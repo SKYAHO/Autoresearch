@@ -1,0 +1,80 @@
+name: Experiment
+description: 모델, 데이터, 지표, 방법론 실험을 기록합니다.
+title: "[EXP] "
+labels: ["experiment"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        실험 issue는 가설과 판정 기준을 먼저 정하는 데 목적이 있습니다. 결과가 나오면 같은 issue에 요약을 남겨 주세요.
+
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: 가설
+      description: 이번 실험으로 검증하려는 가설을 명확하게 적어 주세요.
+      placeholder: 예) 신규 피처를 추가하면 baseline 대비 AUC가 0.01 이상 개선된다.
+    validations:
+      required: true
+
+  - type: input
+    id: dataset
+    attributes:
+      label: 데이터셋
+      description: 사용할 데이터셋 이름, 기간, 버전을 적어 주세요.
+      placeholder: 예) train_2026_06_v1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: model
+    attributes:
+      label: 모델
+      options:
+        - XGBoost
+        - LightGBM
+        - CatBoost
+        - Linear / Logistic Regression
+        - 기타
+    validations:
+      required: true
+
+  - type: dropdown
+    id: metric
+    attributes:
+      label: 주요 평가지표
+      multiple: true
+      options:
+        - AUC
+        - RMSE
+        - F1
+        - Accuracy
+        - Precision / Recall
+        - 기타
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: 실험 설정
+      description: 피처, 하이퍼파라미터, 비교군, 실행 방법을 적어 주세요.
+      value: |
+        - Features:
+        - Hyperparameters:
+        - Baseline / Champion:
+        - Command:
+    validations:
+      required: true
+
+  - type: textarea
+    id: result
+    attributes:
+      label: 결과
+      description: 실험 후 MLflow run, 지표 요약, 결론을 업데이트해 주세요.
+      value: |
+        - MLflow Run:
+        - Metric Summary:
+        - Conclusion:
+    validations:
+      required: false

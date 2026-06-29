@@ -1,0 +1,66 @@
+name: Feature
+description: 새 기능 또는 기존 기능 개선 작업을 제안합니다.
+title: "[FEAT] "
+labels: ["feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        기능 issue는 작업의 출발점입니다. PR은 이 issue의 완료 조건을 만족하도록 작게 나누어 주세요.
+
+  - type: textarea
+    id: purpose
+    attributes:
+      label: 목적
+      description: 이 기능이 왜 필요한지, 어떤 문제를 해결하는지 설명해 주세요.
+      placeholder: 예) 반복되는 계산 로직을 공통 함수로 분리해 테스트 가능하게 만듭니다.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: 작업 범위
+      description: 이번 issue에서 할 일을 체크리스트로 적어 주세요.
+      value: |
+        - [ ]
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 영향받는 컴포넌트
+      multiple: true
+      options:
+        - Feature Store
+        - Training
+        - Serving
+        - Reporting
+        - 공통 인프라 / CI-CD
+        - 문서 / 운영
+        - 기타
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: 완료 조건
+      description: 이 issue가 끝났다고 판단할 수 있는 기준을 적어 주세요.
+      value: |
+        - [ ]
+        - [ ]
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: 참고 사항
+      description: 관련 링크, 설계 메모, 제약 조건이 있으면 적어 주세요.
+    validations:
+      required: false

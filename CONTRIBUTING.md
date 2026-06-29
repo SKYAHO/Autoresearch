@@ -12,7 +12,7 @@ AutoResearch 프로젝트에 기여해 주셔서 감사합니다.
 ```
 
 1. **이슈 생성**: 작업 시작 전 반드시 이슈를 먼저 생성합니다.  
-   이슈 템플릿(Feature / Bug / Experiment)을 선택해 작성해 주세요.
+   `Issues > New issue`에서 Issue Form(Feature / Bug / Experiment)을 선택해 작성해 주세요. Form을 선택하면 제목 prefix와 label이 자동으로 적용됩니다.
 
 2. **브랜치 생성**: `main`에서 분기하여 작업 브랜치를 만듭니다.  
    브랜치 네이밍 규칙은 아래를 따릅니다.
