@@ -13,7 +13,14 @@ BQ_DATASET="youtube"                 # BigQuery 데이터셋
 BQ_TABLE_NAME="trending"             # BigQuery 테이블
 JOB_NAME="youtube-trending-daily"    # Cloud Run Job 이름
 IMAGE="${GCP_REGION}-docker.pkg.dev/${PROJECT_ID}/yt/${JOB_NAME}:latest"
-YOUTUBE_API_KEY="${YOUTUBE_API_KEY:-}"  # 환경변수로 주입(파일에 키를 적지 마세요): YOUTUBE_API_KEY="키" bash gcp/deploy.sh
+YOUTUBE_API_KEY="${YOUTUBE_API_KEY:-}"  # 환경변수로 주입 가능: YOUTUBE_API_KEY="키" bash gcp/deploy.sh
+
+# 환경변수로 주지 않았으면 프로젝트 루트의 .env 에서 읽는다(키를 deploy.sh 에 적지 않기 위함)
+if [ -z "$YOUTUBE_API_KEY" ] && [ -f .env ]; then
+  YOUTUBE_API_KEY="$(grep -E '^YOUTUBE_API_KEY=' .env | head -n1 | cut -d= -f2-)"
+  YOUTUBE_API_KEY="${YOUTUBE_API_KEY%\"}"; YOUTUBE_API_KEY="${YOUTUBE_API_KEY#\"}"
+  YOUTUBE_API_KEY="${YOUTUBE_API_KEY%\'}"; YOUTUBE_API_KEY="${YOUTUBE_API_KEY#\'}"
+fi
 
 RUN_SA="yt-job-sa@${PROJECT_ID}.iam.gserviceaccount.com"      # 작업 실행 SA
 SCHED_SA="yt-sched-sa@${PROJECT_ID}.iam.gserviceaccount.com"  # 스케줄러 SA
@@ -54,6 +61,15 @@ fi
 # ─────────────────────────────────────────────────────────────
 gcloud iam service-accounts create yt-job-sa --display-name="YT job" 2>/dev/null || true
 gcloud iam service-accounts create yt-sched-sa --display-name="YT scheduler" 2>/dev/null || true
+
+# 서비스 계정은 생성 직후 전파 지연이 있어 IAM 바인딩이 "does not exist"로 실패할 수 있다.
+# 존재가 확인될 때까지 최대 60초 대기.
+for SA in "$RUN_SA" "$SCHED_SA"; do
+  for _ in $(seq 1 12); do
+    gcloud iam service-accounts describe "$SA" >/dev/null 2>&1 && break
+    echo "  서비스 계정 전파 대기 중... ($SA)"; sleep 5
+  done
+done
 
 # 작업 SA: GCS 쓰기, BigQuery 적재/쿼리, 시크릿 읽기
 gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
