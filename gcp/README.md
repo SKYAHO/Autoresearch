@@ -14,15 +14,48 @@ Cloud Scheduler (09:00 KST)  ──HTTP──▶  Cloud Run Job  ──▶  YouT
    API 키: Secret Manager
 ```
 
+## 사전 준비 (환경 설정)
+
+### 1) Google Cloud SDK(gcloud) 설치
+
+```bash
+# macOS - Homebrew
+brew install --cask google-cloud-sdk
+# 또는 공식 설치 스크립트
+curl https://sdk.cloud.google.com | bash && exec -l $SHELL
+
+gcloud --version    # gcloud, bq 표시되면 OK
+```
+
+### 2) 로그인 / 인증
+
+```bash
+gcloud auth login                       # 사용자 로그인
+gcloud auth application-default login    # 로컬 ADC(빌드/배포용)
+```
+
+### 3) GCP 프로젝트 준비
+
+프로젝트 ID는 **소문자/숫자/하이픈**만 가능합니다(대문자 불가). 결제 계정이 연결돼 있어야 합니다.
+
+```bash
+gcloud projects list                                  # 기존 프로젝트 확인
+# 없으면 생성 후 콘솔에서 결제 연결
+gcloud projects create my-autoresearch-123 --name="Autoresearch"
+# 결제: https://console.cloud.google.com/billing
+```
+
+### 4) `gcp/deploy.sh` 상단 변수 수정
+
+`PROJECT_ID`(위에서 확인/생성한 실제 ID), `BUCKET`(전역 유일), `YOUTUBE_API_KEY`(발급 키) 등을 본인 값으로 채웁니다.
+
 ## 빠른 시작
 
-1. `gcloud` 로그인 및 결제 연결된 프로젝트 준비.
-2. `gcp/deploy.sh` 상단 변수(`PROJECT_ID`, `BUCKET`, `YOUTUBE_API_KEY` 등)를 본인 값으로 수정.
-3. 프로젝트 루트에서 실행:
+위 사전 준비를 마친 뒤, 프로젝트 루트에서:
 
-   ```bash
-   bash gcp/deploy.sh
-   ```
+```bash
+bash gcp/deploy.sh
+```
 
 스크립트가 API 활성화 → 버킷/데이터셋/시크릿 생성 → 서비스계정·권한 →
 이미지 빌드 → Cloud Run Job 배포 → Cloud Scheduler(매일 9시 KST) 등록까지 수행합니다.

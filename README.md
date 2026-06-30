@@ -49,5 +49,6 @@ export YOUTUBE_API_KEY="발급받은_키"
 
 ## GCP 배포
 
-매일 09:00 KST 자동 수집을 GCP에서 운영하려면 `gcp/README.md` 참고.
+매일 09:00 KST 자동 수집을 GCP에서 운영하려면 **사전 준비(gcloud 설치·인증·프로젝트 설정)부터
+배포까지** [`gcp/README.md`](gcp/README.md)를 참고하세요.
 (Cloud Run Job + Cloud Scheduler + GCS 일자 parquet + BigQuery 적재)
