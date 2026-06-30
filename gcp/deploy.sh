@@ -6,14 +6,14 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────
 # 0) 설정 — 본인 값으로 수정
 # ─────────────────────────────────────────────────────────────
-PROJECT_ID="Autoresearch"          # GCP 프로젝트 ID
+PROJECT_ID="autoresearch-501004"          # GCP 프로젝트 ID
 GCP_REGION="asia-northeast3"         # 서울 리전
 BUCKET="${PROJECT_ID}-youtube-trend" # GCS 버킷명(전역 유일)
 BQ_DATASET="youtube"                 # BigQuery 데이터셋
 BQ_TABLE_NAME="trending"             # BigQuery 테이블
 JOB_NAME="youtube-trending-daily"    # Cloud Run Job 이름
 IMAGE="${GCP_REGION}-docker.pkg.dev/${PROJECT_ID}/yt/${JOB_NAME}:latest"
-YOUTUBE_API_KEY=""       # Secret Manager 에 넣을 값
+YOUTUBE_API_KEY="${YOUTUBE_API_KEY:-}"  # 환경변수로 주입(파일에 키를 적지 마세요): YOUTUBE_API_KEY="키" bash gcp/deploy.sh
 
 RUN_SA="yt-job-sa@${PROJECT_ID}.iam.gserviceaccount.com"      # 작업 실행 SA
 SCHED_SA="yt-sched-sa@${PROJECT_ID}.iam.gserviceaccount.com"  # 스케줄러 SA
@@ -41,7 +41,13 @@ bq --location="$GCP_REGION" mk -d "${PROJECT_ID}:${BQ_DATASET}" 2>/dev/null || t
 # 3) API 키를 Secret Manager 에 저장
 # ─────────────────────────────────────────────────────────────
 gcloud secrets create youtube-api-key 2>/dev/null || true
-printf '%s' "$YOUTUBE_API_KEY" | gcloud secrets versions add youtube-api-key --data-file=-
+if [ -n "$YOUTUBE_API_KEY" ]; then
+  printf '%s' "$YOUTUBE_API_KEY" | gcloud secrets versions add youtube-api-key --data-file=-
+else
+  echo "WARNING: YOUTUBE_API_KEY 가 비어 있어 시크릿 버전 추가를 건너뜁니다."
+  echo "  배포 후 실제 키를 반드시 추가하세요:"
+  echo "    printf '%s' '발급받은키' | gcloud secrets versions add youtube-api-key --data-file=-"
+fi
 
 # ─────────────────────────────────────────────────────────────
 # 4) 서비스 계정 + 권한
