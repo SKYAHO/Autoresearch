@@ -73,8 +73,17 @@ def _client():
     return genai.Client(vertexai=True, project=GCP_PROJECT, location=VERTEX_LOCATION)
 
 
-def gemini_generate(system_prompt: str, contents, temperature: float = 0.9) -> str:
-    """system_prompt + contents(문자열 또는 메시지 리스트) → 생성 텍스트."""
+def gemini_generate(
+    system_prompt: str,
+    contents,
+    temperature: float = 0.9,
+    response_mime_type: str | None = None,
+    max_output_tokens: int = 2048,
+) -> str:
+    """system_prompt + contents → 생성 텍스트.
+
+    response_mime_type="application/json" 이면 모델이 JSON 으로만 응답한다.
+    """
     from google.genai import types
 
     client = _client()
@@ -84,7 +93,25 @@ def gemini_generate(system_prompt: str, contents, temperature: float = 0.9) -> s
         config=types.GenerateContentConfig(
             system_instruction=system_prompt,
             temperature=temperature,
-            max_output_tokens=1024,
+            max_output_tokens=max_output_tokens,
+            response_mime_type=response_mime_type,
         ),
     )
     return (resp.text or "").strip()
+
+
+def parse_json_array(text: str):
+    """모델 응답에서 JSON 배열을 견고하게 추출."""
+    import json
+    import re
+
+    t = text.strip()
+    if t.startswith("```"):
+        t = re.sub(r"^```[a-zA-Z]*\n?", "", t).rstrip("`").strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        m = re.search(r"\[.*\]", t, re.DOTALL)
+        if m:
+            return json.loads(m.group(0))
+        raise

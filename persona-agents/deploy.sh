@@ -14,8 +14,9 @@ GEMINI_MODEL="gemini-2.5-flash"
 BUCKET="${PROJECT_ID}-persona-agents"
 BQ_DATASET="persona"
 PERSONAS_TABLE="${PROJECT_ID}.${BQ_DATASET}.personas"
-OUTPUT_TABLE="${PROJECT_ID}.${BQ_DATASET}.persona_dialogues"
-JOB_NAME="persona-batch"
+INTERACTIONS_TABLE="${PROJECT_ID}.${BQ_DATASET}.interactions"
+VIDEOS_TABLE="${PROJECT_ID}.youtube.trending"   # 후보 영상 카탈로그(기존 YouTube 파이프라인)
+JOB_NAME="persona-sim"
 SERVICE_NAME="persona-api"
 IMAGE="${GCP_REGION}-docker.pkg.dev/${PROJECT_ID}/persona/agents:latest"
 
@@ -86,12 +87,12 @@ gcloud run deploy "$SERVICE_NAME" \
   --no-allow-unauthenticated \
   --set-env-vars="${COMMON_ENV}"
 
-# ── 7) 배치 생성 (Cloud Run Job) — command override 로 generate_batch 실행 ──
+# ── 7) 행동 시뮬레이션 (Cloud Run Job) — command override 로 simulate_behavior 실행 ──
 gcloud run jobs deploy "$JOB_NAME" \
   --image="$IMAGE" --region="$GCP_REGION" --service-account="$RUN_SA" \
   --max-retries=1 --task-timeout=3600s \
-  --command="python" --args="generate_batch.py" \
-  --set-env-vars="${COMMON_ENV},OUTPUT_TABLE=${OUTPUT_TABLE},GCS_BUCKET=${BUCKET},SAMPLE_SIZE=20,TURNS=4"
+  --command="python" --args="simulate_behavior.py" \
+  --set-env-vars="${COMMON_ENV},VIDEOS_TABLE=${VIDEOS_TABLE},OUTPUT_TABLE=${INTERACTIONS_TABLE},GCS_BUCKET=${BUCKET},SAMPLE_USERS=20,POOL_SIZE=80,SLATE_SIZE=15"
 
 cat <<EOF
 
@@ -104,10 +105,13 @@ cat <<EOF
    BQ_LOCATION=${GCP_REGION} python persona-agents/ingest_personas.py
    (또는 Cloud Run Job 으로도 실행 가능)
 
-2) 배치 생성 실행:
+2) 행동 시뮬레이션 실행(가상 유저 → 영상 클릭/시청 이벤트 생성):
    gcloud run jobs execute ${JOB_NAME} --region=${GCP_REGION}
+   결과: BigQuery ${INTERACTIONS_TABLE} (학습용 상호작용 데이터)
 
-3) 인터랙티브 API 호출(인증 필요):
+3) (선택) 인터랙티브 페르소나 대화 API:
    URL=\$(gcloud run services describe ${SERVICE_NAME} --region=${GCP_REGION} --format='value(status.url)')
    curl -H "Authorization: Bearer \$(gcloud auth print-identity-token)" "\$URL/personas?n=3"
+
+다음 단계(예정): interactions 로 추천 모델 학습(BQML → Vertex Two-Tower) + 추천 서빙.
 EOF
