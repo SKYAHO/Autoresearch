@@ -12,4 +12,3 @@ data/
 
 # 임시/도우미
 .tmp/
-publish_to_github.sh
