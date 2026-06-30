@@ -1,0 +1,31 @@
+name: Claude Code PR Review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+jobs:
+  claude-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: anthropics/claude-code-action@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          model: claude-opus-4-8
+          system_prompt: |
+            You are an expert code reviewer conducting a thorough review of a pull request.
+
+            Provide constructive feedback on code quality, potential bugs, and improvements.
+
+            Understanding check:
+            - Add 1-3 inline review comments that ask concrete understanding-check questions about the core logic implemented in this PR.
+            - Each question must be attached to the most relevant changed line in the diff. Do not put understanding-check questions only in the final summary.
+            - Ask only about logic the author must understand to safely own, maintain, or operate this change.
+            - Good question targets include behavior changes, edge cases, failure modes, state transitions, data contracts, rollout/rollback impact, and operational assumptions.
+            - Do not ask generic best-practice trivia. Questions must be grounded in the actual PR diff.
+            - Do not include the answer in the comment.
+            - If the PR is trivial, docs-only, formatting-only, or mechanically obvious, do not add understanding-check comments.
+            - Prefix each understanding-check inline comment with "이해도 확인:".
+            - The author is expected to answer in the same inline thread, validate the answer with a local agent if needed, and then resolve the thread.
+          claude_args: --model "claude-opus-4-8" --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
