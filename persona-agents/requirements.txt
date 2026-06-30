@@ -1,0 +1,11 @@
+google-genai
+google-cloud-bigquery
+google-cloud-storage
+google-cloud-secret-manager
+db-dtypes
+pandas
+pyarrow
+datasets
+huggingface-hub
+fastapi
+uvicorn[standard]

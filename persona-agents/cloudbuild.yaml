@@ -1,0 +1,6 @@
+# 프로젝트 루트를 빌드 컨텍스트로, persona-agents/Dockerfile 로 이미지 빌드
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args: ["build", "-f", "persona-agents/Dockerfile", "-t", "${_IMAGE}", "."]
+images:
+  - "${_IMAGE}"
