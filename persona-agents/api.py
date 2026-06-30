@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import os
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 
 import common
 
@@ -43,7 +43,7 @@ class ChatRequest(BaseModel):
     persona_id: str | None = None
     persona: dict | None = None
     message: str
-    history: list[dict] = []
+    history: list[dict] = Field(default_factory=list)
 
 
 def fetch_persona(persona_id: str) -> dict:
@@ -68,9 +68,19 @@ def healthz() -> dict:
 
 
 @app.get("/personas")
-def personas(n: int = 5) -> dict:
-    sql = f"SELECT * FROM `{PERSONAS_TABLE}` ORDER BY RAND() LIMIT {int(n)}"
-    rows = [dict(r) for r in _bq().query(sql).result()]
+def personas(n: int = Query(5, ge=1, le=50)) -> dict:
+    from google.cloud import bigquery
+
+    sql = f"SELECT * FROM `{PERSONAS_TABLE}` ORDER BY RAND() LIMIT @n"
+    rows = [
+        dict(r)
+        for r in _bq().query(
+            sql,
+            job_config=bigquery.QueryJobConfig(
+                query_parameters=[bigquery.ScalarQueryParameter("n", "INT64", n)]
+            ),
+        ).result()
+    ]
     out = [{"persona_id": common.persona_id(r), "summary": common.build_system_prompt(r)[:300]} for r in rows]
     return {"count": len(out), "personas": out}
 

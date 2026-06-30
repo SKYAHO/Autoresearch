@@ -37,13 +37,15 @@ def main() -> None:
     ap.add_argument("--master", default=str(MASTER), help="append 대상 마스터 parquet")
     args = ap.parse_args()
 
+    region = ft.normalize_region(args.region)
+    max_results = ft.validate_max_results(args.max)
     key = ft.load_api_key()
     now = datetime.now(KST)
     dot_date = now.strftime("%Y.%m.%d")   # 마스터/일자 컬럼 포맷 (2026.06.30)
     iso_date = now.strftime("%Y-%m-%d")   # 파일명 포맷
 
-    print(f"[{iso_date} KST] {args.region} 트렌딩 수집 (max {args.max})")
-    rows = ft.build_rows(key, args.region, dot_date, args.max)
+    print(f"[{iso_date} KST] {region} 트렌딩 수집 (max {max_results})")
+    rows = ft.build_rows(key, region, dot_date, max_results)
     if not rows:
         print("수집된 행이 없습니다. 종료.")
         return
@@ -52,12 +54,12 @@ def main() -> None:
     # 1) 연/월 폴더 아래 일자별 parquet
     day_dir = DATA_DIR / now.strftime("%Y") / now.strftime("%m")
     day_dir.mkdir(parents=True, exist_ok=True)
-    day_path = day_dir / f"youtube_trending_{args.region}_{iso_date}.parquet"
+    day_path = day_dir / f"youtube_trending_{region}_{iso_date}.parquet"
     df.to_parquet(day_path, index=False)
     print(f"  일자 파일 저장: {day_path}  ({len(df)} rows)")
 
     # 2) 마스터에 append (같은 날짜 데이터는 먼저 제거 후 추가 = 재실행 안전)
-    country = ft.REGION_NAMES.get(args.region, args.region)
+    country = ft.REGION_NAMES.get(region, region)
     today_ts = pd.to_datetime(iso_date)  # 날짜(datetime) 비교용
     master = Path(args.master)
     master.parent.mkdir(parents=True, exist_ok=True)

@@ -31,6 +31,7 @@ import requests
 
 API_BASE = "https://www.googleapis.com/youtube/v3"
 OUTPUT_DIR = Path(os.getenv("YOUTUBE_OUTPUT_DIR", "data"))
+HTTP = requests.Session()
 
 # 업로드 parquet의 컬럼 순서(28개)와 정확히 일치
 COLUMNS = [
@@ -96,6 +97,17 @@ REGION_NAMES: dict[str, str] = {
 }
 
 
+def normalize_region(region: str) -> str:
+    """YouTube regionCode 로 쓸 국가 코드를 정규화."""
+    return region.strip().upper()
+
+
+def validate_max_results(max_results: int) -> int:
+    if max_results < 1:
+        raise SystemExit("--max 값은 1 이상이어야 합니다.")
+    return max_results
+
+
 def load_api_key() -> str:
     key = os.getenv("YOUTUBE_API_KEY")
     if not key:
@@ -115,9 +127,9 @@ def load_api_key() -> str:
 
 
 def api_get(key: str, endpoint: str, params: dict) -> dict:
-    params = {**params, "key": key}
+    params = {k: v for k, v in {**params, "key": key}.items() if v is not None}
     try:
-        resp = requests.get(f"{API_BASE}/{endpoint}", params=params, timeout=30)
+        resp = HTTP.get(f"{API_BASE}/{endpoint}", params=params, timeout=30)
     except requests.RequestException as exc:
         sys.exit(f"네트워크 오류 [{endpoint}]: {exc}")
     if resp.status_code != 200:
@@ -185,9 +197,14 @@ def fetch_channels(key: str, channel_ids: list[str]) -> dict[str, dict]:
 
 
 def build_rows(key: str, region: str, trending_date: str, max_results: int) -> list[dict]:
+    region = normalize_region(region)
+    max_results = validate_max_results(max_results)
     country = REGION_NAMES.get(region, region)
     print(f"  [{region}] {country} 트렌딩 수집...", end="", flush=True)
     videos = fetch_trending(key, region, max_results)
+    if not videos:
+        print(" 영상 0 · 채널 0")
+        return []
     cats = category_map(key, region)
     channels = fetch_channels(key, [v["snippet"]["channelId"] for v in videos])
     print(f" 영상 {len(videos)} · 채널 {len(channels)}")
@@ -287,15 +304,20 @@ def main() -> None:
     parser.add_argument("--csv", action="store_true", help="parquet과 함께 CSV도 저장")
     args = parser.parse_args()
 
+    max_results = validate_max_results(args.max)
+    regions = (
+        list(REGION_NAMES)
+        if args.all
+        else list(dict.fromkeys(normalize_region(r) for r in args.regions.split(",") if r.strip()))
+    )
     key = load_api_key()
-    regions = list(REGION_NAMES) if args.all else [r.strip().upper() for r in args.regions.split(",") if r.strip()]
 
     trending_date = datetime.now(timezone.utc).strftime("%Y.%m.%d")
-    print(f"수집일 {trending_date} · 국가 {len(regions)}개 · 국가당 최대 {args.max}")
+    print(f"수집일 {trending_date} · 국가 {len(regions)}개 · 국가당 최대 {max_results}")
 
     all_rows: list[dict] = []
     for region in regions:
-        all_rows.extend(build_rows(key, region, trending_date, args.max))
+        all_rows.extend(build_rows(key, region, trending_date, max_results))
 
     df = to_dataframe(all_rows)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

@@ -32,8 +32,8 @@ from google.cloud import bigquery, storage
 import fetch_trending_dataset as ft
 
 KST = ZoneInfo("Asia/Seoul")
-REGION_CODE = os.getenv("REGION_CODE", "KR")
-MAX_RESULTS = int(os.getenv("MAX_RESULTS", "200"))
+REGION_CODE = ft.normalize_region(os.getenv("REGION_CODE", "KR"))
+MAX_RESULTS = ft.validate_max_results(int(os.getenv("MAX_RESULTS", "200")))
 GCS_BUCKET = os.environ["GCS_BUCKET"]
 GCS_PREFIX = os.getenv("GCS_PREFIX", "youtube_trending")
 BQ_TABLE = os.environ["BQ_TABLE"]

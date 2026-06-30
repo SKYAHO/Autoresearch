@@ -34,13 +34,32 @@ from google.cloud import bigquery, storage
 
 import common
 
+
+def env_int(name: str, default: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except ValueError as exc:
+        raise SystemExit(f"오류: {name} 환경변수는 정수여야 합니다.") from exc
+    if value < 1:
+        raise SystemExit(f"오류: {name} 환경변수는 1 이상이어야 합니다.")
+    return value
+
+
+def coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "y"}
+    return bool(value)
+
+
 PERSONAS_TABLE = os.environ["PERSONAS_TABLE"]
 VIDEOS_TABLE = os.environ["VIDEOS_TABLE"]
 OUTPUT_TABLE = os.environ["OUTPUT_TABLE"]
 GCS_BUCKET = os.environ["GCS_BUCKET"]
-SAMPLE_USERS = int(os.getenv("SAMPLE_USERS", "20"))
-POOL_SIZE = int(os.getenv("POOL_SIZE", "80"))
-SLATE_SIZE = int(os.getenv("SLATE_SIZE", "15"))
+SAMPLE_USERS = env_int("SAMPLE_USERS", 20)
+POOL_SIZE = env_int("POOL_SIZE", 80)
+SLATE_SIZE = env_int("SLATE_SIZE", 15)
 BQ_LOCATION = os.getenv("BQ_LOCATION", "asia-northeast3")
 
 OUTPUT_SCHEMA = [
@@ -57,9 +76,15 @@ OUTPUT_SCHEMA = [
 
 def fetch_video_pool(bq: bigquery.Client) -> list[dict]:
     sql = f"""
+        WITH latest_day AS (
+            SELECT MAX(video_trending__date) AS d
+            FROM `{VIDEOS_TABLE}`
+            WHERE video_id IS NOT NULL
+        )
         SELECT video_id, video_title, video_category_id, channel_title, video_view_count
-        FROM `{VIDEOS_TABLE}`
+        FROM `{VIDEOS_TABLE}`, latest_day
         WHERE video_id IS NOT NULL
+          AND video_trending__date = latest_day.d
         ORDER BY RAND()
         LIMIT {POOL_SIZE}
     """
@@ -67,8 +92,12 @@ def fetch_video_pool(bq: bigquery.Client) -> list[dict]:
 
 
 def sample_personas(bq: bigquery.Client) -> list[dict]:
-    sql = f"SELECT * FROM `{PERSONAS_TABLE}` ORDER BY RAND() LIMIT {SAMPLE_USERS}"
-    return [dict(r) for r in bq.query(sql).result()]
+    sql = f"SELECT * FROM `{PERSONAS_TABLE}` WHERE RAND() < 0.05 LIMIT {SAMPLE_USERS}"
+    rows = [dict(r) for r in bq.query(sql).result()]
+    if len(rows) >= SAMPLE_USERS:
+        return rows
+    fallback = f"SELECT * FROM `{PERSONAS_TABLE}` ORDER BY RAND() LIMIT {SAMPLE_USERS}"
+    return [dict(r) for r in bq.query(fallback).result()]
 
 
 def slate_text(slate: list[dict]) -> str:
@@ -135,15 +164,25 @@ def main() -> None:
         except Exception as exc:  # noqa: BLE001
             print(f"  시뮬레이션 실패(persona={pid}): {exc}")
             continue
-        by_no = {int(d.get("no", 0)): d for d in decisions if isinstance(d, dict)}
+        by_no = {}
+        for d in decisions:
+            if not isinstance(d, dict):
+                continue
+            try:
+                no = int(d.get("no", 0))
+            except (TypeError, ValueError):
+                continue
+            if no > 0:
+                by_no[no] = d
         for i, v in enumerate(slate, 1):
             d = by_no.get(i, {})
-            clicked = bool(d.get("clicked", False))
+            clicked = coerce_bool(d.get("clicked", False))
             wr = d.get("watch_ratio", 0) or 0
             try:
                 wr = max(0.0, min(1.0, float(wr)))
             except (TypeError, ValueError):
                 wr = 0.0
+            liked = clicked and coerce_bool(d.get("liked", False))
             rows.append({
                 "run_id": run_id,
                 "persona_id": pid,
@@ -151,7 +190,7 @@ def main() -> None:
                 "rank": i,
                 "clicked": clicked,
                 "watch_ratio": wr if clicked else 0.0,
-                "liked": bool(d.get("liked", False)),
+                "liked": liked,
                 "created_at": now,
             })
     print(f"생성된 상호작용 이벤트: {len(rows)}")

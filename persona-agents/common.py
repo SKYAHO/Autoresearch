@@ -30,17 +30,24 @@ PERSONA_ATTR_FIELDS = [
 ]
 
 
+def has_value(value) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip()
+    return text != "" and text.lower() not in {"nan", "<na>", "none"}
+
+
 def build_system_prompt(row: dict) -> str:
     """페르소나 한 행(dict) → 한국어 롤플레이 system prompt."""
     attrs = []
     for f in PERSONA_ATTR_FIELDS:
         v = row.get(f)
-        if v not in (None, "", "nan"):
+        if has_value(v):
             attrs.append(f"{f}: {v}")
     narrative = []
     for f in PERSONA_TEXT_FIELDS:
         v = row.get(f)
-        if v not in (None, "", "nan"):
+        if has_value(v):
             narrative.append(str(v).strip())
 
     lines = [
@@ -58,7 +65,7 @@ def build_system_prompt(row: dict) -> str:
 
 def persona_id(row: dict, fallback: str = "") -> str:
     for k in ("uuid", "persona_id", "id"):
-        if row.get(k):
+        if has_value(row.get(k)):
             return str(row[k])
     return fallback
 
