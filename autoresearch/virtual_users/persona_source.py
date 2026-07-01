@@ -5,6 +5,8 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
+from datasets import load_dataset
+
 from autoresearch.virtual_users.schema import SOURCE_DATASET, SourcePersona
 
 
@@ -86,26 +88,33 @@ def write_raw_persona_records(
     logger.info("Wrote raw persona snapshot", extra={"output_path": str(path)})
 
 
-def load_nvidia_persona_records(max_records: int | None = None) -> list[SourcePersona]:
-    from datasets import load_dataset
-
+def load_nvidia_persona_records(
+    max_records: int | None = None,
+    raw_output_path: str | Path | None = None,
+) -> list[SourcePersona]:
     logger.info(
         "Loading NVIDIA persona records",
         extra={"source_dataset": SOURCE_DATASET, "max_records": max_records},
     )
     dataset = load_dataset(SOURCE_DATASET, split="train", streaming=True)
+    raw_records: list[dict[str, Any]] = []
     records: list[SourcePersona] = []
     skipped = 0
 
     for raw_record in dataset:
+        raw_payload = dict(raw_record)
+        raw_records.append(raw_payload)
         try:
-            records.append(source_persona_from_record(dict(raw_record)))
+            records.append(source_persona_from_record(raw_payload))
         except (KeyError, TypeError, ValueError):
             skipped += 1
             logger.debug("Skipped invalid persona record", exc_info=True)
             continue
         if max_records is not None and len(records) >= max_records:
             break
+
+    if raw_output_path is not None:
+        write_raw_persona_records(raw_records, raw_output_path)
 
     logger.info(
         "Loaded NVIDIA persona records",

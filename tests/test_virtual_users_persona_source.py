@@ -145,3 +145,41 @@ def test_source_persona_from_record_maps_spec_fields():
     assert persona.travel_persona == "Cafe trips."
     assert persona.culinary_persona == "Cooking shorts."
     assert persona.family_persona == "Family lifestyle."
+
+
+def test_load_nvidia_persona_records_can_write_raw_snapshot(monkeypatch, tmp_path):
+    raw_records = [
+        {
+            "uuid": "p-001",
+            "age": 24,
+            "sex": "female",
+            "occupation": "student",
+            "persona": "Music fan.",
+        },
+        {
+            "uuid": "p-002",
+            "age": 25,
+            "sex": "male",
+            "occupation": "developer",
+            "persona": "Gaming fan.",
+        },
+    ]
+
+    def fake_load_dataset(name, split, streaming):
+        assert name == "nvidia/Nemotron-Personas-Korea"
+        assert split == "train"
+        assert streaming is True
+        return raw_records
+
+    monkeypatch.setattr(persona_source, "load_dataset", fake_load_dataset, raising=False)
+
+    output_path = tmp_path / "raw_snapshot.jsonl"
+    records = persona_source.load_nvidia_persona_records(
+        max_records=2,
+        raw_output_path=output_path,
+    )
+
+    assert [record.uuid for record in records] == ["p-001", "p-002"]
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["uuid"] == "p-001"

@@ -984,7 +984,7 @@ git commit -m "feat: export warehouse-ready virtual users"
 
 **목적:** Task 2에서 만든 raw snapshot writer를 실제 Hugging Face loader 흐름에 연결한다. 이 task는 외부 dataset 호출을 monkeypatch해서 네트워크 없이 검증한다.
 
-- [ ] **Step 1: 실패하는 loader test 작성**
+- [x] **Step 1: 실패하는 loader test 작성**
 
 `tests/test_virtual_users_persona_source.py`에 아래 테스트를 추가한다.
 
@@ -1029,7 +1029,7 @@ def test_load_nvidia_persona_records_can_write_raw_snapshot(monkeypatch, tmp_pat
     assert json.loads(lines[0])["uuid"] == "p-001"
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run:
 
@@ -1043,7 +1043,7 @@ Expected:
 TypeError: load_nvidia_persona_records() got an unexpected keyword argument 'raw_output_path'
 ```
 
-- [ ] **Step 3: `load_dataset` import 위치 변경**
+- [x] **Step 3: `load_dataset` import 위치 변경**
 
 `autoresearch/virtual_users/persona_source.py` 상단에 추가한다.
 
@@ -1053,7 +1053,7 @@ from datasets import load_dataset
 
 `load_nvidia_persona_records()` 내부의 local import는 제거한다.
 
-- [ ] **Step 4: loader signature와 raw persistence 구현**
+- [x] **Step 4: loader signature와 raw persistence 구현**
 
 `load_nvidia_persona_records()`를 아래처럼 교체한다.
 
@@ -1097,7 +1097,7 @@ def load_nvidia_persona_records(
     return records
 ```
 
-- [ ] **Step 5: 통과 확인**
+- [x] **Step 5: 통과 확인**
 
 Run:
 
@@ -1111,7 +1111,7 @@ Expected:
 tests/test_virtual_users_persona_source.py::test_load_nvidia_persona_records_can_write_raw_snapshot PASSED
 ```
 
-- [ ] **Step 6: commit**
+- [x] **Step 6: commit**
 
 Run:
 
