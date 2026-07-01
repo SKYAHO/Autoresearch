@@ -21,7 +21,7 @@ KR-only 강제:
 import logging
 import math
 import re
-from datetime import date, datetime, time
+from datetime import UTC, date, datetime, time
 from typing import get_args, get_origin
 
 from autoresearch.youtube_collection.schema import TARGET_COUNTRY, TrendingVideo
@@ -242,12 +242,23 @@ def _to_datetime(value: object) -> datetime | None:
     ):
         return None
     if isinstance(value, datetime):
-        return value
+        return _ensure_utc(value)
     if isinstance(value, date):
-        return datetime.combine(value, time())
+        return _ensure_utc(datetime.combine(value, time()))
     # "2024.10.12" → "2024-10-12" 치환 후 ISO 파싱.
     text = _DOT_DATE.sub(r"\1-\2-\3", str(value))
-    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    return _ensure_utc(datetime.fromisoformat(text.replace("Z", "+00:00")))
+
+
+def _ensure_utc(dt: datetime) -> datetime:
+    """naive datetime(백필의 "2024.10.12" 등)에 UTC 를 부착.
+
+    백필은 naive, 일일은 UTC-aware 로 파싱돼 같은 컬럼에 tz 가 섞이는 것을 막는다.
+    이미 tz 가 있으면 그대로(UTC 가정하에 변환하지 않고 보존).
+    """
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=UTC)
+    return dt
 
 
 def _normalize_country(raw: object) -> str:

@@ -52,7 +52,7 @@ def test_normalize_kaggle_row_fixes_typo_key_and_country_name():
     video = normalize_kaggle_row(_kaggle_row(), collected_at=collected_at)
 
     assert isinstance(video, TrendingVideo)
-    assert video.video_trending_date == datetime(2026, 6, 25, 0, 0)
+    assert video.video_trending_date == datetime(2026, 6, 25, 0, 0, tzinfo=UTC)
     assert video.video_trending_country == "KR"
     assert video.collected_at == collected_at
 
@@ -118,7 +118,7 @@ def test_normalize_kaggle_row_handles_real_all_string_parquet_shapes():
     video = normalize_kaggle_row(row, collected_at=collected_at)
 
     assert video.video_category == "Sports"  # raw key video_category_id -> video_category
-    assert video.video_trending_date == datetime(2024, 10, 12, 0, 0)
+    assert video.video_trending_date == datetime(2024, 10, 12, 0, 0, tzinfo=UTC)
     assert video.video_tags == ["JENNIE", "Mantra", "제니"]
     assert video.video_view_count == 42_000_000
     assert video.video_like_count == 1_500_000
@@ -312,3 +312,15 @@ def test_coerce_raises_on_unsupported_annotation():
 
     with pytest.raises(TypeError):
         _coerce("1.0", float)
+
+
+def test_to_datetime_attaches_utc_to_naive_input():
+    # Kaggle "2024.10.12" 는 naive 로 파싱되지만, 백필/일일 tz 일관을 위해 UTC-aware 로 통일.
+    from datetime import timedelta
+
+    from autoresearch.youtube_collection.transform import _to_datetime
+
+    result = _to_datetime("2024.10.12")
+    assert result is not None
+    assert result.tzinfo is not None
+    assert result.utcoffset() == timedelta(0)

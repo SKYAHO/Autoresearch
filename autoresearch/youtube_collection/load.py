@@ -31,6 +31,45 @@ logger = logging.getLogger(__name__)
 
 PARTITION_FILE = "part-0.parquet"
 
+# 파일에 저장되는 29컬럼의 고정 스키마(dt 파티션키는 제외).
+# from_pylist 자동 추론 대신 명시적 스키마를 고정 → 한 파티션의 값이 전부 None
+# 이어도(예: 채널 전원 구독자 숨김) null 타입이 아닌 int64/timestamp 로 쓰여
+# 파티션 간 스키마 충돌을 원천 차단한다.
+_TS = pa.timestamp("us", tz="UTC")
+_SCHEMA = pa.schema(
+    [
+        ("video_id", pa.string()),
+        ("video_published_at", _TS),
+        ("video_trending_date", _TS),
+        ("video_trending_country", pa.string()),
+        ("video_title", pa.string()),
+        ("video_description", pa.string()),
+        ("video_default_thumbnail", pa.string()),
+        ("video_category", pa.string()),
+        ("video_tags", pa.list_(pa.string())),
+        ("video_duration", pa.string()),
+        ("video_dimension", pa.string()),
+        ("video_definition", pa.string()),
+        ("video_licensed_content", pa.bool_()),
+        ("video_view_count", pa.int64()),
+        ("video_like_count", pa.int64()),
+        ("video_comment_count", pa.int64()),
+        ("channel_id", pa.string()),
+        ("channel_title", pa.string()),
+        ("channel_description", pa.string()),
+        ("channel_custom_url", pa.string()),
+        ("channel_published_at", _TS),
+        ("channel_country", pa.string()),
+        ("channel_view_count", pa.int64()),
+        ("channel_subscriber_count", pa.int64()),
+        ("channel_have_hidden_subscribers", pa.bool_()),
+        ("channel_video_count", pa.int64()),
+        ("channel_localized_title", pa.string()),
+        ("channel_localized_description", pa.string()),
+        ("collected_at", _TS),
+    ]
+)
+
 
 def write_partition(
     videos: list[TrendingVideo],
@@ -64,7 +103,11 @@ def write_partition(
 
 def _to_table(videos: list[TrendingVideo]):
     """TrendingVideo 리스트 → pyarrow Table.
-    model_dump() 가 타입에 맞는 Python dict 를 주고, from_pylist 가 타입을 유지.
+
+    model_dump() 로 Python dict 를 만들고, 명시적 _SCHEMA 로 from_pylist.
+    스키마를 고정하면 파티션마다 동일한 타입(int64/timestamp/list 등)이
+    보장돼, 값이 전부 None 인 파티션이 null 타입으로 떨어져 인접 파티션과
+    충돌하는 일을 막는다.
     """
     records = [v.model_dump() for v in videos]
-    return pa.Table.from_pylist(records)
+    return pa.Table.from_pylist(records, schema=_SCHEMA)
