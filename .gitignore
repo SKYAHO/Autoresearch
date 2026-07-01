@@ -1,2 +1,39 @@
 __pycache__/
 *.py[cod]
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# GCP service account keys
+*-service-account*.json
+*gcp*.json
+*credentials*.json
+google_credentials.json
+service-account.json
+
+# Feast artifacts
+feature_repo/registry.db
+feature_repo/registry.pb
+*.registry
+
+# Data artifacts - parquet/csv만 제외, 디렉토리 구조(.gitkeep)는 유지
+**/data/*.parquet
+**/data/*.csv
+*.parquet
+*.csv
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

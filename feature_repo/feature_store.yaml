@@ -1,0 +1,36 @@
+# Feast Feature Store 설정
+# ============================================================================
+# 이 파일은 프로젝트 기본 설정을 담고 있습니다.
+# 개인 GCP 계정으로 테스트 시 project 필드를 본인 프로젝트 ID로 변경하세요.
+# Redis 연결 정보는 Memorystore 인스턴스 생성 후 scripts/setup_feast_config.py 로 주입합니다.
+# ============================================================================
+
+project: autoresearch_feature_store
+
+# Registry: Feature 정의(메타데이터)를 저장하는 위치
+# 로컬 개발 시 로컬 파일 사용 / 운영 시 GCS 권장
+registry:
+  registry_type: file
+  path: data/registry.db
+
+provider: gcp
+
+# Offline Store: BigQuery
+offline_store:
+  type: bigquery
+  dataset: feast_offline_store          # BigQuery dataset 이름
+  project: t-academy-bigquery           # GCP Project ID (개인 테스트 시 변경)
+
+# Online Store: Memorystore for Redis
+# connection_string은 setup 스크립트로 주입 (민감 정보)
+# 로컬 개발 시 localhost Redis 사용 가능
+online_store:
+  type: redis
+  connection_string: "localhost:6379"   # 운영: Memorystore IP:PORT 로 교체
+
+offline_config:
+  gcs_staging_location: gs://feast-staging-autoresearch/  # BigQuery materialize 임시 저장소
+
+entity_key_serialization_version: 2
+
+# Feature 정의 파일 (이 디렉토리 내의 모든 *.py 파일에서 Entity, FeatureView 로드)
