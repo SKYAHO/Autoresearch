@@ -21,6 +21,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # 레포 루트를 import 경로에 추가(dags/ 안에서 autoresearch.* 사용).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -56,7 +57,7 @@ def _gcs_filesystem():
 @dag(
     dag_id="youtube_backfill_kr",
     schedule=None,  # 수동 트리거만.
-    start_date=datetime(2026, 6, 25),
+    start_date=datetime(2026, 6, 25, tzinfo=ZoneInfo("Asia/Seoul")),  # tz-aware
     catchup=False,
     tags=["youtube", "collection", "kr", "backfill"],
     # 트리거 시점에 UI/CLI 에서 덮어쓸 수 있는 파라미터.

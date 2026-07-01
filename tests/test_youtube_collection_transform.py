@@ -269,3 +269,46 @@ def test_normalize_api_item_defaults_missing_metadata_to_empty():
     assert result.video_comment_count == 0
     assert result.channel_custom_url == ""
     assert result.channel_localized_title == ""
+
+
+def test_normalize_api_item_rejects_non_kr_region_code():
+    # KR-only 불변식은 API 경로에서도 강제되어야 한다.
+    collected_at = datetime(2026, 6, 25, 15, 30, tzinfo=UTC)
+    with pytest.raises(ValueError):
+        normalize_api_item(
+            _api_video_item(),
+            _api_channel_item(),
+            {"24": "Entertainment"},
+            collected_at=collected_at,
+            region_code="US",
+        )
+
+
+def test_normalize_api_item_warns_when_statistics_missing(caplog):
+    # statistics 가 통째로 없으면 카운트가 0으로 강제되며, 델타 왜곡 추적을 위해 WARN.
+    collected_at = datetime(2026, 6, 25, 15, 30, tzinfo=UTC)
+    video = _api_video_item()
+    del video["statistics"]
+
+    with caplog.at_level("WARNING"):
+        result = normalize_api_item(
+            video, _api_channel_item(), {"24": "Entertainment"}, collected_at=collected_at
+        )
+
+    assert result.video_view_count == 0
+    assert any("statistic" in r.message.lower() for r in caplog.records)
+
+
+def test_normalize_kaggle_row_raises_for_missing_required_datetime():
+    # non-Optional datetime 결측은 pydantic 의 모호한 에러 대신 명확한 ValueError.
+    collected_at = datetime(2026, 6, 26, 0, 30, tzinfo=UTC)
+    row = _kaggle_row(video_published_at=None)
+    with pytest.raises(ValueError, match="datetime"):
+        normalize_kaggle_row(row, collected_at=collected_at)
+
+
+def test_coerce_raises_on_unsupported_annotation():
+    from autoresearch.youtube_collection.transform import _coerce
+
+    with pytest.raises(TypeError):
+        _coerce("1.0", float)

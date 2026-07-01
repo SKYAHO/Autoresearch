@@ -24,8 +24,9 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # DAG 파일은 dags/ 아래에 있지만 autoresearch 패키지는 레포 루트에 있다.
 # 레포 루트를 import 경로에 추가해서 autoresearch.* 를 불러올 수 있게 한다.
@@ -43,6 +44,8 @@ logger = logging.getLogger(__name__)
 LAKE_DIR_NAME = "data_lake/youtube_trending_kr"
 # KR 하루 트렌딩 규모. 약 200개.
 DEFAULT_MAX_RESULTS = 200
+# dt 키는 KST 일자 기준(KR 트렌딩 날). collected_at 은 UTC로 저장(백필과 통일).
+_KST = ZoneInfo("Asia/Seoul")
 
 
 def _get_config(name: str, default: str | None = None) -> str | None:
@@ -89,7 +92,7 @@ def _gcs_filesystem():
 @dag(
     dag_id="youtube_trending_kr_daily",
     schedule="30 15 * * *",  # UTC 15:30 = KST 00:30
-    start_date=datetime(2026, 6, 25),
+    start_date=datetime(2026, 6, 25, tzinfo=_KST),  # tz-aware 권장
     catchup=False,  # 과거 분할 실행(백필) 안 함 — 백필은 별도 DAG.
     tags=["youtube", "collection", "kr"],
     default_args={"retries": 2},  # 일시적 API 실패 대비 재시도 2회.
@@ -101,9 +104,9 @@ def youtube_trending_kr_daily():
         list_videos, list_channels, list_categories = _make_callables(
             _build_service()
         )
-        # 2) 수집 시각 = 현재 KST. 이것이 dt 키와 video_trending_date 가 됨.
-        kst = _kst()
-        collected_at = datetime.now(kst)
+        # 2) 수집 시각 = 현재(UTC, 백필과 통일). dt 키는 이 시각의 KST 일자.
+        collected_at = datetime.now(UTC)
+        partition_date = collected_at.astimezone(_KST).date()
 
         # 3) 트렌딩 수집 + 채널 메타 + 카테고리 변환 + 정규화
         videos = collect_trending(
@@ -123,19 +126,12 @@ def youtube_trending_kr_daily():
             )
         base_path = f"{bucket}/{LAKE_DIR_NAME}"
         path = write_partition(
-            videos, base_path, collected_at.date(), filesystem=_gcs_filesystem()
+            videos, base_path, partition_date, filesystem=_gcs_filesystem()
         )
         logger.info("Daily snapshot complete: %d videos -> %s", len(videos), path)
         return path
 
     snapshot()
-
-
-def _kst():
-    """Asia/Seoul 타임존 객체."""
-    from zoneinfo import ZoneInfo
-
-    return ZoneInfo("Asia/Seoul")
 
 
 youtube_trending_kr_daily()

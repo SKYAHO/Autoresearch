@@ -101,6 +101,13 @@ def normalize_api_item(
     snippet = video_item.get("snippet", {}) or {}
     content = video_item.get("contentDetails", {}) or {}
     stats = video_item.get("statistics", {}) or {}
+    # statistics 가 통째로 없으면 카운트가 0으로 강제된다(append-only 델타 왜곡).
+    # 스키마를 바꾸진 않되, 추적 가능하도록 WARN 로그를 남긴다.
+    if not stats:
+        logger.warning(
+            "video statistics missing for video_id=%s; counts default to 0",
+            video_item.get("id"),
+        )
     # --- 채널 쪽(채널 조회 실패 시 None → 빈 dict 폴백) ---
     chan = channel_item or {}
     c_snippet = chan.get("snippet", {}) or {}
@@ -148,6 +155,11 @@ def normalize_api_item(
         if name != "collected_at"
     }
     normalized["collected_at"] = collected_at
+    # KR-only 강제: Kaggle 경로와 대칭되게 API 경로에서도 _normalize_country 로 검증.
+    # region_code 가 KR 계열이 아니면 ValueError (잘못된 국가 데이터 원천 차단).
+    normalized["video_trending_country"] = _normalize_country(
+        normalized["video_trending_country"]
+    )
     logger.debug("Normalized API item for video_id=%s", normalized.get("video_id"))
     return TrendingVideo(**normalized)
 
@@ -180,10 +192,18 @@ def _coerce(value: object, annotation: object) -> object:
     if annotation is int:
         return _to_int(value)
     if annotation is datetime:
-        return _to_datetime(value)
+        result = _to_datetime(value)
+        # non-Optional datetime 인데 결측/파싱불가 → pydantic 의 모호한 에러 대신
+        # 명확한 ValueError 로 조기 실패(Optional 분기는 위에서 이미 None 반환됨).
+        if result is None:
+            raise ValueError(
+                f"required datetime is missing or unparseable: {value!r}"
+            )
+        return result
     if get_origin(annotation) is list:
         return _to_tags(value)
-    return value
+    # 스키마에 새 타입(float 등)이 추가되면 조용히 통과시키지 않도록 방어.
+    raise TypeError(f"unsupported annotation: {annotation!r}")
 
 
 def _to_int(value: object) -> int:

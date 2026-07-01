@@ -84,7 +84,10 @@ def fetch_channel_map(list_channels, channel_ids: list[str]) -> dict[str, dict]:
         batch = channel_ids[start : start + _CHANNEL_BATCH]
         response = list_channels(part=_CHANNEL_PART, id=",".join(batch))
         for item in response.get("items", []):
-            mapping[item["id"]] = item
+            # id 가 없는 비정형 항목은 KeyError 대신 skip.
+            cid = item.get("id")
+            if cid:
+                mapping[cid] = item
     logger.info("Fetched metadata for %d channels", len(mapping))
     return mapping
 
@@ -100,10 +103,13 @@ def fetch_category_map(
     미리 id→이름 테이블을 만들어 둔다(Kaggle 스키마와 일치시키기 위함).
     """
     response = list_categories(part=_CATEGORY_PART, regionCode=region_code)
-    mapping = {
-        item["id"]: item["snippet"]["title"]
-        for item in response.get("items", [])
-    }
+    mapping: dict[str, str] = {}
+    for item in response.get("items", []):
+        # id 또는 snippet.title 이 없는 비정형 항목은 skip (KeyError 방지).
+        cid = item.get("id")
+        title = item.get("snippet", {}).get("title")
+        if cid and title:
+            mapping[cid] = title
     logger.info("Fetched %d video categories for region=%s", len(mapping), region_code)
     return mapping
 

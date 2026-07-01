@@ -145,3 +145,30 @@ def test_collect_trending_normalizes_video_even_when_channel_missing():
     assert len(videos) == 1
     assert videos[0].video_id == "v1"
     assert videos[0].channel_title == ""  # missing channel -> empty defaults
+
+
+def test_fetch_channel_map_skips_items_without_id():
+    def fake_list(**params):
+        return {
+            "items": [
+                {"id": "c1", "snippet": {"title": "c1"}},
+                {"snippet": {"title": "no_id"}},  # id 누락 -> skip (KeyError X)
+            ]
+        }
+
+    mapping = fetch_channel_map(fake_list, ["c1"])
+    assert mapping == {"c1": {"id": "c1", "snippet": {"title": "c1"}}}
+
+
+def test_fetch_category_map_skips_items_without_title():
+    def fake_list(**params):
+        return {
+            "items": [
+                {"id": "24", "snippet": {"title": "Music"}},
+                {"id": "99"},  # snippet/title 누락 -> skip
+                {"snippet": {"title": "x"}},  # id 누락 -> skip
+            ]
+        }
+
+    mapping = fetch_category_map(fake_list)
+    assert mapping == {"24": "Music"}

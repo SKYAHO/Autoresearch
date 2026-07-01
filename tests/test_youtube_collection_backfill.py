@@ -74,3 +74,19 @@ def test_backfill_normalizes_written_rows(tmp_path):
     row = pq.read_table(str(base / "dt=2024-10-12" / "part-0.parquet")).to_pylist()[0]
     assert row["video_trending_country"] == "KR"  # full name -> code
     assert row["collected_at"] == collected_at
+
+
+def test_backfill_skips_malformed_rows_instead_of_crashing(tmp_path):
+    good = _raw_row("v1", date(2024, 10, 12), "South Korea")
+    bad = _raw_row("v2", date(2024, 10, 12), "South Korea")
+    bad["video_published_at"] = None  # non-Optional datetime 결측 -> 정규화 ValueError -> skip
+    rows = [good, bad]
+    source = tmp_path / "global.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), source)
+
+    base = tmp_path / "lake"
+    collected_at = datetime(2026, 6, 26, 0, 30, tzinfo=UTC)
+
+    total = backfill_from_parquet(str(source), str(base), collected_at=collected_at)
+
+    assert total == 1  # malformed 행은 건너뛰고 정상 1행만 적재
