@@ -36,6 +36,8 @@ class GenerationRequest(BaseModel):
     use_gemini: bool = True
     source_mode: Literal["huggingface", "fixture"] = "huggingface"
     output_path: str = "data/generated/virtual_users_20s_100.json"
+    raw_output_path: str = "data/raw/personas/nvidia_personas_kr.jsonl"
+    warehouse_output_path: str = "data/generated/virtual_users_kr.jsonl"
 
     @field_validator("age_min", "age_max", "male_count", "female_count")
     @classmethod
@@ -60,11 +62,18 @@ class SourcePersona(BaseModel):
     occupation: str = ""
     province: str = ""
     district: str = ""
+    country: str = "KR"
+    locale: str = "ko-KR"
     persona: str = ""
     hobbies_and_interests: str = ""
+    hobbies_and_interests_list: list[str] = Field(default_factory=list)
     professional_persona: str = ""
+    skills_and_expertise: str = ""
     sports_persona: str = ""
     arts_persona: str = ""
+    travel_persona: str = ""
+    culinary_persona: str = ""
+    family_persona: str = ""
     cultural_background: str = ""
 
 
@@ -87,14 +96,45 @@ class GenerationMeta(BaseModel):
 class VirtualUser(BaseModel):
     virtual_user_id: str
     source_uuid: str
+    source_dataset: str = SOURCE_DATASET
+    country: str = "KR"
+    locale: str = "ko-KR"
     age: int
     sex: Literal["male", "female"]
     age_bucket: str
     occupation: str
     province: str
+    district: str = ""
     persona_summary: str
+    interest_keywords: list[str] = Field(default_factory=list)
     youtube_profile: YouTubeProfile
     generation_meta: GenerationMeta
+
+    def to_warehouse_row(self) -> dict[str, object]:
+        return {
+            "user_id": self.virtual_user_id,
+            "source_uuid": self.source_uuid,
+            "source_dataset": self.source_dataset,
+            "country": self.country,
+            "locale": self.locale,
+            "age": self.age,
+            "sex": self.sex,
+            "occupation": self.occupation,
+            "province": self.province,
+            "district": self.district,
+            "persona_summary": self.persona_summary,
+            "interest_keywords": self.interest_keywords,
+            "primary_categories": self.youtube_profile.primary_categories,
+            "shorts_affinity": self.youtube_profile.shorts_affinity,
+            "longform_affinity": self.youtube_profile.longform_affinity,
+            "trend_sensitivity": self.youtube_profile.trend_sensitivity,
+            "comment_propensity": self.youtube_profile.comment_propensity,
+            "watch_time_band": self.youtube_profile.watch_time_band,
+            "schema_version": self.generation_meta.schema_version,
+            "prompt_version": self.generation_meta.prompt_version,
+            "llm_model": self.generation_meta.llm_model,
+            "generated_at": self.generation_meta.generated_at,
+        }
 
 
 class VirtualUserBatch(BaseModel):
@@ -131,4 +171,3 @@ class VirtualUserBatch(BaseModel):
             },
         )
         return payload
-
