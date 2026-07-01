@@ -1,0 +1,194 @@
+import logging
+import random
+from collections.abc import Iterable
+from typing import Any
+
+from autoresearch.virtual_users.schema import SOURCE_DATASET, SourcePersona
+
+
+logger = logging.getLogger(__name__)
+
+MALE_VALUES = {"male", "m", "man", "남성", "남자"}
+FEMALE_VALUES = {"female", "f", "woman", "여성", "여자"}
+
+
+def normalize_sex(value: object) -> str:
+    normalized = str(value).strip().lower()
+    if normalized in MALE_VALUES:
+        return "male"
+    if normalized in FEMALE_VALUES:
+        return "female"
+    logger.debug("Unsupported source persona sex value", extra={"raw_sex": str(value)})
+    raise ValueError(f"Unsupported sex value: {value}")
+
+
+def _as_text(record: dict[str, Any], key: str) -> str:
+    value = record.get(key, "")
+    if value is None:
+        return ""
+    return str(value)
+
+
+def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
+    persona = SourcePersona(
+        uuid=_as_text(record, "uuid"),
+        age=int(record["age"]),
+        sex=normalize_sex(record["sex"]),
+        occupation=_as_text(record, "occupation"),
+        province=_as_text(record, "province"),
+        district=_as_text(record, "district"),
+        persona=_as_text(record, "persona"),
+        hobbies_and_interests=_as_text(record, "hobbies_and_interests"),
+        professional_persona=_as_text(record, "professional_persona"),
+        sports_persona=_as_text(record, "sports_persona"),
+        arts_persona=_as_text(record, "arts_persona"),
+        cultural_background=_as_text(record, "cultural_background"),
+    )
+    logger.debug(
+        "Converted raw persona record",
+        extra={
+            "source_uuid": persona.uuid,
+            "age": persona.age,
+            "sex": persona.sex,
+            "province": persona.province,
+        },
+    )
+    return persona
+
+
+def load_nvidia_persona_records(max_records: int | None = None) -> list[SourcePersona]:
+    from datasets import load_dataset
+
+    logger.info(
+        "Loading NVIDIA persona records",
+        extra={"source_dataset": SOURCE_DATASET, "max_records": max_records},
+    )
+    dataset = load_dataset(SOURCE_DATASET, split="train", streaming=True)
+    records: list[SourcePersona] = []
+    skipped = 0
+
+    for raw_record in dataset:
+        try:
+            records.append(source_persona_from_record(dict(raw_record)))
+        except (KeyError, TypeError, ValueError):
+            skipped += 1
+            logger.debug("Skipped invalid persona record", exc_info=True)
+            continue
+        if max_records is not None and len(records) >= max_records:
+            break
+
+    logger.info(
+        "Loaded NVIDIA persona records",
+        extra={
+            "source_dataset": SOURCE_DATASET,
+            "loaded_count": len(records),
+            "skipped_count": skipped,
+        },
+    )
+    return records
+
+
+def build_fixture_persona_records(
+    male_count: int = 60,
+    female_count: int = 60,
+) -> list[SourcePersona]:
+    rows: list[SourcePersona] = []
+    for index in range(male_count):
+        age = 20 + (index % 10)
+        rows.append(
+            SourcePersona(
+                uuid=f"fixture-m-{index:03d}",
+                age=age,
+                sex="male",
+                occupation="student" if index % 2 == 0 else "office worker",
+                province="Seoul",
+                district="Mapo-gu",
+                persona="A 20s male persona interested in gaming, music, and creators.",
+                hobbies_and_interests="gaming, music, short-form video",
+                professional_persona="Early career learner.",
+                sports_persona="Occasional sports highlights viewer.",
+                arts_persona="Interested in popular music.",
+                cultural_background="Korean urban digital media user.",
+            )
+        )
+    for index in range(female_count):
+        age = 20 + (index % 10)
+        rows.append(
+            SourcePersona(
+                uuid=f"fixture-f-{index:03d}",
+                age=age,
+                sex="female",
+                occupation="student" if index % 2 == 0 else "designer",
+                province="Gyeonggi-do",
+                district="Seongnam-si",
+                persona="A 20s female persona interested in music, lifestyle, and learning.",
+                hobbies_and_interests="music, beauty, lifestyle, study video",
+                professional_persona="Early career planner.",
+                sports_persona="Light sports content viewer.",
+                arts_persona="Interested in music and visual culture.",
+                cultural_background="Korean mobile-first media user.",
+            )
+        )
+
+    logger.debug(
+        "Built fixture persona records",
+        extra={"male_count": male_count, "female_count": female_count, "total": len(rows)},
+    )
+    return rows
+
+
+def sample_personas_by_contract(
+    records: Iterable[SourcePersona],
+    age_min: int,
+    age_max: int,
+    male_count: int,
+    female_count: int,
+    seed: int,
+) -> list[SourcePersona]:
+    eligible = [record for record in records if age_min <= record.age <= age_max]
+    male_records = [record for record in eligible if record.sex == "male"]
+    female_records = [record for record in eligible if record.sex == "female"]
+
+    logger.info(
+        "Filtered source personas for virtual user sampling",
+        extra={
+            "age_min": age_min,
+            "age_max": age_max,
+            "eligible_count": len(eligible),
+            "available_male_count": len(male_records),
+            "available_female_count": len(female_records),
+            "requested_male_count": male_count,
+            "requested_female_count": female_count,
+            "seed": seed,
+        },
+    )
+
+    if len(male_records) < male_count:
+        raise ValueError(
+            f"Not enough male personas: requested={male_count}, available={len(male_records)}"
+        )
+    if len(female_records) < female_count:
+        raise ValueError(
+            f"Not enough female personas: requested={female_count}, "
+            f"available={len(female_records)}"
+        )
+
+    rng = random.Random(seed)
+    male_pool = list(male_records)
+    female_pool = list(female_records)
+    rng.shuffle(male_pool)
+    rng.shuffle(female_pool)
+    sampled = male_pool[:male_count] + female_pool[:female_count]
+    rng.shuffle(sampled)
+
+    logger.info(
+        "Sampled source personas for virtual user generation",
+        extra={
+            "sampled_total": len(sampled),
+            "sampled_male_count": male_count,
+            "sampled_female_count": female_count,
+            "seed": seed,
+        },
+    )
+    return sampled
+
