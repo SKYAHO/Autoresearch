@@ -10,6 +10,7 @@ from autoresearch.virtual_users.schema import GenerationRequest
 def test_generate_virtual_user_batch_writes_expected_100_user_json(tmp_path, caplog):
     records = build_fixture_persona_records(male_count=60, female_count=60)
     output_path = tmp_path / "virtual_users_20s_100.json"
+    warehouse_output_path = tmp_path / "virtual_users_kr.jsonl"
     request = GenerationRequest(
         male_count=50,
         female_count=50,
@@ -17,6 +18,7 @@ def test_generate_virtual_user_batch_writes_expected_100_user_json(tmp_path, cap
         use_gemini=False,
         source_mode="fixture",
         output_path=str(output_path),
+        warehouse_output_path=str(warehouse_output_path),
     )
 
     with caplog.at_level(logging.INFO, logger="autoresearch.virtual_users.pipeline"):
@@ -45,6 +47,7 @@ def test_generate_virtual_user_batch_uses_stable_virtual_user_ids(tmp_path):
         use_gemini=False,
         source_mode="fixture",
         output_path=str(tmp_path / "users.json"),
+        warehouse_output_path=str(tmp_path / "warehouse_users.jsonl"),
     )
 
     batch = generate_virtual_user_batch(
@@ -64,6 +67,7 @@ def test_generate_virtual_user_batch_uses_stable_virtual_user_ids(tmp_path):
 def test_generate_virtual_user_batch_preserves_request_in_output(tmp_path):
     records = build_fixture_persona_records(male_count=5, female_count=5)
     output_path = tmp_path / "users.json"
+    warehouse_output_path = tmp_path / "warehouse_users.jsonl"
     request = GenerationRequest(
         age_min=20,
         age_max=29,
@@ -73,6 +77,7 @@ def test_generate_virtual_user_batch_preserves_request_in_output(tmp_path):
         use_gemini=False,
         source_mode="fixture",
         output_path=str(output_path),
+        warehouse_output_path=str(warehouse_output_path),
     )
 
     generate_virtual_user_batch(
@@ -86,3 +91,36 @@ def test_generate_virtual_user_batch_preserves_request_in_output(tmp_path):
     assert payload["request"]["female_count"] == 1
     assert payload["request"]["seed"] == 99
     assert payload["source_dataset"] == "nvidia/Nemotron-Personas-Korea"
+
+
+def test_generate_virtual_user_batch_writes_warehouse_jsonl(tmp_path):
+    records = build_fixture_persona_records(male_count=5, female_count=5)
+    batch_output_path = tmp_path / "virtual_users_batch.json"
+    warehouse_output_path = tmp_path / "virtual_users_kr.jsonl"
+    request = GenerationRequest(
+        male_count=1,
+        female_count=1,
+        seed=7,
+        use_gemini=False,
+        source_mode="fixture",
+        output_path=str(batch_output_path),
+        warehouse_output_path=str(warehouse_output_path),
+    )
+
+    generate_virtual_user_batch(
+        request=request,
+        records=records,
+        generator=RuleBasedVirtualUserGenerator(),
+    )
+
+    lines = warehouse_output_path.read_text(encoding="utf-8").splitlines()
+    rows = [json.loads(line) for line in lines]
+
+    assert len(rows) == 2
+    assert rows[0]["user_id"].startswith("vu_")
+    assert rows[0]["source_dataset"] == "nvidia/Nemotron-Personas-Korea"
+    assert rows[0]["country"] == "KR"
+    assert rows[0]["locale"] == "ko-KR"
+    assert isinstance(rows[0]["interest_keywords"], list)
+    assert "primary_categories" in rows[0]
+    assert "watch_time_band" in rows[0]

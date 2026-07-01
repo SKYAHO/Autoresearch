@@ -866,7 +866,7 @@ git commit -m "feat: populate warehouse fields in virtual users"
 
 **목적:** 기존 batch JSON은 디버깅/메타데이터 포함 output이고, warehouse-ready JSONL은 적재 직전 row output이다. 목적이 다르므로 별도 writer로 분리한다.
 
-- [ ] **Step 1: 실패하는 pipeline export test 작성**
+- [x] **Step 1: 실패하는 pipeline export test 작성**
 
 `tests/test_virtual_users_pipeline.py`에 아래 테스트를 추가한다.
 
@@ -904,7 +904,7 @@ def test_generate_virtual_user_batch_writes_warehouse_jsonl(tmp_path):
     assert "watch_time_band" in rows[0]
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run:
 
@@ -918,7 +918,7 @@ Expected:
 FileNotFoundError
 ```
 
-- [ ] **Step 3: pipeline에 JSONL writer 구현**
+- [x] **Step 3: pipeline에 JSONL writer 구현**
 
 `autoresearch/virtual_users/pipeline.py`에서 `generate_virtual_user_batch()` 위에 helper를 추가한다.
 
@@ -950,7 +950,7 @@ def write_virtual_users_warehouse_jsonl(
     )
 ```
 
-- [ ] **Step 4: 통과 확인**
+- [x] **Step 4: 통과 확인**
 
 Run:
 
@@ -964,7 +964,7 @@ Expected:
 tests/test_virtual_users_pipeline.py::test_generate_virtual_user_batch_writes_warehouse_jsonl PASSED
 ```
 
-- [ ] **Step 5: commit**
+- [x] **Step 5: commit**
 
 Run:
 
