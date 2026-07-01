@@ -1,3 +1,5 @@
+"""Hugging Face persona raw data를 가져와 내부 SourcePersona로 정규화한다."""
+
 import json
 import logging
 import random
@@ -17,6 +19,8 @@ FEMALE_VALUES = {"female", "f", "woman", "여성", "여자"}
 
 
 def normalize_sex(value: object) -> str:
+    """원천 데이터의 성별 값을 pipeline 표준값인 male/female로 변환한다."""
+
     normalized = str(value).strip().lower()
     if normalized in MALE_VALUES:
         return "male"
@@ -27,6 +31,8 @@ def normalize_sex(value: object) -> str:
 
 
 def _as_text(record: dict[str, Any], key: str) -> str:
+    """raw record의 optional 값을 빈 문자열 또는 문자열로 안전하게 읽는다."""
+
     value = record.get(key, "")
     if value is None:
         return ""
@@ -34,6 +40,8 @@ def _as_text(record: dict[str, Any], key: str) -> str:
 
 
 def _as_text_list(record: dict[str, Any], key: str) -> list[str]:
+    """raw record의 list형/문자열형 관심사 필드를 문자열 list로 맞춘다."""
+
     value = record.get(key, [])
     if value is None:
         return []
@@ -43,6 +51,8 @@ def _as_text_list(record: dict[str, Any], key: str) -> list[str]:
 
 
 def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
+    """Hugging Face raw row 하나를 검증 가능한 SourcePersona 한 건으로 변환한다."""
+
     persona = SourcePersona(
         uuid=_as_text(record, "uuid"),
         age=int(record["age"]),
@@ -80,6 +90,8 @@ def write_raw_persona_records(
     records: Iterable[dict[str, Any]],
     output_path: str | Path,
 ) -> None:
+    """재현성과 live QA 확인을 위해 raw persona payload를 JSONL로 저장한다."""
+
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
@@ -92,6 +104,8 @@ def load_nvidia_persona_records(
     max_records: int | None = None,
     raw_output_path: str | Path | None = None,
 ) -> list[SourcePersona]:
+    """NVIDIA Persona dataset을 streaming으로 읽고 유효한 persona만 반환한다."""
+
     logger.info(
         "Loading NVIDIA persona records",
         extra={"source_dataset": SOURCE_DATASET, "max_records": max_records},
@@ -131,6 +145,8 @@ def build_fixture_persona_records(
     male_count: int = 60,
     female_count: int = 60,
 ) -> list[SourcePersona]:
+    """외부 dataset/Gemini 없이 테스트할 수 있는 deterministic fixture를 만든다."""
+
     rows: list[SourcePersona] = []
     for index in range(male_count):
         age = 20 + (index % 10)
@@ -184,6 +200,8 @@ def sample_personas_by_contract(
     female_count: int,
     seed: int,
 ) -> list[SourcePersona]:
+    """요청한 나이/성별 조건에 맞는 persona를 seed 기반으로 재현 가능하게 샘플링한다."""
+
     eligible = [record for record in records if age_min <= record.age <= age_max]
     male_records = [record for record in eligible if record.sex == "male"]
     female_records = [record for record in eligible if record.sex == "female"]

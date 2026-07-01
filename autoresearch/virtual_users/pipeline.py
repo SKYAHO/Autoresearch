@@ -1,3 +1,5 @@
+"""정규화된 persona 목록에서 virtual user batch와 warehouse row를 생성한다."""
+
 import json
 import logging
 from pathlib import Path
@@ -21,6 +23,8 @@ def write_virtual_users_warehouse_jsonl(
     batch: VirtualUserBatch,
     output_path: str | Path,
 ) -> None:
+    """VirtualUserBatch를 Data Warehouse 적재 직전 JSONL row 파일로 저장한다."""
+
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as file:
@@ -40,6 +44,8 @@ def generate_virtual_user_batch(
     records: list[SourcePersona],
     generator: VirtualUserGenerator,
 ) -> VirtualUserBatch:
+    """persona 샘플링, virtual user 생성, batch/warehouse 파일 저장을 순서대로 실행한다."""
+
     logger.info(
         "Starting virtual user batch generation",
         extra={

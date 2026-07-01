@@ -1,3 +1,5 @@
+"""Persona 텍스트에서 추천 후보 매칭에 쓸 관심 keyword를 추출한다."""
+
 from autoresearch.virtual_users.schema import SourcePersona
 
 
@@ -16,6 +18,8 @@ KEYWORD_ALIASES: dict[str, tuple[str, ...]] = {
 
 
 def _persona_text(persona: SourcePersona) -> str:
+    """관심사 추출 대상이 되는 persona 텍스트 필드를 하나의 검색 문자열로 합친다."""
+
     parts = [
         persona.persona,
         persona.hobbies_and_interests,
@@ -33,6 +37,8 @@ def _persona_text(persona: SourcePersona) -> str:
 
 
 def extract_interest_keywords(persona: SourcePersona, limit: int = 10) -> list[str]:
+    """미리 정의한 alias 사전으로 persona 관심 keyword를 결정적으로 추출한다."""
+
     text = _persona_text(persona)
     keywords: list[str] = []
     for keyword, aliases in KEYWORD_ALIASES.items():
