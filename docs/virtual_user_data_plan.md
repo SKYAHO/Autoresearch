@@ -552,7 +552,7 @@ git commit -m "feat: persist raw persona snapshots"
 
 **목적:** spec.md의 “Persona -> 관심사 추출” 요구사항을 LLM과 분리된 deterministic 함수로 구현한다.
 
-- [ ] **Step 1: 실패하는 interest extraction test 작성**
+- [x] **Step 1: 실패하는 interest extraction test 작성**
 
 `tests/test_virtual_users_interests.py`를 생성한다.
 
@@ -603,7 +603,7 @@ def test_extract_interest_keywords_returns_general_when_no_match():
     assert extract_interest_keywords(persona) == ["general"]
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run:
 
@@ -617,7 +617,7 @@ Expected:
 ModuleNotFoundError: No module named 'autoresearch.virtual_users.interests'
 ```
 
-- [ ] **Step 3: interest extractor 구현**
+- [x] **Step 3: interest extractor 구현**
 
 `autoresearch/virtual_users/interests.py`를 생성한다.
 
@@ -668,7 +668,7 @@ def extract_interest_keywords(persona: SourcePersona, limit: int = 10) -> list[s
     return keywords[:limit]
 ```
 
-- [ ] **Step 4: 통과 확인**
+- [x] **Step 4: 통과 확인**
 
 Run:
 
@@ -683,7 +683,7 @@ tests/test_virtual_users_interests.py::test_extract_interest_keywords_uses_spec_
 tests/test_virtual_users_interests.py::test_extract_interest_keywords_returns_general_when_no_match PASSED
 ```
 
-- [ ] **Step 5: commit**
+- [x] **Step 5: commit**
 
 Run:
 
