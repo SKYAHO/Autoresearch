@@ -88,6 +88,12 @@ def parse_virtual_user_json(raw_text: str) -> VirtualUser:
         logger.warning("Failed to parse Gemini virtual user JSON", exc_info=True)
         raise ValueError("Gemini response must be valid JSON") from exc
 
+    payload["generation_meta"] = {
+        "schema_version": GENERATION_SCHEMA_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "llm_model": "unstamped-llm-response",
+        "generated_at": _now_iso(),
+    }
     user = VirtualUser.model_validate(payload)
     logger.debug(
         "Parsed virtual user JSON",
@@ -99,6 +105,39 @@ def parse_virtual_user_json(raw_text: str) -> VirtualUser:
         },
     )
     return user
+
+
+def _ensure_source_persona_matches_user(
+    user: VirtualUser,
+    persona: SourcePersona,
+    virtual_user_id: str,
+) -> None:
+    expected = {
+        "virtual_user_id": virtual_user_id,
+        "source_uuid": persona.uuid,
+        "age": persona.age,
+        "sex": persona.sex,
+        "occupation": persona.occupation,
+        "province": persona.province,
+    }
+    actual = {
+        "virtual_user_id": user.virtual_user_id,
+        "source_uuid": user.source_uuid,
+        "age": user.age,
+        "sex": user.sex,
+        "occupation": user.occupation,
+        "province": user.province,
+    }
+    mismatches = [
+        field
+        for field, expected_value in expected.items()
+        if actual[field] != expected_value
+    ]
+    if mismatches:
+        raise ValueError(
+            "Generated user fields do not match source persona: "
+            + ", ".join(mismatches)
+        )
 
 
 def _now_iso() -> str:
@@ -268,10 +307,11 @@ class GeminiVirtualUserGenerator:
             parse_virtual_user_json(response.text or ""),
             model_name=self.model_name,
         )
-        if user.source_uuid != persona.uuid:
-            raise ValueError("Generated user source_uuid does not match source persona")
-        if user.virtual_user_id != virtual_user_id:
-            raise ValueError("Generated user virtual_user_id does not match requested id")
+        _ensure_source_persona_matches_user(
+            user,
+            persona=persona,
+            virtual_user_id=virtual_user_id,
+        )
 
         logger.info(
             "Generated Gemini virtual user",

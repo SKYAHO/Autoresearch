@@ -6,6 +6,7 @@ import pytest
 from autoresearch.virtual_users.gemini_generator import (
     GeminiVirtualUserGenerator,
     RuleBasedVirtualUserGenerator,
+    _ensure_source_persona_matches_user,
     _stamp_generation_meta,
     build_virtual_user_prompt,
     parse_virtual_user_json,
@@ -74,6 +75,36 @@ def test_parse_virtual_user_json_accepts_valid_payload(caplog):
     assert "Parsed virtual user JSON" in caplog.text
 
 
+def test_parse_virtual_user_json_allows_missing_generation_meta_before_stamp():
+    raw = json.dumps(
+        {
+            "virtual_user_id": "vu_0001",
+            "source_uuid": "fixture-m-000",
+            "age": 24,
+            "sex": "male",
+            "age_bucket": "20s",
+            "occupation": "student",
+            "province": "Seoul",
+            "persona_summary": "Gaming-focused student.",
+            "youtube_profile": {
+                "primary_categories": ["Gaming", "Music"],
+                "shorts_affinity": 0.86,
+                "longform_affinity": 0.34,
+                "trend_sensitivity": 0.82,
+                "comment_propensity": 0.41,
+                "watch_time_band": "night",
+            },
+        }
+    )
+
+    user = parse_virtual_user_json(raw)
+    stamped = _stamp_generation_meta(user, model_name="gemini-2.5-flash")
+
+    assert stamped.generation_meta.schema_version == GENERATION_SCHEMA_VERSION
+    assert stamped.generation_meta.prompt_version == PROMPT_VERSION
+    assert stamped.generation_meta.llm_model == "gemini-2.5-flash"
+
+
 def test_parse_virtual_user_json_rejects_non_json_text():
     with pytest.raises(ValueError, match="Gemini response must be valid JSON"):
         parse_virtual_user_json("not json")
@@ -134,6 +165,19 @@ def test_rule_based_generator_produces_valid_schema_without_api_call(caplog):
     assert user.generation_meta.prompt_version == PROMPT_VERSION
     assert user.generation_meta.llm_model == "fixture"
     assert "Generated fixture virtual user" in caplog.text
+
+
+def test_ensure_source_persona_matches_user_rejects_hallucinated_persona_fields():
+    persona = build_fixture_persona_records(male_count=1, female_count=0)[0]
+    user = RuleBasedVirtualUserGenerator().generate(persona, virtual_user_id="vu_0001")
+    mutated = user.model_copy(update={"sex": "female"})
+
+    with pytest.raises(ValueError, match="sex"):
+        _ensure_source_persona_matches_user(
+            mutated,
+            persona=persona,
+            virtual_user_id="vu_0001",
+        )
 
 
 def test_gemini_generator_requires_api_key(monkeypatch):
