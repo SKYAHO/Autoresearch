@@ -1130,7 +1130,7 @@ git commit -m "feat: snapshot raw huggingface personas"
 
 **목적:** task별 테스트가 통과해도 전체 suite에서 기존 기능이 깨질 수 있으므로 마지막에 전체 검증을 수행한다.
 
-- [ ] **Step 1: 전체 테스트 실행**
+- [x] **Step 1: 전체 테스트 실행**
 
 Run:
 
@@ -1144,7 +1144,7 @@ Expected:
 passed
 ```
 
-- [ ] **Step 2: diff 검토**
+- [x] **Step 2: diff 검토**
 
 Run:
 
@@ -1159,7 +1159,7 @@ Expected:
 Only virtual user implementation and virtual user tests are changed.
 ```
 
-- [ ] **Step 3: branch 상태 확인**
+- [x] **Step 3: branch 상태 확인**
 
 Run:
 
