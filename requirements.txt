@@ -1,0 +1,4 @@
+pydantic>=2.6
+datasets>=2.19
+google-genai>=1.0
+pytest>=8.0
