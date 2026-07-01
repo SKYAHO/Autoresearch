@@ -4,9 +4,11 @@ import os
 from datetime import UTC, datetime
 from typing import Protocol
 
+from autoresearch.virtual_users.interests import extract_interest_keywords
 from autoresearch.virtual_users.schema import (
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
+    SOURCE_DATASET,
     SourcePersona,
     VirtualUser,
 )
@@ -40,12 +42,17 @@ Required JSON shape:
 {{
   "virtual_user_id": "{virtual_user_id}",
   "source_uuid": "{persona.uuid}",
+  "source_dataset": "{SOURCE_DATASET}",
+  "country": "{persona.country}",
+  "locale": "{persona.locale}",
   "age": {persona.age},
   "sex": "{persona.sex}",
   "age_bucket": "20s",
   "occupation": "{persona.occupation}",
   "province": "{persona.province}",
+  "district": "{persona.district}",
   "persona_summary": "one Korean or English sentence",
+  "interest_keywords": ["music", "gaming"],
   "youtube_profile": {{
     "primary_categories": ["Gaming", "Music"],
     "shorts_affinity": 0.0,
@@ -67,6 +74,8 @@ Constraints:
 - primary_categories must contain 1 to 5 YouTube categories.
 - watch_time_band must be one of morning, afternoon, evening, night, mixed.
 - Keep original age, sex, occupation, province, and source_uuid.
+- Keep original district, country, locale, and source_uuid.
+- interest_keywords must be a list of concise lowercase English keywords.
 - The LLM generates data only; it does not choose pipeline flow, model routing, or serving policy.
 """
     logger.debug(
@@ -119,6 +128,9 @@ def _ensure_source_persona_matches_user(
         "sex": persona.sex,
         "occupation": persona.occupation,
         "province": persona.province,
+        "district": persona.district,
+        "country": persona.country,
+        "locale": persona.locale,
     }
     actual = {
         "virtual_user_id": user.virtual_user_id,
@@ -127,6 +139,9 @@ def _ensure_source_persona_matches_user(
         "sex": user.sex,
         "occupation": user.occupation,
         "province": user.province,
+        "district": user.district,
+        "country": user.country,
+        "locale": user.locale,
     }
     mismatches = [
         field
@@ -210,15 +225,21 @@ class RuleBasedVirtualUserGenerator:
             comments = 0.25
             band = "mixed"
 
+        interest_keywords = extract_interest_keywords(persona)
         user = VirtualUser(
             virtual_user_id=virtual_user_id,
             source_uuid=persona.uuid,
+            source_dataset=SOURCE_DATASET,
+            country=persona.country,
+            locale=persona.locale,
             age=persona.age,
             sex=persona.sex,
             age_bucket="20s",
             occupation=persona.occupation,
             province=persona.province,
+            district=persona.district,
             persona_summary=persona.persona[:180] or "20s Korean virtual user.",
+            interest_keywords=interest_keywords,
             youtube_profile={
                 "primary_categories": categories,
                 "shorts_affinity": shorts,

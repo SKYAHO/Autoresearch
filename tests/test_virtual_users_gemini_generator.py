@@ -15,6 +15,8 @@ from autoresearch.virtual_users.persona_source import build_fixture_persona_reco
 from autoresearch.virtual_users.schema import (
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
+    SOURCE_DATASET,
+    SourcePersona,
 )
 
 
@@ -165,6 +167,30 @@ def test_rule_based_generator_produces_valid_schema_without_api_call(caplog):
     assert user.generation_meta.prompt_version == PROMPT_VERSION
     assert user.generation_meta.llm_model == "fixture"
     assert "Generated fixture virtual user" in caplog.text
+
+
+def test_rule_based_generator_populates_warehouse_fields():
+    persona = SourcePersona(
+        uuid="p-001",
+        age=24,
+        sex="female",
+        occupation="student",
+        province="Seoul",
+        district="Mapo-gu",
+        persona="Enjoys music videos and lifestyle creators.",
+        hobbies_and_interests="beauty, study videos",
+        hobbies_and_interests_list=["music", "beauty"],
+    )
+
+    user = RuleBasedVirtualUserGenerator().generate(persona, virtual_user_id="vu_0001")
+
+    assert user.virtual_user_id == "vu_0001"
+    assert user.source_uuid == "p-001"
+    assert user.source_dataset == SOURCE_DATASET
+    assert user.country == "KR"
+    assert user.locale == "ko-KR"
+    assert user.district == "Mapo-gu"
+    assert user.interest_keywords == ["music", "beauty", "study", "lifestyle"]
 
 
 def test_ensure_source_persona_matches_user_rejects_hallucinated_persona_fields():

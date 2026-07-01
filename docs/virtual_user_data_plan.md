@@ -703,7 +703,7 @@ git commit -m "feat: extract virtual user interest keywords"
 
 **목적:** schema만 확장하면 실제 output에는 값이 비어 있을 수 있으므로, rule-based generator와 Gemini prompt 모두 새 field를 생성하도록 만든다.
 
-- [ ] **Step 1: 실패하는 generator test 작성**
+- [x] **Step 1: 실패하는 generator test 작성**
 
 `tests/test_virtual_users_gemini_generator.py`에 아래 테스트를 추가한다. 기존 import가 있으면 합친다.
 
@@ -736,7 +736,7 @@ def test_rule_based_generator_populates_warehouse_fields():
     assert user.interest_keywords == ["music", "beauty", "study", "lifestyle"]
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run:
 
@@ -750,7 +750,7 @@ Expected:
 FAILED tests/test_virtual_users_gemini_generator.py::test_rule_based_generator_populates_warehouse_fields
 ```
 
-- [ ] **Step 3: generator import와 prompt contract 수정**
+- [x] **Step 3: generator import와 prompt contract 수정**
 
 `autoresearch/virtual_users/gemini_generator.py`에 import를 추가한다.
 
@@ -780,7 +780,7 @@ Constraints에 아래 문장을 추가한다.
 - interest_keywords must be a list of concise lowercase English keywords.
 ```
 
-- [ ] **Step 4: source field validation 확장**
+- [x] **Step 4: source field validation 확장**
 
 `_ensure_source_persona_matches_user()`의 `expected`를 아래처럼 바꾼다.
 
@@ -814,7 +814,7 @@ Constraints에 아래 문장을 추가한다.
     }
 ```
 
-- [ ] **Step 5: rule-based generator output 수정**
+- [x] **Step 5: rule-based generator output 수정**
 
 `RuleBasedVirtualUserGenerator.generate()`에서 `VirtualUser` 생성 전 아래 줄을 추가한다.
 
@@ -832,7 +832,7 @@ Constraints에 아래 문장을 추가한다.
             interest_keywords=interest_keywords,
 ```
 
-- [ ] **Step 6: 통과 확인**
+- [x] **Step 6: 통과 확인**
 
 Run:
 
@@ -846,7 +846,7 @@ Expected:
 tests/test_virtual_users_gemini_generator.py::test_rule_based_generator_populates_warehouse_fields PASSED
 ```
 
-- [ ] **Step 7: commit**
+- [x] **Step 7: commit**
 
 Run:
 
