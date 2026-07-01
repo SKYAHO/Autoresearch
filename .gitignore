@@ -1,2 +1,10 @@
 __pycache__/
 *.py[cod]
+
+# Astro / Airflow local state
+.astro/
+.env
+
+# Generated data artifacts
+data/generated/
+/tmp/
