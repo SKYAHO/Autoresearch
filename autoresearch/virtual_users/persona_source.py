@@ -1,6 +1,8 @@
+import json
 import logging
 import random
 from collections.abc import Iterable
+from pathlib import Path
 from typing import Any
 
 from autoresearch.virtual_users.schema import SOURCE_DATASET, SourcePersona
@@ -29,6 +31,15 @@ def _as_text(record: dict[str, Any], key: str) -> str:
     return str(value)
 
 
+def _as_text_list(record: dict[str, Any], key: str) -> list[str]:
+    value = record.get(key, [])
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item).strip()]
+    return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
 def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
     persona = SourcePersona(
         uuid=_as_text(record, "uuid"),
@@ -39,9 +50,14 @@ def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
         district=_as_text(record, "district"),
         persona=_as_text(record, "persona"),
         hobbies_and_interests=_as_text(record, "hobbies_and_interests"),
+        hobbies_and_interests_list=_as_text_list(record, "hobbies_and_interests_list"),
         professional_persona=_as_text(record, "professional_persona"),
+        skills_and_expertise=_as_text(record, "skills_and_expertise"),
         sports_persona=_as_text(record, "sports_persona"),
         arts_persona=_as_text(record, "arts_persona"),
+        travel_persona=_as_text(record, "travel_persona"),
+        culinary_persona=_as_text(record, "culinary_persona"),
+        family_persona=_as_text(record, "family_persona"),
         cultural_background=_as_text(record, "cultural_background"),
     )
     logger.debug(
@@ -51,9 +67,23 @@ def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
             "age": persona.age,
             "sex": persona.sex,
             "province": persona.province,
+            "country": persona.country,
+            "locale": persona.locale,
         },
     )
     return persona
+
+
+def write_raw_persona_records(
+    records: Iterable[dict[str, Any]],
+    output_path: str | Path,
+) -> None:
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        for record in records:
+            file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+    logger.info("Wrote raw persona snapshot", extra={"output_path": str(path)})
 
 
 def load_nvidia_persona_records(max_records: int | None = None) -> list[SourcePersona]:
@@ -191,4 +221,3 @@ def sample_personas_by_contract(
         },
     )
     return sampled
-

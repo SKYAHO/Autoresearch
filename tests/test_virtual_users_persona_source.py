@@ -1,7 +1,9 @@
+import json
 import logging
 
 import pytest
 
+import autoresearch.virtual_users.persona_source as persona_source
 from autoresearch.virtual_users.persona_source import (
     build_fixture_persona_records,
     normalize_sex,
@@ -84,3 +86,62 @@ def test_sample_personas_by_contract_raises_when_not_enough_records():
 
     with pytest.raises(ValueError, match="Not enough male personas"):
         sample_personas_by_contract(records, 20, 29, 5, 1, seed=1)
+
+
+def test_write_raw_persona_records_creates_jsonl_snapshot(tmp_path):
+    output_path = tmp_path / "raw_personas.jsonl"
+    raw_records = [
+        {
+            "uuid": "p-001",
+            "age": 24,
+            "sex": "female",
+            "occupation": "student",
+            "persona": "A student interested in music.",
+        },
+        {
+            "uuid": "p-002",
+            "age": 25,
+            "sex": "male",
+            "occupation": "developer",
+            "persona": "A developer interested in gaming.",
+        },
+    ]
+
+    persona_source.write_raw_persona_records(raw_records, output_path)
+
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["uuid"] == "p-001"
+    assert json.loads(lines[1])["uuid"] == "p-002"
+
+
+def test_source_persona_from_record_maps_spec_fields():
+    persona = source_persona_from_record(
+        {
+            "uuid": "p-001",
+            "age": 24,
+            "sex": "female",
+            "occupation": "student",
+            "province": "Seoul",
+            "district": "Mapo-gu",
+            "persona": "Enjoys music videos.",
+            "hobbies_and_interests": "music, beauty",
+            "hobbies_and_interests_list": ["music", "beauty"],
+            "professional_persona": "Learner.",
+            "skills_and_expertise": "design",
+            "sports_persona": "Light sports viewer.",
+            "arts_persona": "Music fan.",
+            "travel_persona": "Cafe trips.",
+            "culinary_persona": "Cooking shorts.",
+            "family_persona": "Family lifestyle.",
+            "cultural_background": "Korean urban media user.",
+        }
+    )
+
+    assert persona.country == "KR"
+    assert persona.locale == "ko-KR"
+    assert persona.hobbies_and_interests_list == ["music", "beauty"]
+    assert persona.skills_and_expertise == "design"
+    assert persona.travel_persona == "Cafe trips."
+    assert persona.culinary_persona == "Cooking shorts."
+    assert persona.family_persona == "Family lifestyle."

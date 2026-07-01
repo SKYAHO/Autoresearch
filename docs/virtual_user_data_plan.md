@@ -353,16 +353,16 @@ git commit -m "feat: extend virtual user warehouse schema"
 
 **목적:** 원본 raw data를 저장해 생성 결과를 재현 가능하게 만든다. 나중에 virtual user row가 이상할 때 어떤 원본 row에서 왔는지 추적할 수 있다.
 
-- [ ] **Step 1: 실패하는 raw snapshot test 작성**
+- [x] **Step 1: 실패하는 raw snapshot test 작성**
 
 `tests/test_virtual_users_persona_source.py`에 아래 테스트를 추가한다. 기존 import가 있으면 중복 없이 합친다.
 
 ```python
 import json
 
+import autoresearch.virtual_users.persona_source as persona_source
 from autoresearch.virtual_users.persona_source import (
     source_persona_from_record,
-    write_raw_persona_records,
 )
 
 
@@ -385,7 +385,7 @@ def test_write_raw_persona_records_creates_jsonl_snapshot(tmp_path):
         },
     ]
 
-    write_raw_persona_records(raw_records, output_path)
+    persona_source.write_raw_persona_records(raw_records, output_path)
 
     lines = output_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
@@ -425,7 +425,7 @@ def test_source_persona_from_record_maps_spec_fields():
     assert persona.family_persona == "Family lifestyle."
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run:
 
@@ -440,7 +440,7 @@ FAILED tests/test_virtual_users_persona_source.py::test_write_raw_persona_record
 FAILED tests/test_virtual_users_persona_source.py::test_source_persona_from_record_maps_spec_fields
 ```
 
-- [ ] **Step 3: raw writer와 field mapping 구현**
+- [x] **Step 3: raw writer와 field mapping 구현**
 
 `autoresearch/virtual_users/persona_source.py` import를 아래처럼 확장한다.
 
@@ -517,7 +517,7 @@ def write_raw_persona_records(
     logger.info("Wrote raw persona snapshot", extra={"output_path": str(path)})
 ```
 
-- [ ] **Step 4: 통과 확인**
+- [x] **Step 4: 통과 확인**
 
 Run:
 
@@ -532,7 +532,7 @@ tests/test_virtual_users_persona_source.py::test_write_raw_persona_records_creat
 tests/test_virtual_users_persona_source.py::test_source_persona_from_record_maps_spec_fields PASSED
 ```
 
-- [ ] **Step 5: commit**
+- [x] **Step 5: commit**
 
 Run:
 
