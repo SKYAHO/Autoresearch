@@ -1,0 +1,5 @@
+# 개발/테스트 + virtual_users(실험) 의존성. 런타임 포함.
+-r requirements.txt
+pytest>=8.0
+datasets>=2.19
+google-genai>=1.0
