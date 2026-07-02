@@ -3,3 +3,10 @@ __pycache__/
 *.pkl
 *.csv
 .env
+
+# Astro / Airflow local state
+.astro/
+
+# Generated data artifacts
+data/generated/
+/tmp/

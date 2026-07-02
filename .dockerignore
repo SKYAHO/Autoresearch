@@ -1,5 +1,6 @@
 .git
 .github
+.gitignore
 .pytest_cache
 __pycache__/
 *.py[cod]
@@ -10,6 +11,7 @@ env
 .env.*
 data
 *.parquet
+*.md
 dist
 build
 *.egg-info
