@@ -19,18 +19,13 @@ provider: gcp
 # Offline Store: BigQuery (추후 팀 GCP 환경으로 변경 필요)
 offline_store:
   type: bigquery
-  dataset: feast_offline_store          # BigQuery dataset 이름
-  project: autoresearch-skyaho           # GCP Project ID
+  dataset: feast_offline_store
+  project_id: autoresearch-skyaho-501202
+  gcs_staging_location: gs://feast-staging-autoresearch/
 
-# Online Store: Memorystore for Redis
-# connection_string은 setup 스크립트로 주입 (민감 정보)
-# 로컬 개발 시 localhost Redis 사용 가능
 online_store:
   type: redis
-  connection_string: "localhost:6379"   # 운영: Memorystore IP:PORT 로 교체
-
-offline_config:
-  gcs_staging_location: gs://feast-staging-autoresearch/  # BigQuery materialize 임시 저장소
+  connection_string: "localhost:6379"
 
 entity_key_serialization_version: 2
 

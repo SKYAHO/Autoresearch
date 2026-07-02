@@ -20,7 +20,7 @@ from feast import Entity, FeatureView, Field
 from feast.infra.offline_stores.bigquery import BigQuerySource
 from feast.types import Int64, Float32, String
 
-GCP_PROJECT = os.getenv("GCP_PROJECT_ID", "autoresearch-skyaho")
+GCP_PROJECT = os.getenv("GCP_PROJECT_ID", "autoresearch-skyaho-501202")
 BQ_DATASET = os.getenv("BQ_DATASET", "feast_offline_store")
 
 

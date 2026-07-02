@@ -1,5 +1,7 @@
 __pycache__/
 *.py[cod]
+.venv/
+.python-version
 
 # GCP service account keys
 *-service-account*.json
@@ -7,6 +9,8 @@ __pycache__/
 *credentials*.json
 google_credentials.json
 service-account.json
+key/
+keys/
 
 # Environment files
 .env
