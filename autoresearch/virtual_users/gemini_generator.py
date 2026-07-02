@@ -13,6 +13,7 @@ from autoresearch.virtual_users.schema import (
     SOURCE_DATASET,
     SourcePersona,
     VirtualUser,
+    age_bucket_for,
 )
 
 
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_VERTEX_LOCATION = "global"
+PERSONA_SUMMARY_MAX_CHARS = 180
 
 
 class VirtualUserGenerator(Protocol):
@@ -34,6 +36,7 @@ class VirtualUserGenerator(Protocol):
 def build_virtual_user_prompt(persona: SourcePersona, virtual_user_id: str) -> str:
     """Gemini가 따라야 할 JSON contract와 원천 persona 정보를 prompt로 구성한다."""
 
+    age_bucket = age_bucket_for(persona.age)
     persona_payload = persona.model_dump()
     prompt = f"""You convert a Korean synthetic persona into a virtual YouTube user profile.
 
@@ -55,7 +58,7 @@ Required JSON shape:
   "locale": "{persona.locale}",
   "age": {persona.age},
   "sex": "{persona.sex}",
-  "age_bucket": "20s",
+  "age_bucket": "{age_bucket}",
   "occupation": "{persona.occupation}",
   "province": "{persona.province}",
   "district": "{persona.district}",
@@ -81,6 +84,7 @@ Constraints:
 - All affinity numbers must be between 0 and 1.
 - primary_categories must contain 1 to 5 YouTube categories.
 - watch_time_band must be one of morning, afternoon, evening, night, mixed.
+- age_bucket must be "{age_bucket}".
 - Keep original age, sex, occupation, province, and source_uuid.
 - Keep original district, country, locale, and source_uuid.
 - interest_keywords must be a list of concise lowercase English keywords.
@@ -197,6 +201,15 @@ def _stamp_generation_meta(user: VirtualUser, model_name: str) -> VirtualUser:
     return stamped
 
 
+def _normalize_interest_keywords_from_persona(
+    user: VirtualUser,
+    persona: SourcePersona,
+) -> VirtualUser:
+    payload = user.model_dump()
+    payload["interest_keywords"] = extract_interest_keywords(persona)
+    return VirtualUser.model_validate(payload)
+
+
 def _first_env(*names: str) -> str | None:
     """여러 환경변수 후보 중 가장 먼저 설정된 값을 반환한다."""
 
@@ -258,11 +271,14 @@ class RuleBasedVirtualUserGenerator:
             locale=persona.locale,
             age=persona.age,
             sex=persona.sex,
-            age_bucket="20s",
+            age_bucket=age_bucket_for(persona.age),
             occupation=persona.occupation,
             province=persona.province,
             district=persona.district,
-            persona_summary=persona.persona[:180] or "20s Korean virtual user.",
+            persona_summary=(
+                persona.persona[:PERSONA_SUMMARY_MAX_CHARS]
+                or f"{age_bucket_for(persona.age)} Korean virtual user."
+            ),
             interest_keywords=interest_keywords,
             youtube_profile={
                 "primary_categories": categories,
@@ -360,6 +376,7 @@ class GeminiVirtualUserGenerator:
             parse_virtual_user_json(response.text or ""),
             model_name=self.model_name,
         )
+        user = _normalize_interest_keywords_from_persona(user, persona)
         _ensure_source_persona_matches_user(
             user,
             persona=persona,

@@ -9,7 +9,12 @@ from typing import Any
 
 from datasets import load_dataset
 
-from autoresearch.virtual_users.schema import SOURCE_DATASET, SourcePersona
+from autoresearch.virtual_users.schema import (
+    KR_COUNTRY,
+    KR_LOCALE,
+    SOURCE_DATASET,
+    SourcePersona,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +55,11 @@ def _as_text_list(record: dict[str, Any], key: str) -> list[str]:
     return [part.strip() for part in str(value).split(",") if part.strip()]
 
 
+def _as_text_or_default(record: dict[str, Any], key: str, default: str) -> str:
+    value = _as_text(record, key).strip()
+    return value or default
+
+
 def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
     """Hugging Face raw row 하나를 검증 가능한 SourcePersona 한 건으로 변환한다."""
 
@@ -60,6 +70,8 @@ def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
         occupation=_as_text(record, "occupation"),
         province=_as_text(record, "province"),
         district=_as_text(record, "district"),
+        country=_as_text_or_default(record, "country", KR_COUNTRY),
+        locale=_as_text_or_default(record, "locale", KR_LOCALE),
         persona=_as_text(record, "persona"),
         hobbies_and_interests=_as_text(record, "hobbies_and_interests"),
         hobbies_and_interests_list=_as_text_list(record, "hobbies_and_interests_list"),
@@ -100,35 +112,53 @@ def write_raw_persona_records(
     logger.info("Wrote raw persona snapshot", extra={"output_path": str(path)})
 
 
+def _write_raw_persona_record(file, record: dict[str, Any]) -> None:
+    file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+
 def load_nvidia_persona_records(
     max_records: int | None = None,
     raw_output_path: str | Path | None = None,
 ) -> list[SourcePersona]:
-    """NVIDIA Persona dataset을 streaming으로 읽고 유효한 persona만 반환한다."""
+    """Load valid NVIDIA personas while optionally streaming raw rows to JSONL."""
 
     logger.info(
         "Loading NVIDIA persona records",
         extra={"source_dataset": SOURCE_DATASET, "max_records": max_records},
     )
     dataset = load_dataset(SOURCE_DATASET, split="train", streaming=True)
-    raw_records: list[dict[str, Any]] = []
     records: list[SourcePersona] = []
     skipped = 0
 
-    for raw_record in dataset:
-        raw_payload = dict(raw_record)
-        raw_records.append(raw_payload)
-        try:
-            records.append(source_persona_from_record(raw_payload))
-        except (KeyError, TypeError, ValueError):
-            skipped += 1
-            logger.debug("Skipped invalid persona record", exc_info=True)
-            continue
-        if max_records is not None and len(records) >= max_records:
-            break
-
+    raw_snapshot_file = None
+    raw_snapshot_path: Path | None = None
     if raw_output_path is not None:
-        write_raw_persona_records(raw_records, raw_output_path)
+        raw_snapshot_path = Path(raw_output_path)
+        raw_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_snapshot_file = raw_snapshot_path.open("w", encoding="utf-8")
+
+    try:
+        for raw_record in dataset:
+            raw_payload = dict(raw_record)
+            if raw_snapshot_file is not None:
+                _write_raw_persona_record(raw_snapshot_file, raw_payload)
+            try:
+                records.append(source_persona_from_record(raw_payload))
+            except (KeyError, TypeError, ValueError):
+                skipped += 1
+                logger.debug("Skipped invalid persona record", exc_info=True)
+                continue
+            if max_records is not None and len(records) >= max_records:
+                break
+    finally:
+        if raw_snapshot_file is not None:
+            raw_snapshot_file.close()
+
+    if raw_snapshot_path is not None:
+        logger.info(
+            "Wrote raw persona snapshot",
+            extra={"output_path": str(raw_snapshot_path)},
+        )
 
     logger.info(
         "Loaded NVIDIA persona records",

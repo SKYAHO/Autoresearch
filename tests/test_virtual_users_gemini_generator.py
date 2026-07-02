@@ -5,8 +5,10 @@ import pytest
 
 from autoresearch.virtual_users.gemini_generator import (
     GeminiVirtualUserGenerator,
+    PERSONA_SUMMARY_MAX_CHARS,
     RuleBasedVirtualUserGenerator,
     _ensure_source_persona_matches_user,
+    _normalize_interest_keywords_from_persona,
     _stamp_generation_meta,
     build_virtual_user_prompt,
     parse_virtual_user_json,
@@ -36,6 +38,22 @@ def test_build_virtual_user_prompt_contains_fixed_json_contract(caplog):
     assert "shorts_affinity" in prompt
     assert persona.uuid in prompt
     assert "Built virtual user generation prompt" in caplog.text
+
+
+def test_build_virtual_user_prompt_uses_source_age_bucket():
+    persona = SourcePersona(
+        uuid="p-034",
+        age=34,
+        sex="female",
+        occupation="designer",
+        province="Seoul",
+        persona="Design-focused media user.",
+    )
+
+    prompt = build_virtual_user_prompt(persona, virtual_user_id="vu_0034")
+
+    assert '"age": 34' in prompt
+    assert '"age_bucket": "30s"' in prompt
 
 
 def test_parse_virtual_user_json_accepts_valid_payload(caplog):
@@ -150,6 +168,46 @@ def test_stamp_generation_meta_overrides_llm_controlled_metadata():
     assert stamped.generation_meta.generated_at != "1999-01-01T00:00:00Z"
 
 
+def test_normalize_interest_keywords_from_persona_overrides_llm_keywords():
+    persona = SourcePersona(
+        uuid="p-001",
+        age=24,
+        sex="female",
+        occupation="student",
+        province="Seoul",
+        persona="Enjoys music videos and lifestyle creators.",
+        hobbies_and_interests="beauty, study videos",
+        hobbies_and_interests_list=["music", "beauty"],
+    )
+    user = parse_virtual_user_json(
+        json.dumps(
+            {
+                "virtual_user_id": "vu_0001",
+                "source_uuid": "p-001",
+                "age": 24,
+                "sex": "female",
+                "age_bucket": "20s",
+                "occupation": "student",
+                "province": "Seoul",
+                "persona_summary": "LLM summary.",
+                "interest_keywords": ["llm-invented", "unbounded"],
+                "youtube_profile": {
+                    "primary_categories": ["Music"],
+                    "shorts_affinity": 0.7,
+                    "longform_affinity": 0.4,
+                    "trend_sensitivity": 0.5,
+                    "comment_propensity": 0.2,
+                    "watch_time_band": "evening",
+                },
+            }
+        )
+    )
+
+    normalized = _normalize_interest_keywords_from_persona(user, persona)
+
+    assert normalized.interest_keywords == ["music", "beauty", "study", "lifestyle"]
+
+
 def test_rule_based_generator_produces_valid_schema_without_api_call(caplog):
     persona = build_fixture_persona_records(male_count=1, female_count=0)[0]
     generator = RuleBasedVirtualUserGenerator(model_name="fixture")
@@ -191,6 +249,42 @@ def test_rule_based_generator_populates_warehouse_fields():
     assert user.locale == "ko-KR"
     assert user.district == "Mapo-gu"
     assert user.interest_keywords == ["music", "beauty", "study", "lifestyle"]
+
+
+def test_rule_based_generator_derives_age_bucket_from_age():
+    persona = SourcePersona(
+        uuid="p-034",
+        age=34,
+        sex="female",
+        occupation="designer",
+        province="Seoul",
+        persona="Design-focused media user.",
+    )
+
+    user = RuleBasedVirtualUserGenerator().generate(
+        persona,
+        virtual_user_id="vu_0034",
+    )
+
+    assert user.age_bucket == "30s"
+
+
+def test_rule_based_generator_uses_named_persona_summary_limit():
+    persona = SourcePersona(
+        uuid="p-001",
+        age=24,
+        sex="female",
+        occupation="student",
+        province="Seoul",
+        persona="x" * (PERSONA_SUMMARY_MAX_CHARS + 20),
+    )
+
+    user = RuleBasedVirtualUserGenerator().generate(
+        persona,
+        virtual_user_id="vu_0001",
+    )
+
+    assert len(user.persona_summary) == PERSONA_SUMMARY_MAX_CHARS
 
 
 def test_ensure_source_persona_matches_user_rejects_hallucinated_persona_fields():

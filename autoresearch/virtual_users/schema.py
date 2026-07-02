@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 SOURCE_DATASET = "nvidia/Nemotron-Personas-Korea"
 GENERATION_SCHEMA_VERSION = "virtual_user_schema_v1"
 PROMPT_VERSION = "virtual_user_youtube_v1"
+KR_COUNTRY = "KR"
+KR_LOCALE = "ko-KR"
 
 YOUTUBE_CATEGORIES = [
     "Gaming",
@@ -27,6 +29,14 @@ YOUTUBE_CATEGORIES = [
 ]
 
 WATCH_TIME_BANDS = ["morning", "afternoon", "evening", "night", "mixed"]
+
+
+def age_bucket_for(age: int) -> str:
+    """Return a decade age bucket such as 20s or 30s."""
+
+    if age < 0:
+        raise ValueError("age must be non-negative")
+    return f"{age // 10 * 10}s"
 
 
 class GenerationRequest(BaseModel):
@@ -72,8 +82,8 @@ class SourcePersona(BaseModel):
     occupation: str = ""
     province: str = ""
     district: str = ""
-    country: str = "KR"
-    locale: str = "ko-KR"
+    country: str = KR_COUNTRY
+    locale: str = KR_LOCALE
     persona: str = ""
     hobbies_and_interests: str = ""
     hobbies_and_interests_list: list[str] = Field(default_factory=list)
@@ -85,6 +95,20 @@ class SourcePersona(BaseModel):
     culinary_persona: str = ""
     family_persona: str = ""
     cultural_background: str = ""
+
+    @field_validator("country")
+    @classmethod
+    def valid_country(cls, value: str) -> str:
+        if value != KR_COUNTRY:
+            raise ValueError("country must be KR")
+        return value
+
+    @field_validator("locale")
+    @classmethod
+    def valid_locale(cls, value: str) -> str:
+        if value != KR_LOCALE:
+            raise ValueError("locale must be ko-KR")
+        return value
 
 
 class YouTubeProfile(BaseModel):
@@ -136,6 +160,7 @@ class VirtualUser(BaseModel):
             "country": self.country,
             "locale": self.locale,
             "age": self.age,
+            "age_bucket": self.age_bucket,
             "sex": self.sex,
             "occupation": self.occupation,
             "province": self.province,
