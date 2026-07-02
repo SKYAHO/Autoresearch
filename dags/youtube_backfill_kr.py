@@ -87,8 +87,11 @@ def youtube_backfill_kr():
                 "source_path param or YOUTUBE_BACKFILL_SOURCE is not set"
             )
 
-        # 2) 일괄 적재. 읽기는 pq 가 gs:// 를 자동 처리, 쓰기는 filesystem(GCS).
-        total = backfill_from_parquet(source_path, base_path)
+        # 2) 일괄 적재. 읽기는 pq 가 gs:// 를 자동 처리, 쓰기는 filesystem(GCS) 명시 전달.
+        #    filesystem= 누락 시 backfill_from_parquet 기본값(None)이 로컬 FS로 써버리므로 주의.
+        total = backfill_from_parquet(
+            source_path, base_path, filesystem=_gcs_filesystem()
+        )
         logger.info("Backfill complete: %d rows -> %s", total, base_path)
         return total
 
