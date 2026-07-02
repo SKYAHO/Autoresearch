@@ -7,6 +7,7 @@ from autoresearch.virtual_users.gemini_generator import (
     GeminiVirtualUserGenerator,
     RuleBasedVirtualUserGenerator,
     _ensure_source_persona_matches_user,
+    _normalize_interest_keywords_from_persona,
     _stamp_generation_meta,
     build_virtual_user_prompt,
     parse_virtual_user_json,
@@ -164,6 +165,46 @@ def test_stamp_generation_meta_overrides_llm_controlled_metadata():
     assert stamped.generation_meta.prompt_version == PROMPT_VERSION
     assert stamped.generation_meta.llm_model == "gemini-2.5-flash"
     assert stamped.generation_meta.generated_at != "1999-01-01T00:00:00Z"
+
+
+def test_normalize_interest_keywords_from_persona_overrides_llm_keywords():
+    persona = SourcePersona(
+        uuid="p-001",
+        age=24,
+        sex="female",
+        occupation="student",
+        province="Seoul",
+        persona="Enjoys music videos and lifestyle creators.",
+        hobbies_and_interests="beauty, study videos",
+        hobbies_and_interests_list=["music", "beauty"],
+    )
+    user = parse_virtual_user_json(
+        json.dumps(
+            {
+                "virtual_user_id": "vu_0001",
+                "source_uuid": "p-001",
+                "age": 24,
+                "sex": "female",
+                "age_bucket": "20s",
+                "occupation": "student",
+                "province": "Seoul",
+                "persona_summary": "LLM summary.",
+                "interest_keywords": ["llm-invented", "unbounded"],
+                "youtube_profile": {
+                    "primary_categories": ["Music"],
+                    "shorts_affinity": 0.7,
+                    "longform_affinity": 0.4,
+                    "trend_sensitivity": 0.5,
+                    "comment_propensity": 0.2,
+                    "watch_time_band": "evening",
+                },
+            }
+        )
+    )
+
+    normalized = _normalize_interest_keywords_from_persona(user, persona)
+
+    assert normalized.interest_keywords == ["music", "beauty", "study", "lifestyle"]
 
 
 def test_rule_based_generator_produces_valid_schema_without_api_call(caplog):

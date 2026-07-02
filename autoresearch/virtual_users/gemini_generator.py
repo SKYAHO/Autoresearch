@@ -200,6 +200,15 @@ def _stamp_generation_meta(user: VirtualUser, model_name: str) -> VirtualUser:
     return stamped
 
 
+def _normalize_interest_keywords_from_persona(
+    user: VirtualUser,
+    persona: SourcePersona,
+) -> VirtualUser:
+    payload = user.model_dump()
+    payload["interest_keywords"] = extract_interest_keywords(persona)
+    return VirtualUser.model_validate(payload)
+
+
 def _first_env(*names: str) -> str | None:
     """여러 환경변수 후보 중 가장 먼저 설정된 값을 반환한다."""
 
@@ -363,6 +372,7 @@ class GeminiVirtualUserGenerator:
             parse_virtual_user_json(response.text or ""),
             model_name=self.model_name,
         )
+        user = _normalize_interest_keywords_from_persona(user, persona)
         _ensure_source_persona_matches_user(
             user,
             persona=persona,
