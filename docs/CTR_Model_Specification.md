@@ -52,7 +52,6 @@ Rule
         - likeCount
         - commentCount
         - duration
-        - language
         
         ```json
         {
