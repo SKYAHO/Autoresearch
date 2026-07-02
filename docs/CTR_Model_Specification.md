@@ -110,7 +110,7 @@ Rule
 
 | Feature | Type | Feature Store | 사용되는 원본 컬럼 및 생성 방법 |
 | --- | --- | --- | --- |
-| `category_id` | Category | Offline | `categoryId` 원본 사용 |
+| `category_id` | Category | Offline | `categoryId`를 카테고리명(문자)으로 매핑하여 저장 |
 | `duration_sec` | Numeric | Offline | `duration` → 초 단위 변환 |
 | `view_count` | Numeric | Offline | `viewCount` 원본 사용 |
 | `like_ratio` | Float | Offline | `likeCount` / `viewCount` |
@@ -210,7 +210,7 @@ Rule
 
 | 스펙 Feature | Feast FeatureView | 생성 방법 | 상태 |
 | --- | --- | --- | --- |
-| `category_id` | `video_features` | YouTube API `categoryId` 원본 | 미구현 |
+| `category_id` | `video_features` | YouTube API `categoryId`를 카테고리명으로 매핑 | 미구현 |
 | `duration_sec` | `video_features` | `duration` → 초 단위 변환 | 미구현 |
 | `view_count` | `video_features` | `viewCount` 원본 | 미구현 |
 | `like_ratio` | `video_features` | `likeCount` / `viewCount` | 미구현 |
