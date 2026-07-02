@@ -1,0 +1,8 @@
+airflow:
+  connections: []
+  variables:
+    - variable_name: YOUTUBE_LAKE_BUCKET
+      variable_value: ""
+    - variable_name: YOUTUBE_BACKFILL_SOURCE
+      variable_value: ""
+  pools: []

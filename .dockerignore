@@ -1,0 +1,17 @@
+.git
+.github
+.gitignore
+.pytest_cache
+__pycache__/
+*.py[cod]
+.venv
+venv
+env
+.env
+.env.*
+data
+*.parquet
+*.md
+dist
+build
+*.egg-info

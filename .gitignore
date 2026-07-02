@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+
 .venv/
 .python-version
 
@@ -19,3 +20,10 @@ keys/
 # OS
 .DS_Store
 Thumbs.db
+
+# Astro / Airflow local state
+.astro/
+
+# Generated data artifacts
+data/generated/
+/tmp/
