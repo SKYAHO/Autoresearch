@@ -1,8 +1,9 @@
+# Runtime dependencies for the YouTube collection pipeline.
+# Only these are installed into the Astro Airflow image (see Dockerfile).
+# NOTE: `datasets`/`google-genai` belong to the virtual_users module and are
+# intentionally kept OUT of this file (Airflow ships a `datasets` module that
+# would collide with the HuggingFace package of the same name).
 pydantic>=2.6
-datasets>=2.19
-google-genai>=1.0
-pytest>=8.0
-# youtube_collection (also installed into the Astro Airflow image)
 pyarrow>=15.0
 google-api-python-client>=2.100
 google-cloud-storage>=2.10

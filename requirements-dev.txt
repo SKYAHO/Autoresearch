@@ -1,0 +1,11 @@
+# Local development & tests: everything the repo needs.
+# The Astro Airflow image installs only requirements.txt (lean). For local dev / CI:
+#   pip install -r requirements-dev.txt
+-r requirements.txt
+
+# Test tooling.
+pytest>=8.0
+
+# virtual_users module runtime deps (offline simulator, not part of the Airflow image).
+datasets>=2.19
+google-genai>=1.0
