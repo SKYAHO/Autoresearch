@@ -23,14 +23,27 @@ def test_extract_interest_keywords_uses_spec_persona_fields():
 
     assert keywords == [
         "music",
+        "lifestyle",
         "beauty",
         "study",
         "design",
-        "sports",
         "travel",
+        "sports",
         "cooking",
-        "lifestyle",
     ]
+
+
+def test_extract_interest_keywords_applies_limit_after_relevance_sort():
+    persona = SourcePersona(
+        uuid="p-003",
+        age=27,
+        sex="male",
+        persona="Gaming gaming gaming music videos.",
+        hobbies_and_interests="technology and gaming",
+        skills_and_expertise="software developer",
+    )
+
+    assert extract_interest_keywords(persona, limit=2) == ["gaming", "technology"]
 
 
 def test_extract_interest_keywords_returns_general_when_no_match():

@@ -1,5 +1,7 @@
 """Persona 텍스트에서 추천 후보 매칭에 쓸 관심 keyword를 추출한다."""
 
+import re
+
 from autoresearch.virtual_users.schema import SourcePersona
 
 
@@ -36,15 +38,28 @@ def _persona_text(persona: SourcePersona) -> str:
     return " ".join(part for part in parts if part).lower()
 
 
+def _keyword_score(text: str, aliases: tuple[str, ...]) -> int:
+    score = 0
+    for alias in aliases:
+        pattern = rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])"
+        score += len(re.findall(pattern, text))
+    return score
+
+
 def extract_interest_keywords(persona: SourcePersona, limit: int = 10) -> list[str]:
-    """미리 정의한 alias 사전으로 persona 관심 keyword를 결정적으로 추출한다."""
+    """Extract keywords ordered by alias occurrence count.
+
+    Higher alias match counts rank first. Alias declaration order is only a
+    deterministic tie breaker, so `limit` drops the least-supported keywords.
+    """
 
     text = _persona_text(persona)
-    keywords: list[str] = []
-    for keyword, aliases in KEYWORD_ALIASES.items():
-        if any(alias in text for alias in aliases):
-            keywords.append(keyword)
+    scored_keywords: list[tuple[int, int, str]] = []
+    for priority, (keyword, aliases) in enumerate(KEYWORD_ALIASES.items()):
+        score = _keyword_score(text, aliases)
+        if score > 0:
+            scored_keywords.append((-score, priority, keyword))
 
-    if not keywords:
+    if not scored_keywords:
         return ["general"]
-    return keywords[:limit]
+    return [keyword for _, _, keyword in sorted(scored_keywords)[:limit]]
