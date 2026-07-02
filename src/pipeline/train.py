@@ -12,6 +12,10 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 
+# Add project root to path
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
+
 from src.models.lgbm_model import LGBMModel
 from src.utils.model_utils import save_model, save_feature_columns
 
@@ -47,7 +51,7 @@ def main():
     print("\n[Step 1] 데이터 로드...")
     data_path = os.path.join(project_root, config["data"]["path"])
     dataset = pd.read_csv(data_path)
-    print(f"  ✓ {len(dataset)} rows, {len(dataset.columns)} columns")
+    print(f"  [OK] {len(dataset)} rows, {len(dataset.columns)} columns")
 
     # =========================================================
     # Step 2: Feature/Label 분리
@@ -59,8 +63,8 @@ def main():
     X = dataset[feature_columns].copy()
     y = dataset["clicked"].copy()
 
-    print(f"  ✓ Features: {X.shape}")
-    print(f"  ✓ Label (clicked): {y.shape}, ratio={y.mean():.3%}")
+    print(f"  [OK] Features: {X.shape}")
+    print(f"  [OK] Label (clicked): {y.shape}, ratio={y.mean():.3%}")
 
     # =========================================================
     # Step 3: Categorical dtype 변환
@@ -69,7 +73,7 @@ def main():
     for col in categorical_columns:
         if col in X.columns:
             X[col] = X[col].astype("category")
-    print(f"  ✓ {len(categorical_columns)} categorical columns 설정")
+    print(f"  [OK] {len(categorical_columns)} categorical columns 설정")
 
     # =========================================================
     # Step 4: Train/Val split
@@ -84,7 +88,7 @@ def main():
         random_state=random_state,
         stratify=y
     )
-    print(f"  ✓ Train: {X_train.shape}, Val: {X_val.shape}")
+    print(f"  [OK] Train: {X_train.shape}, Val: {X_val.shape}")
 
     # =========================================================
     # Step 5: scale_pos_weight 계산
@@ -95,9 +99,9 @@ def main():
         neg_count = (y_train == 0).sum()
         pos_count = (y_train == 1).sum()
         scale_pos_weight = neg_count / pos_count
-        print(f"  ✓ auto 계산: neg={neg_count}, pos={pos_count}, ratio={scale_pos_weight:.2f}")
+        print(f"  [OK] auto 계산: neg={neg_count}, pos={pos_count}, ratio={scale_pos_weight:.2f}")
     else:
-        print(f"  ✓ 고정값: {scale_pos_weight}")
+        print(f"  [OK] 고정값: {scale_pos_weight}")
 
     # =========================================================
     # Step 6: 모델 훈련
@@ -111,7 +115,7 @@ def main():
         random_state=config["model"]["random_state"],
     )
     model.fit(X_train, y_train, categorical_features=categorical_columns)
-    print(f"  ✓ 훈련 완료")
+    print(f"  [OK] 훈련 완료")
 
     # =========================================================
     # Step 7: 검증
@@ -119,7 +123,7 @@ def main():
     print("\n[Step 7] 검증...")
     y_val_pred_proba = model.predict_proba(X_val)[:, 1]
     val_roc_auc = roc_auc_score(y_val, y_val_pred_proba)
-    print(f"  ✓ Val ROC-AUC: {val_roc_auc:.4f}")
+    print(f"  [OK] Val ROC-AUC: {val_roc_auc:.4f}")
 
     # category_match silent bug 감지
     if (X_val["category_match"] == 1).sum() == 0:

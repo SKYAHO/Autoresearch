@@ -13,6 +13,10 @@ import pickle
 import pandas as pd
 from sklearn.metrics import roc_auc_score, average_precision_score, log_loss
 
+# Add project root to path
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
+
 from src.utils.model_utils import load_model, load_feature_columns
 
 
@@ -67,14 +71,14 @@ def main():
         if col in X.columns:
             X[col] = X[col].astype("category")
 
-    print(f"  ✓ {len(dataset)} rows")
+    print(f"  [OK] {len(dataset)} rows")
 
     # =========================================================
     # Step 3: 예측
     # =========================================================
     print("\n[Step 3] 예측...")
     y_pred_proba = model.predict_proba(X)[:, 1]
-    print(f"  ✓ 예측 완료")
+    print(f"  [OK] 예측 완료")
 
     # =========================================================
     # Step 4: 평가 지표 계산
@@ -84,9 +88,9 @@ def main():
     pr_auc = average_precision_score(y, y_pred_proba)
     logloss = log_loss(y, y_pred_proba)
 
-    print(f"  ✓ ROC-AUC: {roc_auc:.4f}")
-    print(f"  ✓ PR-AUC: {pr_auc:.4f}")
-    print(f"  ✓ Log Loss: {logloss:.4f}")
+    print(f"  [OK] ROC-AUC: {roc_auc:.4f}")
+    print(f"  [OK] PR-AUC: {pr_auc:.4f}")
+    print(f"  [OK] Log Loss: {logloss:.4f}")
 
     # =========================================================
     # Step 5: Baseline 비교
@@ -94,14 +98,17 @@ def main():
     print("\n[Step 5] Baseline (LogisticRegression) 비교...")
     baseline_path = os.path.join(project_root, "models", "baseline.pkl")
     if os.path.exists(baseline_path):
-        with open(baseline_path, "rb") as f:
-            baseline_model = pickle.load(f)
-        baseline_pred_proba = baseline_model.predict_proba(X)[:, 1]
-        baseline_roc_auc = roc_auc_score(y, baseline_pred_proba)
-        print(f"  ✓ Baseline ROC-AUC: {baseline_roc_auc:.4f}")
-        print(f"  ✓ LightGBM vs Baseline: {roc_auc - baseline_roc_auc:+.4f}")
+        try:
+            with open(baseline_path, "rb") as f:
+                baseline_model = pickle.load(f)
+            baseline_pred_proba = baseline_model.predict_proba(X)[:, 1]
+            baseline_roc_auc = roc_auc_score(y, baseline_pred_proba)
+            print(f"  [OK] Baseline ROC-AUC: {baseline_roc_auc:.4f}")
+            print(f"  [OK] LightGBM vs Baseline: {roc_auc - baseline_roc_auc:+.4f}")
+        except Exception as e:
+            print(f"  [WARNING] Baseline 로드 실패: {e}")
     else:
-        print(f"  ⚠️  Baseline 모델을 찾을 수 없음: {baseline_path}")
+        print(f"  [WARNING] Baseline 모델을 찾을 수 없음: {baseline_path}")
 
     print("\n" + "=" * 70)
     print("평가 완료")
