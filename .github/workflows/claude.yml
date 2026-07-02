@@ -3,7 +3,6 @@ name: Claude Code PR Review
 on:
   pull_request:
     types: [opened, ready_for_review]
-  workflow_dispatch:
 
 jobs:
   claude-review:
