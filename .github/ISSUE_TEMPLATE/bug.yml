@@ -18,7 +18,7 @@ body:
     attributes:
       label: P - Problem
       description: 발생한 문제, 영향받는 사용자/흐름, 재현 절차를 적어 주세요.
-      value: |
+      placeholder: |
         ## 현상
         예) 입력값이 비어 있을 때 학습 파이프라인이 종료됩니다.
 
@@ -37,7 +37,7 @@ body:
     attributes:
       label: A - Analysis
       description: 확인한 원인, 의심 지점, 관련 코드/로그/데이터 조건을 적어 주세요.
-      value: |
+      placeholder: |
         ## 원인 또는 의심 지점
         예) 입력 validation 없이 첫 row를 참조합니다.
 
@@ -54,7 +54,7 @@ body:
     attributes:
       label: A - Action
       description: 수정 방향과 작업 체크리스트를 적어 주세요.
-      value: |
+      placeholder: |
         - [ ] 실패를 재현하는 테스트를 추가한다
         - [ ] 원인 코드를 수정한다
         - [ ] 관련 문서 또는 에러 메시지를 필요한 만큼 갱신한다
@@ -66,7 +66,7 @@ body:
     attributes:
       label: R - Result
       description: 수정 후 기대 결과와 검증 명령을 적어 주세요.
-      value: |
+      placeholder: |
         ## 기대 결과
         예) 빈 입력이면 명확한 validation error를 반환하고 pipeline이 예측 가능한 상태로 종료됩니다.
 
