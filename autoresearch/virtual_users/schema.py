@@ -31,6 +31,14 @@ YOUTUBE_CATEGORIES = [
 WATCH_TIME_BANDS = ["morning", "afternoon", "evening", "night", "mixed"]
 
 
+def age_bucket_for(age: int) -> str:
+    """Return a decade age bucket such as 20s or 30s."""
+
+    if age < 0:
+        raise ValueError("age must be non-negative")
+    return f"{age // 10 * 10}s"
+
+
 class GenerationRequest(BaseModel):
     """가상 사용자 배치 생성에 필요한 입력 조건과 출력 경로를 담는다."""
 
@@ -152,6 +160,7 @@ class VirtualUser(BaseModel):
             "country": self.country,
             "locale": self.locale,
             "age": self.age,
+            "age_bucket": self.age_bucket,
             "sex": self.sex,
             "occupation": self.occupation,
             "province": self.province,

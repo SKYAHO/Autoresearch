@@ -121,6 +121,7 @@ def test_generate_virtual_user_batch_writes_warehouse_jsonl(tmp_path):
     assert rows[0]["source_dataset"] == "nvidia/Nemotron-Personas-Korea"
     assert rows[0]["country"] == "KR"
     assert rows[0]["locale"] == "ko-KR"
+    assert rows[0]["age_bucket"] == "20s"
     assert isinstance(rows[0]["interest_keywords"], list)
     assert "primary_categories" in rows[0]
     assert "watch_time_band" in rows[0]

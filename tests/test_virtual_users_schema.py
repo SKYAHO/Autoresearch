@@ -10,6 +10,7 @@ from autoresearch.virtual_users.schema import (
     SourcePersona,
     VirtualUser,
     VirtualUserBatch,
+    age_bucket_for,
 )
 
 
@@ -22,6 +23,17 @@ def test_generation_request_defaults_match_mvp_contract():
     assert request.female_count == 50
     assert request.seed == 42
     assert request.output_path == "data/generated/virtual_users_20s_100.json"
+
+
+def test_age_bucket_for_groups_age_by_decade():
+    assert age_bucket_for(20) == "20s"
+    assert age_bucket_for(29) == "20s"
+    assert age_bucket_for(34) == "30s"
+
+
+def test_age_bucket_for_rejects_negative_age():
+    with pytest.raises(ValueError, match="age must be non-negative"):
+        age_bucket_for(-1)
 
 
 def test_source_persona_normalizes_required_fields():
@@ -271,6 +283,7 @@ def test_virtual_user_exports_warehouse_ready_row():
         "country": "KR",
         "locale": "ko-KR",
         "age": 24,
+        "age_bucket": "20s",
         "sex": "female",
         "occupation": "student",
         "province": "Seoul",

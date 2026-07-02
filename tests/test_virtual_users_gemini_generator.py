@@ -38,6 +38,22 @@ def test_build_virtual_user_prompt_contains_fixed_json_contract(caplog):
     assert "Built virtual user generation prompt" in caplog.text
 
 
+def test_build_virtual_user_prompt_uses_source_age_bucket():
+    persona = SourcePersona(
+        uuid="p-034",
+        age=34,
+        sex="female",
+        occupation="designer",
+        province="Seoul",
+        persona="Design-focused media user.",
+    )
+
+    prompt = build_virtual_user_prompt(persona, virtual_user_id="vu_0034")
+
+    assert '"age": 34' in prompt
+    assert '"age_bucket": "30s"' in prompt
+
+
 def test_parse_virtual_user_json_accepts_valid_payload(caplog):
     raw = json.dumps(
         {
@@ -191,6 +207,24 @@ def test_rule_based_generator_populates_warehouse_fields():
     assert user.locale == "ko-KR"
     assert user.district == "Mapo-gu"
     assert user.interest_keywords == ["music", "beauty", "study", "lifestyle"]
+
+
+def test_rule_based_generator_derives_age_bucket_from_age():
+    persona = SourcePersona(
+        uuid="p-034",
+        age=34,
+        sex="female",
+        occupation="designer",
+        province="Seoul",
+        persona="Design-focused media user.",
+    )
+
+    user = RuleBasedVirtualUserGenerator().generate(
+        persona,
+        virtual_user_id="vu_0034",
+    )
+
+    assert user.age_bucket == "30s"
 
 
 def test_ensure_source_persona_matches_user_rejects_hallucinated_persona_fields():

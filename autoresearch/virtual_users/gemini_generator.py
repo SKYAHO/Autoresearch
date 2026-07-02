@@ -13,6 +13,7 @@ from autoresearch.virtual_users.schema import (
     SOURCE_DATASET,
     SourcePersona,
     VirtualUser,
+    age_bucket_for,
 )
 
 
@@ -34,6 +35,7 @@ class VirtualUserGenerator(Protocol):
 def build_virtual_user_prompt(persona: SourcePersona, virtual_user_id: str) -> str:
     """Gemini가 따라야 할 JSON contract와 원천 persona 정보를 prompt로 구성한다."""
 
+    age_bucket = age_bucket_for(persona.age)
     persona_payload = persona.model_dump()
     prompt = f"""You convert a Korean synthetic persona into a virtual YouTube user profile.
 
@@ -55,7 +57,7 @@ Required JSON shape:
   "locale": "{persona.locale}",
   "age": {persona.age},
   "sex": "{persona.sex}",
-  "age_bucket": "20s",
+  "age_bucket": "{age_bucket}",
   "occupation": "{persona.occupation}",
   "province": "{persona.province}",
   "district": "{persona.district}",
@@ -81,6 +83,7 @@ Constraints:
 - All affinity numbers must be between 0 and 1.
 - primary_categories must contain 1 to 5 YouTube categories.
 - watch_time_band must be one of morning, afternoon, evening, night, mixed.
+- age_bucket must be "{age_bucket}".
 - Keep original age, sex, occupation, province, and source_uuid.
 - Keep original district, country, locale, and source_uuid.
 - interest_keywords must be a list of concise lowercase English keywords.
@@ -258,7 +261,7 @@ class RuleBasedVirtualUserGenerator:
             locale=persona.locale,
             age=persona.age,
             sex=persona.sex,
-            age_bucket="20s",
+            age_bucket=age_bucket_for(persona.age),
             occupation=persona.occupation,
             province=persona.province,
             district=persona.district,
