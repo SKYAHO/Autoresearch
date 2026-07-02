@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_VERTEX_LOCATION = "global"
+PERSONA_SUMMARY_MAX_CHARS = 180
 
 
 class VirtualUserGenerator(Protocol):
@@ -274,7 +275,10 @@ class RuleBasedVirtualUserGenerator:
             occupation=persona.occupation,
             province=persona.province,
             district=persona.district,
-            persona_summary=persona.persona[:180] or "20s Korean virtual user.",
+            persona_summary=(
+                persona.persona[:PERSONA_SUMMARY_MAX_CHARS]
+                or f"{age_bucket_for(persona.age)} Korean virtual user."
+            ),
             interest_keywords=interest_keywords,
             youtube_profile={
                 "primary_categories": categories,

@@ -5,6 +5,7 @@ import pytest
 
 from autoresearch.virtual_users.gemini_generator import (
     GeminiVirtualUserGenerator,
+    PERSONA_SUMMARY_MAX_CHARS,
     RuleBasedVirtualUserGenerator,
     _ensure_source_persona_matches_user,
     _normalize_interest_keywords_from_persona,
@@ -266,6 +267,24 @@ def test_rule_based_generator_derives_age_bucket_from_age():
     )
 
     assert user.age_bucket == "30s"
+
+
+def test_rule_based_generator_uses_named_persona_summary_limit():
+    persona = SourcePersona(
+        uuid="p-001",
+        age=24,
+        sex="female",
+        occupation="student",
+        province="Seoul",
+        persona="x" * (PERSONA_SUMMARY_MAX_CHARS + 20),
+    )
+
+    user = RuleBasedVirtualUserGenerator().generate(
+        persona,
+        virtual_user_id="vu_0001",
+    )
+
+    assert len(user.persona_summary) == PERSONA_SUMMARY_MAX_CHARS
 
 
 def test_ensure_source_persona_matches_user_rejects_hallucinated_persona_fields():
