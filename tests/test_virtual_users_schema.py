@@ -198,6 +198,39 @@ def test_source_persona_accepts_spec_fields_and_kr_defaults():
     assert persona.family_persona == "Lives with family."
 
 
+def test_source_persona_accepts_explicit_kr_contract_fields():
+    persona = SourcePersona(
+        uuid="p-001",
+        age=24,
+        sex="female",
+        country="KR",
+        locale="ko-KR",
+    )
+
+    assert persona.country == "KR"
+    assert persona.locale == "ko-KR"
+
+
+def test_source_persona_rejects_non_kr_contract_fields():
+    with pytest.raises(ValidationError, match="country must be KR"):
+        SourcePersona(
+            uuid="p-001",
+            age=24,
+            sex="female",
+            country="US",
+            locale="ko-KR",
+        )
+
+    with pytest.raises(ValidationError, match="locale must be ko-KR"):
+        SourcePersona(
+            uuid="p-001",
+            age=24,
+            sex="female",
+            country="KR",
+            locale="en-US",
+        )
+
+
 def test_virtual_user_exports_warehouse_ready_row():
     user = VirtualUser(
         virtual_user_id="vu_0001",

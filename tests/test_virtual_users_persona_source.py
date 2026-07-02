@@ -147,6 +147,38 @@ def test_source_persona_from_record_maps_spec_fields():
     assert persona.family_persona == "Family lifestyle."
 
 
+def test_source_persona_from_record_reads_explicit_country_locale():
+    persona = source_persona_from_record(
+        {
+            "uuid": "p-001",
+            "age": 24,
+            "sex": "female",
+            "country": "KR",
+            "locale": "ko-KR",
+            "occupation": "student",
+            "province": "Seoul",
+            "persona": "Enjoys music videos.",
+        }
+    )
+
+    assert persona.country == "KR"
+    assert persona.locale == "ko-KR"
+
+
+def test_source_persona_from_record_rejects_non_kr_country_locale():
+    with pytest.raises(ValueError, match="country must be KR"):
+        source_persona_from_record(
+            {
+                "uuid": "p-001",
+                "age": 24,
+                "sex": "female",
+                "country": "US",
+                "locale": "ko-KR",
+                "persona": "Non-KR row.",
+            }
+        )
+
+
 def test_load_nvidia_persona_records_can_write_raw_snapshot(monkeypatch, tmp_path):
     raw_records = [
         {

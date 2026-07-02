@@ -9,7 +9,12 @@ from typing import Any
 
 from datasets import load_dataset
 
-from autoresearch.virtual_users.schema import SOURCE_DATASET, SourcePersona
+from autoresearch.virtual_users.schema import (
+    KR_COUNTRY,
+    KR_LOCALE,
+    SOURCE_DATASET,
+    SourcePersona,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -50,6 +55,11 @@ def _as_text_list(record: dict[str, Any], key: str) -> list[str]:
     return [part.strip() for part in str(value).split(",") if part.strip()]
 
 
+def _as_text_or_default(record: dict[str, Any], key: str, default: str) -> str:
+    value = _as_text(record, key).strip()
+    return value or default
+
+
 def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
     """Hugging Face raw row 하나를 검증 가능한 SourcePersona 한 건으로 변환한다."""
 
@@ -60,6 +70,8 @@ def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
         occupation=_as_text(record, "occupation"),
         province=_as_text(record, "province"),
         district=_as_text(record, "district"),
+        country=_as_text_or_default(record, "country", KR_COUNTRY),
+        locale=_as_text_or_default(record, "locale", KR_LOCALE),
         persona=_as_text(record, "persona"),
         hobbies_and_interests=_as_text(record, "hobbies_and_interests"),
         hobbies_and_interests_list=_as_text_list(record, "hobbies_and_interests_list"),
