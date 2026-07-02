@@ -1,8 +1,6 @@
+# YouTube 트렌딩 수집(Airflow/Astro) 런타임 의존성.
+# 테스트/실험 모듈 의존성은 requirements-dev.txt 참조.
 pydantic>=2.6
-datasets>=2.19
-google-genai>=1.0
-pytest>=8.0
-# youtube_collection (also installed into the Astro Airflow image)
 pyarrow>=15.0
 google-api-python-client>=2.100
 google-cloud-storage>=2.10
