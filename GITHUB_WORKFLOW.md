@@ -68,6 +68,26 @@ Closes #12
 
 이번 CI는 실제 GKE 배포를 수행하지 않습니다. GKE 배포 단계는 GCP project, Artifact Registry repository, GKE cluster, workload identity 또는 service account 전략이 정해진 뒤 별도 issue/PR에서 추가합니다.
 
+### Claude Code PR Review
+
+`.github/workflows/claude.yml`은 Claude 기반 PR 리뷰 workflow입니다.
+
+자동 실행 조건:
+
+- PR이 처음 열림(`opened`)
+- Draft PR을 Ready for review로 전환(`ready_for_review`)
+
+수동 재리뷰 요청:
+
+- PR 피드백을 반영한 뒤 같은 PR의 최신 diff를 다시 리뷰받고 싶으면 PR conversation에 `/claude-review` 댓글을 작성합니다.
+- `/claude-review` 댓글은 PR에서만 동작하며, 일반 issue 댓글에서는 Claude review job을 실행하지 않습니다.
+- push마다 자동 재리뷰되는 `synchronize` 이벤트는 비용과 노이즈를 줄이기 위해 사용하지 않습니다.
+
+주의 사항:
+
+- Actions 탭의 `workflow_dispatch`는 workflow를 수동 실행할 수 있게 열어두지만, PR 재리뷰 요청은 `/claude-review` 댓글을 기본 방식으로 사용합니다.
+- Claude review가 남긴 inline thread를 반영한 뒤에는 `/claude-review`로 최신 변경분에 대한 추가 검토를 요청합니다.
+
 ### GitHub Project
 
 현재 Project에는 다음 view가 있습니다.
