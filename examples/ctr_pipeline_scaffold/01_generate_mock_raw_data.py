@@ -113,7 +113,6 @@ def gen_personas(n=50):
                 "persona": f"{hobby_text}에 관심이 많은 시청자",
                 "hobbies_and_interests": f"주요 관심사: {hobby_text}",
                 "hobbies_and_interests_list": json.dumps(interests, ensure_ascii=False),
-                "career_goals_and_ambitions": f"{random.choice(OCCUPATIONS)} 분야 전문가 성장을 목표로 함",
                 "sex": random.choice(["M", "F"]),
                 "age": random.randint(18, 60),
                 "occupation": random.choice(OCCUPATIONS),

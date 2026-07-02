@@ -95,15 +95,8 @@ Rule
         기술 카테고리 | List |  |
         | hobbies_and_interests |  | Text | 관심사 키워드 추출 |
         | hobbies_and_interests_list | 선호 주제 생성 | List |  |
-        | career_goals_and_ambitions |  | Text | 목표 성향 Feature |
         | sex | 성별 | Category |  |
         | age | 나이 | Numeric | `age_group` 생성 |
-        | marital_status | 결혼 여부 | Category |  |
-        | military_status | 병역 여부 | Category |  |
-        | family_type | 가족 형태 | Category |  |
-        | housing_type | 주거 형태 | Category |  |
-        | education_level | 학력 | Category |  |
-        | bachelors_field | 전공 | Category |  |
         | occupation | 직업 | Category |  |
         | district | 지역 | Category | 지역 그룹화 |
         | province | 시·도 | Category |  |
