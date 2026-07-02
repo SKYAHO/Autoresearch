@@ -215,3 +215,62 @@ def test_load_nvidia_persona_records_can_write_raw_snapshot(monkeypatch, tmp_pat
     lines = output_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["uuid"] == "p-001"
+
+
+def test_load_nvidia_persona_records_streams_raw_snapshot_until_valid_limit(
+    monkeypatch,
+    tmp_path,
+):
+    raw_records = [
+        {
+            "uuid": "invalid-001",
+            "age": 24,
+            "sex": "unknown",
+            "occupation": "student",
+            "persona": "Invalid sex row.",
+        },
+        {
+            "uuid": "p-001",
+            "age": 24,
+            "sex": "female",
+            "occupation": "student",
+            "persona": "Music fan.",
+        },
+        {
+            "uuid": "p-002",
+            "age": 25,
+            "sex": "male",
+            "occupation": "developer",
+            "persona": "Gaming fan.",
+        },
+        {
+            "uuid": "p-003",
+            "age": 26,
+            "sex": "female",
+            "occupation": "marketer",
+            "persona": "Should not be read after valid limit.",
+        },
+    ]
+
+    def fake_load_dataset(name, split, streaming):
+        assert name == "nvidia/Nemotron-Personas-Korea"
+        assert split == "train"
+        assert streaming is True
+        for record in raw_records:
+            yield record
+
+    monkeypatch.setattr(persona_source, "load_dataset", fake_load_dataset, raising=False)
+
+    output_path = tmp_path / "raw_snapshot.jsonl"
+    records = persona_source.load_nvidia_persona_records(
+        max_records=2,
+        raw_output_path=output_path,
+    )
+
+    assert [record.uuid for record in records] == ["p-001", "p-002"]
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["uuid"] for line in lines] == [
+        "invalid-001",
+        "p-001",
+        "p-002",
+    ]

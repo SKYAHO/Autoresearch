@@ -112,35 +112,53 @@ def write_raw_persona_records(
     logger.info("Wrote raw persona snapshot", extra={"output_path": str(path)})
 
 
+def _write_raw_persona_record(file, record: dict[str, Any]) -> None:
+    file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+
+
 def load_nvidia_persona_records(
     max_records: int | None = None,
     raw_output_path: str | Path | None = None,
 ) -> list[SourcePersona]:
-    """NVIDIA Persona dataset을 streaming으로 읽고 유효한 persona만 반환한다."""
+    """Load valid NVIDIA personas while optionally streaming raw rows to JSONL."""
 
     logger.info(
         "Loading NVIDIA persona records",
         extra={"source_dataset": SOURCE_DATASET, "max_records": max_records},
     )
     dataset = load_dataset(SOURCE_DATASET, split="train", streaming=True)
-    raw_records: list[dict[str, Any]] = []
     records: list[SourcePersona] = []
     skipped = 0
 
-    for raw_record in dataset:
-        raw_payload = dict(raw_record)
-        raw_records.append(raw_payload)
-        try:
-            records.append(source_persona_from_record(raw_payload))
-        except (KeyError, TypeError, ValueError):
-            skipped += 1
-            logger.debug("Skipped invalid persona record", exc_info=True)
-            continue
-        if max_records is not None and len(records) >= max_records:
-            break
-
+    raw_snapshot_file = None
+    raw_snapshot_path: Path | None = None
     if raw_output_path is not None:
-        write_raw_persona_records(raw_records, raw_output_path)
+        raw_snapshot_path = Path(raw_output_path)
+        raw_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_snapshot_file = raw_snapshot_path.open("w", encoding="utf-8")
+
+    try:
+        for raw_record in dataset:
+            raw_payload = dict(raw_record)
+            if raw_snapshot_file is not None:
+                _write_raw_persona_record(raw_snapshot_file, raw_payload)
+            try:
+                records.append(source_persona_from_record(raw_payload))
+            except (KeyError, TypeError, ValueError):
+                skipped += 1
+                logger.debug("Skipped invalid persona record", exc_info=True)
+                continue
+            if max_records is not None and len(records) >= max_records:
+                break
+    finally:
+        if raw_snapshot_file is not None:
+            raw_snapshot_file.close()
+
+    if raw_snapshot_path is not None:
+        logger.info(
+            "Wrote raw persona snapshot",
+            extra={"output_path": str(raw_snapshot_path)},
+        )
 
     logger.info(
         "Loaded NVIDIA persona records",
