@@ -1,4 +1,4 @@
-FROM quay.io/astronomer/astro-runtime:12.7.0
+FROM quay.io/astronomer/astro-runtime:13.8.0
 
 # Airflow 컨테이너에서 동작하는 수집 로직(pyarrow, google-api-python-client,
 # google-cloud-storage, gcsfs 등)에 필요한 의존성을 이미지에 설치한다.
