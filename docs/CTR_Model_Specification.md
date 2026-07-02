@@ -189,6 +189,50 @@ Rule
 
 **현재 상태(7.1 기준) vs 목표**: 현재 MVP 단계에서는 위 Feature들을 CSV(`data/raw`, `data/processed`)로 관리하며, Offline/Online 구분은 논리적으로만 존재한다. 목표 아키텍처는 Offline은 Feast 기반 Feature Store(BigQuery/GCS 연동), Online은 Redis/Valkey이며, 이 마이그레이션은 별도 작업으로 진행한다.
 
+## 📌 Feast 매핑 대응표
+
+본 섹션은 위 Feature Engineering / Feature Store Contract에서 정의한 Feature가 Feast FeatureView로 어떻게 매핑되는지를 명시한다. Feast 구현 스키마가 변경될 경우 본 표를 함께 갱신한다.
+
+### User Feature 매핑
+
+| 스펙 Feature | Feast FeatureView | 집계 방식 | 상태 |
+| --- | --- | --- | --- |
+| `age_group` | `user_features` | Persona 원본 파생 | 미구현 |
+| `occupation` | `user_features` | Persona 원본 사용 | 미구현 |
+| `historical_category_affinity` | `user_features` | Label Timestamp 이전 Event Log 집계, cold-start 시 `"unknown"` | 미구현 |
+| `recent_click_count_7d` | `user_features` | 7일 sliding window 집계 (누적 카운트 아님) | 미구현 |
+| `recent_watch_time_7d` | `user_features` | 7일 sliding window 합계 (평균 아님) | 미구현 |
+| `recent_like_count_7d` | `user_features` | 7일 sliding window 집계 (누적 카운트 아님) | 미구현 |
+
+> User Behavior Feature(`recent_*_7d`, `historical_category_affinity`)는 7일 윈도우 기준 recency 신호를 반영해야 하므로, 단순 누적 카운터(increment)가 아닌 sliding window 집계 로직으로 구현한다. Feast의 `ttl`은 조회 값의 유효기간을 의미할 뿐 집계 윈도우가 아니므로, 윈도우 처리는 소스 데이터(Event Log → Online Feature) 생성 단계에서 이루어져야 한다.
+
+### Video Feature 매핑
+
+| 스펙 Feature | Feast FeatureView | 생성 방법 | 상태 |
+| --- | --- | --- | --- |
+| `category_id` | `video_features` | YouTube API `categoryId` 원본 | 미구현 |
+| `duration_sec` | `video_features` | `duration` → 초 단위 변환 | 미구현 |
+| `view_count` | `video_features` | `viewCount` 원본 | 미구현 |
+| `like_ratio` | `video_features` | `likeCount` / `viewCount` | 미구현 |
+| `comment_ratio` | `video_features` | `commentCount` / `viewCount` | 미구현 |
+| `days_since_upload` | `video_features` | 노출 시점 - `publishedAt` | 미구현 |
+
+> `dislike_count`는 본 스펙의 Raw Data 정의(YouTube Data API)에 포함되지 않는 필드다. YouTube Data API는 2021년 이후 공개 dislike 수를 제공하지 않으므로, 원본 데이터 소스 확보 가능 여부를 확인한 뒤 스키마 포함 여부를 결정한다.
+
+### Interaction Feature 매핑
+
+| 스펙 Feature | Feast 구현 방식 | 상태 |
+| --- | --- | --- |
+| `category_match` | On-Demand Feature View (저장 없음) | 미구현 |
+| `topic_similarity` | On-Demand Feature View (저장 없음) | 미구현 |
+| `user_video_embedding_similarity` | On-Demand Feature View (저장 없음) | 미구현 |
+
+> Interaction Feature는 `user_id × video_id` cross product 특성상 배치 사전 계산 대상이 아니며, 일반 FeatureView(BigQuery 소스 기반 배치 적재)로 구현하지 않는다. User Feature와 Video Feature 조회 결과를 입력으로 받아 즉시 계산하는 **Feast On-Demand Feature View(ODFV)**로 구현하며, Training Dataset 생성 로직과 Serving 로직이 동일한 계산 함수를 공유해야 한다 (Training-Serving Skew 방지 원칙, Feature Engineering 섹션 참고).
+
+### Cold-start Fallback 처리 위치
+
+`historical_category_affinity`가 `"unknown"`인 경우의 fallback 처리 위치(Feast FeatureView 기본값 vs Serving 코드)는 아직 결정되지 않았다. 결정되는 대로 본 섹션에 반영한다.
+
 ## 📌 Training Dataset
 
 ```json
