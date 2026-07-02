@@ -47,7 +47,9 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build Docker image
-        run: docker build --tag autoresearch:ci .
+        # 루트 Dockerfile 은 Astro 런타임 이미지(astro dev/배포용)이다.
+        # CI 의 빌드 검증은 가벼운 app 패키지 이미지(Dockerfile.app) 로 수행한다.
+        run: docker build -f Dockerfile.app --tag autoresearch:ci .
 
       - name: Run Docker image smoke check
         run: docker run --rm autoresearch:ci
