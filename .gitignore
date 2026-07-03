@@ -1,5 +1,7 @@
 __pycache__/
 *.py[cod]
+*.pkl
+*.csv
 
 .venv/
 .python-version
@@ -23,6 +25,9 @@ Thumbs.db
 
 # Astro / Airflow local state
 .astro/
+
+.gcp-creds.json
+
 
 # Generated data artifacts
 data/generated/
