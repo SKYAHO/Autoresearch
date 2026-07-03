@@ -7,39 +7,26 @@ baseline 모델과 비교한다.
 """
 
 import os
-import sys
 import yaml
 import pickle
 import pandas as pd
 from sklearn.metrics import roc_auc_score, average_precision_score, log_loss
 
-# Add project root to path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, PROJECT_ROOT)
-
 from src.utils.model_utils import load_model, load_feature_columns
+from src.utils.config_utils import get_project_root, load_config
 
 
-def get_project_root():
-    """프로젝트 루트 경로 반환."""
-    current = os.path.dirname(os.path.abspath(__file__))
-    while current != "/":
-        if os.path.exists(os.path.join(current, "src")):
-            return current
-        current = os.path.dirname(current)
-    raise RuntimeError("프로젝트 루트를 찾을 수 없습니다")
-
-
-def load_config(config_path):
-    """config.yaml 로드."""
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
-
-
-def main():
+def main(config_path=None, data_path=None, model_path=None):
     project_root = get_project_root()
-    config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
+    if config_path is None:
+        config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
     config = load_config(config_path)
+
+    # CLI override 패턴: is not None으로 체크하여 falsy 값 처리
+    if data_path is None:
+        data_path = os.path.join(project_root, config["data"]["path"])
+    if model_path is None:
+        model_path = os.path.join(project_root, config["artifacts"]["model_path"])
 
     print("=" * 70)
     print("모델 평가")
@@ -49,7 +36,6 @@ def main():
     # Step 1: 모델 & Feature 로드
     # =========================================================
     print("\n[Step 1] 모델 로드...")
-    model_path = os.path.join(project_root, config["artifacts"]["model_path"])
     feature_columns_path = os.path.join(project_root, config["artifacts"]["feature_columns_path"])
 
     model = load_model(model_path)
@@ -59,7 +45,6 @@ def main():
     # Step 2: 데이터 로드 및 전처리
     # =========================================================
     print("\n[Step 2] 데이터 로드...")
-    data_path = os.path.join(project_root, config["data"]["path"])
     dataset = pd.read_csv(data_path)
 
     X = dataset[feature_columns].copy()

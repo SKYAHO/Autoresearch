@@ -6,40 +6,31 @@ config.yaml의 설정을 읽어 LightGBM 모델을 훈련하고 저장한다.
 """
 
 import os
-import sys
 import yaml
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import roc_auc_score
 
-# Add project root to path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, PROJECT_ROOT)
-
 from src.models.lgbm_model import LGBMModel
 from src.utils.model_utils import save_model, save_feature_columns
+from src.utils.config_utils import get_project_root, load_config
 
 
-def get_project_root():
-    """프로젝트 루트 경로 반환."""
-    current = os.path.dirname(os.path.abspath(__file__))
-    while current != "/":
-        if os.path.exists(os.path.join(current, "src")):
-            return current
-        current = os.path.dirname(current)
-    raise RuntimeError("프로젝트 루트를 찾을 수 없습니다")
-
-
-def load_config(config_path):
-    """config.yaml 로드."""
-    with open(config_path, "r") as f:
-        return yaml.safe_load(f)
-
-
-def main():
+def main(config_path=None, data_path=None, model_output=None, test_size=None, random_state=None):
     project_root = get_project_root()
-    config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
+    if config_path is None:
+        config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
     config = load_config(config_path)
+
+    # CLI override 패턴: is not None으로 체크하여 falsy 값 처리
+    if data_path is None:
+        data_path = os.path.join(project_root, config["data"]["path"])
+    if model_output is None:
+        model_output = os.path.join(project_root, config["artifacts"]["model_path"])
+    if test_size is None:
+        test_size = config["data"]["test_size"]
+    if random_state is None:
+        random_state = config["data"]["random_state"]
 
     print("=" * 70)
     print("LightGBM 모델 훈련")
@@ -49,7 +40,6 @@ def main():
     # Step 1: 데이터 로드
     # =========================================================
     print("\n[Step 1] 데이터 로드...")
-    data_path = os.path.join(project_root, config["data"]["path"])
     dataset = pd.read_csv(data_path)
     print(f"  [OK] {len(dataset)} rows, {len(dataset.columns)} columns")
 
@@ -79,9 +69,6 @@ def main():
     # Step 4: Train/Val split
     # =========================================================
     print("\n[Step 4] Train/Val 분할...")
-    test_size = config["data"]["test_size"]
-    random_state = config["data"]["random_state"]
-
     X_train, X_val, y_train, y_val = train_test_split(
         X, y,
         test_size=test_size,
@@ -133,17 +120,16 @@ def main():
     # Step 8: 모델 저장
     # =========================================================
     print("\n[Step 8] 모델 저장...")
-    model_path = os.path.join(project_root, config["artifacts"]["model_path"])
     feature_columns_path = os.path.join(project_root, config["artifacts"]["feature_columns_path"])
 
-    save_model(model.model, model_path)
+    save_model(model.model, model_output)
     save_feature_columns(feature_columns, feature_columns_path)
 
     print("\n" + "=" * 70)
     print("훈련 완료")
     print("=" * 70)
     print(f"Val ROC-AUC: {val_roc_auc:.4f}")
-    print(f"Model: {model_path}")
+    print(f"Model: {model_output}")
     print(f"Feature columns: {feature_columns_path}")
 
 

@@ -12,31 +12,22 @@ training_dataset.csv 생성 파이프라인.
 """
 
 import os
-import sys
 import json
 import duckdb
 import pandas as pd
 from datetime import datetime
-
-# Add project root to path
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, PROJECT_ROOT)
 
 from src.features.feature_builder import (
     compute_category_match,
     compute_topic_similarity,
     compute_embedding_similarity,
 )
+from src.utils.config_utils import get_project_root
 
 
 def get_data_dir():
     """프로젝트 루트의 data 디렉토리 경로 반환."""
-    current = os.path.dirname(os.path.abspath(__file__))
-    while current != "/":
-        if os.path.exists(os.path.join(current, "data")):
-            return os.path.join(current, "data")
-        current = os.path.dirname(current)
-    raise RuntimeError("data 디렉토리를 찾을 수 없습니다")
+    return os.path.join(get_project_root(), "data")
 
 
 def validate_events(events: pd.DataFrame) -> None:
@@ -74,9 +65,23 @@ def validate_point_in_time(dataset: pd.DataFrame) -> None:
     print(f"  [OK] {len(dataset_copy)} 샘플 확인 완료")
 
 
-def main():
-    data_dir = get_data_dir()
-    output_path = os.path.join(data_dir, "processed", "training_dataset.csv")
+def extract_topics_simple(text):
+    """간단한 topic 추출 (키워드 기반)."""
+    vocab = ["music", "sports", "gaming", "travel", "food",
+             "education", "technology", "beauty", "news",
+             "entertainment", "family", "finance", "health", "movie", "fashion"]
+    text_lower = str(text).lower() if text else ""
+    found = [t for t in vocab if t in text_lower]
+    return json.dumps(found)
+
+
+def main(raw_dir=None, events_path=None, output_path=None):
+    if raw_dir is None:
+        raw_dir = "data/raw"
+    if events_path is None:
+        events_path = "data/processed/events.csv"
+    if output_path is None:
+        output_path = "data/processed/training_dataset.csv"
 
     print("=" * 70)
     print("training_dataset.csv 생성 파이프라인")
@@ -86,9 +91,9 @@ def main():
     # 데이터 로드
     # =========================================================
     print("\n[로드] 데이터 로드 중...")
-    videos = pd.read_csv(os.path.join(data_dir, "raw", "youtube_videos.csv"))
-    personas = pd.read_csv(os.path.join(data_dir, "raw", "personas.csv"))
-    events = pd.read_csv(os.path.join(data_dir, "processed", "events.csv"))
+    videos = pd.read_csv(os.path.join(raw_dir, "youtube_videos.csv"))
+    personas = pd.read_csv(os.path.join(raw_dir, "personas.csv"))
+    events = pd.read_csv(events_path)
 
     print(f"  [OK] youtube_videos.csv: {len(videos)} rows")
     print(f"  [OK] personas.csv: {len(personas)} rows")
@@ -243,17 +248,6 @@ def main():
     # Step 2: Interaction Features (Pandas apply)
     # =========================================================
     print("\n[Step 2] Interaction Features 계산...")
-
-    # Topic Similarity (JSON 생성 필요)
-    # 간단히: 컬럼에서 topic 키워드 추출
-    def extract_topics_simple(text):
-        """간단한 topic 추출 (키워드 기반)."""
-        vocab = ["music", "sports", "gaming", "travel", "food",
-                 "education", "technology", "beauty", "news",
-                 "entertainment", "family", "finance", "health", "movie", "fashion"]
-        text_lower = str(text).lower() if text else ""
-        found = [t for t in vocab if t in text_lower]
-        return json.dumps(found)
 
     joined["preferred_topics_json"] = joined["hobbies_and_interests"].apply(extract_topics_simple)
     joined["video_topic_json"] = (joined["title"].fillna("") + " " + joined["description"].fillna("")).apply(extract_topics_simple)
