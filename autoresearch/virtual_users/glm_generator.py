@@ -1,3 +1,5 @@
+"""GLM 또는 fixture rule로 SourcePersona를 VirtualUser로 변환한다."""
+
 import json
 import logging
 import os
@@ -35,6 +37,8 @@ generation_meta는 만들지 마라.
 
 
 def build_virtual_user_prompt(persona: SourcePersona, virtual_user_id: str) -> str:
+    """SourcePersona 전체 payload와 허용 category vocab을 GLM user prompt로 만든다."""
+
     persona_payload = persona.model_dump()
     allowed_categories = "\n".join(
         f"- {category}" for category in DEFAULT_KAGGLE_YOUTUBE_CATEGORIES
@@ -96,6 +100,8 @@ Constraints:
 
 
 def parse_virtual_user_json(raw_text: str) -> DerivedVirtualUserFeatures:
+    """GLM raw response를 derived-only feature schema로 파싱하고 검증한다."""
+
     try:
         payload = json.loads(raw_text)
     except json.JSONDecodeError as exc:
@@ -114,6 +120,8 @@ def parse_virtual_user_json(raw_text: str) -> DerivedVirtualUserFeatures:
 
 
 def _now_iso() -> str:
+    """생성 metadata에 넣을 UTC ISO timestamp를 초 단위로 반환한다."""
+
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
@@ -123,6 +131,8 @@ def _virtual_user_from_derived_features(
     virtual_user_id: str,
     model_name: str,
 ) -> VirtualUser:
+    """Source factual field와 GLM derived feature를 병합해 VirtualUser를 만든다."""
+
     category_affinity = build_category_affinity(
         primary_categories=features.primary_categories,
         category_evidence=features.category_evidence,
@@ -176,10 +186,16 @@ def _virtual_user_from_derived_features(
 
 
 class RuleBasedVirtualUserGenerator:
+    """LLM 없이 테스트/fixture 용도로 VirtualUser를 생성하는 deterministic generator."""
+
     def __init__(self, model_name: str = "fixture-rule-generator") -> None:
+        """생성 metadata에 기록할 fixture model 이름을 설정한다."""
+
         self.model_name = model_name
 
     def generate(self, persona: SourcePersona, virtual_user_id: str) -> VirtualUser:
+        """간단한 keyword rule로 derived feature를 만들고 VirtualUser로 병합한다."""
+
         interests = extract_virtual_user_interests(persona)
         text = " ".join(
             [
@@ -259,12 +275,16 @@ class RuleBasedVirtualUserGenerator:
 
 
 class GLMVirtualUserGenerator:
+    """OpenAI-compatible Z.ai GLM API를 호출해 VirtualUser를 생성하는 generator."""
+
     def __init__(
         self,
         api_key: str | None = None,
         model_name: str = DEFAULT_GLM_MODEL,
         base_url: str | None = None,
     ) -> None:
+        """API key, model, base URL을 설정하고 GLM 호출 가능 상태인지 검증한다."""
+
         self.api_key = api_key or os.environ.get("ZAI_API_KEY")
         self.base_url = base_url or os.environ.get("ZAI_BASE_URL") or DEFAULT_ZAI_BASE_URL
         self.model_name = model_name
@@ -272,12 +292,16 @@ class GLMVirtualUserGenerator:
             raise ValueError("ZAI_API_KEY is required when use_llm=true")
 
     def _client_kwargs(self) -> dict[str, object]:
+        """OpenAI client 초기화에 필요한 인증/endpoint 인자를 반환한다."""
+
         return {
             "api_key": self.api_key,
             "base_url": self.base_url,
         }
 
     def generate(self, persona: SourcePersona, virtual_user_id: str) -> VirtualUser:
+        """GLM에 derived JSON을 요청하고 SourcePersona와 병합해 VirtualUser를 반환한다."""
+
         from openai import OpenAI
 
         logger.info(
