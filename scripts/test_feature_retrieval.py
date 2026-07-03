@@ -1,4 +1,8 @@
 """
+TEMP_FEAST_BOOTSTRAP:
+현재 조회 검증은 임시 더미 데이터 기준이다.
+실제 BigQuery 적재 파이프라인과 스키마가 확정되면 실제 데이터 기준으로 교체한다.
+
 Feast Feature 조회 검증 스크립트
 
 Online / Historical Feature 조회가 정상 동작하는지 확인합니다.

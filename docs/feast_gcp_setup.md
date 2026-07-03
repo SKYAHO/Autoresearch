@@ -1,5 +1,9 @@
 # Feast Feature Store - GCP 설정 가이드
 
+> TEMP_FEAST_BOOTSTRAP:
+> 실제 데이터 적재 파이프라인 완료 전 Feast 스키마/조회 검증을 위한 임시 더미 적재 절차를 포함합니다.
+> 실제 BigQuery 적재 파이프라인과 스키마가 확정되면 이 문서는 실제 데이터 기준으로 교체합니다.
+
 BigQuery(Offline Store) + Memorystore for Redis(Online Store) 연동 가이드입니다.
 
 각 단계는 **GCP Console(Web UI)** 기준으로 설명하며, 참고용 **CLI 명령어**도 함께 기재합니다.

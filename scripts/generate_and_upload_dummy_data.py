@@ -1,4 +1,8 @@
 """
+TEMP_FEAST_BOOTSTRAP:
+실제 데이터 적재 파이프라인 완료 전 Feast 스키마/조회 검증용 임시 seed script.
+실제 BigQuery 적재 파이프라인과 스키마가 확정되면 이 파일은 삭제한다.
+
 더미 Feature 데이터 생성 및 BigQuery 직접 업로드
 
 parquet이나 GCS를 거치지 않고, DataFrame을 BigQuery 테이블에 직접 적재합니다.

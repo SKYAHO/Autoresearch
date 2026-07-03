@@ -1,4 +1,8 @@
 """
+TEMP_FEAST_BOOTSTRAP:
+현재 FeatureView 스키마는 임시 더미 데이터 기준이다.
+실제 BigQuery 적재 파이프라인과 스키마가 확정되면 실제 데이터 기준으로 교체한다.
+
 Feast Entity & FeatureView 정의 (현재 더미 데이터 사용, 추후 데이터에 맞게 가공 필요)
 
 Entity:
