@@ -1,7 +1,9 @@
+import json
 import logging
 
 import pytest
 
+import autoresearch.virtual_users.persona_source as persona_source
 from autoresearch.virtual_users.persona_source import (
     build_fixture_persona_records,
     normalize_sex,
@@ -41,6 +43,10 @@ def test_source_persona_from_record_preserves_expected_fields():
             "sports_persona": None,
             "arts_persona": "Enjoys visual culture.",
             "cultural_background": "Korean urban context.",
+            "skills_and_expertise": "Figma, illustration",
+            "travel_persona": "Weekend Seoul gallery visitor.",
+            "culinary_persona": "Finds dessert cafes through video.",
+            "family_persona": "Shares short videos with siblings.",
         }
     )
 
@@ -48,6 +54,63 @@ def test_source_persona_from_record_preserves_expected_fields():
     assert persona.sex == "female"
     assert persona.sports_persona == ""
     assert persona.arts_persona == "Enjoys visual culture."
+    assert persona.skills_and_expertise == "Figma, illustration"
+    assert persona.travel_persona == "Weekend Seoul gallery visitor."
+    assert persona.culinary_persona == "Finds dessert cafes through video."
+    assert persona.family_persona == "Shares short videos with siblings."
+
+
+def test_source_persona_from_record_preserves_all_raw_columns():
+    raw = {
+        "uuid": "raw-001",
+        "professional_persona": "책을 큐레이션한다.",
+        "sports_persona": "숲길을 걷는다.",
+        "arts_persona": "동물의 숲과 LP 음악을 좋아한다.",
+        "travel_persona": "조용한 해변을 찾는다.",
+        "culinary_persona": "마라탕을 주문한다.",
+        "family_persona": "혼자 거주한다.",
+        "persona": "제주의 작은 서점에서 일한다.",
+        "cultural_background": "제주 지역 맥락.",
+        "skills_and_expertise": "책 큐레이션",
+        "skills_and_expertise_list": "['책 큐레이션', '고객 응대']",
+        "hobbies_and_interests": "사려니숲길 산책, 닌텐도 스위치",
+        "hobbies_and_interests_list": "['사려니숲길 산책', '닌텐도 스위치']",
+        "career_goals_and_ambitions": "교육 공방을 열고 싶어 한다.",
+        "sex": "여자",
+        "age": 22,
+        "marital_status": "미혼",
+        "military_status": "비현역",
+        "family_type": "혼자 거주",
+        "housing_type": "아파트",
+        "education_level": "4년제 대학교",
+        "bachelors_field": "교육",
+        "occupation": "서적·문구 및 음반 판매원",
+        "district": "제주-제주시",
+        "province": "제주",
+        "country": "대한민국",
+        "country_code": "KR-SOURCE",
+        "locale": "ko-KR-source",
+    }
+
+    persona = source_persona_from_record(raw)
+
+    assert persona.sex == "female"
+    assert persona.sex_normalized == "female"
+    assert persona.country == "대한민국"
+    assert persona.country_code == "KR-SOURCE"
+    assert persona.locale == "ko-KR-source"
+    assert persona.skills_and_expertise_list == ["책 큐레이션", "고객 응대"]
+    assert persona.hobbies_and_interests_list == ["사려니숲길 산책", "닌텐도 스위치"]
+    assert persona.career_goals_and_ambitions == "교육 공방을 열고 싶어 한다."
+    assert persona.marital_status == "미혼"
+    assert persona.military_status == "비현역"
+    assert persona.family_type == "혼자 거주"
+    assert persona.housing_type == "아파트"
+    assert persona.education_level == "4년제 대학교"
+    assert persona.bachelors_field == "교육"
+    assert persona.raw_payload["uuid"] == "raw-001"
+    assert persona.source_hash
+    assert "교육 공방을 열고 싶어 한다." in persona.source_text
 
 
 def test_sample_personas_by_contract_returns_requested_20s_counts(caplog):
@@ -84,3 +147,100 @@ def test_sample_personas_by_contract_raises_when_not_enough_records():
 
     with pytest.raises(ValueError, match="Not enough male personas"):
         sample_personas_by_contract(records, 20, 29, 5, 1, seed=1)
+
+
+def test_write_raw_persona_records_creates_jsonl_snapshot(tmp_path):
+    output_path = tmp_path / "raw_personas.jsonl"
+    raw_records = [
+        {
+            "uuid": "p-001",
+            "age": 24,
+            "sex": "female",
+            "occupation": "student",
+            "persona": "A student interested in music.",
+        },
+        {
+            "uuid": "p-002",
+            "age": 25,
+            "sex": "male",
+            "occupation": "developer",
+            "persona": "A developer interested in gaming.",
+        },
+    ]
+
+    persona_source.write_raw_persona_records(raw_records, output_path)
+
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["uuid"] == "p-001"
+    assert json.loads(lines[1])["uuid"] == "p-002"
+
+
+def test_source_persona_from_record_maps_spec_fields():
+    persona = source_persona_from_record(
+        {
+            "uuid": "p-001",
+            "age": 24,
+            "sex": "female",
+            "occupation": "student",
+            "province": "Seoul",
+            "district": "Mapo-gu",
+            "persona": "Enjoys music videos.",
+            "hobbies_and_interests": "music, beauty",
+            "hobbies_and_interests_list": ["music", "beauty"],
+            "professional_persona": "Learner.",
+            "skills_and_expertise": "design",
+            "sports_persona": "Light sports viewer.",
+            "arts_persona": "Music fan.",
+            "travel_persona": "Cafe trips.",
+            "culinary_persona": "Cooking shorts.",
+            "family_persona": "Family lifestyle.",
+            "cultural_background": "Korean urban media user.",
+        }
+    )
+
+    assert persona.country == "KR"
+    assert persona.locale == "ko-KR"
+    assert persona.hobbies_and_interests_list == ["music", "beauty"]
+    assert persona.skills_and_expertise == "design"
+    assert persona.travel_persona == "Cafe trips."
+    assert persona.culinary_persona == "Cooking shorts."
+    assert persona.family_persona == "Family lifestyle."
+
+
+def test_load_nvidia_persona_records_can_write_raw_snapshot(monkeypatch, tmp_path):
+    raw_records = [
+        {
+            "uuid": "p-001",
+            "age": 24,
+            "sex": "female",
+            "occupation": "student",
+            "persona": "Music fan.",
+        },
+        {
+            "uuid": "p-002",
+            "age": 25,
+            "sex": "male",
+            "occupation": "developer",
+            "persona": "Gaming fan.",
+        },
+    ]
+
+    def fake_load_dataset(name, split, streaming):
+        assert name == "nvidia/Nemotron-Personas-Korea"
+        assert split == "train"
+        assert streaming is True
+        return raw_records
+
+    monkeypatch.setattr(persona_source, "load_dataset", fake_load_dataset, raising=False)
+
+    output_path = tmp_path / "raw_snapshot.jsonl"
+    records = persona_source.load_nvidia_persona_records(
+        max_records=2,
+        raw_output_path=output_path,
+    )
+
+    assert [record.uuid for record in records] == ["p-001", "p-002"]
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[0])["uuid"] == "p-001"

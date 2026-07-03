@@ -1,4 +1,4 @@
-# AUTO RESARCH 
+# Autoresearch
 
 # barnch 전략 
 
