@@ -22,21 +22,25 @@
 
 공식 API + API Key 조합에서 실제 발생 가능한 5가지 실패 모드:
 
-| # | 실패 모드 | YouTube 응답 | 빈도 (본 프로젝트 기준) |
-|---|---|---|---|
-| 1 | 일일 쿼터 초과 | 403 `quotaExceeded` | 중 (Key 1개 10,000 units, 하루 ~7 units 사용이라 사실상 희귀, 하지만 Key 공유/증설 시 증가) |
-| 2 | 초당/사용자 레이트리밋 | 403 `userRateLimitExceeded` / `rateLimitExceeded`, 429 | 중 |
-| 3 | **IP 단위 차단** | 403 (suspension/forbidden 계열) — 모든 Key 가 동일 403 으로 실패. 5xx/네트워크 오류는 IP 밴 시그니처에서 제외(전역 상류 장애 가능) | **저 (꼬리 케이스)** — 반복 패턴 감지 시 |
-| 4 | 일시적 서버/네트워크 오류 | 5xx, `TimeoutError`, `ConnectionError` | 중 |
-| 5 | Key 무효화/설정 오류 | 403 `keyInvalid` / `accessNotConfigured` | 저 |
+| # | 실패 모드 | YouTube 응답 | 빈도 (본 프로젝트 기준) | Key 롤링 유효? |
+|---|---|---|---|---|
+| 1 | 일일 쿼터 초과 | 403 `quotaExceeded` | **희귀** — 하루 ~7 units (프로젝트 기본 10,000 의 0.07%) | **무효** (프로젝트 단위 쿼터, 같은 프로젝트 Key 회전해도 공유) |
+| 2 | 초당/사용자 레이트리밋 | 403 `userRateLimitExceeded` / `rateLimitExceeded`, 429 | 희귀 — 호출량 적음 | **무효 가능** (프로젝트 단위 한도 추정) |
+| 3 | **IP 단위 차단** | 403 (suspension/forbidden 계열) — 모든 Key 가 동일 403 으로 실패. 5xx/네트워크 오류는 IP 밴 시그니처에서 제외(전역 상류 장애 가능) | **저 (꼬리 케이스)** — 반복 패턴 감지 시 | 무관 (프록시 경로 전환으로 대응) |
+| 4 | 일시적 서버/네트워크 오류 | 5xx, `TimeoutError`, `ConnectionError` | **중 (가장 현실적)** | **무효** (상류 장애 → 같은 Key backoff 재시도, 지속 시 skip) |
+| 5 | Key 무효화/설정 오류 | 403 `keyInvalid` / `accessNotConfigured` | 저 | **유효** — 다른 정상 Key 로 회전 |
 
-핵심 통찰: 공식 API + Key 환경에서 **IP 밴(#3)은 현실적으로 꼬리 케이스**다. 흔한 실패는 쿼터/레이트리밋(#1,#2)이며, 이는 **Key 롤링만으로 Key 없이도 해결**된다. 따라서 Key 롤링이 1차 방어, 프록시는 IP 밴 전용의 벨트-서스펜더(2차) 역할이다. 그럼에도 프록시를 설계하는 이유는 멘토가 명시적으로 요구한 주제이며, Cloud Run + NAT + K8s 차이를 설명할 수 있다는 점에서 포트폴리오/면접 가치가 크기 때문이다.
+**핵심 통찰 (리서치 정정):** 가장 현실적인 실패는 일시적 5xx/네트워크(#4)이며, **재시도(tenacity)가 1차 방어**다. Key 롤링의 유효 범위는 좁다 — YouTube Data API 의 쿼터/레이트리밋은 **GCP 프로젝트 단위**로 할당되므로, **같은 프로젝트의 다수 Key 는 쿼터를 공유**하여 `quotaExceeded`/`userRateLimitExceeded` 를 다른 Key 로 회전한다고 해소되지 않는다. Key 롤링이 실질적으로 기여하는 시나리오는 **Key 자체 무효화(#5)** 뿐이다.
+
+> **⚠️ 쿼터 정책 제약 (공식 문서 기준):** 쿼터를 늘리기 위해 별도 GCP 프로젝트를 여러 개 만드는 행위는 YouTube 개발자 정책이 **"sharding"** 이라 부르며 **명시적 약관 위반**(적발 시 쿼터 삭감·Key 취소·계정 정지)이다. 정석은 **Quota Extension(API Compliance Audit)** 양식 신청이다. 단, 진짜 use case 가 다른 경우(iOS/Android 분리, prod/dev 분리 등)는 별도 프로젝트+Key 가 허용된다. 본 프로젝트는 하루 ~7 units 로 쿼터 소진 자체가 비현실적이므로 Extension 없이도 충분하다. 본 설계의 Key 풀은 #5 대응(예비 Key 보유)이 목적이지 쿼터 회피가 아니다.
+
+IP 밴(#3)은 여전히 꼬리 케이스이며, Cloud Run 프록시가 벨트-서스펜더(2차)로 대응한다. 프록시를 설계하는 이유는 멘토가 명시적으로 요구한 주제이며, Cloud Run + NAT + K8s 차이를 설명할 수 있다는 점에서 포트폴리오/면접 가치가 크기 때문이다.
 
 ## 3. 설계 결정 요약
 
 | 결정 | 선택 | 근거 |
 |---|---|---|
-| 복원력 범위 | 4단계 계층 방어 (재시도 → Key 롤링 → Cloud Run 프록시 → Circuit Breaker) | 멘토 "현업 수준 고민" 부합, 단계별 점진 도입 가능 |
+| 복원력 범위 | 계층 방어: **재시도(1차)** → Key 롤링(#5 Key 무효화 대응으로 축소) → Cloud Run 프록시(IP 밴) → Circuit Breaker → skip+알림 | 멘토 "현업 수준 고민" 부합, 단계별 점진 도입 가능. 쿼터/레이트리밋은 프로젝트 단위라 회전 무효(§2 참조) |
 | IP 밴 회피 아키텍처 | Cloud Run 전달 프록시 (dumb forwarder) | 멘토 묘사와 일치, Airflow/GKE 단일 오케스트레이터 구조 유지(Git Sync DAG 합의와 일관) |
 | 전체 실패 폴백 | 건너뛰기 + 알림 | 트렌딩은 시점 데이터라 복구 불가; ML 관점에서 수백 일 중 하루 결측은 무시 가능 |
 | 복원력 로직 위치 | 신규 모듈 `autoresearch/youtube_collection/client.py` | 기존 callable 주입 seam 활용, DAG 얇게 유지, `fetch.py` 변경 없이 단위테스트 보존 |
@@ -57,7 +61,7 @@ ResilientYouTubeClient.make_callables()   ← client.py (신규)
    │
    ├─① 에러 분류: 재시도? 키 회전? 프록시? 폭주?
    ├─② 재시도: tenacity backoff+jitter (5xx/429/네트워크만)
-   ├─③ Key 풀 롤링: quotaExceeded/userRateLimitExceeded → 다음 키
+   ├─③ Key 회전: keyInvalid/accessNotConfigured(Key 자체 무효)만 → 다음 키. quotaExceeded/userRateLimitExceeded는 프로젝트 단위라 회전 무효(§2)
    ├─④ IP 밴 시그니처(전 키 동일 403) → Cloud Run 프록시 경로로 전환 (5xx/네트워크는 일시장애 → skip, 전환 X)
    └─⑤ Circuit Breaker OPEN(전부 실패) → CollectionExhausted raise
                 │                                  → DAG 실패 → Airflow 알림 → 그날 skip
@@ -108,18 +112,18 @@ class ResilientYouTubeClient:
   1. 현재 활성 Key 로 googleapiclient 호출
   2. 예외 분류(5.2) → 액션 결정
   3. tenacity 로 재시도 가능류는 backoff 재시도
-  4. Key 회전 대상이면 다음 Key 로 전환 후 재시도
+  4. Key 회전 대상(keyInvalid/accessNotConfigured = Key 자체 무효)이면 다음 Key 로 전환 후 재시도. quotaExceeded/userRateLimitExceeded 는 프로젝트 단위 한도라 회전하지 않고 같은 Key 로 backoff/처리
   5. IP 밴 시그니처(전 키 동일 403) 감지 시 proxy_url 경로(`requests.get`)로 전환. 5xx/네트워크는 일시장애로 분류해 프록시 전환 없이 skip
   6. Circuit Breaker 조건 충족 시 `CollectionExhausted` raise
-- Key 상태(소진/무효)와 일일 unit 사용량은 in-memory 로 per DAG-run 유지. 매일 새 프로세스이므로 영속 상태 불필요.
+- Key 상태(무효화됨)만 in-memory 로 per DAG-run 유지. quotaExceeded 는 프로젝트 단위라 Key별 소진 추적은 불필요. 매일 새 프로세스이므로 영속 상태 불필요.
 
 ### 5.2 에러 분류 규칙
 
 | YouTube reason / 상황 | 분류 | 액션 |
 |---|---|---|
-| 403 `quotaExceeded` | 키 일일쿼터 소진 | 해당 Key "오늘 소진" 마크 → 회전 (그날 다시 안 씀) |
-| 403 `userRateLimitExceeded` / `rateLimitExceeded`, 429 | 키 단위 레이트리밋 | backoff 후 회전 |
-| 403 `keyInvalid` / `accessNotConfigured` | Key 자체 무효 | 풀에서 영구 제외 → 회전 |
+| 403 `quotaExceeded` | **프로젝트** 일일 쿼터 소진 | 회전 **무효**(같은 프로젝트 Key 들은 쿼터 공유). 그날 그대로 **skip + 알림**. (본 프로젝트는 ~7 units/일이라 사실상 발생 불가) |
+| 403 `userRateLimitExceeded` / `rateLimitExceeded`, 429 | 프로젝트 단위 레이트리밋(추정) | backoff 후 **같은 Key** 재시도. 회전은 무효. backoff 소진 후에도 지속 시 skip + 알림 |
+| 403 `keyInvalid` / `accessNotConfigured` | Key 자체 무효 | 풀에서 영구 제외 → **다음 Key 로 회전(유일한 유효 회전 시나리오)** |
 | 5xx, `TimeoutError`, `ConnectionError` | 일시적(전역 상류 장애 후보) | backoff 재시도 (같은 Key). 모든 Key·backoff 소진 후에도 지속되면 **"일시 장애"로 skip (프록시 전환 없이)** — 상류 장애는 프록시로도 해결 불가 |
 | 한 collection run 내 **모든 Key 가 403(suspension/forbidden 계열)으로 동일 실패** | **IP 밴 시그니처** | Cloud Run 프록시 경로로 전환. 403 계열만 시그니처로 인정 (5xx/네트워크는 IP 밴 아님) |
 | 프록시 경로도 `max_proxy_attempts` 회 실패 | Circuit Breaker OPEN | `CollectionExhausted` raise |
@@ -222,5 +226,5 @@ tests/
 - "공식 API 를 써도 IP 밴이 나는 이유는?"
 - "Cloud Run 재시작이 IP 를 바꾸는 메커니즘과, K8s 파드 재시작이 안 바꾸는 이유(NAT)?"
 - "Circuit Breaker 패턴이 왜 필요한가?"
-- "Key 롤링과 프록시 중 어느 쪽이 먼저여야 하는가, 그 이유는?"
+- "Key 롤링은 어느 실패에만 기여하고, 왜 quotaExceeded/userRateLimitExceeded 에는 무효한가?(쿼터의 프로젝트 단위 할당 · sharding 금지)"
 - "왜 복원력 로직을 DAG 가 아니라 별도 모듈(`client.py`)로 뽑았는가?(테스트용이성/책임분리)"
