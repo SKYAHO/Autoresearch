@@ -1,5 +1,7 @@
 """Hugging Face persona raw data를 가져와 내부 SourcePersona로 정규화한다."""
 
+import ast
+import hashlib
 import json
 import logging
 import random
@@ -46,31 +48,100 @@ def _as_text_list(record: dict[str, Any], key: str) -> list[str]:
     if value is None:
         return []
     if isinstance(value, list):
-        return [str(item) for item in value if str(item).strip()]
-    return [part.strip() for part in str(value).split(",") if part.strip()]
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    text = str(value).strip()
+    if not text:
+        return []
+
+    try:
+        parsed = ast.literal_eval(text)
+    except (SyntaxError, ValueError):
+        parsed = None
+
+    if isinstance(parsed, list):
+        return [str(item).strip() for item in parsed if str(item).strip()]
+
+    return [part.strip().strip("'\"") for part in text.split(",") if part.strip()]
+
+
+def _source_text(record: dict[str, Any]) -> str:
+    """GLM 입력에 사용할 source persona 전체 맥락 문자열을 만든다."""
+
+    keys = [
+        "persona",
+        "professional_persona",
+        "sports_persona",
+        "arts_persona",
+        "travel_persona",
+        "culinary_persona",
+        "family_persona",
+        "cultural_background",
+        "skills_and_expertise",
+        "skills_and_expertise_list",
+        "hobbies_and_interests",
+        "hobbies_and_interests_list",
+        "career_goals_and_ambitions",
+        "marital_status",
+        "military_status",
+        "family_type",
+        "housing_type",
+        "education_level",
+        "bachelors_field",
+        "occupation",
+        "district",
+        "province",
+        "country",
+    ]
+    return "\n".join(_as_text(record, key) for key in keys if _as_text(record, key))
+
+
+def _source_hash(record: dict[str, Any]) -> str:
+    """raw payload의 안정적인 추적 hash를 만든다."""
+
+    payload = json.dumps(record, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
     """Hugging Face raw row 하나를 검증 가능한 SourcePersona 한 건으로 변환한다."""
 
+    normalized_sex = normalize_sex(record["sex"])
+    raw_payload = dict(record)
     persona = SourcePersona(
         uuid=_as_text(record, "uuid"),
         age=int(record["age"]),
-        sex=normalize_sex(record["sex"]),
+        sex=normalized_sex,
+        sex_normalized=normalized_sex,
         occupation=_as_text(record, "occupation"),
         province=_as_text(record, "province"),
         district=_as_text(record, "district"),
+        country=_as_text(record, "country") or SourcePersona.model_fields["country"].default,
+        country_code=_as_text(record, "country_code")
+        or SourcePersona.model_fields["country_code"].default,
+        locale=_as_text(record, "locale") or SourcePersona.model_fields["locale"].default,
         persona=_as_text(record, "persona"),
         hobbies_and_interests=_as_text(record, "hobbies_and_interests"),
         hobbies_and_interests_list=_as_text_list(record, "hobbies_and_interests_list"),
         professional_persona=_as_text(record, "professional_persona"),
         skills_and_expertise=_as_text(record, "skills_and_expertise"),
+        skills_and_expertise_list=_as_text_list(record, "skills_and_expertise_list"),
         sports_persona=_as_text(record, "sports_persona"),
         arts_persona=_as_text(record, "arts_persona"),
         travel_persona=_as_text(record, "travel_persona"),
         culinary_persona=_as_text(record, "culinary_persona"),
         family_persona=_as_text(record, "family_persona"),
         cultural_background=_as_text(record, "cultural_background"),
+        career_goals_and_ambitions=_as_text(record, "career_goals_and_ambitions"),
+        marital_status=_as_text(record, "marital_status"),
+        military_status=_as_text(record, "military_status"),
+        family_type=_as_text(record, "family_type"),
+        housing_type=_as_text(record, "housing_type"),
+        education_level=_as_text(record, "education_level"),
+        bachelors_field=_as_text(record, "bachelors_field"),
+        source_text=_source_text(record),
+        source_hash=_source_hash(record),
+        raw_payload=raw_payload,
     )
     logger.debug(
         "Converted raw persona record",
@@ -145,7 +216,7 @@ def build_fixture_persona_records(
     male_count: int = 60,
     female_count: int = 60,
 ) -> list[SourcePersona]:
-    """외부 dataset/Gemini 없이 테스트할 수 있는 deterministic fixture를 만든다."""
+    """외부 dataset/LLM 없이 테스트할 수 있는 deterministic fixture를 만든다."""
 
     rows: list[SourcePersona] = []
     for index in range(male_count):
@@ -164,6 +235,10 @@ def build_fixture_persona_records(
                 sports_persona="Occasional sports highlights viewer.",
                 arts_persona="Interested in popular music.",
                 cultural_background="Korean urban digital media user.",
+                skills_and_expertise="study planning, basic coding",
+                travel_persona="Enjoys Seoul travel and cafe videos.",
+                culinary_persona="Watches Korean food clips.",
+                family_persona="Shares comedy clips with friends and family.",
             )
         )
     for index in range(female_count):
@@ -182,6 +257,10 @@ def build_fixture_persona_records(
                 sports_persona="Light sports content viewer.",
                 arts_persona="Interested in music and visual culture.",
                 cultural_background="Korean mobile-first media user.",
+                skills_and_expertise="design tools, study planning",
+                travel_persona="Enjoys local travel and cafe videos.",
+                culinary_persona="Watches dessert and home cooking clips.",
+                family_persona="Shares lifestyle videos with family.",
             )
         )
 

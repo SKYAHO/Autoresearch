@@ -1,4 +1,8 @@
-from autoresearch.virtual_users.interests import extract_interest_keywords
+from autoresearch.virtual_users.categories import DEFAULT_KAGGLE_YOUTUBE_CATEGORIES
+from autoresearch.virtual_users.interests import (
+    CATEGORY_KEYWORDS,
+    extract_interest_keywords,
+)
 from autoresearch.virtual_users.schema import SourcePersona
 
 
@@ -42,3 +46,8 @@ def test_extract_interest_keywords_returns_general_when_no_match():
     )
 
     assert extract_interest_keywords(persona) == ["general"]
+
+
+def test_interest_category_keywords_use_kaggle_vocab():
+    assert set(CATEGORY_KEYWORDS).issubset(set(DEFAULT_KAGGLE_YOUTUBE_CATEGORIES))
+    assert "Travel & Events" in DEFAULT_KAGGLE_YOUTUBE_CATEGORIES

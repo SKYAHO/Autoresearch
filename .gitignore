@@ -1,9 +1,13 @@
 __pycache__/
 *.py[cod]
+*.pkl
+*.csv
+.env
 
 # Astro / Airflow local state
 .astro/
 .env
+.gcp-creds.json
 
 # Generated data artifacts
 data/generated/
