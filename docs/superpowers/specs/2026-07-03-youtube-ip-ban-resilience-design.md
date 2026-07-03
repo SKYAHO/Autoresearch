@@ -196,7 +196,7 @@ tests/
 - **프록시 통합테스트**: 로컬 Docker 로 프록시 띄우고, query forward / health 응답 전환 / restart 유도를 검증.
 - **CI**: 기존 `.github/workflows/ci.yml`(pytest 3.11/3.12, Docker 빌드) 그대로 통과해야 함.
 
-## 9. 인프라 조율 사항 (현규 / Terraform 담당)
+## 9. 인프라 조율 사항 (인프라 담당 / Terraform)
 
 - Cloud Run 프록시 서비스 Terraform 추가 (별도 issue 권장 — 본 PR 범위와 분리).
 - Secret Manager: YouTube API Key secret 생성 + collector GKE 서비스계정에 Secret Accessor 권한.
@@ -207,7 +207,7 @@ tests/
 
 1. **1차 PR**: `client.py` (재시도 + Key 롤링 + Circuit Breaker) + DAG 교체 + 단위테스트. `proxy_url=None`. 현실적 실패(쿼터/레이트리밋)의 대부분 즉시 해소.
 2. **2차 PR**: `proxy/` Cloud Run 프록시 서비스 + `proxy_url` 주입 + 통합테스트. IP 밴 꼬리 케이스 대응.
-3. **3차 (별도 issue)**: Terraform Cloud Run/Secret Manager 인프라화.
+3. **3차 (인프라 담당 별도 issue)**: 인프라 담당자가 Cloud Run/Secret Manager 를 Terraform 으로 인프라화. 본 설계는 §9 의 요구사항만 명시하며, 컬렉션 담당자는 Terraform 코드를 작성하지 않는다(역할 분리: 인프라 = 인프라 담당, 컬렉션 = 데이터 수집 담당).
 
 ## 11. Non-goals (명시적 비대상)
 
