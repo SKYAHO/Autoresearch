@@ -43,6 +43,10 @@ def test_source_persona_from_record_preserves_expected_fields():
             "sports_persona": None,
             "arts_persona": "Enjoys visual culture.",
             "cultural_background": "Korean urban context.",
+            "skills_and_expertise": "Figma, illustration",
+            "travel_persona": "Weekend Seoul gallery visitor.",
+            "culinary_persona": "Finds dessert cafes through video.",
+            "family_persona": "Shares short videos with siblings.",
         }
     )
 
@@ -50,6 +54,10 @@ def test_source_persona_from_record_preserves_expected_fields():
     assert persona.sex == "female"
     assert persona.sports_persona == ""
     assert persona.arts_persona == "Enjoys visual culture."
+    assert persona.skills_and_expertise == "Figma, illustration"
+    assert persona.travel_persona == "Weekend Seoul gallery visitor."
+    assert persona.culinary_persona == "Finds dessert cafes through video."
+    assert persona.family_persona == "Shares short videos with siblings."
 
 
 def test_sample_personas_by_contract_returns_requested_20s_counts(caplog):

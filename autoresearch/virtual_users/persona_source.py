@@ -164,6 +164,10 @@ def build_fixture_persona_records(
                 sports_persona="Occasional sports highlights viewer.",
                 arts_persona="Interested in popular music.",
                 cultural_background="Korean urban digital media user.",
+                skills_and_expertise="study planning, basic coding",
+                travel_persona="Enjoys Seoul travel and cafe videos.",
+                culinary_persona="Watches Korean food clips.",
+                family_persona="Shares comedy clips with friends and family.",
             )
         )
     for index in range(female_count):
@@ -182,6 +186,10 @@ def build_fixture_persona_records(
                 sports_persona="Light sports content viewer.",
                 arts_persona="Interested in music and visual culture.",
                 cultural_background="Korean mobile-first media user.",
+                skills_and_expertise="design tools, study planning",
+                travel_persona="Enjoys local travel and cafe videos.",
+                culinary_persona="Watches dessert and home cooking clips.",
+                family_persona="Shares lifestyle videos with family.",
             )
         )
 

@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field, field_validator
 logger = logging.getLogger(__name__)
 
 SOURCE_DATASET = "nvidia/Nemotron-Personas-Korea"
+SOURCE_COUNTRY = "KR"
+SOURCE_LOCALE = "ko-KR"
 GENERATION_SCHEMA_VERSION = "virtual_user_schema_v1"
 PROMPT_VERSION = "virtual_user_youtube_v1"
 
@@ -29,6 +31,14 @@ YOUTUBE_CATEGORIES = [
 WATCH_TIME_BANDS = ["morning", "afternoon", "evening", "night", "mixed"]
 
 
+def age_bucket_for_age(age: int) -> str:
+    """원천 나이를 10년 단위 age bucket으로 변환한다."""
+
+    if age < 0:
+        raise ValueError("age must be non-negative")
+    return f"{age // 10 * 10}s"
+
+
 class GenerationRequest(BaseModel):
     """가상 사용자 배치 생성에 필요한 입력 조건과 출력 경로를 담는다."""
 
@@ -38,8 +48,10 @@ class GenerationRequest(BaseModel):
     female_count: int = 50
     seed: int = 42
     use_gemini: bool = True
+    use_llm: bool = True
+    max_concurrency: int = 1
     source_mode: Literal["huggingface", "fixture"] = "huggingface"
-    output_path: str = "data/generated/virtual_users_20s_100.json"
+    output_path: str = "asset/virtual_user/virtual_users_20s_100.parquet"
     raw_output_path: str = "data/raw/personas/nvidia_personas_kr.jsonl"
     warehouse_output_path: str = "data/generated/virtual_users_kr.jsonl"
 
@@ -50,6 +62,15 @@ class GenerationRequest(BaseModel):
 
         if value < 0:
             raise ValueError("Generation counts and ages must be non-negative")
+        return value
+
+    @field_validator("max_concurrency")
+    @classmethod
+    def positive_max_concurrency(cls, value: int) -> int:
+        """GLM/Gemini 병렬 생성 worker 수가 1 이상인지 확인한다."""
+
+        if value < 1:
+            raise ValueError("max_concurrency must be at least 1")
         return value
 
     @field_validator("age_max")
@@ -72,8 +93,8 @@ class SourcePersona(BaseModel):
     occupation: str = ""
     province: str = ""
     district: str = ""
-    country: str = "KR"
-    locale: str = "ko-KR"
+    country: str = SOURCE_COUNTRY
+    locale: str = SOURCE_LOCALE
     persona: str = ""
     hobbies_and_interests: str = ""
     hobbies_and_interests_list: list[str] = Field(default_factory=list)
@@ -113,8 +134,8 @@ class VirtualUser(BaseModel):
     virtual_user_id: str
     source_uuid: str
     source_dataset: str = SOURCE_DATASET
-    country: str = "KR"
-    locale: str = "ko-KR"
+    country: str = SOURCE_COUNTRY
+    locale: str = SOURCE_LOCALE
     age: int
     sex: Literal["male", "female"]
     age_bucket: str
@@ -122,9 +143,25 @@ class VirtualUser(BaseModel):
     province: str
     district: str = ""
     persona_summary: str
+    hobby_keywords: list[str] = Field(default_factory=list)
     interest_keywords: list[str] = Field(default_factory=list)
+    category_affinity: dict[str, float] = Field(default_factory=dict)
     youtube_profile: YouTubeProfile
     generation_meta: GenerationMeta
+
+    @field_validator("category_affinity")
+    @classmethod
+    def valid_category_affinity(cls, value: dict[str, float]) -> dict[str, float]:
+        """카테고리별 affinity 값이 0~1 범위인지 확인한다."""
+
+        invalid = [
+            category
+            for category, affinity in value.items()
+            if affinity < 0.0 or affinity > 1.0
+        ]
+        if invalid:
+            raise ValueError("category_affinity values must be between 0 and 1")
+        return value
 
     def to_warehouse_row(self) -> dict[str, object]:
         """중첩된 profile/meta 구조를 warehouse-friendly flat row로 변환한다."""
@@ -141,7 +178,9 @@ class VirtualUser(BaseModel):
             "province": self.province,
             "district": self.district,
             "persona_summary": self.persona_summary,
+            "hobby_keywords": self.hobby_keywords,
             "interest_keywords": self.interest_keywords,
+            "category_affinity": self.category_affinity,
             "primary_categories": self.youtube_profile.primary_categories,
             "shorts_affinity": self.youtube_profile.shorts_affinity,
             "longform_affinity": self.youtube_profile.longform_affinity,
