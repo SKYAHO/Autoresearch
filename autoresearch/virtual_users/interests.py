@@ -2,7 +2,8 @@
 
 from dataclasses import dataclass
 
-from autoresearch.virtual_users.schema import SourcePersona, YOUTUBE_CATEGORIES
+from autoresearch.virtual_users.categories import DEFAULT_KAGGLE_YOUTUBE_CATEGORIES
+from autoresearch.virtual_users.schema import SourcePersona
 
 
 KEYWORD_ALIASES: dict[str, tuple[str, ...]] = {
@@ -96,7 +97,7 @@ def _extract_hobby_keywords(persona: SourcePersona, limit: int = 10) -> list[str
 def _category_affinity(persona: SourcePersona) -> dict[str, float]:
     text = _persona_text(persona)
     scores: dict[str, float] = {}
-    for category in YOUTUBE_CATEGORIES:
+    for category in DEFAULT_KAGGLE_YOUTUBE_CATEGORIES:
         aliases = CATEGORY_KEYWORDS.get(category, ())
         hits = sum(1 for alias in aliases if alias in text)
         if hits:
@@ -109,7 +110,7 @@ def _category_affinity(persona: SourcePersona) -> dict[str, float]:
 
 
 def extract_virtual_user_interests(persona: SourcePersona) -> VirtualUserInterests:
-    """Build deterministic fallback interest features for GLM/Gemini output rows."""
+    """Build deterministic fallback interest features for GLM output rows."""
 
     return VirtualUserInterests(
         hobby_keywords=_extract_hobby_keywords(persona),

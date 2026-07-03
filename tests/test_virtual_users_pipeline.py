@@ -147,7 +147,12 @@ def test_generate_virtual_user_batch_writes_expected_100_user_parquet(tmp_path, 
     assert rows[0]["hobby_keywords"]
     assert rows[0]["interest_keywords"]
     assert rows[0]["category_affinity"]
-    assert rows[0]["youtube_primary_categories"]
+    assert isinstance(rows[0]["category_evidence"], str)
+    assert json.loads(rows[0]["category_evidence"])
+    assert isinstance(rows[0]["source_persona_json"], str)
+    assert json.loads(rows[0]["source_persona_json"])["uuid"] == rows[0]["source_uuid"]
+    assert rows[0]["primary_categories"]
+    assert "youtube_primary_categories" not in rows[0]
     assert batch.summary["male"] == 50
     assert batch.summary["female"] == 50
     assert "Starting virtual user batch generation" in caplog.text
@@ -177,6 +182,10 @@ def test_generate_virtual_user_batch_writes_affinity_as_map_not_sparse_struct(tm
         pa.string(),
         pa.float64(),
     )
+    assert table.schema.field("category_evidence").type == pa.string()
+    assert table.schema.field("source_persona_json").type == pa.string()
+    assert table.schema.field("primary_categories").type == pa.list_(pa.string())
+    assert "youtube_primary_categories" not in table.schema.names
     rows = table.to_pylist()
     affinities = [_affinity_map_to_dict(row["category_affinity"]) for row in rows]
     assert {"Gaming": 0.91} in affinities
@@ -295,5 +304,8 @@ def test_generate_virtual_user_batch_writes_warehouse_jsonl(tmp_path):
     assert isinstance(rows[0]["hobby_keywords"], list)
     assert isinstance(rows[0]["interest_keywords"], list)
     assert isinstance(rows[0]["category_affinity"], dict)
+    assert isinstance(rows[0]["category_evidence"], dict)
+    assert isinstance(rows[0]["source_persona_json"], dict)
+    assert rows[0]["source_persona_json"]["uuid"] == rows[0]["source_uuid"]
     assert "primary_categories" in rows[0]
     assert "watch_time_band" in rows[0]

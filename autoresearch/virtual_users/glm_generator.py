@@ -2,10 +2,14 @@ import json
 import logging
 import os
 from datetime import UTC, datetime
-from typing import Protocol
 
+from autoresearch.virtual_users.categories import (
+    DEFAULT_KAGGLE_YOUTUBE_CATEGORIES,
+    build_category_affinity,
+)
 from autoresearch.virtual_users.interests import extract_virtual_user_interests
 from autoresearch.virtual_users.schema import (
+    DerivedVirtualUserFeatures,
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
     SOURCE_COUNTRY,
@@ -20,16 +24,22 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GLM_MODEL = "glm-5.2"
 DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
-
-
-class VirtualUserGenerator(Protocol):
-    def generate(self, persona: SourcePersona, virtual_user_id: str) -> VirtualUser:
-        ...
+GLM_SYSTEM_HARNESS = """너는 virtual user feature extractor다.
+source data의 demographic/factual 필드는 절대 변경하지 마라.
+모든 persona 컬럼을 근거로 관심사와 취향을 추론하라.
+출력은 지정된 derived JSON schema만 허용한다.
+없는 정보를 만들지 말고 source에서 추론 가능한 수준만 생성하라.
+category는 제공된 allowed category vocabulary 안에서만 선택하라.
+generation_meta는 만들지 마라.
+"""
 
 
 def build_virtual_user_prompt(persona: SourcePersona, virtual_user_id: str) -> str:
     persona_payload = persona.model_dump()
-    prompt = f"""You convert a Korean synthetic persona into a virtual YouTube user profile.
+    allowed_categories = "\n".join(
+        f"- {category}" for category in DEFAULT_KAGGLE_YOUTUBE_CATEGORIES
+    )
+    prompt = f"""You convert a Korean synthetic persona into derived virtual YouTube user features.
 
 Prompt version: {PROMPT_VERSION}
 Schema version: {GENERATION_SCHEMA_VERSION}
@@ -38,45 +48,39 @@ Virtual user id: {virtual_user_id}
 Source persona:
 {json.dumps(persona_payload, ensure_ascii=False, indent=2)}
 
+Allowed category vocabulary:
+{allowed_categories}
+
 Return only JSON. Do not include Markdown. Do not include commentary.
 
-Required JSON shape:
+Required derived JSON shape:
 {{
-  "virtual_user_id": "{virtual_user_id}",
-  "source_uuid": "{persona.uuid}",
-  "age": {persona.age},
-  "sex": "{persona.sex}",
-  "age_bucket": "{age_bucket_for_age(persona.age)}",
-  "occupation": "{persona.occupation}",
-  "province": "{persona.province}",
-  "district": "{persona.district}",
-  "country": "{SOURCE_COUNTRY}",
-  "locale": "{SOURCE_LOCALE}",
   "persona_summary": "one Korean or English sentence",
   "hobby_keywords": ["keyword inferred from source hobbies"],
   "interest_keywords": ["keyword inferred from source persona text"],
-  "category_affinity": {{
-    "Gaming": 0.0,
-    "Music": 0.0,
-    "Entertainment": 0.0
+  "lifestyle_keywords": ["daily life keyword inferred from source"],
+  "food_keywords": ["food keyword inferred from source"],
+  "travel_keywords": ["travel keyword inferred from source"],
+  "career_keywords": ["career keyword inferred from source"],
+  "family_context_keywords": ["family or household keyword inferred from source"],
+  "primary_categories": ["Gaming", "Music"],
+  "category_evidence": {{
+    "Gaming": ["short source-grounded phrase"]
   }},
-  "youtube_profile": {{
-    "primary_categories": ["Gaming", "Music"],
-    "shorts_affinity": 0.0,
-    "longform_affinity": 0.0,
-    "trend_sensitivity": 0.0,
-    "comment_propensity": 0.0,
-    "watch_time_band": "night"
-  }}
+  "shorts_affinity": 0.0,
+  "longform_affinity": 0.0,
+  "trend_sensitivity": 0.0,
+  "comment_propensity": 0.0,
+  "watch_time_band": "night"
 }}
 
 Constraints:
 - All affinity numbers must be between 0 and 1.
-- primary_categories must contain 1 to 5 YouTube categories.
-- category_affinity values must be between 0 and 1.
+- primary_categories must contain 1 to 5 categories from the allowed vocabulary.
+- category_evidence keys must be from the allowed vocabulary.
 - watch_time_band must be one of morning, afternoon, evening, night, mixed.
-- Keep original age, sex, occupation, province, district, country, locale, and source_uuid.
-- Infer hobby_keywords, interest_keywords, category_affinity, and youtube_profile from source persona text.
+- Do not output demographic/factual fields such as age, sex, occupation, province, district, country, locale, source_uuid, or virtual_user_id.
+- Infer only preference, interest, evidence, and viewing tendency fields from source persona text.
 - The LLM generates data only; it does not choose pipeline flow, model routing, or serving policy.
 """
     logger.debug(
@@ -91,98 +95,84 @@ Constraints:
     return prompt
 
 
-def parse_virtual_user_json(raw_text: str) -> VirtualUser:
+def parse_virtual_user_json(raw_text: str) -> DerivedVirtualUserFeatures:
     try:
         payload = json.loads(raw_text)
     except json.JSONDecodeError as exc:
         logger.warning("Failed to parse LLM virtual user JSON", exc_info=True)
         raise ValueError("LLM response must be valid JSON") from exc
 
-    payload.pop("generation_meta", None)
-    payload["generation_meta"] = {
-        "schema_version": GENERATION_SCHEMA_VERSION,
-        "prompt_version": PROMPT_VERSION,
-        "llm_model": "unstamped-llm-response",
-        "generated_at": _now_iso(),
-    }
-    user = VirtualUser.model_validate(payload)
+    features = DerivedVirtualUserFeatures.model_validate(payload)
     logger.debug(
-        "Parsed virtual user JSON",
+        "Parsed derived virtual user JSON",
         extra={
-            "virtual_user_id": user.virtual_user_id,
-            "source_uuid": user.source_uuid,
-            "prompt_version": user.generation_meta.prompt_version,
-            "llm_model": user.generation_meta.llm_model,
+            "primary_categories": features.primary_categories,
+            "prompt_version": PROMPT_VERSION,
         },
     )
-    return user
-
-
-def _ensure_source_persona_matches_user(
-    user: VirtualUser,
-    persona: SourcePersona,
-    virtual_user_id: str,
-) -> None:
-    expected = {
-        "virtual_user_id": virtual_user_id,
-        "source_uuid": persona.uuid,
-        "age": persona.age,
-        "sex": persona.sex,
-        "age_bucket": age_bucket_for_age(persona.age),
-        "occupation": persona.occupation,
-        "province": persona.province,
-        "district": persona.district,
-        "country": SOURCE_COUNTRY,
-        "locale": SOURCE_LOCALE,
-    }
-    actual = {
-        "virtual_user_id": user.virtual_user_id,
-        "source_uuid": user.source_uuid,
-        "age": user.age,
-        "sex": user.sex,
-        "age_bucket": user.age_bucket,
-        "occupation": user.occupation,
-        "province": user.province,
-        "district": user.district,
-        "country": user.country,
-        "locale": user.locale,
-    }
-    mismatches = [
-        field
-        for field, expected_value in expected.items()
-        if actual[field] != expected_value
-    ]
-    if mismatches:
-        raise ValueError(
-            "Generated user fields do not match source persona: "
-            + ", ".join(mismatches)
-        )
+    return features
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
 
 
-def _stamp_generation_meta(user: VirtualUser, model_name: str) -> VirtualUser:
-    payload = user.model_dump()
-    payload["generation_meta"] = {
-        "schema_version": GENERATION_SCHEMA_VERSION,
-        "prompt_version": PROMPT_VERSION,
-        "llm_model": model_name,
-        "generated_at": _now_iso(),
-    }
-    stamped = VirtualUser.model_validate(payload)
-    logger.debug(
-        "Stamped deterministic generation metadata",
-        extra={
-            "virtual_user_id": stamped.virtual_user_id,
-            "source_uuid": stamped.source_uuid,
-            "model_name": model_name,
+def _virtual_user_from_derived_features(
+    persona: SourcePersona,
+    features: DerivedVirtualUserFeatures,
+    virtual_user_id: str,
+    model_name: str,
+) -> VirtualUser:
+    category_affinity = build_category_affinity(
+        primary_categories=features.primary_categories,
+        category_evidence=features.category_evidence,
+        allowed_categories=set(DEFAULT_KAGGLE_YOUTUBE_CATEGORIES),
+    )
+    user = VirtualUser(
+        virtual_user_id=virtual_user_id,
+        source_uuid=persona.uuid,
+        source_hash=persona.source_hash,
+        age=persona.age,
+        sex=persona.sex,
+        age_bucket=age_bucket_for_age(persona.age),
+        marital_status=persona.marital_status,
+        military_status=persona.military_status,
+        family_type=persona.family_type,
+        housing_type=persona.housing_type,
+        education_level=persona.education_level,
+        bachelors_field=persona.bachelors_field,
+        occupation=persona.occupation,
+        province=persona.province,
+        district=persona.district,
+        country=persona.country or SOURCE_COUNTRY,
+        locale=persona.locale or SOURCE_LOCALE,
+        persona_summary=features.persona_summary,
+        hobby_keywords=features.hobby_keywords,
+        interest_keywords=features.interest_keywords,
+        lifestyle_keywords=features.lifestyle_keywords,
+        food_keywords=features.food_keywords,
+        travel_keywords=features.travel_keywords,
+        career_keywords=features.career_keywords,
+        family_context_keywords=features.family_context_keywords,
+        category_evidence=features.category_evidence,
+        category_affinity=category_affinity,
+        source_persona_json=persona.model_dump(),
+        youtube_profile={
+            "primary_categories": features.primary_categories,
+            "shorts_affinity": features.shorts_affinity,
+            "longform_affinity": features.longform_affinity,
+            "trend_sensitivity": features.trend_sensitivity,
+            "comment_propensity": features.comment_propensity,
+            "watch_time_band": features.watch_time_band,
+        },
+        generation_meta={
             "schema_version": GENERATION_SCHEMA_VERSION,
             "prompt_version": PROMPT_VERSION,
+            "llm_model": model_name,
+            "generated_at": _now_iso(),
         },
     )
-    return stamped
+    return user
 
 
 class RuleBasedVirtualUserGenerator:
@@ -222,35 +212,38 @@ class RuleBasedVirtualUserGenerator:
             comments = 0.25
             band = "mixed"
 
-        user = VirtualUser(
-            virtual_user_id=virtual_user_id,
-            source_uuid=persona.uuid,
-            age=persona.age,
-            sex=persona.sex,
-            age_bucket=age_bucket_for_age(persona.age),
-            occupation=persona.occupation,
-            province=persona.province,
-            district=persona.district,
-            country=SOURCE_COUNTRY,
-            locale=SOURCE_LOCALE,
+        evidence_keywords = (interests.hobby_keywords + interests.interest_keywords)[:3]
+        features = DerivedVirtualUserFeatures(
             persona_summary=persona.persona[:180] or "20s Korean virtual user.",
             hobby_keywords=interests.hobby_keywords,
             interest_keywords=interests.interest_keywords,
-            category_affinity=interests.category_affinity,
-            youtube_profile={
-                "primary_categories": categories,
-                "shorts_affinity": shorts,
-                "longform_affinity": longform,
-                "trend_sensitivity": trend,
-                "comment_propensity": comments,
-                "watch_time_band": band,
+            lifestyle_keywords=[
+                value for value in [persona.family_type, persona.housing_type] if value
+            ],
+            food_keywords=[persona.culinary_persona] if persona.culinary_persona else [],
+            travel_keywords=[persona.travel_persona] if persona.travel_persona else [],
+            career_keywords=[persona.career_goals_and_ambitions]
+            if persona.career_goals_and_ambitions
+            else [],
+            family_context_keywords=[persona.family_persona]
+            if persona.family_persona
+            else [],
+            primary_categories=categories,
+            category_evidence={
+                category: evidence_keywords
+                for category in categories
             },
-            generation_meta={
-                "schema_version": GENERATION_SCHEMA_VERSION,
-                "prompt_version": PROMPT_VERSION,
-                "llm_model": self.model_name,
-                "generated_at": _now_iso(),
-            },
+            shorts_affinity=shorts,
+            longform_affinity=longform,
+            trend_sensitivity=trend,
+            comment_propensity=comments,
+            watch_time_band=band,
+        )
+        user = _virtual_user_from_derived_features(
+            persona=persona,
+            features=features,
+            virtual_user_id=virtual_user_id,
+            model_name=self.model_name,
         )
         logger.info(
             "Generated fixture virtual user",
@@ -301,6 +294,10 @@ class GLMVirtualUserGenerator:
             model=self.model_name,
             messages=[
                 {
+                    "role": "system",
+                    "content": GLM_SYSTEM_HARNESS,
+                },
+                {
                     "role": "user",
                     "content": build_virtual_user_prompt(persona, virtual_user_id),
                 }
@@ -308,14 +305,11 @@ class GLMVirtualUserGenerator:
             response_format={"type": "json_object"},
         )
         raw_text = response.choices[0].message.content or ""
-        user = _stamp_generation_meta(
-            parse_virtual_user_json(raw_text),
-            model_name=self.model_name,
-        )
-        _ensure_source_persona_matches_user(
-            user,
+        user = _virtual_user_from_derived_features(
             persona=persona,
+            features=parse_virtual_user_json(raw_text),
             virtual_user_id=virtual_user_id,
+            model_name=self.model_name,
         )
 
         logger.info(

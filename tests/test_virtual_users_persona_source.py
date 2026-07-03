@@ -60,6 +60,59 @@ def test_source_persona_from_record_preserves_expected_fields():
     assert persona.family_persona == "Shares short videos with siblings."
 
 
+def test_source_persona_from_record_preserves_all_raw_columns():
+    raw = {
+        "uuid": "raw-001",
+        "professional_persona": "책을 큐레이션한다.",
+        "sports_persona": "숲길을 걷는다.",
+        "arts_persona": "동물의 숲과 LP 음악을 좋아한다.",
+        "travel_persona": "조용한 해변을 찾는다.",
+        "culinary_persona": "마라탕을 주문한다.",
+        "family_persona": "혼자 거주한다.",
+        "persona": "제주의 작은 서점에서 일한다.",
+        "cultural_background": "제주 지역 맥락.",
+        "skills_and_expertise": "책 큐레이션",
+        "skills_and_expertise_list": "['책 큐레이션', '고객 응대']",
+        "hobbies_and_interests": "사려니숲길 산책, 닌텐도 스위치",
+        "hobbies_and_interests_list": "['사려니숲길 산책', '닌텐도 스위치']",
+        "career_goals_and_ambitions": "교육 공방을 열고 싶어 한다.",
+        "sex": "여자",
+        "age": 22,
+        "marital_status": "미혼",
+        "military_status": "비현역",
+        "family_type": "혼자 거주",
+        "housing_type": "아파트",
+        "education_level": "4년제 대학교",
+        "bachelors_field": "교육",
+        "occupation": "서적·문구 및 음반 판매원",
+        "district": "제주-제주시",
+        "province": "제주",
+        "country": "대한민국",
+        "country_code": "KR-SOURCE",
+        "locale": "ko-KR-source",
+    }
+
+    persona = source_persona_from_record(raw)
+
+    assert persona.sex == "female"
+    assert persona.sex_normalized == "female"
+    assert persona.country == "대한민국"
+    assert persona.country_code == "KR-SOURCE"
+    assert persona.locale == "ko-KR-source"
+    assert persona.skills_and_expertise_list == ["책 큐레이션", "고객 응대"]
+    assert persona.hobbies_and_interests_list == ["사려니숲길 산책", "닌텐도 스위치"]
+    assert persona.career_goals_and_ambitions == "교육 공방을 열고 싶어 한다."
+    assert persona.marital_status == "미혼"
+    assert persona.military_status == "비현역"
+    assert persona.family_type == "혼자 거주"
+    assert persona.housing_type == "아파트"
+    assert persona.education_level == "4년제 대학교"
+    assert persona.bachelors_field == "교육"
+    assert persona.raw_payload["uuid"] == "raw-001"
+    assert persona.source_hash
+    assert "교육 공방을 열고 싶어 한다." in persona.source_text
+
+
 def test_sample_personas_by_contract_returns_requested_20s_counts(caplog):
     records = build_fixture_persona_records(male_count=60, female_count=60)
 

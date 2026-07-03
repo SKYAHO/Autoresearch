@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from autoresearch.virtual_users.schema import (
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
+    DerivedVirtualUserFeatures,
     GenerationRequest,
     SourcePersona,
     VirtualUser,
@@ -57,6 +58,70 @@ def test_source_persona_normalizes_required_fields():
     assert persona.hobbies_and_interests == "gaming, music, short videos"
 
 
+def test_source_persona_preserves_full_raw_persona_contract():
+    persona = SourcePersona(
+        uuid="p-001",
+        professional_persona="책 큐레이션을 잘한다.",
+        sports_persona="숲길을 천천히 걷는다.",
+        arts_persona="동물의 숲과 LP 음악을 좋아한다.",
+        travel_persona="조용한 해변과 골목 카페를 찾는다.",
+        culinary_persona="마라탕과 꿔바로우를 주문한다.",
+        family_persona="혼자 살지만 가족과 정서적 유대가 있다.",
+        persona="제주의 작은 서점에서 일하는 22세 여성.",
+        cultural_background="제주시 아파트 단지에서 성장했다.",
+        skills_and_expertise="독립출판물 큐레이션",
+        skills_and_expertise_list=["독립출판물 큐레이션", "고객 응대"],
+        hobbies_and_interests="사려니숲길 산책, 닌텐도 스위치",
+        hobbies_and_interests_list=["사려니숲길 산책", "닌텐도 스위치"],
+        career_goals_and_ambitions="작은 교육 공방을 운영하고 싶어 한다.",
+        sex="female",
+        sex_normalized="female",
+        age=22,
+        marital_status="미혼",
+        military_status="비현역",
+        family_type="혼자 거주",
+        housing_type="아파트",
+        education_level="4년제 대학교",
+        bachelors_field="교육",
+        occupation="서적·문구 및 음반 판매원",
+        district="제주-제주시",
+        province="제주",
+        country="대한민국",
+        country_code="KR",
+        locale="ko-KR",
+        source_text="제주의 작은 서점에서 일하는 22세 여성.",
+        source_hash="hash",
+        raw_payload={"uuid": "p-001"},
+    )
+
+    assert persona.career_goals_and_ambitions == "작은 교육 공방을 운영하고 싶어 한다."
+    assert persona.education_level == "4년제 대학교"
+    assert persona.raw_payload["uuid"] == "p-001"
+
+
+def test_derived_virtual_user_features_accepts_glm_only_payload():
+    features = DerivedVirtualUserFeatures(
+        persona_summary="제주 서점에서 일하며 조용한 취미를 즐긴다.",
+        hobby_keywords=["사려니숲길 산책", "닌텐도 스위치"],
+        interest_keywords=["책 큐레이션", "LP 음악"],
+        lifestyle_keywords=["혼자 거주", "저녁 휴식"],
+        food_keywords=["마라탕", "꿔바로우"],
+        travel_keywords=["조용한 해변", "골목 카페"],
+        career_keywords=["교육 공방"],
+        family_context_keywords=["가족 밑반찬"],
+        primary_categories=["Gaming", "Music"],
+        category_evidence={"Gaming": ["닌텐도 스위치"], "Music": ["LP 음악"]},
+        shorts_affinity=0.62,
+        longform_affinity=0.57,
+        trend_sensitivity=0.41,
+        comment_propensity=0.18,
+        watch_time_band="night",
+    )
+
+    assert features.primary_categories == ["Gaming", "Music"]
+    assert features.category_evidence["Gaming"] == ["닌텐도 스위치"]
+
+
 def test_virtual_user_schema_accepts_expected_json_shape():
     user = VirtualUser(
         virtual_user_id="vu_0001",
@@ -95,6 +160,61 @@ def test_virtual_user_schema_accepts_expected_json_shape():
     assert user.hobby_keywords == ["gaming", "music"]
     assert user.category_affinity["Gaming"] == 0.91
     assert user.generation_meta.prompt_version == PROMPT_VERSION
+
+
+def test_virtual_user_exports_lossless_warehouse_row():
+    user = VirtualUser(
+        virtual_user_id="vu_0001",
+        source_uuid="p-001",
+        source_hash="hash-001",
+        age=22,
+        sex="female",
+        age_bucket="20s",
+        marital_status="미혼",
+        military_status="비현역",
+        family_type="혼자 거주",
+        housing_type="아파트",
+        education_level="4년제 대학교",
+        bachelors_field="교육",
+        occupation="서적·문구 및 음반 판매원",
+        province="제주",
+        district="제주-제주시",
+        country="KR",
+        locale="ko-KR",
+        persona_summary="제주 서점에서 일하며 교육 공방을 꿈꾼다.",
+        hobby_keywords=["닌텐도 스위치"],
+        interest_keywords=["책 큐레이션"],
+        lifestyle_keywords=["혼자 거주"],
+        food_keywords=["마라탕"],
+        travel_keywords=["조용한 해변"],
+        career_keywords=["교육 공방"],
+        family_context_keywords=["가족 밑반찬"],
+        category_evidence={"Gaming": ["닌텐도 스위치"]},
+        category_affinity={"Gaming": 0.88},
+        source_persona_json={"uuid": "p-001", "country": "대한민국"},
+        youtube_profile={
+            "primary_categories": ["Gaming"],
+            "shorts_affinity": 0.62,
+            "longform_affinity": 0.57,
+            "trend_sensitivity": 0.41,
+            "comment_propensity": 0.18,
+            "watch_time_band": "night",
+        },
+        generation_meta={
+            "schema_version": GENERATION_SCHEMA_VERSION,
+            "prompt_version": PROMPT_VERSION,
+            "llm_model": "glm-5.2",
+            "generated_at": "2026-06-28T00:00:00Z",
+        },
+    )
+
+    row = user.to_warehouse_row()
+
+    assert row["source_hash"] == "hash-001"
+    assert row["education_level"] == "4년제 대학교"
+    assert row["career_keywords"] == ["교육 공방"]
+    assert row["category_evidence"]["Gaming"] == ["닌텐도 스위치"]
+    assert row["source_persona_json"]["uuid"] == user.source_uuid
 
 
 def test_virtual_user_schema_rejects_out_of_range_category_affinity():
@@ -312,23 +432,37 @@ def test_virtual_user_exports_warehouse_ready_row():
         "user_id": "vu_0001",
         "source_uuid": "p-001",
         "source_dataset": "nvidia/Nemotron-Personas-Korea",
+        "source_hash": "",
         "country": "KR",
         "locale": "ko-KR",
         "age": 24,
         "sex": "female",
+        "marital_status": "",
+        "military_status": "",
+        "family_type": "",
+        "housing_type": "",
+        "education_level": "",
+        "bachelors_field": "",
         "occupation": "student",
         "province": "Seoul",
         "district": "Mapo-gu",
         "persona_summary": "Student interested in music and lifestyle.",
         "hobby_keywords": [],
         "interest_keywords": ["music", "beauty", "lifestyle"],
+        "lifestyle_keywords": [],
+        "food_keywords": [],
+        "travel_keywords": [],
+        "career_keywords": [],
+        "family_context_keywords": [],
         "category_affinity": {},
         "primary_categories": ["Music", "Howto & Style"],
+        "category_evidence": {},
         "shorts_affinity": 0.82,
         "longform_affinity": 0.38,
         "trend_sensitivity": 0.71,
         "comment_propensity": 0.24,
         "watch_time_band": "night",
+        "source_persona_json": {},
         "schema_version": GENERATION_SCHEMA_VERSION,
         "prompt_version": PROMPT_VERSION,
         "llm_model": "fixture",

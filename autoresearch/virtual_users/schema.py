@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import logging
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 logger = logging.getLogger(__name__)
@@ -14,22 +14,6 @@ SOURCE_COUNTRY = "KR"
 SOURCE_LOCALE = "ko-KR"
 GENERATION_SCHEMA_VERSION = "virtual_user_schema_v1"
 PROMPT_VERSION = "virtual_user_youtube_v1"
-
-YOUTUBE_CATEGORIES = [
-    "Gaming",
-    "Music",
-    "Entertainment",
-    "Education",
-    "News & Politics",
-    "Sports",
-    "Science & Technology",
-    "Howto & Style",
-    "People & Blogs",
-    "Comedy",
-]
-
-WATCH_TIME_BANDS = ["morning", "afternoon", "evening", "night", "mixed"]
-
 
 def age_bucket_for_age(age: int) -> str:
     """원천 나이를 10년 단위 age bucket으로 변환한다."""
@@ -47,7 +31,6 @@ class GenerationRequest(BaseModel):
     male_count: int = 50
     female_count: int = 50
     seed: int = 42
-    use_gemini: bool = True
     use_llm: bool = True
     max_concurrency: int = 1
     source_mode: Literal["huggingface", "fixture"] = "huggingface"
@@ -67,7 +50,7 @@ class GenerationRequest(BaseModel):
     @field_validator("max_concurrency")
     @classmethod
     def positive_max_concurrency(cls, value: int) -> int:
-        """GLM/Gemini 병렬 생성 worker 수가 1 이상인지 확인한다."""
+        """GLM 병렬 생성 worker 수가 1 이상인지 확인한다."""
 
         if value < 1:
             raise ValueError("max_concurrency must be at least 1")
@@ -90,28 +73,63 @@ class SourcePersona(BaseModel):
     uuid: str
     age: int
     sex: Literal["male", "female"]
+    sex_normalized: Literal["male", "female"] | None = None
     occupation: str = ""
     province: str = ""
     district: str = ""
     country: str = SOURCE_COUNTRY
+    country_code: str = SOURCE_COUNTRY
     locale: str = SOURCE_LOCALE
     persona: str = ""
     hobbies_and_interests: str = ""
     hobbies_and_interests_list: list[str] = Field(default_factory=list)
     professional_persona: str = ""
     skills_and_expertise: str = ""
+    skills_and_expertise_list: list[str] = Field(default_factory=list)
     sports_persona: str = ""
     arts_persona: str = ""
     travel_persona: str = ""
     culinary_persona: str = ""
     family_persona: str = ""
     cultural_background: str = ""
+    career_goals_and_ambitions: str = ""
+    marital_status: str = ""
+    military_status: str = ""
+    family_type: str = ""
+    housing_type: str = ""
+    education_level: str = ""
+    bachelors_field: str = ""
+    source_text: str = ""
+    source_hash: str = ""
+    raw_payload: dict[str, object] = Field(default_factory=dict)
 
 
 class YouTubeProfile(BaseModel):
     """추천 도메인에서 사용할 YouTube 소비 성향 feature 묶음."""
 
     primary_categories: list[str] = Field(min_length=1, max_length=5)
+    shorts_affinity: float = Field(ge=0.0, le=1.0)
+    longform_affinity: float = Field(ge=0.0, le=1.0)
+    trend_sensitivity: float = Field(ge=0.0, le=1.0)
+    comment_propensity: float = Field(ge=0.0, le=1.0)
+    watch_time_band: Literal["morning", "afternoon", "evening", "night", "mixed"]
+
+
+class DerivedVirtualUserFeatures(BaseModel):
+    """GLM이 생성하는 취향/관심사 기반 derived feature 계약."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    persona_summary: str
+    hobby_keywords: list[str] = Field(default_factory=list)
+    interest_keywords: list[str] = Field(default_factory=list)
+    lifestyle_keywords: list[str] = Field(default_factory=list)
+    food_keywords: list[str] = Field(default_factory=list)
+    travel_keywords: list[str] = Field(default_factory=list)
+    career_keywords: list[str] = Field(default_factory=list)
+    family_context_keywords: list[str] = Field(default_factory=list)
+    primary_categories: list[str] = Field(min_length=1, max_length=5)
+    category_evidence: dict[str, list[str]] = Field(default_factory=dict)
     shorts_affinity: float = Field(ge=0.0, le=1.0)
     longform_affinity: float = Field(ge=0.0, le=1.0)
     trend_sensitivity: float = Field(ge=0.0, le=1.0)
@@ -134,18 +152,32 @@ class VirtualUser(BaseModel):
     virtual_user_id: str
     source_uuid: str
     source_dataset: str = SOURCE_DATASET
+    source_hash: str = ""
     country: str = SOURCE_COUNTRY
     locale: str = SOURCE_LOCALE
     age: int
     sex: Literal["male", "female"]
     age_bucket: str
+    marital_status: str = ""
+    military_status: str = ""
+    family_type: str = ""
+    housing_type: str = ""
+    education_level: str = ""
+    bachelors_field: str = ""
     occupation: str
     province: str
     district: str = ""
     persona_summary: str
     hobby_keywords: list[str] = Field(default_factory=list)
     interest_keywords: list[str] = Field(default_factory=list)
+    lifestyle_keywords: list[str] = Field(default_factory=list)
+    food_keywords: list[str] = Field(default_factory=list)
+    travel_keywords: list[str] = Field(default_factory=list)
+    career_keywords: list[str] = Field(default_factory=list)
+    family_context_keywords: list[str] = Field(default_factory=list)
+    category_evidence: dict[str, list[str]] = Field(default_factory=dict)
     category_affinity: dict[str, float] = Field(default_factory=dict)
+    source_persona_json: dict[str, object] = Field(default_factory=dict)
     youtube_profile: YouTubeProfile
     generation_meta: GenerationMeta
 
@@ -170,23 +202,37 @@ class VirtualUser(BaseModel):
             "user_id": self.virtual_user_id,
             "source_uuid": self.source_uuid,
             "source_dataset": self.source_dataset,
+            "source_hash": self.source_hash,
             "country": self.country,
             "locale": self.locale,
             "age": self.age,
             "sex": self.sex,
+            "marital_status": self.marital_status,
+            "military_status": self.military_status,
+            "family_type": self.family_type,
+            "housing_type": self.housing_type,
+            "education_level": self.education_level,
+            "bachelors_field": self.bachelors_field,
             "occupation": self.occupation,
             "province": self.province,
             "district": self.district,
             "persona_summary": self.persona_summary,
             "hobby_keywords": self.hobby_keywords,
             "interest_keywords": self.interest_keywords,
+            "lifestyle_keywords": self.lifestyle_keywords,
+            "food_keywords": self.food_keywords,
+            "travel_keywords": self.travel_keywords,
+            "career_keywords": self.career_keywords,
+            "family_context_keywords": self.family_context_keywords,
             "category_affinity": self.category_affinity,
             "primary_categories": self.youtube_profile.primary_categories,
+            "category_evidence": self.category_evidence,
             "shorts_affinity": self.youtube_profile.shorts_affinity,
             "longform_affinity": self.youtube_profile.longform_affinity,
             "trend_sensitivity": self.youtube_profile.trend_sensitivity,
             "comment_propensity": self.youtube_profile.comment_propensity,
             "watch_time_band": self.youtube_profile.watch_time_band,
+            "source_persona_json": self.source_persona_json,
             "schema_version": self.generation_meta.schema_version,
             "prompt_version": self.generation_meta.prompt_version,
             "llm_model": self.generation_meta.llm_model,
