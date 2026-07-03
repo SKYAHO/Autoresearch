@@ -167,3 +167,91 @@ def test_virtual_user_batch_counts_users_by_sex(caplog):
     assert batch.summary["female"] == 1
     assert payload["summary"] == {"total": 2, "male": 1, "female": 1}
     assert "Prepared virtual user batch output" in caplog.text
+
+
+def test_source_persona_accepts_spec_fields_and_kr_defaults():
+    persona = SourcePersona(
+        uuid="p-001",
+        age=24,
+        sex="female",
+        occupation="student",
+        province="Seoul",
+        district="Mapo-gu",
+        persona="A student who enjoys music and lifestyle videos.",
+        hobbies_and_interests="music, beauty, lifestyle",
+        hobbies_and_interests_list=["music", "beauty"],
+        professional_persona="Early career learner.",
+        skills_and_expertise="presentation, design",
+        sports_persona="Light sports highlights viewer.",
+        arts_persona="Interested in popular music.",
+        travel_persona="Enjoys Seoul cafe trip videos.",
+        culinary_persona="Watches cooking shorts.",
+        family_persona="Lives with family.",
+    )
+
+    assert persona.country == "KR"
+    assert persona.locale == "ko-KR"
+    assert persona.hobbies_and_interests_list == ["music", "beauty"]
+    assert persona.skills_and_expertise == "presentation, design"
+    assert persona.travel_persona == "Enjoys Seoul cafe trip videos."
+    assert persona.culinary_persona == "Watches cooking shorts."
+    assert persona.family_persona == "Lives with family."
+
+
+def test_virtual_user_exports_warehouse_ready_row():
+    user = VirtualUser(
+        virtual_user_id="vu_0001",
+        source_uuid="p-001",
+        source_dataset="nvidia/Nemotron-Personas-Korea",
+        country="KR",
+        locale="ko-KR",
+        age=24,
+        sex="female",
+        age_bucket="20s",
+        occupation="student",
+        province="Seoul",
+        district="Mapo-gu",
+        persona_summary="Student interested in music and lifestyle.",
+        interest_keywords=["music", "beauty", "lifestyle"],
+        youtube_profile={
+            "primary_categories": ["Music", "Howto & Style"],
+            "shorts_affinity": 0.82,
+            "longform_affinity": 0.38,
+            "trend_sensitivity": 0.71,
+            "comment_propensity": 0.24,
+            "watch_time_band": "night",
+        },
+        generation_meta={
+            "schema_version": GENERATION_SCHEMA_VERSION,
+            "prompt_version": PROMPT_VERSION,
+            "llm_model": "fixture",
+            "generated_at": "2026-07-01T00:00:00+00:00",
+        },
+    )
+
+    row = user.to_warehouse_row()
+
+    assert row == {
+        "user_id": "vu_0001",
+        "source_uuid": "p-001",
+        "source_dataset": "nvidia/Nemotron-Personas-Korea",
+        "country": "KR",
+        "locale": "ko-KR",
+        "age": 24,
+        "sex": "female",
+        "occupation": "student",
+        "province": "Seoul",
+        "district": "Mapo-gu",
+        "persona_summary": "Student interested in music and lifestyle.",
+        "interest_keywords": ["music", "beauty", "lifestyle"],
+        "primary_categories": ["Music", "Howto & Style"],
+        "shorts_affinity": 0.82,
+        "longform_affinity": 0.38,
+        "trend_sensitivity": 0.71,
+        "comment_propensity": 0.24,
+        "watch_time_band": "night",
+        "schema_version": GENERATION_SCHEMA_VERSION,
+        "prompt_version": PROMPT_VERSION,
+        "llm_model": "fixture",
+        "generated_at": "2026-07-01T00:00:00+00:00",
+    }
