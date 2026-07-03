@@ -110,6 +110,7 @@ Rule
 
 | Feature | Type | Feature Store | 사용되는 원본 컬럼 및 생성 방법 |
 | --- | --- | --- | --- |
+| `video_id` | ID | Offline | YouTube 영상 ID (Entity Key) |
 | `category_id` | Category | Offline | `categoryId`를 카테고리명(문자)으로 매핑하여 저장 |
 | `duration_sec` | Numeric | Offline | `duration` → 초 단위 변환 |
 | `view_count` | Numeric | Offline | `viewCount` 원본 사용 |
@@ -121,6 +122,7 @@ Rule
 
 | Feature | Type | Feature Store | 사용되는 원본 컬럼 및 생성 방법 |
 | --- | --- | --- | --- |
+| `user_id` | ID | Offline | 사용자 ID (Entity Key) |
 | `age_group` | Category | Offline | `age` 그룹화 |
 | `occupation` | Category | Offline | `occupation` 원본 사용 |
 | `historical_category_affinity` | Category | Online | Label Timestamp 이전 Event Log에서 가장 자주 클릭한 Category |
@@ -240,7 +242,7 @@ Event Log 한 행   (user_id=u1, video_id=v10, timestamp=T, clicked=1)
         │
         ├─→  User Feature Store에서
         │    Label Timestamp(T) 이전 기준으로 생성된
-        │    User Feature 조회
+        │    User Feature 조회 (user_id=u1)
         │
         ├─→  Video Feature Store에서 v10의 피처 조회
         │
@@ -252,11 +254,12 @@ Event Log 한 행   (user_id=u1, video_id=v10, timestamp=T, clicked=1)
                 
 			                       ↓
 			                       
-    [User Feature | Video Feature | Interaction Feature | clicked]
+    [user_id | video_id | User Feature | Video Feature | Interaction Feature | clicked]
 ```
 
 - **최종 Model Input Columns**
     
+    > `user_id`와 `video_id`는 Training Dataset의 row key로 저장되나, 모델의 학습/추론 입력에는 포함되지 않는다 (모델은 user와 video의 feature만 사용).
     
     | Column | Type | 설명 |
     | --- | --- | --- |
