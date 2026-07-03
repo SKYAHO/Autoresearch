@@ -112,7 +112,6 @@ def source_persona_from_record(record: dict[str, Any]) -> SourcePersona:
         uuid=_as_text(record, "uuid"),
         age=int(record["age"]),
         sex=normalized_sex,
-        sex_normalized=normalized_sex,
         occupation=_as_text(record, "occupation"),
         province=_as_text(record, "province"),
         district=_as_text(record, "district"),

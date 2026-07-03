@@ -150,7 +150,9 @@ def test_generate_virtual_user_batch_writes_expected_100_user_parquet(tmp_path, 
     assert isinstance(rows[0]["category_evidence"], str)
     assert json.loads(rows[0]["category_evidence"])
     assert isinstance(rows[0]["source_persona_json"], str)
-    assert json.loads(rows[0]["source_persona_json"])["uuid"] == rows[0]["source_uuid"]
+    source_persona_json = json.loads(rows[0]["source_persona_json"])
+    assert source_persona_json["uuid"] == rows[0]["source_uuid"]
+    assert "sex_normalized" not in source_persona_json
     assert rows[0]["primary_categories"]
     assert "youtube_primary_categories" not in rows[0]
     assert batch.summary["male"] == 50

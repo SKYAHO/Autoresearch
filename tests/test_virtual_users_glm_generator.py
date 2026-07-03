@@ -65,6 +65,7 @@ def test_build_virtual_user_prompt_contains_glm_json_contract(caplog):
     assert "category_evidence" in prompt
     assert "category_affinity" not in prompt
     assert "generation_meta" not in prompt
+    assert "sex_normalized" not in prompt
     assert persona.uuid in prompt
     assert "Built virtual user generation prompt" in caplog.text
 
@@ -123,6 +124,7 @@ def test_virtual_user_from_derived_features_copies_source_fields_and_affinity():
     assert user.source_hash == "hash-123"
     assert user.country == "대한민국"
     assert user.source_persona_json["country"] == "대한민국"
+    assert "sex_normalized" not in user.source_persona_json
     assert user.category_affinity == {"Gaming": 0.91, "Music": 0.75}
     assert user.category_evidence["Gaming"] == ["gaming hobby", "creator videos"]
     assert user.generation_meta.schema_version == GENERATION_SCHEMA_VERSION

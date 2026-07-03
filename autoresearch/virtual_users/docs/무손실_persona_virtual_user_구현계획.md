@@ -70,13 +70,14 @@ country
 정규화 helper field는 아래를 추가한다.
 
 ```text
-sex_normalized
 country_code
 locale
 source_text
 source_hash
 raw_payload
 ```
+
+원본 성별값은 `raw_payload["sex"]`에 보존하고, `SourcePersona.sex`는 pipeline 표준값인 `male` 또는 `female`로 유지한다.
 
 ## Virtual User 목표 컬럼
 
@@ -156,7 +157,6 @@ def test_source_persona_preserves_full_raw_persona_contract():
         hobbies_and_interests_list=["사려니숲길 산책", "닌텐도 스위치"],
         career_goals_and_ambitions="작은 교육 공방을 운영하고 싶어 한다.",
         sex="female",
-        sex_normalized="female",
         age=22,
         marital_status="미혼",
         military_status="비현역",
@@ -172,12 +172,14 @@ def test_source_persona_preserves_full_raw_persona_contract():
         locale="ko-KR",
         source_text="제주의 작은 서점에서 일하는 22세 여성.",
         source_hash="hash",
-        raw_payload={"uuid": "p-001"},
+        raw_payload={"uuid": "p-001", "sex": "여자"},
     )
 
+    assert persona.sex == "female"
     assert persona.career_goals_and_ambitions == "작은 교육 공방을 운영하고 싶어 한다."
     assert persona.education_level == "4년제 대학교"
     assert persona.raw_payload["uuid"] == "p-001"
+    assert persona.raw_payload["sex"] == "여자"
 ```
 
 - [ ] **Step 2: 테스트 실패 확인**
@@ -209,7 +211,6 @@ class SourcePersona(BaseModel):
     hobbies_and_interests_list: list[str] = Field(default_factory=list)
     career_goals_and_ambitions: str = ""
     sex: Literal["male", "female"]
-    sex_normalized: Literal["male", "female"] | None = None
     age: int
     marital_status: str = ""
     military_status: str = ""
@@ -280,7 +281,7 @@ def test_source_persona_from_record_preserves_all_raw_columns():
     persona = source_persona_from_record(raw)
 
     assert persona.sex == "female"
-    assert persona.sex_normalized == "female"
+    assert persona.raw_payload["sex"] == "여자"
     assert persona.country == "대한민국"
     assert persona.country_code == "KR"
     assert persona.career_goals_and_ambitions == "교육 공방을 열고 싶어 한다."
@@ -351,7 +352,7 @@ def _source_hash(record: dict[str, Any]) -> str:
 
 - [ ] **Step 4: `source_persona_from_record()` 전체 매핑**
 
-모든 raw 컬럼을 `SourcePersona`에 넣고, `sex`와 `sex_normalized`에는 정규화된 성별을 넣는다. `source_text`, `source_hash`, `raw_payload`도 함께 채운다.
+모든 raw 컬럼을 `SourcePersona`에 넣고, 원본 성별값은 `raw_payload["sex"]`에 보존하되 `SourcePersona.sex`에는 정규화된 성별을 넣는다. `source_text`, `source_hash`, `raw_payload`도 함께 채운다.
 
 - [ ] **Step 5: persona source 테스트 실행**
 

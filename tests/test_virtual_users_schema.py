@@ -75,7 +75,6 @@ def test_source_persona_preserves_full_raw_persona_contract():
         hobbies_and_interests_list=["사려니숲길 산책", "닌텐도 스위치"],
         career_goals_and_ambitions="작은 교육 공방을 운영하고 싶어 한다.",
         sex="female",
-        sex_normalized="female",
         age=22,
         marital_status="미혼",
         military_status="비현역",
@@ -91,12 +90,15 @@ def test_source_persona_preserves_full_raw_persona_contract():
         locale="ko-KR",
         source_text="제주의 작은 서점에서 일하는 22세 여성.",
         source_hash="hash",
-        raw_payload={"uuid": "p-001"},
+        raw_payload={"uuid": "p-001", "sex": "여자"},
     )
 
+    assert persona.sex == "female"
     assert persona.career_goals_and_ambitions == "작은 교육 공방을 운영하고 싶어 한다."
     assert persona.education_level == "4년제 대학교"
     assert persona.raw_payload["uuid"] == "p-001"
+    assert persona.raw_payload["sex"] == "여자"
+    assert "sex_normalized" not in persona.model_dump()
 
 
 def test_derived_virtual_user_features_accepts_glm_only_payload():

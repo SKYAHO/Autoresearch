@@ -95,7 +95,8 @@ def test_source_persona_from_record_preserves_all_raw_columns():
     persona = source_persona_from_record(raw)
 
     assert persona.sex == "female"
-    assert persona.sex_normalized == "female"
+    assert persona.raw_payload["sex"] == "여자"
+    assert "sex_normalized" not in persona.model_dump()
     assert persona.country == "대한민국"
     assert persona.country_code == "KR-SOURCE"
     assert persona.locale == "ko-KR-source"

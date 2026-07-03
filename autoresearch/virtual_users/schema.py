@@ -73,7 +73,6 @@ class SourcePersona(BaseModel):
     uuid: str
     age: int
     sex: Literal["male", "female"]
-    sex_normalized: Literal["male", "female"] | None = None
     occupation: str = ""
     province: str = ""
     district: str = ""
