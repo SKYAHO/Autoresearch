@@ -340,7 +340,7 @@ feast materialize-incremental $(date -u +"%Y-%m-%dT%H:%M:%S")
 ```bash
 # feature_store/ 디렉토리 안이므로 프로젝트 루트로 복귀
 cd ..
-python scripts/test_feature_retrieval.py
+python scripts/verify_feature_retrieval.py
 ```
 
 성공 시 Online / Historical Feature 조회 결과가 출력됩니다.

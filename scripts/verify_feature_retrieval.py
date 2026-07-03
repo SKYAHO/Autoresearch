@@ -12,7 +12,7 @@ Online / Historical Feature 조회가 정상 동작하는지 확인합니다.
   2. feast materialize 실행 완료 (BigQuery -> Redis 동기화)
 
 사용법:
-  python scripts/test_feature_retrieval.py
+  python scripts/verify_feature_retrieval.py
 """
 
 from datetime import datetime, timedelta, timezone
@@ -21,7 +21,7 @@ import pandas as pd
 from feast import FeatureStore
 
 
-def test_online_features():
+def verify_online_features():
     """get_online_features: 단일 Entity Feature 조회"""
     print("=" * 60)
     print("1. Online Feature 조회 (get_online_features)")
@@ -47,7 +47,7 @@ def test_online_features():
     print(f"\n[OK] Online Feature 조회 성공 ({len(df)} rows)\n")
 
 
-def test_historical_features():
+def verify_historical_features():
     """get_historical_features: Entity DataFrame 기반 Feature 조회"""
     print("=" * 60)
     print("2. Historical Feature 조회 (get_historical_features)")
@@ -85,11 +85,11 @@ def test_historical_features():
 
 if __name__ == "__main__":
     try:
-        test_online_features()
+        verify_online_features()
     except Exception as e:
         print(f"[FAIL] Online Feature 조회 실패: {e}\n")
 
     try:
-        test_historical_features()
+        verify_historical_features()
     except Exception as e:
         print(f"[FAIL] Historical Feature 조회 실패: {e}\n")
