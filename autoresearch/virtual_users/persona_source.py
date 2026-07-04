@@ -333,6 +333,67 @@ def build_fixture_persona_records(
     return rows
 
 
+def build_fixture_raw_persona_records(
+    male_count: int = 60,
+    female_count: int = 60,
+) -> list[dict[str, Any]]:
+    """외부 dataset/LLM 없이 테스트할 수 있는 deterministic raw dict fixture."""
+    rows: list[dict[str, Any]] = []
+    for index in range(male_count):
+        rows.append(
+            {
+                "uuid": f"fixture-m-{index:03d}",
+                "age": 20 + (index % 10),
+                "sex": "남자",
+                "occupation": "student" if index % 2 == 0 else "office worker",
+                "province": "서울",
+                "district": "마포구",
+                "persona": "게임과 음악을 즐기는 20대 남성.",
+                "hobbies_and_interests": "게임, 음악, 숏폼",
+            }
+        )
+    for index in range(female_count):
+        rows.append(
+            {
+                "uuid": f"fixture-f-{index:03d}",
+                "age": 20 + (index % 10),
+                "sex": "여자",
+                "occupation": "student" if index % 2 == 0 else "designer",
+                "province": "경기",
+                "district": "성남시",
+                "persona": "음악과 라이프스타일을 즐기는 20대 여성.",
+                "hobbies_and_interests": "음악, 뷰티, 라이프스타일",
+            }
+        )
+    return rows
+
+
+def load_raw_persona_records(
+    max_records: int | None = None,
+    raw_output_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """NVIDIA Persona dataset을 streaming으로 읽어 raw dict 그대로 반환한다."""
+    logger.info(
+        "Loading raw NVIDIA persona records",
+        extra={"source_dataset": SOURCE_DATASET, "max_records": max_records},
+    )
+    dataset = load_dataset(SOURCE_DATASET, split="train", streaming=True)
+    records: list[dict[str, Any]] = []
+    for raw_record in dataset:
+        records.append(dict(raw_record))
+        if max_records is not None and len(records) >= max_records:
+            break
+
+    if raw_output_path is not None:
+        write_raw_persona_records(records, raw_output_path)
+
+    logger.info(
+        "Loaded raw NVIDIA persona records",
+        extra={"source_dataset": SOURCE_DATASET, "loaded_count": len(records)},
+    )
+    return records
+
+
 def sample_personas_by_contract(
     records: Iterable[SourcePersona],
     age_min: int,

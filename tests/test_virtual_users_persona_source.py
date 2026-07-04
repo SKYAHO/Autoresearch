@@ -6,6 +6,8 @@ import pytest
 import autoresearch.virtual_users.persona_source as persona_source
 from autoresearch.virtual_users.persona_source import (
     build_fixture_persona_records,
+    build_fixture_raw_persona_records,
+    load_raw_persona_records,
     normalize_sex,
     record_age,
     record_sex,
@@ -280,3 +282,31 @@ def test_sample_raw_personas_by_contract_returns_balanced_seeded_sample():
     assert sum(1 for r in sample if record_sex(r) == "male") == 50
     assert sum(1 for r in sample if record_sex(r) == "female") == 50
     assert [r["uuid"] for r in sample] == [r["uuid"] for r in again]  # deterministic
+
+
+def test_build_fixture_raw_persona_records_returns_balanced_raw_dicts():
+    rows = build_fixture_raw_persona_records(male_count=3, female_count=2)
+
+    assert len(rows) == 5
+    assert all(isinstance(r, dict) for r in rows)
+    assert sum(1 for r in rows if r["sex"] == "남자") == 3
+    assert sum(1 for r in rows if r["sex"] == "여자") == 2
+    assert rows[0]["uuid"]
+    assert rows[0]["persona"]
+
+
+def test_load_raw_persona_records_returns_raw_dicts_and_snapshot(monkeypatch, tmp_path):
+    fake = [{"uuid": "a", "age": 24, "sex": "여자", "persona": "p"}]
+
+    def fake_load_dataset(*args, **kwargs):
+        return iter(fake)
+
+    monkeypatch.setattr(
+        "autoresearch.virtual_users.persona_source.load_dataset", fake_load_dataset
+    )
+    snapshot = tmp_path / "raw.jsonl"
+
+    rows = load_raw_persona_records(max_records=1, raw_output_path=snapshot)
+
+    assert rows == fake
+    assert snapshot.read_text(encoding="utf-8").strip()
