@@ -32,6 +32,69 @@ def normalize_sex(value: object) -> str:
     raise ValueError(f"Unsupported sex value: {value}")
 
 
+def record_age(record: dict[str, Any]) -> int | None:
+    """raw record의 age를 int로 읽되, 불가하면 None."""
+    try:
+        return int(record["age"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def record_sex(record: dict[str, Any]) -> str | None:
+    """raw record의 sex를 male/female로 읽되, 불가하면 None."""
+    try:
+        return normalize_sex(record["sex"])
+    except (KeyError, ValueError):
+        return None
+
+
+def sample_raw_personas_by_contract(
+    records: list[dict[str, Any]],
+    age_min: int,
+    age_max: int,
+    male_count: int,
+    female_count: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    """raw dict에서 연령/성별을 읽어 seed 기반 균형 샘플을 만든다."""
+    eligible = [
+        record
+        for record in records
+        if (age := record_age(record)) is not None and age_min <= age <= age_max
+    ]
+    male_records = [r for r in eligible if record_sex(r) == "male"]
+    female_records = [r for r in eligible if record_sex(r) == "female"]
+
+    if len(male_records) < male_count:
+        raise ValueError(
+            f"Not enough male personas: requested={male_count}, available={len(male_records)}"
+        )
+    if len(female_records) < female_count:
+        raise ValueError(
+            f"Not enough female personas: requested={female_count}, "
+            f"available={len(female_records)}"
+        )
+
+    rng = random.Random(seed)
+    male_pool = list(male_records)
+    female_pool = list(female_records)
+    rng.shuffle(male_pool)
+    rng.shuffle(female_pool)
+    sampled = male_pool[:male_count] + female_pool[:female_count]
+    rng.shuffle(sampled)
+
+    logger.info(
+        "Sampled raw personas for virtual user generation",
+        extra={
+            "sampled_total": len(sampled),
+            "sampled_male_count": male_count,
+            "sampled_female_count": female_count,
+            "seed": seed,
+        },
+    )
+    return sampled
+
+
 def _as_text(record: dict[str, Any], key: str) -> str:
     """raw record의 optional 값을 빈 문자열 또는 문자열로 안전하게 읽는다."""
 

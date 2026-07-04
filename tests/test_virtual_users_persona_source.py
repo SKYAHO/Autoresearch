@@ -7,7 +7,10 @@ import autoresearch.virtual_users.persona_source as persona_source
 from autoresearch.virtual_users.persona_source import (
     build_fixture_persona_records,
     normalize_sex,
+    record_age,
+    record_sex,
     sample_personas_by_contract,
+    sample_raw_personas_by_contract,
     source_persona_from_record,
 )
 
@@ -245,3 +248,35 @@ def test_load_nvidia_persona_records_can_write_raw_snapshot(monkeypatch, tmp_pat
     lines = output_path.read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["uuid"] == "p-001"
+
+
+def _raw_rows():
+    rows = []
+    for i in range(60):
+        rows.append({"uuid": f"m-{i}", "age": 20 + (i % 10), "sex": "남자"})
+    for i in range(60):
+        rows.append({"uuid": f"f-{i}", "age": 20 + (i % 10), "sex": "여자"})
+    return rows
+
+
+def test_record_age_and_sex_read_from_raw_dict():
+    assert record_age({"age": "25"}) == 25
+    assert record_age({"age": None}) is None
+    assert record_sex({"sex": "여자"}) == "female"
+    assert record_sex({"sex": "unknown"}) is None
+
+
+def test_sample_raw_personas_by_contract_returns_balanced_seeded_sample():
+    rows = _raw_rows()
+
+    sample = sample_raw_personas_by_contract(
+        records=rows, age_min=20, age_max=29, male_count=50, female_count=50, seed=42
+    )
+    again = sample_raw_personas_by_contract(
+        records=rows, age_min=20, age_max=29, male_count=50, female_count=50, seed=42
+    )
+
+    assert len(sample) == 100
+    assert sum(1 for r in sample if record_sex(r) == "male") == 50
+    assert sum(1 for r in sample if record_sex(r) == "female") == 50
+    assert [r["uuid"] for r in sample] == [r["uuid"] for r in again]  # deterministic
