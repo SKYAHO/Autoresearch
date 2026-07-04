@@ -8,11 +8,56 @@ from autoresearch.virtual_users.schema import (
     PROMPT_VERSION,
     DerivedVirtualUserFeatures,
     GenerationRequest,
+    GenerationResult,
+    QuarantineRecord,
     SourcePersona,
     VirtualUser,
     VirtualUserBatch,
     age_bucket_for_age,
 )
+
+
+def _make_single_user_batch() -> VirtualUserBatch:
+    """1명짜리 VirtualUser로 구성된 VirtualUserBatch를 만드는 테스트 헬퍼."""
+
+    user = VirtualUser(
+        virtual_user_id="vu_0001",
+        source_uuid="p-001",
+        age=22,
+        sex="male",
+        age_bucket="20s",
+        occupation="student",
+        province="Seoul",
+        district="Mapo-gu",
+        country="KR",
+        locale="ko-KR",
+        persona_summary="Male student.",
+        hobby_keywords=["gaming"],
+        interest_keywords=["music"],
+        category_affinity={"Gaming": 0.8},
+        youtube_profile={
+            "primary_categories": ["Gaming"],
+            "shorts_affinity": 0.8,
+            "longform_affinity": 0.4,
+            "trend_sensitivity": 0.7,
+            "comment_propensity": 0.3,
+            "watch_time_band": "night",
+        },
+        generation_meta={
+            "schema_version": GENERATION_SCHEMA_VERSION,
+            "prompt_version": PROMPT_VERSION,
+            "llm_model": "fixture",
+            "generated_at": "2026-06-28T00:00:00Z",
+        },
+    )
+
+    return VirtualUserBatch(
+        schema_version=GENERATION_SCHEMA_VERSION,
+        prompt_version=PROMPT_VERSION,
+        source_dataset="nvidia/Nemotron-Personas-Korea",
+        request=GenerationRequest(male_count=1, female_count=0),
+        users=[user],
+    )
 
 
 def test_generation_request_defaults_match_mvp_contract():
@@ -470,3 +515,32 @@ def test_virtual_user_exports_warehouse_ready_row():
         "llm_model": "fixture",
         "generated_at": "2026-07-01T00:00:00+00:00",
     }
+
+
+def test_quarantine_record_captures_failure_context():
+    record = QuarantineRecord(
+        source_uuid="p-1",
+        raw_row={"uuid": "p-1", "sex": "여자"},
+        raw_llm_response="{bad json",
+        error_type="invalid_json",
+        error_message="Expecting value",
+    )
+    assert record.error_type == "invalid_json"
+    assert record.raw_row["sex"] == "여자"
+
+
+def test_generation_result_summary_counts_valid_and_quarantine():
+    result = GenerationResult(
+        batch=_make_single_user_batch(),
+        quarantine=[
+            QuarantineRecord(
+                source_uuid="p-2",
+                raw_row={"uuid": "p-2"},
+                raw_llm_response="",
+                error_type="api_error",
+                error_message="timeout",
+            )
+        ],
+    )
+    assert result.summary == {"valid": 1, "quarantined": 1, "api_error": 1,
+                              "invalid_json": 0, "schema_fail": 0}

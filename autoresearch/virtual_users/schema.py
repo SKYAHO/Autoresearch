@@ -37,6 +37,7 @@ class GenerationRequest(BaseModel):
     output_path: str = "asset/virtual_user/virtual_users_20s_100.parquet"
     raw_output_path: str = "data/raw/personas/nvidia_personas_kr.jsonl"
     warehouse_output_path: str = "data/generated/virtual_users_kr.jsonl"
+    quarantine_output_path: str = "data/generated/virtual_users_quarantine.jsonl"
 
     @field_validator("age_min", "age_max", "male_count", "female_count")
     @classmethod
@@ -279,3 +280,31 @@ class VirtualUserBatch(BaseModel):
             },
         )
         return payload
+
+
+class QuarantineRecord(BaseModel):
+    """생성 실패로 격리된 행. 후처리를 위해 원본과 raw 응답을 보존한다."""
+
+    source_uuid: str = ""
+    raw_row: dict[str, object] = Field(default_factory=dict)
+    raw_llm_response: str = ""
+    error_type: Literal["api_error", "invalid_json", "schema_fail"]
+    error_message: str = ""
+
+
+class GenerationResult(BaseModel):
+    """유효 batch와 격리 행을 함께 담는 배치 실행 결과."""
+
+    batch: "VirtualUserBatch"
+    quarantine: list[QuarantineRecord] = Field(default_factory=list)
+
+    @property
+    def summary(self) -> dict[str, int]:
+        counts = {"api_error": 0, "invalid_json": 0, "schema_fail": 0}
+        for record in self.quarantine:
+            counts[record.error_type] += 1
+        return {
+            "valid": len(self.batch.users),
+            "quarantined": len(self.quarantine),
+            **counts,
+        }
