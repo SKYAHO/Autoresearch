@@ -2,20 +2,22 @@
 
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Protocol
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from pydantic import ValidationError
 
-from autoresearch.virtual_users.persona_source import sample_personas_by_contract
+from autoresearch.virtual_users.glm_generator import assemble_virtual_user
+from autoresearch.virtual_users.persona_source import sample_raw_personas_by_contract
 from autoresearch.virtual_users.schema import (
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
     SOURCE_DATASET,
     GenerationRequest,
-    SourcePersona,
+    GenerationResult,
+    QuarantineRecord,
     VirtualUser,
     VirtualUserBatch,
 )
@@ -27,8 +29,10 @@ logger = logging.getLogger(__name__)
 class VirtualUserGenerator(Protocol):
     """pipeline이 provider 구현을 같은 방식으로 호출하기 위한 인터페이스."""
 
-    def generate(self, persona: SourcePersona, virtual_user_id: str) -> VirtualUser:
-        """SourcePersona 한 건을 VirtualUser 한 건으로 변환한다."""
+    model_name: str
+
+    def generate(self, raw_row: dict, virtual_user_id: str) -> str:
+        """raw persona dict 한 건에 대한 raw LLM 응답 text를 반환한다."""
 
         ...
 
@@ -193,49 +197,82 @@ def write_virtual_users_warehouse_jsonl(
     )
 
 
-def _generate_one_user(
+def write_quarantine_jsonl(
+    records: list[QuarantineRecord],
+    output_path: str | Path,
+) -> None:
+    """생성 실패로 격리된 행을 후처리를 위한 JSONL 파일로 저장한다."""
+
+    path = Path(output_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as file:
+        for record in records:
+            file.write(
+                json.dumps(record.model_dump(), ensure_ascii=False, default=str) + "\n"
+            )
+    logger.info(
+        "Wrote quarantine output",
+        extra={"output_path": str(path), "total": len(records)},
+    )
+
+
+def _generate_isolated(
     generator: VirtualUserGenerator,
-    index: int,
-    persona: SourcePersona,
-) -> tuple[int, VirtualUser]:
-    """virtual_user_id를 안정적으로 부여해 단일 user를 생성한다."""
+    records: list[dict],
+) -> tuple[list[VirtualUser], list[QuarantineRecord]]:
+    """행 단위로 생성을 격리해 한 행의 실패가 배치 전체를 중단시키지 않게 한다."""
 
-    virtual_user_id = f"vu_{index:04d}"
-    return index, generator.generate(persona, virtual_user_id=virtual_user_id)
-
-
-def _generate_users(
-    sampled: list[SourcePersona],
-    generator: VirtualUserGenerator,
-    max_concurrency: int,
-) -> list[VirtualUser]:
-    """요청된 concurrency로 virtual user를 생성하되 결과 순서를 보존한다."""
-
-    if max_concurrency == 1 or len(sampled) <= 1:
-        return [
-            _generate_one_user(generator, index, persona)[1]
-            for index, persona in enumerate(sampled, start=1)
-        ]
-
-    users_by_index: dict[int, VirtualUser] = {}
-    with ThreadPoolExecutor(max_workers=max_concurrency) as executor:
-        futures = [
-            executor.submit(_generate_one_user, generator, index, persona)
-            for index, persona in enumerate(sampled, start=1)
-        ]
-        for future in as_completed(futures):
-            index, user = future.result()
-            users_by_index[index] = user
-
-    return [users_by_index[index] for index in range(1, len(sampled) + 1)]
+    users: list[VirtualUser] = []
+    quarantine: list[QuarantineRecord] = []
+    for index, raw_row in enumerate(records, start=1):
+        virtual_user_id = f"vu_{index:04d}"
+        source_uuid = str(raw_row.get("uuid", ""))
+        try:
+            raw_text = generator.generate(raw_row, virtual_user_id)
+        except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
+            quarantine.append(
+                QuarantineRecord(
+                    source_uuid=source_uuid,
+                    raw_row=raw_row,
+                    raw_llm_response="",
+                    error_type="api_error",
+                    error_message=str(exc),
+                )
+            )
+            continue
+        try:
+            users.append(
+                assemble_virtual_user(raw_row, raw_text, virtual_user_id, generator.model_name)
+            )
+        except json.JSONDecodeError as exc:
+            quarantine.append(
+                QuarantineRecord(
+                    source_uuid=source_uuid,
+                    raw_row=raw_row,
+                    raw_llm_response=raw_text,
+                    error_type="invalid_json",
+                    error_message=str(exc),
+                )
+            )
+        except (ValidationError, ValueError, KeyError) as exc:
+            quarantine.append(
+                QuarantineRecord(
+                    source_uuid=source_uuid,
+                    raw_row=raw_row,
+                    raw_llm_response=raw_text,
+                    error_type="schema_fail",
+                    error_message=str(exc),
+                )
+            )
+    return users, quarantine
 
 
 def generate_virtual_user_batch(
     request: GenerationRequest,
-    records: list[SourcePersona],
+    records: list[dict],
     generator: VirtualUserGenerator,
-) -> VirtualUserBatch:
-    """persona 샘플링, virtual user 생성, batch/warehouse 파일 저장을 실행한다."""
+) -> GenerationResult:
+    """persona 샘플링, 행 단위 격리 생성, batch/warehouse/quarantine 파일 저장을 실행한다."""
 
     logger.info(
         "Starting virtual user batch generation",
@@ -251,7 +288,7 @@ def generate_virtual_user_batch(
         },
     )
 
-    sampled = sample_personas_by_contract(
+    sampled = sample_raw_personas_by_contract(
         records=records,
         age_min=request.age_min,
         age_max=request.age_max,
@@ -264,11 +301,7 @@ def generate_virtual_user_batch(
         extra={"sampled_count": len(sampled)},
     )
 
-    users = _generate_users(
-        sampled=sampled,
-        generator=generator,
-        max_concurrency=request.max_concurrency,
-    )
+    users, quarantine = _generate_isolated(generator, sampled)
 
     batch = VirtualUserBatch(
         schema_version=GENERATION_SCHEMA_VERSION,
@@ -277,14 +310,8 @@ def generate_virtual_user_batch(
         request=request,
         users=users,
     )
-    logger.info(
-        "Generated virtual users",
-        extra={
-            "generated_total": batch.summary["total"],
-            "generated_male": batch.summary["male"],
-            "generated_female": batch.summary["female"],
-        },
-    )
+    result = GenerationResult(batch=batch, quarantine=quarantine)
+    logger.info("Generated virtual user batch", extra=result.summary)
 
     output_path = Path(request.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -302,4 +329,5 @@ def generate_virtual_user_batch(
         batch=batch,
         output_path=request.warehouse_output_path,
     )
-    return batch
+    write_quarantine_jsonl(quarantine, request.quarantine_output_path)
+    return result
