@@ -254,7 +254,7 @@ def _generate_isolated(
                     error_message=str(exc),
                 )
             )
-        except (ValidationError, ValueError, KeyError) as exc:
+        except (ValidationError, ValueError, KeyError, TypeError, AttributeError) as exc:
             quarantine.append(
                 QuarantineRecord(
                     source_uuid=source_uuid,

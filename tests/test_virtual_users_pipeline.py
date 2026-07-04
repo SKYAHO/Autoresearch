@@ -24,8 +24,43 @@ class _OneBadGenerator(RuleBasedVirtualUserGenerator):
         return super().generate(raw_row, virtual_user_id)
 
 
+class _NonObjectJsonGenerator(RuleBasedVirtualUserGenerator):
+    """두 번째 호출에서만 valid JSON이지만 object가 아닌 body를 반환한다."""
+
+    def __init__(self):
+        super().__init__()
+        self._n = 0
+
+    def generate(self, raw_row, virtual_user_id):
+        self._n += 1
+        if self._n == 2:
+            return "[]"
+        return super().generate(raw_row, virtual_user_id)
+
+
 def _affinity_map_to_dict(value: object) -> dict[str, float]:
     return {key: score for key, score in value}
+
+
+def test_batch_isolates_non_object_json_row_as_schema_fail(tmp_path):
+    """valid JSON이지만 object가 아닌 body(TypeError)를 schema_fail로 격리한다."""
+
+    records = build_fixture_raw_persona_records(male_count=2, female_count=1)
+    request = GenerationRequest(
+        male_count=2, female_count=1, use_llm=False,
+        output_path=str(tmp_path / "vu.parquet"),
+        warehouse_output_path=str(tmp_path / "vu.jsonl"),
+        quarantine_output_path=str(tmp_path / "q.jsonl"),
+    )
+
+    result = generate_virtual_user_batch(request, records, _NonObjectJsonGenerator())
+
+    assert result.summary["valid"] == 2          # 배치가 안 죽음
+    assert result.summary["quarantined"] == 1
+    assert result.summary["schema_fail"] == 1
+    q_lines = (tmp_path / "q.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(q_lines) == 1
+    assert json.loads(q_lines[0])["error_type"] == "schema_fail"
 
 
 def test_batch_isolates_bad_row_and_quarantines_it(tmp_path):

@@ -28,7 +28,7 @@ GLM_SYSTEM_HARNESS = """너는 virtual user row generator다.
 아래 원본 persona를 근거로 지정된 JSON schema를 채운다.
 없는 정보를 지어내지 마라. 원본에서 추론 가능한 수준만 생성하라.
 category 값은 제공된 allowed category vocabulary 안에서만 선택하라.
-virtual_user_id, source_uuid, source_hash, source_persona_json, age_bucket, generation_meta는 만들지 마라(코드가 채운다).
+virtual_user_id, source_uuid, source_hash, source_persona_json, age_bucket, generation_meta, country, locale는 만들지 마라(코드가 채운다).
 출력은 지정된 JSON 하나만 허용한다. Markdown이나 주석을 넣지 마라.
 """
 
@@ -115,7 +115,10 @@ def assemble_virtual_user(
         "llm_model": model_name,
         "generated_at": _now_iso(),
     }
-    return VirtualUser.model_validate(payload)  # raises ValidationError -> schema_fail
+    # raises ValidationError -> schema_fail. Stamping above may also raise
+    # ValueError/KeyError/TypeError -> schema_fail (e.g. bad/missing "age",
+    # or a non-object payload such as a JSON list/number/string/null).
+    return VirtualUser.model_validate(payload)
 
 
 class RuleBasedVirtualUserGenerator:
