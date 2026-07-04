@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import logging
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 logger = logging.getLogger(__name__)
@@ -68,68 +68,10 @@ class GenerationRequest(BaseModel):
         return value
 
 
-class SourcePersona(BaseModel):
-    """Hugging Face raw persona를 정규화한 내부 입력 schema."""
-
-    uuid: str
-    age: int
-    sex: Literal["male", "female"]
-    occupation: str = ""
-    province: str = ""
-    district: str = ""
-    country: str = SOURCE_COUNTRY
-    country_code: str = SOURCE_COUNTRY
-    locale: str = SOURCE_LOCALE
-    persona: str = ""
-    hobbies_and_interests: str = ""
-    hobbies_and_interests_list: list[str] = Field(default_factory=list)
-    professional_persona: str = ""
-    skills_and_expertise: str = ""
-    skills_and_expertise_list: list[str] = Field(default_factory=list)
-    sports_persona: str = ""
-    arts_persona: str = ""
-    travel_persona: str = ""
-    culinary_persona: str = ""
-    family_persona: str = ""
-    cultural_background: str = ""
-    career_goals_and_ambitions: str = ""
-    marital_status: str = ""
-    military_status: str = ""
-    family_type: str = ""
-    housing_type: str = ""
-    education_level: str = ""
-    bachelors_field: str = ""
-    source_text: str = ""
-    source_hash: str = ""
-    raw_payload: dict[str, object] = Field(default_factory=dict)
-
-
 class YouTubeProfile(BaseModel):
     """추천 도메인에서 사용할 YouTube 소비 성향 feature 묶음."""
 
     primary_categories: list[str] = Field(min_length=1, max_length=5)
-    shorts_affinity: float = Field(ge=0.0, le=1.0)
-    longform_affinity: float = Field(ge=0.0, le=1.0)
-    trend_sensitivity: float = Field(ge=0.0, le=1.0)
-    comment_propensity: float = Field(ge=0.0, le=1.0)
-    watch_time_band: Literal["morning", "afternoon", "evening", "night", "mixed"]
-
-
-class DerivedVirtualUserFeatures(BaseModel):
-    """GLM이 생성하는 취향/관심사 기반 derived feature 계약."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    persona_summary: str
-    hobby_keywords: list[str] = Field(default_factory=list)
-    interest_keywords: list[str] = Field(default_factory=list)
-    lifestyle_keywords: list[str] = Field(default_factory=list)
-    food_keywords: list[str] = Field(default_factory=list)
-    travel_keywords: list[str] = Field(default_factory=list)
-    career_keywords: list[str] = Field(default_factory=list)
-    family_context_keywords: list[str] = Field(default_factory=list)
-    primary_categories: list[str] = Field(min_length=1, max_length=5)
-    category_evidence: dict[str, list[str]] = Field(default_factory=dict)
     shorts_affinity: float = Field(ge=0.0, le=1.0)
     longform_affinity: float = Field(ge=0.0, le=1.0)
     trend_sensitivity: float = Field(ge=0.0, le=1.0)

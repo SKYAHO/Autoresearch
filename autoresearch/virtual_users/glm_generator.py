@@ -8,19 +8,13 @@ from datetime import UTC, datetime
 
 from pydantic import ValidationError  # noqa: F401  (호출부에서 사용)
 
-from autoresearch.virtual_users.categories import (
-    DEFAULT_KAGGLE_YOUTUBE_CATEGORIES,
-    build_category_affinity,
-)
-from autoresearch.virtual_users.interests import extract_virtual_user_interests
+from autoresearch.virtual_users.categories import DEFAULT_KAGGLE_YOUTUBE_CATEGORIES
 from autoresearch.virtual_users.persona_source import record_sex
 from autoresearch.virtual_users.schema import (
-    DerivedVirtualUserFeatures,
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
     SOURCE_COUNTRY,
     SOURCE_LOCALE,
-    SourcePersona,
     VirtualUser,
     age_bucket_for_age,
 )
@@ -93,90 +87,10 @@ Constraints:
     return prompt
 
 
-def parse_virtual_user_json(raw_text: str) -> DerivedVirtualUserFeatures:
-    """GLM raw response를 derived-only feature schema로 파싱하고 검증한다."""
-
-    try:
-        payload = json.loads(raw_text)
-    except json.JSONDecodeError as exc:
-        logger.warning("Failed to parse LLM virtual user JSON", exc_info=True)
-        raise ValueError("LLM response must be valid JSON") from exc
-
-    features = DerivedVirtualUserFeatures.model_validate(payload)
-    logger.debug(
-        "Parsed derived virtual user JSON",
-        extra={
-            "primary_categories": features.primary_categories,
-            "prompt_version": PROMPT_VERSION,
-        },
-    )
-    return features
-
-
 def _now_iso() -> str:
     """생성 metadata에 넣을 UTC ISO timestamp를 초 단위로 반환한다."""
 
     return datetime.now(UTC).replace(microsecond=0).isoformat()
-
-
-def _virtual_user_from_derived_features(
-    persona: SourcePersona,
-    features: DerivedVirtualUserFeatures,
-    virtual_user_id: str,
-    model_name: str,
-) -> VirtualUser:
-    """Source factual field와 GLM derived feature를 병합해 VirtualUser를 만든다."""
-
-    category_affinity = build_category_affinity(
-        primary_categories=features.primary_categories,
-        category_evidence=features.category_evidence,
-        allowed_categories=set(DEFAULT_KAGGLE_YOUTUBE_CATEGORIES),
-    )
-    user = VirtualUser(
-        virtual_user_id=virtual_user_id,
-        source_uuid=persona.uuid,
-        source_hash=persona.source_hash,
-        age=persona.age,
-        sex=persona.sex,
-        age_bucket=age_bucket_for_age(persona.age),
-        marital_status=persona.marital_status,
-        military_status=persona.military_status,
-        family_type=persona.family_type,
-        housing_type=persona.housing_type,
-        education_level=persona.education_level,
-        bachelors_field=persona.bachelors_field,
-        occupation=persona.occupation,
-        province=persona.province,
-        district=persona.district,
-        country=persona.country or SOURCE_COUNTRY,
-        locale=persona.locale or SOURCE_LOCALE,
-        persona_summary=features.persona_summary,
-        hobby_keywords=features.hobby_keywords,
-        interest_keywords=features.interest_keywords,
-        lifestyle_keywords=features.lifestyle_keywords,
-        food_keywords=features.food_keywords,
-        travel_keywords=features.travel_keywords,
-        career_keywords=features.career_keywords,
-        family_context_keywords=features.family_context_keywords,
-        category_evidence=features.category_evidence,
-        category_affinity=category_affinity,
-        source_persona_json=persona.model_dump(),
-        youtube_profile={
-            "primary_categories": features.primary_categories,
-            "shorts_affinity": features.shorts_affinity,
-            "longform_affinity": features.longform_affinity,
-            "trend_sensitivity": features.trend_sensitivity,
-            "comment_propensity": features.comment_propensity,
-            "watch_time_band": features.watch_time_band,
-        },
-        generation_meta={
-            "schema_version": GENERATION_SCHEMA_VERSION,
-            "prompt_version": PROMPT_VERSION,
-            "llm_model": model_name,
-            "generated_at": _now_iso(),
-        },
-    )
-    return user
 
 
 def assemble_virtual_user(
