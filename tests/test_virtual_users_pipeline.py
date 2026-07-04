@@ -231,3 +231,21 @@ def test_generate_virtual_user_batch_writes_warehouse_jsonl(tmp_path):
     assert rows[0]["source_persona_json"]["uuid"] == rows[0]["source_uuid"]
     assert "primary_categories" in rows[0]
     assert "watch_time_band" in rows[0]
+
+
+def test_end_to_end_100_rows_rule_based(tmp_path):
+    records = build_fixture_raw_persona_records(male_count=60, female_count=60)
+    request = GenerationRequest(
+        male_count=50, female_count=50, use_llm=False,
+        output_path=str(tmp_path / "vu.parquet"),
+        warehouse_output_path=str(tmp_path / "vu.jsonl"),
+        quarantine_output_path=str(tmp_path / "q.jsonl"),
+    )
+
+    result = generate_virtual_user_batch(request, records, RuleBasedVirtualUserGenerator())
+
+    assert result.summary == {"valid": 100, "quarantined": 0,
+                              "api_error": 0, "invalid_json": 0, "schema_fail": 0}
+    warehouse_lines = (tmp_path / "vu.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(warehouse_lines) == 100
+    assert result.batch.summary == {"total": 100, "male": 50, "female": 50}
