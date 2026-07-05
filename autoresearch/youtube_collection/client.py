@@ -417,8 +417,19 @@ class ResilientYouTubeClient:
         }[resource]
 
     def _check_call_budget(self) -> None:
-        """max_total_calls 폭주 가드. Task 8 에서 본격 구현, Task 3는 스텁."""
-        # Task 8 에서 채움.
+        """max_total_calls 폭주 가드. 호출 수 누적 초과 시 CollectionExhausted.
+
+        _retry_with_backoff 가 매 시도 전(증가 전) 호출. 따라서
+        `_call_count >= _max_total_calls` 일 때 즉시 폭주 확정 — 무효 Key 반복
+        루프나 IP밴 시그니처 실패 폭주 등으로 호출 수가 풀리지 못하는 상황을
+        per-run 총량으로 막는다. Key 값/헤더/본문은 기록하지 않는다
+        (CollectionExhausted 메시지에도 call_count 정수만).
+        """
+        if self._call_count >= self._max_total_calls:
+            raise CollectionExhausted(
+                f"폭주 가드: max_total_calls={self._max_total_calls} 도달 "
+                f"(call_count={self._call_count})"
+            )
 
     def _record_ip_ban_candidate(
         self, key: str, resource: str, reason: str | None

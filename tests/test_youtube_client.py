@@ -387,3 +387,24 @@ def test_ip_ban_signature_uses_proxy_when_configured():
 
     with pytest.raises(CollectionExhausted):
         client.make_callables().list_videos(part="snippet")
+
+
+def test_max_total_calls_guards_against_runaway():
+    """max_total_calls=3 초과 → CollectionExhausted (무효 Key 반복 루프 방지)."""
+
+    def factory(key):
+        def list_videos(**kw):
+            return _fake_videos_response()  # 정상이어도 호출 수 누적
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(
+        keys=["k1"], max_total_calls=3, _service_factory=factory
+    )
+    callables = client.make_callables()
+    callables.list_videos(part="a")
+    callables.list_channels(part="b")
+    callables.list_categories(part="c")
+
+    with pytest.raises(CollectionExhausted, match="폭주 가드"):
+        callables.list_videos(part="d")  # 4회째
