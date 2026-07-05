@@ -627,3 +627,28 @@ def test_success_path_logs_ok(caplog):
         "youtube call ok" in r.getMessage() and "key_index=0" in r.getMessage()
         for r in caplog.records
     )
+
+
+def test_ip_ban_signature_switches_to_proxy(monkeypatch):
+    """전 Key 동일 403 + proxy_url 설정 → _call_via_proxy 로 전환 성공."""
+    factory = _make_service_that_raises(
+        _RetryableHttpError(403, "suspended", None),
+        _RetryableHttpError(403, "suspended", None),
+    )
+    client = ResilientYouTubeClient(
+        keys=["k1", "k2"],
+        proxy_url="https://proxy.example.com",
+        _service_factory=factory,
+    )
+
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return {"items": [{"id": "v1"}]}
+        text = ""
+
+    monkeypatch.setattr("requests.get", lambda *a, **k: FakeResp())
+
+    result = client._call_with_resilience("videos", {"part": "snippet"})
+    assert result == {"items": [{"id": "v1"}]}
+    assert client._breaker_open is True  # 시그니처 확정 마킹

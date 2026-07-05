@@ -421,6 +421,21 @@ class ResilientYouTubeClient:
             return k
         return None
 
+    def _pick_proxy_key(self) -> str | None:
+        """프록시 경로용 Key 선택. _invalid_keys(영구 무효)만 스킵.
+
+        IP밴 시그니처 성립 후 _call_via_proxy 로 진입하는 시점에는 모든 활성
+        Key 가 _ip_ban_candidates 에 쌓여 있다(직접 경로 egress IP 기준).
+        프록시는 다른 egress IP 를 사용하므로 IP밴 후보 여부는 경로 무효의
+        원인이 아니다. 따라서 _ip_ban_candidates 를 스킵하지 않고
+        _invalid_keys(keyInvalid/keyExpired/401 등 Key 자체 무효)만 스킵한다.
+        """
+        for k in self._keys:
+            if k in self._invalid_keys:
+                continue
+            return k
+        return None
+
     def _key_index(self, key: str) -> int:
         """로깅용 Key 식별자(값 아님). 0-base."""
         return self._keys.index(key)
@@ -507,7 +522,7 @@ class ResilientYouTubeClient:
         host = urlparse(self._proxy_url or "").hostname or "(unknown)"
         url = f"{(self._proxy_url or '').rstrip('/')}/youtube/v3/{resource}"
         for _ in range(self._max_proxy_attempts):
-            key = self._pick_active_key()
+            key = self._pick_proxy_key()
             if key is None:
                 raise CollectionExhausted(
                     f"프록시 경로: 활성 Key 없음 resource={resource} proxy_host={host}"
