@@ -56,6 +56,34 @@ def test_rejects_key_query_param(monkeypatch):
     assert "forbidden" in response.text
 
 
+def test_upstream_429_marks_unhealthy(monkeypatch):
+    """upstream 429 반복 시 unhealthy 마킹 → /health 503."""
+    monkeypatch.setattr(
+        "proxy.app._upstream_get",
+        lambda *a, **k: _FakeResp(429, {"error": {"errors": [{"reason": "quotaExceeded"}], "code": 429}}),
+    )
+    # 임계치(3회) 도달 전에는 정상 응답 전달
+    for _ in range(3):
+        r = client.get("/youtube/v3/videos", headers={"X-Goog-Api-Key": "k1"})
+        assert r.status_code == 429
+    # 3회 후 unhealthy
+    health = client.get("/health")
+    assert health.status_code == 503
+
+
+def test_upstream_success_clears_unhealthy(monkeypatch):
+    """정상 응답 시 unhealthy 플래그 리셋."""
+    app.state.unhealthy = False
+    app.state._unhealthy_streak = 3  # 거의 임계
+    monkeypatch.setattr(
+        "proxy.app._upstream_get",
+        lambda *a, **k: _FakeResp(200, {"items": []}),
+    )
+    client.get("/youtube/v3/videos", headers={"X-Goog-Api-Key": "k1"})
+    assert app.state._unhealthy_streak == 0
+    assert app.state.unhealthy is False
+
+
 class _FakeResp:
     def __init__(self, status_code, payload):
         self.status_code = status_code

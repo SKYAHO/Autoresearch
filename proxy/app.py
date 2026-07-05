@@ -15,6 +15,8 @@ UPSTREAM_TIMEOUT = 10.0
 
 app = FastAPI(title="youtube-proxy", docs_url=None, redoc_url=None)
 app.state.unhealthy = False  # Task 2 에서 unhealthy 마킹 시 사용
+app.state._unhealthy_streak = 0
+UNHEALTHY_THRESHOLD = 3
 
 
 def _upstream_get(url: str, *, params, headers, timeout):
@@ -55,5 +57,11 @@ def forward(rest_path: str, request: Request, x_goog_api_key: str = Header(defau
         headers=upstream_headers,
         timeout=UPSTREAM_TIMEOUT,
     )
-    # upstream 응답을 그대로 전달(status 포함).
-    return JSONResponse(status_code=resp.status_code, content=resp.json())
+    status = resp.status_code
+    if status == 200:
+        app.state._unhealthy_streak = 0
+    elif status == 429 or status >= 500:
+        app.state._unhealthy_streak += 1
+        if app.state._unhealthy_streak >= UNHEALTHY_THRESHOLD:
+            app.state.unhealthy = True
+    return JSONResponse(status_code=status, content=resp.json())
