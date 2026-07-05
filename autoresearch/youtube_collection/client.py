@@ -19,7 +19,7 @@ from typing import NamedTuple, Callable
 
 from tenacity import (
     Retrying,
-    retry_if_exception_type,
+    retry_if_exception,
     stop_after_attempt,
     wait_exponential_jitter,
 )
@@ -150,6 +150,19 @@ def _classify_error(status: int, reason: str | None) -> Verdict:
     return Verdict.BACKOFF
 
 
+def _is_backoff_error(exc: BaseException) -> bool:
+    """tenacity retry predicate — BACKOFF 판정된 _RetryableHttpError 만 재시도.
+
+    ROTATE/TERMINAL_*/IP_BAN_CANDIDATE 는 tenacity 가 재시도하면 안 된다.
+    즉시 상위 _call_with_resilience 외곽 루프로 승격시켜야 한다
+    (회전·터미널 판정은 외곽 루프의 책임). 이 함수가 False 면 tenacity 는
+    reraise=True 정책에 따라 즉시 예외를 다시 던진다.
+    """
+    if isinstance(exc, _RetryableHttpError):
+        return _classify_error(exc.status, exc.reason) is Verdict.BACKOFF
+    return False
+
+
 class CollectionExhausted(Exception):
     """모든 Key·경로마저 실패한 최종 폭주 상태. DAG 가 잡아 skip+알림으로 승격."""
 
@@ -267,18 +280,26 @@ class ResilientYouTubeClient:
                         f"일시 장애 backoff 소진 resource={resource} "
                         f"status={e.status} reason={e.reason}"
                     )
-                # ROTATE/TERMINAL/IP_BAN_CANDIDATE 는 후속 태스크에서 처리.
-                # Task 4에서는 BACKOFF만 다루므로, 나머지는 우선 terminal 로 승격(임시).
+                if verdict is Verdict.ROTATE:
+                    # 현재 Key 무효화(keyInvalid/keyExpired/401) — 즉시 다음 Key 회전.
+                    self._invalid_keys.add(key)
+                    continue  # while 재시도 → _pick_active_key 가 다음 활성 Key 반환
+                # TERMINAL_QUOTA/TERMINAL_CONFIG/IP_BAN_CANDIDATE — 후속 태스크.
                 raise CollectionExhausted(
                     f"verdict={verdict} resource={resource} status={e.status} reason={e.reason}"
                 )
 
     def _retry_with_backoff(self, list_callable: Callable[..., dict], kw: dict) -> dict:
-        """tenacity — BACKOFF 분류 에러만 재시도. 다른 verdict는 즉시 예외로 승격."""
+        """tenacity — BACKOFF 분류 에러만 재시도. 다른 verdict는 즉시 예외로 승격.
+
+        ROTATE/TERMINAL/IP_BAN_CANDIDATE 판정 에러는 tenacity 가 재시도하지
+        않고(see _is_backoff_error) 즉시 _RetryableHttpError 를 다시 던져
+        상위 _call_with_resilience 외곽 루프가 회전·터미널 판정을 내리게 한다.
+        """
         for attempt in Retrying(
             stop=stop_after_attempt(self._max_retries),
             wait=wait_exponential_jitter(initial=1, max=30),
-            retry=retry_if_exception_type(_RetryableHttpError),
+            retry=retry_if_exception(_is_backoff_error),
             reraise=True,
         ):
             with attempt:

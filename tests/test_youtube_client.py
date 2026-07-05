@@ -6,8 +6,13 @@ import pytest
 import requests
 
 from autoresearch.youtube_collection.client import (
+    CollectionExhausted,
+    ResilientYouTubeClient,
     Verdict,
+    YouTubeCallables,
     _classify_error,
+    _parse_reason_from_content,
+    _try_wrap_http_error,
 )
 
 
@@ -46,15 +51,6 @@ from autoresearch.youtube_collection.client import (
 )
 def test_classify_error_maps_youtube_reasons(status, reason, expected):
     assert _classify_error(status, reason) is expected
-
-
-from autoresearch.youtube_collection.client import (
-    CollectionExhausted,
-    ResilientYouTubeClient,
-    YouTubeCallables,
-    _parse_reason_from_content,
-    _try_wrap_http_error,
-)
 
 
 def _fake_videos_response():
@@ -203,3 +199,71 @@ def test_parse_reason_from_content_malformed_returns_none():
     assert _parse_reason_from_content(b"") is None
     assert _parse_reason_from_content(None) is None
     assert _parse_reason_from_content(b'{"error": {}}') is None
+
+
+def test_key_invalid_rotates_to_next_key_and_succeeds():
+    """k1 → 400 keyInvalid → k2 → 200. Key 무효화 마킹 + 회전 성공."""
+    state = {"k1_calls": 0}
+
+    def factory(key):
+        def list_videos(**kw):
+            if key == "k1":
+                state["k1_calls"] += 1
+                raise FakeHttpError(400, "keyInvalid")
+            return _fake_videos_response()  # k2 정상
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(
+        keys=["k1", "k2"], max_retries=2, _service_factory=factory
+    )
+    result = client.make_callables().list_videos(part="snippet")
+
+    assert result == _fake_videos_response()
+    assert state["k1_calls"] == 1  # 1회만 호출, tenacity 반복 X (ROTATE는 즉시)
+
+
+def test_key_expired_treated_same_as_key_invalid():
+    """400 keyExpired → 회전."""
+    def factory(key):
+        def list_videos(**kw):
+            if key == "k1":
+                raise FakeHttpError(400, "keyExpired")
+            return _fake_videos_response()
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(keys=["k1", "k2"], _service_factory=factory)
+    result = client.make_callables().list_videos(part="snippet")
+
+    assert result == _fake_videos_response()
+
+
+def test_401_auth_rotates_to_next_key():
+    """401 unauthorized → 회전."""
+    def factory(key):
+        def list_videos(**kw):
+            if key == "k1":
+                raise FakeHttpError(401, "unauthorized")
+            return _fake_videos_response()
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(keys=["k1", "k2"], _service_factory=factory)
+    result = client.make_callables().list_videos(part="snippet")
+
+    assert result == _fake_videos_response()
+
+
+def test_all_keys_invalid_raises_collection_exhausted():
+    """k1, k2 모두 keyInvalid → CollectionExhausted."""
+    def factory(key):
+        def list_videos(**kw):
+            raise FakeHttpError(400, "keyInvalid")
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(keys=["k1", "k2"], _service_factory=factory)
+
+    with pytest.raises(CollectionExhausted):
+        client.make_callables().list_videos(part="snippet")
