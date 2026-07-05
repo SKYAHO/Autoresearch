@@ -1,4 +1,5 @@
 import json
+import logging
 import socket
 import ssl
 
@@ -48,6 +49,7 @@ from autoresearch.youtube_collection.client import (
         (503, None, Verdict.BACKOFF),
         (403, "someUndefinedReason", Verdict.IP_BAN_CANDIDATE),  # 기타 403
         (403, "", Verdict.IP_BAN_CANDIDATE),  # 빈 reason 403
+        (400, "", Verdict.BACKOFF),  # unknown 4xx → 일시적 기본 정책
     ],
 )
 def test_classify_error_maps_youtube_reasons(status, reason, expected):
@@ -492,3 +494,51 @@ def test_service_factory_cached_per_key():
     callables.list_categories(part="c")
 
     assert len(factory_calls) == 1
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ssl.SSLEOFError("ssl eof"),
+        BrokenPipeError("broken pipe"),
+        InterruptedError("interrupted"),
+        TimeoutError("timed out"),
+    ],
+)
+def test_try_wrap_http_error_wraps_extended_network_errors(exc):
+    """SSLEOFError/BrokenPipeError/InterruptedError/TimeoutError → 599 래핑(사각지대 보강)."""
+    wrapped = _try_wrap_http_error(exc)
+    assert wrapped is not None
+    assert wrapped.status == 599
+    assert wrapped.reason is None
+
+
+def test_call_via_proxy_masks_credentials_in_proxy_url():
+    """proxy_url 임베디드 credentials 는 예외 메시지에 노출 안 함(호스트만)."""
+
+    client = ResilientYouTubeClient(
+        keys=["k1"],
+        proxy_url="https://user:secret@proxy.example.com@proxy.example.com:8080",
+    )
+
+    with pytest.raises(CollectionExhausted) as exc_info:
+        client._call_via_proxy("videos", {})
+
+    msg = str(exc_info.value)
+    assert "secret" not in msg
+    assert "user:secret" not in msg
+    assert "proxy.example.com" in msg  # 호스트는 표시
+
+
+def test_success_path_logs_ok(caplog):
+    """정상 경로 성공 시 info 로그 기록(관측성, key_index 만)."""
+    factory = _make_service_that_raises(then_return=_fake_videos_response())
+    client = ResilientYouTubeClient(keys=["k1"], _service_factory=factory)
+
+    with caplog.at_level(logging.INFO, logger="autoresearch.youtube_collection.client"):
+        client.make_callables().list_videos(part="snippet")
+
+    assert any(
+        "youtube call ok" in r.getMessage() and "key_index=0" in r.getMessage()
+        for r in caplog.records
+    )

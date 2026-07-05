@@ -106,8 +106,18 @@ def _try_wrap_http_error(exc: Exception) -> _RetryableHttpError | None:
         status = response.status_code
         reason = _parse_reason_from_content(getattr(response, "content", b""))
         return _RetryableHttpError(status, reason, exc)
-    # 네트워크 계층(gaierror/SSLError/Timeout/Connection) — 599 가상 코드로 일시적 취급.
-    net_types = ("gaierror", "SSLError", "Timeout", "Connection", "ConnectionError")
+    # 네트워크 계층 — 599 가상 코드로 일시적 취급.
+    # SSLEOFError/BrokenPipeError/InterruptedError/TimeoutError/OSError 등 사각지대 보강.
+    net_types = (
+        "gaierror",
+        "SSLError",
+        "SSLEOFError",
+        "Timeout",
+        "Connection",
+        "OSError",
+        "BrokenPipeError",
+        "InterruptedError",
+    )
     if any(t in type(exc).__name__ for t in net_types):
         return _RetryableHttpError(599, None, exc)
     return None
@@ -290,7 +300,13 @@ class ResilientYouTubeClient:
             list_callable = self._get_list_callable(key, resource)
             try:
                 # tenacity 안쪽: 현재 Key+경로에 대해 backoff.
-                return self._retry_with_backoff(list_callable, kw)
+                result = self._retry_with_backoff(list_callable, kw)
+                logger.info(
+                    "youtube call ok resource=%s key_index=%d route=normal",
+                    resource,
+                    self._key_index(key),
+                )
+                return result
             except _RetryableHttpError as e:
                 # tenacity 가 backoff 소진하고 던진 예외 — verdict 로 분기.
                 verdict = _classify_error(e.status, e.reason)
@@ -481,7 +497,12 @@ class ResilientYouTubeClient:
         """프록시 경로 호출. 1차 PR 은 프록시 미배포 → 시그니처 후 즉시 CollectionExhausted.
 
         2차 PR 에서 requests.get(proxy_url/youtube/v3/...) 로 구현.
+        예외 메시지에는 proxy_url 전체(임베디드 credentials 포함)가 아닌
+        호스트만 기록하여 로그 유출을 방지한다.
         """
+        from urllib.parse import urlparse
+
+        host = urlparse(self._proxy_url or "").hostname or "(unknown)"
         raise CollectionExhausted(
-            f"프록시 경로 미구현(1차 PR) resource={resource} proxy_url={self._proxy_url}"
+            f"프록시 경로 미구현(1차 PR) resource={resource} proxy_host={host}"
         )
