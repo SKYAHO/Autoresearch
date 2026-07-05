@@ -235,6 +235,7 @@ class ResilientYouTubeClient:
         # per-run 상태
         self._invalid_keys: set[str] = set()
         self._call_count = 0
+        self._ip_ban_candidates: dict[str, str] = {}  # key → reason (per resource 라운드)
 
     def make_callables(self) -> YouTubeCallables:
         """fetch.collect_trending 용 (list_videos, list_channels, list_categories).
@@ -284,7 +285,21 @@ class ResilientYouTubeClient:
                     # 현재 Key 무효화(keyInvalid/keyExpired/401) — 즉시 다음 Key 회전.
                     self._invalid_keys.add(key)
                     continue  # while 재시도 → _pick_active_key 가 다음 활성 Key 반환
-                # TERMINAL_QUOTA/TERMINAL_CONFIG/IP_BAN_CANDIDATE — 후속 태스크.
+                if verdict is Verdict.TERMINAL_QUOTA:
+                    # 프로젝트 일일 쿼터 소진 — Key 회전 무효(전 Key 동일). 즉시 skip 승격.
+                    raise CollectionExhausted(
+                        f"프로젝트 일일 쿼터 소진 — 회전 무효 resource={resource} reason={e.reason}"
+                    )
+                if verdict is Verdict.TERMINAL_CONFIG:
+                    # accessNotConfigured — 프로젝트 스코프 설정 문제. 회전 무효. 즉시 skip.
+                    raise CollectionExhausted(
+                        f"프로젝트 설정 문제(accessNotConfigured) — 회전 무효 "
+                        f"resource={resource}"
+                    )
+                if verdict is Verdict.IP_BAN_CANDIDATE:
+                    # 후속 태스크(시그니처 누적).
+                    self._record_ip_ban_candidate(key, resource, e.reason)
+                    continue  # 임시: 다음 Key (Task 7 에서 시그니처 판정으로 교체)
                 raise CollectionExhausted(
                     f"verdict={verdict} resource={resource} status={e.status} reason={e.reason}"
                 )
@@ -357,3 +372,7 @@ class ResilientYouTubeClient:
     def _check_call_budget(self) -> None:
         """max_total_calls 폭주 가드. Task 8 에서 본격 구현, Task 3는 스텁."""
         # Task 8 에서 채움.
+
+    def _record_ip_ban_candidate(self, key: str, resource: str, reason: str | None) -> None:
+        """Task 7 에서 시그니처 판정에 사용. Task 6 은 기록만."""
+        self._ip_ban_candidates[key] = reason or ""

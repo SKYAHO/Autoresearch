@@ -267,3 +267,38 @@ def test_all_keys_invalid_raises_collection_exhausted():
 
     with pytest.raises(CollectionExhausted):
         client.make_callables().list_videos(part="snippet")
+
+
+def test_quota_exceeded_skips_without_rotation():
+    """403 quotaExceeded → 회전 없이 즉시 CollectionExhausted(프로젝트 단위)."""
+    call_count = {"n": 0}
+
+    def factory(key):
+        def list_videos(**kw):
+            call_count["n"] += 1
+            raise FakeHttpError(403, "quotaExceeded")
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(keys=["k1", "k2"], _service_factory=factory)
+
+    with pytest.raises(CollectionExhausted):
+        client.make_callables().list_videos(part="snippet")
+    # 회전 안 했음 — k1 1회 호출 후 즉시 터미널.
+    assert call_count["n"] == 1
+
+
+def test_access_not_configured_skips_without_rotation():
+    """403 accessNotConfigured → 회전 없이 즉시 CollectionExhausted(프로젝트 스코프)."""
+    call_count = {"n": 0}
+
+    def factory(key):
+        def list_videos(**kw):
+            call_count["n"] += 1
+            raise FakeHttpError(403, "accessNotConfigured")
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(keys=["k1", "k2"], _service_factory=factory)
+
+    with pytest.raises(CollectionExhausted):
+        client.make_callables().list_videos(part="snippet")
+    assert call_count["n"] == 1  # k2 로 회전 안 함
