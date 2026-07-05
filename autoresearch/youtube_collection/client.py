@@ -437,7 +437,9 @@ class ResilientYouTubeClient:
         """IP밴 시그니처 판정. None=계속 회전, Verdict.IP_BAN_CANDIDATE=터미널 판정.
 
         엣지 규칙(설계 §5.2):
-        - reason 파싱 실패(None) → 시그니처 미카운트. 회전 계속.
+        - reason 파싱 실패(None) → 시그니처 미카운트. 단 회전 추적용 sentinel("")
+          으로 마킹하여 _pick_active_key 가 같은 key 를 반복 선택하지 않게 함
+          (tight loop 방지). 시그니처 판정에서는 빈 reason 후보 제외.
         - 활성 Key ≥2 일 때만 시그니처 인정.
         - 모든 활성 Key 가 candidate 이고 동일 reason 일 때 성립.
         - 부분 성공(일부 Key 만 candidate) → 불성립.
@@ -447,17 +449,21 @@ class ResilientYouTubeClient:
         _invalid_keys(ROTATE 영구 무효)만 제외.
         """
         if reason is None:
-            # reason 파싱 실패 → 이미 BACKOFF 로 분류되어야 하지만 안전망.
+            # reason 파싱 실패 → 시그니처 미카운트이나, 회전 추적용 sentinel 마킹.
+            # 이로써 _pick_active_key 가 같은 key 를 반복 선택하는 tight loop 방지.
+            self._ip_ban_candidates[key] = ""
             return None
         self._ip_ban_candidates[key] = reason
         active_keys = [k for k in self._keys if k not in self._invalid_keys]
         if len(active_keys) < 2:
             # 최소 Key≥2 아니면 시그니처 불성립. 회전 계속(결국 소진).
             return None
+        # 빈 reason(sentinel) 후보는 시그니처 판정에서 제외(엣지: reason=None 미카운트).
+        candidates_with_reason = {k: v for k, v in self._ip_ban_candidates.items() if v}
         # 모든 활성 Key 가 이미 candidate 인가?(부분 성공이면 일부만 candidate)
-        if all(k in self._ip_ban_candidates for k in active_keys):
+        if all(k in candidates_with_reason for k in active_keys):
             # 동일 reason 인가?(엣지: reason 정확히 같아야)
-            reasons = {self._ip_ban_candidates[k] for k in active_keys}
+            reasons = {candidates_with_reason[k] for k in active_keys}
             if len(reasons) == 1:
                 # 시그니처 성립.
                 return Verdict.IP_BAN_CANDIDATE

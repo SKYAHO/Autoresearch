@@ -12,6 +12,7 @@ from autoresearch.youtube_collection.client import (
     YouTubeCallables,
     _classify_error,
     _parse_reason_from_content,
+    _RetryableHttpError,
     _try_wrap_http_error,
 )
 
@@ -408,3 +409,61 @@ def test_max_total_calls_guards_against_runaway():
 
     with pytest.raises(CollectionExhausted, match="폭주 가드"):
         callables.list_videos(part="d")  # 4회째
+
+
+def test_403_reason_none_rotates_to_next_key():
+    """403 + reason=None(본문 파싱 불가, CDN/IP밴 에러페이지) → IP_BAN_CANDIDATE
+    이지만 시그니처 미카운트. key1 회전 마킹(sentinel) → key2 로 넘어감.
+
+    같은 key 로 반복 시도하지 않음(타이트 루프 방지, 설계 §5.2 엣지).
+    """
+    calls = []
+
+    def factory(key):
+        def list_videos(**kw):
+            calls.append(key)
+            if key == "k1":
+                raise _RetryableHttpError(403, None)
+            return _fake_videos_response()
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(keys=["k1", "k2"], _service_factory=factory)
+    result = client.make_callables().list_videos(part="snippet")
+
+    assert result == _fake_videos_response()
+    assert calls == ["k1", "k2"]
+
+
+def test_403_reason_none_both_keys_exhausts_without_loop():
+    """전 Key 403 reason=None → 시그니처 미성립 → 회전 소진 → CollectionExhausted.
+
+    각 key 는 1회씩만 호출(tight loop 없이 call_budget 도달 전 소진).
+    """
+    calls = []
+
+    def factory(key):
+        def list_videos(**kw):
+            calls.append(key)
+            raise _RetryableHttpError(403, None)
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(keys=["k1", "k2"], _service_factory=factory)
+
+    with pytest.raises(CollectionExhausted):
+        client.make_callables().list_videos(part="snippet")
+
+    assert calls.count("k1") == 1
+    assert calls.count("k2") == 1
+
+
+def test_record_ip_ban_candidate_reason_none_does_not_count_signature():
+    """reason=None 후보는 시그니처 판정에서 제외(설계 §5.2 엣지 규칙).
+
+    단 회전 추적용 sentinel("") 으로 마킹하여 _pick_active_key 가 스킵하게 함.
+    """
+    client = ResilientYouTubeClient(keys=["k1", "k2"])
+    assert client._record_ip_ban_candidate("k1", "videos", None) is None
+    assert client._record_ip_ban_candidate("k2", "videos", None) is None
+    assert client._ip_ban_candidates == {"k1": "", "k2": ""}
