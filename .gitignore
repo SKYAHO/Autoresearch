@@ -12,3 +12,7 @@ __pycache__/
 # Generated data artifacts
 data/generated/
 /tmp/
+
+# Large raw datasets (Kaggle backfill 원본/샘플 등)
+*.zip
+data/raw/youtube/
