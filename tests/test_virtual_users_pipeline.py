@@ -3,10 +3,14 @@ import logging
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from autoresearch.virtual_users.glm_generator import RuleBasedVirtualUserGenerator
 from autoresearch.virtual_users.persona_source import build_fixture_raw_persona_records
-from autoresearch.virtual_users.pipeline import generate_virtual_user_batch
+from autoresearch.virtual_users.pipeline import (
+    BatchGenerationError,
+    generate_virtual_user_batch,
+)
 from autoresearch.virtual_users.schema import GenerationRequest
 
 
@@ -22,6 +26,13 @@ class _OneBadGenerator(RuleBasedVirtualUserGenerator):
         if self._n == 2:
             return "{not valid json"
         return super().generate(raw_row, virtual_user_id)
+
+
+class _AllBadGenerator(RuleBasedVirtualUserGenerator):
+    """모든 호출에서 잘못된 JSON을 반환해 전량 실패를 만든다."""
+
+    def generate(self, raw_row, virtual_user_id):
+        return "{not valid json"
 
 
 class _NonObjectJsonGenerator(RuleBasedVirtualUserGenerator):
@@ -80,6 +91,43 @@ def test_batch_isolates_bad_row_and_quarantines_it(tmp_path):
     q_lines = (tmp_path / "q.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(q_lines) == 1
     assert json.loads(q_lines[0])["error_type"] == "invalid_json"
+
+
+def test_batch_raises_when_quarantine_ratio_exceeds_threshold(tmp_path):
+    """전량 실패는 격리 파일을 남기고 BatchGenerationError로 종료한다."""
+
+    records = build_fixture_raw_persona_records(male_count=2, female_count=1)
+    quarantine_path = tmp_path / "q.jsonl"
+    request = GenerationRequest(
+        male_count=2, female_count=1, use_llm=False,
+        output_path=str(tmp_path / "vu.parquet"),
+        warehouse_output_path=str(tmp_path / "vu.jsonl"),
+        quarantine_output_path=str(quarantine_path),
+    )
+
+    with pytest.raises(BatchGenerationError):
+        generate_virtual_user_batch(request, records, _AllBadGenerator())
+
+    # 격리 파일은 포렌식용으로 남고, 성공 산출물(parquet)은 쓰이지 않는다.
+    assert len(quarantine_path.read_text(encoding="utf-8").splitlines()) == 3
+    assert not (tmp_path / "vu.parquet").exists()
+
+
+def test_batch_tolerates_quarantine_within_threshold(tmp_path):
+    """임계치(기본 0.5) 이하 격리는 raise 없이 정상 산출물을 쓴다."""
+
+    records = build_fixture_raw_persona_records(male_count=2, female_count=1)
+    request = GenerationRequest(
+        male_count=2, female_count=1, use_llm=False,
+        output_path=str(tmp_path / "vu.parquet"),
+        warehouse_output_path=str(tmp_path / "vu.jsonl"),
+        quarantine_output_path=str(tmp_path / "q.jsonl"),
+    )
+
+    result = generate_virtual_user_batch(request, records, _OneBadGenerator())
+
+    assert result.summary["quarantined"] == 1  # 1/3 ≈ 0.33 <= 0.5
+    assert (tmp_path / "vu.parquet").exists()
 
 
 def test_generate_virtual_user_batch_writes_expected_100_user_parquet(tmp_path, caplog):

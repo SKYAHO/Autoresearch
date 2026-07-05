@@ -33,6 +33,7 @@ class GenerationRequest(BaseModel):
     seed: int = 42
     use_llm: bool = True
     max_concurrency: int = 1
+    max_quarantine_ratio: float = 0.5
     source_mode: Literal["huggingface", "fixture"] = "huggingface"
     output_path: str = "asset/virtual_user/virtual_users_20s_100.parquet"
     raw_output_path: str = "data/raw/personas/nvidia_personas_kr.jsonl"
@@ -55,6 +56,15 @@ class GenerationRequest(BaseModel):
 
         if value < 1:
             raise ValueError("max_concurrency must be at least 1")
+        return value
+
+    @field_validator("max_quarantine_ratio")
+    @classmethod
+    def valid_quarantine_ratio(cls, value: float) -> float:
+        """전량/대량 실패 가드 임계치는 0~1 비율이어야 한다."""
+
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("max_quarantine_ratio must be between 0 and 1")
         return value
 
     @field_validator("age_max")

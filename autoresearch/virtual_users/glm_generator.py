@@ -6,10 +6,8 @@ import logging
 import os
 from datetime import UTC, datetime
 
-from pydantic import ValidationError  # noqa: F401  (호출부에서 사용)
-
 from autoresearch.virtual_users.categories import DEFAULT_KAGGLE_YOUTUBE_CATEGORIES
-from autoresearch.virtual_users.persona_source import record_sex
+from autoresearch.virtual_users.persona_source import record_age, record_sex
 from autoresearch.virtual_users.schema import (
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
@@ -105,10 +103,22 @@ def assemble_virtual_user(
     payload["virtual_user_id"] = virtual_user_id
     payload["source_uuid"] = str(raw_row.get("uuid", ""))
     payload["source_hash"] = build_source_hash(raw_row)
-    payload["source_persona_json"] = raw_row
-    payload["age_bucket"] = age_bucket_for_age(int(payload["age"]))
-    payload.setdefault("country", SOURCE_COUNTRY)
-    payload.setdefault("locale", SOURCE_LOCALE)
+    # 얕은 복사로 records 리스트/QuarantineRecord와의 우발적 공유 mutation을 예방한다.
+    payload["source_persona_json"] = dict(raw_row)
+    # 인구통계는 raw persona를 source-of-truth로 stamp한다. 샘플러가 raw age/sex로
+    # 균형(20대·성비 50:50)을 보장하므로, LLM이 흘린 age/sex를 채택하면 출력 분포가
+    # 그 계약과 어긋난다. raw에 값이 없으면 schema_fail로 격리한다(샘플된 행은 항상 값 존재).
+    raw_age = record_age(raw_row)
+    raw_sex = record_sex(raw_row)
+    if raw_age is None or raw_sex is None:
+        raise ValueError(f"raw persona lacks usable age/sex: uuid={raw_row.get('uuid')}")
+    payload["age"] = raw_age
+    payload["sex"] = raw_sex
+    payload["age_bucket"] = age_bucket_for_age(raw_age)
+    # country/locale는 다른 stamp 필드처럼 무조건 덮어쓴다(harness가 "코드가 채운다"고
+    # 지시하므로 LLM이 값을 뱉어도 채택하지 않는다).
+    payload["country"] = SOURCE_COUNTRY
+    payload["locale"] = SOURCE_LOCALE
     payload["generation_meta"] = {
         "schema_version": GENERATION_SCHEMA_VERSION,
         "prompt_version": PROMPT_VERSION,
@@ -116,8 +126,8 @@ def assemble_virtual_user(
         "generated_at": _now_iso(),
     }
     # raises ValidationError -> schema_fail. Stamping above may also raise
-    # ValueError/KeyError/TypeError -> schema_fail (e.g. bad/missing "age",
-    # or a non-object payload such as a JSON list/number/string/null).
+    # ValueError (raw lacks age/sex) or TypeError/AttributeError for a non-object
+    # payload such as a JSON list/number/string/null -> schema_fail.
     return VirtualUser.model_validate(payload)
 
 

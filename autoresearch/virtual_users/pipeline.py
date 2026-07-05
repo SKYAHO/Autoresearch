@@ -267,6 +267,10 @@ def _generate_isolated(
     return users, quarantine
 
 
+class BatchGenerationError(RuntimeError):
+    """배치의 격리 비율이 임계치를 넘어 전량/대량 실패로 판정될 때 발생한다."""
+
+
 def generate_virtual_user_batch(
     request: GenerationRequest,
     records: list[dict],
@@ -312,6 +316,19 @@ def generate_virtual_user_batch(
     )
     result = GenerationResult(batch=batch, quarantine=quarantine)
     logger.info("Generated virtual user batch", extra=result.summary)
+
+    # 전량/대량 실패 가드: 행 단위 격리(한 행이 배치를 못 죽임)와 별개로, 배치 전체가
+    # 조용히 빈/부실 결과로 "성공 종료"하는 상황을 막는다. 격리 파일은 포렌식용으로 남기고
+    # 실패로 종료해 운영자가 "전량 실패"와 "정상 실행"을 구분할 수 있게 한다.
+    if sampled:
+        quarantine_ratio = len(quarantine) / len(sampled)
+        if quarantine_ratio > request.max_quarantine_ratio:
+            write_quarantine_jsonl(quarantine, request.quarantine_output_path)
+            raise BatchGenerationError(
+                f"quarantine ratio {quarantine_ratio:.2f} exceeds max_quarantine_ratio "
+                f"{request.max_quarantine_ratio:.2f} "
+                f"(valid={len(users)}, quarantined={len(quarantine)}, sampled={len(sampled)})"
+            )
 
     output_path = Path(request.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
