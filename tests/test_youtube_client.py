@@ -626,6 +626,94 @@ def test_call_via_proxy_429_raises_collection_exhausted(monkeypatch):
         client._call_via_proxy("videos", {})
 
 
+class _ProxyResp:
+    """_call_via_proxy 테스트용 응답. .content 를 통해 reason 파싱이 가능해야 한다."""
+
+    def __init__(self, status_code, body_json):
+        self.status_code = status_code
+        self.content = body_json.encode()
+
+    def json(self):
+        return json.loads(self.content)
+
+
+def test_call_via_proxy_rotates_on_key_invalid(monkeypatch):
+    """proxy 루프에서 keyInvalid(ROTATE) 시 다음 Key 회전(normal route 와 일관).
+
+    k1 → 400 keyInvalid → 무효화 → k2 → 200 성공. fix 전에는 verdict 미처리로
+    k1 만 반복 재시도 후 max_proxy_attempts 소진 → CollectionExhausted 였음.
+    """
+    used_keys = []
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        key = headers["X-Goog-Api-Key"]
+        used_keys.append(key)
+        if key == "k1":
+            return _ProxyResp(
+                400, '{"error":{"errors":[{"reason":"keyInvalid"}],"code":400}}'
+            )
+        return _ProxyResp(200, '{"items":[]}')
+
+    client = ResilientYouTubeClient(
+        keys=["k1", "k2"],
+        proxy_url="https://proxy.example.com",
+    )
+    monkeypatch.setattr("requests.get", fake_get)
+
+    result = client._call_via_proxy("videos", {"part": "snippet"})
+    assert result == {"items": []}
+    assert used_keys == ["k1", "k2"]
+    assert "k1" in client._invalid_keys
+
+
+def test_call_via_proxy_terminal_quota_raises_immediately(monkeypatch):
+    """proxy 루프에서 dailyLimitExceeded(TERMINAL_QUOTA) 시 즉시 CollectionExhausted.
+
+    회전 무효(전 Key 동일). 남은 proxy attempt 를 소진하지 않고 즉시 승격한다.
+    """
+    call_count = 0
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        nonlocal call_count
+        call_count += 1
+        return _ProxyResp(
+            403, '{"error":{"errors":[{"reason":"dailyLimitExceeded"}],"code":403}}'
+        )
+
+    client = ResilientYouTubeClient(
+        keys=["k1", "k2"],
+        proxy_url="https://proxy.example.com",
+    )
+    monkeypatch.setattr("requests.get", fake_get)
+
+    with pytest.raises(CollectionExhausted):
+        client._call_via_proxy("videos", {})
+    assert call_count == 1  # 즉시 승격, 남은 attempt 미사용
+
+
+def test_call_via_proxy_200_non_json_raises_collection_exhausted(monkeypatch):
+    """200 + non-JSON 본문 → CollectionExhausted(skip+알림), raw JSONDecodeError 전파 금지.
+
+    fix 전: resp.json() 의 JSONDecodeError 가 _RetryableHttpError 가 아니어서
+    회전/tenacity 에서 잡히지 않아 회전 루프 밖으로 전파 → DAG 크래시(skip+알림 아님).
+    """
+    class NonJsonResp:
+        status_code = 200
+        content = b"<html>Not JSON</html>"
+
+        def json(self):
+            raise json.JSONDecodeError("Expecting value", "<html>", 0)
+
+    client = ResilientYouTubeClient(
+        keys=["k1"],
+        proxy_url="https://proxy.example.com",
+    )
+    monkeypatch.setattr("requests.get", lambda *a, **k: NonJsonResp())
+
+    with pytest.raises(CollectionExhausted):
+        client._call_via_proxy("videos", {})
+
+
 def test_success_path_logs_ok(caplog):
     """정상 경로 성공 시 info 로그 기록(관측성, key_index 만)."""
     factory = _make_service_that_raises(then_return=_fake_videos_response())

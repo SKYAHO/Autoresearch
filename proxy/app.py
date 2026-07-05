@@ -57,12 +57,21 @@ def forward(rest_path: str, request: Request, x_goog_api_key: str = Header(defau
     upstream_url = f"{UPSTREAM_HOST}/youtube/v3/{rest_path}"
     # X-Goog-Api-Key 만 upstream 으로 전달(다른 헤더는 의도적 미전달).
     upstream_headers = {"X-Goog-Api-Key": x_goog_api_key}
-    resp = _upstream_get(
-        upstream_url,
-        params=dict(request.query_params),
-        headers=upstream_headers,
-        timeout=UPSTREAM_TIMEOUT,
-    )
+    try:
+        resp = _upstream_get(
+            upstream_url,
+            params=dict(request.query_params),
+            headers=upstream_headers,
+            timeout=UPSTREAM_TIMEOUT,
+        )
+    except httpx.HTTPError:
+        # upstream 네트워크 장애(Timeout/ConnectError 등) — streak 증가 + 502.
+        # fix 전: 예외가 FastAPI 로 전파되어 500 + streak 미증가 → proxy 죽어도
+        # /health 200 (설계 의도인 unhealthy→Cloud Run 재시작 무력화).
+        app.state._unhealthy_streak += 1
+        if app.state._unhealthy_streak >= UNHEALTHY_THRESHOLD:
+            app.state.unhealthy = True
+        return JSONResponse(status_code=502, content={"detail": "upstream unavailable"})
     status = resp.status_code
     if status == 200:
         app.state._unhealthy_streak = 0

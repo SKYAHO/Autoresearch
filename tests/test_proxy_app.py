@@ -1,3 +1,4 @@
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from proxy.app import app
@@ -156,3 +157,30 @@ class _FakeResp:
 
     def json(self):
         return self._payload
+
+
+def test_upstream_exception_increments_streak_and_returns_502(monkeypatch):
+    """_upstream_get 이 httpx 예외(ConnectError/Timeout) 시 streak 증가 + 502.
+
+    fix 전: 예외가 FastAPI 로 전파되어 streak 미증가 → proxy 죽어도 /health 200
+    (설계 의도인 unhealthy→재시작 무력화).
+    """
+    def fake_get(url, *, params, headers, timeout):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    response = client.get("/youtube/v3/videos", headers={"X-Goog-Api-Key": "k1"})
+    assert response.status_code == 502
+    assert app.state._unhealthy_streak == 1
+
+
+def test_upstream_exception_repeated_marks_unhealthy(monkeypatch):
+    """httpx 예외 3회 누적 → unhealthy=True → /health 503."""
+    def fake_get(url, *, params, headers, timeout):
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    for _ in range(3):
+        r = client.get("/youtube/v3/videos", headers={"X-Goog-Api-Key": "k1"})
+        assert r.status_code == 502
+    assert app.state.unhealthy is True

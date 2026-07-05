@@ -543,16 +543,44 @@ class ResilientYouTubeClient:
                     f" proxy_host={host} err={type(e).__name__}"
                 ) from None
             if resp.status_code == 200:
-                return resp.json()
-            # 4xx/5xx — 회전/재시도 외곽에서 처리하도록 CollectionExhausted.
+                try:
+                    return resp.json()
+                except json.JSONDecodeError:
+                    # 200 이지만 non-JSON 본문(예: upstream HTML 에러 페이지).
+                    # JSONDecodeError 는 _RetryableHttpError 가 아니어서 회전/tenacity
+                    # 외곽에서 잡히지 않아 DAG 크래시를 유발한다. skip+알림 경로로
+                    # 승격한다(masking 유지 — 본문/traceback 미기록, host 만).
+                    raise CollectionExhausted(
+                        f"프록시 경로: 200 non-JSON 본문 resource={resource} "
+                        f"proxy_host={host}"
+                    ) from None
+            # 4xx/5xx — verdict 에 따라 회전/터미널/계속 분기(normal route 와 일관).
+            # fix 전에는 _log_decision 만 하고 행동이 없어 ROTATE 시 같은 Key 재시도,
+            # TERMINAL 시에도 남은 attempt 를 소진하는 비일관이 있었다.
             reason = _parse_reason_from_content(getattr(resp, "content", b"") or b"")
+            verdict = _classify_error(resp.status_code, reason)
             self._log_decision(
                 resource=resource,
                 key=key,
                 route="proxy",
-                verdict=_classify_error(resp.status_code, reason),
+                verdict=verdict,
                 exc=_RetryableHttpError(resp.status_code, reason, None),
             )
+            if verdict is Verdict.ROTATE:
+                # 현재 Key 무효화(keyInvalid/keyExpired/401) → 다음 Key 회전.
+                self._invalid_keys.add(key)
+                continue
+            if verdict is Verdict.TERMINAL_QUOTA:
+                # 프로젝트 일일 쿼터 — 전 Key 동일. 즉시 skip 승격.
+                raise CollectionExhausted(
+                    f"프록시 경로: 일일 쿼터 소진 resource={resource} reason={reason}"
+                )
+            if verdict is Verdict.TERMINAL_CONFIG:
+                # accessNotConfigured — 프로젝트 스코프. 회전 무효. 즉시 skip.
+                raise CollectionExhausted(
+                    f"프록시 경로: 프로젝트 설정 문제 resource={resource} reason={reason}"
+                )
+            # BACKOFF / IP_BAN_CANDIDATE → 다음 attempt 계속(현재 동작 유지).
         raise CollectionExhausted(
             f"프록시 경로 소진 resource={resource} proxy_host={host}"
         )
