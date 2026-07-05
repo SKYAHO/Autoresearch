@@ -1,7 +1,9 @@
 # YouTube 트렌딩 수집(Airflow/Astro) 런타임 의존성.
 # 테스트/실험 모듈 의존성은 requirements-dev.txt 참조.
-pydantic>=2.6
+pydantic>=2.6,<3
 pyarrow>=15.0
-google-api-python-client>=2.100
+google-api-python-client>=2.100,<3
 google-cloud-storage>=2.10
 gcsfs>=2024.0
+tenacity>=8.2,<10
+requests>=2.32,<3
