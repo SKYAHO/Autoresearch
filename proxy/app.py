@@ -41,9 +41,15 @@ def forward(rest_path: str, request: Request, x_goog_api_key: str = Header(defau
     """
     if not x_goog_api_key:
         raise HTTPException(status_code=400, detail="X-Goog-Api-Key 헤더 누락")
+    # path traversal 방지: %2E%2E(URL 인코딩 ../) 는 Starlette 라우팅을 통과하므로
+    # rest_path(이미 URL 디코딩됨) 에서 .. 세그먼트와 빈 세그먼트(//) 를 거부한다.
+    # 위반 시 /youtube/v3/ 화이트리스트를 우회해 googleapis 임의 path 로 도달 가능.
+    if ".." in rest_path.split("/") or any(seg == "" for seg in rest_path.split("/")):
+        raise HTTPException(status_code=400, detail="path escape forbidden")
     # key= query param 은 마스킹 불변량 위반(URL 로그/캐시 에 key 노출).
     # 반드시 X-Goog-Api-Key 헤더로 전달. query 는 upstream forward 전 차단.
-    if "key" in request.query_params:
+    # query param 키는 대소문자를 구분하지 않으므로 lower 비교로 우회(Key=/KEY=) 차단.
+    if any(k.lower() == "key" for k in request.query_params):
         raise HTTPException(
             status_code=400,
             detail="key query param forbidden; use X-Goog-Api-Key header",

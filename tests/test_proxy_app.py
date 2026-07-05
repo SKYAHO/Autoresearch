@@ -71,6 +71,40 @@ def test_rejects_key_query_param(monkeypatch):
     assert "forbidden" in response.text
 
 
+@pytest.mark.parametrize("bad_param", ["Key", "KEY", "kEy"])
+def test_rejects_key_query_param_case_variant(bad_param, monkeypatch):
+    """대소문자 변형(Key=/KEY=) 도 차단 — HTTP header 와 달리 query param 키는
+    case-insensitive 가 아니므로 명시적 lower 비교로 우회 차단."""
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        raise AssertionError("upstream 이 호출되면 안 됨(key 대소문자 우회 차단 전)")
+
+    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    response = client.get(
+        "/youtube/v3/videos",
+        params={"part": "snippet", bad_param: "SECRET"},
+        headers={"X-Goog-Api-Key": "k1"},
+    )
+    assert response.status_code == 400
+    assert "forbidden" in response.text
+
+
+def test_rejects_encoded_path_escape(monkeypatch):
+    """%2E%2E(URL 인코딩 ../) 로 /youtube/v3/ 화이트리스트 우회 시도 → 400.
+
+    리터럴 .. 는 Starlette 라우팅이 막지만 인코딩은 통과하므로, forward 단에서
+    rest_path 검증이 필요하다. upstream 은 절대 호출되면 안 된다.
+    """
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        raise AssertionError(f"upstream 이 호출되면 안 됨(path escape 차단 전): {url}")
+
+    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    response = client.get(
+        "/youtube/v3/%2E%2E/maps/api/place/json",
+        headers={"X-Goog-Api-Key": "k1"},
+    )
+    assert response.status_code == 400
+
+
 def test_upstream_429_marks_unhealthy(monkeypatch):
     """upstream 429 반복 시 unhealthy 마킹 → /health 503."""
     monkeypatch.setattr(
