@@ -369,11 +369,11 @@ def test_ip_ban_signature_partial_success_does_not_qualify():
     assert result == _fake_videos_response()
 
 
-def test_ip_ban_signature_uses_proxy_when_configured():
-    """전 Key 동일 403 + proxy_url 있음 → 프록시 경로로 전환 (1차: stub).
+def test_ip_ban_signature_uses_proxy_when_configured(monkeypatch):
+    """전 Key 동일 403 + proxy_url 있음 → breaker_open 마킹 후 프록시 경로 진입.
 
-    1차 PR은 proxy_url 이 있어도 실제 프록시 호출은 stub(프록시 미배포).
-    시그니처 감지 → 프록시 시도 → 여기선 프록시도 동일 에러 → CollectionExhausted.
+    시그니처 감지 → Circuit Breaker OPEN → _call_via_proxy 로 전환.
+    requests.get 을 가짜 응답(200)으로 격리하여 네트워크 호출 0건을 보장한다.
     """
 
     def factory(key):
@@ -382,15 +382,26 @@ def test_ip_ban_signature_uses_proxy_when_configured():
 
         return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
 
-    # proxy_url 주입했지만 _proxy_callable 주입 안 했으므로 기본(동일 factory 재사용).
     client = ResilientYouTubeClient(
         keys=["k1", "k2"],
         proxy_url="https://fake-proxy.example.com",
         _service_factory=factory,
     )
 
-    with pytest.raises(CollectionExhausted):
-        client.make_callables().list_videos(part="snippet")
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"items": [{"id": "v1"}]}
+
+        text = ""
+
+    # _call_via_proxy 의 requests.get 을 가짜 응답으로 대체(네트워크 격리).
+    monkeypatch.setattr("requests.get", lambda *a, **k: FakeResp())
+
+    result = client.make_callables().list_videos(part="snippet")
+    assert result == {"items": [{"id": "v1"}]}
+    assert client._breaker_open is True  # 시그니처 확정 마킹
 
 
 def test_max_total_calls_guards_against_runaway():
