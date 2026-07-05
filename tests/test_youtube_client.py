@@ -513,25 +513,69 @@ def test_try_wrap_http_error_wraps_extended_network_errors(exc):
     assert wrapped.reason is None
 
 
-def test_call_via_proxy_masks_credentials_in_proxy_url():
-    """proxy_url 임베디드 credentials 는 예외 메시지에 노출 안 함(호스트만).
+def test_call_via_proxy_forwards_request_and_returns_json(monkeypatch):
+    """_call_via_proxy: proxy_url/youtube/v3/<resource> 로 GET, X-Goog-Api-Key 헤더."""
+    captured = {}
 
-    주: fixture 의 password 토큰은 사전 커밋 마스킹 도구에 의해 변형될 수 있으나,
-    프로덕션 코드(urlparse().hostname 만 사용)는 credentials 무관하게 안전하다.
-    회귀 감지는 '@' 부재(userinfo@host 통째 노출)로 검증한다.
-    """
+    class FakeResp:
+        status_code = 200
+        def json(self):
+            return {"items": [{"id": "v1"}]}
+        text = ""
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = params
+        captured["headers"] = headers
+        return FakeResp()
 
     client = ResilientYouTubeClient(
         keys=["k1"],
-        proxy_url="https://user:secret@proxy.example.com@proxy.example.com:8080",
+        proxy_url="https://proxy.example.com",
     )
+    # 정상 경로 service factory 가 호출되지 않도록 factory stub
+    monkeypatch.setattr(client, "_service_factory", lambda key: (_ for _ in ()).throw(RuntimeError("should not call direct service")))
+    monkeypatch.setattr("requests.get", fake_get)
+
+    result = client._call_via_proxy("videos", {"part": "snippet"})
+    assert result == {"items": [{"id": "v1"}]}
+    assert captured["url"] == "https://proxy.example.com/youtube/v3/videos"
+    assert captured["params"] == {"part": "snippet"}
+    assert captured["headers"]["X-Goog-Api-Key"] == "k1"
+
+
+def test_call_via_proxy_masks_credentials_in_proxy_url(monkeypatch):
+    """proxy_url 임베디드 credentials 는 예외 메시지에 노출 안 함(호스트만)."""
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        raise requests.exceptions.HTTPError("upstream 503")
+
+    client = ResilientYouTubeClient(
+        keys=["k1"],
+        proxy_url="https://user:__VG_EMAIL_x__@proxy.example.com@proxy.example.com:8080",
+    )
+    monkeypatch.setattr("requests.get", fake_get)
 
     with pytest.raises(CollectionExhausted) as exc_info:
         client._call_via_proxy("videos", {})
-
     msg = str(exc_info.value)
-    assert "proxy.example.com" in msg  # 호스트는 표시
-    assert "@" not in msg               # userinfo@host 노출 없음(credentials 회귀 감지)
+    assert "proxy.example.com" in msg
+    assert "@" not in msg
+
+
+def test_call_via_proxy_429_raises_collection_exhausted(monkeypatch):
+    """upstream 429 → CollectionExhausted(회전/재시도 외곽에서 처리)."""
+    class FakeResp:
+        status_code = 429
+        text = '{"error":{"errors":[{"reason":"quotaExceeded"}],"code":429}}'
+        def json(self):
+            import json
+            return json.loads(self.text)
+
+    client = ResilientYouTubeClient(keys=["k1"], proxy_url="https://proxy.example.com")
+    monkeypatch.setattr("requests.get", lambda *a, **k: FakeResp())
+
+    with pytest.raises(CollectionExhausted):
+        client._call_via_proxy("videos", {})
 
 
 def test_success_path_logs_ok(caplog):

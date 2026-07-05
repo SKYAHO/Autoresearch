@@ -494,15 +494,46 @@ class ResilientYouTubeClient:
         return None
 
     def _call_via_proxy(self, resource: str, kw: dict) -> dict:
-        """프록시 경로 호출. 1차 PR 은 프록시 미배포 → 시그니처 후 즉시 CollectionExhausted.
+        """프록시 경로 호출. X-Goog-Api-Key 헤더로 key 전달, dumb forwarder 에 의뢰.
 
-        2차 PR 에서 requests.get(proxy_url/youtube/v3/...) 로 구현.
-        예외 메시지에는 proxy_url 전체(임베디드 credentials 포함)가 아닌
-        호스트만 기록하여 로그 유출을 방지한다.
+        proxy_url/youtube/v3/<resource> 로 GET. 응답은 googleapiclient execute()
+        와 동일 JSON dict. upstream 에러(4xx/5xx)는 CollectionExhausted 로 승격.
+        예외 메시지에는 proxy_url 전체(임베디드 credentials 포함)가 아닌 호스트만.
         """
         from urllib.parse import urlparse
 
+        import requests
+
         host = urlparse(self._proxy_url or "").hostname or "(unknown)"
+        url = f"{(self._proxy_url or '').rstrip('/')}/youtube/v3/{resource}"
+        for _ in range(self._max_proxy_attempts):
+            key = self._pick_active_key()
+            if key is None:
+                raise CollectionExhausted(
+                    f"프록시 경로: 활성 Key 없음 resource={resource} proxy_host={host}"
+                )
+            try:
+                resp = requests.get(
+                    url,
+                    params=kw,
+                    headers={"X-Goog-Api-Key": key},
+                    timeout=30,
+                )
+            except requests.exceptions.RequestException as e:
+                raise CollectionExhausted(
+                    f"프록시 경로 네트워크 오류 resource={resource} proxy_host={host}"
+                ) from e
+            if resp.status_code == 200:
+                return resp.json()
+            # 4xx/5xx — 회전/재시도 외곽에서 처리하도록 CollectionExhausted.
+            reason = _parse_reason_from_content(getattr(resp, "content", b"") or b"")
+            self._log_decision(
+                resource=resource,
+                key=key,
+                route="proxy",
+                verdict=_classify_error(resp.status_code, reason),
+                exc=_RetryableHttpError(resp.status_code, reason, None),
+            )
         raise CollectionExhausted(
-            f"프록시 경로 미구현(1차 PR) resource={resource} proxy_host={host}"
+            f"프록시 경로 소진 resource={resource} proxy_host={host}"
         )
