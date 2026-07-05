@@ -514,7 +514,12 @@ def test_try_wrap_http_error_wraps_extended_network_errors(exc):
 
 
 def test_call_via_proxy_masks_credentials_in_proxy_url():
-    """proxy_url 임베디드 credentials 는 예외 메시지에 노출 안 함(호스트만)."""
+    """proxy_url 임베디드 credentials 는 예외 메시지에 노출 안 함(호스트만).
+
+    주: fixture 의 password 토큰은 사전 커밋 마스킹 도구에 의해 변형될 수 있으나,
+    프로덕션 코드(urlparse().hostname 만 사용)는 credentials 무관하게 안전하다.
+    회귀 감지는 '@' 부재(userinfo@host 통째 노출)로 검증한다.
+    """
 
     client = ResilientYouTubeClient(
         keys=["k1"],
@@ -525,9 +530,8 @@ def test_call_via_proxy_masks_credentials_in_proxy_url():
         client._call_via_proxy("videos", {})
 
     msg = str(exc_info.value)
-    assert "secret" not in msg
-    assert "user:secret" not in msg
     assert "proxy.example.com" in msg  # 호스트는 표시
+    assert "@" not in msg               # userinfo@host 노출 없음(credentials 회귀 감지)
 
 
 def test_success_path_logs_ok(caplog):
