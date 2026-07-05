@@ -87,9 +87,7 @@ def test_normal_path_single_key_returns_response():
 
         return list_videos, list_channels, list_categories
 
-    client = ResilientYouTubeClient(
-        keys=["k1"], _service_factory=fake_service_factory
-    )
+    client = ResilientYouTubeClient(keys=["k1"], _service_factory=fake_service_factory)
     callables = client.make_callables()
 
     result = callables.list_videos(part="snippet", chart="mostPopular")
@@ -225,6 +223,7 @@ def test_key_invalid_rotates_to_next_key_and_succeeds():
 
 def test_key_expired_treated_same_as_key_invalid():
     """400 keyExpired → 회전."""
+
     def factory(key):
         def list_videos(**kw):
             if key == "k1":
@@ -241,6 +240,7 @@ def test_key_expired_treated_same_as_key_invalid():
 
 def test_401_auth_rotates_to_next_key():
     """401 unauthorized → 회전."""
+
     def factory(key):
         def list_videos(**kw):
             if key == "k1":
@@ -257,6 +257,7 @@ def test_401_auth_rotates_to_next_key():
 
 def test_all_keys_invalid_raises_collection_exhausted():
     """k1, k2 모두 keyInvalid → CollectionExhausted."""
+
     def factory(key):
         def list_videos(**kw):
             raise FakeHttpError(400, "keyInvalid")
@@ -277,6 +278,7 @@ def test_quota_exceeded_skips_without_rotation():
         def list_videos(**kw):
             call_count["n"] += 1
             raise FakeHttpError(403, "quotaExceeded")
+
         return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
 
     client = ResilientYouTubeClient(keys=["k1", "k2"], _service_factory=factory)
@@ -295,6 +297,7 @@ def test_access_not_configured_skips_without_rotation():
         def list_videos(**kw):
             call_count["n"] += 1
             raise FakeHttpError(403, "accessNotConfigured")
+
         return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
 
     client = ResilientYouTubeClient(keys=["k1", "k2"], _service_factory=factory)
@@ -302,3 +305,85 @@ def test_access_not_configured_skips_without_rotation():
     with pytest.raises(CollectionExhausted):
         client.make_callables().list_videos(part="snippet")
     assert call_count["n"] == 1  # k2 로 회전 안 함
+
+
+def test_ip_ban_signature_proxy_none_short_circuits():
+    """전 Key 동일 403(기타 reason) + proxy_url=None → 즉시 CollectionExhausted.
+
+    시그니처 성립(Key≥2, 전 Key 동일 403 IP_BAN_CANDIDATE).
+    """
+
+    def factory(key):
+        def list_videos(**kw):
+            raise FakeHttpError(403, "suspended")  # 기타 403 → IP_BAN_CANDIDATE
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(
+        keys=["k1", "k2"], proxy_url=None, _service_factory=factory
+    )
+
+    with pytest.raises(CollectionExhausted, match="IP 밴"):
+        client.make_callables().list_videos(part="snippet")
+
+
+def test_ip_ban_signature_single_key_does_not_qualify():
+    """Key 1개 + 403 → 시그니처 미성립(최소 Key≥2). CollectionExhausted(rotate 소진)."""
+
+    def factory(key):
+        def list_videos(**kw):
+            raise FakeHttpError(403, "suspended")
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(
+        keys=["k1"], proxy_url=None, _service_factory=factory
+    )
+
+    with pytest.raises(CollectionExhausted) as exc_info:
+        client.make_callables().list_videos(part="snippet")
+    # IP 밴 메시지가 아님 — 시그니처 미성립으로 회전 소진 처리.
+    assert "IP 밴" not in str(exc_info.value)
+
+
+def test_ip_ban_signature_partial_success_does_not_qualify():
+    """k1=403 suspended, k2=200 → 부분 성공, 시그니처 불성립 → k2 응답 반환."""
+
+    def factory(key):
+        def list_videos(**kw):
+            if key == "k1":
+                raise FakeHttpError(403, "suspended")
+            return _fake_videos_response()
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(
+        keys=["k1", "k2"], proxy_url=None, _service_factory=factory
+    )
+    result = client.make_callables().list_videos(part="snippet")
+
+    assert result == _fake_videos_response()
+
+
+def test_ip_ban_signature_uses_proxy_when_configured():
+    """전 Key 동일 403 + proxy_url 있음 → 프록시 경로로 전환 (1차: stub).
+
+    1차 PR은 proxy_url 이 있어도 실제 프록시 호출은 stub(프록시 미배포).
+    시그니처 감지 → 프록시 시도 → 여기선 프록시도 동일 에러 → CollectionExhausted.
+    """
+
+    def factory(key):
+        def list_videos(**kw):
+            raise FakeHttpError(403, "suspended")
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    # proxy_url 주입했지만 _proxy_callable 주입 안 했으므로 기본(동일 factory 재사용).
+    client = ResilientYouTubeClient(
+        keys=["k1", "k2"],
+        proxy_url="https://fake-proxy.example.com",
+        _service_factory=factory,
+    )
+
+    with pytest.raises(CollectionExhausted):
+        client.make_callables().list_videos(part="snippet")
