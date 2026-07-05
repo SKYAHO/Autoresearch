@@ -3,3 +3,5 @@
 pytest>=8.0
 datasets>=2.19
 openai>=1.0
+fastapi>=0.115,<0.117
+httpx>=0.28,<0.29
