@@ -38,3 +38,55 @@ from autoresearch.youtube_collection.client import Verdict, _classify_error
 )
 def test_classify_error_maps_youtube_reasons(status, reason, expected):
     assert _classify_error(status, reason) is expected
+
+
+from autoresearch.youtube_collection.client import (
+    ResilientYouTubeClient,
+    YouTubeCallables,
+)
+
+
+def _fake_videos_response():
+    return {"items": [{"id": "v1"}], "nextPageToken": None}
+
+
+def test_make_callables_returns_named_tuple_with_three_callables():
+    client = ResilientYouTubeClient(keys=["k1"])
+
+    callables = client.make_callables()
+
+    assert isinstance(callables, YouTubeCallables)
+    assert callable(callables.list_videos)
+    assert callable(callables.list_channels)
+    assert callable(callables.list_categories)
+
+
+def test_normal_path_single_key_returns_response():
+    """Key 1개, 정상 응답 — 가장 단순한 성공 경로."""
+    calls = []
+
+    def fake_service_factory(key):
+        def list_videos(**kw):
+            calls.append(("videos", key, kw))
+            return _fake_videos_response()
+
+        def list_channels(**kw):
+            calls.append(("channels", key, kw))
+            return {"items": []}
+
+        def list_categories(**kw):
+            calls.append(("categories", key, kw))
+            return {"items": []}
+
+        return list_videos, list_channels, list_categories
+
+    client = ResilientYouTubeClient(
+        keys=["k1"], _service_factory=fake_service_factory
+    )
+    callables = client.make_callables()
+
+    result = callables.list_videos(part="snippet", chart="mostPopular")
+
+    assert result == _fake_videos_response()
+    assert len(calls) == 1
+    assert calls[0][1] == "k1"  # Key 1개 사용

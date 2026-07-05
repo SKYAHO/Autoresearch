@@ -87,3 +87,133 @@ def _classify_error(status: int, reason: str | None) -> Verdict:
         return Verdict.IP_BAN_CANDIDATE
     # 그 이유를 알 수 없는 4xx — 일시적 기본 정책.
     return Verdict.BACKOFF
+
+
+class CollectionExhausted(Exception):
+    """모든 Key·경로마저 실패한 최종 폭주 상태. DAG 가 잡아 skip+알림으로 승격."""
+
+
+class YouTubeCallables(NamedTuple):
+    """make_callables 반환 — 순서 실수를 타입으로 방지(fetch.py 계약)."""
+
+    list_videos: Callable[..., dict]
+    list_channels: Callable[..., dict]
+    list_categories: Callable[..., dict]
+
+
+# 정상 경로(googleapiclient 직접) callable 생산 팩토리 — 테스트 주입점.
+# 기본 구현은 실제 googleapiclient.build 를 쓰고, 단위테스트는 가짜 팩토리를 주입.
+ServiceCallables = tuple[Callable[..., dict], Callable[..., dict], Callable[..., dict]]
+
+
+def _default_service_factory(api_key: str) -> ServiceCallables:
+    """googleapiclient 로 실제 service 를 만들어 fetch.py 용 callable 로 adapt.
+
+    DAG 는 이 함수를 직접 쓰지 않고 ResilientYouTubeClient 에게 넘긴다.
+    단위테스트는 가짜 팩토리를 _service_factory 인자로 주입해 googleapiclient 를 孤立시킨다.
+    """
+    from googleapiclient.discovery import build
+
+    service = build("youtube", "v3", developerKey=api_key, cache_discovery=False)
+    return (
+        lambda **kw: service.videos().list(**kw).execute(),
+        lambda **kw: service.channels().list(**kw).execute(),
+        lambda **kw: service.videoCategories().list(**kw).execute(),
+    )
+
+
+class ResilientYouTubeClient:
+    """YouTube 수집 복원력 클라이언트.
+
+    fetch.collect_trending 이 기대하는 3개 callable(list_videos/list_channels/
+    list_categories)를 생산하되, 각 호출에 계층적 복원력을 입힌다.
+
+    상태(무효화된 Key, IP밴 시그니처 이력, Circuit Breaker)는 per-run
+    (이 인스턴스) 공유. 매일 새 DAG run = 새 인스턴스 = 자동 리셋.
+
+    Args:
+        keys: API Key 리스트. 최소 1개. Key 1개면 회전 불가(IP밴 시그니처도 불성립).
+        proxy_url: Cloud Run 프록시 URL. 1차 PR 기본 None(비활성).
+        max_retries: tenacity — 현재 Key+경로 조합에 대한 backoff 최대 시도.
+        max_proxy_attempts: 프록시 경로 재시도 상한. proxy_url=None 이면 미사용.
+        max_total_calls: 한 collection run 폭주 가드(총 호출 수 상한).
+        _service_factory: 테스트 주입용(기본 _default_service_factory).
+    """
+
+    def __init__(
+        self,
+        keys: list[str],
+        *,
+        proxy_url: str | None = None,
+        max_retries: int = 3,
+        max_proxy_attempts: int = 2,
+        max_total_calls: int = 60,
+        _service_factory: Callable[[str], ServiceCallables] = _default_service_factory,
+    ):
+        if not keys:
+            raise ValueError("keys 는 최소 1개 필요")
+        self._keys = list(keys)
+        self._proxy_url = proxy_url
+        self._max_retries = max_retries
+        self._max_proxy_attempts = max_proxy_attempts
+        self._max_total_calls = max_total_calls
+        self._service_factory = _service_factory
+        # per-run 상태
+        self._invalid_keys: set[str] = set()
+        self._call_count = 0
+
+    def make_callables(self) -> YouTubeCallables:
+        """fetch.collect_trending 용 (list_videos, list_channels, list_categories).
+
+        각 callable 은 (**kw) -> dict. 복원력 로직은 내부에서 자원 종류별로
+        동일하게 적용된다.
+        """
+        return YouTubeCallables(
+            list_videos=self._make_resilient_callable("videos"),
+            list_channels=self._make_resilient_callable("channels"),
+            list_categories=self._make_resilient_callable("categories"),
+        )
+
+    def _make_resilient_callable(self, resource: str) -> Callable[..., dict]:
+        """자원별 복원력 callable 생산. Task 3 에선 정상 경로만(복원력은 후속 태스크)."""
+        def resilient(**kw) -> dict:
+            key = self._pick_active_key()
+            if key is None:
+                raise CollectionExhausted("활성 Key 없음")
+            self._check_call_budget()
+            list_callable = self._get_list_callable(key, resource)
+            self._call_count += 1
+            logger.debug(
+                "youtube call resource=%s key_index=%d route=normal",
+                resource,
+                self._key_index(key),
+            )
+            return self._call_with_resilience(list_callable, kw)
+
+        return resilient
+
+    def _call_with_resilience(
+        self, underlying: Callable[..., dict], kwargs: dict
+    ) -> dict:
+        """Task 3는 정상 경로 pass-through. Task 4-8이 backoff/회전/밴/Breaker 주입."""
+        return underlying(**kwargs)
+
+    def _pick_active_key(self) -> str | None:
+        """무효화되지 않은 첫 Key. 없으면 None."""
+        for k in self._keys:
+            if k not in self._invalid_keys:
+                return k
+        return None
+
+    def _key_index(self, key: str) -> int:
+        """로깅용 Key 식별자(값 아님). 0-base."""
+        return self._keys.index(key)
+
+    def _get_list_callable(self, key: str, resource: str) -> Callable[..., dict]:
+        """현재 Key·경로에 해당하는 fetch.py 용 callable. Task 3는 정상 경로만."""
+        list_videos, list_channels, list_categories = self._service_factory(key)
+        return {"videos": list_videos, "channels": list_channels, "categories": list_categories}[resource]
+
+    def _check_call_budget(self) -> None:
+        """max_total_calls 폭주 가드. Task 8 에서 본격 구현, Task 3는 스텁."""
+        # Task 8 에서 채움.
