@@ -2,6 +2,7 @@ import json
 import logging
 import socket
 import ssl
+import traceback
 
 import pytest
 import requests
@@ -560,6 +561,42 @@ def test_call_via_proxy_masks_credentials_in_proxy_url(monkeypatch):
     msg = str(exc_info.value)
     assert "proxy.example.com" in msg
     assert "@" not in msg
+
+
+def test_call_via_proxy_does_not_chain_raw_requests_exception(monkeypatch):
+    """RequestException 은 __cause__ 로 체인 금지.
+
+    raw requests 예외(예: ConnectionError)는 repr 에 proxy URL(credentials
+    포함 가능)을 embed 한다. 이를 CollectionExhausted.__cause__ 로 보존하면
+    logging.exception / traceback 출력 시 credentials 가 노출된다.
+    따라서 __cause__ 는 None 이어야 하며, 대신 예외 타입명만 메시지에 포함해
+    디버깅 정보를 보존한다.
+    """
+    credential = "__VG_EMAIL_x__@proxy.example.com"
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        raise requests.exceptions.ConnectionError(
+            "HTTPSConnectionPool(host='proxy.example.com', port=8080): "
+            "Max retries exceeded with url: /youtube/v3/videos "
+            f"(Caused by connection to https://user:{credential}:8080)"
+        )
+
+    client = ResilientYouTubeClient(
+        keys=["k1"],
+        proxy_url=f"https://user:{credential}@proxy.example.com:8080",
+    )
+    monkeypatch.setattr("requests.get", fake_get)
+
+    with pytest.raises(CollectionExhausted) as exc_info:
+        client._call_via_proxy("videos", {})
+    exc = exc_info.value
+
+    assert exc.__cause__ is None
+    assert "ConnectionError" in str(exc)
+    assert credential not in str(exc)
+    assert "@" not in str(exc)
+    tb_text = "".join(traceback.format_exception(exc))
+    assert credential not in tb_text
 
 
 def test_call_via_proxy_429_raises_collection_exhausted(monkeypatch):

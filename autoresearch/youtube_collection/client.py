@@ -520,9 +520,13 @@ class ResilientYouTubeClient:
                     timeout=30,
                 )
             except requests.exceptions.RequestException as e:
+                # raw requests 예외의 repr 은 proxy URL(credentials 포함 가능)을
+                # embed 할 수 있으므로 __cause__ 로 체인하지 않는다. 대신 예외
+                # 타입명만 메시지에 남겨 디버깅 정보를 보존한다.
                 raise CollectionExhausted(
-                    f"프록시 경로 네트워크 오류 resource={resource} proxy_host={host}"
-                ) from e
+                    f"프록시 경로 네트워크 오류 resource={resource}"
+                    f" proxy_host={host} err={type(e).__name__}"
+                ) from None
             if resp.status_code == 200:
                 return resp.json()
             # 4xx/5xx — 회전/재시도 외곽에서 처리하도록 CollectionExhausted.
