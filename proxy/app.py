@@ -39,6 +39,13 @@ def forward(rest_path: str, request: Request, x_goog_api_key: str = Header(defau
     """
     if not x_goog_api_key:
         raise HTTPException(status_code=400, detail="X-Goog-Api-Key 헤더 누락")
+    # key= query param 은 마스킹 불변량 위반(URL 로그/캐시 에 key 노출).
+    # 반드시 X-Goog-Api-Key 헤더로 전달. query 는 upstream forward 전 차단.
+    if "key" in request.query_params:
+        raise HTTPException(
+            status_code=400,
+            detail="key query param forbidden; use X-Goog-Api-Key header",
+        )
     upstream_url = f"{UPSTREAM_HOST}/youtube/v3/{rest_path}"
     # X-Goog-Api-Key 만 upstream 으로 전달(다른 헤더는 의도적 미전달).
     upstream_headers = {"X-Goog-Api-Key": x_goog_api_key}

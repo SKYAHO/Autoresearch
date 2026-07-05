@@ -41,6 +41,21 @@ def test_rejects_missing_api_key_header():
     assert response.status_code == 400
 
 
+def test_rejects_key_query_param(monkeypatch):
+    """key= query param 은 마스킹 불변량 위반. 400 + upstream 미호출."""
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        raise AssertionError("upstream 이 호출되면 안 됨(key query param 차단 전)")
+
+    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    response = client.get(
+        "/youtube/v3/videos",
+        params={"part": "snippet", "key": "SECRET"},
+        headers={"X-Goog-Api-Key": "k1"},
+    )
+    assert response.status_code == 400
+    assert "forbidden" in response.text
+
+
 class _FakeResp:
     def __init__(self, status_code, payload):
         self.status_code = status_code
