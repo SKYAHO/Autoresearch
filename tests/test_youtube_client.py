@@ -1,6 +1,14 @@
-import pytest
+import json
+import socket
+import ssl
 
-from autoresearch.youtube_collection.client import Verdict, _classify_error
+import pytest
+import requests
+
+from autoresearch.youtube_collection.client import (
+    Verdict,
+    _classify_error,
+)
 
 
 @pytest.mark.parametrize(
@@ -41,8 +49,11 @@ def test_classify_error_maps_youtube_reasons(status, reason, expected):
 
 
 from autoresearch.youtube_collection.client import (
+    CollectionExhausted,
     ResilientYouTubeClient,
     YouTubeCallables,
+    _parse_reason_from_content,
+    _try_wrap_http_error,
 )
 
 
@@ -90,3 +101,105 @@ def test_normal_path_single_key_returns_response():
     assert result == _fake_videos_response()
     assert len(calls) == 1
     assert calls[0][1] == "k1"  # Key 1개 사용
+
+
+class FakeHttpError(Exception):
+    """googleapiclient.errors.HttpError 흉내. status/reason 전달용."""
+
+    def __init__(self, status: int, reason: str | None):
+        self.status = status
+        self.reason = reason
+        body = {"error": {"errors": [{"reason": reason or ""}]}}
+        # googleapiclient HttpError 는 resp.status 와 content(JSON bytes)를 가짐.
+
+        class _Resp:
+            def __init__(self, s):
+                self.status = s
+
+        self.resp = _Resp(status)
+        self.content = json.dumps(body).encode()
+        super().__init__(f"FakeHttpError status={status} reason={reason}")
+
+
+def _make_service_that_raises(*errors, then_return=None):
+    """errors 순서대로 raise 하다가, 소진 후 then_return 반환하는 service 팩토리."""
+    state = {"i": 0}
+
+    def factory(key):
+        def list_videos(**kw):
+            i = state["i"]
+            if i < len(errors):
+                state["i"] += 1
+                raise errors[i]
+            return then_return or _fake_videos_response()
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    return factory
+
+
+def test_5xx_backoff_then_success():
+    """500 → 503 → 200. tenacity backoff 후 정상 복귀."""
+    factory = _make_service_that_raises(
+        FakeHttpError(500, "internalError"),
+        FakeHttpError(503, "backendError"),
+        then_return=_fake_videos_response(),
+    )
+    client = ResilientYouTubeClient(
+        keys=["k1"], max_retries=3, _service_factory=factory
+    )
+    result = client.make_callables().list_videos(part="snippet")
+
+    assert result == _fake_videos_response()
+
+
+def test_5xx_backoff_exhausted_raises_collection_exhausted():
+    """500 × max_retries회 반복 → 소진 → CollectionExhausted."""
+    factory = _make_service_that_raises(
+        FakeHttpError(500, "internalError"),
+        FakeHttpError(500, "internalError"),
+        FakeHttpError(500, "internalError"),
+    )
+    client = ResilientYouTubeClient(
+        keys=["k1"], max_retries=3, _service_factory=factory
+    )
+
+    with pytest.raises(CollectionExhausted):
+        client.make_callables().list_videos(part="snippet")
+
+
+def test_ratelimit_backoff_then_success():
+    """rateLimitExceeded → 200. BACKOFF reason 도 backoff 후 복귀."""
+    factory = _make_service_that_raises(
+        FakeHttpError(403, "rateLimitExceeded"),
+        then_return=_fake_videos_response(),
+    )
+    client = ResilientYouTubeClient(
+        keys=["k1"], max_retries=3, _service_factory=factory
+    )
+    result = client.make_callables().list_videos(part="snippet")
+
+    assert result == _fake_videos_response()
+
+
+def test_try_wrap_http_error_wraps_network_errors_to_599():
+    """DNS/SSL/Timeout/Connection 예외는 599 가상 코드로 래핑(reason None)."""
+    network_errors = [
+        socket.gaierror("dns fail"),
+        ssl.SSLError("ssl fail"),
+        requests.exceptions.Timeout("timeout"),
+        requests.exceptions.ConnectionError("conn"),
+    ]
+    for exc in network_errors:
+        wrapped = _try_wrap_http_error(exc)
+        assert wrapped is not None
+        assert wrapped.status == 599
+        assert wrapped.reason is None
+
+
+def test_parse_reason_from_content_malformed_returns_none():
+    """JSON 파싱 실패/빈 본문/누락 → reason None."""
+    assert _parse_reason_from_content(b"not json") is None
+    assert _parse_reason_from_content(b"") is None
+    assert _parse_reason_from_content(None) is None
+    assert _parse_reason_from_content(b'{"error": {}}') is None
