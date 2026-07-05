@@ -239,6 +239,8 @@ class ResilientYouTubeClient:
         self._max_proxy_attempts = max_proxy_attempts
         self._max_total_calls = max_total_calls
         self._service_factory = _service_factory
+        # per-key service 캐시(discovery fetch 비용 절감).
+        self._service_cache: dict[str, ServiceCallables] = {}
         # per-run 상태
         self._invalid_keys: set[str] = set()
         self._call_count = 0
@@ -408,8 +410,14 @@ class ResilientYouTubeClient:
         return self._keys.index(key)
 
     def _get_list_callable(self, key: str, resource: str) -> Callable[..., dict]:
-        """현재 Key·경로에 해당하는 fetch.py 용 callable. Task 3는 정상 경로만."""
-        list_videos, list_channels, list_categories = self._service_factory(key)
+        """현재 Key·경로에 해당하는 fetch.py 용 callable. Task 3는 정상 경로만.
+
+        per-key 로 service 를 캐싱하여 동일 key 반복 호출 시 factory(프로덕션:
+        googleapiclient.build → discovery fetch) 재실행을 방지한다.
+        """
+        if key not in self._service_cache:
+            self._service_cache[key] = self._service_factory(key)
+        list_videos, list_channels, list_categories = self._service_cache[key]
         return {
             "videos": list_videos,
             "channels": list_channels,

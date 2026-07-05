@@ -467,3 +467,28 @@ def test_record_ip_ban_candidate_reason_none_does_not_count_signature():
     assert client._record_ip_ban_candidate("k1", "videos", None) is None
     assert client._record_ip_ban_candidate("k2", "videos", None) is None
     assert client._ip_ban_candidates == {"k1": "", "k2": ""}
+
+
+def test_service_factory_cached_per_key():
+    """동일 key 로 여러 호출 시 factory 는 key 당 1회만 호출.
+
+    프로덕션 _default_service_factory 는 googleapiclient.build (discovery fetch)
+    을 수반하므로 매 호출마다 재생성하면 비용이 크다.
+    """
+    factory_calls = []
+
+    def fake_service_factory(key):
+        factory_calls.append(key)
+
+        def list_videos(**kw):
+            return _fake_videos_response()
+
+        return list_videos, lambda **kw: {"items": []}, lambda **kw: {"items": []}
+
+    client = ResilientYouTubeClient(keys=["k1"], _service_factory=fake_service_factory)
+    callables = client.make_callables()
+    callables.list_videos(part="a")
+    callables.list_channels(part="b")
+    callables.list_categories(part="c")
+
+    assert len(factory_calls) == 1
