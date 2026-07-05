@@ -52,6 +52,14 @@ def test_rejects_non_youtube_path():
     assert response.status_code == 404  # /youtube/v3/ 외 path 는 라우팅 안 됨
 
 
+def test_openapi_schema_disabled():
+    """/openapi.json 노출 금지 — docs_url/redoc_url=None 만으로는 미차단.
+    스키마(엔드포인트 목록) 누출 방지를 위해 openapi_url=None 필요.
+    """
+    response = client.get("/openapi.json")
+    assert response.status_code == 404
+
+
 def test_rejects_missing_api_key_header():
     response = client.get("/youtube/v3/videos", params={"part": "snippet"})
     assert response.status_code == 400

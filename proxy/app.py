@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse
 UPSTREAM_HOST = "https://www.googleapis.com"
 UPSTREAM_TIMEOUT = 10.0
 
-app = FastAPI(title="youtube-proxy", docs_url=None, redoc_url=None)
+app = FastAPI(title="youtube-proxy", docs_url=None, redoc_url=None, openapi_url=None)
 app.state.unhealthy = False  # Task 2 에서 unhealthy 마킹 시 사용
 app.state._unhealthy_streak = 0
 UNHEALTHY_THRESHOLD = 3
