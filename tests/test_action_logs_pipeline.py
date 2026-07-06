@@ -200,3 +200,15 @@ def test_build_candidates_returns_video_dicts_no_exposure_label():
     # pool보다 큰 요청은 pool 크기로 클램프
     assert len(build_candidates(users[0], videos[:5], 20, 0.2, random.Random(1))) == 5
     assert build_candidates(users[0], [], 20, 0.2, random.Random(1)) == []
+
+
+def test_rulebased_judgments_have_no_search_keyword():
+    users = _fixture_users(1)
+    videos = build_fixture_video_records(6)
+    raw = RuleBasedActionLogGenerator().generate(users[0], videos)
+    data = json.loads(raw)
+    assert len(data["judgments"]) == 6
+    for j in data["judgments"]:
+        assert set(j) == {"video_id", "click_propensity", "watch_fraction", "would_like"}
+        assert 0.0 <= j["click_propensity"] <= 1.0
+        assert isinstance(j["would_like"], bool)
