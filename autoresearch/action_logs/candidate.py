@@ -7,11 +7,6 @@
 import logging
 import random
 
-from autoresearch.action_logs.schema import (
-    EXPOSURE_EXPLORATION,
-    EXPOSURE_TOP_RANKED,
-)
-
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +54,11 @@ def build_candidates(
     candidates_per_user: int,
     exploration_ratio: float,
     rng: random.Random,
-) -> list[tuple[dict, str]]:
-    """유저 1명의 노출 batch를 (video, exposure_type) 목록으로 구성한다.
+) -> list[dict]:
+    """유저 1명의 노출 batch를 video dict 목록으로 구성한다.
 
-    관련 후보(top_ranked) + exploration 랜덤. pool이 요청 수보다 작으면 가능한 만큼만.
+    관련 후보(키워드 겹침 상위) + exploration 랜덤을 섞되, exposure_type 라벨은
+    로그에 남기지 않으므로 반환하지 않는다. pool이 요청 수보다 작으면 가능한 만큼만.
     """
     if not videos:
         return []
@@ -89,8 +85,7 @@ def build_candidates(
     rng.shuffle(remaining)
     exploration = remaining[:n_explore]
 
-    candidates = [(v, EXPOSURE_TOP_RANKED) for v in relevant]
-    candidates += [(v, EXPOSURE_EXPLORATION) for v in exploration]
+    candidates = relevant + exploration
     rng.shuffle(candidates)
 
     logger.debug(

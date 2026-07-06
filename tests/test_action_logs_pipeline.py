@@ -1,10 +1,12 @@
 import json
+import random
 from datetime import UTC, datetime, timedelta
 
 import pyarrow.parquet as pq
 import pytest
 from pydantic import ValidationError
 
+from autoresearch.action_logs.candidate import build_candidates
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
 from autoresearch.action_logs.pipeline import (
     ActionLogGenerationError,
@@ -185,3 +187,16 @@ def test_video_source_helpers():
     assert _parse_tags(["a", " b ", ""]) == ["a", "b"]
     assert nominal_duration_sec("abc") == nominal_duration_sec("abc")  # 결정론적
     assert 60 <= nominal_duration_sec("abc") <= 900
+
+
+def test_build_candidates_returns_video_dicts_no_exposure_label():
+    users = _fixture_users(1)
+    videos = build_fixture_video_records(40)
+    got = build_candidates(users[0], videos, candidates_per_user=20,
+                           exploration_ratio=0.2, rng=random.Random(1))
+    assert len(got) == 20
+    assert all(isinstance(v, dict) and "video_id" in v for v in got)  # tuple 아님
+    assert len({v["video_id"] for v in got}) == 20  # dedup
+    # pool보다 큰 요청은 pool 크기로 클램프
+    assert len(build_candidates(users[0], videos[:5], 20, 0.2, random.Random(1))) == 5
+    assert build_candidates(users[0], [], 20, 0.2, random.Random(1)) == []
