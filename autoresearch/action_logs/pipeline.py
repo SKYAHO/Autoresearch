@@ -6,6 +6,7 @@ parquet/warehouse/quarantine 저장. 한 유저의 실패가 배치를 죽이지
 """
 import json
 import logging
+import math
 import random
 from collections import defaultdict
 from datetime import UTC, timedelta
@@ -28,10 +29,20 @@ from autoresearch.action_logs.schema import (
     ImpressionDraft,
     QuarantineRecord,
 )
-from autoresearch.action_logs.video_source import nominal_duration_sec
+from autoresearch.action_logs.video_source import _MAX_DURATION, nominal_duration_sec
 
 
 logger = logging.getLogger(__name__)
+
+# 클릭 세션(impression 직후 click→view→like)이 impression 시각 뒤로 늘어날 수 있는 최대 초.
+# like 지연 상한은 max(2, watch)이고, watch = round(watch_fraction × duration)이며 duration은
+# nominal_duration_sec가 _MAX_DURATION으로 캡한다 → 세션 span의 상한이 _MAX_DURATION에 결합된다.
+_CLICK_DELAY_MAX_SEC = 30
+_VIEW_DELAY_MAX_SEC = 5
+_MAX_SESSION_SPAN_SEC = _CLICK_DELAY_MAX_SEC + _VIEW_DELAY_MAX_SEC + max(2, _MAX_DURATION)
+# impression을 history_end에서 최소 이만큼(시간, 올림) 이전에 두면 위 세션 span을 항상 흡수해
+# 모든 후속 이벤트가 history_end를 넘지 않는다. _MAX_DURATION을 키우면 자동으로 여유가 늘어난다.
+_MIN_IMPRESSION_HOURS = max(1, math.ceil(_MAX_SESSION_SPAN_SEC / 3600))
 
 
 class ActionLogGenerator(Protocol):
@@ -233,21 +244,32 @@ def _expand_events(
             day = days[(position // cap) % len(days)]
             impression_ts = end - timedelta(
                 days=day,
-                hours=urng.randint(1, 23),  # 1h+ 여유로 후속 이벤트가 end를 넘지 않게
+                # history_end에서 최소 _MIN_IMPRESSION_HOURS시간 이전 → 후속 click/view/like가
+                # 세션 최대 span(_MAX_SESSION_SPAN_SEC)만큼 밀려도 history_end를 넘지 않는다.
+                hours=urng.randint(_MIN_IMPRESSION_HOURS, 23),
                 minutes=urng.randint(0, 59),
                 seconds=urng.randint(0, 59),
             )
             _emit(impression_ts, user_id, "impression", draft.video_id)
             if idx not in clicked:
                 continue
-            click_ts = impression_ts + timedelta(seconds=urng.randint(1, 30))
+            click_ts = impression_ts + timedelta(seconds=urng.randint(1, _CLICK_DELAY_MAX_SEC))
             _emit(click_ts, user_id, "click", draft.video_id)
             watch = max(1, round(draft.watch_fraction * draft.duration_sec))
-            view_ts = click_ts + timedelta(seconds=urng.randint(1, 5))
+            view_ts = click_ts + timedelta(seconds=urng.randint(1, _VIEW_DELAY_MAX_SEC))
             _emit(view_ts, user_id, "view", draft.video_id, watch=watch)
+            last_ts = view_ts
             if draft.would_like:
                 like_ts = view_ts + timedelta(seconds=urng.randint(1, max(2, watch)))
                 _emit(like_ts, user_id, "like", draft.video_id)
+                last_ts = like_ts
+            # window 불변식 가드: 세션 마지막 이벤트도 history_end를 넘지 않는다.
+            # _MIN_IMPRESSION_HOURS가 _MAX_DURATION 기반이라 성립하며, 이 결합이 깨지면
+            # (예: _MAX_DURATION을 여유보다 크게 올리면) 여기서 조기에 실패한다.
+            assert last_ts <= end, (
+                f"session event {last_ts} exceeded history_end {end} — "
+                "check _MIN_IMPRESSION_HOURS vs _MAX_SESSION_SPAN_SEC"
+            )
     return events
 
 

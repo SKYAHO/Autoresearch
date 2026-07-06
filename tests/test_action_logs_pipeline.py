@@ -139,6 +139,19 @@ def test_timestamps_within_history_window(tmp_path):
         assert lo <= event.event_timestamp <= _FIXED_END
 
 
+def test_impression_headroom_covers_max_session_span():
+    # window 불변식(모든 이벤트 <= history_end)이 _MAX_DURATION과 결합돼 있음을 명시적으로 잠근다.
+    # _MAX_DURATION을 올리면 _MAX_SESSION_SPAN_SEC가 커지고 _MIN_IMPRESSION_HOURS도 따라
+    # 커져야 하며, 그렇지 않으면 클릭 세션 후속 이벤트가 history_end를 넘을 수 있다.
+    from autoresearch.action_logs.pipeline import (
+        _MAX_SESSION_SPAN_SEC,
+        _MIN_IMPRESSION_HOURS,
+    )
+
+    assert _MIN_IMPRESSION_HOURS >= 1
+    assert _MIN_IMPRESSION_HOURS * 3600 >= _MAX_SESSION_SPAN_SEC
+
+
 def test_per_user_daily_impression_cap_respected(tmp_path):
     users, videos = _fixture_users(1), build_fixture_video_records(40)
     result = generate_action_log_batch(
