@@ -1,10 +1,12 @@
 """VirtualUser + TrendingVideo pool로 Phase 1(historical) event log를 생성한다.
 
-흐름: 유저 단위 격리(LLM 판단) → 전역 2% CTR 정규화 → 코드 조립(timestamp·watch/like
-제약·stamp) → parquet/warehouse/quarantine 저장. 한 유저의 실패가 배치를 죽이지 않는다.
+흐름: 유저 단위 격리(LLM 판단) → 전역 2% CTR 정규화 → 이벤트 확장(_expand_events:
+노출마다 impression 1행, 클릭 선정분엔 click/view(+like)를 추가 배치) →
+parquet/warehouse/quarantine 저장. 한 유저의 실패가 배치를 죽이지 않는다.
 """
 import json
 import logging
+import math
 import random
 from collections import defaultdict
 from datetime import UTC, timedelta
@@ -27,10 +29,20 @@ from autoresearch.action_logs.schema import (
     ImpressionDraft,
     QuarantineRecord,
 )
-from autoresearch.action_logs.video_source import nominal_duration_sec
+from autoresearch.action_logs.video_source import _MAX_DURATION, nominal_duration_sec
 
 
 logger = logging.getLogger(__name__)
+
+# 클릭 세션(impression 직후 click→view→like)이 impression 시각 뒤로 늘어날 수 있는 최대 초.
+# like 지연 상한은 max(2, watch)이고, watch = round(watch_fraction × duration)이며 duration은
+# nominal_duration_sec가 _MAX_DURATION으로 캡한다 → 세션 span의 상한이 _MAX_DURATION에 결합된다.
+_CLICK_DELAY_MAX_SEC = 30
+_VIEW_DELAY_MAX_SEC = 5
+_MAX_SESSION_SPAN_SEC = _CLICK_DELAY_MAX_SEC + _VIEW_DELAY_MAX_SEC + max(2, _MAX_DURATION)
+# impression을 history_end에서 최소 이만큼(시간, 올림) 이전에 두면 위 세션 span을 항상 흡수해
+# 모든 후속 이벤트가 history_end를 넘지 않는다. _MAX_DURATION을 키우면 자동으로 여유가 늘어난다.
+_MIN_IMPRESSION_HOURS = max(1, math.ceil(_MAX_SESSION_SPAN_SEC / 3600))
 
 
 class ActionLogGenerator(Protocol):
@@ -53,14 +65,11 @@ EVENT_LOG_PARQUET_SCHEMA = pa.schema(
         pa.field("event_id", pa.string()),
         pa.field("event_timestamp", pa.timestamp("us", tz="UTC")),
         pa.field("user_id", pa.string()),
+        pa.field("event_type", pa.string()),
         pa.field("video_id", pa.string()),
-        pa.field("clicked", pa.int64()),
         pa.field("watch_time_sec", pa.int64()),
-        pa.field("liked", pa.int64()),
-        pa.field("search_keyword", pa.string()),
-        pa.field("source", pa.string()),
         pa.field("rank", pa.int64()),
-        pa.field("exposure_type", pa.string()),
+        pa.field("source", pa.string()),
         pa.field("schema_version", pa.string()),
         pa.field("prompt_version", pa.string()),
         pa.field("llm_model", pa.string()),
@@ -77,7 +86,7 @@ def _clamp01(value: object) -> float:
 
 def _build_user_drafts(
     virtual_user: dict,
-    candidates: list[tuple[dict, str]],
+    candidates: list[dict],
     raw_text: str,
 ) -> list[ImpressionDraft]:
     """LLM raw judgments를 파싱해 후보별 ImpressionDraft를 만든다.
@@ -91,17 +100,15 @@ def _build_user_drafts(
 
     user_id = str(virtual_user.get("user_id", ""))
     drafts: list[ImpressionDraft] = []
-    for video, exposure in candidates:
+    for video in candidates:
         vid = video["video_id"]
         j = jmap.get(vid)
         if j is None:
-            prop, frac, like, keyword = 0.0, 0.0, False, None
+            prop, frac, like = 0.0, 0.0, False
         else:
             prop = _clamp01(j.get("click_propensity", 0.0))
             frac = _clamp01(j.get("watch_fraction", 0.0))
             like = bool(j.get("would_like", False))
-            raw_kw = j.get("search_keyword")
-            keyword = str(raw_kw) if raw_kw not in (None, "") else None
         drafts.append(
             ImpressionDraft(
                 user_id=user_id,
@@ -109,8 +116,6 @@ def _build_user_drafts(
                 click_propensity=prop,
                 watch_fraction=frac,
                 would_like=like,
-                search_keyword=keyword,
-                exposure_type=exposure,
                 duration_sec=nominal_duration_sec(vid),
             )
         )
@@ -139,9 +144,8 @@ def _generate_drafts_isolated(
         )
         if not candidates:
             continue
-        videos_only = [v for v, _ in candidates]
         try:
-            raw_text = generator.generate(virtual_user, videos_only)
+            raw_text = generator.generate(virtual_user, candidates)
         except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
             quarantine.append(
                 QuarantineRecord(
@@ -179,7 +183,8 @@ def _generate_drafts_isolated(
 
 
 def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
-    """전역 2% 정규화: click_propensity 상위 round(ctr×N)개를 clicked=1로 선택한다."""
+    """전역 2% 정규화: click_propensity 상위 round(ctr×N)개의 draft(=impression)
+    인덱스를 '클릭'으로 선정해 반환한다."""
 
     total = len(drafts)
     n_click = round(target_ctr * total)
@@ -190,13 +195,16 @@ def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[in
     return set(order[:n_click])
 
 
-def _assemble_events(
+def _expand_events(
     drafts: list[ImpressionDraft],
     clicked: set[int],
     request: EventGenerationRequest,
 ) -> list[EventLog]:
-    """draft + 클릭 결정 → EventLog. timestamp 분산, watch/like 제약, stamp를 적용한다."""
+    """draft + 클릭 결정 → long EventLog 스트림.
 
+    노출마다 impression 1행. 클릭 선정분엔 같은 세션 흐름으로 click/view(+like)를
+    impression 직후(초 단위 단조 증가)에 배치한다. 일일 상한은 impression 기준.
+    """
     end = request.history_end
     if end.tzinfo is None:
         end = end.replace(tzinfo=UTC)
@@ -207,6 +215,23 @@ def _assemble_events(
 
     events: list[EventLog] = []
     seq = 0
+
+    def _emit(timestamp, user_id, event_type, video_id, watch=None):
+        nonlocal seq
+        events.append(
+            EventLog(
+                event_id=f"evt_{seq:08d}",
+                event_timestamp=timestamp,
+                user_id=user_id,
+                event_type=event_type,
+                video_id=video_id,
+                watch_time_sec=watch,
+                rank=None,
+                source=SOURCE_HISTORICAL,
+            )
+        )
+        seq += 1
+
     for user_id, indices in by_user.items():
         urng = random.Random(f"{request.seed}:ts:{user_id}")
         days = list(range(request.history_days))
@@ -217,35 +242,34 @@ def _assemble_events(
         for position, idx in enumerate(order):
             draft = drafts[idx]
             day = days[(position // cap) % len(days)]
-            timestamp = end - timedelta(
+            impression_ts = end - timedelta(
                 days=day,
-                hours=urng.randint(0, 23),
+                # history_end에서 최소 _MIN_IMPRESSION_HOURS시간 이전 → 후속 click/view/like가
+                # 세션 최대 span(_MAX_SESSION_SPAN_SEC)만큼 밀려도 history_end를 넘지 않는다.
+                hours=urng.randint(_MIN_IMPRESSION_HOURS, 23),
                 minutes=urng.randint(0, 59),
                 seconds=urng.randint(0, 59),
             )
-            is_click = idx in clicked
-            if is_click:
-                watch = max(1, round(draft.watch_fraction * draft.duration_sec))
-                liked = 1 if draft.would_like else 0
-                keyword = draft.search_keyword
-            else:
-                watch, liked, keyword = 0, 0, None
-            events.append(
-                EventLog(
-                    event_id=f"evt_{seq:08d}",
-                    event_timestamp=timestamp,
-                    user_id=user_id,
-                    video_id=draft.video_id,
-                    clicked=1 if is_click else 0,
-                    watch_time_sec=watch,
-                    liked=liked,
-                    search_keyword=keyword,
-                    source=SOURCE_HISTORICAL,
-                    rank=None,
-                    exposure_type=draft.exposure_type,
-                )
+            _emit(impression_ts, user_id, "impression", draft.video_id)
+            if idx not in clicked:
+                continue
+            click_ts = impression_ts + timedelta(seconds=urng.randint(1, _CLICK_DELAY_MAX_SEC))
+            _emit(click_ts, user_id, "click", draft.video_id)
+            watch = max(1, round(draft.watch_fraction * draft.duration_sec))
+            view_ts = click_ts + timedelta(seconds=urng.randint(1, _VIEW_DELAY_MAX_SEC))
+            _emit(view_ts, user_id, "view", draft.video_id, watch=watch)
+            last_ts = view_ts
+            if draft.would_like:
+                like_ts = view_ts + timedelta(seconds=urng.randint(1, max(2, watch)))
+                _emit(like_ts, user_id, "like", draft.video_id)
+                last_ts = like_ts
+            # window 불변식 가드: 세션 마지막 이벤트도 history_end를 넘지 않는다.
+            # _MIN_IMPRESSION_HOURS가 _MAX_DURATION 기반이라 성립하며, 이 결합이 깨지면
+            # (예: _MAX_DURATION을 여유보다 크게 올리면) 여기서 조기에 실패한다.
+            assert last_ts <= end, (
+                f"session event {last_ts} exceeded history_end {end} — "
+                "check _MIN_IMPRESSION_HOURS vs _MAX_SESSION_SPAN_SEC"
             )
-            seq += 1
     return events
 
 
@@ -259,14 +283,11 @@ def _event_rows(batch: EventLogBatch, model_name: str) -> list[dict]:
                 "event_id": event.event_id,
                 "event_timestamp": event.event_timestamp,
                 "user_id": event.user_id,
+                "event_type": event.event_type,
                 "video_id": event.video_id,
-                "clicked": event.clicked,
                 "watch_time_sec": event.watch_time_sec,
-                "liked": event.liked,
-                "search_keyword": event.search_keyword,
-                "source": event.source,
                 "rank": event.rank,
-                "exposure_type": event.exposure_type,
+                "source": event.source,
                 "schema_version": batch.schema_version,
                 "prompt_version": batch.prompt_version,
                 "llm_model": model_name,
@@ -326,7 +347,7 @@ def generate_action_log_batch(
 
     drafts, quarantine = _generate_drafts_isolated(generator, virtual_users, videos, request)
     clicked = _clicked_indices(drafts, request.target_ctr)
-    events = _assemble_events(drafts, clicked, request)
+    events = _expand_events(drafts, clicked, request)
 
     batch = EventLogBatch(
         schema_version=ACTION_LOG_SCHEMA_VERSION,
