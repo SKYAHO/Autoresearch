@@ -88,7 +88,7 @@ def youtube_backfill_kr():
             )
 
         # 2) 일괄 적재. 읽기는 pq 가 gs:// 를 자동 처리, 쓰기는 filesystem(GCS).
-        total = backfill_from_parquet(source_path, base_path)
+        total = backfill_from_parquet(source_path, base_path, filesystem=_gcs_filesystem())
         logger.info("Backfill complete: %d rows -> %s", total, base_path)
         return total
 
