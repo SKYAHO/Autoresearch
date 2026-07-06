@@ -27,7 +27,9 @@ DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 GLM_SYSTEM_HARNESS = """너는 virtual user row generator다.
 아래 원본 persona를 근거로 지정된 JSON schema를 채운다.
 없는 정보를 지어내지 마라. 원본에서 추론 가능한 수준만 생성하라.
-category 값은 제공된 allowed category vocabulary 안에서만 선택하라.
+단, occupation은 원본의 직업/전문(professional) 서술에서 반드시 추론해 채워라. 빈 문자열 금지.
+category 값은 제공된 allowed category vocabulary의 문자열을 그대로만 사용하라.
+vocabulary에 없는 이름을 만들지 마라(예: "Food"는 없음 → 음식·요리는 "Howto & Style").
 virtual_user_id, source_uuid, source_hash, source_persona_json, age_bucket, generation_meta, country, locale는 만들지 마라(코드가 채운다).
 출력은 지정된 JSON 하나만 허용한다. Markdown이나 주석을 넣지 마라.
 """
@@ -56,7 +58,7 @@ Allowed category vocabulary:
 Return only JSON with this shape (no Markdown, no commentary):
 {{
   "age": 24, "sex": "female",
-  "occupation": "", "province": "", "district": "",
+  "occupation": "간호사", "province": "", "district": "",
   "marital_status": "", "military_status": "", "family_type": "",
   "housing_type": "", "education_level": "", "bachelors_field": "",
   "persona_summary": "one sentence",
@@ -71,7 +73,8 @@ Return only JSON with this shape (no Markdown, no commentary):
 
 Constraints:
 - sex must be "male" or "female".
-- primary_categories: 1 to 5 items from the allowed vocabulary.
+- occupation: 원본 persona의 직업/professional 서술에서 반드시 추론해 채워라(빈 문자열 금지).
+- primary_categories: 1 to 5 items, allowed vocabulary의 정확한 문자열만(새 이름 금지).
 - watch_time_band in [morning, afternoon, evening, night, mixed].
 """
     logger.debug(

@@ -95,7 +95,7 @@ def test_assemble_virtual_user_raises_on_schema_violation():
 def test_rule_based_generator_returns_assemblable_full_content():
     gen = RuleBasedVirtualUserGenerator()
     raw = {"uuid": "p-9", "age": 24, "sex": "여자", "persona": "게임을 좋아함",
-           "hobbies_and_interests": "게임, 음악"}
+           "occupation": "게임 스트리머", "hobbies_and_interests": "게임, 음악"}
 
     raw_text = gen.generate(raw, "vu_0001")
     user = assemble_virtual_user(raw, raw_text, "vu_0001", gen.model_name)

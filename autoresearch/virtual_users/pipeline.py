@@ -2,6 +2,7 @@
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Protocol
 
@@ -159,27 +160,54 @@ def write_quarantine_jsonl(
 def _generate_isolated(
     generator: VirtualUserGenerator,
     records: list[dict],
+    max_concurrency: int = 1,
 ) -> tuple[list[VirtualUser], list[QuarantineRecord]]:
-    """행 단위로 생성을 격리해 한 행의 실패가 배치 전체를 중단시키지 않게 한다."""
+    """행 단위로 생성을 격리하되 LLM 호출(네트워크 I/O)만 병렬화한다.
 
+    virtual_user_id는 원본 record 순서로 부여하고 조립·검증도 그 순서로 처리하므로,
+    병렬 호출이어도 출력은 결정론적이다. 한 행의 실패가 배치 전체를 중단시키지 않는다.
+    """
+
+    tasks = [
+        (index, f"vu_{index:04d}", raw_row)
+        for index, raw_row in enumerate(records, start=1)
+    ]
+
+    # 1) LLM 호출만 병렬화. 실패는 index별로 보관해 이후 원본 순서로 처리한다.
+    raw_by_index: dict[int, str] = {}
+    api_error_by_index: dict[int, str] = {}
+
+    def _call(task: tuple[int, str, dict]) -> tuple[int, str]:
+        index, virtual_user_id, raw_row = task
+        return index, generator.generate(raw_row, virtual_user_id)
+
+    with ThreadPoolExecutor(max_workers=max(1, max_concurrency)) as executor:
+        futures = {executor.submit(_call, task): task for task in tasks}
+        for future in as_completed(futures):
+            index = futures[future][0]
+            try:
+                _, raw_text = future.result()
+                raw_by_index[index] = raw_text
+            except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
+                api_error_by_index[index] = str(exc)
+
+    # 2) 조립·검증은 원본 순서로 단일 스레드에서(결정론). 실패는 quarantine.
     users: list[VirtualUser] = []
     quarantine: list[QuarantineRecord] = []
-    for index, raw_row in enumerate(records, start=1):
-        virtual_user_id = f"vu_{index:04d}"
+    for index, virtual_user_id, raw_row in tasks:
         source_uuid = str(raw_row.get("uuid", ""))
-        try:
-            raw_text = generator.generate(raw_row, virtual_user_id)
-        except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
+        if index in api_error_by_index:
             quarantine.append(
                 QuarantineRecord(
                     source_uuid=source_uuid,
                     raw_row=raw_row,
                     raw_llm_response="",
                     error_type="api_error",
-                    error_message=str(exc),
+                    error_message=api_error_by_index[index],
                 )
             )
             continue
+        raw_text = raw_by_index[index]
         try:
             users.append(
                 assemble_virtual_user(raw_row, raw_text, virtual_user_id, generator.model_name)
@@ -245,7 +273,7 @@ def generate_virtual_user_batch(
         extra={"sampled_count": len(sampled)},
     )
 
-    users, quarantine = _generate_isolated(generator, sampled)
+    users, quarantine = _generate_isolated(generator, sampled, request.max_concurrency)
 
     batch = VirtualUserBatch(
         schema_version=GENERATION_SCHEMA_VERSION,

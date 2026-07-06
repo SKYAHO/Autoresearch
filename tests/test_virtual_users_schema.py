@@ -11,8 +11,47 @@ from autoresearch.virtual_users.schema import (
     QuarantineRecord,
     VirtualUser,
     VirtualUserBatch,
+    YouTubeProfile,
     age_bucket_for_age,
 )
+
+
+def _valid_user_kwargs(**overrides):
+    kwargs = dict(
+        virtual_user_id="vu_0001",
+        source_uuid="p-1",
+        age=24,
+        sex="male",
+        age_bucket="20s",
+        occupation="개발자",
+        province="Seoul",
+        persona_summary="dev",
+        youtube_profile={"primary_categories": ["Gaming"], "watch_time_band": "night"},
+        generation_meta={
+            "schema_version": GENERATION_SCHEMA_VERSION,
+            "prompt_version": PROMPT_VERSION,
+            "llm_model": "fixture",
+            "generated_at": "2026-07-06T00:00:00Z",
+        },
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_youtube_profile_rejects_out_of_vocabulary_category():
+    YouTubeProfile(primary_categories=["Music", "Gaming"], watch_time_band="night")  # 정상 vocab
+    with pytest.raises(ValidationError):
+        YouTubeProfile(primary_categories=["Food"], watch_time_band="night")  # vocab 밖
+    with pytest.raises(ValidationError):
+        YouTubeProfile(primary_categories=["Music", "Music"], watch_time_band="night")  # 중복
+
+
+def test_virtual_user_rejects_blank_occupation():
+    VirtualUser(**_valid_user_kwargs())  # 정상
+    with pytest.raises(ValidationError):
+        VirtualUser(**_valid_user_kwargs(occupation=""))
+    with pytest.raises(ValidationError):
+        VirtualUser(**_valid_user_kwargs(occupation="   "))
 
 
 def _make_single_user_batch() -> VirtualUserBatch:

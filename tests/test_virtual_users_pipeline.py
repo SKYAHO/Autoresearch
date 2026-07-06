@@ -210,3 +210,18 @@ def test_end_to_end_100_rows_rule_based(tmp_path):
     rows = pq.read_table(tmp_path / "vu.parquet").to_pylist()
     assert len(rows) == 100
     assert result.batch.summary == {"total": 100, "male": 50, "female": 50}
+
+
+def test_generate_virtual_user_batch_parallel_is_deterministic_and_ordered(tmp_path):
+    # max_concurrency>1(병렬 호출)이어도 user_id는 원본 순서로 부여되고 조립도 순서대로.
+    records = build_fixture_raw_persona_records(male_count=15, female_count=15)
+    request = GenerationRequest(
+        age_min=20, age_max=29, male_count=10, female_count=10,
+        seed=42, use_llm=False, max_concurrency=4,
+        output_path=str(tmp_path / "u.parquet"),
+        quarantine_output_path=str(tmp_path / "q.jsonl"),
+    )
+    result = generate_virtual_user_batch(request, records, RuleBasedVirtualUserGenerator())
+    ids = [u.virtual_user_id for u in result.batch.users]
+    assert ids == [f"vu_{i:04d}" for i in range(1, len(ids) + 1)]  # 결정론적 순서
+    assert result.summary["valid"] == 20 and result.summary["quarantined"] == 0

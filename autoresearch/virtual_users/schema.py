@@ -6,8 +6,15 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from autoresearch.virtual_users.categories import (
+    DEFAULT_KAGGLE_YOUTUBE_CATEGORIES,
+    validate_categories,
+)
+
 
 logger = logging.getLogger(__name__)
+
+_ALLOWED_CATEGORIES = set(DEFAULT_KAGGLE_YOUTUBE_CATEGORIES)
 
 SOURCE_DATASET = "nvidia/Nemotron-Personas-Korea"
 SOURCE_COUNTRY = "KR"
@@ -83,6 +90,13 @@ class YouTubeProfile(BaseModel):
     primary_categories: list[str] = Field(min_length=1, max_length=5)
     watch_time_band: Literal["morning", "afternoon", "evening", "night", "mixed"]
 
+    @field_validator("primary_categories")
+    @classmethod
+    def categories_in_vocabulary(cls, value: list[str]) -> list[str]:
+        """허용 YouTube vocabulary 밖 값·중복을 거부한다(약한 모델의 vocab 드리프트 차단)."""
+
+        return validate_categories(value, _ALLOWED_CATEGORIES)
+
 
 class GenerationMeta(BaseModel):
     """생성 결과의 schema, prompt, 모델, 생성 시각을 추적하는 metadata."""
@@ -125,6 +139,15 @@ class VirtualUser(BaseModel):
     source_persona_json: dict[str, object] = Field(default_factory=dict)
     youtube_profile: YouTubeProfile
     generation_meta: GenerationMeta
+
+    @field_validator("occupation")
+    @classmethod
+    def occupation_not_blank(cls, value: str) -> str:
+        """occupation은 비어있으면 안 된다(빈 값은 schema_fail로 격리해 품질을 보장)."""
+
+        if not value or not value.strip():
+            raise ValueError("occupation must not be empty")
+        return value
 
 
 class VirtualUserBatch(BaseModel):
