@@ -5,8 +5,11 @@ import types
 import pytest
 
 from autoresearch.virtual_users.glm_generator import (
+    DEFAULT_OPENROUTER_BASE_URL,
+    DEFAULT_OPENROUTER_MODEL,
     GLM_SYSTEM_HARNESS,
     GLMVirtualUserGenerator,
+    OpenRouterVirtualUserGenerator,
     RuleBasedVirtualUserGenerator,
     assemble_virtual_user,
     build_source_hash,
@@ -117,6 +120,60 @@ def test_glm_generator_uses_zai_base_url_env(monkeypatch):
 
     assert generator.api_key == "test-api-key"
     assert generator.base_url == "https://example.test/v4"
+
+
+def test_openrouter_generator_requires_api_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        OpenRouterVirtualUserGenerator()
+
+
+def test_openrouter_generator_defaults_to_nemo_and_openrouter_url(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-api-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    generator = OpenRouterVirtualUserGenerator()
+
+    assert generator.api_key == "test-api-key"
+    assert generator.model_name == DEFAULT_OPENROUTER_MODEL == "mistralai/mistral-nemo"
+    assert generator.base_url == DEFAULT_OPENROUTER_BASE_URL
+
+
+def test_openrouter_generator_calls_openai_compatible_client(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["completion_kwargs"] = kwargs
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(content="{\"ok\": true}")
+                    )
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
+    raw = build_fixture_raw_persona_records(male_count=1, female_count=0)[0]
+    generator = OpenRouterVirtualUserGenerator(api_key="test-api-key", model_name="mistralai/mistral-nemo")
+
+    result = generator.generate(raw, virtual_user_id="vu_0001")
+
+    assert result == "{\"ok\": true}"
+    assert captured["client_kwargs"] == {
+        "api_key": "test-api-key",
+        "base_url": DEFAULT_OPENROUTER_BASE_URL,
+    }
+    completion_kwargs = captured["completion_kwargs"]
+    assert completion_kwargs["model"] == "mistralai/mistral-nemo"
+    assert completion_kwargs["response_format"] == {"type": "json_object"}
+    assert completion_kwargs["messages"][0]["content"] == GLM_SYSTEM_HARNESS
 
 
 def test_glm_generator_calls_openai_compatible_client(monkeypatch):

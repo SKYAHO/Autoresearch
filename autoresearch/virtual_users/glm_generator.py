@@ -1,4 +1,4 @@
-"""GLM 또는 fixture rule로 raw persona dict를 VirtualUser로 변환한다."""
+"""GLM/OpenRouter LLM 또는 fixture rule로 raw persona dict를 VirtualUser로 변환한다."""
 
 import hashlib
 import json
@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_GLM_MODEL = "glm-5.2"
 DEFAULT_ZAI_BASE_URL = "https://api.z.ai/api/coding/paas/v4"
+DEFAULT_OPENROUTER_MODEL = "mistralai/mistral-nemo"
+DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 GLM_SYSTEM_HARNESS = """너는 virtual user row generator다.
 아래 원본 persona를 근거로 지정된 JSON schema를 채운다.
 없는 정보를 지어내지 마라. 원본에서 추론 가능한 수준만 생성하라.
@@ -180,22 +182,17 @@ class RuleBasedVirtualUserGenerator:
         return json.dumps(content, ensure_ascii=False)
 
 
-class GLMVirtualUserGenerator:
-    """OpenAI-compatible Z.ai GLM API를 호출해 raw response text를 반환하는 generator."""
+class _OpenAICompatibleVirtualUserGenerator:
+    """OpenAI-compatible chat completions로 raw persona → VirtualUser JSON을 만드는 공통 로직.
 
-    def __init__(
-        self,
-        api_key: str | None = None,
-        model_name: str = DEFAULT_GLM_MODEL,
-        base_url: str | None = None,
-    ) -> None:
-        """API key, model, base URL을 설정하고 GLM 호출 가능 상태인지 검증한다."""
+    provider(Z.ai GLM / OpenRouter)별로 api_key·base_url·model만 다르고, system harness와
+    프롬프트·호출 방식(json_object 강제)은 동일하다. 서브클래스가 provider 설정을 채운다.
+    """
 
-        self.api_key = api_key or os.environ.get("ZAI_API_KEY")
-        self.base_url = base_url or os.environ.get("ZAI_BASE_URL") or DEFAULT_ZAI_BASE_URL
+    def __init__(self, api_key: str | None, base_url: str, model_name: str) -> None:
+        self.api_key = api_key
+        self.base_url = base_url
         self.model_name = model_name
-        if not self.api_key:
-            raise ValueError("ZAI_API_KEY is required when use_llm=true")
 
     def _client_kwargs(self) -> dict[str, object]:
         """OpenAI client 초기화에 필요한 인증/endpoint 인자를 반환한다."""
@@ -206,12 +203,12 @@ class GLMVirtualUserGenerator:
         }
 
     def generate(self, raw_row: dict, virtual_user_id: str) -> str:
-        """GLM에 raw row 기반 full-schema JSON을 요청하고 raw text를 그대로 반환한다."""
+        """provider에 raw row 기반 full-schema JSON을 요청하고 raw text를 그대로 반환한다."""
 
         from openai import OpenAI
 
         logger.info(
-            "Requesting GLM virtual user generation",
+            "Requesting virtual user generation",
             extra={
                 "source_uuid": raw_row.get("uuid", ""),
                 "virtual_user_id": virtual_user_id,
@@ -231,14 +228,44 @@ class GLMVirtualUserGenerator:
             ],
             response_format={"type": "json_object"},
         )
-        raw_text = response.choices[0].message.content or ""
+        return response.choices[0].message.content or ""
 
-        logger.info(
-            "Generated GLM virtual user raw text",
-            extra={
-                "source_uuid": raw_row.get("uuid", ""),
-                "virtual_user_id": virtual_user_id,
-                "model_name": self.model_name,
-            },
+
+class GLMVirtualUserGenerator(_OpenAICompatibleVirtualUserGenerator):
+    """OpenAI-compatible Z.ai GLM API generator."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str = DEFAULT_GLM_MODEL,
+        base_url: str | None = None,
+    ) -> None:
+        """ZAI_API_KEY/ZAI_BASE_URL 환경변수로 GLM 호출 상태를 구성·검증한다."""
+
+        super().__init__(
+            api_key=api_key or os.environ.get("ZAI_API_KEY"),
+            base_url=base_url or os.environ.get("ZAI_BASE_URL") or DEFAULT_ZAI_BASE_URL,
+            model_name=model_name,
         )
-        return raw_text
+        if not self.api_key:
+            raise ValueError("ZAI_API_KEY is required when use_llm=true")
+
+
+class OpenRouterVirtualUserGenerator(_OpenAICompatibleVirtualUserGenerator):
+    """OpenAI-compatible OpenRouter API generator (기본 모델 mistral-nemo)."""
+
+    def __init__(
+        self,
+        api_key: str | None = None,
+        model_name: str = DEFAULT_OPENROUTER_MODEL,
+        base_url: str | None = None,
+    ) -> None:
+        """OPENROUTER_API_KEY/OPENROUTER_BASE_URL 환경변수로 OpenRouter 호출 상태를 구성·검증한다."""
+
+        super().__init__(
+            api_key=api_key or os.environ.get("OPENROUTER_API_KEY"),
+            base_url=base_url or os.environ.get("OPENROUTER_BASE_URL") or DEFAULT_OPENROUTER_BASE_URL,
+            model_name=model_name,
+        )
+        if not self.api_key:
+            raise ValueError("OPENROUTER_API_KEY is required when use_llm=true")
