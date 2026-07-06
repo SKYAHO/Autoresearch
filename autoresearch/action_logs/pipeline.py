@@ -1,7 +1,8 @@
 """VirtualUser + TrendingVideo pool로 Phase 1(historical) event log를 생성한다.
 
-흐름: 유저 단위 격리(LLM 판단) → 전역 2% CTR 정규화 → 코드 조립(timestamp·watch/like
-제약·stamp) → parquet/warehouse/quarantine 저장. 한 유저의 실패가 배치를 죽이지 않는다.
+흐름: 유저 단위 격리(LLM 판단) → 전역 2% CTR 정규화 → 이벤트 확장(_expand_events:
+노출마다 impression 1행, 클릭 선정분엔 click/view(+like)를 추가 배치) →
+parquet/warehouse/quarantine 저장. 한 유저의 실패가 배치를 죽이지 않는다.
 """
 import json
 import logging
@@ -132,9 +133,8 @@ def _generate_drafts_isolated(
         )
         if not candidates:
             continue
-        videos_only = candidates
         try:
-            raw_text = generator.generate(virtual_user, videos_only)
+            raw_text = generator.generate(virtual_user, candidates)
         except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
             quarantine.append(
                 QuarantineRecord(
@@ -172,7 +172,8 @@ def _generate_drafts_isolated(
 
 
 def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
-    """전역 2% 정규화: click_propensity 상위 round(ctr×N)개를 clicked=1로 선택한다."""
+    """전역 2% 정규화: click_propensity 상위 round(ctr×N)개의 draft(=impression)
+    인덱스를 '클릭'으로 선정해 반환한다."""
 
     total = len(drafts)
     n_click = round(target_ctr * total)

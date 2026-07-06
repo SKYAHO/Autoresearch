@@ -109,7 +109,26 @@ def test_click_session_timestamps_are_monotonic(tmp_path):
     for group in by_key.values():
         group.sort(key=lambda e: order[e.event_type])
         ts = [e.event_timestamp for e in group]
-        assert ts == sorted(ts)  # impression <= click <= view <= like
+        assert all(a < b for a, b in zip(ts, ts[1:])), f"non-strict session order: {ts}"
+
+
+def test_clicked_indices_selects_highest_propensity():
+    from autoresearch.action_logs.pipeline import _clicked_indices
+    from autoresearch.action_logs.schema import ImpressionDraft
+
+    drafts = [
+        ImpressionDraft(
+            user_id="u",
+            video_id=f"v{i}",
+            click_propensity=p,
+            watch_fraction=0.5,
+            would_like=False,
+            duration_sec=100,
+        )
+        for i, p in enumerate([0.1, 0.9, 0.5, 0.8, 0.2])
+    ]
+    chosen = _clicked_indices(drafts, target_ctr=0.4)  # round(0.4*5)=2
+    assert chosen == {1, 3}  # the 0.9 and 0.8 propensity drafts
 
 
 def test_timestamps_within_history_window(tmp_path):

@@ -1,5 +1,11 @@
 # action log 생성 QA 리포트 (Phase 1, MVP)
 
+> ⚠️ **STALE (wide 포맷) — 2026-07-06 event log long 전환(이슈 #57) 이전 결과입니다.**
+> 아래 지표는 `clicked`/`liked`/`exposure_type` 등 제거된 wide 컬럼 기준이라 현재 스키마
+> (`autoresearch/action_logs/schema.py`, event_type 4종)와 일치하지 않습니다. long 포맷
+> QA 재생성은 `OPENROUTER_API_KEY` 확보 후 수행 예정(플랜 Task 6). 설계:
+> `docs/superpowers/specs/2026-07-06-event-log-long-format-design.md`.
+
 - 측정일: 2026-07-06 · 이슈 #57 · 모델 `mistralai/mistral-nemo`(OpenRouter)
 - 입력: virtual_users 10명(vu_nemo_10) × KR TrendingVideo 200건(asaniczka)
 - 조건: candidates_per_user=24, target_ctr=0.02, exploration_ratio=0.2, history 30일, seed=42
