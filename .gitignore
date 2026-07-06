@@ -9,6 +9,10 @@ __pycache__/
 .env
 .gcp-creds.json
 
+# Local credentials and virtualenv
+keys/
+.venv/
+
 # Generated data artifacts
 data/generated/
 /tmp/
