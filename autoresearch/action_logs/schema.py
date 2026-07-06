@@ -16,44 +16,33 @@ ACTION_LOG_SCHEMA_VERSION = "action_log_schema_v1"
 PROMPT_VERSION = "action_log_ctr_v1"
 SOURCE_HISTORICAL = "historical"
 
-# exposure_type 씨앗: 관련 후보 / 다양성 랜덤.
-EXPOSURE_TOP_RANKED = "top_ranked"
-EXPOSURE_EXPLORATION = "exploration"
-
 
 class EventLog(BaseModel):
-    """한 row = 특정 사용자에게 특정 영상이 노출된 사건 1회(impression=1).
+    """한 row = 한 이벤트. event_type ∈ {impression, click, view, like}.
 
-    `docs/AGENT_SIMULATOR_SPEC.md`의 events 테이블 계약을 그대로 따른다.
+    라벨(clicked)은 저장하지 않는다. clicked는 downstream이 impression↔click join으로
+    파생한다. 노출마다 impression 1행, 클릭 선정분엔 click/view(+like) 행이 추가된다.
+    설계: docs/superpowers/specs/2026-07-06-event-log-long-format-design.md
     """
 
     event_id: str
     event_timestamp: datetime
     user_id: str
+    event_type: Literal["impression", "click", "view", "like"]
     video_id: str
-    clicked: int
-    watch_time_sec: int = Field(ge=0)
-    liked: int
-    search_keyword: str | None = None
-    source: Literal["historical", "online_simulated"] = SOURCE_HISTORICAL
+    watch_time_sec: int | None = None
     rank: int | None = None
-    exposure_type: Literal["top_ranked", "exploration"] | None = None
-
-    @field_validator("clicked", "liked")
-    @classmethod
-    def binary_only(cls, value: int) -> int:
-        """clicked/liked는 0 또는 1만 허용한다."""
-
-        if value not in (0, 1):
-            raise ValueError("clicked/liked must be 0 or 1")
-        return value
+    source: Literal["historical", "online_simulated"] = SOURCE_HISTORICAL
 
     @model_validator(mode="after")
-    def enforce_no_click_constraints(self) -> "EventLog":
-        """clicked=0이면 watch_time_sec=0·liked=0을 강제한다(SSOT 제약)."""
+    def watch_time_only_for_view(self) -> "EventLog":
+        """watch_time_sec는 view 이벤트일 때만 non-null(>=0), 그 외엔 null이어야 한다."""
 
-        if self.clicked == 0 and (self.watch_time_sec != 0 or self.liked != 0):
-            raise ValueError("clicked=0 requires watch_time_sec=0 and liked=0")
+        if self.event_type == "view":
+            if self.watch_time_sec is None or self.watch_time_sec < 0:
+                raise ValueError("view event requires watch_time_sec >= 0")
+        elif self.watch_time_sec is not None:
+            raise ValueError(f"{self.event_type} event must have watch_time_sec=None")
         return self
 
     def to_warehouse_row(self) -> dict[str, object]:
@@ -63,27 +52,25 @@ class EventLog(BaseModel):
             "event_id": self.event_id,
             "event_timestamp": self.event_timestamp.isoformat(),
             "user_id": self.user_id,
+            "event_type": self.event_type,
             "video_id": self.video_id,
-            "clicked": self.clicked,
             "watch_time_sec": self.watch_time_sec,
-            "liked": self.liked,
-            "search_keyword": self.search_keyword,
-            "source": self.source,
             "rank": self.rank,
-            "exposure_type": self.exposure_type,
+            "source": self.source,
         }
 
 
 class ImpressionDraft(BaseModel):
-    """LLM 판단 결과(전역 2% 정규화 전 중간 산출물). 저장되지 않는다."""
+    """LLM 판단 결과(전역 2% 정규화 전 중간 산출물). 저장되지 않는다.
+
+    draft 1건 = 후보(노출) 1건 = impression 1행에 대응한다.
+    """
 
     user_id: str
     video_id: str
     click_propensity: float = Field(ge=0.0, le=1.0)
     watch_fraction: float = Field(ge=0.0, le=1.0)
     would_like: bool
-    search_keyword: str | None = None
-    exposure_type: Literal["top_ranked", "exploration"]
     duration_sec: int = Field(ge=1)
 
 
@@ -146,14 +133,15 @@ class EventLogBatch(BaseModel):
 
     @property
     def summary(self) -> dict[str, float]:
-        """총 event 수, 클릭 수, 전역 CTR을 계산한다."""
+        """총 event 수, impression/click 행 수, 전역 CTR(clicks/impressions)을 계산한다."""
 
-        total = len(self.events)
-        clicks = sum(1 for e in self.events if e.clicked == 1)
+        impressions = sum(1 for e in self.events if e.event_type == "impression")
+        clicks = sum(1 for e in self.events if e.event_type == "click")
         return {
-            "total_events": total,
+            "total_events": len(self.events),
+            "impressions": impressions,
             "clicks": clicks,
-            "ctr": round(clicks / total, 4) if total else 0.0,
+            "ctr": round(clicks / impressions, 4) if impressions else 0.0,
         }
 
 

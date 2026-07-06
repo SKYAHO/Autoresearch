@@ -139,13 +139,43 @@ def test_total_failure_raises_and_writes_quarantine(tmp_path):
     assert not (tmp_path / "e.parquet").exists()
 
 
-def test_eventlog_rejects_click0_with_watch_or_like():
+def test_eventlog_watch_time_only_for_view():
     now = datetime(2026, 7, 1, tzinfo=UTC)
-    EventLog(event_id="e", event_timestamp=now, user_id="u", video_id="v", clicked=0, watch_time_sec=0, liked=0)
+    # view는 watch_time_sec 필수(>=0)
+    ev = EventLog(event_id="e", event_timestamp=now, user_id="u",
+                  event_type="view", video_id="v", watch_time_sec=42)
+    assert ev.watch_time_sec == 42 and ev.rank is None and ev.source == "historical"
+    # impression/click/like는 watch_time_sec=None (기본값)
+    for et in ("impression", "click", "like"):
+        assert EventLog(event_id="e", event_timestamp=now, user_id="u",
+                        event_type=et, video_id="v").watch_time_sec is None
+    # view인데 watch_time_sec 누락 -> 거부
     with pytest.raises(ValidationError):
-        EventLog(event_id="e", event_timestamp=now, user_id="u", video_id="v", clicked=0, watch_time_sec=5, liked=0)
+        EventLog(event_id="e", event_timestamp=now, user_id="u",
+                 event_type="view", video_id="v")
+    # 비-view인데 watch_time_sec 채움 -> 거부
     with pytest.raises(ValidationError):
-        EventLog(event_id="e", event_timestamp=now, user_id="u", video_id="v", clicked=0, watch_time_sec=0, liked=1)
+        EventLog(event_id="e", event_timestamp=now, user_id="u",
+                 event_type="impression", video_id="v", watch_time_sec=5)
+
+
+def test_batch_summary_ctr_from_impression_and_click_rows():
+    from autoresearch.action_logs.schema import EventLogBatch
+    now = datetime(2026, 7, 1, tzinfo=UTC)
+
+    def _ev(et, wt=None):
+        return EventLog(event_id="e", event_timestamp=now, user_id="u",
+                        event_type=et, video_id="v", watch_time_sec=wt)
+
+    events = [_ev("impression"), _ev("impression"), _ev("click"), _ev("view", 10), _ev("like")]
+    batch = EventLogBatch(
+        schema_version="s", prompt_version="p",
+        request=EventGenerationRequest(), events=events,
+    )
+    s = batch.summary
+    assert s["impressions"] == 2 and s["clicks"] == 1
+    assert s["total_events"] == 5
+    assert s["ctr"] == round(1 / 2, 4)
 
 
 def test_video_source_helpers():
