@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 import logging
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 logger = logging.getLogger(__name__)
@@ -33,10 +33,12 @@ class GenerationRequest(BaseModel):
     seed: int = 42
     use_llm: bool = True
     max_concurrency: int = 1
+    max_quarantine_ratio: float = 0.5
     source_mode: Literal["huggingface", "fixture"] = "huggingface"
     output_path: str = "asset/virtual_user/virtual_users_20s_100.parquet"
     raw_output_path: str = "data/raw/personas/nvidia_personas_kr.jsonl"
     warehouse_output_path: str = "data/generated/virtual_users_kr.jsonl"
+    quarantine_output_path: str = "data/generated/virtual_users_quarantine.jsonl"
 
     @field_validator("age_min", "age_max", "male_count", "female_count")
     @classmethod
@@ -56,6 +58,15 @@ class GenerationRequest(BaseModel):
             raise ValueError("max_concurrency must be at least 1")
         return value
 
+    @field_validator("max_quarantine_ratio")
+    @classmethod
+    def valid_quarantine_ratio(cls, value: float) -> float:
+        """전량/대량 실패 가드 임계치는 0~1 비율이어야 한다."""
+
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("max_quarantine_ratio must be between 0 and 1")
+        return value
+
     @field_validator("age_max")
     @classmethod
     def valid_age_range(cls, value: int, info) -> int:
@@ -67,69 +78,10 @@ class GenerationRequest(BaseModel):
         return value
 
 
-class SourcePersona(BaseModel):
-    """Hugging Face raw persona를 정규화한 내부 입력 schema."""
-
-    uuid: str
-    age: int
-    sex: Literal["male", "female"]
-    sex_normalized: Literal["male", "female"] | None = None
-    occupation: str = ""
-    province: str = ""
-    district: str = ""
-    country: str = SOURCE_COUNTRY
-    country_code: str = SOURCE_COUNTRY
-    locale: str = SOURCE_LOCALE
-    persona: str = ""
-    hobbies_and_interests: str = ""
-    hobbies_and_interests_list: list[str] = Field(default_factory=list)
-    professional_persona: str = ""
-    skills_and_expertise: str = ""
-    skills_and_expertise_list: list[str] = Field(default_factory=list)
-    sports_persona: str = ""
-    arts_persona: str = ""
-    travel_persona: str = ""
-    culinary_persona: str = ""
-    family_persona: str = ""
-    cultural_background: str = ""
-    career_goals_and_ambitions: str = ""
-    marital_status: str = ""
-    military_status: str = ""
-    family_type: str = ""
-    housing_type: str = ""
-    education_level: str = ""
-    bachelors_field: str = ""
-    source_text: str = ""
-    source_hash: str = ""
-    raw_payload: dict[str, object] = Field(default_factory=dict)
-
-
 class YouTubeProfile(BaseModel):
     """추천 도메인에서 사용할 YouTube 소비 성향 feature 묶음."""
 
     primary_categories: list[str] = Field(min_length=1, max_length=5)
-    shorts_affinity: float = Field(ge=0.0, le=1.0)
-    longform_affinity: float = Field(ge=0.0, le=1.0)
-    trend_sensitivity: float = Field(ge=0.0, le=1.0)
-    comment_propensity: float = Field(ge=0.0, le=1.0)
-    watch_time_band: Literal["morning", "afternoon", "evening", "night", "mixed"]
-
-
-class DerivedVirtualUserFeatures(BaseModel):
-    """GLM이 생성하는 취향/관심사 기반 derived feature 계약."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    persona_summary: str
-    hobby_keywords: list[str] = Field(default_factory=list)
-    interest_keywords: list[str] = Field(default_factory=list)
-    lifestyle_keywords: list[str] = Field(default_factory=list)
-    food_keywords: list[str] = Field(default_factory=list)
-    travel_keywords: list[str] = Field(default_factory=list)
-    career_keywords: list[str] = Field(default_factory=list)
-    family_context_keywords: list[str] = Field(default_factory=list)
-    primary_categories: list[str] = Field(min_length=1, max_length=5)
-    category_evidence: dict[str, list[str]] = Field(default_factory=dict)
     shorts_affinity: float = Field(ge=0.0, le=1.0)
     longform_affinity: float = Field(ge=0.0, le=1.0)
     trend_sensitivity: float = Field(ge=0.0, le=1.0)
@@ -280,3 +232,31 @@ class VirtualUserBatch(BaseModel):
             },
         )
         return payload
+
+
+class QuarantineRecord(BaseModel):
+    """생성 실패로 격리된 행. 후처리를 위해 원본과 raw 응답을 보존한다."""
+
+    source_uuid: str = ""
+    raw_row: dict[str, object] = Field(default_factory=dict)
+    raw_llm_response: str = ""
+    error_type: Literal["api_error", "invalid_json", "schema_fail"]
+    error_message: str = ""
+
+
+class GenerationResult(BaseModel):
+    """유효 batch와 격리 행을 함께 담는 배치 실행 결과."""
+
+    batch: "VirtualUserBatch"
+    quarantine: list[QuarantineRecord] = Field(default_factory=list)
+
+    @property
+    def summary(self) -> dict[str, int]:
+        counts = {"api_error": 0, "invalid_json": 0, "schema_fail": 0}
+        for record in self.quarantine:
+            counts[record.error_type] += 1
+        return {
+            "valid": len(self.batch.users),
+            "quarantined": len(self.quarantine),
+            **counts,
+        }
