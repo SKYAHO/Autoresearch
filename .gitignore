@@ -3,11 +3,29 @@ __pycache__/
 *.pkl
 *.csv
 
-# Astro / Airflow local state
-.astro/
+.venv/
+.python-version
+
+# GCP service account keys
+*-service-account*.json
+*gcp*.json
+*credentials*.json
+google_credentials.json
+service-account.json
+key/
+keys/
+
+# Environment files
 .env
 .env.*
 !.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Astro / Airflow local state
+.astro/
 .gcp-creds.json
 
 # Generated data artifacts

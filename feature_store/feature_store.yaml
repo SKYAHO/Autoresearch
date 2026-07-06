@@ -1,0 +1,32 @@
+# Feast Feature Store 설정
+# ============================================================================
+# 이 파일은 프로젝트 기본 설정을 담고 있습니다.
+# 개인 GCP 계정으로 테스트 시 project 필드를 본인 프로젝트 ID로 변경하세요.
+# Redis 연결 정보는 Memorystore 인스턴스 생성 후 이 파일에서 직접 수정하세요.
+# ============================================================================
+
+project: autoresearch_feature_store
+
+# Registry: FeatureView 메타데이터(Entity, Feature 스키마 등)를 저장하는 위치
+# GCS 버킷에 저장하여 팀 전체가 하나의 Registry를 공유
+# GCP에서 gs://feast-registry-autoresearch/ 버킷 생성 필요
+registry:
+  registry_type: file
+  path: gs://feast-registry-autoresearch/registry.db
+
+provider: gcp
+
+# Offline Store: BigQuery (추후 팀 GCP 환경으로 변경 필요)
+offline_store:
+  type: bigquery
+  dataset: feast_offline_store
+  project_id: autoresearch-skyaho-501202
+  gcs_staging_location: gs://feast-staging-autoresearch/
+
+online_store:
+  type: redis
+  connection_string: "localhost:6379"
+
+entity_key_serialization_version: 2
+
+# Feature 정의 파일 (이 디렉토리 내의 모든 *.py 파일에서 Entity, FeatureView 로드)
