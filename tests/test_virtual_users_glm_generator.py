@@ -1,5 +1,4 @@
 import json
-import logging
 import sys
 import types
 
@@ -9,152 +8,105 @@ from autoresearch.virtual_users.glm_generator import (
     GLM_SYSTEM_HARNESS,
     GLMVirtualUserGenerator,
     RuleBasedVirtualUserGenerator,
-    _virtual_user_from_derived_features,
+    assemble_virtual_user,
+    build_source_hash,
     build_virtual_user_prompt,
-    parse_virtual_user_json,
 )
-from autoresearch.virtual_users.persona_source import build_fixture_persona_records
-from autoresearch.virtual_users.schema import (
-    GENERATION_SCHEMA_VERSION,
-    PROMPT_VERSION,
-    age_bucket_for_age,
-)
+from autoresearch.virtual_users.persona_source import build_fixture_raw_persona_records
+from autoresearch.virtual_users.schema import VirtualUser
 
 
-def _valid_derived_features_payload() -> dict[str, object]:
+def _raw_row():
+    return {"uuid": "p-001", "age": 24, "sex": "여자", "persona": "제주 서점 직원"}
+
+
+def _full_content():
     return {
-        "persona_summary": "Gaming-focused student.",
-        "hobby_keywords": ["gaming", "music"],
-        "interest_keywords": ["creator videos", "short-form video"],
-        "lifestyle_keywords": ["night viewing"],
-        "food_keywords": ["snacks"],
-        "travel_keywords": ["local cafes"],
-        "career_keywords": ["creator economy"],
-        "family_context_keywords": ["single household"],
-        "primary_categories": ["Gaming", "Music"],
-        "category_evidence": {
-            "Gaming": ["gaming hobby", "creator videos"],
-            "Music": ["music hobby"],
+        "age": 24,
+        "sex": "female",
+        "occupation": "판매원",
+        "province": "제주",
+        "district": "제주시",
+        "marital_status": "미혼",
+        "military_status": "비현역",
+        "family_type": "1인 가구",
+        "housing_type": "아파트",
+        "education_level": "4년제 대학교",
+        "bachelors_field": "교육",
+        "persona_summary": "제주의 20대 여성.",
+        "hobby_keywords": ["독서"],
+        "interest_keywords": ["음악"],
+        "lifestyle_keywords": [],
+        "food_keywords": [],
+        "travel_keywords": [],
+        "career_keywords": [],
+        "family_context_keywords": [],
+        "category_evidence": {"Music": ["LP"]},
+        "category_affinity": {"Music": 0.8},
+        "youtube_profile": {
+            "primary_categories": ["Music"],
+            "shorts_affinity": 0.6,
+            "longform_affinity": 0.5,
+            "trend_sensitivity": 0.4,
+            "comment_propensity": 0.2,
+            "watch_time_band": "night",
         },
-        "shorts_affinity": 0.86,
-        "longform_affinity": 0.34,
-        "trend_sensitivity": 0.82,
-        "comment_propensity": 0.41,
-        "watch_time_band": "night",
     }
 
 
-def test_build_virtual_user_prompt_contains_glm_json_contract(caplog):
-    persona = build_fixture_persona_records(male_count=1, female_count=0)[0]
-
-    with caplog.at_level(
-        logging.DEBUG,
-        logger="autoresearch.virtual_users.glm_generator",
-    ):
-        prompt = build_virtual_user_prompt(persona, virtual_user_id="vu_0001")
-
-    assert PROMPT_VERSION in prompt
-    assert GENERATION_SCHEMA_VERSION in prompt
-    assert "Return only JSON" in prompt
-    assert "Required derived JSON shape" in prompt
-    assert "Allowed category vocabulary" in prompt
-    assert "Travel & Events" in prompt
-    assert "shorts_affinity" in prompt
-    assert "hobby_keywords" in prompt
-    assert "interest_keywords" in prompt
-    assert "category_evidence" in prompt
-    assert "category_affinity" not in prompt
-    assert "generation_meta" not in prompt
-    assert persona.uuid in prompt
-    assert "Built virtual user generation prompt" in caplog.text
+def test_build_virtual_user_prompt_embeds_raw_row_and_vocab():
+    prompt = build_virtual_user_prompt(_raw_row(), "vu_0001")
+    assert "p-001" in prompt          # raw row 포함
+    assert "제주 서점 직원" in prompt
+    assert "Music" in prompt          # allowed vocabulary
+    assert "sex_normalized" not in prompt
 
 
-def test_parse_virtual_user_json_accepts_valid_derived_payload(caplog):
-    raw = json.dumps(_valid_derived_features_payload())
-
-    with caplog.at_level(
-        logging.DEBUG,
-        logger="autoresearch.virtual_users.glm_generator",
-    ):
-        features = parse_virtual_user_json(raw)
-
-    assert features.primary_categories == ["Gaming", "Music"]
-    assert features.hobby_keywords == ["gaming", "music"]
-    assert features.category_evidence["Gaming"] == ["gaming hobby", "creator videos"]
-    assert features.shorts_affinity == 0.86
-    assert "Parsed derived virtual user JSON" in caplog.text
-
-
-def test_parse_virtual_user_json_rejects_non_json_text():
-    with pytest.raises(ValueError, match="LLM response must be valid JSON"):
-        parse_virtual_user_json("not json")
-
-
-def test_virtual_user_from_derived_features_copies_source_fields_and_affinity():
-    persona = build_fixture_persona_records(male_count=1, female_count=0)[0].model_copy(
-        update={
-            "marital_status": "미혼",
-            "military_status": "비대상",
-            "family_type": "혼자 거주",
-            "housing_type": "원룸",
-            "education_level": "대학교 재학",
-            "bachelors_field": "컴퓨터공학",
-            "source_hash": "hash-123",
-            "country": "대한민국",
-            "country_code": "KR",
-        }
-    )
-    features = parse_virtual_user_json(json.dumps(_valid_derived_features_payload()))
-
-    user = _virtual_user_from_derived_features(
-        persona=persona,
-        features=features,
+def test_assemble_virtual_user_stamps_code_owned_fields():
+    user = assemble_virtual_user(
+        raw_row=_raw_row(),
+        raw_text=json.dumps(_full_content(), ensure_ascii=False),
         virtual_user_id="vu_0001",
         model_name="glm-5.2",
     )
-
+    assert isinstance(user, VirtualUser)
     assert user.virtual_user_id == "vu_0001"
-    assert user.source_uuid == persona.uuid
-    assert user.age == persona.age
-    assert user.sex == persona.sex
-    assert user.occupation == persona.occupation
-    assert user.marital_status == "미혼"
-    assert user.education_level == "대학교 재학"
-    assert user.source_hash == "hash-123"
-    assert user.country == "대한민국"
-    assert user.source_persona_json["country"] == "대한민국"
-    assert user.category_affinity == {"Gaming": 0.91, "Music": 0.75}
-    assert user.category_evidence["Gaming"] == ["gaming hobby", "creator videos"]
-    assert user.generation_meta.schema_version == GENERATION_SCHEMA_VERSION
-    assert user.generation_meta.prompt_version == PROMPT_VERSION
+    assert user.source_uuid == "p-001"                 # code-stamped from raw row
+    assert user.source_hash == build_source_hash(_raw_row())
+    assert user.age_bucket == "20s"                    # code-computed from age
+    assert user.source_persona_json == _raw_row()       # raw row preserved
     assert user.generation_meta.llm_model == "glm-5.2"
+    assert user.sex == "female"                         # LLM content
 
 
-def test_rule_based_generator_produces_valid_schema_without_api_call(caplog):
-    persona = build_fixture_persona_records(male_count=1, female_count=0)[0]
-    generator = RuleBasedVirtualUserGenerator(model_name="fixture")
+def test_assemble_virtual_user_raises_on_invalid_json():
+    with pytest.raises(json.JSONDecodeError):
+        assemble_virtual_user(_raw_row(), "{not json", "vu_0001", "glm-5.2")
 
-    with caplog.at_level(
-        logging.INFO,
-        logger="autoresearch.virtual_users.glm_generator",
-    ):
-        user = generator.generate(persona, virtual_user_id="vu_0001")
 
-    assert user.virtual_user_id == "vu_0001"
-    assert user.source_uuid == persona.uuid
-    assert user.sex == "male"
-    assert user.age_bucket == age_bucket_for_age(persona.age)
-    assert user.district == persona.district
-    assert user.country == "KR"
-    assert user.locale == "ko-KR"
-    assert user.source_hash == persona.source_hash
-    assert user.source_persona_json["uuid"] == persona.uuid
-    assert user.hobby_keywords
-    assert user.interest_keywords
+def test_assemble_virtual_user_raises_on_schema_violation():
+    from pydantic import ValidationError
+
+    bad = _full_content()
+    bad["youtube_profile"]["shorts_affinity"] = 5.0  # out of range
+    with pytest.raises(ValidationError):
+        assemble_virtual_user(
+            _raw_row(), json.dumps(bad), "vu_0001", "glm-5.2"
+        )
+
+
+def test_rule_based_generator_returns_assemblable_full_content():
+    gen = RuleBasedVirtualUserGenerator()
+    raw = {"uuid": "p-9", "age": 24, "sex": "여자", "persona": "게임을 좋아함",
+           "hobbies_and_interests": "게임, 음악"}
+
+    raw_text = gen.generate(raw, "vu_0001")
+    user = assemble_virtual_user(raw, raw_text, "vu_0001", gen.model_name)
+
+    assert user.sex == "female"
+    assert user.youtube_profile.primary_categories
     assert user.category_affinity
-    assert user.generation_meta.prompt_version == PROMPT_VERSION
-    assert user.generation_meta.llm_model == "fixture"
-    assert "Generated fixture virtual user" in caplog.text
+    assert "sex_normalized" not in user.source_persona_json
 
 
 def test_glm_generator_requires_zai_api_key(monkeypatch):
@@ -184,7 +136,7 @@ def test_glm_generator_calls_openai_compatible_client(monkeypatch):
                 choices=[
                     types.SimpleNamespace(
                         message=types.SimpleNamespace(
-                            content=json.dumps(_valid_derived_features_payload())
+                            content="{\"ok\": true}"
                         )
                     )
                 ]
@@ -196,15 +148,16 @@ def test_glm_generator_calls_openai_compatible_client(monkeypatch):
             self.chat = types.SimpleNamespace(completions=FakeCompletions())
 
     monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
-    persona = build_fixture_persona_records(male_count=1, female_count=0)[0]
+    raw = build_fixture_raw_persona_records(male_count=1, female_count=0)[0]
     generator = GLMVirtualUserGenerator(
         api_key="test-api-key",
         base_url="https://example.test/v4",
         model_name="glm-test",
     )
 
-    user = generator.generate(persona, virtual_user_id="vu_0001")
+    result = generator.generate(raw, virtual_user_id="vu_0001")
 
+    assert result == "{\"ok\": true}"
     assert captured["client_kwargs"] == {
         "api_key": "test-api-key",
         "base_url": "https://example.test/v4",
@@ -215,5 +168,4 @@ def test_glm_generator_calls_openai_compatible_client(monkeypatch):
     assert completion_kwargs["messages"][0]["role"] == "system"
     assert completion_kwargs["messages"][0]["content"] == GLM_SYSTEM_HARNESS
     assert completion_kwargs["messages"][1]["role"] == "user"
-    assert "Source persona:" in completion_kwargs["messages"][1]["content"]
-    assert user.generation_meta.llm_model == "glm-test"
+    assert "Source persona (raw):" in completion_kwargs["messages"][1]["content"]
