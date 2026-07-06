@@ -17,7 +17,12 @@ YouTube Data API v3 일일 수집 볼륨은 하루 약 7 units(기본 할당량 
 
 ## 3차(Cloud Run 배포/Terraform) 보류
 
-Cloud Run 의 "재시작 → 새 egress IP" 동작은 **공식 문서로 보장되지 않는다**. Cloud Run healthchecks 문서는 "limits instance restarts to prevent uncontrolled crash loops"를 명시해, once-True-stays-True unhealthy 루프가 1~2회 후 재시작 자체가 스로틀될 수 있다. 따라서 3차 인프라 배포는 **egress IP 회전 가정을 경험적으로 검증하기 전까지 보류**한다. 2차 코드(proxy/ + client 연동)는 Docker 통합테스트로 국소적 실행 증거를 남긴다.
+Cloud Run 의 egress IP 회전 동작은 부분적으로 검증됐다:
+
+- **수동 신규 revision 배포 → 새 IP 관측(검증됨)**: 임시 GCP 프로젝트 테스트(2026-07-05)에서 신규 revision 배포 시 새 인스턴스에 새 egress IP 가 할당됨을 관측(IPv6 대역 `...4604:400::d00` → `...4603:400::901`). 회전된 IP 로 YouTube Data API 호출 정상 성공(200, KR 트렌딩).
+- **liveness 자동 재시작 → IP 회전(미검증)**: Cloud Run healthchecks 문서가 "limits instance restarts to prevent uncontrolled crash loops" 를 명시해, once-True-stays-True unhealthy 루프가 1~2회 후 재시작 자체가 스로틀될 수 있다. 본 경로는 프로덕션에서 실제 IP밴 발생 전까지 관측 불가.
+
+따라서 3차 인프라 배포는 **liveness 자동 회전 경로의 경험적 검증 + 인프라 담당자 조율 전까지 보류**한다. 2차 코드(proxy/ + client 연동)는 Docker 통합테스트로 국소적 실행 증거를, 임시 Cloud Run 테스트로 수동 revision 경로의 IP 회전 증거를 남긴다.
 
 ## 결과
 
