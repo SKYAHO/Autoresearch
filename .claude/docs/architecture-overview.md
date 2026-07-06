@@ -38,7 +38,8 @@
 
 ```
 YouTube Data API
-    → autoresearch/youtube_collection/fetch.py
+    → client.py (복원력 래퍼: 재시도/Key롤링/IP밴시그니처/Cloud Run 프록시)
+    → fetch.py (수집 로직)
     → transform.py (pydantic 스키마 검증)
     → load.py (GCS 데이터 레이크, parquet)
 

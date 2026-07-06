@@ -44,7 +44,9 @@
 - Autoresearch: YouTube 트렌딩 데이터 기반 CTR 모델링 프로젝트
 - 런타임 패키지는 `autoresearch/`:
   - `autoresearch/youtube_collection/` — YouTube 트렌딩 수집
-    (fetch/transform/load/backfill), GCS 데이터 레이크 적재
+    (fetch/transform/load/backfill/schema + client.py 복원력 레이어),
+    GCS 데이터 레이크 적재
+  - `proxy/` — Cloud Run dumb forwarder (YouTube API IP밴 대응 egress seam)
   - `autoresearch/virtual_users/` — Gemini 기반 가상 유저(페르소나) 생성
     파이프라인
 - Airflow DAG은 `dags/` (Astro Runtime 13.8.0): `youtube_trending_kr_daily`,

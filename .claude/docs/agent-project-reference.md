@@ -22,7 +22,9 @@ autoresearch/                # 런타임 패키지
 │   ├── transform.py         # 원본 → 정제 데이터 변환
 │   ├── load.py              # GCS 데이터 레이크 적재
 │   ├── backfill.py          # 과거 데이터 백필
-│   └── schema.py            # pydantic 데이터 계약
+│   ├── schema.py            # pydantic 데이터 계약
+│   └── client.py            # 복원력 레이어(재시도/Key롤링/IP밴시그니처/프록시)
+├── proxy/                   # Cloud Run dumb forwarder (IP밴 egress seam)
 ├── virtual_users/           # Gemini 기반 가상 유저(페르소나) 생성
 │   ├── persona_source.py    # 페르소나 원천 데이터 로드
 │   ├── interests.py         # 관심사 매핑
