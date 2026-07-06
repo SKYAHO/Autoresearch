@@ -59,6 +59,22 @@
 `session_id`, `request_id`, `exposure_type`(top_ranked/exploration), `query`(search),
 그리고 `event_type=search`. Phase 2(추천 서버) 도입 시 `rank`·`exposure_type`과 함께 추가.
 
+### 이벤트 semantic / 테이블 관계 (확정)
+- **PK**: `events` 테이블의 진짜 PK는 `event_id`다. `(user_id, video_id)`는 **유니크하지 않은 FK**다
+  — 한 (유저, 영상) 쌍이 `impression`/`click`/`view`/`like` 최대 4행을 가질 수 있고, 미래엔
+  같은 영상을 다른 시각에 다시 노출/시청할 수도 있다. `videos`(PK=`video_id`)·`virtual_users`
+  (PK=`user_id`)를 참조하는 자식 이벤트 로그다.
+- **이벤트별 의미**:
+  - `impression` 행 존재 = **노출됨**(추천/결과에 떴다). "노출 대상" 집합은 impression으로 정의.
+  - `click` 행 존재 = **클릭 발생**. 이는 라벨이 아니라 raw 사건이며, `clicked` 라벨은
+    downstream에서 `impression LEFT JOIN click`으로 파생한다(로그에 `clicked` 컬럼 없음).
+  - `view` 행 존재 = **실제 시청**(클릭 후 재생). `watch_time_sec`는 이 행에만 붙는다.
+    "영상을 본 사람" = 해당 `video_id`에 `view` 행이 있는 유저로 정의한다.
+  - `like` 행 존재 = 좋아요 발생.
+- **왜 `clicked=0/1` 컬럼이 아니라 `click` 이벤트인가**: wide의 `clicked` boolean은 모든 impression
+  행에 라벨을 미리 박아 leakage를 유발했다. long은 클릭이 실제 일어난 순간에만 `click` 행 1개를
+  추가하므로, 이벤트 로그 자체엔 라벨이 없고(=원천), 라벨은 학습셋 빌더가 join으로 만든다.
+
 ## 4. 이벤트 생성 규칙 (유저 × 노출영상 1건당)
 
 - **항상**: `impression` 1행 (rank=null, watch_time=null, source=historical)
