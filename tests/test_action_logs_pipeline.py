@@ -280,3 +280,21 @@ def test_rulebased_judgments_have_no_search_keyword():
         assert set(j) == {"video_id", "click_propensity", "watch_fraction", "would_like"}
         assert 0.0 <= j["click_propensity"] <= 1.0
         assert isinstance(j["would_like"], bool)
+
+
+def test_chunked_parallel_matches_single_call(tmp_path):
+    # 청킹+병렬(chunk_size=8, workers=4)이 단일콜과 동일한 impression/click을 내고 결정론적.
+    users, videos = _fixture_users(6), build_fixture_video_records(40)
+    chunked = generate_action_log_batch(
+        _request(tmp_path / "c", chunk_size=8, max_concurrency=4),
+        users, videos, RuleBasedActionLogGenerator(),
+    )
+    single = generate_action_log_batch(
+        _request(tmp_path / "s", chunk_size=0, max_concurrency=1),
+        users, videos, RuleBasedActionLogGenerator(),
+    )
+    assert chunked.summary["impressions"] == single.summary["impressions"] == 6 * 20
+    assert chunked.summary["clicks"] == single.summary["clicks"]
+    imps = [e for e in chunked.batch.events if e.event_type == "impression"]
+    assert imps[0].user_id == "vu_0000"  # 병렬이어도 원본 유저 순서 유지
+    assert chunked.summary["quarantined_users"] == 0

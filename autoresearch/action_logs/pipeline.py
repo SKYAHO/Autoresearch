@@ -9,6 +9,7 @@ import logging
 import math
 import random
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -122,16 +123,32 @@ def _build_user_drafts(
     return drafts
 
 
+def _chunked(seq: list, size: int):
+    """size>0이면 seq를 size 단위로 쪼개고, 아니면 통째로 하나만 내보낸다."""
+
+    if size and size > 0:
+        for start in range(0, len(seq), size):
+            yield seq[start : start + size]
+    else:
+        yield seq
+
+
 def _generate_drafts_isolated(
     generator: ActionLogGenerator,
     virtual_users: list[dict],
     videos: list[dict],
     request: EventGenerationRequest,
-) -> tuple[list[ImpressionDraft], list[QuarantineRecord]]:
-    """유저 단위로 판단 생성을 격리한다. 실패 유저는 quarantine으로 보낸다."""
+) -> tuple[list[ImpressionDraft], list[QuarantineRecord], int]:
+    """LLM 판정을 (유저×후보청크) 단위로 격리·병렬 생성한다.
 
-    drafts: list[ImpressionDraft] = []
-    quarantine: list[QuarantineRecord] = []
+    후보를 chunk_size로 쪼개 각 청크가 독립 LLM 콜(작은 context)이 되게 하고,
+    콜은 max_concurrency로 병렬 실행한다. user_id·조립은 원본(유저,청크) 순서로
+    처리하므로 병렬이어도 결정론. 한 청크 실패가 배치를 죽이지 않는다.
+    반환: (drafts, quarantine, 총 작업(청크) 수).
+    """
+
+    # 1) 결정론적 작업 목록: (user_id, virtual_user, chunk_candidates)
+    work: list[tuple[str, dict, list[dict]]] = []
     for index, virtual_user in enumerate(virtual_users):
         user_id = str(virtual_user.get("user_id", f"user_{index}"))
         user_rng = random.Random(f"{request.seed}:{user_id}")
@@ -144,21 +161,45 @@ def _generate_drafts_isolated(
         )
         if not candidates:
             continue
-        try:
-            raw_text = generator.generate(virtual_user, candidates)
-        except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
+        for chunk in _chunked(candidates, request.chunk_size):
+            work.append((user_id, virtual_user, chunk))
+
+    # 2) LLM 콜만 병렬화. 실패는 작업 index별로 보관해 이후 순서대로 처리.
+    raw_by_index: dict[int, str] = {}
+    api_error_by_index: dict[int, str] = {}
+
+    def _call(i: int) -> tuple[int, str]:
+        _uid, vu, chunk = work[i]
+        return i, generator.generate(vu, chunk)
+
+    with ThreadPoolExecutor(max_workers=max(1, request.max_concurrency)) as executor:
+        futures = {executor.submit(_call, i): i for i in range(len(work))}
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                _, raw_text = future.result()
+                raw_by_index[i] = raw_text
+            except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
+                api_error_by_index[i] = str(exc)
+
+    # 3) 조립·검증은 원본 순서로 단일 스레드에서(결정론). 실패는 quarantine.
+    drafts: list[ImpressionDraft] = []
+    quarantine: list[QuarantineRecord] = []
+    for i, (user_id, virtual_user, chunk) in enumerate(work):
+        if i in api_error_by_index:
             quarantine.append(
                 QuarantineRecord(
                     user_id=user_id,
                     virtual_user=virtual_user,
                     raw_llm_response="",
                     error_type="api_error",
-                    error_message=str(exc),
+                    error_message=api_error_by_index[i],
                 )
             )
             continue
+        raw_text = raw_by_index[i]
         try:
-            drafts.extend(_build_user_drafts(virtual_user, candidates, raw_text))
+            drafts.extend(_build_user_drafts(virtual_user, chunk, raw_text))
         except json.JSONDecodeError as exc:
             quarantine.append(
                 QuarantineRecord(
@@ -179,7 +220,7 @@ def _generate_drafts_isolated(
                     error_message=str(exc),
                 )
             )
-    return drafts, quarantine
+    return drafts, quarantine, len(work)
 
 
 def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
@@ -345,7 +386,9 @@ def generate_action_log_batch(
         },
     )
 
-    drafts, quarantine = _generate_drafts_isolated(generator, virtual_users, videos, request)
+    drafts, quarantine, total_work = _generate_drafts_isolated(
+        generator, virtual_users, videos, request
+    )
     clicked = _clicked_indices(drafts, request.target_ctr)
     events = _expand_events(drafts, clicked, request)
 
@@ -360,15 +403,15 @@ def generate_action_log_batch(
 
     # 전량/대량 실패 가드: 유저 단위 격리와 별개로, 배치 전체가 조용히 빈 결과로
     # 성공 종료하는 상황을 막는다. 격리 파일은 포렌식용으로 남기고 실패로 종료한다.
-    if virtual_users:
-        quarantine_ratio = len(quarantine) / len(virtual_users)
+    if total_work:
+        quarantine_ratio = len(quarantine) / total_work
         if quarantine_ratio > request.max_quarantine_ratio:
             write_quarantine_jsonl(quarantine, request.quarantine_output_path)
             raise ActionLogGenerationError(
                 f"quarantine ratio {quarantine_ratio:.2f} exceeds max_quarantine_ratio "
                 f"{request.max_quarantine_ratio:.2f} "
-                f"(valid_users={len(virtual_users) - len(quarantine)}, "
-                f"quarantined={len(quarantine)}, users={len(virtual_users)})"
+                f"(quarantined={len(quarantine)}, total_chunks={total_work}, "
+                f"users={len(virtual_users)})"
             )
 
     output_path = Path(request.output_path)
