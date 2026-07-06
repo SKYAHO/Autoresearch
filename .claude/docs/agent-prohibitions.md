@@ -1,40 +1,41 @@
-# Plan Review Execution Guide
+# Agent Prohibitions
 
-> Last Updated: 2026-05-26
+> Last Updated: 2026-07-06
 
-Use this guide for reviewing pre-implementation plans. For code or diff review,
-use `agent-peer-review.md`.
+이 저장소에서 에이전트가 해서는 안 되는 일의 목록입니다.
 
-## When To Use This Doc
+## Git / GitHub
 
-Use plan review for:
+- `main`에 직접 push하지 않습니다. 모든 변경은 PR을 거칩니다.
+- 사용자가 요청하지 않은 커밋, push, PR 생성을 하지 않습니다.
+- 시크릿(`.env`, `keys/`, `.gcp-creds.json`), 생성된 데이터 파일
+  (`*.csv`, `*.pkl`, parquet 산출물), 캐시(`__pycache__/`)를 커밋하지
+  않습니다.
+- 컨벤션 외 커밋 type을 사용하지 않습니다. 허용:
+  `feat`, `fix`, `exp`, `docs`, `refactor`, `test`, `chore`.
+- 이미 push된 브랜치를 사용자 동의 없이 force push하지 않습니다
+  (rebase 후 `--force-with-lease`는 예외).
 
-- large multi-file changes
-- migrations or storage contract changes
-- public CLI, MCP, hook, or web behavior changes
-- deployment or workflow changes with operational risk
-- explicit requests for "plan review" or ambiguity checks
+## Code
 
-## Review Questions
+- 요청된 변경에 필요하지 않은 광범위한 리팩터링을 하지 않습니다.
+- 동작 변경과 구조 변경을 한 커밋에 섞지 않습니다.
+- 기존의 구체적인 예외를 광범위한 `Exception`으로 바꾸지 않습니다.
+- 예외를 로깅이나 의미 있는 반환 없이 삼키지 않습니다.
+- 테스트 없이 동작을 변경하지 않습니다. 변경된 동작에는 대응하는
+  테스트를 추가하거나 갱신합니다.
+- 자격 증명, API 키, 버킷 이름을 코드에 하드코딩하지 않습니다.
 
-Evaluate the plan against these questions:
+## Data
 
-1. Is the goal clear and bounded?
-2. Are non-goals explicit enough to prevent scope creep?
-3. Are affected modules and ownership boundaries correct?
-4. Does the plan separate structural and behavioral work?
-5. Are tests and verification commands specific?
-6. Are migration, rollback, and compatibility risks addressed?
-7. Are assumptions stated and discoverable?
-8. Is any step over-engineered for the requested outcome?
+- 실제 사용자 데이터나 대용량 원본 데이터를 저장소에 넣지 않습니다.
+- 테스트에 실제 네트워크 호출(YouTube, GCS, Gemini)을 넣지 않습니다.
+- 스키마(pydantic 모델)를 소비자 영향 확인 없이 변경하지 않습니다.
 
-## Output Shape
+## Docs
 
-Return:
-
-1. Blocking issues.
-2. Non-blocking improvements.
-3. Ambiguities or assumptions.
-4. Suggested plan edits.
-
-If the plan is sound, say so and list the highest remaining risks.
+- 동작, 명령어, 설정이 바뀌었는데 문서를 갱신하지 않은 채 작업을
+  끝내지 않습니다.
+- 규칙 문서(`CLAUDE.md`, `CONTRIBUTING.md`, `.claude/docs/`) 간에
+  충돌하는 내용을 새로 만들지 않습니다. 충돌을 발견하면 사용자에게
+  보고합니다.

@@ -1,16 +1,17 @@
 # Architecture Overview
 
-> Last Updated: 2026-07-03
+> Last Updated: 2026-07-06
 
-High-level overview of the four domain architecture, key design decisions, and
-how they interact.
+4개 도메인 아키텍처의 조감도, 핵심 설계 결정, 도메인 간 상호작용을
+정리한 문서입니다. 현재 구현된 부분과 계획(별도 브랜치 진행 중)을
+구분해서 읽어야 합니다.
 
 ## When To Use This Doc
 
-- You need to understand how the four domains interact.
-- You're making a cross-domain change and want to understand constraints.
-- You need to understand why specific architectural choices were made (e.g., ODFV vs FeatureView).
-- You're onboarding to the project and want a bird's-eye view.
+- 4개 도메인이 어떻게 상호작용하는지 파악해야 할 때
+- 도메인을 가로지르는 변경을 하며 제약을 이해해야 할 때
+- 특정 설계 결정(예: ODFV vs FeatureView)의 이유를 알아야 할 때
+- 프로젝트에 온보딩하며 전체 그림이 필요할 때
 
 ## Four Domains
 
@@ -20,229 +21,148 @@ how they interact.
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
 │  Model Training      Feast Features       Airflow       │
-│  (waieiches,         (waieiches,          (bbungjun)   │
+│  (waieiches,         (waieiches,          (bbungjun)    │
 │   hyochangsung)      hyochangsung)                      │
 │                                                         │
-│  ↓                   ↓                   ↓               │
-│  LightGBM          ODFV FeatureViews  DAG Scheduler    │
-│  CTR Prediction    Feature Transform   Orchestration   │
-│                                                         │
-│  ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← ← → → → → → →   │
-│         Consumes Features    Calls Training/Eval       │
+│  LightGBM (계획)     ODFV FeatureView    DAG 스케줄러   │
+│  CTR 예측            피처 변환 (계획)    데이터 수집    │
 │                                                         │
 └─────────────────────────────────────────────────────────┘
                             ↑
                  GCP Infrastructure
                     (hyeongyu-data)
-        [Cloud Deployment, Secrets, Auth]
+              [GCS, BigQuery, 시크릿, CI/CD]
+```
+
+## Current Data Flow (구현됨)
+
+```
+YouTube Data API
+    → autoresearch/youtube_collection/fetch.py
+    → transform.py (pydantic 스키마 검증)
+    → load.py (GCS 데이터 레이크, parquet)
+
+Airflow (Astro Runtime):
+    dags/youtube_trending_kr_daily.py  # 일간 수집
+    dags/youtube_backfill_kr.py        # 과거 데이터 백필 (Kaggle 원천)
+
+가상 유저 (실험):
+    persona 원천 → autoresearch/virtual_users/pipeline.py
+    → Gemini API (gemini_generator.py) → 가상 유저 데이터셋
 ```
 
 ## Domain 1: Model Training (waieiches, hyochangsung)
 
-**Responsibility:** CTR (Click-Through Rate) model definition, training orchestration, evaluation metrics.
+**책임:** CTR(클릭률) 모델 정의, 학습 오케스트레이션, 평가 지표.
 
-**Key Files:**
-- `src/models/lightgbm_model.py` — LightGBM model class
-- `src/pipeline/train.py` — Training script
-- `src/pipeline/evaluate.py` — Evaluation and metric calculation
-- `src/pipeline/build_training_dataset.py` — Dataset preparation from Event Log
-- `src/pipeline/config.yaml` — Model hyperparameters and paths
-- `docs/CTR_Model_Specification.md` — Full CTR modeling specification
+**상태:** 별도 브랜치 진행 중 (Issue #33). 현재 main에는
+`examples/ctr_pipeline_scaffold/` 예제만 있습니다.
 
-**Inputs:**
-- Event Log (from Agent Simulator, see AGENT_SIMULATOR_SPEC.md)
-- Feast features (retrieved at training time)
+**주요 파일 (계획):**
+- `src/models/lightgbm_model.py` — LightGBM 모델 클래스
+- `src/pipeline/train.py`, `evaluate.py`, `build_training_dataset.py`
+- `src/pipeline/config.yaml` — 하이퍼파라미터·경로의 단일 출처
+- `docs/CTR_Model_Specification.md` — CTR 모델링 스펙 (전체 상세)
 
-**Outputs:**
-- Trained model checkpoint → `artifacts/models/`
-- Evaluation metrics → logs and artifacts
-
-### CTR Model Overview (see docs/CTR_Model_Specification.md for full details)
-
-**Modeling Task:**
-- **Target:** Predict click probability when a user_id sees a video_id
-- **Input:** user_id (retrieved from API), features assembled from Feature Store
-- **Output:** Click probability per video (not a recommendation list)
-- **Post-processing:** Rank by probability, extract Top-N, optionally mix exploration items
-
-**Feature Engineering:**
-
-| Feature Category | Examples | Storage |
-|------------------|----------|---------|
-| Video Features | category_id, duration_sec, view_count, like_ratio, comment_ratio, days_since_upload | Offline (Batch) |
-| User Features | age_group, occupation, historical_category_affinity, recent_click_count_7d, recent_watch_time_7d, recent_like_count_7d | Online (streaming) |
-| Intermediate Artifacts | preferred_topics, video_topic, user_embedding, video_embedding | Computed on-demand |
-
-**Key Rules (see CTR_Model_Specification.md):**
-- Scalar features only; vectors/lists used only for Similarity computation, not direct input
-- User features derived only from events **before label timestamp** (no leakage)
-- Interaction features computed identically in training and serving (no training-serving skew)
-- Similarity features abstracted by **score**, not implementation (baseline defined, but BM25/Cosine/Cross-Encoder variations allowed)
-- Cold-start policy: missing historical_category_affinity → "unknown" (not imputed)
-
-**Design Decisions:**
-- Use Feast at training time to fetch latest features dynamically
-- Evaluation includes offline metrics and feature analysis
-- Single source of truth for data generation: AGENT_SIMULATOR_SPEC.md defines Event Log; CTR_Model_Specification.md defines feature/label transformation
+**모델링 과업:**
+- **목표:** user_id가 video_id를 봤을 때의 클릭 확률 예측
+- **출력:** 영상별 클릭 확률 (추천 리스트가 아님). 후처리로 확률 순
+  정렬, Top-N 추출, 탐색 아이템 혼합
+- **핵심 규칙** (상세는 `CTR_Model_Specification.md`):
+  - 스칼라 피처만 직접 입력. 벡터/리스트는 유사도 계산에만 사용
+  - 유저 피처는 라벨 시점 **이전** 이벤트로만 생성 (누수 금지)
+  - Interaction 피처는 학습과 서빙에서 동일하게 계산 (skew 금지)
+  - Cold-start: 이력 없는 값은 "unknown" 처리 (대치 금지)
 
 ## Domain 2: Feast Features (waieiches, hyochangsung)
 
-**Responsibility:** Feature definitions, feature store setup, feature engineering transforms.
+**책임:** 피처 정의, 피처 스토어 구축, 피처 엔지니어링 변환.
 
-**Key Files:**
-- `src/features/feature_builder.py` — Feature classes and transforms
-- `src/features/features.py` — Main FeatureView definitions
+**상태:** 별도 브랜치 진행 중 (`feature_store/`, `scripts/`는 소스
+미커밋).
 
-**Inputs:**
-- Event log data (from data sources)
-- Historical feature request timestamps
-- Raw data (YouTube API, Persona, Event Log)
+### Feast 핵심 설계 결정 (확정)
 
-**Outputs:**
-- Retrieved features (used by training and inference)
-- Feature metadata (columns, types, freshness)
+**1. ODFV(On-Demand Feature View) 필수**
+- 실시간 변환(정규화, 버킷팅 등)은 ODFV로 구현합니다.
+- 변환 목적으로 일반 `FeatureView`를 쓰지 않습니다. 모든 변형을
+  사전 물질화해야 하는 안티패턴입니다.
 
-### Key Design Decisions for Feast
+**2. TTL ≠ 윈도우 집계**
+- TTL은 피처 신선도 요구(예: 1시간마다 갱신), 윈도우는 계산
+  범위(예: 최근 7일 합)입니다. 서로 독립적으로 설정합니다.
 
-**1. ODFV (On-Demand Feature View) is mandatory**
-
-- **What:** ODFV allows real-time feature transformations without pre-computing
-- **Why:** We need flexibility to apply transforms (normalization, bucketing) on-the-fly without storing every possible variation
-- **When to use:** Transforms that apply to real-time requests (e.g., "last 7 days of activity")
-- **Anti-pattern:** Don't use generic `FeatureView` for transforms; that requires pre-materialization of every variant
-
-**Example (correct):**
-```python
-@on_demand_feature_view(...)
-def user_activity_odfv(inputs):
-    # Compute on-demand, not pre-stored
-    return df.with_columns([
-        pl.col("event_count").rolling_mean(window_size=7).alias("activity_7d_ma")
-    ])
-```
-
-**Example (incorrect):**
-```python
-# Don't do this — requires pre-computing all normalization variants
-@batch_feature_view(...)
-def user_activity_batch(inputs):
-    ...
-```
-
-**2. TTL (Time-To-Live) ≠ Windowed Aggregation**
-
-- **TTL:** How fresh the feature data must be (e.g., "features must be refreshed hourly")
-- **Windowed Agg:** Window size for computation (e.g., "sum of last 7 days")
-- **Common mistake:** Confusing `ttl=3600` (1 hour) with `window_size=7*24*3600` (7 days)
-- **Rule:** Set both independently based on business requirements, not as the same value
-
-**Example:**
 ```yaml
-# Correct: features refresh every hour, but compute over 7 days
-ttl: 3600  # 1 hour freshness requirement
-window_size: 604800  # 7 days of data (7*24*3600)
+ttl: 3600            # 신선도: 1시간
+window_size: 604800  # 계산 범위: 7일
 ```
 
-**3. Cold-Start Fallback: Use "unknown" or Null**
+**3. Cold-start는 명시적 null 또는 "unknown"**
+- 이력이 없는 엔티티는 0이나 평균으로 대치하지 않습니다. 명시적
+  결측을 반환해 모델이 학습 시 본 희소성을 그대로 보게 합니다.
 
-- **What:** When a user/entity has no historical data, what do we return?
-- **Decision:** Return explicit null or "unknown" identifier, NOT a default value
-- **Why:** Explicit missing values prevent silent bugs; the model can learn to handle them
-- **Anti-pattern:** Don't impute with zeros or means during serving; let the model see the sparsity it trained on
-
-**Example:**
-```python
-def get_feature_value(user_id, feature_name):
-    value = fetch_from_feast(user_id, feature_name)
-    if value is None:
-        return None  # or "UNKNOWN_USER" as a categorical
-    return value
-```
-
-**4. Training-Serving Consistency**
-
-- **Rule:** Interaction features (e.g., category similarity) must be computed identically in training and serving
-- **Why:** Training-Serving Skew is a major source of production model degradation
-- **Enforcement:** Code reviews check that training dataset feature logic and Feast transform logic are identical
+**4. Training-Serving 일관성**
+- Interaction 피처는 학습 데이터셋 생성 로직과 Feast 변환 로직이
+  동일해야 합니다. 리뷰에서 양쪽 로직 일치를 확인합니다.
 
 ## Domain 3: Airflow Orchestration (bbungjun)
 
-**Responsibility:** DAG definitions, job scheduling, pipeline orchestration.
+**책임:** DAG 정의, 스케줄링, 파이프라인 오케스트레이션.
 
-**Key Files:**
-- `dags/` — DAG definitions
-- `src/pipeline/config.yaml` — Shared config (read by DAGs)
-- `airflow_settings.yaml` — Airflow environment configuration
+**상태:** 구현됨. 수집 DAG 2개가 운영 중입니다.
 
-**Inputs:**
-- Event logs (from data sources)
-- Scheduling triggers (daily, hourly, etc.)
+**주요 파일:**
+- `dags/youtube_trending_kr_daily.py` — 일간 트렌딩 수집
+- `dags/youtube_backfill_kr.py` — 과거 데이터 백필
+- `airflow_settings.yaml` — 로컬 Airflow 변수
+  (`YOUTUBE_LAKE_BUCKET`, `YOUTUBE_BACKFILL_SOURCE`)
 
-**Outputs:**
-- Trigger training jobs
-- Orchestrate feature refreshes
-- Monitor pipeline health
-
-**Example DAGs:**
-- `youtube_backfill_kr.py` — Backfill historical data
-- `youtube_trending_kr_daily.py` — Daily data ingestion and model retraining
-
-**Design Constraints:**
-- DAGs consume `config.yaml` for parameter management (don't hardcode)
-- Training and evaluation scripts are wrapped by DAG operators (BashOperator)
-- Feature refreshes are separate DAGs that run before training
-- All DAG code references Domain 1/2 modules; no duplicate feature/model logic
+**설계 제약:**
+- DAG은 `autoresearch/` 모듈을 호출만 하고, 피처·모델 로직을
+  중복 구현하지 않습니다.
+- DAG은 sys.path 조작으로 `autoresearch`를 import 합니다. 패키지
+  배치(`Dockerfile`) 변경 시 함께 확인합니다.
+- 학습·평가 스크립트는 추후 DAG operator로 감싸 호출합니다(계획).
 
 ## Domain 4: GCP Infrastructure (hyeongyu-data)
 
-**Responsibility:** Cloud deployment, environment setup, secrets management.
+**책임:** 클라우드 배포, 환경 구성, 시크릿 관리.
 
-**Key Areas:**
-- GitHub Actions workflows for CI/CD (`.github/workflows/ci.yml`)
-- GCP service accounts and IAM
-- Secret management (API keys, credentials)
-- Data pipeline infrastructure (BigQuery, Cloud Composer)
-
-**Integration Points:**
-- All domains: Credentials stored in GitHub Secrets / GCP Secret Manager (`.env.example` for local)
-- Feature domain: BigQuery backend for Feast (production)
-- Model domain: GCP Artifact Registry for model storage
-- Airflow domain: Cloud Composer orchestration
+**주요 영역:**
+- GitHub Actions CI/CD (`.github/workflows/ci.yml`, `claude.yml`)
+- GCS 데이터 레이크 버킷, 서비스 계정과 IAM
+- 시크릿 관리 (로컬 `.env`, CI는 GitHub Secrets)
+- BigQuery, Cloud Composer (프로덕션 계획)
 
 ## Cross-Domain Interactions
 
-### Model Training ← Feast Features
-- **Flow:** Training script calls Feast client to retrieve features
-- **Contract:** Features must be retrieved at consistent timestamp; no training-serving skew
-- **Example:** `feast.get_online_features(entity_rows=[...], features=[...])`
-
-### Airflow → Model Training + Feast
-- **Flow:** Airflow DAG calls training script via BashOperator
-- **Contract:** Training script exits 0 on success, non-zero on failure
-- **Example:** `BashOperator(bash_command="python src/pipeline/train.py")`
-
-### All Domains ← GCP Infrastructure
-- **Credentials:** Every script reads from environment vars or GitHub Secrets
-- **Data:** BigQuery for raw events, DuckDB/SQLite for local development
-- **Artifacts:** Model checkpoints stored in `artifacts/` (local) or GCP Artifact Registry (production)
+- **Airflow → 수집 모듈:** DAG task가 `autoresearch.youtube_collection`
+  함수를 호출합니다. 실패는 명확히 예외로 전파합니다.
+- **Model Training ← Feast (계획):** 학습 스크립트가 Feast 클라이언트로
+  피처를 조회합니다. 직접 SQL 조회는 금지합니다.
+- **모든 도메인 ← GCP:** 자격 증명은 환경 변수 또는 GitHub Secrets로만
+  전달합니다. 하드코딩을 금지합니다.
 
 ## Key Architecture Rules
 
-1. **No tight coupling between domains.** If Model Training needs Airflow details, that's a coupling issue.
-2. **Config is single-source-of-truth.** All runtime behavior defined in `config.yaml`, not code.
-3. **Feast is the feature source.** No direct SQL queries for features in training scripts; always go through Feast.
-4. **Secrets are environment variables.** No hardcoding credentials, API keys, or paths.
-5. **Each domain has a clear owner.** Ownership questions → check `agent-project-reference.md`.
-6. **Single source of truth for data specification.** Event Log spec → AGENT_SIMULATOR_SPEC.md. Feature/Label definition → CTR_Model_Specification.md.
+1. **도메인 간 강결합 금지.** 다른 도메인의 내부 구현에 의존하지
+   않습니다.
+2. **설정은 단일 출처.** 파이프라인 파라미터는 설정 파일과 환경
+   변수로 관리하고 코드에 하드코딩하지 않습니다.
+3. **데이터 계약은 pydantic 스키마.** 모듈 간 데이터는 `schema.py`
+   모델로 검증합니다.
+4. **시크릿은 환경 변수.** 자격 증명, API 키, 버킷 이름을 코드에
+   넣지 않습니다.
+5. **데이터 스펙의 단일 출처.** Event Log는
+   `docs/AGENT_SIMULATOR_SPEC.md`, 피처/라벨 정의는
+   `docs/CTR_Model_Specification.md`를 따릅니다.
 
 ## Verification Checklist
 
-- [ ] New code belongs to the correct domain (check `agent-project-reference.md`)
-- [ ] No cross-domain hardcoding of credentials or paths
-- [ ] Feast uses ODFV for transforms (not batch FeatureView)
-- [ ] TTL and windowed aggregation are set independently
-- [ ] Cold-start handling is explicit (null or "unknown", not imputed)
-- [ ] Config changes go to `config.yaml`, not code
-- [ ] Cross-domain tests validate interaction points
-- [ ] Training and serving feature logic is identical (no training-serving skew)
-- [ ] Specs (CTR_Model_Specification.md, AGENT_SIMULATOR_SPEC.md) are the source of truth
+- [ ] 새 코드가 올바른 도메인에 있다 (`agent-project-reference.md` 참조)
+- [ ] 자격 증명·경로 하드코딩이 없다
+- [ ] Feast 변환은 ODFV를 사용한다 (계획 작업 시)
+- [ ] TTL과 윈도우 집계를 독립적으로 설정했다
+- [ ] Cold-start 처리가 명시적이다 (null/"unknown", 대치 금지)
+- [ ] 학습과 서빙의 피처 로직이 동일하다
+- [ ] 스펙 문서가 데이터 정의의 단일 출처로 유지된다

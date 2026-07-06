@@ -1,32 +1,39 @@
 # Agent Error Handling Reference
 
-> Last Updated: 2026-05-26
+> Last Updated: 2026-07-06
 
-Use this document when adding or changing error behavior.
+에러 동작을 추가하거나 변경할 때 사용하는 문서입니다.
 
 ## Error Selection Flow
 
-1. Identify the failed boundary: CLI input, MCP request, hook payload, storage,
-   search, dream curation, web rendering, or deployment.
-2. Determine fault owner: caller input, missing configuration, unavailable
-   dependency, data conflict, or internal bug.
-3. Reuse existing exception types and exit-code behavior where present.
-4. Keep messages actionable and safe to expose.
-5. Add or update tests for user-visible error behavior.
+1. 실패한 경계를 식별합니다: YouTube API 호출, GCS 업로드/다운로드,
+   Gemini API 호출, pydantic 스키마 검증, Airflow task, 파일 I/O.
+2. 원인 소유자를 판단합니다: 호출자 입력 오류, 설정 누락(환경 변수),
+   외부 서비스 불가, 데이터 계약 위반, 내부 버그.
+3. 기존 예외 타입과 동작을 재사용합니다. 새 예외 계층을 불필요하게
+   만들지 않습니다.
+4. 메시지는 실행 가능한 정보를 담되 노출해도 안전해야 합니다.
+5. 사용자 가시적 에러 동작이 바뀌면 테스트를 추가하거나 갱신합니다.
 
 ## Common Patterns
 
-- Missing or malformed hook payloads should fail with explicit messages and
-  stable exit behavior.
-- Optimistic concurrency conflicts should preserve the expected/current hash
-  semantics used by memory writes.
-- Migration failures should surface the target database URL only when safe.
-- External service failures should include the operation and sanitized endpoint,
-  not credentials.
+- **환경 변수 누락:** 어떤 변수가 왜 필요한지 명시하고 즉시
+  실패합니다. 빈 값으로 조용히 진행하지 않습니다.
+- **스키마 검증 실패:** pydantic 검증 오류는 삼키지 않고 전파하거나,
+  스킵할 경우 어떤 레코드를 왜 스킵했는지 로깅합니다.
+- **외부 API 실패(YouTube, Gemini):** 작업 이름과 정제된 컨텍스트를
+  포함하고, 자격 증명이나 API 키는 포함하지 않습니다. 재시도가
+  필요하면 명시적으로 구현합니다.
+- **GCS 적재 실패:** 대상 버킷/경로(안전한 범위)와 작업을 명시하고
+  실패를 전파합니다. 부분 적재 상태를 로깅으로 남깁니다.
+- **Airflow task:** 실패는 예외로 전파해 task가 실패 상태가 되게
+  합니다. 실패를 잡아서 성공으로 위장하지 않습니다.
 
 ## Do Not
 
-- Replace precise existing errors with broad `Exception`.
-- Swallow exceptions without logging or returning a meaningful result.
-- Leak secrets, full transcripts, or full memory content in error messages.
-- Change CLI exit behavior without tests and documentation.
+- 구체적인 기존 에러를 광범위한 `Exception`으로 바꾸지 않습니다.
+- 로깅이나 의미 있는 결과 없이 예외를 삼키지 않습니다.
+- 에러 메시지에 시크릿, API 키, 자격 증명, 전체 응답 덤프를 노출하지
+  않습니다.
+- 테스트와 문서 갱신 없이 사용자 가시적 에러 동작을 변경하지
+  않습니다.

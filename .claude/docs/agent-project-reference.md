@@ -1,119 +1,116 @@
 # Agent Project Reference
 
-> Last Updated: 2026-07-03
+> Last Updated: 2026-07-06
 
-Quick navigation to project ownership, folder structure, and team boundaries.
-This doc answers "where does X live?" and "who owns Y?" questions.
+프로젝트 구조, 폴더 책임, 팀 소유권을 빠르게 찾기 위한 문서입니다.
+"X는 어디에 있는가?", "Y는 누가 소유하는가?" 질문에 답합니다.
 
 ## When To Use This Doc
 
-- You need to understand the project layout and folder responsibilities.
-- You're adding new code and want to know where it belongs.
-- You need to understand team domain boundaries and ownership.
+- 프로젝트 레이아웃과 폴더별 책임을 파악해야 할 때
+- 새 코드를 추가할 위치를 정해야 할 때
+- 팀 도메인 경계와 소유권을 확인해야 할 때
 
 ## Project Layout
 
+현재 저장소의 실제 구조입니다:
+
 ```
-src/
-├── config/              # Shared configuration utilities
-├── features/            # Feast Feature Store definitions & feature engineering
-│   ├── feature_builder.py
-│   └── ...
-├── models/              # Model definitions and training logic
-│   ├── lightgbm_model.py
-│   └── ...
-├── pipeline/            # Training pipeline, evaluation, and orchestration
-│   ├── config.yaml      # Pipeline configuration
-│   ├── train.py         # Training script
-│   ├── evaluate.py      # Model evaluation
-│   ├── build_training_dataset.py
-│   └── ...
-├── utils/               # Utility functions (logging, data handling, etc.)
-│   └── ...
-└── cli/                 # CLI interface (future)
+autoresearch/                # 런타임 패키지
+├── youtube_collection/      # YouTube 트렌딩 수집 파이프라인
+│   ├── fetch.py             # YouTube Data API 호출
+│   ├── transform.py         # 원본 → 정제 데이터 변환
+│   ├── load.py              # GCS 데이터 레이크 적재
+│   ├── backfill.py          # 과거 데이터 백필
+│   └── schema.py            # pydantic 데이터 계약
+├── virtual_users/           # Gemini 기반 가상 유저(페르소나) 생성
+│   ├── persona_source.py    # 페르소나 원천 데이터 로드
+│   ├── interests.py         # 관심사 매핑
+│   ├── gemini_generator.py  # Gemini API 호출
+│   ├── pipeline.py          # 생성 파이프라인 오케스트레이션
+│   └── schema.py            # pydantic 데이터 계약
+└── math_utils.py            # 공용 계산 유틸리티
 
-artifacts/
-├── models/              # Trained models and checkpoints (git-ignored)
-└── ...
+dags/                        # Airflow DAG (Astro Runtime 13.8.0)
+├── youtube_trending_kr_daily.py
+└── youtube_backfill_kr.py
 
-tests/
-├── unit/                # Unit tests for modules
-├── integration/         # Integration tests
-└── ...
+tests/                       # 모듈별 test_<module>.py 플랫 구조
+examples/ctr_pipeline_scaffold/  # CTR 파이프라인 예제 스캐폴드
+feature_store/               # Feast 작업 중 (소스 미커밋)
+scripts/                     # 보조 스크립트 작업 중 (소스 미커밋)
+docs/                        # 스펙·플랜 문서
+.github/                     # CI, Claude 리뷰, 이슈 폼, PR 템플릿
+```
 
-docs/
-├── specs/YYYY-MM-DD-<slug>.md   # Requirements and design decisions
-└── plans/YYYY-MM-DD-<slug>.md   # Implementation plans
+진행 중(별도 브랜치, main 미반영):
+
+```
+src/                         # CTR 학습 파이프라인 (Issue #33)
+├── models/                  # LightGBM 모델 클래스
+├── features/                # 피처 엔지니어링, Feast 정의
+├── pipeline/                # train/evaluate/config.yaml
+└── utils/                   # 모델 저장/로드 유틸리티
 ```
 
 ## Team Ownership & Domains
 
-| Domain | Team Members | Responsibilities | Key Paths |
-|--------|--------------|------------------|-----------|
-| **Model Training** | waieiches, hyochangsung | Model architecture, training pipelines, evaluation metrics | `src/models/`, `src/pipeline/` |
-| **Feast Features** | waieiches, hyochangsung | Feature definitions (ODFV), feature engineering, feature store integration | `src/features/` |
-| **Airflow Orchestration** | bbungjun | DAG definitions, job scheduling, data pipeline orchestration | `src/pipeline/airflow/` (future) |
-| **GCP Infrastructure** | hyeongyu-data | Cloud deployment, infrastructure-as-code, secrets management | `.github/workflows/`, `infrastructure/` (future) |
+| 도메인 | 팀원 | 책임 | 주요 경로 |
+|---|---|---|---|
+| **Model Training** | waieiches, hyochangsung | 모델 구조, 학습 파이프라인, 평가 지표 | `src/models/`, `src/pipeline/` (진행 중), `examples/ctr_pipeline_scaffold/` |
+| **Feast Features** | waieiches, hyochangsung | 피처 정의(ODFV), 피처 엔지니어링, 피처 스토어 연동 | `feature_store/`, `src/features/` (진행 중) |
+| **Airflow Orchestration** | bbungjun | DAG 정의, 스케줄링, 데이터 파이프라인 오케스트레이션 | `dags/`, `autoresearch/youtube_collection/` |
+| **GCP Infrastructure** | hyeongyu-data | 클라우드 배포, 인프라, 시크릿 관리 | `.github/workflows/`, GCS/BigQuery 설정 |
 
 ## Ownership Boundaries
 
-### `src/config/`
-- **Owner:** Shared (all domains)
-- **Responsibility:** Centralized configuration loading, environment variable handling
-- **Pattern:** Config utilities go here; don't create domain-specific config files
+### `autoresearch/youtube_collection/`
+- **책임:** YouTube API 수집, 변환, GCS 적재, 백필
+- **패턴:** fetch → transform → load 단계를 파일로 분리합니다. 데이터
+  계약은 `schema.py`의 pydantic 모델로 정의합니다.
 
-### `src/models/`
-- **Owner:** 대장, 효창 (Model Training)
-- **Responsibility:** Model classes, training logic, hyperparameter definitions
-- **Pattern:** One model = one file (e.g., `lightgbm_model.py`). Keep model-specific logic internal.
+### `autoresearch/virtual_users/`
+- **책임:** 페르소나 원천 데이터 로드, Gemini 기반 가상 유저 생성
+- **패턴:** 외부 API 호출(`gemini_generator.py`)과 오케스트레이션
+  (`pipeline.py`)을 분리합니다.
 
-### `src/features/`
-- **Owner:** 대장, 효창 (Feast Features)
-- **Responsibility:** Feast FeatureView definitions (ODFV-first pattern), feature engineering transforms
-- **Key Decision:** ODFV (On-Demand Feature View) required; never use generic FeatureView for transformations
-- **Pattern:** Feature definitions → `features.py`. Helper transforms → `_transforms.py`. Integration tests in `tests/integration/`.
+### `dags/`
+- **책임:** Airflow DAG 정의만 담습니다. 비즈니스 로직은
+  `autoresearch/` 모듈에 두고 DAG은 호출만 합니다.
+- **주의:** DAG은 sys.path 조작으로 `autoresearch`를 import 합니다.
+  컨테이너 배치(`Dockerfile`) 변경 시 함께 확인해야 합니다.
 
-### `src/pipeline/`
-- **Owner:** 대장, 효창 (Model Training), 영준 (Airflow)
-- **Responsibility:** Training orchestration, evaluation, dataset building, config schema
-- **Pattern:** One orchestration script = one file. CLI interface wraps these.
-- **Config:** `config.yaml` is the single source of truth for pipeline parameters.
-
-### `src/utils/`
-- **Owner:** Shared (all domains)
-- **Responsibility:** Reusable utilities, helpers, logging, validation
-- **Pattern:** If used by 2+ domains, it belongs here. Domain-specific helpers stay in-domain.
+### `tests/`
+- **책임:** 모듈별 단위 테스트. `tests/test_<module>.py` 형식을
+  따릅니다. 새 모듈에는 대응하는 테스트 파일을 만듭니다.
 
 ## Technical Stack
 
-- **Language:** Python 3.9+
-- **Dependencies:** `uv` (package manager), PyTorch, LightGBM, Feast, Airflow (future)
-- **Data Storage:** DuckDB (local), BigQuery (production)
-- **Model Artifacts:** `artifacts/models/` (local git-ignored directory)
-- **Configuration:** YAML (`src/pipeline/config.yaml`) + environment variables
-- **Testing:** pytest (unit + integration tests)
-- **Linting/Typing:** ruff, basedpyright
+- **언어:** Python 3.12 (`.python-version`), CI는 3.11/3.12 매트릭스
+- **의존성:** pip + `requirements.txt`(런타임) / `requirements-dev.txt`(개발)
+- **주요 라이브러리:** pydantic v2, pyarrow, google-api-python-client,
+  google-cloud-storage, gcsfs, google-genai(개발)
+- **데이터 저장:** GCS 데이터 레이크(parquet), BigQuery(프로덕션 예정)
+- **오케스트레이션:** Airflow (Astro Runtime 13.8.0)
+- **테스트:** pytest
+- **계획:** LightGBM, Feast (별도 브랜치 진행 중)
 
 ## Key Extension Rules
 
-### Adding New Features
-
-1. **Determine domain ownership:** Is this Model Training, Feast, Airflow, or GCP?
-2. **Place code correctly:** Follow folder structure. Avoid cross-domain entanglement.
-3. **Update config if needed:** If it affects pipeline behavior, add to `config.yaml`.
-4. **Write tests:** Unit tests in `tests/unit/`, integration tests in `tests/integration/`.
-5. **Document design decisions:** If the change affects architecture, add a note to the relevant `.claude/docs/` guide or create a spec document.
-
-### When Domains Overlap
-
-- **Model + Features:** Feature engineering lives in `src/features/`. Model training consumes features in `src/models/`.
-- **Model + Pipeline:** Pipeline orchestrates training; model implementation stays in `src/models/`.
-- **Features + Airflow:** Airflow DAG retrieves features from Feast; feature definitions stay in `src/features/`.
+1. **도메인 소유권 확인:** Model Training, Feast, Airflow, GCP 중
+   어디에 속하는지 먼저 판단합니다.
+2. **올바른 위치에 배치:** 위 폴더 구조를 따르고 도메인 간 결합을
+   피합니다.
+3. **데이터 계약 갱신:** 스키마가 바뀌면 해당 모듈의 `schema.py`
+   pydantic 모델과 테스트를 함께 수정합니다.
+4. **테스트 작성:** `tests/test_<module>.py`에 단위 테스트를 추가합니다.
+5. **설계 결정 기록:** 아키텍처에 영향이 있으면 `docs/specs/`에 spec을
+   남기거나 관련 `.claude/docs/` 가이드를 갱신합니다.
 
 ## Verification Checklist
 
-- [ ] Code is in the correct folder per team domain.
-- [ ] Configuration changes go to `config.yaml` (not hardcoded).
-- [ ] Tests are written for new functionality.
-- [ ] No cross-domain entanglement (e.g., feature transforms in `models/`).
-- [ ] Docs updated if behavior or configuration changed.
+- [ ] 코드가 팀 도메인에 맞는 폴더에 있다.
+- [ ] DAG에 비즈니스 로직이 들어가지 않았다.
+- [ ] 스키마 변경 시 pydantic 모델과 테스트를 함께 수정했다.
+- [ ] 새 기능에 테스트가 있다.
+- [ ] 동작·설정이 바뀌었으면 문서를 갱신했다.
