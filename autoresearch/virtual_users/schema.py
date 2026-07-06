@@ -81,8 +81,6 @@ class YouTubeProfile(BaseModel):
     """추천 도메인에서 사용할 YouTube 소비 성향 feature 묶음."""
 
     primary_categories: list[str] = Field(min_length=1, max_length=5)
-    trend_sensitivity: float = Field(ge=0.0, le=1.0)
-    comment_propensity: float = Field(ge=0.0, le=1.0)
     watch_time_band: Literal["morning", "afternoon", "evening", "night", "mixed"]
 
 

@@ -43,8 +43,6 @@ def _full_content():
         "family_context_keywords": [],
         "youtube_profile": {
             "primary_categories": ["Music"],
-            "trend_sensitivity": 0.4,
-            "comment_propensity": 0.2,
             "watch_time_band": "night",
         },
     }
@@ -84,7 +82,7 @@ def test_assemble_virtual_user_raises_on_schema_violation():
     from pydantic import ValidationError
 
     bad = _full_content()
-    bad["youtube_profile"]["trend_sensitivity"] = 5.0  # out of range
+    bad["youtube_profile"]["watch_time_band"] = "invalid_band"  # not in Literal
     with pytest.raises(ValidationError):
         assemble_virtual_user(
             _raw_row(), json.dumps(bad), "vu_0001", "glm-5.2"

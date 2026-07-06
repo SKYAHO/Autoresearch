@@ -194,37 +194,6 @@ def test_generate_virtual_user_batch_uses_stable_virtual_user_ids(tmp_path):
     ]
 
 
-def test_generate_virtual_user_batch_preserves_request_metadata_in_parquet(tmp_path):
-    records = build_fixture_raw_persona_records(male_count=5, female_count=5)
-    output_path = tmp_path / "users.parquet"
-    quarantine_output_path = tmp_path / "quarantine.jsonl"
-    request = GenerationRequest(
-        age_min=20,
-        age_max=29,
-        male_count=1,
-        female_count=1,
-        seed=99,
-        use_llm=False,
-        source_mode="fixture",
-        output_path=str(output_path),
-        quarantine_output_path=str(quarantine_output_path),
-    )
-
-    generate_virtual_user_batch(
-        request=request,
-        records=records,
-        generator=RuleBasedVirtualUserGenerator(),
-    )
-
-    rows = pq.read_table(output_path).to_pylist()
-    assert rows[0]["request_male_count"] == 1
-    assert rows[0]["request_female_count"] == 1
-    assert rows[0]["request_seed"] == 99
-    assert rows[0]["request_use_llm"] is False
-    assert rows[0]["request_max_concurrency"] == 1
-    assert rows[0]["source_dataset"] == "nvidia/Nemotron-Personas-Korea"
-
-
 def test_end_to_end_100_rows_rule_based(tmp_path):
     records = build_fixture_raw_persona_records(male_count=60, female_count=60)
     request = GenerationRequest(

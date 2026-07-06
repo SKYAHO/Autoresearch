@@ -34,8 +34,6 @@ def _make_single_user_batch() -> VirtualUserBatch:
         interest_keywords=["music"],
         youtube_profile={
             "primary_categories": ["Gaming"],
-            "trend_sensitivity": 0.7,
-            "comment_propensity": 0.3,
             "watch_time_band": "night",
         },
         generation_meta={
@@ -97,8 +95,6 @@ def test_virtual_user_schema_accepts_expected_json_shape():
         interest_keywords=["creator economy", "short videos"],
         youtube_profile={
             "primary_categories": ["Gaming", "Music"],
-            "trend_sensitivity": 0.76,
-            "comment_propensity": 0.35,
             "watch_time_band": "night",
         },
         generation_meta={
@@ -134,8 +130,6 @@ def test_virtual_user_batch_counts_users_by_sex(caplog):
             interest_keywords=["music"],
             youtube_profile={
                 "primary_categories": ["Gaming"],
-                "trend_sensitivity": 0.7,
-                "comment_propensity": 0.3,
                 "watch_time_band": "night",
             },
             generation_meta={
@@ -161,8 +155,6 @@ def test_virtual_user_batch_counts_users_by_sex(caplog):
             interest_keywords=["lifestyle"],
             youtube_profile={
                 "primary_categories": ["Music"],
-                "trend_sensitivity": 0.6,
-                "comment_propensity": 0.2,
                 "watch_time_band": "evening",
             },
             generation_meta={

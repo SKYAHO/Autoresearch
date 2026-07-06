@@ -63,14 +63,12 @@ Return only JSON with this shape (no Markdown, no commentary):
   "family_context_keywords": [],
   "youtube_profile": {{
     "primary_categories": ["Music"],
-    "trend_sensitivity": 0.0, "comment_propensity": 0.0,
     "watch_time_band": "night"
   }}
 }}
 
 Constraints:
 - sex must be "male" or "female".
-- trend_sensitivity / comment_propensity between 0 and 1.
 - primary_categories: 1 to 5 items from the allowed vocabulary.
 - watch_time_band in [morning, afternoon, evening, night, mixed].
 """
@@ -167,7 +165,6 @@ class RuleBasedVirtualUserGenerator:
             "family_context_keywords": [],
             "youtube_profile": {
                 "primary_categories": categories,
-                "trend_sensitivity": 0.61, "comment_propensity": 0.25,
                 "watch_time_band": band,
             },
         }
