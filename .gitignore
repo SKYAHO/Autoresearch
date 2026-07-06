@@ -28,7 +28,6 @@ Thumbs.db
 
 .gcp-creds.json
 
-
 # Generated data artifacts
 data/generated/
 /tmp/
