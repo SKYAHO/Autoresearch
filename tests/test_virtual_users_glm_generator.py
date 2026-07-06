@@ -41,12 +41,8 @@ def _full_content():
         "travel_keywords": [],
         "career_keywords": [],
         "family_context_keywords": [],
-        "category_evidence": {"Music": ["LP"]},
-        "category_affinity": {"Music": 0.8},
         "youtube_profile": {
             "primary_categories": ["Music"],
-            "shorts_affinity": 0.6,
-            "longform_affinity": 0.5,
             "trend_sensitivity": 0.4,
             "comment_propensity": 0.2,
             "watch_time_band": "night",
@@ -88,7 +84,7 @@ def test_assemble_virtual_user_raises_on_schema_violation():
     from pydantic import ValidationError
 
     bad = _full_content()
-    bad["youtube_profile"]["shorts_affinity"] = 5.0  # out of range
+    bad["youtube_profile"]["trend_sensitivity"] = 5.0  # out of range
     with pytest.raises(ValidationError):
         assemble_virtual_user(
             _raw_row(), json.dumps(bad), "vu_0001", "glm-5.2"
@@ -105,7 +101,6 @@ def test_rule_based_generator_returns_assemblable_full_content():
 
     assert user.sex == "female"
     assert user.youtube_profile.primary_categories
-    assert user.category_affinity
     assert "sex_normalized" not in user.source_persona_json
 
 

@@ -39,7 +39,7 @@ class VirtualUserGenerator(Protocol):
 
 VIRTUAL_USERS_PARQUET_SCHEMA = pa.schema(
     [
-        pa.field("virtual_user_id", pa.string()),
+        pa.field("user_id", pa.string()),
         pa.field("source_uuid", pa.string()),
         pa.field("source_dataset", pa.string()),
         pa.field("source_hash", pa.string()),
@@ -76,11 +76,7 @@ VIRTUAL_USERS_PARQUET_SCHEMA = pa.schema(
         pa.field("travel_keywords", pa.list_(pa.string())),
         pa.field("career_keywords", pa.list_(pa.string())),
         pa.field("family_context_keywords", pa.list_(pa.string())),
-        pa.field("category_affinity", pa.map_(pa.string(), pa.float64())),
         pa.field("primary_categories", pa.list_(pa.string())),
-        pa.field("category_evidence", pa.string()),
-        pa.field("shorts_affinity", pa.float64()),
-        pa.field("longform_affinity", pa.float64()),
         pa.field("trend_sensitivity", pa.float64()),
         pa.field("comment_propensity", pa.float64()),
         pa.field("watch_time_band", pa.string()),
@@ -91,12 +87,6 @@ VIRTUAL_USERS_PARQUET_SCHEMA = pa.schema(
         pa.field("generated_at", pa.string()),
     ]
 )
-
-
-def _map_entries(values: dict[str, float]) -> list[tuple[str, float]]:
-    """PyArrow map<string, double> 저장을 위해 dict를 안정적인 pair list로 바꾼다."""
-
-    return [(key, float(values[key])) for key in sorted(values)]
 
 
 def _json_string(value: object) -> str:
@@ -112,7 +102,7 @@ def _virtual_user_rows(batch: VirtualUserBatch) -> list[dict[str, object]]:
     for user in batch.users:
         rows.append(
             {
-                "virtual_user_id": user.virtual_user_id,
+                "user_id": user.virtual_user_id,
                 "source_uuid": user.source_uuid,
                 "source_dataset": batch.source_dataset,
                 "source_hash": user.source_hash,
@@ -149,11 +139,7 @@ def _virtual_user_rows(batch: VirtualUserBatch) -> list[dict[str, object]]:
                 "travel_keywords": user.travel_keywords,
                 "career_keywords": user.career_keywords,
                 "family_context_keywords": user.family_context_keywords,
-                "category_affinity": _map_entries(user.category_affinity),
                 "primary_categories": user.youtube_profile.primary_categories,
-                "category_evidence": _json_string(user.category_evidence),
-                "shorts_affinity": user.youtube_profile.shorts_affinity,
-                "longform_affinity": user.youtube_profile.longform_affinity,
                 "trend_sensitivity": user.youtube_profile.trend_sensitivity,
                 "comment_propensity": user.youtube_profile.comment_propensity,
                 "watch_time_band": user.youtube_profile.watch_time_band,
@@ -175,26 +161,6 @@ def _write_virtual_users_parquet(batch: VirtualUserBatch, output_path: Path) -> 
         schema=VIRTUAL_USERS_PARQUET_SCHEMA,
     )
     pq.write_table(table, output_path)
-
-
-def write_virtual_users_warehouse_jsonl(
-    batch: VirtualUserBatch,
-    output_path: str | Path,
-) -> None:
-    """VirtualUserBatch를 Data Warehouse 적재 직전 JSONL row 파일로 저장한다."""
-
-    path = Path(output_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as file:
-        for user in batch.users:
-            file.write(
-                json.dumps(user.to_warehouse_row(), ensure_ascii=False, default=str)
-                + "\n"
-            )
-    logger.info(
-        "Wrote warehouse-ready virtual user output",
-        extra={"output_path": str(path), "total": len(batch.users)},
-    )
 
 
 def write_quarantine_jsonl(
@@ -341,10 +307,6 @@ def generate_virtual_user_batch(
             "male": batch.summary["male"],
             "female": batch.summary["female"],
         },
-    )
-    write_virtual_users_warehouse_jsonl(
-        batch=batch,
-        output_path=request.warehouse_output_path,
     )
     write_quarantine_jsonl(quarantine, request.quarantine_output_path)
     return result

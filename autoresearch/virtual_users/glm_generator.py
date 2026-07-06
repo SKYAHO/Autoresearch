@@ -61,11 +61,8 @@ Return only JSON with this shape (no Markdown, no commentary):
   "hobby_keywords": [], "interest_keywords": [], "lifestyle_keywords": [],
   "food_keywords": [], "travel_keywords": [], "career_keywords": [],
   "family_context_keywords": [],
-  "category_evidence": {{"Music": ["short grounded phrase"]}},
-  "category_affinity": {{"Music": 0.8}},
   "youtube_profile": {{
     "primary_categories": ["Music"],
-    "shorts_affinity": 0.0, "longform_affinity": 0.0,
     "trend_sensitivity": 0.0, "comment_propensity": 0.0,
     "watch_time_band": "night"
   }}
@@ -73,9 +70,8 @@ Return only JSON with this shape (no Markdown, no commentary):
 
 Constraints:
 - sex must be "male" or "female".
-- All affinity numbers between 0 and 1.
+- trend_sensitivity / comment_propensity between 0 and 1.
 - primary_categories: 1 to 5 items from the allowed vocabulary.
-- category_evidence / category_affinity keys must be from the allowed vocabulary.
 - watch_time_band in [morning, afternoon, evening, night, mixed].
 """
     logger.debug(
@@ -169,11 +165,8 @@ class RuleBasedVirtualUserGenerator:
             "hobby_keywords": [], "interest_keywords": [], "lifestyle_keywords": [],
             "food_keywords": [], "travel_keywords": [], "career_keywords": [],
             "family_context_keywords": [],
-            "category_evidence": {c: ["fixture"] for c in categories},
-            "category_affinity": {c: round(0.8 - 0.1 * i, 2) for i, c in enumerate(categories)},
             "youtube_profile": {
                 "primary_categories": categories,
-                "shorts_affinity": 0.68, "longform_affinity": 0.51,
                 "trend_sensitivity": 0.61, "comment_propensity": 0.25,
                 "watch_time_band": band,
             },

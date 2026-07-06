@@ -32,11 +32,8 @@ def _make_single_user_batch() -> VirtualUserBatch:
         persona_summary="Male student.",
         hobby_keywords=["gaming"],
         interest_keywords=["music"],
-        category_affinity={"Gaming": 0.8},
         youtube_profile={
             "primary_categories": ["Gaming"],
-            "shorts_affinity": 0.8,
-            "longform_affinity": 0.4,
             "trend_sensitivity": 0.7,
             "comment_propensity": 0.3,
             "watch_time_band": "night",
@@ -98,11 +95,8 @@ def test_virtual_user_schema_accepts_expected_json_shape():
         persona_summary="Trend-sensitive college student who watches gaming videos.",
         hobby_keywords=["gaming", "music"],
         interest_keywords=["creator economy", "short videos"],
-        category_affinity={"Gaming": 0.91, "Music": 0.74},
         youtube_profile={
             "primary_categories": ["Gaming", "Music"],
-            "shorts_affinity": 0.82,
-            "longform_affinity": 0.41,
             "trend_sensitivity": 0.76,
             "comment_propensity": 0.35,
             "watch_time_band": "night",
@@ -115,135 +109,11 @@ def test_virtual_user_schema_accepts_expected_json_shape():
         },
     )
 
-    assert user.youtube_profile.shorts_affinity == 0.82
+    assert user.youtube_profile.primary_categories == ["Gaming", "Music"]
     assert user.country == "KR"
     assert user.locale == "ko-KR"
     assert user.hobby_keywords == ["gaming", "music"]
-    assert user.category_affinity["Gaming"] == 0.91
     assert user.generation_meta.prompt_version == PROMPT_VERSION
-
-
-def test_virtual_user_exports_lossless_warehouse_row():
-    user = VirtualUser(
-        virtual_user_id="vu_0001",
-        source_uuid="p-001",
-        source_hash="hash-001",
-        age=22,
-        sex="female",
-        age_bucket="20s",
-        marital_status="미혼",
-        military_status="비현역",
-        family_type="혼자 거주",
-        housing_type="아파트",
-        education_level="4년제 대학교",
-        bachelors_field="교육",
-        occupation="서적·문구 및 음반 판매원",
-        province="제주",
-        district="제주-제주시",
-        country="KR",
-        locale="ko-KR",
-        persona_summary="제주 서점에서 일하며 교육 공방을 꿈꾼다.",
-        hobby_keywords=["닌텐도 스위치"],
-        interest_keywords=["책 큐레이션"],
-        lifestyle_keywords=["혼자 거주"],
-        food_keywords=["마라탕"],
-        travel_keywords=["조용한 해변"],
-        career_keywords=["교육 공방"],
-        family_context_keywords=["가족 밑반찬"],
-        category_evidence={"Gaming": ["닌텐도 스위치"]},
-        category_affinity={"Gaming": 0.88},
-        source_persona_json={"uuid": "p-001", "country": "대한민국"},
-        youtube_profile={
-            "primary_categories": ["Gaming"],
-            "shorts_affinity": 0.62,
-            "longform_affinity": 0.57,
-            "trend_sensitivity": 0.41,
-            "comment_propensity": 0.18,
-            "watch_time_band": "night",
-        },
-        generation_meta={
-            "schema_version": GENERATION_SCHEMA_VERSION,
-            "prompt_version": PROMPT_VERSION,
-            "llm_model": "glm-5.2",
-            "generated_at": "2026-06-28T00:00:00Z",
-        },
-    )
-
-    row = user.to_warehouse_row()
-
-    assert row["source_hash"] == "hash-001"
-    assert row["education_level"] == "4년제 대학교"
-    assert row["career_keywords"] == ["교육 공방"]
-    assert row["category_evidence"]["Gaming"] == ["닌텐도 스위치"]
-    assert row["source_persona_json"]["uuid"] == user.source_uuid
-
-
-def test_virtual_user_schema_rejects_out_of_range_category_affinity():
-    with pytest.raises(ValidationError):
-        VirtualUser(
-            virtual_user_id="vu_0001",
-            source_uuid="p-001",
-            age=24,
-            sex="female",
-            age_bucket="20s",
-            occupation="designer",
-            province="Seoul",
-            district="Jongno-gu",
-            country="KR",
-            locale="ko-KR",
-            persona_summary="Designer persona.",
-            hobby_keywords=["visual culture"],
-            interest_keywords=["design"],
-            category_affinity={"Music": 1.2},
-            youtube_profile={
-                "primary_categories": ["Music"],
-                "shorts_affinity": 0.7,
-                "longform_affinity": 0.4,
-                "trend_sensitivity": 0.5,
-                "comment_propensity": 0.3,
-                "watch_time_band": "evening",
-            },
-            generation_meta={
-                "schema_version": GENERATION_SCHEMA_VERSION,
-                "prompt_version": PROMPT_VERSION,
-                "llm_model": "glm-5.2",
-                "generated_at": "2026-06-28T00:00:00Z",
-            },
-        )
-
-
-def test_virtual_user_schema_rejects_out_of_range_affinity():
-    with pytest.raises(ValidationError):
-        VirtualUser(
-            virtual_user_id="vu_0001",
-            source_uuid="p-001",
-            age=24,
-            sex="female",
-            age_bucket="20s",
-            occupation="designer",
-            province="Seoul",
-            district="Jongno-gu",
-            country="KR",
-            locale="ko-KR",
-            persona_summary="Designer persona.",
-            hobby_keywords=["music"],
-            interest_keywords=["design"],
-            category_affinity={"Music": 0.7},
-            youtube_profile={
-                "primary_categories": ["Music"],
-                "shorts_affinity": 1.2,
-                "longform_affinity": 0.4,
-                "trend_sensitivity": 0.5,
-                "comment_propensity": 0.3,
-                "watch_time_band": "evening",
-            },
-            generation_meta={
-                "schema_version": GENERATION_SCHEMA_VERSION,
-                "prompt_version": PROMPT_VERSION,
-                "llm_model": "glm-5.2",
-                "generated_at": "2026-06-28T00:00:00Z",
-            },
-        )
 
 
 def test_virtual_user_batch_counts_users_by_sex(caplog):
@@ -262,11 +132,8 @@ def test_virtual_user_batch_counts_users_by_sex(caplog):
             persona_summary="Male student.",
             hobby_keywords=["gaming"],
             interest_keywords=["music"],
-            category_affinity={"Gaming": 0.8},
             youtube_profile={
                 "primary_categories": ["Gaming"],
-                "shorts_affinity": 0.8,
-                "longform_affinity": 0.4,
                 "trend_sensitivity": 0.7,
                 "comment_propensity": 0.3,
                 "watch_time_band": "night",
@@ -292,11 +159,8 @@ def test_virtual_user_batch_counts_users_by_sex(caplog):
             persona_summary="Female marketer.",
             hobby_keywords=["music"],
             interest_keywords=["lifestyle"],
-            category_affinity={"Music": 0.7},
             youtube_profile={
                 "primary_categories": ["Music"],
-                "shorts_affinity": 0.7,
-                "longform_affinity": 0.5,
                 "trend_sensitivity": 0.6,
                 "comment_propensity": 0.2,
                 "watch_time_band": "evening",
@@ -325,81 +189,6 @@ def test_virtual_user_batch_counts_users_by_sex(caplog):
     assert batch.summary["female"] == 1
     assert payload["summary"] == {"total": 2, "male": 1, "female": 1}
     assert "Prepared virtual user batch output" in caplog.text
-
-
-def test_virtual_user_exports_warehouse_ready_row():
-    user = VirtualUser(
-        virtual_user_id="vu_0001",
-        source_uuid="p-001",
-        source_dataset="nvidia/Nemotron-Personas-Korea",
-        country="KR",
-        locale="ko-KR",
-        age=24,
-        sex="female",
-        age_bucket="20s",
-        occupation="student",
-        province="Seoul",
-        district="Mapo-gu",
-        persona_summary="Student interested in music and lifestyle.",
-        interest_keywords=["music", "beauty", "lifestyle"],
-        youtube_profile={
-            "primary_categories": ["Music", "Howto & Style"],
-            "shorts_affinity": 0.82,
-            "longform_affinity": 0.38,
-            "trend_sensitivity": 0.71,
-            "comment_propensity": 0.24,
-            "watch_time_band": "night",
-        },
-        generation_meta={
-            "schema_version": GENERATION_SCHEMA_VERSION,
-            "prompt_version": PROMPT_VERSION,
-            "llm_model": "fixture",
-            "generated_at": "2026-07-01T00:00:00+00:00",
-        },
-    )
-
-    row = user.to_warehouse_row()
-
-    assert row == {
-        "user_id": "vu_0001",
-        "source_uuid": "p-001",
-        "source_dataset": "nvidia/Nemotron-Personas-Korea",
-        "source_hash": "",
-        "country": "KR",
-        "locale": "ko-KR",
-        "age": 24,
-        "sex": "female",
-        "marital_status": "",
-        "military_status": "",
-        "family_type": "",
-        "housing_type": "",
-        "education_level": "",
-        "bachelors_field": "",
-        "occupation": "student",
-        "province": "Seoul",
-        "district": "Mapo-gu",
-        "persona_summary": "Student interested in music and lifestyle.",
-        "hobby_keywords": [],
-        "interest_keywords": ["music", "beauty", "lifestyle"],
-        "lifestyle_keywords": [],
-        "food_keywords": [],
-        "travel_keywords": [],
-        "career_keywords": [],
-        "family_context_keywords": [],
-        "category_affinity": {},
-        "primary_categories": ["Music", "Howto & Style"],
-        "category_evidence": {},
-        "shorts_affinity": 0.82,
-        "longform_affinity": 0.38,
-        "trend_sensitivity": 0.71,
-        "comment_propensity": 0.24,
-        "watch_time_band": "night",
-        "source_persona_json": {},
-        "schema_version": GENERATION_SCHEMA_VERSION,
-        "prompt_version": PROMPT_VERSION,
-        "llm_model": "fixture",
-        "generated_at": "2026-07-01T00:00:00+00:00",
-    }
 
 
 def test_quarantine_record_captures_failure_context():

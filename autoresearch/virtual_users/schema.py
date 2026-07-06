@@ -37,7 +37,6 @@ class GenerationRequest(BaseModel):
     source_mode: Literal["huggingface", "fixture"] = "huggingface"
     output_path: str = "asset/virtual_user/virtual_users_20s_100.parquet"
     raw_output_path: str = "data/raw/personas/nvidia_personas_kr.jsonl"
-    warehouse_output_path: str = "data/generated/virtual_users_kr.jsonl"
     quarantine_output_path: str = "data/generated/virtual_users_quarantine.jsonl"
 
     @field_validator("age_min", "age_max", "male_count", "female_count")
@@ -82,8 +81,6 @@ class YouTubeProfile(BaseModel):
     """추천 도메인에서 사용할 YouTube 소비 성향 feature 묶음."""
 
     primary_categories: list[str] = Field(min_length=1, max_length=5)
-    shorts_affinity: float = Field(ge=0.0, le=1.0)
-    longform_affinity: float = Field(ge=0.0, le=1.0)
     trend_sensitivity: float = Field(ge=0.0, le=1.0)
     comment_propensity: float = Field(ge=0.0, le=1.0)
     watch_time_band: Literal["morning", "afternoon", "evening", "night", "mixed"]
@@ -127,69 +124,9 @@ class VirtualUser(BaseModel):
     travel_keywords: list[str] = Field(default_factory=list)
     career_keywords: list[str] = Field(default_factory=list)
     family_context_keywords: list[str] = Field(default_factory=list)
-    category_evidence: dict[str, list[str]] = Field(default_factory=dict)
-    category_affinity: dict[str, float] = Field(default_factory=dict)
     source_persona_json: dict[str, object] = Field(default_factory=dict)
     youtube_profile: YouTubeProfile
     generation_meta: GenerationMeta
-
-    @field_validator("category_affinity")
-    @classmethod
-    def valid_category_affinity(cls, value: dict[str, float]) -> dict[str, float]:
-        """카테고리별 affinity 값이 0~1 범위인지 확인한다."""
-
-        invalid = [
-            category
-            for category, affinity in value.items()
-            if affinity < 0.0 or affinity > 1.0
-        ]
-        if invalid:
-            raise ValueError("category_affinity values must be between 0 and 1")
-        return value
-
-    def to_warehouse_row(self) -> dict[str, object]:
-        """중첩된 profile/meta 구조를 warehouse-friendly flat row로 변환한다."""
-
-        return {
-            "user_id": self.virtual_user_id,
-            "source_uuid": self.source_uuid,
-            "source_dataset": self.source_dataset,
-            "source_hash": self.source_hash,
-            "country": self.country,
-            "locale": self.locale,
-            "age": self.age,
-            "sex": self.sex,
-            "marital_status": self.marital_status,
-            "military_status": self.military_status,
-            "family_type": self.family_type,
-            "housing_type": self.housing_type,
-            "education_level": self.education_level,
-            "bachelors_field": self.bachelors_field,
-            "occupation": self.occupation,
-            "province": self.province,
-            "district": self.district,
-            "persona_summary": self.persona_summary,
-            "hobby_keywords": self.hobby_keywords,
-            "interest_keywords": self.interest_keywords,
-            "lifestyle_keywords": self.lifestyle_keywords,
-            "food_keywords": self.food_keywords,
-            "travel_keywords": self.travel_keywords,
-            "career_keywords": self.career_keywords,
-            "family_context_keywords": self.family_context_keywords,
-            "category_affinity": self.category_affinity,
-            "primary_categories": self.youtube_profile.primary_categories,
-            "category_evidence": self.category_evidence,
-            "shorts_affinity": self.youtube_profile.shorts_affinity,
-            "longform_affinity": self.youtube_profile.longform_affinity,
-            "trend_sensitivity": self.youtube_profile.trend_sensitivity,
-            "comment_propensity": self.youtube_profile.comment_propensity,
-            "watch_time_band": self.youtube_profile.watch_time_band,
-            "source_persona_json": self.source_persona_json,
-            "schema_version": self.generation_meta.schema_version,
-            "prompt_version": self.generation_meta.prompt_version,
-            "llm_model": self.generation_meta.llm_model,
-            "generated_at": self.generation_meta.generated_at,
-        }
 
 
 class VirtualUserBatch(BaseModel):
