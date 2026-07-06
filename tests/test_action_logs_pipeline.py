@@ -66,32 +66,61 @@ def _request(tmp_path, **kw):
     return EventGenerationRequest(**base)
 
 
-def test_end_to_end_events_hit_target_ctr_and_constraints(tmp_path):
+def test_end_to_end_long_event_stream(tmp_path):
     users, videos = _fixture_users(6), build_fixture_video_records(40)
     result = generate_action_log_batch(_request(tmp_path), users, videos, RuleBasedActionLogGenerator())
+    events = result.batch.events
 
-    total = result.summary["total_events"]
-    assert total == 6 * 20  # 유저당 후보 20 (pool 40)
-    assert result.summary["clicks"] == round(0.05 * total)  # 전역 2%(여기선 5%) 정규화
-    for event in result.batch.events:
-        if event.clicked == 0:
-            assert event.watch_time_sec == 0 and event.liked == 0
-        assert event.source == "historical"
-        assert event.rank is None
-        assert event.exposure_type in {"top_ranked", "exploration"}
+    impressions = [e for e in events if e.event_type == "impression"]
+    clicks = [e for e in events if e.event_type == "click"]
+    views = [e for e in events if e.event_type == "view"]
+    likes = [e for e in events if e.event_type == "like"]
+
+    assert len(impressions) == 6 * 20  # 유저당 후보 20 (pool 40)
+    assert result.summary["impressions"] == 6 * 20
+    assert len(clicks) == round(0.05 * len(impressions))  # 전역 CTR 정규화(여기선 5%)
+    assert result.summary["clicks"] == len(clicks)
+    assert len(views) == len(clicks)  # 클릭 선정분마다 view 1행
+    assert len(likes) <= len(clicks)  # like는 would_like일 때만
+    # view만 watch_time_sec>0, 그 외 event_type은 None
+    for e in events:
+        if e.event_type == "view":
+            assert e.watch_time_sec is not None and e.watch_time_sec > 0
+        else:
+            assert e.watch_time_sec is None
+        assert e.rank is None and e.source == "historical"
+    # 클릭 선정 video는 impression·click·view를 모두 가진다
+    clicked_keys = {(e.user_id, e.video_id) for e in clicks}
+    imp_keys = {(e.user_id, e.video_id) for e in impressions}
+    view_keys = {(e.user_id, e.video_id) for e in views}
+    assert clicked_keys <= imp_keys and clicked_keys == view_keys
     assert (tmp_path / "e.parquet").exists()
     assert result.summary["quarantined_users"] == 0
+
+
+def test_click_session_timestamps_are_monotonic(tmp_path):
+    users, videos = _fixture_users(6), build_fixture_video_records(40)
+    result = generate_action_log_batch(_request(tmp_path), users, videos, RuleBasedActionLogGenerator())
+    # (user, video)별로 event_type 순서대로 timestamp가 단조 증가하는지
+    by_key: dict = {}
+    for e in result.batch.events:
+        by_key.setdefault((e.user_id, e.video_id), []).append(e)
+    order = {"impression": 0, "click": 1, "view": 2, "like": 3}
+    for group in by_key.values():
+        group.sort(key=lambda e: order[e.event_type])
+        ts = [e.event_timestamp for e in group]
+        assert ts == sorted(ts)  # impression <= click <= view <= like
 
 
 def test_timestamps_within_history_window(tmp_path):
     users, videos = _fixture_users(4), build_fixture_video_records(40)
     result = generate_action_log_batch(_request(tmp_path), users, videos, RuleBasedActionLogGenerator())
-    lo = _FIXED_END - timedelta(days=31)
+    lo = _FIXED_END - timedelta(days=30)
     for event in result.batch.events:
         assert lo <= event.event_timestamp <= _FIXED_END
 
 
-def test_per_user_daily_cap_respected(tmp_path):
+def test_per_user_daily_impression_cap_respected(tmp_path):
     users, videos = _fixture_users(1), build_fixture_video_records(40)
     result = generate_action_log_batch(
         _request(tmp_path, candidates_per_user=30, max_events_per_user_per_day=5, history_days=30),
@@ -99,6 +128,8 @@ def test_per_user_daily_cap_respected(tmp_path):
     )
     per_day: dict = {}
     for event in result.batch.events:
+        if event.event_type != "impression":
+            continue  # 상한은 impression 기준
         key = (event.user_id, event.event_timestamp.date())
         per_day[key] = per_day.get(key, 0) + 1
     assert max(per_day.values()) <= 5
@@ -109,9 +140,14 @@ def test_parquet_matches_events(tmp_path):
     result = generate_action_log_batch(_request(tmp_path), users, videos, RuleBasedActionLogGenerator())
     table = pq.read_table(tmp_path / "e.parquet")
     assert table.num_rows == result.summary["total_events"]
-    assert set(table.column_names) >= {"event_id", "event_timestamp", "clicked", "exposure_type"}
+    assert set(table.column_names) >= {"event_id", "event_timestamp", "event_type", "watch_time_sec"}
+    assert "clicked" not in table.column_names and "exposure_type" not in table.column_names
     warehouse = [json.loads(line) for line in (tmp_path / "e.jsonl").read_text(encoding="utf-8").splitlines()]
     assert len(warehouse) == result.summary["total_events"]
+    assert set(warehouse[0]) == {
+        "event_id", "event_timestamp", "user_id", "event_type",
+        "video_id", "watch_time_sec", "rank", "source",
+    }
 
 
 def test_user_isolation_quarantines_bad_row(tmp_path):

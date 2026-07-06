@@ -53,14 +53,11 @@ EVENT_LOG_PARQUET_SCHEMA = pa.schema(
         pa.field("event_id", pa.string()),
         pa.field("event_timestamp", pa.timestamp("us", tz="UTC")),
         pa.field("user_id", pa.string()),
+        pa.field("event_type", pa.string()),
         pa.field("video_id", pa.string()),
-        pa.field("clicked", pa.int64()),
         pa.field("watch_time_sec", pa.int64()),
-        pa.field("liked", pa.int64()),
-        pa.field("search_keyword", pa.string()),
-        pa.field("source", pa.string()),
         pa.field("rank", pa.int64()),
-        pa.field("exposure_type", pa.string()),
+        pa.field("source", pa.string()),
         pa.field("schema_version", pa.string()),
         pa.field("prompt_version", pa.string()),
         pa.field("llm_model", pa.string()),
@@ -77,7 +74,7 @@ def _clamp01(value: object) -> float:
 
 def _build_user_drafts(
     virtual_user: dict,
-    candidates: list[tuple[dict, str]],
+    candidates: list[dict],
     raw_text: str,
 ) -> list[ImpressionDraft]:
     """LLM raw judgments를 파싱해 후보별 ImpressionDraft를 만든다.
@@ -91,17 +88,15 @@ def _build_user_drafts(
 
     user_id = str(virtual_user.get("user_id", ""))
     drafts: list[ImpressionDraft] = []
-    for video, exposure in candidates:
+    for video in candidates:
         vid = video["video_id"]
         j = jmap.get(vid)
         if j is None:
-            prop, frac, like, keyword = 0.0, 0.0, False, None
+            prop, frac, like = 0.0, 0.0, False
         else:
             prop = _clamp01(j.get("click_propensity", 0.0))
             frac = _clamp01(j.get("watch_fraction", 0.0))
             like = bool(j.get("would_like", False))
-            raw_kw = j.get("search_keyword")
-            keyword = str(raw_kw) if raw_kw not in (None, "") else None
         drafts.append(
             ImpressionDraft(
                 user_id=user_id,
@@ -109,8 +104,6 @@ def _build_user_drafts(
                 click_propensity=prop,
                 watch_fraction=frac,
                 would_like=like,
-                search_keyword=keyword,
-                exposure_type=exposure,
                 duration_sec=nominal_duration_sec(vid),
             )
         )
@@ -139,7 +132,7 @@ def _generate_drafts_isolated(
         )
         if not candidates:
             continue
-        videos_only = [v for v, _ in candidates]
+        videos_only = candidates
         try:
             raw_text = generator.generate(virtual_user, videos_only)
         except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
@@ -190,13 +183,16 @@ def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[in
     return set(order[:n_click])
 
 
-def _assemble_events(
+def _expand_events(
     drafts: list[ImpressionDraft],
     clicked: set[int],
     request: EventGenerationRequest,
 ) -> list[EventLog]:
-    """draft + 클릭 결정 → EventLog. timestamp 분산, watch/like 제약, stamp를 적용한다."""
+    """draft + 클릭 결정 → long EventLog 스트림.
 
+    노출마다 impression 1행. 클릭 선정분엔 같은 세션 흐름으로 click/view(+like)를
+    impression 직후(초 단위 단조 증가)에 배치한다. 일일 상한은 impression 기준.
+    """
     end = request.history_end
     if end.tzinfo is None:
         end = end.replace(tzinfo=UTC)
@@ -207,6 +203,23 @@ def _assemble_events(
 
     events: list[EventLog] = []
     seq = 0
+
+    def _emit(timestamp, user_id, event_type, video_id, watch=None):
+        nonlocal seq
+        events.append(
+            EventLog(
+                event_id=f"evt_{seq:08d}",
+                event_timestamp=timestamp,
+                user_id=user_id,
+                event_type=event_type,
+                video_id=video_id,
+                watch_time_sec=watch,
+                rank=None,
+                source=SOURCE_HISTORICAL,
+            )
+        )
+        seq += 1
+
     for user_id, indices in by_user.items():
         urng = random.Random(f"{request.seed}:ts:{user_id}")
         days = list(range(request.history_days))
@@ -217,35 +230,23 @@ def _assemble_events(
         for position, idx in enumerate(order):
             draft = drafts[idx]
             day = days[(position // cap) % len(days)]
-            timestamp = end - timedelta(
+            impression_ts = end - timedelta(
                 days=day,
-                hours=urng.randint(0, 23),
+                hours=urng.randint(1, 23),  # 1h+ 여유로 후속 이벤트가 end를 넘지 않게
                 minutes=urng.randint(0, 59),
                 seconds=urng.randint(0, 59),
             )
-            is_click = idx in clicked
-            if is_click:
-                watch = max(1, round(draft.watch_fraction * draft.duration_sec))
-                liked = 1 if draft.would_like else 0
-                keyword = draft.search_keyword
-            else:
-                watch, liked, keyword = 0, 0, None
-            events.append(
-                EventLog(
-                    event_id=f"evt_{seq:08d}",
-                    event_timestamp=timestamp,
-                    user_id=user_id,
-                    video_id=draft.video_id,
-                    clicked=1 if is_click else 0,
-                    watch_time_sec=watch,
-                    liked=liked,
-                    search_keyword=keyword,
-                    source=SOURCE_HISTORICAL,
-                    rank=None,
-                    exposure_type=draft.exposure_type,
-                )
-            )
-            seq += 1
+            _emit(impression_ts, user_id, "impression", draft.video_id)
+            if idx not in clicked:
+                continue
+            click_ts = impression_ts + timedelta(seconds=urng.randint(1, 30))
+            _emit(click_ts, user_id, "click", draft.video_id)
+            watch = max(1, round(draft.watch_fraction * draft.duration_sec))
+            view_ts = click_ts + timedelta(seconds=urng.randint(1, 5))
+            _emit(view_ts, user_id, "view", draft.video_id, watch=watch)
+            if draft.would_like:
+                like_ts = view_ts + timedelta(seconds=urng.randint(1, max(2, watch)))
+                _emit(like_ts, user_id, "like", draft.video_id)
     return events
 
 
@@ -259,14 +260,11 @@ def _event_rows(batch: EventLogBatch, model_name: str) -> list[dict]:
                 "event_id": event.event_id,
                 "event_timestamp": event.event_timestamp,
                 "user_id": event.user_id,
+                "event_type": event.event_type,
                 "video_id": event.video_id,
-                "clicked": event.clicked,
                 "watch_time_sec": event.watch_time_sec,
-                "liked": event.liked,
-                "search_keyword": event.search_keyword,
-                "source": event.source,
                 "rank": event.rank,
-                "exposure_type": event.exposure_type,
+                "source": event.source,
                 "schema_version": batch.schema_version,
                 "prompt_version": batch.prompt_version,
                 "llm_model": model_name,
@@ -326,7 +324,7 @@ def generate_action_log_batch(
 
     drafts, quarantine = _generate_drafts_isolated(generator, virtual_users, videos, request)
     clicked = _clicked_indices(drafts, request.target_ctr)
-    events = _assemble_events(drafts, clicked, request)
+    events = _expand_events(drafts, clicked, request)
 
     batch = EventLogBatch(
         schema_version=ACTION_LOG_SCHEMA_VERSION,
