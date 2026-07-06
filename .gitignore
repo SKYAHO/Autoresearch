@@ -2,16 +2,31 @@ __pycache__/
 *.py[cod]
 *.pkl
 *.csv
+
+.venv/
+.python-version
+
+# GCP service account keys
+*-service-account*.json
+*gcp*.json
+*credentials*.json
+google_credentials.json
+service-account.json
+key/
+keys/
+
+# Environment files
 .env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
 
 # Astro / Airflow local state
 .astro/
-.env
-.gcp-creds.json
 
-# Local credentials and virtualenv
-keys/
-.venv/
+.gcp-creds.json
 
 # Generated data artifacts
 data/generated/
