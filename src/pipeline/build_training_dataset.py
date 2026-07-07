@@ -322,7 +322,7 @@ def main():
     )
     hist_match_dist = (joined["historical_category_match"] == 1).sum()
     if hist_match_dist == 0:
-        print(f"  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
+        print("  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
     else:
         print(f"  [OK] historical_category_match: 0={len(joined) - hist_match_dist}, 1={hist_match_dist}")
 

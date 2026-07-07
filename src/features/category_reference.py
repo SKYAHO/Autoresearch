@@ -6,7 +6,6 @@ See: CTR_Model_Specification.md (Intermediate Artifacts section)
 NOTE: category_description_embedding는 모듈 import 시 1회만 생성되어 캐시됨.
 """
 
-from typing import Optional
 import numpy as np
 
 from src.features.embeddings import embed_text

@@ -96,7 +96,7 @@ def main():
         random_state=config["model"]["random_state"],
     )
     model.fit(X_train, y_train, categorical_features=categorical_columns)
-    print(f"  [OK] 훈련 완료")
+    print("  [OK] 훈련 완료")
 
     print("\n[Step 7] 검증...")
     y_val_pred_proba = model.predict_proba(X_val)[:, 1]
@@ -104,7 +104,7 @@ def main():
     print(f"  [OK] Val ROC-AUC: {val_roc_auc:.4f}")
 
     if (X_val["historical_category_match"] == 1).sum() == 0:
-        print(f"  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
+        print("  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
 
     print("\n[Step 8] 모델 저장...")
     model_path = os.path.join(project_root, config["artifacts"]["model_path"])

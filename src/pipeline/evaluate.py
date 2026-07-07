@@ -67,7 +67,7 @@ def main():
 
     print("\n[Step 3] 예측...")
     y_pred_proba = model.predict_proba(X)[:, 1]
-    print(f"  [OK] 예측 완료")
+    print("  [OK] 예측 완료")
 
     print("\n[Step 4] 평가 지표 계산...")
     roc_auc = roc_auc_score(y, y_pred_proba)
