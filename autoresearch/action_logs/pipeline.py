@@ -158,6 +158,8 @@ def _generate_drafts_isolated(
             request.candidates_per_user,
             request.exploration_ratio,
             user_rng,
+            personalized_ratio=request.personalized_ratio,
+            popular_ratio=request.popular_ratio,
         )
         if not candidates:
             continue

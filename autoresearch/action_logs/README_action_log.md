@@ -209,6 +209,21 @@ result = generate_action_log_batch(EventGenerationRequest(...paths...), users, v
 > 별도 어댑터 없이 그대로 `generate_action_log_batch`의 `virtual_users` 인자로 넣을 수 있다.
 > candidate 관련도는 `primary_categories`/`interest_keywords` 등으로 계산한다.
 
+### 7.5 Airflow daily DAG
+
+`dags/youtube_action_log_daily.py`는 매일 KST 01:00에 실행되어 같은 날짜의 YouTube
+daily partition을 읽고 action log partition을 생성한다.
+
+```text
+입력 영상: gs://<YOUTUBE_LAKE_BUCKET>/data_lake/youtube_trending_kr/dt=YYYY-MM-DD/part-0.parquet
+입력 유저: gs://<YOUTUBE_LAKE_BUCKET>/asset/virtual_user/vu_1000.parquet
+출력 로그: gs://<YOUTUBE_LAKE_BUCKET>/data_lake/action_log/dt=YYYY-MM-DD/part-0.parquet
+```
+
+기본 후보 믹스는 유저당 24개 노출 기준 `70% personalized / 20% popular /
+10% exploration`이다. 기본 generator는 `rule_based`이며, `ACTION_LOG_GENERATOR=openrouter`
+로 설정하면 `OpenRouterActionLogGenerator`를 사용한다.
+
 ### 7.3 환경
 - Python 3.12 venv에서 실행/테스트. 시스템 python3(3.10)은 프로젝트 실행 불가.
 - 테스트: `python -m pytest tests/test_action_logs_pipeline.py`, 린트: `python -m ruff check autoresearch tests`.

@@ -54,18 +54,30 @@ def build_candidates(
     candidates_per_user: int,
     exploration_ratio: float,
     rng: random.Random,
+    *,
+    personalized_ratio: float = 0.7,
+    popular_ratio: float = 0.2,
 ) -> list[dict]:
     """유저 1명의 노출 batch를 video dict 목록으로 구성한다.
 
-    관련 후보(키워드 겹침 상위) + exploration 랜덤을 섞되, exposure_type 라벨은
-    로그에 남기지 않으므로 반환하지 않는다. pool이 요청 수보다 작으면 가능한 만큼만.
+    personalized relevance + popular/trending + exploration 랜덤을 섞되,
+    exposure_type 라벨은 로그에 남기지 않으므로 반환하지 않는다. pool이 요청 수보다
+    작으면 가능한 만큼만.
     """
     if not videos:
         return []
 
     n_total = min(candidates_per_user, len(videos))
-    n_explore = min(round(n_total * exploration_ratio), n_total)
-    n_relevant = n_total - n_explore
+    ratio_sum = personalized_ratio + popular_ratio + exploration_ratio
+    if ratio_sum <= 0:
+        personalized_ratio, popular_ratio, exploration_ratio = 1.0, 0.0, 0.0
+        ratio_sum = 1.0
+    n_popular = min(round(n_total * popular_ratio / ratio_sum), n_total)
+    n_explore = min(
+        round(n_total * exploration_ratio / ratio_sum),
+        n_total - n_popular,
+    )
+    n_relevant = n_total - n_popular - n_explore
 
     keywords = _user_keywords(virtual_user)
     scored = [
@@ -80,12 +92,36 @@ def build_candidates(
     # 관련도 desc, 동점은 조회수 desc, 그다음 idx로 안정 정렬.
     scored.sort(key=lambda t: (-t[0], -t[1], t[2]))
 
-    relevant = [t[3] for t in scored[:n_relevant]]
-    remaining = [t[3] for t in scored[n_relevant:]]
-    rng.shuffle(remaining)
-    exploration = remaining[:n_explore]
+    selected: list[dict] = []
+    seen: set[str] = set()
 
-    candidates = relevant + exploration
+    def add_unique(items: list[dict], limit: int) -> list[dict]:
+        added: list[dict] = []
+        for item in items:
+            if len(added) >= limit:
+                break
+            video_id = str(item.get("video_id", ""))
+            if not video_id or video_id in seen:
+                continue
+            seen.add(video_id)
+            selected.append(item)
+            added.append(item)
+        return added
+
+    relevant = add_unique([t[3] for t in scored], n_relevant)
+    popular_pool = sorted(
+        videos,
+        key=lambda v: (-int(v.get("view_count", 0) or 0), str(v.get("video_id", ""))),
+    )
+    popular = add_unique(popular_pool, n_popular)
+    remaining = [v for v in videos if str(v.get("video_id", "")) not in seen]
+    rng.shuffle(remaining)
+    exploration = add_unique(remaining, n_explore)
+
+    if len(selected) < n_total:
+        add_unique([t[3] for t in scored], n_total - len(selected))
+
+    candidates = selected
     rng.shuffle(candidates)
 
     logger.debug(
@@ -93,6 +129,7 @@ def build_candidates(
         extra={
             "user_id": virtual_user.get("user_id"),
             "n_relevant": len(relevant),
+            "n_popular": len(popular),
             "n_exploration": len(exploration),
         },
     )
