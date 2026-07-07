@@ -26,13 +26,13 @@ from datetime import datetime
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.features.feature_builder import (
+from src.features.feature_builder import (  # noqa: E402
     compute_historical_category_match,
     compute_preferred_category_match,
     embed_keywords,
     compute_topic_similarity,
 )
-from src.features.category_reference import CATEGORY_DESCRIPTIONS
+from src.features.category_reference import CATEGORY_DESCRIPTIONS  # noqa: E402
 
 
 KEYWORD_TO_CATEGORY = {
@@ -149,7 +149,7 @@ def main():
                 hours, minutes, seconds = match.groups()
                 total = int(hours or 0) * 3600 + int(minutes or 0) * 60 + int(seconds or 0)
                 return total
-        except:
+        except Exception:
             pass
         return 0
 

@@ -15,8 +15,8 @@ from sklearn.metrics import roc_auc_score
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.models.lgbm_model import LGBMModel
-from src.utils.model_utils import save_model, save_feature_columns
+from src.models.lgbm_model import LGBMModel  # noqa: E402
+from src.utils.model_utils import save_model, save_feature_columns  # noqa: E402
 
 
 def get_project_root():
