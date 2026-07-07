@@ -27,7 +27,7 @@ def verify_online_features():
     print("1. Online Feature 조회 (get_online_features)")
     print("=" * 60)
 
-    store = FeatureStore(repo_path="feature_store")
+    store = FeatureStore(repo_path="feature_repo")
 
     online_features = store.get_online_features(
         features=[
@@ -53,7 +53,7 @@ def verify_historical_features():
     print("2. Historical Feature 조회 (get_historical_features)")
     print("=" * 60)
 
-    store = FeatureStore(repo_path="feature_store")
+    store = FeatureStore(repo_path="feature_repo")
 
     entity_df = pd.DataFrame(
         {

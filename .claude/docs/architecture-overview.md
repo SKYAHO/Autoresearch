@@ -79,8 +79,9 @@ Airflow (Astro Runtime):
 
 **책임:** 피처 정의, 피처 스토어 구축, 피처 엔지니어링 변환.
 
-**상태:** 별도 브랜치 진행 중 (`feature_store/`, `scripts/`는 소스
-미커밋).
+**상태:** 도입됨 — `feature_repo/`에 Entity(`user`, `video`)와 더미 스키마
+FeatureView 3개 정의 (실데이터 스키마로 교체 예정). Feast 0.64, BigQuery
+offline store + Redis online store.
 
 ### Feast 핵심 설계 결정 (확정)
 

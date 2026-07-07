@@ -61,8 +61,10 @@
 - 팀 도메인 4개: Model Training (waieiches, hyochangsung), Feast Features
   (waieiches, hyochangsung — 도입 진행 중), Airflow Orchestration (bbungjun),
   GCP Infrastructure (hyeongyu-data)
-- CTR 학습 파이프라인(`src/` 구조)과 Feast 피처 스토어는 별도 브랜치에서 진행
-  중이며 아직 main에 없습니다.
+- Feast 피처 스토어는 `feature_repo/`에 도입되어 있습니다 (Entity·FeatureView
+  정의는 더미 스키마, 실데이터 스키마로 교체 예정).
+- CTR 학습 파이프라인(`src/` 구조)은 별도 브랜치에서 진행 중이며 아직 main에
+  없습니다.
 
 ## Core Rules
 
