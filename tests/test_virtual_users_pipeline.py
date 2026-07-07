@@ -1,7 +1,6 @@
 import json
 import logging
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -49,10 +48,6 @@ class _NonObjectJsonGenerator(RuleBasedVirtualUserGenerator):
         return super().generate(raw_row, virtual_user_id)
 
 
-def _affinity_map_to_dict(value: object) -> dict[str, float]:
-    return {key: score for key, score in value}
-
-
 def test_batch_isolates_non_object_json_row_as_schema_fail(tmp_path):
     """valid JSON이지만 object가 아닌 body(TypeError)를 schema_fail로 격리한다."""
 
@@ -60,7 +55,6 @@ def test_batch_isolates_non_object_json_row_as_schema_fail(tmp_path):
     request = GenerationRequest(
         male_count=2, female_count=1, use_llm=False,
         output_path=str(tmp_path / "vu.parquet"),
-        warehouse_output_path=str(tmp_path / "vu.jsonl"),
         quarantine_output_path=str(tmp_path / "q.jsonl"),
     )
 
@@ -79,7 +73,6 @@ def test_batch_isolates_bad_row_and_quarantines_it(tmp_path):
     request = GenerationRequest(
         male_count=2, female_count=1, use_llm=False,
         output_path=str(tmp_path / "vu.parquet"),
-        warehouse_output_path=str(tmp_path / "vu.jsonl"),
         quarantine_output_path=str(tmp_path / "q.jsonl"),
     )
 
@@ -101,7 +94,6 @@ def test_batch_raises_when_quarantine_ratio_exceeds_threshold(tmp_path):
     request = GenerationRequest(
         male_count=2, female_count=1, use_llm=False,
         output_path=str(tmp_path / "vu.parquet"),
-        warehouse_output_path=str(tmp_path / "vu.jsonl"),
         quarantine_output_path=str(quarantine_path),
     )
 
@@ -120,7 +112,6 @@ def test_batch_tolerates_quarantine_within_threshold(tmp_path):
     request = GenerationRequest(
         male_count=2, female_count=1, use_llm=False,
         output_path=str(tmp_path / "vu.parquet"),
-        warehouse_output_path=str(tmp_path / "vu.jsonl"),
         quarantine_output_path=str(tmp_path / "q.jsonl"),
     )
 
@@ -133,7 +124,6 @@ def test_batch_tolerates_quarantine_within_threshold(tmp_path):
 def test_generate_virtual_user_batch_writes_expected_100_user_parquet(tmp_path, caplog):
     records = build_fixture_raw_persona_records(male_count=60, female_count=60)
     output_path = tmp_path / "virtual_users_20s_100.parquet"
-    warehouse_output_path = tmp_path / "virtual_users_kr.jsonl"
     quarantine_output_path = tmp_path / "virtual_users_quarantine.jsonl"
     request = GenerationRequest(
         male_count=50,
@@ -142,7 +132,6 @@ def test_generate_virtual_user_batch_writes_expected_100_user_parquet(tmp_path, 
         use_llm=False,
         source_mode="fixture",
         output_path=str(output_path),
-        warehouse_output_path=str(warehouse_output_path),
         quarantine_output_path=str(quarantine_output_path),
     )
 
@@ -160,15 +149,13 @@ def test_generate_virtual_user_batch_writes_expected_100_user_parquet(tmp_path, 
     assert len(rows) == 100
     assert sum(1 for row in rows if row["sex"] == "male") == 50
     assert sum(1 for row in rows if row["sex"] == "female") == 50
+    assert rows[0]["user_id"].startswith("vu_")
     assert rows[0]["source_dataset"] == "nvidia/Nemotron-Personas-Korea"
     assert rows[0]["district"]
     assert rows[0]["country"] == "KR"
     assert rows[0]["locale"] == "ko-KR"
     assert rows[0]["hobby_keywords"] is not None
     assert rows[0]["interest_keywords"] is not None
-    assert rows[0]["category_affinity"]
-    assert isinstance(rows[0]["category_evidence"], str)
-    assert json.loads(rows[0]["category_evidence"])
     assert isinstance(rows[0]["source_persona_json"], str)
     source_persona_json = json.loads(rows[0]["source_persona_json"])
     assert source_persona_json["uuid"] == rows[0]["source_uuid"]
@@ -181,41 +168,6 @@ def test_generate_virtual_user_batch_writes_expected_100_user_parquet(tmp_path, 
     assert "Wrote virtual user batch parquet output" in caplog.text
 
 
-def test_generate_virtual_user_batch_writes_affinity_as_map_not_sparse_struct(tmp_path):
-    records = build_fixture_raw_persona_records(male_count=1, female_count=1)
-    output_path = tmp_path / "users.parquet"
-    request = GenerationRequest(
-        male_count=1,
-        female_count=1,
-        seed=17,
-        use_llm=False,
-        source_mode="fixture",
-        output_path=str(output_path),
-        warehouse_output_path=str(output_path.with_name("warehouse_users.jsonl")),
-        quarantine_output_path=str(output_path.with_name("quarantine.jsonl")),
-    )
-
-    generate_virtual_user_batch(
-        request=request,
-        records=records,
-        generator=RuleBasedVirtualUserGenerator(),
-    )
-
-    table = pq.read_table(output_path)
-    assert table.schema.field("category_affinity").type == pa.map_(
-        pa.string(),
-        pa.float64(),
-    )
-    assert table.schema.field("category_evidence").type == pa.string()
-    assert table.schema.field("source_persona_json").type == pa.string()
-    assert table.schema.field("primary_categories").type == pa.list_(pa.string())
-    assert "youtube_primary_categories" not in table.schema.names
-    rows = table.to_pylist()
-    affinities = [_affinity_map_to_dict(row["category_affinity"]) for row in rows]
-    assert all(affinity for affinity in affinities)
-    assert all(None not in affinity.values() for affinity in affinities)
-
-
 def test_generate_virtual_user_batch_uses_stable_virtual_user_ids(tmp_path):
     records = build_fixture_raw_persona_records(male_count=10, female_count=10)
     request = GenerationRequest(
@@ -225,7 +177,6 @@ def test_generate_virtual_user_batch_uses_stable_virtual_user_ids(tmp_path):
         use_llm=False,
         source_mode="fixture",
         output_path=str(tmp_path / "users.parquet"),
-        warehouse_output_path=str(tmp_path / "warehouse_users.jsonl"),
         quarantine_output_path=str(tmp_path / "quarantine.jsonl"),
     )
 
@@ -243,85 +194,11 @@ def test_generate_virtual_user_batch_uses_stable_virtual_user_ids(tmp_path):
     ]
 
 
-def test_generate_virtual_user_batch_preserves_request_metadata_in_parquet(tmp_path):
-    records = build_fixture_raw_persona_records(male_count=5, female_count=5)
-    output_path = tmp_path / "users.parquet"
-    warehouse_output_path = tmp_path / "warehouse_users.jsonl"
-    quarantine_output_path = tmp_path / "quarantine.jsonl"
-    request = GenerationRequest(
-        age_min=20,
-        age_max=29,
-        male_count=1,
-        female_count=1,
-        seed=99,
-        use_llm=False,
-        source_mode="fixture",
-        output_path=str(output_path),
-        warehouse_output_path=str(warehouse_output_path),
-        quarantine_output_path=str(quarantine_output_path),
-    )
-
-    generate_virtual_user_batch(
-        request=request,
-        records=records,
-        generator=RuleBasedVirtualUserGenerator(),
-    )
-
-    rows = pq.read_table(output_path).to_pylist()
-    assert rows[0]["request_male_count"] == 1
-    assert rows[0]["request_female_count"] == 1
-    assert rows[0]["request_seed"] == 99
-    assert rows[0]["request_use_llm"] is False
-    assert rows[0]["request_max_concurrency"] == 1
-    assert rows[0]["source_dataset"] == "nvidia/Nemotron-Personas-Korea"
-
-
-def test_generate_virtual_user_batch_writes_warehouse_jsonl(tmp_path):
-    records = build_fixture_raw_persona_records(male_count=5, female_count=5)
-    batch_output_path = tmp_path / "virtual_users_batch.parquet"
-    warehouse_output_path = tmp_path / "virtual_users_kr.jsonl"
-    quarantine_output_path = tmp_path / "quarantine.jsonl"
-    request = GenerationRequest(
-        male_count=1,
-        female_count=1,
-        seed=7,
-        use_llm=False,
-        source_mode="fixture",
-        output_path=str(batch_output_path),
-        warehouse_output_path=str(warehouse_output_path),
-        quarantine_output_path=str(quarantine_output_path),
-    )
-
-    generate_virtual_user_batch(
-        request=request,
-        records=records,
-        generator=RuleBasedVirtualUserGenerator(),
-    )
-
-    lines = warehouse_output_path.read_text(encoding="utf-8").splitlines()
-    rows = [json.loads(line) for line in lines]
-
-    assert len(rows) == 2
-    assert rows[0]["user_id"].startswith("vu_")
-    assert rows[0]["source_dataset"] == "nvidia/Nemotron-Personas-Korea"
-    assert rows[0]["country"] == "KR"
-    assert rows[0]["locale"] == "ko-KR"
-    assert isinstance(rows[0]["hobby_keywords"], list)
-    assert isinstance(rows[0]["interest_keywords"], list)
-    assert isinstance(rows[0]["category_affinity"], dict)
-    assert isinstance(rows[0]["category_evidence"], dict)
-    assert isinstance(rows[0]["source_persona_json"], dict)
-    assert rows[0]["source_persona_json"]["uuid"] == rows[0]["source_uuid"]
-    assert "primary_categories" in rows[0]
-    assert "watch_time_band" in rows[0]
-
-
 def test_end_to_end_100_rows_rule_based(tmp_path):
     records = build_fixture_raw_persona_records(male_count=60, female_count=60)
     request = GenerationRequest(
         male_count=50, female_count=50, use_llm=False,
         output_path=str(tmp_path / "vu.parquet"),
-        warehouse_output_path=str(tmp_path / "vu.jsonl"),
         quarantine_output_path=str(tmp_path / "q.jsonl"),
     )
 
@@ -329,6 +206,22 @@ def test_end_to_end_100_rows_rule_based(tmp_path):
 
     assert result.summary == {"valid": 100, "quarantined": 0,
                               "api_error": 0, "invalid_json": 0, "schema_fail": 0}
-    warehouse_lines = (tmp_path / "vu.jsonl").read_text(encoding="utf-8").splitlines()
-    assert len(warehouse_lines) == 100
+    assert (tmp_path / "vu.parquet").exists()
+    rows = pq.read_table(tmp_path / "vu.parquet").to_pylist()
+    assert len(rows) == 100
     assert result.batch.summary == {"total": 100, "male": 50, "female": 50}
+
+
+def test_generate_virtual_user_batch_parallel_is_deterministic_and_ordered(tmp_path):
+    # max_concurrency>1(병렬 호출)이어도 user_id는 원본 순서로 부여되고 조립도 순서대로.
+    records = build_fixture_raw_persona_records(male_count=15, female_count=15)
+    request = GenerationRequest(
+        age_min=20, age_max=29, male_count=10, female_count=10,
+        seed=42, use_llm=False, max_concurrency=4,
+        output_path=str(tmp_path / "u.parquet"),
+        quarantine_output_path=str(tmp_path / "q.jsonl"),
+    )
+    result = generate_virtual_user_batch(request, records, RuleBasedVirtualUserGenerator())
+    ids = [u.virtual_user_id for u in result.batch.users]
+    assert ids == [f"vu_{i:04d}" for i in range(1, len(ids) + 1)]  # 결정론적 순서
+    assert result.summary["valid"] == 20 and result.summary["quarantined"] == 0
