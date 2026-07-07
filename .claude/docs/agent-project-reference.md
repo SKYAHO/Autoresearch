@@ -89,7 +89,8 @@ src/                         # CTR 학습 파이프라인 (Issue #33)
 ## Technical Stack
 
 - **언어:** Python 3.12 (`.python-version`), CI는 3.11/3.12 매트릭스
-- **의존성:** pip + `requirements.txt`(런타임) / `requirements-dev.txt`(개발)
+- **의존성:** uv + `pyproject.toml`/`uv.lock`(단일 출처).
+  `requirements.txt`·`proxy/requirements.txt`는 `uv export` 산출물
 - **주요 라이브러리:** pydantic v2, pyarrow, google-api-python-client,
   google-cloud-storage, gcsfs, google-genai(개발)
 - **데이터 저장:** GCS 데이터 레이크(parquet), BigQuery(프로덕션 예정)

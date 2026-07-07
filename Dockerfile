@@ -2,7 +2,9 @@ FROM quay.io/astronomer/astro-runtime:13.8.0
 
 # Airflow 컨테이너에서 동작하는 수집 로직(pyarrow, google-api-python-client,
 # google-cloud-storage, gcsfs 등)에 필요한 의존성을 이미지에 설치한다.
-# requirements.txt 는 CI app 이미지(Dockerfile.app) 와 공유하는 단일 출처.
+# requirements.txt 는 pyproject.toml + uv.lock 에서 `uv export` 로 생성되는
+# 산출물이며(직접 수정 금지, 헤더의 재생성 명령 참조) CI app 이미지
+# (Dockerfile.app)와 공유한다.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

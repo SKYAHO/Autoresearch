@@ -24,22 +24,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
+          enable-cache: true
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-dev.txt
+        run: uv sync --frozen
 
       - name: Run pytest
-        run: python -m pytest
+        run: uv run --no-sync python -m pytest
+
+  uv-lock-check:
+    name: uv lock & export drift
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Verify uv.lock matches pyproject.toml
+        run: uv lock --check
+
+      - name: Verify exported requirements files match uv.lock
+        # requirements.txt(Astro/CI 이미지)와 proxy/requirements.txt(Cloud Run)는
+        # uv.lock 에서 생성되는 산출물이다. 재생성 후 diff 로 drift 를 검사한다.
+        run: |
+          uv export --frozen --no-dev --no-hashes -o requirements.txt
+          uv export --frozen --only-group proxy --no-hashes -o proxy/requirements.txt
+          git diff --exit-code requirements.txt proxy/requirements.txt
 
   docker-build:
     name: Docker build
