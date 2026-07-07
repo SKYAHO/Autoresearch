@@ -14,11 +14,10 @@ AutoResearch 프로젝트에 기여해 주셔서 감사합니다.
 이슈 생성 → 브랜치 생성 → 작업 → PR 생성 → 리뷰 → Squash Merge
 ```
 
-1. **이슈 생성**: 작업 시작 전 반드시 이슈를 먼저 생성합니다.
+1. **이슈 생성**: 코드가 변경되는 작업은 반드시 이슈를 먼저 발행합니다.
    `Issues > New issue`에서 Issue Form(Feature / Bug / Experiment)을 선택해 작성해 주세요. Form을 선택하면 제목 prefix와 label이 자동으로 적용됩니다. 빈 이슈 생성은 비활성화되어 있습니다.
 
-2. **브랜치 생성**: `main`을 최신화한 뒤 분기하여 작업 브랜치를 만듭니다.
-   브랜치 네이밍 규칙은 아래를 따릅니다.
+2. **브랜치 생성**: 브랜치는 **해당 이슈에서 생성**합니다. 이슈 우측 `Development > Create a branch`를 사용하면 브랜치가 이슈에 자동 연결되고, `main` 기준으로 분기됩니다. 브랜치 네이밍 규칙은 아래를 따릅니다.
 
 3. **작업 및 커밋**: 커밋 컨벤션에 따라 커밋 메시지를 작성합니다.
 
@@ -53,12 +52,13 @@ AutoResearch 프로젝트에 기여해 주셔서 감사합니다.
 
 ## 브랜치 네이밍 규칙
 
-브랜치는 항상 `main` 최신 상태에서 생성합니다.
+브랜치는 **해당 이슈의 `Create a branch`로 생성**합니다 (이슈-브랜치 자동 연결,
+`main` 기준 분기). 생성한 브랜치명을 로컬에서 체크아웃해 작업합니다.
 
 ```bash
-git switch main
-git pull origin main
-git switch -c feat/42-add-feature-store-schema
+# 이슈에서 Create a branch로 브랜치 생성(예: feat/42-add-feature-store-schema) 후
+git fetch origin
+git switch feat/42-add-feature-store-schema
 ```
 
 | 유형 | 패턴 | 예시 |
