@@ -79,7 +79,9 @@ class EventGenerationRequest(BaseModel):
 
     target_ctr: float = 0.02
     candidates_per_user: int = 24
-    exploration_ratio: float = 0.2
+    personalized_ratio: float = 0.7
+    popular_ratio: float = 0.2
+    exploration_ratio: float = 0.1
     history_days: int = 30
     history_end: datetime = Field(
         default_factory=lambda: datetime.now(UTC).replace(microsecond=0)
@@ -93,7 +95,13 @@ class EventGenerationRequest(BaseModel):
     warehouse_output_path: str = "data/generated/event_log.jsonl"
     quarantine_output_path: str = "data/generated/event_log_quarantine.jsonl"
 
-    @field_validator("target_ctr", "exploration_ratio", "max_quarantine_ratio")
+    @field_validator(
+        "target_ctr",
+        "personalized_ratio",
+        "popular_ratio",
+        "exploration_ratio",
+        "max_quarantine_ratio",
+    )
     @classmethod
     def ratio_0_1(cls, value: float) -> float:
         """비율 파라미터는 0~1 범위여야 한다."""
