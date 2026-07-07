@@ -5,8 +5,11 @@ import types
 import pytest
 
 from autoresearch.virtual_users.glm_generator import (
+    DEFAULT_OPENROUTER_BASE_URL,
+    DEFAULT_OPENROUTER_MODEL,
     GLM_SYSTEM_HARNESS,
     GLMVirtualUserGenerator,
+    OpenRouterVirtualUserGenerator,
     RuleBasedVirtualUserGenerator,
     assemble_virtual_user,
     build_source_hash,
@@ -41,14 +44,8 @@ def _full_content():
         "travel_keywords": [],
         "career_keywords": [],
         "family_context_keywords": [],
-        "category_evidence": {"Music": ["LP"]},
-        "category_affinity": {"Music": 0.8},
         "youtube_profile": {
             "primary_categories": ["Music"],
-            "shorts_affinity": 0.6,
-            "longform_affinity": 0.5,
-            "trend_sensitivity": 0.4,
-            "comment_propensity": 0.2,
             "watch_time_band": "night",
         },
     }
@@ -88,7 +85,7 @@ def test_assemble_virtual_user_raises_on_schema_violation():
     from pydantic import ValidationError
 
     bad = _full_content()
-    bad["youtube_profile"]["shorts_affinity"] = 5.0  # out of range
+    bad["youtube_profile"]["watch_time_band"] = "invalid_band"  # not in Literal
     with pytest.raises(ValidationError):
         assemble_virtual_user(
             _raw_row(), json.dumps(bad), "vu_0001", "glm-5.2"
@@ -98,14 +95,13 @@ def test_assemble_virtual_user_raises_on_schema_violation():
 def test_rule_based_generator_returns_assemblable_full_content():
     gen = RuleBasedVirtualUserGenerator()
     raw = {"uuid": "p-9", "age": 24, "sex": "여자", "persona": "게임을 좋아함",
-           "hobbies_and_interests": "게임, 음악"}
+           "occupation": "게임 스트리머", "hobbies_and_interests": "게임, 음악"}
 
     raw_text = gen.generate(raw, "vu_0001")
     user = assemble_virtual_user(raw, raw_text, "vu_0001", gen.model_name)
 
     assert user.sex == "female"
     assert user.youtube_profile.primary_categories
-    assert user.category_affinity
     assert "sex_normalized" not in user.source_persona_json
 
 
@@ -124,6 +120,60 @@ def test_glm_generator_uses_zai_base_url_env(monkeypatch):
 
     assert generator.api_key == "test-api-key"
     assert generator.base_url == "https://example.test/v4"
+
+
+def test_openrouter_generator_requires_api_key(monkeypatch):
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        OpenRouterVirtualUserGenerator()
+
+
+def test_openrouter_generator_defaults_to_nemo_and_openrouter_url(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-api-key")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    generator = OpenRouterVirtualUserGenerator()
+
+    assert generator.api_key == "test-api-key"
+    assert generator.model_name == DEFAULT_OPENROUTER_MODEL == "mistralai/mistral-nemo"
+    assert generator.base_url == DEFAULT_OPENROUTER_BASE_URL
+
+
+def test_openrouter_generator_calls_openai_compatible_client(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured["completion_kwargs"] = kwargs
+            return types.SimpleNamespace(
+                choices=[
+                    types.SimpleNamespace(
+                        message=types.SimpleNamespace(content="{\"ok\": true}")
+                    )
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            captured["client_kwargs"] = kwargs
+            self.chat = types.SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setitem(sys.modules, "openai", types.SimpleNamespace(OpenAI=FakeOpenAI))
+    raw = build_fixture_raw_persona_records(male_count=1, female_count=0)[0]
+    generator = OpenRouterVirtualUserGenerator(api_key="test-api-key", model_name="mistralai/mistral-nemo")
+
+    result = generator.generate(raw, virtual_user_id="vu_0001")
+
+    assert result == "{\"ok\": true}"
+    assert captured["client_kwargs"] == {
+        "api_key": "test-api-key",
+        "base_url": DEFAULT_OPENROUTER_BASE_URL,
+    }
+    completion_kwargs = captured["completion_kwargs"]
+    assert completion_kwargs["model"] == "mistralai/mistral-nemo"
+    assert completion_kwargs["response_format"] == {"type": "json_object"}
+    assert completion_kwargs["messages"][0]["content"] == GLM_SYSTEM_HARNESS
 
 
 def test_glm_generator_calls_openai_compatible_client(monkeypatch):
