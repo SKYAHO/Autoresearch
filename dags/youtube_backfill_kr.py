@@ -18,13 +18,8 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
-
-# 레포 루트를 import 경로에 추가(dags/ 안에서 autoresearch.* 사용).
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from airflow.decorators import dag, task
 from airflow.models import Variable

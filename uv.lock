@@ -187,7 +187,7 @@ version = "4.14.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3b/72/5562aabb8dd7181e8e860622a38bea08d17842b99ecd4c91f84ac95251b0/anyio-4.14.1.tar.gz", hash = "sha256:8d648a3544c1a700e3ff78615cd679e4c5c3f149904287e73687b2596963629e", size = 254831, upload-time = "2026-06-24T20:56:06.017Z" }
 wheels = [
@@ -256,7 +256,7 @@ wheels = [
 [[package]]
 name = "autoresearch"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "gcsfs" },
     { name = "google-api-python-client" },
@@ -538,7 +538,7 @@ name = "click"
 version = "8.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/76/d4/81420972a676e8ffea40450d8c8c92943e7218a78fe9b64359836cc9876b/click-8.4.2.tar.gz", hash = "sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6", size = 338000, upload-time = "2026-06-24T17:45:15.148Z" }
 wheels = [
@@ -729,11 +729,11 @@ resolution-markers = [
     "python_full_version < '3.13' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
 ]
 dependencies = [
-    { name = "annotated-doc", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "pydantic", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "starlette", version = "0.52.1", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "typing-extensions", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "typing-inspection", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "annotated-doc" },
+    { name = "pydantic" },
+    { name = "starlette", version = "0.52.1", source = { registry = "https://pypi.org/simple" } },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/01/72/0df5c58c954742f31a7054e2dd1143bae0b408b7f36b59b85f928f9b456c/fastapi-0.128.8.tar.gz", hash = "sha256:3171f9f328c4a218f0a8d2ba8310ac3a55d1ee12c28c949650288aee25966007", size = 375523, upload-time = "2026-02-11T15:19:36.69Z" }
 wheels = [
@@ -1444,8 +1444,8 @@ name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "certifi", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "h11", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "certifi" },
+    { name = "h11" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/06/94/82699a10bca87a5556c9c59b5963f2d039dbd239f25bc2a63907a05a14cb/httpcore-1.0.9.tar.gz", hash = "sha256:6e34463af53fd2ab5d807f399a9b45ea31c3dfa2276f15a2c3f00afff6e176e8", size = 85484, upload-time = "2025-04-24T22:06:22.219Z" }
 wheels = [
@@ -1512,10 +1512,10 @@ name = "httpx"
 version = "0.28.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "certifi", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "httpcore", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "idna", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "anyio" },
+    { name = "certifi" },
+    { name = "httpcore" },
+    { name = "idna" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b1/df/48c586a5fe32a0f01324ee087459e112ebb7224f646c0b5023f5e79e9956/httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc", size = 141406, upload-time = "2024-12-06T15:37:23.222Z" }
 wheels = [
@@ -3259,8 +3259,8 @@ resolution-markers = [
     "python_full_version < '3.13' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
 ]
 dependencies = [
-    { name = "anyio", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "typing-extensions", marker = "(python_full_version < '3.13' and extra == 'group-12-autoresearch-dev') or (python_full_version < '3.13' and extra != 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "anyio" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c4/68/79977123bb7be889ad680d79a40f339082c1978b5cfcf62c2d8d196873ac/starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933", size = 2653702, upload-time = "2026-01-18T13:34:11.062Z" }
 wheels = [
@@ -3410,11 +3410,11 @@ wheels = [
 
 [package.optional-dependencies]
 standard = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "colorama", marker = "sys_platform == 'win32'" },
     { name = "httptools" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
-    { name = "uvloop", marker = "(platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32') or (platform_python_implementation == 'PyPy' and extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (platform_python_implementation == 'PyPy' and extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (sys_platform == 'cygwin' and extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (sys_platform == 'cygwin' and extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (sys_platform == 'win32' and extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'" },
     { name = "watchfiles" },
     { name = "websockets" },
 ]

@@ -16,28 +16,33 @@
 현재 저장소의 실제 구조입니다:
 
 ```
-autoresearch/                # 런타임 패키지
-├── youtube_collection/      # YouTube 트렌딩 수집 파이프라인
+pyproject.toml               # 의존성 단일 출처 (uv), uv.lock 과 세트
+src/autoresearch/            # 런타임 패키지 (src 레이아웃, uv sync 가 editable 설치)
+├── youtube_collection/      # YouTube 트렌딩 수집 파이프라인 — Airflow 도메인
 │   ├── fetch.py             # YouTube Data API 호출
 │   ├── transform.py         # 원본 → 정제 데이터 변환
 │   ├── load.py              # GCS 데이터 레이크 적재
 │   ├── backfill.py          # 과거 데이터 백필
 │   ├── schema.py            # pydantic 데이터 계약
 │   └── client.py            # 복원력 레이어(재시도/Key롤링/IP밴시그니처/프록시)
-├── proxy/                   # Cloud Run dumb forwarder (IP밴 egress seam)
-├── virtual_users/           # Gemini 기반 가상 유저(페르소나) 생성
+├── action_logs/             # 가상 유저 행동 로그 생성 — Airflow 도메인
+├── virtual_users/           # 가상 유저(페르소나) 생성
 │   ├── persona_source.py    # 페르소나 원천 데이터 로드
-│   ├── interests.py         # 관심사 매핑
-│   ├── gemini_generator.py  # Gemini API 호출
+│   ├── categories.py        # YouTube 카테고리 매핑
+│   ├── glm_generator.py     # LLM API 호출
 │   ├── pipeline.py          # 생성 파이프라인 오케스트레이션
 │   └── schema.py            # pydantic 데이터 계약
 └── math_utils.py            # 공용 계산 유틸리티
 
+proxy/                       # Cloud Run dumb forwarder (IP밴 egress seam), 독립 배포물
 dags/                        # Airflow DAG (Astro Runtime 13.8.0)
 ├── youtube_trending_kr_daily.py
-└── youtube_backfill_kr.py
+├── youtube_backfill_kr.py
+└── youtube_action_log_daily.py
 
-tests/                       # 모듈별 test_<module>.py 플랫 구조
+tests/                       # 도메인별 디렉토리로 패키지 구조 미러링
+├── youtube_collection/  ├── action_logs/  ├── virtual_users/
+├── proxy/               └── dags/
 examples/ctr_pipeline_scaffold/  # CTR 파이프라인 예제 스캐폴드
 feature_repo/                # Feast Entity·FeatureView 정의 (더미 스키마), feature_store.yaml
 scripts/                     # 더미 데이터 적재·Feast 조회 검증 스크립트
@@ -45,46 +50,41 @@ docs/                        # 스펙·플랜 문서
 .github/                     # CI, Claude 리뷰, 이슈 폼, PR 템플릿
 ```
 
-진행 중(별도 브랜치, main 미반영):
-
-```
-src/                         # CTR 학습 파이프라인 (Issue #33)
-├── models/                  # LightGBM 모델 클래스
-├── features/                # 피처 엔지니어링, Feast 정의
-├── pipeline/                # train/evaluate/config.yaml
-└── utils/                   # 모델 저장/로드 유틸리티
-```
+진행 중(별도 브랜치, main 미반영): CTR 학습 파이프라인 (Issue #33) —
+models/features/pipeline 코드는 `src/autoresearch/` 하위 서브패키지로
+흡수 예정입니다.
 
 ## Team Ownership & Domains
 
 | 도메인 | 팀원 | 책임 | 주요 경로 |
 |---|---|---|---|
-| **Model Training** | waieiches, hyochangsung | 모델 구조, 학습 파이프라인, 평가 지표 | `src/models/`, `src/pipeline/` (진행 중), `examples/ctr_pipeline_scaffold/` |
-| **Feast Features** | waieiches, hyochangsung | 피처 정의(ODFV), 피처 엔지니어링, 피처 스토어 연동 | `feature_repo/`, `src/features/` (진행 중) |
-| **Airflow Orchestration** | bbungjun | DAG 정의, 스케줄링, 데이터 파이프라인 오케스트레이션 | `dags/`, `autoresearch/youtube_collection/` |
+| **Model Training** | waieiches, hyochangsung | 모델 구조, 학습 파이프라인, 평가 지표 | `src/autoresearch/models/`·`pipeline/` (진행 중), `examples/ctr_pipeline_scaffold/` |
+| **Feast Features** | waieiches, hyochangsung | 피처 정의(ODFV), 피처 엔지니어링, 피처 스토어 연동 | `feature_repo/`, `src/autoresearch/features/` (진행 중) |
+| **Airflow Orchestration** | bbungjun | DAG 정의, 스케줄링, 데이터 파이프라인 오케스트레이션 | `dags/`, `src/autoresearch/youtube_collection/`, `src/autoresearch/action_logs/` |
 | **GCP Infrastructure** | hyeongyu-data | 클라우드 배포, 인프라, 시크릿 관리 | `.github/workflows/`, GCS/BigQuery 설정 |
 
 ## Ownership Boundaries
 
-### `autoresearch/youtube_collection/`
+### `src/autoresearch/youtube_collection/`
 - **책임:** YouTube API 수집, 변환, GCS 적재, 백필
 - **패턴:** fetch → transform → load 단계를 파일로 분리합니다. 데이터
   계약은 `schema.py`의 pydantic 모델로 정의합니다.
 
-### `autoresearch/virtual_users/`
-- **책임:** 페르소나 원천 데이터 로드, Gemini 기반 가상 유저 생성
-- **패턴:** 외부 API 호출(`gemini_generator.py`)과 오케스트레이션
+### `src/autoresearch/virtual_users/`
+- **책임:** 페르소나 원천 데이터 로드, LLM 기반 가상 유저 생성
+- **패턴:** 외부 API 호출(`glm_generator.py`)과 오케스트레이션
   (`pipeline.py`)을 분리합니다.
 
 ### `dags/`
 - **책임:** Airflow DAG 정의만 담습니다. 비즈니스 로직은
-  `autoresearch/` 모듈에 두고 DAG은 호출만 합니다.
-- **주의:** DAG은 sys.path 조작으로 `autoresearch`를 import 합니다.
-  컨테이너 배치(`Dockerfile`) 변경 시 함께 확인해야 합니다.
+  `src/autoresearch/` 모듈에 두고 DAG은 호출만 합니다.
+- DAG은 정식 설치된 `autoresearch` 패키지를 import 합니다 (로컬은 uv
+  editable 설치, 컨테이너는 `Dockerfile`의 `pip install --no-deps .`).
 
 ### `tests/`
-- **책임:** 모듈별 단위 테스트. `tests/test_<module>.py` 형식을
-  따릅니다. 새 모듈에는 대응하는 테스트 파일을 만듭니다.
+- **책임:** 단위 테스트. 패키지 구조를 미러링한 도메인 디렉토리
+  (`tests/<도메인>/test_<module>.py`)를 따릅니다. 새 모듈에는 대응하는
+  테스트 파일을 만듭니다.
 
 ## Technical Stack
 
@@ -109,7 +109,8 @@ src/                         # CTR 학습 파이프라인 (Issue #33)
    피합니다.
 3. **데이터 계약 갱신:** 스키마가 바뀌면 해당 모듈의 `schema.py`
    pydantic 모델과 테스트를 함께 수정합니다.
-4. **테스트 작성:** `tests/test_<module>.py`에 단위 테스트를 추가합니다.
+4. **테스트 작성:** `tests/<도메인>/test_<module>.py`에 단위 테스트를
+   추가합니다.
 5. **설계 결정 기록:** 아키텍처에 영향이 있으면 `docs/specs/`에 spec을
    남기거나 관련 `.claude/docs/` 가이드를 갱신합니다.
 

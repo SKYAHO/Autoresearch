@@ -29,14 +29,8 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from datetime import UTC, datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
-
-# DAG 파일은 dags/ 아래에 있지만 autoresearch 패키지는 레포 루트에 있다.
-# 레포 루트를 import 경로에 추가해서 autoresearch.* 를 불러올 수 있게 한다.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from airflow.decorators import dag, task
 from airflow.exceptions import AirflowFailException

@@ -42,16 +42,20 @@
 ## Project Context
 
 - Autoresearch: YouTube 트렌딩 데이터 기반 CTR 모델링 프로젝트
-- 런타임 패키지는 `autoresearch/`:
-  - `autoresearch/youtube_collection/` — YouTube 트렌딩 수집
+- 런타임 패키지는 `src/autoresearch/` (src 레이아웃, `uv sync`가 editable
+  설치):
+  - `src/autoresearch/youtube_collection/` — YouTube 트렌딩 수집
     (fetch/transform/load/backfill/schema + client.py 복원력 레이어),
     GCS 데이터 레이크 적재
-  - `proxy/` — Cloud Run dumb forwarder (YouTube API IP밴 대응 egress seam)
-  - `autoresearch/virtual_users/` — Gemini 기반 가상 유저(페르소나) 생성
+  - `src/autoresearch/action_logs/` — 가상 유저 행동 로그 생성
+  - `src/autoresearch/virtual_users/` — Gemini 기반 가상 유저(페르소나) 생성
     파이프라인
+  - `proxy/` — Cloud Run dumb forwarder (YouTube API IP밴 대응 egress seam)
 - Airflow DAG은 `dags/` (Astro Runtime 13.8.0): `youtube_trending_kr_daily`,
   `youtube_backfill_kr`
-- 테스트는 `tests/` (모듈별 `test_<module>.py` 플랫 구조)
+- 테스트는 `tests/` 아래 도메인별 디렉토리
+  (`youtube_collection/`·`action_logs/`·`virtual_users/`·`proxy/`·`dags/`)에
+  패키지 모듈을 미러링해 배치 (`pytest tests/<도메인>` 부분 실행 가능)
 - CTR 파이프라인 예제 스캐폴드는 `examples/ctr_pipeline_scaffold/`
 - 의존성은 uv 기반: 단일 출처는 `pyproject.toml` + `uv.lock`입니다.
   `requirements.txt`(Astro `Dockerfile`·CI `Dockerfile.app` 공유)는
@@ -96,9 +100,9 @@ uv run python -m pytest
 - Airflow DAG 로컬 실행은 Astro CLI를 사용합니다 (`astro dev start`).
 - 필수 환경 변수는 `.env.example` 참조: `YOUTUBE_API_KEY`,
   `YOUTUBE_LAKE_BUCKET`, `YOUTUBE_BACKFILL_SOURCE`.
-- 주의: `dags/*.py`는 sys.path 조작으로 `autoresearch` 패키지를 import 합니다.
-  컨테이너 내 패키지 배치(`Dockerfile`)와 결합되어 있으므로 구조 변경 시 함께
-  확인해야 합니다.
+- `dags/*.py`는 정식 설치된 `autoresearch` 패키지를 import 합니다 (로컬은
+  `uv sync`의 editable 설치, 컨테이너는 `Dockerfile`의
+  `pip install --no-deps .`).
 
 ## Spec / Plan First
 

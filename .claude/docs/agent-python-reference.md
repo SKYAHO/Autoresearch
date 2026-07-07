@@ -49,7 +49,8 @@ Python 코드를 작성하거나 수정할 때 사용하는 문서입니다.
 
 ## Tests
 
-- 테스트는 `tests/test_<module>.py`에 배치합니다.
+- 테스트는 패키지 구조를 미러링한 `tests/<도메인>/test_<module>.py`에
+  배치합니다.
 - 변경된 동작에 집중된 테스트를 우선합니다.
 - 외부 API(YouTube, GCS, Gemini)는 mock으로 격리합니다. 실제
   네트워크 호출을 테스트에 넣지 않습니다.

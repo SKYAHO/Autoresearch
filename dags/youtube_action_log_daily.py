@@ -23,12 +23,8 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
 from datetime import UTC, date, datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from airflow.decorators import dag, task
 from airflow.models import Variable

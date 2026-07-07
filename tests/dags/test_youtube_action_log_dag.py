@@ -32,7 +32,7 @@ def _load_action_log_dag(monkeypatch, variable_values: dict[str, str]):
     monkeypatch.setitem(sys.modules, "airflow.decorators", decorators)
     monkeypatch.setitem(sys.modules, "airflow.models", models)
 
-    path = Path(__file__).resolve().parents[1] / "dags" / "youtube_action_log_daily.py"
+    path = Path(__file__).resolve().parents[2] / "dags" / "youtube_action_log_daily.py"
     spec = importlib.util.spec_from_file_location("_test_youtube_action_log_daily", path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None

@@ -120,10 +120,10 @@ window_size: 604800  # 계산 범위: 7일
   (`YOUTUBE_LAKE_BUCKET`, `YOUTUBE_BACKFILL_SOURCE`)
 
 **설계 제약:**
-- DAG은 `autoresearch/` 모듈을 호출만 하고, 피처·모델 로직을
+- DAG은 `src/autoresearch/` 모듈을 호출만 하고, 피처·모델 로직을
   중복 구현하지 않습니다.
-- DAG은 sys.path 조작으로 `autoresearch`를 import 합니다. 패키지
-  배치(`Dockerfile`) 변경 시 함께 확인합니다.
+- DAG은 정식 설치된 `autoresearch` 패키지를 import 합니다 (로컬은 uv
+  editable 설치, 컨테이너는 `Dockerfile`의 `pip install --no-deps .`).
 - 학습·평가 스크립트는 추후 DAG operator로 감싸 호출합니다(계획).
 
 ## Domain 4: GCP Infrastructure (hyeongyu-data)

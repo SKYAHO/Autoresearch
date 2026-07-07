@@ -22,7 +22,7 @@
 - **schema:** pydantic 모델로 모듈 간 데이터 계약을 정의합니다.
 - **pipeline:** 단계들을 엮는 오케스트레이션만 담당합니다.
 - **dags/:** Airflow DAG 정의만 담습니다. 비즈니스 로직은
-  `autoresearch/` 모듈에 둡니다.
+  `src/autoresearch/` 모듈에 둡니다.
 
 ## Imports
 

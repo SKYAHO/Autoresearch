@@ -6,8 +6,9 @@
 [project]
 name = "autoresearch"
 version = "0.1.0"
+# readme 필드는 넣지 않는다: .dockerignore 가 *.md 를 제외하므로 이미지 빌드
+# 컨텍스트에 README 가 없고, 내부 패키지라 배포 메타데이터가 불필요하다.
 description = "YouTube 트렌딩 데이터 기반 CTR 모델링 프로젝트"
-readme = "README.md"
 requires-python = ">=3.11"
 # YouTube 트렌딩 수집(Airflow/Astro) 런타임 의존성.
 dependencies = [
@@ -51,10 +52,11 @@ proxy = [
     "httpx>=0.28,<0.29",
 ]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [tool.uv]
-# Phase 1(이슈 #80): 의존성 관리만 uv 로 전환하고 패키지 배치 방식(sys.path)은
-# 유지한다. Phase 2 에서 src 레이아웃 전환 시 package 빌드로 변경 예정.
-package = false
 default-groups = ["dev"]
 # feast==0.64.0(starlette>=1.0.1)과 dev/proxy 의 fastapi<0.129(starlette<1.0)는
 # 공존 불가 — 기존에 requirements-feast.txt 가 별도 venv 였던 이유.

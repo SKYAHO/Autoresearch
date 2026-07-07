@@ -9,9 +9,10 @@ FROM quay.io/astronomer/astro-runtime:13.8.0
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# autoresearch 패키지를 /usr/local/airflow/autoresearch 에 배치한다.
-# astro-runtime 의 WORKDIR/AIRFLOW_HOME 은 /usr/local/airflow 이고,
-# astro dev 는 ./dags -> /usr/local/airflow/dags 로 마운트하므로
-# dags/*.py 의 sys.path hack(parents[1] == /usr/local/airflow) 로
-# autoresearch.* import 가 해결된다.
-COPY autoresearch ./autoresearch
+# autoresearch 패키지(src 레이아웃)를 site-packages 에 정식 설치한다.
+# --no-deps: 의존성은 위 requirements.txt 미러로 이미 설치되어 있다 — Astro
+# 베이스 제약 존중 계약 유지. dags/*.py 는 sys.path 조작 없이 설치된 패키지를
+# 그대로 import 한다.
+COPY pyproject.toml ./
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps .
