@@ -91,6 +91,14 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 
 `historical_category_affinity(가장 많이 클릭한 카테고리)`는 사용자의 과거 클릭 이력(Raw Action Log)을 기반으로 생성되므로, 아직 클릭 이력이 없는 신규 사용자(또는 label timestamp 이전 클릭 이력이 없는 경우)는 이 값이 존재하지 않는다. 이 경우 `"unknown"`으로 채운다. Interaction Feature의 `historical_category_match`는 `historical_category_affinity`가 `"unknown"`이면 무조건 `0`으로 강제한다 (비교 불가 상태와 실제 불일치 상태를 혼동하지 않기 위함).
 
+#### historical_category_affinity 집계 요구사항
+`historical_category_affinity`는 point-in-time correctness(label timestamp 이전 이벤트만 사용)만 만족하면 되며, 특정 집계 윈도우(누적 전체 기간 vs N일 슬라이딩 윈도우)를 본 문서에서 강제하지 않는다. 다만 다음 두 가지 요구사항을 만족해야 한다.
+
+- 안정성 하한: 너무 짧은 윈도우(예: 1~2일)로 집계할 경우 값이 자주 뒤집혀 historical_category_match가 노이즈성 신호가 될 수 있으므로, 최소 7일 이상의 관측 기간을 반영해야 한다.
+- recent_click_count_7d와의 독립성: historical_category_affinity가 recent_click_count_7d와 동일한 윈도우·동일한 원본 집계에서 파생될 경우 두 피처가 사실상 같은 정보를 중복 인코딩하게 되므로, 가능하면 서로 다른 관측 기간(예: recent_click_count_7d는 7일, historical_category_affinity는 그보다 긴 누적 또는 30일 이상)을 사용해 신호의 독립성을 확보한다.
+
+
+
 > ⚠️ UserDynamicFeature 생성 SQL이나 Raw Action Log aggregation 세부사항은 본 문서에서 정의하지 않는다.
 
 ### 📊 Intermediate Artifacts
