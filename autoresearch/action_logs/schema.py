@@ -86,6 +86,8 @@ class EventGenerationRequest(BaseModel):
     )
     max_events_per_user_per_day: int = 8
     seed: int = 42
+    max_concurrency: int = 1
+    chunk_size: int = 0
     max_quarantine_ratio: float = 0.5
     output_path: str = "asset/action_log/event_log.parquet"
     warehouse_output_path: str = "data/generated/event_log.jsonl"
@@ -100,13 +102,22 @@ class EventGenerationRequest(BaseModel):
             raise ValueError("ratio must be between 0 and 1")
         return value
 
-    @field_validator("candidates_per_user", "max_events_per_user_per_day", "history_days")
+    @field_validator("candidates_per_user", "max_events_per_user_per_day", "history_days", "max_concurrency")
     @classmethod
     def positive(cls, value: int) -> int:
-        """후보 수/일 상한/기간은 1 이상이어야 한다."""
+        """후보 수/일 상한/기간/동시성은 1 이상이어야 한다."""
 
         if value < 1:
             raise ValueError("must be at least 1")
+        return value
+
+    @field_validator("chunk_size")
+    @classmethod
+    def non_negative_chunk(cls, value: int) -> int:
+        """chunk_size는 0(청킹 없음) 또는 양수여야 한다."""
+
+        if value < 0:
+            raise ValueError("chunk_size must be >= 0")
         return value
 
 
