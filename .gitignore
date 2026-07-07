@@ -17,7 +17,8 @@ keys/
 
 # Environment files
 .env
-.env.local
+.env.*
+!.env.example
 
 # OS
 .DS_Store
@@ -25,7 +26,6 @@ Thumbs.db
 
 # Astro / Airflow local state
 .astro/
-
 .gcp-creds.json
 
 # Generated data artifacts

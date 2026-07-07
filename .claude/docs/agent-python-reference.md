@@ -31,8 +31,8 @@ Python 코드를 작성하거나 수정할 때 사용하는 문서입니다.
 
 ## Configuration
 
-- 설정은 환경 변수로 주입합니다 (`YOUTUBE_API_KEY`,
-  `YOUTUBE_LAKE_BUCKET`, `YOUTUBE_BACKFILL_SOURCE` 등).
+- 설정은 환경 변수로 주입합니다 (`YOUTUBE_API_KEYS` (복수, 쉼표 구분),
+  `YOUTUBE_PROXY_URL`, `YOUTUBE_LAKE_BUCKET`, `YOUTUBE_BACKFILL_SOURCE` 등).
 - 기본값은 로컬 개발에 안전한 값으로 둡니다.
 - 새 환경 변수를 추가하면 `.env.example`과 필요 시
   `airflow_settings.yaml`을 갱신합니다.
