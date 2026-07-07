@@ -11,8 +11,14 @@ __pycache__/
 
 # Generated data artifacts
 data/generated/
+asset/
 /tmp/
 
-# Large raw datasets (Kaggle backfill 원본/샘플 등)
+# Large raw datasets (Kaggle backfill 원본/샘플, persona 원본 등)
 *.zip
 data/raw/youtube/
+data/raw/personas/
+Nemotron-Personas-Korea/
+
+# Codex 세션 스크래치(임베디드 repo 포함)
+.codex-tmp/

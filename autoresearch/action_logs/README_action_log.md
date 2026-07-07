@@ -50,9 +50,9 @@ LLM은 (유저 × 후보영상)마다 `click_propensity`/`watch_fraction`/`would
 ## 3. 데이터 흐름
 
 ```
-virtual_users(list[dict]) ─┐
-   ↑ warehouse jsonl        ├─►  generate_action_log_batch(request, users, videos, generator)   [pipeline.py]
-KR TrendingVideo(parquet) ─┘         (video_source.load_video_records 로 videos 로드)
+virtual_users(parquet) ───┐
+                          ├─►  generate_action_log_batch(request, users, videos, generator)   [pipeline.py]
+KR TrendingVideo(parquet) ┘         (video_source.load_video_records 로 videos 로드)
         │
         ▼   ── 유저 단위 격리 루프 ──  _generate_drafts_isolated
         │     ├ candidate.build_candidates(user, videos)      # 유저당 24후보 (관련+exploration), seed 고정
@@ -198,16 +198,16 @@ result = generate_action_log_batch(EventGenerationRequest(...paths...), users, v
 ### 7.4 입력 포맷 (중요 — 두 입력의 소비 형태가 다르다)
 `generate_action_log_batch`는 `virtual_users: list[dict]`, `videos: list[dict]`를 **받기만** 하고 로드는 호출자 몫이다. 각 입력의 소비-준비 포맷이 다르다:
 
-| 입력 | 정본 저장 | action_logs 소비 포맷 | 로더 |
-|---|---|---|---|
-| **videos** | KR TrendingVideo parquet(`data/raw/youtube/*.parquet`) | 동일(parquet) | `video_source.load_video_records(path)` |
-| **virtual_users** | parquet(`asset/virtual_user/*.parquet`, `VIRTUAL_USERS_PARQUET_SCHEMA`) | **warehouse jsonl**(`data/generated/*.jsonl`) | `[json.loads(l) for l in open(path)]` |
+| 입력 | 정본 저장 | 로더 |
+|---|---|---|
+| **videos** | KR TrendingVideo parquet(`data/raw/youtube/*.parquet`) | `video_source.load_video_records(path)` |
+| **virtual_users** | parquet(`asset/virtual_user/*.parquet`, `VIRTUAL_USERS_PARQUET_SCHEMA`) | `pq.read_table(path).to_pylist()` |
 
-> ⚠️ **virtual_users는 parquet을 그대로 넣으면 안 된다.** virtual_users 정본 parquet은
-> (a) 키가 `virtual_user_id`인데 action_logs는 **`user_id`**를 기대하고(그대로면 `user_{i}`로 폴백돼 원래 id 유실),
-> (b) `category_affinity`가 **map 타입**이라 `to_pylist()` 시 `[(cat, w), …]` 튜플 리스트가 되는데 candidate/llm_generator는 **dict**를 기대한다(튜플 리스트면 affinity 신호 무시).
-> 그래서 `user_id` + dict형 affinity로 평탄화된 **warehouse jsonl**을 입력으로 쓴다.
-> parquet에서 직접 읽으려면 `virtual_user_id→user_id`, `category_affinity(map)→dict` 어댑터가 필요하다(현재 미구현 — 아래 9절 follow-up).
+> virtual_users parquet은 **`user_id` 컬럼**을 쓰고(action_logs가 기대하는 키와 동일), affinity성
+> 필드(`category_affinity`/`category_evidence`/`shorts_affinity`/`longform_affinity`)를 담지 않는다
+> (그런 점수는 feature engineering 단계 소관). 그래서 `pq.read_table(path).to_pylist()` 결과를
+> 별도 어댑터 없이 그대로 `generate_action_log_batch`의 `virtual_users` 인자로 넣을 수 있다.
+> candidate 관련도는 `primary_categories`/`interest_keywords` 등으로 계산한다.
 
 ### 7.3 환경
 - Python 3.12 venv에서 실행/테스트. 시스템 python3(3.10)은 프로젝트 실행 불가.
@@ -229,5 +229,5 @@ result = generate_action_log_batch(EventGenerationRequest(...paths...), users, v
 
 - **CTR training dataset 빌더** — `impression LEFT JOIN click`로 `clicked` 라벨 파생, view/like/click 집계로 dynamic feature 생성. (다음 레이어)
 - **Phase 2**(`online_simulated`) — 추천 서버 연동, `rank`/`exposure_type` 실제값, `session_id`/`request_id`/`query`/`search` 이벤트.
-- **virtual_users parquet 어댑터** — 정본 parquet(`virtual_user_id`, `category_affinity` map)을 action_logs 입력(`user_id`, dict)으로 변환하는 로더. 현재는 warehouse jsonl을 입력으로 쓴다(7.4 참고).
+- **action_logs 내 category_affinity 잔여 참조 정리** — candidate/llm_generator가 `category_affinity`를 읽는 코드가 남아 있으나 virtual_user가 더는 제공하지 않아 항상 빈 값이다(무해). 죽은 경로 제거는 후속 정리 대상.
 - **스케일** — 100k 규모 병렬/Batch 생성.
