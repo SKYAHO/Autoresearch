@@ -5,9 +5,9 @@ TEMP_FEAST_BOOTSTRAP:
 
 Feast Entity & FeatureView 정의 (현재 더미 데이터 사용, 추후 데이터에 맞게 가공 필요)
 
-Entity:
-  - user_id: 사용자 식별자
-  - video_id: 비디오 식별자
+Entity (이름은 개념, join_keys는 컬럼 — 공식 quickstart 컨벤션):
+  - user (join_key: user_id): 사용자
+  - video (join_key: video_id): 비디오
 
 FeatureView:
   - user_features: 사용자 단위 Feature (시청 수, 평균 시청 시간 등)
@@ -33,16 +33,16 @@ BQ_DATASET = os.getenv("BQ_DATASET", "feast_offline_store")
 # ============================================================================
 
 user_entity = Entity(
-    name="user_id",
+    name="user",
     join_keys=["user_id"],
-    description="사용자 식별자",
+    description="사용자",
     tags={"domain": "user"},
 )
 
 video_entity = Entity(
-    name="video_id",
+    name="video",
     join_keys=["video_id"],
-    description="비디오 식별자",
+    description="비디오",
     tags={"domain": "video"},
 )
 

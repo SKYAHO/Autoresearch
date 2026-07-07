@@ -1,7 +1,9 @@
 # Feast Feature Store 설정
 # ============================================================================
 # 이 파일은 프로젝트 기본 설정을 담고 있습니다.
-# 개인 GCP 계정으로 테스트 시 project 필드를 본인 프로젝트 ID로 변경하세요.
+# 개인 GCP 계정으로 테스트 시 offline_store.project_id를 본인 GCP 프로젝트
+# ID로 변경하세요. (아래 project는 Feast 프로젝트 이름이므로 변경 금지 —
+# 바꾸면 registry가 분리됩니다.)
 # Redis 연결 정보는 Memorystore 인스턴스 생성 후 이 파일에서 직접 수정하세요.
 # ============================================================================
 
@@ -27,6 +29,6 @@ online_store:
   type: redis
   connection_string: "localhost:6379"
 
-entity_key_serialization_version: 2
+entity_key_serialization_version: 3
 
 # Feature 정의 파일 (이 디렉토리 내의 모든 *.py 파일에서 Entity, FeatureView 로드)

@@ -37,8 +37,8 @@ dags/                        # Airflow DAG (Astro Runtime 13.8.0)
 
 tests/                       # 모듈별 test_<module>.py 플랫 구조
 examples/ctr_pipeline_scaffold/  # CTR 파이프라인 예제 스캐폴드
-feature_store/               # Feast 작업 중 (소스 미커밋)
-scripts/                     # 보조 스크립트 작업 중 (소스 미커밋)
+feature_repo/                # Feast Entity·FeatureView 정의 (더미 스키마), feature_store.yaml
+scripts/                     # 더미 데이터 적재·Feast 조회 검증 스크립트
 docs/                        # 스펙·플랜 문서
 .github/                     # CI, Claude 리뷰, 이슈 폼, PR 템플릿
 ```
@@ -58,7 +58,7 @@ src/                         # CTR 학습 파이프라인 (Issue #33)
 | 도메인 | 팀원 | 책임 | 주요 경로 |
 |---|---|---|---|
 | **Model Training** | waieiches, hyochangsung | 모델 구조, 학습 파이프라인, 평가 지표 | `src/models/`, `src/pipeline/` (진행 중), `examples/ctr_pipeline_scaffold/` |
-| **Feast Features** | waieiches, hyochangsung | 피처 정의(ODFV), 피처 엔지니어링, 피처 스토어 연동 | `feature_store/`, `src/features/` (진행 중) |
+| **Feast Features** | waieiches, hyochangsung | 피처 정의(ODFV), 피처 엔지니어링, 피처 스토어 연동 | `feature_repo/`, `src/features/` (진행 중) |
 | **Airflow Orchestration** | bbungjun | DAG 정의, 스케줄링, 데이터 파이프라인 오케스트레이션 | `dags/`, `autoresearch/youtube_collection/` |
 | **GCP Infrastructure** | hyeongyu-data | 클라우드 배포, 인프라, 시크릿 관리 | `.github/workflows/`, GCS/BigQuery 설정 |
 
@@ -93,7 +93,9 @@ src/                         # CTR 학습 파이프라인 (Issue #33)
 - **데이터 저장:** GCS 데이터 레이크(parquet), BigQuery(프로덕션 예정)
 - **오케스트레이션:** Airflow (Astro Runtime 13.8.0)
 - **테스트:** pytest
-- **계획:** LightGBM, Feast (별도 브랜치 진행 중)
+- **피처 스토어:** Feast 0.64 (`feature_repo/`, BigQuery offline / Redis
+  online, 더미 스키마)
+- **계획:** LightGBM (별도 브랜치 진행 중)
 
 ## Key Extension Rules
 
