@@ -52,7 +52,8 @@ def _get_config(name: str, default: str | None = None) -> str | None:
     if value:
         return value
     try:
-        return Variable.get(name, default_var=default)
+        value = Variable.get(name, default_var=None)
+        return value if value else default
     except Exception:
         return default
 

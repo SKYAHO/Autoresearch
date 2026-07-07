@@ -107,6 +107,22 @@ def _default_history_end(partition_date: date) -> datetime:
     return end_kst.astimezone(UTC)
 
 
+def _validate_event_partition_dates(events, partition_date: date) -> None:
+    """모든 event_timestamp가 출력 dt partition의 KST 날짜 안에 있는지 검증한다."""
+
+    for event in events:
+        timestamp = event.event_timestamp
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        event_date = timestamp.astimezone(_KST).date()
+        if event_date != partition_date:
+            raise ValueError(
+                "event_timestamp outside partition_date "
+                f"(event_id={event.event_id}, event_date={event_date}, "
+                f"partition_date={partition_date})"
+            )
+
+
 def run_daily_action_log(
     *,
     partition_date: date,
@@ -198,6 +214,7 @@ def run_daily_action_log(
                 _copy_local_file(quarantine_file, quarantine_path, filesystem=filesystem)
             raise
 
+        _validate_event_partition_dates(result.batch.events, partition_date)
         event_table = pq.read_table(request.output_path)
         _write_table(event_table, output_path, filesystem=filesystem)
         if quarantine_path:

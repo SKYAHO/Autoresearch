@@ -113,6 +113,9 @@ def build_candidates(
         videos,
         key=lambda v: (-int(v.get("view_count", 0) or 0), str(v.get("video_id", ""))),
     )
+    # popular_pool 전체를 스캔하므로 상위 인기 영상이 personalized와 겹쳐도
+    # 다음 인기 영상으로 popular 슬롯을 채운다. 아래 fallback은 주로 blank/duplicate
+    # video_id처럼 유효 unique pool이 n_total보다 작을 때만 의미가 있다.
     popular = add_unique(popular_pool, n_popular)
     remaining = [v for v in videos if str(v.get("video_id", "")) not in seen]
     rng.shuffle(remaining)

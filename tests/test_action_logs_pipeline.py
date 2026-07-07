@@ -339,6 +339,49 @@ def test_build_candidates_includes_popular_slice_after_personalized_slice():
     assert len(ids) == 10
 
 
+def test_build_candidates_fills_popular_slice_when_top_popular_overlap_personalized():
+    user = {
+        "user_id": "vu",
+        "primary_categories": ["niche"],
+        "interest_keywords": ["niche"],
+    }
+    videos = []
+    for i in range(7):
+        videos.append(
+            {
+                "video_id": f"popular_personalized_{i}",
+                "title": f"niche popular match {i}",
+                "description": "",
+                "tags": [],
+                "view_count": 10_000 - i,
+            }
+        )
+    for i in range(5):
+        videos.append(
+            {
+                "video_id": f"popular_broad_{i}",
+                "title": f"broad popular {i}",
+                "description": "",
+                "tags": [],
+                "view_count": 9_000 - i,
+            }
+        )
+
+    got = build_candidates(
+        user,
+        videos,
+        candidates_per_user=10,
+        exploration_ratio=0.1,
+        rng=random.Random(7),
+        personalized_ratio=0.7,
+        popular_ratio=0.2,
+    )
+    ids = {v["video_id"] for v in got}
+
+    assert len(got) == 10
+    assert {"popular_broad_0", "popular_broad_1"} <= ids
+
+
 def test_rulebased_judgments_have_no_search_keyword():
     users = _fixture_users(1)
     videos = build_fixture_video_records(6)

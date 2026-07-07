@@ -1,7 +1,9 @@
 from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from autoresearch.action_logs.daily import run_daily_action_log
 
@@ -77,3 +79,54 @@ def test_run_daily_action_log_writes_dt_partition(tmp_path):
     assert summary["clicks"] == 3
     assert table.num_rows == summary["total_events"]
     assert quarantine_path.exists()
+
+
+def test_run_daily_action_log_keeps_event_timestamps_inside_partition_date(tmp_path):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    output_base = tmp_path / "action_log"
+
+    _write_virtual_users(virtual_users_path)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    run_daily_action_log(
+        partition_date=partition_date,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(output_base),
+        candidates_per_user=5,
+        target_ctr=0.2,
+        seed=123,
+        generator_name="rule_based",
+    )
+
+    table = pq.read_table(output_base / "dt=2026-07-01" / "part-0.parquet")
+    kst = ZoneInfo("Asia/Seoul")
+    assert {
+        row["event_timestamp"].astimezone(kst).date()
+        for row in table.select(["event_timestamp"]).to_pylist()
+    } == {partition_date}
+
+
+def test_run_daily_action_log_rejects_timestamp_outside_partition_date(tmp_path):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    output_base = tmp_path / "action_log"
+
+    _write_virtual_users(virtual_users_path)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    with pytest.raises(ValueError, match="outside partition_date"):
+        run_daily_action_log(
+            partition_date=partition_date,
+            youtube_base_path=str(youtube_base),
+            virtual_users_path=str(virtual_users_path),
+            output_base_path=str(output_base),
+            candidates_per_user=5,
+            target_ctr=0.2,
+            seed=123,
+            generator_name="rule_based",
+            history_end=datetime(2026, 7, 3, 0, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+        )
