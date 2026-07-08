@@ -49,33 +49,52 @@ def main():
     dataset = pd.read_csv(data_path)
     print(f"  [OK] {len(dataset)} rows, {len(dataset.columns)} columns")
 
-    print("\n[Step 2] Feature/Label 분리...")
+    print("\n[Step 2] Train/Val/Test 분할 (Test는 완전 held-out)...")
+    test_size = config["data"]["test_size"]
+    val_size = config["data"]["val_size"]
+    random_state = config["data"]["random_state"]
+
+    train_val_df, test_df = train_test_split(
+        dataset,
+        test_size=test_size,
+        random_state=random_state,
+        stratify=dataset["clicked"],
+    )
+    val_ratio_within_train_val = val_size / (1 - test_size)
+    train_df, val_df = train_test_split(
+        train_val_df,
+        test_size=val_ratio_within_train_val,
+        random_state=random_state,
+        stratify=train_val_df["clicked"],
+    )
+    print(f"  [OK] Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)} (Test는 학습에 미사용)")
+
+    test_set_path = os.path.join(project_root, config["artifacts"]["test_set_path"])
+    os.makedirs(os.path.dirname(test_set_path), exist_ok=True)
+    test_df.to_csv(test_set_path, index=False)
+    print(f"  [저장] Test set (held-out): {test_set_path}")
+
+    print("\n[Step 3] Feature/Label 분리...")
     feature_columns = config["data"]["feature_columns"]
     categorical_columns = config["data"]["categorical_columns"]
 
-    X = dataset[feature_columns].copy()
-    y = dataset["clicked"].copy()
+    X_train = train_df[feature_columns].copy()
+    y_train = train_df["clicked"].copy()
+    X_val = val_df[feature_columns].copy()
+    y_val = val_df["clicked"].copy()
 
-    print(f"  [OK] Features: {X.shape}")
-    print(f"  [OK] Label (clicked): {y.shape}, ratio={y.mean():.3%}")
+    print(f"  [OK] Train features: {X_train.shape}, ratio={y_train.mean():.3%}")
+    print(f"  [OK] Val features: {X_val.shape}, ratio={y_val.mean():.3%}")
 
-    print("\n[Step 3] Categorical 컬럼 dtype 변환...")
+    print("\n[Step 4] Categorical 컬럼 dtype 변환...")
     for col in categorical_columns:
-        if col in X.columns:
-            X[col] = X[col].astype("category")
+        if col in X_train.columns:
+            categories = pd.api.types.union_categoricals(
+                [X_train[col].astype("category"), X_val[col].astype("category")]
+            ).categories
+            X_train[col] = pd.Categorical(X_train[col], categories=categories)
+            X_val[col] = pd.Categorical(X_val[col], categories=categories)
     print(f"  [OK] {len(categorical_columns)} categorical columns 설정")
-
-    print("\n[Step 4] Train/Val 분할...")
-    test_size = config["data"]["test_size"]
-    random_state = config["data"]["random_state"]
-
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=y
-    )
-    print(f"  [OK] Train: {X_train.shape}, Val: {X_val.shape}")
 
     print("\n[Step 5] scale_pos_weight 계산...")
     scale_pos_weight = config["model"]["scale_pos_weight"]

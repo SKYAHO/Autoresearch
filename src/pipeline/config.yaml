@@ -1,6 +1,7 @@
 data:
   path: data/processed/training_dataset.csv
   test_size: 0.2
+  val_size: 0.2
   random_state: 42
   feature_columns:
     - age_group
@@ -34,3 +35,4 @@ model:
 artifacts:
   model_path: artifacts/models/lgbm_model.joblib
   feature_columns_path: artifacts/models/feature_columns.pkl
+  test_set_path: data/processed/test_set.csv
