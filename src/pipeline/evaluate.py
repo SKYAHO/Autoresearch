@@ -35,9 +35,12 @@ def load_config(config_path):
         return yaml.safe_load(f)
 
 
-def main():
+def main(config_path: str = None, data_path: str = None, model_path: str = None):
     project_root = get_project_root()
-    config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
+    if config_path is None:
+        config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
+    elif not os.path.isabs(config_path):
+        config_path = os.path.join(project_root, config_path)
     config = load_config(config_path)
 
     print("=" * 70)
@@ -45,14 +48,20 @@ def main():
     print("=" * 70)
 
     print("\n[Step 1] 모델 로드...")
-    model_path = os.path.join(project_root, config["artifacts"]["model_path"])
+    if model_path is None:
+        model_path = os.path.join(project_root, config["artifacts"]["model_path"])
+    elif not os.path.isabs(model_path):
+        model_path = os.path.join(project_root, model_path)
     feature_columns_path = os.path.join(project_root, config["artifacts"]["feature_columns_path"])
 
     model = load_model(model_path)
     feature_columns = load_feature_columns(feature_columns_path)
 
     print("\n[Step 2] 데이터 로드 (held-out test set)...")
-    data_path = os.path.join(project_root, config["artifacts"]["test_set_path"])
+    if data_path is None:
+        data_path = os.path.join(project_root, config["artifacts"]["test_set_path"])
+    elif not os.path.isabs(data_path):
+        data_path = os.path.join(project_root, data_path)
     dataset = pd.read_csv(data_path)
 
     X = dataset[feature_columns].copy()

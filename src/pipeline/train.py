@@ -35,9 +35,18 @@ def load_config(config_path):
         return yaml.safe_load(f)
 
 
-def main():
+def main(
+    config_path: str = None,
+    data_path: str = None,
+    model_output: str = None,
+    test_size: float = None,
+    random_state: int = None,
+):
     project_root = get_project_root()
-    config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
+    if config_path is None:
+        config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
+    elif not os.path.isabs(config_path):
+        config_path = os.path.join(project_root, config_path)
     config = load_config(config_path)
 
     print("=" * 70)
@@ -45,14 +54,19 @@ def main():
     print("=" * 70)
 
     print("\n[Step 1] 데이터 로드...")
-    data_path = os.path.join(project_root, config["data"]["path"])
+    if data_path is None:
+        data_path = os.path.join(project_root, config["data"]["path"])
+    elif not os.path.isabs(data_path):
+        data_path = os.path.join(project_root, data_path)
     dataset = pd.read_csv(data_path)
     print(f"  [OK] {len(dataset)} rows, {len(dataset.columns)} columns")
 
     print("\n[Step 2] Train/Val/Test 분할 (Test는 완전 held-out)...")
-    test_size = config["data"]["test_size"]
+    if test_size is None:
+        test_size = config["data"]["test_size"]
+    if random_state is None:
+        random_state = config["data"]["random_state"]
     val_size = config["data"]["val_size"]
-    random_state = config["data"]["random_state"]
 
     train_val_df, test_df = train_test_split(
         dataset,
@@ -126,7 +140,12 @@ def main():
         print("  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
 
     print("\n[Step 8] 모델 저장...")
-    model_path = os.path.join(project_root, config["artifacts"]["model_path"])
+    if model_output is None:
+        model_path = os.path.join(project_root, config["artifacts"]["model_path"])
+    elif not os.path.isabs(model_output):
+        model_path = os.path.join(project_root, model_output)
+    else:
+        model_path = model_output
     feature_columns_path = os.path.join(project_root, config["artifacts"]["feature_columns_path"])
 
     save_model(model.model, model_path)
