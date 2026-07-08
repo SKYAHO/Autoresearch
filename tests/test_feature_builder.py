@@ -1,6 +1,5 @@
 """Unit tests for CTR model interaction feature functions."""
 
-import pytest
 import numpy as np
 import json
 from src.features.feature_builder import (
