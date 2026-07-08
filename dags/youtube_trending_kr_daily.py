@@ -5,20 +5,26 @@ GCS 레이크에 append 한다. append-only 일별 스냅샷 모델의 실시간
 
 스케줄: ``30 15 * * *`` (UTC 15:30 == KST 00:30)
     → 그날 트렌딩이 어느 정도 확정된 새벽에 찍는다. dt 키는 KST 수집일.
-    (Kaggle 의 video_trending_date 도 같은 의미라 과거/실시간 데이터가 일관됨.)
 
 필요 설정(환경변수 또는 Airflow Variable):
-  * ``YOUTUBE_API_KEY``    - YouTube Data API v3 개발자 키
+  * ``YOUTUBE_API_KEYS``  - YouTube Data API v3 키(쉼표 구분 복수, Key 무효화 대응)
   * ``YOUTUBE_LAKE_BUCKET`` - GCS 버킷명(gs:// 접두사 없음)
+  * ``YOUTUBE_PROXY_URL``  - (선택) Cloud Run 프록시 URL. 1차: 미설정=비활성.
 
 인증:
   * GCP: Application Default Credentials(로컬은 ``gcloud auth application-default
-    login``, prod K8s 은 Workload Identity — 최현규 인프라 담당).
-  * YouTube: API 키만으로 충분(쿼터 ~7 units/일, 예산 10,000 대비 0.07%).
+    login``, prod K8s 은 Workload Identity — 인프라 담당).
+  * YouTube: API 키 풀만으로 충분(쿼터 ~7 units/일, 예산 10,000 대비 0.07%).
+
+복원력:
+  * ResilientYouTubeClient 가 재시도(tenacity) + Key 롤링 + IP밴 시그니처 +
+    Circuit Breaker + skip 을 담당. CollectionExhausted → AirflowFailException
+    승격으로 터미널 실패(retries 무관 즉시 failed).
 
 이 파일은 '얇은 래퍼'다. 실제 로직은 autoresearch.youtube_collection(순수 Python,
 단위테스트 가능)에 있고, 여기선 Airflow TaskFlow 로 그것들을 엮기만 한다.
 """
+
 from __future__ import annotations
 
 import logging
@@ -33,8 +39,14 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from airflow.decorators import dag, task
+from airflow.exceptions import AirflowFailException
 from airflow.models import Variable
 
+from autoresearch.youtube_collection.client import (
+    CollectionExhausted,
+    ResilientYouTubeClient,
+    YouTubeCallables,
+)
 from autoresearch.youtube_collection.fetch import collect_trending
 from autoresearch.youtube_collection.load import write_partition
 
@@ -59,26 +71,24 @@ def _get_config(name: str, default: str | None = None) -> str | None:
         return default
 
 
-def _build_service():
-    """google-api-python-client 으로 YouTube Data API v3 서비스 객체 생성."""
-    from googleapiclient.discovery import build
+def _load_keys() -> list[str]:
+    """API Key 풀 로드: YOUTUBE_API_KEYS(복수, 쉼표) 우선, 없으면 단수 폴백."""
+    raw = _get_config("YOUTUBE_API_KEYS")
+    if raw:
+        keys = [k.strip() for k in raw.split(",") if k.strip()]
+        if keys:
+            return keys
+    single = _get_config("YOUTUBE_API_KEY")
+    if single:
+        return [single]
+    raise RuntimeError("YOUTUBE_API_KEYS(또는 YOUTUBE_API_KEY) 가 설정되지 않음")
 
-    api_key = _get_config("YOUTUBE_API_KEY")
-    if not api_key:
-        raise RuntimeError("YOUTUBE_API_KEY is not set (env or Airflow Variable)")
-    return build("youtube", "v3", developerKey=api_key, cache_discovery=False)
 
-
-def _make_callables(service):
-    """googleapiclient resource → fetch.py 가 기대하는 평범한 callable 로 adapt.
-
-    fetch.py 는 googleapiclient 를 몰라야(테스트 용이) 하므로, 여기서
-    ``service.videos().list(**kw).execute()`` 모양을 ``list_videos(**kw)`` 로 감싼다.
-    """
-    return (
-        lambda **kw: service.videos().list(**kw).execute(),
-        lambda **kw: service.channels().list(**kw).execute(),
-        lambda **kw: service.videoCategories().list(**kw).execute(),
+def _build_client() -> ResilientYouTubeClient:
+    """ResilientYouTubeClient 생성. proxy_url 은 환경변수(1차: 보통 None)."""
+    return ResilientYouTubeClient(
+        keys=_load_keys(),
+        proxy_url=_get_config("YOUTUBE_PROXY_URL"),
     )
 
 
@@ -100,25 +110,26 @@ def _gcs_filesystem():
 def youtube_trending_kr_daily():
     @task
     def snapshot() -> str:
-        # 1) API 서비스 빌드 + callable adapt
-        list_videos, list_channels, list_categories = _make_callables(
-            _build_service()
-        )
-        # 2) 수집 시각 = 현재(UTC, 백필과 통일). dt 키는 이 시각의 KST 일자.
+        client = _build_client()
+        callables: YouTubeCallables = client.make_callables()
         collected_at = datetime.now(UTC)
         partition_date = collected_at.astimezone(_KST).date()
 
-        # 3) 트렌딩 수집 + 채널 메타 + 카테고리 변환 + 정규화
-        videos = collect_trending(
-            list_videos,
-            list_channels,
-            list_categories,
-            collected_at=collected_at,
-            region_code="KR",
-            max_results=DEFAULT_MAX_RESULTS,
-        )
+        try:
+            videos = collect_trending(
+                callables.list_videos,
+                callables.list_channels,
+                callables.list_categories,
+                collected_at=collected_at,
+                region_code="KR",
+                max_results=DEFAULT_MAX_RESULTS,
+            )
+        except CollectionExhausted as e:
+            # 터미널: 모든 Key·경로 소진. 재시도 무의미 → 즉시 failed 승격.
+            raise AirflowFailException(
+                f"유튜브 수집 폭주 — 그날 partition skip: {e}"
+            ) from e
 
-        # 4) GCS 파티션 적재. base_path 는 bucket-상대경로(gs:// 없음).
         bucket = _get_config("YOUTUBE_LAKE_BUCKET")
         if not bucket:
             raise RuntimeError(

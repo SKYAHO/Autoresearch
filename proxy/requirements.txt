@@ -1,0 +1,5 @@
+# dumb forwarder 런타임 핀. dev(requirements-dev.txt) 표면과 동일하게 정렬:
+# dev(최대 0.128) 통과 → prod(0.116) 깨짐 버전 발산 방지.
+fastapi>=0.115,<0.129
+uvicorn[standard]>=0.32,<0.35
+httpx>=0.28,<0.29

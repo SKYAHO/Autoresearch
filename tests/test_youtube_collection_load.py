@@ -1,4 +1,4 @@
-from datetime import UTC, date, datetime
+from datetime import date, datetime
 
 import pyarrow as pa
 import pyarrow.parquet as pq

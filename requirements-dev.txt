@@ -2,4 +2,6 @@
 -r requirements.txt
 pytest>=8.0
 datasets>=2.19
-google-genai>=1.0
+openai>=1.0
+fastapi>=0.115,<0.129
+httpx>=0.28,<0.29
