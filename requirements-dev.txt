@@ -1,7 +1,0 @@
-# 개발/테스트 + virtual_users(실험) 의존성. 런타임 포함.
--r requirements.txt
-pytest>=8.0
-datasets>=2.19
-openai>=1.0
-fastapi>=0.115,<0.129
-httpx>=0.28,<0.29
