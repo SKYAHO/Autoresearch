@@ -39,7 +39,10 @@ def main(
     config_path: str = None,
     data_path: str = None,
     model_output: str = None,
+    test_set_output: str = None,
+    feature_columns_output: str = None,
     test_size: float = None,
+    val_size: float = None,
     random_state: int = None,
 ):
     project_root = get_project_root()
@@ -64,9 +67,17 @@ def main(
     print("\n[Step 2] Train/Val/Test 분할 (Test는 완전 held-out)...")
     if test_size is None:
         test_size = config["data"]["test_size"]
+    if val_size is None:
+        val_size = config["data"]["val_size"]
     if random_state is None:
         random_state = config["data"]["random_state"]
-    val_size = config["data"]["val_size"]
+
+    if test_size + val_size >= 1:
+        raise ValueError(
+            f"test_size({test_size}) + val_size({val_size}) >= 1 입니다 — "
+            "train에 데이터가 남지 않거나 분할 자체가 불가능합니다. "
+            "두 값의 합이 1보다 작아야 합니다 (예: test_size=0.2, val_size=0.2)."
+        )
 
     train_val_df, test_df = train_test_split(
         dataset,
@@ -83,7 +94,12 @@ def main(
     )
     print(f"  [OK] Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)} (Test는 학습에 미사용)")
 
-    test_set_path = os.path.join(project_root, config["artifacts"]["test_set_path"])
+    if test_set_output is None:
+        test_set_path = os.path.join(project_root, config["artifacts"]["test_set_path"])
+    elif not os.path.isabs(test_set_output):
+        test_set_path = os.path.join(project_root, test_set_output)
+    else:
+        test_set_path = test_set_output
     os.makedirs(os.path.dirname(test_set_path), exist_ok=True)
     test_df.to_csv(test_set_path, index=False)
     print(f"  [저장] Test set (held-out): {test_set_path}")
@@ -126,7 +142,7 @@ def main(
         n_estimators=config["model"]["n_estimators"],
         learning_rate=config["model"]["learning_rate"],
         num_leaves=config["model"]["num_leaves"],
-        random_state=config["model"]["random_state"],
+        random_state=random_state,
     )
     model.fit(X_train, y_train, categorical_features=categorical_columns)
     print("  [OK] 훈련 완료")
@@ -146,7 +162,12 @@ def main(
         model_path = os.path.join(project_root, model_output)
     else:
         model_path = model_output
-    feature_columns_path = os.path.join(project_root, config["artifacts"]["feature_columns_path"])
+    if feature_columns_output is None:
+        feature_columns_path = os.path.join(project_root, config["artifacts"]["feature_columns_path"])
+    elif not os.path.isabs(feature_columns_output):
+        feature_columns_path = os.path.join(project_root, feature_columns_output)
+    else:
+        feature_columns_path = feature_columns_output
 
     save_model(model.model, model_path)
     save_feature_columns(feature_columns, feature_columns_path)

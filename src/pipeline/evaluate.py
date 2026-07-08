@@ -35,7 +35,12 @@ def load_config(config_path):
         return yaml.safe_load(f)
 
 
-def main(config_path: str = None, data_path: str = None, model_path: str = None):
+def main(
+    config_path: str = None,
+    data_path: str = None,
+    model_path: str = None,
+    feature_columns_path: str = None,
+):
     project_root = get_project_root()
     if config_path is None:
         config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
@@ -52,7 +57,10 @@ def main(config_path: str = None, data_path: str = None, model_path: str = None)
         model_path = os.path.join(project_root, config["artifacts"]["model_path"])
     elif not os.path.isabs(model_path):
         model_path = os.path.join(project_root, model_path)
-    feature_columns_path = os.path.join(project_root, config["artifacts"]["feature_columns_path"])
+    if feature_columns_path is None:
+        feature_columns_path = os.path.join(project_root, config["artifacts"]["feature_columns_path"])
+    elif not os.path.isabs(feature_columns_path):
+        feature_columns_path = os.path.join(project_root, feature_columns_path)
 
     model = load_model(model_path)
     feature_columns = load_feature_columns(feature_columns_path)
