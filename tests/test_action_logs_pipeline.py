@@ -2,6 +2,7 @@ import json
 import random
 from datetime import UTC, datetime, timedelta
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from pydantic import ValidationError
@@ -270,6 +271,117 @@ def test_build_candidates_returns_video_dicts_no_exposure_label():
     assert build_candidates(users[0], [], 20, 0.2, random.Random(1)) == []
 
 
+def test_event_generation_request_defaults_to_70_20_10_candidate_mix():
+    req = EventGenerationRequest()
+
+    assert req.personalized_ratio == 0.7
+    assert req.popular_ratio == 0.2
+    assert req.exploration_ratio == 0.1
+
+
+def test_build_candidates_includes_popular_slice_after_personalized_slice():
+    user = {
+        "user_id": "vu",
+        "primary_categories": ["niche"],
+        "interest_keywords": ["niche"],
+    }
+    videos = []
+    for i in range(12):
+        videos.append(
+            {
+                "video_id": f"personal_{i}",
+                "title": f"niche match {i}",
+                "description": "",
+                "tags": [],
+                "view_count": 100 - i,
+            }
+        )
+    videos.extend(
+        [
+            {
+                "video_id": "popular_a",
+                "title": "broad hit",
+                "description": "",
+                "tags": [],
+                "view_count": 10_000,
+            },
+            {
+                "video_id": "popular_b",
+                "title": "another broad hit",
+                "description": "",
+                "tags": [],
+                "view_count": 9_000,
+            },
+            {
+                "video_id": "tail",
+                "title": "tail video",
+                "description": "",
+                "tags": [],
+                "view_count": 1,
+            },
+        ]
+    )
+
+    got = build_candidates(
+        user,
+        videos,
+        candidates_per_user=10,
+        exploration_ratio=0.1,
+        rng=random.Random(7),
+        personalized_ratio=0.7,
+        popular_ratio=0.2,
+    )
+    ids = {v["video_id"] for v in got}
+
+    assert len(got) == 10
+    assert "popular_a" in ids
+    assert "popular_b" in ids
+    assert len(ids) == 10
+
+
+def test_build_candidates_fills_popular_slice_when_top_popular_overlap_personalized():
+    user = {
+        "user_id": "vu",
+        "primary_categories": ["niche"],
+        "interest_keywords": ["niche"],
+    }
+    videos = []
+    for i in range(7):
+        videos.append(
+            {
+                "video_id": f"popular_personalized_{i}",
+                "title": f"niche popular match {i}",
+                "description": "",
+                "tags": [],
+                "view_count": 10_000 - i,
+            }
+        )
+    for i in range(5):
+        videos.append(
+            {
+                "video_id": f"popular_broad_{i}",
+                "title": f"broad popular {i}",
+                "description": "",
+                "tags": [],
+                "view_count": 9_000 - i,
+            }
+        )
+
+    got = build_candidates(
+        user,
+        videos,
+        candidates_per_user=10,
+        exploration_ratio=0.1,
+        rng=random.Random(7),
+        personalized_ratio=0.7,
+        popular_ratio=0.2,
+    )
+    ids = {v["video_id"] for v in got}
+
+    assert len(got) == 10
+    assert {"popular_broad_0", "popular_broad_1"} <= ids
+
+
 def test_rulebased_judgments_have_no_search_keyword():
     users = _fixture_users(1)
     videos = build_fixture_video_records(6)
@@ -298,3 +410,41 @@ def test_chunked_parallel_matches_single_call(tmp_path):
     imps = [e for e in chunked.batch.events if e.event_type == "impression"]
     assert imps[0].user_id == "vu_0000"  # 병렬이어도 원본 유저 순서 유지
     assert chunked.summary["quarantined_users"] == 0
+
+
+def test_load_video_records_accepts_youtube_collection_schema(tmp_path):
+    path = tmp_path / "youtube.parquet"
+    table = pa.Table.from_pylist(
+        [
+            {
+                "video_id": "yt1",
+                "video_title": "정규화 영상",
+                "video_description": "설명",
+                "video_tags": ["태그1", "태그2"],
+                "video_view_count": 1234,
+                "video_like_count": 55,
+                "video_comment_count": 6,
+                "channel_title": "채널명",
+                "video_published_at": datetime(2026, 7, 1, tzinfo=UTC),
+            }
+        ]
+    )
+    pq.write_table(table, path)
+
+    from autoresearch.action_logs.video_source import load_video_records
+
+    records = load_video_records(path)
+
+    assert records == [
+        {
+            "video_id": "yt1",
+            "title": "정규화 영상",
+            "description": "설명",
+            "tags": ["태그1", "태그2"],
+            "view_count": 1234,
+            "like_count": 55,
+            "comment_count": 6,
+            "channel_name": "채널명",
+            "published_at": "2026-07-01 00:00:00+00:00",
+        }
+    ]
