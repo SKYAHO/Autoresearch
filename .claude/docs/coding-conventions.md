@@ -57,8 +57,10 @@
 ## Dependency Changes
 
 - 실제 복잡도를 줄여줄 때만 의존성을 추가합니다.
-- 런타임 의존성은 `requirements.txt`, 개발·실험 의존성은
-  `requirements-dev.txt`에 추가합니다. `requirements.txt`는 Astro
-  이미지와 CI 이미지가 공유하는 단일 출처이므로 런타임에 불필요한
-  패키지를 넣지 않습니다.
+- 의존성 단일 출처는 `pyproject.toml`입니다. 런타임 의존성은
+  `[project] dependencies`(변경 시 미러인 `requirements.txt`도 함께 수정),
+  개발·실험 의존성은 `[dependency-groups]`의 `dev` 그룹에 추가한 뒤
+  `uv lock`으로 잠급니다. proxy 의존성 변경 시에는 `proxy/requirements.txt`
+  헤더의 `uv export` 명령으로 재생성합니다. 런타임 의존성은 Astro 이미지와
+  CI 이미지에 그대로 설치되므로 불필요한 패키지를 넣지 않습니다.
 - 사용자가 설치하거나 설정해야 하는 운영 의존성은 문서화합니다.

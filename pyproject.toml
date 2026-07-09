@@ -1,0 +1,65 @@
+# 의존성 단일 출처. uv 로 관리한다 (uv sync / uv lock).
+# requirements.txt(Astro·CI 이미지)와 proxy/requirements.txt(Cloud Run)는
+# 이 파일 + uv.lock 에서 `uv export` 로 생성되는 산출물이다 — 직접 수정 금지.
+# 재생성 명령은 각 파일 상단 헤더 참조. CI 가 drift 를 검사한다.
+
+[project]
+name = "autoresearch"
+version = "0.1.0"
+description = "YouTube 트렌딩 데이터 기반 CTR 모델링 프로젝트"
+readme = "README.md"
+requires-python = ">=3.11"
+# YouTube 트렌딩 수집(Airflow/Astro) 런타임 의존성.
+dependencies = [
+    "pydantic>=2.6,<3",
+    "pyarrow>=15.0",
+    "google-api-python-client>=2.100,<3",
+    "google-cloud-storage>=2.10",
+    "gcsfs>=2024.0",
+    "tenacity>=8.2,<10",
+    "requests>=2.32,<3",
+]
+
+[dependency-groups]
+# 개발/테스트 + virtual_users(실험) 의존성. `uv sync` 기본 포함.
+dev = [
+    "pytest>=8.0",
+    "datasets>=2.19",
+    "openai>=1.0",
+    "fastapi>=0.115,<0.129",
+    "httpx>=0.28,<0.29",
+    { include-group = "lint" },
+]
+# 린트 전용 표면 (CI lint job 은 이 그룹만 설치).
+lint = [
+    "ruff==0.15.18",
+]
+# Feast 피처 스토어(feature_repo/) 별도 환경: `uv sync --only-group feast`
+feast = [
+    "feast[gcp]==0.64.0",
+    "google-cloud-bigquery>=3.20",
+    "redis>=5.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "python-dotenv>=1.0",
+]
+# proxy/ (Cloud Run dumb forwarder) 런타임 핀.
+# dev 표면과 동일하게 정렬: dev(최대 0.128) 통과 → prod(0.116) 깨짐 버전 발산 방지.
+proxy = [
+    "fastapi>=0.115,<0.129",
+    "uvicorn[standard]>=0.32,<0.35",
+    "httpx>=0.28,<0.29",
+]
+
+[tool.uv]
+# Phase 1(이슈 #80): 의존성 관리만 uv 로 전환하고 패키지 배치 방식(sys.path)은
+# 유지한다. Phase 2 에서 src 레이아웃 전환 시 package 빌드로 변경 예정.
+package = false
+default-groups = ["dev"]
+# feast==0.64.0(starlette>=1.0.1)과 dev/proxy 의 fastapi<0.129(starlette<1.0)는
+# 공존 불가 — 기존에 requirements-feast.txt 가 별도 venv 였던 이유.
+# feast 는 격리 환경으로 선언한다: `uv sync --only-group feast`
+conflicts = [
+    [{ group = "feast" }, { group = "dev" }],
+    [{ group = "feast" }, { group = "proxy" }],
+]
