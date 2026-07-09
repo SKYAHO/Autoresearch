@@ -1,33 +1,31 @@
 # Feast Feature Store 설정
 # ============================================================================
-# 이 파일은 프로젝트 기본 설정을 담고 있습니다.
-# 개인 GCP 계정으로 테스트 시 offline_store.project_id를 본인 GCP 프로젝트
-# ID로 변경하세요. (아래 project는 Feast 프로젝트 이름이므로 변경 금지 —
-# 바꾸면 registry가 분리됩니다.)
-# Redis 연결 정보는 Memorystore 인스턴스 생성 후 이 파일에서 직접 수정하세요.
+# 환경별 값(GCP 프로젝트 ID, 버킷 경로 등)은 하드코딩하지 않고 환경 변수로
+# 주입합니다. .env.example 을 복사해 .env 를 만들고 값을 채우세요.
+# (아래 project 는 Feast 프로젝트 이름이므로 변경 금지 — 바꾸면 registry 가
+# 분리됩니다.)
 # ============================================================================
 
 project: autoresearch_feature_store
 
 # Registry: FeatureView 메타데이터(Entity, Feature 스키마 등)를 저장하는 위치
-# GCS 버킷에 저장하여 팀 전체가 하나의 Registry를 공유
-# GCP에서 gs://feast-registry-autoresearch/ 버킷 생성 필요
+# GCS 버킷에 저장하여 팀 전체가 하나의 Registry 를 공유
 registry:
   registry_type: file
-  path: gs://feast-registry-autoresearch/registry.db
+  path: ${GCS_REGISTRY_PATH}
 
 provider: gcp
 
-# Offline Store: BigQuery (추후 팀 GCP 환경으로 변경 필요)
+# Offline Store: BigQuery
 offline_store:
   type: bigquery
-  dataset: feast_offline_store
-  project_id: autoresearch-skyaho-501202
-  gcs_staging_location: gs://feast-staging-autoresearch/
+  dataset: ${BQ_DATASET}
+  project_id: ${GCP_PROJECT_ID}
+  gcs_staging_location: ${GCS_STAGING_LOCATION}
 
 online_store:
   type: redis
-  connection_string: "localhost:6379"
+  connection_string: ${REDIS_HOST}:${REDIS_PORT}
 
 entity_key_serialization_version: 3
 
