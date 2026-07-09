@@ -5,7 +5,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from autoresearch.action_logs.daily import run_daily_action_log
+from autoresearch.action_logs.daily import (
+    merge_daily_action_log_shards,
+    run_daily_action_log,
+    run_daily_action_log_shard,
+)
 
 
 def _write_virtual_users(path):
@@ -130,3 +134,61 @@ def test_run_daily_action_log_rejects_timestamp_outside_partition_date(tmp_path)
             generator_name="rule_based",
             history_end=datetime(2026, 7, 3, 0, 0, tzinfo=ZoneInfo("Asia/Seoul")),
         )
+
+
+def test_sharded_daily_action_log_merges_global_partition(tmp_path):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    work_base = tmp_path / "action_log_work"
+    work_quarantine_base = tmp_path / "action_log_quarantine_work"
+    output_base = tmp_path / "action_log"
+    quarantine_base = tmp_path / "action_log_quarantine"
+
+    _write_virtual_users(virtual_users_path)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    for shard_index in range(2):
+        run_daily_action_log_shard(
+            partition_date=partition_date,
+            shard_index=shard_index,
+            shard_count=2,
+            youtube_base_path=str(youtube_base),
+            virtual_users_path=str(virtual_users_path),
+            output_base_path=str(work_base),
+            quarantine_base_path=str(work_quarantine_base),
+            candidates_per_user=5,
+            target_ctr=0.2,
+            seed=123,
+            generator_name="rule_based",
+        )
+
+    shard_path = work_base / "dt=2026-07-01" / "shard=000" / "part-0.parquet"
+    shard_table = pq.read_table(shard_path)
+    assert "event_id" not in shard_table.column_names
+    assert shard_table.num_rows == 5
+
+    summary = merge_daily_action_log_shards(
+        partition_date=partition_date,
+        shard_count=2,
+        shard_output_base_path=str(work_base),
+        output_base_path=str(output_base),
+        shard_quarantine_base_path=str(work_quarantine_base),
+        quarantine_base_path=str(quarantine_base),
+        candidates_per_user=5,
+        target_ctr=0.2,
+        seed=123,
+        model_name="rule_based",
+    )
+
+    output_path = output_base / "dt=2026-07-01" / "part-0.parquet"
+    quarantine_path = quarantine_base / "dt=2026-07-01" / "quarantine.jsonl"
+    table = pq.read_table(output_path)
+    rows = table.to_pylist()
+    event_ids = [row["event_id"] for row in rows]
+
+    assert summary["impressions"] == 15
+    assert summary["clicks"] == 3
+    assert table.num_rows == summary["total_events"]
+    assert event_ids == [f"evt_{index:08d}" for index in range(len(rows))]
+    assert quarantine_path.exists()

@@ -10,6 +10,7 @@ import math
 import random
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from datetime import UTC, timedelta
 from pathlib import Path
 from typing import Protocol
@@ -61,6 +62,27 @@ class ActionLogGenerationError(RuntimeError):
     """격리 비율이 임계치를 넘어 전량/대량 실패로 판정될 때 발생한다."""
 
 
+@dataclass(frozen=True)
+class ActionLogDraftGenerationResult:
+    """LLM judgment draft 생성 결과와 quarantine 요약."""
+
+    drafts: list[ImpressionDraft]
+    quarantine: list[QuarantineRecord]
+    total_work: int
+
+    @property
+    def summary(self) -> dict[str, int]:
+        counts = {"api_error": 0, "invalid_json": 0, "schema_fail": 0}
+        for record in self.quarantine:
+            counts[record.error_type] += 1
+        return {
+            "drafts": len(self.drafts),
+            "quarantined_users": len(self.quarantine),
+            "total_work": self.total_work,
+            **counts,
+        }
+
+
 EVENT_LOG_PARQUET_SCHEMA = pa.schema(
     [
         pa.field("event_id", pa.string()),
@@ -75,6 +97,17 @@ EVENT_LOG_PARQUET_SCHEMA = pa.schema(
         pa.field("prompt_version", pa.string()),
         pa.field("llm_model", pa.string()),
         pa.field("generated_at", pa.string()),
+    ]
+)
+
+ACTION_LOG_DRAFT_PARQUET_SCHEMA = pa.schema(
+    [
+        pa.field("user_id", pa.string()),
+        pa.field("video_id", pa.string()),
+        pa.field("click_propensity", pa.float64()),
+        pa.field("watch_fraction", pa.float64()),
+        pa.field("would_like", pa.bool_()),
+        pa.field("duration_sec", pa.int64()),
     ]
 )
 
@@ -340,11 +373,53 @@ def _event_rows(batch: EventLogBatch, model_name: str) -> list[dict]:
     return rows
 
 
-def _write_event_log_parquet(batch: EventLogBatch, model_name: str, output_path: Path) -> None:
+def _draft_rows(drafts: list[ImpressionDraft]) -> list[dict]:
+    """ImpressionDraft 목록을 shard work parquet row로 변환한다."""
+
+    return [draft.model_dump() for draft in drafts]
+
+
+def write_action_log_draft_parquet(
+    drafts: list[ImpressionDraft],
+    output_path: str | Path,
+    *,
+    filesystem=None,
+) -> None:
+    """Shard work parquet으로 저장할 LLM judgment draft를 쓴다."""
+
+    if filesystem is None:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    table = pa.Table.from_pylist(
+        _draft_rows(drafts),
+        schema=ACTION_LOG_DRAFT_PARQUET_SCHEMA,
+    )
+    pq.write_table(table, output_path, filesystem=filesystem)
+
+
+def read_action_log_draft_parquet(
+    input_path: str | Path,
+    *,
+    filesystem=None,
+) -> list[ImpressionDraft]:
+    """Shard work parquet을 ImpressionDraft 목록으로 읽는다."""
+
+    table = pq.read_table(input_path, filesystem=filesystem)
+    return [ImpressionDraft.model_validate(row) for row in table.to_pylist()]
+
+
+def write_event_log_parquet(
+    batch: EventLogBatch,
+    model_name: str,
+    output_path: str | Path,
+    *,
+    filesystem=None,
+) -> None:
     """EventLogBatch를 명시적 Arrow schema의 Parquet 파일로 저장한다."""
 
+    if filesystem is None:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pylist(_event_rows(batch, model_name), schema=EVENT_LOG_PARQUET_SCHEMA)
-    pq.write_table(table, output_path)
+    pq.write_table(table, output_path, filesystem=filesystem)
 
 
 def write_event_log_warehouse_jsonl(batch: EventLogBatch, output_path: str | Path) -> None:
@@ -369,16 +444,40 @@ def write_quarantine_jsonl(records: list[QuarantineRecord], output_path: str | P
     logger.info("Wrote quarantine output", extra={"output_path": str(path), "total": len(records)})
 
 
-def generate_action_log_batch(
+def _raise_if_quarantine_exceeds(
+    quarantine: list[QuarantineRecord],
+    total_work: int,
+    request: EventGenerationRequest,
+    user_count: int,
+) -> None:
+    """전량/대량 실패가 조용히 성공 처리되지 않도록 quarantine 비율을 검증한다."""
+
+    if not total_work:
+        return
+
+    quarantine_ratio = len(quarantine) / total_work
+    if quarantine_ratio <= request.max_quarantine_ratio:
+        return
+
+    write_quarantine_jsonl(quarantine, request.quarantine_output_path)
+    raise ActionLogGenerationError(
+        f"quarantine ratio {quarantine_ratio:.2f} exceeds max_quarantine_ratio "
+        f"{request.max_quarantine_ratio:.2f} "
+        f"(quarantined={len(quarantine)}, total_chunks={total_work}, "
+        f"users={user_count})"
+    )
+
+
+def generate_action_log_drafts(
     request: EventGenerationRequest,
     virtual_users: list[dict],
     videos: list[dict],
     generator: ActionLogGenerator,
-) -> EventGenerationResult:
-    """유저 단위 격리 생성 → 전역 2% 정규화 → 조립 → 파일 저장을 실행한다."""
+) -> ActionLogDraftGenerationResult:
+    """유저 단위 LLM 판단을 실행하고 전역 CTR 정규화 전 draft를 반환한다."""
 
     logger.info(
-        "Starting action log batch generation",
+        "Starting action log draft generation",
         extra={
             "users": len(virtual_users),
             "videos": len(videos),
@@ -391,6 +490,23 @@ def generate_action_log_batch(
     drafts, quarantine, total_work = _generate_drafts_isolated(
         generator, virtual_users, videos, request
     )
+    _raise_if_quarantine_exceeds(quarantine, total_work, request, len(virtual_users))
+    result = ActionLogDraftGenerationResult(
+        drafts=drafts,
+        quarantine=quarantine,
+        total_work=total_work,
+    )
+    logger.info("Generated action log drafts", extra=result.summary)
+    return result
+
+
+def expand_action_log_drafts(
+    request: EventGenerationRequest,
+    drafts: list[ImpressionDraft],
+    quarantine: list[QuarantineRecord] | None = None,
+) -> EventGenerationResult:
+    """전체 draft에 전역 CTR 정규화와 long event 확장을 적용한다."""
+
     clicked = _clicked_indices(drafts, request.target_ctr)
     events = _expand_events(drafts, clicked, request)
 
@@ -400,27 +516,36 @@ def generate_action_log_batch(
         request=request,
         events=events,
     )
-    result = EventGenerationResult(batch=batch, quarantine=quarantine)
+    result = EventGenerationResult(batch=batch, quarantine=quarantine or [])
     logger.info("Generated action log batch", extra=result.summary)
+    return result
 
-    # 전량/대량 실패 가드: 유저 단위 격리와 별개로, 배치 전체가 조용히 빈 결과로
-    # 성공 종료하는 상황을 막는다. 격리 파일은 포렌식용으로 남기고 실패로 종료한다.
-    if total_work:
-        quarantine_ratio = len(quarantine) / total_work
-        if quarantine_ratio > request.max_quarantine_ratio:
-            write_quarantine_jsonl(quarantine, request.quarantine_output_path)
-            raise ActionLogGenerationError(
-                f"quarantine ratio {quarantine_ratio:.2f} exceeds max_quarantine_ratio "
-                f"{request.max_quarantine_ratio:.2f} "
-                f"(quarantined={len(quarantine)}, total_chunks={total_work}, "
-                f"users={len(virtual_users)})"
-            )
+
+def generate_action_log_batch(
+    request: EventGenerationRequest,
+    virtual_users: list[dict],
+    videos: list[dict],
+    generator: ActionLogGenerator,
+) -> EventGenerationResult:
+    """유저 단위 격리 생성 → 전역 2% 정규화 → 조립 → 파일 저장을 실행한다."""
+
+    draft_result = generate_action_log_drafts(
+        request,
+        virtual_users,
+        videos,
+        generator,
+    )
+    result = expand_action_log_drafts(
+        request,
+        draft_result.drafts,
+        draft_result.quarantine,
+    )
 
     output_path = Path(request.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_event_log_parquet(batch, generator.model_name, output_path)
-    write_event_log_warehouse_jsonl(batch, request.warehouse_output_path)
-    write_quarantine_jsonl(quarantine, request.quarantine_output_path)
+    write_event_log_parquet(result.batch, generator.model_name, output_path)
+    write_event_log_warehouse_jsonl(result.batch, request.warehouse_output_path)
+    write_quarantine_jsonl(draft_result.quarantine, request.quarantine_output_path)
     logger.info(
         "Wrote action log outputs",
         extra={"output_path": str(output_path), **result.summary},

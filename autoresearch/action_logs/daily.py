@@ -5,6 +5,7 @@ YouTube daily partition과 virtual user parquet이고, 출력은 action log dt p
 """
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 from datetime import UTC, date, datetime, time, timedelta
@@ -19,9 +20,15 @@ from autoresearch.action_logs.llm_generator import (
 )
 from autoresearch.action_logs.pipeline import (
     ActionLogGenerationError,
+    expand_action_log_drafts,
     generate_action_log_batch,
+    generate_action_log_drafts,
+    read_action_log_draft_parquet,
+    write_action_log_draft_parquet,
+    write_event_log_parquet,
+    write_quarantine_jsonl,
 )
-from autoresearch.action_logs.schema import EventGenerationRequest
+from autoresearch.action_logs.schema import EventGenerationRequest, QuarantineRecord
 from autoresearch.action_logs.video_source import load_video_records
 
 
@@ -48,6 +55,30 @@ def _dt_path(
     if filesystem is None:
         return str(Path(base_path) / f"dt={partition_date:%Y-%m-%d}" / filename)
     return f"{_strip_gs(base_path).rstrip('/')}/dt={partition_date:%Y-%m-%d}/{filename}"
+
+
+def _dt_shard_path(
+    base_path: str,
+    partition_date: date,
+    shard_index: int,
+    filename: str,
+    *,
+    filesystem=None,
+) -> str:
+    """local/GCS 공통 dt partition shard 파일 경로를 만든다."""
+
+    shard_dir = f"shard={shard_index:03d}"
+    if filesystem is None:
+        return str(
+            Path(base_path)
+            / f"dt={partition_date:%Y-%m-%d}"
+            / shard_dir
+            / filename
+        )
+    return (
+        f"{_strip_gs(base_path).rstrip('/')}/dt={partition_date:%Y-%m-%d}/"
+        f"{shard_dir}/{filename}"
+    )
 
 
 def _input_path(path: str, *, filesystem=None) -> str:
@@ -80,6 +111,48 @@ def _copy_local_file(source: str | Path, destination: str, *, filesystem=None) -
 
     with Path(source).open("rb") as src, filesystem.open_output_stream(destination) as dst:
         shutil.copyfileobj(src, dst)
+
+
+def _read_quarantine_jsonl(path: str, *, filesystem=None) -> list[QuarantineRecord]:
+    """local/GCS quarantine JSONL 파일을 읽어 QuarantineRecord 목록으로 반환한다."""
+
+    if filesystem is None:
+        file_path = Path(path)
+        if not file_path.exists():
+            return []
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    else:
+        try:
+            with filesystem.open_input_file(path) as file:
+                lines = file.read().decode("utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+
+    return [
+        QuarantineRecord.model_validate(json.loads(line))
+        for line in lines
+        if line.strip()
+    ]
+
+
+def _select_virtual_user_shard(
+    virtual_users: list[dict],
+    shard_index: int,
+    shard_count: int,
+) -> list[dict]:
+    """virtual user parquet 순서를 유지하는 contiguous shard slice를 반환한다."""
+
+    if shard_count < 1:
+        raise ValueError("shard_count must be at least 1")
+    if not 0 <= shard_index < shard_count:
+        raise ValueError(
+            f"shard_index must satisfy 0 <= shard_index < shard_count "
+            f"(shard_index={shard_index}, shard_count={shard_count})"
+        )
+
+    start = len(virtual_users) * shard_index // shard_count
+    end = len(virtual_users) * (shard_index + 1) // shard_count
+    return virtual_users[start:end]
 
 
 def _build_generator(generator_name: str, model_name: str | None = None):
@@ -121,6 +194,42 @@ def _validate_event_partition_dates(events, partition_date: date) -> None:
                 f"(event_id={event.event_id}, event_date={event_date}, "
                 f"partition_date={partition_date})"
             )
+
+
+def _build_request(
+    *,
+    partition_date: date,
+    tmp_dir: Path,
+    candidates_per_user: int,
+    target_ctr: float,
+    personalized_ratio: float,
+    popular_ratio: float,
+    exploration_ratio: float,
+    seed: int,
+    max_concurrency: int,
+    chunk_size: int,
+    max_quarantine_ratio: float,
+    history_end: datetime | None,
+) -> EventGenerationRequest:
+    """daily runner의 공통 EventGenerationRequest를 만든다."""
+
+    return EventGenerationRequest(
+        target_ctr=target_ctr,
+        candidates_per_user=candidates_per_user,
+        personalized_ratio=personalized_ratio,
+        popular_ratio=popular_ratio,
+        exploration_ratio=exploration_ratio,
+        history_days=1,
+        history_end=history_end or _default_history_end(partition_date),
+        max_events_per_user_per_day=candidates_per_user,
+        seed=seed,
+        max_concurrency=max_concurrency,
+        chunk_size=chunk_size,
+        max_quarantine_ratio=max_quarantine_ratio,
+        output_path=str(tmp_dir / "event_log.parquet"),
+        warehouse_output_path=str(tmp_dir / "event_log.jsonl"),
+        quarantine_output_path=str(tmp_dir / "quarantine.jsonl"),
+    )
 
 
 def run_daily_action_log(
@@ -184,22 +293,19 @@ def run_daily_action_log(
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
-        request = EventGenerationRequest(
-            target_ctr=target_ctr,
+        request = _build_request(
+            partition_date=partition_date,
+            tmp_dir=tmp_dir,
             candidates_per_user=candidates_per_user,
+            target_ctr=target_ctr,
             personalized_ratio=personalized_ratio,
             popular_ratio=popular_ratio,
             exploration_ratio=exploration_ratio,
-            history_days=1,
-            history_end=history_end or _default_history_end(partition_date),
-            max_events_per_user_per_day=candidates_per_user,
             seed=seed,
             max_concurrency=max_concurrency,
             chunk_size=chunk_size,
             max_quarantine_ratio=max_quarantine_ratio,
-            output_path=str(tmp_dir / "event_log.parquet"),
-            warehouse_output_path=str(tmp_dir / "event_log.jsonl"),
-            quarantine_output_path=str(tmp_dir / "quarantine.jsonl"),
+            history_end=history_end,
         )
         try:
             result = generate_action_log_batch(
@@ -229,6 +335,227 @@ def run_daily_action_log(
         "partition_date": f"{partition_date:%Y-%m-%d}",
         "users": len(virtual_users),
         "videos": len(videos),
+        "output_path": output_path,
+        "quarantine_path": quarantine_path,
+    }
+
+
+def run_daily_action_log_shard(
+    *,
+    partition_date: date,
+    shard_index: int,
+    shard_count: int,
+    youtube_base_path: str,
+    virtual_users_path: str,
+    output_base_path: str,
+    quarantine_base_path: str | None = None,
+    filesystem=None,
+    candidates_per_user: int = 24,
+    target_ctr: float = 0.02,
+    personalized_ratio: float = 0.7,
+    popular_ratio: float = 0.2,
+    exploration_ratio: float = 0.1,
+    seed: int = 42,
+    max_concurrency: int = 1,
+    chunk_size: int = 0,
+    max_quarantine_ratio: float = 0.5,
+    generator_name: str = "rule_based",
+    model_name: str | None = None,
+    history_end: datetime | None = None,
+) -> dict[str, object]:
+    """하루치 action log 생성을 위한 shard work parquet을 생성한다.
+
+    Shard output은 최종 EventLog가 아니라 `ImpressionDraft` parquet이다. 최종
+    CTR 정규화와 event_id 부여는 `merge_daily_action_log_shards`에서 한 번만
+    수행한다.
+    """
+
+    youtube_path = _dt_path(
+        youtube_base_path,
+        partition_date,
+        _PARTITION_FILE,
+        filesystem=filesystem,
+    )
+    output_path = _dt_shard_path(
+        output_base_path,
+        partition_date,
+        shard_index,
+        _PARTITION_FILE,
+        filesystem=filesystem,
+    )
+    quarantine_path = (
+        _dt_shard_path(
+            quarantine_base_path,
+            partition_date,
+            shard_index,
+            _QUARANTINE_FILE,
+            filesystem=filesystem,
+        )
+        if quarantine_base_path
+        else ""
+    )
+
+    videos = load_video_records(youtube_path, filesystem=filesystem)
+    virtual_users = _read_virtual_users(virtual_users_path, filesystem=filesystem)
+    shard_users = _select_virtual_user_shard(
+        virtual_users,
+        shard_index,
+        shard_count,
+    )
+    generator = _build_generator(generator_name, model_name)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        request = _build_request(
+            partition_date=partition_date,
+            tmp_dir=tmp_dir,
+            candidates_per_user=candidates_per_user,
+            target_ctr=target_ctr,
+            personalized_ratio=personalized_ratio,
+            popular_ratio=popular_ratio,
+            exploration_ratio=exploration_ratio,
+            seed=seed,
+            max_concurrency=max_concurrency,
+            chunk_size=chunk_size,
+            max_quarantine_ratio=max_quarantine_ratio,
+            history_end=history_end,
+        )
+        try:
+            result = generate_action_log_drafts(
+                request,
+                shard_users,
+                videos,
+                generator,
+            )
+        except ActionLogGenerationError:
+            quarantine_file = tmp_dir / "quarantine.jsonl"
+            if quarantine_path and quarantine_file.exists():
+                _copy_local_file(quarantine_file, quarantine_path, filesystem=filesystem)
+            raise
+
+        draft_path = tmp_dir / "action_log_drafts.parquet"
+        write_action_log_draft_parquet(result.drafts, draft_path)
+        write_quarantine_jsonl(result.quarantine, request.quarantine_output_path)
+        _copy_local_file(draft_path, output_path, filesystem=filesystem)
+        if quarantine_path:
+            _copy_local_file(
+                request.quarantine_output_path,
+                quarantine_path,
+                filesystem=filesystem,
+            )
+
+    return {
+        **result.summary,
+        "partition_date": f"{partition_date:%Y-%m-%d}",
+        "shard_index": shard_index,
+        "shard_count": shard_count,
+        "users_total": len(virtual_users),
+        "users": len(shard_users),
+        "videos": len(videos),
+        "output_path": output_path,
+        "quarantine_path": quarantine_path,
+    }
+
+
+def merge_daily_action_log_shards(
+    *,
+    partition_date: date,
+    shard_count: int,
+    shard_output_base_path: str,
+    output_base_path: str,
+    shard_quarantine_base_path: str | None = None,
+    quarantine_base_path: str | None = None,
+    filesystem=None,
+    candidates_per_user: int = 24,
+    target_ctr: float = 0.02,
+    personalized_ratio: float = 0.7,
+    popular_ratio: float = 0.2,
+    exploration_ratio: float = 0.1,
+    seed: int = 42,
+    max_concurrency: int = 1,
+    chunk_size: int = 0,
+    max_quarantine_ratio: float = 0.5,
+    model_name: str | None = None,
+    history_end: datetime | None = None,
+) -> dict[str, object]:
+    """Shard work parquet을 합쳐 최종 daily action log dt partition을 생성한다."""
+
+    if shard_count < 1:
+        raise ValueError("shard_count must be at least 1")
+
+    output_path = _dt_path(
+        output_base_path,
+        partition_date,
+        _PARTITION_FILE,
+        filesystem=filesystem,
+    )
+    quarantine_path = (
+        _dt_path(
+            quarantine_base_path,
+            partition_date,
+            _QUARANTINE_FILE,
+            filesystem=filesystem,
+        )
+        if quarantine_base_path
+        else ""
+    )
+
+    drafts = []
+    quarantine: list[QuarantineRecord] = []
+    for shard_index in range(shard_count):
+        shard_path = _dt_shard_path(
+            shard_output_base_path,
+            partition_date,
+            shard_index,
+            _PARTITION_FILE,
+            filesystem=filesystem,
+        )
+        drafts.extend(read_action_log_draft_parquet(shard_path, filesystem=filesystem))
+        if shard_quarantine_base_path:
+            shard_quarantine_path = _dt_shard_path(
+                shard_quarantine_base_path,
+                partition_date,
+                shard_index,
+                _QUARANTINE_FILE,
+                filesystem=filesystem,
+            )
+            quarantine.extend(
+                _read_quarantine_jsonl(shard_quarantine_path, filesystem=filesystem)
+            )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        request = _build_request(
+            partition_date=partition_date,
+            tmp_dir=tmp_dir,
+            candidates_per_user=candidates_per_user,
+            target_ctr=target_ctr,
+            personalized_ratio=personalized_ratio,
+            popular_ratio=popular_ratio,
+            exploration_ratio=exploration_ratio,
+            seed=seed,
+            max_concurrency=max_concurrency,
+            chunk_size=chunk_size,
+            max_quarantine_ratio=max_quarantine_ratio,
+            history_end=history_end,
+        )
+        result = expand_action_log_drafts(request, drafts, quarantine)
+        _validate_event_partition_dates(result.batch.events, partition_date)
+        write_event_log_parquet(result.batch, model_name or "", request.output_path)
+        _copy_local_file(request.output_path, output_path, filesystem=filesystem)
+        if quarantine_path:
+            write_quarantine_jsonl(quarantine, request.quarantine_output_path)
+            _copy_local_file(
+                request.quarantine_output_path,
+                quarantine_path,
+                filesystem=filesystem,
+            )
+
+    return {
+        **result.summary,
+        "partition_date": f"{partition_date:%Y-%m-%d}",
+        "shard_count": shard_count,
+        "drafts": len(drafts),
         "output_path": output_path,
         "quarantine_path": quarantine_path,
     }
