@@ -216,10 +216,9 @@ def _list_files(path: str, *, filesystem=None) -> list[str]:
         if not directory.exists():
             return []
         return sorted(str(item) for item in directory.iterdir() if item.is_file())
-    try:
-        infos = filesystem.get_file_info(FileSelector(path, recursive=False))
-    except FileNotFoundError:
-        return []
+    infos = filesystem.get_file_info(
+        FileSelector(path, recursive=False, allow_not_found=True)
+    )
     return sorted(info.path for info in infos if info.type == FileType.File)
 
 
