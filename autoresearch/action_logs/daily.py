@@ -7,13 +7,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import tempfile
+from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from time import monotonic
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pyarrow.parquet as pq
+from pyarrow.fs import FileSelector, FileType
 
 from autoresearch.action_logs.llm_generator import (
     OpenRouterActionLogGenerator,
@@ -21,10 +26,13 @@ from autoresearch.action_logs.llm_generator import (
 )
 from autoresearch.action_logs.pipeline import (
     ActionLogGenerationError,
+    ActionLogProgressSnapshot,
     expand_action_log_drafts,
     generate_action_log_batch,
     generate_action_log_drafts,
+    read_action_log_checkpoint_part,
     read_action_log_draft_parquet,
+    write_action_log_checkpoint_part,
     write_action_log_draft_parquet,
     write_event_log_parquet,
     write_quarantine_jsonl,
@@ -34,6 +42,7 @@ from autoresearch.action_logs.schema import (
     PROMPT_VERSION,
     ActionLogShardManifest,
     EventGenerationRequest,
+    ImpressionDraft,
     QuarantineRecord,
 )
 from autoresearch.action_logs.video_source import load_video_records
@@ -43,6 +52,13 @@ _KST = ZoneInfo("Asia/Seoul")
 _PARTITION_FILE = "part-0.parquet"
 _QUARANTINE_FILE = "quarantine.jsonl"
 _MANIFEST_FILE = "manifest.json"
+_PROGRESS_FILE = "progress.json"
+_DEFAULT_PROGRESS_DIR = "action_log_progress"
+_CHECKPOINT_MANIFEST_FILE = "checkpoint_manifest.json"
+_CHECKPOINT_PARTS_DIR = "parts"
+_DEFAULT_CHECKPOINT_DIR = "action_log_checkpoints"
+
+logger = logging.getLogger(__name__)
 
 
 def _strip_gs(path: str) -> str:
@@ -89,6 +105,28 @@ def _dt_shard_path(
     )
 
 
+def _sibling_base_path(base_path: str, sibling_name: str) -> str:
+    """base_path의 마지막 경로 요소를 sibling_name으로 바꾼다."""
+
+    stripped = base_path.rstrip("/")
+    parent, separator, _name = stripped.rpartition("/")
+    if not separator:
+        return sibling_name
+    return f"{parent}/{sibling_name}"
+
+
+def _default_progress_base_path(output_base_path: str) -> str:
+    """Shard work 출력 루트 옆의 기본 progress 루트를 만든다."""
+
+    return _sibling_base_path(output_base_path, _DEFAULT_PROGRESS_DIR)
+
+
+def _default_checkpoint_base_path(output_base_path: str) -> str:
+    """Shard work 출력 루트 옆의 기본 durable checkpoint 루트를 만든다."""
+
+    return _sibling_base_path(output_base_path, _DEFAULT_CHECKPOINT_DIR)
+
+
 def _input_path(path: str, *, filesystem=None) -> str:
     """filesystem 주입 여부에 맞춰 입력 경로를 정규화한다."""
 
@@ -123,6 +161,17 @@ def _write_json_file(payload: dict[str, object], path: str, *, filesystem=None) 
         file.write(data)
 
 
+def _write_progress_json_file(
+    payload: dict[str, object],
+    path: str,
+    *,
+    filesystem=None,
+) -> None:
+    """관측용 progress JSON을 쓴다. 테스트에서 실패 경계를 독립 주입한다."""
+
+    _write_json_file(payload, path, filesystem=filesystem)
+
+
 def _read_json_file(path: str, *, filesystem=None) -> dict[str, object]:
     """local 또는 주입된 filesystem의 JSON object를 읽는다."""
 
@@ -149,6 +198,29 @@ def _copy_local_file(source: str | Path, destination: str, *, filesystem=None) -
         shutil.copyfileobj(src, dst)
 
 
+def _path_exists(path: str, *, filesystem=None) -> bool:
+    """local/GCS 경로 존재 여부를 반환한다."""
+
+    if filesystem is None:
+        return Path(path).exists()
+    return filesystem.get_file_info(path).type != FileType.NotFound
+
+
+def _list_files(path: str, *, filesystem=None) -> list[str]:
+    """local/GCS 디렉터리의 직계 파일 경로를 정렬해 반환한다."""
+
+    if filesystem is None:
+        directory = Path(path)
+        if not directory.exists():
+            return []
+        return sorted(str(item) for item in directory.iterdir() if item.is_file())
+    try:
+        infos = filesystem.get_file_info(FileSelector(path, recursive=False))
+    except FileNotFoundError:
+        return []
+    return sorted(info.path for info in infos if info.type == FileType.File)
+
+
 def _read_quarantine_jsonl(path: str, *, filesystem=None) -> list[QuarantineRecord]:
     """local/GCS quarantine JSONL 파일을 읽어 QuarantineRecord 목록으로 반환한다."""
 
@@ -169,6 +241,124 @@ def _read_quarantine_jsonl(path: str, *, filesystem=None) -> list[QuarantineReco
         for line in lines
         if line.strip()
     ]
+
+
+class _ActionLogShardProgressWriter:
+    """Shard 진행률을 stdout과 JSON 파일에 throttle하여 기록한다."""
+
+    def __init__(
+        self,
+        *,
+        partition_date: date,
+        shard_index: int,
+        shard_count: int,
+        progress_path: str,
+        filesystem=None,
+        flush_interval_sec: float = 15.0,
+        flush_chunks: int = 25,
+    ) -> None:
+        self._partition_date = partition_date
+        self._shard_index = shard_index
+        self._shard_count = shard_count
+        self._progress_path = progress_path
+        self._filesystem = filesystem
+        self._flush_interval_sec = flush_interval_sec
+        self._flush_chunks = max(1, flush_chunks)
+        self._last_flush_monotonic: float | None = None
+        self._last_flushed_completed = -1
+        self._last_flushed_total = -1
+        self._latest = ActionLogProgressSnapshot(
+            status="running",
+            completed_chunks=0,
+            total_chunks=0,
+            success_chunks=0,
+            failed_chunks=0,
+            quarantined_chunks=0,
+        )
+
+    @property
+    def path(self) -> str:
+        """progress JSON 출력 경로."""
+
+        return self._progress_path
+
+    def __call__(self, snapshot: ActionLogProgressSnapshot) -> None:
+        """pipeline progress callback 인터페이스."""
+
+        self._latest = snapshot
+        force = snapshot.completed_chunks == 0
+        self._flush(snapshot, force=force)
+
+    def finish(self, status: str) -> None:
+        """최종 상태를 강제로 기록한다."""
+
+        if status not in {"success", "failed"}:
+            raise ValueError("status must be success or failed")
+        self._latest = replace(self._latest, status=status)
+        self._flush(self._latest, force=True)
+
+    def _should_flush(self, snapshot: ActionLogProgressSnapshot) -> bool:
+        if snapshot.total_chunks != self._last_flushed_total:
+            return True
+        if snapshot.completed_chunks - self._last_flushed_completed >= self._flush_chunks:
+            return True
+        if self._last_flush_monotonic is None:
+            return True
+        return monotonic() - self._last_flush_monotonic >= self._flush_interval_sec
+
+    def _flush(self, snapshot: ActionLogProgressSnapshot, *, force: bool) -> None:
+        if not force and not self._should_flush(snapshot):
+            return
+
+        pct = (
+            snapshot.completed_chunks / snapshot.total_chunks * 100
+            if snapshot.total_chunks
+            else 0.0
+        )
+        print(
+            "[action-log-progress] "
+            f"shard={self._shard_index:03d} "
+            f"completed={snapshot.completed_chunks} "
+            f"total={snapshot.total_chunks} "
+            f"success={snapshot.success_chunks} "
+            f"failed={snapshot.failed_chunks} "
+            f"pct={pct:.1f}",
+            flush=True,
+        )
+
+        payload = {
+            "partition_date": f"{self._partition_date:%Y-%m-%d}",
+            "shard_index": self._shard_index,
+            "shard_count": self._shard_count,
+            "status": snapshot.status,
+            "completed_chunks": snapshot.completed_chunks,
+            "total_chunks": snapshot.total_chunks,
+            "success_chunks": snapshot.success_chunks,
+            "failed_chunks": snapshot.failed_chunks,
+            "quarantined_chunks": snapshot.quarantined_chunks,
+            "updated_at": (
+                datetime.now(UTC)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            ),
+        }
+        try:
+            _write_progress_json_file(
+                payload,
+                self._progress_path,
+                filesystem=self._filesystem,
+            )
+        except Exception:  # noqa: BLE001 - progress write failure must not fail shard work
+            logger.warning(
+                "Failed to write action log shard progress",
+                extra={"progress_path": self._progress_path, "status": snapshot.status},
+                exc_info=True,
+            )
+        finally:
+            self._last_flush_monotonic = monotonic()
+            self._last_flushed_completed = snapshot.completed_chunks
+            self._last_flushed_total = snapshot.total_chunks
 
 
 def _select_virtual_user_shard(
@@ -260,6 +450,137 @@ def _config_fingerprint(
     )
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _work_id(
+    *,
+    partition_date: date,
+    shard_index: int,
+    user_id: str,
+    chunk_index: int,
+    config_fingerprint: str,
+) -> str:
+    """partition/shard/user/chunk/config 기반 결정론적 work_id를 만든다."""
+
+    payload = {
+        "partition_date": partition_date.isoformat(),
+        "shard_index": shard_index,
+        "user_id": user_id,
+        "chunk_index": chunk_index,
+        "config_fingerprint": config_fingerprint,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _child_path(parent: str, *parts: str, filesystem=None) -> str:
+    """local/GCS parent 아래 child 경로를 만든다."""
+
+    if filesystem is None:
+        return str(Path(parent).joinpath(*parts))
+    return "/".join([parent.rstrip("/"), *(part.strip("/") for part in parts)])
+
+
+class _ActionLogCheckpointStore:
+    """성공 work를 fingerprint namespace의 immutable parquet part로 저장한다."""
+
+    def __init__(
+        self,
+        *,
+        partition_date: date,
+        shard_index: int,
+        shard_count: int,
+        checkpoint_base_path: str,
+        config_fingerprint: str,
+        config: dict[str, object],
+        filesystem=None,
+    ) -> None:
+        self._filesystem = filesystem
+        self._namespace_path = _dt_shard_path(
+            checkpoint_base_path,
+            partition_date,
+            shard_index,
+            f"fingerprint={config_fingerprint}",
+            filesystem=filesystem,
+        )
+        self._manifest_path = _child_path(
+            self._namespace_path,
+            _CHECKPOINT_MANIFEST_FILE,
+            filesystem=filesystem,
+        )
+        self._parts_path = _child_path(
+            self._namespace_path,
+            _CHECKPOINT_PARTS_DIR,
+            filesystem=filesystem,
+        )
+        self._manifest = {
+            "checkpoint_version": "action_log_checkpoint_v1",
+            "partition_date": partition_date.isoformat(),
+            "shard_index": shard_index,
+            "shard_count": shard_count,
+            "config_fingerprint": config_fingerprint,
+            "config": config,
+        }
+
+    @property
+    def namespace_path(self) -> str:
+        """현재 fingerprint에 격리된 checkpoint namespace 경로."""
+
+        return self._namespace_path
+
+    def initialize(self) -> None:
+        """checkpoint manifest를 생성하거나 기존 계약을 검증한다."""
+
+        if _path_exists(self._manifest_path, filesystem=self._filesystem):
+            existing = _read_json_file(
+                self._manifest_path,
+                filesystem=self._filesystem,
+            )
+            if existing != self._manifest:
+                raise ValueError(
+                    "checkpoint manifest does not match config fingerprint namespace"
+                )
+            return
+        _write_json_file(
+            self._manifest,
+            self._manifest_path,
+            filesystem=self._filesystem,
+        )
+
+    def load_completed(self) -> dict[str, list[ImpressionDraft]]:
+        """중복 part를 work_id로 dedup해 완료 draft를 복원한다."""
+
+        completed: dict[str, list[ImpressionDraft]] = {}
+        for part_path in _list_files(self._parts_path, filesystem=self._filesystem):
+            if not part_path.endswith(".parquet"):
+                continue
+            part = read_action_log_checkpoint_part(
+                part_path,
+                filesystem=self._filesystem,
+            )
+            completed.setdefault(part.work_id, part.drafts)
+        return completed
+
+    def write_part(
+        self,
+        work_id: str,
+        work_order: int,
+        drafts: list[ImpressionDraft],
+    ) -> None:
+        """성공 work를 고유 이름의 immutable part로 추가한다."""
+
+        part_path = _child_path(
+            self._parts_path,
+            f"part-{work_id}-{uuid4().hex}.parquet",
+            filesystem=self._filesystem,
+        )
+        write_action_log_checkpoint_part(
+            work_id,
+            work_order,
+            drafts,
+            part_path,
+            filesystem=self._filesystem,
+        )
 
 
 def _manifest_request(manifest: ActionLogShardManifest, tmp_dir: Path) -> EventGenerationRequest:
@@ -474,6 +795,10 @@ def run_daily_action_log_shard(
     generator_name: str = "rule_based",
     model_name: str | None = None,
     history_end: datetime | None = None,
+    progress_base_path: str | None = None,
+    checkpoint_base_path: str | None = None,
+    progress_flush_interval_sec: float = 15.0,
+    progress_flush_chunks: int = 25,
 ) -> dict[str, object]:
     """하루치 action log 생성을 위한 shard work parquet을 생성한다.
 
@@ -513,85 +838,142 @@ def run_daily_action_log_shard(
         if quarantine_base_path
         else ""
     )
-
-    videos = load_video_records(youtube_path, filesystem=filesystem)
-    virtual_users = _read_virtual_users(virtual_users_path, filesystem=filesystem)
-    shard_users = _select_virtual_user_shard(
-        virtual_users,
-        shard_index,
-        shard_count,
+    resolved_progress_base_path = (
+        progress_base_path or _default_progress_base_path(output_base_path)
     )
-    generator = _build_generator(generator_name, model_name)
-    resolved_model_name = str(generator.model_name).strip()
-    if not resolved_model_name:
-        raise ValueError("generator model_name must not be empty")
+    resolved_checkpoint_base_path = (
+        checkpoint_base_path or _default_checkpoint_base_path(output_base_path)
+    )
+    progress_path = _dt_shard_path(
+        resolved_progress_base_path,
+        partition_date,
+        shard_index,
+        _PROGRESS_FILE,
+        filesystem=filesystem,
+    )
+    progress_writer = _ActionLogShardProgressWriter(
+        partition_date=partition_date,
+        shard_index=shard_index,
+        shard_count=shard_count,
+        progress_path=progress_path,
+        filesystem=filesystem,
+        flush_interval_sec=progress_flush_interval_sec,
+        flush_chunks=progress_flush_chunks,
+    )
+    progress_finalized = False
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_dir = Path(tmp)
-        request = _build_request(
-            partition_date=partition_date,
-            tmp_dir=tmp_dir,
-            candidates_per_user=candidates_per_user,
-            target_ctr=target_ctr,
-            personalized_ratio=personalized_ratio,
-            popular_ratio=popular_ratio,
-            exploration_ratio=exploration_ratio,
-            seed=seed,
-            max_concurrency=max_concurrency,
-            chunk_size=chunk_size,
-            max_quarantine_ratio=max_quarantine_ratio,
-            history_end=history_end,
+    try:
+        videos = load_video_records(youtube_path, filesystem=filesystem)
+        virtual_users = _read_virtual_users(virtual_users_path, filesystem=filesystem)
+        shard_users = _select_virtual_user_shard(
+            virtual_users,
+            shard_index,
+            shard_count,
         )
-        result = generate_action_log_drafts(
-            request,
-            shard_users,
-            videos,
-            generator,
-            enforce_quarantine_limit=False,
-        )
+        generator = _build_generator(generator_name, model_name)
+        resolved_model_name = str(generator.model_name).strip()
+        if not resolved_model_name:
+            raise ValueError("generator model_name must not be empty")
 
-        draft_path = tmp_dir / "action_log_drafts.parquet"
-        write_action_log_draft_parquet(result.drafts, draft_path)
-        write_quarantine_jsonl(result.quarantine, request.quarantine_output_path)
-        _copy_local_file(draft_path, output_path, filesystem=filesystem)
-        if quarantine_path:
-            _copy_local_file(
-                request.quarantine_output_path,
-                quarantine_path,
-                filesystem=filesystem,
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp)
+            request = _build_request(
+                partition_date=partition_date,
+                tmp_dir=tmp_dir,
+                candidates_per_user=candidates_per_user,
+                target_ctr=target_ctr,
+                personalized_ratio=personalized_ratio,
+                popular_ratio=popular_ratio,
+                exploration_ratio=exploration_ratio,
+                seed=seed,
+                max_concurrency=max_concurrency,
+                chunk_size=chunk_size,
+                max_quarantine_ratio=max_quarantine_ratio,
+                history_end=history_end,
             )
-
-        manifest = ActionLogShardManifest(
-            partition_date=partition_date,
-            shard_index=shard_index,
-            shard_count=shard_count,
-            generator=_normalize_generator_name(generator_name),
-            model_name=resolved_model_name,
-            candidates_per_user=request.candidates_per_user,
-            target_ctr=request.target_ctr,
-            personalized_ratio=request.personalized_ratio,
-            popular_ratio=request.popular_ratio,
-            exploration_ratio=request.exploration_ratio,
-            seed=request.seed,
-            chunk_size=request.chunk_size,
-            max_quarantine_ratio=request.max_quarantine_ratio,
-            history_end=request.history_end,
-            total_work=result.total_work,
-            completed_work=result.total_work,
-            quarantine_count=len(result.quarantine),
-            schema_version=ACTION_LOG_SCHEMA_VERSION,
-            prompt_version=PROMPT_VERSION,
-            config_fingerprint=_config_fingerprint(
+            fingerprint = _config_fingerprint(
                 generator_name=generator_name,
                 model_name=resolved_model_name,
                 request=request,
-            ),
-        )
-        _write_json_file(
-            manifest.model_dump(mode="json"),
-            manifest_path,
-            filesystem=filesystem,
-        )
+            )
+            checkpoint_store = _ActionLogCheckpointStore(
+                partition_date=partition_date,
+                shard_index=shard_index,
+                shard_count=shard_count,
+                checkpoint_base_path=resolved_checkpoint_base_path,
+                config_fingerprint=fingerprint,
+                config=_fingerprint_payload(
+                    generator_name=generator_name,
+                    model_name=resolved_model_name,
+                    request=request,
+                ),
+                filesystem=filesystem,
+            )
+            checkpoint_store.initialize()
+            completed_work = checkpoint_store.load_completed()
+            result = generate_action_log_drafts(
+                request,
+                shard_users,
+                videos,
+                generator,
+                progress_callback=progress_writer,
+                enforce_quarantine_limit=False,
+                work_id_factory=lambda user_id, chunk_index: _work_id(
+                    partition_date=partition_date,
+                    shard_index=shard_index,
+                    user_id=user_id,
+                    chunk_index=chunk_index,
+                    config_fingerprint=fingerprint,
+                ),
+                completed_work=completed_work,
+                checkpoint_callback=checkpoint_store.write_part,
+            )
+
+            draft_path = tmp_dir / "action_log_drafts.parquet"
+            write_action_log_draft_parquet(result.drafts, draft_path)
+            write_quarantine_jsonl(result.quarantine, request.quarantine_output_path)
+            _copy_local_file(draft_path, output_path, filesystem=filesystem)
+            if quarantine_path:
+                _copy_local_file(
+                    request.quarantine_output_path,
+                    quarantine_path,
+                    filesystem=filesystem,
+                )
+
+            manifest = ActionLogShardManifest(
+                partition_date=partition_date,
+                shard_index=shard_index,
+                shard_count=shard_count,
+                generator=_normalize_generator_name(generator_name),
+                model_name=resolved_model_name,
+                candidates_per_user=request.candidates_per_user,
+                target_ctr=request.target_ctr,
+                personalized_ratio=request.personalized_ratio,
+                popular_ratio=request.popular_ratio,
+                exploration_ratio=request.exploration_ratio,
+                seed=request.seed,
+                chunk_size=request.chunk_size,
+                max_quarantine_ratio=request.max_quarantine_ratio,
+                history_end=request.history_end,
+                total_work=result.total_work,
+                completed_work=result.total_work,
+                quarantine_count=len(result.quarantine),
+                schema_version=ACTION_LOG_SCHEMA_VERSION,
+                prompt_version=PROMPT_VERSION,
+                config_fingerprint=fingerprint,
+            )
+            _write_json_file(
+                manifest.model_dump(mode="json"),
+                manifest_path,
+                filesystem=filesystem,
+            )
+
+        progress_writer.finish("success")
+        progress_finalized = True
+    except Exception:
+        if not progress_finalized:
+            progress_writer.finish("failed")
+        raise
 
     return {
         **result.summary,
@@ -605,6 +987,8 @@ def run_daily_action_log_shard(
         "quarantine_path": quarantine_path,
         "manifest_path": manifest_path,
         "config_fingerprint": manifest.config_fingerprint,
+        "progress_path": progress_path,
+        "checkpoint_path": checkpoint_store.namespace_path,
     }
 
 

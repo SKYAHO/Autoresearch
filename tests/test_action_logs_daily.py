@@ -1,5 +1,7 @@
 import json
+import shutil
 from datetime import UTC, date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pyarrow as pa
@@ -330,6 +332,16 @@ class _OneUserFailureGenerator(RuleBasedActionLogGenerator):
         return super().generate(virtual_user, videos)
 
 
+class _CountingGenerator(RuleBasedActionLogGenerator):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def generate(self, virtual_user, videos):
+        self.calls += 1
+        return super().generate(virtual_user, videos)
+
+
 @pytest.mark.parametrize(
     ("max_quarantine_ratio", "should_raise"),
     [(0.4, False), (0.2, True)],
@@ -388,3 +400,227 @@ def test_quarantine_guard_is_global_at_merge(
         summary = merge()
         assert summary["quarantine_count"] == 1
         assert summary["total_work"] == 4
+
+
+def test_run_daily_action_log_shard_writes_progress_json_dt_shard_path(tmp_path):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    work_base = tmp_path / "action_log_work"
+
+    _write_virtual_users(virtual_users_path)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    summary = run_daily_action_log_shard(
+        partition_date=partition_date,
+        shard_index=1,
+        shard_count=2,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(work_base),
+        candidates_per_user=5,
+        target_ctr=0.2,
+        seed=123,
+        generator_name="rule_based",
+        progress_flush_chunks=1,
+    )
+
+    progress_path = (
+        tmp_path
+        / "action_log_progress"
+        / "dt=2026-07-01"
+        / "shard=001"
+        / "progress.json"
+    )
+    payload = json.loads(progress_path.read_text(encoding="utf-8"))
+
+    assert summary["progress_path"] == str(progress_path)
+    assert payload["partition_date"] == "2026-07-01"
+    assert payload["shard_index"] == 1
+    assert payload["shard_count"] == 2
+    assert payload["status"] == "success"
+    assert payload["completed_chunks"] == payload["total_chunks"] == 2
+    assert payload["success_chunks"] == 2
+    assert payload["failed_chunks"] == 0
+    assert payload["quarantined_chunks"] == 0
+    assert payload["updated_at"].endswith("Z")
+
+
+def test_run_daily_action_log_shard_ignores_progress_writer_failure(
+    tmp_path,
+    monkeypatch,
+):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    work_base = tmp_path / "action_log_work"
+
+    _write_virtual_users(virtual_users_path)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    def _raise_progress_write(payload, path, *, filesystem=None):
+        raise OSError("progress write failed")
+
+    monkeypatch.setattr(
+        daily_module,
+        "_write_progress_json_file",
+        _raise_progress_write,
+    )
+
+    summary = run_daily_action_log_shard(
+        partition_date=partition_date,
+        shard_index=0,
+        shard_count=2,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(work_base),
+        candidates_per_user=5,
+        target_ctr=0.2,
+        seed=123,
+        generator_name="rule_based",
+        progress_flush_chunks=1,
+    )
+
+    output_path = work_base / "dt=2026-07-01" / "shard=000" / "part-0.parquet"
+    assert summary["output_path"] == str(output_path)
+    assert output_path.exists()
+
+
+def test_shard_resume_calls_only_unfinished_work_after_interruption(
+    tmp_path,
+    monkeypatch,
+):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    work_base = tmp_path / "action_log_work"
+    generator = _CountingGenerator()
+
+    _write_virtual_users(virtual_users_path, count=3)
+    _write_youtube_partition(youtube_base, partition_date)
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda generator_name, model_name=None: generator,
+    )
+    original_write_part = daily_module._ActionLogCheckpointStore.write_part
+    interrupted = False
+
+    def _write_then_interrupt(self, work_id, work_order, drafts):
+        nonlocal interrupted
+        original_write_part(self, work_id, work_order, drafts)
+        if not interrupted:
+            interrupted = True
+            raise RuntimeError("simulated interruption")
+
+    monkeypatch.setattr(
+        daily_module._ActionLogCheckpointStore,
+        "write_part",
+        _write_then_interrupt,
+    )
+    kwargs = {
+        "partition_date": partition_date,
+        "shard_index": 0,
+        "shard_count": 1,
+        "youtube_base_path": str(youtube_base),
+        "virtual_users_path": str(virtual_users_path),
+        "output_base_path": str(work_base),
+        "candidates_per_user": 4,
+        "chunk_size": 2,
+        "max_concurrency": 1,
+    }
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        run_daily_action_log_shard(**kwargs)
+    assert generator.calls == 1
+
+    monkeypatch.setattr(
+        daily_module._ActionLogCheckpointStore,
+        "write_part",
+        original_write_part,
+    )
+    calls_before_resume = generator.calls
+    summary = run_daily_action_log_shard(**kwargs)
+
+    assert summary["total_work"] == 6
+    assert generator.calls - calls_before_resume == 5
+    assert Path(summary["manifest_path"]).exists()
+    assert Path(summary["output_path"]).exists()
+
+
+def test_checkpoint_fingerprint_isolates_changed_config(tmp_path, monkeypatch):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    work_base = tmp_path / "action_log_work"
+    generator = _CountingGenerator()
+
+    _write_virtual_users(virtual_users_path, count=2)
+    _write_youtube_partition(youtube_base, partition_date)
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda generator_name, model_name=None: generator,
+    )
+    common = {
+        "partition_date": partition_date,
+        "shard_index": 0,
+        "shard_count": 1,
+        "youtube_base_path": str(youtube_base),
+        "virtual_users_path": str(virtual_users_path),
+        "output_base_path": str(work_base),
+        "candidates_per_user": 4,
+        "chunk_size": 2,
+    }
+
+    first = run_daily_action_log_shard(**common, seed=1)
+    calls_after_first = generator.calls
+    second = run_daily_action_log_shard(**common, seed=2)
+
+    assert first["config_fingerprint"] != second["config_fingerprint"]
+    assert first["checkpoint_path"] != second["checkpoint_path"]
+    assert generator.calls - calls_after_first == second["total_work"]
+
+
+def test_checkpoint_duplicate_parts_are_deduplicated_by_work_id(
+    tmp_path,
+    monkeypatch,
+):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    work_base = tmp_path / "action_log_work"
+    first_generator = _CountingGenerator()
+
+    _write_virtual_users(virtual_users_path, count=2)
+    _write_youtube_partition(youtube_base, partition_date)
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda generator_name, model_name=None: first_generator,
+    )
+    kwargs = {
+        "partition_date": partition_date,
+        "shard_index": 0,
+        "shard_count": 1,
+        "youtube_base_path": str(youtube_base),
+        "virtual_users_path": str(virtual_users_path),
+        "output_base_path": str(work_base),
+        "candidates_per_user": 4,
+        "chunk_size": 2,
+    }
+    first = run_daily_action_log_shard(**kwargs)
+    parts_dir = Path(first["checkpoint_path"]) / "parts"
+    source = sorted(parts_dir.glob("*.parquet"))[0]
+    shutil.copyfile(source, parts_dir / "duplicate.parquet")
+
+    resumed_generator = _CountingGenerator()
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda generator_name, model_name=None: resumed_generator,
+    )
+    second = run_daily_action_log_shard(**kwargs)
+
+    assert resumed_generator.calls == 0
+    assert second["drafts"] == first["drafts"]

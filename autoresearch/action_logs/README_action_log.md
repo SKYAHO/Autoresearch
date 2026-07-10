@@ -218,11 +218,32 @@ daily partition을 읽고 action log partition을 생성한다.
 입력 영상: gs://<YOUTUBE_LAKE_BUCKET>/data_lake/youtube_trending_kr/dt=YYYY-MM-DD/part-0.parquet
 입력 유저: gs://<YOUTUBE_LAKE_BUCKET>/asset/virtual_user/vu_1000.parquet
 출력 로그: gs://<YOUTUBE_LAKE_BUCKET>/data_lake/action_log/dt=YYYY-MM-DD/part-0.parquet
+Shard 진행률: gs://<YOUTUBE_LAKE_BUCKET>/data_lake/action_log_progress/dt=YYYY-MM-DD/shard=NNN/progress.json
+Shard checkpoint: gs://<YOUTUBE_LAKE_BUCKET>/data_lake/action_log_checkpoints/dt=YYYY-MM-DD/shard=NNN/fingerprint=<SHA256>/
+Shard manifest: gs://<YOUTUBE_LAKE_BUCKET>/data_lake/action_log_work/dt=YYYY-MM-DD/shard=NNN/manifest.json
 ```
 
 기본 후보 믹스는 유저당 24개 노출 기준 `70% personalized / 20% popular /
 10% exploration`이다. 기본 generator는 `rule_based`이며, `ACTION_LOG_GENERATOR=openrouter`
 로 설정하면 `OpenRouterActionLogGenerator`를 사용한다.
+
+Shard 모드(`run_daily_action_log_shard`)는 draft 생성 중 stdout에
+`[action-log-progress] shard=003 completed=120 total=873 success=118 failed=2 pct=13.7`
+형태의 진행률을 출력하고, 같은 내용을 `progress.json`으로 주기적으로 갱신한다.
+기본 progress root는 shard work 출력 root 옆의 `action_log_progress`이며,
+progress 기록 실패는 경고만 남기고 shard 생성은 계속한다. `progress.json`은
+덮어쓸 수 있는 관측용 snapshot일 뿐 재개 checkpoint가 아니다.
+
+Durable checkpoint는 별도 `action_log_checkpoints` root에 성공한 API work를
+immutable parquet part로 즉시 추가한다. work_id는 partition/shard/user/chunk/config
+fingerprint로 결정되며, 재실행은 같은 fingerprint의 완료 work를 건너뛴다. 중복
+part는 work_id로 dedup하고, 다른 fingerprint의 이전 checkpoint는 별도 namespace에
+격리한다. 최종 shard parquet은 checkpoint와 새 성공 결과를 원본 work 순서로
+조립한 뒤 `manifest.json`을 마지막에 기록한다.
+
+Shard 단계는 로컬 quarantine 비율만으로 성공 draft를 폐기하지 않는다. merge가
+모든 shard manifest의 fingerprint/model/schema/prompt 계약과 완료 여부를 확인한 뒤
+`total_work`와 `quarantine_count`를 합산해 전역 `max_quarantine_ratio`를 검증한다.
 
 ### 7.3 환경
 - Python 3.12 venv에서 실행/테스트. 시스템 python3(3.10)은 프로젝트 실행 불가.
@@ -237,6 +258,9 @@ daily partition을 읽고 action log partition을 생성한다.
 | `asset/action_log/event_log.parquet` | 명시적 Arrow 스키마 event log(12컬럼) |
 | `data/generated/event_log.jsonl` | warehouse 적재용 flat row(도메인 8컬럼) |
 | `data/generated/event_log_quarantine.jsonl` | 격리된 유저(원본 + raw 응답 + error) |
+| `data_lake/action_log_progress/dt=YYYY-MM-DD/shard=NNN/progress.json` | Shard draft 생성 진행률(status, completed/success/failed/quarantined chunks) |
+| `data_lake/action_log_checkpoints/dt=YYYY-MM-DD/shard=NNN/fingerprint=<SHA256>/parts/*.parquet` | 성공 work durable checkpoint(immutable, work_id dedup) |
+| `data_lake/action_log_work/dt=YYYY-MM-DD/shard=NNN/manifest.json` | shard/merge config fingerprint와 work/quarantine 계약 |
 
 ---
 
