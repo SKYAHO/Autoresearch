@@ -9,10 +9,11 @@ import logging
 import math
 import random
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 from datetime import UTC, timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Literal, Protocol
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -61,6 +62,63 @@ class ActionLogGenerationError(RuntimeError):
     """격리 비율이 임계치를 넘어 전량/대량 실패로 판정될 때 발생한다."""
 
 
+@dataclass(frozen=True)
+class ActionLogDraftGenerationResult:
+    """LLM judgment draft 생성 결과와 quarantine 요약."""
+
+    drafts: list[ImpressionDraft]
+    quarantine: list[QuarantineRecord]
+    total_work: int
+
+    @property
+    def summary(self) -> dict[str, int]:
+        counts = {"api_error": 0, "invalid_json": 0, "schema_fail": 0}
+        for record in self.quarantine:
+            counts[record.error_type] += 1
+        return {
+            "drafts": len(self.drafts),
+            "quarantined_users": len(self.quarantine),
+            "total_work": self.total_work,
+            **counts,
+        }
+
+
+@dataclass(frozen=True)
+class ActionLogProgressSnapshot:
+    """LLM chunk 생성 진행률을 외부 reporter로 전달하기 위한 스냅샷."""
+
+    status: Literal["running", "success", "failed"]
+    completed_chunks: int
+    total_chunks: int
+    success_chunks: int
+    failed_chunks: int
+    quarantined_chunks: int
+
+
+ActionLogProgressCallback = Callable[[ActionLogProgressSnapshot], None]
+ActionLogWorkIdFactory = Callable[[str, int], str]
+ActionLogCheckpointCallback = Callable[[str, int, list[ImpressionDraft]], None]
+
+
+@dataclass(frozen=True)
+class ActionLogCheckpointPart:
+    """durable checkpoint part에서 복원한 한 work의 성공 draft."""
+
+    work_id: str
+    work_order: int
+    drafts: list[ImpressionDraft]
+
+
+@dataclass(frozen=True)
+class _ActionLogWorkItem:
+    """결정론적 원본 순서를 가진 유저 후보 chunk 작업."""
+
+    work_id: str
+    user_id: str
+    virtual_user: dict
+    candidates: list[dict]
+
+
 EVENT_LOG_PARQUET_SCHEMA = pa.schema(
     [
         pa.field("event_id", pa.string()),
@@ -75,6 +133,25 @@ EVENT_LOG_PARQUET_SCHEMA = pa.schema(
         pa.field("prompt_version", pa.string()),
         pa.field("llm_model", pa.string()),
         pa.field("generated_at", pa.string()),
+    ]
+)
+
+ACTION_LOG_DRAFT_PARQUET_SCHEMA = pa.schema(
+    [
+        pa.field("user_id", pa.string()),
+        pa.field("video_id", pa.string()),
+        pa.field("click_propensity", pa.float64()),
+        pa.field("watch_fraction", pa.float64()),
+        pa.field("would_like", pa.bool_()),
+        pa.field("duration_sec", pa.int64()),
+    ]
+)
+
+ACTION_LOG_CHECKPOINT_PARQUET_SCHEMA = pa.schema(
+    [
+        pa.field("work_id", pa.string()),
+        pa.field("work_order", pa.int64()),
+        *ACTION_LOG_DRAFT_PARQUET_SCHEMA,
     ]
 )
 
@@ -138,6 +215,10 @@ def _generate_drafts_isolated(
     virtual_users: list[dict],
     videos: list[dict],
     request: EventGenerationRequest,
+    progress_callback: ActionLogProgressCallback | None = None,
+    work_id_factory: ActionLogWorkIdFactory | None = None,
+    completed_work: dict[str, list[ImpressionDraft]] | None = None,
+    checkpoint_callback: ActionLogCheckpointCallback | None = None,
 ) -> tuple[list[ImpressionDraft], list[QuarantineRecord], int]:
     """LLM 판정을 (유저×후보청크) 단위로 격리·병렬 생성한다.
 
@@ -147,8 +228,8 @@ def _generate_drafts_isolated(
     반환: (drafts, quarantine, 총 작업(청크) 수).
     """
 
-    # 1) 결정론적 작업 목록: (user_id, virtual_user, chunk_candidates)
-    work: list[tuple[str, dict, list[dict]]] = []
+    # 1) 결정론적 작업 목록: (work_id, user_id, virtual_user, chunk_candidates)
+    work: list[_ActionLogWorkItem] = []
     for index, virtual_user in enumerate(virtual_users):
         user_id = str(virtual_user.get("user_id", f"user_{index}"))
         user_rng = random.Random(f"{request.seed}:{user_id}")
@@ -163,66 +244,151 @@ def _generate_drafts_isolated(
         )
         if not candidates:
             continue
-        for chunk in _chunked(candidates, request.chunk_size):
-            work.append((user_id, virtual_user, chunk))
+        for chunk_index, chunk in enumerate(_chunked(candidates, request.chunk_size)):
+            work_id = (
+                work_id_factory(user_id, chunk_index)
+                if work_id_factory is not None
+                else f"work_{len(work):08d}"
+            )
+            work.append(
+                _ActionLogWorkItem(
+                    work_id=work_id,
+                    user_id=user_id,
+                    virtual_user=virtual_user,
+                    candidates=chunk,
+                )
+            )
 
-    # 2) LLM 콜만 병렬화. 실패는 작업 index별로 보관해 이후 순서대로 처리.
-    raw_by_index: dict[int, str] = {}
-    api_error_by_index: dict[int, str] = {}
+    work_ids = [item.work_id for item in work]
+    if len(work_ids) != len(set(work_ids)):
+        raise ValueError("duplicate action log work_id")
+
+    # 2) LLM 콜만 병렬화. 완료 시점에 파싱/격리까지 판정하되, 결과는 작업 index별로
+    # 보관해 최종 조립 순서는 기존처럼 원본 순서를 유지한다.
+    drafts_by_index: dict[int, list[ImpressionDraft]] = {}
+    quarantine_by_index: dict[int, QuarantineRecord] = {}
+    total_chunks = len(work)
+    restored_work = completed_work or {}
+    for index, item in enumerate(work):
+        restored = restored_work.get(item.work_id)
+        if restored is not None:
+            drafts_by_index[index] = restored
+    completed_chunks = len(drafts_by_index)
+    success_chunks = len(drafts_by_index)
+    failed_chunks = 0
+    quarantined_chunks = 0
+
+    def _emit_progress(status: Literal["running", "success", "failed"]) -> None:
+        if progress_callback is None:
+            return
+        snapshot = ActionLogProgressSnapshot(
+            status=status,
+            completed_chunks=completed_chunks,
+            total_chunks=total_chunks,
+            success_chunks=success_chunks,
+            failed_chunks=failed_chunks,
+            quarantined_chunks=quarantined_chunks,
+        )
+        try:
+            progress_callback(snapshot)
+        except Exception:  # noqa: BLE001 - progress reporting must not fail generation
+            logger.warning("Action log progress callback failed", exc_info=True)
 
     def _call(i: int) -> tuple[int, str]:
-        _uid, vu, chunk = work[i]
-        return i, generator.generate(vu, chunk)
+        item = work[i]
+        return i, generator.generate(item.virtual_user, item.candidates)
 
-    with ThreadPoolExecutor(max_workers=max(1, request.max_concurrency)) as executor:
-        futures = {executor.submit(_call, i): i for i in range(len(work))}
-        for future in as_completed(futures):
-            i = futures[future]
+    _emit_progress("running")
+    pending_indices = iter(i for i in range(total_chunks) if i not in drafts_by_index)
+    max_workers = max(1, request.max_concurrency)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures: dict[Future[tuple[int, str]], int] = {}
+
+        def _submit_next() -> bool:
             try:
-                _, raw_text = future.result()
-                raw_by_index[i] = raw_text
-            except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
-                api_error_by_index[i] = str(exc)
+                index = next(pending_indices)
+            except StopIteration:
+                return False
+            futures[executor.submit(_call, index)] = index
+            return True
 
-    # 3) 조립·검증은 원본 순서로 단일 스레드에서(결정론). 실패는 quarantine.
+        for _ in range(max_workers):
+            if not _submit_next():
+                break
+
+        while futures:
+            done, _pending = wait(futures, return_when=FIRST_COMPLETED)
+            for future in sorted(done, key=lambda item: futures[item]):
+                i = futures.pop(future)
+                item = work[i]
+                user_id = item.user_id
+                virtual_user = item.virtual_user
+                chunk = item.candidates
+                succeeded_drafts: list[ImpressionDraft] | None = None
+                failure: QuarantineRecord | None = None
+                try:
+                    _, raw_text = future.result()
+                except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
+                    failure = QuarantineRecord(
+                        user_id=user_id,
+                        virtual_user=virtual_user,
+                        raw_llm_response="",
+                        error_type="api_error",
+                        error_message=str(exc),
+                    )
+                else:
+                    try:
+                        succeeded_drafts = _build_user_drafts(
+                            virtual_user,
+                            chunk,
+                            raw_text,
+                        )
+                    except json.JSONDecodeError as exc:
+                        failure = QuarantineRecord(
+                            user_id=user_id,
+                            virtual_user=virtual_user,
+                            raw_llm_response=raw_text,
+                            error_type="invalid_json",
+                            error_message=str(exc),
+                        )
+                    except (
+                        ValidationError,
+                        ValueError,
+                        KeyError,
+                        TypeError,
+                        AttributeError,
+                    ) as exc:
+                        failure = QuarantineRecord(
+                            user_id=user_id,
+                            virtual_user=virtual_user,
+                            raw_llm_response=raw_text,
+                            error_type="schema_fail",
+                            error_message=str(exc),
+                        )
+
+                if succeeded_drafts is not None:
+                    if checkpoint_callback is not None:
+                        checkpoint_callback(item.work_id, i, succeeded_drafts)
+                    drafts_by_index[i] = succeeded_drafts
+                    success_chunks += 1
+                else:
+                    assert failure is not None
+                    quarantine_by_index[i] = failure
+                    failed_chunks += 1
+                    quarantined_chunks += 1
+                completed_chunks += 1
+                _emit_progress("running")
+                _submit_next()
+
+    # 3) 조립은 원본 순서로 단일 스레드에서(결정론). 실패는 quarantine.
     drafts: list[ImpressionDraft] = []
     quarantine: list[QuarantineRecord] = []
-    for i, (user_id, virtual_user, chunk) in enumerate(work):
-        if i in api_error_by_index:
-            quarantine.append(
-                QuarantineRecord(
-                    user_id=user_id,
-                    virtual_user=virtual_user,
-                    raw_llm_response="",
-                    error_type="api_error",
-                    error_message=api_error_by_index[i],
-                )
-            )
-            continue
-        raw_text = raw_by_index[i]
-        try:
-            drafts.extend(_build_user_drafts(virtual_user, chunk, raw_text))
-        except json.JSONDecodeError as exc:
-            quarantine.append(
-                QuarantineRecord(
-                    user_id=user_id,
-                    virtual_user=virtual_user,
-                    raw_llm_response=raw_text,
-                    error_type="invalid_json",
-                    error_message=str(exc),
-                )
-            )
-        except (ValidationError, ValueError, KeyError, TypeError, AttributeError) as exc:
-            quarantine.append(
-                QuarantineRecord(
-                    user_id=user_id,
-                    virtual_user=virtual_user,
-                    raw_llm_response=raw_text,
-                    error_type="schema_fail",
-                    error_message=str(exc),
-                )
-            )
-    return drafts, quarantine, len(work)
+    for i in range(total_chunks):
+        if i in quarantine_by_index:
+            quarantine.append(quarantine_by_index[i])
+        else:
+            drafts.extend(drafts_by_index[i])
+    return drafts, quarantine, total_chunks
 
 
 def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
@@ -340,11 +506,102 @@ def _event_rows(batch: EventLogBatch, model_name: str) -> list[dict]:
     return rows
 
 
-def _write_event_log_parquet(batch: EventLogBatch, model_name: str, output_path: Path) -> None:
+def _draft_rows(drafts: list[ImpressionDraft]) -> list[dict]:
+    """ImpressionDraft 목록을 shard work parquet row로 변환한다."""
+
+    return [draft.model_dump() for draft in drafts]
+
+
+def write_action_log_draft_parquet(
+    drafts: list[ImpressionDraft],
+    output_path: str | Path,
+    *,
+    filesystem=None,
+) -> None:
+    """Shard work parquet으로 저장할 LLM judgment draft를 쓴다."""
+
+    if filesystem is None:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    table = pa.Table.from_pylist(
+        _draft_rows(drafts),
+        schema=ACTION_LOG_DRAFT_PARQUET_SCHEMA,
+    )
+    pq.write_table(table, output_path, filesystem=filesystem)
+
+
+def read_action_log_draft_parquet(
+    input_path: str | Path,
+    *,
+    filesystem=None,
+) -> list[ImpressionDraft]:
+    """Shard work parquet을 ImpressionDraft 목록으로 읽는다."""
+
+    table = pq.read_table(input_path, filesystem=filesystem)
+    return [ImpressionDraft.model_validate(row) for row in table.to_pylist()]
+
+
+def write_action_log_checkpoint_part(
+    work_id: str,
+    work_order: int,
+    drafts: list[ImpressionDraft],
+    output_path: str | Path,
+    *,
+    filesystem=None,
+) -> None:
+    """성공한 work 하나를 immutable checkpoint parquet part로 쓴다."""
+
+    if not drafts:
+        raise ValueError("checkpoint part requires at least one draft")
+    if filesystem is None:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"work_id": work_id, "work_order": work_order, **draft.model_dump()}
+        for draft in drafts
+    ]
+    table = pa.Table.from_pylist(rows, schema=ACTION_LOG_CHECKPOINT_PARQUET_SCHEMA)
+    pq.write_table(table, output_path, filesystem=filesystem)
+
+
+def read_action_log_checkpoint_part(
+    input_path: str | Path,
+    *,
+    filesystem=None,
+) -> ActionLogCheckpointPart:
+    """checkpoint parquet part를 work identity와 draft 목록으로 읽는다."""
+
+    rows = pq.read_table(input_path, filesystem=filesystem).to_pylist()
+    if not rows:
+        raise ValueError(f"empty checkpoint part: {input_path}")
+    work_ids = {str(row["work_id"]) for row in rows}
+    work_orders = {int(row["work_order"]) for row in rows}
+    if len(work_ids) != 1 or len(work_orders) != 1:
+        raise ValueError(f"mixed work identity in checkpoint part: {input_path}")
+    drafts = [
+        ImpressionDraft.model_validate(
+            {key: value for key, value in row.items() if key not in {"work_id", "work_order"}}
+        )
+        for row in rows
+    ]
+    return ActionLogCheckpointPart(
+        work_id=work_ids.pop(),
+        work_order=work_orders.pop(),
+        drafts=drafts,
+    )
+
+
+def write_event_log_parquet(
+    batch: EventLogBatch,
+    model_name: str,
+    output_path: str | Path,
+    *,
+    filesystem=None,
+) -> None:
     """EventLogBatch를 명시적 Arrow schema의 Parquet 파일로 저장한다."""
 
+    if filesystem is None:
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pylist(_event_rows(batch, model_name), schema=EVENT_LOG_PARQUET_SCHEMA)
-    pq.write_table(table, output_path)
+    pq.write_table(table, output_path, filesystem=filesystem)
 
 
 def write_event_log_warehouse_jsonl(batch: EventLogBatch, output_path: str | Path) -> None:
@@ -369,16 +626,50 @@ def write_quarantine_jsonl(records: list[QuarantineRecord], output_path: str | P
     logger.info("Wrote quarantine output", extra={"output_path": str(path), "total": len(records)})
 
 
-def generate_action_log_batch(
+def _raise_if_quarantine_exceeds(
+    quarantine: list[QuarantineRecord],
+    total_work: int,
+    request: EventGenerationRequest,
+    user_count: int,
+) -> None:
+    """전량/대량 실패가 조용히 성공 처리되지 않도록 quarantine 비율을 검증한다."""
+
+    if not total_work:
+        return
+
+    quarantine_ratio = len(quarantine) / total_work
+    if quarantine_ratio <= request.max_quarantine_ratio:
+        return
+
+    write_quarantine_jsonl(quarantine, request.quarantine_output_path)
+    raise ActionLogGenerationError(
+        f"quarantine ratio {quarantine_ratio:.2f} exceeds max_quarantine_ratio "
+        f"{request.max_quarantine_ratio:.2f} "
+        f"(quarantined={len(quarantine)}, total_chunks={total_work}, "
+        f"users={user_count})"
+    )
+
+
+def generate_action_log_drafts(
     request: EventGenerationRequest,
     virtual_users: list[dict],
     videos: list[dict],
     generator: ActionLogGenerator,
-) -> EventGenerationResult:
-    """유저 단위 격리 생성 → 전역 2% 정규화 → 조립 → 파일 저장을 실행한다."""
+    progress_callback: ActionLogProgressCallback | None = None,
+    *,
+    enforce_quarantine_limit: bool = True,
+    work_id_factory: ActionLogWorkIdFactory | None = None,
+    completed_work: dict[str, list[ImpressionDraft]] | None = None,
+    checkpoint_callback: ActionLogCheckpointCallback | None = None,
+) -> ActionLogDraftGenerationResult:
+    """유저 단위 LLM 판단을 실행하고 전역 CTR 정규화 전 draft를 반환한다.
+
+    단일 실행은 quarantine 비율을 즉시 검증한다. shard 실행은 성공 draft를
+    보존하기 위해 이 검증을 merge 단계의 전역 합산 뒤로 미룰 수 있다.
+    """
 
     logger.info(
-        "Starting action log batch generation",
+        "Starting action log draft generation",
         extra={
             "users": len(virtual_users),
             "videos": len(videos),
@@ -389,8 +680,33 @@ def generate_action_log_batch(
     )
 
     drafts, quarantine, total_work = _generate_drafts_isolated(
-        generator, virtual_users, videos, request
+        generator,
+        virtual_users,
+        videos,
+        request,
+        progress_callback,
+        work_id_factory,
+        completed_work,
+        checkpoint_callback,
     )
+    if enforce_quarantine_limit:
+        _raise_if_quarantine_exceeds(quarantine, total_work, request, len(virtual_users))
+    result = ActionLogDraftGenerationResult(
+        drafts=drafts,
+        quarantine=quarantine,
+        total_work=total_work,
+    )
+    logger.info("Generated action log drafts", extra=result.summary)
+    return result
+
+
+def expand_action_log_drafts(
+    request: EventGenerationRequest,
+    drafts: list[ImpressionDraft],
+    quarantine: list[QuarantineRecord] | None = None,
+) -> EventGenerationResult:
+    """전체 draft에 전역 CTR 정규화와 long event 확장을 적용한다."""
+
     clicked = _clicked_indices(drafts, request.target_ctr)
     events = _expand_events(drafts, clicked, request)
 
@@ -400,27 +716,38 @@ def generate_action_log_batch(
         request=request,
         events=events,
     )
-    result = EventGenerationResult(batch=batch, quarantine=quarantine)
+    result = EventGenerationResult(batch=batch, quarantine=quarantine or [])
     logger.info("Generated action log batch", extra=result.summary)
+    return result
 
-    # 전량/대량 실패 가드: 유저 단위 격리와 별개로, 배치 전체가 조용히 빈 결과로
-    # 성공 종료하는 상황을 막는다. 격리 파일은 포렌식용으로 남기고 실패로 종료한다.
-    if total_work:
-        quarantine_ratio = len(quarantine) / total_work
-        if quarantine_ratio > request.max_quarantine_ratio:
-            write_quarantine_jsonl(quarantine, request.quarantine_output_path)
-            raise ActionLogGenerationError(
-                f"quarantine ratio {quarantine_ratio:.2f} exceeds max_quarantine_ratio "
-                f"{request.max_quarantine_ratio:.2f} "
-                f"(quarantined={len(quarantine)}, total_chunks={total_work}, "
-                f"users={len(virtual_users)})"
-            )
+
+def generate_action_log_batch(
+    request: EventGenerationRequest,
+    virtual_users: list[dict],
+    videos: list[dict],
+    generator: ActionLogGenerator,
+    progress_callback: ActionLogProgressCallback | None = None,
+) -> EventGenerationResult:
+    """유저 단위 격리 생성 → 전역 2% 정규화 → 조립 → 파일 저장을 실행한다."""
+
+    draft_result = generate_action_log_drafts(
+        request,
+        virtual_users,
+        videos,
+        generator,
+        progress_callback,
+    )
+    result = expand_action_log_drafts(
+        request,
+        draft_result.drafts,
+        draft_result.quarantine,
+    )
 
     output_path = Path(request.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_event_log_parquet(batch, generator.model_name, output_path)
-    write_event_log_warehouse_jsonl(batch, request.warehouse_output_path)
-    write_quarantine_jsonl(quarantine, request.quarantine_output_path)
+    write_event_log_parquet(result.batch, generator.model_name, output_path)
+    write_event_log_warehouse_jsonl(result.batch, request.warehouse_output_path)
+    write_quarantine_jsonl(draft_result.quarantine, request.quarantine_output_path)
     logger.info(
         "Wrote action log outputs",
         extra={"output_path": str(output_path), **result.summary},
