@@ -124,23 +124,18 @@ def validate_point_in_time(dataset: pd.DataFrame) -> None:
     print(f"  [OK] {len(dataset)} 샘플 확인 완료")
 
 
-def main(raw_dir: str = None, events_path: str = None, output_path: str = None):
+def main():
     data_dir = get_data_dir()
-    if raw_dir is None:
-        raw_dir = os.path.join(data_dir, "raw")
-    if events_path is None:
-        events_path = os.path.join(data_dir, "processed", "events.csv")
-    if output_path is None:
-        output_path = os.path.join(data_dir, "processed", "training_dataset.csv")
+    output_path = os.path.join(data_dir, "processed", "training_dataset.csv")
 
     print("=" * 70)
     print("training_dataset.csv 생성 파이프라인")
     print("=" * 70)
 
     print("\n[로드] 데이터 로드 중...")
-    videos = pd.read_csv(os.path.join(raw_dir, "youtube_videos.csv"))
-    personas = pd.read_csv(os.path.join(raw_dir, "personas.csv"))
-    events = pd.read_csv(events_path)
+    videos = pd.read_csv(os.path.join(data_dir, "raw", "youtube_videos.csv"))
+    personas = pd.read_csv(os.path.join(data_dir, "raw", "personas.csv"))
+    events = pd.read_csv(os.path.join(data_dir, "processed", "events.csv"))
 
     # Parse ISO 8601 duration to seconds (e.g., "PT4M29S" → 269)
     def parse_iso8601_duration(duration_str):
