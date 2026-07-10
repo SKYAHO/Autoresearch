@@ -23,7 +23,9 @@ def register_model(model_uri: str, model_name: str, tags: Optional[Dict[str, str
     model_version = mlflow.register_model(model_uri, model_name)
     if tags:
         client = mlflow.tracking.MlflowClient()
-        client.set_model_version_tag(model_name, model_version.version, tags)
+        client = mlflow.tracking.MlflowClient()
+        for key, value in tags.items():
+            client.set_model_version_tag(model_name, model_version.version, key, value)
     return model_version.version
 
 
