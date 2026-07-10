@@ -11,10 +11,17 @@ Mock Raw 데이터를 생성한다.
 """
 
 import os
+import sys
 import random
 import json
 import pandas as pd
 from datetime import datetime, timedelta
+
+# Add PROJECT_ROOT to sys.path for imports
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, PROJECT_ROOT)
+
+from src.features.category_reference import CATEGORY_DESCRIPTIONS
 
 random.seed(42)
 
@@ -25,13 +32,16 @@ TOPIC_VOCAB = [
     "health", "movie", "fashion",
 ]
 
-# Topic -> (YouTube categoryId, category 대표 한글 라벨) 매핑 (mock)
+# Topic -> YouTube category name 매핑 (mock)
 TOPIC_TO_CATEGORY = {
-    "music": "10", "sports": "17", "gaming": "20", "travel": "19",
-    "food": "26", "education": "27", "technology": "28", "beauty": "26",
-    "news": "25", "entertainment": "24", "family": "1", "finance": "25",
-    "health": "26", "movie": "1", "fashion": "26",
+    "music": "Music", "sports": "Sports", "gaming": "Gaming", "travel": "Travel & Events",
+    "food": "Howto & Style", "education": "Education", "technology": "Science & Technology", "beauty": "Howto & Style",
+    "news": "News & Politics", "entertainment": "Entertainment", "family": "Film & Animation", "finance": "News & Politics",
+    "health": "Howto & Style", "movie": "Film & Animation", "fashion": "Howto & Style",
 }
+
+assert set(TOPIC_TO_CATEGORY.values()) <= set(CATEGORY_DESCRIPTIONS), \
+    f"TOPIC_TO_CATEGORY has invalid categories: {set(TOPIC_TO_CATEGORY.values()) - set(CATEGORY_DESCRIPTIONS)}"
 
 CHANNELS = [f"Channel_{t.capitalize()}{i}" for t in TOPIC_VOCAB for i in range(1, 3)]
 
@@ -126,7 +136,8 @@ def gen_personas(n=50):
     return pd.DataFrame(rows)
 
 
-if __name__ == "__main__":
+def main():
+    """Generate mock raw data (videos and personas)."""
     data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
     videos = gen_videos(30)
     personas = gen_personas(50)
@@ -134,3 +145,7 @@ if __name__ == "__main__":
     personas.to_csv(os.path.join(data_dir, "persona_raw.csv"), index=False)
     print(f"video_raw.csv: {len(videos)} rows")
     print(f"persona_raw.csv: {len(personas)} rows")
+
+
+if __name__ == "__main__":
+    main()
