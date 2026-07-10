@@ -1,4 +1,4 @@
-/# Data Warehouse (BigQuery)
+# Data Warehouse (BigQuery)
 
 > 기준일: 2026-07-10
 
