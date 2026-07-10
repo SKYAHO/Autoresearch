@@ -195,10 +195,12 @@ result = generate_action_log_batch(EventGenerationRequest(...paths...), users, v
 gen.close()
 ```
 - generator는 worker thread별 OpenAI client/HTTP connection pool을 재사용하며 daily runner가
-  lifecycle 종료 시 모두 닫는다. SDK 내장 retry는 비활성화하고 408/429/502/503/504만
-  `Retry-After` + exponential backoff + jitter로 제한 재시도한다. timeout/retry는
-  `OPENROUTER_TIMEOUT_SEC`, `OPENROUTER_MAX_RETRIES`,
-  `OPENROUTER_RETRY_BACKOFF_BASE_SEC`, `OPENROUTER_RETRY_BACKOFF_MAX_SEC`로 설정한다.
+  lifecycle 종료 시 모두 닫는다. SDK 내장 retry는 비활성화하고 408/429/502/503/504와
+  `APITimeoutError`만 `Retry-After` + exponential backoff + jitter로 제한 재시도한다.
+  timeout/retry는 `OPENROUTER_TIMEOUT_SEC`, `OPENROUTER_MAX_RETRIES`,
+  `OPENROUTER_TIMEOUT_MAX_RETRIES`, `OPENROUTER_RETRY_BACKOFF_BASE_SEC`,
+  `OPENROUTER_RETRY_BACKOFF_MAX_SEC`로 설정한다. timeout 재시도는 비용 제어를 위해
+  기본 1회이며, HTTP 상태코드 재시도 한도와 분리해 조정한다.
 - `OPENROUTER_PROVIDER_SORT`, `OPENROUTER_ALLOW_FALLBACKS`,
   `OPENROUTER_REQUIRE_PARAMETERS`는 선택 설정이다. 비워 두면 기존 OpenRouter routing
   기본값을 유지하며 특정 provider나 `:nitro`를 강제하지 않는다.

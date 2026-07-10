@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Literal
 
+from openai import APITimeoutError
+
 from autoresearch.action_logs.candidate import (
     _relevance_score,
     _user_keywords,
@@ -28,6 +30,7 @@ DEFAULT_OPENROUTER_MODEL = "mistralai/mistral-nemo"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_TIMEOUT_SEC = 60.0
 DEFAULT_OPENROUTER_MAX_RETRIES = 2
+DEFAULT_OPENROUTER_TIMEOUT_MAX_RETRIES = 1
 DEFAULT_OPENROUTER_RETRY_BACKOFF_BASE_SEC = 1.0
 DEFAULT_OPENROUTER_RETRY_BACKOFF_MAX_SEC = 30.0
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, 502, 503, 504})
@@ -195,6 +198,7 @@ class OpenRouterActionLogGenerator:
         max_tokens: int = 4000,
         timeout_seconds: float | None = None,
         max_retries: int | None = None,
+        timeout_max_retries: int | None = None,
         retry_backoff_base_seconds: float | None = None,
         retry_backoff_max_seconds: float | None = None,
         provider_sort: Literal["price", "throughput", "latency"] | None = None,
@@ -217,6 +221,14 @@ class OpenRouterActionLogGenerator:
             max_retries
             if max_retries is not None
             else _env_int("OPENROUTER_MAX_RETRIES", DEFAULT_OPENROUTER_MAX_RETRIES)
+        )
+        self.timeout_max_retries = (
+            timeout_max_retries
+            if timeout_max_retries is not None
+            else _env_int(
+                "OPENROUTER_TIMEOUT_MAX_RETRIES",
+                DEFAULT_OPENROUTER_TIMEOUT_MAX_RETRIES,
+            )
         )
         self.retry_backoff_base_seconds = (
             retry_backoff_base_seconds
@@ -255,6 +267,8 @@ class OpenRouterActionLogGenerator:
             raise ValueError("timeout_seconds must be greater than 0")
         if self.max_retries < 0:
             raise ValueError("max_retries must be at least 0")
+        if self.timeout_max_retries < 0:
+            raise ValueError("timeout_max_retries must be at least 0")
         if self.retry_backoff_base_seconds < 0:
             raise ValueError("retry_backoff_base_seconds must be at least 0")
         if self.retry_backoff_max_seconds < self.retry_backoff_base_seconds:
@@ -392,21 +406,32 @@ class OpenRouterActionLogGenerator:
 
         client = self._get_client()
         response = None
-        for attempt in range(1, self.max_retries + 2):
+        attempts = 0
+        http_retries = 0
+        timeout_retries = 0
+        while response is None:
+            attempts += 1
             try:
                 response = client.chat.completions.create(**request)
-                break
             except Exception as exc:  # noqa: BLE001 - SDK exception boundary
                 status = self._status_code(exc)
-                if status in _RETRYABLE_STATUS_CODES and attempt <= self.max_retries:
-                    delay = self._retry_delay(exc, attempt)
+                is_timeout = isinstance(exc, APITimeoutError)
+                retry_limit = self.timeout_max_retries if is_timeout else self.max_retries
+                retries_used = timeout_retries if is_timeout else http_retries
+                is_retryable = is_timeout or status in _RETRYABLE_STATUS_CODES
+                if is_retryable and retries_used < retry_limit:
+                    if is_timeout:
+                        timeout_retries += 1
+                    else:
+                        http_retries += 1
+                    delay = self._retry_delay(exc, attempts)
                     logger.warning(
                         "Retrying OpenRouter action log request",
                         extra={
                             "status": status,
                             "error_type": type(exc).__name__,
                             "provider": self._provider_name(exc),
-                            "attempt": attempt,
+                            "attempt": attempts,
                             "retry_delay_seconds": round(delay, 3),
                         },
                     )
@@ -416,7 +441,7 @@ class OpenRouterActionLogGenerator:
                     status=status,
                     error_type=type(exc).__name__,
                     provider=self._provider_name(exc),
-                    attempts=attempt,
+                    attempts=attempts,
                 )
                 logger.error("OpenRouter action log request failed", extra=error.log_fields)
                 raise error from None

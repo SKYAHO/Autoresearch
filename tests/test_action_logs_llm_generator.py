@@ -2,7 +2,9 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from types import SimpleNamespace
 
+import httpx
 import pytest
+from openai import APITimeoutError
 
 import autoresearch.action_logs.llm_generator as llm_module
 from autoresearch.action_logs.llm_generator import (
@@ -33,6 +35,12 @@ def _videos():
 def _success(content: str = '{"judgments": []}'):
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+    )
+
+
+def _timeout_error() -> APITimeoutError:
+    return APITimeoutError(
+        request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
     )
 
 
@@ -180,6 +188,47 @@ def test_openrouter_retry_exhaustion_is_structured(monkeypatch):
         "attempts": 3,
     }
     assert len(client.completions.calls) == 3
+
+
+def test_openrouter_retries_api_timeout_with_separate_limit(monkeypatch):
+    client = _FakeClient([_timeout_error(), _success()])
+    sleeps = []
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    monkeypatch.setattr(llm_module.time, "sleep", sleeps.append)
+    monkeypatch.setattr(llm_module.random, "uniform", lambda start, end: 0.0)
+    generator = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        max_retries=0,
+        timeout_max_retries=1,
+        retry_backoff_base_seconds=0.0,
+        retry_backoff_max_seconds=0.0,
+    )
+
+    assert generator.generate(_user(), _videos()) == '{"judgments": []}'
+    assert len(client.completions.calls) == 2
+    assert sleeps == [0.0]
+
+
+def test_openrouter_timeout_retry_limit_is_independent_from_http_limit(monkeypatch):
+    client = _FakeClient([_timeout_error(), _timeout_error(), _success()])
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(llm_module.random, "uniform", lambda start, end: 0.0)
+    generator = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        max_retries=3,
+        timeout_max_retries=1,
+        retry_backoff_base_seconds=0.0,
+        retry_backoff_max_seconds=0.0,
+    )
+
+    with pytest.raises(OpenRouterRequestError) as exc_info:
+        generator.generate(_user(), _videos())
+
+    assert exc_info.value.status is None
+    assert exc_info.value.error_type == "APITimeoutError"
+    assert exc_info.value.attempts == 2
+    assert len(client.completions.calls) == 2
 
 
 def test_openrouter_provider_preferences_are_optional_and_do_not_change_model(
