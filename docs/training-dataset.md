@@ -1,19 +1,5 @@
 # Training Dataset (model Input)
 
-## Table of Contents
-
-- [Overview](#overview)
-- [Training Dataset Columns](#training-dataset-columns)
-- [Model Input Columns](#model-input-columns)
-- [Target Column](#target-column)
-- [Interaction Features](#interaction-features)
-- [BigQuery Join Fallback](#bigquery-join-fallback)
-- [Training Dataset Metadata](#training-dataset-metadata)
-- [Validation Checklist](#validation-checklist)
-- [Design Principles](#design-principles)
-
-<a id="overview"></a>
-
 ## Overview
 
 > [!NOTE]
@@ -25,13 +11,13 @@
 
 | 구분 | 이름 | 역할 |
 | --- | --- | --- |
-| Entity dataframe | [`training_entity`](https://app.notion.com/p/Data-Warehouse-BigQuery-398f1db77c1e805ba290c63b74b66b39?pvs=21) | 학습 row 기준. `user_id`, `video_id`, `event_timestamp`, `clicked` 포함 |
-| Feature View | [`UserStaticView`](https://app.notion.com/p/Data-Warehouse-BigQuery-398f1db77c1e805ba290c63b74b66b39?pvs=21) | 유저 정적 피처 조회 |
-| Feature View | [`UserDynamicView`](https://app.notion.com/p/Data-Warehouse-BigQuery-398f1db77c1e805ba290c63b74b66b39?pvs=21) | 유저 행동 기반 동적 피처 조회 |
-| Feature View | [`VideoFeatureView`](https://app.notion.com/p/Data-Warehouse-BigQuery-398f1db77c1e805ba290c63b74b66b39?pvs=21) | 영상 피처 조회 |
-| Feature View | [`UserCategorySimilarityView`](https://app.notion.com/p/Data-Warehouse-BigQuery-398f1db77c1e805ba290c63b74b66b39?pvs=21) | 유저-카테고리별 `topic_similarity` 조회 |
-| Artifact table | [`user_topic_embedding`](https://app.notion.com/p/Data-Warehouse-BigQuery-398f1db77c1e805ba290c63b74b66b39?pvs=21) | 사용자 관심 키워드별 embedding 저장 |
-| Reference table | [`category_embedding`](https://app.notion.com/p/Data-Warehouse-BigQuery-398f1db77c1e805ba290c63b74b66b39?pvs=21) | 카테고리 설명문과 카테고리 embedding 저장 |
+| Entity dataframe | `training_entity` | 학습 row 기준. `user_id`, `video_id`, `event_timestamp`, `clicked` 포함 |
+| Feature View | `UserStaticView` | 유저 정적 피처 조회 |
+| Feature View | `UserDynamicView` | 유저 행동 기반 동적 피처 조회 |
+| Feature View | `VideoFeatureView` | 영상 피처 조회 |
+| Feature View | `UserCategorySimilarityView` | 유저-카테고리별 `topic_similarity` 조회 |
+| Artifact table | `user_topic_embedding` | 사용자 관심 키워드별 embedding 저장 |
+| Reference table | `category_embedding` | 카테고리 설명문과 카테고리 embedding 저장 |
 | Output table | `training_dataset` | 최종 모델 학습 데이터셋 |
 
 ### 데이터셋 생성 흐름
@@ -64,7 +50,6 @@
 
 ## 💠 Training/Input/Target 컬럼
 
-<a id="training-dataset-columns"></a>
 
 ### 📊 Training Dataset Columns
 
@@ -116,7 +101,6 @@
 
 이 값 체계가 어긋나면 `preferred_category_match`, `historical_category_match`, `topic_similarity`가 잘못 계산될 수 있다.
 
-<a id="model-input-columns"></a>
 
 ### 📊 Model Input Columns
 
@@ -173,7 +157,6 @@
 
 ---
 
-<a id="interaction-features"></a>
 
 ## 💠 Interaction Feature 계산 규칙
 
@@ -242,8 +225,6 @@ IF(
 사용자 관심 키워드와 영상 카테고리의 의미적 유사도
 
 ---
-
-<a id="bigquery-join-fallback"></a>
 
 ## 💠 MVP용 BigQuery Join Fallback
 
@@ -558,7 +539,6 @@ SELECT
 
 ---
 
-<a id="design-principles"></a>
 
 ### 구현 원칙
 
