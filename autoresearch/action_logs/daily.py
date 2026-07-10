@@ -154,7 +154,9 @@ def _write_json_file(payload: dict[str, object], path: str, *, filesystem=None) 
     if filesystem is None:
         file_path = Path(path)
         file_path.parent.mkdir(parents=True, exist_ok=True)
-        file_path.write_bytes(data)
+        temporary_path = file_path.with_name(f".{file_path.name}.{uuid4().hex}.tmp")
+        temporary_path.write_bytes(data)
+        temporary_path.replace(file_path)
         return
 
     with filesystem.open_output_stream(path) as file:
@@ -406,10 +408,20 @@ def _build_generator(generator_name: str, model_name: str | None = None):
     raise AssertionError(f"unsupported normalized generator: {normalized}")
 
 
+def _close_generator(generator) -> None:
+    """client pool을 가진 generator의 lifecycle을 종료한다."""
+
+    close = getattr(generator, "close", None)
+    if callable(close):
+        close()
+
+
 def _fingerprint_payload(
     *,
     generator_name: str,
     model_name: str,
+    generator_config: dict[str, object] | None = None,
+    input_fingerprint: str,
     request: EventGenerationRequest,
 ) -> dict[str, object]:
     """출력 재현성에 영향을 주는 설정만 canonical fingerprint 입력으로 만든다."""
@@ -420,6 +432,8 @@ def _fingerprint_payload(
     return {
         "generator": _normalize_generator_name(generator_name),
         "model_name": model_name,
+        "generator_config": generator_config or {},
+        "input_fingerprint": input_fingerprint,
         "candidates_per_user": request.candidates_per_user,
         "target_ctr": request.target_ctr,
         "personalized_ratio": request.personalized_ratio,
@@ -439,6 +453,8 @@ def _config_fingerprint(
     *,
     generator_name: str,
     model_name: str,
+    generator_config: dict[str, object] | None = None,
+    input_fingerprint: str,
     request: EventGenerationRequest,
 ) -> str:
     """재현성 설정의 SHA-256 fingerprint를 반환한다."""
@@ -446,9 +462,24 @@ def _config_fingerprint(
     payload = _fingerprint_payload(
         generator_name=generator_name,
         model_name=model_name,
+        generator_config=generator_config,
+        input_fingerprint=input_fingerprint,
         request=request,
     )
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _input_fingerprint(virtual_users: list[dict], videos: list[dict]) -> str:
+    """입력 원문을 저장하지 않고 순서·내용의 SHA-256만 계산한다."""
+
+    payload = {"virtual_users": virtual_users, "videos": videos}
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -574,13 +605,20 @@ class _ActionLogCheckpointStore:
             f"part-{work_id}-{uuid4().hex}.parquet",
             filesystem=self._filesystem,
         )
+        write_path = (
+            f"{part_path}.{uuid4().hex}.tmp"
+            if self._filesystem is None
+            else part_path
+        )
         write_action_log_checkpoint_part(
             work_id,
             work_order,
             drafts,
-            part_path,
+            write_path,
             filesystem=self._filesystem,
         )
+        if self._filesystem is None:
+            Path(write_path).replace(part_path)
 
 
 def _manifest_request(manifest: ActionLogShardManifest, tmp_dir: Path) -> EventGenerationRequest:
@@ -741,12 +779,15 @@ def run_daily_action_log(
             history_end=history_end,
         )
         try:
-            result = generate_action_log_batch(
-                request,
-                virtual_users,
-                videos,
-                generator,
-            )
+            try:
+                result = generate_action_log_batch(
+                    request,
+                    virtual_users,
+                    videos,
+                    generator,
+                )
+            finally:
+                _close_generator(generator)
         except ActionLogGenerationError:
             quarantine_file = tmp_dir / "quarantine.jsonl"
             if quarantine_path and quarantine_file.exists():
@@ -861,10 +902,12 @@ def run_daily_action_log_shard(
         flush_chunks=progress_flush_chunks,
     )
     progress_finalized = False
+    generator = None
 
     try:
         videos = load_video_records(youtube_path, filesystem=filesystem)
         virtual_users = _read_virtual_users(virtual_users_path, filesystem=filesystem)
+        input_fingerprint = _input_fingerprint(virtual_users, videos)
         shard_users = _select_virtual_user_shard(
             virtual_users,
             shard_index,
@@ -874,6 +917,7 @@ def run_daily_action_log_shard(
         resolved_model_name = str(generator.model_name).strip()
         if not resolved_model_name:
             raise ValueError("generator model_name must not be empty")
+        generator_config = dict(getattr(generator, "fingerprint_config", {}))
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_dir = Path(tmp)
@@ -894,6 +938,8 @@ def run_daily_action_log_shard(
             fingerprint = _config_fingerprint(
                 generator_name=generator_name,
                 model_name=resolved_model_name,
+                generator_config=generator_config,
+                input_fingerprint=input_fingerprint,
                 request=request,
             )
             checkpoint_store = _ActionLogCheckpointStore(
@@ -905,6 +951,8 @@ def run_daily_action_log_shard(
                 config=_fingerprint_payload(
                     generator_name=generator_name,
                     model_name=resolved_model_name,
+                    generator_config=generator_config,
+                    input_fingerprint=input_fingerprint,
                     request=request,
                 ),
                 filesystem=filesystem,
@@ -946,6 +994,7 @@ def run_daily_action_log_shard(
                 shard_count=shard_count,
                 generator=_normalize_generator_name(generator_name),
                 model_name=resolved_model_name,
+                generator_config=generator_config,
                 candidates_per_user=request.candidates_per_user,
                 target_ctr=request.target_ctr,
                 personalized_ratio=request.personalized_ratio,
@@ -960,6 +1009,7 @@ def run_daily_action_log_shard(
                 quarantine_count=len(result.quarantine),
                 schema_version=ACTION_LOG_SCHEMA_VERSION,
                 prompt_version=PROMPT_VERSION,
+                input_fingerprint=input_fingerprint,
                 config_fingerprint=fingerprint,
             )
             _write_json_file(
@@ -974,6 +1024,9 @@ def run_daily_action_log_shard(
         if not progress_finalized:
             progress_writer.finish("failed")
         raise
+    finally:
+        if generator is not None:
+            _close_generator(generator)
 
     return {
         **result.summary,
@@ -1040,6 +1093,8 @@ def _load_shard_manifests(
         expected_fingerprint = _config_fingerprint(
             generator_name=manifest.generator,
             model_name=manifest.model_name,
+            generator_config=manifest.generator_config,
+            input_fingerprint=manifest.input_fingerprint,
             request=request,
         )
         if manifest.config_fingerprint != expected_fingerprint:

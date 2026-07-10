@@ -182,6 +182,7 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
         "shard_count": 2,
         "generator": "rule_based",
         "model_name": "fixture-rule-action-log",
+        "generator_config": {},
         "candidates_per_user": 5,
         "target_ctr": 0.2,
         "personalized_ratio": 0.7,
@@ -196,8 +197,10 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
         "quarantine_count": 0,
         "schema_version": "action_log_schema_v1",
         "prompt_version": "action_log_ctr_v1",
+        "input_fingerprint": manifest["input_fingerprint"],
         "config_fingerprint": manifest["config_fingerprint"],
     }
+    assert len(manifest["input_fingerprint"]) == 64
     assert len(manifest["config_fingerprint"]) == 64
 
     summary = merge_daily_action_log_shards(
@@ -576,6 +579,43 @@ def test_checkpoint_fingerprint_isolates_changed_config(tmp_path, monkeypatch):
     first = run_daily_action_log_shard(**common, seed=1)
     calls_after_first = generator.calls
     second = run_daily_action_log_shard(**common, seed=2)
+
+    assert first["config_fingerprint"] != second["config_fingerprint"]
+    assert first["checkpoint_path"] != second["checkpoint_path"]
+    assert generator.calls - calls_after_first == second["total_work"]
+
+
+def test_checkpoint_fingerprint_isolates_changed_input_content(tmp_path, monkeypatch):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    work_base = tmp_path / "action_log_work"
+    generator = _CountingGenerator()
+
+    _write_virtual_users(virtual_users_path, count=2)
+    _write_youtube_partition(youtube_base, partition_date)
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda generator_name, model_name=None: generator,
+    )
+    kwargs = {
+        "partition_date": partition_date,
+        "shard_index": 0,
+        "shard_count": 1,
+        "youtube_base_path": str(youtube_base),
+        "virtual_users_path": str(virtual_users_path),
+        "output_base_path": str(work_base),
+        "candidates_per_user": 4,
+        "chunk_size": 2,
+    }
+
+    first = run_daily_action_log_shard(**kwargs)
+    users = pq.read_table(virtual_users_path).to_pylist()
+    users[0]["persona_summary"] = "변경된 입력"
+    pq.write_table(pa.Table.from_pylist(users), virtual_users_path)
+    calls_after_first = generator.calls
+    second = run_daily_action_log_shard(**kwargs)
 
     assert first["config_fingerprint"] != second["config_fingerprint"]
     assert first["checkpoint_path"] != second["checkpoint_path"]

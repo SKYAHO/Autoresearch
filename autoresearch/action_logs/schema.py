@@ -84,6 +84,7 @@ class ActionLogShardManifest(BaseModel):
     shard_count: int = Field(ge=1)
     generator: str = Field(min_length=1)
     model_name: str = Field(min_length=1)
+    generator_config: dict[str, object] = Field(default_factory=dict)
     candidates_per_user: int = Field(ge=1)
     target_ctr: float = Field(ge=0.0, le=1.0)
     personalized_ratio: float = Field(ge=0.0, le=1.0)
@@ -98,6 +99,7 @@ class ActionLogShardManifest(BaseModel):
     quarantine_count: int = Field(ge=0)
     schema_version: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
+    input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     config_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
     @model_validator(mode="after")
