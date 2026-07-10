@@ -131,9 +131,16 @@ WHERE user_id IS NOT NULL;
 
 MVP에서는 **일 단위 snapshot(Asia/Seoul 기준 날짜 경계)**을 생성한다.
 
-예를 들어 `2026-07-05 10:00:00`에 발생한 학습 row는 `2026-07-05 00:00:00` snapshot 또는 그 이전의 가장 최신 snapshot을 사용한다.
+#### 🔸 Cold-start 처리
 
-이 방식은 당일 오전 행동 일부를 반영하지 못할 수 있지만, 미래 데이터를 보는 leakage는 방지할 수 있다. 이 방식은 MVP용 근사 방식이며, 추후에는 training_entity.event_timestamp 기준으로 row-level rolling aggregation을 수행하거나 더 촘촘한 snapshot 주기로 개선할 수 있다.
+일 단위 snapshot 기준 시점 이전에 행동 이력이 없는 유저는 dynamic feature를 default 값으로 채운다.
+
+- count 계열 feature: `0`
+- watch time 계열 feature: `0`
+- `historical_category_affinity`: `"unknown"`
+
+MVP의 daily snapshot 방식에서는 impression 당일 00:00 이후부터 impression 시점 이전까지의 행동도 반영하지 않는다.  
+이는 leakage를 방지하기 위한 보수적인 근사 방식이며, 추후 row-level rolling aggregation 또는 더 촘촘한 snapshot 주기로 개선한다.
 
 ### 🔸 Columns
 
@@ -482,10 +489,12 @@ QUALIFY ROW_NUMBER() OVER (
 `label_window_sec`, `created_at`은 row 컬럼으로 저장하지 않고, `training_dataset_metadata`에서 관리한다.
 
 #### Clicked label 생성 규칙
-- `impression` 이벤트를 기준 row로 사용한다.
-- 같은 `user_id`, `video_id`에 대해 impression 이후 30분 이내 `event_type = 'click'` 이벤트가 있으면 `clicked = 1`
-- 없으면 `clicked = 0`
-- 30분 window는 `label_window_sec = 1800`으로 metadata/config에 기록한다.
+  - `impression` 이벤트를 기준 row로 사용한다.
+  - 같은 `user_id`, `video_id`에 대해 impression 이후 30분 이내 click이 있으면 positive 후보로 본다.
+  - 하나의 click은 하나의 impression에만 귀속한다.
+  - 현재 raw action log에는 `request_id`, `session_id`, `impression_id`가 없으므로, MVP에서는 click 직전에 발생한 가장 가까운 impression 1건에만 click을 귀속한다.
+  - 해당 impression은 `clicked = 1`, 나머지 impression은 `clicked = 0`으로 둔다.
+  - 30분 window는 `label_window_sec = 1800`으로 metadata/config에 기록한다.
 
 ### 🔸 SQL
 
@@ -509,6 +518,7 @@ WITH impressions AS (
 
 clicks AS (
   SELECT
+    event_id AS click_event_id,
     user_id,
     video_id,
     event_timestamp AS click_timestamp
@@ -517,6 +527,29 @@ clicks AS (
     AND user_id IS NOT NULL
     AND video_id IS NOT NULL
     AND event_timestamp IS NOT NULL
+),
+
+click_attribution_candidates AS (
+  SELECT
+    c.click_event_id,
+    i.source_event_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY c.click_event_id
+      ORDER BY i.event_timestamp DESC
+    ) AS rn
+  FROM clicks c
+  JOIN impressions i
+    ON c.user_id = i.user_id
+   AND c.video_id = i.video_id
+   AND i.event_timestamp < c.click_timestamp
+   AND i.event_timestamp >= TIMESTAMP_SUB(c.click_timestamp, INTERVAL label_window_sec SECOND)
+),
+
+positive_impressions AS (
+  SELECT DISTINCT
+    source_event_id
+  FROM click_attribution_candidates
+  WHERE rn = 1
 )
 
 SELECT
@@ -524,19 +557,11 @@ SELECT
   i.user_id,
   i.video_id,
   i.event_timestamp,
-  IF(COUNT(c.click_timestamp) > 0, 1, 0) AS clicked,
+  IF(p.source_event_id IS NOT NULL, 1, 0) AS clicked,
   i.source_event_id
 FROM impressions i
-LEFT JOIN clicks c
-  ON i.user_id = c.user_id
- AND i.video_id = c.video_id
- AND c.click_timestamp > i.event_timestamp
- AND c.click_timestamp <= TIMESTAMP_ADD(i.event_timestamp, INTERVAL label_window_sec SECOND)
-GROUP BY
-  i.user_id,
-  i.video_id,
-  i.event_timestamp,
-  i.source_event_id;
+LEFT JOIN positive_impressions p
+  ON i.source_event_id = p.source_event_id;
 ```
 
 ---
