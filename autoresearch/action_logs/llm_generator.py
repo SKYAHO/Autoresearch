@@ -407,7 +407,7 @@ class OpenRouterActionLogGenerator:
         client = self._get_client()
         response = None
         attempts = 0
-        http_retries = 0
+        total_retries = 0
         timeout_retries = 0
         while response is None:
             attempts += 1
@@ -416,14 +416,18 @@ class OpenRouterActionLogGenerator:
             except Exception as exc:  # noqa: BLE001 - SDK exception boundary
                 status = self._status_code(exc)
                 is_timeout = isinstance(exc, APITimeoutError)
-                retry_limit = self.timeout_max_retries if is_timeout else self.max_retries
-                retries_used = timeout_retries if is_timeout else http_retries
                 is_retryable = is_timeout or status in _RETRYABLE_STATUS_CODES
-                if is_retryable and retries_used < retry_limit:
+                can_retry_timeout = (
+                    not is_timeout or timeout_retries < self.timeout_max_retries
+                )
+                if (
+                    is_retryable
+                    and total_retries < self.max_retries
+                    and can_retry_timeout
+                ):
+                    total_retries += 1
                     if is_timeout:
                         timeout_retries += 1
-                    else:
-                        http_retries += 1
                     delay = self._retry_delay(exc, attempts)
                     logger.warning(
                         "Retrying OpenRouter action log request",

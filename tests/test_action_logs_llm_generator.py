@@ -198,7 +198,7 @@ def test_openrouter_retries_api_timeout_with_separate_limit(monkeypatch):
     monkeypatch.setattr(llm_module.random, "uniform", lambda start, end: 0.0)
     generator = OpenRouterActionLogGenerator(
         api_key="test-api-key",
-        max_retries=0,
+        max_retries=1,
         timeout_max_retries=1,
         retry_backoff_base_seconds=0.0,
         retry_backoff_max_seconds=0.0,
@@ -209,7 +209,7 @@ def test_openrouter_retries_api_timeout_with_separate_limit(monkeypatch):
     assert sleeps == [0.0]
 
 
-def test_openrouter_timeout_retry_limit_is_independent_from_http_limit(monkeypatch):
+def test_openrouter_timeout_retry_limit_is_independent_from_total_limit(monkeypatch):
     client = _FakeClient([_timeout_error(), _timeout_error(), _success()])
     monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
     monkeypatch.setattr(llm_module.time, "sleep", lambda seconds: None)
@@ -229,6 +229,29 @@ def test_openrouter_timeout_retry_limit_is_independent_from_http_limit(monkeypat
     assert exc_info.value.error_type == "APITimeoutError"
     assert exc_info.value.attempts == 2
     assert len(client.completions.calls) == 2
+
+
+def test_openrouter_retry_total_is_capped_across_timeout_and_http_errors(monkeypatch):
+    client = _FakeClient(
+        [_timeout_error(), _StatusError(503), _StatusError(503), _success()]
+    )
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    monkeypatch.setattr(llm_module.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(llm_module.random, "uniform", lambda start, end: 0.0)
+    generator = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        max_retries=2,
+        timeout_max_retries=1,
+        retry_backoff_base_seconds=0.0,
+        retry_backoff_max_seconds=0.0,
+    )
+
+    with pytest.raises(OpenRouterRequestError) as exc_info:
+        generator.generate(_user(), _videos())
+
+    assert exc_info.value.status == 503
+    assert exc_info.value.attempts == 3
+    assert len(client.completions.calls) == 3
 
 
 def test_openrouter_provider_preferences_are_optional_and_do_not_change_model(
