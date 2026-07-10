@@ -12,6 +12,7 @@ from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
 from autoresearch.action_logs.pipeline import (
     ActionLogGenerationError,
     generate_action_log_batch,
+    generate_action_log_drafts,
 )
 from autoresearch.action_logs.schema import EventGenerationRequest, EventLog
 from autoresearch.action_logs.video_source import (
@@ -410,6 +411,52 @@ def test_chunked_parallel_matches_single_call(tmp_path):
     imps = [e for e in chunked.batch.events if e.event_type == "impression"]
     assert imps[0].user_id == "vu_0000"  # 병렬이어도 원본 유저 순서 유지
     assert chunked.summary["quarantined_users"] == 0
+
+
+def test_draft_progress_callback_reports_completed_chunks(tmp_path):
+    users, videos = _fixture_users(2), build_fixture_video_records(8)
+    snapshots = []
+
+    result = generate_action_log_drafts(
+        _request(tmp_path, candidates_per_user=4, chunk_size=2, max_concurrency=2),
+        users,
+        videos,
+        RuleBasedActionLogGenerator(),
+        progress_callback=snapshots.append,
+    )
+
+    assert result.total_work == 4
+    assert [snapshot.completed_chunks for snapshot in snapshots] == [0, 1, 2, 3, 4]
+    assert {snapshot.total_chunks for snapshot in snapshots} == {4}
+    assert snapshots[-1].success_chunks == 4
+    assert snapshots[-1].failed_chunks == 0
+    assert snapshots[-1].quarantined_chunks == 0
+
+
+def test_draft_progress_callback_counts_quarantined_chunks(tmp_path):
+    class _OneBadUserGen(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user, videos):
+            if virtual_user["user_id"] == "vu_0000":
+                return "{not valid json"
+            return super().generate(virtual_user, videos)
+
+    users, videos = _fixture_users(2), build_fixture_video_records(8)
+    snapshots = []
+
+    result = generate_action_log_drafts(
+        _request(tmp_path, candidates_per_user=4, chunk_size=2, max_concurrency=2),
+        users,
+        videos,
+        _OneBadUserGen(),
+        progress_callback=snapshots.append,
+    )
+
+    assert result.total_work == 4
+    assert len(result.quarantine) == 2
+    assert snapshots[-1].completed_chunks == 4
+    assert snapshots[-1].success_chunks == 2
+    assert snapshots[-1].failed_chunks == 2
+    assert snapshots[-1].quarantined_chunks == 2
 
 
 def test_load_video_records_accepts_youtube_collection_schema(tmp_path):
