@@ -13,6 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Callable, Literal, Protocol
 
 import pyarrow as pa
@@ -20,6 +21,10 @@ import pyarrow.parquet as pq
 from pydantic import ValidationError
 
 from autoresearch.action_logs.candidate import build_candidates
+from autoresearch.action_logs.observability import (
+    ActionLogTelemetryReporter,
+    action_log_work_log_context,
+)
 from autoresearch.action_logs.schema import (
     ACTION_LOG_SCHEMA_VERSION,
     PROMPT_VERSION,
@@ -95,7 +100,7 @@ class ActionLogProgressSnapshot:
     quarantined_chunks: int
 
 
-ActionLogProgressCallback = Callable[[ActionLogProgressSnapshot], None]
+ActionLogProgressCallback = Callable[[ActionLogProgressSnapshot], float | None]
 ActionLogWorkIdFactory = Callable[[str, int], str]
 ActionLogCheckpointCallback = Callable[[str, int, list[ImpressionDraft]], None]
 
@@ -117,6 +122,18 @@ class _ActionLogWorkItem:
     user_id: str
     virtual_user: dict
     candidates: list[dict]
+
+
+@dataclass(frozen=True)
+class _ActionLogCallResult:
+    """worker의 request timing과 raw 응답 또는 안전한 예외 전달값."""
+
+    work_sequence: int
+    submitted_at: float
+    started_at: float
+    request_elapsed_ms: float
+    raw_text: str = ""
+    error: Exception | None = None
 
 
 EVENT_LOG_PARQUET_SCHEMA = pa.schema(
@@ -219,6 +236,7 @@ def _generate_drafts_isolated(
     work_id_factory: ActionLogWorkIdFactory | None = None,
     completed_work: dict[str, list[ImpressionDraft]] | None = None,
     checkpoint_callback: ActionLogCheckpointCallback | None = None,
+    shard_index: int | None = None,
 ) -> tuple[list[ImpressionDraft], list[QuarantineRecord], int]:
     """LLM 판정을 (유저×후보청크) 단위로 격리·병렬 생성한다.
 
@@ -277,10 +295,16 @@ def _generate_drafts_isolated(
     success_chunks = len(drafts_by_index)
     failed_chunks = 0
     quarantined_chunks = 0
+    telemetry = ActionLogTelemetryReporter(
+        logger=logger,
+        shard_index=shard_index,
+        total_work=total_chunks,
+        initial_completed_work=completed_chunks,
+    )
 
-    def _emit_progress(status: Literal["running", "success", "failed"]) -> None:
+    def _emit_progress(status: Literal["running", "success", "failed"]) -> float:
         if progress_callback is None:
-            return
+            return 0.0
         snapshot = ActionLogProgressSnapshot(
             status=status,
             completed_chunks=completed_chunks,
@@ -289,27 +313,67 @@ def _generate_drafts_isolated(
             failed_chunks=failed_chunks,
             quarantined_chunks=quarantined_chunks,
         )
+        started_at = monotonic()
         try:
-            progress_callback(snapshot)
+            reported_elapsed_ms = progress_callback(snapshot)
         except Exception:  # noqa: BLE001 - progress reporting must not fail generation
             logger.warning("Action log progress callback failed", exc_info=True)
+            return (monotonic() - started_at) * 1000
+        if isinstance(reported_elapsed_ms, (int, float)) and not isinstance(
+            reported_elapsed_ms,
+            bool,
+        ):
+            return float(reported_elapsed_ms)
+        return (monotonic() - started_at) * 1000
 
-    def _call(i: int) -> tuple[int, str]:
+    def _call(i: int, submitted_at: float) -> _ActionLogCallResult:
         item = work[i]
-        return i, generator.generate(item.virtual_user, item.candidates)
+        started_at = monotonic()
+        with action_log_work_log_context(
+            shard_index=shard_index,
+            work_sequence=i,
+            detailed=telemetry.detailed,
+        ):
+            try:
+                raw_text = generator.generate(item.virtual_user, item.candidates)
+            except Exception as exc:  # noqa: BLE001 - worker boundary, isolated below
+                return _ActionLogCallResult(
+                    work_sequence=i,
+                    submitted_at=submitted_at,
+                    started_at=started_at,
+                    request_elapsed_ms=(monotonic() - started_at) * 1000,
+                    error=exc,
+                )
+        return _ActionLogCallResult(
+            work_sequence=i,
+            submitted_at=submitted_at,
+            started_at=started_at,
+            request_elapsed_ms=(monotonic() - started_at) * 1000,
+            raw_text=raw_text,
+        )
 
     _emit_progress("running")
+    telemetry.start(
+        completed_work=completed_chunks,
+        failed_work=failed_chunks,
+        active_workers=0,
+        pending_work=total_chunks - completed_chunks,
+    )
     pending_indices = iter(i for i in range(total_chunks) if i not in drafts_by_index)
     max_workers = max(1, request.max_concurrency)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures: dict[Future[tuple[int, str]], int] = {}
+        futures: dict[Future[_ActionLogCallResult], tuple[int, float]] = {}
 
         def _submit_next() -> bool:
             try:
                 index = next(pending_indices)
             except StopIteration:
                 return False
-            futures[executor.submit(_call, index)] = index
+            submitted_at = monotonic()
+            futures[executor.submit(_call, index, submitted_at)] = (
+                index,
+                submitted_at,
+            )
             return True
 
         for _ in range(max_workers):
@@ -318,8 +382,8 @@ def _generate_drafts_isolated(
 
         while futures:
             done, _pending = wait(futures, return_when=FIRST_COMPLETED)
-            for future in sorted(done, key=lambda item: futures[item]):
-                i = futures.pop(future)
+            for future in sorted(done, key=lambda item: futures[item][0]):
+                i, submitted_at = futures.pop(future)
                 item = work[i]
                 user_id = item.user_id
                 virtual_user = item.virtual_user
@@ -327,27 +391,37 @@ def _generate_drafts_isolated(
                 succeeded_drafts: list[ImpressionDraft] | None = None
                 failure: QuarantineRecord | None = None
                 try:
-                    _, raw_text = future.result()
+                    call_result = future.result()
                 except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
+                    call_result = _ActionLogCallResult(
+                        work_sequence=i,
+                        submitted_at=submitted_at,
+                        started_at=submitted_at,
+                        request_elapsed_ms=0.0,
+                        error=exc,
+                    )
+
+                parse_started_at = monotonic()
+                if call_result.error is not None:
                     failure = QuarantineRecord(
                         user_id=user_id,
                         virtual_user=virtual_user,
                         raw_llm_response="",
                         error_type="api_error",
-                        error_message=str(exc),
+                        error_message=str(call_result.error),
                     )
                 else:
                     try:
                         succeeded_drafts = _build_user_drafts(
                             virtual_user,
                             chunk,
-                            raw_text,
+                            call_result.raw_text,
                         )
                     except json.JSONDecodeError as exc:
                         failure = QuarantineRecord(
                             user_id=user_id,
                             virtual_user=virtual_user,
-                            raw_llm_response=raw_text,
+                            raw_llm_response=call_result.raw_text,
                             error_type="invalid_json",
                             error_message=str(exc),
                         )
@@ -361,14 +435,28 @@ def _generate_drafts_isolated(
                         failure = QuarantineRecord(
                             user_id=user_id,
                             virtual_user=virtual_user,
-                            raw_llm_response=raw_text,
+                            raw_llm_response=call_result.raw_text,
                             error_type="schema_fail",
                             error_message=str(exc),
                         )
+                parse_elapsed_ms = (
+                    (monotonic() - parse_started_at) * 1000
+                    if call_result.error is None
+                    else 0.0
+                )
 
+                checkpoint_write_elapsed_ms = 0.0
+                checkpoint_rows = 0
                 if succeeded_drafts is not None:
                     if checkpoint_callback is not None:
-                        checkpoint_callback(item.work_id, i, succeeded_drafts)
+                        checkpoint_started_at = monotonic()
+                        try:
+                            checkpoint_callback(item.work_id, i, succeeded_drafts)
+                        finally:
+                            checkpoint_write_elapsed_ms = (
+                                monotonic() - checkpoint_started_at
+                            ) * 1000
+                    checkpoint_rows = len(succeeded_drafts)
                     drafts_by_index[i] = succeeded_drafts
                     success_chunks += 1
                 else:
@@ -377,8 +465,36 @@ def _generate_drafts_isolated(
                     failed_chunks += 1
                     quarantined_chunks += 1
                 completed_chunks += 1
-                _emit_progress("running")
+                progress_write_elapsed_ms = _emit_progress("running")
+                submit_started_at = monotonic()
                 _submit_next()
+                submit_elapsed_ms = (monotonic() - submit_started_at) * 1000
+                active_workers = sum(
+                    1 for submitted_future in futures if not submitted_future.done()
+                )
+                telemetry.record(
+                    work_sequence=i,
+                    queue_wait_ms=(call_result.started_at - submitted_at) * 1000,
+                    request_elapsed_ms=call_result.request_elapsed_ms,
+                    parse_elapsed_ms=parse_elapsed_ms,
+                    checkpoint_write_elapsed_ms=checkpoint_write_elapsed_ms,
+                    checkpoint_rows=checkpoint_rows,
+                    progress_write_elapsed_ms=progress_write_elapsed_ms,
+                    submit_elapsed_ms=submit_elapsed_ms,
+                    total_elapsed_ms=(monotonic() - submitted_at) * 1000,
+                    completed_work=completed_chunks,
+                    failed_work=failed_chunks,
+                    active_workers=active_workers,
+                    pending_work=max(
+                        0,
+                        total_chunks - completed_chunks - active_workers,
+                    ),
+                )
+
+    telemetry.finish(
+        completed_work=completed_chunks,
+        failed_work=failed_chunks,
+    )
 
     # 3) 조립은 원본 순서로 단일 스레드에서(결정론). 실패는 quarantine.
     drafts: list[ImpressionDraft] = []
@@ -661,6 +777,7 @@ def generate_action_log_drafts(
     work_id_factory: ActionLogWorkIdFactory | None = None,
     completed_work: dict[str, list[ImpressionDraft]] | None = None,
     checkpoint_callback: ActionLogCheckpointCallback | None = None,
+    shard_index: int | None = None,
 ) -> ActionLogDraftGenerationResult:
     """유저 단위 LLM 판단을 실행하고 전역 CTR 정규화 전 draft를 반환한다.
 
@@ -688,6 +805,7 @@ def generate_action_log_drafts(
         work_id_factory,
         completed_work,
         checkpoint_callback,
+        shard_index,
     )
     if enforce_quarantine_limit:
         _raise_if_quarantine_exceeds(quarantine, total_work, request, len(virtual_users))
