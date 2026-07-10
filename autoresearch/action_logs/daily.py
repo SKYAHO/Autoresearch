@@ -5,6 +5,7 @@ YouTube daily partition과 virtual user parquet이고, 출력은 action log dt p
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -28,13 +29,20 @@ from autoresearch.action_logs.pipeline import (
     write_event_log_parquet,
     write_quarantine_jsonl,
 )
-from autoresearch.action_logs.schema import EventGenerationRequest, QuarantineRecord
+from autoresearch.action_logs.schema import (
+    ACTION_LOG_SCHEMA_VERSION,
+    PROMPT_VERSION,
+    ActionLogShardManifest,
+    EventGenerationRequest,
+    QuarantineRecord,
+)
 from autoresearch.action_logs.video_source import load_video_records
 
 
 _KST = ZoneInfo("Asia/Seoul")
 _PARTITION_FILE = "part-0.parquet"
 _QUARANTINE_FILE = "quarantine.jsonl"
+_MANIFEST_FILE = "manifest.json"
 
 
 def _strip_gs(path: str) -> str:
@@ -101,6 +109,34 @@ def _write_table(table, path: str, *, filesystem=None) -> None:
     pq.write_table(table, path, filesystem=filesystem)
 
 
+def _write_json_file(payload: dict[str, object], path: str, *, filesystem=None) -> None:
+    """local 또는 주입된 filesystem에 JSON 파일을 쓴다."""
+
+    data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+    if filesystem is None:
+        file_path = Path(path)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_bytes(data)
+        return
+
+    with filesystem.open_output_stream(path) as file:
+        file.write(data)
+
+
+def _read_json_file(path: str, *, filesystem=None) -> dict[str, object]:
+    """local 또는 주입된 filesystem의 JSON object를 읽는다."""
+
+    if filesystem is None:
+        data = Path(path).read_bytes()
+    else:
+        with filesystem.open_input_file(path) as file:
+            data = file.read()
+    payload = json.loads(data)
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON object expected: {path}")
+    return payload
+
+
 def _copy_local_file(source: str | Path, destination: str, *, filesystem=None) -> None:
     """로컬 임시 파일을 local/GCS 최종 경로로 복사한다."""
 
@@ -155,17 +191,93 @@ def _select_virtual_user_shard(
     return virtual_users[start:end]
 
 
-def _build_generator(generator_name: str, model_name: str | None = None):
-    """설정값에 따라 action log judgment generator를 만든다."""
+def _normalize_generator_name(generator_name: str) -> str:
+    """generator alias를 manifest에 기록할 canonical 이름으로 정규화한다."""
 
     normalized = generator_name.strip().lower()
     if normalized in {"rule_based", "rule-based", "fixture"}:
-        return RuleBasedActionLogGenerator()
+        return "rule_based"
     if normalized in {"openrouter", "llm"}:
-        kwargs = {"model_name": model_name} if model_name else {}
-        return OpenRouterActionLogGenerator(**kwargs)
+        return "openrouter"
     raise ValueError(
         "generator_name must be one of: rule_based, rule-based, fixture, openrouter, llm"
+    )
+
+
+def _build_generator(generator_name: str, model_name: str | None = None):
+    """설정값에 따라 action log judgment generator를 만든다."""
+
+    normalized = _normalize_generator_name(generator_name)
+    if normalized == "rule_based":
+        return RuleBasedActionLogGenerator()
+    if normalized == "openrouter":
+        kwargs = {"model_name": model_name} if model_name else {}
+        return OpenRouterActionLogGenerator(**kwargs)
+    raise AssertionError(f"unsupported normalized generator: {normalized}")
+
+
+def _fingerprint_payload(
+    *,
+    generator_name: str,
+    model_name: str,
+    request: EventGenerationRequest,
+) -> dict[str, object]:
+    """출력 재현성에 영향을 주는 설정만 canonical fingerprint 입력으로 만든다."""
+
+    history_end = request.history_end
+    if history_end.tzinfo is None:
+        history_end = history_end.replace(tzinfo=UTC)
+    return {
+        "generator": _normalize_generator_name(generator_name),
+        "model_name": model_name,
+        "candidates_per_user": request.candidates_per_user,
+        "target_ctr": request.target_ctr,
+        "personalized_ratio": request.personalized_ratio,
+        "popular_ratio": request.popular_ratio,
+        "exploration_ratio": request.exploration_ratio,
+        "seed": request.seed,
+        "chunk_size": request.chunk_size,
+        "history_days": request.history_days,
+        "history_end": history_end.astimezone(UTC).isoformat(),
+        "max_events_per_user_per_day": request.max_events_per_user_per_day,
+        "schema_version": ACTION_LOG_SCHEMA_VERSION,
+        "prompt_version": PROMPT_VERSION,
+    }
+
+
+def _config_fingerprint(
+    *,
+    generator_name: str,
+    model_name: str,
+    request: EventGenerationRequest,
+) -> str:
+    """재현성 설정의 SHA-256 fingerprint를 반환한다."""
+
+    payload = _fingerprint_payload(
+        generator_name=generator_name,
+        model_name=model_name,
+        request=request,
+    )
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _manifest_request(manifest: ActionLogShardManifest, tmp_dir: Path) -> EventGenerationRequest:
+    """검증된 shard manifest에서 merge용 요청 계약을 복원한다."""
+
+    return _build_request(
+        partition_date=manifest.partition_date,
+        tmp_dir=tmp_dir,
+        candidates_per_user=manifest.candidates_per_user,
+        target_ctr=manifest.target_ctr,
+        personalized_ratio=manifest.personalized_ratio,
+        popular_ratio=manifest.popular_ratio,
+        exploration_ratio=manifest.exploration_ratio,
+        seed=manifest.seed,
+        max_concurrency=1,
+        chunk_size=manifest.chunk_size,
+        max_quarantine_ratio=manifest.max_quarantine_ratio,
+        history_end=manifest.history_end,
     )
 
 
@@ -383,6 +495,13 @@ def run_daily_action_log_shard(
         _PARTITION_FILE,
         filesystem=filesystem,
     )
+    manifest_path = _dt_shard_path(
+        output_base_path,
+        partition_date,
+        shard_index,
+        _MANIFEST_FILE,
+        filesystem=filesystem,
+    )
     quarantine_path = (
         _dt_shard_path(
             quarantine_base_path,
@@ -403,6 +522,9 @@ def run_daily_action_log_shard(
         shard_count,
     )
     generator = _build_generator(generator_name, model_name)
+    resolved_model_name = str(generator.model_name).strip()
+    if not resolved_model_name:
+        raise ValueError("generator model_name must not be empty")
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -420,18 +542,13 @@ def run_daily_action_log_shard(
             max_quarantine_ratio=max_quarantine_ratio,
             history_end=history_end,
         )
-        try:
-            result = generate_action_log_drafts(
-                request,
-                shard_users,
-                videos,
-                generator,
-            )
-        except ActionLogGenerationError:
-            quarantine_file = tmp_dir / "quarantine.jsonl"
-            if quarantine_path and quarantine_file.exists():
-                _copy_local_file(quarantine_file, quarantine_path, filesystem=filesystem)
-            raise
+        result = generate_action_log_drafts(
+            request,
+            shard_users,
+            videos,
+            generator,
+            enforce_quarantine_limit=False,
+        )
 
         draft_path = tmp_dir / "action_log_drafts.parquet"
         write_action_log_draft_parquet(result.drafts, draft_path)
@@ -444,6 +561,38 @@ def run_daily_action_log_shard(
                 filesystem=filesystem,
             )
 
+        manifest = ActionLogShardManifest(
+            partition_date=partition_date,
+            shard_index=shard_index,
+            shard_count=shard_count,
+            generator=_normalize_generator_name(generator_name),
+            model_name=resolved_model_name,
+            candidates_per_user=request.candidates_per_user,
+            target_ctr=request.target_ctr,
+            personalized_ratio=request.personalized_ratio,
+            popular_ratio=request.popular_ratio,
+            exploration_ratio=request.exploration_ratio,
+            seed=request.seed,
+            chunk_size=request.chunk_size,
+            max_quarantine_ratio=request.max_quarantine_ratio,
+            history_end=request.history_end,
+            total_work=result.total_work,
+            completed_work=result.total_work,
+            quarantine_count=len(result.quarantine),
+            schema_version=ACTION_LOG_SCHEMA_VERSION,
+            prompt_version=PROMPT_VERSION,
+            config_fingerprint=_config_fingerprint(
+                generator_name=generator_name,
+                model_name=resolved_model_name,
+                request=request,
+            ),
+        )
+        _write_json_file(
+            manifest.model_dump(mode="json"),
+            manifest_path,
+            filesystem=filesystem,
+        )
+
     return {
         **result.summary,
         "partition_date": f"{partition_date:%Y-%m-%d}",
@@ -454,7 +603,78 @@ def run_daily_action_log_shard(
         "videos": len(videos),
         "output_path": output_path,
         "quarantine_path": quarantine_path,
+        "manifest_path": manifest_path,
+        "config_fingerprint": manifest.config_fingerprint,
     }
+
+
+def _load_shard_manifests(
+    *,
+    partition_date: date,
+    shard_count: int,
+    shard_output_base_path: str,
+    filesystem=None,
+) -> list[ActionLogShardManifest]:
+    """모든 shard manifest를 읽고 병합 전 계약 일치를 검증한다."""
+
+    manifests: list[ActionLogShardManifest] = []
+    for shard_index in range(shard_count):
+        manifest_path = _dt_shard_path(
+            shard_output_base_path,
+            partition_date,
+            shard_index,
+            _MANIFEST_FILE,
+            filesystem=filesystem,
+        )
+        try:
+            manifest = ActionLogShardManifest.model_validate(
+                _read_json_file(manifest_path, filesystem=filesystem)
+            )
+        except FileNotFoundError as exc:
+            raise ValueError(f"missing shard manifest: {manifest_path}") from exc
+        if manifest.partition_date != partition_date:
+            raise ValueError(
+                "shard manifest partition_date mismatch "
+                f"(shard={shard_index}, expected={partition_date}, "
+                f"actual={manifest.partition_date})"
+            )
+        if manifest.shard_index != shard_index or manifest.shard_count != shard_count:
+            raise ValueError(
+                "shard manifest topology mismatch "
+                f"(expected_index={shard_index}, actual_index={manifest.shard_index}, "
+                f"expected_count={shard_count}, actual_count={manifest.shard_count})"
+            )
+        if manifest.schema_version != ACTION_LOG_SCHEMA_VERSION:
+            raise ValueError(
+                f"shard manifest schema_version mismatch: {manifest.schema_version}"
+            )
+        if manifest.prompt_version != PROMPT_VERSION:
+            raise ValueError(
+                f"shard manifest prompt_version mismatch: {manifest.prompt_version}"
+            )
+        request = _manifest_request(manifest, Path("."))
+        expected_fingerprint = _config_fingerprint(
+            generator_name=manifest.generator,
+            model_name=manifest.model_name,
+            request=request,
+        )
+        if manifest.config_fingerprint != expected_fingerprint:
+            raise ValueError(
+                "shard manifest config_fingerprint does not match its config "
+                f"(shard={shard_index})"
+            )
+        manifests.append(manifest)
+
+    fingerprints = {manifest.config_fingerprint for manifest in manifests}
+    if len(fingerprints) != 1:
+        raise ValueError("shard config_fingerprint mismatch")
+    model_names = {manifest.model_name for manifest in manifests}
+    if len(model_names) != 1:
+        raise ValueError("shard model_name mismatch")
+    quarantine_limits = {manifest.max_quarantine_ratio for manifest in manifests}
+    if len(quarantine_limits) != 1:
+        raise ValueError("shard max_quarantine_ratio mismatch")
+    return manifests
 
 
 def merge_daily_action_log_shards(
@@ -466,22 +686,34 @@ def merge_daily_action_log_shards(
     shard_quarantine_base_path: str | None = None,
     quarantine_base_path: str | None = None,
     filesystem=None,
-    candidates_per_user: int = 24,
-    target_ctr: float = 0.02,
-    personalized_ratio: float = 0.7,
-    popular_ratio: float = 0.2,
-    exploration_ratio: float = 0.1,
-    seed: int = 42,
-    max_concurrency: int = 1,
-    chunk_size: int = 0,
-    max_quarantine_ratio: float = 0.5,
-    model_name: str | None = None,
-    history_end: datetime | None = None,
+    max_quarantine_ratio: float | None = None,
 ) -> dict[str, object]:
-    """Shard work parquet을 합쳐 최종 daily action log dt partition을 생성한다."""
+    """검증된 shard manifest 계약으로 최종 daily action log를 생성한다.
+
+    shard 단계는 성공 draft를 보존하기 위해 quarantine 비율로 실패하지 않는다.
+    merge 단계가 모든 manifest의 전체 work/quarantine을 합산해 전역 한도를
+    단 한 번 검증한다.
+    """
 
     if shard_count < 1:
         raise ValueError("shard_count must be at least 1")
+
+    manifests = _load_shard_manifests(
+        partition_date=partition_date,
+        shard_count=shard_count,
+        shard_output_base_path=shard_output_base_path,
+        filesystem=filesystem,
+    )
+    contract = manifests[0]
+    resolved_max_quarantine_ratio = contract.max_quarantine_ratio
+    if (
+        max_quarantine_ratio is not None
+        and max_quarantine_ratio != resolved_max_quarantine_ratio
+    ):
+        raise ValueError(
+            "merge max_quarantine_ratio does not match shard manifest "
+            f"(merge={max_quarantine_ratio}, shard={resolved_max_quarantine_ratio})"
+        )
 
     output_path = _dt_path(
         output_base_path,
@@ -523,25 +755,36 @@ def merge_daily_action_log_shards(
                 _read_quarantine_jsonl(shard_quarantine_path, filesystem=filesystem)
             )
 
+    total_work = sum(manifest.total_work for manifest in manifests)
+    quarantine_count = sum(manifest.quarantine_count for manifest in manifests)
+    if shard_quarantine_base_path and len(quarantine) != quarantine_count:
+        raise ValueError(
+            "shard quarantine count does not match manifests "
+            f"(records={len(quarantine)}, manifests={quarantine_count})"
+        )
+    quarantine_ratio = quarantine_count / total_work if total_work else 0.0
+    if quarantine_ratio > resolved_max_quarantine_ratio:
+        if quarantine_path and shard_quarantine_base_path:
+            with tempfile.TemporaryDirectory() as tmp:
+                quarantine_file = Path(tmp) / _QUARANTINE_FILE
+                write_quarantine_jsonl(quarantine, quarantine_file)
+                _copy_local_file(
+                    quarantine_file,
+                    quarantine_path,
+                    filesystem=filesystem,
+                )
+        raise ActionLogGenerationError(
+            f"global quarantine ratio {quarantine_ratio:.2f} exceeds "
+            f"max_quarantine_ratio {resolved_max_quarantine_ratio:.2f} "
+            f"(quarantined={quarantine_count}, total_work={total_work})"
+        )
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
-        request = _build_request(
-            partition_date=partition_date,
-            tmp_dir=tmp_dir,
-            candidates_per_user=candidates_per_user,
-            target_ctr=target_ctr,
-            personalized_ratio=personalized_ratio,
-            popular_ratio=popular_ratio,
-            exploration_ratio=exploration_ratio,
-            seed=seed,
-            max_concurrency=max_concurrency,
-            chunk_size=chunk_size,
-            max_quarantine_ratio=max_quarantine_ratio,
-            history_end=history_end,
-        )
+        request = _manifest_request(contract, tmp_dir)
         result = expand_action_log_drafts(request, drafts, quarantine)
         _validate_event_partition_dates(result.batch.events, partition_date)
-        write_event_log_parquet(result.batch, model_name or "", request.output_path)
+        write_event_log_parquet(result.batch, contract.model_name, request.output_path)
         _copy_local_file(request.output_path, output_path, filesystem=filesystem)
         if quarantine_path:
             write_quarantine_jsonl(quarantine, request.quarantine_output_path)
@@ -553,9 +796,14 @@ def merge_daily_action_log_shards(
 
     return {
         **result.summary,
+        "quarantined_users": quarantine_count,
         "partition_date": f"{partition_date:%Y-%m-%d}",
         "shard_count": shard_count,
         "drafts": len(drafts),
+        "total_work": total_work,
+        "quarantine_count": quarantine_count,
+        "config_fingerprint": contract.config_fingerprint,
+        "model_name": contract.model_name,
         "output_path": output_path,
         "quarantine_path": quarantine_path,
     }

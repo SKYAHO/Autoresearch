@@ -473,8 +473,14 @@ def generate_action_log_drafts(
     virtual_users: list[dict],
     videos: list[dict],
     generator: ActionLogGenerator,
+    *,
+    enforce_quarantine_limit: bool = True,
 ) -> ActionLogDraftGenerationResult:
-    """유저 단위 LLM 판단을 실행하고 전역 CTR 정규화 전 draft를 반환한다."""
+    """유저 단위 LLM 판단을 실행하고 전역 CTR 정규화 전 draft를 반환한다.
+
+    단일 실행은 quarantine 비율을 즉시 검증한다. shard 실행은 성공 draft를
+    보존하기 위해 이 검증을 merge 단계의 전역 합산 뒤로 미룰 수 있다.
+    """
 
     logger.info(
         "Starting action log draft generation",
@@ -490,7 +496,8 @@ def generate_action_log_drafts(
     drafts, quarantine, total_work = _generate_drafts_isolated(
         generator, virtual_users, videos, request
     )
-    _raise_if_quarantine_exceeds(quarantine, total_work, request, len(virtual_users))
+    if enforce_quarantine_limit:
+        _raise_if_quarantine_exceeds(quarantine, total_work, request, len(virtual_users))
     result = ActionLogDraftGenerationResult(
         drafts=drafts,
         quarantine=quarantine,
