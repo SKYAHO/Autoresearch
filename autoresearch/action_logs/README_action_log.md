@@ -28,7 +28,7 @@
 | `like` | 좋아요 발생 | `null` |
 
 **④ LLM은 판단, 코드는 조립**
-LLM은 (유저 × 후보영상)마다 `click_propensity`/`watch_fraction`/`would_like`만 판단한다. **정확한 클릭 비율(전역 2% CTR)은 코드가 결정**한다 — propensity 상위 `round(target_ctr × 총 impression 수)`개를 클릭으로 선정. 그래서 모델을 바꿔도 CTR은 고정, 개별 판단만 달라진다.
+LLM은 (유저 × 후보영상)마다 `click_propensity`/`watch_fraction`만 판단한다(토큰 절감을 위해 위치기반 `{"j": [[cp, wf], ...]}` 포맷). `would_like`는 LLM이 출력하지 않고 코드가 `derive_would_like`로 파생한다. **정확한 클릭 비율(전역 2% CTR)은 코드가 결정**한다 — propensity 상위 `round(target_ctr × 총 impression 수)`개를 클릭으로 선정. 그래서 모델을 바꿔도 CTR은 고정, 개별 판단만 달라진다.
 
 ---
 
@@ -57,8 +57,8 @@ KR TrendingVideo(parquet) ┘         (video_source.load_video_records 로 video
         ▼   ── 유저 단위 격리 루프 ──  _generate_drafts_isolated
         │     ├ candidate.build_candidates(user, videos)      # 유저당 24후보 (관련+exploration), seed 고정
         │     ├ generator.generate(user, candidates) → raw JSON
-        │     │     # LLM: [{video_id, click_propensity, watch_fraction, would_like}, ...]
-        │     └ _build_user_drafts(raw) → [ImpressionDraft ...]
+        │     │     # LLM: {"j": [[click_propensity, watch_fraction], ...]}  (후보 순서 = 배열 위치)
+        │     └ _build_user_drafts(raw) → [ImpressionDraft ...]  # would_like는 여기서 코드 파생
         │           # 파싱 실패 시 해당 유저만 quarantine (배치는 계속)
         ▼
   _clicked_indices(drafts, target_ctr)         # 전역 propensity 내림차순 상위 round(2%×N) = "클릭" 선정
@@ -115,7 +115,7 @@ KR TrendingVideo(parquet) ┘         (video_source.load_video_records 로 video
 - **클릭 선정분에만 추가**:
   - `click` 1행
   - `view` 1행 — `watch_time_sec = max(1, round(watch_fraction × duration_sec))`
-  - `like` 1행 — LLM `would_like=true`일 때만
+  - `like` 1행 — `would_like=true`일 때만 (코드 파생: `derive_would_like`)
 - **timestamp**: 같은 (user, video) 세션은 `impression < click < view < like`로 단조 증가.
 - **일일 상한**(`max_events_per_user_per_day`): **impression 기준**으로만 적용(파생 click/view/like는 같은 노출의 후속이라 상한에 안 셈). → "하루에 노출 몇 개"를 제한하는 의미.
 - **window**: 모든 이벤트가 `[history_end - history_days일, history_end]` 안. impression을 `history_end`보다 최소 `_MIN_IMPRESSION_HOURS`시간 이전에 배치해 후속 세션 이벤트가 `history_end`를 넘지 않도록 보장(→ 5.2 참고).
@@ -132,7 +132,7 @@ LLM 판정 결과 1건 = 후보(노출) 1건 = `impression` 1행에 대응.
 | `user_id`, `video_id` | str | |
 | `click_propensity` | float [0,1] | 전역 정규화용 |
 | `watch_fraction` | float [0,1] | view watch_time 산출용 |
-| `would_like` | bool | like 생성 여부 |
+| `would_like` | bool | like 생성 여부. 코드 파생(`derive_would_like`: cp≥0.7 & wf≥0.6) |
 | `duration_sec` | int ≥1 | `nominal_duration_sec(video_id)` (60~900s, 결정론) |
 
 ### 5.2 타임스탬프 헤드룸(window ↔ `_MAX_DURATION` 결합, 명시적)

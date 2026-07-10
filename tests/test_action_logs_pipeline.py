@@ -383,16 +383,19 @@ def test_build_candidates_fills_popular_slice_when_top_popular_overlap_personali
     assert {"popular_broad_0", "popular_broad_1"} <= ids
 
 
-def test_rulebased_judgments_have_no_search_keyword():
+def test_rulebased_judgments_are_positional_pairs():
     users = _fixture_users(1)
     videos = build_fixture_video_records(6)
     raw = RuleBasedActionLogGenerator().generate(users[0], videos)
     data = json.loads(raw)
-    assert len(data["judgments"]) == 6
-    for j in data["judgments"]:
-        assert set(j) == {"video_id", "click_propensity", "watch_fraction", "would_like"}
-        assert 0.0 <= j["click_propensity"] <= 1.0
-        assert isinstance(j["would_like"], bool)
+    # 위치기반 포맷: {"j": [[cp, wf], ...]} — 후보 개수만큼, would_like·video_id 없음.
+    assert set(data) == {"j"}
+    assert len(data["j"]) == 6
+    for entry in data["j"]:
+        assert len(entry) == 2
+        cp, wf = entry
+        assert 0.0 <= cp <= 1.0
+        assert 0.0 <= wf <= 1.0
 
 
 def test_chunked_parallel_matches_single_call(tmp_path):
