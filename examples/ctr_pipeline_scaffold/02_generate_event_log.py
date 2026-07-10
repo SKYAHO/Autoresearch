@@ -8,18 +8,26 @@
 - 실제 스펙에서는 관심사/주제 추출을 "LLM 또는 Keyword 기반"으로 하고 구현 방식은 구현자 재량이다.
   여기서는 데모 목적으로 "Topic Vocabulary 키워드가 텍스트에 등장하는지" 여부로 단순 판정한다.
   (실제 구현 시 LLM 기반 추출로 교체 가능)
-- 매칭 알고리즘(Persona 관심사 ↔ 영상 주제)도 구현자 재량이며, 여기서는
-  Jaccard 유사도 + category 일치 가중치로 단순화했다. Agent Simulator 담당자가
-  실제 구현 시 다른 알고리즘을 쓸 수 있다 — 이 스크립트는 어디까지나
-  "Event Log 스키마와 CTR Model Spec이 실제로 맞물려 동작하는지"를 검증하기 위한 것이다.
+- 클릭 확률은 실제 학습 피처인 topic_similarity(src.features.feature_builder,
+  CTR_Model_Specification.md 기준 user_keyword_embeddings ↔ category_description_embedding
+  cosine 유사도)를 그대로 재사용해 계산한다. 별도의 근사치(예: Jaccard)를 쓰면 라벨과
+  학습 피처의 신호가 어긋나 mock 데이터에서 모델이 아무것도 학습하지 못하게 된다.
+  Agent Simulator 담당자가 실제 구현 시 다른 알고리즘을 쓸 수 있으나, 그 경우에도
+  라벨 생성 로직과 실제 feature 계산 로직이 같은 신호를 가리키도록 맞춰야 한다.
 """
 
 import os
+import sys
 import json
 import random
 from datetime import datetime, timedelta
 
 import pandas as pd
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, PROJECT_ROOT)
+
+from src.features.feature_builder import embed_keywords, compute_topic_similarity  # noqa: E402
 
 random.seed(42)
 
@@ -36,13 +44,6 @@ def extract_topics_from_text(text: str, k_max=4):
     text_lower = text.lower()
     found = [t for t in TOPIC_VOCAB if t in text_lower]
     return found[:k_max] if found else [random.choice(TOPIC_VOCAB)]
-
-
-def jaccard(a: list, b: list) -> float:
-    sa, sb = set(a), set(b)
-    if not sa or not sb:
-        return 0.0
-    return len(sa & sb) / len(sa | sb)
 
 
 def main():
@@ -78,7 +79,7 @@ def main():
     # --- Phase 1 Event Log 생성 ---
     # AGENT_SIMULATOR_SPEC: "유저 관심사와 영상 주제가 가까울수록 clicked=1 확률이 높아지도록 생성"
     # "전체 row 중 clicked=1 비율은 약 2% 내외를 목표로 한다"
-    N_IMPRESSIONS = 6000  # 노출(row) 수 = impression 수 (스펙: row 존재 = impression)
+    N_IMPRESSIONS = 30000  # 노출(row) 수 = impression 수 (스펙: row 존재 = impression)
     START = datetime(2026, 4, 1)
     END = datetime(2026, 6, 30)  # 약 90일 범위 (Event Log Spec: 현실적 분산)
     span_sec = int((END - START).total_seconds())
@@ -86,8 +87,17 @@ def main():
     users = personas.to_dict("records")
     vids = videos.to_dict("records")
 
-    user_topics_map = dict(zip(personas["uuid"], personas["preferred_topics"]))
-    video_topics_map = dict(zip(videos["video_id"], videos["video_topic"]))
+    video_category_map = dict(zip(videos["video_id"], videos["categoryId"]))
+
+    # 클릭 라벨은 실제 학습 피처(topic_similarity, src.features.feature_builder)와 동일한
+    # 로직으로 생성한다: hobbies_and_interests_list -> user_keyword_embeddings -> category_id
+    # 와의 cosine 유사도(max-pool). build_training_dataset.py의 topic_similarity 계산과
+    # 신호가 어긋나면(예: 별개의 Jaccard 근사치를 쓰면) mock 데이터에서 모델이 학습할
+    # 신호 자체가 사라진다.
+    user_keyword_embeddings_map = {
+        row["uuid"]: embed_keywords(json.loads(row["hobbies_and_interests_list"]))
+        for row in personas.to_dict("records")
+    }
 
     rows = []
     # 유저별 하루 이벤트 수가 한쪽에 몰리지 않도록, 유저를 반복 샘플링하되 균등에 가깝게 배분
@@ -98,17 +108,14 @@ def main():
         u = users[user_cycle[i] % len(users)]
         v = random.choice(vids)
 
-        u_topics = user_topics_map[u["uuid"]]
-        v_topics = video_topics_map[v["video_id"]]
+        match_score = compute_topic_similarity(
+            user_keyword_embeddings_map[u["uuid"]], video_category_map[v["video_id"]]
+        )  # 0.0 ~ 1.0
 
-        sim = jaccard(u_topics, v_topics)
-        # category 일치 가중치는 여기선 topic 기반 근사치로 대체 (raw category 텍스트 매핑 단순화)
-        match_score = sim  # 0.0 ~ 1.0
-
-        # base_rate를 아주 낮게 설정하고 match_score에 비례해 소폭 가산 -> 전체 평균 ~2%
-        base_rate = 0.014
-        boost = 0.12 * match_score
-        click_prob = min(base_rate + boost, 0.35)
+        # base_rate를 아주 낮게 설정하고 match_score에 비례해 가산 -> 전체 평균 ~2%
+        base_rate = -0.02
+        boost = 0.30 * match_score
+        click_prob = min(max(base_rate + boost, 0.0), 0.35)
         clicked = 1 if random.random() < click_prob else 0
 
         ts = START + timedelta(seconds=random.randint(0, span_sec))
