@@ -3,7 +3,7 @@
 출력 스키마·규칙은 `docs/AGENT_SIMULATOR_SPEC.md`(Single Source of Truth)를 따른다.
 이번 구현은 Phase 1(historical)만 다룬다.
 """
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 import logging
 from typing import Literal
 
@@ -61,9 +61,10 @@ class EventLog(BaseModel):
 
 
 class ImpressionDraft(BaseModel):
-    """LLM 판단 결과(전역 2% 정규화 전 중간 산출물). 저장되지 않는다.
+    """LLM 판단 결과(전역 CTR 정규화 전 shard parquet 중간 산출물).
 
-    draft 1건 = 후보(노출) 1건 = impression 1행에 대응한다.
+    draft 1건 = 후보(노출) 1건 = impression 1행에 대응한다. shard 생성과
+    merge 사이에서는 `ACTION_LOG_DRAFT_PARQUET_SCHEMA` 계약으로 저장된다.
     """
 
     user_id: str
@@ -72,6 +73,46 @@ class ImpressionDraft(BaseModel):
     watch_fraction: float = Field(ge=0.0, le=1.0)
     would_like: bool
     duration_sec: int = Field(ge=1)
+
+
+class ActionLogShardManifest(BaseModel):
+    """완료된 action log shard의 생성·병합 데이터 계약."""
+
+    manifest_version: str = "action_log_shard_manifest_v1"
+    partition_date: date
+    shard_index: int = Field(ge=0)
+    shard_count: int = Field(ge=1)
+    generator: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
+    generator_config: dict[str, object] = Field(default_factory=dict)
+    candidates_per_user: int = Field(ge=1)
+    target_ctr: float = Field(ge=0.0, le=1.0)
+    personalized_ratio: float = Field(ge=0.0, le=1.0)
+    popular_ratio: float = Field(ge=0.0, le=1.0)
+    exploration_ratio: float = Field(ge=0.0, le=1.0)
+    seed: int
+    chunk_size: int = Field(ge=0)
+    max_quarantine_ratio: float = Field(ge=0.0, le=1.0)
+    history_end: datetime
+    total_work: int = Field(ge=0)
+    completed_work: int = Field(ge=0)
+    quarantine_count: int = Field(ge=0)
+    schema_version: str = Field(min_length=1)
+    prompt_version: str = Field(min_length=1)
+    input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+    config_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def completed_work_matches_total(self) -> "ActionLogShardManifest":
+        """완료 manifest에는 모든 work의 성공 또는 격리 결과가 있어야 한다."""
+
+        if self.completed_work != self.total_work:
+            raise ValueError("completed_work must equal total_work")
+        if self.quarantine_count > self.completed_work:
+            raise ValueError("quarantine_count cannot exceed completed_work")
+        if self.shard_index >= self.shard_count:
+            raise ValueError("shard_index must be less than shard_count")
+        return self
 
 
 class EventGenerationRequest(BaseModel):
