@@ -7,6 +7,14 @@ import hashlib
 import json
 import logging
 import os
+import random
+import threading
+import time
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from typing import Literal
+
+from openai import APITimeoutError
 
 from autoresearch.action_logs.candidate import (
     _relevance_score,
@@ -20,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_OPENROUTER_MODEL = "mistralai/mistral-nemo"
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_OPENROUTER_TIMEOUT_SEC = 60.0
+DEFAULT_OPENROUTER_MAX_RETRIES = 2
+DEFAULT_OPENROUTER_TIMEOUT_MAX_RETRIES = 1
+DEFAULT_OPENROUTER_RETRY_BACKOFF_BASE_SEC = 1.0
+DEFAULT_OPENROUTER_RETRY_BACKOFF_MAX_SEC = 30.0
+_RETRYABLE_STATUS_CODES = frozenset({408, 429, 502, 503, 504})
 
 ACTION_LOG_SYSTEM_HARNESS = """너는 한국 YouTube 사용자의 시청 행동을 시뮬레이션하는 판정기다.
 주어진 사용자 프로필과 후보 영상 목록을 근거로, 각 후보 영상에 대해 이 사용자가
@@ -118,6 +132,61 @@ class RuleBasedActionLogGenerator:
         return json.dumps({"judgments": judgments}, ensure_ascii=False)
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    return float(value) if value not in {None, ""} else default
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    return int(value) if value not in {None, ""} else default
+
+
+def _env_optional_bool(name: str) -> bool | None:
+    value = os.environ.get(name)
+    if value in {None, ""}:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be a boolean")
+
+
+class OpenRouterRequestError(RuntimeError):
+    """노출 가능한 구조화 필드만 보존한 OpenRouter 최종 요청 실패."""
+
+    def __init__(
+        self,
+        *,
+        status: int | None,
+        error_type: str,
+        provider: str,
+        attempts: int,
+    ) -> None:
+        self.status = status
+        self.error_type = error_type
+        self.provider = provider
+        self.attempts = attempts
+        super().__init__(
+            "OpenRouter request failed "
+            f"(status={status}, error_type={error_type}, "
+            f"provider={provider}, attempts={attempts})"
+        )
+
+    @property
+    def log_fields(self) -> dict[str, object]:
+        """시크릿·요청·응답 본문을 제외한 구조화 로그 필드."""
+
+        return {
+            "status": self.status,
+            "error_type": self.error_type,
+            "provider": self.provider,
+            "attempts": self.attempts,
+        }
+
+
 class OpenRouterActionLogGenerator:
     """OpenAI-compatible OpenRouter API로 judgments를 생성하는 generator."""
 
@@ -127,32 +196,261 @@ class OpenRouterActionLogGenerator:
         model_name: str = DEFAULT_OPENROUTER_MODEL,
         base_url: str | None = None,
         max_tokens: int = 4000,
+        timeout_seconds: float | None = None,
+        max_retries: int | None = None,
+        timeout_max_retries: int | None = None,
+        retry_backoff_base_seconds: float | None = None,
+        retry_backoff_max_seconds: float | None = None,
+        provider_sort: Literal["price", "throughput", "latency"] | None = None,
+        allow_fallbacks: bool | None = None,
+        require_parameters: bool | None = None,
     ) -> None:
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         self.base_url = base_url or DEFAULT_OPENROUTER_BASE_URL
         self.model_name = model_name
         self.max_tokens = max_tokens
+        self.timeout_seconds = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else _env_float(
+                "OPENROUTER_TIMEOUT_SEC",
+                DEFAULT_OPENROUTER_TIMEOUT_SEC,
+            )
+        )
+        self.max_retries = (
+            max_retries
+            if max_retries is not None
+            else _env_int("OPENROUTER_MAX_RETRIES", DEFAULT_OPENROUTER_MAX_RETRIES)
+        )
+        self.timeout_max_retries = (
+            timeout_max_retries
+            if timeout_max_retries is not None
+            else _env_int(
+                "OPENROUTER_TIMEOUT_MAX_RETRIES",
+                DEFAULT_OPENROUTER_TIMEOUT_MAX_RETRIES,
+            )
+        )
+        self.retry_backoff_base_seconds = (
+            retry_backoff_base_seconds
+            if retry_backoff_base_seconds is not None
+            else _env_float(
+                "OPENROUTER_RETRY_BACKOFF_BASE_SEC",
+                DEFAULT_OPENROUTER_RETRY_BACKOFF_BASE_SEC,
+            )
+        )
+        self.retry_backoff_max_seconds = (
+            retry_backoff_max_seconds
+            if retry_backoff_max_seconds is not None
+            else _env_float(
+                "OPENROUTER_RETRY_BACKOFF_MAX_SEC",
+                DEFAULT_OPENROUTER_RETRY_BACKOFF_MAX_SEC,
+            )
+        )
+        self.provider_sort = provider_sort or os.environ.get("OPENROUTER_PROVIDER_SORT") or None
+        self.allow_fallbacks = (
+            allow_fallbacks
+            if allow_fallbacks is not None
+            else _env_optional_bool("OPENROUTER_ALLOW_FALLBACKS")
+        )
+        self.require_parameters = (
+            require_parameters
+            if require_parameters is not None
+            else _env_optional_bool("OPENROUTER_REQUIRE_PARAMETERS")
+        )
+        self._thread_local = threading.local()
+        self._client_lock = threading.Lock()
+        self._clients: list[object] = []
+        self._closed = False
         if not self.api_key:
             raise ValueError("OPENROUTER_API_KEY is required for OpenRouterActionLogGenerator")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than 0")
+        if self.max_retries < 0:
+            raise ValueError("max_retries must be at least 0")
+        if self.timeout_max_retries < 0:
+            raise ValueError("timeout_max_retries must be at least 0")
+        if self.retry_backoff_base_seconds < 0:
+            raise ValueError("retry_backoff_base_seconds must be at least 0")
+        if self.retry_backoff_max_seconds < self.retry_backoff_base_seconds:
+            raise ValueError(
+                "retry_backoff_max_seconds must be at least retry_backoff_base_seconds"
+            )
+        if self.provider_sort not in {None, "price", "throughput", "latency"}:
+            raise ValueError("provider_sort must be one of: price, throughput, latency")
 
     def _client_kwargs(self) -> dict[str, object]:
-        return {"api_key": self.api_key, "base_url": self.base_url}
+        return {
+            "api_key": self.api_key,
+            "base_url": self.base_url,
+            "timeout": self.timeout_seconds,
+            "max_retries": 0,
+        }
+
+    @property
+    def fingerprint_config(self) -> dict[str, object]:
+        """LLM 출력과 provider 선택에 영향을 주는 안전한 설정."""
+
+        return {
+            "base_url_fingerprint": hashlib.sha256(self.base_url.encode()).hexdigest(),
+            "max_tokens": self.max_tokens,
+            "provider_sort": self.provider_sort,
+            "allow_fallbacks": self.allow_fallbacks,
+            "require_parameters": self.require_parameters,
+        }
+
+    def _get_client(self):
+        """현재 worker thread 전용 OpenAI client와 connection pool을 재사용한다."""
+
+        with self._client_lock:
+            if self._closed:
+                raise RuntimeError("OpenRouterActionLogGenerator is closed")
+            client = getattr(self._thread_local, "client", None)
+            if client is None:
+                from openai import OpenAI
+
+                client = OpenAI(**self._client_kwargs())
+                self._thread_local.client = client
+                self._clients.append(client)
+            return client
+
+    def _provider_preferences(self) -> dict[str, object]:
+        preferences: dict[str, object] = {}
+        if self.provider_sort is not None:
+            preferences["sort"] = self.provider_sort
+        if self.allow_fallbacks is not None:
+            preferences["allow_fallbacks"] = self.allow_fallbacks
+        if self.require_parameters is not None:
+            preferences["require_parameters"] = self.require_parameters
+        return preferences
+
+    @staticmethod
+    def _status_code(exc: Exception) -> int | None:
+        status = getattr(exc, "status_code", None)
+        return int(status) if isinstance(status, int) else None
+
+    @staticmethod
+    def _response_headers(exc: Exception):
+        response = getattr(exc, "response", None)
+        return getattr(response, "headers", {}) if response is not None else {}
+
+    @classmethod
+    def _provider_name(cls, exc: Exception) -> str:
+        headers = cls._response_headers(exc)
+        for name in ("x-openrouter-provider", "x-provider"):
+            value = headers.get(name) if hasattr(headers, "get") else None
+            if value:
+                return str(value)
+        return "unknown"
+
+    @classmethod
+    def _retry_after_seconds(cls, exc: Exception) -> float | None:
+        headers = cls._response_headers(exc)
+        value = headers.get("retry-after") if hasattr(headers, "get") else None
+        if value in {None, ""}:
+            return None
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            try:
+                retry_at = parsedate_to_datetime(str(value))
+            except (TypeError, ValueError, OverflowError):
+                return None
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=UTC)
+            return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+
+    def _retry_delay(self, exc: Exception, attempt: int) -> float:
+        backoff = min(
+            self.retry_backoff_max_seconds,
+            self.retry_backoff_base_seconds * (2 ** (attempt - 1)),
+        )
+        retry_after = self._retry_after_seconds(exc) or 0.0
+        jitter = random.uniform(0.0, self.retry_backoff_base_seconds)
+        return max(backoff, retry_after) + jitter
+
+    def close(self) -> None:
+        """생성한 모든 thread-local client의 connection pool을 닫는다."""
+
+        with self._client_lock:
+            if self._closed:
+                return
+            self._closed = True
+            clients = list({id(client): client for client in self._clients}.values())
+            self._clients.clear()
+        for client in clients:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
+    def __enter__(self) -> "OpenRouterActionLogGenerator":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
 
     def generate(self, virtual_user: dict, videos: list[dict]) -> str:
         """OpenRouter에 판정 요청을 보내고 raw response text를 반환한다."""
 
-        from openai import OpenAI
-
-        client = OpenAI(**self._client_kwargs())
-        response = client.chat.completions.create(
-            model=self.model_name,
-            messages=[
+        request: dict[str, object] = {
+            "model": self.model_name,
+            "messages": [
                 {"role": "system", "content": ACTION_LOG_SYSTEM_HARNESS},
                 {"role": "user", "content": build_action_log_prompt(virtual_user, videos)},
             ],
-            response_format={"type": "json_object"},
-            max_tokens=self.max_tokens,
-        )
+            "response_format": {"type": "json_object"},
+            "max_tokens": self.max_tokens,
+        }
+        provider = self._provider_preferences()
+        if provider:
+            request["extra_body"] = {"provider": provider}
+
+        client = self._get_client()
+        response = None
+        attempts = 0
+        total_retries = 0
+        timeout_retries = 0
+        while response is None:
+            attempts += 1
+            try:
+                response = client.chat.completions.create(**request)
+            except Exception as exc:  # noqa: BLE001 - SDK exception boundary
+                status = self._status_code(exc)
+                is_timeout = isinstance(exc, APITimeoutError)
+                is_retryable = is_timeout or status in _RETRYABLE_STATUS_CODES
+                can_retry_timeout = (
+                    not is_timeout or timeout_retries < self.timeout_max_retries
+                )
+                if (
+                    is_retryable
+                    and total_retries < self.max_retries
+                    and can_retry_timeout
+                ):
+                    total_retries += 1
+                    if is_timeout:
+                        timeout_retries += 1
+                    delay = self._retry_delay(exc, attempts)
+                    logger.warning(
+                        "Retrying OpenRouter action log request",
+                        extra={
+                            "status": status,
+                            "error_type": type(exc).__name__,
+                            "provider": self._provider_name(exc),
+                            "attempt": attempts,
+                            "retry_delay_seconds": round(delay, 3),
+                        },
+                    )
+                    time.sleep(delay)
+                    continue
+                error = OpenRouterRequestError(
+                    status=status,
+                    error_type=type(exc).__name__,
+                    provider=self._provider_name(exc),
+                    attempts=attempts,
+                )
+                logger.error("OpenRouter action log request failed", extra=error.log_fields)
+                raise error from None
+
+        assert response is not None
         logger.info(
             "Generated action log judgments",
             extra={"user_id": virtual_user.get("user_id"), "model_name": self.model_name},
