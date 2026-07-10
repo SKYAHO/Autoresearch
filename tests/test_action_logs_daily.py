@@ -2,11 +2,13 @@ import json
 import shutil
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from pyarrow.fs import FileInfo, FileType
 
 import autoresearch.action_logs.daily as daily_module
 from autoresearch.action_logs.daily import (
@@ -16,6 +18,69 @@ from autoresearch.action_logs.daily import (
 )
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
 from autoresearch.action_logs.pipeline import ActionLogGenerationError
+
+
+class _SelectorFilesystem:
+    """FileSelector 호출만 검증하는 GCS filesystem 대역."""
+
+    def __init__(self, infos=None, error: OSError | None = None):
+        self.infos = list(infos or [])
+        self.error = error
+        self.selector = None
+
+    def get_file_info(self, selector):
+        self.selector = selector
+        if self.error is not None:
+            raise self.error
+        return self.infos
+
+
+def test_list_files_treats_missing_gcs_checkpoint_parts_prefix_as_empty():
+    filesystem = _SelectorFilesystem()
+    parts_path = "bucket/action_log_checkpoints/dt=2026-07-10/shard=000/parts"
+
+    assert daily_module._list_files(parts_path, filesystem=filesystem) == []
+    assert filesystem.selector.base_dir == parts_path
+    assert filesystem.selector.recursive is False
+    assert filesystem.selector.allow_not_found is True
+
+
+def test_checkpoint_load_completed_restores_existing_parquet_parts(monkeypatch):
+    part_path = "bucket/checkpoints/parts/part-work-a.parquet"
+    filesystem = _SelectorFilesystem(
+        [
+            FileInfo(part_path, type=FileType.File),
+            FileInfo("bucket/checkpoints/parts/.keep", type=FileType.File),
+        ]
+    )
+    expected_drafts = [SimpleNamespace(event_id="draft-a")]
+    monkeypatch.setattr(
+        daily_module,
+        "read_action_log_checkpoint_part",
+        lambda path, filesystem: SimpleNamespace(
+            work_id="work-a",
+            drafts=expected_drafts,
+        ),
+    )
+    store = daily_module._ActionLogCheckpointStore(
+        partition_date=date(2026, 7, 10),
+        shard_index=0,
+        shard_count=1,
+        checkpoint_base_path="bucket/checkpoints",
+        config_fingerprint="fingerprint",
+        config={},
+        filesystem=filesystem,
+    )
+
+    assert store.load_completed() == {"work-a": expected_drafts}
+    assert filesystem.selector.allow_not_found is True
+
+
+def test_list_files_propagates_non_missing_filesystem_errors():
+    filesystem = _SelectorFilesystem(error=PermissionError("permission denied"))
+
+    with pytest.raises(PermissionError, match="permission denied"):
+        daily_module._list_files("bucket/checkpoints/parts", filesystem=filesystem)
 
 
 def _write_virtual_users(path, count: int = 3):
