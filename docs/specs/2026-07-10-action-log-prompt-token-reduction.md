@@ -1,6 +1,6 @@
 # Spec: Action Log 프롬프트 토큰 절감 (포맷 최적화)
 
-- Status: Implemented; Claude review follow-up recorded
+- Status: Implemented; Live QA passed
 - Date: 2026-07-10
 - Owner: Airflow Orchestration (bbungjun)
 - 관련 모듈: `autoresearch/action_logs/` (`llm_generator.py`, `pipeline.py`, `schema.py`)
@@ -223,3 +223,141 @@ PR #112의 Claude 리뷰 스레드를 기준으로 다음과 같이 처리한다
 - prompt version 변경 시 checkpoint namespace가 분리된다.
 - v1 rollback 시 기존 v1 checkpoint를 재사용한다.
 - prompt version mismatch manifest는 merge 전에 거부된다.
+
+## Live QA 후속 개선: 출력 계약 준수 안정화 (2026-07-12)
+
+### 재현 증거
+
+개선된 v2 prompt를 실제 dev GCS 입력으로 검증했다.
+
+- 입력 영상:
+  `gs://ar-infra-501607-autoresearch-dev-raw-data/data_lake/youtube_trending_kr/dt=2026-07-10/part-0.parquet`
+- 영상 200행 중 20행, virtual user 3명, `mistralai/mistral-nemo`, 유저당 1콜.
+- 결과: 2콜 정상, 1콜 `invalid_json` 격리.
+- 실패 응답은 홀수 index 10개만 반환했고, 최상위 JSON에 닫는 `]`가 하나 더
+  있어 `JSONDecodeError`가 발생했다. 문법을 수동 보정하더라도 index 개수 계약
+  위반으로 `schema_fail` 대상이다.
+
+이 결과는 validator 누락이 아니라 작은 모델이 compact 예시의 `...`를 일부 항목
+생략 허용으로 오해하고 JSON 문법까지 위반할 수 있음을 보여준다. v2는 실패를
+안전하게 격리하지만, 유효한 유저 판단을 복구하지는 못한다.
+
+### v3 user prompt 계약
+
+- 추상 예시 `{"j": [[index, cp, wf], ...]}`와 모든 ellipsis를 제거한다.
+- 호출 시 후보 개수 `n`에 맞춰 **완전한 유효 JSON skeleton**을 동적으로 만든다.
+
+```json
+{"j":[[0,0.0,0.0],[1,0.0,0.0],[2,0.0,0.0]]}
+```
+
+- 모델은 skeleton의 객체/배열 구조, row 개수, index, row 순서를 바꾸지 않고 각
+  row의 두 placeholder 값만 판단 결과로 교체한다.
+- prompt에 `required_indexes` 전체 목록과 `expected_count`를 명시한다.
+- 출력 전 자체 검증 항목을 명시한다: 유효 JSON, key는 `j` 하나, row 수 `n`,
+  index `0..n-1` 각 1회, 각 row 길이 3, 숫자 범위 0~1.
+- user prompt가 바뀌므로 `PROMPT_VERSION`을 `action_log_ctr_v3`로 올린다.
+
+### JSON/schema 교정 재시도 계약
+
+- 최초 응답이 `invalid_json` 또는 `schema_fail`이면 OpenRouter generator에 한해
+  같은 유저·후보 청크를 **최대 1회** 다시 요청한다.
+- 재시도 prompt는 이전 실패 유형을 안전한 enum 문자열로만 전달하고, 실패 응답
+  원문은 prompt에 재주입하지 않는다.
+- transport/API 오류는 기존 HTTP retry 정책을 따르며 schema 교정 재시도 대상이
+  아니다.
+- 두 번째 응답이 성공하면 정상 draft로 처리한다. 다시 실패하면 두 번째 응답과
+  최종 오류를 기존 `QuarantineRecord`에 저장한다.
+- RuleBased 및 외부 custom generator처럼 교정 메서드가 없는 구현은 기존처럼
+  즉시 격리해 protocol 하위 호환성을 유지한다.
+
+### 완료 기준
+
+- prompt 단위 테스트가 skeleton의 완전한 index 집합과 ellipsis 부재를 검증한다.
+- pipeline 단위 테스트가 `invalid_json → retry success`, `schema_fail → retry
+  success`, `retry final failure → quarantine`을 검증한다.
+- 전체 pytest와 `git diff --check`가 통과한다.
+- 동일 GCS raw 영상 20건으로 최소 5명의 실제 OpenRouter 호출을 수행해 각 응답의
+  JSON 문법, row 수, index 집합, draft/event schema를 검토한다.
+
+### 완료 결과
+
+- 단위 테스트에서 complete skeleton, ellipsis 부재, invalid JSON 복구, schema
+  불일치 복구, 재실패 quarantine을 검증했다.
+- dev GCS raw 영상 20건 × virtual user 5명으로 OpenRouter Live QA를 수행했다.
+- 최초 응답 5/5가 모두 유효 JSON, row 20개, row 길이 3, index `0..19`를
+  만족했다. schema 교정 재시도 0회, quarantine 0건이었다.
+- 판단값 100건은 `click_propensity` 10개 고유값(0.0~0.6),
+  `watch_fraction` 10개 고유값(0.0~0.8)을 가져 skeleton placeholder를 단순
+  복사하지 않았음을 확인했다.
+- 최종 `action_log_ctr_v3` EventLog는 110행(impression 100, click 5, view 5),
+  CTR 5%, `watch_time_sec` view-only 불변식을 만족했다.
+- 후속 확대 QA에서 동일 raw 20건 × virtual user 100명을 동시성 2로 실행했다.
+  최초 응답 100/100이 JSON/index 계약을 만족했고 schema retry와 quarantine은
+  모두 0건이었다. 2,000개 judgment와 최종 EventLog 2,244행의 세션·스키마
+  불변식도 전수 검증을 통과했다.
+
+## PR #119 Claude 리뷰 후속 결정 (2026-07-12)
+
+### 리뷰 판단
+
+1. **메인 스레드의 동기 schema retry**: 지적을 수용한다. 현재 구현은 완료된
+   future를 수집하는 coordinator에서 재시도 네트워크 호출을 실행하므로, 여러
+   검증 실패가 한 번에 발생하면 재시도가 직렬화되고 완료된 worker 슬롯의
+   재충전도 늦어진다. 정상 응답만 나온 100-user Live QA에서는 드러나지 않은
+   failure-path 처리량 문제다.
+2. **재시도 API 오류 상태 유실**: 지적을 수용하되 파싱 시간 계약을 명확히 한다.
+   재시도 호출이 예외를 내면 최종 결과의 `error`와 `error_type=api_error`를
+   보존한다. 단, 최초 응답은 실제로 도착해 검증됐으므로 그 최초 파싱 시간은
+   0으로 버리지 않고 `parse_elapsed_ms`에 남긴다.
+3. **재시도 파싱 시간의 request 귀속**: 지적을 수용한다. 재시도 timer가 두 번째
+   `_try_build_user_drafts()`까지 감싸 request latency에 파싱 비용을 포함한 것은
+   계측 계약 위반이다.
+
+### worker lifecycle 계약
+
+- 한 `(virtual user × candidate chunk)` worker가 최초 생성 요청, 최초 응답 검증,
+  필요 시 1회 schema 교정 요청, 두 번째 응답 검증까지 모두 소유한다.
+- coordinator는 완결된 work 결과만 수집하고 checkpoint·progress·결정론적 결과
+  조립을 담당한다. coordinator에서는 LLM 네트워크 호출을 하지 않는다.
+- schema retry도 기존 `max_concurrency` worker 슬롯 안에서 실행한다. 따라서 한
+  work의 재시도 중 다른 worker가 끝나면 coordinator가 그 슬롯에 다음 work를
+  제출할 수 있고, 여러 재시도는 worker 수 범위에서 병렬 진행된다.
+- API 동시 호출 수는 최초 요청과 schema retry를 합쳐도 `max_concurrency`를 넘지
+  않는다.
+
+### 최종 오류와 raw 응답 계약
+
+- 최초 생성 요청이 실패하면 `api_error`, 빈 raw 응답, `parse_elapsed_ms=0`으로
+  격리한다. schema 교정 재시도는 하지 않는다.
+- 최초 응답 검증 실패 후 schema retry 요청 자체가 실패하면 최종 `error`를
+  보존하고 `api_error`로 격리한다. quarantine raw 응답은 진단 가능한 마지막
+  수신 응답인 최초 실패 응답을 유지한다.
+- schema retry 응답도 JSON/schema 검증에 실패하면 두 번째 raw 응답과 두 번째
+  검증 오류 유형(`invalid_json` 또는 `schema_fail`)을 격리한다.
+- 성공 draft와 최종 오류는 동시에 존재할 수 없다.
+- worker에서 예상하지 못한 내부 예외는 `api_error`로 격리해 숨기지 않고 배치
+  호출자에게 전파한다. generator 호출 경계에서 잡은 외부 API 예외만
+  `api_error` 결과로 변환한다.
+
+### 텔레메트리 시간 계약
+
+- `request_elapsed_ms`: `generator.generate()`와
+  `generator.generate_schema_retry()` 호출에 실제로 소비된 시간의 합. JSON 파싱,
+  schema 검증, coordinator 처리 시간은 포함하지 않는다.
+- `parse_elapsed_ms`: 최초 응답 및 재시도 응답에 대한
+  `_try_build_user_drafts()` 실행 시간의 합. 네트워크 요청 시간은 포함하지 않는다.
+- 재시도 API 오류가 나더라도 이미 수행된 최초 응답 파싱 시간은
+  `parse_elapsed_ms`에 포함한다. 반대로 최초 API 오류처럼 파싱 자체가 없으면
+  0이다.
+- `queue_wait_ms`, checkpoint/progress/submit 계측과 최종 결정론적 조립 계약은
+  변경하지 않는다.
+
+### 추가 완료 기준
+
+- 재시도가 block된 동안 다른 worker 완료 슬롯에 다음 work가 제출되는 동시성
+  회귀 테스트가 통과한다.
+- 재시도 API 오류 결과가 `error_type=api_error`와 실제 예외를 보존하고, 최초
+  실패 raw 응답을 quarantine에 남기는 테스트가 통과한다.
+- 제어된 clock으로 최초·재시도 request 시간의 합과 두 번의 parse 시간 합이
+  서로 겹치지 않음을 검증한다.
