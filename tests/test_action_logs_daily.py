@@ -156,6 +156,31 @@ def test_run_daily_action_log_writes_dt_partition(tmp_path):
     assert quarantine_path.exists()
 
 
+def test_run_daily_action_log_applies_deterministic_max_users(tmp_path):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    output_base = tmp_path / "action_log"
+
+    _write_virtual_users(virtual_users_path, count=3)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    summary = run_daily_action_log(
+        partition_date=partition_date,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(output_base),
+        max_users=2,
+        candidates_per_user=5,
+        target_ctr=0.2,
+        seed=123,
+        generator_name="rule_based",
+    )
+
+    assert summary["users"] == 2
+    assert summary["impressions"] == 10
+
+
 def test_run_daily_action_log_keeps_event_timestamps_inside_partition_date(tmp_path):
     partition_date = date(2026, 7, 1)
     virtual_users_path = tmp_path / "virtual_users.parquet"
