@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 logger = logging.getLogger(__name__)
 
 ACTION_LOG_SCHEMA_VERSION = "action_log_schema_v1"
-PROMPT_VERSION = "action_log_ctr_v1"
+PROMPT_VERSION = "action_log_ctr_v2"
 SOURCE_HISTORICAL = "historical"
 
 
