@@ -261,7 +261,7 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
         "completed_work": 1,
         "quarantine_count": 0,
         "schema_version": "action_log_schema_v1",
-        "prompt_version": "action_log_ctr_v1",
+        "prompt_version": "action_log_ctr_v2",
         "input_fingerprint": manifest["input_fingerprint"],
         "config_fingerprint": manifest["config_fingerprint"],
     }
@@ -648,6 +648,55 @@ def test_checkpoint_fingerprint_isolates_changed_config(tmp_path, monkeypatch):
     assert first["config_fingerprint"] != second["config_fingerprint"]
     assert first["checkpoint_path"] != second["checkpoint_path"]
     assert generator.calls - calls_after_first == second["total_work"]
+
+
+def test_prompt_version_change_isolates_checkpoint_and_supports_rollback(
+    tmp_path,
+    monkeypatch,
+):
+    """프롬프트 버전 rollout은 namespace를 분리하고 rollback을 보존한다."""
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    work_base = tmp_path / "action_log_work"
+    generator = _CountingGenerator()
+
+    _write_virtual_users(virtual_users_path, count=2)
+    _write_youtube_partition(youtube_base, partition_date)
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda generator_name, model_name=None: generator,
+    )
+    common = {
+        "partition_date": partition_date,
+        "shard_index": 0,
+        "shard_count": 1,
+        "youtube_base_path": str(youtube_base),
+        "virtual_users_path": str(virtual_users_path),
+        "output_base_path": str(work_base),
+        "candidates_per_user": 4,
+        "chunk_size": 2,
+    }
+
+    monkeypatch.setattr(daily_module, "PROMPT_VERSION", "action_log_ctr_v1")
+    v1_first = run_daily_action_log_shard(**common)
+    calls_after_v1 = generator.calls
+
+    monkeypatch.setattr(daily_module, "PROMPT_VERSION", "action_log_ctr_v2")
+    v2 = run_daily_action_log_shard(**common)
+    calls_after_v2 = generator.calls
+
+    assert v1_first["config_fingerprint"] != v2["config_fingerprint"]
+    assert v1_first["checkpoint_path"] != v2["checkpoint_path"]
+    assert calls_after_v2 - calls_after_v1 == v2["total_work"]
+
+    monkeypatch.setattr(daily_module, "PROMPT_VERSION", "action_log_ctr_v1")
+    v1_rollback = run_daily_action_log_shard(**common)
+
+    assert v1_rollback["config_fingerprint"] == v1_first["config_fingerprint"]
+    assert v1_rollback["checkpoint_path"] == v1_first["checkpoint_path"]
+    assert generator.calls == calls_after_v2
 
 
 def test_checkpoint_fingerprint_isolates_changed_input_content(tmp_path, monkeypatch):

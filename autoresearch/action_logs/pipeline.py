@@ -179,6 +179,23 @@ def _clamp01(value: object) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
+WOULD_LIKE_CLICK_THRESHOLD = 0.7
+WOULD_LIKE_WATCH_THRESHOLD = 0.6
+
+
+def derive_would_like(click_propensity: float, watch_fraction: float) -> bool:
+    """click/watch 신호로 좋아요(만족) 여부를 결정론적으로 파생한다.
+
+    LLM 출력 토큰 절감을 위해 would_like는 응답에서 제거하고 코드로 판정한다.
+    임계값은 like 이벤트 볼륨에 직접 영향을 주므로 캘리브레이션 대상이다.
+    """
+
+    return (
+        click_propensity >= WOULD_LIKE_CLICK_THRESHOLD
+        and watch_fraction >= WOULD_LIKE_WATCH_THRESHOLD
+    )
+
+
 def _build_user_drafts(
     virtual_user: dict,
     candidates: list[dict],
@@ -186,31 +203,54 @@ def _build_user_drafts(
 ) -> list[ImpressionDraft]:
     """LLM raw judgments를 파싱해 후보별 ImpressionDraft를 만든다.
 
+    응답은 인덱스 포맷({"j": [[index, click_propensity, watch_fraction], ...]})이며,
+    index는 후보의 0-base 배열 위치다. 각 판정을 index로 후보에 재결합하므로 LLM이
+    순서를 바꿔 반환해도 오정렬되지 않는다. index 집합이 정확히 0..n-1(각 1회)이 아니면
+    (개수 불일치·범위 이탈·중복·누락) 라벨 무결성을 보장할 수 없어 ValueError로
+    격리(schema_fail)한다. would_like는 click/watch로부터 코드에서 파생한다.
+
     json.JSONDecodeError -> invalid_json. 구조/타입 오류(ValueError/KeyError/TypeError/
-    AttributeError/ValidationError) -> schema_fail. 판단이 누락된 후보는 비클릭 노출로 채운다.
+    AttributeError/ValidationError) -> schema_fail.
     """
     data = json.loads(raw_text)  # invalid_json
-    judgments = data["judgments"]  # KeyError/TypeError
-    jmap = {str(j["video_id"]): j for j in judgments}
+    judgments = data["j"]  # KeyError/TypeError
+    n = len(candidates)
+    if not isinstance(judgments, list) or len(judgments) != n:
+        got = len(judgments) if isinstance(judgments, list) else "non-list"
+        raise ValueError(f"judgment count mismatch: got {got}, expected {n}")
+
+    by_index: dict[int, tuple[object, object]] = {}
+    for entry in judgments:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            raise ValueError(f"judgment entry must be [index, cp, wf]: {entry!r}")
+        raw_index = entry[0]
+        # bool은 int의 subclass라 명시적으로 배제. 정수값 float(3.0)은 허용.
+        if isinstance(raw_index, bool) or not isinstance(raw_index, (int, float)):
+            raise ValueError(f"judgment index must be an integer: {raw_index!r}")
+        if float(raw_index) != int(raw_index):
+            raise ValueError(f"judgment index must be an integer: {raw_index!r}")
+        index = int(raw_index)
+        if not 0 <= index < n:
+            raise ValueError(f"judgment index out of range: {index} (n={n})")
+        if index in by_index:
+            raise ValueError(f"duplicate judgment index: {index}")
+        by_index[index] = (entry[1], entry[2])
+    # len==n + 범위 [0,n) + 중복 없음 => index 집합은 정확히 0..n-1 (누락도 배제).
 
     user_id = str(virtual_user.get("user_id", ""))
     drafts: list[ImpressionDraft] = []
-    for video in candidates:
+    for i, video in enumerate(candidates):
+        cp_raw, wf_raw = by_index[i]
         vid = video["video_id"]
-        j = jmap.get(vid)
-        if j is None:
-            prop, frac, like = 0.0, 0.0, False
-        else:
-            prop = _clamp01(j.get("click_propensity", 0.0))
-            frac = _clamp01(j.get("watch_fraction", 0.0))
-            like = bool(j.get("would_like", False))
+        prop = _clamp01(cp_raw)
+        frac = _clamp01(wf_raw)
         drafts.append(
             ImpressionDraft(
                 user_id=user_id,
                 video_id=vid,
                 click_propensity=prop,
                 watch_fraction=frac,
-                would_like=like,
+                would_like=derive_would_like(prop, frac),
                 duration_sec=nominal_duration_sec(vid),
             )
         )
