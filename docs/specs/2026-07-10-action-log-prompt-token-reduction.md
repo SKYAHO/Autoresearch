@@ -1,6 +1,6 @@
 # Spec: Action Log 프롬프트 토큰 절감 (포맷 최적화)
 
-- Status: Implemented; Claude review follow-up recorded
+- Status: Implemented; Live QA passed
 - Date: 2026-07-10
 - Owner: Airflow Orchestration (bbungjun)
 - 관련 모듈: `autoresearch/action_logs/` (`llm_generator.py`, `pipeline.py`, `schema.py`)
@@ -223,3 +223,72 @@ PR #112의 Claude 리뷰 스레드를 기준으로 다음과 같이 처리한다
 - prompt version 변경 시 checkpoint namespace가 분리된다.
 - v1 rollback 시 기존 v1 checkpoint를 재사용한다.
 - prompt version mismatch manifest는 merge 전에 거부된다.
+
+## Live QA 후속 개선: 출력 계약 준수 안정화 (2026-07-12)
+
+### 재현 증거
+
+개선된 v2 prompt를 실제 dev GCS 입력으로 검증했다.
+
+- 입력 영상:
+  `gs://ar-infra-501607-autoresearch-dev-raw-data/data_lake/youtube_trending_kr/dt=2026-07-10/part-0.parquet`
+- 영상 200행 중 20행, virtual user 3명, `mistralai/mistral-nemo`, 유저당 1콜.
+- 결과: 2콜 정상, 1콜 `invalid_json` 격리.
+- 실패 응답은 홀수 index 10개만 반환했고, 최상위 JSON에 닫는 `]`가 하나 더
+  있어 `JSONDecodeError`가 발생했다. 문법을 수동 보정하더라도 index 개수 계약
+  위반으로 `schema_fail` 대상이다.
+
+이 결과는 validator 누락이 아니라 작은 모델이 compact 예시의 `...`를 일부 항목
+생략 허용으로 오해하고 JSON 문법까지 위반할 수 있음을 보여준다. v2는 실패를
+안전하게 격리하지만, 유효한 유저 판단을 복구하지는 못한다.
+
+### v3 user prompt 계약
+
+- 추상 예시 `{"j": [[index, cp, wf], ...]}`와 모든 ellipsis를 제거한다.
+- 호출 시 후보 개수 `n`에 맞춰 **완전한 유효 JSON skeleton**을 동적으로 만든다.
+
+```json
+{"j":[[0,0.0,0.0],[1,0.0,0.0],[2,0.0,0.0]]}
+```
+
+- 모델은 skeleton의 객체/배열 구조, row 개수, index, row 순서를 바꾸지 않고 각
+  row의 두 placeholder 값만 판단 결과로 교체한다.
+- prompt에 `required_indexes` 전체 목록과 `expected_count`를 명시한다.
+- 출력 전 자체 검증 항목을 명시한다: 유효 JSON, key는 `j` 하나, row 수 `n`,
+  index `0..n-1` 각 1회, 각 row 길이 3, 숫자 범위 0~1.
+- user prompt가 바뀌므로 `PROMPT_VERSION`을 `action_log_ctr_v3`로 올린다.
+
+### JSON/schema 교정 재시도 계약
+
+- 최초 응답이 `invalid_json` 또는 `schema_fail`이면 OpenRouter generator에 한해
+  같은 유저·후보 청크를 **최대 1회** 다시 요청한다.
+- 재시도 prompt는 이전 실패 유형을 안전한 enum 문자열로만 전달하고, 실패 응답
+  원문은 prompt에 재주입하지 않는다.
+- transport/API 오류는 기존 HTTP retry 정책을 따르며 schema 교정 재시도 대상이
+  아니다.
+- 두 번째 응답이 성공하면 정상 draft로 처리한다. 다시 실패하면 두 번째 응답과
+  최종 오류를 기존 `QuarantineRecord`에 저장한다.
+- RuleBased 및 외부 custom generator처럼 교정 메서드가 없는 구현은 기존처럼
+  즉시 격리해 protocol 하위 호환성을 유지한다.
+
+### 완료 기준
+
+- prompt 단위 테스트가 skeleton의 완전한 index 집합과 ellipsis 부재를 검증한다.
+- pipeline 단위 테스트가 `invalid_json → retry success`, `schema_fail → retry
+  success`, `retry final failure → quarantine`을 검증한다.
+- 전체 pytest와 `git diff --check`가 통과한다.
+- 동일 GCS raw 영상 20건으로 최소 5명의 실제 OpenRouter 호출을 수행해 각 응답의
+  JSON 문법, row 수, index 집합, draft/event schema를 검토한다.
+
+### 완료 결과
+
+- 단위 테스트에서 complete skeleton, ellipsis 부재, invalid JSON 복구, schema
+  불일치 복구, 재실패 quarantine을 검증했다.
+- dev GCS raw 영상 20건 × virtual user 5명으로 OpenRouter Live QA를 수행했다.
+- 최초 응답 5/5가 모두 유효 JSON, row 20개, row 길이 3, index `0..19`를
+  만족했다. schema 교정 재시도 0회, quarantine 0건이었다.
+- 판단값 100건은 `click_propensity` 10개 고유값(0.0~0.6),
+  `watch_fraction` 10개 고유값(0.0~0.8)을 가져 skeleton placeholder를 단순
+  복사하지 않았음을 확인했다.
+- 최종 `action_log_ctr_v3` EventLog는 110행(impression 100, click 5, view 5),
+  CTR 5%, `watch_time_sec` view-only 불변식을 만족했다.

@@ -202,6 +202,81 @@ def test_user_isolation_quarantines_bad_row(tmp_path):
     assert json.loads(q_lines[0])["error_type"] == "invalid_json"
 
 
+@pytest.mark.parametrize(
+    ("first_response", "expected_error_type"),
+    [
+        ("{not valid json", "invalid_json"),
+        (json.dumps({"j": [[0, 0.1, 0.2]]}), "schema_fail"),
+    ],
+)
+def test_openrouter_style_generator_repairs_response_validation_once(
+    tmp_path,
+    first_response,
+    expected_error_type,
+):
+    class _RepairingGenerator:
+        model_name = "repairing-generator"
+
+        def __init__(self):
+            self.generate_calls = 0
+            self.retry_calls = []
+
+        def generate(self, virtual_user, videos):
+            self.generate_calls += 1
+            return first_response
+
+        def generate_schema_retry(self, virtual_user, videos, *, error_type):
+            self.retry_calls.append(error_type)
+            return RuleBasedActionLogGenerator().generate(virtual_user, videos)
+
+    generator = _RepairingGenerator()
+    result = generate_action_log_batch(
+        _request(tmp_path, candidates_per_user=4),
+        _fixture_users(1),
+        build_fixture_video_records(4),
+        generator,
+    )
+
+    assert generator.generate_calls == 1
+    assert generator.retry_calls == [expected_error_type]
+    assert result.summary["quarantined_users"] == 0
+    assert result.summary["impressions"] == 4
+
+
+def test_schema_retry_final_failure_is_quarantined(tmp_path):
+    class _AlwaysInvalidGenerator:
+        model_name = "always-invalid-generator"
+
+        def __init__(self):
+            self.retry_calls = 0
+
+        def generate(self, virtual_user, videos):
+            return "{first invalid"
+
+        def generate_schema_retry(self, virtual_user, videos, *, error_type):
+            self.retry_calls += 1
+            return "{retry invalid"
+
+    generator = _AlwaysInvalidGenerator()
+    result = generate_action_log_batch(
+        _request(
+            tmp_path,
+            candidates_per_user=4,
+            max_quarantine_ratio=1.0,
+        ),
+        _fixture_users(1),
+        build_fixture_video_records(4),
+        generator,
+    )
+
+    assert generator.retry_calls == 1
+    assert result.summary["invalid_json"] == 1
+    quarantine = json.loads(
+        (tmp_path / "q.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert quarantine["raw_llm_response"] == "{retry invalid"
+
+
 def test_total_failure_raises_and_writes_quarantine(tmp_path):
     class _AllBadGen(RuleBasedActionLogGenerator):
         def generate(self, virtual_user, videos):
