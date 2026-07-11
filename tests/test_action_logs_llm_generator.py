@@ -365,7 +365,18 @@ def test_openrouter_retry_log_separates_attempt_and_backoff(monkeypatch, caplog)
         ]
     )
     monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
-    monkeypatch.setattr(llm_module.time, "sleep", lambda seconds: None)
+    event_order = []
+    original_emit = llm_module.emit_action_log_event
+
+    def _record_event(*args, **kwargs):
+        event_order.append(args[2])
+        return original_emit(*args, **kwargs)
+
+    def _record_sleep(seconds):
+        event_order.append("sleep")
+
+    monkeypatch.setattr(llm_module, "emit_action_log_event", _record_event)
+    monkeypatch.setattr(llm_module.time, "sleep", _record_sleep)
     monkeypatch.setattr(llm_module.random, "uniform", lambda start, end: 0.0)
     generator = OpenRouterActionLogGenerator(
         api_key="test-api-key",
@@ -389,10 +400,20 @@ def test_openrouter_retry_log_separates_attempt_and_backoff(monkeypatch, caplog)
     attempts = [
         event for event in events if event["event"] == "openrouter_attempt_complete"
     ]
+    retry_scheduled = next(
+        event for event in events if event["event"] == "openrouter_retry_scheduled"
+    )
     request = next(
         event for event in events if event["event"] == "openrouter_request_complete"
     )
     assert len(attempts) == 2
+    assert event_order.index("openrouter_retry_scheduled") < event_order.index("sleep")
+    assert retry_scheduled["attempt"] == 1
+    assert retry_scheduled["retry_count"] == 1
+    assert retry_scheduled["backoff_seconds"] == 1.0
+    assert retry_scheduled["http_status"] == 429
+    assert retry_scheduled["provider"] == "provider-a"
+    assert retry_scheduled["request_elapsed_ms"] >= 0
     assert attempts[0]["outcome"] == "retry"
     assert attempts[0]["http_status"] == 429
     assert attempts[0]["provider"] == "provider-a"
@@ -401,6 +422,10 @@ def test_openrouter_retry_log_separates_attempt_and_backoff(monkeypatch, caplog)
     assert attempts[1]["outcome"] == "success"
     assert request["retry_count"] == 1
     assert request["attempt"] == 2
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "test-api-key" not in serialized
+    assert "vu_test" not in serialized
+    assert "테스트 영상" not in serialized
 
 
 def test_openrouter_success_detail_logs_are_suppressed_for_large_runs(

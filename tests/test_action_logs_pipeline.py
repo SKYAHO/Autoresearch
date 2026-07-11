@@ -8,6 +8,7 @@ import pyarrow.parquet as pq
 import pytest
 from pydantic import ValidationError
 
+import autoresearch.action_logs.pipeline as pipeline_module
 from autoresearch.action_logs.candidate import build_candidates
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
 from autoresearch.action_logs.pipeline import (
@@ -427,11 +428,64 @@ def test_draft_progress_callback_reports_completed_chunks(tmp_path):
     )
 
     assert result.total_work == 4
-    assert [snapshot.completed_chunks for snapshot in snapshots] == [0, 1, 2, 3, 4]
+    completed = [snapshot.completed_chunks for snapshot in snapshots]
+    assert completed[0] == 0
+    assert completed[-1] == 4
+    assert completed == sorted(set(completed))
     assert {snapshot.total_chunks for snapshot in snapshots} == {4}
     assert snapshots[-1].success_chunks == 4
     assert snapshots[-1].failed_chunks == 0
     assert snapshots[-1].quarantined_chunks == 0
+
+
+def test_progress_snapshot_is_emitted_after_completed_batch_is_drained(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    real_wait = pipeline_module.wait
+
+    def _wait_for_current_batch(futures, *, return_when):
+        return real_wait(futures)
+
+    monkeypatch.setattr(pipeline_module, "wait", _wait_for_current_batch)
+    snapshots = []
+
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+        result = generate_action_log_drafts(
+            _request(
+                tmp_path,
+                candidates_per_user=4,
+                chunk_size=2,
+                max_concurrency=2,
+            ),
+            _fixture_users(2),
+            build_fixture_video_records(8),
+            RuleBasedActionLogGenerator(),
+            progress_callback=snapshots.append,
+        )
+
+    assert result.total_work == 4
+    assert [snapshot.completed_chunks for snapshot in snapshots] == [0, 2, 4]
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    micro = [
+        event
+        for event in events
+        if event["event"] == "action_log_micro_work_complete"
+    ]
+    assert len(micro) == 4
+    assert [event["completed_work"] for event in micro] == [2, 2, 4, 4]
+    assert all(
+        event["completed_work"]
+        + event["active_workers"]
+        + event["pending_work"]
+        == event["total_work"]
+        for event in micro
+    )
 
 
 def test_draft_progress_callback_counts_quarantined_chunks(tmp_path):

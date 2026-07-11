@@ -248,8 +248,9 @@ progress 기록 실패는 경고만 남기고 shard 생성은 계속한다. `pro
 덮어쓸 수 있는 관측용 snapshot일 뿐 재개 checkpoint가 아니다.
 
 같은 stdout에는 한 줄 JSON 구조화 telemetry도 출력한다. `event`로
-`openrouter_attempt_complete`, `openrouter_request_complete`,
-`action_log_micro_work_complete`, `action_log_shard_progress`를 구분한다. micro work의
+`openrouter_retry_scheduled`, `openrouter_attempt_complete`,
+`openrouter_request_complete`, `action_log_micro_work_complete`,
+`action_log_shard_progress`를 구분한다. micro work의
 `queue_wait_ms`, OpenRouter request/attempt/retry/backoff, JSON parse·schema validation,
 checkpoint parquet write/rows, progress write, 다음 work submit, 전체 elapsed를 각각
 기록한다. shard 집계에는 completed/total/failed/active/pending, throughput/min,
@@ -262,7 +263,8 @@ retry/error를 제외한 request별 로그를 생략하고 15초마다 집계한
 조정할 수 있다. 이 설정은 생성 결과에 영향을 주지 않으므로 checkpoint fingerprint에
 포함되지 않는다. API key, prompt, raw response, user/work ID와 persona 필드는 telemetry에
 기록하지 않는다. `shard_index=-1`, `work_sequence=-1`은 shard/work context 밖에서
-발생한 로그를 뜻한다.
+발생한 로그를 뜻한다. telemetry 환경 변수에 숫자가 아니거나 허용 범위를 벗어난 값이
+들어오면 shard 생성을 중단하지 않고 기본값으로 대체하며, 원래 값은 로그에 남기지 않는다.
 
 Durable checkpoint는 별도 `action_log_checkpoints` root에 성공한 API work를
 immutable parquet part로 즉시 추가한다. config fingerprint에는 생성 설정과 입력

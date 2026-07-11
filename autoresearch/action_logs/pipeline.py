@@ -382,6 +382,9 @@ def _generate_drafts_isolated(
 
         while futures:
             done, _pending = wait(futures, return_when=FIRST_COMPLETED)
+            completed_batch: list[
+                tuple[_ActionLogCallResult, float, float, int]
+            ] = []
             for future in sorted(done, key=lambda item: futures[item][0]):
                 i, submitted_at = futures.pop(future)
                 item = work[i]
@@ -465,30 +468,59 @@ def _generate_drafts_isolated(
                     failed_chunks += 1
                     quarantined_chunks += 1
                 completed_chunks += 1
-                progress_write_elapsed_ms = _emit_progress("running")
+                completed_batch.append(
+                    (
+                        call_result,
+                        parse_elapsed_ms,
+                        checkpoint_write_elapsed_ms,
+                        checkpoint_rows,
+                    )
+                )
+
+            progress_write_elapsed_ms = _emit_progress("running")
+            submit_elapsed_by_work: list[float] = []
+            for _ in completed_batch:
                 submit_started_at = monotonic()
                 _submit_next()
-                submit_elapsed_ms = (monotonic() - submit_started_at) * 1000
-                active_workers = sum(
-                    1 for submitted_future in futures if not submitted_future.done()
+                submit_elapsed_by_work.append(
+                    (monotonic() - submit_started_at) * 1000
                 )
+            active_workers = len(futures)
+            pending_work = max(
+                0,
+                total_chunks - completed_chunks - active_workers,
+            )
+            last_batch_index = len(completed_batch) - 1
+            for batch_index, (
+                call_result,
+                parse_elapsed_ms,
+                checkpoint_write_elapsed_ms,
+                checkpoint_rows,
+            ) in enumerate(completed_batch):
                 telemetry.record(
-                    work_sequence=i,
-                    queue_wait_ms=(call_result.started_at - submitted_at) * 1000,
+                    work_sequence=call_result.work_sequence,
+                    queue_wait_ms=(
+                        call_result.started_at - call_result.submitted_at
+                    )
+                    * 1000,
                     request_elapsed_ms=call_result.request_elapsed_ms,
                     parse_elapsed_ms=parse_elapsed_ms,
                     checkpoint_write_elapsed_ms=checkpoint_write_elapsed_ms,
                     checkpoint_rows=checkpoint_rows,
-                    progress_write_elapsed_ms=progress_write_elapsed_ms,
-                    submit_elapsed_ms=submit_elapsed_ms,
-                    total_elapsed_ms=(monotonic() - submitted_at) * 1000,
+                    progress_write_elapsed_ms=(
+                        progress_write_elapsed_ms
+                        if batch_index == last_batch_index
+                        else 0.0
+                    ),
+                    submit_elapsed_ms=submit_elapsed_by_work[batch_index],
+                    total_elapsed_ms=(
+                        monotonic() - call_result.submitted_at
+                    )
+                    * 1000,
                     completed_work=completed_chunks,
                     failed_work=failed_chunks,
                     active_workers=active_workers,
-                    pending_work=max(
-                        0,
-                        total_chunks - completed_chunks - active_workers,
-                    ),
+                    pending_work=pending_work,
                 )
 
     telemetry.finish(

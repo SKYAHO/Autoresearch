@@ -467,6 +467,21 @@ class OpenRouterActionLogGenerator:
                     if is_timeout:
                         timeout_retries += 1
                     delay = self._retry_delay(exc, attempts)
+                    provider_name = self._provider_name(exc)
+                    emit_action_log_event(
+                        logger,
+                        logging.WARNING,
+                        "openrouter_retry_scheduled",
+                        attempt=attempts,
+                        retry_count=total_retries,
+                        backoff_seconds=round(delay, 3),
+                        http_status=status if status is not None else 0,
+                        provider=provider_name,
+                        request_elapsed_ms=round(
+                            (time.monotonic() - request_started_at) * 1000,
+                            3,
+                        ),
+                    )
                     backoff_started_at = time.monotonic()
                     time.sleep(delay)
                     backoff_elapsed_ms = (
@@ -480,7 +495,7 @@ class OpenRouterActionLogGenerator:
                         retry_count=total_retries,
                         http_status=status if status is not None else 0,
                         error_type=type(exc).__name__,
-                        provider=self._provider_name(exc),
+                        provider=provider_name,
                         attempt_elapsed_ms=round(attempt_elapsed_ms, 3),
                         backoff_scheduled_ms=round(delay * 1000, 3),
                         backoff_elapsed_ms=round(backoff_elapsed_ms, 3),

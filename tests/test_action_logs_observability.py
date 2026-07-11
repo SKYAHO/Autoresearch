@@ -83,3 +83,86 @@ def test_aggregate_interval_must_stay_in_operational_range(interval):
             initial_completed_work=0,
             aggregate_interval_sec=interval,
         )
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "total_work", "expected_detailed", "reason", "fallback"),
+    [
+        (
+            "ACTION_LOG_TELEMETRY_DETAIL_MAX_WORK",
+            "private-invalid-integer",
+            100,
+            True,
+            "invalid_number",
+            100,
+        ),
+        (
+            "ACTION_LOG_TELEMETRY_DETAIL_MAX_WORK",
+            "-1",
+            100,
+            True,
+            "out_of_range",
+            100,
+        ),
+        (
+            "ACTION_LOG_TELEMETRY_INTERVAL_SEC",
+            "private-invalid-float",
+            101,
+            False,
+            "invalid_number",
+            15.0,
+        ),
+        (
+            "ACTION_LOG_TELEMETRY_INTERVAL_SEC",
+            "5",
+            101,
+            False,
+            "out_of_range",
+            15.0,
+        ),
+        (
+            "ACTION_LOG_TELEMETRY_INTERVAL_SEC",
+            "nan",
+            101,
+            False,
+            "out_of_range",
+            15.0,
+        ),
+    ],
+)
+def test_invalid_telemetry_env_falls_back_without_exposing_raw_value(
+    monkeypatch,
+    caplog,
+    name,
+    value,
+    total_work,
+    expected_detailed,
+    reason,
+    fallback,
+):
+    logger = logging.getLogger("test.action_log.env_fallback")
+    monkeypatch.delenv("ACTION_LOG_TELEMETRY_DETAIL_MAX_WORK", raising=False)
+    monkeypatch.delenv("ACTION_LOG_TELEMETRY_INTERVAL_SEC", raising=False)
+    monkeypatch.setenv(name, value)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        reporter = ActionLogTelemetryReporter(
+            logger=logger,
+            shard_index=0,
+            total_work=total_work,
+            initial_completed_work=0,
+        )
+
+    assert reporter.detailed is expected_detailed
+    events = [json.loads(record.message) for record in caplog.records]
+    assert events == [
+        {
+            "event": "action_log_telemetry_config_fallback",
+            "fallback": fallback,
+            "reason": reason,
+            "setting": name,
+            "shard_index": -1,
+            "work_sequence": -1,
+        }
+    ]
+    assert "value" not in events[0]

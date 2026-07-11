@@ -88,22 +88,100 @@ def emit_action_log_event(
     )
 
 
-def _env_int(name: str, default: int) -> int:
+def _warn_config_fallback(
+    logger: logging.Logger,
+    *,
+    name: str,
+    default: int | float,
+    reason: str,
+) -> None:
+    emit_action_log_event(
+        logger,
+        logging.WARNING,
+        "action_log_telemetry_config_fallback",
+        setting=name,
+        fallback=default,
+        reason=reason,
+    )
+
+
+def _env_int(
+    name: str,
+    default: int,
+    *,
+    logger: logging.Logger,
+    minimum: int | None = None,
+) -> int:
     value = os.environ.get(name)
-    return int(value) if value not in {None, ""} else default
+    if value in {None, ""}:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        _warn_config_fallback(
+            logger,
+            name=name,
+            default=default,
+            reason="invalid_number",
+        )
+        return default
+    if minimum is not None and parsed < minimum:
+        _warn_config_fallback(
+            logger,
+            name=name,
+            default=default,
+            reason="out_of_range",
+        )
+        return default
+    return parsed
 
 
-def _env_float(name: str, default: float) -> float:
+def _env_float(
+    name: str,
+    default: float,
+    *,
+    logger: logging.Logger,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float:
     value = os.environ.get(name)
-    return float(value) if value not in {None, ""} else default
+    if value in {None, ""}:
+        return default
+    try:
+        parsed = float(value)
+    except ValueError:
+        _warn_config_fallback(
+            logger,
+            name=name,
+            default=default,
+            reason="invalid_number",
+        )
+        return default
+    if (
+        not math.isfinite(parsed)
+        or (minimum is not None and parsed < minimum)
+        or (maximum is not None and parsed > maximum)
+    ):
+        _warn_config_fallback(
+            logger,
+            name=name,
+            default=default,
+            reason="out_of_range",
+        )
+        return default
+    return parsed
 
 
-def _percentile(values: list[float], percentile: float) -> float:
-    if not values:
+def _percentile(ordered_values: list[float], percentile: float) -> float:
+    if not ordered_values:
         return 0.0
+    index = max(0, math.ceil(percentile * len(ordered_values)) - 1)
+    return ordered_values[index]
+
+
+def _latency_percentiles(values: list[float]) -> tuple[float, float]:
     ordered = sorted(values)
-    index = max(0, math.ceil(percentile * len(ordered)) - 1)
-    return ordered[index]
+    return _percentile(ordered, 0.50), _percentile(ordered, 0.95)
 
 
 def _average(values: list[float]) -> float:
@@ -129,6 +207,8 @@ class ActionLogTelemetryReporter:
             else _env_int(
                 "ACTION_LOG_TELEMETRY_DETAIL_MAX_WORK",
                 DEFAULT_TELEMETRY_DETAIL_MAX_WORK,
+                logger=logger,
+                minimum=0,
             )
         )
         resolved_interval_sec = (
@@ -137,6 +217,9 @@ class ActionLogTelemetryReporter:
             else _env_float(
                 "ACTION_LOG_TELEMETRY_INTERVAL_SEC",
                 DEFAULT_TELEMETRY_INTERVAL_SEC,
+                logger=logger,
+                minimum=10.0,
+                maximum=30.0,
             )
         )
         if resolved_detail_max_work < 0:
@@ -214,6 +297,9 @@ class ActionLogTelemetryReporter:
         self._window.append({**metrics, "checkpoint_rows": float(checkpoint_rows)})
 
         if self._detailed:
+            latency_p50_ms, latency_p95_ms = _latency_percentiles(
+                self._total_latencies
+            )
             emit_action_log_event(
                 self._logger,
                 logging.INFO,
@@ -228,8 +314,8 @@ class ActionLogTelemetryReporter:
                 active_workers=active_workers,
                 pending_work=pending_work,
                 throughput_per_min=self._throughput(completed_work),
-                latency_p50_ms=round(_percentile(self._total_latencies, 0.50), 3),
-                latency_p95_ms=round(_percentile(self._total_latencies, 0.95), 3),
+                latency_p50_ms=round(latency_p50_ms, 3),
+                latency_p95_ms=round(latency_p95_ms, 3),
                 eta_seconds=self._eta_seconds(completed_work),
                 **{key: round(value, 3) for key, value in metrics.items()},
             )
@@ -289,6 +375,9 @@ class ActionLogTelemetryReporter:
         if force and completed_work == self._last_emitted_completed and not self._window:
             return
 
+        latency_p50_ms, latency_p95_ms = _latency_percentiles(
+            self._total_latencies
+        )
         fields: dict[str, object] = {
             "shard_index": self._shard_index,
             "work_sequence": -1,
@@ -300,8 +389,8 @@ class ActionLogTelemetryReporter:
             "active_workers": active_workers,
             "pending_work": pending_work,
             "throughput_per_min": self._throughput(completed_work),
-            "latency_p50_ms": round(_percentile(self._total_latencies, 0.50), 3),
-            "latency_p95_ms": round(_percentile(self._total_latencies, 0.95), 3),
+            "latency_p50_ms": round(latency_p50_ms, 3),
+            "latency_p95_ms": round(latency_p95_ms, 3),
             "eta_seconds": self._eta_seconds(completed_work),
         }
         for name in (
