@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 from datetime import UTC, datetime, timedelta
 
@@ -7,6 +8,7 @@ import pyarrow.parquet as pq
 import pytest
 from pydantic import ValidationError
 
+import autoresearch.action_logs.pipeline as pipeline_module
 from autoresearch.action_logs.candidate import build_candidates
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
 from autoresearch.action_logs.pipeline import (
@@ -459,11 +461,64 @@ def test_draft_progress_callback_reports_completed_chunks(tmp_path):
     )
 
     assert result.total_work == 4
-    assert [snapshot.completed_chunks for snapshot in snapshots] == [0, 1, 2, 3, 4]
+    completed = [snapshot.completed_chunks for snapshot in snapshots]
+    assert completed[0] == 0
+    assert completed[-1] == 4
+    assert completed == sorted(set(completed))
     assert {snapshot.total_chunks for snapshot in snapshots} == {4}
     assert snapshots[-1].success_chunks == 4
     assert snapshots[-1].failed_chunks == 0
     assert snapshots[-1].quarantined_chunks == 0
+
+
+def test_progress_snapshot_is_emitted_after_completed_batch_is_drained(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    real_wait = pipeline_module.wait
+
+    def _wait_for_current_batch(futures, *, return_when):
+        return real_wait(futures)
+
+    monkeypatch.setattr(pipeline_module, "wait", _wait_for_current_batch)
+    snapshots = []
+
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+        result = generate_action_log_drafts(
+            _request(
+                tmp_path,
+                candidates_per_user=4,
+                chunk_size=2,
+                max_concurrency=2,
+            ),
+            _fixture_users(2),
+            build_fixture_video_records(8),
+            RuleBasedActionLogGenerator(),
+            progress_callback=snapshots.append,
+        )
+
+    assert result.total_work == 4
+    assert [snapshot.completed_chunks for snapshot in snapshots] == [0, 2, 4]
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    micro = [
+        event
+        for event in events
+        if event["event"] == "action_log_micro_work_complete"
+    ]
+    assert len(micro) == 4
+    assert [event["completed_work"] for event in micro] == [2, 2, 4, 4]
+    assert all(
+        event["completed_work"]
+        + event["active_workers"]
+        + event["pending_work"]
+        == event["total_work"]
+        for event in micro
+    )
 
 
 def test_draft_progress_callback_counts_quarantined_chunks(tmp_path):
@@ -490,6 +545,71 @@ def test_draft_progress_callback_counts_quarantined_chunks(tmp_path):
     assert snapshots[-1].success_chunks == 2
     assert snapshots[-1].failed_chunks == 2
     assert snapshots[-1].quarantined_chunks == 2
+
+
+def test_micro_work_structured_log_separates_pipeline_timings(tmp_path, caplog):
+    checkpoint_rows = []
+
+    def _checkpoint(work_id, work_order, drafts):
+        checkpoint_rows.append((work_id, work_order, len(drafts)))
+
+    def _progress(snapshot):
+        return 3.25
+
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+        result = generate_action_log_drafts(
+            _request(
+                tmp_path,
+                candidates_per_user=4,
+                chunk_size=0,
+                max_concurrency=1,
+            ),
+            _fixture_users(1),
+            build_fixture_video_records(8),
+            RuleBasedActionLogGenerator(),
+            progress_callback=_progress,
+            checkpoint_callback=_checkpoint,
+            shard_index=3,
+        )
+
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    micro = [
+        event
+        for event in events
+        if event["event"] == "action_log_micro_work_complete"
+    ]
+
+    assert result.total_work == 1
+    assert checkpoint_rows[0][2] == 4
+    assert len(micro) == 1
+    payload = micro[0]
+    assert payload["shard_index"] == 3
+    assert payload["work_sequence"] == 0
+    assert payload["checkpoint_rows"] == 4
+    assert payload["progress_write_elapsed_ms"] == 3.25
+    assert payload["completed_work"] == payload["total_work"] == 1
+    assert payload["failed_work"] == payload["active_workers"] == 0
+    assert payload["pending_work"] == 0
+    for field in (
+        "queue_wait_ms",
+        "request_elapsed_ms",
+        "parse_elapsed_ms",
+        "checkpoint_write_elapsed_ms",
+        "submit_elapsed_ms",
+        "total_elapsed_ms",
+        "throughput_per_min",
+        "latency_p50_ms",
+        "latency_p95_ms",
+        "eta_seconds",
+    ):
+        assert payload[field] >= 0
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "user_id" not in serialized
+    assert "vu_0000" not in serialized
 
 
 def test_load_video_records_accepts_youtube_collection_schema(tmp_path):

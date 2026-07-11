@@ -21,6 +21,7 @@ from autoresearch.action_logs.candidate import (
     _user_keywords,
     _video_text,
 )
+from autoresearch.action_logs.observability import emit_action_log_event
 from autoresearch.action_logs.schema import PROMPT_VERSION
 
 
@@ -349,6 +350,40 @@ class OpenRouterActionLogGenerator:
                 return str(value)
         return "unknown"
 
+    @staticmethod
+    def _response_provider(response: object) -> str:
+        """OpenRouter 응답에서 민감하지 않은 provider 이름만 추출한다."""
+
+        provider = getattr(response, "provider", None)
+        if provider:
+            return str(provider)
+        model_extra = getattr(response, "model_extra", None)
+        if isinstance(model_extra, dict) and model_extra.get("provider"):
+            return str(model_extra["provider"])
+        return "unknown"
+
+    @staticmethod
+    def _usage_fields(response: object) -> dict[str, int | float]:
+        """응답 본문 없이 token/reasoning/cost 메타데이터만 반환한다."""
+
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {}
+        fields: dict[str, int | float] = {}
+        for source_name, target_name in (
+            ("prompt_tokens", "prompt_tokens"),
+            ("completion_tokens", "completion_tokens"),
+            ("cost", "reported_cost"),
+        ):
+            value = getattr(usage, source_name, None)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                fields[target_name] = value
+        details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(details, "reasoning_tokens", None)
+        if isinstance(reasoning_tokens, int) and not isinstance(reasoning_tokens, bool):
+            fields["reasoning_tokens"] = reasoning_tokens
+        return fields
+
     @classmethod
     def _retry_after_seconds(cls, exc: Exception) -> float | None:
         headers = cls._response_headers(exc)
@@ -416,11 +451,14 @@ class OpenRouterActionLogGenerator:
         attempts = 0
         total_retries = 0
         timeout_retries = 0
+        request_started_at = time.monotonic()
         while response is None:
             attempts += 1
+            attempt_started_at = time.monotonic()
             try:
                 response = client.chat.completions.create(**request)
             except Exception as exc:  # noqa: BLE001 - SDK exception boundary
+                attempt_elapsed_ms = (time.monotonic() - attempt_started_at) * 1000
                 status = self._status_code(exc)
                 is_timeout = isinstance(exc, APITimeoutError)
                 is_retryable = is_timeout or status in _RETRYABLE_STATUS_CODES
@@ -436,17 +474,40 @@ class OpenRouterActionLogGenerator:
                     if is_timeout:
                         timeout_retries += 1
                     delay = self._retry_delay(exc, attempts)
-                    logger.warning(
-                        "Retrying OpenRouter action log request",
-                        extra={
-                            "status": status,
-                            "error_type": type(exc).__name__,
-                            "provider": self._provider_name(exc),
-                            "attempt": attempts,
-                            "retry_delay_seconds": round(delay, 3),
-                        },
+                    provider_name = self._provider_name(exc)
+                    emit_action_log_event(
+                        logger,
+                        logging.WARNING,
+                        "openrouter_retry_scheduled",
+                        attempt=attempts,
+                        retry_count=total_retries,
+                        backoff_seconds=round(delay, 3),
+                        http_status=status if status is not None else 0,
+                        provider=provider_name,
+                        request_elapsed_ms=round(
+                            (time.monotonic() - request_started_at) * 1000,
+                            3,
+                        ),
                     )
+                    backoff_started_at = time.monotonic()
                     time.sleep(delay)
+                    backoff_elapsed_ms = (
+                        time.monotonic() - backoff_started_at
+                    ) * 1000
+                    emit_action_log_event(
+                        logger,
+                        logging.WARNING,
+                        "openrouter_attempt_complete",
+                        attempt=attempts,
+                        retry_count=total_retries,
+                        http_status=status if status is not None else 0,
+                        error_type=type(exc).__name__,
+                        provider=provider_name,
+                        attempt_elapsed_ms=round(attempt_elapsed_ms, 3),
+                        backoff_scheduled_ms=round(delay * 1000, 3),
+                        backoff_elapsed_ms=round(backoff_elapsed_ms, 3),
+                        outcome="retry",
+                    )
                     continue
                 error = OpenRouterRequestError(
                     status=status,
@@ -454,12 +515,68 @@ class OpenRouterActionLogGenerator:
                     provider=self._provider_name(exc),
                     attempts=attempts,
                 )
-                logger.error("OpenRouter action log request failed", extra=error.log_fields)
+                request_elapsed_ms = (time.monotonic() - request_started_at) * 1000
+                emit_action_log_event(
+                    logger,
+                    logging.ERROR,
+                    "openrouter_attempt_complete",
+                    attempt=attempts,
+                    retry_count=total_retries,
+                    http_status=status if status is not None else 0,
+                    error_type=type(exc).__name__,
+                    provider=error.provider,
+                    attempt_elapsed_ms=round(attempt_elapsed_ms, 3),
+                    backoff_scheduled_ms=0.0,
+                    backoff_elapsed_ms=0.0,
+                    outcome="failed",
+                )
+                emit_action_log_event(
+                    logger,
+                    logging.ERROR,
+                    "openrouter_request_complete",
+                    request_elapsed_ms=round(request_elapsed_ms, 3),
+                    retry_count=total_retries,
+                    attempt=attempts,
+                    http_status=status if status is not None else 0,
+                    provider=error.provider,
+                    outcome="failed",
+                )
                 raise error from None
+            else:
+                provider_name = self._response_provider(response)
+                emit_action_log_event(
+                    logger,
+                    logging.INFO,
+                    "openrouter_attempt_complete",
+                    detailed_only=True,
+                    attempt=attempts,
+                    retry_count=total_retries,
+                    http_status=200,
+                    provider=provider_name,
+                    attempt_elapsed_ms=round(
+                        (time.monotonic() - attempt_started_at) * 1000,
+                        3,
+                    ),
+                    backoff_scheduled_ms=0.0,
+                    backoff_elapsed_ms=0.0,
+                    outcome="success",
+                )
 
         assert response is not None
-        logger.info(
-            "Generated action log judgments",
-            extra={"user_id": virtual_user.get("user_id"), "model_name": self.model_name},
+        emit_action_log_event(
+            logger,
+            logging.INFO,
+            "openrouter_request_complete",
+            detailed_only=True,
+            request_elapsed_ms=round(
+                (time.monotonic() - request_started_at) * 1000,
+                3,
+            ),
+            retry_count=total_retries,
+            attempt=attempts,
+            http_status=200,
+            provider=self._response_provider(response),
+            outcome="success",
+            **self._usage_fields(response),
         )
         return response.choices[0].message.content or ""

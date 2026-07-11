@@ -283,12 +283,12 @@ class _ActionLogShardProgressWriter:
 
         return self._progress_path
 
-    def __call__(self, snapshot: ActionLogProgressSnapshot) -> None:
-        """pipeline progress callback 인터페이스."""
+    def __call__(self, snapshot: ActionLogProgressSnapshot) -> float:
+        """pipeline progress callback 인터페이스와 실제 write elapsed를 반환한다."""
 
         self._latest = snapshot
         force = snapshot.completed_chunks == 0
-        self._flush(snapshot, force=force)
+        return self._flush(snapshot, force=force)
 
     def finish(self, status: str) -> None:
         """최종 상태를 강제로 기록한다."""
@@ -307,9 +307,9 @@ class _ActionLogShardProgressWriter:
             return True
         return monotonic() - self._last_flush_monotonic >= self._flush_interval_sec
 
-    def _flush(self, snapshot: ActionLogProgressSnapshot, *, force: bool) -> None:
+    def _flush(self, snapshot: ActionLogProgressSnapshot, *, force: bool) -> float:
         if not force and not self._should_flush(snapshot):
-            return
+            return 0.0
 
         pct = (
             snapshot.completed_chunks / snapshot.total_chunks * 100
@@ -344,6 +344,7 @@ class _ActionLogShardProgressWriter:
                 .replace("+00:00", "Z")
             ),
         }
+        write_started_at = monotonic()
         try:
             _write_progress_json_file(
                 payload,
@@ -360,6 +361,7 @@ class _ActionLogShardProgressWriter:
             self._last_flush_monotonic = monotonic()
             self._last_flushed_completed = snapshot.completed_chunks
             self._last_flushed_total = snapshot.total_chunks
+        return (monotonic() - write_started_at) * 1000
 
 
 def _select_virtual_user_shard(
@@ -974,6 +976,7 @@ def run_daily_action_log_shard(
                 ),
                 completed_work=completed_work,
                 checkpoint_callback=checkpoint_store.write_part,
+                shard_index=shard_index,
             )
 
             draft_path = tmp_dir / "action_log_drafts.parquet"
