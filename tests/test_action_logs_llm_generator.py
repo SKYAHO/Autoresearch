@@ -10,6 +10,7 @@ import autoresearch.action_logs.llm_generator as llm_module
 from autoresearch.action_logs.llm_generator import (
     OpenRouterActionLogGenerator,
     OpenRouterRequestError,
+    build_action_log_prompt,
 )
 
 
@@ -30,6 +31,43 @@ def _videos():
             "tags": ["게임"],
         }
     ]
+
+
+def test_prompt_uses_complete_json_skeleton_without_ellipsis():
+    videos = [
+        {
+            "video_id": f"video_{index}",
+            "title": f"테스트 영상 {index}",
+            "description": "설명",
+            "tags": ["게임"],
+        }
+        for index in range(4)
+    ]
+
+    prompt = build_action_log_prompt(_user(), videos)
+
+    assert "Prompt version: action_log_ctr_v3" in prompt
+    assert 'required_indexes=[0,1,2,3]' in prompt
+    assert "expected_count=4" in prompt
+    assert '{"j":[[0,0.0,0.0],[1,0.0,0.0],[2,0.0,0.0],[3,0.0,0.0]]}' in prompt
+    assert "..." not in prompt
+
+
+def test_schema_retry_prompt_names_failure_without_reusing_raw_response(monkeypatch):
+    client = _FakeClient([_success('{"j":[[0,0.2,0.3]]}')])
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    generator = OpenRouterActionLogGenerator(api_key="test-api-key")
+
+    result = generator.generate_schema_retry(
+        _user(),
+        _videos(),
+        error_type="invalid_json",
+    )
+
+    prompt = client.completions.calls[0]["messages"][1]["content"]
+    assert result == '{"j":[[0,0.2,0.3]]}'
+    assert "이전 응답은 invalid_json 검증에 실패했다" in prompt
+    assert '{"j":[[0,0.0,0.0]]}' in prompt
 
 
 def _success(content: str = '{"judgments": []}'):

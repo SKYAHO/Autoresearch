@@ -261,7 +261,7 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
         "completed_work": 1,
         "quarantine_count": 0,
         "schema_version": "action_log_schema_v1",
-        "prompt_version": "action_log_ctr_v2",
+        "prompt_version": "action_log_ctr_v3",
         "input_fingerprint": manifest["input_fingerprint"],
         "config_fingerprint": manifest["config_fingerprint"],
     }
@@ -679,24 +679,24 @@ def test_prompt_version_change_isolates_checkpoint_and_supports_rollback(
         "chunk_size": 2,
     }
 
-    monkeypatch.setattr(daily_module, "PROMPT_VERSION", "action_log_ctr_v1")
-    v1_first = run_daily_action_log_shard(**common)
-    calls_after_v1 = generator.calls
-
     monkeypatch.setattr(daily_module, "PROMPT_VERSION", "action_log_ctr_v2")
-    v2 = run_daily_action_log_shard(**common)
+    v2_first = run_daily_action_log_shard(**common)
     calls_after_v2 = generator.calls
 
-    assert v1_first["config_fingerprint"] != v2["config_fingerprint"]
-    assert v1_first["checkpoint_path"] != v2["checkpoint_path"]
-    assert calls_after_v2 - calls_after_v1 == v2["total_work"]
+    monkeypatch.setattr(daily_module, "PROMPT_VERSION", "action_log_ctr_v3")
+    v3 = run_daily_action_log_shard(**common)
+    calls_after_v3 = generator.calls
 
-    monkeypatch.setattr(daily_module, "PROMPT_VERSION", "action_log_ctr_v1")
-    v1_rollback = run_daily_action_log_shard(**common)
+    assert v2_first["config_fingerprint"] != v3["config_fingerprint"]
+    assert v2_first["checkpoint_path"] != v3["checkpoint_path"]
+    assert calls_after_v3 - calls_after_v2 == v3["total_work"]
 
-    assert v1_rollback["config_fingerprint"] == v1_first["config_fingerprint"]
-    assert v1_rollback["checkpoint_path"] == v1_first["checkpoint_path"]
-    assert generator.calls == calls_after_v2
+    monkeypatch.setattr(daily_module, "PROMPT_VERSION", "action_log_ctr_v2")
+    v2_rollback = run_daily_action_log_shard(**common)
+
+    assert v2_rollback["config_fingerprint"] == v2_first["config_fingerprint"]
+    assert v2_rollback["checkpoint_path"] == v2_first["checkpoint_path"]
+    assert generator.calls == calls_after_v3
 
 
 def test_checkpoint_fingerprint_isolates_changed_input_content(tmp_path, monkeypatch):

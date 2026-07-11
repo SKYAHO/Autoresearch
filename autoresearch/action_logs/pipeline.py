@@ -240,6 +240,31 @@ def _build_user_drafts(
     return drafts
 
 
+def _try_build_user_drafts(
+    virtual_user: dict,
+    candidates: list[dict],
+    raw_text: str,
+) -> tuple[
+    list[ImpressionDraft] | None,
+    Literal["invalid_json", "schema_fail"] | None,
+    Exception | None,
+]:
+    """raw 응답을 draft로 파싱하고 격리 분류를 값으로 반환한다."""
+
+    try:
+        return _build_user_drafts(virtual_user, candidates, raw_text), None, None
+    except json.JSONDecodeError as exc:
+        return None, "invalid_json", exc
+    except (
+        ValidationError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+    ) as exc:
+        return None, "schema_fail", exc
+
+
 def _chunked(seq: list, size: int):
     """size>0이면 seq를 size 단위로 쪼개고, 아니면 통째로 하나만 내보낸다."""
 
@@ -377,33 +402,47 @@ def _generate_drafts_isolated(
                         error_message=str(exc),
                     )
                 else:
-                    try:
-                        succeeded_drafts = _build_user_drafts(
-                            virtual_user,
-                            chunk,
-                            raw_text,
+                    succeeded_drafts, error_type, parse_error = (
+                        _try_build_user_drafts(virtual_user, chunk, raw_text)
+                    )
+                    schema_retry = getattr(generator, "generate_schema_retry", None)
+                    if succeeded_drafts is None and callable(schema_retry):
+                        assert error_type is not None
+                        logger.warning(
+                            "Retrying action log judgment after response validation failure",
+                            extra={
+                                "user_id": user_id,
+                                "error_type": error_type,
+                                "model_name": getattr(generator, "model_name", "unknown"),
+                            },
                         )
-                    except json.JSONDecodeError as exc:
+                        try:
+                            raw_text = schema_retry(
+                                virtual_user,
+                                chunk,
+                                error_type=error_type,
+                            )
+                        except Exception as exc:  # noqa: BLE001 - generator retry boundary
+                            failure = QuarantineRecord(
+                                user_id=user_id,
+                                virtual_user=virtual_user,
+                                raw_llm_response=raw_text,
+                                error_type="api_error",
+                                error_message=str(exc),
+                            )
+                        else:
+                            succeeded_drafts, error_type, parse_error = (
+                                _try_build_user_drafts(virtual_user, chunk, raw_text)
+                            )
+
+                    if succeeded_drafts is None and failure is None:
+                        assert error_type is not None and parse_error is not None
                         failure = QuarantineRecord(
                             user_id=user_id,
                             virtual_user=virtual_user,
                             raw_llm_response=raw_text,
-                            error_type="invalid_json",
-                            error_message=str(exc),
-                        )
-                    except (
-                        ValidationError,
-                        ValueError,
-                        KeyError,
-                        TypeError,
-                        AttributeError,
-                    ) as exc:
-                        failure = QuarantineRecord(
-                            user_id=user_id,
-                            virtual_user=virtual_user,
-                            raw_llm_response=raw_text,
-                            error_type="schema_fail",
-                            error_message=str(exc),
+                            error_type=error_type,
+                            error_message=str(parse_error),
                         )
 
                 if succeeded_drafts is not None:

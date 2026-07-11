@@ -100,7 +100,7 @@ KR TrendingVideo(parquet) ┘         (video_source.load_video_records 로 video
 | `rank` | int64 (nullable) | **Phase 1은 항상 `null`** (추천 순위 없음) |
 | `source` | string | `historical` (Phase 1 고정) |
 | `schema_version` | string | `action_log_schema_v1` |
-| `prompt_version` | string | `action_log_ctr_v1` |
+| `prompt_version` | string | `action_log_ctr_v3` |
 | `llm_model` | string | 생성 모델명 (예: `mistralai/mistral-nemo`) |
 | `generated_at` | string | 배치 생성 시각(ISO) |
 
@@ -165,6 +165,10 @@ LLM 판정 결과 1건 = 후보(노출) 1건 = `impression` 1행에 대응.
 ## 6. 장애 격리 & quarantine
 
 - **유저 단위 격리**: 한 유저의 LLM 실패가 배치 전체를 죽이지 않는다. 실패 유저는 `QuarantineRecord`로 격리되고 나머지는 계속.
+- **응답 교정 재시도**: OpenRouter 응답이 `invalid_json` 또는 `schema_fail`이면
+  complete JSON skeleton이 포함된 교정 prompt로 같은 청크를 최대 1회 다시
+  생성한다. 두 번째 응답도 실패할 때만 최종 응답을 quarantine한다. API/transport
+  오류는 이 경로가 아니라 기존 HTTP retry 정책을 따른다.
 - **error_type 3종 & 예외 순서**(load-bearing):
   - `generator.generate(...)` 예외 → `api_error`
   - `json.JSONDecodeError` → `invalid_json`
