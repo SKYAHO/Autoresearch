@@ -278,6 +278,7 @@ dependencies = [
 dev = [
     { name = "datasets" },
     { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" } },
+    { name = "google-cloud-bigquery" },
     { name = "httpx" },
     { name = "openai" },
     { name = "pytest" },
@@ -321,6 +322,7 @@ requires-dist = [
 dev = [
     { name = "datasets", specifier = ">=2.19" },
     { name = "fastapi", specifier = ">=0.115,<0.129" },
+    { name = "google-cloud-bigquery", specifier = ">=3.20" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
     { name = "openai", specifier = ">=1.0" },
     { name = "pytest", specifier = ">=8.0" },
@@ -1096,8 +1098,8 @@ name = "google-cloud-bigquery"
 version = "3.42.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "google-api-core", extra = ["grpc"], marker = "extra == 'group-12-autoresearch-feast'" },
-    { name = "google-auth", extra = ["pyopenssl"], marker = "extra == 'group-12-autoresearch-feast'" },
+    { name = "google-api-core", extra = ["grpc"], marker = "extra == 'group-12-autoresearch-dev' or extra == 'group-12-autoresearch-feast'" },
+    { name = "google-auth", extra = ["pyopenssl"], marker = "extra == 'group-12-autoresearch-dev' or extra == 'group-12-autoresearch-feast'" },
     { name = "google-cloud-core" },
     { name = "google-resumable-media" },
     { name = "packaging" },
