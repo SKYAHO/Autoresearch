@@ -1,6 +1,6 @@
 # Plan: Action Log 프롬프트 토큰 절감 구현
 
-- Status: Draft
+- Status: Complete
 - Date: 2026-07-10
 - Spec: `docs/specs/2026-07-10-action-log-prompt-token-reduction.md`
 - 대상 파일: `autoresearch/action_logs/llm_generator.py`,
@@ -116,3 +116,37 @@ uv run python -m pytest -q            # 전체 회귀
   이상 시 임계값/프롬프트 문구를 조정한다.
 - 롤백 경로: `PROMPT_VERSION`과 프롬프트/파싱을 v1으로 되돌리면 되며, 스키마·
   다운스트림은 불변이라 데이터 마이그레이션은 불필요.
+
+## Step 7 — PR #119 Claude 리뷰 후속 수정
+
+### 구현 결정
+
+- `_ActionLogCallResult`가 최종 draft, 오류 유형, 실제 예외,
+  `request_elapsed_ms`, `parse_elapsed_ms`를 함께 반환하도록 결과 계약을 확장한다.
+- 최초 요청부터 선택적 schema retry와 재파싱까지 수행하는 worker helper를 두고,
+  coordinator의 동기 `schema_retry()` 호출과 보정용 elapsed subtraction을 제거한다.
+- 각 request 호출 직전·직후와 각 parse 호출 직전·직후를 별도로 측정해 두 지표가
+  겹치지 않게 누적한다.
+- 재시도 API 오류에서는 최종 예외를 버리지 않고 `api_error`로 반환한다. 최초
+  응답 파싱이 이미 수행됐다면 그 시간은 parse 지표에 보존한다.
+- worker future의 예상하지 못한 내부 예외는 coordinator에서 `api_error`로
+  바꾸지 않고 전파해 내부 버그를 외부 장애로 위장하지 않는다.
+- coordinator는 worker 결과를 `QuarantineRecord` 또는 checkpoint 성공으로
+  변환하고, 기존 원본 work 순서 조립을 유지한다.
+
+### 추가 테스트
+
+- [x] block된 schema retry와 별개로 완료된 worker 슬롯에 다음 work가 투입된다.
+- [x] schema retry API 오류가 최종 예외·`api_error`·최초 raw 응답을 보존한다.
+- [x] 제어된 clock에서 request 합계는 두 네트워크 호출만, parse 합계는 두 검증
+  호출만 포함한다.
+- [x] 기존 invalid JSON/schema 복구, 최종 검증 실패 quarantine 테스트가 유지된다.
+- [x] 예상하지 못한 worker 내부 예외가 `api_error`로 격리되지 않고 전파된다.
+- [x] 대상 action-log 테스트와 전체 pytest, `git diff --check`가 통과한다.
+
+### 검증 결과
+
+- `tests/test_action_logs_pipeline.py`: 35 passed.
+- action-log 관련 4개 테스트 모듈: 78 passed.
+- 전체 테스트: 249 passed, 2 skipped. skip은 기존 Docker 사용 가능 여부 검사다.
+- Ruff 대상 파일 검사와 `git diff --check` 통과.

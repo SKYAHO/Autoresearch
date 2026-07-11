@@ -2,6 +2,7 @@ import json
 import logging
 import random
 from datetime import UTC, datetime, timedelta
+from threading import Event
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -241,6 +242,146 @@ def test_openrouter_style_generator_repairs_response_validation_once(
     assert generator.retry_calls == [expected_error_type]
     assert result.summary["quarantined_users"] == 0
     assert result.summary["impressions"] == 4
+
+
+def test_schema_retry_stays_in_worker_and_does_not_block_next_work_submission(
+    tmp_path,
+):
+    retry_started = Event()
+    third_work_started = Event()
+
+    class _CoordinatedGenerator:
+        model_name = "coordinated-generator"
+
+        def generate(self, virtual_user, videos):
+            user_id = virtual_user["user_id"]
+            if user_id == "vu_0000":
+                return "{first invalid"
+            if user_id == "vu_0001":
+                assert retry_started.wait(timeout=2.0)
+            if user_id == "vu_0002":
+                third_work_started.set()
+            return RuleBasedActionLogGenerator().generate(virtual_user, videos)
+
+        def generate_schema_retry(self, virtual_user, videos, *, error_type):
+            assert virtual_user["user_id"] == "vu_0000"
+            assert error_type == "invalid_json"
+            retry_started.set()
+            assert third_work_started.wait(timeout=2.0)
+            return RuleBasedActionLogGenerator().generate(virtual_user, videos)
+
+    result = generate_action_log_drafts(
+        _request(
+            tmp_path,
+            candidates_per_user=1,
+            chunk_size=0,
+            max_concurrency=2,
+        ),
+        _fixture_users(3),
+        build_fixture_video_records(3),
+        _CoordinatedGenerator(),
+    )
+
+    assert third_work_started.is_set()
+    assert len(result.drafts) == 3
+    assert result.quarantine == []
+
+
+def test_schema_retry_timings_separate_request_and_parse(monkeypatch):
+    class _RepairingGenerator:
+        model_name = "timed-repairing-generator"
+
+        def generate(self, virtual_user, videos):
+            return "{first invalid"
+
+        def generate_schema_retry(self, virtual_user, videos, *, error_type):
+            return RuleBasedActionLogGenerator().generate(virtual_user, videos)
+
+    clock = iter(
+        [
+            0.000,  # worker start
+            0.000,  # initial request start
+            0.010,  # initial request end
+            0.010,  # initial parse start
+            0.012,  # initial parse end
+            0.012,  # retry request start
+            0.032,  # retry request end
+            0.032,  # retry parse start
+            0.037,  # retry parse end
+        ]
+    )
+    monkeypatch.setattr(pipeline_module, "monotonic", lambda: next(clock))
+    virtual_user = _fixture_users(1)[0]
+    item = pipeline_module._ActionLogWorkItem(
+        work_id="work_00000000",
+        user_id=virtual_user["user_id"],
+        virtual_user=virtual_user,
+        candidates=build_fixture_video_records(1),
+    )
+
+    result = pipeline_module._generate_action_log_work(
+        _RepairingGenerator(),
+        item,
+        work_sequence=0,
+        submitted_at=0.0,
+        shard_index=None,
+        detailed_telemetry=True,
+    )
+
+    assert result.drafts is not None
+    assert result.error is None
+    assert result.request_elapsed_ms == pytest.approx(30.0)
+    assert result.parse_elapsed_ms == pytest.approx(7.0)
+
+
+def test_schema_retry_api_error_preserves_error_and_initial_raw_response(tmp_path):
+    class _RetryApiErrorGenerator:
+        model_name = "retry-api-error-generator"
+
+        def generate(self, virtual_user, videos):
+            return "{first invalid"
+
+        def generate_schema_retry(self, virtual_user, videos, *, error_type):
+            raise RuntimeError("retry transport unavailable")
+
+    result = generate_action_log_drafts(
+        _request(
+            tmp_path,
+            candidates_per_user=1,
+            max_quarantine_ratio=1.0,
+        ),
+        _fixture_users(1),
+        build_fixture_video_records(1),
+        _RetryApiErrorGenerator(),
+    )
+
+    assert result.summary["api_error"] == 1
+    assert result.summary["invalid_json"] == 0
+    assert result.quarantine[0].raw_llm_response == "{first invalid"
+    assert result.quarantine[0].error_message == "retry transport unavailable"
+
+
+def test_unexpected_worker_error_is_not_disguised_as_api_error(
+    tmp_path,
+    monkeypatch,
+):
+    def _raise_internal_error(virtual_user, candidates, raw_text):
+        raise RuntimeError("unexpected parser bug")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_try_build_user_drafts",
+        _raise_internal_error,
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected parser bug"):
+        generate_action_log_drafts(
+            _request(tmp_path, candidates_per_user=1),
+            _fixture_users(1),
+            build_fixture_video_records(1),
+            RuleBasedActionLogGenerator(),
+        )
+
 
 
 def test_schema_retry_final_failure_is_quarantined(tmp_path):

@@ -296,3 +296,68 @@ PR #112의 Claude 리뷰 스레드를 기준으로 다음과 같이 처리한다
   최초 응답 100/100이 JSON/index 계약을 만족했고 schema retry와 quarantine은
   모두 0건이었다. 2,000개 judgment와 최종 EventLog 2,244행의 세션·스키마
   불변식도 전수 검증을 통과했다.
+
+## PR #119 Claude 리뷰 후속 결정 (2026-07-12)
+
+### 리뷰 판단
+
+1. **메인 스레드의 동기 schema retry**: 지적을 수용한다. 현재 구현은 완료된
+   future를 수집하는 coordinator에서 재시도 네트워크 호출을 실행하므로, 여러
+   검증 실패가 한 번에 발생하면 재시도가 직렬화되고 완료된 worker 슬롯의
+   재충전도 늦어진다. 정상 응답만 나온 100-user Live QA에서는 드러나지 않은
+   failure-path 처리량 문제다.
+2. **재시도 API 오류 상태 유실**: 지적을 수용하되 파싱 시간 계약을 명확히 한다.
+   재시도 호출이 예외를 내면 최종 결과의 `error`와 `error_type=api_error`를
+   보존한다. 단, 최초 응답은 실제로 도착해 검증됐으므로 그 최초 파싱 시간은
+   0으로 버리지 않고 `parse_elapsed_ms`에 남긴다.
+3. **재시도 파싱 시간의 request 귀속**: 지적을 수용한다. 재시도 timer가 두 번째
+   `_try_build_user_drafts()`까지 감싸 request latency에 파싱 비용을 포함한 것은
+   계측 계약 위반이다.
+
+### worker lifecycle 계약
+
+- 한 `(virtual user × candidate chunk)` worker가 최초 생성 요청, 최초 응답 검증,
+  필요 시 1회 schema 교정 요청, 두 번째 응답 검증까지 모두 소유한다.
+- coordinator는 완결된 work 결과만 수집하고 checkpoint·progress·결정론적 결과
+  조립을 담당한다. coordinator에서는 LLM 네트워크 호출을 하지 않는다.
+- schema retry도 기존 `max_concurrency` worker 슬롯 안에서 실행한다. 따라서 한
+  work의 재시도 중 다른 worker가 끝나면 coordinator가 그 슬롯에 다음 work를
+  제출할 수 있고, 여러 재시도는 worker 수 범위에서 병렬 진행된다.
+- API 동시 호출 수는 최초 요청과 schema retry를 합쳐도 `max_concurrency`를 넘지
+  않는다.
+
+### 최종 오류와 raw 응답 계약
+
+- 최초 생성 요청이 실패하면 `api_error`, 빈 raw 응답, `parse_elapsed_ms=0`으로
+  격리한다. schema 교정 재시도는 하지 않는다.
+- 최초 응답 검증 실패 후 schema retry 요청 자체가 실패하면 최종 `error`를
+  보존하고 `api_error`로 격리한다. quarantine raw 응답은 진단 가능한 마지막
+  수신 응답인 최초 실패 응답을 유지한다.
+- schema retry 응답도 JSON/schema 검증에 실패하면 두 번째 raw 응답과 두 번째
+  검증 오류 유형(`invalid_json` 또는 `schema_fail`)을 격리한다.
+- 성공 draft와 최종 오류는 동시에 존재할 수 없다.
+- worker에서 예상하지 못한 내부 예외는 `api_error`로 격리해 숨기지 않고 배치
+  호출자에게 전파한다. generator 호출 경계에서 잡은 외부 API 예외만
+  `api_error` 결과로 변환한다.
+
+### 텔레메트리 시간 계약
+
+- `request_elapsed_ms`: `generator.generate()`와
+  `generator.generate_schema_retry()` 호출에 실제로 소비된 시간의 합. JSON 파싱,
+  schema 검증, coordinator 처리 시간은 포함하지 않는다.
+- `parse_elapsed_ms`: 최초 응답 및 재시도 응답에 대한
+  `_try_build_user_drafts()` 실행 시간의 합. 네트워크 요청 시간은 포함하지 않는다.
+- 재시도 API 오류가 나더라도 이미 수행된 최초 응답 파싱 시간은
+  `parse_elapsed_ms`에 포함한다. 반대로 최초 API 오류처럼 파싱 자체가 없으면
+  0이다.
+- `queue_wait_ms`, checkpoint/progress/submit 계측과 최종 결정론적 조립 계약은
+  변경하지 않는다.
+
+### 추가 완료 기준
+
+- 재시도가 block된 동안 다른 worker 완료 슬롯에 다음 work가 제출되는 동시성
+  회귀 테스트가 통과한다.
+- 재시도 API 오류 결과가 `error_type=api_error`와 실제 예외를 보존하고, 최초
+  실패 raw 응답을 quarantine에 남기는 테스트가 통과한다.
+- 제어된 clock으로 최초·재시도 request 시간의 합과 두 번의 parse 시간 합이
+  서로 겹치지 않음을 검증한다.
