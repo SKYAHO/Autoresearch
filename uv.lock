@@ -282,6 +282,7 @@ dev = [
     { name = "httpx" },
     { name = "openai" },
     { name = "pytest" },
+    { name = "python-dotenv" },
     { name = "ruff" },
 ]
 feast = [
@@ -326,6 +327,7 @@ dev = [
     { name = "httpx", specifier = ">=0.28,<0.29" },
     { name = "openai", specifier = ">=1.0" },
     { name = "pytest", specifier = ">=8.0" },
+    { name = "python-dotenv", specifier = ">=1.0" },
     { name = "ruff", specifier = "==0.15.18" },
 ]
 feast = [
