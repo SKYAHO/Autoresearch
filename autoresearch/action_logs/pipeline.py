@@ -186,30 +186,47 @@ def _build_user_drafts(
 ) -> list[ImpressionDraft]:
     """LLM raw judgments를 파싱해 후보별 ImpressionDraft를 만든다.
 
-    응답은 위치기반 배열({"j": [[click_propensity, watch_fraction], ...]})이며 배열
-    위치가 후보 index다. 위치 정렬은 길이가 어긋나면 라벨을 조용히 오정렬시키므로,
-    개수 불일치·원소 형태 오류는 ValueError로 격리(schema_fail)한다. would_like는
-    click/watch로부터 코드에서 파생한다.
+    응답은 인덱스 포맷({"j": [[index, click_propensity, watch_fraction], ...]})이며,
+    index는 후보의 0-base 배열 위치다. 각 판정을 index로 후보에 재결합하므로 LLM이
+    순서를 바꿔 반환해도 오정렬되지 않는다. index 집합이 정확히 0..n-1(각 1회)이 아니면
+    (개수 불일치·범위 이탈·중복·누락) 라벨 무결성을 보장할 수 없어 ValueError로
+    격리(schema_fail)한다. would_like는 click/watch로부터 코드에서 파생한다.
 
     json.JSONDecodeError -> invalid_json. 구조/타입 오류(ValueError/KeyError/TypeError/
     AttributeError/ValidationError) -> schema_fail.
     """
     data = json.loads(raw_text)  # invalid_json
     judgments = data["j"]  # KeyError/TypeError
-    if not isinstance(judgments, list) or len(judgments) != len(candidates):
+    n = len(candidates)
+    if not isinstance(judgments, list) or len(judgments) != n:
         got = len(judgments) if isinstance(judgments, list) else "non-list"
-        raise ValueError(
-            f"judgment count mismatch: got {got}, expected {len(candidates)}"
-        )
+        raise ValueError(f"judgment count mismatch: got {got}, expected {n}")
+
+    by_index: dict[int, tuple[object, object]] = {}
+    for entry in judgments:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            raise ValueError(f"judgment entry must be [index, cp, wf]: {entry!r}")
+        raw_index = entry[0]
+        # bool은 int의 subclass라 명시적으로 배제. 정수값 float(3.0)은 허용.
+        if isinstance(raw_index, bool) or not isinstance(raw_index, (int, float)):
+            raise ValueError(f"judgment index must be an integer: {raw_index!r}")
+        if float(raw_index) != int(raw_index):
+            raise ValueError(f"judgment index must be an integer: {raw_index!r}")
+        index = int(raw_index)
+        if not 0 <= index < n:
+            raise ValueError(f"judgment index out of range: {index} (n={n})")
+        if index in by_index:
+            raise ValueError(f"duplicate judgment index: {index}")
+        by_index[index] = (entry[1], entry[2])
+    # len==n + 범위 [0,n) + 중복 없음 => index 집합은 정확히 0..n-1 (누락도 배제).
 
     user_id = str(virtual_user.get("user_id", ""))
     drafts: list[ImpressionDraft] = []
-    for video, entry in zip(candidates, judgments):
-        if not isinstance(entry, (list, tuple)) or len(entry) != 2:
-            raise ValueError(f"judgment entry must be [cp, wf]: {entry!r}")
+    for i, video in enumerate(candidates):
+        cp_raw, wf_raw = by_index[i]
         vid = video["video_id"]
-        prop = _clamp01(entry[0])
-        frac = _clamp01(entry[1])
+        prop = _clamp01(cp_raw)
+        frac = _clamp01(wf_raw)
         drafts.append(
             ImpressionDraft(
                 user_id=user_id,

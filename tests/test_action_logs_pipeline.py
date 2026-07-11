@@ -11,6 +11,7 @@ from autoresearch.action_logs.candidate import build_candidates
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
 from autoresearch.action_logs.pipeline import (
     ActionLogGenerationError,
+    _build_user_drafts,
     generate_action_log_batch,
     generate_action_log_drafts,
 )
@@ -383,19 +384,48 @@ def test_build_candidates_fills_popular_slice_when_top_popular_overlap_personali
     assert {"popular_broad_0", "popular_broad_1"} <= ids
 
 
-def test_rulebased_judgments_are_positional_pairs():
+def test_rulebased_judgments_are_indexed_triples():
     users = _fixture_users(1)
     videos = build_fixture_video_records(6)
     raw = RuleBasedActionLogGenerator().generate(users[0], videos)
     data = json.loads(raw)
-    # 위치기반 포맷: {"j": [[cp, wf], ...]} — 후보 개수만큼, would_like·video_id 없음.
+    # 인덱스 포맷: {"j": [[idx, cp, wf], ...]} — would_like·video_id 없음.
     assert set(data) == {"j"}
     assert len(data["j"]) == 6
+    assert [entry[0] for entry in data["j"]] == list(range(6))  # 0..n-1
     for entry in data["j"]:
-        assert len(entry) == 2
-        cp, wf = entry
+        assert len(entry) == 3
+        idx, cp, wf = entry
         assert 0.0 <= cp <= 1.0
         assert 0.0 <= wf <= 1.0
+
+
+def test_build_user_drafts_realigns_shuffled_indices():
+    # LLM이 순서를 바꿔 반환해도 index로 재결합해 올바른 video_id에 매핑된다.
+    vu = {"user_id": "vu_x"}
+    videos = [{"video_id": f"vid_{i}"} for i in range(4)]
+    shuffled = json.dumps({"j": [[2, 0.9, 0.9], [0, 0.1, 0.1], [3, 0.8, 0.7], [1, 0.2, 0.2]]})
+    drafts = _build_user_drafts(vu, videos, shuffled)
+    got = {d.video_id: (d.click_propensity, d.watch_fraction) for d in drafts}
+    assert got["vid_0"] == (0.1, 0.1)
+    assert got["vid_2"] == (0.9, 0.9)
+    assert got["vid_3"] == (0.8, 0.7)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"j": [[0, 0.1, 0.1], [1, 0.2, 0.2], [2, 0.3, 0.3]]},  # 개수 부족(n=4)
+        {"j": [[0, 0.1, 0.1], [0, 0.2, 0.2], [2, 0.3, 0.3], [3, 0.4, 0.4]]},  # 중복 index
+        {"j": [[0, 0.1, 0.1], [1, 0.2, 0.2], [2, 0.3, 0.3], [9, 0.4, 0.4]]},  # 범위 이탈
+        {"j": [[0, 0.1], [1, 0.2, 0.2], [2, 0.3, 0.3], [3, 0.4, 0.4]]},  # 원소 길이 오류
+    ],
+)
+def test_build_user_drafts_rejects_broken_index_sets(payload):
+    vu = {"user_id": "vu_x"}
+    videos = [{"video_id": f"vid_{i}"} for i in range(4)]
+    with pytest.raises(ValueError):
+        _build_user_drafts(vu, videos, json.dumps(payload))
 
 
 def test_chunked_parallel_matches_single_call(tmp_path):

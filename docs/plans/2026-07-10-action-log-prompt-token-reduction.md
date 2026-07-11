@@ -26,10 +26,11 @@
   `[title(≤120), tags(≤8), channel(≤40), description(≤160)]` 순서로.
   truncation 한도는 현행 유지. video_id는 넣지 않는다.
 - `build_action_log_prompt()`: 후보 블록 앞에 컬럼 순서와 "배열 위치 = 후보
-  index" 명시. 출력형식 지시를 신규 출력 계약(`{"j":[[cp,wf],...]}`,
-  "정확히 N개를 후보 순서대로", would_like 언급 제거)으로 교체.
-- `ACTION_LOG_SYSTEM_HARNESS`: would_like 관련 문장 제거, 출력이 위치기반
-  배열임을 반영.
+  index" 명시. 출력형식 지시를 신규 출력 계약(`{"j":[[index,cp,wf],...]}`,
+  "index 0~N-1 각 1회", would_like 언급 제거)으로 교체. (index는 리뷰 반영으로
+  추가 — 재정렬 방어.)
+- `ACTION_LOG_SYSTEM_HARNESS`: would_like 관련 문장 제거, 출력이 인덱스
+  객체(`{"j":[[index,cp,wf],...]}`)임을 반영.
 
 ### Step 2 — would_like 파생 규칙 (방안 6)
 
@@ -38,19 +39,20 @@
 - 모듈 상수 `WOULD_LIKE_CLICK_THRESHOLD = 0.7`,
   `WOULD_LIKE_WATCH_THRESHOLD = 0.6`.
 - `derive_would_like(click_propensity, watch_fraction) -> bool` 헬퍼 추가.
-- `RuleBasedActionLogGenerator.generate()`도 신규 출력 포맷(`{"j":[[cp,wf],...]}`)
-  으로 맞추고 would_like는 출력에서 제거.
+- `RuleBasedActionLogGenerator.generate()`도 신규 출력 포맷
+  (`{"j":[[i,cp,wf],...]}`, `enumerate`)으로 맞추고 would_like는 출력에서 제거.
 
 ### Step 3 — 파싱 계약 변경 (방안 5·6)
 
 `pipeline.py` `_build_user_drafts()`:
 
 - `data["judgments"]` + `jmap`(video_id 매핑) 제거.
-- `j = data["j"]` 읽고 `len(j) != len(candidates)`이면 `ValueError`
-  발생시켜 `schema_fail` 격리로 흐르게 한다(패딩 금지).
-- 후보 `i`별로 `entry = j[i]` → `click_propensity=_clamp01(entry[0])`,
-  `watch_fraction=_clamp01(entry[1])`, `would_like=derive_would_like(...)`.
-- entry가 길이 2 숫자 배열이 아니면 구조 오류 → `schema_fail`.
+- `j = data["j"]` 읽고 각 원소 `[index, cp, wf]`를 `index`로 `by_index`에 모은다.
+- **index 무결성 검증** → 위반 시 `ValueError`(→`schema_fail`):
+  개수 불일치(`len(j)!=n`), 원소 길이≠3, index 비정수(bool 배제·정수값 float 허용),
+  범위 이탈(`index∉[0,n)`), 중복 index. 세 조건(len==n·범위·중복없음) 성립 시
+  누락도 배제되어 index 집합이 정확히 `0..n-1`.
+- 후보 `i`: `cp,wf = by_index[i]` → `_clamp01` 적용, `would_like=derive_would_like`.
 - 격리 error_type 분류(`invalid_json`/`schema_fail`)가 기존 호출부와
   일관되는지 확인(`_generate_drafts_isolated`의 예외 처리 경로).
 
@@ -61,18 +63,22 @@
 - `PROMPT_VERSION = "action_log_ctr_v1"` → `"action_log_ctr_v2"`.
 - 영향 확인: `daily.py:447/1010/1087`(manifest·체크포인트 게이트),
   `pipeline.py:715`(manifest). 코드 변경은 없고 상수 값만 전파됨을 확인.
-- `daily.py:1087`의 prompt_version 불일치는 `ValueError` raise다. 이 예외를
-  호출하는 상위 경로가 "구버전 shard 재생성"으로 흡수하는지 "런 실패"로
-  전파하는지 확인하고, 필요 시 롤아웃 순서(구버전 산출물 정리)를 조정한다.
+- **확인 완료** (리뷰 반영): `prompt_version`은 `_fingerprint_payload`(daily.py:447)
+  에 포함되고 체크포인트 namespace가 `fingerprint={config_fingerprint}`(daily.py:529)로
+  격리된다. 따라서 (a) 생성/재개: v2는 새 fingerprint→새 namespace→v1 파트 미검출로
+  **재생성**(구 v1 체크포인트는 고아 방치, 손상 아님), (b) 병합: `_load_shard_manifests`가
+  v1 매니페스트를 `ValueError`로 **거부**(v1/v2 혼재 병합 불가), (c) 롤백 v2→v1:
+  fingerprint 복귀로 v1 namespace 재활성, v2 산출물은 고아 방치·병합 거부 → **데이터
+  손상 없음**. 실질 우려는 고아 v1 작업의 재계산 낭비뿐 → 진행 중 배치 없을 때 배포.
 
 ### Step 5 — 테스트 갱신
 
 - `tests/test_action_logs_llm_generator.py`: 신규 프롬프트 문자열·
   RuleBased 출력 포맷·`derive_would_like` 단위 테스트. video_id가 프롬프트에
-  없음, 출력이 위치배열임을 검증.
-- `tests/test_action_logs_pipeline.py`: `_build_user_drafts` 인덱스 정렬,
-  길이 불일치 → 격리, would_like 파생값 검증. 기존 video_id 매핑 기반
-  테스트를 위치기반으로 교체.
+  없음, 출력이 인덱스 삼중배열임을 검증.
+- `tests/test_action_logs_pipeline.py`: `_build_user_drafts` index 재결합,
+  **재정렬 응답 정상 매핑**, 개수불일치·중복·범위이탈·원소길이 오류 → 격리,
+  would_like 파생값 검증. 기존 video_id 매핑 기반 테스트를 index 기반으로 교체.
 - `tests/test_action_logs_daily.py:264`: 하드코딩된 `"action_log_ctr_v1"`을
   `"action_log_ctr_v2"`(또는 `PROMPT_VERSION` import)로 갱신.
 - fixture 골든/샘플 응답이 있으면 신규 포맷으로 갱신.
@@ -94,8 +100,8 @@ uv run python -m pytest -q            # 전체 회귀
 ```
 
 - [ ] 신규 프롬프트에 video_id 미포함, 후보 블록이 배열-of-배열.
-- [ ] 출력 `{"j":[[cp,wf],...]}` 파싱 정상, 위치 정렬 정확.
-- [ ] 길이 불일치 응답 → `schema_fail` 격리 (오정렬 은폐 없음).
+- [ ] 출력 `{"j":[[index,cp,wf],...]}` 파싱 정상, **재정렬 응답도 index로 정확 매핑**.
+- [ ] 개수불일치·중복·범위이탈·원소길이 오류 → `schema_fail` 격리 (오정렬 은폐 없음).
 - [ ] would_like 파생값이 임계값 규칙과 일치, parquet에 정상 저장.
 - [ ] like 이벤트 볼륨(발생률)이 현행 대비 허용 범위 내(캘리브레이션 결과).
 - [ ] `PROMPT_VERSION` = v2가 manifest·체크포인트 게이트에 전파.

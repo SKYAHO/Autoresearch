@@ -28,7 +28,7 @@
 | `like` | 좋아요 발생 | `null` |
 
 **④ LLM은 판단, 코드는 조립**
-LLM은 (유저 × 후보영상)마다 `click_propensity`/`watch_fraction`만 판단한다(토큰 절감을 위해 위치기반 `{"j": [[cp, wf], ...]}` 포맷). `would_like`는 LLM이 출력하지 않고 코드가 `derive_would_like`로 파생한다. **정확한 클릭 비율(전역 2% CTR)은 코드가 결정**한다 — propensity 상위 `round(target_ctr × 총 impression 수)`개를 클릭으로 선정. 그래서 모델을 바꿔도 CTR은 고정, 개별 판단만 달라진다.
+LLM은 (유저 × 후보영상)마다 `click_propensity`/`watch_fraction`만 판단한다(토큰 절감을 위해 인덱스 포맷 `{"j": [[idx, cp, wf], ...]}` — `idx`는 후보의 0-base 위치라 재정렬에도 재결합 가능). `would_like`는 LLM이 출력하지 않고 코드가 `derive_would_like`로 파생한다. **정확한 클릭 비율(전역 2% CTR)은 코드가 결정**한다 — propensity 상위 `round(target_ctr × 총 impression 수)`개를 클릭으로 선정. 그래서 모델을 바꿔도 CTR은 고정, 개별 판단만 달라진다.
 
 ---
 
@@ -57,7 +57,7 @@ KR TrendingVideo(parquet) ┘         (video_source.load_video_records 로 video
         ▼   ── 유저 단위 격리 루프 ──  _generate_drafts_isolated
         │     ├ candidate.build_candidates(user, videos)      # 유저당 24후보 (관련+exploration), seed 고정
         │     ├ generator.generate(user, candidates) → raw JSON
-        │     │     # LLM: {"j": [[click_propensity, watch_fraction], ...]}  (후보 순서 = 배열 위치)
+        │     │     # LLM: {"j": [[index, click_propensity, watch_fraction], ...]}  (index로 후보 재결합)
         │     └ _build_user_drafts(raw) → [ImpressionDraft ...]  # would_like는 여기서 코드 파생
         │           # 파싱 실패 시 해당 유저만 quarantine (배치는 계속)
         ▼
