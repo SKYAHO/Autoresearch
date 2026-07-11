@@ -292,3 +292,7 @@ PR #112의 Claude 리뷰 스레드를 기준으로 다음과 같이 처리한다
   복사하지 않았음을 확인했다.
 - 최종 `action_log_ctr_v3` EventLog는 110행(impression 100, click 5, view 5),
   CTR 5%, `watch_time_sec` view-only 불변식을 만족했다.
+- 후속 확대 QA에서 동일 raw 20건 × virtual user 100명을 동시성 2로 실행했다.
+  최초 응답 100/100이 JSON/index 계약을 만족했고 schema retry와 quarantine은
+  모두 0건이었다. 2,000개 judgment와 최종 EventLog 2,244행의 세션·스키마
+  불변식도 전수 검증을 통과했다.

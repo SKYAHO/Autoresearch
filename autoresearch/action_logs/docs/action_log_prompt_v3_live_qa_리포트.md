@@ -97,3 +97,64 @@ v2로 동일 raw 20건 × user 3명을 호출했을 때 2건 성공, 1건 실패
 - 작은 모델의 출력은 확률적이므로 5콜은 무오류를 보장하지 않는다. 첫 운영
   배치에서 initial failure, schema retry success/failure, quarantine 비율을 계속
   관측해야 한다.
+
+## 확대 Live QA: Virtual user 100명
+
+5명 QA 이후 동일한 GCS raw 영상 20건을 virtual user parquet의 앞 100행에
+적용해 확대 검증했다. OpenRouter 동시성은 운영 안정화 기준에 맞춰 2로 제한했다.
+
+### 호출 및 응답 계약
+
+| 항목 | 결과 |
+| --- | ---: |
+| Virtual user | 100 |
+| 유저당 후보 | 20 |
+| 최초 OpenRouter 호출 | 100 |
+| 유효 JSON | 100/100 |
+| top-level key가 `j` 하나 | 100/100 |
+| row 수 20 | 100/100 |
+| 각 row 길이 3 | 100/100 |
+| index 집합 `0..19` | 100/100 |
+| schema 교정 재시도 | 0 |
+| quarantine | 0 |
+
+### 판단값 전수 검사
+
+| 항목 | click propensity | watch fraction |
+| --- | ---: | ---: |
+| 판단 수 | 2,000 | 2,000 |
+| non-zero | 1,663 | 1,699 |
+| 고유값 수 | 29 | 26 |
+| 범위 | 0.0~1.0 | 0.0~1.0 |
+| 평균 | 0.1671 | 0.3886 |
+
+2,000개 판단값이 충분히 분산되어 있어 모델이 skeleton placeholder를 복사한
+결과가 아님을 확인했다.
+
+### 최종 EventLog 전수 검사
+
+| 항목 | 결과 |
+| --- | ---: |
+| impression | 2,000 |
+| click | 100 |
+| view | 100 |
+| like | 44 |
+| 총 row | 2,244 |
+| CTR | 5% |
+| 처리된 user | 100 |
+| 유저당 impression | 20 |
+
+- 2,244개 `event_id`가 모두 고유했다.
+- click과 view의 `(user_id, video_id)` 집합이 일치했다.
+- like 세션은 모두 click 세션의 부분집합이었다.
+- 각 클릭 세션의 timestamp가 `impression < click < view < like` 순서를
+  만족했다.
+- `watch_time_sec`는 view에서만 non-null이었다.
+- 전 행이 `prompt_version=action_log_ctr_v3`,
+  `llm_model=mistralai/mistral-nemo`를 가졌다.
+
+### 확대 QA 판정
+
+v3는 이번 100-call 표본에서 최초 응답만으로 JSON 및 index 계약을 100% 준수했다.
+schema retry 경로는 발생하지 않았으며 단위 테스트로 별도 검증된 상태다. 운영에서는
+모델 응답의 확률적 특성을 고려해 retry 및 quarantine 지표를 계속 관측한다.
