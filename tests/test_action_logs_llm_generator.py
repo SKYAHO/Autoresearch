@@ -35,9 +35,10 @@ def _videos():
     ]
 
 
-def _success(content: str = '{"judgments": []}'):
+def _success(content: str = '{"judgments": []}', **kwargs):
     return SimpleNamespace(
-        choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
+        choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+        **kwargs,
     )
 
 
@@ -260,6 +261,12 @@ def test_openrouter_retry_total_is_capped_across_timeout_and_http_errors(monkeyp
 def test_openrouter_provider_preferences_are_optional_and_do_not_change_model(
     monkeypatch,
 ):
+    for name in (
+        "OPENROUTER_PROVIDER_SORT",
+        "OPENROUTER_ALLOW_FALLBACKS",
+        "OPENROUTER_REQUIRE_PARAMETERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
     default_client = _FakeClient()
     configured_client = _FakeClient()
     clients = iter([default_client, configured_client])
@@ -287,6 +294,154 @@ def test_openrouter_provider_preferences_are_optional_and_do_not_change_model(
     }
     assert default_request["model"] == configured_request["model"]
     assert ":nitro" not in configured_request["model"]
+
+
+def test_openrouter_default_routing_preserves_ambient_provider_preferences(
+    monkeypatch,
+):
+    client = _FakeClient()
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    monkeypatch.setenv("OPENROUTER_PROVIDER_SORT", "latency")
+    monkeypatch.setenv("OPENROUTER_ALLOW_FALLBACKS", "false")
+    monkeypatch.setenv("OPENROUTER_REQUIRE_PARAMETERS", "true")
+    generator = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        provider_routing_mode="default",
+    )
+
+    generator.generate(_user(), _videos())
+
+    request = client.completions.calls[0]
+    assert request["extra_body"] == {
+        "provider": {
+            "sort": "latency",
+            "allow_fallbacks": False,
+            "require_parameters": True,
+        }
+    }
+    assert request["extra_headers"] == {"X-OpenRouter-Metadata": "enabled"}
+    assert generator.fingerprint_config["provider_routing_mode"] == "default"
+    assert generator.fingerprint_config["provider_preferences"] == {
+        "sort": "latency",
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
+
+
+def test_openrouter_auto_omits_provider_payload_despite_ambient_preferences(
+    monkeypatch,
+):
+    client = _FakeClient()
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    monkeypatch.setenv("OPENROUTER_PROVIDER_SORT", "not-a-valid-sort")
+    monkeypatch.setenv("OPENROUTER_ALLOW_FALLBACKS", "not-a-boolean")
+    monkeypatch.setenv("OPENROUTER_REQUIRE_PARAMETERS", "not-a-boolean")
+    generator = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        provider_routing_mode="auto",
+        provider_sort="throughput",
+        allow_fallbacks=False,
+        require_parameters=True,
+    )
+
+    generator.generate(_user(), _videos())
+
+    request = client.completions.calls[0]
+    assert "extra_body" not in request
+    assert request["extra_headers"] == {"X-OpenRouter-Metadata": "enabled"}
+    assert generator.fingerprint_config["provider_preferences"] == {}
+
+
+def test_openrouter_fixed_uses_only_normalized_slug_and_disables_fallbacks(
+    monkeypatch,
+):
+    client = _FakeClient()
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    monkeypatch.setenv("OPENROUTER_PROVIDER_SORT", "not-a-valid-sort")
+    monkeypatch.setenv("OPENROUTER_ALLOW_FALLBACKS", "not-a-boolean")
+    monkeypatch.setenv("OPENROUTER_REQUIRE_PARAMETERS", "not-a-boolean")
+    generator = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        provider_routing_mode="fixed",
+        provider_slug=" DeepInfra ",
+        provider_sort="latency",
+        allow_fallbacks=True,
+        require_parameters=True,
+    )
+
+    generator.generate(_user(), _videos())
+
+    request = client.completions.calls[0]
+    assert request["extra_body"] == {
+        "provider": {
+            "only": ["deepinfra"],
+            "allow_fallbacks": False,
+        }
+    }
+    assert generator.provider_slug == "deepinfra"
+    assert generator.fingerprint_config["provider_preferences"] == {
+        "only": ["deepinfra"],
+        "allow_fallbacks": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("provider_routing_mode", "provider_slug", "message"),
+    [
+        ("invalid", None, "provider_routing_mode"),
+        ("AUTO", None, "provider_routing_mode"),
+        (" fixed ", "deepinfra", "provider_routing_mode"),
+        ("default", "deepinfra", "only allowed"),
+        ("auto", "deepinfra", "only allowed"),
+        ("fixed", None, "is required"),
+        ("fixed", "", "is required"),
+        ("fixed", "deep infra", "valid OpenRouter provider slug"),
+        ("fixed", "../deepinfra", "valid OpenRouter provider slug"),
+        ("fixed", "deepinfra//turbo", "valid OpenRouter provider slug"),
+    ],
+)
+def test_openrouter_provider_routing_rejects_invalid_mode_slug_combinations(
+    provider_routing_mode,
+    provider_slug,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        OpenRouterActionLogGenerator(
+            api_key="test-api-key",
+            provider_routing_mode=provider_routing_mode,
+            provider_slug=provider_slug,
+        )
+
+
+def test_openrouter_provider_mode_and_slug_change_fingerprint_without_model_change(
+    monkeypatch,
+):
+    for name in (
+        "OPENROUTER_PROVIDER_SORT",
+        "OPENROUTER_ALLOW_FALLBACKS",
+        "OPENROUTER_REQUIRE_PARAMETERS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    default = OpenRouterActionLogGenerator(api_key="test-api-key")
+    auto = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        provider_routing_mode="auto",
+    )
+    fixed = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        provider_routing_mode="fixed",
+        provider_slug="deepinfra",
+    )
+    fixed_variant = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        provider_routing_mode="fixed",
+        provider_slug="deepinfra/turbo",
+    )
+
+    assert default.model_name == auto.model_name == fixed.model_name
+    assert default.fingerprint_config != auto.fingerprint_config
+    assert auto.fingerprint_config != fixed.fingerprint_config
+    assert fixed.fingerprint_config != fixed_variant.fingerprint_config
 
 
 def test_openrouter_returns_invalid_json_without_retry(monkeypatch):
@@ -355,6 +510,133 @@ def test_openrouter_structured_logs_include_attempt_usage_without_sensitive_data
     assert "vu_test" not in serialized
     assert "테스트 영상" not in serialized
     assert "judgments" not in serialized
+
+
+def test_openrouter_official_router_metadata_is_safely_aggregated(
+    monkeypatch,
+    caplog,
+):
+    sensitive_summary = "raw prompt and response must stay hidden"
+    sensitive_pipeline = "persona secret inside router metadata"
+    sensitive_response = '{"secret_response_body": true}'
+    response = _success(
+        sensitive_response,
+        provider="legacy-provider",
+        model_extra={
+            "openrouter_metadata": {
+                "requested": "sensitive-requested-value",
+                "strategy": "fallback",
+                "summary": sensitive_summary,
+                "attempt": 3,
+                "endpoints": {
+                    "total": 3,
+                    "available": [
+                        {"provider": "Provider A", "selected": False},
+                        {"provider": "DeepInfra", "selected": True},
+                    ],
+                },
+                "attempts": [
+                    {"provider": "Provider A", "status": "429"},
+                    {"provider": "Provider B", "status": 503},
+                    {"provider": "DeepInfra", "status": 200},
+                ],
+                "pipeline": [
+                    {
+                        "type": "guardrail",
+                        "data": {"raw": sensitive_pipeline},
+                    }
+                ],
+            }
+        },
+    )
+    client = _FakeClient([response])
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    generator = OpenRouterActionLogGenerator(api_key="test-api-key")
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="autoresearch.action_logs.llm_generator",
+    ):
+        with action_log_work_log_context(
+            shard_index=1,
+            work_sequence=9,
+            detailed=True,
+        ):
+            assert generator.generate(_user(), _videos()) == sensitive_response
+
+    events = [json.loads(record.message) for record in caplog.records]
+    attempt = next(
+        event for event in events if event["event"] == "openrouter_attempt_complete"
+    )
+    request = next(
+        event for event in events if event["event"] == "openrouter_request_complete"
+    )
+    assert attempt["provider"] == "DeepInfra"
+    assert request["provider"] == "DeepInfra"
+    assert request["router_attempt_count"] == 3
+    assert request["router_fallback_count"] == 2
+    assert request["router_429_count"] == 1
+    assert client.completions.calls[0]["extra_headers"] == {
+        "X-OpenRouter-Metadata": "enabled"
+    }
+
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert sensitive_summary not in serialized
+    assert sensitive_pipeline not in serialized
+    assert sensitive_response not in serialized
+    assert "sensitive-requested-value" not in serialized
+    assert "openrouter_metadata" not in serialized
+
+
+def test_openrouter_malformed_router_metadata_is_ignored_with_legacy_fallback(
+    monkeypatch,
+    caplog,
+):
+    sensitive_metadata = "malformed metadata secret"
+    response = _success(
+        model_extra={
+            "provider": "legacy-provider",
+            "openrouter_metadata": {
+                "attempt": "not-an-integer",
+                "endpoints": {
+                    "available": [
+                        None,
+                        {
+                            "provider": f"unsafe\n{sensitive_metadata}",
+                            "selected": True,
+                        },
+                    ]
+                },
+                "attempts": {"unexpected": "object"},
+                "summary": sensitive_metadata,
+            },
+        }
+    )
+    client = _FakeClient([response])
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    generator = OpenRouterActionLogGenerator(api_key="test-api-key")
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="autoresearch.action_logs.llm_generator",
+    ):
+        with action_log_work_log_context(
+            shard_index=0,
+            work_sequence=1,
+            detailed=True,
+        ):
+            generator.generate(_user(), _videos())
+
+    request = next(
+        json.loads(record.message)
+        for record in caplog.records
+        if json.loads(record.message)["event"] == "openrouter_request_complete"
+    )
+    assert request["provider"] == "legacy-provider"
+    assert "router_attempt_count" not in request
+    assert "router_fallback_count" not in request
+    assert "router_429_count" not in request
+    assert sensitive_metadata not in json.dumps(request, ensure_ascii=False)
 
 
 def test_openrouter_retry_log_separates_attempt_and_backoff(monkeypatch, caplog):

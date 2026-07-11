@@ -23,6 +23,7 @@ from pyarrow.fs import FileSelector, FileType
 from autoresearch.action_logs.llm_generator import (
     OpenRouterActionLogGenerator,
     RuleBasedActionLogGenerator,
+    _normalize_provider_routing,
 )
 from autoresearch.action_logs.pipeline import (
     ActionLogGenerationError,
@@ -384,6 +385,30 @@ def _select_virtual_user_shard(
     return virtual_users[start:end]
 
 
+def _validate_expected_user_count(
+    virtual_users: list[dict],
+    expected_user_count: int | None,
+) -> None:
+    """로드된 전체 virtual user 수를 shard split 전에 fail-closed 검증한다."""
+
+    if expected_user_count is None:
+        return
+    if isinstance(expected_user_count, bool) or not isinstance(
+        expected_user_count,
+        int,
+    ):
+        raise ValueError("expected_user_count must be an integer")
+    if expected_user_count < 1:
+        raise ValueError("expected_user_count must be at least 1")
+    actual_user_count = len(virtual_users)
+    if actual_user_count != expected_user_count:
+        raise ValueError(
+            "virtual user count mismatch "
+            f"(expected_user_count={expected_user_count}, "
+            f"actual_user_count={actual_user_count})"
+        )
+
+
 def _normalize_generator_name(generator_name: str) -> str:
     """generator alias를 manifest에 기록할 canonical 이름으로 정규화한다."""
 
@@ -397,15 +422,34 @@ def _normalize_generator_name(generator_name: str) -> str:
     )
 
 
-def _build_generator(generator_name: str, model_name: str | None = None):
+def _build_generator(
+    generator_name: str,
+    model_name: str | None = None,
+    *,
+    provider_routing_mode: str = "default",
+    provider_slug: str | None = None,
+) -> RuleBasedActionLogGenerator | OpenRouterActionLogGenerator:
     """설정값에 따라 action log judgment generator를 만든다."""
 
     normalized = _normalize_generator_name(generator_name)
+    routing_mode, normalized_provider_slug = _normalize_provider_routing(
+        provider_routing_mode,
+        provider_slug,
+    )
     if normalized == "rule_based":
+        if routing_mode != "default":
+            raise ValueError(
+                f"provider_routing_mode='{routing_mode}' is only supported when "
+                "generator_name='openrouter'; rule_based requires 'default'"
+            )
         return RuleBasedActionLogGenerator()
     if normalized == "openrouter":
         kwargs = {"model_name": model_name} if model_name else {}
-        return OpenRouterActionLogGenerator(**kwargs)
+        return OpenRouterActionLogGenerator(
+            **kwargs,
+            provider_routing_mode=routing_mode,
+            provider_slug=normalized_provider_slug,
+        )
     raise AssertionError(f"unsupported normalized generator: {normalized}")
 
 
@@ -723,6 +767,9 @@ def run_daily_action_log(
     max_quarantine_ratio: float = 0.5,
     generator_name: str = "rule_based",
     model_name: str | None = None,
+    provider_routing_mode: str = "default",
+    provider_slug: str | None = None,
+    expected_user_count: int | None = None,
     history_end: datetime | None = None,
 ) -> dict[str, object]:
     """하루치 YouTube partition과 virtual user parquet으로 action log를 생성한다.
@@ -734,6 +781,9 @@ def run_daily_action_log(
         output_base_path: `.../data_lake/action_log` 출력 루트.
         quarantine_base_path: quarantine jsonl 출력 루트. None이면 최종 복사를 생략한다.
         filesystem: None(로컬) 또는 pyarrow filesystem(GCS 등).
+        provider_routing_mode: OpenRouter provider routing mode.
+        provider_slug: fixed mode에서 단독 허용할 OpenRouter provider slug.
+        expected_user_count: 로드된 virtual user 수의 선택적 fail-closed 조건.
     """
 
     youtube_path = _dt_path(
@@ -761,7 +811,13 @@ def run_daily_action_log(
 
     videos = load_video_records(youtube_path, filesystem=filesystem)
     virtual_users = _read_virtual_users(virtual_users_path, filesystem=filesystem)
-    generator = _build_generator(generator_name, model_name)
+    _validate_expected_user_count(virtual_users, expected_user_count)
+    generator = _build_generator(
+        generator_name,
+        model_name,
+        provider_routing_mode=provider_routing_mode,
+        provider_slug=provider_slug,
+    )
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -836,6 +892,9 @@ def run_daily_action_log_shard(
     max_quarantine_ratio: float = 0.5,
     generator_name: str = "rule_based",
     model_name: str | None = None,
+    provider_routing_mode: str = "default",
+    provider_slug: str | None = None,
+    expected_user_count: int | None = None,
     history_end: datetime | None = None,
     progress_base_path: str | None = None,
     checkpoint_base_path: str | None = None,
@@ -908,13 +967,19 @@ def run_daily_action_log_shard(
     try:
         videos = load_video_records(youtube_path, filesystem=filesystem)
         virtual_users = _read_virtual_users(virtual_users_path, filesystem=filesystem)
+        _validate_expected_user_count(virtual_users, expected_user_count)
         input_fingerprint = _input_fingerprint(virtual_users, videos)
         shard_users = _select_virtual_user_shard(
             virtual_users,
             shard_index,
             shard_count,
         )
-        generator = _build_generator(generator_name, model_name)
+        generator = _build_generator(
+            generator_name,
+            model_name,
+            provider_routing_mode=provider_routing_mode,
+            provider_slug=provider_slug,
+        )
         resolved_model_name = str(generator.model_name).strip()
         if not resolved_model_name:
             raise ValueError("generator model_name must not be empty")

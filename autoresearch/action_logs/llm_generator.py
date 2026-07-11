@@ -8,8 +8,10 @@ import json
 import logging
 import os
 import random
+import re
 import threading
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Literal
@@ -35,6 +37,12 @@ DEFAULT_OPENROUTER_TIMEOUT_MAX_RETRIES = 1
 DEFAULT_OPENROUTER_RETRY_BACKOFF_BASE_SEC = 1.0
 DEFAULT_OPENROUTER_RETRY_BACKOFF_MAX_SEC = 30.0
 _RETRYABLE_STATUS_CODES = frozenset({408, 429, 502, 503, 504})
+_PROVIDER_ROUTING_MODES = frozenset({"default", "auto", "fixed"})
+_PROVIDER_SLUG_PATTERN = re.compile(
+    r"[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*"
+)
+_SAFE_PROVIDER_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._:/()+-]{0,127}")
+_OPENROUTER_METADATA_HEADER = {"X-OpenRouter-Metadata": "enabled"}
 
 ACTION_LOG_SYSTEM_HARNESS = """너는 한국 YouTube 사용자의 시청 행동을 시뮬레이션하는 판정기다.
 주어진 사용자 프로필과 후보 영상 목록을 근거로, 각 후보 영상에 대해 이 사용자가
@@ -162,6 +170,42 @@ def _env_optional_bool(name: str) -> bool | None:
     raise ValueError(f"{name} must be a boolean")
 
 
+def _normalize_provider_routing(
+    provider_routing_mode: str,
+    provider_slug: str | None,
+) -> tuple[str, str | None]:
+    """OpenRouter routing mode와 fixed provider slug를 fail-closed 정규화한다."""
+
+    if not isinstance(provider_routing_mode, str):
+        raise ValueError(
+            "provider_routing_mode must be one of: default, auto, fixed"
+        )
+    normalized_mode = provider_routing_mode
+    if normalized_mode not in _PROVIDER_ROUTING_MODES:
+        raise ValueError(
+            "provider_routing_mode must be one of: default, auto, fixed"
+        )
+
+    if normalized_mode != "fixed":
+        if provider_slug is not None:
+            raise ValueError(
+                "provider_slug is only allowed when provider_routing_mode='fixed'"
+            )
+        return normalized_mode, None
+
+    if not isinstance(provider_slug, str) or not provider_slug.strip():
+        raise ValueError(
+            "provider_slug is required when provider_routing_mode='fixed'"
+        )
+    normalized_slug = provider_slug.strip().lower()
+    if (
+        len(normalized_slug) > 128
+        or _PROVIDER_SLUG_PATTERN.fullmatch(normalized_slug) is None
+    ):
+        raise ValueError("provider_slug must be a valid OpenRouter provider slug")
+    return normalized_mode, normalized_slug
+
+
 class OpenRouterRequestError(RuntimeError):
     """노출 가능한 구조화 필드만 보존한 OpenRouter 최종 요청 실패."""
 
@@ -212,7 +256,13 @@ class OpenRouterActionLogGenerator:
         provider_sort: Literal["price", "throughput", "latency"] | None = None,
         allow_fallbacks: bool | None = None,
         require_parameters: bool | None = None,
+        provider_routing_mode: str = "default",
+        provider_slug: str | None = None,
     ) -> None:
+        self.provider_routing_mode, self.provider_slug = _normalize_provider_routing(
+            provider_routing_mode,
+            provider_slug,
+        )
         self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY")
         self.base_url = base_url or DEFAULT_OPENROUTER_BASE_URL
         self.model_name = model_name
@@ -254,17 +304,28 @@ class OpenRouterActionLogGenerator:
                 DEFAULT_OPENROUTER_RETRY_BACKOFF_MAX_SEC,
             )
         )
-        self.provider_sort = provider_sort or os.environ.get("OPENROUTER_PROVIDER_SORT") or None
-        self.allow_fallbacks = (
-            allow_fallbacks
-            if allow_fallbacks is not None
-            else _env_optional_bool("OPENROUTER_ALLOW_FALLBACKS")
-        )
-        self.require_parameters = (
-            require_parameters
-            if require_parameters is not None
-            else _env_optional_bool("OPENROUTER_REQUIRE_PARAMETERS")
-        )
+        if self.provider_routing_mode == "default":
+            self.provider_sort = (
+                provider_sort
+                or os.environ.get("OPENROUTER_PROVIDER_SORT")
+                or None
+            )
+            self.allow_fallbacks = (
+                allow_fallbacks
+                if allow_fallbacks is not None
+                else _env_optional_bool("OPENROUTER_ALLOW_FALLBACKS")
+            )
+            self.require_parameters = (
+                require_parameters
+                if require_parameters is not None
+                else _env_optional_bool("OPENROUTER_REQUIRE_PARAMETERS")
+            )
+        else:
+            self.provider_sort = None
+            self.allow_fallbacks = (
+                False if self.provider_routing_mode == "fixed" else None
+            )
+            self.require_parameters = None
         self._thread_local = threading.local()
         self._client_lock = threading.Lock()
         self._clients: list[object] = []
@@ -301,6 +362,9 @@ class OpenRouterActionLogGenerator:
         return {
             "base_url_fingerprint": hashlib.sha256(self.base_url.encode()).hexdigest(),
             "max_tokens": self.max_tokens,
+            "provider_routing_mode": self.provider_routing_mode,
+            "provider_slug": self.provider_slug,
+            "provider_preferences": self._provider_preferences(),
             "provider_sort": self.provider_sort,
             "allow_fallbacks": self.allow_fallbacks,
             "require_parameters": self.require_parameters,
@@ -322,6 +386,15 @@ class OpenRouterActionLogGenerator:
             return client
 
     def _provider_preferences(self) -> dict[str, object]:
+        if self.provider_routing_mode == "auto":
+            return {}
+        if self.provider_routing_mode == "fixed":
+            assert self.provider_slug is not None
+            return {
+                "only": [self.provider_slug],
+                "allow_fallbacks": False,
+            }
+
         preferences: dict[str, object] = {}
         if self.provider_sort is not None:
             preferences["sort"] = self.provider_sort
@@ -351,15 +424,124 @@ class OpenRouterActionLogGenerator:
         return "unknown"
 
     @staticmethod
-    def _response_provider(response: object) -> str:
-        """OpenRouter 응답에서 민감하지 않은 provider 이름만 추출한다."""
+    def _safe_provider_name(value: object) -> str | None:
+        """외부 metadata에서 로그 가능한 짧은 provider 이름만 허용한다."""
+
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        if _SAFE_PROVIDER_NAME_PATTERN.fullmatch(normalized) is None:
+            return None
+        return normalized
+
+    @staticmethod
+    def _safe_nonnegative_int(value: object) -> int | None:
+        """bool과 비정상 값을 제외하고 외부 metadata 숫자를 정수로 읽는다."""
+
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            parsed = value
+        elif isinstance(value, float) and value.is_integer():
+            parsed = int(value)
+        elif isinstance(value, str) and value.strip().isdigit():
+            parsed = int(value.strip())
+        else:
+            return None
+        return parsed if parsed >= 0 else None
+
+    @staticmethod
+    def _router_metadata(response: object) -> Mapping[str, object] | None:
+        """SDK model_extra의 공식 router metadata object만 선택한다."""
+
+        model_extra = getattr(response, "model_extra", None)
+        if not isinstance(model_extra, Mapping):
+            return None
+        metadata = model_extra.get("openrouter_metadata")
+        return metadata if isinstance(metadata, Mapping) else None
+
+    @classmethod
+    def _router_metadata_fields(
+        cls,
+        response: object,
+    ) -> dict[str, int | str]:
+        """Router metadata 원문 없이 선택 provider와 안전한 count만 반환한다."""
+
+        metadata = cls._router_metadata(response)
+        if metadata is None:
+            return {}
+
+        selected_provider = None
+        endpoints = metadata.get("endpoints")
+        if isinstance(endpoints, Mapping):
+            available = endpoints.get("available")
+            if isinstance(available, (list, tuple)):
+                for endpoint in available:
+                    if not isinstance(endpoint, Mapping):
+                        continue
+                    if endpoint.get("selected") is not True:
+                        continue
+                    selected_provider = cls._safe_provider_name(
+                        endpoint.get("provider")
+                    )
+                    if selected_provider is not None:
+                        break
+
+        attempts_value = metadata.get("attempts")
+        attempts: list[Mapping[str, object]] | None = None
+        if isinstance(attempts_value, (list, tuple)):
+            attempts = [
+                attempt
+                for attempt in attempts_value
+                if isinstance(attempt, Mapping)
+            ]
+
+        if selected_provider is None and attempts:
+            for attempt in reversed(attempts):
+                status = cls._safe_nonnegative_int(attempt.get("status"))
+                if status is not None and not 200 <= status < 300:
+                    continue
+                selected_provider = cls._safe_provider_name(
+                    attempt.get("provider")
+                )
+                if selected_provider is not None:
+                    break
+
+        attempt_count = len(attempts) if attempts is not None else None
+        reported_attempt = cls._safe_nonnegative_int(metadata.get("attempt"))
+        if reported_attempt is not None:
+            attempt_count = max(attempt_count or 0, reported_attempt)
+
+        fields: dict[str, int | str] = {}
+        if selected_provider is not None:
+            fields["provider"] = selected_provider
+        if attempt_count is not None and attempt_count > 0:
+            fields["router_attempt_count"] = attempt_count
+            fields["router_fallback_count"] = max(0, attempt_count - 1)
+        if attempts is not None:
+            fields["router_429_count"] = sum(
+                cls._safe_nonnegative_int(attempt.get("status")) == 429
+                for attempt in attempts
+            )
+        return fields
+
+    @classmethod
+    def _response_provider(cls, response: object) -> str:
+        """공식 metadata를 우선하고 기존 response provider fallback을 유지한다."""
+
+        metadata_provider = cls._router_metadata_fields(response).get("provider")
+        if isinstance(metadata_provider, str):
+            return metadata_provider
 
         provider = getattr(response, "provider", None)
-        if provider:
-            return str(provider)
+        safe_provider = cls._safe_provider_name(provider)
+        if safe_provider is not None:
+            return safe_provider
         model_extra = getattr(response, "model_extra", None)
-        if isinstance(model_extra, dict) and model_extra.get("provider"):
-            return str(model_extra["provider"])
+        if isinstance(model_extra, Mapping):
+            safe_provider = cls._safe_provider_name(model_extra.get("provider"))
+            if safe_provider is not None:
+                return safe_provider
         return "unknown"
 
     @staticmethod
@@ -441,6 +623,7 @@ class OpenRouterActionLogGenerator:
             ],
             "response_format": {"type": "json_object"},
             "max_tokens": self.max_tokens,
+            "extra_headers": dict(_OPENROUTER_METADATA_HEADER),
         }
         provider = self._provider_preferences()
         if provider:
@@ -563,6 +746,10 @@ class OpenRouterActionLogGenerator:
                 )
 
         assert response is not None
+        router_fields = self._router_metadata_fields(response)
+        provider_name = str(
+            router_fields.pop("provider", self._response_provider(response))
+        )
         emit_action_log_event(
             logger,
             logging.INFO,
@@ -575,8 +762,9 @@ class OpenRouterActionLogGenerator:
             retry_count=total_retries,
             attempt=attempts,
             http_status=200,
-            provider=self._response_provider(response),
+            provider=provider_name,
             outcome="success",
             **self._usage_fields(response),
+            **router_fields,
         )
         return response.choices[0].message.content or ""

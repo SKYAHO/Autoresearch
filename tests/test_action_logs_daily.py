@@ -1,3 +1,4 @@
+import inspect
 import json
 import shutil
 from datetime import UTC, date, datetime
@@ -16,7 +17,11 @@ from autoresearch.action_logs.daily import (
     run_daily_action_log,
     run_daily_action_log_shard,
 )
-from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
+from autoresearch.action_logs.llm_generator import (
+    DEFAULT_OPENROUTER_MODEL,
+    OpenRouterActionLogGenerator,
+    RuleBasedActionLogGenerator,
+)
 from autoresearch.action_logs.pipeline import ActionLogGenerationError
 
 
@@ -123,6 +128,28 @@ def _write_youtube_partition(base, partition_date: date, count: int = 12):
     pq.write_table(pa.Table.from_pylist(rows), partition_dir / "part-0.parquet")
 
 
+def test_daily_runners_expose_provider_and_expected_count_contract():
+    for runner in (run_daily_action_log, run_daily_action_log_shard):
+        parameters = inspect.signature(runner).parameters
+        assert parameters["provider_routing_mode"].annotation in {str, "str"}
+        assert parameters["provider_routing_mode"].default == "default"
+        assert parameters["provider_slug"].default is None
+        assert parameters["expected_user_count"].default is None
+
+
+@pytest.mark.parametrize(
+    ("expected_user_count", "message"),
+    [
+        (True, "must be an integer"),
+        (0, "must be at least 1"),
+        (-1, "must be at least 1"),
+    ],
+)
+def test_expected_user_count_rejects_invalid_values(expected_user_count, message):
+    with pytest.raises(ValueError, match=message):
+        daily_module._validate_expected_user_count([], expected_user_count)
+
+
 def test_run_daily_action_log_writes_dt_partition(tmp_path):
     partition_date = date(2026, 7, 1)
     virtual_users_path = tmp_path / "virtual_users.parquet"
@@ -154,6 +181,148 @@ def test_run_daily_action_log_writes_dt_partition(tmp_path):
     assert summary["clicks"] == 3
     assert table.num_rows == summary["total_events"]
     assert quarantine_path.exists()
+
+
+def test_run_daily_action_log_accepts_expected_user_count_100(tmp_path):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    output_base = tmp_path / "action_log"
+
+    _write_virtual_users(virtual_users_path, count=100)
+    _write_youtube_partition(youtube_base, partition_date, count=1)
+
+    summary = run_daily_action_log(
+        partition_date=partition_date,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(output_base),
+        candidates_per_user=1,
+        expected_user_count=100,
+    )
+
+    assert summary["users"] == 100
+    assert summary["impressions"] == 100
+
+
+def test_run_daily_action_log_rejects_expected_user_count_mismatch_before_generator(
+    tmp_path,
+    monkeypatch,
+):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    output_base = tmp_path / "action_log"
+
+    _write_virtual_users(virtual_users_path, count=99)
+    _write_youtube_partition(youtube_base, partition_date, count=1)
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda *args, **kwargs: pytest.fail("generator must not be built"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"expected_user_count=100, actual_user_count=99",
+    ):
+        run_daily_action_log(
+            partition_date=partition_date,
+            youtube_base_path=str(youtube_base),
+            virtual_users_path=str(virtual_users_path),
+            output_base_path=str(output_base),
+            candidates_per_user=1,
+            expected_user_count=100,
+        )
+
+    assert not output_base.exists()
+
+
+def test_run_daily_action_log_shard_rejects_expected_count_before_split_and_generator(
+    tmp_path,
+    monkeypatch,
+):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    output_base = tmp_path / "action_log_work"
+
+    _write_virtual_users(virtual_users_path, count=99)
+    _write_youtube_partition(youtube_base, partition_date, count=1)
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda *args, **kwargs: pytest.fail("generator must not be built"),
+    )
+    monkeypatch.setattr(
+        daily_module,
+        "_select_virtual_user_shard",
+        lambda *args, **kwargs: pytest.fail("users must not be split"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"expected_user_count=100, actual_user_count=99",
+    ):
+        run_daily_action_log_shard(
+            partition_date=partition_date,
+            shard_index=0,
+            shard_count=2,
+            youtube_base_path=str(youtube_base),
+            virtual_users_path=str(virtual_users_path),
+            output_base_path=str(output_base),
+            progress_base_path=str(tmp_path / "progress"),
+            checkpoint_base_path=str(tmp_path / "checkpoints"),
+            candidates_per_user=1,
+            expected_user_count=100,
+        )
+
+    assert not output_base.exists()
+
+
+@pytest.mark.parametrize(
+    ("provider_routing_mode", "provider_slug"),
+    [("auto", None), ("fixed", "deepinfra")],
+)
+def test_rule_based_generator_rejects_non_default_provider_routing(
+    provider_routing_mode,
+    provider_slug,
+):
+    with pytest.raises(ValueError, match="only supported.*openrouter"):
+        daily_module._build_generator(
+            "rule_based",
+            provider_routing_mode=provider_routing_mode,
+            provider_slug=provider_slug,
+        )
+
+
+def test_build_generator_passes_normalized_fixed_provider_slug(monkeypatch):
+    captured = {}
+    sentinel = SimpleNamespace(model_name=DEFAULT_OPENROUTER_MODEL)
+
+    def _openrouter_factory(**kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        daily_module,
+        "OpenRouterActionLogGenerator",
+        _openrouter_factory,
+    )
+
+    generator = daily_module._build_generator(
+        "openrouter",
+        model_name=DEFAULT_OPENROUTER_MODEL,
+        provider_routing_mode="fixed",
+        provider_slug=" DeepInfra ",
+    )
+
+    assert generator is sentinel
+    assert captured == {
+        "model_name": DEFAULT_OPENROUTER_MODEL,
+        "provider_routing_mode": "fixed",
+        "provider_slug": "deepinfra",
+    }
 
 
 def test_run_daily_action_log_keeps_event_timestamps_inside_partition_date(tmp_path):
@@ -431,7 +600,7 @@ def test_quarantine_guard_is_global_at_merge(
     monkeypatch.setattr(
         daily_module,
         "_build_generator",
-        lambda generator_name, model_name=None: _OneUserFailureGenerator(),
+        lambda generator_name, model_name=None, **kwargs: _OneUserFailureGenerator(),
     )
 
     summaries = []
@@ -569,7 +738,7 @@ def test_shard_resume_calls_only_unfinished_work_after_interruption(
     monkeypatch.setattr(
         daily_module,
         "_build_generator",
-        lambda generator_name, model_name=None: generator,
+        lambda generator_name, model_name=None, **kwargs: generator,
     )
     original_write_part = daily_module._ActionLogCheckpointStore.write_part
     interrupted = False
@@ -628,7 +797,7 @@ def test_checkpoint_fingerprint_isolates_changed_config(tmp_path, monkeypatch):
     monkeypatch.setattr(
         daily_module,
         "_build_generator",
-        lambda generator_name, model_name=None: generator,
+        lambda generator_name, model_name=None, **kwargs: generator,
     )
     common = {
         "partition_date": partition_date,
@@ -650,6 +819,80 @@ def test_checkpoint_fingerprint_isolates_changed_config(tmp_path, monkeypatch):
     assert generator.calls - calls_after_first == second["total_work"]
 
 
+def test_provider_routing_mode_isolates_shard_checkpoint_fingerprint(
+    tmp_path,
+):
+    partition_date = date(2026, 7, 1)
+    request = daily_module._build_request(
+        partition_date=partition_date,
+        tmp_dir=tmp_path,
+        candidates_per_user=24,
+        target_ctr=0.02,
+        personalized_ratio=0.7,
+        popular_ratio=0.2,
+        exploration_ratio=0.1,
+        seed=42,
+        max_concurrency=1,
+        chunk_size=0,
+        max_quarantine_ratio=0.5,
+        history_end=None,
+    )
+    auto_generator = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        provider_routing_mode="auto",
+    )
+    fixed_generator = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        provider_routing_mode="fixed",
+        provider_slug="deepinfra",
+    )
+    auto_config = dict(auto_generator.fingerprint_config)
+    fixed_config = dict(fixed_generator.fingerprint_config)
+    common = {
+        "generator_name": "openrouter",
+        "model_name": DEFAULT_OPENROUTER_MODEL,
+        "input_fingerprint": "a" * 64,
+        "request": request,
+    }
+
+    auto_fingerprint = daily_module._config_fingerprint(
+        **common,
+        generator_config=auto_config,
+    )
+    fixed_fingerprint = daily_module._config_fingerprint(
+        **common,
+        generator_config=fixed_config,
+    )
+    auto_store = daily_module._ActionLogCheckpointStore(
+        partition_date=partition_date,
+        shard_index=0,
+        shard_count=1,
+        checkpoint_base_path=str(tmp_path / "checkpoints"),
+        config_fingerprint=auto_fingerprint,
+        config={},
+    )
+    fixed_store = daily_module._ActionLogCheckpointStore(
+        partition_date=partition_date,
+        shard_index=0,
+        shard_count=1,
+        checkpoint_base_path=str(tmp_path / "checkpoints"),
+        config_fingerprint=fixed_fingerprint,
+        config={},
+    )
+
+    assert auto_generator.model_name == fixed_generator.model_name
+    assert auto_fingerprint != fixed_fingerprint
+    assert auto_store.namespace_path != fixed_store.namespace_path
+    assert auto_config["provider_routing_mode"] == "auto"
+    assert auto_config["provider_preferences"] == {}
+    assert fixed_config["provider_routing_mode"] == "fixed"
+    assert fixed_config["provider_slug"] == "deepinfra"
+    assert fixed_config["provider_preferences"] == {
+        "only": ["deepinfra"],
+        "allow_fallbacks": False,
+    }
+
+
 def test_prompt_version_change_isolates_checkpoint_and_supports_rollback(
     tmp_path,
     monkeypatch,
@@ -666,7 +909,7 @@ def test_prompt_version_change_isolates_checkpoint_and_supports_rollback(
     monkeypatch.setattr(
         daily_module,
         "_build_generator",
-        lambda generator_name, model_name=None: generator,
+        lambda generator_name, model_name=None, **kwargs: generator,
     )
     common = {
         "partition_date": partition_date,
@@ -711,7 +954,7 @@ def test_checkpoint_fingerprint_isolates_changed_input_content(tmp_path, monkeyp
     monkeypatch.setattr(
         daily_module,
         "_build_generator",
-        lambda generator_name, model_name=None: generator,
+        lambda generator_name, model_name=None, **kwargs: generator,
     )
     kwargs = {
         "partition_date": partition_date,
@@ -751,7 +994,7 @@ def test_checkpoint_duplicate_parts_are_deduplicated_by_work_id(
     monkeypatch.setattr(
         daily_module,
         "_build_generator",
-        lambda generator_name, model_name=None: first_generator,
+        lambda generator_name, model_name=None, **kwargs: first_generator,
     )
     kwargs = {
         "partition_date": partition_date,
@@ -772,7 +1015,7 @@ def test_checkpoint_duplicate_parts_are_deduplicated_by_work_id(
     monkeypatch.setattr(
         daily_module,
         "_build_generator",
-        lambda generator_name, model_name=None: resumed_generator,
+        lambda generator_name, model_name=None, **kwargs: resumed_generator,
     )
     second = run_daily_action_log_shard(**kwargs)
 
