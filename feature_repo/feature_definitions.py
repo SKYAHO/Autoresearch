@@ -1,31 +1,27 @@
 """
-TEMP_FEAST_BOOTSTRAP:
-현재 FeatureView 스키마는 임시 더미 데이터 기준이다.
-실제 BigQuery 적재 파이프라인과 스키마가 확정되면 실제 데이터 기준으로 교체한다.
-
-Feast Entity & FeatureView 정의 (현재 더미 데이터 사용, 추후 데이터에 맞게 가공 필요)
+Feast Entity & FeatureView 정의.
 
 Entity (이름은 개념, join_keys는 컬럼 — 공식 quickstart 컨벤션):
-  - user (join_key: user_id): 사용자
-  - video (join_key: video_id): 비디오
+  - user (join_key: user_id)
+  - video (join_key: video_id)
+  - category (join_key: category_id)
 
-FeatureView:
-  - user_features: 사용자 단위 Feature (시청 수, 평균 시청 시간 등)
-  - video_features: 비디오 단위 Feature (조회수, 좋아요 수, 카테고리 등)
-  - user_video_interaction: 사용자-비디오 상호작용 Feature (시청 시간 등)
-
-추후 SQL 팀에서 정의한 실제 스키마로 교체 예정.
+FeatureView (BigQuery source table → FeatureView):
+  - user_static_feature      → UserStaticView (user)
+  - user_dynamic_feature     → UserDynamicView (user)
+  - video_feature            → VideoFeatureView (video)
+  - user_category_similarity → UserCategorySimilarityView (user, category)
 """
 
 import os
-from datetime import timedelta
 
 from feast import Entity, FeatureView, Field
 from feast.infra.offline_stores.bigquery import BigQuerySource
-from feast.types import Int64, Float32, String
+from feast.types import Array, Float64, Int64, String
+from feast.value_type import ValueType
 
-GCP_PROJECT = os.getenv("GCP_PROJECT_ID", "autoresearch-skyaho-501202")
-BQ_DATASET = os.getenv("BQ_DATASET", "feast_offline_store")
+GCP_PROJECT = os.environ["GCP_PROJECT_ID"]
+BQ_DATASET = os.environ["BQ_DATASET"]
 
 
 # ============================================================================
@@ -35,6 +31,7 @@ BQ_DATASET = os.getenv("BQ_DATASET", "feast_offline_store")
 user_entity = Entity(
     name="user",
     join_keys=["user_id"],
+    value_type=ValueType.STRING,
     description="사용자",
     tags={"domain": "user"},
 )
@@ -42,8 +39,17 @@ user_entity = Entity(
 video_entity = Entity(
     name="video",
     join_keys=["video_id"],
+    value_type=ValueType.STRING,
     description="비디오",
     tags={"domain": "video"},
+)
+
+category_entity = Entity(
+    name="category",
+    join_keys=["category_id"],
+    value_type=ValueType.STRING,
+    description="비디오 카테고리",
+    tags={"domain": "category"},
 )
 
 
@@ -52,25 +58,32 @@ video_entity = Entity(
 # 테이블: {GCP_PROJECT}.{BQ_DATASET}.{table_name}
 # ============================================================================
 
-user_source = BigQuerySource(
-    name="user_features_source",
-    table=f"{GCP_PROJECT}.{BQ_DATASET}.user_features",
+user_static_source = BigQuerySource(
+    name="user_static_feature_source",
+    table=f"{GCP_PROJECT}.{BQ_DATASET}.user_static_feature",
     timestamp_field="event_timestamp",
-    description="사용자 단위 Feature 데이터 (더미)",
+    description="사용자 정적 Feature",
+)
+
+user_dynamic_source = BigQuerySource(
+    name="user_dynamic_feature_source",
+    table=f"{GCP_PROJECT}.{BQ_DATASET}.user_dynamic_feature",
+    timestamp_field="event_timestamp",
+    description="사용자 동적 Feature (최근 7일 집계)",
 )
 
 video_source = BigQuerySource(
-    name="video_features_source",
-    table=f"{GCP_PROJECT}.{BQ_DATASET}.video_features",
+    name="video_feature_source",
+    table=f"{GCP_PROJECT}.{BQ_DATASET}.video_feature",
     timestamp_field="event_timestamp",
-    description="비디오 단위 Feature 데이터 (더미)",
+    description="비디오 Feature",
 )
 
-interaction_source = BigQuerySource(
-    name="user_video_interaction_source",
-    table=f"{GCP_PROJECT}.{BQ_DATASET}.user_video_interaction",
+user_category_similarity_source = BigQuerySource(
+    name="user_category_similarity_source",
+    table=f"{GCP_PROJECT}.{BQ_DATASET}.user_category_similarity",
     timestamp_field="event_timestamp",
-    description="사용자-비디오 상호작용 Feature 데이터 (더미)",
+    description="사용자-카테고리 topic similarity",
 )
 
 
@@ -78,48 +91,68 @@ interaction_source = BigQuerySource(
 # FeatureView 정의
 # ============================================================================
 
-user_features_fv = FeatureView(
-    name="user_features",
+user_static_view = FeatureView(
+    name="UserStaticView",
     entities=[user_entity],
-    ttl=timedelta(days=30),
     schema=[
-        Field(name="total_watch_count", dtype=Int64),
-        Field(name="avg_watch_duration_sec", dtype=Float32),
-        Field(name="liked_video_count", dtype=Int64),
+        Field(name="age_group", dtype=String),
+        Field(name="occupation", dtype=String),
+        Field(name="preferred_category", dtype=Array(String)),
+        Field(name="preferred_topics", dtype=Array(String)),
+        Field(name="watch_time_band", dtype=String),
     ],
-    source=user_source,
+    source=user_static_source,
     online=True,
-    tags={"team": "feature-store", "status": "dummy"},
-    description="사용자 단위 더미 Feature (추후 실제 스키마로 교체)",
+    tags={"team": "feature-store"},
+    description="사용자 정적 Feature",
 )
 
-video_features_fv = FeatureView(
-    name="video_features",
-    entities=[video_entity],
-    ttl=timedelta(days=30),
+user_dynamic_view = FeatureView(
+    name="UserDynamicView",
+    entities=[user_entity],
     schema=[
+        Field(name="recent_click_count_7d", dtype=Int64),
+        Field(name="recent_view_count_7d", dtype=Int64),
+        Field(name="recent_watch_time_7d", dtype=Int64),
+        Field(name="recent_like_count_7d", dtype=Int64),
+        Field(name="historical_category_affinity", dtype=String),
+        Field(name="total_event_count_7d", dtype=Int64),
+    ],
+    source=user_dynamic_source,
+    online=True,
+    tags={"team": "feature-store"},
+    description="사용자 동적 Feature (최근 7일 집계)",
+)
+
+video_feature_view = FeatureView(
+    name="VideoFeatureView",
+    entities=[video_entity],
+    schema=[
+        Field(name="category_id", dtype=String),
+        Field(name="duration_sec", dtype=Int64),
         Field(name="view_count", dtype=Int64),
-        Field(name="like_count", dtype=Int64),
-        Field(name="dislike_count", dtype=Int64),
-        Field(name="duration_sec", dtype=Float32),
-        Field(name="category", dtype=String),
+        Field(name="like_ratio", dtype=Float64),
+        Field(name="comment_ratio", dtype=Float64),
+        Field(name="days_since_upload", dtype=Int64),
+        Field(name="channel_subscriber_count", dtype=Int64),
+        Field(name="channel_view_count", dtype=Int64),
+        Field(name="channel_video_count", dtype=Int64),
     ],
     source=video_source,
     online=True,
-    tags={"team": "feature-store", "status": "dummy"},
-    description="비디오 단위 더미 Feature (추후 실제 스키마로 교체)",
+    tags={"team": "feature-store"},
+    description="비디오 Feature",
 )
 
-user_video_interaction_fv = FeatureView(
-    name="user_video_interaction",
-    entities=[user_entity, video_entity],
-    ttl=timedelta(days=14),
+user_category_similarity_view = FeatureView(
+    name="UserCategorySimilarityView",
+    entities=[user_entity, category_entity],
     schema=[
-        Field(name="watch_time_sec", dtype=Float32),
-        Field(name="like_ratio", dtype=Float32),
+        Field(name="topic_similarity", dtype=Float64),
+        Field(name="topic_similarity_top_topic", dtype=String),
     ],
-    source=interaction_source,
+    source=user_category_similarity_source,
     online=True,
-    tags={"team": "feature-store", "status": "dummy"},
-    description="사용자-비디오 상호작용 더미 Feature (추후 실제 스키마로 교체)",
+    tags={"team": "feature-store"},
+    description="사용자-카테고리 topic similarity",
 )
