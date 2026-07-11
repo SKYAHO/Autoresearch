@@ -34,6 +34,7 @@ Raw Data Catalog
 | `prompt_version` | `VARCHAR` | 프롬프트 버전 |
 | `llm_model` | `VARCHAR` | 생성에 사용된 LLM 모델 |
 | `generated_at` | `VARCHAR` | 생성 시각 문자열 |
+| `dt` | `DATE` | 파티션 날짜 (parquet 컬럼이 아닌 `dt=*` 경로 값, BigQuery 적재 시 복원) |
 
 ---
 
@@ -86,6 +87,7 @@ Raw Data Catalog
 | 컬럼 | 타입 | 설명 |
 | --- | --- | --- |
 | `collected_at` | `TIMESTAMP WITH TIME ZONE` | 데이터 수집 시각 |
+| `dt` | `DATE` | 파티션 날짜 (parquet 컬럼이 아닌 `dt=*` 경로 값, BigQuery 적재 시 복원) |
 
 ---
 
