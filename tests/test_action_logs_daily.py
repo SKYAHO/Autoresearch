@@ -286,7 +286,7 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
         "completed_work": 1,
         "quarantine_count": 0,
         "schema_version": "action_log_schema_v1",
-        "prompt_version": "action_log_ctr_v3",
+        "prompt_version": "action_log_ctr_v4",
         "input_fingerprint": manifest["input_fingerprint"],
         "config_fingerprint": manifest["config_fingerprint"],
     }
