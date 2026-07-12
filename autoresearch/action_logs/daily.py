@@ -1181,7 +1181,7 @@ def run_daily_action_log_shard(
                 config_fingerprint=fingerprint,
             )
             _write_json_file(
-                manifest.model_dump(mode="json"),
+                manifest.model_dump(mode="json", exclude_none=True),
                 manifest_path,
                 filesystem=filesystem,
             )
