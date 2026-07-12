@@ -8,12 +8,9 @@ permissions:
   contents: read
 
 jobs:
-  release-info:
+  trigger-build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Print release info
         run: |
           echo "Tag: ${{ github.event.release.tag_name }}"
@@ -21,22 +18,27 @@ jobs:
           echo "Target: ${{ github.event.release.target_commitish }}"
           echo "URL: ${{ github.event.release.html_url }}"
 
-      # TODO: GCP Workload Identity Federation 설정 후 활성화
-      # 현재 WIF pool이 Autoresearch-infra 리포만 허용하므로,
-      # infra 팀에 Autoresearch 리포 추가를 요청해야 함.
-      #
-      # - name: Authenticate to GCP
-      #   uses: google-github-actions/auth@v2
-      #   with:
-      #     workload_identity_provider: projects/185508640491/locations/global/workloadIdentityPools/autoresearch-github/providers/github
-      #     service_account: <service-account-email>
-      #
-      # - name: Configure Docker for GAR
-      #   run: gcloud auth configure-docker asia-northeast3-docker.pkg.dev
-      #
-      # - name: Trigger Cloud Build
-      #   run: |
-      #     gcloud builds submit \
-      #       --project ar-infra-501607 \
-      #       --config ../Autoresearch-airflow/cloudbuild.yaml \
-      #       --substitutions _IMAGE_TAG=${{ github.event.release.tag_name }},_AUTORESEARCH_REF=${{ github.event.release.tag_name }}
+      - name: Generate App token
+        uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: SKYAHO
+          repositories: Autoresearch-airflow
+
+      - name: Trigger build in Autoresearch-airflow
+        env:
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/SKYAHO/Autoresearch-airflow/dispatches \
+            -d "{\"event_type\":\"autoresearch-released\",\"client_payload\":{\"ref\":\"$TAG\",\"tag\":\"$TAG\"}}")
+          if [ "$RESPONSE_CODE" != "204" ]; then
+            echo "::error::Failed to dispatch event (HTTP $RESPONSE_CODE)"
+            exit 1
+          fi
+          echo "Dispatch sent successfully for tag $TAG"
