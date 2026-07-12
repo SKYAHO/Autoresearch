@@ -80,6 +80,8 @@ class ActionLogShardManifest(BaseModel):
 
     manifest_version: str = "action_log_shard_manifest_v1"
     partition_date: date
+    interval_start: datetime | None = None
+    interval_end: datetime | None = None
     shard_index: int = Field(ge=0)
     shard_count: int = Field(ge=1)
     generator: str = Field(min_length=1)
@@ -124,6 +126,7 @@ class EventGenerationRequest(BaseModel):
     popular_ratio: float = 0.2
     exploration_ratio: float = 0.1
     history_days: int = 30
+    history_start: datetime | None = None
     history_end: datetime = Field(
         default_factory=lambda: datetime.now(UTC).replace(microsecond=0)
     )
@@ -168,6 +171,14 @@ class EventGenerationRequest(BaseModel):
         if value < 0:
             raise ValueError("chunk_size must be >= 0")
         return value
+
+    @model_validator(mode="after")
+    def history_window_is_ordered(self) -> "EventGenerationRequest":
+        """명시적인 생성 구간은 종료 시각보다 앞서야 합니다."""
+
+        if self.history_start is not None and self.history_start >= self.history_end:
+            raise ValueError("history_start must be earlier than history_end")
+        return self
 
 
 class QuarantineRecord(BaseModel):

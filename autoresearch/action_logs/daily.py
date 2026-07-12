@@ -72,13 +72,19 @@ def _dt_path(
     partition_date: date,
     filename: str,
     *,
+    partition_hour: int | None = None,
     filesystem=None,
 ) -> str:
     """local/GCS 공통 dt partition 파일 경로를 만든다."""
 
+    parts = [f"dt={partition_date:%Y-%m-%d}"]
+    if partition_hour is not None:
+        if not 0 <= partition_hour <= 23:
+            raise ValueError("partition_hour must be between 0 and 23")
+        parts.append(f"hour={partition_hour:02d}")
     if filesystem is None:
-        return str(Path(base_path) / f"dt={partition_date:%Y-%m-%d}" / filename)
-    return f"{_strip_gs(base_path).rstrip('/')}/dt={partition_date:%Y-%m-%d}/{filename}"
+        return str(Path(base_path).joinpath(*parts, filename))
+    return "/".join([_strip_gs(base_path).rstrip("/"), *parts, filename])
 
 
 def _dt_shard_path(
@@ -87,21 +93,21 @@ def _dt_shard_path(
     shard_index: int,
     filename: str,
     *,
+    partition_hour: int | None = None,
     filesystem=None,
 ) -> str:
     """local/GCS 공통 dt partition shard 파일 경로를 만든다."""
 
     shard_dir = f"shard={shard_index:03d}"
+    partition_parts = [f"dt={partition_date:%Y-%m-%d}"]
+    if partition_hour is not None:
+        if not 0 <= partition_hour <= 23:
+            raise ValueError("partition_hour must be between 0 and 23")
+        partition_parts.append(f"hour={partition_hour:02d}")
     if filesystem is None:
-        return str(
-            Path(base_path)
-            / f"dt={partition_date:%Y-%m-%d}"
-            / shard_dir
-            / filename
-        )
-    return (
-        f"{_strip_gs(base_path).rstrip('/')}/dt={partition_date:%Y-%m-%d}/"
-        f"{shard_dir}/{filename}"
+        return str(Path(base_path).joinpath(*partition_parts, shard_dir, filename))
+    return "/".join(
+        [_strip_gs(base_path).rstrip("/"), *partition_parts, shard_dir, filename]
     )
 
 
@@ -440,6 +446,9 @@ def _fingerprint_payload(
     history_end = request.history_end
     if history_end.tzinfo is None:
         history_end = history_end.replace(tzinfo=UTC)
+    history_start = request.history_start
+    if history_start is not None and history_start.tzinfo is None:
+        history_start = history_start.replace(tzinfo=UTC)
     return {
         "generator": _normalize_generator_name(generator_name),
         "model_name": model_name,
@@ -453,6 +462,11 @@ def _fingerprint_payload(
         "seed": request.seed,
         "chunk_size": request.chunk_size,
         "history_days": request.history_days,
+        "history_start": (
+            history_start.astimezone(UTC).isoformat()
+            if history_start is not None
+            else None
+        ),
         "history_end": history_end.astimezone(UTC).isoformat(),
         "max_events_per_user_per_day": request.max_events_per_user_per_day,
         "schema_version": ACTION_LOG_SCHEMA_VERSION,
@@ -530,6 +544,7 @@ class _ActionLogCheckpointStore:
         self,
         *,
         partition_date: date,
+        partition_hour: int | None = None,
         shard_index: int,
         shard_count: int,
         checkpoint_base_path: str,
@@ -543,6 +558,7 @@ class _ActionLogCheckpointStore:
             partition_date,
             shard_index,
             f"fingerprint={config_fingerprint}",
+            partition_hour=partition_hour,
             filesystem=filesystem,
         )
         self._manifest_path = _child_path(
@@ -558,6 +574,7 @@ class _ActionLogCheckpointStore:
         self._manifest = {
             "checkpoint_version": "action_log_checkpoint_v1",
             "partition_date": partition_date.isoformat(),
+            "partition_hour": partition_hour,
             "shard_index": shard_index,
             "shard_count": shard_count,
             "config_fingerprint": config_fingerprint,
@@ -647,6 +664,7 @@ def _manifest_request(manifest: ActionLogShardManifest, tmp_dir: Path) -> EventG
         max_concurrency=1,
         chunk_size=manifest.chunk_size,
         max_quarantine_ratio=manifest.max_quarantine_ratio,
+        history_start=manifest.interval_start,
         history_end=manifest.history_end,
     )
 
@@ -660,6 +678,48 @@ def _default_history_end(partition_date: date) -> datetime:
         tzinfo=_KST,
     )
     return end_kst.astimezone(UTC)
+
+
+def _normalize_hourly_interval(
+    interval_start: datetime,
+    interval_end: datetime,
+) -> tuple[datetime, datetime, date, int]:
+    """한 시간짜리 KST 데이터 구간을 검증하고 파티션 정보를 반환합니다."""
+
+    if interval_start.tzinfo is None or interval_end.tzinfo is None:
+        raise ValueError("interval_start and interval_end must be timezone-aware")
+    start = interval_start.astimezone(UTC)
+    end = interval_end.astimezone(UTC)
+    if end - start != timedelta(hours=1):
+        raise ValueError("hourly interval must be exactly one hour")
+    start_kst = start.astimezone(_KST)
+    if start_kst.minute or start_kst.second or start_kst.microsecond:
+        raise ValueError("hourly interval must start on an hour boundary")
+    return start, end, start_kst.date(), start_kst.hour
+
+
+def _select_hourly_virtual_users(
+    virtual_users: list[dict],
+    *,
+    interval_start: datetime,
+    max_users: int | None,
+    seed: int,
+) -> list[dict]:
+    """구간별로 재현 가능한 Persona 집합을 선택합니다."""
+
+    if max_users is None or max_users >= len(virtual_users):
+        return virtual_users
+    if max_users < 1:
+        raise ValueError("max_users must be at least 1")
+
+    interval_key = interval_start.astimezone(UTC).isoformat()
+
+    def selection_key(user: dict) -> str:
+        user_id = str(user.get("user_id", ""))
+        payload = f"{seed}:{interval_key}:{user_id}".encode()
+        return hashlib.sha256(payload).hexdigest()
+
+    return sorted(virtual_users, key=selection_key)[:max_users]
 
 
 def _validate_event_partition_dates(events, partition_date: date) -> None:
@@ -678,6 +738,28 @@ def _validate_event_partition_dates(events, partition_date: date) -> None:
             )
 
 
+def _validate_event_interval(
+    events,
+    interval_start: datetime,
+    interval_end: datetime,
+) -> None:
+    """모든 이벤트가 반개구간 ``[start, end)`` 안에 있는지 검증합니다."""
+
+    start = interval_start.astimezone(UTC)
+    end = interval_end.astimezone(UTC)
+    for event in events:
+        timestamp = event.event_timestamp
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        timestamp = timestamp.astimezone(UTC)
+        if not start <= timestamp < end:
+            raise ValueError(
+                "event_timestamp outside interval "
+                f"(event_id={event.event_id}, timestamp={timestamp.isoformat()}, "
+                f"interval_start={start.isoformat()}, interval_end={end.isoformat()})"
+            )
+
+
 def _build_request(
     *,
     partition_date: date,
@@ -692,6 +774,7 @@ def _build_request(
     chunk_size: int,
     max_quarantine_ratio: float,
     history_end: datetime | None,
+    history_start: datetime | None = None,
 ) -> EventGenerationRequest:
     """daily runner의 공통 EventGenerationRequest를 만든다."""
 
@@ -702,6 +785,7 @@ def _build_request(
         popular_ratio=popular_ratio,
         exploration_ratio=exploration_ratio,
         history_days=1,
+        history_start=history_start,
         history_end=history_end or _default_history_end(partition_date),
         max_events_per_user_per_day=candidates_per_user,
         seed=seed,
@@ -735,6 +819,8 @@ def run_daily_action_log(
     generator_name: str = "rule_based",
     model_name: str | None = None,
     history_end: datetime | None = None,
+    interval_start: datetime | None = None,
+    interval_end: datetime | None = None,
 ) -> dict[str, object]:
     """하루치 YouTube partition과 virtual user parquet으로 action log를 생성한다.
 
@@ -747,6 +833,18 @@ def run_daily_action_log(
         filesystem: None(로컬) 또는 pyarrow filesystem(GCS 등).
     """
 
+    partition_hour = None
+    normalized_start = None
+    normalized_end = None
+    if interval_start is not None or interval_end is not None:
+        if interval_start is None or interval_end is None:
+            raise ValueError("interval_start and interval_end must be provided together")
+        normalized_start, normalized_end, derived_date, partition_hour = (
+            _normalize_hourly_interval(interval_start, interval_end)
+        )
+        if derived_date != partition_date:
+            raise ValueError("partition_date must match interval_start in Asia/Seoul")
+
     youtube_path = _dt_path(
         youtube_base_path,
         partition_date,
@@ -757,6 +855,7 @@ def run_daily_action_log(
         output_base_path,
         partition_date,
         _PARTITION_FILE,
+        partition_hour=partition_hour,
         filesystem=filesystem,
     )
     quarantine_path = (
@@ -764,6 +863,7 @@ def run_daily_action_log(
             quarantine_base_path,
             partition_date,
             _QUARANTINE_FILE,
+            partition_hour=partition_hour,
             filesystem=filesystem,
         )
         if quarantine_base_path
@@ -772,8 +872,17 @@ def run_daily_action_log(
 
     videos = load_video_records(youtube_path, filesystem=filesystem)
     virtual_users = _read_virtual_users(
-        virtual_users_path, filesystem=filesystem, max_users=max_users
+        virtual_users_path,
+        filesystem=filesystem,
+        max_users=max_users if normalized_start is None else None,
     )
+    if normalized_start is not None:
+        virtual_users = _select_hourly_virtual_users(
+            virtual_users,
+            interval_start=normalized_start,
+            max_users=max_users,
+            seed=seed,
+        )
     generator = _build_generator(generator_name, model_name)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -790,7 +899,8 @@ def run_daily_action_log(
             max_concurrency=max_concurrency,
             chunk_size=chunk_size,
             max_quarantine_ratio=max_quarantine_ratio,
-            history_end=history_end,
+            history_start=normalized_start,
+            history_end=normalized_end or history_end,
         )
         try:
             try:
@@ -808,7 +918,14 @@ def run_daily_action_log(
                 _copy_local_file(quarantine_file, quarantine_path, filesystem=filesystem)
             raise
 
-        _validate_event_partition_dates(result.batch.events, partition_date)
+        if normalized_start is not None and normalized_end is not None:
+            _validate_event_interval(
+                result.batch.events,
+                normalized_start,
+                normalized_end,
+            )
+        else:
+            _validate_event_partition_dates(result.batch.events, partition_date)
         event_table = pq.read_table(request.output_path)
         _write_table(event_table, output_path, filesystem=filesystem)
         if quarantine_path:
@@ -821,6 +938,8 @@ def run_daily_action_log(
     return {
         **result.summary,
         "partition_date": f"{partition_date:%Y-%m-%d}",
+        "interval_start": normalized_start.isoformat() if normalized_start else None,
+        "interval_end": normalized_end.isoformat() if normalized_end else None,
         "users": len(virtual_users),
         "videos": len(videos),
         "output_path": output_path,
@@ -855,6 +974,8 @@ def run_daily_action_log_shard(
     checkpoint_base_path: str | None = None,
     progress_flush_interval_sec: float = 15.0,
     progress_flush_chunks: int = 25,
+    interval_start: datetime | None = None,
+    interval_end: datetime | None = None,
 ) -> dict[str, object]:
     """하루치 action log 생성을 위한 shard work parquet을 생성한다.
 
@@ -862,6 +983,18 @@ def run_daily_action_log_shard(
     CTR 정규화와 event_id 부여는 `merge_daily_action_log_shards`에서 한 번만
     수행한다.
     """
+
+    partition_hour = None
+    normalized_start = None
+    normalized_end = None
+    if interval_start is not None or interval_end is not None:
+        if interval_start is None or interval_end is None:
+            raise ValueError("interval_start and interval_end must be provided together")
+        normalized_start, normalized_end, derived_date, partition_hour = (
+            _normalize_hourly_interval(interval_start, interval_end)
+        )
+        if derived_date != partition_date:
+            raise ValueError("partition_date must match interval_start in Asia/Seoul")
 
     youtube_path = _dt_path(
         youtube_base_path,
@@ -874,6 +1007,7 @@ def run_daily_action_log_shard(
         partition_date,
         shard_index,
         _PARTITION_FILE,
+        partition_hour=partition_hour,
         filesystem=filesystem,
     )
     manifest_path = _dt_shard_path(
@@ -881,6 +1015,7 @@ def run_daily_action_log_shard(
         partition_date,
         shard_index,
         _MANIFEST_FILE,
+        partition_hour=partition_hour,
         filesystem=filesystem,
     )
     quarantine_path = (
@@ -889,6 +1024,7 @@ def run_daily_action_log_shard(
             partition_date,
             shard_index,
             _QUARANTINE_FILE,
+            partition_hour=partition_hour,
             filesystem=filesystem,
         )
         if quarantine_base_path
@@ -905,6 +1041,7 @@ def run_daily_action_log_shard(
         partition_date,
         shard_index,
         _PROGRESS_FILE,
+        partition_hour=partition_hour,
         filesystem=filesystem,
     )
     progress_writer = _ActionLogShardProgressWriter(
@@ -922,8 +1059,17 @@ def run_daily_action_log_shard(
     try:
         videos = load_video_records(youtube_path, filesystem=filesystem)
         virtual_users = _read_virtual_users(
-            virtual_users_path, filesystem=filesystem, max_users=max_users
+            virtual_users_path,
+            filesystem=filesystem,
+            max_users=max_users if normalized_start is None else None,
         )
+        if normalized_start is not None:
+            virtual_users = _select_hourly_virtual_users(
+                virtual_users,
+                interval_start=normalized_start,
+                max_users=max_users,
+                seed=seed,
+            )
         input_fingerprint = _input_fingerprint(virtual_users, videos)
         shard_users = _select_virtual_user_shard(
             virtual_users,
@@ -950,7 +1096,8 @@ def run_daily_action_log_shard(
                 max_concurrency=max_concurrency,
                 chunk_size=chunk_size,
                 max_quarantine_ratio=max_quarantine_ratio,
-                history_end=history_end,
+                history_start=normalized_start,
+                history_end=normalized_end or history_end,
             )
             fingerprint = _config_fingerprint(
                 generator_name=generator_name,
@@ -961,6 +1108,7 @@ def run_daily_action_log_shard(
             )
             checkpoint_store = _ActionLogCheckpointStore(
                 partition_date=partition_date,
+                partition_hour=partition_hour,
                 shard_index=shard_index,
                 shard_count=shard_count,
                 checkpoint_base_path=resolved_checkpoint_base_path,
@@ -1008,6 +1156,8 @@ def run_daily_action_log_shard(
 
             manifest = ActionLogShardManifest(
                 partition_date=partition_date,
+                interval_start=normalized_start,
+                interval_end=normalized_end,
                 shard_index=shard_index,
                 shard_count=shard_count,
                 generator=_normalize_generator_name(generator_name),
@@ -1049,6 +1199,8 @@ def run_daily_action_log_shard(
     return {
         **result.summary,
         "partition_date": f"{partition_date:%Y-%m-%d}",
+        "interval_start": normalized_start.isoformat() if normalized_start else None,
+        "interval_end": normalized_end.isoformat() if normalized_end else None,
         "shard_index": shard_index,
         "shard_count": shard_count,
         "users_total": len(virtual_users),
@@ -1068,6 +1220,9 @@ def _load_shard_manifests(
     partition_date: date,
     shard_count: int,
     shard_output_base_path: str,
+    partition_hour: int | None = None,
+    interval_start: datetime | None = None,
+    interval_end: datetime | None = None,
     filesystem=None,
 ) -> list[ActionLogShardManifest]:
     """모든 shard manifest를 읽고 병합 전 계약 일치를 검증한다."""
@@ -1079,6 +1234,7 @@ def _load_shard_manifests(
             partition_date,
             shard_index,
             _MANIFEST_FILE,
+            partition_hour=partition_hour,
             filesystem=filesystem,
         )
         try:
@@ -1092,6 +1248,13 @@ def _load_shard_manifests(
                 "shard manifest partition_date mismatch "
                 f"(shard={shard_index}, expected={partition_date}, "
                 f"actual={manifest.partition_date})"
+            )
+        if manifest.interval_start != interval_start or manifest.interval_end != interval_end:
+            raise ValueError(
+                "shard manifest interval mismatch "
+                f"(shard={shard_index}, expected_start={interval_start}, "
+                f"actual_start={manifest.interval_start}, expected_end={interval_end}, "
+                f"actual_end={manifest.interval_end})"
             )
         if manifest.shard_index != shard_index or manifest.shard_count != shard_count:
             raise ValueError(
@@ -1144,6 +1307,8 @@ def merge_daily_action_log_shards(
     quarantine_base_path: str | None = None,
     filesystem=None,
     max_quarantine_ratio: float | None = None,
+    interval_start: datetime | None = None,
+    interval_end: datetime | None = None,
 ) -> dict[str, object]:
     """검증된 shard manifest 계약으로 최종 daily action log를 생성한다.
 
@@ -1155,10 +1320,25 @@ def merge_daily_action_log_shards(
     if shard_count < 1:
         raise ValueError("shard_count must be at least 1")
 
+    partition_hour = None
+    normalized_start = None
+    normalized_end = None
+    if interval_start is not None or interval_end is not None:
+        if interval_start is None or interval_end is None:
+            raise ValueError("interval_start and interval_end must be provided together")
+        normalized_start, normalized_end, derived_date, partition_hour = (
+            _normalize_hourly_interval(interval_start, interval_end)
+        )
+        if derived_date != partition_date:
+            raise ValueError("partition_date must match interval_start in Asia/Seoul")
+
     manifests = _load_shard_manifests(
         partition_date=partition_date,
         shard_count=shard_count,
         shard_output_base_path=shard_output_base_path,
+        partition_hour=partition_hour,
+        interval_start=normalized_start,
+        interval_end=normalized_end,
         filesystem=filesystem,
     )
     contract = manifests[0]
@@ -1176,6 +1356,7 @@ def merge_daily_action_log_shards(
         output_base_path,
         partition_date,
         _PARTITION_FILE,
+        partition_hour=partition_hour,
         filesystem=filesystem,
     )
     quarantine_path = (
@@ -1183,6 +1364,7 @@ def merge_daily_action_log_shards(
             quarantine_base_path,
             partition_date,
             _QUARANTINE_FILE,
+            partition_hour=partition_hour,
             filesystem=filesystem,
         )
         if quarantine_base_path
@@ -1197,6 +1379,7 @@ def merge_daily_action_log_shards(
             partition_date,
             shard_index,
             _PARTITION_FILE,
+            partition_hour=partition_hour,
             filesystem=filesystem,
         )
         drafts.extend(read_action_log_draft_parquet(shard_path, filesystem=filesystem))
@@ -1206,6 +1389,7 @@ def merge_daily_action_log_shards(
                 partition_date,
                 shard_index,
                 _QUARANTINE_FILE,
+                partition_hour=partition_hour,
                 filesystem=filesystem,
             )
             quarantine.extend(
@@ -1240,7 +1424,14 @@ def merge_daily_action_log_shards(
         tmp_dir = Path(tmp)
         request = _manifest_request(contract, tmp_dir)
         result = expand_action_log_drafts(request, drafts, quarantine)
-        _validate_event_partition_dates(result.batch.events, partition_date)
+        if normalized_start is not None and normalized_end is not None:
+            _validate_event_interval(
+                result.batch.events,
+                normalized_start,
+                normalized_end,
+            )
+        else:
+            _validate_event_partition_dates(result.batch.events, partition_date)
         write_event_log_parquet(result.batch, contract.model_name, request.output_path)
         _copy_local_file(request.output_path, output_path, filesystem=filesystem)
         if quarantine_path:
@@ -1255,6 +1446,8 @@ def merge_daily_action_log_shards(
         **result.summary,
         "quarantined_users": quarantine_count,
         "partition_date": f"{partition_date:%Y-%m-%d}",
+        "interval_start": normalized_start.isoformat() if normalized_start else None,
+        "interval_end": normalized_end.isoformat() if normalized_end else None,
         "shard_count": shard_count,
         "drafts": len(drafts),
         "total_work": total_work,

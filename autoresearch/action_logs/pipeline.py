@@ -678,6 +678,9 @@ def _expand_events(
     end = request.history_end
     if end.tzinfo is None:
         end = end.replace(tzinfo=UTC)
+    start = request.history_start
+    if start is not None and start.tzinfo is None:
+        start = start.replace(tzinfo=UTC)
 
     by_user: dict[str, list[int]] = defaultdict(list)
     for idx, draft in enumerate(drafts):
@@ -711,15 +714,27 @@ def _expand_events(
         cap = request.max_events_per_user_per_day
         for position, idx in enumerate(order):
             draft = drafts[idx]
-            day = days[(position // cap) % len(days)]
-            impression_ts = end - timedelta(
-                days=day,
-                # history_end에서 최소 _MIN_IMPRESSION_HOURS시간 이전 → 후속 click/view/like가
-                # 세션 최대 span(_MAX_SESSION_SPAN_SEC)만큼 밀려도 history_end를 넘지 않는다.
-                hours=urng.randint(_MIN_IMPRESSION_HOURS, 23),
-                minutes=urng.randint(0, 59),
-                seconds=urng.randint(0, 59),
-            )
+            if start is not None:
+                available_seconds = int(
+                    (end - start).total_seconds() - _MAX_SESSION_SPAN_SEC - 1
+                )
+                if available_seconds < 0:
+                    raise ValueError(
+                        "history window is shorter than the maximum session span"
+                    )
+                impression_ts = start + timedelta(
+                    seconds=urng.randint(0, available_seconds)
+                )
+            else:
+                day = days[(position // cap) % len(days)]
+                impression_ts = end - timedelta(
+                    days=day,
+                    # history_end에서 최소 _MIN_IMPRESSION_HOURS시간 이전 → 후속 click/view/like가
+                    # 세션 최대 span(_MAX_SESSION_SPAN_SEC)만큼 밀려도 history_end를 넘지 않는다.
+                    hours=urng.randint(_MIN_IMPRESSION_HOURS, 23),
+                    minutes=urng.randint(0, 59),
+                    seconds=urng.randint(0, 59),
+                )
             _emit(impression_ts, user_id, "impression", draft.video_id)
             if idx not in clicked:
                 continue

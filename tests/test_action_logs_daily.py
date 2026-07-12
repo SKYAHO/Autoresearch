@@ -209,6 +209,71 @@ def test_run_daily_action_log_keeps_event_timestamps_inside_partition_date(tmp_p
     } == {partition_date}
 
 
+def test_run_hourly_action_log_writes_hour_partition_and_bounds_events(tmp_path):
+    partition_date = date(2026, 7, 13)
+    interval_start = datetime(2026, 7, 13, 9, tzinfo=ZoneInfo("Asia/Seoul"))
+    interval_end = datetime(2026, 7, 13, 10, tzinfo=ZoneInfo("Asia/Seoul"))
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    output_base = tmp_path / "action_log"
+
+    _write_virtual_users(virtual_users_path, count=10)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    summary = run_daily_action_log(
+        partition_date=partition_date,
+        interval_start=interval_start,
+        interval_end=interval_end,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(output_base),
+        max_users=3,
+        candidates_per_user=5,
+        target_ctr=0.2,
+        seed=123,
+        generator_name="rule_based",
+    )
+
+    output_path = output_base / "dt=2026-07-13" / "hour=09" / "part-0.parquet"
+    table = pq.read_table(output_path)
+    timestamps = [
+        row["event_timestamp"]
+        for row in table.select(["event_timestamp"]).to_pylist()
+    ]
+
+    assert summary["users"] == 3
+    assert summary["output_path"] == str(output_path)
+    assert all(interval_start <= timestamp < interval_end for timestamp in timestamps)
+
+
+def test_hourly_persona_selection_is_deterministic_and_rotates():
+    users = [{"user_id": f"vu_{index:04d}"} for index in range(100)]
+    first_start = datetime(2026, 7, 13, 9, tzinfo=ZoneInfo("Asia/Seoul"))
+    next_start = datetime(2026, 7, 13, 10, tzinfo=ZoneInfo("Asia/Seoul"))
+
+    first = daily_module._select_hourly_virtual_users(
+        users,
+        interval_start=first_start,
+        max_users=10,
+        seed=42,
+    )
+    repeated = daily_module._select_hourly_virtual_users(
+        list(reversed(users)),
+        interval_start=first_start,
+        max_users=10,
+        seed=42,
+    )
+    following = daily_module._select_hourly_virtual_users(
+        users,
+        interval_start=next_start,
+        max_users=10,
+        seed=42,
+    )
+
+    assert first == repeated
+    assert first != following
+
+
 def test_run_daily_action_log_rejects_timestamp_outside_partition_date(tmp_path):
     partition_date = date(2026, 7, 1)
     virtual_users_path = tmp_path / "virtual_users.parquet"
