@@ -36,7 +36,7 @@ def _videos():
     ]
 
 
-def test_prompt_uses_complete_json_skeleton_without_ellipsis():
+def test_prompt_explicitly_lists_all_24_candidate_rows_and_indexes():
     videos = [
         {
             "video_id": f"video_{index}",
@@ -44,15 +44,28 @@ def test_prompt_uses_complete_json_skeleton_without_ellipsis():
             "description": "설명",
             "tags": ["게임"],
         }
-        for index in range(4)
+        for index in range(24)
     ]
 
     prompt = build_action_log_prompt(_user(), videos)
 
-    assert "Prompt version: action_log_ctr_v3" in prompt
-    assert 'required_indexes=[0,1,2,3]' in prompt
-    assert "expected_count=4" in prompt
-    assert '{"j":[[0,0.0,0.0],[1,0.0,0.0],[2,0.0,0.0],[3,0.0,0.0]]}' in prompt
+    expected_candidates = json.dumps(
+        [[index, f"테스트 영상 {index}", ["게임"], "", "설명"] for index in range(24)],
+        ensure_ascii=False,
+    )
+    expected_skeleton = json.dumps(
+        {"j": [[index, 0.0, 0.0] for index in range(24)]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    required_indexes = json.dumps(list(range(24)), separators=(",", ":"))
+
+    assert "Prompt version: action_log_ctr_v4" in prompt
+    assert "컬럼 순서 = [index, title, tags, channel, description]" in prompt
+    assert expected_candidates in prompt
+    assert f"required_indexes={required_indexes}" in prompt
+    assert "expected_count=24" in prompt
+    assert expected_skeleton in prompt
     assert "..." not in prompt
 
 

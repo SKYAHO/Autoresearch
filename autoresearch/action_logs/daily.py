@@ -133,10 +133,20 @@ def _input_path(path: str, *, filesystem=None) -> str:
     return _strip_gs(path) if filesystem is not None else path
 
 
-def _read_virtual_users(path: str, *, filesystem=None) -> list[dict]:
+def _read_virtual_users(
+    path: str,
+    *,
+    filesystem=None,
+    max_users: int | None = None,
+) -> list[dict]:
     """virtual user parquet을 읽어 action log 파이프라인 입력 dict 목록으로 반환한다."""
 
-    return pq.read_table(_input_path(path, filesystem=filesystem), filesystem=filesystem).to_pylist()
+    if max_users is not None and max_users < 1:
+        raise ValueError("max_users must be at least 1")
+    table = pq.read_table(_input_path(path, filesystem=filesystem), filesystem=filesystem)
+    if max_users is not None:
+        table = table.slice(0, max_users)
+    return table.to_pylist()
 
 
 def _write_table(table, path: str, *, filesystem=None) -> None:
@@ -709,6 +719,7 @@ def run_daily_action_log(
     partition_date: date,
     youtube_base_path: str,
     virtual_users_path: str,
+    max_users: int | None = None,
     output_base_path: str,
     quarantine_base_path: str | None = None,
     filesystem=None,
@@ -760,7 +771,9 @@ def run_daily_action_log(
     )
 
     videos = load_video_records(youtube_path, filesystem=filesystem)
-    virtual_users = _read_virtual_users(virtual_users_path, filesystem=filesystem)
+    virtual_users = _read_virtual_users(
+        virtual_users_path, filesystem=filesystem, max_users=max_users
+    )
     generator = _build_generator(generator_name, model_name)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -822,6 +835,7 @@ def run_daily_action_log_shard(
     shard_count: int,
     youtube_base_path: str,
     virtual_users_path: str,
+    max_users: int | None = None,
     output_base_path: str,
     quarantine_base_path: str | None = None,
     filesystem=None,
@@ -907,7 +921,9 @@ def run_daily_action_log_shard(
 
     try:
         videos = load_video_records(youtube_path, filesystem=filesystem)
-        virtual_users = _read_virtual_users(virtual_users_path, filesystem=filesystem)
+        virtual_users = _read_virtual_users(
+            virtual_users_path, filesystem=filesystem, max_users=max_users
+        )
         input_fingerprint = _input_fingerprint(virtual_users, videos)
         shard_users = _select_virtual_user_shard(
             virtual_users,

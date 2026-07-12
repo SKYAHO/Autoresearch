@@ -100,7 +100,7 @@ KR TrendingVideo(parquet) ┘         (video_source.load_video_records 로 video
 | `rank` | int64 (nullable) | **Phase 1은 항상 `null`** (추천 순위 없음) |
 | `source` | string | `historical` (Phase 1 고정) |
 | `schema_version` | string | `action_log_schema_v1` |
-| `prompt_version` | string | `action_log_ctr_v3` |
+| `prompt_version` | string | `action_log_ctr_v4` |
 | `llm_model` | string | 생성 모델명 (예: `mistralai/mistral-nemo`) |
 | `generated_at` | string | 배치 생성 시각(ISO) |
 

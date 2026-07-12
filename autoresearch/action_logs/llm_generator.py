@@ -69,21 +69,23 @@ def _user_profile_block(virtual_user: dict) -> str:
     )
 
 
-CANDIDATE_COLUMNS = "[title, tags, channel, description]"
+CANDIDATE_COLUMNS = "[index, title, tags, channel, description]"
 
 
 def _candidate_block(videos: list[dict]) -> str:
     """프롬프트에 넣을 후보 영상 목록.
 
-    토큰 절약: 반복 키를 제거한 위치기반 배열-of-배열로 직렬화한다. 배열 위치가
-    후보 index이며, 컬럼 순서는 CANDIDATE_COLUMNS(title, tags, channel, description).
-    video_id는 넣지 않고(응답도 위치로 정렬) 필드 truncation 한도는 유지한다.
+    토큰 절약: 반복 키를 제거한 위치기반 배열-of-배열로 직렬화하되, 각 행의 첫
+    원소에도 후보 index를 명시한다. 컬럼 순서는
+    CANDIDATE_COLUMNS(index, title, tags, channel, description)이다. video_id는 넣지
+    않고(응답도 index로 정렬) 필드 truncation 한도는 유지한다.
     """
 
     rows = []
-    for v in videos:
+    for index, v in enumerate(videos):
         rows.append(
             [
+                index,
                 str(v.get("title", ""))[:120],
                 (v.get("tags") or [])[:8],
                 str(v.get("channel_name", ""))[:40],
@@ -125,7 +127,7 @@ def build_action_log_prompt(
 {retry_notice}사용자 프로필:
 {_user_profile_block(virtual_user)}
 
-후보 영상({n}개, 배열 위치 = 후보 index):
+후보 영상({n}개, 각 행 첫 원소 index = 후보 index):
 컬럼 순서 = {CANDIDATE_COLUMNS}
 {_candidate_block(videos)}
 
