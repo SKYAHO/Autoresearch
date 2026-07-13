@@ -57,7 +57,7 @@ gcloud auth application-default login   # Feast 인증용
 터미널 세션에서 한 번 실행 (이후 모든 단계에서 사용):
 
 ```bash
-export GCP_PROJECT=autoresearch-skyaho    # 본인 GCP 프로젝트 ID로 변경
+export GCP_PROJECT=your-gcp-project-id    # 팀/본인 GCP 프로젝트 ID로 변경
 export BQ_LOCATION="asia-northeast3"
 ```
 
@@ -157,7 +157,7 @@ Feast에서 두 가지 용도의 버킷이 필요합니다.
 **Console**
 
 1. **Cloud Storage** → **버킷** → **만들기**
-2. 버킷 이름: `feast-registry-autoresearch`
+2. 버킷 이름: registry용 버킷 (전역 유일해야 함)
 3. 위치: `asia-northeast3`
 4. 만들기 클릭
 
@@ -166,15 +166,16 @@ Feast에서 두 가지 용도의 버킷이 필요합니다.
 **Console**
 
 1. **Cloud Storage** → **버킷** → **만들기**
-2. 버킷 이름: `feast-staging-autoresearch`
+2. 버킷 이름: staging용 버킷 (전역 유일해야 함)
 3. 위치: `asia-northeast3`
 4. 만들기 클릭
 
 ### CLI (참고)
 
 ```bash
-gsutil mb -l ${BQ_LOCATION} gs://feast-registry-autoresearch/
-gsutil mb -l ${BQ_LOCATION} gs://feast-staging-autoresearch/
+# 버킷 이름은 전역 유일해야 하므로 프로젝트에 맞는 이름으로 지정
+gsutil mb -l ${BQ_LOCATION} gs://<registry-bucket>/
+gsutil mb -l ${BQ_LOCATION} gs://<staging-bucket>/
 ```
 
 - [ ] Registry 버킷 완료
@@ -276,24 +277,20 @@ cp .env.example .env
 
 ```
 GOOGLE_APPLICATION_CREDENTIALS=./keys/service-account.json
-GCP_PROJECT_ID=autoresearch-skyaho       # 본인 GCP 프로젝트 ID
+GCP_PROJECT_ID=your-gcp-project-id        # 팀/본인 GCP 프로젝트 ID
 BQ_DATASET=feast_offline_store
+GCS_REGISTRY_PATH=gs://<registry-bucket>/registry.db
+GCS_STAGING_LOCATION=gs://<staging-bucket>/
 REDIS_HOST=localhost                      # 터널링 시 localhost
 REDIS_PORT=6379
 ```
 
-### feature_store.yaml 수정
+### feature_store.yaml (수정 불필요)
 
-`feature_repo/feature_store.yaml`에서 다음 항목 확인/수정:
-
-```yaml
-offline_store:
-  project_id: autoresearch-skyaho-501202  # 본인 GCP 프로젝트 ID
-  gcs_staging_location: gs://feast-staging-autoresearch/
-
-online_store:
-  connection_string: "localhost:6379"     # 터널링 시 localhost
-```
+`feature_repo/feature_store.yaml`은 위 환경 변수를 `${...}`로 참조하므로
+직접 수정하지 않습니다. `.env`만 채우면 됩니다. (`GCS_REGISTRY_PATH`,
+`GCS_STAGING_LOCATION`, `GCP_PROJECT_ID`, `BQ_DATASET`, `REDIS_HOST`,
+`REDIS_PORT`가 로드 시 주입됩니다.)
 
 - [ ] .env 설정 완료
 - [ ] feature_store.yaml 수정 완료
@@ -324,7 +321,7 @@ cd feature_repo
 feast apply
 ```
 
-> Registry가 GCS 버킷(`gs://feast-registry-autoresearch/`)에 저장됩니다.
+> Registry가 `GCS_REGISTRY_PATH`로 지정한 GCS 버킷에 저장됩니다.
 
 - [ ] 완료
 
@@ -358,12 +355,30 @@ python scripts/verify_feature_retrieval.py
 
 ---
 
-## GCP 계정 전환 (개인 → 프로젝트)
+## GCP 계정 전환 (개인 → 팀 프로젝트)
 
-1. 프로젝트 GCP에서 동일하게 서비스 계정, BigQuery, GCS, Redis, Bastion 생성
-2. `.env`의 `GCP_PROJECT_ID`, `REDIS_HOST` 등 업데이트
-3. `feature_repo/feature_store.yaml`의 project_id, connection_string, 버킷 이름 직접 수정
+환경별 값은 모두 `.env`로 주입하므로, 코드나 `feature_store.yaml`은
+수정하지 않습니다. 전환 절차:
+
+1. 팀 GCP 프로젝트에 BigQuery 데이터셋, GCS 버킷(registry/staging), (서빙 시)
+   Redis 준비 — 전부 `asia-northeast3` 리전
+2. `.env`의 값 교체: `GCP_PROJECT_ID`, `BQ_DATASET`, `GCS_REGISTRY_PATH`,
+   `GCS_STAGING_LOCATION`, `REDIS_HOST` 등
+3. 인증 설정 (아래 "인증 방식" 참고)
 4. `feast apply && feast materialize-incremental ...` 재실행
+
+### 인증 방식
+
+로컬에서 팀 프로젝트에 접근하는 방법은 두 가지이며, 팀 정책에 따릅니다.
+
+- **개인 계정 ADC**: `gcloud auth application-default login` 실행. 키 파일이
+  없어 유출 위험이 낮아 로컬 개발에 권장. 인프라 담당이 내 계정에 역할 부여.
+- **서비스 계정 키(JSON)**: 발급받은 키를 `keys/`에 두고 `.env`의
+  `GOOGLE_APPLICATION_CREDENTIALS`로 지정. CI·자동화에서 사용. **키 파일은
+  시크릿이므로 커밋 금지** (`keys/`, `.gcp-creds.json`은 `.gitignore` 처리됨).
+
+필요 IAM 역할 (offline store 기준): BigQuery `dataEditor` + `jobUser`,
+GCS(registry·staging 버킷) `storage.objectAdmin`.
 
 ---
 

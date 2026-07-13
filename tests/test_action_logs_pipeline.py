@@ -1,17 +1,22 @@
 import json
+import logging
 import random
 from datetime import UTC, datetime, timedelta
+from threading import Event
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from pydantic import ValidationError
 
+import autoresearch.action_logs.pipeline as pipeline_module
 from autoresearch.action_logs.candidate import build_candidates
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
 from autoresearch.action_logs.pipeline import (
     ActionLogGenerationError,
+    _build_user_drafts,
     generate_action_log_batch,
+    generate_action_log_drafts,
 )
 from autoresearch.action_logs.schema import EventGenerationRequest, EventLog
 from autoresearch.action_logs.video_source import (
@@ -198,6 +203,221 @@ def test_user_isolation_quarantines_bad_row(tmp_path):
     assert json.loads(q_lines[0])["error_type"] == "invalid_json"
 
 
+@pytest.mark.parametrize(
+    ("first_response", "expected_error_type"),
+    [
+        ("{not valid json", "invalid_json"),
+        (json.dumps({"j": [[0, 0.1, 0.2]]}), "schema_fail"),
+    ],
+)
+def test_openrouter_style_generator_repairs_response_validation_once(
+    tmp_path,
+    first_response,
+    expected_error_type,
+):
+    class _RepairingGenerator:
+        model_name = "repairing-generator"
+
+        def __init__(self):
+            self.generate_calls = 0
+            self.retry_calls = []
+
+        def generate(self, virtual_user, videos):
+            self.generate_calls += 1
+            return first_response
+
+        def generate_schema_retry(self, virtual_user, videos, *, error_type):
+            self.retry_calls.append(error_type)
+            return RuleBasedActionLogGenerator().generate(virtual_user, videos)
+
+    generator = _RepairingGenerator()
+    result = generate_action_log_batch(
+        _request(tmp_path, candidates_per_user=4),
+        _fixture_users(1),
+        build_fixture_video_records(4),
+        generator,
+    )
+
+    assert generator.generate_calls == 1
+    assert generator.retry_calls == [expected_error_type]
+    assert result.summary["quarantined_users"] == 0
+    assert result.summary["impressions"] == 4
+
+
+def test_schema_retry_stays_in_worker_and_does_not_block_next_work_submission(
+    tmp_path,
+):
+    retry_started = Event()
+    third_work_started = Event()
+
+    class _CoordinatedGenerator:
+        model_name = "coordinated-generator"
+
+        def generate(self, virtual_user, videos):
+            user_id = virtual_user["user_id"]
+            if user_id == "vu_0000":
+                return "{first invalid"
+            if user_id == "vu_0001":
+                assert retry_started.wait(timeout=2.0)
+            if user_id == "vu_0002":
+                third_work_started.set()
+            return RuleBasedActionLogGenerator().generate(virtual_user, videos)
+
+        def generate_schema_retry(self, virtual_user, videos, *, error_type):
+            assert virtual_user["user_id"] == "vu_0000"
+            assert error_type == "invalid_json"
+            retry_started.set()
+            assert third_work_started.wait(timeout=2.0)
+            return RuleBasedActionLogGenerator().generate(virtual_user, videos)
+
+    result = generate_action_log_drafts(
+        _request(
+            tmp_path,
+            candidates_per_user=1,
+            chunk_size=0,
+            max_concurrency=2,
+        ),
+        _fixture_users(3),
+        build_fixture_video_records(3),
+        _CoordinatedGenerator(),
+    )
+
+    assert third_work_started.is_set()
+    assert len(result.drafts) == 3
+    assert result.quarantine == []
+
+
+def test_schema_retry_timings_separate_request_and_parse(monkeypatch):
+    class _RepairingGenerator:
+        model_name = "timed-repairing-generator"
+
+        def generate(self, virtual_user, videos):
+            return "{first invalid"
+
+        def generate_schema_retry(self, virtual_user, videos, *, error_type):
+            return RuleBasedActionLogGenerator().generate(virtual_user, videos)
+
+    clock = iter(
+        [
+            0.000,  # worker start
+            0.000,  # initial request start
+            0.010,  # initial request end
+            0.010,  # initial parse start
+            0.012,  # initial parse end
+            0.012,  # retry request start
+            0.032,  # retry request end
+            0.032,  # retry parse start
+            0.037,  # retry parse end
+        ]
+    )
+    monkeypatch.setattr(pipeline_module, "monotonic", lambda: next(clock))
+    virtual_user = _fixture_users(1)[0]
+    item = pipeline_module._ActionLogWorkItem(
+        work_id="work_00000000",
+        user_id=virtual_user["user_id"],
+        virtual_user=virtual_user,
+        candidates=build_fixture_video_records(1),
+    )
+
+    result = pipeline_module._generate_action_log_work(
+        _RepairingGenerator(),
+        item,
+        work_sequence=0,
+        submitted_at=0.0,
+        shard_index=None,
+        detailed_telemetry=True,
+    )
+
+    assert result.drafts is not None
+    assert result.error is None
+    assert result.request_elapsed_ms == pytest.approx(30.0)
+    assert result.parse_elapsed_ms == pytest.approx(7.0)
+
+
+def test_schema_retry_api_error_preserves_error_and_initial_raw_response(tmp_path):
+    class _RetryApiErrorGenerator:
+        model_name = "retry-api-error-generator"
+
+        def generate(self, virtual_user, videos):
+            return "{first invalid"
+
+        def generate_schema_retry(self, virtual_user, videos, *, error_type):
+            raise RuntimeError("retry transport unavailable")
+
+    result = generate_action_log_drafts(
+        _request(
+            tmp_path,
+            candidates_per_user=1,
+            max_quarantine_ratio=1.0,
+        ),
+        _fixture_users(1),
+        build_fixture_video_records(1),
+        _RetryApiErrorGenerator(),
+    )
+
+    assert result.summary["api_error"] == 1
+    assert result.summary["invalid_json"] == 0
+    assert result.quarantine[0].raw_llm_response == "{first invalid"
+    assert result.quarantine[0].error_message == "retry transport unavailable"
+
+
+def test_unexpected_worker_error_is_not_disguised_as_api_error(
+    tmp_path,
+    monkeypatch,
+):
+    def _raise_internal_error(virtual_user, candidates, raw_text):
+        raise RuntimeError("unexpected parser bug")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_try_build_user_drafts",
+        _raise_internal_error,
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected parser bug"):
+        generate_action_log_drafts(
+            _request(tmp_path, candidates_per_user=1),
+            _fixture_users(1),
+            build_fixture_video_records(1),
+            RuleBasedActionLogGenerator(),
+        )
+
+
+
+def test_schema_retry_final_failure_is_quarantined(tmp_path):
+    class _AlwaysInvalidGenerator:
+        model_name = "always-invalid-generator"
+
+        def __init__(self):
+            self.retry_calls = 0
+
+        def generate(self, virtual_user, videos):
+            return "{first invalid"
+
+        def generate_schema_retry(self, virtual_user, videos, *, error_type):
+            self.retry_calls += 1
+            return "{retry invalid"
+
+    generator = _AlwaysInvalidGenerator()
+    result = generate_action_log_batch(
+        _request(
+            tmp_path,
+            candidates_per_user=4,
+            max_quarantine_ratio=1.0,
+        ),
+        _fixture_users(1),
+        build_fixture_video_records(4),
+        generator,
+    )
+
+    assert generator.retry_calls == 1
+    assert result.summary["invalid_json"] == 1
+    quarantine = json.loads(
+        (tmp_path / "q.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert quarantine["raw_llm_response"] == "{retry invalid"
+
+
 def test_total_failure_raises_and_writes_quarantine(tmp_path):
     class _AllBadGen(RuleBasedActionLogGenerator):
         def generate(self, virtual_user, videos):
@@ -277,6 +497,38 @@ def test_event_generation_request_defaults_to_70_20_10_candidate_mix():
     assert req.personalized_ratio == 0.7
     assert req.popular_ratio == 0.2
     assert req.exploration_ratio == 0.1
+
+
+def test_event_generation_request_accepts_candidate_ratio_sum_inside_tolerance():
+    request = EventGenerationRequest(
+        personalized_ratio=0.7000000005,
+        popular_ratio=0.2,
+        exploration_ratio=0.1,
+    )
+
+    assert request.personalized_ratio == 0.7000000005
+
+
+@pytest.mark.parametrize(
+    ("personalized", "popular", "exploration"),
+    [
+        (0.700000002, 0.2, 0.1),
+        (0.6, 0.2, 0.1),
+        (float("nan"), 0.2, 0.1),
+        (float("inf"), 0.0, 0.0),
+    ],
+)
+def test_event_generation_request_rejects_invalid_candidate_ratio_mix(
+    personalized,
+    popular,
+    exploration,
+):
+    with pytest.raises(ValidationError):
+        EventGenerationRequest(
+            personalized_ratio=personalized,
+            popular_ratio=popular,
+            exploration_ratio=exploration,
+        )
 
 
 def test_build_candidates_includes_popular_slice_after_personalized_slice():
@@ -382,16 +634,48 @@ def test_build_candidates_fills_popular_slice_when_top_popular_overlap_personali
     assert {"popular_broad_0", "popular_broad_1"} <= ids
 
 
-def test_rulebased_judgments_have_no_search_keyword():
+def test_rulebased_judgments_are_indexed_triples():
     users = _fixture_users(1)
     videos = build_fixture_video_records(6)
     raw = RuleBasedActionLogGenerator().generate(users[0], videos)
     data = json.loads(raw)
-    assert len(data["judgments"]) == 6
-    for j in data["judgments"]:
-        assert set(j) == {"video_id", "click_propensity", "watch_fraction", "would_like"}
-        assert 0.0 <= j["click_propensity"] <= 1.0
-        assert isinstance(j["would_like"], bool)
+    # 인덱스 포맷: {"j": [[idx, cp, wf], ...]} — would_like·video_id 없음.
+    assert set(data) == {"j"}
+    assert len(data["j"]) == 6
+    assert [entry[0] for entry in data["j"]] == list(range(6))  # 0..n-1
+    for entry in data["j"]:
+        assert len(entry) == 3
+        idx, cp, wf = entry
+        assert 0.0 <= cp <= 1.0
+        assert 0.0 <= wf <= 1.0
+
+
+def test_build_user_drafts_realigns_shuffled_indices():
+    # LLM이 순서를 바꿔 반환해도 index로 재결합해 올바른 video_id에 매핑된다.
+    vu = {"user_id": "vu_x"}
+    videos = [{"video_id": f"vid_{i}"} for i in range(4)]
+    shuffled = json.dumps({"j": [[2, 0.9, 0.9], [0, 0.1, 0.1], [3, 0.8, 0.7], [1, 0.2, 0.2]]})
+    drafts = _build_user_drafts(vu, videos, shuffled)
+    got = {d.video_id: (d.click_propensity, d.watch_fraction) for d in drafts}
+    assert got["vid_0"] == (0.1, 0.1)
+    assert got["vid_2"] == (0.9, 0.9)
+    assert got["vid_3"] == (0.8, 0.7)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"j": [[0, 0.1, 0.1], [1, 0.2, 0.2], [2, 0.3, 0.3]]},  # 개수 부족(n=4)
+        {"j": [[0, 0.1, 0.1], [0, 0.2, 0.2], [2, 0.3, 0.3], [3, 0.4, 0.4]]},  # 중복 index
+        {"j": [[0, 0.1, 0.1], [1, 0.2, 0.2], [2, 0.3, 0.3], [9, 0.4, 0.4]]},  # 범위 이탈
+        {"j": [[0, 0.1], [1, 0.2, 0.2], [2, 0.3, 0.3], [3, 0.4, 0.4]]},  # 원소 길이 오류
+    ],
+)
+def test_build_user_drafts_rejects_broken_index_sets(payload):
+    vu = {"user_id": "vu_x"}
+    videos = [{"video_id": f"vid_{i}"} for i in range(4)]
+    with pytest.raises(ValueError):
+        _build_user_drafts(vu, videos, json.dumps(payload))
 
 
 def test_chunked_parallel_matches_single_call(tmp_path):
@@ -410,6 +694,170 @@ def test_chunked_parallel_matches_single_call(tmp_path):
     imps = [e for e in chunked.batch.events if e.event_type == "impression"]
     assert imps[0].user_id == "vu_0000"  # 병렬이어도 원본 유저 순서 유지
     assert chunked.summary["quarantined_users"] == 0
+
+
+def test_draft_progress_callback_reports_completed_chunks(tmp_path):
+    users, videos = _fixture_users(2), build_fixture_video_records(8)
+    snapshots = []
+
+    result = generate_action_log_drafts(
+        _request(tmp_path, candidates_per_user=4, chunk_size=2, max_concurrency=2),
+        users,
+        videos,
+        RuleBasedActionLogGenerator(),
+        progress_callback=snapshots.append,
+    )
+
+    assert result.total_work == 4
+    completed = [snapshot.completed_chunks for snapshot in snapshots]
+    assert completed[0] == 0
+    assert completed[-1] == 4
+    assert completed == sorted(set(completed))
+    assert {snapshot.total_chunks for snapshot in snapshots} == {4}
+    assert snapshots[-1].success_chunks == 4
+    assert snapshots[-1].failed_chunks == 0
+    assert snapshots[-1].quarantined_chunks == 0
+
+
+def test_progress_snapshot_is_emitted_after_completed_batch_is_drained(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    real_wait = pipeline_module.wait
+
+    def _wait_for_current_batch(futures, *, return_when):
+        return real_wait(futures)
+
+    monkeypatch.setattr(pipeline_module, "wait", _wait_for_current_batch)
+    snapshots = []
+
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+        result = generate_action_log_drafts(
+            _request(
+                tmp_path,
+                candidates_per_user=4,
+                chunk_size=2,
+                max_concurrency=2,
+            ),
+            _fixture_users(2),
+            build_fixture_video_records(8),
+            RuleBasedActionLogGenerator(),
+            progress_callback=snapshots.append,
+        )
+
+    assert result.total_work == 4
+    assert [snapshot.completed_chunks for snapshot in snapshots] == [0, 2, 4]
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    micro = [
+        event
+        for event in events
+        if event["event"] == "action_log_micro_work_complete"
+    ]
+    assert len(micro) == 4
+    assert [event["completed_work"] for event in micro] == [2, 2, 4, 4]
+    assert all(
+        event["completed_work"]
+        + event["active_workers"]
+        + event["pending_work"]
+        == event["total_work"]
+        for event in micro
+    )
+
+
+def test_draft_progress_callback_counts_quarantined_chunks(tmp_path):
+    class _OneBadUserGen(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user, videos):
+            if virtual_user["user_id"] == "vu_0000":
+                return "{not valid json"
+            return super().generate(virtual_user, videos)
+
+    users, videos = _fixture_users(2), build_fixture_video_records(8)
+    snapshots = []
+
+    result = generate_action_log_drafts(
+        _request(tmp_path, candidates_per_user=4, chunk_size=2, max_concurrency=2),
+        users,
+        videos,
+        _OneBadUserGen(),
+        progress_callback=snapshots.append,
+    )
+
+    assert result.total_work == 4
+    assert len(result.quarantine) == 2
+    assert snapshots[-1].completed_chunks == 4
+    assert snapshots[-1].success_chunks == 2
+    assert snapshots[-1].failed_chunks == 2
+    assert snapshots[-1].quarantined_chunks == 2
+
+
+def test_micro_work_structured_log_separates_pipeline_timings(tmp_path, caplog):
+    checkpoint_rows = []
+
+    def _checkpoint(work_id, work_order, drafts):
+        checkpoint_rows.append((work_id, work_order, len(drafts)))
+
+    def _progress(snapshot):
+        return 3.25
+
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+        result = generate_action_log_drafts(
+            _request(
+                tmp_path,
+                candidates_per_user=4,
+                chunk_size=0,
+                max_concurrency=1,
+            ),
+            _fixture_users(1),
+            build_fixture_video_records(8),
+            RuleBasedActionLogGenerator(),
+            progress_callback=_progress,
+            checkpoint_callback=_checkpoint,
+            shard_index=3,
+        )
+
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    micro = [
+        event
+        for event in events
+        if event["event"] == "action_log_micro_work_complete"
+    ]
+
+    assert result.total_work == 1
+    assert checkpoint_rows[0][2] == 4
+    assert len(micro) == 1
+    payload = micro[0]
+    assert payload["shard_index"] == 3
+    assert payload["work_sequence"] == 0
+    assert payload["checkpoint_rows"] == 4
+    assert payload["progress_write_elapsed_ms"] == 3.25
+    assert payload["completed_work"] == payload["total_work"] == 1
+    assert payload["failed_work"] == payload["active_workers"] == 0
+    assert payload["pending_work"] == 0
+    for field in (
+        "queue_wait_ms",
+        "request_elapsed_ms",
+        "parse_elapsed_ms",
+        "checkpoint_write_elapsed_ms",
+        "submit_elapsed_ms",
+        "total_elapsed_ms",
+        "throughput_per_min",
+        "latency_p50_ms",
+        "latency_p95_ms",
+        "eta_seconds",
+    ):
+        assert payload[field] >= 0
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "user_id" not in serialized
+    assert "vu_0000" not in serialized
 
 
 def test_load_video_records_accepts_youtube_collection_schema(tmp_path):

@@ -33,9 +33,11 @@ python 01_generate_mock_raw_data.py
 ### 2️⃣ `02_generate_event_log.py`
 
 Event Log 시뮬레이션 (Phase 1 historical)
-- `event_log.csv`: 6,000건 노출 + 클릭 레이블
-- `video_topic.csv`: 영상 주제 추출 (Topic Vocabulary 키워드 매칭)
-- `user_preferred_topics.csv`: 사용자 관심사 추출
+- `event_log.csv`: 30,000건 노출 + 클릭 레이블 (3-way split 시 test에도 충분한 양성 샘플이
+  남도록 6,000건에서 증량)
+- `video_topic.csv`: 영상 주제 추출 (Topic Vocabulary 키워드 매칭, QA/참고용 — 학습 피처
+  계산에는 사용되지 않음)
+- `user_preferred_topics.csv`: 사용자 관심사 추출 (QA/참고용)
 
 ```bash
 python 02_generate_event_log.py
@@ -43,7 +45,7 @@ python 02_generate_event_log.py
 
 **검증**: 
 - `data/event_log.csv` 생성 ✓
-- `clicked=1` 비율: ~2.45% (목표: 약 2% 내외) ✓
+- `clicked=1` 비율: ~2.8% (목표: 약 2% 내외) ✓
 
 ### 3️⃣ `03_build_features_and_training_dataset.py`
 
@@ -68,10 +70,10 @@ python 03_build_features_and_training_dataset.py
 
 ```bash
 # training_dataset.csv 확인
-- 행 수: 6,000건
+- 행 수: 30,000건
 - 컬럼 수: 16개 (age_group, occupation, ... , clicked)
 - NULL 체크: historical_category_affinity는 'unknown'으로 모두 채워짐 (NULL 없음) ✓
-- clicked ratio: ~2.45%
+- clicked ratio: ~2.8%
 ```
 
 ### 핵심 검증 결과
@@ -88,12 +90,14 @@ python 03_build_features_and_training_dataset.py
 
 #### 모델 성능 검증 ✓
 
-Baseline Logistic Regression:
-- ROC-AUC: 0.61 (랜덤 0.5 대비 유의미)
-- Feature Importance Top 3:
-  1. `topic_similarity` (계수: 4.41) ← 가장 강한 신호
-  2. `recent_click_count_7d` (계수: 0.18)
-  3. `category_match` (계수: 0.08)
+Train/Val/Test 3-way split (test는 학습에 전혀 노출되지 않음, `src/pipeline/train.py`,
+`src/pipeline/evaluate.py` 참고):
+- Val ROC-AUC: 0.75, Test(held-out) ROC-AUC: 0.76 (baseline 0.61 상회, val/test 격차 없음
+  → data leakage 없음 확인)
+- 클릭 라벨은 `topic_similarity`(spec 그대로: user_keyword_embeddings ↔
+  category_description_embedding cosine 유사도, max-pool)에 비례하도록 생성됨 —
+  라벨 생성 로직과 학습 피처 로직이 동일한 함수(`src.features.feature_builder`)를 공유해야
+  mock 데이터에서 모델이 유의미한 신호를 학습할 수 있다는 점이 핵심 (아래 Placeholder 2 참고).
 
 ---
 
@@ -116,18 +120,18 @@ def extract_topics_from_text(text: str, k_max=4):
 
 ### 2. Similarity 계산 (02_generate_event_log.py)
 
-**현재**: Jaccard Similarity (Set 교집합/합집합)
+**현재**: `src.features.feature_builder.compute_topic_similarity`를 그대로 재사용
+(user_keyword_embeddings ↔ category_description_embedding cosine 유사도, max-pool).
+클릭 라벨 생성 로직과 학습 피처 계산 로직이 반드시 같은 함수를 가리켜야 한다 — 예전에는
+라벨은 Jaccard, 피처는 embedding 기반으로 서로 다른 값을 썼다가 mock 데이터에서 두 신호가
+무상관이 되어 모델이 아무것도 학습하지 못하는 문제가 있었다 (이슈 #73).
 
-```python
-def jaccard(a: list, b: list) -> float:
-    sa, sb = set(a), set(b)
-    return len(sa & sb) / len(sa | sb)
-```
+**남은 placeholder**: `compute_topic_similarity`가 사용하는 `embed_text`(해시 기반
+pseudo-embedding, `src/features/embeddings.py`)는 실제 semantic 정보를 담지 못한다.
+실제 Sentence Transformer로 교체 시 라벨 생성 쪽 `base_rate`/`boost_coef` 튜닝
+(`02_generate_event_log.py`)도 새 임베딩 분포에 맞춰 재조정이 필요할 수 있다.
 
-**교체**: 다른 알고리즘 실험 가능
-- Cosine Similarity (임베딩 기반)
-- BM25 (텍스트 매칭)
-- Cross-Encoder 점수
+**교체**: Sentence Transformer, BERT, 또는 도메인 특화 임베딩 모델로 `embed_text` 교체
 
 ---
 

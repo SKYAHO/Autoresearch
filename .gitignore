@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.pkl
 *.csv
+*.joblib
 
 .venv/
 .python-version
@@ -18,6 +19,7 @@ keys/
 # Environment files
 .env
 .env.*
+gha-creds-*.json
 !.env.example
 
 # OS
