@@ -2,8 +2,8 @@
 
 사전조건:
 - MLflow 서버가 MLFLOW_TRACKING_URI에서 실행 중
-- hostvs Python 환경에 mlflow==2.22.1 설치
-- .env 또는 환경 변수로 MLFLOW_SMOKE_EXPERIMENT, MLFLOW_ARTIFACT_STORE_MODE 설정
+- host Python 환경에 mlflow==2.22.1 설치
+- .env 또는 환경 변수로 MLFLOW_SMOKE_EXPERIMENT 설정
 
 사용법:
 - 신규 Run 생성 및 검증:
@@ -14,7 +14,6 @@
 
 검증 항목:
 - MLflow 서버 상태 (healthcheck)
-- MLflow 클라이언트/서버 버전 일치
 - Run 생성, parameter/metric/artifact 기록
 - Run 상태 ("FINISHED")
 - artifact 재조회 및 다운로드 (왕복 검증)
@@ -81,6 +80,11 @@ def main():
         try:
             experiment = client.get_experiment_by_name(experiment_name)
             if experiment is None:
+                if args.query_only:
+                    raise RuntimeError(
+                        f"Experiment '{experiment_name}'이(가) 존재하지 않습니다. "
+                        "신규 Run을 생성한 뒤 다시 시도하세요."
+                    )
                 experiment_id = mlflow.create_experiment(experiment_name)
                 experiment = client.get_experiment(experiment_id)
                 print(f"[OK] 신규 Experiment 생성: {experiment_name}")
@@ -94,10 +98,7 @@ def main():
             print("=" * 60)
             print("[3/5] 이전 Run 재조회 (--query-only 모드)")
             print("=" * 60)
-            filter_string = (
-                "tags.`test.type` = 'mlflow-smoke-test' "
-                f"AND tags.`test.artifact_store` = '{artifact_store_mode}'"
-            )
+            filter_string = "tags.`test.type` = 'mlflow-smoke-test'"
             print(f"검색 필터: {filter_string}")
             runs = client.search_runs(
                 experiment_ids=[experiment.experiment_id],
