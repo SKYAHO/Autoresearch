@@ -1,3 +1,10 @@
+FROM ghcr.io/astral-sh/uv:0.11.26 AS lock-export
+
+WORKDIR /source
+
+COPY pyproject.toml uv.lock ./
+RUN ["/uv", "export", "--frozen", "--no-dev", "--no-hashes", "--output-file", "/requirements.lock"]
+
 FROM python:3.12-slim
 
 ARG VCS_REF=unknown
@@ -14,9 +21,9 @@ WORKDIR /app
 
 RUN adduser --disabled-password --gecos "" appuser
 
-COPY requirements.txt .
-RUN python -m pip install --upgrade pip \
-    && python -m pip install --no-cache-dir -r requirements.txt
+COPY --from=lock-export /requirements.lock ./
+RUN python -m pip install --no-cache-dir -r requirements.lock \
+    && rm requirements.lock
 
 COPY autoresearch ./autoresearch
 

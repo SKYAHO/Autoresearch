@@ -486,6 +486,41 @@ merge와 quality command가 실행된다.
 
 **종료 조건**: 후보 application digest가 Airflow 저장소의 build 없이 발행된다.
 
+#### Phase 2 운영 계약과 진행 상태
+
+`Autoresearch`의 `Release application image` workflow는 두 경로만 허용한다.
+
+- GitHub Release `published`: release tag를 checkout하고 release tag와
+  `sha-<full-source-sha>` image tag를 함께 push한다.
+- 수동 `workflow_dispatch`: 입력한 40자리 `source_sha`만 checkout하고
+  `sha-<full-source-sha>` image tag를 push한다. branch와 움직이는 `main`은
+  입력으로 허용하지 않는다.
+
+workflow는 다음 repository variable과 secret을 사용한다.
+
+| 종류 | 이름 | 값/출처 |
+| --- | --- | --- |
+| Variable | `GCP_PROJECT_ID` | 대상 GCP project ID |
+| Variable | `GCP_REGION` | Artifact Registry region |
+| Variable | `GAR_REPOSITORY` | 대상 Artifact Registry repository 이름 |
+| Variable | `WIF_PROVIDER_ID` | bootstrap output의 full provider resource ID |
+| Secret | `GAR_PUSHER_SA` | dev output `github_actions_app_pusher_service_account_email` |
+
+build 결과는 GitHub Actions summary와 job output에 full source SHA 및
+`autoresearch-batch@sha256:<digest>`를 기록한다. push 직후 digest로 image를 다시
+pull하여 OCI revision, non-root user, 세 공개 CLI의 `--help`와 `--version`을
+검증한다. 기존 digest와 tag를 삭제하지 않으므로 이전 정상 digest를 rollback에
+사용할 수 있다.
+
+2026-07-13 기준 진행 상태:
+
+- [x] `Autoresearch-infra`의 repository-scoped WIF impersonation과 GAR writer 적용
+- [x] `Autoresearch` 단독 checkout/build/push/검증 workflow 구현 (Issue #134)
+- [x] `Autoresearch` repository variable 4개와 `GAR_PUSHER_SA` 설정
+- [ ] workflow를 `main`에 merge
+- [ ] full source SHA 후보 image 발행 및 digest 검증
+- [ ] 발행된 digest를 사용하는 Airflow QA cutover
+
 ### Phase 3. Airflow QA cutover
 
 1. DAG helper를 git-sync되는 `dags/` subtree로 이동한다.

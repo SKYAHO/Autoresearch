@@ -1,7 +1,7 @@
 # 의존성 단일 출처. uv 로 관리한다 (uv sync / uv lock).
-# requirements.txt(Astro·CI 이미지)와 proxy/requirements.txt(Cloud Run)는
-# 이 파일 + uv.lock 에서 `uv export` 로 생성되는 산출물이다 — 직접 수정 금지.
-# 재생성 명령은 각 파일 상단 헤더 참조. CI 가 drift 를 검사한다.
+# requirements.txt(Astro 이미지)는 project dependency 범위의 미러이고,
+# proxy/requirements.txt(Cloud Run)는 uv.lock export 산출물이다 — 직접 수정 금지.
+# Dockerfile.app은 이 파일과 uv.lock을 build 중 직접 읽는다.
 
 [project]
 name = "autoresearch"
