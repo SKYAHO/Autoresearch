@@ -87,7 +87,25 @@ jobs:
       - name: Build Docker image
         # 루트 Dockerfile 은 Astro 런타임 이미지(astro dev/배포용)이다.
         # CI 의 빌드 검증은 가벼운 app 패키지 이미지(Dockerfile.app) 로 수행한다.
-        run: docker build -f Dockerfile.app --tag autoresearch:ci .
+        run: |
+          docker build \
+            --build-arg VCS_REF="${{ github.sha }}" \
+            -f Dockerfile.app \
+            --tag autoresearch:ci \
+            .
 
       - name: Run Docker image smoke check
-        run: docker run --rm autoresearch:ci
+        run: |
+          docker run --rm autoresearch:ci
+          docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.youtube_trending --help
+          docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.youtube_trending --version
+          docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.action_log --help
+          docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.action_log --version
+          docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.action_log_quality --help
+          docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.action_log_quality --version
