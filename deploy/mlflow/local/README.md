@@ -69,6 +69,43 @@ python ../../../scripts/mlflow_smoke_test.py --query-only
 
 `--query-only` 모드는 새 Run을 생성하지 않고, 이전에 생성한 Run을 태그 기반으로 검색하여 메트릭 및 artifact를 재확인합니다.
 
+## MinIO (S3 호환) 검증 모드 (선택 사항)
+
+로컬 S3 호환 객체 저장소 (MinIO)에 artifact를 업로드할 경우, compose override 방식으로 MinIO를 추가합니다.
+
+### 1. 환경 파일 생성
+
+```bash
+cp .env.minio.example .env.minio
+# 필요시 비밀번호 변경
+# nano .env.minio
+```
+
+### 2. MinIO 환경 기동
+
+```bash
+docker compose --env-file .env.minio -f compose.yaml -f compose.minio.yaml up -d
+```
+
+### 3. MLflow UI 및 MinIO Console 확인
+
+- MLflow UI: http://localhost:5000
+- MinIO Console: http://localhost:9001 (user: minio-user)
+
+### 4. MinIO 환경 종료
+
+```bash
+# 데이터 유지
+docker compose --env-file .env.minio -f compose.yaml -f compose.minio.yaml down
+
+# 전체 삭제
+docker compose --env-file .env.minio -f compose.yaml -f compose.minio.yaml down -v
+```
+
+상세 가이드는 [README-minio.md](README-minio.md) 참고.
+
+---
+
 ## GCS 검증 모드 (선택 사항)
 
 실 GCS 버킷에 artifact를 업로드할 경우, `.env`를 다음과 같이 수정하고 override 파일을 사용합니다.
