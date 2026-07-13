@@ -55,7 +55,7 @@ def get_category_description_embedding(category_id: str) -> np.ndarray:
     if category_id in _CATEGORY_EMBEDDINGS:
         return _CATEGORY_EMBEDDINGS[category_id]
 
-    return _CATEGORY_EMBEDDINGS.get("People & Blogs", _CATEGORY_EMBEDDINGS["People & Blogs"])
+    return _CATEGORY_EMBEDDINGS["People & Blogs"]
 
 
 _init_category_embeddings()
