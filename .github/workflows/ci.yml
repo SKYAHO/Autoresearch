@@ -101,6 +101,10 @@ jobs:
           docker run --rm autoresearch:ci \
             python -m autoresearch.jobs.youtube_trending --version
           docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.youtube_backfill --help
+          docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.youtube_backfill --version
+          docker run --rm autoresearch:ci \
             python -m autoresearch.jobs.action_log --help
           docker run --rm autoresearch:ci \
             python -m autoresearch.jobs.action_log --version
