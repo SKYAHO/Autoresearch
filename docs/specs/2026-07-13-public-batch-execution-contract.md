@@ -65,7 +65,7 @@ console script alias를 추가할 수 있지만 Airflow는 v1 동안 위 module 
 - 빈 문자열, `.`·`..`, 중복 separator가 있는 비정규화 path는 거부한다.
 - application은 Airflow의 사전 검증 여부와 관계없이 모든 입력을 검증한다.
 - secret은 CLI 인자로 받지 않고 정해진 환경 변수에서만 읽는다.
-- overwrite를 지원하는 YouTube와 action-log 명령은 옵션 없음, bare flag와
+- overwrite를 지원하는 YouTube 일일 수집과 action-log 명령은 옵션 없음, bare flag와
   explicit boolean을 모두 허용한다.
 
 ```text
@@ -162,20 +162,25 @@ python -m autoresearch.jobs.youtube_trending \
 
 ```text
 python -m autoresearch.jobs.youtube_backfill \
-  --source-path <local-or-gs-parquet> \
+  --source-path gs://<bucket>/<source>.parquet \
   --youtube-base-path gs://<bucket>/data_lake/youtube_trending_kr \
-  [--start-date YYYY-MM-DD] \
-  [--end-date YYYY-MM-DD] \
-  [--overwrite]
+  --overwrite=true
 ```
 
 ### 계약
 
-- source parquet을 날짜별 partition으로 변환한다.
-- `start-date`와 `end-date`를 함께 사용할 때 시작일은 종료일보다 늦을 수 없다.
+- source와 output은 정규화된 완전한 `gs://` path만 허용한다. 로컬 경로 지원은
+  application 내부 함수의 개발·테스트 호환 범위이며 공개 운영 계약이 아니다.
+- source parquet 전체를 날짜별 partition으로 변환한다. 날짜 범위 필터는 기존
+  backfill 비즈니스 로직에 없으므로 v1 공개 명령에서도 제공하지 않는다.
 - output은 일일 수집과 동일한 schema·partition path를 사용한다.
-- 개별 partition 실패는 전체 command를 실패시킨다. 부분 성공 partition 목록은
-  summary에 기록한다.
+- 기존 구현과 동일하게 source에 포함된 각 날짜의 `part-0.parquet`을 교체하므로
+  실행자는 `--overwrite=true`를 명시해야 한다. 옵션 누락 또는 false는 실행 전에
+  exit 2로 거부한다.
+- 같은 source를 다시 실행하면 같은 날짜 partition을 교체하는 멱등 동작이다.
+  source에서 사라진 날짜의 기존 destination partition은 자동 삭제하지 않는다.
+- 개별 partition 실패는 전체 command를 실패시킨다. 이미 완료된 partition은
+  남을 수 있으므로 운영자는 같은 source로 전체 명령을 다시 실행한다.
 
 ## Action log 공통 옵션
 

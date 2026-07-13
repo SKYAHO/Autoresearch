@@ -181,6 +181,7 @@ jobs:
           docker run --rm "$digest_ref"
           for module in \
             autoresearch.jobs.youtube_trending \
+            autoresearch.jobs.youtube_backfill \
             autoresearch.jobs.action_log \
             autoresearch.jobs.action_log_quality
           do
