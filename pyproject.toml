@@ -58,6 +58,10 @@ proxy = [
     "httpx>=0.28,<0.29",
 ]
 
+[tool.pytest.ini_options]
+# scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외
+testpaths = ["tests"]
+
 [tool.uv]
 # Phase 1(이슈 #80): 의존성 관리만 uv 로 전환하고 패키지 배치 방식(sys.path)은
 # 유지한다. Phase 2 에서 src 레이아웃 전환 시 package 빌드로 변경 예정.
