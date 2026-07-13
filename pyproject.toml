@@ -18,6 +18,7 @@ dependencies = [
     "gcsfs>=2024.0",
     "tenacity>=8.2,<10",
     "requests>=2.32,<3",
+    "openai>=1.0",
     # CTR Model Training (Issue #33)
     "duckdb>=0.8.0",
     "lightgbm>=4.0.0",
@@ -32,7 +33,6 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "datasets>=2.19",
-    "openai>=1.0",
     "fastapi>=0.115,<0.129",
     "httpx>=0.28,<0.29",
     { include-group = "lint" },

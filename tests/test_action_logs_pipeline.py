@@ -499,6 +499,38 @@ def test_event_generation_request_defaults_to_70_20_10_candidate_mix():
     assert req.exploration_ratio == 0.1
 
 
+def test_event_generation_request_accepts_candidate_ratio_sum_inside_tolerance():
+    request = EventGenerationRequest(
+        personalized_ratio=0.7000000005,
+        popular_ratio=0.2,
+        exploration_ratio=0.1,
+    )
+
+    assert request.personalized_ratio == 0.7000000005
+
+
+@pytest.mark.parametrize(
+    ("personalized", "popular", "exploration"),
+    [
+        (0.700000002, 0.2, 0.1),
+        (0.6, 0.2, 0.1),
+        (float("nan"), 0.2, 0.1),
+        (float("inf"), 0.0, 0.0),
+    ],
+)
+def test_event_generation_request_rejects_invalid_candidate_ratio_mix(
+    personalized,
+    popular,
+    exploration,
+):
+    with pytest.raises(ValidationError):
+        EventGenerationRequest(
+            personalized_ratio=personalized,
+            popular_ratio=popular,
+            exploration_ratio=exploration,
+        )
+
+
 def test_build_candidates_includes_popular_slice_after_personalized_slice():
     user = {
         "user_id": "vu",
