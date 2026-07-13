@@ -1,0 +1,13 @@
+services:
+  mlflow:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcs-key.json
+    volumes:
+      - ${GCS_KEY_FILE_HOST_PATH}:/secrets/gcs-key.json:ro
+    command: >
+      sh -c "pip install -q psycopg2-binary==2.9.10 'google-cloud-storage>=2,<3' &&
+      mlflow server
+        --host 0.0.0.0
+        --port 5000
+        --backend-store-uri postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow_local_password}@postgres:5432/${POSTGRES_DB:-mlflow}
+        --artifacts-destination ${MLFLOW_ARTIFACT_DESTINATION}"

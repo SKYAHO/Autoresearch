@@ -1,3 +1,5 @@
+import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from types import SimpleNamespace
@@ -10,7 +12,9 @@ import autoresearch.action_logs.llm_generator as llm_module
 from autoresearch.action_logs.llm_generator import (
     OpenRouterActionLogGenerator,
     OpenRouterRequestError,
+    build_action_log_prompt,
 )
+from autoresearch.action_logs.observability import action_log_work_log_context
 
 
 def _user():
@@ -30,6 +34,56 @@ def _videos():
             "tags": ["게임"],
         }
     ]
+
+
+def test_prompt_explicitly_lists_all_24_candidate_rows_and_indexes():
+    videos = [
+        {
+            "video_id": f"video_{index}",
+            "title": f"테스트 영상 {index}",
+            "description": "설명",
+            "tags": ["게임"],
+        }
+        for index in range(24)
+    ]
+
+    prompt = build_action_log_prompt(_user(), videos)
+
+    expected_candidates = json.dumps(
+        [[index, f"테스트 영상 {index}", ["게임"], "", "설명"] for index in range(24)],
+        ensure_ascii=False,
+    )
+    expected_skeleton = json.dumps(
+        {"j": [[index, 0.0, 0.0] for index in range(24)]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    required_indexes = json.dumps(list(range(24)), separators=(",", ":"))
+
+    assert "Prompt version: action_log_ctr_v4" in prompt
+    assert "컬럼 순서 = [index, title, tags, channel, description]" in prompt
+    assert expected_candidates in prompt
+    assert f"required_indexes={required_indexes}" in prompt
+    assert "expected_count=24" in prompt
+    assert expected_skeleton in prompt
+    assert "..." not in prompt
+
+
+def test_schema_retry_prompt_names_failure_without_reusing_raw_response(monkeypatch):
+    client = _FakeClient([_success('{"j":[[0,0.2,0.3]]}')])
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    generator = OpenRouterActionLogGenerator(api_key="test-api-key")
+
+    result = generator.generate_schema_retry(
+        _user(),
+        _videos(),
+        error_type="invalid_json",
+    )
+
+    prompt = client.completions.calls[0]["messages"][1]["content"]
+    assert result == '{"j":[[0,0.2,0.3]]}'
+    assert "이전 응답은 invalid_json 검증에 실패했다" in prompt
+    assert '{"j":[[0,0.0,0.0]]}' in prompt
 
 
 def _success(content: str = '{"judgments": []}'):
@@ -296,3 +350,152 @@ def test_openrouter_returns_invalid_json_without_retry(monkeypatch):
 
     assert generator.generate(_user(), _videos()) == "{not valid json"
     assert len(client.completions.calls) == 1
+
+
+def test_openrouter_structured_logs_include_attempt_usage_without_sensitive_data(
+    monkeypatch,
+    caplog,
+):
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content='{"judgments": []}'))],
+        provider="provider-safe",
+        usage=SimpleNamespace(
+            prompt_tokens=120,
+            completion_tokens=30,
+            cost=0.001,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=4),
+        ),
+    )
+    client = _FakeClient([response])
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    generator = OpenRouterActionLogGenerator(api_key="test-api-key")
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="autoresearch.action_logs.llm_generator",
+    ):
+        with action_log_work_log_context(
+            shard_index=2,
+            work_sequence=7,
+            detailed=True,
+        ):
+            generator.generate(_user(), _videos())
+
+    events = [json.loads(record.message) for record in caplog.records]
+    attempt = next(
+        event for event in events if event["event"] == "openrouter_attempt_complete"
+    )
+    request = next(
+        event for event in events if event["event"] == "openrouter_request_complete"
+    )
+    assert attempt["shard_index"] == request["shard_index"] == 2
+    assert attempt["work_sequence"] == request["work_sequence"] == 7
+    assert attempt["attempt"] == 1
+    assert attempt["http_status"] == 200
+    assert attempt["provider"] == "provider-safe"
+    assert attempt["attempt_elapsed_ms"] >= 0
+    assert request["request_elapsed_ms"] >= attempt["attempt_elapsed_ms"]
+    assert request["retry_count"] == 0
+    assert request["prompt_tokens"] == 120
+    assert request["completion_tokens"] == 30
+    assert request["reasoning_tokens"] == 4
+    assert request["reported_cost"] == 0.001
+
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "test-api-key" not in serialized
+    assert "vu_test" not in serialized
+    assert "테스트 영상" not in serialized
+    assert "judgments" not in serialized
+
+
+def test_openrouter_retry_log_separates_attempt_and_backoff(monkeypatch, caplog):
+    client = _FakeClient(
+        [
+            _StatusError(429, {"x-openrouter-provider": "provider-a"}),
+            _success(),
+        ]
+    )
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    event_order = []
+    original_emit = llm_module.emit_action_log_event
+
+    def _record_event(*args, **kwargs):
+        event_order.append(args[2])
+        return original_emit(*args, **kwargs)
+
+    def _record_sleep(seconds):
+        event_order.append("sleep")
+
+    monkeypatch.setattr(llm_module, "emit_action_log_event", _record_event)
+    monkeypatch.setattr(llm_module.time, "sleep", _record_sleep)
+    monkeypatch.setattr(llm_module.random, "uniform", lambda start, end: 0.0)
+    generator = OpenRouterActionLogGenerator(
+        api_key="test-api-key",
+        max_retries=1,
+        retry_backoff_base_seconds=1.0,
+        retry_backoff_max_seconds=1.0,
+    )
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="autoresearch.action_logs.llm_generator",
+    ):
+        with action_log_work_log_context(
+            shard_index=0,
+            work_sequence=0,
+            detailed=True,
+        ):
+            generator.generate(_user(), _videos())
+
+    events = [json.loads(record.message) for record in caplog.records]
+    attempts = [
+        event for event in events if event["event"] == "openrouter_attempt_complete"
+    ]
+    retry_scheduled = next(
+        event for event in events if event["event"] == "openrouter_retry_scheduled"
+    )
+    request = next(
+        event for event in events if event["event"] == "openrouter_request_complete"
+    )
+    assert len(attempts) == 2
+    assert event_order.index("openrouter_retry_scheduled") < event_order.index("sleep")
+    assert retry_scheduled["attempt"] == 1
+    assert retry_scheduled["retry_count"] == 1
+    assert retry_scheduled["backoff_seconds"] == 1.0
+    assert retry_scheduled["http_status"] == 429
+    assert retry_scheduled["provider"] == "provider-a"
+    assert retry_scheduled["request_elapsed_ms"] >= 0
+    assert attempts[0]["outcome"] == "retry"
+    assert attempts[0]["http_status"] == 429
+    assert attempts[0]["provider"] == "provider-a"
+    assert attempts[0]["backoff_scheduled_ms"] == 1000.0
+    assert attempts[0]["backoff_elapsed_ms"] >= 0
+    assert attempts[1]["outcome"] == "success"
+    assert request["retry_count"] == 1
+    assert request["attempt"] == 2
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "test-api-key" not in serialized
+    assert "vu_test" not in serialized
+    assert "테스트 영상" not in serialized
+
+
+def test_openrouter_success_detail_logs_are_suppressed_for_large_runs(
+    monkeypatch,
+    caplog,
+):
+    client = _FakeClient([_success()])
+    monkeypatch.setattr("openai.OpenAI", lambda **kwargs: client)
+    generator = OpenRouterActionLogGenerator(api_key="test-api-key")
+
+    with caplog.at_level(
+        logging.INFO,
+        logger="autoresearch.action_logs.llm_generator",
+    ):
+        with action_log_work_log_context(
+            shard_index=0,
+            work_sequence=0,
+            detailed=False,
+        ):
+            generator.generate(_user(), _videos())
+
+    assert caplog.records == []
