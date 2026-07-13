@@ -12,11 +12,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Print release info
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          NAME: ${{ github.event.release.name }}
+          TARGET: ${{ github.event.release.target_commitish }}
+          URL: ${{ github.event.release.html_url }}
         run: |
-          echo "Tag: ${{ github.event.release.tag_name }}"
-          echo "Name: ${{ github.event.release.name }}"
-          echo "Target: ${{ github.event.release.target_commitish }}"
-          echo "URL: ${{ github.event.release.html_url }}"
+          echo "Tag: $TAG"
+          echo "Name: $NAME"
+          echo "Target: $TARGET"
+          echo "URL: $URL"
 
       - name: Generate App token
         uses: actions/create-github-app-token@v3
@@ -32,11 +37,13 @@ jobs:
           TOKEN: ${{ steps.app-token.outputs.token }}
           TAG: ${{ github.event.release.tag_name }}
         run: |
+          PAYLOAD=$(jq -nc --arg tag "$TAG" \
+            '{event_type:"autoresearch-released",client_payload:{ref:$tag,tag:$tag}}')
           RESPONSE_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/SKYAHO/Autoresearch-airflow/dispatches \
-            -d "{\"event_type\":\"autoresearch-released\",\"client_payload\":{\"ref\":\"$TAG\",\"tag\":\"$TAG\"}}")
+            -d "$PAYLOAD")
           if [ "$RESPONSE_CODE" != "204" ]; then
             echo "::error::Failed to dispatch event (HTTP $RESPONSE_CODE)"
             exit 1
