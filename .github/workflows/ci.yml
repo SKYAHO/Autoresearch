@@ -98,6 +98,14 @@ jobs:
         run: |
           docker run --rm autoresearch:ci
           docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.youtube_trending --help
+          docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.youtube_trending --version
+          docker run --rm autoresearch:ci \
             python -m autoresearch.jobs.action_log --help
           docker run --rm autoresearch:ci \
             python -m autoresearch.jobs.action_log --version
+          docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.action_log_quality --help
+          docker run --rm autoresearch:ci \
+            python -m autoresearch.jobs.action_log_quality --version
