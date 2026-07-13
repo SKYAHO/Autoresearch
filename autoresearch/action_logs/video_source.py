@@ -50,26 +50,44 @@ def _int(value: object) -> int:
         return 0
 
 
+def _first_present(row: dict, *keys: str) -> object:
+    """row에서 값이 있는 첫 번째 key를 반환한다."""
+
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 def _to_video_record(row: dict) -> dict:
     """원천 parquet row 한 건을 정규 VideoRecord dict로 변환한다."""
 
     return {
         "video_id": str(row.get("video_id", "")),
-        "title": str(row.get("title", "") or ""),
-        "description": str(row.get("description", "") or ""),
-        "tags": _parse_tags(row.get("video_tags")),
-        "view_count": _int(row.get("view_count")),
-        "like_count": _int(row.get("like_count")),
-        "comment_count": _int(row.get("comment_count")),
-        "channel_name": str(row.get("channel_name", "") or ""),
-        "published_at": str(row.get("publish_date", "") or ""),
+        "title": str(_first_present(row, "title", "video_title") or ""),
+        "description": str(
+            _first_present(row, "description", "video_description") or ""
+        ),
+        "tags": _parse_tags(_first_present(row, "tags", "video_tags")),
+        "view_count": _int(_first_present(row, "view_count", "video_view_count")),
+        "like_count": _int(_first_present(row, "like_count", "video_like_count")),
+        "comment_count": _int(
+            _first_present(row, "comment_count", "video_comment_count")
+        ),
+        "channel_name": str(
+            _first_present(row, "channel_name", "channel_title") or ""
+        ),
+        "published_at": str(
+            _first_present(row, "publish_date", "video_published_at") or ""
+        ),
     }
 
 
-def load_video_records(path: str | Path) -> list[dict]:
+def load_video_records(path: str | Path, *, filesystem=None) -> list[dict]:
     """KR TrendingVideo parquet을 읽어 video_id로 dedup된 VideoRecord 목록을 반환한다."""
 
-    table = pq.read_table(path)
+    table = pq.read_table(path, filesystem=filesystem)
     seen: set[str] = set()
     records: list[dict] = []
     for row in table.to_pylist():

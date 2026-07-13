@@ -53,10 +53,11 @@
   `youtube_backfill_kr`
 - 테스트는 `tests/` (모듈별 `test_<module>.py` 플랫 구조)
 - CTR 파이프라인 예제 스캐폴드는 `examples/ctr_pipeline_scaffold/`
-- 의존성은 pip 기반: `requirements.txt`(런타임) /
-  `requirements-dev.txt`(개발·테스트). `requirements.txt`는 Astro
-  이미지(`Dockerfile`)와 CI 이미지(`Dockerfile.app`)가 공유하는 단일
-  출처입니다.
+- 의존성은 uv 기반: 단일 출처는 `pyproject.toml` + `uv.lock`입니다.
+  `requirements.txt`(Astro `Dockerfile`·CI `Dockerfile.app` 공유)는
+  `[project].dependencies`의 범위 미러(Astro 베이스 제약과의 충돌 회피,
+  헤더 참조), `proxy/requirements.txt`(Cloud Run)는 `uv export` 전핀
+  산출물입니다. 둘 다 CI `uv-lock-check` job이 drift를 검사합니다.
 - Python 3.12 (`.python-version`), CI는 3.11/3.12 매트릭스
 - 팀 도메인 4개: Model Training (waieiches, hyochangsung), Feast Features
   (waieiches, hyochangsung — 도입 진행 중), Airflow Orchestration (bbungjun),
@@ -68,6 +69,9 @@
 
 ## Core Rules
 
+- 코드가 변경되는 작업은 반드시 이슈를 먼저 발행하고, 그 이슈의 `Create a
+  branch`로 브랜치를 생성합니다(이슈-브랜치 자동 연결). 상세는
+  `.claude/docs/agent-workflow-reference.md` 참조.
 - 새 추상화보다 기존 저장소 패턴을 우선합니다.
 - 구조 변경과 동작 변경은 분리합니다.
 - Python 함수의 타입 힌트(반환 타입 포함)를 유지합니다.
@@ -80,11 +84,15 @@
 로컬 테스트와 개발:
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt
-python -m pytest
+uv sync                  # .venv 생성 + 런타임/dev 의존성 설치 (uv.lock 기준)
+uv run python -m pytest
 ```
 
+- 의존성 변경은 `pyproject.toml` 수정 → `uv lock` → 산출물 갱신 순서로
+  진행합니다 (`requirements.txt`는 런타임 의존성 미러라 함께 수동 갱신,
+  `proxy/requirements.txt`는 헤더의 `uv export` 명령으로 재생성).
+- Feast 작업은 격리 그룹을 사용합니다: `uv sync --only-group feast`
+  (feast 0.64는 dev/proxy의 fastapi<0.129와 starlette 충돌).
 - Airflow DAG 로컬 실행은 Astro CLI를 사용합니다 (`astro dev start`).
 - 필수 환경 변수는 `.env.example` 참조: `YOUTUBE_API_KEY`,
   `YOUTUBE_LAKE_BUCKET`, `YOUTUBE_BACKFILL_SOURCE`.
@@ -116,7 +124,7 @@ python -m pytest
 주요 명령어:
 
 ```bash
-python -m pytest -v                                 # CI와 동일
+uv run python -m pytest -v                          # CI와 동일
 docker build -f Dockerfile.app -t autoresearch:ci . # CI 이미지 빌드 검증
 ```
 

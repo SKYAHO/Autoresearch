@@ -18,7 +18,7 @@ Merge. 모든 기능 작업의 운영 표준입니다. 사람용 요약은
 ```
 Issue 생성 (Project Todo 자동 추가)
     ↓
-Branch 생성 (feat/이슈번호-설명)
+Branch 생성 (이슈의 Create a branch, feat/이슈번호-설명)
     ↓
 Commit (<type>: 한국어 설명)
     ↓
@@ -54,6 +54,12 @@ GitHub는 `form 선택 → label 자동 적용` 방식으로 동작합니다. Pr
 
 ## Branch Naming
 
+**코드가 변경되는 작업은 반드시 이슈를 먼저 발행하고, 그 이슈에서 브랜치를
+생성합니다.** GitHub 이슈 우측 `Development > Create a branch`를 사용하면
+브랜치가 이슈에 자동 연결(`main` 기준 분기)되어, PR을 `main`으로 머지할 때
+이슈 자동 close와 Project `Done` 전환이 확실해집니다. 로컬에서 임의로 분기하는
+대신 이슈에서 만든 브랜치를 체크아웃해 작업합니다.
+
 **형식:** `<type>/<이슈번호>-<간략한-설명>`
 
 **Type:** `feat/`, `fix/`, `exp/`, `docs/`, `refactor/`, `chore/`
@@ -63,9 +69,9 @@ GitHub는 `form 선택 → label 자동 적용` 방식으로 동작합니다. Pr
 - 한 브랜치에는 하나의 주요 목적만 담습니다.
 
 ```bash
-git switch main
-git pull origin main
-git switch -c feat/45-docs-system-phase1
+# 이슈에서 Create a branch로 생성(예: feat/45-docs-system-phase1) 후
+git fetch origin
+git switch feat/45-docs-system-phase1
 ```
 
 ## Commit Messages
