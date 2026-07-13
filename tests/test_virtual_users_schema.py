@@ -7,10 +7,89 @@ from autoresearch.virtual_users.schema import (
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
     GenerationRequest,
-    SourcePersona,
+    GenerationResult,
+    QuarantineRecord,
     VirtualUser,
     VirtualUserBatch,
+    YouTubeProfile,
+    age_bucket_for_age,
 )
+
+
+def _valid_user_kwargs(**overrides):
+    kwargs = dict(
+        virtual_user_id="vu_0001",
+        source_uuid="p-1",
+        age=24,
+        sex="male",
+        age_bucket="20s",
+        occupation="개발자",
+        province="Seoul",
+        persona_summary="dev",
+        youtube_profile={"primary_categories": ["Gaming"], "watch_time_band": "night"},
+        generation_meta={
+            "schema_version": GENERATION_SCHEMA_VERSION,
+            "prompt_version": PROMPT_VERSION,
+            "llm_model": "fixture",
+            "generated_at": "2026-07-06T00:00:00Z",
+        },
+    )
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_youtube_profile_rejects_out_of_vocabulary_category():
+    YouTubeProfile(primary_categories=["Music", "Gaming"], watch_time_band="night")  # 정상 vocab
+    with pytest.raises(ValidationError):
+        YouTubeProfile(primary_categories=["Food"], watch_time_band="night")  # vocab 밖
+    with pytest.raises(ValidationError):
+        YouTubeProfile(primary_categories=["Music", "Music"], watch_time_band="night")  # 중복
+
+
+def test_virtual_user_rejects_blank_occupation():
+    VirtualUser(**_valid_user_kwargs())  # 정상
+    with pytest.raises(ValidationError):
+        VirtualUser(**_valid_user_kwargs(occupation=""))
+    with pytest.raises(ValidationError):
+        VirtualUser(**_valid_user_kwargs(occupation="   "))
+
+
+def _make_single_user_batch() -> VirtualUserBatch:
+    """1명짜리 VirtualUser로 구성된 VirtualUserBatch를 만드는 테스트 헬퍼."""
+
+    user = VirtualUser(
+        virtual_user_id="vu_0001",
+        source_uuid="p-001",
+        age=22,
+        sex="male",
+        age_bucket="20s",
+        occupation="student",
+        province="Seoul",
+        district="Mapo-gu",
+        country="KR",
+        locale="ko-KR",
+        persona_summary="Male student.",
+        hobby_keywords=["gaming"],
+        interest_keywords=["music"],
+        youtube_profile={
+            "primary_categories": ["Gaming"],
+            "watch_time_band": "night",
+        },
+        generation_meta={
+            "schema_version": GENERATION_SCHEMA_VERSION,
+            "prompt_version": PROMPT_VERSION,
+            "llm_model": "fixture",
+            "generated_at": "2026-06-28T00:00:00Z",
+        },
+    )
+
+    return VirtualUserBatch(
+        schema_version=GENERATION_SCHEMA_VERSION,
+        prompt_version=PROMPT_VERSION,
+        source_dataset="nvidia/Nemotron-Personas-Korea",
+        request=GenerationRequest(male_count=1, female_count=0),
+        users=[user],
+    )
 
 
 def test_generation_request_defaults_match_mvp_contract():
@@ -21,25 +100,21 @@ def test_generation_request_defaults_match_mvp_contract():
     assert request.male_count == 50
     assert request.female_count == 50
     assert request.seed == 42
-    assert request.output_path == "data/generated/virtual_users_20s_100.json"
+    assert request.use_llm is True
+    assert request.max_concurrency == 1
+    assert request.output_path == "asset/virtual_user/virtual_users_20s_100.parquet"
 
 
-def test_source_persona_normalizes_required_fields():
-    persona = SourcePersona(
-        uuid="p-001",
-        age=24,
-        sex="male",
-        occupation="student",
-        province="Seoul",
-        district="Gangnam-gu",
-        persona="A student who enjoys games and music.",
-        hobbies_and_interests="gaming, music, short videos",
-    )
+def test_generation_request_rejects_invalid_max_concurrency():
+    with pytest.raises(ValidationError):
+        GenerationRequest(max_concurrency=0)
 
-    assert persona.uuid == "p-001"
-    assert persona.age == 24
-    assert persona.sex == "male"
-    assert persona.hobbies_and_interests == "gaming, music, short videos"
+
+def test_age_bucket_for_age_uses_source_age():
+    assert age_bucket_for_age(19) == "10s"
+    assert age_bucket_for_age(20) == "20s"
+    assert age_bucket_for_age(29) == "20s"
+    assert age_bucket_for_age(30) == "30s"
 
 
 def test_virtual_user_schema_accepts_expected_json_shape():
@@ -51,53 +126,29 @@ def test_virtual_user_schema_accepts_expected_json_shape():
         age_bucket="20s",
         occupation="student",
         province="Seoul",
+        district="Gangnam-gu",
+        country="KR",
+        locale="ko-KR",
         persona_summary="Trend-sensitive college student who watches gaming videos.",
+        hobby_keywords=["gaming", "music"],
+        interest_keywords=["creator economy", "short videos"],
         youtube_profile={
             "primary_categories": ["Gaming", "Music"],
-            "shorts_affinity": 0.82,
-            "longform_affinity": 0.41,
-            "trend_sensitivity": 0.76,
-            "comment_propensity": 0.35,
             "watch_time_band": "night",
         },
         generation_meta={
             "schema_version": GENERATION_SCHEMA_VERSION,
             "prompt_version": PROMPT_VERSION,
-            "llm_model": "gemini-2.0-flash",
+            "llm_model": "glm-5.2",
             "generated_at": "2026-06-28T00:00:00Z",
         },
     )
 
-    assert user.youtube_profile.shorts_affinity == 0.82
+    assert user.youtube_profile.primary_categories == ["Gaming", "Music"]
+    assert user.country == "KR"
+    assert user.locale == "ko-KR"
+    assert user.hobby_keywords == ["gaming", "music"]
     assert user.generation_meta.prompt_version == PROMPT_VERSION
-
-
-def test_virtual_user_schema_rejects_out_of_range_affinity():
-    with pytest.raises(ValidationError):
-        VirtualUser(
-            virtual_user_id="vu_0001",
-            source_uuid="p-001",
-            age=24,
-            sex="female",
-            age_bucket="20s",
-            occupation="designer",
-            province="Seoul",
-            persona_summary="Designer persona.",
-            youtube_profile={
-                "primary_categories": ["Music"],
-                "shorts_affinity": 1.2,
-                "longform_affinity": 0.4,
-                "trend_sensitivity": 0.5,
-                "comment_propensity": 0.3,
-                "watch_time_band": "evening",
-            },
-            generation_meta={
-                "schema_version": GENERATION_SCHEMA_VERSION,
-                "prompt_version": PROMPT_VERSION,
-                "llm_model": "gemini-2.0-flash",
-                "generated_at": "2026-06-28T00:00:00Z",
-            },
-        )
 
 
 def test_virtual_user_batch_counts_users_by_sex(caplog):
@@ -110,13 +161,14 @@ def test_virtual_user_batch_counts_users_by_sex(caplog):
             age_bucket="20s",
             occupation="student",
             province="Seoul",
+            district="Mapo-gu",
+            country="KR",
+            locale="ko-KR",
             persona_summary="Male student.",
+            hobby_keywords=["gaming"],
+            interest_keywords=["music"],
             youtube_profile={
                 "primary_categories": ["Gaming"],
-                "shorts_affinity": 0.8,
-                "longform_affinity": 0.4,
-                "trend_sensitivity": 0.7,
-                "comment_propensity": 0.3,
                 "watch_time_band": "night",
             },
             generation_meta={
@@ -134,13 +186,14 @@ def test_virtual_user_batch_counts_users_by_sex(caplog):
             age_bucket="20s",
             occupation="marketer",
             province="Busan",
+            district="Haeundae-gu",
+            country="KR",
+            locale="ko-KR",
             persona_summary="Female marketer.",
+            hobby_keywords=["music"],
+            interest_keywords=["lifestyle"],
             youtube_profile={
                 "primary_categories": ["Music"],
-                "shorts_affinity": 0.7,
-                "longform_affinity": 0.5,
-                "trend_sensitivity": 0.6,
-                "comment_propensity": 0.2,
                 "watch_time_band": "evening",
             },
             generation_meta={
@@ -169,89 +222,30 @@ def test_virtual_user_batch_counts_users_by_sex(caplog):
     assert "Prepared virtual user batch output" in caplog.text
 
 
-def test_source_persona_accepts_spec_fields_and_kr_defaults():
-    persona = SourcePersona(
-        uuid="p-001",
-        age=24,
-        sex="female",
-        occupation="student",
-        province="Seoul",
-        district="Mapo-gu",
-        persona="A student who enjoys music and lifestyle videos.",
-        hobbies_and_interests="music, beauty, lifestyle",
-        hobbies_and_interests_list=["music", "beauty"],
-        professional_persona="Early career learner.",
-        skills_and_expertise="presentation, design",
-        sports_persona="Light sports highlights viewer.",
-        arts_persona="Interested in popular music.",
-        travel_persona="Enjoys Seoul cafe trip videos.",
-        culinary_persona="Watches cooking shorts.",
-        family_persona="Lives with family.",
+def test_quarantine_record_captures_failure_context():
+    record = QuarantineRecord(
+        source_uuid="p-1",
+        raw_row={"uuid": "p-1", "sex": "여자"},
+        raw_llm_response="{bad json",
+        error_type="invalid_json",
+        error_message="Expecting value",
     )
-
-    assert persona.country == "KR"
-    assert persona.locale == "ko-KR"
-    assert persona.hobbies_and_interests_list == ["music", "beauty"]
-    assert persona.skills_and_expertise == "presentation, design"
-    assert persona.travel_persona == "Enjoys Seoul cafe trip videos."
-    assert persona.culinary_persona == "Watches cooking shorts."
-    assert persona.family_persona == "Lives with family."
+    assert record.error_type == "invalid_json"
+    assert record.raw_row["sex"] == "여자"
 
 
-def test_virtual_user_exports_warehouse_ready_row():
-    user = VirtualUser(
-        virtual_user_id="vu_0001",
-        source_uuid="p-001",
-        source_dataset="nvidia/Nemotron-Personas-Korea",
-        country="KR",
-        locale="ko-KR",
-        age=24,
-        sex="female",
-        age_bucket="20s",
-        occupation="student",
-        province="Seoul",
-        district="Mapo-gu",
-        persona_summary="Student interested in music and lifestyle.",
-        interest_keywords=["music", "beauty", "lifestyle"],
-        youtube_profile={
-            "primary_categories": ["Music", "Howto & Style"],
-            "shorts_affinity": 0.82,
-            "longform_affinity": 0.38,
-            "trend_sensitivity": 0.71,
-            "comment_propensity": 0.24,
-            "watch_time_band": "night",
-        },
-        generation_meta={
-            "schema_version": GENERATION_SCHEMA_VERSION,
-            "prompt_version": PROMPT_VERSION,
-            "llm_model": "fixture",
-            "generated_at": "2026-07-01T00:00:00+00:00",
-        },
+def test_generation_result_summary_counts_valid_and_quarantine():
+    result = GenerationResult(
+        batch=_make_single_user_batch(),
+        quarantine=[
+            QuarantineRecord(
+                source_uuid="p-2",
+                raw_row={"uuid": "p-2"},
+                raw_llm_response="",
+                error_type="api_error",
+                error_message="timeout",
+            )
+        ],
     )
-
-    row = user.to_warehouse_row()
-
-    assert row == {
-        "user_id": "vu_0001",
-        "source_uuid": "p-001",
-        "source_dataset": "nvidia/Nemotron-Personas-Korea",
-        "country": "KR",
-        "locale": "ko-KR",
-        "age": 24,
-        "sex": "female",
-        "occupation": "student",
-        "province": "Seoul",
-        "district": "Mapo-gu",
-        "persona_summary": "Student interested in music and lifestyle.",
-        "interest_keywords": ["music", "beauty", "lifestyle"],
-        "primary_categories": ["Music", "Howto & Style"],
-        "shorts_affinity": 0.82,
-        "longform_affinity": 0.38,
-        "trend_sensitivity": 0.71,
-        "comment_propensity": 0.24,
-        "watch_time_band": "night",
-        "schema_version": GENERATION_SCHEMA_VERSION,
-        "prompt_version": PROMPT_VERSION,
-        "llm_model": "fixture",
-        "generated_at": "2026-07-01T00:00:00+00:00",
-    }
+    assert result.summary == {"valid": 1, "quarantined": 1, "api_error": 1,
+                              "invalid_json": 0, "schema_fail": 0}

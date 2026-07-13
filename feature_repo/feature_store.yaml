@@ -1,0 +1,32 @@
+# Feast Feature Store 설정
+# ============================================================================
+# 환경별 값(GCP 프로젝트 ID, 버킷 경로 등)은 하드코딩하지 않고 환경 변수로
+# 주입합니다. .env.example 을 복사해 .env 를 만들고 값을 채우세요.
+# (아래 project 는 Feast 프로젝트 이름이므로 변경 금지 — 바꾸면 registry 가
+# 분리됩니다.)
+# ============================================================================
+
+project: autoresearch_feature_store
+
+# Registry: FeatureView 메타데이터(Entity, Feature 스키마 등)를 저장하는 위치
+# GCS 버킷에 저장하여 팀 전체가 하나의 Registry 를 공유
+registry:
+  registry_type: file
+  path: ${GCS_REGISTRY_PATH}
+
+provider: gcp
+
+# Offline Store: BigQuery
+offline_store:
+  type: bigquery
+  dataset: ${BQ_DATASET}
+  project_id: ${GCP_PROJECT_ID}
+  gcs_staging_location: ${GCS_STAGING_LOCATION}
+
+online_store:
+  type: redis
+  connection_string: ${REDIS_HOST}:${REDIS_PORT}
+
+entity_key_serialization_version: 3
+
+# Feature 정의 파일 (이 디렉토리 내의 모든 *.py 파일에서 Entity, FeatureView 로드)

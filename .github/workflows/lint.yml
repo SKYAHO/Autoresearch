@@ -1,0 +1,32 @@
+name: Lint
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  ruff:
+    name: Ruff
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          # uv 버전을 고정해 lock/export 포맷이 로컬과 어긋나지 않게 한다.
+          version: "0.11.26"
+          python-version: "3.13"
+
+      - name: Install Ruff
+        # ruff 버전은 pyproject.toml 의 lint 그룹이 단일 출처.
+        run: uv sync --frozen --only-group lint
+
+      - name: Run Ruff
+        run: uv run --no-sync ruff check autoresearch tests

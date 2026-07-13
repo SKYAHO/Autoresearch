@@ -1,0 +1,76 @@
+# 의존성 단일 출처. uv 로 관리한다 (uv sync / uv lock).
+# requirements.txt(Astro 이미지)는 project dependency 범위의 미러이고,
+# proxy/requirements.txt(Cloud Run)는 uv.lock export 산출물이다 — 직접 수정 금지.
+# Dockerfile.app은 이 파일과 uv.lock을 build 중 직접 읽는다.
+
+[project]
+name = "autoresearch"
+version = "0.1.0"
+description = "YouTube 트렌딩 데이터 기반 CTR 모델링 프로젝트"
+readme = "README.md"
+requires-python = ">=3.11"
+# YouTube 트렌딩 수집(Airflow/Astro) 런타임 의존성.
+dependencies = [
+    "pydantic>=2.6,<3",
+    "pyarrow>=15.0",
+    "google-api-python-client>=2.100,<3",
+    "google-cloud-storage>=2.10",
+    "gcsfs>=2024.0",
+    "tenacity>=8.2,<10",
+    "requests>=2.32,<3",
+    "openai>=1.0",
+    # CTR Model Training (Issue #33)
+    "duckdb>=0.8.0",
+    "lightgbm>=4.0.0",
+    "scikit-learn>=1.3.0",
+    "PyYAML>=6.0",
+    "joblib>=1.3.0",
+    "typer>=0.9.0",
+]
+
+[dependency-groups]
+# 개발/테스트 + virtual_users(실험) 의존성. `uv sync` 기본 포함.
+dev = [
+    "pytest>=8.0",
+    "datasets>=2.19",
+    "fastapi>=0.115,<0.129",
+    "httpx>=0.28,<0.29",
+    { include-group = "lint" },
+]
+# 린트 전용 표면 (CI lint job 은 이 그룹만 설치).
+lint = [
+    "ruff==0.15.18",
+]
+# Feast 피처 스토어(feature_repo/) 별도 환경: `uv sync --only-group feast`
+feast = [
+    "feast[gcp]==0.64.0",
+    "google-cloud-bigquery>=3.20",
+    "redis>=5.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "python-dotenv>=1.0",
+]
+# proxy/ (Cloud Run dumb forwarder) 런타임 핀.
+# dev 표면과 동일하게 정렬: dev(최대 0.128) 통과 → prod(0.116) 깨짐 버전 발산 방지.
+proxy = [
+    "fastapi>=0.115,<0.129",
+    "uvicorn[standard]>=0.32,<0.35",
+    "httpx>=0.28,<0.29",
+]
+
+[tool.pytest.ini_options]
+# scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외
+testpaths = ["tests"]
+
+[tool.uv]
+# Phase 1(이슈 #80): 의존성 관리만 uv 로 전환하고 패키지 배치 방식(sys.path)은
+# 유지한다. Phase 2 에서 src 레이아웃 전환 시 package 빌드로 변경 예정.
+package = false
+default-groups = ["dev"]
+# feast==0.64.0(starlette>=1.0.1)과 dev/proxy 의 fastapi<0.129(starlette<1.0)는
+# 공존 불가 — 기존에 requirements-feast.txt 가 별도 venv 였던 이유.
+# feast 는 격리 환경으로 선언한다: `uv sync --only-group feast`
+conflicts = [
+    [{ group = "feast" }, { group = "dev" }],
+    [{ group = "feast" }, { group = "proxy" }],
+]
