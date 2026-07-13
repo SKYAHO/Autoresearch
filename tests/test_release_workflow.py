@@ -69,3 +69,15 @@ def test_application_image_uses_the_locked_dependency_source():
     assert "COPY pyproject.toml uv.lock ./" in dockerfile
     assert '"/uv", "export", "--frozen", "--no-dev", "--no-hashes"' in dockerfile
     assert "COPY requirements.txt" not in dockerfile
+
+
+def test_repository_does_not_keep_legacy_airflow_runtime_surface():
+    legacy_files = (
+        "airflow_settings.yaml",
+        "Dockerfile",
+        "packages.txt",
+        "requirements.txt",
+    )
+
+    assert not list((REPOSITORY_ROOT / "dags").rglob("*.py"))
+    assert all(not (REPOSITORY_ROOT / path).exists() for path in legacy_files)

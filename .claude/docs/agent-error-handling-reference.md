@@ -1,13 +1,13 @@
 # Agent Error Handling Reference
 
-> Last Updated: 2026-07-06
+> Last Updated: 2026-07-13
 
 에러 동작을 추가하거나 변경할 때 사용하는 문서입니다.
 
 ## Error Selection Flow
 
 1. 실패한 경계를 식별합니다: YouTube API 호출, GCS 업로드/다운로드,
-   Gemini API 호출, pydantic 스키마 검증, Airflow task, 파일 I/O.
+   Gemini API 호출, pydantic 스키마 검증, 공개 batch command, 파일 I/O.
 2. 원인 소유자를 판단합니다: 호출자 입력 오류, 설정 누락(환경 변수),
    외부 서비스 불가, 데이터 계약 위반, 내부 버그.
 3. 기존 예외 타입과 동작을 재사용합니다. 새 예외 계층을 불필요하게
@@ -26,8 +26,9 @@
   필요하면 명시적으로 구현합니다.
 - **GCS 적재 실패:** 대상 버킷/경로(안전한 범위)와 작업을 명시하고
   실패를 전파합니다. 부분 적재 상태를 로깅으로 남깁니다.
-- **Airflow task:** 실패는 예외로 전파해 task가 실패 상태가 되게
-  합니다. 실패를 잡아서 성공으로 위장하지 않습니다.
+- **공개 batch command:** 실패는 문서화된 exit code와 마지막
+  `job_summary` 계약으로 드러냅니다. 실패를 잡아서 성공으로 위장하지
+  않습니다.
 
 ## Do Not
 

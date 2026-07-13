@@ -26,8 +26,7 @@ gha-creds-*.json
 .DS_Store
 Thumbs.db
 
-# Astro / Airflow local state
-.astro/
+# GCP credential files
 .gcp-creds.json
 
 # Generated data artifacts

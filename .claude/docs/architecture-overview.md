@@ -1,6 +1,6 @@
 # Architecture Overview
 
-> Last Updated: 2026-07-06
+> Last Updated: 2026-07-13
 
 4개 도메인 아키텍처의 조감도, 핵심 설계 결정, 도메인 간 상호작용을
 정리한 문서입니다. 현재 구현된 부분과 계획(별도 브랜치 진행 중)을
@@ -15,23 +15,17 @@
 
 ## Four Domains
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                  Autoresearch Project                   │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  Model Training      Feast Features       Airflow       │
-│  (waieiches,         (waieiches,          (bbungjun)    │
-│   hyochangsung)      hyochangsung)                      │
-│                                                         │
-│  LightGBM (계획)     ODFV FeatureView    DAG 스케줄러   │
-│  CTR 예측            피처 변환 (계획)    데이터 수집    │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-                            ↑
-                 GCP Infrastructure
-                    (hyeongyu-data)
-              [GCS, BigQuery, 시크릿, CI/CD]
+```text
+Autoresearch
+  ├─ YouTube 수집·backfill·action log·quality 공개 CLI
+  ├─ Feature Store·학습·평가·추론 애플리케이션
+  └─ Dockerfile.app → immutable application image
+                         ↑ 실행
+Autoresearch-airflow
+  └─ DAG·Sensor·KPO·schedule·retry·timeout·Airflow Helm
+                         ↑ 기반
+Autoresearch-infra
+  └─ GKE·GAR·GCS·BigQuery·IAM/WIF·Secret·Kubernetes policy
 ```
 
 ## Current Data Flow (구현됨)
@@ -43,9 +37,15 @@ YouTube Data API
     → transform.py (pydantic 스키마 검증)
     → load.py (GCS 데이터 레이크, parquet)
 
-Airflow (Astro Runtime):
-    dags/youtube_trending_kr_daily.py  # 일간 수집
-    dags/youtube_backfill_kr.py        # 과거 데이터 백필 (Kaggle 원천)
+공개 batch 실행:
+    autoresearch.jobs.youtube_trending
+    autoresearch.jobs.youtube_backfill
+    autoresearch.jobs.action_log
+    autoresearch.jobs.action_log_quality
+    → Dockerfile.app application image
+
+Airflow (외부 Autoresearch-airflow):
+    DAG/KPO → immutable image digest → 위 공개 module command
 
 가상 유저 (실험):
     persona 원천 → autoresearch/virtual_users/pipeline.py
@@ -56,11 +56,11 @@ Airflow (Astro Runtime):
 
 **책임:** CTR(클릭률) 모델 정의, 학습 오케스트레이션, 평가 지표.
 
-**상태:** 별도 브랜치 진행 중 (Issue #33). 현재 main에는
-`examples/ctr_pipeline_scaffold/` 예제만 있습니다.
+**상태:** `src/`에 LightGBM 학습·평가 파이프라인과 피처 빌더가 구현되어
+있습니다.
 
-**주요 파일 (계획):**
-- `src/models/lightgbm_model.py` — LightGBM 모델 클래스
+**주요 파일:**
+- `src/models/lgbm_model.py` — LightGBM 모델 클래스
 - `src/pipeline/train.py`, `evaluate.py`, `build_training_dataset.py`
 - `src/pipeline/config.yaml` — 하이퍼파라미터·경로의 단일 출처
 - `docs/CTR_Model_Specification.md` — CTR 모델링 스펙 (전체 상세)
@@ -111,39 +111,38 @@ window_size: 604800  # 계산 범위: 7일
 
 **책임:** DAG 정의, 스케줄링, 파이프라인 오케스트레이션.
 
-**상태:** 구현됨. 수집 DAG 2개가 운영 중입니다.
+**상태:** `SKYAHO/Autoresearch-airflow`에 구현되어 있습니다. 이 저장소에는
+Airflow runtime source나 설정을 두지 않습니다.
 
-**주요 파일:**
-- `dags/youtube_trending_kr_daily.py` — 일간 트렌딩 수집
-- `dags/youtube_backfill_kr.py` — 과거 데이터 백필
-- `airflow_settings.yaml` — 로컬 Airflow 변수
-  (`YOUTUBE_LAKE_BUCKET`, `YOUTUBE_BACKFILL_SOURCE`)
+**이 저장소가 제공하는 경계:**
+- `Dockerfile.app` — canonical application image
+- `autoresearch/jobs/` — versioned public batch command
+- `docs/specs/2026-07-13-public-batch-execution-contract.md` — CLI·I/O·exit 계약
 
 **설계 제약:**
-- DAG은 `autoresearch/` 모듈을 호출만 하고, 피처·모델 로직을
-  중복 구현하지 않습니다.
-- DAG은 sys.path 조작으로 `autoresearch`를 import 합니다. 패키지
-  배치(`Dockerfile`) 변경 시 함께 확인합니다.
-- 학습·평가 스크립트는 추후 DAG operator로 감싸 호출합니다(계획).
+- Airflow는 application 내부 Python API를 import하지 않고 공개 CLI만
+  실행합니다.
+- schedule·retry·timeout·Pool·KPO 정책은 application에 넣지 않습니다.
+- application image는 `Autoresearch` checkout 하나로 발행하고 Airflow는
+  immutable digest를 선택합니다.
 
 ## Domain 4: GCP Infrastructure (hyeongyu-data)
 
 **책임:** 클라우드 배포, 환경 구성, 시크릿 관리.
 
-**주요 영역:**
-- GitHub Actions CI/CD (`.github/workflows/ci.yml`, `claude.yml`)
-- GCS 데이터 레이크 버킷, 서비스 계정과 IAM
-- 시크릿 관리 (로컬 `.env`, CI는 GitHub Secrets)
-- BigQuery, Cloud Composer (프로덕션 계획)
+**상태:** GCP·Kubernetes 리소스는 `SKYAHO/Autoresearch-infra`가
+소유합니다. 이 저장소의 release workflow는 infra가 제공한 GAR·WIF reference를
+소비해 application image만 발행합니다.
 
 ## Cross-Domain Interactions
 
-- **Airflow → 수집 모듈:** DAG task가 `autoresearch.youtube_collection`
-  함수를 호출합니다. 실패는 명확히 예외로 전파합니다.
+- **Airflow → application:** KPO가 immutable application image에서
+  `autoresearch.jobs.*` 공개 CLI를 실행합니다. 내부 모듈을 직접 import하지
+  않습니다.
 - **Model Training ← Feast (계획):** 학습 스크립트가 Feast 클라이언트로
   피처를 조회합니다. 직접 SQL 조회는 금지합니다.
-- **모든 도메인 ← GCP:** 자격 증명은 환경 변수 또는 GitHub Secrets로만
-  전달합니다. 하드코딩을 금지합니다.
+- **모든 workload ← infra:** bucket, cluster, service account와 Secret
+  reference를 소비합니다. 자격 증명 원문 하드코딩을 금지합니다.
 
 ## Key Architecture Rules
 
