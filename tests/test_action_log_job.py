@@ -172,6 +172,35 @@ def test_run_maps_single_cli_default_to_no_overwrite(monkeypatch):
     assert captured["overwrite"] is False
 
 
+@pytest.mark.parametrize(
+    ("option", "expected"),
+    [
+        (["--overwrite"], True),
+        (["--overwrite=true"], True),
+        (["--overwrite=TRUE"], True),
+        (["--overwrite=false"], False),
+        (["--overwrite=FALSE"], False),
+    ],
+)
+def test_parser_accepts_backward_compatible_overwrite_forms(option, expected):
+    parser = action_log_job._build_parser()
+
+    args = parser.parse_args([*_SINGLE_ARGS, *option])
+
+    assert args.overwrite is expected
+
+
+def test_main_returns_exit_2_for_invalid_overwrite_value(monkeypatch, capsys):
+    monkeypatch.setattr(
+        action_log_job, "_run", lambda args: pytest.fail("must not run")
+    )
+
+    assert action_log_job.main([*_SINGLE_ARGS, "--overwrite=1"]) == 2
+    assert _json_lines(capsys.readouterr().out)[-1]["error_type"] == (
+        "invalid_arguments"
+    )
+
+
 def test_run_maps_shard_arguments_to_domain_runner(monkeypatch):
     filesystem = object()
     captured = {}
