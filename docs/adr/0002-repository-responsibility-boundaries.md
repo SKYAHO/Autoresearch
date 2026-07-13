@@ -200,6 +200,10 @@ breaking change를 만들지 않는다.
 - DAG와 helper는 같은 git-sync revision으로 배포된다.
 - 인프라 변경은 application·DAG release와 독립적으로 plan·apply할 수 있다.
 - 각 저장소는 자체 테스트와 rollback 단위를 갖는다.
+- 모든 action-log shard는 동일한 데이터 작업만 수행하며 shard 0에 기존 최종
+  결과 삭제 같은 별도 운영 역할을 부여하지 않는다.
+- 상세 격리 파일은 선택적 진단 산출물로 취급하고, 새 최종 parquet이 완성되기
+  전까지 이전 정상 parquet을 마지막 정상 결과로 유지한다.
 
 ## 승인 조건
 
@@ -213,4 +217,5 @@ breaking change를 만들지 않는다.
 
 - `Autoresearch-airflow`: https://github.com/SKYAHO/Autoresearch-airflow
 - `Autoresearch-infra`: https://github.com/SKYAHO/Autoresearch-infra
-- 현재 action-log 운영 DAG: `youtube_gcs_action_log_pipeline`
+- `Autoresearch` 제거 대상 레거시 DAG: `youtube_action_log_daily`
+- `Autoresearch-airflow` 현재 운영 DAG: `youtube_gcs_action_log_pipeline`

@@ -97,8 +97,8 @@ console script alias를 추가할 수 있지만 Airflow는 v1 동안 위 module 
 | code | 의미 | Airflow 처리 |
 | --- | --- | --- |
 | `0` | `succeeded` 또는 명시적 `skipped` | task 성공 |
-| `1` | runtime, 외부 API, 데이터 검증, 품질 임계치 실패 | task 실패·retry 정책 적용 |
-| `2` | CLI 사용 오류 또는 인자 parsing 실패 | task 실패, 자동 retry 비권장 |
+| `1` | runtime, 외부 API, 입력 데이터·schema 검증, 품질 임계치 실패 | task 실패·retry 정책 적용 |
+| `2` | CLI 인자의 문법·type·범위·조합 검증 실패 | task 실패, 자동 retry 비권장 |
 
 Python process가 signal 또는 resource limit로 종료될 때의 code는 runtime이
 결정하며 Airflow는 0이 아닌 모든 code를 실패로 취급한다.
@@ -172,7 +172,7 @@ python -m autoresearch.jobs.youtube_backfill \
 --youtube-base-path gs://<bucket>/data_lake/youtube_trending_kr
 --virtual-users-path gs://<bucket>/asset/virtual_user/<file>.parquet
 --output-base-path gs://<bucket>/<path>
---quarantine-base-path gs://<bucket>/<path>
+[--quarantine-base-path gs://<bucket>/<path>]
 [--max-users <positive-int>]
 [--overwrite]
 [--generator-name <name>]
@@ -191,7 +191,11 @@ python -m autoresearch.jobs.youtube_backfill \
 ### 공통 validation
 
 - YouTube `dt` partition과 virtual user parquet이 존재해야 한다.
-- personalized, popular, exploration ratio의 합은 `1.0`이어야 한다.
+- personalized, popular, exploration ratio의 합은 절대 허용 오차 `1e-9` 안에서
+  `1.0`이어야 한다. 구현은 `math.isclose`에 `rel_tol=0.0`, `abs_tol=1e-9`를
+  적용하거나 동등한 검사를 사용한다.
+- 각 ratio가 숫자로 parsing됐지만 합계 조건을 만족하지 않으면 실행 전 CLI 인자
+  조합 오류로 처리하고 exit 2로 종료한다.
 - `target-ctr`와 `max-quarantine-ratio`는 0 이상 1 이하다.
 - `max-users`는 전체 실행의 사용자 universe 제한이다. shard당 제한이 아니다.
 - `chunk-size=0`은 `candidates-per-user`와 같은 크기를 사용한다는 뜻이다.
@@ -210,11 +214,23 @@ python -m autoresearch.jobs.action_log --mode single <common-options>
 
 ```text
 <output-base-path>/dt=YYYY-MM-DD/part-0.parquet
-<quarantine-base-path>/dt=YYYY-MM-DD/quarantine.jsonl
 ```
 
 기존 final parquet이 있고 `--overwrite`가 없으면 `status=skipped`, exit 0이다.
-생성·schema 검증·quarantine publish까지 완료되어야 `succeeded`로 간주한다.
+격리 비율이 임계치 이내이고 생성·schema 검증·final parquet 게시가 완료되면
+`succeeded`로 간주한다.
+
+`--quarantine-base-path`는 실패 상세를 보존해야 하는 QA·진단 실행에서만
+사용하는 선택 인자다. 지정되면 다음 JSONL을 best-effort로 기록한다.
+
+```text
+<quarantine-base-path>/dt=YYYY-MM-DD/quarantine.jsonl
+```
+
+상세 격리 파일은 정상 데이터 생성에 필요한 입력이 아니다. 저장 실패는
+`quarantine_publish_failed` warning event로 기록하되 final parquet을 삭제하거나
+task를 실패시키지 않는다. 격리 비율 판정에 필요한 count와 실패 유형 집계는
+항상 job summary에 남긴다.
 
 ## Action log shard
 
@@ -224,14 +240,15 @@ python -m autoresearch.jobs.action_log --mode shard \
   --shard-index <0-based-index> \
   --shard-count <positive-int> \
   --progress-base-path gs://<bucket>/data_lake/action_log_progress \
-  --checkpoint-base-path gs://<bucket>/data_lake/action_log_checkpoints \
-  --final-output-base-path gs://<bucket>/data_lake/action_log \
-  --final-quarantine-base-path gs://<bucket>/data_lake/action_log_quarantine
+  --checkpoint-base-path gs://<bucket>/data_lake/action_log_checkpoints
 ```
 
 ### 계약
 
 - `0 <= shard-index < shard-count`를 만족해야 한다.
+- shard 0을 포함한 모든 shard는 자신의 사용자 구간에 대한 draft, manifest,
+  checkpoint와 progress만 생성한다. 특정 shard에 final artifact 삭제나 실행 준비
+  같은 별도 운영 역할을 부여하지 않는다.
 - 모든 shard는 `max-users`가 적용된 동일한 사용자 snapshot과 동일한
   `input_fingerprint`를 사용한다.
 - 순서는 `max-users cap → fingerprint → shard selection`으로 고정한다.
@@ -255,11 +272,11 @@ python -m autoresearch.jobs.action_log --mode shard \
   fingerprint=<sha256>/parts/*.parquet
 ```
 
-- stale final artifact 무효화와 publish 성공 판정은 application 책임이다.
-  Airflow task가 GCS file을 직접 삭제해 성공 의미를 재구현하지 않는다.
-- v1 호환 동작에서는 `shard-index=0` application process가 shard 처리 전에 stale
-  final parquet과 quarantine artifact를 무효화한다. 이 동작을 별도 prepare
-  command로 분리하려면 새 계약 revision과 DAG dependency 변경이 필요하다.
+- 기존 final parquet은 shard 실행 전에 삭제하지 않는다. 새 merge가 실패하면
+  이전 parquet을 마지막 정상 결과로 유지한다.
+- shard별 상세 격리 파일은 `--quarantine-base-path`를 지정한 진단 실행에서만
+  best-effort로 저장한다. 저장 실패와 관계없이 manifest에는 `quarantine_count`와
+  실패 유형 집계를 기록하며 merge의 전역 임계치 판정은 이 집계를 사용한다.
 
 ## Action log merge
 
@@ -268,10 +285,9 @@ python -m autoresearch.jobs.action_log --mode merge \
   --partition-date YYYY-MM-DD \
   --shard-count <positive-int> \
   --shard-output-base-path gs://<bucket>/data_lake/action_log_work \
-  --shard-quarantine-base-path gs://<bucket>/data_lake/action_log_quarantine_work \
   --output-base-path gs://<bucket>/data_lake/action_log \
-  --quarantine-base-path gs://<bucket>/data_lake/action_log_quarantine \
-  --max-quarantine-ratio <0..1>
+  --max-quarantine-ratio <0..1> \
+  [--overwrite]
 ```
 
 ### 계약
@@ -280,14 +296,25 @@ python -m autoresearch.jobs.action_log --mode merge \
 - manifest의 schema, prompt, input와 config fingerprint가 호환되어야 한다.
 - global CTR normalization, event ID 확정과 최종 schema 검증은 merge command가
   수행한다.
-- quarantine ratio가 임계치를 넘으면 exit 1이며 성공 parquet을 남기지 않는다.
-- final parquet 이후 quarantine publish가 실패해도 final parquet을 성공 marker로
-  남기지 않는다.
+- 전역 quarantine ratio는 manifest의 `total_work`와 `quarantine_count` 합계로
+  계산한다. 상세 격리 JSONL 존재 여부에 의존하지 않는다.
+- quarantine ratio가 임계치를 넘으면 final parquet을 게시하기 전에 exit 1로
+  실패한다. 기존 final parquet이 있다면 삭제하지 않고 마지막 정상 결과로
+  유지한다.
+- merge는 shard별 상세 격리 JSONL을 입력으로 요구하거나 하나의 최종 격리 파일로
+  다시 합치지 않는다. QA·진단에 필요한 상세는 각 shard의 선택 파일에서 확인한다.
+- 모든 draft·manifest·schema 검증이 끝난 뒤 final parquet을 canonical path에 가장
+  마지막으로 게시한다. `--overwrite` rerun은 이 시점에만 이전 final parquet을
+  교체한다.
+- 기존 final parquet이 있고 `--overwrite`가 없으면 이를 유지하고
+  `status=skipped`, exit 0으로 종료한다.
+- 현재 run의 성공 여부는 final 파일의 단순 존재가 아니라 process exit code와
+  마지막 `job_summary`로 판정한다. 실패한 rerun 동안에도 이전 정상 파일이 남을
+  수 있기 때문이다.
 - 최종 output:
 
 ```text
 <output-base-path>/dt=YYYY-MM-DD/part-0.parquet
-<quarantine-base-path>/dt=YYYY-MM-DD/quarantine.jsonl
 ```
 
 ## Airflow 호출 계약
@@ -296,6 +323,7 @@ Airflow는 다음만 담당한다.
 
 - partition date template과 운영 파라미터 값 결정
 - shard 수만큼 KPO task fan-out
+- shard 0을 포함한 모든 shard에 동일한 task 정책 적용
 - 모든 shard 성공 뒤 merge task fan-in
 - image digest, namespace, service account와 secret reference 연결
 - task retry, timeout, Pool과 concurrency
@@ -305,7 +333,7 @@ Airflow는 다음을 하지 않는다.
 
 - `autoresearch.*` 내부 Python 함수 import
 - GCS input existence 또는 schema의 최종 판정
-- final artifact 삭제와 publish rollback
+- final artifact 사전 삭제와 publish rollback
 - CTR·candidate·fingerprint·quarantine 계산
 - application image source 조립
 
@@ -317,6 +345,10 @@ Airflow는 다음을 하지 않는다.
 - 새 공개 CLI와 production DAG는 완전한 `gs://` path를 전달한다.
 - 첫 application image는 전환을 위해 기존 `--bucket` 입력을 deprecated alias로
   받을 수 있다.
+- 기존 wrapper의 shard 0 final artifact 삭제는 legacy 호환 동작으로만 유지하고,
+  새 공개 CLI로 전환할 때 제거한다.
+- 기존 wrapper가 merge 단계에서 final quarantine JSONL을 만드는 동작도 legacy
+  호환 범위로 두고 새 공개 CLI 전환 시 제거한다.
 - deprecated 입력을 사용하면 secret을 포함하지 않는 warning event를 남긴다.
 - 새 Airflow DAG의 QA가 통과한 다음 release에서 legacy wrapper와 `--bucket`
   path 합성을 제거한다.
@@ -349,6 +381,8 @@ asia-northeast3-docker.pkg.dev/<project>/<repository>/autoresearch-batch@sha256:
 
 - Application rollback은 Airflow가 이전 image digest를 다시 선택하는 것으로
   수행한다.
+- 실패한 rerun은 기존 final parquet을 마지막 정상 결과로 유지하며 rollback을
+  위해 정상 파일을 다시 복사할 필요가 없다.
 - DAG rollback은 git-sync 대상 Airflow commit을 되돌리는 것으로 수행한다.
 - Infra rollback은 Terraform state와 plan 단위로 수행하며 app/DAG source를
   변경하지 않는다.
@@ -363,7 +397,11 @@ asia-northeast3-docker.pkg.dev/<project>/<repository>/autoresearch-batch@sha256:
 
 - 모든 CLI parser와 validation 단위 테스트
 - action-log single/shard/merge 테스트
+- ratio 합계 허용 오차와 CLI 조합 오류 exit 2 테스트
+- 모든 shard가 동일한 역할만 수행하는 repository contract test
 - checkpoint resume와 merge publish 실패 테스트
+- 상세 격리 파일 저장 실패가 final 성공을 막지 않는 테스트
+- merge 실패 시 이전 final parquet이 보존되는 테스트
 - data quality test
 - batch image build, `--version`, `--help`, import smoke test
 - secret과 식별자 log 차단 테스트
@@ -382,7 +420,8 @@ asia-northeast3-docker.pkg.dev/<project>/<repository>/autoresearch-batch@sha256:
 - production과 같은 KPO 경로에서 1,000명, 5개 shard 실행
 - 5개 shard가 동일한 fingerprint와 사용자 universe를 사용
 - shard·manifest·checkpoint·final partition 생성
-- quarantine 0 또는 허용 임계치 이하
+- manifest 집계 기준 quarantine ratio가 허용 임계치 이하
+- 선택적 상세 격리 파일 저장 실패가 final partition을 제거하지 않음
 - event schema와 user/video 참조 무결성 통과
 - pod stdout JSON event와 final `job_summary` 확인
 - 이전 image digest로 rollback 가능 확인
@@ -396,4 +435,6 @@ asia-northeast3-docker.pkg.dev/<project>/<repository>/autoresearch-batch@sha256:
 - Airflow DAG는 공개 명령 문자열 외에 application 내부 구현에 의존하지 않는다.
 - Airflow와 application release를 각각 독립적으로 rollback할 수 있다.
 - 중복 DAG, wrapper domain logic과 batch image build가 제거된다.
+- shard 0에 별도 final 삭제 역할이 없고 모든 shard가 동일한 계약을 따른다.
+- 상세 격리 파일 저장 여부와 final parquet 성공 여부가 분리된다.
 - 다른 저장소 문서는 이 계약을 복사하지 않고 링크한다.
