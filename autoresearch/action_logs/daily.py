@@ -25,6 +25,7 @@ from autoresearch.action_logs.llm_generator import (
     RuleBasedActionLogGenerator,
 )
 from autoresearch.action_logs.pipeline import (
+    EVENT_LOG_PARQUET_SCHEMA,
     ActionLogGenerationError,
     ActionLogProgressSnapshot,
     expand_action_log_drafts,
@@ -43,6 +44,7 @@ from autoresearch.action_logs.schema import (
     ActionLogShardManifest,
     EventGenerationRequest,
     ImpressionDraft,
+    QuarantineErrorType,
     QuarantineRecord,
 )
 from autoresearch.action_logs.video_source import load_video_records
@@ -109,6 +111,8 @@ def _sibling_base_path(base_path: str, sibling_name: str) -> str:
     """base_path의 마지막 경로 요소를 sibling_name으로 바꾼다."""
 
     stripped = base_path.rstrip("/")
+    if not stripped.startswith("gs://"):
+        return str(Path(stripped).with_name(sibling_name))
     parent, separator, _name = stripped.rpartition("/")
     if not separator:
         return sibling_name
@@ -147,14 +151,6 @@ def _read_virtual_users(
     if max_users is not None:
         table = table.slice(0, max_users)
     return table.to_pylist()
-
-
-def _write_table(table, path: str, *, filesystem=None) -> None:
-    """pyarrow Table을 local 또는 주입된 filesystem 경로에 쓴다."""
-
-    if filesystem is None:
-        Path(path).parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(table, path, filesystem=filesystem)
 
 
 def _write_json_file(payload: dict[str, object], path: str, *, filesystem=None) -> None:
@@ -210,12 +206,108 @@ def _copy_local_file(source: str | Path, destination: str, *, filesystem=None) -
         shutil.copyfileobj(src, dst)
 
 
+def _publish_final_file(
+    source: str | Path,
+    destination: str,
+    *,
+    filesystem=None,
+) -> None:
+    """검증된 로컬 파일을 기존 final 사전 삭제 없이 마지막에 게시한다."""
+
+    if filesystem is None:
+        destination_path = Path(destination)
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        staging_path = destination_path.with_name(
+            f".{destination_path.name}.{uuid4().hex}.staging"
+        )
+        try:
+            shutil.copyfile(source, staging_path)
+            staging_path.replace(destination_path)
+        finally:
+            staging_path.unlink(missing_ok=True)
+        return
+
+    staging_path = f"{destination}.staging-{uuid4().hex}"
+    try:
+        _copy_local_file(source, staging_path, filesystem=filesystem)
+        filesystem.copy_file(staging_path, destination)
+    finally:
+        try:
+            filesystem.delete_file(staging_path)
+        except FileNotFoundError:
+            pass
+        except Exception:  # noqa: BLE001 - staging cleanup must not mask publish result
+            logger.warning(
+                "Failed to clean up action log staging object",
+                extra={"artifact": "final_parquet_staging"},
+                exc_info=True,
+            )
+
+
+def _publish_quarantine_best_effort(
+    source: str | Path,
+    destination: str,
+    *,
+    filesystem=None,
+) -> dict[str, str] | None:
+    """선택적 격리 파일을 게시하고 실패를 안전한 warning으로 반환한다."""
+
+    try:
+        _copy_local_file(source, destination, filesystem=filesystem)
+    except Exception:  # noqa: BLE001 - quarantine is an optional diagnostic artifact
+        logger.warning(
+            "Failed to publish action log quarantine artifact",
+            extra={"artifact": "quarantine"},
+            exc_info=True,
+        )
+        return {
+            "event": "warning",
+            "warning_type": "quarantine_publish_failed",
+            "artifact": "quarantine",
+        }
+    return None
+
+
+def _quarantine_error_counts(
+    quarantine: list[QuarantineRecord],
+) -> dict[QuarantineErrorType, int]:
+    counts: dict[QuarantineErrorType, int] = {}
+    for record in quarantine:
+        counts[record.error_type] = counts.get(record.error_type, 0) + 1
+    return counts
+
+
 def _path_exists(path: str, *, filesystem=None) -> bool:
     """local/GCS 경로 존재 여부를 반환한다."""
 
     if filesystem is None:
         return Path(path).exists()
     return filesystem.get_file_info(path).type != FileType.NotFound
+
+
+def _validate_existing_final(
+    path: str,
+    partition_date: date,
+    *,
+    filesystem=None,
+) -> None:
+    """skip 대상으로 사용할 기존 final의 schema와 partition을 검증한다."""
+
+    try:
+        input_path = _input_path(path, filesystem=filesystem)
+        schema = pq.read_schema(input_path, filesystem=filesystem)
+        timestamp_table = pq.read_table(
+            input_path,
+            columns=["event_timestamp"],
+            filesystem=filesystem,
+        )
+    except Exception as exc:  # noqa: BLE001 - pyarrow/filesystem errors vary by backend
+        raise ValueError("existing final parquet is unreadable") from exc
+    if not schema.equals(EVENT_LOG_PARQUET_SCHEMA):
+        raise ValueError("existing final parquet schema does not match action log contract")
+    timestamps = timestamp_table.column("event_timestamp").to_pylist()
+    if any(timestamp.astimezone(_KST).date() != partition_date for timestamp in timestamps):
+        raise ValueError("existing final parquet contains another partition date")
 
 
 def _list_files(path: str, *, filesystem=None) -> list[str]:
@@ -232,30 +324,8 @@ def _list_files(path: str, *, filesystem=None) -> list[str]:
     return sorted(info.path for info in infos if info.type == FileType.File)
 
 
-def _read_quarantine_jsonl(path: str, *, filesystem=None) -> list[QuarantineRecord]:
-    """local/GCS quarantine JSONL 파일을 읽어 QuarantineRecord 목록으로 반환한다."""
-
-    if filesystem is None:
-        file_path = Path(path)
-        if not file_path.exists():
-            return []
-        lines = file_path.read_text(encoding="utf-8").splitlines()
-    else:
-        try:
-            with filesystem.open_input_file(path) as file:
-                lines = file.read().decode("utf-8").splitlines()
-        except FileNotFoundError:
-            return []
-
-    return [
-        QuarantineRecord.model_validate(json.loads(line))
-        for line in lines
-        if line.strip()
-    ]
-
-
 class _ActionLogShardProgressWriter:
-    """Shard 진행률을 stdout과 JSON 파일에 throttle하여 기록한다."""
+    """Shard 진행률을 logger와 JSON 파일에 throttle하여 기록한다."""
 
     def __init__(
         self,
@@ -326,15 +396,16 @@ class _ActionLogShardProgressWriter:
             if snapshot.total_chunks
             else 0.0
         )
-        print(
-            "[action-log-progress] "
-            f"shard={self._shard_index:03d} "
-            f"completed={snapshot.completed_chunks} "
-            f"total={snapshot.total_chunks} "
-            f"success={snapshot.success_chunks} "
-            f"failed={snapshot.failed_chunks} "
-            f"pct={pct:.1f}",
-            flush=True,
+        logger.info(
+            "Action log shard progress",
+            extra={
+                "shard_index": self._shard_index,
+                "completed_chunks": snapshot.completed_chunks,
+                "total_chunks": snapshot.total_chunks,
+                "success_chunks": snapshot.success_chunks,
+                "failed_chunks": snapshot.failed_chunks,
+                "percent_complete": round(pct, 1),
+            },
         )
 
         payload = {
@@ -735,6 +806,7 @@ def run_daily_action_log(
     generator_name: str = "rule_based",
     model_name: str | None = None,
     history_end: datetime | None = None,
+    overwrite: bool = True,
 ) -> dict[str, object]:
     """하루치 YouTube partition과 virtual user parquet으로 action log를 생성한다.
 
@@ -745,6 +817,8 @@ def run_daily_action_log(
         output_base_path: `.../data_lake/action_log` 출력 루트.
         quarantine_base_path: quarantine jsonl 출력 루트. None이면 최종 복사를 생략한다.
         filesystem: None(로컬) 또는 pyarrow filesystem(GCS 등).
+        overwrite: 기존 Python DAG 호출은 하위 호환을 위해 기본 재생성한다. 공개
+            CLI는 `--overwrite` 여부를 항상 명시적으로 전달한다.
     """
 
     youtube_path = _dt_path(
@@ -769,6 +843,16 @@ def run_daily_action_log(
         if quarantine_base_path
         else ""
     )
+
+    if not overwrite and _path_exists(output_path, filesystem=filesystem):
+        _validate_existing_final(output_path, partition_date, filesystem=filesystem)
+        return {
+            "status": "skipped",
+            "partition_date": f"{partition_date:%Y-%m-%d}",
+            "output_path": output_path,
+            "quarantine_path": quarantine_path,
+            "warnings": [],
+        }
 
     videos = load_video_records(youtube_path, filesystem=filesystem)
     virtual_users = _read_virtual_users(
@@ -805,26 +889,39 @@ def run_daily_action_log(
         except ActionLogGenerationError:
             quarantine_file = tmp_dir / "quarantine.jsonl"
             if quarantine_path and quarantine_file.exists():
-                _copy_local_file(quarantine_file, quarantine_path, filesystem=filesystem)
+                _publish_quarantine_best_effort(
+                    quarantine_file,
+                    quarantine_path,
+                    filesystem=filesystem,
+                )
             raise
 
         _validate_event_partition_dates(result.batch.events, partition_date)
-        event_table = pq.read_table(request.output_path)
-        _write_table(event_table, output_path, filesystem=filesystem)
+        pq.read_table(request.output_path)
+        warnings: list[dict[str, str]] = []
         if quarantine_path:
-            _copy_local_file(
+            warning = _publish_quarantine_best_effort(
                 request.quarantine_output_path,
                 quarantine_path,
                 filesystem=filesystem,
             )
+            if warning is not None:
+                warnings.append(warning)
+        _publish_final_file(
+            request.output_path,
+            output_path,
+            filesystem=filesystem,
+        )
 
     return {
         **result.summary,
+        "status": "succeeded",
         "partition_date": f"{partition_date:%Y-%m-%d}",
         "users": len(virtual_users),
         "videos": len(videos),
         "output_path": output_path,
         "quarantine_path": quarantine_path,
+        "warnings": warnings,
     }
 
 
@@ -855,6 +952,7 @@ def run_daily_action_log_shard(
     checkpoint_base_path: str | None = None,
     progress_flush_interval_sec: float = 15.0,
     progress_flush_chunks: int = 25,
+    overwrite: bool = False,
 ) -> dict[str, object]:
     """하루치 action log 생성을 위한 shard work parquet을 생성한다.
 
@@ -959,6 +1057,46 @@ def run_daily_action_log_shard(
                 input_fingerprint=input_fingerprint,
                 request=request,
             )
+            if (
+                not overwrite
+                and _path_exists(output_path, filesystem=filesystem)
+                and _path_exists(manifest_path, filesystem=filesystem)
+            ):
+                existing_manifest = ActionLogShardManifest.model_validate(
+                    _read_json_file(manifest_path, filesystem=filesystem)
+                )
+                if (
+                    existing_manifest.partition_date == partition_date
+                    and existing_manifest.shard_index == shard_index
+                    and existing_manifest.shard_count == shard_count
+                    and existing_manifest.schema_version == ACTION_LOG_SCHEMA_VERSION
+                    and existing_manifest.prompt_version == PROMPT_VERSION
+                    and existing_manifest.config_fingerprint == fingerprint
+                ):
+                    progress_writer.finish("success")
+                    progress_finalized = True
+                    return {
+                        "status": "skipped",
+                        "drafts": pq.read_table(
+                            _input_path(output_path, filesystem=filesystem),
+                            filesystem=filesystem,
+                        ).num_rows,
+                        "total_work": existing_manifest.total_work,
+                        "quarantined_users": existing_manifest.quarantine_count,
+                        "quarantine_count": existing_manifest.quarantine_count,
+                        "partition_date": f"{partition_date:%Y-%m-%d}",
+                        "shard_index": shard_index,
+                        "shard_count": shard_count,
+                        "users_total": len(virtual_users),
+                        "users": len(shard_users),
+                        "videos": len(videos),
+                        "output_path": output_path,
+                        "quarantine_path": quarantine_path,
+                        "manifest_path": manifest_path,
+                        "config_fingerprint": fingerprint,
+                        "progress_path": progress_path,
+                        "warnings": [],
+                    }
             checkpoint_store = _ActionLogCheckpointStore(
                 partition_date=partition_date,
                 shard_index=shard_index,
@@ -999,12 +1137,15 @@ def run_daily_action_log_shard(
             write_action_log_draft_parquet(result.drafts, draft_path)
             write_quarantine_jsonl(result.quarantine, request.quarantine_output_path)
             _copy_local_file(draft_path, output_path, filesystem=filesystem)
+            warnings: list[dict[str, str]] = []
             if quarantine_path:
-                _copy_local_file(
+                warning = _publish_quarantine_best_effort(
                     request.quarantine_output_path,
                     quarantine_path,
                     filesystem=filesystem,
                 )
+                if warning is not None:
+                    warnings.append(warning)
 
             manifest = ActionLogShardManifest(
                 partition_date=partition_date,
@@ -1025,6 +1166,7 @@ def run_daily_action_log_shard(
                 total_work=result.total_work,
                 completed_work=result.total_work,
                 quarantine_count=len(result.quarantine),
+                quarantine_error_counts=_quarantine_error_counts(result.quarantine),
                 schema_version=ACTION_LOG_SCHEMA_VERSION,
                 prompt_version=PROMPT_VERSION,
                 input_fingerprint=input_fingerprint,
@@ -1048,6 +1190,7 @@ def run_daily_action_log_shard(
 
     return {
         **result.summary,
+        "status": "succeeded",
         "partition_date": f"{partition_date:%Y-%m-%d}",
         "shard_index": shard_index,
         "shard_count": shard_count,
@@ -1060,6 +1203,7 @@ def run_daily_action_log_shard(
         "config_fingerprint": manifest.config_fingerprint,
         "progress_path": progress_path,
         "checkpoint_path": checkpoint_store.namespace_path,
+        "warnings": warnings,
     }
 
 
@@ -1140,10 +1284,9 @@ def merge_daily_action_log_shards(
     shard_count: int,
     shard_output_base_path: str,
     output_base_path: str,
-    shard_quarantine_base_path: str | None = None,
-    quarantine_base_path: str | None = None,
     filesystem=None,
     max_quarantine_ratio: float | None = None,
+    overwrite: bool = False,
 ) -> dict[str, object]:
     """검증된 shard manifest 계약으로 최종 daily action log를 생성한다.
 
@@ -1154,6 +1297,22 @@ def merge_daily_action_log_shards(
 
     if shard_count < 1:
         raise ValueError("shard_count must be at least 1")
+
+    output_path = _dt_path(
+        output_base_path,
+        partition_date,
+        _PARTITION_FILE,
+        filesystem=filesystem,
+    )
+    if not overwrite and _path_exists(output_path, filesystem=filesystem):
+        _validate_existing_final(output_path, partition_date, filesystem=filesystem)
+        return {
+            "status": "skipped",
+            "partition_date": f"{partition_date:%Y-%m-%d}",
+            "shard_count": shard_count,
+            "output_path": output_path,
+            "warnings": [],
+        }
 
     manifests = _load_shard_manifests(
         partition_date=partition_date,
@@ -1172,25 +1331,7 @@ def merge_daily_action_log_shards(
             f"(merge={max_quarantine_ratio}, shard={resolved_max_quarantine_ratio})"
         )
 
-    output_path = _dt_path(
-        output_base_path,
-        partition_date,
-        _PARTITION_FILE,
-        filesystem=filesystem,
-    )
-    quarantine_path = (
-        _dt_path(
-            quarantine_base_path,
-            partition_date,
-            _QUARANTINE_FILE,
-            filesystem=filesystem,
-        )
-        if quarantine_base_path
-        else ""
-    )
-
     drafts = []
-    quarantine: list[QuarantineRecord] = []
     for shard_index in range(shard_count):
         shard_path = _dt_shard_path(
             shard_output_base_path,
@@ -1200,36 +1341,34 @@ def merge_daily_action_log_shards(
             filesystem=filesystem,
         )
         drafts.extend(read_action_log_draft_parquet(shard_path, filesystem=filesystem))
-        if shard_quarantine_base_path:
-            shard_quarantine_path = _dt_shard_path(
-                shard_quarantine_base_path,
-                partition_date,
-                shard_index,
-                _QUARANTINE_FILE,
-                filesystem=filesystem,
-            )
-            quarantine.extend(
-                _read_quarantine_jsonl(shard_quarantine_path, filesystem=filesystem)
-            )
 
     total_work = sum(manifest.total_work for manifest in manifests)
     quarantine_count = sum(manifest.quarantine_count for manifest in manifests)
-    if shard_quarantine_base_path and len(quarantine) != quarantine_count:
-        raise ValueError(
-            "shard quarantine count does not match manifests "
-            f"(records={len(quarantine)}, manifests={quarantine_count})"
+    quarantine_error_counts = {
+        error_type: sum(
+            (manifest.quarantine_error_counts or {}).get(error_type, 0)
+            for manifest in manifests
+        )
+        for error_type in ("api_error", "invalid_json", "schema_fail")
+    }
+    legacy_manifests = [
+        manifest for manifest in manifests if manifest.quarantine_error_counts is None
+    ]
+    unclassified_quarantine_count = sum(
+        manifest.quarantine_count
+        for manifest in legacy_manifests
+    )
+    warnings: list[dict[str, str]] = []
+    if legacy_manifests:
+        warnings.append(
+            {
+                "event": "warning",
+                "warning_type": "quarantine_error_counts_unavailable",
+                "artifact": "shard_manifest",
+            }
         )
     quarantine_ratio = quarantine_count / total_work if total_work else 0.0
     if quarantine_ratio > resolved_max_quarantine_ratio:
-        if quarantine_path and shard_quarantine_base_path:
-            with tempfile.TemporaryDirectory() as tmp:
-                quarantine_file = Path(tmp) / _QUARANTINE_FILE
-                write_quarantine_jsonl(quarantine, quarantine_file)
-                _copy_local_file(
-                    quarantine_file,
-                    quarantine_path,
-                    filesystem=filesystem,
-                )
         raise ActionLogGenerationError(
             f"global quarantine ratio {quarantine_ratio:.2f} exceeds "
             f"max_quarantine_ratio {resolved_max_quarantine_ratio:.2f} "
@@ -1239,28 +1378,29 @@ def merge_daily_action_log_shards(
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         request = _manifest_request(contract, tmp_dir)
-        result = expand_action_log_drafts(request, drafts, quarantine)
+        result = expand_action_log_drafts(request, drafts, [])
         _validate_event_partition_dates(result.batch.events, partition_date)
         write_event_log_parquet(result.batch, contract.model_name, request.output_path)
-        _copy_local_file(request.output_path, output_path, filesystem=filesystem)
-        if quarantine_path:
-            write_quarantine_jsonl(quarantine, request.quarantine_output_path)
-            _copy_local_file(
-                request.quarantine_output_path,
-                quarantine_path,
-                filesystem=filesystem,
-            )
+        pq.read_table(request.output_path)
+        _publish_final_file(
+            request.output_path,
+            output_path,
+            filesystem=filesystem,
+        )
 
     return {
         **result.summary,
+        **quarantine_error_counts,
+        "status": "succeeded",
         "quarantined_users": quarantine_count,
         "partition_date": f"{partition_date:%Y-%m-%d}",
         "shard_count": shard_count,
         "drafts": len(drafts),
         "total_work": total_work,
         "quarantine_count": quarantine_count,
+        "unclassified_quarantine_count": unclassified_quarantine_count,
         "config_fingerprint": contract.config_fingerprint,
         "model_name": contract.model_name,
         "output_path": output_path,
-        "quarantine_path": quarantine_path,
+        "warnings": warnings,
     }

@@ -5,6 +5,7 @@
 """
 from datetime import UTC, date, datetime
 import logging
+import math
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -15,6 +16,21 @@ logger = logging.getLogger(__name__)
 ACTION_LOG_SCHEMA_VERSION = "action_log_schema_v1"
 PROMPT_VERSION = "action_log_ctr_v4"
 SOURCE_HISTORICAL = "historical"
+QuarantineErrorType = Literal["api_error", "invalid_json", "schema_fail"]
+
+
+def validate_candidate_ratios(
+    personalized_ratio: float,
+    popular_ratio: float,
+    exploration_ratio: float,
+) -> None:
+    """후보 구성 비율이 유한하고 합계가 1인지 검증한다."""
+
+    ratios = (personalized_ratio, popular_ratio, exploration_ratio)
+    if not all(math.isfinite(value) for value in ratios):
+        raise ValueError("candidate ratios must be finite")
+    if not math.isclose(sum(ratios), 1.0, rel_tol=0.0, abs_tol=1e-9):
+        raise ValueError("candidate ratios must sum to 1.0")
 
 
 class EventLog(BaseModel):
@@ -97,6 +113,7 @@ class ActionLogShardManifest(BaseModel):
     total_work: int = Field(ge=0)
     completed_work: int = Field(ge=0)
     quarantine_count: int = Field(ge=0)
+    quarantine_error_counts: dict[QuarantineErrorType, int] | None = None
     schema_version: str = Field(min_length=1)
     prompt_version: str = Field(min_length=1)
     input_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -106,12 +123,24 @@ class ActionLogShardManifest(BaseModel):
     def completed_work_matches_total(self) -> "ActionLogShardManifest":
         """완료 manifest에는 모든 work의 성공 또는 격리 결과가 있어야 한다."""
 
+        validate_candidate_ratios(
+            self.personalized_ratio,
+            self.popular_ratio,
+            self.exploration_ratio,
+        )
         if self.completed_work != self.total_work:
             raise ValueError("completed_work must equal total_work")
         if self.quarantine_count > self.completed_work:
             raise ValueError("quarantine_count cannot exceed completed_work")
         if self.shard_index >= self.shard_count:
             raise ValueError("shard_index must be less than shard_count")
+        if self.quarantine_error_counts is not None:
+            if any(count < 0 for count in self.quarantine_error_counts.values()):
+                raise ValueError("quarantine error counts must be non-negative")
+            if sum(self.quarantine_error_counts.values()) != self.quarantine_count:
+                raise ValueError(
+                    "quarantine error counts must sum to quarantine_count"
+                )
         return self
 
 
@@ -169,6 +198,17 @@ class EventGenerationRequest(BaseModel):
             raise ValueError("chunk_size must be >= 0")
         return value
 
+    @model_validator(mode="after")
+    def candidate_ratios_sum_to_one(self) -> "EventGenerationRequest":
+        """후보 구성 비율의 합은 허용 오차 안에서 1이어야 한다."""
+
+        validate_candidate_ratios(
+            self.personalized_ratio,
+            self.popular_ratio,
+            self.exploration_ratio,
+        )
+        return self
+
 
 class QuarantineRecord(BaseModel):
     """생성 실패로 격리된 유저. 후처리를 위해 원본과 raw 응답을 보존한다."""
@@ -176,7 +216,7 @@ class QuarantineRecord(BaseModel):
     user_id: str = ""
     virtual_user: dict[str, object] = Field(default_factory=dict)
     raw_llm_response: str = ""
-    error_type: Literal["api_error", "invalid_json", "schema_fail"]
+    error_type: QuarantineErrorType
     error_message: str = ""
 
 

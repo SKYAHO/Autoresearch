@@ -1,0 +1,355 @@
+"""액션 로그 single, shard, merge 공개 batch 명령."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import math
+import os
+import re
+from datetime import date
+from typing import Sequence
+
+from pyarrow.fs import GcsFileSystem
+
+from autoresearch.action_logs.daily import (
+    merge_daily_action_log_shards,
+    run_daily_action_log,
+    run_daily_action_log_shard,
+)
+from autoresearch.action_logs.schema import validate_candidate_ratios
+from autoresearch.jobs import BATCH_CONTRACT_VERSION
+
+
+logger = logging.getLogger(__name__)
+_DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
+_REVISION = os.getenv("AUTORESEARCH_REVISION", "unknown")
+
+
+class BatchArgumentError(ValueError):
+    """공개 batch 명령의 문법·범위·조합 오류."""
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise BatchArgumentError(message)
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return parsed
+
+
+def _non_negative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be at least 0")
+    return parsed
+
+
+def _ratio(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or not 0.0 <= parsed <= 1.0:
+        raise argparse.ArgumentTypeError("must be a finite number between 0 and 1")
+    return parsed
+
+
+def _partition_date(value: str) -> date:
+    if _DATE_PATTERN.fullmatch(value) is None:
+        raise argparse.ArgumentTypeError("must use YYYY-MM-DD")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a valid calendar date") from exc
+
+
+def _canonical_gcs_path(value: str) -> str:
+    if not value.startswith("gs://"):
+        raise BatchArgumentError("paths must use gs://bucket/path")
+    remainder = value[5:]
+    if not remainder or "/" not in remainder or "\\" in remainder:
+        raise BatchArgumentError("paths must use gs://bucket/path")
+    bucket, object_path = remainder.split("/", 1)
+    segments = object_path.split("/")
+    if (
+        not bucket
+        or not object_path
+        or any(part in {"", ".", ".."} for part in segments)
+    ):
+        raise BatchArgumentError(
+            "GCS paths must be normalized without empty, . or .. segments"
+        )
+    return value
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = _ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=json.dumps(
+            {
+                "application_revision": _REVISION,
+                "contract_version": BATCH_CONTRACT_VERSION,
+            },
+            sort_keys=True,
+        ),
+    )
+    parser.add_argument("--mode", choices=("single", "shard", "merge"), required=True)
+    parser.add_argument("--partition-date", type=_partition_date, required=True)
+    parser.add_argument("--youtube-base-path")
+    parser.add_argument("--virtual-users-path")
+    parser.add_argument("--output-base-path")
+    parser.add_argument("--quarantine-base-path")
+    parser.add_argument("--shard-output-base-path")
+    parser.add_argument("--progress-base-path")
+    parser.add_argument("--checkpoint-base-path")
+    parser.add_argument("--max-users", type=_positive_int)
+    parser.add_argument("--shard-index", type=_non_negative_int)
+    parser.add_argument("--shard-count", type=_positive_int)
+    parser.add_argument("--generator-name", default="rule_based")
+    parser.add_argument("--model-name")
+    parser.add_argument("--candidates-per-user", type=_positive_int, default=24)
+    parser.add_argument("--target-ctr", type=_ratio, default=0.02)
+    parser.add_argument("--personalized-ratio", type=_ratio, default=0.7)
+    parser.add_argument("--popular-ratio", type=_ratio, default=0.2)
+    parser.add_argument("--exploration-ratio", type=_ratio, default=0.1)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--max-concurrency", type=_positive_int, default=1)
+    parser.add_argument("--chunk-size", type=_non_negative_int, default=0)
+    parser.add_argument("--max-quarantine-ratio", type=_ratio)
+    parser.add_argument("--overwrite", action="store_true")
+    return parser
+
+
+def _require(args: argparse.Namespace, *names: str) -> None:
+    missing = [name.replace("_", "-") for name in names if getattr(args, name) is None]
+    if missing:
+        raise BatchArgumentError(
+            f"mode={args.mode} requires " + ", ".join(f"--{name}" for name in missing)
+        )
+
+
+def _reject(args: argparse.Namespace, *names: str) -> None:
+    supplied = [
+        name.replace("_", "-") for name in names if getattr(args, name) is not None
+    ]
+    if supplied:
+        raise BatchArgumentError(
+            f"mode={args.mode} does not accept "
+            + ", ".join(f"--{name}" for name in supplied)
+        )
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    if args.mode in {"single", "shard"}:
+        _require(args, "youtube_base_path", "virtual_users_path", "output_base_path")
+        if args.max_quarantine_ratio is None:
+            args.max_quarantine_ratio = 0.5
+        try:
+            validate_candidate_ratios(
+                args.personalized_ratio,
+                args.popular_ratio,
+                args.exploration_ratio,
+            )
+        except ValueError as exc:
+            raise BatchArgumentError(str(exc)) from exc
+    if args.mode == "shard":
+        _require(
+            args,
+            "shard_index",
+            "shard_count",
+            "progress_base_path",
+            "checkpoint_base_path",
+        )
+        if args.shard_index >= args.shard_count:
+            raise BatchArgumentError("--shard-index must be less than --shard-count")
+        _reject(args, "shard_output_base_path")
+    elif args.mode == "single":
+        _reject(
+            args,
+            "shard_index",
+            "shard_count",
+            "shard_output_base_path",
+            "progress_base_path",
+            "checkpoint_base_path",
+        )
+    elif args.mode == "merge":
+        _require(
+            args,
+            "shard_count",
+            "shard_output_base_path",
+            "output_base_path",
+            "max_quarantine_ratio",
+        )
+        _reject(
+            args,
+            "youtube_base_path",
+            "virtual_users_path",
+            "quarantine_base_path",
+            "progress_base_path",
+            "checkpoint_base_path",
+            "max_users",
+            "shard_index",
+        )
+
+    path_names = (
+        "youtube_base_path",
+        "virtual_users_path",
+        "output_base_path",
+        "quarantine_base_path",
+        "shard_output_base_path",
+        "progress_base_path",
+        "checkpoint_base_path",
+    )
+    for name in path_names:
+        value = getattr(args, name)
+        if value is not None:
+            setattr(args, name, _canonical_gcs_path(value))
+
+
+def _run(args: argparse.Namespace) -> dict[str, object]:
+    filesystem = GcsFileSystem()
+    if args.mode == "single":
+        return run_daily_action_log(
+            partition_date=args.partition_date,
+            youtube_base_path=args.youtube_base_path,
+            virtual_users_path=args.virtual_users_path,
+            max_users=args.max_users,
+            output_base_path=args.output_base_path,
+            quarantine_base_path=args.quarantine_base_path,
+            filesystem=filesystem,
+            candidates_per_user=args.candidates_per_user,
+            target_ctr=args.target_ctr,
+            personalized_ratio=args.personalized_ratio,
+            popular_ratio=args.popular_ratio,
+            exploration_ratio=args.exploration_ratio,
+            seed=args.seed,
+            max_concurrency=args.max_concurrency,
+            chunk_size=args.chunk_size,
+            max_quarantine_ratio=args.max_quarantine_ratio,
+            generator_name=args.generator_name,
+            model_name=args.model_name,
+            overwrite=args.overwrite,
+        )
+    if args.mode == "shard":
+        return run_daily_action_log_shard(
+            partition_date=args.partition_date,
+            shard_index=args.shard_index,
+            shard_count=args.shard_count,
+            youtube_base_path=args.youtube_base_path,
+            virtual_users_path=args.virtual_users_path,
+            max_users=args.max_users,
+            output_base_path=args.output_base_path,
+            quarantine_base_path=args.quarantine_base_path,
+            filesystem=filesystem,
+            candidates_per_user=args.candidates_per_user,
+            target_ctr=args.target_ctr,
+            personalized_ratio=args.personalized_ratio,
+            popular_ratio=args.popular_ratio,
+            exploration_ratio=args.exploration_ratio,
+            seed=args.seed,
+            max_concurrency=args.max_concurrency,
+            chunk_size=args.chunk_size,
+            max_quarantine_ratio=args.max_quarantine_ratio,
+            generator_name=args.generator_name,
+            model_name=args.model_name,
+            progress_base_path=args.progress_base_path,
+            checkpoint_base_path=args.checkpoint_base_path,
+            overwrite=args.overwrite,
+        )
+    return merge_daily_action_log_shards(
+        partition_date=args.partition_date,
+        shard_count=args.shard_count,
+        shard_output_base_path=args.shard_output_base_path,
+        output_base_path=args.output_base_path,
+        filesystem=filesystem,
+        max_quarantine_ratio=args.max_quarantine_ratio,
+        overwrite=args.overwrite,
+    )
+
+
+def _emit(payload: dict[str, object]) -> None:
+    print(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str), flush=True
+    )
+
+
+def _summary(
+    *,
+    status: str,
+    partition_date: date | None,
+    details: dict[str, object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "event": "job_summary",
+        "contract_version": BATCH_CONTRACT_VERSION,
+        "job": "action_log",
+        "status": status,
+    }
+    if partition_date is not None:
+        payload["partition_date"] = partition_date.isoformat()
+    if details:
+        payload.update(details)
+    return payload
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI 인자를 검증·실행하고 공개 종료 코드를 반환한다."""
+
+    parser = _build_parser()
+    args: argparse.Namespace | None = None
+    try:
+        args = parser.parse_args(argv)
+        _validate_args(args)
+    except BatchArgumentError as exc:
+        logger.error("Invalid action log batch arguments: %s", exc)
+        _emit(
+            _summary(
+                status="failed",
+                partition_date=getattr(args, "partition_date", None),
+                details={"error_type": "invalid_arguments"},
+            )
+        )
+        return 2
+
+    try:
+        result = dict(_run(args))
+    except Exception as exc:  # noqa: BLE001 - process boundary maps runtime failures to exit 1
+        logger.error("Action log batch failed (%s)", type(exc).__name__)
+        _emit(
+            _summary(
+                status="failed",
+                partition_date=args.partition_date,
+                details={"error_type": "runtime_failure"},
+            )
+        )
+        return 1
+
+    warnings = result.pop("warnings", [])
+    for warning in warnings if isinstance(warnings, list) else []:
+        if isinstance(warning, dict):
+            _emit(
+                {
+                    "contract_version": BATCH_CONTRACT_VERSION,
+                    "job": "action_log",
+                    "partition_date": args.partition_date.isoformat(),
+                    **warning,
+                }
+            )
+    status = str(result.pop("status", "succeeded"))
+    _emit(
+        _summary(
+            status=status,
+            partition_date=args.partition_date,
+            details=result,
+        )
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

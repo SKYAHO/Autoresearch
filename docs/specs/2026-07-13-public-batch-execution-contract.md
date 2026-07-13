@@ -220,6 +220,11 @@ python -m autoresearch.jobs.action_log --mode single <common-options>
 격리 비율이 임계치 이내이고 생성·schema 검증·final parquet 게시가 완료되면
 `succeeded`로 간주한다.
 
+전환 기간의 기존 `youtube_action_log_daily` DAG는 Python 함수의 종전 재생성
+동작을 유지한다. 공개 CLI는 함수 기본값에 의존하지 않고 `--overwrite` 여부를
+명시적으로 전달하므로, 새 Airflow DAG에서는 플래그가 없을 때 위 skip 계약을
+따른다.
+
 `--quarantine-base-path`는 실패 상세를 보존해야 하는 QA·진단 실행에서만
 사용하는 선택 인자다. 지정되면 다음 JSONL을 best-effort로 기록한다.
 
@@ -298,6 +303,10 @@ python -m autoresearch.jobs.action_log --mode merge \
   수행한다.
 - 전역 quarantine ratio는 manifest의 `total_work`와 `quarantine_count` 합계로
   계산한다. 상세 격리 JSONL 존재 여부에 의존하지 않는다.
+- 전환 기간의 구형 manifest처럼 실패 유형 집계가 없는 경우 해당 격리 건수는
+  `unclassified_quarantine_count`로 별도 집계하고
+  `quarantine_error_counts_unavailable` warning을 출력한다. 따라서 알려진 세 실패
+  유형의 합계가 전체 격리 건수보다 작아지는 이유를 소비자가 구분할 수 있다.
 - quarantine ratio가 임계치를 넘으면 final parquet을 게시하기 전에 exit 1로
   실패한다. 기존 final parquet이 있다면 삭제하지 않고 마지막 정상 결과로
   유지한다.

@@ -226,7 +226,56 @@ gen.close()
 > 별도 어댑터 없이 그대로 `generate_action_log_batch`의 `virtual_users` 인자로 넣을 수 있다.
 > candidate 관련도는 `primary_categories`/`interest_keywords` 등으로 계산한다.
 
-### 7.5 Airflow daily DAG
+### 7.5 공개 batch 실행 명령
+
+Airflow를 포함한 외부 실행자는 `action_logs` 내부 함수를 import하지 않고 다음
+module 명령만 호출한다.
+
+```bash
+python -m autoresearch.jobs.action_log --mode single \
+  --partition-date 2026-07-13 \
+  --youtube-base-path gs://<bucket>/data_lake/youtube_trending_kr \
+  --virtual-users-path gs://<bucket>/asset/virtual_user/vu_1000.parquet \
+  --output-base-path gs://<bucket>/data_lake/action_log
+
+python -m autoresearch.jobs.action_log --mode shard \
+  --partition-date 2026-07-13 \
+  --youtube-base-path gs://<bucket>/data_lake/youtube_trending_kr \
+  --virtual-users-path gs://<bucket>/asset/virtual_user/vu_1000.parquet \
+  --output-base-path gs://<bucket>/data_lake/action_log_work \
+  --progress-base-path gs://<bucket>/data_lake/action_log_progress \
+  --checkpoint-base-path gs://<bucket>/data_lake/action_log_checkpoints \
+  --shard-index 0 --shard-count 5
+
+python -m autoresearch.jobs.action_log --mode merge \
+  --partition-date 2026-07-13 \
+  --shard-output-base-path gs://<bucket>/data_lake/action_log_work \
+  --output-base-path gs://<bucket>/data_lake/action_log \
+  --shard-count 5 --max-quarantine-ratio 0.2
+```
+
+stdout은 JSON Lines이며 마지막 event는 `job_summary`다. exit 0은 성공 또는
+명시적 skip, exit 1은 runtime·입력 데이터·schema·품질 실패, exit 2는 CLI
+문법·범위·조합 오류다. 세 후보 구성 비율의 합은 절대 허용 오차 `1e-9` 안에서
+1이어야 한다.
+
+`--quarantine-base-path`는 single과 shard의 선택적 QA 산출물이다. 상세 격리
+JSONL 게시 실패는 `quarantine_publish_failed` warning을 남기지만 정상 Parquet을
+실패시키지 않는다. merge의 전역 격리 비율은 shard manifest 집계만 사용한다.
+실패 유형 집계가 없는 구형 manifest의 격리 건수는
+`unclassified_quarantine_count`로 분리하고
+`quarantine_error_counts_unavailable` warning을 출력한다.
+
+기존 final이 있고 `--overwrite`가 없으면 skip한다. overwrite 실행도 기존 final을
+미리 삭제하지 않으며, 새 결과의 생성·schema·품질 검증이 끝난 뒤 마지막 단계에서
+교체한다. shard 0을 포함한 모든 shard는 자신의 draft·manifest·checkpoint·progress만
+관리하고 final 삭제 같은 특수 역할을 갖지 않는다.
+
+전환 기간의 기존 DAG가 직접 호출하는 Python 함수는 종전처럼 기본 재생성한다.
+공개 CLI는 `--overwrite` 값을 항상 명시적으로 전달하므로 플래그가 없으면 위 skip
+계약을 따른다.
+
+### 7.6 Airflow daily DAG
 
 `dags/youtube_action_log_daily.py`는 매일 KST 01:00에 실행되어 같은 날짜의 YouTube
 daily partition을 읽고 action log partition을 생성한다.
@@ -244,14 +293,13 @@ Shard manifest: gs://<YOUTUBE_LAKE_BUCKET>/data_lake/action_log_work/dt=YYYY-MM-
 10% exploration`이다. 기본 generator는 `rule_based`이며, `ACTION_LOG_GENERATOR=openrouter`
 로 설정하면 `OpenRouterActionLogGenerator`를 사용한다.
 
-Shard 모드(`run_daily_action_log_shard`)는 draft 생성 중 stdout에
-`[action-log-progress] shard=003 completed=120 total=873 success=118 failed=2 pct=13.7`
-형태의 진행률을 출력하고, 같은 내용을 `progress.json`으로 주기적으로 갱신한다.
+Shard 모드(`run_daily_action_log_shard`)는 draft 생성 중 진행률을 logger와
+`progress.json`으로 주기적으로 갱신한다. 공개 CLI의 stdout은 JSON event 전용이다.
 기본 progress root는 shard work 출력 root 옆의 `action_log_progress`이며,
 progress 기록 실패는 경고만 남기고 shard 생성은 계속한다. `progress.json`은
 덮어쓸 수 있는 관측용 snapshot일 뿐 재개 checkpoint가 아니다.
 
-같은 stdout에는 한 줄 JSON 구조화 telemetry도 출력한다. `event`로
+구조화 telemetry는 logger를 통해 남긴다. `event`로
 `openrouter_retry_scheduled`, `openrouter_attempt_complete`,
 `openrouter_request_complete`, `action_log_micro_work_complete`,
 `action_log_shard_progress`를 구분한다. micro work의
