@@ -20,6 +20,7 @@ from autoresearch.action_logs.daily import (
 )
 from autoresearch.action_logs.schema import validate_candidate_ratios
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
+from autoresearch.jobs._telemetry import configure_action_log_telemetry_logging
 
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,19 @@ def _ratio(value: str) -> float:
     if not math.isfinite(parsed) or not 0.0 <= parsed <= 1.0:
         raise argparse.ArgumentTypeError("must be a finite number between 0 and 1")
     return parsed
+
+
+def _overwrite(value: str | bool) -> bool:
+    """KPO argument list와 호환되는 명시적 overwrite boolean을 해석한다."""
+
+    if isinstance(value, bool):
+        return value
+    normalized = value.casefold()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise argparse.ArgumentTypeError("must be true or false")
 
 
 def _partition_date(value: str) -> date:
@@ -121,7 +135,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-concurrency", type=_positive_int, default=1)
     parser.add_argument("--chunk-size", type=_non_negative_int, default=0)
     parser.add_argument("--max-quarantine-ratio", type=_ratio)
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--overwrite",
+        nargs="?",
+        const=True,
+        default=False,
+        type=_overwrite,
+    )
     return parser
 
 
@@ -300,6 +320,7 @@ def _summary(
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI 인자를 검증·실행하고 공개 종료 코드를 반환한다."""
 
+    configure_action_log_telemetry_logging()
     parser = _build_parser()
     args: argparse.Namespace | None = None
     try:

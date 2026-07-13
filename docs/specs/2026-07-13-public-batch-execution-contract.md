@@ -2,7 +2,7 @@
 
 - **상태**: Proposed
 - **날짜**: 2026-07-13
-- **이슈**: #125
+- **이슈**: #125, #129
 - **관련 ADR**: `docs/adr/0002-repository-responsibility-boundaries.md`
 
 ## 목적
@@ -12,8 +12,9 @@
 로컬, CI와 KubernetesPodOperator에서 동일하게 동작해야 한다.
 
 이 계약은 현재 운영 범위인 YouTube 일일 수집, YouTube backfill, action-log
-single/shard/merge를 다룬다. Feature Store materialization, 학습·평가, MLflow,
-FastAPI serving command는 각 기능이 운영화될 때 별도 revision으로 추가한다.
+single/shard/merge와 action-log 품질 검사를 다룬다. Feature Store
+materialization, 학습·평가, MLflow, FastAPI serving command는 각 기능이
+운영화될 때 별도 revision으로 추가한다.
 
 ## 계약 버전
 
@@ -42,6 +43,7 @@ python -m autoresearch.jobs.youtube_backfill [options]
 python -m autoresearch.jobs.action_log --mode single [options]
 python -m autoresearch.jobs.action_log --mode shard [options]
 python -m autoresearch.jobs.action_log --mode merge [options]
+python -m autoresearch.jobs.action_log_quality [options]
 ```
 
 console script alias를 추가할 수 있지만 Airflow는 v1 동안 위 module 경로를
@@ -63,6 +65,18 @@ console script alias를 추가할 수 있지만 Airflow는 v1 동안 위 module 
 - 빈 문자열, `.`·`..`, 중복 separator가 있는 비정규화 path는 거부한다.
 - application은 Airflow의 사전 검증 여부와 관계없이 모든 입력을 검증한다.
 - secret은 CLI 인자로 받지 않고 정해진 환경 변수에서만 읽는다.
+- overwrite를 지원하는 YouTube와 action-log 명령은 옵션 없음, bare flag와
+  explicit boolean을 모두 허용한다.
+
+```text
+--overwrite
+--overwrite=true
+--overwrite=false
+```
+
+bare flag는 `true`, 옵션 없음은 `false`다. 명시값은 대소문자를 구분하지 않는
+`true`와 `false`만 허용하며 그 외 값은 exit 2로 거부한다. Airflow는 argument
+원소 수를 고정하기 위해 `--overwrite=<rendered-boolean>` 한 원소를 전달한다.
 
 ### 출력
 
@@ -125,7 +139,7 @@ python -m autoresearch.jobs.youtube_trending \
   --region-code KR \
   --max-results 200 \
   [--proxy-url <url>] \
-  [--overwrite]
+  [--overwrite[=<boolean>]]
 ```
 
 ### 계약
@@ -174,7 +188,7 @@ python -m autoresearch.jobs.youtube_backfill \
 --output-base-path gs://<bucket>/<path>
 [--quarantine-base-path gs://<bucket>/<path>]
 [--max-users <positive-int>]
-[--overwrite]
+[--overwrite[=<boolean>]]
 [--generator-name <name>]
 [--model-name <name>]
 [--candidates-per-user <positive-int>]
@@ -292,7 +306,7 @@ python -m autoresearch.jobs.action_log --mode merge \
   --shard-output-base-path gs://<bucket>/data_lake/action_log_work \
   --output-base-path gs://<bucket>/data_lake/action_log \
   --max-quarantine-ratio <0..1> \
-  [--overwrite]
+  [--overwrite[=<boolean>]]
 ```
 
 ### 계약
@@ -325,6 +339,29 @@ python -m autoresearch.jobs.action_log --mode merge \
 ```text
 <output-base-path>/dt=YYYY-MM-DD/part-0.parquet
 ```
+
+## Action log 품질 검사
+
+```text
+python -m autoresearch.jobs.action_log_quality \
+  --partition-date YYYY-MM-DD \
+  --youtube-base-path gs://<bucket>/data_lake/youtube_trending_kr \
+  --virtual-users-path gs://<bucket>/asset/virtual_user/<file>.parquet \
+  --action-log-base-path gs://<bucket>/data_lake/action_log \
+  --expected-model <model>
+```
+
+### 계약
+
+- YouTube와 action-log 입력은 지정 날짜의
+  `dt=YYYY-MM-DD/part-0.parquet`를 읽는다.
+- YouTube `video_id`의 null·중복, 필수 event type, action-log의 video/user 참조,
+  기대 model 존재 여부를 검증한다.
+- action-log Arrow final schema와 각 row의 `EventLog` 불변식을 함께 검증한다.
+- 식별자 원문은 출력하지 않고 row·오류 count와 안전한 판정 문구만
+  `job_summary`에 포함한다.
+- 모든 검사를 통과하면 `status=succeeded`, exit 0이다. 품질 판정 실패는
+  `status=failed`, exit 1이며 CLI 인자 오류는 exit 2다.
 
 ## Airflow 호출 계약
 
