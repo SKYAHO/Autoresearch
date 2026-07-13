@@ -843,6 +843,37 @@ def test_single_quarantine_publish_failure_warns_and_keeps_final_success(
     assert not (quarantine_base / "dt=2026-07-01" / "quarantine.jsonl").exists()
 
 
+def test_single_default_preserves_legacy_overwrite_behavior(tmp_path, monkeypatch):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube"
+    output_base = tmp_path / "action_log"
+    _write_virtual_users(virtual_users_path)
+    _write_youtube_partition(youtube_base, partition_date)
+    generator = _CountingGenerator()
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda *args, **kwargs: generator,
+    )
+    common = {
+        "partition_date": partition_date,
+        "youtube_base_path": str(youtube_base),
+        "virtual_users_path": str(virtual_users_path),
+        "output_base_path": str(output_base),
+        "candidates_per_user": 5,
+        "target_ctr": 0.2,
+    }
+
+    first = run_daily_action_log(**common)
+    first_call_count = generator.calls
+    second = run_daily_action_log(**common)
+
+    assert first["status"] == "succeeded"
+    assert second["status"] == "succeeded"
+    assert generator.calls == first_call_count * 2
+
+
 def test_single_skips_existing_final_before_generator_creation(tmp_path, monkeypatch):
     partition_date = date(2026, 7, 1)
     virtual_users_path = tmp_path / "virtual_users.parquet"
@@ -866,7 +897,7 @@ def test_single_skips_existing_final_before_generator_creation(tmp_path, monkeyp
         lambda *args, **kwargs: pytest.fail("generator must not be created"),
     )
 
-    summary = run_daily_action_log(**common)
+    summary = run_daily_action_log(**common, overwrite=False)
 
     assert summary["status"] == "skipped"
     assert output_path.read_bytes() == previous
@@ -1001,6 +1032,54 @@ def test_merge_quality_failure_uses_manifest_counts_and_preserves_final(
         )
 
     assert output_path.read_bytes() == b"last-known-good"
+
+
+def test_merge_reports_unclassified_count_for_legacy_manifest(tmp_path, monkeypatch):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube"
+    work_base = tmp_path / "work"
+    _write_virtual_users(virtual_users_path, count=2)
+    _write_youtube_partition(youtube_base, partition_date)
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda generator_name, model_name=None: _OneUserFailureGenerator(),
+    )
+    for shard_index in range(2):
+        run_daily_action_log_shard(
+            partition_date=partition_date,
+            shard_index=shard_index,
+            shard_count=2,
+            youtube_base_path=str(youtube_base),
+            virtual_users_path=str(virtual_users_path),
+            output_base_path=str(work_base),
+            candidates_per_user=5,
+            max_quarantine_ratio=0.5,
+        )
+
+    manifest_path = work_base / "dt=2026-07-01" / "shard=000" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest.pop("quarantine_error_counts") == {"invalid_json": 1}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    summary = merge_daily_action_log_shards(
+        partition_date=partition_date,
+        shard_count=2,
+        shard_output_base_path=str(work_base),
+        output_base_path=str(tmp_path / "action_log"),
+    )
+
+    assert summary["quarantine_count"] == 1
+    assert summary["unclassified_quarantine_count"] == 1
+    assert sum(summary[key] for key in ("api_error", "invalid_json", "schema_fail")) == 0
+    assert summary["warnings"] == [
+        {
+            "event": "warning",
+            "warning_type": "quarantine_error_counts_unavailable",
+            "artifact": "shard_manifest",
+        }
+    ]
 
 
 def test_all_shards_share_input_fingerprint_and_do_not_touch_final(tmp_path):

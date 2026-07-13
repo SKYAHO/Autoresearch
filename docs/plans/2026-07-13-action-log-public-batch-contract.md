@@ -320,7 +320,7 @@ docker run --rm autoresearch:batch-contract-v1 \
 - merge 품질 실패 후 이전 final 보존
 - 성공 run의 마지막 stdout event가 `job_summary`
 
-로컬 구현 검증 결과(2026-07-13): 전체 pytest 275개, Ruff,
+로컬 구현 검증 결과(2026-07-13): 전체 pytest 278개, 변경 파일 대상 Ruff,
 `uv lock --check`, runtime requirements mirror, proxy export drift와
 `git diff --check`가 통과했다. Python 3.12 application image를 빌드하고 기본
 실행, action-log `--help`·`--version`, runtime import, OCI label과 non-root user를

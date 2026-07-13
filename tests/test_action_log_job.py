@@ -153,6 +153,25 @@ def test_main_maps_runtime_failure_to_exit_1_without_sensitive_detail(
     assert "user-123" not in combined
 
 
+def test_run_maps_single_cli_default_to_no_overwrite(monkeypatch):
+    filesystem = object()
+    captured = {}
+    monkeypatch.setattr(action_log_job, "GcsFileSystem", lambda: filesystem)
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(action_log_job, "run_daily_action_log", fake_run)
+    parser = action_log_job._build_parser()
+    args = parser.parse_args(_SINGLE_ARGS)
+    action_log_job._validate_args(args)
+
+    assert action_log_job._run(args) == {"status": "succeeded"}
+    assert captured["filesystem"] is filesystem
+    assert captured["overwrite"] is False
+
+
 def test_run_maps_shard_arguments_to_domain_runner(monkeypatch):
     filesystem = object()
     captured = {}

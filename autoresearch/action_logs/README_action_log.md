@@ -262,11 +262,18 @@ stdout은 JSON Lines이며 마지막 event는 `job_summary`다. exit 0은 성공
 `--quarantine-base-path`는 single과 shard의 선택적 QA 산출물이다. 상세 격리
 JSONL 게시 실패는 `quarantine_publish_failed` warning을 남기지만 정상 Parquet을
 실패시키지 않는다. merge의 전역 격리 비율은 shard manifest 집계만 사용한다.
+실패 유형 집계가 없는 구형 manifest의 격리 건수는
+`unclassified_quarantine_count`로 분리하고
+`quarantine_error_counts_unavailable` warning을 출력한다.
 
 기존 final이 있고 `--overwrite`가 없으면 skip한다. overwrite 실행도 기존 final을
 미리 삭제하지 않으며, 새 결과의 생성·schema·품질 검증이 끝난 뒤 마지막 단계에서
 교체한다. shard 0을 포함한 모든 shard는 자신의 draft·manifest·checkpoint·progress만
 관리하고 final 삭제 같은 특수 역할을 갖지 않는다.
+
+전환 기간의 기존 DAG가 직접 호출하는 Python 함수는 종전처럼 기본 재생성한다.
+공개 CLI는 `--overwrite` 값을 항상 명시적으로 전달하므로 플래그가 없으면 위 skip
+계약을 따른다.
 
 ### 7.6 Airflow daily DAG
 

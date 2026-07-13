@@ -806,7 +806,7 @@ def run_daily_action_log(
     generator_name: str = "rule_based",
     model_name: str | None = None,
     history_end: datetime | None = None,
-    overwrite: bool = False,
+    overwrite: bool = True,
 ) -> dict[str, object]:
     """하루치 YouTube partition과 virtual user parquet으로 action log를 생성한다.
 
@@ -817,6 +817,8 @@ def run_daily_action_log(
         output_base_path: `.../data_lake/action_log` 출력 루트.
         quarantine_base_path: quarantine jsonl 출력 루트. None이면 최종 복사를 생략한다.
         filesystem: None(로컬) 또는 pyarrow filesystem(GCS 등).
+        overwrite: 기존 Python DAG 호출은 하위 호환을 위해 기본 재생성한다. 공개
+            CLI는 `--overwrite` 여부를 항상 명시적으로 전달한다.
     """
 
     youtube_path = _dt_path(
@@ -1349,6 +1351,22 @@ def merge_daily_action_log_shards(
         )
         for error_type in ("api_error", "invalid_json", "schema_fail")
     }
+    legacy_manifests = [
+        manifest for manifest in manifests if manifest.quarantine_error_counts is None
+    ]
+    unclassified_quarantine_count = sum(
+        manifest.quarantine_count
+        for manifest in legacy_manifests
+    )
+    warnings: list[dict[str, str]] = []
+    if legacy_manifests:
+        warnings.append(
+            {
+                "event": "warning",
+                "warning_type": "quarantine_error_counts_unavailable",
+                "artifact": "shard_manifest",
+            }
+        )
     quarantine_ratio = quarantine_count / total_work if total_work else 0.0
     if quarantine_ratio > resolved_max_quarantine_ratio:
         raise ActionLogGenerationError(
@@ -1380,8 +1398,9 @@ def merge_daily_action_log_shards(
         "drafts": len(drafts),
         "total_work": total_work,
         "quarantine_count": quarantine_count,
+        "unclassified_quarantine_count": unclassified_quarantine_count,
         "config_fingerprint": contract.config_fingerprint,
         "model_name": contract.model_name,
         "output_path": output_path,
-        "warnings": [],
+        "warnings": warnings,
     }
