@@ -1,6 +1,6 @@
 # Agent Python Reference
 
-> Last Updated: 2026-07-06
+> Last Updated: 2026-07-13
 
 Python 코드를 작성하거나 수정할 때 사용하는 문서입니다.
 
@@ -34,10 +34,10 @@ Python 코드를 작성하거나 수정할 때 사용하는 문서입니다.
 - 설정은 환경 변수로 주입합니다 (`YOUTUBE_API_KEYS` (복수, 쉼표 구분),
   `YOUTUBE_PROXY_URL`, `YOUTUBE_LAKE_BUCKET`, `YOUTUBE_BACKFILL_SOURCE` 등).
 - 기본값은 로컬 개발에 안전한 값으로 둡니다.
-- 새 환경 변수를 추가하면 `.env.example`과 필요 시
-  `airflow_settings.yaml`을 갱신합니다.
-- Airflow 환경에서는 Airflow Variables로도 주입될 수 있음을
-  고려합니다.
+- 새 환경 변수를 추가하면 `.env.example`을 갱신합니다.
+- 공개 batch CLI에 필요한 설정은 명시적 CLI 인자 또는 환경 변수로
+  검증합니다. Airflow Variable과 Secret reference의 매핑은
+  `Autoresearch-airflow`가 소유합니다.
 
 ## Logging and Errors
 
