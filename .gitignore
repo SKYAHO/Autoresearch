@@ -19,14 +19,14 @@ keys/
 # Environment files
 .env
 .env.*
+gha-creds-*.json
 !.env.example
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Astro / Airflow local state
-.astro/
+# GCP credential files
 .gcp-creds.json
 
 # Generated data artifacts

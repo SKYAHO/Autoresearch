@@ -1,7 +1,7 @@
 """Daily action log 생성 실행기.
 
-Airflow DAG은 이 모듈의 `run_daily_action_log`를 호출만 한다. 입력은 같은 날짜의
-YouTube daily partition과 virtual user parquet이고, 출력은 action log dt partition이다.
+공개 batch entrypoint가 이 모듈을 호출한다. 입력은 같은 날짜의 YouTube daily
+partition과 virtual user parquet이고, 출력은 action log dt partition이다.
 """
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 # Coding Guidelines for AI Coding Agents
 
-> Version: 1.0.0 | Last Updated: 2026-07-06
+> Version: 1.0.0 | Last Updated: 2026-07-13
 
 이 문서는 Claude Code 등 AI 코딩 에이전트가 이 저장소에서 작업할 때의 기본
 진입점입니다. 필수 규칙은 짧게 유지하고, 상세 가이드는 `.claude/docs/`를
@@ -46,26 +46,30 @@
   - `autoresearch/youtube_collection/` — YouTube 트렌딩 수집
     (fetch/transform/load/backfill/schema + client.py 복원력 레이어),
     GCS 데이터 레이크 적재
-  - `proxy/` — Cloud Run dumb forwarder (YouTube API IP밴 대응 egress seam)
   - `autoresearch/virtual_users/` — Gemini 기반 가상 유저(페르소나) 생성
     파이프라인
-- Airflow DAG은 `dags/` (Astro Runtime 13.8.0): `youtube_trending_kr_daily`,
-  `youtube_backfill_kr`
+  - `autoresearch/action_logs/` — action log 생성·shard·merge·품질 계약
+  - `autoresearch/jobs/` — Airflow에 종속되지 않는 공개 batch CLI
+- `proxy/` — Cloud Run dumb forwarder (YouTube API IP밴 대응 egress seam)
+- `Dockerfile.app`은 공개 CLI를 실행하는 canonical application image입니다.
+- DAG·schedule·KubernetesPodOperator·Airflow 배포는 인접 저장소
+  `SKYAHO/Autoresearch-airflow`가 소유하며, 이 저장소의 image와 공개 CLI만
+  소비합니다.
 - 테스트는 `tests/` (모듈별 `test_<module>.py` 플랫 구조)
 - CTR 파이프라인 예제 스캐폴드는 `examples/ctr_pipeline_scaffold/`
 - 의존성은 uv 기반: 단일 출처는 `pyproject.toml` + `uv.lock`입니다.
-  `requirements.txt`(Astro `Dockerfile`·CI `Dockerfile.app` 공유)는
-  `[project].dependencies`의 범위 미러(Astro 베이스 제약과의 충돌 회피,
-  헤더 참조), `proxy/requirements.txt`(Cloud Run)는 `uv export` 전핀
-  산출물입니다. 둘 다 CI `uv-lock-check` job이 drift를 검사합니다.
+  `Dockerfile.app`도 이 두 파일을 사용합니다. `proxy/requirements.txt`
+  (Cloud Run)는 `uv export` 전핀 산출물이며 CI `uv-lock-check` job이 drift를
+  검사합니다.
 - Python 3.12 (`.python-version`), CI는 3.11/3.12 매트릭스
-- 팀 도메인 4개: Model Training (waieiches, hyochangsung), Feast Features
+- 프로그램 도메인은 Model Training (waieiches, hyochangsung), Feast Features
   (waieiches, hyochangsung — 도입 진행 중), Airflow Orchestration (bbungjun),
-  GCP Infrastructure (hyeongyu-data)
+  GCP Infrastructure (hyeongyu-data)입니다. 뒤의 두 도메인 구현은 각각
+  `Autoresearch-airflow`, `Autoresearch-infra` 저장소가 소유합니다.
 - Feast 피처 스토어는 `feature_repo/`에 도입되어 있습니다 (Entity·FeatureView
   정의는 더미 스키마, 실데이터 스키마로 교체 예정).
-- CTR 학습 파이프라인(`src/` 구조)은 별도 브랜치에서 진행 중이며 아직 main에
-  없습니다.
+- CTR 학습 파이프라인은 `src/models/`, `src/features/`, `src/pipeline/`에
+  구현되어 있습니다.
 
 ## Core Rules
 
@@ -89,16 +93,15 @@ uv run python -m pytest
 ```
 
 - 의존성 변경은 `pyproject.toml` 수정 → `uv lock` → 산출물 갱신 순서로
-  진행합니다 (`requirements.txt`는 런타임 의존성 미러라 함께 수동 갱신,
-  `proxy/requirements.txt`는 헤더의 `uv export` 명령으로 재생성).
+  진행합니다 (`proxy/requirements.txt`는 헤더의 `uv export` 명령으로 재생성).
 - Feast 작업은 격리 그룹을 사용합니다: `uv sync --only-group feast`
   (feast 0.64는 dev/proxy의 fastapi<0.129와 starlette 충돌).
-- Airflow DAG 로컬 실행은 Astro CLI를 사용합니다 (`astro dev start`).
 - 필수 환경 변수는 `.env.example` 참조: `YOUTUBE_API_KEY`,
   `YOUTUBE_LAKE_BUCKET`, `YOUTUBE_BACKFILL_SOURCE`.
-- 주의: `dags/*.py`는 sys.path 조작으로 `autoresearch` 패키지를 import 합니다.
-  컨테이너 내 패키지 배치(`Dockerfile`)와 결합되어 있으므로 구조 변경 시 함께
-  확인해야 합니다.
+- 공개 batch 명령과 인자 계약은
+  `docs/specs/2026-07-13-public-batch-execution-contract.md`를 따릅니다.
+- schedule, retry, timeout, Pool이나 KPO 인자 선택을 변경해야 하면
+  `Autoresearch-airflow`에서 작업합니다.
 
 ## Spec / Plan First
 

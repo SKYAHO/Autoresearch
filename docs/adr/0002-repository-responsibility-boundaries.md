@@ -1,6 +1,6 @@
 # ADR 0002: 애플리케이션·Airflow·인프라 저장소의 책임 경계
 
-- **상태**: Proposed
+- **상태**: Accepted
 - **날짜**: 2026-07-13
 - **이슈**: #125
 - **실행 계약**: `docs/specs/2026-07-13-public-batch-execution-contract.md`
@@ -8,8 +8,8 @@
 ## 배경
 
 Autoresearch 프로젝트는 애플리케이션·ML 코드, Airflow 오케스트레이션,
-GCP·Kubernetes 인프라를 세 저장소로 분리하고 있다. 그러나 현재는 다음과 같이
-책임이 겹친다.
+GCP·Kubernetes 인프라를 세 저장소로 분리하고 있다. 결정 당시에는 다음과 같이
+책임이 겹쳤다.
 
 - `Autoresearch`에 Airflow DAG, Astro Dockerfile, `airflow_settings.yaml`이 있다.
 - `Autoresearch-airflow`의 batch entrypoint가 CLI 변환을 넘어 GCS 경로 계산,
@@ -149,21 +149,21 @@ Autoresearch-airflow ── public CLI invocation ──────> Autoresear
 `Autoresearch-airflow`와 `Autoresearch-infra`에는 각 저장소 운영에 필요한 내용만
 두고 위 문서에 링크한다. 책임 표와 CLI 계약 전문을 복사하지 않는다.
 
-## 현재 파일의 처분
+## 결정 당시 파일의 처분과 구현 상태
 
 ### `Autoresearch`
 
-| 현재 파일 | 처분 |
+| 결정 당시 파일 | 최종 상태 |
 | --- | --- |
 | `autoresearch/action_logs/` | 유지: 도메인 단일 원본 |
 | `autoresearch/youtube_collection/` | 유지: 수집 단일 원본 |
-| `dags/youtube_action_log_daily.py` | Airflow 통합 DAG 전환 후 제거 |
-| `dags/youtube_trending_kr_daily.py` | Airflow 통합 DAG 전환 후 제거 |
-| `dags/youtube_backfill_kr.py` | Airflow KPO DAG를 먼저 만든 뒤 제거 |
-| `airflow_settings.yaml` | Airflow 저장소 전환 후 제거 |
-| Astro용 root `Dockerfile` | Airflow 저장소 전환 후 제거 |
-| `Dockerfile.app` | canonical application batch image로 개편 |
-| Airflow DAG test | Airflow 저장소로 이전하거나 대체 후 제거 |
+| `dags/youtube_action_log_daily.py` | 통합 DAG 전환·canary 뒤 제거 완료 |
+| `dags/youtube_trending_kr_daily.py` | 공개 CLI 기반 KPO 전환 뒤 제거 완료 |
+| `dags/youtube_backfill_kr.py` | public backfill CLI·KPO smoke 뒤 제거 완료 |
+| `airflow_settings.yaml` | Airflow 저장소 전환 뒤 제거 완료 |
+| Astro용 root `Dockerfile`, `packages.txt`, `requirements.txt` | 제거 완료 |
+| `Dockerfile.app` | canonical application batch image로 유지 |
+| Airflow DAG 전용 test | 대체 DAG 검증 뒤 제거 완료 |
 
 ### `Autoresearch-airflow`
 
@@ -205,9 +205,10 @@ breaking change를 만들지 않는다.
 - 상세 격리 파일은 선택적 진단 산출물로 취급하고, 새 최종 parquet이 완성되기
   전까지 이전 정상 parquet을 마지막 정상 결과로 유지한다.
 
-## 승인 조건
+## 채택 근거
 
-이 ADR은 다음 조건을 만족한 PR이 승인·병합될 때 `Accepted`로 변경한다.
+2026-07-13에 다음 조건을 확인해 `Accepted`로 변경했다. 실행·canary·rollback
+근거는 `docs/specs/2026-07-13-autoresearch-airflow-boundary-cutover.md`에 기록한다.
 
 - Application·Airflow·Infrastructure 담당자가 책임 경계를 검토한다.
 - 공개 실행 계약의 명령·입출력·오류 의미에 합의한다.

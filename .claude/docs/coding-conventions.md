@@ -1,6 +1,6 @@
 # Coding Conventions
 
-> Last Updated: 2026-07-06
+> Last Updated: 2026-07-13
 
 구현 세부 사항에 대한 실용 컨벤션입니다. 필수 규칙은 `CLAUDE.md`에
 있습니다.
@@ -21,8 +21,8 @@
 - **load:** GCS 등 외부 저장소 적재 의미론을 담당합니다.
 - **schema:** pydantic 모델로 모듈 간 데이터 계약을 정의합니다.
 - **pipeline:** 단계들을 엮는 오케스트레이션만 담당합니다.
-- **dags/:** Airflow DAG 정의만 담습니다. 비즈니스 로직은
-  `autoresearch/` 모듈에 둡니다.
+- **jobs:** Airflow에 종속되지 않는 공개 batch CLI와 입력 검증만
+  담당합니다. schedule·retry·KPO 정책은 두지 않습니다.
 
 ## Imports
 
@@ -58,9 +58,9 @@
 
 - 실제 복잡도를 줄여줄 때만 의존성을 추가합니다.
 - 의존성 단일 출처는 `pyproject.toml`입니다. 런타임 의존성은
-  `[project] dependencies`(변경 시 미러인 `requirements.txt`도 함께 수정),
-  개발·실험 의존성은 `[dependency-groups]`의 `dev` 그룹에 추가한 뒤
-  `uv lock`으로 잠급니다. proxy 의존성 변경 시에는 `proxy/requirements.txt`
-  헤더의 `uv export` 명령으로 재생성합니다. 런타임 의존성은 Astro 이미지와
-  CI 이미지에 그대로 설치되므로 불필요한 패키지를 넣지 않습니다.
+  `[project] dependencies`, 개발·실험 의존성은 `[dependency-groups]`의
+  `dev` 그룹에 추가한 뒤 `uv lock`으로 잠급니다. proxy 의존성 변경 시에는
+  `proxy/requirements.txt` 헤더의 `uv export` 명령으로 재생성합니다.
+  `Dockerfile.app`이 lock에서 런타임 의존성을 설치하므로 불필요한 패키지를
+  넣지 않습니다.
 - 사용자가 설치하거나 설정해야 하는 운영 의존성은 문서화합니다.
