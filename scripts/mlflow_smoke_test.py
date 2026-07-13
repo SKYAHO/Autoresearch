@@ -81,7 +81,8 @@ def main():
         try:
             experiment = client.get_experiment_by_name(experiment_name)
             if experiment is None:
-                experiment = mlflow.create_experiment(experiment_name)
+                experiment_id = mlflow.create_experiment(experiment_name)
+                experiment = client.get_experiment(experiment_id)
                 print(f"[OK] 신규 Experiment 생성: {experiment_name}")
             else:
                 print(f"[OK] 기존 Experiment 사용: {experiment_name} (ID: {experiment.experiment_id})")
@@ -126,20 +127,16 @@ def main():
                 mlflow.log_metric(SMOKE_METRIC_KEY, SMOKE_METRIC_VALUE)
                 print(f"[OK] Metric 기록: {SMOKE_METRIC_KEY}={SMOKE_METRIC_VALUE}")
 
-                with tempfile.NamedTemporaryFile(
-                    mode="w", suffix=".txt", delete=False
-                ) as f:
-                    f.write(SMOKE_ARTIFACT_CONTENT)
-                    temp_artifact_path = f.name
-
-                mlflow.log_artifact(temp_artifact_path, artifact_path=".")
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    artifact_file = os.path.join(tmpdir, SMOKE_ARTIFACT_NAME)
+                    with open(artifact_file, "w") as f:
+                        f.write(SMOKE_ARTIFACT_CONTENT)
+                    mlflow.log_artifact(artifact_file)
                 print(f"[OK] Artifact 기록: {SMOKE_ARTIFACT_NAME}")
 
                 mlflow.set_tag("test.type", "mlflow-smoke-test")
                 mlflow.set_tag("test.persistence_check", "true")
                 mlflow.set_tag("test.artifact_store", artifact_store_mode)
-
-                os.unlink(temp_artifact_path)
 
             print("[OK] Run 완료")
             print()
