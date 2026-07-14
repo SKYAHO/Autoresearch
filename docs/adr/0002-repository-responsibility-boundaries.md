@@ -114,6 +114,11 @@ Autoresearch-infra ── GAR·WIF·runtime resource ─────> Autoresear
 Autoresearch-airflow ── public CLI invocation ──────> Autoresearch image
 ```
 
+application release는 검증된 digest를 전달하기 위해 Airflow Helm values만 바꾸는
+PR을 자동 생성할 수 있다. 이는 배포 설정의 소유권을 이전하는 것이 아니다.
+PR merge와 이후 Helm 배포는 계속 `Autoresearch-airflow`의 보호 규칙과 workflow가
+통제한다.
+
 다음 역방향 의존은 금지한다.
 
 - `Autoresearch`가 Airflow package나 DAG module을 import하는 것

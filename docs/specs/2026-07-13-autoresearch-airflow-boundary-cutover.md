@@ -512,6 +512,18 @@ pull하여 OCI revision, non-root user, 세 공개 CLI의 `--help`와 `--version
 검증한다. 기존 digest와 tag를 삭제하지 않으므로 이전 정상 digest를 rollback에
 사용할 수 있다.
 
+image 검증이 끝나면 같은 workflow가 GitHub App installation token으로
+`Autoresearch-airflow`의 `deploy/airflow/values.yaml`만 변경하는 승격 PR을 연다.
+PR branch는 `automation/batch-<source-sha 앞 12자리>`로 고정해 같은 release의
+재실행을 멱등하게 처리한다. 자동화는 PR 생성까지만 담당하고 merge는 사람이
+CI 결과와 digest를 확인한 뒤 수행한다. Airflow 저장소의 `main`에 merge되면
+그 저장소가 소유한 GKE Helm 배포 workflow가 실행된다.
+
+이를 위해 `APP_ID`와 `APP_PRIVATE_KEY`가 가리키는 GitHub App에는
+`Autoresearch-airflow` repository의 Contents read/write 및 Pull requests
+read/write 권한이 필요하다. `GITHUB_TOKEN` 대신 installation token을 사용하므로
+생성된 PR에서도 대상 저장소 CI가 정상적으로 시작된다.
+
 2026-07-13 기준 진행 상태:
 
 - [x] `Autoresearch-infra`의 repository-scoped WIF impersonation과 GAR writer 적용
@@ -520,6 +532,7 @@ pull하여 OCI revision, non-root user, 세 공개 CLI의 `--help`와 `--version
 - [x] workflow를 `main`에 merge
 - [x] full source SHA 후보 image 발행 및 digest 검증
 - [x] 발행된 digest를 사용하는 Airflow QA cutover
+- [x] 검증된 digest를 Airflow values로 승격하는 자동 PR workflow 구현 (Issue #145)
 
 ### Phase 3. Airflow QA cutover
 

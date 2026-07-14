@@ -35,12 +35,31 @@ def test_release_workflow_publishes_application_image_directly():
     ]
 
 
-def test_release_workflow_is_independent_from_airflow_repository():
-    workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+def test_release_workflow_opens_an_airflow_digest_promotion_pr():
+    workflow = _load_workflow()
+    job = workflow["jobs"]["promote-airflow-digest"]
+    steps = job["steps"]
 
-    assert "Autoresearch-airflow" not in workflow_text
+    assert job["needs"] == "publish-application-image"
+    assert any(
+        step.get("uses") == "actions/create-github-app-token@v2" for step in steps
+    )
+    checkout = next(
+        step for step in steps if step.get("uses") == "actions/checkout@v6"
+    )
+    assert checkout["with"]["repository"] == "SKYAHO/Autoresearch-airflow"
+    assert checkout["with"]["ref"] == "main"
+
+    create_pr = next(
+        step for step in steps if step.get("uses") == "peter-evans/create-pull-request@v8"
+    )
+    assert create_pr["with"]["base"] == "main"
+    assert create_pr["with"]["add-paths"] == "deploy/airflow/values.yaml"
+    assert create_pr["with"]["branch"].startswith("automation/batch-")
+
+    workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "repository_dispatch" not in workflow_text
-    assert "actions/create-github-app-token" not in workflow_text
+    assert "scripts/promote_batch_image.py" in workflow_text
 
 
 def test_release_workflow_verifies_all_public_batch_commands():
