@@ -58,7 +58,6 @@ proxy = [
     "uvicorn[standard]>=0.32,<0.35",
     "httpx>=0.28,<0.29",
 ]
-
 [tool.pytest.ini_options]
 # scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외
 testpaths = ["tests"]

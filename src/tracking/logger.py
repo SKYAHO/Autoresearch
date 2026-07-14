@@ -37,14 +37,23 @@ def log_tags(tags: Dict[str, str]) -> None:
     mlflow.set_tags(tags)
 
 
-def log_artifact(artifact_path: str, artifact_type: str = "model") -> None:
+def log_artifact(
+    local_path: Optional[str] = None,
+    artifact_path: str = "model",
+    artifact_type: Optional[str] = None,
+) -> None:
     """Artifact 파일 기록.
 
     Args:
-        artifact_path: 파일 경로
-        artifact_type: Artifact 종류 (model, feature_list, config 등)
+        local_path: 로컬 파일 경로
+        artifact_path: MLflow Artifact 저장 경로
+        artifact_type: 이전 호출부 호환용 Artifact 종류
     """
-    mlflow.log_artifact(artifact_path, artifact_path=artifact_type)
+    if local_path is None:
+        raise ValueError("local_path is required")
+    if artifact_type is not None:
+        artifact_path = artifact_type
+    mlflow.log_artifact(local_path, artifact_path=artifact_path)
 
 
 def log_artifacts(artifact_dir: str) -> None:
@@ -54,3 +63,22 @@ def log_artifacts(artifact_dir: str) -> None:
         artifact_dir: 디렉토리 경로
     """
     mlflow.log_artifacts(artifact_dir)
+
+
+def start_run(run_name: Optional[str] = None, tags: Optional[Dict[str, str]] = None) -> str:
+    """MLflow Run 시작.
+
+    Args:
+        run_name: Run 이름
+        tags: 초기 태그
+
+    Returns:
+        Run ID
+    """
+    run = mlflow.start_run(run_name=run_name, tags=tags)
+    return run.info.run_id
+
+
+def end_run() -> None:
+    """MLflow Run 종료."""
+    mlflow.end_run()

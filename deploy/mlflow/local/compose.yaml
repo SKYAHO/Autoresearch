@@ -8,32 +8,38 @@ services:
     volumes:
       - mlflow_postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mlflow}"]
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-mlflow} -d ${POSTGRES_DB:-mlflow}
       interval: 5s
       timeout: 5s
       retries: 10
       start_period: 10s
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.22.1
+    image: autoresearch-mlflow-server:2.22.1-runtime-v1
     depends_on:
       postgres:
         condition: service_healthy
-    environment:
-      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://localhost:5000}
     ports:
       - "5000:5000"
     volumes:
       - mlflow_artifacts:/mlartifacts
-    command: >
-      sh -c "pip install -q psycopg2-binary==2.9.10 &&
-      mlflow server
-        --host 0.0.0.0
-        --port 5000
-        --backend-store-uri postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow_local_password}@postgres:5432/${POSTGRES_DB:-mlflow}
-        --artifacts-destination /mlartifacts"
+    command:
+      - sh
+      - -c
+      - |
+        exec mlflow server \
+          --host 0.0.0.0 \
+          --port 5000 \
+          --backend-store-uri "postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow_local_password}@postgres:5432/${POSTGRES_DB:-mlflow}" \
+          --artifacts-destination /mlartifacts
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 5000), timeout=2)"]
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; r = urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2); raise SystemExit(0 if r.status == 200 else 1)"
       interval: 5s
       timeout: 5s
       retries: 10
