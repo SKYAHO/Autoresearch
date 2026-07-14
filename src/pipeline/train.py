@@ -15,11 +15,12 @@ from sklearn.metrics import roc_auc_score
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
+import mlflow  # noqa: E402
+
 from src.models.lgbm_model import LGBMModel  # noqa: E402
 from src.utils.model_utils import save_model, save_feature_columns  # noqa: E402
-from src.tracking.client import set_tracking_uri, get_or_create_experiment  # noqa: E402
+from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
 from src.tracking.logger import log_artifact, log_metrics, log_parameters  # noqa: E402
-import mlflow  # noqa: E402
 
 
 def get_project_root():
@@ -58,8 +59,7 @@ def main(
     # MLflow 초기화
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
     set_tracking_uri(tracking_uri)
-    experiment_name = "ctr-model-training"
-    experiment_id = get_or_create_experiment(experiment_name)
+    experiment_id = get_or_create_experiment("ctr-model-training")
 
     print("=" * 70)
     print("LightGBM 모델 훈련")
@@ -204,8 +204,8 @@ def main(
         save_model(model.model, model_path)
         save_feature_columns(feature_columns, feature_columns_path)
 
-        log_artifact(model_path, artifact_type="model")
-        log_artifact(feature_columns_path, artifact_type="features")
+        log_artifact(local_path=model_path, artifact_path="model")
+        log_artifact(local_path=feature_columns_path, artifact_path="features")
 
     print("\n" + "=" * 70)
     print("훈련 완료")
