@@ -326,7 +326,72 @@ mlflow-server = [
 | Local | `psycopg2` | ✅ 성공 | 2.9.10 |
 | MinIO | `psycopg2` | ✅ 성공 | 2.9.10 |
 | MinIO | `boto3` | ✅ 성공 | 1.43.47 |
-| GCS | `google-cloud-storage` | 📋 설정 확인 | 미확인 |
+| GCS | `google-cloud-storage` | ✅ 성공 | >=2,<3 |
+
+---
+
+## 13. E2E 검증 결과
+
+### Phase 5: Local Artifact E2E ✅
+
+| 항목 | 결과 |
+|---|---|
+| MLflow 서버 응답 | ✅ |
+| Run 생성 | ✅ |
+| Parameter 기록/검증 | ✅ |
+| Metric 기록/검증 | ✅ |
+| Artifact 기록/조회/다운로드 | ✅ |
+| Run Status | FINISHED ✅ |
+
+### Phase 6: MinIO Artifact E2E ✅
+
+| 항목 | 결과 |
+|---|---|
+| MLflow 서버 응답 | ✅ |
+| Run 생성 | ✅ |
+| S3 호환 Artifact 업로드 | ✅ |
+| Artifact 다운로드 및 검증 | ✅ |
+| Run Status | FINISHED ✅ |
+
+### Phase 7: 영속성 검증 (down→up) ✅
+
+| 항목 | 결과 |
+|---|---|
+| PostgreSQL named volume | ✅ 영속성 확인 |
+| MinIO Object 영속성 | ✅ 영속성 확인 |
+| 기존 Run 재조회 | ✅ 동일 Run ID 확인 |
+| Artifact 재다운로드 | ✅ 성공 |
+
+### Phase 8: GCS Artifact E2E ✅
+
+**환경**:
+- GCP Project: `ar-infra-501607`
+- Bucket: `gs://ar-infra-501607-autoresearch-mlflow-artifacts`
+- MLflow: `ghcr.io/mlflow/mlflow:v2.22.1`
+- Backend Store: PostgreSQL
+- 인증: 로컬 ADC (Application Default Credentials)
+- Artifact 방식: MLflow Artifact Proxy Mode
+
+**문제 해결**:
+- 초기 오류: Project ID를 추론하지 못함
+- 해결: `GOOGLE_CLOUD_PROJECT=${GCP_PROJECT_ID}` 환경변수 추가
+
+**검증 결과**:
+
+| 항목 | 결과 |
+|---|---|
+| Bucket 접근 | ✅ |
+| Object 업로드 | ✅ |
+| Object 다운로드 | ✅ |
+| 내용 비교 | ✅ |
+| MLflow Smoke Test | ✅ |
+| Run Status | FINISHED ✅ |
+| GCS Object 생성 | ✅ |
+
+**생성된 GCS Object**:
+```
+gs://ar-infra-501607-autoresearch-mlflow-artifacts/mlflow-artifacts/7/bafd490a32b4476a978cbd6bd3733a16/artifacts/smoke-artifact.txt
+```
 
 #### 결론
 
@@ -336,32 +401,150 @@ mlflow-server = [
 
 ---
 
-## 13. Decision (진행 중)
+## 14. Decision (최종 확정)
 
 ### MLflow 버전
 
-**확정됨**: v2.22.1 (프로젝트 고정 버전)
+**✅ 확정됨**: v2.22.1 (프로젝트 고정 버전)
 
 ### 공식 이미지 의존성
 
-**검증 완료 (Phase 3)**:
+**✅ 검증 완료**:
 - 공식 이미지 v2.22.1 (Digest: `sha256:752d6d7e9fae6c321a67632fdc835b42b2d39f6dd6d684e483f4de0772743e81`)
-- 필요한 모든 패키지 미포함
+- 필요한 3가지 패키지 미포함:
+  - `psycopg2-binary` (PostgreSQL)
+  - `boto3` (MinIO/S3)
+  - `google-cloud-storage` (GCS)
 
 ### 이미지 선택
 
-**검증 진행 중 (Phase 4-8)**:
-- Compose 실행 후 최종 Runtime 상태 확인 중
-- 현재까지 공식 이미지 그대로 사용은 불가능
-- 최소 파생 이미지 필요 가능성 높음
+**✅ 최소 파생 이미지 필수**
 
-### Registry 선택
+**근거**:
+1. 공식 이미지는 필수 Runtime 패키지 3가지 미포함 (Phase 3)
+2. Compose 시작 시 설치로 보완 가능함 확인 (Phase 4)
+3. Local/MinIO/GCS 모두 E2E 검증 완료 (Phase 5-8)
+4. 현재 Compose는 임시 방식 (프로덕션 부적합)
+5. 최종 Linux 배포는 Build-time 설치 필요
 
-**검증 예정**: 이미지 결정 후 선택
+**최소 파생 이미지 구성**:
 
-### 최종 이미지 URI
+```text
+deploy/mlflow/Dockerfile
+deploy/mlflow/runtime/pyproject.toml
+deploy/mlflow/runtime/uv.lock
+```
 
-**확정 예정**: Phase 9에서 결정
+Dockerfile은 루트 프로젝트 manifest가 아니라 MLflow 서버 전용 runtime manifest와 lockfile을 복사한다. Build 단계에서는 `uv export --frozen --no-dev --no-hashes`로 requirements를 생성하고, 파일이 비어 있지 않은지 확인한 뒤 `uv pip install --system`으로 설치한다.
+
+**Runtime manifest**:
+
+```toml
+[project]
+name = "autoresearch-mlflow-runtime"
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "psycopg2-binary==2.9.10",
+    "boto3==1.43.47",
+    "google-cloud-storage==2.19.0",
+    "protobuf<7",
+]
+
+[tool.uv]
+package = false
+```
+
+루트 프로젝트는 Python `>=3.11,<3.14` 범위의 학습/애플리케이션 환경을 관리하고, MLflow 서버 이미지는 Python 3.10 공식 이미지 위에서 별도 manifest/lockfile로 관리한다. 두 환경을 같은 `uv.lock`에 묶지 않는다.
+
+### Runtime 의존성 최종 결정
+
+| 패키지 | 제약 조건 | 검증 버전 | 설치 방식 | 용도 |
+|---|---|---|---|---|
+| `psycopg2-binary` | ==2.9.10 | 2.9.10 | UV Build-time | PostgreSQL Backend |
+| `boto3` | ==1.43.47 | 1.43.47 | UV Build-time | MinIO/S3 Artifact |
+| `google-cloud-storage` | ==2.19.0 | 2.19.0 | UV Build-time | GCS Artifact |
+| `protobuf` | <7 | 6.33.6 | UV Build-time | MLflow 2.22.1 API 호환성 |
+
+`protobuf<7`은 MLflow 2.22.1 호환성 제약이다. 최초 runtime lock에서 `protobuf==7.35.1`이 선택되자 MLflow API 요청 중 `FieldDescriptor.label` 오류가 발생했다. `protobuf<7` 추가 후 `protobuf==6.33.6`으로 고정했고 Local/MinIO/GCS 검증에서 정상 동작을 확인했다.
+
+### 컨테이너 시작 시 pip install 제거
+
+**최종 상태**:
+
+Compose command에는 `mlflow server` 실행만 남기고 시작 시 `pip install`을 제거했다. 패키지는 `autoresearch-mlflow-server:2.22.1-runtime-v1` 이미지 build-time에 설치된다.
+
+검증 결과 `deploy/mlflow` 하위 Compose YAML에서 `pip install` 문자열은 0건이다. Pod 시작 시간 단축, 네트워크 장애 영향 제거, 버전 재현성을 확보한다.
+
+### Base 이미지와 최종 이미지 Registry 구분
+
+**Base Image**:
+```text
+ghcr.io/mlflow/mlflow:v2.22.1
+Python: 3.10.18
+Digest: sha256:752d6d7e9fae6c321a67632fdc835b42b2d39f6dd6d684e483f4de0772743e81
+```
+
+**Final Derived Image**:
+```text
+Local tag: autoresearch-mlflow-server:2.22.1-runtime-v1
+Build 도구: UV
+Dependency source: deploy/mlflow/runtime/pyproject.toml + deploy/mlflow/runtime/uv.lock
+```
+
+### Python Runtime 결정
+
+**✅ 확정됨**:
+
+MLflow Tracking Server는 공식 MLflow v2.22.1 이미지가 제공하는 **Python 3.10.18** Runtime을 사용한다.
+
+학습 파이프라인의 Python 3.12 환경과 MLflow 서버 환경은 **독립된 컨테이너**이며, MLflow API를 통해 통신하므로 Python 버전을 동일하게 맞추지 않는다.
+
+**현재 #94에서는 공식 이미지의 검증된 실행 환경을 유지**하고, 필요한 PostgreSQL, S3 및 GCS Runtime 패키지만 추가한다.
+
+**Risk**:
+Python 3.10의 지원 종료가 2026년 10월로 예정되어 있다.
+
+**Mitigation**:
+전체 파이프라인 안정화 후 MLflow 및 Python Runtime 업그레이드를 별도 후속 과제로 관리한다.
+
+### Kubernetes 배포 이미지
+
+**최종 결정**:
+- 최소 파생 이미지 사용
+- Backend Store: PostgreSQL (Secret)
+- Artifact Proxy Mode: GCS (Workload Identity)
+- 환경변수 필수:
+  - `MLFLOW_BACKEND_STORE_URI`: PostgreSQL 연결 문자열
+  - `MLFLOW_ARTIFACT_DESTINATION`: GCS 경로
+  - `GOOGLE_CLOUD_PROJECT`: GCP Project ID (선택사항, ADC 추론 가능)
+
+### #94 현재 상태
+
+**✅ Phase 9 이미지 전략 결정: 완료**
+- MLflow v2.22.1 고정
+- Python 3.10.18 Runtime 허용
+- 공식 이미지 기반 최소 파생 이미지 선택
+- UV 기반 Build-time 설치
+- Runtime 패키지 제약 조건 확정
+
+**✅ Phase 10 최소 파생 이미지 구현 및 검증: 완료**
+- Dockerfile 작성 완료
+- MLflow runtime 전용 manifest/lockfile 생성 완료
+- 이미지 Build 완료: `autoresearch-mlflow-server:2.22.1-runtime-v1`
+- Local Artifact E2E 완료
+- MinIO Artifact E2E 완료
+- GCS Artifact Proxy E2E 완료
+- PostgreSQL Run 영속성 확인 완료
+- MinIO Object 영속성 확인 완료
+- Compose 시작 시 `pip install` 제거 완료
+
+**❌ 제외 항목** (후속 과제):
+- Kubernetes 배포 설정 (#95)
+- Workload Identity (#95)
+- GCS IAM 권한 (#95)
+- Python 3.10 Runtime 업그레이드 (별도 후속 과제)
+- MLflow 3.x 업그레이드 (별도 후속 과제)
 
 ---
 
@@ -378,16 +561,41 @@ mlflow-server = [
 
 ## 15. 검증 일정
 
-| Phase | 작업 | 소요 시간 | 상태 |
-|---|---|---|---|
-| 0 | Smoke Test 인터페이스 확인 | ~5분 | ✅ 완료 |
-| 1 | Spec 초안 작성 | ~30분 | ✅ 완료 |
-| 2 | #94 이슈 수정 | ~20분 | ✅ 완료 |
-| 3 | 공식 이미지 의존성 검증 | ~10분 | ✅ 완료 |
-| 4 | Compose Runtime 검증 | ~20분 | ⏳ 진행 예정 |
-| 5-8 | 로컬 E2E 검증 | ~30분 | ⏳ 예정 |
-| 9-14 | 이미지 결정 및 문서화 | ~30분 | ⏳ 예정 |
+| Phase | 작업 | 상태 |
+|---|---|---|
+| 0 | Smoke Test 인터페이스 확인 | ✅ 완료 |
+| 1 | Spec 초안 작성 | ✅ 완료 |
+| 2 | #94 이슈 수정 | ✅ 완료 |
+| 3 | 공식 이미지 의존성 검증 | ✅ 완료 |
+| 4 | Compose Runtime 검증 | ✅ 완료 |
+| 5 | Local Artifact E2E | ✅ 완료 |
+| 6 | MinIO Artifact E2E | ✅ 완료 |
+| 7 | 영속성 검증 (down→up) | ✅ 완료 |
+| 8 | GCS Artifact E2E | ✅ 완료 |
+| 9 | 최종 이미지 결정 | ✅ 완료 |
+| 10 | Decision 및 Spec 최종화 | ✅ 완료 |
 
 ---
 
-**다음**: Phase 4 - Compose 실행 후 최종 Runtime 확인
+## 16. 다음 단계
+
+### #94 마무리
+
+최소 파생 이미지 구현과 Local/MinIO/GCS 검증은 완료됐다. 남은 작업은 관련 파일만 커밋하고 원격 브랜치와 동기화한 뒤 push하는 것이다.
+
+### #95 (Kubernetes 배포)
+
+이어서 진행:
+
+1. **Workload Identity 설정**
+   - ServiceAccount 생성
+   - GCS IAM 권한
+
+2. **Kubernetes Deployment 작성**
+   - Pod 사양
+   - Volume/Secret 마운트
+   - 환경변수 설정
+
+3. **통합 테스트**
+   - Pod에서 GCS Artifact 업로드
+   - Run 조회 검증
