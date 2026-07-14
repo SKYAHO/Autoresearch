@@ -80,7 +80,3 @@ conflicts = [
     [{ group = "feast" }, { group = "dev" }],
     [{ group = "feast" }, { group = "proxy" }],
 ]
-
-[tool.uv.dependency-groups]
-# MLflow 서버 그룹: 공식 이미지 Python 3.10.18 전용.
-mlflow-server = { requires-python = ">=3.10,<3.11" }
