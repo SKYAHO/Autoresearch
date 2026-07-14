@@ -17,6 +17,9 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from src.models.lgbm_model import LGBMModel  # noqa: E402
 from src.utils.model_utils import save_model, save_feature_columns  # noqa: E402
+from src.tracking.client import set_tracking_uri, get_or_create_experiment  # noqa: E402
+from src.tracking.logger import log_params, log_metrics, log_artifact  # noqa: E402
+import mlflow  # noqa: E402
 
 
 def get_project_root():
@@ -51,6 +54,13 @@ def main(
     elif not os.path.isabs(config_path):
         config_path = os.path.join(project_root, config_path)
     config = load_config(config_path)
+
+    # MLflow 초기화
+    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+    set_tracking_uri(tracking_uri)
+    experiment_name = "ctr-model-training"
+    experiment_id = get_or_create_experiment(experiment_name)
+    mlflow.start_run(experiment_id=experiment_id)
 
     print("=" * 70)
     print("LightGBM 모델 훈련")
@@ -136,6 +146,17 @@ def main(
     else:
         print(f"  [OK] 고정값: {scale_pos_weight}")
 
+    # MLflow: Parameter 기록
+    mlflow.log_param("model_type", "LightGBM")
+    mlflow.log_param("n_estimators", config["model"]["n_estimators"])
+    mlflow.log_param("learning_rate", config["model"]["learning_rate"])
+    mlflow.log_param("num_leaves", config["model"]["num_leaves"])
+    mlflow.log_param("scale_pos_weight", scale_pos_weight)
+    mlflow.log_param("random_state", random_state)
+    mlflow.log_param("train_size", len(train_df))
+    mlflow.log_param("val_size", len(val_df))
+    mlflow.log_param("test_size", len(test_df))
+
     print("\n[Step 6] LightGBM 모델 훈련...")
     model = LGBMModel(
         scale_pos_weight=scale_pos_weight,
@@ -151,6 +172,11 @@ def main(
     y_val_pred_proba = model.predict_proba(X_val)[:, 1]
     val_roc_auc = roc_auc_score(y_val, y_val_pred_proba)
     print(f"  [OK] Val ROC-AUC: {val_roc_auc:.4f}")
+
+    # MLflow: Metric 기록
+    mlflow.log_metric("val_roc_auc", val_roc_auc)
+    mlflow.log_metric("train_positive_ratio", y_train.mean())
+    mlflow.log_metric("val_positive_ratio", y_val.mean())
 
     if (X_val["historical_category_match"] == 1).sum() == 0:
         print("  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
@@ -171,6 +197,13 @@ def main(
 
     save_model(model.model, model_path)
     save_feature_columns(feature_columns, feature_columns_path)
+
+    # MLflow: Artifact 기록
+    mlflow.log_artifact(model_path, artifact_path="model")
+    mlflow.log_artifact(feature_columns_path, artifact_path="features")
+
+    # MLflow: Run 종료
+    mlflow.end_run()
 
     print("\n" + "=" * 70)
     print("훈련 완료")
