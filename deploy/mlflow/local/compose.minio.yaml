@@ -11,10 +11,15 @@ services:
     volumes:
       - minio-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test:
+        - CMD
+        - curl
+        - -f
+        - http://127.0.0.1:9000/minio/health/live
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 10s
     networks:
       - default
 
@@ -25,7 +30,10 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      /usr/bin/mc alias set minio http://minio:9000 ${MINIO_ROOT_USER:-minio-user} ${MINIO_ROOT_PASSWORD:-minio-password} &&
+      /usr/bin/mc alias set minio
+        http://minio:9000
+        ${MINIO_ROOT_USER:-minio-user}
+        ${MINIO_ROOT_PASSWORD:-minio-password} &&
       /usr/bin/mc mb minio/mlflow-artifacts --ignore-existing &&
       echo 'Bucket mlflow-artifacts created/exists'
       "
@@ -37,17 +45,23 @@ services:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio-user}
       AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minio-password}
-    command: >
-      sh -c "pip install -q psycopg2-binary==2.9.10 &&
-      mlflow server
-        --host 0.0.0.0
-        --port 5000
-        --backend-store-uri postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow_local_password}@postgres:5432/${POSTGRES_DB:-mlflow}
-        --serve-artifacts
-        --artifacts-destination s3://mlflow-artifacts"
+      AWS_DEFAULT_REGION: us-east-1
     depends_on:
+      postgres:
+        condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+    command:
+      - sh
+      - -c
+      - |
+        pip install -q psycopg2-binary==2.9.10 boto3 &&
+        exec mlflow server \
+          --host 0.0.0.0 \
+          --port 5000 \
+          --backend-store-uri "postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow_local_password}@postgres:5432/${POSTGRES_DB:-mlflow}" \
+          --serve-artifacts \
+          --artifacts-destination s3://mlflow-artifacts
 
 volumes:
   minio-data:
