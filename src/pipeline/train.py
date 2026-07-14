@@ -204,8 +204,8 @@ def main(
         save_model(model.model, model_path)
         save_feature_columns(feature_columns, feature_columns_path)
 
-        log_artifact(model_path, artifact_path="model")
-        log_artifact(feature_columns_path, artifact_path="features")
+        log_artifact(local_path=model_path, artifact_path="model")
+        log_artifact(local_path=feature_columns_path, artifact_path="features")
 
     print("\n" + "=" * 70)
     print("훈련 완료")
