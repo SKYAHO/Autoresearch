@@ -221,3 +221,86 @@ jobs:
             echo
             echo "Existing registry digests are retained as rollback candidates."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  promote-airflow-digest:
+    name: Open Airflow digest promotion PR
+    needs: publish-application-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Create installation token for the Airflow repository
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: Autoresearch-airflow
+
+      - name: Checkout Airflow deployment repository
+        uses: actions/checkout@v6
+        with:
+          repository: SKYAHO/Autoresearch-airflow
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+          path: airflow-repo
+
+      - name: Update the immutable application digest
+        env:
+          DIGEST_REF: ${{ needs.publish-application-image.outputs.digest_ref }}
+          SOURCE_SHA: ${{ needs.publish-application-image.outputs.source_sha }}
+        shell: bash
+        run: |
+          python airflow-repo/scripts/promote_batch_image.py \
+            --values airflow-repo/deploy/airflow/values.yaml \
+            --digest-ref "$DIGEST_REF" \
+            --source-sha "$SOURCE_SHA"
+
+      - name: Resolve promotion branch
+        id: promotion-branch
+        env:
+          SOURCE_SHA: ${{ needs.publish-application-image.outputs.source_sha }}
+        shell: bash
+        run: echo "short_sha=${SOURCE_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: Create Airflow promotion pull request
+        id: promotion-pr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          path: airflow-repo
+          add-paths: deploy/airflow/values.yaml
+          base: main
+          branch: automation/batch-${{ steps.promotion-branch.outputs.short_sha }}
+          delete-branch: true
+          commit-message: "chore: batch image digest 승격"
+          title: "chore: batch image digest 승격 (${{ steps.promotion-branch.outputs.short_sha }})"
+          body: |
+            Autoresearch application release가 검증한 immutable image를 dev Airflow 배포 후보로 승격합니다.
+
+            - Source SHA: `${{ needs.publish-application-image.outputs.source_sha }}`
+            - Digest: `${{ needs.publish-application-image.outputs.digest_ref }}`
+            - Release workflow: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+
+            이 PR의 CI가 통과한 뒤 사람이 merge하면 Airflow 저장소의 GKE 배포 workflow가 실행됩니다.
+
+      - name: Write promotion summary
+        env:
+          PULL_REQUEST_URL: ${{ steps.promotion-pr.outputs.pull-request-url }}
+          SOURCE_SHA: ${{ needs.publish-application-image.outputs.source_sha }}
+          DIGEST_REF: ${{ needs.publish-application-image.outputs.digest_ref }}
+        shell: bash
+        run: |
+          {
+            echo "## Airflow digest promotion"
+            echo
+            echo "- Source SHA: \`$SOURCE_SHA\`"
+            echo "- Digest: \`$DIGEST_REF\`"
+            if [[ -n "$PULL_REQUEST_URL" ]]; then
+              echo "- Pull request: $PULL_REQUEST_URL"
+            else
+              echo "- Pull request: no change (the digest is already current)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
