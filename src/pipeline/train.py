@@ -18,7 +18,7 @@ sys.path.insert(0, PROJECT_ROOT)
 from src.models.lgbm_model import LGBMModel  # noqa: E402
 from src.utils.model_utils import save_model, save_feature_columns  # noqa: E402
 from src.tracking.client import set_tracking_uri, get_or_create_experiment  # noqa: E402
-from src.tracking.logger import log_params, log_metrics, log_artifact  # noqa: E402
+from src.tracking.logger import log_artifact, log_metrics, log_parameters  # noqa: E402
 import mlflow  # noqa: E402
 
 
@@ -60,150 +60,152 @@ def main(
     set_tracking_uri(tracking_uri)
     experiment_name = "ctr-model-training"
     experiment_id = get_or_create_experiment(experiment_name)
-    mlflow.start_run(experiment_id=experiment_id)
 
     print("=" * 70)
     print("LightGBM 모델 훈련")
     print("=" * 70)
 
-    print("\n[Step 1] 데이터 로드...")
-    if data_path is None:
-        data_path = os.path.join(project_root, config["data"]["path"])
-    elif not os.path.isabs(data_path):
-        data_path = os.path.join(project_root, data_path)
-    dataset = pd.read_csv(data_path)
-    print(f"  [OK] {len(dataset)} rows, {len(dataset.columns)} columns")
+    with mlflow.start_run(experiment_id=experiment_id):
+        print("\n[Step 1] 데이터 로드...")
+        if data_path is None:
+            data_path = os.path.join(project_root, config["data"]["path"])
+        elif not os.path.isabs(data_path):
+            data_path = os.path.join(project_root, data_path)
+        dataset = pd.read_csv(data_path)
+        print(f"  [OK] {len(dataset)} rows, {len(dataset.columns)} columns")
 
-    print("\n[Step 2] Train/Val/Test 분할 (Test는 완전 held-out)...")
-    if test_size is None:
-        test_size = config["data"]["test_size"]
-    if val_size is None:
-        val_size = config["data"]["val_size"]
-    if random_state is None:
-        random_state = config["data"]["random_state"]
+        print("\n[Step 2] Train/Val/Test 분할 (Test는 완전 held-out)...")
+        if test_size is None:
+            test_size = config["data"]["test_size"]
+        if val_size is None:
+            val_size = config["data"]["val_size"]
+        if random_state is None:
+            random_state = config["data"]["random_state"]
 
-    if test_size + val_size >= 1:
-        raise ValueError(
-            f"test_size({test_size}) + val_size({val_size}) >= 1 입니다 — "
-            "train에 데이터가 남지 않거나 분할 자체가 불가능합니다. "
-            "두 값의 합이 1보다 작아야 합니다 (예: test_size=0.2, val_size=0.2)."
+        if test_size + val_size >= 1:
+            raise ValueError(
+                f"test_size({test_size}) + val_size({val_size}) >= 1 입니다 — "
+                "train에 데이터가 남지 않거나 분할 자체가 불가능합니다. "
+                "두 값의 합이 1보다 작아야 합니다 (예: test_size=0.2, val_size=0.2)."
+            )
+
+        train_val_df, test_df = train_test_split(
+            dataset,
+            test_size=test_size,
+            random_state=random_state,
+            stratify=dataset["clicked"],
+        )
+        val_ratio_within_train_val = val_size / (1 - test_size)
+        train_df, val_df = train_test_split(
+            train_val_df,
+            test_size=val_ratio_within_train_val,
+            random_state=random_state,
+            stratify=train_val_df["clicked"],
+        )
+        print(f"  [OK] Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)} (Test는 학습에 미사용)")
+
+        if test_set_output is None:
+            test_set_path = os.path.join(project_root, config["artifacts"]["test_set_path"])
+        elif not os.path.isabs(test_set_output):
+            test_set_path = os.path.join(project_root, test_set_output)
+        else:
+            test_set_path = test_set_output
+        os.makedirs(os.path.dirname(test_set_path), exist_ok=True)
+        test_df.to_csv(test_set_path, index=False)
+        print(f"  [저장] Test set (held-out): {test_set_path}")
+
+        print("\n[Step 3] Feature/Label 분리...")
+        feature_columns = config["data"]["feature_columns"]
+        categorical_columns = config["data"]["categorical_columns"]
+
+        X_train = train_df[feature_columns].copy()
+        y_train = train_df["clicked"].copy()
+        X_val = val_df[feature_columns].copy()
+        y_val = val_df["clicked"].copy()
+
+        print(f"  [OK] Train features: {X_train.shape}, ratio={y_train.mean():.3%}")
+        print(f"  [OK] Val features: {X_val.shape}, ratio={y_val.mean():.3%}")
+
+        print("\n[Step 4] Categorical 컬럼 dtype 변환...")
+        for col in categorical_columns:
+            if col in X_train.columns:
+                categories = pd.api.types.union_categoricals(
+                    [X_train[col].astype("category"), X_val[col].astype("category")]
+                ).categories
+                X_train[col] = pd.Categorical(X_train[col], categories=categories)
+                X_val[col] = pd.Categorical(X_val[col], categories=categories)
+        print(f"  [OK] {len(categorical_columns)} categorical columns 설정")
+
+        print("\n[Step 5] scale_pos_weight 계산...")
+        scale_pos_weight = config["model"]["scale_pos_weight"]
+        if scale_pos_weight == "auto":
+            neg_count = (y_train == 0).sum()
+            pos_count = (y_train == 1).sum()
+            scale_pos_weight = neg_count / pos_count
+            print(f"  [OK] auto 계산: neg={neg_count}, pos={pos_count}, ratio={scale_pos_weight:.2f}")
+        else:
+            print(f"  [OK] 고정값: {scale_pos_weight}")
+
+        log_parameters(
+            {
+                "model_type": "LightGBM",
+                "n_estimators": config["model"]["n_estimators"],
+                "learning_rate": config["model"]["learning_rate"],
+                "num_leaves": config["model"]["num_leaves"],
+                "scale_pos_weight": scale_pos_weight,
+                "random_state": random_state,
+                "train_size": len(train_df),
+                "val_size": len(val_df),
+                "test_size": len(test_df),
+            }
         )
 
-    train_val_df, test_df = train_test_split(
-        dataset,
-        test_size=test_size,
-        random_state=random_state,
-        stratify=dataset["clicked"],
-    )
-    val_ratio_within_train_val = val_size / (1 - test_size)
-    train_df, val_df = train_test_split(
-        train_val_df,
-        test_size=val_ratio_within_train_val,
-        random_state=random_state,
-        stratify=train_val_df["clicked"],
-    )
-    print(f"  [OK] Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)} (Test는 학습에 미사용)")
+        print("\n[Step 6] LightGBM 모델 훈련...")
+        model = LGBMModel(
+            scale_pos_weight=scale_pos_weight,
+            n_estimators=config["model"]["n_estimators"],
+            learning_rate=config["model"]["learning_rate"],
+            num_leaves=config["model"]["num_leaves"],
+            random_state=random_state,
+        )
+        model.fit(X_train, y_train, categorical_features=categorical_columns)
+        print("  [OK] 훈련 완료")
 
-    if test_set_output is None:
-        test_set_path = os.path.join(project_root, config["artifacts"]["test_set_path"])
-    elif not os.path.isabs(test_set_output):
-        test_set_path = os.path.join(project_root, test_set_output)
-    else:
-        test_set_path = test_set_output
-    os.makedirs(os.path.dirname(test_set_path), exist_ok=True)
-    test_df.to_csv(test_set_path, index=False)
-    print(f"  [저장] Test set (held-out): {test_set_path}")
+        print("\n[Step 7] 검증...")
+        y_val_pred_proba = model.predict_proba(X_val)[:, 1]
+        val_roc_auc = roc_auc_score(y_val, y_val_pred_proba)
+        print(f"  [OK] Val ROC-AUC: {val_roc_auc:.4f}")
 
-    print("\n[Step 3] Feature/Label 분리...")
-    feature_columns = config["data"]["feature_columns"]
-    categorical_columns = config["data"]["categorical_columns"]
+        log_metrics(
+            {
+                "val_roc_auc": val_roc_auc,
+                "train_positive_ratio": float(y_train.mean()),
+                "val_positive_ratio": float(y_val.mean()),
+            }
+        )
 
-    X_train = train_df[feature_columns].copy()
-    y_train = train_df["clicked"].copy()
-    X_val = val_df[feature_columns].copy()
-    y_val = val_df["clicked"].copy()
+        if (X_val["historical_category_match"] == 1).sum() == 0:
+            print("  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
 
-    print(f"  [OK] Train features: {X_train.shape}, ratio={y_train.mean():.3%}")
-    print(f"  [OK] Val features: {X_val.shape}, ratio={y_val.mean():.3%}")
+        print("\n[Step 8] 모델 저장...")
+        if model_output is None:
+            model_path = os.path.join(project_root, config["artifacts"]["model_path"])
+        elif not os.path.isabs(model_output):
+            model_path = os.path.join(project_root, model_output)
+        else:
+            model_path = model_output
+        if feature_columns_output is None:
+            feature_columns_path = os.path.join(project_root, config["artifacts"]["feature_columns_path"])
+        elif not os.path.isabs(feature_columns_output):
+            feature_columns_path = os.path.join(project_root, feature_columns_output)
+        else:
+            feature_columns_path = feature_columns_output
 
-    print("\n[Step 4] Categorical 컬럼 dtype 변환...")
-    for col in categorical_columns:
-        if col in X_train.columns:
-            categories = pd.api.types.union_categoricals(
-                [X_train[col].astype("category"), X_val[col].astype("category")]
-            ).categories
-            X_train[col] = pd.Categorical(X_train[col], categories=categories)
-            X_val[col] = pd.Categorical(X_val[col], categories=categories)
-    print(f"  [OK] {len(categorical_columns)} categorical columns 설정")
+        save_model(model.model, model_path)
+        save_feature_columns(feature_columns, feature_columns_path)
 
-    print("\n[Step 5] scale_pos_weight 계산...")
-    scale_pos_weight = config["model"]["scale_pos_weight"]
-    if scale_pos_weight == "auto":
-        neg_count = (y_train == 0).sum()
-        pos_count = (y_train == 1).sum()
-        scale_pos_weight = neg_count / pos_count
-        print(f"  [OK] auto 계산: neg={neg_count}, pos={pos_count}, ratio={scale_pos_weight:.2f}")
-    else:
-        print(f"  [OK] 고정값: {scale_pos_weight}")
-
-    # MLflow: Parameter 기록
-    mlflow.log_param("model_type", "LightGBM")
-    mlflow.log_param("n_estimators", config["model"]["n_estimators"])
-    mlflow.log_param("learning_rate", config["model"]["learning_rate"])
-    mlflow.log_param("num_leaves", config["model"]["num_leaves"])
-    mlflow.log_param("scale_pos_weight", scale_pos_weight)
-    mlflow.log_param("random_state", random_state)
-    mlflow.log_param("train_size", len(train_df))
-    mlflow.log_param("val_size", len(val_df))
-    mlflow.log_param("test_size", len(test_df))
-
-    print("\n[Step 6] LightGBM 모델 훈련...")
-    model = LGBMModel(
-        scale_pos_weight=scale_pos_weight,
-        n_estimators=config["model"]["n_estimators"],
-        learning_rate=config["model"]["learning_rate"],
-        num_leaves=config["model"]["num_leaves"],
-        random_state=random_state,
-    )
-    model.fit(X_train, y_train, categorical_features=categorical_columns)
-    print("  [OK] 훈련 완료")
-
-    print("\n[Step 7] 검증...")
-    y_val_pred_proba = model.predict_proba(X_val)[:, 1]
-    val_roc_auc = roc_auc_score(y_val, y_val_pred_proba)
-    print(f"  [OK] Val ROC-AUC: {val_roc_auc:.4f}")
-
-    # MLflow: Metric 기록
-    mlflow.log_metric("val_roc_auc", val_roc_auc)
-    mlflow.log_metric("train_positive_ratio", y_train.mean())
-    mlflow.log_metric("val_positive_ratio", y_val.mean())
-
-    if (X_val["historical_category_match"] == 1).sum() == 0:
-        print("  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
-
-    print("\n[Step 8] 모델 저장...")
-    if model_output is None:
-        model_path = os.path.join(project_root, config["artifacts"]["model_path"])
-    elif not os.path.isabs(model_output):
-        model_path = os.path.join(project_root, model_output)
-    else:
-        model_path = model_output
-    if feature_columns_output is None:
-        feature_columns_path = os.path.join(project_root, config["artifacts"]["feature_columns_path"])
-    elif not os.path.isabs(feature_columns_output):
-        feature_columns_path = os.path.join(project_root, feature_columns_output)
-    else:
-        feature_columns_path = feature_columns_output
-
-    save_model(model.model, model_path)
-    save_feature_columns(feature_columns, feature_columns_path)
-
-    # MLflow: Artifact 기록
-    mlflow.log_artifact(model_path, artifact_path="model")
-    mlflow.log_artifact(feature_columns_path, artifact_path="features")
-
-    # MLflow: Run 종료
-    mlflow.end_run()
+        log_artifact(model_path, artifact_type="model")
+        log_artifact(feature_columns_path, artifact_type="features")
 
     print("\n" + "=" * 70)
     print("훈련 완료")
