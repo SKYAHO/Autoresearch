@@ -36,6 +36,8 @@ dev = [
     "datasets>=2.19",
     "fastapi>=0.115,<0.129",
     "httpx>=0.28,<0.29",
+    "google-cloud-bigquery>=3.20",
+    "python-dotenv>=1.0",
     { include-group = "lint" },
 ]
 # 린트 전용 표면 (CI lint job 은 이 그룹만 설치).
