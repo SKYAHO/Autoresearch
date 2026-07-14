@@ -1,7 +1,6 @@
-# syntax=docker/dockerfile:1
+﻿# syntax=docker/dockerfile:1
 
-# 실제 사용 중인 UV 버전으로 고정한다.
-ARG UV_VERSION=0.11.28
+ARG UV_VERSION=0.10.0
 
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
@@ -14,22 +13,19 @@ ENV UV_SYSTEM_PYTHON=1
 
 WORKDIR /opt/mlflow-runtime
 
-COPY pyproject.toml uv.lock ./
+COPY deploy/mlflow/runtime/pyproject.toml ./pyproject.toml
+COPY deploy/mlflow/runtime/uv.lock ./uv.lock
 
 RUN uv export \
       --frozen \
-      --only-group mlflow-server \
+      --no-dev \
       --no-hashes \
-      --no-header \
-      --output-file /tmp/mlflow-server-requirements.txt \
-    && echo "===== exported requirements =====" \
-    && cat /tmp/mlflow-server-requirements.txt \
-    && echo "===== installing requirements =====" \
+      --output-file /tmp/mlflow-runtime-requirements.txt \
+    && test -s /tmp/mlflow-runtime-requirements.txt \
     && uv pip install \
       --system \
-      --requirement /tmp/mlflow-server-requirements.txt \
-    && echo "===== verifying imports =====" \
-    && python -c "import psycopg2, boto3, google.cloud.storage; print('psycopg2=', psycopg2.__version__); print('boto3=', boto3.__version__); print('google-cloud-storage=', google.cloud.storage.__version__)" \
-    && rm -f /tmp/mlflow-server-requirements.txt
+      --requirement /tmp/mlflow-runtime-requirements.txt \
+    && python -c "import psycopg2; import boto3; import google.cloud.storage; print('psycopg2:', psycopg2.__version__); print('boto3:', boto3.__version__); print('google-cloud-storage:', google.cloud.storage.__version__)" \
+    && rm -f /tmp/mlflow-runtime-requirements.txt
 
 EXPOSE 5000

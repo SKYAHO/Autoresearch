@@ -1,13 +1,23 @@
 services:
   mlflow:
     environment:
-      GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcs-key.json
+      GOOGLE_APPLICATION_CREDENTIALS: /secrets/gcs-credentials.json
+      GOOGLE_CLOUD_PROJECT: ${GCP_PROJECT_ID:?GCP project ID is required}
+      MLFLOW_ARTIFACT_DESTINATION: ${MLFLOW_ARTIFACT_DESTINATION:?MLFLOW artifact destination is required}
+      POSTGRES_USER: ${POSTGRES_USER:-mlflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlflow_local_password}
+      POSTGRES_DB: ${POSTGRES_DB:-mlflow}
     volumes:
-      - ${GCS_KEY_FILE_HOST_PATH}:/secrets/gcs-key.json:ro
-    command: >
-      sh -c "pip install -q psycopg2-binary==2.9.10 'google-cloud-storage>=2,<3' &&
-      mlflow server
-        --host 0.0.0.0
-        --port 5000
-        --backend-store-uri postgresql://${POSTGRES_USER:-mlflow}:${POSTGRES_PASSWORD:-mlflow_local_password}@postgres:5432/${POSTGRES_DB:-mlflow}
-        --artifacts-destination ${MLFLOW_ARTIFACT_DESTINATION}"
+      - ${GCS_KEY_FILE_HOST_PATH:?GCS credentials file path is required}:/secrets/gcs-credentials.json:ro
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        exec mlflow server \
+          --host 0.0.0.0 \
+          --port 5000 \
+          --backend-store-uri \
+          "postgresql://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/$${POSTGRES_DB}" \
+          --serve-artifacts \
+          --artifacts-destination "$${MLFLOW_ARTIFACT_DESTINATION}"
