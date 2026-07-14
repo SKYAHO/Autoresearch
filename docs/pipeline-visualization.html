@@ -1,0 +1,717 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube 수집 복원력 파이프라인</title>
+  <style>
+    :root {
+      --bg: #070b16;
+      --bg-grad: radial-gradient(ellipse 80% 60% at 50% -10%, #1e1b4b 0%, transparent 60%),
+                  radial-gradient(ellipse 60% 50% at 90% 110%, #0c4a6e22 0%, transparent 60%),
+                  #070b16;
+      --panel: rgba(23, 31, 48, 0.55);
+      --panel-solid: #131b2b;
+      --border: rgba(148, 163, 184, 0.12);
+      --border-strong: rgba(148, 163, 184, 0.25);
+      --text: #e8edf5;
+      --text-dim: #a3aec0;
+      --muted: #7d889c;
+      --indigo: #818cf8;
+      --cyan: #22d3ee;
+      --violet: #a78bfa;
+      --emerald: #34d399;
+      --amber: #fbbf24;
+      --rose: #fb7185;
+      --shadow: 0 20px 50px -20px rgba(0,0,0,0.6);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      height: 100vh;
+      overflow: hidden;
+      font-family: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", "Pretendard", "Noto Sans KR", sans-serif;
+      background: var(--bg-grad);
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      max-width: 1320px;
+      margin: 0 auto;
+      padding: 1.1rem 1.75rem 1.25rem;
+    }
+    /* 헤더 */
+    header { flex-shrink: 0; }
+    .head-row {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      margin-bottom: 0.9rem;
+    }
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 0.7rem;
+    }
+    .brand h1 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text);
+    }
+    .brand .badge {
+      font-size: 0.66rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--indigo);
+      padding: 0.18rem 0.5rem;
+      border: 1px solid rgba(129,140,248,0.3);
+      border-radius: 999px;
+      background: rgba(129,140,248,0.08);
+    }
+    .head-meta {
+      font-size: 0.74rem;
+      color: var(--muted);
+      letter-spacing: 0.01em;
+    }
+    .tabs {
+      display: flex;
+      gap: 0.15rem;
+      padding: 0.2rem;
+      background: rgba(15, 21, 34, 0.6);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      backdrop-filter: blur(12px);
+      width: fit-content;
+    }
+    .tab-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-dim);
+      padding: 0.5rem 1.05rem;
+      border-radius: 9px;
+      cursor: pointer;
+      font-size: 0.84rem;
+      font-weight: 500;
+      font-family: inherit;
+      transition: color 0.2s, background 0.2s;
+      white-space: nowrap;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      color: #fff;
+      background: linear-gradient(135deg, rgba(129,140,248,0.9), rgba(34,211,238,0.75));
+      box-shadow: 0 6px 20px -6px rgba(129,140,248,0.5);
+    }
+    /* 메인 */
+    main {
+      flex: 1;
+      min-height: 0;
+      margin-top: 1rem;
+      position: relative;
+    }
+    .panel {
+      display: none;
+      height: 100%;
+      animation: rise 0.4s cubic-bezier(0.16,1,0.3,1);
+    }
+    .panel.active {
+      display: grid;
+      grid-template-columns: 1.35fr 1fr;
+      gap: 1.1rem;
+    }
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .stage-canvas, .side {
+      min-height: 0;
+      min-width: 0;
+    }
+    .stage-canvas {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 1.4rem;
+      backdrop-filter: blur(14px);
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .canvas-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 0.9rem;
+    }
+    .canvas-body {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 0;
+    }
+    .side {
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      min-height: 0;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.1rem 1.25rem;
+      backdrop-filter: blur(14px);
+      box-shadow: var(--shadow);
+    }
+    .card h3 {
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      color: var(--text);
+      margin-bottom: 0.45rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .card h3::before {
+      content: "";
+      width: 3px;
+      height: 13px;
+      border-radius: 2px;
+      background: linear-gradient(var(--indigo), var(--cyan));
+    }
+    .card p {
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+    .card p strong { color: var(--text); font-weight: 600; }
+    .card p code {
+      background: rgba(34,211,238,0.1);
+      color: var(--cyan);
+      padding: 0.08rem 0.38rem;
+      border-radius: 5px;
+      font-size: 0.78rem;
+      font-family: "SF Mono", ui-monospace, monospace;
+    }
+    /* 노드/플로우 컴포넌트 */
+    .flow-h {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      flex-wrap: wrap;
+    }
+    .node {
+      background: linear-gradient(160deg, rgba(30,41,59,0.9), rgba(20,28,43,0.95));
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      padding: 0.9rem 1.1rem;
+      min-width: 130px;
+      text-align: center;
+      position: relative;
+      transition: transform 0.25s cubic-bezier(0.16,1,0.3,1), box-shadow 0.25s, border-color 0.25s;
+    }
+    .node:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 12px 30px -8px var(--glow, rgba(129,140,248,0.4));
+      border-color: var(--ring, rgba(129,140,248,0.5));
+    }
+    .node .ico { font-size: 1.3rem; margin-bottom: 0.3rem; }
+    .node .nm { font-size: 0.82rem; font-weight: 600; color: var(--text); }
+    .node .sub { font-size: 0.68rem; color: var(--muted); margin-top: 0.2rem; line-height: 1.3; }
+    .node.indigo { --glow: rgba(129,140,248,0.4); --ring: rgba(129,140,248,0.5); }
+    .node.indigo .nm { color: #c7d2fe; }
+    .node.violet { --glow: rgba(167,139,250,0.4); --ring: rgba(167,139,250,0.5); border-color: rgba(167,139,250,0.3); }
+    .node.violet .nm { color: #ddd6fe; }
+    .node.rose { --glow: rgba(251,113,133,0.4); --ring: rgba(251,113,133,0.5); border-color: rgba(251,113,133,0.3); }
+    .node.rose .nm { color: #fecdd3; }
+    .node.emerald { --glow: rgba(52,211,153,0.4); --ring: rgba(52,211,153,0.5); border-color: rgba(52,211,153,0.3); }
+    .node.emerald .nm { color: #a7f3d0; }
+    .node.amber { --glow: rgba(251,191,36,0.4); --ring: rgba(251,191,36,0.5); border-color: rgba(251,191,36,0.3); }
+    .node.amber .nm { color: #fde68a; }
+    .arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 46px;
+      flex-shrink: 0;
+      color: var(--muted);
+    }
+    .arrow svg { width: 100%; height: 14px; }
+    .arrow.dashed svg path { stroke-dasharray: 4 4; }
+    .arrow .lbl {
+      position: absolute;
+      font-size: 0.62rem;
+      color: var(--muted);
+      background: var(--bg);
+      padding: 0 4px;
+    }
+    .arrow-wrap { position: relative; display: flex; align-items: center; }
+    /* 복원력 단계 */
+    .stages {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.7rem;
+      width: 100%;
+    }
+    .stage {
+      background: linear-gradient(160deg, rgba(20,28,43,0.8), rgba(15,21,34,0.9));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 0.9rem 1.05rem;
+      cursor: pointer;
+      transition: all 0.22s cubic-bezier(0.16,1,0.3,1);
+      position: relative;
+      overflow: hidden;
+    }
+    .stage::before {
+      content: "";
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 3px;
+      background: var(--sc, var(--indigo));
+      opacity: 0.5;
+      transition: opacity 0.22s, width 0.22s;
+    }
+    .stage:hover { transform: translateY(-2px); border-color: var(--sc); }
+    .stage.sel {
+      border-color: var(--sc);
+      background: linear-gradient(160deg, color-mix(in srgb, var(--sc) 12%, rgba(20,28,43,0.9)), rgba(15,21,34,0.95));
+    }
+    .stage.sel::before { opacity: 1; width: 4px; }
+    .stage .sn { font-size: 0.66rem; font-weight: 700; letter-spacing: 0.08em; color: var(--sc); }
+    .stage .st { font-size: 0.92rem; font-weight: 600; margin-top: 0.18rem; color: var(--text); }
+    .stage .sg { font-size: 0.72rem; color: var(--muted); margin-top: 0.18rem; }
+    .stage-detail {
+      margin-top: 0.9rem;
+      padding: 1rem 1.15rem;
+      background: rgba(7,11,22,0.5);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      flex: 1;
+      overflow: auto;
+    }
+    .stage-detail h4 {
+      font-size: 0.95rem;
+      color: var(--sc, var(--indigo));
+      margin-bottom: 0.45rem;
+    }
+    .stage-detail .dsc {
+      font-size: 0.82rem;
+      color: var(--text-dim);
+      line-height: 1.6;
+    }
+    .kv {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.32rem 0.9rem;
+      font-size: 0.78rem;
+      margin-top: 0.7rem;
+      padding-top: 0.7rem;
+      border-top: 1px solid var(--border);
+    }
+    .kv dt { color: var(--muted); }
+    .kv dd { color: var(--text); }
+    /* 통계 */
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.7rem;
+    }
+    .stat {
+      background: linear-gradient(160deg, rgba(20,28,43,0.8), rgba(15,21,34,0.9));
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 0.95rem 1.1rem;
+      text-align: center;
+      transition: transform 0.2s;
+    }
+    .stat:hover { transform: translateY(-2px); }
+    .stat .v { font-size: 1.65rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1; }
+    .stat .l { font-size: 0.66rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.35rem; }
+    .stat.ok .v { color: var(--emerald); }
+    .stat.warn .v { color: var(--amber); }
+    .stat.neutral .v { color: var(--text-dim); }
+    /* verdict 테이블 */
+    .vtable { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    .vtable th {
+      text-align: left;
+      font-size: 0.64rem;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 0.5rem 0.6rem;
+      border-bottom: 1px solid var(--border-strong);
+    }
+    .vtable td {
+      padding: 0.62rem 0.6rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-dim);
+    }
+    .vtable tbody tr { transition: background 0.15s; }
+    .vtable tbody tr:hover { background: rgba(129,140,248,0.05); }
+    .vtable td:first-child { color: var(--text); }
+    .vtable code {
+      background: rgba(34,211,238,0.08);
+      color: var(--cyan);
+      padding: 0.08rem 0.38rem;
+      border-radius: 5px;
+      font-family: "SF Mono", ui-monospace, monospace;
+      font-size: 0.74rem;
+    }
+    .tag {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.68rem;
+      font-weight: 600;
+    }
+    .tag.ok { background: rgba(52,211,153,0.12); color: var(--emerald); }
+    .tag.warn { background: rgba(251,191,36,0.12); color: var(--amber); }
+    .tag.danger { background: rgba(251,113,133,0.12); color: var(--rose); }
+    .tag.info { background: rgba(129,140,248,0.12); color: var(--indigo); }
+    .hint { font-size: 0.72rem; color: var(--muted); margin-top: 0.7rem; line-height: 1.5; }
+    /* 레인 (프록시) */
+    .lanes { display: flex; flex-direction: column; gap: 0.9rem; width: 100%; }
+    .lane {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.7rem 0.9rem;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(15,21,34,0.5);
+    }
+    .lane.primary { border-color: rgba(34,211,238,0.25); }
+    .lane.fallback { border-color: rgba(251,191,36,0.25); border-style: dashed; }
+    .lane-tag {
+      font-size: 0.62rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 0.22rem 0.55rem;
+      border-radius: 6px;
+      flex-shrink: 0;
+    }
+    .lane.primary .lane-tag { background: rgba(34,211,238,0.12); color: var(--cyan); }
+    .lane.fallback .lane-tag { background: rgba(251,191,36,0.12); color: var(--amber); }
+    .lane-flow { display: flex; align-items: center; gap: 0.35rem; flex: 1; flex-wrap: wrap; }
+    .chip {
+      font-size: 0.72rem;
+      padding: 0.3rem 0.6rem;
+      background: rgba(30,41,59,0.7);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+    .sep { color: var(--muted); font-size: 0.8rem; }
+    /* 스크롤바 */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.2); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(148,163,184,0.35); }
+    @media (max-width: 980px) {
+      .panel.active { grid-template-columns: 1fr; }
+      .stage-canvas { min-height: 280px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="head-row">
+        <div class="brand">
+          <h1>YouTube 수집 복원력 파이프라인</h1>
+          <span class="badge">Airflow Orchestration</span>
+        </div>
+        <span class="head-meta">PR #56 · #48 · #77</span>
+      </div>
+      <nav class="tabs" id="tabs">
+        <button class="tab-btn active" data-tab="pipeline">파이프라인</button>
+        <button class="tab-btn" data-tab="resilience">복원력 4단계</button>
+        <button class="tab-btn" data-tab="verdict">에러 분류</button>
+        <button class="tab-btn" data-tab="proxy">프록시</button>
+        <button class="tab-btn" data-tab="empirical">실증 결과</button>
+      </nav>
+    </header>
+
+    <main>
+      <!-- 1. 파이프라인 -->
+      <div class="panel active" id="pipeline">
+        <div class="stage-canvas">
+          <div class="canvas-label">데이터 흐름</div>
+          <div class="canvas-body">
+            <div class="flow-h">
+              <div class="node indigo">
+                <div class="ico">🕐</div>
+                <div class="nm">Airflow DAG</div>
+                <div class="sub">youtube_trending_kr_daily</div>
+              </div>
+              <div class="arrow-wrap">
+                <div class="arrow"><svg viewBox="0 0 46 14"><path d="M2 7 H38" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M34 3 L42 7 L34 11" stroke="currentColor" stroke-width="1.5" fill="none"/></svg></div>
+              </div>
+              <div class="node violet">
+                <div class="ico">🛡️</div>
+                <div class="nm">ResilientYouTubeClient</div>
+                <div class="sub">복원력 레이어 · 591줄</div>
+              </div>
+              <div class="arrow-wrap">
+                <div class="arrow"><svg viewBox="0 0 46 14"><path d="M2 7 H38" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M34 3 L42 7 L34 11" stroke="currentColor" stroke-width="1.5" fill="none"/></svg></div>
+              </div>
+              <div class="node rose">
+                <div class="ico">📺</div>
+                <div class="nm">YouTube Data API v3</div>
+                <div class="sub">videos.list</div>
+              </div>
+              <div class="arrow-wrap">
+                <div class="arrow"><svg viewBox="0 0 46 14"><path d="M2 7 H38" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M34 3 L42 7 L34 11" stroke="currentColor" stroke-width="1.5" fill="none"/></svg></div>
+              </div>
+              <div class="node emerald">
+                <div class="ico">☁️</div>
+                <div class="nm">GCS 데이터 레이크</div>
+                <div class="sub">Parquet</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="side">
+          <div class="card">
+            <h3>담당 영역</h3>
+            <p>매일 트렌딩 영상 메타데이터를 수집해 GCS에 적재. <strong>ResilientYouTubeClient</strong>가 API 호출의 신뢰성을 담당.</p>
+          </div>
+          <div class="card">
+            <h3>해결한 문제</h3>
+            <p>단일 Key → 무효화 시 전체 중단. 부분 실패 허용 없음. IP밴 대응 부재. <strong>점진적 복구 + 운영 알람 최적화</strong>로 해결.</p>
+          </div>
+          <div class="card">
+            <h3>산출물</h3>
+            <p><code>client.py</code> · <code>proxy/app.py</code> · <code>docs/adr/0001</code> · 151 테스트 통과 · PR #56 main 머지</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. 복원력 -->
+      <div class="panel" id="resilience">
+        <div class="stage-canvas">
+          <div class="canvas-label">4단계 방어 — 단계를 클릭하세요</div>
+          <div class="stages" id="stages">
+            <div class="stage sel" data-i="0" style="--sc:#60a5fa">
+              <div class="sn">① BACKOFF</div>
+              <div class="st">재시도</div>
+              <div class="sg">일시적 5xx · rateLimit</div>
+            </div>
+            <div class="stage" data-i="1" style="--sc:#a78bfa">
+              <div class="sn">② ROTATE</div>
+              <div class="st">Key 롤링</div>
+              <div class="sg">keyInvalid · 401</div>
+            </div>
+            <div class="stage" data-i="2" style="--sc:#fbbf24">
+              <div class="sn">③ IP_BAN</div>
+              <div class="st">프록시 전환</div>
+              <div class="sg">전 Key 동일 403</div>
+            </div>
+            <div class="stage" data-i="3" style="--sc:#fb7185">
+              <div class="sn">④ TERMINAL</div>
+              <div class="st">즉시 종료</div>
+              <div class="sg">quota · config</div>
+            </div>
+          </div>
+          <div class="stage-detail" id="sdetail" style="--sc:#60a5fa">
+            <h4 id="sd-h">① 재시도 (BACKOFF)</h4>
+            <p class="dsc" id="sd-d">일시적 실패(5xx, rateLimitExceeded)를 tenacity 지수 백오프로 흡수합니다. 같은 Key로 재시도하며, BACKOFF 한도 소진 시 CollectionExhausted로 승격합니다.</p>
+            <dl class="kv" id="sd-kv">
+              <dt>실패 유형</dt><dd>5xx · rateLimitExceeded</dd>
+              <dt>스코프</dt><dd>일시적</dd>
+              <dt>복구</dt><dd><span class="tag ok">가능</span></dd>
+            </dl>
+          </div>
+        </div>
+        <div class="side">
+          <div class="card">
+            <h3>복원 철학</h3>
+            <p>API 호출 실패 시 <strong>점진적 강도</strong>의 4단계로 복구. 각 단계는 서로 다른 실패 유형을 흡분해 부분 실패를 허용합니다.</p>
+          </div>
+          <div class="card">
+            <h3>핵심 설계 결정</h3>
+            <p><code>accessNotConfigured</code>=프로젝트 스코프(회전 무효) · <code>userRateLimitExceeded</code>=보수적 회전 무효 · IP밴 시그니처는 최소 Key≥2일 때만 판정.</p>
+          </div>
+          <div class="card">
+            <h3>보안 불변량</h3>
+            <p>로깅은 <code>key_index</code>만 허용. Key값·헤더·본문·traceback·URL 전체 금지. <code>from None</code> 체인 scrub으로 credentials 누출 차단.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. 에러 분류 -->
+      <div class="panel" id="verdict">
+        <div class="stage-canvas">
+          <div class="canvas-label">Verdict 분류 매트릭스</div>
+          <div class="canvas-body" style="align-items:stretch; display:block; width:100%;">
+            <table class="vtable">
+              <thead>
+                <tr><th>Verdict</th><th>발생 조건 (reason)</th><th>스코프</th><th>동작</th><th>복구</th></tr>
+              </thead>
+              <tbody>
+                <tr><td><code>ROTATE</code></td><td>keyInvalid · keyExpired · 401</td><td>Key 단위</td><td><span class="tag info">② Key 롤링</span></td><td><span class="tag ok">가능</span></td></tr>
+                <tr><td><code>BACKOFF</code></td><td>5xx · rateLimitExceeded</td><td>일시적</td><td><span class="tag info">① 재시도</span></td><td><span class="tag ok">가능</span></td></tr>
+                <tr><td><code>IP_BAN_CANDIDATE</code></td><td>전 활성 Key 동일 403</td><td>egress IP</td><td><span class="tag warn">③ 프록시</span></td><td><span class="tag warn">IP 회전 시</span></td></tr>
+                <tr><td><code>TERMINAL_QUOTA</code></td><td>quotaExceeded</td><td>프로젝트</td><td><span class="tag danger">④ 종료</span></td><td><span class="tag danger">불가</span></td></tr>
+                <tr><td><code>TERMINAL_CONFIG</code></td><td>accessNotConfigured</td><td>프로젝트</td><td><span class="tag danger">④ 종료</span></td><td><span class="tag danger">불가</span></td></tr>
+              </tbody>
+            </table>
+            <p class="hint">_<strong>classify_error()</strong>는 순수 함수로 status_code + reason → Verdict를 결정. 테스트 용이하며 외부 상태 의존성 없음.</p>
+          </div>
+        </div>
+        <div class="side">
+          <div class="card">
+            <h3>분류 기준</h3>
+            <p>응답의 <code>status_code</code>와 <code>reason</code>을 5종 Verdict로 매핑. 각 Verdict가 어느 복원 단계를 트리거할지 결정합니다.</p>
+          </div>
+          <div class="card">
+            <h3>설계 핵심</h3>
+            <p>프로젝트 스코프 실패(quota·config)는 회전 무효 → <strong>즉시 종료</strong>로 불필요한 재시도·알람 방지. IP밴은 스코프가 다르므로 별도 단계.</p>
+          </div>
+          <div class="card">
+            <h3>운영 효과</h3>
+            <p>쿼터 소진(예상 종료)과 진짜 장애를 분리 → 알람 피로 감소. Key 무효화는 자동 회전으로 무중단.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. 프록시 -->
+      <div class="panel" id="proxy">
+        <div class="stage-canvas">
+          <div class="canvas-label">egress IP 회전 — 두 경로</div>
+          <div class="canvas-body" style="display:block; width:100%;">
+            <div class="lanes">
+              <div class="lane primary">
+                <span class="lane-tag">Normal</span>
+                <div class="lane-flow">
+                  <span class="chip">Client</span><span class="sep">→</span>
+                  <span class="chip">직접 호출</span><span class="sep">→</span>
+                  <span class="chip">egress IP₁</span><span class="sep">→</span>
+                  <span class="chip">YouTube API</span>
+                </div>
+              </div>
+              <div class="lane fallback">
+                <span class="lane-tag">Proxy</span>
+                <div class="lane-flow">
+                  <span class="chip">Client</span><span class="sep">⇢</span>
+                  <span class="chip">Cloud Run</span><span class="sep">→</span>
+                  <span class="chip">dumb forwarder</span><span class="sep">→</span>
+                  <span class="chip">egress IP₂</span><span class="sep">→</span>
+                  <span class="chip">YouTube API</span>
+                </div>
+              </div>
+            </div>
+            <p class="hint">IP밴 시그니처 감지(전 활성 Key 동일 403) 시 Normal → Proxy로 자동 전환. Cloud Run revision 재배포 시 새 egress IP 할당.</p>
+          </div>
+        </div>
+        <div class="side">
+          <div class="card">
+            <h3>프록시 역할</h3>
+            <p><strong>dumb forwarder</strong> — 비즈니스 로직 없이 egress IP만 전환. host 화이트리스트(<code>www.googleapis.com</code>)로 목적지 제한.</p>
+          </div>
+          <div class="card">
+            <h3>보안 설계</h3>
+            <p>path escape 차단 · <code>key=</code> query 거부 · <code>X-Goog-Api-Key</code> 헤더 필수 · once-True-stays-True unhealthy(Cloud Run 재시작 유도).</p>
+          </div>
+          <div class="card">
+            <h3>ADR 0001</h3>
+            <p>프록시는 <strong>학습+범용 egress seam</strong> 목적. IP밴은 꼬리 케이스. 3차 배포(Terraform)는 인프라 담당자 영역으로 보류.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. 실증 -->
+      <div class="panel" id="empirical">
+        <div class="stage-canvas">
+          <div class="canvas-label">실증 테스트 — PR #77</div>
+          <div class="canvas-body" style="display:block; width:100%;">
+            <div class="stats">
+              <div class="stat ok"><div class="v">8,117</div><div class="l">성공 200</div></div>
+              <div class="stat warn"><div class="v">1,870</div><div class="l">quota 403</div></div>
+              <div class="stat neutral"><div class="v">13</div><div class="l">네트워크 오류</div></div>
+              <div class="stat ok"><div class="v">0</div><div class="l">IP밴 시그니처</div></div>
+            </div>
+            <p class="hint">quota_burst.py · 50 workers 병렬 · 10,000호출 · 약 2.5분 (별도 GCP 프로젝트 autoresearch-501004)</p>
+          </div>
+        </div>
+        <div class="side">
+          <div class="card">
+            <h3>3가지 핵심 발견</h3>
+            <p><strong>1.</strong> quota 폭주로 IP밴 유도 불가 — YouTube는 quota 초과 시 <code>quotaExceeded</code>만 반환 (별개 메커니즘)<br><strong>2.</strong> quota 초과 시 복원력 정상 동작 — <code>TERMINAL_QUOTA</code> → 즉시 <code>CollectionExhausted</code><br><strong>3.</strong> 정상 사용(7 units/day)에서 IP밴 미발생 — ADR 0001 가설 실증</p>
+          </div>
+          <div class="card">
+            <h3>환경 정리</h3>
+            <p>Cloud Run 서비스 삭제 · proxy 임시 코드 revert 완료. 운영 환경 무영향.</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    const tabs = document.querySelectorAll('.tab-btn');
+    const panels = document.querySelectorAll('.panel');
+    tabs.forEach(btn => {
+      btn.addEventListener('click', () => {
+        const t = btn.dataset.tab;
+        tabs.forEach(b => b.classList.toggle('active', b === btn));
+        panels.forEach(p => p.classList.toggle('active', p.id === t));
+      });
+    });
+
+    const STAGES = [
+      {
+        c: '#60a5fa', h: '① 재시도 (BACKOFF)',
+        d: '일시적 실패(5xx, rateLimitExceeded)를 tenacity 지수 백오프로 흡수합니다. 같은 Key로 재시도하며, BACKOFF 한도 소진 시 CollectionExhausted로 승격합니다.',
+        kv: [['실패 유형','5xx · rateLimitExceeded'],['스코프','일시적'],['복구','<span class="tag ok">가능</span>']]
+      },
+      {
+        c: '#a78bfa', h: '② Key 롤링 (ROTATE)',
+        d: 'Key 단위 실패(keyInvalid, keyExpired, 401)는 다음 활성 Key로 교체해 복구합니다. 무효화된 Key는 _invalid_keys에 마킹해 재사용을 방지합니다.',
+        kv: [['실패 유형','keyInvalid · keyExpired · 401'],['스코프','Key 단위'],['복구','<span class="tag ok">가능</span>']]
+      },
+      {
+        c: '#fbbf24', h: '③ 프록시 전환 (IP_BAN_CANDIDATE)',
+        d: '전 활성 Key가 동일 403을 반환하면 IP밴 시그니처로 판정(최소 Key≥2). Cloud Run 프록시 경유로 egress IP를 전환해 복구를 시도합니다.',
+        kv: [['실패 유형','전 Key 동일 403 (IP밴 시그니처)'],['스코프','egress IP 단위'],['복구','<span class="tag warn">IP 회전 시</span>']]
+      },
+      {
+        c: '#fb7185', h: '④ 즉시 종료 (TERMINAL)',
+        d: '프로젝트 단위 실패(quotaExceeded, accessNotConfigured)는 회전/재시도로 복구 불가. 즉시 CollectionExhausted로 승격해 DAG에 skip/fail 신호를 전달합니다.',
+        kv: [['실패 유형','quotaExceeded · accessNotConfigured'],['스코프','프로젝트 단위'],['복구','<span class="tag danger">불가</span>']]
+      }
+    ];
+    const stageEls = document.querySelectorAll('.stage');
+    const sd = document.getElementById('sdetail');
+    const sdH = document.getElementById('sd-h');
+    const sdD = document.getElementById('sd-d');
+    const sdKV = document.getElementById('sd-kv');
+    stageEls.forEach(el => {
+      el.addEventListener('click', () => {
+        const i = parseInt(el.dataset.i);
+        const s = STAGES[i];
+        stageEls.forEach(e => e.classList.toggle('sel', e === el));
+        sd.style.setProperty('--sc', s.c);
+        sdH.style.color = s.c;
+        sdH.textContent = s.h;
+        sdD.textContent = s.d;
+        sdKV.innerHTML = s.kv.map(([k,v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('');
+      });
+    });
+  </script>
+</body>
+</html>

@@ -13,6 +13,7 @@ from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, timedelta
 from pathlib import Path
+from time import monotonic
 from typing import Callable, Literal, Protocol
 
 import pyarrow as pa
@@ -20,6 +21,10 @@ import pyarrow.parquet as pq
 from pydantic import ValidationError
 
 from autoresearch.action_logs.candidate import build_candidates
+from autoresearch.action_logs.observability import (
+    ActionLogTelemetryReporter,
+    action_log_work_log_context,
+)
 from autoresearch.action_logs.schema import (
     ACTION_LOG_SCHEMA_VERSION,
     PROMPT_VERSION,
@@ -95,7 +100,7 @@ class ActionLogProgressSnapshot:
     quarantined_chunks: int
 
 
-ActionLogProgressCallback = Callable[[ActionLogProgressSnapshot], None]
+ActionLogProgressCallback = Callable[[ActionLogProgressSnapshot], float | None]
 ActionLogWorkIdFactory = Callable[[str, int], str]
 ActionLogCheckpointCallback = Callable[[str, int, list[ImpressionDraft]], None]
 
@@ -117,6 +122,21 @@ class _ActionLogWorkItem:
     user_id: str
     virtual_user: dict
     candidates: list[dict]
+
+
+@dataclass(frozen=True)
+class _ActionLogCallResult:
+    """worker가 완결한 생성·검증 결과와 서로 겹치지 않는 timing."""
+
+    work_sequence: int
+    submitted_at: float
+    started_at: float
+    request_elapsed_ms: float
+    parse_elapsed_ms: float
+    raw_text: str = ""
+    drafts: list[ImpressionDraft] | None = None
+    error_type: Literal["api_error", "invalid_json", "schema_fail"] | None = None
+    error: Exception | None = None
 
 
 EVENT_LOG_PARQUET_SCHEMA = pa.schema(
@@ -162,6 +182,23 @@ def _clamp01(value: object) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
+WOULD_LIKE_CLICK_THRESHOLD = 0.7
+WOULD_LIKE_WATCH_THRESHOLD = 0.6
+
+
+def derive_would_like(click_propensity: float, watch_fraction: float) -> bool:
+    """click/watch 신호로 좋아요(만족) 여부를 결정론적으로 파생한다.
+
+    LLM 출력 토큰 절감을 위해 would_like는 응답에서 제거하고 코드로 판정한다.
+    임계값은 like 이벤트 볼륨에 직접 영향을 주므로 캘리브레이션 대상이다.
+    """
+
+    return (
+        click_propensity >= WOULD_LIKE_CLICK_THRESHOLD
+        and watch_fraction >= WOULD_LIKE_WATCH_THRESHOLD
+    )
+
+
 def _build_user_drafts(
     virtual_user: dict,
     candidates: list[dict],
@@ -169,35 +206,191 @@ def _build_user_drafts(
 ) -> list[ImpressionDraft]:
     """LLM raw judgments를 파싱해 후보별 ImpressionDraft를 만든다.
 
+    응답은 인덱스 포맷({"j": [[index, click_propensity, watch_fraction], ...]})이며,
+    index는 후보의 0-base 배열 위치다. 각 판정을 index로 후보에 재결합하므로 LLM이
+    순서를 바꿔 반환해도 오정렬되지 않는다. index 집합이 정확히 0..n-1(각 1회)이 아니면
+    (개수 불일치·범위 이탈·중복·누락) 라벨 무결성을 보장할 수 없어 ValueError로
+    격리(schema_fail)한다. would_like는 click/watch로부터 코드에서 파생한다.
+
     json.JSONDecodeError -> invalid_json. 구조/타입 오류(ValueError/KeyError/TypeError/
-    AttributeError/ValidationError) -> schema_fail. 판단이 누락된 후보는 비클릭 노출로 채운다.
+    AttributeError/ValidationError) -> schema_fail.
     """
     data = json.loads(raw_text)  # invalid_json
-    judgments = data["judgments"]  # KeyError/TypeError
-    jmap = {str(j["video_id"]): j for j in judgments}
+    judgments = data["j"]  # KeyError/TypeError
+    n = len(candidates)
+    if not isinstance(judgments, list) or len(judgments) != n:
+        got = len(judgments) if isinstance(judgments, list) else "non-list"
+        raise ValueError(f"judgment count mismatch: got {got}, expected {n}")
+
+    by_index: dict[int, tuple[object, object]] = {}
+    for entry in judgments:
+        if not isinstance(entry, (list, tuple)) or len(entry) != 3:
+            raise ValueError(f"judgment entry must be [index, cp, wf]: {entry!r}")
+        raw_index = entry[0]
+        # bool은 int의 subclass라 명시적으로 배제. 정수값 float(3.0)은 허용.
+        if isinstance(raw_index, bool) or not isinstance(raw_index, (int, float)):
+            raise ValueError(f"judgment index must be an integer: {raw_index!r}")
+        if float(raw_index) != int(raw_index):
+            raise ValueError(f"judgment index must be an integer: {raw_index!r}")
+        index = int(raw_index)
+        if not 0 <= index < n:
+            raise ValueError(f"judgment index out of range: {index} (n={n})")
+        if index in by_index:
+            raise ValueError(f"duplicate judgment index: {index}")
+        by_index[index] = (entry[1], entry[2])
+    # len==n + 범위 [0,n) + 중복 없음 => index 집합은 정확히 0..n-1 (누락도 배제).
 
     user_id = str(virtual_user.get("user_id", ""))
     drafts: list[ImpressionDraft] = []
-    for video in candidates:
+    for i, video in enumerate(candidates):
+        cp_raw, wf_raw = by_index[i]
         vid = video["video_id"]
-        j = jmap.get(vid)
-        if j is None:
-            prop, frac, like = 0.0, 0.0, False
-        else:
-            prop = _clamp01(j.get("click_propensity", 0.0))
-            frac = _clamp01(j.get("watch_fraction", 0.0))
-            like = bool(j.get("would_like", False))
+        prop = _clamp01(cp_raw)
+        frac = _clamp01(wf_raw)
         drafts.append(
             ImpressionDraft(
                 user_id=user_id,
                 video_id=vid,
                 click_propensity=prop,
                 watch_fraction=frac,
-                would_like=like,
+                would_like=derive_would_like(prop, frac),
                 duration_sec=nominal_duration_sec(vid),
             )
         )
     return drafts
+
+
+def _try_build_user_drafts(
+    virtual_user: dict,
+    candidates: list[dict],
+    raw_text: str,
+) -> tuple[
+    list[ImpressionDraft] | None,
+    Literal["invalid_json", "schema_fail"] | None,
+    Exception | None,
+]:
+    """raw 응답을 draft로 파싱하고 격리 분류를 값으로 반환한다."""
+
+    try:
+        return _build_user_drafts(virtual_user, candidates, raw_text), None, None
+    except json.JSONDecodeError as exc:
+        return None, "invalid_json", exc
+    except (
+        ValidationError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+    ) as exc:
+        return None, "schema_fail", exc
+
+
+def _generate_action_log_work(
+    generator: ActionLogGenerator,
+    item: _ActionLogWorkItem,
+    *,
+    work_sequence: int,
+    submitted_at: float,
+    shard_index: int | None,
+    detailed_telemetry: bool,
+) -> _ActionLogCallResult:
+    """한 worker에서 최초 요청부터 선택적 schema 교정과 검증까지 완결한다.
+
+    request 시간은 generator 호출만, parse 시간은 draft 검증만 각각 누적한다.
+    schema retry API 오류가 나더라도 최초 응답의 검증 시간과 최종 예외를 함께
+    보존해 coordinator가 실제 최종 상태로 격리할 수 있게 한다.
+    """
+
+    started_at = monotonic()
+    request_elapsed_ms = 0.0
+    parse_elapsed_ms = 0.0
+    raw_text = ""
+
+    with action_log_work_log_context(
+        shard_index=shard_index,
+        work_sequence=work_sequence,
+        detailed=detailed_telemetry,
+    ):
+        request_started_at = monotonic()
+        try:
+            raw_text = generator.generate(item.virtual_user, item.candidates)
+        except Exception as exc:  # noqa: BLE001 - worker API boundary
+            request_elapsed_ms += (monotonic() - request_started_at) * 1000
+            return _ActionLogCallResult(
+                work_sequence=work_sequence,
+                submitted_at=submitted_at,
+                started_at=started_at,
+                request_elapsed_ms=request_elapsed_ms,
+                parse_elapsed_ms=parse_elapsed_ms,
+                error_type="api_error",
+                error=exc,
+            )
+        request_elapsed_ms += (monotonic() - request_started_at) * 1000
+
+        parse_started_at = monotonic()
+        drafts, error_type, parse_error = _try_build_user_drafts(
+            item.virtual_user,
+            item.candidates,
+            raw_text,
+        )
+        parse_elapsed_ms += (monotonic() - parse_started_at) * 1000
+
+        schema_retry = getattr(generator, "generate_schema_retry", None)
+        if drafts is None and callable(schema_retry):
+            assert error_type is not None
+            logger.warning(
+                "Retrying action log judgment after response validation failure",
+                extra={
+                    "user_id": item.user_id,
+                    "error_type": error_type,
+                    "model_name": getattr(generator, "model_name", "unknown"),
+                },
+            )
+            retry_started_at = monotonic()
+            try:
+                raw_text = schema_retry(
+                    item.virtual_user,
+                    item.candidates,
+                    error_type=error_type,
+                )
+            except Exception as exc:  # noqa: BLE001 - schema retry API boundary
+                request_elapsed_ms += (monotonic() - retry_started_at) * 1000
+                return _ActionLogCallResult(
+                    work_sequence=work_sequence,
+                    submitted_at=submitted_at,
+                    started_at=started_at,
+                    request_elapsed_ms=request_elapsed_ms,
+                    parse_elapsed_ms=parse_elapsed_ms,
+                    raw_text=raw_text,
+                    error_type="api_error",
+                    error=exc,
+                )
+            request_elapsed_ms += (monotonic() - retry_started_at) * 1000
+
+            parse_started_at = monotonic()
+            drafts, error_type, parse_error = _try_build_user_drafts(
+                item.virtual_user,
+                item.candidates,
+                raw_text,
+            )
+            parse_elapsed_ms += (monotonic() - parse_started_at) * 1000
+
+    if drafts is None:
+        assert error_type is not None and parse_error is not None
+    else:
+        assert error_type is None and parse_error is None
+    return _ActionLogCallResult(
+        work_sequence=work_sequence,
+        submitted_at=submitted_at,
+        started_at=started_at,
+        request_elapsed_ms=request_elapsed_ms,
+        parse_elapsed_ms=parse_elapsed_ms,
+        raw_text=raw_text,
+        drafts=drafts,
+        error_type=error_type,
+        error=parse_error,
+    )
+
 
 
 def _chunked(seq: list, size: int):
@@ -219,6 +412,7 @@ def _generate_drafts_isolated(
     work_id_factory: ActionLogWorkIdFactory | None = None,
     completed_work: dict[str, list[ImpressionDraft]] | None = None,
     checkpoint_callback: ActionLogCheckpointCallback | None = None,
+    shard_index: int | None = None,
 ) -> tuple[list[ImpressionDraft], list[QuarantineRecord], int]:
     """LLM 판정을 (유저×후보청크) 단위로 격리·병렬 생성한다.
 
@@ -263,8 +457,8 @@ def _generate_drafts_isolated(
     if len(work_ids) != len(set(work_ids)):
         raise ValueError("duplicate action log work_id")
 
-    # 2) LLM 콜만 병렬화. 완료 시점에 파싱/격리까지 판정하되, 결과는 작업 index별로
-    # 보관해 최종 조립 순서는 기존처럼 원본 순서를 유지한다.
+    # 2) 최초 LLM 콜부터 선택적 schema retry와 파싱까지 work 단위로 병렬화한다.
+    # 결과는 작업 index별로 보관해 최종 조립 순서는 기존처럼 원본 순서를 유지한다.
     drafts_by_index: dict[int, list[ImpressionDraft]] = {}
     quarantine_by_index: dict[int, QuarantineRecord] = {}
     total_chunks = len(work)
@@ -277,10 +471,16 @@ def _generate_drafts_isolated(
     success_chunks = len(drafts_by_index)
     failed_chunks = 0
     quarantined_chunks = 0
+    telemetry = ActionLogTelemetryReporter(
+        logger=logger,
+        shard_index=shard_index,
+        total_work=total_chunks,
+        initial_completed_work=completed_chunks,
+    )
 
-    def _emit_progress(status: Literal["running", "success", "failed"]) -> None:
+    def _emit_progress(status: Literal["running", "success", "failed"]) -> float:
         if progress_callback is None:
-            return
+            return 0.0
         snapshot = ActionLogProgressSnapshot(
             status=status,
             completed_chunks=completed_chunks,
@@ -289,27 +489,51 @@ def _generate_drafts_isolated(
             failed_chunks=failed_chunks,
             quarantined_chunks=quarantined_chunks,
         )
+        started_at = monotonic()
         try:
-            progress_callback(snapshot)
+            reported_elapsed_ms = progress_callback(snapshot)
         except Exception:  # noqa: BLE001 - progress reporting must not fail generation
             logger.warning("Action log progress callback failed", exc_info=True)
+            return (monotonic() - started_at) * 1000
+        if isinstance(reported_elapsed_ms, (int, float)) and not isinstance(
+            reported_elapsed_ms,
+            bool,
+        ):
+            return float(reported_elapsed_ms)
+        return (monotonic() - started_at) * 1000
 
-    def _call(i: int) -> tuple[int, str]:
-        item = work[i]
-        return i, generator.generate(item.virtual_user, item.candidates)
+    def _call(i: int, submitted_at: float) -> _ActionLogCallResult:
+        return _generate_action_log_work(
+            generator,
+            work[i],
+            work_sequence=i,
+            submitted_at=submitted_at,
+            shard_index=shard_index,
+            detailed_telemetry=telemetry.detailed,
+        )
 
     _emit_progress("running")
+    telemetry.start(
+        completed_work=completed_chunks,
+        failed_work=failed_chunks,
+        active_workers=0,
+        pending_work=total_chunks - completed_chunks,
+    )
     pending_indices = iter(i for i in range(total_chunks) if i not in drafts_by_index)
     max_workers = max(1, request.max_concurrency)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures: dict[Future[tuple[int, str]], int] = {}
+        futures: dict[Future[_ActionLogCallResult], tuple[int, float]] = {}
 
         def _submit_next() -> bool:
             try:
                 index = next(pending_indices)
             except StopIteration:
                 return False
-            futures[executor.submit(_call, index)] = index
+            submitted_at = monotonic()
+            futures[executor.submit(_call, index, submitted_at)] = (
+                index,
+                submitted_at,
+            )
             return True
 
         for _ in range(max_workers):
@@ -318,57 +542,39 @@ def _generate_drafts_isolated(
 
         while futures:
             done, _pending = wait(futures, return_when=FIRST_COMPLETED)
-            for future in sorted(done, key=lambda item: futures[item]):
-                i = futures.pop(future)
+            completed_batch: list[tuple[_ActionLogCallResult, float, int]] = []
+            for future in sorted(done, key=lambda item: futures[item][0]):
+                i, _submitted_at = futures.pop(future)
                 item = work[i]
-                user_id = item.user_id
-                virtual_user = item.virtual_user
-                chunk = item.candidates
-                succeeded_drafts: list[ImpressionDraft] | None = None
-                failure: QuarantineRecord | None = None
-                try:
-                    _, raw_text = future.result()
-                except Exception as exc:  # noqa: BLE001 - API/transport failure isolation
-                    failure = QuarantineRecord(
-                        user_id=user_id,
-                        virtual_user=virtual_user,
-                        raw_llm_response="",
-                        error_type="api_error",
-                        error_message=str(exc),
-                    )
-                else:
-                    try:
-                        succeeded_drafts = _build_user_drafts(
-                            virtual_user,
-                            chunk,
-                            raw_text,
-                        )
-                    except json.JSONDecodeError as exc:
-                        failure = QuarantineRecord(
-                            user_id=user_id,
-                            virtual_user=virtual_user,
-                            raw_llm_response=raw_text,
-                            error_type="invalid_json",
-                            error_message=str(exc),
-                        )
-                    except (
-                        ValidationError,
-                        ValueError,
-                        KeyError,
-                        TypeError,
-                        AttributeError,
-                    ) as exc:
-                        failure = QuarantineRecord(
-                            user_id=user_id,
-                            virtual_user=virtual_user,
-                            raw_llm_response=raw_text,
-                            error_type="schema_fail",
-                            error_message=str(exc),
-                        )
+                # generator의 외부 API 오류는 worker가 명시적인 결과로 변환한다.
+                # 여기까지 전파된 예외는 내부 버그이므로 api_error로 위장하지 않는다.
+                call_result = future.result()
 
+                succeeded_drafts = call_result.drafts
+                failure: QuarantineRecord | None = None
+                if succeeded_drafts is None:
+                    assert call_result.error_type is not None
+                    assert call_result.error is not None
+                    failure = QuarantineRecord(
+                        user_id=item.user_id,
+                        virtual_user=item.virtual_user,
+                        raw_llm_response=call_result.raw_text,
+                        error_type=call_result.error_type,
+                        error_message=str(call_result.error),
+                    )
+
+                checkpoint_write_elapsed_ms = 0.0
+                checkpoint_rows = 0
                 if succeeded_drafts is not None:
                     if checkpoint_callback is not None:
-                        checkpoint_callback(item.work_id, i, succeeded_drafts)
+                        checkpoint_started_at = monotonic()
+                        try:
+                            checkpoint_callback(item.work_id, i, succeeded_drafts)
+                        finally:
+                            checkpoint_write_elapsed_ms = (
+                                monotonic() - checkpoint_started_at
+                            ) * 1000
+                    checkpoint_rows = len(succeeded_drafts)
                     drafts_by_index[i] = succeeded_drafts
                     success_chunks += 1
                 else:
@@ -377,8 +583,63 @@ def _generate_drafts_isolated(
                     failed_chunks += 1
                     quarantined_chunks += 1
                 completed_chunks += 1
-                _emit_progress("running")
+                completed_batch.append(
+                    (
+                        call_result,
+                        checkpoint_write_elapsed_ms,
+                        checkpoint_rows,
+                    )
+                )
+
+            progress_write_elapsed_ms = _emit_progress("running")
+            submit_elapsed_by_work: list[float] = []
+            for _ in completed_batch:
+                submit_started_at = monotonic()
                 _submit_next()
+                submit_elapsed_by_work.append(
+                    (monotonic() - submit_started_at) * 1000
+                )
+            active_workers = len(futures)
+            pending_work = max(
+                0,
+                total_chunks - completed_chunks - active_workers,
+            )
+            last_batch_index = len(completed_batch) - 1
+            for batch_index, (
+                call_result,
+                checkpoint_write_elapsed_ms,
+                checkpoint_rows,
+            ) in enumerate(completed_batch):
+                telemetry.record(
+                    work_sequence=call_result.work_sequence,
+                    queue_wait_ms=(
+                        call_result.started_at - call_result.submitted_at
+                    )
+                    * 1000,
+                    request_elapsed_ms=call_result.request_elapsed_ms,
+                    parse_elapsed_ms=call_result.parse_elapsed_ms,
+                    checkpoint_write_elapsed_ms=checkpoint_write_elapsed_ms,
+                    checkpoint_rows=checkpoint_rows,
+                    progress_write_elapsed_ms=(
+                        progress_write_elapsed_ms
+                        if batch_index == last_batch_index
+                        else 0.0
+                    ),
+                    submit_elapsed_ms=submit_elapsed_by_work[batch_index],
+                    total_elapsed_ms=(
+                        monotonic() - call_result.submitted_at
+                    )
+                    * 1000,
+                    completed_work=completed_chunks,
+                    failed_work=failed_chunks,
+                    active_workers=active_workers,
+                    pending_work=pending_work,
+                )
+
+    telemetry.finish(
+        completed_work=completed_chunks,
+        failed_work=failed_chunks,
+    )
 
     # 3) 조립은 원본 순서로 단일 스레드에서(결정론). 실패는 quarantine.
     drafts: list[ImpressionDraft] = []
@@ -661,6 +922,7 @@ def generate_action_log_drafts(
     work_id_factory: ActionLogWorkIdFactory | None = None,
     completed_work: dict[str, list[ImpressionDraft]] | None = None,
     checkpoint_callback: ActionLogCheckpointCallback | None = None,
+    shard_index: int | None = None,
 ) -> ActionLogDraftGenerationResult:
     """유저 단위 LLM 판단을 실행하고 전역 CTR 정규화 전 draft를 반환한다.
 
@@ -688,6 +950,7 @@ def generate_action_log_drafts(
         work_id_factory,
         completed_work,
         checkpoint_callback,
+        shard_index,
     )
     if enforce_quarantine_limit:
         _raise_if_quarantine_exceeds(quarantine, total_work, request, len(virtual_users))

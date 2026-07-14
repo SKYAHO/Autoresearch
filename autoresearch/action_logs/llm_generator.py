@@ -1,7 +1,7 @@
 """VirtualUser × 후보 영상 batch를 받아 후보별 클릭 판단(judgments)을 생성한다.
 
-역할 분담: LLM은 실제 title/description을 읽고 후보별 click_propensity/watch_fraction/
-would_like만 판단한다. 전역 2% 정규화·timestamp·제약 강제는 pipeline(코드).
+역할 분담: LLM은 실제 title/description을 읽고 후보별 click_propensity/watch_fraction만
+판단한다. would_like 파생·전역 2% 정규화·timestamp·제약 강제는 pipeline(코드).
 """
 import hashlib
 import json
@@ -21,6 +21,7 @@ from autoresearch.action_logs.candidate import (
     _user_keywords,
     _video_text,
 )
+from autoresearch.action_logs.observability import emit_action_log_event
 from autoresearch.action_logs.schema import PROMPT_VERSION
 
 
@@ -40,10 +41,12 @@ ACTION_LOG_SYSTEM_HARNESS = """너는 한국 YouTube 사용자의 시청 행동�
 클릭할 가능성을 판단한다.
 - click_propensity: 0~1. 사용자 관심사와 영상 내용(title/description/tags)이 맞을수록 높다.
 - watch_fraction: 0~1. 클릭했다고 가정할 때 영상을 얼마나 볼지 비율.
-- would_like: true/false. 클릭 후 좋아요를 누를 만큼 만족할지.
 지어내지 말고 프로필과 영상 텍스트에 근거해 판단하라. 대부분의 영상은 관심 밖이라
 click_propensity가 낮아야 정상이다.
-출력은 지정된 JSON 하나만 허용한다. Markdown이나 주석을 넣지 마라."""
+출력은 최상위 key가 j 하나뿐인 JSON 객체만 허용한다. j의 각 row는
+[index, click_propensity, watch_fraction] 길이 3 배열이다. 정확한 row와 index는
+user prompt의 JSON skeleton을 그대로 유지하고 두 실수 값만 교체한다.
+Markdown, 주석, 설명 문장, 추가 key를 넣지 마라."""
 
 
 def _user_profile_block(virtual_user: dict) -> str:
@@ -66,43 +69,80 @@ def _user_profile_block(virtual_user: dict) -> str:
     )
 
 
+CANDIDATE_COLUMNS = "[index, title, tags, channel, description]"
+
+
 def _candidate_block(videos: list[dict]) -> str:
-    """프롬프트에 넣을 후보 영상 목록(토큰 절약을 위해 필드 축약)."""
+    """프롬프트에 넣을 후보 영상 목록.
 
-    items = []
-    for v in videos:
-        items.append(
-            {
-                "video_id": v["video_id"],
-                "title": str(v.get("title", ""))[:120],
-                "tags": (v.get("tags") or [])[:8],
-                "channel": str(v.get("channel_name", ""))[:40],
-                "description": str(v.get("description", ""))[:160],
-            }
+    토큰 절약: 반복 키를 제거한 위치기반 배열-of-배열로 직렬화하되, 각 행의 첫
+    원소에도 후보 index를 명시한다. 컬럼 순서는
+    CANDIDATE_COLUMNS(index, title, tags, channel, description)이다. video_id는 넣지
+    않고(응답도 index로 정렬) 필드 truncation 한도는 유지한다.
+    """
+
+    rows = []
+    for index, v in enumerate(videos):
+        rows.append(
+            [
+                index,
+                str(v.get("title", ""))[:120],
+                (v.get("tags") or [])[:8],
+                str(v.get("channel_name", ""))[:40],
+                str(v.get("description", ""))[:160],
+            ]
         )
-    return json.dumps(items, ensure_ascii=False)
+    return json.dumps(rows, ensure_ascii=False)
 
 
-def build_action_log_prompt(virtual_user: dict, videos: list[dict]) -> str:
+def _output_skeleton(count: int) -> str:
+    """후보 전체 index를 포함하는 compact valid JSON skeleton을 만든다."""
+
+    return json.dumps(
+        {"j": [[index, 0.0, 0.0] for index in range(count)]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def build_action_log_prompt(
+    virtual_user: dict,
+    videos: list[dict],
+    *,
+    schema_retry_error: str | None = None,
+) -> str:
     """사용자 프로필 + 후보 영상 목록을 판정 요청 프롬프트로 만든다."""
 
+    n = len(videos)
+    required_indexes = json.dumps(list(range(n)), separators=(",", ":"))
+    skeleton = _output_skeleton(n)
+    retry_notice = (
+        f"이전 응답은 {schema_retry_error} 검증에 실패했다. 이번 응답은 아래 "
+        "skeleton을 문자 구조까지 정확히 지켜라.\n\n"
+        if schema_retry_error
+        else ""
+    )
     return f"""Prompt version: {PROMPT_VERSION}
 
-사용자 프로필:
+{retry_notice}사용자 프로필:
 {_user_profile_block(virtual_user)}
 
-후보 영상 목록({len(videos)}개):
+후보 영상({n}개, 각 행 첫 원소 index = 후보 index):
+컬럼 순서 = {CANDIDATE_COLUMNS}
 {_candidate_block(videos)}
 
-각 후보 영상 video_id마다 판단을 반환하라. 아래 JSON 형태만 출력하라(주석/Markdown 금지):
-{{"judgments": [
-  {{"video_id": "...", "click_propensity": 0.0, "watch_fraction": 0.0, "would_like": false}}
-]}}
+아래 JSON skeleton의 객체/배열 구조, row 수, index와 row 순서를 그대로 유지하고,
+각 row의 두 0.0 placeholder만 판단한 click_propensity와 watch_fraction으로 교체하라:
+{skeleton}
 
 제약:
-- judgments는 후보 영상 전체를 포함한다(각 video_id 1회).
+- required_indexes={required_indexes}
+- expected_count={n}
+- row 삭제·추가·재정렬과 index 변경을 금지한다.
+- 각 원소는 [index, click_propensity, watch_fraction] 형태의 길이 3 배열.
 - click_propensity, watch_fraction 은 0~1 사이 실수.
-- would_like 은 true/false.
+- 출력 직전 확인: 유효 JSON, key는 j 하나, row 수 {n}, required_indexes 각 1회.
+- JSON 객체 하나만 출력하고 Markdown, 주석, 설명을 넣지 마라.
 """
 
 
@@ -113,23 +153,22 @@ class RuleBasedActionLogGenerator:
         self.model_name = model_name
 
     def generate(self, virtual_user: dict, videos: list[dict]) -> str:
-        """유저 키워드-영상 텍스트 겹침으로 결정론적 판단을 만든다."""
+        """유저 키워드-영상 텍스트 겹침으로 결정론적 판단을 만든다.
+
+        출력은 LLM generator와 동일한 인덱스 포맷({"j": [[idx, cp, wf], ...]})이다.
+        would_like는 출력하지 않고 파이프라인 파싱에서 코드로 파생한다.
+        """
 
         keywords = _user_keywords(virtual_user)
-        judgments = []
-        for v in videos:
+        rows = []
+        for i, v in enumerate(videos):
             overlap = _relevance_score(keywords, _video_text(v))
             jitter = (int(hashlib.sha256(v["video_id"].encode()).hexdigest(), 16) % 100) / 1000.0
             propensity = min(1.0, 0.05 + 0.25 * overlap + jitter)
-            judgments.append(
-                {
-                    "video_id": v["video_id"],
-                    "click_propensity": round(propensity, 3),
-                    "watch_fraction": round(min(1.0, propensity + 0.1), 3),
-                    "would_like": propensity > 0.7,
-                }
+            rows.append(
+                [i, round(propensity, 3), round(min(1.0, propensity + 0.1), 3)]
             )
-        return json.dumps({"judgments": judgments}, ensure_ascii=False)
+        return json.dumps({"j": rows}, ensure_ascii=False)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -342,6 +381,40 @@ class OpenRouterActionLogGenerator:
                 return str(value)
         return "unknown"
 
+    @staticmethod
+    def _response_provider(response: object) -> str:
+        """OpenRouter 응답에서 민감하지 않은 provider 이름만 추출한다."""
+
+        provider = getattr(response, "provider", None)
+        if provider:
+            return str(provider)
+        model_extra = getattr(response, "model_extra", None)
+        if isinstance(model_extra, dict) and model_extra.get("provider"):
+            return str(model_extra["provider"])
+        return "unknown"
+
+    @staticmethod
+    def _usage_fields(response: object) -> dict[str, int | float]:
+        """응답 본문 없이 token/reasoning/cost 메타데이터만 반환한다."""
+
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return {}
+        fields: dict[str, int | float] = {}
+        for source_name, target_name in (
+            ("prompt_tokens", "prompt_tokens"),
+            ("completion_tokens", "completion_tokens"),
+            ("cost", "reported_cost"),
+        ):
+            value = getattr(usage, source_name, None)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                fields[target_name] = value
+        details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(details, "reasoning_tokens", None)
+        if isinstance(reasoning_tokens, int) and not isinstance(reasoning_tokens, bool):
+            fields["reasoning_tokens"] = reasoning_tokens
+        return fields
+
     @classmethod
     def _retry_after_seconds(cls, exc: Exception) -> float | None:
         headers = cls._response_headers(exc)
@@ -391,11 +464,39 @@ class OpenRouterActionLogGenerator:
     def generate(self, virtual_user: dict, videos: list[dict]) -> str:
         """OpenRouter에 판정 요청을 보내고 raw response text를 반환한다."""
 
+        return self._generate_with_prompt(
+            virtual_user,
+            build_action_log_prompt(virtual_user, videos),
+        )
+
+    def generate_schema_retry(
+        self,
+        virtual_user: dict,
+        videos: list[dict],
+        *,
+        error_type: str,
+    ) -> str:
+        """JSON/schema 검증 실패 청크를 교정 지시와 함께 한 번 다시 생성한다."""
+
+        if error_type not in {"invalid_json", "schema_fail"}:
+            raise ValueError("error_type must be invalid_json or schema_fail")
+        return self._generate_with_prompt(
+            virtual_user,
+            build_action_log_prompt(
+                virtual_user,
+                videos,
+                schema_retry_error=error_type,
+            ),
+        )
+
+    def _generate_with_prompt(self, virtual_user: dict, user_prompt: str) -> str:
+        """주어진 user prompt로 OpenRouter 요청·HTTP retry를 수행한다."""
+
         request: dict[str, object] = {
             "model": self.model_name,
             "messages": [
                 {"role": "system", "content": ACTION_LOG_SYSTEM_HARNESS},
-                {"role": "user", "content": build_action_log_prompt(virtual_user, videos)},
+                {"role": "user", "content": user_prompt},
             ],
             "response_format": {"type": "json_object"},
             "max_tokens": self.max_tokens,
@@ -409,11 +510,14 @@ class OpenRouterActionLogGenerator:
         attempts = 0
         total_retries = 0
         timeout_retries = 0
+        request_started_at = time.monotonic()
         while response is None:
             attempts += 1
+            attempt_started_at = time.monotonic()
             try:
                 response = client.chat.completions.create(**request)
             except Exception as exc:  # noqa: BLE001 - SDK exception boundary
+                attempt_elapsed_ms = (time.monotonic() - attempt_started_at) * 1000
                 status = self._status_code(exc)
                 is_timeout = isinstance(exc, APITimeoutError)
                 is_retryable = is_timeout or status in _RETRYABLE_STATUS_CODES
@@ -429,17 +533,40 @@ class OpenRouterActionLogGenerator:
                     if is_timeout:
                         timeout_retries += 1
                     delay = self._retry_delay(exc, attempts)
-                    logger.warning(
-                        "Retrying OpenRouter action log request",
-                        extra={
-                            "status": status,
-                            "error_type": type(exc).__name__,
-                            "provider": self._provider_name(exc),
-                            "attempt": attempts,
-                            "retry_delay_seconds": round(delay, 3),
-                        },
+                    provider_name = self._provider_name(exc)
+                    emit_action_log_event(
+                        logger,
+                        logging.WARNING,
+                        "openrouter_retry_scheduled",
+                        attempt=attempts,
+                        retry_count=total_retries,
+                        backoff_seconds=round(delay, 3),
+                        http_status=status if status is not None else 0,
+                        provider=provider_name,
+                        request_elapsed_ms=round(
+                            (time.monotonic() - request_started_at) * 1000,
+                            3,
+                        ),
                     )
+                    backoff_started_at = time.monotonic()
                     time.sleep(delay)
+                    backoff_elapsed_ms = (
+                        time.monotonic() - backoff_started_at
+                    ) * 1000
+                    emit_action_log_event(
+                        logger,
+                        logging.WARNING,
+                        "openrouter_attempt_complete",
+                        attempt=attempts,
+                        retry_count=total_retries,
+                        http_status=status if status is not None else 0,
+                        error_type=type(exc).__name__,
+                        provider=provider_name,
+                        attempt_elapsed_ms=round(attempt_elapsed_ms, 3),
+                        backoff_scheduled_ms=round(delay * 1000, 3),
+                        backoff_elapsed_ms=round(backoff_elapsed_ms, 3),
+                        outcome="retry",
+                    )
                     continue
                 error = OpenRouterRequestError(
                     status=status,
@@ -447,12 +574,68 @@ class OpenRouterActionLogGenerator:
                     provider=self._provider_name(exc),
                     attempts=attempts,
                 )
-                logger.error("OpenRouter action log request failed", extra=error.log_fields)
+                request_elapsed_ms = (time.monotonic() - request_started_at) * 1000
+                emit_action_log_event(
+                    logger,
+                    logging.ERROR,
+                    "openrouter_attempt_complete",
+                    attempt=attempts,
+                    retry_count=total_retries,
+                    http_status=status if status is not None else 0,
+                    error_type=type(exc).__name__,
+                    provider=error.provider,
+                    attempt_elapsed_ms=round(attempt_elapsed_ms, 3),
+                    backoff_scheduled_ms=0.0,
+                    backoff_elapsed_ms=0.0,
+                    outcome="failed",
+                )
+                emit_action_log_event(
+                    logger,
+                    logging.ERROR,
+                    "openrouter_request_complete",
+                    request_elapsed_ms=round(request_elapsed_ms, 3),
+                    retry_count=total_retries,
+                    attempt=attempts,
+                    http_status=status if status is not None else 0,
+                    provider=error.provider,
+                    outcome="failed",
+                )
                 raise error from None
+            else:
+                provider_name = self._response_provider(response)
+                emit_action_log_event(
+                    logger,
+                    logging.INFO,
+                    "openrouter_attempt_complete",
+                    detailed_only=True,
+                    attempt=attempts,
+                    retry_count=total_retries,
+                    http_status=200,
+                    provider=provider_name,
+                    attempt_elapsed_ms=round(
+                        (time.monotonic() - attempt_started_at) * 1000,
+                        3,
+                    ),
+                    backoff_scheduled_ms=0.0,
+                    backoff_elapsed_ms=0.0,
+                    outcome="success",
+                )
 
         assert response is not None
-        logger.info(
-            "Generated action log judgments",
-            extra={"user_id": virtual_user.get("user_id"), "model_name": self.model_name},
+        emit_action_log_event(
+            logger,
+            logging.INFO,
+            "openrouter_request_complete",
+            detailed_only=True,
+            request_elapsed_ms=round(
+                (time.monotonic() - request_started_at) * 1000,
+                3,
+            ),
+            retry_count=total_retries,
+            attempt=attempts,
+            http_status=200,
+            provider=self._response_provider(response),
+            outcome="success",
+            **self._usage_fields(response),
         )
         return response.choices[0].message.content or ""
