@@ -56,14 +56,6 @@ proxy = [
     "uvicorn[standard]>=0.32,<0.35",
     "httpx>=0.28,<0.29",
 ]
-# MLflow Tracking Server 런타임 (공식 이미지 Python 3.10 기반).
-# 학습 파이프라인(Python 3.12)과 독립된 컨테이너에서 실행.
-mlflow-server = [
-    "psycopg2-binary==2.9.10",
-    "boto3==1.43.47",
-    "google-cloud-storage>=2,<3",
-]
-
 [tool.pytest.ini_options]
 # scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외
 testpaths = ["tests"]
