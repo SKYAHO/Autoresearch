@@ -12,7 +12,7 @@ IP밴 시그니처/프록시 전환 계층은 학습 + 범용 egress seam 목적
 3차(Cloud Run 배포)는 egress IP 회전 가정 검증 전까지 보류한다.
 자세한 근거는 ADR 0001(docs/adr/0001-youtube-proxy-purpose.md) 참조.
 
-설계 문서: docs/superpowers/specs/2026-07-03-youtube-ip-ban-resilience-design.md
+설계 문서: docs/archive/specs/2026-07-03-youtube-ip-ban-resilience-design.md
 (PR #48 머지 후 main 에 반영). 이슈 #47.
 """
 

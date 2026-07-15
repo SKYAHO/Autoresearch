@@ -276,7 +276,7 @@
 
 - `Dockerfile.app`
 - `.github/workflows/ci.yml`
-- `autoresearch/action_logs/README_action_log.md`
+- `docs/guides/action-log.md`
 
 작업:
 

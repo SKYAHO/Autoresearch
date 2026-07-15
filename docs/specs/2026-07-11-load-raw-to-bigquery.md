@@ -5,7 +5,7 @@
 
 ## 배경
 
-`docs/data-warehouse.md`의 피처 테이블 SQL은 BigQuery의 raw 테이블을
+`docs/guides/data-warehouse.md`의 피처 테이블 SQL은 BigQuery의 raw 테이블을
 원천으로 참조하지만, GCS 데이터 레이크의 raw 데이터를 BigQuery로 적재하는
 수단이 없다. 피처 테이블 생성과 Feast offline store 연동의 전제로 raw 적재
 스크립트를 추가한다.
@@ -23,7 +23,7 @@
 ## 적재 대상
 
 GCS 버킷(`YOUTUBE_LAKE_BUCKET`) 기준. 대상 테이블 이름은
-`docs/data-warehouse.md`의 피처 SQL이 참조하는 이름을 그대로 사용한다.
+`docs/guides/data-warehouse.md`의 피처 SQL이 참조하는 이름을 그대로 사용한다.
 
 | 소스 (GCS) | 대상 테이블 | 파티션 처리 |
 | --- | --- | --- |

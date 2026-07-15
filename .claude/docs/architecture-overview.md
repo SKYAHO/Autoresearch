@@ -63,13 +63,13 @@ Airflow (외부 Autoresearch-airflow):
 - `src/models/lgbm_model.py` — LightGBM 모델 클래스
 - `src/pipeline/train.py`, `evaluate.py`, `build_training_dataset.py`
 - `src/pipeline/config.yaml` — 하이퍼파라미터·경로의 단일 출처
-- `docs/CTR_Model_Specification.md` — CTR 모델링 스펙 (전체 상세)
+- `docs/guides/ctr-model-specification.md` — CTR 모델링 스펙 (전체 상세)
 
 **모델링 과업:**
 - **목표:** user_id가 video_id를 봤을 때의 클릭 확률 예측
 - **출력:** 영상별 클릭 확률 (추천 리스트가 아님). 후처리로 확률 순
   정렬, Top-N 추출, 탐색 아이템 혼합
-- **핵심 규칙** (상세는 `CTR_Model_Specification.md`):
+- **핵심 규칙** (상세는 `docs/guides/ctr-model-specification.md`):
   - 스칼라 피처만 직접 입력. 벡터/리스트는 유사도 계산에만 사용
   - 유저 피처는 라벨 시점 **이전** 이벤트로만 생성 (누수 금지)
   - Interaction 피처는 학습과 서빙에서 동일하게 계산 (skew 금지)
@@ -155,8 +155,8 @@ Airflow runtime source나 설정을 두지 않습니다.
 4. **시크릿은 환경 변수.** 자격 증명, API 키, 버킷 이름을 코드에
    넣지 않습니다.
 5. **데이터 스펙의 단일 출처.** Event Log는
-   `docs/AGENT_SIMULATOR_SPEC.md`, 피처/라벨 정의는
-   `docs/CTR_Model_Specification.md`를 따릅니다.
+   `docs/guides/agent-simulator-spec.md`, 피처/라벨 정의는
+   `docs/guides/ctr-model-specification.md`를 따릅니다.
 
 ## Verification Checklist
 

@@ -3,7 +3,7 @@
 - 이슈: #57
 - 날짜: 2026-07-06
 - 상태: 브레인스토밍 확정 → 구현
-- SSOT: `docs/AGENT_SIMULATOR_SPEC.md` (event 스키마·노출/라벨 규칙). 본 문서는 이를 **재정의하지 않고** Phase 1을 LLM 매칭으로 구현하는 방법만 다룬다.
+- SSOT: `docs/guides/agent-simulator-spec.md` (event 스키마·노출/라벨 규칙). 본 문서는 이를 **재정의하지 않고** Phase 1을 LLM 매칭으로 구현하는 방법만 다룬다.
 
 ## 1. 목적 / 범위
 

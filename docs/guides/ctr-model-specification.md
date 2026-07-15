@@ -16,13 +16,13 @@
 
 Training Dataset은 **Agent Simulator Specification**에서 생성된 **Raw Action Log**를 입력으로 사용한다.
 
-[SKYAHO/Autoresearch/docs/AGENT_SIMULATOR_SPEC.md](https://github.com/SKYAHO/Autoresearch/blob/main/docs/AGENT_SIMULATOR_SPEC.md)
+[SKYAHO/Autoresearch/docs/guides/agent-simulator-spec.md](https://github.com/SKYAHO/Autoresearch/blob/main/docs/guides/agent-simulator-spec.md)
 
 - Raw Action Log 생성 규칙(노출 정의, `clicked` 생성 정책, Phase 1/2 차이)은 해당 문서를 따르며, 본 문서에서 재정의하지 않는다.
 - Raw Action Log 상의 노출(Impression, Phase 2 기준)은 **추천 서버가 Candidate Pool(예: Trending 상위 200개)을 재랭킹한 뒤 반환한 Top-N 추천 리스트**를 기준으로 생성된다. 따라서 Candidate Pool 전체가 아니라, 서버가 실제 반환한 Top-N만 Raw Action Log의 row로 기록된다.
 - 본 문서에서는 이 Raw Action Log를 어떻게 **Feature와 Label로 활용해 Training Dataset을 구성하고 모델을 학습하는지**만 다룬다.
 
-> **Single Source of Truth 원칙**: 노출/라벨 생성 방식이 바뀌면 [Agent Simulator Specification](https://github.com/SKYAHO/Autoresearch/blob/main/docs/AGENT_SIMULATOR_SPEC.md)만 수정하며, 본 문서는 그 변경을 그대로 참조하므로 별도 수정이 필요 없다.
+> **Single Source of Truth 원칙**: 노출/라벨 생성 방식이 바뀌면 [Agent Simulator Specification](https://github.com/SKYAHO/Autoresearch/blob/main/docs/guides/agent-simulator-spec.md)만 수정하며, 본 문서는 그 변경을 그대로 참조하므로 별도 수정이 필요 없다.
 
 ---
 

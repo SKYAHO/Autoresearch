@@ -1,7 +1,7 @@
 """Category reference data and embeddings for CTR model feature engineering.
 
 Implements 15 fixed YouTube categories with descriptions and embeddings.
-See: CTR_Model_Specification.md (Intermediate Artifacts section)
+See: docs/guides/ctr-model-specification.md (Intermediate Artifacts section)
 
 NOTE: category_description_embedding는 모듈 import 시 1회만 생성되어 캐시됨.
 """

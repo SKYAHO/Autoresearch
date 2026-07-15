@@ -24,15 +24,14 @@ autoresearch/                # 런타임 패키지
 │   ├── backfill.py          # 과거 데이터 백필
 │   ├── schema.py            # pydantic 데이터 계약
 │   └── client.py            # 복원력 레이어(재시도/Key롤링/IP밴시그니처/프록시)
-├── virtual_users/           # Gemini 기반 가상 유저(페르소나) 생성
+├── virtual_users/           # LLM 기반 가상 유저(페르소나) 생성
 │   ├── persona_source.py    # 페르소나 원천 데이터 로드
-│   ├── interests.py         # 관심사 매핑
-│   ├── gemini_generator.py  # Gemini API 호출
+│   ├── categories.py        # 카테고리 매핑
+│   ├── glm_generator.py     # LLM API 호출
 │   ├── pipeline.py          # 생성 파이프라인 오케스트레이션
 │   └── schema.py            # pydantic 데이터 계약
 ├── action_logs/             # action log 생성·shard·merge·품질 계약
-├── jobs/                    # 공개 batch CLI entrypoint
-└── math_utils.py            # 공용 계산 유틸리티
+└── jobs/                    # 공개 batch CLI entrypoint
 
 Dockerfile.app               # canonical application batch image
 proxy/                       # Cloud Run dumb forwarder (IP밴 egress seam)
@@ -40,14 +39,33 @@ src/                         # CTR 학습·평가·피처 파이프라인
 ├── models/                  # LightGBM 모델 클래스
 ├── features/                # 피처 엔지니어링
 ├── pipeline/                # train/evaluate/config.yaml
+├── tracking/                # MLflow tracking 연동
 └── utils/                   # 모델 저장/로드 유틸리티
+deploy/mlflow/               # MLflow Tracking Server 이미지·로컬 compose
 tests/                       # 모듈별 test_<module>.py 플랫 구조
 examples/ctr_pipeline_scaffold/  # CTR 파이프라인 예제 스캐폴드
 feature_repo/                # Feast Entity·FeatureView 정의 (더미 스키마), feature_store.yaml
 scripts/                     # 더미 데이터 적재·Feast 조회 검증 스크립트
-docs/                        # 스펙·플랜 문서
+docs/                        # 문서 (아래 Docs Layout 참조)
 .github/                     # CI, Claude 리뷰, 이슈 폼, PR 템플릿
 ```
+
+## Docs Layout
+
+```
+docs/
+├── README.md                # 문서 인덱스: 무엇이 어디 있는지
+├── adr/                     # Architecture Decision Records
+├── specs/                   # 살아있는 계약·설계 spec (진행 중·유효한 것만)
+├── plans/                   # 진행 중 구현 계획
+├── guides/                  # 운영·아키텍처 가이드 (data-lake, feature-store 등)
+├── assets/                  # 문서용 이미지
+└── archive/                 # 완료·과거 문서 보존 (specs/plans/reports)
+```
+
+- 새 spec/plan은 `docs/specs/`, `docs/plans/`에 `YYYY-MM-DD-<slug>.md`로 만들고,
+  구현이 완료되어 더 이상 계약으로 쓰이지 않으면 `docs/archive/`로 옮깁니다.
+- 코드 디렉토리 안에 문서를 두지 않습니다(모듈 사용법은 `docs/guides/`).
 
 ## Team Ownership & Domains
 

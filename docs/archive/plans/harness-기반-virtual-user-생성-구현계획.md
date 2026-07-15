@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.13, Pydantic v2, PyArrow Parquet, OpenAI-compatible GLM client, Hugging Face `datasets`, pytest.
 
-기준 설계 문서: `autoresearch/virtual_users/docs/harness_기반_virtual_user_생성_설계.md`
+기준 설계 문서: `docs/archive/specs/harness-기반-virtual-user-생성-설계.md`
 
 ## Global Constraints
 

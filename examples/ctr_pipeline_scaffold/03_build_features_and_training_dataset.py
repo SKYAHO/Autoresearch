@@ -1,7 +1,7 @@
 """
 03_build_features_and_training_dataset.py
 
-CTR_Model_Specification.md를 그대로 구현한다.
+docs/guides/ctr-model-specification.md를 그대로 구현한다.
 멘토 피드백("피처 가공은 pandas 연산보다 SQL 기반으로")에 따라
 모든 Feature 가공은 DuckDB SQL로 수행한다. (Python은 orchestration만 담당)
 
@@ -235,7 +235,7 @@ def main():
 
     # =========================================================
     # 5) User Static Feature(age_group, occupation) 붙이고
-    #    최종 Model Input Columns 순서로 정렬 (CTR_Model_Specification.md 기준)
+    #    최종 Model Input Columns 순서로 정렬 (docs/guides/ctr-model-specification.md 기준)
     # =========================================================
     con.register("joined", joined)
     con.register("user_feature_offline", user_feature_offline)

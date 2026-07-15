@@ -4,8 +4,8 @@
 
 - **위치**: `autoresearch/action_logs/`
 - **범위**: Phase 1(`historical`) MVP. 추천 서버가 필요한 Phase 2(`online_simulated`)는 범위 밖.
-- **SSOT**: [`docs/AGENT_SIMULATOR_SPEC.md`](../../docs/AGENT_SIMULATOR_SPEC.md)
-- **설계 근거**: [`docs/superpowers/specs/2026-07-06-event-log-long-format-design.md`](../../docs/superpowers/specs/2026-07-06-event-log-long-format-design.md)
+- **SSOT**: [`docs/guides/agent-simulator-spec.md`](../guides/agent-simulator-spec.md)
+- **설계 근거**: [`docs/archive/specs/2026-07-06-event-log-long-format-design.md`](../archive/specs/2026-07-06-event-log-long-format-design.md)
 
 > 전체 파이프라인에서의 위치: `persona → virtual_users → **user action logs(event log)** → (다음 레이어) CTR training dataset → 개인별 reranking ML`
 
