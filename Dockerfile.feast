@@ -1,10 +1,3 @@
-FROM ghcr.io/astral-sh/uv:0.11.26 AS lock-export
-
-WORKDIR /source
-
-COPY pyproject.toml uv.lock ./
-RUN ["/uv", "export", "--frozen", "--no-dev", "--group", "feast", "--no-hashes", "--output-file", "/requirements.lock"]
-
 FROM python:3.12-slim
 
 ARG VCS_REF=unknown
@@ -13,17 +6,29 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV AUTORESEARCH_REVISION=${VCS_REF}
 
+# feast 0.64는 pyarrow>=21을 선언하지만 메인 의존성 해석은 pyarrow==19.0.1로
+# 고정된다. uv.lock은 이 조합을 하나의 해로 고정하며 uv는 lock을 그대로
+# 설치하므로 정상 동작한다. pip은 exported requirements를 재해석하며 feast의
+# pyarrow>=21을 강제해 충돌하므로, 이 이미지는 pip이 아니라 uv로 lock 기반
+# 설치한다.
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
+ENV PATH="/opt/venv/bin:${PATH}"
+
 LABEL org.opencontainers.image.source="https://github.com/SKYAHO/Autoresearch" \
       org.opencontainers.image.revision="${VCS_REF}" \
       io.autoresearch.batch-contract.version="batch-contract-v1"
+
+COPY --from=ghcr.io/astral-sh/uv:0.11.26 /uv /bin/uv
 
 WORKDIR /app
 
 RUN adduser --disabled-password --gecos "" appuser
 
-COPY --from=lock-export /requirements.lock ./
-RUN python -m pip install --no-cache-dir -r requirements.lock \
-    && rm requirements.lock
+COPY pyproject.toml uv.lock ./
+RUN uv sync --frozen --no-dev --group feast --no-install-project \
+    && rm -rf /root/.cache/uv
 
 COPY autoresearch ./autoresearch
 COPY feature_repo ./feature_repo
