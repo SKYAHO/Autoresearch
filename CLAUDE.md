@@ -63,9 +63,11 @@
   검사합니다.
 - Python 3.12 (`.python-version`), CI는 3.11/3.12 매트릭스
 - 프로그램 도메인은 Model Training (waieiches, hyochangsung), Feast Features
-  (waieiches, hyochangsung — 도입 진행 중), Airflow Orchestration (bbungjun),
-  GCP Infrastructure (hyeongyu-data)입니다. 뒤의 두 도메인 구현은 각각
-  `Autoresearch-airflow`, `Autoresearch-infra` 저장소가 소유합니다.
+  (waieiches, hyochangsung — 도입 진행 중), YouTube Collection & Release
+  (Noah-JuYong — 수집 파이프라인·복원력 레이어·프록시, release/배포 자동화
+  워크플로우), Airflow Orchestration (bbungjun), GCP Infrastructure
+  (hyeongyu-data)입니다. 뒤의 두 도메인 구현은 각각 `Autoresearch-airflow`,
+  `Autoresearch-infra` 저장소가 소유합니다.
 - Feast 피처 스토어는 `feature_repo/`에 도입되어 있습니다 (Entity·FeatureView
   정의는 더미 스키마, 실데이터 스키마로 교체 예정).
 - CTR 학습 파이프라인은 `src/models/`, `src/features/`, `src/pipeline/`에
