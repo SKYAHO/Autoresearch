@@ -1,0 +1,199 @@
+"""Feast offline store를 Redis online store로 materialize하는 공개 batch 명령."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
+import sys
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import MutableMapping, Sequence
+
+from autoresearch.jobs import BATCH_CONTRACT_VERSION
+
+logger = logging.getLogger(__name__)
+_REVISION = os.getenv("AUTORESEARCH_REVISION", "unknown")
+JOB_NAME = "feast_materialize"
+
+
+class BatchArgumentError(ValueError):
+    """공개 batch 명령의 문법·범위 오류."""
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise BatchArgumentError(message)
+
+
+def _iso_datetime(value: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an ISO 8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _view_list(value: str) -> list[str]:
+    views = [item.strip() for item in value.split(",")]
+    if not views or any(not item for item in views):
+        raise argparse.ArgumentTypeError(
+            "must be a comma-separated feature view list"
+        )
+    return views
+
+
+def _boolean(value: str | bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = value.casefold()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise argparse.ArgumentTypeError("must be true or false")
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = _ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=json.dumps(
+            {
+                "application_revision": _REVISION,
+                "contract_version": BATCH_CONTRACT_VERSION,
+            },
+            sort_keys=True,
+        ),
+    )
+    parser.add_argument("--repo-path", default="feature_repo")
+    parser.add_argument("--views", type=_view_list)
+    parser.add_argument("--start-ts", type=_iso_datetime)
+    parser.add_argument("--end-ts", type=_iso_datetime)
+    parser.add_argument(
+        "--dry-run",
+        nargs="?",
+        const=True,
+        default=False,
+        type=_boolean,
+    )
+    return parser
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    if (args.start_ts is None) != (args.end_ts is None):
+        raise BatchArgumentError(
+            "--start-ts and --end-ts must be provided together"
+        )
+    if args.start_ts is not None and args.start_ts >= args.end_ts:
+        raise BatchArgumentError("--start-ts must be earlier than --end-ts")
+
+
+def _fetch_ca_secret(project_id: str, secret_id: str) -> bytes:
+    from google.cloud import secretmanager
+
+    client = secretmanager.SecretManagerServiceClient()
+    name = f"projects/{project_id}/secrets/{secret_id}/versions/latest"
+    response = client.access_secret_version(request={"name": name})
+    return response.payload.data
+
+
+def _ensure_ca_bundle(
+    environment: MutableMapping[str, str] | None = None,
+) -> str | None:
+    env = os.environ if environment is None else environment
+    ca_path = env.get("REDIS_TLS_CA_PATH", "").strip()
+    if ca_path and Path(ca_path).exists():
+        return ca_path
+    secret_id = env.get("REDIS_CA_SECRET_ID", "").strip()
+    if not secret_id:
+        if ca_path:
+            raise RuntimeError(f"Redis TLS CA bundle not found: {ca_path}")
+        return None
+    project_id = env.get("GCP_PROJECT_ID", "").strip()
+    if not project_id:
+        raise RuntimeError(
+            "GCP_PROJECT_ID is required to fetch the Redis CA bundle"
+        )
+    payload = _fetch_ca_secret(project_id, secret_id)
+    handle = tempfile.NamedTemporaryFile(
+        mode="wb", suffix=".pem", delete=False
+    )
+    with handle:
+        handle.write(payload)
+    env["REDIS_TLS_CA_PATH"] = handle.name
+    return handle.name
+
+
+def _run(args: argparse.Namespace) -> dict[str, object]:
+    raise NotImplementedError
+
+
+def _emit(payload: dict[str, object]) -> None:
+    print(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+        flush=True,
+    )
+
+
+def _summary(
+    *, status: str, details: dict[str, object] | None = None
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "event": "job_summary",
+        "contract_version": BATCH_CONTRACT_VERSION,
+        "job": JOB_NAME,
+        "status": status,
+    }
+    if details:
+        payload.update(details)
+    return payload
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI 인자를 검증·실행하고 공개 종료 코드를 반환한다."""
+
+    parser = _build_parser()
+    try:
+        args = parser.parse_args(argv)
+        _validate_args(args)
+    except BatchArgumentError as exc:
+        logger.error("Invalid feast_materialize arguments: %s", exc)
+        _emit(
+            _summary(
+                status="failed", details={"error_type": "invalid_arguments"}
+            )
+        )
+        return 2
+
+    try:
+        result = dict(_run(args))
+    except BatchArgumentError as exc:
+        logger.error("Invalid feast_materialize arguments: %s", exc)
+        _emit(
+            _summary(
+                status="failed", details={"error_type": "invalid_arguments"}
+            )
+        )
+        return 2
+    except Exception as exc:  # noqa: BLE001 - process boundary maps failures to exit 1
+        logger.error("feast_materialize failed (%s)", type(exc).__name__)
+        _emit(
+            _summary(
+                status="failed", details={"error_type": "runtime_failure"}
+            )
+        )
+        return 1
+
+    status = str(result.pop("status", "succeeded"))
+    _emit(_summary(status=status, details=result))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
