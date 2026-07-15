@@ -111,7 +111,7 @@ docs/
 - **의존성:** uv + `pyproject.toml`/`uv.lock`(단일 출처).
   `proxy/requirements.txt`만 `uv export` 전핀 산출물로 유지
 - **주요 라이브러리:** pydantic v2, pyarrow, google-api-python-client,
-  google-cloud-storage, gcsfs, google-genai(개발)
+  google-cloud-storage, gcsfs, openai(GLM/zAI 호출)
 - **데이터 저장:** GCS 데이터 레이크(parquet), BigQuery(프로덕션 예정)
 - **오케스트레이션:** 외부 `Autoresearch-airflow`가 application image의 공개
   CLI를 KubernetesPodOperator로 실행

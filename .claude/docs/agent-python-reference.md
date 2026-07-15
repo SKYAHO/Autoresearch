@@ -24,7 +24,7 @@ Python 코드를 작성하거나 수정할 때 사용하는 문서입니다.
 
 ## Data Validation
 
-- 외부에서 들어오는 데이터(YouTube API 응답, Kaggle parquet, Gemini
+- 외부에서 들어오는 데이터(YouTube API 응답, Kaggle parquet, GLM
   응답)는 pydantic 모델로 검증한 뒤 사용합니다.
 - pydantic v2 문법을 사용합니다 (`model_validate`, `model_dump`).
 - 스키마 변경 시 대응하는 테스트를 함께 갱신합니다.
@@ -51,7 +51,7 @@ Python 코드를 작성하거나 수정할 때 사용하는 문서입니다.
 
 - 테스트는 `tests/test_<module>.py`에 배치합니다.
 - 변경된 동작에 집중된 테스트를 우선합니다.
-- 외부 API(YouTube, GCS, Gemini)는 mock으로 격리합니다. 실제
+- 외부 API(YouTube, GCS, GLM)는 mock으로 격리합니다. 실제
   네트워크 호출을 테스트에 넣지 않습니다.
 - 파일 산출물은 `tmp_path` 등 임시 디렉터리를 사용합니다.
 - 실행: `python -m pytest -v` (CI와 동일)
