@@ -10,9 +10,12 @@ import sys
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import MutableMapping, Sequence
+from typing import TYPE_CHECKING, Any, MutableMapping, Sequence
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
+
+if TYPE_CHECKING:
+    from feast import FeatureStore
 
 logger = logging.getLogger(__name__)
 _REVISION = os.getenv("AUTORESEARCH_REVISION", "unknown")
@@ -130,7 +133,7 @@ def _ensure_ca_bundle(
     return handle.name
 
 
-def _load_store(repo_path: str):
+def _load_store(repo_path: str) -> "FeatureStore":
     resolved = Path(repo_path).resolve()
     if not (resolved / "feature_store.yaml").exists():
         raise BatchArgumentError(
@@ -144,7 +147,7 @@ def _load_store(repo_path: str):
     return FeatureStore(repo_path=str(resolved))
 
 
-def _online_client(online_config):
+def _online_client(online_config: Any) -> Any:
     import importlib
 
     type_path = str(online_config.type)
@@ -157,7 +160,7 @@ def _online_client(online_config):
     return store_class()._get_client(online_config)
 
 
-def _dry_run(store) -> dict[str, object]:
+def _dry_run(store: "FeatureStore") -> dict[str, object]:
     views = sorted(view.name for view in store.list_feature_views())
     client = _online_client(store.config.online_store)
     client.ping()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Callable, Literal, Optional, Tuple
 
 import google.auth
@@ -53,7 +53,9 @@ class GCPIAMCredentialProvider(CredentialProvider):
         expiry = self._credentials.expiry
         if expiry is None:
             return False
-        return expiry - datetime.utcnow() < _TOKEN_REFRESH_MARGIN
+        # google-auth의 expiry는 naive UTC이므로 같은 표현으로 비교한다.
+        now_utc = datetime.now(UTC).replace(tzinfo=None)
+        return expiry - now_utc < _TOKEN_REFRESH_MARGIN
 
 
 class IAMRedisOnlineStoreConfig(RedisOnlineStoreConfig):
