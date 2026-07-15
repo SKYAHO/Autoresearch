@@ -599,6 +599,7 @@ def test_call_via_proxy_does_not_chain_raw_requests_exception(monkeypatch, caplo
     client = ResilientYouTubeClient(
         keys=["k1"],
         proxy_url=f"https://user:{credential}@proxy.example.com:8080",
+        proxy_network_backoff=0,
     )
     monkeypatch.setattr("requests.get", fake_get)
 
