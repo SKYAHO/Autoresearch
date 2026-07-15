@@ -48,10 +48,12 @@ lint = [
 feast = [
     "feast[gcp]==0.64.0",
     "google-cloud-bigquery>=3.20",
+    "google-cloud-secret-manager>=2.20",
     "redis>=5.0",
     "pandas>=2.0",
     "pyarrow>=14.0",
     "python-dotenv>=1.0",
+    "pytest>=8.0",
 ]
 # proxy/ (Cloud Run dumb forwarder) 런타임 핀.
 # dev 표면과 동일하게 정렬: dev(최대 0.128) 통과 → prod(0.116) 깨짐 버전 발산 방지.

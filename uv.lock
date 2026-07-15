@@ -318,8 +318,10 @@ dev = [
 feast = [
     { name = "feast", extra = ["gcp"], marker = "extra == 'group-12-autoresearch-feast'" },
     { name = "google-cloud-bigquery" },
+    { name = "google-cloud-secret-manager" },
     { name = "pandas" },
     { name = "pyarrow" },
+    { name = "pytest" },
     { name = "python-dotenv" },
     { name = "redis" },
 ]
@@ -365,8 +367,10 @@ dev = [
 feast = [
     { name = "feast", extras = ["gcp"], specifier = "==0.64.0" },
     { name = "google-cloud-bigquery", specifier = ">=3.20" },
+    { name = "google-cloud-secret-manager", specifier = ">=2.20" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=14.0" },
+    { name = "pytest", specifier = ">=8.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "redis", specifier = ">=5.0" },
 ]
@@ -1418,8 +1422,8 @@ wheels = [
 
 [package.optional-dependencies]
 grpc = [
-    { name = "grpcio", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
-    { name = "grpcio-status", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
+    { name = "grpcio" },
+    { name = "grpcio-status" },
 ]
 
 [[package]]
@@ -1573,6 +1577,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d6/b2/d4679b666980da16cfe8c80c7a3f1996c29fc2b9d5a2db1ab22144d88a09/google_cloud_datastore-2.25.0.tar.gz", hash = "sha256:dd646a3d8f99c2750bb5f6e0f18ece7bed95fd76e02dacaddbfa35a2b22328ff", size = 265596, upload-time = "2026-06-03T15:28:05.261Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/95/b2/fd5a3e55a5f698fd527f783ce27368e8e9c3d872bd1e1c39dd377b2b9f14/google_cloud_datastore-2.25.0-py3-none-any.whl", hash = "sha256:e47e25933bcfad7118335015b0de2f2b2b5444e81f6f029a62040f568f4f52eb", size = 207230, upload-time = "2026-06-03T15:27:15.488Z" },
+]
+
+[[package]]
+name = "google-cloud-secret-manager"
+version = "2.29.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"], marker = "extra == 'group-12-autoresearch-feast'" },
+    { name = "google-auth" },
+    { name = "grpc-google-iam-v1" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d2/7c/5c88cdde9664f6c75fb68aa11e0af4309a92bef38dd38df0456ffb0f469b/google_cloud_secret_manager-2.29.0.tar.gz", hash = "sha256:ee64133af8fdb3780affb65ec6ccf10ab15a0113d8edeba388665f4be87ce1be", size = 278437, upload-time = "2026-06-03T16:13:43.149Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/c2/fc3275bc42a522757cb5141d7dae51f048b93d2f5fe4574fcee5392cef03/google_cloud_secret_manager-2.29.0-py3-none-any.whl", hash = "sha256:21bac2d0adb0bb3c13c346d7223832f197c2266534528a1bf1402774e06395a3", size = 225042, upload-time = "2026-06-03T16:12:20.162Z" },
 ]
 
 [[package]]
@@ -1800,7 +1821,7 @@ name = "grpcio"
 version = "1.82.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b6/19/e29d3979b420b92d516ee97f0bff4fb88cbb3d724791318f50beb55db549/grpcio-1.82.0.tar.gz", hash = "sha256:bfe3247e0bb598585ce26565730970d21bccf3c9dc547dc6703a1a3c7888e8e1", size = 13184479, upload-time = "2026-07-06T04:22:54.421Z" }
 wheels = [
@@ -1851,9 +1872,9 @@ name = "grpcio-status"
 version = "1.82.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "googleapis-common-protos", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
-    { name = "grpcio", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
-    { name = "protobuf", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
+    { name = "googleapis-common-protos" },
+    { name = "grpcio" },
+    { name = "protobuf" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/07/c3/42148fdb28747b6c12df1351dece3fd574262fa14b180eca9821428626df/grpcio_status-1.82.0.tar.gz", hash = "sha256:ea0cbc12c52a902cb33ba56fb3233dcfad53ffead08f4a659b1752d473a6a0ac", size = 13902, upload-time = "2026-07-06T04:26:47.864Z" }
 wheels = [
