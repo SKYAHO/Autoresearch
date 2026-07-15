@@ -43,7 +43,7 @@ def test_forwards_youtube_request_to_upstream(monkeypatch):
     )
     assert response.status_code == 200
     assert captured["url"] == "https://www.googleapis.com/youtube/v3/videos"
-    assert captured["params"] == {"part": "snippet", "id": "vid1"}
+    assert dict(captured["params"]) == {"part": "snippet", "id": "vid1"}
     assert captured["headers"]["X-Goog-Api-Key"] == "k1"
 
 
@@ -91,6 +91,48 @@ def test_rejects_key_query_param_case_variant(bad_param, monkeypatch):
     response = client.get(
         "/youtube/v3/videos",
         params={"part": "snippet", bad_param: "SECRET"},
+        headers={"X-Goog-Api-Key": "k1"},
+    )
+    assert response.status_code == 400
+    assert "forbidden" in response.text
+
+
+def test_forwards_multi_value_query_params(monkeypatch):
+    """정상 multi-value query (?id=a&id=b&id=c) 는 업스트림으로 그대로 전달.
+
+    Starlette QueryParams 순회는 고유 키만 반환하므로, multi-value 정상 호출은
+    key= 차단 로직의 영향을 받지 않는다. YouTube API 는 ?id=A&id=B 형태로
+    다중 비디오 조회를 지원하므로 이 경로가 보장되어야 한다.
+    dict() 변환 시 multi-value 가 마지막 값으로 손실되는 회귀도 함께 방지한다.
+    """
+    captured = {}
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        captured["params"] = params
+        return _FakeResp(200, {"items": []})
+
+    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    response = client.get(
+        "/youtube/v3/videos",
+        params={"part": "snippet", "id": ["a", "b", "c"]},
+        headers={"X-Goog-Api-Key": "k1"},
+    )
+    assert response.status_code == 200
+    # multi-value 가 보존되어 upstream 에 전달되는지 확인 (list of tuples 형태).
+    id_values = [v for k, v in captured["params"] if k == "id"]
+    assert id_values == ["a", "b", "c"]
+
+
+def test_rejects_multi_value_key_query_param(monkeypatch):
+    """multi-value key= 우회 시도 (?key=a&key=b) 도 차단 — Starlette QueryParams
+    순회가 고유 키만 반환하더라도 'key' 가 한 번 잡히면 충분하다."""
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        raise AssertionError("upstream 이 호출되면 안 됨(multi-value key= 차단 전)")
+
+    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    response = client.get(
+        "/youtube/v3/videos",
+        params={"part": "snippet", "key": ["SECRET1", "SECRET2"]},
         headers={"X-Goog-Api-Key": "k1"},
     )
     assert response.status_code == 400

@@ -574,14 +574,18 @@ def test_call_via_proxy_masks_credentials_in_proxy_url(monkeypatch):
     assert "@" not in msg
 
 
-def test_call_via_proxy_does_not_chain_raw_requests_exception(monkeypatch):
+def test_call_via_proxy_does_not_chain_raw_requests_exception(monkeypatch, caplog):
     """RequestException 은 __cause__ 로 체인 금지.
 
     raw requests 예외(예: ConnectionError)는 repr 에 proxy URL(credentials
     포함 가능)을 embed 한다. 이를 CollectionExhausted.__cause__ 로 보존하면
     logging.exception / traceback 출력 시 credentials 가 노출된다.
-    따라서 __cause__ 는 None 이어야 하며, 대신 예외 타입명만 메시지에 포함해
-    디버깅 정보를 보존한다.
+    따라서 __cause__ 는 None 이어야 하며, 대신 예외 타입명만 warning 로그에
+    남겨 디버깅 정보를 보존한다.
+
+    항목 3 변경(#152): RequestException 시 즉시 포기하지 않고 다음 attempt 로
+    재시도. 모든 attempt 소진 시 "프록시 경로 소진" CollectionExhausted raise.
+    디버깅 정보(err 타입명)는 warning 로그로만 보존된다.
     """
     credential = "__VG_EMAIL_x__@proxy.example.com"
 
@@ -598,16 +602,23 @@ def test_call_via_proxy_does_not_chain_raw_requests_exception(monkeypatch):
     )
     monkeypatch.setattr("requests.get", fake_get)
 
-    with pytest.raises(CollectionExhausted) as exc_info:
-        client._call_via_proxy("videos", {})
+    with caplog.at_level(
+        logging.WARNING, logger="autoresearch.youtube_collection.client"
+    ):
+        with pytest.raises(CollectionExhausted) as exc_info:
+            client._call_via_proxy("videos", {})
     exc = exc_info.value
 
     assert exc.__cause__ is None
-    assert "ConnectionError" in str(exc)
     assert credential not in str(exc)
     assert "@" not in str(exc)
     tb_text = "".join(traceback.format_exception(exc))
     assert credential not in tb_text
+    # 디버깅 정보(err 타입명)는 warning 로그로만 보존 — credentials 노출 없이.
+    assert any(
+        "ConnectionError" in r.getMessage() and credential not in r.getMessage()
+        for r in caplog.records
+    )
 
 
 def test_call_via_proxy_429_raises_collection_exhausted(monkeypatch):
