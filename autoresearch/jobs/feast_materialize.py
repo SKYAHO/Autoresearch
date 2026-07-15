@@ -130,8 +130,68 @@ def _ensure_ca_bundle(
     return handle.name
 
 
+def _load_store(repo_path: str):
+    resolved = Path(repo_path).resolve()
+    if not (resolved / "feature_store.yaml").exists():
+        raise BatchArgumentError(
+            f"feature_store.yaml not found under {repo_path}"
+        )
+    parent = str(resolved.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+    from feast import FeatureStore
+
+    return FeatureStore(repo_path=str(resolved))
+
+
+def _online_client(online_config):
+    import importlib
+
+    type_path = str(online_config.type)
+    if "." not in type_path:
+        raise RuntimeError(
+            "dry-run requires a custom online store adapter type"
+        )
+    module_path, class_name = type_path.rsplit(".", 1)
+    store_class = getattr(importlib.import_module(module_path), class_name)
+    return store_class()._get_client(online_config)
+
+
+def _dry_run(store) -> dict[str, object]:
+    views = sorted(view.name for view in store.list_feature_views())
+    client = _online_client(store.config.online_store)
+    client.ping()
+    return {"mode": "dry_run", "views": views, "redis_ping": True}
+
+
 def _run(args: argparse.Namespace) -> dict[str, object]:
-    raise NotImplementedError
+    _ensure_ca_bundle()
+    store = _load_store(args.repo_path)
+    if args.dry_run:
+        return {"status": "succeeded", **_dry_run(store)}
+
+    registered = {view.name for view in store.list_feature_views()}
+    views = args.views or sorted(registered)
+    unknown = sorted(set(views) - registered)
+    if unknown:
+        raise RuntimeError(f"unknown feature views: {', '.join(unknown)}")
+
+    end_ts = args.end_ts or datetime.now(UTC)
+    if args.start_ts is not None:
+        store.materialize(
+            start_date=args.start_ts, end_date=end_ts, feature_views=views
+        )
+        mode = "range"
+    else:
+        store.materialize_incremental(end_date=end_ts, feature_views=views)
+        mode = "incremental"
+    return {
+        "status": "succeeded",
+        "mode": mode,
+        "views": views,
+        "start_ts": args.start_ts.isoformat() if args.start_ts else None,
+        "end_ts": end_ts.isoformat(),
+    }
 
 
 def _emit(payload: dict[str, object]) -> None:

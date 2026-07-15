@@ -74,3 +74,89 @@ def test_ensure_ca_bundle_fetches_secret(monkeypatch, tmp_path):
 def test_ensure_ca_bundle_secret_without_project_raises():
     with pytest.raises(RuntimeError):
         job._ensure_ca_bundle({"REDIS_CA_SECRET_ID": "redis-ca"})
+
+
+class _FakeStore:
+    def __init__(self, view_names):
+        self._views = view_names
+        self.calls = []
+        self.config = type(
+            "C",
+            (),
+            {
+                "online_store": type(
+                    "O",
+                    (),
+                    {"type": "feature_repo.redis_iam.IAMRedisOnlineStore"},
+                )()
+            },
+        )()
+
+    def list_feature_views(self):
+        return [type("V", (), {"name": name})() for name in self._views]
+
+    def materialize(self, start_date, end_date, feature_views):
+        self.calls.append(("range", start_date, end_date, tuple(feature_views)))
+
+    def materialize_incremental(self, end_date, feature_views):
+        self.calls.append(("incremental", end_date, tuple(feature_views)))
+
+
+@pytest.fixture
+def fake_store(monkeypatch):
+    store = _FakeStore(["UserStaticView", "VideoFeatureView"])
+    monkeypatch.setattr(job, "_ensure_ca_bundle", lambda env=None: None)
+    monkeypatch.setattr(job, "_load_store", lambda repo_path: store)
+    return store
+
+
+def test_incremental_materialize_all_views(fake_store, capsys):
+    assert job.main([]) == 0
+
+    summary = _json_lines(capsys.readouterr().out)[-1]
+    assert summary["status"] == "succeeded"
+    assert summary["mode"] == "incremental"
+    assert fake_store.calls[0][0] == "incremental"
+    assert fake_store.calls[0][2] == ("UserStaticView", "VideoFeatureView")
+
+
+def test_range_materialize_selected_views(fake_store, capsys):
+    argv = [
+        "--views",
+        "UserStaticView",
+        "--start-ts",
+        "2026-07-01T00:00:00",
+        "--end-ts",
+        "2026-07-02T00:00:00",
+    ]
+
+    assert job.main(argv) == 0
+
+    call = fake_store.calls[0]
+    assert call[0] == "range"
+    assert call[3] == ("UserStaticView",)
+
+
+def test_unknown_view_exits_one(fake_store, capsys):
+    assert job.main(["--views", "NopeView"]) == 1
+
+    summary = _json_lines(capsys.readouterr().out)[-1]
+    assert summary["error_type"] == "runtime_failure"
+
+
+def test_dry_run_pings_online_store(fake_store, monkeypatch, capsys):
+    pinged = []
+    monkeypatch.setattr(
+        job,
+        "_online_client",
+        lambda config: type(
+            "R", (), {"ping": lambda self: pinged.append(True)}
+        )(),
+    )
+
+    assert job.main(["--dry-run"]) == 0
+
+    summary = _json_lines(capsys.readouterr().out)[-1]
+    assert summary["mode"] == "dry_run"
+    assert pinged == [True]
+    assert fake_store.calls == []
