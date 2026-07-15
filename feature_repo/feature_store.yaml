@@ -23,9 +23,14 @@ offline_store:
   project_id: ${GCP_PROJECT_ID}
   gcs_staging_location: ${GCS_STAGING_LOCATION}
 
+# Online Store: Memorystore for Redis Cluster (IAM 인증·TLS)
+# REDIS_HOST/REDIS_PORT 는 cluster discovery endpoint 값이다.
+# 어댑터 구현·인증 방식은 feature_repo/redis_iam.py 참조.
 online_store:
-  type: redis
+  type: feature_repo.redis_iam.IAMRedisOnlineStore
+  redis_type: redis_cluster
   connection_string: ${REDIS_HOST}:${REDIS_PORT}
+  tls_ca_cert_path: ${REDIS_TLS_CA_PATH}
 
 entity_key_serialization_version: 3
 
