@@ -46,7 +46,7 @@
   - `autoresearch/youtube_collection/` — YouTube 트렌딩 수집
     (fetch/transform/load/backfill/schema + client.py 복원력 레이어),
     GCS 데이터 레이크 적재
-  - `autoresearch/virtual_users/` — Gemini 기반 가상 유저(페르소나) 생성
+  - `autoresearch/virtual_users/` — LLM 기반 가상 유저(페르소나) 생성
     파이프라인
   - `autoresearch/action_logs/` — action log 생성·shard·merge·품질 계약
   - `autoresearch/jobs/` — Airflow에 종속되지 않는 공개 batch CLI

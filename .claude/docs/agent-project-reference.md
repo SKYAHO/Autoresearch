@@ -85,8 +85,8 @@ docs/
   계약은 `schema.py`의 pydantic 모델로 정의합니다.
 
 ### `autoresearch/virtual_users/`
-- **책임:** 페르소나 원천 데이터 로드, Gemini 기반 가상 유저 생성
-- **패턴:** 외부 API 호출(`gemini_generator.py`)과 오케스트레이션
+- **책임:** 페르소나 원천 데이터 로드, LLM 기반 가상 유저 생성
+- **패턴:** 외부 API 호출(`glm_generator.py`)과 오케스트레이션
   (`pipeline.py`)을 분리합니다.
 
 ### `autoresearch/action_logs/`와 `autoresearch/jobs/`

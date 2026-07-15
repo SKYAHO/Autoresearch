@@ -49,7 +49,7 @@ Airflow (외부 Autoresearch-airflow):
 
 가상 유저 (실험):
     persona 원천 → autoresearch/virtual_users/pipeline.py
-    → Gemini API (gemini_generator.py) → 가상 유저 데이터셋
+    → GLM API (glm_generator.py) → 가상 유저 데이터셋
 ```
 
 ## Domain 1: Model Training (waieiches, hyochangsung)

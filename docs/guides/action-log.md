@@ -43,7 +43,7 @@ LLM은 (유저 × 후보영상)마다 `click_propensity`/`watch_fraction`만 판
 | `pipeline.py` | 오케스트레이션 — 유저 단위 격리 생성 → 전역 2% 정규화 → 이벤트 확장 → parquet/warehouse/quarantine 저장 + 실패 가드. | `generate_action_log_batch`, `_expand_events`, `EVENT_LOG_PARQUET_SCHEMA` |
 
 > `__init__.py`는 비어 있다. 서브모듈에서 직접 import 한다.
-> `docs/action_log_qa_리포트.md` — 실측 QA 리포트(모델별 결과).
+> [`../archive/reports/action-log-qa-리포트.md`](../archive/reports/action-log-qa-리포트.md) — 실측 QA 리포트(모델별 결과).
 
 ---
 
