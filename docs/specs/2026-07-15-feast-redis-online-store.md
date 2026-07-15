@@ -54,10 +54,13 @@ Feast 0.64 `RedisOnlineStore`는 `_get_client`/`_get_client_async` 한 쌍에서
 
 **`IAMRedisOnlineStore(RedisOnlineStore)`** + **`IAMRedisOnlineStoreConfig`**
 
-- `_get_client`/`_get_client_async`를 오버라이드해 부모의 connection string
-  파싱은 재사용하되 client kwargs에 다음을 주입한다.
+- `_get_client`를 오버라이드해 부모의 connection string 파싱은 재사용하되
+  client kwargs에 다음을 주입한다.
   - `credential_provider=GCPIAMCredentialProvider(...)`
   - `ssl=True`, `ssl_ca_certs=<CA 번들 경로>`
+- `_get_client_async`는 feature server 전용 경로로 이 연동 범위 밖이므로,
+  미검증 인증 경로 사용을 막기 위해 `NotImplementedError`로 명시적으로
+  차단한다.
 - Feast 커스텀 online store 규약(`get_online_config_from_type`)을 따른다:
   클래스 이름은 `OnlineStore`로 끝나야 하고, 같은 모듈에 `<클래스명>Config`
   pydantic 설정 클래스가 있어야 한다.
@@ -77,12 +80,14 @@ online_store:
   type: feature_repo.redis_iam.IAMRedisOnlineStore
   redis_type: redis_cluster
   connection_string: ${REDIS_HOST}:${REDIS_PORT}
-  iam_auth: ${REDIS_IAM_AUTH}
   tls_ca_cert_path: ${REDIS_TLS_CA_PATH}
 ```
 
 - `REDIS_HOST`/`REDIS_PORT`는 discovery endpoint 값을 재사용한다 (기존 env
   이름 유지).
+- `iam_auth`는 yaml에 두지 않는다. 기본값 `true`를 사용하며, `iam_auth=false`
+  폴백(로컬 단일 Redis/fakeredis)은 테스트에서 config를 직접 생성할 때만
+  쓴다. 미설정 `${...}` env가 literal로 남으면 bool 파싱이 깨지기 때문이다.
 - Feast registry, offline store 설정은 변경하지 않는다.
 
 ### 3. CA 번들 조달
@@ -118,7 +123,6 @@ python -m autoresearch.jobs.feast_materialize \
 | --- | --- | --- |
 | `GCP_PROJECT_ID`, `BQ_DATASET`, `GCS_REGISTRY_PATH`, `GCS_STAGING_LOCATION` | 기존 Feast 설정 | 변경 없음 |
 | `REDIS_HOST`, `REDIS_PORT` | discovery endpoint | 기존 이름 재사용 |
-| `REDIS_IAM_AUTH` | IAM 인증 on/off | 기본 `true` |
 | `REDIS_TLS_CA_PATH` | CA 번들 파일 경로 | 선택 |
 | `REDIS_CA_SECRET_ID` | CA 번들 Secret Manager id | `REDIS_TLS_CA_PATH` 부재 시 필수 |
 
@@ -161,10 +165,12 @@ token, CA 본문, entity 값은 로그에 출력하지 않는다 (기존 계약 
 feast·redis 의존성은 격리 그룹에만 있어 dev 환경(CI 기본 matrix 포함)에서는
 import할 수 없다. 다음 방식으로 실행 환경을 분리한다.
 
-- feast 그룹에 `pytest`를 추가하고, feast 관련 테스트는
-  `uv run --only-group feast -m pytest tests/test_feast_materialize.py ...`
-  로 실행한다.
-- 기존 CI matrix에서는 해당 테스트 파일이 module 수준
+- feast 그룹에 `pytest`를 추가하고, feast 어댑터 테스트
+  (`tests/test_redis_iam.py`)는
+  `uv run --no-dev --group feast python -m pytest tests/test_redis_iam.py`
+  로 실행한다. CLI 테스트(`tests/test_feast_materialize.py`)는 feast import를
+  지연시켜 dev 환경에서도 실행된다.
+- 기존 CI matrix에서는 `tests/test_redis_iam.py`가 module 수준
   `pytest.importorskip("feast")`로 skip되어 수집 실패가 없다.
 - CI에 feast 테스트 전용 job 추가 여부는 plan에서 결정한다 (최소한 로컬
   실행 절차는 문서화한다).
