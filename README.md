@@ -38,6 +38,7 @@ GCP 인프라는 [`SKYAHO/Autoresearch-infra`](https://github.com/SKYAHO/Autores
 |---|---|---|
 | Model Training | waieiches, hyochangsung | `src/models/`, `src/pipeline/` |
 | Feast Features | waieiches, hyochangsung | `feature_repo/`, `src/features/` |
+| YouTube Collection & Release | Noah-JuYong | `autoresearch/youtube_collection/`, `proxy/`, `.github/workflows/` (release·배포 트리거) |
 | Airflow Orchestration | bbungjun | `Autoresearch-airflow` 저장소 |
 | GCP Infrastructure | hyeongyu-data | `Autoresearch-infra` 저장소 |
 

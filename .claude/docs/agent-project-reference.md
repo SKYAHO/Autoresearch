@@ -73,6 +73,7 @@ docs/
 |---|---|---|---|
 | **Model Training** | waieiches, hyochangsung | 모델 구조, 학습 파이프라인, 평가 지표 | `src/models/`, `src/pipeline/`, `examples/ctr_pipeline_scaffold/` |
 | **Feast Features** | waieiches, hyochangsung | 피처 정의(ODFV), 피처 엔지니어링, 피처 스토어 연동 | `feature_repo/`, `src/features/` |
+| **YouTube Collection & Release** | Noah-JuYong | YouTube 수집 파이프라인·복원력 레이어·프록시, release/배포 자동화 워크플로우 | `autoresearch/youtube_collection/`, `proxy/`, `.github/workflows/` |
 | **Airflow Orchestration** | bbungjun | DAG 정의, 스케줄링, 데이터 파이프라인 오케스트레이션 | `SKYAHO/Autoresearch-airflow` |
 | **GCP Infrastructure** | hyeongyu-data | 클라우드·Kubernetes 리소스, IAM, 시크릿 기반 | `SKYAHO/Autoresearch-infra` |
 
