@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 import numpy as np
-import pandas as pd  # noqa: F401  # noqa: PANDAS_OK - LightGBM artifact expects pandas categorical columns.
+import pandas as pd
 
-from src.serving.schemas import CandidateVideo, RerankedVideo
+from src.serving.schemas import CandidateVideo, FeatureValue, RerankedVideo
 
 
 @runtime_checkable
@@ -35,6 +35,7 @@ class PredictionError(Exception):
 class Reranker:
     model: ProbabilityModel
     feature_columns: tuple[str, ...]
+    categorical_categories: Mapping[str, tuple[FeatureValue, ...]]
 
     def rerank(self, candidates: Sequence[CandidateVideo]) -> list[RerankedVideo]:
         missing_columns = tuple(
@@ -48,8 +49,12 @@ class Reranker:
         feature_frame = pd.DataFrame(
             [candidate.features for candidate in candidates], columns=self.feature_columns
         )
-        for column in feature_frame.select_dtypes(include=["object"]).columns:
-            feature_frame[column] = feature_frame[column].astype("category")
+        # 학습 시점 카테고리·순서를 그대로 재현해야 LightGBM category 코드가 일치한다.
+        # 학습에 없던 값은 NaN(결측)으로 처리된다.
+        for column, categories in self.categorical_categories.items():
+            feature_frame[column] = pd.Categorical(
+                feature_frame[column], categories=categories
+            )
 
         probabilities = self.model.predict_proba(feature_frame)
         if probabilities.ndim != 2 or probabilities.shape != (len(candidates), 2):

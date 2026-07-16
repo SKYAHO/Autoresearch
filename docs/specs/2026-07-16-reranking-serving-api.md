@@ -14,10 +14,24 @@
 
 ## 모델 artifact
 
-- `RERANK_MODEL_SOURCE=local`: `RERANK_MODEL_PATH`의 joblib/pickle 모델과 `RERANK_FEATURE_COLUMNS_PATH`의 pickle feature 목록을 로드한다.
-- `RERANK_MODEL_SOURCE=mlflow`: `MLFLOW_TRACKING_URI`와 `RERANK_MLFLOW_RUN_ID`를 사용해 `runs:/<run_id>/model/lgbm_model.joblib`, `runs:/<run_id>/features/feature_columns.pkl` artifact를 내려받아 로드한다.
+- `RERANK_MODEL_SOURCE=local`: `RERANK_MODEL_PATH`의 joblib/pickle 모델,
+  `RERANK_FEATURE_COLUMNS_PATH`의 pickle feature 목록,
+  `RERANK_CATEGORICAL_COLUMNS_PATH`의 pickle 범주형 카테고리 dict를 로드한다.
+- `RERANK_MODEL_SOURCE=mlflow`: `MLFLOW_TRACKING_URI`와 `RERANK_MLFLOW_RUN_ID`를 사용해
+  `runs:/<run_id>/model/lgbm_model.joblib`, `runs:/<run_id>/features/feature_columns.pkl`,
+  `runs:/<run_id>/features/categorical_columns.pkl` artifact를 내려받아 로드한다.
 
-현재 학습 파이프라인의 artifact 경로와 일치한다. MLflow registry alias를 통한 pyfunc 모델 로드는 학습 파이프라인이 MLflow model flavor를 기록하도록 확장될 때 별도 작업으로 다룬다.
+`categorical_columns.pkl`은 `dict[컬럼명, 카테고리 리스트]`이며 학습 시점
+카테고리 값·순서를 보존한다. 서빙은 이 목록으로 `pd.Categorical`을 구성해
+LightGBM category 코드 매핑을 학습과 동일하게 재현한다. 요청 feature 값의
+타입은 학습 데이터와 동일해야 하며(예: 학습이 int였다면 int로 전송), 학습에
+없던 카테고리 값은 결측(NaN)으로 처리된다. 이 아티팩트는 필수다 — 없는 기존
+run은 재학습이 필요하다.
+
+현재 학습 파이프라인의 artifact 경로와 일치한다(경로 상수는
+`src/serving/model_loader.py`와 `src/pipeline/train.py`가 계약으로 공유).
+MLflow registry alias를 통한 pyfunc 모델 로드는 학습 파이프라인이 MLflow
+model flavor를 기록하도록 확장될 때 별도 작업으로 다룬다.
 
 ## 컨테이너
 
