@@ -11,6 +11,16 @@
 
 Closes #
 
+## 라벨
+
+> Release Drafter가 라벨 기반으로 분류·버전을 계산합니다. 최소 1개 이상
+> 부착해 주세요.
+
+- [ ] `feature` 또는 `enhancement` (minor)
+- [ ] `bug` (patch)
+- [ ] `breaking` (major)
+- [ ] `documentation` / `experiment` (버전 영향 없음)
+
 ## 체크리스트
 
 - [ ] 코드가 로컬에서 정상적으로 실행된다

@@ -105,6 +105,21 @@ docs: 아키텍처 개요 갱신
 - [ ] 테스트 통과: `python -m pytest -v`
 - [ ] 시크릿, `.env`, 데이터 파일이 포함되지 않았다
 - [ ] 커밋 메시지가 컨벤션을 따른다
+- [ ] PR 라벨을 1개 이상 부착했다 (아래 매핑 참조)
+
+**PR 라벨 (Release Drafter 연동):**
+
+Release Drafter가 라벨 기반으로 release note 분류와 semantic version을
+자동 계산합니다. 라벨이 없으면 `Other Changes`(patch)로 분류되므로, 변경
+성격에 맞는 라벨을 반드시 부착합니다.
+
+| 라벨 | 분류 | 버전 영향 |
+|---|---|---|
+| `feature`, `enhancement` | Features | minor |
+| `bug` | Bug Fixes | patch |
+| `breaking` | Breaking Changes | major |
+| `documentation` | Documentation | 없음 |
+| `experiment` | Experiments | 없음 |
 
 **PR 본문** (`.github/PULL_REQUEST_TEMPLATE.md` 사용):
 
