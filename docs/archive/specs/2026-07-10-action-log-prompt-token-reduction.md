@@ -4,8 +4,8 @@
 - Date: 2026-07-10
 - Owner: Airflow Orchestration (bbungjun)
 - 관련 모듈: `autoresearch/action_logs/` (`llm_generator.py`, `pipeline.py`, `schema.py`)
-- 관련 문서: `docs/AGENT_SIMULATOR_SPEC.md` (출력 스키마 SSOT),
-  `autoresearch/action_logs/README_action_log.md`
+- 관련 문서: `docs/guides/agent-simulator-spec.md` (출력 스키마 SSOT),
+  `docs/guides/action-log.md`
 
 ## 배경 / 문제
 

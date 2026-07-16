@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - 실행/테스트는 WSL venv `arpy`(3.12)로만: `source ~/…/arpy/bin/activate` 또는 `arpy/bin/python -m pytest …`. 시스템 python3(3.10)은 프로젝트 실행 불가.
-- SSOT: `docs/AGENT_SIMULATOR_SPEC.md`. 설계 근거: `docs/superpowers/specs/2026-07-06-event-log-long-format-design.md`.
+- SSOT: `docs/guides/agent-simulator-spec.md`. 설계 근거: `docs/archive/specs/2026-07-06-event-log-long-format-design.md`.
 - MVP 8컬럼만: `event_id, event_timestamp, user_id, event_type, video_id, watch_time_sec, rank(항상 null), source(historical)`. `session_id/request_id/exposure_type/query/search event`는 Phase 2 보류(구현 금지).
 - `rank`는 Phase 1에서 **항상 null**. `source`는 **항상 `historical`**.
 - 코드가 정확한 클릭 비율을 결정(LLM은 비율을 정하지 않음). 전역 CTR = `round(target_ctr × 총 impression 수)`.
@@ -95,7 +95,7 @@ class EventLog(BaseModel):
 
     라벨(clicked)은 저장하지 않는다. clicked는 downstream이 impression↔click join으로
     파생한다. 노출마다 impression 1행, 클릭 선정분엔 click/view(+like) 행이 추가된다.
-    설계: docs/superpowers/specs/2026-07-06-event-log-long-format-design.md
+    설계: docs/archive/specs/2026-07-06-event-log-long-format-design.md
     """
 
     event_id: str
@@ -700,18 +700,18 @@ git commit -m "refactor: 파이프라인 이벤트 확장(_expand_events)·long 
 
 ---
 
-### Task 5: SSOT 문서를 long 설계로 갱신 (`docs/AGENT_SIMULATOR_SPEC.md`)
+### Task 5: SSOT 문서를 long 설계로 갱신 (`docs/guides/agent-simulator-spec.md`)
 
 현재 SSOT는 wide + `clicked` 컬럼을 서술해 코드와 충돌한다. long 설계(event_type 도입, 라벨은 학습셋에서 파생, Phase 1 rank=null)로 갱신한다.
 
 **Files:**
-- Modify: `docs/AGENT_SIMULATOR_SPEC.md`
+- Modify: `docs/guides/agent-simulator-spec.md`
 
 **Interfaces:** 없음(문서).
 
 - [ ] **Step 1: 현재 SSOT 확인**
 
-`docs/AGENT_SIMULATOR_SPEC.md`를 읽어(에디터 또는 `cat docs/AGENT_SIMULATOR_SPEC.md`) events 테이블 스키마·노출/라벨 규칙 서술 위치를 파악한다. 기존 QA 리포트는 `autoresearch/action_logs/docs/action_log_qa_리포트.md`.
+`docs/guides/agent-simulator-spec.md`를 읽어(에디터 또는 `cat docs/guides/agent-simulator-spec.md`) events 테이블 스키마·노출/라벨 규칙 서술 위치를 파악한다. 기존 QA 리포트는 `docs/archive/reports/action-log-qa-리포트.md`.
 
 - [ ] **Step 2: events 스키마 서술을 long 8컬럼으로 교체**
 
@@ -719,12 +719,12 @@ events 테이블 컬럼 목록을 `event_id, event_timestamp, user_id, event_typ
 
 - [ ] **Step 3: 라벨·규칙 서술 교체**
 
-다음을 명시한다: (1) 라벨(`clicked`)은 로그에 없고 `impression LEFT JOIN click`으로 downstream 학습셋에서 파생, (2) 노출마다 impression 1행·클릭 선정분엔 click/view(+like), (3) 일일 상한은 impression 기준, (4) `session_id/request_id/exposure_type/query/search event`는 Phase 2 보류. 설계 근거로 `docs/superpowers/specs/2026-07-06-event-log-long-format-design.md`를 링크한다.
+다음을 명시한다: (1) 라벨(`clicked`)은 로그에 없고 `impression LEFT JOIN click`으로 downstream 학습셋에서 파생, (2) 노출마다 impression 1행·클릭 선정분엔 click/view(+like), (3) 일일 상한은 impression 기준, (4) `session_id/request_id/exposure_type/query/search event`는 Phase 2 보류. 설계 근거로 `docs/archive/specs/2026-07-06-event-log-long-format-design.md`를 링크한다.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/AGENT_SIMULATOR_SPEC.md
+git add docs/guides/agent-simulator-spec.md
 git commit -m "docs: AGENT_SIMULATOR_SPEC를 long event log 설계로 갱신 (이슈 #57)"
 ```
 
@@ -753,7 +753,7 @@ Run: `test -n "$OPENROUTER_API_KEY" && echo has-key || echo no-key` 및 KR Trend
 
 - [ ] **Step 4: 리포트 갱신 + Commit**
 
-`autoresearch/action_logs/docs/action_log_qa_리포트.md`를 long 지표로 갱신하고 커밋한다.
+`docs/archive/reports/action-log-qa-리포트.md`를 long 지표로 갱신하고 커밋한다.
 
 ```bash
 git add autoresearch/action_logs/docs/

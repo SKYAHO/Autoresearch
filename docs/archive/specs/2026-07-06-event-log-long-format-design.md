@@ -144,7 +144,7 @@ virtual_users(10) + KR TrendingVideo(200)
 
 ## 9. SSOT 문서 갱신
 
-`docs/AGENT_SIMULATOR_SPEC.md`를 이 long 설계로 갱신한다(현재 wide + clicked 컬럼 서술이
+`docs/guides/agent-simulator-spec.md`를 이 long 설계로 갱신한다(현재 wide + clicked 컬럼 서술이
 코드와 충돌하므로 필수). event_type 도입, clicked/liked 컬럼 서술 제거,
 "라벨은 학습셋에서 파생" 명시, Phase 1 rank=null 유지.
 
