@@ -622,6 +622,42 @@ def test_call_via_proxy_does_not_chain_raw_requests_exception(monkeypatch, caplo
     )
 
 
+def test_call_via_proxy_waits_before_network_error_retry(monkeypatch):
+    """프록시 네트워크 오류 뒤 설정한 backoff만큼 대기하고 재시도한다."""
+    requests_calls = 0
+    sleep_calls = []
+
+    class FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"items": [{"id": "v1"}]}
+
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        nonlocal requests_calls
+        requests_calls += 1
+        if requests_calls == 1:
+            raise requests.exceptions.ConnectionError("temporary proxy outage")
+        return FakeResp()
+
+    def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+
+    client = ResilientYouTubeClient(
+        keys=["k1"],
+        proxy_url="https://proxy.example.com",
+        proxy_network_backoff=1.5,
+    )
+    monkeypatch.setattr("requests.get", fake_get)
+    monkeypatch.setattr("autoresearch.youtube_collection.client.time.sleep", fake_sleep)
+
+    result = client._call_via_proxy("videos", {"part": "snippet"})
+
+    assert result == {"items": [{"id": "v1"}]}
+    assert requests_calls == 2
+    assert sleep_calls == [1.5]
+
+
 def test_call_via_proxy_429_raises_collection_exhausted(monkeypatch):
     """upstream 429 → CollectionExhausted(회전/재시도 외곽에서 처리)."""
     class FakeResp:

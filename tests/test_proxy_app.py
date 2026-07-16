@@ -1,7 +1,7 @@
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from proxy.app import app
+from proxy.app import _upstream_get, app
 
 client = TestClient(app)
 
@@ -121,6 +121,33 @@ def test_forwards_multi_value_query_params(monkeypatch):
     # multi-value 가 보존되어 upstream 에 전달되는지 확인 (list of tuples 형태).
     id_values = [v for k, v in captured["params"] if k == "id"]
     assert id_values == ["a", "b", "c"]
+
+
+def test_upstream_get_serializes_multi_value_query_params(monkeypatch):
+    """httpx 는 tuple 목록의 중복 key 를 upstream URL 에 반복 직렬화한다."""
+    captured = {}
+
+    def handler(request):
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json={"items": []})
+
+    original_client = httpx.Client
+
+    def mock_client(*, timeout):
+        return original_client(transport=httpx.MockTransport(handler), timeout=timeout)
+
+    monkeypatch.setattr("proxy.app.httpx.Client", mock_client)
+    response = _upstream_get(
+        "https://www.googleapis.com/youtube/v3/videos",
+        params=[("part", "snippet"), ("id", "a"), ("id", "b"), ("id", "c")],
+        headers={"X-Goog-Api-Key": "k1"},
+        timeout=10.0,
+    )
+
+    assert response.status_code == 200
+    assert captured["url"] == (
+        "https://www.googleapis.com/youtube/v3/videos?part=snippet&id=a&id=b&id=c"
+    )
 
 
 def test_rejects_multi_value_key_query_param(monkeypatch):
