@@ -38,10 +38,14 @@ class Reranker:
     categorical_categories: Mapping[str, tuple[FeatureValue, ...]]
 
     def rerank(self, candidates: Sequence[CandidateVideo]) -> list[RerankedVideo]:
+        if not candidates:
+            return []
+
+        common_keys = set(candidates[0].features)
+        for candidate in candidates[1:]:
+            common_keys &= candidate.features.keys()
         missing_columns = tuple(
-            column
-            for column in self.feature_columns
-            if any(column not in candidate.features for candidate in candidates)
+            column for column in self.feature_columns if column not in common_keys
         )
         if missing_columns:
             raise MissingFeatureColumnsError(columns=missing_columns)

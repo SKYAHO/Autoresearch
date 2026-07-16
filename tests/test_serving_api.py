@@ -122,6 +122,30 @@ def test_rerank_orders_candidates_by_ctr_score() -> None:
     }
 
 
+def test_rerank_returns_422_when_candidate_missing_feature() -> None:
+    reranker = Reranker(
+        model=RankingModel(),
+        feature_columns=("ranking_signal",),
+        categorical_categories={},
+    )
+    app = create_app(reranker=reranker)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/rerank",
+            json={
+                "user_id": "user-1",
+                "candidates": [
+                    {"video_id": "video-1", "features": {"ranking_signal": 0.5}},
+                    {"video_id": "video-2", "features": {"other": 1.0}},
+                ],
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Missing required model features: ranking_signal"}
+
+
 def test_healthcheck_and_metrics_report_ready_model() -> None:
     reranker = Reranker(
         model=RankingModel(),
