@@ -8,7 +8,7 @@ training_dataset.csv 생성 파이프라인.
 - data/processed/events.csv (이벤트 로그)
 
 출력:
-- data/processed/training_dataset.csv (16컬럼, CTR_Model_Specification.md 준수)
+- data/processed/training_dataset.csv (16컬럼, docs/guides/ctr-model-specification.md 준수)
 
 NOTE: 위의 입력 CSV 파일들은 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py
       스크립트의 산출물이며, 스펙 변경 시에는 scaffold를 수정한 후 해당 스크립트를
@@ -72,7 +72,7 @@ def derive_preferred_category(keywords):
 
     실제 User Feature Specification 구현 전까지의 임시 mock 로직.
     LLM이 persona를 기반으로 YouTube 카테고리 1~3개를 직접 선택하는 방식으로
-    향후 교체 필요 (CTR_Model_Specification.md, User Feature Specification 참고).
+    향후 교체 필요 (docs/guides/ctr-model-specification.md, User Feature Specification 참고).
 
     Args:
         keywords: preferred_topics의 키워드 리스트 (영어 또는 한글).

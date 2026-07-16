@@ -2,7 +2,7 @@
 
 PLACEHOLDER: Text encoding using deterministic hash-based pseudo-embeddings.
 Real implementation requires Sentence Transformer (e.g., all-MiniLM-L6-v2).
-See: CTR_Model_Specification.md (Intermediate Artifacts section)
+See: docs/guides/ctr-model-specification.md (Intermediate Artifacts section)
 """
 
 import hashlib

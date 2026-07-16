@@ -2,7 +2,7 @@
 
 ## 목적
 
-`CTR_Model_Specification.md` + `AGENT_SIMULATOR_SPEC.md`가 실제로 앞뒤가 맞물려 동작하는지 검증하기 위한 **mock 파이프라인**.
+`docs/guides/ctr-model-specification.md` + `docs/guides/agent-simulator-spec.md`가 실제로 앞뒤가 맞물려 동작하는지 검증하기 위한 **mock 파이프라인**.
 
 - 스펙 문서의 Feature 정의가 실제 데이터에서 구현 가능한지 확인
 - Cold-start Policy(historical_category_affinity NULL 처리) 동작 검증
@@ -184,7 +184,7 @@ examples/ctr_pipeline_scaffold/
 | 담당 | 작업 | 입력 | 출력 |
 |---|---|---|---|
 | **Raw Data 수집** | 01 스크립트 교체 | - | YouTube API + Persona 데이터 |
-| **Agent Simulator** | 02 스크립트 교체 | Raw Data | Event Log (AGENT_SIMULATOR_SPEC.md 기준) |
+| **Agent Simulator** | 02 스크립트 교체 | Raw Data | Event Log (docs/guides/agent-simulator-spec.md 기준) |
 | **Feature Store 적재** | 03 스크립트 수정 | Event Log | Feast Feature Store (BigQuery + Redis) |
 | **Model Training** | 새로 작성 | Training Dataset | LightGBM 모델 |
 

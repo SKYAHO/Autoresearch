@@ -5,7 +5,7 @@
 - 입력: virtual_users 10명(`data/generated/virtual_users_qa_10.jsonl`) × KR TrendingVideo 200건(asaniczka, `data/raw/youtube/kr_trending_sample_200.parquet`)
 - 조건: candidates_per_user=24, target_ctr=0.02, exploration_ratio=0.2, history 30일, seed=42
 - 실행: 유저별 LLM 판정 호출을 ThreadPoolExecutor(10 workers)로 **병렬화**. draft 파싱·전역 2% 정규화·이벤트 확장은 유저 안정 순서로 단일 스레드 처리 → 응답 순서와 무관하게 결정론적.
-- 설계: `docs/superpowers/specs/2026-07-06-event-log-long-format-design.md`
+- 설계: `docs/archive/specs/2026-07-06-event-log-long-format-design.md`
 
 ## 결과 비교
 

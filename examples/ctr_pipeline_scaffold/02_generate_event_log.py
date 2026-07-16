@@ -1,15 +1,15 @@
 """
 02_generate_event_log.py
 
-- AGENT_SIMULATOR_SPEC.md의 Phase 1(historical) 생성 규칙을 단순화하여 재현한다.
-- CTR_Model_Specification.md의 Topic Vocabulary 기반 topic 추출 규칙을 따른다.
+- docs/guides/agent-simulator-spec.md의 Phase 1(historical) 생성 규칙을 단순화하여 재현한다.
+- docs/guides/ctr-model-specification.md의 Topic Vocabulary 기반 topic 추출 규칙을 따른다.
 
 ⚠️ 주의 (Placeholder 명시)
 - 실제 스펙에서는 관심사/주제 추출을 "LLM 또는 Keyword 기반"으로 하고 구현 방식은 구현자 재량이다.
   여기서는 데모 목적으로 "Topic Vocabulary 키워드가 텍스트에 등장하는지" 여부로 단순 판정한다.
   (실제 구현 시 LLM 기반 추출로 교체 가능)
 - 클릭 확률은 실제 학습 피처인 topic_similarity(src.features.feature_builder,
-  CTR_Model_Specification.md 기준 user_keyword_embeddings ↔ category_description_embedding
+  docs/guides/ctr-model-specification.md 기준 user_keyword_embeddings ↔ category_description_embedding
   cosine 유사도)를 그대로 재사용해 계산한다. 별도의 근사치(예: Jaccard)를 쓰면 라벨과
   학습 피처의 신호가 어긋나 mock 데이터에서 모델이 아무것도 학습하지 못하게 된다.
   Agent Simulator 담당자가 실제 구현 시 다른 알고리즘을 쓸 수 있으나, 그 경우에도
@@ -77,7 +77,7 @@ def main():
     ).to_csv(os.path.join(data_dir, "user_preferred_topics.csv"), index=False)
 
     # --- Phase 1 Event Log 생성 ---
-    # AGENT_SIMULATOR_SPEC: "유저 관심사와 영상 주제가 가까울수록 clicked=1 확률이 높아지도록 생성"
+    # agent-simulator-spec.md: "유저 관심사와 영상 주제가 가까울수록 clicked=1 확률이 높아지도록 생성"
     # "전체 row 중 clicked=1 비율은 약 2% 내외를 목표로 한다"
     N_IMPRESSIONS = 30000  # 노출(row) 수 = impression 수 (스펙: row 존재 = impression)
     START = datetime(2026, 4, 1)

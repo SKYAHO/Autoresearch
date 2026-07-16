@@ -31,7 +31,7 @@
   뒤 사용합니다:
   - YouTube Data API 응답
   - Kaggle 등 외부 parquet/CSV 원천
-  - Gemini API 응답
+  - GLM API 응답
 - 외부 입력으로 파일 경로나 GCS 경로를 조립할 때는 예상 범위를
   벗어나지 않는지 확인합니다.
 

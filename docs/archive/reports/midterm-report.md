@@ -202,10 +202,10 @@ ADR 0001로 보류 명시. 인프라 담당 팀원(hyeongyu-data)에게 Terrafor
 | `tests/test_proxy_app.py` (194줄) | proxy/app.py 테스트 | main 머지 |
 | `tests/test_proxy_docker.py` (79줄) | 컨테이너 통합 테스트 | main 머지 |
 | `docs/adr/0001-youtube-proxy-purpose.md` | 프록시 목적/범위 ADR | main 머지 |
-| `docs/superpowers/specs/2026-07-03-youtube-ip-ban-resilience-design.md` | 설계 문서 | PR #48 리뷰 중 |
-| `docs/superpowers/specs/2026-07-07-youtube-resilience-empirical-test.md` | 실증 테스트 설계 | PR #77 리뷰 중 |
-| `docs/superpowers/plans/2026-07-07-youtube-resilience-empirical-test.md` | 실증 테스트 실행 계획 | PR #77 리뷰 중 |
-| `docs/empirical-test/2026-07-07-run-log.md` | 실증 테스트 실행 로그 | PR #77 리뷰 중 |
+| `docs/archive/specs/2026-07-03-youtube-ip-ban-resilience-design.md` | 설계 문서 | PR #48 리뷰 중 |
+| `docs/archive/specs/2026-07-07-youtube-resilience-empirical-test.md` | 실증 테스트 설계 | PR #77 리뷰 중 |
+| `docs/archive/plans/2026-07-07-youtube-resilience-empirical-test.md` | 실증 테스트 실행 계획 | PR #77 리뷰 중 |
+| `docs/archive/reports/2026-07-07-empirical-test-run-log.md` | 실증 테스트 실행 로그 | PR #77 리뷰 중 |
 | `scripts/empirical_test/quota_burst.py` | IP밴 유도 스크립트 | PR #77 리뷰 중 |
 
 ### B. ADR 0001 요약
