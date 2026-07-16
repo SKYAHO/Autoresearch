@@ -52,6 +52,24 @@ GitHub는 `form 선택 → label 자동 적용` 방식으로 동작합니다. Pr
 `Add item`으로 제목만 추가하면 form을 우회하므로, 새 작업은 Issues
 화면에서 생성합니다.
 
+**에이전트로 이슈를 생성할 때 (`gh issue create`):**
+
+`gh issue create`는 Issue Form을 우회하므로, 라벨과 담당자를 명시하지
+않으면 빈 상태로 생성됩니다. 아래 플래그를 반드시 지정합니다.
+
+- `--label`: 작업 성격에 맞는 라벨 1개 이상 (`feature`, `bug`,
+  `experiment`, `enhancement`, `documentation` 중 택). Issue Form의
+  자동 라벨과 동일한 기준을 적용합니다.
+- `--assignee @me`: 이슈 작성자를 담당자로 자동 할당합니다.
+
+```bash
+gh issue create \
+  --title "[FEAT] ..." \
+  --label feature \
+  --assignee @me \
+  --body-file issue-body.md
+```
+
 ## Branch Naming
 
 **코드가 변경되는 작업은 반드시 이슈를 먼저 발행하고, 그 이슈에서 브랜치를
@@ -106,6 +124,21 @@ docs: 아키텍처 개요 갱신
 - [ ] 시크릿, `.env`, 데이터 파일이 포함되지 않았다
 - [ ] 커밋 메시지가 컨벤션을 따른다
 - [ ] PR 라벨을 1개 이상 부착했다 (아래 매핑 참조)
+- [ ] 담당자를 작성자 본인으로 지정했다
+
+**PR 담당자 (assignee):**
+
+PR을 생성하는 에이전트(또는 사용자)가 해당 작업의 담당자이므로, 작성자를
+담당자로 지정합니다. `gh pr create` 사용 시 `--assignee @me` 플래그를
+추가합니다.
+
+```bash
+gh pr create \
+  --title "..." \
+  --label feature \
+  --assignee @me \
+  --body-file pr-body.md
+```
 
 **PR 라벨 (Release Drafter 연동):**
 
