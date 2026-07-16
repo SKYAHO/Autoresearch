@@ -34,7 +34,6 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "datasets>=2.19",
-    "fastapi>=0.115,<0.129",
     "httpx>=0.28,<0.29",
     "google-cloud-bigquery>=3.20",
     "python-dotenv>=1.0",
@@ -60,6 +59,11 @@ proxy = [
     "uvicorn[standard]>=0.32,<0.35",
     "httpx>=0.28,<0.29",
 ]
+serving = [
+    "fastapi>=0.115,<0.129",
+    "uvicorn[standard]>=0.32,<0.35",
+    "prometheus-client>=0.20,<1",
+]
 [tool.pytest.ini_options]
 # scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외
 testpaths = ["tests"]
@@ -75,4 +79,5 @@ default-groups = ["dev"]
 conflicts = [
     [{ group = "feast" }, { group = "dev" }],
     [{ group = "feast" }, { group = "proxy" }],
+    [{ group = "feast" }, { group = "serving" }],
 ]
