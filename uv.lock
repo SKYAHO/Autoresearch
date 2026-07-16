@@ -311,11 +311,14 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "datasets" },
+    { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" } },
     { name = "google-cloud-bigquery" },
     { name = "httpx" },
+    { name = "prometheus-client" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "ruff" },
+    { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 feast = [
     { name = "feast", extra = ["gcp"], marker = "extra == 'group-12-autoresearch-feast'" },
@@ -362,11 +365,14 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "datasets", specifier = ">=2.19" },
+    { name = "fastapi", specifier = ">=0.115,<0.129" },
     { name = "google-cloud-bigquery", specifier = ">=3.20" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
+    { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "ruff", specifier = "==0.15.18" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]
 feast = [
     { name = "feast", extras = ["gcp"], specifier = "==0.64.0" },

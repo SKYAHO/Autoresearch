@@ -38,6 +38,7 @@ dev = [
     "google-cloud-bigquery>=3.20",
     "python-dotenv>=1.0",
     { include-group = "lint" },
+    { include-group = "serving" },
 ]
 # 린트 전용 표면 (CI lint job 은 이 그룹만 설치).
 lint = [
