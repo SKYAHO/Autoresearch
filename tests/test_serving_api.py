@@ -17,7 +17,7 @@ from src.serving.model_loader import (
     load_mlflow_model,
 )
 from src.serving.schemas import CandidateVideo
-from src.serving.service import Reranker
+from src.serving.service import PredictionError, Reranker
 
 
 class RankingModel:
@@ -89,6 +89,40 @@ def test_rerank_casts_categorical_columns_with_training_categories() -> None:
     assert [item.video_id for item in response] == ["video-cat30", "video-cat10"]
     assert response[0].ctr_score == 0.2
     assert response[1].ctr_score == 0.0
+
+
+class WrongShapeModel:
+    def predict_proba(self, features):
+        return np.zeros((len(features), 3))
+
+
+class ListReturningModel:
+    def predict_proba(self, features):
+        return [0.0] * len(features)
+
+
+def test_rerank_raises_prediction_error_for_wrong_shaped_matrix() -> None:
+    reranker = Reranker(
+        model=WrongShapeModel(),
+        feature_columns=("ranking_signal",),
+        categorical_categories={},
+    )
+
+    with pytest.raises(PredictionError) as excinfo:
+        reranker.rerank([CandidateVideo(video_id="video-1", features={"ranking_signal": 0.5})])
+
+    assert excinfo.value.reason == "Model returned an invalid probability matrix."
+
+
+def test_rerank_raises_prediction_error_when_model_returns_list() -> None:
+    reranker = Reranker(
+        model=ListReturningModel(),
+        feature_columns=("ranking_signal",),
+        categorical_categories={},
+    )
+
+    with pytest.raises(PredictionError):
+        reranker.rerank([CandidateVideo(video_id="video-1", features={"ranking_signal": 0.5})])
 
 
 def test_rerank_orders_candidates_by_ctr_score() -> None:
@@ -191,6 +225,30 @@ def test_local_model_loader_reads_model_and_feature_columns(tmp_path: Path) -> N
     )
 
     assert [item.video_id for item in response] == ["video-high", "video-low"]
+
+
+def test_local_model_loader_preserves_categorical_value_types(tmp_path: Path) -> None:
+    model_path = tmp_path / "model.joblib"
+    feature_columns_path = tmp_path / "feature_columns.pkl"
+    categorical_columns_path = tmp_path / "categorical_columns.pkl"
+    joblib.dump(RankingModel(), model_path)
+    with feature_columns_path.open("wb") as feature_columns_file:
+        pickle.dump(["ranking_signal", "category_id"], feature_columns_file)
+    with categorical_columns_path.open("wb") as categorical_columns_file:
+        pickle.dump({"category_id": [10, 20, 30]}, categorical_columns_file)
+
+    reranker = load_local_model(
+        LocalModelSettings(
+            model_path=model_path,
+            feature_columns_path=feature_columns_path,
+            categorical_columns_path=categorical_columns_path,
+        )
+    )
+
+    # int 카테고리가 pydantic 검증을 통과하며 int로 보존되어야 한다.
+    # str/float로 강제되면 서빙이 모든 categorical 값을 NaN으로 만든다.
+    assert reranker.categorical_categories == {"category_id": (10, 20, 30)}
+    assert all(type(category) is int for category in reranker.categorical_categories["category_id"])
 
 
 def test_local_model_loader_rejects_unknown_categorical_columns(tmp_path: Path) -> None:

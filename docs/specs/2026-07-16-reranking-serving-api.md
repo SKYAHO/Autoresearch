@@ -28,6 +28,10 @@ LightGBM category 코드 매핑을 학습과 동일하게 재현한다. 요청 f
 없던 카테고리 값은 결측(NaN)으로 처리된다. 이 아티팩트는 필수다 — 없는 기존
 run은 재학습이 필요하다.
 
+모델·feature·categorical artifact는 joblib/pickle로 역직렬화하며 이 과정에서
+임의 코드가 실행될 수 있으므로, artifact는 신뢰된 출처(자체 학습 파이프라인
+산출물 또는 신뢰된 MLflow tracking server)에서만 로드해야 한다.
+
 현재 학습 파이프라인의 artifact 경로와 일치한다(경로 상수는
 `src/serving/model_loader.py`와 `src/pipeline/train.py`가 계약으로 공유).
 MLflow registry alias를 통한 pyfunc 모델 로드는 학습 파이프라인이 MLflow

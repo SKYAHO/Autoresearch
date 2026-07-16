@@ -62,10 +62,12 @@ class Reranker:
 
         try:
             probabilities = self.model.predict_proba(feature_frame)
+            if probabilities.ndim != 2 or probabilities.shape != (len(candidates), 2):
+                raise PredictionError(reason="Model returned an invalid probability matrix.")
+        except PredictionError:
+            raise
         except Exception as error:
             raise PredictionError(reason="Model prediction raised an exception.") from error
-        if probabilities.ndim != 2 or probabilities.shape != (len(candidates), 2):
-            raise PredictionError(reason="Model returned an invalid probability matrix.")
 
         ranked_items = [
             RerankedVideo(video_id=candidate.video_id, ctr_score=float(probability[1]))
