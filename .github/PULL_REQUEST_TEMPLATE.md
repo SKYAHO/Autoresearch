@@ -19,7 +19,7 @@ Closes #
 - [ ] `feature` 또는 `enhancement` (minor)
 - [ ] `bug` (patch)
 - [ ] `breaking` (major)
-- [ ] `documentation` / `experiment` (버전 영향 없음)
+- [ ] `documentation` / `experiment` (patch — default)
 
 ## 체크리스트
 
