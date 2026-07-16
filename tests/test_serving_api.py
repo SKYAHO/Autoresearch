@@ -246,3 +246,27 @@ def test_mlflow_model_loader_downloads_training_artifacts(
         "runs:/run-123/features/feature_columns.pkl",
         "runs:/run-123/features/categorical_columns.pkl",
     ]
+
+
+def test_metrics_expose_candidate_count_buckets() -> None:
+    reranker = Reranker(
+        model=RankingModel(),
+        feature_columns=("ranking_signal",),
+        categorical_categories={},
+    )
+    app = create_app(reranker=reranker)
+
+    with TestClient(app) as client:
+        client.post(
+            "/rerank",
+            json={
+                "user_id": "user-1",
+                "candidates": [
+                    {"video_id": "video-1", "features": {"ranking_signal": 0.5}},
+                ],
+            },
+        )
+        metrics_response = client.get("/metrics")
+
+    assert 'rerank_candidates_bucket{le="50.0"}' in metrics_response.text
+    assert 'rerank_candidates_bucket{le="500.0"}' in metrics_response.text

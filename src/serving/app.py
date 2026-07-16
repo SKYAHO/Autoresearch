@@ -17,7 +17,11 @@ from src.serving.schemas import HealthcheckResponse, RerankRequest, RerankRespon
 from src.serving.service import MissingFeatureColumnsError, PredictionError, Reranker
 
 RERANK_REQUESTS = Counter("rerank_requests", "Number of reranking requests.")
-RERANK_CANDIDATES = Histogram("rerank_candidates", "Candidate count per reranking request.")
+RERANK_CANDIDATES = Histogram(
+    "rerank_candidates",
+    "Candidate count per reranking request.",
+    buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500),
+)
 RERANK_DURATION = Histogram("rerank_duration_seconds", "Reranking request duration.")
 RERANK_MODEL_READY = Gauge("rerank_model_ready", "Whether a reranking model is ready.")
 
