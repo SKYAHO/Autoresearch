@@ -26,6 +26,34 @@ class RankingModel:
         return np.column_stack((1.0 - scores, scores))
 
 
+class RaisingModel:
+    def predict_proba(self, features):
+        raise ValueError("boom")
+
+
+def test_rerank_returns_500_when_model_raises() -> None:
+    reranker = Reranker(
+        model=RaisingModel(),
+        feature_columns=("ranking_signal",),
+        categorical_categories={},
+    )
+    app = create_app(reranker=reranker)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/rerank",
+            json={
+                "user_id": "user-1",
+                "candidates": [
+                    {"video_id": "video-1", "features": {"ranking_signal": 0.5}},
+                ],
+            },
+        )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Reranking model returned an invalid prediction."}
+
+
 class CategoricalCodeModel:
     """category 코드로 점수를 계산해 카테고리 매핑 정확성을 검증하는 모델."""
 

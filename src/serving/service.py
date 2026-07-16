@@ -56,7 +56,10 @@ class Reranker:
                 feature_frame[column], categories=categories
             )
 
-        probabilities = self.model.predict_proba(feature_frame)
+        try:
+            probabilities = self.model.predict_proba(feature_frame)
+        except Exception as error:
+            raise PredictionError(reason="Model prediction raised an exception.") from error
         if probabilities.ndim != 2 or probabilities.shape != (len(candidates), 2):
             raise PredictionError(reason="Model returned an invalid probability matrix.")
 
