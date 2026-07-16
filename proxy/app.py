@@ -60,7 +60,7 @@ def forward(rest_path: str, request: Request, x_goog_api_key: str = Header(defau
     try:
         resp = _upstream_get(
             upstream_url,
-            params=dict(request.query_params),
+            params=list(request.query_params.multi_items()),
             headers=upstream_headers,
             timeout=UPSTREAM_TIMEOUT,
         )

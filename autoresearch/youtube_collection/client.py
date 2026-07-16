@@ -21,6 +21,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import time
 from typing import NamedTuple, Callable
 
 from tenacity import (
@@ -232,6 +233,8 @@ class ResilientYouTubeClient:
         proxy_url: Cloud Run 프록시 URL. 1차 PR 기본 None(비활성).
         max_retries: tenacity — 현재 Key+경로 조합에 대한 backoff 최대 시도.
         max_proxy_attempts: 프록시 경로 재시도 상한. proxy_url=None 이면 미사용.
+        proxy_network_backoff: 프록시 네트워크 예외(Timeout/ConnectError 등) 시
+            재시도 전 대기 시간(초). 일시적 장애 회복 창.
         max_total_calls: 한 collection run 폭주 가드(총 호출 수 상한).
         _service_factory: 테스트 주입용(기본 _default_service_factory).
     """
@@ -243,6 +246,7 @@ class ResilientYouTubeClient:
         proxy_url: str | None = None,
         max_retries: int = 3,
         max_proxy_attempts: int = 2,
+        proxy_network_backoff: float = 1.0,
         max_total_calls: int = 60,
         _service_factory: Callable[[str], ServiceCallables] = _default_service_factory,
     ):
@@ -252,6 +256,7 @@ class ResilientYouTubeClient:
         self._proxy_url = proxy_url
         self._max_retries = max_retries
         self._max_proxy_attempts = max_proxy_attempts
+        self._proxy_network_backoff = proxy_network_backoff
         self._max_total_calls = max_total_calls
         self._service_factory = _service_factory
         # per-key service 캐시(discovery fetch 비용 절감).
@@ -264,7 +269,6 @@ class ResilientYouTubeClient:
         # IP밴 시그니처 — 현재 자원 호출 라운드에서 IP_BAN_CANDIDATE 누적.
         # key → reason. _invalid_keys 와 분리(시그니처 판정이 활성 Key 전체를 봐야 하므로).
         self._ip_ban_candidates: dict[str, str] = {}
-        self._proxy_attempts: int = 0
 
     def make_callables(self) -> YouTubeCallables:
         """fetch.collect_trending 용 (list_videos, list_channels, list_categories).
@@ -526,7 +530,7 @@ class ResilientYouTubeClient:
 
         host = urlparse(self._proxy_url or "").hostname or "(unknown)"
         url = f"{(self._proxy_url or '').rstrip('/')}/youtube/v3/{resource}"
-        for _ in range(self._max_proxy_attempts):
+        for attempt in range(self._max_proxy_attempts):
             key = self._pick_proxy_key()
             if key is None:
                 raise CollectionExhausted(
@@ -543,10 +547,19 @@ class ResilientYouTubeClient:
                 # raw requests 예외의 repr 은 proxy URL(credentials 포함 가능)을
                 # embed 할 수 있으므로 __cause__ 로 체인하지 않는다. 대신 예외
                 # 타입명만 메시지에 남겨 디버깅 정보를 보존한다.
-                raise CollectionExhausted(
-                    f"프록시 경로 네트워크 오류 resource={resource}"
-                    f" proxy_host={host} err={type(e).__name__}"
-                ) from None
+                # 일시적 네트워크 장애(Timeout/ConnectError 등) 시 backoff 후
+                # 다음 attempt 로 재시도. 모든 attempt 소진 시 for 루프 종료 후
+                # CollectionExhausted raise.
+                logger.warning(
+                    "youtube proxy network error resource=%s proxy_host=%s"
+                    " err=%s — backoff 후 다음 attempt 로 재시도",
+                    resource,
+                    host,
+                    type(e).__name__,
+                )
+                if attempt < self._max_proxy_attempts - 1:
+                    time.sleep(self._proxy_network_backoff)
+                continue
             if resp.status_code == 200:
                 try:
                     return resp.json()
