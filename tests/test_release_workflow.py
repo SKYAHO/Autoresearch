@@ -85,9 +85,11 @@ def test_github_wif_credentials_are_excluded_from_repository_and_build_context()
 def test_application_image_uses_the_locked_dependency_source():
     dockerfile = APPLICATION_DOCKERFILE.read_text(encoding="utf-8")
 
-    assert "COPY pyproject.toml uv.lock ./" in dockerfile
-    assert '"/uv", "export", "--frozen", "--no-dev", "--no-hashes"' in dockerfile
-    assert "COPY requirements.txt" not in dockerfile
+    assert "source=uv.lock,target=uv.lock" in dockerfile
+    assert "source=pyproject.toml,target=pyproject.toml" in dockerfile
+    assert "uv sync --locked --no-dev" in dockerfile
+    assert "uv export" not in dockerfile
+    assert "COPY requirements" not in dockerfile
 
 
 def test_repository_does_not_keep_legacy_airflow_runtime_surface():
