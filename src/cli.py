@@ -37,6 +37,7 @@ def train_model(
         None, help="Held-out test set 저장 경로 (config override, 병렬 실험 시 실험별로 분리 필요)"
     ),
     feature_columns_output: Optional[str] = typer.Option(None, help="Feature 목록 저장 경로 (config override)"),
+    categorical_columns_output: Optional[str] = typer.Option(None, help="Categorical 카테고리 저장 경로 (config override)"),
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
     random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
@@ -48,6 +49,7 @@ def train_model(
         model_output=model_output,
         test_set_output=test_set_output,
         feature_columns_output=feature_columns_output,
+        categorical_columns_output=categorical_columns_output,
         test_size=test_size,
         val_size=val_size,
         random_state=random_state,
@@ -81,6 +83,7 @@ def run_pipeline(
         None, help="Held-out test set 저장 경로 (config override, 병렬 실험 시 실험별로 분리 필요)"
     ),
     feature_columns_output: Optional[str] = typer.Option(None, help="Feature 목록 저장 경로 (config override)"),
+    categorical_columns_output: Optional[str] = typer.Option(None, help="Categorical 카테고리 저장 경로 (config override)"),
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
     random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
@@ -100,6 +103,7 @@ def run_pipeline(
         model_output=model_output,
         test_set_output=test_set_output,
         feature_columns_output=feature_columns_output,
+        categorical_columns_output=categorical_columns_output,
         test_size=test_size,
         val_size=val_size,
         random_state=random_state,
