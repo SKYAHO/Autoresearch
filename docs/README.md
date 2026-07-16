@@ -39,6 +39,7 @@
 - [CTR 모델 명세](guides/ctr-model-specification.md)
 - [Agent Simulator 명세 (action log SSOT)](guides/agent-simulator-spec.md)
 - [action_logs 모듈 사용법](guides/action-log.md)
+- [YouTube 트렌딩 수집 파이프라인](guides/youtube-collection.md) — API 수집·정규화·GCS parquet 적재
 
 ## 아카이브
 
