@@ -47,3 +47,34 @@ def test_breaking_rows_are_flagged():
     d = copy.deepcopy(DELTA)
     d["cross_repo"][0]["breaking"] = True
     assert "⚠️" in render_comment(d, None)
+
+
+def test_breaking_signatures_only_delta_shows_warning_and_symbol():
+    """unchanged_contracts/version_changes/schema_changes/cross_repo가 전부 비어 있고
+    breaking_signatures만 있어도 판정 표에 ⚠️와 심볼 이름이 나타나야 한다.
+    (수정 전에는 render_comment가 breaking_signatures를 전혀 읽지 않아 표 자체가
+    생성되지 않고 심볼 이름도 코멘트에 나타나지 않았다.)"""
+    import copy
+    d = copy.deepcopy(DELTA)
+    d["version_changes"] = []
+    d["unchanged_contracts"] = []
+    d["schema_changes"] = []
+    d["cross_repo"] = []
+    d["breaking_signatures"] = [
+        {"module": "action_logs.daily", "name": "run_daily_action_log"},
+    ]
+    md = render_comment(d, None)
+    assert "⚠️" in md
+    assert "run_daily_action_log" in md
+
+
+def test_breaking_signatures_mixed_with_non_breaking_still_warns():
+    """비파괴 항목(rename 등)과 breaking_signatures가 섞여 있어도 ⚠️가 표에 나타나야 한다."""
+    import copy
+    d = copy.deepcopy(DELTA)
+    d["breaking_signatures"] = [
+        {"module": "action_logs.daily", "name": "run_daily_action_log"},
+    ]
+    md = render_comment(d, None)
+    assert "⚠️" in md
+    assert "run_daily_action_log" in md

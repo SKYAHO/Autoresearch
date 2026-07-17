@@ -27,6 +27,8 @@ def render_comment(delta: dict, report_url: str | None) -> str:
     for x in delta["cross_repo"]:
         mark = "⚠️ 파괴적" if x["breaking"] else "🔵 비파괴"
         rows.append(f'| {mark} | `{x["contract"]}` {x["impact"]} — {x.get("details", "")} |')
+    for b in delta.get("breaking_signatures", []):
+        rows.append(f'| ⚠️ 파괴적 | `{b["module"]}.{b["name"]}` 시그니처가 하위호환되지 않습니다 |')
     if rows:
         lines += ["| 판정 | 계약 · 영향 |", "| --- | --- |", *rows, ""]
 
