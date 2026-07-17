@@ -23,6 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # ref 를 명시하지 않으면 pull_request 이벤트의 기본 체크아웃 대상은
+          # base+head 를 합성한 머지 프리뷰 커밋(refs/pull/<PR>/merge)이 되어
+          # head.json 의 revision 라벨과 실제 스캔 트리가 어긋난다.
+          # head sha 를 명시해 실제 PR 변경분만 스캔하도록 고정한다.
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
 
       - uses: actions/setup-python@v5
