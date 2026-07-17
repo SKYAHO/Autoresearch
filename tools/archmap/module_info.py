@@ -39,11 +39,27 @@ def _is_basemodel(node: ast.ClassDef) -> bool:
 
 
 def _class_fields(node: ast.ClassDef) -> list[str]:
+    """필드를 "이름: 타입" 문자열로 반환한다(FG-2 — 타입 변경 침묵 방지).
+
+    타입 없이 이름만 모으면 `event_id: str` -> `event_id: int` 같은 필드 타입
+    변경이 delta.py의 집합 비교(옛/새 필드명 집합 차이)에서 완전히 사라져
+    "계약 무변경" 초록을 만든다. 어노테이션을 이름에 붙여 문자열화하면 타입이
+    바뀐 필드는 이름이 같아도 다른 문자열이 되어 자동으로 removed(옛 타입,
+    breaking)+added(새 타입, non-breaking) 쌍으로 나타난다 — schema_fields가
+    여전히 array of strings이므로 서버 스키마 변경도 필요 없다.
+    ast.AnnAssign은 문법상 annotation이 항상 있으므로(`x: int`처럼 콜론 뒤가
+    비는 문법은 없다) stmt.annotation이 None인 경우는 실질적으로 발생하지
+    않지만, 방어적으로 이름만 남기는 분기를 유지한다.
+    """
     fields = []
     for stmt in node.body:
         if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
-            if not stmt.target.id.startswith("_") and stmt.target.id != "model_config":
-                fields.append(stmt.target.id)
+            name = stmt.target.id
+            if not name.startswith("_") and name != "model_config":
+                if stmt.annotation is not None:
+                    fields.append(f"{name}: {ast.unparse(stmt.annotation)}")
+                else:
+                    fields.append(name)
     return fields
 
 

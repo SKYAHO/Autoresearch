@@ -70,8 +70,10 @@ def test_version_consts_rule():
 
 
 def test_schema_fields_only_from_basemodel():
+    # FG-2: 필드는 "이름: 타입" 문자열로 나온다 — 타입 변경이 delta.py의 집합
+    # 비교에서 침묵하지 않게 하려면 이름만으로는 부족하다(주석 참고).
     fields = _info()["schema_fields"]
-    assert fields == {"EventLog": ["event_id", "clicked"]}   # Helper 제외, model_config·_cache 제외
+    assert fields == {"EventLog": ["event_id: str", "clicked: bool"]}  # Helper 제외, model_config·_cache 제외
 
 
 def test_imports_internal_only_prefix_stripped():

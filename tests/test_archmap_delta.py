@@ -3,6 +3,7 @@ from pathlib import Path
 
 from tools.archmap.build import build_architecture
 from tools.archmap.delta import build_delta, parse_numstat
+from tools.archmap.module_info import extract_module_info
 
 BASE = {
     "schema_version": "archmap-v0", "repo": "Autoresearch", "repo_url": "",
@@ -415,3 +416,34 @@ def test_build_delta_end_to_end_optional_cli_arg_added_stays_nonbreaking(tmp_pat
     optional = [x for x in d["cross_repo"] if x["impact"] == "optional-arg-added"]
     assert optional == [{"contract": "batch-contract-v1", "impact": "optional-arg-added",
                          "breaking": False, "details": "--dry-run 인자 추가"}]
+
+
+# --- FG-2 (최종 전체 리뷰): pydantic 필드 타입 변경이 "계약 무변경" 초록을 만듦 ---
+# 수작업 dict(필드 이름만 문자열)로는 extract_module_info의 실제 어노테이션
+# 직렬화 경로를 거치지 않으므로, 실제 소스를 extract_module_info로 추출해
+# event_id: str -> event_id: int 변경이 schema_changes에 removed(breaking)+
+# added(non-breaking) 쌍으로 침묵 없이 나타나는지 확인한다.
+
+def test_schema_field_type_change_surfaces_via_real_extraction():
+    base_src = "from pydantic import BaseModel\n\nclass EventLog(BaseModel):\n    event_id: str\n"
+    head_src = "from pydantic import BaseModel\n\nclass EventLog(BaseModel):\n    event_id: int\n"
+    base_mod = extract_module_info(base_src, "action_logs.schema", "action_logs",
+                                   "autoresearch/action_logs/schema.py")
+    head_mod = extract_module_info(head_src, "action_logs.schema", "action_logs",
+                                   "autoresearch/action_logs/schema.py")
+    assert base_mod["schema_fields"] == {"EventLog": ["event_id: str"]}
+    assert head_mod["schema_fields"] == {"EventLog": ["event_id: int"]}
+
+    base = {**BASE, "modules": [base_mod]}
+    head = {**BASE, "revision": "head000", "modules": [head_mod]}
+    changed = {"autoresearch/action_logs/schema.py": 1}
+    d = build_delta(base, head, changed, pr=165, issue=None)
+
+    removed = [s for s in d["schema_changes"] if s["change"] == "removed"]
+    added = [s for s in d["schema_changes"] if s["change"] == "added"]
+    assert removed == [{"model": "EventLog", "module": "action_logs.schema",
+                        "field": "event_id: str", "change": "removed", "breaking": True}]
+    assert added == [{"model": "EventLog", "module": "action_logs.schema",
+                      "field": "event_id: int", "change": "added", "breaking": False}]
+    # ACTION_LOG_SCHEMA_VERSION 등 버전 상수가 없는 최소 픽스처라 unchanged_contracts는
+    # 비어 있다 — 이 테스트의 요점은 "타입 변경이 침묵하지 않는다"는 것 자체다.
