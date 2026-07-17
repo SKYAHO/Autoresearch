@@ -78,3 +78,21 @@ def test_breaking_signatures_mixed_with_non_breaking_still_warns():
     md = render_comment(d, None)
     assert "⚠️" in md
     assert "run_daily_action_log" in md
+
+
+def test_table_cells_are_escaped():
+    """표 셀 값에 `|`나 개행이 있으면 표가 깨지므로 이스케이프해야 한다."""
+    import copy
+    d = copy.deepcopy(DELTA)
+    d["version_changes"][0]["from"] = "a|b\nc"
+    d["version_changes"][0]["to"] = "d|e\nf"
+    md = render_comment(d, None)
+    lines = md.splitlines()
+    version_lines = [ln for ln in lines if "PROMPT_VERSION" in ln]
+    assert len(version_lines) == 1
+    # 원본 개행으로 인한 행 분리가 없어야 한다 — 줄 수가 늘어나지 않음을 의미.
+    assert r"a\|b c" in md
+    assert r"d\|e f" in md
+    # 이스케이프되지 않은 원본 값(raw `|`가 포함된 원문 그대로)은 남아있지 않아야 한다.
+    assert "a|b" not in md
+    assert "d|e" not in md

@@ -4,6 +4,12 @@ from __future__ import annotations
 MARKER = "<!-- archmap-report -->"
 
 
+def _cell(value: object) -> str:
+    """표 셀 값을 이스케이프한다 — `|`는 열 구분을 깨고 개행은 행을 쪼갠다."""
+    text = str(value)
+    return text.replace("|", r"\|").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+
 def render_comment(delta: dict, report_url: str | None) -> str:
     lines = [MARKER, "## 🗺️ PR 이해 리포트 — 결정론 사실 요약", ""]
 
@@ -17,18 +23,20 @@ def render_comment(delta: dict, report_url: str | None) -> str:
 
     rows = []
     for u in delta["unchanged_contracts"]:
-        rows.append(f'| ✅ 검증됨 | `{u["const"]}` = `{u["value"]}` 불변 |')
+        rows.append(f'| ✅ 검증됨 | `{_cell(u["const"])}` = `{_cell(u["value"])}` 불변 |')
     for v in delta["version_changes"]:
         mark = "⚠️ 파괴적" if v["breaking"] else "🔵 비파괴"
-        rows.append(f'| {mark} | `{v["const"]}`: `{v["from"]}` → `{v["to"]}` |')
+        rows.append(f'| {mark} | `{_cell(v["const"])}`: `{_cell(v["from"])}` → `{_cell(v["to"])}` |')
     for s in delta["schema_changes"]:
         mark = "⚠️ 파괴적" if s["breaking"] else "🔵 비파괴"
-        rows.append(f'| {mark} | `{s["model"]}.{s["field"]}` {s["change"]} |')
+        rows.append(f'| {mark} | `{_cell(s["model"])}.{_cell(s["field"])}` {_cell(s["change"])} |')
     for x in delta["cross_repo"]:
         mark = "⚠️ 파괴적" if x["breaking"] else "🔵 비파괴"
-        rows.append(f'| {mark} | `{x["contract"]}` {x["impact"]} — {x.get("details", "")} |')
+        rows.append(f'| {mark} | `{_cell(x["contract"])}` {_cell(x["impact"])}'
+                    f' — {_cell(x.get("details", ""))} |')
     for b in delta.get("breaking_signatures", []):
-        rows.append(f'| ⚠️ 파괴적 | `{b["module"]}.{b["name"]}` 시그니처가 하위호환되지 않습니다 |')
+        rows.append(f'| ⚠️ 파괴적 | `{_cell(b["module"])}.{_cell(b["name"])}`'
+                    f' 시그니처가 하위호환되지 않습니다 |')
     if rows:
         lines += ["| 판정 | 계약 · 영향 |", "| --- | --- |", *rows, ""]
 
