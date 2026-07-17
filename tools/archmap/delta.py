@@ -4,6 +4,41 @@ from __future__ import annotations
 SCHEMA_VERSION = "archmap-v0"
 
 
+def _normalize_rename_path(path: str) -> str:
+    """`git diff --numstat`의 기본 rename 축약 표기를 head(새) 경로로 정규화한다.
+
+    git은 별도 설정 없이도 기본으로 rename을 압축해서 보여준다. 실제 저장소에서
+    `git mv` 후 `git diff --cached --numstat`을 실행해 확인한 세 가지 형태:
+      1) 공통 접두/접미가 전혀 없으면 중괄호 없이 "old/path.py => new/path.py"
+      2) 공통 접두/접미가 있으면 "prefix{old => new}suffix" — prefix 또는 suffix가
+         비어 있을 수 있다: "{action_logs => jobs}/schema.py",
+         "autoresearch/action_logs/{schema.py => schema_new.py}"
+      3) 중괄호 안쪽(old 또는 new) 자체가 빈 문자열일 수도 있다:
+         "autoresearch/{ => sub}/schema.py" (디렉터리 계층이 새로 생김),
+         "autoresearch/{sub => }/schema.py" (디렉터리 계층이 사라짐)
+    rename이 아니면 입력을 그대로 반환한다.
+    """
+    brace_start = path.find("{")
+    if brace_start != -1:
+        brace_end = path.find("}", brace_start)
+        if brace_end != -1:
+            inner = path[brace_start + 1:brace_end]
+            if " => " in inner:
+                prefix = path[:brace_start]
+                suffix = path[brace_end + 1:]
+                _, new_mid = inner.split(" => ", 1)
+                new_path = prefix + new_mid + suffix
+                # new_mid가 빈 문자열이면 prefix/suffix 경계의 슬래시가 겹칠 수 있다
+                # (예: "autoresearch/" + "" + "/schema.py" -> "autoresearch//schema.py").
+                while "//" in new_path:
+                    new_path = new_path.replace("//", "/")
+                return new_path
+    if " => " in path:
+        _, new_path = path.split(" => ", 1)
+        return new_path
+    return path
+
+
 def parse_numstat(text: str) -> dict[str, int]:
     changed: dict[str, int] = {}
     for line in text.splitlines():
@@ -11,7 +46,8 @@ def parse_numstat(text: str) -> dict[str, int]:
         if len(parts) != 3:
             continue
         added, _, path = parts
-        changed[path] = int(added) if added.isdigit() else 0
+        head_path = _normalize_rename_path(path)
+        changed[head_path] = int(added) if added.isdigit() else 0
     return changed
 
 

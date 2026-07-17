@@ -105,3 +105,43 @@ def test_tests_section():
     d = _delta()
     assert d["tests"] == {"files": ["tests/test_action_logs_daily.py"], "lines_added": 52}
     assert d["sidecar_stale"] == []
+
+
+# --- Critical 1: git 기본 rename 축약 표기 (실제 `git diff --numstat` 출력으로 확인) ---
+# 아래 문자열은 임시 저장소에서 실제로 `git mv` + `git diff --cached --numstat`을
+# 실행해 얻은 값이다 (-M 플래그 없이도 git 2.34는 기본으로 rename을 압축한다).
+
+def test_parse_numstat_rename_cross_dir_no_common_affix():
+    # 공통 접두/접미가 전혀 없으면 "old => new" 형태 (중괄호 없음)
+    text = "3\t0\tautoresearch/action_logs/schema.py => other_dir/schema_new.py\n"
+    assert parse_numstat(text) == {"other_dir/schema_new.py": 3}
+
+
+def test_parse_numstat_rename_same_dir_braces():
+    # 같은 디렉터리 내 rename: "dir/{old => new}" (접미 없음)
+    text = "3\t0\tautoresearch/action_logs/{schema.py => schema_new.py}\n"
+    assert parse_numstat(text) == {"autoresearch/action_logs/schema_new.py": 3}
+
+
+def test_parse_numstat_rename_prefix_and_suffix_common():
+    # 접두("autoresearch/")와 접미("/schema.py")가 모두 있는 디렉터리 rename
+    text = "3\t0\tautoresearch/{action_logs => jobs}/schema.py\n"
+    assert parse_numstat(text) == {"autoresearch/jobs/schema.py": 3}
+
+
+def test_parse_numstat_rename_empty_old_inner():
+    # 중괄호 안 old 쪽이 빈 문자열: 디렉터리 계층이 새로 생기는 경우
+    text = "3\t0\tautoresearch/{ => sub}/schema.py\n"
+    assert parse_numstat(text) == {"autoresearch/sub/schema.py": 3}
+
+
+def test_parse_numstat_rename_empty_new_inner():
+    # 중괄호 안 new 쪽이 빈 문자열: 디렉터리 계층이 사라지는 경우 (이중 슬래시 방지 확인)
+    text = "3\t0\tautoresearch/{sub => }/schema.py\n"
+    assert parse_numstat(text) == {"autoresearch/schema.py": 3}
+
+
+def test_parse_numstat_rename_top_level_no_brace_degenerate():
+    # 공통 접두/접미가 없는 최상위 rename은 git이 중괄호 없이 "old => new"로 낸다
+    text = "0\t0\tsub/schema.py => schema.py\n"
+    assert parse_numstat(text) == {"schema.py": 0}
