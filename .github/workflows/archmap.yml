@@ -87,6 +87,11 @@ jobs:
           TOKEN: ${{ secrets.ARCHMAP_TOKEN }}
 
       - name: PR 코멘트 upsert
+        # fork PR 에서는 GITHUB_TOKEN 이 강제로 read-only 가 되어 쓰기(gh api)
+        # 호출이 403 으로 실패한다. 이 스텝이 붉게 죽어 CI 전체를 실패시키지
+        # 않도록 continue-on-error 를 둔다. 다만 실패를 조용히 묻지 않고
+        # 아래 로직에서 ::warning:: 애노테이션으로 원인을 로그에 남긴다.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -97,10 +102,14 @@ jobs:
           existing=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate \
             --jq '[.[] | select(.body | startswith("<!-- archmap-report -->"))][0].id // empty')
           if [ -n "$existing" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" \
-              -F body=@/tmp/comment.md
+            if ! gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" \
+              -F body=@/tmp/comment.md; then
+              echo "::warning::PR 코멘트 갱신에 실패했습니다. fork PR은 GITHUB_TOKEN이 read-only로 강제되어 코멘트를 쓸 수 없습니다."
+            fi
           else
-            gh api "repos/${{ github.repository }}/issues/$pr/comments" -F body=@/tmp/comment.md
+            if ! gh api "repos/${{ github.repository }}/issues/$pr/comments" -F body=@/tmp/comment.md; then
+              echo "::warning::PR 코멘트 작성에 실패했습니다. fork PR은 GITHUB_TOKEN이 read-only로 강제되어 코멘트를 쓸 수 없습니다."
+            fi
           fi
 
   manifest:
