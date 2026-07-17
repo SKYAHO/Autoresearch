@@ -40,7 +40,8 @@ def test_build_architecture(tmp_path):
     assert ids["src.features.build"]["stage"] == "training"
     assert arch["contracts"] == [{
         "name": "batch-contract-v1", "module": "jobs",
-        "cli_args": ["--mode", "--max-users"], "consumed_by": ["Autoresearch-airflow"]}]
+        "cli_args": ["--mode", "--max-users"], "required_args": [],
+        "consumed_by": ["Autoresearch-airflow"]}]
     json.dumps(arch)  # 직렬화 가능해야 한다
 
 
@@ -54,3 +55,7 @@ def test_real_repo_smoke():
     assert "ACTION_LOG_SCHEMA_VERSION" in consts["action_logs.schema"]
     contract = arch["contracts"][0]
     assert contract["name"] == "batch-contract-v1" and "--mode" in contract["cli_args"]
+    # FG-1: 이 레포의 jobs/action_log.py는 --mode를 required=True로 등록한다.
+    # required_args가 이를 보존하지 못하면 필수 인자 추가가 조용히 초록 처리된다.
+    assert "--mode" in contract["required_args"]
+    assert "--partition-date" in contract["required_args"]

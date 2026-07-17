@@ -192,9 +192,19 @@ def build_delta(base: dict, head: dict, changed: dict[str, int],
             continue
         added = [a for a in c["cli_args"] if a not in old["cli_args"]]
         removed = [a for a in old["cli_args"] if a not in c["cli_args"]]
-        if added:
+        # required_args는 추출기가 새로 채우기 시작한 필드라 옛 architecture.json
+        # 픽스처에는 없을 수 있다 — .get()으로 기본값 []를 둔다.
+        new_required = set(c.get("required_args", []))
+        required_added = [a for a in added if a in new_required]
+        optional_added = [a for a in added if a not in new_required]
+        if required_added:
+            cross_repo.append({"contract": c["name"], "impact": "required-arg-added",
+                               "breaking": True,
+                               "details": ", ".join(required_added) + " 필수 인자 추가"})
+        if optional_added:
             cross_repo.append({"contract": c["name"], "impact": "optional-arg-added",
-                               "breaking": False, "details": ", ".join(added) + " 인자 추가"})
+                               "breaking": False,
+                               "details": ", ".join(optional_added) + " 인자 추가"})
         if removed:
             cross_repo.append({"contract": c["name"], "impact": "arg-removed",
                                "breaking": True, "details": ", ".join(removed) + " 인자 제거"})

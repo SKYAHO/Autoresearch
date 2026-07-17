@@ -55,13 +55,22 @@ def _batch_contract(repo_root: Path) -> list[dict]:
     if name is None:
         return []
     cli_args: list[str] = []
+    required_flags: set[str] = set()
     for path in sorted((repo_root / "autoresearch" / "jobs").glob("*.py")):
         if path.name.startswith("_"):
             continue
-        for flag in extract_cli_args(path.read_text(encoding="utf-8")):
+        for arg in extract_cli_args(path.read_text(encoding="utf-8")):
+            flag = arg["flag"]
             if flag not in cli_args:
                 cli_args.append(flag)
-    return [{"name": name, "module": "jobs", "cli_args": cli_args, "consumed_by": CONSUMED_BY}]
+            if arg["required"]:
+                required_flags.add(flag)
+    # required_args는 cli_args의 부분집합 문자열 배열이다 — 서버 스키마는
+    # contracts[]에 대해 additionalProperties를 막지 않으므로(breaking_signatures
+    # 선례) cli_args 타입(array of strings)을 바꾸지 않고 새 필드로만 추가한다.
+    required_args = [f for f in cli_args if f in required_flags]
+    return [{"name": name, "module": "jobs", "cli_args": cli_args,
+             "required_args": required_args, "consumed_by": CONSUMED_BY}]
 
 
 def build_architecture(repo_root: Path, repo: str, revision: str, repo_url: str) -> dict:

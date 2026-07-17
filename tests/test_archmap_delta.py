@@ -26,7 +26,8 @@ BASE = {
         "imports": [],
     }],
     "contracts": [{"name": "batch-contract-v1", "module": "jobs",
-                   "cli_args": ["--mode"], "consumed_by": ["Autoresearch-airflow"]}],
+                   "cli_args": ["--mode"], "required_args": [],
+                   "consumed_by": ["Autoresearch-airflow"]}],
 }
 
 
@@ -94,7 +95,8 @@ def test_breaking_signature_when_required_param_added():
     assert d["breaking_signatures"] == [{"module": "action_logs.schema", "name": "run_daily"}]
 
 
-def test_cross_repo_arg_added_and_removed():
+def test_cross_repo_optional_arg_added_stays_nonbreaking():
+    # 선택 인자 추가는 기존 동작 그대로 optional-arg-added/breaking=False 여야 한다.
     d = _delta()
     (x,) = d["cross_repo"]
     assert x["contract"] == "batch-contract-v1" and x["impact"] == "optional-arg-added" \
@@ -103,6 +105,34 @@ def test_cross_repo_arg_added_and_removed():
     head["contracts"][0]["cli_args"] = []
     removed = [x for x in _delta(head)["cross_repo"] if x["impact"] == "arg-removed"]
     assert removed and removed[0]["breaking"] is True
+
+
+def test_cross_repo_required_arg_added_is_breaking():
+    # FG-1: extract_cli_args가 required 여부를 보존한 뒤, cross_repo 판정도
+    # required 인자 추가를 optional-arg-added가 아니라 breaking으로 봐야 한다.
+    head = _head()
+    head["contracts"][0]["cli_args"] = ["--mode", "--max-users"]
+    head["contracts"][0]["required_args"] = ["--max-users"]
+    d = _delta(head)
+    required = [x for x in d["cross_repo"] if x["impact"] == "required-arg-added"]
+    assert required and required[0]["breaking"] is True
+    assert required[0]["contract"] == "batch-contract-v1"
+    assert "--max-users" in required[0]["details"]
+    # 같은 인자가 optional-arg-added로도 이중 보고되면 안 된다.
+    assert not any(x["impact"] == "optional-arg-added" for x in d["cross_repo"])
+
+
+def test_cross_repo_mixed_required_and_optional_args_added():
+    # 같은 계약에 필수 인자와 선택 인자가 동시에 추가되면 둘 다 각자 판정으로 갈라진다.
+    head = _head()
+    head["contracts"][0]["cli_args"] = ["--mode", "--max-users", "--dry-run"]
+    head["contracts"][0]["required_args"] = ["--max-users"]
+    d = _delta(head)
+    by_impact = {x["impact"]: x for x in d["cross_repo"]}
+    assert by_impact["required-arg-added"]["breaking"] is True
+    assert "--max-users" in by_impact["required-arg-added"]["details"]
+    assert by_impact["optional-arg-added"]["breaking"] is False
+    assert "--dry-run" in by_impact["optional-arg-added"]["details"]
 
 
 def test_tests_section():
@@ -322,3 +352,66 @@ def test_build_delta_end_to_end_rename_same_directory_is_breaking(tmp_path):
     added = [m for m in d["changed_modules"] if m["id"] == "action_logs.schema_v2"]
     assert added and added[0]["symbols_changed"] == [
         {"name": "run_daily", "change": "added", "line": 1}]
+
+
+# --- FG-1 (최종 전체 리뷰): required=True CLI 인자 추가가 "하위호환" 초록을 받음 ---
+# 수작업 dict로는 extract_cli_args의 실제 파싱 경로를 거치지 않으므로, 실제
+# jobs/__init__.py + jobs/*.py 소스를 build_architecture로 빌드해 cross_repo가
+# required 인자 추가를 optional-arg-added가 아니라 required-arg-added(breaking)로
+# 판정하는지 전 층위(추출→델타)로 확인한다.
+
+def test_build_delta_end_to_end_required_cli_arg_added_is_breaking(tmp_path):
+    base_root, head_root = tmp_path / "base_repo", tmp_path / "head_repo"
+    _write_module(base_root, "autoresearch/jobs/__init__.py",
+                  'BATCH_CONTRACT_VERSION = "batch-contract-v1"\n')
+    _write_module(base_root, "autoresearch/jobs/action_log.py",
+                  'import argparse\n\n'
+                  'def _p():\n    p = argparse.ArgumentParser()\n'
+                  '    p.add_argument("--mode", required=True)\n    return p\n')
+    _write_module(head_root, "autoresearch/jobs/__init__.py",
+                  'BATCH_CONTRACT_VERSION = "batch-contract-v1"\n')
+    _write_module(head_root, "autoresearch/jobs/action_log.py",
+                  'import argparse\n\n'
+                  'def _p():\n    p = argparse.ArgumentParser()\n'
+                  '    p.add_argument("--mode", required=True)\n'
+                  '    p.add_argument("--must-have", required=True)\n    return p\n')
+
+    base = build_architecture(base_root, "Autoresearch", "base_sha", "")
+    head = build_architecture(head_root, "Autoresearch", "head_sha", "")
+    assert base["contracts"][0]["required_args"] == ["--mode"]
+    assert head["contracts"][0]["required_args"] == ["--mode", "--must-have"]
+
+    changed = {"autoresearch/jobs/action_log.py": 1}
+    d = build_delta(base, head, changed, pr=165, issue=None)
+
+    required = [x for x in d["cross_repo"] if x["impact"] == "required-arg-added"]
+    assert required == [{"contract": "batch-contract-v1", "impact": "required-arg-added",
+                         "breaking": True, "details": "--must-have 필수 인자 추가"}]
+    assert not any(x["impact"] == "optional-arg-added" for x in d["cross_repo"])
+
+
+def test_build_delta_end_to_end_optional_cli_arg_added_stays_nonbreaking(tmp_path):
+    base_root, head_root = tmp_path / "base_repo", tmp_path / "head_repo"
+    _write_module(base_root, "autoresearch/jobs/__init__.py",
+                  'BATCH_CONTRACT_VERSION = "batch-contract-v1"\n')
+    _write_module(base_root, "autoresearch/jobs/action_log.py",
+                  'import argparse\n\n'
+                  'def _p():\n    p = argparse.ArgumentParser()\n'
+                  '    p.add_argument("--mode", required=True)\n    return p\n')
+    _write_module(head_root, "autoresearch/jobs/__init__.py",
+                  'BATCH_CONTRACT_VERSION = "batch-contract-v1"\n')
+    _write_module(head_root, "autoresearch/jobs/action_log.py",
+                  'import argparse\n\n'
+                  'def _p():\n    p = argparse.ArgumentParser()\n'
+                  '    p.add_argument("--mode", required=True)\n'
+                  '    p.add_argument("--dry-run")\n    return p\n')
+
+    base = build_architecture(base_root, "Autoresearch", "base_sha", "")
+    head = build_architecture(head_root, "Autoresearch", "head_sha", "")
+    changed = {"autoresearch/jobs/action_log.py": 1}
+    d = build_delta(base, head, changed, pr=165, issue=None)
+
+    assert not any(x["impact"] == "required-arg-added" for x in d["cross_repo"])
+    optional = [x for x in d["cross_repo"] if x["impact"] == "optional-arg-added"]
+    assert optional == [{"contract": "batch-contract-v1", "impact": "optional-arg-added",
+                         "breaking": False, "details": "--dry-run 인자 추가"}]
