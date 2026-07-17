@@ -65,13 +65,43 @@ def test_changed_modules_and_compatible_signature():
     assert {"name": "run_daily", "change": "signature", "line": 10} in m["symbols_changed"]
 
 
-def test_version_change_nonbreaking_and_unchanged_contract():
+def test_version_change_nonbreaking():
     d = _delta()
     (v,) = d["version_changes"]
     assert v["const"] == "PROMPT_VERSION" and v["from"].endswith("v3") \
         and v["to"].endswith("v4") and v["breaking"] is False
-    (u,) = d["unchanged_contracts"]
-    assert u["const"] == "ACTION_LOG_SCHEMA_VERSION" and u["value"] == "action_log_schema_v1"
+
+
+# --- Critical A (최종 전체 리뷰): 필드 타입이 바뀌는 중에도 "계약 불변" 초록이 뜸 ---
+# 스펙 §7 두 번째 조건: "X 계약/스키마 불변" 배지는 X의 버전 상수가
+# unchanged_contracts에 있을 뿐 아니라, 해당 모듈 schema_changes에 X 관련 필드
+# 변경이 "없어야" 부여할 수 있다. 어떤 필드가 어떤 버전 상수와 "관련"인지 추출기가
+# 판별할 방법이 없으므로 보수적으로 모듈 단위로 묶는다: 모듈에 schema_changes가
+# 하나라도 있으면 그 모듈의 버전 상수는 unchanged_contracts에 넣지 않는다.
+
+def test_unchanged_contract_suppressed_when_module_has_schema_changes():
+    # 기본 _head()는 PROMPT_VERSION 값 변경 + EventLog.position 필드 추가를 함께
+    # 가진다 -> action_logs.schema 모듈에 schema_changes가 존재한다. 이 상태에서
+    # ACTION_LOG_SCHEMA_VERSION 값 자체는 안 바뀌었지만, 같은 모듈에 스키마 변경이
+    # 있으므로 "계약 불변"을 주장해서는 안 된다(허위 초록 금지).
+    d = _delta()
+    assert d["schema_changes"], "이 테스트의 전제: 모듈에 스키마 변경이 있어야 함"
+    consts = {u["const"] for u in d["unchanged_contracts"]}
+    assert "ACTION_LOG_SCHEMA_VERSION" not in consts
+    # 값이 바뀌지 않았으므로 version_changes에도 들어가면 안 된다 — 아무것도
+    # 주장하지 않는 것이 거짓을 주장하는 것보다 낫다.
+    assert not any(v["const"] == "ACTION_LOG_SCHEMA_VERSION" for v in d["version_changes"])
+
+
+def test_unchanged_contract_kept_when_module_has_no_schema_changes():
+    # 정상 케이스 회귀 (PR #120 시나리오): 모듈에 schema_changes가 전혀 없으면
+    # 버전 상수 불변 판정은 그대로 unchanged_contracts에 남아야 한다.
+    head = _head()
+    head["modules"][0]["schema_fields"] = copy.deepcopy(BASE["modules"][0]["schema_fields"])
+    d = _delta(head)
+    assert d["schema_changes"] == []
+    consts = {u["const"] for u in d["unchanged_contracts"]}
+    assert "ACTION_LOG_SCHEMA_VERSION" in consts
 
 
 def test_schema_field_added_nonbreaking_removed_breaking():

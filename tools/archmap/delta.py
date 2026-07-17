@@ -144,6 +144,20 @@ def build_delta(base: dict, head: dict, changed: dict[str, int],
         changed_modules.append({"id": mid, "path": hm["path"], "stage": hm["stage"],
                                 "symbols_changed": symbols,
                                 "public_surface_changed": bool(symbols)})
+        # 스키마 필드 변경을 먼저 계산한다 — 아래 버전 상수 "불변" 판정(스펙 §7 두
+        # 번째 조건)이 이 모듈에 스키마 변경이 있었는지를 알아야 하기 때문이다.
+        module_schema_changes: list[dict] = []
+        for model in set(bm["schema_fields"]) | set(hm["schema_fields"]):
+            old_f = set(bm["schema_fields"].get(model, []))
+            new_f = set(hm["schema_fields"].get(model, []))
+            for f in sorted(new_f - old_f):
+                module_schema_changes.append({"model": model, "module": mid, "field": f,
+                                              "change": "added", "breaking": False})
+            for f in sorted(old_f - new_f):
+                module_schema_changes.append({"model": model, "module": mid, "field": f,
+                                              "change": "removed", "breaking": True})
+        schema_changes.extend(module_schema_changes)
+
         for const, info in hm["version_consts"].items():
             old = bm["version_consts"].get(const)
             if old is None:
@@ -154,22 +168,19 @@ def build_delta(base: dict, head: dict, changed: dict[str, int],
                 version_changes.append({"const": const, "module": mid,
                                         "from": old["value"], "to": info["value"],
                                         "line": info["line"], "breaking": False})
-            else:
+            elif not module_schema_changes:
+                # 스펙 §7: 버전 상수 값이 그대로여도 같은 모듈에 schema_changes가
+                # 하나라도 있으면 "계약 불변"을 주장하지 않는다. 어떤 필드가 어떤
+                # 버전 상수와 "관련"인지 추출기가 판별할 방법이 없으므로, 보수적으로
+                # 모듈 단위 전체를 묶어 판정한다 — "애매하면 breaking/warning 쪽"
+                # 원칙에 부합한다. 이 값은 실제로 안 바뀌었으므로 version_changes에도
+                # 넣지 않는다: 아무것도 주장하지 않는 것이 거짓 주장보다 낫다.
                 unchanged_contracts.append({"const": const, "module": mid,
                                             "value": info["value"], "line": info["line"]})
         for const, old in bm["version_consts"].items():
             if const not in hm["version_consts"]:
                 version_changes.append({"const": const, "module": mid, "from": old["value"],
                                         "to": None, "line": None, "breaking": True})
-        for model in set(bm["schema_fields"]) | set(hm["schema_fields"]):
-            old_f = set(bm["schema_fields"].get(model, []))
-            new_f = set(hm["schema_fields"].get(model, []))
-            for f in sorted(new_f - old_f):
-                schema_changes.append({"model": model, "module": mid, "field": f,
-                                       "change": "added", "breaking": False})
-            for f in sorted(old_f - new_f):
-                schema_changes.append({"model": model, "module": mid, "field": f,
-                                       "change": "removed", "breaking": True})
 
     for mid, bm in base_mods.items():
         if mid not in head_mods and bm["path"] in changed:
