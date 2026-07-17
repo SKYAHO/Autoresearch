@@ -13,6 +13,8 @@ BASE = {
         "public_symbols": [
             {"name": "run_daily", "kind": "function", "sig": "(request, generator)", "line": 10},
             {"name": "EventLog", "kind": "class", "sig": None, "line": 30},
+            {"name": "helper", "kind": "function", "sig": "()", "line": 40},
+            {"name": "flag", "kind": "const", "sig": None, "line": 41},
         ],
         "version_consts": {
             "ACTION_LOG_SCHEMA_VERSION": {"value": "action_log_schema_v1", "line": 16},
@@ -145,3 +147,40 @@ def test_parse_numstat_rename_top_level_no_brace_degenerate():
     # 공통 접두/접미가 없는 최상위 rename은 git이 중괄호 없이 "old => new"로 낸다
     text = "0\t0\tsub/schema.py => schema.py\n"
     assert parse_numstat(text) == {"schema.py": 0}
+
+
+# --- Critical 2: kind 변경 탐지 (class<->const, function<->const) ---
+
+def test_kind_change_class_to_const_both_sig_none():
+    # class Foo -> Foo = "value" : 둘 다 sig=None이라 기존 코드는 흔적조차 못 남겼다
+    head = _head()
+    head["modules"][0]["public_symbols"][1] = {
+        "name": "EventLog", "kind": "const", "sig": None, "line": 30}
+    d = _delta(head)
+    (m,) = d["changed_modules"]
+    assert {"name": "EventLog", "change": "signature", "line": 30} in m["symbols_changed"]
+    assert {"module": "action_logs.schema", "name": "EventLog"} in d["breaking_signatures"]
+
+
+def test_kind_change_function_to_const_no_args_sig_backward_compatible_trap():
+    # 무인자 function "()" -> const None : _sig_backward_compatible만 보면 비파괴로 오판
+    head = _head()
+    head["modules"][0]["public_symbols"][2] = {
+        "name": "helper", "kind": "const", "sig": None, "line": 40}
+    d = _delta(head)
+    assert {"module": "action_logs.schema", "name": "helper"} in d["breaking_signatures"]
+
+
+def test_kind_change_const_to_function_no_args():
+    # const None -> 무인자 function "()" : 역방향도 동일하게 오판되던 경로
+    head = _head()
+    head["modules"][0]["public_symbols"][3] = {
+        "name": "flag", "kind": "function", "sig": "()", "line": 41}
+    d = _delta(head)
+    assert {"module": "action_logs.schema", "name": "flag"} in d["breaking_signatures"]
+
+
+def test_kind_unchanged_signature_change_still_uses_backward_compat_check():
+    # kind가 같을 때는 기존 sig 하위호환 판정이 그대로 적용돼야 한다 (회귀 방지)
+    d = _delta()  # run_daily: (request, generator) -> (request, generator, max_users=None)
+    assert d["breaking_signatures"] == []

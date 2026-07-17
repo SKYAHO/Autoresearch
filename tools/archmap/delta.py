@@ -77,9 +77,16 @@ def _symbols_changed(base_m: dict, head_m: dict) -> tuple[list[dict], list[dict]
     for name, s in head_syms.items():
         if name not in base_syms:
             changes.append({"name": name, "change": "added", "line": s["line"]})
-        elif s.get("sig") != base_syms[name].get("sig"):
+            continue
+        b = base_syms[name]
+        if s.get("kind") != b.get("kind"):
+            # kind 자체가 바뀌면(class<->const, function<->const 등) sig 비교는
+            # 의미가 없다 — 종류 변경은 무조건 파괴적 API 변경으로 취급한다.
             changes.append({"name": name, "change": "signature", "line": s["line"]})
-            if not _sig_backward_compatible(base_syms[name].get("sig"), s.get("sig")):
+            breaking.append({"module": head_m["id"], "name": name})
+        elif s.get("sig") != b.get("sig"):
+            changes.append({"name": name, "change": "signature", "line": s["line"]})
+            if not _sig_backward_compatible(b.get("sig"), s.get("sig")):
                 breaking.append({"module": head_m["id"], "name": name})
     for name, s in base_syms.items():
         if name not in head_syms:
