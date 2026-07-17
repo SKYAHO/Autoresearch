@@ -96,3 +96,30 @@ def test_table_cells_are_escaped():
     # 이스케이프되지 않은 원본 값(raw `|`가 포함된 원문 그대로)은 남아있지 않아야 한다.
     assert "a|b" not in md
     assert "d|e" not in md
+
+
+def test_schema_changes_are_rendered():
+    """schema_changes 렌더링 분기가 실제로 실행되는지 검증한다(기존 테스트는 항상 빈 리스트)."""
+    import copy
+    d = copy.deepcopy(DELTA)
+    d["schema_changes"] = [
+        {"model": "ActionLog", "module": "action_logs.schema", "field": "user_id",
+         "change": "removed", "breaking": True},
+    ]
+    md = render_comment(d, None)
+    assert "ActionLog" in md and "user_id" in md
+    assert "⚠️" in md
+
+
+def test_version_changes_breaking_true_is_rendered():
+    """version_changes에서 breaking: True인 경우(상수 삭제 등)도 ⚠️로 표시되어야 한다
+    (기존 breaking 토글 테스트는 cross_repo만 다뤘다)."""
+    import copy
+    d = copy.deepcopy(DELTA)
+    d["version_changes"] = [
+        {"const": "OLD_CONST", "module": "action_logs.schema",
+         "from": "v1", "to": None, "line": None, "breaking": True},
+    ]
+    md = render_comment(d, None)
+    assert "OLD_CONST" in md
+    assert "⚠️" in md
