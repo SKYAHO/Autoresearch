@@ -296,6 +296,7 @@ dependencies = [
     { name = "mlflow" },
     { name = "openai" },
     { name = "pandas" },
+    { name = "protobuf" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pyyaml" },
@@ -343,6 +344,7 @@ requires-dist = [
     { name = "mlflow", specifier = "==2.22.1" },
     { name = "openai", specifier = ">=1.0" },
     { name = "pandas", specifier = ">=2.0,<3" },
+    { name = "protobuf", specifier = "<7" },
     { name = "pyarrow", specifier = ">=15.0" },
     { name = "pydantic", specifier = ">=2.6,<3" },
     { name = "pyyaml", specifier = ">=6.0" },
@@ -1418,8 +1420,8 @@ wheels = [
 
 [package.optional-dependencies]
 grpc = [
-    { name = "grpcio", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
-    { name = "grpcio-status", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
+    { name = "grpcio" },
+    { name = "grpcio-status" },
 ]
 
 [[package]]
@@ -1800,7 +1802,7 @@ name = "grpcio"
 version = "1.82.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b6/19/e29d3979b420b92d516ee97f0bff4fb88cbb3d724791318f50beb55db549/grpcio-1.82.0.tar.gz", hash = "sha256:bfe3247e0bb598585ce26565730970d21bccf3c9dc547dc6703a1a3c7888e8e1", size = 13184479, upload-time = "2026-07-06T04:22:54.421Z" }
 wheels = [
@@ -1851,9 +1853,9 @@ name = "grpcio-status"
 version = "1.82.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "googleapis-common-protos", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
-    { name = "grpcio", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
-    { name = "protobuf", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
+    { name = "googleapis-common-protos" },
+    { name = "grpcio" },
+    { name = "protobuf" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/07/c3/42148fdb28747b6c12df1351dece3fd574262fa14b180eca9821428626df/grpcio_status-1.82.0.tar.gz", hash = "sha256:ea0cbc12c52a902cb33ba56fb3233dcfad53ffead08f4a659b1752d473a6a0ac", size = 13902, upload-time = "2026-07-06T04:26:47.864Z" }
 wheels = [
