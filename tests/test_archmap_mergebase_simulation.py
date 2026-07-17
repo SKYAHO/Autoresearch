@@ -51,6 +51,9 @@ def _build_repo(tmp_path: Path) -> tuple[Path, str, str, str]:
     origin = tmp_path / "origin.git_work"
     origin.mkdir()
     _git(origin, "init", "-q")
+    # CI 러너에는 전역 git identity가 없어 commit이 실패하므로 저장소 로컬로 지정한다.
+    _git(origin, "config", "user.email", "archmap-test@example.com")
+    _git(origin, "config", "user.name", "archmap test")
     _git(origin, "checkout", "-q", "-b", "main")
 
     # 커밋 A: 머지베이스. schema.py에는 bar()만 있다.
