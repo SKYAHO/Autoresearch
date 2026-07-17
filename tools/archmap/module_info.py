@@ -39,14 +39,20 @@ def _is_basemodel(node: ast.ClassDef) -> bool:
 
 
 def _class_fields(node: ast.ClassDef) -> list[str]:
-    """필드를 "이름: 타입" 문자열로 반환한다(FG-2 — 타입 변경 침묵 방지).
+    """필드를 "이름: 타입[ = 우변]" 문자열로 반환한다.
 
-    타입 없이 이름만 모으면 `event_id: str` -> `event_id: int` 같은 필드 타입
-    변경이 delta.py의 집합 비교(옛/새 필드명 집합 차이)에서 완전히 사라져
-    "계약 무변경" 초록을 만든다. 어노테이션을 이름에 붙여 문자열화하면 타입이
-    바뀐 필드는 이름이 같아도 다른 문자열이 되어 자동으로 removed(옛 타입,
-    breaking)+added(새 타입, non-breaking) 쌍으로 나타난다 — schema_fields가
-    여전히 array of strings이므로 서버 스키마 변경도 필요 없다.
+    FG-2는 타입 변경 침묵을 막으려고 어노테이션을 이름에 붙였지만, 우변
+    (`stmt.value`)은 여전히 버렸다. `Field(ge=0.0, le=1.0)` -> `Field(ge=0.5,
+    le=1.0)`처럼 타입은 그대로고 제약(우변)만 바뀌는 흔한 pydantic 관용구는
+    어노테이션 문자열이 변경 전후 동일해 delta.py의 집합 비교에서 완전히
+    침묵한다. 마찬가지로 `rank: int | None = None`(선택, 기본값 있음) ->
+    `rank: int | None`(우변 제거로 필수화)도 우변을 버리면 구분이 안 된다.
+    우변이 있으면 `ast.unparse(stmt.value)`까지 문자열에 포함시켜, 제약/기본값
+    변경이 이름이 같아도 다른 문자열이 되어 자동으로 removed(옛 값, breaking)+
+    added(새 값, non-breaking) 쌍으로 나타나게 한다 — schema_fields가 여전히
+    array of strings이므로 서버 스키마 변경도 필요 없다.
+    우변이 없는 필드(`event_id: str`)는 " = ..." 을 붙이지 않고 기존 형식을
+    그대로 유지한다 — 없는 기본값을 지어내지 않는다.
     ast.AnnAssign은 문법상 annotation이 항상 있으므로(`x: int`처럼 콜론 뒤가
     비는 문법은 없다) stmt.annotation이 None인 경우는 실질적으로 발생하지
     않지만, 방어적으로 이름만 남기는 분기를 유지한다.
@@ -57,7 +63,10 @@ def _class_fields(node: ast.ClassDef) -> list[str]:
             name = stmt.target.id
             if not name.startswith("_") and name != "model_config":
                 if stmt.annotation is not None:
-                    fields.append(f"{name}: {ast.unparse(stmt.annotation)}")
+                    text = f"{name}: {ast.unparse(stmt.annotation)}"
+                    if stmt.value is not None:
+                        text += f" = {ast.unparse(stmt.value)}"
+                    fields.append(text)
                 else:
                     fields.append(name)
     return fields

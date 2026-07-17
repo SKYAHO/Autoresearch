@@ -78,3 +78,33 @@ def test_schema_fields_only_from_basemodel():
 
 def test_imports_internal_only_prefix_stripped():
     assert _info()["imports"] == ["action_logs", "action_logs.schema"]
+
+
+# --- Critical 1 (라운드 3): _class_fields가 우변(stmt.value)을 버려 Field(ge=...)
+# 제약 변경·선택→필수화가 schema_changes에서 완전히 사라지는 결함 ---
+# FG-2는 어노테이션(타입)만 문자열에 포함시켰다. `Field(ge=0.0, le=1.0)` ->
+# `Field(ge=0.5, le=1.0)`처럼 타입은 그대로고 우변 제약만 바뀌면, 어노테이션
+# 기반 문자열은 변경 전후가 동일해 delta.py의 집합 비교(old_f - new_f 등)에서
+# 완전히 침묵한다. 우변도 문자열에 포함시켜야 제약 변경이 removed+added 쌍으로
+# 드러난다.
+
+def test_schema_fields_include_rhs_for_constraint_changes():
+    src = textwrap.dedent('''
+        from pydantic import BaseModel, Field
+
+        class ImpressionDraft(BaseModel):
+            click_propensity: float = Field(ge=0.0, le=1.0)
+            event_id: str
+            rank: int | None = None
+    ''')
+    info = extract_module_info(src, "action_logs.schema", "action_logs",
+                               "autoresearch/action_logs/schema.py")
+    fields = info["schema_fields"]["ImpressionDraft"]
+    # 우변이 있는 필드는 우변까지 문자열에 포함되어야 제약 변경이 침묵하지 않는다.
+    assert "click_propensity: float = Field(ge=0.0, le=1.0)" in fields
+    # 우변이 없는 필드는 기존 형식("이름: 타입")을 그대로 유지해야 한다 — "= None" 등을
+    # 지어내면 안 된다.
+    assert "event_id: str" in fields
+    # 기본값이 있던 선택 필드가 필수화(우변 제거)되는 경우를 구분하려면, 우변이
+    # 있을 때는 그 값까지 문자열에 남아야 한다.
+    assert "rank: int | None = None" in fields
