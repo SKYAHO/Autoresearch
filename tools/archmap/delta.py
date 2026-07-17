@@ -4,8 +4,14 @@ from __future__ import annotations
 SCHEMA_VERSION = "archmap-v0"
 
 
-def _normalize_rename_path(path: str) -> str:
-    """`git diff --numstat`의 기본 rename 축약 표기를 head(새) 경로로 정규화한다.
+def _collapse_slashes(path: str) -> str:
+    while "//" in path:
+        path = path.replace("//", "/")
+    return path
+
+
+def _split_rename_path(path: str) -> tuple[str, str] | None:
+    """`git diff --numstat`의 rename 축약 표기를 (old_path, new_path)로 분리한다.
 
     git은 별도 설정 없이도 기본으로 rename을 압축해서 보여준다. 실제 저장소에서
     `git mv` 후 `git diff --cached --numstat`을 실행해 확인한 세 가지 형태:
@@ -16,7 +22,7 @@ def _normalize_rename_path(path: str) -> str:
       3) 중괄호 안쪽(old 또는 new) 자체가 빈 문자열일 수도 있다:
          "autoresearch/{ => sub}/schema.py" (디렉터리 계층이 새로 생김),
          "autoresearch/{sub => }/schema.py" (디렉터리 계층이 사라짐)
-    rename이 아니면 입력을 그대로 반환한다.
+    rename이 아니면 None을 반환한다.
     """
     brace_start = path.find("{")
     if brace_start != -1:
@@ -26,28 +32,47 @@ def _normalize_rename_path(path: str) -> str:
             if " => " in inner:
                 prefix = path[:brace_start]
                 suffix = path[brace_end + 1:]
-                _, new_mid = inner.split(" => ", 1)
-                new_path = prefix + new_mid + suffix
-                # new_mid가 빈 문자열이면 prefix/suffix 경계의 슬래시가 겹칠 수 있다
-                # (예: "autoresearch/" + "" + "/schema.py" -> "autoresearch//schema.py").
-                while "//" in new_path:
-                    new_path = new_path.replace("//", "/")
-                return new_path
+                old_mid, new_mid = inner.split(" => ", 1)
+                # old_mid/new_mid가 빈 문자열이면 prefix/suffix 경계의 슬래시가 겹칠
+                # 수 있다(예: "autoresearch/" + "" + "/schema.py" -> "autoresearch//schema.py").
+                old_path = _collapse_slashes(prefix + old_mid + suffix)
+                new_path = _collapse_slashes(prefix + new_mid + suffix)
+                return old_path, new_path
     if " => " in path:
-        _, new_path = path.split(" => ", 1)
-        return new_path
-    return path
+        old_path, new_path = path.split(" => ", 1)
+        return old_path, new_path
+    return None
 
 
 def parse_numstat(text: str) -> dict[str, int]:
+    """`git diff --numstat` 출력을 {경로: 추가줄수}로 파싱한다.
+
+    build_delta는 base/head 모듈을 (경로가 아니라) build.py의 _module_id()가 경로에서
+    파생시킨 id로 매칭한다. 파일을 rename하면 head id가 base와 달라져 base_mods.get(mid)가
+    항상 None이 되고, 해당 모듈이 "완전히 새 모듈"로 처리되어 breaking 시그니처 변경이
+    통째로 사라지는 결함이 있었다(직전 라운드에서 head 경로만 정규화했지만 id 매칭 자체는
+    고치지 못해 실효가 없었음).
+    그래서 rename 줄은 old 경로(추가줄수 0)와 new 경로(실제 추가줄수) 둘 다 changed에
+    넣는다 — "삭제 + 추가"로 펼치면 build_delta의 기존 로직이 자연히 old 경로만 있는
+    base 모듈을 삭제(모든 심볼 removed + breaking_signatures)로, new 경로만 있는 head
+    모듈을 추가로 잡는다. 이것은 은폐가 아니라 진실이다: 모듈 경로가 바뀌면 그것을
+    import하던 쪽에는 실제로 breaking 변경이므로, rename을 삭제+추가로 보고하는 것이
+    정직한 판정이다.
+    """
     changed: dict[str, int] = {}
     for line in text.splitlines():
         parts = line.split("\t")
         if len(parts) != 3:
             continue
         added, _, path = parts
-        head_path = _normalize_rename_path(path)
-        changed[head_path] = int(added) if added.isdigit() else 0
+        added_n = int(added) if added.isdigit() else 0
+        split = _split_rename_path(path)
+        if split is not None:
+            old_path, new_path = split
+            changed[old_path] = 0
+            changed[new_path] = added_n
+        else:
+            changed[path] = added_n
     return changed
 
 

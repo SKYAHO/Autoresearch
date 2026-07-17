@@ -1,5 +1,7 @@
 import copy
+from pathlib import Path
 
+from tools.archmap.build import build_architecture
 from tools.archmap.delta import build_delta, parse_numstat
 
 BASE = {
@@ -112,41 +114,48 @@ def test_tests_section():
 # --- Critical 1: git 기본 rename 축약 표기 (실제 `git diff --numstat` 출력으로 확인) ---
 # 아래 문자열은 임시 저장소에서 실제로 `git mv` + `git diff --cached --numstat`을
 # 실행해 얻은 값이다 (-M 플래그 없이도 git 2.34는 기본으로 rename을 압축한다).
+# rename 줄은 old 경로(추가줄수 0)와 new 경로(실제 추가줄수) 둘 다 changed에 들어간다
+# (라운드 2 수정: id 매칭 실패로 breaking이 사라지는 결함을 "삭제 + 추가"로 펼쳐서 해결).
 
 def test_parse_numstat_rename_cross_dir_no_common_affix():
     # 공통 접두/접미가 전혀 없으면 "old => new" 형태 (중괄호 없음)
     text = "3\t0\tautoresearch/action_logs/schema.py => other_dir/schema_new.py\n"
-    assert parse_numstat(text) == {"other_dir/schema_new.py": 3}
+    assert parse_numstat(text) == {"autoresearch/action_logs/schema.py": 0,
+                                   "other_dir/schema_new.py": 3}
 
 
 def test_parse_numstat_rename_same_dir_braces():
     # 같은 디렉터리 내 rename: "dir/{old => new}" (접미 없음)
     text = "3\t0\tautoresearch/action_logs/{schema.py => schema_new.py}\n"
-    assert parse_numstat(text) == {"autoresearch/action_logs/schema_new.py": 3}
+    assert parse_numstat(text) == {"autoresearch/action_logs/schema.py": 0,
+                                   "autoresearch/action_logs/schema_new.py": 3}
 
 
 def test_parse_numstat_rename_prefix_and_suffix_common():
     # 접두("autoresearch/")와 접미("/schema.py")가 모두 있는 디렉터리 rename
     text = "3\t0\tautoresearch/{action_logs => jobs}/schema.py\n"
-    assert parse_numstat(text) == {"autoresearch/jobs/schema.py": 3}
+    assert parse_numstat(text) == {"autoresearch/action_logs/schema.py": 0,
+                                   "autoresearch/jobs/schema.py": 3}
 
 
 def test_parse_numstat_rename_empty_old_inner():
     # 중괄호 안 old 쪽이 빈 문자열: 디렉터리 계층이 새로 생기는 경우
     text = "3\t0\tautoresearch/{ => sub}/schema.py\n"
-    assert parse_numstat(text) == {"autoresearch/sub/schema.py": 3}
+    assert parse_numstat(text) == {"autoresearch/schema.py": 0,
+                                   "autoresearch/sub/schema.py": 3}
 
 
 def test_parse_numstat_rename_empty_new_inner():
     # 중괄호 안 new 쪽이 빈 문자열: 디렉터리 계층이 사라지는 경우 (이중 슬래시 방지 확인)
     text = "3\t0\tautoresearch/{sub => }/schema.py\n"
-    assert parse_numstat(text) == {"autoresearch/schema.py": 3}
+    assert parse_numstat(text) == {"autoresearch/sub/schema.py": 0,
+                                   "autoresearch/schema.py": 3}
 
 
 def test_parse_numstat_rename_top_level_no_brace_degenerate():
     # 공통 접두/접미가 없는 최상위 rename은 git이 중괄호 없이 "old => new"로 낸다
     text = "0\t0\tsub/schema.py => schema.py\n"
-    assert parse_numstat(text) == {"schema.py": 0}
+    assert parse_numstat(text) == {"sub/schema.py": 0, "schema.py": 0}
 
 
 # --- Critical 2: kind 변경 탐지 (class<->const, function<->const) ---
@@ -250,3 +259,66 @@ def test_module_removed_entirely():
     assert removed[0]["symbols_changed"][0]["change"] == "removed"
     assert removed[0]["public_surface_changed"] is True
     assert {"module": "action_logs.schema", "name": "run_daily"} in d["breaking_signatures"]
+
+
+# --- Critical (라운드 2): rename이 id 매칭 실패로 breaking 시그니처를 통째로 삼킴 ---
+# build_delta는 모듈을 path가 아니라 build.py의 _module_id()가 만드는 id로 매칭한다.
+# rename하면 head id가 base와 달라지므로, 수작업 dict(양쪽 id를 동일하게 유지)로는
+# 이 결함이 절대 드러나지 않는다. 반드시 build_architecture로 실제 base/head를 만들어
+# id가 실제로 달라지는 것을 확인한 뒤 build_delta에 넘겨야 한다.
+
+def _write_module(root: Path, rel_path: str, source: str) -> None:
+    p = root / rel_path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(source, encoding="utf-8")
+
+
+def test_build_delta_end_to_end_rename_across_directory_is_breaking(tmp_path):
+    # 시나리오 A: 디렉터리 이동(action_logs -> jobs) + 필수 인자 추가(breaking).
+    # 실제 `git mv` 후 `git diff --numstat`이 내는 형태: "autoresearch/{action_logs => jobs}/schema.py"
+    base_root, head_root = tmp_path / "base_repo", tmp_path / "head_repo"
+    _write_module(base_root, "autoresearch/action_logs/schema.py",
+                  "def run_daily(request, generator):\n    return None\n")
+    _write_module(head_root, "autoresearch/jobs/schema.py",
+                  "def run_daily(request, generator, must_have):\n    return None\n")
+
+    base = build_architecture(base_root, "Autoresearch", "base_sha", "")
+    head = build_architecture(head_root, "Autoresearch", "head_sha", "")
+    (base_mod,), (head_mod,) = base["modules"], head["modules"]
+    # id가 실제로 달라짐을 먼저 확인 — 이것이 결함의 근본 원인이다.
+    assert base_mod["id"] == "action_logs.schema"
+    assert head_mod["id"] == "jobs.schema"
+    assert base_mod["id"] != head_mod["id"]
+
+    changed = parse_numstat("1\t1\tautoresearch/{action_logs => jobs}/schema.py\n")
+    d = build_delta(base, head, changed, pr=165, issue=None)
+
+    assert d["breaking_signatures"] == [{"module": "action_logs.schema", "name": "run_daily"}]
+    added = [m for m in d["changed_modules"] if m["id"] == "jobs.schema"]
+    assert added and added[0]["symbols_changed"] == [
+        {"name": "run_daily", "change": "added", "line": 1}]
+
+
+def test_build_delta_end_to_end_rename_same_directory_is_breaking(tmp_path):
+    # 시나리오 B: 같은 디렉터리 내 파일명 변경(schema.py -> schema_v2.py) + 필수 인자 추가.
+    # 실제 numstat 형태: "autoresearch/action_logs/{schema.py => schema_v2.py}"
+    base_root, head_root = tmp_path / "base_repo", tmp_path / "head_repo"
+    _write_module(base_root, "autoresearch/action_logs/schema.py",
+                  "def run_daily(request, generator):\n    return None\n")
+    _write_module(head_root, "autoresearch/action_logs/schema_v2.py",
+                  "def run_daily(request, generator, must_have):\n    return None\n")
+
+    base = build_architecture(base_root, "Autoresearch", "base_sha", "")
+    head = build_architecture(head_root, "Autoresearch", "head_sha", "")
+    (base_mod,), (head_mod,) = base["modules"], head["modules"]
+    assert base_mod["id"] == "action_logs.schema"
+    assert head_mod["id"] == "action_logs.schema_v2"
+    assert base_mod["id"] != head_mod["id"]
+
+    changed = parse_numstat("1\t1\tautoresearch/action_logs/{schema.py => schema_v2.py}\n")
+    d = build_delta(base, head, changed, pr=165, issue=None)
+
+    assert d["breaking_signatures"] == [{"module": "action_logs.schema", "name": "run_daily"}]
+    added = [m for m in d["changed_modules"] if m["id"] == "action_logs.schema_v2"]
+    assert added and added[0]["symbols_changed"] == [
+        {"name": "run_daily", "change": "added", "line": 1}]
