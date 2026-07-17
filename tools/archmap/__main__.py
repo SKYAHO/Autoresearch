@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from tools.archmap.build import build_architecture
+from tools.archmap.delta import build_delta, parse_numstat
 
 
 def _write(doc: dict, out: str) -> None:
@@ -28,10 +29,26 @@ def main(argv: list[str] | None = None) -> None:
     p_build.add_argument("--revision", required=True)
     p_build.add_argument("--out", default="-")
 
+    p_delta = sub.add_parser("delta", help="pr-delta.json 생성")
+    p_delta.add_argument("--base", required=True, help="base architecture.json 경로")
+    p_delta.add_argument("--head", required=True, help="head architecture.json 경로")
+    p_delta.add_argument("--numstat", required=True, help="git diff --numstat 출력 파일")
+    p_delta.add_argument("--pr", type=int, required=True)
+    p_delta.add_argument("--issue-json", default=None, help="이슈 정보 JSON 파일(선택)")
+    p_delta.add_argument("--out", default="-")
+
     args = parser.parse_args(argv)
     if args.command == "build":
         _write(build_architecture(Path(args.repo_root), args.repo,
                                   args.revision, args.repo_url), args.out)
+    elif args.command == "delta":
+        base = json.loads(Path(args.base).read_text(encoding="utf-8"))
+        head = json.loads(Path(args.head).read_text(encoding="utf-8"))
+        changed = parse_numstat(Path(args.numstat).read_text(encoding="utf-8"))
+        issue = None
+        if args.issue_json:
+            issue = json.loads(Path(args.issue_json).read_text(encoding="utf-8"))
+        _write(build_delta(base, head, changed, args.pr, issue), args.out)
 
 
 if __name__ == "__main__":
