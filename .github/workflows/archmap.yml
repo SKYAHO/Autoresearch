@@ -1,0 +1,127 @@
+name: Archmap
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-report:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      # PR 본문의 "Closes #N" 이슈를 조회하려면 issues:read 가 필요하다.
+      # pull-requests:write 는 PR 코멘트 upsert 범위만 커버하며 이슈 조회는
+      # 포함하지 않으므로 명시적으로 추가한다.
+      issues: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: head/base architecture.json 추출
+        run: |
+          python -m tools.archmap build --repo-root . \
+            --repo Autoresearch --repo-url "https://github.com/${{ github.repository }}" \
+            --revision "${{ github.event.pull_request.head.sha }}" --out /tmp/head.json
+          git worktree add /tmp/base-tree "${{ github.event.pull_request.base.sha }}"
+          python -m tools.archmap build --repo-root /tmp/base-tree \
+            --repo Autoresearch --repo-url "https://github.com/${{ github.repository }}" \
+            --revision "${{ github.event.pull_request.base.sha }}" --out /tmp/base.json
+
+      - name: 연결 이슈 조회 (PR 본문의 Closes #N)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          num=$(printf '%s' "$PR_BODY" | grep -oiE 'close[sd]? #[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
+          if [ -n "$num" ]; then
+            gh api "repos/${{ github.repository }}/issues/$num" \
+              --jq '{number: .number, title: .title, body_excerpt: (.body // "" | .[0:300])}' \
+              > /tmp/issue.json || rm -f /tmp/issue.json
+          fi
+
+      - name: pr-delta.json 생성
+        run: |
+          git diff --numstat "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" > /tmp/numstat.txt
+          issue_flag=""
+          [ -f /tmp/issue.json ] && issue_flag="--issue-json /tmp/issue.json"
+          python -m tools.archmap delta --base /tmp/base.json --head /tmp/head.json \
+            --numstat /tmp/numstat.txt --pr "${{ github.event.pull_request.number }}" \
+            $issue_flag --out /tmp/pr-delta.json
+
+      - name: 서버로 POST (변수 설정 시에만)
+        if: vars.ARCHMAP_SERVER_URL != ''
+        continue-on-error: true
+        run: |
+          python - <<'EOF'
+          import json, os, urllib.request
+          body = {"architecture": json.load(open("/tmp/head.json", encoding="utf-8")),
+                  "pr_delta": json.load(open("/tmp/pr-delta.json", encoding="utf-8"))}
+          req = urllib.request.Request(
+              os.environ["SERVER"] + "/api/pr-report",
+              data=json.dumps(body).encode(),
+              headers={"X-Archmap-Token": os.environ["TOKEN"],
+                       "Content-Type": "application/json"})
+          url = json.load(urllib.request.urlopen(req, timeout=30))["report_url"]
+          open("/tmp/report-url.txt", "w").write(url)
+          EOF
+        env:
+          SERVER: ${{ vars.ARCHMAP_SERVER_URL }}
+          TOKEN: ${{ secrets.ARCHMAP_TOKEN }}
+
+      - name: PR 코멘트 upsert
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url_flag=""
+          [ -f /tmp/report-url.txt ] && url_flag="--report-url $(cat /tmp/report-url.txt)"
+          python -m tools.archmap comment --delta /tmp/pr-delta.json $url_flag --out /tmp/comment.md
+          pr=${{ github.event.pull_request.number }}
+          existing=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate \
+            --jq '[.[] | select(.body | startswith("<!-- archmap-report -->"))][0].id // empty')
+          if [ -n "$existing" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" \
+              -F body=@/tmp/comment.md
+          else
+            gh api "repos/${{ github.repository }}/issues/$pr/comments" -F body=@/tmp/comment.md
+          fi
+
+  manifest:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: architecture.json 추출 후 서버로 POST
+        if: vars.ARCHMAP_SERVER_URL != ''
+        continue-on-error: true
+        run: |
+          python -m tools.archmap build --repo-root . \
+            --repo Autoresearch --repo-url "https://github.com/${{ github.repository }}" \
+            --revision "${{ github.sha }}" --out /tmp/arch.json
+          python - <<'EOF'
+          import json, os, urllib.request
+          req = urllib.request.Request(
+              os.environ["SERVER"] + "/api/manifest",
+              data=open("/tmp/arch.json", "rb").read(),
+              headers={"X-Archmap-Token": os.environ["TOKEN"],
+                       "Content-Type": "application/json"})
+          urllib.request.urlopen(req, timeout=30)
+          EOF
+        env:
+          SERVER: ${{ vars.ARCHMAP_SERVER_URL }}
+          TOKEN: ${{ secrets.ARCHMAP_TOKEN }}
