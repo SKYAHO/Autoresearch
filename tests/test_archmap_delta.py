@@ -416,7 +416,8 @@ def test_build_delta_end_to_end_required_cli_arg_added_is_breaking(tmp_path):
     d = build_delta(base, head, changed, pr=165, issue=None)
 
     required = [x for x in d["cross_repo"] if x["impact"] == "required-arg-added"]
-    assert required == [{"contract": "batch-contract-v1", "impact": "required-arg-added",
+    assert required == [{"contract": "batch-contract-v1:jobs.action_log",
+                         "impact": "required-arg-added",
                          "breaking": True, "details": "--must-have 필수 인자 추가"}]
     assert not any(x["impact"] == "optional-arg-added" for x in d["cross_repo"])
 
@@ -484,7 +485,8 @@ def test_build_delta_end_to_end_existing_optional_arg_becomes_required_is_breaki
     d = build_delta(base, head, changed, pr=165, issue=None)
 
     flipped = [x for x in d["cross_repo"] if x["impact"] == "arg-became-required"]
-    assert flipped == [{"contract": "batch-contract-v1", "impact": "arg-became-required",
+    assert flipped == [{"contract": "batch-contract-v1:jobs.action_log",
+                        "impact": "arg-became-required",
                         "breaking": True, "details": "--youtube-base-path 인자가 필수로 변경됨"}]
     # --dry-run은 새로 추가된 선택 인자이므로 별도로 optional-arg-added여야 한다.
     optional = [x for x in d["cross_repo"] if x["impact"] == "optional-arg-added"]
@@ -516,7 +518,8 @@ def test_build_delta_end_to_end_optional_cli_arg_added_stays_nonbreaking(tmp_pat
 
     assert not any(x["impact"] == "required-arg-added" for x in d["cross_repo"])
     optional = [x for x in d["cross_repo"] if x["impact"] == "optional-arg-added"]
-    assert optional == [{"contract": "batch-contract-v1", "impact": "optional-arg-added",
+    assert optional == [{"contract": "batch-contract-v1:jobs.action_log",
+                         "impact": "optional-arg-added",
                          "breaking": False, "details": "--dry-run 인자 추가"}]
 
 
@@ -604,3 +607,92 @@ def test_schema_field_optional_becomes_required_surfaces_via_real_extraction():
                         "breaking": True}]
     assert added == [{"model": "EventLog", "module": "action_logs.schema",
                       "field": "rank: int | None", "change": "added", "breaking": False}]
+
+
+# --- 검사관 원본 재현 A/B (합집합이 job별 변경을 은폐) ---
+# _batch_contract가 jobs/*.py 전체의 CLI 인자를 합집합으로 묶어 계약 하나를
+# 만들면, 한 job에서 플래그를 뒤집거나 지워도 다른 job에 같은 플래그가 남아 있는
+# 한 합집합 자체는 안 바뀐다 — 실제 레포가 정확히 이 모양이다:
+# --youtube-base-path는 action_log.py에서는 선택, youtube_backfill.py/
+# action_log_quality.py/youtube_trending.py에서는 필수. 두 job을 함께 넣어야
+# (action_log.py만으로는 애초에 겹치는 필수 플래그가 없어 재현이 안 됨) 실제
+# 은폐가 재현된다.
+
+_YOUTUBE_BACKFILL_SRC = ('import argparse\n\n'
+                         'def _p():\n    p = argparse.ArgumentParser()\n'
+                         '    p.add_argument("--source-path", required=True)\n'
+                         '    p.add_argument("--youtube-base-path", required=True)\n'
+                         '    return p\n')
+
+
+def _write_two_job_repo(root: Path, action_log_src: str) -> None:
+    _write_module(root, "autoresearch/jobs/__init__.py",
+                  'BATCH_CONTRACT_VERSION = "batch-contract-v1"\n')
+    _write_module(root, "autoresearch/jobs/action_log.py", action_log_src)
+    _write_module(root, "autoresearch/jobs/youtube_backfill.py", _YOUTUBE_BACKFILL_SRC)
+
+
+def test_repro_a_required_flip_hidden_by_union_now_surfaces_as_breaking(tmp_path):
+    # 재현 A: action_log.py의 기존 --youtube-base-path를 required=True로 뒤집고,
+    # 동시에 새 선택 인자 --region을 추가. airflow가 --youtube-base-path 없이
+    # action_log job을 호출하면 실제로 실패하므로 breaking 경고가 떠야 한다.
+    base_root, head_root = tmp_path / "base_repo", tmp_path / "head_repo"
+    base_action_log = ('import argparse\n\n'
+                       'def _p():\n    p = argparse.ArgumentParser()\n'
+                       '    p.add_argument("--mode", required=True)\n'
+                       '    p.add_argument("--youtube-base-path")\n    return p\n')
+    head_action_log = ('import argparse\n\n'
+                       'def _p():\n    p = argparse.ArgumentParser()\n'
+                       '    p.add_argument("--mode", required=True)\n'
+                       '    p.add_argument("--youtube-base-path", required=True)\n'
+                       '    p.add_argument("--region")\n    return p\n')
+    _write_two_job_repo(base_root, base_action_log)
+    _write_two_job_repo(head_root, head_action_log)
+
+    base = build_architecture(base_root, "Autoresearch", "base_sha", "")
+    head = build_architecture(head_root, "Autoresearch", "head_sha", "")
+    changed = {"autoresearch/jobs/action_log.py": 2}
+    d = build_delta(base, head, changed, pr=165, issue=None)
+
+    action_log_events = [x for x in d["cross_repo"]
+                         if x["contract"].endswith("jobs.action_log")]
+    flipped = [x for x in action_log_events if x["impact"] == "arg-became-required"]
+    assert flipped and flipped[0]["breaking"] is True, \
+        f"거짓 초록: --youtube-base-path 필수화가 침묵함. cross_repo={d['cross_repo']}"
+    assert "--youtube-base-path" in flipped[0]["details"]
+    optional = [x for x in action_log_events if x["impact"] == "optional-arg-added"]
+    assert optional and "--region" in optional[0]["details"]
+    # youtube_backfill 계약 자체는 변경이 없었으므로 cross_repo에 나타나면 안 된다
+    # — job별 분리가 무관한 계약까지 오염시키지 않는지 확인.
+    assert not [x for x in d["cross_repo"] if x["contract"].endswith("jobs.youtube_backfill")]
+
+
+def test_repro_b_arg_removed_hidden_by_union_now_surfaces_as_breaking(tmp_path):
+    # 재현 B: action_log.py에서 --youtube-base-path를 완전 삭제하고, 동시에 새
+    # 선택 인자를 추가. 다른 job(youtube_backfill.py)에 같은 이름의 필수 플래그가
+    # 남아 있으므로, 합집합 설계에서는 cli_args 합집합에 플래그가 그대로 남아
+    # arg-removed가 완전히 침묵한다.
+    base_root, head_root = tmp_path / "base_repo", tmp_path / "head_repo"
+    base_action_log = ('import argparse\n\n'
+                       'def _p():\n    p = argparse.ArgumentParser()\n'
+                       '    p.add_argument("--mode", required=True)\n'
+                       '    p.add_argument("--youtube-base-path")\n    return p\n')
+    head_action_log = ('import argparse\n\n'
+                       'def _p():\n    p = argparse.ArgumentParser()\n'
+                       '    p.add_argument("--mode", required=True)\n'
+                       '    p.add_argument("--region")\n    return p\n')
+    _write_two_job_repo(base_root, base_action_log)
+    _write_two_job_repo(head_root, head_action_log)
+
+    base = build_architecture(base_root, "Autoresearch", "base_sha", "")
+    head = build_architecture(head_root, "Autoresearch", "head_sha", "")
+    changed = {"autoresearch/jobs/action_log.py": 2}
+    d = build_delta(base, head, changed, pr=165, issue=None)
+
+    action_log_events = [x for x in d["cross_repo"]
+                         if x["contract"].endswith("jobs.action_log")]
+    removed = [x for x in action_log_events if x["impact"] == "arg-removed"]
+    assert removed and removed[0]["breaking"] is True, \
+        f"거짓 초록: --youtube-base-path 삭제가 침묵함. cross_repo={d['cross_repo']}"
+    assert "--youtube-base-path" in removed[0]["details"]
+    assert not [x for x in d["cross_repo"] if x["contract"].endswith("jobs.youtube_backfill")]
