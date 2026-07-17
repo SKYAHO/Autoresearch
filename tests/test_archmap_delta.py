@@ -421,6 +421,78 @@ def test_build_delta_end_to_end_required_cli_arg_added_is_breaking(tmp_path):
     assert not any(x["impact"] == "optional-arg-added" for x in d["cross_repo"])
 
 
+# --- Critical 2 (라운드 3): 기존 optional 인자의 required 뒤집기가 불가시 ---
+# 기존 코드는 required_added = [a for a in added if a in new_required]로 "새로
+# 추가된" 플래그만 본다. 기존 플래그가 optional -> required로 뒤집혀도 added에도
+# removed에도 나타나지 않으므로 완전히 사라진다 — airflow가 소비하는 계약이
+# 파괴됐는데 optional-arg-added(무관 플래그)만 잡혀 "하위호환" 초록이 거짓으로 뜬다.
+
+def test_cross_repo_existing_optional_arg_becomes_required_is_breaking():
+    head = _head()
+    # cli_args 집합 자체는 이미 --max-users가 추가된 상태(added) — 여기서는 기존에도
+    # 있던 --mode가 required로 뒤집히는 것만 별도로 확인한다.
+    head["contracts"][0]["required_args"] = ["--mode"]
+    d = _delta(head)
+    flipped = [x for x in d["cross_repo"] if x["impact"] == "arg-became-required"]
+    assert flipped and flipped[0]["breaking"] is True
+    assert flipped[0]["contract"] == "batch-contract-v1"
+    assert "--mode" in flipped[0]["details"]
+
+
+def test_cross_repo_existing_required_arg_becomes_optional_is_nonbreaking():
+    # 반대 방향(required -> optional)은 완화이므로 breaking이면 안 된다.
+    base = copy.deepcopy(BASE)
+    base["contracts"][0]["required_args"] = ["--mode"]
+    head = copy.deepcopy(base)
+    head["revision"] = "head000"
+    head["contracts"][0]["required_args"] = []
+    d = build_delta(base, head, CHANGED, pr=120,
+                    issue={"number": 118, "title": "t", "body_excerpt": "b"})
+    assert not any(x["impact"] == "arg-became-required" for x in d["cross_repo"])
+    relaxed = [x for x in d["cross_repo"] if x["impact"] == "arg-became-optional"]
+    assert relaxed and relaxed[0]["breaking"] is False
+    assert "--mode" in relaxed[0]["details"]
+
+
+def test_build_delta_end_to_end_existing_optional_arg_becomes_required_is_breaking(tmp_path):
+    # 라이브 재현: 선택 인자(--dry-run)를 새로 추가하면서 동시에 기존
+    # --youtube-base-path를 required=True로 뒤집는 PR. 유일한 배지가 "하위호환"
+    # 초록이면 안 된다 — 실제 소스를 build_architecture로 추출해 전 층위로 확인한다.
+    base_root, head_root = tmp_path / "base_repo", tmp_path / "head_repo"
+    _write_module(base_root, "autoresearch/jobs/__init__.py",
+                  'BATCH_CONTRACT_VERSION = "batch-contract-v1"\n')
+    _write_module(base_root, "autoresearch/jobs/action_log.py",
+                  'import argparse\n\n'
+                  'def _p():\n    p = argparse.ArgumentParser()\n'
+                  '    p.add_argument("--mode", required=True)\n'
+                  '    p.add_argument("--youtube-base-path")\n    return p\n')
+    _write_module(head_root, "autoresearch/jobs/__init__.py",
+                  'BATCH_CONTRACT_VERSION = "batch-contract-v1"\n')
+    _write_module(head_root, "autoresearch/jobs/action_log.py",
+                  'import argparse\n\n'
+                  'def _p():\n    p = argparse.ArgumentParser()\n'
+                  '    p.add_argument("--mode", required=True)\n'
+                  '    p.add_argument("--youtube-base-path", required=True)\n'
+                  '    p.add_argument("--dry-run")\n    return p\n')
+
+    base = build_architecture(base_root, "Autoresearch", "base_sha", "")
+    head = build_architecture(head_root, "Autoresearch", "head_sha", "")
+    assert base["contracts"][0]["required_args"] == ["--mode"]
+    assert head["contracts"][0]["required_args"] == ["--mode", "--youtube-base-path"]
+
+    changed = {"autoresearch/jobs/action_log.py": 1}
+    d = build_delta(base, head, changed, pr=165, issue=None)
+
+    flipped = [x for x in d["cross_repo"] if x["impact"] == "arg-became-required"]
+    assert flipped == [{"contract": "batch-contract-v1", "impact": "arg-became-required",
+                        "breaking": True, "details": "--youtube-base-path 인자가 필수로 변경됨"}]
+    # --dry-run은 새로 추가된 선택 인자이므로 별도로 optional-arg-added여야 한다.
+    optional = [x for x in d["cross_repo"] if x["impact"] == "optional-arg-added"]
+    assert optional and "--dry-run" in optional[0]["details"]
+    # 뒤집힌 기존 플래그가 required-arg-added(신규 추가 취급)로 이중 보고되면 안 된다.
+    assert not any(x["impact"] == "required-arg-added" for x in d["cross_repo"])
+
+
 def test_build_delta_end_to_end_optional_cli_arg_added_stays_nonbreaking(tmp_path):
     base_root, head_root = tmp_path / "base_repo", tmp_path / "head_repo"
     _write_module(base_root, "autoresearch/jobs/__init__.py",
@@ -477,3 +549,58 @@ def test_schema_field_type_change_surfaces_via_real_extraction():
                       "field": "event_id: int", "change": "added", "breaking": False}]
     # ACTION_LOG_SCHEMA_VERSION 등 버전 상수가 없는 최소 픽스처라 unchanged_contracts는
     # 비어 있다 — 이 테스트의 요점은 "타입 변경이 침묵하지 않는다"는 것 자체다.
+
+
+# --- Critical 1 (라운드 3): Field(ge=...) 제약 변경·선택→필수화가 우변을 버려 침묵함 ---
+# 라이브 재현: autoresearch/action_logs/schema.py의 click_propensity 필드가
+# Field(ge=0.0, le=1.0) -> Field(ge=0.5, le=1.0)로 바뀌어도(구 모델은 0.2를 수용,
+# 신 모델은 거부 — 계약이 명백히 파괴됨) 어노테이션만 문자열화하면 schema_changes에
+# 아무것도 나타나지 않아 "계약 불변" 초록이 거짓으로 뜬다.
+
+def test_schema_field_constraint_change_surfaces_via_real_extraction():
+    base_src = ("from pydantic import BaseModel, Field\n\n"
+                "class ImpressionDraft(BaseModel):\n"
+                "    click_propensity: float = Field(ge=0.0, le=1.0)\n")
+    head_src = ("from pydantic import BaseModel, Field\n\n"
+                "class ImpressionDraft(BaseModel):\n"
+                "    click_propensity: float = Field(ge=0.5, le=1.0)\n")
+    base_mod = extract_module_info(base_src, "action_logs.schema", "action_logs",
+                                   "autoresearch/action_logs/schema.py")
+    head_mod = extract_module_info(head_src, "action_logs.schema", "action_logs",
+                                   "autoresearch/action_logs/schema.py")
+    base = {**BASE, "modules": [base_mod]}
+    head = {**BASE, "revision": "head000", "modules": [head_mod]}
+    changed = {"autoresearch/action_logs/schema.py": 1}
+    d = build_delta(base, head, changed, pr=165, issue=None)
+
+    removed = [s for s in d["schema_changes"] if s["change"] == "removed"]
+    added = [s for s in d["schema_changes"] if s["change"] == "added"]
+    assert removed == [{"model": "ImpressionDraft", "module": "action_logs.schema",
+                        "field": "click_propensity: float = Field(ge=0.0, le=1.0)",
+                        "change": "removed", "breaking": True}]
+    assert added == [{"model": "ImpressionDraft", "module": "action_logs.schema",
+                      "field": "click_propensity: float = Field(ge=0.5, le=1.0)",
+                      "change": "added", "breaking": False}]
+
+
+def test_schema_field_optional_becomes_required_surfaces_via_real_extraction():
+    # 기본값 있는 선택 필드(`rank: int | None = None`)가 필수 필드(`rank: int | None`)로
+    # 바뀌는 것도 같은 침묵 경로 — 우변(`= None`)이 사라지는 것 자체가 신호다.
+    base_src = "from pydantic import BaseModel\n\nclass EventLog(BaseModel):\n    rank: int | None = None\n"
+    head_src = "from pydantic import BaseModel\n\nclass EventLog(BaseModel):\n    rank: int | None\n"
+    base_mod = extract_module_info(base_src, "action_logs.schema", "action_logs",
+                                   "autoresearch/action_logs/schema.py")
+    head_mod = extract_module_info(head_src, "action_logs.schema", "action_logs",
+                                   "autoresearch/action_logs/schema.py")
+    base = {**BASE, "modules": [base_mod]}
+    head = {**BASE, "revision": "head000", "modules": [head_mod]}
+    changed = {"autoresearch/action_logs/schema.py": 1}
+    d = build_delta(base, head, changed, pr=165, issue=None)
+
+    removed = [s for s in d["schema_changes"] if s["change"] == "removed"]
+    added = [s for s in d["schema_changes"] if s["change"] == "added"]
+    assert removed == [{"model": "EventLog", "module": "action_logs.schema",
+                        "field": "rank: int | None = None", "change": "removed",
+                        "breaking": True}]
+    assert added == [{"model": "EventLog", "module": "action_logs.schema",
+                      "field": "rank: int | None", "change": "added", "breaking": False}]

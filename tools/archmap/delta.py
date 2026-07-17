@@ -206,6 +206,7 @@ def build_delta(base: dict, head: dict, changed: dict[str, int],
         # required_args는 추출기가 새로 채우기 시작한 필드라 옛 architecture.json
         # 픽스처에는 없을 수 있다 — .get()으로 기본값 []를 둔다.
         new_required = set(c.get("required_args", []))
+        old_required = set(old.get("required_args", []))
         required_added = [a for a in added if a in new_required]
         optional_added = [a for a in added if a not in new_required]
         if required_added:
@@ -219,6 +220,24 @@ def build_delta(base: dict, head: dict, changed: dict[str, int],
         if removed:
             cross_repo.append({"contract": c["name"], "impact": "arg-removed",
                                "breaking": True, "details": ", ".join(removed) + " 인자 제거"})
+        # 기존 플래그(added/removed 어디에도 없는, base·head 양쪽에 있는 플래그)의
+        # required 소속 대조 — required_added는 "새로 추가된" 플래그만 보므로,
+        # 이미 있던 optional 플래그가 required로 뒤집혀도 added에도 removed에도
+        # 나타나지 않아 완전히 사라진다(이전 수정 FG-1의 사각지대). base·head
+        # 양쪽에 required_args가 이미 있으므로 스키마 변경 없이 대조 가능하다.
+        common = [a for a in c["cli_args"] if a in old["cli_args"]]
+        became_required = [a for a in common if a in new_required and a not in old_required]
+        became_optional = [a for a in common if a not in new_required and a in old_required]
+        if became_required:
+            cross_repo.append({"contract": c["name"], "impact": "arg-became-required",
+                               "breaking": True,
+                               "details": ", ".join(became_required) + " 인자가 필수로 변경됨"})
+        if became_optional:
+            # 반대 방향(required -> optional)은 완화이므로 breaking이 아니다 —
+            # 그래도 소비자가 알 수 있도록 사실은 기록한다(INFO 성격, VERIFIED 아님).
+            cross_repo.append({"contract": c["name"], "impact": "arg-became-optional",
+                               "breaking": False,
+                               "details": ", ".join(became_optional) + " 인자가 선택으로 완화됨"})
 
     head_contract_names = {c["name"] for c in head["contracts"]}
     for name in base_contracts:
