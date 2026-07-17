@@ -3,14 +3,18 @@
 training_dataset.csv 생성 파이프라인.
 
 입력:
-- data/raw/youtube_videos.csv (YouTube API 원본 데이터)
-- data/raw/personas.csv (가상 사용자 페르소나)
-- data/processed/events.csv (이벤트 로그)
+- videos: mock CSV(data/raw/youtube_videos.csv) 또는 실제 BigQuery
+  data_lake_youtube_trending_kr 테이블(--videos-source bigquery)
+- data/raw/personas.csv 또는 gs:// parquet (가상 사용자 페르소나, 확장자로 자동 판별)
+- data/processed/events.csv (이벤트 로그, mock CSV만 지원. 실 BigQuery
+  action_log 테이블은 long-format(impression/click/view/like)이라 이 파이프라인이
+  기대하는 wide-format(행당 clicked/liked/watch_time_sec)으로 변환하는 별도
+  작업이 필요하다. issue #171 참고)
 
 출력:
 - data/processed/training_dataset.csv (16컬럼, docs/guides/ctr-model-specification.md 준수)
 
-NOTE: 위의 입력 CSV 파일들은 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py
+NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py
       스크립트의 산출물이며, 스펙 변경 시에는 scaffold를 수정한 후 해당 스크립트를
       재실행해 입력값을 갱신할 것. 이 파일들을 직접 수정하면 stale 상태로 남아
       다음 조사/버그 시 같은 문제가 반복된다.
@@ -22,6 +26,12 @@ import json
 import duckdb
 import pandas as pd
 from datetime import datetime
+
+BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "ar-infra-501607")
+BIGQUERY_DATASET = os.environ.get("CTR_TRAINING_BQ_DATASET", "feast_offline_store")
+BIGQUERY_VIDEOS_TABLE = os.environ.get(
+    "CTR_TRAINING_BQ_VIDEOS_TABLE", "data_lake_youtube_trending_kr"
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
@@ -124,7 +134,54 @@ def validate_point_in_time(dataset: pd.DataFrame) -> None:
     print(f"  [OK] {len(dataset)} 샘플 확인 완료")
 
 
-def main(raw_dir: str = None, events_path: str = None, output_path: str = None):
+def load_videos_from_bigquery() -> pd.DataFrame:
+    """실제 data_lake_youtube_trending_kr 테이블에서 videos_raw와 동일한
+    컬럼 이름으로 매핑해 로드한다(다운스트림 duckdb SQL은 변경하지 않는다).
+
+    video_category는 이미 카테고리 이름 문자열이라(src.features.category_reference
+    의 CATEGORY_DESCRIPTIONS 키와 동일 체계) 별도 ID→이름 변환이 필요 없다.
+    """
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=BIGQUERY_PROJECT)
+    query = f"""
+        SELECT
+            video_id,
+            video_category AS categoryId,
+            video_duration AS duration,
+            video_view_count AS viewCount,
+            video_like_count AS likeCount,
+            video_comment_count AS commentCount,
+            video_published_at AS publishedAt
+        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{BIGQUERY_VIDEOS_TABLE}`
+    """
+    return client.query(query).to_dataframe()
+
+
+def load_personas(personas_path: str) -> pd.DataFrame:
+    """personas 입력을 확장자로 판별해 로드한다.
+
+    로컬/GCS 경로 모두 지원한다(gcsfs가 gs:// 경로를 pandas에 투명하게
+    연결한다). virtual_users 파이프라인의 실제 산출물 위치가 정해지면
+    이 함수에 그 경로만 넘기면 된다. BigQuery 적재는 필요 없다(persona는
+    학습 시 집계된 user feature로만 쓰이고 그 자체가 warehouse 테이블일
+    필요는 없음).
+    """
+    if personas_path.endswith(".parquet"):
+        return pd.read_parquet(personas_path)
+    return pd.read_csv(personas_path)
+
+
+def main(
+    raw_dir: str = None,
+    events_path: str = None,
+    output_path: str = None,
+    videos_source: str = "csv",
+    personas_path: str = None,
+):
+    if videos_source not in ("csv", "bigquery"):
+        raise ValueError(f"videos_source must be 'csv' or 'bigquery': {videos_source!r}")
+
     data_dir = get_data_dir()
     if raw_dir is None:
         raw_dir = os.path.join(data_dir, "raw")
@@ -132,14 +189,19 @@ def main(raw_dir: str = None, events_path: str = None, output_path: str = None):
         events_path = os.path.join(data_dir, "processed", "events.csv")
     if output_path is None:
         output_path = os.path.join(data_dir, "processed", "training_dataset.csv")
+    if personas_path is None:
+        personas_path = os.path.join(raw_dir, "personas.csv")
 
     print("=" * 70)
     print("training_dataset.csv 생성 파이프라인")
     print("=" * 70)
 
     print("\n[로드] 데이터 로드 중...")
-    videos = pd.read_csv(os.path.join(raw_dir, "youtube_videos.csv"))
-    personas = pd.read_csv(os.path.join(raw_dir, "personas.csv"))
+    if videos_source == "bigquery":
+        videos = load_videos_from_bigquery()
+    else:
+        videos = pd.read_csv(os.path.join(raw_dir, "youtube_videos.csv"))
+    personas = load_personas(personas_path)
     events = pd.read_csv(events_path)
 
     # Parse ISO 8601 duration to seconds (e.g., "PT4M29S" → 269)
@@ -161,8 +223,8 @@ def main(raw_dir: str = None, events_path: str = None, output_path: str = None):
     if 'duration' in videos.columns:
         videos['duration'] = videos['duration'].apply(parse_iso8601_duration)
 
-    print(f"  [OK] youtube_videos.csv: {len(videos)} rows")
-    print(f"  [OK] personas.csv: {len(personas)} rows")
+    print(f"  [OK] videos ({videos_source}): {len(videos)} rows")
+    print(f"  [OK] personas ({personas_path}): {len(personas)} rows")
     print(f"  [OK] events.csv: {len(events)} rows")
 
     validate_events(events)

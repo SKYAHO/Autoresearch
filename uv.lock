@@ -290,6 +290,7 @@ dependencies = [
     { name = "gcsfs", version = "2025.3.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
     { name = "gcsfs", version = "2025.12.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
     { name = "google-api-python-client" },
+    { name = "google-cloud-bigquery" },
     { name = "google-cloud-storage" },
     { name = "joblib" },
     { name = "lightgbm" },
@@ -337,6 +338,7 @@ requires-dist = [
     { name = "duckdb", specifier = ">=0.8.0" },
     { name = "gcsfs", specifier = ">=2024.0" },
     { name = "google-api-python-client", specifier = ">=2.100,<3" },
+    { name = "google-cloud-bigquery", specifier = ">=3.20" },
     { name = "google-cloud-storage", specifier = ">=2.10" },
     { name = "joblib", specifier = ">=1.3.0" },
     { name = "lightgbm", specifier = ">=4.0.0" },
@@ -1418,8 +1420,8 @@ wheels = [
 
 [package.optional-dependencies]
 grpc = [
-    { name = "grpcio", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
-    { name = "grpcio-status", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
+    { name = "grpcio" },
+    { name = "grpcio-status" },
 ]
 
 [[package]]
@@ -1487,8 +1489,8 @@ name = "google-cloud-bigquery"
 version = "3.42.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "google-api-core", extra = ["grpc"], marker = "extra == 'group-12-autoresearch-dev' or extra == 'group-12-autoresearch-feast'" },
-    { name = "google-auth", extra = ["pyopenssl"], marker = "extra == 'group-12-autoresearch-dev' or extra == 'group-12-autoresearch-feast'" },
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth", extra = ["pyopenssl"] },
     { name = "google-cloud-core" },
     { name = "google-resumable-media" },
     { name = "packaging" },
@@ -1800,7 +1802,7 @@ name = "grpcio"
 version = "1.82.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b6/19/e29d3979b420b92d516ee97f0bff4fb88cbb3d724791318f50beb55db549/grpcio-1.82.0.tar.gz", hash = "sha256:bfe3247e0bb598585ce26565730970d21bccf3c9dc547dc6703a1a3c7888e8e1", size = 13184479, upload-time = "2026-07-06T04:22:54.421Z" }
 wheels = [
@@ -1851,9 +1853,9 @@ name = "grpcio-status"
 version = "1.82.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "googleapis-common-protos", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
-    { name = "grpcio", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
-    { name = "protobuf", marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
+    { name = "googleapis-common-protos" },
+    { name = "grpcio" },
+    { name = "protobuf" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/07/c3/42148fdb28747b6c12df1351dece3fd574262fa14b180eca9821428626df/grpcio_status-1.82.0.tar.gz", hash = "sha256:ea0cbc12c52a902cb33ba56fb3233dcfad53ffead08f4a659b1752d473a6a0ac", size = 13902, upload-time = "2026-07-06T04:26:47.864Z" }
 wheels = [
@@ -3830,7 +3832,7 @@ version = "26.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/74/b7/da07bae88f5a9506b4def6f2f4903cf4c3b8831e560dba8fa18ca08f758f/pyopenssl-26.3.0.tar.gz", hash = "sha256:589de7fae1c9ea670d18422ed00fc04da787bbde8e1454aea872aa57b49ad341", size = 182024, upload-time = "2026-06-12T20:28:07.458Z" }
 wheels = [
