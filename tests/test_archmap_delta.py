@@ -184,3 +184,69 @@ def test_kind_unchanged_signature_change_still_uses_backward_compat_check():
     # kind가 같을 때는 기존 sig 하위호환 판정이 그대로 적용돼야 한다 (회귀 방지)
     d = _delta()  # run_daily: (request, generator) -> (request, generator, max_users=None)
     assert d["breaking_signatures"] == []
+
+
+# --- Important 3: 계약 삭제가 cross_repo에 잡히는지 ---
+
+def test_cross_repo_contract_removed_entirely():
+    head = _head()
+    head["contracts"] = []
+    d = _delta(head)
+    removed = [x for x in d["cross_repo"] if x["contract"] == "batch-contract-v1"]
+    assert len(removed) == 1
+    assert removed[0]["breaking"] is True
+    assert removed[0]["impact"] == "contract-removed"
+    assert removed[0]["details"]
+
+
+# --- 미검증 분기: version_consts 신규 추가 / 완전 제거 ---
+
+def test_version_const_added_from_none():
+    head = _head()
+    head["modules"][0]["version_consts"]["NEW_THING_VERSION"] = {"value": "v1", "line": 99}
+    d = _delta(head)
+    added = [v for v in d["version_changes"] if v["const"] == "NEW_THING_VERSION"]
+    assert added == [{"const": "NEW_THING_VERSION", "module": "action_logs.schema",
+                      "from": None, "to": "v1", "line": 99, "breaking": False}]
+
+
+def test_version_const_removed_entirely_is_breaking():
+    head = _head()
+    del head["modules"][0]["version_consts"]["ACTION_LOG_SCHEMA_VERSION"]
+    d = _delta(head)
+    removed = [v for v in d["version_changes"] if v["const"] == "ACTION_LOG_SCHEMA_VERSION"]
+    assert removed == [{"const": "ACTION_LOG_SCHEMA_VERSION", "module": "action_logs.schema",
+                        "from": "action_log_schema_v1", "to": None, "line": None,
+                        "breaking": True}]
+
+
+# --- 미검증 분기: 모듈 전체 추가 / 삭제 ---
+
+def test_module_added_entirely():
+    head = _head()
+    head["modules"].append({
+        "id": "action_logs.new_module", "stage": "action_logs",
+        "path": "autoresearch/action_logs/new_module.py",
+        "role": None, "owns": [], "not_owns": [],
+        "public_symbols": [{"name": "run_new", "kind": "function", "sig": "()", "line": 5}],
+        "version_consts": {}, "schema_fields": {}, "imports": [],
+    })
+    changed = dict(CHANGED)
+    changed["autoresearch/action_logs/new_module.py"] = 20
+    d = build_delta(BASE, head, changed, pr=120, issue=None)
+    added = [m for m in d["changed_modules"] if m["id"] == "action_logs.new_module"]
+    assert len(added) == 1
+    assert added[0]["symbols_changed"] == [{"name": "run_new", "change": "added", "line": 5}]
+    assert added[0]["public_surface_changed"] is True
+
+
+def test_module_removed_entirely():
+    head = _head()
+    head["modules"] = []
+    changed = {"autoresearch/action_logs/schema.py": 0}
+    d = build_delta(BASE, head, changed, pr=120, issue=None)
+    removed = [m for m in d["changed_modules"] if m["id"] == "action_logs.schema"]
+    assert len(removed) == 1
+    assert removed[0]["symbols_changed"][0]["change"] == "removed"
+    assert removed[0]["public_surface_changed"] is True
+    assert {"module": "action_logs.schema", "name": "run_daily"} in d["breaking_signatures"]

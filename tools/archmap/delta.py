@@ -174,6 +174,15 @@ def build_delta(base: dict, head: dict, changed: dict[str, int],
             cross_repo.append({"contract": c["name"], "impact": "arg-removed",
                                "breaking": True, "details": ", ".join(removed) + " 인자 제거"})
 
+    head_contract_names = {c["name"] for c in head["contracts"]}
+    for name in base_contracts:
+        if name not in head_contract_names:
+            # base에 있던 계약이 head에서 통째로 사라짐 — 소비 레포(예:
+            # Autoresearch-airflow) 입장에서는 arg-removed보다 더 파괴적인 이벤트다.
+            cross_repo.append({"contract": name, "impact": "contract-removed",
+                               "breaking": True,
+                               "details": "계약이 head에서 완전히 삭제됨 — 소비 레포 확인 필요"})
+
     test_files = sorted(p for p in changed if p.startswith("tests/"))
     return {"schema_version": SCHEMA_VERSION, "repo": head["repo"], "pr": pr,
             "base_sha": base["revision"], "head_sha": head["revision"], "issue": issue,
