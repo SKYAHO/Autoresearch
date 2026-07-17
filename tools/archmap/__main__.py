@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from tools.archmap.build import build_architecture
+from tools.archmap.comment import render_comment
 from tools.archmap.delta import build_delta, parse_numstat
 
 
@@ -37,6 +38,11 @@ def main(argv: list[str] | None = None) -> None:
     p_delta.add_argument("--issue-json", default=None, help="이슈 정보 JSON 파일(선택)")
     p_delta.add_argument("--out", default="-")
 
+    p_comment = sub.add_parser("comment", help="PR 코멘트 마크다운 생성")
+    p_comment.add_argument("--delta", required=True)
+    p_comment.add_argument("--report-url", default=None)
+    p_comment.add_argument("--out", default="-")
+
     args = parser.parse_args(argv)
     if args.command == "build":
         _write(build_architecture(Path(args.repo_root), args.repo,
@@ -49,6 +55,13 @@ def main(argv: list[str] | None = None) -> None:
         if args.issue_json:
             issue = json.loads(Path(args.issue_json).read_text(encoding="utf-8"))
         _write(build_delta(base, head, changed, args.pr, issue), args.out)
+    elif args.command == "comment":
+        delta = json.loads(Path(args.delta).read_text(encoding="utf-8"))
+        text = render_comment(delta, args.report_url)
+        if args.out == "-":
+            sys.stdout.write(text)
+        else:
+            Path(args.out).write_text(text, encoding="utf-8")
 
 
 if __name__ == "__main__":
