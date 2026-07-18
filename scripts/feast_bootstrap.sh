@@ -31,18 +31,33 @@ else
 import os
 import sys
 
-from google.api_core.exceptions import NotFound
+from google.api_core.exceptions import Forbidden, NotFound
+from google.auth.exceptions import DefaultCredentialsError
 from google.cloud import storage
 
 bucket_name = os.environ["CODE_ARTIFACTS_BUCKET"]
 sha = os.environ.get("CODE_ARCHIVE_SHA", "").strip()
-bucket = storage.Client().bucket(bucket_name)
 target = "code/latest.txt"
 try:
+    bucket = storage.Client().bucket(bucket_name)
     if not sha:
         sha = bucket.blob(target).download_as_text().strip()
     target = f"code/{sha}.tar.gz"
     bucket.blob(target).download_to_filename(sys.argv[1])
+except DefaultCredentialsError as exc:
+    print(
+        f"오류: GCP 자격 증명을 찾을 수 없습니다. "
+        f"Workload Identity(KSA-GSA 바인딩) 또는 ADC 설정을 확인하세요: {exc}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+except Forbidden as exc:
+    print(
+        f"오류: gs://{bucket_name}/{target} 접근 권한이 없습니다. "
+        f"파드 GSA에 해당 버킷 roles/storage.objectViewer가 필요합니다: {exc}",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 except NotFound as exc:
     print(f"오류: gs://{bucket_name}/{target} 다운로드 실패: {exc}", file=sys.stderr)
     sys.exit(2)
