@@ -35,11 +35,11 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "datasets>=2.19",
-    "fastapi>=0.115,<0.129",
     "httpx>=0.28,<0.29",
     "google-cloud-bigquery>=3.20",
     "python-dotenv>=1.0",
     { include-group = "lint" },
+    { include-group = "serving" },
 ]
 # 린트 전용 표면 (CI lint job 은 이 그룹만 설치).
 lint = [
@@ -49,10 +49,12 @@ lint = [
 feast = [
     "feast[gcp]==0.64.0",
     "google-cloud-bigquery>=3.20",
+    "google-cloud-secret-manager>=2.20",
     "redis>=5.0",
     "pandas>=2.0",
     "pyarrow>=14.0",
     "python-dotenv>=1.0",
+    "pytest>=8.0",
 ]
 # proxy/ (Cloud Run dumb forwarder) 런타임 핀.
 # dev 표면과 동일하게 정렬: dev(최대 0.128) 통과 → prod(0.116) 깨짐 버전 발산 방지.
@@ -60,6 +62,11 @@ proxy = [
     "fastapi>=0.115,<0.129",
     "uvicorn[standard]>=0.32,<0.35",
     "httpx>=0.28,<0.29",
+]
+serving = [
+    "fastapi>=0.115,<0.129",
+    "uvicorn[standard]>=0.32,<0.35",
+    "prometheus-client>=0.20,<1",
 ]
 [tool.pytest.ini_options]
 # scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외
@@ -76,4 +83,5 @@ default-groups = ["dev"]
 conflicts = [
     [{ group = "feast" }, { group = "dev" }],
     [{ group = "feast" }, { group = "proxy" }],
+    [{ group = "feast" }, { group = "serving" }],
 ]
