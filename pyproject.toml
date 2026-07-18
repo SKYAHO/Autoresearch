@@ -31,6 +31,8 @@ dependencies = [
     # deploy/mlflow/runtime과 동일하게 고정: protobuf>=7에서 mlflow 2.22.1
     # client가 FieldDescriptor.label 오류를 낸다.
     "protobuf<7",
+    "onnxmltools>=1.12",
+    "onnxruntime>=1.18",
 ]
 
 [dependency-groups]
