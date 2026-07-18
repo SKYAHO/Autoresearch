@@ -17,6 +17,9 @@ from src.serving.model_loader import (
 from src.serving.schemas import HealthcheckResponse, RerankRequest, RerankResponse
 from src.serving.service import MissingFeatureColumnsError, PredictionError, Reranker
 
+# 아래 메트릭들은 모듈 전역 레지스트리에 등록된다 — uvicorn을 --workers>1로 늘리면
+# 워커별로 값이 분리되어 /metrics가 워커마다 다르게 보인다. 스케일업 시
+# PROMETHEUS_MULTIPROC_DIR 기반 멀티프로세스 설정이 필요하다.
 RERANK_REQUESTS = Counter("rerank_requests", "Number of reranking requests.")
 RERANK_CANDIDATES = Histogram(
     "rerank_candidates",

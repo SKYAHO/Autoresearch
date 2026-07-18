@@ -16,9 +16,8 @@ class ProbabilityModel(Protocol):
 
     def predict_proba(self, features: pd.DataFrame) -> np.ndarray: ...
 
-## Frozen , slots 내가 만든 클래스에서 적합한 설정을 골라야 한다 
 
-@dataclass(frozen=True, slots=True) 
+@dataclass(frozen=True, slots=True)
 class MissingFeatureColumnsError(Exception):
     """요청 후보들에 모델이 요구하는 피처 컬럼이 빠졌을 때 발생한다(→ HTTP 422)."""
 

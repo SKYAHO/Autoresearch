@@ -7,9 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field
 FeatureValue = str | int | float | bool
 
 
-# BASE MODEL 은 pydantic(파이썬의 타입을 자동검증 해주는 친구) 라이브러리가 제공하는 클래스
-# 역할은 들어오는 데이터의 유효성을 검증하고, 데이터 구조를 정의하는 것이다.
-
 class CandidateVideo(BaseModel):
     """재정렬 대상 후보 영상 하나. video_id와 모델 입력 피처 맵을 담는다."""
 
@@ -40,9 +37,9 @@ class RerankedVideo(BaseModel):
 class RerankResponse(BaseModel):
     """/rerank 응답 본문. CTR 점수 내림차순으로 정렬된 결과 목록."""
 
-    model_config = ConfigDict(frozen=True) #설정 dict 의 구성을 불변요소로 만들어라 -> model config 의 스키마는 
+    model_config = ConfigDict(frozen=True)
 
-    items: list[RerankedVideo]             # 데이터필드가 이렇게 되어있다는 뜼임 
+    items: list[RerankedVideo]
 
 
 class HealthcheckResponse(BaseModel):
