@@ -339,13 +339,23 @@ def main(
             "events_source='bigquery' requires events_start_date and events_end_date"
         )
 
-    data_dir = get_data_dir()
+    # get_data_dir()는 저장소 안의 data/ 디렉토리를 걸어 올라가며 찾는데,
+    # BigQuery 소스처럼 모든 경로가 이미 명시적으로 주어진 경우(CI 컨테이너 등
+    # data/가 없는 환경 포함)에는 아예 필요 없다 — 실제로 필요할 때만 지연 호출한다.
+    _data_dir_cache = None
+
+    def _resolve_data_dir():
+        nonlocal _data_dir_cache
+        if _data_dir_cache is None:
+            _data_dir_cache = get_data_dir()
+        return _data_dir_cache
+
     if raw_dir is None:
-        raw_dir = os.path.join(data_dir, "raw")
-    if events_path is None:
-        events_path = os.path.join(data_dir, "processed", "events.csv")
+        raw_dir = os.path.join(_resolve_data_dir(), "raw")
+    if events_source == "csv" and events_path is None:
+        events_path = os.path.join(_resolve_data_dir(), "processed", "events.csv")
     if output_path is None:
-        output_path = os.path.join(data_dir, "processed", "training_dataset.csv")
+        output_path = os.path.join(_resolve_data_dir(), "processed", "training_dataset.csv")
     if personas_path is None:
         personas_path = os.path.join(raw_dir, "personas.csv")
 
