@@ -1,0 +1,93 @@
+name: Code archive upload
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Full 40-character commit SHA to archive (empty = dispatched ref HEAD)
+        required: false
+        type: string
+      update_latest:
+        description: Update code/latest.txt to this SHA
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-archive
+  cancel-in-progress: false
+
+jobs:
+  upload-code-archive:
+    name: Upload code archive to GCS
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve source ref and latest flag
+        id: source
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_SOURCE_SHA: ${{ inputs.source_sha }}
+          MANUAL_UPDATE_LATEST: ${{ inputs.update_latest }}
+          EVENT_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ -z "$MANUAL_SOURCE_SHA" ]]; then
+              ref="$EVENT_SHA"
+            elif [[ "$MANUAL_SOURCE_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              ref="${MANUAL_SOURCE_SHA,,}"
+            else
+              echo "::error::source_sha must be a full 40-character commit SHA"
+              exit 1
+            fi
+            update_latest="$MANUAL_UPDATE_LATEST"
+          else
+            ref="$EVENT_SHA"
+            main_sha="$(git ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
+            if [[ "$EVENT_SHA" == "$main_sha" ]]; then
+              update_latest="true"
+            else
+              update_latest="false"
+              echo "::notice::Skipping latest update: event SHA ${EVENT_SHA} is no longer main HEAD (${main_sha})"
+            fi
+          fi
+          {
+            echo "ref=$ref"
+            echo "update_latest=$update_latest"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GCP with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER_ID }}
+          service_account: ${{ secrets.GCS_CODE_UPLOADER_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload code archive
+        env:
+          CODE_ARTIFACTS_BUCKET: ${{ secrets.CODE_ARTIFACTS_BUCKET }}
+          SOURCE_REF: ${{ steps.source.outputs.ref }}
+          UPDATE_LATEST: ${{ steps.source.outputs.update_latest }}
+        shell: bash
+        run: |
+          args=("$SOURCE_REF")
+          if [[ "$UPDATE_LATEST" == "true" ]]; then
+            args+=("--update-latest")
+          fi
+          scripts/upload_code_archive.sh "${args[@]}"
