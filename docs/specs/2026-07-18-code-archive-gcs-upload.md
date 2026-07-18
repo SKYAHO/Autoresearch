@@ -78,7 +78,8 @@ gs://<CODE_ARTIFACTS_BUCKET>/code/latest.txt                  # 최신 main SHA
 ### 4. 워크플로우 — `.github/workflows/code-archive.yml`
 
 - 트리거:
-  - `push: branches: [main]` — 머지마다 자동 실행, `--update-latest` 포함
+- `push: branches: [main]` — 머지마다 자동 실행. 실행 시점에도 이벤트 SHA가
+  원격 `main` HEAD와 같을 때만 `--update-latest`를 포함한다.
   - `workflow_dispatch` — SHA 입력(선택, 기본 main HEAD)과 latest 갱신 여부
     입력을 받아 수동 업로드·복구에 사용
 - 경로 필터 없음. 모든 main push가 아카이브를 만들어 "latest == main HEAD"
@@ -89,6 +90,9 @@ gs://<CODE_ARTIFACTS_BUCKET>/code/latest.txt                  # 최신 main SHA
   최신 것 하나만 남기므로, 짧은 간격의 연속 머지에서는 중간 SHA의 아카이브가
   생략될 수 있다. latest는 항상 최신 머지를 가리키므로 불변식에는 영향이
   없고, 생략된 SHA가 필요하면 workflow_dispatch로 보충한다.
+- 과거 push run을 재실행해도 이벤트 SHA가 현재 `main` HEAD가 아니면
+  아카이브는 확인하되 `latest.txt`는 갱신하지 않는다. 이로써 재실행이 latest를
+  과거 SHA로 되돌리는 것을 막는다.
 - 인증: `google-github-actions/auth@v2` + `vars.WIF_PROVIDER_ID` +
   신규 secret `GCS_CODE_UPLOADER_SA` (release.yml의 WIF 패턴과 동일, SA만
   분리).
@@ -121,8 +125,9 @@ GitHub 저장소 설정: secret `CODE_ARTIFACTS_BUCKET`, `GCS_CODE_UPLOADER_SA`
 
 - 업로드 실패 시 워크플로우가 실패로 표시된다. main 코드 자체는 영향이
   없으며, 다음 머지 또는 workflow_dispatch 재실행으로 복구한다.
-- 오래된 run 재실행으로 latest가 과거 SHA를 가리키게 되면
-  workflow_dispatch로 최신 SHA를 다시 가리키게 한다.
+- 과거 push run 재실행은 현재 `main` HEAD와 이벤트 SHA를 비교해 latest 갱신을
+  건너뛴다. `workflow_dispatch`는 명시적으로 선택한 SHA로 latest를 변경할 수
+  있으므로, 복구 작업에서는 현재 main SHA를 입력해야 한다.
 
 ## 검증
 

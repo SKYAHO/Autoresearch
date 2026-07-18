@@ -31,6 +31,11 @@ jobs:
       id-token: write
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - name: Resolve source ref and latest flag
         id: source
         env:
@@ -52,17 +57,18 @@ jobs:
             update_latest="$MANUAL_UPDATE_LATEST"
           else
             ref="$EVENT_SHA"
-            update_latest="true"
+            main_sha="$(git ls-remote --exit-code origin refs/heads/main | awk '{print $1}')"
+            if [[ "$EVENT_SHA" == "$main_sha" ]]; then
+              update_latest="true"
+            else
+              update_latest="false"
+              echo "::notice::Skipping latest update: event SHA ${EVENT_SHA} is no longer main HEAD (${main_sha})"
+            fi
           fi
           {
             echo "ref=$ref"
             echo "update_latest=$update_latest"
           } >> "$GITHUB_OUTPUT"
-
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
 
       - name: Authenticate to GCP with Workload Identity Federation
         uses: google-github-actions/auth@v2
