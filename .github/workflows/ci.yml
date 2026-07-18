@@ -127,9 +127,20 @@ jobs:
             .
 
       - name: Run Feast Docker image smoke check
+        # 코드가 이미지에 없으므로 로컬 아카이브 주입 모드로 부트스트랩
+        # 압축 해제·실행 경로를 검증한다.
         run: |
-          docker run --rm autoresearch-feast:ci
-          docker run --rm autoresearch-feast:ci \
-            python -m autoresearch.jobs.feast_materialize --help
-          docker run --rm autoresearch-feast:ci \
-            python -m autoresearch.jobs.feast_materialize --version
+          git archive --format=tar.gz -o /tmp/code-archive.tar.gz HEAD
+          run_feast() {
+            docker run --rm \
+              -v /tmp/code-archive.tar.gz:/tmp/code-archive.tar.gz:ro \
+              -e CODE_ARCHIVE_LOCAL_PATH=/tmp/code-archive.tar.gz \
+              autoresearch-feast:ci "$@"
+          }
+          run_feast
+          run_feast python -m autoresearch.jobs.feast_materialize --help
+          run_feast python -m autoresearch.jobs.feast_materialize --version
+          if docker run --rm autoresearch-feast:ci 2>/dev/null; then
+            echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
+            exit 1
+          fi
