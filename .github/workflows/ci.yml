@@ -74,6 +74,11 @@ jobs:
       - name: Verify uv.lock matches pyproject.toml
         run: uv lock --check
 
+      - name: Verify MLflow runtime uv.lock matches pyproject.toml
+        # deploy/mlflow/runtime은 루트 프로젝트와 분리된 독립 manifest/lockfile이라
+        # 루트 uv lock --check로는 drift가 잡히지 않는다.
+        run: cd deploy/mlflow/runtime && uv lock --check
+
       - name: Verify exported proxy/requirements.txt matches uv.lock
         # proxy/requirements.txt(Cloud Run, 깨끗한 python-slim 베이스)는
         # uv.lock 에서 생성되는 전핀 산출물이다. 재생성 후 diff 로 drift 를 검사한다.
@@ -138,6 +143,16 @@ jobs:
             python -m src.cli evaluate-model --help
           docker run --rm autoresearch-training:ci \
             python -m src.cli run-pipeline --help
+
+      - name: Build MLflow runtime image
+        # deploy/mlflow/runtime의 uv.lock 기반 최소 파생 이미지를 검증한다.
+        # Dockerfile 안의 psycopg2/boto3/google-cloud-storage import 스모크 체크가
+        # 이 빌드를 통해서만 실행된다.
+        run: |
+          docker build \
+            -f deploy/mlflow/Dockerfile \
+            --tag mlflow-runtime:ci \
+            .
 
       - name: Build Feast Docker image
         # feast 그룹 파생 이미지 (materialize 실행·GKE 검증용)
