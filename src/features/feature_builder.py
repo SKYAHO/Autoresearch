@@ -1,7 +1,7 @@
 """Interaction Feature 계산 함수들.
 
 Training과 Serving에서 동일한 로직으로 사용하여 Training-Serving Skew를 방지한다.
-See: CTR_Model_Specification.md (Interaction Feature section)
+See: docs/guides/ctr-model-specification.md (Interaction Feature section)
 """
 
 import json

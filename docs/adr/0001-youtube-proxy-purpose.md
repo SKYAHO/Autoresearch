@@ -32,6 +32,6 @@ Cloud Run 의 egress IP 회전 동작은 부분적으로 검증됐다:
 
 ## 참고
 
-- 설계 문서: `docs/superpowers/specs/2026-07-03-youtube-ip-ban-resilience-design.md` (PR #48 머지 후 main 에 반영)
-- 구현 계획: `docs/superpowers/plans/2026-07-05-youtube-resilient-client.md`, `docs/superpowers/plans/2026-07-05-youtube-proxy-service.md`
+- 설계 문서: `docs/archive/specs/2026-07-03-youtube-ip-ban-resilience-design.md` (PR #48 머지 후 main 에 반영)
+- 구현 계획: `docs/archive/plans/2026-07-05-youtube-resilient-client.md`, `docs/archive/plans/2026-07-05-youtube-proxy-service.md`
 - Cloud Run healthchecks 문서 재시작 throttle 명시: `cloud.google.com/run/docs/configuring/healthchecks`

@@ -1,6 +1,6 @@
 """action log(event log) 생성 파이프라인의 데이터 계약.
 
-출력 스키마·규칙은 `docs/AGENT_SIMULATOR_SPEC.md`(Single Source of Truth)를 따른다.
+출력 스키마·규칙은 `docs/guides/agent-simulator-spec.md`(Single Source of Truth)를 따른다.
 이번 구현은 Phase 1(historical)만 다룬다.
 """
 from datetime import UTC, date, datetime
@@ -38,7 +38,7 @@ class EventLog(BaseModel):
 
     라벨(clicked)은 저장하지 않는다. clicked는 downstream이 impression↔click join으로
     파생한다. 노출마다 impression 1행, 클릭 선정분엔 click/view(+like) 행이 추가된다.
-    설계: docs/superpowers/specs/2026-07-06-event-log-long-format-design.md
+    설계: docs/archive/specs/2026-07-06-event-log-long-format-design.md
     """
 
     event_id: str

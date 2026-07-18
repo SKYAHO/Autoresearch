@@ -1,17 +1,26 @@
-FROM ghcr.io/astral-sh/uv:0.11.26 AS lock-export
+FROM python:3.12-slim AS builder
 
-WORKDIR /source
+COPY --from=ghcr.io/astral-sh/uv:0.11.26 /uv /uvx /bin/
 
-COPY pyproject.toml uv.lock ./
-RUN ["/uv", "export", "--frozen", "--no-dev", "--no-hashes", "--output-file", "/requirements.lock"]
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=0
+
+WORKDIR /app
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-dev
 
 FROM python:3.12-slim
 
 ARG VCS_REF=unknown
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV AUTORESEARCH_REVISION=${VCS_REF}
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    AUTORESEARCH_REVISION=${VCS_REF} \
+    PATH="/app/.venv/bin:$PATH"
 
 LABEL org.opencontainers.image.source="https://github.com/SKYAHO/Autoresearch" \
       org.opencontainers.image.revision="${VCS_REF}" \
@@ -21,9 +30,7 @@ WORKDIR /app
 
 RUN adduser --disabled-password --gecos "" appuser
 
-COPY --from=lock-export /requirements.lock ./
-RUN python -m pip install --no-cache-dir -r requirements.lock \
-    && rm requirements.lock
+COPY --from=builder /app/.venv /app/.venv
 
 COPY autoresearch ./autoresearch
 

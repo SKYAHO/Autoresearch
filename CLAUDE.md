@@ -46,7 +46,7 @@
   - `autoresearch/youtube_collection/` — YouTube 트렌딩 수집
     (fetch/transform/load/backfill/schema + client.py 복원력 레이어),
     GCS 데이터 레이크 적재
-  - `autoresearch/virtual_users/` — Gemini 기반 가상 유저(페르소나) 생성
+  - `autoresearch/virtual_users/` — LLM 기반 가상 유저(페르소나) 생성
     파이프라인
   - `autoresearch/action_logs/` — action log 생성·shard·merge·품질 계약
   - `autoresearch/jobs/` — Airflow에 종속되지 않는 공개 batch CLI
@@ -63,9 +63,11 @@
   검사합니다.
 - Python 3.12 (`.python-version`), CI는 3.11/3.12 매트릭스
 - 프로그램 도메인은 Model Training (waieiches, hyochangsung), Feast Features
-  (waieiches, hyochangsung — 도입 진행 중), Airflow Orchestration (bbungjun),
-  GCP Infrastructure (hyeongyu-data)입니다. 뒤의 두 도메인 구현은 각각
-  `Autoresearch-airflow`, `Autoresearch-infra` 저장소가 소유합니다.
+  (waieiches, hyochangsung — 도입 진행 중), YouTube Collection & Release
+  (Noah-JuYong — 수집 파이프라인·복원력 레이어·프록시, release/배포 자동화
+  워크플로우), Airflow Orchestration (bbungjun), GCP Infrastructure
+  (hyeongyu-data)입니다. 뒤의 두 도메인 구현은 각각 `Autoresearch-airflow`,
+  `Autoresearch-infra` 저장소가 소유합니다.
 - Feast 피처 스토어는 `feature_repo/`에 도입되어 있습니다 (Entity·FeatureView
   정의는 더미 스키마, 실데이터 스키마로 교체 예정).
 - CTR 학습 파이프라인은 `src/models/`, `src/features/`, `src/pipeline/`에

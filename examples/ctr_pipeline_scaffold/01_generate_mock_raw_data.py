@@ -1,7 +1,7 @@
 """
 01_generate_mock_raw_data.py
 
-CTR_Model_Specification.md의 Raw Data 스키마(YouTube Data API + Persona)를 그대로 따르는
+docs/guides/ctr-model-specification.md의 Raw Data 스키마(YouTube Data API + Persona)를 그대로 따르는
 Mock Raw 데이터를 생성한다.
 
 이 스크립트가 만드는 데이터는:

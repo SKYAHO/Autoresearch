@@ -26,7 +26,7 @@
 
 - **Modify (임시, 테스트 후 revert):** `proxy/app.py` — `/egress-ip` 엔드포인트 추가. Cloud Run egress IP 직접 조회용. PR #56 범위 밖 임시 변경이므로 별도 커밋 금지(작업 트리에서만 유지, 테스트 종료 후 revert).
 - **Create:** `scripts/empirical_test/quota_burst.py` — proxy 경유 YouTube API 폭주 요청 스크립트. egress IP 밴 유도용. 일회성 스크립트(저장소 보관, 테스트 재현용).
-- **Create:** `docs/empirical-test/2026-07-07-run-log.md` — 실행 로그. 각 Phase 결과(status code, reason, egress IP, 관측 사항)를 순차 기록. 최종 산출물.
+- **Create:** `docs/archive/reports/2026-07-07-empirical-test-run-log.md` — 실행 로그. 각 Phase 결과(status code, reason, egress IP, 관측 사항)를 순차 기록. 최종 산출물.
 
 **설계 빈틈 메모:** spec에는 egress IP 조회 방법이 구체화되어 있지 않다. 본 plan은 proxy에 임시 `/egress-ip` 엔드포인트(외부 IP 확인 서비스 호출)를 추가하는 방식으로 채운다. 사용자 검토 시 대안(예: Cloud Run 로그 기반 추론, 별도 Job)으로 변경 가능.
 
@@ -38,7 +38,7 @@
 
 **Files:**
 - Modify: `proxy/app.py` (`/egress-ip` 엔드포인트 추가, 임시)
-- Create: `docs/empirical-test/2026-07-07-run-log.md`
+- Create: `docs/archive/reports/2026-07-07-empirical-test-run-log.md`
 
 **Interfaces:**
 - Consumes: `proxy/Dockerfile`, `proxy/app.py` (PR #56 산출물)
@@ -114,7 +114,7 @@ Expected: `{"ip":"<IPv4 주소>"}` — 이 값을 IP₁으로 기록.
 
 - [ ] **Step 6: run-log.md 초기화 + Phase 1 결과 기록**
 
-`docs/empirical-test/2026-07-07-run-log.md` 생성:
+`docs/archive/reports/2026-07-07-empirical-test-run-log.md` 생성:
 
 ```markdown
 # YouTube 복원력 실증 테스트 실행 로그
@@ -147,7 +147,7 @@ Expected: `{"ip":"<IPv4 주소>"}` — 이 값을 IP₁으로 기록.
 - Task 1 완료 (`PROXY_URL` 설정됨)
 
 **Files:**
-- Modify: `docs/empirical-test/2026-07-07-run-log.md` (Phase 2 섹션 추가)
+- Modify: `docs/archive/reports/2026-07-07-empirical-test-run-log.md` (Phase 2 섹션 추가)
 
 **Interfaces:**
 - Consumes: `PROXY_URL`, `YOUTUBE_API_KEY`, `autoresearch/youtube_collection/client.py`
@@ -191,7 +191,7 @@ Expected: `client.py OK`
 
 - [ ] **Step 4: run-log.md에 Phase 2 결과 기록**
 
-`docs/empirical-test/2026-07-07-run-log.md`에 추가:
+`docs/archive/reports/2026-07-07-empirical-test-run-log.md`에 추가:
 
 ```markdown
 ## Phase 2: 정상 작동 확인
@@ -217,7 +217,7 @@ Expected: `client.py OK`
 
 **Files:**
 - Create: `scripts/empirical_test/quota_burst.py`
-- Modify: `docs/empirical-test/2026-07-07-run-log.md` (Phase 3 섹션)
+- Modify: `docs/archive/reports/2026-07-07-empirical-test-run-log.md` (Phase 3 섹션)
 
 **Interfaces:**
 - Consumes: `PROXY_URL`, `YOUTUBE_API_KEY`, Task 1의 IP₁
@@ -362,7 +362,7 @@ run-log.md에 기록 → Step 6.
 
 - [ ] **Step 6: run-log.md에 Phase 3 + 최종 결과 기록**
 
-`docs/empirical-test/2026-07-07-run-log.md`에 추가:
+`docs/archive/reports/2026-07-07-empirical-test-run-log.md`에 추가:
 
 ```markdown
 ## Phase 3: IP밴 유도 시도
@@ -398,7 +398,7 @@ git checkout -- proxy/app.py
 ```
 Expected: `git diff proxy/app.py` 출력 없음.
 
-`scripts/empirical_test/quota_burst.py`, `docs/empirical-test/2026-07-07-run-log.md`는 보관(재현/기록용). 커밋 여부는 사용자 결정.
+`scripts/empirical_test/quota_burst.py`, `docs/archive/reports/2026-07-07-empirical-test-run-log.md`는 보관(재현/기록용). 커밋 여부는 사용자 결정.
 
 ---
 
