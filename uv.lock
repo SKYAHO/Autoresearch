@@ -2,31 +2,31 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version >= '3.15' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
+    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version >= '3.15' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
     "python_full_version >= '3.14' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.13.*' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version < '3.12' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version >= '3.14' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
 ]
 conflicts = [[
@@ -35,6 +35,9 @@ conflicts = [[
 ], [
     { package = "autoresearch", group = "feast" },
     { package = "autoresearch", group = "proxy" },
+], [
+    { package = "autoresearch", group = "feast" },
+    { package = "autoresearch", group = "serving" },
 ]]
 
 [[package]]
@@ -57,7 +60,7 @@ dependencies = [
     { name = "frozenlist" },
     { name = "multidict" },
     { name = "propcache" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/82/78/8ea7308cac6934de8c74a14f3d5f65d1c89287426688be79538d0e5c013d/aiohttp-3.14.1.tar.gz", hash = "sha256:307f2cff90a764d329e77040603fa032db89c5c24fdad50c4c15334cba744035", size = 7955794, upload-time = "2026-06-07T21:09:35.529Z" }
@@ -170,7 +173,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "frozenlist" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -215,7 +218,7 @@ version = "4.14.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "idna" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3b/72/5562aabb8dd7181e8e860622a38bea08d17842b99ecd4c91f84ac95251b0/anyio-4.14.1.tar.gz", hash = "sha256:8d648a3544c1a700e3ff78615cd679e4c5c3f149904287e73687b2596963629e", size = 254831, upload-time = "2026-06-24T20:56:06.017Z" }
 wheels = [
@@ -287,7 +290,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "duckdb" },
-    { name = "gcsfs", version = "2025.3.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "gcsfs", version = "2025.3.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "gcsfs", version = "2025.12.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-feast' or extra != 'group-12-autoresearch-dev'" },
     { name = "google-api-python-client" },
     { name = "google-cloud-storage" },
@@ -312,15 +315,19 @@ dev = [
     { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" } },
     { name = "google-cloud-bigquery" },
     { name = "httpx" },
+    { name = "prometheus-client" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "ruff" },
+    { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 feast = [
     { name = "feast", extra = ["gcp"], marker = "extra == 'group-12-autoresearch-feast'" },
     { name = "google-cloud-bigquery" },
+    { name = "google-cloud-secret-manager" },
     { name = "pandas" },
     { name = "pyarrow" },
+    { name = "pytest" },
     { name = "python-dotenv" },
     { name = "redis" },
 ]
@@ -330,7 +337,12 @@ lint = [
 proxy = [
     { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" } },
     { name = "httpx" },
-    { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+]
+serving = [
+    { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" } },
+    { name = "prometheus-client" },
+    { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 
 [package.metadata]
@@ -360,15 +372,19 @@ dev = [
     { name = "fastapi", specifier = ">=0.115,<0.129" },
     { name = "google-cloud-bigquery", specifier = ">=3.20" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
+    { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "ruff", specifier = "==0.15.18" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]
 feast = [
     { name = "feast", extras = ["gcp"], specifier = "==0.64.0" },
     { name = "google-cloud-bigquery", specifier = ">=3.20" },
+    { name = "google-cloud-secret-manager", specifier = ">=2.20" },
     { name = "pandas", specifier = ">=2.0" },
     { name = "pyarrow", specifier = ">=14.0" },
+    { name = "pytest", specifier = ">=8.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "redis", specifier = ">=5.0" },
 ]
@@ -376,6 +392,11 @@ lint = [{ name = "ruff", specifier = "==0.15.18" }]
 proxy = [
     { name = "fastapi", specifier = ">=0.115,<0.129" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
+]
+serving = [
+    { name = "fastapi", specifier = ">=0.115,<0.129" },
+    { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]
 
@@ -420,7 +441,7 @@ name = "cffi"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/57/5f/ff100cae70ebe9d8df1c01a00e510e45d9adb5c1fdda84791b199141de97/cffi-2.1.0.tar.gz", hash = "sha256:efc1cdd798b1aaf39b4610bba7aad28c9bea9b910f25c784ccf9ec1fa719d1f9", size = 531036, upload-time = "2026-07-06T21:34:30.382Z" }
 wheels = [
@@ -607,7 +628,7 @@ name = "click"
 version = "8.4.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/76/d4/81420972a676e8ffea40450d8c8c92943e7218a78fe9b64359836cc9876b/click-8.4.2.tar.gz", hash = "sha256:9a6cea6e60b17ebe0a44c5cc636d94f09bd66142c1cd7d8b4cd731c4917a15f6", size = 338000, upload-time = "2026-06-24T17:45:15.148Z" }
 wheels = [
@@ -637,8 +658,8 @@ name = "contourpy"
 version = "1.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/58/01/1253e6698a07380cd31a736d248a3f2a50a7c88779a1813da27503cadc2a/contourpy-1.3.3.tar.gz", hash = "sha256:083e12155b210502d0bca491432bb04d56dc3432f95a979b429f2848c3dbe880", size = 13466174, upload-time = "2025-07-26T12:03:12.549Z" }
 wheels = [
@@ -720,7 +741,7 @@ name = "cryptography"
 version = "49.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/1f/99/d1c90d6041656cc6ee229dc99cd67fd0cd5aec3c5f7d72fffc27cc750054/cryptography-49.0.0.tar.gz", hash = "sha256:f89660a348f4f78a92366240a61404e337586ef7f5909a2fef59ca88ef505493", size = 854345, upload-time = "2026-06-12T20:02:30.512Z" }
 wheels = [
@@ -801,8 +822,8 @@ wheels = [
 
 [package.optional-dependencies]
 dataframe = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "pandas" },
     { name = "pyarrow" },
 ]
@@ -829,11 +850,11 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dill", version = "0.3.8", source = { registry = "https://pypi.org/simple" } },
     { name = "filelock" },
-    { name = "fsspec", version = "2025.3.0", source = { registry = "https://pypi.org/simple" }, extra = ["http"], marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "fsspec", version = "2025.3.0", source = { registry = "https://pypi.org/simple" }, extra = ["http"], marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "huggingface-hub" },
     { name = "multiprocess" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-12-autoresearch-dev') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'group-12-autoresearch-dev') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-12-autoresearch-dev') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'group-12-autoresearch-dev') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "packaging" },
     { name = "pandas" },
     { name = "pyarrow" },
@@ -852,8 +873,8 @@ name = "db-dtypes"
 version = "1.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "packaging" },
     { name = "pandas" },
     { name = "pyarrow" },
@@ -878,12 +899,12 @@ version = "0.3.8"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform != 'win32'",
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/17/4d/ac7ffa80c69ea1df30a8aa11b3578692a5118e7cd1aa157e3ef73b092d15/dill-0.3.8.tar.gz", hash = "sha256:3ebe3c479ad625c4553aca177444d89b486b1d84982eeacded644afc0cf797ca", size = 184847, upload-time = "2024-01-27T23:42:16.145Z" }
@@ -897,14 +918,14 @@ version = "0.3.9"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform != 'win32'",
-    "python_full_version >= '3.15' and sys_platform == 'win32'",
     "python_full_version == '3.14.*' and sys_platform != 'win32'",
-    "python_full_version == '3.14.*' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform != 'win32'",
+    "python_full_version >= '3.15' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/70/43/86fe3f9e130c4137b0f1b50784dd70a5087b911fe07fa81e53e0c4c47fea/dill-0.3.9.tar.gz", hash = "sha256:81aa267dddf68cbfe8029c42ca9ec6a4ab3b22371d1c450abc54422577b4512c", size = 187000, upload-time = "2024-09-29T00:03:20.958Z" }
@@ -926,7 +947,7 @@ name = "docker"
 version = "7.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "pywin32", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "requests" },
     { name = "urllib3" },
 ]
@@ -977,20 +998,20 @@ version = "0.128.8"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform != 'win32'",
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 dependencies = [
-    { name = "annotated-doc", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "pydantic", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "starlette", version = "0.52.1", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "typing-extensions", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "typing-inspection", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "annotated-doc", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "pydantic", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "starlette", version = "0.52.1", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "typing-extensions", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "typing-inspection", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/01/72/0df5c58c954742f31a7054e2dd1143bae0b408b7f36b59b85f928f9b456c/fastapi-0.128.8.tar.gz", hash = "sha256:3171f9f328c4a218f0a8d2ba8310ac3a55d1ee12c28c949650288aee25966007", size = 375523, upload-time = "2026-02-11T15:19:36.69Z" }
 wheels = [
@@ -1003,14 +1024,14 @@ version = "0.139.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform != 'win32'",
-    "python_full_version >= '3.15' and sys_platform == 'win32'",
     "python_full_version == '3.14.*' and sys_platform != 'win32'",
-    "python_full_version == '3.14.*' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform != 'win32'",
+    "python_full_version >= '3.15' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 dependencies = [
@@ -1040,8 +1061,8 @@ dependencies = [
     { name = "jinja2" },
     { name = "jsonschema" },
     { name = "mmh3" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "pandas" },
     { name = "prometheus-client" },
     { name = "protobuf" },
@@ -1264,12 +1285,12 @@ version = "2025.3.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform != 'win32'",
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/34/f4/5721faf47b8c499e776bc34c6a8fc17efdf7fdef0b00f398128bc5dcb4ac/fsspec-2025.3.0.tar.gz", hash = "sha256:a935fd1ea872591f2b5148907d103488fc523295e6c64b835cfad8c3eca44972", size = 298491, upload-time = "2025-03-07T21:47:56.461Z" }
@@ -1287,23 +1308,23 @@ name = "fsspec"
 version = "2025.12.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version >= '3.15' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
+    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version >= '3.15' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
     "python_full_version >= '3.14' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/b6/27/954057b0d1f53f086f681755207dda6de6c660ce133c829158e8e8fe7895/fsspec-2025.12.0.tar.gz", hash = "sha256:c505de011584597b1060ff778bb664c1bc022e87921b0e4f10cc9c44f9635973", size = 309748, upload-time = "2025-12-03T15:23:42.687Z" }
@@ -1317,22 +1338,22 @@ version = "2025.3.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform != 'win32'",
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 dependencies = [
-    { name = "aiohttp", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "decorator", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "fsspec", version = "2025.3.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "google-auth", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "google-auth-oauthlib", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "google-cloud-storage", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "requests", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "aiohttp", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "decorator", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "fsspec", version = "2025.3.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "google-auth", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "google-auth-oauthlib", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "google-cloud-storage", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "requests", marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/59/81/441e9f7f8b9b4cabb89ff19cd58da12cebb5e6ea2864920ae8862061fac0/gcsfs-2025.3.0.tar.gz", hash = "sha256:f68d7bc24bd4b944cd55a6963b9fd722c7bd5791f46c6aebacc380e648292c04", size = 81174, upload-time = "2025-03-08T18:33:54.69Z" }
 wheels = [
@@ -1344,23 +1365,23 @@ name = "gcsfs"
 version = "2025.12.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version >= '3.15' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
+    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version >= '3.15' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
     "python_full_version >= '3.14' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
 ]
 dependencies = [
@@ -1507,8 +1528,8 @@ pandas = [
     { name = "db-dtypes" },
     { name = "grpcio" },
     { name = "pandas" },
-    { name = "pandas-gbq", version = "0.31.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "pandas-gbq", version = "0.35.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "pandas-gbq", version = "0.31.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "pandas-gbq", version = "0.35.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "pyarrow" },
 ]
 
@@ -1575,6 +1596,23 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/d6/b2/d4679b666980da16cfe8c80c7a3f1996c29fc2b9d5a2db1ab22144d88a09/google_cloud_datastore-2.25.0.tar.gz", hash = "sha256:dd646a3d8f99c2750bb5f6e0f18ece7bed95fd76e02dacaddbfa35a2b22328ff", size = 265596, upload-time = "2026-06-03T15:28:05.261Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/95/b2/fd5a3e55a5f698fd527f783ce27368e8e9c3d872bd1e1c39dd377b2b9f14/google_cloud_datastore-2.25.0-py3-none-any.whl", hash = "sha256:e47e25933bcfad7118335015b0de2f2b2b5444e81f6f029a62040f568f4f52eb", size = 207230, upload-time = "2026-06-03T15:27:15.488Z" },
+]
+
+[[package]]
+name = "google-cloud-secret-manager"
+version = "2.29.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"], marker = "extra == 'group-12-autoresearch-feast'" },
+    { name = "google-auth" },
+    { name = "grpc-google-iam-v1" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d2/7c/5c88cdde9664f6c75fb68aa11e0af4309a92bef38dd38df0456ffb0f469b/google_cloud_secret_manager-2.29.0.tar.gz", hash = "sha256:ee64133af8fdb3780affb65ec6ccf10ab15a0113d8edeba388665f4be87ce1be", size = 278437, upload-time = "2026-06-03T16:13:43.149Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b6/c2/fc3275bc42a522757cb5141d7dae51f048b93d2f5fe4574fcee5392cef03/google_cloud_secret_manager-2.29.0-py3-none-any.whl", hash = "sha256:21bac2d0adb0bb3c13c346d7223832f197c2266534528a1bf1402774e06395a3", size = 225042, upload-time = "2026-06-03T16:12:20.162Z" },
 ]
 
 [[package]]
@@ -1867,11 +1905,11 @@ name = "gunicorn"
 version = "23.0.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
+    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
     "python_full_version >= '3.14' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.13.*' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
@@ -1882,7 +1920,7 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
 ]
 dependencies = [
-    { name = "packaging", marker = "sys_platform != 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "packaging", marker = "sys_platform != 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/34/72/9614c465dc206155d93eff0ca20d42e1e35afc533971379482de953521a4/gunicorn-23.0.0.tar.gz", hash = "sha256:f014447a0101dc57e294f6c18ca6b40227a4c90e9bdb586042628030cba004ec", size = 375031, upload-time = "2024-08-10T20:25:27.378Z" }
 wheels = [
@@ -2411,10 +2449,10 @@ name = "lightgbm"
 version = "4.6.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/68/0b/a2e9f5c5da7ef047cc60cef37f86185088845e8433e54d2e7ed439cce8a3/lightgbm-4.6.0.tar.gz", hash = "sha256:cb1c59720eb569389c0ba74d14f52351b573af489f230032a1c9f314f8bab7fe", size = 1703705, upload-time = "2025-02-15T04:03:03.111Z" }
 wheels = [
@@ -2550,8 +2588,8 @@ dependencies = [
     { name = "cycler" },
     { name = "fonttools" },
     { name = "kiwisolver" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "packaging" },
     { name = "pillow" },
     { name = "pyparsing" },
@@ -2624,20 +2662,20 @@ dependencies = [
     { name = "docker" },
     { name = "flask" },
     { name = "graphene" },
-    { name = "gunicorn", version = "23.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "gunicorn", version = "23.0.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "jinja2" },
     { name = "markdown" },
     { name = "matplotlib" },
     { name = "mlflow-skinny" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "scikit-learn" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "sqlalchemy" },
-    { name = "waitress", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "waitress", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/34/37/65f82b6bf19e9f5751d28a05346a1458b2bb775f9c6a5db21c1aa115ddfc/mlflow-2.22.1.tar.gz", hash = "sha256:b7d6cb294112115cb0031a554629a21647c38ba88d0fd7455e0ddead02b4bb28", size = 28377360, upload-time = "2025-06-06T05:53:06.01Z" }
 wheels = [
@@ -2653,7 +2691,7 @@ dependencies = [
     { name = "click" },
     { name = "cloudpickle" },
     { name = "databricks-sdk" },
-    { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "fastapi", version = "0.139.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-12-autoresearch-feast'" },
     { name = "gitpython" },
     { name = "importlib-metadata" },
@@ -3061,25 +3099,25 @@ name = "numpy"
 version = "2.5.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version >= '3.15' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
+    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version >= '3.15' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
     "python_full_version >= '3.14' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.13.*' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version >= '3.14' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/fd/89965aa4ac08c74998539fcbf24fa3540f3e15237fbeb6bcf9c908f4aade/numpy-2.5.1.tar.gz", hash = "sha256:a48a113e6afea91f5608793bafa7ef2ad481fefbda87ec5069f483de61cb9fa3", size = 20755553, upload-time = "2026-07-04T17:08:00.933Z" }
@@ -3210,8 +3248,8 @@ name = "pandas"
 version = "2.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "python-dateutil" },
     { name = "pytz" },
     { name = "tzdata" },
@@ -3266,8 +3304,8 @@ version = "0.31.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform != 'win32'",
-    "python_full_version >= '3.15' and sys_platform == 'win32'",
     "python_full_version == '3.14.*' and sys_platform != 'win32'",
+    "python_full_version >= '3.15' and sys_platform == 'win32'",
     "python_full_version == '3.14.*' and sys_platform == 'win32'",
 ]
 dependencies = [
@@ -3295,10 +3333,10 @@ version = "0.35.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform != 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 dependencies = [
@@ -3307,8 +3345,8 @@ dependencies = [
     { name = "google-auth", marker = "python_full_version < '3.14'" },
     { name = "google-auth-oauthlib", marker = "python_full_version < '3.14'" },
     { name = "google-cloud-bigquery", marker = "python_full_version < '3.14'" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'group-12-autoresearch-feast') or (python_full_version < '3.12' and extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (python_full_version < '3.12' and extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (python_full_version >= '3.14' and extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (python_full_version >= '3.14' and extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'group-12-autoresearch-feast') or (python_full_version < '3.12' and extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (python_full_version < '3.12' and extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (python_full_version < '3.12' and extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving') or (python_full_version >= '3.14' and extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (python_full_version >= '3.14' and extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (python_full_version >= '3.14' and extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "packaging", marker = "python_full_version < '3.14'" },
     { name = "pandas", marker = "python_full_version < '3.14'" },
     { name = "psutil", marker = "python_full_version < '3.14'" },
@@ -4193,10 +4231,10 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "joblib" },
     { name = "narwhals" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "threadpoolctl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/fa/6f/37092bdb25f712817231799fc5674d8e704066a8a70c1d2d40517e18b4ab/scikit_learn-1.9.0.tar.gz", hash = "sha256:8833266989d3a5110178a9fae30783675460724d0e1efb13b14901d2c660c557", size = 7750767, upload-time = "2026-06-02T11:54:32.706Z" }
@@ -4242,7 +4280,7 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -4313,29 +4351,29 @@ name = "scipy"
 version = "1.18.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version >= '3.15' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.14.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy'",
+    "python_full_version >= '3.15' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version >= '3.15' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast' and extra != 'group-12-autoresearch-proxy' and extra != 'group-12-autoresearch-serving'",
     "python_full_version >= '3.14' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.13.*' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform != 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform == 'win32' and extra == 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version >= '3.14' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.13.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform != 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version >= '3.14' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
     "python_full_version == '3.12.*' and sys_platform == 'win32' and extra != 'group-12-autoresearch-dev' and extra != 'group-12-autoresearch-feast'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a7/25/c2700dfaf6442b4effaa91af24ebce5dc9d31bb4a69706313aae70d72cd0/scipy-1.18.0.tar.gz", hash = "sha256:67b2ad2ad54c72ca6d04975a9b2df8c3638c34ddd5b28738e94fc2b57929d378", size = 30774447, upload-time = "2026-06-19T15:01:43.456Z" }
 wheels = [
@@ -4431,7 +4469,7 @@ name = "sqlalchemy"
 version = "2.0.51"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "greenlet", marker = "platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "greenlet", marker = "platform_machine == 'AMD64' or platform_machine == 'WIN32' or platform_machine == 'aarch64' or platform_machine == 'amd64' or platform_machine == 'ppc64le' or platform_machine == 'win32' or platform_machine == 'x86_64' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/02/f1/a7a892f18d4d224e6b26f706531eafccc41e37594d37d304786969ee13cb/sqlalchemy-2.0.51.tar.gz", hash = "sha256:804dccd8a4a6242c4e30ad961e540e18a588f6527202f2d6791b01845d59fdc9", size = 9912201, upload-time = "2026-06-15T15:41:20.012Z" }
@@ -4494,17 +4532,17 @@ version = "0.52.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform != 'win32'",
-    "python_full_version >= '3.14' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform != 'win32'",
+    "python_full_version >= '3.14' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 dependencies = [
-    { name = "anyio", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "typing-extensions", marker = "(python_full_version < '3.13' and extra == 'group-12-autoresearch-dev') or (python_full_version < '3.13' and extra != 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "anyio", marker = "extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "typing-extensions", marker = "(python_full_version < '3.13' and extra == 'group-12-autoresearch-dev') or (python_full_version < '3.13' and extra != 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c4/68/79977123bb7be889ad680d79a40f339082c1978b5cfcf62c2d8d196873ac/starlette-0.52.1.tar.gz", hash = "sha256:834edd1b0a23167694292e94f597773bc3f89f362be6effee198165a35d62933", size = 2653702, upload-time = "2026-01-18T13:34:11.062Z" }
 wheels = [
@@ -4517,19 +4555,19 @@ version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15' and sys_platform != 'win32'",
-    "python_full_version >= '3.15' and sys_platform == 'win32'",
     "python_full_version == '3.14.*' and sys_platform != 'win32'",
-    "python_full_version == '3.14.*' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform != 'win32'",
-    "python_full_version == '3.13.*' and sys_platform == 'win32'",
     "python_full_version == '3.12.*' and sys_platform != 'win32'",
-    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform != 'win32'",
+    "python_full_version >= '3.15' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.12.*' and sys_platform == 'win32'",
     "python_full_version < '3.12' and sys_platform == 'win32'",
 ]
 dependencies = [
     { name = "anyio", marker = "extra == 'group-12-autoresearch-feast'" },
-    { name = "typing-extensions", marker = "(python_full_version < '3.13' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "typing-extensions", marker = "(python_full_version < '3.13' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/eb/e3/7c1dc7381d9f8ab7d854328ebfa884e62cb3f3d8549ddfd37c7814f42afa/starlette-1.3.1.tar.gz", hash = "sha256:05d0213193f2fbaae60e2ecb593b4add4262ad4e46536b54abe36f11a71724e0", size = 2703240, upload-time = "2026-06-12T09:23:11.602Z" }
 wheels = [
@@ -4586,7 +4624,7 @@ name = "tqdm"
 version = "4.68.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/ae/5f/57ff8b434839e70dab45601284ea413e947a63799891b7553e5960a793a8/tqdm-4.68.4.tar.gz", hash = "sha256:19829c9673638f2a0b8617da4cdcb927e831cd88bcfcb6e78d42a4d1af131520", size = 792418, upload-time = "2026-07-07T09:58:18.369Z" }
 wheels = [
@@ -4611,7 +4649,7 @@ version = "0.26.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "rich" },
     { name = "shellingham" },
 ]
@@ -4697,8 +4735,8 @@ name = "uvicorn-worker"
 version = "0.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "gunicorn", version = "23.0.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'win32' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
-    { name = "gunicorn", version = "26.0.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'win32' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy')" },
+    { name = "gunicorn", version = "23.0.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform != 'win32' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "gunicorn", version = "26.0.0", source = { registry = "https://pypi.org/simple" }, marker = "(sys_platform == 'win32' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "uvicorn" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/37/c0/b5df8c9a31b0516a47703a669902b362ca1e569fed4f3daa1d4299b28be0/uvicorn_worker-0.3.0.tar.gz", hash = "sha256:6baeab7b2162ea6b9612cbe149aa670a76090ad65a267ce8e27316ed13c7de7b", size = 9181, upload-time = "2024-12-26T12:13:07.591Z" }
