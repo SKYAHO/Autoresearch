@@ -30,9 +30,14 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --group feast --no-install-project \
     && rm -rf /root/.cache/uv
 
-COPY autoresearch ./autoresearch
-COPY feature_repo ./feature_repo
+# 코드는 이미지에 포함하지 않는다. ENTRYPOINT 부트스트랩이 파드 시작 시
+# GCS 코드 아카이브(#174 파이프라인)를 /app에 풀고 커맨드를 실행한다.
+# revision 라벨·AUTORESEARCH_REVISION은 이미지 빌드 시점 커밋을 뜻하며,
+# 실행 코드 버전은 부트스트랩 로그([feast-bootstrap] code: ...)가 담당한다.
+COPY scripts/feast_bootstrap.sh /usr/local/bin/feast_bootstrap.sh
+RUN chown -R appuser /app
 
 USER appuser
 
+ENTRYPOINT ["/usr/local/bin/feast_bootstrap.sh"]
 CMD ["python", "-c", "import feast, feature_repo.redis_iam; print('autoresearch feast image ready')"]
