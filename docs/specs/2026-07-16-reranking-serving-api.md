@@ -8,9 +8,11 @@
 
 - `GET /healthcheck`: 모델 로드 상태를 반환한다. 모델을 사용할 수 없으면 `503`을 반환한다.
 - `POST /rerank`: `user_id`와 후보 목록을 받고, 각 후보의 사전 조립된 scalar feature로 CTR을 예측한다. 응답 `items`는 `ctr_score` 내림차순이다.
-- `GET /metrics`: Prometheus 형식의 요청 수·지연 시간·모델 준비 상태를 노출한다.
+- `GET /metrics`: Prometheus 형식의 요청 수·지연 시간·모델 준비 상태를 노출한다. 학습에 없던
+  categorical 값이 NaN으로 강등되면(신규 카테고리 등장 등) `rerank_unseen_category_total{column=...}`
+  카운터가 컬럼별로 증가하고 경고 로그가 남는다 — 조용한 학습-서빙 스큐를 감지해 재학습 신호로 쓴다.
 
-`/rerank`의 후보는 `video_id`와 `features`를 가진다. `features`는 학습 artifact의 feature-column 목록을 모두 포함해야 하며, 벡터·리스트는 받지 않는다. MVP에서는 Feature Store 조회를 수행하지 않는다.
+`/rerank`의 후보는 `video_id`와 `features`를 가진다. `features`는 학습 artifact의 feature-column 목록을 모두 포함해야 하며, 벡터·리스트는 받지 않는다. MVP에서는 Feature Store 조회를 수행하지 않는다. 학습 카테고리에 없는 값이 오면 요청은 실패하지 않고 해당 값을 NaN(결측)으로 처리하되, 위 `rerank_unseen_category_total`로 계측한다.
 
 ## 모델 artifact
 

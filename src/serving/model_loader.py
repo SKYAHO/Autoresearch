@@ -24,12 +24,16 @@ MLFLOW_CATEGORICAL_COLUMNS_ARTIFACT_PATH: Final = "features/categorical_columns.
 
 
 class ModelSource(StrEnum):
+    """모델 아티팩트를 어디서 읽을지 지정하는 소스 종류(로컬 파일 / MLflow 런)."""
+
     LOCAL = "local"
     MLFLOW = "mlflow"
 
 
 @dataclass(frozen=True, slots=True)
 class LocalModelSettings:
+    """로컬 파일에서 로드할 때 필요한 모델·피처·카테고리 아티팩트 경로 묶음."""
+
     model_path: Path
     feature_columns_path: Path
     categorical_columns_path: Path
@@ -37,6 +41,8 @@ class LocalModelSettings:
 
 @dataclass(frozen=True, slots=True)
 class MlflowModelSettings:
+    """MLflow 런에서 아티팩트를 내려받을 때 필요한 tracking URI와 run_id."""
+
     tracking_uri: str
     run_id: str
 
@@ -46,6 +52,8 @@ ModelSettings: TypeAlias = LocalModelSettings | MlflowModelSettings
 
 @dataclass(frozen=True, slots=True)
 class ModelConfigurationError(Exception):
+    """환경변수 설정이 잘못됐을 때 발생한다(소스 값 오류·필수 변수 누락 등)."""
+
     reason: str
 
     def __str__(self) -> str:
@@ -54,6 +62,8 @@ class ModelConfigurationError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class ModelArtifactError(Exception):
+    """아티팩트 자체가 없거나 형식·계약이 어긋날 때 발생한다."""
+
     reason: str
 
     def __str__(self) -> str:
@@ -61,6 +71,7 @@ class ModelArtifactError(Exception):
 
 
 def load_model_settings_from_environment() -> ModelSettings:
+    """환경변수(RERANK_MODEL_SOURCE 등)를 읽어 소스별 설정 객체로 변환한다."""
     raw_source = os.getenv("RERANK_MODEL_SOURCE", ModelSource.LOCAL.value)
     try:
         source = ModelSource(raw_source)
@@ -90,6 +101,7 @@ def load_model_settings_from_environment() -> ModelSettings:
 
 
 def load_reranker(settings: ModelSettings) -> Reranker:
+    """설정 종류에 따라 로컬/MLflow 로더로 분기해 Reranker를 만든다."""
     match settings:
         case LocalModelSettings():
             return load_local_model(settings)
@@ -100,6 +112,7 @@ def load_reranker(settings: ModelSettings) -> Reranker:
 
 
 def load_local_model(settings: LocalModelSettings) -> Reranker:
+    """로컬 경로의 아티팩트들로 Reranker를 로드한다."""
     return _load_reranker(
         model_path=settings.model_path,
         feature_columns_path=settings.feature_columns_path,
@@ -108,6 +121,7 @@ def load_local_model(settings: LocalModelSettings) -> Reranker:
 
 
 def load_mlflow_model(settings: MlflowModelSettings) -> Reranker:
+    """MLflow 런에서 모델·피처·카테고리 아티팩트를 내려받아 Reranker를 로드한다."""
     mlflow.set_tracking_uri(settings.tracking_uri)
     model_path = Path(
         mlflow.artifacts.download_artifacts(
@@ -134,6 +148,7 @@ def load_mlflow_model(settings: MlflowModelSettings) -> Reranker:
 def _load_reranker(
     model_path: Path, feature_columns_path: Path, categorical_columns_path: Path
 ) -> Reranker:
+    """세 아티팩트의 존재·형식·상호 계약(카테고리 컬럼 ⊆ 피처)을 검증하고 Reranker를 조립한다."""
     if not model_path.is_file():
         raise ModelArtifactError(reason=f"Model artifact does not exist: {model_path}")
     if not feature_columns_path.is_file():
@@ -195,6 +210,7 @@ def _load_reranker(
 
 
 def _required_environment_value(name: str) -> str:
+    """필수 환경변수를 읽고, 없거나 공백이면 ModelConfigurationError를 던진다."""
     value = os.getenv(name)
     if value is None or not value.strip():
         raise ModelConfigurationError(reason=f"{name} is required to load the reranking model.")

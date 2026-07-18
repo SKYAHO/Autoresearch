@@ -91,6 +91,69 @@ def test_rerank_casts_categorical_columns_with_training_categories() -> None:
     assert response[1].ctr_score == 0.0
 
 
+def test_rerank_with_diagnostics_reports_unseen_categories() -> None:
+    reranker = Reranker(
+        model=CategoricalCodeModel(),
+        feature_columns=("category_id",),
+        categorical_categories={"category_id": (10, 20, 30)},
+    )
+
+    outcome = reranker.rerank_with_diagnostics(
+        [
+            CandidateVideo(video_id="video-known", features={"category_id": 10}),
+            CandidateVideo(video_id="video-unseen", features={"category_id": 99}),
+        ]
+    )
+
+    # 학습에 없던 category_id=99 는 NaN으로 강등되고, 진단에 원래 값이 보고되어야 한다.
+    assert outcome.unseen_categories == {"category_id": (99,)}
+    assert {item.video_id for item in outcome.items} == {"video-known", "video-unseen"}
+
+
+def test_rerank_with_diagnostics_empty_when_all_categories_known() -> None:
+    reranker = Reranker(
+        model=CategoricalCodeModel(),
+        feature_columns=("category_id",),
+        categorical_categories={"category_id": (10, 20, 30)},
+    )
+
+    outcome = reranker.rerank_with_diagnostics(
+        [
+            CandidateVideo(video_id="video-a", features={"category_id": 10}),
+            CandidateVideo(video_id="video-b", features={"category_id": 30}),
+        ]
+    )
+
+    assert outcome.unseen_categories == {}
+
+
+def test_metrics_report_unseen_category_coercions() -> None:
+    reranker = Reranker(
+        model=CategoricalCodeModel(),
+        feature_columns=("category_id",),
+        categorical_categories={"category_id": (10, 20, 30)},
+    )
+    app = create_app(reranker=reranker)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/rerank",
+            json={
+                "user_id": "user-1",
+                "candidates": [
+                    {"video_id": "video-known", "features": {"category_id": 10}},
+                    {"video_id": "video-unseen", "features": {"category_id": 99}},
+                ],
+            },
+        )
+        metrics_response = client.get("/metrics")
+
+    # 학습에 없던 카테고리가 트래픽에 등장해도 요청은 200으로 응답된다(조용한 degradation).
+    assert response.status_code == 200
+    # 그 대신 unseen-category 카운터가 컬럼별로 계측되어 감지 가능해야 한다.
+    assert 'rerank_unseen_category_total{column="category_id"}' in metrics_response.text
+
+
 class WrongShapeModel:
     def predict_proba(self, features):
         return np.zeros((len(features), 3))
