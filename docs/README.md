@@ -40,6 +40,7 @@
 - [Agent Simulator 명세 (action log SSOT)](guides/agent-simulator-spec.md)
 - [action_logs 모듈 사용법](guides/action-log.md)
 - [Release & 배포 파이프라인](guides/release-pipeline.md) — CI/CD·GAR push·digest 승격·GKE 배포 자동화
+- [CTR 학습 이미지](guides/training-image.md) — `Dockerfile.train`, MLflow tracking URI 연동
 - [YouTube 트렌딩 수집 파이프라인](guides/youtube-collection.md) — API 수집·정규화·GCS parquet 적재
 
 ## 아카이브

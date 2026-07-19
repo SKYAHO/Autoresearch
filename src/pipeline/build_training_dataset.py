@@ -163,7 +163,9 @@ def load_videos_from_bigquery() -> pd.DataFrame:
             video_view_count AS viewCount,
             video_like_count AS likeCount,
             video_comment_count AS commentCount,
-            video_published_at AS publishedAt
+            video_published_at AS publishedAt,
+            video_title AS title,
+            video_description AS description
         FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{BIGQUERY_VIDEOS_TABLE}`
     """
     return client.query(query).to_dataframe()
