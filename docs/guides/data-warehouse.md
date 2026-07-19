@@ -577,6 +577,35 @@ LEFT JOIN positive_impressions p
   ON i.source_event_id = p.source_event_id;
 ```
 
+### 🔸 (현재 16컬럼 파이프라인 전용) watch_time_sec / liked 파생 규칙
+
+> [!NOTE]
+> 아래 규칙은 `training_entity`/`user_dynamic_feature`(Feast 경유 목표 설계)의
+> 일부가 아니다. `src/pipeline/build_training_dataset.py`(issue #172)가 아직
+> Feast 없이 동작하는 현재 16컬럼 파이프라인의 `online_features` 자기조인이
+> impression 행마다 `clicked`/`liked`/`watch_time_sec`을 직접 컬럼으로
+> 가지고 있다고 가정하기 때문에 필요한 **임시 어댑터 규칙**이다. Feast
+> 전환(`#175`) 이후에는 `user_dynamic_feature`가 raw `event_type` count로
+> `recent_watch_time_7d`/`recent_like_count_7d`를 직접 계산하므로 이 절 자체가
+> 불필요해진다.
+
+`clicked`는 위 `Clicked label 생성 규칙`(`label_window_sec=1800`)과 동일하게
+click을 impression에 귀속시켜 파생한다. `liked`/`watch_time_sec`은 click을
+기준으로 **순차적으로** 체이닝한다 — impression에서 직접 재조회하지 않는다.
+
+- **watch_time_sec**: 귀속된 click **이후** `followup_window_sec`(기본
+  600초) 이내 **가장 먼저 발생한** view의 `watch_time_sec`. 매칭되는 view가
+  없으면 0.
+- **liked**: view가 아니라 click 기준으로 독립적으로 찾지 않고, **방금 확정된
+  view 이후** `followup_window_sec` 이내 가장 먼저 발생한 like가 있으면 1.
+  **view가 확정되지 않으면 liked도 항상 0**이다(실제 이벤트 생성기의
+  `like_ts = view_ts + α` 인과관계와 동일하게, view 없이는 like도 없다고 본다).
+
+`followup_window_sec`는 `label_window_sec`처럼 impression↔click 사이의 지연이
+아니라 click→view→view→like처럼 **이미 귀속된 이벤트 사이의 지연**이라 별도
+이름을 쓴다. 구현: `src/pipeline/build_training_dataset.py`의
+`derive_wide_events()`.
+
 ---
 
 <a id="user_topic_embedding"></a>

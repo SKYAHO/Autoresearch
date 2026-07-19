@@ -29,6 +29,15 @@ def build_features(
     personas_path: Optional[str] = typer.Option(
         None, help="Persona 파일 경로(로컬 CSV 또는 gs://.../*.parquet, 기본: <raw_dir>/personas.csv)"
     ),
+    events_source: str = typer.Option(
+        "csv", help="events 입력 소스: csv(mock) 또는 bigquery(data_lake_action_log)"
+    ),
+    events_start_date: Optional[str] = typer.Option(
+        None, help="events-source bigquery일 때 학습 기간 시작일(YYYY-MM-DD)"
+    ),
+    events_end_date: Optional[str] = typer.Option(
+        None, help="events-source bigquery일 때 학습 기간 종료일(YYYY-MM-DD)"
+    ),
 ) -> None:
     """training_dataset.csv 생성."""
     build_training_dataset.main(
@@ -37,6 +46,9 @@ def build_features(
         output_path=output_path,
         videos_source=videos_source,
         personas_path=personas_path,
+        events_source=events_source,
+        events_start_date=events_start_date,
+        events_end_date=events_end_date,
     )
 
 
