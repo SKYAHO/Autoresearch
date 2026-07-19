@@ -23,9 +23,21 @@ def build_features(
     raw_dir: Optional[str] = typer.Option(None, help="Raw 데이터 디렉토리 (기본: data/raw)"),
     events_path: Optional[str] = typer.Option(None, help="Event log CSV 경로 (기본: data/processed/events.csv)"),
     output_path: Optional[str] = typer.Option(None, help="출력 CSV 경로 (기본: data/processed/training_dataset.csv)"),
+    videos_source: str = typer.Option(
+        "csv", help="videos 입력 소스: csv(mock) 또는 bigquery(data_lake_youtube_trending_kr)"
+    ),
+    personas_path: Optional[str] = typer.Option(
+        None, help="Persona 파일 경로(로컬 CSV 또는 gs://.../*.parquet, 기본: <raw_dir>/personas.csv)"
+    ),
 ) -> None:
     """training_dataset.csv 생성."""
-    build_training_dataset.main(raw_dir=raw_dir, events_path=events_path, output_path=output_path)
+    build_training_dataset.main(
+        raw_dir=raw_dir,
+        events_path=events_path,
+        output_path=output_path,
+        videos_source=videos_source,
+        personas_path=personas_path,
+    )
 
 
 @app.command()
