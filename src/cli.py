@@ -101,6 +101,21 @@ def run_pipeline(
     raw_dir: Optional[str] = typer.Option(None, help="Raw 데이터 디렉토리 (기본: data/raw)"),
     events_path: Optional[str] = typer.Option(None, help="Event log CSV 경로 (기본: data/processed/events.csv)"),
     dataset_path: Optional[str] = typer.Option(None, help="Training dataset 경로 (기본: data/processed/training_dataset.csv)"),
+    videos_source: str = typer.Option(
+        "csv", help="videos 입력 소스: csv(mock) 또는 bigquery(data_lake_youtube_trending_kr)"
+    ),
+    personas_path: Optional[str] = typer.Option(
+        None, help="Persona 파일 경로(로컬 CSV 또는 gs://.../*.parquet, 기본: <raw_dir>/personas.csv)"
+    ),
+    events_source: str = typer.Option(
+        "csv", help="events 입력 소스: csv(mock) 또는 bigquery(data_lake_action_log)"
+    ),
+    events_start_date: Optional[str] = typer.Option(
+        None, help="events-source bigquery일 때 학습 기간 시작일(YYYY-MM-DD)"
+    ),
+    events_end_date: Optional[str] = typer.Option(
+        None, help="events-source bigquery일 때 학습 기간 종료일(YYYY-MM-DD)"
+    ),
     config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
     model_output: Optional[str] = typer.Option(None, help="모델 저장 경로 (config override)"),
     test_set_output: Optional[str] = typer.Option(
@@ -118,7 +133,23 @@ def run_pipeline(
     typer.echo("=" * 70)
 
     typer.echo("\n[1/3] build-features 실행...")
-    build_training_dataset.main(raw_dir=raw_dir, events_path=events_path, output_path=dataset_path)
+    build_training_dataset.main(
+        raw_dir=raw_dir,
+        events_path=events_path,
+        output_path=dataset_path,
+        videos_source=videos_source,
+        personas_path=personas_path,
+        events_source=events_source,
+        events_start_date=events_start_date,
+        events_end_date=events_end_date,
+    )
+
+    # 어떤 소스·기간의 데이터로 학습했는지 MLflow run에 항상 남긴다 — 기본값을
+    # 썼는지 명시값을 썼는지와 무관하게 나중에 조회 가능해야 한다.
+    data_source_params = {"videos_source": videos_source, "events_source": events_source}
+    if events_source == "bigquery":
+        data_source_params["events_start_date"] = events_start_date
+        data_source_params["events_end_date"] = events_end_date
 
     typer.echo("\n[2/3] train-model 실행...")
     train.main(
@@ -131,6 +162,7 @@ def run_pipeline(
         test_size=test_size,
         val_size=val_size,
         random_state=random_state,
+        extra_params=data_source_params,
     )
 
     # dataset_path(방금 만든 train+val+test 전체)는 넘기지 않는다: evaluate는
