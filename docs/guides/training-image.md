@@ -46,17 +46,28 @@ GKE 배포 세부사항(네임스페이스, NetworkPolicy, 접속 방법)은
 MLflow 서버의 proxy 모드로 기록되므로, 학습 이미지에는 GCS 자격 증명이 필요
 없습니다.
 
-## 이미지 배포 (범위 밖)
+## 이미지 배포
 
-이 이미지를 GAR에 publish하고 Airflow DAG가 소비하는 파이프라인(release.yml
-연동, digest 승격 PR 등)은 아직 구성돼 있지 않습니다. `Dockerfile.app`의
-release 파이프라인([release-pipeline.md](release-pipeline.md) 참조)과 동일한
-패턴을 적용할지는 CTR 학습 DAG 작업(`Autoresearch-airflow#72`)에서 실제 배포
-방식이 정해진 뒤 별도로 결정합니다. 지금은 CI에서 이미지가 정상 빌드되는지만
-검증합니다.
+`.github/workflows/publish-training-image.yml`(`workflow_dispatch` 수동 트리거)이
+`Dockerfile.train`을 빌드해 GAR(`asia-northeast3-docker.pkg.dev/ar-infra-501607/
+autoresearch-dev-docker/autoresearch-training`)로 push합니다.
+`Autoresearch-airflow`의 `build-and-push.yml`과 동일하게 Workload Identity
+Federation(`autoresearch-github` pool)으로 `autoresearch-dev-gar-pusher`
+서비스 계정을 impersonate합니다.
+
+이 워크플로가 성공하려면, 해당 서비스 계정의 `roles/iam.workloadIdentityUser`
+바인딩이 `SKYAHO/Autoresearch` 저장소를 포함하도록 확장돼 있어야 합니다(기존엔
+`SKYAHO/Autoresearch-airflow`만 허용돼 있었음 — 인프라 관리자 조치 필요,
+`SKYAHO/Autoresearch#185` 참고).
+
+워크플로 실행 후 Step Summary에 push된 digest가 출력됩니다. 이 digest를
+`Autoresearch-airflow`의 `deploy/airflow/values.yaml`(
+`AIRFLOW_VAR_AUTORESEARCH_TRAINING_IMAGE`)에 반영해야 `ctr_model_training`
+DAG가 이 이미지를 사용합니다 — 자동 반영은 아직 없고 수동 PR로 갱신합니다.
 
 ## 관련 이슈
 
 - `SKYAHO/Autoresearch#169` — 학습 이미지 패키징(이 문서)
 - `SKYAHO/Autoresearch-infra#234` — NetworkPolicy egress 허용
 - `SKYAHO/Autoresearch-airflow#72` — CTR 학습 DAG
+- `SKYAHO/Autoresearch#185` — GAR publish 자동화
