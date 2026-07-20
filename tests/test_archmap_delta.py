@@ -1,6 +1,10 @@
 import copy
 from pathlib import Path
+from typing import Protocol, TypedDict
 
+import pytest
+
+from tools.archmap import delta as delta_module
 from tools.archmap.build import build_architecture
 from tools.archmap.delta import build_delta, parse_numstat
 from tools.archmap.module_info import extract_module_info
@@ -169,7 +173,7 @@ def test_cross_repo_mixed_required_and_optional_args_added():
 def test_tests_section():
     d = _delta()
     assert d["tests"] == {"files": ["tests/test_action_logs_daily.py"], "lines_added": 52}
-    assert d["sidecar_stale"] == []
+    assert d["sidecar_stale"] == ["autoresearch/action_logs/schema.py"]
 
 
 # --- Critical 1: git 기본 rename 축약 표기 (실제 `git diff --numstat` 출력으로 확인) ---
@@ -696,3 +700,316 @@ def test_repro_b_arg_removed_hidden_by_union_now_surfaces_as_breaking(tmp_path):
         f"거짓 초록: --youtube-base-path 삭제가 침묵함. cross_repo={d['cross_repo']}"
     assert "--youtube-base-path" in removed[0]["details"]
     assert not [x for x in d["cross_repo"] if x["contract"].endswith("jobs.youtube_backfill")]
+
+
+class _SidecarWritable(Protocol):
+    def __setitem__(
+        self,
+        key: str,
+        value: str | list[str] | None,
+        /,
+    ) -> None: ...
+
+
+class _PublicSymbolFixture(TypedDict):
+    name: str
+    kind: str
+    sig: str | None
+    line: int
+
+
+class _VersionConstFixture(TypedDict):
+    value: str
+    line: int
+
+
+def _set_sidecar(module: _SidecarWritable, role: str | None,
+                 owns: list[str] | None = None,
+                 not_owns: list[str] | None = None,
+                 stage: str | None = None) -> None:
+    if stage is not None:
+        module["stage"] = stage
+    module["role"] = role
+    module["owns"] = [] if owns is None else owns
+    module["not_owns"] = [] if not_owns is None else not_owns
+
+
+def test_stage_only_sidecar_change_is_not_treated_as_unchanged() -> None:
+    # Given: public/version surface changes while the sidecar stage changes with it.
+    base = copy.deepcopy(BASE)
+    head = _head()
+    _set_sidecar(base["modules"][0], "역할", ["하나"], ["둘"], stage="action_logs")
+    _set_sidecar(head["modules"][0], "역할", ["하나"], ["둘"], stage="new_stage")
+    head["modules"][0]["stage"] = "new_stage"
+
+    # When: the delta compares the sidecar meaning.
+    delta = build_delta(base, head, CHANGED, pr=120, issue=None)
+
+    # Then: stage is part of the meaning, so this changed sidecar is fresh.
+    assert delta["sidecar_stale"] == []
+
+
+def test_parse_name_status_counts_only_exact_delete_and_deduplicates() -> None:
+    # Given: 실제 name-status에 삭제·rename·copy·수정 상태가 섞여 있다.
+    text = (
+        "D\tautoresearch/action_logs/removed.py\n"
+        "D\tautoresearch/action_logs/removed.py\n"
+        "R100\tautoresearch/action_logs/old.py\tautoresearch/action_logs/new.py\n"
+        "C100\tautoresearch/action_logs/source.py\tautoresearch/action_logs/copy.py\n"
+        "M\tautoresearch/action_logs/changed.py\n"
+    )
+
+    # When: name-status 사실을 삭제 집합으로 파싱한다.
+    deleted = delta_module.parse_name_status(text)
+
+    # Then: 정확히 D 상태만 중복 없이 삭제로 인정한다.
+    assert deleted == {"autoresearch/action_logs/removed.py"}
+
+
+def test_parse_numstat_nul_round_trips_unicode_paths_and_rename_copy() -> None:
+    # Given: 실제 git --numstat -z의 일반·rename/copy 레코드 바이트다.
+    modified_path = "autoresearch/action_logs/수정.py"
+    deleted_path = "autoresearch/action_logs/삭제.py"
+    rename_old = "autoresearch/action_logs/이름전.py"
+    rename_new = "autoresearch/action_logs/이름후.py"
+    copy_source = "autoresearch/action_logs/복사원본.py"
+    copy_target = "autoresearch/action_logs/복사본.py"
+    raw = (
+        f"1\t1\t{modified_path}\0"
+        f"0\t2\t{deleted_path}\0"
+        f"0\t0\t\0{rename_old}\0{rename_new}\0"
+        f"0\t0\t\0{copy_source}\0{copy_target}\0"
+    ).encode()
+
+    # When: NUL-delimited numstat를 파싱한다.
+    changed = delta_module.parse_numstat(raw)
+
+    # Then: UTF-8 POSIX 경로와 rename/copy 양쪽 경로가 그대로 보존된다.
+    assert changed == {
+        modified_path: 1,
+        deleted_path: 0,
+        rename_old: 0,
+        rename_new: 0,
+        copy_source: 0,
+        copy_target: 0,
+    }
+
+
+def test_parse_name_status_nul_counts_only_exact_unicode_delete() -> None:
+    # Given: 실제 git --name-status -z의 수정·삭제·rename·copy 바이트다.
+    modified_path = "autoresearch/action_logs/수정.py"
+    deleted_path = "autoresearch/action_logs/삭제.py"
+    raw = (
+        f"M\0{modified_path}\0"
+        f"D\0{deleted_path}\0"
+        "R100\0autoresearch/action_logs/이름전.py\0"
+        "autoresearch/action_logs/이름후.py\0"
+        "C100\0autoresearch/action_logs/복사원본.py\0"
+        "autoresearch/action_logs/복사본.py\0"
+    ).encode()
+
+    # When: NUL-delimited name-status를 삭제 사실로 파싱한다.
+    deleted = delta_module.parse_name_status(raw)
+
+    # Then: literal Unicode 경로의 exact D만 삭제이고 rename/copy는 제외된다.
+    assert deleted == {deleted_path}
+
+
+def test_public_and_version_changes_mark_missing_sidecar_stale() -> None:
+    # Given: public signature와 version constant가 바뀌었고 head sidecar가 없다.
+    d = _delta()
+
+    # When: delta의 stale 사실을 읽는다.
+    stale = d["sidecar_stale"]
+
+    # Then: 기존 빈 배열이 아니라 해당 POSIX 모듈 경로가 stale이다.
+    assert stale == ["autoresearch/action_logs/schema.py"]
+    assert all(set(item) == {"module", "name"} for item in d["breaking_signatures"])
+    assert all(isinstance(item["module"], str) and isinstance(item["name"], str)
+               for item in d["breaking_signatures"])
+
+
+def test_valid_to_missing_sidecar_is_stale() -> None:
+    # Given: base에는 valid sidecar가 있고 head에서는 sidecar가 사라졌다.
+    base = copy.deepcopy(BASE)
+    _set_sidecar(base["modules"][0], "같은 역할", ["하나"], ["둘"])
+    head = _head()
+
+    # When: public/version 변경을 delta로 계산한다.
+    d = build_delta(base, head, CHANGED, pr=120, issue=None)
+
+    # Then: head sidecar 부재는 stale이다.
+    assert d["sidecar_stale"] == ["autoresearch/action_logs/schema.py"]
+
+
+def test_meaningful_sidecar_change_is_fresh() -> None:
+    # Given: public/version 변경과 함께 sidecar 의미값이 달라졌다.
+    base = copy.deepcopy(BASE)
+    _set_sidecar(base["modules"][0], "이전 역할", ["하나"], ["둘"])
+    head = _head()
+    _set_sidecar(head["modules"][0], "새 역할", ["셋"], ["넷"])
+
+    # When: delta를 계산한다.
+    d = build_delta(base, head, CHANGED, pr=120, issue=None)
+
+    # Then: 의미 있는 갱신은 stale를 해소한다.
+    assert d["sidecar_stale"] == []
+
+
+def test_reorder_and_comment_only_sidecar_change_is_stale(tmp_path) -> None:
+    # Given: public signature가 바뀌지만 sidecar는 주석·포맷·목록 순서만 바뀐다.
+    base_root, head_root = tmp_path / "base_repo", tmp_path / "head_repo"
+    _write_module(base_root, "autoresearch/action_logs/daily.py",
+                  '__arch__ = {\n'
+                  '    "stage": "action_logs", "role": "역할",\n'
+                  '    "owns": ["하나", "둘"], "not_owns": ["셋"],\n'
+                  '}\n'
+                  'def run(request):\n'
+                  '    return request\n')
+    _write_module(head_root, "autoresearch/action_logs/daily.py",
+                  '# 설명 주석만 바뀜\n'
+                  '__arch__={"stage": "action_logs",  # 인라인 주석\n'
+                  '          "role": "역할", "owns": ["둘", "하나"], '
+                  '"not_owns": ["셋"]}\n'
+                  'def run(request, optional=None):\n'
+                  '    return request\n')
+    base = build_architecture(base_root, "Autoresearch", "base_sha", "")
+    head = build_architecture(head_root, "Autoresearch", "head_sha", "")
+
+    # When: 실제 manifest 사실로 delta를 계산한다.
+    d = build_delta(base, head, {"autoresearch/action_logs/daily.py": 2}, pr=187, issue=None)
+
+    # Then: sidecar 의미값 동일이므로 stale이다.
+    assert d["sidecar_stale"] == ["autoresearch/action_logs/daily.py"]
+
+
+def test_private_only_body_change_is_fresh(tmp_path) -> None:
+    # Given: private 함수 본문만 바뀌고 public/version surface는 동일하다.
+    base_root, head_root = tmp_path / "base_repo", tmp_path / "head_repo"
+    _write_module(base_root, "autoresearch/action_logs/daily.py",
+                  '__arch__ = {"stage": "action_logs", "role": "역할", '
+                  '"owns": ["하나"], "not_owns": []}\n'
+                  'def _private():\n'
+                  '    return 1\n')
+    _write_module(head_root, "autoresearch/action_logs/daily.py",
+                  '__arch__ = {"stage": "action_logs", "role": "역할", '
+                  '"owns": ["하나"], "not_owns": []}\n'
+                  'def _private():\n'
+                  '    return 2\n')
+    base = build_architecture(base_root, "Autoresearch", "base_sha", "")
+    head = build_architecture(head_root, "Autoresearch", "head_sha", "")
+
+    # When: private-only change를 delta로 계산한다.
+    d = build_delta(base, head, {"autoresearch/action_logs/daily.py": 1}, pr=187, issue=None)
+
+    # Then: public/version trigger가 없으므로 fresh이다.
+    assert d["sidecar_stale"] == []
+
+
+@pytest.mark.parametrize(
+    ("public_symbols", "version_consts", "role", "expected_stale"),
+    [
+        ([{"name": "new_public", "kind": "function", "sig": "()", "line": 1}],
+         {}, None, True),
+        ([{"name": "new_public", "kind": "function", "sig": "()", "line": 1}],
+         {}, "신규 역할", False),
+        ([], {"NEW_VERSION": {"value": "v1", "line": 1}}, None, True),
+        ([], {}, None, False),
+    ],
+)
+def test_new_module_public_missing_valid_and_private_only(
+    public_symbols: list[_PublicSymbolFixture],
+    version_consts: dict[str, _VersionConstFixture],
+    role: str | None,
+    expected_stale: bool,
+) -> None:
+    # Given: public surface가 있는 신규 모듈 또는 private-only 신규 모듈이다.
+    path = "autoresearch/action_logs/new.py"
+    head = _head()
+    module = {
+        "id": "action_logs.new", "stage": "action_logs", "path": path,
+        "role": None, "owns": [], "not_owns": [],
+        "public_symbols": public_symbols,
+        "version_consts": version_consts,
+        "schema_fields": {}, "imports": [],
+    }
+    _set_sidecar(module, role)
+    head["modules"].append(module)
+    changed = dict(CHANGED)
+    changed[path] = 1
+
+    # When: 신규 모듈 delta를 계산한다.
+    d = build_delta(BASE, head, changed, pr=187, issue=None)
+
+    # Then: public 신규 missing만 stale이고 valid/private-only는 fresh이다.
+    assert (path in d["sidecar_stale"]) is expected_stale
+
+
+def test_actual_delete_excludes_module_from_stale() -> None:
+    # Given: manifest에서는 public 모듈이 사라졌지만 name-status가 실제 D를 증명한다.
+    head = copy.deepcopy(_head())
+    head["modules"] = []
+    path = "autoresearch/action_logs/schema.py"
+    deleted = delta_module.parse_name_status(f"D\t{path}\n")
+
+    # When: 실제 삭제 집합을 함께 전달한다.
+    d = build_delta(BASE, head, {path: 0}, pr=187, issue=None, deleted_paths=deleted)
+
+    # Then: 삭제된 파일은 sidecar stale 계산에서 제외한다.
+    assert d["sidecar_stale"] == []
+
+
+def test_retained_public_to_private_transition_is_stale() -> None:
+    # Given: 파일은 manifest에 남아 있으나 마지막 public/version surface가 사라졌다.
+    head = copy.deepcopy(BASE)
+    _set_sidecar(head["modules"][0], "역할", ["하나"], [])
+    head["modules"][0]["public_symbols"] = []
+    head["modules"][0]["version_consts"] = {}
+    base = copy.deepcopy(BASE)
+    _set_sidecar(base["modules"][0], "역할", ["하나"], [])
+
+    # When: 파일 삭제 증거 없이 delta를 계산한다.
+    d = build_delta(base, head, {"autoresearch/action_logs/schema.py": 1}, pr=187, issue=None)
+
+    # Then: retained public-to-private transition은 stale이다.
+    assert d["sidecar_stale"] == ["autoresearch/action_logs/schema.py"]
+
+
+def test_rename_and_copy_are_not_actual_deletions() -> None:
+    # Given: name-status가 rename/copy만 보고한다.
+    text = (
+        "R100\tautoresearch/action_logs/old.py\tautoresearch/action_logs/new.py\n"
+        "C100\tautoresearch/action_logs/source.py\tautoresearch/action_logs/copy.py\n"
+    )
+
+    # When: 삭제 집합으로 파싱한다.
+    deleted = delta_module.parse_name_status(text)
+
+    # Then: 기존 rename/copy 판정을 삭제로 오인하지 않는다.
+    assert deleted == set()
+
+
+def test_stale_paths_are_sorted_and_unique() -> None:
+    # Given: 두 모듈이 public surface를 바꾸고 입력 changed 순서는 역순이다.
+    base = copy.deepcopy(BASE)
+    extra_path = "autoresearch/action_logs/aaa.py"
+    extra = copy.deepcopy(BASE["modules"][0])
+    extra["id"] = "action_logs.aaa"
+    extra["path"] = extra_path
+    extra["public_symbols"] = [{"name": "extra", "kind": "function",
+                                 "sig": "(value)", "line": 1}]
+    extra["version_consts"] = {}
+    extra["schema_fields"] = {}
+    extra["imports"] = []
+    base["modules"].append(extra)
+    head = copy.deepcopy(base)
+    head["modules"][0]["public_symbols"][0]["sig"] = "(request, generator, required)"
+    head["modules"][1]["public_symbols"][0]["sig"] = "(value, required)"
+    changed = {extra_path: 2, "autoresearch/action_logs/schema.py": 2}
+
+    # When: stale 목록을 계산한다.
+    d = build_delta(base, head, changed, pr=187, issue=None)
+
+    # Then: POSIX 사전순·중복 제거 계약을 지킨다.
+    assert d["sidecar_stale"] == [extra_path, "autoresearch/action_logs/schema.py"]
+    assert d["sidecar_stale"] == sorted(set(d["sidecar_stale"]))
