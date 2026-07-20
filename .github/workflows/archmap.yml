@@ -28,6 +28,8 @@ jobs:
           # head.json 의 revision 라벨과 실제 스캔 트리가 어긋난다.
           # head sha 를 명시해 실제 PR 변경분만 스캔하도록 고정한다.
           ref: ${{ github.event.pull_request.head.sha }}
+          # 0은 모든 브랜치·태그의 전체 이력을 fetch하므로 아래 base.sha와
+          # head.sha 모두 merge-base 계산에 사용할 수 있다.
           fetch-depth: 0
 
       - uses: actions/setup-python@v5

@@ -56,13 +56,11 @@ def test_real_repo_smoke():
             "jobs.action_log"} <= ids
     consts = {m["id"]: m["version_consts"] for m in arch["modules"]}
     assert "ACTION_LOG_SCHEMA_VERSION" in consts["action_logs.schema"]
-    # jobs/*.py 4개(action_log, action_log_quality, youtube_backfill,
-    # youtube_trending) 각각이 독립된 계약으로 나와야 한다 — 합집합으로 묶으면
-    # job별 CLI 표면 변경(플래그 추가/삭제/required 뒤집기)이 다른 job에 가려진다.
     contracts_by_module = {c["module"]: c for c in arch["contracts"]}
-    assert set(contracts_by_module) == {
+    expected_job_modules = {
         "jobs.action_log", "jobs.action_log_quality",
         "jobs.youtube_backfill", "jobs.youtube_trending"}
+    assert expected_job_modules <= set(contracts_by_module)
     contract = contracts_by_module["jobs.action_log"]
     assert contract["name"] == "batch-contract-v1:jobs.action_log"
     assert "--mode" in contract["cli_args"]

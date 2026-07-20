@@ -55,9 +55,9 @@ def parse_numstat(text: str) -> dict[str, int]:
     그래서 rename 줄은 old 경로(추가줄수 0)와 new 경로(실제 추가줄수) 둘 다 changed에
     넣는다 — "삭제 + 추가"로 펼치면 build_delta의 기존 로직이 자연히 old 경로만 있는
     base 모듈을 삭제(모든 심볼 removed + breaking_signatures)로, new 경로만 있는 head
-    모듈을 추가로 잡는다. 이것은 은폐가 아니라 진실이다: 모듈 경로가 바뀌면 그것을
-    import하던 쪽에는 실제로 breaking 변경이므로, rename을 삭제+추가로 보고하는 것이
-    정직한 판정이다.
+    모듈을 추가로 잡는다. Phase 0은 외부 import 여부를 판별할 수 없으므로 내부 모듈도
+    같은 보수적 정책을 적용한다. 모듈 경로를 import하던 소비자가 깨질 가능성을 숨기지
+    않기 위해 rename을 삭제+추가로 보고한다.
     """
     changed: dict[str, int] = {}
     for line in text.splitlines():
@@ -197,9 +197,8 @@ def build_delta(base: dict, head: dict, changed: dict[str, int],
     for c in head["contracts"]:
         old = base_contracts.get(c["name"])
         if old is None:
-            cross_repo.append({"contract": c["name"], "impact": "contract-renamed",
-                               "breaking": True,
-                               "details": "base에 없는 계약 이름 — 이름 변경 여부를 확인하십시오"})
+            cross_repo.append({"contract": c["name"], "impact": "contract-added",
+                               "breaking": False, "details": "새 계약이 추가됨"})
             continue
         added = [a for a in c["cli_args"] if a not in old["cli_args"]]
         removed = [a for a in old["cli_args"] if a not in c["cli_args"]]

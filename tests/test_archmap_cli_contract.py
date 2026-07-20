@@ -25,6 +25,7 @@ def test_extracts_flags_in_source_order_dedup_with_required():
         {"flag": "--mode", "required": True},
         {"flag": "--partition-date", "required": True},
         {"flag": "--max-users", "required": False},
+        {"flag": "positional_arg", "required": True},
         {"flag": "--seed", "required": False},
         {"flag": "--mode2", "required": True},
     ]
@@ -43,3 +44,27 @@ def test_short_alias_before_long_flag_still_picks_long_flag():
 
 def test_no_parser_returns_empty():
     assert extract_cli_args("x = 1\n") == []
+
+
+def test_positional_nargs_controls_required_contract():
+    # Given: 필수·선택 위치 인자가 섞인 argparse 계약이다.
+    source = textwrap.dedent('''
+        import argparse
+        p = argparse.ArgumentParser()
+        p.add_argument("input_dir")
+        p.add_argument("output_dir", nargs="?")
+        p.add_argument("filters", nargs="*")
+        p.add_argument("targets", nargs="+")
+        p.add_argument("-v")
+    ''')
+
+    # When: 공개 CLI 계약을 추출한다.
+    extracted = extract_cli_args(source)
+
+    # Then: 위치 인자는 보존되고 실제 선택 가능한 nargs만 선택으로 분류된다.
+    assert extracted == [
+        {"flag": "input_dir", "required": True},
+        {"flag": "output_dir", "required": False},
+        {"flag": "filters", "required": False},
+        {"flag": "targets", "required": True},
+    ]
