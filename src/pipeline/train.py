@@ -71,6 +71,7 @@ def main(
     test_size: float = None,
     val_size: float = None,
     random_state: int = None,
+    extra_params: dict = None,
 ):
     project_root = get_project_root()
     if config_path is None:
@@ -165,19 +166,22 @@ def main(
         else:
             print(f"  [OK] 고정값: {scale_pos_weight}")
 
-        log_parameters(
-            {
-                "model_type": "LightGBM",
-                "n_estimators": config["model"]["n_estimators"],
-                "learning_rate": config["model"]["learning_rate"],
-                "num_leaves": config["model"]["num_leaves"],
-                "scale_pos_weight": scale_pos_weight,
-                "random_state": random_state,
-                "train_size": len(train_df),
-                "val_size": len(val_df),
-                "test_size": len(test_df),
-            }
-        )
+        params = {
+            "model_type": "LightGBM",
+            "n_estimators": config["model"]["n_estimators"],
+            "learning_rate": config["model"]["learning_rate"],
+            "num_leaves": config["model"]["num_leaves"],
+            "scale_pos_weight": scale_pos_weight,
+            "random_state": random_state,
+            "train_size": len(train_df),
+            "val_size": len(val_df),
+            "test_size": len(test_df),
+        }
+        if extra_params:
+            # 데이터 소스 계보(예: events_source/events_start_date/events_end_date)를
+            # run에 남겨서, 어떤 기간의 데이터로 학습했는지 항상 조회 가능하게 한다.
+            params.update(extra_params)
+        log_parameters(params)
 
         print("\n[Step 6] LightGBM 모델 훈련...")
         model = LGBMModel(
