@@ -194,3 +194,50 @@ def test_round_output_feeds_retraining_path(tmp_path, stub_reranker):
     impressions = len(model_long[model_long["event_type"] == "impression"])
     assert len(wide) == impressions
     assert wide["clicked"].sum() >= 1  # target_ctr=0.2로 클릭이 존재
+
+
+def test_render_report_html_contains_policies_and_values():
+    from src.pipeline.report_html import render_report_html
+
+    report = {
+        "policy_version": "run-x", "k": 10, "exploration_ratio": 0.1,
+        "target_ctr": 0.02, "seed": 42, "users": 100,
+        "skipped_users": [], "dropped_exposures_without_judgment": 0,
+        "overlap_jaccard_mean": 0.25, "unseen_category_counts": {},
+        "quarantined_chunks": 0,
+        "policies": {
+            "baseline": {"impressions": 1000, "clicks": 15, "ctr": 0.015,
+                          "mean_click_propensity": 0.31,
+                          "exploration_impressions": 0, "exploration_clicks": 0},
+            "model": {"impressions": 1000, "clicks": 25, "ctr": 0.025,
+                       "mean_click_propensity": 0.44,
+                       "exploration_impressions": 100, "exploration_clicks": 2},
+        },
+    }
+    html = render_report_html(report)
+    assert "<!doctype html>" in html.lower()
+    assert "baseline" in html and "model" in html
+    assert "2.50%" in html and "1.50%" in html  # 정책별 CTR
+    assert "run-x" in html
+    assert "<table" in html  # 접근성용 데이터 테이블
+    assert "http" not in html.split("</head>")[0]  # head에 외부 리소스 없음
+
+
+def test_round_writes_html_report(tmp_path, stub_reranker):
+    main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        target_ctr=0.2,
+        seed=42,
+        policy_version="stub-run",
+        output_dir=str(tmp_path),
+    )
+    html_path = tmp_path / "policy_round_report.html"
+    assert html_path.is_file()
+    assert "stub-run" in html_path.read_text(encoding="utf-8")

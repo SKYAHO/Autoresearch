@@ -53,6 +53,7 @@ from src.features.assembly import (
     compute_video_features,
 )
 from src.pipeline.policy_selector import Exposure, select_exposures
+from src.pipeline.report_html import render_report_html
 from src.serving.model_loader import (
     load_model_settings_from_environment,
     load_reranker,
@@ -296,6 +297,10 @@ def main(
     }
     report_path = Path(output_dir) / "policy_round_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    html_path = Path(output_dir) / "policy_round_report.html"
+    html_path.write_text(render_report_html(report), encoding="utf-8")
+
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return report
 

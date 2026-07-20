@@ -105,8 +105,7 @@ CLI 인자로 노출하되 기본값은 다음과 같다.
 
 ## 평가 리포트
 
-라운드 종료 시 stdout + JSON 파일로 남기고, 핵심 수치는 MLflow run으로도
-기록한다(학습 run과 동일 experiment 관례).
+라운드 종료 시 stdout + JSON 파일 + **자기완결 HTML 리포트**(`policy_round_report.html`, 외부 의존성 없는 인라인 차트)로 남기고, 핵심 수치는 MLflow run으로도 기록한다(학습 run과 동일 experiment 관례).
 
 | 지표 | 의미 |
 | --- | --- |
