@@ -11,13 +11,13 @@ from datetime import datetime
 import duckdb
 import pandas as pd
 
+from src.features.category_reference import CATEGORY_DESCRIPTIONS
 from src.features.feature_builder import (
     compute_historical_category_match,
     compute_preferred_category_match,
     compute_topic_similarity,
     embed_keywords,
 )
-from src.features.category_reference import CATEGORY_DESCRIPTIONS
 
 KEYWORD_TO_CATEGORY = {
     "gaming": "Gaming",

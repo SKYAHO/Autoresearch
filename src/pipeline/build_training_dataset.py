@@ -23,7 +23,6 @@ NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeli
 
 import os
 import sys
-import json
 import duckdb
 import pandas as pd
 from datetime import datetime, timedelta
@@ -52,8 +51,6 @@ from src.features.assembly import (  # noqa: E402
     compute_point_in_time_user_features,
     compute_user_offline_features,
     compute_video_features,
-    derive_preferred_category,
-    extract_keywords_safe,
 )
 
 
@@ -370,7 +367,6 @@ def main(
     con = duckdb.connect()
     con.register("videos_raw", videos)
     con.register("personas_raw", personas)
-    con.register("event_log", events)
 
     snapshot_date = datetime.now().strftime("%Y-%m-%d")
 
