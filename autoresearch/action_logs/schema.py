@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 ACTION_LOG_SCHEMA_VERSION = "action_log_schema_v1"
 PROMPT_VERSION = "action_log_ctr_v4"
 SOURCE_HISTORICAL = "historical"
+SOURCE_ONLINE_SIMULATED = "online_simulated"
 QuarantineErrorType = Literal["api_error", "invalid_json", "schema_fail"]
 
 
@@ -49,6 +50,12 @@ class EventLog(BaseModel):
     watch_time_sec: int | None = None
     rank: int | None = None
     source: Literal["historical", "online_simulated"] = SOURCE_HISTORICAL
+    # 정책 시뮬레이션 라운드 메타데이터 (docs/specs/2026-07-20-policy-simulation-round.md).
+    # 전부 optional — 기존 historical 로그와 하위 호환.
+    policy: Literal["baseline", "model"] | None = None
+    ctr_score: float | None = None
+    is_exploration: bool | None = None
+    policy_version: str | None = None
 
     @model_validator(mode="after")
     def watch_time_only_for_view(self) -> "EventLog":
@@ -73,6 +80,10 @@ class EventLog(BaseModel):
             "watch_time_sec": self.watch_time_sec,
             "rank": self.rank,
             "source": self.source,
+            "policy": self.policy,
+            "ctr_score": self.ctr_score,
+            "is_exploration": self.is_exploration,
+            "policy_version": self.policy_version,
         }
 
 

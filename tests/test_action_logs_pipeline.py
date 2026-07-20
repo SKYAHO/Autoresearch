@@ -185,6 +185,7 @@ def test_parquet_matches_events(tmp_path):
     assert set(warehouse[0]) == {
         "event_id", "event_timestamp", "user_id", "event_type",
         "video_id", "watch_time_sec", "rank", "source",
+        "policy", "ctr_score", "is_exploration", "policy_version",
     }
 
 
