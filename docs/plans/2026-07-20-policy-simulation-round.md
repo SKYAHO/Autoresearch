@@ -34,8 +34,9 @@ tests/test_features_assembly.py          # 신규 (Task 1)
 tests/test_action_logs_schema_policy.py  # 신규 (Task 2)
 tests/test_action_logs_pipeline.py       # 수정: seam·메타 테스트 추가 (Task 3, 4)
 tests/test_policy_selector.py            # 신규 (Task 5)
-tests/test_simulate_policy_round.py      # 신규 (Task 6, 7)
-docs/specs/2026-07-20-policy-simulation-round.md  # 수정: manifest→리포트 JSON 문구 (Task 6)
+tests/test_simulate_policy_round.py      # 신규 (Task 6, 7, 8)
+src/pipeline/report_html.py              # 신규: 자기완결 HTML 리포트 렌더러 (Task 8)
+docs/specs/2026-07-20-policy-simulation-round.md  # 수정: manifest→리포트 JSON 문구 (Task 6), HTML 리포트 산출물 추가 (Task 8)
 ```
 
 ---
@@ -1620,9 +1621,291 @@ git push -u origin feat/195-policy-simulation-round
 
 ---
 
+### Task 8: 자기완결 HTML 리포트 (`src/pipeline/report_html.py`)
+
+라운드 리포트를 브라우저로 바로 열어볼 수 있는 단일 HTML 파일로 렌더링한다. 외부 의존성·네트워크 요청 없이 stdlib만 사용한다 (matplotlib 미도입).
+
+**시각화 설계 (dataviz 스킬 적용 결과 — 구현 시 그대로 따를 것):**
+- 정책 2개 = 카테고리 2색. baseline=파랑(`#2a78d6` light / `#3987e5` dark), model=초록(`#008300` 양 모드 공통). 이 조합은 dataviz validator로 light/dark 모두 전 항목 PASS 검증 완료(CVD ΔE 26.5+/27.3+, 대비 3:1 이상) — **색을 바꾸려면 재검증 필수**.
+- 차트당 축 1개 원칙: CTR 비교와 평균 propensity 비교는 스케일이 다르므로 **별도 미니 차트 2개**로 분리한다 (이중축 금지).
+- 막대는 가로 div 막대(트랙+채움), 데이터 끝만 4px 라운드, 막대 사이 2px 간격, 값은 막대 옆 텍스트 토큰 색으로 직접 라벨.
+- 색은 항상 범례 칩+정책명 텍스트와 동반 (색 단독 식별 금지). 다크 모드는 `prefers-color-scheme` + `:root[data-theme]` 이중 스코프.
+- 접근성: 전체 수치의 데이터 테이블을 차트 아래 포함.
+
+**Files:**
+- Create: `src/pipeline/report_html.py`
+- Modify: `src/pipeline/simulate_policy_round.py` (`main()` 6단계 리포트 저장부에 HTML 쓰기 1줄 + import)
+- Modify: `docs/specs/2026-07-20-policy-simulation-round.md` (평가 리포트 절에 HTML 산출물 1문장 추가)
+- Test: `tests/test_simulate_policy_round.py` (테스트 추가)
+
+**Interfaces:**
+- Consumes: Task 6의 리포트 dict 구조 (`policies.{baseline,model}.{impressions,clicks,ctr,mean_click_propensity,exploration_impressions,exploration_clicks}`, `overlap_jaccard_mean`, `users`, `policy_version`, `k`, `exploration_ratio`, `target_ctr`)
+- Produces: `render_report_html(report: dict) -> str` — 완전한 단일 HTML 문서 문자열
+
+- [ ] **Step 1: 실패하는 테스트 추가** — `tests/test_simulate_policy_round.py` 말미에
+
+```python
+def test_render_report_html_contains_policies_and_values():
+    from src.pipeline.report_html import render_report_html
+
+    report = {
+        "policy_version": "run-x", "k": 10, "exploration_ratio": 0.1,
+        "target_ctr": 0.02, "seed": 42, "users": 100,
+        "skipped_users": [], "dropped_exposures_without_judgment": 0,
+        "overlap_jaccard_mean": 0.25, "unseen_category_counts": {},
+        "quarantined_chunks": 0,
+        "policies": {
+            "baseline": {"impressions": 1000, "clicks": 15, "ctr": 0.015,
+                          "mean_click_propensity": 0.31,
+                          "exploration_impressions": 0, "exploration_clicks": 0},
+            "model": {"impressions": 1000, "clicks": 25, "ctr": 0.025,
+                       "mean_click_propensity": 0.44,
+                       "exploration_impressions": 100, "exploration_clicks": 2},
+        },
+    }
+    html = render_report_html(report)
+    assert "<!doctype html>" in html.lower()
+    assert "baseline" in html and "model" in html
+    assert "2.50%" in html and "1.50%" in html  # 정책별 CTR
+    assert "run-x" in html
+    assert "<table" in html  # 접근성용 데이터 테이블
+    assert "http" not in html.split("</head>")[0]  # head에 외부 리소스 없음
+
+
+def test_round_writes_html_report(tmp_path, stub_reranker):
+    main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        target_ctr=0.2,
+        seed=42,
+        policy_version="stub-run",
+        output_dir=str(tmp_path),
+    )
+    html_path = tmp_path / "policy_round_report.html"
+    assert html_path.is_file()
+    assert "stub-run" in html_path.read_text(encoding="utf-8")
+```
+
+- [ ] **Step 2: 실패 확인**
+
+Run: `uv run python -m pytest tests/test_simulate_policy_round.py::test_render_report_html_contains_policies_and_values -v`
+Expected: FAIL — `ModuleNotFoundError: No module named 'src.pipeline.report_html'`
+
+- [ ] **Step 3: 구현** — `src/pipeline/report_html.py`
+
+```python
+"""정책 시뮬레이션 라운드 리포트의 자기완결 HTML 렌더러.
+
+외부 의존성·네트워크 요청 없이 stdlib만으로 스탯 타일·가로 막대 비교·데이터
+테이블을 가진 단일 HTML 문서를 만든다. 팔레트(baseline 파랑/model 초록)는
+dataviz validator로 light/dark 모두 검증 완료 — 색 변경 시 재검증할 것.
+"""
+
+from __future__ import annotations
+
+from html import escape
+
+_CSS = """
+:root {
+  color-scheme: light;
+  --surface: #fcfcfb; --card: #ffffff; --border: #e4e3df;
+  --text-primary: #0b0b0b; --text-secondary: #52514e;
+  --series-baseline: #2a78d6; --series-model: #008300;
+  --track: #eeede9;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface: #1a1a19; --card: #232322; --border: #3a3a38;
+    --text-primary: #ffffff; --text-secondary: #c3c2b7;
+    --series-baseline: #3987e5; --series-model: #008300;
+    --track: #2e2e2c;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface: #1a1a19; --card: #232322; --border: #3a3a38;
+  --text-primary: #ffffff; --text-secondary: #c3c2b7;
+  --series-baseline: #3987e5; --series-model: #008300;
+  --track: #2e2e2c;
+}
+* { box-sizing: border-box; }
+body { margin: 0; padding: 24px; background: var(--surface); color: var(--text-primary);
+       font: 14px/1.5 system-ui, sans-serif; }
+h1 { font-size: 20px; margin: 0 0 4px; }
+.meta { color: var(--text-secondary); margin-bottom: 20px; }
+.tiles { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }
+.tile { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+        padding: 12px 16px; min-width: 140px; }
+.tile .label { color: var(--text-secondary); font-size: 12px; }
+.tile .value { font-size: 24px; font-weight: 600; }
+.chart { background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+         padding: 16px; margin-bottom: 16px; max-width: 640px; }
+.chart h2 { font-size: 14px; margin: 0 0 12px; }
+.row { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+.row .name { width: 90px; color: var(--text-secondary); flex-shrink: 0; }
+.row .track { flex: 1; background: var(--track); height: 20px; border-radius: 0 4px 4px 0; }
+.row .fill { height: 100%; border-radius: 0 4px 4px 0; min-width: 2px; }
+.row .val { width: 70px; text-align: right; font-variant-numeric: tabular-nums; }
+.fill.baseline { background: var(--series-baseline); }
+.fill.model { background: var(--series-model); }
+.legend { display: flex; gap: 16px; margin: 4px 0 16px; color: var(--text-secondary); font-size: 12px; }
+.chip { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
+table { border-collapse: collapse; margin-top: 8px; }
+th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+"""
+
+
+def _pct(value: float) -> str:
+    """0.025 → '2.50%' 표기."""
+    return f"{value * 100:.2f}%"
+
+
+def _bar_rows(values: dict[str, float], fmt) -> str:
+    """정책별 가로 막대 행 HTML. 최대값 기준 폭, 값은 직접 라벨."""
+    vmax = max(values.values()) or 1.0
+    rows = []
+    for policy, value in values.items():
+        width = max(1.0, value / vmax * 100)
+        rows.append(
+            f'<div class="row" title="{escape(policy)}: {escape(fmt(value))}">'
+            f'<span class="name">{escape(policy)}</span>'
+            f'<span class="track"><span class="fill {escape(policy)}" '
+            f'style="width:{width:.1f}%"></span></span>'
+            f'<span class="val">{escape(fmt(value))}</span></div>'
+        )
+    return "".join(rows)
+
+
+def render_report_html(report: dict) -> str:
+    """리포트 dict를 자기완결 HTML 문서 문자열로 렌더링한다."""
+    policies = report["policies"]
+    baseline, model = policies["baseline"], policies["model"]
+    legend = (
+        '<div class="legend">'
+        '<span><span class="chip" style="background:var(--series-baseline)"></span>baseline</span>'
+        '<span><span class="chip" style="background:var(--series-model)"></span>model</span>'
+        "</div>"
+    )
+    lift = model["ctr"] - baseline["ctr"]
+    explo_imps = model["exploration_impressions"]
+    explo_ctr = model["exploration_clicks"] / explo_imps if explo_imps else 0.0
+    tiles = "".join(
+        f'<div class="tile"><div class="label">{escape(label)}</div>'
+        f'<div class="value">{escape(value)}</div></div>'
+        for label, value in (
+            ("model CTR", _pct(model["ctr"])),
+            ("baseline CTR", _pct(baseline["ctr"])),
+            ("CTR lift", f"{'+' if lift >= 0 else ''}{_pct(lift)}"),
+            ("노출 겹침 (Jaccard)", f"{report['overlap_jaccard_mean']:.2f}"),
+            ("유저 수", str(report["users"])),
+        )
+    )
+    table_rows = "".join(
+        f"<tr><td>{escape(name)}</td><td>{p['impressions']}</td><td>{p['clicks']}</td>"
+        f"<td>{escape(_pct(p['ctr']))}</td><td>{p['mean_click_propensity']:.4f}</td>"
+        f"<td>{p['exploration_impressions']}</td><td>{p['exploration_clicks']}</td></tr>"
+        for name, p in policies.items()
+    )
+    return f"""<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>정책 시뮬레이션 라운드 리포트</title>
+<style>{_CSS}</style>
+</head>
+<body>
+<h1>정책 시뮬레이션 라운드 리포트</h1>
+<div class="meta">policy_version={escape(str(report["policy_version"]))} ·
+k={report["k"]} · ε={report["exploration_ratio"]} · target_ctr={report["target_ctr"]} ·
+seed={report["seed"]}</div>
+<div class="tiles">{tiles}</div>
+{legend}
+<div class="chart"><h2>정책별 CTR (합동 정규화 후)</h2>
+{_bar_rows({"baseline": baseline["ctr"], "model": model["ctr"]}, _pct)}</div>
+<div class="chart"><h2>정책별 평균 click propensity (정규화 전 raw)</h2>
+{_bar_rows({"baseline": baseline["mean_click_propensity"], "model": model["mean_click_propensity"]}, lambda v: f"{v:.4f}")}</div>
+<div class="chart"><h2>데이터 테이블</h2>
+<table>
+<tr><th>policy</th><th>impressions</th><th>clicks</th><th>CTR</th>
+<th>mean propensity</th><th>explo imps</th><th>explo clicks</th></tr>
+{table_rows}
+</table>
+<p class="meta">exploration CTR (model): {escape(_pct(explo_ctr))} ·
+skipped users: {len(report["skipped_users"])} ·
+dropped exposures: {report["dropped_exposures_without_judgment"]} ·
+quarantined chunks: {report["quarantined_chunks"]}</p></div>
+</body>
+</html>
+"""
+```
+
+`simulate_policy_round.py` `main()`의 리포트 저장부(`report_path.write_text` 직후)에 추가:
+
+```python
+    from src.pipeline.report_html import render_report_html  # 파일 상단 import로 이동
+
+    html_path = Path(output_dir) / "policy_round_report.html"
+    html_path.write_text(render_report_html(report), encoding="utf-8")
+```
+
+(import는 파일 상단 import 블록에 배치한다.)
+
+- [ ] **Step 4: 통과 확인 + 렌더 확인**
+
+Run: `uv run python -m pytest tests/test_simulate_policy_round.py -v`
+Expected: 전부 PASS (6건). 이후 실제 눈 확인: 스모크 테스트가 남긴 HTML을 열어 라벨 겹침·오버플로 없는지 본다 —
+
+```bash
+uv run python - <<'EOF'
+from src.pipeline.report_html import render_report_html
+report = {"policy_version": "sample", "k": 10, "exploration_ratio": 0.1, "target_ctr": 0.02,
+          "seed": 42, "users": 100, "skipped_users": [], "dropped_exposures_without_judgment": 0,
+          "overlap_jaccard_mean": 0.25, "unseen_category_counts": {}, "quarantined_chunks": 0,
+          "policies": {"baseline": {"impressions": 1000, "clicks": 15, "ctr": 0.015,
+                                     "mean_click_propensity": 0.31, "exploration_impressions": 0,
+                                     "exploration_clicks": 0},
+                        "model": {"impressions": 1000, "clicks": 25, "ctr": 0.025,
+                                   "mean_click_propensity": 0.44, "exploration_impressions": 100,
+                                   "exploration_clicks": 2}}}
+open("/tmp/sample_report.html", "w").write(render_report_html(report))
+print("saved /tmp/sample_report.html")
+EOF
+```
+
+- [ ] **Step 5: spec에 HTML 산출물 반영**
+
+`docs/specs/2026-07-20-policy-simulation-round.md` 평가 리포트 절 첫 문단을 다음으로 교체:
+
+> 라운드 종료 시 stdout + JSON 파일 + **자기완결 HTML 리포트**(`policy_round_report.html`, 외부 의존성 없는 인라인 차트)로 남기고, 핵심 수치는 MLflow run으로도 기록한다(학습 run과 동일 experiment 관례).
+
+- [ ] **Step 6: 전체 스위트 + 커밋 + push**
+
+```bash
+uv run python -m pytest -v
+git add src/pipeline/report_html.py src/pipeline/simulate_policy_round.py tests/test_simulate_policy_round.py docs/specs/2026-07-20-policy-simulation-round.md
+git commit -m "feat: 정책 라운드 자기완결 HTML 리포트 렌더러 추가 (#195)
+
+stdlib만으로 스탯 타일·정책별 막대 비교·데이터 테이블을 렌더링.
+팔레트는 dataviz validator light/dark 검증 통과 색상만 사용.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
+git push origin feat/195-policy-simulation-round
+```
+
+---
+
 ## Self-Review 결과
 
-- **Spec coverage:** 피처 조립 공용화(Task 1), 정책 선택기(Task 5), 배치 진입점·리포트(Task 6), provider seam(Task 3), 스키마 확장(Task 2), 합동 정규화(Task 4·6), 테스트 5종(Task 1·2·5·6·7), 에러 처리(fail-fast는 Task 6 `load_reranker` 최상단, 유저 격리는 `skipped_users`, LLM chunk 격리는 기존 기계) — 전부 매핑됨. spec의 shard manifest 확장은 Task 6 Step 5에서 리포트 JSON 기록으로 정정.
+- **Spec coverage:** 피처 조립 공용화(Task 1), 정책 선택기(Task 5), 배치 진입점·리포트(Task 6), provider seam(Task 3), 스키마 확장(Task 2), 합동 정규화(Task 4·6), 테스트 5종(Task 1·2·5·6·7), 에러 처리(fail-fast는 Task 6 `load_reranker` 최상단, 유저 격리는 `skipped_users`, LLM chunk 격리는 기존 기계), HTML 리포트 시각화(Task 8 — spec 평가 리포트 절도 함께 갱신) — 전부 매핑됨. spec의 shard manifest 확장은 Task 6 Step 5에서 리포트 JSON 기록으로 정정.
 - **Type consistency:** `select_exposures→list[Exposure]`(Task 5)를 Task 6이 동일 시그니처로 소비. `ExposureMetadata`(Task 4)·`normalize_clicks`(Task 4)·`candidate_provider`(Task 3)의 이름·시그니처가 Task 6 코드와 일치함을 확인.
 - **알려진 리스크 (실행자 주의):**
   - Task 1의 `online_features` 일반화는 반환 컬럼 순서가 원본과 다를 수 있다 — downstream은 이름 기반 접근이므로 무해하지만, `tests/test_build_training_dataset.py`가 컬럼 순서를 고정 검증한다면 최종 SELECT(603–627행)가 순서를 결정하므로 영향 없음을 확인할 것.
