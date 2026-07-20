@@ -1,0 +1,156 @@
+name: Archmap
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pr-report:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      # PR 본문의 "Closes #N" 이슈를 조회하려면 issues:read 가 필요하다.
+      # pull-requests:write 는 PR 코멘트 upsert 범위만 커버하며 이슈 조회는
+      # 포함하지 않으므로 명시적으로 추가한다.
+      issues: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # ref 를 명시하지 않으면 pull_request 이벤트의 기본 체크아웃 대상은
+          # base+head 를 합성한 머지 프리뷰 커밋(refs/pull/<PR>/merge)이 되어
+          # head.json 의 revision 라벨과 실제 스캔 트리가 어긋난다.
+          # head sha 를 명시해 실제 PR 변경분만 스캔하도록 고정한다.
+          ref: ${{ github.event.pull_request.head.sha }}
+          # 0은 모든 브랜치·태그의 전체 이력을 fetch하므로 아래 base.sha와
+          # head.sha 모두 merge-base 계산에 사용할 수 있다.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: merge-base 계산 (Files-changed 탭과 같은 3-dot 의미론)
+        # pull_request 페이로드의 base.sha는 머지베이스가 아니라 base 브랜치의
+        # "현재 tip"이다. PR이 열려 있는 동안 base가 전진하면(다른 PR이 먼저
+        # 머지되면) base.sha 그대로 diff를 뜨는 2-dot 비교는 base에만 새로 생긴
+        # 심볼을 "이 PR이 삭제했다"고 오판한다. GitHub의 Files-changed 탭처럼
+        # 실제 분기점(merge-base)을 기준으로 삼아야 이 PR이 건드리지 않은
+        # base쪽 변경이 델타에 섞여 들어오지 않는다.
+        id: mergebase
+        run: |
+          merge_base=$(git merge-base "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}")
+          echo "sha=$merge_base" >> "$GITHUB_OUTPUT"
+
+      - name: head/base architecture.json 추출
+        run: |
+          python -m tools.archmap build --repo-root . \
+            --repo Autoresearch --repo-url "https://github.com/${{ github.repository }}" \
+            --revision "${{ github.event.pull_request.head.sha }}" --out /tmp/head.json
+          git worktree add /tmp/base-tree "${{ steps.mergebase.outputs.sha }}"
+          python -m tools.archmap build --repo-root /tmp/base-tree \
+            --repo Autoresearch --repo-url "https://github.com/${{ github.repository }}" \
+            --revision "${{ steps.mergebase.outputs.sha }}" --out /tmp/base.json
+
+      - name: 연결 이슈 조회 (PR 본문의 Closes #N)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          num=$(printf '%s' "$PR_BODY" | grep -oiE 'close[sd]? #[0-9]+' | grep -oE '[0-9]+' | head -1 || true)
+          if [ -n "$num" ]; then
+            gh api "repos/${{ github.repository }}/issues/$num" \
+              --jq '{number: .number, title: .title, body_excerpt: (.body // "" | .[0:300])}' \
+              > /tmp/issue.json || rm -f /tmp/issue.json
+          fi
+
+      - name: pr-delta.json 생성
+        run: |
+          git diff --numstat "${{ steps.mergebase.outputs.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" > /tmp/numstat.txt
+          issue_flag=""
+          [ -f /tmp/issue.json ] && issue_flag="--issue-json /tmp/issue.json"
+          python -m tools.archmap delta --base /tmp/base.json --head /tmp/head.json \
+            --numstat /tmp/numstat.txt --pr "${{ github.event.pull_request.number }}" \
+            $issue_flag --out /tmp/pr-delta.json
+
+      - name: 서버로 POST (변수 설정 시에만)
+        if: vars.ARCHMAP_SERVER_URL != ''
+        continue-on-error: true
+        run: |
+          python - <<'EOF'
+          import json, os, urllib.request
+          body = {"architecture": json.load(open("/tmp/head.json", encoding="utf-8")),
+                  "pr_delta": json.load(open("/tmp/pr-delta.json", encoding="utf-8"))}
+          req = urllib.request.Request(
+              os.environ["SERVER"] + "/api/pr-report",
+              data=json.dumps(body).encode(),
+              headers={"X-Archmap-Token": os.environ["TOKEN"],
+                       "Content-Type": "application/json"})
+          url = json.load(urllib.request.urlopen(req, timeout=30))["report_url"]
+          open("/tmp/report-url.txt", "w").write(url)
+          EOF
+        env:
+          SERVER: ${{ vars.ARCHMAP_SERVER_URL }}
+          TOKEN: ${{ secrets.ARCHMAP_TOKEN }}
+
+      - name: PR 코멘트 upsert
+        # fork PR 에서는 GITHUB_TOKEN 이 강제로 read-only 가 되어 쓰기(gh api)
+        # 호출이 403 으로 실패한다. 이 스텝이 붉게 죽어 CI 전체를 실패시키지
+        # 않도록 continue-on-error 를 둔다. 다만 실패를 조용히 묻지 않고
+        # 아래 로직에서 ::warning:: 애노테이션으로 원인을 로그에 남긴다.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          url_flag=""
+          [ -f /tmp/report-url.txt ] && url_flag="--report-url $(cat /tmp/report-url.txt)"
+          python -m tools.archmap comment --delta /tmp/pr-delta.json $url_flag --out /tmp/comment.md
+          pr=${{ github.event.pull_request.number }}
+          existing=$(gh api "repos/${{ github.repository }}/issues/$pr/comments" --paginate \
+            --jq '[.[] | select(.body | startswith("<!-- archmap-report -->"))][0].id // empty')
+          if [ -n "$existing" ]; then
+            if ! gh api -X PATCH "repos/${{ github.repository }}/issues/comments/$existing" \
+              -F body=@/tmp/comment.md; then
+              echo "::warning::PR 코멘트 갱신에 실패했습니다. fork PR은 GITHUB_TOKEN이 read-only로 강제되어 코멘트를 쓸 수 없습니다."
+            fi
+          else
+            if ! gh api "repos/${{ github.repository }}/issues/$pr/comments" -F body=@/tmp/comment.md; then
+              echo "::warning::PR 코멘트 작성에 실패했습니다. fork PR은 GITHUB_TOKEN이 read-only로 강제되어 코멘트를 쓸 수 없습니다."
+            fi
+          fi
+
+  manifest:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: architecture.json 추출 후 서버로 POST
+        if: vars.ARCHMAP_SERVER_URL != ''
+        continue-on-error: true
+        run: |
+          python -m tools.archmap build --repo-root . \
+            --repo Autoresearch --repo-url "https://github.com/${{ github.repository }}" \
+            --revision "${{ github.sha }}" --out /tmp/arch.json
+          python - <<'EOF'
+          import json, os, urllib.request
+          req = urllib.request.Request(
+              os.environ["SERVER"] + "/api/manifest",
+              data=open("/tmp/arch.json", "rb").read(),
+              headers={"X-Archmap-Token": os.environ["TOKEN"],
+                       "Content-Type": "application/json"})
+          urllib.request.urlopen(req, timeout=30)
+          EOF
+        env:
+          SERVER: ${{ vars.ARCHMAP_SERVER_URL }}
+          TOKEN: ${{ secrets.ARCHMAP_TOKEN }}
