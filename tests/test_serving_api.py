@@ -7,6 +7,7 @@ import joblib
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
+from prometheus_client import REGISTRY
 
 from src.serving.app import create_app
 from src.serving.model_loader import (
@@ -110,6 +111,26 @@ def test_rerank_with_diagnostics_reports_unseen_categories() -> None:
     assert {item.video_id for item in outcome.items} == {"video-known", "video-unseen"}
 
 
+def test_rerank_detects_categorical_type_mismatch_as_unseen() -> None:
+    # 요청 categorical 값의 타입이 학습 카테고리와 다르면(str "10" vs int 10) 조용히 NaN으로
+    # 강등된다. 정규화(coerce)하지 않는 detection-only 동작을 고정한다 — 예방이 아니라 감지:
+    # 요청은 실패하지 않고, unseen 진단으로 원래 값이 그대로 보고되어야 한다.
+    reranker = Reranker(
+        model=CategoricalCodeModel(),
+        feature_columns=("category_id",),
+        categorical_categories={"category_id": (10, 20, 30)},
+    )
+
+    outcome = reranker.rerank_with_diagnostics(
+        [
+            CandidateVideo(video_id="video-1", features={"category_id": "10"}),
+            CandidateVideo(video_id="video-2", features={"category_id": "20"}),
+        ]
+    )
+
+    assert outcome.unseen_categories == {"category_id": ("10", "20")}
+
+
 def test_rerank_with_diagnostics_empty_when_all_categories_known() -> None:
     reranker = Reranker(
         model=CategoricalCodeModel(),
@@ -152,6 +173,48 @@ def test_metrics_report_unseen_category_coercions() -> None:
     assert response.status_code == 200
     # 그 대신 unseen-category 카운터가 컬럼별로 계측되어 감지 가능해야 한다.
     assert 'rerank_unseen_category_total{column="category_id"}' in metrics_response.text
+
+
+def test_metrics_report_type_mismatch_through_http_request() -> None:
+    # 타입 불일치 감지가 단위 호출뿐 아니라 실제 HTTP 경로에서도 성립하는지 고정한다.
+    # 핵심 연결 고리는 pydantic smart union이다 — FeatureValue = str | int | float | bool 에서
+    # JSON 값 "10"은 유니온 멤버 str과 정확히 일치하므로 int로 coerce되지 않고 str로 보존된다.
+    # 이 보존이 깨지면(유니온 정의 변경, strict/lax 설정 추가 등) 요청은 정상 매칭되어
+    # 카운터가 영영 증가하지 않고 detection-only 계약과 메트릭이 죽은 코드가 된다.
+    reranker = Reranker(
+        model=CategoricalCodeModel(),
+        feature_columns=("category_id",),
+        categorical_categories={"category_id": (10, 20, 30)},
+    )
+    app = create_app(reranker=reranker)
+    # 카운터는 모듈 전역이라 다른 테스트의 증가분이 누적된다. 절대값 대신 델타를 본다.
+    labels = {"column": "category_id"}
+    before = REGISTRY.get_sample_value("rerank_unseen_category_total", labels) or 0.0
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/rerank",
+            json={
+                "user_id": "user-1",
+                "candidates": [
+                    # 학습 카테고리는 int 10 — JSON str "10"은 매칭에 실패해야 한다.
+                    {"video_id": "video-str", "features": {"category_id": "10"}},
+                    {"video_id": "video-int", "features": {"category_id": 20}},
+                ],
+            },
+        )
+
+    after = REGISTRY.get_sample_value("rerank_unseen_category_total", labels) or 0.0
+
+    assert response.status_code == 200
+    # str "10" 후보 1건만 강등되어야 한다 — int 20은 학습 카테고리와 일치하므로 온전하다.
+    assert after - before == 1.0
+    # 강등된 후보는 NaN이 되어 category code -1(결측 sentinel)로 예측된다 — 매칭된 후보보다
+    # 낮은 점수로 밀리는 조용한 품질 저하의 실체이며, 에러 없이 응답에 섞여 나간다.
+    scores = {item["video_id"]: item["ctr_score"] for item in response.json()["items"]}
+    assert scores["video-str"] == pytest.approx(-0.1)
+    assert scores["video-int"] == pytest.approx(0.1)
+    assert scores["video-str"] < scores["video-int"]
 
 
 class WrongShapeModel:

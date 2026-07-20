@@ -59,7 +59,6 @@ docs/
 ├── specs/                   # 살아있는 계약·설계 spec (진행 중·유효한 것만)
 ├── plans/                   # 진행 중 구현 계획
 ├── guides/                  # 운영·아키텍처 가이드 (data-lake, feature-store 등)
-├── assets/                  # 문서용 이미지
 └── archive/                 # 완료·과거 문서 보존 (specs/plans/reports)
 ```
 

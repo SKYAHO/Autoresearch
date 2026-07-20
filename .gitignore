@@ -45,3 +45,12 @@ Nemotron-Personas-Korea/
 
 # 세션 스크래치 작업 공간
 scratchpad/
+
+# 에이전트 생성 HTML 리포트(docs 최상위만 — docs/archive/reports/는 추적 유지)
+/docs/*.html
+
+# 에이전트 도구 세션 스크래치
+.omo/
+
+# 로컬 생성 산출물(PDF 등)
+output/
