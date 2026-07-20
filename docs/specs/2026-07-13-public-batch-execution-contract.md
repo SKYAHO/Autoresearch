@@ -12,9 +12,9 @@
 로컬, CI와 KubernetesPodOperator에서 동일하게 동작해야 한다.
 
 이 계약은 현재 운영 범위인 YouTube 일일 수집, YouTube backfill, action-log
-single/shard/merge와 action-log 품질 검사를 다룬다. Feature Store
-materialization, 학습·평가, MLflow, FastAPI serving command는 각 기능이
-운영화될 때 별도 revision으로 추가한다.
+single/shard/merge, action-log 품질 검사와 Feast materialize를 다룬다.
+학습·평가, MLflow, FastAPI serving command는 각 기능이 운영화될 때 별도
+revision으로 추가한다.
 
 ## 계약 버전
 
@@ -44,6 +44,7 @@ python -m autoresearch.jobs.action_log --mode single [options]
 python -m autoresearch.jobs.action_log --mode shard [options]
 python -m autoresearch.jobs.action_log --mode merge [options]
 python -m autoresearch.jobs.action_log_quality [options]
+python -m autoresearch.jobs.feast_materialize [options]
 ```
 
 console script alias를 추가할 수 있지만 Airflow는 v1 동안 위 module 경로를
@@ -129,6 +130,39 @@ Python process가 signal 또는 resource limit로 종료될 때의 code는 runti
 Infra는 secret 저장과 workload 접근 권한을 담당하고, Airflow는 Kubernetes
 Secret 또는 Secret Manager 연동 reference를 pod 환경 변수에 연결한다.
 Application은 환경 변수를 읽고 누락·빈 값을 검증한다.
+
+## Feast materialize
+
+```text
+python -m autoresearch.jobs.feast_materialize \
+  [--repo-path feature_repo] \
+  [--views VIEW1,VIEW2] \
+  [--start-ts ISO8601 --end-ts ISO8601] \
+  [--dry-run[=<boolean>]]
+```
+
+### 계약
+
+- v1 호환 추가 명령이다 (기존 명령의 계약 변경 없음).
+- `--start-ts`/`--end-ts`는 함께만 지정할 수 있다. 하나만 지정하면 exit 2다.
+- 둘 다 지정하면 해당 구간 materialize, 둘 다 없으면 현재 UTC 기준
+  incremental materialize를 수행한다.
+- `--views` 생략 시 registry의 전체 FeatureView가 대상이다. 등록되지 않은
+  view 이름은 exit 1이다.
+- `--dry-run`은 CA 조달, IAM token 발급, Redis `PING`, registry 접근까지만
+  검증하고 적재 없이 exit 0으로 종료한다.
+- IAM token, CA 본문, entity 값은 stdout·stderr에 출력하지 않는다.
+- 실행 이미지는 `Dockerfile.feast` 파생 이미지다 (`Dockerfile.app`에는 feast
+  의존성이 없다).
+
+### 환경 변수
+
+| 이름 | 용도 | 비고 |
+| --- | --- | --- |
+| `GCP_PROJECT_ID`, `BQ_DATASET`, `GCS_REGISTRY_PATH`, `GCS_STAGING_LOCATION` | Feast offline store·registry | 기존 Feast 설정 |
+| `REDIS_HOST`, `REDIS_PORT` | Redis Cluster discovery endpoint | |
+| `REDIS_TLS_CA_PATH` | 서버 CA 번들 파일 경로 | 선택 |
+| `REDIS_CA_SECRET_ID` | CA 번들 Secret Manager secret id | `REDIS_TLS_CA_PATH` 부재 시 필수 |
 
 ## YouTube 일일 수집
 

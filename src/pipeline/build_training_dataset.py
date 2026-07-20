@@ -3,14 +3,19 @@
 training_dataset.csv 생성 파이프라인.
 
 입력:
-- data/raw/youtube_videos.csv (YouTube API 원본 데이터)
-- data/raw/personas.csv (가상 사용자 페르소나)
-- data/processed/events.csv (이벤트 로그)
+- videos: mock CSV(data/raw/youtube_videos.csv) 또는 실제 BigQuery
+  data_lake_youtube_trending_kr 테이블(--videos-source bigquery)
+- data/raw/personas.csv 또는 gs:// parquet (가상 사용자 페르소나, 확장자로 자동 판별)
+- events: mock CSV(data/processed/events.csv) 또는 실제 BigQuery
+  data_lake_action_log 테이블(--events-source bigquery). 실제 테이블은
+  long-format(impression/click/view/like 이벤트별 1행)이라 derive_wide_events()가
+  attribution을 거쳐 wide-format(행당 clicked/liked/watch_time_sec)으로 변환한다
+  (docs/guides/data-warehouse.md의 training_entity 참고, issue #172)
 
 출력:
 - data/processed/training_dataset.csv (16컬럼, docs/guides/ctr-model-specification.md 준수)
 
-NOTE: 위의 입력 CSV 파일들은 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py
+NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py
       스크립트의 산출물이며, 스펙 변경 시에는 scaffold를 수정한 후 해당 스크립트를
       재실행해 입력값을 갱신할 것. 이 파일들을 직접 수정하면 stale 상태로 남아
       다음 조사/버그 시 같은 문제가 반복된다.
@@ -21,7 +26,23 @@ import sys
 import json
 import duckdb
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+
+BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "ar-infra-501607")
+BIGQUERY_DATASET = os.environ.get("CTR_TRAINING_BQ_DATASET", "feast_offline_store")
+BIGQUERY_VIDEOS_TABLE = os.environ.get(
+    "CTR_TRAINING_BQ_VIDEOS_TABLE", "data_lake_youtube_trending_kr"
+)
+BIGQUERY_ACTION_LOG_TABLE = os.environ.get(
+    "CTR_TRAINING_BQ_ACTION_LOG_TABLE", "data_lake_action_log"
+)
+# impression -> click 귀속 윈도우(docs/guides/data-warehouse.md의 training_entity와 동일 이름/기본값).
+LABEL_WINDOW_SEC = int(os.environ.get("CTR_TRAINING_LABEL_WINDOW_SEC", "1800"))
+# click -> view -> like 체이닝 윈도우(문서에 없는 신규 규칙, docs/guides/data-warehouse.md에 반영 예정).
+FOLLOWUP_WINDOW_SEC = int(os.environ.get("CTR_TRAINING_FOLLOWUP_WINDOW_SEC", "600"))
+# online_features의 7일 lookback 자기조인이 학습 기간 첫 7일에도 온전한 과거 데이터를
+# 보도록 왼쪽으로 미리 당겨서 조회하는 padding.
+_LOOKBACK_PAD_DAYS = 7
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
@@ -124,23 +145,249 @@ def validate_point_in_time(dataset: pd.DataFrame) -> None:
     print(f"  [OK] {len(dataset)} 샘플 확인 완료")
 
 
-def main(raw_dir: str = None, events_path: str = None, output_path: str = None):
-    data_dir = get_data_dir()
+def load_videos_from_bigquery() -> pd.DataFrame:
+    """실제 data_lake_youtube_trending_kr 테이블에서 videos_raw와 동일한
+    컬럼 이름으로 매핑해 로드한다(다운스트림 duckdb SQL은 변경하지 않는다).
+
+    video_category는 이미 카테고리 이름 문자열이라(src.features.category_reference
+    의 CATEGORY_DESCRIPTIONS 키와 동일 체계) 별도 ID→이름 변환이 필요 없다.
+    """
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=BIGQUERY_PROJECT)
+    query = f"""
+        SELECT
+            video_id,
+            video_category AS categoryId,
+            video_duration AS duration,
+            video_view_count AS viewCount,
+            video_like_count AS likeCount,
+            video_comment_count AS commentCount,
+            video_published_at AS publishedAt,
+            video_title AS title,
+            video_description AS description
+        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{BIGQUERY_VIDEOS_TABLE}`
+    """
+    return client.query(query).to_dataframe()
+
+
+def load_personas(personas_path: str) -> pd.DataFrame:
+    """personas 입력을 확장자로 판별해 로드한다.
+
+    로컬/GCS 경로 모두 지원한다(gcsfs가 gs:// 경로를 pandas에 투명하게
+    연결한다). virtual_users 파이프라인의 실제 산출물 위치가 정해지면
+    이 함수에 그 경로만 넘기면 된다. BigQuery 적재는 필요 없다(persona는
+    학습 시 집계된 user feature로만 쓰이고 그 자체가 warehouse 테이블일
+    필요는 없음).
+    """
+    if personas_path.endswith(".parquet"):
+        return pd.read_parquet(personas_path)
+    return pd.read_csv(personas_path)
+
+
+def load_events_from_bigquery(start_date: str, end_date: str) -> pd.DataFrame:
+    """dt 파티션 [start_date, end_date] 범위의 raw long-format 이벤트를
+    그대로 가져온다. attribution(long→wide 변환)은 여기서 하지 않는다 —
+    derive_wide_events()가 DuckDB로 순수하게 수행한다. BigQuery SQL 안에서
+    조인하면 attribution 로직을 실제 데이터로 단위 테스트할 방법이 없어서
+    (load_videos_from_bigquery와 같은 이유로) 조회와 변환을 분리한다.
+
+    start_date/end_date는 dt 파티션 필터용 KST 캘린더 날짜 문자열
+    (YYYY-MM-DD)이다. dt 자체가 timezone 없이 생성 시점에 이미 Asia/Seoul
+    날짜 경계로 버킷팅되어 있으므로 여기서 timezone 변환은 하지 않는다.
+    """
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=BIGQUERY_PROJECT)
+    query = f"""
+        SELECT event_id, event_timestamp, user_id, event_type, video_id, watch_time_sec
+        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{BIGQUERY_ACTION_LOG_TABLE}`
+        WHERE dt BETWEEN '{start_date}' AND '{end_date}'
+    """
+    return client.query(query).to_dataframe()
+
+
+def derive_wide_events(
+    long_events: pd.DataFrame,
+    label_window_sec: int = LABEL_WINDOW_SEC,
+    followup_window_sec: int = FOLLOWUP_WINDOW_SEC,
+) -> pd.DataFrame:
+    """long-format(impression/click/view/like) 이벤트를 wide-format(행당
+    event_id/user_id/video_id/timestamp/clicked/liked/watch_time_sec)으로
+    변환한다. 순수 함수라 BigQuery 없이 단위 테스트 가능하다.
+
+    Attribution 규칙:
+    - click 귀속: 같은 (user_id, video_id), click **직전** label_window_sec
+      이내 **가장 가까운(최근)** impression에 귀속(ORDER BY 시각 DESC).
+    - 한 impression에 click 후보가 여러 개 매칭되면 **가장 이른 click을
+      anchor로 고정**한다(ORDER BY click 시각 ASC) — 이후 view/like 체이닝은
+      이 anchor 하나로만 진행한다.
+    - view 귀속: anchor click **이후** followup_window_sec 이내 **가장
+      먼저 발생한** view(ORDER BY 시각 ASC, click 기준).
+    - like 귀속: click이 아니라 **확정된 view 이후** followup_window_sec
+      이내 가장 먼저 발생한 like(view 기준 순차 체인 — 실제 생성기의
+      like_ts = view_ts + α 인과관계와 동일). **view가 없으면 like도
+      항상 0**이다(view를 거치지 않는 독립 탐색은 하지 않는다).
+    - click이 없는 impression(대다수)은 clicked=liked=0, watch_time_sec=0.
+
+    이 규칙 중 click 귀속(label_window_sec)만 docs/guides/data-warehouse.md의
+    training_entity에 문서화되어 있고, view/like 체이닝(followup_window_sec)은
+    이번에 새로 정의한 규칙이라 같은 문서에 추가 반영한다.
+    """
+    con = duckdb.connect()
+    con.register("long_events", long_events)
+
+    query = f"""
+        WITH impressions AS (
+            SELECT event_id, event_timestamp, user_id, video_id
+            FROM long_events WHERE event_type = 'impression'
+        ),
+        clicks AS (
+            SELECT event_id, event_timestamp, user_id, video_id
+            FROM long_events WHERE event_type = 'click'
+        ),
+        views AS (
+            SELECT event_id, event_timestamp, user_id, video_id, watch_time_sec
+            FROM long_events WHERE event_type = 'view'
+        ),
+        likes AS (
+            SELECT event_id, event_timestamp, user_id, video_id
+            FROM long_events WHERE event_type = 'like'
+        ),
+        click_attr AS (
+            SELECT
+                c.event_id AS click_event_id,
+                c.event_timestamp AS click_ts,
+                c.user_id,
+                c.video_id,
+                i.event_id AS impression_event_id
+            FROM clicks c
+            JOIN impressions i
+                ON i.user_id = c.user_id AND i.video_id = c.video_id
+               AND i.event_timestamp < c.event_timestamp
+               AND i.event_timestamp >= c.event_timestamp - INTERVAL {label_window_sec} SECOND
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY c.event_id ORDER BY i.event_timestamp DESC
+            ) = 1
+        ),
+        impression_click AS (
+            -- 한 impression에 click 후보가 여러 개면 가장 이른 click을 anchor로 고정
+            SELECT impression_event_id, click_event_id, click_ts, user_id, video_id
+            FROM click_attr
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY impression_event_id ORDER BY click_ts ASC
+            ) = 1
+        ),
+        view_attr AS (
+            SELECT
+                ic.impression_event_id,
+                v.event_timestamp AS view_ts,
+                v.watch_time_sec
+            FROM impression_click ic
+            JOIN views v
+                ON v.user_id = ic.user_id AND v.video_id = ic.video_id
+               AND v.event_timestamp > ic.click_ts
+               AND v.event_timestamp <= ic.click_ts + INTERVAL {followup_window_sec} SECOND
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY ic.impression_event_id ORDER BY v.event_timestamp ASC
+            ) = 1
+        ),
+        like_attr AS (
+            -- like는 click이 아니라 "확정된 view" 이후로만 체이닝한다(순차 인과관계).
+            -- view가 없으면 이 CTE에 해당 impression이 아예 안 나타나므로 liked=0.
+            SELECT va.impression_event_id
+            FROM view_attr va
+            JOIN impression_click ic ON ic.impression_event_id = va.impression_event_id
+            JOIN likes l
+                ON l.user_id = ic.user_id AND l.video_id = ic.video_id
+               AND l.event_timestamp > va.view_ts
+               AND l.event_timestamp <= va.view_ts + INTERVAL {followup_window_sec} SECOND
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY va.impression_event_id ORDER BY l.event_timestamp ASC
+            ) = 1
+        )
+        SELECT
+            i.event_id,
+            i.user_id,
+            i.video_id,
+            i.event_timestamp AS timestamp,
+            CASE WHEN ic.click_event_id IS NOT NULL THEN 1 ELSE 0 END AS clicked,
+            CASE WHEN la.impression_event_id IS NOT NULL THEN 1 ELSE 0 END AS liked,
+            CAST(COALESCE(va.watch_time_sec, 0) AS BIGINT) AS watch_time_sec
+        FROM impressions i
+        LEFT JOIN impression_click ic ON ic.impression_event_id = i.event_id
+        LEFT JOIN view_attr va ON va.impression_event_id = i.event_id
+        LEFT JOIN like_attr la ON la.impression_event_id = i.event_id
+    """
+    return con.execute(query).df()
+
+
+def main(
+    raw_dir: str = None,
+    events_path: str = None,
+    output_path: str = None,
+    videos_source: str = "csv",
+    personas_path: str = None,
+    events_source: str = "csv",
+    events_start_date: str = None,
+    events_end_date: str = None,
+):
+    if videos_source not in ("csv", "bigquery"):
+        raise ValueError(f"videos_source must be 'csv' or 'bigquery': {videos_source!r}")
+    if events_source not in ("csv", "bigquery"):
+        raise ValueError(f"events_source must be 'csv' or 'bigquery': {events_source!r}")
+    if events_source == "bigquery" and (not events_start_date or not events_end_date):
+        raise ValueError(
+            "events_source='bigquery' requires events_start_date and events_end_date"
+        )
+
+    # get_data_dir()는 저장소 안의 data/ 디렉토리를 걸어 올라가며 찾는데,
+    # BigQuery 소스처럼 모든 경로가 이미 명시적으로 주어진 경우(CI 컨테이너 등
+    # data/가 없는 환경 포함)에는 아예 필요 없다 — 실제로 필요할 때만 지연 호출한다.
+    _data_dir_cache = None
+
+    def _resolve_data_dir():
+        nonlocal _data_dir_cache
+        if _data_dir_cache is None:
+            _data_dir_cache = get_data_dir()
+        return _data_dir_cache
+
     if raw_dir is None:
-        raw_dir = os.path.join(data_dir, "raw")
-    if events_path is None:
-        events_path = os.path.join(data_dir, "processed", "events.csv")
+        raw_dir = os.path.join(_resolve_data_dir(), "raw")
+    if events_source == "csv" and events_path is None:
+        events_path = os.path.join(_resolve_data_dir(), "processed", "events.csv")
     if output_path is None:
-        output_path = os.path.join(data_dir, "processed", "training_dataset.csv")
+        output_path = os.path.join(_resolve_data_dir(), "processed", "training_dataset.csv")
+    if personas_path is None:
+        personas_path = os.path.join(raw_dir, "personas.csv")
 
     print("=" * 70)
     print("training_dataset.csv 생성 파이프라인")
     print("=" * 70)
 
     print("\n[로드] 데이터 로드 중...")
-    videos = pd.read_csv(os.path.join(raw_dir, "youtube_videos.csv"))
-    personas = pd.read_csv(os.path.join(raw_dir, "personas.csv"))
-    events = pd.read_csv(events_path)
+    if videos_source == "bigquery":
+        videos = load_videos_from_bigquery()
+    else:
+        videos = pd.read_csv(os.path.join(raw_dir, "youtube_videos.csv"))
+    personas = load_personas(personas_path)
+    if events_source == "bigquery":
+        # online_features의 7일 lookback이 학습 기간 첫 7일에도 온전한 과거
+        # 데이터를 보도록 왼쪽 padding, click->view->like 세션이 end_date
+        # 경계에서 잘리지 않도록 오른쪽도 소폭 padding해서 넉넉히 가져온다.
+        # 최종 출력 단계에서 이 padding 구간은 양쪽 다 잘라낸다(아래 참고).
+        padded_start = (
+            datetime.strptime(events_start_date, "%Y-%m-%d")
+            - timedelta(days=_LOOKBACK_PAD_DAYS)
+        ).strftime("%Y-%m-%d")
+        padded_end = (
+            datetime.strptime(events_end_date, "%Y-%m-%d")
+            + timedelta(seconds=LABEL_WINDOW_SEC + 2 * FOLLOWUP_WINDOW_SEC)
+        ).strftime("%Y-%m-%d")
+        long_events = load_events_from_bigquery(padded_start, padded_end)
+        events = derive_wide_events(long_events)
+    else:
+        events = pd.read_csv(events_path)
 
     # Parse ISO 8601 duration to seconds (e.g., "PT4M29S" → 269)
     def parse_iso8601_duration(duration_str):
@@ -161,9 +408,9 @@ def main(raw_dir: str = None, events_path: str = None, output_path: str = None):
     if 'duration' in videos.columns:
         videos['duration'] = videos['duration'].apply(parse_iso8601_duration)
 
-    print(f"  [OK] youtube_videos.csv: {len(videos)} rows")
-    print(f"  [OK] personas.csv: {len(personas)} rows")
-    print(f"  [OK] events.csv: {len(events)} rows")
+    print(f"  [OK] videos ({videos_source}): {len(videos)} rows")
+    print(f"  [OK] personas ({personas_path}): {len(personas)} rows")
+    print(f"  [OK] events ({events_source}): {len(events)} rows")
 
     validate_events(events)
 
@@ -342,8 +589,19 @@ def main(raw_dir: str = None, events_path: str = None, output_path: str = None):
     con.register("joined", joined)
     con.register("user_feature_offline", user_feature_offline)
 
+    # BigQuery 경로에서만 적용: load_events_from_bigquery가 lookback/세션 완성을
+    # 위해 [events_start_date, events_end_date] 바깥까지 padding해서 가져왔으므로,
+    # 최종 학습 데이터에는 원래 요청한 구간만 남기고 양쪽 다 잘라낸다. 왼쪽만
+    # 자르면 end_date 이후 padding 구간의 impression이 조용히 섞여 들어간다.
+    trim_clause = ""
+    if events_source == "bigquery":
+        trim_clause = (
+            f"WHERE j.timestamp >= TIMESTAMP '{events_start_date}' "
+            f"AND j.timestamp < TIMESTAMP '{events_end_date}'"
+        )
+
     training_dataset = con.execute(
-        """
+        f"""
         SELECT
             uo.age_group,
             uo.occupation,
@@ -363,6 +621,7 @@ def main(raw_dir: str = None, events_path: str = None, output_path: str = None):
             CAST(j.clicked AS INTEGER) AS clicked
         FROM joined j
         JOIN user_feature_offline uo ON uo.user_id = j.user_id
+        {trim_clause}
         ORDER BY j.timestamp
         """
     ).df()

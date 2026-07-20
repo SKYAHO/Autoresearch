@@ -18,7 +18,7 @@ sys.path.insert(0, PROJECT_ROOT)
 import mlflow  # noqa: E402
 
 from src.models.lgbm_model import LGBMModel  # noqa: E402
-from src.utils.model_utils import save_model, save_feature_columns  # noqa: E402
+from src.utils.model_utils import save_model, save_feature_columns, save_categorical_columns  # noqa: E402
 from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
 from src.tracking.logger import log_artifact, log_metrics, log_parameters  # noqa: E402
 
@@ -39,15 +39,39 @@ def load_config(config_path):
         return yaml.safe_load(f)
 
 
+def collect_categorical_categories(
+    X_train: pd.DataFrame, X_val: pd.DataFrame, categorical_columns: list
+) -> dict:
+    """
+    Categorical 컬럼을 train/val union 카테고리로 캐스팅하고 카테고리 목록을 반환.
+
+    반환된 dict는 categorical_columns.pkl 아티팩트로 저장되어 서빙이 학습과
+    동일한 category 코드 매핑을 재현하는 데 사용된다 (src/serving/model_loader.py).
+    """
+    categories_by_column: dict = {}
+    for col in categorical_columns:
+        if col not in X_train.columns:
+            continue
+        categories = pd.api.types.union_categoricals(
+            [X_train[col].astype("category"), X_val[col].astype("category")]
+        ).categories
+        X_train[col] = pd.Categorical(X_train[col], categories=categories)
+        X_val[col] = pd.Categorical(X_val[col], categories=categories)
+        categories_by_column[col] = categories.tolist()
+    return categories_by_column
+
+
 def main(
     config_path: str = None,
     data_path: str = None,
     model_output: str = None,
     test_set_output: str = None,
     feature_columns_output: str = None,
+    categorical_columns_output: str = None,
     test_size: float = None,
     val_size: float = None,
     random_state: int = None,
+    extra_params: dict = None,
 ):
     project_root = get_project_root()
     if config_path is None:
@@ -127,13 +151,9 @@ def main(
         print(f"  [OK] Val features: {X_val.shape}, ratio={y_val.mean():.3%}")
 
         print("\n[Step 4] Categorical 컬럼 dtype 변환...")
-        for col in categorical_columns:
-            if col in X_train.columns:
-                categories = pd.api.types.union_categoricals(
-                    [X_train[col].astype("category"), X_val[col].astype("category")]
-                ).categories
-                X_train[col] = pd.Categorical(X_train[col], categories=categories)
-                X_val[col] = pd.Categorical(X_val[col], categories=categories)
+        categories_by_column = collect_categorical_categories(
+            X_train, X_val, categorical_columns
+        )
         print(f"  [OK] {len(categorical_columns)} categorical columns 설정")
 
         print("\n[Step 5] scale_pos_weight 계산...")
@@ -146,19 +166,22 @@ def main(
         else:
             print(f"  [OK] 고정값: {scale_pos_weight}")
 
-        log_parameters(
-            {
-                "model_type": "LightGBM",
-                "n_estimators": config["model"]["n_estimators"],
-                "learning_rate": config["model"]["learning_rate"],
-                "num_leaves": config["model"]["num_leaves"],
-                "scale_pos_weight": scale_pos_weight,
-                "random_state": random_state,
-                "train_size": len(train_df),
-                "val_size": len(val_df),
-                "test_size": len(test_df),
-            }
-        )
+        params = {
+            "model_type": "LightGBM",
+            "n_estimators": config["model"]["n_estimators"],
+            "learning_rate": config["model"]["learning_rate"],
+            "num_leaves": config["model"]["num_leaves"],
+            "scale_pos_weight": scale_pos_weight,
+            "random_state": random_state,
+            "train_size": len(train_df),
+            "val_size": len(val_df),
+            "test_size": len(test_df),
+        }
+        if extra_params:
+            # 데이터 소스 계보(예: events_source/events_start_date/events_end_date)를
+            # run에 남겨서, 어떤 기간의 데이터로 학습했는지 항상 조회 가능하게 한다.
+            params.update(extra_params)
+        log_parameters(params)
 
         print("\n[Step 6] LightGBM 모델 훈련...")
         model = LGBMModel(
@@ -200,12 +223,24 @@ def main(
             feature_columns_path = os.path.join(project_root, feature_columns_output)
         else:
             feature_columns_path = feature_columns_output
+        if categorical_columns_output is None:
+            categorical_columns_path = os.path.join(
+                project_root, config["artifacts"]["categorical_columns_path"]
+            )
+        elif not os.path.isabs(categorical_columns_output):
+            categorical_columns_path = os.path.join(project_root, categorical_columns_output)
+        else:
+            categorical_columns_path = categorical_columns_output
 
         save_model(model.model, model_path)
         save_feature_columns(feature_columns, feature_columns_path)
+        save_categorical_columns(categories_by_column, categorical_columns_path)
 
+        # artifact 경로(model/, features/)는 서빙 로더(src/serving/model_loader.py)의
+        # MLflow 다운로드 경로 상수와 계약이다 — 변경 시 양쪽을 함께 갱신한다.
         log_artifact(local_path=model_path, artifact_path="model")
         log_artifact(local_path=feature_columns_path, artifact_path="features")
+        log_artifact(local_path=categorical_columns_path, artifact_path="features")
 
     print("\n" + "=" * 70)
     print("훈련 완료")
@@ -213,6 +248,7 @@ def main(
     print(f"Val ROC-AUC: {val_roc_auc:.4f}")
     print(f"Model: {model_path}")
     print(f"Feature columns: {feature_columns_path}")
+    print(f"Categorical columns: {categorical_columns_path}")
 
 
 if __name__ == "__main__":
