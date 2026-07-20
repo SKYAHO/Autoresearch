@@ -24,7 +24,7 @@ Commit (<type>: 한국어 설명)
     ↓
 PR 생성 (Draft 또는 Ready)
     ↓
-Review → Approve 2명 → Squash Merge
+Review → Approve 1명 → Squash Merge
     ↓
 Issue 자동 close → Project Done
 ```
@@ -185,7 +185,7 @@ Closes #45
 ## Review & Approval
 
 **머지 조건:**
-- 팀원 **2명** approve
+- 팀원 **1명** approve
 - 모든 conversation resolved
 - CI status check 통과
 - Ready for review 상태 (Draft는 approve가 있어도 merge 불가)
@@ -279,7 +279,7 @@ git push --force-with-lease origin feat/45-...
 
 ## Troubleshooting
 
-- **PR이 merge되지 않을 때:** Draft 상태, approve 2명 충족, 충돌,
+- **PR이 merge되지 않을 때:** Draft 상태, approve 1명 충족, 충돌,
   required check 실패 여부를 확인합니다.
 - **Project에 항목이 안 보일 때:** `Done` 컬럼과 view filter를
   확인합니다. 이미 closed/merged된 항목은 자동 추가 필터에 걸리지

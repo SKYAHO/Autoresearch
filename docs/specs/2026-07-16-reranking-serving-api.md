@@ -12,7 +12,9 @@
   categorical 값이 NaN으로 강등되면(신규 카테고리 등장 등) `rerank_unseen_category_total{column=...}`
   카운터가 컬럼별로 증가하고 경고 로그가 남는다 — 조용한 학습-서빙 스큐를 감지해 재학습 신호로 쓴다.
 
-`/rerank`의 후보는 `video_id`와 `features`를 가진다. `features`는 학습 artifact의 feature-column 목록을 모두 포함해야 하며, 벡터·리스트는 받지 않는다. MVP에서는 Feature Store 조회를 수행하지 않는다. 학습 카테고리에 없는 값이 오면 요청은 실패하지 않고 해당 값을 NaN(결측)으로 처리하되, 위 `rerank_unseen_category_total`로 계측한다.
+`/rerank`의 후보는 `video_id`와 `features`를 가진다. `features`는 학습 artifact의 feature-column 목록을 모두 포함해야 하며, 벡터·리스트는 받지 않는다. MVP에서는 Feature Store 조회를 수행하지 않는다. 학습 카테고리에 없는 값이 오면 요청은 실패하지 않고 해당 값을 NaN(결측)으로 처리하되, 위 `rerank_unseen_category_total`로 계측한다. 이 강등에는 **타입 불일치**도 포함된다 — 예: 학습 카테고리가 `int (10, 20, 30)`인데 요청이 `str "10"`으로 오면 매칭에 실패해 NaN이 된다. MVP는 요청 값을 학습 카테고리 타입으로 정규화(coerce)하지 않으며, 이 조용한 왜곡은 예방이 아니라 위 메트릭으로 **감지**하는 것을 계약으로 한다(정규화는 후속 과제).
+
+이 감지가 HTTP 경로에서 성립하는 것은 `FeatureValue = str | int | float | bool`이 pydantic v2 **smart union**으로 검증되어, JSON 값의 타입이 유니온 멤버와 정확히 일치하면 그대로 보존되기 때문이다(`"10"`은 `str`로 남고 `int`로 coerce되지 않는다). 이 유니온을 좁히거나 `union_mode='left_to_right'` 같은 순차 검증으로 바꾸면 요청 값이 조용히 변환되어 불일치가 감지되지 않고 메트릭이 죽은 코드가 된다.
 
 ## 모델 artifact
 
