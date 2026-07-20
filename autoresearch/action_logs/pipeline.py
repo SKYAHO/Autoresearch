@@ -9,6 +9,7 @@ import logging
 import math
 import random
 from collections import defaultdict
+from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, timedelta
@@ -677,10 +678,32 @@ def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[in
     return set(order[:n_click])
 
 
+def normalize_clicks(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
+    """전역 CTR 정규화의 공개 진입점 — 외부 배치(정책 시뮬레이션)가 합동 pool에
+    한 번만 적용할 수 있게 _clicked_indices를 노출한다."""
+
+    return _clicked_indices(drafts, target_ctr)
+
+
+@dataclass(frozen=True)
+class ExposureMetadata:
+    """정책 시뮬레이션 노출 1건의 로그 태깅 메타데이터. 키는 (user_id, video_id)."""
+
+    policy: Literal["baseline", "model"]
+    rank: int
+    ctr_score: float | None
+    is_exploration: bool | None
+    policy_version: str | None
+
+
 def _expand_events(
     drafts: list[ImpressionDraft],
     clicked: set[int],
     request: EventGenerationRequest,
+    *,
+    metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None,
+    source: str = SOURCE_HISTORICAL,
+    event_id_prefix: str = "evt",
 ) -> list[EventLog]:
     """draft + 클릭 결정 → long EventLog 스트림.
 
@@ -700,16 +723,21 @@ def _expand_events(
 
     def _emit(timestamp, user_id, event_type, video_id, watch=None):
         nonlocal seq
+        meta = metadata.get((user_id, video_id)) if metadata else None
         events.append(
             EventLog(
-                event_id=f"evt_{seq:08d}",
+                event_id=f"{event_id_prefix}_{seq:08d}",
                 event_timestamp=timestamp,
                 user_id=user_id,
                 event_type=event_type,
                 video_id=video_id,
                 watch_time_sec=watch,
-                rank=None,
-                source=SOURCE_HISTORICAL,
+                rank=meta.rank if meta else None,
+                source=source,
+                policy=meta.policy if meta else None,
+                ctr_score=meta.ctr_score if meta else None,
+                is_exploration=meta.is_exploration if meta else None,
+                policy_version=meta.policy_version if meta else None,
             )
         )
         seq += 1

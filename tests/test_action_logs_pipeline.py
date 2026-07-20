@@ -915,3 +915,67 @@ def test_candidate_provider_overrides_default_selection(tmp_path):
     expected_video_ids = {str(v["video_id"]) for v in fixed}
     assert {pair[1] for pair in judged_pairs} <= expected_video_ids
     assert len(result.drafts) == 2 * len(users)
+
+
+def test_expand_events_tags_exposure_metadata_and_prefix():
+    from autoresearch.action_logs.pipeline import (
+        ExposureMetadata,
+        _expand_events,
+        normalize_clicks,
+    )
+    from autoresearch.action_logs.schema import SOURCE_ONLINE_SIMULATED, ImpressionDraft
+
+    drafts = [
+        ImpressionDraft(
+            user_id="u1", video_id="v1", click_propensity=0.9,
+            watch_fraction=0.5, would_like=False, duration_sec=100,
+        ),
+        ImpressionDraft(
+            user_id="u1", video_id="v2", click_propensity=0.1,
+            watch_fraction=0.5, would_like=False, duration_sec=100,
+        ),
+    ]
+    clicked = normalize_clicks(drafts, target_ctr=0.5)  # 상위 1건 = v1
+    assert clicked == {0}
+
+    metadata = {
+        ("u1", "v1"): ExposureMetadata(
+            policy="model", rank=1, ctr_score=0.9,
+            is_exploration=False, policy_version="run-x",
+        ),
+        ("u1", "v2"): ExposureMetadata(
+            policy="model", rank=2, ctr_score=0.1,
+            is_exploration=True, policy_version="run-x",
+        ),
+    }
+    request = EventGenerationRequest(seed=7)
+    events = _expand_events(
+        drafts, clicked, request,
+        metadata=metadata, source=SOURCE_ONLINE_SIMULATED, event_id_prefix="evt_m",
+    )
+    impressions = [e for e in events if e.event_type == "impression"]
+    assert len(impressions) == 2
+    assert all(e.source == "online_simulated" for e in events)
+    assert all(e.event_id.startswith("evt_m_") for e in events)
+    v1_imp = next(e for e in impressions if e.video_id == "v1")
+    assert (v1_imp.policy, v1_imp.rank, v1_imp.ctr_score) == ("model", 1, 0.9)
+    v1_click = next(e for e in events if e.event_type == "click")
+    assert v1_click.policy == "model"  # 세션 행에도 태깅
+    v2_imp = next(e for e in impressions if e.video_id == "v2")
+    assert v2_imp.is_exploration is True
+
+
+def test_expand_events_without_metadata_is_unchanged():
+    from autoresearch.action_logs.pipeline import _expand_events, normalize_clicks
+    from autoresearch.action_logs.schema import ImpressionDraft
+
+    drafts = [
+        ImpressionDraft(
+            user_id="u1", video_id="v1", click_propensity=0.9,
+            watch_fraction=0.5, would_like=False, duration_sec=100,
+        ),
+    ]
+    events = _expand_events(drafts, normalize_clicks(drafts, 0.0), EventGenerationRequest(seed=7))
+    assert events[0].event_id == "evt_00000000"
+    assert events[0].source == "historical"
+    assert events[0].policy is None
