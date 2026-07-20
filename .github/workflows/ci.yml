@@ -133,16 +133,25 @@ jobs:
             .
 
       - name: Run training image smoke check
+        # 코드가 이미지에 없으므로 로컬 아카이브 주입 모드로 부트스트랩
+        # 압축 해제·실행 경로를 검증한다 (Dockerfile.feast와 동일 패턴).
         run: |
-          docker run --rm autoresearch-training:ci
-          docker run --rm autoresearch-training:ci \
-            python -m src.cli build-features --help
-          docker run --rm autoresearch-training:ci \
-            python -m src.cli train-model --help
-          docker run --rm autoresearch-training:ci \
-            python -m src.cli evaluate-model --help
-          docker run --rm autoresearch-training:ci \
-            python -m src.cli run-pipeline --help
+          git archive --format=tar.gz -o /tmp/code-archive.tar.gz HEAD
+          run_training() {
+            docker run --rm \
+              -v /tmp/code-archive.tar.gz:/tmp/code-archive.tar.gz:ro \
+              -e CODE_ARCHIVE_LOCAL_PATH=/tmp/code-archive.tar.gz \
+              autoresearch-training:ci "$@"
+          }
+          run_training
+          run_training python -m src.cli build-features --help
+          run_training python -m src.cli train-model --help
+          run_training python -m src.cli evaluate-model --help
+          run_training python -m src.cli run-pipeline --help
+          if docker run --rm autoresearch-training:ci 2>/dev/null; then
+            echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
+            exit 1
+          fi
 
       - name: Build MLflow runtime image
         # deploy/mlflow/runtime의 uv.lock 기반 최소 파생 이미지를 검증한다.

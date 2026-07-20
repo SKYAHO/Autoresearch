@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # 파드 시작 시 코드 아카이브를 /app에 풀고 전달받은 커맨드를 실행한다.
-# 계약: docs/specs/2026-07-18-feast-bootstrap-gcs-code.md
+# Dockerfile.feast, Dockerfile.train 공용 ENTRYPOINT.
+# 계약: docs/specs/2026-07-18-feast-bootstrap-gcs-code.md,
+#       docs/specs/2026-07-20-training-image-gcs-bootstrap.md
 set -euo pipefail
 
 if (( $# == 0 )); then
   cat >&2 <<'USAGE'
 오류: 실행할 커맨드가 필요합니다.
-사용법: feast_bootstrap.sh <command> [args...]
+사용법: gcs_code_bootstrap.sh <command> [args...]
   env CODE_ARCHIVE_LOCAL_PATH  로컬 tar.gz 사용 (CI·로컬 검증용)
   env CODE_ARTIFACTS_BUCKET    코드 아카이브 GCS 버킷 이름 (gs:// 제외)
   env CODE_ARCHIVE_SHA         고정 실행할 40자 커밋 SHA (기본: code/latest.txt)
@@ -72,5 +74,5 @@ if [[ -z "${CODE_ARCHIVE_LOCAL_PATH:-}" ]]; then
   rm -f "${archive_path}"
 fi
 
-echo "[feast-bootstrap] code: ${code_version}"
+echo "[gcs-bootstrap] code: ${code_version}"
 exec "$@"
