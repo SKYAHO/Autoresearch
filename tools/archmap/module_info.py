@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import ast
 
+from tools.archmap.sidecar import extract_arch_sidecar
+
 VERSION_CONST_ALLOWLIST = {"TARGET_COUNTRY"}
 INTERNAL_ROOT = "autoresearch"
 
@@ -82,6 +84,7 @@ def _normalize_import(module: str) -> str | None:
 
 def extract_module_info(source: str, module_id: str, stage: str, path: str) -> dict:
     tree = ast.parse(source)
+    sidecar = extract_arch_sidecar(tree, path, stage)
     public_symbols: list[dict] = []
     version_consts: dict[str, dict] = {}
     schema_fields: dict[str, list[str]] = {}
@@ -116,6 +119,8 @@ def extract_module_info(source: str, module_id: str, stage: str, path: str) -> d
                 imports.add(norm)
 
     return {"id": module_id, "stage": stage, "path": path,
-            "role": None, "owns": [], "not_owns": [],
+            "role": sidecar["role"] if sidecar is not None else None,
+            "owns": sidecar["owns"] if sidecar is not None else [],
+            "not_owns": sidecar["not_owns"] if sidecar is not None else [],
             "public_symbols": public_symbols, "version_consts": version_consts,
             "schema_fields": schema_fields, "imports": sorted(imports)}

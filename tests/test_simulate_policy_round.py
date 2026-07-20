@@ -1,7 +1,5 @@
 """simulate_policy_round 배치 테스트 — stub Reranker + rule-based LLM."""
 
-import random
-
 import numpy as np
 import pandas as pd
 import pytest
