@@ -110,6 +110,26 @@ def test_rerank_with_diagnostics_reports_unseen_categories() -> None:
     assert {item.video_id for item in outcome.items} == {"video-known", "video-unseen"}
 
 
+def test_rerank_detects_categorical_type_mismatch_as_unseen() -> None:
+    # 요청 categorical 값의 타입이 학습 카테고리와 다르면(str "10" vs int 10) 조용히 NaN으로
+    # 강등된다. 정규화(coerce)하지 않는 detection-only 동작을 고정한다 — 예방이 아니라 감지:
+    # 요청은 실패하지 않고, unseen 진단으로 원래 값이 그대로 보고되어야 한다.
+    reranker = Reranker(
+        model=CategoricalCodeModel(),
+        feature_columns=("category_id",),
+        categorical_categories={"category_id": (10, 20, 30)},
+    )
+
+    outcome = reranker.rerank_with_diagnostics(
+        [
+            CandidateVideo(video_id="video-1", features={"category_id": "10"}),
+            CandidateVideo(video_id="video-2", features={"category_id": "20"}),
+        ]
+    )
+
+    assert outcome.unseen_categories == {"category_id": ("10", "20")}
+
+
 def test_rerank_with_diagnostics_empty_when_all_categories_known() -> None:
     reranker = Reranker(
         model=CategoricalCodeModel(),

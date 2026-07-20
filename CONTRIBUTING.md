@@ -23,7 +23,7 @@ AutoResearch 프로젝트에 기여해 주셔서 감사합니다.
 
 4. **PR 생성**: PR 템플릿을 채우고, 본문에 `Closes #이슈번호`를 포함합니다.
 
-5. **코드 리뷰**: 팀원 **최소 2명**의 Approve를 받아야 머지할 수 있습니다.
+5. **코드 리뷰**: 팀원 **최소 1명**의 Approve를 받아야 머지할 수 있습니다.
 
 6. **Squash Merge**: 머지는 항상 **Squash and merge** 방식으로 합니다.
    머지 커밋 제목은 `<type>: <설명> (#PR번호)` 형식으로 작성합니다.
@@ -190,7 +190,7 @@ Issue Form과 자동화를 단순하게 유지하기 위해 `feature`, `bug`, `e
 `main` 브랜치에는 아래 보호 규칙이 적용되어 있습니다.
 
 - **직접 push 금지**: 모든 변경은 PR을 통해서만 반영됩니다.
-- **리뷰 승인 필수**: 최소 2명의 팀원 Approve가 있어야 머지할 수 있습니다.
+- **리뷰 승인 필수**: 최소 1명의 팀원 Approve가 있어야 머지할 수 있습니다.
 - **CI 통과 필수**: CI 체크가 모두 통과해야 머지할 수 있습니다.
 - **머지 방식**: Squash and merge만 허용합니다.
 
@@ -200,7 +200,7 @@ Issue Form과 자동화를 단순하게 유지하기 위해 `feature`, `bug`, `e
 
 ## 문제 해결
 
-**PR이 merge되지 않을 때**: Draft 상태인지, approve 2명이 있는지, 충돌이 있는지, required check가 실패했는지 확인합니다. Draft PR은 approve를 받아도 merge할 수 없습니다.
+**PR이 merge되지 않을 때**: Draft 상태인지, approve 1명이 있는지, 충돌이 있는지, required check가 실패했는지 확인합니다. Draft PR은 approve를 받아도 merge할 수 없습니다.
 
 **Project에 항목이 안 보일 때**: `Done` 컬럼과 view filter를 확인합니다. 이미 closed/merged된 항목은 자동 추가 필터(`is:issue,pr is:open`)에 걸리지 않을 수 있습니다.
 
