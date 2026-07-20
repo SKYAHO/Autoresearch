@@ -164,3 +164,33 @@ def test_round_events_are_tagged_per_policy(tmp_path, stub_reranker):
     model_imps = table[(table["policy"] == "model") & (table["event_type"] == "impression")]
     assert model_imps["ctr_score"].notna().all()
     assert (model_imps["policy_version"] == "stub-run").all()
+
+
+def test_round_output_feeds_retraining_path(tmp_path, stub_reranker):
+    """policy=model 필터 후 derive_wide_events가 라벨을 복원할 수 있어야 한다."""
+    import pyarrow.parquet as pq
+
+    from src.pipeline.build_training_dataset import derive_wide_events
+
+    main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        target_ctr=0.2,
+        seed=42,
+        policy_version="stub-run",
+        output_dir=str(tmp_path),
+    )
+    table = pq.read_table(tmp_path / "event_log.parquet").to_pandas()
+    model_long = table[table["policy"] == "model"][
+        ["event_id", "event_timestamp", "user_id", "event_type", "video_id", "watch_time_sec"]
+    ]
+    wide = derive_wide_events(model_long)
+    impressions = len(model_long[model_long["event_type"] == "impression"])
+    assert len(wide) == impressions
+    assert wide["clicked"].sum() >= 1  # target_ctr=0.2로 클릭이 존재
