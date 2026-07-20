@@ -897,3 +897,21 @@ def test_load_video_records_accepts_youtube_collection_schema(tmp_path):
             "published_at": "2026-07-01 00:00:00+00:00",
         }
     ]
+
+
+def test_candidate_provider_overrides_default_selection(tmp_path):
+    """candidate_provider 주입 시 build_candidates 대신 주입된 후보만 판정한다."""
+    users, videos = _fixture_users(2), build_fixture_video_records(10)
+    fixed = [videos[0], videos[1]]  # 항상 같은 2개만 노출
+
+    def provider(virtual_user, user_rng):
+        return list(fixed)
+
+    result = generate_action_log_drafts(
+        _request(tmp_path), users, videos, RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+    )
+    judged_pairs = {(d.user_id, d.video_id) for d in result.drafts}
+    expected_video_ids = {str(v["video_id"]) for v in fixed}
+    assert {pair[1] for pair in judged_pairs} <= expected_video_ids
+    assert len(result.drafts) == 2 * len(users)

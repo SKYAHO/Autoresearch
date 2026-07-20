@@ -104,6 +104,10 @@ ActionLogProgressCallback = Callable[[ActionLogProgressSnapshot], float | None]
 ActionLogWorkIdFactory = Callable[[str, int], str]
 ActionLogCheckpointCallback = Callable[[str, int, list[ImpressionDraft]], None]
 
+# 유저별 노출 후보를 외부에서 결정할 때 쓰는 주입 지점. (virtual_user, user_rng)를
+# 받아 video dict 목록을 반환한다. None이면 기존 build_candidates 휴리스틱을 쓴다.
+CandidateProvider = Callable[[dict, random.Random], list[dict]]
+
 
 @dataclass(frozen=True)
 class ActionLogCheckpointPart:
@@ -417,6 +421,7 @@ def _generate_drafts_isolated(
     completed_work: dict[str, list[ImpressionDraft]] | None = None,
     checkpoint_callback: ActionLogCheckpointCallback | None = None,
     shard_index: int | None = None,
+    candidate_provider: CandidateProvider | None = None,
 ) -> tuple[list[ImpressionDraft], list[QuarantineRecord], int]:
     """LLM 판정을 (유저×후보청크) 단위로 격리·병렬 생성한다.
 
@@ -431,15 +436,18 @@ def _generate_drafts_isolated(
     for index, virtual_user in enumerate(virtual_users):
         user_id = str(virtual_user.get("user_id", f"user_{index}"))
         user_rng = random.Random(f"{request.seed}:{user_id}")
-        candidates = build_candidates(
-            virtual_user,
-            videos,
-            request.candidates_per_user,
-            request.exploration_ratio,
-            user_rng,
-            personalized_ratio=request.personalized_ratio,
-            popular_ratio=request.popular_ratio,
-        )
+        if candidate_provider is not None:
+            candidates = candidate_provider(virtual_user, user_rng)
+        else:
+            candidates = build_candidates(
+                virtual_user,
+                videos,
+                request.candidates_per_user,
+                request.exploration_ratio,
+                user_rng,
+                personalized_ratio=request.personalized_ratio,
+                popular_ratio=request.popular_ratio,
+            )
         if not candidates:
             continue
         for chunk_index, chunk in enumerate(_chunked(candidates, request.chunk_size)):
@@ -931,6 +939,7 @@ def generate_action_log_drafts(
     completed_work: dict[str, list[ImpressionDraft]] | None = None,
     checkpoint_callback: ActionLogCheckpointCallback | None = None,
     shard_index: int | None = None,
+    candidate_provider: CandidateProvider | None = None,
 ) -> ActionLogDraftGenerationResult:
     """유저 단위 LLM 판단을 실행하고 전역 CTR 정규화 전 draft를 반환한다.
 
@@ -959,6 +968,7 @@ def generate_action_log_drafts(
         completed_work,
         checkpoint_callback,
         shard_index,
+        candidate_provider,
     )
     if enforce_quarantine_limit:
         _raise_if_quarantine_exceeds(quarantine, total_work, request, len(virtual_users))
