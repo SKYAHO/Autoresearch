@@ -8,7 +8,6 @@
 | `specs/` | 살아있는 계약·설계 spec (`YYYY-MM-DD-<slug>.md`) | 유효한 동안 |
 | `plans/` | 진행 중 구현 계획 (`YYYY-MM-DD-<slug>.md`) | 구현 완료 시 archive로 |
 | `guides/` | 운영·아키텍처 가이드 | 상시 갱신 |
-| `assets/` | 문서용 이미지 | 참조되는 동안 |
 | `archive/` | 완료·과거 spec/plan/리포트 보존 | 영구 (수정하지 않음) |
 
 새 spec/plan 작성 규칙은 [`CLAUDE.md`](../CLAUDE.md)의 *Spec / Plan First* 절을
