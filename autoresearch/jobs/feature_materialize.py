@@ -22,6 +22,7 @@ FEATURE_TABLES: tuple[str, ...] = (
     "user_dynamic_feature",
     "video_feature",
 )
+_GCP_PROJECT_ID_PATTERN = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
 
 
 class BatchArgumentError(ValueError):
@@ -358,6 +359,8 @@ COMMIT TRANSACTION;
 
 
 def _validate_args(args: argparse.Namespace) -> None:
+    if not _GCP_PROJECT_ID_PATTERN.fullmatch(args.project):
+        raise BatchArgumentError("invalid GCP project ID")
     try:
         build_materialize_script(args.project, args.dataset, FEATURE_TABLES[0])
     except ValueError as exc:

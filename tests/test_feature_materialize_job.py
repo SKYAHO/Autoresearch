@@ -102,6 +102,51 @@ def test_main_rejects_invalid_project_identifier(monkeypatch, capsys):
     assert _summary(capsys.readouterr().out)["error_type"] == "invalid_arguments"
 
 
+def test_main_accepts_gcp_project_id(monkeypatch, capsys):
+    monkeypatch.setattr(
+        feature_materialize,
+        "_run",
+        lambda args: {"status": "succeeded"},
+    )
+
+    assert (
+        feature_materialize.main(
+            ["--project", "ar-infra-501607", "--dataset", "test_dataset"]
+        )
+        == 0
+    )
+
+    assert _summary(capsys.readouterr().out)["status"] == "succeeded"
+
+
+@pytest.mark.parametrize(
+    "project_id",
+    [
+        "_project",
+        "Project-id",
+        "abcde",
+        "a" * 31,
+        "project-",
+    ],
+)
+def test_main_rejects_invalid_gcp_project_id_before_running(
+    project_id, monkeypatch, caplog, capsys
+):
+    monkeypatch.setattr(
+        feature_materialize, "_run", lambda args: pytest.fail("must not run")
+    )
+
+    assert (
+        feature_materialize.main(["--project", project_id, "--dataset", "test_dataset"])
+        == 2
+    )
+
+    output = capsys.readouterr().out
+    assert _summary(output)["error_type"] == "invalid_arguments"
+    assert project_id not in output
+    assert project_id not in caplog.text
+
+
 def test_feature_tables_are_the_three_supported_sources():
     assert feature_materialize.FEATURE_TABLES == (
         "user_static_feature",
