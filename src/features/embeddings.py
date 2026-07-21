@@ -11,6 +11,17 @@ RETRIEVAL_QUERY(사용자 관심 키워드처럼 "질의" 역할)와 RETRIEVAL_D
 각자의 역할에 맞는 task_type을 지정한다.
 """
 
+__arch__ = {
+    "stage": "training",
+    "role": "Vertex AI gemini-embedding-001로 텍스트를 배치 임베딩합니다.",
+    "owns": [
+        "Vertex AI 배치 임베딩 호출(청크·재시도·정규화)",
+    ],
+    "not_owns": [
+        "임베딩 결과의 유사도 계산이나 캐싱",
+    ],
+}
+
 import os
 
 import numpy as np
