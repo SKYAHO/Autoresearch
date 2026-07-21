@@ -196,7 +196,7 @@ LEFT JOIN category_rank c
  AND u.event_timestamp = c.event_timestamp
  AND c.rn = 1
 """,
-    "video_feature": """
+    "video_feature": r"""
 WITH parsed AS (
   SELECT
     video_id,
@@ -204,10 +204,10 @@ WITH parsed AS (
     video_category AS category_id,
 
     (
-      COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'P(\\d+)D') AS INT64), 0) * 86400
-      + COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\\d+)H') AS INT64), 0) * 3600
-      + COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\\d+)M') AS INT64), 0) * 60
-      + COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\\d+)S') AS INT64), 0)
+      COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'P(\d+)D') AS INT64), 0) * 86400
+      + COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)H') AS INT64), 0) * 3600
+      + COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)M') AS INT64), 0) * 60
+      + COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)S') AS INT64), 0)
     ) AS duration_sec,
 
     COALESCE(video_view_count, 0) AS view_count,
@@ -255,12 +255,16 @@ def build_materialize_script(
     project_id: str, dataset_id: str, table_name: str
 ) -> str:
     """Build the transactional BigQuery script for one supported feature table."""
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", project_id):
+    if not isinstance(project_id, str) or not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_-]*", project_id
+    ):
         raise ValueError("invalid project_id")
-    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", dataset_id):
+    if not isinstance(dataset_id, str) or not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*", dataset_id
+    ):
         raise ValueError("invalid dataset_id")
     if table_name not in FEATURE_TABLES:
-        raise ValueError(f"unsupported feature table: {table_name}")
+        raise ValueError("unsupported feature table")
 
     target = f"`{project_id}.{dataset_id}.{table_name}`"
     select_sql = _FEATURE_SELECTS[table_name].format(

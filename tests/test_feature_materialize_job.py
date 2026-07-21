@@ -43,10 +43,14 @@ def test_supported_script_references_its_raw_source(table_name, raw_table):
 
 
 def test_script_rejects_unknown_feature_table():
-    with pytest.raises(ValueError, match="unsupported feature table"):
+    table_name = "user_category_similarity; secret-value"
+
+    with pytest.raises(ValueError, match="^unsupported feature table$") as error:
         feature_materialize.build_materialize_script(
-            "test-project", "test_dataset", "user_category_similarity"
+            "test-project", "test_dataset", table_name
         )
+
+    assert table_name not in str(error.value)
 
 
 @pytest.mark.parametrize(
@@ -70,3 +74,28 @@ def test_script_rejects_unsafe_project_or_dataset_identifier(
 
     assert project_id not in str(error.value)
     assert dataset_id not in str(error.value)
+
+
+@pytest.mark.parametrize("project_id", [None, 1, object()])
+def test_script_rejects_non_string_project_identifier(project_id):
+    with pytest.raises(ValueError, match="^invalid project_id$"):
+        feature_materialize.build_materialize_script(
+            project_id, "test_dataset", "user_static_feature"
+        )
+
+
+@pytest.mark.parametrize("dataset_id", [None, 1, object()])
+def test_script_rejects_non_string_dataset_identifier(dataset_id):
+    with pytest.raises(ValueError, match="^invalid dataset_id$"):
+        feature_materialize.build_materialize_script(
+            "test-project", dataset_id, "user_static_feature"
+        )
+
+
+def test_video_script_uses_single_backslash_iso_8601_duration_patterns():
+    script = feature_materialize.build_materialize_script(
+        "test-project", "test_dataset", "video_feature"
+    )
+
+    for pattern in (r"P(\d+)D", r"(\d+)H", r"(\d+)M", r"(\d+)S"):
+        assert f"r'{pattern}'" in script
