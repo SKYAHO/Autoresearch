@@ -119,39 +119,29 @@ MODEL_FEATURE_COLUMNS = (
 
 ### 실행 방식 결정
 
-검토한 방식은 세 가지다.
-
-1. **완전 순차 실행:** 충돌 가능성은 가장 낮지만 독립적인 schema와 순수 조립 작업까지 기다려야 한다.
-2. **Wave 단위 병렬 실행(채택):** 소유 파일이 겹치지 않는 Task 1/2와 Task 3/4만 각각 병렬화하고, app/runtime 통합과 최종 검증은 순차 수행한다. 속도와 리뷰 가능성의 균형이 가장 좋다.
-3. **Task별 별도 브랜치·worktree 완전 병렬:** 처리량은 높지만 작은 이슈에 cherry-pick/rebase와 통합 리뷰 비용이 과도하고, #216/#219 선행 상태가 달라질 위험이 있다.
-
-구현은 2번을 사용한다. 각 병렬 Task는 별도 agent context를 사용하되 같은 파일을 소유하지 않으며, Wave gate에서 root가 diff와 합친 테스트 결과를 검증한다.
+사용자가 지정한 `superpowers:subagent-driven-development`는 각 Task의 구현 직후 독립 리뷰를 완료해야 다음 Task로 진행할 수 있다. 따라서 이 계획은 같은 파일 충돌 여부와 무관하게 **완전 순차 실행**한다.
 
 ```text
 Task 0 브랜치 동기화·baseline
-  └─ Wave 1 (병렬)
-     ├─ Task 1 외부 API 계약·spec
-     └─ Task 2 순수 Feature Build
-          └─ Wave 2 (Task 1·2 완료 후 병렬)
-             ├─ Task 3 Feast reader·Redis CA bootstrap
-             └─ Task 4 /rerank HTTP 경로·모델 계보
-                  └─ Wave 3
-                     └─ Task 5 production startup·이미지·CI
-                          └─ Wave 4
-                             └─ Task 6 전체 검증·실연동 smoke
+  └─ Task 1 외부 API 계약·spec
+      └─ Task 2 순수 Feature Build
+          └─ Task 3 Feast reader·Redis CA bootstrap
+              └─ Task 4 /rerank HTTP 경로·모델 계보
+                  └─ Task 5 production startup·이미지·CI
+                      └─ Task 6 전체 검증·실연동 smoke
 ```
 
 | Task | 독립 산출물 | 소유 파일 | 선행 Task | 병렬 가능 |
 | --- | --- | --- | --- | --- |
 | 0 | 최신 선행 브랜치와 green baseline | Git 상태만 변경 | 없음 | 불가 |
-| 1 | 새 HTTP schema와 serving spec | `schemas.py`, `test_serving_schemas.py`, serving spec | 0 | Task 2와 가능 |
-| 2 | Redis 없는 순수 2단계 조립기 | `online_features.py`, `test_serving_online_features.py` | 0 | Task 1과 가능 |
-| 3 | 실제 Feast SDK/CA 어댑터 | `feast_reader.py`, `feature_repo/bootstrap.py`, materialize 관련 파일 | 1, 2 | Task 4와 가능 |
-| 4 | fake builder가 주입된 `/rerank` | `app.py`, `test_serving_api.py` | 1, 2, #216 | Task 3과 가능 |
+| 1 | 새 HTTP schema와 serving spec | `schemas.py`, `test_serving_schemas.py`, serving spec | 0 | 불가 (Task별 리뷰 게이트) |
+| 2 | Redis 없는 순수 2단계 조립기 | `online_features.py`, `test_serving_online_features.py` | 1 | 불가 (Task별 리뷰 게이트) |
+| 3 | 실제 Feast SDK/CA 어댑터 | `feast_reader.py`, `feature_repo/bootstrap.py`, materialize 관련 파일 | 1, 2 | 불가 (Task별 리뷰 게이트) |
+| 4 | fake builder가 주입된 `/rerank` | `app.py`, `test_serving_api.py` | 1, 2, #216 | 불가 (Task별 리뷰 게이트) |
 | 5 | 기본 runtime wiring과 serving image | `app.py`, serving Dockerfile, CI, deployment test | 3, 4 | 불가 |
 | 6 | 전체 검증 및 rollout 증거 | serving spec 검증 기록 | 5, #210, #218 | 불가 |
 
-병렬 실행 시 하나의 agent가 하나의 Task만 소유한다. Wave 종료마다 두 결과의 diff를 검토하고 targeted test를 합쳐 실행한 뒤 다음 Wave로 넘어간다. Task 3은 `app.py`를, Task 4는 Feast/bootstrap 파일을 수정하지 않는다.
+각 Task는 한 agent만 소유하고, 구현자 self-review와 독립 리뷰어의 spec/quality 승인을 모두 얻은 뒤 다음 Task로 넘어간다. Task 3은 `app.py`를, Task 4는 Feast/bootstrap 파일을 수정하지 않는다.
 
 ## Task 0: 선행 브랜치 동기화와 baseline 고정
 
