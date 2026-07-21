@@ -190,27 +190,55 @@ def test_build_applies_typed_cold_start_defaults_before_derived_features() -> No
     }
 
 
-@pytest.mark.parametrize(
-    "first_response",
-    [
-        {"user_id": ["user-1"], "video_id": ["video-1"]},
-        {
-            "user_id": ["user-1", "user-1"],
-            "video_id": ["video-1", "unexpected-video"],
-        },
-    ],
-)
-def test_build_rejects_first_read_length_or_entity_key_mismatches(
-    first_response: Mapping[str, Sequence[object]],
-) -> None:
+def test_build_rejects_first_read_length_mismatch() -> None:
+    complete_response = _first_response()
+    builder = ServingFeatureBuilder(
+        reader=FakeReader(
+            responses=[
+                {column: values[:-1] for column, values in complete_response.items()},
+                _similarity_response(),
+            ]
+        )
+    )
+
+    with pytest.raises(FeatureRetrievalError, match="unexpected lengths"):
+        builder.build(
+            user_id="user-1",
+            video_ids=["video-a", "video-b", "video-c"],
+            feature_columns=MODEL_FEATURE_COLUMNS,
+        )
+
+
+def test_build_rejects_first_read_entity_key_mismatch() -> None:
+    first_response = _first_response()
+    first_response["video_id"] = ["video-a", "video-b", "unexpected-video"]
     builder = ServingFeatureBuilder(
         reader=FakeReader(responses=[first_response, _similarity_response()])
     )
 
-    with pytest.raises(FeatureRetrievalError):
+    with pytest.raises(FeatureRetrievalError, match="entity keys do not match"):
         builder.build(
             user_id="user-1",
-            video_ids=["video-1", "video-2"],
+            video_ids=["video-a", "video-b", "video-c"],
+            feature_columns=MODEL_FEATURE_COLUMNS,
+        )
+
+
+def test_build_rejects_second_read_length_mismatch() -> None:
+    complete_response = _similarity_response()
+    builder = ServingFeatureBuilder(
+        reader=FakeReader(
+            responses=[
+                _first_response(),
+                {column: values[:-1] for column, values in complete_response.items()},
+            ]
+        )
+    )
+
+    with pytest.raises(FeatureRetrievalError, match="unexpected lengths"):
+        builder.build(
+            user_id="user-1",
+            video_ids=["video-a", "video-b", "video-c"],
             feature_columns=MODEL_FEATURE_COLUMNS,
         )
 
@@ -229,7 +257,7 @@ def test_build_rejects_second_read_entity_key_mismatch() -> None:
         )
     )
 
-    with pytest.raises(FeatureRetrievalError):
+    with pytest.raises(FeatureRetrievalError, match="entity keys do not match"):
         builder.build(
             user_id="user-1",
             video_ids=["video-a", "video-b", "video-c"],
