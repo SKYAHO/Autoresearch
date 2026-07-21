@@ -109,8 +109,8 @@ model flavor를 기록하도록 확장될 때 별도 작업으로 다룬다.
 
 로컬 dev 전체 suite, Feast 격리 suite, lockfile, serving 이미지 빌드와 컨테이너
 smoke를 새로 검증했다. 이미지는 `mlflow-skinny==2.22.1` 및
-`pyarrow==21.0.0`을 포함하며 `python -m pip check`가 성공했다. Feast·FastAPI·IAM
-LightGBM·Feast·FastAPI·Redis adapter·serving app import와 `FeatureStore('/app/feature_repo')` bootstrap도
+`pyarrow==21.0.0`을 포함하며 `python -m pip check`가 성공했다.
+LightGBM·Feast·FastAPI·Redis IAM adapter·serving app import와 `FeatureStore('/app/feature_repo')` bootstrap도
 성공했다. 라이브러리의 Pydantic/NumPy deprecation warning은 있었지만 실패는 없었다.
 
 실제 GKE/Redis smoke는 이번 코드 작업에서 실행하거나 인증·endpoint·운영
