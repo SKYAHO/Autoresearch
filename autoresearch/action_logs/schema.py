@@ -69,6 +69,9 @@ class EventLog(BaseModel):
     ctr_score: float | None = None
     is_exploration: bool | None = None
     policy_version: str | None = None
+    # 노출 조립 출처 태그 (#221). 노출별 model/trending/random 출처를 로그에 남긴다.
+    # optional — exposure_source가 없는 기존 로그와 하위 호환.
+    exposure_source: Literal["model", "trending", "random"] | None = None
 
     @model_validator(mode="after")
     def watch_time_only_for_view(self) -> "EventLog":
@@ -97,6 +100,7 @@ class EventLog(BaseModel):
             "ctr_score": self.ctr_score,
             "is_exploration": self.is_exploration,
             "policy_version": self.policy_version,
+            "exposure_source": self.exposure_source,
         }
 
 

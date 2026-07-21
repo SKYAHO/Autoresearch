@@ -23,6 +23,8 @@ from autoresearch.jobs import BATCH_CONTRACT_VERSION
 
 logger = logging.getLogger(__name__)
 REQUIRED_EVENT_TYPES = ("impression", "click", "view")
+# additive 확장 컬럼 — 이 컬럼이 없는 구 파티션 스키마도 missing 검사에서 제외한다 (#221).
+OPTIONAL_ADDITIVE_COLUMNS = frozenset({"exposure_source"})
 _DATE_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}")
 _PARTITION_FILE = "part-0.parquet"
 _REVISION = os.getenv("AUTORESEARCH_REVISION", "unknown")
@@ -142,7 +144,9 @@ def summarize_final_schema(
     """Arrow final schema와 EventLog row 불변식을 검증해 count만 반환한다."""
 
     actual_names = set(action_schema.names)
-    missing_columns = sorted(set(EVENT_LOG_PARQUET_SCHEMA.names) - actual_names)
+    missing_columns = sorted(
+        set(EVENT_LOG_PARQUET_SCHEMA.names) - actual_names - OPTIONAL_ADDITIVE_COLUMNS
+    )
     type_mismatches = sorted(
         field.name
         for field in EVENT_LOG_PARQUET_SCHEMA

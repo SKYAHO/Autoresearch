@@ -171,6 +171,7 @@ EVENT_LOG_PARQUET_SCHEMA = pa.schema(
         pa.field("ctr_score", pa.float64()),
         pa.field("is_exploration", pa.bool_()),
         pa.field("policy_version", pa.string()),
+        pa.field("exposure_source", pa.string()),
         pa.field("schema_version", pa.string()),
         pa.field("prompt_version", pa.string()),
         pa.field("llm_model", pa.string()),
@@ -707,6 +708,7 @@ class ExposureMetadata:
     ctr_score: float | None
     is_exploration: bool | None
     policy_version: str | None
+    exposure_source: Literal["model", "trending", "random"] | None = None
 
 
 def _expand_events(
@@ -751,6 +753,7 @@ def _expand_events(
                 ctr_score=meta.ctr_score if meta else None,
                 is_exploration=meta.is_exploration if meta else None,
                 policy_version=meta.policy_version if meta else None,
+                exposure_source=meta.exposure_source if meta else None,
             )
         )
         seq += 1
@@ -815,6 +818,7 @@ def _event_rows(batch: EventLogBatch, model_name: str) -> list[dict]:
                 "ctr_score": event.ctr_score,
                 "is_exploration": event.is_exploration,
                 "policy_version": event.policy_version,
+                "exposure_source": event.exposure_source,
                 "schema_version": batch.schema_version,
                 "prompt_version": batch.prompt_version,
                 "llm_model": model_name,
