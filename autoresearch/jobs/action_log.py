@@ -9,11 +9,14 @@ import math
 import os
 import re
 from datetime import date
+from collections.abc import Mapping
 from typing import Sequence
 
 from pyarrow.fs import GcsFileSystem
 
+from autoresearch.action_logs.pipeline import CandidateProvider, ExposureMetadata
 from autoresearch.action_logs.daily import (
+    CandidateProviderFactory,
     merge_daily_action_log_shards,
     run_daily_action_log,
     run_daily_action_log_shard,
@@ -166,7 +169,9 @@ def _reject(args: argparse.Namespace, *names: str) -> None:
         )
 
 
-def _build_candidate_provider_factory(args: argparse.Namespace):
+def _build_candidate_provider_factory(
+    args: argparse.Namespace,
+) -> CandidateProviderFactory | None:
     """model 모드에서만 src.pipeline을 지연 import해 노출 provider factory를 만든다.
 
     heuristic 모드는 None을 반환하며 src·BigQuery에 의존하지 않는다.
@@ -175,7 +180,7 @@ def _build_candidate_provider_factory(args: argparse.Namespace):
     if args.exposure_source != "model":
         return None
 
-    def factory(videos: list[dict]):
+    def factory(videos: list[dict]) -> tuple[CandidateProvider, Mapping[tuple[str, str], ExposureMetadata]]:
         from google.cloud import bigquery
 
         from src.pipeline.build_training_dataset import BIGQUERY_PROJECT
