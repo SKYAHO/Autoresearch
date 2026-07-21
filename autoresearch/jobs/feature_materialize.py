@@ -1,3 +1,6 @@
+import re
+
+
 FEATURE_TABLES: tuple[str, ...] = (
     "user_static_feature",
     "user_dynamic_feature",
@@ -252,6 +255,10 @@ def build_materialize_script(
     project_id: str, dataset_id: str, table_name: str
 ) -> str:
     """Build the transactional BigQuery script for one supported feature table."""
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", project_id):
+        raise ValueError("invalid project_id")
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", dataset_id):
+        raise ValueError("invalid dataset_id")
     if table_name not in FEATURE_TABLES:
         raise ValueError(f"unsupported feature table: {table_name}")
 

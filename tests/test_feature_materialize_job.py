@@ -47,3 +47,26 @@ def test_script_rejects_unknown_feature_table():
         feature_materialize.build_materialize_script(
             "test-project", "test_dataset", "user_category_similarity"
         )
+
+
+@pytest.mark.parametrize(
+    ("project_id", "dataset_id", "field_name"),
+    [
+        ("test project", "test_dataset", "project_id"),
+        ("test`project", "test_dataset", "project_id"),
+        ("test-project; DROP TABLE users", "test_dataset", "project_id"),
+        ("test-project", "test dataset", "dataset_id"),
+        ("test-project", "test`dataset", "dataset_id"),
+        ("test-project", "test_dataset; DROP TABLE users", "dataset_id"),
+    ],
+)
+def test_script_rejects_unsafe_project_or_dataset_identifier(
+    project_id, dataset_id, field_name
+):
+    with pytest.raises(ValueError, match=field_name) as error:
+        feature_materialize.build_materialize_script(
+            project_id, dataset_id, "user_static_feature"
+        )
+
+    assert project_id not in str(error.value)
+    assert dataset_id not in str(error.value)
