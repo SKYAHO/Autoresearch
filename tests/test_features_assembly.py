@@ -7,6 +7,7 @@ from src.features.assembly import (
     compute_point_in_time_user_features,
     compute_user_offline_features,
     compute_video_features,
+    parse_primary_categories,
 )
 
 
@@ -126,3 +127,51 @@ def test_compute_interaction_columns_matches():
     assert out["historical_category_match"].iloc[0] == 1
     assert out["preferred_category_match"].iloc[0] in (0, 1)
     assert 0.0 <= abs(out["topic_similarity"].iloc[0]) <= 1.0
+
+
+def test_compute_interaction_columns_uses_primary_categories_when_present():
+    # primary_categories 컬럼이 있으면 키워드 매핑 mock 대신 실제 값을 그대로 쓴다.
+    joined = pd.DataFrame(
+        {
+            "hobbies_and_interests_list": ['["unmapped_keyword"]'],
+            "primary_categories": ['["Sports", "Music"]'],
+            "historical_category_affinity": ["Sports"],
+            "category_id": ["Sports"],
+        }
+    )
+    out = compute_interaction_columns(joined)
+    assert out["preferred_category"].iloc[0] == ["Sports", "Music"]
+    assert out["preferred_category_match"].iloc[0] == 1  # category_id="Sports" ∈ preferred_category
+
+
+def test_compute_interaction_columns_falls_back_without_primary_categories():
+    # primary_categories 컬럼이 없으면(구식 mock) 기존 키워드 매핑으로 fallback한다.
+    joined = pd.DataFrame(
+        {
+            "hobbies_and_interests_list": ['["gaming"]'],
+            "historical_category_affinity": ["Gaming"],
+            "category_id": ["Gaming"],
+        }
+    )
+    out = compute_interaction_columns(joined)
+    assert out["preferred_category"].iloc[0] == ["Gaming"]
+
+
+def test_parse_primary_categories_from_json_string():
+    assert parse_primary_categories('["Gaming", "Music"]') == ["Gaming", "Music"]
+
+
+def test_parse_primary_categories_from_list():
+    assert parse_primary_categories(["Gaming", "Music"]) == ["Gaming", "Music"]
+
+
+def test_parse_primary_categories_filters_out_of_vocabulary_values():
+    # LLM이 vocabulary 밖 값을 산출하는 vocab drift 상황을 방어한다.
+    assert parse_primary_categories('["Gaming", "NotACategory"]') == ["Gaming"]
+
+
+def test_parse_primary_categories_handles_null_and_empty():
+    assert parse_primary_categories(None) == []
+    assert parse_primary_categories(float("nan")) == []
+    assert parse_primary_categories("") == []
+    assert parse_primary_categories("[]") == []

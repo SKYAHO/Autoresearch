@@ -252,6 +252,7 @@ def test_main_outputs_21_model_input_columns_plus_clicked(tmp_path, monkeypatch)
             "hobbies_and_interests": ["gaming"],
             "hobbies_and_interests_list": ["[]"],
             "watch_time_band": ["morning"],
+            "primary_categories": ['["Music"]'],
         }
     ).to_csv(raw_dir / "personas.csv", index=False)
 
@@ -279,6 +280,9 @@ def test_main_outputs_21_model_input_columns_plus_clicked(tmp_path, monkeypatch)
     assert len(result.columns) == 22  # 21 Model Input + clicked label
     assert result.loc[0, "watch_time_band"] == "morning"
     assert result.loc[0, "channel_subscriber_count"] == 12345
+    # video의 category_id="Music"이 personas.csv의 primary_categories=["Music"]에
+    # 포함되므로, 실제 값을 배선했다면 1이어야 한다 (#205).
+    assert result.loc[0, "preferred_category_match"] == 1
     assert result.loc[0, "channel_view_count"] == 999999
     assert result.loc[0, "channel_video_count"] == 321
     assert result.loc[0, "recent_view_count_7d"] == 0

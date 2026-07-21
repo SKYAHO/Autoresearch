@@ -42,11 +42,13 @@ assert set(KEYWORD_TO_CATEGORY.values()) <= set(CATEGORY_DESCRIPTIONS), \
 
 
 def derive_preferred_category(keywords) -> list:
-    """TEMPORARY MOCK: 키워드 리스트에서 선호 카테고리 파생.
+    """FALLBACK MOCK: 키워드 리스트에서 선호 카테고리 파생.
 
-    실제 User Feature Specification 구현 전까지의 임시 mock 로직.
-    LLM이 persona를 기반으로 YouTube 카테고리 1~3개를 직접 선택하는 방식으로
-    향후 교체 필요 (docs/guides/ctr-model-specification.md, User Feature Specification 참고).
+    personas 원본에 virtual_users 파이프라인이 LLM으로 직접 산출한
+    primary_categories 컬럼이 없을 때만(구식 mock personas.csv 등) 쓰는
+    fallback이다. primary_categories가 있으면 parse_primary_categories()가
+    그 실제 값을 그대로 쓴다 (#205, autoresearch/virtual_users/schema.py의
+    YouTubeProfile.primary_categories 참고).
 
     Args:
         keywords: preferred_topics의 키워드 리스트 (영어 또는 한글).
@@ -66,6 +68,28 @@ def derive_preferred_category(keywords) -> list:
                 if len(categories) >= 3:
                     break
     return categories if categories else ["People & Blogs"]
+
+
+def parse_primary_categories(value) -> list:
+    """virtual_users 파이프라인이 산출한 primary_categories 원본을 파싱한다.
+
+    parquet에서 로드하면 파이썬 list로, mock CSV에서 로드하면 JSON 문자열로
+    들어온다. docs/guides/data-warehouse.md의 user_static_feature 규칙과
+    동일하게 null/빈 값은 빈 리스트로 처리하고, CATEGORY_DESCRIPTIONS
+    vocabulary 밖의 값은 걸러낸다(LLM vocab drift 방어).
+    """
+    if isinstance(value, list):
+        categories = value
+    elif value is None or pd.isna(value):
+        return []
+    else:
+        try:
+            categories = json.loads(str(value))
+        except (json.JSONDecodeError, TypeError):
+            return []
+    if not isinstance(categories, list):
+        return []
+    return [c for c in categories if c in CATEGORY_DESCRIPTIONS]
 
 
 def extract_keywords_safe(text_or_json) -> list:
@@ -270,10 +294,17 @@ def compute_interaction_columns(joined: pd.DataFrame) -> pd.DataFrame:
 
     입력 필수 컬럼: hobbies_and_interests_list, historical_category_affinity,
     category_id. (build_training_dataset.py Step 2의 계산을 그대로 이동한 것.)
+
+    preferred_category는 joined에 primary_categories 컬럼이 있으면(virtual_users
+    파이프라인의 실제 LLM 산출값, #205) 그 값을 그대로 쓰고, 없으면(구식 mock
+    personas.csv 등) derive_preferred_category() 키워드 매핑 fallback을 쓴다.
     """
     out = joined.copy()
     out["preferred_topics"] = out["hobbies_and_interests_list"].apply(extract_keywords_safe)
-    out["preferred_category"] = out["preferred_topics"].apply(derive_preferred_category)
+    if "primary_categories" in out.columns:
+        out["preferred_category"] = out["primary_categories"].apply(parse_primary_categories)
+    else:
+        out["preferred_category"] = out["preferred_topics"].apply(derive_preferred_category)
     out["user_keyword_embeddings"] = out["preferred_topics"].apply(embed_keywords)
     out["topic_similarity"] = out.apply(
         lambda row: compute_topic_similarity(row["user_keyword_embeddings"], row["category_id"]),
