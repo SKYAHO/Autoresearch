@@ -172,3 +172,34 @@ def test_main_survives_registry_registration_failure(tmp_path, monkeypatch) -> N
 
     # 모델 파일은 registry 등록 실패와 무관하게 이미 저장되어 있어야 한다.
     assert model_output.exists()
+
+
+def test_main_registers_lineage_tags_from_extra_params(tmp_path, monkeypatch) -> None:
+    """extra_params(데이터 계보)로 넘긴 값이 실제로 등록된 버전의 태그에
+    반영되는지 검증(run params 기록뿐 아니라 registry 태그까지 전파)."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    data_path = tmp_path / "training_dataset.csv"
+    _synthetic_ctr_dataset().to_csv(data_path, index=False)
+
+    train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.pkl"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.pkl"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+        extra_params={"videos_source": "bigquery", "events_source": "bigquery"},
+    )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    [version] = client.search_model_versions("name='ctr-model'")
+    tags = client.get_model_version("ctr-model", str(version.version)).tags
+    assert tags["videos_source"] == "bigquery"
+    assert tags["events_source"] == "bigquery"
