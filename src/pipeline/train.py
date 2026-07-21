@@ -21,6 +21,7 @@ from src.models.lgbm_model import LGBMModel  # noqa: E402
 from src.utils.model_utils import save_model, save_feature_columns, save_categorical_columns  # noqa: E402
 from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
 from src.tracking.logger import log_artifact, log_metrics, log_parameters  # noqa: E402
+from src.tracking.registry import register_model  # noqa: E402
 
 
 def get_project_root():
@@ -89,7 +90,7 @@ def main(
     print("LightGBM 모델 훈련")
     print("=" * 70)
 
-    with mlflow.start_run(experiment_id=experiment_id):
+    with mlflow.start_run(experiment_id=experiment_id) as run:
         print("\n[Step 1] 데이터 로드...")
         if data_path is None:
             data_path = os.path.join(project_root, config["data"]["path"])
@@ -242,6 +243,23 @@ def main(
         log_artifact(local_path=feature_columns_path, artifact_path="features")
         log_artifact(local_path=categorical_columns_path, artifact_path="features")
 
+        print("\n[Step 9] Model Registry 등록...")
+        model_name = config["registry"]["model_name"]
+        # log_artifact(..., artifact_path="model")과 짝을 맞춰야 한다 — 서빙 로더의
+        # MLFLOW_MODEL_ARTIFACT_PATH 상수(model/lgbm_model.joblib)도 같은
+        # "model/" 아티팩트 경로 아래 파일을 참조한다.
+        model_uri = f"runs:/{run.info.run_id}/model"
+        registry_tags = {"val_roc_auc": f"{val_roc_auc:.4f}"}
+        if extra_params:
+            registry_tags.update({k: str(v) for k, v in extra_params.items()})
+        # 등록 실패로 이미 끝난 학습 run을 FAILED 처리하지 않는다(best-effort).
+        registered_version = None
+        try:
+            registered_version = register_model(model_uri, model_name, tags=registry_tags)
+            print(f"  [OK] {model_name} v{registered_version} 등록 완료")
+        except Exception as exc:
+            print(f"  ⚠️  Model Registry 등록 실패 — 학습 결과(모델·아티팩트)는 정상 저장됨: {exc}")
+
     print("\n" + "=" * 70)
     print("훈련 완료")
     print("=" * 70)
@@ -249,6 +267,11 @@ def main(
     print(f"Model: {model_path}")
     print(f"Feature columns: {feature_columns_path}")
     print(f"Categorical columns: {categorical_columns_path}")
+    print(
+        f"Registered model: {model_name} v{registered_version}"
+        if registered_version is not None
+        else f"Registered model: 등록 실패 (건너뜀 — 위 경고 로그 참고, run_id={run.info.run_id})"
+    )
 
 
 if __name__ == "__main__":
