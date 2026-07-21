@@ -251,9 +251,20 @@ def main(
         # ONNX 입력은 categorical_columns.pkl(위에서 저장한 categories_by_column)이
         # 정한 카테고리 순서의 정수 코드를 받는다 — 별도 매핑 아티팩트를 새로
         # 만들지 않고 기존 categorical_columns.pkl 계약을 그대로 재사용한다.
-        onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
-        log_onnx_model(onnx_model, artifact_path="model_onnx")
-        print("  [OK] ONNX 모델 기록 완료 (model_onnx/)")
+        #
+        # ONNX는 보조 산출물이다. 이 시점에는 이미 Step 8에서 모델·feature·
+        # categorical 아티팩트가 저장·기록 완료된 뒤라서, onnxmltools/onnx/
+        # protobuf 스택 문제(버전 민감도가 높다)로 여기서 실패해도 이미 끝난
+        # 학습·저장 결과까지 run 전체를 실패로 마킹하지 않는다 — 경고만 남기고
+        # 계속 진행한다.
+        onnx_logged = False
+        try:
+            onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
+            log_onnx_model(onnx_model, artifact_path="model_onnx")
+            onnx_logged = True
+            print("  [OK] ONNX 모델 기록 완료 (model_onnx/)")
+        except Exception as exc:
+            print(f"  ⚠️  ONNX 변환/기록 실패 — 학습 결과(모델·아티팩트)는 정상 저장됨: {exc}")
 
     print("\n" + "=" * 70)
     print("훈련 완료")
@@ -262,7 +273,11 @@ def main(
     print(f"Model: {model_path}")
     print(f"Feature columns: {feature_columns_path}")
     print(f"Categorical columns: {categorical_columns_path}")
-    print("ONNX model: model_onnx/ (MLflow artifact)")
+    print(
+        "ONNX model: model_onnx/ (MLflow artifact)"
+        if onnx_logged
+        else "ONNX model: 기록 실패 (건너뜀 — 위 경고 로그 참고)"
+    )
 
 
 if __name__ == "__main__":

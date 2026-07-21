@@ -145,3 +145,41 @@ def test_main_converts_and_logs_onnx_model(tmp_path, monkeypatch) -> None:
     assert len(log_calls) == 1
     assert log_calls[0]["onnx_model"] is sentinel_onnx_model
     assert log_calls[0]["artifact_path"] == "model_onnx"
+
+
+def test_main_survives_onnx_conversion_failure(tmp_path, monkeypatch, capsys) -> None:
+    """#178 리뷰 반영: ONNX는 보조 산출물이라 변환 실패가 학습 run 전체를
+    실패로 마킹해서는 안 된다 — 모델은 이미 Step 8에서 저장·기록된 뒤다."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    data_path = tmp_path / "training_dataset.csv"
+    _synthetic_ctr_dataset().to_csv(data_path, index=False)
+
+    def fake_convert_raises(model, n_features):
+        raise RuntimeError("onnxmltools 변환 실패(시뮬레이션)")
+
+    monkeypatch.setattr(train, "convert_lgbm_to_onnx", fake_convert_raises)
+
+    # 예외가 전파되지 않고 main()이 정상적으로 끝까지 실행되어야 한다.
+    train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.pkl"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.pkl"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+    )
+
+    # 모델 파일은 ONNX 실패와 무관하게 이미 저장되어 있어야 한다.
+    assert (tmp_path / "model.joblib").exists()
+
+    captured = capsys.readouterr()
+    assert "ONNX 변환/기록 실패" in captured.out
+    assert "onnxmltools 변환 실패(시뮬레이션)" in captured.out
+    assert "훈련 완료" in captured.out
