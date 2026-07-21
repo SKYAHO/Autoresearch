@@ -193,6 +193,7 @@ def test_healthcheck_is_503_when_feast_initialization_fails(
     assert response.status_code == 503
     assert feast_load_calls == ["feature_repo"]
     assert "phase=feature_store" in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
     assert "Feast initialization failed" not in caplog.text
 
 
@@ -226,6 +227,7 @@ def test_healthcheck_is_503_when_model_initialization_fails(
     assert response.status_code == 503
     assert feast_load_calls == []
     assert "phase=model" in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
     assert "secret-model-loader-error" not in caplog.text
 
 

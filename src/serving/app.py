@@ -100,10 +100,11 @@ def create_app(
                     os.getenv("RERANK_FEATURE_REPO_PATH", "feature_repo")
                 )
                 active_feature_builder = ServingFeatureBuilder(reader=reader)
-            except Exception:  # noqa: BLE001 - startup boundary must remain health-queryable.
+            except Exception as error:  # noqa: BLE001 - startup boundary must remain health-queryable.
                 logger.error(
-                    "Reranking runtime initialization failed: phase=%s",
+                    "Reranking runtime initialization failed: phase=%s error_type=%s",
                     initialization_phase,
+                    type(error).__name__,
                 )
         RERANK_MODEL_READY.set(1 if unavailable_detail() is None else 0)
         yield
