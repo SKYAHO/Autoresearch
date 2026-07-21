@@ -1,10 +1,13 @@
 from collections.abc import Mapping, Sequence
 
+import pytest
+
 import src.serving.feast_reader as feast_reader
 from src.serving.feast_reader import (
     FeastOnlineFeatureReader,
     load_feast_online_feature_reader,
 )
+from src.serving.online_features import FeatureRetrievalError
 
 
 class _FakeOnlineFeatures:
@@ -63,3 +66,24 @@ def test_loader_prepares_ca_bundle_before_creating_store(monkeypatch) -> None:
     # Then: CA preparation precedes store construction and its store is injected.
     assert events == ["ca", "store:feature_repo"]
     assert reader.store is store
+
+
+def test_read_converts_external_store_error_without_sdk_or_request_values() -> None:
+    # Given: an injected external store that exposes sensitive failure details.
+    class _FailingStore:
+        def get_online_features(
+            self, *, features: list[str], entity_rows: list[dict[str, str]]
+        ) -> _FakeOnlineFeatures:
+            raise RuntimeError("password=secret user_id=user-1")
+
+    reader = FeastOnlineFeatureReader(store=_FailingStore())
+
+    # When: the SDK-facing adapter invokes the external store.
+    with pytest.raises(FeatureRetrievalError) as excinfo:
+        reader.read(
+            feature_refs=("UserStaticView:age_group",),
+            entity_rows=({"user_id": "user-1"},),
+        )
+
+    # Then: callers receive only the fixed safe retrieval failure.
+    assert str(excinfo.value) == "Feast online feature retrieval failed."

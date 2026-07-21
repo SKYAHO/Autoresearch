@@ -24,12 +24,6 @@ class _FeatureStore(Protocol):
         ...
 
 
-def _feast_error_type() -> type[Exception]:
-    from feast.errors import FeastError
-
-    return FeastError
-
-
 @dataclass(frozen=True, slots=True)
 class FeastOnlineFeatureReader:
     """주입된 Feast store로 online feature 요청을 수행한다."""
@@ -48,7 +42,7 @@ class FeastOnlineFeatureReader:
                 features=list(feature_refs),
                 entity_rows=[dict(row) for row in entity_rows],
             ).to_dict()
-        except _feast_error_type():
+        except Exception:  # noqa: BLE001 - external SDK errors may contain request data.
             raise FeatureRetrievalError(
                 reason="Feast online feature retrieval failed."
             ) from None
