@@ -53,7 +53,7 @@ class RerankResponseItem(BaseModel):
 
 
 class RerankResponse(BaseModel):
-    """/rerank 응답 본문. CTR 점수 내림차순으로 정렬된 결과 목록."""
+    """/rerank 응답 본문. items는 요청 video_ids 순서를 보존한다."""
 
     model_config = ConfigDict(frozen=True)
 

@@ -7,9 +7,9 @@
 
 ## API 계약
 
-- `GET /healthcheck`: 모델 로드 상태를 반환한다. 모델을 사용할 수 없으면 `503`을 반환한다.
+- `GET /healthcheck`: 모델, 온라인 FeatureStore, 모델-피처 계약이 모두 준비된 경우에만 `200`을 반환하며, 하나라도 준비되지 않으면 `503`을 반환한다.
 - `POST /rerank`: `user_id`와 `video_ids`를 받아 온라인 피처를 조립해 CTR을 예측한다. 응답 `items`는 입력 `video_ids` 순서를 보존한다.
-- `GET /metrics`: Prometheus 형식의 요청 수·지연 시간·모델 준비 상태를 노출한다. 학습에 없던
+- `GET /metrics`: Prometheus 형식의 요청 수·지연 시간·전체 서빙 준비 상태를 기존 `rerank_model_ready` 이름으로 노출한다. 학습에 없던
   categorical 값이 NaN으로 강등되면(신규 카테고리 등장 등) `rerank_unseen_category_total{column=...}`
   카운터가 컬럼별로 증가하고 경고 로그가 남는다 — 조용한 학습-서빙 스큐를 감지해 재학습 신호로 쓴다.
 
@@ -103,14 +103,14 @@ model flavor를 기록하도록 확장될 때 별도 작업으로 다룬다.
 
 ## 컨테이너
 
-`deploy/serving/Dockerfile`은 uv lockfile 기반으로 런타임 의존성을 설치한다. 로컬 모델은 이미지에 포함하지 않으며, 실행 환경에서 read-only volume 또는 artifact 다운로드로 제공한다.
+`deploy/serving/Dockerfile`은 uv lockfile 기반 Python 의존성과 LightGBM 런타임에 필요한 `libgomp1`을 설치한다. 로컬 모델은 이미지에 포함하지 않으며, 실행 환경에서 read-only volume 또는 artifact 다운로드로 제공한다.
 
 ## 2026-07-22 Task 6 검증과 rollout 전제조건
 
 로컬 dev 전체 suite, Feast 격리 suite, lockfile, serving 이미지 빌드와 컨테이너
 smoke를 새로 검증했다. 이미지는 `mlflow-skinny==2.22.1` 및
 `pyarrow==21.0.0`을 포함하며 `python -m pip check`가 성공했다. Feast·FastAPI·IAM
-Redis adapter·serving app import와 `FeatureStore('/app/feature_repo')` bootstrap도
+LightGBM·Feast·FastAPI·Redis adapter·serving app import와 `FeatureStore('/app/feature_repo')` bootstrap도
 성공했다. 라이브러리의 Pydantic/NumPy deprecation warning은 있었지만 실패는 없었다.
 
 실제 GKE/Redis smoke는 이번 코드 작업에서 실행하거나 인증·endpoint·운영

@@ -23,6 +23,20 @@ def test_serving_image_installs_feast_compatible_group() -> None:
     assert '"--group", "serving"' not in dockerfile
 
 
+def test_serving_runtime_installs_lightgbm_native_dependency() -> None:
+    # Given: the production serving image definition.
+    dockerfile = SERVING_DOCKERFILE.read_text(encoding="utf-8")
+
+    # When: its runtime package installation is inspected.
+    runtime_stage = dockerfile.split("FROM python:3.12-slim", maxsplit=1)[1]
+
+    # Then: LightGBM's OpenMP library is installed before dropping privileges.
+    assert "apt-get update" in runtime_stage
+    assert "apt-get install --no-install-recommends -y libgomp1" in runtime_stage
+    assert "rm -rf /var/lib/apt/lists/*" in runtime_stage
+    assert runtime_stage.index("libgomp1") < runtime_stage.index("USER appuser")
+
+
 def test_serving_image_copies_src_feature_repo_and_bootstrap_package() -> None:
     dockerfile = SERVING_DOCKERFILE.read_text(encoding="utf-8")
 
@@ -36,8 +50,12 @@ def test_ci_builds_serving_image_and_runs_import_smoke() -> None:
 
     assert "-f deploy/serving/Dockerfile" in workflow
     assert "--tag autoresearch-serving:ci" in workflow
-    assert "import feast, fastapi, feature_repo.redis_iam, src.serving.app" in workflow
+    assert (
+        "import lightgbm, feast, fastapi, feature_repo.redis_iam, src.serving.app"
+        in workflow
+    )
     assert "tests/test_serving_feast_reader.py" in workflow
+    assert "tests/test_serving_feast_reader_feast.py" in workflow
     assert "tests/test_serving_api.py" in workflow
     assert "tests/test_serving_deployment.py" in workflow
 

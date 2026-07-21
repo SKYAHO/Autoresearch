@@ -299,6 +299,22 @@ def test_rerank_preserves_requested_video_id_order_with_model_run_id() -> None:
     }
 
 
+def test_openapi_describes_rerank_response_in_request_order() -> None:
+    # Given: the public serving application.
+    app = create_app(resolved_model=_resolved_model(), feature_builder=FakeFeatureBuilder())
+
+    # When: a client reads the generated OpenAPI response schema.
+    openapi_schema = app.openapi()
+    response_description = openapi_schema["components"]["schemas"]["RerankResponse"][
+        "description"
+    ]
+
+    # Then: the schema promises request order rather than score order.
+    assert response_description == (
+        "/rerank 응답 본문. items는 요청 video_ids 순서를 보존한다."
+    )
+
+
 def test_rerank_does_not_accept_caller_supplied_features() -> None:
     app = create_app(resolved_model=_resolved_model(), feature_builder=FakeFeatureBuilder())
 
@@ -382,6 +398,22 @@ def test_metrics_observe_video_id_count() -> None:
     after = REGISTRY.get_sample_value("rerank_video_ids_sum") or 0.0
     assert response.status_code == 200
     assert after - before == 2.0
+
+
+def test_metrics_describe_full_serving_readiness_without_renaming_metric() -> None:
+    # Given: a runtime with a compatible model and online feature builder.
+    app = create_app(resolved_model=_resolved_model(), feature_builder=FakeFeatureBuilder())
+
+    # When: Prometheus scrapes the metrics endpoint.
+    with TestClient(app) as client:
+        response = client.get("/metrics")
+
+    # Then: the existing metric describes every readiness dependency.
+    assert response.status_code == 200
+    assert (
+        "# HELP rerank_model_ready Whether the model, online feature store, and "
+        "feature contract are ready."
+    ) in response.text
 
 
 def test_rerank_maps_prediction_failure_to_500() -> None:

@@ -39,7 +39,10 @@ RERANK_VIDEO_IDS = Histogram(
     buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500),
 )
 RERANK_DURATION = Histogram("rerank_duration_seconds", "Reranking request duration.")
-RERANK_MODEL_READY = Gauge("rerank_model_ready", "Whether a reranking model is ready.")
+RERANK_MODEL_READY = Gauge(
+    "rerank_model_ready",
+    "Whether the model, online feature store, and feature contract are ready.",
+)
 # 학습에 없던 categorical 값이 NaN으로 조용히 강등된 횟수(컬럼별). 신규 카테고리 등장 =
 # 학습-서빙 스큐 신호이며, 재학습 트리거로 쓴다. 라벨은 컬럼명만 사용해 카디널리티를 제한한다.
 RERANK_UNSEEN_CATEGORY = Counter(
