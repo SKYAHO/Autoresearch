@@ -629,7 +629,7 @@ git commit -m "build: #220 Feast 포함 serving 이미지 검증"
 - Consumes: Task 1~5의 통합 결과와 #210/#218/materialize 운영 준비 상태
 - Produces: dev/Feast/container 검증 증거와 rollout 전 실제 Redis smoke 결과
 
-- [ ] **Step 1: dev 전체 테스트**
+- [x] **Step 1: dev 전체 테스트**
 
 ```bash
 uv sync --frozen
@@ -638,7 +638,7 @@ uv run --no-sync python -m pytest -v
 
 Expected: 전체 PASS. 기존 배치·시뮬레이션은 내부 `CandidateVideo`/`Reranker`를 계속 사용하므로 동작 불변.
 
-- [ ] **Step 2: Feast 격리 테스트**
+- [x] **Step 2: Feast 격리 테스트**
 
 ```bash
 uv sync --frozen --no-dev --group feast
@@ -651,7 +651,7 @@ uv run --no-sync python -m pytest \
 
 Expected: 전체 PASS.
 
-- [ ] **Step 3: 정적·컨테이너 검증**
+- [x] **Step 3: 정적·컨테이너 검증**
 
 ```bash
 uv lock --check
@@ -667,14 +667,16 @@ Expected: exit 0.
 
 이 단계는 코드 PR의 fake 테스트 완료를 막지 않지만 실제 rollout 전에는 필수다.
 
+Result (2026-07-22): 실행하지 않았다. #210/#218 및 운영 materialize가 준비된 뒤 동일 KSA/Workload Identity·Redis CA 환경에서 수행하는 배포 전 필수 gate로 serving spec에 기록했다.
+
 1. 동일 KSA/Workload Identity와 Redis CA 환경으로 serving pod를 기동한다.
 2. 존재하는 user 1명과 video 2개로 `/rerank`를 호출한다.
-3. 응답이 2개이며 CTR 내림차순, `model_id`가 현재 champion run ID인지 확인한다.
+3. 응답이 요청 `video_ids` 순서를 보존하고, `model_id`가 현재 champion run ID인지 확인한다.
 4. 로그/metric으로 Feast 오류 0, unseen categorical/default 사용량을 확인한다.
 5. 없는 user와 없는 video를 각각 호출해 typed cold-start가 200 응답을 내는지 확인한다.
 6. 201개, 중복 video ID, legacy candidates 요청이 각각 422인지 확인한다.
 
-- [ ] **Step 5: 최종 문서·커밋**
+- [x] **Step 5: 최종 문서·커밋**
 
 실연동 결과와 아직 남은 인프라 의존성을 spec/PR에 기록한다.
 
