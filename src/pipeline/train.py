@@ -18,9 +18,14 @@ sys.path.insert(0, PROJECT_ROOT)
 import mlflow  # noqa: E402
 
 from src.models.lgbm_model import LGBMModel  # noqa: E402
-from src.utils.model_utils import save_model, save_feature_columns, save_categorical_columns  # noqa: E402
+from src.utils.model_utils import (  # noqa: E402
+    save_model,
+    save_feature_columns,
+    save_categorical_columns,
+    convert_lgbm_to_onnx,
+)
 from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
-from src.tracking.logger import log_artifact, log_metrics, log_parameters  # noqa: E402
+from src.tracking.logger import log_artifact, log_metrics, log_parameters, log_onnx_model  # noqa: E402
 
 
 def get_project_root():
@@ -242,6 +247,14 @@ def main(
         log_artifact(local_path=feature_columns_path, artifact_path="features")
         log_artifact(local_path=categorical_columns_path, artifact_path="features")
 
+        print("\n[Step 9] ONNX 변환 및 기록...")
+        # ONNX 입력은 categorical_columns.pkl(위에서 저장한 categories_by_column)이
+        # 정한 카테고리 순서의 정수 코드를 받는다 — 별도 매핑 아티팩트를 새로
+        # 만들지 않고 기존 categorical_columns.pkl 계약을 그대로 재사용한다.
+        onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
+        log_onnx_model(onnx_model, artifact_path="model_onnx")
+        print("  [OK] ONNX 모델 기록 완료 (model_onnx/)")
+
     print("\n" + "=" * 70)
     print("훈련 완료")
     print("=" * 70)
@@ -249,6 +262,7 @@ def main(
     print(f"Model: {model_path}")
     print(f"Feature columns: {feature_columns_path}")
     print(f"Categorical columns: {categorical_columns_path}")
+    print("ONNX model: model_onnx/ (MLflow artifact)")
 
 
 if __name__ == "__main__":
