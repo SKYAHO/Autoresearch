@@ -1,8 +1,84 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
+import yaml
+from mlflow.tracking import MlflowClient
 
+from src.pipeline import train
 from src.pipeline.train import collect_categorical_categories
+
+FEATURE_COLUMNS = [
+    "age_group",
+    "occupation",
+    "historical_category_affinity",
+    "recent_click_count_7d",
+    "recent_watch_time_7d",
+    "recent_like_count_7d",
+    "category_id",
+    "duration_sec",
+    "view_count",
+    "like_ratio",
+    "comment_ratio",
+    "days_since_upload",
+    "historical_category_match",
+    "preferred_category_match",
+    "topic_similarity",
+]
+CATEGORICAL_COLUMNS = ["age_group", "occupation", "historical_category_affinity", "category_id"]
+
+
+def _synthetic_ctr_dataset(n: int = 60, seed: int = 7) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    return pd.DataFrame(
+        {
+            "clicked": [i % 2 for i in range(n)],
+            "age_group": rng.choice(["10s", "20s", "30s", "40s", "50s+"], size=n),
+            "occupation": rng.choice(["Student", "Engineer", "Marketer"], size=n),
+            "historical_category_affinity": rng.choice(["A", "B", "C"], size=n),
+            "recent_click_count_7d": rng.integers(0, 20, size=n).astype(float),
+            "recent_watch_time_7d": rng.random(size=n) * 100,
+            "recent_like_count_7d": rng.integers(0, 10, size=n).astype(float),
+            "category_id": rng.integers(1, 6, size=n),
+            "duration_sec": rng.integers(60, 600, size=n).astype(float),
+            "view_count": rng.integers(100, 100000, size=n).astype(float),
+            "like_ratio": rng.random(size=n),
+            "comment_ratio": rng.random(size=n),
+            "days_since_upload": rng.integers(0, 30, size=n).astype(float),
+            "historical_category_match": rng.integers(0, 2, size=n),
+            "preferred_category_match": rng.integers(0, 2, size=n),
+            "topic_similarity": rng.random(size=n),
+        }
+    )
+
+
+def _write_train_config(config_path) -> None:
+    config = {
+        "data": {
+            "path": "ignored.csv",
+            "test_size": 0.2,
+            "val_size": 0.2,
+            "random_state": 42,
+            "feature_columns": FEATURE_COLUMNS,
+            "categorical_columns": CATEGORICAL_COLUMNS,
+        },
+        "model": {
+            "n_estimators": 10,
+            "learning_rate": 0.1,
+            "num_leaves": 7,
+            "scale_pos_weight": "auto",
+            "random_state": 42,
+        },
+        "artifacts": {
+            "model_path": "ignored/model.joblib",
+            "feature_columns_path": "ignored/feature_columns.pkl",
+            "categorical_columns_path": "ignored/categorical_columns.pkl",
+            "test_set_path": "ignored/test_set.csv",
+        },
+        "registry": {"model_name": "ctr-model"},
+    }
+    with open(config_path, "w") as f:
+        yaml.safe_dump(config, f)
 
 
 def test_collect_categorical_categories_unions_train_and_val() -> None:
@@ -26,3 +102,104 @@ def test_collect_categorical_categories_skips_missing_columns() -> None:
     result = collect_categorical_categories(X_train, X_val, ["category_id"])
 
     assert result == {}
+
+
+def test_main_registers_model_and_auto_increments_version(tmp_path, monkeypatch) -> None:
+    """#96: 학습 완료 후 ctr-model이 Model Registry에 등록되고 버전이 자동 증가하는지 검증."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    data_path = tmp_path / "training_dataset.csv"
+    _synthetic_ctr_dataset().to_csv(data_path, index=False)
+
+    def run_once(suffix: str) -> None:
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            model_output=str(tmp_path / f"model_{suffix}.joblib"),
+            test_set_output=str(tmp_path / f"test_set_{suffix}.csv"),
+            feature_columns_output=str(tmp_path / f"feature_columns_{suffix}.pkl"),
+            categorical_columns_output=str(tmp_path / f"categorical_columns_{suffix}.pkl"),
+            test_size=0.2,
+            val_size=0.2,
+            random_state=42,
+        )
+
+    run_once("v1")
+    run_once("v2")
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    versions = client.search_model_versions("name='ctr-model'")
+    assert {str(v.version) for v in versions} == {"1", "2"}
+    for v in versions:
+        assert v.run_id
+        tags = client.get_model_version("ctr-model", str(v.version)).tags
+        assert "val_roc_auc" in tags
+
+
+def test_main_survives_registry_registration_failure(tmp_path, monkeypatch) -> None:
+    """리뷰 반영: Registry 등록은 학습이 끝난 뒤의 best-effort 단계라, 등록이
+    실패해도(registry 백엔드 미구성·네트워크 오류 등) run 전체를 실패로
+    마킹해서는 안 된다 — 모델은 이미 저장·기록된 뒤다."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    data_path = tmp_path / "training_dataset.csv"
+    _synthetic_ctr_dataset().to_csv(data_path, index=False)
+
+    def fake_register_model_raises(model_uri, model_name, tags=None):
+        raise RuntimeError("registry 백엔드 없음(시뮬레이션)")
+
+    monkeypatch.setattr(train, "register_model", fake_register_model_raises)
+
+    model_output = tmp_path / "model.joblib"
+    # 예외가 전파되지 않고 main()이 끝까지 정상 실행되어야 한다.
+    train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        model_output=str(model_output),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.pkl"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.pkl"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+    )
+
+    # 모델 파일은 registry 등록 실패와 무관하게 이미 저장되어 있어야 한다.
+    assert model_output.exists()
+
+
+def test_main_registers_lineage_tags_from_extra_params(tmp_path, monkeypatch) -> None:
+    """extra_params(데이터 계보)로 넘긴 값이 실제로 등록된 버전의 태그에
+    반영되는지 검증(run params 기록뿐 아니라 registry 태그까지 전파)."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    data_path = tmp_path / "training_dataset.csv"
+    _synthetic_ctr_dataset().to_csv(data_path, index=False)
+
+    train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.pkl"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.pkl"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+        extra_params={"videos_source": "bigquery", "events_source": "bigquery"},
+    )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    [version] = client.search_model_versions("name='ctr-model'")
+    tags = client.get_model_version("ctr-model", str(version.version)).tags
+    assert tags["videos_source"] == "bigquery"
+    assert tags["events_source"] == "bigquery"

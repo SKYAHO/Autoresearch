@@ -1,0 +1,101 @@
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+from mlflow.exceptions import MlflowException
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.tracking import registry  # noqa: E402
+
+
+def test_register_model_calls_mlflow_register_model(monkeypatch):
+    fake_model_version = MagicMock(version="3")
+    fake_register_model = MagicMock(return_value=fake_model_version)
+    monkeypatch.setattr(registry.mlflow, "register_model", fake_register_model)
+
+    result = registry.register_model("runs:/abc123/model", "ctr-model")
+
+    fake_register_model.assert_called_once_with("runs:/abc123/model", "ctr-model")
+    assert result == "3"
+
+
+def test_register_model_sets_tags_via_client(monkeypatch):
+    fake_model_version = MagicMock(version="4")
+    monkeypatch.setattr(
+        registry.mlflow, "register_model", MagicMock(return_value=fake_model_version)
+    )
+    fake_client = MagicMock()
+    monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
+
+    registry.register_model(
+        "runs:/abc123/model", "ctr-model", tags={"val_roc_auc": "0.85"}
+    )
+
+    fake_client.set_model_version_tag.assert_called_once_with(
+        "ctr-model", "4", "val_roc_auc", "0.85"
+    )
+
+
+def test_register_model_without_tags_skips_client(monkeypatch):
+    fake_model_version = MagicMock(version="1")
+    monkeypatch.setattr(
+        registry.mlflow, "register_model", MagicMock(return_value=fake_model_version)
+    )
+    fake_client_cls = MagicMock()
+    monkeypatch.setattr(registry, "MlflowClient", fake_client_cls)
+
+    registry.register_model("runs:/abc123/model", "ctr-model")
+
+    fake_client_cls.assert_not_called()
+
+
+def test_get_model_versions_returns_empty_list_when_no_versions(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.search_model_versions.return_value = []
+    monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
+
+    assert registry.get_model_versions("ctr-model") == []
+
+
+def test_get_latest_version_picks_highest_version_number(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.search_model_versions.return_value = [
+        MagicMock(version="2"),
+        MagicMock(version="10"),
+        MagicMock(version="1"),
+    ]
+    monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
+
+    assert registry.get_latest_version("ctr-model") == "10"
+
+
+def test_get_latest_version_returns_none_when_no_versions(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.search_model_versions.return_value = []
+    monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
+
+    assert registry.get_latest_version("ctr-model") is None
+
+
+def test_get_model_metrics_by_alias_returns_none_when_alias_missing(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.get_model_version_by_alias.side_effect = MlflowException(
+        "Registered model alias champion not found"
+    )
+    monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
+
+    assert registry.get_model_metrics_by_alias("ctr-model") is None
+
+
+def test_get_model_metrics_by_alias_reraises_unexpected_errors(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.get_model_version_by_alias.side_effect = MlflowException(
+        "connection refused"
+    )
+    monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
+
+    with pytest.raises(MlflowException):
+        registry.get_model_metrics_by_alias("ctr-model")
