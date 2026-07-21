@@ -207,3 +207,7 @@ def test_load_user_rankings_picks_lexicographic_min_run_id_and_warns(caplog):
         )
     assert partition.model_run_id == "run-a"
     assert any("multiple model_run_id" in record.message for record in caplog.records)
+    # 계보-내용 정합: 선택된 run의 행만 남는다 — 다른 run의 rank가 섞이면
+    # policy_version=run-a 태그 아래 run-b 노출이 조립되는 비일관이 생긴다.
+    assert [rv.video_id for rv in partition.by_user["u1"]] == ["v002"]
+    assert "u2" not in partition.by_user  # run-b 전용 유저는 추천 없는 유저로 취급

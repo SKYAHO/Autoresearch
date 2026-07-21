@@ -75,6 +75,10 @@ def load_user_rankings(
     run_ids = sorted(set(frame["model_run_id"].dropna().astype(str)))
     if len(run_ids) > 1:
         logger.warning("multiple model_run_id in partition, using lexicographic min: %s", run_ids)
+        # 계보-내용 정합: policy_version으로 기록될 run의 행만 사용한다.
+        # (#216 배치는 WRITE_TRUNCATE로 파티션당 단일 run을 보장하므로 이 경로는
+        # 상류 계약 위반 신호이며, 다른 run의 순위를 섞어 조립하지 않는다.)
+        frame = frame[frame["model_run_id"].astype(str) == run_ids[0]]
     model_run_id = run_ids[0] if run_ids else None
 
     by_user: dict[str, list[RankedVideo]] = {}

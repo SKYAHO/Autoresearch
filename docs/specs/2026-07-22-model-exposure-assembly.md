@@ -178,6 +178,16 @@ provider가 유지하는 노출 메타데이터를 draft → EventLog 조립 시
 8. `exposure_source` 스키마: 값 검증·to_warehouse_row 왕복·기존 로그(None)
    하위 호환
 
+## Additive 컬럼 확장 시 재검증 방식 (설계 노트)
+
+daily 재실행 skip 검증(`_validate_existing_final`)은 현재 「현행 스키마 또는
+legacy(전체 optional 컬럼 제거) 스키마」의 정확 동등만 관용한다 — optional
+컬럼이 1개인 현 상태에서 가능한 legacy 상태가 하나뿐이라 가장 좁은 관용이다.
+**두 번째 additive optional 컬럼이 도입되는 시점에는** 중간 상태(일부 optional만
+보유한 파티션)가 생기므로, 이 검증을 품질잡과 동일한 집합 차집합 방식
+(필수 컬럼 ⊆ 실제 ∧ 존재 컬럼 타입 일치 ∧ 미지 컬럼 없음)으로 전환한다.
+그 전까지는 정확 동등이 필드 순서까지 보호하므로 유지한다.
+
 ## 미해결 / 후속 (#222로 이월)
 
 - 일일 CLI 배선과 `--exposure-source model|heuristic` 선택 플래그
