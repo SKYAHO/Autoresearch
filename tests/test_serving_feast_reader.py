@@ -91,7 +91,7 @@ def test_read_logs_error_type_and_redacts_external_store_failure(
     # Then: callers and operators receive only the fixed safe failure facts.
     assert str(excinfo.value) == "Feast online feature retrieval failed."
     assert len(caplog.records) == 1
-    assert caplog.records[0].__dict__["error_type"] == "RuntimeError"
+    assert "error_type=RuntimeError" in caplog.text
     assert "password" not in caplog.text
     assert "secret" not in caplog.text
     assert "user-1" not in caplog.text

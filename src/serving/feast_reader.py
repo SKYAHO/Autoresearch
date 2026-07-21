@@ -61,9 +61,11 @@ class FeastOnlineFeatureReader:
                 entity_rows=[dict(row) for row in entity_rows],
             ).to_dict()
         except Exception as error:  # noqa: BLE001 - external SDK errors may contain request data.
+            error_type = type(error).__name__
             logger.error(
-                "Feast online feature retrieval failed.",
-                extra={"error_type": type(error).__name__},
+                "Feast online feature retrieval failed. error_type=%s",
+                error_type,
+                extra={"error_type": error_type},
             )
             raise FeatureRetrievalError(
                 reason="Feast online feature retrieval failed."
