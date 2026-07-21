@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+__arch__ = {
+    "stage": "training",
+    "role": "모델 계보와 온라인 피처 조립기를 연결해 reranking HTTP runtime을 제공합니다.",
+    "owns": [
+        "FastAPI lifespan 의존성 초기화와 readiness 판정",
+        "healthcheck·rerank·metrics HTTP 계약",
+        "요청 순서 응답·모델 계보·서빙 메트릭 노출",
+    ],
+    "not_owns": [
+        "모델 아티팩트 해석",
+        "온라인 피처 조회와 조립 구현",
+        "CTR 예측 구현",
+    ],
+}
+
 import logging
 import os
 from collections.abc import AsyncIterator

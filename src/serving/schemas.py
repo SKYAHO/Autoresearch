@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+__arch__ = {
+    "stage": "training",
+    "role": "rerank 요청·응답과 healthcheck의 Pydantic 데이터 계약을 정의합니다.",
+    "owns": [
+        "user_id·video_ids 요청 검증",
+        "요청 순서 응답 item과 model_id schema",
+        "내부 모델 후보와 healthcheck response schema",
+    ],
+    "not_owns": [
+        "온라인 피처 조회와 조립",
+        "CTR 모델 추론과 점수 정렬",
+        "HTTP 상태와 오류 매핑",
+    ],
+}
+
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator

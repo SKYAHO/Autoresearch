@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+__arch__ = {
+    "stage": "training",
+    "role": "Feast FeatureStore를 서빙의 열 지향 온라인 조회 계약에 맞추는 어댑터입니다.",
+    "owns": [
+        "Feast get_online_features 호출과 결과 변환",
+        "Redis CA·FeatureStore bootstrap",
+        "외부 SDK 오류의 안전한 조회 오류 변환",
+    ],
+    "not_owns": [
+        "피처 계약 검증과 cold-start 기본값",
+        "HTTP 오류 매핑",
+        "Feast 피처 정의와 materialization",
+    ],
+}
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path

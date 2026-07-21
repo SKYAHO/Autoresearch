@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+__arch__ = {"stage": "training", "role": "두 단계 온라인 조회와 cold-start 처리로 모델 피처를 조립합니다.",
+            "owns": ["15개 모델 피처 순서 계약", "keyed batch 조회 조립", "typed cold-start와 파생 피처", "entity·shape·피처 계약 검증"],
+            "not_owns": ["Feast SDK와 Redis bootstrap", "CTR 모델 추론과 점수 정렬", "HTTP 요청·응답 계약"]}
+
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Protocol, TypeAlias
