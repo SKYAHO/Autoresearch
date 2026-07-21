@@ -108,9 +108,9 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 | Artifact | Type | 생성 방법 | 사용 목적 |
 |----------|------|---------|---------|
 | `preferred_topics` | List[str] | persona 텍스트(`sports_persona`, `arts_persona`, `travel_persona`, `culinary_persona`, `family_persona`, `hobbies_and_interests` 등) → LLM 기반 관심 키워드 추출. 축약어/은어/다의어는 **disambiguation phrase 병기** | `topic_similarity` 계산 |
-| `user_keyword_embeddings` | List[Vector] | `preferred_topics`의 각 키워드(phrase)를 **개별로** Sentence Transformer 인코딩 (리스트를 하나로 합쳐서 인코딩하지 않음) | `topic_similarity` 계산 (max-pool) |
+| `user_keyword_embeddings` | List[Vector] | `preferred_topics`의 각 키워드(phrase)를 **개별로** Vertex AI `gemini-embedding-001`(task_type=RETRIEVAL_QUERY, 768차원) 인코딩 (리스트를 하나로 합쳐서 인코딩하지 않음) | `topic_similarity` 계산 (max-pool) |
 | `category_description` | Text (15개 고정) | YouTube 카테고리 15개 각각에 대해 사람이 직접 작성하거나 LLM 이용해 작성한 설명 문장. 1회 작성 후 고정 사용 | 카테고리를 "설명문"으로 확장해 다의성/문맥 부여 |
-| `category_description_embedding` | Vector (15개 고정) | `category_description` → Sentence Transformer 인코딩. 카테고리가 고정이므로 1회만 생성 후 저장 | `topic_similarity` 계산 |
+| `category_description_embedding` | Vector (15개 고정) | `category_description` → Vertex AI `gemini-embedding-001`(task_type=RETRIEVAL_DOCUMENT, 768차원) 인코딩. 카테고리가 고정이므로 첫 조회 시점에 1회만 생성 후 프로세스 내 캐시 | `topic_similarity` 계산 |
 
 #### preferred_topics Disambiguation 처리 기준
 
@@ -170,7 +170,7 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 
 → 사용자 관심사가 여러 개이지만, 이 영상 카테고리에 **가장 관련 있는 단 하나의 키워드 하나만 받아**들이므로 최종 `topic_similarity` = **0.82** (최댓값 선택).
 
-> **Note**: `topic_similarity`의 인코더 모델은 미확정(TBD)
+> **Note**: `topic_similarity`의 인코더 모델은 Vertex AI `gemini-embedding-001`(output_dimensionality=768)로 확정됐다 (#206). 카테고리 설명문은 task_type=RETRIEVAL_DOCUMENT, 사용자 키워드는 task_type=RETRIEVAL_QUERY로 비대칭 인코딩한다.
 
 #### ⚠️ 주의
 

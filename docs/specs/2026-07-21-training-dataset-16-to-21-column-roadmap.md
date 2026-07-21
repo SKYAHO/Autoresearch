@@ -1,6 +1,13 @@
 # training_dataset 16→21컬럼 전환 로드맵 (#175 결정안)
 
 > Status: Draft — 이슈 #175 완료 조건(SSOT 명확화 + 전환 로드맵 합의) 충족을 위한 결정안.
+>
+> **갱신(#206)**: 아래 Phase 3의 "Sentence Transformer"는 이 문서 작성 시점의 초기
+> 가정이었다. 실제로는 self-host(Sentence Transformer) 대신 Vertex AI
+> `gemini-embedding-001`(output_dimensionality=768)을 파이썬 배치 job에서 호출하는
+> 방식으로 확정·구현됐다 — torch 의존성 없이 `google-cloud-aiplatform` SDK 하나로
+> 처리 가능하고, 기존 `Dockerfile.app` 계열에 그대로 얹을 수 있어서다. 이슈 #206
+> 코멘트 참고.
 
 ## 배경
 

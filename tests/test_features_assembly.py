@@ -1,7 +1,9 @@
 """src/features/assembly.py 공용 피처 조립 함수 단위 테스트."""
 
+import numpy as np
 import pandas as pd
 
+import src.features.assembly as assembly_module
 from src.features.assembly import (
     compute_interaction_columns,
     compute_point_in_time_user_features,
@@ -127,6 +129,31 @@ def test_compute_interaction_columns_matches():
     assert out["historical_category_match"].iloc[0] == 1
     assert out["preferred_category_match"].iloc[0] in (0, 1)
     assert 0.0 <= abs(out["topic_similarity"].iloc[0]) <= 1.0
+
+
+def test_compute_interaction_columns_embeds_each_unique_keyword_only_once(monkeypatch):
+    # 같은 유저가 여러 impression 행(row)에 걸쳐 등장해도, Vertex AI에는 유니크
+    # 키워드 집합만 한 번씩 요청해야 한다(#206) — 행 개수만큼 반복 요청하면 안 됨.
+    calls = []
+
+    def fake_embed_texts(texts, task_type):
+        calls.append(list(texts))
+        return [np.zeros(768) for _ in texts]
+
+    monkeypatch.setattr(assembly_module, "embed_texts", fake_embed_texts)
+
+    joined = pd.DataFrame(
+        {
+            # 같은 유저(같은 키워드 세트)가 3개 행에 걸쳐 등장.
+            "hobbies_and_interests_list": ['["gaming", "music"]'] * 3,
+            "historical_category_affinity": ["Gaming", "Music", "Gaming"],
+            "category_id": ["Gaming", "Music", "Gaming"],
+        }
+    )
+    compute_interaction_columns(joined)
+
+    assert len(calls) == 1  # embed_texts는 딱 한 번만 호출
+    assert sorted(calls[0]) == ["gaming", "music"]  # 유니크 키워드만, dedup됨
 
 
 def test_compute_interaction_columns_uses_primary_categories_when_present():
