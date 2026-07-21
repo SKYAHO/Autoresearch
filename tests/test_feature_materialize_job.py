@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 import autoresearch.jobs.feature_materialize as feature_materialize
@@ -99,3 +101,14 @@ def test_video_script_uses_single_backslash_iso_8601_duration_patterns():
 
     for pattern in (r"P(\d+)D", r"(\d+)H", r"(\d+)M", r"(\d+)S"):
         assert f"r'{pattern}'" in script
+
+
+def test_video_script_uses_safe_duration_arithmetic():
+    script = feature_materialize.build_materialize_script(
+        "test-project", "test_dataset", "video_feature"
+    )
+
+    assert "SAFE_MULTIPLY(" in script
+    assert "SAFE_ADD(" in script
+    assert re.search(r"COALESCE\(\s*SAFE_ADD\(", script)
+    assert re.search(r"COALESCE\(\s*SAFE_MULTIPLY\(", script)

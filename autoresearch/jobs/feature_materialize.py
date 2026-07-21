@@ -203,11 +203,42 @@ WITH parsed AS (
     collected_at AS event_timestamp,
     video_category AS category_id,
 
-    (
-      COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'P(\d+)D') AS INT64), 0) * 86400
-      + COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)H') AS INT64), 0) * 3600
-      + COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)M') AS INT64), 0) * 60
-      + COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)S') AS INT64), 0)
+    COALESCE(
+      SAFE_ADD(
+        COALESCE(
+          SAFE_ADD(
+            COALESCE(
+              SAFE_ADD(
+                COALESCE(
+                  SAFE_MULTIPLY(
+                    SAFE_CAST(REGEXP_EXTRACT(video_duration, r'P(\d+)D') AS INT64),
+                    86400
+                  ),
+                  0
+                ),
+                COALESCE(
+                  SAFE_MULTIPLY(
+                    SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)H') AS INT64),
+                    3600
+                  ),
+                  0
+                )
+              ),
+              0
+            ),
+            COALESCE(
+              SAFE_MULTIPLY(
+                SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)M') AS INT64),
+                60
+              ),
+              0
+            )
+          ),
+          0
+        ),
+        COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)S') AS INT64), 0)
+      ),
+      0
     ) AS duration_sec,
 
     COALESCE(video_view_count, 0) AS view_count,
