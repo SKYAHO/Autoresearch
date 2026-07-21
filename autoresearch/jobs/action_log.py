@@ -135,6 +135,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-concurrency", type=_positive_int, default=1)
     parser.add_argument("--chunk-size", type=_non_negative_int, default=0)
     parser.add_argument("--max-quarantine-ratio", type=_ratio)
+    parser.add_argument("--exposure-source", choices=("model", "heuristic"))
+    parser.add_argument("--recommendations-table")
     parser.add_argument(
         "--overwrite",
         nargs="?",
@@ -164,8 +166,49 @@ def _reject(args: argparse.Namespace, *names: str) -> None:
         )
 
 
+def _build_candidate_provider_factory(args: argparse.Namespace):
+    """model 모드에서만 src.pipeline을 지연 import해 노출 provider factory를 만든다.
+
+    heuristic 모드는 None을 반환하며 src·BigQuery에 의존하지 않는다.
+    """
+
+    if args.exposure_source != "model":
+        return None
+
+    def factory(videos: list[dict]):
+        from google.cloud import bigquery
+
+        from src.pipeline.build_training_dataset import BIGQUERY_PROJECT
+        from src.pipeline.model_exposure_provider import (
+            load_user_rankings,
+            make_model_exposure_provider,
+            resolve_recommendations_table_id,
+        )
+
+        table_id = resolve_recommendations_table_id(args.recommendations_table)
+        client = bigquery.Client(project=BIGQUERY_PROJECT)
+        rankings = load_user_rankings(client, table_id, args.partition_date)
+        round_ = make_model_exposure_provider(
+            rankings,
+            videos,
+            candidates_per_user=args.candidates_per_user,
+            personalized_ratio=args.personalized_ratio,
+            popular_ratio=args.popular_ratio,
+            exploration_ratio=args.exploration_ratio,
+        )
+        return round_.provider, round_.metadata
+
+    return factory
+
+
 def _validate_args(args: argparse.Namespace) -> None:
     if args.mode in {"single", "shard"}:
+        args.exposure_source = args.exposure_source or "model"
+        if args.exposure_source == "heuristic" and args.recommendations_table is not None:
+            raise BatchArgumentError(
+                "--recommendations-table is only valid with "
+                "--exposure-source model"
+            )
         _require(args, "youtube_base_path", "virtual_users_path", "output_base_path")
         if args.max_quarantine_ratio is None:
             args.max_quarantine_ratio = 0.5
@@ -214,6 +257,8 @@ def _validate_args(args: argparse.Namespace) -> None:
             "checkpoint_base_path",
             "max_users",
             "shard_index",
+            "exposure_source",
+            "recommendations_table",
         )
 
     path_names = (
@@ -253,6 +298,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
             max_quarantine_ratio=args.max_quarantine_ratio,
             generator_name=args.generator_name,
             model_name=args.model_name,
+            candidate_provider_factory=_build_candidate_provider_factory(args),
             overwrite=args.overwrite,
         )
     if args.mode == "shard":
@@ -279,6 +325,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
             model_name=args.model_name,
             progress_base_path=args.progress_base_path,
             checkpoint_base_path=args.checkpoint_base_path,
+            candidate_provider_factory=_build_candidate_provider_factory(args),
             overwrite=args.overwrite,
         )
     return merge_daily_action_log_shards(
