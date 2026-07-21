@@ -188,3 +188,22 @@ def test_load_user_rankings_fails_fast_on_empty_partition():
     client = _FakeClient(_rankings_frame().iloc[0:0])
     with pytest.raises(RuntimeError, match="2026-07-22"):
         load_user_rankings(client, "p.d.user_recommendations", date(2026, 7, 22))
+
+
+def test_load_user_rankings_picks_lexicographic_min_run_id_and_warns(caplog):
+    frame = pd.DataFrame(
+        {
+            "user_id": ["u1", "u1", "u2"],
+            "video_id": ["v001", "v002", "v001"],
+            "rank": [1, 2, 1],
+            "ctr_score": [0.9, 0.8, 0.7],
+            "model_run_id": ["run-b", "run-a", "run-b"],
+        }
+    )
+    client = _FakeClient(frame)
+    with caplog.at_level("WARNING"):
+        partition = load_user_rankings(
+            client, "p.d.user_recommendations", date(2026, 7, 22)
+        )
+    assert partition.model_run_id == "run-a"
+    assert any("multiple model_run_id" in record.message for record in caplog.records)

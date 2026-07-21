@@ -179,6 +179,10 @@ EVENT_LOG_PARQUET_SCHEMA = pa.schema(
     ]
 )
 
+# additive 확장 컬럼 — 이 컬럼이 없는 legacy 파티션 스키마도 event log 계약에서
+# 관용한다 (#221). event log 스키마 계약의 단일 출처로 이곳에 둔다.
+OPTIONAL_ADDITIVE_COLUMNS = frozenset({"exposure_source"})
+
 ACTION_LOG_DRAFT_PARQUET_SCHEMA = pa.schema(
     [
         pa.field("user_id", pa.string()),
