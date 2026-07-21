@@ -6,11 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV AUTORESEARCH_REVISION=${VCS_REF}
 
-# feast 0.64는 pyarrow>=21을 선언하지만 메인 의존성 해석은 pyarrow==19.0.1로
-# 고정된다. uv.lock은 이 조합을 하나의 해로 고정하며 uv는 lock을 그대로
-# 설치하므로 정상 동작한다. pip은 exported requirements를 재해석하며 feast의
-# pyarrow>=21을 강제해 충돌하므로, 이 이미지는 pip이 아니라 uv로 lock 기반
-# 설치한다.
+# Feast 0.64와 호환되는 PyArrow 21 계열을 uv.lock에 고정한다. 이 이미지는
+# 프로젝트의 단일 의존성 출처를 그대로 재현하도록 uv의 frozen lock 설치를
+# 사용한다.
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
