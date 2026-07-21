@@ -66,3 +66,13 @@ def test_ci_checks_serving_image_dependencies_and_feature_store_bootstrap() -> N
     assert "python -m pip check" in workflow
     assert "from feature_repo.bootstrap import load_feature_store" in workflow
     assert "load_feature_store('/app/feature_repo')" in workflow
+
+
+def test_ci_smokes_serving_healthcheck_fail_closed_and_cleans_up() -> None:
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Run serving image fail-closed healthcheck smoke" in workflow
+    assert "docker run --detach" in workflow
+    assert "trap cleanup EXIT" in workflow
+    assert "/healthcheck" in workflow
+    assert '"${status_code}" = "503"' in workflow

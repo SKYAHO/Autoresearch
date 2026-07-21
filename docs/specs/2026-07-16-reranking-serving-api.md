@@ -15,6 +15,10 @@
   요청당 영상 ID 수는 `rerank_video_ids` histogram으로 노출한다. 이름 전환의 한 배포 기간에는 deprecated
   `rerank_candidates` histogram에도 같은 값을 기록하며, 외부 dashboard와 alert가 새 이름으로 이전됐음을 확인한 뒤 제거한다.
 
+## 배포 의존성 경계
+
+`deploy/serving/Dockerfile`은 Feast 전용 그룹의 고정된 FastAPI·Starlette·PyArrow 런타임을 사용한다. 기본 dev/serving 그룹은 Feast와 공존할 수 없으므로, CI는 dev serving 테스트와 Feast production 이미지 검증을 별도 환경에서 실행한다. 이미지의 실제 HTTP 스모크는 자격 증명을 주입하지 않은 상태에서 `/healthcheck`가 `503`으로 fail-closed 되는지 확인한다.
+
 `/rerank`은 외부 JSON에서 `user_id`와 `video_ids`만 받는다. `video_ids`는 1~200개의 비어 있지 않은 문자열이며 중복을 허용하지 않는다. 유효한 `video_ids`와 함께 들어온 legacy `candidates`를 포함해 선언되지 않은 필드는 `422`로 거부한다. 호출자는 모델 피처를 전달할 수 없으며, 구 계약의 하위 호환 이중 지원도 하지 않는다.
 
 요청 예시:

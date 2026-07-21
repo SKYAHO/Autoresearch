@@ -217,3 +217,30 @@ jobs:
             python -c "import lightgbm, feast, fastapi, feature_repo.redis_iam, src.serving.app"
           docker run --rm autoresearch-serving:ci \
             python -c "from feature_repo.bootstrap import load_feature_store; load_feature_store('/app/feature_repo')"
+
+      - name: Run serving image fail-closed healthcheck smoke
+        shell: bash
+        run: |
+          container_name="autoresearch-serving-healthcheck-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm --force "${container_name}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run --detach \
+            --name "${container_name}" \
+            --publish 127.0.0.1::8000 \
+            autoresearch-serving:ci
+
+          for _ in $(seq 1 30); do
+            host_port="$(docker port "${container_name}" 8000/tcp | awk -F: '{print $NF}')"
+            status_code="$(curl --silent --show-error --output /tmp/serving-healthcheck.json --write-out '%{http_code}' "http://127.0.0.1:${host_port}/healthcheck" || true)"
+            if [ "${status_code}" = "503" ]; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          docker logs "${container_name}"
+          echo "::error::모델·Feast 자격 증명 없이 /healthcheck가 503으로 fail-closed 해야 한다"
+          exit 1
