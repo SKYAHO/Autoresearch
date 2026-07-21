@@ -11,6 +11,7 @@ from src.pipeline.model_exposure_provider import (
     RankingsPartition,
     build_model_exposures,
     load_user_rankings,
+    make_model_exposure_provider,
 )
 
 
@@ -116,6 +117,32 @@ def test_deterministic_for_same_rng_seed():
         "u1", _ranking(), _videos(), random.Random("s:u1"), model_run_id="run-a"
     )
     assert [v["video_id"] for v in first] == [v["video_id"] for v in second]
+
+
+def _partition() -> RankingsPartition:
+    return RankingsPartition(by_user={"u1": _ranking()}, model_run_id="run-a")
+
+
+def test_provider_matches_candidate_provider_seam_and_fills_metadata():
+    round_ = make_model_exposure_provider(_partition(), _videos())
+    candidates = round_.provider({"user_id": "u1"}, random.Random("s:u1"))
+    assert len(candidates) == 24
+    assert len(round_.metadata) == 24
+    assert all(key[0] == "u1" for key in round_.metadata)
+    assert round_.model_run_id == "run-a"
+
+
+def test_provider_returns_trending_random_for_unknown_user():
+    round_ = make_model_exposure_provider(_partition(), _videos())
+    candidates = round_.provider({"user_id": "u-unknown"}, random.Random("s:u-unknown"))
+    assert len(candidates) == 24
+    sources = {m.exposure_source for k, m in round_.metadata.items() if k[0] == "u-unknown"}
+    assert "model" not in sources
+
+
+def test_factory_fails_fast_without_videos():
+    with pytest.raises(RuntimeError, match="trending"):
+        make_model_exposure_provider(_partition(), [])
 
 
 class _FakeQueryJob:

@@ -198,3 +198,48 @@ def build_model_exposures(
             exposure_source=source,  # type: ignore[arg-type]
         )
     return candidates, metadata
+
+
+@dataclass(slots=True)
+class ModelExposureRound:
+    """provider와 노출 태그 맵의 쌍 — 맵은 provider 호출이 진행되며 채워진다."""
+
+    provider: CandidateProvider
+    metadata: dict[tuple[str, str], ExposureMetadata] = field(default_factory=dict)
+    model_run_id: str | None = None
+
+
+def make_model_exposure_provider(
+    rankings: RankingsPartition,
+    videos: Sequence[dict],
+    *,
+    candidates_per_user: int = 24,
+    personalized_ratio: float = 0.7,
+    popular_ratio: float = 0.2,
+    exploration_ratio: float = 0.1,
+) -> ModelExposureRound:
+    """CandidateProvider seam에 주입 가능한 모델 노출 provider를 만든다."""
+    if not videos:
+        raise RuntimeError("trending videos are required to assemble exposures")
+
+    metadata: dict[tuple[str, str], ExposureMetadata] = {}
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        user_id = str(virtual_user.get("user_id", ""))
+        candidates, user_meta = build_model_exposures(
+            user_id,
+            rankings.by_user.get(user_id, []),
+            videos,
+            user_rng,
+            model_run_id=rankings.model_run_id,
+            candidates_per_user=candidates_per_user,
+            personalized_ratio=personalized_ratio,
+            popular_ratio=popular_ratio,
+            exploration_ratio=exploration_ratio,
+        )
+        metadata.update(user_meta)
+        return candidates
+
+    return ModelExposureRound(
+        provider=provider, metadata=metadata, model_run_id=rankings.model_run_id
+    )
