@@ -190,6 +190,56 @@ def test_build_applies_typed_cold_start_defaults_before_derived_features() -> No
     }
 
 
+def test_build_shares_unknown_category_second_read_across_cold_start_candidates() -> None:
+    reader = FakeReader(
+        responses=[
+            {
+                "user_id": ["user-1", "user-1"],
+                "video_id": ["video-b", "video-a"],
+                "age_group": [None, None],
+                "occupation": [None, None],
+                "preferred_category": [None, None],
+                "historical_category_affinity": [None, None],
+                "recent_click_count_7d": [None, None],
+                "recent_watch_time_7d": [None, None],
+                "recent_like_count_7d": [None, None],
+                "category_id": [None, None],
+                "duration_sec": [None, None],
+                "view_count": [None, None],
+                "like_ratio": [None, None],
+                "comment_ratio": [None, None],
+                "days_since_upload": [None, None],
+            },
+            {
+                "user_id": ["user-1"],
+                "category_id": ["unknown"],
+                "topic_similarity": [None],
+            },
+        ]
+    )
+
+    candidates = ServingFeatureBuilder(reader=reader).build(
+        user_id="user-1",
+        video_ids=["video-a", "video-b"],
+        feature_columns=MODEL_FEATURE_COLUMNS,
+    )
+
+    assert reader.calls[1] == (
+        SECOND_READ_FEATURE_REFS,
+        ({"user_id": "user-1", "category_id": "unknown"},),
+    )
+    assert [candidate.video_id for candidate in candidates] == ["video-a", "video-b"]
+    assert [
+        (
+            candidate.features["category_id"],
+            candidate.features["topic_similarity"],
+            candidate.features["historical_category_match"],
+            candidate.features["preferred_category_match"],
+        )
+        for candidate in candidates
+    ] == [("unknown", 0.0, 0, 0), ("unknown", 0.0, 0, 0)]
+
+
 def test_build_rejects_first_read_length_mismatch() -> None:
     complete_response = _first_response()
     builder = ServingFeatureBuilder(
