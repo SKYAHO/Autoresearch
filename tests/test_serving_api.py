@@ -29,8 +29,8 @@ from src.serving.online_features import (
     FeatureRows,
     FeatureRetrievalError,
 )
-from src.serving.schemas import CandidateVideo, FeatureValue
-from src.serving.service import PredictionError, Reranker
+from src.serving.schemas import CandidateVideo, FeatureValue, RerankedVideo
+from src.serving.service import PredictionError, RerankOutcome, Reranker
 
 
 class RecordingModel:
@@ -470,24 +470,75 @@ def test_rerank_maps_prediction_failure_to_500() -> None:
     assert response.json() == {"detail": "Reranking model returned an invalid prediction."}
 
 
-def test_rerank_rejects_empty_video_ids_at_http_boundary() -> None:
-    app = create_app(resolved_model=_resolved_model(), feature_builder=FakeFeatureBuilder())
-
-    with TestClient(app) as client:
-        response = client.post("/rerank", json={"user_id": "user-1", "video_ids": []})
-
-    assert response.status_code == 422
-
-
-def test_rerank_rejects_empty_string_id_at_http_boundary() -> None:
-    app = create_app(resolved_model=_resolved_model(), feature_builder=FakeFeatureBuilder())
-
-    with TestClient(app) as client:
-        response = client.post(
-            "/rerank", json={"user_id": "user-1", "video_ids": [""]}
+@pytest.mark.parametrize(
+    "outcome_video_ids",
+    (
+        ("video-1",),
+        ("video-1", "video-1"),
+        ("video-1", "video-2", "video-extra"),
+    ),
+)
+def test_rerank_maps_invalid_outcome_video_ids_to_safe_500(
+    monkeypatch: pytest.MonkeyPatch,
+    outcome_video_ids: tuple[str, ...],
+) -> None:
+    # Given: the reranker returns missing, duplicate, or extra video IDs.
+    def invalid_outcome(
+        _reranker: Reranker,
+        _candidates: Sequence[CandidateVideo],
+    ) -> RerankOutcome:
+        return RerankOutcome(
+            items=[
+                RerankedVideo(video_id=video_id, ctr_score=0.5)
+                for video_id in outcome_video_ids
+            ],
+            unseen_categories={},
         )
 
+    monkeypatch.setattr(Reranker, "rerank_with_diagnostics", invalid_outcome)
+    app = create_app(
+        resolved_model=_resolved_model(), feature_builder=FakeFeatureBuilder()
+    )
+
+    # When: the invalid outcome reaches the HTTP response mapping boundary.
+    with TestClient(app) as client:
+        response = client.post(
+            "/rerank",
+            json={"user_id": "user-1", "video_ids": ["video-1", "video-2"]},
+        )
+
+    # Then: callers receive the existing safe prediction failure response.
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Reranking model returned an invalid prediction."}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"user_id": "", "video_ids": ["video-1"]},
+        {"user_id": "user-1", "video_ids": []},
+        {"user_id": "user-1", "video_ids": [""]},
+        {
+            "user_id": "user-1",
+            "video_ids": [f"video-{index}" for index in range(201)],
+        },
+        {"user_id": "user-1", "video_ids": ["video-1", "video-1"]},
+    ),
+)
+def test_rerank_rejects_invalid_request_ids_before_builder(
+    payload: dict[str, str | list[str]],
+) -> None:
+    # Given: a builder that records every invocation.
+    builder = FakeFeatureBuilder()
+    app = create_app(resolved_model=_resolved_model(), feature_builder=builder)
+
+    # When: an invalid request reaches the HTTP validation boundary.
+    with TestClient(app) as client:
+        response = client.post("/rerank", json=payload)
+
+    # Then: validation rejects it before online feature construction.
     assert response.status_code == 422
+    assert builder.calls == []
 
 
 class RankingModel:

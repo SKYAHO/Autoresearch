@@ -145,6 +145,15 @@ def create_app(
                     feature_columns=active_model.reranker.feature_columns,
                 )
                 outcome = active_model.reranker.rerank_with_diagnostics(candidates)
+                requested_video_ids = set(request.video_ids)
+                outcome_video_ids = [item.video_id for item in outcome.items]
+                if (
+                    len(outcome_video_ids) != len(requested_video_ids)
+                    or set(outcome_video_ids) != requested_video_ids
+                ):
+                    raise PredictionError(
+                        reason="Reranker returned unexpected video IDs."
+                    )
             except (FeatureContractError, FeatureRetrievalError) as error:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
