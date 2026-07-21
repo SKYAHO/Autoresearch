@@ -33,6 +33,7 @@ RUN adduser --disabled-password --gecos "" appuser
 COPY --from=builder /app/.venv /app/.venv
 
 COPY autoresearch ./autoresearch
+COPY src ./src
 
 USER appuser
 
