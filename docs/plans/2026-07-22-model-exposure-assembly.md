@@ -60,7 +60,7 @@ tests/test_model_exposure_provider.py     # 신규 (Task 2, 3, 4)
   - `_expand_events(..., metadata=...)`가 meta.exposure_source를 EventLog로 전파
   - 품질잡: `OPTIONAL_ADDITIVE_COLUMNS = frozenset({"exposure_source"})` — missing 검사 제외
 
-- [ ] **Step 1: 실패하는 테스트 작성** — `tests/test_action_logs_schema_policy.py`에 추가
+- [x] **Step 1: 실패하는 테스트 작성** — `tests/test_action_logs_schema_policy.py`에 추가
 
 ```python
 def test_exposure_source_roundtrip_and_validation():
@@ -77,12 +77,12 @@ def test_exposure_source_roundtrip_and_validation():
 
 (`_policy_event`는 파일 내 기존 EventLog 생성 헬퍼 — 없으면 impression 이벤트를 만드는 로컬 헬퍼를 함께 추가한다.)
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `uv run python -m pytest tests/test_action_logs_schema_policy.py -v`
 Expected: FAIL — `exposure_source` unexpected keyword / 키 부재
 
-- [ ] **Step 3: 구현**
+- [x] **Step 3: 구현**
 
 `schema.py` — `EventLog`의 `policy_version` 필드 아래에:
 
@@ -112,7 +112,7 @@ OPTIONAL_ADDITIVE_COLUMNS = frozenset({"exposure_source"})  # 모듈 상수
     )
 ```
 
-- [ ] **Step 4: 기존 정확 동등 단언 갱신 (함정 1)**
+- [x] **Step 4: 기존 정확 동등 단언 갱신 (함정 1)**
 
 `tests/test_action_logs_pipeline.py:186` 키 집합에 `"exposure_source"` 추가.
 `tests/test_action_log_quality_job.py`에 소급 호환 테스트 추가:
@@ -127,12 +127,12 @@ def test_quality_treats_exposure_source_as_optional_for_legacy_partitions():
     assert "exposure_source" not in summary["action_schema_missing_columns"]
 ```
 
-- [ ] **Step 5: 통과 확인**
+- [x] **Step 5: 통과 확인**
 
 Run: `uv run python -m pytest tests/test_action_logs_schema_policy.py tests/test_action_logs_pipeline.py tests/test_action_log_quality_job.py -v`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add autoresearch/action_logs/schema.py autoresearch/action_logs/pipeline.py \
@@ -155,7 +155,7 @@ git commit -m "feat: event log에 exposure_source 정책 태그 추가 (#221)"
   - `@dataclass(frozen=True, slots=True) class RankedVideo: video_id: str; rank: int; ctr_score: float | None`
   - `build_model_exposures(user_id, ranking, videos, rng, *, model_run_id, candidates_per_user=24, personalized_ratio=0.7, popular_ratio=0.2, exploration_ratio=0.1) -> tuple[list[dict], dict[tuple[str, str], ExposureMetadata]]`
 
-- [ ] **Step 1: 실패하는 테스트 작성** — `tests/test_model_exposure_provider.py` (신규)
+- [x] **Step 1: 실패하는 테스트 작성** — `tests/test_model_exposure_provider.py` (신규)
 
 ```python
 """모델 노출 조립 provider 단위 테스트 — 실 BQ 미접속(fake client)."""
@@ -272,12 +272,12 @@ def test_deterministic_for_same_rng_seed():
     assert [v["video_id"] for v in first] == [v["video_id"] for v in second]
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `uv run python -m pytest tests/test_model_exposure_provider.py -v`
 Expected: FAIL — `ModuleNotFoundError: src.pipeline.model_exposure_provider`
 
-- [ ] **Step 3: 구현** — `src/pipeline/model_exposure_provider.py` (신규)
+- [x] **Step 3: 구현** — `src/pipeline/model_exposure_provider.py` (신규)
 
 ```python
 """user_recommendations 기반 모델 노출 조립 provider.
@@ -437,12 +437,12 @@ def build_model_exposures(
     return candidates, metadata
 ```
 
-- [ ] **Step 4: 통과 확인**
+- [x] **Step 4: 통과 확인**
 
 Run: `uv run python -m pytest tests/test_model_exposure_provider.py -v`
 Expected: PASS (Task 2 테스트 전부)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/pipeline/model_exposure_provider.py tests/test_model_exposure_provider.py
@@ -462,7 +462,7 @@ git commit -m "feat: 70/20/10 모델 노출 조립 순수 함수 추가 (#221)"
   - `@dataclass(frozen=True, slots=True) class RankingsPartition: by_user: dict[str, list[RankedVideo]]; model_run_id: str | None`
   - `load_user_rankings(client: bigquery.Client, table_id: str, dt: date) -> RankingsPartition` — 0행이면 RuntimeError
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 같은 테스트 파일에 추가
+- [x] **Step 1: 실패하는 테스트 작성** — 같은 테스트 파일에 추가
 
 ```python
 import pandas as pd
@@ -516,12 +516,12 @@ def test_load_user_rankings_fails_fast_on_empty_partition():
         load_user_rankings(client, "p.d.user_recommendations", date(2026, 7, 22))
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `uv run python -m pytest tests/test_model_exposure_provider.py -v`
 Expected: FAIL — `load_user_rankings` ImportError
 
-- [ ] **Step 3: 구현** — 같은 모듈에 추가
+- [x] **Step 3: 구현** — 같은 모듈에 추가
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -570,12 +570,12 @@ def load_user_rankings(
 
 (모듈 상단 import에 `import pandas as pd` 추가.)
 
-- [ ] **Step 4: 통과 확인**
+- [x] **Step 4: 통과 확인**
 
 Run: `uv run python -m pytest tests/test_model_exposure_provider.py -v`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/pipeline/model_exposure_provider.py tests/test_model_exposure_provider.py
@@ -600,7 +600,7 @@ git commit -m "feat: user_recommendations 파티션 리더 추가 (#221)"
     `generate_action_log_drafts(..., candidate_provider=round.provider)` 후
     `_expand_events(..., metadata=round.metadata)`로 조인(#222).
 
-- [ ] **Step 1: 실패하는 테스트 작성** — 같은 테스트 파일에 추가
+- [x] **Step 1: 실패하는 테스트 작성** — 같은 테스트 파일에 추가
 
 ```python
 from src.pipeline.model_exposure_provider import make_model_exposure_provider
@@ -634,12 +634,12 @@ def test_factory_fails_fast_without_videos():
         make_model_exposure_provider(_partition(), [])
 ```
 
-- [ ] **Step 2: 실패 확인**
+- [x] **Step 2: 실패 확인**
 
 Run: `uv run python -m pytest tests/test_model_exposure_provider.py -v`
 Expected: FAIL — `make_model_exposure_provider` ImportError
 
-- [ ] **Step 3: 구현** — 같은 모듈에 추가
+- [x] **Step 3: 구현** — 같은 모듈에 추가
 
 ```python
 @dataclass(slots=True)
@@ -687,12 +687,12 @@ def make_model_exposure_provider(
     )
 ```
 
-- [ ] **Step 4: 통과 확인**
+- [x] **Step 4: 통과 확인**
 
 Run: `uv run python -m pytest tests/test_model_exposure_provider.py -v`
 Expected: PASS (파일 전체)
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/pipeline/model_exposure_provider.py tests/test_model_exposure_provider.py
@@ -703,17 +703,17 @@ git commit -m "feat: 모델 노출 provider 팩토리 추가 (#221)"
 
 ### Task 5: 최종 검증
 
-- [ ] **Step 1: 전체 스위트**
+- [x] **Step 1: 전체 스위트**
 
 Run: `uv run python -m pytest -q`
 Expected: 전부 PASS (기준: main 592 passed + 신규)
 
-- [ ] **Step 2: spec 대조** — `docs/specs/2026-07-22-model-exposure-assembly.md`의
+- [x] **Step 2: spec 대조** — `docs/specs/2026-07-22-model-exposure-assembly.md`의
   목표 3개·조립 규칙·태그 계약·에러 처리 각 항목이 테스트로 커버되는지 확인.
   spec 서술과 구현이 어긋난 항목은 spec을 갱신(코드가 아니라 문서가 틀린 경우)
   하거나 코드를 수정한다.
 
-- [ ] **Step 3: 문서·계획 체크박스 갱신 후 Commit + Push**
+- [x] **Step 3: 문서·계획 체크박스 갱신 후 Commit + Push**
 
 ```bash
 git add docs/plans/2026-07-22-model-exposure-assembly.md

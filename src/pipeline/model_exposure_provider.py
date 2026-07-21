@@ -74,7 +74,7 @@ def load_user_rankings(
 
     run_ids = sorted(set(frame["model_run_id"].dropna().astype(str)))
     if len(run_ids) > 1:
-        logger.warning("multiple model_run_id in partition, using first: %s", run_ids)
+        logger.warning("multiple model_run_id in partition, using lexicographic min: %s", run_ids)
     model_run_id = run_ids[0] if run_ids else None
 
     by_user: dict[str, list[RankedVideo]] = {}
