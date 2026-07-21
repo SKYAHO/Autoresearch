@@ -42,7 +42,8 @@
 
 `docs/specs/2026-07-21-daily-recommendations-batch.md`의 출력 테이블을 그대로
 소비한다. 소비 컬럼: `dt`(파티션 필터), `user_id`, `video_id`, `rank`,
-`ctr_score`, `model_run_id`, `model_version`.
+`ctr_score`, `model_run_id` (`model_version`은 소비하지 않는다 — 계보는
+`policy_version`=run_id로 MLflow에서 역추적).
 
 - 유저별 `rank` 오름차순이 모델 선호 순위다. `ctr_score`는 보정된 확률이
   아닌 순위용 상대 점수임을 그대로 기록에 전파한다.
