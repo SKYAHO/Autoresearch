@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 from collections.abc import MutableMapping
 from pathlib import Path
@@ -43,6 +44,10 @@ def ensure_redis_ca_bundle(
 
 def load_feature_store(repo_path: str | Path) -> object:
     """지정한 repository path로 Feast FeatureStore를 생성한다."""
+    resolved = Path(repo_path).resolve()
+    parent = str(resolved.parent)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
     from feast import FeatureStore
 
-    return FeatureStore(repo_path=str(repo_path))
+    return FeatureStore(repo_path=str(resolved))
