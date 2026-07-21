@@ -162,7 +162,7 @@ Task 0 브랜치 동기화·baseline
 - Consumes: `origin/main`, #216, #219의 병합 상태
 - Produces: #216의 `ResolvedModel`, `load_reranker_with_lineage()`가 존재하는 깨끗한 #220 작업 기준점
 
-- [ ] **Step 1: 선행 작업 병합 상태 확인**
+- [x] **Step 1: 선행 작업 병합 상태 확인**
 
 ```bash
 git fetch origin
@@ -170,17 +170,17 @@ git branch -r --contains origin/feat/216-daily-recommendations-batch
 git branch -r --contains origin/fix/219-daily-recommendations-blockers
 ```
 
-Expected: 두 작업이 `origin/main`에 포함됐는지 판별 가능.
+Result (2026-07-22): `origin/main`의 `b9ca06f`(#216)와 `ce4c67b`(#219)에 두 변경이 포함됐다. 머지 후 원격 작업 브랜치는 정리되어 직접 ancestry 확인은 불가능하므로, `origin/main`의 squash 커밋으로 확인했다.
 
-- [ ] **Step 2: 선행 작업이 병합된 경우 #220 rebase**
+- [x] **Step 2: 선행 작업이 병합된 경우 #220 rebase**
 
 ```bash
 git rebase origin/main
 ```
 
-Expected: 충돌 없이 완료. 병합 전이면 rebase하지 않고 Task 1·2까지만 진행한다.
+Result (2026-07-22): 충돌 없이 `origin/main`의 `ce4c67b` 위로 rebase했으며, 기준 계획 커밋은 `4b96255`다.
 
-- [ ] **Step 3: baseline 검증**
+- [x] **Step 3: baseline 검증**
 
 ```bash
 uv sync --frozen
@@ -189,15 +189,15 @@ uv lock --check
 git status --short
 ```
 
-Expected: 테스트와 lock check PASS. 계획 문서 외 예상하지 못한 변경 없음.
+Result (2026-07-22): `tests/test_serving_api.py`, `tests/test_serving_model_registry.py`, `tests/test_feast_materialize.py` 37개가 통과했고 `uv lock --check`도 통과했다. MLflow/HTTP 422 관련 기존 경고 3개는 남아 있다.
 
-- [ ] **Step 4: 기준 SHA 기록**
+- [x] **Step 4: 기준 SHA 기록**
 
 ```bash
 git rev-parse HEAD
 ```
 
-Expected: 구현 handoff와 각 리뷰에 사용할 full SHA 출력. 이 Task는 코드 커밋을 만들지 않는다.
+Result (2026-07-22): Task 1 구현 전 기준 SHA는 이 Task 결과를 기록한 커밋으로 고정한다.
 
 ## Task 1: serving spec과 외부 스키마를 먼저 고정
 
