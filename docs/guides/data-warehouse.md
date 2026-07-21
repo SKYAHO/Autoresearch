@@ -38,10 +38,10 @@ python -m autoresearch.jobs.feature_materialize \
   --dataset "$BQ_DATASET"
 ```
 
-실행 주체의 ADC 또는 workload identity에는 BigQuery job 실행 권한과 대상
-feature 테이블의 DML 권한이 필요하다. Airflow DAG, schedule, 재시도 설정과
-CLI 연결은 이 저장소의 범위가 아니며, `Autoresearch-airflow` 후속 작업에서
-소유한다.
+실행 주체의 ADC 또는 workload identity에는 BigQuery job 실행 권한, 원본 raw
+테이블 또는 source dataset 읽기 권한, 대상 feature 테이블의 DML 권한이 필요하다.
+Airflow DAG, schedule, 재시도 설정과 CLI 연결은 이 저장소의 범위가 아니며,
+`Autoresearch-airflow` 후속 작업에서 소유한다.
 
 <a id="user_static_feature"></a>
 
