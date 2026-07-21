@@ -211,5 +211,8 @@ jobs:
 
       - name: Run serving image import smoke check
         run: |
+          docker run --rm autoresearch-serving:ci python -m pip check
           docker run --rm autoresearch-serving:ci \
             python -c "import feast, fastapi, feature_repo.redis_iam, src.serving.app"
+          docker run --rm autoresearch-serving:ci \
+            python -c "from feature_repo.bootstrap import load_feature_store; load_feature_store('/app/feature_repo')"

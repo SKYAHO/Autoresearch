@@ -15,8 +15,7 @@ WORKDIR /app
 RUN adduser --disabled-password --gecos "" appuser
 
 COPY --from=lock-export /requirements.lock ./
-# uv.lock이 고정한 전체 전이 의존성을 그대로 설치한다. pip이 Feast의 최신
-# pyarrow 메타데이터로 lock을 다시 풀면 pyarrow 19/21 충돌이 발생한다.
+# uv.lock이 고정한 전체 전이 의존성을 pip 재해석 없이 그대로 설치한다.
 RUN python -m pip install --no-cache-dir --no-deps -r requirements.lock && rm requirements.lock
 
 COPY autoresearch ./autoresearch

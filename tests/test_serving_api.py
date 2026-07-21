@@ -157,6 +157,7 @@ def test_lifespan_loads_model_and_feast_builder_from_environment(
 
 def test_healthcheck_is_503_when_feast_initialization_fails(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     settings = LocalModelSettings(Path("model"), Path("features"), Path("categories"))
     feast_load_calls: list[str] = []
@@ -185,11 +186,47 @@ def test_healthcheck_is_503_when_feast_initialization_fails(
         raising=False,
     )
 
-    with TestClient(create_app()) as client:
-        response = client.get("/healthcheck")
+    with caplog.at_level("ERROR", logger="src.serving.app"):
+        with TestClient(create_app()) as client:
+            response = client.get("/healthcheck")
 
     assert response.status_code == 503
     assert feast_load_calls == ["feature_repo"]
+    assert "phase=feature_store" in caplog.text
+    assert "Feast initialization failed" not in caplog.text
+
+
+def test_healthcheck_is_503_when_model_initialization_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = LocalModelSettings(Path("model"), Path("features"), Path("categories"))
+    feast_load_calls: list[str] = []
+
+    monkeypatch.setattr(
+        serving_app,
+        "load_model_settings_from_environment",
+        lambda: settings,
+    )
+
+    def fail_model_load(received: LocalModelSettings) -> ResolvedModel:
+        raise RuntimeError("token=secret-model-loader-error")
+
+    monkeypatch.setattr(serving_app, "load_reranker_with_lineage", fail_model_load)
+    monkeypatch.setattr(
+        serving_app,
+        "load_feast_online_feature_reader",
+        lambda repo_path: feast_load_calls.append(repo_path) or FakeOnlineFeatureReader(),
+    )
+
+    with caplog.at_level("ERROR", logger="src.serving.app"):
+        with TestClient(create_app()) as client:
+            response = client.get("/healthcheck")
+
+    assert response.status_code == 503
+    assert feast_load_calls == []
+    assert "phase=model" in caplog.text
+    assert "secret-model-loader-error" not in caplog.text
 
 
 def test_lifespan_skips_environment_factories_for_injected_dependencies(

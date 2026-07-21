@@ -73,15 +73,20 @@ def create_app(
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         nonlocal active_feature_builder, active_model
         if load_from_environment:
+            initialization_phase = "model"
             try:
                 settings = load_model_settings_from_environment()
                 active_model = load_reranker_with_lineage(settings)
+                initialization_phase = "feature_store"
                 reader = load_feast_online_feature_reader(
                     os.getenv("RERANK_FEATURE_REPO_PATH", "feature_repo")
                 )
                 active_feature_builder = ServingFeatureBuilder(reader=reader)
             except Exception:  # noqa: BLE001 - startup boundary must remain health-queryable.
-                logger.error("Reranking runtime initialization failed.")
+                logger.error(
+                    "Reranking runtime initialization failed: phase=%s",
+                    initialization_phase,
+                )
         RERANK_MODEL_READY.set(1 if unavailable_detail() is None else 0)
         yield
         RERANK_MODEL_READY.set(0)
