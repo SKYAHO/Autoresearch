@@ -34,8 +34,10 @@ feature 테이블에 전체 갱신하는 공개 batch CLI를 제공한다.
 공개 batch CLI는 프로젝트와 dataset을 명시적으로 받는다. 대상 테이블은
 CLI 내부의 고정된 순서로 실행한다.
 
-```text
-materialize-features --project <project-id> --dataset <dataset-id>
+```bash
+python -m autoresearch.jobs.feature_materialize \
+  --project <project-id> \
+  --dataset <dataset-id>
 ```
 
 기본값과 세부 인자 명명은 기존 `autoresearch.jobs` 공개 명령 계약에 맞춘다.
@@ -69,6 +71,15 @@ materialize-features --project <project-id> --dataset <dataset-id>
 - BigQuery dry-run: 실제 raw 스키마에서 세 SELECT가 컴파일되는지 검증한다.
 - 통합 실행: 별도 승인된 환경에서 각 대상 테이블이 0행이 아닌지와
   FeatureView schema 호환성을 확인한다.
+
+### 실행 기록 체크리스트
+
+- [ ] unit test: `uv run python -m pytest -v tests/test_feature_materialize_job.py`
+  실행 결과와 통과 개수를 기록한다.
+- [ ] BigQuery dry-run: 승인된 프로젝트와 dataset에서 세 대상 SELECT를
+  dry-run하고 각 job ID와 컴파일 결과를 기록한다.
+- [ ] 통합 실행: 실제 row를 적재하는 materialization은 별도 승인된 환경에서만
+  수행하며, 대상 테이블별 0행 여부와 FeatureView schema 호환성 결과를 기록한다.
 
 ## 소유권
 
