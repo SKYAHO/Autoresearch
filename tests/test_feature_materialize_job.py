@@ -198,6 +198,24 @@ def test_static_script_flattens_bigquery_parquet_list_wrappers():
     assert "asset_virtual_user_vu_1000" in script
 
 
+def test_static_script_flattens_every_virtual_user_list_column():
+    script = feature_materialize.build_materialize_script(
+        "test-project", "test_dataset", "user_static_feature"
+    )
+
+    for column_name in (
+        "primary_categories",
+        "hobby_keywords",
+        "interest_keywords",
+        "lifestyle_keywords",
+        "food_keywords",
+        "travel_keywords",
+        "career_keywords",
+        "family_context_keywords",
+    ):
+        assert f"UNNEST({column_name}.list) AS item" in script
+
+
 @pytest.mark.parametrize(
     "table_name,raw_table",
     [

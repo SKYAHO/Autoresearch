@@ -73,7 +73,8 @@
 ### 🔸 SQL
 
 ```sql
-CREATE OR REPLACE TABLE `{project}.{dataset}.user_static_feature` AS
+-- 실행은 python -m autoresearch.jobs.feature_materialize가 담당한다.
+-- Terraform 관리 테이블의 metadata를 보존하기 위해 CREATE OR REPLACE TABLE을 사용하지 않는다.
 SELECT
   user_id,
 
@@ -83,16 +84,40 @@ SELECT
   COALESCE(age_bucket, 'unknown') AS age_group,
   COALESCE(occupation, 'unknown') AS occupation,
 
-  COALESCE(primary_categories, ARRAY<STRING>[]) AS preferred_category,
+  IFNULL(
+    ARRAY(SELECT item.element FROM UNNEST(primary_categories.list) AS item),
+    ARRAY<STRING>[]
+  ) AS preferred_category,
 
   ARRAY_CONCAT(
-    COALESCE(hobby_keywords, ARRAY<STRING>[]),
-    COALESCE(interest_keywords, ARRAY<STRING>[]),
-    COALESCE(lifestyle_keywords, ARRAY<STRING>[]),
-    COALESCE(food_keywords, ARRAY<STRING>[]),
-    COALESCE(travel_keywords, ARRAY<STRING>[]),
-    COALESCE(career_keywords, ARRAY<STRING>[]),
-    COALESCE(family_context_keywords, ARRAY<STRING>[])
+    IFNULL(
+      ARRAY(SELECT item.element FROM UNNEST(hobby_keywords.list) AS item),
+      ARRAY<STRING>[]
+    ),
+    IFNULL(
+      ARRAY(SELECT item.element FROM UNNEST(interest_keywords.list) AS item),
+      ARRAY<STRING>[]
+    ),
+    IFNULL(
+      ARRAY(SELECT item.element FROM UNNEST(lifestyle_keywords.list) AS item),
+      ARRAY<STRING>[]
+    ),
+    IFNULL(
+      ARRAY(SELECT item.element FROM UNNEST(food_keywords.list) AS item),
+      ARRAY<STRING>[]
+    ),
+    IFNULL(
+      ARRAY(SELECT item.element FROM UNNEST(travel_keywords.list) AS item),
+      ARRAY<STRING>[]
+    ),
+    IFNULL(
+      ARRAY(SELECT item.element FROM UNNEST(career_keywords.list) AS item),
+      ARRAY<STRING>[]
+    ),
+    IFNULL(
+      ARRAY(SELECT item.element FROM UNNEST(family_context_keywords.list) AS item),
+      ARRAY<STRING>[]
+    )
   ) AS preferred_topics,
 
   CASE
@@ -192,7 +217,8 @@ MVP의 daily snapshot 방식에서는 impression 당일 00:00 이후부터 impre
 ### 🔸 SQL
 
 ```sql
-CREATE OR REPLACE TABLE `{project}.{dataset}.user_dynamic_feature` AS
+-- 실행은 python -m autoresearch.jobs.feature_materialize가 담당한다.
+-- Terraform 관리 테이블의 metadata를 보존하기 위해 CREATE OR REPLACE TABLE을 사용하지 않는다.
 WITH action_log AS (
   SELECT
     user_id,
@@ -407,7 +433,8 @@ LEFT JOIN category_rank c
 ### 🔸 SQL
 
 ```sql
-CREATE OR REPLACE TABLE `{project}.{dataset}.video_feature` AS
+-- 실행은 python -m autoresearch.jobs.feature_materialize가 담당한다.
+-- Terraform 관리 테이블의 metadata를 보존하기 위해 CREATE OR REPLACE TABLE을 사용하지 않는다.
 WITH parsed AS (
   SELECT
     video_id,
