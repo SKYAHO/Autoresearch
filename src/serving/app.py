@@ -8,22 +8,28 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
-from src.serving.model_loader import (
-    ModelArtifactError,
-    ModelConfigurationError,
-    load_model_settings_from_environment,
-    load_reranker,
+from src.serving.model_loader import ResolvedModel
+from src.serving.online_features import (
+    MODEL_FEATURE_COLUMNS,
+    FeatureContractError,
+    FeatureRetrievalError,
+    ServingFeatureBuilder,
 )
-from src.serving.schemas import HealthcheckResponse, RerankRequest, RerankResponse
-from src.serving.service import MissingFeatureColumnsError, PredictionError, Reranker
+from src.serving.schemas import (
+    HealthcheckResponse,
+    RerankRequest,
+    RerankResponse,
+    RerankResponseItem,
+)
+from src.serving.service import PredictionError
 
 # 아래 메트릭들은 모듈 전역 레지스트리에 등록된다 — uvicorn을 --workers>1로 늘리면
 # 워커별로 값이 분리되어 /metrics가 워커마다 다르게 보인다. 스케일업 시
 # PROMETHEUS_MULTIPROC_DIR 기반 멀티프로세스 설정이 필요하다.
 RERANK_REQUESTS = Counter("rerank_requests", "Number of reranking requests.")
-RERANK_CANDIDATES = Histogram(
-    "rerank_candidates",
-    "Candidate count per reranking request.",
+RERANK_VIDEO_IDS = Histogram(
+    "rerank_video_ids",
+    "Video ID count per reranking request.",
     buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500),
 )
 RERANK_DURATION = Histogram("rerank_duration_seconds", "Reranking request duration.")
@@ -39,21 +45,28 @@ RERANK_UNSEEN_CATEGORY = Counter(
 logger = logging.getLogger(__name__)
 
 
-def create_app(reranker: Reranker | None = None) -> FastAPI:
-    """FastAPI 앱을 조립한다. reranker를 주입하면 그대로 쓰고, 없으면 시작 시 환경변수로 로드한다."""
-    active_reranker = reranker
-    model_load_error: ModelConfigurationError | ModelArtifactError | None = None
+def create_app(
+    resolved_model: ResolvedModel | None = None,
+    feature_builder: ServingFeatureBuilder | None = None,
+) -> FastAPI:
+    """주입된 모델 계보와 온라인 피처 조립기로 FastAPI 앱을 조립한다."""
+    model_contract_error = (
+        "Model feature columns do not match the serving contract."
+        if resolved_model is not None
+        and resolved_model.reranker.feature_columns != MODEL_FEATURE_COLUMNS
+        else None
+    )
+
+    def unavailable_detail() -> str | None:
+        if resolved_model is None:
+            return "Reranking model is unavailable."
+        if feature_builder is None:
+            return "Online feature store is unavailable."
+        return model_contract_error
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        # 앱 시작 시 모델을 1회 로드하고 준비 상태 게이지를 갱신, 종료 시 0으로 되돌린다.
-        nonlocal active_reranker, model_load_error
-        if active_reranker is None:
-            try:
-                active_reranker = load_reranker(load_model_settings_from_environment())
-            except (ModelConfigurationError, ModelArtifactError) as error:
-                model_load_error = error
-        RERANK_MODEL_READY.set(1 if active_reranker is not None else 0)
+        RERANK_MODEL_READY.set(1 if unavailable_detail() is None else 0)
         yield
         RERANK_MODEL_READY.set(0)
 
@@ -61,31 +74,33 @@ def create_app(reranker: Reranker | None = None) -> FastAPI:
 
     @app.get("/healthcheck", response_model=HealthcheckResponse)
     def healthcheck() -> HealthcheckResponse:
-        """모델 준비 여부를 확인한다. 미준비면 503(로드 실패 사유 포함)을 반환한다."""
-        if active_reranker is None:
-            detail = "Reranking model is unavailable."
-            if model_load_error is not None:
-                detail = str(model_load_error)
+        detail = unavailable_detail()
+        if detail is not None:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
         return HealthcheckResponse(status="ok")
 
     @app.post("/rerank", response_model=RerankResponse)
     def rerank(request: RerankRequest) -> RerankResponse:
-        """후보 영상을 CTR 예측으로 재정렬한다. 메트릭을 기록하고 도메인 예외를 HTTP 상태로 매핑한다."""
-        if active_reranker is None:
+        detail = unavailable_detail()
+        if detail is not None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Reranking model is unavailable.",
+                detail=detail,
             )
 
         RERANK_REQUESTS.inc()
-        RERANK_CANDIDATES.observe(len(request.candidates))
+        RERANK_VIDEO_IDS.observe(len(request.video_ids))
         with RERANK_DURATION.time():
             try:
-                outcome = active_reranker.rerank_with_diagnostics(request.candidates)
-            except MissingFeatureColumnsError as error:
+                candidates = feature_builder.build(
+                    user_id=request.user_id,
+                    video_ids=request.video_ids,
+                    feature_columns=resolved_model.reranker.feature_columns,
+                )
+                outcome = resolved_model.reranker.rerank_with_diagnostics(candidates)
+            except (FeatureContractError, FeatureRetrievalError) as error:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=str(error),
                 ) from error
             except PredictionError as error:
@@ -104,7 +119,16 @@ def create_app(reranker: Reranker | None = None) -> FastAPI:
                 len(values),
                 sorted({str(value) for value in values})[:10],
             )
-        return RerankResponse(items=outcome.items)
+        return RerankResponse(
+            items=[
+                RerankResponseItem(
+                    video_id=item.video_id,
+                    ctr_score=item.ctr_score,
+                    model_id=resolved_model.run_id,
+                )
+                for item in outcome.items
+            ]
+        )
 
     @app.get("/metrics", include_in_schema=False)
     def metrics() -> Response:
