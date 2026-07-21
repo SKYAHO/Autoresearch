@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -8,7 +9,12 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
-from src.serving.model_loader import ResolvedModel
+from src.serving.feast_reader import load_feast_online_feature_reader
+from src.serving.model_loader import (
+    ResolvedModel,
+    load_model_settings_from_environment,
+    load_reranker_with_lineage,
+)
 from src.serving.online_features import (
     MODEL_FEATURE_COLUMNS,
     FeatureContractError,
@@ -50,22 +56,32 @@ def create_app(
     feature_builder: ServingFeatureBuilder | None = None,
 ) -> FastAPI:
     """주입된 모델 계보와 온라인 피처 조립기로 FastAPI 앱을 조립한다."""
-    model_contract_error = (
-        "Model feature columns do not match the serving contract."
-        if resolved_model is not None
-        and resolved_model.reranker.feature_columns != MODEL_FEATURE_COLUMNS
-        else None
-    )
+    active_model = resolved_model
+    active_feature_builder = feature_builder
+    load_from_environment = resolved_model is None and feature_builder is None
 
     def unavailable_detail() -> str | None:
-        if resolved_model is None:
+        if active_model is None:
             return "Reranking model is unavailable."
-        if feature_builder is None:
+        if active_feature_builder is None:
             return "Online feature store is unavailable."
-        return model_contract_error
+        if active_model.reranker.feature_columns != MODEL_FEATURE_COLUMNS:
+            return "Model feature columns do not match the serving contract."
+        return None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        nonlocal active_feature_builder, active_model
+        if load_from_environment:
+            try:
+                settings = load_model_settings_from_environment()
+                active_model = load_reranker_with_lineage(settings)
+                reader = load_feast_online_feature_reader(
+                    os.getenv("RERANK_FEATURE_REPO_PATH", "feature_repo")
+                )
+                active_feature_builder = ServingFeatureBuilder(reader=reader)
+            except Exception:  # noqa: BLE001 - startup boundary must remain health-queryable.
+                logger.error("Reranking runtime initialization failed.")
         RERANK_MODEL_READY.set(1 if unavailable_detail() is None else 0)
         yield
         RERANK_MODEL_READY.set(0)
@@ -92,12 +108,12 @@ def create_app(
         RERANK_VIDEO_IDS.observe(len(request.video_ids))
         with RERANK_DURATION.time():
             try:
-                candidates = feature_builder.build(
+                candidates = active_feature_builder.build(
                     user_id=request.user_id,
                     video_ids=request.video_ids,
-                    feature_columns=resolved_model.reranker.feature_columns,
+                    feature_columns=active_model.reranker.feature_columns,
                 )
-                outcome = resolved_model.reranker.rerank_with_diagnostics(candidates)
+                outcome = active_model.reranker.rerank_with_diagnostics(candidates)
             except (FeatureContractError, FeatureRetrievalError) as error:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -125,7 +141,7 @@ def create_app(
                 RerankResponseItem(
                     video_id=video_id,
                     ctr_score=scores_by_video_id[video_id],
-                    model_id=resolved_model.run_id,
+                    model_id=active_model.run_id,
                 )
                 for video_id in request.video_ids
             ]

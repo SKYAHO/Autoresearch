@@ -57,7 +57,14 @@ jobs:
         run: uv sync --frozen --no-dev --group feast
 
       - name: Run feast pytest
-        run: uv run --no-sync python -m pytest tests/test_redis_iam.py tests/test_feast_materialize.py -v
+        run: >-
+          uv run --no-sync python -m pytest
+          tests/test_redis_iam.py
+          tests/test_feast_materialize.py
+          tests/test_serving_feast_reader.py
+          tests/test_serving_api.py
+          tests/test_serving_deployment.py
+          -v
 
   uv-lock-check:
     name: uv lock & proxy export drift
@@ -194,3 +201,15 @@ jobs:
             echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
             exit 1
           fi
+
+      - name: Build serving Docker image
+        run: |
+          docker build \
+            -f deploy/serving/Dockerfile \
+            --tag autoresearch-serving:ci \
+            .
+
+      - name: Run serving image import smoke check
+        run: |
+          docker run --rm autoresearch-serving:ci \
+            python -c "import feast, fastapi, feature_repo.redis_iam, src.serving.app"

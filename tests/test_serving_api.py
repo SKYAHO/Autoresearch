@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import pickle
 from pathlib import Path
@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 
+import src.serving.app as serving_app
 from src.serving.app import create_app
 from src.serving.model_loader import (
     LocalModelSettings,
@@ -24,9 +25,10 @@ from src.serving.model_loader import (
 from src.serving.online_features import (
     MODEL_FEATURE_COLUMNS,
     FeatureContractError,
+    FeatureRows,
     FeatureRetrievalError,
 )
-from src.serving.schemas import CandidateVideo
+from src.serving.schemas import CandidateVideo, FeatureValue
 from src.serving.service import PredictionError, Reranker
 
 
@@ -104,6 +106,122 @@ def _resolved_model(model: RecordingModel | None = None) -> ResolvedModel:
         run_id="run-123",
         model_version="7",
     )
+
+
+class FakeOnlineFeatureReader:
+    def read(
+        self,
+        *,
+        feature_refs: Sequence[str],
+        entity_rows: Sequence[Mapping[str, str]],
+    ) -> FeatureRows:
+        raise AssertionError("healthcheck must not read online features")
+
+
+def test_lifespan_loads_model_and_feast_builder_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = LocalModelSettings(Path("model"), Path("features"), Path("categories"))
+    model_settings_calls: list[None] = []
+    model_load_calls: list[LocalModelSettings] = []
+    feast_load_calls: list[str] = []
+
+    monkeypatch.setenv("RERANK_FEATURE_REPO_PATH", "custom-feature-repo")
+    monkeypatch.setattr(
+        serving_app,
+        "load_model_settings_from_environment",
+        lambda: model_settings_calls.append(None) or settings,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        serving_app,
+        "load_reranker_with_lineage",
+        lambda received: model_load_calls.append(received) or _resolved_model(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        serving_app,
+        "load_feast_online_feature_reader",
+        lambda repo_path: feast_load_calls.append(repo_path) or FakeOnlineFeatureReader(),
+        raising=False,
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.get("/healthcheck")
+
+    assert response.status_code == 200
+    assert model_settings_calls == [None]
+    assert model_load_calls == [settings]
+    assert feast_load_calls == ["custom-feature-repo"]
+
+
+def test_healthcheck_is_503_when_feast_initialization_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = LocalModelSettings(Path("model"), Path("features"), Path("categories"))
+    feast_load_calls: list[str] = []
+
+    monkeypatch.setattr(
+        serving_app,
+        "load_model_settings_from_environment",
+        lambda: settings,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        serving_app,
+        "load_reranker_with_lineage",
+        lambda received: _resolved_model(),
+        raising=False,
+    )
+
+    def fail_feast_load(repo_path: str) -> FakeOnlineFeatureReader:
+        feast_load_calls.append(repo_path)
+        raise RuntimeError("Feast initialization failed")
+
+    monkeypatch.setattr(
+        serving_app,
+        "load_feast_online_feature_reader",
+        fail_feast_load,
+        raising=False,
+    )
+
+    with TestClient(create_app()) as client:
+        response = client.get("/healthcheck")
+
+    assert response.status_code == 503
+    assert feast_load_calls == ["feature_repo"]
+
+
+def test_lifespan_skips_environment_factories_for_injected_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_factory(*args: str | LocalModelSettings) -> None:
+        raise AssertionError("injected app must not call environment factories")
+
+    monkeypatch.setattr(
+        serving_app,
+        "load_model_settings_from_environment",
+        unexpected_factory,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        serving_app,
+        "load_reranker_with_lineage",
+        unexpected_factory,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        serving_app,
+        "load_feast_online_feature_reader",
+        unexpected_factory,
+        raising=False,
+    )
+
+    app = create_app(resolved_model=_resolved_model(), feature_builder=FakeFeatureBuilder())
+    with TestClient(app) as client:
+        response = client.get("/healthcheck")
+
+    assert response.status_code == 200
 
 
 def test_rerank_builds_features_from_user_id_and_video_ids() -> None:
@@ -284,6 +402,60 @@ class CategoricalCodeModel:
         self.received = features
         scores = features["category_id"].cat.codes.to_numpy(dtype=float) / 10.0
         return np.column_stack((1.0 - scores, scores))
+
+
+@dataclass
+class CategoricalFeatureBuilder:
+    def build(
+        self,
+        *,
+        user_id: str,
+        video_ids: Sequence[str],
+        feature_columns: Sequence[str],
+    ) -> list[CandidateVideo]:
+        category_ids: tuple[FeatureValue, ...] = ("10", 20)
+        return [
+            CandidateVideo(
+                video_id=video_id,
+                features={
+                    **{column: 1.0 for column in MODEL_FEATURE_COLUMNS},
+                    "category_id": category_ids[index],
+                },
+            )
+            for index, video_id in enumerate(video_ids)
+        ]
+
+
+def test_metrics_report_unseen_category_type_mismatch_through_http() -> None:
+    resolved_model = ResolvedModel(
+        reranker=Reranker(
+            model=CategoricalCodeModel(),
+            feature_columns=MODEL_FEATURE_COLUMNS,
+            categorical_categories={"category_id": (10, 20, 30)},
+        ),
+        run_id="run-categorical",
+        model_version=None,
+    )
+    app = create_app(
+        resolved_model=resolved_model,
+        feature_builder=CategoricalFeatureBuilder(),
+    )
+    labels = {"column": "category_id"}
+    before = REGISTRY.get_sample_value("rerank_unseen_category_total", labels) or 0.0
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/rerank",
+            json={"user_id": "user-1", "video_ids": ["video-str", "video-int"]},
+        )
+
+    after = REGISTRY.get_sample_value("rerank_unseen_category_total", labels) or 0.0
+
+    assert response.status_code == 200
+    assert after - before == 1.0
+    scores = {item["video_id"]: item["ctr_score"] for item in response.json()["items"]}
+    assert scores["video-str"] == pytest.approx(-0.1)
+    assert scores["video-int"] == pytest.approx(0.1)
 
 
 def test_rerank_preserves_training_categorical_codes() -> None:
