@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+__arch__ = {
+    "stage": "training",
+    "role": "로컬 파일·MLflow run·Registry alias에서 Reranker 아티팩트를 해석합니다.",
+    "owns": ["모델 소스 설정 파싱", "아티팩트 로드", "Registry alias 계보 해석"],
+    "not_owns": ["모델 학습", "추천 후보 피처 조립"],
+}
+
 import os
 import pickle
 from dataclasses import dataclass
@@ -9,6 +16,7 @@ from typing import Final, TypeAlias, assert_never
 
 import joblib
 import mlflow
+from mlflow.tracking import MlflowClient
 from pydantic import TypeAdapter, ValidationError
 
 from src.serving.service import ProbabilityModel, Reranker
@@ -24,10 +32,11 @@ MLFLOW_CATEGORICAL_COLUMNS_ARTIFACT_PATH: Final = "features/categorical_columns.
 
 
 class ModelSource(StrEnum):
-    """모델 아티팩트를 어디서 읽을지 지정하는 소스 종류(로컬 파일 / MLflow 런)."""
+    """모델 아티팩트를 어디서 읽을지 지정하는 소스 종류(로컬 파일 / MLflow 런 / Registry alias)."""
 
     LOCAL = "local"
     MLFLOW = "mlflow"
+    REGISTRY = "registry"
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,7 +56,28 @@ class MlflowModelSettings:
     run_id: str
 
 
-ModelSettings: TypeAlias = LocalModelSettings | MlflowModelSettings
+@dataclass(frozen=True, slots=True)
+class RegistryModelSettings:
+    """Model Registry alias(예: models:/ctr-model@champion)로 로드할 때 필요한 설정."""
+
+    tracking_uri: str
+    model_name: str
+    alias: str
+
+
+ModelSettings: TypeAlias = LocalModelSettings | MlflowModelSettings | RegistryModelSettings
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedModel:
+    """로드된 Reranker와 계보(run_id·Registry 버전)를 함께 담는다.
+
+    local 소스는 run_id="local", registry가 아니면 model_version=None이다.
+    """
+
+    reranker: Reranker
+    run_id: str
+    model_version: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +107,7 @@ def load_model_settings_from_environment() -> ModelSettings:
         source = ModelSource(raw_source)
     except ValueError as error:
         raise ModelConfigurationError(
-            reason="RERANK_MODEL_SOURCE must be 'local' or 'mlflow'."
+            reason="RERANK_MODEL_SOURCE must be 'local', 'mlflow', or 'registry'."
         ) from error
 
     match source:
@@ -96,6 +126,12 @@ def load_model_settings_from_environment() -> ModelSettings:
                 tracking_uri=_required_environment_value("MLFLOW_TRACKING_URI"),
                 run_id=_required_environment_value("RERANK_MLFLOW_RUN_ID"),
             )
+        case ModelSource.REGISTRY:
+            return RegistryModelSettings(
+                tracking_uri=_required_environment_value("MLFLOW_TRACKING_URI"),
+                model_name=os.getenv("RERANK_REGISTRY_MODEL_NAME", "ctr-model"),
+                alias=os.getenv("RERANK_REGISTRY_ALIAS", "champion"),
+            )
         case unreachable:
             assert_never(unreachable)
 
@@ -107,6 +143,8 @@ def load_reranker(settings: ModelSettings) -> Reranker:
             return load_local_model(settings)
         case MlflowModelSettings():
             return load_mlflow_model(settings)
+        case RegistryModelSettings():
+            return _load_registry_model(settings).reranker
         case unreachable:
             assert_never(unreachable)
 
@@ -143,6 +181,43 @@ def load_mlflow_model(settings: MlflowModelSettings) -> Reranker:
         feature_columns_path=feature_columns_path,
         categorical_columns_path=categorical_columns_path,
     )
+
+
+def _load_registry_model(settings: RegistryModelSettings) -> ResolvedModel:
+    """Registry alias를 run_id로 해석한 뒤 기존 run 아티팩트 다운로드 경로를 재사용한다."""
+    mlflow.set_tracking_uri(settings.tracking_uri)
+    try:
+        version = MlflowClient().get_model_version_by_alias(settings.model_name, settings.alias)
+    except Exception as error:
+        raise ModelArtifactError(
+            reason=(
+                f"Failed to resolve registry alias models:/{settings.model_name}"
+                f"@{settings.alias}: {error}"
+            )
+        ) from error
+    reranker = load_mlflow_model(
+        MlflowModelSettings(tracking_uri=settings.tracking_uri, run_id=version.run_id)
+    )
+    return ResolvedModel(
+        reranker=reranker, run_id=version.run_id, model_version=str(version.version)
+    )
+
+
+def load_reranker_with_lineage(settings: ModelSettings) -> ResolvedModel:
+    """설정 종류에 따라 로드하고 계보(run_id·버전)를 함께 반환한다."""
+    match settings:
+        case RegistryModelSettings():
+            return _load_registry_model(settings)
+        case MlflowModelSettings():
+            return ResolvedModel(
+                reranker=load_mlflow_model(settings), run_id=settings.run_id, model_version=None
+            )
+        case LocalModelSettings():
+            return ResolvedModel(
+                reranker=load_local_model(settings), run_id="local", model_version=None
+            )
+        case unreachable:
+            assert_never(unreachable)
 
 
 def _load_reranker(
