@@ -205,36 +205,30 @@ WITH parsed AS (
 
     COALESCE(
       SAFE_ADD(
-        COALESCE(
+        SAFE_ADD(
           SAFE_ADD(
             COALESCE(
-              SAFE_ADD(
-                COALESCE(
-                  SAFE_MULTIPLY(
-                    SAFE_CAST(REGEXP_EXTRACT(video_duration, r'P(\d+)D') AS INT64),
-                    86400
-                  ),
-                  0
-                ),
-                COALESCE(
-                  SAFE_MULTIPLY(
-                    SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)H') AS INT64),
-                    3600
-                  ),
-                  0
-                )
+              SAFE_MULTIPLY(
+                SAFE_CAST(REGEXP_EXTRACT(video_duration, r'P(\d+)D') AS INT64),
+                86400
               ),
               0
             ),
             COALESCE(
               SAFE_MULTIPLY(
-                SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)M') AS INT64),
-                60
+                SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)H') AS INT64),
+                3600
               ),
               0
             )
           ),
-          0
+          COALESCE(
+            SAFE_MULTIPLY(
+              SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)M') AS INT64),
+              60
+            ),
+            0
+          )
         ),
         COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\d+)S') AS INT64), 0)
       ),

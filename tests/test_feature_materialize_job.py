@@ -110,5 +110,59 @@ def test_video_script_uses_safe_duration_arithmetic():
 
     assert "SAFE_MULTIPLY(" in script
     assert "SAFE_ADD(" in script
-    assert re.search(r"COALESCE\(\s*SAFE_ADD\(", script)
     assert re.search(r"COALESCE\(\s*SAFE_MULTIPLY\(", script)
+
+
+def test_video_script_duration_contract_composes_pt1d2h3m4s_as_93784_seconds():
+    script = feature_materialize.build_materialize_script(
+        "test-project", "test_dataset", "video_feature"
+    )
+
+    expected_duration_sec = 1 * 86400 + 2 * 3600 + 3 * 60 + 4
+
+    assert expected_duration_sec == 93784
+    assert "SAFE_MULTIPLY(" in script
+    assert "86400" in script
+    assert "3600" in script
+    assert "60" in script
+    assert "COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\\d+)S') AS INT64), 0)" in script
+
+
+def test_video_script_duration_contract_propagates_safe_add_overflow_to_outer_coalesce():
+    script = feature_materialize.build_materialize_script(
+        "test-project", "test_dataset", "video_feature"
+    )
+
+    duration_expression = """COALESCE(
+       SAFE_ADD(
+         SAFE_ADD(
+           SAFE_ADD(
+             COALESCE(
+               SAFE_MULTIPLY(
+                 SAFE_CAST(REGEXP_EXTRACT(video_duration, r'P(\\d+)D') AS INT64),
+                 86400
+               ),
+               0
+             ),
+             COALESCE(
+               SAFE_MULTIPLY(
+                 SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\\d+)H') AS INT64),
+                 3600
+               ),
+               0
+             )
+           ),
+           COALESCE(
+             SAFE_MULTIPLY(
+               SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\\d+)M') AS INT64),
+               60
+             ),
+             0
+           )
+         ),
+         COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\\d+)S') AS INT64), 0)
+       ),
+       0
+     ) AS duration_sec"""
+
+    assert re.sub(r"\s+", "", duration_expression) in re.sub(r"\s+", "", script)
