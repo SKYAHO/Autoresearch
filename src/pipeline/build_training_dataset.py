@@ -205,6 +205,12 @@ def derive_wide_events(
     이번에 새로 정의한 규칙이라 같은 문서에 추가 반영한다.
     """
     con = duckdb.connect()
+    # 빈 파티션(콜드 스타트)에서는 BigQuery가 STRING 컬럼을 object dtype 빈
+    # 컬럼으로 반환해 DuckDB가 타입을 추론하지 못하고 INTEGER로 등록한다 —
+    # 이후 문자열 키 비교가 깨지므로 등록 전에 계약 dtype을 고정한다.
+    long_events = long_events.astype(
+        {"event_id": "string", "user_id": "string", "video_id": "string", "event_type": "string"}
+    )
     con.register("long_events", long_events)
 
     query = f"""
@@ -289,7 +295,9 @@ def derive_wide_events(
         LEFT JOIN view_attr va ON va.impression_event_id = i.event_id
         LEFT JOIN like_attr la ON la.impression_event_id = i.event_id
     """
-    return con.execute(query).df()
+    wide = con.execute(query).df()
+    # 빈 결과도 하류(DuckDB 재등록)에서 dtype이 보존되도록 문자열 계약을 명시한다.
+    return wide.astype({"event_id": "string", "user_id": "string", "video_id": "string"})
 
 
 def main(

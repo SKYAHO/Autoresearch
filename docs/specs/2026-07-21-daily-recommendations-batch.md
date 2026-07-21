@@ -97,9 +97,12 @@ hobbies_and_interests_list(JSON), hobbies_and_interests(텍스트)`)의 DataFram
 1. registry 소스로 Reranker 로드 (fail-fast — 모델 없이는 라운드 무효)
 2. BQ 로드: 후보(candidate_dt 파티션), 가상 유저 전원 → 어댑터, action log
    (events_dt 단일 파티션) → `derive_wide_events`
-3. 유저별 `build_pool_feature_frame` → `rerank` → 전수 순위. 유저 단위
-   격리: 개별 유저 실패는 skip 계수(quarantine 로그), 실패 비율이 임계치
-   (기본 10%) 초과 시 전체 실패
+3. 유저별 `build_pool_feature_frame` → `rerank` → 전수 순위. 기준일 분리:
+   유저 이력은 `as_of = events_dt + 1`(events_dt 파티션 전체 포함), 영상
+   나이(days_since_upload)는 `snapshot_date = candidate_dt` — action log가
+   지연되어도 신선한 후보의 영상 나이가 음수가 되지 않는다. 유저 단위
+   격리: 개별 유저 실패는 skip 계수(quarantine 로그에 user_id·예외 타입
+   명시), 실패 비율이 임계치(기본 10%) 초과 시 전체 실패
 4. 적재: 결과 행 조립 → `user_recommendations`의 해당 dt 파티션 덮어쓰기
 5. 요약 리포트 stdout(JSON): 유저 수, skip 수, 적재 행 수, model run_id/버전
 
@@ -139,9 +142,11 @@ CLI 인자(공개 계약): `--candidate-dt`(기본: 후보 테이블 MAX(dt)),
 - **fail-fast**: registry alias 해석 실패, 아티팩트 로드 실패, 후보/유저/이벤트
   테이블 조회 실패, 후보 0건 — 시작 즉시 중단 (부분 적재 없음: 적재는 전
   유저 채점 완료 후 1회).
-- **유저 단위 격리**: 개별 유저의 어댑터·조립·채점 실패는 skip하고 user_id를
-  로그로 남긴다. skip 비율 > `--max-skip-ratio`(기본 0.1)이면 적재 없이 전체
-  실패 — 대량 실패를 조용히 절반짜리 추천으로 만들지 않는다.
+- **유저 단위 격리**: 개별 유저의 어댑터·조립·채점 실패는 skip하고 user_id와
+  예외 타입을 stderr warning 메시지에 남긴다. skip 비율 > `--max-skip-ratio`
+  (기본 0.1)이면 적재 없이 전체 실패 — 대량 실패를 조용히 절반짜리 추천으로
+  만들지 않는다. 전 유저가 skip되면 `--max-skip-ratio` 값과 무관하게 적재
+  없이 실패한다 — 빈 결과로 기존 파티션을 비우지 않는다.
 - **콜드스타트는 정상 경로**: 이벤트 이력이 없는 유저는 실패가 아니라
   affinity="unknown"·집계 0으로 채점된다(학습 경로와 동일 의미).
 
