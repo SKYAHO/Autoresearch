@@ -355,6 +355,7 @@ ASSERT (SELECT COUNT(*) FROM materialized_rows) > 0
 DELETE FROM {target} WHERE TRUE;
 INSERT INTO {target} SELECT * FROM materialized_rows;
 COMMIT TRANSACTION;
+SELECT COUNT(*) AS final_row_count FROM {target};
 """
 
 
@@ -378,17 +379,28 @@ def _bigquery_client(project_id: str) -> Any:
 def _run(args: argparse.Namespace) -> dict[str, object]:
     client = _bigquery_client(args.project)
     job_ids: list[str] = []
+    row_counts: dict[str, int] = {}
     for table_name in FEATURE_TABLES:
         script = build_materialize_script(args.project, args.dataset, table_name)
         job = client.query(script)
-        job.result()
+        rows = list(job.result())
+        if len(rows) != 1:
+            raise RuntimeError("invalid final row count result")
+        try:
+            row_count = rows[0]["final_row_count"]
+        except (KeyError, TypeError):
+            raise RuntimeError("invalid final row count result") from None
+        if not isinstance(row_count, int) or isinstance(row_count, bool):
+            raise RuntimeError("invalid final row count result")
         job_ids.append(job.job_id)
+        row_counts[table_name] = row_count
     return {
         "status": "succeeded",
         "project": args.project,
         "dataset": args.dataset,
         "tables": list(FEATURE_TABLES),
         "job_ids": job_ids,
+        "row_counts": row_counts,
     }
 
 

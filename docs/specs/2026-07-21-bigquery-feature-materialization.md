@@ -50,8 +50,11 @@ python -m autoresearch.jobs.feature_materialize \
 3. `user_dynamic_feature`와 `video_feature` SQL은 현재 문서화된 raw
    schema 기반 집계 규칙을 사용한다.
 4. 테이블마다 BigQuery transaction에서 기존 행을 삭제하고 새 변환 결과를
-   삽입한다.
-5. 성공한 테이블의 job ID와 최종 행 수를 기록한다. 0행이면 실패로 처리한다.
+   삽입한 뒤 commit한다.
+5. commit 후 같은 script의 final `SELECT COUNT(*)`로 target table의 최종 행 수를
+   조회한다. 성공 `job_summary`의 `row_counts`는 table name별 이 JSON integer
+   값을 기록하며, 결과가 정확히 한 행의 integer가 아니면 세부 값을 노출하지 않고
+   runtime failure로 처리한다. 0행이면 transaction 안에서 실패로 처리한다.
 
 ## 갱신 및 실패 계약
 
@@ -79,7 +82,10 @@ python -m autoresearch.jobs.feature_materialize \
 - [ ] BigQuery dry-run: 승인된 프로젝트와 dataset에서 세 대상 SELECT를
   dry-run하고 각 job ID와 컴파일 결과를 기록한다.
 - [ ] 통합 실행: 실제 row를 적재하는 materialization은 별도 승인된 환경에서만
-  수행하며, 대상 테이블별 0행 여부와 FeatureView schema 호환성 결과를 기록한다.
+   수행하며, 대상 테이블별 0행 여부와 FeatureView schema 호환성 결과를 기록한다.
+- [ ] transaction rollback write verification: 실제 DML과 rollback 검증은 별도
+  승인된 BigQuery integration checklist에서만 수행한다. 이 저장소의 unit test와
+  dry-run은 write 또는 rollback integration을 실행하지 않는다.
 
 ## 소유권
 

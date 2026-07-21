@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -14,6 +15,8 @@ def _summary(output: str) -> dict[str, object]:
 def test_main_runs_each_feature_table_in_order(monkeypatch, capsys):
     client = MagicMock()
     query_jobs = [MagicMock(job_id=f"job-{index}") for index in range(3)]
+    for index, job in enumerate(query_jobs):
+        job.result.return_value = [{"final_row_count": index + 1}]
     client.query.side_effect = query_jobs
     monkeypatch.setattr(
         feature_materialize, "_bigquery_client", lambda project_id: client
@@ -38,11 +41,41 @@ def test_main_runs_each_feature_table_in_order(monkeypatch, capsys):
     assert summary["status"] == "succeeded"
     assert summary["tables"] == list(feature_materialize.FEATURE_TABLES)
     assert summary["job_ids"] == ["job-0", "job-1", "job-2"]
+    assert summary["row_counts"] == {
+        "user_static_feature": 1,
+        "user_dynamic_feature": 2,
+        "video_feature": 3,
+    }
+
+
+@pytest.mark.parametrize("result", [[], [{}], [{"final_row_count": "3"}]])
+def test_main_stops_when_final_row_count_is_missing_or_not_an_integer(
+    result, monkeypatch, caplog, capsys
+):
+    client = MagicMock()
+    first_job = MagicMock(job_id="job-static")
+    first_job.result.return_value = result
+    client.query.return_value = first_job
+    monkeypatch.setattr(
+        feature_materialize, "_bigquery_client", lambda project_id: client
+    )
+
+    assert (
+        feature_materialize.main(
+            ["--project", "test-project", "--dataset", "test_dataset"]
+        )
+        == 1
+    )
+
+    assert client.query.call_count == 1
+    assert _summary(capsys.readouterr().out)["error_type"] == "runtime_failure"
+    assert "final_row_count" not in caplog.text
 
 
 def test_main_stops_when_a_table_query_fails(monkeypatch, capsys):
     client = MagicMock()
     first_job = MagicMock(job_id="job-static")
+    first_job.result.return_value = [{"final_row_count": 1}]
     client.query.side_effect = [first_job, RuntimeError("query failed")]
     monkeypatch.setattr(
         feature_materialize, "_bigquery_client", lambda project_id: client
@@ -69,6 +102,7 @@ def test_main_stops_when_a_table_query_fails(monkeypatch, capsys):
 def test_main_stops_when_a_table_result_fails(monkeypatch, capsys):
     client = MagicMock()
     first_job = MagicMock(job_id="job-static")
+    first_job.result.return_value = [{"final_row_count": 1}]
     second_job = MagicMock(job_id="job-dynamic")
     second_job.result.side_effect = RuntimeError("result failed")
     client.query.side_effect = [first_job, second_job]
@@ -233,6 +267,7 @@ def test_supported_script_references_its_raw_source(table_name, raw_table):
     assert "DELETE FROM" in script
     assert "INSERT INTO" in script
     assert "ASSERT" in script
+    assert "COMMIT TRANSACTION;\nSELECT COUNT(*) AS final_row_count FROM" in script
     assert "CREATE OR REPLACE TABLE" not in script
 
 
@@ -361,3 +396,19 @@ def test_video_script_duration_contract_propagates_safe_add_overflow_to_outer_co
      ) AS duration_sec"""
 
     assert re.sub(r"\s+", "", duration_expression) in re.sub(r"\s+", "", script)
+
+
+def test_video_duration_expression_in_guide_matches_generated_builder_sql():
+    guide = (
+        Path(__file__).parents[1] / "docs" / "guides" / "data-warehouse.md"
+    ).read_text()
+    script = feature_materialize.build_materialize_script(
+        "test-project", "test_dataset", "video_feature"
+    )
+
+    def duration_expression(sql: str) -> str:
+        start = sql.index("COALESCE(", sql.index("video_category AS category_id,"))
+        end = sql.index(") AS duration_sec,", start) + len(") AS duration_sec")
+        return re.sub(r"\s+", "", sql[start:end])
+
+    assert duration_expression(guide) == duration_expression(script)

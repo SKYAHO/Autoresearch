@@ -139,7 +139,12 @@ Application은 환경 변수를 읽고 누락·빈 값을 검증한다.
 - 명령은 `user_static_feature`, `user_dynamic_feature`, `video_feature`를 이 순서로 전체 갱신한다.
 - 각 테이블은 transaction 내 `DELETE` + `INSERT`로 갱신한다. 한 테이블의 실패는 기존 행을 유지하고 뒤 테이블 실행을 중단하며 exit 1이다.
 - raw 결과가 0행이면 transaction을 실패시킨다.
-- 성공 `job_summary`에는 project, dataset, 대상 table 이름과 BigQuery job ID만 포함한다.
+- 성공 `job_summary`에는 project, dataset, 대상 table 이름, BigQuery job ID와
+  `row_counts`를 포함한다. `row_counts`는 `tables`와 동일한 실행 순서의 table
+  name을 key로 하고, 각 transaction이 commit된 뒤 target table에서 조회한 최종
+  행 수를 JSON integer 값으로 하는 mapping이다. 결과가 정확히 한 행의 integer
+  count가 아니면 stdout에는 세부 값을 노출하지 않고 `runtime_failure`, exit 1로
+  실패한다.
 
 ## Feast materialize
 
