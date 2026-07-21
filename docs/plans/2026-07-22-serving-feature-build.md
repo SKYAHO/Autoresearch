@@ -301,7 +301,7 @@ git commit -m "docs: #220 서빙 피처 계약 고정"
 - Consumes: `src.serving.schemas.CandidateVideo`, `compute_historical_category_match()`, `compute_preferred_category_match()`
 - Produces: `MODEL_FEATURE_COLUMNS`, `OnlineFeatureReader.read`, `FeatureRetrievalError`, `FeatureContractError`, `ServingFeatureBuilder.build -> list[CandidateVideo]`
 
-- [ ] **Step 1: reader protocol과 fake를 사용하는 실패 테스트 작성**
+- [x] **Step 1: reader protocol과 fake를 사용하는 실패 테스트 작성**
 
 `tests/test_serving_online_features.py`에 최소 fake reader를 두고 다음을 고정한다.
 
@@ -323,7 +323,7 @@ uv run --no-sync python -m pytest tests/test_serving_online_features.py -v
 
 Expected: 모듈이 없어 FAIL.
 
-- [ ] **Step 2: 최소 protocol과 도메인 오류 구현**
+- [x] **Step 2: 최소 protocol과 도메인 오류 구현**
 
 실제 Feast 응답 객체를 외부로 새지 않게 reader 계약을 좁힌다.
 
@@ -348,7 +348,7 @@ class FeatureContractError(Exception):
     reason: str
 ```
 
-- [ ] **Step 3: 두 단계 조립 구현**
+- [x] **Step 3: 두 단계 조립 구현**
 
 `ServingFeatureBuilder.build()`의 공개 계약을 다음으로 둔다.
 
@@ -378,7 +378,7 @@ class ServingFeatureBuilder:
 
 `.to_dict()` 배열의 우연한 위치만 믿지 말고 반환된 `video_id`/`category_id` key로 검증·join한다. 중복 입력은 API 스키마에서 막지만 builder도 직접 호출될 수 있으므로 명시적으로 거부한다.
 
-- [ ] **Step 4: targeted test 통과 및 커밋**
+- [x] **Step 4: targeted test 통과 및 커밋**
 
 ```bash
 uv run --no-sync python -m pytest tests/test_serving_online_features.py -v
