@@ -6,7 +6,7 @@ __arch__ = {
     "owns": [
         "Feast get_online_features 호출과 결과 변환",
         "Redis CA·FeatureStore bootstrap",
-        "외부 SDK 오류의 안전한 조회 오류 변환",
+        "외부 SDK 오류의 안전한 진단과 조회 오류 변환",
     ],
     "not_owns": [
         "피처 계약 검증과 cold-start 기본값",
@@ -15,6 +15,7 @@ __arch__ = {
     ],
 }
 
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,8 @@ from src.serving.online_features import (
     FeatureRetrievalError,
     FeatureRows,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _OnlineFeatures(Protocol):
@@ -57,7 +60,11 @@ class FeastOnlineFeatureReader:
                 features=list(feature_refs),
                 entity_rows=[dict(row) for row in entity_rows],
             ).to_dict()
-        except Exception:  # noqa: BLE001 - external SDK errors may contain request data.
+        except Exception as error:  # noqa: BLE001 - external SDK errors may contain request data.
+            logger.error(
+                "Feast online feature retrieval failed.",
+                extra={"error_type": type(error).__name__},
+            )
             raise FeatureRetrievalError(
                 reason="Feast online feature retrieval failed."
             ) from None

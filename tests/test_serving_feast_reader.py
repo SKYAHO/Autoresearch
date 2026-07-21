@@ -68,7 +68,9 @@ def test_loader_prepares_ca_bundle_before_creating_store(monkeypatch) -> None:
     assert reader.store is store
 
 
-def test_read_converts_external_store_error_without_sdk_or_request_values() -> None:
+def test_read_logs_error_type_and_redacts_external_store_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     # Given: an injected external store that exposes sensitive failure details.
     class _FailingStore:
         def get_online_features(
@@ -79,11 +81,17 @@ def test_read_converts_external_store_error_without_sdk_or_request_values() -> N
     reader = FeastOnlineFeatureReader(store=_FailingStore())
 
     # When: the SDK-facing adapter invokes the external store.
-    with pytest.raises(FeatureRetrievalError) as excinfo:
-        reader.read(
-            feature_refs=("UserStaticView:age_group",),
-            entity_rows=({"user_id": "user-1"},),
-        )
+    with caplog.at_level("ERROR", logger="src.serving.feast_reader"):
+        with pytest.raises(FeatureRetrievalError) as excinfo:
+            reader.read(
+                feature_refs=("UserStaticView:age_group",),
+                entity_rows=({"user_id": "user-1"},),
+            )
 
-    # Then: callers receive only the fixed safe retrieval failure.
+    # Then: callers and operators receive only the fixed safe failure facts.
     assert str(excinfo.value) == "Feast online feature retrieval failed."
+    assert len(caplog.records) == 1
+    assert caplog.records[0].__dict__["error_type"] == "RuntimeError"
+    assert "password" not in caplog.text
+    assert "secret" not in caplog.text
+    assert "user-1" not in caplog.text
