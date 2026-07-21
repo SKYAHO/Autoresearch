@@ -68,11 +68,19 @@ def test_ci_checks_serving_image_dependencies_and_feature_store_bootstrap() -> N
     assert "load_feature_store('/app/feature_repo')" in workflow
 
 
-def test_ci_smokes_serving_healthcheck_fail_closed_and_cleans_up() -> None:
+def test_ci_smokes_serving_http_contract_while_unready_and_cleans_up() -> None:
+    # Given: the production serving-image CI workflow.
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "Run serving image fail-closed healthcheck smoke" in workflow
+    # When: its detached-container smoke contract is inspected.
+    # Then: request validation precedes readiness and health remains fail-closed.
+    assert "Run serving image fail-closed HTTP contract smoke" in workflow
     assert "docker run --detach" in workflow
     assert "trap cleanup EXIT" in workflow
+    assert "curl --request POST" in workflow
+    assert "Content-Type: application/json" in workflow
+    assert "--data '{}'" in workflow
+    assert "/rerank" in workflow
+    assert '"${rerank_status_code}" = "422"' in workflow
     assert "/healthcheck" in workflow
-    assert '"${status_code}" = "503"' in workflow
+    assert '"${healthcheck_status_code}" = "503"' in workflow

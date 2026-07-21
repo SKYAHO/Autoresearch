@@ -218,7 +218,7 @@ jobs:
           docker run --rm autoresearch-serving:ci \
             python -c "from feature_repo.bootstrap import load_feature_store; load_feature_store('/app/feature_repo')"
 
-      - name: Run serving image fail-closed healthcheck smoke
+      - name: Run serving image fail-closed HTTP contract smoke
         shell: bash
         run: |
           container_name="autoresearch-serving-healthcheck-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
@@ -234,13 +234,20 @@ jobs:
 
           for _ in $(seq 1 30); do
             host_port="$(docker port "${container_name}" 8000/tcp | awk -F: '{print $NF}')"
-            status_code="$(curl --silent --show-error --output /tmp/serving-healthcheck.json --write-out '%{http_code}' "http://127.0.0.1:${host_port}/healthcheck" || true)"
-            if [ "${status_code}" = "503" ]; then
+            rerank_status_code="$(curl --request POST \
+              --silent --show-error \
+              --output /tmp/serving-rerank.json \
+              --write-out '%{http_code}' \
+              --header 'Content-Type: application/json' \
+              --data '{}' \
+              "http://127.0.0.1:${host_port}/rerank" || true)"
+            healthcheck_status_code="$(curl --silent --show-error --output /tmp/serving-healthcheck.json --write-out '%{http_code}' "http://127.0.0.1:${host_port}/healthcheck" || true)"
+            if [ "${rerank_status_code}" = "422" ] && [ "${healthcheck_status_code}" = "503" ]; then
               exit 0
             fi
             sleep 1
           done
 
           docker logs "${container_name}"
-          echo "::error::모델·Feast 자격 증명 없이 /healthcheck가 503으로 fail-closed 해야 한다"
+          echo "::error::모델·Feast 자격 증명 없이 malformed /rerank는 422이고 /healthcheck는 503이어야 한다"
           exit 1
