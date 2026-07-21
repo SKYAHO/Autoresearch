@@ -402,7 +402,7 @@ git commit -m "feat: #220 온라인 피처 배치 조립 추가"
 - Consumes: `OnlineFeatureReader`, `FeatureRows`, `FeatureRetrievalError` from Task 2
 - Produces: `FeastOnlineFeatureReader.read`, `load_feast_online_feature_reader(repo_path: str | Path) -> FeastOnlineFeatureReader`, `ensure_redis_ca_bundle`
 
-- [ ] **Step 1: 공용 bootstrap 이동 회귀 테스트 작성**
+- [x] **Step 1: 공용 bootstrap 이동 회귀 테스트 작성**
 
 materialize CLI에만 있는 private `_ensure_ca_bundle()`을 복제하지 않는다. `feature_repo/bootstrap.py`의 공개 함수로 이동하고 기존 materialize 테스트가 같은 동작을 보장하게 한다.
 
@@ -419,7 +419,7 @@ uv run --no-sync python -m pytest tests/test_feast_materialize.py -v
 
 Expected: 함수 이동 전 새 import 테스트 FAIL.
 
-- [ ] **Step 2: Feast reader 구현**
+- [x] **Step 2: Feast reader 구현**
 
 `FeastOnlineFeatureReader`는 생성자에서 주입받은 store만 보관하며 `read()`에서 아래 한 줄의 의미만 감싼다.
 
@@ -432,7 +432,7 @@ store.get_online_features(
 
 Feast 예외는 secret/entity 값을 로그에 담지 않고 `FeatureRetrievalError`로 연결한다. store factory는 먼저 CA bundle을 준비한 뒤 `FeatureStore(repo_path=str(repo_path))`를 생성한다.
 
-- [ ] **Step 3: 두 의존성 환경에서 테스트**
+- [x] **Step 3: 두 의존성 환경에서 테스트**
 
 dev 환경에서는 fake store로 어댑터 변환만 테스트하고, Feast 전용 테스트는 module 수준 `pytest.importorskip("feast")`를 사용한다.
 
@@ -446,7 +446,7 @@ uv run --no-sync python -m pytest tests/test_serving_feast_reader.py tests/test_
 
 Expected: 양쪽 PASS. 실제 Redis에는 접속하지 않는다.
 
-- [ ] **Step 4: 커밋**
+- [x] **Step 4: 커밋**
 
 ```bash
 git add feature_repo/bootstrap.py autoresearch/jobs/feast_materialize.py src/serving/feast_reader.py tests/test_feast_materialize.py tests/test_serving_feast_reader.py .env.example
