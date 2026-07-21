@@ -130,6 +130,9 @@ CLI 인자(공개 계약): `--candidate-dt`(기본: 후보 테이블 MAX(dt)),
 
 `python -m src.pipeline.daily_recommendations` 명령과 인자·환경변수를 등재한다.
 스케줄(빈도·재시도·타임아웃)은 `Autoresearch-airflow` 소유로 명시한다.
+공개 명령은 `Dockerfile.app` 이미지에서 실행 가능해야 하므로 이미지에 `src/`를
+포함한다. CLI는 batch-contract-v1(stdout 단일 `job_summary` JSON, exit 0/1/2,
+`--help`/`--version`, stderr 진단)을 준수한다.
 
 ## 에러 처리
 
