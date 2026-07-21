@@ -108,8 +108,8 @@ def test_embed_texts_preserves_order_across_chunks(monkeypatch):
 def test_embed_texts_normalizes_output_vectors(monkeypatch):
     _install_recording_fake(monkeypatch)
     result = embeddings_module.embed_texts(["gaming"], task_type="RETRIEVAL_QUERY")
-    # fake 모델은 norm=5인 벡터를 반환하지만, embed_texts()가 L2 정규화해야 한다
-    # (gemini-embedding-001은 output_dimensionality != 3072일 때 자동 정규화하지 않음).
+    # fake 모델은 norm=5인 벡터를 반환하지만, embed_texts()가 방어적으로 L2
+    # 정규화해야 한다 — API가 이미 정규화된 값을 주더라도 이 정규화는 idempotent.
     assert np.isclose(np.linalg.norm(result[0]), 1.0)
 
 

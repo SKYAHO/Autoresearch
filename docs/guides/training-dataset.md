@@ -509,7 +509,7 @@ SELECT
   'bigquery_asof_fallback' AS join_strategy,
   'daily' AS snapshot_granularity,
   'Asia/Seoul' AS timezone,
-  'gemini-embedding-001' AS embedding_model,
+  'text-multilingual-embedding-002' AS embedding_model,
   768 AS embedding_dim,
   'user_topic_embedding_v1' AS user_topic_embedding_version,
   'category_embedding_v1' AS category_embedding_version,
