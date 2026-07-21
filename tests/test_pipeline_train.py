@@ -137,3 +137,38 @@ def test_main_registers_model_and_auto_increments_version(tmp_path, monkeypatch)
         assert v.run_id
         tags = client.get_model_version("ctr-model", str(v.version)).tags
         assert "val_roc_auc" in tags
+
+
+def test_main_survives_registry_registration_failure(tmp_path, monkeypatch) -> None:
+    """리뷰 반영: Registry 등록은 학습이 끝난 뒤의 best-effort 단계라, 등록이
+    실패해도(registry 백엔드 미구성·네트워크 오류 등) run 전체를 실패로
+    마킹해서는 안 된다 — 모델은 이미 저장·기록된 뒤다."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    data_path = tmp_path / "training_dataset.csv"
+    _synthetic_ctr_dataset().to_csv(data_path, index=False)
+
+    def fake_register_model_raises(model_uri, model_name, tags=None):
+        raise RuntimeError("registry 백엔드 없음(시뮬레이션)")
+
+    monkeypatch.setattr(train, "register_model", fake_register_model_raises)
+
+    model_output = tmp_path / "model.joblib"
+    # 예외가 전파되지 않고 main()이 끝까지 정상 실행되어야 한다.
+    train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        model_output=str(model_output),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.pkl"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.pkl"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+    )
+
+    # 모델 파일은 registry 등록 실패와 무관하게 이미 저장되어 있어야 한다.
+    assert model_output.exists()

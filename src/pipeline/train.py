@@ -251,8 +251,13 @@ def main(
         registry_tags = {"val_roc_auc": f"{val_roc_auc:.4f}"}
         if extra_params:
             registry_tags.update({k: str(v) for k, v in extra_params.items()})
-        registered_version = register_model(model_uri, model_name, tags=registry_tags)
-        print(f"  [OK] {model_name} v{registered_version} 등록 완료")
+        # 등록 실패로 이미 끝난 학습 run을 FAILED 처리하지 않는다(best-effort).
+        registered_version = None
+        try:
+            registered_version = register_model(model_uri, model_name, tags=registry_tags)
+            print(f"  [OK] {model_name} v{registered_version} 등록 완료")
+        except Exception as exc:
+            print(f"  ⚠️  Model Registry 등록 실패 — 학습 결과(모델·아티팩트)는 정상 저장됨: {exc}")
 
     print("\n" + "=" * 70)
     print("훈련 완료")
@@ -261,7 +266,11 @@ def main(
     print(f"Model: {model_path}")
     print(f"Feature columns: {feature_columns_path}")
     print(f"Categorical columns: {categorical_columns_path}")
-    print(f"Registered model: {model_name} v{registered_version}")
+    print(
+        f"Registered model: {model_name} v{registered_version}"
+        if registered_version is not None
+        else f"Registered model: 등록 실패 (건너뜀 — 위 경고 로그 참고, run_id={run.info.run_id})"
+    )
 
 
 if __name__ == "__main__":
