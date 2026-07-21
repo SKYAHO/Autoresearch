@@ -119,14 +119,15 @@ def create_app(
                 len(values),
                 sorted({str(value) for value in values})[:10],
             )
+        scores_by_video_id = {item.video_id: item.ctr_score for item in outcome.items}
         return RerankResponse(
             items=[
                 RerankResponseItem(
-                    video_id=item.video_id,
-                    ctr_score=item.ctr_score,
+                    video_id=video_id,
+                    ctr_score=scores_by_video_id[video_id],
                     model_id=resolved_model.run_id,
                 )
-                for item in outcome.items
+                for video_id in request.video_ids
             ]
         )
 

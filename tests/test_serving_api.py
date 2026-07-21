@@ -2,20 +2,32 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+import pickle
+from pathlib import Path
 
+import joblib
 import numpy as np
 import pandas as pd
+import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 
 from src.serving.app import create_app
-from src.serving.model_loader import ResolvedModel
+from src.serving.model_loader import (
+    LocalModelSettings,
+    MlflowModelSettings,
+    ModelArtifactError,
+    ResolvedModel,
+    load_local_model,
+    load_mlflow_model,
+)
 from src.serving.online_features import (
     MODEL_FEATURE_COLUMNS,
+    FeatureContractError,
     FeatureRetrievalError,
 )
 from src.serving.schemas import CandidateVideo
-from src.serving.service import Reranker
+from src.serving.service import PredictionError, Reranker
 
 
 class RecordingModel:
@@ -69,6 +81,18 @@ class FailingFeatureBuilder:
         raise FeatureRetrievalError(reason="online feature store is unavailable")
 
 
+@dataclass
+class ContractFailingFeatureBuilder:
+    def build(
+        self,
+        *,
+        user_id: str,
+        video_ids: Sequence[str],
+        feature_columns: Sequence[str],
+    ) -> list[CandidateVideo]:
+        raise FeatureContractError(reason="model and feature-store contract disagree")
+
+
 def _resolved_model(model: RecordingModel | None = None) -> ResolvedModel:
     active_model = model or RecordingModel()
     return ResolvedModel(
@@ -102,7 +126,7 @@ def test_rerank_builds_features_from_user_id_and_video_ids() -> None:
     assert "preferred_category" not in model.received
 
 
-def test_rerank_returns_scores_with_model_run_id() -> None:
+def test_rerank_preserves_requested_video_id_order_with_model_run_id() -> None:
     app = create_app(resolved_model=_resolved_model(), feature_builder=FakeFeatureBuilder())
 
     with TestClient(app) as client:
@@ -114,8 +138,8 @@ def test_rerank_returns_scores_with_model_run_id() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "items": [
-            {"video_id": "video-high", "ctr_score": 0.2, "model_id": "run-123"},
             {"video_id": "video-low", "ctr_score": 0.1, "model_id": "run-123"},
+            {"video_id": "video-high", "ctr_score": 0.2, "model_id": "run-123"},
         ]
     }
 
@@ -151,6 +175,21 @@ def test_rerank_maps_feature_store_failure_to_503() -> None:
     assert response.json() == {"detail": "online feature store is unavailable"}
 
 
+def test_rerank_maps_feature_contract_failure_to_503() -> None:
+    app = create_app(
+        resolved_model=_resolved_model(), feature_builder=ContractFailingFeatureBuilder()
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/rerank",
+            json={"user_id": "user-1", "video_ids": ["video-1"]},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "model and feature-store contract disagree"}
+
+
 def test_healthcheck_requires_both_model_and_feature_store() -> None:
     incompatible_model = ResolvedModel(
         reranker=Reranker(
@@ -177,7 +216,7 @@ def test_healthcheck_requires_both_model_and_feature_store() -> None:
 def test_metrics_observe_video_id_count() -> None:
     builder = FakeFeatureBuilder()
     app = create_app(resolved_model=_resolved_model(), feature_builder=builder)
-    before = REGISTRY.get_sample_value("rerank_video_ids_count") or 0.0
+    before = REGISTRY.get_sample_value("rerank_video_ids_sum") or 0.0
 
     with TestClient(app) as client:
         response = client.post(
@@ -185,9 +224,9 @@ def test_metrics_observe_video_id_count() -> None:
             json={"user_id": "user-1", "video_ids": ["video-1", "video-2"]},
         )
 
-    after = REGISTRY.get_sample_value("rerank_video_ids_count") or 0.0
+    after = REGISTRY.get_sample_value("rerank_video_ids_sum") or 0.0
     assert response.status_code == 200
-    assert after - before == 1.0
+    assert after - before == 2.0
 
 
 def test_rerank_maps_prediction_failure_to_500() -> None:
@@ -229,3 +268,197 @@ def test_rerank_rejects_empty_string_id_at_http_boundary() -> None:
         )
 
     assert response.status_code == 422
+
+
+class RankingModel:
+    def predict_proba(self, features: pd.DataFrame) -> np.ndarray:
+        scores = features["ranking_signal"].to_numpy(dtype=float)
+        return np.column_stack((1.0 - scores, scores))
+
+
+class CategoricalCodeModel:
+    def __init__(self) -> None:
+        self.received: pd.DataFrame | None = None
+
+    def predict_proba(self, features: pd.DataFrame) -> np.ndarray:
+        self.received = features
+        scores = features["category_id"].cat.codes.to_numpy(dtype=float) / 10.0
+        return np.column_stack((1.0 - scores, scores))
+
+
+def test_rerank_preserves_training_categorical_codes() -> None:
+    model = CategoricalCodeModel()
+    reranker = Reranker(
+        model=model,
+        feature_columns=("category_id",),
+        categorical_categories={"category_id": (10, 20, 30)},
+    )
+
+    response = reranker.rerank(
+        [
+            CandidateVideo(video_id="video-cat10", features={"category_id": 10}),
+            CandidateVideo(video_id="video-cat30", features={"category_id": 30}),
+        ]
+    )
+
+    assert model.received is not None
+    assert str(model.received["category_id"].dtype) == "category"
+    assert list(model.received["category_id"].cat.categories) == [10, 20, 30]
+    assert [item.video_id for item in response] == ["video-cat30", "video-cat10"]
+
+
+def test_rerank_reports_unseen_categorical_values_without_coercion() -> None:
+    reranker = Reranker(
+        model=CategoricalCodeModel(),
+        feature_columns=("category_id",),
+        categorical_categories={"category_id": (10, 20, 30)},
+    )
+
+    outcome = reranker.rerank_with_diagnostics(
+        [
+            CandidateVideo(video_id="video-known", features={"category_id": 10}),
+            CandidateVideo(video_id="video-unseen", features={"category_id": 99}),
+            CandidateVideo(video_id="video-string", features={"category_id": "10"}),
+        ]
+    )
+
+    assert outcome.unseen_categories == {"category_id": (99, "10")}
+
+
+class WrongShapeModel:
+    def predict_proba(self, features: pd.DataFrame) -> np.ndarray:
+        return np.zeros((len(features), 3))
+
+
+class ListReturningModel:
+    def predict_proba(self, features: pd.DataFrame) -> list[float]:
+        return [0.0] * len(features)
+
+
+@pytest.mark.parametrize("model", (WrongShapeModel(), ListReturningModel()))
+def test_rerank_rejects_invalid_prediction_shapes(
+    model: WrongShapeModel | ListReturningModel,
+) -> None:
+    reranker = Reranker(
+        model=model,
+        feature_columns=("ranking_signal",),
+        categorical_categories={},
+    )
+
+    with pytest.raises(PredictionError):
+        reranker.rerank(
+            [CandidateVideo(video_id="video-1", features={"ranking_signal": 0.5})]
+        )
+
+
+def test_local_model_loader_reads_model_and_feature_columns(tmp_path: Path) -> None:
+    model_path = tmp_path / "model.joblib"
+    feature_columns_path = tmp_path / "feature_columns.pkl"
+    categorical_columns_path = tmp_path / "categorical_columns.pkl"
+    joblib.dump(RankingModel(), model_path)
+    with feature_columns_path.open("wb") as feature_columns_file:
+        pickle.dump(["ranking_signal"], feature_columns_file)
+    with categorical_columns_path.open("wb") as categorical_columns_file:
+        pickle.dump({}, categorical_columns_file)
+
+    reranker = load_local_model(
+        LocalModelSettings(model_path, feature_columns_path, categorical_columns_path)
+    )
+
+    response = reranker.rerank(
+        [
+            CandidateVideo(video_id="video-low", features={"ranking_signal": 0.1}),
+            CandidateVideo(video_id="video-high", features={"ranking_signal": 0.8}),
+        ]
+    )
+
+    assert [item.video_id for item in response] == ["video-high", "video-low"]
+
+
+def test_local_model_loader_preserves_categorical_value_types(tmp_path: Path) -> None:
+    model_path = tmp_path / "model.joblib"
+    feature_columns_path = tmp_path / "feature_columns.pkl"
+    categorical_columns_path = tmp_path / "categorical_columns.pkl"
+    joblib.dump(RankingModel(), model_path)
+    with feature_columns_path.open("wb") as feature_columns_file:
+        pickle.dump(["ranking_signal", "category_id"], feature_columns_file)
+    with categorical_columns_path.open("wb") as categorical_columns_file:
+        pickle.dump({"category_id": [10, 20, 30]}, categorical_columns_file)
+
+    reranker = load_local_model(
+        LocalModelSettings(model_path, feature_columns_path, categorical_columns_path)
+    )
+
+    assert reranker.categorical_categories == {"category_id": (10, 20, 30)}
+    assert all(type(category) is int for category in reranker.categorical_categories["category_id"])
+
+
+def test_local_model_loader_rejects_unknown_categorical_columns(tmp_path: Path) -> None:
+    model_path = tmp_path / "model.joblib"
+    feature_columns_path = tmp_path / "feature_columns.pkl"
+    categorical_columns_path = tmp_path / "categorical_columns.pkl"
+    joblib.dump(RankingModel(), model_path)
+    with feature_columns_path.open("wb") as feature_columns_file:
+        pickle.dump(["ranking_signal"], feature_columns_file)
+    with categorical_columns_path.open("wb") as categorical_columns_file:
+        pickle.dump({"unknown_column": [1, 2]}, categorical_columns_file)
+
+    with pytest.raises(ModelArtifactError):
+        load_local_model(
+            LocalModelSettings(model_path, feature_columns_path, categorical_columns_path)
+        )
+
+
+def test_local_model_loader_requires_categorical_artifact(tmp_path: Path) -> None:
+    model_path = tmp_path / "model.joblib"
+    feature_columns_path = tmp_path / "feature_columns.pkl"
+    joblib.dump(RankingModel(), model_path)
+    with feature_columns_path.open("wb") as feature_columns_file:
+        pickle.dump(["ranking_signal"], feature_columns_file)
+
+    with pytest.raises(ModelArtifactError):
+        load_local_model(
+            LocalModelSettings(
+                model_path,
+                feature_columns_path,
+                tmp_path / "missing.pkl",
+            )
+        )
+
+
+def test_mlflow_model_loader_downloads_training_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model_path = tmp_path / "lgbm_model.joblib"
+    feature_columns_path = tmp_path / "feature_columns.pkl"
+    categorical_columns_path = tmp_path / "categorical_columns.pkl"
+    joblib.dump(RankingModel(), model_path)
+    with feature_columns_path.open("wb") as feature_columns_file:
+        pickle.dump(["ranking_signal"], feature_columns_file)
+    with categorical_columns_path.open("wb") as categorical_columns_file:
+        pickle.dump({}, categorical_columns_file)
+    downloaded_uris: list[str] = []
+
+    def download_artifacts(*, artifact_uri: str) -> str:
+        downloaded_uris.append(artifact_uri)
+        if artifact_uri.endswith("lgbm_model.joblib"):
+            return str(model_path)
+        if artifact_uri.endswith("categorical_columns.pkl"):
+            return str(categorical_columns_path)
+        return str(feature_columns_path)
+
+    monkeypatch.setattr(
+        "src.serving.model_loader.mlflow.artifacts.download_artifacts",
+        download_artifacts,
+    )
+
+    reranker = load_mlflow_model(
+        MlflowModelSettings(tracking_uri="http://mlflow.example", run_id="run-123")
+    )
+
+    assert reranker.feature_columns == ("ranking_signal",)
+    assert downloaded_uris == [
+        "runs:/run-123/model/lgbm_model.joblib",
+        "runs:/run-123/features/feature_columns.pkl",
+        "runs:/run-123/features/categorical_columns.pkl",
+    ]
