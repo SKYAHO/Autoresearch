@@ -246,7 +246,8 @@ def main(
         print("\n[Step 9] Model Registry 등록...")
         model_name = config["registry"]["model_name"]
         # log_artifact(..., artifact_path="model")과 짝을 맞춰야 한다 — 서빙 로더의
-        # MLFLOW_MODEL_ARTIFACT_PATH 상수도 같은 "model/" 경로를 참조한다.
+        # MLFLOW_MODEL_ARTIFACT_PATH 상수(model/lgbm_model.joblib)도 같은
+        # "model/" 아티팩트 경로 아래 파일을 참조한다.
         model_uri = f"runs:/{run.info.run_id}/model"
         registry_tags = {"val_roc_auc": f"{val_roc_auc:.4f}"}
         if extra_params:
