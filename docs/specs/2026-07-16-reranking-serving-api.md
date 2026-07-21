@@ -2,12 +2,13 @@
 
 ## 목표
 
-후보 영상별 CTR 예측값을 반환하고, 높은 점수 순으로 정렬하는 FastAPI MVP를 제공한다.
+후보 영상별 CTR 예측값을 반환하는 FastAPI MVP를 제공한다. 응답 항목의 순서는
+요청 `video_ids` 순서를 보존한다. CTR 점수는 후보 순서를 바꾸지 않는 부가 정보다.
 
 ## API 계약
 
 - `GET /healthcheck`: 모델 로드 상태를 반환한다. 모델을 사용할 수 없으면 `503`을 반환한다.
-- `POST /rerank`: `user_id`와 `video_ids`를 받아 온라인 피처를 조립해 CTR을 예측한다. 응답 `items`는 `ctr_score` 내림차순이다.
+- `POST /rerank`: `user_id`와 `video_ids`를 받아 온라인 피처를 조립해 CTR을 예측한다. 응답 `items`는 입력 `video_ids` 순서를 보존한다.
 - `GET /metrics`: Prometheus 형식의 요청 수·지연 시간·모델 준비 상태를 노출한다. 학습에 없던
   categorical 값이 NaN으로 강등되면(신규 카테고리 등장 등) `rerank_unseen_category_total{column=...}`
   카운터가 컬럼별로 증가하고 경고 로그가 남는다 — 조용한 학습-서빙 스큐를 감지해 재학습 신호로 쓴다.
@@ -28,8 +29,8 @@
 ```json
 {
   "items": [
-    {"video_id": "video-2", "ctr_score": 0.71, "model_id": "run-123"},
-    {"video_id": "video-1", "ctr_score": 0.42, "model_id": "run-123"}
+    {"video_id": "video-1", "ctr_score": 0.42, "model_id": "run-123"},
+    {"video_id": "video-2", "ctr_score": 0.71, "model_id": "run-123"}
   ]
 }
 ```
@@ -103,3 +104,27 @@ model flavor를 기록하도록 확장될 때 별도 작업으로 다룬다.
 ## 컨테이너
 
 `deploy/serving/Dockerfile`은 uv lockfile 기반으로 런타임 의존성을 설치한다. 로컬 모델은 이미지에 포함하지 않으며, 실행 환경에서 read-only volume 또는 artifact 다운로드로 제공한다.
+
+## 2026-07-22 Task 6 검증과 rollout 전제조건
+
+로컬 dev 전체 suite, Feast 격리 suite, lockfile, serving 이미지 빌드와 컨테이너
+smoke를 새로 검증했다. 이미지는 `mlflow-skinny==2.22.1` 및
+`pyarrow==21.0.0`을 포함하며 `python -m pip check`가 성공했다. Feast·FastAPI·IAM
+Redis adapter·serving app import와 `FeatureStore('/app/feature_repo')` bootstrap도
+성공했다. 라이브러리의 Pydantic/NumPy deprecation warning은 있었지만 실패는 없었다.
+
+실제 GKE/Redis smoke는 이번 코드 작업에서 실행하거나 인증·endpoint·운영
+materialize 상태를 추정하지 않는다. #210, #218 및 운영 materialize 준비가 완료된 뒤,
+동일 KSA/Workload Identity와 Redis CA 환경에서 다음을 **배포 전 필수**로 수행한다.
+
+1. serving pod를 기동하고 존재하는 user 1명과 video 2개로 `/rerank`를 호출한다.
+2. 응답이 2개이고 요청 `video_ids` 순서를 보존하며 `model_id`가 현재 champion
+   run ID인지 확인한다. 이는 고정 HTTP 계약이 request-order preservation이므로,
+   이전 계획의 "CTR 내림차순" 검증을 대체한다.
+3. 로그와 metric에서 Feast 오류가 0이고 unseen categorical/default 사용량을 확인한다.
+4. 없는 user와 video 각각이 typed cold-start로 200을 반환하는지 확인한다.
+5. 201개 ID, 중복 video ID, legacy `candidates` 요청이 각각 422인지 확인한다.
+
+이 외부 smoke의 다음 소유자는 #210/#218 및 materialize 운영 준비를 완료한 GKE
+운영 담당자다. 해당 조건이 충족되기 전에는 이 문서의 로컬·컨테이너 증적을 실제
+Redis rollout 승인으로 해석하지 않는다.
