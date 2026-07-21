@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Sequence
 
+import pandas as pd
 from google.cloud import bigquery
 
 from autoresearch.action_logs.pipeline import CandidateProvider, ExposureMetadata
@@ -42,6 +43,50 @@ class RankedVideo:
     video_id: str
     rank: int
     ctr_score: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class RankingsPartition:
+    """dt 파티션 1개의 유저별 모델 순위 + 계보."""
+
+    by_user: dict[str, list[RankedVideo]]
+    model_run_id: str | None
+
+
+def load_user_rankings(
+    client: bigquery.Client, table_id: str, dt: date
+) -> RankingsPartition:
+    """user_recommendations의 dt 파티션을 1회 조회해 유저별 순위 맵으로 만든다.
+
+    파티션이 비면 fail-fast — 휴리스틱 대체는 #222의 명시적 플래그로만 한다.
+    """
+    query = f"""
+    SELECT user_id, video_id, rank, ctr_score, model_run_id
+    FROM `{table_id}`
+    WHERE dt = '{dt.isoformat()}'
+    ORDER BY user_id, rank
+    """
+    frame = client.query(query).to_dataframe()
+    if frame.empty:
+        raise RuntimeError(
+            f"No user_recommendations rows for dt={dt.isoformat()} in {table_id}"
+        )
+
+    run_ids = sorted(set(frame["model_run_id"].dropna().astype(str)))
+    if len(run_ids) > 1:
+        logger.warning("multiple model_run_id in partition, using first: %s", run_ids)
+    model_run_id = run_ids[0] if run_ids else None
+
+    by_user: dict[str, list[RankedVideo]] = {}
+    for row in frame.itertuples(index=False):
+        by_user.setdefault(str(row.user_id), []).append(
+            RankedVideo(
+                video_id=str(row.video_id),
+                rank=int(row.rank),
+                ctr_score=None if pd.isna(row.ctr_score) else float(row.ctr_score),
+            )
+        )
+    return RankingsPartition(by_user=by_user, model_run_id=model_run_id)
 
 
 def build_model_exposures(

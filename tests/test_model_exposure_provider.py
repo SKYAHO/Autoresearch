@@ -1,10 +1,17 @@
 """모델 노출 조립 provider 단위 테스트 — 실 BQ 미접속(fake client)."""
 
 import random
+from datetime import date
 
+import pandas as pd
 import pytest
 
-from src.pipeline.model_exposure_provider import RankedVideo, build_model_exposures
+from src.pipeline.model_exposure_provider import (
+    RankedVideo,
+    RankingsPartition,
+    build_model_exposures,
+    load_user_rankings,
+)
 
 
 def _videos(n: int = 40) -> list[dict]:
@@ -109,3 +116,48 @@ def test_deterministic_for_same_rng_seed():
         "u1", _ranking(), _videos(), random.Random("s:u1"), model_run_id="run-a"
     )
     assert [v["video_id"] for v in first] == [v["video_id"] for v in second]
+
+
+class _FakeQueryJob:
+    def __init__(self, frame: pd.DataFrame):
+        self._frame = frame
+
+    def to_dataframe(self) -> pd.DataFrame:
+        return self._frame
+
+
+class _FakeClient:
+    def __init__(self, frame: pd.DataFrame):
+        self.frame = frame
+        self.queries: list[str] = []
+
+    def query(self, query: str) -> _FakeQueryJob:
+        self.queries.append(query)
+        return _FakeQueryJob(self.frame)
+
+
+def _rankings_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "user_id": ["u1", "u1", "u2"],
+            "video_id": ["v001", "v002", "v001"],
+            "rank": [1, 2, 1],
+            "ctr_score": [0.9, 0.8, 0.7],
+            "model_run_id": ["run-a"] * 3,
+        }
+    )
+
+
+def test_load_user_rankings_groups_by_user_in_rank_order():
+    client = _FakeClient(_rankings_frame())
+    partition = load_user_rankings(client, "p.d.user_recommendations", date(2026, 7, 22))
+    assert [rv.video_id for rv in partition.by_user["u1"]] == ["v001", "v002"]
+    assert partition.by_user["u2"][0].rank == 1
+    assert partition.model_run_id == "run-a"
+    assert "dt = '2026-07-22'" in client.queries[0]
+
+
+def test_load_user_rankings_fails_fast_on_empty_partition():
+    client = _FakeClient(_rankings_frame().iloc[0:0])
+    with pytest.raises(RuntimeError, match="2026-07-22"):
+        load_user_rankings(client, "p.d.user_recommendations", date(2026, 7, 22))
