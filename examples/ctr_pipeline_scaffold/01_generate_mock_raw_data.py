@@ -45,6 +45,18 @@ assert set(TOPIC_TO_CATEGORY.values()) <= set(CATEGORY_DESCRIPTIONS), \
 
 CHANNELS = [f"Channel_{t.capitalize()}{i}" for t in TOPIC_VOCAB for i in range(1, 3)]
 
+# 채널별 통계는 채널명 기준으로 고정해 같은 채널의 여러 영상이 일관된 값을 갖게 한다.
+CHANNEL_STATS = {
+    ch: {
+        "subscriber_count": random.randint(1_000, 3_000_000),
+        "view_count": random.randint(100_000, 500_000_000),
+        "video_count": random.randint(10, 2_000),
+    }
+    for ch in CHANNELS
+}
+
+WATCH_TIME_BAND_RAW_VOCAB = ["morning", "evening", "night", "오전", "오후", "mixed"]
+
 VIDEO_TEMPLATES = {
     "music": ["신곡 라이브 무대", "K-POP 커버 챌린지", "플레이리스트 모음"],
     "sports": ["축구 하이라이트", "농구 경기 분석", "홈트레이닝 루틴"],
@@ -79,12 +91,14 @@ def gen_videos(n=30):
         like_count = int(view_count * random.uniform(0.01, 0.08))
         comment_count = int(view_count * random.uniform(0.001, 0.01))
         duration_sec = random.randint(60, 1500)
+        channel = random.choice(CHANNELS)
+        channel_stats = CHANNEL_STATS[channel]
         rows.append(
             {
                 "video_id": f"v{i:04d}",
                 "title": title,
                 "description": description,
-                "channelTitle": random.choice(CHANNELS),
+                "channelTitle": channel,
                 "publishedAt": published_at,
                 "categoryId": TOPIC_TO_CATEGORY[topic],
                 "tags": json.dumps(tags, ensure_ascii=False),
@@ -93,6 +107,9 @@ def gen_videos(n=30):
                 "commentCount": comment_count,
                 "duration": f"PT{duration_sec // 60}M{duration_sec % 60}S",
                 "language": "ko",
+                "channelSubscriberCount": channel_stats["subscriber_count"],
+                "channelViewCount": channel_stats["view_count"],
+                "channelVideoCount": channel_stats["video_count"],
                 # 검증 편의를 위한 ground-truth 컬럼 (실제 raw data에는 없음, QA용)
                 "_true_topic": topic,
             }
@@ -129,6 +146,7 @@ def gen_personas(n=50):
                 "district": random.choice(DISTRICTS),
                 "province": random.choice(PROVINCES),
                 "country": "KR",
+                "watch_time_band": random.choice(WATCH_TIME_BAND_RAW_VOCAB),
                 # 검증 편의를 위한 ground-truth 컬럼 (실제 raw data에는 없음, QA용)
                 "_true_interests": json.dumps(interests, ensure_ascii=False),
             }

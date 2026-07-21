@@ -57,6 +57,9 @@ def test_load_videos_from_bigquery_queries_configured_table(monkeypatch):
     query_text = fake_client.query.call_args[0][0]
     assert build_training_dataset.BIGQUERY_VIDEOS_TABLE in query_text
     assert "video_category AS categoryId" in query_text
+    assert "channel_subscriber_count AS channelSubscriberCount" in query_text
+    assert "channel_view_count AS channelViewCount" in query_text
+    assert "channel_video_count AS channelVideoCount" in query_text
 
 
 def test_main_rejects_invalid_events_source():
@@ -220,6 +223,66 @@ def test_main_trims_padding_range_from_output(tmp_path, monkeypatch):
 
     result = pd.read_csv(output_path)
     assert len(result) == 1
+
+
+def test_main_outputs_21_model_input_columns_plus_clicked(tmp_path, monkeypatch):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    pd.DataFrame(
+        {
+            "video_id": ["v1"],
+            "categoryId": ["Music"],
+            "duration": ["PT5M"],
+            "viewCount": [1000],
+            "likeCount": [50],
+            "commentCount": [10],
+            "publishedAt": ["2026-01-01"],
+            "title": ["t"],
+            "description": ["d"],
+            "channelSubscriberCount": [12345],
+            "channelViewCount": [999999],
+            "channelVideoCount": [321],
+        }
+    ).to_csv(raw_dir / "youtube_videos.csv", index=False)
+    pd.DataFrame(
+        {
+            "uuid": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobbies_and_interests": ["gaming"],
+            "hobbies_and_interests_list": ["[]"],
+            "watch_time_band": ["morning"],
+        }
+    ).to_csv(raw_dir / "personas.csv", index=False)
+
+    events_path = tmp_path / "events.csv"
+    pd.DataFrame(
+        {
+            "event_id": ["e1"],
+            "user_id": ["u1"],
+            "video_id": ["v1"],
+            "timestamp": ["2026-07-08 12:00:00"],
+            "clicked": [0],
+            "liked": [0],
+            "watch_time_sec": [0],
+        }
+    ).to_csv(events_path, index=False)
+
+    output_path = tmp_path / "training_dataset.csv"
+    build_training_dataset.main(
+        raw_dir=str(raw_dir),
+        events_path=str(events_path),
+        output_path=str(output_path),
+    )
+
+    result = pd.read_csv(output_path)
+    assert len(result.columns) == 22  # 21 Model Input + clicked label
+    assert result.loc[0, "watch_time_band"] == "morning"
+    assert result.loc[0, "channel_subscriber_count"] == 12345
+    assert result.loc[0, "channel_view_count"] == 999999
+    assert result.loc[0, "channel_video_count"] == 321
+    assert result.loc[0, "recent_view_count_7d"] == 0
+    assert result.loc[0, "total_event_count_7d"] == 0
 
 
 def test_derive_wide_events_like_without_view_defaults_to_zero():
