@@ -12,6 +12,8 @@
 - `GET /metrics`: Prometheus 형식의 요청 수·지연 시간·전체 서빙 준비 상태를 기존 `rerank_model_ready` 이름으로 노출한다. 학습에 없던
   categorical 값이 NaN으로 강등되면(신규 카테고리 등장 등) `rerank_unseen_category_total{column=...}`
   카운터가 컬럼별로 증가하고 경고 로그가 남는다 — 조용한 학습-서빙 스큐를 감지해 재학습 신호로 쓴다.
+  요청당 영상 ID 수는 `rerank_video_ids` histogram으로 노출한다. 이름 전환의 한 배포 기간에는 deprecated
+  `rerank_candidates` histogram에도 같은 값을 기록하며, 외부 dashboard와 alert가 새 이름으로 이전됐음을 확인한 뒤 제거한다.
 
 `/rerank`은 외부 JSON에서 `user_id`와 `video_ids`만 받는다. `video_ids`는 1~200개의 비어 있지 않은 문자열이며 중복을 허용하지 않는다. 유효한 `video_ids`와 함께 들어온 legacy `candidates`를 포함해 선언되지 않은 필드는 `422`로 거부한다. 호출자는 모델 피처를 전달할 수 없으며, 구 계약의 하위 호환 이중 지원도 하지 않는다.
 

@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
+from prometheus_client.parser import text_string_to_metric_families
 
 import src.serving.app as serving_app
 from src.serving.app import create_app
@@ -386,20 +387,50 @@ def test_healthcheck_requires_both_model_and_feature_store() -> None:
         assert response.status_code == 503
 
 
-def test_metrics_observe_video_id_count() -> None:
+def test_metrics_scrape_observes_legacy_and_current_video_id_count() -> None:
+    # Given: both metric identities start from their current registry values.
     builder = FakeFeatureBuilder()
     app = create_app(resolved_model=_resolved_model(), feature_builder=builder)
-    before = REGISTRY.get_sample_value("rerank_video_ids_sum") or 0.0
+    metric_names = (
+        "rerank_video_ids_count",
+        "rerank_video_ids_sum",
+        "rerank_candidates_count",
+        "rerank_candidates_sum",
+    )
+    before = {
+        metric_name: REGISTRY.get_sample_value(metric_name) or 0.0
+        for metric_name in metric_names
+    }
 
+    # When: one request with two IDs is followed by a Prometheus scrape.
     with TestClient(app) as client:
         response = client.post(
             "/rerank",
             json={"user_id": "user-1", "video_ids": ["video-1", "video-2"]},
         )
+        metrics_response = client.get("/metrics")
 
-    after = REGISTRY.get_sample_value("rerank_video_ids_sum") or 0.0
+    scraped = {
+        sample.name: sample.value
+        for family in text_string_to_metric_families(metrics_response.text)
+        for sample in family.samples
+        if sample.name in metric_names
+    }
+
+    # Then: current and deprecated identities report the same request volume.
     assert response.status_code == 200
-    assert after - before == 2.0
+    assert metrics_response.status_code == 200
+    assert "# HELP rerank_candidates DEPRECATED:" in metrics_response.text
+    assert "migrate to rerank_video_ids." in metrics_response.text
+    assert {
+        metric_name: scraped[metric_name] - before[metric_name]
+        for metric_name in metric_names
+    } == {
+        "rerank_video_ids_count": 1.0,
+        "rerank_video_ids_sum": 2.0,
+        "rerank_candidates_count": 1.0,
+        "rerank_candidates_sum": 2.0,
+    }
 
 
 def test_metrics_describe_full_serving_readiness_without_renaming_metric() -> None:

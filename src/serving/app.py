@@ -53,6 +53,11 @@ RERANK_VIDEO_IDS = Histogram(
     "Video ID count per reranking request.",
     buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500),
 )
+RERANK_CANDIDATES = Histogram(
+    "rerank_candidates",
+    "DEPRECATED: Candidate count per reranking request; migrate to rerank_video_ids.",
+    buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500),
+)
 RERANK_DURATION = Histogram("rerank_duration_seconds", "Reranking request duration.")
 RERANK_MODEL_READY = Gauge(
     "rerank_model_ready",
@@ -129,7 +134,9 @@ def create_app(
             )
 
         RERANK_REQUESTS.inc()
-        RERANK_VIDEO_IDS.observe(len(request.video_ids))
+        video_id_count = len(request.video_ids)
+        RERANK_VIDEO_IDS.observe(video_id_count)
+        RERANK_CANDIDATES.observe(video_id_count)
         with RERANK_DURATION.time():
             try:
                 candidates = active_feature_builder.build(
