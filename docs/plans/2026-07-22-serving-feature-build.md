@@ -466,7 +466,7 @@ git commit -m "feat: #220 Feast 온라인 조회 어댑터 연결"
 - Produces: `create_app(resolved_model: ResolvedModel | None = None, feature_builder: ServingFeatureBuilder | None = None) -> FastAPI`, fake builder가 주입된 `/rerank` 경로
 - Constraint: Task 3 소유 파일과 production Feast factory를 수정하지 않는다. 기본 production wiring은 Task 5가 소유한다.
 
-- [ ] **Step 1: HTTP 통합 실패 테스트 작성**
+- [x] **Step 1: HTTP 통합 실패 테스트 작성**
 
 `create_app()`에 `ResolvedModel`과 `ServingFeatureBuilder` fake를 주입하고 다음을 검증한다.
 
@@ -494,13 +494,13 @@ uv run --no-sync python -m pytest tests/test_serving_api.py -v
 
 Expected: 기존 app이 `request.candidates`를 읽으므로 FAIL.
 
-- [ ] **Step 2: 주입된 의존성의 lifecycle과 ready 상태 구현**
+- [x] **Step 2: 주입된 의존성의 lifecycle과 ready 상태 구현**
 
 이 Task에서는 테스트로 주입한 `ResolvedModel`과 `ServingFeatureBuilder`만 조립한다. 둘 다 있을 때만 health ready이며 외부 시스템은 열지 않는다. 환경 기반 모델/Feast 기본 로드는 Task 5에서 한 번에 연결한다.
 
 공개 시그니처는 `create_app(resolved_model: ResolvedModel | None = None, feature_builder: ServingFeatureBuilder | None = None) -> FastAPI`로 고정한다.
 
-- [ ] **Step 3: route 변경**
+- [x] **Step 3: route 변경**
 
 ```python
 candidates = active_feature_builder.build(
@@ -518,7 +518,7 @@ outcome = active_model.reranker.rerank_with_diagnostics(candidates)
 - unseen categorical 계측은 그대로 유지
 - 각 응답 항목을 `model_id=active_model.run_id`로 변환
 
-- [ ] **Step 4: 테스트 통과 및 커밋**
+- [x] **Step 4: 테스트 통과 및 커밋**
 
 ```bash
 uv run --no-sync python -m pytest tests/test_serving_api.py tests/test_serving_online_features.py -v
