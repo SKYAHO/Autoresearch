@@ -4,6 +4,19 @@
 노출마다 impression 1행, 클릭 선정분엔 click/view(+like)를 추가 배치) →
 parquet/warehouse/quarantine 저장. 한 유저의 실패가 배치를 죽이지 않는다.
 """
+__arch__ = {
+    "stage": "action_logs",
+    "role": "가상 사용자 노출 판정을 이벤트 로그 초안과 저장 산출물로 변환합니다.",
+    "owns": [
+        "유저별 action log draft 생성과 격리",
+        "클릭 정규화와 이벤트 확장",
+        "parquet·warehouse·quarantine 출력",
+    ],
+    "not_owns": [
+        "정책별 노출 후보 선택",
+        "CTR 모델 학습",
+    ],
+}
 import json
 import logging
 import math
