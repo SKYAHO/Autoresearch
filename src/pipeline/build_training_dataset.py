@@ -23,6 +23,20 @@ NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeli
       다음 조사/버그 시 같은 문제가 반복된다.
 """
 
+__arch__ = {
+    "stage": "training",
+    "role": "원천 이벤트와 피처를 CTR 학습 데이터셋으로 변환합니다.",
+    "owns": [
+        "historical event를 wide training row로 변환",
+        "point-in-time 학습 데이터셋 생성",
+        "학습 입력 품질 검증",
+    ],
+    "not_owns": [
+        "정책 시뮬레이션 노출 선택",
+        "CTR 모델 학습 실행",
+    ],
+}
+
 import os
 import sys
 import duckdb
