@@ -71,15 +71,25 @@ jobs:
               > /tmp/issue.json || rm -f /tmp/issue.json
           fi
 
+      - name: 변경 파일 상태 수집
+        run: |
+          git diff --name-status -z "${{ steps.mergebase.outputs.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" > /tmp/name-status.txt
+
       - name: pr-delta.json 생성
         run: |
-          git diff --numstat "${{ steps.mergebase.outputs.sha }}" \
+          git diff --numstat -z "${{ steps.mergebase.outputs.sha }}" \
             "${{ github.event.pull_request.head.sha }}" > /tmp/numstat.txt
           issue_flag=""
           [ -f /tmp/issue.json ] && issue_flag="--issue-json /tmp/issue.json"
           python -m tools.archmap delta --base /tmp/base.json --head /tmp/head.json \
-            --numstat /tmp/numstat.txt --pr "${{ github.event.pull_request.number }}" \
+            --numstat /tmp/numstat.txt --name-status /tmp/name-status.txt \
+            --pr "${{ github.event.pull_request.number }}" \
             $issue_flag --out /tmp/pr-delta.json
+
+      - name: sidecar 설명 게이트
+        run: |
+          python -m tools.archmap check-sidecar --delta /tmp/pr-delta.json
 
       - name: 서버로 POST (변수 설정 시에만)
         if: vars.ARCHMAP_SERVER_URL != ''
