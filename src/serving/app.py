@@ -19,6 +19,7 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Final
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import Response
@@ -72,6 +73,9 @@ RERANK_UNSEEN_CATEGORY = Counter(
 )
 
 logger = logging.getLogger(__name__)
+STRING_CATEGORICAL_FEATURE_COLUMNS: Final = frozenset(
+    {"age_group", "occupation", "historical_category_affinity", "category_id"}
+)
 
 
 def create_app(
@@ -90,6 +94,17 @@ def create_app(
             return "Online feature store is unavailable."
         if active_model.reranker.feature_columns != MODEL_FEATURE_COLUMNS:
             return "Model feature columns do not match the serving contract."
+        incompatible_categorical_columns = tuple(
+            column
+            for column in STRING_CATEGORICAL_FEATURE_COLUMNS
+            if column in active_model.reranker.categorical_categories
+            and not all(
+                isinstance(value, str)
+                for value in active_model.reranker.categorical_categories[column]
+            )
+        )
+        if incompatible_categorical_columns:
+            return "Model categorical values do not match the serving feature types."
         return None
 
     @asynccontextmanager

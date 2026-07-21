@@ -579,12 +579,37 @@ class CategoricalFeatureBuilder:
         ]
 
 
-def test_metrics_report_unseen_category_type_mismatch_through_http() -> None:
+def test_healthcheck_rejects_non_string_categories_for_string_serving_features() -> None:
+    builder = FakeFeatureBuilder()
     resolved_model = ResolvedModel(
         reranker=Reranker(
             model=CategoricalCodeModel(),
             feature_columns=MODEL_FEATURE_COLUMNS,
             categorical_categories={"category_id": (10, 20, 30)},
+        ),
+        run_id="run-incompatible-category-type",
+        model_version=None,
+    )
+    app = create_app(resolved_model=resolved_model, feature_builder=builder)
+
+    with TestClient(app) as client:
+        healthcheck = client.get("/healthcheck")
+        rerank = client.post(
+            "/rerank",
+            json={"user_id": "user-1", "video_ids": ["video-1"]},
+        )
+
+    assert healthcheck.status_code == 503
+    assert rerank.status_code == 503
+    assert builder.calls == []
+
+
+def test_metrics_report_unseen_category_type_mismatch_through_http() -> None:
+    resolved_model = ResolvedModel(
+        reranker=Reranker(
+            model=CategoricalCodeModel(),
+            feature_columns=MODEL_FEATURE_COLUMNS,
+            categorical_categories={"category_id": ("10", "20", "30")},
         ),
         run_id="run-categorical",
         model_version=None,
@@ -607,8 +632,8 @@ def test_metrics_report_unseen_category_type_mismatch_through_http() -> None:
     assert response.status_code == 200
     assert after - before == 1.0
     scores = {item["video_id"]: item["ctr_score"] for item in response.json()["items"]}
-    assert scores["video-str"] == pytest.approx(-0.1)
-    assert scores["video-int"] == pytest.approx(0.1)
+    assert scores["video-str"] == pytest.approx(0.0)
+    assert scores["video-int"] == pytest.approx(-0.1)
 
 
 def test_rerank_preserves_training_categorical_codes() -> None:
