@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 FeatureValue = str | int | float | bool
 
@@ -17,12 +17,20 @@ class CandidateVideo(BaseModel):
 
 
 class RerankRequest(BaseModel):
-    """/rerank 요청 본문. 요청 유저와 최소 1개 이상의 후보 목록."""
+    """/rerank 요청 본문. 요청 유저와 중복 없는 영상 ID 목록."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     user_id: Annotated[str, Field(min_length=1)]
-    candidates: Annotated[list[CandidateVideo], Field(min_length=1)]
+    video_ids: Annotated[
+        list[Annotated[str, Field(min_length=1)]], Field(min_length=1, max_length=200)
+    ]
+
+    @model_validator(mode="after")
+    def reject_duplicate_video_ids(self) -> RerankRequest:
+        if len(set(self.video_ids)) != len(self.video_ids):
+            raise ValueError("video_ids must not contain duplicates")
+        return self
 
 
 class RerankedVideo(BaseModel):
@@ -34,12 +42,22 @@ class RerankedVideo(BaseModel):
     ctr_score: float
 
 
+class RerankResponseItem(BaseModel):
+    """/rerank 응답 항목. 모델 계보를 포함한 공개 API 전용 값이다."""
+
+    model_config = ConfigDict(frozen=True)
+
+    video_id: str
+    ctr_score: float
+    model_id: str
+
+
 class RerankResponse(BaseModel):
     """/rerank 응답 본문. CTR 점수 내림차순으로 정렬된 결과 목록."""
 
     model_config = ConfigDict(frozen=True)
 
-    items: list[RerankedVideo]
+    items: list[RerankResponseItem]
 
 
 class HealthcheckResponse(BaseModel):

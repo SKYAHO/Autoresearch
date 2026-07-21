@@ -7,14 +7,73 @@
 ## API 계약
 
 - `GET /healthcheck`: 모델 로드 상태를 반환한다. 모델을 사용할 수 없으면 `503`을 반환한다.
-- `POST /rerank`: `user_id`와 후보 목록을 받고, 각 후보의 사전 조립된 scalar feature로 CTR을 예측한다. 응답 `items`는 `ctr_score` 내림차순이다.
+- `POST /rerank`: `user_id`와 `video_ids`를 받아 온라인 피처를 조립해 CTR을 예측한다. 응답 `items`는 `ctr_score` 내림차순이다.
 - `GET /metrics`: Prometheus 형식의 요청 수·지연 시간·모델 준비 상태를 노출한다. 학습에 없던
   categorical 값이 NaN으로 강등되면(신규 카테고리 등장 등) `rerank_unseen_category_total{column=...}`
   카운터가 컬럼별로 증가하고 경고 로그가 남는다 — 조용한 학습-서빙 스큐를 감지해 재학습 신호로 쓴다.
 
-`/rerank`의 후보는 `video_id`와 `features`를 가진다. `features`는 학습 artifact의 feature-column 목록을 모두 포함해야 하며, 벡터·리스트는 받지 않는다. MVP에서는 Feature Store 조회를 수행하지 않는다. 학습 카테고리에 없는 값이 오면 요청은 실패하지 않고 해당 값을 NaN(결측)으로 처리하되, 위 `rerank_unseen_category_total`로 계측한다. 이 강등에는 **타입 불일치**도 포함된다 — 예: 학습 카테고리가 `int (10, 20, 30)`인데 요청이 `str "10"`으로 오면 매칭에 실패해 NaN이 된다. MVP는 요청 값을 학습 카테고리 타입으로 정규화(coerce)하지 않으며, 이 조용한 왜곡은 예방이 아니라 위 메트릭으로 **감지**하는 것을 계약으로 한다(정규화는 후속 과제).
+`/rerank`은 외부 JSON에서 `user_id`와 `video_ids`만 받는다. `video_ids`는 1~200개의 비어 있지 않은 문자열이며 중복을 허용하지 않는다. 유효한 `video_ids`와 함께 들어온 legacy `candidates`를 포함해 선언되지 않은 필드는 `422`로 거부한다. 호출자는 모델 피처를 전달할 수 없으며, 구 계약의 하위 호환 이중 지원도 하지 않는다.
 
-이 감지가 HTTP 경로에서 성립하는 것은 `FeatureValue = str | int | float | bool`이 pydantic v2 **smart union**으로 검증되어, JSON 값의 타입이 유니온 멤버와 정확히 일치하면 그대로 보존되기 때문이다(`"10"`은 `str`로 남고 `int`로 coerce되지 않는다). 이 유니온을 좁히거나 `union_mode='left_to_right'` 같은 순차 검증으로 바꾸면 요청 값이 조용히 변환되어 불일치가 감지되지 않고 메트릭이 죽은 코드가 된다.
+요청 예시:
+
+```json
+{
+  "user_id": "user-1",
+  "video_ids": ["video-1", "video-2"]
+}
+```
+
+응답 항목은 요청 `user_id`를 반향하지 않는다. `model_id`는 예측에 사용한 불변 MLflow `run_id`이며, #216의 로컬 모델 계약에서는 `"local"`이다.
+
+```json
+{
+  "items": [
+    {"video_id": "video-2", "ctr_score": 0.71, "model_id": "run-123"},
+    {"video_id": "video-1", "ctr_score": 0.42, "model_id": "run-123"}
+  ]
+}
+```
+
+## 온라인 피처 조립 계약
+
+요청당 온라인 조회는 정확히 두 번의 Feast 배치 API 호출로 수행한다.
+
+1. 입력 순서의 `(user_id, video_id)` 1~200행으로 `UserStaticView`, `UserDynamicView`, `VideoFeatureView`에서 직접 피처와 `preferred_category`를 읽는다.
+2. 첫 조회의 고유 `(user_id, category_id)` 행으로 `UserCategorySimilarityView`의 `topic_similarity`를 읽고, 같은 category의 모든 영상에 다시 결합한다.
+
+조회 결과는 entity key와 길이가 요청과 일치할 때만 결합한다. 모델에는 ID와 `preferred_category` 같은 조립 보조 컬럼을 전달하지 않는다. 모델 artifact의 피처 순서는 다음 15개와 정확히 같아야 한다.
+
+| 순서 | 모델 입력 | 소스 또는 처리 |
+| --- | --- | --- |
+| 1 | `age_group` | UserStaticView |
+| 2 | `occupation` | UserStaticView |
+| 3 | `historical_category_affinity` | UserDynamicView |
+| 4 | `recent_click_count_7d` | UserDynamicView |
+| 5 | `recent_watch_time_7d` | UserDynamicView |
+| 6 | `recent_like_count_7d` | UserDynamicView |
+| 7 | `category_id` | VideoFeatureView |
+| 8 | `duration_sec` | VideoFeatureView |
+| 9 | `view_count` | VideoFeatureView |
+| 10 | `like_ratio` | VideoFeatureView |
+| 11 | `comment_ratio` | VideoFeatureView |
+| 12 | `days_since_upload` | VideoFeatureView |
+| 13 | `historical_category_match` | 기존 공용 계산 함수 |
+| 14 | `preferred_category_match` | `preferred_category`를 보조 값으로 한 기존 공용 계산 함수 |
+| 15 | `topic_similarity` | UserCategorySimilarityView |
+
+| 결측 값 종류 | typed cold-start 기본값 |
+| --- | --- |
+| `age_group`, `occupation`, `historical_category_affinity`, `category_id` | `"unknown"` |
+| `preferred_category` 보조 값 | `[]` |
+| 최근 7일 count/watch-time, 영상 count/duration/age | `0` |
+| `like_ratio`, `comment_ratio`, `topic_similarity` | `0.0` |
+| 두 match 피처 | 위 기본값으로 공용 함수를 계산한 결과 `0` |
+
+학습 categorical artifact에 `"unknown"`이 없으면 기존 Reranker가 값을 NaN으로 강등하고 `rerank_unseen_category_total`로 계측한다. 이 방식은 학습 의미가 다른 결측을 묵시적 숫자 `0`으로 바꾸지 않는다.
+
+## 온라인 기록 범위
+
+`/rerank`는 BigQuery에 온라인 요청을 동기 기록하지 않는다. #216의 일일 전체 순위 원장은 날짜 파티션 전체를 `WRITE_TRUNCATE`하므로 online append를 섞으면 배치 재실행에서 삭제되고, 현재 스키마에는 `request_id`, `source`, `served_at`도 없다. HTTP critical path에서의 BigQuery 호출은 지연 시간과 가용성에도 영향을 준다. 별도 온라인 감사 로그가 필요하면 append 전용 테이블과 비동기 sink를 설계하는 별도 이슈로 다룬다.
 
 ## 모델 artifact
 
