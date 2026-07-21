@@ -28,6 +28,11 @@ LABEL org.opencontainers.image.source="https://github.com/SKYAHO/Autoresearch" \
 
 WORKDIR /app
 
+# lightgbm이 런타임에 libgomp(OpenMP)를 dlopen한다. python:3.12-slim에는
+# 기본으로 포함되어 있지 않다.
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN adduser --disabled-password --gecos "" appuser
 
 COPY --from=builder /app/.venv /app/.venv

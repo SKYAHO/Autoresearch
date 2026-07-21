@@ -1,6 +1,7 @@
 """일일 추천 배치 헬퍼 단위 테스트 — 실 BQ 미접속(fake client)."""
 
 import json
+import logging
 from datetime import UTC, date, datetime
 
 import numpy as np
@@ -230,6 +231,110 @@ def test_run_batch_loads_exactly_one_events_partition(monkeypatch):
         personas=_personas(["u1"]),
     )
     assert calls == [("2026-07-20", "2026-07-20")]
+
+
+def _bq_empty_long_events() -> pd.DataFrame:
+    """빈 파티션 조회 시 BigQuery to_dataframe()가 반환하는 형상 — STRING 컬럼이 object dtype."""
+    return pd.DataFrame(
+        {
+            "event_id": pd.Series([], dtype="object"),
+            "event_timestamp": pd.Series([], dtype="datetime64[us, UTC]"),
+            "user_id": pd.Series([], dtype="object"),
+            "event_type": pd.Series([], dtype="object"),
+            "video_id": pd.Series([], dtype="object"),
+            "watch_time_sec": pd.Series([], dtype="Int64"),
+        }
+    )
+
+
+def test_run_batch_cold_start_scores_with_empty_events_partition():
+    # 빈 action-log 파티션(콜드 스타트)은 정상 경로다: dtype 붕괴 없이 0 집계로 채점해야 한다.
+    client = _FakeClient()
+    report = run_batch(
+        candidate_dt=date(2026, 7, 21),
+        events_dt=date(2026, 7, 21),
+        bq_client=client,
+        resolved=_stub_resolved(),
+        videos_raw=_videos_raw(),
+        personas=_personas(["u1", "u2"]),
+        events=daily.derive_wide_events(_bq_empty_long_events()),
+    )
+    assert (report["users"], report["skipped_users"], report["rows"]) == (2, 0, 10)
+
+
+def test_run_batch_never_truncates_partition_when_all_users_skipped(monkeypatch):
+    # max_skip_ratio=1.0(허용 경계)에서도 전 유저 실패 시 빈 프레임으로 파티션을 덮으면 안 된다.
+    client = _FakeClient()
+
+    def _always_fail(**kwargs):
+        raise KeyError("broken persona")
+
+    monkeypatch.setattr(daily, "build_pool_feature_frame", _always_fail)
+    with pytest.raises(RuntimeError):
+        run_batch(
+            candidate_dt=date(2026, 7, 21),
+            events_dt=date(2026, 7, 21),
+            max_skip_ratio=1.0,
+            bq_client=client,
+            resolved=_stub_resolved(),
+            videos_raw=_videos_raw(),
+            personas=_personas(["u1", "u2"]),
+            events=_empty_events(),
+        )
+    assert client.loads == []
+
+
+def test_run_batch_snapshots_video_features_at_candidate_dt(monkeypatch):
+    # action log가 지연돼도 영상 스냅샷(days_since_upload 기준일)은 candidate_dt여야 한다.
+    captured: dict = {}
+    original = daily.build_pool_feature_frame
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(daily, "build_pool_feature_frame", _capture)
+    run_batch(
+        candidate_dt=date(2026, 7, 21),
+        events_dt=date(2026, 7, 18),
+        dry_run=True,
+        bq_client=_FakeClient(),
+        resolved=_stub_resolved(),
+        videos_raw=_videos_raw(),
+        personas=_personas(["u1"]),
+        events=_empty_events(),
+    )
+    assert captured["snapshot_date"] == "2026-07-21"
+    assert captured["as_of"] == "2026-07-19 00:00:00"
+
+
+def test_quarantine_warning_names_user_and_exception_type(monkeypatch, caplog):
+    # spec 계약: 격리 시 stderr warning에 user_id와 예외 타입이 보여야 한다.
+    original = daily.build_pool_feature_frame
+
+    def _fail_u2(**kwargs):
+        if kwargs["user_id"] == "u2":
+            raise KeyError("broken persona")
+        return original(**kwargs)
+
+    monkeypatch.setattr(daily, "build_pool_feature_frame", _fail_u2)
+    with caplog.at_level(logging.WARNING, logger="src.pipeline.daily_recommendations"):
+        run_batch(
+            candidate_dt=date(2026, 7, 21),
+            events_dt=date(2026, 7, 21),
+            max_skip_ratio=0.6,
+            dry_run=True,
+            bq_client=_FakeClient(),
+            resolved=_stub_resolved(),
+            videos_raw=_videos_raw(),
+            personas=_personas(["u1", "u2"]),
+            events=_empty_events(),
+        )
+    message = next(
+        record.getMessage() for record in caplog.records if "quarantined" in record.getMessage()
+    )
+    assert "u2" in message
+    assert "KeyError" in message
 
 
 def test_run_batch_fails_without_write_when_skip_ratio_exceeded(monkeypatch):

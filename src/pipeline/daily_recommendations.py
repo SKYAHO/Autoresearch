@@ -256,6 +256,8 @@ def run_batch(
 
     # events_dt 파티션 전체를 과거 이력으로 포함하되 이후 이벤트는 보지 않는다.
     as_of = (events_dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+    # 영상 나이(days_since_upload)는 유저 이력 기준일이 아니라 추천 대상일 기준.
+    snapshot_date = candidate_dt.isoformat()
 
     generated_at = clock()
     all_rows: list[dict] = []
@@ -268,6 +270,7 @@ def run_batch(
                 videos_raw=videos_raw,
                 user_id=user_id,
                 as_of=as_of,
+                snapshot_date=snapshot_date,
             )
             ranked = reranker.rerank(_to_candidate_videos(frame, reranker.feature_columns))
             all_rows.extend(
@@ -282,15 +285,23 @@ def run_batch(
                 )
             )
         except Exception as error:  # noqa: BLE001 - spec가 유저 단위 격리를 요구하는 경계
+            # 기본 핸들러(lastResort)는 extra를 렌더링하지 않으므로 진단 정보를
+            # 메시지 본문에 포함한다(spec의 stderr 진단 계약).
             logger.warning(
-                "daily recommendation user quarantined",
-                extra={"user_id": user_id, "exception_type": type(error).__name__},
+                "daily recommendation user quarantined (user_id=%s, exception_type=%s)",
+                user_id,
+                type(error).__name__,
             )
             skipped.append(user_id)
 
     if user_ids and len(skipped) / len(user_ids) > max_skip_ratio:
         raise RuntimeError(
             f"Skip ratio {len(skipped)}/{len(user_ids)} exceeded {max_skip_ratio}; aborting without write."
+        )
+    if user_ids and not all_rows:
+        # max_skip_ratio=1.0이어도 전량 실패 결과로 기존 파티션을 비우면 안 된다.
+        raise RuntimeError(
+            f"All {len(skipped)}/{len(user_ids)} users were skipped; aborting without write."
         )
 
     if not dry_run:

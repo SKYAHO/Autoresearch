@@ -82,6 +82,12 @@ def test_application_image_contains_daily_recommendations_command():
     assert "COPY src ./src" in dockerfile
 
 
+def test_application_image_installs_lightgbm_openmp_runtime():
+    # lightgbm 모델 로드가 libgomp.so.1을 dlopen한다 — python:3.12-slim에는 없다.
+    dockerfile = APPLICATION_DOCKERFILE.read_text(encoding="utf-8")
+    assert "libgomp1" in dockerfile
+
+
 def test_github_wif_credentials_are_excluded_from_repository_and_build_context():
     for ignore_file in (".gitignore", ".dockerignore"):
         ignore_rules = (REPOSITORY_ROOT / ignore_file).read_text(encoding="utf-8")
