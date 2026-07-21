@@ -1057,3 +1057,28 @@ def test_expand_events_joins_tags_from_draft_fallback(tmp_path):
     assert by_video["v1"].policy == "model" and by_video["v1"].rank == 3
     assert by_video["v1"].ctr_score == 0.7 and by_video["v1"].policy_version == "run-a"
     assert by_video["v2"].is_exploration is True
+
+
+def test_batch_attaches_provider_exposure_tags(tmp_path):
+    users, videos = _fixture_users(2), build_fixture_video_records(10)
+    metadata: dict[tuple[str, str], ExposureMetadata] = {}
+
+    def provider(virtual_user: dict, user_rng) -> list[dict]:
+        picked = videos[:3]
+        for position, video in enumerate(picked, start=1):
+            metadata[(virtual_user["user_id"], str(video["video_id"]))] = (
+                ExposureMetadata(
+                    policy="model", rank=position, ctr_score=0.5,
+                    is_exploration=False, policy_version="run-a",
+                    exposure_source="model",
+                )
+            )
+        return picked
+
+    result = generate_action_log_batch(
+        _request(tmp_path), users, videos, RuleBasedActionLogGenerator(),
+        candidate_provider=provider, exposure_metadata=metadata,
+    )
+    impressions = [e for e in result.batch.events if e.event_type == "impression"]
+    assert impressions and all(e.exposure_source == "model" for e in impressions)
+    assert all(e.policy_version == "run-a" for e in impressions)

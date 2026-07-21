@@ -1112,8 +1112,15 @@ def generate_action_log_batch(
     videos: list[dict],
     generator: ActionLogGenerator,
     progress_callback: ActionLogProgressCallback | None = None,
+    *,
+    candidate_provider: CandidateProvider | None = None,
+    exposure_metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None,
 ) -> EventGenerationResult:
-    """유저 단위 격리 생성 → 전역 2% 정규화 → 조립 → 파일 저장을 실행한다."""
+    """유저 단위 격리 생성 → 전역 2% 정규화 → 조립 → 파일 저장을 실행한다.
+
+    exposure_metadata는 candidate_provider 호출이 진행되며 채워지는 공유 맵일 수
+    있으므로(#221 ModelExposureRound), draft 생성이 끝난 뒤에 참조한다.
+    """
 
     draft_result = generate_action_log_drafts(
         request,
@@ -1121,10 +1128,14 @@ def generate_action_log_batch(
         videos,
         generator,
         progress_callback,
+        candidate_provider=candidate_provider,
     )
+    drafts = draft_result.drafts
+    if exposure_metadata is not None:
+        drafts = attach_exposure_tags(drafts, exposure_metadata)
     result = expand_action_log_drafts(
         request,
-        draft_result.drafts,
+        drafts,
         draft_result.quarantine,
     )
 
