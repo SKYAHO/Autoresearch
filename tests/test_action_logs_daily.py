@@ -17,7 +17,7 @@ from autoresearch.action_logs.daily import (
     run_daily_action_log_shard,
 )
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
-from autoresearch.action_logs.pipeline import ActionLogGenerationError
+from autoresearch.action_logs.pipeline import ActionLogGenerationError, ExposureMetadata
 
 
 class _SelectorFilesystem:
@@ -1181,3 +1181,87 @@ def test_all_shards_share_input_fingerprint_and_do_not_touch_final(tmp_path):
     assert shard_users[0].isdisjoint(shard_users[1])
     assert shard_users[0] | shard_users[1] == {"vu_0000", "vu_0001", "vu_0002"}
     assert final_path.read_bytes() == b"last-known-good"
+
+
+def _closed_loop_factory(videos):
+    """(user_id, video_id) 태그를 채우며 상위 3개를 노출하는 폐루프 provider factory."""
+
+    metadata: dict[tuple[str, str], ExposureMetadata] = {}
+
+    def provider(virtual_user, user_rng):
+        picked = videos[:3]
+        user_id = str(virtual_user.get("user_id", ""))
+        for position, video in enumerate(picked, start=1):
+            metadata[(user_id, str(video["video_id"]))] = ExposureMetadata(
+                policy="model",
+                rank=position,
+                ctr_score=0.5,
+                is_exploration=False,
+                policy_version="run-a",
+                exposure_source="model",
+            )
+        return picked
+
+    return provider, metadata
+
+
+def test_daily_single_joins_exposure_tags_into_final_parquet(tmp_path):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    output_base = tmp_path / "action_log"
+
+    _write_virtual_users(virtual_users_path)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    summary = run_daily_action_log(
+        partition_date=partition_date,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(output_base),
+        candidates_per_user=3,
+        target_ctr=0.2,
+        seed=123,
+        generator_name="rule_based",
+        candidate_provider_factory=_closed_loop_factory,
+        overwrite=True,
+    )
+
+    assert summary["status"] == "succeeded"
+    table = pq.read_table(output_base / "dt=2026-07-01" / "part-0.parquet")
+    assert "model" in set(table.column("exposure_source").to_pylist())
+
+
+def test_daily_shard_then_merge_carries_exposure_tags(tmp_path):
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube_trending_kr"
+    work_base = tmp_path / "action_log_work"
+    output_base = tmp_path / "action_log"
+
+    _write_virtual_users(virtual_users_path)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    run_daily_action_log_shard(
+        partition_date=partition_date,
+        shard_index=0,
+        shard_count=1,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(work_base),
+        candidates_per_user=3,
+        target_ctr=0.2,
+        seed=123,
+        generator_name="rule_based",
+        candidate_provider_factory=_closed_loop_factory,
+    )
+    merge_summary = merge_daily_action_log_shards(
+        partition_date=partition_date,
+        shard_count=1,
+        shard_output_base_path=str(work_base),
+        output_base_path=str(output_base),
+    )
+
+    assert merge_summary["status"] == "succeeded"
+    table = pq.read_table(output_base / "dt=2026-07-01" / "part-0.parquet")
+    assert "model" in set(table.column("exposure_source").to_pylist())
