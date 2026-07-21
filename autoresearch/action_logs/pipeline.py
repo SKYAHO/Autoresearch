@@ -4,11 +4,25 @@
 노출마다 impression 1행, 클릭 선정분엔 click/view(+like)를 추가 배치) →
 parquet/warehouse/quarantine 저장. 한 유저의 실패가 배치를 죽이지 않는다.
 """
+__arch__ = {
+    "stage": "action_logs",
+    "role": "가상 사용자 노출 판정을 이벤트 로그 초안과 저장 산출물로 변환합니다.",
+    "owns": [
+        "유저별 action log draft 생성과 격리",
+        "클릭 정규화와 이벤트 확장",
+        "parquet·warehouse·quarantine 출력",
+    ],
+    "not_owns": [
+        "정책별 노출 후보 선택",
+        "CTR 모델 학습",
+    ],
+}
 import json
 import logging
 import math
 import random
 from collections import defaultdict
+from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, timedelta
@@ -104,6 +118,10 @@ ActionLogProgressCallback = Callable[[ActionLogProgressSnapshot], float | None]
 ActionLogWorkIdFactory = Callable[[str, int], str]
 ActionLogCheckpointCallback = Callable[[str, int, list[ImpressionDraft]], None]
 
+# 유저별 노출 후보를 외부에서 결정할 때 쓰는 주입 지점. (virtual_user, user_rng)를
+# 받아 video dict 목록을 반환한다. None이면 기존 build_candidates 휴리스틱을 쓴다.
+CandidateProvider = Callable[[dict, random.Random], list[dict]]
+
 
 @dataclass(frozen=True)
 class ActionLogCheckpointPart:
@@ -149,6 +167,10 @@ EVENT_LOG_PARQUET_SCHEMA = pa.schema(
         pa.field("watch_time_sec", pa.int64()),
         pa.field("rank", pa.int64()),
         pa.field("source", pa.string()),
+        pa.field("policy", pa.string()),
+        pa.field("ctr_score", pa.float64()),
+        pa.field("is_exploration", pa.bool_()),
+        pa.field("policy_version", pa.string()),
         pa.field("schema_version", pa.string()),
         pa.field("prompt_version", pa.string()),
         pa.field("llm_model", pa.string()),
@@ -413,6 +435,7 @@ def _generate_drafts_isolated(
     completed_work: dict[str, list[ImpressionDraft]] | None = None,
     checkpoint_callback: ActionLogCheckpointCallback | None = None,
     shard_index: int | None = None,
+    candidate_provider: CandidateProvider | None = None,
 ) -> tuple[list[ImpressionDraft], list[QuarantineRecord], int]:
     """LLM 판정을 (유저×후보청크) 단위로 격리·병렬 생성한다.
 
@@ -427,15 +450,18 @@ def _generate_drafts_isolated(
     for index, virtual_user in enumerate(virtual_users):
         user_id = str(virtual_user.get("user_id", f"user_{index}"))
         user_rng = random.Random(f"{request.seed}:{user_id}")
-        candidates = build_candidates(
-            virtual_user,
-            videos,
-            request.candidates_per_user,
-            request.exploration_ratio,
-            user_rng,
-            personalized_ratio=request.personalized_ratio,
-            popular_ratio=request.popular_ratio,
-        )
+        if candidate_provider is not None:
+            candidates = candidate_provider(virtual_user, user_rng)
+        else:
+            candidates = build_candidates(
+                virtual_user,
+                videos,
+                request.candidates_per_user,
+                request.exploration_ratio,
+                user_rng,
+                personalized_ratio=request.personalized_ratio,
+                popular_ratio=request.popular_ratio,
+            )
         if not candidates:
             continue
         for chunk_index, chunk in enumerate(_chunked(candidates, request.chunk_size)):
@@ -665,10 +691,32 @@ def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[in
     return set(order[:n_click])
 
 
+def normalize_clicks(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
+    """전역 CTR 정규화의 공개 진입점 — 외부 배치(정책 시뮬레이션)가 합동 pool에
+    한 번만 적용할 수 있게 _clicked_indices를 노출한다."""
+
+    return _clicked_indices(drafts, target_ctr)
+
+
+@dataclass(frozen=True)
+class ExposureMetadata:
+    """정책 시뮬레이션 노출 1건의 로그 태깅 메타데이터. 키는 (user_id, video_id)."""
+
+    policy: Literal["baseline", "model"]
+    rank: int
+    ctr_score: float | None
+    is_exploration: bool | None
+    policy_version: str | None
+
+
 def _expand_events(
     drafts: list[ImpressionDraft],
     clicked: set[int],
     request: EventGenerationRequest,
+    *,
+    metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None,
+    source: str = SOURCE_HISTORICAL,
+    event_id_prefix: str = "evt",
 ) -> list[EventLog]:
     """draft + 클릭 결정 → long EventLog 스트림.
 
@@ -688,16 +736,21 @@ def _expand_events(
 
     def _emit(timestamp, user_id, event_type, video_id, watch=None):
         nonlocal seq
+        meta = metadata.get((user_id, video_id)) if metadata else None
         events.append(
             EventLog(
-                event_id=f"evt_{seq:08d}",
+                event_id=f"{event_id_prefix}_{seq:08d}",
                 event_timestamp=timestamp,
                 user_id=user_id,
                 event_type=event_type,
                 video_id=video_id,
                 watch_time_sec=watch,
-                rank=None,
-                source=SOURCE_HISTORICAL,
+                rank=meta.rank if meta else None,
+                source=source,
+                policy=meta.policy if meta else None,
+                ctr_score=meta.ctr_score if meta else None,
+                is_exploration=meta.is_exploration if meta else None,
+                policy_version=meta.policy_version if meta else None,
             )
         )
         seq += 1
@@ -758,6 +811,10 @@ def _event_rows(batch: EventLogBatch, model_name: str) -> list[dict]:
                 "watch_time_sec": event.watch_time_sec,
                 "rank": event.rank,
                 "source": event.source,
+                "policy": event.policy,
+                "ctr_score": event.ctr_score,
+                "is_exploration": event.is_exploration,
+                "policy_version": event.policy_version,
                 "schema_version": batch.schema_version,
                 "prompt_version": batch.prompt_version,
                 "llm_model": model_name,
@@ -923,6 +980,7 @@ def generate_action_log_drafts(
     completed_work: dict[str, list[ImpressionDraft]] | None = None,
     checkpoint_callback: ActionLogCheckpointCallback | None = None,
     shard_index: int | None = None,
+    candidate_provider: CandidateProvider | None = None,
 ) -> ActionLogDraftGenerationResult:
     """유저 단위 LLM 판단을 실행하고 전역 CTR 정규화 전 draft를 반환한다.
 
@@ -951,6 +1009,7 @@ def generate_action_log_drafts(
         completed_work,
         checkpoint_callback,
         shard_index,
+        candidate_provider,
     )
     if enforce_quarantine_limit:
         _raise_if_quarantine_exceeds(quarantine, total_work, request, len(virtual_users))
