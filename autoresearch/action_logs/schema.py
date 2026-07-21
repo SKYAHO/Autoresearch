@@ -117,6 +117,12 @@ class ImpressionDraft(BaseModel):
     watch_fraction: float = Field(ge=0.0, le=1.0)
     would_like: bool
     duration_sec: int = Field(ge=1)
+    # 노출 태그 (#222 폐루프): provider가 남긴 출처·순위·점수·계보를 draft에
+    # 실어 shard→merge를 건너 운반한다. 휴리스틱 라운드·구 shard는 전부 None.
+    exposure_source: Literal["model", "trending", "random"] | None = None
+    exposure_rank: int | None = Field(default=None, ge=1)
+    exposure_ctr_score: float | None = None
+    policy_version: str | None = None
 
 
 class ActionLogShardManifest(BaseModel):
