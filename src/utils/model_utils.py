@@ -5,6 +5,17 @@ import pickle
 import joblib
 import pandas as pd
 
+__arch__ = {
+    "stage": "training",
+    "role": "학습된 모델과 관련 아티팩트를 로컬 파일로 저장·로드하고 ONNX로 변환합니다.",
+    "owns": [
+        "모델/피처 목록/카테고리 매핑 저장·로드",
+        "LightGBM → ONNX 변환",
+        "카테고리 dtype에서 학습 시점 카테고리 순서 추출",
+    ],
+    "not_owns": ["MLflow 기록", "모델 학습"],
+}
+
 
 def save_model(model, path: str) -> None:
     """

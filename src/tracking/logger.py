@@ -7,6 +7,18 @@ from typing import Any, Dict, Optional
 
 import mlflow
 
+__arch__ = {
+    "stage": "training",
+    "role": "MLflow run에 파라미터·지표·태그·아티팩트를 기록합니다.",
+    "owns": [
+        "파라미터/지표/태그 기록",
+        "로컬 파일·디렉토리 아티팩트 기록",
+        "ONNX 모델 아티팩트 기록",
+        "run 시작/종료",
+    ],
+    "not_owns": ["모델 학습", "Model Registry 등록"],
+}
+
 
 def log_parameters(params: Dict[str, Any]) -> None:
     """Parameter 기록.
