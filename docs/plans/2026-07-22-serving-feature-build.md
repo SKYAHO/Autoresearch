@@ -541,7 +541,7 @@ git commit -m "feat: #220 rerank 요청을 온라인 피처 조립에 연결"
 - Consumes: Task 3의 `load_feast_online_feature_reader()`, Task 4의 `create_app()`, #216의 `load_reranker_with_lineage()`
 - Produces: 환경 기반 production lifespan, Feast 호환 OCI image, CI build/import gate
 
-- [ ] **Step 1: production startup 실패 테스트 작성**
+- [x] **Step 1: production startup 실패 테스트 작성**
 
 `tests/test_serving_api.py`에서 환경 로더를 monkeypatch해 주입 없이 생성한 앱이 lifespan 시작 시 모델과 Feast reader를 각각 한 번 로드하고 ready가 되는지 검증한다. 어느 하나라도 실패하면 `/healthcheck`는 503이어야 한다.
 
@@ -552,7 +552,7 @@ Run: `uv run --no-sync python -m pytest tests/test_serving_api.py -k "lifespan o
 
 Expected: production Feast factory가 아직 app에 연결되지 않아 FAIL.
 
-- [ ] **Step 2: production lifespan 연결**
+- [x] **Step 2: production lifespan 연결**
 
 기본 시작 경로를 다음 순서로 구성한다.
 
@@ -563,7 +563,7 @@ Expected: production Feast factory가 아직 app에 연결되지 않아 FAIL.
 
 테스트에서 두 의존성을 주입하면 환경 로더를 호출하지 않는다.
 
-- [ ] **Step 3: 배포 계약 실패 테스트 작성**
+- [x] **Step 3: 배포 계약 실패 테스트 작성**
 
 현재 `deploy/serving/Dockerfile`은 `serving` 그룹만 설치하고 `src/`만 복사하므로 Feast와 `feature_repo`가 없다. 정적 계약 테스트로 다음을 고정한다.
 
@@ -580,7 +580,7 @@ uv run --no-sync python -m pytest tests/test_serving_deployment.py -v
 
 Expected: FAIL.
 
-- [ ] **Step 4: Dockerfile 변경**
+- [x] **Step 4: Dockerfile 변경**
 
 Feast 0.64는 FastAPI 0.139/Starlette 1.3 계열을 요구하고 현재 `serving` 그룹은 FastAPI `<0.129`다. 두 그룹을 억지로 함께 설치하지 않는다. 이미 lock에 검증된 Feast 실행 조합을 사용한다.
 
@@ -594,7 +594,7 @@ COPY src ./src
 
 현재 기준으로 Feast 그룹에서 기존 serving/Redis 테스트가 함께 통과함을 확인했다. `serving` 그룹은 dev 테스트용 FastAPI 표면으로 유지하고, production serving image만 Feast 호환 그룹을 사용한다.
 
-- [ ] **Step 5: CI에 serving image build/smoke 추가**
+- [x] **Step 5: CI에 serving image build/smoke 추가**
 
 기존 Docker build job에 다음을 추가한다.
 
@@ -606,7 +606,7 @@ docker run --rm autoresearch-serving:ci \
 
 Feast pytest job에는 `tests/test_serving_feast_reader.py`와 `tests/test_serving_api.py`를 추가한다. 실 모델/Redis를 요구하는 uvicorn startup은 CI smoke에서 실행하지 않는다.
 
-- [ ] **Step 6: 로컬 검증 및 커밋**
+- [x] **Step 6: 로컬 검증 및 커밋**
 
 ```bash
 uv run --no-sync python -m pytest tests/test_serving_api.py tests/test_serving_deployment.py -v
