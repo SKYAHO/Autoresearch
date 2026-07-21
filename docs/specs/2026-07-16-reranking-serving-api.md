@@ -121,9 +121,17 @@ materialize 상태를 추정하지 않는다. #210, #218 및 운영 materialize 
 2. 응답이 2개이고 요청 `video_ids` 순서를 보존하며 `model_id`가 현재 champion
    run ID인지 확인한다. 이는 고정 HTTP 계약이 request-order preservation이므로,
    이전 계획의 "CTR 내림차순" 검증을 대체한다.
-3. 로그와 metric에서 Feast 오류가 0이고 unseen categorical/default 사용량을 확인한다.
-4. 없는 user와 video 각각이 typed cold-start로 200을 반환하는지 확인한다.
+3. 로그에서 Feast 오류가 0이고 `rerank_unseen_category_total` metric이
+   unseen categorical에 대해 기대값인지 확인한다.
+4. 없는 user와 video 각각이 typed cold-start로 200을 반환하고, 응답 수,
+   요청 `video_ids` 순서, `video_id` 및 `model_id` 계약을 지키는지 확인한다.
 5. 201개 ID, 중복 video ID, legacy `candidates` 요청이 각각 422인지 확인한다.
+
+typed cold-start default의 사용량을 세는 metric 또는 log는 현재 제공하지 않는다.
+`test_build_applies_typed_cold_start_defaults_before_derived_features`는 로컬 unit test에서
+typed default와 파생 피처 계산을 고정한다. 반면 실제 GKE gate는 해당 내부 값을
+관측하지 않고, 존재하지 않는 entity의 HTTP 200 및 response contract 증거로만
+cold-start 동작을 검증한다.
 
 이 외부 smoke의 다음 소유자는 #210/#218 및 materialize 운영 준비를 완료한 GKE
 운영 담당자다. 해당 조건이 충족되기 전에는 이 문서의 로컬·컨테이너 증적을 실제
