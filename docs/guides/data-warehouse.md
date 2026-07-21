@@ -72,6 +72,14 @@
 
 ### 🔸 SQL
 
+> [!NOTE]
+> 아래 SQL은 `CREATE OR REPLACE TABLE`로 표기되어 있지만, 실제 배치 job
+> (`src/pipeline/build_feature_tables.py`)은 `BEGIN TRANSACTION; TRUNCATE
+> TABLE; INSERT INTO {SELECT 본문}; COMMIT TRANSACTION;`으로 실행한다 —
+> 테이블 스키마(REQUIRED 등)를 Terraform이 관리하기 시작해서, `CREATE OR
+> REPLACE`/`WRITE_TRUNCATE`처럼 SELECT 결과에서 스키마를 다시 유추하는
+> 방식은 REQUIRED 제약을 지워버린다. 아래 `SELECT` 본문 자체는 그대로다.
+
 ```sql
 CREATE OR REPLACE TABLE `{project}.{dataset}.user_static_feature` AS
 SELECT
@@ -190,6 +198,11 @@ MVP의 daily snapshot 방식에서는 impression 당일 00:00 이후부터 impre
 | `total_event_count_7d` |
 
 ### 🔸 SQL
+
+> [!NOTE]
+> 실제 배치 job은 `CREATE OR REPLACE TABLE`이 아니라 `TRUNCATE TABLE` +
+> `INSERT INTO`를 트랜잭션으로 묶어 실행한다 — 이유는 `user_static_feature`
+> 절의 노트 참고.
 
 ```sql
 CREATE OR REPLACE TABLE `{project}.{dataset}.user_dynamic_feature` AS
@@ -406,6 +419,11 @@ LEFT JOIN category_rank c
 
 ### 🔸 SQL
 
+> [!NOTE]
+> 실제 배치 job은 `CREATE OR REPLACE TABLE`이 아니라 `TRUNCATE TABLE` +
+> `INSERT INTO`를 트랜잭션으로 묶어 실행한다 — 이유는 `user_static_feature`
+> 절의 노트 참고.
+
 ```sql
 CREATE OR REPLACE TABLE `{project}.{dataset}.video_feature` AS
 WITH parsed AS (
@@ -509,6 +527,12 @@ QUALIFY ROW_NUMBER() OVER (
   - 해당 impression은 `clicked = 1`, 나머지 impression은 `clicked = 0`으로 둔다.
   - 30분 window는 `label_window_sec = 1800`으로 metadata/config에 기록한다.
   - 
+> [!NOTE]
+> 실제 배치 job은 `CREATE OR REPLACE TABLE`이 아니라 `TRUNCATE TABLE` +
+> `INSERT INTO`를 트랜잭션으로 묶어 실행한다 — 이유는 `user_static_feature`
+> 절의 노트 참고. `dataset_id`/`label_window_sec`도 `DECLARE`가 아니라
+> 배치 job 함수 인자로 주입한다.
+
 ### 🔸 SQL
 
 ```sql
