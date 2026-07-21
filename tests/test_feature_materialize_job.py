@@ -1,8 +1,105 @@
+import json
 import re
+from unittest.mock import MagicMock, call
 
 import pytest
 
 import autoresearch.jobs.feature_materialize as feature_materialize
+
+
+def _summary(output: str) -> dict[str, object]:
+    return json.loads(output.splitlines()[-1])
+
+
+def test_main_runs_each_feature_table_in_order(monkeypatch, capsys):
+    client = MagicMock()
+    query_jobs = [MagicMock(job_id=f"job-{index}") for index in range(3)]
+    client.query.side_effect = query_jobs
+    monkeypatch.setattr(
+        feature_materialize, "_bigquery_client", lambda project_id: client
+    )
+
+    assert (
+        feature_materialize.main(
+            ["--project", "test-project", "--dataset", "test_dataset"]
+        )
+        == 0
+    )
+
+    expected_scripts = [
+        feature_materialize.build_materialize_script(
+            "test-project", "test_dataset", table_name
+        )
+        for table_name in feature_materialize.FEATURE_TABLES
+    ]
+    assert client.query.call_args_list == [call(script) for script in expected_scripts]
+    assert [job.result.call_count for job in query_jobs] == [1, 1, 1]
+    summary = _summary(capsys.readouterr().out)
+    assert summary["status"] == "succeeded"
+    assert summary["tables"] == list(feature_materialize.FEATURE_TABLES)
+    assert summary["job_ids"] == ["job-0", "job-1", "job-2"]
+
+
+def test_main_stops_when_a_table_query_fails(monkeypatch, capsys):
+    client = MagicMock()
+    first_job = MagicMock(job_id="job-static")
+    client.query.side_effect = [first_job, RuntimeError("query failed")]
+    monkeypatch.setattr(
+        feature_materialize, "_bigquery_client", lambda project_id: client
+    )
+
+    assert (
+        feature_materialize.main(
+            ["--project", "test-project", "--dataset", "test_dataset"]
+        )
+        == 1
+    )
+
+    first_script = feature_materialize.build_materialize_script(
+        "test-project", "test_dataset", "user_static_feature"
+    )
+    second_script = feature_materialize.build_materialize_script(
+        "test-project", "test_dataset", "user_dynamic_feature"
+    )
+    assert client.query.call_args_list == [call(first_script), call(second_script)]
+    first_job.result.assert_called_once_with()
+    assert _summary(capsys.readouterr().out)["error_type"] == "runtime_failure"
+
+
+def test_main_stops_when_a_table_result_fails(monkeypatch, capsys):
+    client = MagicMock()
+    first_job = MagicMock(job_id="job-static")
+    second_job = MagicMock(job_id="job-dynamic")
+    second_job.result.side_effect = RuntimeError("result failed")
+    client.query.side_effect = [first_job, second_job]
+    monkeypatch.setattr(
+        feature_materialize, "_bigquery_client", lambda project_id: client
+    )
+
+    assert (
+        feature_materialize.main(
+            ["--project", "test-project", "--dataset", "test_dataset"]
+        )
+        == 1
+    )
+
+    assert client.query.call_count == 2
+    first_job.result.assert_called_once_with()
+    second_job.result.assert_called_once_with()
+    assert _summary(capsys.readouterr().out)["error_type"] == "runtime_failure"
+
+
+def test_main_rejects_invalid_project_identifier(monkeypatch, capsys):
+    monkeypatch.setattr(
+        feature_materialize, "_run", lambda args: pytest.fail("must not run")
+    )
+
+    assert (
+        feature_materialize.main(["--project", "bad project", "--dataset", "dataset"])
+        == 2
+    )
+
+    assert _summary(capsys.readouterr().out)["error_type"] == "invalid_arguments"
 
 
 def test_feature_tables_are_the_three_supported_sources():
@@ -125,7 +222,10 @@ def test_video_script_duration_contract_composes_pt1d2h3m4s_as_93784_seconds():
     assert "86400" in script
     assert "3600" in script
     assert "60" in script
-    assert "COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\\d+)S') AS INT64), 0)" in script
+    assert (
+        "COALESCE(SAFE_CAST(REGEXP_EXTRACT(video_duration, r'(\\d+)S') AS INT64), 0)"
+        in script
+    )
 
 
 def test_video_script_duration_contract_propagates_safe_add_overflow_to_outer_coalesce():

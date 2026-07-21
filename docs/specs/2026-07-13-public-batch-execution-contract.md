@@ -44,6 +44,7 @@ python -m autoresearch.jobs.action_log --mode single [options]
 python -m autoresearch.jobs.action_log --mode shard [options]
 python -m autoresearch.jobs.action_log --mode merge [options]
 python -m autoresearch.jobs.action_log_quality [options]
+python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <dataset-id>
 python -m autoresearch.jobs.feast_materialize [options]
 ```
 
@@ -130,6 +131,14 @@ Python process가 signal 또는 resource limit로 종료될 때의 code는 runti
 Infra는 secret 저장과 workload 접근 권한을 담당하고, Airflow는 Kubernetes
 Secret 또는 Secret Manager 연동 reference를 pod 환경 변수에 연결한다.
 Application은 환경 변수를 읽고 누락·빈 값을 검증한다.
+
+## BigQuery feature materialize
+
+- `--project`와 `--dataset`은 BigQuery identifier 문법을 만족하는 필수 인자다.
+- 명령은 `user_static_feature`, `user_dynamic_feature`, `video_feature`를 이 순서로 전체 갱신한다.
+- 각 테이블은 transaction 내 `DELETE` + `INSERT`로 갱신한다. 한 테이블의 실패는 기존 행을 유지하고 뒤 테이블 실행을 중단하며 exit 1이다.
+- raw 결과가 0행이면 transaction을 실패시킨다.
+- 성공 `job_summary`에는 project, dataset, 대상 table 이름과 BigQuery job ID만 포함한다.
 
 ## Feast materialize
 

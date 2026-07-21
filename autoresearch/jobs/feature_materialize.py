@@ -1,4 +1,20 @@
+"""BigQuery feature table을 전체 갱신하는 공개 batch 명령."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import os
 import re
+from typing import Any, Sequence
+
+from autoresearch.jobs import BATCH_CONTRACT_VERSION
+
+
+logger = logging.getLogger(__name__)
+_REVISION = os.getenv("AUTORESEARCH_REVISION", "unknown")
+JOB_NAME = "feature_materialize"
 
 
 FEATURE_TABLES: tuple[str, ...] = (
@@ -6,6 +22,33 @@ FEATURE_TABLES: tuple[str, ...] = (
     "user_dynamic_feature",
     "video_feature",
 )
+
+
+class BatchArgumentError(ValueError):
+    """공개 batch 명령의 문법·범위 오류."""
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise BatchArgumentError(message)
+
+
+def _version_json() -> str:
+    return json.dumps(
+        {
+            "application_revision": _REVISION,
+            "contract_version": BATCH_CONTRACT_VERSION,
+        },
+        sort_keys=True,
+    )
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = _ArgumentParser(description=__doc__)
+    parser.add_argument("--version", action="version", version=_version_json())
+    parser.add_argument("--project", required=True)
+    parser.add_argument("--dataset", required=True)
+    return parser
 
 
 def _string_array(column_name: str) -> str:
@@ -276,9 +319,7 @@ QUALIFY ROW_NUMBER() OVER (
 }
 
 
-def build_materialize_script(
-    project_id: str, dataset_id: str, table_name: str
-) -> str:
+def build_materialize_script(project_id: str, dataset_id: str, table_name: str) -> str:
     """Build the transactional BigQuery script for one supported feature table."""
     if not isinstance(project_id, str) or not re.fullmatch(
         r"[A-Za-z_][A-Za-z0-9_-]*", project_id
@@ -314,3 +355,83 @@ DELETE FROM {target} WHERE TRUE;
 INSERT INTO {target} SELECT * FROM materialized_rows;
 COMMIT TRANSACTION;
 """
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    try:
+        build_materialize_script(args.project, args.dataset, FEATURE_TABLES[0])
+    except ValueError as exc:
+        raise BatchArgumentError(str(exc)) from exc
+
+
+def _bigquery_client(project_id: str) -> Any:
+    from google.cloud import bigquery
+
+    return bigquery.Client(project=project_id)
+
+
+def _run(args: argparse.Namespace) -> dict[str, object]:
+    client = _bigquery_client(args.project)
+    job_ids: list[str] = []
+    for table_name in FEATURE_TABLES:
+        script = build_materialize_script(args.project, args.dataset, table_name)
+        job = client.query(script)
+        job.result()
+        job_ids.append(job.job_id)
+    return {
+        "status": "succeeded",
+        "project": args.project,
+        "dataset": args.dataset,
+        "tables": list(FEATURE_TABLES),
+        "job_ids": job_ids,
+    }
+
+
+def _emit(payload: dict[str, object]) -> None:
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
+
+
+def _summary(
+    *, status: str, details: dict[str, object] | None = None
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "event": "job_summary",
+        "contract_version": BATCH_CONTRACT_VERSION,
+        "job": JOB_NAME,
+        "status": status,
+    }
+    if details:
+        payload.update(details)
+    return payload
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """CLI 인자를 검증·실행하고 공개 종료 코드를 반환한다."""
+
+    parser = _build_parser()
+    try:
+        args = parser.parse_args(argv)
+        _validate_args(args)
+    except BatchArgumentError as exc:
+        logger.error("Invalid feature_materialize arguments: %s", exc)
+        _emit(_summary(status="failed", details={"error_type": "invalid_arguments"}))
+        return 2
+
+    try:
+        result = dict(_run(args))
+    except BatchArgumentError as exc:
+        logger.error("Invalid feature_materialize arguments: %s", exc)
+        _emit(_summary(status="failed", details={"error_type": "invalid_arguments"}))
+        return 2
+    except Exception as exc:  # noqa: BLE001 - process boundary maps failures to exit 1
+        logger.error("feature_materialize failed (%s)", type(exc).__name__)
+        _emit(_summary(status="failed", details={"error_type": "runtime_failure"}))
+        return 1
+
+    status = str(result.pop("status", "succeeded"))
+    _emit(_summary(status=status, details=result))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
