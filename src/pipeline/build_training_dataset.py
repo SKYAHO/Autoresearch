@@ -69,13 +69,20 @@ from src.features.assembly import (  # noqa: E402
 
 
 def get_data_dir():
-    """프로젝트 루트의 data 디렉토리 경로 반환."""
+    """프로젝트 루트의 data 디렉토리 경로 반환. 없으면 프로젝트 루트 아래에 생성한다.
+
+    GCS 코드 부트스트랩 이미지(Dockerfile.train)는 data/를 이미지에 포함하지
+    않으므로, 컨테이너 최초 실행 시에는 이 디렉토리가 아예 존재하지 않는다 —
+    존재를 요구하는 대신 만들어서 돌려준다(출력 경로 등으로 바로 쓰기 위함).
+    """
     current = os.path.dirname(os.path.abspath(__file__))
     while current != "/":
         if os.path.exists(os.path.join(current, "data")):
             return os.path.join(current, "data")
         current = os.path.dirname(current)
-    raise RuntimeError("data 디렉토리를 찾을 수 없습니다")
+    data_dir = os.path.join(PROJECT_ROOT, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    return data_dir
 
 
 def validate_events(events: pd.DataFrame) -> None:
@@ -315,13 +322,15 @@ def main(
             _data_dir_cache = get_data_dir()
         return _data_dir_cache
 
-    if raw_dir is None:
+    if videos_source == "csv" and raw_dir is None:
         raw_dir = os.path.join(_resolve_data_dir(), "raw")
     if events_source == "csv" and events_path is None:
         events_path = os.path.join(_resolve_data_dir(), "processed", "events.csv")
     if output_path is None:
         output_path = os.path.join(_resolve_data_dir(), "processed", "training_dataset.csv")
     if personas_path is None:
+        if raw_dir is None:
+            raw_dir = os.path.join(_resolve_data_dir(), "raw")
         personas_path = os.path.join(raw_dir, "personas.csv")
 
     print("=" * 70)

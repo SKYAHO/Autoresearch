@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -220,6 +221,84 @@ def test_main_trims_padding_range_from_output(tmp_path, monkeypatch):
 
     result = pd.read_csv(output_path)
     assert len(result) == 1
+
+
+def test_main_bigquery_mode_never_resolves_local_data_dir(tmp_path, monkeypatch):
+    # Dockerfile.train(GCS 코드 부트스트랩 이미지)은 로컬 data/ 디렉토리를 이미지에
+    # 전혀 포함하지 않는다. videos_source/events_source가 모두 bigquery이고
+    # personas_path/output_path가 명시되면 get_data_dir()을 절대 호출하지
+    # 않아야 한다 — 안 그러면 컨테이너에서 항상 실패한다(issue #212).
+    def _fail_if_called():
+        raise AssertionError("get_data_dir() must not be called when all paths are explicit")
+
+    monkeypatch.setattr(build_training_dataset, "get_data_dir", _fail_if_called)
+
+    videos_df = pd.DataFrame(
+        {
+            "video_id": ["v1"],
+            "categoryId": ["Music"],
+            "duration": ["PT5M"],
+            "viewCount": [1000],
+            "likeCount": [50],
+            "commentCount": [10],
+            "publishedAt": ["2026-01-01"],
+            "title": ["t"],
+            "description": ["d"],
+        }
+    )
+    monkeypatch.setattr(build_training_dataset, "load_videos_from_bigquery", lambda: videos_df)
+
+    long_events = pd.DataFrame(
+        [_long_event("i1", "2026-07-08 12:00:00", "u1", "impression", "v1")]
+    )
+    monkeypatch.setattr(
+        build_training_dataset, "load_events_from_bigquery", lambda start, end: long_events
+    )
+
+    personas_path = tmp_path / "personas.csv"
+    pd.DataFrame(
+        {
+            "uuid": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobbies_and_interests": ["gaming"],
+            "hobbies_and_interests_list": ["[]"],
+        }
+    ).to_csv(personas_path, index=False)
+
+    output_path = tmp_path / "training_dataset.csv"
+
+    build_training_dataset.main(
+        videos_source="bigquery",
+        events_source="bigquery",
+        events_start_date="2026-07-08",
+        events_end_date="2026-07-09",
+        personas_path=str(personas_path),
+        output_path=str(output_path),
+    )
+
+    assert output_path.exists()
+
+
+def test_get_data_dir_creates_directory_when_none_found(tmp_path, monkeypatch):
+    # 컨테이너 최초 실행 시 프로젝트 루트 어디에도 data/가 없다 — 예외를 던지는
+    # 대신 만들어서 돌려줘야 한다(issue #212). 걸어 올라가는 실제 파일시스템
+    # 탐색은 OS마다 sentinel("/")이 달라 테스트하기 위험하므로, dirname을 즉시
+    # sentinel로 만들어 "어디서도 못 찾음" 경로를 결정적으로 재현한다.
+    created = {}
+    monkeypatch.setattr(build_training_dataset, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(build_training_dataset.os.path, "exists", lambda path: False)
+    monkeypatch.setattr(build_training_dataset.os.path, "dirname", lambda path: "/")
+    monkeypatch.setattr(
+        build_training_dataset.os,
+        "makedirs",
+        lambda path, exist_ok=False: created.setdefault("path", path),
+    )
+
+    data_dir = build_training_dataset.get_data_dir()
+
+    assert data_dir == os.path.join(str(tmp_path), "data")
+    assert created["path"] == data_dir
 
 
 def test_derive_wide_events_like_without_view_defaults_to_zero():
