@@ -12,7 +12,8 @@
 로컬, CI와 KubernetesPodOperator에서 동일하게 동작해야 한다.
 
 이 계약은 현재 운영 범위인 YouTube 일일 수집, YouTube backfill, action-log
-single/shard/merge, action-log 품질 검사와 Feast materialize를 다룬다.
+single/shard/merge, action-log 품질 검사, BigQuery feature materialize와 Feast
+materialize를 다룬다.
 학습·평가, MLflow, FastAPI serving command는 각 기능이 운영화될 때 별도
 revision으로 추가한다.
 

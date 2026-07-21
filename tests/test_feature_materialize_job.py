@@ -147,6 +147,38 @@ def test_main_rejects_invalid_gcp_project_id_before_running(
     assert project_id not in caplog.text
 
 
+def test_main_accepts_maximum_length_bigquery_dataset_id(monkeypatch, capsys):
+    run = MagicMock(return_value={"status": "succeeded"})
+    monkeypatch.setattr(feature_materialize, "_run", run)
+
+    assert (
+        feature_materialize.main(["--project", "test-project", "--dataset", "a" * 1024])
+        == 0
+    )
+
+    run.assert_called_once()
+    assert _summary(capsys.readouterr().out)["status"] == "succeeded"
+
+
+def test_main_rejects_oversized_bigquery_dataset_id_before_running(
+    monkeypatch, caplog, capsys
+):
+    dataset_id = "a" * 1025
+    monkeypatch.setattr(
+        feature_materialize, "_run", lambda args: pytest.fail("must not run")
+    )
+
+    assert (
+        feature_materialize.main(["--project", "test-project", "--dataset", dataset_id])
+        == 2
+    )
+
+    output = capsys.readouterr().out
+    assert _summary(output)["error_type"] == "invalid_arguments"
+    assert dataset_id not in output
+    assert dataset_id not in caplog.text
+
+
 def test_feature_tables_are_the_three_supported_sources():
     assert feature_materialize.FEATURE_TABLES == (
         "user_static_feature",

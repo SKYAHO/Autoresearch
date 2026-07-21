@@ -361,6 +361,8 @@ COMMIT TRANSACTION;
 def _validate_args(args: argparse.Namespace) -> None:
     if not _GCP_PROJECT_ID_PATTERN.fullmatch(args.project):
         raise BatchArgumentError("invalid GCP project ID")
+    if len(args.dataset) > 1024:
+        raise BatchArgumentError("invalid dataset ID")
     try:
         build_materialize_script(args.project, args.dataset, FEATURE_TABLES[0])
     except ValueError as exc:
