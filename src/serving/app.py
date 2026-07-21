@@ -106,6 +106,8 @@ def create_app(
                 )
                 active_feature_builder = ServingFeatureBuilder(reader=reader)
             except Exception as error:  # noqa: BLE001 - startup boundary must remain health-queryable.
+                # 설정·인증 실패는 연결 문자열이나 토큰을 예외 문자열에 포함할 수 있으므로,
+                # 이 경계에서는 안전한 phase/error type만 기록한다.
                 logger.error(
                     "Reranking runtime initialization failed: phase=%s error_type=%s",
                     initialization_phase,
@@ -154,6 +156,8 @@ def create_app(
                     raise PredictionError(
                         reason="Reranker returned unexpected video IDs."
                     )
+            # Pydantic이 호출자 요청 형태를 422로 검증한다. 여기의 오류는 그 이후
+            # 모델·Feast 경계에서 발견된 서버측 계약/조회 장애이므로 503으로 표면화한다.
             except (FeatureContractError, FeatureRetrievalError) as error:
                 raise HTTPException(
                     status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
