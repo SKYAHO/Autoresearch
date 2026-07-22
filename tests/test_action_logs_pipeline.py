@@ -13,12 +13,22 @@ import autoresearch.action_logs.pipeline as pipeline_module
 from autoresearch.action_logs.candidate import build_candidates
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
 from autoresearch.action_logs.pipeline import (
+    ACTION_LOG_DRAFT_PARQUET_SCHEMA,
     ActionLogGenerationError,
+    ExposureMetadata,
     _build_user_drafts,
+    attach_exposure_tags,
+    expand_action_log_drafts,
     generate_action_log_batch,
     generate_action_log_drafts,
+    read_action_log_draft_parquet,
+    write_action_log_draft_parquet,
 )
-from autoresearch.action_logs.schema import EventGenerationRequest, EventLog
+from autoresearch.action_logs.schema import (
+    EventGenerationRequest,
+    EventLog,
+    ImpressionDraft,
+)
 from autoresearch.action_logs.video_source import (
     _parse_tags,
     build_fixture_video_records,
@@ -980,3 +990,95 @@ def test_expand_events_without_metadata_is_unchanged():
     assert events[0].event_id == "evt_00000000"
     assert events[0].source == "historical"
     assert events[0].policy is None
+
+
+def _tagged_draft(**overrides) -> ImpressionDraft:
+    base = dict(
+        user_id="u1", video_id="v1", click_propensity=0.9,
+        watch_fraction=0.4, would_like=False, duration_sec=100,
+        exposure_source="model", exposure_rank=3, exposure_ctr_score=0.7,
+        policy_version="run-a",
+    )
+    base.update(overrides)
+    return ImpressionDraft(**base)
+
+
+def test_draft_exposure_tags_roundtrip_parquet(tmp_path):
+    drafts = [
+        _tagged_draft(),
+        _tagged_draft(video_id="v2", exposure_source="random",
+                      exposure_rank=9, exposure_ctr_score=None),
+    ]
+    path = tmp_path / "drafts.parquet"
+    write_action_log_draft_parquet(drafts, path)
+    restored = read_action_log_draft_parquet(path)
+    assert [d.exposure_source for d in restored] == ["model", "random"]
+    assert restored[0].exposure_rank == 3 and restored[0].policy_version == "run-a"
+
+
+def test_legacy_draft_parquet_without_tag_columns_reads_untagged(tmp_path):
+    legacy_fields = [
+        f for f in ACTION_LOG_DRAFT_PARQUET_SCHEMA
+        if f.name not in ("exposure_source", "exposure_rank",
+                          "exposure_ctr_score", "policy_version")
+    ]
+    row = {"user_id": "u1", "video_id": "v1", "click_propensity": 0.9,
+           "watch_fraction": 0.4, "would_like": False, "duration_sec": 100}
+    path = tmp_path / "legacy.parquet"
+    pq.write_table(pa.Table.from_pylist([row], schema=pa.schema(legacy_fields)), path)
+    restored = read_action_log_draft_parquet(path)
+    assert restored[0].exposure_source is None
+
+
+def test_attach_exposure_tags_leaves_unmapped_drafts_untagged():
+    metadata = {
+        ("u1", "v1"): ExposureMetadata(
+            policy="model", rank=3, ctr_score=0.7, is_exploration=False,
+            policy_version="run-a", exposure_source="model",
+        )
+    }
+    plain = _tagged_draft(exposure_source=None, exposure_rank=None,
+                          exposure_ctr_score=None, policy_version=None)
+    other = _tagged_draft(video_id="vX", exposure_source=None, exposure_rank=None,
+                          exposure_ctr_score=None, policy_version=None)
+    tagged = attach_exposure_tags([plain, other], metadata)
+    assert tagged[0].exposure_source == "model" and tagged[0].exposure_rank == 3
+    assert tagged[1].exposure_source is None
+
+
+def test_expand_events_joins_tags_from_draft_fallback(tmp_path):
+    request = _request(tmp_path)
+    drafts = [_tagged_draft(), _tagged_draft(video_id="v2", exposure_source="random",
+                                             exposure_rank=2, exposure_ctr_score=None)]
+    result = expand_action_log_drafts(request, drafts, [])
+    impressions = [e for e in result.batch.events if e.event_type == "impression"]
+    by_video = {e.video_id: e for e in impressions}
+    assert by_video["v1"].exposure_source == "model"
+    assert by_video["v1"].policy == "model" and by_video["v1"].rank == 3
+    assert by_video["v1"].ctr_score == 0.7 and by_video["v1"].policy_version == "run-a"
+    assert by_video["v2"].is_exploration is True
+
+
+def test_batch_attaches_provider_exposure_tags(tmp_path):
+    users, videos = _fixture_users(2), build_fixture_video_records(10)
+    metadata: dict[tuple[str, str], ExposureMetadata] = {}
+
+    def provider(virtual_user: dict, user_rng) -> list[dict]:
+        picked = videos[:3]
+        for position, video in enumerate(picked, start=1):
+            metadata[(virtual_user["user_id"], str(video["video_id"]))] = (
+                ExposureMetadata(
+                    policy="model", rank=position, ctr_score=0.5,
+                    is_exploration=False, policy_version="run-a",
+                    exposure_source="model",
+                )
+            )
+        return picked
+
+    result = generate_action_log_batch(
+        _request(tmp_path), users, videos, RuleBasedActionLogGenerator(),
+        candidate_provider=provider, exposure_metadata=metadata,
+    )
+    impressions = [e for e in result.batch.events if e.event_type == "impression"]
+    assert impressions and all(e.exposure_source == "model" for e in impressions)
+    assert all(e.policy_version == "run-a" for e in impressions)

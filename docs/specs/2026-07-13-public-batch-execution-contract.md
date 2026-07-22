@@ -292,6 +292,40 @@ python -m autoresearch.jobs.action_log --mode single <common-options>
 task를 실패시키지 않는다. 격리 비율 판정에 필요한 count와 실패 유형 집계는
 항상 job summary에 남긴다.
 
+### 노출 소스 (single·shard 공통)
+
+`single`과 `shard` 모드는 노출(candidate) 조립 소스를 선택하는 두 인자를
+받는다. `merge` 모드는 두 인자를 모두 거부한다(exit 2, `invalid_arguments`).
+
+| 인자 | 값 | 기본값 | 설명 |
+| --- | --- | --- | --- |
+| `--exposure-source` | `model` \| `heuristic` | `model` | 노출 조립 소스 선택 |
+| `--recommendations-table` | bare table name | env 또는 `user_recommendations` | `model` 모드에서만 유효한 대상 테이블 이름 |
+
+- `--exposure-source model`(기본)은 champion 모델의 유저별 순위를
+  `user_recommendations`에서 읽어 70/20/10(모델/트렌딩/랜덤)으로 노출을
+  조립하고 노출별 정책 태그를 로그에 싣는다. 이 모드는 BigQuery에 의존한다.
+- 대상 테이블 id는 `{CTR_TRAINING_BQ_PROJECT}.{CTR_TRAINING_BQ_DATASET}.<name>`으로
+  정규화한다. `<name>`은 `--recommendations-table` → 환경 변수
+  `CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE` → `user_recommendations` 순으로 해석한다.
+- `model` 모드는 action log와 `user_recommendations`의 dt 파티션이 정합해야 한다.
+  action log의 `--partition-date`와 동일한 dt 파티션을 조회한다.
+- 해당 dt 파티션이 비어 있으면 fail-fast로 exit 1(`runtime_failure`)이다. 휴리스틱
+  대체는 자동으로 일어나지 않는다.
+- `--recommendations-table`은 `model` 모드에서만 허용한다. `heuristic` 모드와 함께
+  주면 exit 2(`invalid_arguments`)로 거부한다.
+- `--exposure-source heuristic`은 종전 규칙 기반 조립으로 폴백한다. 이 모드는
+  src 파이프라인·BigQuery에 의존하지 않으므로, `user_recommendations` 파티션이
+  아직 없거나 상류 추천 배치가 실패한 날의 복구 실행에 사용한다.
+
+#### Airflow 선행 의존 인계 노트
+
+`model` 모드의 action log task는 같은 dt의 `daily_recommendations` 배치(#216,
+`user_recommendations` 적재)가 선행 완료되어야 한다. `Autoresearch-airflow`의 DAG는
+action log task를 `daily_recommendations` 뒤에 배치하고, 파티션 부재 시 exit 1을
+task 실패로 전파한다. 상류 추천이 소실·지연된 날의 수동 복구는
+`--exposure-source heuristic`으로 실행한다.
+
 ## Action log shard
 
 ```text

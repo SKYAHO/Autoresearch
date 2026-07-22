@@ -178,6 +178,10 @@ ACTION_LOG_DRAFT_PARQUET_SCHEMA = pa.schema(
         pa.field("watch_fraction", pa.float64()),
         pa.field("would_like", pa.bool_()),
         pa.field("duration_sec", pa.int64()),
+        pa.field("exposure_source", pa.string()),
+        pa.field("exposure_rank", pa.int64()),
+        pa.field("exposure_ctr_score", pa.float64()),
+        pa.field("policy_version", pa.string()),
     ]
 )
 
@@ -702,6 +706,51 @@ class ExposureMetadata:
     exposure_source: Literal["model", "trending", "random"] | None = None
 
 
+def attach_exposure_tags(
+    drafts: list[ImpressionDraft],
+    metadata: Mapping[tuple[str, str], ExposureMetadata],
+) -> list[ImpressionDraft]:
+    """provider가 남긴 노출 태그를 draft에 심는다(맵에 없는 draft는 무태그 유지)."""
+
+    tagged: list[ImpressionDraft] = []
+    for draft in drafts:
+        meta = metadata.get((draft.user_id, draft.video_id))
+        if meta is None or meta.exposure_source is None:
+            tagged.append(draft)
+            continue
+        tagged.append(
+            draft.model_copy(
+                update={
+                    "exposure_source": meta.exposure_source,
+                    "exposure_rank": meta.rank,
+                    "exposure_ctr_score": meta.ctr_score,
+                    "policy_version": meta.policy_version,
+                }
+            )
+        )
+    return tagged
+
+
+def _exposure_metadata_from_drafts(
+    drafts: list[ImpressionDraft],
+) -> dict[tuple[str, str], ExposureMetadata]:
+    """draft에 실려 온 태그를 ExposureMetadata 맵으로 복원한다(merge/fallback 경로)."""
+
+    metadata: dict[tuple[str, str], ExposureMetadata] = {}
+    for draft in drafts:
+        if draft.exposure_source is None:
+            continue
+        metadata[(draft.user_id, draft.video_id)] = ExposureMetadata(
+            policy="model",
+            rank=draft.exposure_rank if draft.exposure_rank is not None else 0,
+            ctr_score=draft.exposure_ctr_score,
+            is_exploration=draft.exposure_source == "random",
+            policy_version=draft.policy_version,
+            exposure_source=draft.exposure_source,
+        )
+    return metadata
+
+
 def _expand_events(
     drafts: list[ImpressionDraft],
     clicked: set[int],
@@ -716,6 +765,12 @@ def _expand_events(
     노출마다 impression 1행. 클릭 선정분엔 같은 세션 흐름으로 click/view(+like)를
     impression 직후(초 단위 단조 증가)에 배치한다. 일일 상한은 impression 기준.
     """
+    if metadata is None:
+        # draft에 실려 온 태그가 있으면 그것으로 조인한다(merge 경로 무변경 —
+        # 외부 metadata 인자(정책 시뮬레이션 라운드)는 그대로 우선).
+        embedded = _exposure_metadata_from_drafts(drafts)
+        metadata = embedded or None
+
     end = request.history_end
     if end.tzinfo is None:
         end = end.replace(tzinfo=UTC)
@@ -1044,8 +1099,15 @@ def generate_action_log_batch(
     videos: list[dict],
     generator: ActionLogGenerator,
     progress_callback: ActionLogProgressCallback | None = None,
+    *,
+    candidate_provider: CandidateProvider | None = None,
+    exposure_metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None,
 ) -> EventGenerationResult:
-    """유저 단위 격리 생성 → 전역 2% 정규화 → 조립 → 파일 저장을 실행한다."""
+    """유저 단위 격리 생성 → 전역 2% 정규화 → 조립 → 파일 저장을 실행한다.
+
+    exposure_metadata는 candidate_provider 호출이 진행되며 채워지는 공유 맵일 수
+    있으므로(#221 ModelExposureRound), draft 생성이 끝난 뒤에 참조한다.
+    """
 
     draft_result = generate_action_log_drafts(
         request,
@@ -1053,10 +1115,14 @@ def generate_action_log_batch(
         videos,
         generator,
         progress_callback,
+        candidate_provider=candidate_provider,
     )
+    drafts = draft_result.drafts
+    if exposure_metadata is not None:
+        drafts = attach_exposure_tags(drafts, exposure_metadata)
     result = expand_action_log_drafts(
         request,
-        draft_result.drafts,
+        drafts,
         draft_result.quarantine,
     )
 

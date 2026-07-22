@@ -40,6 +40,18 @@ class RankingsPartition:
     model_run_id: str | None
 
 
+def resolve_recommendations_table_id(table: str | None) -> str:
+    """user_recommendations 대상 테이블의 정규화된 id를 만든다(기본값 단일 출처)."""
+    import os
+
+    from src.pipeline.build_training_dataset import BIGQUERY_DATASET, BIGQUERY_PROJECT
+
+    resolved = table or os.environ.get(
+        "CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE", "user_recommendations"
+    )
+    return f"{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{resolved}"
+
+
 def load_user_rankings(
     client: bigquery.Client, table_id: str, dt: date
 ) -> RankingsPartition:
