@@ -53,6 +53,7 @@
 
 - [Spec — YouTube 리랭킹 서빙 API](specs/2026-07-16-reranking-serving-api.md)
 - [Plan — Reranking Serving API 구현](plans/2026-07-16-reranking-serving-api.md) (완료)
+- [시각화 — Serving Feature Build: 무엇이 바뀌었나](reports/2026-07-22-serving-feature-build-overview.html) — 비개발 팀원용 변경 흐름·운영 경계 안내
 - `src/serving/` (FastAPI 추론 서버), `deploy/serving/` (이미지 정의)
 
 ### 🌬️ 오케스트레이션 (Airflow)
