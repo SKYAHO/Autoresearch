@@ -932,6 +932,58 @@ def test_single_failed_overwrite_preserves_previous_final(tmp_path):
     assert output_path.read_bytes() == previous
 
 
+def _write_final_parquet(path: Path, schema: pa.Schema, partition_date: date) -> None:
+    """주어진 schema로 파티션 날짜 내 timestamp 한 건을 담은 final parquet을 기록한다."""
+
+    timestamp = datetime(
+        partition_date.year, partition_date.month, partition_date.day, 3, 0, tzinfo=UTC
+    )
+    row = {}
+    for field in schema:
+        if field.name == "event_timestamp":
+            row[field.name] = timestamp
+        elif pa.types.is_integer(field.type):
+            row[field.name] = 0
+        elif pa.types.is_floating(field.type):
+            row[field.name] = 0.0
+        elif pa.types.is_boolean(field.type):
+            row[field.name] = False
+        else:
+            row[field.name] = "x"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist([row], schema=schema), path)
+
+
+def test_validate_existing_final_tolerates_legacy_schema_without_exposure_source(
+    tmp_path,
+):
+    from autoresearch.action_logs.pipeline import EVENT_LOG_PARQUET_SCHEMA
+
+    partition_date = date(2026, 7, 1)
+    legacy_schema = pa.schema(
+        [field for field in EVENT_LOG_PARQUET_SCHEMA if field.name != "exposure_source"]
+    )
+    final_path = tmp_path / "dt=2026-07-01" / "part-0.parquet"
+    _write_final_parquet(final_path, legacy_schema, partition_date)
+
+    daily_module._validate_existing_final(str(final_path), partition_date)
+
+
+def test_validate_existing_final_rejects_unrelated_schema(tmp_path):
+    partition_date = date(2026, 7, 1)
+    unrelated_schema = pa.schema(
+        [
+            pa.field("event_timestamp", pa.timestamp("us", tz="UTC")),
+            pa.field("unexpected_column", pa.string()),
+        ]
+    )
+    final_path = tmp_path / "dt=2026-07-01" / "part-0.parquet"
+    _write_final_parquet(final_path, unrelated_schema, partition_date)
+
+    with pytest.raises(ValueError, match="schema does not match"):
+        daily_module._validate_existing_final(str(final_path), partition_date)
+
+
 def test_final_publish_staging_copy_failure_preserves_previous_file(
     tmp_path,
     monkeypatch,

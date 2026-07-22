@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -23,10 +24,19 @@ def test_load_personas_reads_csv(tmp_path):
 
 
 def test_load_personas_reads_parquet(tmp_path):
+    # parquet은 실제 virtual_users 파이프라인 원본 스키마(user_id 등)라, CSV mock과
+    # 달리 to_personas_frame()을 거쳐 uuid 계약 컬럼으로 정규화되어야 한다(#229).
     parquet_path = tmp_path / "personas.parquet"
-    pd.DataFrame({"uuid": ["u1"], "age": [25], "occupation": ["Student"]}).to_parquet(
-        parquet_path
-    )
+    pd.DataFrame(
+        {
+            "user_id": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobby_keywords": [["gaming"]],
+            "interest_keywords": [["esports"]],
+            "lifestyle_keywords": [None],
+        }
+    ).to_parquet(parquet_path)
 
     result = build_training_dataset.load_personas(str(parquet_path))
 
@@ -289,6 +299,84 @@ def test_main_outputs_21_model_input_columns_plus_clicked(tmp_path, monkeypatch)
     assert result.loc[0, "total_event_count_7d"] == 0
 
 
+def test_main_bigquery_mode_never_resolves_local_data_dir(tmp_path, monkeypatch):
+    # Dockerfile.train(GCS 코드 부트스트랩 이미지)은 로컬 data/ 디렉토리를 이미지에
+    # 전혀 포함하지 않는다. videos_source/events_source가 모두 bigquery이고
+    # personas_path/output_path가 명시되면 get_data_dir()을 절대 호출하지
+    # 않아야 한다 — 안 그러면 컨테이너에서 항상 실패한다(issue #212).
+    def _fail_if_called():
+        raise AssertionError("get_data_dir() must not be called when all paths are explicit")
+
+    monkeypatch.setattr(build_training_dataset, "get_data_dir", _fail_if_called)
+
+    videos_df = pd.DataFrame(
+        {
+            "video_id": ["v1"],
+            "categoryId": ["Music"],
+            "duration": ["PT5M"],
+            "viewCount": [1000],
+            "likeCount": [50],
+            "commentCount": [10],
+            "publishedAt": ["2026-01-01"],
+            "title": ["t"],
+            "description": ["d"],
+        }
+    )
+    monkeypatch.setattr(build_training_dataset, "load_videos_from_bigquery", lambda: videos_df)
+
+    long_events = pd.DataFrame(
+        [_long_event("i1", "2026-07-08 12:00:00", "u1", "impression", "v1")]
+    )
+    monkeypatch.setattr(
+        build_training_dataset, "load_events_from_bigquery", lambda start, end: long_events
+    )
+
+    personas_path = tmp_path / "personas.csv"
+    pd.DataFrame(
+        {
+            "uuid": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobbies_and_interests": ["gaming"],
+            "hobbies_and_interests_list": ["[]"],
+        }
+    ).to_csv(personas_path, index=False)
+
+    output_path = tmp_path / "training_dataset.csv"
+
+    build_training_dataset.main(
+        videos_source="bigquery",
+        events_source="bigquery",
+        events_start_date="2026-07-08",
+        events_end_date="2026-07-09",
+        personas_path=str(personas_path),
+        output_path=str(output_path),
+    )
+
+    assert output_path.exists()
+
+
+def test_get_data_dir_creates_directory_when_none_found(tmp_path, monkeypatch):
+    # 컨테이너 최초 실행 시 프로젝트 루트 어디에도 data/가 없다 — 예외를 던지는
+    # 대신 만들어서 돌려줘야 한다(issue #212). 걸어 올라가는 실제 파일시스템
+    # 탐색은 OS마다 sentinel("/")이 달라 테스트하기 위험하므로, dirname을 즉시
+    # sentinel로 만들어 "어디서도 못 찾음" 경로를 결정적으로 재현한다.
+    created = {}
+    monkeypatch.setattr(build_training_dataset, "PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setattr(build_training_dataset.os.path, "exists", lambda path: False)
+    monkeypatch.setattr(build_training_dataset.os.path, "dirname", lambda path: "/")
+    monkeypatch.setattr(
+        build_training_dataset.os,
+        "makedirs",
+        lambda path, exist_ok=False: created.setdefault("path", path),
+    )
+
+    data_dir = build_training_dataset.get_data_dir()
+
+    assert data_dir == os.path.join(str(tmp_path), "data")
+    assert created["path"] == data_dir
+
+
 def test_derive_wide_events_like_without_view_defaults_to_zero():
     # like는 view를 거쳐서만 체이닝된다 — view가 없으면 like가 존재해도 0.
     rows = [
@@ -304,3 +392,71 @@ def test_derive_wide_events_like_without_view_defaults_to_zero():
     assert row["clicked"] == 1
     assert row["liked"] == 0
     assert row["watch_time_sec"] == 0
+
+
+# --- dataset 계층 분리(raw vs feature) ------------------------------------
+
+
+def test_raw_table_id_uses_raw_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+
+    assert (
+        build_training_dataset.raw_table_id("data_lake_action_log")
+        == "proj.data_lake_raw.data_lake_action_log"
+    )
+
+
+def test_feature_table_id_uses_feature_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_DATASET", "feast_offline_store")
+
+    assert (
+        build_training_dataset.feature_table_id("user_recommendations")
+        == "proj.feast_offline_store.user_recommendations"
+    )
+
+
+def test_raw_and_feature_datasets_default_to_separate_datasets():
+    # 기본값이 같아지면 dataset 분리가 무의미해진다 — 회귀 방지용 계약.
+    assert build_training_dataset.BIGQUERY_RAW_DATASET == "data_lake_raw"
+    assert build_training_dataset.BIGQUERY_DATASET == "feast_offline_store"
+
+
+def _fake_bigquery(monkeypatch, fake_df):
+    fake_query_job = MagicMock()
+    fake_query_job.to_dataframe.return_value = fake_df
+    fake_client = MagicMock()
+    fake_client.query.return_value = fake_query_job
+
+    fake_bigquery_module = MagicMock()
+    fake_bigquery_module.Client.return_value = fake_client
+    monkeypatch.setitem(sys.modules, "google.cloud.bigquery", fake_bigquery_module)
+    monkeypatch.setitem(sys.modules, "google.cloud", MagicMock(bigquery=fake_bigquery_module))
+    return fake_client
+
+
+def test_load_videos_from_bigquery_reads_raw_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_DATASET", "feast_offline_store")
+    fake_client = _fake_bigquery(monkeypatch, pd.DataFrame({"video_id": ["v1"]}))
+
+    build_training_dataset.load_videos_from_bigquery()
+
+    query_text = fake_client.query.call_args[0][0]
+    assert "`proj.data_lake_raw.data_lake_youtube_trending_kr`" in query_text
+    assert "feast_offline_store" not in query_text
+
+
+def test_load_events_from_bigquery_reads_raw_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_DATASET", "feast_offline_store")
+    fake_client = _fake_bigquery(monkeypatch, pd.DataFrame({"event_id": ["e1"]}))
+
+    build_training_dataset.load_events_from_bigquery("2026-06-24", "2026-07-01")
+
+    query_text = fake_client.query.call_args[0][0]
+    assert "`proj.data_lake_raw.data_lake_action_log`" in query_text
+    assert "feast_offline_store" not in query_text
