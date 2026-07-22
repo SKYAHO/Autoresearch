@@ -1,7 +1,7 @@
 """VirtualUser × 후보 영상 batch를 받아 후보별 클릭 판단(judgments)을 생성한다.
 
 역할 분담: LLM은 실제 title/description을 읽고 후보별 click_propensity/watch_fraction만
-판단한다. would_like 파생·전역 2% 정규화·timestamp·제약 강제는 pipeline(코드).
+판단한다. would_like 파생·per-slate 클릭 선정(click_threshold)·timestamp·제약 강제는 pipeline(코드).
 """
 import hashlib
 import json
