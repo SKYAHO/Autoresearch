@@ -42,7 +42,13 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "ar-infra-501607")
+# feature/서빙 계층 dataset — Feast feature 테이블 4종(user_static_feature,
+# user_dynamic_feature, video_feature, user_category_similarity)과 배치 출력
+# 테이블(user_recommendations)이 여기에 있다.
 BIGQUERY_DATASET = os.environ.get("CTR_TRAINING_BQ_DATASET", "feast_offline_store")
+# raw(데이터 레이크 적재) 계층 dataset — data_lake_* 테이블 전용. feature 계층과
+# 물리적으로 분리되어 있으므로 raw 테이블은 반드시 이 dataset 으로 해석한다.
+BIGQUERY_RAW_DATASET = os.environ.get("CTR_TRAINING_BQ_RAW_DATASET", "data_lake_raw")
 BIGQUERY_VIDEOS_TABLE = os.environ.get(
     "CTR_TRAINING_BQ_VIDEOS_TABLE", "data_lake_youtube_trending_kr"
 )
@@ -67,6 +73,25 @@ from src.features.assembly import (  # noqa: E402
     compute_video_features,
 )
 from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
+
+
+def raw_table_id(table: str) -> str:
+    """raw(데이터 레이크) 테이블의 완전한 BigQuery 식별자를 만든다.
+
+    raw 테이블(`data_lake_*`)은 feature 계층과 다른 dataset
+    (`CTR_TRAINING_BQ_RAW_DATASET`, 기본 `data_lake_raw`)에 있다. 모듈
+    전역을 호출 시점에 읽으므로 테스트에서 monkeypatch 로 재정의할 수 있다.
+    """
+    return f"{BIGQUERY_PROJECT}.{BIGQUERY_RAW_DATASET}.{table}"
+
+
+def feature_table_id(table: str) -> str:
+    """feature/서빙 테이블의 완전한 BigQuery 식별자를 만든다.
+
+    Feast feature 테이블과 배치 출력 테이블은 계속
+    `CTR_TRAINING_BQ_DATASET`(기본 `feast_offline_store`)에 있다.
+    """
+    return f"{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{table}"
 
 
 def get_data_dir():
@@ -137,7 +162,7 @@ def load_videos_from_bigquery() -> pd.DataFrame:
             video_published_at AS publishedAt,
             video_title AS title,
             video_description AS description
-        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{BIGQUERY_VIDEOS_TABLE}`
+        FROM `{raw_table_id(BIGQUERY_VIDEOS_TABLE)}`
     """
     return client.query(query).to_dataframe()
 
@@ -173,7 +198,7 @@ def load_events_from_bigquery(start_date: str, end_date: str) -> pd.DataFrame:
     client = bigquery.Client(project=BIGQUERY_PROJECT)
     query = f"""
         SELECT event_id, event_timestamp, user_id, event_type, video_id, watch_time_sec
-        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{BIGQUERY_ACTION_LOG_TABLE}`
+        FROM `{raw_table_id(BIGQUERY_ACTION_LOG_TABLE)}`
         WHERE dt BETWEEN '{start_date}' AND '{end_date}'
     """
     return client.query(query).to_dataframe()

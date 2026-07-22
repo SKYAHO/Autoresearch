@@ -325,3 +325,71 @@ def test_derive_wide_events_like_without_view_defaults_to_zero():
     assert row["clicked"] == 1
     assert row["liked"] == 0
     assert row["watch_time_sec"] == 0
+
+
+# --- dataset 계층 분리(raw vs feature) ------------------------------------
+
+
+def test_raw_table_id_uses_raw_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+
+    assert (
+        build_training_dataset.raw_table_id("data_lake_action_log")
+        == "proj.data_lake_raw.data_lake_action_log"
+    )
+
+
+def test_feature_table_id_uses_feature_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_DATASET", "feast_offline_store")
+
+    assert (
+        build_training_dataset.feature_table_id("user_recommendations")
+        == "proj.feast_offline_store.user_recommendations"
+    )
+
+
+def test_raw_and_feature_datasets_default_to_separate_datasets():
+    # 기본값이 같아지면 dataset 분리가 무의미해진다 — 회귀 방지용 계약.
+    assert build_training_dataset.BIGQUERY_RAW_DATASET == "data_lake_raw"
+    assert build_training_dataset.BIGQUERY_DATASET == "feast_offline_store"
+
+
+def _fake_bigquery(monkeypatch, fake_df):
+    fake_query_job = MagicMock()
+    fake_query_job.to_dataframe.return_value = fake_df
+    fake_client = MagicMock()
+    fake_client.query.return_value = fake_query_job
+
+    fake_bigquery_module = MagicMock()
+    fake_bigquery_module.Client.return_value = fake_client
+    monkeypatch.setitem(sys.modules, "google.cloud.bigquery", fake_bigquery_module)
+    monkeypatch.setitem(sys.modules, "google.cloud", MagicMock(bigquery=fake_bigquery_module))
+    return fake_client
+
+
+def test_load_videos_from_bigquery_reads_raw_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_DATASET", "feast_offline_store")
+    fake_client = _fake_bigquery(monkeypatch, pd.DataFrame({"video_id": ["v1"]}))
+
+    build_training_dataset.load_videos_from_bigquery()
+
+    query_text = fake_client.query.call_args[0][0]
+    assert "`proj.data_lake_raw.data_lake_youtube_trending_kr`" in query_text
+    assert "feast_offline_store" not in query_text
+
+
+def test_load_events_from_bigquery_reads_raw_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_DATASET", "feast_offline_store")
+    fake_client = _fake_bigquery(monkeypatch, pd.DataFrame({"event_id": ["e1"]}))
+
+    build_training_dataset.load_events_from_bigquery("2026-06-24", "2026-07-01")
+
+    query_text = fake_client.query.call_args[0][0]
+    assert "`proj.data_lake_raw.data_lake_action_log`" in query_text
+    assert "feast_offline_store" not in query_text
