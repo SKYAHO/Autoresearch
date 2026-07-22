@@ -66,6 +66,7 @@ from src.features.assembly import (  # noqa: E402
     compute_user_offline_features,
     compute_video_features,
 )
+from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
 
 
 def get_data_dir():
@@ -145,13 +146,14 @@ def load_personas(personas_path: str) -> pd.DataFrame:
     """personas 입력을 확장자로 판별해 로드한다.
 
     로컬/GCS 경로 모두 지원한다(gcsfs가 gs:// 경로를 pandas에 투명하게
-    연결한다). virtual_users 파이프라인의 실제 산출물 위치가 정해지면
-    이 함수에 그 경로만 넘기면 된다. BigQuery 적재는 필요 없다(persona는
-    학습 시 집계된 user feature로만 쓰이고 그 자체가 warehouse 테이블일
-    필요는 없음).
+    연결한다). CSV는 이미 personas 계약(uuid/age/occupation/관심사) 형태인
+    mock 산출물이라 그대로 쓴다. parquet은 virtual_users 파이프라인의 원본
+    스키마(user_id/hobby_keywords/interest_keywords 등)이므로
+    to_personas_frame()으로 계약 형태로 정규화한다(daily_recommendations.py와
+    동일한 패턴, #229).
     """
     if personas_path.endswith(".parquet"):
-        return pd.read_parquet(personas_path)
+        return to_personas_frame(pd.read_parquet(personas_path))
     return pd.read_csv(personas_path)
 
 
