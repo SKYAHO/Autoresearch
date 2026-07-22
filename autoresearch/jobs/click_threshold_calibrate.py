@@ -10,6 +10,7 @@ from typing import Sequence
 
 from autoresearch.action_logs.calibration import recommend_click_threshold
 from autoresearch.action_logs.pipeline import read_action_log_draft_parquet
+from autoresearch.action_logs.schema import ImpressionDraft
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _per_user_max(drafts) -> tuple[list[float], int]:
+def _per_user_max(drafts: list[ImpressionDraft]) -> tuple[list[float], int]:
     best: dict[str, float] = defaultdict(float)
     impressions = 0
     for d in drafts:
@@ -33,30 +34,30 @@ def _per_user_max(drafts) -> tuple[list[float], int]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    drafts = read_action_log_draft_parquet(args.draft_path)
-    per_user_max, impressions = _per_user_max(drafts)
     try:
+        drafts = read_action_log_draft_parquet(args.draft_path)
+        per_user_max, impressions = _per_user_max(drafts)
         rec = recommend_click_threshold(per_user_max, impressions, args.target_ctr)
-    except ValueError as exc:
-        logger.error("calibration failed: %s", exc)
-        print(json.dumps({"status": "failed", "error": str(exc)}, ensure_ascii=False))
-        return 1
-    print(
-        json.dumps(
-            {
-                "status": "succeeded",
-                "recommended_threshold": rec.recommended_threshold,
-                "achieved_ctr": rec.achieved_ctr,
-                "target_ctr": rec.target_ctr,
-                "users": rec.users,
-                "impressions": rec.impressions,
-                "per_user_max_quantiles": dict(rec.per_user_max_quantiles),
-                "sweep": [list(row) for row in rec.sweep],
-            },
-            ensure_ascii=False,
-            sort_keys=True,
+        payload = {
+            "status": "succeeded",
+            "recommended_threshold": rec.recommended_threshold,
+            "achieved_ctr": rec.achieved_ctr,
+            "target_ctr": rec.target_ctr,
+            "users": rec.users,
+            "impressions": rec.impressions,
+            "per_user_max_quantiles": dict(rec.per_user_max_quantiles),
+            "sweep": [list(row) for row in rec.sweep],
+        }
+    except Exception as exc:  # noqa: BLE001 - process boundary maps failures to exit 1
+        logger.error("click-threshold calibration failed (%s)", type(exc).__name__)
+        print(
+            json.dumps(
+                {"status": "failed", "error_type": type(exc).__name__},
+                ensure_ascii=False,
+            )
         )
-    )
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     return 0
 
 

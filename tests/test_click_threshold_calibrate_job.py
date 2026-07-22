@@ -24,10 +24,18 @@ def test_cli_emits_recommendation(tmp_path, capsys) -> None:
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert payload["impressions"] == 4
     assert payload["users"] == 2
-    assert "recommended_threshold" in payload
+    assert payload["recommended_threshold"] == 0.9
+    assert payload["achieved_ctr"] == 0.25
 
 
 def test_cli_requires_target_ctr(tmp_path) -> None:
     import pytest
     with pytest.raises(SystemExit):
         main(["--draft-path", str(tmp_path / "x.parquet")])
+
+
+def test_cli_missing_draft_path_returns_failed(tmp_path, capsys) -> None:
+    code = main(["--draft-path", str(tmp_path / "nope.parquet"), "--target-ctr", "0.25"])
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["status"] == "failed"
