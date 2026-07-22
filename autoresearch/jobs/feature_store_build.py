@@ -318,6 +318,78 @@ VIDEO_FEATURE = FeatureTableSpec(
     select_sql=_VIDEO_SELECT,
 )
 
+_TRAINING_ENTITY_SELECT = """\
+WITH impressions AS (
+  SELECT
+    event_id AS source_event_id,
+    user_id,
+    video_id,
+    event_timestamp
+  FROM `{project}.{raw_dataset}.data_lake_action_log`
+  WHERE event_type = 'impression'
+    AND user_id IS NOT NULL
+    AND video_id IS NOT NULL
+    AND event_timestamp IS NOT NULL
+),
+clicks AS (
+  SELECT
+    event_id AS click_event_id,
+    user_id,
+    video_id,
+    event_timestamp AS click_timestamp
+  FROM `{project}.{raw_dataset}.data_lake_action_log`
+  WHERE event_type = 'click'
+    AND user_id IS NOT NULL
+    AND video_id IS NOT NULL
+    AND event_timestamp IS NOT NULL
+),
+click_attribution_candidates AS (
+  SELECT
+    c.click_event_id,
+    i.source_event_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY c.click_event_id
+      ORDER BY i.event_timestamp DESC
+    ) AS rn
+  FROM clicks c
+  JOIN impressions i
+    ON c.user_id = i.user_id
+   AND c.video_id = i.video_id
+   AND i.event_timestamp < c.click_timestamp
+   AND i.event_timestamp >= TIMESTAMP_SUB(c.click_timestamp, INTERVAL 1800 SECOND)
+),
+positive_impressions AS (
+  SELECT DISTINCT
+    source_event_id
+  FROM click_attribution_candidates
+  WHERE rn = 1
+)
+SELECT
+  'ctr_train_v1' AS dataset_id,
+  i.user_id,
+  i.video_id,
+  i.event_timestamp,
+  IF(p.source_event_id IS NOT NULL, 1, 0) AS clicked,
+  i.source_event_id
+FROM impressions i
+LEFT JOIN positive_impressions p
+  ON i.source_event_id = p.source_event_id
+"""
+
+TRAINING_ENTITY = FeatureTableSpec(
+    name="training_entity",
+    entity_keys=("user_id", "video_id"),
+    columns=(
+        "dataset_id",
+        "user_id",
+        "video_id",
+        "event_timestamp",
+        "clicked",
+        "source_event_id",
+    ),
+    select_sql=_TRAINING_ENTITY_SELECT,
+)
+
 # user_category_similarity는 여기서 만들지 않는다. 원본인 user_topic_embedding /
 # category_embedding artifact 테이블을 적재하는 배치가 아직 없어 SQL만으로는
 # 재구축할 수 없다.
@@ -325,6 +397,7 @@ FEATURE_TABLES: tuple[FeatureTableSpec, ...] = (
     USER_STATIC_FEATURE,
     USER_DYNAMIC_FEATURE,
     VIDEO_FEATURE,
+    TRAINING_ENTITY,
 )
 _TABLES_BY_NAME = {spec.name: spec for spec in FEATURE_TABLES}
 

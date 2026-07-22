@@ -60,6 +60,7 @@ def test_default_tables_cover_declared_specs() -> None:
         "user_static_feature",
         "user_dynamic_feature",
         "video_feature",
+        "training_entity",
     ]
 
 
@@ -114,6 +115,32 @@ def test_insert_column_list_matches_feature_view_contract() -> None:
     )
 
 
+def test_training_entity_sql_uses_raw_dataset_and_label_window() -> None:
+    sql = feature_store_build.build_rebuild_sql(
+        feature_store_build.TRAINING_ENTITY,
+        project="p",
+        dataset="feat",
+        raw_dataset="raw",
+    )
+    assert "`p.raw.data_lake_action_log`" in sql
+    assert "INSERT INTO `p.feat.training_entity`" in sql
+    assert "INTERVAL 1800 SECOND" in sql
+    assert "'ctr_train_v1' AS dataset_id" in sql
+    assert "CREATE OR REPLACE" not in sql
+    assert "WRITE_TRUNCATE" not in sql
+
+
+def test_training_entity_columns_match_data_warehouse_contract() -> None:
+    assert feature_store_build.TRAINING_ENTITY.columns == (
+        "dataset_id",
+        "user_id",
+        "video_id",
+        "event_timestamp",
+        "clicked",
+        "source_event_id",
+    )
+
+
 def test_validation_sql_checks_empty_null_and_duplicate_keys() -> None:
     sql = feature_store_build.build_validation_sql(
         feature_store_build.VIDEO_FEATURE, project="p", dataset="feat"
@@ -139,6 +166,7 @@ def test_main_rebuilds_and_validates_every_table(fake_client, capsys) -> None:
         "user_static_feature",
         "user_dynamic_feature",
         "video_feature",
+        "training_entity",
     ]
 
 
