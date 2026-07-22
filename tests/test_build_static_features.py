@@ -10,6 +10,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -31,6 +32,7 @@ def _settings(**overrides):
         bucket="b",
         persona_path="asset/virtual_user/vu_1000.parquet",
         dry_run=False,
+        cache_dir=None,
     )
     base.update(overrides)
     return bsf.Settings(**base)
@@ -163,3 +165,66 @@ def test_select_steps_orders_by_dependency_and_rejects_unknown() -> None:
     assert bsf.select_steps(None) == list(bsf.STEPS)
     with pytest.raises(ValueError):
         bsf.select_steps("nope")
+
+
+def test_embed_reuses_cache_and_only_calls_api_for_new_topics(monkeypatch, tmp_path):
+    calls: list[list[str]] = []
+
+    def _fake_embed_texts(texts, task_type):
+        calls.append(list(texts))
+        return [np.full(bsf.EMBEDDING_DIM, float(len(t))) for t in texts]
+
+    import types
+
+    fake_module = types.ModuleType("src.features.embeddings")
+    fake_module.embed_texts = _fake_embed_texts
+    monkeypatch.setitem(sys.modules, "src.features.embeddings", fake_module)
+    monkeypatch.setattr(bsf, "EMBED_SLICE_PAUSE_SEC", 0)
+
+    cache_path = tmp_path / "cache.json"
+    settings = _settings(cache_dir=tmp_path)
+
+    first = bsf._embed(["a", "bb"], "RETRIEVAL_QUERY", settings, cache_path)
+    assert calls == [["a", "bb"]]
+    assert cache_path.exists()
+
+    # 두 번째 호출은 캐시에 없는 topic만 API로 보낸다.
+    second = bsf._embed(["a", "bb", "ccc"], "RETRIEVAL_QUERY", settings, cache_path)
+    assert calls[1] == ["ccc"]
+    assert second[:2] == first
+    assert len(second) == 3
+
+
+def test_embed_slices_requests_to_respect_quota(monkeypatch, tmp_path):
+    calls: list[int] = []
+
+    def _fake_embed_texts(texts, task_type):
+        calls.append(len(texts))
+        return [np.zeros(bsf.EMBEDDING_DIM) for _ in texts]
+
+    import types
+
+    fake_module = types.ModuleType("src.features.embeddings")
+    fake_module.embed_texts = _fake_embed_texts
+    monkeypatch.setitem(sys.modules, "src.features.embeddings", fake_module)
+    monkeypatch.setattr(bsf, "EMBED_SLICE_SIZE", 2)
+    monkeypatch.setattr(bsf, "EMBED_SLICE_PAUSE_SEC", 0)
+
+    bsf._embed(["a", "b", "c", "d", "e"], "RETRIEVAL_QUERY", _settings(), None)
+
+    # 한 번에 몰아 보내지 않고 슬라이스 단위로 끊어 호출한다.
+    assert calls == [2, 2, 1]
+
+
+def test_embed_dry_run_does_not_call_api(monkeypatch):
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("dry-run은 임베딩 API를 호출하면 안 된다")
+
+    import types
+
+    fake_module = types.ModuleType("src.features.embeddings")
+    fake_module.embed_texts = _boom
+    monkeypatch.setitem(sys.modules, "src.features.embeddings", fake_module)
+
+    vectors = bsf._embed(["a"], "RETRIEVAL_QUERY", _settings(dry_run=True), None)
+    assert vectors == [[0.0] * bsf.EMBEDDING_DIM]

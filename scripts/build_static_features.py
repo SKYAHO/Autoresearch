@@ -38,9 +38,11 @@ SQL 계약 출처: docs/guides/data-warehouse.md.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 try:
     from dotenv import load_dotenv
@@ -64,6 +66,14 @@ EPOCH_TS = "1970-01-01 00:00:00 UTC"
 
 USER_TOPIC_EMBEDDING_VERSION = "user_topic_embedding_v1"
 CATEGORY_EMBEDDING_VERSION = "category_embedding_v1"
+
+# Vertex AI 분당 쿼터 대응. embed_texts()는 250건 청크를 간격 없이 연속
+# 호출하므로 46k건 규모에서는 ResourceExhausted(429)가 난다. 슬라이스마다
+# 끊어 호출하고 사이에 쉰다.
+EMBED_SLICE_SIZE = 250
+EMBED_SLICE_PAUSE_SEC = 2.0
+EMBED_QUOTA_RETRIES = 6
+EMBED_QUOTA_BACKOFF_SEC = 30
 
 # persona parquet에서 preferred_topics를 구성하는 키워드 array 컬럼들.
 # docs/guides/data-warehouse.md user_static_feature 규칙과 동일한 순서.
@@ -94,6 +104,7 @@ class Settings:
     bucket: str
     persona_path: str
     dry_run: bool
+    cache_dir: Path | None
 
 
 # ---------------------------------------------------------------------------
@@ -348,13 +359,94 @@ def _load_embedding_table(client, table_id: str, rows: list[dict], schema, setti
     print(f"  [OK] {table_id} <- {client.get_table(table_id).num_rows} rows")
 
 
-def _embed(texts: list[str], task_type: str, settings: Settings) -> list[list[float]]:
+def _cache_path(settings: Settings, name: str) -> Path | None:
+    if settings.cache_dir is None:
+        return None
+    return settings.cache_dir / f"{name}_embedding_cache.json"
+
+
+def _load_embedding_cache(path: Path | None) -> dict[str, list[float]]:
+    """이전 실행이 남긴 임베딩 캐시를 읽는다.
+
+    46k건 규모라 중간에 쿼터로 끊기면 재실행 비용이 크다. 캐시가 있으면 이미
+    임베딩한 topic은 API를 다시 호출하지 않는다.
+    """
+
+    if path is None or not path.exists():
+        return {}
+    with path.open(encoding="utf-8") as handle:
+        cached = json.load(handle)
+    print(f"  캐시 {len(cached)}건을 재사용합니다: {path}")
+    return cached
+
+
+def _save_embedding_cache(path: Path | None, cache: dict[str, list[float]]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        json.dump(cache, handle)
+    tmp.replace(path)
+
+
+def _embed(
+    texts: list[str],
+    task_type: str,
+    settings: Settings,
+    cache_path: Path | None = None,
+) -> list[list[float]]:
+    """Vertex AI 임베딩을 쿼터에 맞춰 나눠 호출한다.
+
+    embed_texts()는 청크를 간격 없이 연속 호출하므로 46k건 규모에서는 Vertex AI
+    분당 쿼터를 넘겨 ResourceExhausted(429)로 죽는다. 여기서 슬라이스 단위로
+    끊어 호출하고 사이에 쉬며, 쿼터 오류는 긴 백오프로 재시도한다. 성공한
+    슬라이스는 즉시 캐시에 기록해 중간에 실패해도 재실행이 이어지게 한다.
+    """
+
     if settings.dry_run:
         # dry-run은 임베딩 API를 호출하지 않는다. 0벡터 placeholder.
         return [[0.0] * EMBEDDING_DIM for _ in texts]
+
+    import time
+
+    from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
+    from tenacity import RetryError
+
     from src.features.embeddings import embed_texts
 
-    return [vec.tolist() for vec in embed_texts(texts, task_type=task_type)]
+    cache = _load_embedding_cache(cache_path)
+    pending = [text for text in texts if text not in cache]
+    print(f"  임베딩 대상 {len(pending)}건 (캐시 적중 {len(texts) - len(pending)}건)")
+
+    quota_errors = (ResourceExhausted, ServiceUnavailable, RetryError)
+    for start in range(0, len(pending), EMBED_SLICE_SIZE):
+        chunk = pending[start : start + EMBED_SLICE_SIZE]
+        for attempt in range(1, EMBED_QUOTA_RETRIES + 1):
+            try:
+                vectors = embed_texts(chunk, task_type=task_type)
+                break
+            except quota_errors as exc:
+                if attempt == EMBED_QUOTA_RETRIES:
+                    _save_embedding_cache(cache_path, cache)
+                    raise RuntimeError(
+                        f"임베딩 쿼터 재시도 {EMBED_QUOTA_RETRIES}회 실패 "
+                        f"({type(exc).__name__}). 캐시를 저장했으니 재실행하면 "
+                        f"{len(cache)}건을 건너뜁니다."
+                    ) from exc
+                backoff = EMBED_QUOTA_BACKOFF_SEC * attempt
+                print(f"  쿼터 대기 {backoff}s (시도 {attempt}/{EMBED_QUOTA_RETRIES})")
+                time.sleep(backoff)
+        cache.update(
+            {text: vector.tolist() for text, vector in zip(chunk, vectors)}
+        )
+        done = min(start + EMBED_SLICE_SIZE, len(pending))
+        print(f"  진행 {done}/{len(pending)}", flush=True)
+        _save_embedding_cache(cache_path, cache)
+        if done < len(pending):
+            time.sleep(EMBED_SLICE_PAUSE_SEC)
+
+    return [cache[text] for text in texts]
 
 
 def build_user_topic_embedding(client, settings: Settings) -> None:
@@ -368,7 +460,9 @@ def build_user_topic_embedding(client, settings: Settings) -> None:
     topics = unique_topics(topic_rows)
     print(f"  users={persona_df['user_id'].nunique()} topic_rows={len(topic_rows)} unique_topics={len(topics)}")
 
-    vectors = _embed(topics, "RETRIEVAL_QUERY", settings)
+    vectors = _embed(
+        topics, "RETRIEVAL_QUERY", settings, _cache_path(settings, "user_topic")
+    )
     topic_to_vec = dict(zip(topics, vectors))
 
     rows = [
@@ -408,7 +502,12 @@ def build_category_embedding(client, settings: Settings) -> None:
     print("[category_embedding] 15개 카테고리 설명문 임베딩")
     names = list(CATEGORY_DESCRIPTIONS.keys())
     descriptions = list(CATEGORY_DESCRIPTIONS.values())
-    vectors = _embed(descriptions, "RETRIEVAL_DOCUMENT", settings)
+    vectors = _embed(
+        descriptions,
+        "RETRIEVAL_DOCUMENT",
+        settings,
+        _cache_path(settings, "category"),
+    )
     rows = [
         {
             "category_id": name,
@@ -484,6 +583,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bucket", default=os.getenv("YOUTUBE_LAKE_BUCKET"))
     parser.add_argument("--persona-path", default=DEFAULT_PERSONA_PATH)
     parser.add_argument("--steps", default=None, help="실행할 step 쉼표 구분 (기본 전부)")
+    parser.add_argument(
+        "--cache-dir",
+        default=".embedding_cache",
+        help="임베딩 캐시 디렉터리. 빈 문자열이면 캐시를 쓰지 않는다",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -505,6 +609,7 @@ def main(argv: list[str] | None = None) -> int:
         bucket=args.bucket,
         persona_path=args.persona_path,
         dry_run=args.dry_run,
+        cache_dir=Path(args.cache_dir) if args.cache_dir else None,
     )
 
     from google.cloud import bigquery
