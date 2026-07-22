@@ -13,9 +13,12 @@ training_dataset.csv 생성 파이프라인.
   (docs/guides/data-warehouse.md의 training_entity 참고, issue #172)
 
 출력:
-- data/processed/training_dataset.csv (21컬럼, docs/guides/training-dataset.md의
-  Model Input Columns 준수. Feast get_historical_features()는 아직 경유하지
-  않는 DuckDB fallback 경로 — issue #204/#175 결정안 참고)
+- data/processed/training_dataset.csv (21개 model input feature와 `clicked`
+  label을 포함한 총 22개 물리 컬럼. model input의 이름·순서와 categorical
+  분류는 `src/features/model_contract.py`가 소유하며, 이 모듈은 feature 목록을
+  별도로 정의하지 않는다. `clicked`는 22번째 label physical column이며 model
+  input이 아니다. Feast get_historical_features()는 아직 경유하지 않는 DuckDB
+  fallback 경로 — issue #204/#175 결정안 참고)
 
 NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py
       스크립트의 산출물이며, 스펙 변경 시에는 scaffold를 수정한 후 해당 스크립트를
@@ -53,6 +56,8 @@ _LOOKBACK_PAD_DAYS = 7
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
+
+from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
 
 from src.features.assembly import (  # noqa: E402
     compute_point_in_time_user_features,
@@ -501,6 +506,34 @@ def main(
     con.register("joined", joined)
     con.register("user_feature_offline", user_feature_offline)
 
+    feature_sql_expressions = {
+        "age_group": "uo.age_group",
+        "occupation": "uo.occupation",
+        "watch_time_band": "uo.watch_time_band",
+        "recent_click_count_7d": "CAST(j.recent_click_count_7d AS INTEGER)",
+        "recent_view_count_7d": "CAST(j.recent_view_count_7d AS INTEGER)",
+        "recent_watch_time_7d": "CAST(j.recent_watch_time_7d AS INTEGER)",
+        "recent_like_count_7d": "CAST(j.recent_like_count_7d AS INTEGER)",
+        "historical_category_affinity": "j.historical_category_affinity",
+        "total_event_count_7d": "CAST(j.total_event_count_7d AS INTEGER)",
+        "category_id": "j.category_id",
+        "duration_sec": "CAST(j.duration_sec AS INTEGER)",
+        "view_count": "CAST(j.view_count AS BIGINT)",
+        "like_ratio": "j.like_ratio",
+        "comment_ratio": "j.comment_ratio",
+        "days_since_upload": "CAST(j.days_since_upload AS INTEGER)",
+        "channel_subscriber_count": "CAST(j.channel_subscriber_count AS BIGINT)",
+        "channel_view_count": "CAST(j.channel_view_count AS BIGINT)",
+        "channel_video_count": "CAST(j.channel_video_count AS BIGINT)",
+        "topic_similarity": "j.topic_similarity",
+        "preferred_category_match": "CAST(j.preferred_category_match AS INTEGER)",
+        "historical_category_match": "CAST(j.historical_category_match AS INTEGER)",
+    }
+    feature_projection = ",\n            ".join(
+        f"{feature_sql_expressions[column]} AS {column}"
+        for column in MODEL_FEATURE_COLUMNS
+    )
+
     # BigQuery 경로에서만 적용: load_events_from_bigquery가 lookback/세션 완성을
     # 위해 [events_start_date, events_end_date] 바깥까지 padding해서 가져왔으므로,
     # 최종 학습 데이터에는 원래 요청한 구간만 남기고 양쪽 다 잘라낸다. 왼쪽만
@@ -515,27 +548,7 @@ def main(
     training_dataset = con.execute(
         f"""
         SELECT
-            uo.age_group,
-            uo.occupation,
-            uo.watch_time_band,
-            j.historical_category_affinity,
-            CAST(j.recent_click_count_7d AS INTEGER) AS recent_click_count_7d,
-            CAST(j.recent_view_count_7d AS INTEGER) AS recent_view_count_7d,
-            CAST(j.recent_watch_time_7d AS INTEGER) AS recent_watch_time_7d,
-            CAST(j.recent_like_count_7d AS INTEGER) AS recent_like_count_7d,
-            CAST(j.total_event_count_7d AS INTEGER) AS total_event_count_7d,
-            j.category_id,
-            CAST(j.duration_sec AS INTEGER) AS duration_sec,
-            CAST(j.view_count AS BIGINT) AS view_count,
-            j.like_ratio,
-            j.comment_ratio,
-            CAST(j.days_since_upload AS INTEGER) AS days_since_upload,
-            CAST(j.channel_subscriber_count AS BIGINT) AS channel_subscriber_count,
-            CAST(j.channel_view_count AS BIGINT) AS channel_view_count,
-            CAST(j.channel_video_count AS BIGINT) AS channel_video_count,
-            j.topic_similarity,
-            CAST(j.historical_category_match AS INTEGER) AS historical_category_match,
-            CAST(j.preferred_category_match AS INTEGER) AS preferred_category_match,
+            {feature_projection},
             CAST(j.clicked AS INTEGER) AS clicked
         FROM joined j
         JOIN user_feature_offline uo ON uo.user_id = j.user_id

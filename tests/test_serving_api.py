@@ -4,16 +4,23 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 import pickle
 from pathlib import Path
+from typing import BinaryIO
 
 import joblib
 import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from prometheus_client import REGISTRY
 from prometheus_client.parser import text_string_to_metric_families
 
 import src.serving.app as serving_app
+from src.features.model_contract import (
+    CATEGORICAL_FEATURE_COLUMNS,
+    FeatureContractError,
+    MODEL_FEATURE_COLUMNS,
+)
 from src.serving.app import create_app
 from src.serving.model_loader import (
     LocalModelSettings,
@@ -24,8 +31,6 @@ from src.serving.model_loader import (
     load_mlflow_model,
 )
 from src.serving.online_features import (
-    MODEL_FEATURE_COLUMNS,
-    FeatureContractError,
     FeatureRows,
     FeatureRetrievalError,
 )
@@ -543,8 +548,30 @@ def test_rerank_rejects_invalid_request_ids_before_builder(
 
 class RankingModel:
     def predict_proba(self, features: pd.DataFrame) -> np.ndarray:
-        scores = features["ranking_signal"].to_numpy(dtype=float)
+        scores = features["view_count"].to_numpy(dtype=float)
         return np.column_stack((1.0 - scores, scores))
+
+
+def _write_local_model_artifacts(
+    tmp_path: Path,
+    *,
+    feature_columns: Sequence[str] = MODEL_FEATURE_COLUMNS,
+    categorical_columns: Sequence[str] = CATEGORICAL_FEATURE_COLUMNS,
+    category_values: Mapping[str, Sequence[str | int | float | bool]] | None = None,
+) -> LocalModelSettings:
+    model_path = tmp_path / "model.joblib"
+    feature_columns_path = tmp_path / "feature_columns.pkl"
+    categorical_columns_path = tmp_path / "categorical_columns.pkl"
+    categories = {
+        column: list(category_values.get(column, ())) if category_values is not None else []
+        for column in categorical_columns
+    }
+    joblib.dump(RankingModel(), model_path)
+    with feature_columns_path.open("wb") as feature_columns_file:
+        pickle.dump(list(feature_columns), feature_columns_file)
+    with categorical_columns_path.open("wb") as categorical_columns_file:
+        pickle.dump(categories, categorical_columns_file)
+    return LocalModelSettings(model_path, feature_columns_path, categorical_columns_path)
 
 
 class CategoricalCodeModel:
@@ -590,6 +617,31 @@ def test_healthcheck_rejects_non_string_categories_for_string_serving_features()
         run_id="run-incompatible-category-type",
         model_version=None,
     )
+    app = create_app(resolved_model=resolved_model, feature_builder=builder)
+
+    with TestClient(app) as client:
+        healthcheck = client.get("/healthcheck")
+        rerank = client.post(
+            "/rerank",
+            json={"user_id": "user-1", "video_ids": ["video-1"]},
+        )
+
+    assert healthcheck.status_code == 503
+    assert rerank.status_code == 503
+    assert builder.calls == []
+
+
+def test_healthcheck_rejects_non_string_watch_time_band_categories() -> None:
+    resolved_model = ResolvedModel(
+        reranker=Reranker(
+            model=RecordingModel(),
+            feature_columns=MODEL_FEATURE_COLUMNS,
+            categorical_categories={"watch_time_band": (1, 2)},
+        ),
+        run_id="run-incompatible-watch-time-band-type",
+        model_version=None,
+    )
+    builder = FakeFeatureBuilder()
     app = create_app(resolved_model=resolved_model, feature_builder=builder)
 
     with TestClient(app) as client:
@@ -702,75 +754,229 @@ def test_rerank_rejects_invalid_prediction_shapes(
 
 
 def test_local_model_loader_reads_model_and_feature_columns(tmp_path: Path) -> None:
-    model_path = tmp_path / "model.joblib"
-    feature_columns_path = tmp_path / "feature_columns.pkl"
-    categorical_columns_path = tmp_path / "categorical_columns.pkl"
-    joblib.dump(RankingModel(), model_path)
-    with feature_columns_path.open("wb") as feature_columns_file:
-        pickle.dump(["ranking_signal"], feature_columns_file)
-    with categorical_columns_path.open("wb") as categorical_columns_file:
-        pickle.dump({}, categorical_columns_file)
-
-    reranker = load_local_model(
-        LocalModelSettings(model_path, feature_columns_path, categorical_columns_path)
-    )
+    reranker = load_local_model(_write_local_model_artifacts(tmp_path))
 
     response = reranker.rerank(
         [
-            CandidateVideo(video_id="video-low", features={"ranking_signal": 0.1}),
-            CandidateVideo(video_id="video-high", features={"ranking_signal": 0.8}),
+            CandidateVideo(
+                video_id="video-low",
+                features={column: 0.1 for column in MODEL_FEATURE_COLUMNS},
+            ),
+            CandidateVideo(
+                video_id="video-high",
+                features={column: 0.8 for column in MODEL_FEATURE_COLUMNS},
+            ),
         ]
     )
 
+    assert reranker.feature_columns == MODEL_FEATURE_COLUMNS
+    assert tuple(reranker.categorical_categories) == CATEGORICAL_FEATURE_COLUMNS
     assert [item.video_id for item in response] == ["video-high", "video-low"]
 
 
-def test_local_model_loader_preserves_categorical_value_types(tmp_path: Path) -> None:
-    model_path = tmp_path / "model.joblib"
-    feature_columns_path = tmp_path / "feature_columns.pkl"
-    categorical_columns_path = tmp_path / "categorical_columns.pkl"
-    joblib.dump(RankingModel(), model_path)
-    with feature_columns_path.open("wb") as feature_columns_file:
-        pickle.dump(["ranking_signal", "category_id"], feature_columns_file)
-    with categorical_columns_path.open("wb") as categorical_columns_file:
-        pickle.dump({"category_id": [10, 20, 30]}, categorical_columns_file)
+def test_local_model_loader_rejects_truncated_feature_columns_artifact(
+    tmp_path: Path,
+) -> None:
+    settings = _write_local_model_artifacts(tmp_path)
+    settings.feature_columns_path.write_bytes(b"\x80\x05")
 
-    reranker = load_local_model(
-        LocalModelSettings(model_path, feature_columns_path, categorical_columns_path)
+    with pytest.raises(
+        ModelArtifactError,
+        match="Feature-column artifact could not be deserialized",
+    ) as error_info:
+        load_local_model(settings)
+
+    assert isinstance(error_info.value.__cause__, EOFError)
+
+
+def test_local_model_loader_rejects_malformed_categorical_columns_artifact(
+    tmp_path: Path,
+) -> None:
+    settings = _write_local_model_artifacts(tmp_path)
+    settings.categorical_columns_path.write_bytes(b"not a pickle")
+
+    with pytest.raises(
+        ModelArtifactError,
+        match="Categorical-column artifact could not be deserialized",
+    ) as error_info:
+        load_local_model(settings)
+
+    assert isinstance(error_info.value.__cause__, pickle.UnpicklingError)
+
+
+def test_local_model_loader_normalizes_unreadable_metadata_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _write_local_model_artifacts(tmp_path)
+    read_error = PermissionError("metadata file is unreadable")
+    original_open = Path.open
+
+    def fail_for_feature_columns(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> BinaryIO:
+        if path == settings.feature_columns_path:
+            raise read_error
+        return original_open(
+            path,
+            mode=mode,
+            buffering=buffering,
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+        )
+
+    monkeypatch.setattr(Path, "open", fail_for_feature_columns)
+
+    with pytest.raises(
+        ModelArtifactError,
+        match="Feature-column artifact could not be deserialized",
+    ) as error_info:
+        load_local_model(settings)
+
+    assert error_info.value.__cause__ is read_error
+    assert str(settings.feature_columns_path) in str(error_info.value)
+
+
+def test_local_model_loader_normalizes_schema_malformed_metadata_artifact(
+    tmp_path: Path,
+) -> None:
+    settings = _write_local_model_artifacts(tmp_path)
+    settings.feature_columns_path.write_bytes(pickle.dumps({"not": "columns"}))
+
+    with pytest.raises(
+        ModelArtifactError,
+        match="Feature-column artifact must contain a sequence of strings",
+    ) as error_info:
+        load_local_model(settings)
+
+    assert isinstance(error_info.value.__cause__, ValidationError)
+    assert str(settings.feature_columns_path) in str(error_info.value)
+
+
+def test_mlflow_model_loader_normalizes_unreadable_metadata_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _write_local_model_artifacts(tmp_path)
+    read_error = PermissionError("downloaded metadata file is unreadable")
+    original_open = Path.open
+
+    def fail_for_feature_columns(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> BinaryIO:
+        if path == settings.feature_columns_path:
+            raise read_error
+        return original_open(
+            path,
+            mode=mode,
+            buffering=buffering,
+            encoding=encoding,
+            errors=errors,
+            newline=newline,
+        )
+
+    def download_artifacts(*, artifact_uri: str) -> str:
+        if artifact_uri.endswith("lgbm_model.joblib"):
+            return str(settings.model_path)
+        if artifact_uri.endswith("categorical_columns.pkl"):
+            return str(settings.categorical_columns_path)
+        return str(settings.feature_columns_path)
+
+    monkeypatch.setattr(Path, "open", fail_for_feature_columns)
+    monkeypatch.setattr(
+        "src.serving.model_loader.mlflow.artifacts.download_artifacts",
+        download_artifacts,
     )
 
-    assert reranker.categorical_categories == {"category_id": (10, 20, 30)}
-    assert all(type(category) is int for category in reranker.categorical_categories["category_id"])
-
-
-def test_local_model_loader_rejects_unknown_categorical_columns(tmp_path: Path) -> None:
-    model_path = tmp_path / "model.joblib"
-    feature_columns_path = tmp_path / "feature_columns.pkl"
-    categorical_columns_path = tmp_path / "categorical_columns.pkl"
-    joblib.dump(RankingModel(), model_path)
-    with feature_columns_path.open("wb") as feature_columns_file:
-        pickle.dump(["ranking_signal"], feature_columns_file)
-    with categorical_columns_path.open("wb") as categorical_columns_file:
-        pickle.dump({"unknown_column": [1, 2]}, categorical_columns_file)
-
-    with pytest.raises(ModelArtifactError):
-        load_local_model(
-            LocalModelSettings(model_path, feature_columns_path, categorical_columns_path)
+    with pytest.raises(
+        ModelArtifactError,
+        match="Feature-column artifact could not be deserialized",
+    ) as error_info:
+        load_mlflow_model(
+            MlflowModelSettings(tracking_uri="http://mlflow.example", run_id="run-123")
         )
+
+    assert error_info.value.__cause__ is read_error
+    assert str(settings.feature_columns_path) in str(error_info.value)
+
+
+def test_local_model_loader_preserves_categorical_value_types(tmp_path: Path) -> None:
+    reranker = load_local_model(
+        _write_local_model_artifacts(
+            tmp_path,
+            category_values={"category_id": (10, 20, 30)},
+        )
+    )
+
+    assert reranker.categorical_categories["category_id"] == (10, 20, 30)
+    assert all(
+        type(category) is int
+        for category in reranker.categorical_categories["category_id"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("feature_columns", "categorical_columns", "artifact_context"),
+    (
+        (MODEL_FEATURE_COLUMNS[:-1], CATEGORICAL_FEATURE_COLUMNS, "Feature-column artifact"),
+        (
+            MODEL_FEATURE_COLUMNS + ("extra_feature",),
+            CATEGORICAL_FEATURE_COLUMNS,
+            "Feature-column artifact",
+        ),
+        (
+            MODEL_FEATURE_COLUMNS[1:] + MODEL_FEATURE_COLUMNS[:1],
+            CATEGORICAL_FEATURE_COLUMNS,
+            "Feature-column artifact",
+        ),
+        (MODEL_FEATURE_COLUMNS, CATEGORICAL_FEATURE_COLUMNS[:-1], "Categorical-column artifact"),
+        (
+            MODEL_FEATURE_COLUMNS,
+            CATEGORICAL_FEATURE_COLUMNS + ("unknown_column",),
+            "Categorical-column artifact",
+        ),
+        (
+            MODEL_FEATURE_COLUMNS,
+            tuple(reversed(CATEGORICAL_FEATURE_COLUMNS)),
+            "Categorical-column artifact",
+        ),
+    ),
+)
+def test_local_model_loader_rejects_noncanonical_artifact_metadata(
+    tmp_path: Path,
+    feature_columns: Sequence[str],
+    categorical_columns: Sequence[str],
+    artifact_context: str,
+) -> None:
+    settings = _write_local_model_artifacts(
+        tmp_path,
+        feature_columns=feature_columns,
+        categorical_columns=categorical_columns,
+    )
+
+    with pytest.raises(ModelArtifactError, match=artifact_context) as error_info:
+        load_local_model(settings)
+
+    assert isinstance(error_info.value.__cause__, FeatureContractError)
 
 
 def test_local_model_loader_requires_categorical_artifact(tmp_path: Path) -> None:
-    model_path = tmp_path / "model.joblib"
-    feature_columns_path = tmp_path / "feature_columns.pkl"
-    joblib.dump(RankingModel(), model_path)
-    with feature_columns_path.open("wb") as feature_columns_file:
-        pickle.dump(["ranking_signal"], feature_columns_file)
+    settings = _write_local_model_artifacts(tmp_path)
 
     with pytest.raises(ModelArtifactError):
         load_local_model(
             LocalModelSettings(
-                model_path,
-                feature_columns_path,
+                settings.model_path,
+                settings.feature_columns_path,
                 tmp_path / "missing.pkl",
             )
         )
@@ -784,9 +990,12 @@ def test_mlflow_model_loader_downloads_training_artifacts(
     categorical_columns_path = tmp_path / "categorical_columns.pkl"
     joblib.dump(RankingModel(), model_path)
     with feature_columns_path.open("wb") as feature_columns_file:
-        pickle.dump(["ranking_signal"], feature_columns_file)
+        pickle.dump(list(MODEL_FEATURE_COLUMNS), feature_columns_file)
     with categorical_columns_path.open("wb") as categorical_columns_file:
-        pickle.dump({}, categorical_columns_file)
+        pickle.dump(
+            {column: [] for column in CATEGORICAL_FEATURE_COLUMNS},
+            categorical_columns_file,
+        )
     downloaded_uris: list[str] = []
 
     def download_artifacts(*, artifact_uri: str) -> str:
@@ -806,7 +1015,7 @@ def test_mlflow_model_loader_downloads_training_artifacts(
         MlflowModelSettings(tracking_uri="http://mlflow.example", run_id="run-123")
     )
 
-    assert reranker.feature_columns == ("ranking_signal",)
+    assert reranker.feature_columns == MODEL_FEATURE_COLUMNS
     assert downloaded_uris == [
         "runs:/run-123/model/lgbm_model.joblib",
         "runs:/run-123/features/feature_columns.pkl",

@@ -5,7 +5,12 @@ import pandas as pd
 import pytest
 
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
-from src.pipeline.simulate_policy_round import build_pool_feature_frame, main
+from src.features.model_contract import FeatureContractError, MODEL_FEATURE_COLUMNS
+from src.pipeline.simulate_policy_round import (
+    _to_candidate_videos,
+    build_pool_feature_frame,
+    main,
+)
 from src.serving.service import Reranker
 
 
@@ -33,6 +38,9 @@ def _videos_raw(n: int = 30) -> pd.DataFrame:
                 "title": f"{cat} video {i}",
                 "description": f"{cat} 설명 {i}",
                 "tags": "",
+                "channelSubscriberCount": 100_000 + i,
+                "channelViewCount": 10_000_000 + i,
+                "channelVideoCount": 100 + i,
             }
         )
     return pd.DataFrame(rows)
@@ -44,6 +52,7 @@ def _personas(n: int = 4) -> pd.DataFrame:
             "uuid": [f"u{i}" for i in range(n)],
             "age": [25] * n,
             "occupation": ["student"] * n,
+            "watch_time_band": ["night"] * n,
             "hobbies_and_interests_list": ['["gaming"]'] * n,
         }
     )
@@ -82,18 +91,35 @@ def _empty_events() -> pd.DataFrame:
     )
 
 
+def _events_with_history() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "event_id": ["e1", "e2"],
+            "user_id": ["u0", "u0"],
+            "video_id": ["v000", "v001"],
+            "timestamp": ["2026-07-20 10:00:00", "2026-07-18 10:00:00"],
+            "clicked": [1, 0],
+            "liked": [1, 0],
+            "watch_time_sec": [120, 0],
+        }
+    ).astype(
+        {
+            "event_id": "string",
+            "user_id": "string",
+            "video_id": "string",
+            "timestamp": "string",
+            "clicked": "Int64",
+            "liked": "Int64",
+            "watch_time_sec": "Int64",
+        }
+    )
+
+
 @pytest.fixture()
 def stub_reranker() -> Reranker:
-    feature_columns = (
-        "age_group", "occupation", "historical_category_affinity",
-        "recent_click_count_7d", "recent_watch_time_7d", "recent_like_count_7d",
-        "category_id", "duration_sec", "view_count", "like_ratio",
-        "comment_ratio", "days_since_upload", "historical_category_match",
-        "preferred_category_match", "topic_similarity",
-    )
     return Reranker(
         model=_CategoryLovingModel(),
-        feature_columns=feature_columns,
+        feature_columns=MODEL_FEATURE_COLUMNS,
         categorical_categories={"category_id": ("Gaming", "Music")},
     )
 
@@ -109,6 +135,37 @@ def test_build_pool_feature_frame_covers_model_columns(stub_reranker):
     assert len(frame) == 6
     for column in stub_reranker.feature_columns:
         assert column in frame.columns, column
+
+
+def test_build_pool_feature_frame_includes_all_missing_contract_features():
+    frame = build_pool_feature_frame(
+        personas=_personas(1),
+        events=_events_with_history(),
+        videos_raw=_videos_raw(2),
+        user_id="u0",
+        as_of="2026-07-22 00:00:00",
+        snapshot_date="2026-07-22",
+    )
+
+    assert set(MODEL_FEATURE_COLUMNS).issubset(frame.columns)
+    assert frame.loc[0, "watch_time_band"] == "night"
+    assert frame.loc[0, "recent_view_count_7d"] == 1
+    assert frame.loc[0, "total_event_count_7d"] == 5
+    assert frame.loc[0, "channel_subscriber_count"] == 100_000
+    assert frame.loc[0, "channel_view_count"] == 10_000_000
+    assert frame.loc[0, "channel_video_count"] == 100
+
+    candidates = _to_candidate_videos(frame, MODEL_FEATURE_COLUMNS)
+    assert tuple(candidates[0].features) == MODEL_FEATURE_COLUMNS
+
+
+@pytest.mark.parametrize(
+    "feature_columns",
+    [MODEL_FEATURE_COLUMNS[:-1], MODEL_FEATURE_COLUMNS[1:] + MODEL_FEATURE_COLUMNS[:1]],
+)
+def test_to_candidate_videos_rejects_noncanonical_feature_contract(feature_columns):
+    with pytest.raises(FeatureContractError):
+        _to_candidate_videos(pd.DataFrame(), feature_columns)
 
 
 def test_build_pool_feature_frame_snapshot_date_decoupled_from_as_of():

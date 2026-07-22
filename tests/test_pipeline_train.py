@@ -1,31 +1,15 @@
 from __future__ import annotations
 
+import pickle
+
 import numpy as np
 import pandas as pd
 import yaml
 from mlflow.tracking import MlflowClient
 
+from src.features.model_contract import CATEGORICAL_FEATURE_COLUMNS, MODEL_FEATURE_COLUMNS
 from src.pipeline import train
 from src.pipeline.train import collect_categorical_categories
-
-FEATURE_COLUMNS = [
-    "age_group",
-    "occupation",
-    "historical_category_affinity",
-    "recent_click_count_7d",
-    "recent_watch_time_7d",
-    "recent_like_count_7d",
-    "category_id",
-    "duration_sec",
-    "view_count",
-    "like_ratio",
-    "comment_ratio",
-    "days_since_upload",
-    "historical_category_match",
-    "preferred_category_match",
-    "topic_similarity",
-]
-CATEGORICAL_COLUMNS = ["age_group", "occupation", "historical_category_affinity", "category_id"]
 
 
 def _synthetic_ctr_dataset(n: int = 60, seed: int = 7) -> pd.DataFrame:
@@ -35,16 +19,22 @@ def _synthetic_ctr_dataset(n: int = 60, seed: int = 7) -> pd.DataFrame:
             "clicked": [i % 2 for i in range(n)],
             "age_group": rng.choice(["10s", "20s", "30s", "40s", "50s+"], size=n),
             "occupation": rng.choice(["Student", "Engineer", "Marketer"], size=n),
+            "watch_time_band": rng.choice(["morning", "evening", "night", "unknown"], size=n),
             "historical_category_affinity": rng.choice(["A", "B", "C"], size=n),
             "recent_click_count_7d": rng.integers(0, 20, size=n).astype(float),
+            "recent_view_count_7d": rng.integers(0, 30, size=n),
             "recent_watch_time_7d": rng.random(size=n) * 100,
             "recent_like_count_7d": rng.integers(0, 10, size=n).astype(float),
+            "total_event_count_7d": rng.integers(0, 100, size=n),
             "category_id": rng.integers(1, 6, size=n),
             "duration_sec": rng.integers(60, 600, size=n).astype(float),
             "view_count": rng.integers(100, 100000, size=n).astype(float),
             "like_ratio": rng.random(size=n),
             "comment_ratio": rng.random(size=n),
             "days_since_upload": rng.integers(0, 30, size=n).astype(float),
+            "channel_subscriber_count": rng.integers(0, 1_000_000, size=n),
+            "channel_view_count": rng.integers(0, 100_000_000, size=n),
+            "channel_video_count": rng.integers(0, 10_000, size=n),
             "historical_category_match": rng.integers(0, 2, size=n),
             "preferred_category_match": rng.integers(0, 2, size=n),
             "topic_similarity": rng.random(size=n),
@@ -59,8 +49,6 @@ def _write_train_config(config_path) -> None:
             "test_size": 0.2,
             "val_size": 0.2,
             "random_state": 42,
-            "feature_columns": FEATURE_COLUMNS,
-            "categorical_columns": CATEGORICAL_COLUMNS,
         },
         "model": {
             "n_estimators": 10,
@@ -128,6 +116,14 @@ def test_main_registers_model_and_auto_increments_version(tmp_path, monkeypatch)
         )
 
     run_once("v1")
+
+    with (tmp_path / "feature_columns_v1.pkl").open("rb") as stream:
+        assert tuple(pickle.load(stream)) == MODEL_FEATURE_COLUMNS
+    with (tmp_path / "categorical_columns_v1.pkl").open("rb") as stream:
+        categories = pickle.load(stream)
+    assert tuple(categories) == CATEGORICAL_FEATURE_COLUMNS
+    assert "watch_time_band" in categories
+
     run_once("v2")
 
     client = MlflowClient(tracking_uri=tracking_uri)

@@ -40,6 +40,11 @@ def extract_words(value: object) -> list[str]:
 
 def to_personas_frame(virtual_users: pd.DataFrame) -> pd.DataFrame:
     """가상 유저 테이블을 personas 계약(uuid/age/occupation/관심사 2형)으로 변환한다."""
+    watch_time_band = (
+        virtual_users["watch_time_band"]
+        if "watch_time_band" in virtual_users.columns
+        else pd.Series("unknown", index=virtual_users.index)
+    )
     word_lists = virtual_users.apply(
         lambda row: [
             word for column in _KEYWORD_COLUMNS for word in extract_words(row[column])
@@ -55,5 +60,6 @@ def to_personas_frame(virtual_users: pd.DataFrame) -> pd.DataFrame:
                 lambda words: json.dumps(words, ensure_ascii=False)
             ),
             "hobbies_and_interests": word_lists.apply(", ".join),
+            "watch_time_band": watch_time_band,
         }
     )

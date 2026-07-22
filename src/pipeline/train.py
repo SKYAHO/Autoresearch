@@ -18,6 +18,10 @@ sys.path.insert(0, PROJECT_ROOT)
 import mlflow  # noqa: E402
 
 from src.models.lgbm_model import LGBMModel  # noqa: E402
+from src.features.model_contract import (  # noqa: E402
+    CATEGORICAL_FEATURE_COLUMNS,
+    MODEL_FEATURE_COLUMNS,
+)
 from src.utils.model_utils import save_model, save_feature_columns, save_categorical_columns  # noqa: E402
 from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
 from src.tracking.logger import log_artifact, log_metrics, log_parameters  # noqa: E402
@@ -140,8 +144,8 @@ def main(
         print(f"  [저장] Test set (held-out): {test_set_path}")
 
         print("\n[Step 3] Feature/Label 분리...")
-        feature_columns = config["data"]["feature_columns"]
-        categorical_columns = config["data"]["categorical_columns"]
+        feature_columns = list(MODEL_FEATURE_COLUMNS)
+        categorical_columns = list(CATEGORICAL_FEATURE_COLUMNS)
 
         X_train = train_df[feature_columns].copy()
         y_train = train_df["clicked"].copy()

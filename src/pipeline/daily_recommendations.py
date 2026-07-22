@@ -1,7 +1,7 @@
 """일일 추천 결과 BQ 적재 배치.
 
 champion 모델(models:/ctr-model@champion)로 일일 트렌딩 후보 전체를 가상 유저
-전원에 대해 채점해, 유저별 전체 순위를 user_recommendations 파티션 테이블에
+전원에 대해 canonical 21개 피처로 채점해, 유저별 전체 순위를 user_recommendations 파티션 테이블에
 멱등 적재한다. 비교 실험·노출 선정은 이 배치의 책임이 아니다(spec 참조).
 
 spec: docs/specs/2026-07-21-daily-recommendations-batch.md
@@ -21,6 +21,7 @@ import pandas as pd
 from google.cloud import bigquery
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
+from src.features.model_contract import require_model_feature_columns
 from src.pipeline.build_training_dataset import (
     BIGQUERY_PROJECT,
     derive_wide_events,
@@ -155,6 +156,9 @@ def _load_candidates(client: bigquery.Client, table_id: str, dt: date) -> pd.Dat
            video_view_count AS viewCount,
            video_like_count AS likeCount,
            video_comment_count AS commentCount,
+           channel_subscriber_count AS channelSubscriberCount,
+           channel_view_count AS channelViewCount,
+           channel_video_count AS channelVideoCount,
            video_published_at AS publishedAt
     FROM `{table_id}`
     WHERE dt = '{dt.isoformat()}'
@@ -167,7 +171,8 @@ def _load_candidates(client: bigquery.Client, table_id: str, dt: date) -> pd.Dat
 def _load_virtual_users(client: bigquery.Client, table_id: str) -> pd.DataFrame:
     """가상 유저 전원의 어댑터 입력 컬럼을 조회한다."""
     query = f"""
-    SELECT user_id, age, occupation, hobby_keywords, interest_keywords, lifestyle_keywords
+    SELECT user_id, age, occupation, hobby_keywords, interest_keywords, lifestyle_keywords,
+           watch_time_band
     FROM `{table_id}`
     """
     return client.query(query).to_dataframe()
@@ -221,6 +226,7 @@ def run_batch(
     if resolved is None:
         resolved = load_reranker_with_lineage(_default_registry_settings())  # fail-fast
     reranker = resolved.reranker
+    feature_columns = require_model_feature_columns(reranker.feature_columns)
     if bq_client is None:
         bq_client = bigquery.Client(project=BIGQUERY_PROJECT)
 
@@ -269,7 +275,7 @@ def run_batch(
                 as_of=as_of,
                 snapshot_date=snapshot_date,
             )
-            ranked = reranker.rerank(_to_candidate_videos(frame, reranker.feature_columns))
+            ranked = reranker.rerank(_to_candidate_videos(frame, feature_columns))
             all_rows.extend(
                 to_recommendation_rows(
                     user_id,
