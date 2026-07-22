@@ -296,6 +296,16 @@ def main(
             "generator와 replay 중 정확히 하나만 지정해야 합니다 "
             "(replay는 저장된 판정을 재사용하므로 generator가 필요 없습니다)"
         )
+    exposure_args = {
+        "seed": seed,
+        "k": k,
+        "exploration_ratio": exploration_ratio,
+        "as_of": as_of,
+    }
+    # 인자 불일치는 모델 로드·유저별 피처 조립(임베딩 호출 포함) 전에 걸러낸다.
+    if replay is not None:
+        _validate_replay_exposure_args(replay.exposure_args, exposure_args)
+
     if reranker is None:
         reranker = load_reranker(load_model_settings_from_environment())  # fail-fast
 
@@ -341,15 +351,6 @@ def main(
         warehouse_output_path=str(Path(output_dir) / "event_log.jsonl"),
         quarantine_output_path=str(Path(output_dir) / "event_log_quarantine.jsonl"),
     )
-    exposure_args = {
-        "seed": seed,
-        "k": k,
-        "exploration_ratio": exploration_ratio,
-        "as_of": as_of,
-    }
-    if replay is not None:
-        _validate_replay_exposure_args(replay.exposure_args, exposure_args)
-
     if replay is None:
         assert generator is not None  # 위 XOR 검증이 보장한다
         union_by_user: dict[str, list[dict]] = {}
