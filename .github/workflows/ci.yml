@@ -121,6 +121,10 @@ jobs:
             python -m autoresearch.jobs.action_log_quality --help
           docker run --rm autoresearch:ci \
             python -m autoresearch.jobs.action_log_quality --version
+          docker run --rm autoresearch:ci \
+            python -m src.pipeline.daily_recommendations --help
+          docker run --rm autoresearch:ci \
+            python -m src.pipeline.daily_recommendations --version
 
       - name: Build training image
         # CTR 학습 파이프라인(src/)을 담는 이미지. Dockerfile.app과 별도로

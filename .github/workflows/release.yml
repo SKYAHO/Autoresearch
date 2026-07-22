@@ -183,7 +183,8 @@ jobs:
             autoresearch.jobs.youtube_trending \
             autoresearch.jobs.youtube_backfill \
             autoresearch.jobs.action_log \
-            autoresearch.jobs.action_log_quality
+            autoresearch.jobs.action_log_quality \
+            src.pipeline.daily_recommendations
           do
             docker run --rm "$digest_ref" python -m "$module" --help >/dev/null
             version_json="$(docker run --rm "$digest_ref" python -m "$module" --version)"
