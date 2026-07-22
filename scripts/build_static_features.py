@@ -162,6 +162,12 @@ def user_category_similarity_sql(settings: Settings) -> str:
 
     event_timestamp/embedding_model/embedding_dim은 원본 테이블 값이 아니라
     이 스크립트 상수로 채워, 정적 feature 시맨틱과 모델 일관성을 보장한다.
+
+    cosine은 ML.DISTANCE로 계산한다. docs/guides/data-warehouse.md의 SQL은 768
+    차원을 UNNEST로 행으로 펼쳐 내적하는데, 그러면 중간 결과가
+    140,934 topic × 15 카테고리 × 768 = 약 16억 행까지 부풀어 실측에서 33분
+    동안 출력 stage가 0행에 머물렀다(평균 8.8 slot, 사실상 병렬화 실패).
+    ML.DISTANCE는 배열을 그대로 받아 같은 값을 계산한다.
     """
 
     feat = f"{settings.project}.{settings.feature_dataset}"
@@ -205,33 +211,19 @@ user_topics AS (
     AND topic_embedding IS NOT NULL
     AND embedding_version = ute_version
 ),
-topic_category_cosine AS (
+best AS (
   SELECT
     u.user_id,
     c.category_id,
     u.topic,
-    SAFE_DIVIDE(
-      SUM(user_val * category_val),
-      NULLIF(
-        SQRT(SUM(user_val * user_val)) * SQRT(SUM(category_val * category_val)),
-        0
-      )
-    ) AS cosine_score
+    1 - ML.DISTANCE(u.topic_embedding, c.category_embedding, 'COSINE') AS cosine_score
   FROM user_topics u
   JOIN categories c
     ON u.embedding_model = c.embedding_model
    AND u.embedding_dim = c.embedding_dim
-  CROSS JOIN UNNEST(u.topic_embedding) AS user_val WITH OFFSET user_idx
-  JOIN UNNEST(c.category_embedding) AS category_val WITH OFFSET category_idx
-    ON user_idx = category_idx
-  GROUP BY u.user_id, c.category_id, u.topic
-),
-best AS (
-  SELECT user_id, category_id, topic, cosine_score
-  FROM topic_category_cosine
   QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY user_id, category_id
-    ORDER BY cosine_score DESC, topic
+    PARTITION BY u.user_id, c.category_id
+    ORDER BY cosine_score DESC, u.topic
   ) = 1
 )
 SELECT
@@ -343,6 +335,15 @@ def build_user_static_feature(client, settings: Settings) -> None:
 
 
 def _load_embedding_table(client, table_id: str, rows: list[dict], schema, settings):
+    """임베딩 행을 Parquet으로 직렬화해 BigQuery에 적재한다.
+
+    load_table_from_json은 쓰지 않는다 — user_topic_embedding은 140,934행 ×
+    768 float(약 1억 800만 개)이라 JSON 텍스트 직렬화가 사실상 끝나지 않는다
+    (실측: 9분 경과 시점에도 load job 제출 전). Parquet은 float 배열을 바이너리로
+    쓰므로 같은 데이터를 수십 배 빠르게 적재한다.
+    """
+
+    import pandas as pd
     from google.cloud import bigquery
 
     if settings.dry_run:
@@ -351,9 +352,17 @@ def _load_embedding_table(client, table_id: str, rows: list[dict], schema, setti
     job_config = bigquery.LoadJobConfig(
         schema=schema,
         write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
+        source_format=bigquery.SourceFormat.PARQUET,
     )
-    job = client.load_table_from_json(
-        rows, table_id, job_config=job_config, location=settings.location
+    frame = pd.DataFrame(rows)
+    # Parquet은 JSON과 달리 타입이 엄격하다. TIMESTAMP 컬럼은 문자열이 아니라
+    # tz-aware datetime이어야 pyarrow가 변환할 수 있다.
+    if "event_timestamp" in frame.columns:
+        frame["event_timestamp"] = pd.to_datetime(
+            frame["event_timestamp"], utc=True
+        )
+    job = client.load_table_from_dataframe(
+        frame, table_id, job_config=job_config, location=settings.location
     )
     job.result()
     print(f"  [OK] {table_id} <- {client.get_table(table_id).num_rows} rows")
@@ -362,7 +371,7 @@ def _load_embedding_table(client, table_id: str, rows: list[dict], schema, setti
 def _cache_path(settings: Settings, name: str) -> Path | None:
     if settings.cache_dir is None:
         return None
-    return settings.cache_dir / f"{name}_embedding_cache.json"
+    return settings.cache_dir / f"{name}_embedding_cache.jsonl"
 
 
 def _load_embedding_cache(path: Path | None) -> dict[str, list[float]]:
@@ -370,24 +379,43 @@ def _load_embedding_cache(path: Path | None) -> dict[str, list[float]]:
 
     46k건 규모라 중간에 쿼터로 끊기면 재실행 비용이 크다. 캐시가 있으면 이미
     임베딩한 topic은 API를 다시 호출하지 않는다.
+
+    형식은 JSON Lines다 — 슬라이스마다 append만 하면 되므로, 전량을 다시 쓰는
+    방식(784MB × 185회 ≈ 72GB 쓰기)의 O(n^2) 비용을 피한다. 같은 topic이 여러 번
+    있으면 나중 값이 이긴다. 손상된 마지막 줄은 무시한다(쓰다가 죽은 경우).
     """
 
     if path is None or not path.exists():
         return {}
+    cached: dict[str, list[float]] = {}
     with path.open(encoding="utf-8") as handle:
-        cached = json.load(handle)
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            cached[record["topic"]] = record["vector"]
     print(f"  캐시 {len(cached)}건을 재사용합니다: {path}")
     return cached
 
 
-def _save_embedding_cache(path: Path | None, cache: dict[str, list[float]]) -> None:
-    if path is None:
+def _append_embedding_cache(
+    path: Path | None, pairs: list[tuple[str, list[float]]]
+) -> None:
+    """새로 임베딩한 (topic, vector)만 캐시 파일에 append한다."""
+
+    if path is None or not pairs:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    with tmp.open("w", encoding="utf-8") as handle:
-        json.dump(cache, handle)
-    tmp.replace(path)
+    with path.open("a", encoding="utf-8") as handle:
+        for topic, vector in pairs:
+            handle.write(
+                json.dumps({"topic": topic, "vector": vector}, ensure_ascii=False)
+            )
+            handle.write("\n")
 
 
 def _embed(
@@ -428,7 +456,6 @@ def _embed(
                 break
             except quota_errors as exc:
                 if attempt == EMBED_QUOTA_RETRIES:
-                    _save_embedding_cache(cache_path, cache)
                     raise RuntimeError(
                         f"임베딩 쿼터 재시도 {EMBED_QUOTA_RETRIES}회 실패 "
                         f"({type(exc).__name__}). 캐시를 저장했으니 재실행하면 "
@@ -437,12 +464,11 @@ def _embed(
                 backoff = EMBED_QUOTA_BACKOFF_SEC * attempt
                 print(f"  쿼터 대기 {backoff}s (시도 {attempt}/{EMBED_QUOTA_RETRIES})")
                 time.sleep(backoff)
-        cache.update(
-            {text: vector.tolist() for text, vector in zip(chunk, vectors)}
-        )
+        fresh = [(text, vector.tolist()) for text, vector in zip(chunk, vectors)]
+        cache.update(dict(fresh))
+        _append_embedding_cache(cache_path, fresh)
         done = min(start + EMBED_SLICE_SIZE, len(pending))
         print(f"  진행 {done}/{len(pending)}", flush=True)
-        _save_embedding_cache(cache_path, cache)
         if done < len(pending):
             time.sleep(EMBED_SLICE_PAUSE_SEC)
 

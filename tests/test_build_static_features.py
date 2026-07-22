@@ -7,6 +7,7 @@ BigQuery/Vertex AI 호출은 대상이 아니다. dataset 계층 분리, TRUNCAT
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 from pathlib import Path
 
@@ -69,6 +70,15 @@ def test_similarity_sql_uses_cross_dataset_sources_and_truncate_insert() -> None
     assert "`p.autoresearch_dev_analytics.category_embedding`" in sql
     assert "`p.autoresearch_dev_analytics.user_topic_embedding`" in sql
     assert "CREATE OR REPLACE" not in sql
+
+
+def test_similarity_sql_uses_ml_distance_not_unnest_explosion() -> None:
+    sql = bsf.user_category_similarity_sql(_settings())
+    # 768차원을 행으로 펼치면 중간 결과가 16억 행이 되어 사실상 끝나지 않는다.
+    assert "ML.DISTANCE(" in sql
+    assert "'COSINE'" in sql
+    assert "WITH OFFSET" not in sql
+    assert "CROSS JOIN UNNEST" not in sql
 
 
 def test_similarity_sql_grid_left_join_prevents_dropped_users() -> None:
@@ -181,7 +191,7 @@ def test_embed_reuses_cache_and_only_calls_api_for_new_topics(monkeypatch, tmp_p
     monkeypatch.setitem(sys.modules, "src.features.embeddings", fake_module)
     monkeypatch.setattr(bsf, "EMBED_SLICE_PAUSE_SEC", 0)
 
-    cache_path = tmp_path / "cache.json"
+    cache_path = tmp_path / "cache.jsonl"
     settings = _settings(cache_dir=tmp_path)
 
     first = bsf._embed(["a", "bb"], "RETRIEVAL_QUERY", settings, cache_path)
@@ -228,3 +238,42 @@ def test_embed_dry_run_does_not_call_api(monkeypatch):
 
     vectors = bsf._embed(["a"], "RETRIEVAL_QUERY", _settings(dry_run=True), None)
     assert vectors == [[0.0] * bsf.EMBEDDING_DIM]
+
+
+def test_embedding_cache_is_append_only_json_lines(monkeypatch, tmp_path):
+    """캐시는 슬라이스마다 append만 한다 — 전량 재작성은 O(n^2)라 46k건에서 못 쓴다."""
+
+    def _fake_embed_texts(texts, task_type):
+        return [np.zeros(bsf.EMBEDDING_DIM) for _ in texts]
+
+    import types
+
+    fake_module = types.ModuleType("src.features.embeddings")
+    fake_module.embed_texts = _fake_embed_texts
+    monkeypatch.setitem(sys.modules, "src.features.embeddings", fake_module)
+    monkeypatch.setattr(bsf, "EMBED_SLICE_SIZE", 2)
+    monkeypatch.setattr(bsf, "EMBED_SLICE_PAUSE_SEC", 0)
+
+    cache_path = tmp_path / "cache.jsonl"
+    bsf._embed(["a", "b", "c"], "RETRIEVAL_QUERY", _settings(), cache_path)
+
+    lines = cache_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 3
+    assert {json.loads(line)["topic"] for line in lines} == {"a", "b", "c"}
+
+    # 이어서 호출하면 새 topic만 append되고 기존 줄은 그대로 남는다.
+    bsf._embed(["a", "d"], "RETRIEVAL_QUERY", _settings(), cache_path)
+    lines_after = cache_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines_after) == 4
+    assert lines_after[:3] == lines
+
+
+def test_embedding_cache_skips_corrupt_trailing_line(tmp_path):
+    """쓰다가 죽어 마지막 줄이 잘려도 나머지 캐시는 살린다."""
+
+    cache_path = tmp_path / "cache.jsonl"
+    cache_path.write_text(
+        json.dumps({"topic": "a", "vector": [0.1]}) + "\n" + '{"topic": "b", "vec',
+        encoding="utf-8",
+    )
+    assert bsf._load_embedding_cache(cache_path) == {"a": [0.1]}
