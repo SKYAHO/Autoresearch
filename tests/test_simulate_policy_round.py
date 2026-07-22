@@ -695,3 +695,30 @@ def test_cli_replay_rejects_generator_flag(tmp_path, monkeypatch):
     )
     with pytest.raises(SystemExit):
         module._cli()
+
+
+def test_report_records_replay_provenance(tmp_path, stub_reranker):
+    """산출물만 보고 원본 판정 라운드와 리플레이를 구분할 수 있어야 한다."""
+    first_dir = tmp_path / "a"
+    original = _run_round(
+        first_dir,
+        stub_reranker,
+        generator=RuleBasedActionLogGenerator(model_name="judge-v9"),
+    )
+    assert original["replay"] is False
+    assert original["llm_model"] == "judge-v9"
+
+    second_dir = tmp_path / "b"
+    replayed = _run_round(
+        second_dir,
+        stub_reranker,
+        generator=None,
+        replay=_load_replay(first_dir),
+        output_dir=str(second_dir),
+    )
+    assert replayed["replay"] is True
+    assert replayed["llm_model"] == "judge-v9"
+
+    html = (second_dir / "policy_round_report.html").read_text(encoding="utf-8")
+    assert "judge-v9" in html
+    assert "replay" in html

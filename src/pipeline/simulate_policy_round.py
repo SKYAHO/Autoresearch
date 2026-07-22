@@ -2,14 +2,29 @@
 """정책 시뮬레이션 라운드 배치.
 
 baseline(키워드 휴리스틱) vs model(Reranker Top-K) 정책을 같은 유저·영상
-pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 CTR 정규화를 거쳐 정책
+pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 판정을 거쳐 정책
 태깅된 event log와 비교 리포트를 산출한다.
+
+이 모듈이 담당하는 구간은 "노출 결정 → 판정 확보 → 커트라인 적용 → event log
+산출"이다. 판정을 만드는 LLM 호출 규약과 클릭 선정 규칙 자체는
+`autoresearch.action_logs`가 소유하며, 학습·평가와 GCS 적재는 담당하지 않는다.
+
+제공 기능:
+
+- 유저별 두 정책 노출 결정과 스코어링 진단 수집
+- LLM 판정 1회 실행(합집합 후보)과 판정 덤프
+  (`action_log_drafts.parquet` + 계보·노출 인자 사이드카
+  `action_log_drafts_meta.json`) — `click_threshold` 캘리브레이션 입력
+- 저장된 판정 리플레이(`--replay-drafts`) — LLM 호출 없이 커트라인만 다시
+  적용하며, 판정이 노출을 다 덮지 못하면 fail-fast한다
+- 정책별 event log(parquet/JSONL)·quarantine·비교 리포트(JSON/HTML) 산출
 
 주의: 두 정책이 같은 (user, video)를 노출하면 동일 판정을 공유하되 이벤트
 행은 정책별로 분리 생성된다. 재학습 등 downstream은 반드시 policy 컬럼으로
 필터링해야 한다(정책 간 attribution 오염 방지).
 
-spec: docs/specs/2026-07-20-policy-simulation-round.md
+spec: docs/specs/2026-07-20-policy-simulation-round.md,
+      docs/specs/2026-07-23-policy-round-draft-replay.md
 """
 
 from __future__ import annotations
@@ -447,6 +462,8 @@ def main(
 
     report = {
         "policy_version": policy_version,
+        "replay": replay is not None,
+        "llm_model": llm_model,
         "k": k,
         "exploration_ratio": exploration_ratio,
         "click_threshold": click_threshold,
@@ -585,6 +602,8 @@ def _cli() -> None:
             log_parameters(
                 {
                     "round_type": "policy_simulation",
+                    "replay": report["replay"],
+                    "llm_model": report["llm_model"],
                     "policy_version": report["policy_version"],
                     "k": report["k"],
                     "exploration_ratio": report["exploration_ratio"],

@@ -141,7 +141,9 @@ seed={report["seed"]}</div>
 <p class="meta">exploration CTR (model): {escape(_pct(explo_ctr))} ·
 skipped users: {len(report["skipped_users"])} ·
 dropped exposures: {report["dropped_exposures_without_judgment"]} ·
-quarantined chunks: {report["quarantined_chunks"]}</p></div>
+quarantined chunks: {report["quarantined_chunks"]} ·
+replay: {str(bool(report.get("replay", False))).lower()} ·
+llm_model={escape(str(report.get("llm_model", "-")))}</p></div>
 </body>
 </html>
 """
