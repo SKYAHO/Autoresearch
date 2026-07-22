@@ -67,8 +67,10 @@ def test_release_workflow_verifies_all_public_batch_commands():
 
     for module in (
         "autoresearch.jobs.youtube_trending",
+        "autoresearch.jobs.youtube_backfill",
         "autoresearch.jobs.action_log",
         "autoresearch.jobs.action_log_quality",
+        "autoresearch.jobs.feature_store_build",
         "src.pipeline.daily_recommendations",
     ):
         assert module in workflow_text
