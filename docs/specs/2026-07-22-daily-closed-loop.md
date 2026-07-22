@@ -16,7 +16,7 @@
 → LLM 클릭 → action log → 재학습)가 닫힌다.
 
 일일 생성은 3개 모드로 돈다: `single`(로컬 일괄), `shard`(LLM 병렬 분할),
-`merge`(전역 CTR 정규화 + 확장). 운영은 shard+merge다.
+`merge`(유저별 최고 1개 + 관련성 커트라인 판정 + 확장). 운영은 shard+merge다.
 
 ## 목표
 
@@ -29,8 +29,9 @@
 
 ## 비범위
 
-- LLM 판정·클릭 정규화 로직 변경 — 없음 (전역 CTR 2% 정규화 유지, 이슈
-  #222 본문의 라벨 방식 결정 준수)
+- LLM 판정·클릭 선정 로직 변경 — 없음 (유저별 최고 1개 + 관련성 커트라인
+  `click_threshold` 방식 유지, 이슈 #222 본문의 라벨 방식 결정 준수; CTR은
+  강제 목표가 아니라 창발 지표)
 - exposure_source별 CTR 집계 리포트(온라인 매트릭 비교) — 후속 이슈
 - Airflow DAG 편성(순서·재시도) — `Autoresearch-airflow` 소유. 본 spec은
   인계 요구사항만 명시한다.

@@ -92,7 +92,7 @@ class EventLog(BaseModel):
 
 
 class ImpressionDraft(BaseModel):
-    """LLM 판단 결과(전역 CTR 정규화 전 shard parquet 중간 산출물).
+    """LLM 판단 결과(클릭 선정 전 shard parquet 중간 산출물).
 
     draft 1건 = 후보(노출) 1건 = impression 1행에 대응한다. shard 생성과
     merge 사이에서는 `ACTION_LOG_DRAFT_PARQUET_SCHEMA` 계약으로 저장된다.
@@ -123,7 +123,7 @@ class ActionLogShardManifest(BaseModel):
     model_name: str = Field(min_length=1)
     generator_config: dict[str, object] = Field(default_factory=dict)
     candidates_per_user: int = Field(ge=1)
-    target_ctr: float = Field(ge=0.0, le=1.0)
+    click_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     personalized_ratio: float = Field(ge=0.0, le=1.0)
     popular_ratio: float = Field(ge=0.0, le=1.0)
     exploration_ratio: float = Field(ge=0.0, le=1.0)
@@ -168,7 +168,7 @@ class ActionLogShardManifest(BaseModel):
 class EventGenerationRequest(BaseModel):
     """action log 배치 생성 입력 조건과 출력 경로."""
 
-    target_ctr: float = 0.02
+    click_threshold: float = 0.55
     candidates_per_user: int = 24
     personalized_ratio: float = 0.7
     popular_ratio: float = 0.2
@@ -187,7 +187,7 @@ class EventGenerationRequest(BaseModel):
     quarantine_output_path: str = "data/generated/event_log_quarantine.jsonl"
 
     @field_validator(
-        "target_ctr",
+        "click_threshold",
         "personalized_ratio",
         "popular_ratio",
         "exploration_ratio",
@@ -254,7 +254,7 @@ class EventLogBatch(BaseModel):
 
     @property
     def summary(self) -> dict[str, float]:
-        """총 event 수, impression/click 행 수, 전역 CTR(clicks/impressions)을 계산한다."""
+        """총 event 수, impression/click 행 수, 배치 전체 CTR(clicks/impressions)을 계산한다."""
 
         impressions = sum(1 for e in self.events if e.event_type == "impression")
         clicks = sum(1 for e in self.events if e.event_type == "click")

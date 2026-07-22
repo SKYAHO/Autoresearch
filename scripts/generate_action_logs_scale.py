@@ -46,7 +46,7 @@ def main() -> None:
     ap.add_argument("--candidates", type=int, default=96)
     ap.add_argument("--chunk", type=int, default=24)
     ap.add_argument("--concurrency", type=int, default=60)
-    ap.add_argument("--target-ctr", type=float, default=0.02)
+    ap.add_argument("--click-threshold", type=float, default=0.55)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--model", default="mistralai/mistral-nemo")
     ap.add_argument("--event-offset", type=int, default=0,
@@ -61,7 +61,7 @@ def main() -> None:
 
     request = EventGenerationRequest(
         candidates_per_user=args.candidates, chunk_size=args.chunk,
-        max_concurrency=args.concurrency, target_ctr=args.target_ctr, seed=args.seed,
+        max_concurrency=args.concurrency, click_threshold=args.click_threshold, seed=args.seed,
         output_path=args.out,
         warehouse_output_path=args.out.replace(".parquet", ".jsonl"),
         quarantine_output_path=args.out.replace(".parquet", "_quarantine.jsonl"),

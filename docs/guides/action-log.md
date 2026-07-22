@@ -28,7 +28,7 @@
 | `like` | 좋아요 발생 | `null` |
 
 **④ LLM은 판단, 코드는 조립**
-LLM은 (유저 × 후보영상)마다 `click_propensity`/`watch_fraction`만 판단한다(토큰 절감을 위해 인덱스 포맷 `{"j": [[idx, cp, wf], ...]}` — `idx`는 후보의 0-base 위치라 재정렬에도 재결합 가능). `would_like`는 LLM이 출력하지 않고 코드가 `derive_would_like`로 파생한다. **정확한 클릭 비율(전역 2% CTR)은 코드가 결정**한다 — propensity 상위 `round(target_ctr × 총 impression 수)`개를 클릭으로 선정. 그래서 모델을 바꿔도 CTR은 고정, 개별 판단만 달라진다.
+LLM은 (유저 × 후보영상)마다 `click_propensity`/`watch_fraction`만 판단한다(토큰 절감을 위해 인덱스 포맷 `{"j": [[idx, cp, wf], ...]}` — `idx`는 후보의 0-base 위치라 재정렬에도 재결합 가능). `would_like`는 LLM이 출력하지 않고 코드가 `derive_would_like`로 파생한다. **클릭 여부는 코드가 유저(슬레이트)별로 결정**한다 — 유저별 노출 중 `click_propensity` 최고 1건이 커트라인(`click_threshold`) 이상이면 그 1건만 클릭으로 선정하고, 미만이면 그 유저는 클릭 0건이다. 전역 할당량이 아니라 관련성 커트라인이므로 **CTR은 더 이상 코드가 강제하는 값이 아니라 모델 판단 품질에 따라 창발(emergent)하는 결과 지표**다.
 
 ---
 
@@ -40,7 +40,7 @@ LLM은 (유저 × 후보영상)마다 `click_propensity`/`watch_fraction`만 판
 | `video_source.py` | KR TrendingVideo parquet 로드 → 정규 `VideoRecord` dict(`video_id` dedup). 영상 길이 컬럼이 없어 결정론적 근사값 제공. | `load_video_records`, `nominal_duration_sec`, `build_fixture_video_records` |
 | `candidate.py` | 유저별 노출 batch 구성 — 관련(키워드 겹침 상위) + exploration(랜덤) 혼합. | `build_candidates` |
 | `llm_generator.py` | 프롬프트 구성 + 후보별 판정(judgments) 생성. 테스트용 결정론 fixture와 실서비스 OpenRouter 두 구현. | `build_action_log_prompt`, `RuleBasedActionLogGenerator`, `OpenRouterActionLogGenerator` |
-| `pipeline.py` | 오케스트레이션 — 유저 단위 격리 생성 → 전역 2% 정규화 → 이벤트 확장 → parquet/warehouse/quarantine 저장 + 실패 가드. | `generate_action_log_batch`, `_expand_events`, `EVENT_LOG_PARQUET_SCHEMA` |
+| `pipeline.py` | 오케스트레이션 — 유저 단위 격리 생성 → 유저별 최고 1건 + 관련성 커트라인 선정 → 이벤트 확장 → parquet/warehouse/quarantine 저장 + 실패 가드. | `generate_action_log_batch`, `_expand_events`, `EVENT_LOG_PARQUET_SCHEMA` |
 
 > `__init__.py`는 비어 있다. 서브모듈에서 직접 import 한다.
 > [`../archive/reports/action-log-qa-리포트.md`](../archive/reports/action-log-qa-리포트.md) — 실측 QA 리포트(모델별 결과).
@@ -61,7 +61,7 @@ KR TrendingVideo(parquet) ┘         (video_source.load_video_records 로 video
         │     └ _build_user_drafts(raw) → [ImpressionDraft ...]  # would_like는 여기서 코드 파생
         │           # 파싱 실패 시 해당 유저만 quarantine (배치는 계속)
         ▼
-  _clicked_indices(drafts, target_ctr)         # 전역 propensity 내림차순 상위 round(2%×N) = "클릭" 선정
+  select_clicks_per_slate(drafts, click_threshold)   # 유저별 최고 1건이 커트라인 이상이면 "클릭" 선정
         │
         ▼
   _expand_events(drafts, clicked, request)      # 노출→impression 1행, 클릭분→click/view(+like), timestamp 배치
@@ -77,7 +77,7 @@ KR TrendingVideo(parquet) ┘         (video_source.load_video_records 로 video
 **단계 요약**
 1. **후보 구성**(`candidate.py`) — 유저 관심 키워드 ↔ 영상 title/tags/description 토큰 겹침으로 관련 후보를 뽑고, exploration 비율만큼 랜덤을 섞는다. exposure_type 라벨은 로그에 남기지 않는다.
 2. **LLM 판정**(`llm_generator.py`) — 유저 1명 × 후보 batch를 실제 영상 텍스트 근거로 읽어 후보별 propensity/watch_fraction/would_like를 반환(유저당 1콜).
-3. **전역 2% 정규화**(`pipeline._clicked_indices`) — 전 유저의 draft를 모아 propensity 상위 `round(target_ctr × 총 impression 수)`개를 클릭으로 선정. tie-break: `(-propensity, user_id, video_id)`로 결정론적.
+3. **유저별 최고 1건 + 관련성 커트라인**(`pipeline.select_clicks_per_slate`) — 유저(슬레이트)별로 `click_propensity` 최고 1건만 후보로 삼아, 그 값이 `click_threshold` 이상이면 클릭으로 선정(미만이면 그 유저는 클릭 0건). tie-break: `(-click_propensity, video_id)`로 결정론적. 전역 할당량이 아니므로 CTR은 점수 분포에 따라 창발한다.
 4. **이벤트 확장**(`pipeline._expand_events`) — 노출마다 `impression`, 클릭 선정분엔 `click → view (→ would_like면 like)`를 timestamp 단조 증가로 배치.
 5. **저장 + 가드** — parquet/warehouse/quarantine 기록. 격리 비율이 `max_quarantine_ratio`를 넘으면 조용한 빈 결과 대신 예외로 실패.
 
@@ -130,7 +130,7 @@ LLM 판정 결과 1건 = 후보(노출) 1건 = `impression` 1행에 대응.
 | 필드 | 타입 | 비고 |
 |---|---|---|
 | `user_id`, `video_id` | str | |
-| `click_propensity` | float [0,1] | 전역 정규화용 |
+| `click_propensity` | float [0,1] | 유저별 최고 1건 + 커트라인 판정용 |
 | `watch_fraction` | float [0,1] | view watch_time 산출용 |
 | `would_like` | bool | like 생성 여부. 코드 파생(`derive_would_like`: cp≥0.7 & wf≥0.6) |
 | `duration_sec` | int ≥1 | `nominal_duration_sec(video_id)` (60~900s, 결정론) |
@@ -145,7 +145,7 @@ LLM 판정 결과 1건 = 후보(노출) 1건 = `impression` 1행에 대응.
 ### 5.3 `EventGenerationRequest` (실행 파라미터)
 | 파라미터 | 기본값 | 의미 |
 |---|---|---|
-| `target_ctr` | `0.02` | 전역 CTR 목표(코드가 강제) |
+| `click_threshold` | `0.55` | 유저별 최고 `click_propensity`가 이 값 이상이어야 클릭으로 선정(관련성 커트라인) |
 | `candidates_per_user` | `24` | 유저당 노출 후보 수 |
 | `exploration_ratio` | `0.2` | 후보 중 exploration(랜덤) 비율 |
 | `history_days` | `30` | historical window 길이(일) |
@@ -158,7 +158,7 @@ LLM 판정 결과 1건 = 후보(노출) 1건 = `impression` 1행에 대응.
 | `quarantine_output_path` | `data/generated/event_log_quarantine.jsonl` | 격리 jsonl |
 
 ### 5.4 결과 요약 (`EventLogBatch.summary` / `EventGenerationResult.summary`)
-`{total_events, impressions, clicks, ctr}` + 결과 레벨엔 `{quarantined_users, api_error, invalid_json, schema_fail}`. **CTR = clicks / impressions.**
+`{total_events, impressions, clicks, ctr}` + 결과 레벨엔 `{quarantined_users, api_error, invalid_json, schema_fail}`. **CTR = clicks / impressions**이며, 더 이상 코드가 강제하는 목표값이 아니라 `click_threshold` 커트라인과 모델 판단 품질에 따라 창발하는 결과 지표다.
 
 ---
 
