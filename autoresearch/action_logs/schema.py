@@ -123,7 +123,6 @@ class ActionLogShardManifest(BaseModel):
     model_name: str = Field(min_length=1)
     generator_config: dict[str, object] = Field(default_factory=dict)
     candidates_per_user: int = Field(ge=1)
-    target_ctr: float = Field(default=0.02, ge=0.0, le=1.0)
     click_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
     personalized_ratio: float = Field(ge=0.0, le=1.0)
     popular_ratio: float = Field(ge=0.0, le=1.0)
@@ -169,7 +168,6 @@ class ActionLogShardManifest(BaseModel):
 class EventGenerationRequest(BaseModel):
     """action log 배치 생성 입력 조건과 출력 경로."""
 
-    target_ctr: float = 0.02
     click_threshold: float = 0.55
     candidates_per_user: int = 24
     personalized_ratio: float = 0.7
@@ -189,7 +187,6 @@ class EventGenerationRequest(BaseModel):
     quarantine_output_path: str = "data/generated/event_log_quarantine.jsonl"
 
     @field_validator(
-        "target_ctr",
         "click_threshold",
         "personalized_ratio",
         "popular_ratio",

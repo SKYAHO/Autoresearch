@@ -674,19 +674,6 @@ def _generate_drafts_isolated(
     return drafts, quarantine, total_chunks
 
 
-def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
-    """전역 2% 정규화: click_propensity 상위 round(ctr×N)개의 draft(=impression)
-    인덱스를 '클릭'으로 선정해 반환한다."""
-
-    total = len(drafts)
-    n_click = round(target_ctr * total)
-    order = sorted(
-        range(total),
-        key=lambda i: (-drafts[i].click_propensity, drafts[i].user_id, drafts[i].video_id),
-    )
-    return set(order[:n_click])
-
-
 def select_clicks_per_slate(
     drafts: list[ImpressionDraft], click_threshold: float
 ) -> set[int]:
@@ -710,13 +697,6 @@ def select_clicks_per_slate(
         if drafts[top].click_propensity >= click_threshold:
             clicked.add(top)
     return clicked
-
-
-def normalize_clicks(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
-    """전역 CTR 정규화의 공개 진입점 — 외부 배치(정책 시뮬레이션)가 합동 pool에
-    한 번만 적용할 수 있게 _clicked_indices를 노출한다."""
-
-    return _clicked_indices(drafts, target_ctr)
 
 
 @dataclass(frozen=True)

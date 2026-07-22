@@ -273,7 +273,6 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
         "model_name": "fixture-rule-action-log",
         "generator_config": {},
         "candidates_per_user": 5,
-        "target_ctr": 0.02,
         "click_threshold": 0.2,
         "personalized_ratio": 0.7,
         "popular_ratio": 0.2,

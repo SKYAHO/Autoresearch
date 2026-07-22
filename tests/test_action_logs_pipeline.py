@@ -71,7 +71,6 @@ def _fixture_users(n=6):
 def _request(tmp_path, **kw):
     base = dict(
         candidates_per_user=20,
-        target_ctr=0.05,
         seed=42,
         history_end=_FIXED_END,
         history_days=30,
@@ -133,25 +132,6 @@ def test_click_session_timestamps_are_monotonic(tmp_path):
         group.sort(key=lambda e: order[e.event_type])
         ts = [e.event_timestamp for e in group]
         assert all(a < b for a, b in zip(ts, ts[1:])), f"non-strict session order: {ts}"
-
-
-def test_clicked_indices_selects_highest_propensity():
-    from autoresearch.action_logs.pipeline import _clicked_indices
-    from autoresearch.action_logs.schema import ImpressionDraft
-
-    drafts = [
-        ImpressionDraft(
-            user_id="u",
-            video_id=f"v{i}",
-            click_propensity=p,
-            watch_fraction=0.5,
-            would_like=False,
-            duration_sec=100,
-        )
-        for i, p in enumerate([0.1, 0.9, 0.5, 0.8, 0.2])
-    ]
-    chosen = _clicked_indices(drafts, target_ctr=0.4)  # round(0.4*5)=2
-    assert chosen == {1, 3}  # the 0.9 and 0.8 propensity drafts
 
 
 def test_timestamps_within_history_window(tmp_path):
@@ -939,7 +919,7 @@ def test_expand_events_tags_exposure_metadata_and_prefix():
     from autoresearch.action_logs.pipeline import (
         ExposureMetadata,
         _expand_events,
-        normalize_clicks,
+        select_clicks_per_slate,
     )
     from autoresearch.action_logs.schema import SOURCE_ONLINE_SIMULATED, ImpressionDraft
 
@@ -953,7 +933,8 @@ def test_expand_events_tags_exposure_metadata_and_prefix():
             watch_fraction=0.5, would_like=False, duration_sec=100,
         ),
     ]
-    clicked = normalize_clicks(drafts, target_ctr=0.5)  # 상위 1건 = v1
+    # per-slate 커트라인 0.5: 슬레이트 최고(v1, 0.9)가 커트라인 이상이라 클릭됨
+    clicked = select_clicks_per_slate(drafts, click_threshold=0.5)
     assert clicked == {0}
 
     metadata = {
@@ -984,7 +965,7 @@ def test_expand_events_tags_exposure_metadata_and_prefix():
 
 
 def test_expand_events_without_metadata_is_unchanged():
-    from autoresearch.action_logs.pipeline import _expand_events, normalize_clicks
+    from autoresearch.action_logs.pipeline import _expand_events, select_clicks_per_slate
     from autoresearch.action_logs.schema import ImpressionDraft
 
     drafts = [
@@ -993,7 +974,10 @@ def test_expand_events_without_metadata_is_unchanged():
             watch_fraction=0.5, would_like=False, duration_sec=100,
         ),
     ]
-    events = _expand_events(drafts, normalize_clicks(drafts, 0.0), EventGenerationRequest(seed=7))
+    # 커트라인을 최고 propensity보다 높게 잡아 클릭 0건(=impression만)인 경로를 검증한다.
+    events = _expand_events(
+        drafts, select_clicks_per_slate(drafts, click_threshold=1.0), EventGenerationRequest(seed=7)
+    )
     assert events[0].event_id == "evt_00000000"
     assert events[0].source == "historical"
     assert events[0].policy is None
