@@ -8,6 +8,7 @@ from src.features.assembly import (
     compute_interaction_columns,
     compute_point_in_time_user_features,
     compute_user_offline_features,
+    compute_user_topic_features,
     compute_video_features,
     parse_primary_categories,
 )
@@ -182,6 +183,102 @@ def test_compute_interaction_columns_falls_back_without_primary_categories():
     )
     out = compute_interaction_columns(joined)
     assert out["preferred_category"].iloc[0] == ["Gaming"]
+
+
+def test_compute_user_topic_features_shape_and_values():
+    personas = pd.DataFrame(
+        {
+            "uuid": ["u1", "u2"],
+            "hobbies_and_interests_list": ['["gaming"]', '["music"]'],
+            "primary_categories": ['["Gaming"]', '["Music"]'],
+        }
+    )
+    out = compute_user_topic_features(personas, ["Gaming", "Music"])
+
+    assert len(out) == 4  # 2 personas x 2 categories
+    assert set(out.columns) == {
+        "user_id",
+        "category_id",
+        "topic_similarity",
+        "preferred_category_match",
+    }
+
+    u1_gaming = out[(out["user_id"] == "u1") & (out["category_id"] == "Gaming")].iloc[0]
+    assert u1_gaming["preferred_category_match"] == 1
+    u1_music = out[(out["user_id"] == "u1") & (out["category_id"] == "Music")].iloc[0]
+    assert u1_music["preferred_category_match"] == 0
+
+
+def test_compute_user_topic_features_embeds_each_unique_keyword_only_once(monkeypatch):
+    # persona 단위(3명)로 계산하므로, 이벤트 수(수백만)와 무관하게 유니크
+    # 키워드 집합만 한 번씩 임베딩해야 한다(#206/#240).
+    calls = []
+
+    def fake_embed_texts(texts, task_type):
+        calls.append(list(texts))
+        return [np.zeros(768) for _ in texts]
+
+    monkeypatch.setattr(assembly_module, "embed_texts", fake_embed_texts)
+
+    personas = pd.DataFrame(
+        {
+            "uuid": ["u1", "u2", "u3"],
+            "hobbies_and_interests_list": ['["gaming", "music"]'] * 3,
+        }
+    )
+    compute_user_topic_features(personas, ["Gaming", "Music"])
+
+    assert len(calls) == 1
+    assert sorted(calls[0]) == ["gaming", "music"]
+
+
+def test_compute_user_topic_features_falls_back_without_primary_categories():
+    personas = pd.DataFrame(
+        {
+            "uuid": ["u1"],
+            "hobbies_and_interests_list": ['["gaming"]'],
+        }
+    )
+    out = compute_user_topic_features(personas, ["Gaming", "Music"])
+    assert out[out["category_id"] == "Gaming"]["preferred_category_match"].iloc[0] == 1
+    assert out[out["category_id"] == "Music"]["preferred_category_match"].iloc[0] == 0
+
+
+def test_compute_user_topic_features_matches_compute_interaction_columns(monkeypatch):
+    # 유저 단위 선계산 경로(#240)가 기존 이벤트 단위 compute_interaction_columns()와
+    # 정확히 같은 topic_similarity/preferred_category_match 값을 내야 한다 — 조인
+    # 순서만 바뀌었을 뿐 계산 결과는 동일해야 한다.
+    def fake_embed_texts(texts, task_type):
+        return [np.full(768, float(len(t))) for t in texts]
+
+    monkeypatch.setattr(assembly_module, "embed_texts", fake_embed_texts)
+
+    personas = pd.DataFrame(
+        {
+            "uuid": ["u1", "u2"],
+            "hobbies_and_interests_list": ['["gaming", "music"]', '["travel"]'],
+            "primary_categories": ['["Gaming"]', '["Travel & Events"]'],
+        }
+    )
+    events_joined = pd.DataFrame(
+        {
+            "user_id": ["u1", "u1", "u2"],
+            "category_id": ["Gaming", "Music", "Travel & Events"],
+            "hobbies_and_interests_list": [
+                '["gaming", "music"]', '["gaming", "music"]', '["travel"]'
+            ],
+            "primary_categories": ['["Gaming"]', '["Gaming"]', '["Travel & Events"]'],
+            "historical_category_affinity": ["unknown", "unknown", "unknown"],
+        }
+    )
+
+    expected = compute_interaction_columns(events_joined)
+
+    user_topic = compute_user_topic_features(personas, events_joined["category_id"].unique())
+    merged = events_joined.merge(user_topic, on=["user_id", "category_id"], how="left")
+
+    assert list(merged["topic_similarity"]) == list(expected["topic_similarity"])
+    assert list(merged["preferred_category_match"]) == list(expected["preferred_category_match"])
 
 
 def test_parse_primary_categories_from_json_string():

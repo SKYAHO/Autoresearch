@@ -55,11 +55,12 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.features.assembly import (  # noqa: E402
-    compute_interaction_columns,
     compute_point_in_time_user_features,
     compute_user_offline_features,
+    compute_user_topic_features,
     compute_video_features,
 )
+from src.features.feature_builder import compute_historical_category_match  # noqa: E402
 from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
 
 
@@ -414,7 +415,6 @@ def main(
 
     print("\n[Step 1] DuckDB SQL 처리...")
     con = duckdb.connect()
-    con.register("personas_raw", personas)
 
     snapshot_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -435,16 +435,17 @@ def main(
     con.register("video_feature", video_feature)
     con.register("online_features", online_features)
 
-    # primary_categories는 virtual_users 파이프라인이 LLM으로 직접 산출한 실제
-    # preferred_category 값이다(#205) — 있으면 그대로 배선하고, 없으면(구식 mock
-    # personas.csv 등) compute_interaction_columns()가 키워드 매핑 mock으로
-    # fallback한다.
-    primary_categories_select = (
-        ",\n            p.primary_categories" if "primary_categories" in personas.columns else ""
-    )
+    # persona의 hobbies_and_interests_list/primary_categories를 이벤트(수백만
+    # 행) 단위로 직접 조인하면 유저당 평균 노출 수만큼 리스트/임베딩 컬럼이
+    # 복제되어 OOM을 유발한다(#231/#238 이후에도 재현, #240). topic_similarity/
+    # preferred_category_match는 (user, category_id) 조합에만 의존하고
+    # category_id는 관측되는 값이 적으므로, persona 단위로 미리 계산해 작은
+    # 유저x카테고리 테이블만 조인한다.
+    user_topic_feature = compute_user_topic_features(personas, video_feature["category_id"].unique())
+    con.register("user_topic_feature", user_topic_feature)
 
     joined = con.execute(
-        f"""
+        """
         SELECT
             o.user_id,
             o.video_id,
@@ -465,11 +466,12 @@ def main(
             vf.channel_subscriber_count,
             vf.channel_view_count,
             vf.channel_video_count,
-            p.hobbies_and_interests,
-            p.hobbies_and_interests_list{primary_categories_select}
+            utf.topic_similarity,
+            utf.preferred_category_match
         FROM online_features o
         JOIN video_feature vf ON vf.video_id = o.video_id
-        JOIN personas_raw p ON p.uuid = o.user_id
+        JOIN user_topic_feature utf ON utf.user_id = o.user_id
+            AND COALESCE(utf.category_id, '') = COALESCE(vf.category_id, '')
         ORDER BY o.timestamp
         """
     ).df()
@@ -477,7 +479,12 @@ def main(
 
     print("\n[Step 2] Interaction Features 계산...")
 
-    joined = compute_interaction_columns(joined)
+    joined["historical_category_match"] = joined.apply(
+        lambda row: compute_historical_category_match(
+            row["historical_category_affinity"], row["category_id"]
+        ),
+        axis=1,
+    )
 
     print(f"  [OK] topic_similarity: mean={joined['topic_similarity'].mean():.3f}")
 
