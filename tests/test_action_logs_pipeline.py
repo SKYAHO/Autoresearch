@@ -95,7 +95,13 @@ def test_end_to_end_long_event_stream(tmp_path):
 
     assert len(impressions) == 6 * 20  # 유저당 후보 20 (pool 40)
     assert result.summary["impressions"] == 6 * 20
-    assert len(clicks) == round(0.05 * len(impressions))  # 전역 CTR 정규화(여기선 5%)
+    # per-slate 커트라인(기본 click_threshold=0.55): 유저당 클릭은 최대 1건이며,
+    # 슬레이트 최고 click_propensity가 커트라인 이상일 때만 클릭이 발생한다.
+    clicks_by_user: dict[str, int] = {}
+    for c in clicks:
+        clicks_by_user[c.user_id] = clicks_by_user.get(c.user_id, 0) + 1
+    assert all(count == 1 for count in clicks_by_user.values())
+    assert len(clicks) <= len(users)
     assert result.summary["clicks"] == len(clicks)
     assert len(views) == len(clicks)  # 클릭 선정분마다 view 1행
     assert len(likes) <= len(clicks)  # like는 would_like일 때만
@@ -1124,3 +1130,19 @@ def test_select_clicks_tiebreak_is_deterministic_by_video_id() -> None:
 
 def test_select_clicks_handles_empty() -> None:
     assert select_clicks_per_slate([], 0.55) == set()
+
+
+def test_expand_uses_per_slate_click_threshold() -> None:
+    request = EventGenerationRequest(click_threshold=0.55)
+    drafts = [
+        _draft("u1", "a", 0.80),  # 클릭
+        _draft("u1", "b", 0.30),
+        _draft("u2", "c", 0.40),  # 커트라인 미만 → 클릭 없음
+    ]
+    result = expand_action_log_drafts(request, drafts)
+    clicks = [e for e in result.batch.events if e.event_type == "click"]
+    assert {c.video_id for c in clicks} == {"a"}
+
+
+def test_event_generation_request_defaults_click_threshold() -> None:
+    assert EventGenerationRequest().click_threshold == 0.55

@@ -274,6 +274,7 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
         "generator_config": {},
         "candidates_per_user": 5,
         "target_ctr": 0.2,
+        "click_threshold": 0.55,
         "personalized_ratio": 0.7,
         "popular_ratio": 0.2,
         "exploration_ratio": 0.1,

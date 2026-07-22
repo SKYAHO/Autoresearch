@@ -1068,7 +1068,7 @@ def generate_action_log_drafts(
         extra={
             "users": len(virtual_users),
             "videos": len(videos),
-            "target_ctr": request.target_ctr,
+            "click_threshold": request.click_threshold,
             "candidates_per_user": request.candidates_per_user,
             "seed": request.seed,
         },
@@ -1102,9 +1102,9 @@ def expand_action_log_drafts(
     drafts: list[ImpressionDraft],
     quarantine: list[QuarantineRecord] | None = None,
 ) -> EventGenerationResult:
-    """전체 draft에 전역 CTR 정규화와 long event 확장을 적용한다."""
+    """전체 draft에 유저별 커트라인 클릭 선정과 long event 확장을 적용한다."""
 
-    clicked = _clicked_indices(drafts, request.target_ctr)
+    clicked = select_clicks_per_slate(drafts, request.click_threshold)
     events = _expand_events(drafts, clicked, request)
 
     batch = EventLogBatch(
