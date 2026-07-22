@@ -12,8 +12,8 @@
 로컬, CI와 KubernetesPodOperator에서 동일하게 동작해야 한다.
 
 이 계약은 현재 운영 범위인 YouTube 일일 수집, YouTube backfill, action-log
-single/shard/merge, action-log 품질 검사와 Feast materialize, 일일 추천 결과
-적재를 다룬다. 학습·평가, FastAPI serving command는 각 기능이 운영화될 때 별도
+single/shard/merge, action-log 품질 검사와 offline feature build, Feast
+materialize, 일일 추천 결과 적재를 다룬다. 학습·평가, FastAPI serving command는 각 기능이 운영화될 때 별도
 revision으로 추가한다.
 
 ## 계약 버전
@@ -44,6 +44,7 @@ python -m autoresearch.jobs.action_log --mode single [options]
 python -m autoresearch.jobs.action_log --mode shard [options]
 python -m autoresearch.jobs.action_log --mode merge [options]
 python -m autoresearch.jobs.action_log_quality [options]
+python -m autoresearch.jobs.feature_store_build [options]
 python -m autoresearch.jobs.feast_materialize [options]
 python -m src.pipeline.daily_recommendations [options]
 ```
