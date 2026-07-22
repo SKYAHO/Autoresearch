@@ -26,7 +26,7 @@
 - Create: `docs/plans/2026-07-22-feature-materialization-coexistence.md`
 
 **Interfaces:**
-- Consumes: public CLI `python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <dataset-id>`.
+- Consumes: public CLI `python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <feature-dataset-id> --raw-dataset <raw-dataset-id>`.
 - Produces: conflict-free documentation that preserves the main-branch dataset-layer guide and defines the public operational path.
 
 - [ ] **Step 1: Resolve the table-of-contents conflict**

@@ -418,7 +418,7 @@ git add docs/guides/data-warehouse.md tests/test_feature_materialize_job.py
 - Modify: `docs/specs/2026-07-21-bigquery-feature-materialization.md`
 
 **Interfaces:**
-- Consumes: `python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <dataset-id>` from Task 2.
+- Consumes: `python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <feature-dataset-id> --raw-dataset <raw-dataset-id>` from Task 2.
 - Produces: 운영자가 실행할 canonical command와 명시적인 out-of-scope handoff.
 
 - [ ] **Step 1: warehouse guide에 canonical 실행 안내를 추가한다**
@@ -430,7 +430,8 @@ materialization 실행` 절을 추가한다. 아래 canonical command와 사전 
 ```bash
 python -m autoresearch.jobs.feature_materialize \
   --project "$GCP_PROJECT_ID" \
-  --dataset "$BQ_DATASET"
+  --dataset "$BQ_DATASET" \
+  --raw-dataset "$CTR_TRAINING_BQ_RAW_DATASET"
 ```
 
 ADC 또는 workload identity의 BigQuery job 실행 및 대상 테이블 DML 권한이

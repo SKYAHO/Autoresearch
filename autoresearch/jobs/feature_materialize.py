@@ -1,9 +1,11 @@
-"""BigQuery raw를 Terraform 관리 feature table로 변환하는 공개 batch 명령.
+"""Raw warehouse와 Feast·학습 소비 단계 사이의 feature materialization을 담당한다.
 
-이 모듈은 raw action log와 YouTube trending 데이터를 세 feature target으로
-materialize하는 SQL 및 JSONL batch CLI를 제공한다. GCS raw 적재,
-``src.pipeline.build_feature_tables``, Airflow schedule, Terraform 관리는 인접
-파이프라인 또는 소유 저장소의 책임이다.
+이 모듈은 raw action log와 YouTube trending 데이터를 Terraform이 관리하는
+``user_static_feature``, ``user_dynamic_feature``, ``video_feature`` target으로
+변환하는 SQL 및 공개 JSONL batch CLI를 제공한다. GCS raw 적재는 인접 수집
+단계가, Feast·학습 데이터 조회는 downstream 단계가 담당한다.
+``src.pipeline.build_feature_tables``, Airflow schedule, Terraform 관리는 이
+모듈의 책임이 아니다.
 """
 
 from __future__ import annotations
