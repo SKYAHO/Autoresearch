@@ -43,24 +43,31 @@ feature 테이블에 전체 갱신하는 공개 batch CLI를 제공한다.
 
 ## 인터페이스
 
-공개 batch CLI는 프로젝트와 dataset을 명시적으로 받는다. 대상 테이블은
-CLI 내부의 고정된 순서로 실행한다.
+공개 batch CLI는 프로젝트, feature target dataset, raw source dataset을
+명시적으로 받는다. 대상 테이블은 CLI 내부의 고정된 순서로 실행한다.
 
 ```bash
 python -m autoresearch.jobs.feature_materialize \
   --project <project-id> \
-  --dataset <dataset-id>
+  --dataset <feature-dataset-id> \
+  --raw-dataset <raw-dataset-id>
 ```
 
-기본값과 세부 인자 명명은 기존 `autoresearch.jobs` 공개 명령 계약에 맞춘다.
+`--dataset`은 `user_static_feature`, `user_dynamic_feature`, `video_feature`
+target table을 가리킨다. `--raw-dataset`은 `data_lake_action_log`와
+`data_lake_youtube_trending_kr` source table을 가리킨다.
+`asset_virtual_user_vu_1000`은 별도 이전 전까지 feature dataset에 남아
+있으므로 static source는 `--dataset`을 사용한다. 기본값과 세부 인자 명명은
+기존 `autoresearch.jobs` 공개 명령 계약에 맞춘다.
 
 ## 데이터 흐름
 
-1. CLI가 BigQuery client를 생성하고 대상 테이블의 존재를 확인한다.
+1. CLI가 BigQuery client를 생성하고 feature target dataset의 대상 테이블
+   존재를 확인한다.
 2. `user_static_feature` SQL은 raw virtual-user nested list를
    `UNNEST(field.list)` 후 `element`를 추출해 repeated string 컬럼을 만든다.
-3. `user_dynamic_feature`와 `video_feature` SQL은 현재 문서화된 raw
-   schema 기반 집계 규칙을 사용한다.
+3. `user_dynamic_feature`와 `video_feature` SQL은 `--raw-dataset`의 현재
+   문서화된 raw schema 기반 집계 규칙을 사용한다.
 4. 테이블마다 BigQuery transaction에서 기존 행을 삭제하고 새 변환 결과를
    삽입한 뒤 commit한다.
 5. commit 후 같은 script의 final `SELECT COUNT(*)`로 target table의 최종 행 수를
