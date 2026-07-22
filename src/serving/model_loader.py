@@ -1,12 +1,5 @@
 from __future__ import annotations
 
-__arch__ = {
-    "stage": "training",
-    "role": "로컬 파일·MLflow run·Registry alias에서 Reranker 아티팩트를 해석합니다.",
-    "owns": ["모델 소스 설정 파싱", "아티팩트 로드", "Registry alias 계보 해석"],
-    "not_owns": ["모델 학습", "추천 후보 피처 조립"],
-}
-
 import os
 import pickle
 from dataclasses import dataclass

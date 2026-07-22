@@ -1,6 +1,6 @@
 # Coding Guidelines for AI Coding Agents
 
-> Version: 1.0.0 | Last Updated: 2026-07-13
+> Version: 1.1.0 | Last Updated: 2026-07-22
 
 이 문서는 Claude Code 등 AI 코딩 에이전트가 이 저장소에서 작업할 때의 기본
 진입점입니다. 필수 규칙은 짧게 유지하고, 상세 가이드는 `.claude/docs/`를
@@ -78,6 +78,11 @@
 - 코드가 변경되는 작업은 반드시 이슈를 먼저 발행하고, 그 이슈의 `Create a
   branch`로 브랜치를 생성합니다(이슈-브랜치 자동 연결). 상세는
   `.claude/docs/agent-workflow-reference.md` 참조.
+- 모듈 최상단 docstring에 ① 이 모듈이 **전체 파이프라인 기준으로 어느
+  구간을 담당하는지**(담당하지 않는 인접 책임 포함), ② 모듈이 제공하는
+  기능을 모듈 단위로 서술합니다. 새 모듈은 생성 시, 기존 모듈은 기능을
+  추가·변경하는 같은 커밋에서 docstring을 갱신합니다. 형식은
+  `.claude/docs/agent-python-reference.md`의 Module Responsibility 참조.
 - 새 추상화보다 기존 저장소 패턴을 우선합니다.
 - 구조 변경과 동작 변경은 분리합니다.
 - Python 함수의 타입 힌트(반환 타입 포함)를 유지합니다.

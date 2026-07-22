@@ -9,19 +9,6 @@ spec: docs/specs/2026-07-21-daily-recommendations-batch.md
 
 from __future__ import annotations
 
-__arch__ = {
-    "stage": "training",
-    "role": "champion 모델로 일일 후보를 채점해 유저별 순위를 BigQuery에 적재합니다.",
-    "owns": [
-        "일일 추천 순위 산출·계보 태깅",
-        "user_recommendations 파티션 멱등 적재",
-    ],
-    "not_owns": [
-        "노출 선정(Top-K + exploration)과 LLM 판정",
-        "모델 학습과 Registry alias 운영",
-    ],
-}
-
 import argparse
 import json
 import logging
