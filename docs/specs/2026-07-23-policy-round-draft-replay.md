@@ -292,3 +292,90 @@ uv run --env-file .env python -m src.pipeline.simulate_policy_round \
 - `daily.py`의 shard/merge 경로 변경
 - `select_clicks_per_slate`의 정책별 분리
 - GCS 업로드 (덤프는 로컬 출력 디렉터리 전용)
+
+## 실행 결과 (2026-07-23)
+
+폐루프를 실제 OpenRouter LLM으로 완주해 검증했다. **단, 계획한 100유저가 아니라
+8유저로 축소해 실행했다** — 사유는 아래 "규모 제약"에 적는다.
+
+### 라운드 요약
+
+| 항목 | 값 |
+|---|---|
+| 판정 라운드 유저 | 8 (`--max-users 8`) |
+| LLM 모델 | `mistralai/mistral-nemo` |
+| 합집합 draft(=캘리브레이션 분모) | 152 |
+| 정책별 노출 | baseline 80 / model 80 |
+| 노출 겹침 (Jaccard 평균) | 0.0548 |
+| quarantine | 0 |
+
+### ① 판정 라운드 (`--click-threshold 0.5`, 유일한 유료 단계)
+
+| 정책 | impressions | clicks | CTR | mean propensity |
+|---|---|---|---|---|
+| baseline | 80 | 0 | 0.0% | 0.2250 |
+| model | 80 | 6 | 7.5% | 0.2394 |
+
+산출물: `action_log_drafts.parquet`(152행), `action_log_drafts_meta.json`,
+`event_log.parquet`, 리포트 JSON·HTML.
+
+### ② 캘리브레이션 (`--target-ctr 0.015`, LLM 0콜)
+
+```
+recommended_threshold = 0.7
+achieved_ctr          = 0.0132   (합집합 152 노출 기준)
+users = 8, impressions = 152
+per_user_max_quantiles = {p50: 0.5, p75: 0.6, p90: 0.7, p95: 0.8, p99: 0.8}
+sweep = [(0.4, 0.0526), (0.5, 0.0395), (0.6, 0.0197), (0.7, 0.0132), (0.8, 0.0066)]
+```
+
+### ③ 리플레이 (`--click-threshold 0.7`, LLM 0콜)
+
+| 정책 | impressions | clicks | CTR |
+|---|---|---|---|
+| baseline | 80 | 0 | 0.0% |
+| model | 80 | 2 | 2.5% |
+
+리포트에 `replay: true`, `llm_model: mistralai/mistral-nemo`가 기록되었고,
+`dropped_exposures_without_judgment = 0`, 리플레이 event log의 `llm_model`도
+원본 판정 모델과 일치했다. 노출 인자(`seed`/`k`/`exploration_ratio`/`as_of`)는
+CLI에 다시 주지 않고 사이드카 메타에서 상속되었다.
+
+### 관측 — 합집합 기준과 정책별 기준의 분모 차이
+
+캘리브레이션의 `achieved_ctr`(1.32%)과 리플레이의 `policies.model.ctr`(2.5%)이
+다른 것은 정상이며, 이 spec의 "캘리브레이션 의미론" 절이 예측한 그대로다.
+클릭 2건은 동일하고 분모만 다르다 — 합집합 152 노출 대 정책별 80 노출.
+목표 CTR을 정책별 기준으로 맞추려면 리플레이 실측을 보고 `--target-ctr`을
+조정하는 반복이 필요하며, 리플레이가 LLM 0콜이므로 그 반복 비용은 없다.
+
+또한 커트라인 0.5 → 0.7에서 model 클릭이 6 → 2로 줄고 baseline은 0으로 유지된
+것은, 커트라인이 "몇 명이 아예 클릭하는가"를 통제하고 정책별 CTR은 그 결과에
+노출 겹침이 곱해진 파생값이라는 설계와 일치한다.
+
+### 규모 제약 — 100유저를 돌리지 못한 이유
+
+`--max-users 100`과 `--max-users 25` 모두 **Vertex AI 임베딩 할당량**에 막혀
+실패했다(429 `Quota exceeded for aiplatform.googleapis.com/online_prediction_requests_per_base_model`,
+base model `textembedding-gecko`). 실패 지점은 `build_pool_feature_frame` →
+`compute_interaction_columns` → `embed_texts`(`src/features/embeddings.py`)로,
+**노출 피처 계산 단계이며 OpenRouter 호출 이전**이다. 따라서 실패한 두 시도에서
+LLM 비용은 발생하지 않았다.
+
+원인은 이 경로가 **유저 1명당 임베딩 요청 1건**을 내는 데 있다. 단일
+`embed_texts` 호출은 정상 동작하므로 할당량은 소진이 아니라 분당 요율 제한이며,
+`_get_embeddings_chunk`의 재시도는 3회·최대 20초 백오프라 분당 창이 회복되기
+전에 소진된다.
+
+이 제약은 이 spec의 범위 밖이다. 100유저 규모의 캘리브레이션이 필요하면 다음
+중 하나를 별도 이슈로 다뤄야 한다:
+
+- 프로세스 수준 임베딩 캐시 — 페르소나 간 중복 키워드가 많아 요청 수를 크게
+  줄일 수 있다 (`src/features/embeddings.py`는 다른 파이프라인도 공유하므로
+  영향 범위 검토 필요)
+- 유저 루프의 요율 제한 또는 재시도 백오프 상향
+- Vertex AI 할당량 증설 요청
+
+8유저(합집합 152 노출)에서도 `n_click = round(0.015 × 152) = 2`로 캘리브레이션
+자체는 성립했으나, `sweep`의 커트라인 후보가 0.4~0.8의 5개뿐이라 해상도는
+100유저 대비 낮다.
