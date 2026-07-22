@@ -129,11 +129,32 @@ CLI에 `--replay-drafts <parquet>`을 추가한다. 지정되면:
 다르면 에러 — `--max-users`를 빠뜨린 경우를 잡는다. (`users`는 persona 누락으로 건너뛴 유저를 제외한 수라
 입력 규모 비교에는 `virtual_users`를 쓴다.)
 
-**커버리지 fail-fast.** 노출된 `(user, video)` 중 draft가 없는 것이 하나라도
-있으면 누락 건수와 함께 즉시 실패한다. 조용히 건너뛰면 노출 수가 줄어 CTR
-분모가 왜곡되고, "같은 판정 분포에 커트라인을 적용한다"는 캘리브레이션의
-전제가 깨진다. 이 fail-fast는 **리플레이 모드에만** 적용하며, 비리플레이
-경로의 quarantine 관용 동작(`dropped_exposures_without_judgment`)은 유지한다.
+**커버리지 fail-fast는 유저(슬레이트) 단위다.** 노출된 `(user, video)`를 유저
+단위로 묶어 검사한다:
+
+- draft가 **하나도 없는** 유저 → 원본 판정 라운드에서 quarantine된 유저다(그
+  유저의 draft는 parquet에 아예 없다). 비리플레이 경로와 동일하게 관용하고
+  `dropped_exposures_without_judgment`로만 계수한다 — 원본 라운드의 quarantine
+  분모를 그대로 재현하기 위해서다.
+- draft가 **일부만 있는** 유저(슬레이트가 부분적으로만 덮임) → 즉시 실패한다.
+  노출 집합 자체가 판정 라운드와 어긋났다는 신호(예: 다른 virtual user 파일)이며,
+  조용히 건너뛰면 노출 수가 줄어 CTR 분모가 왜곡되고 "같은 판정 분포에
+  커트라인을 적용한다"는 캘리브레이션의 전제가 깨진다.
+
+유저 전체가 quarantine된 경우까지 실패로 처리하면, 실 LLM 판정 라운드에서
+quarantine이 한 명이라도 나온 순간 그 라운드의 draft parquet은 영원히
+리플레이할 수 없게 된다(quarantine은 드물지 않다). 유저 단위로 나눈 이유가
+이것이다. 이 fail-fast는 **리플레이 모드에만** 적용하며, 비리플레이 경로의
+quarantine 관용 동작은 유지한다.
+
+**노출 인자 검증은 `main()` 자체에도 있다.** `resolve_exposure_args`에 의한
+상속·불일치 검사는 `_cli()` 계층에만 있어, `main()`을 직접 호출하는 경로
+(테스트·후속 배치·노트북)에서는 불변식이 강제되지 않았다. `main()`은 리플레이
+분기에서 `replay.exposure_args`와 이번 실행의 실제 노출 인자
+(`seed`/`k`/`exploration_ratio`/`as_of`)를 비교해, 다르면 어떤 인자가 어떻게
+다른지 담아 `ValueError`를 던진다. 이 검사가 먼저 걸리므로, 위 유저 단위
+커버리지 검사가 실패하는 경우는 사실상 노출 인자가 아니라 유저 집합 자체가
+다른 경우로 좁혀진다.
 
 ### 3. `main()` 계약
 
@@ -250,13 +271,19 @@ uv run --env-file .env python -m src.pipeline.simulate_policy_round \
 2. 리플레이 왕복 — 같은 `click_threshold`로 리플레이하면 원본과 **동일한**
    event log가 나온다(이벤트 수·클릭 키셋·정책별 CTR 동등).
 3. 커트라인 변경 — 커트라인을 올리면 클릭이 줄어든다(판정 재사용 확인).
-4. 커버리지 부족 — draft 1건을 지운 parquet으로 리플레이하면 누락 건수를 담은
-   에러로 실패한다.
-5. 인자 불일치 — 메타와 다른 `--seed`를 명시하면 차이를 담은 에러로 실패한다.
-6. 인자 상속 — `--seed`/`--as-of` 미명시 리플레이가 메타 값을 상속해 성공한다.
-7. 계보 — 리플레이 event log의 `llm_model`이 메타 값과 같다.
-8. `main()` 계약 — `generator`와 `replay`를 둘 다 주거나 둘 다 안 주면
-   `ValueError`.
+4. 유저 슬레이트 부분 커버리지 — 한 유저의 draft 중 일부만 지운 parquet으로
+   리플레이하면(그 유저는 draft가 남아 있으되 전부는 아님) 실패한다.
+5. 유저 전체 quarantine 관용 — 한 유저의 draft를 전부 지운 parquet으로
+   리플레이하면 성공하고, 그 유저의 노출은 `dropped_exposures_without_judgment`로
+   계수된다.
+6. 인자 불일치 — 메타와 다른 `--seed`를 명시하면 차이를 담은 에러로 실패한다.
+7. `main()` 노출 인자 검증 — `main()`을 직접 호출해 메타와 다른 `k`로
+   리플레이하면(예: 판정 라운드 `k=6` → 리플레이 `k=3`) `ValueError`로
+   실패한다(`_cli()`를 거치지 않는 경로에서도 불변식이 강제됨을 확인).
+8. 인자 상속 — `--seed`/`--as-of` 미명시 리플레이가 메타 값을 상속해 성공한다.
+9. 계보 — 리플레이 event log의 `llm_model`이 메타 값과 같다.
+10. `main()` 계약 — `generator`와 `replay`를 둘 다 주거나 둘 다 안 주면
+    `ValueError`.
 
 ## 범위 밖
 

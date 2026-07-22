@@ -500,21 +500,36 @@ def test_replay_with_higher_threshold_reduces_clicks(tmp_path, stub_reranker):
     assert strict["policies"]["baseline"]["clicks"] == 0
 
 
-def test_replay_fails_when_drafts_do_not_cover_exposures(tmp_path, stub_reranker):
-    """판정이 노출을 다 덮지 못하면 조용히 넘기지 않고 실패해야 한다."""
+def test_replay_fails_when_a_users_slate_is_partially_covered(tmp_path, stub_reranker):
+    """유저 슬레이트가 일부만 덮이면(노출 집합 불일치 신호) 실패해야 한다.
+
+    한 유저의 draft를 전부 지우는 것(=원본에서 quarantine된 유저)과, 일부만
+    지우는 것(=노출 집합이 어긋난 신호)은 의미가 다르다. 이 테스트는 후자를
+    명시적으로 만든다 — 대상 유저에게 draft를 1건 이상 남겨 "일부만 덮임"을
+    보장한다.
+    """
     first_dir = tmp_path / "a"
     _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
 
     replay = _load_replay(first_dir)
     from src.pipeline.simulate_policy_round import DraftReplay
 
+    target_user = replay.drafts[0].user_id
+    user_drafts = [d for d in replay.drafts if d.user_id == target_user]
+    assert len(user_drafts) > 1, "부분 커버리지를 만들려면 대상 유저에 draft가 2건 이상 필요합니다"
+
+    removed_one = user_drafts[0]
+    partial = [d for d in replay.drafts if d is not removed_one]
     truncated = DraftReplay(
-        drafts=replay.drafts[:-1],
+        drafts=partial,
         llm_model=replay.llm_model,
         exposure_args=replay.exposure_args,
     )
+    # 대상 유저는 draft가 남아 있되(부분 커버리지) 전부는 아니어야 한다.
+    remaining_for_target = [d for d in partial if d.user_id == target_user]
+    assert 0 < len(remaining_for_target) < len(user_drafts)
 
-    with pytest.raises(ValueError, match="cover"):
+    with pytest.raises(ValueError, match="partially cover"):
         _run_round(
             tmp_path / "b",
             stub_reranker,
@@ -522,6 +537,39 @@ def test_replay_fails_when_drafts_do_not_cover_exposures(tmp_path, stub_reranker
             replay=truncated,
             output_dir=str(tmp_path / "b"),
         )
+
+
+def test_replay_tolerates_a_user_with_no_drafts_at_all(tmp_path, stub_reranker):
+    """draft가 하나도 없는 유저(원본에서 quarantine)는 관용하고 dropped로 계수해야 한다.
+
+    발견 사항 2 재현: 실 LLM 라운드에서 quarantine된 유저가 있으면 그 유저의
+    draft는 parquet에 아예 없다. 이런 라운드의 리플레이가 항상 실패하면 안
+    된다 — 원본 라운드와 동일하게 그 유저 노출만 dropped로 세고 성공해야 한다.
+    """
+    first_dir = tmp_path / "a"
+    _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
+
+    replay = _load_replay(first_dir)
+    from src.pipeline.simulate_policy_round import DraftReplay
+
+    quarantined_user = replay.drafts[0].user_id
+    remaining = [d for d in replay.drafts if d.user_id != quarantined_user]
+    assert len(remaining) < len(replay.drafts)  # 해당 유저의 draft가 전부 빠졌는지 확인
+
+    replay_without_user = DraftReplay(
+        drafts=remaining,
+        llm_model=replay.llm_model,
+        exposure_args=replay.exposure_args,
+    )
+
+    replayed = _run_round(
+        tmp_path / "b",
+        stub_reranker,
+        generator=None,
+        replay=replay_without_user,
+        output_dir=str(tmp_path / "b"),
+    )
+    assert replayed["dropped_exposures_without_judgment"] > 0
 
 
 def test_replay_event_log_keeps_original_llm_model(tmp_path, stub_reranker):
@@ -546,6 +594,29 @@ def test_replay_event_log_keeps_original_llm_model(tmp_path, stub_reranker):
 
     table = pq.read_table(second_dir / "event_log.parquet").to_pandas()
     assert set(table["llm_model"].unique()) == {"judge-v9"}
+
+
+def test_main_rejects_replay_with_mismatched_exposure_args(tmp_path, stub_reranker):
+    """main()을 직접 호출해도 replay.exposure_args 불일치를 잡아야 한다(발견 사항 1).
+
+    resolve_exposure_args는 _cli()에서만 검사하므로, main()을 직접 호출하는
+    경로(테스트·후속 배치·노트북)는 이 검사가 없으면 노출 인자가 달라도 통과해
+    CTR 분모가 왜곡된다. 리뷰어가 재현한 시나리오와 동일하게 k를 바꿔 리플레이한다.
+    """
+    first_dir = tmp_path / "a"
+    _run_round(
+        first_dir, stub_reranker, generator=RuleBasedActionLogGenerator(), k=6
+    )
+
+    with pytest.raises(ValueError, match="k"):
+        _run_round(
+            tmp_path / "b",
+            stub_reranker,
+            generator=None,
+            replay=_load_replay(first_dir),
+            k=3,  # 판정 라운드(k=6)와 다른 노출 인자
+            output_dir=str(tmp_path / "b"),
+        )
 
 
 def test_main_requires_exactly_one_of_generator_or_replay(tmp_path, stub_reranker):

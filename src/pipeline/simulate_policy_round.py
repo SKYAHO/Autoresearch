@@ -245,6 +245,31 @@ def resolve_exposure_args(
     return resolved
 
 
+def _validate_replay_exposure_args(
+    replay_exposure_args: Mapping[str, object],
+    actual_exposure_args: Mapping[str, object],
+) -> None:
+    """리플레이 판정의 노출 인자가 이번 실행의 노출 인자와 일치하는지 검사한다.
+
+    `_cli()`의 `resolve_exposure_args`는 인자 상속·불일치 검사를 CLI 계층에서만
+    수행하므로, `main()`을 직접 호출하는 경로(테스트·후속 배치)에서는 불변식이
+    강제되지 않는다. 노출이 달라지면 저장된 판정과 노출이 어긋나 CTR 분모가
+    왜곡되므로 `main()` 자체에서도 검사한다. `resolve_exposure_args`와 동일하게
+    `==` 비교를 쓴다 — JSON 왕복(예: `exploration_ratio` 0.0)과 파이썬 값은
+    `==`로 동등하므로 과탐 없이 충분하다.
+    """
+    mismatches = [
+        f"{key}: 판정 라운드={replay_exposure_args.get(key)!r}, 이번 실행={value!r}"
+        for key, value in actual_exposure_args.items()
+        if replay_exposure_args.get(key) != value
+    ]
+    if mismatches:
+        raise ValueError(
+            "replay.exposure_args가 이번 실행의 노출 인자와 다릅니다 — "
+            + "; ".join(mismatches)
+        )
+
+
 def main(
     personas: pd.DataFrame,
     virtual_users: list[dict],
@@ -322,6 +347,8 @@ def main(
         "exploration_ratio": exploration_ratio,
         "as_of": as_of,
     }
+    if replay is not None:
+        _validate_replay_exposure_args(replay.exposure_args, exposure_args)
 
     if replay is None:
         assert generator is not None  # 위 XOR 검증이 보장한다
@@ -368,17 +395,25 @@ def main(
     }
 
     if replay is not None:
-        missing = [
-            (user_id, exposure.video_id)
-            for user_id, both in exposures_by_user.items()
-            for exposure in both[MODEL] + both[BASELINE]
-            if (user_id, exposure.video_id) not in draft_by_key
-        ]
-        if missing:
+        # 커버리지는 유저(슬레이트) 단위로 검사한다. draft가 하나도 없는
+        # 유저는 원본 판정 라운드에서 quarantine된 유저이므로(그 유저의 draft는
+        # parquet에 아예 없다) 비리플레이 경로와 동일하게 관용하고 아래 4단계의
+        # dropped_exposures_without_judgment로 계수한다. draft가 일부만 있는
+        # 유저는 노출 집합 자체가 판정 라운드와 어긋났다는 신호이므로 실패한다.
+        partially_covered_users: list[str] = []
+        for user_id, both in exposures_by_user.items():
+            exposure_keys = {
+                (user_id, exposure.video_id) for exposure in both[MODEL] + both[BASELINE]
+            }
+            covered = sum(1 for key in exposure_keys if key in draft_by_key)
+            if 0 < covered < len(exposure_keys):
+                partially_covered_users.append(user_id)
+        if partially_covered_users:
             raise ValueError(
-                f"replay drafts do not cover {len(missing)} exposure(s) "
-                f"(first missing: {missing[0]}) — 노출 결정 인자나 유저 집합이 "
-                "판정 라운드와 다를 수 있습니다"
+                f"replay drafts partially cover {len(partially_covered_users)} user "
+                f"slate(s) (first: {partially_covered_users[0]}) — 판정이 하나도 없는 "
+                "유저는 원본 quarantine으로 간주해 관용하지만, 일부만 있는 유저는 "
+                "노출 집합(virtual users 등)이 판정 라운드와 다르다는 신호입니다"
             )
 
     # 3) 합동 per-slate 선정 1회 → clicked (user, video) 키셋
