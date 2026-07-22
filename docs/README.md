@@ -65,6 +65,7 @@
 ### ☁️ 인프라 (Infrastructure)
 
 - [Spec — MLflow 배포 전략](specs/2026-07-14-mlflow-deployment-strategy.md)
+- [Spec — BigQuery Feature Materialization](specs/2026-07-21-bigquery-feature-materialization.md)
 - [가이드 — 데이터 웨어하우스 (BigQuery)](guides/data-warehouse.md)
 - `deploy/mlflow/`, `proxy/` (Cloud Run forwarder), `Dockerfile.app`
 
@@ -85,6 +86,7 @@
 - [Autoresearch-airflow 경계 컷오버](specs/2026-07-13-autoresearch-airflow-boundary-cutover.md)
 - [MLflow 배포 전략](specs/2026-07-14-mlflow-deployment-strategy.md)
 - [GCS raw 데이터 BigQuery 적재](specs/2026-07-11-load-raw-to-bigquery.md)
+- [BigQuery Feature Materialization](specs/2026-07-21-bigquery-feature-materialization.md)
 - [저장소 구조 재정리](specs/2026-07-15-repo-restructure.md) — 이 문서 구조의 근거,
   `src/` 패키지 통합 목표 구조 포함
 
