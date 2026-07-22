@@ -1,8 +1,10 @@
 """VirtualUser + TrendingVideo pool로 Phase 1(historical) event log를 생성한다.
 
-흐름: 유저 단위 격리(LLM 판단) → 전역 2% CTR 정규화 → 이벤트 확장(_expand_events:
-노출마다 impression 1행, 클릭 선정분엔 click/view(+like)를 추가 배치) →
-parquet/warehouse/quarantine 저장. 한 유저의 실패가 배치를 죽이지 않는다.
+흐름: 유저 단위 격리(LLM 판단, 후보별 click_propensity/watch_fraction만 산출) →
+select_clicks_per_slate로 유저(슬레이트)별 최고 1건을 click_threshold
+커트라인으로 클릭 선정 → 이벤트 확장(_expand_events: 노출마다 impression 1행,
+클릭 선정분엔 click/view(+like)를 추가 배치) → parquet/warehouse/quarantine
+저장. 한 유저의 실패가 배치를 죽이지 않는다.
 """
 import json
 import logging
@@ -1037,7 +1039,7 @@ def generate_action_log_drafts(
     shard_index: int | None = None,
     candidate_provider: CandidateProvider | None = None,
 ) -> ActionLogDraftGenerationResult:
-    """유저 단위 LLM 판단을 실행하고 전역 CTR 정규화 전 draft를 반환한다.
+    """유저 단위 LLM 판단을 실행하고 per-slate 클릭 선정 전 draft를 반환한다.
 
     단일 실행은 quarantine 비율을 즉시 검증한다. shard 실행은 성공 draft를
     보존하기 위해 이 검증을 merge 단계의 전역 합산 뒤로 미룰 수 있다.
@@ -1108,7 +1110,8 @@ def generate_action_log_batch(
     candidate_provider: CandidateProvider | None = None,
     exposure_metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None,
 ) -> EventGenerationResult:
-    """유저 단위 격리 생성 → 전역 2% 정규화 → 조립 → 파일 저장을 실행한다.
+    """유저 단위 격리 생성 → per-slate click_threshold 클릭 선정 → 조립 →
+    파일 저장을 실행한다.
 
     exposure_metadata는 candidate_provider 호출이 진행되며 채워지는 공유 맵일 수
     있으므로(#221 ModelExposureRound), draft 생성이 끝난 뒤에 참조한다.

@@ -92,7 +92,7 @@ class EventLog(BaseModel):
 
 
 class ImpressionDraft(BaseModel):
-    """LLM 판단 결과(전역 CTR 정규화 전 shard parquet 중간 산출물).
+    """LLM 판단 결과(클릭 선정 전 shard parquet 중간 산출물).
 
     draft 1건 = 후보(노출) 1건 = impression 1행에 대응한다. shard 생성과
     merge 사이에서는 `ACTION_LOG_DRAFT_PARQUET_SCHEMA` 계약으로 저장된다.
@@ -254,7 +254,7 @@ class EventLogBatch(BaseModel):
 
     @property
     def summary(self) -> dict[str, float]:
-        """총 event 수, impression/click 행 수, 전역 CTR(clicks/impressions)을 계산한다."""
+        """총 event 수, impression/click 행 수, 배치 전체 CTR(clicks/impressions)을 계산한다."""
 
         impressions = sum(1 for e in self.events if e.event_type == "impression")
         clicks = sum(1 for e in self.events if e.event_type == "click")
