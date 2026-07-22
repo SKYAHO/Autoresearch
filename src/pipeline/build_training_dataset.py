@@ -30,10 +30,12 @@ __arch__ = {
         "historical event를 wide training row로 변환",
         "point-in-time 학습 데이터셋 생성",
         "학습 입력 품질 검증",
+        "BigQuery raw/feature dataset 해석 규칙",
     ],
     "not_owns": [
         "정책 시뮬레이션 노출 선택",
         "CTR 모델 학습 실행",
+        "BigQuery dataset 생성과 raw 테이블 적재",
     ],
 }
 
@@ -44,7 +46,13 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "ar-infra-501607")
+# feature/서빙 계층 dataset — Feast feature 테이블 4종(user_static_feature,
+# user_dynamic_feature, video_feature, user_category_similarity)과 배치 출력
+# 테이블(user_recommendations)이 여기에 있다.
 BIGQUERY_DATASET = os.environ.get("CTR_TRAINING_BQ_DATASET", "feast_offline_store")
+# raw(데이터 레이크 적재) 계층 dataset — data_lake_* 테이블 전용. feature 계층과
+# 물리적으로 분리되어 있으므로 raw 테이블은 반드시 이 dataset 으로 해석한다.
+BIGQUERY_RAW_DATASET = os.environ.get("CTR_TRAINING_BQ_RAW_DATASET", "data_lake_raw")
 BIGQUERY_VIDEOS_TABLE = os.environ.get(
     "CTR_TRAINING_BQ_VIDEOS_TABLE", "data_lake_youtube_trending_kr"
 )
@@ -68,16 +76,43 @@ from src.features.assembly import (  # noqa: E402
     compute_user_offline_features,
     compute_video_features,
 )
+from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
+
+
+def raw_table_id(table: str) -> str:
+    """raw(데이터 레이크) 테이블의 완전한 BigQuery 식별자를 만든다.
+
+    raw 테이블(`data_lake_*`)은 feature 계층과 다른 dataset
+    (`CTR_TRAINING_BQ_RAW_DATASET`, 기본 `data_lake_raw`)에 있다. 모듈
+    전역을 호출 시점에 읽으므로 테스트에서 monkeypatch 로 재정의할 수 있다.
+    """
+    return f"{BIGQUERY_PROJECT}.{BIGQUERY_RAW_DATASET}.{table}"
+
+
+def feature_table_id(table: str) -> str:
+    """feature/서빙 테이블의 완전한 BigQuery 식별자를 만든다.
+
+    Feast feature 테이블과 배치 출력 테이블은 계속
+    `CTR_TRAINING_BQ_DATASET`(기본 `feast_offline_store`)에 있다.
+    """
+    return f"{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{table}"
 
 
 def get_data_dir():
-    """프로젝트 루트의 data 디렉토리 경로 반환."""
+    """프로젝트 루트의 data 디렉토리 경로 반환. 없으면 프로젝트 루트 아래에 생성한다.
+
+    GCS 코드 부트스트랩 이미지(Dockerfile.train)는 data/를 이미지에 포함하지
+    않으므로, 컨테이너 최초 실행 시에는 이 디렉토리가 아예 존재하지 않는다 —
+    존재를 요구하는 대신 만들어서 돌려준다(출력 경로 등으로 바로 쓰기 위함).
+    """
     current = os.path.dirname(os.path.abspath(__file__))
     while current != "/":
         if os.path.exists(os.path.join(current, "data")):
             return os.path.join(current, "data")
         current = os.path.dirname(current)
-    raise RuntimeError("data 디렉토리를 찾을 수 없습니다")
+    data_dir = os.path.join(PROJECT_ROOT, "data")
+    os.makedirs(data_dir, exist_ok=True)
+    return data_dir
 
 
 def validate_events(events: pd.DataFrame) -> None:
@@ -134,7 +169,7 @@ def load_videos_from_bigquery() -> pd.DataFrame:
             channel_subscriber_count AS channelSubscriberCount,
             channel_view_count AS channelViewCount,
             channel_video_count AS channelVideoCount
-        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{BIGQUERY_VIDEOS_TABLE}`
+        FROM `{raw_table_id(BIGQUERY_VIDEOS_TABLE)}`
     """
     return client.query(query).to_dataframe()
 
@@ -143,13 +178,14 @@ def load_personas(personas_path: str) -> pd.DataFrame:
     """personas 입력을 확장자로 판별해 로드한다.
 
     로컬/GCS 경로 모두 지원한다(gcsfs가 gs:// 경로를 pandas에 투명하게
-    연결한다). virtual_users 파이프라인의 실제 산출물 위치가 정해지면
-    이 함수에 그 경로만 넘기면 된다. BigQuery 적재는 필요 없다(persona는
-    학습 시 집계된 user feature로만 쓰이고 그 자체가 warehouse 테이블일
-    필요는 없음).
+    연결한다). CSV는 이미 personas 계약(uuid/age/occupation/관심사) 형태인
+    mock 산출물이라 그대로 쓴다. parquet은 virtual_users 파이프라인의 원본
+    스키마(user_id/hobby_keywords/interest_keywords 등)이므로
+    to_personas_frame()으로 계약 형태로 정규화한다(daily_recommendations.py와
+    동일한 패턴, #229).
     """
     if personas_path.endswith(".parquet"):
-        return pd.read_parquet(personas_path)
+        return to_personas_frame(pd.read_parquet(personas_path))
     return pd.read_csv(personas_path)
 
 
@@ -169,7 +205,7 @@ def load_events_from_bigquery(start_date: str, end_date: str) -> pd.DataFrame:
     client = bigquery.Client(project=BIGQUERY_PROJECT)
     query = f"""
         SELECT event_id, event_timestamp, user_id, event_type, video_id, watch_time_sec
-        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{BIGQUERY_ACTION_LOG_TABLE}`
+        FROM `{raw_table_id(BIGQUERY_ACTION_LOG_TABLE)}`
         WHERE dt BETWEEN '{start_date}' AND '{end_date}'
     """
     return client.query(query).to_dataframe()
@@ -203,6 +239,12 @@ def derive_wide_events(
     이번에 새로 정의한 규칙이라 같은 문서에 추가 반영한다.
     """
     con = duckdb.connect()
+    # 빈 파티션(콜드 스타트)에서는 BigQuery가 STRING 컬럼을 object dtype 빈
+    # 컬럼으로 반환해 DuckDB가 타입을 추론하지 못하고 INTEGER로 등록한다 —
+    # 이후 문자열 키 비교가 깨지므로 등록 전에 계약 dtype을 고정한다.
+    long_events = long_events.astype(
+        {"event_id": "string", "user_id": "string", "video_id": "string", "event_type": "string"}
+    )
     con.register("long_events", long_events)
 
     query = f"""
@@ -287,7 +329,9 @@ def derive_wide_events(
         LEFT JOIN view_attr va ON va.impression_event_id = i.event_id
         LEFT JOIN like_attr la ON la.impression_event_id = i.event_id
     """
-    return con.execute(query).df()
+    wide = con.execute(query).df()
+    # 빈 결과도 하류(DuckDB 재등록)에서 dtype이 보존되도록 문자열 계약을 명시한다.
+    return wide.astype({"event_id": "string", "user_id": "string", "video_id": "string"})
 
 
 def main(
@@ -320,13 +364,15 @@ def main(
             _data_dir_cache = get_data_dir()
         return _data_dir_cache
 
-    if raw_dir is None:
+    if videos_source == "csv" and raw_dir is None:
         raw_dir = os.path.join(_resolve_data_dir(), "raw")
     if events_source == "csv" and events_path is None:
         events_path = os.path.join(_resolve_data_dir(), "processed", "events.csv")
     if output_path is None:
         output_path = os.path.join(_resolve_data_dir(), "processed", "training_dataset.csv")
     if personas_path is None:
+        if raw_dir is None:
+            raw_dir = os.path.join(_resolve_data_dir(), "raw")
         personas_path = os.path.join(raw_dir, "personas.csv")
 
     print("=" * 70)
