@@ -54,17 +54,17 @@ python -m autoresearch.jobs.feature_materialize \
 ```
 
 `--dataset`은 `user_static_feature`, `user_dynamic_feature`, `video_feature`
-target table을 가리킨다. `--raw-dataset`은 `data_lake_action_log`와
-`data_lake_youtube_trending_kr` source table을 가리킨다.
-`asset_virtual_user_vu_1000`은 별도 이전 전까지 feature dataset에 남아
-있으므로 static source는 `--dataset`을 사용한다. 기본값과 세부 인자 명명은
-기존 `autoresearch.jobs` 공개 명령 계약에 맞춘다.
+target table을 가리킨다. `--raw-dataset`은 `data_lake_action_log`,
+`data_lake_youtube_trending_kr`, `asset_virtual_user_vu_1000` source table을
+가리킨다. 세 raw source table은 materialization 전에 raw dataset에 적재되어
+있어야 한다. 기본값과 세부 인자 명명은 기존 `autoresearch.jobs` 공개 명령
+계약에 맞춘다.
 
 ## 데이터 흐름
 
 1. CLI가 BigQuery client를 생성하고 feature target dataset의 대상 테이블
    존재를 확인한다.
-2. `user_static_feature` SQL은 raw virtual-user nested list를
+2. `user_static_feature` SQL은 `--raw-dataset`의 virtual-user nested list를
    `UNNEST(field.list)` 후 `element`를 추출해 repeated string 컬럼을 만든다.
 3. `user_dynamic_feature`와 `video_feature` SQL은 `--raw-dataset`의 현재
    문서화된 raw schema 기반 집계 규칙을 사용한다.
