@@ -19,6 +19,8 @@ _SINGLE_ARGS = [
     "gs://test-bucket/asset/virtual_users.parquet",
     "--output-base-path",
     "gs://test-bucket/data_lake/action_log",
+    "--click-threshold",
+    "0.5",
 ]
 
 

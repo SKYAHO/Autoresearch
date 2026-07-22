@@ -312,6 +312,48 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
     assert set(table["llm_model"].to_pylist()) == {"fixture-rule-action-log"}
 
 
+def test_manifest_requires_click_threshold_fail_closed() -> None:
+    """구버전(=click_threshold 부재) manifest는 역직렬화 시 fail-closed 해야 한다."""
+
+    from pydantic import ValidationError
+
+    from autoresearch.action_logs.schema import ActionLogShardManifest
+
+    complete = {
+        "manifest_version": "action_log_shard_manifest_v1",
+        "partition_date": "2026-07-01",
+        "shard_index": 0,
+        "shard_count": 2,
+        "generator": "rule_based",
+        "model_name": "fixture-rule-action-log",
+        "generator_config": {},
+        "candidates_per_user": 5,
+        "click_threshold": 0.2,
+        "personalized_ratio": 0.7,
+        "popular_ratio": 0.2,
+        "exploration_ratio": 0.1,
+        "seed": 123,
+        "chunk_size": 0,
+        "max_quarantine_ratio": 0.5,
+        "history_end": "2026-07-01T15:00:00Z",
+        "total_work": 1,
+        "completed_work": 1,
+        "quarantine_count": 0,
+        "quarantine_error_counts": {},
+        "schema_version": "action_log_schema_v1",
+        "prompt_version": "action_log_ctr_v4",
+        "input_fingerprint": "0" * 64,
+        "config_fingerprint": "0" * 64,
+    }
+
+    # sanity: click_threshold를 포함하면 정상적으로 검증된다.
+    ActionLogShardManifest.model_validate(complete)
+
+    legacy = {key: value for key, value in complete.items() if key != "click_threshold"}
+    with pytest.raises(ValidationError):
+        ActionLogShardManifest.model_validate(legacy)
+
+
 def test_shard_merge_matches_single_run_event_contract(tmp_path):
     partition_date = date(2026, 7, 1)
     virtual_users_path = tmp_path / "virtual_users.parquet"
@@ -387,6 +429,7 @@ def test_merge_rejects_missing_or_tampered_shard_manifest(tmp_path):
             virtual_users_path=str(virtual_users_path),
             output_base_path=str(work_base),
             candidates_per_user=5,
+            click_threshold=0.2,
             seed=123,
         )
 
@@ -615,6 +658,7 @@ def test_shard_resume_calls_only_unfinished_work_after_interruption(
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(work_base),
         "candidates_per_user": 4,
+        "click_threshold": 0.2,
         "chunk_size": 2,
         "max_concurrency": 1,
     }
@@ -659,6 +703,7 @@ def test_checkpoint_fingerprint_isolates_changed_config(tmp_path, monkeypatch):
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(work_base),
         "candidates_per_user": 4,
+        "click_threshold": 0.2,
         "chunk_size": 2,
     }
 
@@ -697,6 +742,7 @@ def test_prompt_version_change_isolates_checkpoint_and_supports_rollback(
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(work_base),
         "candidates_per_user": 4,
+        "click_threshold": 0.2,
         "chunk_size": 2,
     }
 
@@ -742,6 +788,7 @@ def test_checkpoint_fingerprint_isolates_changed_input_content(tmp_path, monkeyp
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(work_base),
         "candidates_per_user": 4,
+        "click_threshold": 0.2,
         "chunk_size": 2,
     }
 
@@ -782,6 +829,7 @@ def test_checkpoint_duplicate_parts_are_deduplicated_by_work_id(
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(work_base),
         "candidates_per_user": 4,
+        "click_threshold": 0.2,
         "chunk_size": 2,
     }
     first = run_daily_action_log_shard(**kwargs)
@@ -1061,6 +1109,7 @@ def test_merge_quality_failure_uses_manifest_counts_and_preserves_final(
             virtual_users_path=str(virtual_users_path),
             output_base_path=str(work_base),
             candidates_per_user=5,
+            click_threshold=0.2,
             max_quarantine_ratio=0.2,
         )
 
@@ -1107,6 +1156,7 @@ def test_merge_reports_unclassified_count_for_legacy_manifest(tmp_path, monkeypa
             virtual_users_path=str(virtual_users_path),
             output_base_path=str(work_base),
             candidates_per_user=5,
+            click_threshold=0.2,
             max_quarantine_ratio=0.5,
         )
 
@@ -1154,6 +1204,7 @@ def test_all_shards_share_input_fingerprint_and_do_not_touch_final(tmp_path):
             virtual_users_path=str(virtual_users_path),
             output_base_path=str(work_base),
             candidates_per_user=5,
+            click_threshold=0.2,
             max_users=3,
         )
         for shard_index in range(2)
@@ -1285,3 +1336,23 @@ def test_cli_parses_click_threshold() -> None:
         ]
     )
     assert args.click_threshold == 0.6
+
+
+def test_cli_requires_click_threshold() -> None:
+    """--click-threshold 없이는 CLI가 조용히 0.55로 채우지 않고 실패해야 한다.
+
+    #260 후속 수정으로 --click-threshold는 파서 레벨 required가 아니라
+    single/shard 모드에서만 `_validate_args`가 강제하는 모드-스코프 필수
+    인자다(merge는 click_threshold를 사용하지 않으므로 대상에서 제외).
+    따라서 parse_args 자체는 성공하고, `_validate_args` 호출 시
+    `BatchArgumentError`가 발생해야 한다.
+    """
+
+    from autoresearch.jobs.action_log import BatchArgumentError, _build_parser, _validate_args
+
+    args = _build_parser().parse_args(
+        ["--mode", "single", "--partition-date", "2026-07-22"]
+    )
+    assert args.click_threshold is None
+    with pytest.raises(BatchArgumentError):
+        _validate_args(args)

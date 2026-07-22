@@ -18,6 +18,8 @@ _SINGLE_ARGS = [
     "gs://test-bucket/asset/virtual_users.parquet",
     "--output-base-path",
     "gs://test-bucket/data_lake/action_log",
+    "--click-threshold",
+    "0.5",
 ]
 
 _MERGE_ARGS = [
@@ -61,6 +63,58 @@ def test_merge_rejects_exposure_arguments():
         _parse_args_for_mode("merge", "--exposure-source", "model")
     with pytest.raises(action_log_job.BatchArgumentError):
         _parse_args_for_mode("merge", "--recommendations-table", "t")
+
+
+def test_merge_parses_and_validates_without_click_threshold():
+    # merge_daily_action_log_shards는 click_threshold를 소비하지 않으므로
+    # merge 모드는 --click-threshold 없이도 파싱·검증에 성공해야 한다
+    # (Airflow 등 실제 merge 호출부는 이 인자를 전달하지 않는다).
+    args = _parse_args_for_mode("merge")
+    assert args.click_threshold is None
+
+
+def test_merge_rejects_click_threshold():
+    with pytest.raises(action_log_job.BatchArgumentError):
+        _parse_args_for_mode("merge", "--click-threshold", "0.5")
+
+
+def test_single_mode_requires_click_threshold():
+    assert _SINGLE_ARGS[-2:] == ["--click-threshold", "0.5"]
+    args_without_threshold = _SINGLE_ARGS[:-2]
+    parser = action_log_job._build_parser()
+    args = parser.parse_args(args_without_threshold)
+    assert args.click_threshold is None
+    with pytest.raises(action_log_job.BatchArgumentError):
+        action_log_job._validate_args(args)
+
+
+def test_shard_mode_requires_click_threshold():
+    parser = action_log_job._build_parser()
+    args = parser.parse_args(
+        [
+            "--mode",
+            "shard",
+            "--partition-date",
+            "2026-07-13",
+            "--youtube-base-path",
+            "gs://test-bucket/data/youtube",
+            "--virtual-users-path",
+            "gs://test-bucket/asset/users.parquet",
+            "--output-base-path",
+            "gs://test-bucket/data/action_log_work",
+            "--progress-base-path",
+            "gs://test-bucket/data/action_log_progress",
+            "--checkpoint-base-path",
+            "gs://test-bucket/data/action_log_checkpoints",
+            "--shard-index",
+            "0",
+            "--shard-count",
+            "5",
+        ]
+    )
+    assert args.click_threshold is None
+    with pytest.raises(action_log_job.BatchArgumentError):
+        action_log_job._validate_args(args)
 
 
 def test_heuristic_mode_rejects_recommendations_table():
@@ -304,6 +358,8 @@ def test_run_maps_shard_arguments_to_domain_runner(monkeypatch):
             "--shard-count",
             "5",
             "--overwrite",
+            "--click-threshold",
+            "0.5",
         ]
     )
     action_log_job._validate_args(args)
