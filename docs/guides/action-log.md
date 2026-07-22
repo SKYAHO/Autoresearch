@@ -145,7 +145,7 @@ LLM 판정 결과 1건 = 후보(노출) 1건 = `impression` 1행에 대응.
 ### 5.3 `EventGenerationRequest` (실행 파라미터)
 | 파라미터 | 기본값 | 의미 |
 |---|---|---|
-| `click_threshold` | `0.55` | 유저별 최고 `click_propensity`가 이 값 이상이어야 클릭으로 선정(관련성 커트라인) |
+| `click_threshold` | 없음(필수, #260) | 유저별 최고 `click_propensity`가 이 값 이상이어야 클릭으로 선정(관련성 커트라인). 미지정 시 조용히 0.55로 채우지 않고 명시적으로 실패한다 |
 | `candidates_per_user` | `24` | 유저당 노출 후보 수 |
 | `exploration_ratio` | `0.2` | 후보 중 exploration(랜덤) 비율 |
 | `history_days` | `30` | historical window 길이(일) |

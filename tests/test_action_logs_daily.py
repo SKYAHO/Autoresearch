@@ -387,6 +387,7 @@ def test_merge_rejects_missing_or_tampered_shard_manifest(tmp_path):
             virtual_users_path=str(virtual_users_path),
             output_base_path=str(work_base),
             candidates_per_user=5,
+            click_threshold=0.2,
             seed=123,
         )
 
@@ -615,6 +616,7 @@ def test_shard_resume_calls_only_unfinished_work_after_interruption(
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(work_base),
         "candidates_per_user": 4,
+        "click_threshold": 0.2,
         "chunk_size": 2,
         "max_concurrency": 1,
     }
@@ -659,6 +661,7 @@ def test_checkpoint_fingerprint_isolates_changed_config(tmp_path, monkeypatch):
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(work_base),
         "candidates_per_user": 4,
+        "click_threshold": 0.2,
         "chunk_size": 2,
     }
 
@@ -697,6 +700,7 @@ def test_prompt_version_change_isolates_checkpoint_and_supports_rollback(
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(work_base),
         "candidates_per_user": 4,
+        "click_threshold": 0.2,
         "chunk_size": 2,
     }
 
@@ -742,6 +746,7 @@ def test_checkpoint_fingerprint_isolates_changed_input_content(tmp_path, monkeyp
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(work_base),
         "candidates_per_user": 4,
+        "click_threshold": 0.2,
         "chunk_size": 2,
     }
 
@@ -782,6 +787,7 @@ def test_checkpoint_duplicate_parts_are_deduplicated_by_work_id(
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(work_base),
         "candidates_per_user": 4,
+        "click_threshold": 0.2,
         "chunk_size": 2,
     }
     first = run_daily_action_log_shard(**kwargs)
@@ -1061,6 +1067,7 @@ def test_merge_quality_failure_uses_manifest_counts_and_preserves_final(
             virtual_users_path=str(virtual_users_path),
             output_base_path=str(work_base),
             candidates_per_user=5,
+            click_threshold=0.2,
             max_quarantine_ratio=0.2,
         )
 
@@ -1107,6 +1114,7 @@ def test_merge_reports_unclassified_count_for_legacy_manifest(tmp_path, monkeypa
             virtual_users_path=str(virtual_users_path),
             output_base_path=str(work_base),
             candidates_per_user=5,
+            click_threshold=0.2,
             max_quarantine_ratio=0.5,
         )
 
@@ -1154,6 +1162,7 @@ def test_all_shards_share_input_fingerprint_and_do_not_touch_final(tmp_path):
             virtual_users_path=str(virtual_users_path),
             output_base_path=str(work_base),
             candidates_per_user=5,
+            click_threshold=0.2,
             max_users=3,
         )
         for shard_index in range(2)
@@ -1285,3 +1294,20 @@ def test_cli_parses_click_threshold() -> None:
         ]
     )
     assert args.click_threshold == 0.6
+
+
+def test_cli_requires_click_threshold() -> None:
+    """--click-threshold 없이는 CLI가 조용히 0.55로 채우지 않고 실패해야 한다.
+
+    브리프 원문은 `pytest.raises(SystemExit)`을 기대하지만, 이 파서
+    (`_ArgumentParser`)는 `error()`를 오버라이드해 필수 인자 누락 시
+    `SystemExit` 대신 `BatchArgumentError`를 던진다(위 `test_cli_parses_click_threshold`의
+    주석과 동일한 사유). 실제 구현과 일치하도록 예외 타입을 맞춘다.
+    """
+
+    from autoresearch.jobs.action_log import BatchArgumentError, _build_parser
+
+    with pytest.raises(BatchArgumentError):
+        _build_parser().parse_args(
+            ["--mode", "single", "--partition-date", "2026-07-22"]
+        )

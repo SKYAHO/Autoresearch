@@ -18,6 +18,8 @@ _SINGLE_ARGS = [
     "gs://test-bucket/asset/virtual_users.parquet",
     "--output-base-path",
     "gs://test-bucket/data_lake/action_log",
+    "--click-threshold",
+    "0.5",
 ]
 
 _MERGE_ARGS = [
@@ -33,6 +35,10 @@ _MERGE_ARGS = [
     "gs://test-bucket/data_lake/action_log",
     "--max-quarantine-ratio",
     "0.2",
+    # merge 모드는 click_threshold를 사용하지 않지만, #260에서 --click-threshold가
+    # 파서 레벨 required=True로 바뀌어 모드 무관하게 항상 채워야 한다.
+    "--click-threshold",
+    "0.5",
 ]
 
 _MODE_ARGS = {"single": _SINGLE_ARGS, "merge": _MERGE_ARGS}
@@ -195,6 +201,8 @@ def test_merge_rejects_quarantine_input_before_runner(monkeypatch, capsys):
             "0.2",
             "--quarantine-base-path",
             "gs://test-bucket/data/quarantine",
+            "--click-threshold",
+            "0.5",
         ]
     )
 
@@ -304,6 +312,8 @@ def test_run_maps_shard_arguments_to_domain_runner(monkeypatch):
             "--shard-count",
             "5",
             "--overwrite",
+            "--click-threshold",
+            "0.5",
         ]
     )
     action_log_job._validate_args(args)

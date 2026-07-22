@@ -130,7 +130,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--generator-name", default="rule_based")
     parser.add_argument("--model-name")
     parser.add_argument("--candidates-per-user", type=_positive_int, default=24)
-    parser.add_argument("--click-threshold", type=_ratio, default=0.55)
+    parser.add_argument("--click-threshold", type=_ratio, required=True)
     parser.add_argument("--personalized-ratio", type=_ratio, default=0.7)
     parser.add_argument("--popular-ratio", type=_ratio, default=0.2)
     parser.add_argument("--exploration-ratio", type=_ratio, default=0.1)
