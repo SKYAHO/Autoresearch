@@ -179,6 +179,57 @@ def _write_drafts_meta(
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+DEFAULT_EXPOSURE_ARGS: dict[str, object] = {"seed": 42, "k": 10, "exploration_ratio": 0.1}
+
+
+def _read_drafts_meta(path: Path) -> dict:
+    """draft 사이드카 메타를 읽는다.
+
+    사이드카가 없으면 판정의 계보(llm_model)를 알 수 없고, 계보 없는 event log를
+    쓰지 않는다는 규칙에 따라 실패한다.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"draft 사이드카 메타가 없습니다: {path} — "
+            "계보(llm_model)를 알 수 없어 event log를 쓸 수 없습니다"
+        )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def resolve_exposure_args(
+    explicit: Mapping[str, object | None],
+    defaults: Mapping[str, object],
+    meta_exposure_args: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """노출 결정 인자를 확정한다.
+
+    meta_exposure_args가 None(신규 라운드)이면 미명시 인자를 기본값으로 채운다.
+    리플레이면 미명시 인자를 판정 라운드에서 상속하고, 명시한 인자가 판정
+    라운드와 다르면 ValueError를 던진다 — 노출이 달라지면 저장된 판정이 노출을
+    덮지 못하고, "같은 판정 분포에 커트라인을 적용한다"는 캘리브레이션 전제가
+    깨지기 때문이다.
+    """
+    resolved: dict[str, object] = {}
+    mismatches: list[str] = []
+    for key, default in defaults.items():
+        given = explicit.get(key)
+        if meta_exposure_args is None:
+            resolved[key] = default if given is None else given
+            continue
+        if key not in meta_exposure_args:
+            raise ValueError(f"replay 메타에 노출 인자 '{key}'가 없습니다")
+        inherited = meta_exposure_args[key]
+        if given is None or given == inherited:
+            resolved[key] = inherited
+        else:
+            mismatches.append(f"{key}: 지정={given!r}, 판정 라운드={inherited!r}")
+    if mismatches:
+        raise ValueError(
+            "replay 인자가 판정 라운드와 다릅니다 — " + "; ".join(mismatches)
+        )
+    return resolved
+
+
 def main(
     personas: pd.DataFrame,
     virtual_users: list[dict],
@@ -425,19 +476,28 @@ def _cli() -> None:
     parser.add_argument("--virtual-users", required=True, help="virtual user parquet 경로")
     parser.add_argument("--videos", required=True, help="videos_raw csv 경로 (youtube_videos.csv 형식)")
     parser.add_argument("--events", required=True, help="historical wide events csv 경로")
-    parser.add_argument("--k", type=int, default=10)
-    parser.add_argument("--exploration-ratio", type=float, default=0.1)
+    parser.add_argument("--k", type=int, default=None, help="기본 10 (리플레이면 판정 라운드에서 상속)")
+    parser.add_argument("--exploration-ratio", type=float, default=None, help="기본 0.1 (리플레이면 상속)")
     parser.add_argument("--click-threshold", type=float, required=True)
     parser.add_argument("--max-users", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=None, help="기본 42 (리플레이면 상속)")
     parser.add_argument("--chunk-size", type=int, default=0)
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--policy-version", default="local")
     parser.add_argument("--as-of", default=None, help="기준 시각 (기본: 현재 UTC)")
     parser.add_argument("--output-dir", default="data/generated/policy_round")
-    parser.add_argument("--generator", choices=["openrouter", "rule-based"], default="openrouter")
+    parser.add_argument(
+        "--generator", choices=["openrouter", "rule-based"], default=None,
+        help="기본 openrouter. --replay-drafts와 함께 쓸 수 없습니다",
+    )
+    parser.add_argument(
+        "--replay-drafts", default=None,
+        help="저장된 draft parquet 경로. 지정하면 LLM 호출 없이 커트라인만 다시 적용합니다",
+    )
     parser.add_argument("--log-mlflow", action="store_true")
     args = parser.parse_args()
+    if args.replay_drafts is not None and args.generator is not None:
+        parser.error("--generator는 --replay-drafts와 함께 쓸 수 없습니다 (저장된 판정을 재사용합니다)")
 
     from datetime import UTC, datetime
 
@@ -451,11 +511,43 @@ def _cli() -> None:
         virtual_users = virtual_users[: args.max_users]
     videos_raw = pd.read_csv(args.videos)
     events = pd.read_csv(args.events)
-    generator = (
-        RuleBasedActionLogGenerator() if args.generator == "rule-based"
-        else OpenRouterActionLogGenerator()
+
+    replay = None
+    generator = None
+    meta_exposure_args = None
+    if args.replay_drafts is not None:
+        meta = _read_drafts_meta(Path(args.replay_drafts).with_name(DRAFTS_META_FILENAME))
+        if len(virtual_users) != meta["virtual_users"]:
+            parser.error(
+                f"virtual user 수가 판정 라운드와 다릅니다 "
+                f"(지정={len(virtual_users)}, 판정 라운드={meta['virtual_users']}) "
+                "— --max-users를 확인하세요"
+            )
+        meta_exposure_args = meta["exposure_args"]
+        replay = DraftReplay(
+            drafts=read_action_log_draft_parquet(args.replay_drafts),
+            llm_model=str(meta["llm_model"]),
+            exposure_args=meta_exposure_args,
+        )
+    else:
+        generator = (
+            RuleBasedActionLogGenerator() if args.generator == "rule-based"
+            else OpenRouterActionLogGenerator()
+        )
+
+    resolved = resolve_exposure_args(
+        explicit={
+            "seed": args.seed,
+            "k": args.k,
+            "exploration_ratio": args.exploration_ratio,
+            "as_of": args.as_of,
+        },
+        defaults={
+            **DEFAULT_EXPOSURE_ARGS,
+            "as_of": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S"),
+        },
+        meta_exposure_args=meta_exposure_args,
     )
-    as_of = args.as_of or datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
 
     report = main(
         personas=personas,
@@ -463,15 +555,22 @@ def _cli() -> None:
         videos_raw=videos_raw,
         events=events,
         generator=generator,
-        k=args.k,
-        exploration_ratio=args.exploration_ratio,
+        replay=replay,
+        k=int(resolved["k"]),
+        exploration_ratio=float(resolved["exploration_ratio"]),
         click_threshold=args.click_threshold,
-        seed=args.seed,
+        seed=int(resolved["seed"]),
         chunk_size=args.chunk_size,
         max_concurrency=args.max_concurrency,
         policy_version=args.policy_version,
-        as_of=as_of,
+        as_of=str(resolved["as_of"]),
         output_dir=args.output_dir,
+        input_paths={
+            "personas": args.personas,
+            "virtual_users": args.virtual_users,
+            "videos": args.videos,
+            "events": args.events,
+        },
     )
 
     if args.log_mlflow:

@@ -562,3 +562,136 @@ def test_main_requires_exactly_one_of_generator_or_replay(tmp_path, stub_reranke
             replay=_load_replay(first_dir),
             output_dir=str(tmp_path / "c"),
         )
+
+
+def test_resolve_exposure_args_uses_defaults_without_meta():
+    from src.pipeline.simulate_policy_round import resolve_exposure_args
+
+    resolved = resolve_exposure_args(
+        explicit={"seed": None, "k": 6, "exploration_ratio": None, "as_of": None},
+        defaults={"seed": 42, "k": 10, "exploration_ratio": 0.1, "as_of": "now"},
+        meta_exposure_args=None,
+    )
+    assert resolved == {"seed": 42, "k": 6, "exploration_ratio": 0.1, "as_of": "now"}
+
+
+def test_resolve_exposure_args_inherits_meta_when_unspecified():
+    from src.pipeline.simulate_policy_round import resolve_exposure_args
+
+    meta = {"seed": 7, "k": 6, "exploration_ratio": 0.0, "as_of": "2026-07-20 00:00:00"}
+    resolved = resolve_exposure_args(
+        explicit={"seed": None, "k": None, "exploration_ratio": None, "as_of": None},
+        defaults={"seed": 42, "k": 10, "exploration_ratio": 0.1, "as_of": "now"},
+        meta_exposure_args=meta,
+    )
+    assert resolved == meta
+
+
+def test_resolve_exposure_args_rejects_mismatch():
+    from src.pipeline.simulate_policy_round import resolve_exposure_args
+
+    meta = {"seed": 7, "k": 6, "exploration_ratio": 0.0, "as_of": "2026-07-20 00:00:00"}
+    with pytest.raises(ValueError, match="seed"):
+        resolve_exposure_args(
+            explicit={"seed": 42, "k": None, "exploration_ratio": None, "as_of": None},
+            defaults={"seed": 42, "k": 10, "exploration_ratio": 0.1, "as_of": "now"},
+            meta_exposure_args=meta,
+        )
+
+
+def test_read_drafts_meta_requires_sidecar(tmp_path):
+    from src.pipeline.simulate_policy_round import _read_drafts_meta
+
+    with pytest.raises(FileNotFoundError, match="llm_model"):
+        _read_drafts_meta(tmp_path / "action_log_drafts_meta.json")
+
+
+def test_cli_replay_runs_without_generator(tmp_path, stub_reranker, monkeypatch):
+    """CLI 리플레이는 --generator 없이 메타에서 인자를 상속해 동작해야 한다."""
+    import json
+    import sys
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from src.pipeline import simulate_policy_round as module
+
+    # 입력 파일 준비
+    personas_path = tmp_path / "personas.csv"
+    _personas().to_csv(personas_path, index=False)
+    videos_path = tmp_path / "videos.csv"
+    _videos_raw().to_csv(videos_path, index=False)
+    events_path = tmp_path / "events.csv"
+    # 빈 프레임을 CSV로 왕복시키면 dtype이 전부 object로 추론돼 DuckDB의
+    # user_id 비교가 깨진다. 실데이터와 같은 형태로 이력이 있는 프레임을 쓴다.
+    _events_with_history().to_csv(events_path, index=False)
+    users_path = tmp_path / "virtual_users.parquet"
+    pq.write_table(pa.Table.from_pylist(_virtual_users()), users_path)
+
+    monkeypatch.setattr(module, "load_reranker", lambda settings: stub_reranker)
+    monkeypatch.setattr(module, "load_model_settings_from_environment", lambda: None)
+
+    round_a = tmp_path / "round_a"
+    argv = [
+        "prog",
+        "--personas", str(personas_path),
+        "--virtual-users", str(users_path),
+        "--videos", str(videos_path),
+        "--events", str(events_path),
+        "--generator", "rule-based",
+        "--click-threshold", "0.0",
+        "--k", "6",
+        "--exploration-ratio", "0.0",
+        "--as-of", "2026-07-20 00:00:00",
+        "--output-dir", str(round_a),
+    ]
+    monkeypatch.setattr(sys, "argv", argv)
+    module._cli()
+
+    meta = json.loads(
+        (round_a / "action_log_drafts_meta.json").read_text(encoding="utf-8")
+    )
+    assert meta["exposure_args"]["k"] == 6
+
+    # 리플레이 — k/seed/as-of/generator 모두 생략하고 메타에서 상속한다
+    round_b = tmp_path / "round_b"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "--personas", str(personas_path),
+            "--virtual-users", str(users_path),
+            "--videos", str(videos_path),
+            "--events", str(events_path),
+            "--replay-drafts", str(round_a / "action_log_drafts.parquet"),
+            "--click-threshold", "0.0",
+            "--output-dir", str(round_b),
+        ],
+    )
+    module._cli()
+
+    original = json.loads((round_a / "policy_round_report.json").read_text(encoding="utf-8"))
+    replayed = json.loads((round_b / "policy_round_report.json").read_text(encoding="utf-8"))
+    assert replayed["policies"] == original["policies"]
+
+
+def test_cli_replay_rejects_generator_flag(tmp_path, monkeypatch):
+    import sys
+
+    from src.pipeline import simulate_policy_round as module
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "--personas", "p.csv", "--virtual-users", "u.parquet",
+            "--videos", "v.csv", "--events", "e.csv",
+            "--replay-drafts", str(tmp_path / "action_log_drafts.parquet"),
+            "--generator", "rule-based",
+            "--click-threshold", "0.5",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        module._cli()
