@@ -30,22 +30,31 @@
 
 ## Feature materialization 실행
 
-다음 공개 batch CLI가 `user_static_feature`, `user_dynamic_feature`,
-`video_feature`를 순서대로 전체 갱신한다.
+feature 테이블은 갱신 주기에 따라 실행 주체가 다르다.
+
+| 대상 | 실행 주체 | 주기 |
+| --- | --- | --- |
+| `user_dynamic_feature`, `video_feature` | `python -m autoresearch.jobs.feature_store_build` | 매일 (Airflow `feast_offline_feature_build` DAG) |
+| `user_static_feature`, `user_category_similarity` | `scripts/build_static_features.py` | persona·카테고리 설명문 변경 시 수동 |
 
 ```bash
-python -m autoresearch.jobs.feature_materialize \
+python -m autoresearch.jobs.feature_store_build \
   --project "$GCP_PROJECT_ID" \
   --dataset "$BQ_DATASET" \
-  --raw-dataset "$CTR_TRAINING_BQ_RAW_DATASET"
+  --raw-dataset "$CTR_TRAINING_BQ_RAW_DATASET" \
+  --tables user_dynamic_feature,video_feature
 ```
 
-실행 주체의 ADC 또는 workload identity에는 BigQuery job 실행 권한, 원본 raw
-테이블 또는 source dataset 읽기 권한, 대상 feature 테이블의 DML 권한이 필요하다.
-`--dataset`은 `user_static_feature`, `user_dynamic_feature`, `video_feature`
-target table을 가리킨다. `--raw-dataset`은 `data_lake_action_log`,
-`data_lake_youtube_trending_kr`, `asset_virtual_user_vu_1000` source table을
-가리키며, 세 source table은 materialization 전에 모두 존재해야 한다.
+실행 주체의 ADC 또는 workload identity에는 BigQuery job 실행 권한, raw dataset
+읽기 권한, 대상 feature 테이블의 DML 권한이 필요하다. `--dataset`은 Feast
+feature target table을, `--raw-dataset`은 `data_lake_action_log`,
+`data_lake_youtube_trending_kr` source table을 가리킨다.
+
+> [!NOTE]
+> `asset_virtual_user_vu_1000` BigQuery 테이블은 존재하지 않으며 자동 적재 주체도
+> 없다. persona 는 GCS `asset/virtual_user/vu_1000.parquet` 이 source of truth
+> 이므로, `user_static_feature` 는 `scripts/build_static_features.py` 가 그 parquet 을
+> external table 로 직접 읽어 만든다.
 Airflow DAG, schedule, 재시도 설정과 CLI 연결은 이 저장소의 범위가 아니며,
 `Autoresearch-airflow` 후속 작업에서 소유한다.
 
@@ -343,7 +352,7 @@ MVP의 daily snapshot 방식에서는 impression 당일 00:00 이후부터 impre
 ### 🔸 SQL
 
 > [!NOTE]
-> 아래 SQL은 공개 batch CLI(`autoresearch.jobs.feature_materialize`)가 소유하는
+> 아래 SQL은 공개 batch CLI(`autoresearch.jobs.feature_store_build`)가 소유하는
 > `SELECT` 본문이다. CLI는 `BEGIN TRANSACTION; DELETE FROM
 > {target} WHERE TRUE; INSERT INTO {target} ({명시적 컬럼}) SELECT {명시적 컬럼}
 > FROM materialized_rows; COMMIT TRANSACTION;`으로 실행한다. Terraform이 관리하는
@@ -351,8 +360,8 @@ MVP의 daily snapshot 방식에서는 impression 당일 00:00 이후부터 impre
 > `TRUNCATE`는 사용하지 않는다.
 
 ```sql
--- 실행은 python -m autoresearch.jobs.feature_materialize가 담당한다.
--- 이 SELECT 본문은 feature_materialize CLI가 DELETE FROM ... WHERE TRUE와 명시적 INSERT로 적재한다.
+-- 실행은 python -m autoresearch.jobs.feature_store_build가 담당한다.
+-- 이 SELECT 본문은 CLI가 TRUNCATE + 명시적 컬럼 INSERT로 적재한다.
 WITH action_log AS (
   SELECT
     user_id,
@@ -567,7 +576,7 @@ LEFT JOIN category_rank c
 ### 🔸 SQL
 
 > [!NOTE]
-> 아래 SQL은 공개 batch CLI(`autoresearch.jobs.feature_materialize`)가 소유하는
+> 아래 SQL은 공개 batch CLI(`autoresearch.jobs.feature_store_build`)가 소유하는
 > `SELECT` 본문이다. CLI는 `BEGIN TRANSACTION; DELETE FROM
 > {target} WHERE TRUE; INSERT INTO {target} ({명시적 컬럼}) SELECT {명시적 컬럼}
 > FROM materialized_rows; COMMIT TRANSACTION;`으로 실행한다. Terraform이 관리하는
@@ -575,8 +584,8 @@ LEFT JOIN category_rank c
 > `TRUNCATE`는 사용하지 않는다.
 
 ```sql
--- 실행은 python -m autoresearch.jobs.feature_materialize가 담당한다.
--- 이 SELECT 본문은 feature_materialize CLI가 DELETE FROM ... WHERE TRUE와 명시적 INSERT로 적재한다.
+-- 실행은 python -m autoresearch.jobs.feature_store_build가 담당한다.
+-- 이 SELECT 본문은 CLI가 TRUNCATE + 명시적 컬럼 INSERT로 적재한다.
 WITH parsed AS (
   SELECT
     video_id,

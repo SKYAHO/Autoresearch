@@ -1,5 +1,16 @@
 # BigQuery 피처 테이블 Materialization 구현 계획
 
+> [!WARNING]
+> **이 문서는 이력 보존용입니다 (#256에서 철회).**
+> 여기서 도입한 `autoresearch.jobs.feature_materialize` 는 제거되었고, feature
+> materialization 은 `autoresearch.jobs.feature_store_build` 로 단일화되었습니다.
+> 같은 대상 테이블 3종을 재구축하는 공개 CLI 가 둘이 되어 스케줄 충돌 위험이
+> 있었고, `Autoresearch-airflow` 의 `feast_offline_feature_build` DAG 배선이 이미
+> `feature_store_build` 기준이었습니다. 또한 이 문서의 `user_static_feature`
+> 경로는 `{raw_dataset}.asset_virtual_user_vu_1000` 을 전제하는데, 그 BigQuery
+> 테이블은 존재하지 않습니다(persona 는 GCS parquet 이 source of truth).
+> 현재 계약은 `docs/guides/data-warehouse.md` 를 참조하십시오.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** BigQuery raw 테이블에서 `user_static_feature`, `user_dynamic_feature`, `video_feature`를 안전하게 전체 갱신하는 공개 batch CLI를 제공한다.
