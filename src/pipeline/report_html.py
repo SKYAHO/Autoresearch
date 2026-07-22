@@ -128,9 +128,9 @@ k={report["k"]} · ε={report["exploration_ratio"]} · click_threshold={report["
 seed={report["seed"]}</div>
 <div class="tiles">{tiles}</div>
 {legend}
-<div class="chart"><h2>정책별 CTR (합동 정규화 후)</h2>
+<div class="chart"><h2>정책별 CTR (합동 커트라인 판정 후)</h2>
 {_bar_rows({"baseline": baseline["ctr"], "model": model["ctr"]}, _pct)}</div>
-<div class="chart"><h2>정책별 평균 click propensity (정규화 전 raw)</h2>
+<div class="chart"><h2>정책별 평균 click propensity (커트라인 판정 전 raw)</h2>
 {_bar_rows({"baseline": baseline["mean_click_propensity"], "model": model["mean_click_propensity"]}, lambda v: f"{v:.4f}")}</div>
 <div class="chart"><h2>데이터 테이블</h2>
 <table>
