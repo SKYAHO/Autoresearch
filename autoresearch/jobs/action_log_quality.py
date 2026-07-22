@@ -16,7 +16,10 @@ import pyarrow.parquet as pq
 from pyarrow.fs import GcsFileSystem
 from pydantic import ValidationError
 
-from autoresearch.action_logs.pipeline import EVENT_LOG_PARQUET_SCHEMA
+from autoresearch.action_logs.pipeline import (
+    EVENT_LOG_PARQUET_SCHEMA,
+    OPTIONAL_ADDITIVE_COLUMNS,
+)
 from autoresearch.action_logs.schema import EventLog
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
 
@@ -142,7 +145,9 @@ def summarize_final_schema(
     """Arrow final schema와 EventLog row 불변식을 검증해 count만 반환한다."""
 
     actual_names = set(action_schema.names)
-    missing_columns = sorted(set(EVENT_LOG_PARQUET_SCHEMA.names) - actual_names)
+    missing_columns = sorted(
+        set(EVENT_LOG_PARQUET_SCHEMA.names) - actual_names - OPTIONAL_ADDITIVE_COLUMNS
+    )
     type_mismatches = sorted(
         field.name
         for field in EVENT_LOG_PARQUET_SCHEMA

@@ -24,10 +24,19 @@ def test_load_personas_reads_csv(tmp_path):
 
 
 def test_load_personas_reads_parquet(tmp_path):
+    # parquet은 실제 virtual_users 파이프라인 원본 스키마(user_id 등)라, CSV mock과
+    # 달리 to_personas_frame()을 거쳐 uuid 계약 컬럼으로 정규화되어야 한다(#229).
     parquet_path = tmp_path / "personas.parquet"
-    pd.DataFrame({"uuid": ["u1"], "age": [25], "occupation": ["Student"]}).to_parquet(
-        parquet_path
-    )
+    pd.DataFrame(
+        {
+            "user_id": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobby_keywords": [["gaming"]],
+            "interest_keywords": [["esports"]],
+            "lifestyle_keywords": [None],
+        }
+    ).to_parquet(parquet_path)
 
     result = build_training_dataset.load_personas(str(parquet_path))
 

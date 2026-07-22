@@ -110,6 +110,15 @@ def test_quality_detects_reference_model_and_schema_failures():
     assert "expected llm_model expected-model not found" in errors
 
 
+def test_quality_treats_exposure_source_as_optional_for_legacy_partitions():
+    # exposure_source가 없는 구 파티션 스키마 — missing_columns에 포함되지 않아야 한다
+    legacy_schema = pa.schema(
+        [f for f in EVENT_LOG_PARQUET_SCHEMA if f.name != "exposure_source"]
+    )
+    summary = quality_job.summarize_final_schema([], legacy_schema)
+    assert "exposure_source" not in summary["action_schema_missing_columns"]
+
+
 def test_run_resolves_canonical_partition_paths(monkeypatch):
     youtube_rows, action_rows, virtual_user_rows = _valid_rows()
     paths = []

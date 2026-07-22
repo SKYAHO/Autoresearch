@@ -186,6 +186,7 @@ def test_parquet_matches_events(tmp_path):
         "event_id", "event_timestamp", "user_id", "event_type",
         "video_id", "watch_time_sec", "rank", "source",
         "policy", "ctr_score", "is_exploration", "policy_version",
+        "exposure_source",
     }
 
 
