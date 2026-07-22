@@ -349,7 +349,7 @@ def test_dynamic_script_separates_raw_and_feature_datasets():
     assert "DELETE FROM `test-project.feature_dataset.user_dynamic_feature`" in script
 
 
-def test_static_script_keeps_virtual_user_source_in_feature_dataset():
+def test_static_script_reads_virtual_user_source_from_raw_dataset():
     script = feature_materialize.build_materialize_script(
         "test-project",
         "feature_dataset",
@@ -357,8 +357,9 @@ def test_static_script_keeps_virtual_user_source_in_feature_dataset():
         "user_static_feature",
     )
 
-    assert "`test-project.feature_dataset.asset_virtual_user_vu_1000`" in script
-    assert "raw_dataset.asset_virtual_user_vu_1000" not in script
+    assert "`test-project.raw_dataset.asset_virtual_user_vu_1000`" in script
+    assert "feature_dataset.asset_virtual_user_vu_1000" not in script
+    assert "DELETE FROM `test-project.feature_dataset.user_static_feature`" in script
 
 
 def test_static_script_flattens_bigquery_parquet_list_wrappers():

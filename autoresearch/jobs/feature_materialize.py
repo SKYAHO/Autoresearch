@@ -87,7 +87,7 @@ SELECT
     WHEN LOWER(TRIM(watch_time_band)) IN ('night', 'late_night', '밤', '심야') THEN 'night'
     ELSE 'unknown'
   END AS watch_time_band
-FROM `{project_id}.{dataset_id}.asset_virtual_user_vu_1000`
+FROM `{project_id}.{raw_dataset_id}.asset_virtual_user_vu_1000`
 WHERE user_id IS NOT NULL
 """,
     "user_dynamic_feature": """
