@@ -42,6 +42,7 @@ python -m autoresearch.jobs.feature_store_build \
   --project "$GCP_PROJECT_ID" \
   --dataset "$BQ_DATASET" \
   --raw-dataset "$CTR_TRAINING_BQ_RAW_DATASET" \
+  --partition-date 2026-07-21 \
   --tables user_dynamic_feature,video_feature
 ```
 
@@ -49,6 +50,19 @@ python -m autoresearch.jobs.feature_store_build \
 읽기 권한, 대상 feature 테이블의 DML 권한이 필요하다. `--dataset`은 Feast
 feature target table을, `--raw-dataset`은 `data_lake_action_log`,
 `data_lake_youtube_trending_kr` source table을 가리킨다.
+
+`--partition-date`(KST, 필수)는 적재할 하루를 지정한다. 명령은 그 날짜에
+해당하는 행만 `DELETE`한 뒤 다시 `INSERT`하므로, 같은 날짜로 몇 번을 실행해도
+결과가 같다. 전체 기간을 다시 만드는 모드는 없다. 과거를 재계산해야 하면 날짜를
+바꿔 가며 반복 실행한다.
+
+```bash
+# 2026-07-14 ~ 2026-07-21 재계산
+for d in $(seq 0 7); do
+  python -m autoresearch.jobs.feature_store_build \
+    --partition-date "$(date -u -d "2026-07-14 +${d} day" +%F)"
+done
+```
 
 > [!NOTE]
 > `asset_virtual_user_vu_1000` BigQuery 테이블은 존재하지 않으며 자동 적재 주체도
@@ -114,7 +128,8 @@ uv run python scripts/load_raw_to_bigquery.py \
 ### 🔸 아래 SQL 의 실제 실행 방식
 
 `user_dynamic_feature`, `video_feature` 는 매일 도는 공개 batch 명령
-`python -m autoresearch.jobs.feature_store_build` 가 재구축합니다
+`python -m autoresearch.jobs.feature_store_build` 가 `--partition-date` 하루치씩
+증분 적재합니다
 (`autoresearch/jobs/feature_store_build.py`,
 `docs/specs/2026-07-22-feature-store-build-batch.md`). Airflow 에서는
 `Autoresearch-airflow` 의 `feast_offline_feature_build` DAG 가
@@ -353,16 +368,20 @@ MVP의 daily snapshot 방식에서는 impression 당일 00:00 이후부터 impre
 
 > [!NOTE]
 > 아래 SQL은 공개 batch CLI(`autoresearch.jobs.feature_store_build`)가 소유하는
-> `SELECT` 본문이다. CLI는 `BEGIN TRANSACTION; DELETE FROM
-> {target} WHERE TRUE; INSERT INTO {target} ({명시적 컬럼}) SELECT {명시적 컬럼}
-> FROM materialized_rows; COMMIT TRANSACTION;`으로 실행한다. Terraform이 관리하는
-> 테이블 스키마와 REQUIRED 제약을 보존하기 위해 `CREATE OR REPLACE`나
-> `TRUNCATE`는 사용하지 않는다.
+> `SELECT` 본문이다. CLI는 `DELETE FROM {target} WHERE event_timestamp =
+> TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul'); INSERT INTO {target}
+> ({명시적 컬럼}) {아래 SELECT};`로 실행한다. 대상 날짜 행만 교체하므로 같은
+> 날짜로 다시 실행해도 결과가 같다. Terraform이 관리하는 테이블 스키마와
+> REQUIRED 제약을 보존하기 위해 `CREATE OR REPLACE`, `WRITE_TRUNCATE`,
+> `TRUNCATE TABLE`은 사용하지 않는다.
 
 ```sql
 -- 실행은 python -m autoresearch.jobs.feature_store_build가 담당한다.
--- 이 SELECT 본문은 CLI가 TRUNCATE + 명시적 컬럼 INSERT로 적재한다.
+-- 이 SELECT 본문은 CLI가 대상 날짜 DELETE + 명시적 컬럼 INSERT로 적재한다.
+-- {partition_date}는 --partition-date로 받은 KST 날짜다.
 WITH action_log AS (
+  -- category affinity가 30일을 보므로 raw 스캔 윈도우도 30일이다.
+  -- 7일 집계는 이 안에 포함된다.
   SELECT
     user_id,
     video_id,
@@ -372,6 +391,9 @@ WITH action_log AS (
   FROM `{project}.{raw_dataset}.data_lake_action_log`
   WHERE user_id IS NOT NULL
     AND event_timestamp IS NOT NULL
+    AND event_timestamp >= TIMESTAMP_SUB(
+      TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul'), INTERVAL 30 DAY)
+    AND event_timestamp < TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul')
 ),
 
 video_latest AS (
@@ -380,6 +402,9 @@ video_latest AS (
     video_category
   FROM `{project}.{raw_dataset}.data_lake_youtube_trending_kr`
   WHERE video_id IS NOT NULL
+    AND collected_at >= TIMESTAMP_SUB(
+      TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul'), INTERVAL 30 DAY)
+    AND collected_at < TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul')
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY video_id
     ORDER BY COALESCE(collected_at, video_trending_date, video_published_at) DESC
@@ -399,31 +424,25 @@ action_with_category AS (
     ON a.video_id = v.video_id
 ),
 
-date_bounds AS (
-  SELECT
-    DATE(MIN(event_timestamp), 'Asia/Seoul') AS min_date,
-    DATE(MAX(event_timestamp), 'Asia/Seoul') AS max_date
-  FROM action_log
-),
-
-snapshots AS (
-  SELECT
-    TIMESTAMP(snapshot_date, 'Asia/Seoul') AS event_timestamp
-  FROM date_bounds,
-  UNNEST(GENERATE_DATE_ARRAY(min_date, max_date)) AS snapshot_date
-),
-
 users AS (
+  -- 이미 feature 테이블에 등장한 적 있는 유저는 계속 스냅샷을 받는다. 룩백
+  -- 윈도우에 활동이 없어도 아래 LEFT JOIN이 전부 0으로 채우므로, Feast가 오래된
+  -- 스냅샷으로 fallback해 stale한 값을 돌려주는 일이 없다. 신규 유저는 두 번째
+  -- 항에서 들어온다. DELETE가 먼저 실행되어 대상 날짜 행은 이미 지워진 뒤다.
+  SELECT DISTINCT user_id
+  FROM `{project}.{dataset}.user_dynamic_feature`
+  WHERE user_id IS NOT NULL
+  UNION DISTINCT
   SELECT DISTINCT user_id
   FROM action_log
 ),
 
 user_snapshots AS (
+  -- 대상 날짜 스냅샷 하나뿐이므로 유저당 정확히 한 행이다.
   SELECT
-    u.user_id,
-    s.event_timestamp
-  FROM users u
-  CROSS JOIN snapshots s
+    user_id,
+    TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul') AS event_timestamp
+  FROM users
 ),
 
 user_7d AS (
@@ -577,15 +596,17 @@ LEFT JOIN category_rank c
 
 > [!NOTE]
 > 아래 SQL은 공개 batch CLI(`autoresearch.jobs.feature_store_build`)가 소유하는
-> `SELECT` 본문이다. CLI는 `BEGIN TRANSACTION; DELETE FROM
-> {target} WHERE TRUE; INSERT INTO {target} ({명시적 컬럼}) SELECT {명시적 컬럼}
-> FROM materialized_rows; COMMIT TRANSACTION;`으로 실행한다. Terraform이 관리하는
-> 테이블 스키마와 REQUIRED 제약을 보존하기 위해 `CREATE OR REPLACE`나
-> `TRUNCATE`는 사용하지 않는다.
+> `SELECT` 본문이다. CLI는 `DELETE FROM {target} WHERE
+> DATE(event_timestamp, 'Asia/Seoul') = DATE '{partition_date}'; INSERT INTO
+> {target} ({명시적 컬럼}) {아래 SELECT};`로 실행한다. `event_timestamp`가
+> `collected_at` 그대로라 하루 안에 여러 시각이 들어오므로 날짜 단위로 묶어
+> 지운다. Terraform이 관리하는 테이블 스키마와 REQUIRED 제약을 보존하기 위해
+> `CREATE OR REPLACE`, `WRITE_TRUNCATE`, `TRUNCATE TABLE`은 사용하지 않는다.
 
 ```sql
 -- 실행은 python -m autoresearch.jobs.feature_store_build가 담당한다.
--- 이 SELECT 본문은 CLI가 TRUNCATE + 명시적 컬럼 INSERT로 적재한다.
+-- 이 SELECT 본문은 CLI가 대상 날짜 DELETE + 명시적 컬럼 INSERT로 적재한다.
+-- {partition_date}는 --partition-date로 받은 KST 날짜다.
 WITH parsed AS (
   SELECT
     video_id,
@@ -641,6 +662,7 @@ WITH parsed AS (
   FROM `{project}.{raw_dataset}.data_lake_youtube_trending_kr`
   WHERE video_id IS NOT NULL
     AND collected_at IS NOT NULL
+    AND DATE(collected_at, 'Asia/Seoul') = DATE '{partition_date}'
 )
 
 SELECT
