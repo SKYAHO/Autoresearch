@@ -57,7 +57,15 @@ jobs:
         run: uv sync --frozen --no-dev --group feast
 
       - name: Run feast pytest
-        run: uv run --no-sync python -m pytest tests/test_redis_iam.py tests/test_feast_materialize.py -v
+        run: >-
+          uv run --no-sync python -m pytest
+          tests/test_redis_iam.py
+          tests/test_feast_materialize.py
+          tests/test_serving_feast_reader.py
+          tests/test_serving_feast_reader_feast.py
+          tests/test_serving_api.py
+          tests/test_serving_deployment.py
+          -v
 
   uv-lock-check:
     name: uv lock & proxy export drift
@@ -194,3 +202,52 @@ jobs:
             echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
             exit 1
           fi
+
+      - name: Build serving Docker image
+        run: |
+          docker build \
+            -f deploy/serving/Dockerfile \
+            --tag autoresearch-serving:ci \
+            .
+
+      - name: Run serving image import smoke check
+        run: |
+          docker run --rm autoresearch-serving:ci python -m pip check
+          docker run --rm autoresearch-serving:ci \
+            python -c "import lightgbm, feast, fastapi, feature_repo.redis_iam, src.serving.app"
+          docker run --rm autoresearch-serving:ci \
+            python -c "from feature_repo.bootstrap import load_feature_store; load_feature_store('/app/feature_repo')"
+
+      - name: Run serving image fail-closed HTTP contract smoke
+        shell: bash
+        run: |
+          container_name="autoresearch-serving-healthcheck-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            docker rm --force "${container_name}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker run --detach \
+            --name "${container_name}" \
+            --publish 127.0.0.1::8000 \
+            autoresearch-serving:ci
+
+          for _ in $(seq 1 30); do
+            host_port="$(docker port "${container_name}" 8000/tcp | awk -F: '{print $NF}')"
+            rerank_status_code="$(curl --request POST \
+              --silent --show-error \
+              --output /tmp/serving-rerank.json \
+              --write-out '%{http_code}' \
+              --header 'Content-Type: application/json' \
+              --data '{}' \
+              "http://127.0.0.1:${host_port}/rerank" || true)"
+            healthcheck_status_code="$(curl --silent --show-error --output /tmp/serving-healthcheck.json --write-out '%{http_code}' "http://127.0.0.1:${host_port}/healthcheck" || true)"
+            if [ "${rerank_status_code}" = "422" ] && [ "${healthcheck_status_code}" = "503" ]; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          docker logs "${container_name}"
+          echo "::error::모델·Feast 자격 증명 없이 malformed /rerank는 422이고 /healthcheck는 503이어야 한다"
+          exit 1

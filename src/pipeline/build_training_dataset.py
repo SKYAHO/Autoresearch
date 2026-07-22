@@ -13,27 +13,15 @@ training_dataset.csv 생성 파이프라인.
   (docs/guides/data-warehouse.md의 training_entity 참고, issue #172)
 
 출력:
-- data/processed/training_dataset.csv (16컬럼, docs/guides/ctr-model-specification.md 준수)
+- data/processed/training_dataset.csv (21컬럼, docs/guides/training-dataset.md의
+  Model Input Columns 준수. Feast get_historical_features()는 아직 경유하지
+  않는 DuckDB fallback 경로 — issue #204/#175 결정안 참고)
 
 NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py
       스크립트의 산출물이며, 스펙 변경 시에는 scaffold를 수정한 후 해당 스크립트를
       재실행해 입력값을 갱신할 것. 이 파일들을 직접 수정하면 stale 상태로 남아
       다음 조사/버그 시 같은 문제가 반복된다.
 """
-
-__arch__ = {
-    "stage": "training",
-    "role": "원천 이벤트와 피처를 CTR 학습 데이터셋으로 변환합니다.",
-    "owns": [
-        "historical event를 wide training row로 변환",
-        "point-in-time 학습 데이터셋 생성",
-        "학습 입력 품질 검증",
-    ],
-    "not_owns": [
-        "정책 시뮬레이션 노출 선택",
-        "CTR 모델 학습 실행",
-    ],
-}
 
 import os
 import sys
@@ -42,7 +30,13 @@ import pandas as pd
 from datetime import datetime, timedelta
 
 BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "ar-infra-501607")
+# feature/서빙 계층 dataset — Feast feature 테이블 4종(user_static_feature,
+# user_dynamic_feature, video_feature, user_category_similarity)과 배치 출력
+# 테이블(user_recommendations)이 여기에 있다.
 BIGQUERY_DATASET = os.environ.get("CTR_TRAINING_BQ_DATASET", "feast_offline_store")
+# raw(데이터 레이크 적재) 계층 dataset — data_lake_* 테이블 전용. feature 계층과
+# 물리적으로 분리되어 있으므로 raw 테이블은 반드시 이 dataset 으로 해석한다.
+BIGQUERY_RAW_DATASET = os.environ.get("CTR_TRAINING_BQ_RAW_DATASET", "data_lake_raw")
 BIGQUERY_VIDEOS_TABLE = os.environ.get(
     "CTR_TRAINING_BQ_VIDEOS_TABLE", "data_lake_youtube_trending_kr"
 )
@@ -61,11 +55,32 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.features.assembly import (  # noqa: E402
-    compute_interaction_columns,
     compute_point_in_time_user_features,
     compute_user_offline_features,
+    compute_user_topic_features,
     compute_video_features,
 )
+from src.features.feature_builder import compute_historical_category_match  # noqa: E402
+from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
+
+
+def raw_table_id(table: str) -> str:
+    """raw(데이터 레이크) 테이블의 완전한 BigQuery 식별자를 만든다.
+
+    raw 테이블(`data_lake_*`)은 feature 계층과 다른 dataset
+    (`CTR_TRAINING_BQ_RAW_DATASET`, 기본 `data_lake_raw`)에 있다. 모듈
+    전역을 호출 시점에 읽으므로 테스트에서 monkeypatch 로 재정의할 수 있다.
+    """
+    return f"{BIGQUERY_PROJECT}.{BIGQUERY_RAW_DATASET}.{table}"
+
+
+def feature_table_id(table: str) -> str:
+    """feature/서빙 테이블의 완전한 BigQuery 식별자를 만든다.
+
+    Feast feature 테이블과 배치 출력 테이블은 계속
+    `CTR_TRAINING_BQ_DATASET`(기본 `feast_offline_store`)에 있다.
+    """
+    return f"{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{table}"
 
 
 def get_data_dir():
@@ -135,8 +150,11 @@ def load_videos_from_bigquery() -> pd.DataFrame:
             video_comment_count AS commentCount,
             video_published_at AS publishedAt,
             video_title AS title,
-            video_description AS description
-        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{BIGQUERY_VIDEOS_TABLE}`
+            video_description AS description,
+            channel_subscriber_count AS channelSubscriberCount,
+            channel_view_count AS channelViewCount,
+            channel_video_count AS channelVideoCount
+        FROM `{raw_table_id(BIGQUERY_VIDEOS_TABLE)}`
     """
     return client.query(query).to_dataframe()
 
@@ -145,13 +163,14 @@ def load_personas(personas_path: str) -> pd.DataFrame:
     """personas 입력을 확장자로 판별해 로드한다.
 
     로컬/GCS 경로 모두 지원한다(gcsfs가 gs:// 경로를 pandas에 투명하게
-    연결한다). virtual_users 파이프라인의 실제 산출물 위치가 정해지면
-    이 함수에 그 경로만 넘기면 된다. BigQuery 적재는 필요 없다(persona는
-    학습 시 집계된 user feature로만 쓰이고 그 자체가 warehouse 테이블일
-    필요는 없음).
+    연결한다). CSV는 이미 personas 계약(uuid/age/occupation/관심사) 형태인
+    mock 산출물이라 그대로 쓴다. parquet은 virtual_users 파이프라인의 원본
+    스키마(user_id/hobby_keywords/interest_keywords 등)이므로
+    to_personas_frame()으로 계약 형태로 정규화한다(daily_recommendations.py와
+    동일한 패턴, #229).
     """
     if personas_path.endswith(".parquet"):
-        return pd.read_parquet(personas_path)
+        return to_personas_frame(pd.read_parquet(personas_path))
     return pd.read_csv(personas_path)
 
 
@@ -171,7 +190,7 @@ def load_events_from_bigquery(start_date: str, end_date: str) -> pd.DataFrame:
     client = bigquery.Client(project=BIGQUERY_PROJECT)
     query = f"""
         SELECT event_id, event_timestamp, user_id, event_type, video_id, watch_time_sec
-        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{BIGQUERY_ACTION_LOG_TABLE}`
+        FROM `{raw_table_id(BIGQUERY_ACTION_LOG_TABLE)}`
         WHERE dt BETWEEN '{start_date}' AND '{end_date}'
     """
     return client.query(query).to_dataframe()
@@ -396,8 +415,6 @@ def main(
 
     print("\n[Step 1] DuckDB SQL 처리...")
     con = duckdb.connect()
-    con.register("videos_raw", videos)
-    con.register("personas_raw", personas)
 
     snapshot_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -418,6 +435,15 @@ def main(
     con.register("video_feature", video_feature)
     con.register("online_features", online_features)
 
+    # persona의 hobbies_and_interests_list/primary_categories를 이벤트(수백만
+    # 행) 단위로 직접 조인하면 유저당 평균 노출 수만큼 리스트/임베딩 컬럼이
+    # 복제되어 OOM을 유발한다(#231/#238 이후에도 재현, #240). topic_similarity/
+    # preferred_category_match는 (user, category_id) 조합에만 의존하고
+    # category_id는 관측되는 값이 적으므로, persona 단위로 미리 계산해 작은
+    # 유저x카테고리 테이블만 조인한다.
+    user_topic_feature = compute_user_topic_features(personas, video_feature["category_id"].unique())
+    con.register("user_topic_feature", user_topic_feature)
+
     joined = con.execute(
         """
         SELECT
@@ -427,22 +453,25 @@ def main(
             o.clicked,
             o.historical_category_affinity,
             o.recent_click_count_7d,
+            o.recent_view_count_7d,
             o.recent_watch_time_7d,
             o.recent_like_count_7d,
+            o.total_event_count_7d,
             vf.category_id,
             vf.duration_sec,
             vf.view_count,
             vf.like_ratio,
             vf.comment_ratio,
             vf.days_since_upload,
-            p.hobbies_and_interests,
-            p.hobbies_and_interests_list,
-            v.title,
-            v.description
+            vf.channel_subscriber_count,
+            vf.channel_view_count,
+            vf.channel_video_count,
+            utf.topic_similarity,
+            utf.preferred_category_match
         FROM online_features o
         JOIN video_feature vf ON vf.video_id = o.video_id
-        JOIN personas_raw p ON p.uuid = o.user_id
-        JOIN videos_raw v ON v.video_id = o.video_id
+        JOIN user_topic_feature utf ON utf.user_id = o.user_id
+            AND COALESCE(utf.category_id, '') = COALESCE(vf.category_id, '')
         ORDER BY o.timestamp
         """
     ).df()
@@ -450,7 +479,12 @@ def main(
 
     print("\n[Step 2] Interaction Features 계산...")
 
-    joined = compute_interaction_columns(joined)
+    joined["historical_category_match"] = joined.apply(
+        lambda row: compute_historical_category_match(
+            row["historical_category_affinity"], row["category_id"]
+        ),
+        axis=1,
+    )
 
     print(f"  [OK] topic_similarity: mean={joined['topic_similarity'].mean():.3f}")
 
@@ -483,19 +517,25 @@ def main(
         SELECT
             uo.age_group,
             uo.occupation,
+            uo.watch_time_band,
             j.historical_category_affinity,
             CAST(j.recent_click_count_7d AS INTEGER) AS recent_click_count_7d,
+            CAST(j.recent_view_count_7d AS INTEGER) AS recent_view_count_7d,
             CAST(j.recent_watch_time_7d AS INTEGER) AS recent_watch_time_7d,
             CAST(j.recent_like_count_7d AS INTEGER) AS recent_like_count_7d,
+            CAST(j.total_event_count_7d AS INTEGER) AS total_event_count_7d,
             j.category_id,
             CAST(j.duration_sec AS INTEGER) AS duration_sec,
             CAST(j.view_count AS BIGINT) AS view_count,
             j.like_ratio,
             j.comment_ratio,
             CAST(j.days_since_upload AS INTEGER) AS days_since_upload,
+            CAST(j.channel_subscriber_count AS BIGINT) AS channel_subscriber_count,
+            CAST(j.channel_view_count AS BIGINT) AS channel_view_count,
+            CAST(j.channel_video_count AS BIGINT) AS channel_video_count,
+            j.topic_similarity,
             CAST(j.historical_category_match AS INTEGER) AS historical_category_match,
             CAST(j.preferred_category_match AS INTEGER) AS preferred_category_match,
-            j.topic_similarity,
             CAST(j.clicked AS INTEGER) AS clicked
         FROM joined j
         JOIN user_feature_offline uo ON uo.user_id = j.user_id

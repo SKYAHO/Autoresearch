@@ -3,12 +3,15 @@
 Implements 15 fixed YouTube categories with descriptions and embeddings.
 See: docs/guides/ctr-model-specification.md (Intermediate Artifacts section)
 
-NOTE: category_description_embedding는 모듈 import 시 1회만 생성되어 캐시됨.
+NOTE: category_description_embedding는 첫 조회 시점에 Vertex AI로 1회만
+생성되어 프로세스 수명 동안 캐시된다(#206). 모듈 import 시점에는 호출하지
+않는다 — import만으로 네트워크 호출이 발생하면 이 모듈을 임포트하는 모든
+코드(테스트 포함)가 GCP 자격 증명을 요구하게 된다.
 """
 
 import numpy as np
 
-from src.features.embeddings import embed_text
+from src.features.embeddings import embed_texts
 
 
 CATEGORY_DESCRIPTIONS = {
@@ -33,11 +36,17 @@ _CATEGORY_EMBEDDINGS = {}
 
 
 def _init_category_embeddings() -> None:
-    """Initialize embeddings for all 15 categories on module load."""
+    """15개 카테고리 설명문을 한 번에 배치 임베딩해 캐시를 채운다.
+
+    카테고리 설명문은 "검색 대상 문서" 역할이므로 task_type=RETRIEVAL_DOCUMENT를
+    쓴다 — 사용자 키워드(RETRIEVAL_QUERY, feature_builder.py)와 비대칭이다.
+    """
     global _CATEGORY_EMBEDDINGS
     if not _CATEGORY_EMBEDDINGS:
-        for cat_id, desc in CATEGORY_DESCRIPTIONS.items():
-            _CATEGORY_EMBEDDINGS[cat_id] = embed_text(desc)
+        names = list(CATEGORY_DESCRIPTIONS.keys())
+        descriptions = list(CATEGORY_DESCRIPTIONS.values())
+        vectors = embed_texts(descriptions, task_type="RETRIEVAL_DOCUMENT")
+        _CATEGORY_EMBEDDINGS = dict(zip(names, vectors))
 
 
 def get_category_description_embedding(category_id: str) -> np.ndarray:
@@ -56,6 +65,3 @@ def get_category_description_embedding(category_id: str) -> np.ndarray:
         return _CATEGORY_EMBEDDINGS[category_id]
 
     return _CATEGORY_EMBEDDINGS["People & Blogs"]
-
-
-_init_category_embeddings()

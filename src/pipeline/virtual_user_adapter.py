@@ -8,19 +8,6 @@ dict 키("list")만 추출되어 전 키워드가 붕괴한다 — 2026-07-21 v2
 
 from __future__ import annotations
 
-__arch__ = {
-    "stage": "training",
-    "role": "BQ 가상 유저 테이블을 학습 계약 personas 형태로 정규화합니다.",
-    "owns": [
-        "BQ Arrow 중첩 배열 키워드 추출",
-        "personas 계약 컬럼(uuid·age·occupation·관심사) 조립",
-    ],
-    "not_owns": [
-        "피처 계산",
-        "BigQuery 조회 실행",
-    ],
-}
-
 import json
 
 import pandas as pd

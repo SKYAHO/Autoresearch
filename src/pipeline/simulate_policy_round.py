@@ -14,20 +14,6 @@ spec: docs/specs/2026-07-20-policy-simulation-round.md
 
 from __future__ import annotations
 
-__arch__ = {
-    "stage": "training",
-    "role": "두 정책의 노출·판정·정규화 결과를 배치 리포트로 조립합니다.",
-    "owns": [
-        "baseline/model 정책 비교 배치 실행",
-        "합동 판정과 정책별 이벤트 확장",
-        "JSON/HTML 정책 라운드 리포트 출력",
-    ],
-    "not_owns": [
-        "Reranker 모델 학습 및 구현",
-        "원천 데이터 수집",
-    ],
-}
-
 import argparse
 import json
 import os

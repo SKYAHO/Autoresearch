@@ -2,6 +2,7 @@
 
 ## Table of Contents
 
+- [Dataset 계층 분리](#dataset-layers)
 - [user_static_feature](#user_static_feature)
 - [user_dynamic_feature](#user_dynamic_feature)
 - [video_feature](#video_feature)
@@ -23,6 +24,73 @@
 > - `topic_similarity`를 만들기 위한 **Embedding artifact/reference**
 >     - **user_topic_embedding**
 >     - **category_embedding**
+
+---
+
+<a id="dataset-layers"></a>
+
+## 🗂️ Dataset 계층 분리
+
+BigQuery dataset 은 raw 계층과 feature/서빙 계층으로 분리되어 있습니다. 아래
+SQL 의 `{raw_dataset}` / `{dataset}` 플레이스홀더는 각각 이 두 계층을
+가리킵니다.
+
+| 계층 | 플레이스홀더 | 기본 dataset | 테이블 |
+| --- | --- | --- | --- |
+| raw (데이터 레이크 적재) | `{raw_dataset}` | `data_lake_raw` | `data_lake_action_log`, `data_lake_youtube_trending_kr` |
+| feature / 서빙 | `{dataset}` | `feast_offline_store` | `user_static_feature`, `user_dynamic_feature`, `video_feature`, `user_category_similarity`, `user_recommendations` |
+
+### 🔸 환경 변수
+
+| 환경 변수 | 기본값 | 용도 |
+| --- | --- | --- |
+| `CTR_TRAINING_BQ_PROJECT` | `ar-infra-501607` | GCP 프로젝트 |
+| `CTR_TRAINING_BQ_RAW_DATASET` | `data_lake_raw` | raw 테이블 dataset |
+| `CTR_TRAINING_BQ_DATASET` | `feast_offline_store` | feature/서빙 테이블 dataset |
+
+구현은 `src/pipeline/build_training_dataset.py` 의 `raw_table_id()` 와
+`feature_table_id()` 두 헬퍼로 단일화되어 있습니다. 새 BigQuery 조회를 추가할
+때 dataset 문자열을 직접 조립하지 말고 이 헬퍼를 사용합니다.
+
+- raw 테이블 조회: `load_videos_from_bigquery()`,
+  `load_events_from_bigquery()`, `daily_recommendations.run_batch()` 의 후보
+  ·action log 파티션 조회
+- feature/서빙 테이블 조회·적재: `daily_recommendations.run_batch()` 의
+  `user_recommendations` 출력
+
+GCS raw parquet 을 BigQuery 로 적재하는 `scripts/load_raw_to_bigquery.py` 는
+`--dataset` 인자(기본 `BQ_DATASET`)로 대상 dataset 을 받으므로, raw 테이블
+적재 시에는 `--dataset data_lake_raw` 를 명시해야 합니다.
+
+> [!WARNING]
+> **`asset_virtual_user_vu_1000` 는 삭제 예정입니다 (후속 과제).**
+> 인프라 정리 작업에서 이 BigQuery 테이블이 제거됩니다.
+> `src/pipeline/daily_recommendations.py` 가 이 테이블을 참조하지만 해당
+> 배치는 아직 Airflow DAG 으로 배포되지 않아 즉시 장애가 발생하지는 않습니다.
+> GCS 원본 parquet(`asset/virtual_user/vu_1000.parquet`)이 여전히 source of
+> truth 이며 `scripts/load_raw_to_bigquery.py --tables virtual_user` 로
+> 재적재할 수 있습니다. virtual user 소스를 GCS 직접 읽기로 바꿀지, 새
+> dataset 에 재적재할지는 별도 이슈에서 확정합니다. 그 전까지 이 테이블은
+> `{dataset}`(feature 계층) 해석을 유지합니다.
+
+### 🔸 아래 SQL 의 실제 실행 방식
+
+`user_static_feature`, `user_dynamic_feature`, `video_feature` 는 공개 batch 명령
+`python -m autoresearch.jobs.feature_store_build` 가 재구축합니다
+(`autoresearch/jobs/feature_store_build.py`,
+`docs/specs/2026-07-22-feature-store-build-batch.md`). Airflow 에서는
+`Autoresearch-airflow` 의 `feast_offline_feature_build` DAG 가
+`lake_to_bigquery_incremental` 성공 뒤 이 명령을 실행하고,
+`feast_online_store_materialize` 가 그 뒤를 잇습니다.
+
+> [!WARNING]
+> 아래 각 절의 `CREATE OR REPLACE TABLE` 은 **변환 규칙을 읽기 쉽게 보여주기
+> 위한 표기**이며, 실제 적재에 그대로 쓰면 안 됩니다. Feast 피처 테이블 4종의
+> 스키마는 Terraform 이 소유하므로(`Autoresearch-infra`
+> `terraform/envs/dev/bigquery.tf`), `CREATE OR REPLACE` 와 `WRITE_TRUNCATE` 는
+> 모두 대상 테이블 정의(REQUIRED/REPEATED mode 포함)를 query 결과 스키마로
+> 교체해 버립니다. batch 명령은 같은 SELECT 본문을
+> `TRUNCATE TABLE` + `INSERT INTO ... SELECT` 로 실행해 스키마를 보존합니다.
 
 ---
 
@@ -71,6 +139,14 @@
 | `watch_time_band` |
 
 ### 🔸 SQL
+
+> [!NOTE]
+> 아래 SQL은 `CREATE OR REPLACE TABLE`로 표기되어 있지만, 실제 배치 job
+> (`src/pipeline/build_feature_tables.py`)은 `BEGIN TRANSACTION; TRUNCATE
+> TABLE; INSERT INTO {SELECT 본문}; COMMIT TRANSACTION;`으로 실행한다 —
+> 테이블 스키마(REQUIRED 등)를 Terraform이 관리하기 시작해서, `CREATE OR
+> REPLACE`/`WRITE_TRUNCATE`처럼 SELECT 결과에서 스키마를 다시 유추하는
+> 방식은 REQUIRED 제약을 지워버린다. 아래 `SELECT` 본문 자체는 그대로다.
 
 ```sql
 CREATE OR REPLACE TABLE `{project}.{dataset}.user_static_feature` AS
@@ -191,6 +267,11 @@ MVP의 daily snapshot 방식에서는 impression 당일 00:00 이후부터 impre
 
 ### 🔸 SQL
 
+> [!NOTE]
+> 실제 배치 job은 `CREATE OR REPLACE TABLE`이 아니라 `TRUNCATE TABLE` +
+> `INSERT INTO`를 트랜잭션으로 묶어 실행한다 — 이유는 `user_static_feature`
+> 절의 노트 참고.
+
 ```sql
 CREATE OR REPLACE TABLE `{project}.{dataset}.user_dynamic_feature` AS
 WITH action_log AS (
@@ -200,7 +281,7 @@ WITH action_log AS (
     event_type,
     event_timestamp,
     COALESCE(watch_time_sec, 0) AS watch_time_sec
-  FROM `{project}.{dataset}.data_lake_action_log`
+  FROM `{project}.{raw_dataset}.data_lake_action_log`
   WHERE user_id IS NOT NULL
     AND event_timestamp IS NOT NULL
 ),
@@ -209,7 +290,7 @@ video_latest AS (
   SELECT
     video_id,
     video_category
-  FROM `{project}.{dataset}.data_lake_youtube_trending_kr`
+  FROM `{project}.{raw_dataset}.data_lake_youtube_trending_kr`
   WHERE video_id IS NOT NULL
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY video_id
@@ -406,6 +487,11 @@ LEFT JOIN category_rank c
 
 ### 🔸 SQL
 
+> [!NOTE]
+> 실제 배치 job은 `CREATE OR REPLACE TABLE`이 아니라 `TRUNCATE TABLE` +
+> `INSERT INTO`를 트랜잭션으로 묶어 실행한다 — 이유는 `user_static_feature`
+> 절의 노트 참고.
+
 ```sql
 CREATE OR REPLACE TABLE `{project}.{dataset}.video_feature` AS
 WITH parsed AS (
@@ -435,7 +521,7 @@ WITH parsed AS (
     COALESCE(channel_subscriber_count, 0) AS channel_subscriber_count,
     COALESCE(channel_view_count, 0) AS channel_view_count,
     COALESCE(channel_video_count, 0) AS channel_video_count
-  FROM `{project}.{dataset}.data_lake_youtube_trending_kr`
+  FROM `{project}.{raw_dataset}.data_lake_youtube_trending_kr`
   WHERE video_id IS NOT NULL
     AND collected_at IS NOT NULL
 )
@@ -509,6 +595,12 @@ QUALIFY ROW_NUMBER() OVER (
   - 해당 impression은 `clicked = 1`, 나머지 impression은 `clicked = 0`으로 둔다.
   - 30분 window는 `label_window_sec = 1800`으로 metadata/config에 기록한다.
   - 
+> [!NOTE]
+> 실제 배치 job은 `CREATE OR REPLACE TABLE`이 아니라 `TRUNCATE TABLE` +
+> `INSERT INTO`를 트랜잭션으로 묶어 실행한다 — 이유는 `user_static_feature`
+> 절의 노트 참고. `dataset_id`/`label_window_sec`도 `DECLARE`가 아니라
+> 배치 job 함수 인자로 주입한다.
+
 ### 🔸 SQL
 
 ```sql
@@ -522,7 +614,7 @@ WITH impressions AS (
     user_id,
     video_id,
     event_timestamp
-  FROM `{project}.{dataset}.data_lake_action_log`
+  FROM `{project}.{raw_dataset}.data_lake_action_log`
   WHERE event_type = 'impression'
     AND user_id IS NOT NULL
     AND video_id IS NOT NULL
@@ -535,7 +627,7 @@ clicks AS (
     user_id,
     video_id,
     event_timestamp AS click_timestamp
-  FROM `{project}.{dataset}.data_lake_action_log`
+  FROM `{project}.{raw_dataset}.data_lake_action_log`
   WHERE event_type = 'click'
     AND user_id IS NOT NULL
     AND video_id IS NOT NULL

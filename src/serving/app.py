@@ -1,33 +1,69 @@
 from __future__ import annotations
 
+__arch__ = {
+    "stage": "training",
+    "role": "모델 계보와 온라인 피처 조립기를 연결해 reranking HTTP runtime을 제공합니다.",
+    "owns": [
+        "FastAPI lifespan 의존성 초기화와 readiness 판정",
+        "healthcheck·rerank·metrics HTTP 계약",
+        "요청 순서 응답·모델 계보·서빙 메트릭 노출",
+    ],
+    "not_owns": [
+        "모델 아티팩트 해석",
+        "온라인 피처 조회와 조립 구현",
+        "CTR 예측 구현",
+    ],
+}
+
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Final
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
+from src.serving.feast_reader import load_feast_online_feature_reader
 from src.serving.model_loader import (
-    ModelArtifactError,
-    ModelConfigurationError,
+    ResolvedModel,
     load_model_settings_from_environment,
-    load_reranker,
+    load_reranker_with_lineage,
 )
-from src.serving.schemas import HealthcheckResponse, RerankRequest, RerankResponse
-from src.serving.service import MissingFeatureColumnsError, PredictionError, Reranker
+from src.serving.online_features import (
+    MODEL_FEATURE_COLUMNS,
+    FeatureContractError,
+    FeatureRetrievalError,
+    ServingFeatureBuilder,
+)
+from src.serving.schemas import (
+    HealthcheckResponse,
+    RerankRequest,
+    RerankResponse,
+    RerankResponseItem,
+)
+from src.serving.service import PredictionError
 
 # 아래 메트릭들은 모듈 전역 레지스트리에 등록된다 — uvicorn을 --workers>1로 늘리면
 # 워커별로 값이 분리되어 /metrics가 워커마다 다르게 보인다. 스케일업 시
 # PROMETHEUS_MULTIPROC_DIR 기반 멀티프로세스 설정이 필요하다.
 RERANK_REQUESTS = Counter("rerank_requests", "Number of reranking requests.")
+RERANK_VIDEO_IDS = Histogram(
+    "rerank_video_ids",
+    "Video ID count per reranking request.",
+    buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500),
+)
 RERANK_CANDIDATES = Histogram(
     "rerank_candidates",
-    "Candidate count per reranking request.",
+    "DEPRECATED: Candidate count per reranking request; migrate to rerank_video_ids.",
     buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500),
 )
 RERANK_DURATION = Histogram("rerank_duration_seconds", "Reranking request duration.")
-RERANK_MODEL_READY = Gauge("rerank_model_ready", "Whether a reranking model is ready.")
+RERANK_MODEL_READY = Gauge(
+    "rerank_model_ready",
+    "Whether the model, online feature store, and feature contract are ready.",
+)
 # 학습에 없던 categorical 값이 NaN으로 조용히 강등된 횟수(컬럼별). 신규 카테고리 등장 =
 # 학습-서빙 스큐 신호이며, 재학습 트리거로 쓴다. 라벨은 컬럼명만 사용해 카디널리티를 제한한다.
 RERANK_UNSEEN_CATEGORY = Counter(
@@ -37,23 +73,62 @@ RERANK_UNSEEN_CATEGORY = Counter(
 )
 
 logger = logging.getLogger(__name__)
+STRING_CATEGORICAL_FEATURE_COLUMNS: Final = frozenset(
+    {"age_group", "occupation", "historical_category_affinity", "category_id"}
+)
 
 
-def create_app(reranker: Reranker | None = None) -> FastAPI:
-    """FastAPI 앱을 조립한다. reranker를 주입하면 그대로 쓰고, 없으면 시작 시 환경변수로 로드한다."""
-    active_reranker = reranker
-    model_load_error: ModelConfigurationError | ModelArtifactError | None = None
+def create_app(
+    resolved_model: ResolvedModel | None = None,
+    feature_builder: ServingFeatureBuilder | None = None,
+) -> FastAPI:
+    """주입된 모델 계보와 온라인 피처 조립기로 FastAPI 앱을 조립한다."""
+    active_model = resolved_model
+    active_feature_builder = feature_builder
+    load_from_environment = resolved_model is None and feature_builder is None
+
+    def unavailable_detail() -> str | None:
+        if active_model is None:
+            return "Reranking model is unavailable."
+        if active_feature_builder is None:
+            return "Online feature store is unavailable."
+        if active_model.reranker.feature_columns != MODEL_FEATURE_COLUMNS:
+            return "Model feature columns do not match the serving contract."
+        incompatible_categorical_columns = tuple(
+            column
+            for column in STRING_CATEGORICAL_FEATURE_COLUMNS
+            if column in active_model.reranker.categorical_categories
+            and not all(
+                isinstance(value, str)
+                for value in active_model.reranker.categorical_categories[column]
+            )
+        )
+        if incompatible_categorical_columns:
+            return "Model categorical values do not match the serving feature types."
+        return None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        # 앱 시작 시 모델을 1회 로드하고 준비 상태 게이지를 갱신, 종료 시 0으로 되돌린다.
-        nonlocal active_reranker, model_load_error
-        if active_reranker is None:
+        nonlocal active_feature_builder, active_model
+        if load_from_environment:
+            initialization_phase = "model"
             try:
-                active_reranker = load_reranker(load_model_settings_from_environment())
-            except (ModelConfigurationError, ModelArtifactError) as error:
-                model_load_error = error
-        RERANK_MODEL_READY.set(1 if active_reranker is not None else 0)
+                settings = load_model_settings_from_environment()
+                active_model = load_reranker_with_lineage(settings)
+                initialization_phase = "feature_store"
+                reader = load_feast_online_feature_reader(
+                    os.getenv("RERANK_FEATURE_REPO_PATH", "feature_repo")
+                )
+                active_feature_builder = ServingFeatureBuilder(reader=reader)
+            except Exception as error:  # noqa: BLE001 - startup boundary must remain health-queryable.
+                # 설정·인증 실패는 연결 문자열이나 토큰을 예외 문자열에 포함할 수 있으므로,
+                # 이 경계에서는 안전한 phase/error type만 기록한다.
+                logger.error(
+                    "Reranking runtime initialization failed: phase=%s error_type=%s",
+                    initialization_phase,
+                    type(error).__name__,
+                )
+        RERANK_MODEL_READY.set(1 if unavailable_detail() is None else 0)
         yield
         RERANK_MODEL_READY.set(0)
 
@@ -61,31 +136,46 @@ def create_app(reranker: Reranker | None = None) -> FastAPI:
 
     @app.get("/healthcheck", response_model=HealthcheckResponse)
     def healthcheck() -> HealthcheckResponse:
-        """모델 준비 여부를 확인한다. 미준비면 503(로드 실패 사유 포함)을 반환한다."""
-        if active_reranker is None:
-            detail = "Reranking model is unavailable."
-            if model_load_error is not None:
-                detail = str(model_load_error)
+        detail = unavailable_detail()
+        if detail is not None:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
         return HealthcheckResponse(status="ok")
 
     @app.post("/rerank", response_model=RerankResponse)
     def rerank(request: RerankRequest) -> RerankResponse:
-        """후보 영상을 CTR 예측으로 재정렬한다. 메트릭을 기록하고 도메인 예외를 HTTP 상태로 매핑한다."""
-        if active_reranker is None:
+        detail = unavailable_detail()
+        if detail is not None:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Reranking model is unavailable.",
+                detail=detail,
             )
 
         RERANK_REQUESTS.inc()
-        RERANK_CANDIDATES.observe(len(request.candidates))
+        video_id_count = len(request.video_ids)
+        RERANK_VIDEO_IDS.observe(video_id_count)
+        RERANK_CANDIDATES.observe(video_id_count)
         with RERANK_DURATION.time():
             try:
-                outcome = active_reranker.rerank_with_diagnostics(request.candidates)
-            except MissingFeatureColumnsError as error:
+                candidates = active_feature_builder.build(
+                    user_id=request.user_id,
+                    video_ids=request.video_ids,
+                    feature_columns=active_model.reranker.feature_columns,
+                )
+                outcome = active_model.reranker.rerank_with_diagnostics(candidates)
+                requested_video_ids = set(request.video_ids)
+                outcome_video_ids = [item.video_id for item in outcome.items]
+                if (
+                    len(outcome_video_ids) != len(requested_video_ids)
+                    or set(outcome_video_ids) != requested_video_ids
+                ):
+                    raise PredictionError(
+                        reason="Reranker returned unexpected video IDs."
+                    )
+            # Pydantic이 호출자 요청 형태를 422로 검증한다. 여기의 오류는 그 이후
+            # 모델·Feast 경계에서 발견된 서버측 계약/조회 장애이므로 503으로 표면화한다.
+            except (FeatureContractError, FeatureRetrievalError) as error:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                     detail=str(error),
                 ) from error
             except PredictionError as error:
@@ -104,7 +194,17 @@ def create_app(reranker: Reranker | None = None) -> FastAPI:
                 len(values),
                 sorted({str(value) for value in values})[:10],
             )
-        return RerankResponse(items=outcome.items)
+        scores_by_video_id = {item.video_id: item.ctr_score for item in outcome.items}
+        return RerankResponse(
+            items=[
+                RerankResponseItem(
+                    video_id=video_id,
+                    ctr_score=scores_by_video_id[video_id],
+                    model_id=active_model.run_id,
+                )
+                for video_id in request.video_ids
+            ]
+        )
 
     @app.get("/metrics", include_in_schema=False)
     def metrics() -> Response:

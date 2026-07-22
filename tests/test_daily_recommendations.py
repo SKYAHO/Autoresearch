@@ -394,3 +394,96 @@ def test_main_emits_public_job_summary(monkeypatch, capsys):
 def test_main_rejects_invalid_ratio_with_exit_2(capsys):
     assert daily.main(["--max-skip-ratio", "1.1"]) == 2
     assert json.loads(capsys.readouterr().out)["error_type"] == "invalid_arguments"
+
+
+# --- dataset 계층 분리(raw vs feature) ------------------------------------
+
+
+class _QueryRecordingClient(_FakeClient):
+    """MAX(dt) 조회 SQL을 기록하는 fake — dataset 해석만 검증한다."""
+
+    def __init__(self, max_dt: date):
+        super().__init__()
+        self.queries: list[str] = []
+        self._max_dt = max_dt
+
+    def query(self, sql: str):
+        self.queries.append(sql)
+        job = type("_Job", (), {})()
+        job.result = lambda: iter([type("_Row", (), {"max_dt": self._max_dt})()])
+        return job
+
+
+def test_run_batch_resolves_raw_tables_in_raw_dataset(monkeypatch):
+    import src.pipeline.build_training_dataset as btd
+
+    monkeypatch.setattr(btd, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(btd, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+    monkeypatch.setattr(btd, "BIGQUERY_DATASET", "feast_offline_store")
+
+    client = _QueryRecordingClient(date(2026, 7, 21))
+    run_batch(
+        bq_client=client,
+        resolved=_stub_resolved(),
+        videos_raw=_videos_raw(),
+        personas=_personas(["u1"]),
+        events=_empty_events(),
+        dry_run=True,
+    )
+
+    joined = "\n".join(client.queries)
+    assert "`proj.data_lake_raw.data_lake_youtube_trending_kr`" in joined
+    assert "`proj.data_lake_raw.data_lake_action_log`" in joined
+    assert "feast_offline_store" not in joined
+
+
+def test_run_batch_writes_output_table_in_feature_dataset(monkeypatch):
+    import src.pipeline.build_training_dataset as btd
+
+    monkeypatch.setattr(btd, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(btd, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+    monkeypatch.setattr(btd, "BIGQUERY_DATASET", "feast_offline_store")
+
+    client = _FakeClient()
+    run_batch(
+        candidate_dt=date(2026, 7, 21),
+        events_dt=date(2026, 7, 21),
+        bq_client=client,
+        resolved=_stub_resolved(),
+        videos_raw=_videos_raw(),
+        personas=_personas(["u1"]),
+        events=_empty_events(),
+    )
+
+    destinations = [dest for _, dest, _ in client.loads]
+    assert destinations == ["proj.feast_offline_store.user_recommendations$20260721"]
+
+
+def test_virtual_users_table_stays_in_feature_dataset(monkeypatch):
+    """CAVEAT(#232): asset_virtual_user_vu_1000 은 삭제 예정이지만 이번 범위에서는
+    소스를 바꾸지 않는다 — feature dataset 해석을 유지한다는 계약을 고정한다."""
+    import src.pipeline.build_training_dataset as btd
+
+    monkeypatch.setattr(btd, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(btd, "BIGQUERY_DATASET", "feast_offline_store")
+
+    captured: list[str] = []
+
+    def _capture(client, table_id):
+        captured.append(table_id)
+        return _personas(["u1"])
+
+    monkeypatch.setattr(daily, "_load_virtual_users", _capture)
+    monkeypatch.setattr(daily, "to_personas_frame", lambda frame: frame)
+
+    run_batch(
+        candidate_dt=date(2026, 7, 21),
+        events_dt=date(2026, 7, 21),
+        bq_client=_FakeClient(),
+        resolved=_stub_resolved(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        dry_run=True,
+    )
+
+    assert captured == ["proj.feast_offline_store.asset_virtual_user_vu_1000"]

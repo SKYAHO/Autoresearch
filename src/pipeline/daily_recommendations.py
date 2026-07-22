@@ -9,19 +9,6 @@ spec: docs/specs/2026-07-21-daily-recommendations-batch.md
 
 from __future__ import annotations
 
-__arch__ = {
-    "stage": "training",
-    "role": "champion 모델로 일일 후보를 채점해 유저별 순위를 BigQuery에 적재합니다.",
-    "owns": [
-        "일일 추천 순위 산출·계보 태깅",
-        "user_recommendations 파티션 멱등 적재",
-    ],
-    "not_owns": [
-        "노출 선정(Top-K + exploration)과 LLM 판정",
-        "모델 학습과 Registry alias 운영",
-    ],
-}
-
 import argparse
 import json
 import logging
@@ -35,10 +22,11 @@ from google.cloud import bigquery
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
 from src.pipeline.build_training_dataset import (
-    BIGQUERY_DATASET,
     BIGQUERY_PROJECT,
     derive_wide_events,
+    feature_table_id,
     load_events_from_bigquery,
+    raw_table_id,
 )
 from src.pipeline.virtual_user_adapter import to_personas_frame
 from src.serving.model_loader import (
@@ -211,14 +199,21 @@ def run_batch(
     """
     import os
 
-    dataset = f"{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}"
-    trending_table = f"{dataset}." + os.getenv(
-        "CTR_TRAINING_BQ_VIDEOS_TABLE", "data_lake_youtube_trending_kr"
+    # dataset 계층 분리: raw(data_lake_*)는 CTR_TRAINING_BQ_RAW_DATASET,
+    # feature/서빙 테이블은 기존 CTR_TRAINING_BQ_DATASET 으로 해석한다.
+    trending_table = raw_table_id(
+        os.getenv("CTR_TRAINING_BQ_VIDEOS_TABLE", "data_lake_youtube_trending_kr")
     )
-    users_table = f"{dataset}." + os.getenv(
-        "CTR_TRAINING_BQ_VIRTUAL_USERS_TABLE", "asset_virtual_user_vu_1000"
+    # CAVEAT(#232): asset_virtual_user_vu_1000 은 인프라 정리 작업에서 삭제될
+    # 예정이다. 이 배치는 아직 Airflow DAG 으로 배포되지 않아 즉시 장애가 나지는
+    # 않는다. GCS 원본 parquet(asset/virtual_user/vu_1000.parquet)이 여전히
+    # source of truth 이며 scripts/load_raw_to_bigquery.py 로 재적재 가능하다.
+    # virtual user 소스 확정은 후속 과제이므로 여기서는 dataset 을 옮기지 않고
+    # 기존 feature dataset 해석을 그대로 유지한다.
+    users_table = feature_table_id(
+        os.getenv("CTR_TRAINING_BQ_VIRTUAL_USERS_TABLE", "asset_virtual_user_vu_1000")
     )
-    output_table_id = f"{dataset}." + (
+    output_table_id = feature_table_id(
         output_table
         or os.getenv("CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE", "user_recommendations")
     )
@@ -234,7 +229,9 @@ def run_batch(
     if events_dt is None:
         events_dt = _max_partition_date(
             bq_client,
-            f"{dataset}." + os.getenv("CTR_TRAINING_BQ_ACTION_LOG_TABLE", "data_lake_action_log"),
+            raw_table_id(
+                os.getenv("CTR_TRAINING_BQ_ACTION_LOG_TABLE", "data_lake_action_log")
+            ),
         )
 
     if videos_raw is None:

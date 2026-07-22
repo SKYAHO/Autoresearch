@@ -3,19 +3,6 @@
 출력 스키마·규칙은 `docs/guides/agent-simulator-spec.md`(Single Source of Truth)를 따른다.
 이번 구현은 Phase 1(historical)만 다룬다.
 """
-__arch__ = {
-    "stage": "action_logs",
-    "role": "action log 이벤트와 생성 요청의 데이터 계약을 정의합니다.",
-    "owns": [
-        "이벤트 필드와 정책 메타데이터 스키마",
-        "action log 입력값 검증 규칙",
-        "스키마·프롬프트 버전 상수",
-    ],
-    "not_owns": [
-        "이벤트 생성 실행",
-        "학습 데이터셋 조립",
-    ],
-}
 from datetime import UTC, date, datetime
 import logging
 import math

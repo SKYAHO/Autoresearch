@@ -5,6 +5,8 @@ import json
 import pytest
 
 import autoresearch.jobs.feast_materialize as job
+import feature_repo.bootstrap as bootstrap
+from feature_repo.bootstrap import ensure_redis_ca_bundle
 
 
 def _json_lines(output: str) -> list[dict[str, object]]:
@@ -40,30 +42,40 @@ def test_invalid_views_exits_two(capsys):
     assert job.main(["--views", "a,,b"]) == 2
 
 
+def test_missing_repo_path_exits_two(tmp_path, capsys):
+    assert job.main(["--repo-path", str(tmp_path)]) == 2
+
+    summary = _json_lines(capsys.readouterr().out)[-1]
+    assert summary["status"] == "failed"
+    assert summary["error_type"] == "invalid_arguments"
+
+
 def test_ensure_ca_bundle_uses_existing_path(tmp_path):
     ca = tmp_path / "ca.pem"
     ca.write_text("pem")
     env = {"REDIS_TLS_CA_PATH": str(ca)}
 
-    assert job._ensure_ca_bundle(env) == str(ca)
+    assert ensure_redis_ca_bundle(env) == str(ca)
 
 
 def test_ensure_ca_bundle_missing_path_without_secret_raises(tmp_path):
     env = {"REDIS_TLS_CA_PATH": str(tmp_path / "missing.pem")}
 
     with pytest.raises(RuntimeError):
-        job._ensure_ca_bundle(env)
+        ensure_redis_ca_bundle(env)
 
 
 def test_ensure_ca_bundle_without_config_returns_none():
-    assert job._ensure_ca_bundle({}) is None
+    assert ensure_redis_ca_bundle({}) is None
 
 
 def test_ensure_ca_bundle_fetches_secret(monkeypatch, tmp_path):
-    monkeypatch.setattr(job, "_fetch_ca_secret", lambda project, secret: b"PEM")
+    monkeypatch.setattr(
+        bootstrap, "_fetch_ca_secret", lambda project, secret: b"PEM"
+    )
     env = {"REDIS_CA_SECRET_ID": "redis-ca", "GCP_PROJECT_ID": "proj"}
 
-    path = job._ensure_ca_bundle(env)
+    path = ensure_redis_ca_bundle(env)
 
     assert path is not None
     assert env["REDIS_TLS_CA_PATH"] == path
@@ -73,7 +85,23 @@ def test_ensure_ca_bundle_fetches_secret(monkeypatch, tmp_path):
 
 def test_ensure_ca_bundle_secret_without_project_raises():
     with pytest.raises(RuntimeError):
-        job._ensure_ca_bundle({"REDIS_CA_SECRET_ID": "redis-ca"})
+        ensure_redis_ca_bundle({"REDIS_CA_SECRET_ID": "redis-ca"})
+
+
+def test_load_feature_store_constructs_sdk_store_without_connection(
+    monkeypatch, tmp_path
+):
+    feast = pytest.importorskip("feast")
+    captured: list[str] = []
+    store = object()
+    monkeypatch.setattr(
+        feast,
+        "FeatureStore",
+        lambda *, repo_path: captured.append(repo_path) or store,
+    )
+
+    assert bootstrap.load_feature_store(tmp_path) is store
+    assert captured == [str(tmp_path)]
 
 
 class _FakeStore:
@@ -105,8 +133,8 @@ class _FakeStore:
 @pytest.fixture
 def fake_store(monkeypatch):
     store = _FakeStore(["UserStaticView", "VideoFeatureView"])
-    monkeypatch.setattr(job, "_ensure_ca_bundle", lambda env=None: None)
-    monkeypatch.setattr(job, "_load_store", lambda repo_path: store)
+    monkeypatch.setattr(job, "ensure_redis_ca_bundle", lambda env=None: None)
+    monkeypatch.setattr(job, "load_feature_store", lambda repo_path: store)
     return store
 
 
