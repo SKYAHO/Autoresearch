@@ -1,12 +1,22 @@
 """data_lake_raw 테이블에서 Feast offline store feature 테이블을 만드는 공개 batch 명령.
 
 BigQuery raw 계층(``data_lake_raw``)의 적재가 끝난 뒤 실행해 feature 계층
-(``feast_offline_store``)의 Feast source 테이블을 재구축한다. SQL 계약은
-``docs/guides/data-warehouse.md``를 단일 출처로 삼는다.
+(``feast_offline_store``)의 Feast source 테이블에 **대상 날짜 하루치만** 적재한다.
+SQL 계약은 ``docs/guides/data-warehouse.md``를 단일 출처로 삼는다.
 
-적재는 ``TRUNCATE TABLE`` + ``INSERT INTO``로 수행한다. ``CREATE OR REPLACE``나
-``WRITE_TRUNCATE``는 Terraform이 소유한 대상 테이블 스키마(REQUIRED/REPEATED
-mode 포함)를 query 결과 스키마로 교체하므로 사용하지 않는다.
+적재는 ``--partition-date``가 가리키는 행만 ``DELETE``한 뒤 ``INSERT INTO``하는
+증분 방식이다. 같은 날짜로 다시 실행하면 그 날짜 행만 다시 만들어지므로 재실행이
+멱등하다. ``CREATE OR REPLACE``나 ``WRITE_TRUNCATE``는 Terraform이 소유한 대상
+테이블 스키마(REQUIRED/REPEATED mode 포함)를 query 결과 스키마로 교체하므로
+사용하지 않는다.
+
+이 명령이 담당하지 않는 인접 책임:
+
+- raw 계층 적재는 ``lake_to_bigquery`` 경로가 담당한다.
+- ``user_static_feature``와 ``user_category_similarity``는 날짜 개념이 없는 정적
+  feature이며 ``scripts/build_static_features.py``가 소유한다.
+- 전체 기간 재계산 경로는 제공하지 않는다. 과거를 다시 만들어야 하면 날짜별로
+  이 명령을 반복 실행한다.
 """
 
 from __future__ import annotations
@@ -15,6 +25,7 @@ import argparse
 import json
 import logging
 import os
+from datetime import date, datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Sequence
 
@@ -44,44 +55,32 @@ class _ArgumentParser(argparse.ArgumentParser):
 
 @dataclass(frozen=True)
 class FeatureTableSpec:
-    """feature 테이블 하나를 재구축하기 위한 선언.
+    """feature 테이블 하나를 증분 적재하기 위한 선언.
 
     ``columns``는 ``INSERT INTO`` 컬럼 목록이자 ``select_sql``의 출력 순서다.
     ``entity_keys`` + ``event_timestamp``는 Feast point-in-time join의 유일
     키이므로 적재 후 중복 검증에 사용한다.
+
+    ``partition_predicate``는 대상 날짜에 해당하는 행을 고르는 ``WHERE`` 조건이다.
+    적재 전 ``DELETE``와 적재 후 검증이 같은 조건을 쓰므로, 지우는 범위와 검사하는
+    범위가 어긋날 수 없다. ``select_sql``과 함께 ``{partition_date}``를 받는다.
     """
 
     name: str
     entity_keys: tuple[str, ...]
     columns: tuple[str, ...]
     select_sql: str
+    partition_predicate: str
 
 
-_USER_STATIC_SELECT = """\
-SELECT
-  user_id,
-  TIMESTAMP '1970-01-01 00:00:00 UTC' AS event_timestamp,
-  COALESCE(age_bucket, 'unknown') AS age_group,
-  COALESCE(occupation, 'unknown') AS occupation,
-  COALESCE(primary_categories, ARRAY<STRING>[]) AS preferred_category,
-  ARRAY_CONCAT(
-    COALESCE(hobby_keywords, ARRAY<STRING>[]),
-    COALESCE(interest_keywords, ARRAY<STRING>[]),
-    COALESCE(lifestyle_keywords, ARRAY<STRING>[]),
-    COALESCE(food_keywords, ARRAY<STRING>[]),
-    COALESCE(travel_keywords, ARRAY<STRING>[]),
-    COALESCE(career_keywords, ARRAY<STRING>[]),
-    COALESCE(family_context_keywords, ARRAY<STRING>[])
-  ) AS preferred_topics,
-  CASE
-    WHEN LOWER(TRIM(watch_time_band)) IN ('morning', 'am', '오전', '아침') THEN 'morning'
-    WHEN LOWER(TRIM(watch_time_band)) IN ('evening', 'pm', '저녁', '오후') THEN 'evening'
-    WHEN LOWER(TRIM(watch_time_band)) IN ('night', 'late_night', '밤', '심야') THEN 'night'
-    ELSE 'unknown'
-  END AS watch_time_band
-FROM `{project}.{dataset}.asset_virtual_user_vu_1000`
-WHERE user_id IS NOT NULL
-"""
+# 대상 날짜 스냅샷의 기준 시각. user_dynamic_feature의 event_timestamp이자 모든
+# 룩백 윈도우의 상한(미포함)이다. 스칼라 변수를 쓸 수 없어 SQL 곳곳에 그대로
+# 전개된다.
+_SNAPSHOT_TS = "TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul')"
+
+# category affinity가 30일을 보므로 raw 스캔 윈도우도 30일이다. 7일 집계는 이 안에
+# 포함된다.
+_LOOKBACK_DAYS = 30
 
 _USER_DYNAMIC_SELECT = """\
 WITH action_log AS (
@@ -94,6 +93,9 @@ WITH action_log AS (
   FROM `{project}.{raw_dataset}.data_lake_action_log`
   WHERE user_id IS NOT NULL
     AND event_timestamp IS NOT NULL
+    AND event_timestamp >= TIMESTAMP_SUB(
+      TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul'), INTERVAL 30 DAY)
+    AND event_timestamp < TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul')
 ),
 video_latest AS (
   SELECT
@@ -101,6 +103,9 @@ video_latest AS (
     video_category
   FROM `{project}.{raw_dataset}.data_lake_youtube_trending_kr`
   WHERE video_id IS NOT NULL
+    AND collected_at >= TIMESTAMP_SUB(
+      TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul'), INTERVAL 30 DAY)
+    AND collected_at < TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul')
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY video_id
     ORDER BY COALESCE(collected_at, video_trending_date, video_published_at) DESC
@@ -118,28 +123,23 @@ action_with_category AS (
   LEFT JOIN video_latest v
     ON a.video_id = v.video_id
 ),
-date_bounds AS (
-  SELECT
-    DATE(MIN(event_timestamp), 'Asia/Seoul') AS min_date,
-    DATE(MAX(event_timestamp), 'Asia/Seoul') AS max_date
-  FROM action_log
-),
-snapshots AS (
-  SELECT
-    TIMESTAMP(snapshot_date, 'Asia/Seoul') AS event_timestamp
-  FROM date_bounds,
-  UNNEST(GENERATE_DATE_ARRAY(min_date, max_date)) AS snapshot_date
-),
 users AS (
+  -- 이미 feature 테이블에 등장한 적 있는 유저는 계속 스냅샷을 받는다. 룩백
+  -- 윈도우에 활동이 없어도 아래 LEFT JOIN이 전부 0으로 채우므로, Feast가 오래된
+  -- 스냅샷으로 fallback해 stale한 값을 돌려주는 일이 없다. 신규 유저는 두 번째
+  -- 항에서 들어온다. DELETE가 먼저 실행되어 대상 날짜 행은 이미 지워진 뒤다.
+  SELECT DISTINCT user_id
+  FROM `{project}.{dataset}.user_dynamic_feature`
+  WHERE user_id IS NOT NULL
+  UNION DISTINCT
   SELECT DISTINCT user_id
   FROM action_log
 ),
 user_snapshots AS (
   SELECT
-    u.user_id,
-    s.event_timestamp
-  FROM users u
-  CROSS JOIN snapshots s
+    user_id,
+    TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul') AS event_timestamp
+  FROM users
 ),
 user_7d AS (
   SELECT
@@ -248,6 +248,7 @@ _VIDEO_SELECT = r"""WITH parsed AS (
   FROM `{project}.{raw_dataset}.data_lake_youtube_trending_kr`
   WHERE video_id IS NOT NULL
     AND collected_at IS NOT NULL
+    AND DATE(collected_at, 'Asia/Seoul') = DATE '{partition_date}'
 )
 SELECT
   video_id,
@@ -270,20 +271,6 @@ QUALIFY ROW_NUMBER() OVER (
 """
 
 
-USER_STATIC_FEATURE = FeatureTableSpec(
-    name="user_static_feature",
-    entity_keys=("user_id",),
-    columns=(
-        "user_id",
-        "event_timestamp",
-        "age_group",
-        "occupation",
-        "preferred_category",
-        "preferred_topics",
-        "watch_time_band",
-    ),
-    select_sql=_USER_STATIC_SELECT,
-)
 USER_DYNAMIC_FEATURE = FeatureTableSpec(
     name="user_dynamic_feature",
     entity_keys=("user_id",),
@@ -298,6 +285,8 @@ USER_DYNAMIC_FEATURE = FeatureTableSpec(
         "total_event_count_7d",
     ),
     select_sql=_USER_DYNAMIC_SELECT,
+    # 스냅샷 시각이 대상 날짜 KST 자정 한 값이므로 등호로 정확히 짚는다.
+    partition_predicate=f"event_timestamp = {_SNAPSHOT_TS}",
 )
 VIDEO_FEATURE = FeatureTableSpec(
     name="video_feature",
@@ -316,13 +305,17 @@ VIDEO_FEATURE = FeatureTableSpec(
         "channel_video_count",
     ),
     select_sql=_VIDEO_SELECT,
+    # event_timestamp가 collected_at 그대로라 하루 안에 여러 시각이 들어온다.
+    # 날짜 단위로 묶어 지운다.
+    partition_predicate="DATE(event_timestamp, 'Asia/Seoul') = DATE '{partition_date}'",
 )
 
-# user_category_similarity는 여기서 만들지 않는다. 원본인 user_topic_embedding /
-# category_embedding artifact 테이블을 적재하는 배치가 아직 없어 SQL만으로는
-# 재구축할 수 없다.
+# 여기서 만들지 않는 feature 테이블:
+# - user_static_feature: persona asset이 바뀔 때만 갱신되는 정적 feature라 날짜
+#   개념이 없다. scripts/build_static_features.py가 소유한다.
+# - user_category_similarity: 원본인 user_topic_embedding / category_embedding
+#   artifact 테이블과 함께 같은 스크립트가 소유한다.
 FEATURE_TABLES: tuple[FeatureTableSpec, ...] = (
-    USER_STATIC_FEATURE,
     USER_DYNAMIC_FEATURE,
     VIDEO_FEATURE,
 )
@@ -334,6 +327,21 @@ def _table_list(value: str) -> list[str]:
     if not tables or any(not item for item in tables):
         raise argparse.ArgumentTypeError("must be a comma-separated table list")
     return tables
+
+
+def _partition_date(value: str) -> date:
+    """``YYYY-MM-DD``만 허용한다.
+
+    이 값은 SQL 리터럴로 전개되므로, 형식을 여기서 좁혀 두면 주입 가능한 문자열이
+    SQL에 닿지 않는다.
+    """
+
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            "must be an ISO date in YYYY-MM-DD form"
+        ) from None
 
 
 def _boolean(value: str | bool) -> bool:
@@ -378,6 +386,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--location",
         default=os.getenv("CTR_TRAINING_BQ_LOCATION", DEFAULT_LOCATION),
     )
+    parser.add_argument(
+        "--partition-date",
+        required=True,
+        type=_partition_date,
+        help="적재할 대상 날짜(KST, YYYY-MM-DD). 이 날짜 행만 지우고 다시 넣는다",
+    )
     parser.add_argument("--tables", type=_table_list)
     parser.add_argument(
         "--dry-run",
@@ -418,32 +432,56 @@ def table_fqn(spec: FeatureTableSpec, *, project: str, dataset: str) -> str:
     return f"`{project}.{dataset}.{spec.name}`"
 
 
-def build_rebuild_sql(
-    spec: FeatureTableSpec, *, project: str, dataset: str, raw_dataset: str
+def partition_predicate(spec: FeatureTableSpec, *, partition_date: date) -> str:
+    """대상 날짜 행을 고르는 WHERE 조건을 만든다."""
+
+    return spec.partition_predicate.format(partition_date=partition_date.isoformat())
+
+
+def build_incremental_sql(
+    spec: FeatureTableSpec,
+    *,
+    project: str,
+    dataset: str,
+    raw_dataset: str,
+    partition_date: date,
 ) -> str:
-    """대상 테이블 스키마를 보존하는 TRUNCATE + INSERT 스크립트를 만든다."""
+    """대상 날짜 행만 교체하는 DELETE + INSERT 스크립트를 만든다.
+
+    대상 테이블 스키마는 손대지 않는다. 같은 날짜로 다시 실행하면 DELETE가 먼저
+    돌아 이전 결과를 걷어내므로 중복 키가 생기지 않는다.
+    """
 
     select_sql = spec.select_sql.format(
-        project=project, dataset=dataset, raw_dataset=raw_dataset
+        project=project,
+        dataset=dataset,
+        raw_dataset=raw_dataset,
+        partition_date=partition_date.isoformat(),
     )
     target = table_fqn(spec, project=project, dataset=dataset)
     columns = ",\n  ".join(spec.columns)
+    predicate = partition_predicate(spec, partition_date=partition_date)
     return (
-        f"TRUNCATE TABLE {target};\n"
+        f"DELETE FROM {target}\nWHERE {predicate};\n"
         f"INSERT INTO {target} (\n  {columns}\n)\n"
         f"{select_sql.rstrip().rstrip(';')};\n"
     )
 
 
 def build_validation_sql(
-    spec: FeatureTableSpec, *, project: str, dataset: str
+    spec: FeatureTableSpec, *, project: str, dataset: str, partition_date: date
 ) -> str:
-    """적재 결과를 비어있음·NULL 키·중복 키 3가지 기준으로 검사하는 SQL."""
+    """이번 run이 적재한 행을 비어있음·NULL 키·중복 키 3가지로 검사하는 SQL.
+
+    검사 범위를 대상 날짜로 한정한다. 이번 run이 만든 결과만 책임지므로 과거
+    데이터 문제로 일일 run이 죽지 않고, 테이블이 커져도 스캔량이 늘지 않는다.
+    """
 
     target = table_fqn(spec, project=project, dataset=dataset)
     key_columns = (*spec.entity_keys, "event_timestamp")
     null_predicate = " OR ".join(f"{column} IS NULL" for column in key_columns)
     key_tuple = ", ".join(key_columns)
+    predicate = partition_predicate(spec, partition_date=partition_date)
     return f"""\
 WITH loaded AS (
   SELECT
@@ -451,19 +489,20 @@ WITH loaded AS (
     COUNTIF({null_predicate}) AS null_key_count,
     COUNT(*) - COUNT(DISTINCT TO_JSON_STRING(STRUCT({key_tuple}))) AS duplicate_key_count
   FROM {target}
+  WHERE {predicate}
 )
 SELECT
   IF(row_count = 0,
-     ERROR('validation failed: {spec.name} is empty'),
+     ERROR('validation failed: {spec.name} has no rows for {partition_date.isoformat()}'),
      'ok') AS non_empty_check,
   IF(null_key_count > 0,
      ERROR(FORMAT(
-       'validation failed: %d rows with NULL key columns in {spec.name}',
+       'validation failed: %d rows with NULL key columns in {spec.name} for {partition_date.isoformat()}',
        null_key_count)),
      'ok') AS key_not_null_check,
   IF(duplicate_key_count > 0,
      ERROR(FORMAT(
-       'validation failed: %d duplicate key rows in {spec.name}',
+       'validation failed: %d duplicate key rows in {spec.name} for {partition_date.isoformat()}',
        duplicate_key_count)),
      'ok') AS unique_key_check
 FROM loaded
@@ -495,29 +534,38 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
     client = _client(args.project, args.location)
     built: list[str] = []
     for spec in specs:
-        rebuild_sql = build_rebuild_sql(
+        incremental_sql = build_incremental_sql(
             spec,
             project=args.project,
             dataset=args.dataset,
             raw_dataset=args.raw_dataset,
+            partition_date=args.partition_date,
         )
         _run_query(
-            client, rebuild_sql, location=args.location, dry_run=args.dry_run
+            client, incremental_sql, location=args.location, dry_run=args.dry_run
         )
         validation_sql = build_validation_sql(
-            spec, project=args.project, dataset=args.dataset
+            spec,
+            project=args.project,
+            dataset=args.dataset,
+            partition_date=args.partition_date,
         )
         _run_query(
             client, validation_sql, location=args.location, dry_run=args.dry_run
         )
         built.append(spec.name)
-        logger.info("rebuilt feature table %s", spec.name)
+        logger.info(
+            "loaded feature table %s for %s",
+            spec.name,
+            args.partition_date.isoformat(),
+        )
     return {
         "status": "succeeded",
-        "mode": "dry_run" if args.dry_run else "rebuild",
+        "mode": "dry_run" if args.dry_run else "incremental",
         "project": args.project,
         "dataset": args.dataset,
         "raw_dataset": args.raw_dataset,
+        "partition_date": args.partition_date.isoformat(),
         "tables": built,
     }
 
