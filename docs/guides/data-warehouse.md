@@ -95,6 +95,25 @@ uv run python scripts/load_raw_to_bigquery.py \
   --tables virtual_user
 ```
 
+### 🔸 아래 SQL 의 실제 실행 방식
+
+`user_static_feature`, `user_dynamic_feature`, `video_feature` 는 공개 batch 명령
+`python -m autoresearch.jobs.feature_store_build` 가 재구축합니다
+(`autoresearch/jobs/feature_store_build.py`,
+`docs/specs/2026-07-22-feature-store-build-batch.md`). Airflow 에서는
+`Autoresearch-airflow` 의 `feast_offline_feature_build` DAG 가
+`lake_to_bigquery_incremental` 성공 뒤 이 명령을 실행하고,
+`feast_online_store_materialize` 가 그 뒤를 잇습니다.
+
+> [!WARNING]
+> 아래 각 절의 `CREATE OR REPLACE TABLE` 은 **변환 규칙을 읽기 쉽게 보여주기
+> 위한 표기**이며, 실제 적재에 그대로 쓰면 안 됩니다. Feast 피처 테이블 4종의
+> 스키마는 Terraform 이 소유하므로(`Autoresearch-infra`
+> `terraform/envs/dev/bigquery.tf`), `CREATE OR REPLACE` 와 `WRITE_TRUNCATE` 는
+> 모두 대상 테이블 정의(REQUIRED/REPEATED mode 포함)를 query 결과 스키마로
+> 교체해 버립니다. batch 명령은 같은 SELECT 본문을
+> `TRUNCATE TABLE` + `INSERT INTO ... SELECT` 로 실행해 스키마를 보존합니다.
+
 ---
 
 <a id="user_static_feature"></a>

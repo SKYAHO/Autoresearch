@@ -12,7 +12,16 @@ from src.pipeline.model_exposure_provider import (
     build_model_exposures,
     load_user_rankings,
     make_model_exposure_provider,
+    resolve_recommendations_table_id,
 )
+
+
+def test_resolve_recommendations_table_id_defaults_and_override(monkeypatch):
+    monkeypatch.delenv("CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE", raising=False)
+    assert resolve_recommendations_table_id(None).endswith(".user_recommendations")
+    assert resolve_recommendations_table_id("alt_table").endswith(".alt_table")
+    monkeypatch.setenv("CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE", "env_table")
+    assert resolve_recommendations_table_id(None).endswith(".env_table")
 
 
 def _videos(n: int = 40) -> list[dict]:

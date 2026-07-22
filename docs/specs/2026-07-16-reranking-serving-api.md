@@ -2,19 +2,85 @@
 
 ## 목표
 
-후보 영상별 CTR 예측값을 반환하고, 높은 점수 순으로 정렬하는 FastAPI MVP를 제공한다.
+후보 영상별 CTR 예측값을 반환하는 FastAPI MVP를 제공한다. 응답 항목의 순서는
+요청 `video_ids` 순서를 보존한다. CTR 점수는 후보 순서를 바꾸지 않는 부가 정보다.
 
 ## API 계약
 
-- `GET /healthcheck`: 모델 로드 상태를 반환한다. 모델을 사용할 수 없으면 `503`을 반환한다.
-- `POST /rerank`: `user_id`와 후보 목록을 받고, 각 후보의 사전 조립된 scalar feature로 CTR을 예측한다. 응답 `items`는 `ctr_score` 내림차순이다.
-- `GET /metrics`: Prometheus 형식의 요청 수·지연 시간·모델 준비 상태를 노출한다. 학습에 없던
+- `GET /healthcheck`: 모델, 온라인 FeatureStore, 모델-피처 계약이 모두 준비된 경우에만 `200`을 반환하며, 하나라도 준비되지 않으면 `503`을 반환한다.
+- `POST /rerank`: `user_id`와 `video_ids`를 받아 온라인 피처를 조립해 CTR을 예측한다. 응답 `items`는 입력 `video_ids` 순서를 보존한다.
+- `GET /metrics`: Prometheus 형식의 요청 수·지연 시간·전체 서빙 준비 상태를 기존 `rerank_model_ready` 이름으로 노출한다. 학습에 없던
   categorical 값이 NaN으로 강등되면(신규 카테고리 등장 등) `rerank_unseen_category_total{column=...}`
   카운터가 컬럼별로 증가하고 경고 로그가 남는다 — 조용한 학습-서빙 스큐를 감지해 재학습 신호로 쓴다.
+  요청당 영상 ID 수는 `rerank_video_ids` histogram으로 노출한다. 이름 전환의 한 배포 기간에는 deprecated
+  `rerank_candidates` histogram에도 같은 값을 기록하며, 외부 dashboard와 alert가 새 이름으로 이전됐음을 확인한 뒤 제거한다.
 
-`/rerank`의 후보는 `video_id`와 `features`를 가진다. `features`는 학습 artifact의 feature-column 목록을 모두 포함해야 하며, 벡터·리스트는 받지 않는다. MVP에서는 Feature Store 조회를 수행하지 않는다. 학습 카테고리에 없는 값이 오면 요청은 실패하지 않고 해당 값을 NaN(결측)으로 처리하되, 위 `rerank_unseen_category_total`로 계측한다. 이 강등에는 **타입 불일치**도 포함된다 — 예: 학습 카테고리가 `int (10, 20, 30)`인데 요청이 `str "10"`으로 오면 매칭에 실패해 NaN이 된다. MVP는 요청 값을 학습 카테고리 타입으로 정규화(coerce)하지 않으며, 이 조용한 왜곡은 예방이 아니라 위 메트릭으로 **감지**하는 것을 계약으로 한다(정규화는 후속 과제).
+## 배포 의존성 경계
 
-이 감지가 HTTP 경로에서 성립하는 것은 `FeatureValue = str | int | float | bool`이 pydantic v2 **smart union**으로 검증되어, JSON 값의 타입이 유니온 멤버와 정확히 일치하면 그대로 보존되기 때문이다(`"10"`은 `str`로 남고 `int`로 coerce되지 않는다). 이 유니온을 좁히거나 `union_mode='left_to_right'` 같은 순차 검증으로 바꾸면 요청 값이 조용히 변환되어 불일치가 감지되지 않고 메트릭이 죽은 코드가 된다.
+`deploy/serving/Dockerfile`은 Feast 전용 그룹의 고정된 FastAPI·Starlette·PyArrow 런타임을 사용한다. 기본 dev/serving 그룹은 Feast와 공존할 수 없으므로, CI는 dev serving 테스트와 Feast production 이미지 검증을 별도 환경에서 실행한다. 이미지의 실제 HTTP 스모크는 자격 증명을 주입하지 않은 상태에서 `/healthcheck`가 `503`으로 fail-closed 되는지 확인한다.
+
+`/rerank`은 외부 JSON에서 `user_id`와 `video_ids`만 받는다. `video_ids`는 1~200개의 비어 있지 않은 문자열이며 중복을 허용하지 않는다. 유효한 `video_ids`와 함께 들어온 legacy `candidates`를 포함해 선언되지 않은 필드는 `422`로 거부한다. 호출자는 모델 피처를 전달할 수 없으며, 구 계약의 하위 호환 이중 지원도 하지 않는다.
+
+요청 예시:
+
+```json
+{
+  "user_id": "user-1",
+  "video_ids": ["video-1", "video-2"]
+}
+```
+
+응답 항목은 요청 `user_id`를 반향하지 않는다. `model_id`는 예측에 사용한 불변 MLflow `run_id`이며, #216의 로컬 모델 계약에서는 `"local"`이다.
+
+```json
+{
+  "items": [
+    {"video_id": "video-1", "ctr_score": 0.42, "model_id": "run-123"},
+    {"video_id": "video-2", "ctr_score": 0.71, "model_id": "run-123"}
+  ]
+}
+```
+
+## 온라인 피처 조립 계약
+
+요청당 온라인 조회는 정확히 두 번의 Feast 배치 API 호출로 수행한다.
+
+1. 입력 순서의 `(user_id, video_id)` 1~200행으로 `UserStaticView`, `UserDynamicView`, `VideoFeatureView`에서 직접 피처와 `preferred_category`를 읽는다.
+2. 첫 조회의 고유 `(user_id, category_id)` 행으로 `UserCategorySimilarityView`의 `topic_similarity`를 읽고, 같은 category의 모든 영상에 다시 결합한다.
+
+조회 결과는 entity key와 길이가 요청과 일치할 때만 결합한다. 모델에는 ID와 `preferred_category` 같은 조립 보조 컬럼을 전달하지 않는다. 모델 artifact의 피처 순서는 다음 15개와 정확히 같아야 한다.
+
+| 순서 | 모델 입력 | 소스 또는 처리 |
+| --- | --- | --- |
+| 1 | `age_group` | UserStaticView |
+| 2 | `occupation` | UserStaticView |
+| 3 | `historical_category_affinity` | UserDynamicView |
+| 4 | `recent_click_count_7d` | UserDynamicView |
+| 5 | `recent_watch_time_7d` | UserDynamicView |
+| 6 | `recent_like_count_7d` | UserDynamicView |
+| 7 | `category_id` | VideoFeatureView |
+| 8 | `duration_sec` | VideoFeatureView |
+| 9 | `view_count` | VideoFeatureView |
+| 10 | `like_ratio` | VideoFeatureView |
+| 11 | `comment_ratio` | VideoFeatureView |
+| 12 | `days_since_upload` | VideoFeatureView |
+| 13 | `historical_category_match` | 기존 공용 계산 함수 |
+| 14 | `preferred_category_match` | `preferred_category`를 보조 값으로 한 기존 공용 계산 함수 |
+| 15 | `topic_similarity` | UserCategorySimilarityView |
+
+| 결측 값 종류 | typed cold-start 기본값 |
+| --- | --- |
+| `age_group`, `occupation`, `historical_category_affinity`, `category_id` | `"unknown"` |
+| `preferred_category` 보조 값 | `[]` |
+| 최근 7일 count/watch-time, 영상 count/duration/age | `0` |
+| `like_ratio`, `comment_ratio`, `topic_similarity` | `0.0` |
+| 두 match 피처 | 위 기본값으로 공용 함수를 계산한 결과 `0` |
+
+학습 categorical artifact에 `"unknown"`이 없으면 기존 Reranker가 값을 NaN으로 강등하고 `rerank_unseen_category_total`로 계측한다. 이 방식은 학습 의미가 다른 결측을 묵시적 숫자 `0`으로 바꾸지 않는다.
+
+## 온라인 기록 범위
+
+`/rerank`는 BigQuery에 온라인 요청을 동기 기록하지 않는다. #216의 일일 전체 순위 원장은 날짜 파티션 전체를 `WRITE_TRUNCATE`하므로 online append를 섞으면 배치 재실행에서 삭제되고, 현재 스키마에는 `request_id`, `source`, `served_at`도 없다. HTTP critical path에서의 BigQuery 호출은 지연 시간과 가용성에도 영향을 준다. 별도 온라인 감사 로그가 필요하면 append 전용 테이블과 비동기 sink를 설계하는 별도 이슈로 다룬다.
 
 ## 모델 artifact
 
@@ -43,4 +109,36 @@ model flavor를 기록하도록 확장될 때 별도 작업으로 다룬다.
 
 ## 컨테이너
 
-`deploy/serving/Dockerfile`은 uv lockfile 기반으로 런타임 의존성을 설치한다. 로컬 모델은 이미지에 포함하지 않으며, 실행 환경에서 read-only volume 또는 artifact 다운로드로 제공한다.
+`deploy/serving/Dockerfile`은 uv lockfile 기반 Python 의존성과 LightGBM 런타임에 필요한 `libgomp1`을 설치한다. 로컬 모델은 이미지에 포함하지 않으며, 실행 환경에서 read-only volume 또는 artifact 다운로드로 제공한다.
+
+## 2026-07-22 Task 6 검증과 rollout 전제조건
+
+로컬 dev 전체 suite, Feast 격리 suite, lockfile, serving 이미지 빌드와 컨테이너
+smoke를 새로 검증했다. 이미지는 `mlflow-skinny==2.22.1` 및
+`pyarrow==21.0.0`을 포함하며 `python -m pip check`가 성공했다.
+LightGBM·Feast·FastAPI·Redis IAM adapter·serving app import와 `FeatureStore('/app/feature_repo')` bootstrap도
+성공했다. 라이브러리의 Pydantic/NumPy deprecation warning은 있었지만 실패는 없었다.
+
+실제 GKE/Redis smoke는 이번 코드 작업에서 실행하거나 인증·endpoint·운영
+materialize 상태를 추정하지 않는다. #210, #218 및 운영 materialize 준비가 완료된 뒤,
+동일 KSA/Workload Identity와 Redis CA 환경에서 다음을 **배포 전 필수**로 수행한다.
+
+1. serving pod를 기동하고 존재하는 user 1명과 video 2개로 `/rerank`를 호출한다.
+2. 응답이 2개이고 요청 `video_ids` 순서를 보존하며 `model_id`가 현재 champion
+   run ID인지 확인한다. 이는 고정 HTTP 계약이 request-order preservation이므로,
+   이전 계획의 "CTR 내림차순" 검증을 대체한다.
+3. 로그에서 Feast 오류가 0이고 `rerank_unseen_category_total` metric이
+   unseen categorical에 대해 기대값인지 확인한다.
+4. 없는 user와 video 각각이 typed cold-start로 200을 반환하고, 응답 수,
+   요청 `video_ids` 순서, `video_id` 및 `model_id` 계약을 지키는지 확인한다.
+5. 201개 ID, 중복 video ID, legacy `candidates` 요청이 각각 422인지 확인한다.
+
+typed cold-start default의 사용량을 세는 metric 또는 log는 현재 제공하지 않는다.
+`test_build_applies_typed_cold_start_defaults_before_derived_features`는 로컬 unit test에서
+typed default와 파생 피처 계산을 고정한다. 반면 실제 GKE gate는 해당 내부 값을
+관측하지 않고, 존재하지 않는 entity의 HTTP 200 및 response contract 증거로만
+cold-start 동작을 검증한다.
+
+이 외부 smoke의 다음 소유자는 #210/#218 및 materialize 운영 준비를 완료한 GKE
+운영 담당자다. 해당 조건이 충족되기 전에는 이 문서의 로컬·컨테이너 증적을 실제
+Redis rollout 승인으로 해석하지 않는다.

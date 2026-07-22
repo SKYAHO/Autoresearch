@@ -10,6 +10,7 @@ import json
 import logging
 import shutil
 import tempfile
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -30,6 +31,9 @@ from autoresearch.action_logs.pipeline import (
     OPTIONAL_ADDITIVE_COLUMNS,
     ActionLogGenerationError,
     ActionLogProgressSnapshot,
+    CandidateProvider,
+    ExposureMetadata,
+    attach_exposure_tags,
     expand_action_log_drafts,
     generate_action_log_batch,
     generate_action_log_drafts,
@@ -72,6 +76,14 @@ _CHECKPOINT_PARTS_DIR = "parts"
 _DEFAULT_CHECKPOINT_DIR = "action_log_checkpoints"
 
 logger = logging.getLogger(__name__)
+
+# 폐루프 노출 provider factory (#222). daily.py는 BQ·src에 비의존한 순수
+# 오케스트레이션이므로 videos만 받아 (provider, 공유 metadata 맵)을 돌려주는
+# 계약만 알고, 실제 정책 시뮬레이션 구현은 상위 배치가 주입한다.
+CandidateProviderFactory = Callable[
+    [list[dict]],
+    tuple[CandidateProvider, Mapping[tuple[str, str], ExposureMetadata]],
+]
 
 
 def _strip_gs(path: str) -> str:
@@ -820,6 +832,7 @@ def run_daily_action_log(
     generator_name: str = "rule_based",
     model_name: str | None = None,
     history_end: datetime | None = None,
+    candidate_provider_factory: CandidateProviderFactory | None = None,
     overwrite: bool = True,
 ) -> dict[str, object]:
     """하루치 YouTube partition과 virtual user parquet으로 action log를 생성한다.
@@ -831,6 +844,9 @@ def run_daily_action_log(
         output_base_path: `.../data_lake/action_log` 출력 루트.
         quarantine_base_path: quarantine jsonl 출력 루트. None이면 최종 복사를 생략한다.
         filesystem: None(로컬) 또는 pyarrow filesystem(GCS 등).
+        candidate_provider_factory: None이면 기존 휴리스틱 조립을 유지한다. 주입하면
+            videos로부터 폐루프 노출 provider와 공유 메타데이터 맵을 만들어 노출
+            태그(#222)를 최종 로그에 실어 보낸다.
         overwrite: 기존 Python DAG 호출은 하위 호환을 위해 기본 재생성한다. 공개
             CLI는 `--overwrite` 여부를 항상 명시적으로 전달한다.
     """
@@ -872,6 +888,10 @@ def run_daily_action_log(
     virtual_users = _read_virtual_users(
         virtual_users_path, filesystem=filesystem, max_users=max_users
     )
+    candidate_provider: CandidateProvider | None = None
+    exposure_metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None
+    if candidate_provider_factory is not None:
+        candidate_provider, exposure_metadata = candidate_provider_factory(videos)
     generator = _build_generator(generator_name, model_name)
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -897,6 +917,8 @@ def run_daily_action_log(
                     virtual_users,
                     videos,
                     generator,
+                    candidate_provider=candidate_provider,
+                    exposure_metadata=exposure_metadata,
                 )
             finally:
                 _close_generator(generator)
@@ -962,6 +984,7 @@ def run_daily_action_log_shard(
     generator_name: str = "rule_based",
     model_name: str | None = None,
     history_end: datetime | None = None,
+    candidate_provider_factory: CandidateProviderFactory | None = None,
     progress_base_path: str | None = None,
     checkpoint_base_path: str | None = None,
     progress_flush_interval_sec: float = 15.0,
@@ -973,6 +996,9 @@ def run_daily_action_log_shard(
     Shard output은 최종 EventLog가 아니라 `ImpressionDraft` parquet이다. 최종
     CTR 정규화와 event_id 부여는 `merge_daily_action_log_shards`에서 한 번만
     수행한다.
+
+    candidate_provider_factory를 주입하면 폐루프 노출 태그(#222)를 draft parquet에
+    실어 shard→merge를 건너 운반한다. None이면 기존 휴리스틱 조립을 유지한다.
     """
 
     youtube_path = _dt_path(
@@ -1036,6 +1062,10 @@ def run_daily_action_log_shard(
         virtual_users = _read_virtual_users(
             virtual_users_path, filesystem=filesystem, max_users=max_users
         )
+        candidate_provider: CandidateProvider | None = None
+        exposure_metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None
+        if candidate_provider_factory is not None:
+            candidate_provider, exposure_metadata = candidate_provider_factory(videos)
         input_fingerprint = _input_fingerprint(virtual_users, videos)
         shard_users = _select_virtual_user_shard(
             virtual_users,
@@ -1145,10 +1175,14 @@ def run_daily_action_log_shard(
                 completed_work=completed_work,
                 checkpoint_callback=checkpoint_store.write_part,
                 shard_index=shard_index,
+                candidate_provider=candidate_provider,
             )
 
             draft_path = tmp_dir / "action_log_drafts.parquet"
-            write_action_log_draft_parquet(result.drafts, draft_path)
+            drafts_to_write = result.drafts
+            if exposure_metadata is not None:
+                drafts_to_write = attach_exposure_tags(result.drafts, exposure_metadata)
+            write_action_log_draft_parquet(drafts_to_write, draft_path)
             write_quarantine_jsonl(result.quarantine, request.quarantine_output_path)
             _copy_local_file(draft_path, output_path, filesystem=filesystem)
             warnings: list[dict[str, str]] = []

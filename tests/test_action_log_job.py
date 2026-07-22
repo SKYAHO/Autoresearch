@@ -1,3 +1,4 @@
+import argparse
 import json
 from types import SimpleNamespace
 
@@ -18,6 +19,76 @@ _SINGLE_ARGS = [
     "--output-base-path",
     "gs://test-bucket/data_lake/action_log",
 ]
+
+_MERGE_ARGS = [
+    "--mode",
+    "merge",
+    "--partition-date",
+    "2026-07-13",
+    "--shard-count",
+    "5",
+    "--shard-output-base-path",
+    "gs://test-bucket/data_lake/action_log_work",
+    "--output-base-path",
+    "gs://test-bucket/data_lake/action_log",
+    "--max-quarantine-ratio",
+    "0.2",
+]
+
+_MODE_ARGS = {"single": _SINGLE_ARGS, "merge": _MERGE_ARGS}
+
+
+def _parse_valid_single_args(*extra: str) -> argparse.Namespace:
+    parser = action_log_job._build_parser()
+    args = parser.parse_args([*_SINGLE_ARGS, *extra])
+    action_log_job._validate_args(args)
+    return args
+
+
+def _parse_args_for_mode(mode: str, *extra: str) -> argparse.Namespace:
+    parser = action_log_job._build_parser()
+    args = parser.parse_args([*_MODE_ARGS[mode], *extra])
+    action_log_job._validate_args(args)
+    return args
+
+
+def test_exposure_source_defaults_to_model_for_single_and_shard():
+    assert _parse_valid_single_args().exposure_source == "model"
+
+
+def test_merge_rejects_exposure_arguments():
+    with pytest.raises(action_log_job.BatchArgumentError):
+        _parse_args_for_mode("merge", "--exposure-source", "model")
+    with pytest.raises(action_log_job.BatchArgumentError):
+        _parse_args_for_mode("merge", "--recommendations-table", "t")
+
+
+def test_heuristic_mode_rejects_recommendations_table():
+    with pytest.raises(action_log_job.BatchArgumentError):
+        _parse_args_for_mode(
+            "single", "--exposure-source", "heuristic", "--recommendations-table", "t"
+        )
+
+
+def test_run_passes_factory_only_in_model_mode(monkeypatch):
+    filesystem = object()
+    monkeypatch.setattr(action_log_job, "GcsFileSystem", lambda: filesystem)
+    captured: dict = {}
+
+    def _fake_daily(**kwargs):
+        captured.update(kwargs)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(action_log_job, "run_daily_action_log", _fake_daily)
+
+    action_log_job._run(_parse_valid_single_args())
+    assert captured["candidate_provider_factory"] is not None
+
+    captured.clear()
+    action_log_job._run(
+        _parse_valid_single_args("--exposure-source", "heuristic")
+    )
+    assert captured["candidate_provider_factory"] is None
 
 
 def _json_lines(output: str) -> list[dict[str, object]]:
