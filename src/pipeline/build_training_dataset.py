@@ -13,7 +13,9 @@ training_dataset.csv 생성 파이프라인.
   (docs/guides/data-warehouse.md의 training_entity 참고, issue #172)
 
 출력:
-- data/processed/training_dataset.csv (16컬럼, docs/guides/ctr-model-specification.md 준수)
+- data/processed/training_dataset.csv (21컬럼, docs/guides/training-dataset.md의
+  Model Input Columns 준수. Feast get_historical_features()는 아직 경유하지
+  않는 DuckDB fallback 경로 — issue #204/#175 결정안 참고)
 
 NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py
       스크립트의 산출물이며, 스펙 변경 시에는 scaffold를 수정한 후 해당 스크립트를
@@ -163,7 +165,10 @@ def load_videos_from_bigquery() -> pd.DataFrame:
             video_comment_count AS commentCount,
             video_published_at AS publishedAt,
             video_title AS title,
-            video_description AS description
+            video_description AS description,
+            channel_subscriber_count AS channelSubscriberCount,
+            channel_view_count AS channelViewCount,
+            channel_video_count AS channelVideoCount
         FROM `{raw_table_id(BIGQUERY_VIDEOS_TABLE)}`
     """
     return client.query(query).to_dataframe()
@@ -456,14 +461,19 @@ def main(
             o.clicked,
             o.historical_category_affinity,
             o.recent_click_count_7d,
+            o.recent_view_count_7d,
             o.recent_watch_time_7d,
             o.recent_like_count_7d,
+            o.total_event_count_7d,
             vf.category_id,
             vf.duration_sec,
             vf.view_count,
             vf.like_ratio,
             vf.comment_ratio,
             vf.days_since_upload,
+            vf.channel_subscriber_count,
+            vf.channel_view_count,
+            vf.channel_video_count,
             p.hobbies_and_interests,
             p.hobbies_and_interests_list,
             v.title,
@@ -512,19 +522,25 @@ def main(
         SELECT
             uo.age_group,
             uo.occupation,
+            uo.watch_time_band,
             j.historical_category_affinity,
             CAST(j.recent_click_count_7d AS INTEGER) AS recent_click_count_7d,
+            CAST(j.recent_view_count_7d AS INTEGER) AS recent_view_count_7d,
             CAST(j.recent_watch_time_7d AS INTEGER) AS recent_watch_time_7d,
             CAST(j.recent_like_count_7d AS INTEGER) AS recent_like_count_7d,
+            CAST(j.total_event_count_7d AS INTEGER) AS total_event_count_7d,
             j.category_id,
             CAST(j.duration_sec AS INTEGER) AS duration_sec,
             CAST(j.view_count AS BIGINT) AS view_count,
             j.like_ratio,
             j.comment_ratio,
             CAST(j.days_since_upload AS INTEGER) AS days_since_upload,
+            CAST(j.channel_subscriber_count AS BIGINT) AS channel_subscriber_count,
+            CAST(j.channel_view_count AS BIGINT) AS channel_view_count,
+            CAST(j.channel_video_count AS BIGINT) AS channel_video_count,
+            j.topic_similarity,
             CAST(j.historical_category_match AS INTEGER) AS historical_category_match,
             CAST(j.preferred_category_match AS INTEGER) AS preferred_category_match,
-            j.topic_similarity,
             CAST(j.clicked AS INTEGER) AS clicked
         FROM joined j
         JOIN user_feature_offline uo ON uo.user_id = j.user_id

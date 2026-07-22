@@ -212,6 +212,15 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 
 ## 📌 Training Dataset
 
+> [!NOTE]
+> 아래 "최종 Model Input Columns"는 Feast 경유(4개 BigQuery 중간 테이블 +
+> `get_historical_features()`) 목표 아키텍처 기준이다. 이 목표의 SSOT는
+> `docs/guides/training-dataset.md` + `docs/guides/data-warehouse.md`이며,
+> 현재 구현(`src/pipeline/build_training_dataset.py`)은 Feast를 아직
+> 경유하지 않는 DuckDB fallback 경로로 21컬럼까지만 확장된 상태다
+> (`docs/specs/2026-07-21-training-dataset-16-to-21-column-roadmap.md`,
+> issue #175/#204 참고). Feast 전체 cutover는 issue #207에서 별도 진행한다.
+
 ### Feast Historical Retrieval 기준 Training Dataset 생성 절차
 
 1. Raw Action Log에서 impression event를 추출한다.
@@ -234,19 +243,25 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 |--------|------|------|
 | `age_group` | Category | 사용자 연령대 |
 | `occupation` | Category | 사용자 직업 |
-| `historical_category_affinity` | Category | 과거 행동 기반 선호 카테고리 |
+| `watch_time_band` | Category | 사용자 시청 시간대 성향 (`morning`/`evening`/`night`/`unknown`) |
 | `recent_click_count_7d` | Numeric | 최근 7일 클릭 수 |
+| `recent_view_count_7d` | Numeric | 최근 7일 view 수 |
 | `recent_watch_time_7d` | Numeric | 최근 7일 총 시청 시간 |
 | `recent_like_count_7d` | Numeric | 최근 7일 좋아요 수 |
+| `historical_category_affinity` | Category | 과거 행동 기반 선호 카테고리 |
+| `total_event_count_7d` | Numeric | 최근 7일 전체 이벤트 수 |
 | `category_id` | Category | 영상 카테고리 |
 | `duration_sec` | Numeric | 영상 길이 |
 | `view_count` | Numeric | 영상 조회수 |
 | `like_ratio` | Float | 영상 좋아요 비율 |
 | `comment_ratio` | Float | 영상 댓글 비율 |
 | `days_since_upload` | Numeric | 업로드 후 경과일 |
+| `channel_subscriber_count` | Numeric | 채널 구독자 수 |
+| `channel_view_count` | Numeric | 채널 누적 조회수 |
+| `channel_video_count` | Numeric | 채널 영상 수 |
+| `topic_similarity` | Float | 사용자 키워드별 임베딩과 영상 카테고리 설명 임베딩 간 cosine 유사도 중 최댓값(max-pool) |
 | `historical_category_match` | Binary | **과거 행동 기반** 선호 카테고리(`historical_category_affinity`)과 영상 카테고리 일치 여부 |
 | `preferred_category_match` | Binary | **persona 기반** 선호 카테고리(`preferred_category`)과 영상 카테고리 일치 여부 |
-| `topic_similarity` | Float | 사용자 키워드별 임베딩과 영상 카테고리 설명 임베딩 간 cosine 유사도 중 최댓값(max-pool) |
 | `clicked` | Binary | Label |
 
 ---

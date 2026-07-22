@@ -96,10 +96,31 @@ def extract_keywords_safe(text_or_json) -> list:
 
 
 def compute_video_features(videos_raw: pd.DataFrame, snapshot_date: str) -> pd.DataFrame:
-    """영상 원본 컬럼(categoryId/duration/viewCount/...)에서 모델 영상 피처를 계산한다."""
+    """영상 원본 컬럼(categoryId/duration/viewCount/...)에서 모델 영상 피처를 계산한다.
+
+    channel_subscriber_count/channel_view_count/channel_video_count는
+    videos_raw에 channelSubscriberCount/channelViewCount/channelVideoCount
+    컬럼이 있을 때만 채우고, 없으면 0으로 default 처리한다
+    (docs/guides/data-warehouse.md video_feature cold-start 규칙과 동일).
+    """
     datetime.strptime(snapshot_date, "%Y-%m-%d")  # SQL 보간 전 형식 검증
     con = duckdb.connect()
     con.register("videos_raw", videos_raw)
+    channel_subscriber_expr = (
+        "CAST(channelSubscriberCount AS BIGINT)"
+        if "channelSubscriberCount" in videos_raw.columns
+        else "NULL"
+    )
+    channel_view_expr = (
+        "CAST(channelViewCount AS BIGINT)"
+        if "channelViewCount" in videos_raw.columns
+        else "NULL"
+    )
+    channel_video_expr = (
+        "CAST(channelVideoCount AS BIGINT)"
+        if "channelVideoCount" in videos_raw.columns
+        else "NULL"
+    )
     return con.execute(
         f"""
         SELECT
@@ -109,18 +130,39 @@ def compute_video_features(videos_raw: pd.DataFrame, snapshot_date: str) -> pd.D
             CAST(viewCount AS BIGINT) AS view_count,
             ROUND(CAST(likeCount AS FLOAT) / NULLIF(CAST(viewCount AS FLOAT), 0), 4) AS like_ratio,
             ROUND(CAST(commentCount AS FLOAT) / NULLIF(CAST(viewCount AS FLOAT), 0), 4) AS comment_ratio,
-            DATE_DIFF('day', CAST(publishedAt AS DATE), DATE '{snapshot_date}') AS days_since_upload
+            DATE_DIFF('day', CAST(publishedAt AS DATE), DATE '{snapshot_date}') AS days_since_upload,
+            COALESCE({channel_subscriber_expr}, 0) AS channel_subscriber_count,
+            COALESCE({channel_view_expr}, 0) AS channel_view_count,
+            COALESCE({channel_video_expr}, 0) AS channel_video_count
         FROM videos_raw
         """
     ).df()
 
 
 def compute_user_offline_features(personas_raw: pd.DataFrame) -> pd.DataFrame:
-    """persona 원본(uuid/age/occupation)에서 오프라인 유저 피처를 계산한다."""
+    """persona 원본(uuid/age/occupation)에서 오프라인 유저 피처를 계산한다.
+
+    watch_time_band는 personas_raw에 watch_time_band 컬럼이 있을 때만
+    docs/guides/data-warehouse.md의 user_static_feature 정규화 규칙(오전/오후/
+    저녁/밤 표기를 morning/evening/night로 통일, 그 외는 unknown)을 적용하고,
+    컬럼이 없으면 "unknown"으로 default 처리한다.
+    """
     con = duckdb.connect()
     con.register("personas_raw", personas_raw)
-    return con.execute(
+    watch_time_band_expr = (
         """
+        CASE
+            WHEN LOWER(TRIM(watch_time_band)) IN ('morning', 'am', '오전', '아침') THEN 'morning'
+            WHEN LOWER(TRIM(watch_time_band)) IN ('evening', 'pm', '저녁', '오후') THEN 'evening'
+            WHEN LOWER(TRIM(watch_time_band)) IN ('night', 'late_night', '밤', '심야') THEN 'night'
+            ELSE 'unknown'
+        END
+        """
+        if "watch_time_band" in personas_raw.columns
+        else "'unknown'"
+    )
+    return con.execute(
+        f"""
         SELECT
             uuid AS user_id,
             CASE
@@ -130,7 +172,8 @@ def compute_user_offline_features(personas_raw: pd.DataFrame) -> pd.DataFrame:
                 WHEN age < 50 THEN '40s'
                 ELSE '50s+'
             END AS age_group,
-            occupation
+            occupation,
+            {watch_time_band_expr} AS watch_time_band
         FROM personas_raw
         """
     ).df()
@@ -147,6 +190,15 @@ def compute_point_in_time_user_features(
     학습 경로는 query_points=노출 이벤트(as_of=impression 시각)로, 시뮬레이션
     경로는 query_points=유저×기준시각 1행으로 호출한다 — 같은 SQL이므로
     point-in-time 계산이 두 경로에서 항상 일치한다.
+
+    recent_view_count_7d/total_event_count_7d는 근사값이다: event_log는
+    long-format action_log가 아니라 impression 1행에 clicked/liked/
+    watch_time_sec를 붙인 wide-format 어댑터(derive_wide_events() 참고)라
+    view를 별도 행으로 셀 수 없다. watch_time_sec > 0을 view 발생으로,
+    "impression 1 + clicked + view + liked" 합을 total_event_count_7d로
+    근사한다. docs/guides/data-warehouse.md의 user_dynamic_feature(Feast
+    경유 목표 설계)는 raw event_type을 직접 카운트하므로 이 근사와 다를 수
+    있다 — Feast 전환(#207) 이후에는 이 근사가 필요 없어진다.
     """
     con = duckdb.connect()
     con.register("event_log_src", event_log)
@@ -200,7 +252,28 @@ def compute_point_in_time_user_features(
                   AND past.liked = 1
                   AND CAST(past.timestamp AS TIMESTAMP) < CAST(q.as_of AS TIMESTAMP)
                   AND CAST(past.timestamp AS TIMESTAMP) >= CAST(q.as_of AS TIMESTAMP) - INTERVAL 7 DAY
-            ) AS recent_like_count_7d
+            ) AS recent_like_count_7d,
+
+            (
+                SELECT COUNT(*)
+                FROM event_log_ts AS past
+                WHERE past.user_id = q.user_id
+                  AND CAST(past.watch_time_sec AS BIGINT) > 0
+                  AND CAST(past.timestamp AS TIMESTAMP) < CAST(q.as_of AS TIMESTAMP)
+                  AND CAST(past.timestamp AS TIMESTAMP) >= CAST(q.as_of AS TIMESTAMP) - INTERVAL 7 DAY
+            ) AS recent_view_count_7d,
+
+            (
+                SELECT
+                    COALESCE(COUNT(*), 0)
+                    + COALESCE(SUM(CASE WHEN past.clicked = 1 THEN 1 ELSE 0 END), 0)
+                    + COALESCE(SUM(CASE WHEN CAST(past.watch_time_sec AS BIGINT) > 0 THEN 1 ELSE 0 END), 0)
+                    + COALESCE(SUM(CASE WHEN past.liked = 1 THEN 1 ELSE 0 END), 0)
+                FROM event_log_ts AS past
+                WHERE past.user_id = q.user_id
+                  AND CAST(past.timestamp AS TIMESTAMP) < CAST(q.as_of AS TIMESTAMP)
+                  AND CAST(past.timestamp AS TIMESTAMP) >= CAST(q.as_of AS TIMESTAMP) - INTERVAL 7 DAY
+            ) AS total_event_count_7d
         FROM query_points q
         """
     ).df()

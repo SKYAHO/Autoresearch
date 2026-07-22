@@ -29,14 +29,34 @@ def test_compute_video_features_columns_and_values():
     assert list(out.columns) == [
         "video_id", "category_id", "duration_sec", "view_count",
         "like_ratio", "comment_ratio", "days_since_upload",
+        "channel_subscriber_count", "channel_view_count", "channel_video_count",
     ]
     v1 = out[out["video_id"] == "v1"].iloc[0]
     assert v1["duration_sec"] == 120
     assert v1["like_ratio"] == 0.1
     assert v1["days_since_upload"] == 10
+    # channelSubscriberCount 등 원본 컬럼이 없으면 0으로 default 처리된다.
+    assert v1["channel_subscriber_count"] == 0
+    assert v1["channel_view_count"] == 0
+    assert v1["channel_video_count"] == 0
     v2 = out[out["video_id"] == "v2"].iloc[0]
     assert v2["duration_sec"] == 300  # COALESCE 기본값
     assert pd.isna(v2["like_ratio"])  # viewCount=0 → NULLIF → NULL
+
+
+def test_compute_video_features_channel_stats_when_present():
+    videos = _videos_raw()
+    videos["channelSubscriberCount"] = [50_000, None]
+    videos["channelViewCount"] = [1_000_000, 2_000_000]
+    videos["channelVideoCount"] = [42, None]
+    out = compute_video_features(videos, "2026-07-11")
+    v1 = out[out["video_id"] == "v1"].iloc[0]
+    assert v1["channel_subscriber_count"] == 50_000
+    assert v1["channel_view_count"] == 1_000_000
+    assert v1["channel_video_count"] == 42
+    v2 = out[out["video_id"] == "v2"].iloc[0]
+    assert v2["channel_subscriber_count"] == 0  # null → 0 default
+    assert v2["channel_video_count"] == 0
 
 
 def test_compute_user_offline_features_age_group_buckets():
@@ -44,8 +64,25 @@ def test_compute_user_offline_features_age_group_buckets():
         {"uuid": ["u1", "u2", "u3"], "age": [19, 34, 60], "occupation": ["s", "o", "r"]}
     )
     out = compute_user_offline_features(personas)
-    assert list(out.columns) == ["user_id", "age_group", "occupation"]
+    assert list(out.columns) == ["user_id", "age_group", "occupation", "watch_time_band"]
     assert out["age_group"].tolist() == ["10s", "30s", "50s+"]
+    # watch_time_band 컬럼이 없으면 전부 "unknown" default 처리된다.
+    assert out["watch_time_band"].tolist() == ["unknown", "unknown", "unknown"]
+
+
+def test_compute_user_offline_features_watch_time_band_normalization():
+    personas = pd.DataFrame(
+        {
+            "uuid": ["u1", "u2", "u3", "u4", "u5"],
+            "age": [25, 25, 25, 25, 25],
+            "occupation": ["s", "s", "s", "s", "s"],
+            "watch_time_band": ["오전", "PM", "night", "mixed", None],
+        }
+    )
+    out = compute_user_offline_features(personas)
+    assert out["watch_time_band"].tolist() == [
+        "morning", "evening", "night", "unknown", "unknown",
+    ]
 
 
 def test_compute_point_in_time_user_features_respects_as_of():
@@ -71,6 +108,10 @@ def test_compute_point_in_time_user_features_respects_as_of():
     assert row["recent_click_count_7d"] == 1
     assert row["recent_watch_time_7d"] == 60
     assert row["recent_like_count_7d"] == 0
+    # as_of(07-11) 이전 7일 윈도우 안에는 e1(07-10, watch_time_sec=60>0)만 포함 → view 1건.
+    assert row["recent_view_count_7d"] == 1
+    # e1 근사치: impression(1) + clicked(1) + view(1) + liked(0) = 3.
+    assert row["total_event_count_7d"] == 3
 
 
 def test_compute_interaction_columns_matches():
