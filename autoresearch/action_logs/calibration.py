@@ -38,6 +38,9 @@ def recommend_click_threshold(
     per-slate 최대 1클릭이므로 CTR(t) = (max>=t 인 유저 수) / impressions.
     목표 CTR을 위해 n_click=round(target_ctr*impressions)명이 클릭해야 하므로,
     유저별 최고값 내림차순의 n_click번째 값을 커트라인으로 추천한다.
+    커트라인 지점에서 값이 동점(tie)이면 동점자 전원이 커트라인을 통과하므로
+    `achieved_ctr`이 `target_ctr`을 초과(overshoot)할 수 있다 — 이는 CTR(t) 정의와
+    일치하는 정상 동작이며, 호출자는 실제 결과 CTR을 `achieved_ctr`로 확인해야 한다.
     """
     values = sorted(per_user_max_propensity, reverse=True)
     users = len(values)
