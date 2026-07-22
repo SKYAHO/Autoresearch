@@ -40,9 +40,14 @@
 ### 계약
 
 - **request/manifest 필드는 Pydantic required.** `EventGenerationRequest(...)`
-  를 `click_threshold` 없이 만들면 `ValidationError`. 구버전 manifest
-  역직렬화 시 `click_threshold` 부재 → `ValidationError`(cross-version
-  fail-closed).
+  를 `click_threshold` 없이 만들면 `ValidationError`. 정확히는, `click_threshold`
+  필드 자체가 없는 **#255 이전 manifest**(구버전 shard가 남긴, `target_ctr`만
+  기록된 형태)를 역직렬화하면 `ValidationError`가 난다(cross-version
+  fail-closed) — 이 문서 상단 "조용히 0.55로 채워지던" 지적이 가리키는 대상이다.
+  반대로 **#255 시점 이후 manifest**는 Pydantic이 `click_threshold: 0.55`를
+  이미 명시적으로 직렬화해 두었으므로 필드가 존재하고, 역직렬화도 그대로
+  성공한다 — fail-closed는 필드가 아예 없는 구버전만 걸러내며, #255-era
+  manifest를 재해석·재검증하지는 않는다.
 - **CLI는 `required=True`.** `--click-threshold` 없이 실행하면 argparse가
   즉시 실패(비영 종료).
 - 값의 흐름은 불변(CLI → request → manifest). 클릭 선정 로직·per-slate 계약은

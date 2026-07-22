@@ -48,7 +48,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             "per_user_max_quantiles": dict(rec.per_user_max_quantiles),
             "sweep": [list(row) for row in rec.sweep],
         }
+    except ValueError as exc:
+        # recommend_click_threshold만 ValueError를 던진다(안전한 curated 메시지).
+        # Pydantic v2 ValidationError는 ValueError를 상속하지 않고,
+        # FileNotFoundError 등은 OSError 계열이므로 이 except는 오직
+        # recommend_click_threshold의 입력 검증 실패만 잡는다 — 경로 등
+        # 민감 정보가 없어 메시지를 그대로 노출해도 안전하다.
+        logger.error("calibration rejected input: %s", exc)
+        print(
+            json.dumps(
+                {"status": "failed", "error_type": "ValueError", "error": str(exc)},
+                ensure_ascii=False,
+            )
+        )
+        return 1
     except Exception as exc:  # noqa: BLE001 - process boundary maps failures to exit 1
+        # 예상치 못한 실패(파일 IO, 스키마 등) — 경로 등 민감 정보가 섞일 수
+        # 있으므로 메시지는 노출하지 않고 타입만 남긴다.
         logger.error("click-threshold calibration failed (%s)", type(exc).__name__)
         print(
             json.dumps(
