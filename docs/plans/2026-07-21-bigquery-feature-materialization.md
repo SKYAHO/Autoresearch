@@ -28,7 +28,7 @@
 - Create: `autoresearch/jobs/feature_materialize.py`
 
 **Interfaces:**
-- Produces: `FEATURE_TABLES: tuple[str, ...]`, `build_materialize_script(project_id: str, dataset_id: str, table_name: str) -> str`.
+- Produces: `FEATURE_TABLES: tuple[str, ...]`, `build_materialize_script(project_id: str, dataset_id: str, raw_dataset_id: str, table_name: str) -> str`.
 - Consumes: BigQuery raw tables `asset_virtual_user_vu_1000`, `data_lake_action_log`, `data_lake_youtube_trending_kr`.
 
 - [ ] **Step 1: SQL 계약의 실패 테스트를 작성한다**
@@ -51,7 +51,7 @@ def test_feature_tables_are_the_three_supported_sources():
 
 def test_static_script_flattens_bigquery_parquet_list_wrappers():
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "user_static_feature"
+        "test-project", "test_dataset", "test_raw_dataset", "user_static_feature"
     )
 
     assert "UNNEST(primary_categories.list) AS item" in script
@@ -69,7 +69,7 @@ def test_static_script_flattens_bigquery_parquet_list_wrappers():
 )
 def test_supported_script_references_its_raw_source(table_name, raw_table):
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", table_name
+        "test-project", "test_dataset", "test_raw_dataset", table_name
     )
 
     assert raw_table in script
@@ -83,7 +83,7 @@ def test_supported_script_references_its_raw_source(table_name, raw_table):
 def test_script_rejects_unknown_feature_table():
     with pytest.raises(ValueError, match="unsupported feature table"):
         feature_materialize.build_materialize_script(
-            "test-project", "test_dataset", "user_category_similarity"
+            "test-project", "test_dataset", "test_raw_dataset", "user_category_similarity"
         )
 ```
 
@@ -113,7 +113,7 @@ def _string_array(column_name: str) -> str:
 
 
 def build_materialize_script(
-    project_id: str, dataset_id: str, table_name: str
+    project_id: str, dataset_id: str, raw_dataset_id: str, table_name: str
 ) -> str:
     if table_name not in FEATURE_TABLES:
         raise ValueError(f"unsupported feature table: {table_name}")
@@ -121,6 +121,7 @@ def build_materialize_script(
     select_sql = _FEATURE_SELECTS[table_name].format(
         project_id=project_id,
         dataset_id=dataset_id,
+        raw_dataset_id=raw_dataset_id,
         primary_categories=_string_array("primary_categories"),
         hobby_keywords=_string_array("hobby_keywords"),
         interest_keywords=_string_array("interest_keywords"),
@@ -162,7 +163,7 @@ SELECT
     WHEN LOWER(TRIM(watch_time_band)) IN ('night', 'late_night', '밤', '심야') THEN 'night'
     ELSE 'unknown'
   END AS watch_time_band
-FROM `{project_id}.{dataset_id}.asset_virtual_user_vu_1000`
+FROM `{project_id}.{raw_dataset_id}.asset_virtual_user_vu_1000`
 WHERE user_id IS NOT NULL
 ```
 
@@ -188,7 +189,7 @@ git add autoresearch/jobs/feature_materialize.py tests/test_feature_materialize_
 - Modify: `docs/specs/2026-07-13-public-batch-execution-contract.md`
 
 **Interfaces:**
-- Consumes: `build_materialize_script(project_id, dataset_id, table_name)` from Task 1.
+- Consumes: `build_materialize_script(project_id, dataset_id, raw_dataset_id, table_name)` from Task 1.
 - Produces: `main(argv: Sequence[str] | None = None) -> int` and module execution path `python -m autoresearch.jobs.feature_materialize`.
 
 - [ ] **Step 1: CLI의 실패 테스트를 추가한다**
@@ -211,7 +212,7 @@ def test_main_runs_each_feature_table_in_order(monkeypatch, capsys):
     monkeypatch.setattr(feature_materialize, "_bigquery_client", lambda project_id: client)
 
     assert feature_materialize.main(
-        ["--project", "test-project", "--dataset", "test_dataset"]
+        ["--project", "test-project", "--dataset", "test_dataset", "--raw-dataset", "test_raw_dataset"]
     ) == 0
 
     assert client.query.call_count == 3
@@ -227,7 +228,7 @@ def test_main_stops_when_a_table_query_fails(monkeypatch, capsys):
     monkeypatch.setattr(feature_materialize, "_bigquery_client", lambda project_id: client)
 
     assert feature_materialize.main(
-        ["--project", "test-project", "--dataset", "test_dataset"]
+        ["--project", "test-project", "--dataset", "test_dataset", "--raw-dataset", "test_raw_dataset"]
     ) == 1
 
     assert client.query.call_count == 2
@@ -237,7 +238,7 @@ def test_main_stops_when_a_table_query_fails(monkeypatch, capsys):
 def test_main_rejects_invalid_project_identifier(monkeypatch, capsys):
     monkeypatch.setattr(feature_materialize, "_run", lambda args: pytest.fail("must not run"))
 
-    assert feature_materialize.main(["--project", "bad project", "--dataset", "dataset"]) == 2
+    assert feature_materialize.main(["--project", "bad project", "--dataset", "dataset", "--raw-dataset", "raw_dataset"]) == 2
     assert _summary(capsys.readouterr().out)["error_type"] == "invalid_arguments"
 ```
 
@@ -260,6 +261,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=_version_json())
     parser.add_argument("--project", required=True)
     parser.add_argument("--dataset", required=True)
+    parser.add_argument("--raw-dataset", required=True)
     return parser
 
 
@@ -267,7 +269,9 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
     client = _bigquery_client(args.project)
     job_ids: list[str] = []
     for table_name in FEATURE_TABLES:
-        script = build_materialize_script(args.project, args.dataset, table_name)
+        script = build_materialize_script(
+            args.project, args.dataset, args.raw_dataset, table_name
+        )
         job = client.query(script)
         job.result()
         job_ids.append(job.job_id)
@@ -322,7 +326,7 @@ git add autoresearch/jobs/feature_materialize.py tests/test_feature_materialize_
 - Modify: `tests/test_feature_materialize_job.py`
 
 **Interfaces:**
-- Consumes: `build_materialize_script(project_id, dataset_id, table_name)` from Task 1.
+- Consumes: `build_materialize_script(project_id, dataset_id, raw_dataset_id, table_name)` from Task 1.
 - Produces: 문서화된 static SQL과 실행 SQL의 동일한 nested-list 평탄화 계약.
 
 - [ ] **Step 1: 문서 SQL 회귀 테스트를 작성한다**
@@ -332,7 +336,7 @@ git add autoresearch/jobs/feature_materialize.py tests/test_feature_materialize_
 ```python
 def test_static_script_flattens_every_virtual_user_list_column():
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "user_static_feature"
+        "test-project", "test_dataset", "test_raw_dataset", "user_static_feature"
     )
 
     for column_name in (
