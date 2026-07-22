@@ -27,7 +27,19 @@ feature 테이블에 전체 갱신하는 공개 batch CLI를 제공한다.
 - `user_category_similarity` materialization
 - 아직 존재하지 않는 `user_topic_embedding`, `category_embedding` 원천
   테이블 생성
+- `src.pipeline.build_feature_tables`의 수정, 삭제 또는 실행 계약 변경. 이
+  모듈은 `training_entity`도 함께 다루는 별도 구현으로 유지한다.
 - Airflow DAG, 스케줄, KubernetesPodOperator 및 GCP Terraform 변경
+
+## 공존 정책
+
+- 운영자가 호출하는 공개 batch 경로는
+  `python -m autoresearch.jobs.feature_materialize`로 한정한다.
+- `src.pipeline.build_feature_tables`는 이번 변경에서 보존한다. 다만 이 모듈은
+  공개 batch JSONL/exit-code 계약을 제공하지 않으며, raw virtual-user nested
+  list wrapper를 평탄화하지 않는다. 운영 materialization에 사용하지 않는다.
+- 두 모듈이 같은 target table을 갱신하므로, Airflow 등 오케스트레이터는 한
+  schedule에서 둘을 함께 호출하지 않는다.
 
 ## 인터페이스
 

@@ -111,6 +111,22 @@ def test_build_pool_feature_frame_covers_model_columns(stub_reranker):
         assert column in frame.columns, column
 
 
+def test_build_pool_feature_frame_snapshot_date_decoupled_from_as_of():
+    # 영상 나이(days_since_upload)는 snapshot_date 기준, 유저 이력은 as_of 기준으로 분리한다.
+    common = dict(
+        personas=_personas(1),
+        events=_empty_events(),
+        videos_raw=_videos_raw(1),  # publishedAt 2026-07-01
+        user_id="u0",
+        as_of="2026-07-20 00:00:00",
+    )
+    explicit = build_pool_feature_frame(**common, snapshot_date="2026-07-21")
+    assert explicit["days_since_upload"].iloc[0] == 20
+
+    fallback = build_pool_feature_frame(**common)  # 기본값은 기존 동작(as_of 날짜) 유지
+    assert fallback["days_since_upload"].iloc[0] == 19
+
+
 def test_round_report_prefers_model_policy_when_model_is_right(tmp_path, stub_reranker):
     """모델이 유저 취향(Gaming)을 맞히면 합동 정규화 후 model CTR ≥ baseline CTR."""
     report = main(

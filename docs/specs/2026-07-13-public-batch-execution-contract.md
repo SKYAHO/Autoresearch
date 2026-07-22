@@ -13,8 +13,9 @@
 
 이 계약은 현재 운영 범위인 YouTube 일일 수집, YouTube backfill, action-log
 single/shard/merge, action-log 품질 검사, BigQuery feature materialize와 Feast
-materialize를 다룬다.
-학습·평가, MLflow, FastAPI serving command는 각 기능이 운영화될 때 별도
+single/shard/merge, action-log 품질 검사, BigQuery feature materialize와 Feast
+materialize, 일일 추천 결과 적재를 다룬다. 학습·평가, MLflow, FastAPI serving
+command는 각 기능이 운영화될 때 별도
 revision으로 추가한다.
 
 ## 계약 버전
@@ -47,6 +48,7 @@ python -m autoresearch.jobs.action_log --mode merge [options]
 python -m autoresearch.jobs.action_log_quality [options]
 python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <dataset-id>
 python -m autoresearch.jobs.feast_materialize [options]
+python -m src.pipeline.daily_recommendations [options]
 ```
 
 console script alias를 추가할 수 있지만 Airflow는 v1 동안 위 module 경로를
@@ -416,6 +418,43 @@ python -m autoresearch.jobs.action_log_quality \
   `job_summary`에 포함한다.
 - 모든 검사를 통과하면 `status=succeeded`, exit 0이다. 품질 판정 실패는
   `status=failed`, exit 1이며 CLI 인자 오류는 exit 2다.
+
+## 일일 추천 결과 적재
+
+```text
+python -m src.pipeline.daily_recommendations \
+  [--candidate-dt YYYY-MM-DD] \
+  [--events-dt YYYY-MM-DD] \
+  [--max-users <positive-int>] \
+  [--output-table <table>] \
+  [--max-skip-ratio <0..1>] \
+  [--dry-run]
+```
+
+### 계약
+
+- v1 호환 추가 명령이다 (기존 명령의 계약 변경 없음).
+- champion 모델(`models:/ctr-model@champion`)로 일일 트렌딩 후보를 가상 유저
+  전원에 대해 채점해 `user_recommendations` dt 파티션에 멱등 적재한다
+  (파티션 데코레이터 + WRITE_TRUNCATE).
+- `--candidate-dt` 기본값은 후보 테이블 MAX(dt), `--events-dt` 기본값은 action
+  log MAX(dt)이며 **단일 파티션만 소비**한다. `--output-table` 기본값은
+  `user_recommendations`, `--max-skip-ratio` 기본값은 0.1이다.
+- 환경변수: `MLFLOW_TRACKING_URI`(필수), `RERANK_REGISTRY_MODEL_NAME`(기본
+  `ctr-model`), `RERANK_REGISTRY_ALIAS`(기본 `champion`), `CTR_TRAINING_BQ_*`
+  (기존 체계), `CTR_TRAINING_BQ_VIRTUAL_USERS_TABLE`(기본
+  `asset_virtual_user_vu_1000`), `CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE`(기본
+  `user_recommendations`).
+- 정상 종료 시 마지막 stdout event는 `event=job_summary`,
+  `job=daily_recommendations`, `status=succeeded`이며 `users`,
+  `skipped_users`, `rows`, `model_run_id`, `model_version`, `events_dt`,
+  `dry_run`을 포함한다. 인자 오류는 exit 2, registry/BQ/후보 0건/skip 임계
+  초과는 exit 1이며 실패 summary를 남긴다.
+- 격리 진단: user quarantine 요구를 위해 stderr warning에 `user_id`와 예외
+  타입만 기록한다. stdout summary에는 user 식별자를 넣지 않으며 persona·원문
+  예외 메시지는 기록하지 않는다. 공통 식별자 로그 금지 규칙의 범위가 stdout
+  telemetry임을 이 명령 섹션에서 명시한다.
+- 스케줄·재시도·타임아웃은 `Autoresearch-airflow` 소유.
 
 ## Airflow 호출 계약
 

@@ -17,6 +17,7 @@ from time import monotonic
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 from pyarrow.fs import FileSelector, FileType
 
@@ -26,6 +27,7 @@ from autoresearch.action_logs.llm_generator import (
 )
 from autoresearch.action_logs.pipeline import (
     EVENT_LOG_PARQUET_SCHEMA,
+    OPTIONAL_ADDITIVE_COLUMNS,
     ActionLogGenerationError,
     ActionLogProgressSnapshot,
     expand_action_log_drafts,
@@ -51,6 +53,15 @@ from autoresearch.action_logs.video_source import load_video_records
 
 
 _KST = ZoneInfo("Asia/Seoul")
+# 브랜치 이전에 기록된 legacy final은 OPTIONAL_ADDITIVE_COLUMNS가 없다 (#221).
+# 품질잡과 일관되게 재실행 skip 검증에서 이 legacy 스키마도 관용한다.
+_LEGACY_EVENT_LOG_PARQUET_SCHEMA = pa.schema(
+    [
+        field
+        for field in EVENT_LOG_PARQUET_SCHEMA
+        if field.name not in OPTIONAL_ADDITIVE_COLUMNS
+    ]
+)
 _PARTITION_FILE = "part-0.parquet"
 _QUARANTINE_FILE = "quarantine.jsonl"
 _MANIFEST_FILE = "manifest.json"
@@ -303,7 +314,10 @@ def _validate_existing_final(
         )
     except Exception as exc:  # noqa: BLE001 - pyarrow/filesystem errors vary by backend
         raise ValueError("existing final parquet is unreadable") from exc
-    if not schema.equals(EVENT_LOG_PARQUET_SCHEMA):
+    if not (
+        schema.equals(EVENT_LOG_PARQUET_SCHEMA)
+        or schema.equals(_LEGACY_EVENT_LOG_PARQUET_SCHEMA)
+    ):
         raise ValueError("existing final parquet schema does not match action log contract")
     timestamps = timestamp_table.column("event_timestamp").to_pylist()
     if any(timestamp.astimezone(_KST).date() != partition_date for timestamp in timestamps):

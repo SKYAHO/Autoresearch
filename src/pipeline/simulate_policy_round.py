@@ -14,20 +14,6 @@ spec: docs/specs/2026-07-20-policy-simulation-round.md
 
 from __future__ import annotations
 
-__arch__ = {
-    "stage": "training",
-    "role": "두 정책의 노출·판정·정규화 결과를 배치 리포트로 조립합니다.",
-    "owns": [
-        "baseline/model 정책 비교 배치 실행",
-        "합동 판정과 정책별 이벤트 확장",
-        "JSON/HTML 정책 라운드 리포트 출력",
-    ],
-    "not_owns": [
-        "Reranker 모델 학습 및 구현",
-        "원천 데이터 수집",
-    ],
-}
-
 import argparse
 import json
 import os
@@ -85,9 +71,14 @@ def build_pool_feature_frame(
     videos_raw: pd.DataFrame,
     user_id: str,
     as_of: str,
+    snapshot_date: str | None = None,
 ) -> pd.DataFrame:
-    """유저 1명 × 전체 영상 pool의 15개 모델 피처 프레임을 학습과 동일 경로로 만든다."""
-    video_features = compute_video_features(videos_raw, as_of.split(" ")[0])
+    """유저 1명 × 전체 영상 pool의 15개 모델 피처 프레임을 학습과 동일 경로로 만든다.
+
+    snapshot_date(YYYY-MM-DD)는 영상 나이(days_since_upload) 기준일이며, 유저
+    이력 기준(as_of)과 다를 수 있다. 없으면 as_of의 날짜를 사용한다(기존 동작).
+    """
+    video_features = compute_video_features(videos_raw, snapshot_date or as_of.split(" ")[0])
     offline = compute_user_offline_features(personas)
     user_offline = offline[offline["user_id"] == user_id]
     if user_offline.empty:

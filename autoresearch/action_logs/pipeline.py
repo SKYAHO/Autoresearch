@@ -4,19 +4,6 @@
 노출마다 impression 1행, 클릭 선정분엔 click/view(+like)를 추가 배치) →
 parquet/warehouse/quarantine 저장. 한 유저의 실패가 배치를 죽이지 않는다.
 """
-__arch__ = {
-    "stage": "action_logs",
-    "role": "가상 사용자 노출 판정을 이벤트 로그 초안과 저장 산출물로 변환합니다.",
-    "owns": [
-        "유저별 action log draft 생성과 격리",
-        "클릭 정규화와 이벤트 확장",
-        "parquet·warehouse·quarantine 출력",
-    ],
-    "not_owns": [
-        "정책별 노출 후보 선택",
-        "CTR 모델 학습",
-    ],
-}
 import json
 import logging
 import math
@@ -171,12 +158,17 @@ EVENT_LOG_PARQUET_SCHEMA = pa.schema(
         pa.field("ctr_score", pa.float64()),
         pa.field("is_exploration", pa.bool_()),
         pa.field("policy_version", pa.string()),
+        pa.field("exposure_source", pa.string()),
         pa.field("schema_version", pa.string()),
         pa.field("prompt_version", pa.string()),
         pa.field("llm_model", pa.string()),
         pa.field("generated_at", pa.string()),
     ]
 )
+
+# additive 확장 컬럼 — 이 컬럼이 없는 legacy 파티션 스키마도 event log 계약에서
+# 관용한다 (#221). event log 스키마 계약의 단일 출처로 이곳에 둔다.
+OPTIONAL_ADDITIVE_COLUMNS = frozenset({"exposure_source"})
 
 ACTION_LOG_DRAFT_PARQUET_SCHEMA = pa.schema(
     [
@@ -707,6 +699,7 @@ class ExposureMetadata:
     ctr_score: float | None
     is_exploration: bool | None
     policy_version: str | None
+    exposure_source: Literal["model", "trending", "random"] | None = None
 
 
 def _expand_events(
@@ -751,6 +744,7 @@ def _expand_events(
                 ctr_score=meta.ctr_score if meta else None,
                 is_exploration=meta.is_exploration if meta else None,
                 policy_version=meta.policy_version if meta else None,
+                exposure_source=meta.exposure_source if meta else None,
             )
         )
         seq += 1
@@ -815,6 +809,7 @@ def _event_rows(batch: EventLogBatch, model_name: str) -> list[dict]:
                 "ctr_score": event.ctr_score,
                 "is_exploration": event.is_exploration,
                 "policy_version": event.policy_version,
+                "exposure_source": event.exposure_source,
                 "schema_version": batch.schema_version,
                 "prompt_version": batch.prompt_version,
                 "llm_model": model_name,
