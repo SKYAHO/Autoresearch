@@ -35,6 +35,39 @@ def test_release_workflow_publishes_application_image_directly():
     ]
 
 
+def test_release_workflow_publishes_serving_image_with_immutable_verification():
+    workflow = _load_workflow()
+    job = workflow["jobs"]["publish-serving-image"]
+    steps = job["steps"]
+
+    assert job["needs"] == "publish-application-image"
+    assert job["permissions"] == {"contents": "read", "id-token": "write"}
+    assert job["outputs"]["digest_ref"] == "${{ steps.verify.outputs.digest_ref }}"
+
+    checkout = next(step for step in steps if step.get("uses") == "actions/checkout@v6")
+    assert (
+        checkout["with"]["ref"]
+        == "${{ needs.publish-application-image.outputs.source_sha }}"
+    )
+
+    build_step = next(
+        step for step in steps if step.get("uses") == "docker/build-push-action@v6"
+    )
+    assert build_step["with"]["context"] == "."
+    assert build_step["with"]["file"] == "deploy/serving/Dockerfile"
+    assert build_step["with"]["push"] == "true"
+    assert "VCS_REF=${{ steps.source.outputs.sha }}" in build_step["with"][
+        "build-args"
+    ]
+
+    workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "autoresearch-serving" in workflow_text
+    assert "^sha256:[0-9a-f]{64}$" in workflow_text
+    assert "feature_repo.redis_iam, src.serving.app" in workflow_text
+    assert "Serving digest_ref" in workflow_text
+    assert "$GITHUB_STEP_SUMMARY" in workflow_text
+
+
 def test_release_workflow_opens_an_airflow_digest_promotion_pr():
     workflow = _load_workflow()
     job = workflow["jobs"]["promote-airflow-digest"]

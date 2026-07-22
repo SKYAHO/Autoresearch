@@ -7,6 +7,9 @@ RUN ["/uv", "export", "--frozen", "--no-dev", "--group", "feast", "--no-hashes",
 
 FROM python:3.12-slim
 
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision="${VCS_REF}"
+
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
