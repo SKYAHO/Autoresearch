@@ -135,7 +135,7 @@ def main(
     *,
     k: int = 10,
     exploration_ratio: float = 0.1,
-    click_threshold: float = 0.55,
+    click_threshold: float,
     seed: int = 42,
     chunk_size: int = 0,
     max_concurrency: int = 1,
@@ -323,7 +323,7 @@ def _cli() -> None:
     parser.add_argument("--events", required=True, help="historical wide events csv 경로")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--exploration-ratio", type=float, default=0.1)
-    parser.add_argument("--click-threshold", type=float, default=0.55)
+    parser.add_argument("--click-threshold", type=float, required=True)
     parser.add_argument("--max-users", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--chunk-size", type=int, default=0)

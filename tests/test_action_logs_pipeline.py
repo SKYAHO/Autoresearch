@@ -70,6 +70,7 @@ def _fixture_users(n=6):
 
 def _request(tmp_path, **kw):
     base = dict(
+        click_threshold=0.55,
         candidates_per_user=20,
         seed=42,
         history_end=_FIXED_END,
@@ -94,7 +95,7 @@ def test_end_to_end_long_event_stream(tmp_path):
 
     assert len(impressions) == 6 * 20  # 유저당 후보 20 (pool 40)
     assert result.summary["impressions"] == 6 * 20
-    # per-slate 커트라인(기본 click_threshold=0.55): 유저당 클릭은 최대 1건이며,
+    # per-slate 커트라인(테스트 고정값 click_threshold=0.55): 유저당 클릭은 최대 1건이며,
     # 슬레이트 최고 click_propensity가 커트라인 이상일 때만 클릭이 발생한다.
     clicks_by_user: dict[str, int] = {}
     for c in clicks:
@@ -460,7 +461,7 @@ def test_batch_summary_ctr_from_impression_and_click_rows():
     events = [_ev("impression"), _ev("impression"), _ev("click"), _ev("view", 10), _ev("like")]
     batch = EventLogBatch(
         schema_version="s", prompt_version="p",
-        request=EventGenerationRequest(), events=events,
+        request=EventGenerationRequest(click_threshold=0.55), events=events,
     )
     s = batch.summary
     assert s["impressions"] == 2 and s["clicks"] == 1
@@ -491,7 +492,7 @@ def test_build_candidates_returns_video_dicts_no_exposure_label():
 
 
 def test_event_generation_request_defaults_to_70_20_10_candidate_mix():
-    req = EventGenerationRequest()
+    req = EventGenerationRequest(click_threshold=0.55)
 
     assert req.personalized_ratio == 0.7
     assert req.popular_ratio == 0.2
@@ -500,6 +501,7 @@ def test_event_generation_request_defaults_to_70_20_10_candidate_mix():
 
 def test_event_generation_request_accepts_candidate_ratio_sum_inside_tolerance():
     request = EventGenerationRequest(
+        click_threshold=0.55,
         personalized_ratio=0.7000000005,
         popular_ratio=0.2,
         exploration_ratio=0.1,
@@ -524,6 +526,7 @@ def test_event_generation_request_rejects_invalid_candidate_ratio_mix(
 ):
     with pytest.raises(ValidationError):
         EventGenerationRequest(
+            click_threshold=0.55,
             personalized_ratio=personalized,
             popular_ratio=popular,
             exploration_ratio=exploration,
@@ -947,7 +950,7 @@ def test_expand_events_tags_exposure_metadata_and_prefix():
             is_exploration=True, policy_version="run-x",
         ),
     }
-    request = EventGenerationRequest(seed=7)
+    request = EventGenerationRequest(click_threshold=0.55, seed=7)
     events = _expand_events(
         drafts, clicked, request,
         metadata=metadata, source=SOURCE_ONLINE_SIMULATED, event_id_prefix="evt_m",
@@ -976,7 +979,7 @@ def test_expand_events_without_metadata_is_unchanged():
     ]
     # 커트라인을 최고 propensity보다 높게 잡아 클릭 0건(=impression만)인 경로를 검증한다.
     events = _expand_events(
-        drafts, select_clicks_per_slate(drafts, click_threshold=1.0), EventGenerationRequest(seed=7)
+        drafts, select_clicks_per_slate(drafts, click_threshold=1.0), EventGenerationRequest(click_threshold=0.55, seed=7)
     )
     assert events[0].event_id == "evt_00000000"
     assert events[0].source == "historical"
@@ -1128,5 +1131,8 @@ def test_expand_uses_per_slate_click_threshold() -> None:
     assert {c.video_id for c in clicks} == {"a"}
 
 
-def test_event_generation_request_defaults_click_threshold() -> None:
-    assert EventGenerationRequest().click_threshold == 0.55
+def test_event_generation_request_requires_click_threshold() -> None:
+    """click_threshold 미지정 시 0.55로 조용히 채워지지 않고 fail-closed로 거부되어야 한다."""
+
+    with pytest.raises(ValidationError):
+        EventGenerationRequest()
