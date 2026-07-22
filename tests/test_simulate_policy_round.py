@@ -385,3 +385,37 @@ def test_round_dumps_drafts_and_meta(tmp_path, stub_reranker):
     assert meta["inputs"] == {"personas": "demo/personas.csv"}
     # click_threshold는 리플레이에서 바꾸는 값이므로 노출 인자에 없어야 한다.
     assert "click_threshold" not in meta["exposure_args"]
+
+
+def test_round_meta_virtual_users_and_users_diverge_when_persona_missing(tmp_path, stub_reranker):
+    """persona가 없는 유저는 skipped_users로 격리되어 virtual_users > users로 갈라진다.
+
+    메타의 virtual_users는 입력 virtual user 수를, users는 노출 결정에 성공한
+    유저 수를 각각 그대로 반영해야 한다(두 값이 뒤바뀌면 안 됨).
+    """
+    import json
+
+    main(
+        personas=_personas(2),  # u0, u1만 persona 보유
+        virtual_users=_virtual_users(4),  # u0..u3
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        as_of="2026-07-20 00:00:00",
+        policy_version="stub-run",
+        output_dir=str(tmp_path),
+    )
+
+    report = json.loads((tmp_path / "policy_round_report.json").read_text(encoding="utf-8"))
+    assert report["users"] == 2
+    assert set(report["skipped_users"]) == {"u2", "u3"}
+
+    meta = json.loads((tmp_path / "action_log_drafts_meta.json").read_text(encoding="utf-8"))
+    assert meta["virtual_users"] == 4
+    assert meta["users"] == 2
+    assert meta["virtual_users"] != meta["users"]
