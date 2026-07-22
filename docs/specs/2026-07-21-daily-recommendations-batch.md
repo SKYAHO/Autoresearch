@@ -49,10 +49,13 @@
 [모델]   models:/ctr-model@champion (GKE MLflow)
             └─ registry 소스 로더 → 아티팩트 3종 → Reranker (서빙과 동일 코드)
 
-[재료]   BQ feast_offline_store (단일 프로젝트·데이터셋, 테이블명은 환경변수로 재정의 가능)
+[재료]   BQ 단일 프로젝트, dataset 2계층 (dataset·테이블명 모두 환경변수로 재정의 가능)
+         raw 계층: data_lake_raw (CTR_TRAINING_BQ_RAW_DATASET)
             ├─ data_lake_youtube_trending_kr  WHERE dt = <candidate_dt>   → 후보 pool
-            ├─ asset_virtual_user_vu_1000                                  → 유저 전원 + personas 어댑터
             └─ data_lake_action_log           WHERE dt = <events_dt>       → long → derive_wide_events → 행동 피처 원천
+         feature 계층: feast_offline_store (CTR_TRAINING_BQ_DATASET)
+            └─ asset_virtual_user_vu_1000                                  → 유저 전원 + personas 어댑터
+               (※ 삭제 예정 — docs/guides/data-warehouse.md 의 caveat 참조)
 
 [채점]   유저별: build_pool_feature_frame(학습과 동일 assembly 함수)
             → Reranker.rerank → 후보 전수 내림차순

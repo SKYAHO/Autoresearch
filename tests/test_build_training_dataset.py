@@ -67,6 +67,9 @@ def test_load_videos_from_bigquery_queries_configured_table(monkeypatch):
     query_text = fake_client.query.call_args[0][0]
     assert build_training_dataset.BIGQUERY_VIDEOS_TABLE in query_text
     assert "video_category AS categoryId" in query_text
+    assert "channel_subscriber_count AS channelSubscriberCount" in query_text
+    assert "channel_view_count AS channelViewCount" in query_text
+    assert "channel_video_count AS channelVideoCount" in query_text
 
 
 def test_main_rejects_invalid_events_source():
@@ -232,6 +235,127 @@ def test_main_trims_padding_range_from_output(tmp_path, monkeypatch):
     assert len(result) == 1
 
 
+def test_main_outputs_21_model_input_columns_plus_clicked(tmp_path, monkeypatch):
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    pd.DataFrame(
+        {
+            "video_id": ["v1"],
+            "categoryId": ["Music"],
+            "duration": ["PT5M"],
+            "viewCount": [1000],
+            "likeCount": [50],
+            "commentCount": [10],
+            "publishedAt": ["2026-01-01"],
+            "title": ["t"],
+            "description": ["d"],
+            "channelSubscriberCount": [12345],
+            "channelViewCount": [999999],
+            "channelVideoCount": [321],
+        }
+    ).to_csv(raw_dir / "youtube_videos.csv", index=False)
+    pd.DataFrame(
+        {
+            "uuid": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobbies_and_interests": ["gaming"],
+            "hobbies_and_interests_list": ["[]"],
+            "watch_time_band": ["morning"],
+            "primary_categories": ['["Music"]'],
+        }
+    ).to_csv(raw_dir / "personas.csv", index=False)
+
+    events_path = tmp_path / "events.csv"
+    pd.DataFrame(
+        {
+            "event_id": ["e1"],
+            "user_id": ["u1"],
+            "video_id": ["v1"],
+            "timestamp": ["2026-07-08 12:00:00"],
+            "clicked": [0],
+            "liked": [0],
+            "watch_time_sec": [0],
+        }
+    ).to_csv(events_path, index=False)
+
+    output_path = tmp_path / "training_dataset.csv"
+    build_training_dataset.main(
+        raw_dir=str(raw_dir),
+        events_path=str(events_path),
+        output_path=str(output_path),
+    )
+
+    result = pd.read_csv(output_path)
+    assert len(result.columns) == 22  # 21 Model Input + clicked label
+    assert result.loc[0, "watch_time_band"] == "morning"
+    assert result.loc[0, "channel_subscriber_count"] == 12345
+    # video의 category_id="Music"이 personas.csv의 primary_categories=["Music"]에
+    # 포함되므로, 실제 값을 배선했다면 1이어야 한다 (#205).
+    assert result.loc[0, "preferred_category_match"] == 1
+    assert result.loc[0, "channel_view_count"] == 999999
+    assert result.loc[0, "channel_video_count"] == 321
+    assert result.loc[0, "recent_view_count_7d"] == 0
+    assert result.loc[0, "total_event_count_7d"] == 0
+
+
+def test_main_does_not_require_video_title_or_description(tmp_path, monkeypatch):
+    # 최종 21컬럼 어디에도 title/description은 없다 — 예전에는 그런데도 Step 1의
+    # joined 중간 프레임을 만들 때 videos_raw를 JOIN해서 title/description까지
+    # 끌어왔다. 실 데이터 규모(약 160만 행)에서 이 두 텍스트 컬럼이 joined 최대
+    # 크기의 메모리 사용량을 크게 늘려 최종 join 단계에서 OOM으로 이어졌다
+    # (issue #231). videos 원본에 title/description이 아예 없어도 파이프라인이
+    # 정상 동작해야, 그 JOIN과 두 컬럼이 더 이상 필요 없다는 것이 보장된다.
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    pd.DataFrame(
+        {
+            "video_id": ["v1"],
+            "categoryId": ["Music"],
+            "duration": ["PT5M"],
+            "viewCount": [1000],
+            "likeCount": [50],
+            "commentCount": [10],
+            "publishedAt": ["2026-01-01"],
+            # title/description 의도적으로 생략.
+        }
+    ).to_csv(raw_dir / "youtube_videos.csv", index=False)
+    pd.DataFrame(
+        {
+            "uuid": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobbies_and_interests": ["gaming"],
+            "hobbies_and_interests_list": ["[]"],
+        }
+    ).to_csv(raw_dir / "personas.csv", index=False)
+
+    events_path = tmp_path / "events.csv"
+    pd.DataFrame(
+        {
+            "event_id": ["e1"],
+            "user_id": ["u1"],
+            "video_id": ["v1"],
+            "timestamp": ["2026-07-08 12:00:00"],
+            "clicked": [0],
+            "liked": [0],
+            "watch_time_sec": [0],
+        }
+    ).to_csv(events_path, index=False)
+
+    output_path = tmp_path / "training_dataset.csv"
+    build_training_dataset.main(
+        raw_dir=str(raw_dir),
+        events_path=str(events_path),
+        output_path=str(output_path),
+    )
+
+    result = pd.read_csv(output_path)
+    assert "title" not in result.columns
+    assert "description" not in result.columns
+    assert len(result) == 1
+
+
 def test_main_bigquery_mode_never_resolves_local_data_dir(tmp_path, monkeypatch):
     # Dockerfile.train(GCS 코드 부트스트랩 이미지)은 로컬 data/ 디렉토리를 이미지에
     # 전혀 포함하지 않는다. videos_source/events_source가 모두 bigquery이고
@@ -325,3 +449,71 @@ def test_derive_wide_events_like_without_view_defaults_to_zero():
     assert row["clicked"] == 1
     assert row["liked"] == 0
     assert row["watch_time_sec"] == 0
+
+
+# --- dataset 계층 분리(raw vs feature) ------------------------------------
+
+
+def test_raw_table_id_uses_raw_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+
+    assert (
+        build_training_dataset.raw_table_id("data_lake_action_log")
+        == "proj.data_lake_raw.data_lake_action_log"
+    )
+
+
+def test_feature_table_id_uses_feature_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_DATASET", "feast_offline_store")
+
+    assert (
+        build_training_dataset.feature_table_id("user_recommendations")
+        == "proj.feast_offline_store.user_recommendations"
+    )
+
+
+def test_raw_and_feature_datasets_default_to_separate_datasets():
+    # 기본값이 같아지면 dataset 분리가 무의미해진다 — 회귀 방지용 계약.
+    assert build_training_dataset.BIGQUERY_RAW_DATASET == "data_lake_raw"
+    assert build_training_dataset.BIGQUERY_DATASET == "feast_offline_store"
+
+
+def _fake_bigquery(monkeypatch, fake_df):
+    fake_query_job = MagicMock()
+    fake_query_job.to_dataframe.return_value = fake_df
+    fake_client = MagicMock()
+    fake_client.query.return_value = fake_query_job
+
+    fake_bigquery_module = MagicMock()
+    fake_bigquery_module.Client.return_value = fake_client
+    monkeypatch.setitem(sys.modules, "google.cloud.bigquery", fake_bigquery_module)
+    monkeypatch.setitem(sys.modules, "google.cloud", MagicMock(bigquery=fake_bigquery_module))
+    return fake_client
+
+
+def test_load_videos_from_bigquery_reads_raw_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_DATASET", "feast_offline_store")
+    fake_client = _fake_bigquery(monkeypatch, pd.DataFrame({"video_id": ["v1"]}))
+
+    build_training_dataset.load_videos_from_bigquery()
+
+    query_text = fake_client.query.call_args[0][0]
+    assert "`proj.data_lake_raw.data_lake_youtube_trending_kr`" in query_text
+    assert "feast_offline_store" not in query_text
+
+
+def test_load_events_from_bigquery_reads_raw_dataset(monkeypatch):
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_DATASET", "feast_offline_store")
+    fake_client = _fake_bigquery(monkeypatch, pd.DataFrame({"event_id": ["e1"]}))
+
+    build_training_dataset.load_events_from_bigquery("2026-06-24", "2026-07-01")
+
+    query_text = fake_client.query.call_args[0][0]
+    assert "`proj.data_lake_raw.data_lake_action_log`" in query_text
+    assert "feast_offline_store" not in query_text

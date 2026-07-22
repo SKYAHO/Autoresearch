@@ -32,6 +32,7 @@ dependencies = [
     # deploy/mlflow/runtime과 동일하게 고정: protobuf>=7에서 MLflow client가
     # FieldDescriptor.label 오류를 낸다.
     "protobuf<7",
+    "google-cloud-aiplatform>=1.148.1",
 ]
 
 [dependency-groups]

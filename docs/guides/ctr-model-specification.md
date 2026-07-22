@@ -108,9 +108,9 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 | Artifact | Type | 생성 방법 | 사용 목적 |
 |----------|------|---------|---------|
 | `preferred_topics` | List[str] | persona 텍스트(`sports_persona`, `arts_persona`, `travel_persona`, `culinary_persona`, `family_persona`, `hobbies_and_interests` 등) → LLM 기반 관심 키워드 추출. 축약어/은어/다의어는 **disambiguation phrase 병기** | `topic_similarity` 계산 |
-| `user_keyword_embeddings` | List[Vector] | `preferred_topics`의 각 키워드(phrase)를 **개별로** Sentence Transformer 인코딩 (리스트를 하나로 합쳐서 인코딩하지 않음) | `topic_similarity` 계산 (max-pool) |
+| `user_keyword_embeddings` | List[Vector] | `preferred_topics`의 각 키워드(phrase)를 **개별로** Vertex AI `text-multilingual-embedding-002`(task_type=RETRIEVAL_QUERY, 768차원) 인코딩 (리스트를 하나로 합쳐서 인코딩하지 않음) | `topic_similarity` 계산 (max-pool) |
 | `category_description` | Text (15개 고정) | YouTube 카테고리 15개 각각에 대해 사람이 직접 작성하거나 LLM 이용해 작성한 설명 문장. 1회 작성 후 고정 사용 | 카테고리를 "설명문"으로 확장해 다의성/문맥 부여 |
-| `category_description_embedding` | Vector (15개 고정) | `category_description` → Sentence Transformer 인코딩. 카테고리가 고정이므로 1회만 생성 후 저장 | `topic_similarity` 계산 |
+| `category_description_embedding` | Vector (15개 고정) | `category_description` → Vertex AI `text-multilingual-embedding-002`(task_type=RETRIEVAL_DOCUMENT, 768차원) 인코딩. 카테고리가 고정이므로 첫 조회 시점에 1회만 생성 후 프로세스 내 캐시 | `topic_similarity` 계산 |
 
 #### preferred_topics Disambiguation 처리 기준
 
@@ -170,7 +170,7 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 
 → 사용자 관심사가 여러 개이지만, 이 영상 카테고리에 **가장 관련 있는 단 하나의 키워드 하나만 받아**들이므로 최종 `topic_similarity` = **0.82** (최댓값 선택).
 
-> **Note**: `topic_similarity`의 인코더 모델은 미확정(TBD)
+> **Note**: `topic_similarity`의 인코더 모델은 Vertex AI `text-multilingual-embedding-002`(output_dimensionality=768)로 확정됐다 (#206). 카테고리 설명문은 task_type=RETRIEVAL_DOCUMENT, 사용자 키워드는 task_type=RETRIEVAL_QUERY로 비대칭 인코딩한다.
 
 #### ⚠️ 주의
 
@@ -212,6 +212,15 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 
 ## 📌 Training Dataset
 
+> [!NOTE]
+> 아래 "최종 Model Input Columns"는 Feast 경유(4개 BigQuery 중간 테이블 +
+> `get_historical_features()`) 목표 아키텍처 기준이다. 이 목표의 SSOT는
+> `docs/guides/training-dataset.md` + `docs/guides/data-warehouse.md`이며,
+> 현재 구현(`src/pipeline/build_training_dataset.py`)은 Feast를 아직
+> 경유하지 않는 DuckDB fallback 경로로 21컬럼까지만 확장된 상태다
+> (`docs/specs/2026-07-21-training-dataset-16-to-21-column-roadmap.md`,
+> issue #175/#204 참고). Feast 전체 cutover는 issue #207에서 별도 진행한다.
+
 ### Feast Historical Retrieval 기준 Training Dataset 생성 절차
 
 1. Raw Action Log에서 impression event를 추출한다.
@@ -234,19 +243,25 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 |--------|------|------|
 | `age_group` | Category | 사용자 연령대 |
 | `occupation` | Category | 사용자 직업 |
-| `historical_category_affinity` | Category | 과거 행동 기반 선호 카테고리 |
+| `watch_time_band` | Category | 사용자 시청 시간대 성향 (`morning`/`evening`/`night`/`unknown`) |
 | `recent_click_count_7d` | Numeric | 최근 7일 클릭 수 |
+| `recent_view_count_7d` | Numeric | 최근 7일 view 수 |
 | `recent_watch_time_7d` | Numeric | 최근 7일 총 시청 시간 |
 | `recent_like_count_7d` | Numeric | 최근 7일 좋아요 수 |
+| `historical_category_affinity` | Category | 과거 행동 기반 선호 카테고리 |
+| `total_event_count_7d` | Numeric | 최근 7일 전체 이벤트 수 |
 | `category_id` | Category | 영상 카테고리 |
 | `duration_sec` | Numeric | 영상 길이 |
 | `view_count` | Numeric | 영상 조회수 |
 | `like_ratio` | Float | 영상 좋아요 비율 |
 | `comment_ratio` | Float | 영상 댓글 비율 |
 | `days_since_upload` | Numeric | 업로드 후 경과일 |
+| `channel_subscriber_count` | Numeric | 채널 구독자 수 |
+| `channel_view_count` | Numeric | 채널 누적 조회수 |
+| `channel_video_count` | Numeric | 채널 영상 수 |
+| `topic_similarity` | Float | 사용자 키워드별 임베딩과 영상 카테고리 설명 임베딩 간 cosine 유사도 중 최댓값(max-pool) |
 | `historical_category_match` | Binary | **과거 행동 기반** 선호 카테고리(`historical_category_affinity`)과 영상 카테고리 일치 여부 |
 | `preferred_category_match` | Binary | **persona 기반** 선호 카테고리(`preferred_category`)과 영상 카테고리 일치 여부 |
-| `topic_similarity` | Float | 사용자 키워드별 임베딩과 영상 카테고리 설명 임베딩 간 cosine 유사도 중 최댓값(max-pool) |
 | `clicked` | Binary | Label |
 
 ---

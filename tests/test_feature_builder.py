@@ -72,14 +72,14 @@ class TestEmbedKeywords:
         result = embed_keywords(["gaming"])
         assert len(result) == 1
         assert isinstance(result[0], np.ndarray)
-        assert result[0].shape == (32,)
+        assert result[0].shape == (768,)
 
     def test_multiple_keywords(self):
         """Multiple keywords return multiple embeddings."""
         result = embed_keywords(["gaming", "music", "sports"])
         assert len(result) == 3
         assert all(isinstance(e, np.ndarray) for e in result)
-        assert all(e.shape == (32,) for e in result)
+        assert all(e.shape == (768,) for e in result)
 
     def test_empty_list(self):
         """Empty keyword list returns empty list."""
@@ -107,11 +107,15 @@ class TestComputeTopicSimilarity:
         assert compute_topic_similarity([], "Gaming") == 0.0
 
     def test_single_keyword_nonzero_similarity(self):
-        """Single keyword embedding returns non-zero cosine similarity with category."""
+        """Single keyword embedding returns a valid cosine similarity with category."""
         gaming_embed = embed_keywords(["gaming"])
         similarity = compute_topic_similarity(gaming_embed, "Gaming")
         assert isinstance(similarity, float)
-        assert 0 <= similarity <= 1
+        # 두 단위 벡터의 코사인 유사도는 수학적으로 [-1, 1] 범위다. 테스트 환경의
+        # fake 임베딩(#206, tests/conftest.py)은 텍스트 해시 기반 랜덤 벡터라
+        # 의미적으로 가까운 텍스트끼리도 양의 유사도가 보장되지 않는다 — 실제
+        # Vertex AI 임베딩에서만 "관련 있는 텍스트 → 양의 유사도"를 기대할 수 있다.
+        assert -1 <= similarity <= 1
 
     def test_multiple_keywords_max_pool(self):
         """Multiple keywords return max cosine similarity (max-pool)."""
@@ -119,14 +123,14 @@ class TestComputeTopicSimilarity:
         embeddings = embed_keywords(keywords)
         similarity = compute_topic_similarity(embeddings, "Gaming")
         assert isinstance(similarity, float)
-        assert 0 <= similarity <= 1
+        assert -1 <= similarity <= 1
 
     def test_output_range(self):
-        """Similarity output is in valid range [0, 1]."""
+        """Similarity output is in valid range [-1, 1]."""
         embeddings = embed_keywords(["gaming", "music", "sports", "travel"])
         for cat_name in ["Music", "Gaming", "News & Politics", "Education"]:
             similarity = compute_topic_similarity(embeddings, cat_name)
-            assert 0 <= similarity <= 1
+            assert -1 <= similarity <= 1
 
     def test_deterministic_same_inputs(self):
         """Same keywords and category produce same similarity (deterministic)."""
@@ -144,7 +148,7 @@ class TestGetCategoryDescriptionEmbedding:
         """Known category name returns embedding."""
         embedding = get_category_description_embedding("Gaming")
         assert isinstance(embedding, np.ndarray)
-        assert embedding.shape == (32,)
+        assert embedding.shape == (768,)
 
     def test_deterministic_same_category(self):
         """Same category name always returns same embedding."""
@@ -169,5 +173,5 @@ class TestGetCategoryDescriptionEmbedding:
         for cat_name in CATEGORY_DESCRIPTIONS.keys():
             embedding = get_category_description_embedding(cat_name)
             assert isinstance(embedding, np.ndarray)
-            assert embedding.shape == (32,)
+            assert embedding.shape == (768,)
             assert not np.allclose(embedding, 0)
