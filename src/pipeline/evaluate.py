@@ -17,6 +17,10 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.utils.model_utils import load_model, load_feature_columns  # noqa: E402
+from src.features.model_contract import (  # noqa: E402
+    CATEGORICAL_FEATURE_COLUMNS,
+    require_model_feature_columns,
+)
 
 
 def get_project_root():
@@ -63,7 +67,7 @@ def main(
         feature_columns_path = os.path.join(project_root, feature_columns_path)
 
     model = load_model(model_path)
-    feature_columns = load_feature_columns(feature_columns_path)
+    feature_columns = require_model_feature_columns(load_feature_columns(feature_columns_path))
 
     print("\n[Step 2] 데이터 로드 (held-out test set)...")
     if data_path is None:
@@ -72,13 +76,11 @@ def main(
         data_path = os.path.join(project_root, data_path)
     dataset = pd.read_csv(data_path)
 
-    X = dataset[feature_columns].copy()
+    X = dataset[list(feature_columns)].copy()
     y = dataset["clicked"].copy()
 
-    categorical_columns = config["data"]["categorical_columns"]
-    for col in categorical_columns:
-        if col in X.columns:
-            X[col] = X[col].astype("category")
+    for column in CATEGORICAL_FEATURE_COLUMNS:
+        X[column] = X[column].astype("category")
 
     print(f"  [OK] {len(dataset)} rows")
 

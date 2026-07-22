@@ -52,6 +52,7 @@ from src.features.assembly import (
     compute_user_offline_features,
     compute_video_features,
 )
+from src.features.model_contract import require_model_feature_columns
 from src.pipeline.policy_selector import Exposure, select_exposures
 from src.pipeline.report_html import render_report_html
 from src.serving.model_loader import (
@@ -73,7 +74,7 @@ def build_pool_feature_frame(
     as_of: str,
     snapshot_date: str | None = None,
 ) -> pd.DataFrame:
-    """유저 1명 × 전체 영상 pool의 15개 모델 피처 프레임을 학습과 동일 경로로 만든다.
+    """유저 1명 × 전체 영상 pool의 21개 모델 피처 프레임을 학습과 동일 경로로 만든다.
 
     snapshot_date(YYYY-MM-DD)는 영상 나이(days_since_upload) 기준일이며, 유저
     이력 기준(as_of)과 다를 수 있다. 없으면 as_of의 날짜를 사용한다(기존 동작).
@@ -87,13 +88,15 @@ def build_pool_feature_frame(
     online = compute_point_in_time_user_features(events, videos_raw, query)
 
     frame = video_features.copy()
-    for column in ("age_group", "occupation"):
+    for column in ("age_group", "occupation", "watch_time_band"):
         frame[column] = user_offline.iloc[0][column]
     for column in (
         "historical_category_affinity",
         "recent_click_count_7d",
+        "recent_view_count_7d",
         "recent_watch_time_7d",
         "recent_like_count_7d",
+        "total_event_count_7d",
     ):
         frame[column] = online.iloc[0][column]
     persona_row = personas[personas["uuid"] == user_id].iloc[0]
@@ -107,10 +110,11 @@ def _to_candidate_videos(frame: pd.DataFrame, feature_columns: tuple[str, ...]) 
 
     None/NaN 수치는 float('nan')으로 통일한다(FeatureValue는 None을 허용하지 않는다).
     """
+    columns = require_model_feature_columns(feature_columns)
     candidates: list[CandidateVideo] = []
     for _, row in frame.iterrows():
         features = {}
-        for column in feature_columns:
+        for column in columns:
             value = row[column]
             if value is None or (isinstance(value, float) and pd.isna(value)):
                 value = float("nan")

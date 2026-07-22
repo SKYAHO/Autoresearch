@@ -214,10 +214,11 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 
 > [!NOTE]
 > 아래 "최종 Model Input Columns"는 Feast 경유(4개 BigQuery 중간 테이블 +
-> `get_historical_features()`) 목표 아키텍처 기준이다. 이 목표의 SSOT는
-> `docs/guides/training-dataset.md` + `docs/guides/data-warehouse.md`이며,
-> 현재 구현(`src/pipeline/build_training_dataset.py`)은 Feast를 아직
-> 경유하지 않는 DuckDB fallback 경로로 21컬럼까지만 확장된 상태다
+> `get_historical_features()`) 목표 아키텍처 기준이다. model input의 SSOT는
+> `src/features/model_contract.py`이며, 이 가이드는 그 계약과 feature assembly를
+> 설명한다. 현재 구현(`src/pipeline/build_training_dataset.py`)은 Feast를 아직
+> 경유하지 않는 DuckDB fallback 경로지만, 21개 model input과 `clicked` label을
+> 포함한 총 22개 physical column을 생성한다.
 > (`docs/specs/2026-07-21-training-dataset-16-to-21-column-roadmap.md`,
 > issue #175/#204 참고). Feast 전체 cutover는 issue #207에서 별도 진행한다.
 
@@ -238,6 +239,10 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 > Training Dataset은 반드시 사전에 BigQuery 테이블로 존재해야 하는 것은 아니다. Feast historical retrieval의 결과로 생성되는 DataFrame이 Training Dataset이 된다. 다만 오프라인 재현성과 재사용성을 위해 생성 결과를 parquet 또는 BigQuery table로 저장할 수 있다.
 
 ### 최종 Model Input Columns
+
+아래 21개가 model input의 canonical 순서다. categorical feature는 정확히
+`age_group`, `occupation`, `watch_time_band`, `historical_category_affinity`,
+`category_id` 5개이며, `clicked`는 이 목록에 포함되지 않는 target label이다.
 
 | Column | Type | 설명 |
 |--------|------|------|
@@ -260,9 +265,23 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 | `channel_view_count` | Numeric | 채널 누적 조회수 |
 | `channel_video_count` | Numeric | 채널 영상 수 |
 | `topic_similarity` | Float | 사용자 키워드별 임베딩과 영상 카테고리 설명 임베딩 간 cosine 유사도 중 최댓값(max-pool) |
-| `historical_category_match` | Binary | **과거 행동 기반** 선호 카테고리(`historical_category_affinity`)과 영상 카테고리 일치 여부 |
 | `preferred_category_match` | Binary | **persona 기반** 선호 카테고리(`preferred_category`)과 영상 카테고리 일치 여부 |
-| `clicked` | Binary | Label |
+| `historical_category_match` | Binary | **과거 행동 기반** 선호 카테고리(`historical_category_affinity`)과 영상 카테고리 일치 여부 |
+
+`clicked`는 `training_dataset.csv`의 22번째 physical column인 label이다. 즉
+최종 학습 산출물은 canonical 21개 input feature + `clicked` = 22컬럼이고,
+학습·평가 시 model input은 `src/features/model_contract.py`에서 선택한 21개만
+사용한다.
+
+### Feature contract and artifacts
+
+`train.py`와 `evaluate.py`, online `ServingFeatureBuilder`,
+`simulate_policy_round.py`/daily scoring, `model_loader.py`는 모두
+`src/features/model_contract.py`의 동일한 21개 tuple을 소비한다. 학습 산출물의
+`feature_columns.pkl`과 `categorical_columns.pkl`은 SSOT가 아니라 그 계약을
+재현하는 artifact snapshot이며, loader는 feature 이름·순서와 categorical 5개
+key가 계약과 다르면 시작 단계에서 실패시킨다. 15개 artifact나 reordered
+artifact를 지원하거나 누락 feature를 임의 값으로 padding하지 않는다.
 
 ---
 

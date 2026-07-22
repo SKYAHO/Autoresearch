@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 import src.pipeline.daily_recommendations as daily
+from src.features.model_contract import FeatureContractError, MODEL_FEATURE_COLUMNS
 from src.pipeline.daily_recommendations import (
     RECOMMENDATIONS_SCHEMA,
     ensure_output_table,
@@ -81,6 +82,43 @@ class _FakeClient:
         return _FakeLoadJob()
 
 
+class _DataFrameJob:
+    def __init__(self, frame):
+        self._frame = frame
+
+    def to_dataframe(self):
+        return self._frame.copy()
+
+
+class _IngressClient(_FakeClient):
+    def __init__(self, candidates, virtual_users):
+        super().__init__()
+        self.candidates = candidates
+        self.virtual_users = virtual_users
+        self.queries = []
+
+    def query(self, sql):
+        self.queries.append(sql)
+        if "SELECT video_id" in sql:
+            columns = [
+                "video_id", "categoryId", "duration", "viewCount", "likeCount",
+                "commentCount", "publishedAt",
+            ]
+            for column in (
+                "channelSubscriberCount", "channelViewCount", "channelVideoCount",
+            ):
+                if column in sql:
+                    columns.append(column)
+            return _DataFrameJob(self.candidates.loc[:, columns])
+        columns = [
+            "user_id", "age", "occupation", "hobby_keywords", "interest_keywords",
+            "lifestyle_keywords",
+        ]
+        if "watch_time_band" in sql:
+            columns.append("watch_time_band")
+        return _DataFrameJob(self.virtual_users.loc[:, columns])
+
+
 def test_ensure_output_table_creates_partitioned_table_exists_ok():
     client = _FakeClient()
     ensure_output_table(client, "proj.ds.user_recommendations")
@@ -105,21 +143,28 @@ def test_write_partition_is_idempotent_by_truncate_decorator():
 class _EverythingHalfModel:
     """모든 후보에 0.5를 주는 stub — 채점 경로만 검증한다."""
 
+    def __init__(self):
+        self.received_columns: list[tuple[str, ...]] = []
+
     def predict_proba(self, features):
+        self.received_columns.append(tuple(features.columns))
+        return np.column_stack([np.full(len(features), 0.5), np.full(len(features), 0.5)])
+
+
+class _FeatureCaptureModel:
+    def __init__(self):
+        self.received_features = []
+
+    def predict_proba(self, features):
+        self.received_features.append(features.copy())
         return np.column_stack([np.full(len(features), 0.5), np.full(len(features), 0.5)])
 
 
 def _stub_resolved() -> ResolvedModel:
-    feature_columns = (
-        "age_group", "occupation", "historical_category_affinity",
-        "recent_click_count_7d", "recent_watch_time_7d", "recent_like_count_7d",
-        "category_id", "duration_sec", "view_count", "like_ratio",
-        "comment_ratio", "days_since_upload", "historical_category_match",
-        "preferred_category_match", "topic_similarity",
-    )
+    model = _EverythingHalfModel()
     reranker = Reranker(
-        model=_EverythingHalfModel(),
-        feature_columns=feature_columns,
+        model=model,
+        feature_columns=MODEL_FEATURE_COLUMNS,
         categorical_categories={},
     )
     return ResolvedModel(reranker=reranker, run_id="run-e2e", model_version="9")
@@ -179,6 +224,111 @@ def test_run_batch_scores_all_users_and_writes_one_partition():
     assert cfg.write_disposition == "WRITE_TRUNCATE"
     assert len(frame) == 10  # 유저 2 × 후보 5
     assert set(frame["rank"]) == {1, 2, 3, 4, 5}
+
+
+def test_run_batch_passes_canonical_feature_order_to_reranker():
+    resolved = _stub_resolved()
+    run_batch(
+        candidate_dt=date(2026, 7, 21),
+        events_dt=date(2026, 7, 21),
+        dry_run=True,
+        bq_client=_FakeClient(),
+        resolved=resolved,
+        videos_raw=_videos_raw(),
+        personas=_personas(["u1"]),
+        events=_empty_events(),
+    )
+
+    assert resolved.reranker.model.received_columns == [MODEL_FEATURE_COLUMNS]
+
+
+def test_run_batch_preserves_ingress_values_in_canonical_vector():
+    candidates = pd.DataFrame(
+        {
+            "video_id": ["v1"],
+            "categoryId": ["Gaming"],
+            "duration": ["PT1M"],
+            "viewCount": [1000],
+            "likeCount": [100],
+            "commentCount": [10],
+            "publishedAt": ["2026-07-01"],
+            "channelSubscriberCount": [12345],
+            "channelViewCount": [999999],
+            "channelVideoCount": [321],
+        }
+    )
+    virtual_users = pd.DataFrame(
+        {
+            "user_id": ["u1"],
+            "age": [25],
+            "occupation": ["student"],
+            "hobby_keywords": [[]],
+            "interest_keywords": [[]],
+            "lifestyle_keywords": [[]],
+            "watch_time_band": ["night"],
+        }
+    )
+    client = _IngressClient(candidates, virtual_users)
+    model = _FeatureCaptureModel()
+    resolved = ResolvedModel(
+        reranker=Reranker(
+            model=model,
+            feature_columns=MODEL_FEATURE_COLUMNS,
+            categorical_categories={},
+        ),
+        run_id="run-ingress",
+        model_version="1",
+    )
+
+    report = run_batch(
+        candidate_dt=date(2026, 7, 21),
+        events_dt=date(2026, 7, 21),
+        bq_client=client,
+        resolved=resolved,
+        events=_empty_events(),
+        dry_run=True,
+    )
+
+    assert report["skipped_users"] == 0
+    assert tuple(model.received_features[0].columns) == MODEL_FEATURE_COLUMNS
+    row = model.received_features[0].iloc[0]
+    assert row["watch_time_band"] == "night"
+    assert row["channel_subscriber_count"] == 12345
+    assert row["channel_view_count"] == 999999
+    assert row["channel_video_count"] == 321
+
+
+def test_run_batch_rejects_invalid_feature_contract_before_user_loop(monkeypatch):
+    resolved = ResolvedModel(
+        reranker=Reranker(
+            model=_EverythingHalfModel(),
+            feature_columns=MODEL_FEATURE_COLUMNS[:-1],
+            categorical_categories={},
+        ),
+        run_id="run-invalid",
+        model_version="1",
+    )
+    loop_users: list[str] = []
+
+    def _should_not_enter_loop(**kwargs):
+        loop_users.append(kwargs["user_id"])
+        return pd.DataFrame()
+
+    monkeypatch.setattr(daily, "build_pool_feature_frame", _should_not_enter_loop)
+
+    with pytest.raises(FeatureContractError):
+        run_batch(
+            candidate_dt=date(2026, 7, 21),
+            events_dt=date(2026, 7, 21),
+            dry_run=True,
+            bq_client=_FakeClient(),
+            resolved=resolved,
+            videos_raw=_videos_raw(),
+            personas=_personas(["u1"]),
+            events=_empty_events(),
+        )
+
+    assert loop_users == []
 
 
 def test_run_batch_dry_run_writes_nothing():

@@ -19,12 +19,16 @@ import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Final
 
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
+from src.features.model_contract import (
+    CATEGORICAL_FEATURE_COLUMNS,
+    FeatureContractError,
+    MODEL_FEATURE_COLUMNS,
+)
 from src.serving.feast_reader import load_feast_online_feature_reader
 from src.serving.model_loader import (
     ResolvedModel,
@@ -32,8 +36,6 @@ from src.serving.model_loader import (
     load_reranker_with_lineage,
 )
 from src.serving.online_features import (
-    MODEL_FEATURE_COLUMNS,
-    FeatureContractError,
     FeatureRetrievalError,
     ServingFeatureBuilder,
 )
@@ -73,9 +75,6 @@ RERANK_UNSEEN_CATEGORY = Counter(
 )
 
 logger = logging.getLogger(__name__)
-STRING_CATEGORICAL_FEATURE_COLUMNS: Final = frozenset(
-    {"age_group", "occupation", "historical_category_affinity", "category_id"}
-)
 
 
 def create_app(
@@ -96,7 +95,7 @@ def create_app(
             return "Model feature columns do not match the serving contract."
         incompatible_categorical_columns = tuple(
             column
-            for column in STRING_CATEGORICAL_FEATURE_COLUMNS
+            for column in CATEGORICAL_FEATURE_COLUMNS
             if column in active_model.reranker.categorical_categories
             and not all(
                 isinstance(value, str)
