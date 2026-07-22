@@ -430,7 +430,6 @@ def main(
 
     print("\n[Step 1] DuckDB SQL 처리...")
     con = duckdb.connect()
-    con.register("videos_raw", videos)
     con.register("personas_raw", personas)
 
     snapshot_date = datetime.now().strftime("%Y-%m-%d")
@@ -457,7 +456,7 @@ def main(
     # personas.csv 등) compute_interaction_columns()가 키워드 매핑 mock으로
     # fallback한다.
     primary_categories_select = (
-        "p.primary_categories,\n            " if "primary_categories" in personas.columns else ""
+        ",\n            p.primary_categories" if "primary_categories" in personas.columns else ""
     )
 
     joined = con.execute(
@@ -483,13 +482,10 @@ def main(
             vf.channel_view_count,
             vf.channel_video_count,
             p.hobbies_and_interests,
-            p.hobbies_and_interests_list,
-            {primary_categories_select}v.title,
-            v.description
+            p.hobbies_and_interests_list{primary_categories_select}
         FROM online_features o
         JOIN video_feature vf ON vf.video_id = o.video_id
         JOIN personas_raw p ON p.uuid = o.user_id
-        JOIN videos_raw v ON v.video_id = o.video_id
         ORDER BY o.timestamp
         """
     ).df()
