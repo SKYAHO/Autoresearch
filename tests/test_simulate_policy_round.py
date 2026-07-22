@@ -195,7 +195,7 @@ def test_round_report_prefers_model_policy_when_model_is_right(tmp_path, stub_re
         reranker=stub_reranker,
         k=6,
         exploration_ratio=0.0,
-        target_ctr=0.2,
+        click_threshold=0.0,
         seed=42,
         policy_version="stub-run",
         output_dir=str(tmp_path),
@@ -224,7 +224,7 @@ def test_round_events_are_tagged_per_policy(tmp_path, stub_reranker):
         reranker=stub_reranker,
         k=6,
         exploration_ratio=0.0,
-        target_ctr=0.2,
+        click_threshold=0.0,
         seed=42,
         policy_version="stub-run",
         output_dir=str(tmp_path),
@@ -252,7 +252,7 @@ def test_round_output_feeds_retraining_path(tmp_path, stub_reranker):
         reranker=stub_reranker,
         k=6,
         exploration_ratio=0.0,
-        target_ctr=0.2,
+        click_threshold=0.0,
         seed=42,
         policy_version="stub-run",
         output_dir=str(tmp_path),
@@ -264,7 +264,30 @@ def test_round_output_feeds_retraining_path(tmp_path, stub_reranker):
     wide = derive_wide_events(model_long)
     impressions = len(model_long[model_long["event_type"] == "impression"])
     assert len(wide) == impressions
-    assert wide["clicked"].sum() >= 1  # target_ctr=0.2로 클릭이 존재
+    assert wide["clicked"].sum() >= 1  # click_threshold=0.0으로 유저별 최고 1개는 항상 클릭
+
+
+def test_round_clicks_are_at_most_one_per_user(tmp_path, stub_reranker) -> None:
+    import pyarrow.parquet as pq
+
+    main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        policy_version="stub-run",
+        output_dir=str(tmp_path),
+    )
+    table = pq.read_table(tmp_path / "event_log.parquet").to_pandas()
+    clicks = table[table["event_type"] == "click"]
+    per_user = clicks.groupby(["policy", "user_id"]).size()
+    assert (per_user <= 1).all()
 
 
 def test_render_report_html_contains_policies_and_values():
@@ -272,7 +295,7 @@ def test_render_report_html_contains_policies_and_values():
 
     report = {
         "policy_version": "run-x", "k": 10, "exploration_ratio": 0.1,
-        "target_ctr": 0.02, "seed": 42, "users": 100,
+        "click_threshold": 0.55, "seed": 42, "users": 100,
         "skipped_users": [], "dropped_exposures_without_judgment": 0,
         "overlap_jaccard_mean": 0.25, "unseen_category_counts": {},
         "quarantined_chunks": 0,
@@ -304,7 +327,7 @@ def test_round_writes_html_report(tmp_path, stub_reranker):
         reranker=stub_reranker,
         k=6,
         exploration_ratio=0.0,
-        target_ctr=0.2,
+        click_threshold=0.0,
         seed=42,
         policy_version="stub-run",
         output_dir=str(tmp_path),

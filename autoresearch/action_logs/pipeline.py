@@ -1,8 +1,10 @@
 """VirtualUser + TrendingVideo pool로 Phase 1(historical) event log를 생성한다.
 
-흐름: 유저 단위 격리(LLM 판단) → 전역 2% CTR 정규화 → 이벤트 확장(_expand_events:
-노출마다 impression 1행, 클릭 선정분엔 click/view(+like)를 추가 배치) →
-parquet/warehouse/quarantine 저장. 한 유저의 실패가 배치를 죽이지 않는다.
+흐름: 유저 단위 격리(LLM 판단, 후보별 click_propensity/watch_fraction만 산출) →
+select_clicks_per_slate로 유저(슬레이트)별 최고 1건을 click_threshold
+커트라인으로 클릭 선정 → 이벤트 확장(_expand_events: 노출마다 impression 1행,
+클릭 선정분엔 click/view(+like)를 추가 배치) → parquet/warehouse/quarantine
+저장. 한 유저의 실패가 배치를 죽이지 않는다.
 """
 import json
 import logging
@@ -674,24 +676,29 @@ def _generate_drafts_isolated(
     return drafts, quarantine, total_chunks
 
 
-def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
-    """전역 2% 정규화: click_propensity 상위 round(ctr×N)개의 draft(=impression)
-    인덱스를 '클릭'으로 선정해 반환한다."""
+def select_clicks_per_slate(
+    drafts: list[ImpressionDraft], click_threshold: float
+) -> set[int]:
+    """유저(슬레이트)별 click_propensity 최고 1개가 커트라인 이상이면 그 draft
+    인덱스를 클릭으로 선정한다. 최고가 커트라인 미만이면 그 유저는 클릭 0개.
 
-    total = len(drafts)
-    n_click = round(target_ctr * total)
-    order = sorted(
-        range(total),
-        key=lambda i: (-drafts[i].click_propensity, drafts[i].user_id, drafts[i].video_id),
-    )
-    return set(order[:n_click])
+    동점은 (-click_propensity, video_id)로 결정적으로 깬다(높은 점수 우선,
+    같으면 video_id 작은 쪽). 전역 할당량이 아니라 관련성 커트라인이므로
+    CTR은 점수 분포(모델 실력)에 따라 창발한다.
+    """
+    indices_by_user: dict[str, list[int]] = {}
+    for index, draft in enumerate(drafts):
+        indices_by_user.setdefault(draft.user_id, []).append(index)
 
-
-def normalize_clicks(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
-    """전역 CTR 정규화의 공개 진입점 — 외부 배치(정책 시뮬레이션)가 합동 pool에
-    한 번만 적용할 수 있게 _clicked_indices를 노출한다."""
-
-    return _clicked_indices(drafts, target_ctr)
+    clicked: set[int] = set()
+    for indices in indices_by_user.values():
+        top = min(
+            indices,
+            key=lambda i: (-drafts[i].click_propensity, drafts[i].video_id),
+        )
+        if drafts[top].click_propensity >= click_threshold:
+            clicked.add(top)
+    return clicked
 
 
 @dataclass(frozen=True)
@@ -1032,7 +1039,7 @@ def generate_action_log_drafts(
     shard_index: int | None = None,
     candidate_provider: CandidateProvider | None = None,
 ) -> ActionLogDraftGenerationResult:
-    """유저 단위 LLM 판단을 실행하고 전역 CTR 정규화 전 draft를 반환한다.
+    """유저 단위 LLM 판단을 실행하고 per-slate 클릭 선정 전 draft를 반환한다.
 
     단일 실행은 quarantine 비율을 즉시 검증한다. shard 실행은 성공 draft를
     보존하기 위해 이 검증을 merge 단계의 전역 합산 뒤로 미룰 수 있다.
@@ -1043,7 +1050,7 @@ def generate_action_log_drafts(
         extra={
             "users": len(virtual_users),
             "videos": len(videos),
-            "target_ctr": request.target_ctr,
+            "click_threshold": request.click_threshold,
             "candidates_per_user": request.candidates_per_user,
             "seed": request.seed,
         },
@@ -1077,9 +1084,9 @@ def expand_action_log_drafts(
     drafts: list[ImpressionDraft],
     quarantine: list[QuarantineRecord] | None = None,
 ) -> EventGenerationResult:
-    """전체 draft에 전역 CTR 정규화와 long event 확장을 적용한다."""
+    """전체 draft에 유저별 커트라인 클릭 선정과 long event 확장을 적용한다."""
 
-    clicked = _clicked_indices(drafts, request.target_ctr)
+    clicked = select_clicks_per_slate(drafts, request.click_threshold)
     events = _expand_events(drafts, clicked, request)
 
     batch = EventLogBatch(
@@ -1103,7 +1110,8 @@ def generate_action_log_batch(
     candidate_provider: CandidateProvider | None = None,
     exposure_metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None,
 ) -> EventGenerationResult:
-    """유저 단위 격리 생성 → 전역 2% 정규화 → 조립 → 파일 저장을 실행한다.
+    """유저 단위 격리 생성 → per-slate click_threshold 클릭 선정 → 조립 →
+    파일 저장을 실행한다.
 
     exposure_metadata는 candidate_provider 호출이 진행되며 채워지는 공유 맵일 수
     있으므로(#221 ModelExposureRound), draft 생성이 끝난 뒤에 참조한다.

@@ -140,7 +140,7 @@ def test_run_daily_action_log_writes_dt_partition(tmp_path):
         output_base_path=str(output_base),
         quarantine_base_path=str(quarantine_base),
         candidates_per_user=5,
-        target_ctr=0.2,
+        click_threshold=0.2,
         seed=123,
         generator_name="rule_based",
     )
@@ -172,7 +172,7 @@ def test_run_daily_action_log_applies_deterministic_max_users(tmp_path):
         output_base_path=str(output_base),
         max_users=2,
         candidates_per_user=5,
-        target_ctr=0.2,
+        click_threshold=0.2,
         seed=123,
         generator_name="rule_based",
     )
@@ -196,7 +196,7 @@ def test_run_daily_action_log_keeps_event_timestamps_inside_partition_date(tmp_p
         virtual_users_path=str(virtual_users_path),
         output_base_path=str(output_base),
         candidates_per_user=5,
-        target_ctr=0.2,
+        click_threshold=0.2,
         seed=123,
         generator_name="rule_based",
     )
@@ -225,7 +225,7 @@ def test_run_daily_action_log_rejects_timestamp_outside_partition_date(tmp_path)
             virtual_users_path=str(virtual_users_path),
             output_base_path=str(output_base),
             candidates_per_user=5,
-            target_ctr=0.2,
+            click_threshold=0.2,
             seed=123,
             generator_name="rule_based",
             history_end=datetime(2026, 7, 3, 0, 0, tzinfo=ZoneInfo("Asia/Seoul")),
@@ -253,7 +253,7 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
             output_base_path=str(work_base),
             quarantine_base_path=str(work_quarantine_base),
             candidates_per_user=5,
-            target_ctr=0.2,
+            click_threshold=0.2,
             seed=123,
             generator_name="rule_based",
         )
@@ -273,7 +273,7 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
         "model_name": "fixture-rule-action-log",
         "generator_config": {},
         "candidates_per_user": 5,
-        "target_ctr": 0.2,
+        "click_threshold": 0.2,
         "personalized_ratio": 0.7,
         "popular_ratio": 0.2,
         "exploration_ratio": 0.1,
@@ -327,7 +327,7 @@ def test_shard_merge_matches_single_run_event_contract(tmp_path):
         "youtube_base_path": str(youtube_base),
         "virtual_users_path": str(virtual_users_path),
         "candidates_per_user": 5,
-        "target_ctr": 0.2,
+        "click_threshold": 0.2,
         "seed": 123,
         "generator_name": "rule_based",
     }
@@ -467,7 +467,7 @@ def test_quarantine_guard_is_global_at_merge(
                 output_base_path=str(work_base),
                 quarantine_base_path=str(work_quarantine_base),
                 candidates_per_user=5,
-                target_ctr=0.2,
+                click_threshold=0.2,
                 max_quarantine_ratio=max_quarantine_ratio,
             )
         )
@@ -508,7 +508,7 @@ def test_run_daily_action_log_shard_writes_progress_json_dt_shard_path(tmp_path)
         virtual_users_path=str(virtual_users_path),
         output_base_path=str(work_base),
         candidates_per_user=5,
-        target_ctr=0.2,
+        click_threshold=0.2,
         seed=123,
         generator_name="rule_based",
         progress_flush_chunks=1,
@@ -564,7 +564,7 @@ def test_run_daily_action_log_shard_ignores_progress_writer_failure(
         virtual_users_path=str(virtual_users_path),
         output_base_path=str(work_base),
         candidates_per_user=5,
-        target_ctr=0.2,
+        click_threshold=0.2,
         seed=123,
         generator_name="rule_based",
         progress_flush_chunks=1,
@@ -828,7 +828,7 @@ def test_single_quarantine_publish_failure_warns_and_keeps_final_success(
         output_base_path=str(output_base),
         quarantine_base_path=str(quarantine_base),
         candidates_per_user=5,
-        target_ctr=0.2,
+        click_threshold=0.2,
     )
 
     assert summary["status"] == "succeeded"
@@ -862,7 +862,7 @@ def test_single_default_preserves_legacy_overwrite_behavior(tmp_path, monkeypatc
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(output_base),
         "candidates_per_user": 5,
-        "target_ctr": 0.2,
+        "click_threshold": 0.2,
     }
 
     first = run_daily_action_log(**common)
@@ -887,7 +887,7 @@ def test_single_skips_existing_final_before_generator_creation(tmp_path, monkeyp
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(tmp_path / "action_log"),
         "candidates_per_user": 5,
-        "target_ctr": 0.2,
+        "click_threshold": 0.2,
     }
     run_daily_action_log(**common)
     previous = output_path.read_bytes()
@@ -916,7 +916,7 @@ def test_single_failed_overwrite_preserves_previous_final(tmp_path):
         "virtual_users_path": str(virtual_users_path),
         "output_base_path": str(output_base),
         "candidates_per_user": 5,
-        "target_ctr": 0.2,
+        "click_threshold": 0.2,
     }
     run_daily_action_log(**common)
     output_path = output_base / "dt=2026-07-01" / "part-0.parquet"
@@ -1220,7 +1220,7 @@ def test_daily_single_joins_exposure_tags_into_final_parquet(tmp_path):
         virtual_users_path=str(virtual_users_path),
         output_base_path=str(output_base),
         candidates_per_user=3,
-        target_ctr=0.2,
+        click_threshold=0.2,
         seed=123,
         generator_name="rule_based",
         candidate_provider_factory=_closed_loop_factory,
@@ -1250,7 +1250,7 @@ def test_daily_shard_then_merge_carries_exposure_tags(tmp_path):
         virtual_users_path=str(virtual_users_path),
         output_base_path=str(work_base),
         candidates_per_user=3,
-        target_ctr=0.2,
+        click_threshold=0.2,
         seed=123,
         generator_name="rule_based",
         candidate_provider_factory=_closed_loop_factory,
@@ -1265,3 +1265,23 @@ def test_daily_shard_then_merge_carries_exposure_tags(tmp_path):
     assert merge_summary["status"] == "succeeded"
     table = pq.read_table(output_base / "dt=2026-07-01" / "part-0.parquet")
     assert "model" in set(table.column("exposure_source").to_pylist())
+
+
+def test_cli_parses_click_threshold() -> None:
+    from autoresearch.jobs.action_log import _build_parser
+
+    # 브리프 원문은 --mode/--partition-date 없이 parse_args를 호출하지만, 두 인자는
+    # argparse에 required=True로 선언되어 있어 그 상태로는 항상 BatchArgumentError가
+    # 난다(구현과 무관). 파싱 대상 자체는 그대로 두고 필수 인자만 채워 의도(CLI가
+    # --click-threshold를 인식·보관하는지)를 보존한다.
+    args = _build_parser().parse_args(
+        [
+            "--mode",
+            "single",
+            "--partition-date",
+            "2026-07-01",
+            "--click-threshold",
+            "0.6",
+        ]
+    )
+    assert args.click_threshold == 0.6
