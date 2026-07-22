@@ -206,7 +206,7 @@ SELECT
     ELSE 'unknown'
   END AS watch_time_band
 
-FROM `{project}.{dataset}.asset_virtual_user_vu_1000`
+FROM `{project}.{raw_dataset}.asset_virtual_user_vu_1000`
 WHERE user_id IS NOT NULL;
 ```
 

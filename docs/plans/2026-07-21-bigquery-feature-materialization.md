@@ -390,7 +390,9 @@ from autoresearch.jobs.feature_materialize import FEATURE_TABLES, build_material
 
 client = bigquery.Client(project="ar-infra-501607")
 for table_name in FEATURE_TABLES:
-    script = build_materialize_script("ar-infra-501607", "feast_offline_store", table_name)
+    script = build_materialize_script(
+        "ar-infra-501607", "feast_offline_store", "data_lake_raw", table_name
+    )
     select_sql = script.split("CREATE TEMP TABLE materialized_rows AS\n", 1)[1].split(";\nASSERT", 1)[0]
     job = client.query(select_sql, job_config=bigquery.QueryJobConfig(dry_run=True, use_query_cache=False))
     print(f"{table_name}: {job.total_bytes_processed}")
