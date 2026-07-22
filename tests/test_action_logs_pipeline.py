@@ -22,6 +22,7 @@ from autoresearch.action_logs.pipeline import (
     generate_action_log_batch,
     generate_action_log_drafts,
     read_action_log_draft_parquet,
+    select_clicks_per_slate,
     write_action_log_draft_parquet,
 )
 from autoresearch.action_logs.schema import (
@@ -1082,3 +1083,44 @@ def test_batch_attaches_provider_exposure_tags(tmp_path):
     impressions = [e for e in result.batch.events if e.event_type == "impression"]
     assert impressions and all(e.exposure_source == "model" for e in impressions)
     assert all(e.policy_version == "run-a" for e in impressions)
+
+
+def _draft(user_id: str, video_id: str, cp: float) -> ImpressionDraft:
+    return ImpressionDraft(
+        user_id=user_id,
+        video_id=video_id,
+        click_propensity=cp,
+        watch_fraction=0.5,
+        would_like=False,
+        duration_sec=100,
+    )
+
+
+def test_select_clicks_one_top_per_user_above_threshold() -> None:
+    drafts = [
+        _draft("u1", "a", 0.30),
+        _draft("u1", "b", 0.80),  # u1 최고 → 클릭
+        _draft("u2", "c", 0.40),  # u2 최고지만 커트라인 미만 → 클릭 없음
+        _draft("u2", "d", 0.20),
+    ]
+    assert select_clicks_per_slate(drafts, 0.55) == {1}
+
+
+def test_select_clicks_none_when_all_below_threshold() -> None:
+    drafts = [_draft("u1", "a", 0.10), _draft("u1", "b", 0.20)]
+    assert select_clicks_per_slate(drafts, 0.55) == set()
+
+
+def test_select_clicks_threshold_is_inclusive() -> None:
+    drafts = [_draft("u1", "a", 0.55)]
+    assert select_clicks_per_slate(drafts, 0.55) == {0}
+
+
+def test_select_clicks_tiebreak_is_deterministic_by_video_id() -> None:
+    drafts = [_draft("u1", "b", 0.80), _draft("u1", "a", 0.80)]
+    # 동점이면 video_id 작은 "a"(index 1)가 선택된다.
+    assert select_clicks_per_slate(drafts, 0.55) == {1}
+
+
+def test_select_clicks_handles_empty() -> None:
+    assert select_clicks_per_slate([], 0.55) == set()

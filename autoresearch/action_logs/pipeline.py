@@ -687,6 +687,31 @@ def _clicked_indices(drafts: list[ImpressionDraft], target_ctr: float) -> set[in
     return set(order[:n_click])
 
 
+def select_clicks_per_slate(
+    drafts: list[ImpressionDraft], click_threshold: float
+) -> set[int]:
+    """유저(슬레이트)별 click_propensity 최고 1개가 커트라인 이상이면 그 draft
+    인덱스를 클릭으로 선정한다. 최고가 커트라인 미만이면 그 유저는 클릭 0개.
+
+    동점은 (-click_propensity, video_id)로 결정적으로 깬다(높은 점수 우선,
+    같으면 video_id 작은 쪽). 전역 할당량이 아니라 관련성 커트라인이므로
+    CTR은 점수 분포(모델 실력)에 따라 창발한다.
+    """
+    indices_by_user: dict[str, list[int]] = {}
+    for index, draft in enumerate(drafts):
+        indices_by_user.setdefault(draft.user_id, []).append(index)
+
+    clicked: set[int] = set()
+    for indices in indices_by_user.values():
+        top = min(
+            indices,
+            key=lambda i: (-drafts[i].click_propensity, drafts[i].video_id),
+        )
+        if drafts[top].click_propensity >= click_threshold:
+            clicked.add(top)
+    return clicked
+
+
 def normalize_clicks(drafts: list[ImpressionDraft], target_ctr: float) -> set[int]:
     """전역 CTR 정규화의 공개 진입점 — 외부 배치(정책 시뮬레이션)가 합동 pool에
     한 번만 적용할 수 있게 _clicked_indices를 노출한다."""
