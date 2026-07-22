@@ -36,11 +36,14 @@
 ```bash
 python -m autoresearch.jobs.feature_materialize \
   --project "$GCP_PROJECT_ID" \
-  --dataset "$BQ_DATASET"
+  --dataset "$BQ_DATASET" \
+  --raw-dataset "$CTR_TRAINING_BQ_RAW_DATASET"
 ```
 
 실행 주체의 ADC 또는 workload identity에는 BigQuery job 실행 권한, 원본 raw
 테이블 또는 source dataset 읽기 권한, 대상 feature 테이블의 DML 권한이 필요하다.
+`--dataset`은 feature target과 임시 virtual-user source를, `--raw-dataset`은
+action-log와 YouTube-trending source를 가리킨다.
 Airflow DAG, schedule, 재시도 설정과 CLI 연결은 이 저장소의 범위가 아니며,
 `Autoresearch-airflow` 후속 작업에서 소유한다.
 
@@ -139,9 +142,9 @@ GCS raw parquet 을 BigQuery 로 적재하는 `scripts/load_raw_to_bigquery.py` 
 ### 🔸 SQL
 
 > [!NOTE]
-> 아래 SQL은 `CREATE OR REPLACE TABLE`로 표기되어 있지만, 실제 배치 job
-> (`src/pipeline/build_feature_tables.py`)은 `BEGIN TRANSACTION; TRUNCATE
-> TABLE; INSERT INTO {SELECT 본문}; COMMIT TRANSACTION;`으로 실행한다 —
+> 아래 SQL은 `CREATE OR REPLACE TABLE`로 표기되어 있지만, 공개 batch CLI
+> (`autoresearch.jobs.feature_materialize`)는 `BEGIN TRANSACTION; DELETE;
+> INSERT INTO {SELECT 본문}; COMMIT TRANSACTION;`으로 실행한다 —
 > 테이블 스키마(REQUIRED 등)를 Terraform이 관리하기 시작해서, `CREATE OR
 > REPLACE`/`WRITE_TRUNCATE`처럼 SELECT 결과에서 스키마를 다시 유추하는
 > 방식은 REQUIRED 제약을 지워버린다. 아래 `SELECT` 본문 자체는 그대로다.

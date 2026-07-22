@@ -24,14 +24,21 @@ def test_main_runs_each_feature_table_in_order(monkeypatch, capsys):
 
     assert (
         feature_materialize.main(
-            ["--project", "test-project", "--dataset", "test_dataset"]
+            [
+                "--project",
+                "test-project",
+                "--dataset",
+                "test_dataset",
+                "--raw-dataset",
+                "raw_dataset",
+            ]
         )
         == 0
     )
 
     expected_scripts = [
         feature_materialize.build_materialize_script(
-            "test-project", "test_dataset", table_name
+            "test-project", "test_dataset", "raw_dataset", table_name
         )
         for table_name in feature_materialize.FEATURE_TABLES
     ]
@@ -62,7 +69,14 @@ def test_main_stops_when_final_row_count_is_missing_or_not_an_integer(
 
     assert (
         feature_materialize.main(
-            ["--project", "test-project", "--dataset", "test_dataset"]
+            [
+                "--project",
+                "test-project",
+                "--dataset",
+                "test_dataset",
+                "--raw-dataset",
+                "raw_dataset",
+            ]
         )
         == 1
     )
@@ -83,16 +97,23 @@ def test_main_stops_when_a_table_query_fails(monkeypatch, capsys):
 
     assert (
         feature_materialize.main(
-            ["--project", "test-project", "--dataset", "test_dataset"]
+            [
+                "--project",
+                "test-project",
+                "--dataset",
+                "test_dataset",
+                "--raw-dataset",
+                "raw_dataset",
+            ]
         )
         == 1
     )
 
     first_script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "user_static_feature"
+        "test-project", "test_dataset", "raw_dataset", "user_static_feature"
     )
     second_script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "user_dynamic_feature"
+        "test-project", "test_dataset", "raw_dataset", "user_dynamic_feature"
     )
     assert client.query.call_args_list == [call(first_script), call(second_script)]
     first_job.result.assert_called_once_with()
@@ -112,7 +133,14 @@ def test_main_stops_when_a_table_result_fails(monkeypatch, capsys):
 
     assert (
         feature_materialize.main(
-            ["--project", "test-project", "--dataset", "test_dataset"]
+            [
+                "--project",
+                "test-project",
+                "--dataset",
+                "test_dataset",
+                "--raw-dataset",
+                "raw_dataset",
+            ]
         )
         == 1
     )
@@ -129,11 +157,64 @@ def test_main_rejects_invalid_project_identifier(monkeypatch, capsys):
     )
 
     assert (
-        feature_materialize.main(["--project", "bad project", "--dataset", "dataset"])
+        feature_materialize.main(
+            [
+                "--project",
+                "bad project",
+                "--dataset",
+                "dataset",
+                "--raw-dataset",
+                "raw_dataset",
+            ]
+        )
         == 2
     )
 
     assert _summary(capsys.readouterr().out)["error_type"] == "invalid_arguments"
+
+
+def test_main_requires_raw_dataset(monkeypatch, capsys):
+    monkeypatch.setattr(
+        feature_materialize, "_run", lambda args: pytest.fail("must not run")
+    )
+
+    assert (
+        feature_materialize.main(
+            ["--project", "test-project", "--dataset", "feature_dataset"]
+        )
+        == 2
+    )
+
+    assert _summary(capsys.readouterr().out)["error_type"] == "invalid_arguments"
+
+
+def test_main_summary_records_raw_dataset(monkeypatch, capsys):
+    client = MagicMock()
+    query_jobs = [MagicMock(job_id=f"job-{index}") for index in range(3)]
+    for index, job in enumerate(query_jobs):
+        job.result.return_value = [{"final_row_count": index + 1}]
+    client.query.side_effect = query_jobs
+    monkeypatch.setattr(
+        feature_materialize, "_bigquery_client", lambda project_id: client
+    )
+
+    assert (
+        feature_materialize.main(
+            [
+                "--project",
+                "test-project",
+                "--dataset",
+                "feature_dataset",
+                "--raw-dataset",
+                "raw_dataset",
+            ]
+        )
+        == 0
+    )
+
+    summary = _summary(capsys.readouterr().out)
+    assert summary["dataset"] == "feature_dataset"
+    assert summary["raw_dataset"] == "raw_dataset"
 
 
 def test_main_accepts_gcp_project_id(monkeypatch, capsys):
@@ -145,7 +226,14 @@ def test_main_accepts_gcp_project_id(monkeypatch, capsys):
 
     assert (
         feature_materialize.main(
-            ["--project", "ar-infra-501607", "--dataset", "test_dataset"]
+            [
+                "--project",
+                "ar-infra-501607",
+                "--dataset",
+                "test_dataset",
+                "--raw-dataset",
+                "raw_dataset",
+            ]
         )
         == 0
     )
@@ -171,7 +259,16 @@ def test_main_rejects_invalid_gcp_project_id_before_running(
     )
 
     assert (
-        feature_materialize.main(["--project", project_id, "--dataset", "test_dataset"])
+        feature_materialize.main(
+            [
+                "--project",
+                project_id,
+                "--dataset",
+                "test_dataset",
+                "--raw-dataset",
+                "raw_dataset",
+            ]
+        )
         == 2
     )
 
@@ -186,7 +283,16 @@ def test_main_accepts_maximum_length_bigquery_dataset_id(monkeypatch, capsys):
     monkeypatch.setattr(feature_materialize, "_run", run)
 
     assert (
-        feature_materialize.main(["--project", "test-project", "--dataset", "a" * 1024])
+        feature_materialize.main(
+            [
+                "--project",
+                "test-project",
+                "--dataset",
+                "a" * 1024,
+                "--raw-dataset",
+                "raw_dataset",
+            ]
+        )
         == 0
     )
 
@@ -203,7 +309,16 @@ def test_main_rejects_oversized_bigquery_dataset_id_before_running(
     )
 
     assert (
-        feature_materialize.main(["--project", "test-project", "--dataset", dataset_id])
+        feature_materialize.main(
+            [
+                "--project",
+                "test-project",
+                "--dataset",
+                dataset_id,
+                "--raw-dataset",
+                "raw_dataset",
+            ]
+        )
         == 2
     )
 
@@ -221,9 +336,34 @@ def test_feature_tables_are_the_three_supported_sources():
     )
 
 
+def test_dynamic_script_separates_raw_and_feature_datasets():
+    script = feature_materialize.build_materialize_script(
+        "test-project",
+        "feature_dataset",
+        "raw_dataset",
+        "user_dynamic_feature",
+    )
+
+    assert "`test-project.raw_dataset.data_lake_action_log`" in script
+    assert "`test-project.raw_dataset.data_lake_youtube_trending_kr`" in script
+    assert "DELETE FROM `test-project.feature_dataset.user_dynamic_feature`" in script
+
+
+def test_static_script_keeps_virtual_user_source_in_feature_dataset():
+    script = feature_materialize.build_materialize_script(
+        "test-project",
+        "feature_dataset",
+        "raw_dataset",
+        "user_static_feature",
+    )
+
+    assert "`test-project.feature_dataset.asset_virtual_user_vu_1000`" in script
+    assert "raw_dataset.asset_virtual_user_vu_1000" not in script
+
+
 def test_static_script_flattens_bigquery_parquet_list_wrappers():
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "user_static_feature"
+        "test-project", "test_dataset", "raw_dataset", "user_static_feature"
     )
 
     assert "UNNEST(primary_categories.list) AS item" in script
@@ -234,7 +374,7 @@ def test_static_script_flattens_bigquery_parquet_list_wrappers():
 
 def test_static_script_flattens_every_virtual_user_list_column():
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "user_static_feature"
+        "test-project", "test_dataset", "raw_dataset", "user_static_feature"
     )
 
     for column_name in (
@@ -259,7 +399,7 @@ def test_static_script_flattens_every_virtual_user_list_column():
 )
 def test_supported_script_references_its_raw_source(table_name, raw_table):
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", table_name
+        "test-project", "test_dataset", "raw_dataset", table_name
     )
 
     assert raw_table in script
@@ -276,7 +416,7 @@ def test_script_rejects_unknown_feature_table():
 
     with pytest.raises(ValueError, match="^unsupported feature table$") as error:
         feature_materialize.build_materialize_script(
-            "test-project", "test_dataset", table_name
+            "test-project", "test_dataset", "raw_dataset", table_name
         )
 
     assert table_name not in str(error.value)
@@ -298,7 +438,7 @@ def test_script_rejects_unsafe_project_or_dataset_identifier(
 ):
     with pytest.raises(ValueError, match=field_name) as error:
         feature_materialize.build_materialize_script(
-            project_id, dataset_id, "user_static_feature"
+            project_id, dataset_id, "raw_dataset", "user_static_feature"
         )
 
     assert project_id not in str(error.value)
@@ -309,7 +449,7 @@ def test_script_rejects_unsafe_project_or_dataset_identifier(
 def test_script_rejects_non_string_project_identifier(project_id):
     with pytest.raises(ValueError, match="^invalid project_id$"):
         feature_materialize.build_materialize_script(
-            project_id, "test_dataset", "user_static_feature"
+            project_id, "test_dataset", "raw_dataset", "user_static_feature"
         )
 
 
@@ -317,13 +457,13 @@ def test_script_rejects_non_string_project_identifier(project_id):
 def test_script_rejects_non_string_dataset_identifier(dataset_id):
     with pytest.raises(ValueError, match="^invalid dataset_id$"):
         feature_materialize.build_materialize_script(
-            "test-project", dataset_id, "user_static_feature"
+            "test-project", dataset_id, "raw_dataset", "user_static_feature"
         )
 
 
 def test_video_script_uses_single_backslash_iso_8601_duration_patterns():
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "video_feature"
+        "test-project", "test_dataset", "raw_dataset", "video_feature"
     )
 
     for pattern in (r"P(\d+)D", r"(\d+)H", r"(\d+)M", r"(\d+)S"):
@@ -332,7 +472,7 @@ def test_video_script_uses_single_backslash_iso_8601_duration_patterns():
 
 def test_video_script_uses_safe_duration_arithmetic():
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "video_feature"
+        "test-project", "test_dataset", "raw_dataset", "video_feature"
     )
 
     assert "SAFE_MULTIPLY(" in script
@@ -342,7 +482,7 @@ def test_video_script_uses_safe_duration_arithmetic():
 
 def test_video_script_duration_contract_composes_pt1d2h3m4s_as_93784_seconds():
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "video_feature"
+        "test-project", "test_dataset", "raw_dataset", "video_feature"
     )
 
     expected_duration_sec = 1 * 86400 + 2 * 3600 + 3 * 60 + 4
@@ -360,7 +500,7 @@ def test_video_script_duration_contract_composes_pt1d2h3m4s_as_93784_seconds():
 
 def test_video_script_duration_contract_propagates_safe_add_overflow_to_outer_coalesce():
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "video_feature"
+        "test-project", "test_dataset", "raw_dataset", "video_feature"
     )
 
     duration_expression = """COALESCE(
@@ -403,7 +543,7 @@ def test_video_duration_expression_in_guide_matches_generated_builder_sql():
         Path(__file__).parents[1] / "docs" / "guides" / "data-warehouse.md"
     ).read_text()
     script = feature_materialize.build_materialize_script(
-        "test-project", "test_dataset", "video_feature"
+        "test-project", "test_dataset", "raw_dataset", "video_feature"
     )
 
     def duration_expression(sql: str) -> str:

@@ -1,4 +1,10 @@
-"""BigQuery feature table을 전체 갱신하는 공개 batch 명령."""
+"""BigQuery raw를 Terraform 관리 feature table로 변환하는 공개 batch 명령.
+
+이 모듈은 raw action log와 YouTube trending 데이터를 세 feature target으로
+materialize하는 SQL 및 JSONL batch CLI를 제공한다. GCS raw 적재,
+``src.pipeline.build_feature_tables``, Airflow schedule, Terraform 관리는 인접
+파이프라인 또는 소유 저장소의 책임이다.
+"""
 
 from __future__ import annotations
 
@@ -49,6 +55,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=_version_json())
     parser.add_argument("--project", required=True)
     parser.add_argument("--dataset", required=True)
+    parser.add_argument("--raw-dataset", required=True)
     return parser
 
 
@@ -89,7 +96,7 @@ WITH action_log AS (
     event_type,
     event_timestamp,
     COALESCE(watch_time_sec, 0) AS watch_time_sec
-  FROM `{project_id}.{dataset_id}.data_lake_action_log`
+  FROM `{project_id}.{raw_dataset_id}.data_lake_action_log`
   WHERE user_id IS NOT NULL
     AND event_timestamp IS NOT NULL
 ),
@@ -98,7 +105,7 @@ video_latest AS (
   SELECT
     video_id,
     video_category
-  FROM `{project_id}.{dataset_id}.data_lake_youtube_trending_kr`
+  FROM `{project_id}.{raw_dataset_id}.data_lake_youtube_trending_kr`
   WHERE video_id IS NOT NULL
   QUALIFY ROW_NUMBER() OVER (
     PARTITION BY video_id
@@ -293,7 +300,7 @@ WITH parsed AS (
     COALESCE(channel_subscriber_count, 0) AS channel_subscriber_count,
     COALESCE(channel_view_count, 0) AS channel_view_count,
     COALESCE(channel_video_count, 0) AS channel_video_count
-  FROM `{project_id}.{dataset_id}.data_lake_youtube_trending_kr`
+  FROM `{project_id}.{raw_dataset_id}.data_lake_youtube_trending_kr`
   WHERE video_id IS NOT NULL
     AND collected_at IS NOT NULL
 )
@@ -320,7 +327,9 @@ QUALIFY ROW_NUMBER() OVER (
 }
 
 
-def build_materialize_script(project_id: str, dataset_id: str, table_name: str) -> str:
+def build_materialize_script(
+    project_id: str, dataset_id: str, raw_dataset_id: str, table_name: str
+) -> str:
     """Build the transactional BigQuery script for one supported feature table."""
     if not isinstance(project_id, str) or not re.fullmatch(
         r"[A-Za-z_][A-Za-z0-9_-]*", project_id
@@ -330,6 +339,10 @@ def build_materialize_script(project_id: str, dataset_id: str, table_name: str) 
         r"[A-Za-z_][A-Za-z0-9_]*", dataset_id
     ):
         raise ValueError("invalid dataset_id")
+    if not isinstance(raw_dataset_id, str) or not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]*", raw_dataset_id
+    ):
+        raise ValueError("invalid raw_dataset_id")
     if table_name not in FEATURE_TABLES:
         raise ValueError("unsupported feature table")
 
@@ -337,6 +350,7 @@ def build_materialize_script(project_id: str, dataset_id: str, table_name: str) 
     select_sql = _FEATURE_SELECTS[table_name].format(
         project_id=project_id,
         dataset_id=dataset_id,
+        raw_dataset_id=raw_dataset_id,
         primary_categories=_string_array("primary_categories"),
         hobby_keywords=_string_array("hobby_keywords"),
         interest_keywords=_string_array("interest_keywords"),
@@ -364,8 +378,12 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise BatchArgumentError("invalid GCP project ID")
     if len(args.dataset) > 1024:
         raise BatchArgumentError("invalid dataset ID")
+    if len(args.raw_dataset) > 1024:
+        raise BatchArgumentError("invalid raw dataset ID")
     try:
-        build_materialize_script(args.project, args.dataset, FEATURE_TABLES[0])
+        build_materialize_script(
+            args.project, args.dataset, args.raw_dataset, FEATURE_TABLES[0]
+        )
     except ValueError as exc:
         raise BatchArgumentError(str(exc)) from exc
 
@@ -381,7 +399,9 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
     job_ids: list[str] = []
     row_counts: dict[str, int] = {}
     for table_name in FEATURE_TABLES:
-        script = build_materialize_script(args.project, args.dataset, table_name)
+        script = build_materialize_script(
+            args.project, args.dataset, args.raw_dataset, table_name
+        )
         job = client.query(script)
         rows = list(job.result())
         if len(rows) != 1:
@@ -398,6 +418,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
         "status": "succeeded",
         "project": args.project,
         "dataset": args.dataset,
+        "raw_dataset": args.raw_dataset,
         "tables": list(FEATURE_TABLES),
         "job_ids": job_ids,
         "row_counts": row_counts,

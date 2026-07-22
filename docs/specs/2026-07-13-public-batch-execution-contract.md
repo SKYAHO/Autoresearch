@@ -12,8 +12,7 @@
 로컬, CI와 KubernetesPodOperator에서 동일하게 동작해야 한다.
 
 이 계약은 현재 운영 범위인 YouTube 일일 수집, YouTube backfill, action-log
-single/shard/merge, action-log 품질 검사, BigQuery feature materialize와 Feast
-single/shard/merge, action-log 품질 검사, BigQuery feature materialize와 Feast
+single/shard/merge, action-log 품질 검사, BigQuery feature materialize, Feast
 materialize, 일일 추천 결과 적재를 다룬다. 학습·평가, MLflow, FastAPI serving
 command는 각 기능이 운영화될 때 별도
 revision으로 추가한다.
@@ -46,7 +45,7 @@ python -m autoresearch.jobs.action_log --mode single [options]
 python -m autoresearch.jobs.action_log --mode shard [options]
 python -m autoresearch.jobs.action_log --mode merge [options]
 python -m autoresearch.jobs.action_log_quality [options]
-python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <dataset-id>
+python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <feature-dataset-id> --raw-dataset <raw-dataset-id>
 python -m autoresearch.jobs.feast_materialize [options]
 python -m src.pipeline.daily_recommendations [options]
 ```
@@ -137,11 +136,12 @@ Application은 환경 변수를 읽고 누락·빈 값을 검증한다.
 
 ## BigQuery feature materialize
 
-- `--project`와 `--dataset`은 BigQuery identifier 문법을 만족하는 필수 인자다.
+- `--project`, `--dataset`, `--raw-dataset`은 BigQuery identifier 문법을 만족하는 필수 인자다.
+- `--dataset`은 feature target과 임시 virtual-user source를, `--raw-dataset`은 action-log와 YouTube-trending source를 가리킨다.
 - 명령은 `user_static_feature`, `user_dynamic_feature`, `video_feature`를 이 순서로 전체 갱신한다.
 - 각 테이블은 transaction 내 `DELETE` + `INSERT`로 갱신한다. 한 테이블의 실패는 기존 행을 유지하고 뒤 테이블 실행을 중단하며 exit 1이다.
 - raw 결과가 0행이면 transaction을 실패시킨다.
-- 성공 `job_summary`에는 project, dataset, 대상 table 이름, BigQuery job ID와
+- 성공 `job_summary`에는 project, dataset, raw_dataset, 대상 table 이름, BigQuery job ID와
   `row_counts`를 포함한다. `row_counts`는 `tables`와 동일한 실행 순서의 table
   name을 key로 하고, 각 transaction이 commit된 뒤 target table에서 조회한 최종
   행 수를 JSON integer 값으로 하는 mapping이다. 결과가 정확히 한 행의 integer
