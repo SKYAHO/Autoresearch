@@ -28,10 +28,12 @@ __arch__ = {
         "historical event를 wide training row로 변환",
         "point-in-time 학습 데이터셋 생성",
         "학습 입력 품질 검증",
+        "BigQuery raw/feature dataset 해석 규칙",
     ],
     "not_owns": [
         "정책 시뮬레이션 노출 선택",
         "CTR 모델 학습 실행",
+        "BigQuery dataset 생성과 raw 테이블 적재",
     ],
 }
 
