@@ -335,3 +335,53 @@ def test_round_writes_html_report(tmp_path, stub_reranker):
     html_path = tmp_path / "policy_round_report.html"
     assert html_path.is_file()
     assert "stub-run" in html_path.read_text(encoding="utf-8")
+
+
+def test_round_dumps_drafts_and_meta(tmp_path, stub_reranker):
+    """LLM 판정이 draft parquet + 사이드카 메타로 남아야 한다(캘리브레이션 입력)."""
+    import json
+
+    from autoresearch.action_logs.pipeline import read_action_log_draft_parquet
+    from autoresearch.action_logs.schema import (
+        ACTION_LOG_SCHEMA_VERSION,
+        PROMPT_VERSION,
+    )
+
+    main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        as_of="2026-07-20 00:00:00",
+        policy_version="stub-run",
+        output_dir=str(tmp_path),
+        input_paths={"personas": "demo/personas.csv"},
+    )
+
+    drafts = read_action_log_draft_parquet(tmp_path / "action_log_drafts.parquet")
+    assert drafts
+    assert all(0.0 <= d.click_propensity <= 1.0 for d in drafts)
+
+    meta = json.loads((tmp_path / "action_log_drafts_meta.json").read_text(encoding="utf-8"))
+    assert meta["llm_model"] == "fixture-rule-action-log"
+    assert meta["prompt_version"] == PROMPT_VERSION
+    assert meta["schema_version"] == ACTION_LOG_SCHEMA_VERSION
+    assert meta["exposure_args"] == {
+        "seed": 42,
+        "k": 6,
+        "exploration_ratio": 0.0,
+        "as_of": "2026-07-20 00:00:00",
+    }
+    assert meta["policy_version"] == "stub-run"
+    assert meta["virtual_users"] == 4
+    assert meta["users"] == 4
+    assert meta["drafts"] == len(drafts)
+    assert meta["inputs"] == {"personas": "demo/personas.csv"}
+    # click_threshold는 리플레이에서 바꾸는 값이므로 노출 인자에 없어야 한다.
+    assert "click_threshold" not in meta["exposure_args"]

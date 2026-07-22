@@ -18,6 +18,8 @@ import argparse
 import json
 import os
 import random
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -32,7 +34,9 @@ from autoresearch.action_logs.pipeline import (
     ExposureMetadata,
     _expand_events,
     generate_action_log_drafts,
+    read_action_log_draft_parquet,
     select_clicks_per_slate,
+    write_action_log_draft_parquet,
     write_event_log_parquet,
     write_event_log_warehouse_jsonl,
     write_quarantine_jsonl,
@@ -64,6 +68,9 @@ from src.serving.service import Reranker
 
 BASELINE = "baseline"
 MODEL = "model"
+
+DRAFTS_FILENAME = "action_log_drafts.parquet"
+DRAFTS_META_FILENAME = "action_log_drafts_meta.json"
 
 
 def build_pool_feature_frame(
@@ -125,6 +132,39 @@ def _to_candidate_videos(frame: pd.DataFrame, feature_columns: tuple[str, ...]) 
     return candidates
 
 
+def _write_drafts_meta(
+    path: Path,
+    *,
+    llm_model: str,
+    exposure_args: Mapping[str, object],
+    policy_version: str,
+    virtual_users: int,
+    users: int,
+    drafts: int,
+    input_paths: Mapping[str, str] | None,
+) -> None:
+    """draft parquet 옆에 계보와 노출 결정 인자를 사이드카 JSON으로 남긴다.
+
+    llm_model을 draft parquet 컬럼이 아니라 사이드카에 두는 이유는
+    ACTION_LOG_DRAFT_PARQUET_SCHEMA가 daily.py shard/merge와 공유하는 계약이기
+    때문이다. click_threshold는 리플레이에서 바꾸는 값이므로 exposure_args에
+    넣지 않는다.
+    """
+    payload = {
+        "llm_model": llm_model,
+        "prompt_version": PROMPT_VERSION,
+        "schema_version": ACTION_LOG_SCHEMA_VERSION,
+        "exposure_args": dict(exposure_args),
+        "policy_version": policy_version,
+        "virtual_users": virtual_users,
+        "users": users,
+        "drafts": drafts,
+        "inputs": dict(input_paths or {}),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def main(
     personas: pd.DataFrame,
     virtual_users: list[dict],
@@ -142,6 +182,7 @@ def main(
     policy_version: str = "local",
     as_of: str = "2026-07-20 00:00:00",
     output_dir: str = "data/generated/policy_round",
+    input_paths: Mapping[str, str] | None = None,
 ) -> dict:
     """정책 시뮬레이션 라운드를 실행하고 리포트 dict를 반환한다."""
     if reranker is None:
@@ -207,6 +248,26 @@ def main(
         request, virtual_users, list(video_by_id.values()), generator,
         candidate_provider=provider,
     )
+    exposure_args = {
+        "seed": seed,
+        "k": k,
+        "exploration_ratio": exploration_ratio,
+        "as_of": as_of,
+    }
+    _write_drafts_meta(
+        Path(output_dir) / DRAFTS_META_FILENAME,
+        llm_model=generator.model_name,
+        exposure_args=exposure_args,
+        policy_version=policy_version,
+        virtual_users=len(virtual_users),
+        users=len(exposures_by_user),
+        drafts=len(draft_result.drafts),
+        input_paths=input_paths,
+    )
+    write_action_log_draft_parquet(
+        draft_result.drafts, Path(output_dir) / DRAFTS_FILENAME
+    )
+
     draft_by_key: dict[tuple[str, str], ImpressionDraft] = {
         (d.user_id, d.video_id): d for d in draft_result.drafts
     }
