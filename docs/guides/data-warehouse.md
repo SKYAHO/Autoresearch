@@ -144,16 +144,16 @@ uv run python scripts/load_raw_to_bigquery.py \
 ### 🔸 SQL
 
 > [!NOTE]
-> 아래 SQL은 `CREATE OR REPLACE TABLE`로 표기되어 있지만, 공개 batch CLI
-> (`autoresearch.jobs.feature_materialize`)는 `BEGIN TRANSACTION; DELETE;
-> INSERT INTO {SELECT 본문}; COMMIT TRANSACTION;`으로 실행한다 —
-> 테이블 스키마(REQUIRED 등)를 Terraform이 관리하기 시작해서, `CREATE OR
-> REPLACE`/`WRITE_TRUNCATE`처럼 SELECT 결과에서 스키마를 다시 유추하는
-> 방식은 REQUIRED 제약을 지워버린다. 아래 `SELECT` 본문 자체는 그대로다.
+> 아래 SQL은 공개 batch CLI(`autoresearch.jobs.feature_materialize`)가 소유하는
+> `SELECT` 본문이다. CLI는 `BEGIN TRANSACTION; DELETE FROM
+> {target} WHERE TRUE; INSERT INTO {target} ({명시적 컬럼}) SELECT {명시적 컬럼}
+> FROM materialized_rows; COMMIT TRANSACTION;`으로 실행한다. Terraform이 관리하는
+> 테이블 스키마와 REQUIRED 제약을 보존하기 위해 `CREATE OR REPLACE`나
+> `TRUNCATE`는 사용하지 않는다.
 
 ```sql
 -- 실행은 python -m autoresearch.jobs.feature_materialize가 담당한다.
--- Terraform 관리 테이블의 metadata를 보존하기 위해 CREATE OR REPLACE TABLE을 사용하지 않는다.
+-- 이 SELECT 본문은 feature_materialize CLI가 DELETE FROM ... WHERE TRUE와 명시적 INSERT로 적재한다.
 SELECT
   user_id,
 
@@ -296,13 +296,16 @@ MVP의 daily snapshot 방식에서는 impression 당일 00:00 이후부터 impre
 ### 🔸 SQL
 
 > [!NOTE]
-> 실제 배치 job은 `CREATE OR REPLACE TABLE`이 아니라 `TRUNCATE TABLE` +
-> `INSERT INTO`를 트랜잭션으로 묶어 실행한다 — 이유는 `user_static_feature`
-> 절의 노트 참고.
+> 아래 SQL은 공개 batch CLI(`autoresearch.jobs.feature_materialize`)가 소유하는
+> `SELECT` 본문이다. CLI는 `BEGIN TRANSACTION; DELETE FROM
+> {target} WHERE TRUE; INSERT INTO {target} ({명시적 컬럼}) SELECT {명시적 컬럼}
+> FROM materialized_rows; COMMIT TRANSACTION;`으로 실행한다. Terraform이 관리하는
+> 테이블 스키마와 REQUIRED 제약을 보존하기 위해 `CREATE OR REPLACE`나
+> `TRUNCATE`는 사용하지 않는다.
 
 ```sql
 -- 실행은 python -m autoresearch.jobs.feature_materialize가 담당한다.
--- Terraform 관리 테이블의 metadata를 보존하기 위해 CREATE OR REPLACE TABLE을 사용하지 않는다.
+-- 이 SELECT 본문은 feature_materialize CLI가 DELETE FROM ... WHERE TRUE와 명시적 INSERT로 적재한다.
 WITH action_log AS (
   SELECT
     user_id,
@@ -517,13 +520,16 @@ LEFT JOIN category_rank c
 ### 🔸 SQL
 
 > [!NOTE]
-> 실제 배치 job은 `CREATE OR REPLACE TABLE`이 아니라 `TRUNCATE TABLE` +
-> `INSERT INTO`를 트랜잭션으로 묶어 실행한다 — 이유는 `user_static_feature`
-> 절의 노트 참고.
+> 아래 SQL은 공개 batch CLI(`autoresearch.jobs.feature_materialize`)가 소유하는
+> `SELECT` 본문이다. CLI는 `BEGIN TRANSACTION; DELETE FROM
+> {target} WHERE TRUE; INSERT INTO {target} ({명시적 컬럼}) SELECT {명시적 컬럼}
+> FROM materialized_rows; COMMIT TRANSACTION;`으로 실행한다. Terraform이 관리하는
+> 테이블 스키마와 REQUIRED 제약을 보존하기 위해 `CREATE OR REPLACE`나
+> `TRUNCATE`는 사용하지 않는다.
 
 ```sql
 -- 실행은 python -m autoresearch.jobs.feature_materialize가 담당한다.
--- Terraform 관리 테이블의 metadata를 보존하기 위해 CREATE OR REPLACE TABLE을 사용하지 않는다.
+-- 이 SELECT 본문은 feature_materialize CLI가 DELETE FROM ... WHERE TRUE와 명시적 INSERT로 적재한다.
 WITH parsed AS (
   SELECT
     video_id,

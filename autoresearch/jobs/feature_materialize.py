@@ -1,9 +1,11 @@
 """Raw warehouse와 Feast·학습 소비 단계 사이의 feature materialization을 담당한다.
 
-이 모듈은 raw action log와 YouTube trending 데이터를 Terraform이 관리하는
+이 모듈은 raw action log, YouTube trending, 가상 유저
+``asset_virtual_user_vu_1000`` 데이터를 Terraform이 관리하는
 ``user_static_feature``, ``user_dynamic_feature``, ``video_feature`` target으로
-변환하는 SQL 및 공개 JSONL batch CLI를 제공한다. GCS raw 적재는 인접 수집
-단계가, Feast·학습 데이터 조회는 downstream 단계가 담당한다.
+변환하고, 스키마 순서가 명시된 INSERT를 수행하는 SQL 및 공개 JSONL batch CLI를
+제공한다. GCS raw 적재는 인접 수집 단계가, Feast·학습 데이터 조회는 downstream
+단계가 담당한다.
 ``src.pipeline.build_feature_tables``, Airflow schedule, Terraform 관리는 이
 모듈의 책임이 아니다.
 """
@@ -30,6 +32,40 @@ FEATURE_TABLES: tuple[str, ...] = (
     "user_dynamic_feature",
     "video_feature",
 )
+_FEATURE_COLUMNS: dict[str, tuple[str, ...]] = {
+    "user_static_feature": (
+        "user_id",
+        "event_timestamp",
+        "age_group",
+        "occupation",
+        "preferred_category",
+        "preferred_topics",
+        "watch_time_band",
+    ),
+    "user_dynamic_feature": (
+        "user_id",
+        "event_timestamp",
+        "recent_click_count_7d",
+        "recent_view_count_7d",
+        "recent_watch_time_7d",
+        "recent_like_count_7d",
+        "historical_category_affinity",
+        "total_event_count_7d",
+    ),
+    "video_feature": (
+        "video_id",
+        "event_timestamp",
+        "category_id",
+        "duration_sec",
+        "view_count",
+        "like_ratio",
+        "comment_ratio",
+        "days_since_upload",
+        "channel_subscriber_count",
+        "channel_view_count",
+        "channel_video_count",
+    ),
+}
 _GCP_PROJECT_ID_PATTERN = re.compile(r"[a-z][a-z0-9-]{4,28}[a-z0-9]")
 
 
@@ -349,6 +385,7 @@ def build_materialize_script(
         raise ValueError("unsupported feature table")
 
     target = f"`{project_id}.{dataset_id}.{table_name}`"
+    column_list = ",\n  ".join(_FEATURE_COLUMNS[table_name])
     select_sql = _FEATURE_SELECTS[table_name].format(
         project_id=project_id,
         dataset_id=dataset_id,
@@ -369,7 +406,12 @@ CREATE TEMP TABLE materialized_rows AS
 ASSERT (SELECT COUNT(*) FROM materialized_rows) > 0
   AS 'materialized feature result must not be empty';
 DELETE FROM {target} WHERE TRUE;
-INSERT INTO {target} SELECT * FROM materialized_rows;
+INSERT INTO {target} (
+  {column_list}
+)
+SELECT
+  {column_list}
+FROM materialized_rows;
 COMMIT TRANSACTION;
 SELECT COUNT(*) AS final_row_count FROM {target};
 """

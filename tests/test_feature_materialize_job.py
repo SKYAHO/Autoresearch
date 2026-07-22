@@ -336,6 +336,69 @@ def test_feature_tables_are_the_three_supported_sources():
     )
 
 
+@pytest.mark.parametrize(
+    ("table_name", "columns"),
+    [
+        (
+            "user_static_feature",
+            (
+                "user_id",
+                "event_timestamp",
+                "age_group",
+                "occupation",
+                "preferred_category",
+                "preferred_topics",
+                "watch_time_band",
+            ),
+        ),
+        (
+            "user_dynamic_feature",
+            (
+                "user_id",
+                "event_timestamp",
+                "recent_click_count_7d",
+                "recent_view_count_7d",
+                "recent_watch_time_7d",
+                "recent_like_count_7d",
+                "historical_category_affinity",
+                "total_event_count_7d",
+            ),
+        ),
+        (
+            "video_feature",
+            (
+                "video_id",
+                "event_timestamp",
+                "category_id",
+                "duration_sec",
+                "view_count",
+                "like_ratio",
+                "comment_ratio",
+                "days_since_upload",
+                "channel_subscriber_count",
+                "channel_view_count",
+                "channel_video_count",
+            ),
+        ),
+    ],
+)
+def test_script_inserts_explicit_columns_in_target_schema_order(table_name, columns):
+    script = feature_materialize.build_materialize_script(
+        "test-project", "test_dataset", "raw_dataset", table_name
+    )
+    column_list = ",\n  ".join(columns)
+    expected_insert = (
+        f"INSERT INTO `test-project.test_dataset.{table_name}` (\n"
+        f"  {column_list}\n"
+        ")\n"
+        "SELECT\n"
+        f"  {column_list}\n"
+        "FROM materialized_rows;"
+    )
+
+    assert expected_insert in script
+
+
 def test_dynamic_script_separates_raw_and_feature_datasets():
     script = feature_materialize.build_materialize_script(
         "test-project",
