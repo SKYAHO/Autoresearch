@@ -128,6 +128,9 @@ def gen_personas(n=50):
         k = random.randint(2, 3)
         interests = random.sample(TOPIC_VOCAB, k=k)
         hobby_text = ", ".join(interests)
+        # virtual_users 파이프라인의 YouTubeProfile.primary_categories를 흉내:
+        # 관심사를 실제 카테고리 vocabulary로 매핑, 중복 제거, 순서 유지.
+        primary_categories = list(dict.fromkeys(TOPIC_TO_CATEGORY[t] for t in interests))
         rows.append(
             {
                 "uuid": f"u{i:04d}",
@@ -147,6 +150,7 @@ def gen_personas(n=50):
                 "province": random.choice(PROVINCES),
                 "country": "KR",
                 "watch_time_band": random.choice(WATCH_TIME_BAND_RAW_VOCAB),
+                "primary_categories": json.dumps(primary_categories, ensure_ascii=False),
                 # 검증 편의를 위한 ground-truth 컬럼 (실제 raw data에는 없음, QA용)
                 "_true_interests": json.dumps(interests, ensure_ascii=False),
             }

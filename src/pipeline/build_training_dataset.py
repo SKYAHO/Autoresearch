@@ -452,8 +452,16 @@ def main(
     con.register("video_feature", video_feature)
     con.register("online_features", online_features)
 
+    # primary_categories는 virtual_users 파이프라인이 LLM으로 직접 산출한 실제
+    # preferred_category 값이다(#205) — 있으면 그대로 배선하고, 없으면(구식 mock
+    # personas.csv 등) compute_interaction_columns()가 키워드 매핑 mock으로
+    # fallback한다.
+    primary_categories_select = (
+        "p.primary_categories,\n            " if "primary_categories" in personas.columns else ""
+    )
+
     joined = con.execute(
-        """
+        f"""
         SELECT
             o.user_id,
             o.video_id,
@@ -476,7 +484,7 @@ def main(
             vf.channel_video_count,
             p.hobbies_and_interests,
             p.hobbies_and_interests_list,
-            v.title,
+            {primary_categories_select}v.title,
             v.description
         FROM online_features o
         JOIN video_feature vf ON vf.video_id = o.video_id
