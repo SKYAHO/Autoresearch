@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Do not modify or delete `src/pipeline/build_feature_tables.py`.
-- The public operational command is `python -m autoresearch.jobs.feature_materialize`.
+- The public operational command is `python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <feature-dataset-id> --raw-dataset <raw-dataset-id>`.
 - A schedule must not invoke both materialization paths for the same feature target tables.
 - Do not submit BigQuery DML during this work.
 

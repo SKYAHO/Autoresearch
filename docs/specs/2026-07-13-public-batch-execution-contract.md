@@ -137,7 +137,7 @@ Application은 환경 변수를 읽고 누락·빈 값을 검증한다.
 ## BigQuery feature materialize
 
 - `--project`, `--dataset`, `--raw-dataset`은 BigQuery identifier 문법을 만족하는 필수 인자다.
-- `--dataset`은 feature target과 임시 virtual-user source를, `--raw-dataset`은 action-log와 YouTube-trending source를 가리킨다.
+- `--dataset`은 `user_static_feature`, `user_dynamic_feature`, `video_feature` target table을 가리킨다. `--raw-dataset`은 `data_lake_action_log`, `data_lake_youtube_trending_kr`, `asset_virtual_user_vu_1000` source table을 가리키며, 세 source table은 materialization 전에 모두 존재해야 한다.
 - 명령은 `user_static_feature`, `user_dynamic_feature`, `video_feature`를 이 순서로 전체 갱신한다.
 - 각 테이블은 transaction 내 `DELETE` + `INSERT`로 갱신한다. 한 테이블의 실패는 기존 행을 유지하고 뒤 테이블 실행을 중단하며 exit 1이다.
 - raw 결과가 0행이면 transaction을 실패시킨다.

@@ -285,7 +285,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
 `docs/specs/2026-07-13-public-batch-execution-contract.md`의 공개 명령 목록에 다음 행을 추가하고, `Feast materialize` 절 바로 앞에 새 절을 추가한다.
 
 ```text
-python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <dataset-id>
+python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset <feature-dataset-id> --raw-dataset <raw-dataset-id>
 ```
 
 새 절에는 다음 계약을 명시한다.
@@ -293,7 +293,8 @@ python -m autoresearch.jobs.feature_materialize --project <project-id> --dataset
 ```markdown
 ## BigQuery feature materialize
 
-- `--project`와 `--dataset`은 BigQuery identifier 문법을 만족하는 필수 인자다.
+- `--project`, `--dataset`, `--raw-dataset`은 BigQuery identifier 문법을 만족하는 필수 인자다.
+- `--dataset`은 feature target table을, `--raw-dataset`은 action-log, YouTube-trending, virtual-user source table을 가리킨다.
 - 명령은 `user_static_feature`, `user_dynamic_feature`, `video_feature`를 이 순서로 전체 갱신한다.
 - 각 테이블은 transaction 내 `DELETE` + `INSERT`로 갱신한다. 한 테이블의 실패는 기존 행을 유지하고 뒤 테이블 실행을 중단하며 exit 1이다.
 - raw 결과가 0행이면 transaction을 실패시킨다.
