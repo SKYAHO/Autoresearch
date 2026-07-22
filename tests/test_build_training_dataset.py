@@ -356,6 +356,63 @@ def test_main_does_not_require_video_title_or_description(tmp_path, monkeypatch)
     assert len(result) == 1
 
 
+def test_main_preferred_category_match_varies_by_event_category_for_same_user(tmp_path, monkeypatch):
+    # persona의 primary_categories는 유저당 1개뿐이라 (user_id, category_id) 단위로
+    # 선계산해 조인한다(#240) — 같은 유저가 서로 다른 category_id의 영상 2개에
+    # 노출되면, 조인이 카테고리별로 올바르게 구분해서 preferred_category_match를
+    # 매겨야 한다(유저 단위로 뭉개져 항상 같은 값이 나오면 회귀).
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    pd.DataFrame(
+        {
+            "video_id": ["v1", "v2"],
+            "categoryId": ["Music", "Gaming"],
+            "duration": ["PT5M", "PT5M"],
+            "viewCount": [1000, 1000],
+            "likeCount": [50, 50],
+            "commentCount": [10, 10],
+            "publishedAt": ["2026-01-01", "2026-01-01"],
+        }
+    ).to_csv(raw_dir / "youtube_videos.csv", index=False)
+    pd.DataFrame(
+        {
+            "uuid": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobbies_and_interests": ["music"],
+            "hobbies_and_interests_list": ["[]"],
+            "primary_categories": ['["Music"]'],
+        }
+    ).to_csv(raw_dir / "personas.csv", index=False)
+
+    events_path = tmp_path / "events.csv"
+    pd.DataFrame(
+        {
+            "event_id": ["e1", "e2"],
+            "user_id": ["u1", "u1"],
+            "video_id": ["v1", "v2"],
+            "timestamp": ["2026-07-08 12:00:00", "2026-07-08 12:05:00"],
+            "clicked": [0, 0],
+            "liked": [0, 0],
+            "watch_time_sec": [0, 0],
+        }
+    ).to_csv(events_path, index=False)
+
+    output_path = tmp_path / "training_dataset.csv"
+    build_training_dataset.main(
+        raw_dir=str(raw_dir),
+        events_path=str(events_path),
+        output_path=str(output_path),
+    )
+
+    result = pd.read_csv(output_path).sort_values("category_id").reset_index(drop=True)
+    assert len(result) == 2
+    gaming_row = result[result["category_id"] == "Gaming"].iloc[0]
+    music_row = result[result["category_id"] == "Music"].iloc[0]
+    assert gaming_row["preferred_category_match"] == 0
+    assert music_row["preferred_category_match"] == 1
+
+
 def test_main_bigquery_mode_never_resolves_local_data_dir(tmp_path, monkeypatch):
     # Dockerfile.train(GCS 코드 부트스트랩 이미지)은 로컬 data/ 디렉토리를 이미지에
     # 전혀 포함하지 않는다. videos_source/events_source가 모두 bigquery이고

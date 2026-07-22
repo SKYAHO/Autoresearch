@@ -289,6 +289,57 @@ def compute_point_in_time_user_features(
     ).df()
 
 
+def compute_user_topic_features(personas_raw: pd.DataFrame, category_ids) -> pd.DataFrame:
+    """유저 x category_id 단위로 topic_similarity/preferred_category_match를 선계산한다.
+
+    hobbies_and_interests_list/primary_categories는 persona당 1개뿐인데, 이벤트
+    (impression) 단위로 조인하면 유저당 평균 노출 수만큼 리스트/임베딩 컬럼이
+    복제되어 대규모 데이터에서 OOM을 유발한다(#231/#238 이후에도 재현, #240).
+    topic_similarity/preferred_category_match는 실제로는 (user, category_id)
+    조합에만 의존하고 category_id는 관측되는 값이 적으므로, persona 수 x
+    distinct category 수(이벤트 수보다 훨씬 작음) 크기로 미리 계산해두면
+    이벤트 조인 시에는 float/int 컬럼만 붙이면 된다.
+
+    Args:
+        personas_raw: uuid/hobbies_and_interests_list[/primary_categories] 컬럼을 가진 persona 원본.
+        category_ids: 이벤트 쪽에 실제로 존재하는 category_id 값들
+            (예: video_feature["category_id"].unique()).
+
+    Returns:
+        user_id, category_id, topic_similarity, preferred_category_match 컬럼을
+        가진 DataFrame (행 수 = len(personas_raw) x len(distinct category_ids)).
+    """
+    preferred_topics = personas_raw["hobbies_and_interests_list"].apply(extract_keywords_safe)
+    if "primary_categories" in personas_raw.columns:
+        preferred_category = personas_raw["primary_categories"].apply(parse_primary_categories)
+    else:
+        preferred_category = preferred_topics.apply(derive_preferred_category)
+
+    unique_keywords = sorted({kw for kws in preferred_topics for kw in kws})
+    keyword_vectors = embed_texts(unique_keywords, task_type="RETRIEVAL_QUERY")
+    keyword_embedding_cache = dict(zip(unique_keywords, keyword_vectors))
+    user_keyword_embeddings = preferred_topics.apply(
+        lambda kws: [keyword_embedding_cache[kw] for kw in kws]
+    )
+
+    distinct_category_ids = list(dict.fromkeys(category_ids))
+    rows = [
+        {
+            "user_id": user_id,
+            "category_id": category_id,
+            "topic_similarity": compute_topic_similarity(kw_embeddings, category_id),
+            "preferred_category_match": compute_preferred_category_match(pref_cat, category_id),
+        }
+        for user_id, kw_embeddings, pref_cat in zip(
+            personas_raw["uuid"], user_keyword_embeddings, preferred_category
+        )
+        for category_id in distinct_category_ids
+    ]
+    return pd.DataFrame(
+        rows, columns=["user_id", "category_id", "topic_similarity", "preferred_category_match"]
+    )
+
+
 def compute_interaction_columns(joined: pd.DataFrame) -> pd.DataFrame:
     """preferred/topic/match 상호작용 피처를 계산해 컬럼으로 추가한다.
 
