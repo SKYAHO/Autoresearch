@@ -1299,15 +1299,18 @@ def test_cli_parses_click_threshold() -> None:
 def test_cli_requires_click_threshold() -> None:
     """--click-threshold 없이는 CLI가 조용히 0.55로 채우지 않고 실패해야 한다.
 
-    브리프 원문은 `pytest.raises(SystemExit)`을 기대하지만, 이 파서
-    (`_ArgumentParser`)는 `error()`를 오버라이드해 필수 인자 누락 시
-    `SystemExit` 대신 `BatchArgumentError`를 던진다(위 `test_cli_parses_click_threshold`의
-    주석과 동일한 사유). 실제 구현과 일치하도록 예외 타입을 맞춘다.
+    #260 후속 수정으로 --click-threshold는 파서 레벨 required가 아니라
+    single/shard 모드에서만 `_validate_args`가 강제하는 모드-스코프 필수
+    인자다(merge는 click_threshold를 사용하지 않으므로 대상에서 제외).
+    따라서 parse_args 자체는 성공하고, `_validate_args` 호출 시
+    `BatchArgumentError`가 발생해야 한다.
     """
 
-    from autoresearch.jobs.action_log import BatchArgumentError, _build_parser
+    from autoresearch.jobs.action_log import BatchArgumentError, _build_parser, _validate_args
 
+    args = _build_parser().parse_args(
+        ["--mode", "single", "--partition-date", "2026-07-22"]
+    )
+    assert args.click_threshold is None
     with pytest.raises(BatchArgumentError):
-        _build_parser().parse_args(
-            ["--mode", "single", "--partition-date", "2026-07-22"]
-        )
+        _validate_args(args)

@@ -130,7 +130,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--generator-name", default="rule_based")
     parser.add_argument("--model-name")
     parser.add_argument("--candidates-per-user", type=_positive_int, default=24)
-    parser.add_argument("--click-threshold", type=_ratio, required=True)
+    parser.add_argument("--click-threshold", type=_ratio)
     parser.add_argument("--personalized-ratio", type=_ratio, default=0.7)
     parser.add_argument("--popular-ratio", type=_ratio, default=0.2)
     parser.add_argument("--exploration-ratio", type=_ratio, default=0.1)
@@ -214,7 +214,13 @@ def _validate_args(args: argparse.Namespace) -> None:
                 "--recommendations-table is only valid with "
                 "--exposure-source model"
             )
-        _require(args, "youtube_base_path", "virtual_users_path", "output_base_path")
+        _require(
+            args,
+            "youtube_base_path",
+            "virtual_users_path",
+            "output_base_path",
+            "click_threshold",
+        )
         if args.max_quarantine_ratio is None:
             args.max_quarantine_ratio = 0.5
         try:
@@ -264,6 +270,7 @@ def _validate_args(args: argparse.Namespace) -> None:
             "shard_index",
             "exposure_source",
             "recommendations_table",
+            "click_threshold",
         )
 
     path_names = (
