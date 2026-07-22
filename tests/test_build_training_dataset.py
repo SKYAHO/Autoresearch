@@ -69,6 +69,11 @@ def test_load_videos_from_bigquery_queries_configured_table(monkeypatch):
     assert "video_category AS categoryId" in query_text
     assert "channel_subscriber_count AS channelSubscriberCount" in query_text
     assert "channel_view_count AS channelViewCount" in query_text
+    # title/description은 다운스트림 어디에서도 쓰지 않는다 — 실 데이터
+    # 규모(12만+ 행)에서 텍스트 컬럼을 그냥 들고만 있는 낭비를 막기 위해
+    # 아예 조회하지 않는다(#231/#249).
+    assert "video_title" not in query_text
+    assert "video_description" not in query_text
     assert "channel_video_count AS channelVideoCount" in query_text
 
 

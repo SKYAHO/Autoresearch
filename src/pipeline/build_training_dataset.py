@@ -136,6 +136,11 @@ def load_videos_from_bigquery() -> pd.DataFrame:
 
     video_category는 이미 카테고리 이름 문자열이라(src.features.category_reference
     의 CATEGORY_DESCRIPTIONS 키와 동일 체계) 별도 ID→이름 변환이 필요 없다.
+
+    video_title/video_description은 조회하지 않는다 — compute_video_features()/
+    compute_point_in_time_user_features() 어디에서도 쓰지 않고, joined SELECT도
+    더 이상 참조하지 않는다(#238). 실 데이터 규모(12만+ 행)에서 텍스트 컬럼
+    2개를 그냥 들고만 있는 건 순수 낭비라 애초에 조회하지 않는다(#249).
     """
     from google.cloud import bigquery
 
@@ -149,8 +154,6 @@ def load_videos_from_bigquery() -> pd.DataFrame:
             video_like_count AS likeCount,
             video_comment_count AS commentCount,
             video_published_at AS publishedAt,
-            video_title AS title,
-            video_description AS description,
             channel_subscriber_count AS channelSubscriberCount,
             channel_view_count AS channelViewCount,
             channel_video_count AS channelVideoCount
@@ -385,6 +388,11 @@ def main(
         ).strftime("%Y-%m-%d")
         long_events = load_events_from_bigquery(padded_start, padded_end)
         events = derive_wide_events(long_events)
+        # long-format은 이벤트 종류(impression/click/view/like)별로 별도 행이라
+        # wide-format(impression 1행에 결과를 합침)보다 훨씬 크다. 변환 직후로는
+        # 다시 쓰이지 않으므로 실 데이터 규모에서 불필요하게 두 배로 들고 있지
+        # 않도록 명시적으로 해제한다(#231/#249).
+        del long_events
     else:
         events = pd.read_csv(events_path)
 
@@ -432,6 +440,11 @@ def main(
     online_features["timestamp"] = pd.to_datetime(online_features["timestamp"])
     print(f"  [OK] online_features: {len(online_features)} rows")
 
+    # videos/events는 위 point-in-time 계산이 마지막 사용처다 — 이후 단계는
+    # video_feature/online_features(이미 파생됨)만 쓰므로, 실 데이터 규모에서
+    # 원본 raw 프레임을 계속 들고 있지 않도록 여기서 해제한다(#231/#249).
+    del videos, events
+
     con.register("video_feature", video_feature)
     con.register("online_features", online_features)
 
@@ -476,6 +489,16 @@ def main(
         """
     ).df()
     print(f"  [OK] joined features: {len(joined)} rows")
+
+    # video_feature/online_features/user_topic_feature는 joined에 이미 흡수됐다
+    # (마지막 사용처). con.register()는 pandas 프레임을 커넥션에 계속 붙들어
+    # 두므로, Step 3에서 필요 없는 이 셋을 unregister한 뒤 Python 쪽 참조도
+    # 지워서 실 데이터 규모(수백만 행)에서 중복으로 메모리에 남지 않게 한다
+    # (#231/#249).
+    con.unregister("video_feature")
+    con.unregister("online_features")
+    con.unregister("user_topic_feature")
+    del video_feature, online_features, user_topic_feature
 
     print("\n[Step 2] Interaction Features 계산...")
 
