@@ -9,19 +9,6 @@ spec: docs/specs/2026-07-22-model-exposure-assembly.md
 
 from __future__ import annotations
 
-__arch__ = {
-    "stage": "training",
-    "role": "champion 모델 순위를 일일 노출 70% 슬라이스로 조립합니다.",
-    "owns": [
-        "user_recommendations 파티션 리더",
-        "70/20/10 노출 조립·정책 태그",
-    ],
-    "not_owns": [
-        "LLM 판정·클릭 정규화",
-        "일일 CLI 배선·cutover(#222)",
-    ],
-}
-
 import logging
 import random
 from dataclasses import dataclass, field

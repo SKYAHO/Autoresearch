@@ -22,20 +22,6 @@ TRUNCATE TABLE 단계에서 즉시 실패한다(의도된 동작, 조용히 새 
 않는다).
 """
 
-__arch__ = {
-    "stage": "training",
-    "role": "Feast offline store의 4개 중간 피처 테이블을 배치로 갱신합니다.",
-    "owns": [
-        "user_static_feature/user_dynamic_feature/video_feature/training_entity 데이터 갱신",
-        "TRUNCATE TABLE + INSERT INTO 트랜잭션 실행",
-    ],
-    "not_owns": [
-        "BigQuery 테이블 스키마 생성·관리(Terraform 소유)",
-        "user_topic_embedding/category_embedding/user_category_similarity 생성",
-        "Feast get_historical_features() 조회",
-    ],
-}
-
 import os
 
 BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "ar-infra-501607")
