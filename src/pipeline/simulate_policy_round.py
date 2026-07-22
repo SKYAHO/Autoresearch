@@ -73,6 +73,20 @@ DRAFTS_FILENAME = "action_log_drafts.parquet"
 DRAFTS_META_FILENAME = "action_log_drafts_meta.json"
 
 
+@dataclass(frozen=True)
+class DraftReplay:
+    """저장된 LLM 판정과 그 계보.
+
+    판정과 계보는 항상 함께 다뤄야 하므로(계보 없는 event log를 쓰지 않는다)
+    한 값으로 묶는다. exposure_args는 판정 라운드의 노출 결정 인자이며 CLI가
+    인자 상속·불일치 검사에 사용한다.
+    """
+
+    drafts: list[ImpressionDraft]
+    llm_model: str
+    exposure_args: Mapping[str, object]
+
+
 def build_pool_feature_frame(
     personas: pd.DataFrame,
     events: pd.DataFrame,
@@ -170,9 +184,10 @@ def main(
     virtual_users: list[dict],
     videos_raw: pd.DataFrame,
     events: pd.DataFrame,
-    generator: ActionLogGenerator,
+    generator: ActionLogGenerator | None = None,
     reranker: Reranker | None = None,
     *,
+    replay: DraftReplay | None = None,
     k: int = 10,
     exploration_ratio: float = 0.1,
     click_threshold: float,
@@ -185,6 +200,11 @@ def main(
     input_paths: Mapping[str, str] | None = None,
 ) -> dict:
     """정책 시뮬레이션 라운드를 실행하고 리포트 dict를 반환한다."""
+    if (generator is None) == (replay is None):
+        raise ValueError(
+            "generator와 replay 중 정확히 하나만 지정해야 합니다 "
+            "(replay는 저장된 판정을 재사용하므로 generator가 필요 없습니다)"
+        )
     if reranker is None:
         reranker = load_reranker(load_model_settings_from_environment())  # fail-fast
 
@@ -219,21 +239,7 @@ def main(
         ]
         exposures_by_user[user_id] = {MODEL: model_exposures, BASELINE: baseline_exposures}
 
-    # 2) 유저별 합집합 후보로 LLM 판정 1회 (provider 주입)
-    union_by_user: dict[str, list[dict]] = {}
-    for user_id, both in exposures_by_user.items():
-        seen: set[str] = set()
-        union: list[dict] = []
-        for exposure in both[MODEL] + both[BASELINE]:
-            if exposure.video_id in seen:
-                continue
-            seen.add(exposure.video_id)
-            union.append(video_by_id[exposure.video_id])
-        union_by_user[user_id] = union
-
-    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
-        return union_by_user.get(str(virtual_user.get("user_id", "")), [])
-
+    # 2) 판정 확보 — 신규 라운드는 LLM 1회, 리플레이는 저장된 판정 재사용
     request = EventGenerationRequest(
         click_threshold=click_threshold,
         candidates_per_user=max(1, 2 * k),
@@ -244,38 +250,75 @@ def main(
         warehouse_output_path=str(Path(output_dir) / "event_log.jsonl"),
         quarantine_output_path=str(Path(output_dir) / "event_log_quarantine.jsonl"),
     )
-    draft_result = generate_action_log_drafts(
-        request, virtual_users, list(video_by_id.values()), generator,
-        candidate_provider=provider,
-    )
     exposure_args = {
         "seed": seed,
         "k": k,
         "exploration_ratio": exploration_ratio,
         "as_of": as_of,
     }
-    _write_drafts_meta(
-        Path(output_dir) / DRAFTS_META_FILENAME,
-        llm_model=generator.model_name,
-        exposure_args=exposure_args,
-        policy_version=policy_version,
-        virtual_users=len(virtual_users),
-        users=len(exposures_by_user),
-        drafts=len(draft_result.drafts),
-        input_paths=input_paths,
-    )
-    write_action_log_draft_parquet(
-        draft_result.drafts, Path(output_dir) / DRAFTS_FILENAME
-    )
+
+    if replay is None:
+        assert generator is not None  # 위 XOR 검증이 보장한다
+        union_by_user: dict[str, list[dict]] = {}
+        for user_id, both in exposures_by_user.items():
+            seen: set[str] = set()
+            union: list[dict] = []
+            for exposure in both[MODEL] + both[BASELINE]:
+                if exposure.video_id in seen:
+                    continue
+                seen.add(exposure.video_id)
+                union.append(video_by_id[exposure.video_id])
+            union_by_user[user_id] = union
+
+        def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+            return union_by_user.get(str(virtual_user.get("user_id", "")), [])
+
+        draft_result = generate_action_log_drafts(
+            request, virtual_users, list(video_by_id.values()), generator,
+            candidate_provider=provider,
+        )
+        drafts = draft_result.drafts
+        quarantine = draft_result.quarantine
+        llm_model = generator.model_name
+
+        _write_drafts_meta(
+            Path(output_dir) / DRAFTS_META_FILENAME,
+            llm_model=llm_model,
+            exposure_args=exposure_args,
+            policy_version=policy_version,
+            virtual_users=len(virtual_users),
+            users=len(exposures_by_user),
+            drafts=len(drafts),
+            input_paths=input_paths,
+        )
+        write_action_log_draft_parquet(drafts, Path(output_dir) / DRAFTS_FILENAME)
+    else:
+        drafts = replay.drafts
+        quarantine = []  # 이번 실행에서 새로 격리된 판정이 없다
+        llm_model = replay.llm_model
 
     draft_by_key: dict[tuple[str, str], ImpressionDraft] = {
-        (d.user_id, d.video_id): d for d in draft_result.drafts
+        (d.user_id, d.video_id): d for d in drafts
     }
+
+    if replay is not None:
+        missing = [
+            (user_id, exposure.video_id)
+            for user_id, both in exposures_by_user.items()
+            for exposure in both[MODEL] + both[BASELINE]
+            if (user_id, exposure.video_id) not in draft_by_key
+        ]
+        if missing:
+            raise ValueError(
+                f"replay drafts do not cover {len(missing)} exposure(s) "
+                f"(first missing: {missing[0]}) — 노출 결정 인자나 유저 집합이 "
+                "판정 라운드와 다를 수 있습니다"
+            )
 
     # 3) 합동 per-slate 선정 1회 → clicked (user, video) 키셋
     clicked_keys = {
-        (draft_result.drafts[i].user_id, draft_result.drafts[i].video_id)
-        for i in select_clicks_per_slate(draft_result.drafts, click_threshold)
+        (drafts[i].user_id, drafts[i].video_id)
+        for i in select_clicks_per_slate(drafts, click_threshold)
     }
 
     # 4) 정책별 이벤트 확장 (판정 없는 노출은 quarantine 여파로 제외하고 계수)
@@ -347,9 +390,9 @@ def main(
     )
     output_path = Path(request.output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    write_event_log_parquet(batch, generator.model_name, output_path)
+    write_event_log_parquet(batch, llm_model, output_path)
     write_event_log_warehouse_jsonl(batch, request.warehouse_output_path)
-    write_quarantine_jsonl(draft_result.quarantine, request.quarantine_output_path)
+    write_quarantine_jsonl(quarantine, request.quarantine_output_path)
 
     report = {
         "policy_version": policy_version,
@@ -363,7 +406,7 @@ def main(
         "policies": per_policy,
         "overlap_jaccard_mean": overlap,
         "unseen_category_counts": unseen_counts,
-        "quarantined_chunks": len(draft_result.quarantine),
+        "quarantined_chunks": len(quarantine),
     }
     report_path = Path(output_dir) / "policy_round_report.json"
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

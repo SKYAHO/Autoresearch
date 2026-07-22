@@ -419,3 +419,146 @@ def test_round_meta_virtual_users_and_users_diverge_when_persona_missing(tmp_pat
     assert meta["virtual_users"] == 4
     assert meta["users"] == 2
     assert meta["virtual_users"] != meta["users"]
+
+
+def _run_round(tmp_path, stub_reranker, **overrides):
+    """덤프까지 수행하는 표준 라운드 실행 헬퍼."""
+    kwargs = dict(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        as_of="2026-07-20 00:00:00",
+        policy_version="stub-run",
+        output_dir=str(tmp_path),
+    )
+    kwargs.update(overrides)
+    return main(**kwargs)
+
+
+def _load_replay(round_dir):
+    """덤프된 판정과 계보를 DraftReplay로 되살린다."""
+    import json
+
+    from autoresearch.action_logs.pipeline import read_action_log_draft_parquet
+    from src.pipeline.simulate_policy_round import (
+        DRAFTS_FILENAME,
+        DRAFTS_META_FILENAME,
+        DraftReplay,
+    )
+
+    meta = json.loads((round_dir / DRAFTS_META_FILENAME).read_text(encoding="utf-8"))
+    return DraftReplay(
+        drafts=read_action_log_draft_parquet(round_dir / DRAFTS_FILENAME),
+        llm_model=str(meta["llm_model"]),
+        exposure_args=meta["exposure_args"],
+    )
+
+
+def test_replay_reproduces_identical_round(tmp_path, stub_reranker):
+    """같은 커트라인으로 리플레이하면 LLM 없이 동일한 결과가 나와야 한다."""
+    first_dir = tmp_path / "a"
+    original = _run_round(
+        first_dir, stub_reranker, generator=RuleBasedActionLogGenerator()
+    )
+
+    replayed = _run_round(
+        tmp_path / "b",
+        stub_reranker,
+        generator=None,
+        replay=_load_replay(first_dir),
+        output_dir=str(tmp_path / "b"),
+    )
+
+    assert replayed["policies"] == original["policies"]
+    assert replayed["dropped_exposures_without_judgment"] == 0
+
+
+def test_replay_with_higher_threshold_reduces_clicks(tmp_path, stub_reranker):
+    """판정을 재사용한 채 커트라인만 올리면 클릭이 줄어야 한다(캘리브레이션 전제)."""
+    first_dir = tmp_path / "a"
+    original = _run_round(
+        first_dir, stub_reranker, generator=RuleBasedActionLogGenerator()
+    )
+
+    strict = _run_round(
+        tmp_path / "b",
+        stub_reranker,
+        generator=None,
+        replay=_load_replay(first_dir),
+        click_threshold=1.0,  # 어떤 propensity도 넘을 수 없는 커트라인
+        output_dir=str(tmp_path / "b"),
+    )
+
+    assert original["policies"]["model"]["clicks"] >= 1
+    assert strict["policies"]["model"]["clicks"] == 0
+    assert strict["policies"]["baseline"]["clicks"] == 0
+
+
+def test_replay_fails_when_drafts_do_not_cover_exposures(tmp_path, stub_reranker):
+    """판정이 노출을 다 덮지 못하면 조용히 넘기지 않고 실패해야 한다."""
+    first_dir = tmp_path / "a"
+    _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
+
+    replay = _load_replay(first_dir)
+    from src.pipeline.simulate_policy_round import DraftReplay
+
+    truncated = DraftReplay(
+        drafts=replay.drafts[:-1],
+        llm_model=replay.llm_model,
+        exposure_args=replay.exposure_args,
+    )
+
+    with pytest.raises(ValueError, match="cover"):
+        _run_round(
+            tmp_path / "b",
+            stub_reranker,
+            generator=None,
+            replay=truncated,
+            output_dir=str(tmp_path / "b"),
+        )
+
+
+def test_replay_event_log_keeps_original_llm_model(tmp_path, stub_reranker):
+    """리플레이 event log의 계보는 원본 판정 모델이어야 한다."""
+    import pyarrow.parquet as pq
+
+    first_dir = tmp_path / "a"
+    _run_round(
+        first_dir,
+        stub_reranker,
+        generator=RuleBasedActionLogGenerator(model_name="judge-v9"),
+    )
+
+    second_dir = tmp_path / "b"
+    _run_round(
+        second_dir,
+        stub_reranker,
+        generator=None,
+        replay=_load_replay(first_dir),
+        output_dir=str(second_dir),
+    )
+
+    table = pq.read_table(second_dir / "event_log.parquet").to_pandas()
+    assert set(table["llm_model"].unique()) == {"judge-v9"}
+
+
+def test_main_requires_exactly_one_of_generator_or_replay(tmp_path, stub_reranker):
+    with pytest.raises(ValueError, match="정확히 하나"):
+        _run_round(tmp_path / "a", stub_reranker, generator=None)
+
+    first_dir = tmp_path / "b"
+    _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
+    with pytest.raises(ValueError, match="정확히 하나"):
+        _run_round(
+            tmp_path / "c",
+            stub_reranker,
+            generator=RuleBasedActionLogGenerator(),
+            replay=_load_replay(first_dir),
+            output_dir=str(tmp_path / "c"),
+        )
