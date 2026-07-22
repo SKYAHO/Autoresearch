@@ -29,11 +29,11 @@ import duckdb
 import pandas as pd
 
 from src.features.category_reference import CATEGORY_DESCRIPTIONS
+from src.features.embeddings import embed_texts
 from src.features.feature_builder import (
     compute_historical_category_match,
     compute_preferred_category_match,
     compute_topic_similarity,
-    embed_keywords,
 )
 
 KEYWORD_TO_CATEGORY = {
@@ -315,6 +315,11 @@ def compute_interaction_columns(joined: pd.DataFrame) -> pd.DataFrame:
     preferred_category는 joined에 primary_categories 컬럼이 있으면(virtual_users
     파이프라인의 실제 LLM 산출값, #205) 그 값을 그대로 쓰고, 없으면(구식 mock
     personas.csv 등) derive_preferred_category() 키워드 매핑 fallback을 쓴다.
+
+    user_keyword_embeddings는 joined의 고유(unique) 키워드만 한 번씩 배치
+    임베딩한다(#206) — joined는 유저 1명당 여러 행(impression마다 1행)을
+    가지므로, 행마다 개별 임베딩하면 같은 키워드를 Vertex AI에 반복
+    요청하게 된다.
     """
     out = joined.copy()
     out["preferred_topics"] = out["hobbies_and_interests_list"].apply(extract_keywords_safe)
@@ -322,7 +327,13 @@ def compute_interaction_columns(joined: pd.DataFrame) -> pd.DataFrame:
         out["preferred_category"] = out["primary_categories"].apply(parse_primary_categories)
     else:
         out["preferred_category"] = out["preferred_topics"].apply(derive_preferred_category)
-    out["user_keyword_embeddings"] = out["preferred_topics"].apply(embed_keywords)
+
+    unique_keywords = sorted({kw for kws in out["preferred_topics"] for kw in kws})
+    keyword_vectors = embed_texts(unique_keywords, task_type="RETRIEVAL_QUERY")
+    keyword_embedding_cache = dict(zip(unique_keywords, keyword_vectors))
+    out["user_keyword_embeddings"] = out["preferred_topics"].apply(
+        lambda kws: [keyword_embedding_cache[kw] for kw in kws]
+    )
     out["topic_similarity"] = out.apply(
         lambda row: compute_topic_similarity(row["user_keyword_embeddings"], row["category_id"]),
         axis=1,

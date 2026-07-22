@@ -8,7 +8,7 @@ import json
 from typing import Union, List
 import numpy as np
 
-from src.features.embeddings import embed_text, cosine_similarity
+from src.features.embeddings import embed_texts, cosine_similarity
 from src.features.category_reference import get_category_description_embedding
 
 
@@ -55,7 +55,15 @@ def embed_keywords(keywords: List[str]) -> List[np.ndarray]:
     """Convert keyword list to individual embeddings.
 
     각 키워드를 별개로 임베딩하여 keyword-level granularity 유지.
-    통째로 합쳐서 임베딩하지 않음 (스펙 규칙 준수).
+    통째로 합쳐서 임베딩하지 않음 (스펙 규칙 준수). 사용자 관심 키워드는
+    "질의" 역할이므로 task_type=RETRIEVAL_QUERY로 임베딩한다 — 카테고리
+    설명문(RETRIEVAL_DOCUMENT, category_reference.py)과 비대칭이다.
+
+    호출 1건당 1번의 배치 API 요청으로 처리한다(키워드마다 개별 호출하지
+    않음). 다만 이 함수 자체는 호출 단위(보통 유저 1명)를 넘어선 dedup은
+    하지 않는다 — 여러 행(row)에 걸쳐 반복 호출을 피해야 하는 경우(예:
+    학습 데이터셋 조립)는 호출부가 고유 키워드를 먼저 모아 직접
+    embed_texts()를 호출해야 한다 (src/features/assembly.py 참고).
 
     Args:
         keywords: 키워드 문자열 리스트.
@@ -63,7 +71,8 @@ def embed_keywords(keywords: List[str]) -> List[np.ndarray]:
     Returns:
         각 키워드의 embedding 벡터 리스트 (L2-normalized).
     """
-    return [embed_text(kw) for kw in keywords if kw and isinstance(kw, str)]
+    valid_keywords = [kw for kw in keywords if kw and isinstance(kw, str)]
+    return embed_texts(valid_keywords, task_type="RETRIEVAL_QUERY")
 
 
 def compute_topic_similarity(user_keyword_embeddings: List[np.ndarray], category_id: str) -> float:
@@ -76,7 +85,9 @@ def compute_topic_similarity(user_keyword_embeddings: List[np.ndarray], category
         category_id: 영상의 YouTube 카테고리 ID (문자열).
 
     Returns:
-        Cosine similarity 최댓값 (range: [0, 1]).
+        Cosine similarity 최댓값 (수학적 범위: [-1, 1]. 실제 임베딩에서는
+        관련 있는 텍스트끼리 대체로 양수가 나오는 경향이 있을 뿐, 음수가
+        나오지 않는다는 보장은 아니다).
         빈 리스트 → 0.0.
     """
     if not user_keyword_embeddings:
