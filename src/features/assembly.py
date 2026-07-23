@@ -289,7 +289,9 @@ def compute_point_in_time_user_features(
     ).df()
 
 
-def compute_user_topic_features(personas_raw: pd.DataFrame, category_ids) -> pd.DataFrame:
+def compute_user_topic_features(
+    personas_raw: pd.DataFrame, category_ids, skip_embedding: bool = False
+) -> pd.DataFrame:
     """유저 x category_id 단위로 topic_similarity/preferred_category_match를 선계산한다.
 
     hobbies_and_interests_list/primary_categories는 persona당 1개뿐인데, 이벤트
@@ -304,6 +306,13 @@ def compute_user_topic_features(personas_raw: pd.DataFrame, category_ids) -> pd.
         personas_raw: uuid/hobbies_and_interests_list[/primary_categories] 컬럼을 가진 persona 원본.
         category_ids: 이벤트 쪽에 실제로 존재하는 category_id 값들
             (예: video_feature["category_id"].unique()).
+        skip_embedding: True면 embed_texts() 호출(Vertex AI)을 건너뛰고
+            topic_similarity를 전부 None으로 채운다. 호출자가 topic_similarity를
+            사전 계산된 BigQuery `user_category_similarity`에서 별도로 가져오고
+            이 함수는 preferred_category_match만 쓸 때 사용한다(#214) —
+            preferred_category_match 산출 로직을 별도 함수로 복제하면 나중에
+            매칭 규칙이 바뀔 때 한쪽만 고치는 drift가 생기므로, 같은 함수를
+            공유한다.
 
     Returns:
         user_id, category_id, topic_similarity, preferred_category_match 컬럼을
@@ -315,19 +324,24 @@ def compute_user_topic_features(personas_raw: pd.DataFrame, category_ids) -> pd.
     else:
         preferred_category = preferred_topics.apply(derive_preferred_category)
 
-    unique_keywords = sorted({kw for kws in preferred_topics for kw in kws})
-    keyword_vectors = embed_texts(unique_keywords, task_type="RETRIEVAL_QUERY")
-    keyword_embedding_cache = dict(zip(unique_keywords, keyword_vectors))
-    user_keyword_embeddings = preferred_topics.apply(
-        lambda kws: [keyword_embedding_cache[kw] for kw in kws]
-    )
+    if skip_embedding:
+        user_keyword_embeddings = pd.Series([None] * len(personas_raw), index=personas_raw.index)
+    else:
+        unique_keywords = sorted({kw for kws in preferred_topics for kw in kws})
+        keyword_vectors = embed_texts(unique_keywords, task_type="RETRIEVAL_QUERY")
+        keyword_embedding_cache = dict(zip(unique_keywords, keyword_vectors))
+        user_keyword_embeddings = preferred_topics.apply(
+            lambda kws: [keyword_embedding_cache[kw] for kw in kws]
+        )
 
     distinct_category_ids = list(dict.fromkeys(category_ids))
     rows = [
         {
             "user_id": user_id,
             "category_id": category_id,
-            "topic_similarity": compute_topic_similarity(kw_embeddings, category_id),
+            "topic_similarity": (
+                None if skip_embedding else compute_topic_similarity(kw_embeddings, category_id)
+            ),
             "preferred_category_match": compute_preferred_category_match(pref_cat, category_id),
         }
         for user_id, kw_embeddings, pref_cat in zip(

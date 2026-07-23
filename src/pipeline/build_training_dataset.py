@@ -18,7 +18,11 @@ training_dataset.csv 생성 파이프라인.
   분류는 `src/features/model_contract.py`가 소유하며, 이 모듈은 feature 목록을
   별도로 정의하지 않는다. `clicked`는 22번째 label physical column이며 model
   input이 아니다. Feast get_historical_features()는 아직 경유하지 않는 DuckDB
-  fallback 경로 — issue #204/#175 결정안 참고)
+  fallback 경로 — issue #204/#175 결정안 참고. 단 topic_similarity 컬럼만은
+  --topic-similarity-source bigquery로 Feast offline 테이블
+  (`feast_offline_store.user_category_similarity`, #242가 적재)을 as-of join으로
+  조회할 수 있다 — 기본값 `inmemory`는 기존과 동일하게 Vertex AI 즉석 계산을
+  쓴다(issue #214, #244 쿼터 회피 목적)
 
 NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py
       스크립트의 산출물이며, 스펙 변경 시에는 scaffold를 수정한 후 해당 스크립트를
@@ -204,6 +208,25 @@ def load_events_from_bigquery(start_date: str, end_date: str) -> pd.DataFrame:
     return client.query(query).to_dataframe()
 
 
+def load_user_category_similarity_from_bigquery() -> pd.DataFrame:
+    """`feast_offline_store.user_category_similarity`에서 사전 계산된 topic_similarity를
+    전체 로드한다(#214).
+
+    이 테이블은 `scripts/build_static_features.py`(#242)가 Vertex AI 임베딩으로
+    미리 채워둔 (user_id, category_id) 단위 준정적 스냅샷이다 — 여기서는 그
+    결과를 그대로 읽기만 하고 임베딩을 다시 계산하지 않는다. event_timestamp를
+    포함해 반환하므로 호출부가 as-of(point-in-time) join을 수행할 수 있다.
+    """
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=BIGQUERY_PROJECT)
+    query = f"""
+        SELECT user_id, category_id, event_timestamp, topic_similarity
+        FROM `{feature_table_id("user_category_similarity")}`
+    """
+    return client.query(query).to_dataframe()
+
+
 def derive_wide_events(
     long_events: pd.DataFrame,
     label_window_sec: int = LABEL_WINDOW_SEC,
@@ -336,6 +359,7 @@ def main(
     events_source: str = "csv",
     events_start_date: str = None,
     events_end_date: str = None,
+    topic_similarity_source: str = "inmemory",
 ):
     if videos_source not in ("csv", "bigquery"):
         raise ValueError(f"videos_source must be 'csv' or 'bigquery': {videos_source!r}")
@@ -344,6 +368,10 @@ def main(
     if events_source == "bigquery" and (not events_start_date or not events_end_date):
         raise ValueError(
             "events_source='bigquery' requires events_start_date and events_end_date"
+        )
+    if topic_similarity_source not in ("inmemory", "bigquery"):
+        raise ValueError(
+            f"topic_similarity_source must be 'inmemory' or 'bigquery': {topic_similarity_source!r}"
         )
 
     # get_data_dir()는 저장소 안의 data/ 디렉토리를 걸어 올라가며 찾는데,
@@ -459,11 +487,37 @@ def main(
     # preferred_category_match는 (user, category_id) 조합에만 의존하고
     # category_id는 관측되는 값이 적으므로, persona 단위로 미리 계산해 작은
     # 유저x카테고리 테이블만 조인한다.
-    user_topic_feature = compute_user_topic_features(personas, video_feature["category_id"].unique())
-    con.register("user_topic_feature", user_topic_feature)
+    #
+    # topic_similarity_source="bigquery"일 때는 preferred_category_match만
+    # user_topic_feature(skip_embedding=True, Vertex AI 미호출)에서 가져오고,
+    # topic_similarity는 사전 계산된 `user_category_similarity`(#242)를
+    # as-of(point-in-time) join으로 조회한다(#214, docs/guides/
+    # training-dataset.md의 `user_category_similarity_joined` CTE와 동일 패턴).
+    if topic_similarity_source == "bigquery":
+        user_topic_feature = compute_user_topic_features(
+            personas, video_feature["category_id"].unique(), skip_embedding=True
+        )
+        con.register("user_topic_feature", user_topic_feature)
+        user_category_similarity = load_user_category_similarity_from_bigquery()
+        con.register("user_category_similarity", user_category_similarity)
+        topic_similarity_column = "COALESCE(ucs.topic_similarity, 0.0)"
+        topic_similarity_join = """
+        LEFT JOIN user_category_similarity ucs
+            ON ucs.user_id = o.user_id
+           AND ucs.category_id = vf.category_id
+           AND ucs.event_timestamp <= o.timestamp
+        QUALIFY ROW_NUMBER() OVER (
+            PARTITION BY o.user_id, o.video_id, o.timestamp
+            ORDER BY ucs.event_timestamp DESC
+        ) = 1"""
+    else:
+        user_topic_feature = compute_user_topic_features(personas, video_feature["category_id"].unique())
+        con.register("user_topic_feature", user_topic_feature)
+        topic_similarity_column = "utf.topic_similarity"
+        topic_similarity_join = ""
 
     joined = con.execute(
-        """
+        f"""
         SELECT
             o.user_id,
             o.video_id,
@@ -484,12 +538,13 @@ def main(
             vf.channel_subscriber_count,
             vf.channel_view_count,
             vf.channel_video_count,
-            utf.topic_similarity,
+            {topic_similarity_column} AS topic_similarity,
             utf.preferred_category_match
         FROM online_features o
         JOIN video_feature vf ON vf.video_id = o.video_id
         JOIN user_topic_feature utf ON utf.user_id = o.user_id
             AND COALESCE(utf.category_id, '') = COALESCE(vf.category_id, '')
+        {topic_similarity_join}
         ORDER BY o.timestamp
         """
     ).df()
@@ -499,11 +554,15 @@ def main(
     # (마지막 사용처). con.register()는 pandas 프레임을 커넥션에 계속 붙들어
     # 두므로, Step 3에서 필요 없는 이 셋을 unregister한 뒤 Python 쪽 참조도
     # 지워서 실 데이터 규모(수백만 행)에서 중복으로 메모리에 남지 않게 한다
-    # (#231/#249).
+    # (#231/#249). topic_similarity_source="bigquery"일 때 추가로 register한
+    # user_category_similarity도 같은 이유로 함께 해제한다.
     con.unregister("video_feature")
     con.unregister("online_features")
     con.unregister("user_topic_feature")
     del video_feature, online_features, user_topic_feature
+    if topic_similarity_source == "bigquery":
+        con.unregister("user_category_similarity")
+        del user_category_similarity
 
     print("\n[Step 2] Interaction Features 계산...")
 

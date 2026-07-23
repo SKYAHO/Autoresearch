@@ -11,6 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.pipeline import build_training_dataset  # noqa: E402
 from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
+import src.features.assembly as assembly_module  # noqa: E402
 
 
 def test_load_personas_reads_csv(tmp_path):
@@ -477,6 +478,157 @@ def test_main_bigquery_mode_never_resolves_local_data_dir(tmp_path, monkeypatch)
     assert output_path.exists()
 
 
+def _csv_fixture_for_topic_similarity_source_tests(raw_dir, events_path):
+    pd.DataFrame(
+        {
+            "video_id": ["v1", "v2"],
+            "categoryId": ["Music", "Gaming"],
+            "duration": ["PT5M", "PT5M"],
+            "viewCount": [1000, 1000],
+            "likeCount": [50, 50],
+            "commentCount": [10, 10],
+            "publishedAt": ["2026-01-01", "2026-01-01"],
+        }
+    ).to_csv(raw_dir / "youtube_videos.csv", index=False)
+    pd.DataFrame(
+        {
+            "uuid": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobbies_and_interests": ["music"],
+            "hobbies_and_interests_list": ["[]"],
+            "primary_categories": ['["Music"]'],
+        }
+    ).to_csv(raw_dir / "personas.csv", index=False)
+    pd.DataFrame(
+        {
+            "event_id": ["e1", "e2"],
+            "user_id": ["u1", "u1"],
+            "video_id": ["v1", "v2"],
+            # e1(Music)의 entity timestamp: 2026-07-08 12:00:00
+            "timestamp": ["2026-07-08 12:00:00", "2026-07-08 12:05:00"],
+            "clicked": [0, 0],
+            "liked": [0, 0],
+            "watch_time_sec": [0, 0],
+        }
+    ).to_csv(events_path, index=False)
+
+
+def _empty_user_category_similarity() -> pd.DataFrame:
+    # 실제 BigQuery 응답은 쿼리 스키마 기준으로 타입이 고정되지만, 테스트용 빈
+    # DataFrame은 dtype을 명시하지 않으면 event_timestamp가 DOUBLE로 추론되어
+    # DuckDB의 TIMESTAMP 비교(`ucs.event_timestamp <= o.timestamp`)가 깨진다.
+    return pd.DataFrame(
+        {
+            "user_id": pd.array([], dtype="string"),
+            "category_id": pd.array([], dtype="string"),
+            "event_timestamp": pd.array([], dtype="datetime64[ns]"),
+            "topic_similarity": pd.array([], dtype="float64"),
+        }
+    )
+
+
+def test_main_topic_similarity_source_bigquery_selects_most_recent_past_row(tmp_path, monkeypatch):
+    # as-of join 자체를 검증한다 — 지금 실 BigQuery 데이터가 (user_id, category_id)당
+    # 1행뿐이라 이 로직이 "골라내기"를 할 필요가 없는 상태에서는 SQL 필터/PARTITION BY
+    # 버그(부호 실수, 키 누락 등)가 있어도 안 걸린다(#224류로 나중에 발견되는 잠재
+    # 버그). 그래서 같은 (user_id, category_id)에 event_timestamp가 다른 행 3개를
+    # 주입해 "미래 행 무시 + 시점 이하 중 최신 선택"을 직접 확인한다.
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    events_path = tmp_path / "events.csv"
+    _csv_fixture_for_topic_similarity_source_tests(raw_dir, events_path)
+
+    similarity_fixture = pd.DataFrame(
+        {
+            "user_id": ["u1", "u1", "u1"],
+            "category_id": ["Music", "Music", "Music"],
+            "event_timestamp": [
+                pd.Timestamp("2026-07-01 00:00:00"),  # entity ts 이전이지만 더 오래됨
+                pd.Timestamp("2026-07-08 00:00:00"),  # entity ts(07-08 12:00) 이전 중 최신 → 선택돼야 함
+                pd.Timestamp("2026-07-09 00:00:00"),  # entity ts 이후 → 무시돼야 함
+            ],
+            "topic_similarity": [0.11, 0.55, 0.99],
+        }
+    )
+    monkeypatch.setattr(
+        build_training_dataset,
+        "load_user_category_similarity_from_bigquery",
+        lambda: similarity_fixture,
+    )
+
+    output_path = tmp_path / "training_dataset.csv"
+    build_training_dataset.main(
+        raw_dir=str(raw_dir),
+        events_path=str(events_path),
+        output_path=str(output_path),
+        topic_similarity_source="bigquery",
+    )
+
+    result = pd.read_csv(output_path).set_index("category_id")
+    assert result.loc["Music", "topic_similarity"] == pytest.approx(0.55)
+    # Gaming에는 매칭되는 user_category_similarity 행이 없다 → 0.0 default.
+    assert result.loc["Gaming", "topic_similarity"] == pytest.approx(0.0)
+
+
+def test_main_topic_similarity_source_bigquery_never_calls_vertex_ai(tmp_path, monkeypatch):
+    def fail_if_called(texts, task_type):
+        raise AssertionError("topic_similarity_source='bigquery'인데 embed_texts가 호출됨")
+
+    monkeypatch.setattr(assembly_module, "embed_texts", fail_if_called)
+
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    events_path = tmp_path / "events.csv"
+    _csv_fixture_for_topic_similarity_source_tests(raw_dir, events_path)
+    monkeypatch.setattr(
+        build_training_dataset,
+        "load_user_category_similarity_from_bigquery",
+        _empty_user_category_similarity,
+    )
+
+    output_path = tmp_path / "training_dataset.csv"
+    build_training_dataset.main(
+        raw_dir=str(raw_dir),
+        events_path=str(events_path),
+        output_path=str(output_path),
+        topic_similarity_source="bigquery",
+    )
+
+    assert output_path.exists()
+
+
+def test_main_topic_similarity_source_bigquery_output_schema_matches_inmemory(tmp_path, monkeypatch):
+    # 두 모드의 training_dataset 물리 컬럼 집합이 미묘하게 갈라지면 안 된다
+    # (예: topic_similarity_top_topic이 한쪽에만 추가되는 등) — #214는 topic_similarity
+    # "값의 출처"만 바꾸고 스키마는 그대로 유지한다.
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    events_path = tmp_path / "events.csv"
+    _csv_fixture_for_topic_similarity_source_tests(raw_dir, events_path)
+    monkeypatch.setattr(
+        build_training_dataset,
+        "load_user_category_similarity_from_bigquery",
+        _empty_user_category_similarity,
+    )
+
+    output_path = tmp_path / "training_dataset.csv"
+    build_training_dataset.main(
+        raw_dir=str(raw_dir),
+        events_path=str(events_path),
+        output_path=str(output_path),
+        topic_similarity_source="bigquery",
+    )
+
+    result = pd.read_csv(output_path)
+    assert list(result.columns) == [*MODEL_FEATURE_COLUMNS, "clicked"]
+
+
+def test_main_rejects_invalid_topic_similarity_source():
+    with pytest.raises(ValueError, match="topic_similarity_source"):
+        build_training_dataset.main(topic_similarity_source="not-a-real-source")
+
+
 def test_get_data_dir_creates_directory_when_none_found(tmp_path, monkeypatch):
     # 컨테이너 최초 실행 시 프로젝트 루트 어디에도 data/가 없다 — 예외를 던지는
     # 대신 만들어서 돌려줘야 한다(issue #212). 걸어 올라가는 실제 파일시스템
@@ -581,3 +733,22 @@ def test_load_events_from_bigquery_reads_raw_dataset(monkeypatch):
     query_text = fake_client.query.call_args[0][0]
     assert "`proj.data_lake_raw.data_lake_action_log`" in query_text
     assert "feast_offline_store" not in query_text
+
+
+def test_load_user_category_similarity_from_bigquery_reads_feature_dataset(monkeypatch):
+    # user_category_similarity(#242가 적재)는 feature 계층(feast_offline_store)에
+    # 있다 — raw 계층이 아니다.
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "proj")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_RAW_DATASET", "data_lake_raw")
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_DATASET", "feast_offline_store")
+    fake_df = pd.DataFrame({"user_id": ["u1"]})
+    fake_client = _fake_bigquery(monkeypatch, fake_df)
+
+    result = build_training_dataset.load_user_category_similarity_from_bigquery()
+
+    assert result is fake_df
+    query_text = fake_client.query.call_args[0][0]
+    assert "`proj.feast_offline_store.user_category_similarity`" in query_text
+    assert "data_lake_raw" not in query_text
+    assert "event_timestamp" in query_text
+    assert "topic_similarity" in query_text
