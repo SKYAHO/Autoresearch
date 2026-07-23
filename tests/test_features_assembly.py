@@ -190,6 +190,50 @@ def test_compute_point_in_time_user_features_snapshot_day_no_events_but_prior_ac
     assert row["historical_category_affinity"] == "Gaming"
 
 
+def test_compute_point_in_time_user_features_not_inflated_by_duplicate_video_snapshots():
+    # 트렌딩 원본은 (영상, 트렌딩 날짜) 스냅샷이라 video_id가 유일하지 않다(#297).
+    # cat_daily가 평면 조인이면 v1의 스냅샷 3건이 곱해져 반응 수가 3배로 집계되고,
+    # 그 결과 반응이 더 많은 Music(2건)이 아니라 Gaming(1건×3)이 argmax로 뽑히는
+    # 왜곡이 생긴다. point-in-time 조인은 이벤트당 스냅샷 1건만 써야 한다.
+    videos = pd.DataFrame(
+        {
+            "video_id": ["v1", "v1", "v1", "v2"],
+            "video_trending_date": pd.to_datetime(
+                ["2026-07-06", "2026-07-07", "2026-07-08", "2026-07-06"]
+            ),
+            "categoryId": ["Gaming", "Gaming", "Gaming", "Music"],
+            "duration": [120, 120, 120, 120],
+            "viewCount": [1000, 1000, 1000, 1000],
+            "likeCount": [100, 100, 100, 100],
+            "commentCount": [10, 10, 10, 10],
+            "publishedAt": ["2026-07-01", "2026-07-01", "2026-07-01", "2026-07-01"],
+        }
+    )
+    events = pd.DataFrame(
+        {
+            "event_id": ["e1", "e2", "e3"],
+            "user_id": ["u1", "u1", "u1"],
+            "video_id": ["v1", "v2", "v2"],  # Gaming 1건 vs Music 2건
+            "timestamp": [
+                "2026-07-09 10:00:00",
+                "2026-07-09 11:00:00",
+                "2026-07-09 12:00:00",
+            ],
+            "clicked": [1, 1, 1],
+            "liked": [0, 0, 0],
+            "watch_time_sec": [60, 60, 60],
+        }
+    )
+    query_points = pd.DataFrame({"user_id": ["u1"], "as_of": ["2026-07-10 00:00:00"]})
+    out = compute_point_in_time_user_features(events, videos, query_points)
+    row = out.iloc[0]
+    assert row["historical_category_affinity"] == "Music", (
+        "v1의 트렌딩 스냅샷 3건이 중복 집계되어 Gaming이 argmax로 뒤집혔습니다"
+    )
+    # 이벤트 3건이 스냅샷 수만큼 부풀지 않았는지도 함께 고정한다.
+    assert row["recent_click_count_7d"] == 3
+
+
 def test_compute_point_in_time_user_features_affinity_respects_30_day_bound():
     # historical_category_affinity는 스펙상 30일 윈도우다. 30일 밖 클릭은 제외된다
     # (기존 코드는 하한이 없어 전체 히스토리를 봤던 스펙 위반 — 이번에 수정).

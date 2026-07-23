@@ -149,6 +149,12 @@ def load_videos_from_bigquery() -> pd.DataFrame:
     compute_point_in_time_user_features() 어디에서도 쓰지 않고, joined SELECT도
     더 이상 참조하지 않는다(#238). 실 데이터 규모(12만+ 행)에서 텍스트 컬럼
     2개를 그냥 들고만 있는 건 순수 낭비라 애초에 조회하지 않는다(#249).
+
+    video_trending_date는 반드시 함께 조회한다(#297). 이 테이블은 영상이
+    트렌딩에 오른 날마다 한 행이 쌓이는 스냅샷 테이블이라 video_id가 유일하지
+    않다(실측: 128,561행 / 고유 48,422개 = 영상당 평균 2.66행, 최대 32행).
+    이 날짜가 없으면 다운스트림이 이벤트 시점 기준 스냅샷 1건을 고를 수 없어
+    이벤트가 스냅샷 수만큼 복제된다.
     """
     from google.cloud import bigquery
 
@@ -156,6 +162,7 @@ def load_videos_from_bigquery() -> pd.DataFrame:
     query = f"""
         SELECT
             video_id,
+            video_trending_date,
             video_category AS categoryId,
             video_duration AS duration,
             video_view_count AS viewCount,
@@ -579,6 +586,28 @@ def main(
     # 컬럼도 아니며(21 feature + clicked), 동률이 많아 결정적 총순서를 보장하지도
     # 못했다. 정렬을 없애면 조인 결과가 곧바로 CSV로 흘러가 메모리·디스크 모두
     # 입력 프레임 수준으로 유지된다(해시 조인 빌드 측은 video 128K/user 7K로 작다).
+    # 트렌딩 원본은 (영상, 트렌딩 날짜) 스냅샷이라 video_id가 유일하지 않다 —
+    # 실측 128,561행 / 고유 48,422개(영상당 평균 2.66행, 최대 32행). 평면 조인이면
+    # 이벤트 1건이 그 영상의 스냅샷 수만큼 복제되어, ① 같은 impression이 학습셋에
+    # 중복 수록되고(오래 트렌딩한 영상이 최대 32배 과대 가중) ② 조인 결과가 약
+    # 4.7M행으로 불어나 13.3GB를 디스크로 spill했다(#297, GKE remeasure v12).
+    #
+    # ASOF JOIN으로 "이벤트 시각 이하 중 가장 최근 스냅샷 1건"만 고른다. 중복
+    # 제거와 미래 정보 차단(이벤트 이후에 갱신된 조회수를 쓰지 않음)이 동시에
+    # 해결된다. 이벤트 시점 이전 스냅샷이 없는 경우는 실측 61건/1,710,571
+    # (0.004%)이며, 기존 평면 조인도 INNER라 매칭 없는 행은 떨어뜨렸으므로
+    # ASOF(INNER)로 그대로 두어 "그 시점에 알 수 없는 영상"을 제외한다.
+    if "video_trending_date" in video_feature.columns:
+        video_feature_join = (
+            "ASOF JOIN video_feature vf\n"
+            "                    ON vf.video_id = o.video_id\n"
+            "                   AND CAST(vf.video_trending_date AS TIMESTAMP)"
+            " <= CAST(o.timestamp AS TIMESTAMP)"
+        )
+    else:
+        # mock CSV 등 스냅샷 날짜가 없는 입력: video_id가 유일하다고 보고 기존 동작 유지.
+        video_feature_join = "JOIN video_feature vf ON vf.video_id = o.video_id"
+
     print("\n[Step 2] training_dataset 스트리밍 생성 (DuckDB COPY)...")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     escaped_output = output_path.replace("'", "''")
@@ -617,7 +646,7 @@ def main(
                         ELSE 0
                     END AS historical_category_match
                 FROM online_features o
-                JOIN video_feature vf ON vf.video_id = o.video_id
+                {video_feature_join}
                 JOIN user_topic_feature utf ON utf.user_id = o.user_id
                     AND COALESCE(utf.category_id, '') = COALESCE(vf.category_id, '')
                 {topic_similarity_join}

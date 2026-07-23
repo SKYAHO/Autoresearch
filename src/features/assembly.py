@@ -152,10 +152,18 @@ def compute_video_features(videos_raw: pd.DataFrame, snapshot_date: str) -> pd.D
         if "channelVideoCount" in videos_raw.columns
         else "NULL"
     )
+    # 트렌딩 원본은 (영상, 트렌딩 날짜) 스냅샷이라 video_id가 유일하지 않다(#297).
+    # 이 컬럼을 그대로 통과시켜야 다운스트림이 "이벤트 시점 이하 중 최신 스냅샷
+    # 1건"을 고를 수 있다. mock CSV처럼 컬럼이 없는 입력에서는 만들지 않고,
+    # 그 경우 다운스트림이 기존 평면 조인으로 폴백한다.
+    trending_date_select = (
+        "video_trending_date," if "video_trending_date" in videos_raw.columns else ""
+    )
     return con.execute(
         f"""
         SELECT
             video_id,
+            {trending_date_select}
             CAST(categoryId AS VARCHAR) AS category_id,
             COALESCE(CAST(duration AS INTEGER), 300) AS duration_sec,
             CAST(viewCount AS BIGINT) AS view_count,
@@ -246,6 +254,22 @@ def compute_point_in_time_user_features(
     con.register("query_points_src", query_points)
     carry = [c for c in query_points.columns if c not in ("user_id", "as_of")]
     carry_select = "".join(f'q."{name}",\n            ' for name in carry)
+    # 트렌딩 원본은 (영상, 트렌딩 날짜) 스냅샷이라 video_id가 유일하지 않다(#297).
+    # 평면 조인이면 아래 cat_daily의 반응 수(react_c)가 그 영상이 트렌딩한 날 수만큼
+    # 중복 집계되어, 30일 최다 반응 카테고리(argmax)가 뒤집힐 수 있다 — 중복 배수가
+    # 영상·카테고리마다 달라 균일 팽창이 아니기 때문이다. 이벤트 시각 이하 중 가장
+    # 최근 스냅샷 1건만 쓰도록 ASOF 조인한다(카테고리 조회 목적이라 미래 스냅샷을
+    # 쓸 이유도 없다). 스냅샷 날짜가 없는 입력(mock CSV)은 기존 평면 조인 유지.
+    if "video_trending_date" in videos_raw.columns:
+        # 양쪽 모두 명시적으로 캐스트한다 — videos_raw는 pandas datetime64[ns]로
+        # 들어와 TIMESTAMP_NS가 되고, event_log의 timestamp는 경로에 따라 문자열일
+        # 수 있어 그대로 비교하면 Binder Error가 난다.
+        video_category_join = (
+            "ASOF JOIN videos_raw v ON v.video_id = e.video_id "
+            "AND CAST(v.video_trending_date AS TIMESTAMP) <= CAST(e.timestamp AS TIMESTAMP)"
+        )
+    else:
+        video_category_join = "JOIN videos_raw v ON v.video_id = e.video_id"
     return con.execute(
         f"""
         WITH
@@ -329,7 +353,7 @@ def compute_point_in_time_user_features(
                          THEN 1 ELSE 0 END
                 ) AS react_c
             FROM event_log_src e
-            JOIN videos_raw v ON v.video_id = e.video_id
+            {video_category_join}
             GROUP BY e.user_id, event_date, category_id
         ),
         -- 스냅샷 기준 30일 [d-30, d) 윈도우에서 반응 최다 category를 고른다.
