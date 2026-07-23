@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Issue #278 action log to BigQuery and Feast feature loop implementation report">
+  <title>Issue #278 / Action log feature loop report</title>
+  <style>
+    :root {
+      --canvas: #081117;
+      --canvas-raised: #0d1a22;
+      --panel: #11232d;
+      --panel-soft: #162b36;
+      --ink: #f6f2e9;
+      --ink-soft: #a7b8bf;
+      --ink-faint: #6e858e;
+      --line: rgba(231, 241, 238, 0.13);
+      --line-strong: rgba(231, 241, 238, 0.24);
+      --aqua: #70e0cf;
+      --aqua-deep: #2da99e;
+      --amber: #f4bb69;
+      --coral: #ff8575;
+      --shadow: 0 24px 64px rgba(0, 0, 0, 0.24);
+      --radius: 14px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", ui-sans-serif, system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 82% 4%, rgba(112, 224, 207, 0.13), transparent 29rem),
+        radial-gradient(circle at 5% 38%, rgba(244, 187, 105, 0.07), transparent 25rem),
+        linear-gradient(155deg, #071015 0%, var(--canvas) 48%, #0b171d 100%);
+      font-family: var(--sans);
+      line-height: 1.65;
+    }
+
+    a { color: inherit; }
+    code, pre, .mono { font-family: var(--mono); }
+    .shell { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+    .eyebrow {
+      margin: 0 0 16px;
+      color: var(--aqua);
+      font: 700 0.73rem/1.2 var(--mono);
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+    .muted { color: var(--ink-soft); }
+    .faint { color: var(--ink-faint); }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .masthead {
+      position: relative;
+      overflow: hidden;
+      padding: 30px 0 76px;
+      border-bottom: 1px solid var(--line);
+    }
+    .masthead::after {
+      content: "";
+      position: absolute;
+      right: -8rem;
+      bottom: -15rem;
+      width: 38rem;
+      height: 38rem;
+      border: 1px solid rgba(112, 224, 207, 0.18);
+      border-radius: 50%;
+      box-shadow: 0 0 0 3rem rgba(112, 224, 207, 0.025), 0 0 0 7rem rgba(112, 224, 207, 0.02);
+      pointer-events: none;
+    }
+    .topline, .hero, .meta-strip, .section-heading, .flow, .comparison, .evidence-grid, .guardrail-grid, .footer-inner {
+      position: relative;
+      z-index: 1;
+    }
+    .topline {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      color: var(--ink-soft);
+      font: 0.75rem var(--mono);
+      letter-spacing: 0.06em;
+    }
+    .topline a { text-decoration: none; }
+    .topline a:hover { color: var(--aqua); }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(300px, 0.7fr);
+      gap: clamp(40px, 8vw, 110px);
+      align-items: end;
+      padding-top: 84px;
+    }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 {
+      max-width: 800px;
+      margin-bottom: 24px;
+      font-size: clamp(2.7rem, 6vw, 5.8rem);
+      font-weight: 760;
+      letter-spacing: -0.075em;
+      line-height: 0.98;
+    }
+    h1 em { color: var(--aqua); font-style: normal; }
+    .hero-copy {
+      max-width: 680px;
+      margin-bottom: 0;
+      color: var(--ink-soft);
+      font-size: clamp(1rem, 1.8vw, 1.2rem);
+      line-height: 1.8;
+    }
+    .status-plate {
+      padding: 22px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: linear-gradient(150deg, rgba(22, 43, 54, 0.88), rgba(10, 25, 32, 0.88));
+      box-shadow: var(--shadow);
+    }
+    .plate-label {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+      color: var(--ink-faint);
+      font: 0.68rem var(--mono);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .signal { display: inline-flex; align-items: center; gap: 8px; color: var(--aqua); }
+    .signal::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--aqua);
+      box-shadow: 0 0 0 5px rgba(112, 224, 207, 0.1);
+    }
+    .plate-value {
+      margin-bottom: 8px;
+      font: 700 clamp(1.7rem, 3vw, 2.5rem)/1 var(--mono);
+      letter-spacing: -0.06em;
+    }
+    .plate-note { margin: 0; color: var(--ink-soft); font-size: 0.86rem; }
+    .meta-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      margin-top: 66px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .meta-item { min-width: 0; padding: 18px 20px 18px 0; }
+    .meta-item + .meta-item { padding-left: 20px; border-left: 1px solid var(--line); }
+    .meta-item dt {
+      margin-bottom: 6px;
+      color: var(--ink-faint);
+      font: 0.66rem var(--mono);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .meta-item dd { overflow-wrap: anywhere; margin: 0; color: var(--ink); font-size: 0.86rem; }
+
+    main { padding-bottom: 80px; }
+    section { padding: 88px 0; border-bottom: 1px solid var(--line); }
+    .section-heading {
+      display: grid;
+      grid-template-columns: minmax(180px, 0.35fr) minmax(0, 0.65fr);
+      gap: 32px;
+      align-items: start;
+      margin-bottom: 38px;
+    }
+    .section-heading h2 { margin-bottom: 0; font-size: clamp(1.75rem, 3vw, 2.7rem); letter-spacing: -0.055em; line-height: 1.12; }
+    .section-heading p { max-width: 650px; margin-bottom: 0; color: var(--ink-soft); }
+    .section-number { color: var(--aqua); font: 700 0.78rem var(--mono); letter-spacing: 0.12em; }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-bottom: 42px;
+    }
+    .metric {
+      padding: 20px;
+      border-top: 2px solid var(--aqua);
+      background: rgba(17, 35, 45, 0.8);
+    }
+    .metric:nth-child(2) { border-top-color: var(--amber); }
+    .metric:nth-child(3) { border-top-color: var(--coral); }
+    .metric:nth-child(4) { border-top-color: var(--aqua-deep); }
+    .metric strong { display: block; margin-bottom: 5px; font: 700 2rem/1 var(--mono); letter-spacing: -0.07em; }
+    .metric span { color: var(--ink-soft); font-size: 0.8rem; }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+    .flow-node {
+      position: relative;
+      min-height: 170px;
+      padding: 22px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+    }
+    .flow-node::after {
+      content: "";
+      position: absolute;
+      top: 50%;
+      right: -18px;
+      width: 24px;
+      height: 1px;
+      background: var(--line-strong);
+    }
+    .flow-node:nth-child(3)::after, .flow-node:nth-child(6)::after { display: none; }
+    .flow-node.is-risk { border-color: rgba(255, 133, 117, 0.55); background: linear-gradient(145deg, rgba(73, 39, 38, 0.68), var(--panel)); }
+    .flow-node.is-target { border-color: rgba(112, 224, 207, 0.55); background: linear-gradient(145deg, rgba(24, 64, 66, 0.62), var(--panel)); }
+    .node-kicker { margin-bottom: 18px; color: var(--ink-faint); font: 0.65rem var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
+    .flow-node h3 { margin-bottom: 8px; font-size: 1.05rem; letter-spacing: -0.02em; }
+    .flow-node p { margin-bottom: 0; color: var(--ink-soft); font-size: 0.85rem; line-height: 1.6; }
+    .node-code { display: inline-block; margin-top: 14px; color: var(--aqua); font-size: 0.72rem; }
+
+    .callout {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+      margin-top: 28px;
+      padding: 22px 24px;
+      border-left: 3px solid var(--amber);
+      background: rgba(244, 187, 105, 0.08);
+    }
+    .callout strong { color: var(--amber); font: 700 0.8rem var(--mono); letter-spacing: 0.1em; }
+    .callout p { margin-bottom: 0; color: var(--ink-soft); font-size: 0.9rem; }
+
+    .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .code-card { overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); background: var(--canvas-raised); }
+    .code-card header { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+    .code-card header strong { font-size: 0.9rem; }
+    .code-card header span { font: 0.67rem var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
+    .code-card.before header { color: var(--coral); }
+    .code-card.after { border-color: rgba(112, 224, 207, 0.36); }
+    .code-card.after header { color: var(--aqua); }
+    pre { min-height: 180px; margin: 0; padding: 20px; overflow-x: auto; color: #d5e4e2; font-size: 0.76rem; line-height: 1.9; white-space: pre-wrap; }
+    .code-dim { color: var(--ink-faint); }
+    .code-warn { color: var(--coral); text-decoration: line-through; text-decoration-thickness: 2px; }
+    .code-fix { color: var(--aqua); }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 0;
+      margin-top: 20px;
+      border: 1px solid var(--line);
+      background: rgba(13, 26, 34, 0.82);
+    }
+    .pipeline-step { position: relative; min-height: 166px; padding: 22px 18px; border-right: 1px solid var(--line); }
+    .pipeline-step:last-child { border-right: 0; }
+    .pipeline-step::after { content: ""; position: absolute; top: 38px; right: -5px; z-index: 2; width: 9px; height: 9px; border-top: 1px solid var(--aqua); border-right: 1px solid var(--aqua); transform: rotate(45deg); }
+    .pipeline-step:last-child::after { display: none; }
+    .pipeline-step .step-index { display: block; margin-bottom: 24px; color: var(--aqua); font: 0.66rem var(--mono); }
+    .pipeline-step strong { display: block; margin-bottom: 8px; font-size: 0.9rem; }
+    .pipeline-step span { display: block; color: var(--ink-soft); font-size: 0.76rem; line-height: 1.5; }
+    .pipeline-step code { display: block; margin-top: 12px; color: var(--ink-faint); font-size: 0.63rem; overflow-wrap: anywhere; }
+
+    .file-table { width: 100%; border-collapse: collapse; border-top: 1px solid var(--line-strong); }
+    .file-table th, .file-table td { padding: 17px 14px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .file-table th { color: var(--ink-faint); font: 0.67rem var(--mono); letter-spacing: 0.09em; text-transform: uppercase; }
+    .file-table td { color: var(--ink-soft); font-size: 0.86rem; }
+    .file-table td:first-child { width: 34%; color: var(--ink); font-family: var(--mono); font-size: 0.75rem; overflow-wrap: anywhere; }
+    .file-table td:nth-child(2) { width: 18%; color: var(--aqua); }
+
+    .evidence-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+    .evidence-card { padding: 24px; border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(145deg, rgba(22, 43, 54, 0.7), rgba(12, 25, 32, 0.8)); }
+    .evidence-card h3 { margin-bottom: 10px; font-size: 1rem; }
+    .evidence-card p { margin-bottom: 0; color: var(--ink-soft); font-size: 0.85rem; }
+    .evidence-label { display: block; margin-bottom: 14px; color: var(--ink-faint); font: 0.65rem var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
+    .evidence-value { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; font: 700 1.8rem/1 var(--mono); letter-spacing: -0.08em; }
+    .evidence-value small { color: var(--ink-faint); font: 0.72rem var(--mono); letter-spacing: 0; }
+    .evidence-card.is-caveat { border-color: rgba(244, 187, 105, 0.5); background: rgba(75, 55, 32, 0.26); }
+    .evidence-card.is-caveat .evidence-label, .evidence-card.is-caveat h3 { color: var(--amber); }
+    .evidence-card.is-invalid { border-color: rgba(255, 133, 117, 0.45); background: rgba(73, 39, 38, 0.26); }
+    .evidence-card.is-invalid .evidence-label, .evidence-card.is-invalid h3 { color: var(--coral); }
+    .delta { color: var(--coral); }
+
+    .guardrail-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+    .guardrail { min-height: 214px; padding: 20px; border-top: 2px solid var(--amber); background: var(--panel); }
+    .guardrail:nth-child(2) { border-top-color: var(--coral); }
+    .guardrail:nth-child(3) { border-top-color: var(--aqua); }
+    .guardrail:nth-child(4) { border-top-color: var(--aqua-deep); }
+    .guardrail .guard-number { color: var(--ink-faint); font: 0.7rem var(--mono); }
+    .guardrail h3 { margin: 22px 0 8px; font-size: 0.98rem; }
+    .guardrail p { margin-bottom: 0; color: var(--ink-soft); font-size: 0.8rem; line-height: 1.65; }
+
+    .verdict {
+      display: grid;
+      grid-template-columns: minmax(0, 0.7fr) minmax(300px, 1.3fr);
+      gap: 38px;
+      align-items: start;
+      padding: 34px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, rgba(23, 58, 61, 0.8), rgba(13, 29, 36, 0.92));
+      box-shadow: var(--shadow);
+    }
+    .verdict h2 { margin-bottom: 12px; font-size: clamp(1.8rem, 4vw, 3.3rem); letter-spacing: -0.07em; line-height: 1; }
+    .verdict h2 span { color: var(--aqua); }
+    .verdict p { margin-bottom: 0; color: var(--ink-soft); }
+    .verdict-list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
+    .verdict-list li { display: grid; grid-template-columns: 120px 1fr; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); color: var(--ink-soft); font-size: 0.85rem; }
+    .verdict-list li:last-child { padding-bottom: 0; border-bottom: 0; }
+    .verdict-list strong { color: var(--ink); font-family: var(--mono); font-size: 0.72rem; }
+
+    footer { padding: 34px 0 60px; color: var(--ink-faint); font-size: 0.78rem; }
+    .footer-inner { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; }
+    .footer-inner p { max-width: 650px; margin-bottom: 0; }
+    .footer-links { display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: flex-end; }
+    .footer-links a { color: var(--ink-soft); text-decoration: none; }
+    .footer-links a:hover { color: var(--aqua); }
+
+    @media (prefers-reduced-motion: no-preference) {
+      .masthead, section { animation: reveal 520ms ease both; }
+      .metric, .flow-node, .evidence-card, .guardrail { transition: transform 180ms ease, border-color 180ms ease; }
+      .metric:hover, .flow-node:hover, .evidence-card:hover, .guardrail:hover { transform: translateY(-3px); border-color: var(--line-strong); }
+      @keyframes reveal { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+    @media (max-width: 980px) {
+      .pipeline { grid-template-columns: repeat(3, 1fr); }
+      .pipeline-step:nth-child(3) { border-right: 0; }
+      .pipeline-step:nth-child(-n + 3) { border-bottom: 1px solid var(--line); }
+      .pipeline-step:nth-child(3)::after, .pipeline-step:nth-child(6)::after { display: none; }
+      .pipeline-step:nth-child(2)::after, .pipeline-step:nth-child(5)::after { display: block; }
+      .guardrail-grid { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 28px, 620px); }
+      .masthead { padding-bottom: 48px; }
+      .topline { align-items: flex-start; flex-direction: column; gap: 8px; }
+      .hero { grid-template-columns: 1fr; gap: 34px; padding-top: 58px; }
+      h1 { font-size: clamp(2.7rem, 13vw, 4.8rem); }
+      .meta-strip { grid-template-columns: repeat(2, 1fr); margin-top: 44px; }
+      .meta-item:nth-child(3) { padding-left: 0; border-left: 0; }
+      .meta-item:nth-child(n + 3) { border-top: 1px solid var(--line); }
+      .meta-item:nth-child(4) { padding-left: 20px; border-left: 1px solid var(--line); }
+      section { padding: 60px 0; }
+      .section-heading { display: block; margin-bottom: 28px; }
+      .section-heading h2 { margin: 8px 0 16px; }
+      .metrics, .flow, .comparison, .evidence-grid { grid-template-columns: 1fr; }
+      .flow-node { min-height: 0; }
+      .flow-node::after { top: auto; right: auto; bottom: -14px; left: 50%; width: 1px; height: 20px; }
+      .flow-node:nth-child(3)::after { display: block; }
+      .flow-node:last-child::after { display: none; }
+      .pipeline { grid-template-columns: 1fr; }
+      .pipeline-step, .pipeline-step:nth-child(-n + 3) { min-height: 0; border-right: 0; border-bottom: 1px solid var(--line); }
+      .pipeline-step:last-child { border-bottom: 0; }
+      .pipeline-step::after, .pipeline-step:nth-child(2)::after, .pipeline-step:nth-child(5)::after { top: auto; right: auto; bottom: -5px; left: 50%; width: 9px; height: 9px; transform: rotate(135deg); }
+      .pipeline-step:last-child::after { display: none; }
+      .file-table { display: block; overflow-x: auto; white-space: nowrap; }
+      .file-table td:nth-child(3) { white-space: normal; min-width: 240px; }
+      .guardrail-grid { grid-template-columns: 1fr; }
+      .verdict { grid-template-columns: 1fr; gap: 28px; padding: 24px; }
+      .verdict-list li { grid-template-columns: 1fr; gap: 4px; }
+      .footer-inner { flex-direction: column; }
+      .footer-links { justify-content: flex-start; }
+    }
+    @media print {
+      body { background: #fff; color: #111; }
+      .masthead, .status-plate, .flow-node, .code-card, .evidence-card, .guardrail, .verdict { box-shadow: none; }
+      section { page-break-inside: avoid; padding: 30px 0; }
+      .masthead { padding: 30px 0; }
+      .muted, .section-heading p, .flow-node p, .evidence-card p, .guardrail p, .verdict p, footer { color: #444; }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="shell">
+      <div class="topline">
+        <a href="../../README.md">AUTORESEARCH / ENGINEERING REPORT</a>
+        <span>2026.07.23 / ISSUE #278</span>
+      </div>
+
+      <div class="hero">
+        <div>
+          <p class="eyebrow">Action log → BigQuery → Feast</p>
+          <h1>한 파티션을<br><em>한 번만</em> 읽는다.</h1>
+          <p class="hero-copy">Issue #278의 핵심은 데이터를 더 많이 합치는 것이 아니라, action log의 일일 파티션이 이미 독립적인 30일 히스토리라는 사실을 코드에 고정하는 것이었습니다. 이번 리포트는 변경 전 집계 경로, 수정된 SQL, 실제 클러스터 검증 결과를 한 흐름으로 설명합니다.</p>
+        </div>
+        <aside class="status-plate" aria-label="Implementation status">
+          <div class="plate-label"><span>implementation</span><span class="signal">verified</span></div>
+          <div class="plate-value">CONTRACT FIXED</div>
+          <p class="plate-note">코드와 운영 경로는 검증됨. 단, 제공된 round_a 데이터에서 online 증가 조건은 별도 caveat가 남아 있습니다.</p>
+        </aside>
+      </div>
+
+      <dl class="meta-strip">
+        <div class="meta-item"><dt>worktree</dt><dd class="mono">feat-278-action-bq-feature-loop</dd></div>
+        <div class="meta-item"><dt>partition</dt><dd class="mono">dt=2026-07-23</dd></div>
+        <div class="meta-item"><dt>input</dt><dd class="mono">round_a/event_log.parquet</dd></div>
+        <div class="meta-item"><dt>runtime</dt><dd class="mono">GKE / Redis private VPC</dd></div>
+      </dl>
+    </div>
+  </header>
+
+  <main>
+    <section id="summary">
+      <div class="shell">
+        <div class="section-heading">
+          <div><span class="section-number">00 / AT A GLANCE</span></div>
+          <div><h2>무엇이 바뀌었나</h2><p>입력 parquet를 GCS의 새 일일 파티션으로 적재하고, raw BigQuery를 갱신한 뒤, feature build와 Feast materialize를 VPC 내부에서 이어 붙였습니다. 구현 변경은 작지만, 중복 집계를 막는 계약 경계는 명확해졌습니다.</p></div>
+        </div>
+        <div class="metrics">
+          <div class="metric"><strong>174</strong><span>입력 event rows</span></div>
+          <div class="metric"><strong>6</strong><span>click events</span></div>
+          <div class="metric"><strong>1</strong><span>production contract fix</span></div>
+          <div class="metric"><strong>675</strong><span>tests passed</span></div>
+        </div>
+        <div class="callout"><strong>핵심 문장</strong><p>매일의 <code>dt</code> 파티션은 독립적인 30일 snapshot이다. 따라서 feature build는 선택한 <code>--partition-date</code>와 같은 파티션 하나만 읽고, 여러 파티션을 <code>UNION</code>하지 않는다.</p></div>
+      </div>
+    </section>
+
+    <section id="as-is">
+      <div class="shell">
+        <div class="section-heading">
+          <div><span class="section-number">01 / AS IS</span></div>
+          <div><h2>변경 전: 같은 히스토리를<br>여러 번 세는 경로</h2><p>기존 user dynamic query는 30일 시간 범위만 제한하고 <code>dt</code> 파티션을 제한하지 않았습니다. 각 파티션이 이미 같은 과거 이벤트를 포함하므로, 파티션을 함께 읽으면 클릭/뷰/좋아요가 중복 집계될 수 있었습니다.</p></div>
+        </div>
+        <div class="flow" aria-label="Before data flow">
+          <article class="flow-node is-risk"><div class="node-kicker">source / partition A</div><h3>action_log / dt=07-12</h3><p>독립적인 30일 히스토리를 가진 일일 snapshot</p><code class="node-code">history: 30 days</code></article>
+          <article class="flow-node is-risk"><div class="node-kicker">source / partition B</div><h3>action_log / dt=07-21</h3><p>동일한 과거 이벤트가 다시 포함될 수 있음</p><code class="node-code">history: 30 days</code></article>
+          <article class="flow-node is-risk"><div class="node-kicker">source / partition C</div><h3>action_log / dt=07-23</h3><p>이번 라운드의 새 snapshot</p><code class="node-code">history: 30 days</code></article>
+          <article class="flow-node is-risk"><div class="node-kicker">query boundary</div><h3>timestamp만 필터</h3><p>30일 범위 안의 모든 action log 파티션을 읽음</p><code class="node-code">WHERE event_timestamp ...</code></article>
+          <article class="flow-node is-risk"><div class="node-kicker">aggregation</div><h3>중복 가능 집계</h3><p>같은 유저의 과거 클릭이 파티션 수만큼 반복될 수 있음</p><code class="node-code">UNION-like behavior</code></article>
+          <article class="flow-node is-risk"><div class="node-kicker">online symptom</div><h3>설명하기 어려운 값</h3><p>offline과 online이 맞아도, 값의 출처가 계약상 불명확함</p><code class="node-code">risk: silent inflation</code></article>
+        </div>
+        <div class="comparison" style="margin-top: 30px;">
+          <article class="code-card before">
+            <header><strong>Before / partition blind</strong><span>risk</span></header>
+            <pre><span class="code-dim">SELECT</span> user_id, event_timestamp,
+       event_type, video_id
+<span class="code-dim">FROM</span> data_lake_action_log
+<span class="code-dim">WHERE</span> user_id <span class="code-dim">IS NOT NULL</span>
+  <span class="code-dim">AND</span> event_timestamp &gt;= window_start
+  <span class="code-dim">AND</span> event_timestamp &lt; window_end
+<span class="code-warn">-- dt 경계 없음</span></pre>
+          </article>
+          <article class="code-card after">
+            <header><strong>After / one partition</strong><span>contract</span></header>
+            <pre><span class="code-dim">SELECT</span> user_id, event_timestamp,
+       event_type, video_id
+<span class="code-dim">FROM</span> data_lake_action_log
+<span class="code-dim">WHERE</span> user_id <span class="code-dim">IS NOT NULL</span>
+  <span class="code-dim">AND</span> event_timestamp &gt;= window_start
+  <span class="code-dim">AND</span> event_timestamp &lt; window_end
+  <span class="code-fix">AND dt = DATE '{partition_date}'</span></pre>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="to-be">
+      <div class="shell">
+        <div class="section-heading">
+          <div><span class="section-number">02 / TO BE</span></div>
+          <div><h2>변경 후: 데이터 경계를<br>실행 경로에 고정</h2><p>이번 변경은 schema나 champion을 건드리지 않습니다. 이미 존재하는 action log schema와 GCS partition convention을 그대로 사용하고, query의 source boundary만 명시적으로 좁혔습니다.</p></div>
+        </div>
+        <div class="pipeline" aria-label="Corrected data pipeline">
+          <div class="pipeline-step"><span class="step-index">01</span><strong>Parquet</strong><span>실제 LLM round 산출물</span><code>event_log.parquet</code></div>
+          <div class="pipeline-step"><span class="step-index">02</span><strong>GCS partition</strong><span>새 dt만 추가</span><code>data_lake/action_log/dt=2026-07-23/</code></div>
+          <div class="pipeline-step"><span class="step-index">03</span><strong>BigQuery raw</strong><span>명시적 raw dataset</span><code>data_lake_raw</code></div>
+          <div class="pipeline-step"><span class="step-index">04</span><strong>Feature build</strong><span>단일 dt snapshot 조회</span><code>--raw-dataset data_lake_raw</code></div>
+          <div class="pipeline-step"><span class="step-index">05</span><strong>Materialize</strong><span>클러스터 내부 실행</span><code>autoresearch-app SA</code></div>
+          <div class="pipeline-step"><span class="step-index">06</span><strong>Online query</strong><span>Redis 결과 확인</span><code>recent_click_count_7d</code></div>
+        </div>
+        <div class="callout"><strong>불변식</strong><p><code>dt = --partition-date</code>는 단순 최적화가 아니라 집계 정확성 계약입니다. 기존 파티션, champion, shared schema를 변경하지 않고, daily partition을 합치지 않는 것이 이번 작업의 guardrail입니다.</p></div>
+      </div>
+    </section>
+
+    <section id="changes">
+      <div class="shell">
+        <div class="section-heading">
+          <div><span class="section-number">03 / CODE CHANGES</span></div>
+          <div><h2>어떤 코드가<br>왜 바뀌었나</h2><p>핵심 production change는 한 줄의 partition predicate입니다. 나머지는 그 계약을 테스트와 운영 문서에 고정해 다음 실행에서 같은 실수를 반복하지 않도록 한 변경입니다.</p></div>
+        </div>
+        <table class="file-table">
+          <caption class="sr-only">Issue #278 changed files</caption>
+          <thead><tr><th>file</th><th>change</th><th>reason / outcome</th></tr></thead>
+          <tbody>
+            <tr><td>autoresearch/jobs/feature_store_build.py</td><td>5 lines</td><td>user dynamic SQL에 <code>AND dt = DATE '{partition_date}'</code> 추가. 독립 snapshot 간 중복 집계를 차단.</td></tr>
+            <tr><td>tests/test_feature_store_build.py</td><td>6 lines</td><td>선택한 partition만 읽는 SQL boundary를 회귀 테스트로 고정.</td></tr>
+            <tr><td>docs/guides/data-warehouse.md</td><td>2 lines</td><td>warehouse query 설명에 단일 dt 계약을 추가.</td></tr>
+            <tr><td>docs/specs/2026-07-22-feature-store-build-batch.md</td><td>7 lines</td><td>30일 history가 partition 내부에 있다는 설계 원칙을 명시.</td></tr>
+            <tr><td>docs/runbooks/2026-07-23-action-log-feature-loop.md</td><td>new</td><td>dataset mismatch, WRITE_TRUNCATE, private Redis, local Feast 부재를 포함한 재현 가능한 실행 절차.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="evidence">
+      <div class="shell">
+        <div class="section-heading">
+          <div><span class="section-number">04 / RUNTIME EVIDENCE</span></div>
+          <div><h2>실제 실행값으로<br>확인한 것</h2><p>로컬에서 Feast를 흉내 내지 않고, serving image와 <code>autoresearch-app</code> service account를 사용하는 임시 진단 pod를 GKE 안에서 실행했습니다. Redis는 private VPC이므로 이 경로가 실제 runtime과 같은 검증 경계입니다.</p></div>
+        </div>
+        <div class="evidence-grid">
+          <article class="evidence-card"><span class="evidence-label">input artifact</span><div class="evidence-value">174 <small>rows</small></div><h3>round_a event log</h3><p>impressions 160, click 6, view 6, like 2. 새 GCS 경로는 <code>dt=2026-07-23</code>로 분리했습니다.</p></article>
+          <article class="evidence-card"><span class="evidence-label">raw bigquery</span><div class="evidence-value">1,873,655 <small>rows</small></div><h3>raw load completed</h3><p><code>--dataset data_lake_raw</code>를 명시해 적재했습니다. 검증 query에서 새 dt 174행을 확인했습니다.</p></article>
+          <article class="evidence-card"><span class="evidence-label">offline snapshot</span><div class="evidence-value">1 <small>click / 7d</small></div><h3><code>vu_0403</code> feature value</h3><p>계약을 지킨 단일 partition 기준 값입니다. Feast historical query도 같은 timestamp에서 1을 반환했습니다.</p></article>
+          <article class="evidence-card is-caveat"><span class="evidence-label">acceptance caveat</span><div class="evidence-value"><span class="delta">2 → 1</span></div><h3>online 증가 조건 미충족</h3><p>기존 online 값 2보다 corrected 값 1이 작습니다. UNION으로 얻은 3은 계약 위반이므로 폐기했고, 이를 성공 증거로 사용하지 않았습니다.</p></article>
+          <article class="evidence-card is-invalid"><span class="evidence-label">discarded result</span><div class="evidence-value"><span class="delta">3</span> <small>invalid</small></div><h3>왜 3을 버렸나</h3><p>첫 실행에서 partition filter가 없는 구 코드로 materialize한 값입니다. stale equal-timestamp marker까지 정리한 후, 수정 코드로 다시 materialize해 최종 online 값을 1로 맞췄습니다.</p></article>
+          <article class="evidence-card"><span class="evidence-label">verification gate</span><div class="evidence-value">675 <small>passed</small></div><h3>test suite</h3><p>전체 테스트 <code>675 passed, 5 skipped</code>. 변경 파일 Ruff 검사와 <code>git diff --check</code>도 통과했습니다.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="guardrails">
+      <div class="shell">
+        <div class="section-heading">
+          <div><span class="section-number">05 / GUARDRAILS</span></div>
+          <div><h2>실행 전에 확인해야 할<br>네 가지 함정</h2><p>이번 runbook은 코드보다 운영 경계에서 발생할 수 있는 오해를 더 구체적으로 기록합니다. 특히 dataset과 VPC runtime은 로컬에서 조용히 잘못 검증하기 쉬운 지점입니다.</p></div>
+        </div>
+        <div class="guardrail-grid">
+          <article class="guardrail"><span class="guard-number">01 / DATASET</span><h3>raw와 feature dataset은 다르다</h3><p>적재 스크립트 기본값은 <code>feast_offline_store</code>일 수 있습니다. raw 적재 시 반드시 <code>data_lake_raw</code>를 명시합니다.</p></article>
+          <article class="guardrail"><span class="guard-number">02 / WRITE MODE</span><h3><code>WRITE_TRUNCATE</code>는 전체 재적재다</h3><p>실행 전 source artifact와 target table row를 점검합니다. 업로드 검수 없이 재적재하지 않습니다.</p></article>
+          <article class="guardrail"><span class="guard-number">03 / NETWORK</span><h3>Redis는 로컬에서 조회하지 않는다</h3><p>private VPC 주소이므로 serving image와 app service account를 사용해 클러스터 안에서 materialize와 online query를 실행합니다.</p></article>
+          <article class="guardrail"><span class="guard-number">04 / LOCAL ENV</span><h3>로컬 venv에는 Feast가 없다</h3><p>로컬 Feast 설치를 전제로 하지 않습니다. 배포된 serving runtime의 registry, staging, Redis secret을 그대로 사용합니다.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="verdict">
+      <div class="shell">
+        <div class="verdict">
+          <div><p class="eyebrow">FINAL READOUT</p><h2>코드 경계는<br><span>고정되었다.</span></h2><p>Issue #278의 구현과 운영 경로는 재현 가능한 상태입니다. 다만 현재 round_a와 선택한 유저의 전/후 값은 이슈의 “증가” acceptance를 만족하지 않으므로, 완료 판정과 구현 검증을 분리해서 기록합니다.</p></div>
+          <ul class="verdict-list">
+            <li><strong>IMPLEMENTATION</strong><span><code>dt = partition-date</code> 필터가 production query와 regression test에 고정됨</span></li>
+            <li><strong>RUNTIME</strong><span>GCS → BigQuery → feature build → GKE 내부 materialize → Redis online 확인 완료</span></li>
+            <li><strong>SAFETY</strong><span>기존 partition, champion, shared schema, action_logs contract를 변경하지 않음</span></li>
+            <li><strong>ACCEPTANCE</strong><span>현재 증거는 <code>2 → 1</code>. strict increase는 미충족이며, 추가 click 데이터 또는 baseline 0인 대상이 필요함</span></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="shell footer-inner">
+      <p>Issue #278 implementation report. 이 문서는 새 worktree에서 수행한 코드 변경과 실제 실행 증거를 설명하며, commit / push / PR은 생성하지 않았습니다.</p>
+      <nav class="footer-links" aria-label="Related documents">
+        <a href="../runbooks/2026-07-23-action-log-feature-loop.md">runbook</a>
+        <a href="../../autoresearch/jobs/feature_store_build.py">production code</a>
+        <a href="../../tests/test_feature_store_build.py">regression test</a>
+        <a href="../guides/data-warehouse.md">warehouse guide</a>
+      </nav>
+    </div>
+  </footer>
+</body>
+</html>
