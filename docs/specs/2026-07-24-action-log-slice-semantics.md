@@ -92,7 +92,7 @@ AND dt BETWEEN DATE_SUB(DATE '{partition_date}', INTERVAL 30 DAY)
 ### 5. 데이터 마이그레이션 (GCS → BQ 재적재 1회)
 
 BQ는 GCS 전체 재적재 산출물이므로 **GCS만 바로잡으면 된다.** 대상은
-트레일링 파티션 4개뿐이며, 슬라이스 12개(dt=07-07, 07-12~21)는 event_id
+트레일링 파티션 4개뿐이며, 슬라이스 11개(dt=07-07, 07-12~21)는 event_id
 재작성 외 불변이다.
 
 | 파티션 | 실체 (실측) | 처분 |
