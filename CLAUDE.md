@@ -1,16 +1,15 @@
 # Coding Guidelines for AI Coding Agents
 
-> Version: 1.1.0 | Last Updated: 2026-07-22
+> Version: 1.2.0 | Last Updated: 2026-07-24
 
 이 문서는 Claude Code 등 AI 코딩 에이전트가 이 저장소에서 작업할 때의 기본
-진입점입니다. 필수 규칙은 짧게 유지하고, 상세 가이드는 `.claude/docs/`를
-참조합니다.
+진입점입니다. 여기에는 규칙·함정·근거만 남깁니다. 저장소 사실(디렉토리 구조,
+배포 이미지, 팀 도메인)은 정본 문서를 가리키고 여기에 복제하지 않습니다.
 
 ## Language Preference
 
 에이전트 응답, PR 코멘트, 리뷰 요약, 구현 노트는 한국어 격식체를 사용합니다.
-사용자가 명시적으로 요청하는 경우에만 다른 언어를 사용합니다. (추후 영어 전환
-예정)
+사용자가 명시적으로 요청하는 경우에만 다른 언어를 사용합니다.
 
 ## Rule Priority
 
@@ -25,53 +24,37 @@
 
 ## Documentation Navigation
 
-비자명한 변경을 하기 전에 가장 관련 있는 가이드를 먼저 확인합니다:
+비자명한 변경을 하기 전에 가장 관련 있는 문서를 먼저 확인합니다:
 
 | 요청 유형 | 먼저 볼 문서 | 다음 문서 |
 | --- | --- | --- |
-| 프로젝트 구조·소유권 | `.claude/docs/agent-project-reference.md` | `.claude/docs/architecture-overview.md` |
+| 프로젝트 구조·팀 도메인·배포 이미지 | `README.md` | `.claude/docs/agent-project-reference.md` |
+| 폴더별 책임·소유 경계 | `.claude/docs/agent-project-reference.md` | `.claude/docs/architecture-overview.md` |
 | Python 스타일, 타이핑, 로깅 | `.claude/docs/agent-python-reference.md` | `.claude/docs/coding-conventions.md` |
 | 워크플로우, spec, plan, 커밋, PR | `.claude/docs/agent-workflow-reference.md` | `.claude/docs/agent-prohibitions.md` |
+| 문서 배치·수명 (specs/plans/archive) | `docs/README.md` | — |
 | 보안, 시크릿, 외부 입력 | `.claude/docs/agent-security-guidelines.md` | `.claude/docs/agent-prohibitions.md` |
 | 에러 처리 | `.claude/docs/agent-error-handling-reference.md` | 관련 소스 파일 |
 | 코드 리뷰 | `.claude/docs/agent-peer-review.md` | `.claude/docs/agent-workflow-reference.md` |
 | 계획 리뷰 | `.claude/docs/agent-plan-review.md` | `.claude/docs/agent-peer-review.md` |
 
-각 문서는 현재 구현과 계획(별도 브랜치 진행 중)을 구분해 표기합니다.
-
 ## Project Context
 
-- Autoresearch: YouTube 트렌딩 데이터 기반 CTR 모델링 프로젝트
-- 런타임 패키지는 `autoresearch/`:
-  - `autoresearch/youtube_collection/` — YouTube 트렌딩 수집
-    (fetch/transform/load/backfill/schema + client.py 복원력 레이어),
-    GCS 데이터 레이크 적재
-  - `autoresearch/virtual_users/` — LLM 기반 가상 유저(페르소나) 생성
-    파이프라인
-  - `autoresearch/action_logs/` — action log 생성·shard·merge·품질 계약
-  - `autoresearch/jobs/` — Airflow에 종속되지 않는 공개 batch CLI
-- `proxy/` — Cloud Run dumb forwarder (YouTube API IP밴 대응 egress seam)
-- `Dockerfile.app`은 공개 CLI를 실행하는 canonical application image입니다.
-- DAG·schedule·KubernetesPodOperator·Airflow 배포는 인접 저장소
-  `SKYAHO/Autoresearch-airflow`가 소유하며, 이 저장소의 image와 공개 CLI만
-  소비합니다.
-- 테스트는 `tests/` (모듈별 `test_<module>.py` 플랫 구조)
-- CTR 파이프라인 예제 스캐폴드는 `examples/ctr_pipeline_scaffold/`
-- 의존성은 uv 기반: 단일 출처는 `pyproject.toml` + `uv.lock`입니다.
-  `Dockerfile.app`도 이 두 파일을 사용합니다. `proxy/requirements.txt`
-  (Cloud Run)는 `uv export` 전핀 산출물이며 CI `uv-lock-check` job이 drift를
-  검사합니다.
-- Python 3.12 (`.python-version`), CI는 3.11/3.12 매트릭스
-- 프로그램 도메인은 Model Training (waieiches, hyochangsung), Feast Features
-  (waieiches, hyochangsung — 도입 진행 중), YouTube Collection & Release
-  (Noah-JuYong — 수집 파이프라인·복원력 레이어·프록시, release/배포 자동화
-  워크플로우), Airflow Orchestration (bbungjun), GCP Infrastructure
-  (hyeongyu-data)입니다. 뒤의 두 도메인 구현은 각각 `Autoresearch-airflow`,
-  `Autoresearch-infra` 저장소가 소유합니다.
-- Feast 피처 스토어는 `feature_repo/`에 도입되어 있습니다 (Entity·FeatureView
-  정의는 더미 스키마, 실데이터 스키마로 교체 예정).
-- CTR 학습 파이프라인은 `src/models/`, `src/features/`, `src/pipeline/`에
-  구현되어 있습니다.
+Autoresearch는 YouTube 트렌딩 데이터 기반 CTR 모델링 프로젝트입니다.
+수집 → 가상 유저 → action log → 학습 데이터셋 → 학습/평가 → 리랭킹 서빙 →
+일일 추천·노출 시뮬레이션이 다시 action log로 돌아오는 **일일 폐루프**를
+운영합니다. 구조 지도와 팀 도메인은 `README.md`가 정본입니다.
+
+**저장소 경계 (여기서 자주 틀립니다):**
+
+- DAG·schedule·retry·timeout·Pool·KubernetesPodOperator·Airflow 배포는 인접
+  저장소 `SKYAHO/Autoresearch-airflow` 소유입니다. 이 저장소는 배포 이미지와
+  `autoresearch.jobs.*` 공개 CLI만 제공하며, Airflow는 내부 Python API를 직접
+  import하지 않습니다.
+- GCP 인프라(IAM, K8s 리소스, 시크릿 기반)는 `SKYAHO/Autoresearch-infra`
+  소유입니다.
+- 공개 batch 명령·인자 계약은
+  `docs/specs/2026-07-13-public-batch-execution-contract.md`를 따릅니다.
 
 ## Core Rules
 
@@ -88,34 +71,34 @@
 - Python 함수의 타입 힌트(반환 타입 포함)를 유지합니다.
 - 요청된 변경에 필요하지 않은 광범위한 리팩터링은 피합니다.
 - 시크릿, 로컬 데이터 경로, 생성된 데이터 파일, `.env`를 커밋하지 않습니다.
-- 동작, 명령어, 설정, 운영 방식이 바뀌면 문서를 갱신합니다.
+- 새 최상위 디렉토리, `Dockerfile.*`, 공개 batch CLI, 필수 환경 변수를
+  도입하는 PR은 **같은 PR에서** `README.md`와
+  `.claude/docs/agent-project-reference.md`를 갱신합니다.
+- 구현이 완료된 spec/plan은 `docs/archive/`로 옮깁니다. 문서 배치·수명
+  규칙은 `docs/README.md`가 정본입니다.
 
 ## Local Development
 
-로컬 테스트와 개발:
-
 ```bash
-uv sync                  # .venv 생성 + 런타임/dev 의존성 설치 (uv.lock 기준)
-uv run python -m pytest
+uv sync                                    # .venv 생성 + 런타임/dev 의존성 (uv.lock 기준)
+uv run python -m pytest                    # CI pytest job과 동일
+uv run --no-sync ruff check autoresearch tests tools   # CI lint job과 동일
 ```
 
 - 의존성 변경은 `pyproject.toml` 수정 → `uv lock` → 산출물 갱신 순서로
-  진행합니다 (`proxy/requirements.txt`는 헤더의 `uv export` 명령으로 재생성).
-- Feast 작업은 격리 그룹을 사용합니다: `uv sync --only-group feast`
-  (feast 0.64는 dev/proxy의 fastapi<0.129와 starlette 충돌).
-- 필수 환경 변수는 `.env.example` 참조: `YOUTUBE_API_KEY`,
-  `YOUTUBE_LAKE_BUCKET`, `YOUTUBE_BACKFILL_SOURCE`.
-- 공개 batch 명령과 인자 계약은
-  `docs/specs/2026-07-13-public-batch-execution-contract.md`를 따릅니다.
-- schedule, retry, timeout, Pool이나 KPO 인자 선택을 변경해야 하면
-  `Autoresearch-airflow`에서 작업합니다.
+  진행합니다. `proxy/requirements.txt`는 파일 헤더의 `uv export` 명령으로
+  재생성하고, `deploy/mlflow/runtime`은 자체 lock을 가집니다 — CI
+  `uv lock & proxy export drift` job이 둘 다 검사합니다.
+- Feast는 dev 그룹과 의존성 충돌(feast 0.64의 starlette>=1.0 ↔ dev/proxy의
+  fastapi<0.129)로 **격리 그룹**입니다: `uv sync --only-group feast`.
+  feast 계열 테스트는 dev 환경에서 `pytest.importorskip`으로 skip되며, CI
+  `pytest (feast group)` job이 전용 테스트 목록을 별도 실행합니다.
+- 환경 변수의 단일 출처는 `.env.example`입니다. 여기에 나열하지 않습니다.
 
 ## Spec / Plan First
 
 비자명한 변경(광범위한 동작 변경, 마이그레이션, 모듈 간 계약, 공개 API, 대규모
 다중 파일 수정)은 구현 전에 계획을 작성합니다.
-
-저장소 작업 문서 구조를 사용합니다:
 
 - 요구사항, 설계 결정, 동작 계약, 아키텍처 노트 →
   `docs/specs/YYYY-MM-DD-<slug>.md`
@@ -131,20 +114,17 @@ uv run python -m pytest
 변경을 증명하는 가장 좁은 검증부터 수행하고, 공유 동작이나 사용자
 워크플로우에 영향이 있으면 범위를 넓힙니다.
 
-주요 명령어:
-
 ```bash
 uv run python -m pytest -v                          # CI와 동일
+uv run --no-sync ruff check autoresearch tests tools # CI lint와 동일
 docker build -f Dockerfile.app -t autoresearch:ci . # CI 이미지 빌드 검증
 ```
 
-GitHub 워크플로우·문서 변경 시 추가로:
-
-```bash
-git diff --check
-```
-
-`actionlint`가 로컬에 있으면 함께 사용합니다.
+- feast 계열 변경 시: `uv sync --only-group feast` 환경에서 CI
+  `pytest (feast group)` job의 테스트 목록(`.github/workflows/ci.yml`)을
+  실행합니다.
+- GitHub 워크플로우·문서 변경 시 추가로 `git diff --check`.
+  `actionlint`가 로컬에 있으면 함께 사용합니다.
 
 ## Review Guidance
 
@@ -156,5 +136,7 @@ PR 리뷰 시 심각도 순으로 구체적 발견 사항을 먼저 제시합니
 - 변경된 동작에 대한 테스트 누락·부실
 - 타입 안정성 문제
 - 전제 조건과 영향이 명확한 성능 문제
+- 새 디렉토리·이미지·공개 CLI·필수 환경 변수를 도입하면서 `README.md`와
+  `agent-project-reference.md`를 갱신하지 않은 문서 드리프트
 
 구체적 코드 이슈는 인라인 코멘트로, 요약 코멘트는 짧게 유지합니다.

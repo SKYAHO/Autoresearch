@@ -79,9 +79,9 @@ Airflow (외부 Autoresearch-airflow):
 
 **책임:** 피처 정의, 피처 스토어 구축, 피처 엔지니어링 변환.
 
-**상태:** 도입됨 — `feature_repo/`에 Entity(`user`, `video`)와 더미 스키마
-FeatureView 3개 정의 (실데이터 스키마로 교체 예정). Feast 0.64, BigQuery
-offline store + Redis online store.
+**상태:** 운영 중 — `feature_repo/`에 실데이터 스키마 기반 Entity·FeatureView
+정의 (BigQuery source table 연동). Feast 0.64, BigQuery offline store +
+Redis online store, `feast_apply`·`feast_materialize` 공개 batch CLI 제공.
 
 ### Feast 핵심 설계 결정 (확정)
 
