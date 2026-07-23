@@ -93,6 +93,7 @@
 
 ## 가이드
 
+- [전체 파이프라인 개요](guides/pipeline-overview.md) — 배치·서빙·시뮬레이션 폐루프 mermaid 다이어그램
 - [데이터 레이크](guides/data-lake.md) · [데이터 웨어하우스](guides/data-warehouse.md)
 - [학습 데이터셋](guides/training-dataset.md)
 - [피처 스토어](guides/feature-store.md) · [Feast GCP 설정](guides/feast-gcp-setup.md)
