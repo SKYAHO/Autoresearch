@@ -194,12 +194,21 @@ def compute_point_in_time_user_features(
     videos_raw: pd.DataFrame,
     query_points: pd.DataFrame,
 ) -> pd.DataFrame:
-    """query_points(user_id, as_of[, carry...])의 각 행에 대해 as_of 직전 기준
-    historical_category_affinity와 recent 7일 집계를 계산한다.
+    """query_points(user_id, as_of[, carry...])의 각 행에 대해 as_of 기준
+    historical_category_affinity와 recent 집계를 계산한다.
 
-    학습 경로는 query_points=노출 이벤트(as_of=impression 시각)로, 시뮬레이션
-    경로는 query_points=유저×기준시각 1행으로 호출한다 — 같은 SQL이므로
-    point-in-time 계산이 두 경로에서 항상 일치한다.
+    스펙(docs/guides/data-warehouse.md의 user_dynamic_feature)은 **일 단위
+    snapshot**이다: as_of의 날짜(d = CAST(as_of AS DATE))를 기준으로 recent_*_7d는
+    `[d-7, d)`(당일 제외 7일) window, historical_category_affinity는 `[d-30, d)`
+    30일 window 최빈 category다. 같은 (user_id, d)의 impression은 동일 피처를
+    가지므로, event_log을 (user, day)로 미리 집계하고 (user, day) 그레인에서만
+    계산한 뒤 query_points로 broadcast한다 — impression 단위 상관 서브쿼리의
+    메모리 폭발(부등호 self-join 중간 결과)을 없앤다(#284, #271 근본 수정).
+
+    스냅샷 당일 이벤트가 없어도(시뮬레이션 경로 등) 직전 window 활동이 반영되도록
+    "이벤트 날 ∪ 스냅샷 날" spine 위에서 0-패딩 후 window를 돌린다. 학습 경로는
+    query_points=노출 이벤트(as_of=impression 시각), 시뮬레이션 경로는
+    query_points=유저×기준시각 1행으로 호출하며 같은 SQL이라 두 경로가 일치한다.
 
     recent_view_count_7d/total_event_count_7d는 근사값이다: event_log는
     long-format action_log가 아니라 impression 1행에 clicked/liked/
@@ -214,77 +223,132 @@ def compute_point_in_time_user_features(
     con.register("event_log_src", event_log)
     con.register("videos_raw", videos_raw)
     con.register("query_points_src", query_points)
-    con.execute("CREATE OR REPLACE TABLE event_log_ts AS SELECT * FROM event_log_src")
-    con.execute("CREATE OR REPLACE TABLE query_points AS SELECT * FROM query_points_src")
     carry = [c for c in query_points.columns if c not in ("user_id", "as_of")]
     carry_select = "".join(f'q."{name}",\n            ' for name in carry)
     return con.execute(
         f"""
+        WITH
+        -- 스펙(data-warehouse.md user_dynamic_feature)은 일 단위 snapshot
+        -- (Asia/Seoul 날짜 경계)이라, 피처는 (user_id, 날짜) 그레인에서만 다르다.
+        -- 따라서 impression(수백만) 단위가 아니라 (user, day) 단위로만 계산하고
+        -- 마지막에 query_points로 broadcast한다. 무거운 윈도우 연산이 작은
+        -- (user, day) 테이블 위에서만 돌아 상관 서브쿼리의 메모리 폭발을 없앤다(#284).
+
+        -- event_log은 wide-format(impression 1행 + clicked/liked/watch_time_sec)
+        -- 이라 view를 별도 행으로 못 세고, watch_time_sec > 0을 view로 근사한다
+        -- (docstring 참고). day 단위로 미리 합산한다.
+        daily AS (
+            SELECT
+                user_id,
+                CAST(timestamp AS DATE) AS event_date,
+                SUM(CASE WHEN clicked = 1 THEN 1 ELSE 0 END) AS click_c,
+                SUM(CASE WHEN CAST(watch_time_sec AS BIGINT) > 0 THEN 1 ELSE 0 END) AS view_c,
+                COALESCE(SUM(watch_time_sec), 0) AS watch_s,
+                SUM(CASE WHEN liked = 1 THEN 1 ELSE 0 END) AS like_c,
+                COUNT(*)
+                    + SUM(CASE WHEN clicked = 1 THEN 1 ELSE 0 END)
+                    + SUM(CASE WHEN CAST(watch_time_sec AS BIGINT) > 0 THEN 1 ELSE 0 END)
+                    + SUM(CASE WHEN liked = 1 THEN 1 ELSE 0 END) AS tot_c
+            FROM event_log_src
+            GROUP BY user_id, event_date
+        ),
+        -- 스냅샷 날짜(= as_of의 날짜). 같은 (user, day)의 여러 impression은
+        -- 한 번만 계산한다.
+        snap AS (
+            SELECT DISTINCT user_id, CAST(as_of AS DATE) AS d
+            FROM query_points_src
+        ),
+        -- spine: 이벤트 날 ∪ 스냅샷 날. 스냅샷 당일 이벤트가 0건이어도 그 날의
+        -- rolling이 계산되도록 0-패딩한다 — 안 하면 window가 그 (user, day) 행을
+        -- 아예 안 만들어, 직전 6일 활동이 있어도 조용히 0으로 떨어진다.
+        spine AS (
+            SELECT user_id, event_date AS d FROM daily
+            UNION
+            SELECT user_id, d FROM snap
+        ),
+        daily_padded AS (
+            SELECT
+                s.user_id,
+                s.d AS event_date,
+                COALESCE(dl.click_c, 0) AS click_c,
+                COALESCE(dl.view_c, 0) AS view_c,
+                COALESCE(dl.watch_s, 0) AS watch_s,
+                COALESCE(dl.like_c, 0) AS like_c,
+                COALESCE(dl.tot_c, 0) AS tot_c
+            FROM spine s
+            LEFT JOIN daily dl ON dl.user_id = s.user_id AND dl.event_date = s.d
+        ),
+        -- 7일 rolling: [d-7, d) = d-7 ~ d-1 (당일 제외, 스펙 window와 1:1).
+        recent AS (
+            SELECT
+                user_id,
+                event_date AS d,
+                SUM(click_c) OVER w AS recent_click_count_7d,
+                SUM(view_c) OVER w AS recent_view_count_7d,
+                SUM(watch_s) OVER w AS recent_watch_time_7d,
+                SUM(like_c) OVER w AS recent_like_count_7d,
+                SUM(tot_c) OVER w AS total_event_count_7d
+            FROM daily_padded
+            WINDOW w AS (
+                PARTITION BY user_id ORDER BY event_date
+                RANGE BETWEEN INTERVAL 7 DAY PRECEDING AND INTERVAL 1 DAY PRECEDING
+            )
+        ),
+        -- historical_category_affinity: (user, day, category)별 반응(클릭·시청·
+        -- 좋아요) 일별 카운트. video_category는 videos JOIN으로 한 번만 붙인다.
+        cat_daily AS (
+            SELECT
+                e.user_id,
+                CAST(e.timestamp AS DATE) AS event_date,
+                CAST(v.categoryId AS VARCHAR) AS category_id,
+                SUM(
+                    CASE WHEN e.clicked = 1
+                          OR CAST(e.watch_time_sec AS BIGINT) > 0
+                          OR e.liked = 1
+                         THEN 1 ELSE 0 END
+                ) AS react_c
+            FROM event_log_src e
+            JOIN videos_raw v ON v.video_id = e.video_id
+            GROUP BY e.user_id, event_date, category_id
+        ),
+        -- 스냅샷 기준 30일 [d-30, d) 윈도우에서 반응 최다 category를 고른다.
+        -- snap이 구동하므로 스냅샷 당일 이벤트가 없어도(30일 내 이력만 있으면)
+        -- 정상 계산되고, 30일 내 이력이 전혀 없으면 매칭이 없어 'unknown'이 된다.
+        affinity_ranked AS (
+            SELECT
+                s.user_id,
+                s.d,
+                c.category_id,
+                ROW_NUMBER() OVER (
+                    PARTITION BY s.user_id, s.d
+                    ORDER BY SUM(c.react_c) DESC, c.category_id
+                ) AS rn
+            FROM snap s
+            JOIN cat_daily c
+              ON c.user_id = s.user_id
+             AND c.event_date >= s.d - INTERVAL 30 DAY
+             AND c.event_date < s.d
+             AND c.react_c > 0
+            GROUP BY s.user_id, s.d, c.category_id
+        ),
+        affinity AS (
+            SELECT user_id, d, category_id AS historical_category_affinity
+            FROM affinity_ranked WHERE rn = 1
+        )
         SELECT
             q.user_id,
             q.as_of,
-            {carry_select}COALESCE(
-                (
-                    SELECT CAST(v.categoryId AS VARCHAR)
-                    FROM event_log_ts AS past
-                    JOIN videos_raw AS v ON v.video_id = past.video_id
-                    WHERE past.user_id = q.user_id
-                      AND CAST(past.timestamp AS TIMESTAMP) < CAST(q.as_of AS TIMESTAMP)
-                      AND past.clicked = 1
-                    GROUP BY v.categoryId
-                    ORDER BY COUNT(*) DESC
-                    LIMIT 1
-                ),
-                'unknown'
-            ) AS historical_category_affinity,
-
-            (
-                SELECT COUNT(*)
-                FROM event_log_ts AS past
-                WHERE past.user_id = q.user_id
-                  AND past.clicked = 1
-                  AND CAST(past.timestamp AS TIMESTAMP) < CAST(q.as_of AS TIMESTAMP)
-                  AND CAST(past.timestamp AS TIMESTAMP) >= CAST(q.as_of AS TIMESTAMP) - INTERVAL 7 DAY
-            ) AS recent_click_count_7d,
-
-            (
-                SELECT COALESCE(SUM(past.watch_time_sec), 0)
-                FROM event_log_ts AS past
-                WHERE past.user_id = q.user_id
-                  AND CAST(past.timestamp AS TIMESTAMP) < CAST(q.as_of AS TIMESTAMP)
-                  AND CAST(past.timestamp AS TIMESTAMP) >= CAST(q.as_of AS TIMESTAMP) - INTERVAL 7 DAY
-            ) AS recent_watch_time_7d,
-
-            (
-                SELECT COUNT(*)
-                FROM event_log_ts AS past
-                WHERE past.user_id = q.user_id
-                  AND past.liked = 1
-                  AND CAST(past.timestamp AS TIMESTAMP) < CAST(q.as_of AS TIMESTAMP)
-                  AND CAST(past.timestamp AS TIMESTAMP) >= CAST(q.as_of AS TIMESTAMP) - INTERVAL 7 DAY
-            ) AS recent_like_count_7d,
-
-            (
-                SELECT COUNT(*)
-                FROM event_log_ts AS past
-                WHERE past.user_id = q.user_id
-                  AND CAST(past.watch_time_sec AS BIGINT) > 0
-                  AND CAST(past.timestamp AS TIMESTAMP) < CAST(q.as_of AS TIMESTAMP)
-                  AND CAST(past.timestamp AS TIMESTAMP) >= CAST(q.as_of AS TIMESTAMP) - INTERVAL 7 DAY
-            ) AS recent_view_count_7d,
-
-            (
-                SELECT
-                    COALESCE(COUNT(*), 0)
-                    + COALESCE(SUM(CASE WHEN past.clicked = 1 THEN 1 ELSE 0 END), 0)
-                    + COALESCE(SUM(CASE WHEN CAST(past.watch_time_sec AS BIGINT) > 0 THEN 1 ELSE 0 END), 0)
-                    + COALESCE(SUM(CASE WHEN past.liked = 1 THEN 1 ELSE 0 END), 0)
-                FROM event_log_ts AS past
-                WHERE past.user_id = q.user_id
-                  AND CAST(past.timestamp AS TIMESTAMP) < CAST(q.as_of AS TIMESTAMP)
-                  AND CAST(past.timestamp AS TIMESTAMP) >= CAST(q.as_of AS TIMESTAMP) - INTERVAL 7 DAY
-            ) AS total_event_count_7d
-        FROM query_points q
+            {carry_select}COALESCE(a.historical_category_affinity, 'unknown') AS historical_category_affinity,
+            COALESCE(r.recent_click_count_7d, 0) AS recent_click_count_7d,
+            COALESCE(r.recent_watch_time_7d, 0) AS recent_watch_time_7d,
+            COALESCE(r.recent_like_count_7d, 0) AS recent_like_count_7d,
+            COALESCE(r.recent_view_count_7d, 0) AS recent_view_count_7d,
+            COALESCE(r.total_event_count_7d, 0) AS total_event_count_7d
+        FROM query_points_src q
+        LEFT JOIN recent r
+            ON r.user_id = q.user_id AND r.d = CAST(q.as_of AS DATE)
+        LEFT JOIN affinity a
+            ON a.user_id = q.user_id AND a.d = CAST(q.as_of AS DATE)
         """
     ).df()
 
