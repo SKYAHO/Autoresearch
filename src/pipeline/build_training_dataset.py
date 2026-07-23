@@ -57,6 +57,43 @@ FOLLOWUP_WINDOW_SEC = int(os.environ.get("CTR_TRAINING_FOLLOWUP_WINDOW_SEC", "60
 # 보도록 왼쪽으로 미리 당겨서 조회하는 padding.
 _LOOKBACK_PAD_DAYS = 7
 
+# action log dt 파티션과 이벤트 timestamp가 공유하는 시각 체계 (#295 슬라이스 계약).
+_KST_UTC_OFFSET = timedelta(hours=9)
+
+
+def padded_dt_range(events_start_date: str, events_end_date: str) -> tuple[str, str]:
+    """dt 파티션 프루닝 범위를 계산한다 (#286).
+
+    왼쪽은 7일 lookback, 오른쪽은 click→view→like 세션이 KST 자정을 넘어
+    다음 날 파티션에 실린 경우를 위해 세션 윈도우 합을 일 단위로 올림해
+    넓힌다. (기존 구현은 자정에 초를 더한 뒤 날짜로 재포맷해 오른쪽
+    padding이 항상 no-op이었다.)
+    """
+    start = datetime.strptime(events_start_date, "%Y-%m-%d") - timedelta(
+        days=_LOOKBACK_PAD_DAYS
+    )
+    session_pad_days = (LABEL_WINDOW_SEC + 2 * FOLLOWUP_WINDOW_SEC + 86399) // 86400
+    end = datetime.strptime(events_end_date, "%Y-%m-%d") + timedelta(
+        days=session_pad_days
+    )
+    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
+
+
+def events_kst_window(events_start_date: str, events_end_date: str) -> tuple[str, str]:
+    """학습 구간 인자의 단일 의미 — "이벤트 발생 KST 날짜 폐구간 [start, end]" —
+    를 UTC naive timestamp 경계 [start 00:00 KST, end+1 00:00 KST)로 환산한다 (#286).
+
+    raw event_timestamp는 UTC로 저장되므로 트림 비교는 이 경계 문자열을
+    naive UTC 리터럴로 사용한다.
+    """
+    lo = datetime.strptime(events_start_date, "%Y-%m-%d") - _KST_UTC_OFFSET
+    hi = (
+        datetime.strptime(events_end_date, "%Y-%m-%d")
+        + timedelta(days=1)
+        - _KST_UTC_OFFSET
+    )
+    return lo.strftime("%Y-%m-%d %H:%M:%S"), hi.strftime("%Y-%m-%d %H:%M:%S")
+
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
@@ -414,18 +451,17 @@ def main(
     personas = load_personas(personas_path)
     if events_source == "bigquery":
         # online_features의 7일 lookback이 학습 기간 첫 7일에도 온전한 과거
-        # 데이터를 보도록 왼쪽 padding, click->view->like 세션이 end_date
-        # 경계에서 잘리지 않도록 오른쪽도 소폭 padding해서 넉넉히 가져온다.
-        # 최종 출력 단계에서 이 padding 구간은 양쪽 다 잘라낸다(아래 참고).
-        padded_start = (
-            datetime.strptime(events_start_date, "%Y-%m-%d")
-            - timedelta(days=_LOOKBACK_PAD_DAYS)
-        ).strftime("%Y-%m-%d")
-        padded_end = (
-            datetime.strptime(events_end_date, "%Y-%m-%d")
-            + timedelta(seconds=LABEL_WINDOW_SEC + 2 * FOLLOWUP_WINDOW_SEC)
-        ).strftime("%Y-%m-%d")
+        # 데이터를 보도록 왼쪽 padding, click->view->like 세션이 KST 자정을
+        # 넘어 dt=end+1 파티션에 실린 경우를 위해 오른쪽도 일 단위로 padding
+        # 해서 가져온다(#286). 최종 출력 단계에서 padding 구간은 잘라낸다.
+        padded_start, padded_end = padded_dt_range(events_start_date, events_end_date)
         long_events = load_events_from_bigquery(padded_start, padded_end)
+        if getattr(long_events["event_timestamp"].dtype, "tz", None) is not None:
+            # BigQuery TIMESTAMP는 tz-aware UTC로 도착한다. 아래 DuckDB 트림
+            # 비교가 세션 timezone 설정에 좌우되지 않도록 naive UTC로 정규화한다.
+            long_events["event_timestamp"] = (
+                long_events["event_timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
+            )
         events = derive_wide_events(long_events)
         # long-format은 이벤트 종류(impression/click/view/like)별로 별도 행이라
         # wide-format(impression 1행에 결과를 합침)보다 훨씬 크다. 변환 직후로는
@@ -559,11 +595,14 @@ def main(
     # 위해 [events_start_date, events_end_date] 바깥까지 padding해서 가져왔으므로,
     # 최종 학습 데이터에는 원래 요청한 구간만 남기고 양쪽 다 잘라낸다. 왼쪽만
     # 자르면 end_date 이후 padding 구간의 impression이 조용히 섞여 들어간다.
+    # 경계는 인자의 단일 의미("이벤트 발생 KST 날짜 폐구간")를 따른다(#286) —
+    # 과거 구현은 UTC 자정 + end 미포함이라 KST 가장자리 9시간이 어긋났다.
     trim_clause = ""
     if events_source == "bigquery":
+        window_lo, window_hi = events_kst_window(events_start_date, events_end_date)
         trim_clause = (
-            f"WHERE j.timestamp >= TIMESTAMP '{events_start_date}' "
-            f"AND j.timestamp < TIMESTAMP '{events_end_date}'"
+            f"WHERE j.timestamp >= TIMESTAMP '{window_lo}' "
+            f"AND j.timestamp < TIMESTAMP '{window_hi}'"
         )
 
     # joined(online_features x video x user_topic)와 최종 feature projection을
