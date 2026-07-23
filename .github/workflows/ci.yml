@@ -60,6 +60,7 @@ jobs:
         run: >-
           uv run --no-sync python -m pytest
           tests/test_redis_iam.py
+          tests/test_feast_apply.py
           tests/test_feast_materialize.py
           tests/test_serving_feast_reader.py
           tests/test_serving_feast_reader_feast.py
@@ -196,6 +197,8 @@ jobs:
               autoresearch-feast:ci "$@"
           }
           run_feast
+          run_feast python -m autoresearch.jobs.feast_apply --help
+          run_feast python -m autoresearch.jobs.feast_apply --version
           run_feast python -m autoresearch.jobs.feast_materialize --help
           run_feast python -m autoresearch.jobs.feast_materialize --version
           if docker run --rm autoresearch-feast:ci 2>/dev/null; then
