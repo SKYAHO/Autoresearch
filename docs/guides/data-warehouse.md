@@ -382,7 +382,7 @@ MVP의 daily snapshot 방식에서는 impression 당일 00:00 이후부터 impre
 WITH action_log AS (
   -- category affinity가 30일을 보므로 raw 스캔 윈도우도 30일이다.
   -- 7일 집계는 이 안에 포함된다.
-  -- 각 dt는 독립적인 30일 히스토리이므로 대상 파티션 하나만 읽는다.
+  -- dt=D는 KST D일 하루치 슬라이스다(#295 A안). 30일 히스토리는 BETWEEN 프루닝으로 조립한다.
   SELECT
     user_id,
     video_id,
@@ -392,7 +392,8 @@ WITH action_log AS (
   FROM `{project}.{raw_dataset}.data_lake_action_log`
   WHERE user_id IS NOT NULL
     AND event_timestamp IS NOT NULL
-    AND dt = DATE '{partition_date}'
+    AND dt BETWEEN DATE_SUB(DATE '{partition_date}', INTERVAL 30 DAY)
+               AND DATE_SUB(DATE '{partition_date}', INTERVAL 1 DAY)
     AND event_timestamp >= TIMESTAMP_SUB(
       TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul'), INTERVAL 30 DAY)
     AND event_timestamp < TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul')

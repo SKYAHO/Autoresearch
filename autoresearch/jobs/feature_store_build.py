@@ -10,9 +10,9 @@ SQL 계약은 ``docs/guides/data-warehouse.md``를 단일 출처로 삼는다.
 테이블 스키마(REQUIRED/REPEATED mode 포함)를 query 결과 스키마로 교체하므로
 사용하지 않는다.
 
-raw action log는 ``dt``가 ``--partition-date``와 같은 단일 파티션만 소비한다.
-각 일일 파티션이 독립적인 30일 히스토리이므로 여러 ``dt``를 합치면 중복 집계가
-발생한다.
+raw action log는 당일 슬라이스 파티션(dt=D = KST D일 하루치)을
+``dt BETWEEN P-30 AND P-1``로 프루닝해 30일 히스토리를 조립한다(#295 A안).
+슬라이스는 서로소이므로 이 합산은 중복이 아니다.
 
 이 명령이 담당하지 않는 인접 책임:
 
@@ -97,7 +97,8 @@ WITH action_log AS (
   FROM `{project}.{raw_dataset}.data_lake_action_log`
   WHERE user_id IS NOT NULL
     AND event_timestamp IS NOT NULL
-    AND dt = DATE '{partition_date}'
+    AND dt BETWEEN DATE_SUB(DATE '{partition_date}', INTERVAL 30 DAY)
+               AND DATE_SUB(DATE '{partition_date}', INTERVAL 1 DAY)
     AND event_timestamp >= TIMESTAMP_SUB(
       TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul'), INTERVAL 30 DAY)
     AND event_timestamp < TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul')
