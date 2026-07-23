@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR 이해 리포트</title>
+<style>
+  /* 고정 템플릿 — 에이전트는 이 파일을 수정하지 않고 report.json 데이터만 채웁니다. */
+  :root {
+    --bg: #f6f8fa; --surface: #ffffff; --border: #d1d9e0;
+    --text: #1f2328; --muted: #59636e; --accent: #0969da;
+    --unchanged-fill: #f6f8fa; --unchanged-stroke: #d1d9e0; --unchanged-text: #59636e;
+    --modified-fill: #ddf4ff; --modified-stroke: #0969da; --modified-text: #0550ae;
+    --added-fill: #dafbe1;    --added-stroke: #1a7f37;    --added-text: #116329;
+    --removed-fill: #ffebe9;  --removed-stroke: #cf222e;  --removed-text: #a40e26;
+    --diff-add-bg: #dafbe1; --diff-del-bg: #ffebe9; --diff-hunk-bg: #ddf4ff;
+    --risk-bg: #fff8c5; --risk-border: #d4a72c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8d96a0; --accent: #4493f8;
+      --unchanged-fill: #161b22; --unchanged-stroke: #30363d; --unchanged-text: #8d96a0;
+      --modified-fill: #0c2d6b; --modified-stroke: #4493f8; --modified-text: #79c0ff;
+      --added-fill: #04260f;    --added-stroke: #2ea043;    --added-text: #56d364;
+      --removed-fill: #3c0614;  --removed-stroke: #f85149;  --removed-text: #ff7b72;
+      --diff-add-bg: rgba(46,160,67,.22); --diff-del-bg: rgba(248,81,73,.22); --diff-hunk-bg: rgba(68,147,248,.18);
+      --risk-bg: #2b2205; --risk-border: #9e6a03;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+                 "Noto Sans KR", "Malgun Gothic", sans-serif;
+    line-height: 1.6;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  header.page {
+    border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px;
+  }
+  header.page h1 { font-size: 1.35rem; margin: 0 0 6px; }
+  header.page .meta { color: var(--muted); font-size: .85rem; }
+  header.page .meta a { color: var(--accent); text-decoration: none; }
+  section { margin-bottom: 32px; }
+  section > h2 {
+    font-size: 1.05rem; margin: 0 0 12px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  section > h2 .step {
+    display: inline-block; background: var(--accent); color: #fff;
+    border-radius: 999px; font-size: .72rem; padding: 1px 9px;
+    vertical-align: 2px; margin-right: 7px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px;
+  }
+  #summary ol { margin: 0; padding-left: 22px; }
+  #summary li { margin: 4px 0; }
+  /* 파이프라인 SVG */
+  #pipeline-wrap { overflow-x: auto; }
+  #pipeline-svg { display: block; min-width: 760px; width: 100%; height: auto; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: .8rem; color: var(--muted); margin-top: 8px; }
+  .legend span[class^="lg-"]::before {
+    content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+    margin-right: 5px; vertical-align: -1px; border: 1.5px solid;
+  }
+  .legend .lg-unchanged::before { background: var(--unchanged-fill); border-color: var(--unchanged-stroke); }
+  .legend .lg-modified::before  { background: var(--modified-fill);  border-color: var(--modified-stroke); }
+  .legend .lg-added::before     { background: var(--added-fill);     border-color: var(--added-stroke); }
+  .legend .lg-removed::before   { background: var(--removed-fill);   border-color: var(--removed-stroke); }
+  svg .node rect { rx: 8; stroke-width: 1.5; cursor: default; }
+  svg .node.st-unchanged rect { fill: var(--unchanged-fill); stroke: var(--unchanged-stroke); }
+  svg .node.st-modified rect  { fill: var(--modified-fill);  stroke: var(--modified-stroke); }
+  svg .node.st-added rect     { fill: var(--added-fill);     stroke: var(--added-stroke); }
+  svg .node.st-removed rect   { fill: var(--removed-fill);   stroke: var(--removed-stroke); }
+  svg .node.focus rect { stroke-width: 3; }
+  svg .node.clickable rect { cursor: pointer; }
+  svg .node text { font-size: 12px; fill: var(--text); pointer-events: none; }
+  svg .node.st-unchanged text { fill: var(--unchanged-text); }
+  svg .lane-label { font-size: 11px; fill: var(--muted); }
+  svg .edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
+  svg .edge.dashed { stroke-dasharray: 5 4; }
+  svg .edge.st-modified { stroke: var(--modified-stroke); }
+  svg .edge.st-added { stroke: var(--added-stroke); }
+  svg .edge.st-removed { stroke: var(--removed-stroke); }
+  #node-detail { margin-top: 12px; display: none; }
+  #node-detail.visible { display: block; }
+  #node-detail h3 { margin: 0 0 8px; font-size: .95rem; }
+  #node-detail .asis-tobe { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { #node-detail .asis-tobe { grid-template-columns: 1fr; } }
+  #node-detail .asis-tobe > div {
+    border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: .87rem;
+  }
+  #node-detail .asis-tobe .tag { font-size: .72rem; font-weight: 600; color: var(--muted); display: block; margin-bottom: 4px; }
+  #node-detail .paths { color: var(--muted); font-size: .78rem; margin-top: 8px; font-family: ui-monospace, monospace; }
+  /* 왜/기대효과 */
+  #why .effects { margin: 10px 0 0; padding-left: 22px; }
+  /* 변경 카드 */
+  .change-card { margin-bottom: 12px; }
+  .change-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .badge {
+    font-size: .7rem; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid; text-transform: uppercase; letter-spacing: .03em;
+  }
+  .badge.core     { background: var(--removed-fill);  border-color: var(--removed-stroke);  color: var(--removed-text); }
+  .badge.contract { background: var(--modified-fill); border-color: var(--modified-stroke); color: var(--modified-text); }
+  .badge.config   { background: var(--risk-bg);       border-color: var(--risk-border);     color: var(--text); }
+  .badge.test     { background: var(--added-fill);    border-color: var(--added-stroke);    color: var(--added-text); }
+  .badge.docs     { background: var(--unchanged-fill); border-color: var(--unchanged-stroke); color: var(--unchanged-text); }
+  .change-head .symbol { font-weight: 600; font-family: ui-monospace, monospace; font-size: .92rem; }
+  .change-head .file { color: var(--muted); font-size: .8rem; font-family: ui-monospace, monospace; }
+  .change-card p.expl { margin: 8px 0 0; font-size: .92rem; }
+  .risk {
+    background: var(--risk-bg); border: 1px solid var(--risk-border);
+    border-radius: 6px; padding: 8px 12px; margin-top: 8px; font-size: .85rem;
+  }
+  .risk::before { content: "⚠ 리스크: "; font-weight: 700; }
+  details.diff-box { margin-top: 10px; }
+  details.diff-box summary { cursor: pointer; font-size: .85rem; color: var(--accent); user-select: none; }
+  pre.diff {
+    margin: 8px 0 0; border: 1px solid var(--border); border-radius: 6px;
+    overflow-x: auto; font-size: .8rem; line-height: 1.5; padding: 0;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  pre.diff .ln { display: block; padding: 0 12px; white-space: pre; }
+  pre.diff .ln.add { background: var(--diff-add-bg); }
+  pre.diff .ln.del { background: var(--diff-del-bg); }
+  pre.diff .ln.hunk { background: var(--diff-hunk-bg); color: var(--muted); }
+  /* QA */
+  #qa .card { border-left: 4px solid var(--accent); }
+  footer { color: var(--muted); font-size: .78rem; margin-top: 40px; border-top: 1px solid var(--border); padding-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header class="page">
+    <h1 id="pr-title">PR 이해 리포트</h1>
+    <div class="meta" id="pr-meta"></div>
+  </header>
+
+  <section id="summary">
+    <h2>핵심 요약</h2>
+    <div class="card"><ol id="summary-list"></ol></div>
+  </section>
+
+  <section id="pipeline">
+    <h2><span class="step">1단계</span>전체 파이프라인에서의 위치 (as-is → to-be)</h2>
+    <div class="card">
+      <div id="pipeline-wrap"><svg id="pipeline-svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div class="legend">
+        <span class="lg-unchanged">변경 없음</span>
+        <span class="lg-modified">수정</span>
+        <span class="lg-added">신규</span>
+        <span class="lg-removed">삭제</span>
+        <span>· 색칠된 노드를 클릭하면 as-is/to-be 설명이 표시됩니다</span>
+      </div>
+      <div id="node-detail" class="card">
+        <h3 id="nd-title"></h3>
+        <div class="asis-tobe">
+          <div><span class="tag">AS-IS</span><span id="nd-asis"></span></div>
+          <div><span class="tag">TO-BE</span><span id="nd-tobe"></span></div>
+        </div>
+        <div class="paths" id="nd-paths"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="why">
+    <h2>왜 이 작업이 필요했나 · 기대효과</h2>
+    <div class="card">
+      <p id="motivation" style="margin:0"></p>
+      <ul class="effects" id="effects-list"></ul>
+    </div>
+  </section>
+
+  <section id="changes">
+    <h2><span class="step">2단계</span>중요도순 변경 사항</h2>
+    <div id="changes-list"></div>
+  </section>
+
+  <section id="qa">
+    <h2><span class="step">3단계</span>이해도 확인</h2>
+    <div class="card"><p id="qa-note" style="margin:0"></p></div>
+  </section>
+
+  <footer id="page-footer"></footer>
+</main>
+
+<script id="report-data" type="application/json">{"schema_version": 1, "pr": {"number": 316, "title": "fix: chunk_size > 0 부분 quarantine 라운드의 리플레이 실패 해소 (#274)", "author": "bbungjun", "issue_refs": [274], "generated_at": "2026-07-23T18:07:07Z", "head_sha": "a6ca0f3b38c538d100bd9966145a1274e3ab69c8"}, "summary_ko": ["판정 라운드 사이드카에 유저별 노출 video_id 집합(exposure_keys)을 기록하도록 덤프를 확장했습니다.", "리플레이 커버리지 검사를 '전무=관용/일부=실패' 휴리스틱에서 원본 노출 키 집합과의 정확 비교로 교체했습니다.", "덕분에 chunk_size>0 부분 quarantine 라운드도 같은 노출 인자로 리플레이가 성공하며, 구버전 사이드카는 휴리스틱으로 폴백합니다."], "motivation_ko": "정책 판정 라운드의 격리 단위는 유저가 아니라 (유저 × 후보 청크)이므로, chunk_size > 0으로 실행하면 같은 유저의 청크 중 일부만 quarantine되고 나머지는 판정에 성공할 수 있습니다. 이렇게 저장된 draft parquet을 같은 노출 인자로 리플레이하면, 기존 커버리지 규칙('draft가 하나도 없는 유저=원본 quarantine으로 관용, 일부만 있는 유저=노출 불일치로 실패')이 그 유저를 '부분 커버리지'로 오판해 항상 실패했습니다(#274). 이 이분법 휴리스틱은 격리 구간에 국한된 노출 드리프트나 '유저 수는 같고 id만 다른' 전원 zero-coverage 은폐도 놓칠 수 있었습니다. 근본 원인은 리플레이가 '무엇이 노출되었어야 했는가'를 draft에서 역추론하는데, draft에는 격리된 청크의 판정이 애초에 없다는 점입니다. 그 정보는 사이드카만이 알 수 있으므로, 원본 노출 키 집합을 사이드카에 기록해 정확 비교로 검사하도록 바꿉니다.", "expected_effects_ko": ["chunk_size > 0으로 실행한 부분 quarantine 판정 라운드도 같은 노출 인자로 리플레이가 성공하며, 격리분은 dropped_exposures_without_judgment로 계수됩니다.", "노출 유저 집합·유저별 노출 video_id 집합을 원본과 직접 비교하므로, 격리 구간에 국한된 노출 드리프트와 '유저 수 동일·id 상이'의 zero-coverage 은폐까지 fail-fast로 검출합니다.", "공유 계약인 ACTION_LOG_DRAFT_PARQUET_SCHEMA는 건드리지 않고 사이드카 메타(action_log_drafts_meta.json)에만 exposure_keys를 추가해 daily.py shard/merge 경로에 영향이 없습니다.", "exposure_keys가 없는 구버전 사이드카는 기존 유저 단위 휴리스틱으로 폴백해 기존 덤프의 리플레이 동작이 바뀌지 않습니다."], "pipeline": {"nodes": [{"id": "collect", "label": "YouTube 수집", "lane": "batch", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/", "proxy/"]}, {"id": "virtual_users", "label": "가상 유저 생성", "lane": "batch", "order": 2, "status": "unchanged", "paths": ["autoresearch/virtual_users/"]}, {"id": "action_log", "label": "Action Log 생성·품질", "lane": "batch", "order": 3, "status": "unchanged", "paths": ["autoresearch/action_logs/"]}, {"id": "data_lake", "label": "Data Lake (GCS parquet)", "lane": "data", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/load.py", "autoresearch/action_logs/load.py"]}, {"id": "feature_store", "label": "Feature Store (BQ·Feast·Redis)", "lane": "data", "order": 2, "status": "unchanged", "paths": ["feature_repo/", "src/features/", "src/pipeline/build_feature_tables.py"]}, {"id": "training_dataset", "label": "학습 데이터셋 조립", "lane": "train", "order": 1, "status": "unchanged", "paths": ["src/pipeline/build_training_dataset.py"]}, {"id": "train_eval", "label": "모델 학습·평가 (LightGBM·MLflow)", "lane": "train", "order": 2, "status": "unchanged", "paths": ["src/models/", "src/pipeline/train.py", "src/pipeline/evaluate.py", "src/tracking/"]}, {"id": "registry", "label": "Model Registry (MLflow)", "lane": "train", "order": 3, "status": "unchanged", "paths": ["deploy/mlflow/"]}, {"id": "serving", "label": "리랭킹 서빙 API (FastAPI)", "lane": "serve", "order": 1, "status": "unchanged", "paths": ["src/serving/", "deploy/serving/"]}, {"id": "daily_reco", "label": "일일 추천·노출 조립", "lane": "serve", "order": 2, "status": "unchanged", "paths": ["src/pipeline/daily_recommendations.py", "src/pipeline/model_exposure_provider.py", "src/pipeline/policy_selector.py"]}, {"id": "simulation", "label": "가상 유저 클릭 시뮬레이션", "lane": "serve", "order": 3, "status": "modified", "as_is_ko": "판정 덤프 리플레이의 커버리지 검사가 'draft 전무=원본 quarantine으로 관용, 일부만 있음=노출 불일치로 실패'라는 유저 단위 휴리스틱이라, chunk_size>0으로 유저의 청크 일부만 격리된 라운드는 같은 노출 인자로도 항상 리플레이 실패했습니다.", "to_be_ko": "덤프가 사이드카에 유저별 노출 video_id 집합(exposure_keys)을 기록하고, 리플레이는 그 원본 집합과 이번 노출을 정확 비교합니다. 통과 시 미판정 노출은 전부 원본 격리로 확정해 관용·계수하므로 부분 quarantine 라운드도 리플레이됩니다. 구버전 사이드카는 기존 휴리스틱으로 폴백합니다.", "paths": ["src/pipeline/simulate_policy_round.py", "src/pipeline/virtual_user_adapter.py"]}, {"id": "batch_cli", "label": "공개 Batch CLI (Airflow 계약)", "lane": "cross", "order": 1, "status": "unchanged", "paths": ["autoresearch/jobs/"]}, {"id": "ci_release", "label": "CI·이미지·릴리스", "lane": "cross", "order": 2, "status": "unchanged", "paths": [".github/workflows/", "Dockerfile.app", "Dockerfile.serving", "pyproject.toml"]}, {"id": "docs", "label": "문서·스펙", "lane": "cross", "order": 3, "status": "modified", "as_is_ko": "policy-round-draft-replay spec의 사이드카 스키마·커버리지 규칙 절이 유저 단위 휴리스틱을 기술하고, 'chunk_size>0 부분 quarantine'을 알려진 한계로 남겨 두었습니다.", "to_be_ko": "사이드카 exposure_keys 필드와 정확 비교 커버리지 규칙·구버전 폴백을 반영하고, 해당 절을 '해소된 한계(#274)'로 전환하며 테스트 시나리오 11~15를 추가했습니다.", "paths": ["docs/", ".claude/docs/", "CLAUDE.md", "README.md"]}, {"id": "ext_airflow", "label": "(외부) Airflow 오케스트레이션", "lane": "external", "order": 1, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-airflow"]}, {"id": "ext_infra", "label": "(외부) GCP 인프라", "lane": "external", "order": 2, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-infra"]}], "edges": [{"from": "collect", "to": "data_lake"}, {"from": "virtual_users", "to": "action_log"}, {"from": "action_log", "to": "data_lake"}, {"from": "data_lake", "to": "feature_store"}, {"from": "feature_store", "to": "training_dataset"}, {"from": "training_dataset", "to": "train_eval"}, {"from": "train_eval", "to": "registry"}, {"from": "registry", "to": "serving"}, {"from": "feature_store", "to": "serving", "style": "dashed"}, {"from": "serving", "to": "daily_reco"}, {"from": "daily_reco", "to": "simulation"}, {"from": "simulation", "to": "action_log", "style": "dashed"}, {"from": "batch_cli", "to": "ext_airflow", "style": "dashed"}, {"from": "ext_infra", "to": "ci_release", "style": "dashed"}], "focus": ["simulation"]}, "changes": [{"rank": 1, "importance": "core", "module": "src/pipeline", "symbol": "_validate_replay_exposure_keys", "file": "src/pipeline/simulate_policy_round.py", "explanation_ko": "이번 실행의 노출 키 집합을 사이드카의 원본 집합과 정확 비교하는 신규 함수입니다. 먼저 유저 집합을 비교해 다르면(어느 쪽에만 있는 유저 수·예시 포함) 실패하고, 이어 유저별 노출 video_id 집합(MODEL+BASELINE 합집합)을 비교해 다른 유저가 하나라도 있으면 첫 유저의 차이 예시를 담아 실패합니다. 두 비교가 통과하면 판정 없는 노출은 전부 원본 라운드 quarantine으로 확정되므로(유저 전체 격리든 청크 부분 격리든) 관용이 은폐가 아님이 보장됩니다.", "diff_snippet": "+def _validate_replay_exposure_keys(\n+    original: Mapping[str, frozenset[str]],\n+    exposures_by_user: Mapping[str, dict[str, list[Exposure]]],\n+) -> None:\n+    current_users = set(exposures_by_user)\n+    original_users = set(original)\n+    if current_users != original_users:\n+        missing = sorted(original_users - current_users)\n+        extra = sorted(current_users - original_users)\n+        raise ValueError( ... )\n+    mismatched: list[str] = []\n+    for user_id, both in exposures_by_user.items():\n+        current_keys = frozenset(e.video_id for e in both[MODEL] + both[BASELINE])\n+        if current_keys != original[user_id]:\n+            ...\n+            mismatched.append(user_id)\n+    if mismatched:\n+        raise ValueError( ... )", "risk_notes_ko": "판정 없는 노출을 전부 관용하므로, 이 비교가 실제로 원본과 동일할 때만 캘리브레이션 분모가 보존됩니다. 비교 키가 MODEL+BASELINE 합집합·frozenset이라 순서·중복 무관이지만, exposure 조립 로직이 바뀌면 정확 비교가 광범위하게 실패할 수 있으니 유의합니다."}, {"rank": 2, "importance": "core", "module": "src/pipeline", "symbol": "main (replay coverage 분기)", "file": "src/pipeline/simulate_policy_round.py", "explanation_ko": "리플레이 커버리지 검사를 분기했습니다. replay.exposure_keys가 있으면 _validate_replay_exposure_keys로 정확 비교하고, 없으면(구버전 사이드카) 기존 유저 단위 휴리스틱(0<covered<len → 부분 커버리지 실패)으로 폴백합니다. 정확 비교 통과 시 판정 없는 노출은 이후 4단계에서 dropped_exposures_without_judgment로 계수만 하므로 chunk 부분 격리 라운드가 리플레이됩니다.", "diff_snippet": "+        if replay.exposure_keys is not None:\n+            _validate_replay_exposure_keys(replay.exposure_keys, exposures_by_user)\n+        else:\n+            # 구버전 사이드카(exposure_keys 없음) 폴백: 유저 단위 휴리스틱\n+            partially_covered_users: list[str] = []\n+            for user_id, both in exposures_by_user.items():\n+                exposure_keys = {\n+                    (user_id, exposure.video_id) for exposure in both[MODEL] + both[BASELINE]\n+                }\n+                covered = sum(1 for key in exposure_keys if key in draft_by_key)\n+                if 0 < covered < len(exposure_keys):\n+                    partially_covered_users.append(user_id)\n+            if partially_covered_users:\n+                raise ValueError( ... )", "risk_notes_ko": "관용 규칙의 전제('draft 없는 유저=원본 quarantine')를 검사하는 별도 draft 유저 방어선({d.user_id} - exposures_by_user)은 사이드카 버전과 무관하게 유지됩니다. 폴백 경로는 chunk_size>0 부분 격리 라운드를 여전히 리플레이하지 못하므로 필요 시 재덤프가 필요합니다."}, {"rank": 3, "importance": "contract", "module": "src/pipeline", "symbol": "_write_drafts_meta / provider 호출부", "file": "src/pipeline/simulate_policy_round.py", "explanation_ko": "사이드카 메타(action_log_drafts_meta.json)에 exposure_keys 필드를 추가합니다. 유저별 합집합 노출 video_id 목록을 정렬해 기록하며, draft parquet 스키마(ACTION_LOG_DRAFT_PARQUET_SCHEMA, daily.py shard/merge 공유 계약)는 건드리지 않습니다. 격리된 청크의 판정은 draft에 없으므로 '무엇이 노출되었어야 했는가'의 단일 출처가 이 사이드카 필드입니다.", "diff_snippet": "     payload = {\n         ...\n         \"exposure_args\": dict(exposure_args),\n+        \"exposure_keys\": {user: sorted(keys) for user, keys in exposure_keys.items()},\n         \"policy_version\": policy_version,\n         ...\n     }\n\n     # provider 호출부\n+            exposure_keys={\n+                user_id: [str(v[\"video_id\"]) for v in union]\n+                for user_id, union in union_by_user.items()\n+            },", "risk_notes_ko": "사이드카 메타 JSON의 신규 필드로, 덤프-리플레이 간 계약입니다. 구버전 사이드카에는 없으므로 소비자는 meta.get('exposure_keys')로 폴백 처리해야 하며(하위 호환), parquet 계약이 아니므로 daily 병합 경로에는 영향이 없습니다."}, {"rank": 4, "importance": "contract", "module": "src/pipeline", "symbol": "DraftReplay.exposure_keys / _cli 역직렬화", "file": "src/pipeline/simulate_policy_round.py", "explanation_ko": "DraftReplay 데이터클래스에 Optional 필드 exposure_keys(Mapping[str, frozenset[str]] | None, 기본 None)를 추가하고, _cli가 메타에서 exposure_keys를 읽어 frozenset으로 역직렬화합니다. 구버전 사이드카(필드 없음)는 None으로 두어 폴백 경로를 타게 합니다.", "diff_snippet": "     drafts: list[ImpressionDraft]\n     llm_model: str\n     exposure_args: Mapping[str, object]\n+    exposure_keys: Mapping[str, frozenset[str]] | None = None\n\n     # _cli\n+        raw_exposure_keys = meta.get(\"exposure_keys\")  # 구버전 사이드카에는 없다\n+            exposure_keys=(\n+                {str(user): frozenset(str(video) for video in videos)\n+                 for user, videos in raw_exposure_keys.items()}\n+                if raw_exposure_keys is not None else None\n+            ),", "risk_notes_ko": "기본값 None으로 기존 생성자 호출과 하위 호환됩니다. 문자열 강제(str) 변환으로 타입 드리프트를 방어합니다."}, {"rank": 5, "importance": "test", "module": "tests", "symbol": "test_simulate_policy_round.py (신규 5건 + _load_replay)", "file": "tests/test_simulate_policy_round.py", "explanation_ko": "신규 5건: (1) 덤프 메타의 exposure_keys가 노출 유저 전원·정렬 목록을 담는지, (2) exposure_keys가 있으면 부분 draft 누락을 관용하고 dropped 계수, (3) 노출 집합 불일치 실패, (4) 유저 집합 불일치 실패(zero-coverage 은폐 차단), (5) _FlakyGenerator로 chunk_size=1 부분 격리 라운드를 만들고 같은 노출 인자 리플레이가 성공함을 확인하는 이슈 재현 왕복. _load_replay에 with_exposure_keys 플래그를 추가해 기본값 False가 구버전 폴백(기존 2건 회귀), True가 신규 경로를 검증합니다. 전부 LLM 무호출입니다.", "risk_notes_ko": "기존 test 4·5는 구버전 사이드카 폴백 경로의 회귀 테스트로 유지됩니다."}, {"rank": 6, "importance": "docs", "module": "docs/specs", "symbol": "2026-07-23-policy-round-draft-replay.md", "file": "docs/specs/2026-07-23-policy-round-draft-replay.md", "explanation_ko": "사이드카 스키마에 exposure_keys를 추가하고, 커버리지 규칙 절을 정확 비교 + 구버전 폴백으로 갱신했습니다. '알려진 한계 — chunk_size>0 부분 quarantine' 절을 '해소된 한계(#274)'로 전환하고, 검증 시나리오 11~15를 추가했습니다. chunk_size는 노출을 바꾸지 않으므로 여전히 exposure_args에 넣지 않음을 명시합니다.", "risk_notes_ko": "코드가 사실이므로 spec은 구현과 동일 커밋에서 갱신되었습니다."}], "qa_note_ko": "이 PR의 핵심 로직은 리플레이 커버리지 검사를 '유저 단위 휴리스틱'에서 '사이드카 exposure_keys와의 정확 비교(+구버전 폴백)'로 교체해 chunk_size>0 부분 quarantine 라운드의 리플레이 실패(#274)를 해소한 부분입니다. 코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문(특히 _validate_replay_exposure_keys의 정확 비교·관용 규칙과 exposure_keys 사이드카 계약·폴백 분기)에 답변한 뒤 해당 스레드를 resolve해 주십시오."}</script>
+<script>
+"use strict";
+(function () {
+  var raw = document.getElementById("report-data").textContent;
+  var r;
+  try { r = JSON.parse(raw); } catch (e) {
+    document.getElementById("pr-title").textContent = "리포트 데이터를 읽을 수 없습니다";
+    return;
+  }
+
+  // ---------- header ----------
+  document.title = "PR #" + r.pr.number + " 이해 리포트";
+  document.getElementById("pr-title").textContent = "PR #" + r.pr.number + " — " + r.pr.title;
+  var meta = document.getElementById("pr-meta");
+  var metaParts = ["작성자 @" + r.pr.author, "생성 " + r.pr.generated_at, "head " + r.pr.head_sha.slice(0, 8)];
+  if (r.pr.issue_refs && r.pr.issue_refs.length) {
+    metaParts.push("관련 이슈 " + r.pr.issue_refs.map(function (n) { return "#" + n; }).join(", "));
+  }
+  meta.textContent = metaParts.join(" · ");
+
+  // ---------- summary ----------
+  var ol = document.getElementById("summary-list");
+  r.summary_ko.forEach(function (line) {
+    var li = document.createElement("li");
+    li.textContent = line;
+    ol.appendChild(li);
+  });
+
+  // ---------- pipeline SVG (결정적 그리드 배치: lane = 행, order = 행 내 위치) ----------
+  var LANES = ["batch", "data", "train", "serve", "cross", "external"];
+  var LANE_LABELS = { batch: "배치 수집·생성", data: "데이터 계층", train: "학습", serve: "서빙·시뮬레이션", cross: "공통·계약", external: "외부 저장소" };
+  var NW = 172, NH = 46, GX = 40, GY = 34, LABEL_W = 110, PAD = 16;
+  var svgNS = "http://www.w3.org/2000/svg";
+  var svg = document.getElementById("pipeline-svg");
+
+  var nodes = r.pipeline.nodes.slice();
+  var byId = {};
+  var maxOrder = 1;
+  nodes.forEach(function (n) { byId[n.id] = n; if (n.order > maxOrder) maxOrder = n.order; });
+  var usedLanes = LANES.filter(function (l) { return nodes.some(function (n) { return n.lane === l; }); });
+
+  function pos(n) {
+    var laneIdx = usedLanes.indexOf(n.lane);
+    return {
+      x: PAD + LABEL_W + (n.order - 1) * (NW + GX),
+      y: PAD + laneIdx * (NH + GY)
+    };
+  }
+  var W = PAD * 2 + LABEL_W + maxOrder * (NW + GX) - GX;
+  var H = PAD * 2 + usedLanes.length * (NH + GY) - GY;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+  // 화살표 marker
+  var defs = document.createElementNS(svgNS, "defs");
+  ["", "modified", "added", "removed"].forEach(function (st) {
+    var m = document.createElementNS(svgNS, "marker");
+    m.setAttribute("id", "arrow" + (st ? "-" + st : ""));
+    m.setAttribute("viewBox", "0 0 10 10");
+    m.setAttribute("refX", "9"); m.setAttribute("refY", "5");
+    m.setAttribute("markerWidth", "7"); m.setAttribute("markerHeight", "7");
+    m.setAttribute("orient", "auto-start-reverse");
+    var p = document.createElementNS(svgNS, "path");
+    p.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+    p.setAttribute("fill", st === "modified" ? "var(--modified-stroke)"
+      : st === "added" ? "var(--added-stroke)"
+      : st === "removed" ? "var(--removed-stroke)" : "var(--border)");
+    m.appendChild(p);
+    defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+
+  // lane 라벨
+  usedLanes.forEach(function (lane, i) {
+    var t = document.createElementNS(svgNS, "text");
+    t.setAttribute("class", "lane-label");
+    t.setAttribute("x", PAD);
+    t.setAttribute("y", PAD + i * (NH + GY) + NH / 2 + 4);
+    t.textContent = LANE_LABELS[lane] || lane;
+    svg.appendChild(t);
+  });
+
+  // 에지 (노드보다 먼저 그려서 아래 깔리게)
+  (r.pipeline.edges || []).forEach(function (e) {
+    var a = byId[e.from], b = byId[e.to];
+    if (!a || !b) return;
+    var pa = pos(a), pb = pos(b);
+    var x1, y1, x2, y2;
+    if (a.lane === b.lane) { // 같은 행: 오른쪽 → 왼쪽
+      x1 = pa.x + NW; y1 = pa.y + NH / 2; x2 = pb.x; y2 = pb.y + NH / 2;
+    } else {               // 다른 행: 아래/위 가장자리 중앙끼리
+      var down = pb.y > pa.y;
+      x1 = pa.x + NW / 2; y1 = down ? pa.y + NH : pa.y;
+      x2 = pb.x + NW / 2; y2 = down ? pb.y : pb.y + NH;
+    }
+    var path = document.createElementNS(svgNS, "path");
+    var mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    path.setAttribute("d", a.lane === b.lane
+      ? "M " + x1 + " " + y1 + " L " + x2 + " " + y2
+      : "M " + x1 + " " + y1 + " C " + x1 + " " + my + ", " + x2 + " " + my + ", " + x2 + " " + y2);
+    var cls = "edge";
+    if (e.style === "dashed") cls += " dashed";
+    if (e.status && e.status !== "unchanged") cls += " st-" + e.status;
+    path.setAttribute("class", cls);
+    path.setAttribute("marker-end", "url(#arrow" + (e.status && e.status !== "unchanged" ? "-" + e.status : "") + ")");
+    svg.appendChild(path);
+  });
+
+  // 노드
+  var detail = document.getElementById("node-detail");
+  nodes.forEach(function (n) {
+    var p = pos(n);
+    var g = document.createElementNS(svgNS, "g");
+    var hasDetail = !!(n.as_is_ko || n.to_be_ko);
+    g.setAttribute("class", "node st-" + n.status
+      + ((r.pipeline.focus || []).indexOf(n.id) >= 0 ? " focus" : "")
+      + (hasDetail ? " clickable" : ""));
+    var rect = document.createElementNS(svgNS, "rect");
+    rect.setAttribute("x", p.x); rect.setAttribute("y", p.y);
+    rect.setAttribute("width", NW); rect.setAttribute("height", NH);
+    rect.setAttribute("rx", 8);
+    g.appendChild(rect);
+    var label = document.createElementNS(svgNS, "text");
+    label.setAttribute("x", p.x + NW / 2);
+    label.setAttribute("y", p.y + NH / 2 + 4);
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = n.label;
+    g.appendChild(label);
+    if (hasDetail) {
+      rect.addEventListener("click", function () {
+        document.getElementById("nd-title").textContent = n.label
+          + " (" + (n.status === "modified" ? "수정" : n.status === "added" ? "신규" : n.status === "removed" ? "삭제" : "변경 없음") + ")";
+        document.getElementById("nd-asis").textContent = n.as_is_ko || "—";
+        document.getElementById("nd-tobe").textContent = n.to_be_ko || "—";
+        document.getElementById("nd-paths").textContent = (n.paths || []).join("  ·  ");
+        detail.classList.add("visible");
+        detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+    }
+    svg.appendChild(g);
+  });
+
+  // 변경된 focus 노드가 있으면 첫 번째를 자동 표시
+  var firstFocus = (r.pipeline.focus || []).map(function (id) { return byId[id]; })
+    .filter(function (n) { return n && (n.as_is_ko || n.to_be_ko); })[0];
+  if (firstFocus) {
+    document.getElementById("nd-title").textContent = firstFocus.label;
+    document.getElementById("nd-asis").textContent = firstFocus.as_is_ko || "—";
+    document.getElementById("nd-tobe").textContent = firstFocus.to_be_ko || "—";
+    document.getElementById("nd-paths").textContent = (firstFocus.paths || []).join("  ·  ");
+    detail.classList.add("visible");
+  }
+
+  // ---------- why ----------
+  document.getElementById("motivation").textContent = r.motivation_ko;
+  var ul = document.getElementById("effects-list");
+  r.expected_effects_ko.forEach(function (t) {
+    var li = document.createElement("li");
+    li.textContent = t;
+    ul.appendChild(li);
+  });
+
+  // ---------- changes (rank 순) ----------
+  var list = document.getElementById("changes-list");
+  r.changes.slice().sort(function (a, b) { return a.rank - b.rank; }).forEach(function (c) {
+    var card = document.createElement("div");
+    card.className = "card change-card";
+
+    var head = document.createElement("div");
+    head.className = "change-head";
+    var badge = document.createElement("span");
+    badge.className = "badge " + c.importance;
+    badge.textContent = c.importance;
+    head.appendChild(badge);
+    var sym = document.createElement("span");
+    sym.className = "symbol";
+    sym.textContent = c.module + " :: " + c.symbol;
+    head.appendChild(sym);
+    var file = document.createElement("span");
+    file.className = "file";
+    file.textContent = c.file;
+    head.appendChild(file);
+    card.appendChild(head);
+
+    var expl = document.createElement("p");
+    expl.className = "expl";
+    expl.textContent = c.explanation_ko;
+    card.appendChild(expl);
+
+    if (c.risk_notes_ko) {
+      var risk = document.createElement("div");
+      risk.className = "risk";
+      risk.textContent = c.risk_notes_ko;
+      card.appendChild(risk);
+    }
+
+    if (c.diff_snippet) {
+      var det = document.createElement("details");
+      det.className = "diff-box";
+      var sum = document.createElement("summary");
+      sum.textContent = "diff 보기";
+      det.appendChild(sum);
+      var pre = document.createElement("pre");
+      pre.className = "diff";
+      c.diff_snippet.split("\n").forEach(function (line) {
+        var span = document.createElement("span");
+        var cls = "ln";
+        if (line.indexOf("@@") === 0) cls += " hunk";
+        else if (line.indexOf("+") === 0 && line.indexOf("+++") !== 0) cls += " add";
+        else if (line.indexOf("-") === 0 && line.indexOf("---") !== 0) cls += " del";
+        span.className = cls;
+        span.textContent = line.length ? line : " ";
+        pre.appendChild(span);
+      });
+      det.appendChild(pre);
+      card.appendChild(det);
+    }
+    list.appendChild(card);
+  });
+
+  // ---------- qa / footer ----------
+  document.getElementById("qa-note").textContent = r.qa_note_ko;
+  document.getElementById("page-footer").textContent =
+    "이 리포트는 pr-report 워크플로우가 자동 생성했습니다. 최신 상태가 아니면 PR에 /claude-report 코멘트로 재생성할 수 있습니다.";
+})();
+</script>
+</body>
+</html>
