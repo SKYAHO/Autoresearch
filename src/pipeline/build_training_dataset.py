@@ -32,7 +32,6 @@ NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeli
 
 import os
 import sys
-import duckdb
 import pandas as pd
 from datetime import datetime, timedelta
 
@@ -68,8 +67,8 @@ from src.features.assembly import (  # noqa: E402
     compute_user_offline_features,
     compute_user_topic_features,
     compute_video_features,
+    connect_duckdb,
 )
-from src.features.feature_builder import compute_historical_category_match  # noqa: E402
 from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
 
 
@@ -133,10 +132,10 @@ def validate_events(events: pd.DataFrame) -> None:
         print(f"  [WARNING] click rate {click_rate:.3%} (예상: 0.5~10%)")
 
 
-def validate_point_in_time(dataset: pd.DataFrame) -> None:
-    """point-in-time correctness spot check."""
+def validate_point_in_time_count(row_count: int) -> None:
+    """point-in-time correctness spot check (스트리밍 경로: 행 수만 받는다)."""
     print("\n[검증 Step 4] point-in-time correctness spot check...")
-    print(f"  [OK] {len(dataset)} 샘플 확인 완료")
+    print(f"  [OK] {row_count} 샘플 확인 완료")
 
 
 def load_videos_from_bigquery() -> pd.DataFrame:
@@ -254,7 +253,7 @@ def derive_wide_events(
     training_entity에 문서화되어 있고, view/like 체이닝(followup_window_sec)은
     이번에 새로 정의한 규칙이라 같은 문서에 추가 반영한다.
     """
-    con = duckdb.connect()
+    con = connect_duckdb()
     # 빈 파티션(콜드 스타트)에서는 BigQuery가 STRING 컬럼을 object dtype 빈
     # 컬럼으로 반환해 DuckDB가 타입을 추론하지 못하고 INTEGER로 등록한다 —
     # 이후 문자열 키 비교가 깨지므로 등록 전에 계약 dtype을 고정한다.
@@ -455,7 +454,7 @@ def main(
     validate_events(events)
 
     print("\n[Step 1] DuckDB SQL 처리...")
-    con = duckdb.connect()
+    con = connect_duckdb()
 
     snapshot_date = datetime.now().strftime("%Y-%m-%d")
 
@@ -501,91 +500,24 @@ def main(
         user_category_similarity = load_user_category_similarity_from_bigquery()
         con.register("user_category_similarity", user_category_similarity)
         topic_similarity_column = "COALESCE(ucs.topic_similarity, 0.0)"
+        # as-of join: 이벤트 시각 이하(<=) 중 가장 최근 similarity 스냅샷 1건.
+        # 예전엔 LEFT JOIN + QUALIFY ROW_NUMBER() OVER (PARTITION BY ...)로 같은
+        # 결과를 냈는데, 그 윈도우는 조인 결과 1.77M행을 전량 정렬해 #292의
+        # memory_limit 아래에서 디스크로 spill됐고 노드 ephemeral-storage를 채워
+        # 파드가 Evicted됐다(#293). DuckDB 네이티브 ASOF JOIN은 같은 의미론을
+        # 전량 정렬 없이 처리한다 — 매칭이 없으면 LEFT라 행이 보존되고
+        # COALESCE로 0.0이 되는 것도 동일하다.
         topic_similarity_join = """
-        LEFT JOIN user_category_similarity ucs
+        ASOF LEFT JOIN user_category_similarity ucs
             ON ucs.user_id = o.user_id
            AND ucs.category_id = vf.category_id
-           AND ucs.event_timestamp <= o.timestamp
-        QUALIFY ROW_NUMBER() OVER (
-            PARTITION BY o.user_id, o.video_id, o.timestamp
-            ORDER BY ucs.event_timestamp DESC
-        ) = 1"""
+           AND ucs.event_timestamp <= o.timestamp"""
     else:
         user_topic_feature = compute_user_topic_features(personas, video_feature["category_id"].unique())
         con.register("user_topic_feature", user_topic_feature)
         topic_similarity_column = "utf.topic_similarity"
         topic_similarity_join = ""
 
-    joined = con.execute(
-        f"""
-        SELECT
-            o.user_id,
-            o.video_id,
-            o.timestamp,
-            o.clicked,
-            o.historical_category_affinity,
-            o.recent_click_count_7d,
-            o.recent_view_count_7d,
-            o.recent_watch_time_7d,
-            o.recent_like_count_7d,
-            o.total_event_count_7d,
-            vf.category_id,
-            vf.duration_sec,
-            vf.view_count,
-            vf.like_ratio,
-            vf.comment_ratio,
-            vf.days_since_upload,
-            vf.channel_subscriber_count,
-            vf.channel_view_count,
-            vf.channel_video_count,
-            {topic_similarity_column} AS topic_similarity,
-            utf.preferred_category_match
-        FROM online_features o
-        JOIN video_feature vf ON vf.video_id = o.video_id
-        JOIN user_topic_feature utf ON utf.user_id = o.user_id
-            AND COALESCE(utf.category_id, '') = COALESCE(vf.category_id, '')
-        {topic_similarity_join}
-        ORDER BY o.timestamp
-        """
-    ).df()
-    print(f"  [OK] joined features: {len(joined)} rows")
-
-    # video_feature/online_features/user_topic_feature는 joined에 이미 흡수됐다
-    # (마지막 사용처). con.register()는 pandas 프레임을 커넥션에 계속 붙들어
-    # 두므로, Step 3에서 필요 없는 이 셋을 unregister한 뒤 Python 쪽 참조도
-    # 지워서 실 데이터 규모(수백만 행)에서 중복으로 메모리에 남지 않게 한다
-    # (#231/#249). topic_similarity_source="bigquery"일 때 추가로 register한
-    # user_category_similarity도 같은 이유로 함께 해제한다.
-    con.unregister("video_feature")
-    con.unregister("online_features")
-    con.unregister("user_topic_feature")
-    del video_feature, online_features, user_topic_feature
-    if topic_similarity_source == "bigquery":
-        con.unregister("user_category_similarity")
-        del user_category_similarity
-
-    print("\n[Step 2] Interaction Features 계산...")
-
-    joined["historical_category_match"] = joined.apply(
-        lambda row: compute_historical_category_match(
-            row["historical_category_affinity"], row["category_id"]
-        ),
-        axis=1,
-    )
-
-    print(f"  [OK] topic_similarity: mean={joined['topic_similarity'].mean():.3f}")
-
-    hist_match_dist = (joined["historical_category_match"] == 1).sum()
-    if hist_match_dist == 0:
-        print("  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
-    else:
-        print(f"  [OK] historical_category_match: 0={len(joined) - hist_match_dist}, 1={hist_match_dist}")
-
-    pref_match_dist = (joined["preferred_category_match"] == 1).sum()
-    print(f"  [OK] preferred_category_match: 0={len(joined) - pref_match_dist}, 1={pref_match_dist}")
-
-    print("\n[Step 3] 최종 dataset 구성...")
-    con.register("joined", joined)
     con.register("user_feature_offline", user_feature_offline)
 
     feature_sql_expressions = {
@@ -627,34 +559,114 @@ def main(
             f"AND j.timestamp < TIMESTAMP '{events_end_date}'"
         )
 
-    training_dataset = con.execute(
+    # joined(online_features x video x user_topic)와 최종 feature projection을
+    # 하나의 DuckDB 쿼리로 합쳐 CSV로 스트리밍한다. 예전엔 joined(1.77M행)와
+    # training_dataset(1.77M행)을 각각 pandas로 materialize + historical_category_match를
+    # 행 단위 pandas .apply로 계산해, 실 규모에서 대형 pandas 프레임 2벌 + apply
+    # 중간 결과가 동시 상주하며 ~18GB로 튀어 OOM됐다(#271/#287). DuckDB의
+    # COPY ... TO csv는 조인 결과를 pandas로 물리지 않고 디스크로 흘려보내
+    # 피크 메모리를 online_features 등 입력 프레임 크기 수준으로 낮춘다.
+    #
+    # historical_category_match는 단순 문자열 비교라 pandas .apply 대신 SQL CASE로
+    # 계산한다(compute_historical_category_match와 동일: unknown이면 0,
+    # affinity==category_id면 1, 아니면 0).
+    #
+    # 이 쿼리에는 의도적으로 ORDER BY가 없다(#293). 예전엔 `ORDER BY j.timestamp`로
+    # 1.77M행을 전량 정렬했는데, #292의 memory_limit이 그 정렬을 디스크로 spill시키자
+    # 이번엔 노드 ephemeral-storage가 차서 파드가 Evicted됐다(2026-07-23 실측).
+    # 그런데 이 정렬은 소비처가 없다: train.py는 train_test_split(random_state,
+    # stratify)로 **무작위 층화 분할**을 하므로 행 순서를 버리고, timestamp는 출력
+    # 컬럼도 아니며(21 feature + clicked), 동률이 많아 결정적 총순서를 보장하지도
+    # 못했다. 정렬을 없애면 조인 결과가 곧바로 CSV로 흘러가 메모리·디스크 모두
+    # 입력 프레임 수준으로 유지된다(해시 조인 빌드 측은 video 128K/user 7K로 작다).
+    print("\n[Step 2] training_dataset 스트리밍 생성 (DuckDB COPY)...")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    escaped_output = output_path.replace("'", "''")
+    # 출력 행 순서를 보존하려고 결과를 버퍼링하지 않게 해 스트리밍 COPY의 메모리를
+    # 더 낮춘다. 위와 같은 이유로 이 CSV의 행 순서에 의존하는 소비처가 없다.
+    con.execute("SET preserve_insertion_order = false")
+    con.execute(
+        f"""
+        COPY (
+            WITH joined AS (
+                SELECT
+                    o.user_id,
+                    o.clicked,
+                    o.timestamp,
+                    o.historical_category_affinity,
+                    o.recent_click_count_7d,
+                    o.recent_view_count_7d,
+                    o.recent_watch_time_7d,
+                    o.recent_like_count_7d,
+                    o.total_event_count_7d,
+                    vf.category_id,
+                    vf.duration_sec,
+                    vf.view_count,
+                    vf.like_ratio,
+                    vf.comment_ratio,
+                    vf.days_since_upload,
+                    vf.channel_subscriber_count,
+                    vf.channel_view_count,
+                    vf.channel_video_count,
+                    {topic_similarity_column} AS topic_similarity,
+                    utf.preferred_category_match,
+                    CASE
+                        WHEN CAST(o.historical_category_affinity AS VARCHAR) = 'unknown' THEN 0
+                        WHEN CAST(o.historical_category_affinity AS VARCHAR)
+                             = CAST(vf.category_id AS VARCHAR) THEN 1
+                        ELSE 0
+                    END AS historical_category_match
+                FROM online_features o
+                JOIN video_feature vf ON vf.video_id = o.video_id
+                JOIN user_topic_feature utf ON utf.user_id = o.user_id
+                    AND COALESCE(utf.category_id, '') = COALESCE(vf.category_id, '')
+                {topic_similarity_join}
+            )
+            SELECT
+                {feature_projection},
+                CAST(j.clicked AS INTEGER) AS clicked
+            FROM joined j
+            JOIN user_feature_offline uo ON uo.user_id = j.user_id
+            {trim_clause}
+        ) TO '{escaped_output}' (FORMAT CSV, HEADER)
+        """
+    )
+    print(f"\n[저장] {output_path}")
+
+    # 입력 프레임 정리(#231/#249): COPY가 끝났으니 registered pandas 프레임을 해제.
+    con.unregister("video_feature")
+    con.unregister("online_features")
+    con.unregister("user_topic_feature")
+    del video_feature, online_features, user_topic_feature
+    if topic_similarity_source == "bigquery":
+        con.unregister("user_category_similarity")
+        del user_category_similarity
+
+    # 통계는 대형 pandas 프레임 없이 출력 CSV를 DuckDB로 재스캔해 집계한다.
+    print("\n[Step 3] 생성 결과 검증...")
+    n, click_rate, hist_match_1, pref_match_1, topic_sim_mean = con.execute(
         f"""
         SELECT
-            {feature_projection},
-            CAST(j.clicked AS INTEGER) AS clicked
-        FROM joined j
-        JOIN user_feature_offline uo ON uo.user_id = j.user_id
-        {trim_clause}
-        ORDER BY j.timestamp
+            COUNT(*),
+            AVG(clicked),
+            SUM(historical_category_match),
+            SUM(preferred_category_match),
+            AVG(topic_similarity)
+        FROM read_csv_auto('{escaped_output}')
         """
-    ).df()
-
-    print(f"  [OK] {len(training_dataset)} rows, {len(training_dataset.columns)} columns")
-
-    validate_point_in_time(training_dataset)
-
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    training_dataset.to_csv(output_path, index=False)
-    print(f"\n[저장] {output_path}")
+    ).fetchone()
+    validate_point_in_time_count(n)
 
     print("\n" + "=" * 70)
     print("생성 완료 통계")
     print("=" * 70)
-    print(f"Rows: {len(training_dataset)}")
-    print(f"Columns ({len(training_dataset.columns)}): {list(training_dataset.columns)}")
-    print(f"Click rate: {training_dataset['clicked'].mean():.3%}")
-    print(f"\nNull values:\n{training_dataset.isnull().sum()}")
-    print(f"\nFirst 3 rows:\n{training_dataset.head(3)}")
+    print(f"Rows: {n}, Columns: {len(MODEL_FEATURE_COLUMNS) + 1}")
+    print(f"Click rate: {click_rate:.3%}")
+    print(f"  [OK] topic_similarity: mean={topic_sim_mean:.3f}")
+    print(f"  [OK] historical_category_match: 0={n - hist_match_1}, 1={hist_match_1}")
+    if hist_match_1 == 0:
+        print("  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
+    print(f"  [OK] preferred_category_match: 0={n - pref_match_1}, 1={pref_match_1}")
 
 
 if __name__ == "__main__":

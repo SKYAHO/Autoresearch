@@ -1,5 +1,7 @@
 """src/features/assembly.py 공용 피처 조립 함수 단위 테스트."""
 
+import tempfile
+
 import numpy as np
 import pandas as pd
 
@@ -10,8 +12,27 @@ from src.features.assembly import (
     compute_user_offline_features,
     compute_user_topic_features,
     compute_video_features,
+    connect_duckdb,
     parse_primary_categories,
 )
+
+
+def test_connect_duckdb_applies_memory_limit_and_temp_directory(monkeypatch):
+    """대형 정렬/조인이 디스크로 spill하도록 memory_limit/temp_directory가
+    실제 연결에 반영되는지 검증(#271/#291 OOM 회귀 방지)."""
+    monkeypatch.setattr(assembly_module, "DUCKDB_MEMORY_LIMIT", "500MB")
+    monkeypatch.setattr(assembly_module, "DUCKDB_TEMP_DIR", tempfile.gettempdir())
+    con = connect_duckdb()
+    try:
+        mem = con.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+        tmp = con.execute("SELECT current_setting('temp_directory')").fetchone()[0]
+        # DuckDB는 '500MB'를 '476.8 MiB' 등으로 정규화하므로 값이 시스템
+        # RAM의 ~80% 기본값이 아니라 우리가 건 상한임을 바이트로 확인한다.
+        assert mem not in ("", None)
+        assert "MiB" in mem or "MB" in mem  # GiB 규모 기본값이 아님
+        assert tmp != ""  # spill 대상 디렉터리가 설정됨
+    finally:
+        con.close()
 
 
 def _videos_raw() -> pd.DataFrame:
