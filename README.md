@@ -60,6 +60,11 @@ docs/                # 문서 — docs/README.md 인덱스 참조
 DAG·스케줄·Airflow 배포는 [`SKYAHO/Autoresearch-airflow`](https://github.com/SKYAHO/Autoresearch-airflow),
 GCP 인프라는 [`SKYAHO/Autoresearch-infra`](https://github.com/SKYAHO/Autoresearch-infra)가 소유합니다.
 
+action log 데이터 레이크는 **일일 슬라이스 파티션**(`dt=D` = KST D일
+하루치, 파티션 간 서로소)으로 적재되며, 피처·학습 소비자는 `dt BETWEEN`
+프루닝으로 30일 히스토리를 조립합니다. 계약 상세:
+[`docs/specs/2026-07-24-action-log-slice-semantics.md`](docs/specs/2026-07-24-action-log-slice-semantics.md)
+
 ## 팀 도메인
 
 | 도메인 | 팀원 | 주요 경로 |
