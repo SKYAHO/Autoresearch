@@ -1,6 +1,7 @@
 import json
 import logging
 import random
+import re
 from datetime import UTC, datetime, timedelta
 from threading import Event
 
@@ -981,9 +982,42 @@ def test_expand_events_without_metadata_is_unchanged():
     events = _expand_events(
         drafts, select_clicks_per_slate(drafts, click_threshold=1.0), EventGenerationRequest(click_threshold=0.55, seed=7)
     )
-    assert events[0].event_id == "evt_00000000"
+    assert re.fullmatch(r"evt_\d{8}_00000000", events[0].event_id)
     assert events[0].source == "historical"
     assert events[0].policy is None
+
+
+def test_expand_events_event_ids_are_date_namespaced_and_unique():
+    # #295 A안: event_id = {prefix}_{이벤트 KST 날짜}_{seq}. 파티션(dt=KST 날짜)
+    # 네임스페이스가 들어가므로 파티션 간 충돌이 구조적으로 불가능해진다.
+    import re
+    from datetime import datetime, timedelta, timezone
+
+    from autoresearch.action_logs.pipeline import _expand_events, select_clicks_per_slate
+    from autoresearch.action_logs.schema import EventGenerationRequest, ImpressionDraft
+
+    kst = timezone(timedelta(hours=9))
+    drafts = [
+        ImpressionDraft(
+            user_id=f"u{i}", video_id=f"v{i}", click_propensity=0.1,
+            watch_fraction=0.5, would_like=False, duration_sec=100,
+        )
+        for i in range(3)
+    ]
+    request = EventGenerationRequest(
+        click_threshold=0.55, seed=7,
+        history_end=datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc),
+    )
+    events = _expand_events(drafts, select_clicks_per_slate(drafts, 1.0), request)
+
+    assert len(events) == 3
+    ids = [e.event_id for e in events]
+    assert len(set(ids)) == len(ids)
+    for event in events:
+        match = re.fullmatch(r"evt_(\d{8})_(\d{8})", event.event_id)
+        assert match, event.event_id
+        expected_day = event.event_timestamp.astimezone(kst).strftime("%Y%m%d")
+        assert match.group(1) == expected_day
 
 
 def _tagged_draft(**overrides) -> ImpressionDraft:
