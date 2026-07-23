@@ -500,15 +500,18 @@ def main(
         user_category_similarity = load_user_category_similarity_from_bigquery()
         con.register("user_category_similarity", user_category_similarity)
         topic_similarity_column = "COALESCE(ucs.topic_similarity, 0.0)"
+        # as-of join: 이벤트 시각 이하(<=) 중 가장 최근 similarity 스냅샷 1건.
+        # 예전엔 LEFT JOIN + QUALIFY ROW_NUMBER() OVER (PARTITION BY ...)로 같은
+        # 결과를 냈는데, 그 윈도우는 조인 결과 1.77M행을 전량 정렬해 #292의
+        # memory_limit 아래에서 디스크로 spill됐고 노드 ephemeral-storage를 채워
+        # 파드가 Evicted됐다(#293). DuckDB 네이티브 ASOF JOIN은 같은 의미론을
+        # 전량 정렬 없이 처리한다 — 매칭이 없으면 LEFT라 행이 보존되고
+        # COALESCE로 0.0이 되는 것도 동일하다.
         topic_similarity_join = """
-        LEFT JOIN user_category_similarity ucs
+        ASOF LEFT JOIN user_category_similarity ucs
             ON ucs.user_id = o.user_id
            AND ucs.category_id = vf.category_id
-           AND ucs.event_timestamp <= o.timestamp
-        QUALIFY ROW_NUMBER() OVER (
-            PARTITION BY o.user_id, o.video_id, o.timestamp
-            ORDER BY ucs.event_timestamp DESC
-        ) = 1"""
+           AND ucs.event_timestamp <= o.timestamp"""
     else:
         user_topic_feature = compute_user_topic_features(personas, video_feature["category_id"].unique())
         con.register("user_topic_feature", user_topic_feature)
@@ -561,15 +564,27 @@ def main(
     # training_dataset(1.77M행)을 각각 pandas로 materialize + historical_category_match를
     # 행 단위 pandas .apply로 계산해, 실 규모에서 대형 pandas 프레임 2벌 + apply
     # 중간 결과가 동시 상주하며 ~18GB로 튀어 OOM됐다(#271/#287). DuckDB의
-    # COPY ... TO csv는 조인/정렬 결과를 pandas로 물리지 않고 디스크로 흘려보내
+    # COPY ... TO csv는 조인 결과를 pandas로 물리지 않고 디스크로 흘려보내
     # 피크 메모리를 online_features 등 입력 프레임 크기 수준으로 낮춘다.
     #
     # historical_category_match는 단순 문자열 비교라 pandas .apply 대신 SQL CASE로
     # 계산한다(compute_historical_category_match와 동일: unknown이면 0,
     # affinity==category_id면 1, 아니면 0).
+    #
+    # 이 쿼리에는 의도적으로 ORDER BY가 없다(#293). 예전엔 `ORDER BY j.timestamp`로
+    # 1.77M행을 전량 정렬했는데, #292의 memory_limit이 그 정렬을 디스크로 spill시키자
+    # 이번엔 노드 ephemeral-storage가 차서 파드가 Evicted됐다(2026-07-23 실측).
+    # 그런데 이 정렬은 소비처가 없다: train.py는 train_test_split(random_state,
+    # stratify)로 **무작위 층화 분할**을 하므로 행 순서를 버리고, timestamp는 출력
+    # 컬럼도 아니며(21 feature + clicked), 동률이 많아 결정적 총순서를 보장하지도
+    # 못했다. 정렬을 없애면 조인 결과가 곧바로 CSV로 흘러가 메모리·디스크 모두
+    # 입력 프레임 수준으로 유지된다(해시 조인 빌드 측은 video 128K/user 7K로 작다).
     print("\n[Step 2] training_dataset 스트리밍 생성 (DuckDB COPY)...")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     escaped_output = output_path.replace("'", "''")
+    # 출력 행 순서를 보존하려고 결과를 버퍼링하지 않게 해 스트리밍 COPY의 메모리를
+    # 더 낮춘다. 위와 같은 이유로 이 CSV의 행 순서에 의존하는 소비처가 없다.
+    con.execute("SET preserve_insertion_order = false")
     con.execute(
         f"""
         COPY (
@@ -613,7 +628,6 @@ def main(
             FROM joined j
             JOIN user_feature_offline uo ON uo.user_id = j.user_id
             {trim_clause}
-            ORDER BY j.timestamp
         ) TO '{escaped_output}' (FORMAT CSV, HEADER)
         """
     )
