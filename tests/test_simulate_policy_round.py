@@ -793,3 +793,27 @@ def test_report_records_replay_provenance(tmp_path, stub_reranker):
     html = (second_dir / "policy_round_report.html").read_text(encoding="utf-8")
     assert "judge-v9" in html
     assert "replay" in html
+
+
+def test_replay_fails_when_judged_users_are_absent_from_exposures(tmp_path, stub_reranker):
+    """유저 수는 같고 id만 다른 virtual users로 리플레이하면 실패해야 한다.
+
+    전량 zero-coverage는 quarantine 관용 규칙에 걸려 조용히 통과하고
+    impressions=0·CTR=0 리포트를 만들어낸다 — 정상 종료로 오인되는 실패다.
+    """
+    first_dir = tmp_path / "a"
+    _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
+
+    other_personas = _personas(4).assign(uuid=[f"z{i}" for i in range(4)])
+    other_users = [dict(user, user_id=f"z{i}") for i, user in enumerate(_virtual_users(4))]
+
+    with pytest.raises(ValueError, match="판정이 있는 유저"):
+        _run_round(
+            tmp_path / "b",
+            stub_reranker,
+            generator=None,
+            replay=_load_replay(first_dir),
+            personas=other_personas,
+            virtual_users=other_users,
+            output_dir=str(tmp_path / "b"),
+        )

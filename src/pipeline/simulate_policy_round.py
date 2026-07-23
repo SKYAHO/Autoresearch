@@ -396,6 +396,18 @@ def main(
     }
 
     if replay is not None:
+        # 아래 quarantine 관용 규칙의 전제를 먼저 검사한다. 판정이 있는 유저는
+        # 전부 이번 노출에도 나타나야 한다 — 그렇지 않으면 유저 집합 자체가
+        # 다른 것이고, 관용 규칙이 그 전량을 "원본 quarantine"으로 오인해
+        # impressions=0·CTR=0 리포트를 에러 없이 만들어낸다.
+        absent_judged_users = sorted({d.user_id for d in drafts} - set(exposures_by_user))
+        if absent_judged_users:
+            raise ValueError(
+                f"replay drafts에 판정이 있는 유저 {len(absent_judged_users)}명이 이번 "
+                f"노출에 없습니다 (first: {absent_judged_users[0]}) — virtual users가 "
+                "판정 라운드와 다릅니다"
+            )
+
         # 커버리지는 유저(슬레이트) 단위로 검사한다. draft가 하나도 없는
         # 유저는 원본 판정 라운드에서 quarantine된 유저이므로(그 유저의 draft는
         # parquet에 아예 없다) 비리플레이 경로와 동일하게 관용하고 아래 4단계의
