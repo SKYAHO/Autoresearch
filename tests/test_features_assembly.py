@@ -118,6 +118,77 @@ def test_compute_point_in_time_user_features_respects_as_of():
     assert row["total_event_count_7d"] == 3
 
 
+def test_compute_point_in_time_user_features_excludes_snapshot_day_itself():
+    # 스펙(data-warehouse.md): 일 단위 snapshot이라 스냅샷 당일(as_of의 날) 행동은
+    # [d-7, d) window 밖이라 반영되지 않는다("07-05 00:00~10:00 사이 행동은 미반영").
+    events = pd.DataFrame(
+        {
+            "event_id": ["e1"],
+            "user_id": ["u1"],
+            "video_id": ["v1"],
+            "timestamp": ["2026-07-11 08:00:00"],  # as_of와 같은 날(스냅샷 당일)
+            "clicked": [1],
+            "liked": [0],
+            "watch_time_sec": [60],
+        }
+    )
+    query_points = pd.DataFrame({"user_id": ["u1"], "as_of": ["2026-07-11 10:00:00"]})
+    out = compute_point_in_time_user_features(events, _videos_raw(), query_points)
+    row = out.iloc[0]
+    assert row["recent_click_count_7d"] == 0
+    assert row["recent_view_count_7d"] == 0
+    assert row["total_event_count_7d"] == 0
+    # affinity 30일 window도 당일을 제외하므로 이력 없음 → unknown.
+    assert row["historical_category_affinity"] == "unknown"
+
+
+def test_compute_point_in_time_user_features_snapshot_day_no_events_but_prior_activity():
+    # 스냅샷 당일엔 이벤트 0건이지만 직전 6일 내 활동이 있는 케이스(시뮬레이션 경로
+    # 스타일: query_points가 이벤트가 아님). daily 위에서만 window를 돌리면 이
+    # (user, day) 행이 없어 조용히 0으로 떨어지는데, spine 0-패딩으로 정상 계산되어야
+    # 한다(#284 — window-over-daily였다면 못 잡는 silent bug).
+    events = pd.DataFrame(
+        {
+            "event_id": ["e1"],
+            "user_id": ["u1"],
+            "video_id": ["v1"],
+            "timestamp": ["2026-07-08 10:00:00"],  # 스냅샷(07-11)보다 3일 전
+            "clicked": [1],
+            "liked": [0],
+            "watch_time_sec": [60],
+        }
+    )
+    query_points = pd.DataFrame({"user_id": ["u1"], "as_of": ["2026-07-11 00:00:00"]})
+    out = compute_point_in_time_user_features(events, _videos_raw(), query_points)
+    row = out.iloc[0]
+    # 07-08은 [07-04, 07-10] window 안 → 반영돼야 한다. 0이면 spine 패딩 누락 회귀.
+    assert row["recent_click_count_7d"] == 1
+    assert row["recent_view_count_7d"] == 1
+    assert row["recent_watch_time_7d"] == 60
+    assert row["total_event_count_7d"] == 3
+    assert row["historical_category_affinity"] == "Gaming"
+
+
+def test_compute_point_in_time_user_features_affinity_respects_30_day_bound():
+    # historical_category_affinity는 스펙상 30일 윈도우다. 30일 밖 클릭은 제외된다
+    # (기존 코드는 하한이 없어 전체 히스토리를 봤던 스펙 위반 — 이번에 수정).
+    events = pd.DataFrame(
+        {
+            "event_id": ["e_old", "e_new"],
+            "user_id": ["u1", "u1"],
+            "video_id": ["v1", "v2"],  # v1=Gaming, v2=Music
+            "timestamp": ["2026-06-15 10:00:00", "2026-07-20 10:00:00"],  # 46일 전(밖), 11일 전(안)
+            "clicked": [1, 1],
+            "liked": [0, 0],
+            "watch_time_sec": [0, 0],
+        }
+    )
+    query_points = pd.DataFrame({"user_id": ["u1"], "as_of": ["2026-07-31 00:00:00"]})
+    out = compute_point_in_time_user_features(events, _videos_raw(), query_points)
+    # 30일 window [07-01, 07-31) 안엔 Music(07-20)만 → Gaming(06-15)은 제외.
+    assert out.iloc[0]["historical_category_affinity"] == "Music"
+
+
 def test_compute_interaction_columns_matches():
     joined = pd.DataFrame(
         {
