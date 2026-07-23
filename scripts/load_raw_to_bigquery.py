@@ -21,7 +21,7 @@ hive partitioned 소스(dt=*)는 HivePartitioningOptions(mode=AUTO)로 dt 컬럼
 
 옵션:
   --project PROJECT   GCP 프로젝트 ID (기본: .env의 GCP_PROJECT_ID)
-  --dataset DATASET   BigQuery 데이터셋 (기본: .env의 BQ_DATASET 또는 feast_offline_store)
+  --dataset DATASET   BigQuery 데이터셋 (기본: .env의 CTR_TRAINING_BQ_RAW_DATASET 또는 data_lake_raw)
   --location LOCATION BigQuery location (기본: .env의 BQ_LOCATION 또는 asia-northeast3)
   --bucket BUCKET     GCS 버킷 이름, gs:// 제외 (기본: .env의 YOUTUBE_LAKE_BUCKET)
   --tables KEYS       적재 대상 키 쉼표 구분 (기본: 전부)
@@ -169,7 +169,11 @@ def main(argv: list[str] | None = None) -> int:
         description="GCS 데이터 레이크 raw parquet을 BigQuery 네이티브 테이블로 적재"
     )
     parser.add_argument("--project", default=os.getenv("GCP_PROJECT_ID"))
-    parser.add_argument("--dataset", default=os.getenv("BQ_DATASET", "feast_offline_store"))
+    # raw 계층 적재이므로 소비자(feature_store_build, build_training_dataset)와
+    # 같은 raw 계층 변수를 읽는다. BQ_DATASET(feature 계층)은 읽지 않는다(#303).
+    parser.add_argument(
+        "--dataset", default=os.getenv("CTR_TRAINING_BQ_RAW_DATASET", "data_lake_raw")
+    )
     parser.add_argument("--location", default=os.getenv("BQ_LOCATION", "asia-northeast3"))
     parser.add_argument("--bucket", default=os.getenv("YOUTUBE_LAKE_BUCKET"))
     parser.add_argument("--tables", default=None, help="적재 대상 키 쉼표 구분")

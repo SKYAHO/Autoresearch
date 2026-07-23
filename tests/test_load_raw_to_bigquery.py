@@ -130,8 +130,48 @@ def test_load_target_failure_is_captured():
 @pytest.fixture
 def isolated_env(monkeypatch):
     monkeypatch.setattr("scripts.load_raw_to_bigquery.load_dotenv", lambda: None)
-    for var in ("GCP_PROJECT_ID", "BQ_DATASET", "BQ_LOCATION", "YOUTUBE_LAKE_BUCKET"):
+    for var in (
+        "GCP_PROJECT_ID",
+        "BQ_DATASET",
+        "BQ_LOCATION",
+        "YOUTUBE_LAKE_BUCKET",
+        "CTR_TRAINING_BQ_RAW_DATASET",
+    ):
         monkeypatch.delenv(var, raising=False)
+
+
+def test_main_defaults_dataset_to_raw_layer(isolated_env):
+    # #303: --dataset 미지정 시 raw 계층(data_lake_raw)에 적재해야 한다.
+    # 소비자(feature_store_build, build_training_dataset)의 기본값과 같은 계약.
+    client = mock.MagicMock()
+    client.get_table.return_value.num_rows = 1
+
+    with mock.patch(
+        "scripts.load_raw_to_bigquery.bigquery.Client", return_value=client
+    ):
+        exit_code = main(["--project", "proj", "--bucket", BUCKET, "--tables", "action_log"])
+
+    assert exit_code == 0
+    args, _ = client.load_table_from_uri.call_args
+    assert args[1] == "proj.data_lake_raw.data_lake_action_log"
+
+
+def test_main_dataset_env_override_reads_raw_layer_variable(isolated_env, monkeypatch):
+    # 환경 변수 재정의는 feature 계층(BQ_DATASET)이 아니라 raw 계층
+    # 변수(CTR_TRAINING_BQ_RAW_DATASET)를 따른다.
+    monkeypatch.setenv("CTR_TRAINING_BQ_RAW_DATASET", "raw_override")
+    monkeypatch.setenv("BQ_DATASET", "feast_offline_store")
+    client = mock.MagicMock()
+    client.get_table.return_value.num_rows = 1
+
+    with mock.patch(
+        "scripts.load_raw_to_bigquery.bigquery.Client", return_value=client
+    ):
+        exit_code = main(["--project", "proj", "--bucket", BUCKET, "--tables", "action_log"])
+
+    assert exit_code == 0
+    args, _ = client.load_table_from_uri.call_args
+    assert args[1] == "proj.raw_override.data_lake_action_log"
 
 
 def test_main_missing_bucket_exits_with_error(isolated_env, capsys):
