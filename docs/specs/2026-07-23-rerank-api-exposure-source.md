@@ -160,22 +160,27 @@ Vertex 임베딩은 **호출하지 않는다** — topic_similarity는 서버가
 7. `--rerank-url`을 model/heuristic 소스와 함께 주면 거부.
 8. shard 모드 + `rerank-api` 거부.
 
-## 실행 runbook (spec 승인 후 실측으로 갱신)
+## 실행 runbook
+
+공개 CLI는 gs:// 경로만 받는다(공개 배치 계약). 로컬 스모크는 도메인 러너
+직접 호출(`run_daily_action_log(..., filesystem=None)` + rerank-api factory)로
+수행하고 — 아래 "실측" 절이 그 기록이다 — 운영 라운드는 CLI + GCS 경로로 한다.
 
 ```bash
 # 0) 서버 연결
 kubectl -n autoresearch port-forward deploy/autoresearch-serving-looptest 8088:8000 &
 
-# 1) LLM 0콜 스모크 — rule_based 클릭 판정으로 배선만 검증
+# 1) 실 LLM 라운드 — openrouter + GCS 업로드 (#278이 소비할 dt로)
+#    dt 선택은 #278 트랙과 조율 (기존 파티션과 미충돌 날짜)
+eval "$(grep '^export OPENROUTER_API_KEY=' ~/.bashrc)" && \
 uv run --env-file .env --no-sync python -m autoresearch.jobs.action_log \
   --mode single --partition-date <dt> \
-  --youtube-base-path <트렌딩 lake 경로> --virtual-users-path <vu parquet> \
-  --output-base-path data/generated/serving_loop_smoke \
+  --youtube-base-path gs://<lake-bucket>/data_lake/youtube_trending_kr \
+  --virtual-users-path gs://<lake-bucket>/asset/virtual_user/<vu>.parquet \
+  --output-base-path gs://<lake-bucket>/data_lake/action_log \
   --exposure-source rerank-api --rerank-url http://127.0.0.1:8088 \
-  --generator-name rule_based --click-threshold 0.7 --max-users 5
-
-# 2) 실 LLM 라운드 — openrouter + GCS 업로드 (#278이 소비할 dt로)
-#    dt 선택은 #278 트랙과 조율 (기존 파티션과 미충돌 날짜)
+  --generator-name openrouter --model-name <llm> \
+  --click-threshold 0.7 --max-users <n>
 ```
 
 ## 범위 밖
@@ -184,3 +189,22 @@ uv run --env-file .env --no-sync python -m autoresearch.jobs.action_log \
 - 후보 pool을 online store 실재 목록과 대조하는 사전 검증
 - champion 별칭 교체·모델 품질 (#271/#269, 팀원 트랙)
 - 적재 이후의 피처 갱신·materialize (#278, Codex 트랙)
+
+## 실측 (2026-07-23, 실서버 스모크)
+
+`autoresearch-serving-looptest`(GKE, `ctr-model` v4 = `loop-test`)에
+port-forward로 접속해 도메인 러너(`run_daily_action_log`, 로컬 경로 +
+`filesystem=None`)로 5유저 라운드를 실행했다. 클릭 판정은 `rule_based`
+generator(LLM 0콜), 노출 pool은 실제 lake 파티션
+`youtube_trending_kr/dt=2026-07-19`(198개 영상)이다.
+
+```
+users=5  impressions=120  quarantine=0  status=succeeded
+exposure_source 분포: model 85 (17×5) · trending 25 (5×5) · random 10 (2×5)
+policy_version(전 행): 3396ebda93684b4d827d861de44c8cc7  ← /rerank 응답 model_id
+model 노출의 ctr_score: 전부 non-null
+```
+
+노출 조립 계약(24개=17/5/2)·태그·계보가 BQ 소스와 동일하게 산출됨을 실서버
+경유로 확인했다. clicks=0은 rule_based propensity가 커트라인 0.7을 넘지 못한
+결과로, 실 LLM 라운드에서는 #267에서 캘리브레이션된 커트라인을 쓴다.
