@@ -38,9 +38,12 @@ def _get_model():
         import vertexai
         from vertexai.language_models import TextEmbeddingModel
 
+        # 기본값은 나머지 인프라(BigQuery·GCS·GKE·Redis)와 같은 서울 리전이다 (#276).
+        # 미지정 시 조용히 다른 리전으로 나가면 쿼터가 리전별로 잡히는 특성상
+        # 원인 파악이 어려워지므로, 기본값 자체를 맞춰 둔다.
         vertexai.init(
             project=os.environ["GCP_PROJECT_ID"],
-            location=os.environ.get("GCP_LOCATION", "us-central1"),
+            location=os.environ.get("GCP_LOCATION", "asia-northeast3"),
         )
         _model = TextEmbeddingModel.from_pretrained(EMBEDDING_MODEL)
     return _model

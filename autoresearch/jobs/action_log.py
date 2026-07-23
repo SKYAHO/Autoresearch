@@ -1,4 +1,16 @@
-"""액션 로그 single, shard, merge 공개 batch 명령."""
+"""액션 로그 single, shard, merge 공개 batch 명령.
+
+전체 파이프라인 기준으로 이 모듈은 "action log 배치의 공개 CLI 계약" 구간만
+담당한다 — 인자 문법·조합 검증과 도메인 러너(`action_logs.daily`) 호출 매핑.
+노출 순위의 출처는 `--exposure-source`로 고른다: `model`(BigQuery
+`user_recommendations` 파티션), `rerank-api`(Inference Server `/rerank` 실시간
+호출, single 전용), `heuristic`(규칙 기반). 노출 조립·클릭 판정·저장 로직은
+각각 `src.pipeline`·`autoresearch.action_logs`가 소유하며 여기서 담당하지
+않는다.
+
+spec: docs/specs/2026-07-13-public-batch-execution-contract.md,
+      docs/specs/2026-07-23-rerank-api-exposure-source.md
+"""
 
 from __future__ import annotations
 
@@ -51,6 +63,13 @@ def _non_negative_int(value: str) -> int:
     parsed = int(value)
     if parsed < 0:
         raise argparse.ArgumentTypeError("must be at least 0")
+    return parsed
+
+
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0.0:
+        raise argparse.ArgumentTypeError("must be a positive finite number")
     return parsed
 
 
@@ -138,8 +157,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-concurrency", type=_positive_int, default=1)
     parser.add_argument("--chunk-size", type=_non_negative_int, default=0)
     parser.add_argument("--max-quarantine-ratio", type=_ratio)
-    parser.add_argument("--exposure-source", choices=("model", "heuristic"))
+    parser.add_argument(
+        "--exposure-source", choices=("model", "heuristic", "rerank-api")
+    )
     parser.add_argument("--recommendations-table")
+    parser.add_argument("--rerank-url")
+    parser.add_argument("--rerank-timeout-sec", type=_positive_float)
     parser.add_argument(
         "--overwrite",
         nargs="?",
@@ -172,10 +195,35 @@ def _reject(args: argparse.Namespace, *names: str) -> None:
 def _build_candidate_provider_factory(
     args: argparse.Namespace,
 ) -> CandidateProviderFactory | None:
-    """model 모드에서만 src.pipeline을 지연 import해 노출 provider factory를 만든다.
+    """model·rerank-api 소스에서만 src.pipeline을 지연 import해 factory를 만든다.
 
-    heuristic 모드는 None을 반환하며 src·BigQuery에 의존하지 않는다.
+    heuristic 모드는 None을 반환하며 src·BigQuery·requests에 의존하지 않는다.
     """
+
+    if args.exposure_source == "rerank-api":
+
+        def rerank_factory(
+            videos: list[dict],
+        ) -> tuple[CandidateProvider, Mapping[tuple[str, str], ExposureMetadata]]:
+            from src.pipeline.rerank_api import (
+                RerankApiSettings,
+                make_rerank_api_exposure_provider,
+            )
+
+            round_ = make_rerank_api_exposure_provider(
+                RerankApiSettings(
+                    base_url=args.rerank_url,
+                    timeout_sec=args.rerank_timeout_sec,
+                ),
+                videos,
+                candidates_per_user=args.candidates_per_user,
+                personalized_ratio=args.personalized_ratio,
+                popular_ratio=args.popular_ratio,
+                exploration_ratio=args.exploration_ratio,
+            )
+            return round_.provider, round_.metadata
+
+        return rerank_factory
 
     if args.exposure_source != "model":
         return None
@@ -209,11 +257,32 @@ def _build_candidate_provider_factory(
 def _validate_args(args: argparse.Namespace) -> None:
     if args.mode in {"single", "shard"}:
         args.exposure_source = args.exposure_source or "model"
-        if args.exposure_source == "heuristic" and args.recommendations_table is not None:
+        if args.exposure_source != "model" and args.recommendations_table is not None:
             raise BatchArgumentError(
                 "--recommendations-table is only valid with "
                 "--exposure-source model"
             )
+        if args.exposure_source == "rerank-api":
+            if args.mode == "shard":
+                # shard는 GCS 체크포인트 재실행 구조라 실시간 HTTP 순위의
+                # 재현성을 보장할 수 없다(재실행 시 다른 점수) — single 전용.
+                raise BatchArgumentError(
+                    "--exposure-source rerank-api supports mode=single only"
+                )
+            _require(args, "rerank_url")
+            if args.rerank_timeout_sec is None:
+                args.rerank_timeout_sec = 30.0
+        else:
+            supplied = [
+                name.replace("_", "-")
+                for name in ("rerank_url", "rerank_timeout_sec")
+                if getattr(args, name) is not None
+            ]
+            if supplied:
+                raise BatchArgumentError(
+                    ", ".join(f"--{name}" for name in supplied)
+                    + " is only valid with --exposure-source rerank-api"
+                )
         _require(
             args,
             "youtube_base_path",
@@ -270,6 +339,8 @@ def _validate_args(args: argparse.Namespace) -> None:
             "shard_index",
             "exposure_source",
             "recommendations_table",
+            "rerank_url",
+            "rerank_timeout_sec",
             "click_threshold",
         )
 
