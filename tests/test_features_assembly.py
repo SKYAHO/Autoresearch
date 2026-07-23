@@ -281,6 +281,46 @@ def test_compute_user_topic_features_matches_compute_interaction_columns(monkeyp
     assert list(merged["preferred_category_match"]) == list(expected["preferred_category_match"])
 
 
+def test_compute_user_topic_features_skip_embedding_never_calls_embed_texts(monkeypatch):
+    # skip_embedding=True(#214, topic_similarity_source="bigquery" 호출부용)는
+    # topic_similarity를 BigQuery에서 별도로 가져오므로 embed_texts(Vertex AI)를
+    # 절대 호출하면 안 된다 — 호출되면 즉시 실패하도록 예외를 던지는 스텁으로 교체.
+    def fail_if_called(texts, task_type):
+        raise AssertionError("skip_embedding=True인데 embed_texts가 호출됨")
+
+    monkeypatch.setattr(assembly_module, "embed_texts", fail_if_called)
+
+    personas = pd.DataFrame(
+        {
+            "uuid": ["u1", "u2"],
+            "hobbies_and_interests_list": ['["gaming"]', '["music"]'],
+            "primary_categories": ['["Gaming"]', '["Music"]'],
+        }
+    )
+    out = compute_user_topic_features(personas, ["Gaming", "Music"], skip_embedding=True)
+
+    assert out["topic_similarity"].isna().all()
+
+
+def test_compute_user_topic_features_skip_embedding_preserves_preferred_category_match():
+    # preferred_category_match 산출 로직은 skip_embedding 값과 무관하게 완전히
+    # 동일해야 한다(#245/#246과 같은 로직 drift를 피하려고 별도 함수로 복제하지
+    # 않고 같은 함수를 공유하기로 한 결정 — #214).
+    personas = pd.DataFrame(
+        {
+            "uuid": ["u1", "u2"],
+            "hobbies_and_interests_list": ['["gaming"]', '["music"]'],
+            "primary_categories": ['["Gaming"]', '["Music"]'],
+        }
+    )
+    with_embedding = compute_user_topic_features(personas, ["Gaming", "Music"])
+    without_embedding = compute_user_topic_features(personas, ["Gaming", "Music"], skip_embedding=True)
+
+    assert list(without_embedding["preferred_category_match"]) == list(
+        with_embedding["preferred_category_match"]
+    )
+
+
 def test_parse_primary_categories_from_json_string():
     assert parse_primary_categories('["Gaming", "Music"]') == ["Gaming", "Music"]
 
