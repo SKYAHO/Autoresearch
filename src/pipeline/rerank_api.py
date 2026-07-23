@@ -182,6 +182,19 @@ def make_rerank_api_exposure_provider(
     `build_model_exposures`에 넘겨 BQ 소스와 동일한 조립·태그를 얻는다.
     후보 pool은 생성 시 1회 고정한다. 한 라운드 안에서 응답 model_id가
     달라지면(서버가 도중에 재배포됨) 순위 계보가 섞이므로 즉시 실패한다.
+
+    직렬성 전제: 파이프라인은 provider를 작업 목록 구축 단계(단일 스레드,
+    `_generate_drafts_isolated` 1단계)에서만 호출하며, `--max-concurrency`는
+    그 뒤의 LLM 콜(2단계 ThreadPoolExecutor)만 병렬화한다. `model_run_id`
+    비교와 `metadata` 누적이 락 없이 안전한 근거가 이 직렬성이다 — 기존 BQ
+    소스(`make_model_exposure_provider`)의 공유 맵도 같은 전제를 쓴다.
+    provider 호출을 병렬화하려면 두 provider 모두 재설계가 필요하다.
+
+    세션 소유권: `session`을 주입하면 호출자 소유이므로 여기서 닫지 않는다.
+    주입이 없으면 내부에서 생성하며, CandidateProvider seam에는 라운드 종료
+    훅이 없어 명시적으로 닫지 못한다 — 배치 CLI(프로세스 종료 시 소켓 회수)
+    전제의 의도적 선택이다. 장수명 프로세스에서 재사용하려면 세션을 주입하고
+    호출자가 수명을 관리해야 한다.
     """
     if not videos:
         raise RerankApiError("트렌딩 영상 pool 없이 노출을 조립할 수 없습니다")
