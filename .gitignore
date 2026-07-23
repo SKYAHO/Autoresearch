@@ -34,6 +34,9 @@ data/generated/
 asset/
 /tmp/
 
+# 로컬 MLflow 추적 저장소 (MLFLOW_TRACKING_URI=file:./mlruns)
+mlruns/
+
 # Large raw datasets (Kaggle backfill 원본/샘플, persona 원본 등)
 *.zip
 data/raw/youtube/
