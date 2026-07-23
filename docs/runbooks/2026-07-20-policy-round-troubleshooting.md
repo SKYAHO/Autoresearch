@@ -3,7 +3,7 @@
 > 대상: 이슈 #195 (분할: #198, #199) / PR #200, #201, #203
 > 기록일: 2026-07-20
 > 관련 문서: `docs/specs/2026-07-20-policy-simulation-round.md`,
-> `docs/plans/2026-07-20-policy-simulation-round.md`
+> `docs/archive/plans/2026-07-20-policy-simulation-round.md`
 
 3개 PR로 분할 구현하며 만난 문제와 해결을 유형별로 기록한다. 같은 유형의
 작업(스키마 확장, 추출 리팩터링, 분할 PR)에서 재발 가능성이 높은 항목은

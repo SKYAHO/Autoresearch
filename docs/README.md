@@ -8,6 +8,8 @@
 | `specs/` | 살아있는 계약·설계 spec (`YYYY-MM-DD-<slug>.md`) | 유효한 동안 |
 | `plans/` | 진행 중 구현 계획 (`YYYY-MM-DD-<slug>.md`) | 구현 완료 시 archive로 |
 | `guides/` | 운영·아키텍처 가이드 | 상시 갱신 |
+| `runbooks/` | 운영 절차·트러블슈팅 기록 | 상시 갱신 |
+| `reports/` | 팀 공유용 시각화 리포트 (HTML) | 참조되는 동안, 이후 archive/reports로 |
 | `archive/` | 완료·과거 spec/plan/리포트 보존 | 영구 (수정하지 않음) |
 
 새 spec/plan 작성 규칙은 [`CLAUDE.md`](../CLAUDE.md)의 *Spec / Plan First* 절을
@@ -52,7 +54,7 @@
 ### 🚀 서빙 (Serving)
 
 - [Spec — YouTube 리랭킹 서빙 API](specs/2026-07-16-reranking-serving-api.md)
-- [Plan — Reranking Serving API 구현](plans/2026-07-16-reranking-serving-api.md) (완료)
+- [Plan — Reranking Serving API 구현](archive/plans/2026-07-16-reranking-serving-api.md) (완료·아카이브)
 - [시각화 — Serving Feature Build: 무엇이 바뀌었나](reports/2026-07-22-serving-feature-build-overview.html) — 비개발 팀원용 변경 흐름·운영 경계 안내
 - `src/serving/` (FastAPI 추론 서버), `deploy/serving/` (이미지 정의)
 

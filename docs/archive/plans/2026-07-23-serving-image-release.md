@@ -1,6 +1,6 @@
 # Serving Image Release Implementation Plan
 
-**Source design:** `docs/superpowers/specs/2026-07-23-serving-image-release-design.md`  
+**Source design:** `docs/archive/specs/2026-07-23-serving-image-release-design.md`  
 **Issue:** #266  
 **Branch:** `feat/266-serving-image-release`
 
