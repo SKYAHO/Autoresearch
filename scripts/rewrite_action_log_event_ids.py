@@ -7,12 +7,14 @@
 [기능] 레거시 ``{prefix}_{seq:08d}`` event_id를 파티션 날짜 네임스페이스
 ``{prefix}_{YYYYMMDD}_{seq:08d}``로 바꾼다. 이미 새 형식인 id는 그대로 두므로
 재실행이 멱등하다. 인식할 수 없는 형식은 조용히 통과시키지 않고 실패한다.
+입력 테이블이 ``--partition-date`` 하루치 단일 KST 슬라이스가 아니면(예: 30일
+합성 전개 파티션) `event_timestamp` 기준으로 사전 검증해 fail-loud 한다.
 """
 from __future__ import annotations
 
 import argparse
 import re
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -20,10 +22,41 @@ import pyarrow.parquet as pq
 
 _LEGACY = re.compile(r"^(?P<prefix>.+?)_(?P<seq>\d{8})$")
 _NAMESPACED = re.compile(r"^.+_\d{8}_\d{8}$")
+_KST = timezone(timedelta(hours=9))
+
+
+def _to_kst_date(timestamp: datetime | None) -> date:
+    """timestamp를 KST 기준 date로 변환한다. aware면 astimezone, naive면 UTC로 간주해 +9h."""
+    if timestamp is None:
+        raise ValueError(
+            "event_timestamp 값에 null이 있어 단일 KST 날짜 슬라이스 검증을 할 수 없습니다."
+        )
+    if timestamp.tzinfo is not None:
+        return timestamp.astimezone(_KST).date()
+    return (timestamp + timedelta(hours=9)).date()
+
+
+def _validate_single_kst_date_slice(table: pa.Table, partition_date: date) -> None:
+    """테이블 전 행이 partition_date 하루치 KST 슬라이스인지 검증한다."""
+    if "event_timestamp" not in table.column_names:
+        raise ValueError(
+            "event_timestamp 컬럼이 없어 단일 KST 날짜 슬라이스 검증을 할 수 없습니다."
+        )
+    kst_dates = [_to_kst_date(ts) for ts in table.column("event_timestamp").to_pylist()]
+    mismatched = [d for d in kst_dates if d != partition_date]
+    if mismatched:
+        actual_min, actual_max = min(kst_dates), max(kst_dates)
+        raise ValueError(
+            "단일 KST 날짜 슬라이스 가드 위반: "
+            f"파티션 날짜({partition_date.isoformat()})와 다른 행이 "
+            f"{len(mismatched)}건 있습니다. 실제 KST 날짜 범위 "
+            f"{actual_min.isoformat()}~{actual_max.isoformat()}"
+        )
 
 
 def rewrite_event_ids(table: pa.Table, partition_date: date) -> pa.Table:
     """레거시 event_id에 파티션 날짜 네임스페이스를 주입한 새 Table을 돌려준다."""
+    _validate_single_kst_date_slice(table, partition_date)
     day = partition_date.strftime("%Y%m%d")
     rewritten: list[str] = []
     for event_id in table.column("event_id").to_pylist():
