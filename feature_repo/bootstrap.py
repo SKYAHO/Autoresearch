@@ -1,3 +1,19 @@
+"""Feast repository 실행 전 준비(부트스트랩) 헬퍼.
+
+[파이프라인] 피처 구간 — Feast를 사용하는 공개 batch 명령
+(``autoresearch.jobs.feast_apply``, ``autoresearch.jobs.feast_materialize``)과
+serving reader가 Feast repo config를 읽기 **직전**에 필요한 실행 환경을
+갖추는 구간을 담당한다.
+
+[기능] Redis TLS CA 번들을 확인하거나 Secret Manager에서 조달해
+``REDIS_TLS_CA_PATH``를 채우고, ``feature_repo.*`` custom online store adapter를
+import할 수 있도록 repo의 부모 디렉터리를 ``sys.path``에 넣으며, 준비가 끝난
+repo로 Feast ``FeatureStore``를 생성한다.
+
+[비책임] CLI 인자 계약·종료 코드는 ``autoresearch/jobs/``의 각 batch 모듈이,
+Entity·FeatureView 정의는 ``feature_repo/``의 정의 파일이 소유한다.
+"""
+
 from __future__ import annotations
 
 import os
@@ -42,12 +58,23 @@ def ensure_redis_ca_bundle(
     return handle.name
 
 
-def load_feature_store(repo_path: str | Path) -> object:
-    """지정한 repository path로 Feast FeatureStore를 생성한다."""
+def ensure_repo_importable(repo_path: str | Path) -> Path:
+    """repo의 부모 디렉터리를 sys.path에 넣어 `feature_repo.*` import를 가능하게 한다.
+
+    feature_store.yaml의 ``online_store.type``이 custom adapter
+    (``feature_repo.redis_iam.IAMRedisOnlineStore``)를 가리키므로 config 검증
+    전에 이 처리가 끝나 있어야 한다. 해석된 절대 경로를 반환한다.
+    """
     resolved = Path(repo_path).resolve()
     parent = str(resolved.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
+    return resolved
+
+
+def load_feature_store(repo_path: str | Path) -> object:
+    """지정한 repository path로 Feast FeatureStore를 생성한다."""
+    resolved = ensure_repo_importable(repo_path)
     from feast import FeatureStore
 
     return FeatureStore(repo_path=str(resolved))

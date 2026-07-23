@@ -186,11 +186,11 @@ PY
 기대: PING True, shard count 2, same-tag slot 일치·MGET 성공, 다른 tag
 `CROSSSLOT` 재현.
 
-## 6. feast apply + materialize + 온라인 조회
+## 6. feast_apply + materialize + 온라인 조회
 
 ```bash
 kubectl exec -n "${NAMESPACE}" feast-redis-validation -- \
-  bash -c "cd /app/feature_repo && feast apply"
+  bash -c "cd /app && python -m autoresearch.jobs.feast_apply"
 
 kubectl exec -n "${NAMESPACE}" feast-redis-validation -- \
   bash -c "cd /app && python -m autoresearch.jobs.feast_materialize"
@@ -201,8 +201,13 @@ kubectl exec -n "${NAMESPACE}" feast-redis-validation -- \
   bash -c "cd /app && python /tmp/verify_feature_retrieval.py"
 ```
 
-기대: apply 성공, materialize `status=succeeded` exit 0, 조회 스크립트 `[OK]`
-2건(Redis에서 실값 반환).
+기대: apply·materialize 모두 `job_summary` `status=succeeded` exit 0, 조회
+스크립트 `[OK]` 2건(Redis에서 실값 반환).
+
+apply는 `feast apply` CLI 대신 공개 batch 명령을 쓴다. feast 0.64의 apply
+커맨드는 인증 실패(`FeastProviderLoginError`)를 삼키고 exit 0으로 끝나므로,
+낡은 registry 위에서 materialize가 성공한 것처럼 보일 수 있다. registry를
+바꾸지 않고 diff만 보려면 `--dry-run`을 붙인다.
 
 ## 7. 정리
 
