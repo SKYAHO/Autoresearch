@@ -478,6 +478,107 @@ def test_main_bigquery_mode_never_resolves_local_data_dir(tmp_path, monkeypatch)
     assert output_path.exists()
 
 
+def _trending_snapshots_videos_df() -> pd.DataFrame:
+    """같은 영상이 트렌딩 날짜별로 3번 등장하는 실제 원본 모양의 fixture.
+
+    data_lake_youtube_trending_kr은 영상이 트렌딩에 오른 날마다 한 행이 쌓이는
+    스냅샷 테이블이라 video_id가 유일하지 않다(실측 영상당 평균 2.66행, 최대 32행).
+    viewCount를 스냅샷마다 다르게 둬서 "어느 스냅샷이 선택됐는지"를 값으로 구분한다.
+    """
+    return pd.DataFrame(
+        {
+            "video_id": ["v1", "v1", "v1"],
+            "video_trending_date": pd.to_datetime(
+                ["2026-07-06", "2026-07-08", "2026-07-10"]
+            ),
+            "categoryId": ["Music", "Music", "Music"],
+            "duration": ["PT5M", "PT5M", "PT5M"],
+            "viewCount": [100, 200, 300],
+            "likeCount": [10, 20, 30],
+            "commentCount": [1, 2, 3],
+            "publishedAt": ["2026-01-01", "2026-01-01", "2026-01-01"],
+        }
+    )
+
+
+def _single_persona_csv(personas_path) -> None:
+    pd.DataFrame(
+        {
+            "uuid": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobbies_and_interests": ["music"],
+            "hobbies_and_interests_list": ["[]"],
+            "primary_categories": ['["Music"]'],
+        }
+    ).to_csv(personas_path, index=False)
+
+
+def test_main_duplicate_video_snapshots_yield_one_row_per_event(tmp_path, monkeypatch):
+    # 트렌딩 스냅샷 중복(#297): 평면 조인이면 이벤트 1건이 스냅샷 수(여기선 3)만큼
+    # 복제되어 같은 impression이 학습셋에 3번 들어간다. point-in-time 조인은
+    # 이벤트당 정확히 1행만 내야 한다.
+    monkeypatch.setattr(
+        build_training_dataset, "load_videos_from_bigquery", _trending_snapshots_videos_df
+    )
+    long_events = pd.DataFrame(
+        [_long_event("i1", "2026-07-09 12:00:00", "u1", "impression", "v1")]
+    )
+    monkeypatch.setattr(
+        build_training_dataset, "load_events_from_bigquery", lambda start, end: long_events
+    )
+    personas_path = tmp_path / "personas.csv"
+    _single_persona_csv(personas_path)
+    output_path = tmp_path / "training_dataset.csv"
+
+    build_training_dataset.main(
+        videos_source="bigquery",
+        events_source="bigquery",
+        events_start_date="2026-07-09",
+        events_end_date="2026-07-10",
+        personas_path=str(personas_path),
+        output_path=str(output_path),
+    )
+
+    result = pd.read_csv(output_path)
+    assert len(result) == 1, (
+        f"이벤트 1건에 스냅샷 3건이 곱해져 {len(result)}행이 됐습니다 — "
+        "학습셋에 같은 impression이 중복 수록됩니다"
+    )
+
+
+def test_main_video_features_come_from_snapshot_at_or_before_event(tmp_path, monkeypatch):
+    # 미래 스냅샷 차단(#297): 이벤트(07-09) 시점에서는 07-10 스냅샷(viewCount=300)을
+    # 쓰면 안 되고, 07-08 스냅샷(viewCount=200)이 선택돼야 한다.
+    monkeypatch.setattr(
+        build_training_dataset, "load_videos_from_bigquery", _trending_snapshots_videos_df
+    )
+    long_events = pd.DataFrame(
+        [_long_event("i1", "2026-07-09 12:00:00", "u1", "impression", "v1")]
+    )
+    monkeypatch.setattr(
+        build_training_dataset, "load_events_from_bigquery", lambda start, end: long_events
+    )
+    personas_path = tmp_path / "personas.csv"
+    _single_persona_csv(personas_path)
+    output_path = tmp_path / "training_dataset.csv"
+
+    build_training_dataset.main(
+        videos_source="bigquery",
+        events_source="bigquery",
+        events_start_date="2026-07-09",
+        events_end_date="2026-07-10",
+        personas_path=str(personas_path),
+        output_path=str(output_path),
+    )
+
+    result = pd.read_csv(output_path)
+    assert result.iloc[0]["view_count"] == 200, (
+        "이벤트 시각 이하 중 최신 스냅샷(07-08, viewCount=200)이 아니라 "
+        f"{result.iloc[0]['view_count']}가 선택됐습니다"
+    )
+
+
 def _csv_fixture_for_topic_similarity_source_tests(raw_dir, events_path):
     pd.DataFrame(
         {
