@@ -9,8 +9,9 @@ PR merge부터 GKE 배포·Airflow 실행까지의 자동화 흐름을 설명합
 
 - 코드 변경이 main에 merge되면 Release Drafter가 draft release에 누적
 - 담당자가 release를 게시하면 semantic version git tag 생성 및 Docker 이미지 빌드 트리거
-- 빌드된 이미지를 Google Artifact Registry(GAR)에 push하고 OCI 메타데이터·CLI 계약 검증
+- 빌드된 batch·serving 이미지를 Google Artifact Registry(GAR)에 push하고 OCI 메타데이터·실행 계약 검증
 - batch 이미지 digest를 배포 리포 values에 자동 반영하는 승격 PR 생성
+- serving 이미지 digest를 인프라 리포가 GKE 배포에 소비할 수 있도록 job summary에 기록
 - 승격 PR merge 시 GKE에 안전하게 배포 (DAG 일시정지 → helm upgrade → 검증 → 자동 롤백)
 - 비용 민감한 batch workload는 Spot node pool로 격리
 
@@ -33,6 +34,9 @@ flowchart TD
         VERIFY --> APP[GitHub App 토큰<br/>create-github-app-token]
         APP --> PROMO[배포 리포 values.yaml<br/>batch digest 갱신]
         PROMO --> PRAUTO[PR 자동 생성<br/>automation/batch-XXX]
+        RY --> SERVING[deploy/serving/Dockerfile 빌드<br/>autoresearch-serving]
+        SERVING --> SVERIFY[OCI revision / non-root /<br/>Feast·serving import smoke]
+        SVERIFY --> SSUMMARY[serving digest_ref<br/>job summary → infra 리포]
     end
 
     PRAUTO --> MERGE2[리뷰 후 머지]
@@ -73,8 +77,9 @@ PR에 붙은 라벨을 기반으로 semantic version을 자동 계산하여 draf
 
 ### 애플리케이션 이미지 빌드 및 GAR push (release.yml)
 
-코드 리포의 `release.yml`은 release가 게시되면 batch 이미지를 빌드하여 GAR에
-push합니다.
+코드 리포의 `release.yml`은 release가 게시되면 batch와 serving 이미지를 각각
+빌드하여 GAR에 push합니다. serving job은 batch job이 검증한 동일한
+`source_sha`를 checkout하므로 두 이미지의 소스 계보가 일치합니다.
 
 **주요 단계**:
 
@@ -83,11 +88,28 @@ push합니다.
 2. **이미지 빌드**: `Dockerfile.app` (multi-stage, uv lock-export → python:3.12-slim,
    non-root user). 빌드 인자로 `VCS_REF`(commit SHA) 전달.
 3. **GAR push**: `autoresearch-batch:sha-<short>` + release tag (예: `v0.0.2`) 두 개 태그로 push.
-4. **검증**: OCI revision 라벨, non-root 실행, CLI 계약(batch-contract-v1) 4개 모듈
-   import 확인 (youtube_trending, youtube_backfill, action_log, action_log_quality).
+4. **검증**: OCI revision 라벨, non-root 실행, CLI 계약(batch-contract-v1) 6개 모듈
+   import 확인 (youtube_trending, youtube_backfill, action_log, action_log_quality,
+   feature_store_build, daily_recommendations).
 5. **Digest 승격 PR**: GitHub App 토큰으로 배포 리포에 PR 자동 생성 (아래 참조).
 
 workflow_dispatch(`source_sha` 입력)로 수동 실행도 가능합니다.
+
+#### Serving 이미지 release job
+
+`publish-serving-image` job은 다음 계약으로
+`autoresearch-serving`을 발행합니다.
+
+1. `deploy/serving/Dockerfile`을 사용하고 `VCS_REF`에 full commit SHA를 전달
+2. `sha-<full-sha>` immutable tag와 published release tag를 GAR에 push
+3. push 결과 digest를 pull하여 `org.opencontainers.image.revision`이 source SHA와 같은지 확인
+4. 이미지가 non-root `appuser`로 실행되는지 확인
+5. `lightgbm`, `feast`, `fastapi`, `feature_repo.redis_iam`, `src.serving.app` import smoke 실행
+6. 검증된 `IMAGE_URI@sha256:<digest>`를 `Serving digest_ref`로 GitHub job summary에 기록
+
+이 단계는 실제 모델, Redis, Secret Manager, GKE endpoint에 접속하지 않습니다.
+실제 serving Deployment/Service rollout과 runtime connectivity 검증은
+`SKYAHO/Autoresearch-infra`가 소유합니다.
 
 ### Digest 승격 PR 자동화
 
@@ -158,8 +180,9 @@ Spot VM 회수에 대비해 `retries >= 1` 유지.
 1. PR에 적절한 라벨 부여 (`feature`/`enhancement`/`bug`/`breaking`)
 2. PR을 main에 merge → Release Drafter가 draft release 갱신
 3. GitHub Releases에서 draft release 게시 (Publish release)
-4. release.yml이 자동 실행: batch 이미지 빌드 → GAR push → digest 승격 PR 생성
-5. 승격 PR 리뷰 후 머지 → deploy-gke-dev.yml이 자동 실행: GKE 배포 + 검증
+4. release.yml이 자동 실행: batch·serving 이미지 빌드 → GAR push → batch digest 승격 PR 생성 및 serving digest summary 기록
+5. batch 승격 PR 리뷰 후 머지 → deploy-gke-dev.yml이 자동 실행: GKE 배포 + 검증
+6. infra serving 배포는 release summary의 serving `digest_ref`를 사용
 
 ### 수동으로 이미지 빌드 (긴급 수정)
 
@@ -176,6 +199,10 @@ gcloud artifacts docker images list \
 # 특정 태그의 digest
 gcloud artifacts docker images describe \
   asia-northeast3-docker.pkg.dev/ar-infra-501607/autoresearch-dev-docker/autoresearch-batch:v0.0.2
+
+# serving 이미지 목록
+gcloud artifacts docker images list \
+  asia-northeast3-docker.pkg.dev/ar-infra-501607/autoresearch-dev-docker/autoresearch-serving
 ```
 
 ## 워크플로우 파일 참조
@@ -186,8 +213,9 @@ gcloud artifacts docker images describe \
 |------|------|
 | `.github/release-drafter.yml` | 라벨 → semver 매핑 규칙 |
 | `.github/workflows/release-drafter.yml` | push to main 트리거 |
-| `.github/workflows/release.yml` | release:published → 빌드/GAR push/digest 승격 PR |
+| `.github/workflows/release.yml` | release:published → batch·serving 빌드/GAR push/digest 승격 PR |
 | `Dockerfile.app` | multi-stage batch 이미지 (uv lock-export → python:3.12-slim, non-root) |
+| `deploy/serving/Dockerfile` | Feast 호환 serving 이미지 (FastAPI/Uvicorn, non-root) |
 
 ### 배포 리포 (`SKYAHO/Autoresearch-airflow`)
 
@@ -207,3 +235,8 @@ gcloud artifacts docker images describe \
 | `terraform/bootstrap/main.tf` | WIF pool, attribute_condition (list 멤버십) |
 | `terraform/envs/dev/github_actions.tf` | GAR push용 SA + WIF IAM + GAR writer 권한 |
 | `terraform/envs/dev/*.tf` | batch-spot node pool 정의 포함 |
+
+serving 이미지의 실제 GKE Deployment/Service, Workload Identity·Secret
+Manager 연결, Redis TLS runtime 검증은 `SKYAHO/Autoresearch-infra#302`의
+책임 범위입니다. 이 저장소는 검증된 immutable image digest를 발행하는
+지점까지를 담당합니다.

@@ -45,6 +45,14 @@ def test_serving_image_copies_src_feature_repo_and_bootstrap_package() -> None:
     assert "COPY src ./src" in dockerfile
 
 
+def test_serving_image_embeds_source_revision_and_runs_non_root() -> None:
+    dockerfile = SERVING_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "ARG VCS_REF=unknown" in dockerfile
+    assert 'LABEL org.opencontainers.image.revision="${VCS_REF}"' in dockerfile
+    assert "USER appuser" in dockerfile
+
+
 def test_ci_builds_serving_image_and_runs_import_smoke() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 

@@ -51,6 +51,7 @@ scratchpad/
 
 # 에이전트 도구 세션 스크래치
 .omo/
+.worktrees/
 
 # 로컬 생성 산출물(PDF 등)
 output/

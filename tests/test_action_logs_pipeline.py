@@ -22,6 +22,7 @@ from autoresearch.action_logs.pipeline import (
     generate_action_log_batch,
     generate_action_log_drafts,
     read_action_log_draft_parquet,
+    select_clicks_per_slate,
     write_action_log_draft_parquet,
 )
 from autoresearch.action_logs.schema import (
@@ -69,8 +70,8 @@ def _fixture_users(n=6):
 
 def _request(tmp_path, **kw):
     base = dict(
+        click_threshold=0.55,
         candidates_per_user=20,
-        target_ctr=0.05,
         seed=42,
         history_end=_FIXED_END,
         history_days=30,
@@ -94,7 +95,13 @@ def test_end_to_end_long_event_stream(tmp_path):
 
     assert len(impressions) == 6 * 20  # 유저당 후보 20 (pool 40)
     assert result.summary["impressions"] == 6 * 20
-    assert len(clicks) == round(0.05 * len(impressions))  # 전역 CTR 정규화(여기선 5%)
+    # per-slate 커트라인(테스트 고정값 click_threshold=0.55): 유저당 클릭은 최대 1건이며,
+    # 슬레이트 최고 click_propensity가 커트라인 이상일 때만 클릭이 발생한다.
+    clicks_by_user: dict[str, int] = {}
+    for c in clicks:
+        clicks_by_user[c.user_id] = clicks_by_user.get(c.user_id, 0) + 1
+    assert all(count == 1 for count in clicks_by_user.values())
+    assert len(clicks) <= len(users)
     assert result.summary["clicks"] == len(clicks)
     assert len(views) == len(clicks)  # 클릭 선정분마다 view 1행
     assert len(likes) <= len(clicks)  # like는 would_like일 때만
@@ -126,25 +133,6 @@ def test_click_session_timestamps_are_monotonic(tmp_path):
         group.sort(key=lambda e: order[e.event_type])
         ts = [e.event_timestamp for e in group]
         assert all(a < b for a, b in zip(ts, ts[1:])), f"non-strict session order: {ts}"
-
-
-def test_clicked_indices_selects_highest_propensity():
-    from autoresearch.action_logs.pipeline import _clicked_indices
-    from autoresearch.action_logs.schema import ImpressionDraft
-
-    drafts = [
-        ImpressionDraft(
-            user_id="u",
-            video_id=f"v{i}",
-            click_propensity=p,
-            watch_fraction=0.5,
-            would_like=False,
-            duration_sec=100,
-        )
-        for i, p in enumerate([0.1, 0.9, 0.5, 0.8, 0.2])
-    ]
-    chosen = _clicked_indices(drafts, target_ctr=0.4)  # round(0.4*5)=2
-    assert chosen == {1, 3}  # the 0.9 and 0.8 propensity drafts
 
 
 def test_timestamps_within_history_window(tmp_path):
@@ -473,7 +461,7 @@ def test_batch_summary_ctr_from_impression_and_click_rows():
     events = [_ev("impression"), _ev("impression"), _ev("click"), _ev("view", 10), _ev("like")]
     batch = EventLogBatch(
         schema_version="s", prompt_version="p",
-        request=EventGenerationRequest(), events=events,
+        request=EventGenerationRequest(click_threshold=0.55), events=events,
     )
     s = batch.summary
     assert s["impressions"] == 2 and s["clicks"] == 1
@@ -504,7 +492,7 @@ def test_build_candidates_returns_video_dicts_no_exposure_label():
 
 
 def test_event_generation_request_defaults_to_70_20_10_candidate_mix():
-    req = EventGenerationRequest()
+    req = EventGenerationRequest(click_threshold=0.55)
 
     assert req.personalized_ratio == 0.7
     assert req.popular_ratio == 0.2
@@ -513,6 +501,7 @@ def test_event_generation_request_defaults_to_70_20_10_candidate_mix():
 
 def test_event_generation_request_accepts_candidate_ratio_sum_inside_tolerance():
     request = EventGenerationRequest(
+        click_threshold=0.55,
         personalized_ratio=0.7000000005,
         popular_ratio=0.2,
         exploration_ratio=0.1,
@@ -537,6 +526,7 @@ def test_event_generation_request_rejects_invalid_candidate_ratio_mix(
 ):
     with pytest.raises(ValidationError):
         EventGenerationRequest(
+            click_threshold=0.55,
             personalized_ratio=personalized,
             popular_ratio=popular,
             exploration_ratio=exploration,
@@ -932,7 +922,7 @@ def test_expand_events_tags_exposure_metadata_and_prefix():
     from autoresearch.action_logs.pipeline import (
         ExposureMetadata,
         _expand_events,
-        normalize_clicks,
+        select_clicks_per_slate,
     )
     from autoresearch.action_logs.schema import SOURCE_ONLINE_SIMULATED, ImpressionDraft
 
@@ -946,7 +936,8 @@ def test_expand_events_tags_exposure_metadata_and_prefix():
             watch_fraction=0.5, would_like=False, duration_sec=100,
         ),
     ]
-    clicked = normalize_clicks(drafts, target_ctr=0.5)  # 상위 1건 = v1
+    # per-slate 커트라인 0.5: 슬레이트 최고(v1, 0.9)가 커트라인 이상이라 클릭됨
+    clicked = select_clicks_per_slate(drafts, click_threshold=0.5)
     assert clicked == {0}
 
     metadata = {
@@ -959,7 +950,7 @@ def test_expand_events_tags_exposure_metadata_and_prefix():
             is_exploration=True, policy_version="run-x",
         ),
     }
-    request = EventGenerationRequest(seed=7)
+    request = EventGenerationRequest(click_threshold=0.55, seed=7)
     events = _expand_events(
         drafts, clicked, request,
         metadata=metadata, source=SOURCE_ONLINE_SIMULATED, event_id_prefix="evt_m",
@@ -977,7 +968,7 @@ def test_expand_events_tags_exposure_metadata_and_prefix():
 
 
 def test_expand_events_without_metadata_is_unchanged():
-    from autoresearch.action_logs.pipeline import _expand_events, normalize_clicks
+    from autoresearch.action_logs.pipeline import _expand_events, select_clicks_per_slate
     from autoresearch.action_logs.schema import ImpressionDraft
 
     drafts = [
@@ -986,7 +977,10 @@ def test_expand_events_without_metadata_is_unchanged():
             watch_fraction=0.5, would_like=False, duration_sec=100,
         ),
     ]
-    events = _expand_events(drafts, normalize_clicks(drafts, 0.0), EventGenerationRequest(seed=7))
+    # 커트라인을 최고 propensity보다 높게 잡아 클릭 0건(=impression만)인 경로를 검증한다.
+    events = _expand_events(
+        drafts, select_clicks_per_slate(drafts, click_threshold=1.0), EventGenerationRequest(click_threshold=0.55, seed=7)
+    )
     assert events[0].event_id == "evt_00000000"
     assert events[0].source == "historical"
     assert events[0].policy is None
@@ -1082,3 +1076,63 @@ def test_batch_attaches_provider_exposure_tags(tmp_path):
     impressions = [e for e in result.batch.events if e.event_type == "impression"]
     assert impressions and all(e.exposure_source == "model" for e in impressions)
     assert all(e.policy_version == "run-a" for e in impressions)
+
+
+def _draft(user_id: str, video_id: str, cp: float) -> ImpressionDraft:
+    return ImpressionDraft(
+        user_id=user_id,
+        video_id=video_id,
+        click_propensity=cp,
+        watch_fraction=0.5,
+        would_like=False,
+        duration_sec=100,
+    )
+
+
+def test_select_clicks_one_top_per_user_above_threshold() -> None:
+    drafts = [
+        _draft("u1", "a", 0.30),
+        _draft("u1", "b", 0.80),  # u1 최고 → 클릭
+        _draft("u2", "c", 0.40),  # u2 최고지만 커트라인 미만 → 클릭 없음
+        _draft("u2", "d", 0.20),
+    ]
+    assert select_clicks_per_slate(drafts, 0.55) == {1}
+
+
+def test_select_clicks_none_when_all_below_threshold() -> None:
+    drafts = [_draft("u1", "a", 0.10), _draft("u1", "b", 0.20)]
+    assert select_clicks_per_slate(drafts, 0.55) == set()
+
+
+def test_select_clicks_threshold_is_inclusive() -> None:
+    drafts = [_draft("u1", "a", 0.55)]
+    assert select_clicks_per_slate(drafts, 0.55) == {0}
+
+
+def test_select_clicks_tiebreak_is_deterministic_by_video_id() -> None:
+    drafts = [_draft("u1", "b", 0.80), _draft("u1", "a", 0.80)]
+    # 동점이면 video_id 작은 "a"(index 1)가 선택된다.
+    assert select_clicks_per_slate(drafts, 0.55) == {1}
+
+
+def test_select_clicks_handles_empty() -> None:
+    assert select_clicks_per_slate([], 0.55) == set()
+
+
+def test_expand_uses_per_slate_click_threshold() -> None:
+    request = EventGenerationRequest(click_threshold=0.55)
+    drafts = [
+        _draft("u1", "a", 0.80),  # 클릭
+        _draft("u1", "b", 0.30),
+        _draft("u2", "c", 0.40),  # 커트라인 미만 → 클릭 없음
+    ]
+    result = expand_action_log_drafts(request, drafts)
+    clicks = [e for e in result.batch.events if e.event_type == "click"]
+    assert {c.video_id for c in clicks} == {"a"}
+
+
+def test_event_generation_request_requires_click_threshold() -> None:
+    """click_threshold 미지정 시 0.55로 조용히 채워지지 않고 fail-closed로 거부되어야 한다."""
+
+    with pytest.raises(ValidationError):
+        EventGenerationRequest()

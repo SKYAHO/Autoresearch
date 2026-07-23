@@ -7,6 +7,38 @@
 >
 > CTR 모델은 이 데이터셋을 입력으로 사용해 특정 `user_id`가 특정 `video_id`를 노출받았을 때 클릭할 확률, 즉 `clicked` label을 예측한다.
 
+### Canonical model input contract
+
+모델 입력의 SSOT는 [`src/features/model_contract.py`](../../src/features/model_contract.py) 하나다. 아래 목록은 그 계약의 문서상 mirror이며, serving, training, simulation/daily scoring이 각자 feature 목록을 정의하거나 보정하지 않는다.
+
+canonical model input은 다음 정확히 21개이며, 나열된 순서도 계약이다.
+
+```text
+age_group
+occupation
+watch_time_band
+recent_click_count_7d
+recent_view_count_7d
+recent_watch_time_7d
+recent_like_count_7d
+historical_category_affinity
+total_event_count_7d
+category_id
+duration_sec
+view_count
+like_ratio
+comment_ratio
+days_since_upload
+channel_subscriber_count
+channel_view_count
+channel_video_count
+topic_similarity
+preferred_category_match
+historical_category_match
+```
+
+이 중 categorical feature는 정확히 5개인 `age_group`, `occupation`, `watch_time_band`, `historical_category_affinity`, `category_id`다. `clicked`는 model feature가 아니라 label이며, `build_training_dataset.py`가 생성하는 `training_dataset.csv`의 22번째 물리 컬럼이다. 따라서 물리 학습 산출물은 21개 input feature + `clicked` label = 총 22컬럼이다.
+
 ### 필요한 입력 테이블 / 산출물
 
 | 구분 | 이름 | 역할 |
@@ -52,6 +84,8 @@
 
 
 ### 📊 Training Dataset Columns
+
+아래 표는 point-in-time feature assembly에 사용되는 논리 컬럼과 보조 컬럼을 함께 설명한다. 최종 모델 입력은 위 canonical contract에서 명시적으로 선택하며, `training_dataset.csv`의 physical output contract는 21개 input과 마지막 `clicked` label의 22컬럼이다.
 
 | 컬럼 | 타입 | 출처 | 설명 |
 | --- | --- | --- | --- |
@@ -104,7 +138,7 @@
 
 ### 📊 Model Input Columns
 
-아래 컬럼만 모델 학습 입력으로 사용한다.
+아래 컬럼만 모델 학습 입력으로 사용한다. 이 표는 `src/features/model_contract.py`의 canonical 21개 순서를 그대로 반영하며, 별도의 feature list를 정의하지 않는다.
 
 | 컬럼 | 타입 |
 | --- | --- |

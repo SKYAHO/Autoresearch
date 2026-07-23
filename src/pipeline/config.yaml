@@ -3,27 +3,6 @@ data:
   test_size: 0.2
   val_size: 0.2
   random_state: 42
-  feature_columns:
-    - age_group
-    - occupation
-    - historical_category_affinity
-    - recent_click_count_7d
-    - recent_watch_time_7d
-    - recent_like_count_7d
-    - category_id
-    - duration_sec
-    - view_count
-    - like_ratio
-    - comment_ratio
-    - days_since_upload
-    - historical_category_match
-    - preferred_category_match
-    - topic_similarity
-  categorical_columns:
-    - age_group
-    - occupation
-    - historical_category_affinity
-    - category_id
 
 model:
   n_estimators: 200

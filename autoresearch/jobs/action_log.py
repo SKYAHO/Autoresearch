@@ -130,7 +130,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--generator-name", default="rule_based")
     parser.add_argument("--model-name")
     parser.add_argument("--candidates-per-user", type=_positive_int, default=24)
-    parser.add_argument("--target-ctr", type=_ratio, default=0.02)
+    parser.add_argument("--click-threshold", type=_ratio)
     parser.add_argument("--personalized-ratio", type=_ratio, default=0.7)
     parser.add_argument("--popular-ratio", type=_ratio, default=0.2)
     parser.add_argument("--exploration-ratio", type=_ratio, default=0.1)
@@ -214,7 +214,13 @@ def _validate_args(args: argparse.Namespace) -> None:
                 "--recommendations-table is only valid with "
                 "--exposure-source model"
             )
-        _require(args, "youtube_base_path", "virtual_users_path", "output_base_path")
+        _require(
+            args,
+            "youtube_base_path",
+            "virtual_users_path",
+            "output_base_path",
+            "click_threshold",
+        )
         if args.max_quarantine_ratio is None:
             args.max_quarantine_ratio = 0.5
         try:
@@ -264,6 +270,7 @@ def _validate_args(args: argparse.Namespace) -> None:
             "shard_index",
             "exposure_source",
             "recommendations_table",
+            "click_threshold",
         )
 
     path_names = (
@@ -293,7 +300,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
             quarantine_base_path=args.quarantine_base_path,
             filesystem=filesystem,
             candidates_per_user=args.candidates_per_user,
-            target_ctr=args.target_ctr,
+            click_threshold=args.click_threshold,
             personalized_ratio=args.personalized_ratio,
             popular_ratio=args.popular_ratio,
             exploration_ratio=args.exploration_ratio,
@@ -318,7 +325,7 @@ def _run(args: argparse.Namespace) -> dict[str, object]:
             quarantine_base_path=args.quarantine_base_path,
             filesystem=filesystem,
             candidates_per_user=args.candidates_per_user,
-            target_ctr=args.target_ctr,
+            click_threshold=args.click_threshold,
             personalized_ratio=args.personalized_ratio,
             popular_ratio=args.popular_ratio,
             exploration_ratio=args.exploration_ratio,

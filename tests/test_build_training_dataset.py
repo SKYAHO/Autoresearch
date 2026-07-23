@@ -10,6 +10,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.pipeline import build_training_dataset  # noqa: E402
+from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
 
 
 def test_load_personas_reads_csv(tmp_path):
@@ -293,6 +294,7 @@ def test_main_outputs_21_model_input_columns_plus_clicked(tmp_path, monkeypatch)
 
     result = pd.read_csv(output_path)
     assert len(result.columns) == 22  # 21 Model Input + clicked label
+    assert list(result.columns) == [*MODEL_FEATURE_COLUMNS, "clicked"]
     assert result.loc[0, "watch_time_band"] == "morning"
     assert result.loc[0, "channel_subscriber_count"] == 12345
     # video의 category_id="Music"이 personas.csv의 primary_categories=["Music"]에

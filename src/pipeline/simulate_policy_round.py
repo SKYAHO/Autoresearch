@@ -32,7 +32,7 @@ from autoresearch.action_logs.pipeline import (
     ExposureMetadata,
     _expand_events,
     generate_action_log_drafts,
-    normalize_clicks,
+    select_clicks_per_slate,
     write_event_log_parquet,
     write_event_log_warehouse_jsonl,
     write_quarantine_jsonl,
@@ -52,6 +52,7 @@ from src.features.assembly import (
     compute_user_offline_features,
     compute_video_features,
 )
+from src.features.model_contract import require_model_feature_columns
 from src.pipeline.policy_selector import Exposure, select_exposures
 from src.pipeline.report_html import render_report_html
 from src.serving.model_loader import (
@@ -73,7 +74,7 @@ def build_pool_feature_frame(
     as_of: str,
     snapshot_date: str | None = None,
 ) -> pd.DataFrame:
-    """유저 1명 × 전체 영상 pool의 15개 모델 피처 프레임을 학습과 동일 경로로 만든다.
+    """유저 1명 × 전체 영상 pool의 21개 모델 피처 프레임을 학습과 동일 경로로 만든다.
 
     snapshot_date(YYYY-MM-DD)는 영상 나이(days_since_upload) 기준일이며, 유저
     이력 기준(as_of)과 다를 수 있다. 없으면 as_of의 날짜를 사용한다(기존 동작).
@@ -87,13 +88,15 @@ def build_pool_feature_frame(
     online = compute_point_in_time_user_features(events, videos_raw, query)
 
     frame = video_features.copy()
-    for column in ("age_group", "occupation"):
+    for column in ("age_group", "occupation", "watch_time_band"):
         frame[column] = user_offline.iloc[0][column]
     for column in (
         "historical_category_affinity",
         "recent_click_count_7d",
+        "recent_view_count_7d",
         "recent_watch_time_7d",
         "recent_like_count_7d",
+        "total_event_count_7d",
     ):
         frame[column] = online.iloc[0][column]
     persona_row = personas[personas["uuid"] == user_id].iloc[0]
@@ -107,10 +110,11 @@ def _to_candidate_videos(frame: pd.DataFrame, feature_columns: tuple[str, ...]) 
 
     None/NaN 수치는 float('nan')으로 통일한다(FeatureValue는 None을 허용하지 않는다).
     """
+    columns = require_model_feature_columns(feature_columns)
     candidates: list[CandidateVideo] = []
     for _, row in frame.iterrows():
         features = {}
-        for column in feature_columns:
+        for column in columns:
             value = row[column]
             if value is None or (isinstance(value, float) and pd.isna(value)):
                 value = float("nan")
@@ -131,7 +135,7 @@ def main(
     *,
     k: int = 10,
     exploration_ratio: float = 0.1,
-    target_ctr: float = 0.02,
+    click_threshold: float,
     seed: int = 42,
     chunk_size: int = 0,
     max_concurrency: int = 1,
@@ -190,7 +194,7 @@ def main(
         return union_by_user.get(str(virtual_user.get("user_id", "")), [])
 
     request = EventGenerationRequest(
-        target_ctr=target_ctr,
+        click_threshold=click_threshold,
         candidates_per_user=max(1, 2 * k),
         seed=seed,
         chunk_size=chunk_size,
@@ -207,10 +211,10 @@ def main(
         (d.user_id, d.video_id): d for d in draft_result.drafts
     }
 
-    # 3) 합동 정규화 1회 → clicked (user, video) 키셋
+    # 3) 합동 per-slate 선정 1회 → clicked (user, video) 키셋
     clicked_keys = {
         (draft_result.drafts[i].user_id, draft_result.drafts[i].video_id)
-        for i in normalize_clicks(draft_result.drafts, target_ctr)
+        for i in select_clicks_per_slate(draft_result.drafts, click_threshold)
     }
 
     # 4) 정책별 이벤트 확장 (판정 없는 노출은 quarantine 여파로 제외하고 계수)
@@ -290,7 +294,7 @@ def main(
         "policy_version": policy_version,
         "k": k,
         "exploration_ratio": exploration_ratio,
-        "target_ctr": target_ctr,
+        "click_threshold": click_threshold,
         "seed": seed,
         "users": len(exposures_by_user),
         "skipped_users": skipped_users,
@@ -319,7 +323,7 @@ def _cli() -> None:
     parser.add_argument("--events", required=True, help="historical wide events csv 경로")
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--exploration-ratio", type=float, default=0.1)
-    parser.add_argument("--target-ctr", type=float, default=0.02)
+    parser.add_argument("--click-threshold", type=float, required=True)
     parser.add_argument("--max-users", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--chunk-size", type=int, default=0)
@@ -357,7 +361,7 @@ def _cli() -> None:
         generator=generator,
         k=args.k,
         exploration_ratio=args.exploration_ratio,
-        target_ctr=args.target_ctr,
+        click_threshold=args.click_threshold,
         seed=args.seed,
         chunk_size=args.chunk_size,
         max_concurrency=args.max_concurrency,
@@ -381,7 +385,7 @@ def _cli() -> None:
                     "policy_version": report["policy_version"],
                     "k": report["k"],
                     "exploration_ratio": report["exploration_ratio"],
-                    "target_ctr": report["target_ctr"],
+                    "click_threshold": report["click_threshold"],
                     "seed": report["seed"],
                     "users": report["users"],
                 }

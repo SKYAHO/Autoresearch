@@ -48,31 +48,41 @@
 1. 입력 순서의 `(user_id, video_id)` 1~200행으로 `UserStaticView`, `UserDynamicView`, `VideoFeatureView`에서 직접 피처와 `preferred_category`를 읽는다.
 2. 첫 조회의 고유 `(user_id, category_id)` 행으로 `UserCategorySimilarityView`의 `topic_similarity`를 읽고, 같은 category의 모든 영상에 다시 결합한다.
 
-조회 결과는 entity key와 길이가 요청과 일치할 때만 결합한다. 모델에는 ID와 `preferred_category` 같은 조립 보조 컬럼을 전달하지 않는다. 모델 artifact의 피처 순서는 다음 15개와 정확히 같아야 한다.
+조회 결과는 entity key와 길이가 요청과 일치할 때만 결합한다. 모델에는 ID와 `preferred_category` 같은 조립 보조 컬럼을 전달하지 않는다. 모델 artifact의 피처 순서는 `src/features/model_contract.py`의 canonical 21개와 정확히 같아야 하며, serving 계층이 별도의 feature list를 정의하지 않는다.
 
 | 순서 | 모델 입력 | 소스 또는 처리 |
 | --- | --- | --- |
 | 1 | `age_group` | UserStaticView |
 | 2 | `occupation` | UserStaticView |
-| 3 | `historical_category_affinity` | UserDynamicView |
+| 3 | `watch_time_band` | UserStaticView |
 | 4 | `recent_click_count_7d` | UserDynamicView |
-| 5 | `recent_watch_time_7d` | UserDynamicView |
-| 6 | `recent_like_count_7d` | UserDynamicView |
-| 7 | `category_id` | VideoFeatureView |
-| 8 | `duration_sec` | VideoFeatureView |
-| 9 | `view_count` | VideoFeatureView |
-| 10 | `like_ratio` | VideoFeatureView |
-| 11 | `comment_ratio` | VideoFeatureView |
-| 12 | `days_since_upload` | VideoFeatureView |
-| 13 | `historical_category_match` | 기존 공용 계산 함수 |
-| 14 | `preferred_category_match` | `preferred_category`를 보조 값으로 한 기존 공용 계산 함수 |
-| 15 | `topic_similarity` | UserCategorySimilarityView |
+| 5 | `recent_view_count_7d` | UserDynamicView |
+| 6 | `recent_watch_time_7d` | UserDynamicView |
+| 7 | `recent_like_count_7d` | UserDynamicView |
+| 8 | `historical_category_affinity` | UserDynamicView |
+| 9 | `total_event_count_7d` | UserDynamicView |
+| 10 | `category_id` | VideoFeatureView |
+| 11 | `duration_sec` | VideoFeatureView |
+| 12 | `view_count` | VideoFeatureView |
+| 13 | `like_ratio` | VideoFeatureView |
+| 14 | `comment_ratio` | VideoFeatureView |
+| 15 | `days_since_upload` | VideoFeatureView |
+| 16 | `channel_subscriber_count` | VideoFeatureView |
+| 17 | `channel_view_count` | VideoFeatureView |
+| 18 | `channel_video_count` | VideoFeatureView |
+| 19 | `topic_similarity` | UserCategorySimilarityView |
+| 20 | `preferred_category_match` | `preferred_category`를 보조 값으로 한 기존 공용 계산 함수 |
+| 21 | `historical_category_match` | 기존 공용 계산 함수 |
+
+categorical feature는 정확히 5개인 `age_group`, `occupation`, `watch_time_band`,
+`historical_category_affinity`, `category_id`다. `clicked`는 serving feature가
+아니며 training dataset의 label이다.
 
 | 결측 값 종류 | typed cold-start 기본값 |
 | --- | --- |
-| `age_group`, `occupation`, `historical_category_affinity`, `category_id` | `"unknown"` |
+| `age_group`, `occupation`, `watch_time_band`, `historical_category_affinity`, `category_id` | `"unknown"` |
 | `preferred_category` 보조 값 | `[]` |
-| 최근 7일 count/watch-time, 영상 count/duration/age | `0` |
+| 최근 7일 count/watch-time, 영상 count/duration/age/channel count | `0` |
 | `like_ratio`, `comment_ratio`, `topic_similarity` | `0.0` |
 | 두 match 피처 | 위 기본값으로 공용 함수를 계산한 결과 `0` |
 
@@ -106,6 +116,28 @@ run은 재학습이 필요하다.
 `src/serving/model_loader.py`와 `src/pipeline/train.py`가 계약으로 공유).
 MLflow registry alias를 통한 pyfunc 모델 로드는 학습 파이프라인이 MLflow
 model flavor를 기록하도록 확장될 때 별도 작업으로 다룬다.
+
+artifact의 `feature_columns.pkl`과 `categorical_columns.pkl`은
+`src/features/model_contract.py`의 snapshot일 뿐 SSOT가 아니다. loader는 21개
+feature 이름·순서와 categorical 5개 key가 canonical contract와 정확히 일치할
+때만 로드한다. 15개 또는 reordered artifact는 시작/healthcheck 경계에서
+거부하며, 누락 feature를 `NaN`이나 다른 값으로 조용히 padding하지 않는다.
+
+## 21개 계약 rollout gate
+
+train artifact, offline evaluator, online `ServingFeatureBuilder`,
+simulation/daily scoring, model loader는 하나의 cutover 단위다. 이 중 일부만
+먼저 배포하거나 15개 artifact를 새 serving/batch에 연결하지 않는다.
+
+1. `src/features/model_contract.py`로 21개 artifact를 생성하고 evaluator의 offline 평가를 승인한다.
+2. serving builder와 simulation/daily frame이 같은 21개 contract와 5개 categorical key를 사용하고, loader가 artifact를 strict 검증하는지 확인한다.
+3. 일일 schedule을 일시 중지하거나 새 serving/batch image 사용이 보장된 실행 시각을 선택한다.
+4. 검증된 21개 artifact를 registry에 등록하고, serving image와 batch image를 함께 cutover한다.
+5. `/healthcheck`, `/rerank`, 일일 추천 1회 성공을 확인한 뒤 schedule을 재개한다.
+
+오래된 artifact는 호환 artifact로 간주하지 않고 로드 단계에서 실패해야 한다.
+typed cold-start default는 유효한 21개 입력 값의 결측 조립에만 적용하며,
+artifact shape 불일치를 보정하는 용도로 사용하지 않는다.
 
 ## 컨테이너
 

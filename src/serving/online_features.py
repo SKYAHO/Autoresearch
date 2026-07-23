@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 __arch__ = {"stage": "training", "role": "두 단계 온라인 조회와 cold-start 처리로 모델 피처를 조립합니다.",
-            "owns": ["15개 모델 피처 순서 계약", "keyed batch 조회 조립", "typed cold-start와 파생 피처", "entity·shape·피처 계약 검증"],
+            "owns": ["canonical 21개 모델 피처 벡터 조립", "keyed batch 조회 조립", "typed cold-start와 파생 피처", "entity·shape·피처 계약 검증"],
             "not_owns": ["Feast SDK와 Redis bootstrap", "CTR 모델 추론과 점수 정렬", "HTTP 요청·응답 계약"]}
 
 from collections.abc import Mapping, Sequence
@@ -14,42 +14,35 @@ from src.features.feature_builder import (
     compute_historical_category_match,
     compute_preferred_category_match,
 )
+from src.features.model_contract import (
+    FeatureContractError,
+    MODEL_FEATURE_COLUMNS,
+    require_model_feature_columns,
+)
 from src.serving.schemas import CandidateVideo, FeatureValue
 
 FeatureRows: TypeAlias = Mapping[str, Sequence[object]]
 
-MODEL_FEATURE_COLUMNS: Final[tuple[str, ...]] = (
-    "age_group",
-    "occupation",
-    "historical_category_affinity",
-    "recent_click_count_7d",
-    "recent_watch_time_7d",
-    "recent_like_count_7d",
-    "category_id",
-    "duration_sec",
-    "view_count",
-    "like_ratio",
-    "comment_ratio",
-    "days_since_upload",
-    "historical_category_match",
-    "preferred_category_match",
-    "topic_similarity",
-)
-
 _FIRST_READ_FEATURE_REFS: Final[tuple[str, ...]] = (
     "UserStaticView:age_group",
     "UserStaticView:occupation",
+    "UserStaticView:watch_time_band",
     "UserStaticView:preferred_category",
     "UserDynamicView:historical_category_affinity",
     "UserDynamicView:recent_click_count_7d",
+    "UserDynamicView:recent_view_count_7d",
     "UserDynamicView:recent_watch_time_7d",
     "UserDynamicView:recent_like_count_7d",
+    "UserDynamicView:total_event_count_7d",
     "VideoFeatureView:category_id",
     "VideoFeatureView:duration_sec",
     "VideoFeatureView:view_count",
     "VideoFeatureView:like_ratio",
     "VideoFeatureView:comment_ratio",
     "VideoFeatureView:days_since_upload",
+    "VideoFeatureView:channel_subscriber_count",
+    "VideoFeatureView:channel_view_count",
+    "VideoFeatureView:channel_video_count",
 )
 _SECOND_READ_FEATURE_REFS: Final[tuple[str, ...]] = (
     "UserCategorySimilarityView:topic_similarity",
@@ -57,17 +50,23 @@ _SECOND_READ_FEATURE_REFS: Final[tuple[str, ...]] = (
 _FIRST_READ_COLUMNS: Final[tuple[str, ...]] = (
     "age_group",
     "occupation",
+    "watch_time_band",
     "preferred_category",
     "historical_category_affinity",
     "recent_click_count_7d",
+    "recent_view_count_7d",
     "recent_watch_time_7d",
     "recent_like_count_7d",
+    "total_event_count_7d",
     "category_id",
     "duration_sec",
     "view_count",
     "like_ratio",
     "comment_ratio",
     "days_since_upload",
+    "channel_subscriber_count",
+    "channel_view_count",
+    "channel_video_count",
 )
 
 
@@ -86,16 +85,6 @@ class OnlineFeatureReader(Protocol):
 @dataclass(frozen=True, slots=True)
 class FeatureRetrievalError(Exception):
     """피처 조회 결과가 요청 entity 계약과 맞지 않을 때 발생한다."""
-
-    reason: str
-
-    def __str__(self) -> str:
-        return self.reason
-
-
-@dataclass(frozen=True, slots=True)
-class FeatureContractError(Exception):
-    """모델 artifact 또는 builder 입력 계약이 고정 스키마와 다를 때 발생한다."""
 
     reason: str
 
@@ -172,8 +161,7 @@ class ServingFeatureBuilder:
 def _validate_build_request(
     *, user_id: str, video_ids: Sequence[str], feature_columns: Sequence[str]
 ) -> None:
-    if tuple(feature_columns) != MODEL_FEATURE_COLUMNS:
-        raise FeatureContractError(reason="Model feature columns do not match the serving contract.")
+    require_model_feature_columns(feature_columns)
     if not user_id:
         raise FeatureContractError(reason="user_id must not be empty.")
     if not 1 <= len(video_ids) <= 200:
@@ -235,23 +223,29 @@ def _candidate_from_row(
     features: dict[str, FeatureValue] = {
         "age_group": _string_or_default(row["age_group"], default="unknown"),
         "occupation": _string_or_default(row["occupation"], default="unknown"),
-        "historical_category_affinity": historical_category_affinity,
+        "watch_time_band": _string_or_default(row["watch_time_band"], default="unknown"),
         "recent_click_count_7d": _integer_or_default(row["recent_click_count_7d"]),
+        "recent_view_count_7d": _integer_or_default(row["recent_view_count_7d"]),
         "recent_watch_time_7d": _integer_or_default(row["recent_watch_time_7d"]),
         "recent_like_count_7d": _integer_or_default(row["recent_like_count_7d"]),
+        "historical_category_affinity": historical_category_affinity,
+        "total_event_count_7d": _integer_or_default(row["total_event_count_7d"]),
         "category_id": category_id,
         "duration_sec": _integer_or_default(row["duration_sec"]),
         "view_count": _integer_or_default(row["view_count"]),
         "like_ratio": _float_or_default(row["like_ratio"]),
         "comment_ratio": _float_or_default(row["comment_ratio"]),
         "days_since_upload": _integer_or_default(row["days_since_upload"]),
-        "historical_category_match": compute_historical_category_match(
-            historical_category_affinity, category_id
-        ),
+        "channel_subscriber_count": _integer_or_default(row["channel_subscriber_count"]),
+        "channel_view_count": _integer_or_default(row["channel_view_count"]),
+        "channel_video_count": _integer_or_default(row["channel_video_count"]),
+        "topic_similarity": _float_or_default(topic_similarity),
         "preferred_category_match": compute_preferred_category_match(
             preferred_category, category_id
         ),
-        "topic_similarity": _float_or_default(topic_similarity),
+        "historical_category_match": compute_historical_category_match(
+            historical_category_affinity, category_id
+        ),
     }
     return CandidateVideo(video_id=video_id, features=features)
 
