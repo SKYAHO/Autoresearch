@@ -672,6 +672,61 @@ def test_main_topic_similarity_source_bigquery_selects_most_recent_past_row(tmp_
     assert result.loc["Gaming", "topic_similarity"] == pytest.approx(0.0)
 
 
+def test_main_both_asof_joins_coexist_with_bigquery_topic_similarity(tmp_path, monkeypatch):
+    # 두 ASOF 공존 경로(#297 리뷰 지적). topic_similarity_source="bigquery"이고
+    # videos에 video_trending_date가 있으면 COPY 쿼리에 ASOF가 두 개 걸린다:
+    #   ① video_feature INNER ASOF (이번에 추가)
+    #   ② user_category_similarity LEFT ASOF (#294, ①의 출력 vf.category_id를 참조)
+    # 실제 GKE 재학습이 도는 구성이 바로 이 경로인데 나머지 신규 테스트는 모두
+    # 기본 source라 여길 지나지 않는다. 파싱과 의미론을 함께 고정한다.
+    monkeypatch.setattr(
+        build_training_dataset, "load_videos_from_bigquery", _trending_snapshots_videos_df
+    )
+    long_events = pd.DataFrame(
+        [_long_event("i1", "2026-07-09 12:00:00", "u1", "impression", "v1")]
+    )
+    monkeypatch.setattr(
+        build_training_dataset, "load_events_from_bigquery", lambda start, end: long_events
+    )
+    similarity_fixture = pd.DataFrame(
+        {
+            "user_id": ["u1", "u1", "u1"],
+            "category_id": ["Music", "Music", "Music"],
+            "event_timestamp": [
+                pd.Timestamp("2026-07-01 00:00:00"),
+                pd.Timestamp("2026-07-08 00:00:00"),  # 이벤트(07-09) 이전 중 최신 → 선택
+                pd.Timestamp("2026-07-10 00:00:00"),  # 이벤트 이후 → 무시
+            ],
+            "topic_similarity": [0.11, 0.55, 0.99],
+        }
+    )
+    monkeypatch.setattr(
+        build_training_dataset,
+        "load_user_category_similarity_from_bigquery",
+        lambda: similarity_fixture,
+    )
+    personas_path = tmp_path / "personas.csv"
+    _single_persona_csv(personas_path)
+    output_path = tmp_path / "training_dataset.csv"
+
+    build_training_dataset.main(
+        videos_source="bigquery",
+        events_source="bigquery",
+        topic_similarity_source="bigquery",
+        events_start_date="2026-07-09",
+        events_end_date="2026-07-10",
+        personas_path=str(personas_path),
+        output_path=str(output_path),
+    )
+
+    result = pd.read_csv(output_path)
+    # ① video ASOF: 스냅샷 3건이어도 이벤트당 1행, 07-08 스냅샷(viewCount=200) 선택
+    assert len(result) == 1
+    assert result.iloc[0]["view_count"] == 200
+    # ② similarity ASOF: ①이 고른 category_id(Music)를 기준으로 07-08 값(0.55) 선택
+    assert result.iloc[0]["topic_similarity"] == pytest.approx(0.55)
+
+
 def test_main_topic_similarity_source_bigquery_never_calls_vertex_ai(tmp_path, monkeypatch):
     def fail_if_called(texts, task_type):
         raise AssertionError("topic_similarity_source='bigquery'인데 embed_texts가 호출됨")
