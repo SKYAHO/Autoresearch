@@ -136,8 +136,44 @@ def isolated_env(monkeypatch):
         "BQ_LOCATION",
         "YOUTUBE_LAKE_BUCKET",
         "CTR_TRAINING_BQ_RAW_DATASET",
+        "CTR_TRAINING_BQ_PROJECT",
     ):
         monkeypatch.delenv(var, raising=False)
+
+
+def test_main_project_env_prefers_raw_layer_variable(isolated_env, monkeypatch):
+    # #303 리뷰 후속: project도 소비자와 같은 변수(CTR_TRAINING_BQ_PROJECT)를
+    # 우선해야 두 변수가 갈라진 환경에서 적재/조회 project가 어긋나지 않는다.
+    monkeypatch.setenv("CTR_TRAINING_BQ_PROJECT", "raw-proj")
+    monkeypatch.setenv("GCP_PROJECT_ID", "other-proj")
+    client = mock.MagicMock()
+    client.get_table.return_value.num_rows = 1
+
+    with mock.patch(
+        "scripts.load_raw_to_bigquery.bigquery.Client", return_value=client
+    ) as client_cls:
+        exit_code = main(["--bucket", BUCKET, "--tables", "action_log"])
+
+    assert exit_code == 0
+    assert client_cls.call_args.kwargs["project"] == "raw-proj"
+    args, _ = client.load_table_from_uri.call_args
+    assert args[1] == "raw-proj.data_lake_raw.data_lake_action_log"
+
+
+def test_main_project_falls_back_to_gcp_project_id(isolated_env, monkeypatch):
+    # CTR_TRAINING_BQ_PROJECT 미설정 환경(기존 .env)은 GCP_PROJECT_ID로 동작을 유지한다.
+    monkeypatch.setenv("GCP_PROJECT_ID", "legacy-proj")
+    client = mock.MagicMock()
+    client.get_table.return_value.num_rows = 1
+
+    with mock.patch(
+        "scripts.load_raw_to_bigquery.bigquery.Client", return_value=client
+    ):
+        exit_code = main(["--bucket", BUCKET, "--tables", "action_log"])
+
+    assert exit_code == 0
+    args, _ = client.load_table_from_uri.call_args
+    assert args[1] == "legacy-proj.data_lake_raw.data_lake_action_log"
 
 
 def test_main_defaults_dataset_to_raw_layer(isolated_env):
