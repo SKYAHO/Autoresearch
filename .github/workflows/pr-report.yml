@@ -1,0 +1,240 @@
+name: PR Comprehension Report
+
+# PR 이해 리포트 3단계 체계의 1·2단계(파이프라인 시각화 + 중요도순 diff)를
+# 자동 생성합니다. 에이전트는 report.json 데이터만 출력하고, 고정 템플릿
+# (.github/pr-report/template.html)에 주입해 gh-pages의 pr/<번호>/로 배포한 뒤
+# sticky 코멘트를 남깁니다. 계약 정본: .github/pr-report/report.schema.json,
+# docs/specs/2026-07-24-pr-comprehension-report.md
+#
+# 갱신은 PR에 /claude-report 코멘트로 수동 트리거합니다 (synchronize 자동
+# 재생성은 비용·소음 때문에 제외). 이 워크플로우는 required check가 아니며
+# 실패해도 머지를 막지 않습니다 (soft-fail).
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "리포트를 생성할 PR 번호"
+        required: true
+
+jobs:
+  analyze:
+    if: |
+      (github.event_name == 'pull_request' && !github.event.pull_request.draft) ||
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        contains(github.event.comment.body, '/claude-report')
+      )
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-report-analyze-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write # 실패 안내 코멘트
+      issues: write
+      id-token: write
+      actions: read
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+    outputs:
+      ok: ${{ steps.validate.outcome == 'success' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Generate report.json with Claude
+        continue-on-error: true # 실패는 아래 validate → 안내 코멘트로 soft-fail
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          trigger_phrase: "/claude-report"
+          prompt: |
+            당신은 이 PR을 팀원이 빠르게 이해하도록 돕는 분석가입니다. 모든
+            텍스트 출력은 한국어 격식체를 사용합니다.
+
+            Repository: ${{ github.repository }}
+            Pull request number: ${{ env.PR_NUMBER }}
+
+            절차:
+            1. `gh pr view ${{ env.PR_NUMBER }} --json title,author,body,headRefOid`
+               로 메타데이터를 확보합니다. 관련 이슈 번호는 PR 본문의
+               "Closes #N" 패턴에서 추출합니다.
+            2. `gh pr diff ${{ env.PR_NUMBER }} --name-only` 로 변경 파일
+               목록을 먼저 파악합니다. 파일이 30개를 넘거나 diff가 매우 크면
+               전체 diff를 한 번에 읽지 말고 중요해 보이는 파일부터
+               `gh pr diff ${{ env.PR_NUMBER }}` 결과를 파일별로 나눠
+               읽으십시오. 생성 파일(uv.lock, requirements 산출물, parquet,
+               __pycache__)은 내용을 읽지 말고 docs 등급으로만 집계합니다.
+            3. 파이프라인 배치 판단을 위해 반드시 읽으십시오:
+               - .github/pr-report/pipeline-nodes.json (노드 정본)
+               - docs/guides/pipeline-overview.md
+               - .claude/docs/architecture-overview.md
+            4. 저장소 루트에 report.json 파일 하나만 Write 하십시오. 다른
+               파일의 생성·수정, PR 코멘트 작성은 금지합니다. report.json은
+               .github/pr-report/report.schema.json 을 정확히 따라야 하며
+               (additionalProperties: false), 마크다운 펜스 등 JSON 외
+               텍스트를 포함하면 안 됩니다. generated_at은 현재 UTC 시각,
+               head_sha는 headRefOid를 사용합니다.
+
+            pipeline 작성 규칙:
+            - nodes는 pipeline-nodes.json의 전체 노드를 복사하고 각 노드의
+              status만 판정합니다(unchanged/modified/added/removed). 이 PR이
+              카탈로그에 없는 새 구성요소를 도입할 때만 "custom:" 접두 id로
+              노드를 추가할 수 있습니다.
+            - 변경된 노드에는 as_is_ko / to_be_ko 를 각 1~2문장으로 채우고,
+              focus에 중심 노드 id를 1~3개 지정합니다.
+            - edges는 카탈로그를 복사하되, 이 PR로 의미가 바뀌는 에지에만
+              status를 부여합니다.
+
+            changes 중요도 rubric (rank는 같은 등급 안에서 영향이 큰 순):
+            - core     — 도메인 로직·알고리즘·동작 변경 (파이프라인 산출물이 달라짐)
+            - contract — pydantic 스키마, parquet/BigQuery 스키마, 공개 batch
+                         CLI 인자, API 요청/응답, Feast 정의 등 모듈 간 계약
+            - config   — 설정, 환경 변수, Dockerfile, CI 워크플로우, 의존성
+            - test     — 테스트 추가·수정
+            - docs     — 문서, 주석, 생성 파일(uv.lock 등)
+            같은 파일이라도 함수/클래스 단위로 나눠 항목화하고, docs/test는
+            묶어서 1~2개 항목으로 압축합니다. 총 20개 이하.
+            diff_snippet은 이해에 필요한 핵심 hunk만 발췌합니다(항목당
+            4000자 이하, 불필요하면 생략). risk_notes_ko에는 데이터 계약
+            파급, 학습-서빙 일관성, 롤백 주의점 등을 적습니다.
+
+            summary_ko는 정확히 3줄, 각 줄 120자 이하입니다.
+            qa_note_ko에는 "코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:'
+            질문에 답변한 뒤 스레드를 resolve해 주십시오"를 이 PR의 핵심
+            로직 주제와 함께 안내합니다.
+          claude_args: |
+            --model "claude-opus-4-8"
+            --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob,Grep,Write"
+
+      - name: Validate report.json against schema
+        id: validate
+        continue-on-error: true
+        run: |
+          test -f report.json
+          pipx run check-jsonschema \
+            --schemafile .github/pr-report/report.schema.json report.json
+
+      - name: Build static page
+        if: steps.validate.outcome == 'success'
+        run: |
+          mkdir -p "site/pr/${PR_NUMBER}"
+          python .github/pr-report/inject.py \
+            .github/pr-report/template.html report.json \
+            > "site/pr/${PR_NUMBER}/index.html"
+
+      - name: Upload site artifact
+        if: steps.validate.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-report-site
+          path: site
+          retention-days: 7
+
+      - name: Upload report.json artifact
+        if: steps.validate.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-report-json
+          path: report.json
+          retention-days: 7
+
+      - name: Comment on failure (soft-fail)
+        if: steps.validate.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body \
+            "PR 이해 리포트 생성에 실패했습니다. 워크플로우 로그: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID} — PR에 \`/claude-report\` 코멘트를 남기면 재시도합니다."
+
+  publish:
+    needs: analyze
+    if: needs.analyze.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-report-publish # 저장소 전역: gh-pages push race 방지
+      cancel-in-progress: false
+    permissions:
+      contents: write # gh-pages push
+      pull-requests: write # sticky 코멘트
+      issues: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: Download site artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-report-site
+          path: site
+
+      - name: Download report.json artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: pr-report-json
+          path: .
+
+      - name: Deploy to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          keep_files: true # 다른 PR의 pr/<m>/ 보존 (정리는 phase 2 cleanup에서)
+          commit_message: "pr-report: PR #${{ env.PR_NUMBER }}"
+
+      - name: Upsert sticky comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+          PAGES_URL="https://${OWNER,,}.github.io/${REPO}/pr/${PR_NUMBER}/"
+          export PAGES_URL
+
+          BODY="$(python - <<'PYEOF'
+          import json, os
+          r = json.load(open("report.json", encoding="utf-8"))
+          url = os.environ["PAGES_URL"]
+          lines = ["<!-- pr-comprehension-report -->", "## PR 이해 리포트", ""]
+          lines += [f"{i}. {s}" for i, s in enumerate(r["summary_ko"], 1)]
+          lines += ["", "**중요 변경 top 3**", ""]
+          for c in sorted(r["changes"], key=lambda c: c["rank"])[:3]:
+              first = c["explanation_ko"].splitlines()[0]
+              lines.append(f"- `{c['importance']}` **{c['module']} :: {c['symbol']}** — {first}")
+          lines += [
+              "",
+              f"**[1·2단계 — 파이프라인 시각화·중요도순 전체 diff 보기]({url})** (배포 반영에 1~2분 걸릴 수 있습니다)",
+              "",
+              "**3단계 — 이해도 확인:** 코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오.",
+              "",
+              "---",
+              "_이 코멘트는 pr-report 워크플로우가 자동 생성했습니다. 코드가 갱신되면 PR에 `/claude-report` 코멘트로 재생성할 수 있습니다._",
+          ]
+          print("\n".join(lines))
+          PYEOF
+          )"
+
+          CID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --paginate \
+            --jq '.[] | select(.body | startswith("<!-- pr-comprehension-report -->")) | .id' \
+            | head -1)
+          if [ -n "$CID" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${CID}" \
+              -f body="$BODY" --silent
+          else
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+              -f body="$BODY" --silent
+          fi

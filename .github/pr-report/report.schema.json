@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PR Comprehension Report",
+  "description": "pr-report.yml의 analyze job에서 에이전트가 생성하는 report.json의 계약 정본. 위반 시 리포트는 배포되지 않고 soft-fail 처리됩니다.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "pr",
+    "summary_ko",
+    "motivation_ko",
+    "expected_effects_ko",
+    "pipeline",
+    "changes",
+    "qa_note_ko"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "pr": {
+      "type": "object",
+      "required": ["number", "title", "author", "issue_refs", "generated_at", "head_sha"],
+      "additionalProperties": false,
+      "properties": {
+        "number": { "type": "integer", "minimum": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "author": { "type": "string", "minLength": 1 },
+        "issue_refs": { "type": "array", "items": { "type": "integer", "minimum": 1 } },
+        "generated_at": { "type": "string", "description": "ISO 8601" },
+        "head_sha": { "type": "string", "minLength": 7 }
+      }
+    },
+    "summary_ko": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "type": "string", "minLength": 1, "maxLength": 120 },
+      "description": "핵심 요약 정확히 3줄 (한국어 격식체)"
+    },
+    "motivation_ko": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1200,
+      "description": "왜 필요한 변경인가 — as-is의 문제·배경"
+    },
+    "expected_effects_ko": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5,
+      "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+    },
+    "pipeline": {
+      "type": "object",
+      "required": ["nodes", "edges", "focus"],
+      "additionalProperties": false,
+      "properties": {
+        "nodes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "label", "lane", "order", "status"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "label": { "type": "string", "minLength": 1 },
+              "lane": { "enum": ["batch", "data", "train", "serve", "cross", "external"] },
+              "order": { "type": "integer", "minimum": 1 },
+              "status": { "enum": ["unchanged", "modified", "added", "removed"] },
+              "as_is_ko": { "type": "string", "maxLength": 400 },
+              "to_be_ko": { "type": "string", "maxLength": 400 },
+              "paths": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["from", "to"],
+            "additionalProperties": false,
+            "properties": {
+              "from": { "type": "string" },
+              "to": { "type": "string" },
+              "style": { "enum": ["solid", "dashed"] },
+              "status": { "enum": ["unchanged", "modified", "added", "removed"] }
+            }
+          }
+        },
+        "focus": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 3,
+          "items": { "type": "string" },
+          "description": "이 PR의 중심 노드 id"
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": {
+        "type": "object",
+        "required": ["rank", "importance", "module", "symbol", "file", "explanation_ko"],
+        "additionalProperties": false,
+        "properties": {
+          "rank": { "type": "integer", "minimum": 1 },
+          "importance": { "enum": ["core", "contract", "config", "test", "docs"] },
+          "module": { "type": "string", "minLength": 1, "description": "예: src/pipeline" },
+          "symbol": { "type": "string", "minLength": 1, "description": "함수/클래스/섹션명, 파일 단위면 파일명" },
+          "file": { "type": "string", "minLength": 1 },
+          "explanation_ko": { "type": "string", "minLength": 1, "maxLength": 600 },
+          "diff_snippet": { "type": "string", "maxLength": 4000, "description": "핵심 hunk만 발췌한 unified diff (선택)" },
+          "risk_notes_ko": { "type": "string", "maxLength": 400 }
+        }
+      }
+    },
+    "qa_note_ko": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 600,
+      "description": "3단계 안내: 인라인 '이해도 확인:' 질문 위치와 답변·resolve 방법"
+    }
+  }
+}
