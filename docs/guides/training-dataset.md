@@ -266,6 +266,8 @@ Feast historical retrieval이 아직 완성되지 않았을 때, MVP에서는 Bi
 
 최종 구조에서는 Feast `get_historical_features()`를 사용해 동일한 point-in-time join을 수행하는 것이 목표다.
 
+> **구현 현황(#214)**: 아래 `user_category_similarity_joined` CTE와 동일한 as-of 패턴이 `build_training_dataset.py`에 `topic_similarity_source="bigquery"`(CLI `--topic-similarity-source bigquery`)로 구현되어 있다 — `topic_similarity` 컬럼만 이 경로를 탄다. 나머지 `user_static_feature`/`user_dynamic_feature`/`video_feature` 조인은 여전히 in-process DuckDB 계산(`src/features/assembly.py`)이며, `get_historical_features()` 자체는 아직 경유하지 않는다.
+
 ```sql
 CREATE OR REPLACE TABLE `{project}.{dataset}.training_dataset` AS
 WITH entity AS (

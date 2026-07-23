@@ -38,6 +38,11 @@ def build_features(
     events_end_date: Optional[str] = typer.Option(
         None, help="events-source bigquery일 때 학습 기간 종료일(YYYY-MM-DD)"
     ),
+    topic_similarity_source: str = typer.Option(
+        "inmemory",
+        help="topic_similarity 소스: inmemory(Vertex AI 즉석 계산) 또는 "
+        "bigquery(feast_offline_store.user_category_similarity 사전 계산값 조회, #214/#244)",
+    ),
 ) -> None:
     """training_dataset.csv 생성."""
     build_training_dataset.main(
@@ -49,6 +54,7 @@ def build_features(
         events_source=events_source,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
+        topic_similarity_source=topic_similarity_source,
     )
 
 
@@ -116,6 +122,11 @@ def run_pipeline(
     events_end_date: Optional[str] = typer.Option(
         None, help="events-source bigquery일 때 학습 기간 종료일(YYYY-MM-DD)"
     ),
+    topic_similarity_source: str = typer.Option(
+        "inmemory",
+        help="topic_similarity 소스: inmemory(Vertex AI 즉석 계산) 또는 "
+        "bigquery(feast_offline_store.user_category_similarity 사전 계산값 조회, #214/#244)",
+    ),
     config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
     model_output: Optional[str] = typer.Option(None, help="모델 저장 경로 (config override)"),
     test_set_output: Optional[str] = typer.Option(
@@ -142,11 +153,16 @@ def run_pipeline(
         events_source=events_source,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
+        topic_similarity_source=topic_similarity_source,
     )
 
     # 어떤 소스·기간의 데이터로 학습했는지 MLflow run에 항상 남긴다 — 기본값을
     # 썼는지 명시값을 썼는지와 무관하게 나중에 조회 가능해야 한다.
-    data_source_params = {"videos_source": videos_source, "events_source": events_source}
+    data_source_params = {
+        "videos_source": videos_source,
+        "events_source": events_source,
+        "topic_similarity_source": topic_similarity_source,
+    }
     if events_source == "bigquery":
         data_source_params["events_start_date"] = events_start_date
         data_source_params["events_end_date"] = events_end_date
