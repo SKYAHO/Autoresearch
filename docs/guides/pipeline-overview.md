@@ -57,7 +57,7 @@ flowchart LR
     ONLINE -- "Load Online Features" --> FBUILD
 
     RESP -- "Video Meta + ctr_score" --> EXPO --> LLMG --> CLICK
-    CLICK -- "action 적재" --> ACT
+    CLICK -- "action 적재" --> LAKE
 ```
 
 ## 구간별 상세
