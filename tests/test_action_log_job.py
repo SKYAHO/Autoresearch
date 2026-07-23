@@ -415,3 +415,69 @@ def test_version_reports_revision_and_contract(monkeypatch, capsys):
         "application_revision": "abc123",
         "contract_version": "batch-contract-v1",
     }
+
+
+def test_rerank_api_source_requires_rerank_url():
+    with pytest.raises(action_log_job.BatchArgumentError, match="rerank-url"):
+        _parse_args_for_mode("single", "--exposure-source", "rerank-api")
+
+
+def test_rerank_api_source_defaults_timeout_and_parses():
+    args = _parse_args_for_mode(
+        "single", "--exposure-source", "rerank-api", "--rerank-url", "http://s:8000"
+    )
+    assert args.rerank_timeout_sec == 30.0
+
+
+def test_rerank_url_rejected_with_other_sources():
+    with pytest.raises(action_log_job.BatchArgumentError, match="rerank-api"):
+        _parse_args_for_mode("single", "--rerank-url", "http://s:8000")
+    with pytest.raises(action_log_job.BatchArgumentError, match="rerank-api"):
+        _parse_args_for_mode(
+            "single", "--exposure-source", "heuristic",
+            "--rerank-timeout-sec", "5",
+        )
+
+
+def test_rerank_api_source_rejects_shard_mode():
+    parser = action_log_job._build_parser()
+    args = parser.parse_args(
+        [
+            "--mode", "shard", "--partition-date", "2026-07-13",
+            "--youtube-base-path", "gs://test-bucket/data_lake/youtube",
+            "--virtual-users-path", "gs://test-bucket/asset/vu.parquet",
+            "--output-base-path", "gs://test-bucket/data_lake/action_log",
+            "--click-threshold", "0.5",
+            "--shard-index", "0", "--shard-count", "2",
+            "--progress-base-path", "gs://test-bucket/progress",
+            "--checkpoint-base-path", "gs://test-bucket/checkpoint",
+            "--exposure-source", "rerank-api", "--rerank-url", "http://s:8000",
+        ]
+    )
+    with pytest.raises(action_log_job.BatchArgumentError, match="single"):
+        action_log_job._validate_args(args)
+
+
+def test_rerank_api_source_rejects_recommendations_table():
+    with pytest.raises(action_log_job.BatchArgumentError, match="recommendations-table"):
+        _parse_args_for_mode(
+            "single", "--exposure-source", "rerank-api",
+            "--rerank-url", "http://s:8000", "--recommendations-table", "t",
+        )
+
+
+def test_run_passes_factory_in_rerank_api_mode(monkeypatch):
+    monkeypatch.setattr(action_log_job, "GcsFileSystem", lambda: object())
+    captured: dict = {}
+
+    def _fake_daily(**kwargs):
+        captured.update(kwargs)
+        return {"status": "succeeded"}
+
+    monkeypatch.setattr(action_log_job, "run_daily_action_log", _fake_daily)
+    action_log_job._run(
+        _parse_valid_single_args(
+            "--exposure-source", "rerank-api", "--rerank-url", "http://s:8000"
+        )
+    )
+    assert captured["candidate_provider_factory"] is not None
