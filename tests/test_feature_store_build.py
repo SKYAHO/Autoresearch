@@ -119,10 +119,16 @@ def test_user_dynamic_incremental_sql_builds_a_single_snapshot() -> None:
     assert "AND event_timestamp < TIMESTAMP(DATE '2026-07-21', 'Asia/Seoul')" in sql
 
 
-def test_user_dynamic_snapshot_reads_only_the_selected_action_log_partition() -> None:
+def test_user_dynamic_snapshot_prunes_action_log_partitions_with_between() -> None:
+    # A안(#295): dt=D 파티션은 KST D일 하루치 슬라이스다. 30일 히스토리는
+    # dt BETWEEN P-30 AND P-1 프루닝 + timestamp 윈도우로 조립한다.
     sql = _incremental_sql(feature_store_build.USER_DYNAMIC_FEATURE)
 
-    assert "AND dt = DATE '2026-07-21'" in sql
+    assert "AND dt = DATE '2026-07-21'" not in sql
+    assert (
+        "AND dt BETWEEN DATE_SUB(DATE '2026-07-21', INTERVAL 30 DAY)" in sql
+    )
+    assert "AND DATE_SUB(DATE '2026-07-21', INTERVAL 1 DAY)" in sql
 
 
 def test_user_dynamic_snapshot_covers_users_already_in_the_feature_table() -> None:

@@ -55,6 +55,11 @@ Autoresearch는 YouTube 트렌딩 데이터 기반 CTR 모델링 프로젝트입
   소유입니다.
 - 공개 batch 명령·인자 계약은
   `docs/specs/2026-07-13-public-batch-execution-contract.md`를 따릅니다.
+- action log 데이터 레이크 파티션 계약(#295 A안): `dt=D`는 KST D일 하루치
+  슬라이스(파티션 간 서로소)이며, 소비자는 `dt BETWEEN P-30 AND P-1` +
+  timestamp 윈도우로 30일 히스토리를 조립합니다. event_id는
+  `{prefix}_{YYYYMMDD}_{seq:08d}` 전역 고유 형식입니다. 정본:
+  `docs/specs/2026-07-24-action-log-slice-semantics.md`
 
 ## Project Vision & Phase
 

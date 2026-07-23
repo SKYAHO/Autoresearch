@@ -13,7 +13,13 @@ data/generated/round_a/event_log.parquet
 ## 불변 조건
 
 - `autoresearch/action_logs/` 스키마와 `daily.py`의 shard/merge 경로는 수정하지 않는다.
-- action log의 일일 `dt` 파티션 하나는 독립적인 30일 히스토리다. 소비자는 검증 대상 `dt` 하나만 선택하며 파티션 간 UNION을 하지 않는다.
+- action log의 `dt=D` 파티션은 KST D일 하루치 슬라이스다(#295 A안). 이벤트는
+  실제 발생 당일 timestamp 그대로 `dt=이벤트 당일`에 업로드한다 — "D-1 이벤트
+  → dt=D 트레일링" 관행과 30일 합성 확장 업로드는 폐지되었다. 소비자는
+  `dt BETWEEN P-30 AND P-1`(+timestamp 윈도우)로 히스토리를 조립하며, 이
+  조립의 전제는 event_id 날짜 네임스페이스(`evt_{YYYYMMDD}_{seq}`)다.
+- 업로드 전 대상 `dt`가 비어 있는지 `gcloud storage ls`로 확인한다
+  (`load_raw_to_bigquery`는 WRITE_TRUNCATE 전체 재적재).
 - 기존 champion, 기존 GCS 파티션, Terraform 소유 BigQuery 스키마를 수정하지 않는다.
 - 생성 parquet, `.env`, 시크릿은 커밋하지 않는다.
 - `load_raw_to_bigquery.py --tables action_log`는 `WRITE_TRUNCATE`로 전체 action log 테이블을 재적재하므로 업로드 전 GCS 파티션을 확인한다.

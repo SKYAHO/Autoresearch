@@ -36,6 +36,12 @@ def _user_index(user_id: str) -> int:
         return -1
 
 
+def offset_event_id(event_id: str, offset: int) -> str:
+    """event_id의 마지막 seq 세그먼트에만 offset을 더하고 네임스페이스는 보존한다."""
+    prefix, seq = event_id.rsplit("_", 1)
+    return f"{prefix}_{int(seq) + offset:08d}"
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--users", required=True, help="virtual_user parquet (user_id 컬럼)")
@@ -73,7 +79,7 @@ def main() -> None:
 
     if args.event_offset:
         table = pq.read_table(args.out)
-        eids = [f"evt_{int(e.split('_')[1]) + args.event_offset:08d}"
+        eids = [offset_event_id(e, args.event_offset)
                 for e in table.column("event_id").to_pylist()]
         table = table.set_column(
             table.schema.get_field_index("event_id"), "event_id", pa.array(eids, pa.string()))

@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -308,7 +309,10 @@ def test_sharded_daily_action_log_merges_global_partition(tmp_path):
     assert summary["impressions"] == 15
     assert summary["clicks"] == 3
     assert table.num_rows == summary["total_events"]
-    assert event_ids == [f"evt_{index:08d}" for index in range(len(rows))]
+    # #295 A안: event_id에 이벤트 KST 날짜 네임스페이스가 들어가 evt_00000000 형식이 아니다.
+    assert len(event_ids) == len(rows)
+    for index, event_id in enumerate(event_ids):
+        assert re.fullmatch(rf"evt_\d{{8}}_{index:08d}", event_id), event_id
     assert set(table["llm_model"].to_pylist()) == {"fixture-rule-action-log"}
 
 

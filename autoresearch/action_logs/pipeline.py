@@ -14,7 +14,7 @@ from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import UTC, timedelta
+from datetime import UTC, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from typing import Callable, Literal, Protocol
@@ -53,6 +53,9 @@ _MAX_SESSION_SPAN_SEC = _CLICK_DELAY_MAX_SEC + _VIEW_DELAY_MAX_SEC + max(2, _MAX
 # impression을 history_end에서 최소 이만큼(시간, 올림) 이전에 두면 위 세션 span을 항상 흡수해
 # 모든 후속 이벤트가 history_end를 넘지 않는다. _MAX_DURATION을 키우면 자동으로 여유가 늘어난다.
 _MIN_IMPRESSION_HOURS = max(1, math.ceil(_MAX_SESSION_SPAN_SEC / 3600))
+
+# 이벤트 KST 날짜가 event_id 네임스페이스다(#295 A안: dt 파티션 = KST 당일 슬라이스).
+_KST = timezone(timedelta(hours=9))
 
 
 class ActionLogGenerator(Protocol):
@@ -794,7 +797,7 @@ def _expand_events(
         meta = metadata.get((user_id, video_id)) if metadata else None
         events.append(
             EventLog(
-                event_id=f"{event_id_prefix}_{seq:08d}",
+                event_id=f"{event_id_prefix}_{timestamp.astimezone(_KST):%Y%m%d}_{seq:08d}",
                 event_timestamp=timestamp,
                 user_id=user_id,
                 event_type=event_type,
