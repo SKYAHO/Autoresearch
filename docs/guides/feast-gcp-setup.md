@@ -323,6 +323,12 @@ feast apply
 
 > Registry가 `GCS_REGISTRY_PATH`로 지정한 GCS 버킷에 저장됩니다.
 
+> 배치·운영 경로에서는 `feast apply` CLI 대신 공개 batch 명령
+> `python -m autoresearch.jobs.feast_apply`를 사용합니다. feast 0.64의 apply
+> 커맨드는 인증 실패를 삼키고 exit 0으로 끝나므로 자동화에서 실패를 감지할 수
+> 없습니다. 인자 계약은
+> `docs/specs/2026-07-13-public-batch-execution-contract.md`를 참조하세요.
+
 - [ ] 완료
 
 ---
