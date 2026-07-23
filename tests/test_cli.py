@@ -33,6 +33,7 @@ def test_run_pipeline_forwards_bigquery_sources_to_build_features(monkeypatch):
         events_source="bigquery",
         events_start_date="2026-07-01",
         events_end_date="2026-07-08",
+        topic_similarity_source="inmemory",
         config_path=None,
         model_output=None,
         test_set_output="test_set.csv",
@@ -66,6 +67,7 @@ def test_run_pipeline_logs_data_source_lineage_as_train_extra_params(monkeypatch
         events_source="bigquery",
         events_start_date="2026-07-01",
         events_end_date="2026-07-08",
+        topic_similarity_source="bigquery",
         config_path=None,
         model_output=None,
         test_set_output=None,
@@ -79,6 +81,7 @@ def test_run_pipeline_logs_data_source_lineage_as_train_extra_params(monkeypatch
     assert train_call["extra_params"] == {
         "videos_source": "bigquery",
         "events_source": "bigquery",
+        "topic_similarity_source": "bigquery",
         "events_start_date": "2026-07-01",
         "events_end_date": "2026-07-08",
     }
@@ -100,6 +103,7 @@ def test_run_pipeline_omits_event_dates_from_extra_params_for_csv_source(monkeyp
         events_source="csv",
         events_start_date=None,
         events_end_date=None,
+        topic_similarity_source="inmemory",
         config_path=None,
         model_output=None,
         test_set_output=None,
@@ -110,4 +114,8 @@ def test_run_pipeline_omits_event_dates_from_extra_params_for_csv_source(monkeyp
         random_state=None,
     )
 
-    assert train_call["extra_params"] == {"videos_source": "csv", "events_source": "csv"}
+    assert train_call["extra_params"] == {
+        "videos_source": "csv",
+        "events_source": "csv",
+        "topic_similarity_source": "inmemory",
+    }
