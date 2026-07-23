@@ -32,7 +32,6 @@ NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeli
 
 import os
 import sys
-import duckdb
 import pandas as pd
 from datetime import datetime, timedelta
 
@@ -68,6 +67,7 @@ from src.features.assembly import (  # noqa: E402
     compute_user_offline_features,
     compute_user_topic_features,
     compute_video_features,
+    connect_duckdb,
 )
 from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
 
@@ -253,7 +253,7 @@ def derive_wide_events(
     training_entity에 문서화되어 있고, view/like 체이닝(followup_window_sec)은
     이번에 새로 정의한 규칙이라 같은 문서에 추가 반영한다.
     """
-    con = duckdb.connect()
+    con = connect_duckdb()
     # 빈 파티션(콜드 스타트)에서는 BigQuery가 STRING 컬럼을 object dtype 빈
     # 컬럼으로 반환해 DuckDB가 타입을 추론하지 못하고 INTEGER로 등록한다 —
     # 이후 문자열 키 비교가 깨지므로 등록 전에 계약 dtype을 고정한다.
@@ -454,7 +454,7 @@ def main(
     validate_events(events)
 
     print("\n[Step 1] DuckDB SQL 처리...")
-    con = duckdb.connect()
+    con = connect_duckdb()
 
     snapshot_date = datetime.now().strftime("%Y-%m-%d")
 
