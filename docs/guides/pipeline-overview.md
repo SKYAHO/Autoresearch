@@ -20,7 +20,7 @@ flowchart LR
         FEAST["Feast Offline Store<br/>Feature Tables"]
     end
 
-    ONLINE["Online Store<br/>Memorystore Cluster (shard 구성)"]
+    ONLINE["Online Store<br/>Memorystore Redis Cluster (shard 구성)"]
 
     subgraph TRAINP["Train Pipeline (Airflow)"]
         TRAIN["모델 학습 (LightGBM)"]
@@ -138,11 +138,11 @@ Auto Research Agent가 두 구간을 자동화합니다:
   전체를 반환하고(`src/serving/app.py`), 24개 슬레이트 선별은 노출 조립
   (`src/pipeline/model_exposure_provider.py`)에서 수행합니다. 이 문서의
   다이어그램은 현행 구현 기준으로 그렸습니다.
-- **Online Store 엔진:** 원본 그림은 Valkey Cluster로 표기하나, 저장소
-  spec(`docs/specs/2026-07-15-feast-redis-online-store.md`)과 구현
-  (`feature_repo/redis_iam.py`)은 Memorystore Redis Cluster 기준입니다.
-  다이어그램에는 중립적으로 "Memorystore Cluster"로 표기했습니다 — 실제
-  엔진 표기는 팀 확인 후 통일이 필요합니다.
+- **Online Store 엔진:** 원본 그림은 Valkey Cluster로 표기하나, 실제
+  인프라는 **Memorystore Redis Cluster**로 확인됐습니다(2026-07-24) —
+  저장소 spec(`docs/specs/2026-07-15-feast-redis-online-store.md`)·구현
+  (`feature_repo/redis_iam.py`)과 일치합니다. 다이어그램은 Redis로
+  표기했습니다.
 - **ONNX 아티팩트:** 모델 저장의 ONNX 전환은 진행 중입니다(#302). 현행
   구현은 lightgbm(joblib) 아티팩트입니다.
 
