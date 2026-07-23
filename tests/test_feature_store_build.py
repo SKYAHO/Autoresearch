@@ -119,6 +119,12 @@ def test_user_dynamic_incremental_sql_builds_a_single_snapshot() -> None:
     assert "AND event_timestamp < TIMESTAMP(DATE '2026-07-21', 'Asia/Seoul')" in sql
 
 
+def test_user_dynamic_snapshot_reads_only_the_selected_action_log_partition() -> None:
+    sql = _incremental_sql(feature_store_build.USER_DYNAMIC_FEATURE)
+
+    assert "AND dt = DATE '2026-07-21'" in sql
+
+
 def test_user_dynamic_snapshot_covers_users_already_in_the_feature_table() -> None:
     # 룩백 윈도우에 활동이 없는 유저도 행을 받아야 Feast가 stale한 과거 스냅샷으로
     # fallback하지 않는다.
