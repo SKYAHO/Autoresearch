@@ -180,3 +180,35 @@ def test_main_promotes_downsampling_candidate_with_paired_calibration(monkeypatc
         (MODEL_NAME, "champion", "4"),
         (CALIBRATION_MODEL_NAME, "champion", "2"),
     ]
+
+
+def test_main_promotes_when_candidate_metric_equals_champion(monkeypatch):
+    # 게이트1은 "이상"(>=)이 기준이므로 동률이면 통과해야 한다.
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4")
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        runs={"run-3": {"val_roc_auc": 0.80}, "run-4": {"val_roc_auc": 0.80}},
+    )
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
+
+    assert result == "4"
+    assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]
+
+
+def test_main_promotes_when_champion_metrics_missing_val_roc_auc_key(monkeypatch):
+    # champion run에 val_roc_auc 자체가 없으면(구버전 등) 비교 불가로 자동 통과한다.
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4")
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        runs={"run-3": {}, "run-4": {"val_roc_auc": 0.80}},
+    )
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
+
+    assert result == "4"
+    assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]

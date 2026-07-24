@@ -16,9 +16,11 @@ _resolve_paired_calibration_run_id), Airflow DAG 스케줄링·재시도
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 from mlflow.tracking import MlflowClient
+from src.tracking.client import set_tracking_uri
 from src.tracking.registry import (
     get_latest_version,
     get_model_metrics_by_alias,
@@ -72,8 +74,10 @@ def main(
 
     Raises:
         GateRejectedError: 게이트 조건 미달로 승격 거부.
+        ValueError: 후보 버전의 run에 val_roc_auc 지표가 없음(데이터 결함).
         (기타) MLflow 연결 실패 등 실행 중 오류는 그대로 전파한다.
     """
+    set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
     candidate_version = get_latest_version(model_name)
     if candidate_version is None:
         return None
@@ -123,6 +127,10 @@ def main(
                 "짝지어진 버전이 없습니다."
             )
 
+    # main alias 이동이 실패하면 이 줄 아래로 진행하지 않으므로 calibration alias는
+    # 절대 main 없이 먼저 옮겨지지 않는다 — 부분 실패 시에도 "main은 새 버전인데
+    # calibration은 옛 버전" 조합은 생기지 않는다(반대 조합만 가능하며, 서빙의
+    # fail-closed 페어링 검증이 그 조합을 막는다).
     set_model_alias(model_name, champion_alias, candidate_version)
     if calibration_version is not None:
         set_model_alias(calibration_model_name, champion_alias, calibration_version)
