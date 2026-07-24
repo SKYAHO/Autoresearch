@@ -279,3 +279,36 @@ def test_main_downsampling_with_explicit_scale_pos_weight_fails_closed(tmp_path,
 
     with pytest.raises(ValueError, match="이중 보정"):
         _run_train(tmp_path, config_path)
+
+
+def test_main_downsampling_registers_calibration_model(tmp_path, monkeypatch) -> None:
+    # #302: downsampling 학습은 calibration 모델을 별도 등록명으로 등록하고, 그 버전에
+    # main run_id를 짝 식별 tag로 남긴다(서빙 페어링 검증용).
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=0.5)
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    _run_train(tmp_path, config_path)
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    [main_version] = client.search_model_versions("name='ctr-model'")
+    [cal_version] = client.search_model_versions("name='ctr-calibration-model'")
+    tags = client.get_model_version("ctr-calibration-model", str(cal_version.version)).tags
+    assert tags["main_run_id"] == main_version.run_id
+    assert float(tags["sampling_rate"]) < 1.0
+
+
+def test_main_no_downsampling_registers_no_calibration_model(tmp_path, monkeypatch) -> None:
+    # 하위호환: downsampling 미사용(w=1.0)이면 calibration 모델을 등록하지 않는다.
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=1.0)
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    _run_train(tmp_path, config_path)
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    assert client.search_model_versions("name='ctr-calibration-model'") == []

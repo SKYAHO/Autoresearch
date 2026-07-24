@@ -100,3 +100,71 @@ def test_lineage_for_mlflow_and_local_sources(monkeypatch, tmp_path):
         )
     )
     assert (local_resolved.run_id, local_resolved.model_version) == ("local", None)
+
+
+# ── #302 calibration 페어링 fail-closed 검증 ──────────────────
+
+
+class _PairingClient:
+    """main / calibration 두 등록 모델을 name으로 분기해 resolve하는 가짜 client."""
+
+    def __init__(self, calibration_main_run_id):
+        self._cal_main = calibration_main_run_id
+
+    def get_model_version_by_alias(self, name, alias):
+        if name == "ctr-model":
+            return SimpleNamespace(run_id="run-main", version=8, tags={})
+        return SimpleNamespace(
+            run_id="run-cal", version=3, tags={"main_run_id": self._cal_main}
+        )
+
+
+def _registry_settings():
+    return RegistryModelSettings(
+        tracking_uri="http://mlflow:5000",
+        model_name="ctr-model",
+        alias="champion",
+        calibration_model_name="ctr-calibration-model",
+        calibration_alias="champion",
+    )
+
+
+def test_pairing_mismatch_raises_model_artifact_error(monkeypatch):
+    # calibration이 다른 main(run_id)을 가리키면 서빙 기동을 fail-closed로 막는다.
+    monkeypatch.setattr(model_loader, "MlflowClient", lambda: _PairingClient("OTHER-run"))
+    monkeypatch.setattr(model_loader, "load_mlflow_model", lambda s: _SentinelReranker())
+    with pytest.raises(model_loader.ModelArtifactError, match="페어링"):
+        load_reranker_with_lineage(_registry_settings())
+
+
+def test_pairing_match_loads_and_threads_calibration_run_id(monkeypatch):
+    # 짝이 맞으면 정상 로드하고 calibration run_id를 load_mlflow_model로 넘긴다.
+    captured = {}
+    monkeypatch.setattr(model_loader, "MlflowClient", lambda: _PairingClient("run-main"))
+
+    def _fake(settings):
+        captured["settings"] = settings
+        return _SentinelReranker()
+
+    monkeypatch.setattr(model_loader, "load_mlflow_model", _fake)
+    resolved = load_reranker_with_lineage(_registry_settings())
+    assert resolved.run_id == "run-main"
+    assert captured["settings"].calibration_run_id == "run-cal"
+
+
+def test_no_calibration_skips_pairing_and_threads_none(monkeypatch):
+    # calibration_model_name 미지정(하위호환) → 페어링 검증 없이 calibration_run_id=None.
+    captured = {}
+    monkeypatch.setattr(model_loader, "MlflowClient", lambda: _PairingClient("irrelevant"))
+
+    def _fake(settings):
+        captured["settings"] = settings
+        return _SentinelReranker()
+
+    monkeypatch.setattr(model_loader, "load_mlflow_model", _fake)
+    load_reranker_with_lineage(
+        RegistryModelSettings(
+            tracking_uri="http://mlflow:5000", model_name="ctr-model", alias="champion"
+        )
+    )
+    assert captured["settings"].calibration_run_id is None

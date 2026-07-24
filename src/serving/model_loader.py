@@ -19,6 +19,7 @@ from src.features.model_contract import (
     require_categorical_feature_columns,
     require_model_feature_columns,
 )
+from src.models.calibration import CALIBRATION_PARAM_FILENAME, DownsamplingCalibrator
 from src.serving.service import ProbabilityModel, Reranker
 
 FEATURE_COLUMNS_ADAPTER: Final = TypeAdapter(tuple[str, ...])
@@ -42,6 +43,9 @@ _PICKLE_METADATA_ERRORS: Final = (
 MLFLOW_MODEL_ARTIFACT_PATH: Final = "model/lgbm_model.joblib"
 MLFLOW_FEATURE_COLUMNS_ARTIFACT_PATH: Final = "features/feature_columns.pkl"
 MLFLOW_CATEGORICAL_COLUMNS_ARTIFACT_PATH: Final = "features/categorical_columns.pkl"
+# calibration 모델 아티팩트(JSON w). 학습 train.py Step 9의 artifact_path="calibration"와 계약.
+# 별도 등록 모델(config.registry.calibration_model_name)의 run 아래 이 경로로 로깅된다(#302).
+MLFLOW_CALIBRATION_ARTIFACT_PATH: Final = f"calibration/{CALIBRATION_PARAM_FILENAME}"
 
 
 class ModelSource(StrEnum):
@@ -54,28 +58,47 @@ class ModelSource(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class LocalModelSettings:
-    """로컬 파일에서 로드할 때 필요한 모델·피처·카테고리 아티팩트 경로 묶음."""
+    """로컬 파일에서 로드할 때 필요한 모델·피처·카테고리 아티팩트 경로 묶음.
+
+    calibration_model_path는 optional이다(#302). 지정하면 main→calibration 체이닝을
+    적용하고, None이면 calibration 없이(항등) 기존 1-모델 동작을 유지한다(하위호환).
+    """
 
     model_path: Path
     feature_columns_path: Path
     categorical_columns_path: Path
+    calibration_model_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class MlflowModelSettings:
-    """MLflow 런에서 아티팩트를 내려받을 때 필요한 tracking URI와 run_id."""
+    """MLflow 런에서 아티팩트를 내려받을 때 필요한 tracking URI와 run_id.
+
+    calibration_run_id는 optional이다(#302). 지정하면 그 run의 calibration 아티팩트를
+    로드해 체이닝하고, None이면 calibration 없이(항등) 동작한다(하위호환). 이 경로는
+    수동 run 지정용이라 페어링 자동 검증 대상이 아니다.
+    """
 
     tracking_uri: str
     run_id: str
+    calibration_run_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class RegistryModelSettings:
-    """Model Registry alias(예: models:/ctr-model@champion)로 로드할 때 필요한 설정."""
+    """Model Registry alias(예: models:/ctr-model@champion)로 로드할 때 필요한 설정.
+
+    calibration_model_name은 optional이다(#302). 지정하면 그 등록 모델의 alias를
+    resolve해 main과 짝이 맞는지(main_run_id tag) fail-closed로 검증한 뒤 체이닝하고,
+    None이면 calibration 없이(항등) 동작한다(하위호환). calibration_alias 미지정 시
+    main alias를 재사용한다.
+    """
 
     tracking_uri: str
     model_name: str
     alias: str
+    calibration_model_name: str | None = None
+    calibration_alias: str | None = None
 
 
 ModelSettings: TypeAlias = LocalModelSettings | MlflowModelSettings | RegistryModelSettings
@@ -123,8 +146,12 @@ def load_model_settings_from_environment() -> ModelSettings:
             reason="RERANK_MODEL_SOURCE must be 'local', 'mlflow', or 'registry'."
         ) from error
 
+    # calibration 관련 env는 전부 optional이다(#302, 하위호환) — 필수값처럼
+    # _required_environment_value로 읽지 않고 os.getenv(default None)로 분기한다.
+    # None이면 calibration 미로드 → 항등으로 자연스럽게 빠진다.
     match source:
         case ModelSource.LOCAL:
+            calibration_path = os.getenv("RERANK_CALIBRATION_MODEL_PATH")
             return LocalModelSettings(
                 model_path=Path(_required_environment_value("RERANK_MODEL_PATH")),
                 feature_columns_path=Path(
@@ -133,17 +160,21 @@ def load_model_settings_from_environment() -> ModelSettings:
                 categorical_columns_path=Path(
                     _required_environment_value("RERANK_CATEGORICAL_COLUMNS_PATH")
                 ),
+                calibration_model_path=Path(calibration_path) if calibration_path else None,
             )
         case ModelSource.MLFLOW:
             return MlflowModelSettings(
                 tracking_uri=_required_environment_value("MLFLOW_TRACKING_URI"),
                 run_id=_required_environment_value("RERANK_MLFLOW_RUN_ID"),
+                calibration_run_id=os.getenv("RERANK_MLFLOW_CALIBRATION_RUN_ID"),
             )
         case ModelSource.REGISTRY:
             return RegistryModelSettings(
                 tracking_uri=_required_environment_value("MLFLOW_TRACKING_URI"),
                 model_name=os.getenv("RERANK_REGISTRY_MODEL_NAME", "ctr-model"),
                 alias=os.getenv("RERANK_REGISTRY_ALIAS", "champion"),
+                calibration_model_name=os.getenv("RERANK_REGISTRY_CALIBRATION_MODEL_NAME"),
+                calibration_alias=os.getenv("RERANK_REGISTRY_CALIBRATION_ALIAS"),
             )
         case unreachable:
             assert_never(unreachable)
@@ -163,11 +194,17 @@ def load_reranker(settings: ModelSettings) -> Reranker:
 
 
 def load_local_model(settings: LocalModelSettings) -> Reranker:
-    """로컬 경로의 아티팩트들로 Reranker를 로드한다."""
+    """로컬 경로의 아티팩트들로 Reranker를 로드한다(calibration 경로가 있으면 함께)."""
+    calibration = (
+        DownsamplingCalibrator.load(settings.calibration_model_path)
+        if settings.calibration_model_path is not None
+        else None
+    )
     return _load_reranker(
         model_path=settings.model_path,
         feature_columns_path=settings.feature_columns_path,
         categorical_columns_path=settings.categorical_columns_path,
+        calibration=calibration,
     )
 
 
@@ -189,15 +226,47 @@ def load_mlflow_model(settings: MlflowModelSettings) -> Reranker:
             artifact_uri=f"runs:/{settings.run_id}/{MLFLOW_CATEGORICAL_COLUMNS_ARTIFACT_PATH}"
         )
     )
+    calibration = (
+        _load_calibration_from_run(settings.calibration_run_id)
+        if settings.calibration_run_id is not None
+        else None
+    )
     return _load_reranker(
         model_path=model_path,
         feature_columns_path=feature_columns_path,
         categorical_columns_path=categorical_columns_path,
+        calibration=calibration,
     )
 
 
+def _load_calibration_from_run(run_id: str) -> DownsamplingCalibrator:
+    """run의 calibration 아티팩트(JSON w)를 내려받아 DownsamplingCalibrator로 만든다.
+
+    calibration_run_id가 명시적으로 지정된 경로에서만 호출되므로, 아티팩트가 없거나
+    파싱에 실패하면 misconfiguration으로 보고 ModelArtifactError로 fail-closed한다.
+    """
+    try:
+        path = Path(
+            mlflow.artifacts.download_artifacts(
+                artifact_uri=f"runs:/{run_id}/{MLFLOW_CALIBRATION_ARTIFACT_PATH}"
+            )
+        )
+        return DownsamplingCalibrator.load(path)
+    except Exception as error:
+        raise ModelArtifactError(
+            reason=(
+                f"calibration 아티팩트를 로드하지 못했습니다(run={run_id}, "
+                f"{MLFLOW_CALIBRATION_ARTIFACT_PATH}): {error}"
+            )
+        ) from error
+
+
 def _load_registry_model(settings: RegistryModelSettings) -> ResolvedModel:
-    """Registry alias를 run_id로 해석한 뒤 기존 run 아티팩트 다운로드 경로를 재사용한다."""
+    """Registry alias를 run_id로 해석한 뒤 기존 run 아티팩트 다운로드 경로를 재사용한다.
+
+    calibration_model_name이 지정되면 calibration alias도 resolve해 main과 짝이 맞는지
+    fail-closed로 검증한다(#302 페어링 검증).
+    """
     mlflow.set_tracking_uri(settings.tracking_uri)
     try:
         version = MlflowClient().get_model_version_by_alias(settings.model_name, settings.alias)
@@ -208,12 +277,57 @@ def _load_registry_model(settings: RegistryModelSettings) -> ResolvedModel:
                 f"@{settings.alias}: {error}"
             )
         ) from error
+    calibration_run_id = _resolve_paired_calibration_run_id(settings, main_run_id=version.run_id)
     reranker = load_mlflow_model(
-        MlflowModelSettings(tracking_uri=settings.tracking_uri, run_id=version.run_id)
+        MlflowModelSettings(
+            tracking_uri=settings.tracking_uri,
+            run_id=version.run_id,
+            calibration_run_id=calibration_run_id,
+        )
     )
     return ResolvedModel(
         reranker=reranker, run_id=version.run_id, model_version=str(version.version)
     )
+
+
+def _resolve_paired_calibration_run_id(
+    settings: RegistryModelSettings, *, main_run_id: str
+) -> str | None:
+    """calibration 등록 모델 alias를 resolve하고 main과 짝이 맞는지 fail-closed로 검증한다.
+
+    - `calibration_model_name`이 None이면 calibration 미사용 → None(항등, 하위호환).
+    - main_model과 calibration_model은 Registry에 완전히 독립된 두 등록 모델이라 각자
+      다른 시점에 champion 승격되면 안 맞는 조합(main@champion=v8, calibration@champion=v3)을
+      조용히 서빙할 수 있다. calibration 버전의 `main_run_id` tag가 지금 resolve된 main
+      run_id와 다르면 `ModelArtifactError`로 서빙 기동을 막는다(#302).
+    - 이 검증은 Registry 경로 전용이다. MLflow 직접 run 지정(`MlflowModelSettings`)은
+      실험·수동 경로라 alias 자동 승격처럼 몰래 어긋날 리스크가 없어 대상이 아니다.
+    """
+    if settings.calibration_model_name is None:
+        return None
+    calibration_alias = settings.calibration_alias or settings.alias
+    try:
+        cal_version = MlflowClient().get_model_version_by_alias(
+            settings.calibration_model_name, calibration_alias
+        )
+    except Exception as error:
+        raise ModelArtifactError(
+            reason=(
+                f"calibration alias models:/{settings.calibration_model_name}"
+                f"@{calibration_alias}를 resolve하지 못했습니다: {error}"
+            )
+        ) from error
+    paired_main_run_id = (cal_version.tags or {}).get("main_run_id")
+    if paired_main_run_id != main_run_id:
+        raise ModelArtifactError(
+            reason=(
+                "calibration 모델과 main 모델의 짝이 맞지 않습니다(#302 페어링 검증). "
+                f"main run_id={main_run_id}, calibration이 가리키는 main_run_id="
+                f"{paired_main_run_id}. 서로 다른 학습에서 나온 조합이라 서빙을 거부합니다 — "
+                "main과 calibration alias를 같은 학습 버전으로 맞춰 승격하세요."
+            )
+        )
+    return cal_version.run_id
 
 
 def load_reranker_with_lineage(settings: ModelSettings) -> ResolvedModel:
@@ -234,9 +348,16 @@ def load_reranker_with_lineage(settings: ModelSettings) -> ResolvedModel:
 
 
 def _load_reranker(
-    model_path: Path, feature_columns_path: Path, categorical_columns_path: Path
+    model_path: Path,
+    feature_columns_path: Path,
+    categorical_columns_path: Path,
+    calibration: DownsamplingCalibrator | None = None,
 ) -> Reranker:
-    """세 아티팩트의 존재·형식·상호 계약(카테고리 컬럼 ⊆ 피처)을 검증하고 Reranker를 조립한다."""
+    """세 아티팩트의 존재·형식·상호 계약(카테고리 컬럼 ⊆ 피처)을 검증하고 Reranker를 조립한다.
+
+    calibration이 주어지면 Reranker가 main 예측 후 calibration을 체이닝한다. None이면
+    calibration 없이(항등) 동작한다(하위호환).
+    """
     if not model_path.is_file():
         raise ModelArtifactError(reason=f"Model artifact does not exist: {model_path}")
     if not feature_columns_path.is_file():
@@ -310,6 +431,7 @@ def _load_reranker(
         model=model,
         feature_columns=feature_columns,
         categorical_categories=categorical_categories,
+        calibration=calibration,
     )
 
 

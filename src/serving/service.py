@@ -7,6 +7,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 import pandas as pd
 
+from src.models.calibration import DownsamplingCalibrator
 from src.serving.schemas import CandidateVideo, FeatureValue, RerankedVideo
 
 
@@ -51,11 +52,17 @@ class RerankOutcome:
 
 @dataclass(frozen=True, slots=True)
 class Reranker:
-    """학습된 모델·피처 계약을 담고, 후보 영상을 CTR 확률로 재정렬하는 핵심 도메인 객체."""
+    """학습된 모델·피처 계약을 담고, 후보 영상을 CTR 확률로 재정렬하는 핵심 도메인 객체.
+
+    calibration이 있으면(#302, downsampling 모델) main 예측 후 그 확률을 원분포로 되돌리는
+    calibration을 체이닝한다(main → calibration). None이면 항등이라 기존 1-모델 동작과 같다.
+    calibration은 monotonic이라 정렬 순위는 바뀌지 않고 반환 ctr_score만 원분포 확률로 보정된다.
+    """
 
     model: ProbabilityModel
     feature_columns: tuple[str, ...]
     categorical_categories: Mapping[str, tuple[FeatureValue, ...]]
+    calibration: DownsamplingCalibrator | None = None
 
     def rerank(self, candidates: Sequence[CandidateVideo]) -> list[RerankedVideo]:
         """후보 피처를 검증·정규화해 CTR 확률을 예측하고, 점수 내림차순으로 정렬해 반환한다."""
@@ -101,9 +108,17 @@ class Reranker:
         except Exception as error:
             raise PredictionError(reason="Model prediction raised an exception.") from error
 
+        # main → calibration 체이닝(#302). calibration이 없으면 raw 확률 그대로.
+        # 보정은 monotonic이라 아래 정렬 순위는 동일하고 반환 점수만 원분포로 이동한다.
+        positive_scores = probabilities[:, 1]
+        if self.calibration is not None:
+            positive_scores = np.asarray(
+                self.calibration.calibrate(positive_scores), dtype=float
+            )
+
         ranked_items = [
-            RerankedVideo(video_id=candidate.video_id, ctr_score=float(probability[1]))
-            for candidate, probability in zip(candidates, probabilities, strict=True)
+            RerankedVideo(video_id=candidate.video_id, ctr_score=float(score))
+            for candidate, score in zip(candidates, positive_scores, strict=True)
         ]
         ranked_items.sort(key=lambda item: item.ctr_score, reverse=True)
         return RerankOutcome(items=ranked_items, unseen_categories=unseen_categories)
