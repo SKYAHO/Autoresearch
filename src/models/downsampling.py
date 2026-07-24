@@ -107,7 +107,11 @@ def downsample_negatives(
     if orig_neg == 0:
         return X, y, 1.0
 
-    keep_neg = int(round(orig_neg * sampling_rate))
+    # negative가 매우 적은 split에서 orig_neg*sampling_rate가 0으로 반올림되면
+    # keep_neg=0 → realized_rate=0.0이 되고, 이 0.0이 calibration에 전달되면
+    # 0<w≤1 검증에 걸려 파이프라인이 중단된다. negative를 전부 없애는 건 학습에
+    # 무의미하므로 최소 1건은 남긴다(realized_rate는 그만큼 nominal보다 커진다).
+    keep_neg = max(1, int(round(orig_neg * sampling_rate)))
     rng = np.random.default_rng(random_state)
     kept_neg_idx = pd.Index(rng.choice(neg_idx.to_numpy(), size=keep_neg, replace=False))
     realized_rate = keep_neg / orig_neg

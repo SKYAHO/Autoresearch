@@ -190,7 +190,11 @@ def main(
         # 값이 강제(=1)를 덮어써 이중 보정이 그대로 남는다.
         # LightGBM엔 is_unbalance라는 또 다른 자동 밸런싱 옵션이 있으나 현재
         # config/lgbm_model.py 어디에도 없다(비활성). 추가되면 여기 가드를 확장한다.
-        if realized_sampling_rate < 1.0:
+        # "downsampling 모드" 판단은 Step 3b 활성화와 동일하게 nominal 기준으로
+        # 통일한다. realized로 판단하면 negative가 0/극소라 realized==1.0으로
+        # 떨어지는 경우 이 강제를 건너뛰고 auto 경로로 빠져 neg_count=0 →
+        # scale_pos_weight=0/pos=0(무효값)이 되는 divergence가 생긴다.
+        if nominal_sampling_rate < 1.0:
             explicit_numeric = configured_spw != "auto" and float(configured_spw) != 1
             if explicit_numeric:
                 raise ValueError(
