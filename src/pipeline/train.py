@@ -18,6 +18,7 @@ sys.path.insert(0, PROJECT_ROOT)
 import mlflow  # noqa: E402
 
 from src.models.lgbm_model import LGBMModel  # noqa: E402
+from src.models.downsampling import downsample_negatives  # noqa: E402
 from src.features.model_contract import (  # noqa: E402
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
@@ -155,6 +156,24 @@ def main(
         print(f"  [OK] Train features: {X_train.shape}, ratio={y_train.mean():.3%}")
         print(f"  [OK] Val features: {X_val.shape}, ratio={y_val.mean():.3%}")
 
+        # negative downsampling — train split에만 적용한다(#300). val/test는 위에서
+        # 원분포로 유지된다. sampling_rate=1.0이면 downsample_negatives가 원본 그대로
+        # 반환(no-op)한다. realized_sampling_rate는 라운딩으로 nominal과 미세하게
+        # 다를 수 있어 실현값을 이후 보정·기록에 쓴다.
+        nominal_sampling_rate = float(config["model"].get("sampling_rate", 1.0))
+        realized_sampling_rate = 1.0
+        if nominal_sampling_rate < 1.0:
+            print("\n[Step 3b] Negative downsampling (train split only)...")
+            n_train_before = len(y_train)
+            X_train, y_train, realized_sampling_rate = downsample_negatives(
+                X_train, y_train, nominal_sampling_rate, random_state=random_state
+            )
+            print(
+                f"  [OK] {n_train_before} → {len(y_train)} rows "
+                f"(sampling_rate nominal={nominal_sampling_rate}, "
+                f"realized={realized_sampling_rate:.4f}), ratio={y_train.mean():.3%}"
+            )
+
         print("\n[Step 4] Categorical 컬럼 dtype 변환...")
         categories_by_column = collect_categorical_categories(
             X_train, X_val, categorical_columns
@@ -162,13 +181,33 @@ def main(
         print(f"  [OK] {len(categorical_columns)} categorical columns 설정")
 
         print("\n[Step 5] scale_pos_weight 계산...")
-        scale_pos_weight = config["model"]["scale_pos_weight"]
-        if scale_pos_weight == "auto":
+        configured_spw = config["model"]["scale_pos_weight"]
+        # downsampling과 scale_pos_weight를 둘 다 걸면 이중 보정이라 He 보정 공식의
+        # 전제가 깨진다(#300 결정 6). downsampling이 켜지면 scale_pos_weight는
+        # 1로 대체(강제)한다. 단 누군가 config에 명시적 숫자값(≠1, "auto" 아님)을
+        # downsampling과 함께 세팅했다면 의도 충돌이므로 fail-closed로 막는다.
+        # 이 강제는 auto 계산 이전에 수행한다 — 순서가 뒤바뀌면 auto가 계산한 큰
+        # 값이 강제(=1)를 덮어써 이중 보정이 그대로 남는다.
+        # LightGBM엔 is_unbalance라는 또 다른 자동 밸런싱 옵션이 있으나 현재
+        # config/lgbm_model.py 어디에도 없다(비활성). 추가되면 여기 가드를 확장한다.
+        if realized_sampling_rate < 1.0:
+            explicit_numeric = configured_spw != "auto" and float(configured_spw) != 1
+            if explicit_numeric:
+                raise ValueError(
+                    "downsampling(sampling_rate<1.0)과 scale_pos_weight="
+                    f"{configured_spw}를 함께 세팅했습니다 — 이중 보정입니다. "
+                    "downsampling이 scale_pos_weight를 대체하므로 둘 중 하나만 쓰세요"
+                    "(#300 결정 6)."
+                )
+            scale_pos_weight = 1
+            print("  [OK] downsampling 활성 → scale_pos_weight=1 강제(이중 보정 방지)")
+        elif configured_spw == "auto":
             neg_count = (y_train == 0).sum()
             pos_count = (y_train == 1).sum()
             scale_pos_weight = neg_count / pos_count
             print(f"  [OK] auto 계산: neg={neg_count}, pos={pos_count}, ratio={scale_pos_weight:.2f}")
         else:
+            scale_pos_weight = configured_spw
             print(f"  [OK] 고정값: {scale_pos_weight}")
 
         params = {
@@ -178,6 +217,9 @@ def main(
             "num_leaves": config["model"]["num_leaves"],
             "scale_pos_weight": scale_pos_weight,
             "random_state": random_state,
+            # downsampling 실현 비율(#300). 1.0이면 downsampling 미적용. 서빙 보정은
+            # 이 값을 쓰므로 실현값(nominal 아님)을 기록한다.
+            "sampling_rate": realized_sampling_rate,
             "train_size": len(train_df),
             "val_size": len(val_df),
             "test_size": len(test_df),
@@ -253,7 +295,13 @@ def main(
         # MLFLOW_MODEL_ARTIFACT_PATH 상수(model/lgbm_model.joblib)도 같은
         # "model/" 아티팩트 경로 아래 파일을 참조한다.
         model_uri = f"runs:/{run.info.run_id}/model"
-        registry_tags = {"val_roc_auc": f"{val_roc_auc:.4f}"}
+        # sampling_rate를 모델 버전 tag로도 기록한다(#300 결정 7). 서빙이 alias로
+        # 모델 버전을 로드하는 순간 tag에서 직접 읽어(run→param 간접 조회 없이)
+        # 로드 시 1회 캐싱한다. 승격 게이트(set_model_alias)도 이 tag를 본다.
+        registry_tags = {
+            "val_roc_auc": f"{val_roc_auc:.4f}",
+            "sampling_rate": f"{realized_sampling_rate}",
+        }
         if extra_params:
             registry_tags.update({k: str(v) for k, v in extra_params.items()})
         # 등록 실패로 이미 끝난 학습 run을 FAILED 처리하지 않는다(best-effort).
@@ -276,6 +324,10 @@ def main(
         if registered_version is not None
         else f"Registered model: 등록 실패 (건너뜀 — 위 경고 로그 참고, run_id={run.info.run_id})"
     )
+
+    # 실현 sampling_rate를 반환한다 — run-pipeline이 evaluate에 넘겨 오프라인
+    # 지표(LogLoss/calibration)를 원분포 기준으로 재게 한다(#300 결정 4).
+    return realized_sampling_rate
 
 
 if __name__ == "__main__":

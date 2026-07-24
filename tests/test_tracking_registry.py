@@ -99,3 +99,54 @@ def test_get_model_metrics_by_alias_reraises_unexpected_errors(monkeypatch):
 
     with pytest.raises(MlflowException):
         registry.get_model_metrics_by_alias("ctr-model")
+
+
+def _fake_client_with_version_tags(tags: dict):
+    fake_version = MagicMock()
+    fake_version.tags = tags
+    fake_client = MagicMock()
+    fake_client.get_model_version.return_value = fake_version
+    return fake_client
+
+
+def test_set_champion_alias_rejects_downsampled_model_when_not_ready(monkeypatch):
+    # #300 순서 가드: downsampling 모델(sampling_rate<1.0)은 서빙 보정 미준비 시
+    # champion 승격 거부.
+    monkeypatch.delenv("CTR_SERVING_CALIBRATION_READY", raising=False)
+    fake_client = _fake_client_with_version_tags({"sampling_rate": "0.5"})
+    monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
+
+    with pytest.raises(ValueError, match="champion 승격을 거부"):
+        registry.set_model_alias("ctr-model", "champion", "7")
+    fake_client.set_registered_model_alias.assert_not_called()
+
+
+def test_set_champion_alias_allows_downsampled_model_when_calibration_ready(monkeypatch):
+    # #302가 서빙 보정을 편입해 플래그를 켜면 승격 허용.
+    monkeypatch.setenv("CTR_SERVING_CALIBRATION_READY", "true")
+    fake_client = _fake_client_with_version_tags({"sampling_rate": "0.5"})
+    monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
+
+    registry.set_model_alias("ctr-model", "champion", "7")
+    fake_client.set_registered_model_alias.assert_called_once()
+
+
+def test_set_champion_alias_allows_full_rate_model(monkeypatch):
+    # sampling_rate=1.0(또는 tag 없음, 기존 v6류)은 downsampling 모델이 아니라 정상 승격.
+    monkeypatch.delenv("CTR_SERVING_CALIBRATION_READY", raising=False)
+    fake_client = _fake_client_with_version_tags({})  # tag 없음 → 1.0 간주
+    monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
+
+    registry.set_model_alias("ctr-model", "champion", "6")
+    fake_client.set_registered_model_alias.assert_called_once()
+
+
+def test_set_non_champion_alias_skips_gate(monkeypatch):
+    # champion 외 alias(challenger/rollback)는 게이트 미적용.
+    monkeypatch.delenv("CTR_SERVING_CALIBRATION_READY", raising=False)
+    fake_client = _fake_client_with_version_tags({"sampling_rate": "0.5"})
+    monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
+
+    registry.set_model_alias("ctr-model", "challenger", "7")
+    fake_client.set_registered_model_alias.assert_called_once()
+    fake_client.get_model_version.assert_not_called()
