@@ -31,6 +31,9 @@ online_store:
   redis_type: redis_cluster
   connection_string: ${REDIS_HOST}:${REDIS_PORT}
   tls_ca_cert_path: ${REDIS_TLS_CA_PATH}
+  # apply 시 FeatureView 삭제에 따른 Redis full-scan 삭제를 끈다
+  # (GHA 러너는 private Redis에 접근 불가; 고아 키는 수동 정리)
+  full_scan_for_deletion: false
 
 entity_key_serialization_version: 3
 
