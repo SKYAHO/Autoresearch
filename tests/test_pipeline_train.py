@@ -312,3 +312,52 @@ def test_main_no_downsampling_registers_no_calibration_model(tmp_path, monkeypat
 
     client = MlflowClient(tracking_uri=tracking_uri)
     assert client.search_model_versions("name='ctr-calibration-model'") == []
+
+
+def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> None:
+    # #302/#179: 학습이 model_onnx/ 아티팩트를 로깅하고, 서빙 로더가 그 run에서 ONNX로
+    # (joblib 아님) Reranker를 로드하며 joblib 예측과 허용오차 내로 동일해야 한다.
+    from src.serving.model_loader import MlflowModelSettings, load_mlflow_model
+    from src.serving.onnx_model import OnnxProbabilityModel
+    from src.serving.schemas import CandidateVideo
+
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    _run_train(tmp_path, config_path)
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    [version] = client.search_model_versions("name='ctr-model'")
+    artifact_paths = {artifact.path for artifact in client.list_artifacts(version.run_id)}
+    assert "model_onnx" in artifact_paths
+
+    reranker = load_mlflow_model(
+        MlflowModelSettings(tracking_uri=tracking_uri, run_id=version.run_id)
+    )
+    assert isinstance(reranker.model, OnnxProbabilityModel)
+
+    serve_frame = _synthetic_ctr_dataset(n=15, seed=11).drop(columns=["clicked"])
+    candidates = [
+        CandidateVideo(video_id=f"v{i}", features=record)
+        for i, record in enumerate(serve_frame.to_dict(orient="records"))
+    ]
+    items = reranker.rerank(candidates)
+    assert len(items) == len(candidates)
+
+    # ONNX 서빙 점수가 원본 joblib LightGBM과 허용오차 내로 동일한지 직접 대조.
+    import joblib
+
+    joblib_model = joblib.load(tmp_path / "model.joblib")
+    with (tmp_path / "categorical_columns.pkl").open("rb") as stream:
+        categories = pickle.load(stream)
+    cast = serve_frame.copy()
+    for col, cats in categories.items():
+        cast[col] = pd.Categorical(cast[col], categories=cats)
+    lgbm_positive = joblib_model.predict_proba(cast[list(MODEL_FEATURE_COLUMNS)])[:, 1]
+    # rerank 결과는 점수 내림차순 정렬이므로 video_id 인덱스로 원위치를 복원해 비교한다.
+    onnx_by_id = {int(item.video_id[1:]): item.ctr_score for item in items}
+    onnx_positive = np.array([onnx_by_id[i] for i in range(len(candidates))])
+    np.testing.assert_allclose(onnx_positive, lgbm_positive, atol=1e-4)
