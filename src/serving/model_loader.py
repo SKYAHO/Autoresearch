@@ -277,7 +277,7 @@ def _load_registry_model(settings: RegistryModelSettings) -> ResolvedModel:
                 f"@{settings.alias}: {error}"
             )
         ) from error
-    calibration_run_id = _resolve_paired_calibration_run_id(settings, main_run_id=version.run_id)
+    calibration_run_id = _resolve_paired_calibration_run_id(settings, main_version=version)
     reranker = load_mlflow_model(
         MlflowModelSettings(
             tracking_uri=settings.tracking_uri,
@@ -291,20 +291,41 @@ def _load_registry_model(settings: RegistryModelSettings) -> ResolvedModel:
 
 
 def _resolve_paired_calibration_run_id(
-    settings: RegistryModelSettings, *, main_run_id: str
+    settings: RegistryModelSettings, *, main_version: object
 ) -> str | None:
-    """calibration 등록 모델 alias를 resolve하고 main과 짝이 맞는지 fail-closed로 검증한다.
+    """calibration을 쓸지 판단하고, 쓴다면 main과 짝이 맞는지 fail-closed로 검증한다.
 
-    - `calibration_model_name`이 None이면 calibration 미사용 → None(항등, 하위호환).
-    - main_model과 calibration_model은 Registry에 완전히 독립된 두 등록 모델이라 각자
-      다른 시점에 champion 승격되면 안 맞는 조합(main@champion=v8, calibration@champion=v3)을
-      조용히 서빙할 수 있다. calibration 버전의 `main_run_id` tag가 지금 resolve된 main
-      run_id와 다르면 `ModelArtifactError`로 서빙 기동을 막는다(#302).
-    - 이 검증은 Registry 경로 전용이다. MLflow 직접 run 지정(`MlflowModelSettings`)은
-      실험·수동 경로라 alias 자동 승격처럼 몰래 어긋날 리스크가 없어 대상이 아니다.
+    판단 기준은 **main 모델 버전의 `sampling_rate` tag**다:
+
+    - main이 non-downsampling(`sampling_rate >= 1.0` 또는 tag 없음, 예 #300 이전 v6)이면
+      보정할 것이 없으므로 calibration을 **스킵**하고 None(항등)을 반환한다. calibration env가
+      설정돼 있어도 무시한다 — main을 v6로 **롤백**했는데 `ctr-calibration-model@champion`은
+      옛 downsampling을 가리키는 상황에서, 롤백이 서빙 기동을 막지 않게 하려는 것이다.
+    - main이 downsampling(`sampling_rate < 1.0`)이면 calibration이 **반드시** 있어야 한다.
+      calibration이 구성되지 않았으면(모델명 미설정) 보정 안 된 편향 확률을 서빙하는 것을
+      막기 위해 `ModelArtifactError`로 기동을 거부한다.
+    - calibration을 쓰는 경우, calibration 버전의 `main_run_id` tag가 지금 resolve된 main
+      run_id와 다르면(main@champion=v8, calibration@champion=v3처럼 각자 다른 시점에 승격돼
+      어긋난 조합) `ModelArtifactError`로 기동을 거부한다.
+
+    이 판단·검증은 Registry 경로 전용이다. MLflow 직접 run 지정(`MlflowModelSettings`)은
+    실험·수동 경로라 alias 자동 승격처럼 몰래 어긋날 리스크가 없어 대상이 아니다.
     """
-    if settings.calibration_model_name is None:
+    main_run_id = main_version.run_id
+    main_tags = getattr(main_version, "tags", None) or {}
+    main_sampling_rate = float(main_tags.get("sampling_rate", 1.0))
+    if main_sampling_rate >= 1.0:
+        # non-downsampling main → 보정 불필요. calibration env가 있어도(롤백 등) 항등.
         return None
+    if settings.calibration_model_name is None:
+        raise ModelArtifactError(
+            reason=(
+                f"main 모델이 downsampling(sampling_rate={main_sampling_rate})인데 서빙에 "
+                "calibration이 구성되지 않았습니다(RERANK_REGISTRY_CALIBRATION_MODEL_NAME 미설정). "
+                "보정 안 된 편향 확률이 서빙에 나가는 것을 막기 위해 기동을 거부합니다 — "
+                "calibration 모델을 배선하거나 non-downsampling 모델을 champion으로 두세요."
+            )
+        )
     calibration_alias = settings.calibration_alias or settings.alias
     try:
         cal_version = MlflowClient().get_model_version_by_alias(

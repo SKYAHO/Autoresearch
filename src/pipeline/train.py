@@ -328,7 +328,10 @@ def main(
             "calibration_model_name", "ctr-calibration-model"
         )
         calibration_version = None
-        if realized_sampling_rate < 1.0:
+        # main 등록이 실패했으면(registered_version None) calibration도 등록하지 않는다 —
+        # main_run_id 짝 tag가 Registry에 없는 main을 가리키는 고아 calibration 버전이
+        # 남는 것을 방지한다(main과 짝지을 대상이 없으므로 등록해도 무의미).
+        if realized_sampling_rate < 1.0 and registered_version is not None:
             calibration_path = os.path.join(
                 os.path.dirname(model_path), CALIBRATION_PARAM_FILENAME
             )

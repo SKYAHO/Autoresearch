@@ -405,12 +405,19 @@ SSOT가 아니다 — 계약 SSOT는 `src/features/model_contract.py`이고 mani
 - **로딩**: 서빙은 두 모델을 로드 시 함께 조립한다(`src/serving/model_loader.py`). Registry 경로는
   `ctr-model@champion`과 `ctr-calibration-model@champion`을 각각 resolve한다. calibration `w`는
   **로드 시 1회 읽어 캐싱**하며 요청당 재조회하지 않는다(#300 서빙 캐싱 계약).
-- **페어링 fail-closed 검증**: Registry 경로에서 calibration 버전의 `main_run_id` tag가 resolve된
-  메인 run_id와 다르면 `ModelArtifactError`로 **서빙 기동을 막는다** — 두 모델이 각자 다른 시점에
-  승격돼 안 맞는 조합(예 `main@champion=v8`, `calibration@champion=v3`)을 조용히 서빙하는 것을
-  방지한다. 이 검증은 **Registry 경로 전용**이다: MLflow 직접 run 지정은 실험·수동 경로라 alias
-  자동 승격처럼 몰래 어긋날 리스크가 없어 대상이 아니다.
-- **하위호환**: calibration 모델이 없으면(v6·`w=1.0`) 페어링 검증을 건너뛰고 calibration 없이 동작한다.
+- **calibration 사용 판단은 메인의 `sampling_rate` tag 기준**: 메인이 non-downsampling
+  (`sampling_rate >= 1.0` 또는 tag 없음, 예 v6)이면 보정할 것이 없어 calibration을 **스킵**한다.
+  calibration alias가 설정돼 있어도 무시한다 — 메인을 v6로 **롤백**했는데 `ctr-calibration-model@
+  champion`이 옛 downsampling을 가리키는 상황에서 롤백이 서빙 기동을 막지 않게 하려는 것이다.
+  운영자는 롤백 시 calibration alias를 따로 손댈 필요가 없다.
+- **downsampling 메인은 calibration 필수**: 메인이 downsampling(`sampling_rate < 1.0`)인데 서빙에
+  calibration이 구성되지 않았으면(모델명 미설정) 보정 안 된 편향 확률을 막기 위해
+  `ModelArtifactError`로 **기동을 거부**한다(#300 승격 게이트와 함께 defense-in-depth).
+- **페어링 fail-closed 검증**: calibration을 쓰는 경우, calibration 버전의 `main_run_id` tag가
+  resolve된 메인 run_id와 다르면 `ModelArtifactError`로 **서빙 기동을 막는다** — 두 모델이 각자
+  다른 시점에 승격돼 안 맞는 조합(예 `main@champion=v8`, `calibration@champion=v3`)을 조용히
+  서빙하는 것을 방지한다. 이 판단·검증은 **Registry 경로 전용**이다: MLflow 직접 run 지정은
+  실험·수동 경로라 alias 자동 승격처럼 몰래 어긋날 리스크가 없어 대상이 아니다.
 
 ### 향후 재검토 조건
 
