@@ -53,9 +53,15 @@
 
 ### 워크플로우 (`.github/workflows/pr-report.yml`)
 
-- **analyze job** (PR별 concurrency, cancel-in-progress): claude-code-action이
-  `report.json` 생성 → `check-jsonschema` 검증 → `inject.py`로
-  `site/pr/<n>/index.html` 빌드 → artifact 업로드. 실패 시 안내 코멘트.
+- **analyze job** (PR별 concurrency, cancel-in-progress):
+  `generate_report.py`가 PR 메타·diff·파이프라인 정본 문서를 결정적으로
+  수집해 **OpenRouter chat completions API**(#319)로 `report.json` 생성
+  (스키마 검증 실패 시 오류 피드백 1회 재시도) → `check-jsonschema` 검증 →
+  `inject.py`로 `site/pr/<n>/index.html` 빌드 → artifact 업로드. 실패 시
+  안내 코멘트. 모델은 워크플로 상단 `PR_REPORT_MODEL` 변수로 교체
+  (기본 `google/gemini-3.6-flash`), 인증은 `OPENROUTER_API_KEY` 시크릿
+  (팀 공용 종량제 — 개인 Claude 구독과 분리). diff는 생성 파일 제외,
+  파일당 20K자·전체 150K자 제한.
 - **publish job** (저장소 전역 concurrency — gh-pages push race 방지):
   `peaceiris/actions-gh-pages@v4` + `keep_files: true`로 배포 → 마커
   `<!-- pr-comprehension-report -->` 기반 sticky 코멘트 upsert (요약 3줄,
@@ -66,7 +72,9 @@
 `claude.yml`(인라인 이해도 확인 질문)과 `pr-report.yml`은 별도
 워크플로우로 병렬 실행됩니다. 리뷰 요약 코멘트가 리포트 URL을
 안내합니다. 트리거 문구 `/claude-review`와 `/claude-report`는 substring
-관계가 아니므로 충돌하지 않습니다.
+관계가 아니므로 충돌하지 않습니다. 인증도 분리되어 있습니다 —
+`claude.yml`은 `CLAUDE_CODE_OAUTH_TOKEN`(Claude 구독), `pr-report.yml`은
+`OPENROUTER_API_KEY`(종량제)를 사용합니다.
 
 ## 운영
 

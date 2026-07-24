@@ -9,6 +9,13 @@ name: PR Comprehension Report
 # 갱신은 PR에 /claude-report 코멘트로 수동 트리거합니다 (synchronize 자동
 # 재생성은 비용·소음 때문에 제외). 이 워크플로우는 required check가 아니며
 # 실패해도 머지를 막지 않습니다 (soft-fail).
+#
+# 분석은 OpenRouter chat completions API를 사용합니다 (#319). 모델은 아래
+# PR_REPORT_MODEL 한 줄로 교체할 수 있습니다 (슬러그: openrouter.ai/models).
+# OPENROUTER_API_KEY 시크릿이 필요합니다.
+
+env:
+  PR_REPORT_MODEL: "google/gemini-3.6-flash"
 
 on:
   pull_request:
@@ -39,8 +46,6 @@ jobs:
       contents: read
       pull-requests: write # 실패 안내 코멘트
       issues: write
-      id-token: write
-      actions: read
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
     outputs:
@@ -51,70 +56,12 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Generate report.json with Claude
+      - name: Generate report.json via OpenRouter
         continue-on-error: true # 실패는 아래 validate → 안내 코멘트로 soft-fail
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          trigger_phrase: "/claude-report"
-          prompt: |
-            당신은 이 PR을 팀원이 빠르게 이해하도록 돕는 분석가입니다. 모든
-            텍스트 출력은 한국어 격식체를 사용합니다.
-
-            Repository: ${{ github.repository }}
-            Pull request number: ${{ env.PR_NUMBER }}
-
-            절차:
-            1. `gh pr view ${{ env.PR_NUMBER }} --json title,author,body,headRefOid`
-               로 메타데이터를 확보합니다. 관련 이슈 번호는 PR 본문의
-               "Closes #N" 패턴에서 추출합니다.
-            2. `gh pr diff ${{ env.PR_NUMBER }} --name-only` 로 변경 파일
-               목록을 먼저 파악합니다. 파일이 30개를 넘거나 diff가 매우 크면
-               전체 diff를 한 번에 읽지 말고 중요해 보이는 파일부터
-               `gh pr diff ${{ env.PR_NUMBER }}` 결과를 파일별로 나눠
-               읽으십시오. 생성 파일(uv.lock, requirements 산출물, parquet,
-               __pycache__)은 내용을 읽지 말고 docs 등급으로만 집계합니다.
-            3. 파이프라인 배치 판단을 위해 반드시 읽으십시오:
-               - .github/pr-report/pipeline-nodes.json (노드 정본)
-               - docs/guides/pipeline-overview.md
-               - .claude/docs/architecture-overview.md
-            4. 저장소 루트에 report.json 파일 하나만 Write 하십시오. 다른
-               파일의 생성·수정, PR 코멘트 작성은 금지합니다. report.json은
-               .github/pr-report/report.schema.json 을 정확히 따라야 하며
-               (additionalProperties: false), 마크다운 펜스 등 JSON 외
-               텍스트를 포함하면 안 됩니다. generated_at은 현재 UTC 시각,
-               head_sha는 headRefOid를 사용합니다.
-
-            pipeline 작성 규칙:
-            - nodes는 pipeline-nodes.json의 전체 노드를 복사하고 각 노드의
-              status만 판정합니다(unchanged/modified/added/removed). 이 PR이
-              카탈로그에 없는 새 구성요소를 도입할 때만 "custom:" 접두 id로
-              노드를 추가할 수 있습니다.
-            - 변경된 노드에는 as_is_ko / to_be_ko 를 각 1~2문장으로 채우고,
-              focus에 중심 노드 id를 1~3개 지정합니다.
-            - edges는 카탈로그를 복사하되, 이 PR로 의미가 바뀌는 에지에만
-              status를 부여합니다.
-
-            changes 중요도 rubric (rank는 같은 등급 안에서 영향이 큰 순):
-            - core     — 도메인 로직·알고리즘·동작 변경 (파이프라인 산출물이 달라짐)
-            - contract — pydantic 스키마, parquet/BigQuery 스키마, 공개 batch
-                         CLI 인자, API 요청/응답, Feast 정의 등 모듈 간 계약
-            - config   — 설정, 환경 변수, Dockerfile, CI 워크플로우, 의존성
-            - test     — 테스트 추가·수정
-            - docs     — 문서, 주석, 생성 파일(uv.lock 등)
-            같은 파일이라도 함수/클래스 단위로 나눠 항목화하고, docs/test는
-            묶어서 1~2개 항목으로 압축합니다. 총 20개 이하.
-            diff_snippet은 이해에 필요한 핵심 hunk만 발췌합니다(항목당
-            4000자 이하, 불필요하면 생략). risk_notes_ko에는 데이터 계약
-            파급, 학습-서빙 일관성, 롤백 주의점 등을 적습니다.
-
-            summary_ko는 정확히 3줄, 각 줄 120자 이하입니다.
-            qa_note_ko에는 "코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:'
-            질문에 답변한 뒤 스레드를 resolve해 주십시오"를 이 PR의 핵심
-            로직 주제와 함께 안내합니다.
-          claude_args: |
-            --model "claude-opus-4-8"
-            --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob,Grep,Write"
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python .github/pr-report/generate_report.py
 
       - name: Validate report.json against schema
         id: validate
