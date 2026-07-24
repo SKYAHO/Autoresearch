@@ -33,7 +33,7 @@
 | 티어 | Claude | Codex |
 | --- | --- | --- |
 | Top | Claude Fable 5 (기본), Claude Opus 4.8 (경량 계획·리뷰) | GPT-5.6 Terra (xhigh) |
-| Middle | Claude Sonnet 5 | GPT-5.6 Luna (high), 다중 파일 구현은 Terra (medium~high) |
+| Middle | Claude Sonnet 5 | GPT-5.6 Luna (high), 다중 파일 구현은 Terra (기본 medium, 실패 시 high 승격) |
 | Fast | Claude Haiku 4.5 | GPT-5.6 Luna (low) |
 
 - 모호한 계획·오케스트레이션은 Fable 5가 전담합니다. Terra xhigh는
