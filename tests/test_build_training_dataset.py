@@ -214,13 +214,15 @@ def test_main_trims_padding_range_from_output(tmp_path, monkeypatch):
     ).to_csv(raw_dir / "personas.csv", index=False)
 
     # 왼쪽 padding 구간(7일 이전), 학습 구간 내부, 오른쪽 padding 구간(end_date
-    # 이후) 각각 impression 1건씩 — load_events_from_bigquery를 mock해서
+    # KST 다음 날) 각각 impression 1건씩 — load_events_from_bigquery를 mock해서
     # 실제 padding 계산과 무관하게 이 세 구간이 다 반환됐다고 가정한다.
+    # #286: 인자는 "이벤트 발생 KST 날짜 폐구간"이므로 after는 KST 07-10
+    # (= 07-09 15:00Z 이후)이어야 트림 대상이다.
     long_events = pd.DataFrame(
         [
             _long_event("before", "2026-07-05 00:00:00", "u1", "impression", "v1"),
             _long_event("in_window", "2026-07-08 12:00:00", "u1", "impression", "v1"),
-            _long_event("after", "2026-07-09 00:30:00", "u1", "impression", "v1"),
+            _long_event("after", "2026-07-09 16:00:00", "u1", "impression", "v1"),
         ]
     )
     monkeypatch.setattr(
@@ -240,6 +242,123 @@ def test_main_trims_padding_range_from_output(tmp_path, monkeypatch):
 
     result = pd.read_csv(output_path)
     assert len(result) == 1
+
+
+def test_padded_dt_range_covers_lookback_and_session_days():
+    # #286: dt 프루닝은 왼쪽 7일 룩백 + 오른쪽 세션 완성 padding(일 단위 올림).
+    # 기존 구현은 자정 + seconds(3000) 후 날짜 재포맷이라 오른쪽 pad가 항상
+    # no-op이었다 — end 다음 날 파티션이 포함되어야 한다.
+    start, end = build_training_dataset.padded_dt_range("2026-07-08", "2026-07-09")
+    assert start == "2026-07-01"
+    assert end == "2026-07-10"
+
+
+def test_events_kst_window_returns_utc_boundaries():
+    # #286: 인자 의미는 "이벤트 발생 KST 날짜 폐구간 [start, end]".
+    # UTC 저장 timestamp 기준 경계는 [start 00:00 KST, end+1 00:00 KST).
+    lo, hi = build_training_dataset.events_kst_window("2026-07-08", "2026-07-09")
+    assert lo == "2026-07-07 15:00:00"
+    assert hi == "2026-07-09 15:00:00"
+
+
+def _write_minimal_raw(raw_dir):
+    pd.DataFrame(
+        {
+            "video_id": ["v1"],
+            "categoryId": ["Music"],
+            "duration": ["PT5M"],
+            "viewCount": [1000],
+            "likeCount": [50],
+            "commentCount": [10],
+            "publishedAt": ["2026-01-01"],
+            "title": ["t"],
+            "description": ["d"],
+        }
+    ).to_csv(raw_dir / "youtube_videos.csv", index=False)
+    pd.DataFrame(
+        {
+            "uuid": ["u1"],
+            "age": [25],
+            "occupation": ["Student"],
+            "hobbies_and_interests": ["gaming"],
+            "hobbies_and_interests_list": ["[]"],
+        }
+    ).to_csv(raw_dir / "personas.csv", index=False)
+
+
+def test_main_trim_uses_kst_day_boundaries(tmp_path, monkeypatch):
+    # #286 경계 계약: KST 폐구간 [07-08, 07-09] =
+    # UTC [07-07 15:00:00, 07-09 15:00:00). 실 BQ 경로처럼 tz-aware UTC
+    # 프레임을 주입해 정규화까지 함께 검증한다.
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    _write_minimal_raw(raw_dir)
+
+    long_events = pd.DataFrame(
+        [
+            _long_event("kst_prev_day", "2026-07-07 14:59:59", "u1", "impression", "v1"),
+            _long_event("kst_start_midnight", "2026-07-07 15:00:00", "u1", "impression", "v1"),
+            _long_event("kst_end_last_sec", "2026-07-09 14:59:59", "u1", "impression", "v1"),
+            _long_event("kst_next_day", "2026-07-09 15:00:00", "u1", "impression", "v1"),
+        ]
+    )
+    long_events["event_timestamp"] = pd.to_datetime(
+        long_events["event_timestamp"], utc=True
+    )
+    captured = {}
+
+    def _fake_load(start, end):
+        captured["dt_range"] = (start, end)
+        return long_events
+
+    monkeypatch.setattr(build_training_dataset, "load_events_from_bigquery", _fake_load)
+
+    output_path = tmp_path / "training_dataset.csv"
+    build_training_dataset.main(
+        raw_dir=str(raw_dir),
+        output_path=str(output_path),
+        events_source="bigquery",
+        events_start_date="2026-07-08",
+        events_end_date="2026-07-09",
+    )
+
+    result = pd.read_csv(output_path)
+    assert len(result) == 2
+    # dt 프루닝 범위가 padded_dt_range와 일치해야 한다 (오른쪽 pad no-op 수정).
+    assert captured["dt_range"] == ("2026-07-01", "2026-07-10")
+
+
+def test_main_attributes_session_crossing_kst_midnight(tmp_path, monkeypatch):
+    # #286: end일 KST 23:59 impression의 클릭이 KST 자정을 넘어 dt=end+1
+    # 파티션에 실려도(오른쪽 dt pad 덕에 로드됨) attribution되어야 한다.
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    _write_minimal_raw(raw_dir)
+
+    long_events = pd.DataFrame(
+        [
+            _long_event("imp_last_min", "2026-07-09 14:59:00", "u1", "impression", "v1"),
+            _long_event("click_next_kst_day", "2026-07-09 15:00:30", "u1", "click", "v1"),
+        ]
+    )
+    monkeypatch.setattr(
+        build_training_dataset,
+        "load_events_from_bigquery",
+        lambda start, end: long_events,
+    )
+
+    output_path = tmp_path / "training_dataset.csv"
+    build_training_dataset.main(
+        raw_dir=str(raw_dir),
+        output_path=str(output_path),
+        events_source="bigquery",
+        events_start_date="2026-07-08",
+        events_end_date="2026-07-09",
+    )
+
+    result = pd.read_csv(output_path)
+    assert len(result) == 1
+    assert int(result["clicked"].iloc[0]) == 1
 
 
 def test_main_outputs_21_model_input_columns_plus_clicked(tmp_path, monkeypatch):
