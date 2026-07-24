@@ -95,8 +95,19 @@
   }
   #node-detail .asis-tobe .tag { font-size: .72rem; font-weight: 600; color: var(--muted); display: block; margin-bottom: 4px; }
   #node-detail .paths { color: var(--muted); font-size: .78rem; margin-top: 8px; font-family: ui-monospace, monospace; }
-  /* 왜/기대효과 */
-  #why .effects { margin: 10px 0 0; padding-left: 22px; }
+  /* 2단계: 쉬운 설명 · 왜 · 기대효과 */
+  #easy .easy-block { margin-bottom: 14px; }
+  #easy .easy-block:last-child { margin-bottom: 0; }
+  #easy .easy-block .tag {
+    display: block; font-size: .72rem; font-weight: 600; color: var(--muted); margin-bottom: 6px;
+  }
+  #easy .easy-block ul { margin: 0; padding-left: 22px; }
+  #easy .easy-block li { margin: 4px 0; }
+  /* 3단계: 기본 접힘 */
+  #changes-details > summary {
+    cursor: pointer; font-weight: 600; color: var(--accent); padding: 4px 0; user-select: none;
+  }
+  #changes-details[open] > summary { margin-bottom: 12px; }
   /* 변경 카드 */
   .change-card { margin-bottom: 12px; }
   .change-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
@@ -167,21 +178,34 @@
     </div>
   </section>
 
-  <section id="why">
-    <h2>왜 이 작업이 필요했나 · 기대효과</h2>
+  <section id="easy">
+    <h2><span class="step">2단계</span>쉬운 설명</h2>
     <div class="card">
-      <p id="motivation" style="margin:0"></p>
-      <ul class="effects" id="effects-list"></ul>
+      <div class="easy-block">
+        <span class="tag">무슨 일이 있었나</span>
+        <ul id="plain-points-list"></ul>
+      </div>
+      <div class="easy-block">
+        <span class="tag">왜 필요했나</span>
+        <p id="motivation" style="margin:0"></p>
+      </div>
+      <div class="easy-block">
+        <span class="tag">기대효과</span>
+        <ul class="effects" id="effects-list"></ul>
+      </div>
     </div>
   </section>
 
   <section id="changes">
-    <h2><span class="step">2단계</span>중요도순 변경 사항</h2>
-    <div id="changes-list"></div>
+    <h2><span class="step">3단계</span>코드 기준 설명</h2>
+    <details id="changes-details">
+      <summary id="changes-summary">코드 기준 상세 설명 펼치기</summary>
+      <div id="changes-list"></div>
+    </details>
   </section>
 
   <section id="qa">
-    <h2><span class="step">3단계</span>이해도 확인</h2>
+    <h2><span class="step">4단계</span>이해도 확인</h2>
     <div class="card"><p id="qa-note" style="margin:0"></p></div>
   </section>
 
@@ -341,7 +365,13 @@
     detail.classList.add("visible");
   }
 
-  // ---------- why ----------
+  // ---------- easy (plain points / why / effects) ----------
+  var ppList = document.getElementById("plain-points-list");
+  r.plain_points_ko.forEach(function (t) {
+    var li = document.createElement("li");
+    li.textContent = t;
+    ppList.appendChild(li);
+  });
   document.getElementById("motivation").textContent = r.motivation_ko;
   var ul = document.getElementById("effects-list");
   r.expected_effects_ko.forEach(function (t) {
@@ -407,6 +437,8 @@
     }
     list.appendChild(card);
   });
+  document.getElementById("changes-summary").textContent =
+    "코드 기준 상세 설명 펼치기 (" + r.changes.length + "건)";
 
   // ---------- qa / footer ----------
   document.getElementById("qa-note").textContent = r.qa_note_ko;
