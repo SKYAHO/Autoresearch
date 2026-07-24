@@ -122,6 +122,16 @@ def test_downsample_preserves_original_row_order():
     assert list(y_ds.index) == sorted(y_ds.index)
 
 
+def test_downsample_keeps_at_least_one_negative_on_tiny_split():
+    # negative가 매우 적어 orig_neg*w가 0으로 반올림돼도 최소 1건은 남겨
+    # realized_rate=0.0(→ calibration ValueError로 파이프라인 중단)을 방지한다.
+    X, y = _train_frame(n_pos=100, n_neg=4)
+    _, y_ds, realized = downsample_negatives(X, y, sampling_rate=0.1, random_state=0)
+    assert (y_ds == 0).sum() == 1  # max(1, round(4*0.1)=0) = 1
+    assert realized == pytest.approx(0.25)  # 1/4
+    assert realized > 0.0
+
+
 def test_downsample_handles_no_negatives():
     X, y = _train_frame(n_pos=10, n_neg=0)
     X_ds, y_ds, realized = downsample_negatives(X, y, sampling_rate=0.1)
