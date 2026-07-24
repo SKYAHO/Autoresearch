@@ -323,11 +323,50 @@ feast apply
 
 > Registry가 `GCS_REGISTRY_PATH`로 지정한 GCS 버킷에 저장됩니다.
 
-> 배치·운영 경로에서는 `feast apply` CLI 대신 공개 batch 명령
-> `python -m autoresearch.jobs.feast_apply`를 사용합니다. feast 0.64의 apply
-> 커맨드는 인증 실패를 삼키고 exit 0으로 끝나므로 자동화에서 실패를 감지할 수
-> 없습니다. 인자 계약은
+> **운영 경로 (GHA, 정본)**: `feature_repo/feature_definitions.py`,
+> `feature_repo/feature_store.yaml`, `feature_repo/.feastignore`,
+> `feature_repo/redis_iam.py`, `pyproject.toml`, `uv.lock`,
+> `.github/workflows/feast-apply.yml` 중 하나가 `main`에 merge되면
+> `.github/workflows/feast-apply.yml` 워크플로우가 feast 공식 CLI(`feast
+> apply`)로 GCS registry를 자동 갱신합니다. `workflow_dispatch`로 수동
+> 실행도 가능합니다. feast 0.64의 apply 커맨드는 인증 실패(
+> `FeastProviderLoginError`)를 삼키고 exit 0으로 끝나는 결함이 있어, 이
+> 워크플로우는 apply 로그의 실패 패턴 grep과 apply 전후 registry generation
+> 비교로 침묵 실패를 감지합니다.
+>
+> **DAG 소비용 경로 (과도기, 폐기 예정)**: Airflow `feast_online_store_materialize`
+> DAG는 여전히 공개 batch 명령 `python -m autoresearch.jobs.feast_apply`로
+> materialize 직전에 apply를 실행합니다. 이 래퍼는 DAG 소비 전용으로
+> 도입되었으며, DAG의 `apply_feature_registry` 태스크가 제거되는 후속
+> 이슈에서 함께 삭제될 예정입니다(과도기에는 GHA 경로와 병존). 인자 계약은
 > `docs/specs/2026-07-13-public-batch-execution-contract.md`를 참조하세요.
+
+### `full_scan_for_deletion: false` (공유 설정)
+
+`feature_store.yaml`의 `online_store.full_scan_for_deletion: false`는 GHA
+apply 경로뿐 아니라 Airflow DAG의 apply 경로에도 함께 적용되는 **공유
+설정**입니다. FeatureView 정의를 삭제하는 merge가 발생해도 apply가 Redis에
+대해 full-scan 삭제를 시도하지 않으므로, 삭제된 FeatureView의 Redis 키가
+자동으로 정리되지 않습니다. 필요 시 수동으로 고아 키를 정리하세요.
+
+### GitHub repo variables ↔ Airflow 주입 env 값 일치
+
+GHA `feast-apply` 워크플로우와 Airflow DAG의 apply 태스크는 **동일한
+`feature_store.yaml`**을 서로 다른 실행 환경(GitHub repo variables vs.
+Airflow가 주입하는 env)에서 채워 넣습니다. 두 값이 어긋나면 registry에 기록된
+`BigQuerySource` 테이블 경로 등이 실행할 때마다 서로 다른 값으로 번갈아
+덮어써지는 flip-flop이 발생합니다. 아래 변수는 반드시 두 경로에서 동일한
+값이어야 합니다.
+
+| 변수 | GHA (repo variable) | Airflow (주입 env) |
+|------|---------------------|---------------------|
+| `GCP_PROJECT_ID` | `vars.GCP_PROJECT_ID` | 동일 값 |
+| `BQ_DATASET` | `vars.BQ_DATASET` | 동일 값 |
+| `GCS_REGISTRY_PATH` | `vars.GCS_REGISTRY_PATH` | 동일 값 |
+| `GCS_STAGING_LOCATION` | `vars.GCS_STAGING_LOCATION` | 동일 값 |
+| `REDIS_HOST` | `vars.REDIS_HOST` | 동일 값 |
+| `REDIS_PORT` | `vars.REDIS_PORT` | 동일 값 |
+| `REDIS_TLS_CA_PATH` | 미설정 (GHA 러너는 private Redis 미접근) | Airflow 쪽 값(설정 시) |
 
 - [ ] 완료
 

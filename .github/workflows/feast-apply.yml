@@ -1,0 +1,120 @@
+name: feast-apply
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - feature_repo/feature_definitions.py
+      - feature_repo/feature_store.yaml
+      - feature_repo/.feastignore
+      - feature_repo/redis_iam.py
+      - pyproject.toml
+      - uv.lock
+      - .github/workflows/feast-apply.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: feast-apply
+  cancel-in-progress: false
+
+jobs:
+  feast-apply:
+    name: Apply Feast feature definitions to registry
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          # uv 버전을 고정해 lock/export 포맷이 로컬과 어긋나지 않게 한다.
+          version: "0.11.26"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install feast dependencies
+        # feast 그룹은 dev 그룹과 충돌하므로 feast 그룹만 격리 설치한다.
+        run: uv sync --frozen --only-group feast
+
+      - name: Authenticate to GCP with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER_ID }}
+          service_account: ${{ secrets.FEAST_APPLY_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Validate required environment variables
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          BQ_DATASET: ${{ vars.BQ_DATASET }}
+          GCS_REGISTRY_PATH: ${{ vars.GCS_REGISTRY_PATH }}
+          GCS_STAGING_LOCATION: ${{ vars.GCS_STAGING_LOCATION }}
+          REDIS_HOST: ${{ vars.REDIS_HOST }}
+          REDIS_PORT: ${{ vars.REDIS_PORT }}
+        shell: bash
+        run: |
+          for variable_name in \
+            GCP_PROJECT_ID BQ_DATASET GCS_REGISTRY_PATH \
+            GCS_STAGING_LOCATION REDIS_HOST REDIS_PORT
+          do
+            if [[ -z "${!variable_name}" ]]; then
+              echo "::error::$variable_name is not configured"
+              exit 1
+            fi
+          done
+
+      - name: Record registry generation before apply
+        id: before
+        env:
+          GCS_REGISTRY_PATH: ${{ vars.GCS_REGISTRY_PATH }}
+        shell: bash
+        run: |
+          generation="$(gcloud storage objects describe "$GCS_REGISTRY_PATH" \
+            --format='value(generation)' 2>/dev/null || true)"
+          echo "generation=$generation" >> "$GITHUB_OUTPUT"
+
+      - name: Run feast apply
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          BQ_DATASET: ${{ vars.BQ_DATASET }}
+          GCS_REGISTRY_PATH: ${{ vars.GCS_REGISTRY_PATH }}
+          GCS_STAGING_LOCATION: ${{ vars.GCS_STAGING_LOCATION }}
+          REDIS_HOST: ${{ vars.REDIS_HOST }}
+          REDIS_PORT: ${{ vars.REDIS_PORT }}
+          PYTHONPATH: ${{ github.workspace }}
+        shell: bash
+        run: |
+          set -o pipefail
+          (cd feature_repo && uv run --no-sync feast apply) 2>&1 | tee apply.log
+
+      - name: Guard against silent apply failure (log pattern)
+        shell: bash
+        run: |
+          if grep -E 'application-default login|GCP error:' apply.log; then
+            echo "::error::feast apply failed silently (FeastProviderLoginError swallowed with exit 0)"
+            exit 1
+          fi
+
+      - name: Guard against silent apply failure (registry generation)
+        env:
+          GCS_REGISTRY_PATH: ${{ vars.GCS_REGISTRY_PATH }}
+          BEFORE_GENERATION: ${{ steps.before.outputs.generation }}
+        shell: bash
+        run: |
+          after_generation="$(gcloud storage objects describe "$GCS_REGISTRY_PATH" \
+            --format='value(generation)' 2>/dev/null || true)"
+          if [[ -n "$BEFORE_GENERATION" && "$after_generation" == "$BEFORE_GENERATION" ]]; then
+            echo "::error::registry generation unchanged after apply (silent failure)"
+            exit 1
+          fi
