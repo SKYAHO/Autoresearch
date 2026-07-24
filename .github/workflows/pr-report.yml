@@ -157,15 +157,13 @@ jobs:
           url = os.environ["PAGES_URL"]
           lines = ["<!-- pr-comprehension-report -->", "## PR 이해 리포트", ""]
           lines += [f"{i}. {s}" for i, s in enumerate(r["summary_ko"], 1)]
-          lines += ["", "**중요 변경 top 3**", ""]
-          for c in sorted(r["changes"], key=lambda c: c["rank"])[:3]:
-              first = c["explanation_ko"].splitlines()[0]
-              lines.append(f"- `{c['importance']}` **{c['module']} :: {c['symbol']}** — {first}")
+          lines += ["", "**쉬운 설명**", ""]
+          lines += [f"- {p}" for p in r["plain_points_ko"][:3]]
           lines += [
               "",
-              f"**[1·2단계 — 파이프라인 시각화·중요도순 전체 diff 보기]({url})** (배포 반영에 1~2분 걸릴 수 있습니다)",
+              f"**[1·2단계 — 파이프라인 시각화·쉬운 설명 보기]({url})** (배포 반영에 1~2분 걸릴 수 있습니다)",
               "",
-              "**3단계 — 이해도 확인:** 코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오.",
+              "**4단계 — 이해도 확인:** 코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오.",
               "",
               "---",
               "_이 코멘트는 pr-report 워크플로우가 자동 생성했습니다. 코드가 갱신되면 PR에 `/claude-report` 코멘트로 재생성할 수 있습니다._",
