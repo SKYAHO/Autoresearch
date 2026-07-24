@@ -82,3 +82,15 @@ def start_run(run_name: Optional[str] = None, tags: Optional[Dict[str, str]] = N
 def end_run() -> None:
     """MLflow Run 종료."""
     mlflow.end_run()
+
+
+def log_onnx_model(onnx_model: Any, artifact_path: str = "model_onnx") -> None:
+    """ONNX로 변환된 모델을 MLflow에 기록한다(mlflow.onnx.log_model 래퍼, #302/#179).
+
+    Args:
+        onnx_model: onnx.ModelProto (예: src.utils.model_utils.convert_lgbm_to_onnx 반환값).
+        artifact_path: MLflow artifact 저장 경로(서빙 로더의 ONNX 경로 상수와 계약).
+    """
+    import mlflow.onnx
+
+    mlflow.onnx.log_model(onnx_model, artifact_path=artifact_path)

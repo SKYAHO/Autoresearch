@@ -27,9 +27,19 @@ from src.features.model_contract import (  # noqa: E402
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
 )
-from src.utils.model_utils import save_model, save_feature_columns, save_categorical_columns  # noqa: E402
+from src.utils.model_utils import (  # noqa: E402
+    convert_lgbm_to_onnx,
+    save_categorical_columns,
+    save_feature_columns,
+    save_model,
+)
 from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
-from src.tracking.logger import log_artifact, log_metrics, log_parameters  # noqa: E402
+from src.tracking.logger import (  # noqa: E402
+    log_artifact,
+    log_metrics,
+    log_onnx_model,
+    log_parameters,
+)
 from src.tracking.registry import register_model  # noqa: E402
 
 
@@ -296,6 +306,19 @@ def main(
         log_artifact(local_path=model_path, artifact_path="model")
         log_artifact(local_path=feature_columns_path, artifact_path="features")
         log_artifact(local_path=categorical_columns_path, artifact_path="features")
+
+        # [Step 8b] 모델 바이너리 ONNX 전환(#302/#179). joblib 저장·로깅 직후 같은 모델을
+        # ONNX로 변환해 model_onnx/로 로깅한다 — 서빙(model_loader)이 이 아티팩트가 있으면
+        # onnxruntime로 추론해 pickle 역직렬화 위험을 없앤다. 입력은 feature_columns 순서의
+        # 단일 float32 텐서([None, n_features])이고, 카테고리는 서빙이 학습 카테고리로 캐스팅해
+        # 뽑은 정수 코드다. 변환 실패는 best-effort로 흘려보낸다 — joblib 모델·아티팩트는 이미
+        # 저장됐고, 서빙은 model_onnx/가 없으면 joblib으로 폴백하기 때문이다(registry 등록과 동일 정책).
+        try:
+            onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
+            log_onnx_model(onnx_model, artifact_path="model_onnx")
+            print("  [OK] ONNX 변환·로깅 완료 (model_onnx/)")
+        except Exception as exc:
+            print(f"  ⚠️  ONNX 변환 실패 — joblib 모델·아티팩트는 정상 저장됨(서빙은 joblib 폴백): {exc}")
 
         print("\n[Step 9] Model Registry 등록...")
         model_name = config["registry"]["model_name"]

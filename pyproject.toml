@@ -28,6 +28,10 @@ dependencies = [
     "joblib>=1.3.0",
     "typer>=0.9.0",
     "mlflow-skinny==2.22.1",
+    # 모델 바이너리 ONNX 전환(#302/#179): 학습 시 LightGBM→ONNX 변환(onnxmltools),
+    # 서빙 시 onnxruntime 추론(pickle 역직렬화 위험 제거).
+    "onnxmltools>=1.12",
+    "onnxruntime>=1.18",
     "pandas>=2.0,<3",
     # deploy/mlflow/runtime과 동일하게 고정: protobuf>=7에서 MLflow client가
     # FieldDescriptor.label 오류를 낸다.

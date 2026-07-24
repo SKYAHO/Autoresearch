@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import pickle
 from dataclasses import dataclass
@@ -20,7 +21,10 @@ from src.features.model_contract import (
     require_model_feature_columns,
 )
 from src.models.calibration import CALIBRATION_PARAM_FILENAME, DownsamplingCalibrator
+from src.serving.onnx_model import OnnxProbabilityModel
 from src.serving.service import ProbabilityModel, Reranker
+
+logger = logging.getLogger(__name__)
 
 FEATURE_COLUMNS_ADAPTER: Final = TypeAdapter(tuple[str, ...])
 CATEGORICAL_CATEGORIES_ADAPTER: Final = TypeAdapter(dict[str, tuple[str | int | float | bool, ...]])
@@ -46,6 +50,12 @@ MLFLOW_CATEGORICAL_COLUMNS_ARTIFACT_PATH: Final = "features/categorical_columns.
 # calibration 모델 아티팩트(JSON w). 학습 train.py Step 9의 artifact_path="calibration"와 계약.
 # 별도 등록 모델(config.registry.calibration_model_name)의 run 아래 이 경로로 로깅된다(#302).
 MLFLOW_CALIBRATION_ARTIFACT_PATH: Final = f"calibration/{CALIBRATION_PARAM_FILENAME}"
+# ONNX 모델 아티팩트 디렉토리(#302/#179). 학습 train.py [Step 8b]의
+# log_onnx_model(artifact_path="model_onnx")와 계약 — mlflow.onnx.log_model이 이 경로 아래
+# MLmodel 디렉토리를 만든다. 이 아티팩트가 있으면 서빙은 onnxruntime로 추론하고, 없으면
+# (기존 champion 등 joblib만 있는 버전) joblib로 폴백한다(하위호환). "서빙 pickle 완전 제거"는
+# 모든 champion이 ONNX로 재학습된 뒤 폴백을 걷어내는 후속 슬라이스에서 완성한다.
+MLFLOW_ONNX_MODEL_ARTIFACT_PATH: Final = "model_onnx"
 
 
 class ModelSource(StrEnum):
@@ -62,12 +72,16 @@ class LocalModelSettings:
 
     calibration_model_path는 optional이다(#302). 지정하면 main→calibration 체이닝을
     적용하고, None이면 calibration 없이(항등) 기존 1-모델 동작을 유지한다(하위호환).
+
+    onnx_model_path도 optional이다(#302/#179). 지정하면 그 .onnx 파일을 onnxruntime로
+    추론하고, None이면 model_path의 joblib으로 로드한다(하위호환).
     """
 
     model_path: Path
     feature_columns_path: Path
     categorical_columns_path: Path
     calibration_model_path: Path | None = None
+    onnx_model_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +166,7 @@ def load_model_settings_from_environment() -> ModelSettings:
     match source:
         case ModelSource.LOCAL:
             calibration_path = os.getenv("RERANK_CALIBRATION_MODEL_PATH")
+            onnx_path = os.getenv("RERANK_ONNX_MODEL_PATH")
             return LocalModelSettings(
                 model_path=Path(_required_environment_value("RERANK_MODEL_PATH")),
                 feature_columns_path=Path(
@@ -161,6 +176,7 @@ def load_model_settings_from_environment() -> ModelSettings:
                     _required_environment_value("RERANK_CATEGORICAL_COLUMNS_PATH")
                 ),
                 calibration_model_path=Path(calibration_path) if calibration_path else None,
+                onnx_model_path=Path(onnx_path) if onnx_path else None,
             )
         case ModelSource.MLFLOW:
             return MlflowModelSettings(
@@ -194,10 +210,19 @@ def load_reranker(settings: ModelSettings) -> Reranker:
 
 
 def load_local_model(settings: LocalModelSettings) -> Reranker:
-    """로컬 경로의 아티팩트들로 Reranker를 로드한다(calibration 경로가 있으면 함께)."""
+    """로컬 경로의 아티팩트들로 Reranker를 로드한다(calibration 경로가 있으면 함께).
+
+    onnx_model_path가 지정되면 그 .onnx를 onnxruntime로 추론하고, 없으면 model_path의
+    joblib으로 로드한다(하위호환).
+    """
     calibration = (
         DownsamplingCalibrator.load(settings.calibration_model_path)
         if settings.calibration_model_path is not None
+        else None
+    )
+    onnx_session = (
+        _build_onnx_session_from_path(settings.onnx_model_path)
+        if settings.onnx_model_path is not None
         else None
     )
     return _load_reranker(
@@ -205,17 +230,17 @@ def load_local_model(settings: LocalModelSettings) -> Reranker:
         feature_columns_path=settings.feature_columns_path,
         categorical_columns_path=settings.categorical_columns_path,
         calibration=calibration,
+        onnx_session=onnx_session,
     )
 
 
 def load_mlflow_model(settings: MlflowModelSettings) -> Reranker:
-    """MLflow 런에서 모델·피처·카테고리 아티팩트를 내려받아 Reranker를 로드한다."""
+    """MLflow 런에서 모델·피처·카테고리 아티팩트를 내려받아 Reranker를 로드한다.
+
+    run에 model_onnx/ 아티팩트가 있으면 onnxruntime로 추론하고(joblib 다운로드·역직렬화
+    생략), 없으면 joblib으로 폴백한다(기존 champion 등 하위호환).
+    """
     mlflow.set_tracking_uri(settings.tracking_uri)
-    model_path = Path(
-        mlflow.artifacts.download_artifacts(
-            artifact_uri=f"runs:/{settings.run_id}/{MLFLOW_MODEL_ARTIFACT_PATH}"
-        )
-    )
     feature_columns_path = Path(
         mlflow.artifacts.download_artifacts(
             artifact_uri=f"runs:/{settings.run_id}/{MLFLOW_FEATURE_COLUMNS_ARTIFACT_PATH}"
@@ -231,12 +256,78 @@ def load_mlflow_model(settings: MlflowModelSettings) -> Reranker:
         if settings.calibration_run_id is not None
         else None
     )
+    onnx_session = _try_load_onnx_session_from_run(settings.run_id)
+    model_path = (
+        None
+        if onnx_session is not None
+        else Path(
+            mlflow.artifacts.download_artifacts(
+                artifact_uri=f"runs:/{settings.run_id}/{MLFLOW_MODEL_ARTIFACT_PATH}"
+            )
+        )
+    )
     return _load_reranker(
         model_path=model_path,
         feature_columns_path=feature_columns_path,
         categorical_columns_path=categorical_columns_path,
         calibration=calibration,
+        onnx_session=onnx_session,
     )
+
+
+def _build_onnx_session_from_path(onnx_model_path: Path):
+    """로컬 .onnx 파일에서 onnxruntime 추론 세션을 만든다(#302/#179).
+
+    onnx_model_path가 명시적으로 지정된 경로에서만 호출되므로, 파일이 없거나 세션 생성이
+    실패하면 misconfiguration으로 보고 ModelArtifactError로 fail-closed한다.
+    """
+    if not onnx_model_path.is_file():
+        raise ModelArtifactError(reason=f"ONNX model artifact does not exist: {onnx_model_path}")
+    try:
+        import onnxruntime as ort
+
+        return ort.InferenceSession(str(onnx_model_path))
+    except Exception as error:
+        raise ModelArtifactError(
+            reason=f"ONNX 세션을 만들지 못했습니다({onnx_model_path}): {error}"
+        ) from error
+
+
+def _try_load_onnx_session_from_run(run_id: str):
+    """run에 model_onnx/ 아티팩트가 있으면 onnxruntime 세션을 만들고, 없으면 None을 반환한다.
+
+    존재 여부는 로더가 이미 쓰는 mlflow.artifacts.download_artifacts 시임으로 확인한다
+    (별도 MlflowClient API를 추가하지 않아 로더가 하나의 다운로드 경로만 갖는다). 다운로드나
+    ONNX 로드가 실패하면 None을 반환해 joblib으로 폴백한다 — model_onnx/ 부재(기존 joblib-only
+    champion, 정상)든 로드 불가(opset 불일치·손상)든 서빙 기동을 막지 않는 하위호환 정책이다.
+    joblib 폴백은 아직 서빙에 남아있는 표현이라(pickle 완전 제거는 후속 슬라이스), ONNX가
+    없거나 못 읽으면 그쪽으로 안전하게 되돌아간다. 단, 아티팩트가 있는데 못 읽는 경우는
+    조용히 넘기지 않고 warning으로 남겨 관측 가능하게 한다.
+    """
+    try:
+        local_model_dir = mlflow.artifacts.download_artifacts(
+            artifact_uri=f"runs:/{run_id}/{MLFLOW_ONNX_MODEL_ARTIFACT_PATH}"
+        )
+    except Exception:
+        # model_onnx/ 아티팩트 부재(예: joblib만 있는 기존 champion) → joblib 폴백(정상 경로).
+        return None
+    try:
+        # `import mlflow.onnx`(별칭 없이)는 함수 스코프에서 `mlflow` 이름을 지역 변수로
+        # 만들어 위의 `mlflow.artifacts` 참조를 UnboundLocalError로 깨뜨린다. 별칭 import로
+        # 모듈 전역 `mlflow`를 가리지 않게 한다.
+        import mlflow.onnx as mlflow_onnx
+        import onnxruntime as ort
+
+        onnx_model = mlflow_onnx.load_model(local_model_dir)
+        return ort.InferenceSession(onnx_model.SerializeToString())
+    except Exception:
+        logger.warning(
+            "model_onnx/ 아티팩트를 내려받았지만 onnxruntime 세션을 만들지 못해 joblib으로 "
+            "폴백합니다(run=%s). ONNX opset/런타임 호환성 또는 아티팩트 손상을 확인하세요.",
+            run_id,
+            exc_info=True,
+        )
+        return None
 
 
 def _load_calibration_from_run(run_id: str) -> DownsamplingCalibrator:
@@ -369,17 +460,22 @@ def load_reranker_with_lineage(settings: ModelSettings) -> ResolvedModel:
 
 
 def _load_reranker(
-    model_path: Path,
+    model_path: Path | None,
     feature_columns_path: Path,
     categorical_columns_path: Path,
     calibration: DownsamplingCalibrator | None = None,
+    onnx_session: object | None = None,
 ) -> Reranker:
     """세 아티팩트의 존재·형식·상호 계약(카테고리 컬럼 ⊆ 피처)을 검증하고 Reranker를 조립한다.
 
     calibration이 주어지면 Reranker가 main 예측 후 calibration을 체이닝한다. None이면
     calibration 없이(항등) 동작한다(하위호환).
+
+    onnx_session이 주어지면 joblib 대신 ONNX 어댑터를 모델로 쓴다(model_path는 무시). 어댑터는
+    feature_columns 순서로 입력을 인코딩하므로, 아래에서 feature_columns를 먼저 로드·검증한 뒤
+    조립한다. onnx_session이 None이면 model_path의 joblib을 로드한다(하위호환).
     """
-    if not model_path.is_file():
+    if onnx_session is None and (model_path is None or not model_path.is_file()):
         raise ModelArtifactError(reason=f"Model artifact does not exist: {model_path}")
     if not feature_columns_path.is_file():
         raise ModelArtifactError(
@@ -393,10 +489,6 @@ def _load_reranker(
                 "학습 파이프라인으로 재학습이 필요합니다.)"
             )
         )
-
-    model = joblib.load(model_path)
-    if not isinstance(model, ProbabilityModel):
-        raise ModelArtifactError(reason="Loaded model does not implement predict_proba.")
 
     feature_columns = _load_pickled_metadata(
         feature_columns_path,
@@ -416,6 +508,13 @@ def _load_reranker(
                 f"{error}"
             )
         ) from error
+
+    if onnx_session is not None:
+        model: ProbabilityModel = OnnxProbabilityModel(onnx_session, feature_columns)
+    else:
+        model = joblib.load(model_path)
+    if not isinstance(model, ProbabilityModel):
+        raise ModelArtifactError(reason="Loaded model does not implement predict_proba.")
 
     categorical_categories = _load_pickled_metadata(
         categorical_columns_path,
