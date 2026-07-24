@@ -4,6 +4,7 @@
 """
 
 import logging
+import os
 from typing import Dict, Optional
 
 import mlflow
@@ -11,6 +12,20 @@ from mlflow.exceptions import MlflowException
 from mlflow.tracking import MlflowClient
 
 logger = logging.getLogger(__name__)
+
+
+def _serving_calibration_ready() -> bool:
+    """서빙 추론에 downsampling 보정이 편입됐는지 여부(#300/#302).
+
+    #302가 서빙(ONNX 그래프/manifest)에 보정을 편입하면 이 플래그를 켠다.
+    그 전까지 기본값은 False라, downsampling 모델(`sampling_rate<1.0`)은
+    champion으로 승격되지 못한다(보정 안 된 편향 확률이 서빙에 나가는 것 방지).
+    """
+    return os.environ.get("CTR_SERVING_CALIBRATION_READY", "false").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def register_model(model_uri: str, model_name: str, tags: Optional[Dict[str, str]] = None) -> str:
@@ -88,12 +103,34 @@ def set_model_alias(model_name: str, alias: str, version: str) -> None:
     Alias를 사용하여 모델 버전을 논리적으로 구분합니다.
     기본 alias: 'champion' (운영 모델).
 
+    champion 승격 시 fail-closed 게이트(#300 순서 가드): 승격 대상 버전이
+    downsampling 모델(`sampling_rate` tag < 1.0)인데 서빙 보정이 아직 준비되지
+    않았으면(`_serving_calibration_ready()`가 False, 기본값) 승격을 거부한다.
+    downsampling 모델은 출력 q가 원분포보다 높게 나오므로, 서빙 보정(#302) 전에
+    champion으로 올리면 보정 안 된 편향 확률이 서빙 트래픽에 나간다. 이 프로젝트의
+    반복 실패 패턴("스펙엔 있는데 코드가 안 지킴")을 코드로 차단한다.
+    `sampling_rate` tag가 없는 기존 모델(v6 등)은 1.0으로 간주해 정상 승격된다.
+
     Args:
         model_name: 모델 이름
         alias: Alias 이름 (예: 'champion', 'challenger', 'rollback')
         version: 모델 버전 번호
+
+    Raises:
+        ValueError: champion 승격 대상이 downsampling 모델인데 서빙 보정 미준비.
     """
     client = MlflowClient()
+    if alias == "champion" and not _serving_calibration_ready():
+        mv = client.get_model_version(name=model_name, version=str(version))
+        sampling_rate = float((mv.tags or {}).get("sampling_rate", 1.0))
+        if sampling_rate < 1.0:
+            raise ValueError(
+                f"{model_name} v{version}는 downsampling 모델(sampling_rate="
+                f"{sampling_rate})인데 서빙 보정이 아직 준비되지 않았습니다"
+                "(#302 미완). 보정 안 된 편향 확률이 서빙에 나가므로 champion "
+                "승격을 거부합니다. #302가 서빙 보정을 편입하면 "
+                "CTR_SERVING_CALIBRATION_READY=true로 승격하세요(#300 순서 가드)."
+            )
     client.set_registered_model_alias(name=model_name, alias=alias, version=version)
 
 

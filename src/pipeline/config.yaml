@@ -10,6 +10,11 @@ model:
   num_leaves: 31
   scale_pos_weight: auto
   random_state: 42
+  # negative downsampling 비율 = negative를 남긴 비율(0<w≤1). 1.0이면 off(#300).
+  # 0.1 = negative의 10%만 남김. sampling_rate < 1.0이면 scale_pos_weight는
+  # 자동으로 1로 강제되고(이중 보정 방지), 출력 확률은 He 2014 보정으로 원분포
+  # 복원된다. 설계: docs/specs/2026-07-24-negative-downsampling-calibration.md
+  sampling_rate: 1.0
 
 artifacts:
   model_path: artifacts/models/lgbm_model.joblib

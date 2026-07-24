@@ -168,7 +168,9 @@ def run_pipeline(
         data_source_params["events_end_date"] = events_end_date
 
     typer.echo("\n[2/3] train-model 실행...")
-    train.main(
+    # train.main은 실현 sampling_rate(#300)를 반환한다 — evaluate가 오프라인
+    # 지표(LogLoss/calibration)를 원분포 기준으로 재도록 그대로 넘긴다.
+    realized_sampling_rate = train.main(
         config_path=config_path,
         data_path=dataset_path,
         model_output=model_output,
@@ -192,6 +194,7 @@ def run_pipeline(
         data_path=test_set_output,
         model_path=model_output,
         feature_columns_path=feature_columns_output,
+        sampling_rate=realized_sampling_rate if realized_sampling_rate is not None else 1.0,
     )
 
     typer.echo("\n" + "=" * 70)

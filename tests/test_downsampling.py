@@ -66,6 +66,17 @@ def test_calibration_rejects_out_of_range_rate(bad):
         apply_downsampling_calibration(0.5, sampling_rate=bad)
 
 
+def test_calibration_preserves_auc_ranking():
+    # 스펙 결정 5: 보정이 monotonic이라 ROC-AUC는 보정 전/후 동일해야 한다.
+    from sklearn.metrics import roc_auc_score
+
+    rng = np.random.default_rng(0)
+    q = rng.random(500)
+    y = (rng.random(500) < q).astype(int)  # 스코어와 상관된 레이블
+    calibrated = apply_downsampling_calibration(q, sampling_rate=0.1)
+    assert roc_auc_score(y, calibrated) == pytest.approx(roc_auc_score(y, q))
+
+
 # ── downsample_negatives ───────────────────────────────────────
 
 

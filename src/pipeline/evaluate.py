@@ -11,12 +11,18 @@ import sys
 import yaml
 import pickle
 import pandas as pd
-from sklearn.metrics import roc_auc_score, average_precision_score, log_loss
+from sklearn.metrics import (  # noqa: E402
+    roc_auc_score,
+    average_precision_score,
+    log_loss,
+    brier_score_loss,
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.utils.model_utils import load_model, load_feature_columns  # noqa: E402
+from src.models.downsampling import apply_downsampling_calibration  # noqa: E402
 from src.features.model_contract import (  # noqa: E402
     CATEGORICAL_FEATURE_COLUMNS,
     require_model_feature_columns,
@@ -44,7 +50,12 @@ def main(
     data_path: str = None,
     model_path: str = None,
     feature_columns_path: str = None,
+    sampling_rate: float = 1.0,
 ):
+    # sampling_rate: 학습 시 쓴 negative downsampling 실현 비율(#300). 다운샘플된
+    # 분포로 학습된 모델의 출력 확률을 원분포로 보정해 LogLoss/Brier/calibration을
+    # 올바른 분포에서 잰다. 기본 1.0 = 보정 없음(항등) — downsampling 미사용
+    # 모델이나 standalone 평가의 하위호환 기본값(#300 결정 7).
     project_root = get_project_root()
     if config_path is None:
         config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
@@ -85,17 +96,33 @@ def main(
     print(f"  [OK] {len(dataset)} rows")
 
     print("\n[Step 3] 예측...")
-    y_pred_proba = model.predict_proba(X)[:, 1]
-    print("  [OK] 예측 완료")
+    raw_pred_proba = model.predict_proba(X)[:, 1]
+    # downsampling 보정(#300 결정 4). sampling_rate=1.0이면 항등(no-op).
+    # 보정은 monotonic이라 ROC-AUC/PR-AUC/랭킹 지표는 불변이고, LogLoss/Brier/
+    # calibration만 원분포 기준으로 이동한다(결정 5).
+    y_pred_proba = apply_downsampling_calibration(raw_pred_proba, sampling_rate)
+    if sampling_rate < 1.0:
+        print(f"  [OK] 예측 완료 (downsampling 보정 적용, sampling_rate={sampling_rate})")
+    else:
+        print("  [OK] 예측 완료 (보정 없음)")
 
     print("\n[Step 4] 평가 지표 계산...")
+    # AUC 계열은 순위 기반이라 보정 전/후 동일하므로 어느 확률로 재도 같다.
     roc_auc = roc_auc_score(y, y_pred_proba)
     pr_auc = average_precision_score(y, y_pred_proba)
+    # LogLoss/Brier는 보정된 확률(원분포 기준)로 잰다 — 보정 검증 근거(결정 5).
     logloss = log_loss(y, y_pred_proba)
+    brier = brier_score_loss(y, y_pred_proba)
 
-    print(f"  [OK] ROC-AUC: {roc_auc:.4f}")
-    print(f"  [OK] PR-AUC: {pr_auc:.4f}")
+    print(f"  [OK] ROC-AUC: {roc_auc:.4f}  (보정에 불변)")
+    print(f"  [OK] PR-AUC: {pr_auc:.4f}  (보정에 불변)")
     print(f"  [OK] Log Loss: {logloss:.4f}")
+    print(f"  [OK] Brier: {brier:.4f}")
+    # calibration 요약: 예측 평균 vs 실제 양성률(원분포 보정 후 서로 가까워야 함).
+    print(
+        f"  [OK] calibration: 예측 평균={float(y_pred_proba.mean()):.4f} "
+        f"vs 실제 양성률={float(y.mean()):.4f}"
+    )
 
     print("\n[Step 5] Baseline (LogisticRegression) 비교...")
     baseline_path = os.path.join(project_root, "models", "baseline.pkl")

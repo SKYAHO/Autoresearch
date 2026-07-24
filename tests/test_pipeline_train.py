@@ -4,6 +4,7 @@ import pickle
 
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 from mlflow.tracking import MlflowClient
 
@@ -199,3 +200,82 @@ def test_main_registers_lineage_tags_from_extra_params(tmp_path, monkeypatch) ->
     tags = client.get_model_version("ctr-model", str(version.version)).tags
     assert tags["videos_source"] == "bigquery"
     assert tags["events_source"] == "bigquery"
+
+
+def _write_train_config_with(config_path, *, sampling_rate=None, scale_pos_weight="auto") -> None:
+    """downsampling 관련 옵션을 넣은 train config (#300)."""
+    config_path_str = str(config_path)
+    _write_train_config(config_path)
+    with open(config_path_str) as f:
+        config = yaml.safe_load(f)
+    config["model"]["scale_pos_weight"] = scale_pos_weight
+    if sampling_rate is not None:
+        config["model"]["sampling_rate"] = sampling_rate
+    with open(config_path_str, "w") as f:
+        yaml.safe_dump(config, f)
+
+
+def _run_train(tmp_path, config_path):
+    return train.main(
+        config_path=str(config_path),
+        data_path=str(tmp_path / "training_dataset.csv"),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.pkl"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.pkl"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+    )
+
+
+def test_main_downsampling_records_sampling_rate_and_preserves_test_set(tmp_path, monkeypatch) -> None:
+    # #300: downsampling 켜면 run param + 모델 버전 tag에 실현 sampling_rate가
+    # 기록되고, held-out test set은 원분포(50/50)를 유지해야 한다(train만 줄임).
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=0.5)
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    realized = _run_train(tmp_path, config_path)
+    assert 0.0 < realized < 1.0
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    [version] = client.search_model_versions("name='ctr-model'")
+    tags = client.get_model_version("ctr-model", str(version.version)).tags
+    assert float(tags["sampling_rate"]) < 1.0
+    run = client.get_run(version.run_id)
+    assert float(run.data.params["sampling_rate"]) < 1.0
+
+    # held-out test set은 원분포(합성 50/50)를 유지 — downsampling이 새지 않음.
+    test_df = pd.read_csv(tmp_path / "test_set.csv")
+    assert test_df["clicked"].mean() == pytest.approx(0.5, abs=0.1)
+
+
+def test_main_downsampling_forces_scale_pos_weight_to_one(tmp_path, monkeypatch) -> None:
+    # #300 결정 6: downsampling 켜지면 scale_pos_weight(auto)가 1로 강제된다(이중 보정 방지).
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=0.5, scale_pos_weight="auto")
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    _run_train(tmp_path, config_path)
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    [version] = client.search_model_versions("name='ctr-model'")
+    run = client.get_run(version.run_id)
+    assert float(run.data.params["scale_pos_weight"]) == 1.0
+
+
+def test_main_downsampling_with_explicit_scale_pos_weight_fails_closed(tmp_path, monkeypatch) -> None:
+    # #300 결정 6 가드: downsampling + 명시적 scale_pos_weight(≠1) 동시 세팅은 fail-closed.
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=0.5, scale_pos_weight=5)
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    with pytest.raises(ValueError, match="이중 보정"):
+        _run_train(tmp_path, config_path)
