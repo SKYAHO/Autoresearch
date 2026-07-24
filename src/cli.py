@@ -14,6 +14,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.pipeline import build_training_dataset, train, evaluate  # noqa: E402
+from src.tracking import promote  # noqa: E402
 
 app = typer.Typer()
 
@@ -200,6 +201,34 @@ def run_pipeline(
     typer.echo("\n" + "=" * 70)
     typer.echo("파이프라인 완료")
     typer.echo("=" * 70)
+
+
+@app.command()
+def promote_model(
+    model_name: str = typer.Option("ctr-model", help="Registry에 등록된 main 모델 이름"),
+    champion_alias: str = typer.Option("champion", help="승격 대상 alias"),
+    calibration_model_name: str = typer.Option(
+        "ctr-calibration-model", help="짝 calibration 모델 이름(downsampling 후보용)"
+    ),
+) -> None:
+    """게이트(지표 비교 + downsampling 페어링) 통과 시 신규 후보를 champion으로 승격."""
+    try:
+        promoted_version = promote.main(
+            model_name=model_name,
+            champion_alias=champion_alias,
+            calibration_model_name=calibration_model_name,
+        )
+    except promote.GateRejectedError as exc:
+        typer.echo(f"[게이트 미달] {exc}", err=True)
+        raise typer.Exit(code=1)
+    except Exception as exc:
+        typer.echo(f"[에러] promote-model 실행 중 오류: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    if promoted_version is None:
+        typer.echo(f"{model_name}: 평가할 신규 후보 버전 없음 — no-op")
+    else:
+        typer.echo(f"[OK] {model_name} v{promoted_version} -> @{champion_alias} 승격 완료")
 
 
 if __name__ == "__main__":

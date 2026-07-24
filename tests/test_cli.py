@@ -4,6 +4,9 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+import typer
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -119,3 +122,68 @@ def test_run_pipeline_omits_event_dates_from_extra_params_for_csv_source(monkeyp
         "events_source": "csv",
         "topic_similarity_source": "inmemory",
     }
+
+
+def test_promote_model_prints_ok_and_exits_zero_on_success(monkeypatch, capsys):
+    monkeypatch.setattr(cli.promote, "main", lambda **kwargs: "4")
+
+    cli.promote_model(
+        model_name="ctr-model",
+        champion_alias="champion",
+        calibration_model_name="ctr-calibration-model",
+    )
+
+    out = capsys.readouterr().out
+    assert "[OK]" in out
+    assert "v4" in out
+
+
+def test_promote_model_prints_noop_message_when_no_candidate(monkeypatch, capsys):
+    monkeypatch.setattr(cli.promote, "main", lambda **kwargs: None)
+
+    cli.promote_model(
+        model_name="ctr-model",
+        champion_alias="champion",
+        calibration_model_name="ctr-calibration-model",
+    )
+
+    out = capsys.readouterr().out
+    assert "no-op" in out
+
+
+def test_promote_model_exits_nonzero_with_gate_rejected_prefix(monkeypatch, capsys):
+    def _raise(**kwargs):
+        raise cli.promote.GateRejectedError("게이트1 미달: 예시 사유")
+
+    monkeypatch.setattr(cli.promote, "main", _raise)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            calibration_model_name="ctr-calibration-model",
+        )
+
+    assert exc_info.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "[게이트 미달]" in err
+
+
+def test_promote_model_exits_nonzero_with_error_prefix_on_unexpected_exception(
+    monkeypatch, capsys
+):
+    def _raise(**kwargs):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(cli.promote, "main", _raise)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            calibration_model_name="ctr-calibration-model",
+        )
+
+    assert exc_info.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "[에러]" in err
