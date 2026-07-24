@@ -18,17 +18,24 @@ from __future__ import annotations
 
 from typing import Optional
 
-from mlflow.tracking import MlflowClient  # noqa: F401
+from mlflow.tracking import MlflowClient
 from src.tracking.registry import (
     get_latest_version,
-    get_model_metrics_by_alias,  # noqa: F401
+    get_model_metrics_by_alias,
     get_model_versions,
-    set_model_alias,  # noqa: F401
+    set_model_alias,
 )
 
 
 class GateRejectedError(RuntimeError):
     """게이트 조건(지표 비교 또는 downsampling 페어링) 미달로 승격이 거부됨."""
+
+
+def _run_id_for_version(versions: list[dict], version: str) -> str:
+    for entry in versions:
+        if entry["version"] == version:
+            return entry["run_id"]
+    raise ValueError(f"버전 {version}의 run_id를 찾을 수 없습니다.")
 
 
 def main(
@@ -62,4 +69,28 @@ def main(
     if champion_entry is not None and champion_entry["version"] == candidate_version:
         return None
 
+    client = MlflowClient()
+    candidate_run_id = _run_id_for_version(existing_versions, candidate_version)
+    candidate_metrics = client.get_run(candidate_run_id).data.metrics
+    candidate_val_roc_auc = candidate_metrics.get("val_roc_auc")
+    if candidate_val_roc_auc is None:
+        raise ValueError(
+            f"{model_name} v{candidate_version}의 run({candidate_run_id})에 "
+            "val_roc_auc 지표가 없습니다."
+        )
+
+    champion_metrics = get_model_metrics_by_alias(model_name, champion_alias)
+    if champion_metrics is not None:
+        champion_val_roc_auc = champion_metrics.get("val_roc_auc")
+        if (
+            champion_val_roc_auc is not None
+            and candidate_val_roc_auc < champion_val_roc_auc
+        ):
+            raise GateRejectedError(
+                f"게이트1 미달: 후보 {model_name} v{candidate_version} "
+                f"val_roc_auc={candidate_val_roc_auc:.4f} < champion"
+                f"({champion_alias}) val_roc_auc={champion_val_roc_auc:.4f}"
+            )
+
+    set_model_alias(model_name, champion_alias, candidate_version)
     return candidate_version

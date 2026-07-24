@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -86,4 +88,57 @@ def test_main_returns_none_when_latest_is_already_champion(monkeypatch):
     result = promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
 
     assert result is None
+    assert client.set_alias_calls == []
+
+
+def test_main_promotes_when_no_champion_exists_bootstrap(monkeypatch):
+    # champion alias가 아직 없으면 비교 대상이 없어 게이트 1을 자동 통과한다.
+    v1 = _version("1", run_id="run-1")
+    client = _PromoteClient(main_versions=[v1], runs={"run-1": {"val_roc_auc": 0.70}})
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
+
+    assert result == "1"
+    assert client.set_alias_calls == [(MODEL_NAME, "champion", "1")]
+
+
+def test_main_promotes_when_candidate_metric_is_better(monkeypatch):
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4")
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        runs={"run-3": {"val_roc_auc": 0.75}, "run-4": {"val_roc_auc": 0.80}},
+    )
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
+
+    assert result == "4"
+    assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]
+
+
+def test_main_rejects_when_candidate_metric_is_worse(monkeypatch):
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4")
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        runs={"run-3": {"val_roc_auc": 0.80}, "run-4": {"val_roc_auc": 0.70}},
+    )
+    _patch_client(monkeypatch, client)
+
+    with pytest.raises(promote.GateRejectedError, match="게이트1"):
+        promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
+    assert client.set_alias_calls == []
+
+
+def test_main_raises_plain_error_when_candidate_metric_missing(monkeypatch):
+    # 게이트 미달(GateRejectedError)이 아니라 데이터 결함으로 다뤄야 한다 —
+    # CLI 계약상 [게이트 미달]/[에러] 메시지가 갈려야 하므로 예외 타입으로 구분한다.
+    candidate = _version("1", run_id="run-1")
+    client = _PromoteClient(main_versions=[candidate], runs={"run-1": {}})
+    _patch_client(monkeypatch, client)
+
+    with pytest.raises(ValueError, match="val_roc_auc"):
+        promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
     assert client.set_alias_calls == []
