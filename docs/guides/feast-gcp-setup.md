@@ -347,7 +347,8 @@ feast apply
 apply 경로뿐 아니라 Airflow DAG의 apply 경로에도 함께 적용되는 **공유
 설정**입니다. FeatureView 정의를 삭제하는 merge가 발생해도 apply가 Redis에
 대해 full-scan 삭제를 시도하지 않으므로, 삭제된 FeatureView의 Redis 키가
-자동으로 정리되지 않습니다. 필요 시 수동으로 고아 키를 정리하세요.
+apply 시점에는 정리되지 않습니다. 고아 키는 `key_ttl_seconds`(아래 "Redis 키
+TTL" 절 참조)에 의해 7일 후 자동 소멸하므로 별도 수동 정리는 필요 없습니다.
 
 ### GitHub repo variables ↔ Airflow 주입 env 값 일치
 
@@ -382,6 +383,23 @@ feast materialize-incremental $(date -u +"%Y-%m-%dT%H:%M:%S")
 > BigQuery 데이터를 읽어 GCS Staging을 거쳐 Redis에 적재합니다.
 
 - [ ] 완료
+
+### Redis 키 TTL (`key_ttl_seconds`)
+
+`feature_store.yaml`의 `online_store.key_ttl_seconds: 604800`(7일)은 Redis에
+키를 쓸 때마다 EXPIRE를 거는 Feast 0.64 online store 설정입니다.
+
+- 살아있는 키는 매일 실행되는 materialize가 매번 다시 써서 TTL이 매일
+  리셋되므로 계속 서빙됩니다.
+- 갱신이 끊긴 키(예: Registry에서 삭제된 FeatureView가 남긴 고아 키)는
+  materialize 대상에서 빠지므로 TTL이 리셋되지 않고 7일 후 Redis가 자동
+  소멸시킵니다. 별도 수동 정리가 필요 없습니다.
+- 트레이드오프: materialize가 7일 이상 연속 실패하면 살아있는 서빙 키도
+  함께 만료되어 조회가 빈 값을 반환합니다. 즉 materialize 장애는 7일 이내
+  복구를 전제로 합니다.
+- FeatureView 정의의 `ttl` 파라미터와는 다른 개념입니다. `ttl`은 조회
+  시점에 값이 "신선한지"를 판정하는 기준이고, `key_ttl_seconds`는 Redis
+  키 자체의 물리적 만료 시간입니다.
 
 ---
 
