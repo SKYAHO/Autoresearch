@@ -1,6 +1,6 @@
 name: PR Comprehension Report
 
-# PR 이해 리포트 3단계 체계의 1·2단계(파이프라인 시각화 + 중요도순 diff)를
+# PR 이해 리포트 4단계 체계의 1·2단계(파이프라인 시각화 + 쉬운 설명)를
 # 자동 생성합니다. 에이전트는 report.json 데이터만 출력하고, 고정 템플릿
 # (.github/pr-report/template.html)에 주입해 gh-pages의 pr/<번호>/로 배포한 뒤
 # sticky 코멘트를 남깁니다. 계약 정본: .github/pr-report/report.schema.json,
