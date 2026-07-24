@@ -1,0 +1,46 @@
+{
+  "$comment": "PR 이해 리포트의 canonical 파이프라인 노드/에지 정본. 근거: docs/guides/pipeline-overview.md, .claude/docs/architecture-overview.md. 에이전트는 이 카탈로그를 그대로 복사해 status만 판정하며, 노드를 임의로 발명하지 않습니다. 신규 구성요소 도입 PR에서만 'custom:' 접두 id로 노드를 추가할 수 있습니다. 파이프라인 구조가 바뀌면 pipeline-overview.md 갱신과 같은 PR에서 이 파일도 갱신합니다.",
+  "lanes": ["batch", "data", "train", "serve", "cross", "external"],
+  "lane_labels": {
+    "batch": "배치 수집·생성",
+    "data": "데이터 계층",
+    "train": "학습",
+    "serve": "서빙·시뮬레이션",
+    "cross": "공통·계약",
+    "external": "외부 저장소"
+  },
+  "nodes": [
+    { "id": "collect", "label": "YouTube 수집", "lane": "batch", "order": 1, "paths": ["autoresearch/youtube_collection/", "proxy/"] },
+    { "id": "virtual_users", "label": "가상 유저 생성", "lane": "batch", "order": 2, "paths": ["autoresearch/virtual_users/"] },
+    { "id": "action_log", "label": "Action Log 생성·품질", "lane": "batch", "order": 3, "paths": ["autoresearch/action_logs/"] },
+    { "id": "data_lake", "label": "Data Lake (GCS parquet)", "lane": "data", "order": 1, "paths": ["autoresearch/youtube_collection/load.py", "autoresearch/action_logs/load.py"] },
+    { "id": "feature_store", "label": "Feature Store (BQ·Feast·Redis)", "lane": "data", "order": 2, "paths": ["feature_repo/", "src/features/", "src/pipeline/build_feature_tables.py"] },
+    { "id": "training_dataset", "label": "학습 데이터셋 조립", "lane": "train", "order": 1, "paths": ["src/pipeline/build_training_dataset.py"] },
+    { "id": "train_eval", "label": "모델 학습·평가 (LightGBM·MLflow)", "lane": "train", "order": 2, "paths": ["src/models/", "src/pipeline/train.py", "src/pipeline/evaluate.py", "src/tracking/"] },
+    { "id": "registry", "label": "Model Registry (MLflow)", "lane": "train", "order": 3, "paths": ["deploy/mlflow/"] },
+    { "id": "serving", "label": "리랭킹 서빙 API (FastAPI)", "lane": "serve", "order": 1, "paths": ["src/serving/", "deploy/serving/"] },
+    { "id": "daily_reco", "label": "일일 추천·노출 조립", "lane": "serve", "order": 2, "paths": ["src/pipeline/daily_recommendations.py", "src/pipeline/model_exposure_provider.py", "src/pipeline/policy_selector.py"] },
+    { "id": "simulation", "label": "가상 유저 클릭 시뮬레이션", "lane": "serve", "order": 3, "paths": ["src/pipeline/simulate_policy_round.py", "src/pipeline/virtual_user_adapter.py"] },
+    { "id": "batch_cli", "label": "공개 Batch CLI (Airflow 계약)", "lane": "cross", "order": 1, "paths": ["autoresearch/jobs/"] },
+    { "id": "ci_release", "label": "CI·이미지·릴리스", "lane": "cross", "order": 2, "paths": [".github/workflows/", "Dockerfile.app", "Dockerfile.serving", "pyproject.toml"] },
+    { "id": "docs", "label": "문서·스펙", "lane": "cross", "order": 3, "paths": ["docs/", ".claude/docs/", "CLAUDE.md", "README.md"] },
+    { "id": "ext_airflow", "label": "(외부) Airflow 오케스트레이션", "lane": "external", "order": 1, "paths": ["SKYAHO/Autoresearch-airflow"] },
+    { "id": "ext_infra", "label": "(외부) GCP 인프라", "lane": "external", "order": 2, "paths": ["SKYAHO/Autoresearch-infra"] }
+  ],
+  "edges": [
+    { "from": "collect", "to": "data_lake" },
+    { "from": "virtual_users", "to": "action_log" },
+    { "from": "action_log", "to": "data_lake" },
+    { "from": "data_lake", "to": "feature_store" },
+    { "from": "feature_store", "to": "training_dataset" },
+    { "from": "training_dataset", "to": "train_eval" },
+    { "from": "train_eval", "to": "registry" },
+    { "from": "registry", "to": "serving" },
+    { "from": "feature_store", "to": "serving", "style": "dashed" },
+    { "from": "serving", "to": "daily_reco" },
+    { "from": "daily_reco", "to": "simulation" },
+    { "from": "simulation", "to": "action_log", "style": "dashed" },
+    { "from": "batch_cli", "to": "ext_airflow", "style": "dashed" },
+    { "from": "ext_infra", "to": "ci_release", "style": "dashed" }
+  ]
+}
