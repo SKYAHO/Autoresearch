@@ -13,10 +13,13 @@ pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 
 
 - 유저별 두 정책 노출 결정과 스코어링 진단 수집
 - LLM 판정 1회 실행(합집합 후보)과 판정 덤프
-  (`action_log_drafts.parquet` + 계보·노출 인자 사이드카
+  (`action_log_drafts.parquet` + 계보·노출 인자·노출 키 집합 사이드카
   `action_log_drafts_meta.json`) — `click_threshold` 캘리브레이션 입력
 - 저장된 판정 리플레이(`--replay-drafts`) — LLM 호출 없이 커트라인만 다시
-  적용하며, 판정이 노출을 다 덮지 못하면 fail-fast한다
+  적용한다. 사이드카의 원본 노출 키 집합과 이번 노출이 다르면 fail-fast하고,
+  동일하면 판정 없는 노출(원본 quarantine — chunk 부분 격리 포함)을 관용·계수
+  한다(#274). 노출 키 집합이 없는 구버전 사이드카는 유저 단위 커버리지
+  휴리스틱으로 폴백한다
 - 정책별 event log(parquet/JSONL)·quarantine·비교 리포트(JSON/HTML) 산출
 
 주의: 두 정책이 같은 (user, video)를 노출하면 동일 판정을 공유하되 이벤트
@@ -94,12 +97,16 @@ class DraftReplay:
 
     판정과 계보는 항상 함께 다뤄야 하므로(계보 없는 event log를 쓰지 않는다)
     한 값으로 묶는다. exposure_args는 판정 라운드의 노출 결정 인자이며 CLI가
-    인자 상속·불일치 검사에 사용한다.
+    인자 상속·불일치 검사에 사용한다. exposure_keys는 판정 라운드의 유저별
+    노출 video_id 집합으로, 있으면 리플레이 커버리지를 휴리스틱 대신 원본
+    노출과의 정확 비교로 검사한다(#274). 구버전 사이드카에는 없으므로 None을
+    허용한다.
     """
 
     drafts: list[ImpressionDraft]
     llm_model: str
     exposure_args: Mapping[str, object]
+    exposure_keys: Mapping[str, frozenset[str]] | None = None
 
 
 def build_pool_feature_frame(
@@ -166,6 +173,7 @@ def _write_drafts_meta(
     *,
     llm_model: str,
     exposure_args: Mapping[str, object],
+    exposure_keys: Mapping[str, list[str]],
     policy_version: str,
     virtual_users: int,
     users: int,
@@ -177,13 +185,16 @@ def _write_drafts_meta(
     llm_model을 draft parquet 컬럼이 아니라 사이드카에 두는 이유는
     ACTION_LOG_DRAFT_PARQUET_SCHEMA가 daily.py shard/merge와 공유하는 계약이기
     때문이다. click_threshold는 리플레이에서 바꾸는 값이므로 exposure_args에
-    넣지 않는다.
+    넣지 않는다. exposure_keys(유저별 합집합 노출 video_id 목록)는 리플레이의
+    커버리지 정확 비교 기준이다 — draft parquet은 격리된 청크의 판정을 담지
+    않으므로, "무엇이 노출되었어야 했는가"는 사이드카만이 안다(#274).
     """
     payload = {
         "llm_model": llm_model,
         "prompt_version": PROMPT_VERSION,
         "schema_version": ACTION_LOG_SCHEMA_VERSION,
         "exposure_args": dict(exposure_args),
+        "exposure_keys": {user: sorted(keys) for user, keys in exposure_keys.items()},
         "policy_version": policy_version,
         "virtual_users": virtual_users,
         "users": users,
@@ -267,6 +278,51 @@ def _validate_replay_exposure_args(
         raise ValueError(
             "replay.exposure_args가 이번 실행의 노출 인자와 다릅니다 — "
             + "; ".join(mismatches)
+        )
+
+
+def _validate_replay_exposure_keys(
+    original: Mapping[str, frozenset[str]],
+    exposures_by_user: Mapping[str, dict[str, list[Exposure]]],
+) -> None:
+    """이번 실행의 노출 키 집합이 판정 라운드와 동일한지 정확 비교한다.
+
+    사이드카에 원본 노출 키 집합이 있으면 커버리지 휴리스틱(draft 전무=관용,
+    일부=실패) 대신 이 비교를 쓴다. 노출 집합이 동일하면 판정 없는 노출은
+    전부 원본 라운드에서 quarantine된 것이므로 관용해도 은폐가 아니다 —
+    `chunk_size > 0`에서 유저의 청크 일부만 격리된 라운드도 리플레이가
+    가능해진다(#274). 반대로 집합이 다르면 격리 구간에 국한된 차이까지
+    포함해 전부 검출된다.
+    """
+    current_users = set(exposures_by_user)
+    original_users = set(original)
+    if current_users != original_users:
+        missing = sorted(original_users - current_users)
+        extra = sorted(current_users - original_users)
+        raise ValueError(
+            "replay 노출 유저 집합이 판정 라운드와 다릅니다 — "
+            f"판정 라운드에만 {len(missing)}명"
+            f"{f' (first: {missing[0]})' if missing else ''}, "
+            f"이번 실행에만 {len(extra)}명"
+            f"{f' (first: {extra[0]})' if extra else ''}"
+        )
+    mismatched: list[str] = []
+    first_detail = ""
+    for user_id, both in exposures_by_user.items():
+        current_keys = frozenset(e.video_id for e in both[MODEL] + both[BASELINE])
+        if current_keys != original[user_id]:
+            if not mismatched:
+                only_original = sorted(original[user_id] - current_keys)[:3]
+                only_current = sorted(current_keys - original[user_id])[:3]
+                first_detail = (
+                    f" (first {user_id}: 판정 라운드에만 {only_original}, "
+                    f"이번 실행에만 {only_current})"
+                )
+            mismatched.append(user_id)
+    if mismatched:
+        raise ValueError(
+            f"replay 노출 키 집합이 판정 라운드와 다른 유저가 {len(mismatched)}명 "
+            "있습니다" + first_detail
         )
 
 
@@ -379,6 +435,10 @@ def main(
             Path(output_dir) / DRAFTS_META_FILENAME,
             llm_model=llm_model,
             exposure_args=exposure_args,
+            exposure_keys={
+                user_id: [str(v["video_id"]) for v in union]
+                for user_id, union in union_by_user.items()
+            },
             policy_version=policy_version,
             virtual_users=len(virtual_users),
             users=len(exposures_by_user),
@@ -408,26 +468,34 @@ def main(
                 "판정 라운드와 다릅니다"
             )
 
-        # 커버리지는 유저(슬레이트) 단위로 검사한다. draft가 하나도 없는
-        # 유저는 원본 판정 라운드에서 quarantine된 유저이므로(그 유저의 draft는
-        # parquet에 아예 없다) 비리플레이 경로와 동일하게 관용하고 아래 4단계의
-        # dropped_exposures_without_judgment로 계수한다. draft가 일부만 있는
-        # 유저는 노출 집합 자체가 판정 라운드와 어긋났다는 신호이므로 실패한다.
-        partially_covered_users: list[str] = []
-        for user_id, both in exposures_by_user.items():
-            exposure_keys = {
-                (user_id, exposure.video_id) for exposure in both[MODEL] + both[BASELINE]
-            }
-            covered = sum(1 for key in exposure_keys if key in draft_by_key)
-            if 0 < covered < len(exposure_keys):
-                partially_covered_users.append(user_id)
-        if partially_covered_users:
-            raise ValueError(
-                f"replay drafts partially cover {len(partially_covered_users)} user "
-                f"slate(s) (first: {partially_covered_users[0]}) — 판정이 하나도 없는 "
-                "유저는 원본 quarantine으로 간주해 관용하지만, 일부만 있는 유저는 "
-                "노출 집합(virtual users 등)이 판정 라운드와 다르다는 신호입니다"
-            )
+        if replay.exposure_keys is not None:
+            # 사이드카에 원본 노출 키 집합이 있으면 정확 비교한다. 통과하면
+            # 판정 없는 노출은 전부 원본 quarantine(chunk 부분 격리 포함)이므로
+            # 아래 4단계에서 dropped_exposures_without_judgment로 계수만 한다.
+            _validate_replay_exposure_keys(replay.exposure_keys, exposures_by_user)
+        else:
+            # 구버전 사이드카(exposure_keys 없음) 폴백: 커버리지를 유저(슬레이트)
+            # 단위 휴리스틱으로 검사한다. draft가 하나도 없는 유저는 원본 판정
+            # 라운드에서 quarantine된 유저이므로(그 유저의 draft는 parquet에 아예
+            # 없다) 관용하고 dropped로 계수하며, draft가 일부만 있는 유저는 노출
+            # 집합이 어긋났다는 신호로 보고 실패한다. 이 휴리스틱은
+            # chunk_size > 0의 부분 격리 라운드를 리플레이하지 못한다(#274) —
+            # 신규 덤프는 exposure_keys를 항상 기록하므로 위 정확 비교를 탄다.
+            partially_covered_users: list[str] = []
+            for user_id, both in exposures_by_user.items():
+                exposure_keys = {
+                    (user_id, exposure.video_id) for exposure in both[MODEL] + both[BASELINE]
+                }
+                covered = sum(1 for key in exposure_keys if key in draft_by_key)
+                if 0 < covered < len(exposure_keys):
+                    partially_covered_users.append(user_id)
+            if partially_covered_users:
+                raise ValueError(
+                    f"replay drafts partially cover {len(partially_covered_users)} user "
+                    f"slate(s) (first: {partially_covered_users[0]}) — 판정이 하나도 없는 "
+                    "유저는 원본 quarantine으로 간주해 관용하지만, 일부만 있는 유저는 "
+                    "노출 집합(virtual users 등)이 판정 라운드와 다르다는 신호입니다"
+                )
 
     # 3) 합동 per-slate 선정 1회 → clicked (user, video) 키셋
     clicked_keys = {
@@ -589,10 +657,19 @@ def _cli() -> None:
                 "— --max-users를 확인하세요"
             )
         meta_exposure_args = meta["exposure_args"]
+        raw_exposure_keys = meta.get("exposure_keys")  # 구버전 사이드카에는 없다
         replay = DraftReplay(
             drafts=read_action_log_draft_parquet(args.replay_drafts),
             llm_model=str(meta["llm_model"]),
             exposure_args=meta_exposure_args,
+            exposure_keys=(
+                {
+                    str(user): frozenset(str(video) for video in videos)
+                    for user, videos in raw_exposure_keys.items()
+                }
+                if raw_exposure_keys is not None
+                else None
+            ),
         )
     else:
         generator = (
