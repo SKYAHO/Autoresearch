@@ -142,3 +142,41 @@ def test_main_raises_plain_error_when_candidate_metric_missing(monkeypatch):
     with pytest.raises(ValueError, match="val_roc_auc"):
         promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
     assert client.set_alias_calls == []
+
+
+def test_main_rejects_downsampling_candidate_without_paired_calibration(monkeypatch):
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4", tags={"sampling_rate": "0.5"})
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        calibration_versions=[],
+        runs={"run-3": {"val_roc_auc": 0.70}, "run-4": {"val_roc_auc": 0.80}},
+    )
+    _patch_client(monkeypatch, client)
+
+    with pytest.raises(promote.GateRejectedError, match="게이트2"):
+        promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
+    assert client.set_alias_calls == []
+
+
+def test_main_promotes_downsampling_candidate_with_paired_calibration(monkeypatch):
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4", tags={"sampling_rate": "0.5"})
+    cal_version = _version("2", run_id="run-cal-2", tags={"main_run_id": "run-4"})
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        calibration_versions=[cal_version],
+        runs={"run-3": {"val_roc_auc": 0.70}, "run-4": {"val_roc_auc": 0.80}},
+    )
+    # set_model_alias의 기존 #300 순서 가드(CTR_SERVING_CALIBRATION_READY)를
+    # 통과시켜야 우리 게이트2 이후의 실제 alias 이동까지 검증할 수 있다.
+    monkeypatch.setenv("CTR_SERVING_CALIBRATION_READY", "true")
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
+
+    assert result == "4"
+    assert client.set_alias_calls == [
+        (MODEL_NAME, "champion", "4"),
+        (CALIBRATION_MODEL_NAME, "champion", "2"),
+    ]

@@ -38,6 +38,22 @@ def _run_id_for_version(versions: list[dict], version: str) -> str:
     raise ValueError(f"버전 {version}의 run_id를 찾을 수 없습니다.")
 
 
+def _find_paired_calibration_version(
+    client: MlflowClient, calibration_model_name: str, main_run_id: str
+) -> Optional[str]:
+    """calibration_model_name 버전 중 main_run_id tag가 일치하는 버전을 찾는다.
+
+    model_loader._resolve_paired_calibration_run_id와 검증 불변식은 같지만
+    조회 방향이 다르다(그쪽은 "이미 alias된 조합이 맞는가", 이쪽은 "alias
+    걸기 전에 짝이 존재하는가") — 그래서 직접 재사용 대신 경량 재구현한다.
+    """
+    versions = client.search_model_versions(f"name='{calibration_model_name}'")
+    matches = [v for v in versions if (v.tags or {}).get("main_run_id") == main_run_id]
+    if not matches:
+        return None
+    return max(matches, key=lambda v: int(v.version)).version
+
+
 def main(
     model_name: str,
     champion_alias: str,
@@ -92,5 +108,22 @@ def main(
                 f"({champion_alias}) val_roc_auc={champion_val_roc_auc:.4f}"
             )
 
+    candidate_mv = client.get_model_version(name=model_name, version=candidate_version)
+    sampling_rate = float((candidate_mv.tags or {}).get("sampling_rate", 1.0))
+    calibration_version: Optional[str] = None
+    if sampling_rate < 1.0:
+        calibration_version = _find_paired_calibration_version(
+            client, calibration_model_name, candidate_run_id
+        )
+        if calibration_version is None:
+            raise GateRejectedError(
+                f"게이트2 미달: 후보 {model_name} v{candidate_version}는 "
+                f"downsampling(sampling_rate={sampling_rate})인데 "
+                f"{calibration_model_name}에 main_run_id={candidate_run_id}와 "
+                "짝지어진 버전이 없습니다."
+            )
+
     set_model_alias(model_name, champion_alias, candidate_version)
+    if calibration_version is not None:
+        set_model_alias(calibration_model_name, champion_alias, calibration_version)
     return candidate_version
