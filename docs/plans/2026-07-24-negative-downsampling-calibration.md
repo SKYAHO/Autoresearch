@@ -18,8 +18,16 @@
   sampling_rate)` 순수 함수 추가. 스펙 결정 2 공식 `q/(q + (1-q)/w)` 그대로.
   `sampling_rate == 1.0`이면 항등(보정 없음)으로 반환해 downsampling 미사용
   경로가 자동으로 no-op이 되게 한다.
+  - **입력 방어(필수, 스펙 결정 2)**: 진입부에서 `0<w≤1`을 검증해 위반 시
+    `ValueError`(`w=0` → 0으로 나누기 방지). `assert`가 아니라 명시적 예외.
 - 단위 테스트: 스펙의 수치 검산(q=0.0909, w=0.1 → ≈0.0099), 경계
-  (w=1.0 → 항등), monotonicity(입력 순서 보존) 단언.
+  (w=1.0 → 항등), monotonicity(입력 순서 보존), **범위 위반(`w=0`/`w>1`/`w≤0`
+  → `ValueError`)** 단언.
+
+> **구현 현황**: 위 함수 1·2는 스펙 리뷰 대기 중 `300-impl-...` 브랜치에 선행
+> 작성 완료(`src/models/downsampling.py`, 범위 검증·`ValueError` 포함). 테스트
+> 18건 통과(수치검산·항등·monotonicity·경계·`ValueError`·positive 불변·
+> realized_rate·seed 결정론). 배선(3·4·게이트)은 스펙 승인 후 이어감.
 
 ### 2. train split 다운샘플러 (순수, 신규)
 
@@ -40,7 +48,17 @@
     `191-199`에서 주입한다. 강제 로직은 **auto 계산(164-172) 이후, 주입(191-199)
     이전**에 넣어야 한다 — 순서가 뒤바뀌면 auto가 계산한 큰 값이 강제(=1)를
     덮어써 이중 보정이 그대로 남는다.
-- Step 5 params(`log_parameters`)에 `sampling_rate` **실현값** 기록.
+  - **다른 밸런싱 옵션 확인**: `is_unbalance` 등 다른 자동 밸런싱 옵션이
+    config/`lgbm_model.py`에 없는지 확인(현재 없음). 가드를 `scale_pos_weight`
+    단독이 아니라 활성 밸런싱 옵션 일반으로 표현해 이후 추가도 커버.
+  - **early stopping 확인**: 현재 `lgbm_model.py:fit()`은 `eval_set`/`callbacks`
+    없이 고정 `n_estimators`로 학습 → early stopping 없음(스펙 결정 4의 전방
+    가드 참고). 이 스펙 범위에서 early stopping을 새로 켜지 않는다. 만약 켠다면
+    val 예측에 보정을 먼저 적용한 뒤 stopping 지표를 재야 한다.
+- Step 5 기록: `sampling_rate` **실현값**을 `log_parameters`(run param)에 기록
+  하고, `register_model` 직후 `MlflowClient.set_model_version_tag(...,
+  "sampling_rate", ...)`로 **모델 버전 tag에도** 기록(서빙 alias 로드 시 직접
+  조회용, 스펙 결정 7).
 
 ### 3b. champion 승격 게이트 (스펙 순서 가드의 코드 강제)
 
@@ -87,10 +105,15 @@ uv run python -m pytest -v                   # CI 동일
 
 - 1·2(순수 함수)는 독립. 3·4는 그 위에. 5는 3·4 후.
 - **#302 핸드오프**: 서빙 추론에의 보정 적용(ONNX 노드)·manifest 편입은 #302.
-  #300은 train/evaluate/기록까지. downsampling champion의 서빙 승격은 스펙의
-  "순서 가드"를 따른다(서빙 보정 준비 후).
+  #300은 train/evaluate/기록(run param + **모델 버전 tag**)까지. downsampling
+  champion의 서빙 승격은 스펙의 "순서 가드"를 따른다(서빙 보정 준비 후).
+- **서빙 캐싱 계약은 #300 스펙(결정 7)이 정의, 구현은 #302**: 서빙이
+  `sampling_rate`를 로드 시 1회 읽어(모델 버전 tag에서 직접) 캐싱하고 요청 중엔
+  캐시 값만 쓴다 — 이 계약을 #300 스펙에 못박아 #302 구현이 요청당 MLflow
+  호출로 새지 않게 한다. #300이 tag를 기록하므로 #302가 읽기만 하면 된다.
 
 ## 비범위
 
-- ONNX 변환, manifest, 서빙 로더 교체 → #302.
+- ONNX 변환, manifest, 서빙 로더 교체·서빙 캐싱 구현 → #302
+  (#300은 그 입력인 tag 기록 + 캐싱 계약 정의까지).
 - `sampling_rate` 최적값 자체의 대규모 튜닝 → 코드 확정 후 실험 트랙.
