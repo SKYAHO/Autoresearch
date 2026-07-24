@@ -81,7 +81,8 @@ Airflow (외부 Autoresearch-airflow):
 
 **상태:** 운영 중 — `feature_repo/`에 실데이터 스키마 기반 Entity·FeatureView
 정의 (BigQuery source table 연동). Feast 0.64, BigQuery offline store +
-Redis online store, `feast_apply`·`feast_materialize` 공개 batch CLI 제공.
+Redis online store, `feast_materialize` 공개 batch CLI 제공. registry apply는
+GitHub Actions `feast-apply` 워크플로우(feast 공식 CLI)가 소유한다(#331).
 
 ### Feast 핵심 설계 결정 (확정)
 

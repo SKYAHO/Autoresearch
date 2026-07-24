@@ -1,9 +1,8 @@
 """Feast repository 실행 전 준비(부트스트랩) 헬퍼.
 
 [파이프라인] 피처 구간 — Feast를 사용하는 공개 batch 명령
-(``autoresearch.jobs.feast_apply``, ``autoresearch.jobs.feast_materialize``)과
-serving reader가 Feast repo config를 읽기 **직전**에 필요한 실행 환경을
-갖추는 구간을 담당한다.
+(``autoresearch.jobs.feast_materialize``)과 serving reader가 Feast repo
+config를 읽기 **직전**에 필요한 실행 환경을 갖추는 구간을 담당한다.
 
 [기능] Redis TLS CA 번들을 확인하거나 Secret Manager에서 조달해
 ``REDIS_TLS_CA_PATH``를 채우고, ``feature_repo.*`` custom online store adapter를
