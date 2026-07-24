@@ -23,6 +23,8 @@ import os
 import re
 import subprocess
 import sys
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,7 +46,24 @@ EXCLUDED_FILE_PATTERNS = re.compile(
 PER_FILE_DIFF_LIMIT = 20_000  # 파일당 최대 문자 수
 TOTAL_DIFF_LIMIT = 150_000  # 전체 diff 최대 문자 수
 DOC_LIMIT = 15_000  # 정본 문서당 최대 문자 수
-MAX_ATTEMPTS = 2
+MAX_ATTEMPTS = 3  # HTTP 전이 오류·스키마 실패를 합쳐 최대 시도 횟수
+RETRY_BACKOFF_SECONDS = 10
+
+
+def _diff_priority(path: str) -> int:
+    """전체 diff 크기 제한 시 잘려나가는 순서를 중요도 역순으로 만들기 위한 정렬 키.
+
+    경로 알파벳순 그대로 담으면 뒤쪽 경로의 core 파일이 우선 생략되므로,
+    changes 중요도 rubric(core > contract > config > test > docs)에 맞춰
+    도메인 소스를 앞에 배치합니다.
+    """
+    if path.startswith(("src/", "autoresearch/", "feature_repo/")):
+        return 0  # core/contract 후보
+    if path.startswith("tests/"):
+        return 2
+    if path.startswith("docs/") or path.endswith((".md", ".rst")):
+        return 3
+    return 1  # 설정·CI·배포 등
 
 
 def run(cmd: list[str]) -> str:
@@ -71,17 +90,25 @@ def gather_pr_meta(pr_number: str) -> dict:
 
 
 def gather_diff(pr_number: str) -> tuple[str, list[str]]:
-    """diff를 파일 섹션 단위로 분해해 생성 파일 제외·크기 제한 후 재조립합니다."""
+    """diff를 파일 섹션 단위로 분해해 생성 파일 제외·크기 제한 후 재조립합니다.
+
+    크기 제한으로 파일을 생략해야 할 때 core 후보(src/, autoresearch/ 등)가
+    먼저 담기도록 중요도순으로 정렬한 뒤 채웁니다.
+    """
     full = run(["gh", "pr", "diff", pr_number])
-    sections = re.split(r"(?m)^(?=diff --git )", full)
-    kept: list[str] = []
-    skipped: list[str] = []
-    total = 0
-    for sec in sections:
+    sections = []
+    for sec in re.split(r"(?m)^(?=diff --git )", full):
         if not sec.strip():
             continue
         m = re.match(r"diff --git a/(\S+)", sec)
         path = m.group(1) if m else "(unknown)"
+        sections.append((path, sec))
+    sections.sort(key=lambda item: _diff_priority(item[0]))  # 동순위는 원래 순서 유지
+
+    kept: list[str] = []
+    skipped: list[str] = []
+    total = 0
+    for path, sec in sections:
         if EXCLUDED_FILE_PATTERNS.search(path):
             skipped.append(f"{path} (생성 파일 — docs 등급으로만 집계)")
             continue
@@ -135,7 +162,7 @@ def build_messages(meta: dict, diff: str, skipped: list[str]) -> list[dict]:
 
 같은 파일이라도 함수/클래스 단위로 나눠 항목화하고, docs/test는 묶어서 1~2개 항목으로 압축합니다. 총 20개 이하. diff_snippet은 이해에 필요한 핵심 hunk만 발췌합니다(항목당 4000자 이하, 불필요하면 생략). risk_notes_ko에는 데이터 계약 파급, 학습-서빙 일관성, 롤백 주의점 등을 적습니다.
 
-summary_ko는 정확히 3줄, 각 줄 120자 이하입니다. qa_note_ko에는 "코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오"를 이 PR의 핵심 로직 주제와 함께 안내합니다."""
+summary_ko는 정확히 3줄, 각 줄 120자 이하입니다. motivation_ko에는 이 변경이 왜 필요했는지(as-is의 문제·배경)를 1~3문장으로 반드시 채웁니다. expected_effects_ko에는 기대효과를 1~5개 항목으로 반드시 채웁니다. qa_note_ko에는 "코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오"를 이 PR의 핵심 로직 주제와 함께 안내합니다. 이 넷은 모두 스키마 필수 필드입니다."""
 
     skipped_note = (
         "\n\n## diff에서 제외된 파일\n" + "\n".join(f"- {s}" for s in skipped)
@@ -222,7 +249,23 @@ def main() -> int:
             )
         print(f"[generate_report] attempt {attempt}/{MAX_ATTEMPTS} "
               f"(model={os.environ['PR_REPORT_MODEL']})", file=sys.stderr)
-        content = strip_fences(call_openrouter(messages))
+        try:
+            content = strip_fences(call_openrouter(messages))
+        except urllib.error.HTTPError as e:
+            # 인증·크레딧 오류는 재시도해도 소용없으므로 즉시 실패
+            if e.code in (401, 402, 403):
+                print(f"[generate_report] HTTP {e.code} — 인증/크레딧 문제, "
+                      "재시도 없이 중단 (시크릿·잔액 확인 필요)", file=sys.stderr)
+                return 1
+            print(f"[generate_report] HTTP {e.code} — {RETRY_BACKOFF_SECONDS}초 후 재시도",
+                  file=sys.stderr)
+            time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+            continue
+        except (urllib.error.URLError, TimeoutError) as e:
+            print(f"[generate_report] 네트워크 오류({e}) — "
+                  f"{RETRY_BACKOFF_SECONDS}초 후 재시도", file=sys.stderr)
+            time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+            continue
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError as e:
