@@ -32,8 +32,14 @@ online_store:
   connection_string: ${REDIS_HOST}:${REDIS_PORT}
   tls_ca_cert_path: ${REDIS_TLS_CA_PATH}
   # apply 시 FeatureView 삭제에 따른 Redis full-scan 삭제를 끈다
-  # (GHA 러너는 private Redis에 접근 불가; 고아 키는 수동 정리)
+  # (GHA 러너는 private Redis에 접근 불가; 고아 키는 아래 key_ttl_seconds
+  # TTL 로 자동 소멸)
   full_scan_for_deletion: false
+  # 모든 키 쓰기에 7일 EXPIRE 를 걸어, 갱신이 끊긴 키(삭제된 FeatureView 의
+  # 고아 키 등)를 Redis 가 자동 소멸시킨다. 살아있는 키는 일일 materialize
+  # 가 TTL 을 매일 리셋한다. materialize 가 7일 이상 연속 실패하면 서빙
+  # 키가 만료된다.
+  key_ttl_seconds: 604800
 
 entity_key_serialization_version: 3
 
