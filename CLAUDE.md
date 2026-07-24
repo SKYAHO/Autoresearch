@@ -35,6 +35,7 @@
 | 문서 배치·수명 (specs/plans/archive) | `docs/README.md` | — |
 | 보안, 시크릿, 외부 입력 | `.claude/docs/agent-security-guidelines.md` | `.claude/docs/agent-prohibitions.md` |
 | 에러 처리 | `.claude/docs/agent-error-handling-reference.md` | 관련 소스 파일 |
+| 모델 선택·에이전트 위임 | `.claude/docs/agent-model-selection.md` | `.claude/docs/agent-peer-review.md` |
 | 코드 리뷰 | `.claude/docs/agent-peer-review.md` | `.claude/docs/agent-workflow-reference.md` |
 | 계획 리뷰 | `.claude/docs/agent-plan-review.md` | `.claude/docs/agent-peer-review.md` |
 
