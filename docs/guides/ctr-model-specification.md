@@ -397,6 +397,14 @@ SSOT가 아니다 — 계약 SSOT는 `src/features/model_contract.py`이고 mani
   run_id 비교**로 대체 구현한다(아래 서빙 로딩 참고). manifest 해시 검증은 후속 슬라이스에서 이
   자리를 채운다.
 
+> #### ⚠️ 잔여 fail-open — mutable tag 의존
+> 서빙의 calibration 사용 판단은 메인 버전의 `sampling_rate` tag에 의존한다. tag가 **없으면**
+> non-downsampling으로 간주해 calibration을 스킵하는데(v6 하위호환), downsampling 모델인데 tag가
+> **유실**된 이상 상황이 champion으로 오르면 보정 안 된 확률을 서빙하는 유일한 fail-open 지점이다.
+> 정상 경로에선 `train.py`가 tag를 항상 기록해 발생하지 않으며(승격 게이트도 동일 가정), **근본
+> 해소는 `sampling_rate`를 mutable tag가 아니라 해시 검증되는 immutable manifest 번들에 넣는 것**
+> (후속 슬라이스)이다.
+
 ### 서빙 로딩 / 체이닝 순서
 
 - **체이닝**: `main_model` 추론(raw `q`) → `calibration_model` 적용(`p`) → 최종 CTR. calibration은
