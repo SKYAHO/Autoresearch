@@ -20,8 +20,8 @@ hive partitioned 소스(dt=*)는 HivePartitioningOptions(mode=AUTO)로 dt 컬럼
   python scripts/load_raw_to_bigquery.py --tables action_log,virtual_user # 일부만
 
 옵션:
-  --project PROJECT   GCP 프로젝트 ID (기본: .env의 GCP_PROJECT_ID)
-  --dataset DATASET   BigQuery 데이터셋 (기본: .env의 BQ_DATASET 또는 feast_offline_store)
+  --project PROJECT   GCP 프로젝트 ID (기본: .env의 CTR_TRAINING_BQ_PROJECT, 없으면 GCP_PROJECT_ID)
+  --dataset DATASET   BigQuery 데이터셋 (기본: .env의 CTR_TRAINING_BQ_RAW_DATASET 또는 data_lake_raw)
   --location LOCATION BigQuery location (기본: .env의 BQ_LOCATION 또는 asia-northeast3)
   --bucket BUCKET     GCS 버킷 이름, gs:// 제외 (기본: .env의 YOUTUBE_LAKE_BUCKET)
   --tables KEYS       적재 대상 키 쉼표 구분 (기본: 전부)
@@ -168,15 +168,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="GCS 데이터 레이크 raw parquet을 BigQuery 네이티브 테이블로 적재"
     )
-    parser.add_argument("--project", default=os.getenv("GCP_PROJECT_ID"))
-    parser.add_argument("--dataset", default=os.getenv("BQ_DATASET", "feast_offline_store"))
+    # project도 소비자와 같은 raw 계층 변수를 우선하고, 미설정 환경은
+    # GCP_PROJECT_ID로 동작을 유지한다. 쓰기 경로이므로 둘 다 없으면
+    # 소비자처럼 기본 project를 가정하지 않고 명시 실패한다(#303).
+    parser.add_argument(
+        "--project",
+        default=os.getenv("CTR_TRAINING_BQ_PROJECT", os.getenv("GCP_PROJECT_ID")),
+    )
+    # raw 계층 적재이므로 소비자(feature_store_build, build_training_dataset)와
+    # 같은 raw 계층 변수를 읽는다. BQ_DATASET(feature 계층)은 읽지 않는다(#303).
+    parser.add_argument(
+        "--dataset", default=os.getenv("CTR_TRAINING_BQ_RAW_DATASET", "data_lake_raw")
+    )
     parser.add_argument("--location", default=os.getenv("BQ_LOCATION", "asia-northeast3"))
     parser.add_argument("--bucket", default=os.getenv("YOUTUBE_LAKE_BUCKET"))
     parser.add_argument("--tables", default=None, help="적재 대상 키 쉼표 구분")
     args = parser.parse_args(argv)
 
     if not args.project:
-        print("[ERROR] --project 또는 .env의 GCP_PROJECT_ID 필요")
+        print("[ERROR] --project 또는 .env의 CTR_TRAINING_BQ_PROJECT/GCP_PROJECT_ID 필요")
         return 1
     if not args.bucket:
         print("[ERROR] --bucket 또는 .env의 YOUTUBE_LAKE_BUCKET 필요")

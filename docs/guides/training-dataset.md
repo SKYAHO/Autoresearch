@@ -7,6 +7,21 @@
 >
 > CTR 모델은 이 데이터셋을 입력으로 사용해 특정 `user_id`가 특정 `video_id`를 노출받았을 때 클릭할 확률, 즉 `clicked` label을 예측한다.
 
+### 학습 구간 인자 계약 (`events_start_date` / `events_end_date`)
+
+`build_training_dataset.main(events_source="bigquery", ...)`의 두 날짜 인자는
+단일 의미를 갖는다 (#286): **"이벤트 발생 KST 캘린더 날짜의 폐구간
+[start, end]"**. 구현은 이 의미를 두 단계로 나눠 수행한다.
+
+- **dt 파티션 프루닝** (`padded_dt_range`): `[start − 7일(룩백), end + 세션
+  padding(일 단위 올림)]` 범위의 당일 슬라이스 파티션(#295 계약)을 읽는다.
+  오른쪽 padding은 KST 자정 직전 impression의 click→view→like 세션이
+  dt=end+1 파티션에 실리는 경우의 attribution을 위해 필요하다.
+- **최종 트림** (`events_kst_window`): 출력 행을 UTC 저장 timestamp 기준
+  `[start 00:00 KST, end+1 00:00 KST)`로 자른다. 과거 구현은 UTC 자정
+  경계(end 미포함)를 사용해 KST 가장자리 9시간이 어긋났다 — 회귀 테스트가
+  현 경계를 고정한다.
+
 ### Canonical model input contract
 
 모델 입력의 SSOT는 [`src/features/model_contract.py`](../../src/features/model_contract.py) 하나다. 아래 목록은 그 계약의 문서상 mirror이며, serving, training, simulation/daily scoring이 각자 feature 목록을 정의하거나 보정하지 않는다.
