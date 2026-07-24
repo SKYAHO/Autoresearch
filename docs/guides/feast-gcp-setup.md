@@ -334,12 +334,14 @@ feast apply
 > 워크플로우는 apply 로그의 실패 패턴 grep과 apply 전후 registry generation
 > 비교로 침묵 실패를 감지합니다.
 >
-> **DAG 소비용 경로 (과도기, 폐기 예정)**: Airflow `feast_online_store_materialize`
-> DAG는 여전히 공개 batch 명령 `python -m autoresearch.jobs.feast_apply`로
-> materialize 직전에 apply를 실행합니다. 이 래퍼는 DAG 소비 전용으로
-> 도입되었으며, DAG의 `apply_feature_registry` 태스크가 제거되는 후속
-> 이슈에서 함께 삭제될 예정입니다(과도기에는 GHA 경로와 병존). 인자 계약은
-> `docs/specs/2026-07-13-public-batch-execution-contract.md`를 참조하세요.
+> **DAG 소비용 경로 (폐기 완료)**: registry apply를 DAG에서 소비하기 위한 공개
+> batch 명령 `python -m autoresearch.jobs.feast_apply` 래퍼가 존재했던
+> 이유도 위와 같다 — feast 0.64 CLI가 `FeastProviderLoginError`를 exit 0으로
+> 삼키는 결함을 우회해야 했다. 이 래퍼는 GHA `feast-apply` 워크플로우의 침묵
+> 실패 가드(registry generation 비교 + apply 로그 grep)로 동일한 안전성을
+> 확보하게 되면서 삭제되었다(#331). Airflow `feast_online_store_materialize`
+> DAG의 `apply_feature_registry` 태스크도 함께 제거된다
+> (`SKYAHO/Autoresearch-airflow#130`).
 
 ### `full_scan_for_deletion: false` (공유 설정)
 

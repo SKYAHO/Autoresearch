@@ -46,13 +46,16 @@ python -m autoresearch.jobs.action_log --mode shard [options]
 python -m autoresearch.jobs.action_log --mode merge [options]
 python -m autoresearch.jobs.action_log_quality [options]
 python -m autoresearch.jobs.feature_store_build [options]
-python -m autoresearch.jobs.feast_apply [options]
 python -m autoresearch.jobs.feast_materialize [options]
 python -m src.pipeline.daily_recommendations [options]
 ```
 
 console script alias를 추가할 수 있지만 Airflow는 v1 동안 위 module 경로를
 사용한다. 구현 함수 이름과 module 내부 구조는 공개 계약이 아니다.
+
+feast registry apply(과거 `autoresearch.jobs.feast_apply`)는 GitHub Actions
+`feast-apply` 워크플로우(feast 공식 CLI 사용)로 이관되어 이 공개 batch 명령
+목록에서 제외됐다(#331).
 
 모든 명령은 다음 공통 옵션을 제공한다.
 
@@ -148,49 +151,6 @@ Application은 환경 변수를 읽고 누락·빈 값을 검증한다.
   행 수를 JSON integer 값으로 하는 mapping이다. 결과가 정확히 한 행의 integer
   count가 아니면 stdout에는 세부 값을 노출하지 않고 `runtime_failure`, exit 1로
   실패한다.
-
-## Feast apply
-
-```text
-python -m autoresearch.jobs.feast_apply \
-  [--repo-path feature_repo] \
-  [--skip-source-validation[=<boolean>]] \
-  [--dry-run[=<boolean>]]
-```
-
-### 계약
-
-- v1 호환 추가 명령이다 (기존 명령의 계약 변경 없음).
-- `feature_repo/`의 Entity·FeatureView·FeatureService 정의를 Feast registry에
-  반영한다. 종전에는 사람이 `kubectl exec`로 `feast apply`를 실행하는 수동
-  절차만 있었고, 그 결과 정의를 바꿔도 registry가 상한 없이 낡은 채로 남았다.
-  이 명령은 materialize 직전에 apply를 실행할 수 있게 만든 공개 batch 명령이다.
-  DAG 배선(`feast_online_store_materialize`)은 `Autoresearch-airflow`가 소유한다.
-- feast CLI(`python -m feast.cli.cli apply`)를 그대로 쓰지 않는다. feast 0.64의
-  apply 커맨드는 `FeastProviderLoginError`를 `print` 후 삼켜 **exit 0**으로
-  끝나므로, 인증 실패가 성공으로 보이고 후속 materialize가 낡은 registry로
-  실행된다. 이 명령은 어떤 feast 예외도 삼키지 않으며, feast가 잘못된 project
-  이름에서 호출하는 `sys.exit(1)`도 실패 summary와 exit 1로 노출한다.
-- `--repo-path` 기본값은 `feature_repo`이며 `feature_store.yaml`이 없으면
-  exit 2다.
-- `--skip-source-validation`은 offline source 존재 검증을 건너뛴다. 기본
-  `false`다.
-- `--dry-run`은 registry를 변경하지 않고 `plan` 경로로 diff만 확인한 뒤 exit
-  0으로 끝난다. 기본 `false`다.
-- 두 boolean 인자는 옵션 없음(`false`), bare flag(`true`), 명시값
-  (`=true`/`=false`)을 모두 허용한다. 그 외 값은 exit 2다.
-- Redis TLS CA 조달과 import 경로 준비는 repo config를 읽기 전에 수행한다.
-  `feature_store.yaml`의 `${REDIS_TLS_CA_PATH}` 치환과 custom online store
-  adapter(`feature_repo.redis_iam.IAMRedisOnlineStore`) 검증이 그 순서에
-  의존한다. import 경로는 repo의 **부모 디렉터리**(`feature_repo.*` adapter
-  import용)와 repo **디렉터리 자체**(feast가 `os.chdir` 뒤 정의 파일을 최상위
-  module로 import하므로 필요) 둘 다 필요하다.
-- feast가 stdout에 쓰는 사람용 diff·진행 로그는 stderr로 보낸다. stdout은
-  JSON Lines 전용 채널이며 마지막 event는 항상 `job_summary`다.
-- 성공 `job_summary`에는 `mode`(`apply` 또는 `plan`), `repo_path`, `project`,
-  `skip_source_validation`을 포함한다.
-- 환경 변수는 Feast materialize와 동일하다 (아래 표 참조).
-- 실행 이미지는 `Dockerfile.feast` 파생 이미지다.
 
 ## Feast materialize
 
