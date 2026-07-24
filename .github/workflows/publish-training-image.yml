@@ -1,0 +1,74 @@
+name: Publish Training Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Training image tag (defaults to short workflow SHA)'
+        required: false
+        default: ''
+
+env:
+  REGION: asia-northeast3
+  PROJECT_ID: ar-infra-501607
+  REPOSITORY: autoresearch-dev-docker
+  IMAGE_NAME: autoresearch-training
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve variables
+        id: vars
+        run: |
+          TAG="${{ inputs.image_tag }}"
+          if [ -z "$TAG" ]; then
+            TAG="${GITHUB_SHA::7}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "image=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.REPOSITORY }}/${{ env.IMAGE_NAME }}:${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GCP (WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: projects/185508640491/locations/global/workloadIdentityPools/autoresearch-github/providers/github
+          service_account: autoresearch-dev-gar-pusher@ar-infra-501607.iam.gserviceaccount.com
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GAR
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Build training image
+        run: |
+          docker build \
+            --build-arg VCS_REF="${{ github.sha }}" \
+            -f Dockerfile.train \
+            -t ${{ steps.vars.outputs.image }} \
+            .
+
+      - name: Push training image
+        run: docker push ${{ steps.vars.outputs.image }}
+
+      - name: Resolve pushed digest
+        id: digest
+        run: |
+          DIGEST="$(docker inspect --format='{{index .RepoDigests 0}}' ${{ steps.vars.outputs.image }})"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        run: |
+          echo "## Training image published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- tag: \`${{ steps.vars.outputs.image }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- digest: \`${{ steps.digest.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Autoresearch-airflow의 \`AIRFLOW_VAR_AUTORESEARCH_TRAINING_IMAGE\`를 위 digest로 갱신해야 DAG가 이 이미지를 사용한다." >> $GITHUB_STEP_SUMMARY
