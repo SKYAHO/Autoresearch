@@ -87,6 +87,9 @@ jobs:
       - name: Run feast apply
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          # WIF external_account 자격증명에는 project_id가 없어 feast GCS registry의
+          # storage.Client()가 프로젝트를 추론하지 못함 — google-auth 표준 변수로 명시.
+          GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
           BQ_DATASET: ${{ vars.BQ_DATASET }}
           GCS_REGISTRY_PATH: ${{ vars.GCS_REGISTRY_PATH }}
           GCS_STAGING_LOCATION: ${{ vars.GCS_STAGING_LOCATION }}
