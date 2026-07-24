@@ -177,6 +177,13 @@ He 보정 공식은 **"모델이 다운샘플 분포를 그대로 학습했다"*
   calibration`이 `sampling_rate == 1.0`에서 항등이므로 경로가 자동으로 일치한다.
 - **아티팩트 개수는 3개 유지**(model / feature_columns / categorical_columns).
   calibration은 wrapper 모델이 아니라 상수 + 수식이라 새 아티팩트가 없다.
+
+  > **[정정 — #302, 2026-07-24]**: 이 "아티팩트 3개 유지 / calibration은 모델이 아니라
+  > 상수+수식" 결정은 14차 코칭 이전에 내린 임의 결정이었으며, 멘토가 명시적으로 요구한
+  > **"레지스트리에 물리적으로 등록된 별도 모델 2개(main → calibration 순차 체이닝)"**
+  > 패키징 방침에 따라 #302에서 supersede됨. calibration 수식(He 2014) 자체는 그대로이나
+  > 패키징이 별도 등록 모델로 바뀐다. 상세는 `docs/guides/ctr-model-specification.md`의
+  > Model Packaging / Deployment 섹션(#302) 참조.
 - **#302와의 경계**: #302가 manifest(`sampling_rate` 포함)와 ONNX 그래프 노드로
   이 값을 정식 편입한다. #300은 값의 산출·기록·오프라인 보정까지 책임지고,
   서빙 추론에의 ONNX 편입은 #302가 이어받는다.

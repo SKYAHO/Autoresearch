@@ -17,9 +17,17 @@ logger = logging.getLogger(__name__)
 def _serving_calibration_ready() -> bool:
     """서빙 추론에 downsampling 보정이 편입됐는지 여부(#300/#302).
 
-    #302가 서빙(ONNX 그래프/manifest)에 보정을 편입하면 이 플래그를 켠다.
-    그 전까지 기본값은 False라, downsampling 모델(`sampling_rate<1.0`)은
-    champion으로 승격되지 못한다(보정 안 된 편향 확률이 서빙에 나가는 것 방지).
+    #302가 서빙에 calibration 체이닝(main → calibration)을 편입·배포하면 이 플래그를
+    켠다. 그 전까지 기본값 False라 downsampling 모델(`sampling_rate<1.0`)은 champion으로
+    승격되지 못한다(보정 안 된 편향 확률이 서빙에 나가는 것 방지).
+
+    검토 결론(#302): 게이트를 "calibration_model이 Registry에 존재하는가"로 바꾸지 않고
+    **env 플래그를 유지**한다. calibration 모델이 등록돼 있어도 서빙이 실제로 그것을
+    로드·체이닝하려면 배포 측에서 `RERANK_REGISTRY_CALIBRATION_MODEL_NAME` 등을 세팅해야
+    하므로, "모델 존재"는 "서빙이 보정을 적용함"의 충분조건이 아니다. 이 플래그는 서빙
+    calibration 배선이 실제로 라이브임을 나타내는 **배포 결합 신호**이고, main↔calibration
+    버전이 어긋난 조합을 막는 것은 로더의 페어링 fail-closed 검증(model_loader
+    `_resolve_paired_calibration_run_id`)이 런타임에서 담당한다(승격 게이트와 역할 분담).
     """
     return os.environ.get("CTR_SERVING_CALIBRATION_READY", "false").lower() in (
         "1",
