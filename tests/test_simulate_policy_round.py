@@ -441,8 +441,13 @@ def _run_round(tmp_path, stub_reranker, **overrides):
     return main(**kwargs)
 
 
-def _load_replay(round_dir):
-    """덤프된 판정과 계보를 DraftReplay로 되살린다."""
+def _load_replay(round_dir, *, with_exposure_keys=False):
+    """덤프된 판정과 계보를 DraftReplay로 되살린다.
+
+    with_exposure_keys=False(기본)는 exposure_keys가 없던 구버전 사이드카의
+    리플레이를 재현한다 — 기존 커버리지 휴리스틱 테스트들이 이 폴백 경로를
+    계속 검증하도록 유지하기 위해서다.
+    """
     import json
 
     from autoresearch.action_logs.pipeline import read_action_log_draft_parquet
@@ -453,10 +458,16 @@ def _load_replay(round_dir):
     )
 
     meta = json.loads((round_dir / DRAFTS_META_FILENAME).read_text(encoding="utf-8"))
+    exposure_keys = None
+    if with_exposure_keys:
+        exposure_keys = {
+            user: frozenset(videos) for user, videos in meta["exposure_keys"].items()
+        }
     return DraftReplay(
         drafts=read_action_log_draft_parquet(round_dir / DRAFTS_FILENAME),
         llm_model=str(meta["llm_model"]),
         exposure_args=meta["exposure_args"],
+        exposure_keys=exposure_keys,
     )
 
 
@@ -567,6 +578,189 @@ def test_replay_tolerates_a_user_with_no_drafts_at_all(tmp_path, stub_reranker):
         stub_reranker,
         generator=None,
         replay=replay_without_user,
+        output_dir=str(tmp_path / "b"),
+    )
+    assert replayed["dropped_exposures_without_judgment"] > 0
+
+
+def test_round_meta_records_exposure_keys(tmp_path, stub_reranker):
+    """덤프 사이드카에 유저별 합집합 노출 키 집합이 기록되어야 한다(#274)."""
+    import json
+
+    from src.pipeline.simulate_policy_round import DRAFTS_META_FILENAME
+
+    report = _run_round(tmp_path, stub_reranker, generator=RuleBasedActionLogGenerator())
+
+    meta = json.loads((tmp_path / DRAFTS_META_FILENAME).read_text(encoding="utf-8"))
+    assert len(meta["exposure_keys"]) == report["users"]
+    for videos in meta["exposure_keys"].values():
+        assert videos, "노출된 유저의 키 목록은 비어 있을 수 없습니다"
+        assert videos == sorted(videos)
+
+
+def test_replay_with_exposure_keys_tolerates_partial_user_drafts(tmp_path, stub_reranker):
+    """노출 키 집합이 있으면 유저의 부분 draft 누락(청크 부분 격리)을 관용해야 한다(#274).
+
+    chunk_size > 0 라운드에서 한 유저의 청크 일부만 격리되면 그 유저의 draft가
+    일부만 남는다. 구버전 휴리스틱은 이를 노출 불일치로 오인해 실패했지만,
+    노출 키 집합 비교가 통과하면 미판정 노출은 원본 격리로 확정되므로 관용하고
+    dropped로 계수해야 한다.
+    """
+    first_dir = tmp_path / "a"
+    _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
+
+    replay = _load_replay(first_dir, with_exposure_keys=True)
+    from src.pipeline.simulate_policy_round import DraftReplay
+
+    target_user = replay.drafts[0].user_id
+    user_drafts = [d for d in replay.drafts if d.user_id == target_user]
+    assert len(user_drafts) > 1
+
+    removed_one = user_drafts[0]
+    partial = DraftReplay(
+        drafts=[d for d in replay.drafts if d is not removed_one],
+        llm_model=replay.llm_model,
+        exposure_args=replay.exposure_args,
+        exposure_keys=replay.exposure_keys,
+    )
+
+    replayed = _run_round(
+        tmp_path / "b",
+        stub_reranker,
+        generator=None,
+        replay=partial,
+        output_dir=str(tmp_path / "b"),
+    )
+    assert replayed["dropped_exposures_without_judgment"] > 0
+
+
+def test_replay_with_exposure_keys_fails_on_exposure_set_mismatch(tmp_path, stub_reranker):
+    """노출 키 집합이 원본과 다르면(비디오 구성 상이) 정확 비교가 실패해야 한다."""
+    first_dir = tmp_path / "a"
+    _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
+
+    replay = _load_replay(first_dir, with_exposure_keys=True)
+    from src.pipeline.simulate_policy_round import DraftReplay
+
+    assert replay.exposure_keys is not None
+    target_user = next(iter(replay.exposure_keys))
+    tampered_keys = dict(replay.exposure_keys)
+    # 원본 노출에서 비디오 1개를 빼서 "판정 라운드의 노출이 달랐다"를 재현한다.
+    tampered_keys[target_user] = frozenset(sorted(tampered_keys[target_user])[:-1])
+    tampered = DraftReplay(
+        drafts=replay.drafts,
+        llm_model=replay.llm_model,
+        exposure_args=replay.exposure_args,
+        exposure_keys=tampered_keys,
+    )
+
+    with pytest.raises(ValueError, match="노출 키 집합"):
+        _run_round(
+            tmp_path / "b",
+            stub_reranker,
+            generator=None,
+            replay=tampered,
+            output_dir=str(tmp_path / "b"),
+        )
+
+
+def test_replay_with_exposure_keys_fails_on_user_set_mismatch(tmp_path, stub_reranker):
+    """노출 유저 집합이 원본과 다르면 실패해야 한다 — 전원 zero-coverage 은폐 차단.
+
+    구버전 휴리스틱에서는 유저 수는 같고 id만 다른 파일로 리플레이하면 전원이
+    zero-coverage가 되어 draft 유저 검사에만 의존했다. 노출 키 집합 비교는
+    유저 집합 차이를 직접 검출한다.
+    """
+    first_dir = tmp_path / "a"
+    _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
+
+    replay = _load_replay(first_dir, with_exposure_keys=True)
+    from src.pipeline.simulate_policy_round import DraftReplay
+
+    assert replay.exposure_keys is not None
+    dropped_user = next(iter(replay.exposure_keys))
+    reduced_keys = {
+        user: keys for user, keys in replay.exposure_keys.items() if user != dropped_user
+    }
+    # 해당 유저의 draft도 함께 제거해 draft 유저 검사가 아니라 유저 집합
+    # 비교가 검출함을 보장한다.
+    reduced = DraftReplay(
+        drafts=[d for d in replay.drafts if d.user_id != dropped_user],
+        llm_model=replay.llm_model,
+        exposure_args=replay.exposure_args,
+        exposure_keys=reduced_keys,
+    )
+
+    with pytest.raises(ValueError, match="노출 유저 집합"):
+        _run_round(
+            tmp_path / "b",
+            stub_reranker,
+            generator=None,
+            replay=reduced,
+            output_dir=str(tmp_path / "b"),
+        )
+
+
+class _FlakyGenerator:
+    """특정 (user, video)가 포함된 청크에서만 실패하는 판정기.
+
+    chunk_size > 0에서 같은 유저의 청크 일부만 quarantine되는 실제 경로를
+    재현한다(#274). 나머지 청크는 RuleBased 판정에 위임한다.
+    """
+
+    def __init__(self, poison_user: str, poison_video: str) -> None:
+        self.model_name = "flaky-rule"
+        self._delegate = RuleBasedActionLogGenerator(model_name=self.model_name)
+        self._poison_user = poison_user
+        self._poison_video = poison_video
+
+    def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+        user_id = str(virtual_user.get("user_id", ""))
+        if user_id == self._poison_user and any(
+            str(v.get("video_id")) == self._poison_video for v in videos
+        ):
+            raise RuntimeError("intentional chunk failure for partial-quarantine repro")
+        return self._delegate.generate(virtual_user, videos)
+
+
+def test_partially_quarantined_chunk_round_replays_successfully(tmp_path, stub_reranker):
+    """chunk_size > 0 부분 격리 라운드를 같은 노출 인자로 리플레이하면 성공해야 한다(#274).
+
+    이슈 재현 경로 그대로: 유저 한 명의 청크 하나만 격리된 판정 라운드를
+    만들고(draft parquet에는 그 (user, video)만 없다), 노출 키 집합이 기록된
+    사이드카로 리플레이한다. 구버전 휴리스틱이라면 부분 커버리지로 실패했을
+    라운드다.
+    """
+    # 1) 정찰 라운드로 결정적 노출에서 poison 대상 (user, video)를 고른다.
+    scout_dir = tmp_path / "scout"
+    _run_round(scout_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
+    scout = _load_replay(scout_dir, with_exposure_keys=True)
+    assert scout.exposure_keys is not None
+    poison_user = next(iter(sorted(scout.exposure_keys)))
+    poison_video = sorted(scout.exposure_keys[poison_user])[0]
+
+    # 2) chunk_size=1로 판정 라운드 실행 — poison 청크만 quarantine된다.
+    round_dir = tmp_path / "round"
+    original = _run_round(
+        round_dir,
+        stub_reranker,
+        generator=_FlakyGenerator(poison_user, poison_video),
+        chunk_size=1,
+    )
+    assert original["quarantined_chunks"] >= 1
+    replay = _load_replay(round_dir, with_exposure_keys=True)
+    judged_keys = {(d.user_id, d.video_id) for d in replay.drafts}
+    assert (poison_user, poison_video) not in judged_keys
+    assert any(d.user_id == poison_user for d in replay.drafts), (
+        "부분 격리 재현 실패 — 대상 유저의 다른 청크는 성공해야 합니다"
+    )
+
+    # 3) 같은 노출 인자로 리플레이 — 성공하고 격리분은 dropped로 계수된다.
+    replayed = _run_round(
+        tmp_path / "b",
+        stub_reranker,
+        generator=None,
+        replay=replay,
         output_dir=str(tmp_path / "b"),
     )
     assert replayed["dropped_exposures_without_judgment"] > 0
