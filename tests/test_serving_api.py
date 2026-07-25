@@ -1000,6 +1000,9 @@ def test_mlflow_model_loader_downloads_training_artifacts(
 
     def download_artifacts(*, artifact_uri: str) -> str:
         downloaded_uris.append(artifact_uri)
+        if artifact_uri.endswith("model_onnx"):
+            # 기존 champion(joblib-only)에는 model_onnx/가 없다 → 다운로드 실패로 부재 신호.
+            raise FileNotFoundError("model_onnx artifact does not exist")
         if artifact_uri.endswith("lgbm_model.joblib"):
             return str(model_path)
         if artifact_uri.endswith("categorical_columns.pkl"):
@@ -1016,8 +1019,11 @@ def test_mlflow_model_loader_downloads_training_artifacts(
     )
 
     assert reranker.feature_columns == MODEL_FEATURE_COLUMNS
-    assert downloaded_uris == [
+    # model_onnx/ 부재를 확인한 뒤 joblib으로 폴백한다(#302/#179 하위호환). ONNX 프로브와
+    # 세 학습 아티팩트를 모두 요청하되, 순서가 아니라 계약 경로 집합으로 검증한다.
+    assert set(downloaded_uris) == {
+        "runs:/run-123/model_onnx",
         "runs:/run-123/model/lgbm_model.joblib",
         "runs:/run-123/features/feature_columns.pkl",
         "runs:/run-123/features/categorical_columns.pkl",
-    ]
+    }

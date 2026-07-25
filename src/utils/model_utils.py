@@ -1,8 +1,46 @@
-"""모델 저장/로드 유틸리티."""
+"""모델 저장/로드 + ONNX 변환 유틸리티."""
 
 import os
 import pickle
+from typing import Any
+
 import joblib
+
+
+def convert_lgbm_to_onnx(model, n_features: int) -> Any:
+    """학습된 LGBMModel을 ONNX로 변환한다(#302/#179).
+
+    재학습이 필요 없다 — 카테고리형 컬럼이 pandas category dtype으로 학습됐더라도
+    LightGBM은 내부적으로 이미 정수 코드로 스플릿을 구성하므로, ONNX 추론 시 원본
+    문자열이 아니라 그 카테고리 순서의 정수 코드(서빙이 `.cat.codes`로 뽑음)를 입력하면
+    예측값이 원본과 허용오차 내로 동일하다.
+
+    입력은 컬럼별 다중 입력이 아니라 전체 피처를 이어붙인 단일 float32 텐서
+    `[None, n_features]` 하나다(onnxmltools의 LightGBM 변환기가 다중 입력을 지원하지 않음).
+    dtype이 float32인 것도 이 변환기의 제약이다 — `DoubleTensorType`은 거부되고
+    `Float`/`Int64`만 허용된다. joblib 폴백은 pandas 원본 float64로 추론하므로 이론상
+    대형 카운트 피처(float32 정확 정수 한계 2^24≈16.7M 초과)에서 분기가 갈릴 수 있으나,
+    LightGBM 스플릿 임계는 bin 경계라 그 스케일에서 float32 반올림 오차보다 훨씬 성글어
+    실측상 허용오차 내로 일치한다(tests/test_model_utils.py의 대형값 적대적 케이스로 고정).
+
+    `zipmap=False`로 변환해 확률 출력이 dict 시퀀스가 아니라 `(n, 2)` float 텐서가 되게
+    한다 — 서빙(onnxruntime)이 그대로 슬라이싱해 쓰기 위함이다(#179 기본값 zipmap=True와
+    다른 지점).
+
+    Args:
+        model: 학습된 LGBMModel(src.models.lgbm_model.LGBMModel) 인스턴스.
+        n_features: 학습에 사용한 피처 개수(입력 텐서 shape 결정용).
+
+    Returns:
+        onnx.ModelProto. `src.tracking.logger.log_onnx_model`로 기록할 수 있다.
+    """
+    from onnxmltools import convert_lightgbm
+    from onnxmltools.convert.common.data_types import FloatTensorType
+
+    if model.model is None:
+        raise ValueError("모델이 학습되지 않았습니다.")
+    initial_type = [("input", FloatTensorType([None, n_features]))]
+    return convert_lightgbm(model.model, initial_types=initial_type, zipmap=False)
 
 
 def save_model(model, path: str) -> None:
