@@ -65,7 +65,7 @@ def collect_categorical_categories(
     """
     Categorical 컬럼을 train/val union 카테고리로 캐스팅하고 카테고리 목록을 반환.
 
-    반환된 dict는 categorical_columns.pkl 아티팩트로 저장되어 서빙이 학습과
+    반환된 dict는 categorical_columns.json 아티팩트로 저장되어 서빙이 학습과
     동일한 category 코드 매핑을 재현하는 데 사용된다 (src/serving/model_loader.py).
     """
     categories_by_column: dict = {}

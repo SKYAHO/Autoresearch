@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
-import pickle
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -29,24 +29,17 @@ logger = logging.getLogger(__name__)
 FEATURE_COLUMNS_ADAPTER: Final = TypeAdapter(tuple[str, ...])
 CATEGORICAL_CATEGORIES_ADAPTER: Final = TypeAdapter(dict[str, tuple[str | int | float | bool, ...]])
 _Metadata = TypeVar("_Metadata")
-_PICKLE_METADATA_ERRORS: Final = (
+_JSON_METADATA_ERRORS: Final = (
     OSError,
-    pickle.UnpicklingError,
-    EOFError,
-    AttributeError,
-    ImportError,
-    IndexError,
-    KeyError,
-    TypeError,
-    ValueError,
-    OverflowError,
+    UnicodeDecodeError,
+    json.JSONDecodeError,
 )
 
 # 학습 파이프라인(src/pipeline/train.py Step 8)의 log_artifact 경로와 계약이다.
 # 학습 config(src/pipeline/config.yaml artifacts.*) 파일명이 바뀌면 함께 갱신한다.
 MLFLOW_MODEL_ARTIFACT_PATH: Final = "model/lgbm_model.joblib"
-MLFLOW_FEATURE_COLUMNS_ARTIFACT_PATH: Final = "features/feature_columns.pkl"
-MLFLOW_CATEGORICAL_COLUMNS_ARTIFACT_PATH: Final = "features/categorical_columns.pkl"
+MLFLOW_FEATURE_COLUMNS_ARTIFACT_PATH: Final = "features/feature_columns.json"
+MLFLOW_CATEGORICAL_COLUMNS_ARTIFACT_PATH: Final = "features/categorical_columns.json"
 # calibration 모델 아티팩트(JSON w). 학습 train.py Step 9의 artifact_path="calibration"와 계약.
 # 별도 등록 모델(config.registry.calibration_model_name)의 run 아래 이 경로로 로깅된다(#302).
 MLFLOW_CALIBRATION_ARTIFACT_PATH: Final = f"calibration/{CALIBRATION_PARAM_FILENAME}"
@@ -495,12 +488,12 @@ def _load_reranker(
         raise ModelArtifactError(
             reason=(
                 "Categorical-column artifact does not exist: "
-                f"{categorical_columns_path} (categorical_columns.pkl을 저장하는 "
+                f"{categorical_columns_path} (categorical_columns.json을 저장하는 "
                 "학습 파이프라인으로 재학습이 필요합니다.)"
             )
         )
 
-    feature_columns = _load_pickled_metadata(
+    feature_columns = _load_json_metadata(
         feature_columns_path,
         adapter=FEATURE_COLUMNS_ADAPTER,
         artifact_label="Feature-column",
@@ -526,7 +519,7 @@ def _load_reranker(
     if not isinstance(model, ProbabilityModel):
         raise ModelArtifactError(reason="Loaded model does not implement predict_proba.")
 
-    categorical_categories = _load_pickled_metadata(
+    categorical_categories = _load_json_metadata(
         categorical_columns_path,
         adapter=CATEGORICAL_CATEGORIES_ADAPTER,
         artifact_label="Categorical-column",
@@ -565,7 +558,7 @@ def _load_reranker(
     )
 
 
-def _load_pickled_metadata(
+def _load_json_metadata(
     path: Path,
     *,
     adapter: TypeAdapter[_Metadata],
@@ -573,8 +566,8 @@ def _load_pickled_metadata(
     malformed_reason: str,
 ) -> _Metadata:
     try:
-        with path.open("rb") as metadata_file:
-            return adapter.validate_python(pickle.load(metadata_file))
+        with path.open(encoding="utf-8") as metadata_file:
+            return adapter.validate_python(json.load(metadata_file))
     except ValidationError as error:
         raise ModelArtifactError(
             reason=(
@@ -582,7 +575,7 @@ def _load_pickled_metadata(
                 f"(path: {path})"
             )
         ) from error
-    except _PICKLE_METADATA_ERRORS as error:
+    except _JSON_METADATA_ERRORS as error:
         raise ModelArtifactError(
             reason=(
                 f"{artifact_label} artifact could not be deserialized from "

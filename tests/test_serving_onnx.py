@@ -113,8 +113,8 @@ def test_onnx_adapter_matches_lgbm_on_categorical_input() -> None:
 
 def _save_contract_artifacts(tmp_path: Path, model, categories, *, with_onnx: bool):
     model_path = tmp_path / "model.joblib"
-    feature_path = tmp_path / "feature_columns.pkl"
-    categorical_path = tmp_path / "categorical_columns.pkl"
+    feature_path = tmp_path / "feature_columns.json"
+    categorical_path = tmp_path / "categorical_columns.json"
     save_model(model.model, str(model_path))
     save_feature_columns(list(MODEL_FEATURE_COLUMNS), str(feature_path))
     save_categorical_columns(categories, str(categorical_path))

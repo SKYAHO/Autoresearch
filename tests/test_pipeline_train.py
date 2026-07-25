@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import pickle
+import json
 
 import numpy as np
 import pandas as pd
@@ -60,8 +60,8 @@ def _write_train_config(config_path) -> None:
         },
         "artifacts": {
             "model_path": "ignored/model.joblib",
-            "feature_columns_path": "ignored/feature_columns.pkl",
-            "categorical_columns_path": "ignored/categorical_columns.pkl",
+            "feature_columns_path": "ignored/feature_columns.json",
+            "categorical_columns_path": "ignored/categorical_columns.json",
             "test_set_path": "ignored/test_set.csv",
         },
         "registry": {"model_name": "ctr-model"},
@@ -109,8 +109,8 @@ def test_main_registers_model_and_auto_increments_version(tmp_path, monkeypatch)
             data_path=str(data_path),
             model_output=str(tmp_path / f"model_{suffix}.joblib"),
             test_set_output=str(tmp_path / f"test_set_{suffix}.csv"),
-            feature_columns_output=str(tmp_path / f"feature_columns_{suffix}.pkl"),
-            categorical_columns_output=str(tmp_path / f"categorical_columns_{suffix}.pkl"),
+            feature_columns_output=str(tmp_path / f"feature_columns_{suffix}.json"),
+            categorical_columns_output=str(tmp_path / f"categorical_columns_{suffix}.json"),
             test_size=0.2,
             val_size=0.2,
             random_state=42,
@@ -118,10 +118,10 @@ def test_main_registers_model_and_auto_increments_version(tmp_path, monkeypatch)
 
     run_once("v1")
 
-    with (tmp_path / "feature_columns_v1.pkl").open("rb") as stream:
-        assert tuple(pickle.load(stream)) == MODEL_FEATURE_COLUMNS
-    with (tmp_path / "categorical_columns_v1.pkl").open("rb") as stream:
-        categories = pickle.load(stream)
+    with (tmp_path / "feature_columns_v1.json").open(encoding="utf-8") as stream:
+        assert tuple(json.load(stream)) == MODEL_FEATURE_COLUMNS
+    with (tmp_path / "categorical_columns_v1.json").open(encoding="utf-8") as stream:
+        categories = json.load(stream)
     assert tuple(categories) == CATEGORICAL_FEATURE_COLUMNS
     assert "watch_time_band" in categories
 
@@ -160,8 +160,8 @@ def test_main_survives_registry_registration_failure(tmp_path, monkeypatch) -> N
         data_path=str(data_path),
         model_output=str(model_output),
         test_set_output=str(tmp_path / "test_set.csv"),
-        feature_columns_output=str(tmp_path / "feature_columns.pkl"),
-        categorical_columns_output=str(tmp_path / "categorical_columns.pkl"),
+        feature_columns_output=str(tmp_path / "feature_columns.json"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.json"),
         test_size=0.2,
         val_size=0.2,
         random_state=42,
@@ -187,8 +187,8 @@ def test_main_registers_lineage_tags_from_extra_params(tmp_path, monkeypatch) ->
         data_path=str(data_path),
         model_output=str(tmp_path / "model.joblib"),
         test_set_output=str(tmp_path / "test_set.csv"),
-        feature_columns_output=str(tmp_path / "feature_columns.pkl"),
-        categorical_columns_output=str(tmp_path / "categorical_columns.pkl"),
+        feature_columns_output=str(tmp_path / "feature_columns.json"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.json"),
         test_size=0.2,
         val_size=0.2,
         random_state=42,
@@ -221,8 +221,8 @@ def _run_train(tmp_path, config_path):
         data_path=str(tmp_path / "training_dataset.csv"),
         model_output=str(tmp_path / "model.joblib"),
         test_set_output=str(tmp_path / "test_set.csv"),
-        feature_columns_output=str(tmp_path / "feature_columns.pkl"),
-        categorical_columns_output=str(tmp_path / "categorical_columns.pkl"),
+        feature_columns_output=str(tmp_path / "feature_columns.json"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.json"),
         test_size=0.2,
         val_size=0.2,
         random_state=42,
@@ -351,8 +351,8 @@ def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> 
     import joblib
 
     joblib_model = joblib.load(tmp_path / "model.joblib")
-    with (tmp_path / "categorical_columns.pkl").open("rb") as stream:
-        categories = pickle.load(stream)
+    with (tmp_path / "categorical_columns.json").open(encoding="utf-8") as stream:
+        categories = json.load(stream)
     cast = serve_frame.copy()
     for col, cats in categories.items():
         cast[col] = pd.Categorical(cast[col], categories=cats)

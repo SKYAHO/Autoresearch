@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-import pickle
+import json
 from pathlib import Path
 from typing import BinaryIO
 
@@ -560,17 +560,17 @@ def _write_local_model_artifacts(
     category_values: Mapping[str, Sequence[str | int | float | bool]] | None = None,
 ) -> LocalModelSettings:
     model_path = tmp_path / "model.joblib"
-    feature_columns_path = tmp_path / "feature_columns.pkl"
-    categorical_columns_path = tmp_path / "categorical_columns.pkl"
+    feature_columns_path = tmp_path / "feature_columns.json"
+    categorical_columns_path = tmp_path / "categorical_columns.json"
     categories = {
         column: list(category_values.get(column, ())) if category_values is not None else []
         for column in categorical_columns
     }
     joblib.dump(RankingModel(), model_path)
-    with feature_columns_path.open("wb") as feature_columns_file:
-        pickle.dump(list(feature_columns), feature_columns_file)
-    with categorical_columns_path.open("wb") as categorical_columns_file:
-        pickle.dump(categories, categorical_columns_file)
+    with feature_columns_path.open("w", encoding="utf-8") as feature_columns_file:
+        json.dump(list(feature_columns), feature_columns_file)
+    with categorical_columns_path.open("w", encoding="utf-8") as categorical_columns_file:
+        json.dump(categories, categorical_columns_file)
     return LocalModelSettings(model_path, feature_columns_path, categorical_columns_path)
 
 
@@ -778,7 +778,7 @@ def test_local_model_loader_rejects_truncated_feature_columns_artifact(
     tmp_path: Path,
 ) -> None:
     settings = _write_local_model_artifacts(tmp_path)
-    settings.feature_columns_path.write_bytes(b"\x80\x05")
+    settings.feature_columns_path.write_bytes(b"[")  # 잘린 JSON
 
     with pytest.raises(
         ModelArtifactError,
@@ -786,14 +786,14 @@ def test_local_model_loader_rejects_truncated_feature_columns_artifact(
     ) as error_info:
         load_local_model(settings)
 
-    assert isinstance(error_info.value.__cause__, EOFError)
+    assert isinstance(error_info.value.__cause__, json.JSONDecodeError)
 
 
 def test_local_model_loader_rejects_malformed_categorical_columns_artifact(
     tmp_path: Path,
 ) -> None:
     settings = _write_local_model_artifacts(tmp_path)
-    settings.categorical_columns_path.write_bytes(b"not a pickle")
+    settings.categorical_columns_path.write_bytes(b"not json")
 
     with pytest.raises(
         ModelArtifactError,
@@ -801,7 +801,7 @@ def test_local_model_loader_rejects_malformed_categorical_columns_artifact(
     ) as error_info:
         load_local_model(settings)
 
-    assert isinstance(error_info.value.__cause__, pickle.UnpicklingError)
+    assert isinstance(error_info.value.__cause__, json.JSONDecodeError)
 
 
 def test_local_model_loader_normalizes_unreadable_metadata_artifact(
@@ -846,7 +846,9 @@ def test_local_model_loader_normalizes_schema_malformed_metadata_artifact(
     tmp_path: Path,
 ) -> None:
     settings = _write_local_model_artifacts(tmp_path)
-    settings.feature_columns_path.write_bytes(pickle.dumps({"not": "columns"}))
+    settings.feature_columns_path.write_text(
+        json.dumps({"not": "columns"}), encoding="utf-8"
+    )
 
     with pytest.raises(
         ModelArtifactError,
@@ -887,7 +889,7 @@ def test_mlflow_model_loader_normalizes_unreadable_metadata_artifact(
     def download_artifacts(*, artifact_uri: str) -> str:
         if artifact_uri.endswith("lgbm_model.joblib"):
             return str(settings.model_path)
-        if artifact_uri.endswith("categorical_columns.pkl"):
+        if artifact_uri.endswith("categorical_columns.json"):
             return str(settings.categorical_columns_path)
         return str(settings.feature_columns_path)
 
@@ -977,7 +979,7 @@ def test_local_model_loader_requires_categorical_artifact(tmp_path: Path) -> Non
             LocalModelSettings(
                 settings.model_path,
                 settings.feature_columns_path,
-                tmp_path / "missing.pkl",
+                tmp_path / "missing.json",
             )
         )
 
@@ -986,13 +988,13 @@ def test_mlflow_model_loader_downloads_training_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     model_path = tmp_path / "lgbm_model.joblib"
-    feature_columns_path = tmp_path / "feature_columns.pkl"
-    categorical_columns_path = tmp_path / "categorical_columns.pkl"
+    feature_columns_path = tmp_path / "feature_columns.json"
+    categorical_columns_path = tmp_path / "categorical_columns.json"
     joblib.dump(RankingModel(), model_path)
-    with feature_columns_path.open("wb") as feature_columns_file:
-        pickle.dump(list(MODEL_FEATURE_COLUMNS), feature_columns_file)
-    with categorical_columns_path.open("wb") as categorical_columns_file:
-        pickle.dump(
+    with feature_columns_path.open("w", encoding="utf-8") as feature_columns_file:
+        json.dump(list(MODEL_FEATURE_COLUMNS), feature_columns_file)
+    with categorical_columns_path.open("w", encoding="utf-8") as categorical_columns_file:
+        json.dump(
             {column: [] for column in CATEGORICAL_FEATURE_COLUMNS},
             categorical_columns_file,
         )
@@ -1005,7 +1007,7 @@ def test_mlflow_model_loader_downloads_training_artifacts(
             raise FileNotFoundError("model_onnx artifact does not exist")
         if artifact_uri.endswith("lgbm_model.joblib"):
             return str(model_path)
-        if artifact_uri.endswith("categorical_columns.pkl"):
+        if artifact_uri.endswith("categorical_columns.json"):
             return str(categorical_columns_path)
         return str(feature_columns_path)
 
@@ -1024,6 +1026,6 @@ def test_mlflow_model_loader_downloads_training_artifacts(
     assert set(downloaded_uris) == {
         "runs:/run-123/model_onnx",
         "runs:/run-123/model/lgbm_model.joblib",
-        "runs:/run-123/features/feature_columns.pkl",
-        "runs:/run-123/features/categorical_columns.pkl",
+        "runs:/run-123/features/feature_columns.json",
+        "runs:/run-123/features/categorical_columns.json",
     }

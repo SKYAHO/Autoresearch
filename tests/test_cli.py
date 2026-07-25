@@ -40,7 +40,7 @@ def test_run_pipeline_forwards_bigquery_sources_to_build_features(monkeypatch):
         config_path=None,
         model_output=None,
         test_set_output="test_set.csv",
-        feature_columns_output="feature_columns.pkl",
+        feature_columns_output="feature_columns.json",
         categorical_columns_output=None,
         test_size=None,
         val_size=None,

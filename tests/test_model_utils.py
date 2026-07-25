@@ -19,9 +19,10 @@ def test_categorical_columns_roundtrip(tmp_path: Path) -> None:
         "category_id": [10, 20, 30],
         "age_group": ["10s", "20s", "30s"],
     }
-    path = tmp_path / "categorical_columns.pkl"
+    path = tmp_path / "categorical_columns.json"
 
     save_categorical_columns(categories_by_column, str(path))
+    assert '"category_id"' in path.read_text(encoding="utf-8")  # JSON, not pickle
     loaded = load_categorical_columns(str(path))
 
     assert loaded == categories_by_column

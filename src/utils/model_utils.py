@@ -1,7 +1,7 @@
 """모델 저장/로드 + ONNX 변환 유틸리티."""
 
+import json
 import os
-import pickle
 from typing import Any
 
 import joblib
@@ -75,21 +75,23 @@ def load_model(path: str):
 
 def save_feature_columns(columns: list, path: str) -> None:
     """
-    Feature 컬럼 목록을 pickle 형식으로 저장.
+    Feature 컬럼 목록을 JSON 형식으로 저장.
+
+    pickle 대신 JSON을 쓴다 — 역직렬화 시 임의 코드 실행 위험을 없애기 위함이다.
 
     Args:
         columns: 컬럼 이름 리스트.
         path: 저장 경로.
     """
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        pickle.dump(columns, f)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(columns, f, ensure_ascii=False)
     print(f"[저장 완료] feature_columns: {path}")
 
 
 def load_feature_columns(path: str) -> list:
     """
-    pickle 형식의 feature 컬럼 목록 로드.
+    JSON 형식의 feature 컬럼 목록 로드.
 
     Args:
         path: 로드 경로.
@@ -99,31 +101,32 @@ def load_feature_columns(path: str) -> list:
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Feature 컬럼 파일을 찾을 수 없습니다: {path}")
-    with open(path, "rb") as f:
-        columns = pickle.load(f)
+    with open(path, encoding="utf-8") as f:
+        columns = json.load(f)
     print(f"[로드 완료] feature_columns: {path} ({len(columns)} columns)")
     return columns
 
 
 def save_categorical_columns(categories_by_column: dict, path: str) -> None:
     """
-    범주형 컬럼별 카테고리 목록을 pickle 형식으로 저장.
+    범주형 컬럼별 카테고리 목록을 JSON 형식으로 저장.
 
-    서빙이 학습과 동일한 category 코드 매핑을 재현하는 데 사용한다.
+    서빙이 학습과 동일한 category 코드 매핑을 재현하는 데 사용한다. pickle 대신
+    JSON을 쓴다 — 역직렬화 시 임의 코드 실행 위험을 없애기 위함이다.
 
     Args:
         categories_by_column: 컬럼명 -> 학습 시점 카테고리 리스트(순서 보존).
         path: 저장 경로.
     """
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
-        pickle.dump(categories_by_column, f)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(categories_by_column, f, ensure_ascii=False)
     print(f"[저장 완료] categorical_columns: {path}")
 
 
 def load_categorical_columns(path: str) -> dict:
     """
-    pickle 형식의 범주형 카테고리 목록 로드.
+    JSON 형식의 범주형 카테고리 목록 로드.
 
     Args:
         path: 로드 경로.
@@ -133,7 +136,7 @@ def load_categorical_columns(path: str) -> dict:
     """
     if not os.path.exists(path):
         raise FileNotFoundError(f"Categorical 컬럼 파일을 찾을 수 없습니다: {path}")
-    with open(path, "rb") as f:
-        categories_by_column = pickle.load(f)
+    with open(path, encoding="utf-8") as f:
+        categories_by_column = json.load(f)
     print(f"[로드 완료] categorical_columns: {path} ({len(categories_by_column)} columns)")
     return categories_by_column
