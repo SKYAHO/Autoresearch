@@ -278,8 +278,9 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 `train.py`와 `evaluate.py`, online `ServingFeatureBuilder`,
 `simulate_policy_round.py`/daily scoring, `model_loader.py`는 모두
 `src/features/model_contract.py`의 동일한 21개 tuple을 소비한다. 학습 산출물의
-`feature_columns.pkl`과 `categorical_columns.pkl`은 SSOT가 아니라 그 계약을
-재현하는 artifact snapshot이며, loader는 feature 이름·순서와 categorical 5개
+`feature_columns.json`과 `categorical_columns.json`은 SSOT가 아니라 그 계약을
+재현하는 artifact snapshot이며(pickle→JSON 전환 #344), loader는
+feature 이름·순서와 categorical 5개
 key가 계약과 다르면 시작 단계에서 실패시킨다. 15개 artifact나 reordered
 artifact를 지원하거나 누락 feature를 임의 값으로 padding하지 않는다.
 
@@ -329,20 +330,21 @@ Training Dataset의 한 행은 `(user_id, video_id, clicked)` pointwise 구조�
 > 상수+수식" 항목은 코칭 이전 임의 결정이었고 본 섹션이 supersede한다(정정 각주:
 > `docs/specs/2026-07-24-negative-downsampling-calibration.md` 결정 7).
 >
-> **구현 범위 구분**: 본 섹션은 배포 **계약**을 정의한다. 이번 PR은 **2-모델 패키징 +
-> 서빙 체이닝 + 페어링 검증**까지 구현하며, 모델 바이너리 **ONNX 전환**·feature 메타
-> **JSON 전환**·**manifest.json 해시 검증**의 구현은 #302 후속 슬라이스에서 진행한다
-> (아래 표의 "목표" 열). ONNX 전환은 학습측 변환을 완성한 **#179**를 Phase 1로 흡수한다.
+> **구현 범위 구분**: 본 섹션은 배포 **계약**을 정의한다. `#302` PR은 **2-모델 패키징 +
+> 서빙 체이닝 + 페어링 검증**을 구현했고, 후속 슬라이스로 모델 바이너리 **ONNX 전환**
+> (`#336` — 학습측 변환을 완성한 **#179**를 Phase 1로 흡수)과 feature 메타 **JSON 전환**
+> (`#344`)이 완료됐다. **joblib 폴백 제거**와 **manifest.json 해시 검증**은 아직 남은
+> 목표다(아래 표의 "남은 목표" 열).
 
 ### Deployment Package Composition
 
 배포 단위는 champion 승격·롤백 시 **원자적으로 함께 이동**해야 하는 아티팩트들의 묶음이다.
 
-| Artifact | 현행(이번 PR) | 목표(#302 후속) | 생성 시점 | 등록 위치 |
+| Artifact | 현행 | 남은 목표 | 생성 시점 | 등록 위치 |
 | --- | --- | --- | --- | --- |
-| 메인 모델 | `model/lgbm_model.joblib` (joblib) | ONNX(`onnxruntime` 추론) | 학습(train.py) | Registry `ctr-model` |
-| feature 컬럼 | `features/feature_columns.pkl` (pickle) | JSON | 학습 | 메인 모델 run |
-| categorical 매핑 | `features/categorical_columns.pkl` (pickle) | JSON | 학습 | 메인 모델 run |
+| 메인 모델 | `model/lgbm_model.joblib` + `model_onnx/`(`onnxruntime` 추론, joblib 폴백) (#336) | joblib 폴백 제거 | 학습(train.py) | Registry `ctr-model` |
+| feature 컬럼 | `features/feature_columns.json` (JSON) (#344) | — | 학습 | 메인 모델 run |
+| categorical 매핑 | `features/categorical_columns.json` (JSON) (#344) | — | 학습 | 메인 모델 run |
 | **calibration 모델** | `calibration/calibration.json` (JSON `w`) | 동일(JSON) | 학습(downsampling 시) | Registry `ctr-calibration-model` |
 | manifest | — | `manifest/manifest.json` | 학습 | 메인 모델 run |
 
