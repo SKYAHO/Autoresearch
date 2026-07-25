@@ -257,15 +257,25 @@ def load_mlflow_model(settings: MlflowModelSettings) -> Reranker:
         else None
     )
     onnx_session = _try_load_onnx_session_from_run(settings.run_id)
-    model_path = (
-        None
-        if onnx_session is not None
-        else Path(
+    # 어느 표현으로 서빙하는지 기동 로그로 남긴다. model_onnx/가 없어 joblib(pickle)으로
+    # 폴백한 사실을 운영이 탐지할 수 있게 하려는 것이다 — 이 슬라이스는 하위호환을 위해
+    # joblib 폴백을 유지하므로, "ONNX로 재학습됐어야 할 run이 조용히 joblib으로 서빙되는"
+    # 상황을 이 INFO 로그로 대시보드·알람에서 집계할 수 있다. 폴백 완전 제거(및 부재 시
+    # fail-closed 게이트)는 모든 champion ONNX 재학습 후 후속 슬라이스에서 닫는다.
+    if onnx_session is not None:
+        logger.info("서빙 모델 표현: ONNX(onnxruntime) — run=%s", settings.run_id)
+        model_path = None
+    else:
+        logger.info(
+            "서빙 모델 표현: joblib 폴백(model_onnx/ 없음) — run=%s. pickle 역직렬화 경로가 "
+            "남아있으니, ONNX로 재학습된 run을 기대하는 환경이라면 이 로그를 알람 대상으로 두세요.",
+            settings.run_id,
+        )
+        model_path = Path(
             mlflow.artifacts.download_artifacts(
                 artifact_uri=f"runs:/{settings.run_id}/{MLFLOW_MODEL_ARTIFACT_PATH}"
             )
         )
-    )
     return _load_reranker(
         model_path=model_path,
         feature_columns_path=feature_columns_path,
