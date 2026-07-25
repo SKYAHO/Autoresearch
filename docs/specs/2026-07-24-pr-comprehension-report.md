@@ -1,18 +1,19 @@
-# PR 이해 리포트 자동 생성 (3단계 이해 체계)
+# PR 이해 리포트 자동 생성 (4단계 이해 체계)
 
-> Status: 구현 (#313) | Last Updated: 2026-07-24
+> Status: 구현 (#313) + 가독성 개선 설계 완료(이슈 미발행) | Last Updated: 2026-07-24
 
 ## 배경·목표
 
 팀 전원이 에이전트(Claude/Codex CLI)로 코드를 생성하면서 PR 단위 코드
-이해가 병목이 되었습니다. 모든 PR에 다음 3단계 이해 체계를 자동
-제공합니다.
+이해가 병목이 되었습니다. 모든 PR에 다음 4단계 이해 체계를 자동
+제공합니다 (3→4단계 재구성 배경은 "가독성 개선" 절 참조).
 
-1. **시각화** — 전체 파이프라인에서 이 PR의 위치(as-is → to-be), 변경
-   이유, 기대효과
-2. **중요도순 diff** — 함수/모듈 단위 재구성, core > contract > config >
-   test > docs 순 정렬
-3. **이해도 확인 Q&A** — 기존 `claude.yml` 리뷰 봇의 인라인
+1. **시각화** — 전체 파이프라인에서 이 PR의 위치(as-is → to-be)
+2. **쉬운 설명** — 주제별 쉬운 설명 + 왜 필요했나 + 기대효과
+   (비전문가 대상, 함수/변수명 지양)
+3. **코드 기준 설명** — 함수/모듈 단위 중요도순 재구성, core >
+   contract > config > test > docs 순 정렬 (기본 접힘)
+4. **이해도 확인 Q&A** — 기존 `claude.yml` 리뷰 봇의 인라인
    "이해도 확인:" 질문(답변 후 스레드 resolve)
 
 ## 설계 결정
@@ -44,12 +45,13 @@
 | 키 | 계약 |
 | --- | --- |
 | `summary_ko` | 정확히 3줄, 각 120자 이하 |
+| `plain_points_ko` | 2단계용 주제별 쉬운 설명 bullet, 3~6개·120자 이하 (schema_version 2, "가독성 개선" 절 참조) |
 | `motivation_ko` / `expected_effects_ko` | as-is 문제 서술 / 기대효과 1~5개 |
 | `pipeline.nodes[]` | 카탈로그 전체 복사 + status 판정, 변경 노드는 `as_is_ko`/`to_be_ko` |
 | `pipeline.focus` | 중심 노드 id 1~3개 |
-| `changes[]` | 20개 이하, rank·importance·module·symbol·file·explanation_ko 필수 |
+| `changes[]` | 20개 이하, rank·importance·module·symbol·file·explanation_ko 필수, 3단계(기본 접힘) |
 | `changes[].importance` | `core` \| `contract` \| `config` \| `test` \| `docs` |
-| `qa_note_ko` | 3단계(인라인 질문 답변·resolve) 안내 |
+| `qa_note_ko` | 4단계(인라인 질문 답변·resolve) 안내 |
 
 ### 워크플로우 (`.github/workflows/pr-report.yml`)
 
@@ -65,7 +67,8 @@
 - **publish job** (저장소 전역 concurrency — gh-pages push race 방지):
   `peaceiris/actions-gh-pages@v4` + `keep_files: true`로 배포 → 마커
   `<!-- pr-comprehension-report -->` 기반 sticky 코멘트 upsert (요약 3줄,
-  중요 변경 top-3, 리포트 링크, 3단계 안내).
+  쉬운 설명 미리보기, 리포트 링크, 4단계 안내 — 상세는 "가독성 개선"
+  절 참조).
 
 ### 기존 리뷰 봇과의 관계
 
@@ -92,3 +95,91 @@
 - 검증 후 `Autoresearch-infra`(카탈로그를 인프라 노드로 교체),
   `Autoresearch-airflow`(OAuth secret 등록 선행, DAG 관점 카탈로그)로
   동일 세트 롤아웃
+
+## 가독성 개선 (4단계 재구성)
+
+> Status: 설계 완료 (이슈 미발행, 구현 전) | Last Updated: 2026-07-24
+
+### 배경
+
+팀원 피드백: 1단계 파이프라인 시각화는 효과적이지만, 나머지 텍스트
+(특히 옛 2단계 `changes[]`의 항목별 기술 설명)는 양이 많고 본인이
+구현하지 않은 모듈의 용어라 읽는 데 시간이 오래 걸립니다. 목표는
+"1단계 시각적 직관은 유지하되, 비전문가가 먼저 쉽게 이해할 수 있는
+설명을 앞에 배치하고, 코드 레벨 상세는 원하는 사람만 펼쳐보게" 하는
+것입니다.
+
+### 새 페이지 구조 (4단계)
+
+핵심요약(라벨 없음) → **1단계** 파이프라인 시각화(변경 없음) →
+**2단계** 쉬운 설명(신규) → **3단계** 코드 기준 설명(옛 2단계
+`changes[]`, 기본 접힘) → **4단계** 이해도 확인(옛 3단계 QA, 라벨만
+이동).
+
+2단계는 신규 필드 `plain_points_ko`(주제별 쉬운 설명 bullet) +
+기존 `motivation_ko`(왜 필요했나) + `expected_effects_ko`(기대효과)를
+한 카드 안에 소제목으로 구분해 통합합니다. `changes[]`·`pipeline`·
+`qa_note_ko`의 구조는 이번 변경 범위 밖입니다(3단계 자체의 재설계는
+필요성이 확인되면 별도 변경으로 다룹니다).
+
+### report.json 계약 변경
+
+- `schema_version`: `1` → `2` (계약 변경 표식. 소비자는 매 실행
+  재생성되는 gh-pages 산출물뿐이라 하위호환 이슈 없음)
+- 신규 필수 필드 `plain_points_ko`: 문자열 배열, 3~6개, 항목당 120자
+  이하. "이 모듈을 모르는 팀원" 기준으로 함수/변수/클래스명 대신
+  동작·데이터·영향 중심 서술. 주제 단위 bullet(예: "데이터가 이렇게
+  바뀌어요").
+
+### 프롬프트 rubric 추가
+
+`generate_report.py`의 system 프롬프트에 `plain_points_ko` 작성 규칙
+섹션을 추가하고, 스키마 필수 필드 안내("이 넷은 모두 필수") 문구를
+"이 다섯"으로 갱신합니다.
+
+**검증 스파이크(2026-07-24, 브레인스토밍 중 수행):** 위 rubric으로
+실제 PR #334(calibration 2-모델 패키징) diff를 OpenRouter
+(`google/gemini-3.6-flash`)에 넣어본 결과, 함수/변수명 없이 동작
+중심으로 읽히는 4개 bullet을 얻었습니다. "서빙", "체이닝" 같은 일부
+도메인 용어는 남았으나 옛 `changes[]` 설명보다 가독성이 뚜렷이
+개선됨을 확인했습니다. 이 결과로 A안(schema에 `plain_points_ko`만
+추가, `changes[]`는 그대로 3단계로 이동)을 최종 확정했습니다.
+
+### template.html 변경
+
+- 섹션 순서를 위 4단계로 재배치
+- 2단계 카드는 `plain_points_ko` bullet · `motivation_ko` ·
+  `expected_effects_ko`를 소제목으로 구분된 하위 블록으로 렌더링
+  (기존 `#node-detail`의 라벨-블록 패턴 재사용)
+- 3단계(`#changes`) 전체를 `<details>`로 감싸 기본 접힘,
+  `<summary>`에 "코드 기준 상세 설명 펼치기 (N건)" 표시. 개별 항목의
+  diff toggle(`details.diff-box`)은 기존 그대로 유지
+- 4단계는 라벨 텍스트만 "3단계"→"4단계"로 교체
+- SVG 파이프라인 렌더링, changes 카드 생성 로직 등 기존 JS는 변경
+  없음
+
+### pr-report.yml (publish job) 변경
+
+sticky 코멘트 생성 파이썬(`Upsert sticky comment` 스텝)이 라벨과
+미리보기를 하드코딩하고 있어 함께 갱신합니다.
+
+- 라벨 텍스트: `"1·2단계 — ..."` / `"3단계 — 이해도 확인"` →
+  `"1·2단계 — ..."` / `"4단계 — 이해도 확인"`(파이프라인+쉬운 설명
+  링크, QA는 4단계로)로 번호만 갱신
+- **미리보기 소스 교체**: 지금은 `changes[]`(3단계, symbol 단위
+  기술 설명) top 3를 코멘트에 미리 보여주는데, 이 코멘트는 PR 화면에서
+  가장 먼저 눈에 띄는 자리라 기술 용어가 그대로 노출되면 오늘 지적된
+  문제가 재발합니다. `sorted(changes, key=rank)[:3]` 대신
+  `plain_points_ko`(상위 2~3개)를 보여주도록 교체해, 코멘트 단계부터
+  "쉬운 설명" 톤을 일관되게 유지합니다.
+
+### 검증 계획
+
+- `python .github/pr-report/inject.py .github/pr-report/template.html
+  <샘플 report.json> > index.html` 후 브라우저로 4단계 레이아웃·접힘
+  동작·다크모드 확인
+- `check-jsonschema`로 `plain_points_ko` 포함 스키마 검증
+- 위 스파이크로 만든 실제 PR #334 기반 report.json으로 렌더링 확인
+- sticky 코멘트 파이썬 스니펫은 `report.json` 샘플로 로컬에서
+  `python -c`로 직접 실행해 출력 미리보기 확인 (GitHub API 호출 없이)
+- `uv run --no-sync ruff check .github/pr-report`

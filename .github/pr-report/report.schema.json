@@ -7,6 +7,7 @@
     "schema_version",
     "pr",
     "summary_ko",
+    "plain_points_ko",
     "motivation_ko",
     "expected_effects_ko",
     "pipeline",
@@ -15,7 +16,7 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "pr": {
       "type": "object",
       "required": ["number", "title", "author", "issue_refs", "generated_at", "head_sha"],
@@ -35,6 +36,13 @@
       "maxItems": 3,
       "items": { "type": "string", "minLength": 1, "maxLength": 120 },
       "description": "핵심 요약 정확히 3줄 (한국어 격식체)"
+    },
+    "plain_points_ko": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 6,
+      "items": { "type": "string", "minLength": 1, "maxLength": 120 },
+      "description": "2단계용 쉬운 설명 — 이 모듈을 모르는 팀원 기준 주제별 bullet (함수/변수/클래스명 지양)"
     },
     "motivation_ko": {
       "type": "string",
