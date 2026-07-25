@@ -102,10 +102,14 @@ def main(
     champion_metrics = get_model_metrics_by_alias(model_name, champion_alias)
     if champion_metrics is not None:
         champion_val_roc_auc = champion_metrics.get("val_roc_auc")
-        if (
-            champion_val_roc_auc is not None
-            and candidate_val_roc_auc < champion_val_roc_auc
-        ):
+        if champion_val_roc_auc is None:
+            raise ValueError(
+                f"{model_name}@{champion_alias}의 run에 val_roc_auc 지표가 없어 "
+                "후보와 비교할 수 없습니다(수동 승격 등으로 지표 없이 등록된 "
+                "champion일 수 있습니다) — 비교 불가를 자동 통과로 처리하지 않고 "
+                "fail-closed로 거부합니다."
+            )
+        if candidate_val_roc_auc < champion_val_roc_auc:
             raise GateRejectedError(
                 f"게이트1 미달: 후보 {model_name} v{candidate_version} "
                 f"val_roc_auc={candidate_val_roc_auc:.4f} < champion"
@@ -127,10 +131,12 @@ def main(
                 "짝지어진 버전이 없습니다."
             )
 
-    # main alias 이동이 실패하면 이 줄 아래로 진행하지 않으므로 calibration alias는
-    # 절대 main 없이 먼저 옮겨지지 않는다 — 부분 실패 시에도 "main은 새 버전인데
-    # calibration은 옛 버전" 조합은 생기지 않는다(반대 조합만 가능하며, 서빙의
-    # fail-closed 페어링 검증이 그 조합을 막는다).
+    # main alias를 먼저, calibration을 나중에 옮긴다 — 부분 실패(main 성공 후
+    # calibration 실패) 시 "main=새 버전, calibration=옛 버전" 조합이 남을 수
+    # 있다("calibration=새, main=옛" 조합은 이 순서상 애초에 발생할 수 없다).
+    # 어느 조합이든 서빙의 fail-closed 페어링 검증(main_run_id tag 불일치)이
+    # 막아주므로 안전하지만, 이 재현 자체를 자동으로 정합화하지는 않는다 —
+    # 재실행 시 같은 candidate_run_id로 다시 페어링을 찾아 이어간다.
     set_model_alias(model_name, champion_alias, candidate_version)
     if calibration_version is not None:
         set_model_alias(calibration_model_name, champion_alias, calibration_version)

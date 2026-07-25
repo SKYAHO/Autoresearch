@@ -198,8 +198,9 @@ def test_main_promotes_when_candidate_metric_equals_champion(monkeypatch):
     assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]
 
 
-def test_main_promotes_when_champion_metrics_missing_val_roc_auc_key(monkeypatch):
-    # champion run에 val_roc_auc 자체가 없으면(구버전 등) 비교 불가로 자동 통과한다.
+def test_main_raises_plain_error_when_champion_metric_missing(monkeypatch):
+    # champion run에 val_roc_auc 자체가 없으면(예: 과거 수동 승격) 비교 불가를
+    # 자동 통과로 처리하지 않고 fail-closed로 거부한다(PR #343 리뷰 반영).
     champion = _version("3", aliases=["champion"], run_id="run-3")
     candidate = _version("4", run_id="run-4")
     client = _PromoteClient(
@@ -208,7 +209,6 @@ def test_main_promotes_when_champion_metrics_missing_val_roc_auc_key(monkeypatch
     )
     _patch_client(monkeypatch, client)
 
-    result = promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
-
-    assert result == "4"
-    assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]
+    with pytest.raises(ValueError, match="val_roc_auc"):
+        promote.main(MODEL_NAME, "champion", CALIBRATION_MODEL_NAME)
+    assert client.set_alias_calls == []
