@@ -46,14 +46,21 @@ GKE 배포 세부사항(네임스페이스, NetworkPolicy, 접속 방법)은
 MLflow 서버의 proxy 모드로 기록되므로, 학습 이미지에는 GCS 자격 증명이 필요
 없습니다.
 
-## 이미지 배포 (범위 밖)
+## 이미지 배포
 
-이 이미지를 GAR에 publish하고 Airflow DAG가 소비하는 파이프라인(release.yml
-연동, digest 승격 PR 등)은 아직 구성돼 있지 않습니다. `Dockerfile.app`의
-release 파이프라인([release-pipeline.md](release-pipeline.md) 참조)과 동일한
-패턴을 적용할지는 CTR 학습 DAG 작업(`Autoresearch-airflow#72`)에서 실제 배포
-방식이 정해진 뒤 별도로 결정합니다. 지금은 CI에서 이미지가 정상 빌드되는지만
-검증합니다.
+이 이미지는 `Dockerfile.app`/serving 이미지와 **같은 release-트리거 패턴**으로 배포됩니다(#185).
+`release.yml`의 `publish-training-image` job이 GitHub Release 발행(또는 `workflow_dispatch` +
+`source_sha`) 시 GAR로 build+push+verify하고, `promote-airflow-digest-training` job이
+`Autoresearch-airflow`의 `deploy/airflow/values.yaml`에서 `AIRFLOW_VAR_AUTORESEARCH_TRAINING_IMAGE`
+digest를 갱신하는 PR을 자동 생성합니다(사람이 merge하면 GKE 배포).
+
+verify 스모크는 코드가 이미지에 없는(런타임 GCS bootstrap) 특성상 ENTRYPOINT를 우회해
+`import onnxmltools, onnxruntime, lightgbm` 등 **런타임 의존성**을 검증합니다 — `#336` 이후 이미지가
+재빌드되지 않아 ONNX 변환이 조용히 joblib으로 폴백한 사고를 릴리스 시점에 잡기 위함입니다.
+
+`autoresearch-feast` 이미지도 같은 파이프라인(`publish-feast-image`/`promote-airflow-digest-feast`)에
+편입돼 있습니다. `deploy/mlflow/Dockerfile`(인프라 Cloud Build 소관 추정)·`proxy/Dockerfile`은 아직
+이 자동화 범위 밖입니다.
 
 ## 관련 이슈
 
