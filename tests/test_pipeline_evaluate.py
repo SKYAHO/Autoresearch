@@ -26,7 +26,7 @@ def test_main_uses_canonical_feature_contract_without_config_columns(tmp_path, m
                 "data": {"path": "ignored.csv"},
                 "artifacts": {
                     "model_path": str(tmp_path / "model.joblib"),
-                    "feature_columns_path": str(tmp_path / "feature_columns.pkl"),
+                    "feature_columns_path": str(tmp_path / "feature_columns.json"),
                 },
             },
             stream,
@@ -64,7 +64,7 @@ def _eval_config_and_data(tmp_path):
                 "data": {"path": "ignored.csv"},
                 "artifacts": {
                     "model_path": str(tmp_path / "model.joblib"),
-                    "feature_columns_path": str(tmp_path / "feature_columns.pkl"),
+                    "feature_columns_path": str(tmp_path / "feature_columns.json"),
                 },
             },
             stream,
