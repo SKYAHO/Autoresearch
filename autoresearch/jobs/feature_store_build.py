@@ -14,6 +14,13 @@ raw action log는 당일 슬라이스 파티션(dt=D = KST D일 하루치)을
 ``dt BETWEEN P-30 AND P-1``로 프루닝해 30일 히스토리를 조립한다(#295 A안).
 슬라이스는 서로소이므로 이 합산은 중복이 아니다.
 
+``training_entity``는 학습 데이터셋의 spine(Feast Historical Retrieval의 entity
+dataframe)이다. 다른 테이블과 달리 과거가 아니라 **대상일 D와 다음 날 D+1을**
+읽는다 — impression(기준 행)에 click(label)을 30분 귀속하는데 자정 근처
+impression의 click이 D+1 파티션에 실릴 수 있기 때문이다. 지우고 검증하는 범위는
+D 행뿐이지만 귀속 계산은 D+1까지 본다(#245, 계약 정본은
+``docs/specs/2026-07-26-training-entity-incremental-slice.md``).
+
 이 명령이 담당하지 않는 인접 책임:
 
 - raw 계층 적재는 ``lake_to_bigquery`` 경로가 담당한다.
@@ -276,6 +283,89 @@ QUALIFY ROW_NUMBER() OVER (
 ) = 1
 """
 
+# training_entity spine. 다른 SELECT과 달리 대상일 D뿐 아니라 다음 날 D+1을 읽어
+# 자정을 넘긴 click 귀속을 온전히 잡는다(spec: 2026-07-26-training-entity-incremental-slice).
+# 세 범위가 갈라진다: 출력 행 = KST 날짜 D impression / click 스캔 = dt D∪D+1 /
+# 귀속 후보 impression = dt D∪D+1. 후보를 D로만 좁히면 자정 직후 click이 더 최근인
+# D+1 impression 대신 D impression에 잘못 붙어 거짓 clicked=1 + 이중 positive가 난다.
+_TRAINING_ENTITY_SELECT = """\
+WITH impressions_candidates AS (
+  -- 귀속 계산용 후보 impression: 대상일 D와 다음 날 D+1. 출력이 아니라 "click의
+  -- 전역 최근 impression"을 정확히 고르기 위한 풀이다.
+  SELECT
+    event_id AS source_event_id,
+    user_id,
+    video_id,
+    event_timestamp
+  FROM `{project}.{raw_dataset}.data_lake_action_log`
+  WHERE event_type = 'impression'
+    AND user_id IS NOT NULL
+    AND video_id IS NOT NULL
+    AND event_timestamp IS NOT NULL
+    AND dt BETWEEN DATE '{partition_date}'
+               AND DATE_ADD(DATE '{partition_date}', INTERVAL 1 DAY)
+    AND event_timestamp >= TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul')
+),
+impressions_output AS (
+  -- 이 파티션이 소유(삭제·검증)하는 행: event_timestamp가 KST 날짜 D에 속한
+  -- impression만. partition_predicate와 정확히 같은 범위다.
+  SELECT source_event_id, user_id, video_id, event_timestamp
+  FROM impressions_candidates
+  WHERE event_timestamp < TIMESTAMP(
+    DATE_ADD(DATE '{partition_date}', INTERVAL 1 DAY), 'Asia/Seoul')
+),
+clicks AS (
+  -- D 출력 impression에 귀속될 수 있는 click: D 00:00(KST) 이후 ~ D+1 자정 + 30분.
+  SELECT
+    event_id AS click_event_id,
+    user_id,
+    video_id,
+    event_timestamp AS click_timestamp
+  FROM `{project}.{raw_dataset}.data_lake_action_log`
+  WHERE event_type = 'click'
+    AND user_id IS NOT NULL
+    AND video_id IS NOT NULL
+    AND event_timestamp IS NOT NULL
+    AND dt BETWEEN DATE '{partition_date}'
+               AND DATE_ADD(DATE '{partition_date}', INTERVAL 1 DAY)
+    AND event_timestamp >= TIMESTAMP(DATE '{partition_date}', 'Asia/Seoul')
+    AND event_timestamp < TIMESTAMP_ADD(
+      TIMESTAMP(DATE_ADD(DATE '{partition_date}', INTERVAL 1 DAY), 'Asia/Seoul'),
+      INTERVAL 1800 SECOND)
+),
+click_attribution AS (
+  -- 각 click을 직전 30분 내 가장 최근(전역 최근) 후보 impression 1건에 귀속.
+  SELECT
+    c.click_event_id,
+    i.source_event_id,
+    ROW_NUMBER() OVER (
+      PARTITION BY c.click_event_id
+      ORDER BY i.event_timestamp DESC
+    ) AS rn
+  FROM clicks c
+  JOIN impressions_candidates i
+    ON c.user_id = i.user_id
+   AND c.video_id = i.video_id
+   AND i.event_timestamp < c.click_timestamp
+   AND i.event_timestamp >= TIMESTAMP_SUB(c.click_timestamp, INTERVAL 1800 SECOND)
+),
+positive_impressions AS (
+  SELECT DISTINCT source_event_id
+  FROM click_attribution
+  WHERE rn = 1
+)
+SELECT
+  'ctr_train_v1' AS dataset_id,
+  o.user_id,
+  o.video_id,
+  o.event_timestamp,
+  IF(p.source_event_id IS NOT NULL, 1, 0) AS clicked,
+  o.source_event_id
+FROM impressions_output o
+LEFT JOIN positive_impressions p
+  ON o.source_event_id = p.source_event_id
+"""
+
 
 USER_DYNAMIC_FEATURE = FeatureTableSpec(
     name="user_dynamic_feature",
@@ -315,6 +405,22 @@ VIDEO_FEATURE = FeatureTableSpec(
     # 날짜 단위로 묶어 지운다.
     partition_predicate="DATE(event_timestamp, 'Asia/Seoul') = DATE '{partition_date}'",
 )
+TRAINING_ENTITY = FeatureTableSpec(
+    name="training_entity",
+    entity_keys=("user_id", "video_id"),
+    columns=(
+        "dataset_id",
+        "user_id",
+        "video_id",
+        "event_timestamp",
+        "clicked",
+        "source_event_id",
+    ),
+    select_sql=_TRAINING_ENTITY_SELECT,
+    # 출력·삭제·검증 범위는 impression이 KST 날짜 D에 발생한 행뿐이다. click 스캔과
+    # 귀속 후보는 D+1까지 넓지만(cross-midnight), 이 파티션이 소유하는 건 D 행이다.
+    partition_predicate="DATE(event_timestamp, 'Asia/Seoul') = DATE '{partition_date}'",
+)
 
 # 여기서 만들지 않는 feature 테이블:
 # - user_static_feature: persona asset이 바뀔 때만 갱신되는 정적 feature라 날짜
@@ -324,6 +430,7 @@ VIDEO_FEATURE = FeatureTableSpec(
 FEATURE_TABLES: tuple[FeatureTableSpec, ...] = (
     USER_DYNAMIC_FEATURE,
     VIDEO_FEATURE,
+    TRAINING_ENTITY,
 )
 _TABLES_BY_NAME = {spec.name: spec for spec in FEATURE_TABLES}
 
