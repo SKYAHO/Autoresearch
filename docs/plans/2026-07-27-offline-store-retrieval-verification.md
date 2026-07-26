@@ -58,6 +58,10 @@ offline feature store가 실제로 조회 가능한지 검증하고, PIT 전환�
    - `ci.yml`의 feast 그룹 테스트 목록에 추가.
 4. **ttl 부재 stale 위험 문서화** — `docs/guides/feature-store.md`에 전 FeatureView
    `ttl` 부재 → 결손일 stale fallback 위험과 방어 방향(#357 ttl 결정으로 연결) 명시.
+5. **Phase 0 감사 문서** — step 2 커버리지 실측 결과를 종합해
+   `docs/specs/2026-07-27-feast-pit-phase0-audit.md`로 판정. 이 문서가 Phase 0의
+   **완료 판정 산출물**이며, "재측정 결손 0 → Phase 0 완료 선언 → Phase 1(#357)
+   착수"의 handoff 기준을 담는다.
 
 ## 검증
 
