@@ -74,6 +74,7 @@ def test_default_tables_cover_declared_specs() -> None:
     assert [spec.name for spec in feature_store_build.FEATURE_TABLES] == [
         "user_dynamic_feature",
         "video_feature",
+        "training_entity",
     ]
 
 
@@ -158,6 +159,88 @@ def test_insert_column_list_matches_feature_view_contract() -> None:
     )
 
 
+def test_training_entity_columns_match_spine_contract() -> None:
+    # data-warehouse.md training_entity 절과 동일한 컬럼·순서. entity_keys는 Feast
+    # join key(user, video)이고 event_timestamp가 PIT 조회 기준 시점이다.
+    assert feature_store_build.TRAINING_ENTITY.columns == (
+        "dataset_id",
+        "user_id",
+        "video_id",
+        "event_timestamp",
+        "clicked",
+        "source_event_id",
+    )
+    assert feature_store_build.TRAINING_ENTITY.entity_keys == ("user_id", "video_id")
+
+
+def test_training_entity_output_and_delete_scope_is_day_d_only() -> None:
+    # 이 파티션이 소유(삭제·검증·출력)하는 범위는 impression이 KST 날짜 D에 발생한
+    # 행뿐이다. click 스캔·귀속 후보가 D+1까지 넓어도 출력은 D로 잘린다.
+    sql = _incremental_sql(feature_store_build.TRAINING_ENTITY)
+    assert sql.startswith(
+        "DELETE FROM `p.feat.training_entity`\n"
+        "WHERE DATE(event_timestamp, 'Asia/Seoul') = DATE '2026-07-21';"
+    )
+    assert "INSERT INTO `p.feat.training_entity` (" in sql
+    # 출력 CTE는 D 자정 상한으로 잘린다(= partition_predicate와 같은 범위).
+    assert "impressions_output AS (" in sql
+    assert (
+        "WHERE event_timestamp < TIMESTAMP(\n"
+        "    DATE_ADD(DATE '2026-07-21', INTERVAL 1 DAY), 'Asia/Seoul')" in sql
+    )
+    assert "TRUNCATE TABLE" not in sql
+    assert "CREATE OR REPLACE" not in sql
+
+
+def test_training_entity_clicks_scan_extends_into_next_day_and_30min() -> None:
+    # 자정을 넘긴 click 귀속을 잡으려면 click 스캔이 D+1 파티션 + 30분까지 가야 한다.
+    sql = _incremental_sql(feature_store_build.TRAINING_ENTITY)
+    # impression 후보 스캔과 click 스캔 두 곳 모두 dt를 D+1까지 넓힌다.
+    assert sql.count("dt BETWEEN DATE '2026-07-21'") == 2
+    assert (
+        "AND DATE_ADD(DATE '2026-07-21', INTERVAL 1 DAY)" in sql
+    )
+    # click 상한은 D+1 자정 + 30분(1800초). 귀속 창(TIMESTAMP_SUB)과 합쳐 두 번 등장.
+    assert "TIMESTAMP_ADD(" in sql
+    assert sql.count("INTERVAL 1800 SECOND") == 2
+
+
+def test_training_entity_attribution_candidate_pool_spans_next_day_against_cross_midnight_double_positive() -> None:
+    """자정 경계 이중 positive 회귀 가드 (#245, spec 3-way 설계).
+
+    시나리오: 같은 (user, video)가 D=2026-07-21 23:55와 D+1=2026-07-22 00:05에
+    각각 노출되고, click이 D+1 00:10에 온다. 진짜 귀속 대상은 더 최근인 D+1 00:05
+    impression이다. 귀속 후보를 D로만 좁히면 이 click이 D 23:55 impression에 잘못
+    붙어 D 행이 거짓 clicked=1이 되고(+ D+1 빌드가 같은 click을 정상 귀속시켜 물리적
+    click 하나가 두 행에서 positive가 됨), 이 버그는 유일성 위반이 아니라 semantic
+    오류라 build_validation_sql의 null/dup-key 검사로는 잡히지 않는다.
+
+    이 하네스는 SQL 문자열 검증(실행 아님)이라, 버그를 유발하는 유일한 회귀 —
+    "귀속 후보를 출력과 같은 D 단일 날짜로 좁히는 것" — 을 구조로 고정한다: 귀속
+    후보(impressions_candidates)는 dt D∪D+1을 스캔하고, 전역 최근 1건을 고르며,
+    출력만 D로 제한된다. 실제 값 대조(D 행이 clicked=0)는 #299 Phase 0의 offline
+    조회 스모크(실행 하네스)에서 같은 시나리오로 재확인한다.
+    """
+    sql = _incremental_sql(feature_store_build.TRAINING_ENTITY)
+    # 후보 impression 풀은 출력(D)과 분리된 별도 CTE이며 D+1까지 스캔한다.
+    assert "impressions_candidates AS (" in sql
+    assert "impressions_output AS (" in sql
+    candidate_block = sql.split("impressions_output AS (")[0]
+    assert (
+        "dt BETWEEN DATE '2026-07-21'\n"
+        "               AND DATE_ADD(DATE '2026-07-21', INTERVAL 1 DAY)"
+        in candidate_block
+    )
+    # click은 후보 풀 전체에서 "가장 최근" impression 1건에 귀속된다.
+    assert "PARTITION BY c.click_event_id" in sql
+    assert "ORDER BY i.event_timestamp DESC" in sql
+    assert "WHERE rn = 1" in sql
+    # 출력은 여전히 D 자정 상한으로 잘린다(D+1 impression은 D+1 빌드가 소유).
+    assert feature_store_build.TRAINING_ENTITY.partition_predicate == (
+        "DATE(event_timestamp, 'Asia/Seoul') = DATE '{partition_date}'"
+    )
+
+
 def test_validation_sql_checks_empty_null_and_duplicate_keys() -> None:
     sql = feature_store_build.build_validation_sql(
         feature_store_build.VIDEO_FEATURE,
@@ -196,7 +279,11 @@ def test_main_loads_and_validates_every_table(fake_client, capsys) -> None:
     assert summary["status"] == "succeeded"
     assert summary["mode"] == "incremental"
     assert summary["partition_date"] == "2026-07-21"
-    assert summary["tables"] == ["user_dynamic_feature", "video_feature"]
+    assert summary["tables"] == [
+        "user_dynamic_feature",
+        "video_feature",
+        "training_entity",
+    ]
 
 
 def test_main_deletes_before_inserting_for_each_table(fake_client) -> None:
