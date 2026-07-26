@@ -25,19 +25,20 @@ import os
 from dotenv import load_dotenv
 from google.cloud import bigquery
 
-# (테이블, 엔티티 컬럼, 더미 접두, 일일 스냅샷 여부)
-_TARGETS: tuple[tuple[str, str, str, bool], ...] = (
-    ("training_entity", "user_id", "user", True),
-    ("user_dynamic_feature", "user_id", "user", True),
-    ("video_feature", "video_id", "video", True),
-    ("user_static_feature", "user_id", "user", False),
-    ("user_category_similarity", "user_id", "user", False),
+# (테이블, 엔티티 컬럼, 더미 접두, 숫자 자릿수, 일일 스냅샷 여부)
+_TARGETS: tuple[tuple[str, str, str, int, bool], ...] = (
+    ("training_entity", "user_id", "user", 4, True),
+    ("user_dynamic_feature", "user_id", "user", 4, True),
+    ("video_feature", "video_id", "video", 5, True),
+    ("user_static_feature", "user_id", "user", 4, False),
+    ("user_category_similarity", "user_id", "user", 4, False),
 )
 
 
-def _dummy_predicate(column: str, prefix: str) -> str:
-    # STARTS_WITH로 리터럴 접두 매칭(LIKE의 '_' 와일드카드/백슬래시 이스케이프 회피).
-    return f"STARTS_WITH({column}, '{prefix}_')"
+def _dummy_predicate(column: str, prefix: str, digits: int) -> str:
+    # 생성기 포맷(user_{i:04d}/video_{i:05d})과 같은 자릿수만 정확 매칭한다.
+    # STARTS_WITH('video_')는 너무 넓어 실 YouTube ID를 제외할 수 있다.
+    return rf"REGEXP_CONTAINS({column}, r'^{prefix}_[0-9]{{{digits}}}$')"
 
 
 def _daily_sql(table_id: str, dummy: str, days: int) -> str:
@@ -96,9 +97,9 @@ def main() -> int:
     print(f"[커버리지] {args.project}.{args.dataset} / 최근 {args.days}일(어제까지)\n")
 
     ok = True
-    for table, column, prefix, is_daily in _TARGETS:
+    for table, column, prefix, digits, is_daily in _TARGETS:
         table_id = f"{args.project}.{args.dataset}.{table}"
-        dummy = _dummy_predicate(column, prefix)
+        dummy = _dummy_predicate(column, prefix, digits)
         print(f"■ {table}")
         try:
             if is_daily:

@@ -7,10 +7,14 @@ offline feature 테이블 4종에서 찾아 삭제한다. **커버리지 측정
 결손일을 "없음"으로 오판해 Phase 0 실측이 무너진다.
 
 더미 식별이 실데이터를 지우지 않는 근거:
-  - 더미 ``user_id``는 ``user_0001``, ``video_id``는 ``video_00001`` 고정 패턴.
-  - 실제 프로덕션 유저는 ``vu_0001``(``vu_`` 접두 -
-    ``autoresearch/virtual_users/pipeline.py``의 ``vu_{index:04d}``), 실제 ``video_id``는
-    YouTube ID(11자 영숫자). 둘 다 ``user_``/``video_`` 패턴과 겹치지 않는다.
+  - 생성기 포맷과 같은 자릿수만 정확 매칭한다: 더미 user는 ``^user_[0-9]{4}$``
+    (user_0001), video는 ``^video_[0-9]{5}$``(video_00001).
+  - 실제 유저는 ``vu_`` 접두(``autoresearch/virtual_users/pipeline.py``의
+    ``vu_{index:04d}``)라 ``user_``와 안 겹친다.
+  - 실 ``video_id``는 YouTube ID(11자 base64url)라 ``video_a1B2c`` 같이 ``video_``로
+    시작할 수 있으나, 자릿수 regex라 숫자 5자리가 아니면 안 걸린다. 잔여 위험은 실
+    ID가 정확히 ``video_`` + 숫자 5자리인 극소 경우뿐이며, dry-run 기본이라 ``--apply``
+    전에 카운트로 확인한다.
 
 기본은 dry-run(패턴 매칭 row 카운트만). ``--apply``로 실제 DELETE.
 
@@ -25,18 +29,20 @@ import os
 from dotenv import load_dotenv
 from google.cloud import bigquery
 
-# (테이블, 엔티티 컬럼, 더미 리터럴 접두) - generate_and_upload_dummy_data.py와 정합.
-# STARTS_WITH로 리터럴 접두 매칭한다(LIKE의 '_' 와일드카드/백슬래시 이스케이프 회피).
-_DUMMY_TARGETS: tuple[tuple[str, str, str], ...] = (
-    ("user_static_feature", "user_id", "user"),
-    ("user_dynamic_feature", "user_id", "user"),
-    ("video_feature", "video_id", "video"),
-    ("user_category_similarity", "user_id", "user"),
+# (테이블, 엔티티 컬럼, 더미 접두, 숫자 자릿수) - generate_and_upload_dummy_data.py의
+# f"user_{i:04d}" / f"video_{i:05d}" 포맷과 정확히 정합.
+_DUMMY_TARGETS: tuple[tuple[str, str, str, int], ...] = (
+    ("user_static_feature", "user_id", "user", 4),
+    ("user_dynamic_feature", "user_id", "user", 4),
+    ("video_feature", "video_id", "video", 5),
+    ("user_category_similarity", "user_id", "user", 4),
 )
 
 
-def _dummy_predicate(column: str, prefix: str) -> str:
-    return f"STARTS_WITH({column}, '{prefix}_')"
+def _dummy_predicate(column: str, prefix: str, digits: int) -> str:
+    # 생성기 포맷과 같은 자릿수만 정확 매칭한다. STARTS_WITH('video_')는 너무 넓어
+    # 실 YouTube ID(11자 base64url, 예: 'video_a1B2c')를 지울 tail risk가 있다.
+    return rf"REGEXP_CONTAINS({column}, r'^{prefix}_[0-9]{{{digits}}}$')"
 
 
 def _count_dummy(client: bigquery.Client, table_id: str, predicate: str) -> int:
@@ -69,9 +75,9 @@ def main() -> int:
     print(f"[{mode}] dataset={args.project}.{args.dataset}")
 
     total = 0
-    for table, column, prefix in _DUMMY_TARGETS:
+    for table, column, prefix, digits in _DUMMY_TARGETS:
         table_id = f"{args.project}.{args.dataset}.{table}"
-        predicate = _dummy_predicate(column, prefix)
+        predicate = _dummy_predicate(column, prefix, digits)
         n = _count_dummy(client, table_id, predicate)
         total += n
         if args.apply and n:
