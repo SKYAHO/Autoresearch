@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import json
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
+
+ARCHIVE_PLACEHOLDER = "/*__ARCHIVE_DATA__*/"
 
 
 class ArchiveBuildError(RuntimeError):
@@ -255,3 +257,65 @@ def build_archive_entries(
         key=lambda entry: (entry.merged_at, entry.number),
         reverse=True,
     )
+
+
+def serialize_archive(
+    entries: Sequence[ArchiveEntry],
+    generated_at: str,
+) -> dict[str, object]:
+    """Convert validated entries to the public archive JSON contract."""
+
+    return {
+        "schema_version": 1,
+        "generated_at": generated_at,
+        "reports": [
+            {
+                **asdict(entry),
+                "summary_ko": list(entry.summary_ko),
+            }
+            for entry in entries
+        ],
+    }
+
+
+def render_archive(
+    template_path: Path,
+    payload: Mapping[str, object],
+) -> str:
+    """Inject archive JSON into the inert data block of the HTML template."""
+
+    try:
+        template = template_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ArchiveBuildError(
+            f"cannot read archive template {template_path}: {error}"
+        ) from error
+    if ARCHIVE_PLACEHOLDER not in template:
+        raise ArchiveBuildError(
+            f"{ARCHIVE_PLACEHOLDER} not found in archive template {template_path}"
+        )
+    data = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
+    return template.replace(ARCHIVE_PLACEHOLDER, data, 1)
+
+
+def write_archive(
+    output_dir: Path,
+    template_path: Path,
+    javascript_path: Path,
+    payload: Mapping[str, object],
+) -> None:
+    """Write a complete archive bundle after every source has been validated."""
+
+    html = render_archive(template_path, payload)
+    archive_json = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    try:
+        javascript = javascript_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as error:
+        raise ArchiveBuildError(
+            f"cannot read archive JavaScript {javascript_path}: {error}"
+        ) from error
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "index.html").write_text(html, encoding="utf-8")
+    (output_dir / "archive.json").write_text(archive_json, encoding="utf-8")
+    (output_dir / "archive.js").write_text(javascript, encoding="utf-8")

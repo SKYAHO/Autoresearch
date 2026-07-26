@@ -177,3 +177,48 @@ def test_fails_when_merged_report_is_corrupt(tmp_path):
 
     with pytest.raises(module.ArchiveBuildError, match="345"):
         module.build_archive_entries(tmp_path, merged)
+
+
+def test_writes_json_html_and_javascript_without_script_breakout(tmp_path):
+    module = _load_module()
+    template = tmp_path / "template.html"
+    template.write_text(
+        '<script id="archive-data" type="application/json">'
+        "/*__ARCHIVE_DATA__*/</script>",
+        encoding="utf-8",
+    )
+    javascript = tmp_path / "archive.js"
+    javascript.write_text("window.archiveLoaded = true;", encoding="utf-8")
+    entry = module.ArchiveEntry(
+        number=345,
+        title="안전성 </script><script>alert(1)</script>",
+        author="bob",
+        merged_at="2026-07-25T12:00:00Z",
+        summary_ko=("요약 1", "요약 2", "요약 3"),
+        report_url="pr/345/",
+    )
+    payload = module.serialize_archive([entry], "2026-07-26T00:00:00Z")
+
+    module.write_archive(tmp_path / "out", template, javascript, payload)
+
+    archive = json.loads(
+        (tmp_path / "out" / "archive.json").read_text(encoding="utf-8")
+    )
+    html = (tmp_path / "out" / "index.html").read_text(encoding="utf-8")
+    assert archive["schema_version"] == 1
+    assert archive["generated_at"] == "2026-07-26T00:00:00Z"
+    assert archive["reports"][0]["number"] == 345
+    assert "</script><script>alert(1)" not in html
+    assert "<\\/script><script>alert(1)" in html
+    assert (
+        tmp_path / "out" / "archive.js"
+    ).read_text(encoding="utf-8") == "window.archiveLoaded = true;"
+
+
+def test_refuses_template_without_archive_placeholder(tmp_path):
+    module = _load_module()
+    template = tmp_path / "template.html"
+    template.write_text("<html></html>", encoding="utf-8")
+
+    with pytest.raises(module.ArchiveBuildError, match="ARCHIVE_DATA"):
+        module.render_archive(template, {"schema_version": 1, "reports": []})
