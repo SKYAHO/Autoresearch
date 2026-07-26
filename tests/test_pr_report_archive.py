@@ -222,3 +222,68 @@ def test_refuses_template_without_archive_placeholder(tmp_path):
 
     with pytest.raises(module.ArchiveBuildError, match="ARCHIVE_DATA"):
         module.render_archive(template, {"schema_version": 1, "reports": []})
+
+
+def test_cli_writes_complete_archive(tmp_path):
+    module = _load_module()
+    _write_report(tmp_path / "pages", 345, schema_version=2)
+    template = tmp_path / "template.html"
+    template.write_text("/*__ARCHIVE_DATA__*/", encoding="utf-8")
+    javascript = tmp_path / "archive.js"
+    javascript.write_text('"use strict";', encoding="utf-8")
+    merged = {
+        345: module.PullRequestMetadata(
+            345, "완료", "bob", "2026-07-25T12:00:00Z"
+        )
+    }
+
+    exit_code = module.main(
+        [
+            "--pages-root",
+            str(tmp_path / "pages"),
+            "--template",
+            str(template),
+            "--javascript",
+            str(javascript),
+            "--output-dir",
+            str(tmp_path / "site"),
+            "--repository",
+            "SKYAHO/Autoresearch",
+        ],
+        merged_prs=merged,
+    )
+
+    assert exit_code == 0
+    archive = json.loads(
+        (tmp_path / "site" / "archive.json").read_text(encoding="utf-8")
+    )
+    assert [report["number"] for report in archive["reports"]] == [345]
+    assert (tmp_path / "site" / "index.html").exists()
+    assert (tmp_path / "site" / "archive.js").exists()
+
+
+def test_cli_keeps_existing_output_when_generation_fails(tmp_path):
+    module = _load_module()
+    site = tmp_path / "site"
+    site.mkdir()
+    existing = site / "index.html"
+    existing.write_text("last-known-good", encoding="utf-8")
+
+    exit_code = module.main(
+        [
+            "--pages-root",
+            str(tmp_path / "missing"),
+            "--template",
+            str(tmp_path / "missing-template"),
+            "--javascript",
+            str(tmp_path / "missing-js"),
+            "--output-dir",
+            str(site),
+            "--repository",
+            "SKYAHO/Autoresearch",
+        ],
+        merged_prs={},
+    )
+
+    assert exit_code == 1
+    assert existing.read_text(encoding="utf-8") == "last-known-good"

@@ -11,9 +11,13 @@ modifies individual ``pr/<number>/`` reports.
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
+import sys
+import tempfile
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -319,3 +323,63 @@ def write_archive(
     (output_dir / "index.html").write_text(html, encoding="utf-8")
     (output_dir / "archive.json").write_text(archive_json, encoding="utf-8")
     (output_dir / "archive.js").write_text(javascript, encoding="utf-8")
+
+
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build the merged PR report archive for GitHub Pages."
+    )
+    parser.add_argument("--pages-root", type=Path, required=True)
+    parser.add_argument("--template", type=Path, required=True)
+    parser.add_argument("--javascript", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--repository", required=True)
+    return parser.parse_args(argv)
+
+
+def main(
+    argv: Sequence[str] | None = None,
+    *,
+    merged_prs: Mapping[int, PullRequestMetadata] | None = None,
+) -> int:
+    """Build a complete bundle and replace output files only after validation."""
+
+    args = _parse_args(argv)
+    try:
+        authoritative_prs = (
+            fetch_merged_pull_requests(args.repository)
+            if merged_prs is None
+            else merged_prs
+        )
+        entries = build_archive_entries(args.pages_root, authoritative_prs)
+        generated_at = (
+            datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z")
+        )
+        payload = serialize_archive(entries, generated_at)
+
+        output_dir: Path = args.output_dir
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(
+            prefix=f".{output_dir.name}-",
+            dir=output_dir.parent,
+        ) as temporary_directory:
+            staged_dir = Path(temporary_directory)
+            write_archive(staged_dir, args.template, args.javascript, payload)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            for filename in ("index.html", "archive.json", "archive.js"):
+                (staged_dir / filename).replace(output_dir / filename)
+    except (ArchiveBuildError, OSError, ValueError) as error:
+        print(f"[pr-report-archive] {error}", file=sys.stderr)
+        return 1
+
+    print(
+        f"[pr-report-archive] generated {len(entries)} merged reports",
+        file=sys.stderr,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
