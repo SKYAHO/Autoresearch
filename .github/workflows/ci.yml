@@ -64,6 +64,7 @@ jobs:
           tests/test_feast_materialize.py
           tests/test_serving_feast_reader.py
           tests/test_serving_feast_reader_feast.py
+          tests/test_offline_retrieval_smoke_feast.py
           tests/test_serving_api.py
           tests/test_serving_deployment.py
           -v
