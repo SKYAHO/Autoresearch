@@ -99,6 +99,30 @@ click(label 원천)이 **KST 자정을 걸쳐 서로 다른 dt 파티션에 실�
 `D+1`에 돌리면 그 impression들의 label이 다음 실행 전까지 일시적으로 낮게 잡힐 수
 있으나, 같은 날짜 재실행이 멱등(DELETE+INSERT)하므로 `D+2` 재실행으로 교정된다.
 
+## 전제 및 latent 계약 리스크
+
+현재 구현이 성립하는 전제이며, 이 전제가 깨지는 변경 시 함께 재검토해야 한다
+(둘 다 지금은 버그가 아니라 미래 계약 리스크다).
+
+- **단일 `dataset_id` 전제**: `dataset_id`는 SQL 상수 `'ctr_train_v1'` 단일 값이다.
+  증분 DELETE 술어는 날짜 단위(`DATE(event_timestamp, 'Asia/Seoul') = D`)라
+  `dataset_id`로 스코프되지 않으므로, 향후 `training_entity`에 복수 `dataset_id`(예:
+  실험 버전)가 공존하면 D 빌드의 DELETE가 **다른 dataset의 D 행까지 지운 뒤
+  `ctr_train_v1`만 재적재**해 하루치가 조용히 유실된다. 복수 dataset 도입 시
+  `partition_predicate`에 `dataset_id` 조건을 함께 걸어야 한다.
+
+- **검증 유일성 키 ≠ 행 실질 PK**: `build_validation_sql`의 중복 검사 키는
+  `(user_id, video_id, event_timestamp)`이고, 행의 실질 PK인 `source_event_id`가
+  아니다. 같은 (user, video)가 **동일 `event_timestamp`에 서로 다른 `event_id`**로
+  두 번 노출된 행이 존재하면(두 행은 `source_event_id`가 달라 정당한 별개 행)
+  중복으로 오탐되어 일일 빌드가 fail-closed로 멈춘다. 현재 폐루프 시뮬레이터는
+  유저별 후보 슬레이트를 후보 하나당 draft 하나로 만들고(`enumerate(candidates)`)
+  `impression_ts`를 **초 단위 유저별 시퀀셜 RNG**로 부여하므로, 동일
+  (user, video, 초)의 재현은 슬레이트에 같은 video가 중복될 때에 한해 ~1/86400
+  확률로만 가능하다(사실상 미발생). 발생해도 조용한 오염이 아니라 명시적 실패라
+  안전 방향이다. 복수 노출을 정식 지원하려면 검증 키를 `source_event_id`로 옮겨야
+  한다.
+
 ## 비범위
 
 - FeatureService 정의·`get_historical_features()` 조회 전환은 #299 Phase 2 범위.
