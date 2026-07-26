@@ -74,6 +74,7 @@
 
 - [ADR 0002 — 저장소 책임 경계](adr/0002-repository-responsibility-boundaries.md)
 - [Spec — 저장소 구조 재정리](specs/2026-07-15-repo-restructure.md)
+- [Spec — 머지된 PR 리포트 아카이브](specs/2026-07-26-pr-report-archive-design.md)
 
 ## ADR
 
@@ -90,6 +91,8 @@
 - [오프라인 feature build 배치](specs/2026-07-22-feature-store-build-batch.md)
 - [저장소 구조 재정리](specs/2026-07-15-repo-restructure.md) — 이 문서 구조의 근거,
   `src/` 패키지 통합 목표 구조 포함
+- [머지된 PR 리포트 아카이브](specs/2026-07-26-pr-report-archive-design.md) —
+  GitHub Pages에 누적된 merge PR 리포트의 정적 검색 인덱스
 
 ## 가이드
 
