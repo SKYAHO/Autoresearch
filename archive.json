@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-26T22:13:40Z",
+  "generated_at": "2026-07-26T22:23:44Z",
   "reports": [
+    {
+      "number": 362,
+      "title": "feat: offline store 실적재 검증 + PIT 조회 스모크 (#356)",
+      "author": "waieiches",
+      "merged_at": "2026-07-26T22:23:34Z",
+      "summary_ko": [
+        "Feast PIT 조회 전환(Phase 0)을 위해 오프라인 피처 스토어의 적재 상태를 실측하고 더미 데이터 정리 스크립트를 추가하였습니다.",
+        "로컬 파일 기반 오프라인 스토어로 get_historical_features PIT 조회 및 ttl 부재 시 stale fallback 동작을 검증하는 스모크 테스트를 구현하였습니다.",
+        "실측 결과 training_entity 미빌드 및 동적 피처 결손을 확인하여 백필 필요성을 명시한 감사 보고서와 관련 문서를 추가하였습니다."
+      ],
+      "report_url": "pr/362/"
+    },
     {
       "number": 361,
       "title": "feat: merge된 PR 리포트 아카이브 제공",
