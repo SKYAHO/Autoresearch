@@ -1,6 +1,6 @@
 # 머지된 PR 리포트 아카이브
 
-> Status: 설계 승인 · 구현 대기 | Issue: #348 | Last Updated: 2026-07-26
+> Status: 구현 완료 (#348) | Issue: #348 | Last Updated: 2026-07-26
 
 ## 배경과 목표
 
@@ -200,3 +200,18 @@ pull_request closed(merged) / PR Report workflow_run / workflow_dispatch
 - 기존 `pr/<번호>/index.html` 파일은 모두 보존된다.
 - 실패한 생성은 기존 아카이브를 덮어쓰지 않는다.
 - 자동 테스트와 정적 검증이 통과한다.
+
+## 구현 검증 결과
+
+- `origin/gh-pages`의 기존 리포트 18개(v1 13개, v2 5개)를 모두 읽고
+  GitHub API의 merge 상태와 교차 검증해 18개 아카이브 항목을 생성했다.
+- Python·Node·workflow 계약 테스트 19개가 통과했다.
+- 전체 테스트는 786개가 통과했고, 구현 전과 동일한 Windows 장경로 관련
+  `test_action_logs_daily.py` 실패 16개만 남았다.
+- Ruff와 `git diff --check`가 통과했다. 로컬에 `actionlint`가 없어
+  workflow 구조는 Python 계약 테스트와 YAML 파싱으로 검증했다.
+- 데스크톱 1280px와 모바일 390px에서 가로 넘침 없이 카드가 표시됐다.
+- 실제 브라우저에서 PR 번호(`345`), 제목(`ONNX`), 작성자(`bbungjun`)
+  검색과 빈 결과 상태를 확인했다.
+- 카드의 상대 링크가 기존 개별 리포트 경로(`pr/<번호>/`)를 가리키며
+  브라우저 콘솔 오류가 없음을 확인했다.

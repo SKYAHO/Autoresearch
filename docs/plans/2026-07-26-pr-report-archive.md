@@ -57,7 +57,7 @@
 - Produces: `build_archive_entries(pages_root: Path, merged_prs: Mapping[int, PullRequestMetadata]) -> list[ArchiveEntry]`
 - Consumes later: Task 2의 정적 렌더러와 Task 3의 workflow CLI가 이 인터페이스를 사용한다.
 
-- [ ] **Step 1: 모듈 로더와 HTML fixture를 포함한 실패 테스트 작성**
+- [x] **Step 1: 모듈 로더와 HTML fixture를 포함한 실패 테스트 작성**
 
 `tests/test_pr_report_archive.py`에 점이 포함된 `.github` 경로를 직접 import하는 로더와 v1·v2 fixture helper를 작성한다.
 
@@ -146,7 +146,7 @@ def test_rejects_invalid_json_and_non_three_line_summary(tmp_path):
         module.extract_report_snapshot(short)
 ```
 
-- [ ] **Step 2: 수집기 테스트가 구현 부재로 실패하는지 확인**
+- [x] **Step 2: 수집기 테스트가 구현 부재로 실패하는지 확인**
 
 Run:
 
@@ -156,7 +156,7 @@ uv run python -m pytest tests/test_pr_report_archive.py -v
 
 Expected: FAIL because `.github/pr-report/build_archive.py` or its public interfaces do not exist.
 
-- [ ] **Step 3: dataclass, 경로 탐색, 안전한 내장 JSON 파서 구현**
+- [x] **Step 3: dataclass, 경로 탐색, 안전한 내장 JSON 파서 구현**
 
 `.github/pr-report/build_archive.py`에 다음 공개 타입과 핵심 검증을 구현한다.
 
@@ -225,7 +225,7 @@ class _ReportDataParser(HTMLParser):
 `pr.number`와 경로 PR 번호 일치, 비어 있지 않은 문자열 요약 정확히 3개를
 검증한다.
 
-- [ ] **Step 4: merge 필터·정렬·오류 격리 실패 테스트 작성**
+- [x] **Step 4: merge 필터·정렬·오류 격리 실패 테스트 작성**
 
 ```python
 def test_builds_only_merged_entries_and_sorts_newest_first(tmp_path):
@@ -270,7 +270,7 @@ def test_fails_when_merged_report_is_corrupt(tmp_path):
         module.build_archive_entries(tmp_path, merged)
 ```
 
-- [ ] **Step 5: GitHub Pulls API 조회와 entry 조립 구현**
+- [x] **Step 5: GitHub Pulls API 조회와 entry 조립 구현**
 
 `fetch_merged_pull_requests`는 다음 명령을 실행해 닫힌 PR 전체를 페이지별
 중첩 배열로 받고, `merged_at is not None`인 항목만 반환한다.
@@ -307,7 +307,7 @@ def fetch_merged_pull_requests(repository: str) -> dict[int, PullRequestMetadata
 merge 메타데이터와 교집합한 뒤에만 HTML을 파싱하고, `merged_at`과
 PR 번호 내림차순으로 안정 정렬한다.
 
-- [ ] **Step 6: Task 1 테스트와 lint 실행**
+- [x] **Step 6: Task 1 테스트와 lint 실행**
 
 Run:
 
@@ -318,7 +318,7 @@ uv run --no-sync ruff check .github/pr-report/build_archive.py tests/test_pr_rep
 
 Expected: all Task 1 tests PASS and ruff exits 0.
 
-- [ ] **Step 7: 데이터 수집기 커밋**
+- [x] **Step 7: 데이터 수집기 커밋**
 
 ```bash
 git add .github/pr-report/build_archive.py tests/test_pr_report_archive.py
@@ -344,7 +344,7 @@ git commit -m "feat: merge PR 리포트 아카이브 데이터 생성 (#348)"
 - Produces: JavaScript `matchesArchiveEntry(entry, rawQuery) -> boolean`
 - Produces: `index.html`, `archive.json`, `archive.js`
 
-- [ ] **Step 1: 산출물·escaping 실패 테스트 작성**
+- [x] **Step 1: 산출물·escaping 실패 테스트 작성**
 
 `tests/test_pr_report_archive.py`에 다음을 추가한다.
 
@@ -389,7 +389,7 @@ def test_refuses_template_without_archive_placeholder(tmp_path):
         module.render_archive(template, {"schema_version": 1, "reports": []})
 ```
 
-- [ ] **Step 2: 렌더링 테스트가 공개 함수 부재로 실패하는지 확인**
+- [x] **Step 2: 렌더링 테스트가 공개 함수 부재로 실패하는지 확인**
 
 Run:
 
@@ -399,7 +399,7 @@ uv run python -m pytest tests/test_pr_report_archive.py -k "writes_json or refus
 
 Expected: FAIL because serialization and rendering functions do not exist.
 
-- [ ] **Step 3: payload 직렬화와 완전 생성 후 쓰기 구현**
+- [x] **Step 3: payload 직렬화와 완전 생성 후 쓰기 구현**
 
 `.github/pr-report/build_archive.py`에 다음 계약을 구현한다.
 
@@ -433,7 +433,7 @@ def render_archive(template_path, payload):
 만들고 세 파일을 쓴다. 파싱이나 렌더링 중 실패하면 기존 출력 파일을
 건드리지 않는다.
 
-- [ ] **Step 4: 순수 검색 함수의 실패 테스트 작성**
+- [x] **Step 4: 순수 검색 함수의 실패 테스트 작성**
 
 `tests/test_pr_report_archive_search.py`에서 Node로 `archive.js`를 가져와
 번호·제목·작성자 검색을 검증한다.
@@ -472,7 +472,7 @@ def test_search_matches_number_title_and_author_case_insensitively():
     assert not _matches("redis")
 ```
 
-- [ ] **Step 5: archive.js와 반응형 템플릿 구현**
+- [x] **Step 5: archive.js와 반응형 템플릿 구현**
 
 `.github/pr-report/archive.js`는 브라우저 전역과 CommonJS에 같은 순수
 함수를 노출한다.
@@ -524,7 +524,7 @@ if (typeof window !== "undefined") {
 properties로 옮겨 재사용하고 `max-width`, `clamp`, 한 열 카드 목록,
 모바일 여백을 정의한다.
 
-- [ ] **Step 6: Task 2 테스트와 lint 실행**
+- [x] **Step 6: Task 2 테스트와 lint 실행**
 
 Run:
 
@@ -535,7 +535,7 @@ uv run --no-sync ruff check .github/pr-report/build_archive.py tests/test_pr_rep
 
 Expected: all Task 1–2 tests PASS and ruff exits 0.
 
-- [ ] **Step 7: 정적 페이지와 검색 커밋**
+- [x] **Step 7: 정적 페이지와 검색 커밋**
 
 ```bash
 git add .github/pr-report/archive-template.html .github/pr-report/archive.js \
@@ -559,7 +559,7 @@ git commit -m "feat: PR 리포트 아카이브 화면과 검색 추가 (#348)"
 - Produces: CLI `python .github/pr-report/build_archive.py --pages-root PATH --template PATH --javascript PATH --output-dir PATH --repository OWNER/REPO`
 - Produces: GitHub Actions workflow `PR Report Archive`
 
-- [ ] **Step 1: CLI 성공·실패 원자성 테스트 작성**
+- [x] **Step 1: CLI 성공·실패 원자성 테스트 작성**
 
 `tests/test_pr_report_archive.py`에 `main(argv, merged_prs=None)` 주입점을
 사용하는 테스트를 추가한다.
@@ -615,7 +615,7 @@ def test_cli_keeps_existing_output_when_generation_fails(tmp_path):
     assert existing.read_text(encoding="utf-8") == "last-known-good"
 ```
 
-- [ ] **Step 2: argparse CLI와 임시 디렉터리 기반 교체 구현**
+- [x] **Step 2: argparse CLI와 임시 디렉터리 기반 교체 구현**
 
 `main`은 UTC `generated_at`을 만들고, `output_dir`의 형제 임시
 디렉터리에서 세 산출물을 완성한 뒤 `Path.replace`로 개별 파일을
@@ -623,7 +623,7 @@ def test_cli_keeps_existing_output_when_generation_fails(tmp_path):
 반환한다. 테스트에서 API를 우회할 수 있도록 `merged_prs`가 `None`일
 때만 `fetch_merged_pull_requests`를 호출한다.
 
-- [ ] **Step 3: workflow 계약의 실패 테스트 작성**
+- [x] **Step 3: workflow 계약의 실패 테스트 작성**
 
 `tests/test_pr_report_archive_workflow.py`를 추가한다.
 
@@ -668,7 +668,7 @@ def test_archive_workflow_serializes_pages_push_and_preserves_reports():
     assert "build_archive.py" in text
 ```
 
-- [ ] **Step 4: PR Report Archive workflow 구현**
+- [x] **Step 4: PR Report Archive workflow 구현**
 
 `.github/workflows/pr-report-archive.yml`의 핵심 계약은 다음과 같다.
 
@@ -728,7 +728,7 @@ jobs:
           commit_message: "pr-report-archive: rebuild"
 ```
 
-- [ ] **Step 5: Task 3 테스트와 workflow 정적 검사 실행**
+- [x] **Step 5: Task 3 테스트와 workflow 정적 검사 실행**
 
 Run:
 
@@ -746,7 +746,7 @@ actionlint .github/workflows/pr-report-archive.yml
 
 Expected: tests PASS, ruff and `git diff --check` exit 0, actionlint exits 0 when available.
 
-- [ ] **Step 6: CLI와 workflow 커밋**
+- [x] **Step 6: CLI와 workflow 커밋**
 
 ```bash
 git add .github/pr-report/build_archive.py .github/workflows/pr-report-archive.yml \
@@ -768,7 +768,7 @@ git commit -m "ci: merge PR 리포트 아카이브 자동 갱신 (#348)"
 - Produces: 실제 `origin/gh-pages` 18개 리포트 기반 로컬 아카이브와 QA 증거
 - Produces: merge 후 `workflow_dispatch` 최초 백필 운영 절차
 
-- [ ] **Step 1: 실제 gh-pages를 임시 worktree로 체크아웃**
+- [x] **Step 1: 실제 gh-pages를 임시 worktree로 체크아웃**
 
 PowerShell에서 저장소 내부가 아닌 임시 경로를 명시적으로 만들고 대상이
 임시 디렉터리인지 확인한 뒤 사용한다.
@@ -781,7 +781,7 @@ if (Test-Path -LiteralPath $archiveQaRoot) {
 git worktree add --detach $archiveQaRoot origin/gh-pages
 ```
 
-- [ ] **Step 2: 실제 merge 상태로 정적 아카이브 생성**
+- [x] **Step 2: 실제 merge 상태로 정적 아카이브 생성**
 
 ```powershell
 uv run python .github/pr-report/build_archive.py `
@@ -796,7 +796,7 @@ Expected: exit 0, `.tmp/pr-report-archive-site/index.html`,
 `archive.json`, `archive.js` 생성. `archive.json`의 모든 PR은 GitHub
 API에서 merge 상태이고 최신 머지순이다.
 
-- [ ] **Step 3: 로컬 서버와 실제 브라우저로 화면·검색 QA**
+- [x] **Step 3: 로컬 서버와 실제 브라우저로 화면·검색 QA**
 
 ```powershell
 uv run python -m http.server 8765 --directory .tmp/pr-report-archive-site
@@ -810,7 +810,7 @@ uv run python -m http.server 8765 --directory .tmp/pr-report-archive-site
 - 존재하지 않는 검색어에서 빈 결과 문구가 보인다.
 - `리포트 보기`가 `/pr/<번호>/` 상대 경로를 가리킨다.
 
-- [ ] **Step 4: 운영 문서와 검증 결과 갱신**
+- [x] **Step 4: 운영 문서와 검증 결과 갱신**
 
 `docs/specs/2026-07-24-pr-comprehension-report.md`의 운영 섹션에 다음을
 추가한다.
@@ -830,7 +830,7 @@ merge된 PR 리포트는 Pages 루트
 `구현 완료 (#348)`로 바꾸고 실제 백필 대상 수, Python 테스트 수,
 브라우저 QA 결과를 기록한다. 이 계획의 완료된 체크박스를 `[x]`로 갱신한다.
 
-- [ ] **Step 5: 전체 관련 테스트와 저장소 검증 실행**
+- [x] **Step 5: 전체 관련 테스트와 저장소 검증 실행**
 
 Run:
 
@@ -847,7 +847,7 @@ git diff --check
 
 Expected: all archive tests PASS, ruff and `git diff --check` exit 0.
 
-- [ ] **Step 6: 임시 QA 자원 정리**
+- [x] **Step 6: 임시 QA 자원 정리**
 
 서버를 종료한 뒤 경로를 다시 확인하고 git worktree만 제거한다.
 
@@ -863,7 +863,7 @@ git worktree remove $archiveQaRoot
 `.tmp` 아래인지 확인한 후 PowerShell `Remove-Item -Recurse -LiteralPath`로
 삭제한다.
 
-- [ ] **Step 7: 문서와 최종 검증 커밋**
+- [x] **Step 7: 문서와 최종 검증 커밋**
 
 ```bash
 git add docs/specs/2026-07-24-pr-comprehension-report.md \
@@ -884,10 +884,10 @@ PR이 merge되어 workflow 파일이 `main`에 들어간 뒤 Actions의
 
 ## 최종 완료 기준
 
-- [ ] 관련 Python·Node 계약 테스트가 모두 통과한다.
-- [ ] ruff, `git diff --check`, 가능한 경우 actionlint가 통과한다.
-- [ ] 실제 기존 v1 13개와 v2 5개 리포트를 오류 없이 읽는다.
-- [ ] 실제 GitHub merge 상태를 기준으로 미머지 리포트가 제외된다.
-- [ ] 로컬 브라우저에서 검색, 빈 상태, 반응형 화면, 링크를 확인한다.
-- [ ] 배포 workflow가 기존 `pr/` 파일을 보존하고 shared concurrency를 사용한다.
-- [ ] merge 후 최초 수동 백필 절차가 운영 문서에 기록된다.
+- [x] 관련 Python·Node 계약 테스트가 모두 통과한다.
+- [x] ruff, `git diff --check`, 가능한 경우 actionlint가 통과한다.
+- [x] 실제 기존 v1 13개와 v2 5개 리포트를 오류 없이 읽는다.
+- [x] 실제 GitHub merge 상태를 기준으로 미머지 리포트가 제외된다.
+- [x] 로컬 브라우저에서 검색, 빈 상태, 반응형 화면, 링크를 확인한다.
+- [x] 배포 workflow가 기존 `pr/` 파일을 보존하고 shared concurrency를 사용한다.
+- [x] merge 후 최초 수동 백필 절차가 운영 문서에 기록된다.

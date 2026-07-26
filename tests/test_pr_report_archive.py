@@ -127,6 +127,17 @@ def test_fetches_only_merged_pull_requests(monkeypatch):
     }
 
 
+def test_run_decodes_external_utf8_output():
+    module = _load_module()
+    command = [
+        sys.executable,
+        "-c",
+        "import sys;sys.stdout.buffer.write(bytes([237,149,156,234,184,128]))",
+    ]
+
+    assert module.run(command) == "한글"
+
+
 def test_builds_only_merged_entries_and_sorts_newest_first(tmp_path):
     module = _load_module()
     _write_report(tmp_path, 344)
