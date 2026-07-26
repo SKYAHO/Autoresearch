@@ -1,6 +1,6 @@
 # Agent Model Selection Guide
 
-> Last Updated: 2026-07-24
+> Last Updated: 2026-07-26
 
 이 문서는 AI 코딩 에이전트의 작업 난도와 위험도에 맞춰 모델 역량을
 선택하는 기준입니다. 티어 정의는 특정 공급자에 종속되지 않으며, 현재 팀이
@@ -27,18 +27,20 @@
 
 ## Current Model Mapping
 
-> 기준일: 2026-07-24. 팀은 Claude(Claude Code)와 Codex(GPT-5.6 계열)만
+> 기준일: 2026-07-26. 팀은 Claude(Claude Code)와 Codex(GPT-5.6 계열)만
 > 사용합니다. 새 모델 출시나 가격 개편 시 이 절만 갱신합니다.
 
 | 티어 | Claude | Codex |
 | --- | --- | --- |
-| Top | Claude Fable 5 (기본), Claude Opus 4.8 (경량 계획·리뷰) | GPT-5.6 Terra (xhigh) |
+| Top | Claude Opus 5 | GPT-5.6 Terra (xhigh) |
 | Middle | Claude Sonnet 5 | GPT-5.6 Luna (high), 다중 파일 구현은 Terra (기본 medium, 실패 시 high 승격) |
 | Fast | Claude Haiku 4.5 | GPT-5.6 Luna (low) |
 
-- 모호한 계획·오케스트레이션은 Fable 5가 전담합니다. Terra xhigh는
+- 모호한 계획·오케스트레이션은 Opus 5가 전담합니다. Terra xhigh는
   범위가 확정된 고난도 작업과 교차 검토에 사용합니다.
-- Fable 5 사용량이 부담되면 일상적 계획·리뷰는 Opus 4.8로 대체합니다.
+- Opus 5는 Opus 4.8과 단가가 같으므로(입력 $5 / 출력 $25 per MTok) 비용을
+  이유로 Top 티어를 하위 모델로 대체하지 않습니다. 비용·지연이 문제가 되면
+  모델이 아니라 effort를 조정합니다.
 
 ## Assignment Rules
 
