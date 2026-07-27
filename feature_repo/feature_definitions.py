@@ -16,10 +16,19 @@ FeatureView (BigQuery source table → FeatureView):
 import os
 from datetime import timedelta
 
+import pandas as pd
 from feast import Entity, FeatureView, Field
 from feast.infra.offline_stores.bigquery import BigQuerySource
+from feast.on_demand_feature_view import on_demand_feature_view
 from feast.types import Array, Float64, Int64, String
 from feast.value_type import ValueType
+
+# 파생 2종 ODFV 본체 재사용(#357 (A)). 순수 문자열 비교 함수라 embeddings의 지연
+# import(vertexai)는 이 경로에서 로드되지 않는다.
+from src.features.feature_builder import (
+    compute_historical_category_match,
+    compute_preferred_category_match,
+)
 
 # FeatureView ttl 정책 (#357 spec (C) 확정, 2026-07-27):
 # - 일 스냅샷 뷰(UserDynamic)만 60h — 당일(≤24h)+1일 결손(≤48h)까지 stale 허용, 2일+는 null.
@@ -168,3 +177,42 @@ user_category_similarity_view = FeatureView(
     tags={"team": "feature-store"},
     description="사용자-카테고리 topic similarity",
 )
+
+
+# ============================================================================
+# On-Demand FeatureView — 파생 2종 (조회 후 계산, 학습·서빙 공통 변환)
+# preferred_category_match / historical_category_match는 raw 피처가 아니라
+# (user 피처 vs 영상 category) 비교로 나오는 파생값이다. ODFV로 정의해 학습·서빙이
+# 같은 변환을 공유 → train/serve skew 원천 차단(#357 (A), #358). 입력은 세 소스 뷰
+# (preferred_category=UserStatic, historical_category_affinity=UserDynamic,
+# category_id=Video)를 조인한 컬럼이며 feature_builder 함수로 계산한다.
+# ============================================================================
+
+
+def compute_category_matches(inputs: pd.DataFrame) -> pd.DataFrame:
+    """ODFV 변환 본체(스토어 없이 단위 테스트 가능하도록 분리).
+
+    inputs는 세 소스 뷰를 조인한 컬럼(preferred_category, historical_category_affinity,
+    category_id)을 가진다. 두 파생 매칭을 계산해 반환한다.
+    """
+    out = pd.DataFrame(index=inputs.index)
+    out["preferred_category_match"] = [
+        compute_preferred_category_match(pref, cat)
+        for pref, cat in zip(inputs["preferred_category"], inputs["category_id"])
+    ]
+    out["historical_category_match"] = [
+        compute_historical_category_match(hist, cat)
+        for hist, cat in zip(inputs["historical_category_affinity"], inputs["category_id"])
+    ]
+    return out
+
+
+@on_demand_feature_view(
+    sources=[user_static_view, user_dynamic_view, video_feature_view],
+    schema=[
+        Field(name="preferred_category_match", dtype=Int64),
+        Field(name="historical_category_match", dtype=Int64),
+    ],
+)
+def category_match_view(inputs: pd.DataFrame) -> pd.DataFrame:
+    return compute_category_matches(inputs)

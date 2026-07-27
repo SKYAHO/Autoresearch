@@ -65,6 +65,7 @@ jobs:
           tests/test_serving_feast_reader.py
           tests/test_serving_feast_reader_feast.py
           tests/test_offline_retrieval_smoke_feast.py
+          tests/test_odfv_category_match_feast.py
           tests/test_serving_api.py
           tests/test_serving_deployment.py
           -v

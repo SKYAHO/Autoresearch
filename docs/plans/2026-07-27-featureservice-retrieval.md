@@ -95,13 +95,17 @@ DuckDB 제거).
 - `build_training_dataset.py`: `--assembly-source` 분기
 - 갱신된 스모크 테스트, #357 스펙 (C) 마감
 
-## 실측 발견 (작업 1)
+## 실측 발견
 
-- **beyond-ttl은 행 드롭(0행), NaN 아님**: `get_historical_features`가 ttl 밖 엔티티를
-  NaN 행이 아니라 **결과에서 제외**함(feast file store 스모크 실증). → 다중 뷰
-  FeatureService 조인에서 한 뷰라도 ttl 밖이면 그 임프레션이 **학습셋에서 통째로 빠질**
-  수 있음. 작업 5(assembly)에서 spine(training_entity) 행 수 대비 조회 결과 행 수를
-  반드시 검증(60h ttl인 UserDynamic이 2일+ 결손일 때 임프레션 손실 여부).
+- **(작업 1) beyond-ttl은 행 드롭(0행), NaN 아님**: `get_historical_features`가 ttl 밖
+  엔티티를 NaN 행이 아니라 **결과에서 제외**함(feast file store 스모크 실증). → 다중 뷰
+  FeatureService 조인에서 한 뷰라도 ttl 밖이면 그 임프레션이 **학습셋에서 통째로 빠질** 수
+  있음. 작업 5(assembly)에서 spine(training_entity) 행 수 대비 조회 결과 행 수를 반드시
+  검증(60h ttl인 UserDynamic이 2일+ 결손일 때 임프레션 손실 여부).
+- **(작업 2) ODFV offline retrieval scale 경고**: Feast가 ODFV offline 조회에 "scale이 잘
+  안 됨(experimental)" RuntimeWarning을 냄. 1.77M spine에서 `category_match_view`가 병목일
+  수 있음 → 작업 5/6에서 시간 측정. 심하면 조회 후 후처리 폴백을 고려(단 학습·서빙 공통
+  경로 이점이 줄어 skew 방지 효과 감소 — trade-off 기록 후 결정).
 
 ## 리스크 / 열린 질문
 
