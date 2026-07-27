@@ -1,6 +1,6 @@
 # PR 이해 리포트 자동 생성 (4단계 이해 체계)
 
-> Status: 구현 (#313) + 가독성 개선 설계 완료(이슈 미발행) | Last Updated: 2026-07-24
+> Status: 구현 (#313, #348) + 가독성 개선 설계 완료(이슈 미발행) | Last Updated: 2026-07-26
 
 ## 배경·목표
 
@@ -88,6 +88,15 @@
 - 로컬 검증: 샘플 report.json으로
   `python .github/pr-report/inject.py .github/pr-report/template.html report.json > index.html`
   후 브라우저 확인.
+
+### Merge 리포트 아카이브
+
+merge된 PR 리포트는 Pages 루트
+`https://skyaho.github.io/Autoresearch/`에서 최신 머지순으로 제공한다.
+`pr-report-archive.yml`은 PR merge, PR Report 완료, 수동 실행 때
+`gh-pages/pr/*`를 다시 스캔하며 기존 개별 리포트 파일은 보존한다.
+최초 배포 또는 복구는 Actions의 **PR Report Archive → Run workflow**로
+실행한다.
 
 ## 남은 작업 (phase 2)
 

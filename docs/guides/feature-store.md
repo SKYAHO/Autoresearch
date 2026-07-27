@@ -125,3 +125,24 @@ Feature View source table에는 entity column과 timestamp column이 반드시 �
         ```
         
     - Feast historical retrieval을 한 번에 처리하기 어렵다면, MVP에서는 BigQuery fallback처럼 `video_feature`를 먼저 붙인 뒤 `user_category_similarity`를 join하는 방식
+
+<a id="ttl-stale-fallback"></a>
+
+## 🔸 ttl 부재 → 결손일 stale fallback 위험 (#356 Phase 0)
+
+FeatureView 4종은 모두 `ttl`이 설정돼 있지 않다(`feature_repo/feature_definitions.py`).
+`ttl`은 "이 스냅샷을 얼마나 오래된 것까지 유효로 볼지"의 상한인데, 없으면 상한이
+무한이라 **PIT(as-of) 조회가 임의로 오래된 스냅샷까지 붙인다.**
+
+- 정상(스냅샷 매일 존재): 이벤트 시점 이하 가장 최근 스냅샷 = 그날 스냅샷.
+- 결손일: 그날 스냅샷이 없으면 `null`이 아니라 **더 오래된 스냅샷(stale)**이 조용히 붙는다.
+
+**Phase 0 실측(#356, 2026-07-27)**: 학습 윈도우 최근 30일에서 `user_dynamic_feature`는
+8/30일, `video_feature`는 5/30일만 스냅샷이 존재했다(각 22·25일 결손). `training_entity`는
+아직 미빌드. `ttl`이 없으므로 이 결손일 조회는 전부 stale fallback으로 이어진다 - 학습이
+"그 시점 값"이 아니라 "며칠 전 값"을 배우는 조용한 왜곡.
+
+- 재현: `tests/test_offline_retrieval_smoke_feast.py`가 07-02 결손 상태에서 07-02 조회 시
+  07-01 스냅샷이 붙는 것을 단언한다.
+- 방어 방향(→ #357에서 결정): FeatureView에 `ttl` 부여(결손일을 `null`로 만들어 stale
+  차단) + 결손일 백필. `ttl` 값은 서빙 online 조회에도 영향하므로 학습·서빙 공통으로 정한다.

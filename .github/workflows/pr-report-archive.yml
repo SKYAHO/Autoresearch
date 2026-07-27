@@ -1,0 +1,58 @@
+name: PR Report Archive
+
+# gh-pages에 누적된 개별 PR 리포트는 보존하고, merge된 PR만 모은 정적
+# 검색 인덱스를 Pages 루트에 갱신합니다. workflow_run은 권한이 높은
+# 컨텍스트이므로 PR 코드나 artifact를 사용하지 않고 main의 생성기와
+# 정적인 gh-pages 콘텐츠만 읽습니다.
+
+on:
+  pull_request:
+    types: [closed]
+  workflow_run:
+    workflows: ["PR Comprehension Report"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  publish-archive:
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pr-report-publish
+      cancel-in-progress: false
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: Checkout current Pages content
+        uses: actions/checkout@v6
+        with:
+          ref: gh-pages
+          path: pages
+          fetch-depth: 1
+
+      - name: Build merged PR report archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python .github/pr-report/build_archive.py \
+            --pages-root pages \
+            --template .github/pr-report/archive-template.html \
+            --javascript .github/pr-report/archive.js \
+            --output-dir site \
+            --repository "$GITHUB_REPOSITORY"
+
+      - name: Deploy archive to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./site
+          keep_files: true
+          commit_message: "pr-report-archive: rebuild"

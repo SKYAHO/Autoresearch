@@ -739,10 +739,25 @@ QUALIFY ROW_NUMBER() OVER (
   - 30분 window는 `label_window_sec = 1800`으로 metadata/config에 기록한다.
   - 
 > [!NOTE]
-> 실제 배치 job은 `CREATE OR REPLACE TABLE`이 아니라 `TRUNCATE TABLE` +
-> `INSERT INTO`를 트랜잭션으로 묶어 실행한다 — 이유는 `user_static_feature`
-> 절의 노트 참고. `dataset_id`/`label_window_sec`도 `DECLARE`가 아니라
-> 배치 job 함수 인자로 주입한다.
+> 아래 SQL은 계약을 보여주는 참조 형태(`CREATE OR REPLACE` + `DECLARE`)다. **실제
+> 배치 job은 `autoresearch/jobs/feature_store_build.py`(공개 CLI
+> `python -m autoresearch.jobs.feature_store_build --tables training_entity
+> --partition-date D`)가 담당**하며, 전체 테이블을 갈아엎는 `CREATE OR
+> REPLACE`/`TRUNCATE`가 아니라 **대상 날짜 파티션만
+> `DELETE FROM ... WHERE DATE(event_timestamp,'Asia/Seoul')=D` 후 `INSERT
+> INTO`**하는 증분 방식이다(#261, Terraform 소유 스키마 보존 목적).
+> `dataset_id`는 SQL 상수, `label_window_sec`(=1800)도 `DECLARE`가 아니라
+> 상수로 전개된다.
+>
+> **training_entity만의 파티션 비대칭 (3-way)**: impression(기준 행)에
+> click(label)을 30분 귀속하는데 자정 근처 impression의 click이 다음 날
+> 파티션에 실릴 수 있다. 그래서 지우고·검증하고·출력하는 범위(impression on
+> day D)와, 읽는 범위(click 스캔·귀속 후보 impression은 dt D∪D+1)가 분리된다.
+> 귀속 후보를 D로만 좁히면 자정 직후 click이 더 최근인 D+1 impression 대신 D
+> impression에 잘못 붙어 거짓 `clicked=1`(+ 이중 positive)이 난다. D 빌드는
+> cross-midnight click이 확정되도록 **D+2 이후**에 도는 것이 안전하다(#295의
+> `dt ≤ P-1` 소비 계약과 정합). 계약 정본:
+> `docs/specs/2026-07-26-training-entity-incremental-slice.md`.
 
 ### 🔸 SQL
 
