@@ -116,6 +116,22 @@ function createReportCard(entry) {
   return article;
 }
 
+function buildReportCardSafely(entry) {
+  try {
+    return createReportCard(entry);
+  } catch (error) {
+    console.warn(
+      "[archive] skipped malformed entry (number=" +
+        (entry && entry.number) +
+        ", category=" +
+        (entry && entry.category) +
+        "):",
+      error
+    );
+    return null;
+  }
+}
+
 function initializeArchive() {
   var dataElement = document.getElementById("archive-data");
   var list = document.getElementById("report-list");
@@ -151,12 +167,16 @@ function initializeArchive() {
         return matchesArchiveEntry(entry, rawQuery);
       });
     list.replaceChildren();
+    var renderedCount = 0;
     visible.forEach(function (entry) {
-      list.appendChild(createReportCard(entry));
+      var card = buildReportCardSafely(entry);
+      if (!card) return;
+      list.appendChild(card);
+      renderedCount += 1;
     });
-    count.textContent = String(visible.length);
-    empty.hidden = visible.length !== 0;
-    if (visible.length === 0) {
+    count.textContent = String(renderedCount);
+    empty.hidden = renderedCount !== 0;
+    if (renderedCount === 0) {
       if (failedCategories[selectedCategory]) {
         empty.textContent = "이 카테고리를 불러오지 못했습니다.";
       } else if (pendingCategories[selectedCategory]) {
@@ -224,10 +244,18 @@ function initializeArchive() {
     });
   });
 
-  render("");
-  CATEGORY_SOURCES.filter(function (source) {
+  var externalSources = CATEGORY_SOURCES.filter(function (source) {
     return !!source.url;
-  }).forEach(loadExternalCategory);
+  });
+  // 외부 카테고리는 아직 fetch가 끝나지 않았음을 초기 렌더 이전에 표시해야
+  // "등록된 리포트 없음" 문구가 잘못 노출되지 않는다(#372).
+  externalSources.forEach(function (source) {
+    pendingCategories[source.key] = true;
+  });
+
+  render("");
+
+  externalSources.forEach(loadExternalCategory);
 }
 
 if (typeof module !== "undefined" && module.exports) {
@@ -237,6 +265,8 @@ if (typeof module !== "undefined" && module.exports) {
     tagCategory: tagCategory,
     absolutizeReportUrl: absolutizeReportUrl,
     mergeAndSortReports: mergeAndSortReports,
+    createReportCard: createReportCard,
+    buildReportCardSafely: buildReportCardSafely,
   };
 }
 if (typeof window !== "undefined") {
