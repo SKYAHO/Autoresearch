@@ -10,6 +10,11 @@
     click 귀속) D+1 데이터가 다 쌓인 뒤라야 label이 온전하다(spec의 D+2 안전).
   - user_dynamic_feature / video_feature: D <= 오늘(KST) - 1. #295 dt <= P-1 소비 계약.
 
+**주의 - 데이터 시작 하한**: 이 러너는 창의 하한을 데이터 수집 시작일로 자동 제한하지
+않는다. 창이 수집 시작 전으로 내려가면 video/training_entity는 0행 -> fail-closed로
+안전하게 걸리지만, user_dynamic은 기존 feature 테이블 유저를 이월해 **0-활동 스냅샷을
+적재**한다(무해하나 무의미). 데이터 있는 구간에 맞춰 `--window`를 지정해 돌려라.
+
 세 테이블은 서로 날짜 의존이 없어 어느 순서로 돌리든 무관하다. 실패 추적이 쉽게
 각 테이블 안에서는 오름차순(오래된 날짜 -> 최근)으로 돈다.
 
@@ -29,6 +34,7 @@ import os
 import sys
 
 from dotenv import load_dotenv
+from google.api_core.exceptions import NotFound
 from google.cloud import bigquery
 
 # 파일로 직접 실행(python scripts/...)해도 autoresearch 패키지를 찾도록 repo root 추가.
@@ -104,10 +110,16 @@ def main() -> int:
         table_id = f"{args.project}.{args.dataset}.{table}"
         dummy = _dummy_predicate(column, prefix, digits)
         try:
-            missing = _missing_days(client, table_id, dummy, args.window, cutoff)
-        except Exception as exc:  # noqa: BLE001 - 테이블 부재는 실패가 아니라 대기로 취급
-            print(f"■ {table}: 조회 불가({type(exc).__name__}) - 테이블 미생성? infra 테이블 생성 후 재실행.\n")
+            client.get_table(table_id)  # 존재 확인: 미생성(NotFound)만 pending으로 분리
+        except NotFound:
+            print(f"■ {table}: 테이블 미생성 - infra 테이블 생성 후 재실행.\n")
             pending.append(table)
+            continue
+        try:
+            missing = _missing_days(client, table_id, dummy, args.window, cutoff)
+        except Exception as exc:  # noqa: BLE001 - 테이블은 있으나 조회 실패 = 진짜 실패(rc=1)
+            print(f"■ {table}: 조회 실패({type(exc).__name__}) - 권한/SQL/일시 오류?\n")
+            failed.append(table)
             continue
 
         dates = missing[: args.limit] if args.limit else missing
