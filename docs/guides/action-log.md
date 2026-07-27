@@ -343,6 +343,17 @@ Shard 단계는 로컬 quarantine 비율만으로 성공 draft를 폐기하지 �
 운영 실행을 하지 않는다** — 다음 절차로 먼저 목표 CTR에 맞는 추천 커트라인을
 구한 뒤에만 `--click-threshold`를 확정해 운영에 반영한다.
 
+**한 번 정하면 끝나는 값이 아니다.** `click_propensity`는 champion 모델이
+만드는 노출 후보에 대한 LLM의 판단이라, champion alias가 다른 버전으로
+바뀌면 이 분포 자체가 달라진다 — **champion을 교체할 때마다 재캘리브레이션이
+필요**하다. 실측(2026-07-26): champion이 v6→v12로 바뀐 뒤 이전 커트라인
+0.7을 그대로 쓰면 동일 목표 CTR(2%) 기준 실제 CTR이 0.79%로 급락했다(100유저
+실측, v12 기준 추천 커트라인은 0.4~0.5대). 운영 반영값은
+`Autoresearch-airflow`의 `AIRFLOW_VAR_ACTION_LOG_CLICK_THRESHOLD` Airflow
+Variable이며, 그 값 옆 주석에 마지막 재캘리브레이션 근거를 남긴다. (아래
+2단계 예시의 `--target-ctr 0.015`는 이 실측과 무관한 별도 예시 실행값이며,
+실제 목표 CTR은 운영 정책에 따라 정한다.)
+
 1. **draft parquet 확보** — 기본(champion) 모델로 폐루프(`exposure_source=model`,
    single/shard 기본값)를 1회 실행한다. `--mode shard`의 출력은 최종
    EventLog가 아니라 `ImpressionDraft` parquet(§7.5 참고, 최종 CTR 정규화는
