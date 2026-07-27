@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR 이해 리포트</title>
+<style>
+  /* 고정 템플릿 — 에이전트는 이 파일을 수정하지 않고 report.json 데이터만 채웁니다. */
+  :root {
+    --bg: #f6f8fa; --surface: #ffffff; --border: #d1d9e0;
+    --text: #1f2328; --muted: #59636e; --accent: #0969da;
+    --unchanged-fill: #f6f8fa; --unchanged-stroke: #d1d9e0; --unchanged-text: #59636e;
+    --modified-fill: #ddf4ff; --modified-stroke: #0969da; --modified-text: #0550ae;
+    --added-fill: #dafbe1;    --added-stroke: #1a7f37;    --added-text: #116329;
+    --removed-fill: #ffebe9;  --removed-stroke: #cf222e;  --removed-text: #a40e26;
+    --diff-add-bg: #dafbe1; --diff-del-bg: #ffebe9; --diff-hunk-bg: #ddf4ff;
+    --risk-bg: #fff8c5; --risk-border: #d4a72c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8d96a0; --accent: #4493f8;
+      --unchanged-fill: #161b22; --unchanged-stroke: #30363d; --unchanged-text: #8d96a0;
+      --modified-fill: #0c2d6b; --modified-stroke: #4493f8; --modified-text: #79c0ff;
+      --added-fill: #04260f;    --added-stroke: #2ea043;    --added-text: #56d364;
+      --removed-fill: #3c0614;  --removed-stroke: #f85149;  --removed-text: #ff7b72;
+      --diff-add-bg: rgba(46,160,67,.22); --diff-del-bg: rgba(248,81,73,.22); --diff-hunk-bg: rgba(68,147,248,.18);
+      --risk-bg: #2b2205; --risk-border: #9e6a03;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+                 "Noto Sans KR", "Malgun Gothic", sans-serif;
+    line-height: 1.6;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  header.page {
+    border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px;
+  }
+  header.page h1 { font-size: 1.35rem; margin: 0 0 6px; }
+  header.page .meta { color: var(--muted); font-size: .85rem; }
+  header.page .meta a { color: var(--accent); text-decoration: none; }
+  section { margin-bottom: 32px; }
+  section > h2 {
+    font-size: 1.05rem; margin: 0 0 12px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  section > h2 .step {
+    display: inline-block; background: var(--accent); color: #fff;
+    border-radius: 999px; font-size: .72rem; padding: 1px 9px;
+    vertical-align: 2px; margin-right: 7px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px;
+  }
+  #summary ol { margin: 0; padding-left: 22px; }
+  #summary li { margin: 4px 0; }
+  /* 파이프라인 SVG */
+  #pipeline-wrap { overflow-x: auto; }
+  #pipeline-svg { display: block; min-width: 760px; width: 100%; height: auto; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: .8rem; color: var(--muted); margin-top: 8px; }
+  .legend span[class^="lg-"]::before {
+    content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+    margin-right: 5px; vertical-align: -1px; border: 1.5px solid;
+  }
+  .legend .lg-unchanged::before { background: var(--unchanged-fill); border-color: var(--unchanged-stroke); }
+  .legend .lg-modified::before  { background: var(--modified-fill);  border-color: var(--modified-stroke); }
+  .legend .lg-added::before     { background: var(--added-fill);     border-color: var(--added-stroke); }
+  .legend .lg-removed::before   { background: var(--removed-fill);   border-color: var(--removed-stroke); }
+  svg .node rect { rx: 8; stroke-width: 1.5; cursor: default; }
+  svg .node.st-unchanged rect { fill: var(--unchanged-fill); stroke: var(--unchanged-stroke); }
+  svg .node.st-modified rect  { fill: var(--modified-fill);  stroke: var(--modified-stroke); }
+  svg .node.st-added rect     { fill: var(--added-fill);     stroke: var(--added-stroke); }
+  svg .node.st-removed rect   { fill: var(--removed-fill);   stroke: var(--removed-stroke); }
+  svg .node.focus rect { stroke-width: 3; }
+  svg .node.clickable rect { cursor: pointer; }
+  svg .node text { font-size: 12px; fill: var(--text); pointer-events: none; }
+  svg .node.st-unchanged text { fill: var(--unchanged-text); }
+  svg .lane-label { font-size: 11px; fill: var(--muted); }
+  svg .edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
+  svg .edge.dashed { stroke-dasharray: 5 4; }
+  svg .edge.st-modified { stroke: var(--modified-stroke); }
+  svg .edge.st-added { stroke: var(--added-stroke); }
+  svg .edge.st-removed { stroke: var(--removed-stroke); }
+  #node-detail { margin-top: 12px; display: none; }
+  #node-detail.visible { display: block; }
+  #node-detail h3 { margin: 0 0 8px; font-size: .95rem; }
+  #node-detail .asis-tobe { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { #node-detail .asis-tobe { grid-template-columns: 1fr; } }
+  #node-detail .asis-tobe > div {
+    border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: .87rem;
+  }
+  #node-detail .asis-tobe .tag { font-size: .72rem; font-weight: 600; color: var(--muted); display: block; margin-bottom: 4px; }
+  #node-detail .paths { color: var(--muted); font-size: .78rem; margin-top: 8px; font-family: ui-monospace, monospace; }
+  /* 2단계: 쉬운 설명 · 왜 · 기대효과 */
+  #easy .easy-block { margin-bottom: 14px; }
+  #easy .easy-block:last-child { margin-bottom: 0; }
+  #easy .easy-block .tag {
+    display: block; font-size: .72rem; font-weight: 600; color: var(--muted); margin-bottom: 6px;
+  }
+  #easy .easy-block ul { margin: 0; padding-left: 22px; }
+  #easy .easy-block li { margin: 4px 0; }
+  /* 3단계: 기본 접힘 */
+  #changes-details > summary {
+    cursor: pointer; font-weight: 600; color: var(--accent); padding: 4px 0; user-select: none;
+  }
+  #changes-details[open] > summary { margin-bottom: 12px; }
+  /* 변경 카드 */
+  .change-card { margin-bottom: 12px; }
+  .change-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .badge {
+    font-size: .7rem; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid; text-transform: uppercase; letter-spacing: .03em;
+  }
+  .badge.core     { background: var(--removed-fill);  border-color: var(--removed-stroke);  color: var(--removed-text); }
+  .badge.contract { background: var(--modified-fill); border-color: var(--modified-stroke); color: var(--modified-text); }
+  .badge.config   { background: var(--risk-bg);       border-color: var(--risk-border);     color: var(--text); }
+  .badge.test     { background: var(--added-fill);    border-color: var(--added-stroke);    color: var(--added-text); }
+  .badge.docs     { background: var(--unchanged-fill); border-color: var(--unchanged-stroke); color: var(--unchanged-text); }
+  .change-head .symbol { font-weight: 600; font-family: ui-monospace, monospace; font-size: .92rem; }
+  .change-head .file { color: var(--muted); font-size: .8rem; font-family: ui-monospace, monospace; }
+  .change-card p.expl { margin: 8px 0 0; font-size: .92rem; }
+  .risk {
+    background: var(--risk-bg); border: 1px solid var(--risk-border);
+    border-radius: 6px; padding: 8px 12px; margin-top: 8px; font-size: .85rem;
+  }
+  .risk::before { content: "⚠ 리스크: "; font-weight: 700; }
+  details.diff-box { margin-top: 10px; }
+  details.diff-box summary { cursor: pointer; font-size: .85rem; color: var(--accent); user-select: none; }
+  pre.diff {
+    margin: 8px 0 0; border: 1px solid var(--border); border-radius: 6px;
+    overflow-x: auto; font-size: .8rem; line-height: 1.5; padding: 0;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  pre.diff .ln { display: block; padding: 0 12px; white-space: pre; }
+  pre.diff .ln.add { background: var(--diff-add-bg); }
+  pre.diff .ln.del { background: var(--diff-del-bg); }
+  pre.diff .ln.hunk { background: var(--diff-hunk-bg); color: var(--muted); }
+  /* QA */
+  #qa .card { border-left: 4px solid var(--accent); }
+  footer { color: var(--muted); font-size: .78rem; margin-top: 40px; border-top: 1px solid var(--border); padding-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header class="page">
+    <h1 id="pr-title">PR 이해 리포트</h1>
+    <div class="meta" id="pr-meta"></div>
+  </header>
+
+  <section id="summary">
+    <h2>핵심 요약</h2>
+    <div class="card"><ol id="summary-list"></ol></div>
+  </section>
+
+  <section id="pipeline">
+    <h2><span class="step">1단계</span>전체 파이프라인에서의 위치 (as-is → to-be)</h2>
+    <div class="card">
+      <div id="pipeline-wrap"><svg id="pipeline-svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div class="legend">
+        <span class="lg-unchanged">변경 없음</span>
+        <span class="lg-modified">수정</span>
+        <span class="lg-added">신규</span>
+        <span class="lg-removed">삭제</span>
+        <span>· 색칠된 노드를 클릭하면 as-is/to-be 설명이 표시됩니다</span>
+      </div>
+      <div id="node-detail" class="card">
+        <h3 id="nd-title"></h3>
+        <div class="asis-tobe">
+          <div><span class="tag">AS-IS</span><span id="nd-asis"></span></div>
+          <div><span class="tag">TO-BE</span><span id="nd-tobe"></span></div>
+        </div>
+        <div class="paths" id="nd-paths"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="easy">
+    <h2><span class="step">2단계</span>쉬운 설명</h2>
+    <div class="card">
+      <div class="easy-block">
+        <span class="tag">무슨 일이 있었나</span>
+        <ul id="plain-points-list"></ul>
+      </div>
+      <div class="easy-block">
+        <span class="tag">왜 필요했나</span>
+        <p id="motivation" style="margin:0"></p>
+      </div>
+      <div class="easy-block">
+        <span class="tag">기대효과</span>
+        <ul id="effects-list"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="changes">
+    <h2><span class="step">3단계</span>코드 기준 설명</h2>
+    <details id="changes-details">
+      <summary id="changes-summary">코드 기준 상세 설명 펼치기</summary>
+      <div id="changes-list"></div>
+    </details>
+  </section>
+
+  <section id="qa">
+    <h2><span class="step">4단계</span>이해도 확인</h2>
+    <div class="card"><p id="qa-note" style="margin:0"></p></div>
+  </section>
+
+  <footer id="page-footer"></footer>
+</main>
+
+<script id="report-data" type="application/json">{"schema_version": 2, "pr": {"number": 371, "title": "feat: feast apply를 GKE Job으로 전환하고 full_scan_for_deletion 복원 (#346)", "author": "hyochangsung", "issue_refs": [346], "generated_at": "2026-07-27T07:51:41+00:00", "head_sha": "df68887b6868bd8f7efb5d81b59ca9544b6d4c03"}, "summary_ko": ["VPC 외부의 GHA 러너가 private Redis에 접근하지 못해 발생하던 문제를 해결하기 위해 Feast apply 실행 위치를 VPC 내부의 GKE Job으로 전환하였습니다.", "online store의 full_scan_for_deletion 옵션을 true로 복원하여 삭제되거나 공유 중인 FeatureView의 고아 해시 필드 및 키 정리가 자동화되도록 구성하였습니다.", "GHA 워크플로우에는 GKE Job 생성, 코드 아카이브 업로드 대기 폴링, TLS CA 사전 조달 및 4중 실패 검증 가드 로직을 반영하였습니다."], "plain_points_ko": ["피처 정의 적용(apply) 작업이 외부 실행 환경에서 클러스터 내부 작업(GKE Job)으로 이동하여 사설 메모리 DB에 접근할 수 있게 되었습니다.", "더 이상 사용하지 않는 피처 정의나 데이터 필드가 메모리 DB에 계속 남아있지 않도록 자동 삭제 스캔 설정이 다시 활성화되었습니다.", "피처 적용 전 최신 코드 압축파일이 준비될 때까지 기다리는 폴링 과정이 추가되어 구버전 코드 반영 위험을 방지합니다.", "보안 인증서(TLS CA)를 사전에 내려받아 실행 컨테이너가 피처 DB에 안전하게 연결되도록 정적 경로 주입 방식을 도입했습니다.", "작업 완료 상태, 실행된 코드 버전, 로그 오류 패턴, 레지스트리 버전을 종합적으로 모니터링하는 4중 안전 가드를 도입했습니다."], "motivation_ko": "기존에는 GitHub Actions 러너가 VPC 외부에 위치하여 private Redis(PSC)에 직접 접근할 수 없었고, 이로 인해 Feast apply 시 고아 키/필드를 지우는 full_scan_for_deletion 옵션을 false로 끌 수밖에 없었습니다. 그러나 key_ttl_seconds 설정만으로는 여러 FeatureView가 동일한 엔티티 키를 공유할 때 생기는 고아 해시 필드가 지워지지 않고 남는 한계가 있었습니다. 이에 Feast apply의 소유 경계는 유지하되 실행 위치를 VPC 내부 GKE Job으로 옮겨 고아 피처 데이터를 안전하게 정리하도록 개선하였습니다.", "expected_effects_ko": ["삭제되거나 변경된 FeatureView의 고아 데이터(해시 필드 및 키)가 Feast apply 시점에 확실히 정리되어 Redis 메모리 오염을 방지합니다.", "GKE Job 방식을 통해 VPC 보안 경계를 유지하면서 private Redis 인스턴스에 안전하게 접근할 수 있습니다.", "Job 종료 상태, 코드 SHA 단언, 로그 패턴, 레지스트리 generation 비교로 이루어진 4중 가드를 통해 침묵 실패나 구버전 코드 적용을 차단합니다."], "pipeline": {"nodes": [{"id": "collect", "label": "YouTube 수집", "lane": "batch", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/", "proxy/"]}, {"id": "virtual_users", "label": "가상 유저 생성", "lane": "batch", "order": 2, "status": "unchanged", "paths": ["autoresearch/virtual_users/"]}, {"id": "action_log", "label": "Action Log 생성·품질", "lane": "batch", "order": 3, "status": "unchanged", "paths": ["autoresearch/action_logs/"]}, {"id": "data_lake", "label": "Data Lake (GCS parquet)", "lane": "data", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/load.py", "autoresearch/action_logs/load.py"]}, {"id": "feature_store", "label": "Feature Store (BQ·Feast·Redis)", "lane": "data", "order": 2, "status": "modified", "as_is_ko": "GHA 러너에서 feast apply를 직접 실행하여 full_scan_for_deletion이 false로 설정되어 있었고 고아 해시 필드가 정리되지 않았습니다.", "to_be_ko": "VPC 내부 GKE Job에서 feast apply를 실행하고 full_scan_for_deletion을 true로 복원하여 고아 키 및 해시 필드를 자동 정리합니다.", "paths": ["feature_repo/", "src/features/", "src/pipeline/build_feature_tables.py"]}, {"id": "training_dataset", "label": "학습 데이터셋 조립", "lane": "train", "order": 1, "status": "unchanged", "paths": ["src/pipeline/build_training_dataset.py"]}, {"id": "train_eval", "label": "모델 학습·평가 (LightGBM·MLflow)", "lane": "train", "order": 2, "status": "unchanged", "paths": ["src/models/", "src/pipeline/train.py", "src/pipeline/evaluate.py", "src/tracking/"]}, {"id": "registry", "label": "Model Registry (MLflow)", "lane": "train", "order": 3, "status": "unchanged", "paths": ["deploy/mlflow/"]}, {"id": "serving", "label": "리랭킹 서빙 API (FastAPI)", "lane": "serve", "order": 1, "status": "unchanged", "paths": ["src/serving/", "deploy/serving/"]}, {"id": "daily_reco", "label": "일일 추천·노출 조립", "lane": "serve", "order": 2, "status": "unchanged", "paths": ["src/pipeline/daily_recommendations.py", "src/pipeline/model_exposure_provider.py", "src/pipeline/policy_selector.py"]}, {"id": "simulation", "label": "가상 유저 클릭 시뮬레이션", "lane": "serve", "order": 3, "status": "unchanged", "paths": ["src/pipeline/simulate_policy_round.py", "src/pipeline/virtual_user_adapter.py"]}, {"id": "batch_cli", "label": "공개 Batch CLI (Airflow 계약)", "lane": "cross", "order": 1, "status": "unchanged", "paths": ["autoresearch/jobs/"]}, {"id": "ci_release", "label": "CI·이미지·릴리스", "lane": "cross", "order": 2, "status": "modified", "as_is_ko": "GHA 러너 환경에서 직접 feast apply 명령어를 수행했습니다.", "to_be_ko": "GHA 워크플로우가 GKE Job 매니페스트를 렌더링/생성하고 아카이브 폴링 및 4중 실패 가드로 작업 완결성을 단언합니다.", "paths": [".github/workflows/", "Dockerfile.app", "Dockerfile.serving", "pyproject.toml"]}, {"id": "docs", "label": "문서·스펙", "lane": "cross", "order": 3, "status": "modified", "as_is_ko": "Feast GCP 가이드 문서에 GHA 러너 직접 실행 및 full_scan_for_deletion: false 기준 내용이 기술되어 있었습니다.", "to_be_ko": "GKE Job 전환 사유, 고아 키/필드 정리를 위한 full_scan_for_deletion: true 세부 동작 및 설계 사양서(spec)를 추가 반영했습니다.", "paths": ["docs/", ".claude/docs/", "CLAUDE.md", "README.md"]}, {"id": "ext_airflow", "label": "(외부) Airflow 오케스트레이션", "lane": "external", "order": 1, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-airflow"]}, {"id": "ext_infra", "label": "(외부) GCP 인프라", "lane": "external", "order": 2, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-infra"]}], "edges": [{"from": "collect", "to": "data_lake"}, {"from": "virtual_users", "to": "action_log"}, {"from": "action_log", "to": "data_lake"}, {"from": "data_lake", "to": "feature_store"}, {"from": "feature_store", "to": "training_dataset"}, {"from": "training_dataset", "to": "train_eval"}, {"from": "train_eval", "to": "registry"}, {"from": "registry", "to": "serving"}, {"from": "feature_store", "to": "serving", "style": "dashed"}, {"from": "serving", "to": "daily_reco"}, {"from": "daily_reco", "to": "simulation"}, {"from": "simulation", "to": "action_log", "style": "dashed"}, {"from": "batch_cli", "to": "ext_airflow", "style": "dashed"}, {"from": "ext_infra", "to": "ci_release", "style": "dashed"}], "focus": ["feature_store", "ci_release"]}, "changes": [{"rank": 1, "importance": "contract", "module": "feature_repo", "symbol": "feature_store.yaml", "file": "feature_repo/feature_store.yaml", "explanation_ko": "online_store의 full_scan_for_deletion 설정을 true로 변경하여 apply 실행 시 삭제되거나 변경된 FeatureView의 Redis 키 및 고아 해시 필드가 정리되도록 수정했습니다.", "diff_snippet": "@@ -31,14 +31,17 @@ online_store:\n   redis_type: redis_cluster\n   connection_string: ${REDIS_HOST}:${REDIS_PORT}\n   tls_ca_cert_path: ${REDIS_TLS_CA_PATH}\n-  full_scan_for_deletion: false\n+  full_scan_for_deletion: true\n   key_ttl_seconds: 604800", "risk_notes_ko": "full_scan_for_deletion 실행 시 전체 키스페이스 SCAN이 발생하므로 키스페이스 크기에 따라 Job 메모리 및 Redis CPU 사용량이 증가할 수 있습니다."}, {"rank": 2, "importance": "core", "module": "feature_repo", "symbol": "download_redis_ca_bundle", "file": "feature_repo/bootstrap.py", "explanation_ko": "Secret Manager에서 Redis TLS CA를 가져와 지정한 고정 경로에 저장하고 REDIS_TLS_CA_PATH 환경변수를 설정하는 download_redis_ca_bundle 함수를 추가했습니다.", "diff_snippet": "@@ -57,6 +59,37 @@ def ensure_redis_ca_bundle(\n+def download_redis_ca_bundle(\n+    destination: str | Path,\n+    environment: MutableMapping[str, str] | None = None,\n+) -> str:\n+    env = os.environ if environment is None else environment\n+    secret_id = env.get(\"REDIS_CA_SECRET_ID\", \"\").strip()\n+    ...\n+    payload = _fetch_ca_secret(project_id, secret_id)\n+    target = Path(destination)\n+    target.parent.mkdir(parents=True, exist_ok=True)\n+    target.write_bytes(payload)\n+    env[\"REDIS_TLS_CA_PATH\"] = str(target)\n+    return str(target)", "risk_notes_ko": "Secret Manager 접근용 REDIS_CA_SECRET_ID 및 GCP_PROJECT_ID 환경변수가 없거나 IAM 권한이 부여되지 않은 경우 RuntimeError가 발생합니다."}, {"rank": 3, "importance": "config", "module": "deploy/feast", "symbol": "apply-job.yaml", "file": "deploy/feast/apply-job.yaml", "explanation_ko": "VPC 내부에서 feast apply를 수행할 GKE Job 템플릿을 새로 정의했습니다. 부트스트랩 스크립트 보존을 위해 command 대신 args만 지정하며 CA 조달 후 feast apply를 실행합니다.", "diff_snippet": "@@ -0,0 +1,91 @@\n+apiVersion: batch/v1\n+kind: Job\n+metadata:\n+  name: ${FEAST_APPLY_JOB_NAME}\n+  namespace: ${FEAST_APPLY_NAMESPACE}\n+spec:\n+  backoffLimit: 0\n+  activeDeadlineSeconds: 1500\n+  template:\n+    spec:\n+      serviceAccountName: ${FEAST_APPLY_SERVICE_ACCOUNT}\n+      containers:\n+        - name: feast-apply\n+          image: ${FEAST_IMAGE}\n+          args:\n+            - sh\n+            - -c\n+            - python scripts/fetch_redis_ca.py /tmp/redis-ca.pem && cd /app/feature_repo && exec feast --log-level debug apply", "risk_notes_ko": "선결 인프라 PR(SKYAHO/Autoresearch-infra#370)의 RBAC 및 스토리지 접근 권한 조치가 완료되어야 Job이 정상 실행됩니다."}, {"rank": 4, "importance": "core", "module": "scripts", "symbol": "fetch_redis_ca.py", "file": "scripts/fetch_redis_ca.py", "explanation_ko": "download_redis_ca_bundle을 실행하여 지정된 경로(/tmp/redis-ca.pem)로 Redis TLS CA 파일 조달을 수행하는 CLI entrypoint 스크립트를 작성했습니다.", "diff_snippet": "@@ -0,0 +1,48 @@\n+def main(argv: list[str] | None = None) -> int:\n+    ...\n+    from feature_repo.bootstrap import download_redis_ca_bundle\n+    path = download_redis_ca_bundle(args[0])\n+    print(f\"[redis-ca] wrote {path}\")\n+    return 0"}, {"rank": 5, "importance": "config", "module": ".github/workflows", "symbol": "feast-apply.yml", "file": ".github/workflows/feast-apply.yml", "explanation_ko": "GHA에서 직접 실행하던 feast apply를 GKE Job 생성 및 대기 방식으로 변경하고, 아카이브 존재 폴링과 4중 검증 가드(Job 결과, 코드 SHA, 로그인 오류 grep, 레지스트리 generation)를 반영했습니다.", "diff_snippet": "@@ -121,24 +121,136 @@ jobs:\n+      - name: Recreate Job\n+        run: |\n+          kubectl delete job \"$JOB_NAME\" -n \"$FEAST_APPLY_NAMESPACE\" --ignore-not-found --wait=true --timeout=120s\n+          kubectl create -f job.yaml\n+      - name: Wait for Job result\n+        ...\n+      - name: Guard against wrong code version (bootstrap marker)\n+        run: |\n+          if ! grep -qF \"[gcs-bootstrap] code: ${CODE_ARCHIVE_SHA}\" apply.log; then\n+            echo \"::error::Job did not run the code archive of ${CODE_ARCHIVE_SHA}\"\n+            exit 1\n+          fi", "risk_notes_ko": "GKE 클러스터 접속 정보 및 새로 추가된 필수 repo variables(GKE_CLUSTER_NAME, FEAST_IMAGE_TAG 등)가 설정되어 있어야 워크플로우가 실패하지 않습니다."}, {"rank": 6, "importance": "test", "module": "tests", "symbol": "test_feast_materialize.py", "file": "tests/test_feast_materialize.py", "explanation_ko": "download_redis_ca_bundle 함수에 대한 정상 파일 기록, 파일 덮어쓰기, 필수 환경 변수 누락 시 예외 발생 여부를 다루는 유닛 테스트 4건을 추가했습니다.", "diff_snippet": "@@ -88,6 +88,46 @@ def test_ensure_ca_bundle_secret_without_project_raises():\n+def test_download_ca_bundle_writes_requested_path(monkeypatch, tmp_path):\n+    monkeypatch.setattr(bootstrap, \"_fetch_ca_secret\", lambda project, secret: b\"PEM\")\n+    destination = tmp_path / \"nested\" / \"redis-ca.pem\"\n+    env = {\"REDIS_CA_SECRET_ID\": \"redis-ca\", \"GCP_PROJECT_ID\": \"proj\"}\n+    path = download_redis_ca_bundle(destination, env)\n+    assert path == str(destination)\n+    assert destination.read_bytes() == b\"PEM\""}, {"rank": 7, "importance": "docs", "module": "docs", "symbol": "feast-gcp-setup.md & 2026-07-27-feast-apply-gke-job.md", "file": "docs/guides/feast-gcp-setup.md", "explanation_ko": "Feast apply의 GKE Job 전환 배경, full_scan_for_deletion 복원 사유, 환경 변수 주입 구조 및 설계 결정 사양서(spec) 문서 내용을 갱신 및 신규 추가했습니다.", "diff_snippet": "@@ -323,16 +323,30 @@ feast apply\n-> **운영 경로 (GHA, 정본)**: ...\n+> **운영 경로 (GHA → GKE Job, 정본)**: ...\n+> 실행 위치를 VPC 안으로 옮긴 이유는 `full_scan_for_deletion: true` 때문입니다."}], "qa_note_ko": "코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오. 이번 PR에서는 Feast apply의 GKE Job 전환 배경, full_scan_for_deletion 복원에 따른 고아 키/필드 정리 동작 및 4중 실패 검증 가드에 대한 이해도를 주로 확인합니다."}</script>
+<script>
+"use strict";
+(function () {
+  var raw = document.getElementById("report-data").textContent;
+  var r;
+  try { r = JSON.parse(raw); } catch (e) {
+    document.getElementById("pr-title").textContent = "리포트 데이터를 읽을 수 없습니다";
+    return;
+  }
+
+  // ---------- header ----------
+  document.title = "PR #" + r.pr.number + " 이해 리포트";
+  document.getElementById("pr-title").textContent = "PR #" + r.pr.number + " — " + r.pr.title;
+  var meta = document.getElementById("pr-meta");
+  var metaParts = ["작성자 @" + r.pr.author, "생성 " + r.pr.generated_at, "head " + r.pr.head_sha.slice(0, 8)];
+  if (r.pr.issue_refs && r.pr.issue_refs.length) {
+    metaParts.push("관련 이슈 " + r.pr.issue_refs.map(function (n) { return "#" + n; }).join(", "));
+  }
+  meta.textContent = metaParts.join(" · ");
+
+  // ---------- summary ----------
+  var ol = document.getElementById("summary-list");
+  r.summary_ko.forEach(function (line) {
+    var li = document.createElement("li");
+    li.textContent = line;
+    ol.appendChild(li);
+  });
+
+  // ---------- pipeline SVG (결정적 그리드 배치: lane = 행, order = 행 내 위치) ----------
+  var LANES = ["batch", "data", "train", "serve", "cross", "external"];
+  var LANE_LABELS = { batch: "배치 수집·생성", data: "데이터 계층", train: "학습", serve: "서빙·시뮬레이션", cross: "공통·계약", external: "외부 저장소" };
+  var NW = 172, NH = 46, GX = 40, GY = 34, LABEL_W = 110, PAD = 16;
+  var svgNS = "http://www.w3.org/2000/svg";
+  var svg = document.getElementById("pipeline-svg");
+
+  var nodes = r.pipeline.nodes.slice();
+  var byId = {};
+  var maxOrder = 1;
+  nodes.forEach(function (n) { byId[n.id] = n; if (n.order > maxOrder) maxOrder = n.order; });
+  var usedLanes = LANES.filter(function (l) { return nodes.some(function (n) { return n.lane === l; }); });
+
+  function pos(n) {
+    var laneIdx = usedLanes.indexOf(n.lane);
+    return {
+      x: PAD + LABEL_W + (n.order - 1) * (NW + GX),
+      y: PAD + laneIdx * (NH + GY)
+    };
+  }
+  var W = PAD * 2 + LABEL_W + maxOrder * (NW + GX) - GX;
+  var H = PAD * 2 + usedLanes.length * (NH + GY) - GY;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+  // 화살표 marker
+  var defs = document.createElementNS(svgNS, "defs");
+  ["", "modified", "added", "removed"].forEach(function (st) {
+    var m = document.createElementNS(svgNS, "marker");
+    m.setAttribute("id", "arrow" + (st ? "-" + st : ""));
+    m.setAttribute("viewBox", "0 0 10 10");
+    m.setAttribute("refX", "9"); m.setAttribute("refY", "5");
+    m.setAttribute("markerWidth", "7"); m.setAttribute("markerHeight", "7");
+    m.setAttribute("orient", "auto-start-reverse");
+    var p = document.createElementNS(svgNS, "path");
+    p.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+    p.setAttribute("fill", st === "modified" ? "var(--modified-stroke)"
+      : st === "added" ? "var(--added-stroke)"
+      : st === "removed" ? "var(--removed-stroke)" : "var(--border)");
+    m.appendChild(p);
+    defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+
+  // lane 라벨
+  usedLanes.forEach(function (lane, i) {
+    var t = document.createElementNS(svgNS, "text");
+    t.setAttribute("class", "lane-label");
+    t.setAttribute("x", PAD);
+    t.setAttribute("y", PAD + i * (NH + GY) + NH / 2 + 4);
+    t.textContent = LANE_LABELS[lane] || lane;
+    svg.appendChild(t);
+  });
+
+  // 에지 (노드보다 먼저 그려서 아래 깔리게)
+  (r.pipeline.edges || []).forEach(function (e) {
+    var a = byId[e.from], b = byId[e.to];
+    if (!a || !b) return;
+    var pa = pos(a), pb = pos(b);
+    var x1, y1, x2, y2;
+    if (a.lane === b.lane) { // 같은 행: 오른쪽 → 왼쪽
+      x1 = pa.x + NW; y1 = pa.y + NH / 2; x2 = pb.x; y2 = pb.y + NH / 2;
+    } else {               // 다른 행: 아래/위 가장자리 중앙끼리
+      var down = pb.y > pa.y;
+      x1 = pa.x + NW / 2; y1 = down ? pa.y + NH : pa.y;
+      x2 = pb.x + NW / 2; y2 = down ? pb.y : pb.y + NH;
+    }
+    var path = document.createElementNS(svgNS, "path");
+    var mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    path.setAttribute("d", a.lane === b.lane
+      ? "M " + x1 + " " + y1 + " L " + x2 + " " + y2
+      : "M " + x1 + " " + y1 + " C " + x1 + " " + my + ", " + x2 + " " + my + ", " + x2 + " " + y2);
+    var cls = "edge";
+    if (e.style === "dashed") cls += " dashed";
+    if (e.status && e.status !== "unchanged") cls += " st-" + e.status;
+    path.setAttribute("class", cls);
+    path.setAttribute("marker-end", "url(#arrow" + (e.status && e.status !== "unchanged" ? "-" + e.status : "") + ")");
+    svg.appendChild(path);
+  });
+
+  // 노드
+  var detail = document.getElementById("node-detail");
+  nodes.forEach(function (n) {
+    var p = pos(n);
+    var g = document.createElementNS(svgNS, "g");
+    var hasDetail = !!(n.as_is_ko || n.to_be_ko);
+    g.setAttribute("class", "node st-" + n.status
+      + ((r.pipeline.focus || []).indexOf(n.id) >= 0 ? " focus" : "")
+      + (hasDetail ? " clickable" : ""));
+    var rect = document.createElementNS(svgNS, "rect");
+    rect.setAttribute("x", p.x); rect.setAttribute("y", p.y);
+    rect.setAttribute("width", NW); rect.setAttribute("height", NH);
+    rect.setAttribute("rx", 8);
+    g.appendChild(rect);
+    var label = document.createElementNS(svgNS, "text");
+    label.setAttribute("x", p.x + NW / 2);
+    label.setAttribute("y", p.y + NH / 2 + 4);
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = n.label;
+    g.appendChild(label);
+    if (hasDetail) {
+      rect.addEventListener("click", function () {
+        document.getElementById("nd-title").textContent = n.label
+          + " (" + (n.status === "modified" ? "수정" : n.status === "added" ? "신규" : n.status === "removed" ? "삭제" : "변경 없음") + ")";
+        document.getElementById("nd-asis").textContent = n.as_is_ko || "—";
+        document.getElementById("nd-tobe").textContent = n.to_be_ko || "—";
+        document.getElementById("nd-paths").textContent = (n.paths || []).join("  ·  ");
+        detail.classList.add("visible");
+        detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+    }
+    svg.appendChild(g);
+  });
+
+  // 변경된 focus 노드가 있으면 첫 번째를 자동 표시
+  var firstFocus = (r.pipeline.focus || []).map(function (id) { return byId[id]; })
+    .filter(function (n) { return n && (n.as_is_ko || n.to_be_ko); })[0];
+  if (firstFocus) {
+    document.getElementById("nd-title").textContent = firstFocus.label;
+    document.getElementById("nd-asis").textContent = firstFocus.as_is_ko || "—";
+    document.getElementById("nd-tobe").textContent = firstFocus.to_be_ko || "—";
+    document.getElementById("nd-paths").textContent = (firstFocus.paths || []).join("  ·  ");
+    detail.classList.add("visible");
+  }
+
+  // ---------- easy (plain points / why / effects) ----------
+  var ppList = document.getElementById("plain-points-list");
+  r.plain_points_ko.forEach(function (t) {
+    var li = document.createElement("li");
+    li.textContent = t;
+    ppList.appendChild(li);
+  });
+  document.getElementById("motivation").textContent = r.motivation_ko;
+  var ul = document.getElementById("effects-list");
+  r.expected_effects_ko.forEach(function (t) {
+    var li = document.createElement("li");
+    li.textContent = t;
+    ul.appendChild(li);
+  });
+
+  // ---------- changes (rank 순) ----------
+  var list = document.getElementById("changes-list");
+  r.changes.slice().sort(function (a, b) { return a.rank - b.rank; }).forEach(function (c) {
+    var card = document.createElement("div");
+    card.className = "card change-card";
+
+    var head = document.createElement("div");
+    head.className = "change-head";
+    var badge = document.createElement("span");
+    badge.className = "badge " + c.importance;
+    badge.textContent = c.importance;
+    head.appendChild(badge);
+    var sym = document.createElement("span");
+    sym.className = "symbol";
+    sym.textContent = c.module + " :: " + c.symbol;
+    head.appendChild(sym);
+    var file = document.createElement("span");
+    file.className = "file";
+    file.textContent = c.file;
+    head.appendChild(file);
+    card.appendChild(head);
+
+    var expl = document.createElement("p");
+    expl.className = "expl";
+    expl.textContent = c.explanation_ko;
+    card.appendChild(expl);
+
+    if (c.risk_notes_ko) {
+      var risk = document.createElement("div");
+      risk.className = "risk";
+      risk.textContent = c.risk_notes_ko;
+      card.appendChild(risk);
+    }
+
+    if (c.diff_snippet) {
+      var det = document.createElement("details");
+      det.className = "diff-box";
+      var sum = document.createElement("summary");
+      sum.textContent = "diff 보기";
+      det.appendChild(sum);
+      var pre = document.createElement("pre");
+      pre.className = "diff";
+      c.diff_snippet.split("\n").forEach(function (line) {
+        var span = document.createElement("span");
+        var cls = "ln";
+        if (line.indexOf("@@") === 0) cls += " hunk";
+        else if (line.indexOf("+") === 0 && line.indexOf("+++") !== 0) cls += " add";
+        else if (line.indexOf("-") === 0 && line.indexOf("---") !== 0) cls += " del";
+        span.className = cls;
+        span.textContent = line.length ? line : " ";
+        pre.appendChild(span);
+      });
+      det.appendChild(pre);
+      card.appendChild(det);
+    }
+    list.appendChild(card);
+  });
+  document.getElementById("changes-summary").textContent =
+    "코드 기준 상세 설명 펼치기 (" + r.changes.length + "건)";
+
+  // ---------- qa / footer ----------
+  document.getElementById("qa-note").textContent = r.qa_note_ko;
+  document.getElementById("page-footer").textContent =
+    "이 리포트는 pr-report 워크플로우가 자동 생성했습니다. 최신 상태가 아니면 PR에 /claude-report 코멘트로 재생성할 수 있습니다.";
+})();
+</script>
+</body>
+</html>
