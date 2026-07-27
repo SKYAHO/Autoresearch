@@ -18,6 +18,10 @@ PIT(as-of) 조회가 성립하려면 **학습 윈도우 전 기간의 스냅샷�
 실측 결과 PIT 조회의 spine(`training_entity`)이 미빌드이고, 일일 동적 피처
 2종에 큰 결손이 있어 **현 상태로는 Phase 1(#357) 조회 전환을 시작할 수 없다.**
 
+> **2026-07-27 갱신**: user_dynamic/video는 데이터 창(07-07~) 결손 0으로 백필 완료.
+> 남은 gate는 **`training_entity` 하나** — infra#362(테이블 생성) apply 후 백필하면
+> Phase 0 완료 → Phase 1 착수. 상세는 아래 "갱신" 절.
+
 ## 실측 결과
 
 | 테이블 | 상태 | 커버리지(윈도우 30일) | 비고 |
@@ -32,6 +36,27 @@ PIT(as-of) 조회가 성립하려면 **학습 윈도우 전 기간의 스냅샷�
   (실측이 seed로 왜곡되지 않았음을 확인.)
 - 정적 테이블 2종의 `1970-01-01` 최신 시각은 "날짜 개념 없는 정적 피처"의 sentinel
   타임스탬프로, PIT 조회가 항상 이 행을 고르게 하는 정상 설계다.
+
+## 갱신 — 2026-07-27 백필 후
+
+**보정 1: 데이터 시작일 = 2026-07-07.** 위 30일 창(06-27~)은 데이터 수집 시작 전
+10일을 헛되이 "결손"으로 셌다(원천 `data_lake_youtube_trending_kr`가 07-07부터).
+커버리지·백필은 **데이터 있는 창** 기준으로 봐야 한다 — `--days`로 창을 맞춰 재측정한다.
+
+**백필 결과 (`scripts/backfill_feature_store.py --apply`, 창 07-07~07-26):**
+
+| 테이블 | 백필 후 | 남은 결손 |
+| --- | --- | --- |
+| `user_dynamic_feature` | **20/20 결손 0** ✅ | 없음 |
+| `video_feature` | **18/20** | 2026-07-08, 2026-07-11 |
+| `training_entity` | 여전히 미빌드 | 테이블 없음 (infra#362 apply 대기) |
+
+- `video_feature`의 07-08·07-11 결손은 **트렌딩 수집이 안 된 날**(원천 0행)이라
+  백필로 못 채운다 — upstream(`Autoresearch-airflow` 수집) 이슈다. PIT은 video를
+  ASOF(이벤트 시점 이하 최신)로 붙이므로 직전 스냅샷이 대신 붙어 **치명적이지 않다**.
+- 데이터 없는 날 백필은 `feature_store_build`의 "0행 → 검증 fail-closed"로 안전하게
+  실패한다(빈 파티션 DELETE는 no-op, 무해). dry-run은 실행을 안 해 이를 못 잡으므로
+  실 `--apply`에서만 드러난다.
 
 ## ttl 부재 → 결손일 stale fallback (실증)
 
@@ -50,7 +75,7 @@ FeatureView 4종 모두 `ttl`이 없어, 결손일 조회가 `null`이 아니라
 | TEMP_FEAST_BOOTSTRAP seed 잔재 0 | ✅ 실측 0 row |
 | offline 조회 스모크 CI green | ✅ feast 그룹 2 pass + `ci.yml` 등록 |
 | 커버리지 문서화 | ✅ 본 문서 |
-| **결손일 0 (또는 백필 완료)** | ❌ **미충족 — 아래 조치 필요** |
+| **결손일 0 (또는 백필 완료)** | 🔶 user_dynamic/video 데이터 창 결손 0(백필 완료) · video 07-08/07-11은 upstream 수집 구멍(문서화) · **training_entity만 infra#362 apply 후 백필 남음** |
 
 ## 필요 조치 (백필·빌드 — `Autoresearch-airflow`/ops)
 
