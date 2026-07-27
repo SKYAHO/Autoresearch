@@ -31,14 +31,17 @@ online_store:
   redis_type: redis_cluster
   connection_string: ${REDIS_HOST}:${REDIS_PORT}
   tls_ca_cert_path: ${REDIS_TLS_CA_PATH}
-  # apply 시 FeatureView 삭제에 따른 Redis full-scan 삭제를 끈다
-  # (GHA 러너는 private Redis에 접근 불가; 고아 키는 아래 key_ttl_seconds
-  # TTL 로 자동 소멸)
-  full_scan_for_deletion: false
-  # 모든 키 쓰기에 7일 EXPIRE 를 걸어, 갱신이 끊긴 키(삭제된 FeatureView 의
-  # 고아 키 등)를 Redis 가 자동 소멸시킨다. 살아있는 키는 일일 materialize
-  # 가 TTL 을 매일 리셋한다. materialize 가 7일 이상 연속 실패하면 서빙
-  # 키가 만료된다.
+  # apply 시 삭제된 FeatureView 의 Redis 키/필드를 정리한다. Redis 키는
+  # 엔티티 단위라 FV 들이 공유하므로, Feast 는 그 키를 쓰는 FV 가 하나뿐이면
+  # 키를 삭제하고 공유 중이면 해당 FV 의 해시 필드만 지운다(hdel). 이 스캔은
+  # Redis 접속을 요구하므로 apply 는 VPC 안의 GKE Job 에서 실행한다
+  # (#346, deploy/feast/apply-job.yaml).
+  full_scan_for_deletion: true
+  # 모든 키 쓰기에 7일 EXPIRE 를 거는 심층 방어. 엔티티 자체가 폐기되어
+  # 아무도 쓰지 않게 된 키를 소멸시킨다. 살아있는 FV 와 엔티티를 공유하는
+  # 고아 필드는 매일 materialize 가 TTL 을 리셋하므로 TTL 로는 지워지지
+  # 않으며, 그 경로는 위 full_scan_for_deletion 이 담당한다. materialize 가
+  # 7일 이상 연속 실패하면 서빙 키가 만료된다.
   key_ttl_seconds: 604800
 
 entity_key_serialization_version: 3
