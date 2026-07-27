@@ -20,6 +20,7 @@ import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+from autoresearch.logging_json import setup_json_logging
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -46,6 +47,11 @@ from src.serving.schemas import (
     RerankResponseItem,
 )
 from src.serving.service import PredictionError
+
+# uvicorn이 자체 로깅을 구성한 뒤 이 모듈을 import하므로, 여기서 JSON
+# stdout으로 재구성해야 access 로그까지 구조화된다 (#352, 계약은
+# autoresearch.logging_json docstring 참조).
+setup_json_logging()
 
 # 아래 메트릭들은 모듈 전역 레지스트리에 등록된다 — uvicorn을 --workers>1로 늘리면
 # 워커별로 값이 분리되어 /metrics가 워커마다 다르게 보인다. 스케일업 시
