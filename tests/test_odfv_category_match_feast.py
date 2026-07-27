@@ -17,6 +17,7 @@ pytest.importorskip("feast")
 
 import pandas as pd  # noqa: E402
 from feast import (  # noqa: E402
+    FeatureService,
     FeatureStore,
     FeatureView,
     Field,
@@ -107,6 +108,10 @@ def _build_store() -> FeatureStore:
     def match_smoke(inputs: pd.DataFrame) -> pd.DataFrame:
         return compute_category_matches(inputs)
 
+    # FeatureService 경유로 조회한다(프로덕션 경로). ODFV를 직접 feature-ref로 조회하면
+    # Feast 버전/플랫폼에 따라 결과 행이 드롭되는 경우가 있어(Linux CI에서 KeyError 재현),
+    # service로 감싼다 — staged 통합 스모크가 CI에서 통과하는 것과 같은 경로.
+    match_service = FeatureService(name="match_service", features=[match_smoke])
     store = FeatureStore(
         config=RepoConfig(
             project="smoke",
@@ -116,7 +121,7 @@ def _build_store() -> FeatureStore:
             entity_key_serialization_version=3,
         )
     )
-    store.apply([user_entity, video_entity, static, dynamic, video, match_smoke])
+    store.apply([user_entity, video_entity, static, dynamic, video, match_smoke, match_service])
     return store
 
 
@@ -138,16 +143,17 @@ def test_odfv_computes_matches_from_three_source_views(tmp_path, monkeypatch) ->
         ]
     )
     out = store.get_historical_features(
-        entity_df=entity_df,
-        features=[
-            "match_smoke:preferred_category_match",
-            "match_smoke:historical_category_match",
-        ],
+        entity_df=entity_df, features=store.get_feature_service("match_service")
     ).to_df()
-    by_video = out.set_index("video_id")
+    # 순서·인덱스에 의존하지 않게 video_id로 dict를 만들어 단정(실패 시 실제 결과를 메시지로).
+    matches = {
+        row["video_id"]: (
+            int(row["preferred_category_match"]),
+            int(row["historical_category_match"]),
+        )
+        for _, row in out.iterrows()
+    }
     # v1=Gaming: preferred(Gaming∈[Gaming,Music])=1, historical(Gaming==Gaming)=1
-    assert int(by_video.loc["v1", "preferred_category_match"]) == 1
-    assert int(by_video.loc["v1", "historical_category_match"]) == 1
+    assert matches.get("v1") == (1, 1), out.to_dict("list")
     # v2=Sports: preferred(Sports∉[..])=0, historical(Gaming!=Sports)=0
-    assert int(by_video.loc["v2", "preferred_category_match"]) == 0
-    assert int(by_video.loc["v2", "historical_category_match"]) == 0
+    assert matches.get("v2") == (0, 0), out.to_dict("list")

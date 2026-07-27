@@ -82,9 +82,10 @@ def _first_response() -> Mapping[str, Sequence[object]]:
 
 
 def _similarity_response() -> Mapping[str, Sequence[object]]:
+    # 2단계(similarity) 조회의 엔티티 키는 category_key다(#358). 값은 category 문자열 그대로.
     return {
         "user_id": ["user-1", "user-1"],
-        "category_id": ["20", "10"],
+        "category_key": ["20", "10"],
         "topic_similarity": [0.2, 0.1],
     }
 
@@ -111,8 +112,8 @@ def test_build_uses_two_keyed_batch_reads_and_returns_ordered_model_features() -
         (
             SECOND_READ_FEATURE_REFS,
             (
-                {"user_id": "user-1", "category_id": "10"},
-                {"user_id": "user-1", "category_id": "20"},
+                {"user_id": "user-1", "category_key": "10"},
+                {"user_id": "user-1", "category_key": "20"},
             ),
         ),
     ]
@@ -182,7 +183,7 @@ def test_build_applies_typed_cold_start_defaults_before_derived_features() -> No
             },
             {
                 "user_id": ["user-1"],
-                "category_id": ["unknown"],
+                "category_key": ["unknown"],
                 "topic_similarity": [None],
             },
         ]
@@ -247,7 +248,7 @@ def test_build_shares_unknown_category_second_read_across_cold_start_candidates(
             },
             {
                 "user_id": ["user-1"],
-                "category_id": ["unknown"],
+                "category_key": ["unknown"],
                 "topic_similarity": [None],
             },
         ]
@@ -261,7 +262,7 @@ def test_build_shares_unknown_category_second_read_across_cold_start_candidates(
 
     assert reader.calls[1] == (
         SECOND_READ_FEATURE_REFS,
-        ({"user_id": "user-1", "category_id": "unknown"},),
+        ({"user_id": "user-1", "category_key": "unknown"},),
     )
     assert [candidate.video_id for candidate in candidates] == ["video-a", "video-b"]
     assert [
@@ -335,7 +336,7 @@ def test_build_rejects_second_read_entity_key_mismatch() -> None:
                 _first_response(),
                 {
                     "user_id": ["user-1", "user-1"],
-                    "category_id": ["10", "unexpected-category"],
+                    "category_key": ["10", "unexpected-category"],
                     "topic_similarity": [0.1, 0.2],
                 },
             ]
