@@ -9,6 +9,10 @@ function matchesArchiveEntry(entry, rawQuery) {
   return haystack.indexOf(query) !== -1;
 }
 
+function matchesCategory(entry, selectedKey) {
+  return selectedKey === "all" || entry.category === selectedKey;
+}
+
 function appendTextElement(parent, tagName, className, text) {
   var element = document.createElement(tagName);
   if (className) element.className = className;
@@ -99,7 +103,10 @@ function initializeArchive() {
 }
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { matchesArchiveEntry: matchesArchiveEntry };
+  module.exports = {
+    matchesArchiveEntry: matchesArchiveEntry,
+    matchesCategory: matchesCategory,
+  };
 }
 if (typeof window !== "undefined") {
   window.matchesArchiveEntry = matchesArchiveEntry;
