@@ -17,8 +17,9 @@ training_dataset.csv 생성 파이프라인.
   label을 포함한 총 22개 물리 컬럼. model input의 이름·순서와 categorical
   분류는 `src/features/model_contract.py`가 소유하며, 이 모듈은 feature 목록을
   별도로 정의하지 않는다. `clicked`는 22번째 label physical column이며 model
-  input이 아니다. Feast get_historical_features()는 아직 경유하지 않는 DuckDB
-  fallback 경로 — issue #204/#175 결정안 참고. 단 topic_similarity 컬럼만은
+  input이 아니다. 조립 경로는 `--assembly-source`로 고른다: duckdb(기본, raw 재계산)와
+  feast(#358, offline store를 get_historical_features PIT로 조회 — offline이 정본 #357).
+  아래 topic_similarity 옵션은 duckdb 경로에 국한된다. 단 topic_similarity 컬럼만은
   --topic-similarity-source bigquery로 Feast offline 테이블
   (`feast_offline_store.user_category_similarity`, #242가 적재)을 as-of join으로
   조회할 수 있다 — 기본값 `inmemory`는 기존과 동일하게 Vertex AI 즉석 계산을
@@ -270,6 +271,57 @@ def load_user_category_similarity_from_bigquery() -> pd.DataFrame:
     return client.query(query).to_dataframe()
 
 
+def load_training_entity_spine(start_date: str, end_date: str) -> pd.DataFrame:
+    """training_entity(spine)를 KST 날짜 폐구간 [start, end]로 로드한다(#358 feast 경로).
+
+    spine은 feature_store_build가 적재한 (user_id, video_id, event_timestamp, clicked)
+    이며, feast get_historical_features의 entity dataframe이 된다. DuckDB 경로처럼 raw를
+    재계산하지 않고 여기에 offline 피처를 PIT로 붙인다.
+    """
+    from google.cloud import bigquery
+
+    client = bigquery.Client(project=BIGQUERY_PROJECT)
+    query = f"""
+        SELECT user_id, video_id, event_timestamp, clicked
+        FROM `{feature_table_id("training_entity")}`
+        WHERE DATE(event_timestamp, 'Asia/Seoul') BETWEEN '{start_date}' AND '{end_date}'
+    """
+    return client.query(query).to_dataframe()
+
+
+def _assemble_via_feast(
+    output_path: str, events_start_date: str, events_end_date: str
+) -> None:
+    """Feast get_historical_features(PIT)로 spine에 21피처를 붙여 CSV로 쓴다(#358).
+
+    DuckDB 재계산 경로를 대체한다. offline store가 정본(#357)이라 그 값을 그대로 읽는다.
+    feast/feature_repo는 이 경로에서만 필요하므로 지연 import한다(격리 그룹).
+    """
+    from feature_repo.bootstrap import load_feature_store
+
+    from src.features.feast_retrieval import retrieve_training_features
+
+    print("\n[feast] training_entity spine 로드...")
+    spine = load_training_entity_spine(events_start_date, events_end_date)
+    print(f"  [OK] spine: {len(spine)} rows")
+
+    repo_path = os.path.join(PROJECT_ROOT, "feature_repo")
+    store = load_feature_store(repo_path)
+    print("\n[feast] get_historical_features(PIT) 조회...")
+    features = retrieve_training_features(store, spine)
+
+    missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
+    if missing:
+        raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
+
+    out = features[[*MODEL_FEATURE_COLUMNS, "clicked"]].copy()
+    out["clicked"] = out["clicked"].astype(int)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    out.to_csv(output_path, index=False)
+    # spine 대비 손실(ttl 밖 행 드롭)은 retrieve_training_features가 경고로 남긴다.
+    print(f"\n[저장] {output_path} ({len(out)} rows, feast 경로)")
+
+
 def derive_wide_events(
     long_events: pd.DataFrame,
     label_window_sec: int = LABEL_WINDOW_SEC,
@@ -403,6 +455,7 @@ def main(
     events_start_date: str = None,
     events_end_date: str = None,
     topic_similarity_source: str = "inmemory",
+    assembly_source: str = "duckdb",
 ):
     if videos_source not in ("csv", "bigquery"):
         raise ValueError(f"videos_source must be 'csv' or 'bigquery': {videos_source!r}")
@@ -415,6 +468,15 @@ def main(
     if topic_similarity_source not in ("inmemory", "bigquery"):
         raise ValueError(
             f"topic_similarity_source must be 'inmemory' or 'bigquery': {topic_similarity_source!r}"
+        )
+    if assembly_source not in ("duckdb", "feast"):
+        raise ValueError(f"assembly_source must be 'duckdb' or 'feast': {assembly_source!r}")
+    if assembly_source == "feast" and (
+        events_source != "bigquery" or not events_start_date or not events_end_date
+    ):
+        raise ValueError(
+            "assembly_source='feast' requires events_source='bigquery' with "
+            "events_start_date/events_end_date (spine=training_entity를 BQ에서 읽는다)"
         )
 
     # get_data_dir()는 저장소 안의 data/ 디렉토리를 걸어 올라가며 찾는데,
@@ -434,6 +496,13 @@ def main(
         events_path = os.path.join(_resolve_data_dir(), "processed", "events.csv")
     if output_path is None:
         output_path = os.path.join(_resolve_data_dir(), "processed", "training_dataset.csv")
+
+    # feast 경로: DuckDB 재계산 대신 offline store 정본(#357)을 PIT 조회로 읽는다(#358).
+    # raw videos/personas/events가 필요 없으므로 여기서 갈라져 조기 반환한다.
+    if assembly_source == "feast":
+        _assemble_via_feast(output_path, events_start_date, events_end_date)
+        return
+
     if personas_path is None:
         if raw_dir is None:
             raw_dir = os.path.join(_resolve_data_dir(), "raw")
