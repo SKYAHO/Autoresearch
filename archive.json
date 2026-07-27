@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-27T06:23:25Z",
+  "generated_at": "2026-07-27T06:46:46Z",
   "reports": [
+    {
+      "number": 370,
+      "title": "feat: PR 리포트 아카이브에 Airflow 카테고리 탭 추가",
+      "author": "bbungjun",
+      "merged_at": "2026-07-27T06:46:35Z",
+      "summary_ko": [
+        "PR 리포트 아카이브 웹 UI에 Application과 Airflow 저장소를 구분하여 조회할 수 있는 카테고리 탭을 추가하였습니다.",
+        "외부 Airflow 저장소의 아카이브 데이터를 클라이언트 측에서 비동기로 조회하여 기존 데이터와 병합·정렬하는 로직을 구현하였습니다.",
+        "카테고리 필터링 및 데이터 병합·URL 절대경로화 로직을 검증하는 Node.js 기반 파이썬 단위 테스트와 관련 명세 문서를 작성하였습니다."
+      ],
+      "report_url": "pr/370/"
+    },
     {
       "number": 367,
       "title": "chore: CI 자동 리뷰 모델 핀을 Claude Opus 5로 갱신 (#351)",
