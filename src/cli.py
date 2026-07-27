@@ -181,6 +181,15 @@ def run_pipeline(
     if events_source == "bigquery":
         data_source_params["events_start_date"] = events_start_date
         data_source_params["events_end_date"] = events_end_date
+    if assembly_source == "feast":
+        # feast 경로의 재현성 계보: 어떤 FeatureService 정의와 registry로 만든
+        # 데이터인지 남긴다(#359). registry는 build 단계가 이미 읽은 env를 재사용한다.
+        from src.features.feast_retrieval import DEFAULT_SERVICE
+
+        data_source_params["feature_service"] = DEFAULT_SERVICE
+        feast_registry_path = os.environ.get("GCS_REGISTRY_PATH")
+        if feast_registry_path:
+            data_source_params["feast_registry_path"] = feast_registry_path
 
     typer.echo("\n[2/3] train-model 실행...")
     # train.main은 실현 sampling_rate(#300)를 반환한다 — evaluate가 오프라인

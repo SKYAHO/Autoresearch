@@ -202,6 +202,43 @@ def test_main_registers_lineage_tags_from_extra_params(tmp_path, monkeypatch) ->
     assert tags["events_source"] == "bigquery"
 
 
+def test_main_logs_training_dataset_lineage(tmp_path, monkeypatch) -> None:
+    """run의 Datasets(input)에 학습 데이터셋이 provenance 태그·행 수와 함께 기록되는지
+    검증(#359). params와 별개인 dataset lineage."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    data_path = tmp_path / "training_dataset.csv"
+    _synthetic_ctr_dataset().to_csv(data_path, index=False)
+
+    train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.json"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.json"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+        extra_params={"assembly_source": "feast", "feature_service": "ctr_training_v1"},
+    )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    experiment = client.get_experiment_by_name("ctr-model-training")
+    [run] = client.search_runs([experiment.experiment_id])
+    [dataset_input] = run.inputs.dataset_inputs
+    assert dataset_input.dataset.name == "training_dataset"
+    input_tags = {tag.key: tag.value for tag in dataset_input.tags}
+    # 용도(context)·provenance·행 수가 dataset input 태그로 남는다.
+    assert input_tags["mlflow.data.context"] == "training"
+    assert input_tags["assembly_source"] == "feast"
+    assert input_tags["feature_service"] == "ctr_training_v1"
+    assert int(input_tags["rows"]) == len(_synthetic_ctr_dataset())
+
+
 def _write_train_config_with(config_path, *, sampling_rate=None, scale_pos_weight="auto") -> None:
     """downsampling 관련 옵션을 넣은 train config (#300)."""
     config_path_str = str(config_path)

@@ -117,12 +117,15 @@
     쓴다(영상 나이 기준일 ≠ 유저 이력 기준일). offline video PIT는 event_timestamp
     하나로 ASOF하므로, 이 분리가 흡수되는지(추천 대상일 영상 스냅샷을 고르는지)를
     실 데이터 1건으로 대조해 회귀가 없음을 확인한다.
-- [ ] A4. MLflow dataset lineage. 현재 `train.py`는 `with mlflow.start_run()` 안에서
-  `log_parameters(extra_params)`로 문자열 계보만 남긴다(`events_source`/기간).
-  `logger.py`는 module-level mlflow 호출의 얇은 래퍼(run 컨텍스트는 호출부가 연다)이므로,
-  같은 패턴으로 `log_dataset(df, *, source, name, context="training")` 래퍼를 추가
-  (`mlflow.log_input(mlflow.data.from_pandas(df, source=source, name=name), context=context)`).
-  기록 내용: FeatureService=`ctr_training_v1`, registry_path, spine 기간, 행 수.
+- [x] A4. MLflow dataset lineage. `logger.py`에 `log_dataset(df, *, name, source,
+  context, targets, tags)` 래퍼 추가(`mlflow.data.from_pandas` + `mlflow.log_input`,
+  기존 얇은 래퍼 패턴). `train.py`가 dataset 로드 직후 이를 호출해 run의 Datasets
+  섹션에 학습 데이터셋을 input으로 남긴다 — provenance는 input **태그**로:
+  행 수 + extra_params(피처 소스·기간·assembly_source) + (feast면) FeatureService·
+  registry_path. `cli.py run_pipeline`이 feast일 때 `data_source_params`에
+  `feature_service=ctr_training_v1`·`feast_registry_path`(env)를 추가. extra_params가
+  없는 standalone train은 행 수만 남긴다. params 기록(기존)은 유지 — dataset lineage와
+  병존. 테스트: run inputs에 `training_dataset` + context/provenance/행수 태그 확인.
 - [ ] A5. 테스트: 시뮬/일일추천이 fake store로 offline PIT 경로를 타는지,
   서빙 후처리가 **drop 없이 cold-start만** 적용하는지(회귀 가드). feast 계열은
   격리 그룹(`uv run --only-group feast`), 나머지는 fake store 주입으로 dev에서 통과.
