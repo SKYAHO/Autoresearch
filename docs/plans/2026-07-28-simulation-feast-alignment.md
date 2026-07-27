@@ -97,13 +97,19 @@
   - 테스트: `tests/test_build_pool_feature_frame_feast.py`(dev-runnable, fake store
     monkeypatch) — spine 구성·tz·서빙 후처리(cold-start만, gap 드롭 금지) 회귀
     가드·누락 가드. 3 passed, ruff 통과.
-- [ ] A2. `simulate_policy_round` — reranker 입력 조립을 A1 신규 함수로 전환.
-  store 주입(테스트용 fake 허용).
-  - CLI 계약: 저장소 내부 유일 호출자는 `_cli()`+테스트(§A2 blast radius). raw
-    `--videos`/`--events`(+`--personas`)가 offline 경로에서 불필요해지므로,
-    `--assembly-source`류 스위치로 **병존**시킬지 전면 전환할지는 **인접 Airflow
-    DAG의 현재 호출 인자를 확인한 뒤** 확정(경계 조율). 확정 전 구 인자 파싱은
-    남겨 두어 DAG를 즉시 깨지 않는다.
+- [x] A2. `simulate_policy_round` — reranker 입력 조립을 A1 신규 함수로 전환(병존).
+  - `main(..., assembly_source="duckdb", feature_store=None)` 추가. feast면 모델
+    reranker의 21피처만 `build_pool_feature_frame_feast`로 만들고, baseline
+    휴리스틱·LLM 후보 provider·pool 정체(`video_by_id`)는 두 경로 공통. 기본
+    duckdb라 기존 동작·테스트 불변.
+  - `_cli()`: `--assembly-source duckdb|feast`(기본 duckdb). feast면 `_assemble_via_feast`와
+    같은 offline 전용 store를 env(GCS_REGISTRY_PATH/GCS_STAGING_LOCATION +
+    BIGQUERY_PROJECT/DATASET)로 만들어 주입.
+  - **backward-compat**: `--personas/--events`는 feast에서 모델 피처에 안 쓰이지만
+    구 인자 파싱을 남겨 인접 Airflow DAG를 즉시 깨지 않는다. 스위치 유지 vs 전면
+    전환(구 인자 제거)은 DAG 호출 인자 확인 후 별도 확정.
+  - 테스트: feast 모드가 offline PIT로만 라우팅(duckdb 경로 미호출 assert)·store
+    주입 전달·pool 전량 전달·feature_store 누락 가드. 35 passed.
 - [ ] A3. `daily_recommendations.run_batch` — `build_pool_feature_frame` 호출을
   A1 신규 함수로 전환.
   - [ ] A3-1. **snapshot_date → as_of 매핑 1건 실측 대조**(체크박스). 현재

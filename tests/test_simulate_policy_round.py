@@ -1011,3 +1011,71 @@ def test_replay_fails_when_judged_users_are_absent_from_exposures(tmp_path, stub
             virtual_users=other_users,
             output_dir=str(tmp_path / "b"),
         )
+
+
+def _fake_pool_frame(store, user_id, candidate_video_ids, as_of) -> pd.DataFrame:
+    """build_pool_feature_frame_feast 대역 — pool 영상당 21피처 1행."""
+    rows = []
+    for video_id in candidate_video_ids:
+        row = {c: 0 for c in MODEL_FEATURE_COLUMNS}
+        row["category_id"] = "Gaming" if video_id[-1] in "0369" else "Music"
+        row["video_id"] = video_id
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def test_main_feast_source_routes_through_offline_pit(tmp_path, stub_reranker, monkeypatch):
+    # assembly_source='feast'면 모델 피처를 offline PIT(build_pool_feature_frame_feast)로만
+    # 만들고, raw 재계산(duckdb build_pool_feature_frame)은 절대 안 탄다(#359 A2).
+    from src.pipeline import simulate_policy_round as module
+
+    calls: list[tuple] = []
+
+    def _fake_feast(store, user_id, candidate_video_ids, as_of):
+        calls.append((store, user_id, tuple(candidate_video_ids), as_of))
+        return _fake_pool_frame(store, user_id, candidate_video_ids, as_of)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("feast 모드에서 duckdb build_pool_feature_frame이 호출됨")
+
+    monkeypatch.setattr(module, "build_pool_feature_frame_feast", _fake_feast)
+    monkeypatch.setattr(module, "build_pool_feature_frame", _boom)
+
+    sentinel_store = object()
+    report = main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        policy_version="feast-run",
+        output_dir=str(tmp_path),
+        assembly_source="feast",
+        feature_store=sentinel_store,
+    )
+
+    assert set(report["policies"]) == {"baseline", "model"}
+    # 유저당 1회 조립, 주입 store가 그대로 전달되고 pool 전량(30)이 후보로 넘어간다.
+    assert len(calls) == len(_virtual_users())
+    assert calls[0][0] is sentinel_store
+    assert len(calls[0][2]) == 30
+
+
+def test_main_feast_requires_feature_store(stub_reranker):
+    with pytest.raises(ValueError, match="feature_store 주입이 필요"):
+        main(
+            personas=_personas(),
+            virtual_users=_virtual_users(),
+            videos_raw=_videos_raw(),
+            events=_empty_events(),
+            generator=RuleBasedActionLogGenerator(),
+            reranker=stub_reranker,
+            click_threshold=0.0,
+            assembly_source="feast",
+            feature_store=None,
+        )
