@@ -5,11 +5,11 @@
 실물(로컬 File store)로 검증한다.
 """
 
-import feature_repo.bootstrap as bootstrap
 import pandas as pd
 import pytest
 
-import src.features.feast_retrieval as feast_retrieval
+from feature_repo import bootstrap
+from src.features import feast_retrieval
 from src.features.model_contract import MODEL_FEATURE_COLUMNS
 from src.pipeline import build_training_dataset as btd
 
@@ -17,6 +17,26 @@ from src.pipeline import build_training_dataset as btd
 def test_feast_requires_bigquery_source_and_dates() -> None:
     with pytest.raises(ValueError, match="assembly_source='feast'"):
         btd.main(assembly_source="feast", events_source="csv")
+
+
+def test_apply_cold_start_defaults_fills_nulls_serving_rule() -> None:
+    # 영상 미발견 등으로 null인 피처를 서빙과 같은 규칙(카테고리→'unknown', 수치→0)으로 채운다.
+    df = pd.DataFrame(
+        {
+            "category_id": ["Gaming", None],  # categorical
+            "view_count": [100, None],  # 수치
+            "topic_similarity": [0.9, None],  # 수치(float)
+            "clicked": [1, 0],  # 모델 피처 아님 → 안 건드림
+        }
+    )
+    out = feast_retrieval.apply_cold_start_defaults(df)
+    assert out.loc[1, "category_id"] == "unknown"
+    assert out.loc[1, "view_count"] == 0
+    assert out.loc[1, "topic_similarity"] == 0.0
+    # 비-null과 비-모델 컬럼은 보존.
+    assert out.loc[0, "category_id"] == "Gaming"
+    assert out.loc[0, "topic_similarity"] == 0.9
+    assert out["clicked"].tolist() == [1, 0]
 
 
 def _fake_env(monkeypatch, features: pd.DataFrame) -> None:

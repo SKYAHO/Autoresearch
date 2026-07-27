@@ -21,6 +21,12 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from src.features.model_contract import (
+    CATEGORICAL_FEATURE_COLUMNS,
+    MODEL_FEATURE_COLUMNS,
+)
+from src.serving.online_features import COLD_START_CATEGORICAL_DEFAULT
+
 if TYPE_CHECKING:
     from feast import FeatureStore
 
@@ -84,3 +90,24 @@ def retrieve_training_features(
             len(spine) - len(result),
         )
     return result
+
+
+def apply_cold_start_defaults(features: pd.DataFrame) -> pd.DataFrame:
+    """조회 결과의 null 모델 피처를 **서빙과 같은** cold-start 기본값으로 채운다(#358).
+
+    PIT 조회는 영상이 offline video_feature에 없으면(스냅샷 부재) 그 행의 영상 피처를
+    null로 준다. null category_id 등은 학습(categorical 인코딩)을 깨므로, 서빙
+    (``online_features``)이 쓰는 것과 동일한 규칙(카테고리→'unknown', 수치→0)으로
+    채운다. 기본값 상수·카테고리 분류를 서빙/계약과 공유해 skew를 막는다(복제 금지).
+    """
+    out = features.copy()
+    for column in MODEL_FEATURE_COLUMNS:
+        if column not in out.columns:
+            continue
+        default = (
+            COLD_START_CATEGORICAL_DEFAULT
+            if column in CATEGORICAL_FEATURE_COLUMNS
+            else 0
+        )
+        out[column] = out[column].fillna(default)
+    return out

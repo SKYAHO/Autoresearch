@@ -22,6 +22,10 @@ from src.serving.schemas import CandidateVideo, FeatureValue
 
 FeatureRows: TypeAlias = Mapping[str, Sequence[object]]
 
+# 카테고리형 피처의 cold-start 기본값(값 없음 → 'unknown'). 학습(feast_retrieval)과
+# 서빙이 같은 상수를 공유해 두 경로의 cold-start가 어긋나지 않게 한다(#358).
+COLD_START_CATEGORICAL_DEFAULT: Final[str] = "unknown"
+
 _FIRST_READ_FEATURE_REFS: Final[tuple[str, ...]] = (
     "UserStaticView:age_group",
     "UserStaticView:occupation",
@@ -125,7 +129,7 @@ class ServingFeatureBuilder:
 
         categories_by_video = {
             video_id: _string_or_default(
-                first_rows[(user_id, video_id)]["category_id"], default="unknown"
+                first_rows[(user_id, video_id)]["category_id"], default=COLD_START_CATEGORICAL_DEFAULT
             )
             for video_id in video_ids
         }
@@ -221,12 +225,12 @@ def _candidate_from_row(
 ) -> CandidateVideo:
     preferred_category = _preferred_category_or_default(row["preferred_category"])
     historical_category_affinity = _string_or_default(
-        row["historical_category_affinity"], default="unknown"
+        row["historical_category_affinity"], default=COLD_START_CATEGORICAL_DEFAULT
     )
     features: dict[str, FeatureValue] = {
-        "age_group": _string_or_default(row["age_group"], default="unknown"),
-        "occupation": _string_or_default(row["occupation"], default="unknown"),
-        "watch_time_band": _string_or_default(row["watch_time_band"], default="unknown"),
+        "age_group": _string_or_default(row["age_group"], default=COLD_START_CATEGORICAL_DEFAULT),
+        "occupation": _string_or_default(row["occupation"], default=COLD_START_CATEGORICAL_DEFAULT),
+        "watch_time_band": _string_or_default(row["watch_time_band"], default=COLD_START_CATEGORICAL_DEFAULT),
         "recent_click_count_7d": _integer_or_default(row["recent_click_count_7d"]),
         "recent_view_count_7d": _integer_or_default(row["recent_view_count_7d"]),
         "recent_watch_time_7d": _integer_or_default(row["recent_watch_time_7d"]),

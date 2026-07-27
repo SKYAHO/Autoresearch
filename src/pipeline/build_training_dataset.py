@@ -299,7 +299,10 @@ def _assemble_via_feast(
     """
     from feature_repo.bootstrap import load_feature_store
 
-    from src.features.feast_retrieval import retrieve_training_features
+    from src.features.feast_retrieval import (
+        apply_cold_start_defaults,
+        retrieve_training_features,
+    )
 
     print("\n[feast] training_entity spine 로드...")
     spine = load_training_entity_spine(events_start_date, events_end_date)
@@ -314,6 +317,8 @@ def _assemble_via_feast(
     if missing:
         raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
 
+    # 영상 미발견 등으로 생긴 null 피처를 서빙과 같은 cold-start 기본값으로 채운다(#358).
+    features = apply_cold_start_defaults(features)
     out = features[[*MODEL_FEATURE_COLUMNS, "clicked"]].copy()
     out["clicked"] = out["clicked"].astype(int)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

@@ -102,10 +102,20 @@ DuckDB 제거).
   FeatureService 조인에서 한 뷰라도 ttl 밖이면 그 임프레션이 **학습셋에서 통째로 빠질** 수
   있음. 작업 5(assembly)에서 spine(training_entity) 행 수 대비 조회 결과 행 수를 반드시
   검증(60h ttl인 UserDynamic이 2일+ 결손일 때 임프레션 손실 여부).
-- **(작업 2) ODFV offline retrieval scale 경고**: Feast가 ODFV offline 조회에 "scale이 잘
-  안 됨(experimental)" RuntimeWarning을 냄. 1.77M spine에서 `category_match_view`가 병목일
-  수 있음 → 작업 5/6에서 시간 측정. 심하면 조회 후 후처리 폴백을 고려(단 학습·서빙 공통
-  경로 이점이 줄어 skew 방지 효과 감소 — trade-off 기록 후 결정).
+- **(작업 2/6) ODFV scale — 문제없음(실측 해소)**: "scale 안 됨" 경고는 떴지만 실측은
+  **오버헤드-바운드**였다: 2,000행 29.5s / 100,000행 38.2s(50배인데 +9s). 대부분 고정
+  오버헤드(entity_df 업로드 + staged 2쿼리 + GCS staging)라 1.77M도 ~분 단위 예상 →
+  **ODFV 유지**. (서빙은 어차피 후처리라, ODFV는 offline 전용 편의일 뿐 — 필요하면 후처리
+  전환도 skew 손실 없으나 지금은 불필요.)
+- **(작업 6) 영상 미발견 null ~3.2% (실환경 실측)**: offline `video_feature` PIT에서 영상
+  스냅샷이 없으면(테이블 부재) 그 행의 영상 피처가 null(category_id 0.968, topic_similarity
+  0.968). null은 categorical 인코딩을 깨므로 **cold-start 기본값 필수**.
+  - 고침: `apply_cold_start_defaults`가 **서빙(online_features)과 같은 규칙**(카테고리
+    →'unknown', 수치→0)으로 채움. 카테고리 기본값 상수(`COLD_START_CATEGORICAL_DEFAULT`)를
+    서빙에서 단일 소스로 뽑아 학습/서빙 공유(복제 금지 — skew 원천 차단).
+  - **데이터 갭 자체는 #358 범위 밖**: feast 3.2% vs DuckDB 0.004%(옛 실측) 차이는 offline
+    `video_feature` 테이블이 raw 트렌딩보다 성긴 것(#356 백필 video 18/20일). **알려진
+    데이터 갭이고 #356/#365 후속**이지 이 경로의 버그가 아니다. 기록만 하고 넘어간다.
 - **(작업 6) `category_id` 이름 충돌 — BigQuery offline 전용 (실환경 검증이 잡음)**:
   `category_id`가 VideoFeatureView **피처**(모델 입력)이면서 category 엔티티 **조인키**를
   겸해, BigQuery offline PIT SQL이 `Column name category_id is ambiguous`로 죽음(Feast

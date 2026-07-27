@@ -96,6 +96,7 @@ def main() -> int:
     features = retrieve_training_features(store, spine)
     elapsed = time.time() - t0
 
+    from src.features.feast_retrieval import apply_cold_start_defaults
     from src.features.model_contract import MODEL_FEATURE_COLUMNS
 
     missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
@@ -104,12 +105,16 @@ def main() -> int:
     print(f"spine {len(spine)} → 결과 {len(features)} rows "
           f"(손실 {len(spine) - len(features)}, ttl 밖 드롭 발견 #1)")
     print(f"21피처 누락: {missing if missing else '없음'}")
+    _watch = ["topic_similarity", "category_id", "preferred_category_match",
+              "historical_category_match", "recent_click_count_7d"]
     if not missing:
-        nn = features[list(MODEL_FEATURE_COLUMNS)].notna().mean().round(3).to_dict()
-        print("피처별 non-null 비율(일부):",
-              {k: nn[k] for k in ["topic_similarity", "preferred_category_match",
-                                  "historical_category_match", "category_id",
-                                  "recent_click_count_7d"]})
+        raw = features[list(MODEL_FEATURE_COLUMNS)].notna().mean().round(3).to_dict()
+        print("raw non-null 비율(발견 #3, video 미발견 갭):", {k: raw[k] for k in _watch})
+        # cold-start 후엔 전부 채워져야 한다(서빙과 같은 규칙).
+        filled = apply_cold_start_defaults(features)
+        post = filled[list(MODEL_FEATURE_COLUMNS)].notna().mean().round(3).to_dict()
+        print("cold-start 후 non-null 비율:", {k: post[k] for k in _watch})
+        features = filled
     if out_abs and not missing:
         out = features[[*MODEL_FEATURE_COLUMNS, "clicked"]].copy()
         out["clicked"] = out["clicked"].astype(int)
