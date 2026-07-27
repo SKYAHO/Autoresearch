@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR 이해 리포트</title>
+<style>
+  /* 고정 템플릿 — 에이전트는 이 파일을 수정하지 않고 report.json 데이터만 채웁니다. */
+  :root {
+    --bg: #f6f8fa; --surface: #ffffff; --border: #d1d9e0;
+    --text: #1f2328; --muted: #59636e; --accent: #0969da;
+    --unchanged-fill: #f6f8fa; --unchanged-stroke: #d1d9e0; --unchanged-text: #59636e;
+    --modified-fill: #ddf4ff; --modified-stroke: #0969da; --modified-text: #0550ae;
+    --added-fill: #dafbe1;    --added-stroke: #1a7f37;    --added-text: #116329;
+    --removed-fill: #ffebe9;  --removed-stroke: #cf222e;  --removed-text: #a40e26;
+    --diff-add-bg: #dafbe1; --diff-del-bg: #ffebe9; --diff-hunk-bg: #ddf4ff;
+    --risk-bg: #fff8c5; --risk-border: #d4a72c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8d96a0; --accent: #4493f8;
+      --unchanged-fill: #161b22; --unchanged-stroke: #30363d; --unchanged-text: #8d96a0;
+      --modified-fill: #0c2d6b; --modified-stroke: #4493f8; --modified-text: #79c0ff;
+      --added-fill: #04260f;    --added-stroke: #2ea043;    --added-text: #56d364;
+      --removed-fill: #3c0614;  --removed-stroke: #f85149;  --removed-text: #ff7b72;
+      --diff-add-bg: rgba(46,160,67,.22); --diff-del-bg: rgba(248,81,73,.22); --diff-hunk-bg: rgba(68,147,248,.18);
+      --risk-bg: #2b2205; --risk-border: #9e6a03;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+                 "Noto Sans KR", "Malgun Gothic", sans-serif;
+    line-height: 1.6;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  header.page {
+    border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px;
+  }
+  header.page h1 { font-size: 1.35rem; margin: 0 0 6px; }
+  header.page .meta { color: var(--muted); font-size: .85rem; }
+  header.page .meta a { color: var(--accent); text-decoration: none; }
+  section { margin-bottom: 32px; }
+  section > h2 {
+    font-size: 1.05rem; margin: 0 0 12px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  section > h2 .step {
+    display: inline-block; background: var(--accent); color: #fff;
+    border-radius: 999px; font-size: .72rem; padding: 1px 9px;
+    vertical-align: 2px; margin-right: 7px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px;
+  }
+  #summary ol { margin: 0; padding-left: 22px; }
+  #summary li { margin: 4px 0; }
+  /* 파이프라인 SVG */
+  #pipeline-wrap { overflow-x: auto; }
+  #pipeline-svg { display: block; min-width: 760px; width: 100%; height: auto; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: .8rem; color: var(--muted); margin-top: 8px; }
+  .legend span[class^="lg-"]::before {
+    content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+    margin-right: 5px; vertical-align: -1px; border: 1.5px solid;
+  }
+  .legend .lg-unchanged::before { background: var(--unchanged-fill); border-color: var(--unchanged-stroke); }
+  .legend .lg-modified::before  { background: var(--modified-fill);  border-color: var(--modified-stroke); }
+  .legend .lg-added::before     { background: var(--added-fill);     border-color: var(--added-stroke); }
+  .legend .lg-removed::before   { background: var(--removed-fill);   border-color: var(--removed-stroke); }
+  svg .node rect { rx: 8; stroke-width: 1.5; cursor: default; }
+  svg .node.st-unchanged rect { fill: var(--unchanged-fill); stroke: var(--unchanged-stroke); }
+  svg .node.st-modified rect  { fill: var(--modified-fill);  stroke: var(--modified-stroke); }
+  svg .node.st-added rect     { fill: var(--added-fill);     stroke: var(--added-stroke); }
+  svg .node.st-removed rect   { fill: var(--removed-fill);   stroke: var(--removed-stroke); }
+  svg .node.focus rect { stroke-width: 3; }
+  svg .node.clickable rect { cursor: pointer; }
+  svg .node text { font-size: 12px; fill: var(--text); pointer-events: none; }
+  svg .node.st-unchanged text { fill: var(--unchanged-text); }
+  svg .lane-label { font-size: 11px; fill: var(--muted); }
+  svg .edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
+  svg .edge.dashed { stroke-dasharray: 5 4; }
+  svg .edge.st-modified { stroke: var(--modified-stroke); }
+  svg .edge.st-added { stroke: var(--added-stroke); }
+  svg .edge.st-removed { stroke: var(--removed-stroke); }
+  #node-detail { margin-top: 12px; display: none; }
+  #node-detail.visible { display: block; }
+  #node-detail h3 { margin: 0 0 8px; font-size: .95rem; }
+  #node-detail .asis-tobe { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { #node-detail .asis-tobe { grid-template-columns: 1fr; } }
+  #node-detail .asis-tobe > div {
+    border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: .87rem;
+  }
+  #node-detail .asis-tobe .tag { font-size: .72rem; font-weight: 600; color: var(--muted); display: block; margin-bottom: 4px; }
+  #node-detail .paths { color: var(--muted); font-size: .78rem; margin-top: 8px; font-family: ui-monospace, monospace; }
+  /* 2단계: 쉬운 설명 · 왜 · 기대효과 */
+  #easy .easy-block { margin-bottom: 14px; }
+  #easy .easy-block:last-child { margin-bottom: 0; }
+  #easy .easy-block .tag {
+    display: block; font-size: .72rem; font-weight: 600; color: var(--muted); margin-bottom: 6px;
+  }
+  #easy .easy-block ul { margin: 0; padding-left: 22px; }
+  #easy .easy-block li { margin: 4px 0; }
+  /* 3단계: 기본 접힘 */
+  #changes-details > summary {
+    cursor: pointer; font-weight: 600; color: var(--accent); padding: 4px 0; user-select: none;
+  }
+  #changes-details[open] > summary { margin-bottom: 12px; }
+  /* 변경 카드 */
+  .change-card { margin-bottom: 12px; }
+  .change-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .badge {
+    font-size: .7rem; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid; text-transform: uppercase; letter-spacing: .03em;
+  }
+  .badge.core     { background: var(--removed-fill);  border-color: var(--removed-stroke);  color: var(--removed-text); }
+  .badge.contract { background: var(--modified-fill); border-color: var(--modified-stroke); color: var(--modified-text); }
+  .badge.config   { background: var(--risk-bg);       border-color: var(--risk-border);     color: var(--text); }
+  .badge.test     { background: var(--added-fill);    border-color: var(--added-stroke);    color: var(--added-text); }
+  .badge.docs     { background: var(--unchanged-fill); border-color: var(--unchanged-stroke); color: var(--unchanged-text); }
+  .change-head .symbol { font-weight: 600; font-family: ui-monospace, monospace; font-size: .92rem; }
+  .change-head .file { color: var(--muted); font-size: .8rem; font-family: ui-monospace, monospace; }
+  .change-card p.expl { margin: 8px 0 0; font-size: .92rem; }
+  .risk {
+    background: var(--risk-bg); border: 1px solid var(--risk-border);
+    border-radius: 6px; padding: 8px 12px; margin-top: 8px; font-size: .85rem;
+  }
+  .risk::before { content: "⚠ 리스크: "; font-weight: 700; }
+  details.diff-box { margin-top: 10px; }
+  details.diff-box summary { cursor: pointer; font-size: .85rem; color: var(--accent); user-select: none; }
+  pre.diff {
+    margin: 8px 0 0; border: 1px solid var(--border); border-radius: 6px;
+    overflow-x: auto; font-size: .8rem; line-height: 1.5; padding: 0;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  pre.diff .ln { display: block; padding: 0 12px; white-space: pre; }
+  pre.diff .ln.add { background: var(--diff-add-bg); }
+  pre.diff .ln.del { background: var(--diff-del-bg); }
+  pre.diff .ln.hunk { background: var(--diff-hunk-bg); color: var(--muted); }
+  /* QA */
+  #qa .card { border-left: 4px solid var(--accent); }
+  footer { color: var(--muted); font-size: .78rem; margin-top: 40px; border-top: 1px solid var(--border); padding-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header class="page">
+    <h1 id="pr-title">PR 이해 리포트</h1>
+    <div class="meta" id="pr-meta"></div>
+  </header>
+
+  <section id="summary">
+    <h2>핵심 요약</h2>
+    <div class="card"><ol id="summary-list"></ol></div>
+  </section>
+
+  <section id="pipeline">
+    <h2><span class="step">1단계</span>전체 파이프라인에서의 위치 (as-is → to-be)</h2>
+    <div class="card">
+      <div id="pipeline-wrap"><svg id="pipeline-svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div class="legend">
+        <span class="lg-unchanged">변경 없음</span>
+        <span class="lg-modified">수정</span>
+        <span class="lg-added">신규</span>
+        <span class="lg-removed">삭제</span>
+        <span>· 색칠된 노드를 클릭하면 as-is/to-be 설명이 표시됩니다</span>
+      </div>
+      <div id="node-detail" class="card">
+        <h3 id="nd-title"></h3>
+        <div class="asis-tobe">
+          <div><span class="tag">AS-IS</span><span id="nd-asis"></span></div>
+          <div><span class="tag">TO-BE</span><span id="nd-tobe"></span></div>
+        </div>
+        <div class="paths" id="nd-paths"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="easy">
+    <h2><span class="step">2단계</span>쉬운 설명</h2>
+    <div class="card">
+      <div class="easy-block">
+        <span class="tag">무슨 일이 있었나</span>
+        <ul id="plain-points-list"></ul>
+      </div>
+      <div class="easy-block">
+        <span class="tag">왜 필요했나</span>
+        <p id="motivation" style="margin:0"></p>
+      </div>
+      <div class="easy-block">
+        <span class="tag">기대효과</span>
+        <ul id="effects-list"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="changes">
+    <h2><span class="step">3단계</span>코드 기준 설명</h2>
+    <details id="changes-details">
+      <summary id="changes-summary">코드 기준 상세 설명 펼치기</summary>
+      <div id="changes-list"></div>
+    </details>
+  </section>
+
+  <section id="qa">
+    <h2><span class="step">4단계</span>이해도 확인</h2>
+    <div class="card"><p id="qa-note" style="margin:0"></p></div>
+  </section>
+
+  <footer id="page-footer"></footer>
+</main>
+
+<script id="report-data" type="application/json">{"schema_version": 2, "pr": {"number": 376, "title": "feat: FeatureService + 학습 조립 get_historical_features 전환 (#358)", "author": "waieiches", "issue_refs": [358], "generated_at": "2026-07-27T13:30:34+00:00", "head_sha": "a20259d5cd3106be2d3111682508451e06d0b602"}, "summary_ko": ["CTR 모델 학습용 21개 피처를 Feast FeatureService(ctr_training_v1)로 통합 정의하고, 학습 데이터셋 조립을 Feast point-in-time(PIT) 조회 경로로 전환하였습니다.", "피처스토어 결손 대응을 위해 유저 동적 피처 TTL을 60시간으로 확정하고, 파생 피처 계산(ODFV) 및 2단계 시밀러리티 조회를 정비하였습니다.", "영상 미발견 시 결측값을 서빙과 동일한 cold-start 규칙으로 보정하였으며, 조인키 변경(category_key)에 따라 Feast 재-apply 및 Redis 재-materialize가 필요합니다."], "plain_points_ko": ["학습 데이터 조립 방식 전환: 원천 로그를 직접 재계산하던 방식 대신 Feast 피처스토어 정본을 시점 기준(point-in-time)으로 조회해 학습 데이터셋을 만듭니다.", "학습-서빙 계산 일관성 확보: 유저 선호 카테고리 일치 여부 등 파생 피처를 실시간 계산(ODFV) 방식으로 통일하여 학습과 서빙 간 불일치를 방지했습니다.", "데이터 결손 대응 유효기간 설정: 매일 수집되는 유저 피처의 유효기간(TTL)을 60시간으로 설정해 1일 수집 누락 발생 시에도 이전 데이터를 안전하게 활용합니다.", "미확인 비디오 및 신규 유저 처리 통합: 학습 시 비디오 정보를 찾을 수 없는 경우 적용하는 기본값 규칙을 서빙 시스템과 완전히 동일하게(카테고리 'unknown', 수치 0) 맞추었습니다.", "데이터베이스 조인 충돌 방지: 비디오 카테고리 컬럼명과 피처 이름이 중복되는 SQL 에러를 막기 위해 조인용 키 이름을 분리했습니다."], "motivation_ko": "기존 학습 파이프라인(build_training_dataset)은 DuckDB를 사용해 원천 로그를 재계산하는 방식으로 피처를 조립했습니다. 이는 Feast 피처스토어 offline store 정본과의 데이터 불일치(#357)를 야기하고 학습과 서빙의 피처 계산 로직이 이원화될 위험이 존재했습니다. 이에 학습에 필요한 21개 피처를 Feast FeatureService(ctr_training_v1)로 단일 정의하고 Feast historical feature PIT 조회를 도입함으로써 피처 정본화 및 train/serve skew 원천 차단을 달성하고자 합니다.", "expected_effects_ko": ["Feast offline store를 학습 데이터 조립 정본으로 채택하여 학습과 서빙 간 데이터 일관성이 확보됩니다.", "On-Demand FeatureView(ODFV) 도입으로 파생 피처 계산 로직이 일원화되어 학습/서빙 불일치가 방지됩니다.", "UserDynamic 피처에 60시간 TTL을 적용하여 1일 결손 시에도 안전한 stale 서빙과 명확한 결손 관리가 가능해집니다.", "cold-start 기본값 상수를 통합 관리하여 결측치 처리 규칙의 불일치를 차단했습니다."], "pipeline": {"nodes": [{"id": "collect", "label": "YouTube 수집", "lane": "batch", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/", "proxy/"]}, {"id": "virtual_users", "label": "가상 유저 생성", "lane": "batch", "order": 2, "status": "unchanged", "paths": ["autoresearch/virtual_users/"]}, {"id": "action_log", "label": "Action Log 생성·품질", "lane": "batch", "order": 3, "status": "unchanged", "paths": ["autoresearch/action_logs/"]}, {"id": "data_lake", "label": "Data Lake (GCS parquet)", "lane": "data", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/load.py", "autoresearch/action_logs/load.py"]}, {"id": "feature_store", "label": "Feature Store (BQ·Feast·Redis)", "lane": "data", "order": 2, "status": "modified", "as_is_ko": "FeatureService 부재 및 피처뷰 TTL 미설정, category_id 조인키 충돌 가능성이 존재했습니다.", "to_be_ko": "FeatureService(ctr_training_v1), ODFV(category_match_view), UserDynamic TTL(60h) 및 category_key 조인키 매핑이 반영되었습니다.", "paths": ["feature_repo/", "src/features/", "src/pipeline/build_feature_tables.py"]}, {"id": "training_dataset", "label": "학습 데이터셋 조립", "lane": "train", "order": 1, "status": "modified", "as_is_ko": "DuckDB 기반 raw 로그 재계산으로 학습 데이터셋을 생성했습니다.", "to_be_ko": "--assembly-source feast 옵션을 제공해 BQ training_entity spine에 Feast PIT 조회로 21피처를 조립합니다.", "paths": ["src/pipeline/build_training_dataset.py"]}, {"id": "train_eval", "label": "모델 학습·평가 (LightGBM·MLflow)", "lane": "train", "order": 2, "status": "modified", "as_is_ko": "기존 데이터 소스 파라미터만 MLflow에 기록했습니다.", "to_be_ko": "assembly_source lineage 정보를 MLflow run 파라미터에 추가 기록합니다.", "paths": ["src/models/", "src/pipeline/train.py", "src/pipeline/evaluate.py", "src/tracking/"]}, {"id": "registry", "label": "Model Registry (MLflow)", "lane": "train", "order": 3, "status": "unchanged", "paths": ["deploy/mlflow/"]}, {"id": "serving", "label": "리랭킹 서빙 API (FastAPI)", "lane": "serve", "order": 1, "status": "modified", "as_is_ko": "category_id를 2단계 온라인 조회의 엔티티키로 직접 사용했습니다.", "to_be_ko": "category_key 조인키 매핑을 반영하고 학습과 동일한 cold-start 기본값 상수를 공유합니다.", "paths": ["src/serving/", "deploy/serving/"]}, {"id": "daily_reco", "label": "일일 추천·노출 조립", "lane": "serve", "order": 2, "status": "unchanged", "paths": ["src/pipeline/daily_recommendations.py", "src/pipeline/model_exposure_provider.py", "src/pipeline/policy_selector.py"]}, {"id": "simulation", "label": "가상 유저 클릭 시뮬레이션", "lane": "serve", "order": 3, "status": "unchanged", "paths": ["src/pipeline/simulate_policy_round.py", "src/pipeline/virtual_user_adapter.py"]}, {"id": "batch_cli", "label": "공개 Batch CLI (Airflow 계약)", "lane": "cross", "order": 1, "status": "unchanged", "paths": ["autoresearch/jobs/"]}, {"id": "ci_release", "label": "CI·이미지·릴리스", "lane": "cross", "order": 2, "status": "modified", "as_is_ko": "기존 Feast 스모크 테스트만 CI에서 실행했습니다.", "to_be_ko": "신규 ODFV 및 Feast retrieval 통합 테스트 3종을 CI 워크플로우에 추가했습니다.", "paths": [".github/workflows/", "Dockerfile.app", "Dockerfile.serving", "pyproject.toml"]}, {"id": "docs", "label": "문서·스펙", "lane": "cross", "order": 3, "status": "modified", "as_is_ko": "피처 계약 정렬 스펙이 검토 중이었습니다.", "to_be_ko": "피처 계약 정렬 스펙(C: TTL 60h 확정) 마감 및 FeatureService retrieval 계획 문서를 반영했습니다.", "paths": ["docs/", ".claude/docs/", "CLAUDE.md", "README.md"]}, {"id": "ext_airflow", "label": "(외부) Airflow 오케스트레이션", "lane": "external", "order": 1, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-airflow"]}, {"id": "ext_infra", "label": "(외부) GCP 인프라", "lane": "external", "order": 2, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-infra"]}], "edges": [{"from": "feature_store", "to": "training_dataset", "status": "modified"}, {"from": "feature_store", "to": "serving", "style": "dashed", "status": "modified"}], "focus": ["feature_store", "training_dataset"]}, "changes": [{"rank": 1, "importance": "contract", "module": "feature_repo", "symbol": "FeatureService / ODFV / TTL", "file": "feature_repo/feature_definitions.py", "explanation_ko": "FeatureService(ctr_training_v1) 정의, ODFV category_match_view 구현, UserDynamic TTL=60h 적용, BigQuery SQL 충돌 방지를 위해 category_entity 조인키를 category_key로 분리 매핑했습니다.", "diff_snippet": "category_entity = Entity(\n    name=\"category\",\n    join_keys=[\"category_key\"],\n    value_type=ValueType.STRING,\n)\n\nctr_training_service = FeatureService(\n    name=\"ctr_training_v1\",\n    features=[\n        user_static_view[[\"age_group\", \"occupation\", \"watch_time_band\"]],\n        user_dynamic_view,\n        video_feature_view,\n        user_category_similarity_view[[\"topic_similarity\"]],\n        category_match_view,\n    ],\n)", "risk_notes_ko": "엔티티 조인키가 category_key로 변경됨에 따라 Feast 재-apply 및 Redis 재-materialize가 필수적입니다."}, {"rank": 2, "importance": "core", "module": "src/features", "symbol": "retrieve_training_features / apply_cold_start_defaults", "file": "src/features/feast_retrieval.py", "explanation_ko": "2단계 staged Feast PIT 조회를 통해 video category_id를 결정한 후 topic_similarity 조회를 수행하며, 비디오 미발견 시 서빙과 동일한 cold-start 규칙으로 기본값을 보정합니다.", "diff_snippet": "def retrieve_training_features(store, spine, service=DEFAULT_SERVICE):\n    video_keys = spine[_JOIN_KEYS].drop_duplicates()\n    video_category = store.get_historical_features(entity_df=video_keys, features=[_VIDEO_CATEGORY_FEATURE]).to_df()\n    video_category = video_category.rename(columns={\"category_id\": _CATEGORY_JOIN_KEY})\n    entity_df = spine.merge(video_category[[*_JOIN_KEYS, _CATEGORY_JOIN_KEY]], on=_JOIN_KEYS, how=\"left\")\n    return store.get_historical_features(entity_df=entity_df, features=store.get_feature_service(service)).to_df()", "risk_notes_ko": "Feast PIT 조회 결과에서 TTL 초과 엔티티는 행이 드롭될 수 있으므로 spine 대비 행 손실 여부를 로깅 및 모니터링해야 합니다."}, {"rank": 3, "importance": "core", "module": "src/pipeline", "symbol": "_assemble_via_feast / main", "file": "src/pipeline/build_training_dataset.py", "explanation_ko": "build_training_dataset에 --assembly-source 옵션을 도입해 'feast' 선택 시 BQ training_entity spine에 PIT 조회를 수행하도록 구성했습니다.", "diff_snippet": "def _assemble_via_feast(output_path, events_start_date, events_end_date):\n    spine = load_training_entity_spine(events_start_date, events_end_date)\n    store = load_feature_store(repo_path)\n    features = retrieve_training_features(store, spine)\n    features = apply_cold_start_defaults(features)\n    out = features[[*MODEL_FEATURE_COLUMNS, \"clicked\"]].copy()\n    out.to_csv(output_path, index=False)"}, {"rank": 4, "importance": "contract", "module": "src/serving", "symbol": "COLD_START_CATEGORICAL_DEFAULT / build", "file": "src/serving/online_features.py", "explanation_ko": "카테고리형 피처의 cold-start 기본값 상수를 단일 정의하여 학습/서빙 간 공유하고, 2단계 온라인 조회의 엔티티키를 category_key로 전환했습니다.", "diff_snippet": "COLD_START_CATEGORICAL_DEFAULT: Final[str] = \"unknown\"\n\nsecond_entities = tuple(\n    {\"user_id\": user_id, \"category_key\": category_id}\n    for category_id in category_ids\n)"}, {"rank": 5, "importance": "config", "module": "src", "symbol": "build_features / run_pipeline", "file": "src/cli.py", "explanation_ko": "CLI 명령에 --assembly-source 인자를 추가하고 MLflow lineage에 assembly_source 파라미터를 기록하도록 수정했습니다.", "diff_snippet": "assembly_source: str = typer.Option(\"duckdb\", help=\"피처 조립 소스: duckdb 또는 feast\")"}, {"rank": 6, "importance": "config", "module": "scripts", "symbol": "main", "file": "scripts/validate_feast_assembly.py", "explanation_ko": "실제 BigQuery offline store 및 로컬 임시 레지스트리를 활용해 Feast 조립 경로와 ODFV 스케일, cold-start 비율을 실측 검증하는 스크립트를 추가했습니다."}, {"rank": 7, "importance": "test", "module": "tests", "symbol": "test_assemble_via_feast_writes_contract_columns", "file": "tests/test_build_training_dataset_feast_path.py", "explanation_ko": "Feast 조립 경로의 인자 검증, cold-start 기본값 채우기, 출력 계약 컬럼 검증 단위 테스트를 추가했습니다."}, {"rank": 8, "importance": "test", "module": "tests", "symbol": "test_staged_retrieval_attaches_all_21_features", "file": "tests/test_feast_retrieval_integration_feast.py", "explanation_ko": "2단계 staged Feast 조회가 21개 피처 전체를 올바르게 조인하고 ODFV 파생값을 상산하는지 로컬 스토어 기반으로 검증하는 스모크 테스트를 구현했습니다."}, {"rank": 9, "importance": "test", "module": "tests", "symbol": "test_odfv_computes_matches_from_three_source_views", "file": "tests/test_odfv_category_match_feast.py", "explanation_ko": "ODFV(category_match_view)가 3개 소스 뷰(UserStatic, UserDynamic, Video)의 필드를 받아 매칭 값을 계산하는지 검증하는 테스트를 추가했습니다."}, {"rank": 10, "importance": "test", "module": "tests", "symbol": "test_ttl_serves_stale_within_60h_but_nulls_beyond", "file": "tests/test_offline_retrieval_smoke_feast.py", "explanation_ko": "UserDynamic TTL=60h 적용에 따라 60시간 이내 스냅샷은 stale 서빙되고 60시간 초과 시 null 처리되는 동작을 시연·검증하도록 수정했습니다."}, {"rank": 11, "importance": "config", "module": ".github/workflows", "symbol": "ci.yml", "file": ".github/workflows/ci.yml", "explanation_ko": "신규 Feast 검증 테스트 파일 3종을 CI 워크플로우 실행 목록에 추가했습니다."}, {"rank": 12, "importance": "docs", "module": "docs", "symbol": "2026-07-27-feature-contract-alignment.md / 2026-07-27-featureservice-retrieval.md", "file": "docs/specs/2026-07-27-feature-contract-alignment.md", "explanation_ko": "TTL=60h 확정 사항을 피처 계약 정렬 스펙 문서에 반영하고 Phase 2 계획 문서를 추가했습니다."}], "qa_note_ko": "코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오. 본 PR의 핵심 주제는 Feast FeatureService(ctr_training_v1) 기반의 21피처 PIT 조립 전환 및 cold-start/TTL 계약 정렬입니다."}</script>
+<script>
+"use strict";
+(function () {
+  var raw = document.getElementById("report-data").textContent;
+  var r;
+  try { r = JSON.parse(raw); } catch (e) {
+    document.getElementById("pr-title").textContent = "리포트 데이터를 읽을 수 없습니다";
+    return;
+  }
+
+  // ---------- header ----------
+  document.title = "PR #" + r.pr.number + " 이해 리포트";
+  document.getElementById("pr-title").textContent = "PR #" + r.pr.number + " — " + r.pr.title;
+  var meta = document.getElementById("pr-meta");
+  var metaParts = ["작성자 @" + r.pr.author, "생성 " + r.pr.generated_at, "head " + r.pr.head_sha.slice(0, 8)];
+  if (r.pr.issue_refs && r.pr.issue_refs.length) {
+    metaParts.push("관련 이슈 " + r.pr.issue_refs.map(function (n) { return "#" + n; }).join(", "));
+  }
+  meta.textContent = metaParts.join(" · ");
+
+  // ---------- summary ----------
+  var ol = document.getElementById("summary-list");
+  r.summary_ko.forEach(function (line) {
+    var li = document.createElement("li");
+    li.textContent = line;
+    ol.appendChild(li);
+  });
+
+  // ---------- pipeline SVG (결정적 그리드 배치: lane = 행, order = 행 내 위치) ----------
+  var LANES = ["batch", "data", "train", "serve", "cross", "external"];
+  var LANE_LABELS = { batch: "배치 수집·생성", data: "데이터 계층", train: "학습", serve: "서빙·시뮬레이션", cross: "공통·계약", external: "외부 저장소" };
+  var NW = 172, NH = 46, GX = 40, GY = 34, LABEL_W = 110, PAD = 16;
+  var svgNS = "http://www.w3.org/2000/svg";
+  var svg = document.getElementById("pipeline-svg");
+
+  var nodes = r.pipeline.nodes.slice();
+  var byId = {};
+  var maxOrder = 1;
+  nodes.forEach(function (n) { byId[n.id] = n; if (n.order > maxOrder) maxOrder = n.order; });
+  var usedLanes = LANES.filter(function (l) { return nodes.some(function (n) { return n.lane === l; }); });
+
+  function pos(n) {
+    var laneIdx = usedLanes.indexOf(n.lane);
+    return {
+      x: PAD + LABEL_W + (n.order - 1) * (NW + GX),
+      y: PAD + laneIdx * (NH + GY)
+    };
+  }
+  var W = PAD * 2 + LABEL_W + maxOrder * (NW + GX) - GX;
+  var H = PAD * 2 + usedLanes.length * (NH + GY) - GY;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+  // 화살표 marker
+  var defs = document.createElementNS(svgNS, "defs");
+  ["", "modified", "added", "removed"].forEach(function (st) {
+    var m = document.createElementNS(svgNS, "marker");
+    m.setAttribute("id", "arrow" + (st ? "-" + st : ""));
+    m.setAttribute("viewBox", "0 0 10 10");
+    m.setAttribute("refX", "9"); m.setAttribute("refY", "5");
+    m.setAttribute("markerWidth", "7"); m.setAttribute("markerHeight", "7");
+    m.setAttribute("orient", "auto-start-reverse");
+    var p = document.createElementNS(svgNS, "path");
+    p.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+    p.setAttribute("fill", st === "modified" ? "var(--modified-stroke)"
+      : st === "added" ? "var(--added-stroke)"
+      : st === "removed" ? "var(--removed-stroke)" : "var(--border)");
+    m.appendChild(p);
+    defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+
+  // lane 라벨
+  usedLanes.forEach(function (lane, i) {
+    var t = document.createElementNS(svgNS, "text");
+    t.setAttribute("class", "lane-label");
+    t.setAttribute("x", PAD);
+    t.setAttribute("y", PAD + i * (NH + GY) + NH / 2 + 4);
+    t.textContent = LANE_LABELS[lane] || lane;
+    svg.appendChild(t);
+  });
+
+  // 에지 (노드보다 먼저 그려서 아래 깔리게)
+  (r.pipeline.edges || []).forEach(function (e) {
+    var a = byId[e.from], b = byId[e.to];
+    if (!a || !b) return;
+    var pa = pos(a), pb = pos(b);
+    var x1, y1, x2, y2;
+    if (a.lane === b.lane) { // 같은 행: 오른쪽 → 왼쪽
+      x1 = pa.x + NW; y1 = pa.y + NH / 2; x2 = pb.x; y2 = pb.y + NH / 2;
+    } else {               // 다른 행: 아래/위 가장자리 중앙끼리
+      var down = pb.y > pa.y;
+      x1 = pa.x + NW / 2; y1 = down ? pa.y + NH : pa.y;
+      x2 = pb.x + NW / 2; y2 = down ? pb.y : pb.y + NH;
+    }
+    var path = document.createElementNS(svgNS, "path");
+    var mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    path.setAttribute("d", a.lane === b.lane
+      ? "M " + x1 + " " + y1 + " L " + x2 + " " + y2
+      : "M " + x1 + " " + y1 + " C " + x1 + " " + my + ", " + x2 + " " + my + ", " + x2 + " " + y2);
+    var cls = "edge";
+    if (e.style === "dashed") cls += " dashed";
+    if (e.status && e.status !== "unchanged") cls += " st-" + e.status;
+    path.setAttribute("class", cls);
+    path.setAttribute("marker-end", "url(#arrow" + (e.status && e.status !== "unchanged" ? "-" + e.status : "") + ")");
+    svg.appendChild(path);
+  });
+
+  // 노드
+  var detail = document.getElementById("node-detail");
+  nodes.forEach(function (n) {
+    var p = pos(n);
+    var g = document.createElementNS(svgNS, "g");
+    var hasDetail = !!(n.as_is_ko || n.to_be_ko);
+    g.setAttribute("class", "node st-" + n.status
+      + ((r.pipeline.focus || []).indexOf(n.id) >= 0 ? " focus" : "")
+      + (hasDetail ? " clickable" : ""));
+    var rect = document.createElementNS(svgNS, "rect");
+    rect.setAttribute("x", p.x); rect.setAttribute("y", p.y);
+    rect.setAttribute("width", NW); rect.setAttribute("height", NH);
+    rect.setAttribute("rx", 8);
+    g.appendChild(rect);
+    var label = document.createElementNS(svgNS, "text");
+    label.setAttribute("x", p.x + NW / 2);
+    label.setAttribute("y", p.y + NH / 2 + 4);
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = n.label;
+    g.appendChild(label);
+    if (hasDetail) {
+      rect.addEventListener("click", function () {
+        document.getElementById("nd-title").textContent = n.label
+          + " (" + (n.status === "modified" ? "수정" : n.status === "added" ? "신규" : n.status === "removed" ? "삭제" : "변경 없음") + ")";
+        document.getElementById("nd-asis").textContent = n.as_is_ko || "—";
+        document.getElementById("nd-tobe").textContent = n.to_be_ko || "—";
+        document.getElementById("nd-paths").textContent = (n.paths || []).join("  ·  ");
+        detail.classList.add("visible");
+        detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+    }
+    svg.appendChild(g);
+  });
+
+  // 변경된 focus 노드가 있으면 첫 번째를 자동 표시
+  var firstFocus = (r.pipeline.focus || []).map(function (id) { return byId[id]; })
+    .filter(function (n) { return n && (n.as_is_ko || n.to_be_ko); })[0];
+  if (firstFocus) {
+    document.getElementById("nd-title").textContent = firstFocus.label;
+    document.getElementById("nd-asis").textContent = firstFocus.as_is_ko || "—";
+    document.getElementById("nd-tobe").textContent = firstFocus.to_be_ko || "—";
+    document.getElementById("nd-paths").textContent = (firstFocus.paths || []).join("  ·  ");
+    detail.classList.add("visible");
+  }
+
+  // ---------- easy (plain points / why / effects) ----------
+  var ppList = document.getElementById("plain-points-list");
+  r.plain_points_ko.forEach(function (t) {
+    var li = document.createElement("li");
+    li.textContent = t;
+    ppList.appendChild(li);
+  });
+  document.getElementById("motivation").textContent = r.motivation_ko;
+  var ul = document.getElementById("effects-list");
+  r.expected_effects_ko.forEach(function (t) {
+    var li = document.createElement("li");
+    li.textContent = t;
+    ul.appendChild(li);
+  });
+
+  // ---------- changes (rank 순) ----------
+  var list = document.getElementById("changes-list");
+  r.changes.slice().sort(function (a, b) { return a.rank - b.rank; }).forEach(function (c) {
+    var card = document.createElement("div");
+    card.className = "card change-card";
+
+    var head = document.createElement("div");
+    head.className = "change-head";
+    var badge = document.createElement("span");
+    badge.className = "badge " + c.importance;
+    badge.textContent = c.importance;
+    head.appendChild(badge);
+    var sym = document.createElement("span");
+    sym.className = "symbol";
+    sym.textContent = c.module + " :: " + c.symbol;
+    head.appendChild(sym);
+    var file = document.createElement("span");
+    file.className = "file";
+    file.textContent = c.file;
+    head.appendChild(file);
+    card.appendChild(head);
+
+    var expl = document.createElement("p");
+    expl.className = "expl";
+    expl.textContent = c.explanation_ko;
+    card.appendChild(expl);
+
+    if (c.risk_notes_ko) {
+      var risk = document.createElement("div");
+      risk.className = "risk";
+      risk.textContent = c.risk_notes_ko;
+      card.appendChild(risk);
+    }
+
+    if (c.diff_snippet) {
+      var det = document.createElement("details");
+      det.className = "diff-box";
+      var sum = document.createElement("summary");
+      sum.textContent = "diff 보기";
+      det.appendChild(sum);
+      var pre = document.createElement("pre");
+      pre.className = "diff";
+      c.diff_snippet.split("\n").forEach(function (line) {
+        var span = document.createElement("span");
+        var cls = "ln";
+        if (line.indexOf("@@") === 0) cls += " hunk";
+        else if (line.indexOf("+") === 0 && line.indexOf("+++") !== 0) cls += " add";
+        else if (line.indexOf("-") === 0 && line.indexOf("---") !== 0) cls += " del";
+        span.className = cls;
+        span.textContent = line.length ? line : " ";
+        pre.appendChild(span);
+      });
+      det.appendChild(pre);
+      card.appendChild(det);
+    }
+    list.appendChild(card);
+  });
+  document.getElementById("changes-summary").textContent =
+    "코드 기준 상세 설명 펼치기 (" + r.changes.length + "건)";
+
+  // ---------- qa / footer ----------
+  document.getElementById("qa-note").textContent = r.qa_note_ko;
+  document.getElementById("page-footer").textContent =
+    "이 리포트는 pr-report 워크플로우가 자동 생성했습니다. 최신 상태가 아니면 PR에 /claude-report 코멘트로 재생성할 수 있습니다.";
+})();
+</script>
+</body>
+</html>
