@@ -14,11 +14,19 @@ FeatureView (BigQuery source table → FeatureView):
 """
 
 import os
+from datetime import timedelta
 
 from feast import Entity, FeatureView, Field
 from feast.infra.offline_stores.bigquery import BigQuerySource
 from feast.types import Array, Float64, Int64, String
 from feast.value_type import ValueType
+
+# FeatureView ttl 정책 (#357 spec (C) 확정, 2026-07-27):
+# - 일 스냅샷 뷰(UserDynamic)만 60h — 당일(≤24h)+1일 결손(≤48h)까지 stale 허용, 2일+는 null.
+#   #365 결손이 잦아 1일마다 null 내면 학습이 과도하게 비므로 stale 상한을 60h로 묶는다.
+# - 정적/준정적(UserStatic/Similarity)은 갱신 주기가 불규칙이라 ttl=None(무제한). 60h면 정상인데도 매일 null.
+# - Video는 일 스냅샷이나 ttl=None — 트렌딩 이탈은 "인기 식음" 신호라 마지막 스냅샷을 유지(모델링 결정).
+_USER_DYNAMIC_TTL = timedelta(hours=60)
 
 GCP_PROJECT = os.environ["GCP_PROJECT_ID"]
 BQ_DATASET = os.environ["BQ_DATASET"]
@@ -103,6 +111,7 @@ user_static_view = FeatureView(
     ],
     source=user_static_source,
     online=True,
+    ttl=None,  # 정적: persona 변경 시만 갱신 → 배치 주기 ttl 성립 안 함(#357 (C))
     tags={"team": "feature-store"},
     description="사용자 정적 Feature",
 )
@@ -120,6 +129,7 @@ user_dynamic_view = FeatureView(
     ],
     source=user_dynamic_source,
     online=True,
+    ttl=_USER_DYNAMIC_TTL,  # 일 스냅샷: 1일 결손까지 stale 허용, 2일+는 null(#357 (C))
     tags={"team": "feature-store"},
     description="사용자 동적 Feature (최근 7일 집계)",
 )
@@ -140,6 +150,7 @@ video_feature_view = FeatureView(
     ],
     source=video_source,
     online=True,
+    ttl=None,  # 트렌딩 이탈 = "인기 식음" 신호라 마지막 스냅샷 유지(모델링 결정, #357 (C))
     tags={"team": "feature-store"},
     description="비디오 Feature",
 )
@@ -153,6 +164,7 @@ user_category_similarity_view = FeatureView(
     ],
     source=user_category_similarity_source,
     online=True,
+    ttl=None,  # 준정적: 임베딩 재계산 시만 갱신 → ttl=None(#357 (C))
     tags={"team": "feature-store"},
     description="사용자-카테고리 topic similarity",
 )
