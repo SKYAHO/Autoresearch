@@ -163,6 +163,13 @@ bounded-stale이다.
 **남은 의존(서빙 도메인)**: 2일+ 결손 시 online 조회가 실제 null을 반환하므로, 서빙이 null
 피처를 처리하는지는 @hyochangsung(Feature Store 공동소유) 별도 확인 — #357 코멘트로 요청됨.
 
+**학습 단계까지 관철(#358)**: (C)의 "결손을 null로 드러낸다"를 학습 파이프라인에서도 지킨다 —
+feast 조회 결과에서 **UserDynamic 피처가 전부 null인 행(ttl 초과/결손)은 채우지 않고 드롭**한다
+(`feast_retrieval.drop_user_dynamic_gap_rows`). 영상 미발견 cold-start(0/unknown 채움)와 구분:
+후자는 "정보가 원래 없음"이지만 전자는 **활동 유저**(라벨 clicked이 그 유저 것)의 기록 유실이라,
+0으로 채우면 "신규 유저" 거짓을 학습에 주입(=stale이 몰래 섞이던 것과 같은 피해). 드롭 건수는
+학습 로그에 별도로 남겨 #365 gap을 감지한다.
+
 ## 남은 작업
 
 - 설계 결정 3종 확정 → #358 착수·완료(feast 경로 실환경 검증 완료, PR 아래).

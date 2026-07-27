@@ -302,6 +302,7 @@ def _assemble_via_feast(
     from src.features.feast_retrieval import (
         apply_cold_start_defaults,
         build_offline_feature_store,
+        drop_user_dynamic_gap_rows,
         retrieve_training_features,
     )
 
@@ -328,8 +329,10 @@ def _assemble_via_feast(
     if missing:
         raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
 
-    # 영상 미발견 등으로 생긴 null 피처를 서빙과 같은 cold-start 기본값으로 채운다(#358).
-    # 대형 프레임 중복 상주를 줄이려 제자리 채움 + 선택 시 추가 copy 안 함(리뷰 OOM).
+    # (C) 결손 가시화: UserDynamic 전체 null(ttl 초과·#365 결손)은 채우지 않고 드롭
+    # (활동 유저를 "신규 유저"로 위장시키지 않는다). 이 뒤에 남는 null(영상 미발견 등)만
+    # 서빙과 같은 cold-start 기본값으로 채운다. 제자리 채움 + 선택 시 추가 copy 안 함(리뷰 OOM).
+    features = drop_user_dynamic_gap_rows(features)
     features = apply_cold_start_defaults(features)
     features["clicked"] = features["clicked"].astype(int)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)

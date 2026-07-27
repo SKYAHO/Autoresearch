@@ -40,6 +40,17 @@ _JOIN_KEYS = ["video_id", "event_timestamp"]
 # 겹치면 offline SQL이 ambiguous로 죽으므로 조인 배관은 category_key로 구분한다(#358).
 _CATEGORY_JOIN_KEY = "category_key"
 
+# UserDynamicView가 제공하는 동적 피처. 이 전부가 null이면 그 (user, ts) 스냅샷이
+# 없다는 뜻 = ttl 초과/파이프라인 결손(#365)이다. drop_user_dynamic_gap_rows 참고.
+_USER_DYNAMIC_COLUMNS = (
+    "recent_click_count_7d",
+    "recent_view_count_7d",
+    "recent_watch_time_7d",
+    "recent_like_count_7d",
+    "historical_category_affinity",
+    "total_event_count_7d",
+)
+
 
 def retrieve_training_features(
     store: FeatureStore,
@@ -105,6 +116,35 @@ def retrieve_training_features(
             len(spine) - len(result),
         )
     return result
+
+
+def drop_user_dynamic_gap_rows(features: pd.DataFrame) -> pd.DataFrame:
+    """UserDynamic 피처가 전부 null인 행을 드롭한다(#358, #357 (C) 결손 가시화 관철).
+
+    영상 미발견 cold-start(``apply_cold_start_defaults``가 0/unknown으로 채움)와 **다르게**
+    처리한다. UserDynamic 전체 null은 "정보가 원래 없는" 게 아니라, **실제로 활동한 유저**
+    (라벨 clicked이 그 활동 유저 것)의 기록을 파이프라인 결손(#365, 60h ttl 초과)으로 못
+    가져온 것이다. 이를 0/unknown으로 채우면 "이력 없는 신규 유저"라는 거짓을 학습에
+    주입하는 셈 — ttl 없던 시절 stale이 몰래 섞이던 것과 같은 피해를 '0'이라는 값으로
+    재현한다. (C)가 ttl로 "결손을 null로 드러내기로" 한 의도를 학습 단계까지 지키려면,
+    채우지 말고 **그 행을 학습에서 제외**해야 한다.
+
+    드롭 건수를 별도로 경고에 남긴다 — good days엔 0이지만, #365가 gap을 만들면 이
+    숫자가 비정상적으로 커져 바로 드러나도록.
+    """
+    cols = [c for c in _USER_DYNAMIC_COLUMNS if c in features.columns]
+    if not cols:
+        return features
+    gap = features[cols].isna().all(axis=1)
+    n_gap = int(gap.sum())
+    if n_gap:
+        logger.warning(
+            "UserDynamic 결손(전 피처 null)으로 %d/%d 행 드롭 — #365 gap 신호 "
+            "(영상 cold-start와 구분: 이건 활동 유저의 기록 유실이라 0으로 안 채운다)",
+            n_gap,
+            len(features),
+        )
+    return features[~gap]
 
 
 def apply_cold_start_defaults(features: pd.DataFrame) -> pd.DataFrame:

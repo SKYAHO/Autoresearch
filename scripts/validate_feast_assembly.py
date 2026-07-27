@@ -87,7 +87,10 @@ def main() -> int:
     features = retrieve_training_features(store, spine)
     elapsed = time.time() - t0
 
-    from src.features.feast_retrieval import apply_cold_start_defaults
+    from src.features.feast_retrieval import (
+        apply_cold_start_defaults,
+        drop_user_dynamic_gap_rows,
+    )
     from src.features.model_contract import MODEL_FEATURE_COLUMNS
 
     missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
@@ -101,8 +104,11 @@ def main() -> int:
     if not missing:
         raw = features[list(MODEL_FEATURE_COLUMNS)].notna().mean().round(3).to_dict()
         print("raw non-null 비율(발견 #3, video 미발견 갭):", {k: raw[k] for k in _watch})
-        # cold-start 후엔 전부 채워져야 한다(서빙과 같은 규칙).
-        filled = apply_cold_start_defaults(features)
+        # (C) 결손 가시화: UserDynamic 전체 null(ttl 초과/#365)은 드롭. good days=0 기대.
+        kept = drop_user_dynamic_gap_rows(features)
+        print(f"UserDynamic 결손 드롭: {len(features) - len(kept)} 행 (#365 gap, good days 기대=0)")
+        # 그 뒤 남는 null(영상 미발견 등)만 cold-start로 채운다(서빙과 같은 규칙).
+        filled = apply_cold_start_defaults(kept)
         post = filled[list(MODEL_FEATURE_COLUMNS)].notna().mean().round(3).to_dict()
         print("cold-start 후 non-null 비율:", {k: post[k] for k in _watch})
         features = filled

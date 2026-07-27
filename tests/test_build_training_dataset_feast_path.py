@@ -38,6 +38,27 @@ def test_apply_cold_start_defaults_fills_nulls_serving_rule() -> None:
     assert out["clicked"].tolist() == [1, 0]
 
 
+def test_drop_user_dynamic_gap_rows() -> None:
+    # UserDynamic 피처가 **전부** null인 행만 드롭(#357 (C) 결손 가시화). 일부만 null이거나
+    # 값이 있으면 유지하고, 영상 피처 null(category_id)은 이 판정과 무관.
+    df = pd.DataFrame(
+        {
+            "recent_click_count_7d": [5, None, None],
+            "recent_view_count_7d": [3, None, None],
+            "recent_watch_time_7d": [10, None, None],
+            "recent_like_count_7d": [0, None, None],
+            "historical_category_affinity": ["Gaming", None, "Music"],
+            "total_event_count_7d": [8, None, None],
+            "category_id": ["Gaming", None, "Music"],  # 영상 null은 gap 판정과 무관
+            "clicked": [1, 1, 0],
+        }
+    )
+    out = feast_retrieval.drop_user_dynamic_gap_rows(df)
+    # row1(전 UserDynamic null) 드롭 / row0(값 있음)·row2(affinity 있음) 유지.
+    assert len(out) == 2
+    assert out["clicked"].tolist() == [1, 0]
+
+
 def _fake_env(monkeypatch, features: pd.DataFrame) -> None:
     spine = pd.DataFrame(
         [{"user_id": "u1", "video_id": "v1",
