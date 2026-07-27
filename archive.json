@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-27T07:52:50Z",
+  "generated_at": "2026-07-27T07:53:48Z",
   "reports": [
+    {
+      "number": 371,
+      "title": "feat: feast apply를 GKE Job으로 전환하고 full_scan_for_deletion 복원 (#346)",
+      "author": "hyochangsung",
+      "merged_at": "2026-07-27T07:53:35Z",
+      "summary_ko": [
+        "VPC 외부의 GHA 러너가 private Redis에 접근하지 못해 발생하던 문제를 해결하기 위해 Feast apply 실행 위치를 VPC 내부의 GKE Job으로 전환하였습니다.",
+        "online store의 full_scan_for_deletion 옵션을 true로 복원하여 삭제되거나 공유 중인 FeatureView의 고아 해시 필드 및 키 정리가 자동화되도록 구성하였습니다.",
+        "GHA 워크플로우에는 GKE Job 생성, 코드 아카이브 업로드 대기 폴링, TLS CA 사전 조달 및 4중 실패 검증 가드 로직을 반영하였습니다."
+      ],
+      "report_url": "pr/371/"
+    },
     {
       "number": 369,
       "title": "feat: DuckDB↔offline 피처 계약 diff 하네스 + 6개 지점 판정 (#357)",
