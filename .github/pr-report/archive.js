@@ -1,5 +1,20 @@
 "use strict";
 
+var CATEGORY_SOURCES = [
+  { key: "application", label: "Application" },
+  {
+    key: "airflow",
+    label: "Airflow",
+    url: "https://skyaho.github.io/Autoresearch-airflow/archive.json",
+    base: "https://skyaho.github.io/Autoresearch-airflow/",
+  },
+];
+var FETCH_TIMEOUT_MS = 6000;
+var CATEGORY_LABELS = CATEGORY_SOURCES.reduce(function (labels, source) {
+  labels[source.key] = source.label;
+  return labels;
+}, {});
+
 function matchesArchiveEntry(entry, rawQuery) {
   var query = String(rawQuery || "").trim().toLocaleLowerCase("ko-KR");
   if (!query) return true;
@@ -60,6 +75,12 @@ function createReportCard(entry) {
   var heading = document.createElement("div");
   heading.className = "card-heading";
   appendTextElement(heading, "span", "pr-number", "#" + entry.number);
+  appendTextElement(
+    heading,
+    "span",
+    "pr-category",
+    CATEGORY_LABELS[entry.category] || entry.category
+  );
   appendTextElement(heading, "h2", "pr-title", entry.title);
   article.appendChild(heading);
 
@@ -101,7 +122,8 @@ function initializeArchive() {
   var count = document.getElementById("report-count");
   var search = document.getElementById("archive-search");
   var empty = document.getElementById("empty-state");
-  if (!dataElement || !list || !count || !search || !empty) return;
+  var tabs = document.getElementById("category-tabs");
+  if (!dataElement || !list || !count || !search || !empty || !tabs) return;
 
   var payload;
   try {
@@ -112,11 +134,20 @@ function initializeArchive() {
     return;
   }
 
-  var reports = Array.isArray(payload.reports) ? payload.reports : [];
+  var reports = tagCategory(
+    Array.isArray(payload.reports) ? payload.reports : [],
+    "application"
+  );
+  var selectedCategory = "all";
+
   function render(rawQuery) {
-    var visible = reports.filter(function (entry) {
-      return matchesArchiveEntry(entry, rawQuery);
-    });
+    var visible = reports
+      .filter(function (entry) {
+        return matchesCategory(entry, selectedCategory);
+      })
+      .filter(function (entry) {
+        return matchesArchiveEntry(entry, rawQuery);
+      });
     list.replaceChildren();
     visible.forEach(function (entry) {
       list.appendChild(createReportCard(entry));
@@ -128,10 +159,59 @@ function initializeArchive() {
       : "아직 등록된 merge 리포트가 없습니다.";
   }
 
+  function loadExternalCategory(source) {
+    var controller =
+      typeof AbortController !== "undefined" ? new AbortController() : null;
+    var timeoutId = controller
+      ? setTimeout(function () {
+          controller.abort();
+        }, FETCH_TIMEOUT_MS)
+      : null;
+    fetch(source.url, controller ? { signal: controller.signal } : {})
+      .then(function (response) {
+        if (!response.ok) throw new Error("HTTP " + response.status);
+        return response.json();
+      })
+      .then(function (externalPayload) {
+        if (timeoutId) clearTimeout(timeoutId);
+        var entries = Array.isArray(externalPayload.reports)
+          ? externalPayload.reports
+          : [];
+        entries = tagCategory(entries, source.key);
+        entries = absolutizeReportUrl(entries, source.base);
+        reports = mergeAndSortReports([reports, entries]);
+        render(search.value);
+      })
+      .catch(function (error) {
+        if (timeoutId) clearTimeout(timeoutId);
+        console.warn(
+          "[archive] failed to load category '" + source.key + "':",
+          error
+        );
+      });
+  }
+
   search.addEventListener("input", function () {
     render(search.value);
   });
+
+  var tabButtons = tabs.querySelectorAll("[data-category]");
+  tabButtons.forEach(function (button) {
+    button.addEventListener("click", function () {
+      selectedCategory = button.getAttribute("data-category");
+      tabButtons.forEach(function (other) {
+        var isSelected = other === button;
+        other.setAttribute("aria-selected", String(isSelected));
+        other.classList.toggle("is-selected", isSelected);
+      });
+      render(search.value);
+    });
+  });
+
   render("");
+  CATEGORY_SOURCES.filter(function (source) {
+    return !!source.url;
+  }).forEach(loadExternalCategory);
 }
 
 if (typeof module !== "undefined" && module.exports) {
