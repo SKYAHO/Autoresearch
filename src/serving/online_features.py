@@ -15,8 +15,8 @@ from src.features.feature_builder import (
     compute_preferred_category_match,
 )
 from src.features.model_contract import (
+    COLD_START_CATEGORICAL_DEFAULT,
     FeatureContractError,
-    MODEL_FEATURE_COLUMNS,
     require_model_feature_columns,
 )
 from src.serving.schemas import CandidateVideo, FeatureValue
@@ -126,13 +126,17 @@ class ServingFeatureBuilder:
 
         categories_by_video = {
             video_id: _string_or_default(
-                first_rows[(user_id, video_id)]["category_id"], default="unknown"
+                first_rows[(user_id, video_id)]["category_id"], default=COLD_START_CATEGORICAL_DEFAULT
             )
             for video_id in video_ids
         }
         category_ids = tuple(dict.fromkeys(categories_by_video.values()))
+        # similarity 조인 키는 category_key다(#358). category 엔티티 조인키를
+        # category_id로 두면 VideoFeatureView의 category_id 피처와 겹쳐 offline SQL이
+        # 죽으므로 category_key로 구분했고, online 2단계 조회 키도 그에 맞춘다. 값 자체는
+        # 그대로 category 문자열이고, 1단계(비디오)의 category_id 피처는 안 바뀐다.
         second_entities = tuple(
-            {"user_id": user_id, "category_id": category_id}
+            {"user_id": user_id, "category_key": category_id}
             for category_id in category_ids
         )
         similarity_rows = _keyed_rows(
@@ -141,7 +145,7 @@ class ServingFeatureBuilder:
                 entity_rows=second_entities,
             ),
             expected_keys=tuple((user_id, category_id) for category_id in category_ids),
-            key_names=("user_id", "category_id"),
+            key_names=("user_id", "category_key"),
             required_columns=("topic_similarity",),
         )
 
@@ -218,12 +222,12 @@ def _candidate_from_row(
 ) -> CandidateVideo:
     preferred_category = _preferred_category_or_default(row["preferred_category"])
     historical_category_affinity = _string_or_default(
-        row["historical_category_affinity"], default="unknown"
+        row["historical_category_affinity"], default=COLD_START_CATEGORICAL_DEFAULT
     )
     features: dict[str, FeatureValue] = {
-        "age_group": _string_or_default(row["age_group"], default="unknown"),
-        "occupation": _string_or_default(row["occupation"], default="unknown"),
-        "watch_time_band": _string_or_default(row["watch_time_band"], default="unknown"),
+        "age_group": _string_or_default(row["age_group"], default=COLD_START_CATEGORICAL_DEFAULT),
+        "occupation": _string_or_default(row["occupation"], default=COLD_START_CATEGORICAL_DEFAULT),
+        "watch_time_band": _string_or_default(row["watch_time_band"], default=COLD_START_CATEGORICAL_DEFAULT),
         "recent_click_count_7d": _integer_or_default(row["recent_click_count_7d"]),
         "recent_view_count_7d": _integer_or_default(row["recent_view_count_7d"]),
         "recent_watch_time_7d": _integer_or_default(row["recent_watch_time_7d"]),

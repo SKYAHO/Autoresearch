@@ -41,6 +41,11 @@ CATEGORICAL_FEATURE_COLUMNS: Final[tuple[str, ...]] = (
     "category_id",
 )
 
+# 카테고리형 피처의 cold-start 기본값(값 없음 → 'unknown'). 학습(feast_retrieval)과
+# 서빙(online_features)이 이 단일 소스를 공유해 두 경로의 cold-start가 어긋나지 않게
+# 한다(#358). 계약 계층이 소유하고 두 계층이 import한다(레이어 방향 정렬).
+COLD_START_CATEGORICAL_DEFAULT: Final[str] = "unknown"
+
 
 @dataclass(frozen=True, slots=True)
 class FeatureContractError(Exception):

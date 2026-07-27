@@ -44,6 +44,12 @@ def build_features(
         help="topic_similarity 소스: inmemory(Vertex AI 즉석 계산) 또는 "
         "bigquery(feast_offline_store.user_category_similarity 사전 계산값 조회, #214/#244)",
     ),
+    assembly_source: str = typer.Option(
+        "duckdb",
+        help="피처 조립 소스: duckdb(raw 재계산, 기본) 또는 "
+        "feast(offline store를 get_historical_features PIT로 조회, #358). "
+        "feast는 events-source bigquery + 기간 인자 필요.",
+    ),
 ) -> None:
     """training_dataset.csv 생성."""
     build_training_dataset.main(
@@ -56,6 +62,7 @@ def build_features(
         events_start_date=events_start_date,
         events_end_date=events_end_date,
         topic_similarity_source=topic_similarity_source,
+        assembly_source=assembly_source,
     )
 
 
@@ -128,6 +135,11 @@ def run_pipeline(
         help="topic_similarity 소스: inmemory(Vertex AI 즉석 계산) 또는 "
         "bigquery(feast_offline_store.user_category_similarity 사전 계산값 조회, #214/#244)",
     ),
+    assembly_source: str = typer.Option(
+        "duckdb",
+        help="피처 조립 소스: duckdb(raw 재계산, 기본) 또는 "
+        "feast(offline store PIT 조회, #358). feast는 events-source bigquery + 기간 필요.",
+    ),
     config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
     model_output: Optional[str] = typer.Option(None, help="모델 저장 경로 (config override)"),
     test_set_output: Optional[str] = typer.Option(
@@ -155,6 +167,7 @@ def run_pipeline(
         events_start_date=events_start_date,
         events_end_date=events_end_date,
         topic_similarity_source=topic_similarity_source,
+        assembly_source=assembly_source,
     )
 
     # 어떤 소스·기간의 데이터로 학습했는지 MLflow run에 항상 남긴다 — 기본값을
@@ -163,6 +176,7 @@ def run_pipeline(
         "videos_source": videos_source,
         "events_source": events_source,
         "topic_similarity_source": topic_similarity_source,
+        "assembly_source": assembly_source,
     }
     if events_source == "bigquery":
         data_source_params["events_start_date"] = events_start_date

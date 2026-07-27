@@ -71,6 +71,7 @@ def test_run_pipeline_logs_data_source_lineage_as_train_extra_params(monkeypatch
         events_start_date="2026-07-01",
         events_end_date="2026-07-08",
         topic_similarity_source="bigquery",
+        assembly_source="duckdb",
         config_path=None,
         model_output=None,
         test_set_output=None,
@@ -85,6 +86,7 @@ def test_run_pipeline_logs_data_source_lineage_as_train_extra_params(monkeypatch
         "videos_source": "bigquery",
         "events_source": "bigquery",
         "topic_similarity_source": "bigquery",
+        "assembly_source": "duckdb",
         "events_start_date": "2026-07-01",
         "events_end_date": "2026-07-08",
     }
@@ -107,6 +109,7 @@ def test_run_pipeline_omits_event_dates_from_extra_params_for_csv_source(monkeyp
         events_start_date=None,
         events_end_date=None,
         topic_similarity_source="inmemory",
+        assembly_source="duckdb",
         config_path=None,
         model_output=None,
         test_set_output=None,
@@ -121,6 +124,7 @@ def test_run_pipeline_omits_event_dates_from_extra_params_for_csv_source(monkeyp
         "videos_source": "csv",
         "events_source": "csv",
         "topic_similarity_source": "inmemory",
+        "assembly_source": "duckdb",
     }
 
 

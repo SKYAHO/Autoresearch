@@ -9,9 +9,10 @@ FeatureView 스키마에서 동작함을 검증한다.
 정의가 손으로 어긋나면 스모크가 실물과 다른 걸 검증하게 되므로, 컬럼은 단일
 소스(``feature_definitions.py``)에서 가져온다.
 
-이 테스트는 동시에 **ttl 부재 → 결손일 stale fallback**을 시연한다: 07-02 스냅샷이
-결손인 상태로 07-02 시점을 조회하면, ttl이 없으므로 null이 아니라 **더 오래된
-07-01 스냅샷**이 조용히 붙는다.
+이 테스트는 동시에 **ttl=60h 동작**을 시연한다(#357 (C) 확정): 07-02 스냅샷이
+결손이어도 07-02 조회는 60h 안이라 07-01 스냅샷을 stale로 서빙하고(1일 결손 허용),
+최신 스냅샷이 60h를 넘어가면 **File store는 그 행을 드롭**한다. 이는 BigQuery(행 보존 +
+NULL, 작업6 실측)와 반대이며, 테스트가 (행 수, 값)으로 어느 쪽인지 명시 기록한다(#376 리뷰).
 """
 
 import os
@@ -62,14 +63,14 @@ def _build_store() -> FeatureStore:
     ).to_parquet(data_path, index=False)
 
     source = FileSource(path=data_path, timestamp_field="event_timestamp")
-    # 프로덕션 스키마를 그대로 재사용(이름·타입 단일 소스). ttl=None도 프로덕션과 동일.
+    # 프로덕션 스키마·ttl을 그대로 재사용(단일 소스). ttl=60h가 실물과 동일하게 검증된다.
     smoke_view = FeatureView(
         name="UserDynamicSmoke",
         entities=[user_entity],
         schema=[Field(name=f.name, dtype=f.dtype) for f in user_dynamic_view.schema],
         source=source,
         online=False,
-        ttl=None,
+        ttl=user_dynamic_view.ttl,
     )
     store = FeatureStore(
         config=RepoConfig(
@@ -84,26 +85,40 @@ def _build_store() -> FeatureStore:
     return store
 
 
-def _click_at(store: FeatureStore, ts: str) -> int:
+def _click_row(store: FeatureStore, ts: str) -> tuple[int, int | None]:
+    """(반환 행 수, recent_click_count_7d 값 or None)을 준다.
+
+    **행 드롭과 NULL 반환을 뭉개지 않는다**(#376 리뷰) — ttl 밖 처리는 offline store마다
+    다르고(File 드롭 vs BigQuery NULL 보존), retrieve_training_features의 결손 처리 설계가
+    바로 그 차이에 의존하므로, 어느 쪽인지 테스트가 기록해야 한다.
+    """
     out = store.get_historical_features(
         entity_df=pd.DataFrame([{"user_id": "u1", "event_timestamp": pd.Timestamp(ts, tz=_UTC)}]),
         features=["UserDynamicSmoke:recent_click_count_7d"],
     ).to_df()
-    return int(out["recent_click_count_7d"].iloc[0])
+    if out.empty:
+        return (0, None)
+    val = out["recent_click_count_7d"].iloc[0]
+    return (len(out), None if pd.isna(val) else int(val))
 
 
 def test_get_historical_features_selects_as_of_snapshot(tmp_path, monkeypatch) -> None:
     # 07-01 스냅샷 이후·07-03 이전 시점 → 이전 스냅샷(07-01)을 고르고 미래(07-03)는 안 붙는다.
     monkeypatch.chdir(tmp_path)
     store = _build_store()
-    assert _click_at(store, "2026-07-02 12:00") == 11
+    assert _click_row(store, "2026-07-02 12:00") == (1, 11)
     # 07-03 스냅샷 이후 시점 → 07-03을 고른다(PIT가 최신 as-of를 선택).
-    assert _click_at(store, "2026-07-04 12:00") == 33
+    assert _click_row(store, "2026-07-04 12:00") == (1, 33)
 
 
-def test_missing_day_falls_back_to_stale_snapshot_without_ttl(tmp_path, monkeypatch) -> None:
-    # ttl 부재 실증: 07-02 스냅샷이 결손인데 07-02를 조회하면 null이 아니라 더
-    # 오래된 07-01 스냅샷(stale)이 붙는다. #357에서 ttl 도입으로 막을 대상.
+def test_ttl_serves_stale_within_60h_but_drops_beyond(tmp_path, monkeypatch) -> None:
+    # #357 (C) ttl=60h 동작 + File store의 ttl-밖 처리 방식을 명시적으로 기록한다.
     monkeypatch.chdir(tmp_path)
     store = _build_store()
-    assert _click_at(store, "2026-07-02 23:59") == 11
+    # 1일 결손(07-02 스냅샷 없음)이어도 07-02 23:59는 07-01 스냅샷 나이 ~48h < 60h → stale 서빙(1행, 값 11).
+    assert _click_row(store, "2026-07-02 23:59") == (1, 11)
+    # 60h 초과(07-03 뒤 84h): **File store는 행을 드롭(0행)**한다 — NaN 행이 아님.
+    # 이는 BigQuery(행 보존 + NULL, 작업6 실측 손실 0)와 반대다. retrieve_training_features는
+    # 양쪽을 다룬다: File 드롭 → 손실 경고 / BigQuery NULL → cold-start·gap 드롭.
+    # feast 버전 업으로 File store가 NULL 보존으로 바뀌면 이 단정이 (1, None)으로 깨져 드러난다.
+    assert _click_row(store, "2026-07-06 12:00") == (0, None)

@@ -1,6 +1,6 @@
 # 피처 계약 정렬 — DuckDB ↔ offline store 값 diff 판정 (#357)
 
-> 작성: 2026-07-27 | 상태: Task 1 실측 완료 · (A)(B) 확정 · **(C) ttl 확인 대기(효창/bbungjun)** |
+> 작성: 2026-07-27 | 상태: Task 1 실측 완료 · **(A)(B)(C) 확정** (ttl: 일 스냅샷 60h / 정적·video None) |
 > 관련: [EPIC] #299(학습 데이터셋 Feast PIT 전환), #356(Phase 0 spine 빌드),
 > #358(FeatureService 조회 전환), #359(DuckDB 제거), #365(폐루프 수집 구멍)
 
@@ -137,23 +137,47 @@ vs 영상 category) 비교로 나오는 파생값(현재 `compute_interaction_co
   유일한 방법. Feast `get_historical_features` 단일 호출로 될지 2단계로 나눌지의 **구현
   형태만** #358에서 실측(결정 자체는 staged로 고정).
 
-### (C) ttl 정책 — 제안(pending, 효창/bbungjun 확인 필요)
+### (C) ttl 정책 — 확정 (2026-07-27): 일 스냅샷 60h / 정적·video None
 
 전 FeatureView `ttl` 부재 → 결손일 stale fallback(#356 실증, **원 지적: bbungjun**).
-**학습뿐 아니라 online 서빙 조회에도 직접 영향**(결손 시 null vs stale)한다.
+학습뿐 아니라 online 서빙 조회에도 직접 영향(결손 시 null vs stale)한다.
 
-- 옵션: (1) ttl 부여로 결손일을 `null`화 vs (2) 백필로만 메움.
-- **제안: ttl 부여(결손 시 stale 대신 명시적 null) + 백필 병행** — stale이 조용히 학습에
-  새는 것보다 null로 드러나는 게 안전. #365 폐루프 구멍이 현실이라 결손은 계속 생긴다.
-- **이 세션에서 확정하지 않는다.** 서빙 영향 정책이라 도메인 공동소유자(효창) + 원
-  위험 제기자(bbungjun) 확인 후 확정한다. #357 이슈 코멘트로 논의 요청 → 결론을 이
-  문서에 반영하고 그때 #357 close, #358 착수.
+- **일 스냅샷 뷰 = `ttl=60h`** (UserDynamicView)
+  - 당일 임프레션(≤24h) + 1일 결손(≤48h)까지 stale 허용, 2일+ 결손은 null
+  - #365 결손이 잦아 1일마다 null 내면 학습이 과도하게 비므로, "무제한 stale"이 아니라
+    **stale 상한 60h로 묶는** 절충
+- **정적/준정적 뷰 = `ttl=None`** (UserStaticView, UserCategorySimilarityView)
+  - 갱신 주기가 불규칙(persona 변경·임베딩 재계산 시만)이라 배치 주기 기반 ttl이 성립 안 함
+  - 60h를 걸면 정상 상태인데도 매일 null(가짜 경보)이 됨
+- **VideoFeatureView = `ttl=None`** (모델링 결정, 별도)
+  - 일 스냅샷이지만, 트렌딩 이탈은 "피처 없음"이 아니라 **"인기 식음"이라는 신호**일 수 있어
+    마지막 스냅샷을 유지한다
+  - 트레이드오프: view_count 등이 마지막 트렌딩 시점 값으로 고정됨(days_since_upload도 그
+    시점 값에서 안 자람). 그래도 null보다 마지막 known 상태가 유용하다고 판단 — 모델링
+    재검토 여지는 열어둠
+
+**제안 대비 변경(silent rewrite 아님)**: 초안은 "결손 시 null화"였으나, #365 결손 빈도를
+고려해 "1일 결손은 stale 허용(60h 상한), 2일+는 null"로 완화. null-on-any-gap이 아니라
+bounded-stale이다.
+
+**남은 의존(서빙 도메인)**: 2일+ 결손 시 online 조회가 실제 null을 반환하므로, 서빙이 null
+피처를 처리하는지는 @hyochangsung(Feature Store 공동소유) 별도 확인 — #357 코멘트로 요청됨.
+
+**학습 단계까지 관철(#358)**: (C)의 "결손을 null로 드러낸다"를 학습 파이프라인에서도 지킨다 —
+feast 조회 결과에서 **UserDynamic 피처가 전부 null인 행(ttl 초과/결손)은 채우지 않고 드롭**한다
+(`feast_retrieval.drop_user_dynamic_gap_rows`). 영상 미발견 cold-start(0/unknown 채움)와 구분:
+후자는 "정보가 원래 없음"이지만 전자는 **활동 유저**(라벨 clicked이 그 유저 것)의 기록 유실이라,
+0으로 채우면 "신규 유저" 거짓을 학습에 주입(=stale이 몰래 섞이던 것과 같은 피해). 드롭 건수는
+학습 로그에 별도로 남겨 #365 gap을 감지한다.
 
 ## 남은 작업
 
-- **Task 5 (ROC-AUC 영향 정량화)**: 신/구 데이터셋으로 각각 학습해 Val/Test ROC-AUC 차
-  측정. n=11 표본 한계 병기. (미착수 — 별도 세션)
-- 설계 결정 3종 확정 → #358 착수.
+- 설계 결정 3종 확정 → #358 착수·완료(feast 경로 실환경 검증 완료, PR 아래).
+- **Task 5 (ROC-AUC 영향 정량화) — 후속으로 미룸**: feast/duckdb 데이터셋 학습 비교.
+  n=11 **참고용**이라 착수 여부가 결론(offline 정본 채택)에 영향 없고, duckdb 실데이터
+  셋업(videos·personas 실경로)이 번거로워 비용 대비 얻는 게 적음. feast 경로 정확성은
+  #358에서 실환경 검증됨(21피처·cold-start·ttl·이름충돌 전부 실측 통과). 필요 시 별도
+  세션에서 참고 수치로 뽑는다.
 
 ## 비범위
 
