@@ -350,7 +350,9 @@ Shard 단계는 로컬 quarantine 비율만으로 성공 draft를 폐기하지 �
 0.7을 그대로 쓰면 동일 목표 CTR(2%) 기준 실제 CTR이 0.79%로 급락했다(100유저
 실측, v12 기준 추천 커트라인은 0.4~0.5대). 운영 반영값은
 `Autoresearch-airflow`의 `AIRFLOW_VAR_ACTION_LOG_CLICK_THRESHOLD` Airflow
-Variable이며, 그 값 옆 주석에 마지막 재캘리브레이션 근거를 남긴다.
+Variable이며, 그 값 옆 주석에 마지막 재캘리브레이션 근거를 남긴다. (아래
+2단계 예시의 `--target-ctr 0.015`는 이 실측과 무관한 별도 예시 실행값이며,
+실제 목표 CTR은 운영 정책에 따라 정한다.)
 
 1. **draft parquet 확보** — 기본(champion) 모델로 폐루프(`exposure_source=model`,
    single/shard 기본값)를 1회 실행한다. `--mode shard`의 출력은 최종
