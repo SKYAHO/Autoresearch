@@ -34,6 +34,12 @@
   uv run python scripts/diff_feature_contract.py --days 2026-07-07,2026-07-12
   uv run python scripts/diff_feature_contract.py --dump-dir .tmp/diff --include-video
 
+**무엇을 재는가**: "실제 학습 데이터셋 값 vs offline 값"이 아니라 **"DuckDB 정의 vs
+offline 정의"**다. 하네스는 DuckDB 경로에 30일 창을 다 덮는 룩백(31일)을 줘서 정의 자체만
+비교한다. 프로덕션 build_training_dataset은 좌측 패딩이 7일(_LOOKBACK_PAD_DAYS)이라 30일
+affinity 창이 절단되므로, 실제 학습–서빙 skew는 여기 수치보다 **클 수 있다**(여기 값은
+정의 차이의 하한). 그 절단은 별개 이슈다.
+
 주의(결과 해석): 정상 데이터는 11일뿐이다(#365 폐루프 구멍). 이 diff는 **n=11일,
 참고용**이며 결론 확정용이 아니다. 결손일을 섞으면 stale 값이 diff를 거짓 "일치"로
 보이게 하므로 기본 대상일은 결손 없는 11일로 고정한다.
@@ -177,11 +183,28 @@ def compute_duck_user_dynamic(
     return duck
 
 
+def _match_mask(duck: pd.Series, off: pd.Series, *, numeric: bool) -> pd.Series:
+    """일치 판정을 한 곳에서 정의한다 — 통계표와 덤프가 같은 기준을 쓰도록.
+
+    양쪽 다 결측(NaN/NA)이면 **일치**로 본다(둘 다 값 없음 = 같음). 문자열은
+    ``astype("string")``이 NaN을 ``pd.NA``로 바꿔 비교 결과가 nullable boolean이
+    되는데, ``pd.NA``가 섞인 마스크로 인덱싱하면 pandas가 ValueError를 낸다.
+    ``fillna``로 결측을 센티넬로 채워 순수 bool 마스크를 돌려준다.
+    """
+    if numeric:
+        d = pd.to_numeric(duck, errors="coerce")
+        o = pd.to_numeric(off, errors="coerce")
+        return (d == o) | (d.isna() & o.isna())
+    d = duck.astype("string").fillna("\x00NA")
+    o = off.astype("string").fillna("\x00NA")
+    return (d == o).fillna(False).astype(bool)
+
+
 def _numeric_stats(merged: pd.DataFrame, col: str) -> dict[str, object]:
     duck = pd.to_numeric(merged[f"{col}__duck"], errors="coerce")
     off = pd.to_numeric(merged[f"{col}__off"], errors="coerce")
     diff = duck - off
-    match = (duck == off) | (duck.isna() & off.isna())
+    match = _match_mask(merged[f"{col}__duck"], merged[f"{col}__off"], numeric=True)
     n = len(merged)
     return {
         "column": col,
@@ -196,9 +219,9 @@ def _numeric_stats(merged: pd.DataFrame, col: str) -> dict[str, object]:
 
 
 def _string_stats(merged: pd.DataFrame, col: str) -> dict[str, object]:
-    duck = merged[f"{col}__duck"].astype("string")
-    off = merged[f"{col}__off"].astype("string")
-    match = duck == off
+    duck = merged[f"{col}__duck"].astype("string").fillna("\x00NA")
+    off = merged[f"{col}__off"].astype("string").fillna("\x00NA")
+    match = _match_mask(merged[f"{col}__duck"], merged[f"{col}__off"], numeric=False)
     n = len(merged)
     mism = merged[~match]
     top_pairs = (
@@ -254,16 +277,24 @@ def compare_user_dynamic(
     return stats, coverage, merged
 
 
-def compare_video(duck_video: pd.DataFrame, offline_video: pd.DataFrame) -> list[dict[str, object]]:
+def compare_video(
+    duck_video: pd.DataFrame, offline_video: pd.DataFrame, window_end: date | None = None
+) -> list[dict[str, object]]:
     """video_feature를 video_id로 대조한다(2차·근사).
 
-    정렬 근사: DuckDB는 video_trending_date, offline은 collected_at 기준 최신을 고르므로
-    (지점 6의 스냅샷 선택 차이) latest-per-video로 축약해 붙인다 — 값 diff와 선택 diff가
-    함께 잡힌다. days_since_upload는 DuckDB가 run-date(snapshot_date), offline이
-    collected_at 기준이라 정의가 달라 equality에서 제외하고 분포만 참고 출력한다.
+    **구조적 비대칭 주의**: 두 축의 "최신"이 서로 다른 기준이다 — DuckDB는
+    video_trending_date, offline은 window 내 collected_at. window_end를 주면 duck
+    쪽을 그 날짜 이하 스냅샷으로 잘라 "같은 window 내 최신끼리" 비교해 근사 노이즈를
+    줄인다(주지 않으면 duck이 대상 기간 이후 미래 스냅샷까지 집어 view_count처럼
+    단조 증가하는 컬럼이 항상 더 큼). 그래도 trending_date vs collected_at 기준 차이는
+    남으므로 값 diff와 스냅샷 선택 diff가 섞여 잡힌다 — 2차·근사인 이유다.
+    days_since_upload는 DuckDB가 run-date(snapshot_date), offline이 collected_at
+    기준이라 정의가 달라 equality에서 제외하고 분포만 참고 출력한다.
     """
     d = duck_video.copy()
     if "video_trending_date" in d.columns:
+        if window_end is not None:
+            d = d[pd.to_datetime(d["video_trending_date"]).dt.date <= window_end]
         d = d.sort_values("video_trending_date").drop_duplicates("video_id", keep="last")
     o = offline_video.sort_values("event_timestamp").drop_duplicates("video_id", keep="last")
     merged = d.merge(o, on="video_id", how="inner", suffixes=("__duck", "__off"))
@@ -349,9 +380,14 @@ def main(argv: list[str] | None = None) -> int:
     client = bigquery.Client(project=args.project)
 
     # 1) raw 로드: 대상일 최소 ~ 최대 + 룩백/크로스미드나잇 여유. 한 번만 읽고 아래서 슬라이스.
+    # 왼쪽은 프로덕션 패딩(_LOOKBACK_PAD_DAYS=7)이 아니라 **의도적으로 30일 창을 다 덮는
+    # 31일**을 준다: 이 하네스는 "실제 학습셋 값"이 아니라 "DuckDB 정의 vs offline 정의"를
+    # 재는 것이라, 양쪽에 동일한 full history를 주고 정의 자체만 비교한다(프로덕션의 7일
+    # 좌측 절단은 별개 이슈). 오른쪽은 btd.padded_dt_range의 세션 패딩을 재사용해
+    # LABEL/FOLLOWUP_WINDOW env가 바뀌어도 크로스미드나잇 여유가 drift하지 않게 한다.
     day_dates = sorted(date.fromisoformat(d) for d in days)
     lo = (day_dates[0] - timedelta(days=_LOOKBACK_DAYS)).isoformat()
-    hi = (day_dates[-1] + timedelta(days=1)).isoformat()  # 크로스미드나잇 click 귀속용
+    _, hi = btd.padded_dt_range(day_dates[-1].isoformat(), day_dates[-1].isoformat())
     long_events = btd.load_events_from_bigquery(lo, hi)
     if getattr(long_events["event_timestamp"].dtype, "tz", None) is not None:
         long_events["event_timestamp"] = (
@@ -385,14 +421,14 @@ def main(argv: list[str] | None = None) -> int:
     }
 
     if args.dump_dir:
+        # 통계표와 동일한 일치 판정(_match_mask)을 써야 덤프 행 수와 통계 불일치
+        # 기준이 어긋나지 않는다(양쪽 다 NaN은 일치로 봄).
         mask = pd.Series(False, index=merged.index)
         for c in _USER_NUMERIC_COLS:
-            mask |= pd.to_numeric(merged[f"{c}__duck"], errors="coerce") != pd.to_numeric(
-                merged[f"{c}__off"], errors="coerce"
-            )
-        mask |= merged[f"{_USER_STRING_COL}__duck"].astype("string") != merged[
-            f"{_USER_STRING_COL}__off"
-        ].astype("string")
+            mask |= ~_match_mask(merged[f"{c}__duck"], merged[f"{c}__off"], numeric=True)
+        mask |= ~_match_mask(
+            merged[f"{_USER_STRING_COL}__duck"], merged[f"{_USER_STRING_COL}__off"], numeric=False
+        )
         _dump(args.dump_dir, "user_dynamic_mismatch.csv", merged[mask])
 
     if args.include_video:
@@ -410,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
              for d in days],
             ignore_index=True,
         )
-        video_stats = compare_video(duck_video, offline_video)
+        video_stats = compare_video(duck_video, offline_video, window_end=day_dates[-1])
         _print_video_report(video_stats)
         payload["video"] = {"stats": video_stats}
 

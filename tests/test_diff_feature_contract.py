@@ -12,11 +12,76 @@ from datetime import date
 import pandas as pd
 
 from scripts.diff_feature_contract import (
+    _kst_date,
     _numeric_stats,
     _string_stats,
     _variance_within_day,
+    compare_user_dynamic,
     compare_video,
 )
+
+
+def test_kst_date_utc_midnight_boundary() -> None:
+    # spec의 핵심 주장("KST 하루가 UTC 두 날짜로 쪼개진다")이 서 있는 경계.
+    # UTC 15:00 = KST 다음날 00:00. 이 순간부터 KST 날짜가 넘어간다.
+    ts = pd.Series(
+        pd.to_datetime(["2026-07-06T15:00:00", "2026-07-06T14:59:59", "2026-07-06T05:30:00"])
+    )
+    got = list(_kst_date(ts))
+    assert got == [date(2026, 7, 7), date(2026, 7, 6), date(2026, 7, 6)]
+
+
+def _duck_row(user, kst, click, view, watch, like, total, aff):
+    return {
+        "user_id": user, "kst_date": kst,
+        "recent_click_count_7d": click, "recent_view_count_7d": view,
+        "recent_watch_time_7d": watch, "recent_like_count_7d": like,
+        "total_event_count_7d": total, "historical_category_affinity": aff,
+    }
+
+
+def test_compare_user_dynamic_join_and_coverage() -> None:
+    D = date(2026, 7, 7)
+    # u1: 같은 (user, KST일)에 임프레션 2개 → offline 1행에 다대일 broadcast.
+    duck = pd.DataFrame([
+        _duck_row("u1", D, 3, 3, 100, 0, 6, "Music"),
+        _duck_row("u1", D, 3, 3, 100, 0, 6, "Music"),
+        _duck_row("u2", D, 1, 1, 10, 0, 2, "Gaming"),
+    ])
+    # offline: u1은 total이 다름(6 vs 7), u3는 무활동이라 임프레션 없이 스냅샷만 존재.
+    offline = pd.DataFrame([
+        _duck_row("u1", D, 3, 3, 100, 0, 7, "Music"),
+        _duck_row("u2", D, 1, 1, 10, 0, 2, "Gaming"),
+        _duck_row("u3", D, 0, 0, 0, 0, 0, "unknown"),
+    ])
+    stats, coverage, merged = compare_user_dynamic(duck, offline)
+
+    # 다대일 broadcast: 임프레션 3개 전부 offline과 매칭.
+    assert coverage["compared_impressions"] == 3
+    # 지점 4: offline-only(u3) 1 user-day, duck-only 0.
+    assert coverage["offline_only_user_days"] == 1
+    assert coverage["duck_only_user_days"] == 0
+    # total_event만 u1 두 행 불일치 → 2/3.
+    total_stat = next(s for s in stats if s["column"] == "total_event_count_7d")
+    assert total_stat["n_mismatch"] == 2
+    click_stat = next(s for s in stats if s["column"] == "recent_click_count_7d")
+    assert click_stat["n_mismatch"] == 0
+
+
+def test_string_stats_survives_one_sided_nan() -> None:
+    # compare_video의 category_id는 duck 쪽 COALESCE가 없어 NaN이 올 수 있다.
+    # astype("string")이 NaN→pd.NA로 바꾸는데, 그대로 마스크 인덱싱하면 크래시났다(#369 리뷰).
+    merged = pd.DataFrame(
+        {
+            "category_id__duck": ["Music", None, None],
+            "category_id__off": ["Music", "Gaming", None],  # 3행: 양쪽 다 NA
+        }
+    )
+    s = _string_stats(merged, "category_id")
+    assert s["n"] == 3
+    # 1행 일치(Music) · 2행 불일치(NA vs Gaming) · 3행 일치(양쪽 NA는 일치).
+    assert s["n_mismatch"] == 1
+    assert s["n_match"] == 2
 
 
 def test_numeric_stats_counts_mismatch_and_diff() -> None:
