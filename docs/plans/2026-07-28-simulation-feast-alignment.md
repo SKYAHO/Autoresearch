@@ -126,9 +126,17 @@
   `feature_service=ctr_training_v1`·`feast_registry_path`(env)를 추가. extra_params가
   없는 standalone train은 행 수만 남긴다. params 기록(기존)은 유지 — dataset lineage와
   병존. 테스트: run inputs에 `training_dataset` + context/provenance/행수 태그 확인.
-- [ ] A5. 테스트: 시뮬/일일추천이 fake store로 offline PIT 경로를 타는지,
-  서빙 후처리가 **drop 없이 cold-start만** 적용하는지(회귀 가드). feast 계열은
-  격리 그룹(`uv run --only-group feast`), 나머지는 fake store 주입으로 dev에서 통과.
+- [x] A5. 테스트.
+  - dev(fake store 주입): `build_pool_feature_frame_feast` 로직(A1)·시뮬 feast 라우팅(A2)·
+    서빙 후처리 **drop 없이 cold-start만** 회귀 가드. `uv run` dev에서 통과.
+  - feast 격리 그룹(로컬 File store): `test_feast_retrieval_integration_feast.py`에
+    `build_pool_feature_frame_feast` end-to-end 추가 — 실물 Feast API로 staged 조회가
+    물리적으로 맞물려 도는지(fake-store 간극) + 반환 계약. CI `pytest (feast group)`가
+    파일 전체를 돌려 자동 포함.
+  - **실측 발견**: File store는 **미발견 엔티티가 섞인 다중 뷰 PIT 조회에서 행을 드롭**한다
+    (spine 2행 중 1행 손실 실측). 즉 "미발견 후보 no-drop + cold-start"(§설계결정 3)는
+    **BigQuery 전용** 계약 — File 테스트로 검증 불가, Phase B(BQ)로 이관. drop 없이
+    cold-start만 적용하는 로직 자체는 fake-store 유닛이 가드.
 
 ### Phase B — 1.77M feast 메모리·정확성 실측 (대장님 BQ)
 
@@ -137,6 +145,10 @@
   21피처 non-null 비율.
 - [ ] B2. 학습-구(duckdb) vs 학습-신(feast) 데이터셋 diff + ROC-AUC 영향
   (n=11일, "참고용" caveat). `diff_feature_contract.py` 활용.
+- [ ] B2-1. **서빙 pool no-drop + cold-start를 BigQuery로 검증**(A5에서 이관).
+  File store는 미발견 엔티티 행을 드롭하지만 BigQuery는 행 보존+NULL이어야 한다 —
+  `build_pool_feature_frame_feast`에 미발견 영상/콜드 유저를 섞어 BQ에서 전 후보가
+  cold-start로 보존되는지 실측(설계결정 3의 서빙 계약이 프로덕션 store에서 성립하는지).
 - [ ] B3. `experiments/2026-07-28_feast-1p77m-memory/notes.md`에 Before/After
   기록. **통과 기준 미충족 시 Phase C 착수 금지.**
 

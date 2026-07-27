@@ -42,7 +42,10 @@ from feature_repo.feature_definitions import (
     video_entity,
     video_feature_view,
 )
-from src.features.feast_retrieval import retrieve_training_features
+from src.features.feast_retrieval import (
+    build_pool_feature_frame_feast,
+    retrieve_training_features,
+)
 from src.features.model_contract import MODEL_FEATURE_COLUMNS
 
 _UTC = "UTC"
@@ -171,3 +174,32 @@ def test_staged_retrieval_attaches_all_21_features(tmp_path, monkeypatch) -> Non
     assert row["category_id"] == "Gaming"
     assert int(row["recent_click_count_7d"]) == 5
     assert int(row["clicked"]) == 1
+
+
+def test_build_pool_feature_frame_feast_end_to_end(tmp_path, monkeypatch) -> None:
+    """서빙 pool 조립(build_pool_feature_frame_feast)이 실물 Feast API로 staged 조회를
+    물리적으로 맞물려 돌리는지 검증(#359 A5) — fake-store 유닛이 못 잡는 간극.
+
+    반환 계약(video_id + 21피처)과 값(staged category 조회·ODFV 파생)을 present 후보로 본다.
+
+    NOTE: "미발견 영상 no-drop + cold-start"(설계결정 3)는 **BigQuery 전용** 계약이다 —
+    File store는 미발견 엔티티가 섞인 다중 뷰 PIT 조회에서 행을 드롭한다(실측,
+    retrieve_training_features NOTE와 동일). 그래서 여기선 present 후보만 넣어 배관을
+    검증하고, 결손 행 보존+cold-start는 Phase B의 BigQuery 실측에서 확인한다. drop 없이
+    cold-start만 적용하는 **로직**은 test_build_pool_feature_frame_feast.py의 fake-store
+    유닛이 가드한다.
+    """
+    monkeypatch.chdir(tmp_path)
+    store = _build_store()
+    out = build_pool_feature_frame_feast(store, "u1", ["v1"], "2026-07-02 00:00:00")
+
+    # 반환 계약: video_id + 21피처, present 후보 1행.
+    assert list(out.columns) == ["video_id", *MODEL_FEATURE_COLUMNS]
+    assert out["video_id"].tolist() == ["v1"]
+    row = out.iloc[0]
+    # staged 조회(category=Gaming)·소스 값·ODFV 파생이 실물 API로 붙는다.
+    assert row["category_id"] == "Gaming"
+    assert int(row["recent_click_count_7d"]) == 5
+    assert row["topic_similarity"] == pytest.approx(0.9)
+    assert int(row["preferred_category_match"]) == 1
+    assert int(row["historical_category_match"]) == 1
