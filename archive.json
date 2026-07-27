@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-27T13:42:42Z",
+  "generated_at": "2026-07-27T15:26:57Z",
   "reports": [
+    {
+      "number": 376,
+      "title": "feat: FeatureService + 학습 조립 get_historical_features 전환 (#358)",
+      "author": "waieiches",
+      "merged_at": "2026-07-27T15:26:45Z",
+      "summary_ko": [
+        "CTR 모델 학습용 21개 피처를 Feast FeatureService(ctr_training_v1)로 통합 정의하고, 학습 데이터셋 조립을 Feast point-in-time(PIT) 조회 경로로 전환하였습니다.",
+        "피처스토어 결손 대응을 위해 유저 동적 피처 TTL을 60시간으로 확정하고, 파생 피처 계산(ODFV) 및 2단계 시밀러리티 조회를 정비하였습니다.",
+        "영상 미발견 시 결측값을 서빙과 동일한 cold-start 규칙으로 보정하였으며, 조인키 변경(category_key)에 따라 Feast 재-apply 및 Redis 재-materialize가 필요합니다."
+      ],
+      "report_url": "pr/376/"
+    },
     {
       "number": 375,
       "title": "feat: PR 리포트 아카이브에 Infra 저장소 카테고리 탭 추가",
