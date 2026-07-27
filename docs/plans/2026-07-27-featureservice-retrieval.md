@@ -3,6 +3,18 @@
 - Issue: #358 (부모 [EPIC] #299), 선행 #357(계약 정렬·정본 채택) 완료(PR #369 머지)
 - 이 브랜치에서 함께: **#357 (C) ttl=60h 확정** 반영 + 스펙 마감 → #357 close
 
+## 상태 (2026-07-27 마감)
+
+작업 1~5 구현 + 작업 6 **실환경 검증 완료**(`validate_feast_assembly.py`로 실 BigQuery):
+
+- ttl(1)·ODFV(2)·FeatureService(4)·staged 조회(3)·`--assembly-source`(5) 전부 구현·테스트
+- 실환경에서 잡아 고침: **category_key 이름충돌**(BigQuery offline ambiguous), **cold-start
+  null 처리**(video 미발견 ~3.2%)
+- 실측 확인: 21피처 정본 조회 + cold-start 후 non-null 1.0, ttl 드롭 0, ODFV scale 문제없음
+  (오버헤드-바운드)
+- **Task 5(ROC-AUC)는 후속으로 미룸** — n=11 참고용이라 결론 무관, duckdb 실데이터 셋업
+  번거로움. 정확성은 위로 충분히 검증됨.
+
 ## 목표
 
 학습 21피처를 **FeatureService**로 정의하고, `build_training_dataset` 조립을
