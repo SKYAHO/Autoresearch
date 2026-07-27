@@ -90,6 +90,37 @@
     color: var(--muted);
     font-size: .86rem;
   }
+  .category-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  .tab-button {
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: .85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .tab-button.is-selected {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .pr-category {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: .72rem;
+    font-weight: 700;
+  }
   #report-list {
     display: grid;
     gap: 14px;
@@ -167,6 +198,11 @@
   </header>
 
   <section class="toolbar" aria-label="아카이브 검색">
+    <div class="category-tabs" id="category-tabs" role="tablist" aria-label="카테고리 필터">
+      <button type="button" class="tab-button is-selected" data-category="all" role="tab" aria-selected="true">전체</button>
+      <button type="button" class="tab-button" data-category="application" role="tab" aria-selected="false">Application</button>
+      <button type="button" class="tab-button" data-category="airflow" role="tab" aria-selected="false">Airflow</button>
+    </div>
     <label for="archive-search">PR 번호·제목·작성자 검색</label>
     <input
       id="archive-search"
