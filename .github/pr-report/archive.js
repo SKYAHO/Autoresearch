@@ -13,6 +13,38 @@ function matchesCategory(entry, selectedKey) {
   return selectedKey === "all" || entry.category === selectedKey;
 }
 
+function shallowCopy(entry) {
+  var copy = {};
+  for (var key in entry) {
+    if (Object.prototype.hasOwnProperty.call(entry, key)) copy[key] = entry[key];
+  }
+  return copy;
+}
+
+function tagCategory(entries, categoryKey) {
+  return entries.map(function (entry) {
+    var tagged = shallowCopy(entry);
+    tagged.category = categoryKey;
+    return tagged;
+  });
+}
+
+function absolutizeReportUrl(entries, baseUrl) {
+  return entries.map(function (entry) {
+    var absolute = shallowCopy(entry);
+    absolute.report_url = baseUrl + entry.report_url;
+    return absolute;
+  });
+}
+
+function mergeAndSortReports(reportArrays) {
+  var merged = [].concat.apply([], reportArrays);
+  return merged.slice().sort(function (a, b) {
+    if (a.merged_at === b.merged_at) return b.number - a.number;
+    return a.merged_at < b.merged_at ? 1 : -1;
+  });
+}
+
 function appendTextElement(parent, tagName, className, text) {
   var element = document.createElement(tagName);
   if (className) element.className = className;
@@ -106,6 +138,9 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {
     matchesArchiveEntry: matchesArchiveEntry,
     matchesCategory: matchesCategory,
+    tagCategory: tagCategory,
+    absolutizeReportUrl: absolutizeReportUrl,
+    mergeAndSortReports: mergeAndSortReports,
   };
 }
 if (typeof window !== "undefined") {
