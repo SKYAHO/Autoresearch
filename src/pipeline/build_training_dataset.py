@@ -297,10 +297,11 @@ def _assemble_via_feast(
     DuckDB 재계산 경로를 대체한다. offline store가 정본(#357)이라 그 값을 그대로 읽는다.
     feast/feature_repo는 이 경로에서만 필요하므로 지연 import한다(격리 그룹).
     """
-    from feature_repo.bootstrap import load_feature_store
+    import tempfile
 
     from src.features.feast_retrieval import (
         apply_cold_start_defaults,
+        build_offline_feature_store,
         retrieve_training_features,
     )
 
@@ -308,8 +309,18 @@ def _assemble_via_feast(
     spine = load_training_entity_spine(events_start_date, events_end_date)
     print(f"  [OK] spine: {len(spine)} rows")
 
-    repo_path = os.path.join(PROJECT_ROOT, "feature_repo")
-    store = load_feature_store(repo_path)
+    # offline 전용 store: prod feature_store.yaml(Redis)을 로드하지 않고, 배포 job이 apply한
+    # prod 레지스트리(GCS_REGISTRY_PATH)만 읽어 BigQuery offline을 조회한다(#358 리뷰).
+    registry_path = os.environ["GCS_REGISTRY_PATH"]
+    gcs_staging = os.environ["GCS_STAGING_LOCATION"]
+    online_db = os.path.join(tempfile.mkdtemp(prefix="feast_assemble_"), "online.db")
+    store = build_offline_feature_store(
+        registry_path,
+        project=BIGQUERY_PROJECT,
+        dataset=BIGQUERY_DATASET,
+        gcs_staging=gcs_staging,
+        online_db_path=online_db,
+    )
     print("\n[feast] get_historical_features(PIT) 조회...")
     features = retrieve_training_features(store, spine)
 
@@ -318,13 +329,12 @@ def _assemble_via_feast(
         raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
 
     # 영상 미발견 등으로 생긴 null 피처를 서빙과 같은 cold-start 기본값으로 채운다(#358).
+    # 대형 프레임 중복 상주를 줄이려 제자리 채움 + 선택 시 추가 copy 안 함(리뷰 OOM).
     features = apply_cold_start_defaults(features)
-    out = features[[*MODEL_FEATURE_COLUMNS, "clicked"]].copy()
-    out["clicked"] = out["clicked"].astype(int)
+    features["clicked"] = features["clicked"].astype(int)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    out.to_csv(output_path, index=False)
-    # spine 대비 손실(ttl 밖 행 드롭)은 retrieve_training_features가 경고로 남긴다.
-    print(f"\n[저장] {output_path} ({len(out)} rows, feast 경로)")
+    features[[*MODEL_FEATURE_COLUMNS, "clicked"]].to_csv(output_path, index=False)
+    print(f"\n[저장] {output_path} ({len(features)} rows, feast 경로)")
 
 
 def derive_wide_events(

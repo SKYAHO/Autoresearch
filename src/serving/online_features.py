@@ -15,16 +15,13 @@ from src.features.feature_builder import (
     compute_preferred_category_match,
 )
 from src.features.model_contract import (
+    COLD_START_CATEGORICAL_DEFAULT,
     FeatureContractError,
     require_model_feature_columns,
 )
 from src.serving.schemas import CandidateVideo, FeatureValue
 
 FeatureRows: TypeAlias = Mapping[str, Sequence[object]]
-
-# 카테고리형 피처의 cold-start 기본값(값 없음 → 'unknown'). 학습(feast_retrieval)과
-# 서빙이 같은 상수를 공유해 두 경로의 cold-start가 어긋나지 않게 한다(#358).
-COLD_START_CATEGORICAL_DEFAULT: Final[str] = "unknown"
 
 _FIRST_READ_FEATURE_REFS: Final[tuple[str, ...]] = (
     "UserStaticView:age_group",

@@ -216,6 +216,10 @@ def compute_category_matches(inputs: pd.DataFrame) -> pd.DataFrame:
 
 
 @on_demand_feature_view(
+    # 소스는 뷰 전체를 준다(투영 아님). 필요한 건 3컬럼뿐이지만, 같은 뷰를 FeatureService가
+    # 다르게 투영(예: UserStatic에서 age_group/occupation/watch_time_band)하는데 ODFV가
+    # 좁게 투영하면 조회 시 "Feature age_group not found in projection UserStaticView"로
+    # 죽는다(#358 리뷰 제안을 시도했으나 통합 스모크에서 실패 — 되돌림).
     sources=[user_static_view, user_dynamic_view, video_feature_view],
     schema=[
         Field(name="preferred_category_match", dtype=Int64),

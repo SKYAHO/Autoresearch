@@ -23,9 +23,9 @@ import pandas as pd
 
 from src.features.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
+    COLD_START_CATEGORICAL_DEFAULT,
     MODEL_FEATURE_COLUMNS,
 )
-from src.serving.online_features import COLD_START_CATEGORICAL_DEFAULT
 
 if TYPE_CHECKING:
     from feast import FeatureStore
@@ -60,9 +60,11 @@ def retrieve_training_features(
     Returns:
         21피처 + entity 키 + spine passthrough 컬럼을 가진 DataFrame.
 
-    NOTE: ttl 밖 엔티티는 Feast가 결과에서 제외하므로(행 드롭, NaN 아님), 반환 행 수가
-    spine보다 적을 수 있다. 손실이 있으면 경고를 남긴다 — 호출부가 학습 데이터 결손으로
-    인지하도록.
+    NOTE: ttl 밖/미발견 엔티티의 처리는 **offline store에 따라 다르다** — File store는 행을
+    드롭하지만, **BigQuery는 행을 보존하고 피처를 NULL로 채운다**(실측: spine 대비 손실 0,
+    영상 미발견 3.2%가 NULL 행으로 돌아옴). 따라서 아래 행 수 가드는 File 기준 보조 신호이고,
+    실질 결손(UserDynamic ttl 초과 등)은 드롭이 아니라 **NULL로 드러난다** — 그 NULL의
+    후처리(cold-start)는 `apply_cold_start_defaults`가 담당한다.
     """
     # Stage 1: (video_id, ts)별 영상 category를 video PIT로 확정.
     video_keys = spine[_JOIN_KEYS].drop_duplicates()
@@ -78,6 +80,19 @@ def retrieve_training_features(
         video_category[[*_JOIN_KEYS, _CATEGORY_JOIN_KEY]], on=_JOIN_KEYS, how="left"
     )
 
+    # stage 1↔2 배관 건전성: category_key 결측률. BigQuery는 entity_df를 임시테이블로
+    # 올렸다 읽으므로 event_timestamp 값·tz·해상도가 어긋나면 이 merge가 전 행 NaN이 되어
+    # topic_similarity가 통째로 null→cold-start로 조용히 0이 된다(행 수는 그대로라 손실
+    # 경고도 안 뜬다). 영상 미발견(정상)과 합산이라 분리는 못 하지만, 비정상적으로 높은
+    # 결측률은 merge 어긋남 신호다.
+    cat_null_rate = float(entity_df[_CATEGORY_JOIN_KEY].isna().mean()) if len(entity_df) else 0.0
+    if cat_null_rate:
+        logger.warning(
+            "category_key 결측률 %.4f (video 미발견 + stage1↔2 merge 어긋남 합산) — "
+            "비정상적으로 높으면 stage1/spine event_timestamp 정합 확인",
+            cat_null_rate,
+        )
+
     # Stage 2: category_key가 채워진 entity_df로 전체 FeatureService 조회.
     result = store.get_historical_features(
         entity_df=entity_df, features=store.get_feature_service(service)
@@ -85,7 +100,7 @@ def retrieve_training_features(
 
     if len(result) < len(spine):
         logger.warning(
-            "feast 조회에서 spine %d행 중 %d행이 빠짐(ttl 밖 등) — 학습 데이터 결손",
+            "feast 조회에서 spine %d행 중 %d행이 빠짐(File store 등 드롭) — 학습 데이터 결손",
             len(spine),
             len(spine) - len(result),
         )
@@ -100,14 +115,52 @@ def apply_cold_start_defaults(features: pd.DataFrame) -> pd.DataFrame:
     (``online_features``)이 쓰는 것과 동일한 규칙(카테고리→'unknown', 수치→0)으로
     채운다. 기본값 상수·카테고리 분류를 서빙/계약과 공유해 skew를 막는다(복제 금지).
     """
-    out = features.copy()
+    # 대형 프레임(1.77M) 중복 상주를 줄이려 컬럼 단위로 제자리 채운다(#358 리뷰 OOM).
     for column in MODEL_FEATURE_COLUMNS:
-        if column not in out.columns:
+        if column not in features.columns:
             continue
         default = (
             COLD_START_CATEGORICAL_DEFAULT
             if column in CATEGORICAL_FEATURE_COLUMNS
             else 0
         )
-        out[column] = out[column].fillna(default)
-    return out
+        features[column] = features[column].fillna(default)
+    return features
+
+
+def build_offline_feature_store(
+    registry_path: str,
+    *,
+    project: str,
+    dataset: str,
+    gcs_staging: str,
+    online_db_path: str,
+):
+    """offline 조회 전용 FeatureStore를 코드로 구성한다(#358).
+
+    prod ``feature_store.yaml``(Redis online store + registry)을 로드하지 않는다 — 학습
+    조립은 ``get_historical_features``(offline=BigQuery)만 쓰므로 Redis가 필요 없고, online
+    store를 sqlite 더미로 둔다. 덕분에 offline 학습 잡이 REDIS_* / redis 어댑터에 의존하지
+    않으며, 검증 스크립트가 실제로 돌린 것과 동일한 store 구성이 정본 경로가 된다.
+
+    ``registry_path``는 배포 apply job(#346)이 갱신하는 prod 레지스트리(GCS)를 가리킨다.
+    ``project``는 Feast 프로젝트명(feature_store.yaml과 동일, 변경 시 registry 분리).
+    """
+    from feast import FeatureStore, RepoConfig
+    from feast.repo_config import RegistryConfig
+
+    return FeatureStore(
+        config=RepoConfig(
+            project="autoresearch_feature_store",
+            provider="gcp",
+            registry=RegistryConfig(path=registry_path),
+            offline_store={
+                "type": "bigquery",
+                "dataset": dataset,
+                "project_id": project,
+                "gcs_staging_location": gcs_staging,
+            },
+            online_store={"type": "sqlite", "path": online_db_path},
+            entity_key_serialization_version=3,
+        )
+    )

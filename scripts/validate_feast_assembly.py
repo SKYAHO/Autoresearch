@@ -49,11 +49,11 @@ def main() -> int:
     os.environ.setdefault("GCP_PROJECT_ID", project)
     os.environ.setdefault("BQ_DATASET", dataset)
 
-    from feast import FeatureStore, RepoConfig
-    from feast.repo_config import RegistryConfig
-
     from feature_repo import feature_definitions as fd
-    from src.features.feast_retrieval import retrieve_training_features
+    from src.features.feast_retrieval import (
+        build_offline_feature_store,
+        retrieve_training_features,
+    )
     from src.pipeline.build_training_dataset import load_training_entity_spine
 
     out_abs = os.path.abspath(args.out) if args.out else None
@@ -62,20 +62,11 @@ def main() -> int:
     # tmp로 chdir해 상대경로("registry.db")를 쓴다(스모크 테스트와 동일 회피).
     os.chdir(tmp)
     print(f"[validate] 로컬 레지스트리={tmp} / offline=bigquery {project}.{dataset}")
-    store = FeatureStore(
-        config=RepoConfig(
-            project="autoresearch_feature_store",
-            provider="gcp",
-            registry=RegistryConfig(path="registry.db"),
-            offline_store={
-                "type": "bigquery",
-                "dataset": dataset,
-                "project_id": project,
-                "gcs_staging_location": staging,
-            },
-            online_store={"type": "sqlite", "path": "online.db"},
-            entity_key_serialization_version=3,
-        )
+    # 프로덕션(_assemble_via_feast)과 동일한 store 빌더를 쓴다 — 검증이 곧 정본 경로.
+    # 다만 레지스트리는 로컬 임시(prod은 GCS를 배포 job이 apply). 그래서 여기서만 apply한다.
+    store = build_offline_feature_store(
+        "registry.db", project=project, dataset=dataset,
+        gcs_staging=staging, online_db_path="online.db",
     )
     store.apply(
         [

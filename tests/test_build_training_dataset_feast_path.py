@@ -8,7 +8,6 @@
 import pandas as pd
 import pytest
 
-from feature_repo import bootstrap
 from src.features import feast_retrieval
 from src.features.model_contract import MODEL_FEATURE_COLUMNS
 from src.pipeline import build_training_dataset as btd
@@ -44,8 +43,10 @@ def _fake_env(monkeypatch, features: pd.DataFrame) -> None:
         [{"user_id": "u1", "video_id": "v1",
           "event_timestamp": pd.Timestamp("2026-07-02", tz="UTC"), "clicked": 1}]
     )
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://fake/staging/")
     monkeypatch.setattr(btd, "load_training_entity_spine", lambda s, e: spine)
-    monkeypatch.setattr(bootstrap, "load_feature_store", lambda repo_path: object())
+    monkeypatch.setattr(feast_retrieval, "build_offline_feature_store", lambda *a, **k: object())
     monkeypatch.setattr(feast_retrieval, "retrieve_training_features", lambda store, sp: features)
 
 
