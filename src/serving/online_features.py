@@ -16,7 +16,6 @@ from src.features.feature_builder import (
 )
 from src.features.model_contract import (
     FeatureContractError,
-    MODEL_FEATURE_COLUMNS,
     require_model_feature_columns,
 )
 from src.serving.schemas import CandidateVideo, FeatureValue
@@ -131,8 +130,12 @@ class ServingFeatureBuilder:
             for video_id in video_ids
         }
         category_ids = tuple(dict.fromkeys(categories_by_video.values()))
+        # similarity 조인 키는 category_key다(#358). category 엔티티 조인키를
+        # category_id로 두면 VideoFeatureView의 category_id 피처와 겹쳐 offline SQL이
+        # 죽으므로 category_key로 구분했고, online 2단계 조회 키도 그에 맞춘다. 값 자체는
+        # 그대로 category 문자열이고, 1단계(비디오)의 category_id 피처는 안 바뀐다.
         second_entities = tuple(
-            {"user_id": user_id, "category_id": category_id}
+            {"user_id": user_id, "category_key": category_id}
             for category_id in category_ids
         )
         similarity_rows = _keyed_rows(
@@ -141,7 +144,7 @@ class ServingFeatureBuilder:
                 entity_rows=second_entities,
             ),
             expected_keys=tuple((user_id, category_id) for category_id in category_ids),
-            key_names=("user_id", "category_id"),
+            key_names=("user_id", "category_key"),
             required_columns=("topic_similarity",),
         )
 

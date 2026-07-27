@@ -63,7 +63,12 @@ video_entity = Entity(
 
 category_entity = Entity(
     name="category",
-    join_keys=["category_id"],
+    # 조인 키는 category_key다. 물리 컬럼(category_id)은 그대로 두고 소스 field_mapping으로
+    # 매핑한다. category_id를 조인 키로 쓰면 VideoFeatureView의 category_id **피처**와
+    # 이름이 겹쳐 BigQuery offline SQL이 ambiguous로 죽는다(#358, Feast 규칙: 피처명 ≠
+    # 조인키명). category_id는 모델 계약(MODEL_FEATURE_COLUMNS) 이름이라 그대로 두고,
+    # 여기(조인 배관)만 category_key로 구분한다.
+    join_keys=["category_key"],
     value_type=ValueType.STRING,
     description="비디오 카테고리",
     tags={"domain": "category"},
@@ -100,6 +105,9 @@ user_category_similarity_source = BigQuerySource(
     name="user_category_similarity_source",
     table=f"{GCP_PROJECT}.{BQ_DATASET}.user_category_similarity",
     timestamp_field="event_timestamp",
+    # 물리 컬럼 category_id를 Feast 조인 키 category_key로 매핑(테이블 스키마 불변).
+    # category_entity.join_keys=["category_key"]와 짝이다(#358).
+    field_mapping={"category_id": "category_key"},
     description="사용자-카테고리 topic similarity",
 )
 

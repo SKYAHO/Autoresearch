@@ -16,8 +16,8 @@ import pytest
 
 pytest.importorskip("feast")
 
-import pandas as pd  # noqa: E402
-from feast import (  # noqa: E402
+import pandas as pd
+from feast import (
     FeatureService,
     FeatureStore,
     FeatureView,
@@ -25,14 +25,14 @@ from feast import (  # noqa: E402
     FileSource,
     RepoConfig,
 )
-from feast.on_demand_feature_view import on_demand_feature_view  # noqa: E402
-from feast.repo_config import RegistryConfig  # noqa: E402
-from feast.types import Int64  # noqa: E402
+from feast.on_demand_feature_view import on_demand_feature_view
+from feast.repo_config import RegistryConfig
+from feast.types import Int64
 
 os.environ.setdefault("GCP_PROJECT_ID", "smoke")
 os.environ.setdefault("BQ_DATASET", "smoke")
 
-from feature_repo.feature_definitions import (  # noqa: E402
+from feature_repo.feature_definitions import (
     category_entity,
     compute_category_matches,
     user_category_similarity_view,
@@ -42,8 +42,8 @@ from feature_repo.feature_definitions import (  # noqa: E402
     video_entity,
     video_feature_view,
 )
-from src.features.feast_retrieval import retrieve_training_features  # noqa: E402
-from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
+from src.features.feast_retrieval import retrieve_training_features
+from src.features.model_contract import MODEL_FEATURE_COLUMNS
 
 _UTC = "UTC"
 _TS = pd.Timestamp("2026-07-01", tz=_UTC)
@@ -68,14 +68,19 @@ def _row(view: FeatureView, keys: dict, **override) -> dict:
     return row
 
 
-def _file_view(src_view: FeatureView, name: str, path: str, rows: list[dict], entities: list) -> FeatureView:
+def _file_view(
+    src_view: FeatureView, name: str, path: str, rows: list[dict], entities: list,
+    field_mapping: dict | None = None,
+) -> FeatureView:
     # 프로덕션 이름을 그대로 써서 헬퍼의 하드코딩 참조(VideoFeatureView 등)와 맞춘다.
     pd.DataFrame(rows).to_parquet(path, index=False)
     return FeatureView(
         name=name,
         entities=entities,
         schema=[Field(name=f.name, dtype=f.dtype) for f in src_view.schema],
-        source=FileSource(path=path, timestamp_field="event_timestamp"),
+        source=FileSource(
+            path=path, timestamp_field="event_timestamp", field_mapping=field_mapping or {}
+        ),
         online=False,
         ttl=src_view.ttl,
     )
@@ -100,11 +105,13 @@ def _build_store() -> FeatureStore:
               duration_sec=300, view_count=1000)],
         [video_entity],
     )
+    # 물리 컬럼은 category_id, Feast 조인키는 category_key(field_mapping) — 프로덕션과 동일.
     similarity = _file_view(
         user_category_similarity_view, "UserCategorySimilarityView", "sim.parquet",
         [_row(user_category_similarity_view, {"user_id": "u1", "category_id": "Gaming"},
               topic_similarity=0.9)],
         [user_entity, category_entity],
+        field_mapping={"category_id": "category_key"},
     )
 
     @on_demand_feature_view(

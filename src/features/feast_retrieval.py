@@ -27,13 +27,16 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_SERVICE = "ctr_training_v1"
-# 1차 video PIT로 확정할 피처(similarity 조인 키인 category_id).
+# 1차 video PIT로 확정할 피처(영상의 category_id).
 _VIDEO_CATEGORY_FEATURE = "VideoFeatureView:category_id"
 _JOIN_KEYS = ["video_id", "event_timestamp"]
+# similarity(UserCategorySimilarityView) 조인 키. category_id(모델 피처)와 이름이
+# 겹치면 offline SQL이 ambiguous로 죽으므로 조인 배관은 category_key로 구분한다(#358).
+_CATEGORY_JOIN_KEY = "category_key"
 
 
 def retrieve_training_features(
-    store: "FeatureStore",
+    store: FeatureStore,
     spine: pd.DataFrame,
     *,
     service: str = DEFAULT_SERVICE,
@@ -55,17 +58,21 @@ def retrieve_training_features(
     spine보다 적을 수 있다. 손실이 있으면 경고를 남긴다 — 호출부가 학습 데이터 결손으로
     인지하도록.
     """
-    # Stage 1: (video_id, ts)별 category_id를 video PIT로 확정.
+    # Stage 1: (video_id, ts)별 영상 category를 video PIT로 확정.
     video_keys = spine[_JOIN_KEYS].drop_duplicates()
     video_category = store.get_historical_features(
         entity_df=video_keys,
         features=[video_category_feature],
     ).to_df()
+    # 그 category를 similarity 조인 키 category_key로 붙인다. entity_df에는 category_id를
+    # 두지 않는다 — stage 2가 VideoFeatureView:category_id(피처)를 다시 조회하므로,
+    # 같은 이름 컬럼이 entity_df에 있으면 ambiguous가 재발한다.
+    video_category = video_category.rename(columns={"category_id": _CATEGORY_JOIN_KEY})
     entity_df = spine.merge(
-        video_category[[*_JOIN_KEYS, "category_id"]], on=_JOIN_KEYS, how="left"
+        video_category[[*_JOIN_KEYS, _CATEGORY_JOIN_KEY]], on=_JOIN_KEYS, how="left"
     )
 
-    # Stage 2: category_id가 채워진 entity_df로 전체 FeatureService 조회.
+    # Stage 2: category_key가 채워진 entity_df로 전체 FeatureService 조회.
     result = store.get_historical_features(
         entity_df=entity_df, features=store.get_feature_service(service)
     ).to_df()

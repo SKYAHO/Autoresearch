@@ -106,6 +106,17 @@ DuckDB 제거).
   안 됨(experimental)" RuntimeWarning을 냄. 1.77M spine에서 `category_match_view`가 병목일
   수 있음 → 작업 5/6에서 시간 측정. 심하면 조회 후 후처리 폴백을 고려(단 학습·서빙 공통
   경로 이점이 줄어 skew 방지 효과 감소 — trade-off 기록 후 결정).
+- **(작업 6) `category_id` 이름 충돌 — BigQuery offline 전용 (실환경 검증이 잡음)**:
+  `category_id`가 VideoFeatureView **피처**(모델 입력)이면서 category 엔티티 **조인키**를
+  겸해, BigQuery offline PIT SQL이 `Column name category_id is ambiguous`로 죽음(Feast
+  규칙: 피처명 ≠ 조인키명). **online(Redis key-value)·File 스모크는 SQL이 없어 통과** →
+  통합 스모크가 못 잡고 `scripts/validate_feast_assembly.py` 실환경 실행이 잡음.
+  - 고침(B안): category 엔티티 조인키를 **`category_key`로 분리**. 물리 BQ 컬럼(category_id)은
+    그대로 두고 source `field_mapping={"category_id":"category_key"}`로 매핑. staged
+    entity_df·serving 2단계 조회 키도 category_key. **모델 피처 `category_id`(1단계·모델
+    계약)는 한 줄도 안 바뀜.** File 스모크에 field_mapping 반영해 재현.
+  - **배포 주의**: 엔티티 조인키가 바뀌므로 (1) Feast **재-apply** 필요, (2) Redis online
+    키 인코딩이 category_id→category_key로 바뀌어 **재-materialize** 필요(값은 동일).
 
 ## 리스크 / 열린 질문
 
