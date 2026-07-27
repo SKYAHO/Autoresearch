@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-27T11:06:48Z",
+  "generated_at": "2026-07-27T11:36:21Z",
   "reports": [
+    {
+      "number": 375,
+      "title": "feat: PR 리포트 아카이브에 Infra 저장소 카테고리 탭 추가",
+      "author": "bbungjun",
+      "merged_at": "2026-07-27T11:36:08Z",
+      "summary_ko": [
+        "PR 리포트 아카이브 웹 UI 페이지에 Infra(Autoresearch-infra) 저장소 탭을 새로 추가하였습니다.",
+        "아카이브 JavaScript의 카테고리 데이터 소스 목록에 Infra 저장소 경로를 등록하였습니다.",
+        "HTML 템플릿의 카테고리 탭 영역에 Infra 탭 버튼 요소를 추가하였습니다."
+      ],
+      "report_url": "pr/375/"
+    },
     {
       "number": 371,
       "title": "feat: feast apply를 GKE Job으로 전환하고 full_scan_for_deletion 복원 (#346)",

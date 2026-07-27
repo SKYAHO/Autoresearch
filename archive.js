@@ -8,6 +8,12 @@ var CATEGORY_SOURCES = [
     url: "https://skyaho.github.io/Autoresearch-airflow/archive.json",
     base: "https://skyaho.github.io/Autoresearch-airflow/",
   },
+  {
+    key: "infra",
+    label: "Infra",
+    url: "https://skyaho.github.io/Autoresearch-infra/archive.json",
+    base: "https://skyaho.github.io/Autoresearch-infra/",
+  },
 ];
 var FETCH_TIMEOUT_MS = 6000;
 var CATEGORY_LABELS = CATEGORY_SOURCES.reduce(function (labels, source) {
