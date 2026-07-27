@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-27T04:06:01Z",
+  "generated_at": "2026-07-27T04:36:06Z",
   "reports": [
+    {
+      "number": 354,
+      "title": "docs: click_threshold는 champion 변경 시 재캘리브레이션 필요함을 명시",
+      "author": "bbungjun",
+      "merged_at": "2026-07-27T04:35:51Z",
+      "summary_ko": [
+        "대표(champion) 추천 모델 교체 시 클릭 임계값(click_threshold)의 재캘리브레이션 필요성을 문서에 추가하였습니다.",
+        "대표 모델 교체 후 이전 임계값을 유지할 때 클릭률이 급락하는 2026-07-26 실측 데이터를 기술하였습니다.",
+        "실제 운영 환경에 적용되는 Airflow Variable 매개변수 명칭과의 상호 참조를 명시하였습니다."
+      ],
+      "report_url": "pr/354/"
+    },
     {
       "number": 362,
       "title": "feat: offline store 실적재 검증 + PIT 조회 스모크 (#356)",
