@@ -32,12 +32,14 @@ os.environ.setdefault("BQ_DATASET", "smoke")
 
 from feature_repo.feature_definitions import (  # noqa: E402
     compute_category_matches,
+    ctr_training_service,
     user_dynamic_view,
     user_entity,
     user_static_view,
     video_entity,
     video_feature_view,
 )
+from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
 
 _UTC = "UTC"
 _TS = pd.Timestamp("2026-07-01", tz=_UTC)
@@ -116,6 +118,13 @@ def _build_store() -> FeatureStore:
     )
     store.apply([user_entity, video_entity, static, dynamic, video, match_smoke])
     return store
+
+
+def test_feature_service_matches_model_contract() -> None:
+    # ctr_training_v1이 정확히 MODEL_FEATURE_COLUMNS 21개로 해소되는지(계약 대조).
+    names = [f.name for proj in ctr_training_service.feature_view_projections for f in proj.features]
+    assert len(names) == len(MODEL_FEATURE_COLUMNS) == 21
+    assert set(names) == set(MODEL_FEATURE_COLUMNS)
 
 
 def test_odfv_computes_matches_from_three_source_views(tmp_path, monkeypatch) -> None:

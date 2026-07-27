@@ -17,7 +17,7 @@ import os
 from datetime import timedelta
 
 import pandas as pd
-from feast import Entity, FeatureView, Field
+from feast import Entity, FeatureService, FeatureView, Field
 from feast.infra.offline_stores.bigquery import BigQuerySource
 from feast.on_demand_feature_view import on_demand_feature_view
 from feast.types import Array, Float64, Int64, String
@@ -216,3 +216,24 @@ def compute_category_matches(inputs: pd.DataFrame) -> pd.DataFrame:
 )
 def category_match_view(inputs: pd.DataFrame) -> pd.DataFrame:
     return compute_category_matches(inputs)
+
+
+# ============================================================================
+# FeatureService — 학습 21피처 묶음 (#358)
+# MODEL_FEATURE_COLUMNS(src/features/model_contract.py)와 이름·개수 1:1이어야 한다.
+# UserStatic에서 3개(preferred_category/preferred_topics는 ODFV 입력이라 제외),
+# UserDynamic 6 + Video 9 + Similarity 1(topic_similarity만) + ODFV 2 = 21.
+# ============================================================================
+
+ctr_training_service = FeatureService(
+    name="ctr_training_v1",
+    features=[
+        user_static_view[["age_group", "occupation", "watch_time_band"]],
+        user_dynamic_view,
+        video_feature_view,
+        user_category_similarity_view[["topic_similarity"]],
+        category_match_view,
+    ],
+    tags={"team": "feature-store"},
+    description="CTR 학습 데이터셋 21피처(모델 계약과 1:1)",
+)
