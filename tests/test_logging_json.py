@@ -71,3 +71,20 @@ def test_traceback_single_event_in_error_stack_trace() -> None:
     assert "original cause" in doc["error.stack_trace"]
     assert doc["error.type"] == "ValueError"
     assert "exc_info" not in doc
+
+
+def test_exc_info_true_without_active_exception_does_not_drop_line() -> None:
+    # 리뷰 반영: except 블록 밖 방어적 logger.error(..., exc_info=True)에서
+    # exc_info=(None, None, None)이 되어도 라인이 드랍되지 않아야 한다.
+    handler, stream = _make_handler()
+    logger = logging.getLogger("test.ecs.noexc")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        logger.error("defensive", exc_info=True)
+    finally:
+        logger.removeHandler(handler)
+
+    doc = json.loads(stream.getvalue().strip())
+    assert doc["message"] == "defensive"
+    assert doc.get("error.type", "Exception") == "Exception"

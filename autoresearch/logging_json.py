@@ -92,7 +92,11 @@ class EcsJsonFormatter(_import_json_formatter()):
         stack = log_record.pop("exc_info", None)
         if stack:
             log_record["error.stack_trace"] = stack
+            # 활성 예외 없이 exc_info=True로 호출되면 exc_info=(None,None,None) —
+            # [0].__name__ 접근 시 AttributeError로 로그 라인이 드랍된다(리뷰 반영).
             log_record.setdefault(
                 "error.type",
-                record.exc_info[0].__name__ if record.exc_info else "Exception",
+                record.exc_info[0].__name__
+                if record.exc_info and record.exc_info[0] is not None
+                else "Exception",
             )
