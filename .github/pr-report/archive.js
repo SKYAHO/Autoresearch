@@ -139,6 +139,8 @@ function initializeArchive() {
     "application"
   );
   var selectedCategory = "all";
+  var pendingCategories = {};
+  var failedCategories = {};
 
   function render(rawQuery) {
     var visible = reports
@@ -154,12 +156,21 @@ function initializeArchive() {
     });
     count.textContent = String(visible.length);
     empty.hidden = visible.length !== 0;
-    empty.textContent = rawQuery
-      ? "검색 결과가 없습니다."
-      : "아직 등록된 merge 리포트가 없습니다.";
+    if (visible.length === 0) {
+      if (failedCategories[selectedCategory]) {
+        empty.textContent = "이 카테고리를 불러오지 못했습니다.";
+      } else if (pendingCategories[selectedCategory]) {
+        empty.textContent = "불러오는 중입니다.";
+      } else {
+        empty.textContent = rawQuery
+          ? "검색 결과가 없습니다."
+          : "아직 등록된 merge 리포트가 없습니다.";
+      }
+    }
   }
 
   function loadExternalCategory(source) {
+    pendingCategories[source.key] = true;
     var controller =
       typeof AbortController !== "undefined" ? new AbortController() : null;
     var timeoutId = controller
@@ -174,6 +185,8 @@ function initializeArchive() {
       })
       .then(function (externalPayload) {
         if (timeoutId) clearTimeout(timeoutId);
+        delete pendingCategories[source.key];
+        delete failedCategories[source.key];
         var entries = Array.isArray(externalPayload.reports)
           ? externalPayload.reports
           : [];
@@ -184,10 +197,13 @@ function initializeArchive() {
       })
       .catch(function (error) {
         if (timeoutId) clearTimeout(timeoutId);
+        delete pendingCategories[source.key];
+        failedCategories[source.key] = true;
         console.warn(
           "[archive] failed to load category '" + source.key + "':",
           error
         );
+        render(search.value);
       });
   }
 
