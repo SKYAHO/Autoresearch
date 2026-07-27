@@ -323,16 +323,30 @@ feast apply
 
 > Registry가 `GCS_REGISTRY_PATH`로 지정한 GCS 버킷에 저장됩니다.
 
-> **운영 경로 (GHA, 정본)**: `feature_repo/feature_definitions.py`,
-> `feature_repo/feature_store.yaml`, `feature_repo/.feastignore`,
-> `feature_repo/redis_iam.py`, `pyproject.toml`, `uv.lock`,
-> `.github/workflows/feast-apply.yml` 중 하나가 `main`에 merge되면
-> `.github/workflows/feast-apply.yml` 워크플로우가 feast 공식 CLI(`feast
-> apply`)로 GCS registry를 자동 갱신합니다. `workflow_dispatch`로 수동
-> 실행도 가능합니다. feast 0.64의 apply 커맨드는 인증 실패(
-> `FeastProviderLoginError`)를 삼키고 exit 0으로 끝나는 결함이 있어, 이
-> 워크플로우는 apply 로그의 실패 패턴 grep과 apply 전후 registry generation
-> 비교로 침묵 실패를 감지합니다.
+> **운영 경로 (GHA → GKE Job, 정본)**: `feature_repo/` 정의·설정,
+> `deploy/feast/apply-job.yaml`, `scripts/fetch_redis_ca.py`,
+> `pyproject.toml`, `uv.lock`, `.github/workflows/feast-apply.yml` 중 하나가
+> `main`에 merge되면 `.github/workflows/feast-apply.yml` 워크플로우가 feast
+> 공식 CLI(`feast apply`)를 **GKE Job으로 실행**해 GCS registry를 자동
+> 갱신합니다. `workflow_dispatch`로 수동 실행도 가능합니다.
+>
+> 실행 위치를 VPC 안으로 옮긴 이유는 `full_scan_for_deletion: true`(아래 절)
+> 때문입니다. GHA 러너는 VPC 밖이라 private Redis(PSC)에 닿지 못하지만, GKE
+> 컨트롤 플레인은 공개 DNS 엔드포인트 + IAM으로 접근할 수 있으므로 러너는
+> Job을 만들고 결과만 판정합니다(#346). 트리거 의미와 "registry apply는 GHA
+> 소유, materialize는 Airflow 소유"라는 경계는 그대로입니다.
+>
+> feast 0.64의 apply 커맨드는 인증 실패(`FeastProviderLoginError`)를 삼키고
+> exit 0으로 끝나는 결함이 있어, 워크플로우는 Job 종료 코드 외에 세 가지
+> 가드를 함께 둡니다 — 부트스트랩 로그의 코드 SHA 일치 확인, apply 로그의
+> 실패 패턴 grep, apply 전후 registry generation 비교.
+>
+> Job은 `command`가 아니라 **`args`만** 지정합니다. `Dockerfile.feast`는
+> 코드를 이미지에 넣지 않고 ENTRYPOINT(`scripts/gcs_code_bootstrap.sh`)가
+> 파드 시작 시 GCS 코드 아카이브를 `/app`에 푸는 구조라, `command`를 주면
+> `feature_repo/`가 없는 컨테이너에서 apply가 돌게 됩니다. 실행할 커밋은
+> `CODE_ARCHIVE_SHA`로 고정하며, 워크플로우는 해당 아카이브가 업로드될
+> 때까지 대기한 뒤 Job을 만듭니다(`code-archive.yml`과 병렬 실행되므로).
 >
 > **DAG 소비용 경로 (폐기 완료)**: registry apply를 DAG에서 소비하기 위한 공개
 > batch 명령 `python -m autoresearch.jobs.feast_apply` 래퍼가 존재했던
@@ -343,33 +357,74 @@ feast apply
 > DAG의 `apply_feature_registry` 태스크도 함께 제거된다
 > (`SKYAHO/Autoresearch-airflow#130`).
 
-### `full_scan_for_deletion: false` (공유 설정)
+### `full_scan_for_deletion: true` (고아 키·필드 정리)
 
-`feature_store.yaml`의 `online_store.full_scan_for_deletion: false`는 GHA
-apply 경로뿐 아니라 Airflow DAG의 apply 경로에도 함께 적용되는 **공유
-설정**입니다. FeatureView 정의를 삭제하는 merge가 발생해도 apply가 Redis에
-대해 full-scan 삭제를 시도하지 않으므로, 삭제된 FeatureView의 Redis 키가
-apply 시점에는 정리되지 않습니다. 고아 키는 `key_ttl_seconds`(아래 "Redis 키
-TTL" 절 참조)에 의해 7일 후 자동 소멸하므로 별도 수동 정리는 필요 없습니다.
+`feature_store.yaml`의 `online_store.full_scan_for_deletion: true`는
+FeatureView 정의를 삭제하는 merge가 발생했을 때 apply가 Redis 키스페이스를
+스캔해 해당 FeatureView의 흔적을 지우도록 합니다.
+
+Feast 0.64의 Redis 키는 **엔티티 단위**(join_key 이름 + 엔티티 값 + project)
+이고 FeatureView와 무관합니다. 같은 엔티티를 쓰는 FeatureView들이 하나의 키를
+공유하고, FeatureView별 데이터는 HASH 필드로 구분됩니다. 그래서 Feast는 두
+경우를 나눠 처리합니다.
+
+- 삭제된 FV가 그 키의 유일한 FV → 키 자체를 `delete`
+- 다른 살아있는 FV와 키를 공유 → 그 FV의 해시 필드만 `hdel`
+
+이 스캔은 Redis 접속을 요구합니다. GHA 러너는 private Redis(PSC)에 닿지
+못하므로 apply는 VPC 안의 GKE Job에서 실행합니다
+(`deploy/feast/apply-job.yaml`, #346).
+
+삭제 건수는 feast의 `logger.debug`로만 남기 때문에 Job은
+`feast --log-level debug apply`로 실행합니다(기본값은 `warning`). 삭제 경로를
+실증할 때는 로그에서 `Deleted N rows for feature view ...`를 확인합니다. 삭제
+대상이 없는 apply는 Redis 클라이언트를 만들지도 않으므로, "apply 1회 성공"은
+Redis 설정 검증이 되지 못합니다.
+
+이 설정은 GHA apply 경로뿐 아니라 Airflow DAG가 같은 `feature_store.yaml`을
+읽는 경로에도 적용되는 **공유 설정**입니다.
 
 ### GitHub repo variables ↔ Airflow 주입 env 값 일치
 
-GHA `feast-apply` 워크플로우와 Airflow DAG의 apply 태스크는 **동일한
-`feature_store.yaml`**을 서로 다른 실행 환경(GitHub repo variables vs.
-Airflow가 주입하는 env)에서 채워 넣습니다. 두 값이 어긋나면 registry에 기록된
-`BigQuerySource` 테이블 경로 등이 실행할 때마다 서로 다른 값으로 번갈아
-덮어써지는 flip-flop이 발생합니다. 아래 변수는 반드시 두 경로에서 동일한
-값이어야 합니다.
+GHA `feast-apply` 경로와 Airflow DAG의 materialize 태스크는 **동일한
+`feature_store.yaml`**을 서로 다른 실행 환경에서 채워 넣습니다. 두 값이
+어긋나면 registry에 기록된 `BigQuerySource` 테이블 경로 등이 실행할 때마다
+서로 다른 값으로 번갈아 덮어써지는 flip-flop이 발생합니다. 아래 변수는 반드시
+두 경로에서 동일한 값이어야 합니다.
 
-| 변수 | GHA (repo variable) | Airflow (주입 env) |
-|------|---------------------|---------------------|
+GHA는 값을 직접 소비하지 않고 **Job 매니페스트의 env로 주입**합니다.
+
+| 변수 | GHA (repo variable → Job env) | Airflow (주입 env) |
+|------|-------------------------------|---------------------|
 | `GCP_PROJECT_ID` | `vars.GCP_PROJECT_ID` | 동일 값 |
 | `BQ_DATASET` | `vars.BQ_DATASET` | 동일 값 |
 | `GCS_REGISTRY_PATH` | `vars.GCS_REGISTRY_PATH` | 동일 값 |
 | `GCS_STAGING_LOCATION` | `vars.GCS_STAGING_LOCATION` | 동일 값 |
 | `REDIS_HOST` | `vars.REDIS_HOST` | 동일 값 |
 | `REDIS_PORT` | `vars.REDIS_PORT` | 동일 값 |
-| `REDIS_TLS_CA_PATH` | 미설정 (GHA 러너는 private Redis 미접근) | Airflow 쪽 값(설정 시) |
+| `REDIS_TLS_CA_PATH` | `/tmp/redis-ca.pem` (Job이 조달해 기록) | Airflow 쪽 값(설정 시) |
+
+`feast` 공식 CLI에는 TLS CA를 조달하는 훅이 없습니다(래퍼 CLI가 담당하던
+책임으로, #331에서 래퍼를 삭제하면서 조달 경로가 비었습니다). Memorystore는
+인스턴스별 사설 CA를 쓰므로 시스템 신뢰 저장소로는 검증되지 않습니다. 그래서
+Job은 `scripts/fetch_redis_ca.py`로 Secret Manager의 CA를 고정 경로
+`/tmp/redis-ca.pem`에 먼저 내려받은 뒤 `feast apply`를 실행하고,
+`REDIS_TLS_CA_PATH`를 그 경로로 정적 주입합니다.
+
+#### apply Job 전용 repo variables
+
+| 이름 | 예시 | 용도 |
+|------|------|------|
+| `GKE_CLUSTER_NAME` | `autoresearch-dev-gke` | Job을 만들 클러스터 |
+| `GKE_LOCATION` | `asia-northeast3-a` | 클러스터 위치(zonal) |
+| `FEAST_IMAGE_TAG` | `sha-<40자 커밋 SHA>` | feast 이미지 고정 태그 |
+| `REDIS_CA_SECRET_ID` | `autoresearch-dev-redis-server-ca` | Redis 서버 CA secret |
+| `FEAST_APPLY_NAMESPACE` | `feast-apply` (기본값) | infra#346 전용 namespace |
+| `FEAST_APPLY_SERVICE_ACCOUNT` | `feast-apply` (기본값) | infra#346 KSA |
+
+이미지 태그는 고정하고 실행할 코드 버전은 `CODE_ARCHIVE_SHA`(트리거 커밋)로
+핀 고정합니다. `Dockerfile.feast`는 코드를 담지 않으므로 "정의가 이미지에
+포함된" 경우는 존재하지 않습니다.
 
 - [ ] 완료
 
@@ -389,13 +444,20 @@ feast materialize-incremental $(date -u +"%Y-%m-%dT%H:%M:%S")
 ### Redis 키 TTL (`key_ttl_seconds`)
 
 `feature_store.yaml`의 `online_store.key_ttl_seconds: 604800`(7일)은 Redis에
-키를 쓸 때마다 EXPIRE를 거는 Feast 0.64 online store 설정입니다.
+키를 쓸 때마다 EXPIRE를 거는 Feast 0.64 online store 설정입니다. 고아 정리의
+주 수단은 `full_scan_for_deletion`이고, TTL은 **심층 방어**입니다.
 
 - 살아있는 키는 매일 실행되는 materialize가 매번 다시 써서 TTL이 매일
   리셋되므로 계속 서빙됩니다.
-- 갱신이 끊긴 키(예: Registry에서 삭제된 FeatureView가 남긴 고아 키)는
-  materialize 대상에서 빠지므로 TTL이 리셋되지 않고 7일 후 Redis가 자동
-  소멸시킵니다. 별도 수동 정리가 필요 없습니다.
+- 아무도 쓰지 않게 된 키(예: 엔티티 자체가 폐기되어 그 키를 쓰는
+  FeatureView가 하나도 남지 않은 경우)는 TTL이 리셋되지 않고 7일 후 Redis가
+  자동 소멸시킵니다.
+- **삭제된 FeatureView의 고아를 TTL로 지울 수는 없습니다.** EXPIRE는 키
+  단위이지 해시 필드 단위가 아니기 때문입니다. 삭제된 FV가 살아있는 FV와
+  엔티티를 공유하면(이 저장소의 `UserStaticView`·`UserDynamicView`가
+  `user_entity`를 공유하는 경우가 그렇습니다) 살아있는 FV의 매일 쓰기가 같은
+  키의 EXPIRE를 리셋하므로 고아 필드는 영구히 남습니다. 이 경로는
+  `full_scan_for_deletion: true`의 `hdel`이 담당합니다.
 - 트레이드오프: materialize가 7일 이상 연속 실패하면 살아있는 서빙 키도
   함께 만료되어 조회가 빈 값을 반환합니다. 즉 materialize 장애는 7일 이내
   복구를 전제로 합니다.

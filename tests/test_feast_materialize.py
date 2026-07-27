@@ -6,7 +6,7 @@ import pytest
 
 import autoresearch.jobs.feast_materialize as job
 import feature_repo.bootstrap as bootstrap
-from feature_repo.bootstrap import ensure_redis_ca_bundle
+from feature_repo.bootstrap import download_redis_ca_bundle, ensure_redis_ca_bundle
 
 
 def _json_lines(output: str) -> list[dict[str, object]]:
@@ -86,6 +86,46 @@ def test_ensure_ca_bundle_fetches_secret(monkeypatch, tmp_path):
 def test_ensure_ca_bundle_secret_without_project_raises():
     with pytest.raises(RuntimeError):
         ensure_redis_ca_bundle({"REDIS_CA_SECRET_ID": "redis-ca"})
+
+
+def test_download_ca_bundle_writes_requested_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        bootstrap, "_fetch_ca_secret", lambda project, secret: b"PEM"
+    )
+    destination = tmp_path / "nested" / "redis-ca.pem"
+    env = {"REDIS_CA_SECRET_ID": "redis-ca", "GCP_PROJECT_ID": "proj"}
+
+    path = download_redis_ca_bundle(destination, env)
+
+    assert path == str(destination)
+    assert destination.read_bytes() == b"PEM"
+    assert env["REDIS_TLS_CA_PATH"] == str(destination)
+
+
+def test_download_ca_bundle_overwrites_existing_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        bootstrap, "_fetch_ca_secret", lambda project, secret: b"NEW"
+    )
+    destination = tmp_path / "redis-ca.pem"
+    destination.write_bytes(b"OLD")
+
+    download_redis_ca_bundle(
+        destination, {"REDIS_CA_SECRET_ID": "redis-ca", "GCP_PROJECT_ID": "proj"}
+    )
+
+    assert destination.read_bytes() == b"NEW"
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"GCP_PROJECT_ID": "proj"},
+        {"REDIS_CA_SECRET_ID": "redis-ca"},
+    ],
+)
+def test_download_ca_bundle_requires_secret_and_project(env, tmp_path):
+    with pytest.raises(RuntimeError):
+        download_redis_ca_bundle(tmp_path / "redis-ca.pem", env)
 
 
 def test_load_feature_store_constructs_sdk_store_without_connection(

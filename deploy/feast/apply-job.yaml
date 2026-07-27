@@ -1,0 +1,91 @@
+# feast apply 실행용 GKE Job 템플릿 (#346).
+#
+# GitHub Actions 러너는 VPC 밖이라 private Redis(PSC)에 닿지 못한다. 그래서
+# `full_scan_for_deletion: true`가 요구하는 online store 삭제 스캔을 수행하려면
+# apply 자체를 VPC 안의 Pod에서 돌려야 한다. GHA는 이 Job을 만들고 결과를
+# 판정하는 역할만 한다.
+#
+# 아래 치환 자리는 .github/workflows/feast-apply.yml이 envsubst로 채운다.
+# 워크플로우는 렌더 후 미치환 자리가 남았는지 검사하므로, 주석에도 치환
+# 문법을 쓰지 않는다.
+# namespace·serviceAccountName은 SKYAHO/Autoresearch-infra#346이 확정한 계약값이다.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ${FEAST_APPLY_JOB_NAME}
+  namespace: ${FEAST_APPLY_NAMESPACE}
+  labels:
+    app.kubernetes.io/name: feast-apply
+    app.kubernetes.io/managed-by: github-actions
+spec:
+  # 재시도하면 침묵 실패 가드(registry generation 비교)의 판정이 흐려지고
+  # 삭제 스캔이 중복 실행되므로 1회 실행으로 고정한다.
+  backoffLimit: 0
+  # 워크플로우 대기 타임아웃(30분)보다 짧게 잡아, 멈춘 Job이 GHA 타임아웃이
+  # 아니라 Job Failed 조건으로 드러나게 한다.
+  activeDeadlineSeconds: 1500
+  # 실패 원인 조사 여유를 두고 하루 뒤 정리한다.
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: feast-apply
+    spec:
+      serviceAccountName: ${FEAST_APPLY_SERVICE_ACCOUNT}
+      restartPolicy: Never
+      containers:
+        - name: feast-apply
+          image: ${FEAST_IMAGE}
+          imagePullPolicy: IfNotPresent
+          # command를 쓰면 ENTRYPOINT(gcs_code_bootstrap.sh)가 대체되어 GCS
+          # 코드 아카이브가 /app에 풀리지 않는다. 반드시 args만 지정한다
+          # (Dockerfile.feast:31-40, Airflow KPO도 cmds 대신 arguments 사용).
+          #
+          # feast 공식 CLI에는 TLS CA 조달 훅이 없어 apply 직전에 내려받는다.
+          # --log-level debug가 없으면 기본값 warning이라 삭제 건수 로그
+          # (feast redis.py의 logger.debug)가 남지 않아 삭제 경로를 검증할 수 없다.
+          args:
+            - sh
+            - -c
+            - python scripts/fetch_redis_ca.py /tmp/redis-ca.pem && cd /app/feature_repo && exec feast --log-level debug apply
+          env:
+            # 코드 조달 — 부트스트랩 계약. BUCKET이 없으면 exit 2, SHA가 없으면
+            # code/latest.txt(직전 커밋)를 참조하므로 둘 다 명시한다.
+            - name: CODE_ARTIFACTS_BUCKET
+              value: "${CODE_ARTIFACTS_BUCKET}"
+            - name: CODE_ARCHIVE_SHA
+              value: "${CODE_ARCHIVE_SHA}"
+            # feature_store.yaml의 online_store.type이
+            # feature_repo.redis_iam.IAMRedisOnlineStore라 /app이 import 경로에 있어야 한다.
+            - name: PYTHONPATH
+              value: "/app"
+            - name: GCP_PROJECT_ID
+              value: "${GCP_PROJECT_ID}"
+            # feast GCS registry의 storage.Client()가 프로젝트를 추론하도록 명시.
+            - name: GOOGLE_CLOUD_PROJECT
+              value: "${GCP_PROJECT_ID}"
+            - name: BQ_DATASET
+              value: "${BQ_DATASET}"
+            - name: GCS_REGISTRY_PATH
+              value: "${GCS_REGISTRY_PATH}"
+            - name: GCS_STAGING_LOCATION
+              value: "${GCS_STAGING_LOCATION}"
+            - name: REDIS_HOST
+              value: "${REDIS_HOST}"
+            - name: REDIS_PORT
+              value: "${REDIS_PORT}"
+            - name: REDIS_CA_SECRET_ID
+              value: "${REDIS_CA_SECRET_ID}"
+            # 위 args가 CA를 쓰는 경로와 같아야 한다.
+            - name: REDIS_TLS_CA_PATH
+              value: "/tmp/redis-ca.pem"
+          resources:
+            # full_scan_for_deletion: true의 delete_table은 전체 키스페이스를
+            # SCAN해 모든 키를 파이썬 리스트에 적재한다. 키스페이스가 커지면
+            # 메모리 사용량이 비례해 증가하므로 여유를 둔다.
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
