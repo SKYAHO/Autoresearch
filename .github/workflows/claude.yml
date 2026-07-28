@@ -1,8 +1,17 @@
 name: Claude Code PR Review
 
+# 문서만 바뀌는 PR은 자동 트리거에서 제외합니다 (#391 — 비용·소음 대비 산출
+# 없음). paths-ignore는 변경 파일이 전부 일치할 때만 스킵하므로 코드+문서 혼합
+# PR은 종전대로 리뷰되고, 문서 PR도 /claude-review 코멘트로 수동 실행할 수
+# 있습니다. 이 워크플로우는 required check가 아니라 스킵돼도 머지를 막지
+# 않습니다 (required로 승격하면 paths-ignore를 함께 재검토해야 합니다).
+
 on:
   pull_request:
     types: [opened, ready_for_review]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   workflow_dispatch:
   issue_comment:
     types: [created]

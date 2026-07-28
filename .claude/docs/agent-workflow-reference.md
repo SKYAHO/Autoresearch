@@ -205,6 +205,10 @@ Closes #45
   않습니다.
 - push마다 자동 재리뷰하는 `synchronize` 이벤트는 비용과 노이즈를
   줄이기 위해 사용하지 않습니다.
+- 변경 파일이 전부 문서(`**.md`, `docs/**`)인 PR은 같은 이유로 자동
+  트리거에서 제외됩니다 (PR 이해 리포트도 동일). 코드와 문서가 섞인 PR은
+  종전대로 실행되며, 문서 PR도 `/claude-review`·`/claude-report` 댓글로
+  수동 실행할 수 있습니다.
 
 **Branch protection (`main`):**
 - 직접 push 금지, PR을 통한 변경만 허용
