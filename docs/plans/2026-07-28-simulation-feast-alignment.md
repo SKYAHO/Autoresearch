@@ -156,6 +156,11 @@
 - [ ] B2-1. **서빙 pool no-drop + cold-start를 BigQuery로 검증**(성능/의미 확인으로 격하).
   A1 reindex로 반환 계약(순서·개수)은 store 무관하게 보장되므로, BQ에서 남는 확인은
   "reindex가 BQ 결과에도 자연스럽게 맞물리는지"와 cold-start 채움 비율의 의미다.
+- [ ] B3-daily. **일일추천 feast 조회 비용 측정·배치화**(PR #381 리뷰 4) — **feast 기본 전환(Phase C) 전 필수**.
+  daily는 유저마다 `build_pool_feature_frame_feast` 호출 → staged 2회 = vu_1000 기준 하루 ~2N(2000)
+  BQ 잡(각 entity_df 업로드). Phase B 실측(217s/4.36GB)은 단일 대형 spine이라 이 경로를 대표 못 함.
+  pool이 전 유저 공통이므로 (전 유저 × 전 후보) spine 1회 조회 후 user_id 그룹핑으로 접을 수 있다
+  (1000×200=20만 행 1회). 이 경로 지연/슬롯 비용 실측 후 배치화.
 - [ ] B3. **시뮬 라운드 feast 조회 비용 측정**(PR #377 리뷰 3). `_model_feature_frame`이
   유저당 호출 → staged 2회 조회(유저 N명 → ~2N BQ 잡), 특히 stage 1(영상 category,
   키=(pool, as_of))은 전 유저 동일한데 반복. N=1000 기준 잡 수·업로드·소요를 실측하고,

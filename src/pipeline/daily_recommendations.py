@@ -20,10 +20,13 @@ import logging
 import os
 import re
 from datetime import UTC, date, datetime, timedelta
-from typing import Callable, Final, Sequence
+from typing import TYPE_CHECKING, Callable, Final, Sequence
 
 import pandas as pd
 from google.cloud import bigquery
+
+if TYPE_CHECKING:
+    from feast import FeatureStore
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
 from src.features.feast_retrieval import build_pool_feature_frame_feast
@@ -204,7 +207,7 @@ def run_batch(
     events: pd.DataFrame | None = None,
     clock: Callable[[], datetime] = _utc_now,
     assembly_source: str = "duckdb",
-    feature_store: object | None = None,
+    feature_store: FeatureStore | None = None,
 ) -> dict[str, object]:
     """일일 추천 배치를 실행하고 요약 리포트를 반환한다.
 
@@ -219,6 +222,17 @@ def run_batch(
     유저=events_dt로 분리하던 것을 단일 as_of로 흡수한다(A3-1 실측 확정). feast는
     ``feature_store`` 주입 또는 GCS_REGISTRY_PATH/GCS_STAGING_LOCATION env를 요구하고 feast
     파생 이미지에서 실행한다. "duckdb"(기본)는 raw 재계산으로 기존과 동일하며 #359에서 제거 예정.
+
+    feast 모드 운영 전제(리뷰 #381):
+    - **offline materialize 선행**: candidate_dt의 video/user 스냅샷이 배치 실행 전에 offline
+      store에 적재돼 있어야 한다(VideoFeatureView ttl=None이라 미적재 시 stale 스냅샷 또는
+      미발견→cold-start). daily는 DAG를 소유하지 않으므로 이 순서는 인접 저장소가 보장한다.
+    - **ttl 창**: UserDynamic ttl=60h이므로 as_of=candidate_dt+1 기준 유효 스냅샷은 대략
+      candidate_dt-1~candidate_dt 파티션이다. action log가 그보다 밀리면 전 유저 cold-start가
+      되며, 그 비율을 리포트 ``cold_start_users``/``video_missing_rate``로 관측한다.
+    - **events_dt 의미**: feast 모드에서 events_dt는 피처·as_of에 쓰이지 않고 ``user_recommendations``
+      의 lineage 컬럼으로만 기록된다(duckdb 모드는 유저 이력 기준일). 소비자는 모드에 따라 의미가
+      다름에 유의한다(공개 batch 계약 spec 참조).
     """
     import os
 
@@ -313,12 +327,22 @@ def run_batch(
         # UserDynamic을 offline PIT로 한 번에 조회. duckdb의 영상/유저 2기준 분리를 흡수한다.
         as_of = (candidate_dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
         candidate_video_ids = [str(v) for v in videos_raw["video_id"].tolist()]
+        # 서빙은 드롭 대신 cold-start로 채우므로(설계결정 3) 결손이 조용히 묻힌다. materialize
+        # 지연/ttl 초과로 개인화가 사라진 추천이 되먹임되는 걸 감지하도록 채우기 전 결손을 센다.
+        feast_diag = {"cold_start_users": 0, "video_missing": 0, "pool_total": 0}
 
         def _pool_frame(user_id: str) -> pd.DataFrame:
-            return build_pool_feature_frame_feast(
-                feature_store, user_id, candidate_video_ids, as_of
+            diag: dict = {}
+            frame = build_pool_feature_frame_feast(
+                feature_store, user_id, candidate_video_ids, as_of, diagnostics=diag
             )
+            if diag.get("user_dynamic_cold"):
+                feast_diag["cold_start_users"] += 1
+            feast_diag["video_missing"] += diag.get("video_missing", 0)
+            feast_diag["pool_total"] += diag.get("pool_size", 0)
+            return frame
     else:
+        feast_diag = None
         # events_dt 파티션 전체를 과거 이력으로 포함하되 이후 이벤트는 보지 않는다.
         as_of = (events_dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
         # 영상 나이(days_since_upload)는 유저 이력 기준일이 아니라 추천 대상일 기준.
@@ -394,6 +418,24 @@ def run_batch(
         "model_version": resolved.model_version,
         "dry_run": dry_run,
     }
+    # feast 관측: 개인화 결손(UserDynamic 전량 null 유저)·영상 미발견 비율을 리포트에 남긴다.
+    # 서빙은 드롭 대신 채우므로(설계결정 3) skip 가드가 못 잡는 조용한 저하를 이 수치로 감지한다.
+    if feast_diag is not None:
+        scored = len(user_ids) - len(skipped)
+        report["cold_start_users"] = feast_diag["cold_start_users"]
+        report["video_missing_rate"] = (
+            round(feast_diag["video_missing"] / feast_diag["pool_total"], 4)
+            if feast_diag["pool_total"]
+            else 0.0
+        )
+        # 채점 유저의 절반 넘게 UserDynamic 결손이면 materialize 지연/ttl 초과 신호 → 경고.
+        if scored and feast_diag["cold_start_users"] / scored > 0.5:
+            logger.warning(
+                "feast personalization gap: %d/%d scored users had all-null UserDynamic "
+                "(cold-start) — check feature_store materialization freshness / 60h ttl",
+                feast_diag["cold_start_users"],
+                scored,
+            )
     return report
 
 

@@ -464,10 +464,19 @@ def test_run_batch_feast_source_uses_candidate_dt_plus_one_single_as_of(monkeypa
     # 흡수한다. duckdb build_pool_feature_frame은 절대 호출되지 않는다.
     captured: dict = {}
 
-    def _capture_feast(store, user_id, candidate_video_ids, as_of):
+    def _capture_feast(store, user_id, candidate_video_ids, as_of, diagnostics=None):
         captured["store"] = store
         captured["candidate_video_ids"] = list(candidate_video_ids)
         captured["as_of"] = as_of
+        if diagnostics is not None:
+            # u1은 cold(UserDynamic 결손), 각 유저 영상 1건 미발견으로 관측 신호를 흉내낸다.
+            diagnostics.update(
+                {
+                    "user_dynamic_cold": user_id == "u1",
+                    "video_missing": 1,
+                    "pool_size": len(candidate_video_ids),
+                }
+            )
         return pd.DataFrame(
             [{**{c: 0 for c in MODEL_FEATURE_COLUMNS}, "video_id": v} for v in candidate_video_ids]
         )
@@ -494,6 +503,9 @@ def test_run_batch_feast_source_uses_candidate_dt_plus_one_single_as_of(monkeypa
     assert captured["candidate_video_ids"] == ["v0", "v1", "v2"]
     assert captured["store"] is sentinel_store
     assert (report["users"], report["rows"]) == (2, 6)  # 2 유저 × 3 후보
+    # feast 관측 필드(#381 리뷰): u1만 cold → 1명, 미발견 2건/pool 6 = 0.3333.
+    assert report["cold_start_users"] == 1
+    assert report["video_missing_rate"] == pytest.approx(0.3333, abs=1e-4)
 
 
 def test_run_batch_feast_requires_registry_env(monkeypatch):

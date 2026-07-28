@@ -20,6 +20,11 @@ DuckDB 폴백 제거의 게이트("1.77M 전량이 배치 파드 메모리에 �
   # 스모크(빠른 확인):
   uv run --only-group feast python scripts/bench/feast_assembly_bench.py \
     --start 2026-07-07 --end 2026-07-21 --limit 5000
+
+주의:
+- 피크 RSS는 100ms 샘플링이라 짧은 스파이크를 놓칠 수 있어 **과소 측정** 방향이다. 게이트
+  판정은 이 하한 위에 여유를 두고 본다.
+- ``--out`` 상대 경로는 자식이 repo 루트에서 실행되므로 **repo 루트 기준**으로 저장된다.
 """
 
 from __future__ import annotations
@@ -46,7 +51,10 @@ def _sample_peak_rss(proc: subprocess.Popen, interval: float = 0.1) -> int:
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
             peak = max(peak, rss)
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as error:
+            # 부모가 자식 RSS 접근에 실패하면 지금까지의 peak가 최종값이 된다 — 조기 종료를
+            # 정상 완료와 구분할 수 있게 경고를 남긴다(게이트 수치의 신뢰도 표시).
+            print(f"[bench] WARNING: RSS 샘플링 조기 중단 ({type(error).__name__}) — peak 과소 가능", flush=True)
             break
         time.sleep(interval)
     return peak
@@ -82,6 +90,8 @@ def main() -> int:
     print(f"  피크 RSS: {peak / 1e9:.2f} GB ({peak / 1e6:.0f} MB)")
     print(f"  벽시계 시간: {elapsed:.1f}s")
     print(f"  종료 코드: {proc.returncode}")
+    print("  주의: 100ms 간격 샘플링이라 짧은 스파이크를 놓칠 수 있어 **과소 측정** 방향이다")
+    print("       (게이트 판정은 이 하한 위에 여유를 두고 볼 것).")
     print("=" * 60)
     return proc.returncode
 

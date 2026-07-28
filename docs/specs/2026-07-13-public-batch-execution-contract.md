@@ -488,6 +488,16 @@ python -m src.pipeline.daily_recommendations \
   조회한다. `feast`는 (a) feast 파생 이미지(`Dockerfile.feast` 계열, `Dockerfile.app`엔 feast
   의존성 없음)에서 실행하고 (b) `GCS_REGISTRY_PATH`·`GCS_STAGING_LOCATION` 환경변수를 요구한다
   (누락 시 exit 1, `runtime_failure`). `duckdb` 기본 경로는 이 두 변수·feast 이미지가 필요 없다.
+- **`--events-dt`의 효력이 모드에 따라 다르다**: `duckdb`는 events_dt로 raw 이벤트를 로드하고
+  유저 이력 기준일(as_of=events_dt+1)로 쓴다. `feast`는 events_dt를 피처·as_of에 **쓰지 않고**
+  (as_of=candidate_dt+1), `user_recommendations.events_dt` 컬럼에 lineage로만 적재한다. 인자
+  시그니처는 같지만 의미가 다르므로 이 컬럼을 읽는 소비자(리랭킹 평가·비교 실험)는 모드를 함께 본다.
+- **feast 모드 선행 의존(DAG 순서)**: candidate_dt의 video/user 피처 스냅샷이 이 배치 실행 전에
+  offline store에 materialize돼 있어야 한다(`VideoFeatureView` ttl=None이라 미적재 시 stale 또는
+  미발견→cold-start, `UserDynamicView` ttl=60h). `Autoresearch-airflow`는 feast 모드 daily를
+  `feature_store_build`(해당 candidate_dt) 뒤에 배치한다.
+- feast 모드 `job_summary`는 관측용으로 `cold_start_users`(UserDynamic 전량 결손 유저 수)와
+  `video_missing_rate`(영상 미발견 비율)를 추가로 싣는다(duckdb 모드엔 없음).
 - champion 모델(`models:/ctr-model@champion`)로 일일 트렌딩 후보를 가상 유저
   전원에 대해 채점해 `user_recommendations` dt 파티션에 멱등 적재한다
   (파티션 데코레이터 + WRITE_TRUNCATE).

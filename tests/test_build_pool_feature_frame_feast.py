@@ -96,6 +96,36 @@ def test_serving_postprocess_cold_start_only_no_drop(monkeypatch) -> None:
     assert v2["total_event_count_7d"] == 0
 
 
+def test_diagnostics_reports_cold_start_signals(monkeypatch) -> None:
+    # cold-start로 채우기 **전** 결손 신호를 diagnostics로 노출한다(서빙 관측용, #381 리뷰).
+    def _all_cold(store, spine, *, service=feast_retrieval.DEFAULT_SERVICE):
+        rows = []
+        for video_id in spine["video_id"]:
+            row = {c: 0 for c in MODEL_FEATURE_COLUMNS}
+            for c in CATEGORICAL_FEATURE_COLUMNS:
+                row[c] = "Gaming"
+            row["video_id"] = video_id
+            for c in feast_retrieval._USER_DYNAMIC_COLUMNS:  # 유저 동적 전량 결손
+                row[c] = None
+            if video_id == "v2":
+                row["category_id"] = None  # 영상 미발견 1건
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    monkeypatch.setattr(feast_retrieval, "retrieve_training_features", _all_cold)
+    diag: dict = {}
+    feast_retrieval.build_pool_feature_frame_feast(
+        store=object(),
+        user_id="u1",
+        candidate_video_ids=["v1", "v2"],
+        as_of="2026-07-20 00:00:00",
+        diagnostics=diag,
+    )
+    assert diag["user_dynamic_cold"] is True  # UserDynamic 전 피처 null
+    assert diag["video_missing"] == 1  # v2만 category_id null
+    assert diag["pool_size"] == 2
+
+
 def test_missing_feature_raises(monkeypatch) -> None:
     # 조회 결과에 모델 피처가 빠지면 조용히 넘기지 않고 즉시 실패.
     monkeypatch.setattr(
