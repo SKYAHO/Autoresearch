@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from feast import FeatureStore
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
-from src.features.feast_retrieval import build_pool_feature_frame_feast
+from src.features.feast_retrieval import build_pool_feature_frames_feast
 from src.features.model_contract import require_model_feature_columns
 from src.pipeline.build_training_dataset import (
     BIGQUERY_DATASET,
@@ -327,20 +327,17 @@ def run_batch(
         # UserDynamic을 offline PIT로 한 번에 조회. duckdb의 영상/유저 2기준 분리를 흡수한다.
         as_of = (candidate_dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
         candidate_video_ids = [str(v) for v in videos_raw["video_id"].tolist()]
-        # 서빙은 드롭 대신 cold-start로 채우므로(설계결정 3) 결손이 조용히 묻힌다. materialize
-        # 지연/ttl 초과로 개인화가 사라진 추천이 되먹임되는 걸 감지하도록 채우기 전 결손을 센다.
-        feast_diag = {"cold_start_users": 0, "video_missing": 0, "pool_total": 0}
+        # pool이 전 유저 공통이므로 (유저 × 후보) spine **1회 조회**로 전 유저 프레임을 배치 조립한다
+        # (#359 C1, 리뷰 4: 유저마다 staged 2회 = 하루 ~2N BQ 잡 회피). registry/service 불일치 같은
+        # 전 유저 공통 오류는 이 조회에서 fail-fast(유저 격리로 위장되지 않음). 서빙은 드롭 대신
+        # cold-start로 채우므로(설계결정 3) 결손이 묻히는 걸 diagnostics 집계로 관측한다.
+        feast_diag: dict = {"cold_start_users": 0, "video_missing": 0, "pool_total": 0}
+        _frames = build_pool_feature_frames_feast(
+            feature_store, user_ids, candidate_video_ids, as_of, diagnostics=feast_diag
+        )
 
         def _pool_frame(user_id: str) -> pd.DataFrame:
-            diag: dict = {}
-            frame = build_pool_feature_frame_feast(
-                feature_store, user_id, candidate_video_ids, as_of, diagnostics=diag
-            )
-            if diag.get("user_dynamic_cold"):
-                feast_diag["cold_start_users"] += 1
-            feast_diag["video_missing"] += diag.get("video_missing", 0)
-            feast_diag["pool_total"] += diag.get("pool_size", 0)
-            return frame
+            return _frames[user_id]
     else:
         feast_diag = None
         # events_dt 파티션 전체를 과거 이력으로 포함하되 이후 이벤트는 보지 않는다.

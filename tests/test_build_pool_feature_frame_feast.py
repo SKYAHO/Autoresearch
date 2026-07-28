@@ -126,6 +126,44 @@ def test_diagnostics_reports_cold_start_signals(monkeypatch) -> None:
     assert diag["pool_size"] == 2
 
 
+def test_batched_frames_split_reindex_and_aggregate(monkeypatch) -> None:
+    # (유저 × 후보) spine 1회 조회 → 유저별 프레임 dict. 각 프레임은 후보 순서로 reindex되고,
+    # diagnostics는 유저 전체 집계(cold_start_users/video_missing/pool_total)를 채운다(#359 C1).
+    def _fake(store, spine, *, service=feast_retrieval.DEFAULT_SERVICE):
+        rows = []
+        for _, r in spine.iterrows():
+            row = {c: 0 for c in MODEL_FEATURE_COLUMNS}
+            for c in CATEGORICAL_FEATURE_COLUMNS:
+                row[c] = "Gaming"
+            row["user_id"] = r["user_id"]
+            row["video_id"] = r["video_id"]
+            if r["user_id"] == "u2":  # u2는 UserDynamic 전량 결손(cold)
+                for c in feast_retrieval._USER_DYNAMIC_COLUMNS:
+                    row[c] = None
+            if r["video_id"] == "v3":  # v3는 영상 미발견
+                row["category_id"] = None
+            rows.append(row)
+        return pd.DataFrame(rows[::-1])  # 뒤집어 반환 → reindex가 후보 순서로 되돌리는지 검증
+
+    monkeypatch.setattr(feast_retrieval, "retrieve_training_features", _fake)
+    diag: dict = {}
+    frames = feast_retrieval.build_pool_feature_frames_feast(
+        store=object(),
+        user_ids=["u1", "u2"],
+        candidate_video_ids=["v1", "v2", "v3"],
+        as_of="2026-07-20 00:00:00",
+        diagnostics=diag,
+    )
+    assert set(frames) == {"u1", "u2"}
+    for user in ("u1", "u2"):
+        assert frames[user].columns.tolist() == ["video_id", *MODEL_FEATURE_COLUMNS]
+        assert frames[user]["video_id"].tolist() == ["v1", "v2", "v3"]  # 후보 순서 결정론
+    # 집계: u2만 cold → 1명, v3 미발견 × 2유저 = 2, pool_total = 2×3.
+    assert diag["cold_start_users"] == 1
+    assert diag["video_missing"] == 2
+    assert diag["pool_total"] == 6
+
+
 def test_missing_feature_raises(monkeypatch) -> None:
     # 조회 결과에 모델 피처가 빠지면 조용히 넘기지 않고 즉시 실패.
     monkeypatch.setattr(

@@ -459,32 +459,36 @@ def test_run_batch_snapshots_video_features_at_candidate_dt(monkeypatch):
 
 
 def test_run_batch_feast_source_uses_candidate_dt_plus_one_single_as_of(monkeypatch):
-    # #359 A3: feast 모드는 build_pool_feature_frame_feast로 **단일 as_of=candidate_dt+1**을 쓴다
-    # (events_dt+1이 아님). 영상 스냅샷은 candidate_dt를 골라 duckdb의 영상/유저 2기준 분리를
-    # 흡수한다. duckdb build_pool_feature_frame은 절대 호출되지 않는다.
+    # #359 A3/C1: feast 모드는 build_pool_feature_frames_feast(배치)로 전 유저를 1회 조회하고,
+    # **단일 as_of=candidate_dt+1**(events_dt+1이 아님)을 쓴다. duckdb build_pool_feature_frame은
+    # 절대 호출되지 않는다. cold_start_users·video_missing_rate 관측 필드도 확인한다.
     captured: dict = {}
 
-    def _capture_feast(store, user_id, candidate_video_ids, as_of, diagnostics=None):
+    def _capture_feast(store, user_ids, candidate_video_ids, as_of, diagnostics=None):
         captured["store"] = store
+        captured["user_ids"] = list(user_ids)
         captured["candidate_video_ids"] = list(candidate_video_ids)
         captured["as_of"] = as_of
         if diagnostics is not None:
-            # u1은 cold(UserDynamic 결손), 각 유저 영상 1건 미발견으로 관측 신호를 흉내낸다.
+            # u1만 cold(1명), 유저당 1 미발견 → video_missing=유저수, pool_total=유저수×후보수 흉내.
             diagnostics.update(
                 {
-                    "user_dynamic_cold": user_id == "u1",
-                    "video_missing": 1,
-                    "pool_size": len(candidate_video_ids),
+                    "cold_start_users": 1,
+                    "video_missing": len(user_ids),
+                    "pool_total": len(user_ids) * len(candidate_video_ids),
                 }
             )
-        return pd.DataFrame(
-            [{**{c: 0 for c in MODEL_FEATURE_COLUMNS}, "video_id": v} for v in candidate_video_ids]
-        )
+        return {
+            u: pd.DataFrame(
+                [{**{c: 0 for c in MODEL_FEATURE_COLUMNS}, "video_id": v} for v in candidate_video_ids]
+            )
+            for u in user_ids
+        }
 
     def _boom(**kwargs):
         raise AssertionError("feast 모드에서 duckdb build_pool_feature_frame이 호출됨")
 
-    monkeypatch.setattr(daily, "build_pool_feature_frame_feast", _capture_feast)
+    monkeypatch.setattr(daily, "build_pool_feature_frames_feast", _capture_feast)
     monkeypatch.setattr(daily, "build_pool_feature_frame", _boom)
 
     client = _FakeClient()
@@ -500,6 +504,7 @@ def test_run_batch_feast_source_uses_candidate_dt_plus_one_single_as_of(monkeypa
         feature_store=sentinel_store,
     )
     assert captured["as_of"] == "2026-07-22 00:00:00"  # candidate_dt+1 (events_dt+1=07-19 아님)
+    assert captured["user_ids"] == ["u1", "u2"]  # 전 유저를 1회 배치 조회
     assert captured["candidate_video_ids"] == ["v0", "v1", "v2"]
     assert captured["store"] is sentinel_store
     assert (report["users"], report["rows"]) == (2, 6)  # 2 유저 × 3 후보

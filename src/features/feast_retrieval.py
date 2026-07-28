@@ -176,6 +176,49 @@ def apply_cold_start_defaults(features: pd.DataFrame) -> pd.DataFrame:
     return features
 
 
+def _normalize_as_of(as_of: str) -> pd.Timestamp:
+    """as_of(UTC wall-clock 문자열)를 tz-aware UTC로 정규화한다 — 학습 spine과 PIT 경계 정렬."""
+    timestamp = pd.Timestamp(as_of)
+    return timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
+
+
+def _require_model_features(features: pd.DataFrame) -> None:
+    """조회 결과에 21개 모델 피처가 모두 있는지 확인(없으면 조용히 넘기지 않고 실패)."""
+    missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
+    if missing:
+        raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
+
+
+def _finalize_pool_frame(
+    features: pd.DataFrame, video_ids: list[str], diagnostics: dict | None
+) -> pd.DataFrame:
+    """한 유저의 조회 결과를 서빙 계약 프레임으로 마감한다(단일·배치 경로 공용).
+
+    후보 순서로 reindex해 (a) 반환 순서를 결정론으로 고정하고(시뮬 재현성·replay 정합 —
+    get_historical_features는 ORDER BY가 없어 조회 순서가 흔들리면 exploration·tie-break가
+    달라진다), (b) File store가 드롭했거나 offline에 없는 영상을 NaN 행으로 복원해 cold-start
+    대상으로 되돌린다(후보가 순위에서 조용히 빠지지 않음, 설계결정 3). cold-start로 채우기
+    **전에** 결손을 diagnostics로 남긴다 — 채운 뒤엔 안 보인다.
+    """
+    features = (
+        features.drop_duplicates(subset="video_id")
+        .set_index("video_id")
+        .reindex(video_ids)
+        .reset_index()
+    )
+    if diagnostics is not None:
+        dyn_cols = [c for c in _USER_DYNAMIC_COLUMNS if c in features.columns]
+        diagnostics["user_dynamic_cold"] = (
+            bool(features[dyn_cols].isna().all(axis=None)) if dyn_cols else False
+        )
+        diagnostics["video_missing"] = (
+            int(features["category_id"].isna().sum()) if "category_id" in features.columns else 0
+        )
+        diagnostics["pool_size"] = int(len(features))
+    features = apply_cold_start_defaults(features)  # 서빙 후처리: cold-start만(드롭 금지)
+    return features[["video_id", *MODEL_FEATURE_COLUMNS]]
+
+
 def build_pool_feature_frame_feast(
     store: FeatureStore,
     user_id: str,
@@ -218,45 +261,63 @@ def build_pool_feature_frame_feast(
         # 빈 pool은 BigQuery에 빈 entity_df를 올리지 않고 즉시 빈 계약 프레임을 돌려준다.
         return pd.DataFrame(columns=["video_id", *MODEL_FEATURE_COLUMNS])
 
-    timestamp = pd.Timestamp(as_of)
-    if timestamp.tzinfo is None:
-        timestamp = timestamp.tz_localize("UTC")
-    else:
-        timestamp = timestamp.tz_convert("UTC")
+    spine = pd.DataFrame(
+        {"user_id": str(user_id), "video_id": video_ids, "event_timestamp": _normalize_as_of(as_of)}
+    )
+    features = retrieve_training_features(store, spine, service=service)
+    _require_model_features(features)
+    return _finalize_pool_frame(features, video_ids, diagnostics)
+
+
+def build_pool_feature_frames_feast(
+    store: FeatureStore,
+    user_ids: Sequence[str],
+    candidate_video_ids: Sequence[str],
+    as_of: str,
+    *,
+    service: str = DEFAULT_SERVICE,
+    diagnostics: dict | None = None,
+) -> dict[str, pd.DataFrame]:
+    """여러 유저 × **공통** 영상 pool을 offline PIT **1회 조회**로 조립한다(#359 C1, 일일추천용).
+
+    daily처럼 pool이 전 유저 공통일 때, 유저마다 ``build_pool_feature_frame_feast``를 부르면
+    staged 2회 × N = 하루 ~2N BQ 잡(각 entity_df 업로드)이 된다. 여기서는 (유저 × 후보) 곱집합
+    spine 1회로 접어 조회를 1회(staged 2단)로 줄인다(PR #381 리뷰 4). 부수로 registry/service
+    불일치 같은 전 유저 공통 오류가 유저별 격리로 위장되지 않고 이 한 번의 조회에서 fail-fast한다.
+
+    Returns:
+        ``{user_id: DataFrame}`` — 각 프레임은 ``candidate_video_ids``와 같은 순서·개수(영상당 1행).
+
+    diagnostics: 주어지면 **집계**를 채운다 — ``cold_start_users``(UserDynamic 전량 결손 유저 수),
+        ``video_missing``(전체 미발견 영상 행 수), ``pool_total``(전체 행 수). 후처리 규칙은
+        ``build_pool_feature_frame_feast``와 동일(cold-start만, 드롭 없음).
+    """
+    video_ids = [str(video_id) for video_id in candidate_video_ids]
+    users = [str(user_id) for user_id in user_ids]
+    if not video_ids or not users:
+        return {u: pd.DataFrame(columns=["video_id", *MODEL_FEATURE_COLUMNS]) for u in users}
 
     spine = pd.DataFrame(
-        {"user_id": str(user_id), "video_id": video_ids, "event_timestamp": timestamp}
+        [(u, v) for u in users for v in video_ids], columns=["user_id", "video_id"]
     )
-
+    spine["event_timestamp"] = _normalize_as_of(as_of)
     features = retrieve_training_features(store, spine, service=service)
-    missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
-    if missing:
-        raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
-    # 서빙 계약(no-drop + 결정론적 순서)을 store 구현에 의존하지 않고 함수에서 직접
-    # 관철한다: 후보 순서로 reindex해 (a) 반환 순서를 고정하고(시뮬 재현성·replay 정합 —
-    # get_historical_features는 ORDER BY가 없어 조회 순서가 흔들리면 exploration·tie-break가
-    # 달라진다), (b) File store가 드롭했거나 offline에 없는 영상을 NaN 행으로 복원해
-    # cold-start 대상으로 되돌린다(후보가 순위에서 조용히 빠지지 않음, 설계결정 3).
-    features = (
-        features.drop_duplicates(subset="video_id")
-        .set_index("video_id")
-        .reindex(video_ids)
-        .reset_index()
-    )
-    # cold-start로 채우기 **전에** 결손을 센다 — 채운 뒤엔 안 보인다(설계결정 3). 서빙 호출부가
-    # 개인화 결손(ttl 초과·materialize 지연)과 영상 미발견을 관측하도록 신호를 남긴다.
+    _require_model_features(features)
+
+    by_user = {str(u): sub for u, sub in features.groupby("user_id", sort=False)}
+    empty = features.iloc[0:0]
+    frames: dict[str, pd.DataFrame] = {}
+    agg = {"cold_start_users": 0, "video_missing": 0, "pool_total": 0}
+    for user in users:
+        per: dict | None = {} if diagnostics is not None else None
+        frames[user] = _finalize_pool_frame(by_user.get(user, empty), video_ids, per)
+        if per is not None:
+            agg["cold_start_users"] += int(bool(per.get("user_dynamic_cold")))
+            agg["video_missing"] += int(per.get("video_missing", 0))
+            agg["pool_total"] += int(per.get("pool_size", 0))
     if diagnostics is not None:
-        dyn_cols = [c for c in _USER_DYNAMIC_COLUMNS if c in features.columns]
-        diagnostics["user_dynamic_cold"] = (
-            bool(features[dyn_cols].isna().all(axis=None)) if dyn_cols else False
-        )
-        diagnostics["video_missing"] = (
-            int(features["category_id"].isna().sum()) if "category_id" in features.columns else 0
-        )
-        diagnostics["pool_size"] = int(len(features))
-    # 서빙 후처리: cold-start만(드롭 금지). 위 NOTE 참고.
-    features = apply_cold_start_defaults(features)
-    return features[["video_id", *MODEL_FEATURE_COLUMNS]]
+        diagnostics.update(agg)
+    return frames
 
 
 def build_offline_feature_store(
