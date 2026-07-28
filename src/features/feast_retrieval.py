@@ -183,6 +183,7 @@ def build_pool_feature_frame_feast(
     as_of: str,
     *,
     service: str = DEFAULT_SERVICE,
+    diagnostics: dict | None = None,
 ) -> pd.DataFrame:
     """유저 1명 × 영상 pool의 21피처 채점 프레임을 학습과 **동일한** offline PIT로 만든다(#359).
 
@@ -198,6 +199,10 @@ def build_pool_feature_frame_feast(
             받아 tz-aware UTC로 정규화한다 — 학습 spine(``training_entity``)의
             event_timestamp가 tz-aware UTC라 그와 정렬해야 PIT 경계가 어긋나지 않는다.
         service: 조회할 FeatureService 이름(기본 ``ctr_training_v1``).
+        diagnostics: 주어지면(dict) cold-start **채우기 전** 결손 신호를 기록한다 — 서빙은
+            드롭 대신 채우므로(설계결정 3) 채운 뒤엔 결손이 안 보인다. 호출부(일일추천 등)가
+            개인화 결손을 관측·집계하도록 ``user_dynamic_cold``(이 유저의 UserDynamic 전 피처
+            null 여부), ``video_missing``(영상 미발견 = category_id null 행 수), ``pool_size``를 채운다.
 
     Returns:
         ``video_id`` + 21개 모델 피처를 가진 DataFrame. 행은 ``candidate_video_ids``와
@@ -238,6 +243,17 @@ def build_pool_feature_frame_feast(
         .reindex(video_ids)
         .reset_index()
     )
+    # cold-start로 채우기 **전에** 결손을 센다 — 채운 뒤엔 안 보인다(설계결정 3). 서빙 호출부가
+    # 개인화 결손(ttl 초과·materialize 지연)과 영상 미발견을 관측하도록 신호를 남긴다.
+    if diagnostics is not None:
+        dyn_cols = [c for c in _USER_DYNAMIC_COLUMNS if c in features.columns]
+        diagnostics["user_dynamic_cold"] = (
+            bool(features[dyn_cols].isna().all(axis=None)) if dyn_cols else False
+        )
+        diagnostics["video_missing"] = (
+            int(features["category_id"].isna().sum()) if "category_id" in features.columns else 0
+        )
+        diagnostics["pool_size"] = int(len(features))
     # 서빙 후처리: cold-start만(드롭 금지). 위 NOTE 참고.
     features = apply_cold_start_defaults(features)
     return features[["video_id", *MODEL_FEATURE_COLUMNS]]
