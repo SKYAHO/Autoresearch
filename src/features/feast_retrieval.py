@@ -1,9 +1,15 @@
-"""학습 데이터셋 조립의 Feast PIT 조회 경로 (#358, [EPIC] #299 Phase 2).
+"""학습·서빙 공용 Feast PIT 조회 경로 (#358 학습, #359 서빙 정합, [EPIC] #299 Phase 2/3).
 
-[파이프라인] 피처 구간 — ``build_training_dataset``의 ``--assembly-source feast`` 경로가
-spine(``training_entity``)에 21피처를 Feast ``get_historical_features``(point-in-time)로
-붙이는 조회 로직을 담당한다. DuckDB 재계산 경로(``assembly.py``)와 병존하며(#359에서
-DuckDB 제거), offline store가 정본(#357)이므로 그 값을 그대로 읽는다.
+[파이프라인] 피처 구간 — 두 소비자가 **같은 offline PIT 조회**로 21피처를 얻어 skew를
+없앤다: ① ``build_training_dataset``의 ``--assembly-source feast`` 경로가 spine
+(``training_entity``)에 붙이는 학습 조립, ② 시뮬레이션·일일추천의 (user × 영상 pool)
+채점 프레임 조립(``build_pool_feature_frame_feast``, #359). 둘 다 Feast
+``get_historical_features``(point-in-time)를 쓰고 offline store가 정본(#357)이라 그 값을
+그대로 읽는다. DuckDB 재계산 경로(``assembly.py``)와 병존하며 #359에서 제거된다.
+
+[학습 vs 서빙 후처리] 결손 처리가 갈린다: 학습은 ``drop_user_dynamic_gap_rows``로
+활동 유저의 결손을 드러내 드롭((C) 결손 가시화)하지만, 서빙(pool 채점)은 콜드 유저·미발견
+영상도 반드시 채점 대상이라 ``apply_cold_start_defaults``만 적용하고 드롭하지 않는다.
 
 [staged 조회] ``topic_similarity``는 (user, **영상 category_id**) 키라 닭-달걀이다
 (#357 (B)). 1차로 video PIT로 category_id를 확정해 entity_df에 붙이고, 2차로 전체
@@ -28,6 +34,8 @@ from src.features.model_contract import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from feast import FeatureStore
 
 logger = logging.getLogger(__name__)
@@ -166,6 +174,73 @@ def apply_cold_start_defaults(features: pd.DataFrame) -> pd.DataFrame:
         )
         features[column] = features[column].fillna(default)
     return features
+
+
+def build_pool_feature_frame_feast(
+    store: FeatureStore,
+    user_id: str,
+    candidate_video_ids: Sequence[str],
+    as_of: str,
+    *,
+    service: str = DEFAULT_SERVICE,
+) -> pd.DataFrame:
+    """유저 1명 × 영상 pool의 21피처 채점 프레임을 학습과 **동일한** offline PIT로 만든다(#359).
+
+    시뮬레이션(``simulate_policy_round``)·일일추천(``daily_recommendations``)의 reranker
+    입력 조립이 raw DuckDB 재계산(``assembly.py``) 대신 이 경로를 쓰게 해, 학습(같은
+    ``retrieve_training_features``)과 값이 어긋나지 않게 한다.
+
+    Args:
+        store: Feast FeatureStore(offline 조회 전용, ``build_offline_feature_store``).
+        user_id: 채점 대상 유저.
+        candidate_video_ids: 채점할 영상 pool의 video_id들(각 1행).
+        as_of: PIT 기준 시각. UTC wall-clock 문자열(예: ``"2026-07-20 00:00:00"``)로
+            받아 tz-aware UTC로 정규화한다 — 학습 spine(``training_entity``)의
+            event_timestamp가 tz-aware UTC라 그와 정렬해야 PIT 경계가 어긋나지 않는다.
+        service: 조회할 FeatureService 이름(기본 ``ctr_training_v1``).
+
+    Returns:
+        ``video_id`` + 21개 모델 피처를 가진 DataFrame. 행은 ``candidate_video_ids``와
+        **정확히 같은 순서·같은 개수**(영상당 1행) — 아래 reindex가 store 구현과 무관하게 보장한다.
+
+    NOTE: 후처리는 서빙 규칙 — ``apply_cold_start_defaults``**만** 적용하고
+    ``drop_user_dynamic_gap_rows``는 쓰지 않는다. 콜드 유저·미발견 영상의 후보를 드롭하면
+    그 영상이 순위에서 조용히 빠지므로, online 서빙과 같은 규칙(카테고리→'unknown',
+    수치→0)으로 채워 전 후보를 채점 대상으로 남긴다(모듈 docstring [학습 vs 서빙 후처리]).
+    """
+    video_ids = [str(video_id) for video_id in candidate_video_ids]
+    if not video_ids:
+        # 빈 pool은 BigQuery에 빈 entity_df를 올리지 않고 즉시 빈 계약 프레임을 돌려준다.
+        return pd.DataFrame(columns=["video_id", *MODEL_FEATURE_COLUMNS])
+
+    timestamp = pd.Timestamp(as_of)
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("UTC")
+    else:
+        timestamp = timestamp.tz_convert("UTC")
+
+    spine = pd.DataFrame(
+        {"user_id": str(user_id), "video_id": video_ids, "event_timestamp": timestamp}
+    )
+
+    features = retrieve_training_features(store, spine, service=service)
+    missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
+    if missing:
+        raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
+    # 서빙 계약(no-drop + 결정론적 순서)을 store 구현에 의존하지 않고 함수에서 직접
+    # 관철한다: 후보 순서로 reindex해 (a) 반환 순서를 고정하고(시뮬 재현성·replay 정합 —
+    # get_historical_features는 ORDER BY가 없어 조회 순서가 흔들리면 exploration·tie-break가
+    # 달라진다), (b) File store가 드롭했거나 offline에 없는 영상을 NaN 행으로 복원해
+    # cold-start 대상으로 되돌린다(후보가 순위에서 조용히 빠지지 않음, 설계결정 3).
+    features = (
+        features.drop_duplicates(subset="video_id")
+        .set_index("video_id")
+        .reindex(video_ids)
+        .reset_index()
+    )
+    # 서빙 후처리: cold-start만(드롭 금지). 위 NOTE 참고.
+    features = apply_cold_start_defaults(features)
+    return features[["video_id", *MODEL_FEATURE_COLUMNS]]
 
 
 def build_offline_feature_store(

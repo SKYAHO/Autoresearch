@@ -36,6 +36,7 @@ from src.utils.model_utils import (  # noqa: E402
 from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
 from src.tracking.logger import (  # noqa: E402
     log_artifact,
+    log_dataset,
     log_metrics,
     log_onnx_model,
     log_parameters,
@@ -117,6 +118,24 @@ def main(
             data_path = os.path.join(project_root, data_path)
         dataset = pd.read_csv(data_path)
         print(f"  [OK] {len(dataset)} rows, {len(dataset.columns)} columns")
+
+        # 데이터셋 lineage(#359): run의 Datasets 섹션에 학습 데이터셋을 input으로 남긴다.
+        # params(extra_params)와 별개로 dataset 엔티티(이름·source·행 수)와 provenance
+        # 태그(피처 소스·기간·FeatureService 등)를 붙여, 어떤 데이터로 학습했는지 run에서
+        # 바로 추적 가능하게 한다. extra_params가 없으면(standalone train) 행 수만 남는다.
+        dataset_tags = {"rows": str(len(dataset))}
+        if extra_params:
+            dataset_tags.update(
+                {k: str(v) for k, v in extra_params.items() if v is not None}
+            )
+        log_dataset(
+            dataset,
+            name="training_dataset",
+            source=data_path,
+            targets="clicked",
+            context="training",
+            tags=dataset_tags,
+        )
 
         print("\n[Step 2] Train/Val/Test 분할 (Test는 완전 held-out)...")
         if test_size is None:

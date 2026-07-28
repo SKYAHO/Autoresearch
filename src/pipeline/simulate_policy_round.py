@@ -39,6 +39,7 @@ import random
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -74,6 +75,7 @@ from src.features.assembly import (
     compute_user_offline_features,
     compute_video_features,
 )
+from src.features.feast_retrieval import build_pool_feature_frame_feast
 from src.features.model_contract import require_model_feature_columns
 from src.pipeline.policy_selector import Exposure, select_exposures
 from src.pipeline.report_html import render_report_html
@@ -83,6 +85,9 @@ from src.serving.model_loader import (
 )
 from src.serving.schemas import CandidateVideo
 from src.serving.service import Reranker
+
+if TYPE_CHECKING:
+    from feast import FeatureStore
 
 BASELINE = "baseline"
 MODEL = "model"
@@ -345,12 +350,28 @@ def main(
     as_of: str = "2026-07-20 00:00:00",
     output_dir: str = "data/generated/policy_round",
     input_paths: Mapping[str, str] | None = None,
+    assembly_source: str = "duckdb",
+    feature_store: FeatureStore | None = None,
 ) -> dict:
-    """정책 시뮬레이션 라운드를 실행하고 리포트 dict를 반환한다."""
+    """정책 시뮬레이션 라운드를 실행하고 리포트 dict를 반환한다.
+
+    assembly_source: 모델 reranker가 보는 21피처의 출처(#359). "feast"는 학습과 같은
+    offline PIT(``build_pool_feature_frame_feast``)를 써 train-serve skew를 없앤다 —
+    이때 ``feature_store``(offline 조회 store) 주입이 필요하다. "duckdb"(기본)는 raw
+    재계산(``assembly.py``)으로 기존과 동일하며 #359에서 제거 예정이다. 어느 경로든
+    baseline 휴리스틱·LLM 후보 provider는 videos_raw(pool 정체)를 그대로 쓴다.
+    """
     if (generator is None) == (replay is None):
         raise ValueError(
             "generator와 replay 중 정확히 하나만 지정해야 합니다 "
             "(replay는 저장된 판정을 재사용하므로 generator가 필요 없습니다)"
+        )
+    if assembly_source not in ("duckdb", "feast"):
+        raise ValueError(f"assembly_source must be 'duckdb' or 'feast': {assembly_source!r}")
+    if assembly_source == "feast" and feature_store is None:
+        raise ValueError(
+            "assembly_source='feast'는 feature_store 주입이 필요합니다 "
+            "(offline PIT 조회 store) — _cli()가 env로 만들어 주입한다"
         )
     exposure_args = {
         "seed": seed,
@@ -366,6 +387,19 @@ def main(
         reranker = load_reranker(load_model_settings_from_environment())  # fail-fast
 
     video_by_id = {str(v["video_id"]): v for v in videos_raw.to_dict("records")}
+    candidate_video_ids = list(video_by_id)
+
+    # 모델 reranker 입력(21피처) 조립 경로 선택(#359). 바뀌는 건 모델이 보는 피처의
+    # 출처뿐 — feast는 학습과 같은 offline PIT라 skew가 없고, duckdb(기본)는 raw
+    # 재계산이다. 두 경로 모두 pool 정체(video_by_id)·baseline 휴리스틱은 공통.
+    if assembly_source == "feast":
+        def _model_feature_frame(user_id: str) -> pd.DataFrame:
+            return build_pool_feature_frame_feast(
+                feature_store, user_id, candidate_video_ids, as_of
+            )
+    else:
+        def _model_feature_frame(user_id: str) -> pd.DataFrame:
+            return build_pool_feature_frame(personas, events, videos_raw, user_id, as_of)
 
     # 1) 유저별 두 정책의 노출 결정 (+ 스코어링 진단 수집)
     exposures_by_user: dict[str, dict[str, list[Exposure]]] = {}
@@ -374,11 +408,17 @@ def main(
     for index, virtual_user in enumerate(virtual_users):
         user_id = str(virtual_user.get("user_id", f"user_{index}"))
         try:
-            frame = build_pool_feature_frame(personas, events, videos_raw, user_id, as_of)
+            frame = _model_feature_frame(user_id)
             candidates = _to_candidate_videos(frame, reranker.feature_columns)
             outcome = reranker.rerank_with_diagnostics(candidates)
         except KeyError:
-            skipped_users.append(user_id)  # 유저 단위 격리: persona 누락 등
+            if assembly_source == "feast":
+                # feast 경로의 KeyError는 유저별 결손이 아니라 전 유저 공통 구성 오류다
+                # (registry/FeatureService 불일치 → retrieve_training_features 내부 컬럼
+                # 접근 실패). 유저 스킵으로 위장하면 빈 노출 리포트가 성공으로 끝나 은폐되므로
+                # 그대로 전파한다(리뷰 #377). persona 누락 격리는 duckdb 경로 전용이다.
+                raise
+            skipped_users.append(user_id)  # duckdb: persona 누락 등 유저 단위 격리
             continue
         for column, values in outcome.unseen_categories.items():
             unseen_counts[column] = unseen_counts.get(column, 0) + len(values)
@@ -627,10 +667,51 @@ def _cli() -> None:
         "--replay-drafts", default=None,
         help="저장된 draft parquet 경로. 지정하면 LLM 호출 없이 커트라인만 다시 적용합니다",
     )
+    parser.add_argument(
+        "--assembly-source", choices=["duckdb", "feast"], default="duckdb",
+        help="모델 피처 조립 경로. feast=학습과 같은 offline PIT(#359, 권장), "
+             "duckdb=raw 재계산(기존, #359에서 제거 예정). feast는 GCS_REGISTRY_PATH/"
+             "GCS_STAGING_LOCATION env를 요구한다",
+    )
     parser.add_argument("--log-mlflow", action="store_true")
     args = parser.parse_args()
     if args.replay_drafts is not None and args.generator is not None:
         parser.error("--generator는 --replay-drafts와 함께 쓸 수 없습니다 (저장된 판정을 재사용합니다)")
+
+    # feast 경로: 학습(_assemble_via_feast)과 동일한 offline 전용 store를 env로 구성해
+    # 주입한다(prod feature_store.yaml/Redis 불필요, registry는 배포 job이 apply한 GCS).
+    feature_store = None
+    if args.assembly_source == "feast":
+        import atexit
+        import shutil
+        import tempfile
+
+        from src.features.feast_retrieval import build_offline_feature_store
+        from src.pipeline.build_training_dataset import (
+            BIGQUERY_DATASET,
+            BIGQUERY_PROJECT,
+        )
+
+        try:
+            registry_path = os.environ["GCS_REGISTRY_PATH"]
+            gcs_staging = os.environ["GCS_STAGING_LOCATION"]
+        except KeyError as exc:
+            parser.error(
+                f"--assembly-source feast는 환경변수 {exc}가 필요합니다 "
+                "(offline 레지스트리·GCS staging 경로)"
+            )
+
+        # offline 전용 store라 sqlite online.db는 실제로 안 쓰이지만 RepoConfig가 경로를
+        # 요구한다. 반복·로컬 실행에서 임시 디렉토리가 쌓이지 않도록 종료 시 정리한다.
+        store_dir = tempfile.mkdtemp(prefix="feast_sim_")
+        atexit.register(shutil.rmtree, store_dir, ignore_errors=True)
+        feature_store = build_offline_feature_store(
+            registry_path,
+            project=BIGQUERY_PROJECT,
+            dataset=BIGQUERY_DATASET,
+            gcs_staging=gcs_staging,
+            online_db_path=os.path.join(store_dir, "online.db"),
+        )
 
     from datetime import UTC, datetime
 
@@ -713,6 +794,8 @@ def _cli() -> None:
             "videos": args.videos,
             "events": args.events,
         },
+        assembly_source=args.assembly_source,
+        feature_store=feature_store,
     )
 
     if args.log_mlflow:

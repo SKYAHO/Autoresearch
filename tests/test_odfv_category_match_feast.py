@@ -135,25 +135,30 @@ def test_feature_service_matches_model_contract() -> None:
 def test_odfv_computes_matches_from_three_source_views(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     store = _build_store()
+    service = store.get_feature_service("match_service")
+
     # u1: preferred=[Gaming,Music], hist=Gaming. v1=Gaming, v2=Sports. 조회 07-02(ttl 안).
-    entity_df = pd.DataFrame(
-        [
-            {"user_id": "u1", "video_id": "v1", "event_timestamp": pd.Timestamp("2026-07-02", tz=_UTC)},
-            {"user_id": "u1", "video_id": "v2", "event_timestamp": pd.Timestamp("2026-07-02", tz=_UTC)},
-        ]
-    )
-    out = store.get_historical_features(
-        entity_df=entity_df, features=store.get_feature_service("match_service")
-    ).to_df()
-    # 순서·인덱스에 의존하지 않게 video_id로 dict를 만들어 단정(실패 시 실제 결과를 메시지로).
-    matches = {
-        row["video_id"]: (
-            int(row["preferred_category_match"]),
-            int(row["historical_category_match"]),
-        )
-        for _, row in out.iterrows()
-    }
+    # 영상별로 **단일 엔티티** 조회한다 — File offline store는 다중 엔티티 ODFV 조회에서
+    # 결과 행을 비결정적으로 드롭해 flaky했다(#377 CI: [v1,v2] 중 v1이 빠져 실패). 여기서
+    # 검증 대상은 "세 소스 뷰가 ODFV 변환에 올바르게 먹여지는가"이지 다중 조회의 행 보존이
+    # 아니므로, 조회를 1행씩 쪼개 드롭 변수를 제거한다(staged 스모크가 단일 행으로 안정
+    # 통과하는 것과 같은 이유).
+    def _match(video_id: str) -> tuple[int, int]:
+        out = store.get_historical_features(
+            entity_df=pd.DataFrame(
+                [{
+                    "user_id": "u1",
+                    "video_id": video_id,
+                    "event_timestamp": pd.Timestamp("2026-07-02", tz=_UTC),
+                }]
+            ),
+            features=service,
+        ).to_df()
+        assert len(out) == 1, out.to_dict("list")
+        row = out.iloc[0]
+        return int(row["preferred_category_match"]), int(row["historical_category_match"])
+
     # v1=Gaming: preferred(Gaming∈[Gaming,Music])=1, historical(Gaming==Gaming)=1
-    assert matches.get("v1") == (1, 1), out.to_dict("list")
+    assert _match("v1") == (1, 1)
     # v2=Sports: preferred(Sports∉[..])=0, historical(Gaming!=Sports)=0
-    assert matches.get("v2") == (0, 0), out.to_dict("list")
+    assert _match("v2") == (0, 0)

@@ -42,7 +42,10 @@ from feature_repo.feature_definitions import (
     video_entity,
     video_feature_view,
 )
-from src.features.feast_retrieval import retrieve_training_features
+from src.features.feast_retrieval import (
+    build_pool_feature_frame_feast,
+    retrieve_training_features,
+)
 from src.features.model_contract import MODEL_FEATURE_COLUMNS
 
 _UTC = "UTC"
@@ -171,3 +174,33 @@ def test_staged_retrieval_attaches_all_21_features(tmp_path, monkeypatch) -> Non
     assert row["category_id"] == "Gaming"
     assert int(row["recent_click_count_7d"]) == 5
     assert int(row["clicked"]) == 1
+
+
+def test_build_pool_feature_frame_feast_end_to_end(tmp_path, monkeypatch) -> None:
+    """서빙 pool 조립이 실물 Feast API로 (a) 21피처를 붙이고 (b) reindex로 후보 순서·개수를
+    관철하는지 검증(#359 A5 + PR #377 리뷰 1).
+
+    reindex 덕에 미발견 후보·File store 드롭 행도 NaN으로 복원돼 cold-start되므로,
+    설계결정 3(서빙 no-drop)이 store 구현과 무관하게 성립한다 — File store가 미발견
+    엔티티 행을 드롭해도(실측) 반환 계약이 동일하다.
+    """
+    monkeypatch.chdir(tmp_path)
+    store = _build_store()
+
+    # present 후보만: 실값이 실물 API로 붙는지(staged category 조회·ODFV 파생·source 값).
+    only = build_pool_feature_frame_feast(store, "u1", ["v1"], "2026-07-02 00:00:00")
+    assert only["video_id"].tolist() == ["v1"]
+    row = only.iloc[0]
+    assert row["category_id"] == "Gaming"
+    assert int(row["recent_click_count_7d"]) == 5
+    assert row["topic_similarity"] == pytest.approx(0.9)
+    assert int(row["preferred_category_match"]) == 1
+    assert int(row["historical_category_match"]) == 1
+
+    # 미발견(v2)을 섞어도: 후보 순서·개수가 고정되고(no-drop) 미발견은 cold-start로 채워짐.
+    mixed = build_pool_feature_frame_feast(store, "u1", ["v1", "v2"], "2026-07-02 00:00:00")
+    assert mixed["video_id"].tolist() == ["v1", "v2"]  # 순서·개수 결정론(File 드롭과 무관)
+    assert list(mixed.columns) == ["video_id", *MODEL_FEATURE_COLUMNS]
+    assert int(mixed[list(MODEL_FEATURE_COLUMNS)].isna().sum().sum()) == 0  # null 없음
+    v2 = mixed[mixed["video_id"] == "v2"].iloc[0]
+    assert v2["category_id"] == "unknown"  # 미발견 영상 → cold-start
