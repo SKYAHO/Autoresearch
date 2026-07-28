@@ -90,9 +90,13 @@
   - `feast_retrieval.build_pool_feature_frame_feast(store, user_id, candidate_video_ids, as_of, *, service)`
     신설. spine = `(user_id 상수, video_id=각 후보, event_timestamp=as_of를 tz-aware
     UTC로 정규화 — 학습 spine과 정렬)`.
-  - `retrieve_training_features(store, spine)` 호출 → 누락 피처 가드 →
-    `apply_cold_start_defaults`**만** 적용(§설계결정 3, `drop_user_dynamic_gap_rows`
-    금지). `video_id` + 21피처 반환(`_to_candidate_videos` 입력 형태).
+  - `retrieve_training_features(store, spine)` 호출 → 누락 피처 가드 → **후보 순서로
+    reindex**(PR #377 리뷰 1) → `apply_cold_start_defaults`**만** 적용(§설계결정 3,
+    `drop_user_dynamic_gap_rows` 금지). `video_id` + 21피처 반환.
+  - reindex가 서빙 계약(no-drop + 결정론적 순서)을 **store 구현과 무관하게** 관철:
+    `get_historical_features`는 ORDER BY가 없어 조회 순서가 흔들리면 exploration·tie-break·
+    replay 정합이 깨지고(리뷰 1), File store가 드롭한 행/미발견 영상은 NaN으로 복원돼
+    cold-start된다 → §설계결정 3이 BQ뿐 아니라 함수 레벨에서 성립.
   - 배치 위치: `feast_retrieval.py`(모듈 docstring을 학습·서빙 공용으로 갱신).
   - 테스트: `tests/test_build_pool_feature_frame_feast.py`(dev-runnable, fake store
     monkeypatch) — spine 구성·tz·서빙 후처리(cold-start만, gap 드롭 금지) 회귀
@@ -133,10 +137,11 @@
     `build_pool_feature_frame_feast` end-to-end 추가 — 실물 Feast API로 staged 조회가
     물리적으로 맞물려 도는지(fake-store 간극) + 반환 계약. CI `pytest (feast group)`가
     파일 전체를 돌려 자동 포함.
-  - **실측 발견**: File store는 **미발견 엔티티가 섞인 다중 뷰 PIT 조회에서 행을 드롭**한다
-    (spine 2행 중 1행 손실 실측). 즉 "미발견 후보 no-drop + cold-start"(§설계결정 3)는
-    **BigQuery 전용** 계약 — File 테스트로 검증 불가, Phase B(BQ)로 이관. drop 없이
-    cold-start만 적용하는 로직 자체는 fake-store 유닛이 가드.
+  - **실측 발견**: File store는 미발견 엔티티가 섞인 다중 뷰 PIT 조회에서 행을 드롭한다
+    (spine 2행 중 1행 손실 실측). → **A1 reindex(PR #377 리뷰 1)로 해소**: 후보 순서로
+    reindex하면 드롭 행도 NaN으로 복원돼 cold-start되므로 §설계결정 3이 File store에서도
+    성립. 통합 테스트를 present-only에서 **present+미발견 혼합 no-drop 검증**으로 강화.
+    B2-1은 "정합성 필수 검증"에서 "성능/의미 확인"으로 격하.
 
 ### Phase B — 1.77M feast 메모리·정확성 실측 (대장님 BQ)
 
@@ -145,10 +150,13 @@
   21피처 non-null 비율.
 - [ ] B2. 학습-구(duckdb) vs 학습-신(feast) 데이터셋 diff + ROC-AUC 영향
   (n=11일, "참고용" caveat). `diff_feature_contract.py` 활용.
-- [ ] B2-1. **서빙 pool no-drop + cold-start를 BigQuery로 검증**(A5에서 이관).
-  File store는 미발견 엔티티 행을 드롭하지만 BigQuery는 행 보존+NULL이어야 한다 —
-  `build_pool_feature_frame_feast`에 미발견 영상/콜드 유저를 섞어 BQ에서 전 후보가
-  cold-start로 보존되는지 실측(설계결정 3의 서빙 계약이 프로덕션 store에서 성립하는지).
+- [ ] B2-1. **서빙 pool no-drop + cold-start를 BigQuery로 검증**(성능/의미 확인으로 격하).
+  A1 reindex로 반환 계약(순서·개수)은 store 무관하게 보장되므로, BQ에서 남는 확인은
+  "reindex가 BQ 결과에도 자연스럽게 맞물리는지"와 cold-start 채움 비율의 의미다.
+- [ ] B3. **시뮬 라운드 feast 조회 비용 측정**(PR #377 리뷰 3). `_model_feature_frame`이
+  유저당 호출 → staged 2회 조회(유저 N명 → ~2N BQ 잡), 특히 stage 1(영상 category,
+  키=(pool, as_of))은 전 유저 동일한데 반복. N=1000 기준 잡 수·업로드·소요를 실측하고,
+  임계 초과 시 (user×pool) 곱집합 spine 1회 조회로 묶는 배치화를 검토(후속 여부 결정).
 - [ ] B3. `experiments/2026-07-28_feast-1p77m-memory/notes.md`에 Before/After
   기록. **통과 기준 미충족 시 Phase C 착수 금지.**
 
@@ -186,6 +194,10 @@
 - #358 배포 미완(Redis 재-materialize + 서빙 재배포, category_key 인코딩) —
   인프라 도메인, 별건. Phase A는 offline만 읽어 이에 의존하지 않음.
 - numpy base 의존성 직접 선언 — 별도 후속.
+- **cold-start 채움 비율 관측**(PR #377 리뷰 4) — materialize 미완 시 전 유저 UserDynamic
+  NULL → 전면 cold-start된 무의미 점수가 event log로 재학습에 되먹임될 수 있음. 서빙이
+  "드롭 대신 채움"을 택한 대가로 채운 비율을 리포트 필드로 계측하거나 임계 초과 fail-fast.
+  per-user 함수에서 집계를 끌어올려야 해 별도 후속(관측 장치).
 
 ## 관련 정본
 

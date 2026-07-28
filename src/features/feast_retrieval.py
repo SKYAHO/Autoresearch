@@ -200,13 +200,19 @@ def build_pool_feature_frame_feast(
         service: 조회할 FeatureService 이름(기본 ``ctr_training_v1``).
 
     Returns:
-        ``video_id`` + 21개 모델 피처를 가진 DataFrame(pool의 영상당 1행).
+        ``video_id`` + 21개 모델 피처를 가진 DataFrame. 행은 ``candidate_video_ids``와
+        **정확히 같은 순서·같은 개수**(영상당 1행) — 아래 reindex가 store 구현과 무관하게 보장한다.
 
     NOTE: 후처리는 서빙 규칙 — ``apply_cold_start_defaults``**만** 적용하고
     ``drop_user_dynamic_gap_rows``는 쓰지 않는다. 콜드 유저·미발견 영상의 후보를 드롭하면
     그 영상이 순위에서 조용히 빠지므로, online 서빙과 같은 규칙(카테고리→'unknown',
     수치→0)으로 채워 전 후보를 채점 대상으로 남긴다(모듈 docstring [학습 vs 서빙 후처리]).
     """
+    video_ids = [str(video_id) for video_id in candidate_video_ids]
+    if not video_ids:
+        # 빈 pool은 BigQuery에 빈 entity_df를 올리지 않고 즉시 빈 계약 프레임을 돌려준다.
+        return pd.DataFrame(columns=["video_id", *MODEL_FEATURE_COLUMNS])
+
     timestamp = pd.Timestamp(as_of)
     if timestamp.tzinfo is None:
         timestamp = timestamp.tz_localize("UTC")
@@ -214,17 +220,24 @@ def build_pool_feature_frame_feast(
         timestamp = timestamp.tz_convert("UTC")
 
     spine = pd.DataFrame(
-        {
-            "user_id": str(user_id),
-            "video_id": [str(video_id) for video_id in candidate_video_ids],
-            "event_timestamp": timestamp,
-        }
+        {"user_id": str(user_id), "video_id": video_ids, "event_timestamp": timestamp}
     )
 
     features = retrieve_training_features(store, spine, service=service)
     missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
     if missing:
         raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
+    # 서빙 계약(no-drop + 결정론적 순서)을 store 구현에 의존하지 않고 함수에서 직접
+    # 관철한다: 후보 순서로 reindex해 (a) 반환 순서를 고정하고(시뮬 재현성·replay 정합 —
+    # get_historical_features는 ORDER BY가 없어 조회 순서가 흔들리면 exploration·tie-break가
+    # 달라진다), (b) File store가 드롭했거나 offline에 없는 영상을 NaN 행으로 복원해
+    # cold-start 대상으로 되돌린다(후보가 순위에서 조용히 빠지지 않음, 설계결정 3).
+    features = (
+        features.drop_duplicates(subset="video_id")
+        .set_index("video_id")
+        .reindex(video_ids)
+        .reset_index()
+    )
     # 서빙 후처리: cold-start만(드롭 금지). 위 NOTE 참고.
     features = apply_cold_start_defaults(features)
     return features[["video_id", *MODEL_FEATURE_COLUMNS]]

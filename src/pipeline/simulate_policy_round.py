@@ -39,6 +39,7 @@ import random
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pandas as pd
 
@@ -84,6 +85,9 @@ from src.serving.model_loader import (
 )
 from src.serving.schemas import CandidateVideo
 from src.serving.service import Reranker
+
+if TYPE_CHECKING:
+    from feast import FeatureStore
 
 BASELINE = "baseline"
 MODEL = "model"
@@ -347,7 +351,7 @@ def main(
     output_dir: str = "data/generated/policy_round",
     input_paths: Mapping[str, str] | None = None,
     assembly_source: str = "duckdb",
-    feature_store: object | None = None,
+    feature_store: FeatureStore | None = None,
 ) -> dict:
     """정책 시뮬레이션 라운드를 실행하고 리포트 dict를 반환한다.
 
@@ -408,7 +412,13 @@ def main(
             candidates = _to_candidate_videos(frame, reranker.feature_columns)
             outcome = reranker.rerank_with_diagnostics(candidates)
         except KeyError:
-            skipped_users.append(user_id)  # 유저 단위 격리: persona 누락 등
+            if assembly_source == "feast":
+                # feast 경로의 KeyError는 유저별 결손이 아니라 전 유저 공통 구성 오류다
+                # (registry/FeatureService 불일치 → retrieve_training_features 내부 컬럼
+                # 접근 실패). 유저 스킵으로 위장하면 빈 노출 리포트가 성공으로 끝나 은폐되므로
+                # 그대로 전파한다(리뷰 #377). persona 누락 격리는 duckdb 경로 전용이다.
+                raise
+            skipped_users.append(user_id)  # duckdb: persona 누락 등 유저 단위 격리
             continue
         for column, values in outcome.unseen_categories.items():
             unseen_counts[column] = unseen_counts.get(column, 0) + len(values)
@@ -672,6 +682,8 @@ def _cli() -> None:
     # 주입한다(prod feature_store.yaml/Redis 불필요, registry는 배포 job이 apply한 GCS).
     feature_store = None
     if args.assembly_source == "feast":
+        import atexit
+        import shutil
         import tempfile
 
         from src.features.feast_retrieval import build_offline_feature_store
@@ -680,13 +692,25 @@ def _cli() -> None:
             BIGQUERY_PROJECT,
         )
 
-        online_db = os.path.join(tempfile.mkdtemp(prefix="feast_sim_"), "online.db")
+        try:
+            registry_path = os.environ["GCS_REGISTRY_PATH"]
+            gcs_staging = os.environ["GCS_STAGING_LOCATION"]
+        except KeyError as exc:
+            parser.error(
+                f"--assembly-source feast는 환경변수 {exc}가 필요합니다 "
+                "(offline 레지스트리·GCS staging 경로)"
+            )
+
+        # offline 전용 store라 sqlite online.db는 실제로 안 쓰이지만 RepoConfig가 경로를
+        # 요구한다. 반복·로컬 실행에서 임시 디렉토리가 쌓이지 않도록 종료 시 정리한다.
+        store_dir = tempfile.mkdtemp(prefix="feast_sim_")
+        atexit.register(shutil.rmtree, store_dir, ignore_errors=True)
         feature_store = build_offline_feature_store(
-            os.environ["GCS_REGISTRY_PATH"],
+            registry_path,
             project=BIGQUERY_PROJECT,
             dataset=BIGQUERY_DATASET,
-            gcs_staging=os.environ["GCS_STAGING_LOCATION"],
-            online_db_path=online_db,
+            gcs_staging=gcs_staging,
+            online_db_path=os.path.join(store_dir, "online.db"),
         )
 
     from datetime import UTC, datetime

@@ -37,7 +37,9 @@ def _fake_retrieve(captured: dict):
                     row[c] = None
                 row["category_id"] = None  # 영상 미발견
             rows.append(row)
-        return pd.DataFrame(rows)
+        # 일부러 순서를 뒤집어 반환한다 — get_historical_features가 ORDER BY 없이
+        # 뒤섞어 줄 수 있는 상황을 흉내내, reindex가 후보 순서로 되돌리는지 검증한다.
+        return pd.DataFrame(rows[::-1])
 
     return _inner
 
@@ -63,7 +65,8 @@ def test_builds_spine_one_row_per_candidate_utc(monkeypatch) -> None:
     ts = spine["event_timestamp"]
     assert ts.dt.tz is not None
     assert (ts == pd.Timestamp("2026-07-20 00:00:00", tz="UTC")).all()
-    # 결과: video_id + 21피처, 영상당 1행.
+    # 결과: video_id + 21피처, 영상당 1행. fake가 뒤집어 반환해도 reindex가 후보
+    # 순서로 되돌리므로 항상 [v1, v2, v3](결정론적 순서).
     assert out.columns.tolist() == ["video_id", *MODEL_FEATURE_COLUMNS]
     assert out["video_id"].tolist() == ["v1", "v2", "v3"]
 
