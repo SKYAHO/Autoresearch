@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-28T05:32:10Z",
+  "generated_at": "2026-07-28T05:37:46Z",
   "reports": [
+    {
+      "number": 383,
+      "title": "feat: PR 리포트 아카이브를 master-detail 레일 UI로 개편",
+      "author": "bbungjun",
+      "merged_at": "2026-07-28T05:37:35Z",
+      "summary_ko": [
+        "PR 이해 리포트 아카이브 웹 화면을 좌측 탐색 레일과 우측 상세 패널 형태의 master-detail UI로 전면 개편했습니다.",
+        "검색어 강조, 정렬 및 그룹핑, 데이터 검증 관문(sanitizeEntry) 등 UI 렌더링 함수를 독립적인 순수 함수로 분리 및 구현했습니다.",
+        "다크 모드 기본 지원, OS 테마 및 localStorage 연동, 모바일 화면 오버레이 전환 등 사용자 경험을 대폭 개선했습니다."
+      ],
+      "report_url": "pr/383/"
+    },
     {
       "number": 381,
       "title": "feat: 일일추천 offline PIT 정렬 (단일 as_of=candidate_dt+1) + Phase B 벤치 (#359 A3)",
