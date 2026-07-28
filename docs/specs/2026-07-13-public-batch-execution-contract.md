@@ -475,12 +475,19 @@ python -m src.pipeline.daily_recommendations \
   [--max-users <positive-int>] \
   [--output-table <table>] \
   [--max-skip-ratio <0..1>] \
+  [--assembly-source duckdb|feast] \
   [--dry-run]
 ```
 
 ### 계약
 
 - v1 호환 추가 명령이다 (기존 명령의 계약 변경 없음).
+- `--assembly-source`(#359)는 선택 인자이며 기본 `duckdb`(raw 재계산, 기존 동작 = v1 하위 호환).
+  `feast`는 학습·시뮬레이션과 같은 offline store를 `get_historical_features`(PIT)로 조회한다 —
+  **단일 as_of=candidate_dt+1**로 영상(candidate_dt 스냅샷)·유저(그 이하 최신 UserDynamic)를 함께
+  조회한다. `feast`는 (a) feast 파생 이미지(`Dockerfile.feast` 계열, `Dockerfile.app`엔 feast
+  의존성 없음)에서 실행하고 (b) `GCS_REGISTRY_PATH`·`GCS_STAGING_LOCATION` 환경변수를 요구한다
+  (누락 시 exit 1, `runtime_failure`). `duckdb` 기본 경로는 이 두 변수·feast 이미지가 필요 없다.
 - champion 모델(`models:/ctr-model@champion`)로 일일 트렌딩 후보를 가상 유저
   전원에 대해 채점해 `user_recommendations` dt 파티션에 멱등 적재한다
   (파티션 데코레이터 + WRITE_TRUNCATE).

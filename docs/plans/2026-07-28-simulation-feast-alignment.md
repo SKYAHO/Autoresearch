@@ -114,13 +114,16 @@
     전환(구 인자 제거)은 DAG 호출 인자 확인 후 별도 확정.
   - 테스트: feast 모드가 offline PIT로만 라우팅(duckdb 경로 미호출 assert)·store
     주입 전달·pool 전량 전달·feature_store 누락 가드. 35 passed.
-- [ ] A3. `daily_recommendations.run_batch` — `build_pool_feature_frame` 호출을
-  A1 신규 함수로 전환.
-  - [ ] A3-1. **snapshot_date → as_of 매핑 1건 실측 대조**(체크박스). 현재
-    일일추천은 `as_of = events_dt+1`, `snapshot_date = candidate_dt`로 **분리**해
-    쓴다(영상 나이 기준일 ≠ 유저 이력 기준일). offline video PIT는 event_timestamp
-    하나로 ASOF하므로, 이 분리가 흡수되는지(추천 대상일 영상 스냅샷을 고르는지)를
-    실 데이터 1건으로 대조해 회귀가 없음을 확인한다.
+- [x] A3. `daily_recommendations.run_batch` — feast 경로 추가(`--assembly-source duckdb|feast`,
+  기본 duckdb 병존). feast면 `build_pool_feature_frame_feast`로 **단일 as_of=candidate_dt+1**,
+  events 로드 생략, store는 주입 또는 env로 구성. 공개 batch 계약(v1 선택 인자 추가=비-breaking),
+  계약 spec의 daily 섹션에 `--assembly-source`+feast env·이미지 문서화. 모듈 docstring 갱신.
+  테스트: feast 라우팅(duckdb 미호출 assert)·as_of=candidate_dt+1·env 가드. 23 passed, CLI
+  `--help/--version/invalid` 계약 확인.
+  - [x] A3-1. **as_of 실측 대조 완료** (`scripts/bench/daily_as_of_probe.py`). 결론:
+    **단일 as_of=candidate_dt+1로 충분** — 영상 PIT가 candidate_dt 스냅샷을, 유저 PIT가 그 이하
+    최신 UserDynamic(=events_dt, 60h ttl 안)을 골라 duckdb의 2기준 분리를 흡수. days_since_upload는
+    스냅샷 저장값(event-time)이라 #224 자연 해소 근거도 확인. edge(ttl>60h 지연)는 cold-start+관측 후속.
 - [x] A4. MLflow dataset lineage. `logger.py`에 `log_dataset(df, *, name, source,
   context, targets, tags)` 래퍼 추가(`mlflow.data.from_pandas` + `mlflow.log_input`,
   기존 얇은 래퍼 패턴). `train.py`가 dataset 로드 직후 이를 호출해 run의 Datasets

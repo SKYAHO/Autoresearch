@@ -4,7 +4,12 @@ champion 모델(models:/ctr-model@champion)로 일일 트렌딩 후보 전체를
 전원에 대해 canonical 21개 피처로 채점해, 유저별 전체 순위를 user_recommendations 파티션 테이블에
 멱등 적재한다. 비교 실험·노출 선정은 이 배치의 책임이 아니다(spec 참조).
 
-spec: docs/specs/2026-07-21-daily-recommendations-batch.md
+피처 조립 소스는 `--assembly-source`로 고른다(#359): duckdb(기본, raw 재계산)와 feast(학습과
+같은 offline store를 get_historical_features PIT로 조회 — 단일 as_of=candidate_dt+1로 영상·유저
+스냅샷을 함께 조회). feast는 학습·시뮬레이션과 피처 출처를 통일해 train-serve skew를 없앤다.
+
+spec: docs/specs/2026-07-21-daily-recommendations-batch.md,
+      docs/specs/2026-07-13-public-batch-execution-contract.md (공개 batch 계약)
 """
 
 from __future__ import annotations
@@ -21,8 +26,10 @@ import pandas as pd
 from google.cloud import bigquery
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
+from src.features.feast_retrieval import build_pool_feature_frame_feast
 from src.features.model_contract import require_model_feature_columns
 from src.pipeline.build_training_dataset import (
+    BIGQUERY_DATASET,
     BIGQUERY_PROJECT,
     derive_wide_events,
     feature_table_id,
@@ -196,13 +203,27 @@ def run_batch(
     personas: pd.DataFrame | None = None,
     events: pd.DataFrame | None = None,
     clock: Callable[[], datetime] = _utc_now,
+    assembly_source: str = "duckdb",
+    feature_store: object | None = None,
 ) -> dict[str, object]:
     """일일 추천 배치를 실행하고 요약 리포트를 반환한다.
 
     bq_client·resolved·videos_raw·personas·events·clock은 테스트 주입용이며,
     None이면 실환경(BigQuery·MLflow registry)에서 로드한다.
+
+    assembly_source: 모델 피처(21개) 조립 경로(#359). "feast"는 학습과 같은 offline PIT
+    (``build_pool_feature_frame_feast``)를 써 train-serve skew를 없앤다. 이때 단일 as_of를
+    쓰는데(offline PIT는 entity 행당 event_timestamp가 하나뿐), **candidate_dt+1**을 쓴다 —
+    영상 PIT가 candidate_dt 트렌딩 스냅샷을(영상 나이 정확), 유저 PIT가 그 이하 최신
+    UserDynamic(=events_dt 스냅샷, 60h ttl 안)을 골라, 기존 duckdb가 영상=candidate_dt/
+    유저=events_dt로 분리하던 것을 단일 as_of로 흡수한다(A3-1 실측 확정). feast는
+    ``feature_store`` 주입 또는 GCS_REGISTRY_PATH/GCS_STAGING_LOCATION env를 요구하고 feast
+    파생 이미지에서 실행한다. "duckdb"(기본)는 raw 재계산으로 기존과 동일하며 #359에서 제거 예정.
     """
     import os
+
+    if assembly_source not in ("duckdb", "feast"):
+        raise ValueError(f"assembly_source must be 'duckdb' or 'feast': {assembly_source!r}")
 
     # dataset 계층 분리: raw(data_lake_*)는 CTR_TRAINING_BQ_RAW_DATASET,
     # feature/서빙 테이블은 기존 CTR_TRAINING_BQ_DATASET 으로 해석한다.
@@ -248,7 +269,9 @@ def run_batch(
         personas = to_personas_frame(_load_virtual_users(bq_client, users_table))
     if personas.empty:
         raise RuntimeError("No virtual users available for scoring")
-    if events is None:
+    # feast 경로는 피처를 offline store에서 조회하므로 raw events 재계산이 불필요하다 —
+    # duckdb 경로만 단일 파티션 events를 wide로 변환해 쓴다.
+    if assembly_source == "duckdb" and events is None:
         # 단일 파티션 소비 계약: 파티션 간 UNION은 attribution·집계를 오염시킨다.
         iso = events_dt.isoformat()
         events = derive_wide_events(load_events_from_bigquery(iso, iso))
@@ -257,17 +280,52 @@ def run_batch(
     if max_users is not None:
         user_ids = user_ids[:max_users]
 
-    # events_dt 파티션 전체를 과거 이력으로 포함하되 이후 이벤트는 보지 않는다.
-    as_of = (events_dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
-    # 영상 나이(days_since_upload)는 유저 이력 기준일이 아니라 추천 대상일 기준.
-    snapshot_date = candidate_dt.isoformat()
-
     generated_at = clock()
-    all_rows: list[dict] = []
-    skipped: list[str] = []
-    for user_id in user_ids:
-        try:
-            frame = build_pool_feature_frame(
+
+    # 모델 피처(21개) 조립 경로 선택(#359). 바뀌는 건 유저별 pool 프레임을 만드는 방식뿐이고,
+    # 이후 채점·순위·적재는 두 경로 공통이다.
+    if assembly_source == "feast":
+        if feature_store is None:
+            import atexit
+            import shutil
+            import tempfile
+
+            from src.features.feast_retrieval import build_offline_feature_store
+
+            try:
+                registry_path = os.environ["GCS_REGISTRY_PATH"]
+                gcs_staging = os.environ["GCS_STAGING_LOCATION"]
+            except KeyError as error:
+                raise RuntimeError(
+                    f"assembly_source='feast'는 환경변수 {error}가 필요합니다 "
+                    "(offline 레지스트리·GCS staging 경로)"
+                ) from error
+            store_dir = tempfile.mkdtemp(prefix="feast_daily_")
+            atexit.register(shutil.rmtree, store_dir, ignore_errors=True)
+            feature_store = build_offline_feature_store(
+                registry_path,
+                project=BIGQUERY_PROJECT,
+                dataset=BIGQUERY_DATASET,
+                gcs_staging=gcs_staging,
+                online_db_path=os.path.join(store_dir, "online.db"),
+            )
+        # 단일 as_of=candidate_dt+1(docstring): 영상은 candidate_dt 스냅샷, 유저는 그 이하 최신
+        # UserDynamic을 offline PIT로 한 번에 조회. duckdb의 영상/유저 2기준 분리를 흡수한다.
+        as_of = (candidate_dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+        candidate_video_ids = [str(v) for v in videos_raw["video_id"].tolist()]
+
+        def _pool_frame(user_id: str) -> pd.DataFrame:
+            return build_pool_feature_frame_feast(
+                feature_store, user_id, candidate_video_ids, as_of
+            )
+    else:
+        # events_dt 파티션 전체를 과거 이력으로 포함하되 이후 이벤트는 보지 않는다.
+        as_of = (events_dt + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+        # 영상 나이(days_since_upload)는 유저 이력 기준일이 아니라 추천 대상일 기준.
+        snapshot_date = candidate_dt.isoformat()
+
+        def _pool_frame(user_id: str) -> pd.DataFrame:
+            return build_pool_feature_frame(
                 personas=personas,
                 events=events,
                 videos_raw=videos_raw,
@@ -275,6 +333,12 @@ def run_batch(
                 as_of=as_of,
                 snapshot_date=snapshot_date,
             )
+
+    all_rows: list[dict] = []
+    skipped: list[str] = []
+    for user_id in user_ids:
+        try:
+            frame = _pool_frame(user_id)
             ranked = reranker.rerank(_to_candidate_videos(frame, feature_columns))
             all_rows.extend(
                 to_recommendation_rows(
@@ -382,6 +446,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-table")
     parser.add_argument("--max-skip-ratio", type=_skip_ratio, default=0.1)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--assembly-source",
+        choices=["duckdb", "feast"],
+        default="duckdb",
+        help="모델 피처 조립 소스. feast=학습과 같은 offline PIT(#359, feast 파생 이미지 + "
+        "GCS_REGISTRY_PATH/GCS_STAGING_LOCATION 필요), duckdb=raw 재계산(기본, #359에서 제거 예정)",
+    )
     return parser
 
 
@@ -415,6 +486,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_table=args.output_table,
             dry_run=args.dry_run,
             max_skip_ratio=args.max_skip_ratio,
+            assembly_source=args.assembly_source,
         )
     except Exception as error:  # noqa: BLE001 - process boundary maps failures to exit 1
         logger.error("daily_recommendations failed (%s)", type(error).__name__)

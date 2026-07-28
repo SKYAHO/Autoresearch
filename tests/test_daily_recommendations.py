@@ -458,6 +458,60 @@ def test_run_batch_snapshots_video_features_at_candidate_dt(monkeypatch):
     assert captured["as_of"] == "2026-07-19 00:00:00"
 
 
+def test_run_batch_feast_source_uses_candidate_dt_plus_one_single_as_of(monkeypatch):
+    # #359 A3: feast 모드는 build_pool_feature_frame_feast로 **단일 as_of=candidate_dt+1**을 쓴다
+    # (events_dt+1이 아님). 영상 스냅샷은 candidate_dt를 골라 duckdb의 영상/유저 2기준 분리를
+    # 흡수한다. duckdb build_pool_feature_frame은 절대 호출되지 않는다.
+    captured: dict = {}
+
+    def _capture_feast(store, user_id, candidate_video_ids, as_of):
+        captured["store"] = store
+        captured["candidate_video_ids"] = list(candidate_video_ids)
+        captured["as_of"] = as_of
+        return pd.DataFrame(
+            [{**{c: 0 for c in MODEL_FEATURE_COLUMNS}, "video_id": v} for v in candidate_video_ids]
+        )
+
+    def _boom(**kwargs):
+        raise AssertionError("feast 모드에서 duckdb build_pool_feature_frame이 호출됨")
+
+    monkeypatch.setattr(daily, "build_pool_feature_frame_feast", _capture_feast)
+    monkeypatch.setattr(daily, "build_pool_feature_frame", _boom)
+
+    client = _FakeClient()
+    sentinel_store = object()
+    report = run_batch(
+        candidate_dt=date(2026, 7, 21),
+        events_dt=date(2026, 7, 18),  # 지연: candidate_dt와 다름 → as_of가 어느 쪽인지 구분됨
+        bq_client=client,
+        resolved=_stub_resolved(),
+        videos_raw=_videos_raw(3),
+        personas=_personas(["u1", "u2"]),
+        assembly_source="feast",
+        feature_store=sentinel_store,
+    )
+    assert captured["as_of"] == "2026-07-22 00:00:00"  # candidate_dt+1 (events_dt+1=07-19 아님)
+    assert captured["candidate_video_ids"] == ["v0", "v1", "v2"]
+    assert captured["store"] is sentinel_store
+    assert (report["users"], report["rows"]) == (2, 6)  # 2 유저 × 3 후보
+
+
+def test_run_batch_feast_requires_registry_env(monkeypatch):
+    # feast 모드에서 store 주입도 env도 없으면 raw KeyError가 아니라 진단 가능한 RuntimeError.
+    monkeypatch.delenv("GCS_REGISTRY_PATH", raising=False)
+    monkeypatch.delenv("GCS_STAGING_LOCATION", raising=False)
+    with pytest.raises(RuntimeError, match="GCS_REGISTRY_PATH"):
+        run_batch(
+            candidate_dt=date(2026, 7, 21),
+            events_dt=date(2026, 7, 21),
+            bq_client=_FakeClient(),
+            resolved=_stub_resolved(),
+            videos_raw=_videos_raw(1),
+            personas=_personas(["u1"]),
+            assembly_source="feast",
+        )
+
+
 def test_quarantine_warning_names_user_and_exception_type(monkeypatch, caplog):
     # spec 계약: 격리 시 stderr warning에 user_id와 예외 타입이 보여야 한다.
     original = daily.build_pool_feature_frame
