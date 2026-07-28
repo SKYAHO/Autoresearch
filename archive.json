@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-28T03:13:19Z",
+  "generated_at": "2026-07-28T03:19:06Z",
   "reports": [
+    {
+      "number": 377,
+      "title": "feat: 시뮬레이션 피처 소스 offline PIT 정렬 + 데이터셋 lineage (Phase A) (#359)",
+      "author": "waieiches",
+      "merged_at": "2026-07-28T03:18:55Z",
+      "summary_ko": [
+        "학습과 시뮬레이션 간 피처 불일치(train-serve skew)를 해소하고자 시뮬레이션 피처 조립 경로를 Feast offline PIT 조회로 정렬했습니다.",
+        "MLflow 학습 실행 시 사용된 데이터셋 메타데이터와 provenance 태그를 Datasets 섹션에 입력 lineage로 남기도록 연동했습니다.",
+        "모든 변경사항은 하위 호환성을 유지하도록 구현되었으며 --assembly-source feast 옵션을 지정할 때만 작동합니다."
+      ],
+      "report_url": "pr/377/"
+    },
     {
       "number": 376,
       "title": "feat: FeatureService + 학습 조립 get_historical_features 전환 (#358)",
