@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-28T08:58:03Z",
+  "generated_at": "2026-07-28T09:02:50Z",
   "reports": [
+    {
+      "number": 392,
+      "title": "chore: 문서 전용 PR에서 자동 LLM 리뷰·리포트 제외 (#391)",
+      "author": "hyeongyu-data",
+      "merged_at": "2026-07-28T09:02:37Z",
+      "summary_ko": [
+        "문서 파일만 수정된 PR에서 Claude 자동 리뷰 및 PR 이해 리포트 워크플로우가 트리거되지 않도록 설정하였습니다.",
+        "GitHub Actions 트리거의 paths-ignore 옵션을 활용하여 문서 변경 시의 LLM API 비용과 알림 소음을 차단하였습니다.",
+        "문서 수정 PR이더라도 필요한 경우 댓글 명령어를 통해 리뷰와 리포트를 수동 실행할 수 있는 지침을 추가하였습니다."
+      ],
+      "report_url": "pr/392/"
+    },
     {
       "number": 384,
       "title": "perf: 일일추천 feast 조회 배치화 + 메모리 결정 문서화 (#359 C1)",
