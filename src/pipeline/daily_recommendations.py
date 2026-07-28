@@ -418,20 +418,23 @@ def run_batch(
     # feast 관측: 개인화 결손(UserDynamic 전량 null 유저)·영상 미발견 비율을 리포트에 남긴다.
     # 서빙은 드롭 대신 채우므로(설계결정 3) skip 가드가 못 잡는 조용한 저하를 이 수치로 감지한다.
     if feast_diag is not None:
-        scored = len(user_ids) - len(skipped)
+        # feast_diag는 배치 조회에서 **전 유저**를 집계한다(스킵/채점 성공 여부 이전 시점).
+        # 그러므로 경고 분모도 채점 성공 수(skipped 제외)가 아니라 전 유저 수로 맞춘다 —
+        # 안 그러면 skip 많은 날 cold_start_users/scored가 1.0을 넘어 잘못 뜬다(PR #384 리뷰 1).
+        n_users = len(user_ids)
         report["cold_start_users"] = feast_diag["cold_start_users"]
         report["video_missing_rate"] = (
             round(feast_diag["video_missing"] / feast_diag["pool_total"], 4)
             if feast_diag["pool_total"]
             else 0.0
         )
-        # 채점 유저의 절반 넘게 UserDynamic 결손이면 materialize 지연/ttl 초과 신호 → 경고.
-        if scored and feast_diag["cold_start_users"] / scored > 0.5:
+        # 전 유저의 절반 넘게 UserDynamic 결손이면 materialize 지연/ttl 초과 신호 → 경고.
+        if n_users and feast_diag["cold_start_users"] / n_users > 0.5:
             logger.warning(
-                "feast personalization gap: %d/%d scored users had all-null UserDynamic "
+                "feast personalization gap: %d/%d users had all-null UserDynamic "
                 "(cold-start) — check feature_store materialization freshness / 60h ttl",
                 feast_diag["cold_start_users"],
-                scored,
+                n_users,
             )
     return report
 

@@ -164,6 +164,44 @@ def test_batched_frames_split_reindex_and_aggregate(monkeypatch) -> None:
     assert diag["pool_total"] == 6
 
 
+def test_batched_user_absent_from_result_gets_cold_start_frame(monkeypatch) -> None:
+    # by_user.get(user, empty) 폴백 분기(#384 리뷰 4): 조회 결과에서 한 유저의 행이 통째로
+    # 빠져도(File store 드롭 등) 그 유저는 전 후보 cold-start 프레임으로 채점 대상에 남고,
+    # 집계에서 cold(전 UserDynamic null)로 잡힌다.
+    def _fake(store, spine, *, service=feast_retrieval.DEFAULT_SERVICE):
+        rows = []
+        for _, r in spine.iterrows():
+            if r["user_id"] == "u_absent":
+                continue  # 이 유저 행을 통째로 드롭
+            row = {c: 0 for c in MODEL_FEATURE_COLUMNS}
+            for c in CATEGORICAL_FEATURE_COLUMNS:
+                row[c] = "Gaming"
+            row["user_id"] = r["user_id"]
+            row["video_id"] = r["video_id"]
+            rows.append(row)
+        return pd.DataFrame(rows)
+
+    monkeypatch.setattr(feast_retrieval, "retrieve_training_features", _fake)
+    diag: dict = {}
+    frames = feast_retrieval.build_pool_feature_frames_feast(
+        store=object(),
+        user_ids=["u1", "u_absent"],
+        candidate_video_ids=["v1", "v2"],
+        as_of="2026-07-20 00:00:00",
+        diagnostics=diag,
+    )
+    # 빠진 유저도 dict에 있고, 후보 전부를 cold-start로 채운 프레임(드롭 아님).
+    assert set(frames) == {"u1", "u_absent"}
+    absent = frames["u_absent"]
+    assert absent["video_id"].tolist() == ["v1", "v2"]
+    assert absent["category_id"].tolist() == ["unknown", "unknown"]  # 영상 피처 cold-start
+    assert (absent["recent_click_count_7d"] == 0).all()  # UserDynamic cold-start
+    # 집계: u_absent가 cold 1명, 그의 2행 모두 미발견 → video_missing에 2 기여.
+    assert diag["cold_start_users"] == 1
+    assert diag["video_missing"] == 2  # u_absent의 v1,v2 (u1은 발견)
+    assert diag["pool_total"] == 4
+
+
 def test_missing_feature_raises(monkeypatch) -> None:
     # 조회 결과에 모델 피처가 빠지면 조용히 넘기지 않고 즉시 실패.
     monkeypatch.setattr(

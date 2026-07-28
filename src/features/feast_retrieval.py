@@ -1,11 +1,12 @@
 """학습·서빙 공용 Feast PIT 조회 경로 (#358 학습, #359 서빙 정합, [EPIC] #299 Phase 2/3).
 
-[파이프라인] 피처 구간 — 두 소비자가 **같은 offline PIT 조회**로 21피처를 얻어 skew를
-없앤다: ① ``build_training_dataset``의 ``--assembly-source feast`` 경로가 spine
-(``training_entity``)에 붙이는 학습 조립, ② 시뮬레이션·일일추천의 (user × 영상 pool)
-채점 프레임 조립(``build_pool_feature_frame_feast``, #359). 둘 다 Feast
-``get_historical_features``(point-in-time)를 쓰고 offline store가 정본(#357)이라 그 값을
-그대로 읽는다. DuckDB 재계산 경로(``assembly.py``)와 병존하며 #359에서 제거된다.
+[파이프라인] 피처 구간 — 소비자가 **같은 offline PIT 조회**로 21피처를 얻어 skew를
+없앤다: ① ``build_training_dataset``의 학습 조립이 spine(``training_entity``)에 붙이는
+경로, ② **시뮬레이션 — 유저 단건** pool 조립(``build_pool_feature_frame_feast``), ③ **일일추천 —
+전 유저 × 공통 pool 1회 배치** 조립(``build_pool_feature_frames_feast``, #359 C1: 유저마다
+staged 2회 = ~2N BQ 잡 회피). 셋 다 Feast ``get_historical_features``(point-in-time)를 쓰고
+offline store가 정본(#357)이라 그 값을 그대로 읽는다. DuckDB 재계산 경로(``assembly.py``)와
+병존하며 #359에서 제거된다.
 
 [학습 vs 서빙 후처리] 결손 처리가 갈린다: 학습은 ``drop_user_dynamic_gap_rows``로
 활동 유저의 결손을 드러내 드롭((C) 결손 가시화)하지만, 서빙(pool 채점)은 콜드 유저·미발견
