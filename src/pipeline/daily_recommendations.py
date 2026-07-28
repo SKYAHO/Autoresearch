@@ -233,6 +233,11 @@ def run_batch(
     - **events_dt 의미**: feast 모드에서 events_dt는 피처·as_of에 쓰이지 않고 ``user_recommendations``
       의 lineage 컬럼으로만 기록된다(duckdb 모드는 유저 이력 기준일). 소비자는 모드에 따라 의미가
       다름에 유의한다(공개 batch 계약 spec 참조).
+    - **격리 경계**(리뷰 #384): feast 배치 조회(``build_pool_feature_frames_feast``)는 유저 단위
+      ``try/except``·``max_skip_ratio`` **밖**이라, registry/staging 불일치뿐 아니라 일시적 BQ 오류도
+      **잡 전체 실패(exit 1, 파티션 미기록)**가 된다(전 유저 공통 오류를 유저 스킵으로 위장하지 않으려는
+      의도 — 재시도는 airflow 잡 레벨이 흡수). feast에서 ``max_skip_ratio``는 조회 이후 유저별 채점
+      (rerank) 실패만 격리한다. duckdb 모드는 종전대로 유저별 조회까지 격리.
     """
     import os
 
