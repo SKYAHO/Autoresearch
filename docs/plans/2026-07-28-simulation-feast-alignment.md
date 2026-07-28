@@ -114,13 +114,16 @@
     전환(구 인자 제거)은 DAG 호출 인자 확인 후 별도 확정.
   - 테스트: feast 모드가 offline PIT로만 라우팅(duckdb 경로 미호출 assert)·store
     주입 전달·pool 전량 전달·feature_store 누락 가드. 35 passed.
-- [ ] A3. `daily_recommendations.run_batch` — `build_pool_feature_frame` 호출을
-  A1 신규 함수로 전환.
-  - [ ] A3-1. **snapshot_date → as_of 매핑 1건 실측 대조**(체크박스). 현재
-    일일추천은 `as_of = events_dt+1`, `snapshot_date = candidate_dt`로 **분리**해
-    쓴다(영상 나이 기준일 ≠ 유저 이력 기준일). offline video PIT는 event_timestamp
-    하나로 ASOF하므로, 이 분리가 흡수되는지(추천 대상일 영상 스냅샷을 고르는지)를
-    실 데이터 1건으로 대조해 회귀가 없음을 확인한다.
+- [x] A3. `daily_recommendations.run_batch` — feast 경로 추가(`--assembly-source duckdb|feast`,
+  기본 duckdb 병존). feast면 `build_pool_feature_frame_feast`로 **단일 as_of=candidate_dt+1**,
+  events 로드 생략, store는 주입 또는 env로 구성. 공개 batch 계약(v1 선택 인자 추가=비-breaking),
+  계약 spec의 daily 섹션에 `--assembly-source`+feast env·이미지 문서화. 모듈 docstring 갱신.
+  테스트: feast 라우팅(duckdb 미호출 assert)·as_of=candidate_dt+1·env 가드. 23 passed, CLI
+  `--help/--version/invalid` 계약 확인.
+  - [x] A3-1. **as_of 실측 대조 완료** (`scripts/bench/daily_as_of_probe.py`). 결론:
+    **단일 as_of=candidate_dt+1로 충분** — 영상 PIT가 candidate_dt 스냅샷을, 유저 PIT가 그 이하
+    최신 UserDynamic(=events_dt, 60h ttl 안)을 골라 duckdb의 2기준 분리를 흡수. days_since_upload는
+    스냅샷 저장값(event-time)이라 #224 자연 해소 근거도 확인. edge(ttl>60h 지연)는 cold-start+관측 후속.
 - [x] A4. MLflow dataset lineage. `logger.py`에 `log_dataset(df, *, name, source,
   context, targets, tags)` 래퍼 추가(`mlflow.data.from_pandas` + `mlflow.log_input`,
   기존 얇은 래퍼 패턴). `train.py`가 dataset 로드 직후 이를 호출해 run의 Datasets
@@ -153,6 +156,11 @@
 - [ ] B2-1. **서빙 pool no-drop + cold-start를 BigQuery로 검증**(성능/의미 확인으로 격하).
   A1 reindex로 반환 계약(순서·개수)은 store 무관하게 보장되므로, BQ에서 남는 확인은
   "reindex가 BQ 결과에도 자연스럽게 맞물리는지"와 cold-start 채움 비율의 의미다.
+- [ ] B3-daily. **일일추천 feast 조회 비용 측정·배치화**(PR #381 리뷰 4) — **feast 기본 전환(Phase C) 전 필수**.
+  daily는 유저마다 `build_pool_feature_frame_feast` 호출 → staged 2회 = vu_1000 기준 하루 ~2N(2000)
+  BQ 잡(각 entity_df 업로드). Phase B 실측(217s/4.36GB)은 단일 대형 spine이라 이 경로를 대표 못 함.
+  pool이 전 유저 공통이므로 (전 유저 × 전 후보) spine 1회 조회 후 user_id 그룹핑으로 접을 수 있다
+  (1000×200=20만 행 1회). 이 경로 지연/슬롯 비용 실측 후 배치화.
 - [ ] B3. **시뮬 라운드 feast 조회 비용 측정**(PR #377 리뷰 3). `_model_feature_frame`이
   유저당 호출 → staged 2회 조회(유저 N명 → ~2N BQ 잡), 특히 stage 1(영상 category,
   키=(pool, as_of))은 전 유저 동일한데 반복. N=1000 기준 잡 수·업로드·소요를 실측하고,
