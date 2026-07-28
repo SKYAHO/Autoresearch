@@ -179,11 +179,16 @@ daily는 feast 경로가 이미 정렬돼 있고 default만 미전환(신규 이
 (silent partial-completion 금지).
 
 #### C1 (PR 1) — 전제: 삭제 없음, 되돌리기 쉬움
-- [ ] C1-1. **daily feast 조회 배치화**(리뷰 4/B3-daily): 유저마다 staged 2회(하루 ~2N BQ 잡) →
-  (전 유저 × 전 후보) spine 1회 조회 후 `user_id` 그룹핑. 대장님 BQ에서 before/after 지연·슬롯 실측.
-- [ ] C1-2. **학습 feast 경로 메모리 최적화**: `retrieve_training_features`/후처리의 중간 copy 축소
-  (reindex·merge·cold-start 제자리화 검토). `scripts/bench/feast_assembly_bench.py`로 4.36GB 대비 재측정.
-- [ ] C1-3. 두 최적화 모두 **duckdb 폴백을 유지한 채** 병존 → 실측으로 개선 확인 후 C2에서 삭제.
+- [x] C1-1. **daily feast 조회 배치화**(리뷰 4/B3-daily): 유저마다 staged 2회(하루 ~2N BQ 잡) →
+  (전 유저 × 전 후보) spine 1회 조회 후 `user_id` 그룹핑. `build_pool_feature_frames_feast` 신설,
+  daily가 루프 전 1회 호출. config 오류 fail-fast(리뷰 #341). dev 63 + feast 2 passed. **BQ 검증**:
+  daily `--assembly-source feast --dry-run`이 실 BQ(1000×200)에서 1회 조회로 도는지(대장님).
+- [x] C1-2. **메모리: 4.36GB 수용, chunking은 future 레버로 문서화**(측정 없는 선제 최적화 지양,
+  프로젝트 원칙). 정확 사용률 = 4.36GB(십진) / 5.88Gi(=6.31GB 십진) ≈ **69%**(순진 비교 74%) —
+  "26% 여유"가 아니라 **2/3 초과 타이트**. 한도까지 ≈1.45배 데이터(≈16 정상일). **chunking 트리거:
+  피크 사용률 85%(≈5.4GB) 또는 spine ~2.2M 행 초과** → `experiments/2026-07-28_feast-1p77m-memory/notes.md`.
+  학습 assembly 경로는 C1에서 미변경(C1-1은 daily만) → 4.36GB 그대로 유효.
+- [x] C1-3. 삭제 없음 → duckdb 폴백 유지한 채 병존. C2에서 삭제.
 
 #### C2 (PR 2) — 삭제: 되돌리기 어려움, 공개 계약 무관
 - [ ] C2-0. **착수 전 blast radius 확인**(A2 패턴): in-repo 호출자는 `src/cli.py`뿐(build-features/
