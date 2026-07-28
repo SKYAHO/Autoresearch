@@ -13,9 +13,10 @@ from src.features.model_contract import MODEL_FEATURE_COLUMNS
 from src.pipeline import build_training_dataset as btd
 
 
-def test_feast_requires_bigquery_source_and_dates() -> None:
-    with pytest.raises(ValueError, match="assembly_source='feast'"):
-        btd.main(assembly_source="feast", events_source="csv")
+def test_main_requires_event_dates() -> None:
+    # C2 feast-only: 기간(events_start_date/events_end_date) 없이는 조립할 spine을 못 정해 실패.
+    with pytest.raises(ValueError, match="events_start_date/events_end_date"):
+        btd.main()
 
 
 def test_apply_cold_start_defaults_fills_nulls_serving_rule() -> None:
