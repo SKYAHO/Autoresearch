@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR 이해 리포트</title>
+<style>
+  /* 고정 템플릿 — 에이전트는 이 파일을 수정하지 않고 report.json 데이터만 채웁니다. */
+  :root {
+    --bg: #f6f8fa; --surface: #ffffff; --border: #d1d9e0;
+    --text: #1f2328; --muted: #59636e; --accent: #0969da;
+    --unchanged-fill: #f6f8fa; --unchanged-stroke: #d1d9e0; --unchanged-text: #59636e;
+    --modified-fill: #ddf4ff; --modified-stroke: #0969da; --modified-text: #0550ae;
+    --added-fill: #dafbe1;    --added-stroke: #1a7f37;    --added-text: #116329;
+    --removed-fill: #ffebe9;  --removed-stroke: #cf222e;  --removed-text: #a40e26;
+    --diff-add-bg: #dafbe1; --diff-del-bg: #ffebe9; --diff-hunk-bg: #ddf4ff;
+    --risk-bg: #fff8c5; --risk-border: #d4a72c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --surface: #161b22; --border: #30363d;
+      --text: #e6edf3; --muted: #8d96a0; --accent: #4493f8;
+      --unchanged-fill: #161b22; --unchanged-stroke: #30363d; --unchanged-text: #8d96a0;
+      --modified-fill: #0c2d6b; --modified-stroke: #4493f8; --modified-text: #79c0ff;
+      --added-fill: #04260f;    --added-stroke: #2ea043;    --added-text: #56d364;
+      --removed-fill: #3c0614;  --removed-stroke: #f85149;  --removed-text: #ff7b72;
+      --diff-add-bg: rgba(46,160,67,.22); --diff-del-bg: rgba(248,81,73,.22); --diff-hunk-bg: rgba(68,147,248,.18);
+      --risk-bg: #2b2205; --risk-border: #9e6a03;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+                 "Noto Sans KR", "Malgun Gothic", sans-serif;
+    line-height: 1.6;
+  }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 16px 64px; }
+  header.page {
+    border-bottom: 1px solid var(--border); padding-bottom: 16px; margin-bottom: 24px;
+  }
+  header.page h1 { font-size: 1.35rem; margin: 0 0 6px; }
+  header.page .meta { color: var(--muted); font-size: .85rem; }
+  header.page .meta a { color: var(--accent); text-decoration: none; }
+  section { margin-bottom: 32px; }
+  section > h2 {
+    font-size: 1.05rem; margin: 0 0 12px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  section > h2 .step {
+    display: inline-block; background: var(--accent); color: #fff;
+    border-radius: 999px; font-size: .72rem; padding: 1px 9px;
+    vertical-align: 2px; margin-right: 7px;
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px;
+  }
+  #summary ol { margin: 0; padding-left: 22px; }
+  #summary li { margin: 4px 0; }
+  /* 파이프라인 SVG */
+  #pipeline-wrap { overflow-x: auto; }
+  #pipeline-svg { display: block; min-width: 760px; width: 100%; height: auto; }
+  .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: .8rem; color: var(--muted); margin-top: 8px; }
+  .legend span[class^="lg-"]::before {
+    content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px;
+    margin-right: 5px; vertical-align: -1px; border: 1.5px solid;
+  }
+  .legend .lg-unchanged::before { background: var(--unchanged-fill); border-color: var(--unchanged-stroke); }
+  .legend .lg-modified::before  { background: var(--modified-fill);  border-color: var(--modified-stroke); }
+  .legend .lg-added::before     { background: var(--added-fill);     border-color: var(--added-stroke); }
+  .legend .lg-removed::before   { background: var(--removed-fill);   border-color: var(--removed-stroke); }
+  svg .node rect { rx: 8; stroke-width: 1.5; cursor: default; }
+  svg .node.st-unchanged rect { fill: var(--unchanged-fill); stroke: var(--unchanged-stroke); }
+  svg .node.st-modified rect  { fill: var(--modified-fill);  stroke: var(--modified-stroke); }
+  svg .node.st-added rect     { fill: var(--added-fill);     stroke: var(--added-stroke); }
+  svg .node.st-removed rect   { fill: var(--removed-fill);   stroke: var(--removed-stroke); }
+  svg .node.focus rect { stroke-width: 3; }
+  svg .node.clickable rect { cursor: pointer; }
+  svg .node text { font-size: 12px; fill: var(--text); pointer-events: none; }
+  svg .node.st-unchanged text { fill: var(--unchanged-text); }
+  svg .lane-label { font-size: 11px; fill: var(--muted); }
+  svg .edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
+  svg .edge.dashed { stroke-dasharray: 5 4; }
+  svg .edge.st-modified { stroke: var(--modified-stroke); }
+  svg .edge.st-added { stroke: var(--added-stroke); }
+  svg .edge.st-removed { stroke: var(--removed-stroke); }
+  #node-detail { margin-top: 12px; display: none; }
+  #node-detail.visible { display: block; }
+  #node-detail h3 { margin: 0 0 8px; font-size: .95rem; }
+  #node-detail .asis-tobe { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { #node-detail .asis-tobe { grid-template-columns: 1fr; } }
+  #node-detail .asis-tobe > div {
+    border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; font-size: .87rem;
+  }
+  #node-detail .asis-tobe .tag { font-size: .72rem; font-weight: 600; color: var(--muted); display: block; margin-bottom: 4px; }
+  #node-detail .paths { color: var(--muted); font-size: .78rem; margin-top: 8px; font-family: ui-monospace, monospace; }
+  /* 2단계: 쉬운 설명 · 왜 · 기대효과 */
+  #easy .easy-block { margin-bottom: 14px; }
+  #easy .easy-block:last-child { margin-bottom: 0; }
+  #easy .easy-block .tag {
+    display: block; font-size: .72rem; font-weight: 600; color: var(--muted); margin-bottom: 6px;
+  }
+  #easy .easy-block ul { margin: 0; padding-left: 22px; }
+  #easy .easy-block li { margin: 4px 0; }
+  /* 3단계: 기본 접힘 */
+  #changes-details > summary {
+    cursor: pointer; font-weight: 600; color: var(--accent); padding: 4px 0; user-select: none;
+  }
+  #changes-details[open] > summary { margin-bottom: 12px; }
+  /* 변경 카드 */
+  .change-card { margin-bottom: 12px; }
+  .change-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .badge {
+    font-size: .7rem; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    border: 1px solid; text-transform: uppercase; letter-spacing: .03em;
+  }
+  .badge.core     { background: var(--removed-fill);  border-color: var(--removed-stroke);  color: var(--removed-text); }
+  .badge.contract { background: var(--modified-fill); border-color: var(--modified-stroke); color: var(--modified-text); }
+  .badge.config   { background: var(--risk-bg);       border-color: var(--risk-border);     color: var(--text); }
+  .badge.test     { background: var(--added-fill);    border-color: var(--added-stroke);    color: var(--added-text); }
+  .badge.docs     { background: var(--unchanged-fill); border-color: var(--unchanged-stroke); color: var(--unchanged-text); }
+  .change-head .symbol { font-weight: 600; font-family: ui-monospace, monospace; font-size: .92rem; }
+  .change-head .file { color: var(--muted); font-size: .8rem; font-family: ui-monospace, monospace; }
+  .change-card p.expl { margin: 8px 0 0; font-size: .92rem; }
+  .risk {
+    background: var(--risk-bg); border: 1px solid var(--risk-border);
+    border-radius: 6px; padding: 8px 12px; margin-top: 8px; font-size: .85rem;
+  }
+  .risk::before { content: "⚠ 리스크: "; font-weight: 700; }
+  details.diff-box { margin-top: 10px; }
+  details.diff-box summary { cursor: pointer; font-size: .85rem; color: var(--accent); user-select: none; }
+  pre.diff {
+    margin: 8px 0 0; border: 1px solid var(--border); border-radius: 6px;
+    overflow-x: auto; font-size: .8rem; line-height: 1.5; padding: 0;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  }
+  pre.diff .ln { display: block; padding: 0 12px; white-space: pre; }
+  pre.diff .ln.add { background: var(--diff-add-bg); }
+  pre.diff .ln.del { background: var(--diff-del-bg); }
+  pre.diff .ln.hunk { background: var(--diff-hunk-bg); color: var(--muted); }
+  /* QA */
+  #qa .card { border-left: 4px solid var(--accent); }
+  footer { color: var(--muted); font-size: .78rem; margin-top: 40px; border-top: 1px solid var(--border); padding-top: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <header class="page">
+    <h1 id="pr-title">PR 이해 리포트</h1>
+    <div class="meta" id="pr-meta"></div>
+  </header>
+
+  <section id="summary">
+    <h2>핵심 요약</h2>
+    <div class="card"><ol id="summary-list"></ol></div>
+  </section>
+
+  <section id="pipeline">
+    <h2><span class="step">1단계</span>전체 파이프라인에서의 위치 (as-is → to-be)</h2>
+    <div class="card">
+      <div id="pipeline-wrap"><svg id="pipeline-svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+      <div class="legend">
+        <span class="lg-unchanged">변경 없음</span>
+        <span class="lg-modified">수정</span>
+        <span class="lg-added">신규</span>
+        <span class="lg-removed">삭제</span>
+        <span>· 색칠된 노드를 클릭하면 as-is/to-be 설명이 표시됩니다</span>
+      </div>
+      <div id="node-detail" class="card">
+        <h3 id="nd-title"></h3>
+        <div class="asis-tobe">
+          <div><span class="tag">AS-IS</span><span id="nd-asis"></span></div>
+          <div><span class="tag">TO-BE</span><span id="nd-tobe"></span></div>
+        </div>
+        <div class="paths" id="nd-paths"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="easy">
+    <h2><span class="step">2단계</span>쉬운 설명</h2>
+    <div class="card">
+      <div class="easy-block">
+        <span class="tag">무슨 일이 있었나</span>
+        <ul id="plain-points-list"></ul>
+      </div>
+      <div class="easy-block">
+        <span class="tag">왜 필요했나</span>
+        <p id="motivation" style="margin:0"></p>
+      </div>
+      <div class="easy-block">
+        <span class="tag">기대효과</span>
+        <ul id="effects-list"></ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="changes">
+    <h2><span class="step">3단계</span>코드 기준 설명</h2>
+    <details id="changes-details">
+      <summary id="changes-summary">코드 기준 상세 설명 펼치기</summary>
+      <div id="changes-list"></div>
+    </details>
+  </section>
+
+  <section id="qa">
+    <h2><span class="step">4단계</span>이해도 확인</h2>
+    <div class="card"><p id="qa-note" style="margin:0"></p></div>
+  </section>
+
+  <footer id="page-footer"></footer>
+</main>
+
+<script id="report-data" type="application/json">{"schema_version": 2, "pr": {"number": 381, "title": "feat: 일일추천 offline PIT 정렬 (단일 as_of=candidate_dt+1) + Phase B 벤치 (#359 A3)", "author": "waieiches", "issue_refs": [], "generated_at": "2026-07-28T04:49:59+00:00", "head_sha": "481596cdcae3ca9941e28d3d73b0b1087ba29692"}, "summary_ko": ["일일추천 배치(daily_recommendations)에 Feast 피처 스토어 기반 offline PIT 조회 옵션(--assembly-source feast)을 추가하였습니다.", "단일 as_of=candidate_dt+1 시점 조회를 확정하여 영상 스냅샷과 유저 동적 피처를 한번에 정합성 있게 조립하고 train-serve skew를 제거하였습니다.", "177만 건 피처 조립 시 피크 메모리가 4.36GB로 집계되어 파드 제한(5.88Gi) 내에 정상 진입함을 벤치마크로 실측 및 검증하였습니다."], "plain_points_ko": ["일일 추천 데이터 조립 시 무거운 raw 로그 직접 재계산 대신, 모델 학습과 동일한 피처 스토어(Feast)에서 데이터를 정합하게 가져오는 옵션이 추가되었습니다.", "추천 대상 일자를 기준으로 데이터 시점을 단일화하여 영상 수명 정보와 유저 이력 정보 간의 시점 어긋남 문제를 해결하였습니다.", "전체 유저 대상 추천 피처 조립 시의 최대 메모리 사용량을 실측하여, 운영 인프라 파드 메모리 한도 내에서 안정하게 구동됨을 입증하였습니다.", "기존 배치 명령어와의 완벽한 하위 호환성을 위해 기본 실행 방식은 유지하면서 플래그 인자를 통한 선택적 가동이 가능하도록 설계하였습니다."], "motivation_ko": "기존 일일추천 배치 프로세스는 raw 이벤트를 DuckDB로 직접 재계산하여 피처를 조립하였습니다. 이는 모델 학습 시 사용하는 Feast 피처 스토어의 조회 방식과 달라 train-serve skew(학습-서빙 간 피처 불일치)가 발생할 위험이 있었으며, 영상 나이와 유저 이력 간 시점 매핑 기준이 이원화되어 있었습니다. 이에 따라 학습 파이프라인과 서빙 배치의 피처 조립 방식을 통일하고, 단일 PIT(Point-In-Time) 조회 시점을 적용하며, 전량 피처 조립 시의 메모리 안정성을 실측 검증하고자 본 변경을 추진하였습니다.", "expected_effects_ko": ["학습 파이프라인과 일일추천 서빙 배치의 피처 조립 경로가 Feast offline PIT로 일원화되어 train-serve skew가 제거됩니다.", "단일 시점(candidate_dt+1)으로 피처를 조회하여 영상 스냅샷과 유저 동적 피처 간 데이터 정합성이 보장됩니다.", "실측 벤치마크를 통해 177만 건 피처 조립 시 피크 메모리(4.36GB)가 파드 메모리 제한(5.88Gi) 내에 안정적으로 수용됨을 확인하였습니다.", "기존 DuckDB 조립 방식을 기본값으로 유지하여 기존 Airflow DAG 및 서비스 동작에 영향을 주지 않는 안전한 전환 기틀을 마련하였습니다."], "pipeline": {"nodes": [{"id": "collect", "label": "YouTube 수집", "lane": "batch", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/", "proxy/"]}, {"id": "virtual_users", "label": "가상 유저 생성", "lane": "batch", "order": 2, "status": "unchanged", "paths": ["autoresearch/virtual_users/"]}, {"id": "action_log", "label": "Action Log 생성·품질", "lane": "batch", "order": 3, "status": "unchanged", "paths": ["autoresearch/action_logs/"]}, {"id": "data_lake", "label": "Data Lake (GCS parquet)", "lane": "data", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/load.py", "autoresearch/action_logs/load.py"]}, {"id": "feature_store", "label": "Feature Store (BQ·Feast·Redis)", "lane": "data", "order": 2, "status": "unchanged", "paths": ["feature_repo/", "src/features/", "src/pipeline/build_feature_tables.py"]}, {"id": "training_dataset", "label": "학습 데이터셋 조립", "lane": "train", "order": 1, "status": "unchanged", "paths": ["src/pipeline/build_training_dataset.py"]}, {"id": "train_eval", "label": "모델 학습·평가 (LightGBM·MLflow)", "lane": "train", "order": 2, "status": "unchanged", "paths": ["src/models/", "src/pipeline/train.py", "src/pipeline/evaluate.py", "src/tracking/"]}, {"id": "registry", "label": "Model Registry (MLflow)", "lane": "train", "order": 3, "status": "unchanged", "paths": ["deploy/mlflow/"]}, {"id": "serving", "label": "리랭킹 서빙 API (FastAPI)", "lane": "serve", "order": 1, "status": "unchanged", "paths": ["src/serving/", "deploy/serving/"]}, {"id": "daily_reco", "label": "일일 추천·노출 조립", "lane": "serve", "order": 2, "status": "modified", "as_is_ko": "DuckDB 기반으로 raw 이벤트를 직접 재계산하여 추천 피처 프레임을 조립함", "to_be_ko": "Feast 피처 스토어 기반 offline PIT 조회 옵션을 추가하여 단일 as_of 시점으로 정밀하게 피처를 조립하고 train-serve skew를 차단함", "paths": ["src/pipeline/daily_recommendations.py", "src/pipeline/model_exposure_provider.py", "src/pipeline/policy_selector.py"]}, {"id": "simulation", "label": "가상 유저 클릭 시뮬레이션", "lane": "serve", "order": 3, "status": "unchanged", "paths": ["src/pipeline/simulate_policy_round.py", "src/pipeline/virtual_user_adapter.py"]}, {"id": "batch_cli", "label": "공개 Batch CLI (Airflow 계약)", "lane": "cross", "order": 1, "status": "unchanged", "paths": ["autoresearch/jobs/"]}, {"id": "ci_release", "label": "CI·이미지·릴리스", "lane": "cross", "order": 2, "status": "unchanged", "paths": [".github/workflows/", "Dockerfile.app", "Dockerfile.serving", "pyproject.toml"]}, {"id": "docs", "label": "문서·스펙", "lane": "cross", "order": 3, "status": "modified", "as_is_ko": "일일 추천 공개 batch 실행 계약 문서가 DuckDB 재계산 실행 옵션만을 명시함", "to_be_ko": "공개 batch 실행 계약 스펙에 --assembly-source 플래그 및 Feast 연동용 환경변수 규격을 명시함", "paths": ["docs/", ".claude/docs/", "CLAUDE.md", "README.md"]}, {"id": "ext_airflow", "label": "(외부) Airflow 오케스트레이션", "lane": "external", "order": 1, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-airflow"]}, {"id": "ext_infra", "label": "(외부) GCP 인프라", "lane": "external", "order": 2, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-infra"]}], "edges": [{"from": "collect", "to": "data_lake", "status": "unchanged"}, {"from": "virtual_users", "to": "action_log", "status": "unchanged"}, {"from": "action_log", "to": "data_lake", "status": "unchanged"}, {"from": "data_lake", "to": "feature_store", "status": "unchanged"}, {"from": "feature_store", "to": "training_dataset", "status": "unchanged"}, {"from": "training_dataset", "to": "train_eval", "status": "unchanged"}, {"from": "train_eval", "to": "registry", "status": "unchanged"}, {"from": "registry", "to": "serving", "status": "unchanged"}, {"from": "feature_store", "to": "serving", "style": "dashed", "status": "unchanged"}, {"from": "serving", "to": "daily_reco", "status": "unchanged"}, {"from": "daily_reco", "to": "simulation", "status": "unchanged"}, {"from": "simulation", "to": "action_log", "style": "dashed", "status": "unchanged"}, {"from": "batch_cli", "to": "ext_airflow", "style": "dashed", "status": "unchanged"}, {"from": "ext_infra", "to": "ci_release", "style": "dashed", "status": "unchanged"}], "focus": ["daily_reco"]}, "changes": [{"rank": 1, "importance": "core", "module": "src/pipeline", "symbol": "run_batch", "file": "src/pipeline/daily_recommendations.py", "explanation_ko": "일일추천 배치에 --assembly-source 인자를 도입하고, feast 지정 시 build_pool_feature_frame_feast 함수를 통해 단일 as_of=candidate_dt+1 기준 Feast offline PIT 조회를 하도록 구현함.", "diff_snippet": "@@ -196,14 +203,28 @@ def run_batch(\n     personas: pd.DataFrame | None = None,\n     events: pd.DataFrame | None = None,\n     clock: Callable[[], datetime] = _utc_now,\n+    assembly_source: str = \"duckdb\",\n+    feature_store: object | None = None,\n ) -> dict[str, object]:\n     if assembly_source not in (\"duckdb\", \"feast\"):\n         raise ValueError(f\"assembly_source must be 'duckdb' or 'feast': {assembly_source!r}\")", "risk_notes_ko": "assembly_source='feast' 모드에서는 GCS_REGISTRY_PATH 및 GCS_STAGING_LOCATION 환경변수가 필요하며, 주입되지 않을 경우 RuntimeError가 발생하므로 인프라 환경변수 설정을 점검해야 함."}, {"rank": 2, "importance": "contract", "module": "docs/specs", "symbol": "2026-07-13-public-batch-execution-contract.md", "file": "docs/specs/2026-07-13-public-batch-execution-contract.md", "explanation_ko": "공개 Batch 실행 계약 명세서에 --assembly-source 옵션 및 Feast 이미지·환경변수 요구사항 사양을 추가 명시함.", "diff_snippet": "@@ -475,12 +475,19 @@ python -m src.pipeline.daily_recommendations \\\n   [--max-users <positive-int>] \\\n   [--output-table <table>] \\\n   [--max-skip-ratio <0..1>] \\\n+  [--assembly-source duckdb|feast] \\\n   [--dry-run]", "risk_notes_ko": "기존 파이프라인과의 비파괴적 호환을 보장하기 위해 기본값은 duckdb로 설정됨."}, {"rank": 3, "importance": "test", "module": "scripts/bench", "symbol": "feast_assembly_bench.py & daily_as_of_probe.py", "file": "scripts/bench/feast_assembly_bench.py", "explanation_ko": "Phase B 검증용 피크 메모리(RSS) 실측 스크립트와 단일 as_of 시점별 피처 커버리지 검증용 probe 스크립트를 신규 작성함.", "risk_notes_ko": "벤치마크 및 오프라인 검증 스크립트로 운영 파이프라인 실행 로직에는 직접적인 영향을 주지 않음."}, {"rank": 4, "importance": "test", "module": "tests", "symbol": "test_daily_recommendations", "file": "tests/test_daily_recommendations.py", "explanation_ko": "Feast 조립 라우팅, 단일 candidate_dt+1 시점 지정 검증, 필수 환경변수 누락 가드 예외 처리 테스트 케이스를 추가함."}, {"rank": 5, "importance": "docs", "module": "docs/plans", "symbol": "2026-07-28-simulation-feast-alignment.md", "file": "docs/plans/2026-07-28-simulation-feast-alignment.md", "explanation_ko": "시뮬레이션 및 일일추천 배치 Feast 정렬 계획 문서 내 A3 및 A3-1 완료 상태 업데이트."}], "qa_note_ko": "코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오. 이번 PR의 핵심은 일일추천 배치에서 Feast offline PIT 단일 시점(as_of=candidate_dt+1) 조회를 도입하여 학습-서빙 간 피처 정합성을 확보하고 피크 메모리 구동 안전성을 실측 검증한 것입니다."}</script>
+<script>
+"use strict";
+(function () {
+  var raw = document.getElementById("report-data").textContent;
+  var r;
+  try { r = JSON.parse(raw); } catch (e) {
+    document.getElementById("pr-title").textContent = "리포트 데이터를 읽을 수 없습니다";
+    return;
+  }
+
+  // ---------- header ----------
+  document.title = "PR #" + r.pr.number + " 이해 리포트";
+  document.getElementById("pr-title").textContent = "PR #" + r.pr.number + " — " + r.pr.title;
+  var meta = document.getElementById("pr-meta");
+  var metaParts = ["작성자 @" + r.pr.author, "생성 " + r.pr.generated_at, "head " + r.pr.head_sha.slice(0, 8)];
+  if (r.pr.issue_refs && r.pr.issue_refs.length) {
+    metaParts.push("관련 이슈 " + r.pr.issue_refs.map(function (n) { return "#" + n; }).join(", "));
+  }
+  meta.textContent = metaParts.join(" · ");
+
+  // ---------- summary ----------
+  var ol = document.getElementById("summary-list");
+  r.summary_ko.forEach(function (line) {
+    var li = document.createElement("li");
+    li.textContent = line;
+    ol.appendChild(li);
+  });
+
+  // ---------- pipeline SVG (결정적 그리드 배치: lane = 행, order = 행 내 위치) ----------
+  var LANES = ["batch", "data", "train", "serve", "cross", "external"];
+  var LANE_LABELS = { batch: "배치 수집·생성", data: "데이터 계층", train: "학습", serve: "서빙·시뮬레이션", cross: "공통·계약", external: "외부 저장소" };
+  var NW = 172, NH = 46, GX = 40, GY = 34, LABEL_W = 110, PAD = 16;
+  var svgNS = "http://www.w3.org/2000/svg";
+  var svg = document.getElementById("pipeline-svg");
+
+  var nodes = r.pipeline.nodes.slice();
+  var byId = {};
+  var maxOrder = 1;
+  nodes.forEach(function (n) { byId[n.id] = n; if (n.order > maxOrder) maxOrder = n.order; });
+  var usedLanes = LANES.filter(function (l) { return nodes.some(function (n) { return n.lane === l; }); });
+
+  function pos(n) {
+    var laneIdx = usedLanes.indexOf(n.lane);
+    return {
+      x: PAD + LABEL_W + (n.order - 1) * (NW + GX),
+      y: PAD + laneIdx * (NH + GY)
+    };
+  }
+  var W = PAD * 2 + LABEL_W + maxOrder * (NW + GX) - GX;
+  var H = PAD * 2 + usedLanes.length * (NH + GY) - GY;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+
+  // 화살표 marker
+  var defs = document.createElementNS(svgNS, "defs");
+  ["", "modified", "added", "removed"].forEach(function (st) {
+    var m = document.createElementNS(svgNS, "marker");
+    m.setAttribute("id", "arrow" + (st ? "-" + st : ""));
+    m.setAttribute("viewBox", "0 0 10 10");
+    m.setAttribute("refX", "9"); m.setAttribute("refY", "5");
+    m.setAttribute("markerWidth", "7"); m.setAttribute("markerHeight", "7");
+    m.setAttribute("orient", "auto-start-reverse");
+    var p = document.createElementNS(svgNS, "path");
+    p.setAttribute("d", "M 0 0 L 10 5 L 0 10 z");
+    p.setAttribute("fill", st === "modified" ? "var(--modified-stroke)"
+      : st === "added" ? "var(--added-stroke)"
+      : st === "removed" ? "var(--removed-stroke)" : "var(--border)");
+    m.appendChild(p);
+    defs.appendChild(m);
+  });
+  svg.appendChild(defs);
+
+  // lane 라벨
+  usedLanes.forEach(function (lane, i) {
+    var t = document.createElementNS(svgNS, "text");
+    t.setAttribute("class", "lane-label");
+    t.setAttribute("x", PAD);
+    t.setAttribute("y", PAD + i * (NH + GY) + NH / 2 + 4);
+    t.textContent = LANE_LABELS[lane] || lane;
+    svg.appendChild(t);
+  });
+
+  // 에지 (노드보다 먼저 그려서 아래 깔리게)
+  (r.pipeline.edges || []).forEach(function (e) {
+    var a = byId[e.from], b = byId[e.to];
+    if (!a || !b) return;
+    var pa = pos(a), pb = pos(b);
+    var x1, y1, x2, y2;
+    if (a.lane === b.lane) { // 같은 행: 오른쪽 → 왼쪽
+      x1 = pa.x + NW; y1 = pa.y + NH / 2; x2 = pb.x; y2 = pb.y + NH / 2;
+    } else {               // 다른 행: 아래/위 가장자리 중앙끼리
+      var down = pb.y > pa.y;
+      x1 = pa.x + NW / 2; y1 = down ? pa.y + NH : pa.y;
+      x2 = pb.x + NW / 2; y2 = down ? pb.y : pb.y + NH;
+    }
+    var path = document.createElementNS(svgNS, "path");
+    var mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    path.setAttribute("d", a.lane === b.lane
+      ? "M " + x1 + " " + y1 + " L " + x2 + " " + y2
+      : "M " + x1 + " " + y1 + " C " + x1 + " " + my + ", " + x2 + " " + my + ", " + x2 + " " + y2);
+    var cls = "edge";
+    if (e.style === "dashed") cls += " dashed";
+    if (e.status && e.status !== "unchanged") cls += " st-" + e.status;
+    path.setAttribute("class", cls);
+    path.setAttribute("marker-end", "url(#arrow" + (e.status && e.status !== "unchanged" ? "-" + e.status : "") + ")");
+    svg.appendChild(path);
+  });
+
+  // 노드
+  var detail = document.getElementById("node-detail");
+  nodes.forEach(function (n) {
+    var p = pos(n);
+    var g = document.createElementNS(svgNS, "g");
+    var hasDetail = !!(n.as_is_ko || n.to_be_ko);
+    g.setAttribute("class", "node st-" + n.status
+      + ((r.pipeline.focus || []).indexOf(n.id) >= 0 ? " focus" : "")
+      + (hasDetail ? " clickable" : ""));
+    var rect = document.createElementNS(svgNS, "rect");
+    rect.setAttribute("x", p.x); rect.setAttribute("y", p.y);
+    rect.setAttribute("width", NW); rect.setAttribute("height", NH);
+    rect.setAttribute("rx", 8);
+    g.appendChild(rect);
+    var label = document.createElementNS(svgNS, "text");
+    label.setAttribute("x", p.x + NW / 2);
+    label.setAttribute("y", p.y + NH / 2 + 4);
+    label.setAttribute("text-anchor", "middle");
+    label.textContent = n.label;
+    g.appendChild(label);
+    if (hasDetail) {
+      rect.addEventListener("click", function () {
+        document.getElementById("nd-title").textContent = n.label
+          + " (" + (n.status === "modified" ? "수정" : n.status === "added" ? "신규" : n.status === "removed" ? "삭제" : "변경 없음") + ")";
+        document.getElementById("nd-asis").textContent = n.as_is_ko || "—";
+        document.getElementById("nd-tobe").textContent = n.to_be_ko || "—";
+        document.getElementById("nd-paths").textContent = (n.paths || []).join("  ·  ");
+        detail.classList.add("visible");
+        detail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+    }
+    svg.appendChild(g);
+  });
+
+  // 변경된 focus 노드가 있으면 첫 번째를 자동 표시
+  var firstFocus = (r.pipeline.focus || []).map(function (id) { return byId[id]; })
+    .filter(function (n) { return n && (n.as_is_ko || n.to_be_ko); })[0];
+  if (firstFocus) {
+    document.getElementById("nd-title").textContent = firstFocus.label;
+    document.getElementById("nd-asis").textContent = firstFocus.as_is_ko || "—";
+    document.getElementById("nd-tobe").textContent = firstFocus.to_be_ko || "—";
+    document.getElementById("nd-paths").textContent = (firstFocus.paths || []).join("  ·  ");
+    detail.classList.add("visible");
+  }
+
+  // ---------- easy (plain points / why / effects) ----------
+  var ppList = document.getElementById("plain-points-list");
+  r.plain_points_ko.forEach(function (t) {
+    var li = document.createElement("li");
+    li.textContent = t;
+    ppList.appendChild(li);
+  });
+  document.getElementById("motivation").textContent = r.motivation_ko;
+  var ul = document.getElementById("effects-list");
+  r.expected_effects_ko.forEach(function (t) {
+    var li = document.createElement("li");
+    li.textContent = t;
+    ul.appendChild(li);
+  });
+
+  // ---------- changes (rank 순) ----------
+  var list = document.getElementById("changes-list");
+  r.changes.slice().sort(function (a, b) { return a.rank - b.rank; }).forEach(function (c) {
+    var card = document.createElement("div");
+    card.className = "card change-card";
+
+    var head = document.createElement("div");
+    head.className = "change-head";
+    var badge = document.createElement("span");
+    badge.className = "badge " + c.importance;
+    badge.textContent = c.importance;
+    head.appendChild(badge);
+    var sym = document.createElement("span");
+    sym.className = "symbol";
+    sym.textContent = c.module + " :: " + c.symbol;
+    head.appendChild(sym);
+    var file = document.createElement("span");
+    file.className = "file";
+    file.textContent = c.file;
+    head.appendChild(file);
+    card.appendChild(head);
+
+    var expl = document.createElement("p");
+    expl.className = "expl";
+    expl.textContent = c.explanation_ko;
+    card.appendChild(expl);
+
+    if (c.risk_notes_ko) {
+      var risk = document.createElement("div");
+      risk.className = "risk";
+      risk.textContent = c.risk_notes_ko;
+      card.appendChild(risk);
+    }
+
+    if (c.diff_snippet) {
+      var det = document.createElement("details");
+      det.className = "diff-box";
+      var sum = document.createElement("summary");
+      sum.textContent = "diff 보기";
+      det.appendChild(sum);
+      var pre = document.createElement("pre");
+      pre.className = "diff";
+      c.diff_snippet.split("\n").forEach(function (line) {
+        var span = document.createElement("span");
+        var cls = "ln";
+        if (line.indexOf("@@") === 0) cls += " hunk";
+        else if (line.indexOf("+") === 0 && line.indexOf("+++") !== 0) cls += " add";
+        else if (line.indexOf("-") === 0 && line.indexOf("---") !== 0) cls += " del";
+        span.className = cls;
+        span.textContent = line.length ? line : " ";
+        pre.appendChild(span);
+      });
+      det.appendChild(pre);
+      card.appendChild(det);
+    }
+    list.appendChild(card);
+  });
+  document.getElementById("changes-summary").textContent =
+    "코드 기준 상세 설명 펼치기 (" + r.changes.length + "건)";
+
+  // ---------- qa / footer ----------
+  document.getElementById("qa-note").textContent = r.qa_note_ko;
+  document.getElementById("page-footer").textContent =
+    "이 리포트는 pr-report 워크플로우가 자동 생성했습니다. 최신 상태가 아니면 PR에 /claude-report 코멘트로 재생성할 수 있습니다.";
+})();
+</script>
+</body>
+</html>
