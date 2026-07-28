@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-28T06:17:16Z",
+  "generated_at": "2026-07-28T06:45:19Z",
   "reports": [
+    {
+      "number": 388,
+      "title": "docs: 에이전트 모델 선택·리뷰 위임 가이드 제거",
+      "author": "hyochangsung",
+      "merged_at": "2026-07-28T06:45:07Z",
+      "summary_ko": [
+        "현재 작업 규모에서 실익이 없는 서브에이전트 모델 선택 및 리뷰 위임 가이드 문서 3건을 삭제하였습니다.",
+        "메인 지침 문서인 CLAUDE.md의 문서 탐색 표에서 삭제된 가이드에 대한 참조 행을 제거하였습니다.",
+        "소스 코드 및 파이프라인 동작 변경이 없는 순수 문서 정돈 목적의 PR입니다."
+      ],
+      "report_url": "pr/388/"
+    },
     {
       "number": 383,
       "title": "feat: PR 리포트 아카이브를 master-detail 레일 UI로 개편",
