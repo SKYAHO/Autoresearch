@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-28T04:58:38Z",
+  "generated_at": "2026-07-28T05:17:32Z",
   "reports": [
+    {
+      "number": 381,
+      "title": "feat: 일일추천 offline PIT 정렬 (단일 as_of=candidate_dt+1) + Phase B 벤치 (#359 A3)",
+      "author": "waieiches",
+      "merged_at": "2026-07-28T05:17:19Z",
+      "summary_ko": [
+        "일일추천 배치(daily_recommendations)에 Feast 피처 스토어 기반 offline PIT 조회 옵션(--assembly-source feast)을 추가하였습니다.",
+        "단일 as_of=candidate_dt+1 시점 조회를 확정하여 영상 스냅샷과 유저 동적 피처를 한번에 정합성 있게 조립하고 train-serve skew를 제거하였습니다.",
+        "177만 건 피처 조립 시 피크 메모리가 4.36GB로 집계되어 파드 제한(5.88Gi) 내에 정상 진입함을 벤치마크로 실측 및 검증하였습니다."
+      ],
+      "report_url": "pr/381/"
+    },
     {
       "number": 377,
       "title": "feat: 시뮬레이션 피처 소스 offline PIT 정렬 + 데이터셋 lineage (Phase A) (#359)",
