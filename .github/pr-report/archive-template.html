@@ -5,218 +5,145 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="Autoresearch의 merge된 PR 이해 리포트 아카이브">
 <title>PR Report Archive · Autoresearch</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=Space+Grotesk:wght@500;700&display=swap">
 <style>
   :root {
-    --bg: #f6f8fa;
-    --surface: #ffffff;
-    --border: #d1d9e0;
-    --text: #1f2328;
-    --muted: #59636e;
-    --accent: #0969da;
-    --accent-soft: #ddf4ff;
-    --shadow: 0 1px 2px rgba(31, 35, 40, .06);
+    --bg: #0c0e0f; --sf: #131617; --tx: #e9eceb; --tx2: #cfd6d4; --mu: #8b9391;
+    --bd: #22282a; --ac: #8fd3c0; --hv: #14181a;
   }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0d1117;
-      --surface: #161b22;
-      --border: #30363d;
-      --text: #e6edf3;
-      --muted: #8d96a0;
-      --accent: #4493f8;
-      --accent-soft: #0c2d6b;
-      --shadow: none;
-    }
+  :root[data-theme="light"] {
+    --bg: #f3f5f4; --sf: #ffffff; --tx: #121614; --tx2: #3b4340; --mu: #6d7671;
+    --bd: #e0e5e3; --ac: #1f7a5c; --hv: #eaefec;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-      "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", sans-serif;
-    line-height: 1.6;
+    margin: 0; background: var(--bg); color: var(--tx);
+    font-family: "Noto Sans KR", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    word-break: keep-all;
   }
-  .archive-shell {
-    width: min(100% - 32px, 920px);
-    margin: 0 auto;
-    padding: clamp(32px, 7vw, 72px) 0 80px;
+  a { color: var(--ac); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  button, input, select { font-family: inherit; }
+  mark { background: color-mix(in srgb, var(--ac) 30%, transparent); color: inherit; border-radius: 2px; }
+
+  .app { display: flex; height: 100vh; overflow: hidden; }
+
+  /* ---------- rail (left) ---------- */
+  .rail { display: flex; flex-direction: column; width: 44%; min-width: 320px; max-width: 560px; border-right: 1px solid var(--bd); }
+  .rail-head { padding: 28px 26px 18px; }
+  .rail-head-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+  .kicker { font-family: "Space Grotesk", sans-serif; font-size: 12px; font-weight: 700; letter-spacing: .2em; color: var(--ac); white-space: nowrap; }
+  #theme-toggle {
+    border: 1px solid var(--bd); background: transparent; color: var(--mu);
+    font-size: 11px; font-weight: 600; letter-spacing: .08em; padding: 6px 12px;
+    border-radius: 999px; cursor: pointer; white-space: nowrap;
   }
-  .eyebrow {
-    margin: 0 0 8px;
-    color: var(--accent);
-    font-size: .78rem;
-    font-weight: 700;
-    letter-spacing: .12em;
-    text-transform: uppercase;
+  #theme-toggle:hover { color: var(--ac); border-color: var(--ac); }
+  .rail-count { display: flex; align-items: baseline; gap: 10px; margin-bottom: 16px; }
+  .rail-count .n { font-family: "Space Grotesk", sans-serif; font-size: 40px; font-weight: 700; line-height: 1; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+  .rail-count .of { font-size: 13px; color: var(--mu); white-space: nowrap; }
+  .repo-stats { display: flex; gap: 16px; flex-wrap: wrap; }
+  .repo-stat {
+    display: flex; align-items: center; gap: 7px; padding: 0 0 5px; border: 0; border-bottom: 2px solid transparent;
+    background: transparent; color: var(--mu); font: inherit; font-size: 13px; font-weight: 400; cursor: pointer; white-space: nowrap;
   }
-  h1 {
-    margin: 0;
-    font-size: clamp(1.8rem, 5vw, 3rem);
-    line-height: 1.15;
-    letter-spacing: -.035em;
+  .repo-stat:hover { color: var(--tx); }
+  .repo-stat.on { color: var(--tx); font-weight: 700; border-bottom-color: currentColor; }
+  .repo-stat .dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+
+  .rail-filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 26px 16px; }
+  .rail-filters input[type="search"] {
+    flex: 1 1 100%; min-width: 140px; height: 36px; padding: 0 14px; border: 1px solid var(--bd);
+    border-radius: 999px; background: var(--sf); color: var(--tx); font-size: 13px; outline: none;
   }
-  .intro {
-    max-width: 640px;
-    margin: 16px 0 0;
-    color: var(--muted);
+  .rail-filters select {
+    flex: 1 1 120px; height: 36px; min-width: 100px; padding: 0 8px; border: 1px solid var(--bd);
+    border-radius: 999px; background: var(--sf); color: var(--mu); font-size: 12px;
   }
-  .toolbar {
-    margin: 32px 0 20px;
+  .rail-filters select#sort-select { flex: 0 1 auto; }
+
+  .rail-list { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  .rail-group-label {
+    position: sticky; top: 0; z-index: 1; padding: 12px 26px 8px; background: var(--bg);
+    font-size: 11px; font-weight: 600; letter-spacing: .14em; color: var(--mu); white-space: nowrap;
   }
-  .toolbar label {
-    display: block;
-    margin-bottom: 8px;
-    font-size: .85rem;
-    font-weight: 650;
+  .rail-item {
+    position: relative; display: grid; grid-template-columns: 48px 1fr; gap: 14px;
+    padding: 13px 26px 15px; cursor: pointer;
   }
-  #archive-search {
-    width: 100%;
-    min-height: 46px;
-    padding: 10px 14px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    outline: none;
-  }
-  #archive-search:focus {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
-  }
-  .archive-count {
-    margin: 12px 0 0;
-    color: var(--muted);
-    font-size: .86rem;
-  }
-  .category-tabs {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 16px;
-    flex-wrap: wrap;
-  }
-  .tab-button {
-    padding: 6px 14px;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    background: var(--surface);
-    color: var(--text);
-    font: inherit;
-    font-size: .85rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .tab-button.is-selected {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .pr-category {
-    flex: 0 0 auto;
-    padding: 2px 8px;
-    border-radius: 999px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-size: .72rem;
-    font-weight: 700;
-  }
-  #report-list {
-    display: grid;
-    gap: 14px;
-  }
-  .report-card {
-    padding: clamp(18px, 4vw, 24px);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: var(--surface);
-    box-shadow: var(--shadow);
-  }
-  .card-heading {
-    display: flex;
-    gap: 10px;
-    align-items: baseline;
-  }
-  .pr-number {
-    flex: 0 0 auto;
-    color: var(--accent);
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-    font-size: .86rem;
-    font-weight: 700;
-  }
-  .pr-title {
-    margin: 0;
-    font-size: 1.05rem;
-    line-height: 1.4;
-  }
-  .report-meta {
-    display: flex;
-    gap: 12px;
-    margin: 8px 0 16px;
-    color: var(--muted);
-    font-size: .8rem;
-  }
-  .summary-list {
-    margin: 0;
-    padding-left: 22px;
-    font-size: .92rem;
-  }
-  .summary-list li + li { margin-top: 5px; }
-  .report-link {
-    display: inline-block;
-    margin-top: 18px;
-    color: var(--accent);
-    font-size: .86rem;
-    font-weight: 650;
-    text-decoration: none;
-  }
-  .report-link:hover { text-decoration: underline; }
-  #empty-state {
-    padding: 48px 20px;
-    border: 1px dashed var(--border);
-    border-radius: 10px;
-    color: var(--muted);
-    text-align: center;
-  }
-  @media (max-width: 560px) {
-    .archive-shell { width: min(100% - 24px, 920px); }
-    .card-heading { display: block; }
-    .pr-number { display: block; margin-bottom: 4px; }
-    .report-meta { flex-wrap: wrap; }
+  .rail-item:hover { background: var(--hv); }
+  .rail-item .bar { position: absolute; left: 0; top: 0; bottom: 0; width: 3px; }
+  .rail-item .num { font-family: "Space Grotesk", sans-serif; font-size: 14px; font-weight: 500; color: var(--mu); padding-top: 2px; }
+  .rail-item .title { font-size: 15px; font-weight: 500; line-height: 1.6; }
+  .rail-item .item-meta { display: flex; align-items: center; gap: 8px; margin-top: 7px; font-size: 12px; color: var(--mu); white-space: nowrap; }
+  .rail-item .item-meta .dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  .rail-empty { margin: 36px 26px; padding: 34px 18px; border: 1px solid var(--bd); border-radius: 12px; text-align: center; font-size: 13px; color: var(--mu); }
+  .rail-status { margin: 0 26px 14px; font-size: 12.5px; color: var(--mu); }
+  .rail-list-tail { height: 40px; }
+
+  /* ---------- detail (right) ---------- */
+  .detail { flex: 1 1 auto; min-width: 0; overflow: auto; background: var(--sf); }
+  .detail-inner { max-width: 640px; padding: 52px 48px 64px; }
+  .detail-back { display: none; }
+  .detail-meta { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; white-space: nowrap; flex-wrap: wrap; }
+  .detail-meta .repo-tag { font-size: 12px; font-weight: 700; letter-spacing: .04em; }
+  .detail-meta .num, .detail-meta .author, .detail-meta .date { font-size: 13px; color: var(--mu); }
+  .detail-meta .num { font-family: "Space Grotesk", sans-serif; }
+  .detail h2 { margin: 0 0 30px; font-size: 29px; font-weight: 700; line-height: 1.45; letter-spacing: -.02em; text-wrap: balance; }
+  .detail-bullets { display: flex; flex-direction: column; gap: 22px; }
+  .bullet { display: grid; grid-template-columns: 8px 1fr; gap: 16px; align-items: start; }
+  .bullet .dot { width: 8px; height: 8px; margin-top: 11px; border-radius: 50%; background: var(--ac); }
+  .bullet p { margin: 0; font-size: 16px; font-weight: 300; line-height: 1.9; color: var(--tx2); text-wrap: balance; }
+  .detail-foot { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--bd); }
+  .detail-foot .repo-full { font-size: 12px; color: var(--mu); }
+  .detail-foot a { font-size: 14px; font-weight: 500; }
+  .detail-empty { padding: 52px 48px; color: var(--mu); font-size: 14px; }
+
+  @media (max-width: 760px) {
+    .app { position: relative; }
+    .rail { width: 100%; max-width: none; min-width: 0; }
+    .detail {
+      position: fixed; inset: 0; z-index: 20; transform: translateX(100%); transition: transform .2s ease;
+    }
+    .detail.is-open { transform: translateX(0); }
+    .detail-inner { padding: 20px 20px 48px; max-width: none; }
+    .detail-back {
+      display: inline-flex; align-items: center; gap: 6px; margin-bottom: 18px; border: 0; background: none;
+      color: var(--mu); font-size: 13px; font-weight: 600; cursor: pointer; padding: 0;
+    }
+    .detail h2 { font-size: 22px; }
   }
 </style>
 </head>
 <body>
-<main class="archive-shell">
-  <header>
-    <p class="eyebrow">Autoresearch</p>
-    <h1>PR Report Archive</h1>
-    <p class="intro">
-      merge된 변경의 목적과 파이프라인 영향을 빠르게 되짚어보는
-      PR 이해 리포트 모음입니다.
-    </p>
-  </header>
-
-  <section class="toolbar" aria-label="아카이브 검색">
-    <div class="category-tabs" id="category-tabs" role="tablist" aria-label="카테고리 필터">
-      <button type="button" class="tab-button is-selected" data-category="all" role="tab" aria-selected="true">전체</button>
-      <button type="button" class="tab-button" data-category="application" role="tab" aria-selected="false">Application</button>
-      <button type="button" class="tab-button" data-category="airflow" role="tab" aria-selected="false">Airflow</button>
-      <button type="button" class="tab-button" data-category="infra" role="tab" aria-selected="false">Infra</button>
+<div class="app" id="app">
+  <aside class="rail">
+    <div class="rail-head">
+      <div class="rail-head-top">
+        <span class="kicker">MERGE LOG</span>
+        <button type="button" id="theme-toggle">LIGHT</button>
+      </div>
+      <div class="rail-count">
+        <span class="n" id="count-num">0</span>
+        <span class="of">/ 전체 <span id="total-num">0</span>건 중</span>
+      </div>
+      <div class="repo-stats" id="repo-stats"></div>
     </div>
-    <label for="archive-search">PR 번호·제목·작성자 검색</label>
-    <input
-      id="archive-search"
-      type="search"
-      placeholder="예: 345, ONNX, waieiches"
-      autocomplete="off"
-    >
-    <p class="archive-count"><strong id="report-count">0</strong>개의 merge 리포트</p>
-  </section>
-
-  <p id="empty-state" hidden>검색 결과가 없습니다.</p>
-  <section id="report-list" aria-label="merge된 PR 리포트" aria-live="polite"></section>
-</main>
+    <div class="rail-filters">
+      <input type="search" id="q" placeholder="검색" autocomplete="off">
+      <select id="author-select"></select>
+      <select id="sort-select">
+        <option value="recent">최신순</option>
+        <option value="repo">저장소순</option>
+      </select>
+    </div>
+    <p class="rail-status" id="rail-status" hidden></p>
+    <div class="rail-list" id="rail-list"></div>
+  </aside>
+  <main class="detail" id="detail"></main>
+</div>
 
 <script id="archive-data" type="application/json">/*__ARCHIVE_DATA__*/</script>
 <script src="./archive.js"></script>
