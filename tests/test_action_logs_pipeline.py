@@ -1,7 +1,9 @@
+import gc
 import json
 import logging
 import random
 import re
+import weakref
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
@@ -561,6 +563,72 @@ def test_schema_retry_final_failure_is_quarantined(tmp_path):
     assert quarantine["raw_llm_response"] == "{retry invalid"
 
 
+def test_streaming_single_schema_retry_final_failure_preserves_quarantine(
+    tmp_path,
+) -> None:
+    class _AlwaysInvalidGenerator:
+        model_name = "always-invalid-generator"
+
+        def __init__(self) -> None:
+            self.retry_calls = 0
+
+        def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+            return "{first invalid"
+
+        def generate_schema_retry(
+            self,
+            virtual_user: dict,
+            videos: list[dict],
+            *,
+            error_type: str,
+        ) -> str:
+            self.retry_calls += 1
+            return "{retry invalid"
+
+    generator = _AlwaysInvalidGenerator()
+    videos = build_fixture_video_records(4)
+    result = pipeline_module.generate_action_log_single(
+        _request(tmp_path, candidates_per_user=4),
+        _fixture_users(1),
+        videos,
+        generator,
+        candidate_provider=lambda virtual_user, user_rng: list(videos),
+    )
+
+    assert generator.retry_calls == 1
+    assert result.summary["quarantined_users"] == 1
+    assert result.summary["invalid_json"] == 1
+    quarantine = json.loads(
+        (tmp_path / "q.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert quarantine["error_type"] == "invalid_json"
+    assert quarantine["raw_llm_response"] == "{retry invalid"
+
+
+def test_streaming_single_propagates_unexpected_parser_exception(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def _raise_internal_error(virtual_user, candidates, raw_text):
+        raise RuntimeError("unexpected parser bug")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_try_build_user_drafts",
+        _raise_internal_error,
+    )
+    videos = build_fixture_video_records(1)
+
+    with pytest.raises(RuntimeError, match="unexpected parser bug"):
+        pipeline_module.generate_action_log_single(
+            _request(tmp_path, candidates_per_user=1),
+            _fixture_users(1),
+            videos,
+            RuleBasedActionLogGenerator(),
+            candidate_provider=lambda virtual_user, user_rng: list(videos),
+        )
+
+
 def test_total_failure_raises_and_writes_quarantine(tmp_path):
     class _AllBadGen(RuleBasedActionLogGenerator):
         def generate(self, virtual_user, videos):
@@ -997,6 +1065,77 @@ def test_streaming_single_retained_payload_is_bounded_by_active_users(
     )
     assert snapshots[-1].buffered_events == 0
     assert any(item.buffered_drafts == 0 for item in snapshots)
+
+
+def test_streaming_single_releases_completed_future_drafts_before_next_provider(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    users = _fixture_users(2)
+    videos = build_fixture_video_records(3)
+    first_user = users[0]["user_id"]
+    second_user = users[1]["user_id"]
+    first_draft_refs: list[weakref.ReferenceType[ImpressionDraft]] = []
+    zero_buffer_after_first_user = Event()
+    provider_order: list[str] = []
+    original_work = pipeline_module._generate_action_log_work
+
+    def _capture_first_user_drafts(
+        generator,
+        item,
+        *,
+        work_sequence,
+        submitted_at,
+        shard_index,
+        detailed_telemetry,
+    ):
+        result = original_work(
+            generator,
+            item,
+            work_sequence=work_sequence,
+            submitted_at=submitted_at,
+            shard_index=shard_index,
+            detailed_telemetry=detailed_telemetry,
+        )
+        if item.user_id == first_user:
+            assert result.drafts is not None
+            first_draft_refs.extend(weakref.ref(draft) for draft in result.drafts)
+        return result
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        user_id = virtual_user["user_id"]
+        provider_order.append(user_id)
+        if user_id == second_user:
+            assert zero_buffer_after_first_user.is_set()
+            assert first_draft_refs
+            gc.collect()
+            assert all(draft_ref() is None for draft_ref in first_draft_refs)
+        return list(videos)
+
+    def observer(snapshot: pipeline_module._StreamingRetentionSnapshot) -> None:
+        if snapshot.active_users == 0 and snapshot.buffered_drafts == 0:
+            zero_buffer_after_first_user.set()
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_generate_action_log_work",
+        _capture_first_user_drafts,
+    )
+    result = pipeline_module.generate_action_log_single(
+        _request(
+            tmp_path,
+            candidates_per_user=3,
+            max_concurrency=1,
+        ),
+        users,
+        videos,
+        RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+        _retention_observer=observer,
+    )
+
+    assert provider_order == [first_user, second_user]
+    assert result.summary["impressions"] == 6
 
 
 def test_streaming_single_matches_legacy_when_later_work_finishes_first(

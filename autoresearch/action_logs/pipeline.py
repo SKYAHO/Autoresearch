@@ -1454,13 +1454,19 @@ def generate_action_log_single(
             state.remaining_chunks -= 1
             _observe()
 
+        def _collect_completed_futures() -> None:
+            completed, _pending = wait(futures, return_when=FIRST_COMPLETED)
+            for completed_future in sorted(
+                completed,
+                key=lambda item: futures[item][2],
+            ):
+                state, chunk_index, _work_sequence = futures.pop(completed_future)
+                _store_work_result(state, chunk_index, completed_future.result())
+
         _fill_active_users()
         while active_users or futures:
             if futures:
-                done, _pending = wait(futures, return_when=FIRST_COMPLETED)
-                for future in sorted(done, key=lambda item: futures[item][2]):
-                    state, chunk_index, _work_sequence = futures.pop(future)
-                    _store_work_result(state, chunk_index, future.result())
+                _collect_completed_futures()
 
             while active_users and active_users[0].remaining_chunks == 0:
                 state = active_users[0]
