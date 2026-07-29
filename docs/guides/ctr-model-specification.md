@@ -321,20 +321,24 @@ Training Dataset의 한 행은 `(user_id, video_id, clicked)` pointwise 구조�
 
 학습 산출물을 서빙으로 넘기는 배포 단위를 정의한다. negative downsampling(#300)이 도입되면서
 모델 출력 확률을 원분포로 되돌리는 **calibration**이 배포 단위에 포함되며, 이를 **메인 모델과
-물리적으로 분리된 별도 등록 모델**로 패키징한다(#302).
+같은 MLflow run의 아티팩트로 종속**시켜 패키징한다(#390 — main run_id 종속).
 
 > [!NOTE]
-> **결정: "수식은 He 상수, 패키징은 모델 2개"** (#302). calibration 수식 자체는 #300의
-> He 2014 보정(`p = q/(q + (1-q)/w)`)을 그대로 쓰며 held-out fit이 없다 — 알고리즘 변경이
-> 아니라 **패키징 변경**이다. `#300` 스펙의 "아티팩트 3개 유지 / calibration은 모델이 아니라
-> 상수+수식" 항목은 코칭 이전 임의 결정이었고 본 섹션이 supersede한다(정정 각주:
-> `docs/specs/2026-07-24-negative-downsampling-calibration.md` 결정 7).
+> **결정: "수식은 He 상수, calibration은 main run에 종속된 아티팩트"** (#390, 멘토 코칭
+> 2026-07-28). calibration 수식 자체는 #300의 He 2014 보정(`p = q/(q + (1-q)/w)`)을 그대로
+> 쓰며 held-out fit이 없다. **패키징 이력**: #302가 처음엔 calibration을 **별도 등록 모델**
+> (`ctr-calibration-model`)로 올렸으나, 이는 main·calibration 두 alias를 champion으로 전환하는
+> 찰나에 서버가 기동하면 **새 main + 직전 calibration**을 조합하는 **동기화(race)** 위험이
+> 있었다(MLflow는 두 alias의 원자적 전환을 지원하지 않음). #390이 이를 **별도 등록 제거 +
+> main run_id 종속**으로 개정한다: calibration은 main과 같은 run에 아티팩트로 로깅되고, 서빙은
+> main을 alias로 로드한 뒤 **그 run_id로 같은 run의 calibration을 함께 읽는다**. 의존이 main
+> 하나로 모여 어긋난 조합이 구조적으로 불가능해진다. #300 스펙의 "calibration은 모델이 아니라
+> 상수+수식" 관점이 이 종속 방식과 다시 정합한다.
 >
-> **구현 범위 구분**: 본 섹션은 배포 **계약**을 정의한다. `#302` PR은 **2-모델 패키징 +
-> 서빙 체이닝 + 페어링 검증**을 구현했고, 후속 슬라이스로 모델 바이너리 **ONNX 전환**
-> (`#336` — 학습측 변환을 완성한 **#179**를 Phase 1로 흡수)과 feature 메타 **JSON 전환**
-> (`#344`)이 완료됐다. **joblib 폴백 제거**와 **manifest.json 해시 검증**은 아직 남은
-> 목표다(아래 표의 "남은 목표" 열).
+> **점진 로드맵**: 본 섹션(#390)은 1단계다. 2단계는 LightGBM→ONNX 변환 그래프의 뒷단을 확장해
+> calibration 계수를 심어 **단일 모델 하나**로 패키징하는 것(별도 이슈). 관련 완료 슬라이스:
+> 모델 바이너리 **ONNX 전환**(#336, 학습측 #179 흡수), feature 메타 **JSON 전환**(#344).
+> **joblib 폴백 제거**와 **manifest.json 해시 검증**은 아직 남은 목표다.
 
 ### Deployment Package Composition
 
@@ -345,11 +349,11 @@ Training Dataset의 한 행은 `(user_id, video_id, clicked)` pointwise 구조�
 | 메인 모델 | `model/lgbm_model.joblib` + `model_onnx/`(`onnxruntime` 추론, joblib 폴백) (#336) | joblib 폴백 제거 | 학습(train.py) | Registry `ctr-model` |
 | feature 컬럼 | `features/feature_columns.json` (JSON) (#344) | — | 학습 | 메인 모델 run |
 | categorical 매핑 | `features/categorical_columns.json` (JSON) (#344) | — | 학습 | 메인 모델 run |
-| **calibration 모델** | `calibration/calibration.json` (JSON `w`) | 동일(JSON) | 학습(downsampling 시) | Registry `ctr-calibration-model` |
+| **calibration** | `calibration/calibration.json` (JSON `w`) | 동일(JSON) | 학습(downsampling 시) | **메인 모델 run**(아티팩트, 별도 등록 없음) |
 | manifest | — | `manifest/manifest.json` | 학습 | 메인 모델 run |
 
-> ⚠️ calibration 모델은 downsampling 학습(`sampling_rate < 1.0`)에서만 생성·등록된다.
-> `w = 1.0`(미사용)이거나 #300 이전 모델(예 champion v6)은 calibration 모델이 없으며, 서빙은
+> ⚠️ calibration 아티팩트는 downsampling 학습(`sampling_rate < 1.0`)에서만 생성·로깅된다.
+> `w = 1.0`(미사용)이거나 #300 이전 모델(예 champion v6)은 calibration 아티팩트가 없으며, 서빙은
 > 이를 **항등(no-op)**으로 처리해 기존 1-모델 배포가 그대로 동작한다(하위호환).
 
 ### Calibration Definition
@@ -358,25 +362,26 @@ Training Dataset의 한 행은 `(user_id, video_id, clicked)` pointwise 구조�
   `src/models/downsampling.py:apply_downsampling_calibration`(#300)을 재사용한다.
 - **파라미터 `w`**: 학습 시 실제로 남긴 negative 비율(**realized `sampling_rate`**, nominal 아님).
   `src/models/calibration.py:DownsamplingCalibrator`가 `w` 하나로 완전히 정의되며 JSON으로 직렬화한다.
-- **"상수지만 모델"**: 내부 로직은 fit 없는 상수 변환이지만, 배포·롤백·버전 관리를 메인 모델과
-  독립적으로 하기 위해 **Registry에 별도 등록 모델로** 패키징한다(모델 2개).
+- **"상수지만 아티팩트"**: 내부 로직은 fit 없는 상수 변환이며, 메인 모델과 **같은 run의 아티팩트**로
+  종속시켜 패키징한다(별도 등록 모델 아님, #390). 배포·롤백·버전 관리의 단일 기준은 메인 모델이다.
 - calibration 수식·규약·검증 지표(LogLoss/Brier/calibration curve, AUC 계열 불변)는 본 문서에서
   재정의하지 않으며, `docs/specs/2026-07-24-negative-downsampling-calibration.md`(#300)를 따른다.
 
 ### MLflow Registry 등록 방식
 
-- **두 등록 모델**: 메인은 `ctr-model`, calibration은 `ctr-calibration-model`
-  (`config.yaml:registry.calibration_model_name`). 각각 `champion`/`challenger`/`rollback` alias로
-  운영한다.
-- **짝(pairing)**: calibration 버전에 메인 학습 run_id를 `main_run_id` tag로 남긴다. 두 모델이
-  같은 학습에서 나왔음을 이 tag로 식별한다.
-- **원자적 이동**: 같은 학습의 메인·calibration 버전을 함께 champion으로 승격/롤백한다. (두 alias를
-  묶어 옮기는 편의 헬퍼는 manifest 도입 시점에 검토하며, 본 문서에서는 아래 fail-closed 검증으로
-  잘못된 조합을 막는 안전망만 정의한다.)
-- **승격 게이트**: downsampling 모델(`sampling_rate` tag `< 1.0`)은 서빙 calibration 배선이 라이브임을
-  나타내는 `CTR_SERVING_CALIBRATION_READY` 플래그(기본 False) 전까지 champion 승격이 거부된다
-  (`src/tracking/registry.py:set_model_alias`, #300 순서 가드). 이 플래그는 "calibration 모델 존재"가
-  아니라 "서빙이 실제로 체이닝하도록 배포됨"을 나타내는 배포 결합 신호다.
+- **단일 등록 모델**: 메인 `ctr-model` 하나만 `champion`/`challenger`/`rollback` alias로 운영한다.
+  calibration은 별도 등록하지 않고 메인 모델 run의 `calibration/` 아티팩트로 종속된다(#390).
+- **run_id 종속**: 서빙이 메인을 alias로 로드하면 그 버전의 run_id를 얻고, **같은 run**의 calibration
+  아티팩트를 함께 읽는다. calibration이 물리적으로 메인과 같은 학습에서 나왔음이 run_id로 보장되므로
+  별도 짝 식별 tag(`main_run_id`)나 페어링 검증이 필요 없다.
+- **단일 승격 기준**: champion 전환 시 이동하는 alias는 메인 하나뿐이다(`src/tracking/promote.py`).
+  두 alias를 비원자적으로 전환하며 생기던 **동기화(race)** — 새 메인 + 직전 calibration 조합 — 이
+  구조적으로 발생하지 않는다.
+- **승격 게이트**: (1) downsampling 후보(`sampling_rate` tag `< 1.0`)는 같은 run에 calibration
+  아티팩트가 있어야 승격된다(없으면 게이트2 거부). (2) 서빙 calibration 배선이 라이브임을 나타내는
+  `CTR_SERVING_CALIBRATION_READY` 플래그(기본 False) 전까지 downsampling 모델의 champion 승격이
+  거부된다(`src/tracking/registry.py:set_model_alias`, #300 순서 가드). 이 플래그는 "서빙이 실제로
+  체이닝하도록 배포됨"을 나타내는 배포 결합 신호다.
 
 ### manifest 스키마 (목표 — 구현은 #302 후속)
 
@@ -395,9 +400,9 @@ SSOT가 아니다 — 계약 SSOT는 `src/features/model_contract.py`이고 mani
 
 - **형식은 JSON**(pickle 금지 — 역직렬화 보안 위험·버전 의존성 제거).
 - 서버 기동 시 해시 짝 검증이 불일치하면 **fail-closed**(기동 거부)한다.
-- **현행(이번 PR)**: manifest 도입 전까지는 위 "짝 검증"을 **calibration의 `main_run_id` tag ↔ 메인
-  run_id 비교**로 대체 구현한다(아래 서빙 로딩 참고). manifest 해시 검증은 후속 슬라이스에서 이
-  자리를 채운다.
+- **현행(#390)**: calibration이 메인과 **같은 run**에 종속되므로(run_id 종속) "서로 다른 학습에서
+  나온 조합" 자체가 구조적으로 불가능하다 — 별도 짝 검증이 필요 없다. manifest 해시 검증은 후속
+  슬라이스에서 아티팩트 무결성(손상·변조) 검증 용도로 이 자리를 채운다.
 
 > #### ⚠️ 잔여 fail-open — mutable tag 의존
 > 서빙의 calibration 사용 판단은 메인 버전의 `sampling_rate` tag에 의존한다. tag가 **없으면**
@@ -412,22 +417,21 @@ SSOT가 아니다 — 계약 SSOT는 `src/features/model_contract.py`이고 mani
 - **체이닝**: `main_model` 추론(raw `q`) → `calibration_model` 적용(`p`) → 최종 CTR. calibration은
   monotonic이라 재랭킹 순위는 불변이고 반환 점수만 원분포 확률로 이동한다
   (`src/serving/service.py:Reranker`).
-- **로딩**: 서빙은 두 모델을 로드 시 함께 조립한다(`src/serving/model_loader.py`). Registry 경로는
-  `ctr-model@champion`과 `ctr-calibration-model@champion`을 각각 resolve한다. calibration `w`는
-  **로드 시 1회 읽어 캐싱**하며 요청당 재조회하지 않는다(#300 서빙 캐싱 계약).
+- **로딩**: 서빙은 메인을 alias로 resolve해 run_id를 얻고, 같은 run의 calibration 아티팩트를
+  함께 조립한다(`src/serving/model_loader.py`). Registry 경로는 `ctr-model@champion` **하나만**
+  resolve한다 — calibration은 별도 alias resolve가 없다. calibration `w`는 **로드 시 1회 읽어
+  캐싱**하며 요청당 재조회하지 않는다(#300 서빙 캐싱 계약).
 - **calibration 사용 판단은 메인의 `sampling_rate` tag 기준**: 메인이 non-downsampling
-  (`sampling_rate >= 1.0` 또는 tag 없음, 예 v6)이면 보정할 것이 없어 calibration을 **스킵**한다.
-  calibration alias가 설정돼 있어도 무시한다 — 메인을 v6로 **롤백**했는데 `ctr-calibration-model@
-  champion`이 옛 downsampling을 가리키는 상황에서 롤백이 서빙 기동을 막지 않게 하려는 것이다.
-  운영자는 롤백 시 calibration alias를 따로 손댈 필요가 없다.
-- **downsampling 메인은 calibration 필수**: 메인이 downsampling(`sampling_rate < 1.0`)인데 서빙에
-  calibration이 구성되지 않았으면(모델명 미설정) 보정 안 된 편향 확률을 막기 위해
-  `ModelArtifactError`로 **기동을 거부**한다(#300 승격 게이트와 함께 defense-in-depth).
-- **페어링 fail-closed 검증**: calibration을 쓰는 경우, calibration 버전의 `main_run_id` tag가
-  resolve된 메인 run_id와 다르면 `ModelArtifactError`로 **서빙 기동을 막는다** — 두 모델이 각자
-  다른 시점에 승격돼 안 맞는 조합(예 `main@champion=v8`, `calibration@champion=v3`)을 조용히
-  서빙하는 것을 방지한다. 이 판단·검증은 **Registry 경로 전용**이다: MLflow 직접 run 지정은
-  실험·수동 경로라 alias 자동 승격처럼 몰래 어긋날 리스크가 없어 대상이 아니다.
+  (`sampling_rate >= 1.0` 또는 tag 없음, 예 v6)이면 보정할 것이 없어 calibration을 **스킵**하고
+  항등으로 동작한다. 메인을 v6로 **롤백**해도 calibration은 그 run에 종속되므로 운영자가 따로
+  손댈 것이 없다.
+- **downsampling 메인은 calibration 필수**: 메인이 downsampling(`sampling_rate < 1.0`)이면 같은
+  run의 calibration 아티팩트를 로드한다. 아티팩트가 없으면(이상 상황) 보정 안 된 편향 확률을 막기
+  위해 `ModelArtifactError`로 **기동을 거부**한다(#300 승격 게이트와 함께 defense-in-depth).
+- **어긋난 조합 불가(구조적)**: calibration이 메인과 같은 run_id에서 로드되므로, "메인과 calibration이
+  각자 다른 시점에 승격돼 안 맞는 조합"이 애초에 발생할 수 없다 — #302의 별도 등록에서 필요했던
+  런타임 페어링 검증(`main_run_id` tag 비교)이 #390에서 불필요해졌다. 이 판단은 **Registry 경로
+  전용**이며, MLflow 직접 run 지정(실험·수동)은 대상이 아니다.
 
 ### 향후 재검토 조건
 
