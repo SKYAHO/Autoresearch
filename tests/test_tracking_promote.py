@@ -10,6 +10,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.tracking import promote, registry  # noqa: E402
+from src.tracking.promotion_result import (  # noqa: E402
+    PromotionExecutionError,
+    PromotionOutcome,
+    PromotionReasonCode,
+)
 
 MODEL_NAME = "ctr-model"
 
@@ -75,24 +80,29 @@ def _patch_client(monkeypatch, client):
     monkeypatch.setattr(promote, "MlflowClient", lambda: client)
 
 
-def test_main_returns_none_when_no_versions_registered(monkeypatch):
+def test_main_returns_no_candidate_when_no_versions_registered(monkeypatch):
     client = _PromoteClient(main_versions=[])
     _patch_client(monkeypatch, client)
 
     result = promote.main(MODEL_NAME, "champion")
 
-    assert result is None
+    assert result.outcome is PromotionOutcome.NO_CANDIDATE
+    assert result.reason_code is PromotionReasonCode.REGISTRY_EMPTY
+    assert result.candidate_version is None
     assert client.set_alias_calls == []
 
 
-def test_main_returns_none_when_latest_is_already_champion(monkeypatch):
+def test_main_returns_no_candidate_when_latest_is_already_champion(monkeypatch):
     v5 = _version("5", aliases=["champion"], run_id="run-5")
     client = _PromoteClient(main_versions=[v5], runs={"run-5": {"val_roc_auc": 0.80}})
     _patch_client(monkeypatch, client)
 
     result = promote.main(MODEL_NAME, "champion")
 
-    assert result is None
+    assert result.outcome is PromotionOutcome.NO_CANDIDATE
+    assert result.reason_code is PromotionReasonCode.ALREADY_CHAMPION
+    assert result.candidate_version == "5"
+    assert result.champion_version == "5"
     assert client.set_alias_calls == []
 
 
@@ -104,7 +114,11 @@ def test_main_promotes_when_no_champion_exists_bootstrap(monkeypatch):
 
     result = promote.main(MODEL_NAME, "champion")
 
-    assert result == "1"
+    assert result.outcome is PromotionOutcome.PROMOTED
+    assert result.reason_code is PromotionReasonCode.FIRST_CHAMPION
+    assert result.candidate_version == "1"
+    assert result.champion_version is None
+    assert result.candidate_metric == 0.70
     assert client.set_alias_calls == [(MODEL_NAME, "champion", "1")]
 
 
@@ -119,7 +133,12 @@ def test_main_promotes_when_candidate_metric_is_better(monkeypatch):
 
     result = promote.main(MODEL_NAME, "champion")
 
-    assert result == "4"
+    assert result.outcome is PromotionOutcome.PROMOTED
+    assert result.reason_code is PromotionReasonCode.METRIC_NOT_DEGRADED
+    assert result.candidate_version == "4"
+    assert result.champion_version == "3"
+    assert result.candidate_metric == 0.80
+    assert result.champion_metric == 0.75
     assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]
 
 
@@ -132,20 +151,23 @@ def test_main_rejects_when_candidate_metric_is_worse(monkeypatch):
     )
     _patch_client(monkeypatch, client)
 
-    with pytest.raises(promote.GateRejectedError, match="게이트1"):
-        promote.main(MODEL_NAME, "champion")
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.REJECTED
+    assert result.reason_code is PromotionReasonCode.METRIC_BELOW_CHAMPION
+    assert result.candidate_version == "4"
+    assert result.champion_version == "3"
     assert client.set_alias_calls == []
 
 
-def test_main_raises_plain_error_when_candidate_metric_missing(monkeypatch):
-    # 게이트 미달(GateRejectedError)이 아니라 데이터 결함으로 다뤄야 한다 —
-    # CLI 계약상 [게이트 미달]/[에러] 메시지가 갈려야 하므로 예외 타입으로 구분한다.
+def test_main_raises_typed_error_when_candidate_metric_missing(monkeypatch):
     candidate = _version("1", run_id="run-1")
     client = _PromoteClient(main_versions=[candidate], runs={"run-1": {}})
     _patch_client(monkeypatch, client)
 
-    with pytest.raises(ValueError, match="val_roc_auc"):
+    with pytest.raises(PromotionExecutionError) as exc_info:
         promote.main(MODEL_NAME, "champion")
+    assert exc_info.value.reason_code is PromotionReasonCode.METRIC_MISSING
     assert client.set_alias_calls == []
 
 
@@ -160,8 +182,13 @@ def test_main_rejects_downsampling_candidate_without_calibration_artifact(monkey
     )
     _patch_client(monkeypatch, client)
 
-    with pytest.raises(promote.GateRejectedError, match="게이트2"):
-        promote.main(MODEL_NAME, "champion")
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.REJECTED
+    assert (
+        result.reason_code
+        is PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING
+    )
     assert client.set_alias_calls == []
 
 
@@ -181,14 +208,14 @@ def test_main_promotes_downsampling_candidate_with_calibration_artifact(monkeypa
 
     result = promote.main(MODEL_NAME, "champion")
 
-    assert result == "4"
+    assert result.outcome is PromotionOutcome.PROMOTED
+    assert result.reason_code is PromotionReasonCode.METRIC_NOT_DEGRADED
+    assert result.candidate_version == "4"
     # 승격 기준은 main 하나뿐 — calibration alias는 이동하지 않는다(#390).
     assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]
 
 
-def test_main_downsampling_artifact_store_error_propagates_not_gate_rejected(monkeypatch):
-    # list_artifacts가 인프라 오류를 던지면 GateRejectedError(게이트 미달)가 아니라
-    # 그대로 전파돼야 한다 — CLI에서 "[게이트 미달]"이 아니라 "[에러]"로 갈린다(#395 리뷰 1b).
+def test_main_downsampling_artifact_store_error_is_typed(monkeypatch):
     champion = _version("3", aliases=["champion"], run_id="run-3")
     candidate = _version("4", run_id="run-4", tags={"sampling_rate": "0.5"})
     client = _PromoteClient(
@@ -198,9 +225,9 @@ def test_main_downsampling_artifact_store_error_propagates_not_gate_rejected(mon
     )
     _patch_client(monkeypatch, client)
 
-    with pytest.raises(RuntimeError, match="아티팩트 스토어 접근") as exc_info:
+    with pytest.raises(PromotionExecutionError) as exc_info:
         promote.main(MODEL_NAME, "champion")
-    assert not isinstance(exc_info.value, promote.GateRejectedError)
+    assert exc_info.value.reason_code is PromotionReasonCode.ARTIFACT_LOOKUP_FAILED
     assert client.set_alias_calls == []
 
 
@@ -216,11 +243,12 @@ def test_main_promotes_when_candidate_metric_equals_champion(monkeypatch):
 
     result = promote.main(MODEL_NAME, "champion")
 
-    assert result == "4"
+    assert result.outcome is PromotionOutcome.PROMOTED
+    assert result.reason_code is PromotionReasonCode.METRIC_NOT_DEGRADED
     assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]
 
 
-def test_main_raises_plain_error_when_champion_metric_missing(monkeypatch):
+def test_main_raises_typed_error_when_champion_metric_missing(monkeypatch):
     # champion run에 val_roc_auc 자체가 없으면(예: 과거 수동 승격) 비교 불가를
     # 자동 통과로 처리하지 않고 fail-closed로 거부한다(PR #343 리뷰 반영).
     champion = _version("3", aliases=["champion"], run_id="run-3")
@@ -231,6 +259,28 @@ def test_main_raises_plain_error_when_champion_metric_missing(monkeypatch):
     )
     _patch_client(monkeypatch, client)
 
-    with pytest.raises(ValueError, match="val_roc_auc"):
+    with pytest.raises(PromotionExecutionError) as exc_info:
         promote.main(MODEL_NAME, "champion")
+    assert exc_info.value.reason_code is PromotionReasonCode.METRIC_MISSING
+    assert client.set_alias_calls == []
+
+
+def test_main_rejects_when_serving_calibration_is_not_ready(monkeypatch):
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4", tags={"sampling_rate": "0.5"})
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        calibration_runs=["run-4"],
+        runs={"run-3": {"val_roc_auc": 0.70}, "run-4": {"val_roc_auc": 0.80}},
+    )
+    monkeypatch.delenv("CTR_SERVING_CALIBRATION_READY", raising=False)
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.REJECTED
+    assert (
+        result.reason_code
+        is PromotionReasonCode.SERVING_CALIBRATION_NOT_READY
+    )
     assert client.set_alias_calls == []

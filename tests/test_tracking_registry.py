@@ -116,7 +116,10 @@ def test_set_champion_alias_rejects_downsampled_model_when_not_ready(monkeypatch
     fake_client = _fake_client_with_version_tags({"sampling_rate": "0.5"})
     monkeypatch.setattr(registry, "MlflowClient", MagicMock(return_value=fake_client))
 
-    with pytest.raises(ValueError, match="champion 승격을 거부"):
+    with pytest.raises(
+        registry.ServingCalibrationNotReadyError,
+        match="champion 승격을 거부",
+    ):
         registry.set_model_alias("ctr-model", "champion", "7")
     fake_client.set_registered_model_alias.assert_not_called()
 

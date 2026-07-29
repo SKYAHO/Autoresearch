@@ -14,6 +14,10 @@ from mlflow.tracking import MlflowClient
 logger = logging.getLogger(__name__)
 
 
+class ServingCalibrationNotReadyError(ValueError):
+    """downsampling champion 승격이 serving 준비 가드에 의해 거부됨."""
+
+
 def _serving_calibration_ready() -> bool:
     """서빙 추론에 downsampling 보정이 편입됐는지 여부(#300/#302/#390).
 
@@ -132,14 +136,15 @@ def set_model_alias(model_name: str, alias: str, version: str) -> None:
         version: 모델 버전 번호
 
     Raises:
-        ValueError: champion 승격 대상이 downsampling 모델인데 서빙 보정 미준비.
+        ServingCalibrationNotReadyError: champion 승격 대상이 downsampling
+            모델인데 서빙 보정 미준비.
     """
     client = MlflowClient()
     if alias == "champion" and not _serving_calibration_ready():
         mv = client.get_model_version(name=model_name, version=str(version))
         sampling_rate = float((mv.tags or {}).get("sampling_rate", 1.0))
         if sampling_rate < 1.0:
-            raise ValueError(
+            raise ServingCalibrationNotReadyError(
                 f"{model_name} v{version}는 downsampling 모델(sampling_rate="
                 f"{sampling_rate})인데 서빙 보정이 아직 준비되지 않았습니다"
                 "(#302 미완). 보정 안 된 편향 확률이 서빙에 나가므로 champion "
