@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-29T05:32:23Z",
+  "generated_at": "2026-07-29T05:41:15Z",
   "reports": [
+    {
+      "number": 402,
+      "title": "fix: feast 이미지에 libgomp1 추가 — LightGBM import 실패로 학습 DAG 전멸 (#401)",
+      "author": "waieiches",
+      "merged_at": "2026-07-29T05:41:03Z",
+      "summary_ko": [
+        "Feast 이미지 기반 학습 DAG 실행 시 발생하던 LightGBM의 OpenMP 라이브러리(libgomp.so.1) 누락 오류를 해결했습니다.",
+        "Dockerfile.feast에 libgomp1 패키지 설치를 추가하여 컨테이너 환경에서 LightGBM 모듈을 정상 임포트할 수 있도록 개선했습니다.",
+        "CI 및 release 워크플로우에 run-pipeline --help 스모크 테스트와 lightgbm 임포트 검증을 추가하여 재발을 방지했습니다."
+      ],
+      "report_url": "pr/402/"
+    },
     {
       "number": 395,
       "title": "refactor: #390 calibration을 main run_id 종속으로 전환 — 별도 등록 제거로 동기화 race 해소",
