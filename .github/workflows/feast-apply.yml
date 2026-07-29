@@ -41,6 +41,7 @@ concurrency:
 jobs:
   feast-apply:
     name: Apply Feast feature definitions to registry
+    environment: ${{ inputs.environment || 'prod' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -56,23 +57,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
-
-      - name: Guard against dev dispatch before dev coordinates are wired
-        # #399: environment 입력은 full_scan_for_deletion 만 끌 뿐, registry/offline/
-        # staging 좌표는 아래 렌더 스텝이 repo-level vars.*(= prod)를 그대로 씁니다.
-        # 지금 dev 로 실행하면 실험 정의가 prod registry 에 apply 되면서 prod 고아 키
-        # GC(full_scan)까지 꺼져, dev 선택이 prod 를 오염시키는 순수 악화가 됩니다.
-        # dev 좌표(GitHub Environments 또는 dev-scoped vars)가 배선되면 이 스텝을
-        # 제거합니다 — Autoresearch-infra 후속 이슈.
-        env:
-          AUTORESEARCH_ENV: ${{ inputs.environment || 'prod' }}
-        shell: bash
-        run: |
-          if [[ "$AUTORESEARCH_ENV" != "prod" ]]; then
-            echo "::error::AUTORESEARCH_ENV=$AUTORESEARCH_ENV is not runnable yet"
-            echo "::error::dev registry/offline/staging coordinates are still prod values (see SKYAHO/Autoresearch#399)"
-            exit 1
-          fi
 
       - name: Authenticate to GCP with Workload Identity Federation
         uses: google-github-actions/auth@v2
