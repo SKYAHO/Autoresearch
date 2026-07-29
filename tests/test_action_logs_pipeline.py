@@ -1183,6 +1183,81 @@ def test_single_falls_back_to_legacy_for_duplicate_user_id(tmp_path) -> None:
     assert provider_calls == [users[0]["user_id"], users[1]["user_id"]]
 
 
+def test_single_falls_back_to_legacy_for_missing_user_id(tmp_path) -> None:
+    users = _fixture_users(1)
+    users[0].pop("user_id")
+    metadata: dict[tuple[str, str], ExposureMetadata] = {}
+    provider_calls: list[str] = []
+    videos = build_fixture_video_records(1)
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        provider_user_id = str(virtual_user.get("user_id", ""))
+        provider_calls.append(provider_user_id)
+        metadata[(provider_user_id, str(videos[0]["video_id"]))] = ExposureMetadata(
+            policy="model",
+            rank=1,
+            ctr_score=0.5,
+            is_exploration=False,
+            policy_version="run-a",
+            exposure_source="model",
+        )
+        return list(videos)
+
+    request = _request(tmp_path, candidates_per_user=1)
+    result = pipeline_module.generate_action_log_single(
+        request,
+        users,
+        videos,
+        RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+        exposure_metadata=metadata,
+    )
+
+    assert result.execution_mode == "legacy"
+    assert provider_calls == [""]
+    rows = pq.read_table(request.output_path, columns=["exposure_source"]).to_pylist()
+    assert {row["exposure_source"] for row in rows} == {"model"}
+
+
+def test_single_falls_back_to_legacy_for_missing_and_explicit_user_0(
+    tmp_path,
+) -> None:
+    users = _fixture_users(2)
+    users[0].pop("user_id")
+    users[1]["user_id"] = "user_0"
+    metadata: dict[tuple[str, str], ExposureMetadata] = {}
+    provider_calls: list[str] = []
+    videos = build_fixture_video_records(1)
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        provider_user_id = str(virtual_user.get("user_id", ""))
+        provider_calls.append(provider_user_id)
+        metadata[(provider_user_id, str(videos[0]["video_id"]))] = ExposureMetadata(
+            policy="model",
+            rank=1,
+            ctr_score=0.5,
+            is_exploration=False,
+            policy_version="run-a",
+            exposure_source="model",
+        )
+        return list(videos)
+
+    request = _request(tmp_path, candidates_per_user=1)
+    result = pipeline_module.generate_action_log_single(
+        request,
+        users,
+        videos,
+        RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+        exposure_metadata=metadata,
+    )
+
+    assert result.execution_mode == "legacy"
+    assert provider_calls == ["", "user_0"]
+    rows = pq.read_table(request.output_path, columns=["exposure_source"]).to_pylist()
+    assert {row["exposure_source"] for row in rows} == {"model"}
+
+
 def test_single_falls_back_to_legacy_for_read_only_exposure_metadata(
     tmp_path,
 ) -> None:

@@ -1384,9 +1384,13 @@ def generate_action_log_single(
     계약은 이 단일 실행 경로에서 사용하지 않는다.
     """
 
-    if _has_duplicate_user_ids(virtual_users) or (
-        exposure_metadata is not None
-        and not isinstance(exposure_metadata, MutableMapping)
+    if (
+        any("user_id" not in virtual_user for virtual_user in virtual_users)
+        or _has_duplicate_user_ids(virtual_users)
+        or (
+            exposure_metadata is not None
+            and not isinstance(exposure_metadata, MutableMapping)
+        )
     ):
         legacy = generate_action_log_batch(
             request,
