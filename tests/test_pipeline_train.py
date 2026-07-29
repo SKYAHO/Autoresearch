@@ -354,6 +354,43 @@ def test_main_no_downsampling_logs_no_calibration_artifact(tmp_path, monkeypatch
     assert client.list_artifacts(main_version.run_id, "calibration") == []
 
 
+def test_downsampling_main_without_calibration_artifact_fails_closed(tmp_path, monkeypatch) -> None:
+    # #390 fail-closed(PR #395 리뷰 5): downsampling main(sampling_rate<1.0 tag)인데 그 run에
+    # calibration 아티팩트가 없으면, 서빙 로드가 ModelArtifactError로 기동을 거부해야 한다
+    # (보정 안 된 편향 확률 서빙 방지). 정상 경로는 아티팩트가 항상 있지만, 이 마지막 보루를
+    # 회귀 테스트로 고정한다 — sampling_rate=1.0으로 학습해 calibration 아티팩트 없는 run을
+    # 만든 뒤, main 버전 tag를 0.5로 덮어써 "downsampling인데 아티팩트 없음" 상황을 재현한다.
+    from mlflow.tracking import MlflowClient as _Client
+
+    from src.serving.model_loader import (
+        ModelArtifactError,
+        RegistryModelSettings,
+        load_reranker_with_lineage,
+    )
+
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=1.0)
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    _run_train(tmp_path, config_path)
+
+    client = _Client(tracking_uri=tracking_uri)
+    [main_version] = client.search_model_versions("name='ctr-model'")
+    # calibration 아티팩트가 없는 run인데 downsampling인 것처럼 tag를 덮어쓴다.
+    assert client.list_artifacts(main_version.run_id, "calibration") == []
+    client.set_model_version_tag("ctr-model", main_version.version, "sampling_rate", "0.5")
+    client.set_registered_model_alias("ctr-model", "champion", main_version.version)
+
+    with pytest.raises(ModelArtifactError, match="calibration"):
+        load_reranker_with_lineage(
+            RegistryModelSettings(
+                tracking_uri=tracking_uri, model_name="ctr-model", alias="champion"
+            )
+        )
+
+
 def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> None:
     # #302/#179: 학습이 model_onnx/ 아티팩트를 로깅하고, 서빙 로더가 그 run에서 ONNX로
     # (joblib 아님) Reranker를 로드하며 joblib 예측과 허용오차 내로 동일해야 한다.

@@ -183,6 +183,15 @@ def promote_model(
     아직 이 플래그를 넘기더라도 기동이 깨지지 않도록 인자 표면만 유지하며, DAG에서 플래그를 제거한
     뒤 후속 PR로 이 인자를 걷어낸다.
     """
+    # 기본값과 다른 값이 명시적으로 넘어오면 stderr에 deprecation 경고를 남긴다 — DAG가
+    # 기본값과 같은 문자열을 넘기면 감지 못하지만(한계), 다른 값이면 "아직 호출부가 이 플래그를
+    # 쓰고 있다"는 신호를 로그로 남겨 언제 걷어내도 되는지 추적하게 한다(#395 리뷰).
+    if calibration_model_name != "ctr-calibration-model":
+        typer.echo(
+            "[경고] --calibration-model-name은 #390에서 무시됩니다(deprecated). "
+            "호출부(DAG)에서 이 플래그를 제거해 주세요.",
+            err=True,
+        )
     try:
         promoted_version = promote.main(
             model_name=model_name,

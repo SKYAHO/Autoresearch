@@ -41,6 +41,24 @@ def _run_id_for_version(versions: list[dict], version: str) -> str:
     raise ValueError(f"버전 {version}의 run_id를 찾을 수 없습니다.")
 
 
+def _run_has_calibration_artifact(client: MlflowClient, run_id: str) -> bool:
+    """run에 calibration 아티팩트(calibration/calibration.json)가 있으면 True.
+
+    아티팩트 스토어 접근 실패(인프라 오류)는 "게이트 미달"(GateRejectedError)과 구분해야
+    한다 — 전자는 재시도·인프라 점검 대상이고 후자는 재학습 대상이라 운영 대응이 다르다.
+    그래서 list_artifacts 예외를 GateRejectedError로 삼키지 않고 RuntimeError로 감싸 그대로
+    전파한다(CLI에서 "[게이트 미달]"이 아니라 "[에러]"로 갈리고, DAG 알림도 구분 가능).
+    """
+    try:
+        artifacts = client.list_artifacts(run_id, "calibration")
+    except Exception as error:
+        raise RuntimeError(
+            f"calibration 아티팩트 존재 확인 중 아티팩트 스토어 접근에 실패했습니다"
+            f"(인프라 오류, run={run_id}): {error}"
+        ) from error
+    return any(entry.path.endswith(CALIBRATION_PARAM_FILENAME) for entry in artifacts)
+
+
 def main(
     model_name: str,
     champion_alias: str,
@@ -58,7 +76,7 @@ def main(
     Raises:
         GateRejectedError: 게이트 조건 미달로 승격 거부.
         ValueError: 후보 버전의 run에 val_roc_auc 지표가 없음(데이터 결함).
-        (기타) MLflow 연결 실패 등 실행 중 오류는 그대로 전파한다.
+        (기타) MLflow 연결·아티팩트 스토어 접근 실패 등 실행 중 오류는 그대로 전파한다.
     """
     set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
     candidate_version = get_latest_version(model_name)
@@ -105,11 +123,7 @@ def main(
         # downsampling 후보는 같은 run에 calibration 아티팩트가 있어야 한다(#390 run_id 종속).
         # 서빙이 승격 후 main run_id로 이 아티팩트를 로드하므로, 없으면 보정 안 된 편향 확률이
         # 나간다 — 승격 전에 fail-closed로 막는다(서빙 로더도 런타임에서 한 번 더 방어).
-        calibration_artifacts = client.list_artifacts(candidate_run_id, "calibration")
-        has_calibration = any(
-            entry.path.endswith(CALIBRATION_PARAM_FILENAME) for entry in calibration_artifacts
-        )
-        if not has_calibration:
+        if not _run_has_calibration_artifact(client, candidate_run_id):
             raise GateRejectedError(
                 f"게이트2 미달: 후보 {model_name} v{candidate_version}는 "
                 f"downsampling(sampling_rate={sampling_rate})인데 run({candidate_run_id})에 "

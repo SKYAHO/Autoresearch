@@ -89,9 +89,9 @@ def test_promote_model_prints_ok_and_exits_zero_on_success(monkeypatch, capsys):
     assert "v4" in out
 
 
-def test_promote_model_accepts_deprecated_calibration_flag_and_ignores_it(monkeypatch, capsys):
+def test_promote_model_accepts_deprecated_calibration_flag_and_warns(monkeypatch, capsys):
     # #390: calibration_model_name은 무시되지만, Airflow DAG 하위호환을 위해 인자는 받아들여야
-    # 하고 promote.main으로는 전달되지 않아야 한다.
+    # 하고 promote.main으로는 전달되지 않아야 한다. 기본값과 다른 값이면 stderr 경고를 남긴다.
     captured = {}
 
     def _fake_main(**kwargs):
@@ -103,11 +103,13 @@ def test_promote_model_accepts_deprecated_calibration_flag_and_ignores_it(monkey
     cli.promote_model(
         model_name="ctr-model",
         champion_alias="champion",
-        calibration_model_name="ctr-calibration-model",
+        calibration_model_name="something-else",
     )
 
     assert "calibration_model_name" not in captured
-    assert "[OK]" in capsys.readouterr().out
+    streams = capsys.readouterr()
+    assert "[OK]" in streams.out
+    assert "deprecated" in streams.err.lower()
 
 
 def test_promote_model_prints_noop_message_when_no_candidate(monkeypatch, capsys):

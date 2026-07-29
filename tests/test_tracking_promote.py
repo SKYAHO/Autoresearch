@@ -29,12 +29,16 @@ class _PromoteClient:
     표면만 흉내내는 가짜 client(#390 — calibration은 별도 등록하지 않는다).
 
     calibration_runs: calibration 아티팩트가 있는 run_id 집합(게이트2용).
+    list_artifacts_error=True면 아티팩트 스토어 접근 실패(인프라 오류)를 흉내낸다.
     """
 
-    def __init__(self, *, main_versions=None, runs=None, calibration_runs=None):
+    def __init__(
+        self, *, main_versions=None, runs=None, calibration_runs=None, list_artifacts_error=False
+    ):
         self.main_versions = main_versions or []
         self.runs = runs or {}
         self.calibration_runs = set(calibration_runs or [])
+        self.list_artifacts_error = list_artifacts_error
         self.set_alias_calls: list[tuple[str, str, str]] = []
 
     def search_model_versions(self, filter_string):
@@ -56,6 +60,8 @@ class _PromoteClient:
         return SimpleNamespace(data=SimpleNamespace(metrics=self.runs.get(run_id, {})))
 
     def list_artifacts(self, run_id, path):
+        if self.list_artifacts_error:
+            raise RuntimeError("artifact store unreachable")
         if run_id in self.calibration_runs and path == "calibration":
             return [SimpleNamespace(path="calibration/calibration.json")]
         return []
@@ -178,6 +184,24 @@ def test_main_promotes_downsampling_candidate_with_calibration_artifact(monkeypa
     assert result == "4"
     # 승격 기준은 main 하나뿐 — calibration alias는 이동하지 않는다(#390).
     assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]
+
+
+def test_main_downsampling_artifact_store_error_propagates_not_gate_rejected(monkeypatch):
+    # list_artifacts가 인프라 오류를 던지면 GateRejectedError(게이트 미달)가 아니라
+    # 그대로 전파돼야 한다 — CLI에서 "[게이트 미달]"이 아니라 "[에러]"로 갈린다(#395 리뷰 1b).
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4", tags={"sampling_rate": "0.5"})
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        runs={"run-3": {"val_roc_auc": 0.70}, "run-4": {"val_roc_auc": 0.80}},
+        list_artifacts_error=True,
+    )
+    _patch_client(monkeypatch, client)
+
+    with pytest.raises(RuntimeError, match="아티팩트 스토어 접근") as exc_info:
+        promote.main(MODEL_NAME, "champion")
+    assert not isinstance(exc_info.value, promote.GateRejectedError)
+    assert client.set_alias_calls == []
 
 
 def test_main_promotes_when_candidate_metric_equals_champion(monkeypatch):
