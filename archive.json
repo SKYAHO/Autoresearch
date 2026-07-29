@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-29T03:37:41Z",
+  "generated_at": "2026-07-29T05:02:03Z",
   "reports": [
+    {
+      "number": 395,
+      "title": "refactor: #390 calibration을 main run_id 종속으로 전환 — 별도 등록 제거로 동기화 race 해소",
+      "author": "waieiches",
+      "merged_at": "2026-07-29T05:01:51Z",
+      "summary_ko": [
+        "보정(calibration) 모델을 별도 등록 모델에서 메인 모델의 학습 실행(run)에 종속된 아티팩트로 전환하였습니다.",
+        "메인 모델과 보정 모델의 승격 시점이 어긋나 발생하던 서빙 동기화 문제(race condition)를 구조적으로 제거하였습니다.",
+        "서빙 로더 및 승격 CLI에서 불필요해진 페어링 검증과 이중 별칭 전환을 제거하고 하위 호환성을 유지했습니다."
+      ],
+      "report_url": "pr/395/"
+    },
     {
       "number": 389,
       "title": "feat: 학습 DuckDB 조립 경로 제거 — build_training_dataset feast-only (#359 C2)",
