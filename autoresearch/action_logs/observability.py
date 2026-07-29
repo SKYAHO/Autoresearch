@@ -1,4 +1,16 @@
-"""Action-log micro work의 안전한 구조화 telemetry 유틸리티."""
+"""Action-log LLM 판정 구간의 안전한 구조화 telemetry 유틸리티.
+
+[파이프라인] 일일 추천 배치의 노출 후보 조립 뒤, action log 출력 최종화 전
+LLM 판정 worker와 single coordinator가 운영 상태를 기록하는 구간을 담당한다.
+
+[기능] shard micro-work progress와 bounded single-mode retention progress를
+식별자·원문 없이 JSON event로 기록하고, 상세/집계 telemetry 설정을 검증한다.
+
+[비책임] LLM 요청·draft/event 생성과 output writer
+(autoresearch/action_logs/pipeline.py), OpenRouter client 호출
+(autoresearch/action_logs/llm_generator.py), 일일 publish
+(autoresearch/action_logs/daily.py).
+"""
 
 from __future__ import annotations
 
@@ -10,7 +22,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from time import monotonic
-from typing import Iterator
+from typing import Iterator, Literal, Protocol
 
 
 DEFAULT_TELEMETRY_DETAIL_MAX_WORK = 100
@@ -60,6 +72,7 @@ def emit_action_log_event(
     event: str,
     *,
     detailed_only: bool = False,
+    include_none_fields: bool = False,
     **fields: object,
 ) -> None:
     """Airflow stdout에서 바로 읽을 수 있는 한 줄 JSON event를 기록한다.
@@ -76,7 +89,13 @@ def emit_action_log_event(
         "shard_index": context.shard_index if context is not None else -1,
         "work_sequence": context.work_sequence if context is not None else -1,
     }
-    payload.update({key: value for key, value in fields.items() if value is not None})
+    payload.update(
+        {
+            key: value
+            for key, value in fields.items()
+            if include_none_fields or value is not None
+        }
+    )
     logger.log(
         level,
         json.dumps(
@@ -186,6 +205,219 @@ def _latency_percentiles(values: list[float]) -> tuple[float, float]:
 
 def _average(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
+
+
+class _StreamingRetentionSnapshot(Protocol):
+    """single-mode coordinator가 reporter에 전달하는 식별자 없는 보존 수량."""
+
+    phase: Literal["generating", "finalizing"]
+    active_users: int
+    buffered_drafts: int
+    buffered_events: int
+    in_flight_work: int
+    activated_users: int
+    total_users: int
+    submitted_work: int
+    total_work: int | None
+    completed_work: int
+    failed_work: int
+    pending_work: int | None
+
+
+class ActionLogStreamingTelemetryReporter:
+    """bounded single-mode retention progress와 확인된 작은 실행의 timing을 기록한다."""
+
+    def __init__(
+        self,
+        *,
+        logger: logging.Logger,
+        detail_max_work: int | None = None,
+        aggregate_interval_sec: float | None = None,
+    ) -> None:
+        resolved_detail_max_work = (
+            detail_max_work
+            if detail_max_work is not None
+            else _env_int(
+                "ACTION_LOG_TELEMETRY_DETAIL_MAX_WORK",
+                DEFAULT_TELEMETRY_DETAIL_MAX_WORK,
+                logger=logger,
+                minimum=0,
+            )
+        )
+        resolved_interval_sec = (
+            aggregate_interval_sec
+            if aggregate_interval_sec is not None
+            else _env_float(
+                "ACTION_LOG_TELEMETRY_INTERVAL_SEC",
+                DEFAULT_TELEMETRY_INTERVAL_SEC,
+                logger=logger,
+                minimum=10.0,
+                maximum=30.0,
+            )
+        )
+        if resolved_detail_max_work < 0:
+            raise ValueError("ACTION_LOG_TELEMETRY_DETAIL_MAX_WORK must be at least 0")
+        if not 10.0 <= resolved_interval_sec <= 30.0:
+            raise ValueError(
+                "ACTION_LOG_TELEMETRY_INTERVAL_SEC must be between 10 and 30"
+            )
+
+        self._logger = logger
+        self._detail_max_work = resolved_detail_max_work
+        self._aggregate_interval_sec = resolved_interval_sec
+        self._last_emit_at = monotonic()
+        self._window: list[dict[str, float]] = []
+        self._detail_metrics: list[dict[str, float | int]] = []
+        self._detail_disabled = resolved_detail_max_work == 0
+        self._provider_exhausted = False
+        self._exact_total_work: int | None = None
+        self._details_emitted = False
+
+    @property
+    def detailed_candidate(self) -> bool:
+        """worker context에 상세 로그를 허용해도 되는지 반환한다."""
+
+        return not self._detail_disabled
+
+    def start(self, snapshot: _StreamingRetentionSnapshot) -> None:
+        """streaming coordinator가 활성 user를 채우기 전의 시작 상태를 강제 기록한다."""
+
+        self._observe(snapshot, force=True)
+
+    def note_submission(self, submitted_work: int) -> None:
+        """다음 work의 상세 context를 고르기 전에 detail 상한을 적용한다."""
+
+        if submitted_work > self._detail_max_work:
+            self._disable_details()
+
+    def record_work(
+        self,
+        *,
+        work_sequence: int,
+        queue_wait_ms: float,
+        request_elapsed_ms: float,
+        parse_elapsed_ms: float,
+        total_elapsed_ms: float,
+    ) -> None:
+        """완료된 work의 식별자 없는 timing을 현재 interval과 detail buffer에 보관한다."""
+
+        window_metrics = {
+            "queue_wait_ms": queue_wait_ms,
+            "request_elapsed_ms": request_elapsed_ms,
+            "parse_elapsed_ms": parse_elapsed_ms,
+            "total_elapsed_ms": total_elapsed_ms,
+        }
+        self._window.append(window_metrics)
+        if self._detail_disabled or len(self._detail_metrics) >= self._detail_max_work:
+            return
+        self._detail_metrics.append(
+            {"work_sequence": work_sequence, **window_metrics}
+        )
+
+    def observe(self, snapshot: _StreamingRetentionSnapshot) -> None:
+        """현재 retention snapshot을 interval throttle에 따라 기록한다."""
+
+        self._observe(snapshot, force=False)
+
+    def finish(self, snapshot: _StreamingRetentionSnapshot) -> None:
+        """마지막 progress와 안전하게 확정된 detail metric을 강제 기록한다."""
+
+        self._observe(snapshot, force=True)
+        self._emit_details(snapshot)
+
+    def _disable_details(self) -> None:
+        self._detail_disabled = True
+        self._detail_metrics.clear()
+
+    def _observe(self, snapshot: _StreamingRetentionSnapshot, *, force: bool) -> None:
+        if snapshot.total_work is not None:
+            self._provider_exhausted = True
+            self._exact_total_work = snapshot.total_work
+            if snapshot.total_work > self._detail_max_work:
+                self._disable_details()
+        self._emit_progress(snapshot, force=force)
+
+    def _emit_progress(
+        self,
+        snapshot: _StreamingRetentionSnapshot,
+        *,
+        force: bool,
+    ) -> None:
+        now = monotonic()
+        if not force and now - self._last_emit_at < self._aggregate_interval_sec:
+            return
+
+        total_latencies = [metrics["total_elapsed_ms"] for metrics in self._window]
+        latency_p50_ms, latency_p95_ms = _latency_percentiles(total_latencies)
+        fields: dict[str, object] = {
+            "phase": snapshot.phase,
+            "log_mode": "aggregate",
+            "active_users": snapshot.active_users,
+            "buffered_drafts": snapshot.buffered_drafts,
+            "buffered_events": snapshot.buffered_events,
+            "in_flight_work": snapshot.in_flight_work,
+            "activated_users": snapshot.activated_users,
+            "total_users": snapshot.total_users,
+            "submitted_work": snapshot.submitted_work,
+            "total_work": snapshot.total_work,
+            "completed_work": snapshot.completed_work,
+            "failed_work": snapshot.failed_work,
+            "pending_work": snapshot.pending_work,
+            "aggregation_window_work": len(self._window),
+            "latency_p50_ms": round(latency_p50_ms, 3),
+            "latency_p95_ms": round(latency_p95_ms, 3),
+        }
+        for name in (
+            "queue_wait_ms",
+            "request_elapsed_ms",
+            "parse_elapsed_ms",
+            "total_elapsed_ms",
+        ):
+            fields[name] = round(
+                _average([metrics[name] for metrics in self._window]),
+                3,
+            )
+        emit_action_log_event(
+            self._logger,
+            logging.INFO,
+            "action_log_streaming_progress",
+            include_none_fields=True,
+            **fields,
+        )
+        self._window.clear()
+        self._last_emit_at = now
+
+    def _emit_details(self, snapshot: _StreamingRetentionSnapshot) -> None:
+        if (
+            self._details_emitted
+            or self._detail_disabled
+            or not self._provider_exhausted
+            or self._exact_total_work is None
+            or self._exact_total_work > self._detail_max_work
+            or len(self._detail_metrics) != self._exact_total_work
+        ):
+            return
+
+        for metrics in sorted(
+            self._detail_metrics,
+            key=lambda metric: int(metric["work_sequence"]),
+        ):
+            emit_action_log_event(
+                self._logger,
+                logging.INFO,
+                "action_log_micro_work_complete",
+                log_mode="detailed",
+                work_sequence=int(metrics["work_sequence"]),
+                total_work=self._exact_total_work,
+                completed_work=snapshot.completed_work,
+                failed_work=snapshot.failed_work,
+                queue_wait_ms=round(float(metrics["queue_wait_ms"]), 3),
+                request_elapsed_ms=round(float(metrics["request_elapsed_ms"]), 3),
+                parse_elapsed_ms=round(float(metrics["parse_elapsed_ms"]), 3),
+                total_elapsed_ms=round(float(metrics["total_elapsed_ms"]), 3),
+            )
+        self._detail_metrics.clear()
+        self._details_emitted = True
 
 
 class ActionLogTelemetryReporter:

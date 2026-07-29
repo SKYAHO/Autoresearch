@@ -33,6 +33,7 @@ from pydantic import ValidationError
 
 from autoresearch.action_logs.candidate import build_candidates
 from autoresearch.action_logs.observability import (
+    ActionLogStreamingTelemetryReporter,
     ActionLogTelemetryReporter,
     action_log_work_log_context,
 )
@@ -1718,8 +1719,20 @@ def generate_action_log_single(
         assert isinstance(exposure_metadata, MutableMapping)
         mutable_exposure_metadata = exposure_metadata
 
+    logger.info(
+        "Starting action log draft generation",
+        extra={
+            "users": len(virtual_users),
+            "videos": len(videos),
+            "click_threshold": request.click_threshold,
+            "candidates_per_user": request.candidates_per_user,
+            "seed": request.seed,
+        },
+    )
+
     max_workers = max(1, request.max_concurrency)
     max_active_users = _STREAMING_ACTIVE_USER_MULTIPLIER * max_workers
+    telemetry = ActionLogStreamingTelemetryReporter(logger=logger)
     active_users: deque[_StreamingUserState] = deque()
     user_iterator = iter(enumerate(virtual_users))
     total_users = len(virtual_users)
@@ -1745,35 +1758,41 @@ def generate_action_log_single(
         buffered_events: int = 0,
         *,
         phase: Literal["generating", "finalizing"] = "generating",
+        start: bool = False,
+        finish: bool = False,
     ) -> None:
-        if _retention_observer is None:
-            return
         if provider_exhausted:
             total_work: int | None = next_work_sequence
             pending_work: int | None = total_work - completed_work - len(futures)
         else:
             total_work = None
             pending_work = None
-        _retention_observer(
-            _StreamingRetentionSnapshot(
-                phase=phase,
-                active_users=len(active_users),
-                buffered_drafts=sum(
-                    len(drafts)
-                    for state in active_users
-                    for drafts in state.drafts_by_chunk.values()
-                ),
-                buffered_events=buffered_events,
-                in_flight_work=len(futures),
-                activated_users=activated_users,
-                total_users=total_users,
-                submitted_work=submitted_work,
-                total_work=total_work,
-                completed_work=completed_work,
-                failed_work=failed_work,
-                pending_work=pending_work,
-            )
+        snapshot = _StreamingRetentionSnapshot(
+            phase=phase,
+            active_users=len(active_users),
+            buffered_drafts=sum(
+                len(drafts)
+                for state in active_users
+                for drafts in state.drafts_by_chunk.values()
+            ),
+            buffered_events=buffered_events,
+            in_flight_work=len(futures),
+            activated_users=activated_users,
+            total_users=total_users,
+            submitted_work=submitted_work,
+            total_work=total_work,
+            completed_work=completed_work,
+            failed_work=failed_work,
+            pending_work=pending_work,
         )
+        if _retention_observer is not None:
+            _retention_observer(snapshot)
+        if start:
+            telemetry.start(snapshot)
+        elif finish:
+            telemetry.finish(snapshot)
+        else:
+            telemetry.observe(snapshot)
 
     with _StreamingActionLogWriter(
         request=request,
@@ -1862,6 +1881,8 @@ def generate_action_log_single(
             while unsent_work and len(futures) < max_workers:
                 state, chunk_index, work_sequence = unsent_work.popleft()
                 submitted_at = monotonic()
+                submitted_work += 1
+                telemetry.note_submission(submitted_work)
                 futures[
                     executor.submit(
                         _generate_action_log_work,
@@ -1870,10 +1891,9 @@ def generate_action_log_single(
                         work_sequence=work_sequence,
                         submitted_at=submitted_at,
                         shard_index=None,
-                        detailed_telemetry=False,
+                        detailed_telemetry=telemetry.detailed_candidate,
                     )
                 ] = (state, chunk_index, work_sequence)
-                submitted_work += 1
                 _observe()
 
         def _store_work_result(
@@ -1897,6 +1917,19 @@ def generate_action_log_single(
                 )
             state.remaining_chunks -= 1
             completed_work += 1
+            telemetry.record_work(
+                work_sequence=call_result.work_sequence,
+                queue_wait_ms=max(
+                    0.0,
+                    (call_result.started_at - call_result.submitted_at) * 1000,
+                ),
+                request_elapsed_ms=call_result.request_elapsed_ms,
+                parse_elapsed_ms=call_result.parse_elapsed_ms,
+                total_elapsed_ms=max(
+                    0.0,
+                    (monotonic() - call_result.submitted_at) * 1000,
+                ),
+            )
             _observe()
 
         def _collect_completed_futures() -> None:
@@ -1908,6 +1941,7 @@ def generate_action_log_single(
                 state, chunk_index, _work_sequence = futures.pop(completed_future)
                 _store_work_result(state, chunk_index, completed_future.result())
 
+        _observe(start=True)
         _fill_active_users()
         _submit_available_work()
         while active_users or futures:
@@ -1979,7 +2013,10 @@ def generate_action_log_single(
         except ActionLogGenerationError:
             _observe(phase="finalizing")
             writer.finalize_quarantine_failure()
-            _observe(phase="finalizing")
+            try:
+                _observe(phase="finalizing", finish=True)
+            except Exception:  # noqa: BLE001 - telemetry must not mask quarantine error
+                logger.exception("Failed to emit final action log streaming telemetry")
             raise
         generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
         _observe(phase="finalizing")
@@ -1990,7 +2027,7 @@ def generate_action_log_single(
                 phase="finalizing",
             ),
         )
-        _observe(phase="finalizing")
+        _observe(phase="finalizing", finish=True)
 
     result = ActionLogSingleResult(
         execution_mode="streaming",

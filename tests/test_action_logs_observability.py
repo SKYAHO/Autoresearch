@@ -1,8 +1,10 @@
 import json
 import logging
+from dataclasses import dataclass
 
 import pytest
 
+import autoresearch.action_logs.observability as observability
 from autoresearch.action_logs.observability import ActionLogTelemetryReporter
 
 
@@ -24,6 +26,300 @@ def _metrics(**overrides):
     }
     values.update(overrides)
     return values
+
+
+@dataclass(frozen=True)
+class _StreamingSnapshot:
+    phase: str
+    active_users: int
+    buffered_drafts: int
+    buffered_events: int
+    in_flight_work: int
+    activated_users: int
+    total_users: int
+    submitted_work: int
+    total_work: int | None
+    completed_work: int
+    failed_work: int
+    pending_work: int | None
+
+
+def _streaming_snapshot(**overrides) -> _StreamingSnapshot:
+    values = {
+        "phase": "generating",
+        "active_users": 0,
+        "buffered_drafts": 0,
+        "buffered_events": 0,
+        "in_flight_work": 0,
+        "activated_users": 0,
+        "total_users": 100,
+        "submitted_work": 0,
+        "total_work": None,
+        "completed_work": 0,
+        "failed_work": 0,
+        "pending_work": None,
+    }
+    values.update(overrides)
+    return _StreamingSnapshot(**values)
+
+
+def test_streaming_telemetry_emits_retention_and_progress_fields(
+    caplog,
+    monkeypatch,
+) -> None:
+    """10초 미만의 중간 관측은 생략하되 시작·종료와 보존 수량은 남긴다."""
+
+    logger = logging.getLogger("test.action_log.streaming.aggregate")
+    now = [0.0]
+    monkeypatch.setattr(observability, "monotonic", lambda: now[0])
+    reporter = observability.ActionLogStreamingTelemetryReporter(
+        logger=logger,
+        detail_max_work=2,
+        aggregate_interval_sec=10.0,
+    )
+    start = _streaming_snapshot()
+    progress_snapshot = _streaming_snapshot(
+        active_users=4,
+        buffered_drafts=48,
+        in_flight_work=2,
+        activated_users=4,
+        submitted_work=4,
+        completed_work=2,
+    )
+    finish = _streaming_snapshot(
+        phase="finalizing",
+        total_users=100,
+        activated_users=100,
+        submitted_work=100,
+        total_work=100,
+        completed_work=100,
+        pending_work=0,
+    )
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        reporter.start(start)
+        now[0] = 1.0
+        reporter.record_work(
+            work_sequence=0,
+            queue_wait_ms=1.0,
+            request_elapsed_ms=20.0,
+            parse_elapsed_ms=2.0,
+            total_elapsed_ms=30.0,
+        )
+        reporter.observe(progress_snapshot)
+        now[0] = 10.0
+        reporter.record_work(
+            work_sequence=1,
+            queue_wait_ms=2.0,
+            request_elapsed_ms=21.0,
+            parse_elapsed_ms=3.0,
+            total_elapsed_ms=31.0,
+        )
+        reporter.observe(progress_snapshot)
+        now[0] = 11.0
+        reporter.finish(finish)
+
+    events = [json.loads(record.message) for record in caplog.records]
+    progress_events = [
+        event
+        for event in events
+        if event["event"] == "action_log_streaming_progress"
+    ]
+    assert len(progress_events) == 3
+    assert progress_events[0]["completed_work"] == 0
+    assert progress_events[-1]["phase"] == "finalizing"
+
+    progress = progress_events[1]
+    assert progress["event"] == "action_log_streaming_progress"
+    assert progress["phase"] == "generating"
+    assert progress["active_users"] == 4
+    assert progress["buffered_drafts"] == 48
+    assert progress["buffered_events"] == 0
+    assert progress["in_flight_work"] == 2
+    assert progress["activated_users"] == 4
+    assert progress["total_users"] == 100
+    assert progress["submitted_work"] == 4
+    assert progress["total_work"] is None
+    assert progress["completed_work"] == 2
+    assert progress["failed_work"] == 0
+    assert "pending_work" in progress
+    assert progress["pending_work"] is None
+
+
+def test_streaming_telemetry_emits_details_only_after_small_total_is_known(
+    caplog,
+    monkeypatch,
+) -> None:
+    """작은 실행의 완료 metric은 정확한 총량 뒤 전역 work 순서로만 기록한다."""
+
+    logger = logging.getLogger("test.action_log.streaming.detail")
+    now = [0.0]
+    monkeypatch.setattr(observability, "monotonic", lambda: now[0])
+    reporter = observability.ActionLogStreamingTelemetryReporter(
+        logger=logger,
+        detail_max_work=2,
+        aggregate_interval_sec=10.0,
+    )
+    unknown_total = _streaming_snapshot(
+        active_users=2,
+        in_flight_work=1,
+        activated_users=2,
+        submitted_work=1,
+        completed_work=1,
+    )
+    known_total = _streaming_snapshot(
+        active_users=0,
+        activated_users=2,
+        total_users=2,
+        submitted_work=2,
+        total_work=2,
+        completed_work=2,
+        pending_work=0,
+    )
+    finish = _streaming_snapshot(
+        phase="finalizing",
+        activated_users=2,
+        total_users=2,
+        submitted_work=2,
+        total_work=2,
+        completed_work=2,
+        pending_work=0,
+    )
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        reporter.start(_streaming_snapshot(total_users=2))
+        reporter.note_submission(1)
+        now[0] = 1.0
+        reporter.record_work(
+            work_sequence=1,
+            queue_wait_ms=1.0,
+            request_elapsed_ms=6.0,
+            parse_elapsed_ms=1.0,
+            total_elapsed_ms=10.0,
+        )
+        reporter.observe(unknown_total)
+        now[0] = 10.0
+        reporter.observe(unknown_total)
+        reporter.note_submission(2)
+        now[0] = 11.0
+        reporter.record_work(
+            work_sequence=0,
+            queue_wait_ms=2.0,
+            request_elapsed_ms=35.0,
+            parse_elapsed_ms=3.0,
+            total_elapsed_ms=50.0,
+        )
+        reporter.observe(known_total)
+        now[0] = 12.0
+        reporter.finish(finish)
+
+    events = [json.loads(record.message) for record in caplog.records]
+    micro = [
+        event
+        for event in events
+        if event["event"] == "action_log_micro_work_complete"
+    ]
+    assert [event["work_sequence"] for event in micro] == [0, 1]
+    assert [event["total_elapsed_ms"] for event in micro] == [50.0, 10.0]
+
+    progress = [
+        event
+        for event in events
+        if event["event"] == "action_log_streaming_progress"
+    ]
+    assert progress[-1]["aggregation_window_work"] == 1
+    assert progress[-1]["latency_p50_ms"] == 50.0
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "user_id" not in serialized
+    assert "raw_text" not in serialized
+    assert "prompt" not in serialized
+
+
+def test_streaming_telemetry_discards_details_above_threshold(
+    caplog,
+    monkeypatch,
+) -> None:
+    """세 번째 submit은 이미 보관한 상세 metric도 폐기해 큰 실행을 상세화하지 않는다."""
+
+    logger = logging.getLogger("test.action_log.streaming.threshold")
+    now = [0.0]
+    monkeypatch.setattr(observability, "monotonic", lambda: now[0])
+    reporter = observability.ActionLogStreamingTelemetryReporter(
+        logger=logger,
+        detail_max_work=2,
+        aggregate_interval_sec=10.0,
+    )
+    finish = _streaming_snapshot(
+        phase="finalizing",
+        activated_users=3,
+        total_users=3,
+        submitted_work=3,
+        total_work=3,
+        completed_work=3,
+        pending_work=0,
+    )
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        reporter.start(_streaming_snapshot(total_users=3))
+        reporter.note_submission(1)
+        reporter.record_work(
+            work_sequence=0,
+            queue_wait_ms=1.0,
+            request_elapsed_ms=10.0,
+            parse_elapsed_ms=1.0,
+            total_elapsed_ms=12.0,
+        )
+        reporter.note_submission(2)
+        reporter.record_work(
+            work_sequence=1,
+            queue_wait_ms=1.0,
+            request_elapsed_ms=11.0,
+            parse_elapsed_ms=1.0,
+            total_elapsed_ms=13.0,
+        )
+        reporter.note_submission(3)
+        assert reporter.detailed_candidate is False
+        reporter.record_work(
+            work_sequence=2,
+            queue_wait_ms=1.0,
+            request_elapsed_ms=12.0,
+            parse_elapsed_ms=1.0,
+            total_elapsed_ms=14.0,
+        )
+        now[0] = 1.0
+        reporter.finish(finish)
+
+    events = [json.loads(record.message) for record in caplog.records]
+    assert not any(
+        event["event"] == "action_log_micro_work_complete" for event in events
+    )
+
+
+def test_emit_action_log_event_preserves_none_filtering_unless_requested(
+    caplog,
+) -> None:
+    """기존 payload는 None을 생략하고 streaming만 알 수 없는 수량을 null로 남긴다."""
+
+    logger = logging.getLogger("test.action_log.streaming.none_fields")
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        observability.emit_action_log_event(
+            logger,
+            logging.INFO,
+            "legacy_event",
+            optional_value=None,
+        )
+        observability.emit_action_log_event(
+            logger,
+            logging.INFO,
+            "streaming_event",
+            include_none_fields=True,
+            optional_value=None,
+        )
+
+    legacy, streaming = [json.loads(record.message) for record in caplog.records]
+    assert "optional_value" not in legacy
+    assert streaming["optional_value"] is None
+    assert "include_none_fields" not in streaming
 
 
 def test_large_run_emits_throttled_aggregate_instead_of_micro_logs(caplog):

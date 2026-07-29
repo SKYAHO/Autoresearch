@@ -1941,6 +1941,244 @@ def test_streaming_single_keeps_workers_busy_behind_slow_head_user(
     assert worker_errors == []
 
 
+def test_streaming_single_emits_operational_retention_telemetry(
+    tmp_path,
+    caplog,
+    monkeypatch,
+) -> None:
+    """private observer 없이도 single coordinator는 안전한 시작·종료 telemetry를 남긴다."""
+
+    monkeypatch.setenv("ACTION_LOG_TELEMETRY_DETAIL_MAX_WORK", "2")
+    monkeypatch.setenv("ACTION_LOG_TELEMETRY_INTERVAL_SEC", "10")
+    videos = build_fixture_video_records(2)
+    request = _request(
+        tmp_path,
+        candidates_per_user=2,
+        chunk_size=1,
+        max_concurrency=2,
+    )
+
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+        pipeline_module.generate_action_log_single(
+            request,
+            _fixture_users(1),
+            videos,
+            RuleBasedActionLogGenerator(),
+            candidate_provider=lambda _virtual_user, _user_rng: list(videos),
+        )
+
+    assert any(
+        record.message == "Starting action log draft generation"
+        for record in caplog.records
+    )
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    progress = [
+        event
+        for event in events
+        if event["event"] == "action_log_streaming_progress"
+    ]
+    assert progress[0]["total_work"] is None
+    assert progress[0]["pending_work"] is None
+    final = progress[-1]
+    assert final["phase"] == "finalizing"
+    assert final["active_users"] == 0
+    assert final["buffered_drafts"] == 0
+    assert final["buffered_events"] == 0
+    assert final["in_flight_work"] == 0
+    assert final["pending_work"] == 0
+    assert final["completed_work"] == final["total_work"] == 2
+
+    detail = [
+        event
+        for event in events
+        if event["event"] == "action_log_micro_work_complete"
+    ]
+    assert [event["work_sequence"] for event in detail] == [0, 1]
+    serialized = json.dumps(events, ensure_ascii=False)
+    assert "vu_0000" not in serialized
+    assert "persona_summary" not in serialized
+    assert "raw_text" not in serialized
+    assert "prompt" not in serialized
+
+
+def test_streaming_single_finishes_telemetry_after_writer_finalization(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """성공 telemetry의 강제 종료는 writer가 row buffer를 해제한 뒤에만 일어난다."""
+
+    order: list[str] = []
+    original_finalize = pipeline_module._StreamingActionLogWriter.finalize_success
+
+    class _RecordingTelemetry:
+        @property
+        def detailed_candidate(self) -> bool:
+            return False
+
+        def start(self, _snapshot: object) -> None:
+            return None
+
+        def note_submission(self, _submitted_work: int) -> None:
+            return None
+
+        def record_work(self, **_metrics: object) -> None:
+            return None
+
+        def observe(self, _snapshot: object) -> None:
+            return None
+
+        def finish(self, _snapshot: object) -> None:
+            order.append("finish")
+
+    def _record_finalization(
+        writer: pipeline_module._StreamingActionLogWriter,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        order.append("finalize_success")
+        original_finalize(writer, *args, **kwargs)
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "ActionLogStreamingTelemetryReporter",
+        lambda *, logger: _RecordingTelemetry(),
+    )
+    monkeypatch.setattr(
+        pipeline_module._StreamingActionLogWriter,
+        "finalize_success",
+        _record_finalization,
+    )
+
+    pipeline_module.generate_action_log_single(
+        _request(tmp_path, candidates_per_user=1, max_concurrency=1),
+        _fixture_users(1),
+        build_fixture_video_records(1),
+        RuleBasedActionLogGenerator(),
+    )
+
+    assert order == ["finalize_success", "finish"]
+
+
+def test_streaming_single_preserves_quarantine_error_when_finish_telemetry_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """quarantine 최종 telemetry 오류가 원래 generation 오류를 덮어쓰면 안 된다."""
+
+    class _FailingFinishTelemetry:
+        @property
+        def detailed_candidate(self) -> bool:
+            return False
+
+        def start(self, _snapshot: object) -> None:
+            return None
+
+        def note_submission(self, _submitted_work: int) -> None:
+            return None
+
+        def record_work(self, **_metrics: object) -> None:
+            return None
+
+        def observe(self, _snapshot: object) -> None:
+            return None
+
+        def finish(self, _snapshot: object) -> None:
+            raise RuntimeError("telemetry finish failed")
+
+    class _AllBad(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+            return "{broken"
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "ActionLogStreamingTelemetryReporter",
+        lambda *, logger: _FailingFinishTelemetry(),
+    )
+
+    with pytest.raises(
+        ActionLogGenerationError,
+        match="quarantine ratio 1.00 exceeds",
+    ):
+        pipeline_module.generate_action_log_single(
+            _request(
+                tmp_path,
+                candidates_per_user=1,
+                max_quarantine_ratio=0.25,
+            ),
+            _fixture_users(1),
+            build_fixture_video_records(1),
+            _AllBad(),
+        )
+
+
+def test_streaming_single_disables_worker_detail_context_after_threshold(
+    tmp_path,
+    caplog,
+    monkeypatch,
+) -> None:
+    """threshold를 넘는 submit부터 worker의 detailed-only context를 끈다."""
+
+    monkeypatch.setenv("ACTION_LOG_TELEMETRY_DETAIL_MAX_WORK", "2")
+    videos = build_fixture_video_records(1)
+    context_flags: list[tuple[int, bool]] = []
+    original_work: Callable[..., _ActionLogCallResult] = (
+        pipeline_module._generate_action_log_work
+    )
+
+    def _capture_context(
+        generator: ActionLogGenerator,
+        item: _ActionLogWorkItem,
+        *,
+        work_sequence: int,
+        submitted_at: float,
+        shard_index: int | None,
+        detailed_telemetry: bool,
+    ) -> _ActionLogCallResult:
+        context_flags.append((work_sequence, detailed_telemetry))
+        return original_work(
+            generator,
+            item,
+            work_sequence=work_sequence,
+            submitted_at=submitted_at,
+            shard_index=shard_index,
+            detailed_telemetry=detailed_telemetry,
+        )
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_generate_action_log_work",
+        _capture_context,
+    )
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+        pipeline_module.generate_action_log_single(
+            _request(
+                tmp_path,
+                candidates_per_user=1,
+                chunk_size=1,
+                max_concurrency=1,
+            ),
+            _fixture_users(5),
+            videos,
+            RuleBasedActionLogGenerator(),
+            candidate_provider=lambda _virtual_user, _user_rng: [videos[0]],
+        )
+
+    assert context_flags[:3] == [(0, True), (1, True), (2, False)]
+    assert all(detailed is False for _sequence, detailed in context_flags[2:])
+    events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if record.message.startswith("{")
+    ]
+    assert not any(
+        event["event"] == "action_log_micro_work_complete" for event in events
+    )
+
+
 def test_streaming_single_retained_payload_is_bounded_by_active_users(
     tmp_path,
 ) -> None:
