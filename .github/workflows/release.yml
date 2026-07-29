@@ -837,9 +837,11 @@ jobs:
           fi
 
           # 코드(feature_repo)는 이미지에 없고 ENTRYPOINT가 GCS 부트스트랩이므로,
-          # 엔트리포인트를 우회해 baked venv의 feast 계열 의존성만 검증한다.
+          # 엔트리포인트를 우회해 baked venv의 의존성만 검증한다. lightgbm은 import
+          # 시점에 libgomp(OpenMP)를 dlopen하므로, 이 한 줄이 네이티브 런타임 누락
+          # (#401)까지 함께 막는다 — #359 C2로 학습도 이 이미지에서 돈다.
           docker run --rm --entrypoint python "$digest_ref" \
-            -c "import feast, pyarrow"
+            -c "import feast, pyarrow, lightgbm"
 
           echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
 
