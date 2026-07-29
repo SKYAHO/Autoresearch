@@ -8,7 +8,7 @@ from concurrent.futures import Future
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 from typing import Callable, Never, Self
 
 import pyarrow as pa
@@ -598,7 +598,11 @@ def test_streaming_single_schema_retry_final_failure_preserves_quarantine(
         return list(videos)
 
     result = pipeline_module.generate_action_log_single(
-        _request(tmp_path, candidates_per_user=4),
+        _request(
+            tmp_path,
+            candidates_per_user=4,
+            max_quarantine_ratio=1.0,
+        ),
         _fixture_users(1),
         videos,
         generator,
@@ -1037,6 +1041,247 @@ def test_streaming_single_bounds_active_users_and_invokes_provider_on_coordinato
     assert provider_order == [user["user_id"] for user in users]
     assert set(provider_threads) == {coordinator_thread}
     assert min(provider_calls_seen_by_generator) <= 2
+
+
+def test_streaming_single_consumes_mutable_exposure_metadata_per_drained_user(
+    tmp_path,
+) -> None:
+    metadata: dict[tuple[str, str], ExposureMetadata] = {}
+    sizes_before_provider: list[int] = []
+    videos = build_fixture_video_records(2)
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        sizes_before_provider.append(len(metadata))
+        user_id = virtual_user["user_id"]
+        for rank, video in enumerate(videos, start=1):
+            metadata[(user_id, str(video["video_id"]))] = ExposureMetadata(
+                policy="model",
+                rank=rank,
+                ctr_score=0.5,
+                is_exploration=False,
+                policy_version="run-a",
+                exposure_source="model",
+            )
+        return list(videos)
+
+    request = _request(
+        tmp_path,
+        candidates_per_user=2,
+        max_concurrency=2,
+    )
+    result = pipeline_module.generate_action_log_single(
+        request,
+        _fixture_users(6),
+        videos,
+        RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+        exposure_metadata=metadata,
+    )
+
+    assert result.execution_mode == "streaming"
+    assert max(sizes_before_provider) <= 2
+    assert metadata == {}
+    rows = pq.read_table(request.output_path, columns=["exposure_source"]).to_pylist()
+    assert {row["exposure_source"] for row in rows} == {"model"}
+
+
+def test_streaming_single_consumes_metadata_when_provider_returns_no_candidates(
+    tmp_path,
+) -> None:
+    metadata: dict[tuple[str, str], ExposureMetadata] = {}
+    sizes_before_provider: list[int] = []
+    videos = build_fixture_video_records(1)
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        user_id = virtual_user["user_id"]
+        sizes_before_provider.append(len(metadata))
+        metadata[(user_id, str(videos[0]["video_id"]))] = ExposureMetadata(
+            policy="model",
+            rank=1,
+            ctr_score=0.5,
+            is_exploration=False,
+            policy_version="run-a",
+            exposure_source="model",
+        )
+        if user_id == "vu_0000":
+            return []
+        return list(videos)
+
+    result = pipeline_module.generate_action_log_single(
+        _request(tmp_path, candidates_per_user=1, max_concurrency=2),
+        _fixture_users(2),
+        videos,
+        RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+        exposure_metadata=metadata,
+    )
+
+    assert result.execution_mode == "streaming"
+    assert sizes_before_provider == [0, 0]
+    assert metadata == {}
+
+
+def test_streaming_single_consumes_metadata_for_quarantined_user(tmp_path) -> None:
+    class _FirstBadUser(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+            if virtual_user["user_id"] == "vu_0000":
+                return "{broken"
+            return super().generate(virtual_user, videos)
+
+    metadata: dict[tuple[str, str], ExposureMetadata] = {}
+    videos = build_fixture_video_records(1)
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        user_id = virtual_user["user_id"]
+        metadata[(user_id, str(videos[0]["video_id"]))] = ExposureMetadata(
+            policy="model",
+            rank=1,
+            ctr_score=0.5,
+            is_exploration=False,
+            policy_version="run-a",
+            exposure_source="model",
+        )
+        return list(videos)
+
+    result = pipeline_module.generate_action_log_single(
+        _request(
+            tmp_path,
+            candidates_per_user=1,
+            max_concurrency=1,
+            max_quarantine_ratio=1.0,
+        ),
+        _fixture_users(2),
+        videos,
+        _FirstBadUser(),
+        candidate_provider=provider,
+        exposure_metadata=metadata,
+    )
+
+    assert result.summary["invalid_json"] == 1
+    assert metadata == {}
+
+
+def test_single_falls_back_to_legacy_for_duplicate_user_id(tmp_path) -> None:
+    users = _fixture_users(2)
+    users[1]["user_id"] = users[0]["user_id"]
+    videos = build_fixture_video_records(1)
+    provider_calls: list[str] = []
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        provider_calls.append(virtual_user["user_id"])
+        return list(videos)
+
+    result = pipeline_module.generate_action_log_single(
+        _request(tmp_path),
+        users,
+        videos,
+        RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+    )
+
+    assert result.execution_mode == "legacy"
+    assert provider_calls == [users[0]["user_id"], users[1]["user_id"]]
+
+
+def test_single_falls_back_to_legacy_for_read_only_exposure_metadata(
+    tmp_path,
+) -> None:
+    backing: dict[tuple[str, str], ExposureMetadata] = {}
+    metadata = MappingProxyType(backing)
+    videos = build_fixture_video_records(2)
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        user_id = virtual_user["user_id"]
+        backing[(user_id, str(videos[0]["video_id"]))] = ExposureMetadata(
+            policy="model",
+            rank=1,
+            ctr_score=0.5,
+            is_exploration=False,
+            policy_version="run-a",
+            exposure_source="model",
+        )
+        return [videos[0]]
+
+    request = _request(tmp_path, candidates_per_user=1)
+    result = pipeline_module.generate_action_log_single(
+        request,
+        _fixture_users(2),
+        videos,
+        RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+        exposure_metadata=metadata,
+    )
+
+    assert result.execution_mode == "legacy"
+    assert set(
+        pq.read_table(
+            request.output_path,
+            columns=["exposure_source"],
+        ).column("exposure_source").to_pylist()
+    ) == {"model"}
+
+
+def test_streaming_single_preserves_quarantine_order_counts_and_file(
+    tmp_path,
+) -> None:
+    class _TwoBadUsers(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+            if virtual_user["user_id"] in {"vu_0001", "vu_0003"}:
+                return "{broken"
+            return super().generate(virtual_user, videos)
+
+    request = _request(
+        tmp_path,
+        candidates_per_user=2,
+        max_concurrency=3,
+        max_quarantine_ratio=0.5,
+    )
+    result = pipeline_module.generate_action_log_single(
+        request,
+        _fixture_users(5),
+        build_fixture_video_records(4),
+        _TwoBadUsers(),
+    )
+
+    quarantined = [
+        json.loads(line)
+        for line in Path(request.quarantine_output_path)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert result.summary["quarantined_users"] == 2
+    assert result.summary["invalid_json"] == 2
+    assert [row["user_id"] for row in quarantined] == ["vu_0001", "vu_0003"]
+
+
+def test_streaming_single_raises_after_writing_quarantine_when_ratio_exceeded(
+    tmp_path,
+) -> None:
+    class _AllBad(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+            return "{broken"
+
+    request = _request(
+        tmp_path,
+        candidates_per_user=2,
+        max_quarantine_ratio=0.25,
+    )
+    with pytest.raises(
+        ActionLogGenerationError,
+        match="quarantine ratio 1.00 exceeds",
+    ):
+        pipeline_module.generate_action_log_single(
+            request,
+            _fixture_users(3),
+            build_fixture_video_records(4),
+            _AllBad(),
+        )
+
+    assert len(
+        Path(request.quarantine_output_path)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ) == 3
 
 
 def test_streaming_single_retained_payload_is_bounded_by_active_users(

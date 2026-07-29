@@ -5,14 +5,16 @@ select_clicks_per_slate로 유저(슬레이트)별 최고 1건을 click_threshol
 커트라인으로 클릭 선정 → 이벤트 확장(_expand_events: 노출마다 impression 1행,
 클릭 선정분엔 click/view(+like)를 추가 배치) → parquet/warehouse/quarantine
 저장. legacy batch 저장 함수와 bounded active-user streaming coordinator가 동일한
-출력 계약을 제공하며, 한 유저의 실패가 배치를 죽이지 않는다.
+출력 계약을 제공하며, streaming은 mutable 노출 metadata를 사용자 drain 시 해제한다.
+중복 사용자 ID 또는 read-only metadata는 legacy 의미를 보존하기 위해 batch 경로로
+fallback한다. 한 유저의 실패가 배치를 죽이지 않는다.
 """
 import json
 import logging
 import math
 import random
 from collections import defaultdict, deque
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
 from dataclasses import dataclass
@@ -772,6 +774,23 @@ class ExposureMetadata:
     exposure_source: Literal["model", "trending", "random"] | None = None
 
 
+def _has_duplicate_user_ids(virtual_users: list[dict]) -> bool:
+    """streaming이 보존할 수 없는 중복 user_id 입력을 감지한다."""
+
+    user_ids = [str(user.get("user_id", "")) for user in virtual_users]
+    return len(user_ids) != len(set(user_ids))
+
+
+def _consume_user_exposure_metadata(
+    metadata: MutableMapping[tuple[str, str], ExposureMetadata],
+    user_id: str,
+) -> dict[tuple[str, str], ExposureMetadata]:
+    """drain 완료 사용자의 노출 metadata를 반환하고 공유 맵에서 제거한다."""
+
+    keys = [key for key in metadata if key[0] == user_id]
+    return {key: metadata.pop(key) for key in keys}
+
+
 def attach_exposure_tags(
     drafts: list[ImpressionDraft],
     metadata: Mapping[tuple[str, str], ExposureMetadata],
@@ -1177,10 +1196,33 @@ def _raise_if_quarantine_exceeds(
         return
 
     write_quarantine_jsonl(quarantine, request.quarantine_output_path)
+    _raise_if_quarantine_count_exceeds(
+        len(quarantine),
+        total_work,
+        request,
+        user_count,
+    )
+
+
+def _raise_if_quarantine_count_exceeds(
+    quarantine_count: int,
+    total_work: int,
+    request: EventGenerationRequest,
+    user_count: int,
+) -> None:
+    """quarantine 목록을 보관하지 않고 실패 비율을 검증한다."""
+
+    if not total_work:
+        return
+
+    quarantine_ratio = quarantine_count / total_work
+    if quarantine_ratio <= request.max_quarantine_ratio:
+        return
+
     raise ActionLogGenerationError(
         f"quarantine ratio {quarantine_ratio:.2f} exceeds max_quarantine_ratio "
         f"{request.max_quarantine_ratio:.2f} "
-        f"(quarantined={len(quarantine)}, total_chunks={total_work}, "
+        f"(quarantined={quarantine_count}, total_chunks={total_work}, "
         f"users={user_count})"
     )
 
@@ -1306,6 +1348,24 @@ def generate_action_log_batch(
     return result
 
 
+def _single_result_from_legacy(
+    result: EventGenerationResult,
+) -> ActionLogSingleResult:
+    """legacy batch 결과를 단일 실행 결과 계약으로 변환한다."""
+
+    summary = result.summary
+    return ActionLogSingleResult(
+        execution_mode="legacy",
+        total_events=int(summary["total_events"]),
+        impressions=int(summary["impressions"]),
+        clicks=int(summary["clicks"]),
+        quarantined_users=int(summary["quarantined_users"]),
+        api_error=int(summary["api_error"]),
+        invalid_json=int(summary["invalid_json"]),
+        schema_fail=int(summary["schema_fail"]),
+    )
+
+
 def generate_action_log_single(
     request: EventGenerationRequest,
     virtual_users: list[dict],
@@ -1323,6 +1383,29 @@ def generate_action_log_single(
     기록한 즉시 참조를 해제한다. 기존 draft/shard 경로의 progress와 checkpoint
     계약은 이 단일 실행 경로에서 사용하지 않는다.
     """
+
+    if _has_duplicate_user_ids(virtual_users) or (
+        exposure_metadata is not None
+        and not isinstance(exposure_metadata, MutableMapping)
+    ):
+        legacy = generate_action_log_batch(
+            request,
+            virtual_users,
+            videos,
+            generator,
+            candidate_provider=candidate_provider,
+            exposure_metadata=exposure_metadata,
+        )
+        return _single_result_from_legacy(legacy)
+
+    mutable_exposure_metadata: (
+        MutableMapping[tuple[str, str], ExposureMetadata] | None
+    )
+    if exposure_metadata is None:
+        mutable_exposure_metadata = None
+    else:
+        assert isinstance(exposure_metadata, MutableMapping)
+        mutable_exposure_metadata = exposure_metadata
 
     max_active_users = max(1, request.max_concurrency)
     active_users: deque[_StreamingUserState] = deque()
@@ -1383,6 +1466,11 @@ def generate_action_log_single(
                     popular_ratio=request.popular_ratio,
                 )
             if not candidates:
+                if mutable_exposure_metadata is not None:
+                    _consume_user_exposure_metadata(
+                        mutable_exposure_metadata,
+                        user_id,
+                    ).clear()
                 return True
 
             work: list[_ActionLogWorkItem] = []
@@ -1477,8 +1565,13 @@ def generate_action_log_single(
                         quarantine.append(state.quarantine_by_chunk[chunk_index])
                     else:
                         drafts.extend(state.drafts_by_chunk[chunk_index])
-                if exposure_metadata is not None:
-                    drafts = attach_exposure_tags(drafts, exposure_metadata)
+                if mutable_exposure_metadata is not None:
+                    user_exposure_metadata = _consume_user_exposure_metadata(
+                        mutable_exposure_metadata,
+                        state.user_id,
+                    )
+                    drafts = attach_exposure_tags(drafts, user_exposure_metadata)
+                    user_exposure_metadata.clear()
 
                 clicked_drafts = select_clicks_per_slate(
                     drafts,
@@ -1515,6 +1608,13 @@ def generate_action_log_single(
                 active_users.popleft()
                 _observe()
                 _fill_active_users()
+
+    _raise_if_quarantine_count_exceeds(
+        quarantined_users,
+        next_work_sequence,
+        request,
+        len(virtual_users),
+    )
 
     result = ActionLogSingleResult(
         execution_mode="streaming",
