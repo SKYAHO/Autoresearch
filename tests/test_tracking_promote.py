@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -171,6 +172,25 @@ def test_main_raises_typed_error_when_candidate_metric_missing(monkeypatch):
     assert client.set_alias_calls == []
 
 
+@pytest.mark.parametrize("metric", [math.nan, math.inf, -math.inf])
+def test_main_rejects_non_finite_candidate_metric_before_alias_update(
+    monkeypatch, metric
+):
+    candidate = _version("1", run_id="run-1")
+    client = _PromoteClient(
+        main_versions=[candidate],
+        runs={"run-1": {"val_roc_auc": metric}},
+    )
+    _patch_client(monkeypatch, client)
+
+    with pytest.raises(PromotionExecutionError) as exc_info:
+        promote.main(MODEL_NAME, "champion")
+
+    assert exc_info.value.reason_code is PromotionReasonCode.METRIC_MISSING
+    assert exc_info.value.candidate_version == "1"
+    assert client.set_alias_calls == []
+
+
 def test_main_rejects_downsampling_candidate_without_calibration_artifact(monkeypatch):
     # downsampling 후보인데 같은 run에 calibration 아티팩트가 없으면 게이트2로 거부한다(#390).
     champion = _version("3", aliases=["champion"], run_id="run-3")
@@ -189,6 +209,10 @@ def test_main_rejects_downsampling_candidate_without_calibration_artifact(monkey
         result.reason_code
         is PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING
     )
+    assert result.legacy_message is not None
+    assert "sampling_rate=0.5" in result.legacy_message
+    assert "run(run-4)" in result.legacy_message
+    assert "calibration/calibration.json" in result.legacy_message
     assert client.set_alias_calls == []
 
 
@@ -262,6 +286,29 @@ def test_main_raises_typed_error_when_champion_metric_missing(monkeypatch):
     with pytest.raises(PromotionExecutionError) as exc_info:
         promote.main(MODEL_NAME, "champion")
     assert exc_info.value.reason_code is PromotionReasonCode.METRIC_MISSING
+    assert client.set_alias_calls == []
+
+
+@pytest.mark.parametrize("metric", [math.nan, math.inf, -math.inf])
+def test_main_rejects_non_finite_champion_metric_before_alias_update(
+    monkeypatch, metric
+):
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4")
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        runs={
+            "run-3": {"val_roc_auc": metric},
+            "run-4": {"val_roc_auc": 0.80},
+        },
+    )
+    _patch_client(monkeypatch, client)
+
+    with pytest.raises(PromotionExecutionError) as exc_info:
+        promote.main(MODEL_NAME, "champion")
+
+    assert exc_info.value.reason_code is PromotionReasonCode.METRIC_MISSING
+    assert exc_info.value.candidate_metric == 0.80
     assert client.set_alias_calls == []
 
 

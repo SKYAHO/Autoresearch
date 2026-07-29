@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import math
 
 import pytest
+from pydantic import ValidationError
 
 from src.tracking import promotion_result
 from src.tracking.promotion_result import (
@@ -38,6 +40,31 @@ def test_result_serializes_exact_v1_envelope() -> None:
         "champion_metric": 0.7931,
         "reason_code": "metric_below_champion",
     }
+
+
+@pytest.mark.parametrize("metric", [math.nan, math.inf, -math.inf])
+def test_result_rejects_non_finite_metric(metric: float) -> None:
+    with pytest.raises(ValidationError):
+        ModelPromotionResult(
+            outcome=PromotionOutcome.PROMOTED,
+            model_name="ctr-model",
+            champion_alias="champion",
+            candidate_version="13",
+            candidate_metric=metric,
+            reason_code=PromotionReasonCode.FIRST_CHAMPION,
+        )
+
+
+def test_result_rejects_invalid_outcome_reason_pair() -> None:
+    with pytest.raises(ValidationError):
+        ModelPromotionResult(
+            outcome=PromotionOutcome.PROMOTED,
+            model_name="ctr-model",
+            champion_alias="champion",
+            candidate_version="13",
+            candidate_metric=0.81,
+            reason_code=PromotionReasonCode.METRIC_BELOW_CHAMPION,
+        )
 
 
 def _promoted_result() -> ModelPromotionResult:

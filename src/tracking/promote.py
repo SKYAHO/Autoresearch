@@ -17,6 +17,7 @@ _resolve_calibration_run_id), Airflow DAG 스케줄링·재시도
 
 from __future__ import annotations
 
+import math
 import os
 
 from mlflow.tracking import MlflowClient
@@ -100,6 +101,7 @@ def main(
         raise PromotionExecutionError(
             PromotionReasonCode.REGISTRY_ACCESS_FAILED,
             "모델 버전 목록 조회에 실패했습니다.",
+            candidate_version=candidate_version,
         ) from error
     champion_entry = next(
         (v for v in existing_versions if champion_alias in v["aliases"]), None
@@ -125,12 +127,16 @@ def main(
         raise PromotionExecutionError(
             PromotionReasonCode.REGISTRY_ACCESS_FAILED,
             "후보 모델 지표 조회에 실패했습니다.",
+            candidate_version=candidate_version,
+            champion_version=champion_version,
         ) from error
     candidate_val_roc_auc = candidate_metrics.get("val_roc_auc")
-    if candidate_val_roc_auc is None:
+    if candidate_val_roc_auc is None or not math.isfinite(candidate_val_roc_auc):
         raise PromotionExecutionError(
             PromotionReasonCode.METRIC_MISSING,
-            "후보 모델에 val_roc_auc 지표가 없습니다.",
+            "후보 모델에 유한한 val_roc_auc 지표가 없습니다.",
+            candidate_version=candidate_version,
+            champion_version=champion_version,
         )
 
     try:
@@ -139,14 +145,20 @@ def main(
         raise PromotionExecutionError(
             PromotionReasonCode.REGISTRY_ACCESS_FAILED,
             "champion 모델 지표 조회에 실패했습니다.",
+            candidate_version=candidate_version,
+            champion_version=champion_version,
+            candidate_metric=candidate_val_roc_auc,
         ) from error
     champion_val_roc_auc: float | None = None
     if champion_metrics is not None:
         champion_val_roc_auc = champion_metrics.get("val_roc_auc")
-        if champion_val_roc_auc is None:
+        if champion_val_roc_auc is None or not math.isfinite(champion_val_roc_auc):
             raise PromotionExecutionError(
                 PromotionReasonCode.METRIC_MISSING,
-                "champion 모델에 val_roc_auc 지표가 없습니다.",
+                "champion 모델에 유한한 val_roc_auc 지표가 없습니다.",
+                candidate_version=candidate_version,
+                champion_version=champion_version,
+                candidate_metric=candidate_val_roc_auc,
             )
         if candidate_val_roc_auc < champion_val_roc_auc:
             return ModelPromotionResult(
@@ -170,12 +182,29 @@ def main(
         raise PromotionExecutionError(
             PromotionReasonCode.REGISTRY_ACCESS_FAILED,
             "후보 모델 tag 조회에 실패했습니다.",
+            candidate_version=candidate_version,
+            champion_version=champion_version,
+            candidate_metric=candidate_val_roc_auc,
+            champion_metric=champion_val_roc_auc,
         ) from error
     if sampling_rate < 1.0:
         # downsampling 후보는 같은 run에 calibration 아티팩트가 있어야 한다(#390 run_id 종속).
         # 서빙이 승격 후 main run_id로 이 아티팩트를 로드하므로, 없으면 보정 안 된 편향 확률이
         # 나간다 — 승격 전에 fail-closed로 막는다(서빙 로더도 런타임에서 한 번 더 방어).
-        if not _run_has_calibration_artifact(client, candidate_run_id):
+        try:
+            has_calibration_artifact = _run_has_calibration_artifact(
+                client, candidate_run_id
+            )
+        except PromotionExecutionError as error:
+            raise PromotionExecutionError(
+                error.reason_code,
+                str(error),
+                candidate_version=candidate_version,
+                champion_version=champion_version,
+                candidate_metric=candidate_val_roc_auc,
+                champion_metric=champion_val_roc_auc,
+            ) from error
+        if not has_calibration_artifact:
             return ModelPromotionResult(
                 outcome=PromotionOutcome.REJECTED,
                 model_name=model_name,
@@ -185,6 +214,11 @@ def main(
                 candidate_metric=candidate_val_roc_auc,
                 champion_metric=champion_val_roc_auc,
                 reason_code=PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING,
+            ).with_legacy_message(
+                f"게이트2 미달: 후보 {model_name} v{candidate_version}는 "
+                f"downsampling(sampling_rate={sampling_rate})인데 "
+                f"run({candidate_run_id})에 calibration 아티팩트"
+                f"(calibration/{CALIBRATION_PARAM_FILENAME})가 없습니다."
             )
 
     # 승격 기준은 main 하나뿐이다(#390). calibration은 이 후보와 같은 run에 종속돼 있어 서빙이
@@ -207,6 +241,10 @@ def main(
         raise PromotionExecutionError(
             PromotionReasonCode.ALIAS_UPDATE_FAILED,
             "champion alias 이동에 실패했습니다.",
+            candidate_version=candidate_version,
+            champion_version=champion_version,
+            candidate_metric=candidate_val_roc_auc,
+            champion_metric=champion_val_roc_auc,
         ) from error
 
     return ModelPromotionResult(

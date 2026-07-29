@@ -6,6 +6,7 @@ python -m src.cli build-features / train-model / evaluate-model / run-pipeline
 
 import os
 import sys
+import traceback
 from pathlib import Path
 from typing import Optional
 
@@ -243,14 +244,42 @@ def _error_result(
     model_name: str,
     champion_alias: str,
     reason_code: PromotionReasonCode,
+    candidate_version: Optional[str] = None,
+    champion_version: Optional[str] = None,
+    candidate_metric: Optional[float] = None,
+    champion_metric: Optional[float] = None,
 ) -> ModelPromotionResult:
     """외부 예외 내용을 포함하지 않는 구조화 오류 결과를 만든다."""
     return ModelPromotionResult(
         outcome=PromotionOutcome.ERROR,
         model_name=model_name,
         champion_alias=champion_alias,
+        candidate_version=candidate_version,
+        champion_version=champion_version,
+        candidate_metric=candidate_metric,
+        champion_metric=champion_metric,
         reason_code=reason_code,
     )
+
+
+def _emit_structured_error_diagnostic(
+    *,
+    reason_code: PromotionReasonCode,
+    error: BaseException,
+    include_stack: bool,
+) -> None:
+    """비밀 가능성이 있는 예외 메시지 없이 안전한 stderr 진단을 출력한다."""
+    typer.echo(
+        f"[구조화 결과 오류] reason_code={reason_code.value} "
+        f"error_type={type(error).__name__}",
+        err=True,
+    )
+    if include_stack and error.__traceback__ is not None:
+        for frame in traceback.extract_tb(error.__traceback__):
+            typer.echo(
+                f"  at {frame.filename}:{frame.lineno} in {frame.name}",
+                err=True,
+            )
 
 
 def _run_structured_promotion(
@@ -266,12 +295,26 @@ def _run_structured_promotion(
             champion_alias=champion_alias,
         )
     except PromotionExecutionError as exc:
+        _emit_structured_error_diagnostic(
+            reason_code=exc.reason_code,
+            error=exc,
+            include_stack=False,
+        )
         result = _error_result(
             model_name=model_name,
             champion_alias=champion_alias,
             reason_code=exc.reason_code,
+            candidate_version=exc.candidate_version,
+            champion_version=exc.champion_version,
+            candidate_metric=exc.candidate_metric,
+            champion_metric=exc.champion_metric,
         )
-    except Exception:
+    except Exception as exc:
+        _emit_structured_error_diagnostic(
+            reason_code=PromotionReasonCode.UNEXPECTED_ERROR,
+            error=exc,
+            include_stack=True,
+        )
         result = _error_result(
             model_name=model_name,
             champion_alias=champion_alias,
@@ -280,11 +323,20 @@ def _run_structured_promotion(
 
     try:
         write_result_file(result, result_path)
-    except Exception:
+    except Exception as exc:
+        _emit_structured_error_diagnostic(
+            reason_code=PromotionReasonCode.RESULT_WRITE_FAILED,
+            error=exc,
+            include_stack=False,
+        )
         result = _error_result(
             model_name=model_name,
             champion_alias=champion_alias,
             reason_code=PromotionReasonCode.RESULT_WRITE_FAILED,
+            candidate_version=result.candidate_version,
+            champion_version=result.champion_version,
+            candidate_metric=result.candidate_metric,
+            champion_metric=result.champion_metric,
         )
 
     typer.echo(result.model_dump_json())
@@ -311,7 +363,28 @@ def _run_legacy_promotion(
         raise typer.Exit(code=1)
 
     if result.outcome is PromotionOutcome.REJECTED:
-        typer.echo(f"[게이트 미달] {result.reason_code.value}", err=True)
+        if result.legacy_message is not None:
+            detail = result.legacy_message
+        elif result.reason_code is PromotionReasonCode.METRIC_BELOW_CHAMPION:
+            detail = (
+                f"게이트1 미달: 후보 {result.model_name} "
+                f"v{result.candidate_version} "
+                f"val_roc_auc={result.candidate_metric:.4f} < "
+                f"champion({result.champion_alias}) "
+                f"val_roc_auc={result.champion_metric:.4f}"
+            )
+        elif result.reason_code is PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING:
+            detail = (
+                f"게이트2 미달: 후보 {result.model_name} "
+                f"v{result.candidate_version}에 필요한 calibration "
+                "아티팩트가 없습니다."
+            )
+        else:
+            detail = (
+                f"후보 {result.model_name} v{result.candidate_version}: "
+                "서빙 calibration 준비가 완료되지 않았습니다."
+            )
+        typer.echo(f"[게이트 미달] {detail}", err=True)
         raise typer.Exit(code=1)
     if result.outcome is PromotionOutcome.NO_CANDIDATE:
         typer.echo(f"{model_name}: 평가할 신규 후보 버전 없음 — no-op")

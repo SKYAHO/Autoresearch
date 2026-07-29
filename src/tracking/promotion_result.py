@@ -16,9 +16,9 @@ import os
 from enum import Enum
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, PrivateAttr, model_validator
 
 MODEL_PROMOTION_RESULT_CONTRACT = "model-promotion-result-v1"
 
@@ -53,6 +53,9 @@ class PromotionReasonCode(str, Enum):
 class ModelPromotionResult(BaseModel):
     """`promote-model`과 Airflow 사이의 v1 구조화 결과."""
 
+    model_config = ConfigDict(allow_inf_nan=False)
+    _legacy_message: str | None = PrivateAttr(default=None)
+
     event: Literal["model_promotion_result"] = "model_promotion_result"
     contract_version: Literal["model-promotion-result-v1"] = (
         "model-promotion-result-v1"
@@ -67,6 +70,49 @@ class ModelPromotionResult(BaseModel):
     champion_metric: float | None = None
     reason_code: PromotionReasonCode
 
+    @property
+    def legacy_message(self) -> str | None:
+        """구조화 JSON에는 포함하지 않는 legacy CLI 진단 문구."""
+        return self._legacy_message
+
+    def with_legacy_message(self, message: str) -> Self:
+        """legacy 호출부에만 사용할 종전 진단 문맥을 결과에 연결한다."""
+        self._legacy_message = message
+        return self
+
+    @model_validator(mode="after")
+    def validate_outcome_reason(self) -> Self:
+        """outcome마다 발생 가능한 안정 reason code만 허용한다."""
+        allowed_reasons = {
+            PromotionOutcome.PROMOTED: {
+                PromotionReasonCode.FIRST_CHAMPION,
+                PromotionReasonCode.METRIC_NOT_DEGRADED,
+            },
+            PromotionOutcome.REJECTED: {
+                PromotionReasonCode.METRIC_BELOW_CHAMPION,
+                PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING,
+                PromotionReasonCode.SERVING_CALIBRATION_NOT_READY,
+            },
+            PromotionOutcome.NO_CANDIDATE: {
+                PromotionReasonCode.REGISTRY_EMPTY,
+                PromotionReasonCode.ALREADY_CHAMPION,
+            },
+            PromotionOutcome.ERROR: {
+                PromotionReasonCode.REGISTRY_ACCESS_FAILED,
+                PromotionReasonCode.METRIC_MISSING,
+                PromotionReasonCode.ARTIFACT_LOOKUP_FAILED,
+                PromotionReasonCode.ALIAS_UPDATE_FAILED,
+                PromotionReasonCode.RESULT_WRITE_FAILED,
+                PromotionReasonCode.UNEXPECTED_ERROR,
+            },
+        }
+        if self.reason_code not in allowed_reasons[self.outcome]:
+            raise ValueError(
+                f"reason_code={self.reason_code.value} is invalid for "
+                f"outcome={self.outcome.value}"
+            )
+        return self
+
 
 class PromotionExecutionError(RuntimeError):
     """안전한 reason code를 보존하는 모델 승격 실행 오류."""
@@ -75,9 +121,18 @@ class PromotionExecutionError(RuntimeError):
         self,
         reason_code: PromotionReasonCode,
         message: str,
+        *,
+        candidate_version: str | None = None,
+        champion_version: str | None = None,
+        candidate_metric: float | None = None,
+        champion_metric: float | None = None,
     ) -> None:
         super().__init__(message)
         self.reason_code = reason_code
+        self.candidate_version = candidate_version
+        self.champion_version = champion_version
+        self.candidate_metric = candidate_metric
+        self.champion_metric = champion_metric
 
 
 def write_result_file(result: ModelPromotionResult, path: Path) -> None:
