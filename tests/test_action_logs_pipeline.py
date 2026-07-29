@@ -4,6 +4,7 @@ import logging
 import random
 import re
 import weakref
+from concurrent.futures import Future
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
@@ -1080,6 +1081,24 @@ def test_streaming_single_releases_completed_future_drafts_before_next_provider(
     provider_order: list[str] = []
     original_work = pipeline_module._generate_action_log_work
 
+    class _InlineExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback) -> None:
+            return None
+
+        def submit(self, fn, /, *args, **kwargs):
+            future = Future()
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except BaseException as error:  # noqa: BLE001 - Future worker boundary
+                future.set_exception(error)
+            return future
+
     def _capture_first_user_drafts(
         generator,
         item,
@@ -1121,6 +1140,7 @@ def test_streaming_single_releases_completed_future_drafts_before_next_provider(
         "_generate_action_log_work",
         _capture_first_user_drafts,
     )
+    monkeypatch.setattr(pipeline_module, "ThreadPoolExecutor", _InlineExecutor)
     result = pipeline_module.generate_action_log_single(
         _request(
             tmp_path,
