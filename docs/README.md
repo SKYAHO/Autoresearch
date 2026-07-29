@@ -48,6 +48,7 @@
 
 - [가이드 — 학습 데이터셋](guides/training-dataset.md)
 - [가이드 — CTR 모델 명세](guides/ctr-model-specification.md)
+- [Spec — 모델 승격 구조화 결과 계약](specs/2026-07-29-model-promotion-structured-outcome.md)
 - [Plan — `src/` → `autoresearch/` 패키지 통합](plans/2026-07-15-src-package-merge.md) (팀 합의 대기)
 - `src/pipeline/`, `src/models/`, `src/features/` (CTR 학습·평가 코드)
 
@@ -93,6 +94,8 @@
   `src/` 패키지 통합 목표 구조 포함
 - [머지된 PR 리포트 아카이브](specs/2026-07-26-pr-report-archive-design.md) —
   GitHub Pages에 누적된 merge PR 리포트의 정적 검색 인덱스
+- [모델 승격 구조화 결과 계약](specs/2026-07-29-model-promotion-structured-outcome.md) —
+  승격·게이트 미달·후보 없음·실행 오류의 기계 판독 결과와 Airflow 인계 계약
 
 ## 가이드
 
