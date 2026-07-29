@@ -13,9 +13,17 @@ Feast Feature 조회 검증 스크립트.
   uv run --no-dev --group feast python scripts/verify_feature_retrieval.py
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import pandas as pd
 from dotenv import load_dotenv
-from feast import FeatureStore
+
+from feature_repo.bootstrap import load_feature_store
+
+if TYPE_CHECKING:
+    from feast import FeatureStore
 
 
 def verify_online_features(store: FeatureStore) -> None:
@@ -64,7 +72,9 @@ def verify_similarity_view(store: FeatureStore) -> None:
 
 def main() -> None:
     load_dotenv()
-    store = FeatureStore(repo_path="feature_repo")
+    # load_feature_store 가 FEAST_ONLINE_FULL_SCAN_FOR_DELETION(prod/dev 파생,
+    # #399)을 채운 뒤 feature_store.yaml 의 ${...} 치환이 성립한다.
+    store = load_feature_store("feature_repo")
     verify_online_features(store)
     verify_similarity_view(store)
 
