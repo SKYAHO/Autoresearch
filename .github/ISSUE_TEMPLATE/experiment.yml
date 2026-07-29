@@ -8,6 +8,9 @@ body:
       value: |
         실험 issue는 가설과 판정 기준을 먼저 정하는 데 목적이 있습니다. 결과가 나오면 같은 issue에 요약을 남겨 주세요.
 
+        **사람이 직접 수행하고 기록하는 실험용입니다.** 에이전트가 읽고 스스로 수행할
+        실험이라면 `Auto Research (에이전트 자율 실험)` 템플릿을 쓰세요.
+
   - type: textarea
     id: hypothesis
     attributes:
