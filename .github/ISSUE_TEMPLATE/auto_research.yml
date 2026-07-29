@@ -1,0 +1,129 @@
+name: Auto Research (에이전트 자율 실험)
+description: 에이전트가 읽고 직접 수행할 실험 가설을 등록합니다.
+title: "[AR] "
+labels: ["experiment", "auto-research"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **이 템플릿은 에이전트가 읽고 실행합니다.** 사람이 결과를 기록하는 일반 실험은
+        `Experiment` 템플릿을 쓰세요.
+
+        흐름: 이 이슈 등록 → 에이전트가 읽음 → 실험 수행 → 과정·결과를 이 이슈에 코멘트
+        → 이슈 종료. 아래 필드는 #396 최소 흐름 1회 완주에서 **실제로 필요했던 것만**
+        남긴 것입니다.
+
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: 연구 가설
+      description: |
+        무엇이 왜 개선될 것이라 보는지. 에이전트의 실험 설계 전부가 여기서 나옵니다.
+        "왜 그렇게 생각하는지"(근거)까지 적으면 에이전트가 검증 방법을 좁힐 수 있습니다.
+      placeholder: |
+        예) LightGBM은 축 정렬 분할만 하므로 두 피처의 비율을 스스로 만들지 못한다.
+        따라서 views_per_day = view_count / (days_since_upload + 1)을 입력에 추가하면
+        baseline 대비 test ROC-AUC가 개선된다.
+    validations:
+      required: true
+
+  - type: textarea
+    id: change
+    attributes:
+      label: 변경할 피처 · 모델
+      description: |
+        에이전트가 그대로 코드로 옮길 수 있을 만큼 구체적으로. 파생 피처는 **계산식**을,
+        하이퍼파라미터는 **바꿀 값과 기준값**을 적습니다. 변경하지 않는 것도 명시하세요
+        (변수가 하나여야 효과를 분리할 수 있습니다).
+      value: |
+        - 추가/변경할 피처 (계산식):
+        - 변경할 하이퍼파라미터 (없으면 "없음"):
+        - baseline과 동일하게 유지할 것:
+    validations:
+      required: true
+
+  - type: textarea
+    id: success_criteria
+    attributes:
+      label: 성공 기준 (지표 · 임계)
+      description: |
+        **주 지표 1개와 수치 임계를 반드시 지정하세요.** 이게 없으면 에이전트가 "지지/기각"을
+        판정할 수 없습니다. 임계 미달은 기각으로 기록되며, 기각도 유효한 결과입니다.
+      value: |
+        - 주 지표 / 임계: (예: held-out test ROC-AUC, baseline 대비 +0.002 이상)
+        - 보조 관측: (예: PR-AUC, LogLoss, feature importance 순위)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: comparison
+    attributes:
+      label: 비교 대상
+      description: |
+        `champion`(MLflow `ctr-model@champion`)은 **다른 기간·다른 데이터 스냅샷**으로
+        학습됐을 수 있어, 변경 1개의 효과를 분리하지 못합니다. 특별한 이유가 없으면
+        "동일 조건 baseline 재학습"을 고르세요(#396 회고).
+      options:
+        - 동일 조건 baseline 재학습 (권장)
+        - champion (ctr-model@champion)
+        - 둘 다
+      default: 0
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproducibility
+    attributes:
+      label: 재현 조건 고정값
+      description: |
+        baseline과 변경군의 A/B가 성립하려면 split·seed가 같아야 합니다.
+        **반복 시드 수**를 1로 두면 결과가 노이즈인지 판정할 수 없습니다 — #396이 그 사례입니다.
+      value: |
+        - test_size / val_size: 0.2 / 0.2
+        - random_state: 42
+        - 반복 시드 수: 1
+    validations:
+      required: true
+
+  - type: textarea
+    id: dataset
+    attributes:
+      label: 대상 데이터 · 기간
+      description: |
+        ⚠️ **현재 에이전트는 이 필드를 지키지 못할 수 있습니다.** 정규 조립 경로
+        (`python -m src.cli build-features` → Feast offline PIT)는 BigQuery spine과 GCS
+        레지스트리 자격 증명이 필요해 로컬 에이전트가 실행할 수 없습니다(#396 B3 ①).
+        기간을 지정해도 에이전트가 기존 CSV 스냅샷을 재사용할 수 있으니, 실제로 무엇을
+        썼는지는 결과 코멘트에서 확인하세요.
+      value: |
+        - 데이터셋 / 경로:
+        - 기간 (KST YYYY-MM-DD ~ YYYY-MM-DD):
+        - 스냅샷 재사용 허용 여부:
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: allowed_scope
+    attributes:
+      label: 허용 범위
+      description: |
+        에이전트가 어디까지 건드려도 되는지 **미리** 합의합니다. #396에서는 피처 1개 추가로
+        `MODEL_FEATURE_COLUMNS`를 고쳐야 했고, 그 결과 학습·시뮬레이션·일일추천·서빙 테스트
+        43개가 추가로 실패했습니다.
+      options:
+        - label: prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다
+        - label: Feast 정의(`feature_repo/`) 수정을 허용한다
+        - label: 실험 결과를 champion으로 승격하는 것까지 검토한다
+
+  - type: textarea
+    id: result
+    attributes:
+      label: 결과 (에이전트가 채웁니다)
+      description: 사람이 미리 채우지 않아도 됩니다. 에이전트가 코멘트로 남기고 이슈를 종료합니다.
+      value: |
+        - 판정 (지지/기각):
+        - 지표 요약 (baseline 대비):
+        - MLflow run:
+        - 막힌 지점 (= 스킬/인프라 백로그):
+    validations:
+      required: false
