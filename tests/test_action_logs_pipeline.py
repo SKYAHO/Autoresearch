@@ -3,6 +3,7 @@ import logging
 import random
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Event
 
 import pyarrow as pa
@@ -30,6 +31,7 @@ from autoresearch.action_logs.schema import (
     EventGenerationRequest,
     EventLog,
     ImpressionDraft,
+    QuarantineRecord,
 )
 from autoresearch.action_logs.video_source import (
     _parse_tags,
@@ -187,6 +189,64 @@ def test_parquet_matches_events(tmp_path):
         "policy", "ctr_score", "is_exploration", "policy_version",
         "exposure_source",
     }
+
+
+def test_streaming_writer_appends_user_row_groups_and_jsonl_in_order(tmp_path) -> None:
+    request = _request(tmp_path)
+    first = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    second = EventLog(
+        event_id="evt_20260701_00000001",
+        event_timestamp=_FIXED_END,
+        user_id="u2",
+        event_type="impression",
+        video_id="v2",
+        source="historical",
+    )
+    quarantine = QuarantineRecord(
+        user_id="u2",
+        error_type="invalid_json",
+        error_message="broken",
+    )
+
+    with pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+        generated_at="2026-07-29T00:00:00+00:00",
+    ) as writer:
+        writer.write_events([first])
+        writer.write_events([second])
+        writer.write_quarantine([quarantine])
+
+    parquet = pq.ParquetFile(request.output_path)
+    assert parquet.num_row_groups == 2
+    assert parquet.read().column("event_id").to_pylist() == [
+        first.event_id,
+        second.event_id,
+    ]
+    warehouse = [
+        json.loads(line)
+        for line in Path(request.warehouse_output_path)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [row["event_id"] for row in warehouse] == [
+        first.event_id,
+        second.event_id,
+    ]
+    quarantined = [
+        json.loads(line)
+        for line in Path(request.quarantine_output_path)
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [row["user_id"] for row in quarantined] == ["u2"]
 
 
 def test_user_isolation_quarantines_bad_row(tmp_path):
@@ -985,6 +1045,33 @@ def test_expand_events_without_metadata_is_unchanged():
     assert re.fullmatch(r"evt_\d{8}_00000000", events[0].event_id)
     assert events[0].source == "historical"
     assert events[0].policy is None
+
+
+def test_expand_events_respects_event_id_sequence_start() -> None:
+    request = EventGenerationRequest(
+        click_threshold=1.0,
+        seed=7,
+        history_end=_FIXED_END,
+    )
+    drafts = [
+        ImpressionDraft(
+            user_id="u1",
+            video_id="v1",
+            click_propensity=0.1,
+            watch_fraction=0.5,
+            would_like=False,
+            duration_sec=100,
+        )
+    ]
+
+    events = pipeline_module._expand_events(
+        drafts,
+        set(),
+        request,
+        event_id_sequence_start=17,
+    )
+
+    assert events[0].event_id.endswith("_00000017")
 
 
 def test_expand_events_event_ids_are_date_namespaced_and_unique():

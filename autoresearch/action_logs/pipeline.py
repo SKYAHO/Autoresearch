@@ -4,7 +4,8 @@
 select_clicks_per_slate로 유저(슬레이트)별 최고 1건을 click_threshold
 커트라인으로 클릭 선정 → 이벤트 확장(_expand_events: 노출마다 impression 1행,
 클릭 선정분엔 click/view(+like)를 추가 배치) → parquet/warehouse/quarantine
-저장. 한 유저의 실패가 배치를 죽이지 않는다.
+저장. legacy batch 저장 함수와 streaming writer가 동일한 출력 계약을 제공하며,
+한 유저의 실패가 배치를 죽이지 않는다.
 """
 import json
 import logging
@@ -17,7 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, timedelta, timezone
 from pathlib import Path
 from time import monotonic
-from typing import Callable, Literal, Protocol
+from types import TracebackType
+from typing import Callable, Literal, Protocol, Self
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -769,6 +771,7 @@ def _expand_events(
     metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None,
     source: str = SOURCE_HISTORICAL,
     event_id_prefix: str = "evt",
+    event_id_sequence_start: int = 0,
 ) -> list[EventLog]:
     """draft + 클릭 결정 → long EventLog 스트림.
 
@@ -790,7 +793,7 @@ def _expand_events(
         by_user[draft.user_id].append(idx)
 
     events: list[EventLog] = []
-    seq = 0
+    seq = event_id_sequence_start
 
     def _emit(timestamp, user_id, event_type, video_id, watch=None):
         nonlocal seq
@@ -882,6 +885,97 @@ def _event_rows(batch: EventLogBatch, model_name: str) -> list[dict]:
             }
         )
     return rows
+
+
+class _StreamingActionLogWriter:
+    """최종 action log 산출물을 사용자 단위 row group으로 증분 기록한다."""
+
+    def __init__(
+        self,
+        *,
+        request: EventGenerationRequest,
+        model_name: str,
+        generated_at: str,
+    ) -> None:
+        self._request = request
+        self._model_name = model_name
+        self._generated_at = generated_at
+        self._parquet_writer: pq.ParquetWriter | None = None
+        self._warehouse_file = None
+        self._quarantine_file = None
+
+    def __enter__(self) -> Self:
+        for raw_path in (
+            self._request.output_path,
+            self._request.warehouse_output_path,
+            self._request.quarantine_output_path,
+        ):
+            Path(raw_path).parent.mkdir(parents=True, exist_ok=True)
+        self._parquet_writer = pq.ParquetWriter(
+            self._request.output_path,
+            EVENT_LOG_PARQUET_SCHEMA,
+        )
+        self._warehouse_file = Path(self._request.warehouse_output_path).open(
+            "w",
+            encoding="utf-8",
+        )
+        self._quarantine_file = Path(self._request.quarantine_output_path).open(
+            "w",
+            encoding="utf-8",
+        )
+        return self
+
+    def write_events(self, events: list[EventLog]) -> None:
+        if not events:
+            return
+        assert self._parquet_writer is not None
+        assert self._warehouse_file is not None
+        batch = EventLogBatch(
+            schema_version=ACTION_LOG_SCHEMA_VERSION,
+            prompt_version=PROMPT_VERSION,
+            request=self._request,
+            events=events,
+            generated_at=self._generated_at,
+        )
+        table = pa.Table.from_pylist(
+            _event_rows(batch, self._model_name),
+            schema=EVENT_LOG_PARQUET_SCHEMA,
+        )
+        self._parquet_writer.write_table(table)
+        for event in events:
+            self._warehouse_file.write(
+                json.dumps(
+                    event.to_warehouse_row(),
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+            )
+
+    def write_quarantine(self, records: list[QuarantineRecord]) -> None:
+        assert self._quarantine_file is not None
+        for record in records:
+            self._quarantine_file.write(
+                json.dumps(
+                    record.model_dump(),
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+            )
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        if self._parquet_writer is not None:
+            self._parquet_writer.close()
+        if self._warehouse_file is not None:
+            self._warehouse_file.close()
+        if self._quarantine_file is not None:
+            self._quarantine_file.close()
 
 
 def _draft_rows(drafts: list[ImpressionDraft]) -> list[dict]:
