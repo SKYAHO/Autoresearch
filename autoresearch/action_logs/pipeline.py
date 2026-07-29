@@ -13,7 +13,9 @@ SKYAHO/Autoresearch-airflow가 소유한다.
 import json
 import logging
 import math
+import os
 import random
+import tempfile
 from collections import defaultdict, deque
 from collections.abc import Mapping, MutableMapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -23,7 +25,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from types import TracebackType
-from typing import Callable, Literal, Protocol, Self
+from typing import Callable, Literal, Protocol, Self, TextIO
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -229,6 +231,11 @@ EVENT_LOG_PARQUET_SCHEMA = pa.schema(
         pa.field("generated_at", pa.string()),
     ]
 )
+
+_EVENT_SPOOL_SCHEMA = pa.schema(
+    [field for field in EVENT_LOG_PARQUET_SCHEMA if field.name != "generated_at"]
+)
+_PARQUET_TARGET_ROW_GROUP_ROWS = 50_000
 
 # additive 확장 컬럼 — 이 컬럼이 없는 legacy 파티션 스키마도 event log 계약에서
 # 관용한다 (#221). event log 스키마 계약의 단일 출처로 이곳에 둔다.
@@ -961,50 +968,165 @@ def _event_rows(batch: EventLogBatch, model_name: str) -> list[dict]:
     return rows
 
 
+def _event_spool_rows(
+    events: list[EventLog],
+    model_name: str,
+) -> list[dict[str, object]]:
+    """완료 시각을 제외한 event rows를 IPC spool schema에 맞춰 변환한다."""
+
+    return [
+        {
+            "event_id": event.event_id,
+            "event_timestamp": event.event_timestamp,
+            "user_id": event.user_id,
+            "event_type": event.event_type,
+            "video_id": event.video_id,
+            "watch_time_sec": event.watch_time_sec,
+            "rank": event.rank,
+            "source": event.source,
+            "policy": event.policy,
+            "ctr_score": event.ctr_score,
+            "is_exploration": event.is_exploration,
+            "policy_version": event.policy_version,
+            "exposure_source": event.exposure_source,
+            "schema_version": ACTION_LOG_SCHEMA_VERSION,
+            "prompt_version": PROMPT_VERSION,
+            "llm_model": model_name,
+        }
+        for event in events
+    ]
+
+
 class _StreamingActionLogWriter:
-    """최종 action log 산출물을 사용자 단위 row group으로 증분 기록한다."""
+    """IPC spool을 completion-time Parquet/JSONL 산출물로 최종화한다."""
 
     def __init__(
         self,
         *,
         request: EventGenerationRequest,
         model_name: str,
-        generated_at: str,
     ) -> None:
         self._request = request
         self._model_name = model_name
-        self._generated_at = generated_at
-        self._parquet_writer: pq.ParquetWriter | None = None
+        self._warehouse_file: TextIO | None = None
+        self._quarantine_file: TextIO | None = None
+        self._event_sink: pa.OSFile | None = None
+        self._event_stream: pa.ipc.RecordBatchStreamWriter | None = None
+        self._exit_stack: ExitStack | None = None
+        self._event_spool_path: Path | None = None
+        self._parquet_spool_path: Path | None = None
+        self._warehouse_spool_path: Path | None = None
+        self._quarantine_spool_path: Path | None = None
+        self._commit_backup_paths: list[Path] = []
+        self._committed = False
+
+    @staticmethod
+    def _create_sibling_spool_path(target_path: str) -> Path:
+        """최종 target과 같은 filesystem에 임시 spool 파일을 만든다."""
+
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, raw_path = tempfile.mkstemp(
+            prefix=f".{target.name}.",
+            suffix=".spool",
+            dir=str(target.parent),
+        )
+        os.close(descriptor)
+        return Path(raw_path)
+
+    def _spool_paths(self) -> tuple[Path, ...]:
+        base_spool_paths = tuple(
+            path
+            for path in (
+                self._event_spool_path,
+                self._parquet_spool_path,
+                self._warehouse_spool_path,
+                self._quarantine_spool_path,
+            )
+            if path is not None
+        )
+        return (*base_spool_paths, *self._commit_backup_paths)
+
+    def _remove_spools(self, *, best_effort: bool = False) -> None:
+        remaining_backup_paths: list[Path] = []
+        for spool_path in self._spool_paths():
+            try:
+                spool_path.unlink(missing_ok=True)
+            except OSError:
+                if not best_effort:
+                    raise
+                if spool_path in self._commit_backup_paths:
+                    remaining_backup_paths.append(spool_path)
+                    message = "Unable to remove committed action log backup spool"
+                else:
+                    message = "Unable to remove committed action log spool"
+                logger.warning(
+                    message,
+                    extra={"spool_path": str(spool_path)},
+                    exc_info=True,
+                )
+        if best_effort:
+            self._commit_backup_paths = remaining_backup_paths
+        else:
+            self._commit_backup_paths.clear()
+
+    def _clear_open_resources(self) -> None:
         self._warehouse_file = None
         self._quarantine_file = None
-        self._exit_stack: ExitStack | None = None
+        self._event_sink = None
+        self._event_stream = None
+
+    def _close_generation_resources(self) -> None:
+        if self._exit_stack is None:
+            return
+        stack, self._exit_stack = self._exit_stack, None
+        try:
+            stack.close()
+        finally:
+            self._clear_open_resources()
+
+    def _ensure_open_and_uncommitted(self) -> None:
+        if self._committed:
+            raise RuntimeError("streaming action log writer is already finalized")
+        if self._exit_stack is None:
+            raise RuntimeError("streaming action log writer is not open")
 
     def __enter__(self) -> Self:
         stack = ExitStack()
         try:
-            for raw_path in (
-                self._request.output_path,
-                self._request.warehouse_output_path,
-                self._request.quarantine_output_path,
-            ):
-                Path(raw_path).parent.mkdir(parents=True, exist_ok=True)
-            self._parquet_writer = pq.ParquetWriter(
-                self._request.output_path,
-                EVENT_LOG_PARQUET_SCHEMA,
+            self._event_spool_path = self._create_sibling_spool_path(
+                self._request.output_path
             )
-            stack.callback(self._parquet_writer.close)
-            self._warehouse_file = Path(self._request.warehouse_output_path).open(
+            self._parquet_spool_path = self._create_sibling_spool_path(
+                self._request.output_path
+            )
+            self._warehouse_spool_path = self._create_sibling_spool_path(
+                self._request.warehouse_output_path
+            )
+            self._quarantine_spool_path = self._create_sibling_spool_path(
+                self._request.quarantine_output_path
+            )
+            self._warehouse_file = stack.enter_context(self._warehouse_spool_path.open(
                 "w",
                 encoding="utf-8",
-            )
-            stack.callback(self._warehouse_file.close)
-            self._quarantine_file = Path(self._request.quarantine_output_path).open(
+            ))
+            self._quarantine_file = stack.enter_context(self._quarantine_spool_path.open(
                 "w",
                 encoding="utf-8",
+            ))
+            self._event_sink = pa.OSFile(str(self._event_spool_path), "wb")
+            stack.callback(self._event_sink.close)
+            self._event_stream = pa.ipc.new_stream(
+                self._event_sink,
+                _EVENT_SPOOL_SCHEMA,
             )
-            stack.callback(self._quarantine_file.close)
+            stack.callback(self._event_stream.close)
         except BaseException:
-            stack.close()
+            try:
+                stack.close()
+            finally:
+                self._clear_open_resources()
+                self._remove_spools()
             raise
         self._exit_stack = stack
         return self
@@ -1012,20 +1134,14 @@ class _StreamingActionLogWriter:
     def write_events(self, events: list[EventLog]) -> None:
         if not events:
             return
-        assert self._parquet_writer is not None
+        self._ensure_open_and_uncommitted()
+        assert self._event_stream is not None
         assert self._warehouse_file is not None
-        batch = EventLogBatch(
-            schema_version=ACTION_LOG_SCHEMA_VERSION,
-            prompt_version=PROMPT_VERSION,
-            request=self._request,
-            events=events,
-            generated_at=self._generated_at,
+        event_batch = pa.RecordBatch.from_pylist(
+            _event_spool_rows(events, self._model_name),
+            schema=_EVENT_SPOOL_SCHEMA,
         )
-        table = pa.Table.from_pylist(
-            _event_rows(batch, self._model_name),
-            schema=EVENT_LOG_PARQUET_SCHEMA,
-        )
-        self._parquet_writer.write_table(table)
+        self._event_stream.write_batch(event_batch)
         for event in events:
             self._warehouse_file.write(
                 json.dumps(
@@ -1037,6 +1153,7 @@ class _StreamingActionLogWriter:
             )
 
     def write_quarantine(self, records: list[QuarantineRecord]) -> None:
+        self._ensure_open_and_uncommitted()
         assert self._quarantine_file is not None
         for record in records:
             self._quarantine_file.write(
@@ -1048,17 +1165,142 @@ class _StreamingActionLogWriter:
                 + "\n"
             )
 
+    def _write_final_parquet(
+        self,
+        generated_at: str,
+        buffered_events_observer: Callable[[int], None] | None,
+    ) -> None:
+        assert self._event_spool_path is not None
+        assert self._parquet_spool_path is not None
+        with ExitStack() as stack:
+            event_source = pa.OSFile(str(self._event_spool_path), "rb")
+            stack.callback(event_source.close)
+            event_reader = pa.ipc.open_stream(event_source)
+            stack.callback(event_reader.close)
+            parquet_writer = pq.ParquetWriter(
+                str(self._parquet_spool_path),
+                EVENT_LOG_PARQUET_SCHEMA,
+            )
+            stack.callback(parquet_writer.close)
+            buffered_batches: list[pa.RecordBatch] = []
+            buffered_rows = 0
+
+            def flush_buffer() -> None:
+                nonlocal buffered_rows
+                if buffered_events_observer is not None:
+                    buffered_events_observer(buffered_rows)
+                table = pa.Table.from_batches(
+                    buffered_batches,
+                    schema=_EVENT_SPOOL_SCHEMA,
+                )
+                generated_column = pa.array(
+                    [generated_at] * table.num_rows,
+                    type=pa.string(),
+                )
+                table = table.append_column("generated_at", generated_column)
+                table = table.select(EVENT_LOG_PARQUET_SCHEMA.names).cast(
+                    EVENT_LOG_PARQUET_SCHEMA
+                )
+                parquet_writer.write_table(
+                    table,
+                    row_group_size=_PARQUET_TARGET_ROW_GROUP_ROWS,
+                )
+                buffered_batches.clear()
+                buffered_rows = 0
+                del generated_column
+                del table
+                if buffered_events_observer is not None:
+                    buffered_events_observer(0)
+
+            for event_batch in event_reader:
+                start = 0
+                while start < event_batch.num_rows:
+                    rows_to_buffer = min(
+                        _PARQUET_TARGET_ROW_GROUP_ROWS - buffered_rows,
+                        event_batch.num_rows - start,
+                    )
+                    buffered_batches.append(event_batch.slice(start, rows_to_buffer))
+                    buffered_rows += rows_to_buffer
+                    start += rows_to_buffer
+                    if buffered_rows == _PARQUET_TARGET_ROW_GROUP_ROWS:
+                        flush_buffer()
+            if buffered_batches:
+                flush_buffer()
+
+    def _commit_success_outputs(self) -> None:
+        """세 final output을 함께 publish하고 중간 실패 시 기존 상태로 되돌린다."""
+
+        assert self._parquet_spool_path is not None
+        assert self._warehouse_spool_path is not None
+        assert self._quarantine_spool_path is not None
+        output_pairs = (
+            (self._parquet_spool_path, Path(self._request.output_path)),
+            (self._warehouse_spool_path, Path(self._request.warehouse_output_path)),
+            (self._quarantine_spool_path, Path(self._request.quarantine_output_path)),
+        )
+        backups: list[tuple[Path, Path]] = []
+        published_paths: list[Path] = []
+        try:
+            for _spool_path, final_path in output_pairs:
+                if final_path.exists():
+                    backup_path = self._create_sibling_spool_path(str(final_path))
+                    self._commit_backup_paths.append(backup_path)
+                    final_path.replace(backup_path)
+                    backups.append((backup_path, final_path))
+            for spool_path, final_path in output_pairs:
+                spool_path.replace(final_path)
+                published_paths.append(final_path)
+        except BaseException:
+            for published_path in reversed(published_paths):
+                published_path.unlink(missing_ok=True)
+            for backup_path, final_path in reversed(backups):
+                if backup_path.exists():
+                    backup_path.replace(final_path)
+            raise
+
+    def finalize_success(
+        self,
+        generated_at: str,
+        buffered_events_observer: Callable[[int], None] | None = None,
+    ) -> None:
+        """IPC spool을 completion-time Parquet와 최종 JSONL 산출물로 publish한다."""
+
+        self._ensure_open_and_uncommitted()
+        self._close_generation_resources()
+        self._write_final_parquet(generated_at, buffered_events_observer)
+        self._commit_success_outputs()
+        self._remove_spools(best_effort=True)
+        final_paths = (
+            Path(self._request.output_path),
+            Path(self._request.warehouse_output_path),
+            Path(self._request.quarantine_output_path),
+        )
+        if not all(path.exists() for path in final_paths):
+            raise RuntimeError("streaming action log finalization did not publish all outputs")
+        self._committed = True
+
+    def finalize_quarantine_failure(self) -> None:
+        """격리 비율 초과 시 quarantine JSONL만 최종 경로에 남긴다."""
+
+        self._ensure_open_and_uncommitted()
+        self._close_generation_resources()
+        assert self._quarantine_spool_path is not None
+        self._quarantine_spool_path.replace(self._request.quarantine_output_path)
+        self._remove_spools()
+        if not Path(self._request.quarantine_output_path).exists():
+            raise RuntimeError("streaming action log quarantine finalization did not publish output")
+        self._committed = True
+
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        assert self._exit_stack is not None
         try:
-            self._exit_stack.__exit__(exc_type, exc, traceback)
+            self._close_generation_resources()
         finally:
-            self._exit_stack = None
+            self._remove_spools(best_effort=self._committed)
 
 
 def _draft_rows(drafts: list[ImpressionDraft]) -> list[dict]:
@@ -1438,11 +1680,9 @@ def generate_action_log_single(
             )
         )
 
-    generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
     with _StreamingActionLogWriter(
         request=request,
         model_name=generator.model_name,
-        generated_at=generated_at,
     ) as writer, ThreadPoolExecutor(max_workers=max_active_users) as executor:
         futures: dict[
             Future[_ActionLogCallResult],
@@ -1614,12 +1854,18 @@ def generate_action_log_single(
                 _observe()
                 _fill_active_users()
 
-    _raise_if_quarantine_count_exceeds(
-        quarantined_users,
-        next_work_sequence,
-        request,
-        len(virtual_users),
-    )
+        try:
+            _raise_if_quarantine_count_exceeds(
+                quarantined_users,
+                next_work_sequence,
+                request,
+                len(virtual_users),
+            )
+        except ActionLogGenerationError:
+            writer.finalize_quarantine_failure()
+            raise
+        generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+        writer.finalize_success(generated_at)
 
     result = ActionLogSingleResult(
         execution_mode="streaming",

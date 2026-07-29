@@ -199,7 +199,10 @@ def test_parquet_matches_events(tmp_path):
     }
 
 
-def test_streaming_writer_appends_user_row_groups_and_jsonl_in_order(tmp_path) -> None:
+def test_streaming_writer_finalizes_completion_time_and_bounded_row_groups(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     request = _request(tmp_path)
     first = EventLog(
         event_id="evt_20260701_00000000",
@@ -217,27 +220,57 @@ def test_streaming_writer_appends_user_row_groups_and_jsonl_in_order(tmp_path) -
         video_id="v2",
         source="historical",
     )
-    quarantine = QuarantineRecord(
+    third = EventLog(
+        event_id="evt_20260701_00000002",
+        event_timestamp=_FIXED_END,
+        user_id="u3",
+        event_type="impression",
+        video_id="v3",
+        source="historical",
+    )
+    fourth = EventLog(
+        event_id="evt_20260701_00000003",
+        event_timestamp=_FIXED_END,
+        user_id="u4",
+        event_type="impression",
+        video_id="v4",
+        source="historical",
+    )
+    first_quarantine = QuarantineRecord(
         user_id="u2",
         error_type="invalid_json",
         error_message="broken",
     )
+    second_quarantine = QuarantineRecord(
+        user_id="u4",
+        error_type="schema_fail",
+        error_message="invalid row",
+    )
+    monkeypatch.setattr(pipeline_module, "_PARQUET_TARGET_ROW_GROUP_ROWS", 3)
 
     with pipeline_module._StreamingActionLogWriter(
         request=request,
         model_name="test-model",
-        generated_at="2026-07-29T00:00:00+00:00",
     ) as writer:
-        writer.write_events([first])
-        writer.write_events([second])
-        writer.write_quarantine([quarantine])
+        writer.write_events([first, second])
+        writer.write_events([third, fourth])
+        writer.write_quarantine([first_quarantine])
+        writer.write_quarantine([second_quarantine])
+        writer.finalize_success("2026-07-30T09:00:00+00:00")
 
     parquet = pq.ParquetFile(request.output_path)
     assert parquet.num_row_groups == 2
-    assert parquet.read().column("event_id").to_pylist() == [
+    assert parquet.metadata.row_group(0).num_rows == 3
+    assert parquet.metadata.row_group(1).num_rows == 1
+    assert parquet.read(columns=["event_id"]).column(0).to_pylist() == [
         first.event_id,
         second.event_id,
+        third.event_id,
+        fourth.event_id,
     ]
+    assert set(
+        parquet.read(columns=["generated_at"]).column(0).to_pylist()
+    ) == {"2026-07-30T09:00:00+00:00"}
     warehouse = [
         json.loads(line)
         for line in Path(request.warehouse_output_path)
@@ -247,6 +280,8 @@ def test_streaming_writer_appends_user_row_groups_and_jsonl_in_order(tmp_path) -
     assert [row["event_id"] for row in warehouse] == [
         first.event_id,
         second.event_id,
+        third.event_id,
+        fourth.event_id,
     ]
     quarantined = [
         json.loads(line)
@@ -254,71 +289,275 @@ def test_streaming_writer_appends_user_row_groups_and_jsonl_in_order(tmp_path) -
         .read_text(encoding="utf-8")
         .splitlines()
     ]
-    assert [row["user_id"] for row in quarantined] == ["u2"]
+    assert [row["user_id"] for row in quarantined] == ["u2", "u4"]
 
 
-def test_streaming_writer_closes_open_resources_when_later_open_fails(tmp_path, monkeypatch) -> None:
-    class _CloseTracker:
-        def __init__(self) -> None:
-            self.closed = False
+def test_streaming_writer_quarantine_failure_commits_only_quarantine(tmp_path) -> None:
+    request = _request(tmp_path)
+    event = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    quarantine = QuarantineRecord(
+        user_id="u1",
+        error_type="invalid_json",
+        error_message="broken",
+    )
 
-        def close(self) -> None:
-            self.closed = True
+    with pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    ) as writer:
+        writer.write_events([event])
+        writer.write_quarantine([quarantine])
+        writer.finalize_quarantine_failure()
 
-    parquet = _CloseTracker()
-    warehouse = _CloseTracker()
-    open_results = iter([warehouse, OSError("quarantine open failed")])
-    monkeypatch.setattr(pipeline_module.pq, "ParquetWriter", lambda *_: parquet)
+    assert not Path(request.output_path).exists()
+    assert not Path(request.warehouse_output_path).exists()
+    assert Path(request.quarantine_output_path).read_text(encoding="utf-8").count("\n") == 1
 
-    def fake_open(self, *args, **kwargs):
-        result = next(open_results)
-        if isinstance(result, Exception):
-            raise result
-        return result
 
-    monkeypatch.setattr(Path, "open", fake_open)
+def test_streaming_writer_exception_removes_spools(tmp_path) -> None:
+    request = _request(tmp_path)
+    event = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    quarantine = QuarantineRecord(
+        user_id="u1",
+        error_type="invalid_json",
+        error_message="broken",
+    )
 
-    with pytest.raises(OSError, match="quarantine open failed"):
+    with pytest.raises(RuntimeError, match="abort run"):
+        with pipeline_module._StreamingActionLogWriter(
+            request=request,
+            model_name="test-model",
+        ) as writer:
+            writer.write_events([event])
+            writer.write_quarantine([quarantine])
+            raise RuntimeError("abort run")
+
+    assert not Path(request.output_path).exists()
+    assert not Path(request.warehouse_output_path).exists()
+    assert not Path(request.quarantine_output_path).exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_streaming_writer_rolls_back_success_outputs_when_commit_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path)
+    event = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    original_replace = Path.replace
+
+    def fail_warehouse_publish(source: Path, target: str | Path) -> Path:
+        if Path(target) == Path(request.warehouse_output_path):
+            raise OSError("warehouse publish failed")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_warehouse_publish)
+
+    with pytest.raises(OSError, match="warehouse publish failed"):
+        with pipeline_module._StreamingActionLogWriter(
+            request=request,
+            model_name="test-model",
+        ) as writer:
+            writer.write_events([event])
+            writer.finalize_success("2026-07-30T09:00:00+00:00")
+
+    assert not Path(request.output_path).exists()
+    assert not Path(request.warehouse_output_path).exists()
+    assert not Path(request.quarantine_output_path).exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_streaming_writer_restores_existing_outputs_when_commit_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path)
+    previous_outputs = {
+        Path(request.output_path): b"previous parquet",
+        Path(request.warehouse_output_path): b'{"previous": "warehouse"}\n',
+        Path(request.quarantine_output_path): b'{"previous": "quarantine"}\n',
+    }
+    for path, contents in previous_outputs.items():
+        path.write_bytes(contents)
+
+    event = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    original_replace = Path.replace
+    warehouse_publish_failed = False
+
+    def fail_first_warehouse_publish(source: Path, target: str | Path) -> Path:
+        nonlocal warehouse_publish_failed
+        if (
+            Path(target) == Path(request.warehouse_output_path)
+            and not warehouse_publish_failed
+        ):
+            warehouse_publish_failed = True
+            raise OSError("warehouse publish failed")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_first_warehouse_publish)
+
+    with pytest.raises(OSError, match="warehouse publish failed"):
+        with pipeline_module._StreamingActionLogWriter(
+            request=request,
+            model_name="test-model",
+        ) as writer:
+            writer.write_events([event])
+            writer.finalize_success("2026-07-30T09:00:00+00:00")
+
+    assert {
+        path: path.read_bytes()
+        for path in previous_outputs
+    } == previous_outputs
+    assert {path.name for path in tmp_path.iterdir()} == {
+        path.name for path in previous_outputs
+    }
+
+
+def test_streaming_writer_cleans_tracked_backup_after_unlink_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request = _request(tmp_path)
+    for path in (
+        Path(request.output_path),
+        Path(request.warehouse_output_path),
+        Path(request.quarantine_output_path),
+    ):
+        path.write_text("previous output\n", encoding="utf-8")
+    event = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    original_unlink = Path.unlink
+    backup_unlink_failed = False
+
+    with pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    ) as writer:
+        initial_spool_paths = set(writer._spool_paths())
+
+        def fail_first_backup_unlink(path: Path, *, missing_ok: bool = False) -> None:
+            nonlocal backup_unlink_failed
+            if path not in initial_spool_paths and not backup_unlink_failed:
+                backup_unlink_failed = True
+                raise PermissionError("backup cleanup failed")
+            original_unlink(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", fail_first_backup_unlink)
+        with caplog.at_level(logging.WARNING, logger=pipeline_module.__name__):
+            writer.write_events([event])
+            writer.finalize_success("2026-07-30T09:00:00+00:00")
+
+    assert "Unable to remove committed action log backup spool" in caplog.messages
+    assert backup_unlink_failed is True
+    assert {path.name for path in tmp_path.iterdir()} == {
+        "e.parquet",
+        "e.jsonl",
+        "q.jsonl",
+    }
+
+
+def test_streaming_writer_keeps_success_when_backup_cleanup_persists(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request = _request(tmp_path)
+    for path in (
+        Path(request.output_path),
+        Path(request.warehouse_output_path),
+        Path(request.quarantine_output_path),
+    ):
+        path.write_text("previous output\n", encoding="utf-8")
+    event = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    original_unlink = Path.unlink
+    writer = pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    )
+
+    with writer:
+        initial_spool_paths = set(writer._spool_paths())
+
+        def fail_backup_unlink(path: Path, *, missing_ok: bool = False) -> None:
+            if path not in initial_spool_paths:
+                raise PermissionError("backup cleanup keeps failing")
+            original_unlink(path, missing_ok=missing_ok)
+
+        with monkeypatch.context() as cleanup_monkeypatch:
+            cleanup_monkeypatch.setattr(Path, "unlink", fail_backup_unlink)
+            with caplog.at_level(logging.WARNING, logger=pipeline_module.__name__):
+                writer.write_events([event])
+                writer.finalize_success("2026-07-30T09:00:00+00:00")
+            assert writer._committed is True
+            assert writer._commit_backup_paths
+
+    assert "Unable to remove committed action log backup spool" in caplog.messages
+    assert writer._commit_backup_paths == []
+    assert {path.name for path in tmp_path.iterdir()} == {
+        "e.parquet",
+        "e.jsonl",
+        "q.jsonl",
+    }
+
+
+def test_streaming_writer_removes_spools_after_partial_open_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_opening_stream(*_args: object, **_kwargs: object) -> Never:
+        raise OSError("ipc stream open failed")
+
+    monkeypatch.setattr(pipeline_module.pa.ipc, "new_stream", fail_opening_stream)
+
+    with pytest.raises(OSError, match="ipc stream open failed"):
         pipeline_module._StreamingActionLogWriter(
             request=_request(tmp_path),
             model_name="test-model",
-            generated_at="2026-07-29T00:00:00+00:00",
         ).__enter__()
 
-    assert parquet.closed is True
-    assert warehouse.closed is True
-
-
-def test_streaming_writer_closes_remaining_resources_after_close_failure(tmp_path, monkeypatch) -> None:
-    class _CloseTracker:
-        def __init__(self, error: Exception | None = None) -> None:
-            self.closed = False
-            self._error = error
-
-        def close(self) -> None:
-            self.closed = True
-            if self._error is not None:
-                raise self._error
-
-    parquet = _CloseTracker(RuntimeError("parquet close failed"))
-    warehouse = _CloseTracker()
-    quarantine = _CloseTracker()
-    open_results = iter([warehouse, quarantine])
-    monkeypatch.setattr(pipeline_module.pq, "ParquetWriter", lambda *_: parquet)
-    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: next(open_results))
-    writer = pipeline_module._StreamingActionLogWriter(
-        request=_request(tmp_path),
-        model_name="test-model",
-        generated_at="2026-07-29T00:00:00+00:00",
-    )
-    writer.__enter__()
-
-    with pytest.raises(RuntimeError, match="parquet close failed"):
-        writer.__exit__(None, None, None)
-
-    assert parquet.closed is True
-    assert warehouse.closed is True
-    assert quarantine.closed is True
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_streaming_writer_creates_schema_only_parquet_without_events(tmp_path) -> None:
@@ -327,9 +566,8 @@ def test_streaming_writer_creates_schema_only_parquet_without_events(tmp_path) -
     with pipeline_module._StreamingActionLogWriter(
         request=request,
         model_name="test-model",
-        generated_at="2026-07-29T00:00:00+00:00",
-    ):
-        pass
+    ) as writer:
+        writer.finalize_success("2026-07-30T09:00:00+00:00")
 
     parquet = pq.ParquetFile(request.output_path)
     assert parquet.metadata.num_rows == 0

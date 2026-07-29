@@ -160,10 +160,10 @@ def test_run_daily_action_log_writes_dt_partition(tmp_path):
     assert quarantine_path.exists()
 
 
-def test_run_daily_action_log_streams_one_parquet_row_group_per_user(
+def test_run_daily_action_log_coalesces_small_output_into_one_target_row_group(
     tmp_path: Path,
 ) -> None:
-    """단일 daily 경로가 완료 사용자별 event row group을 flush해야 한다."""
+    """작은 daily output은 사용자 수와 무관하게 하나의 target row group으로 coalesce한다."""
 
     partition_date = date(2026, 7, 1)
     virtual_users_path = tmp_path / "virtual_users.parquet"
@@ -185,8 +185,13 @@ def test_run_daily_action_log_streams_one_parquet_row_group_per_user(
     )
 
     parquet = pq.ParquetFile(output_base / "dt=2026-07-01" / "part-0.parquet")
+    table = parquet.read(columns=["event_id"])
     assert summary["users"] == 4
-    assert parquet.num_row_groups == 4
+    assert table.num_rows == summary["total_events"]
+    assert table.column("event_id").to_pylist() == sorted(
+        table.column("event_id").to_pylist()
+    )
+    assert parquet.num_row_groups == 1
 
 
 def test_validate_staged_event_parquet_reads_row_groups_without_read_table(
@@ -224,10 +229,10 @@ def test_validate_staged_event_parquet_reads_row_groups_without_read_table(
     with pipeline_module._StreamingActionLogWriter(
         request=request,
         model_name="test-model",
-        generated_at="2026-07-29T00:00:00+00:00",
     ) as writer:
         writer.write_events([events[0]])
         writer.write_events([events[1]])
+        writer.finalize_success("2026-07-30T09:00:00+00:00")
 
     def _whole_file_read_must_not_run(
         *_args: object,
@@ -276,9 +281,8 @@ def test_validate_staged_event_parquet_accepts_empty_event_file(tmp_path: Path) 
     with pipeline_module._StreamingActionLogWriter(
         request=request,
         model_name="test-model",
-        generated_at="2026-07-29T00:00:00+00:00",
-    ):
-        pass
+    ) as writer:
+        writer.finalize_success("2026-07-30T09:00:00+00:00")
 
     daily_module._validate_staged_event_parquet(request.output_path, partition_date)
 
