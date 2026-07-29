@@ -4,19 +4,19 @@
 select_clicks_per_slate로 유저(슬레이트)별 최고 1건을 click_threshold
 커트라인으로 클릭 선정 → 이벤트 확장(_expand_events: 노출마다 impression 1행,
 클릭 선정분엔 click/view(+like)를 추가 배치) → parquet/warehouse/quarantine
-저장. legacy batch 저장 함수와 streaming writer가 동일한 출력 계약을 제공하며,
-한 유저의 실패가 배치를 죽이지 않는다.
+저장. legacy batch 저장 함수와 bounded active-user streaming coordinator가 동일한
+출력 계약을 제공하며, 한 유저의 실패가 배치를 죽이지 않는다.
 """
 import json
 import logging
 import math
 import random
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
 from dataclasses import dataclass
-from datetime import UTC, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
 from types import TracebackType
@@ -98,6 +98,37 @@ class ActionLogDraftGenerationResult:
 
 
 @dataclass(frozen=True)
+class ActionLogSingleResult:
+    """bounded active-user 단일 실행의 파일 기록 결과 요약."""
+
+    execution_mode: Literal["streaming", "legacy"]
+    total_events: int
+    impressions: int
+    clicks: int
+    quarantined_users: int
+    api_error: int
+    invalid_json: int
+    schema_fail: int
+
+    @property
+    def summary(self) -> dict[str, int | float]:
+        """legacy batch summary와 같은 집계 필드를 반환한다."""
+
+        return {
+            "total_events": self.total_events,
+            "impressions": self.impressions,
+            "clicks": self.clicks,
+            "ctr": round(self.clicks / self.impressions, 4)
+            if self.impressions
+            else 0.0,
+            "quarantined_users": self.quarantined_users,
+            "api_error": self.api_error,
+            "invalid_json": self.invalid_json,
+            "schema_fail": self.schema_fail,
+        }
+
+
+@dataclass(frozen=True)
 class ActionLogProgressSnapshot:
     """LLM chunk 생성 진행률을 외부 reporter로 전달하기 위한 스냅샷."""
 
@@ -112,6 +143,15 @@ class ActionLogProgressSnapshot:
 ActionLogProgressCallback = Callable[[ActionLogProgressSnapshot], float | None]
 ActionLogWorkIdFactory = Callable[[str, int], str]
 ActionLogCheckpointCallback = Callable[[str, int, list[ImpressionDraft]], None]
+
+
+@dataclass(frozen=True)
+class _StreamingRetentionSnapshot:
+    """active-user streaming 경로의 현재 보존 payload 수량."""
+
+    active_users: int
+    buffered_drafts: int
+    buffered_events: int
 
 # 유저별 노출 후보를 외부에서 결정할 때 쓰는 주입 지점. (virtual_user, user_rng)를
 # 받아 video dict 목록을 반환한다. None이면 기존 build_candidates 휴리스틱을 쓴다.
@@ -135,6 +175,19 @@ class _ActionLogWorkItem:
     user_id: str
     virtual_user: dict
     candidates: list[dict]
+
+
+@dataclass
+class _StreamingUserState:
+    """drain 전 한 사용자의 chunk 결과만 보관하는 bounded coordinator 상태."""
+
+    user_sequence: int
+    user_id: str
+    virtual_user: dict
+    work: list[_ActionLogWorkItem]
+    drafts_by_chunk: dict[int, list[ImpressionDraft]]
+    quarantine_by_chunk: dict[int, QuarantineRecord]
+    remaining_chunks: int
 
 
 @dataclass(frozen=True)
@@ -1250,4 +1303,222 @@ def generate_action_log_batch(
         "Wrote action log outputs",
         extra={"output_path": str(output_path), **result.summary},
     )
+    return result
+
+
+def generate_action_log_single(
+    request: EventGenerationRequest,
+    virtual_users: list[dict],
+    videos: list[dict],
+    generator: ActionLogGenerator,
+    *,
+    candidate_provider: CandidateProvider | None = None,
+    exposure_metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None,
+    _retention_observer: Callable[[_StreamingRetentionSnapshot], None] | None = None,
+) -> ActionLogSingleResult:
+    """active user 수를 제한해 action log를 사용자 순서대로 증분 기록한다.
+
+    후보 provider는 coordinator에서 입력 순서대로 호출한다. 각 사용자의 모든
+    chunk 결과가 모인 뒤에만 click을 한 번 선정하고, user-local event를 writer에
+    기록한 즉시 참조를 해제한다. 기존 draft/shard 경로의 progress와 checkpoint
+    계약은 이 단일 실행 경로에서 사용하지 않는다.
+    """
+
+    max_active_users = max(1, request.max_concurrency)
+    active_users: deque[_StreamingUserState] = deque()
+    user_iterator = iter(enumerate(virtual_users))
+    next_work_sequence = 0
+    next_event_sequence = 0
+    total_events = 0
+    impressions = 0
+    clicks = 0
+    quarantined_users = 0
+    error_counts = {"api_error": 0, "invalid_json": 0, "schema_fail": 0}
+
+    def _observe(buffered_events: int = 0) -> None:
+        if _retention_observer is None:
+            return
+        _retention_observer(
+            _StreamingRetentionSnapshot(
+                active_users=len(active_users),
+                buffered_drafts=sum(
+                    len(drafts)
+                    for state in active_users
+                    for drafts in state.drafts_by_chunk.values()
+                ),
+                buffered_events=buffered_events,
+            )
+        )
+
+    generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+    with _StreamingActionLogWriter(
+        request=request,
+        model_name=generator.model_name,
+        generated_at=generated_at,
+    ) as writer, ThreadPoolExecutor(max_workers=max_active_users) as executor:
+        futures: dict[
+            Future[_ActionLogCallResult],
+            tuple[_StreamingUserState, int, int],
+        ] = {}
+
+        def _activate_next_user() -> bool:
+            nonlocal next_work_sequence
+            try:
+                user_sequence, virtual_user = next(user_iterator)
+            except StopIteration:
+                return False
+
+            user_id = str(virtual_user.get("user_id", f"user_{user_sequence}"))
+            user_rng = random.Random(f"{request.seed}:{user_id}")
+            if candidate_provider is not None:
+                candidates = candidate_provider(virtual_user, user_rng)
+            else:
+                candidates = build_candidates(
+                    virtual_user,
+                    videos,
+                    request.candidates_per_user,
+                    request.exploration_ratio,
+                    user_rng,
+                    personalized_ratio=request.personalized_ratio,
+                    popular_ratio=request.popular_ratio,
+                )
+            if not candidates:
+                return True
+
+            work: list[_ActionLogWorkItem] = []
+            work_sequences: list[int] = []
+            for chunk_index, chunk in enumerate(
+                _chunked(candidates, request.chunk_size)
+            ):
+                work.append(
+                    _ActionLogWorkItem(
+                        work_id=f"work_{next_work_sequence:08d}",
+                        user_id=user_id,
+                        virtual_user=virtual_user,
+                        candidates=chunk,
+                    )
+                )
+                work_sequences.append(next_work_sequence)
+                next_work_sequence += 1
+
+            state = _StreamingUserState(
+                user_sequence=user_sequence,
+                user_id=user_id,
+                virtual_user=virtual_user,
+                work=work,
+                drafts_by_chunk={},
+                quarantine_by_chunk={},
+                remaining_chunks=len(work),
+            )
+            for chunk_index, (item, work_sequence) in enumerate(
+                zip(work, work_sequences, strict=True)
+            ):
+                submitted_at = monotonic()
+                futures[
+                    executor.submit(
+                        _generate_action_log_work,
+                        generator,
+                        item,
+                        work_sequence=work_sequence,
+                        submitted_at=submitted_at,
+                        shard_index=None,
+                        detailed_telemetry=False,
+                    )
+                ] = (state, chunk_index, work_sequence)
+            active_users.append(state)
+            _observe()
+            return True
+
+        def _fill_active_users() -> None:
+            while len(active_users) < max_active_users:
+                if not _activate_next_user():
+                    return
+
+        def _store_work_result(
+            state: _StreamingUserState,
+            chunk_index: int,
+            call_result: _ActionLogCallResult,
+        ) -> None:
+            if call_result.drafts is not None:
+                state.drafts_by_chunk[chunk_index] = call_result.drafts
+            else:
+                assert call_result.error_type is not None
+                assert call_result.error is not None
+                state.quarantine_by_chunk[chunk_index] = QuarantineRecord(
+                    user_id=state.user_id,
+                    virtual_user=state.virtual_user,
+                    raw_llm_response=call_result.raw_text,
+                    error_type=call_result.error_type,
+                    error_message=str(call_result.error),
+                )
+            state.remaining_chunks -= 1
+            _observe()
+
+        _fill_active_users()
+        while active_users or futures:
+            if futures:
+                done, _pending = wait(futures, return_when=FIRST_COMPLETED)
+                for future in sorted(done, key=lambda item: futures[item][2]):
+                    state, chunk_index, _work_sequence = futures.pop(future)
+                    _store_work_result(state, chunk_index, future.result())
+
+            while active_users and active_users[0].remaining_chunks == 0:
+                state = active_users[0]
+                drafts: list[ImpressionDraft] = []
+                quarantine: list[QuarantineRecord] = []
+                for chunk_index in range(len(state.work)):
+                    if chunk_index in state.quarantine_by_chunk:
+                        quarantine.append(state.quarantine_by_chunk[chunk_index])
+                    else:
+                        drafts.extend(state.drafts_by_chunk[chunk_index])
+                if exposure_metadata is not None:
+                    drafts = attach_exposure_tags(drafts, exposure_metadata)
+
+                clicked_drafts = select_clicks_per_slate(
+                    drafts,
+                    request.click_threshold,
+                )
+                events = _expand_events(
+                    drafts,
+                    clicked_drafts,
+                    request,
+                    event_id_sequence_start=next_event_sequence,
+                )
+                event_count = len(events)
+                total_events += event_count
+                impressions += sum(
+                    event.event_type == "impression" for event in events
+                )
+                clicks += sum(event.event_type == "click" for event in events)
+                quarantined_users += len(quarantine)
+                for record in quarantine:
+                    error_counts[record.error_type] += 1
+
+                _observe(buffered_events=event_count)
+                writer.write_events(events)
+                next_event_sequence += event_count
+                events.clear()
+                _observe()
+                writer.write_quarantine(quarantine)
+
+                drafts.clear()
+                quarantine.clear()
+                state.work.clear()
+                state.drafts_by_chunk.clear()
+                state.quarantine_by_chunk.clear()
+                active_users.popleft()
+                _observe()
+                _fill_active_users()
+
+    result = ActionLogSingleResult(
+        execution_mode="streaming",
+        total_events=total_events,
+        impressions=impressions,
+        clicks=clicks,
+        quarantined_users=quarantined_users,
+        api_error=error_counts["api_error"],
+        invalid_json=error_counts["invalid_json"],
+        schema_fail=error_counts["schema_fail"],
+    )
+    logger.info("Wrote streaming action log outputs", extra=result.summary)
     return result

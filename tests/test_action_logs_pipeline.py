@@ -841,6 +841,287 @@ def test_chunked_parallel_matches_single_call(tmp_path):
     assert chunked.summary["quarantined_users"] == 0
 
 
+def test_streaming_single_matches_legacy_chunked_output_order_and_seed(tmp_path) -> None:
+    users = _fixture_users(6)
+    videos = build_fixture_video_records(40)
+    legacy_request = _request(
+        tmp_path / "legacy",
+        chunk_size=4,
+        max_concurrency=3,
+    )
+    streaming_request = _request(
+        tmp_path / "streaming",
+        chunk_size=4,
+        max_concurrency=3,
+    )
+
+    legacy = generate_action_log_batch(
+        legacy_request,
+        users,
+        videos,
+        RuleBasedActionLogGenerator(),
+    )
+    streamed = pipeline_module.generate_action_log_single(
+        streaming_request,
+        users,
+        videos,
+        RuleBasedActionLogGenerator(),
+    )
+
+    columns = [
+        name
+        for name in pipeline_module.EVENT_LOG_PARQUET_SCHEMA.names
+        if name != "generated_at"
+    ]
+    legacy_rows = pq.read_table(legacy_request.output_path, columns=columns).to_pylist()
+    streamed_rows = pq.read_table(
+        streaming_request.output_path,
+        columns=columns,
+    ).to_pylist()
+    assert streamed.execution_mode == "streaming"
+    assert streamed.summary == legacy.summary
+    assert streamed_rows == legacy_rows
+    assert Path(streaming_request.warehouse_output_path).read_text(
+        encoding="utf-8"
+    ) == Path(legacy_request.warehouse_output_path).read_text(encoding="utf-8")
+
+
+def test_streaming_single_selects_one_click_after_all_user_chunks_finish(
+    tmp_path,
+) -> None:
+    videos = build_fixture_video_records(4)
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        return list(videos)
+
+    result = pipeline_module.generate_action_log_single(
+        _request(
+            tmp_path,
+            candidates_per_user=4,
+            chunk_size=2,
+            max_concurrency=2,
+            click_threshold=0.0,
+        ),
+        _fixture_users(1),
+        videos,
+        RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+    )
+
+    result_path = tmp_path / "e.parquet"
+    rows = pq.read_table(result_path).to_pylist()
+    assert result_path.is_file()
+    assert result.summary["clicks"] == 1
+    assert sum(row["event_type"] == "click" for row in rows) == 1
+
+
+def test_streaming_single_bounds_active_users_and_invokes_provider_on_coordinator(
+    tmp_path,
+) -> None:
+    from threading import get_ident
+
+    coordinator_thread = get_ident()
+    provider_threads: list[int] = []
+    provider_order: list[str] = []
+    provider_calls_seen_by_generator: list[int] = []
+    videos = build_fixture_video_records(2)
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        provider_threads.append(get_ident())
+        provider_order.append(virtual_user["user_id"])
+        return [videos[0]]
+
+    class _RecordingGenerator(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user: dict, candidates: list[dict]) -> str:
+            provider_calls_seen_by_generator.append(len(provider_order))
+            return super().generate(virtual_user, candidates)
+
+    users = _fixture_users(7)
+    pipeline_module.generate_action_log_single(
+        _request(
+            tmp_path,
+            candidates_per_user=1,
+            max_concurrency=2,
+        ),
+        users,
+        videos,
+        _RecordingGenerator(),
+        candidate_provider=provider,
+    )
+
+    assert provider_order == [user["user_id"] for user in users]
+    assert set(provider_threads) == {coordinator_thread}
+    assert min(provider_calls_seen_by_generator) <= 2
+
+
+def test_streaming_single_retained_payload_is_bounded_by_active_users(
+    tmp_path,
+) -> None:
+    users = _fixture_users(40)
+    candidates_per_user = 7
+    max_concurrency = 3
+    snapshots: list[pipeline_module._StreamingRetentionSnapshot] = []
+
+    pipeline_module.generate_action_log_single(
+        _request(
+            tmp_path,
+            candidates_per_user=candidates_per_user,
+            chunk_size=2,
+            max_concurrency=max_concurrency,
+            click_threshold=0.0,
+        ),
+        users,
+        build_fixture_video_records(20),
+        RuleBasedActionLogGenerator(),
+        _retention_observer=snapshots.append,
+    )
+
+    assert snapshots
+    assert max(item.active_users for item in snapshots) <= max_concurrency
+    assert max(item.buffered_drafts for item in snapshots) <= (
+        max_concurrency * candidates_per_user
+    )
+    # 한 사용자는 impressions N개와 최대 click/view/like 각 1개만 만든다.
+    assert max(item.buffered_events for item in snapshots) <= (
+        candidates_per_user + 3
+    )
+    event_buffer_positions = [
+        index
+        for index, item in enumerate(snapshots)
+        if item.buffered_events > 0
+    ]
+    assert len(event_buffer_positions) == len(users)
+    assert all(
+        snapshots[index + 1].buffered_events == 0
+        for index in event_buffer_positions
+    )
+    assert snapshots[-1].buffered_events == 0
+    assert any(item.buffered_drafts == 0 for item in snapshots)
+
+
+def test_streaming_single_matches_legacy_when_later_work_finishes_first(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    users = _fixture_users(2)
+    videos = build_fixture_video_records(4)
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        return list(videos)
+
+    legacy_request = _request(
+        tmp_path / "legacy",
+        candidates_per_user=4,
+        chunk_size=2,
+        max_concurrency=2,
+    )
+    streaming_request = _request(
+        tmp_path / "streaming",
+        candidates_per_user=4,
+        chunk_size=2,
+        max_concurrency=2,
+    )
+    legacy = generate_action_log_batch(
+        legacy_request,
+        users,
+        videos,
+        RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+    )
+
+    first_work_started = Event()
+    later_chunk_future_finished = Event()
+    later_user_future_finished = Event()
+    completed_work: list[tuple[str, str]] = []
+    first_user = users[0]["user_id"]
+    later_user = users[1]["user_id"]
+    first_chunk_video = str(videos[0]["video_id"])
+    later_chunk_video = str(videos[2]["video_id"])
+    original_work = pipeline_module._generate_action_log_work
+
+    class _CompletionTrackingExecutor(pipeline_module.ThreadPoolExecutor):
+        def submit(self, fn, /, *args, **kwargs):
+            future = super().submit(fn, *args, **kwargs)
+            item = args[1]
+            key = (item.user_id, str(item.candidates[0]["video_id"]))
+            if key == (first_user, later_chunk_video):
+                future.add_done_callback(
+                    lambda _future: later_chunk_future_finished.set()
+                )
+            elif key == (later_user, first_chunk_video):
+                future.add_done_callback(
+                    lambda _future: later_user_future_finished.set()
+                )
+            return future
+
+    def _complete_out_of_order(
+        generator,
+        item,
+        *,
+        work_sequence,
+        submitted_at,
+        shard_index,
+        detailed_telemetry,
+    ):
+        result = original_work(
+            generator,
+            item,
+            work_sequence=work_sequence,
+            submitted_at=submitted_at,
+            shard_index=shard_index,
+            detailed_telemetry=detailed_telemetry,
+        )
+        key = (item.user_id, str(item.candidates[0]["video_id"]))
+        if key == (first_user, first_chunk_video):
+            first_work_started.set()
+            assert later_chunk_future_finished.wait(timeout=2.0)
+            assert later_user_future_finished.wait(timeout=2.0)
+        elif key in {
+            (first_user, later_chunk_video),
+            (later_user, first_chunk_video),
+        }:
+            assert first_work_started.wait(timeout=2.0)
+        completed_work.append(key)
+        return result
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "ThreadPoolExecutor",
+        _CompletionTrackingExecutor,
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "_generate_action_log_work",
+        _complete_out_of_order,
+    )
+    streamed = pipeline_module.generate_action_log_single(
+        streaming_request,
+        users,
+        videos,
+        RuleBasedActionLogGenerator(),
+        candidate_provider=provider,
+    )
+
+    assert completed_work.index((first_user, later_chunk_video)) < completed_work.index(
+        (first_user, first_chunk_video)
+    )
+    assert completed_work.index((later_user, first_chunk_video)) < completed_work.index(
+        (first_user, first_chunk_video)
+    )
+    columns = [
+        name
+        for name in pipeline_module.EVENT_LOG_PARQUET_SCHEMA.names
+        if name != "generated_at"
+    ]
+    assert pq.read_table(streaming_request.output_path, columns=columns).to_pylist() == (
+        pq.read_table(legacy_request.output_path, columns=columns).to_pylist()
+    )
+    assert streamed.summary == legacy.summary
+    assert Path(streaming_request.warehouse_output_path).read_text(
+        encoding="utf-8"
+    ) == Path(legacy_request.warehouse_output_path).read_text(encoding="utf-8")
+
+
 def test_draft_progress_callback_reports_completed_chunks(tmp_path):
     users, videos = _fixture_users(2), build_fixture_video_records(8)
     snapshots = []
