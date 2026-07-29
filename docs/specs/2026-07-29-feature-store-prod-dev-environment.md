@@ -86,6 +86,16 @@ registry 경로(`GCS_REGISTRY_PATH`)가 이미 환경을 물리적으로 가르�
 dev=false)해 Job manifest에 주입한다. dev apply는 full_scan=false라 Redis에 접속하지
 않는다.
 
+### D5. dev 좌표 배선 전까지 dev dispatch를 막는다
+
+D4의 `environment` 입력은 `full_scan_for_deletion`만 끈다. registry/offline/staging
+좌표는 렌더 스텝이 repo-level `vars.*`(= prod)를 그대로 쓰므로, 지금 dev를 고르면
+실험 정의가 **prod registry에 apply되면서 prod 고아 키 GC까지 꺼진다** — dev 선택이
+prod를 보호하기는커녕 오염시키는 순수 악화다.
+
+그래서 워크플로우 첫 스텝(체크아웃 직후, GCP 인증 전)에서 `AUTORESEARCH_ENV != prod`
+이면 즉시 실패시킨다. dev 좌표가 주입되는 후속 PR에서 이 가드를 제거한다.
+
 ## 범위 밖(후속)
 
 - **dev registry/BQ/staging 좌표 주입**: 이 PR은 셀렉터·online 접촉 제어를 제공한다.
@@ -94,17 +104,9 @@ dev=false)해 Job manifest에 주입한다. dev apply는 full_scan=false라 Redi
   `Autoresearch-infra` 후속 이슈.
 - **dev BQ dataset·GCS prefix 프로비저닝**: `Autoresearch-infra` 후속 이슈.
 - **승격(promotion) 파이프라인**: dev metric 통과 → prod 반영·A/B는 별도 트랙.
-
-## 하위 호환성 정책(함께 못 박음)
-
-16회차에서 서빙 중 피처의 조인 키 컬럼명을 in-place로 바꾸자 서빙 서버가 다운됐다.
-환경 분리와 함께 다음을 운영 정책으로 명문화한다.
-
-- 서빙 중인 피처는 **in-place 업데이트·삭제 금지**, **append-only**만 허용.
-- 컬럼명·조인 키 변경은 **새 피처를 별도 정의**해 갈아끼우고 기존 것은 유지.
-- 이 규칙은 운영 문서와 Claude 리뷰 액션에 함께 적어 에이전트가 막게 한다.
-
-dev를 오프라인 실험장으로 두면 이런 파괴적 변경을 prod 밖에서 먼저 검증할 수 있다.
+- **피처 하위 호환성(append-only) 운영 정책**: 16회차에서 서빙 중 피처의 조인 키
+  컬럼명을 in-place로 바꿔 서빙 서버가 다운된 건에 대한 정책이다. 환경 분리와
+  독립적인 주제이므로 이 이슈에서 다루지 않고 별도 이슈로 분리한다.
 
 ## 검증
 

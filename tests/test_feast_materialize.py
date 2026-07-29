@@ -1,6 +1,7 @@
 """feast_materialize 공개 batch 명령 테스트 (feast 불필요, dev 환경 실행 가능)."""
 
 import json
+import os
 
 import pytest
 
@@ -142,6 +143,53 @@ def test_load_feature_store_constructs_sdk_store_without_connection(
 
     assert bootstrap.load_feature_store(tmp_path) is store
     assert captured == [str(tmp_path)]
+
+
+def _clear_feast_environment(monkeypatch) -> None:
+    """환경 셀렉터 키를 지우되 teardown 에서 되돌려지도록 한다(#399).
+
+    ``ensure_online_store_env`` 는 실제 ``os.environ`` 에 setdefault 하므로,
+    ``delenv(raising=False)`` 만으로는 테스트가 심은 값이 프로세스에 남는다.
+    monkeypatch 가 복원 대상으로 기록하도록 값을 넣었다가 지운다.
+    """
+    for name in ("AUTORESEARCH_ENV", "FEAST_ONLINE_FULL_SCAN_FOR_DELETION"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+
+
+@pytest.mark.parametrize(
+    ("environment", "expected"),
+    [(None, "true"), ("prod", "true"), ("dev", "false")],
+)
+def test_load_feature_store_seeds_online_full_scan_default(
+    monkeypatch, tmp_path, environment, expected
+):
+    # Given: feature_store.yaml 의 ${FEAST_ONLINE_FULL_SCAN_FOR_DELETION} 치환은
+    # 이 변수가 설정돼 있어야 성립한다(#399). bootstrap 이 그 배선을 소유한다.
+    feast = pytest.importorskip("feast")
+    _clear_feast_environment(monkeypatch)
+    if environment is not None:
+        monkeypatch.setenv("AUTORESEARCH_ENV", environment)
+    monkeypatch.setattr(feast, "FeatureStore", lambda *, repo_path: object())
+
+    # When: Python 경로(materialize·서빙·검증 스크립트)가 store 를 연다.
+    bootstrap.load_feature_store(tmp_path)
+
+    # Then: 미설정·prod 는 고아 키 GC 를 유지하고, dev 는 Redis 에 접속하지 않는다.
+    assert os.environ["FEAST_ONLINE_FULL_SCAN_FOR_DELETION"] == expected
+
+
+def test_load_feature_store_keeps_deployment_injected_full_scan(monkeypatch, tmp_path):
+    # 배포(apply Job)가 명시한 값은 덮지 않는다.
+    feast = pytest.importorskip("feast")
+    _clear_feast_environment(monkeypatch)
+    monkeypatch.setenv("AUTORESEARCH_ENV", "dev")
+    monkeypatch.setenv("FEAST_ONLINE_FULL_SCAN_FOR_DELETION", "true")
+    monkeypatch.setattr(feast, "FeatureStore", lambda *, repo_path: object())
+
+    bootstrap.load_feature_store(tmp_path)
+
+    assert os.environ["FEAST_ONLINE_FULL_SCAN_FOR_DELETION"] == "true"
 
 
 class _FakeStore:

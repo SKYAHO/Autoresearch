@@ -13,10 +13,17 @@ Feast Feature 조회 검증 스크립트.
   uv run --no-dev --group feast python scripts/verify_feature_retrieval.py
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import pandas as pd
 from dotenv import load_dotenv
 
 from feature_repo.bootstrap import load_feature_store
+
+if TYPE_CHECKING:
+    from feast import FeatureStore
 
 
 def verify_online_features(store: FeatureStore) -> None:
