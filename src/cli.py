@@ -6,6 +6,8 @@ python -m src.cli build-features / train-model / evaluate-model / run-pipeline
 
 import os
 import sys
+import traceback
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -15,6 +17,14 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from src.pipeline import build_training_dataset, train, evaluate  # noqa: E402
 from src.tracking import promote  # noqa: E402
+from src.tracking.promotion_result import (  # noqa: E402
+    MODEL_PROMOTION_RESULT_CONTRACT,
+    ModelPromotionResult,
+    PromotionExecutionError,
+    PromotionOutcome,
+    PromotionReasonCode,
+    write_result_file,
+)
 
 app = typer.Typer()
 
@@ -176,6 +186,16 @@ def promote_model(
         help="[DEPRECATED · 무시됨] #390에서 calibration은 main run에 종속돼 별도 등록하지 않습니다. "
         "호출 계약 하위호환을 위해 인자만 남겨두며 값은 사용하지 않습니다.",
     ),
+    result_contract: Optional[str] = typer.Option(
+        None,
+        "--result-contract",
+        help="구조화 결과 계약. --result-path와 함께 model-promotion-result-v1만 허용합니다.",
+    ),
+    result_path: Optional[Path] = typer.Option(
+        None,
+        "--result-path",
+        help="구조화 결과 JSON 파일 경로. --result-contract와 함께 지정합니다.",
+    ),
 ) -> None:
     """게이트(지표 비교 + downsampling calibration 아티팩트 존재) 통과 시 신규 후보를 champion으로 승격.
 
@@ -183,6 +203,19 @@ def promote_model(
     아직 이 플래그를 넘기더라도 기동이 깨지지 않도록 인자 표면만 유지하며, DAG에서 플래그를 제거한
     뒤 후속 PR로 이 인자를 걷어낸다.
     """
+    structured_mode_requested = result_contract is not None or result_path is not None
+    structured_mode_valid = (
+        result_contract == MODEL_PROMOTION_RESULT_CONTRACT
+        and result_path is not None
+    )
+    if structured_mode_requested and not structured_mode_valid:
+        typer.echo(
+            "[인자 오류] --result-contract와 --result-path를 함께 지정하고 "
+            f"--result-contract={MODEL_PROMOTION_RESULT_CONTRACT}을 사용해 주세요.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     # 기본값과 다른 값이 명시적으로 넘어오면 stderr에 deprecation 경고를 남긴다 — DAG가
     # 기본값과 같은 문자열을 넘기면 감지 못하지만(한계), 다른 값이면 "아직 호출부가 이 플래그를
     # 쓰고 있다"는 신호를 로그로 남겨 언제 걷어내도 되는지 추적하게 한다(#395 리뷰).
@@ -192,8 +225,133 @@ def promote_model(
             "호출부(DAG)에서 이 플래그를 제거해 주세요.",
             err=True,
         )
+    if structured_mode_valid:
+        _run_structured_promotion(
+            model_name=model_name,
+            champion_alias=champion_alias,
+            result_path=result_path,
+        )
+        return
+
+    _run_legacy_promotion(
+        model_name=model_name,
+        champion_alias=champion_alias,
+    )
+
+
+def _error_result(
+    *,
+    model_name: str,
+    champion_alias: str,
+    reason_code: PromotionReasonCode,
+    candidate_version: Optional[str] = None,
+    champion_version: Optional[str] = None,
+    candidate_metric: Optional[float] = None,
+    champion_metric: Optional[float] = None,
+) -> ModelPromotionResult:
+    """외부 예외 내용을 포함하지 않는 구조화 오류 결과를 만든다."""
+    return ModelPromotionResult(
+        outcome=PromotionOutcome.ERROR,
+        model_name=model_name,
+        champion_alias=champion_alias,
+        candidate_version=candidate_version,
+        champion_version=champion_version,
+        candidate_metric=candidate_metric,
+        champion_metric=champion_metric,
+        reason_code=reason_code,
+    )
+
+
+def _emit_structured_error_diagnostic(
+    *,
+    reason_code: PromotionReasonCode,
+    error: BaseException,
+    include_stack: bool,
+) -> None:
+    """비밀 가능성이 있는 예외 메시지 없이 안전한 stderr 진단을 출력한다."""
+    typer.echo(
+        f"[구조화 결과 오류] reason_code={reason_code.value} "
+        f"error_type={type(error).__name__}",
+        err=True,
+    )
+    if include_stack and error.__traceback__ is not None:
+        for frame in traceback.extract_tb(error.__traceback__):
+            typer.echo(
+                f"  at {frame.filename}:{frame.lineno} in {frame.name}",
+                err=True,
+            )
+
+
+def _run_structured_promotion(
+    *,
+    model_name: str,
+    champion_alias: str,
+    result_path: Path,
+) -> None:
+    """구조화 결과를 파일과 stdout에 기록하고 오류에만 non-zero로 종료한다."""
     try:
-        promoted_version = promote.main(
+        result = promote.main(
+            model_name=model_name,
+            champion_alias=champion_alias,
+        )
+    except PromotionExecutionError as exc:
+        _emit_structured_error_diagnostic(
+            reason_code=exc.reason_code,
+            error=exc,
+            include_stack=False,
+        )
+        result = _error_result(
+            model_name=model_name,
+            champion_alias=champion_alias,
+            reason_code=exc.reason_code,
+            candidate_version=exc.candidate_version,
+            champion_version=exc.champion_version,
+            candidate_metric=exc.candidate_metric,
+            champion_metric=exc.champion_metric,
+        )
+    except Exception as exc:
+        _emit_structured_error_diagnostic(
+            reason_code=PromotionReasonCode.UNEXPECTED_ERROR,
+            error=exc,
+            include_stack=True,
+        )
+        result = _error_result(
+            model_name=model_name,
+            champion_alias=champion_alias,
+            reason_code=PromotionReasonCode.UNEXPECTED_ERROR,
+        )
+
+    try:
+        write_result_file(result, result_path)
+    except Exception as exc:
+        _emit_structured_error_diagnostic(
+            reason_code=PromotionReasonCode.RESULT_WRITE_FAILED,
+            error=exc,
+            include_stack=False,
+        )
+        result = _error_result(
+            model_name=model_name,
+            champion_alias=champion_alias,
+            reason_code=PromotionReasonCode.RESULT_WRITE_FAILED,
+            candidate_version=result.candidate_version,
+            champion_version=result.champion_version,
+            candidate_metric=result.candidate_metric,
+            champion_metric=result.champion_metric,
+        )
+
+    typer.echo(result.model_dump_json())
+    if result.outcome is PromotionOutcome.ERROR:
+        raise typer.Exit(code=1)
+
+
+def _run_legacy_promotion(
+    *,
+    model_name: str,
+    champion_alias: str,
+) -> None:
+    """구조화 opt-in 전 호출부의 메시지와 exit code 계약을 보존한다."""
+    try:
+        result = promote.main(
             model_name=model_name,
             champion_alias=champion_alias,
         )
@@ -204,10 +362,41 @@ def promote_model(
         typer.echo(f"[에러] promote-model 실행 중 오류: {exc}", err=True)
         raise typer.Exit(code=1)
 
-    if promoted_version is None:
+    if result.outcome is PromotionOutcome.REJECTED:
+        if result.legacy_message is not None:
+            detail = result.legacy_message
+        elif result.reason_code is PromotionReasonCode.METRIC_BELOW_CHAMPION:
+            detail = (
+                f"게이트1 미달: 후보 {result.model_name} "
+                f"v{result.candidate_version} "
+                f"val_roc_auc={result.candidate_metric:.4f} < "
+                f"champion({result.champion_alias}) "
+                f"val_roc_auc={result.champion_metric:.4f}"
+            )
+        elif result.reason_code is PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING:
+            detail = (
+                f"게이트2 미달: 후보 {result.model_name} "
+                f"v{result.candidate_version}에 필요한 calibration "
+                "아티팩트가 없습니다."
+            )
+        else:
+            detail = (
+                f"후보 {result.model_name} v{result.candidate_version}: "
+                "서빙 calibration 준비가 완료되지 않았습니다."
+            )
+        typer.echo(f"[게이트 미달] {detail}", err=True)
+        raise typer.Exit(code=1)
+    if result.outcome is PromotionOutcome.NO_CANDIDATE:
         typer.echo(f"{model_name}: 평가할 신규 후보 버전 없음 — no-op")
-    else:
-        typer.echo(f"[OK] {model_name} v{promoted_version} -> @{champion_alias} 승격 완료")
+        return
+    if result.outcome is PromotionOutcome.ERROR:
+        typer.echo(f"[에러] promote-model 실행 실패: {result.reason_code.value}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"[OK] {model_name} v{result.candidate_version} "
+        f"-> @{champion_alias} 승격 완료"
+    )
 
 
 if __name__ == "__main__":

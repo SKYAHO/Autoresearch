@@ -80,6 +80,11 @@ docs/
   명령만 소비하며 내부 Python API를 직접 import하지 않습니다.
 - 공개 batch 명령·인자 계약:
   `docs/specs/2026-07-13-public-batch-execution-contract.md`
+- 모델 승격 판정과 `model-promotion-result-v1` schema는 이 저장소가
+  소유합니다. Airflow는 `--result-path` 파일을 XCom으로 운반하고 알림으로
+  렌더링하지만 `src.tracking` 내부 API를 import하거나 outcome을 다시
+  판정하지 않습니다. 결과 정본:
+  `docs/specs/2026-07-29-model-promotion-structured-outcome.md`
 
 ### `tests/`
 - **책임:** 모듈별 단위 테스트. `tests/test_<module>.py` 플랫 구조를
