@@ -1,13 +1,14 @@
-"""VirtualUser + TrendingVideo pool로 Phase 1(historical) event log를 생성한다.
+"""Virtual user 후보를 LLM 판정에서 action log 산출물로 변환한다.
 
-흐름: 유저 단위 격리(LLM 판단, 후보별 click_propensity/watch_fraction만 산출) →
-select_clicks_per_slate로 유저(슬레이트)별 최고 1건을 click_threshold
-커트라인으로 클릭 선정 → 이벤트 확장(_expand_events: 노출마다 impression 1행,
-클릭 선정분엔 click/view(+like)를 추가 배치) → parquet/warehouse/quarantine
-저장. legacy batch 저장 함수와 bounded active-user streaming coordinator가 동일한
-출력 계약을 제공하며, streaming은 mutable 노출 metadata를 사용자 drain 시 해제한다.
-중복 사용자 ID 또는 read-only metadata는 legacy 의미를 보존하기 위해 batch 경로로
-fallback한다. 한 유저의 실패가 배치를 죽이지 않는다.
+[파이프라인] 노출 후보 조립 다음, action log 파티션 publish 이전 구간에서
+LLM 판정·클릭 선정·이벤트 확장·로컬 산출물 기록을 담당한다.
+
+[기능] shard/checkpoint가 사용하는 legacy draft/batch 계약과 단일 모드의
+bounded active-user 스트리밍, Parquet row-group 및 JSONL 기록을 제공한다.
+
+[비책임] 일일 partition 검증·publish는 autoresearch/action_logs/daily.py,
+공개 CLI dispatch는 autoresearch/jobs/action_log.py, KPO resource 설정은
+SKYAHO/Autoresearch-airflow가 소유한다.
 """
 import json
 import logging
