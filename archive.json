@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-29T06:04:00Z",
+  "generated_at": "2026-07-29T06:20:39Z",
   "reports": [
+    {
+      "number": 398,
+      "title": "feat: Auto Research 가설 등록용 이슈 템플릿 추가 (#397)",
+      "author": "waieiches",
+      "merged_at": "2026-07-29T06:20:21Z",
+      "summary_ko": [
+        "Auto Research 에이전트 자율 실험 등록을 위한 전용 GitHub 이슈 템플릿(auto_research.yml)을 새로 추가하였습니다.",
+        "사전 실측 완주 경험(#396)에 기반하여 가설, 성공 기준, 재현 조건, 허용 범위 등 꼭 필요한 필드만 확정하였습니다.",
+        "기존 실험 템플릿(experiment.yml)에 사람 전용 실험임을 안내하는 문구를 추가하여 역할을 명확히 분리하였습니다."
+      ],
+      "report_url": "pr/398/"
+    },
     {
       "number": 402,
       "title": "fix: feast 이미지에 libgomp1 추가 — LightGBM import 실패로 학습 DAG 전멸 (#401)",
