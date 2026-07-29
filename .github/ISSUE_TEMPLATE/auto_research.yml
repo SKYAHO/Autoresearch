@@ -9,9 +9,11 @@ body:
         **이 템플릿은 에이전트가 읽고 실행합니다.** 사람이 결과를 기록하는 일반 실험은
         `Experiment` 템플릿을 쓰세요.
 
-        흐름: 이 이슈 등록 → 에이전트가 읽음 → 실험 수행 → 과정·결과를 이 이슈에 코멘트
-        → 이슈 종료. 아래 필드는 #396 최소 흐름 1회 완주에서 **실제로 필요했던 것만**
-        남긴 것입니다.
+        흐름: 이 이슈 등록 → 에이전트가 읽음 → 실험 수행 → 과정·로그는 코멘트로,
+        결과 요약은 본문 맨 아래 `결과` 항목에 채워 넣음 → 이슈 종료. 판정과 MLflow run을
+        나중에 훑을 때의 **정본은 본문**이고, 코멘트는 과정 기록입니다.
+
+        아래 필드는 #396 최소 흐름 1회 완주에서 **실제로 필요했던 것만** 남긴 것입니다.
 
   - type: textarea
     id: hypothesis
@@ -42,18 +44,25 @@ body:
     validations:
       required: true
 
-  - type: textarea
+  - type: input
     id: success_criteria
     attributes:
-      label: 성공 기준 (지표 · 임계)
+      label: 성공 기준 — 주 지표 1개와 수치 임계
       description: |
-        **주 지표 1개와 수치 임계를 반드시 지정하세요.** 이게 없으면 에이전트가 "지지/기각"을
+        **한 줄로 직접 적으세요(기본값 없음).** 이게 없으면 에이전트가 "지지/기각"을
         판정할 수 없습니다. 임계 미달은 기각으로 기록되며, 기각도 유효한 결과입니다.
-      value: |
-        - 주 지표 / 임계: (예: held-out test ROC-AUC, baseline 대비 +0.002 이상)
-        - 보조 관측: (예: PR-AUC, LogLoss, feature importance 순위)
+      placeholder: 예) held-out test ROC-AUC, baseline 대비 +0.002 이상
     validations:
       required: true
+
+  - type: input
+    id: secondary_metrics
+    attributes:
+      label: 보조 관측 지표
+      description: 판정에는 쓰지 않지만 함께 기록할 지표입니다.
+      placeholder: 예) PR-AUC, LogLoss, feature importance 순위
+    validations:
+      required: false
 
   - type: dropdown
     id: comparison
@@ -77,11 +86,12 @@ body:
       label: 재현 조건 고정값
       description: |
         baseline과 변경군의 A/B가 성립하려면 split·seed가 같아야 합니다.
-        **반복 시드 수**를 1로 두면 결과가 노이즈인지 판정할 수 없습니다 — #396이 그 사례입니다.
+        시드 1개로 1회만 돌리면 지표 차이가 노이즈인지 판정할 수 없어(#396이 그 사례),
+        기본값을 시드 3개로 둡니다. 줄이려면 그 이유를 가설에 적으세요.
       value: |
         - test_size / val_size: 0.2 / 0.2
-        - random_state: 42
-        - 반복 시드 수: 1
+        - 시드 목록: 42, 43, 44
+        - 반복 시드 수: 3
     validations:
       required: true
 
@@ -94,11 +104,25 @@ body:
         (`python -m src.cli build-features` → Feast offline PIT)는 BigQuery spine과 GCS
         레지스트리 자격 증명이 필요해 로컬 에이전트가 실행할 수 없습니다(#396 B3 ①).
         기간을 지정해도 에이전트가 기존 CSV 스냅샷을 재사용할 수 있으니, 실제로 무엇을
-        썼는지는 결과 코멘트에서 확인하세요.
+        썼는지는 아래 `스냅샷 재사용`과 결과 항목에서 확인하세요.
       value: |
         - 데이터셋 / 경로:
         - 기간 (KST YYYY-MM-DD ~ YYYY-MM-DD):
-        - 스냅샷 재사용 허용 여부:
+    validations:
+      required: true
+
+  - type: dropdown
+    id: snapshot_reuse
+    attributes:
+      label: 스냅샷 재사용
+      description: |
+        위 기간을 정규 조립 경로로 만들지 못했을 때, 에이전트가 기존 CSV 스냅샷으로
+        진행해도 되는지입니다. "불허"면 조립에 실패한 시점에 중단하고 막힌 지점을
+        코멘트로 남깁니다.
+      options:
+        - 허용 (진행하되 실제로 쓴 데이터를 결과에 명시)
+        - 불허 (정규 조립 경로 실패 시 중단)
+      default: 0
     validations:
       required: true
 
@@ -110,6 +134,9 @@ body:
         에이전트가 어디까지 건드려도 되는지 **미리** 합의합니다. #396에서는 피처 1개 추가로
         `MODEL_FEATURE_COLUMNS`를 고쳐야 했고, 그 결과 학습·시뮬레이션·일일추천·서빙 테스트
         43개가 추가로 실패했습니다.
+
+        **미체크는 불허입니다.** 실험이 성립하려면 미체크 항목을 건드려야 한다고 판단되면,
+        에이전트는 진행하지 않고 이 이슈에 질문 코멘트를 남기고 대기합니다.
       options:
         - label: prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다
         - label: Feast 정의(`feature_repo/`) 수정을 허용한다
@@ -119,10 +146,14 @@ body:
     id: result
     attributes:
       label: 결과 (에이전트가 채웁니다)
-      description: 사람이 미리 채우지 않아도 됩니다. 에이전트가 코멘트로 남기고 이슈를 종료합니다.
+      description: |
+        사람이 미리 채우지 않습니다. 에이전트가 실험을 마치면 **이 본문 항목을 채워
+        이슈를 갱신하고**(과정·로그는 별도 코멘트) 종료합니다. 나중에 판정·MLflow run을
+        모을 때 읽는 정본은 본문의 이 항목입니다.
       value: |
         - 판정 (지지/기각):
         - 지표 요약 (baseline 대비):
+        - 실제 사용 데이터 (스냅샷 재사용 여부 포함):
         - MLflow run:
         - 막힌 지점 (= 스킬/인프라 백로그):
     validations:
