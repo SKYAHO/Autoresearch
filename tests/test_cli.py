@@ -15,6 +15,8 @@ from src import cli  # noqa: E402
 
 def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     build_features_call = {}
+    # build-features 성공 뒤 lineage가 GCS_REGISTRY_PATH를 필수로 읽는다(#359 C2, 무조건 기록).
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
     monkeypatch.setattr(cli.build_training_dataset, "main", lambda **kw: build_features_call.update(kw))
     monkeypatch.setattr(cli.train, "main", lambda **kw: None)
     monkeypatch.setattr(cli.evaluate, "main", MagicMock())

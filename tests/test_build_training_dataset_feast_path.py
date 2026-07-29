@@ -88,6 +88,28 @@ def test_assemble_via_feast_writes_contract_columns(tmp_path, monkeypatch) -> No
     assert int(written["clicked"].iloc[0]) == 1
 
 
+def test_assemble_via_feast_empty_warns_and_reports_counts(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    # 관측성(#359 C2 리뷰): UserDynamic 전량 결손(#365)으로 전 행이 gap 드롭돼 학습 0행이면
+    # 조용히 성공하지 않고 조회->드롭->학습 행 수 + 경고를 stdout에 남긴다.
+    row = {c: 0 for c in MODEL_FEATURE_COLUMNS}
+    for c in feast_retrieval._USER_DYNAMIC_COLUMNS:
+        row[c] = None  # 전 UserDynamic null → gap 드롭 대상
+    features = pd.DataFrame([row])
+    features["clicked"] = 1
+    _fake_env(monkeypatch, features)
+
+    out_path = str(tmp_path / "out.csv")
+    btd._assemble_via_feast(out_path, "2026-07-07", "2026-07-21")
+
+    written = pd.read_csv(out_path)
+    assert len(written) == 0  # 전량 드롭
+    out = capsys.readouterr().out
+    assert "조회 1행" in out and "드롭 1행" in out and "학습 0행" in out
+    assert "[경고]" in out
+
+
 def test_assemble_via_feast_missing_feature_raises(tmp_path, monkeypatch) -> None:
     # 조회 결과에 모델 피처가 빠지면 조용히 넘기지 않고 즉시 실패.
     features = pd.DataFrame([{"category_id": "Gaming", "clicked": 1}])

@@ -178,9 +178,25 @@ def _assemble_via_feast(
     # (C) 결손 가시화: UserDynamic 전체 null(ttl 초과·#365 결손)은 채우지 않고 드롭
     # (활동 유저를 "신규 유저"로 위장시키지 않는다). 이 뒤에 남는 null(영상 미발견 등)만
     # 서빙과 같은 cold-start 기본값으로 채운다. 제자리 채움 + 선택 시 추가 copy 안 함(리뷰 OOM).
+    n_retrieved = len(features)
     features = drop_user_dynamic_gap_rows(features)
+    n_dropped = n_retrieved - len(features)
     features = apply_cold_start_defaults(features)
     features["clicked"] = features["clicked"].astype(int)
+    # 관측성(#359 C2 리뷰): validate_events/Step3 통계가 사라진 자리를 최소 지표로 대체한다.
+    # 조용한 데이터 급감·전량 드롭을 운영자가 stdout으로 알아채게, 조회→드롭→학습 행 수와
+    # click_rate를 남긴다. 학습 행이 0이면 성공으로 조용히 끝내지 않고 경고를 크게 찍는다
+    # (하드 실패로 막을지는 후속 판단 — 지금은 실패 의미를 바꾸지 않는다).
+    click_rate = float(features["clicked"].mean()) if len(features) else 0.0
+    print(
+        f"  [관측] 조회 {n_retrieved}행 -> UserDynamic gap 드롭 {n_dropped}행 "
+        f"-> 학습 {len(features)}행, click_rate={click_rate:.4f}"
+    )
+    if features.empty:
+        print(
+            "  [경고] 학습 행이 0입니다 — spine이 비었거나 UserDynamic 결손(#365)으로 "
+            "전량 드롭됐습니다. 이어지는 train-model이 빈 데이터로 실패할 수 있습니다."
+        )
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     features[[*MODEL_FEATURE_COLUMNS, "clicked"]].to_csv(output_path, index=False)
     print(f"\n[저장] {output_path} ({len(features)} rows, feast 경로)")

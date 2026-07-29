@@ -119,14 +119,18 @@ def run_pipeline(
     # feast(offline store PIT)가 유일하므로 FeatureService·registry·기간을 기록한다.
     from src.features.feast_retrieval import DEFAULT_SERVICE
 
-    data_source_params = {"assembly_source": "feast", "feature_service": DEFAULT_SERVICE}
-    if events_start_date:
-        data_source_params["events_start_date"] = events_start_date
-    if events_end_date:
-        data_source_params["events_end_date"] = events_end_date
-    feast_registry_path = os.environ.get("GCS_REGISTRY_PATH")
-    if feast_registry_path:
-        data_source_params["feast_registry_path"] = feast_registry_path
+    # run-pipeline은 C2로 feast-only다. 위 build-features(_assemble_via_feast)가
+    # events 기간을 필수로 검증하고 GCS_REGISTRY_PATH를 필수로 읽으므로(미설정이면
+    # 여기 도달 전에 멈춤), 이 시점엔 셋 다 항상 존재한다. 따라서 조립이 필수로 읽는
+    # 값을 lineage는 "있으면 기록"으로 두던 비대칭을 없애고 무조건 기록해, registry나
+    # 기간이 빠진 재현 불가 run이 남지 않게 한다(#359 C2 리뷰).
+    data_source_params = {
+        "assembly_source": "feast",
+        "feature_service": DEFAULT_SERVICE,
+        "events_start_date": events_start_date,
+        "events_end_date": events_end_date,
+        "feast_registry_path": os.environ["GCS_REGISTRY_PATH"],
+    }
 
     typer.echo("\n[2/3] train-model 실행...")
     # train.main은 실현 sampling_rate(#300)를 반환한다 — evaluate가 오프라인
