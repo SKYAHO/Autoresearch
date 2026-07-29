@@ -25,6 +25,7 @@ import re
 import sys
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 
 import pytest
 
@@ -32,6 +33,7 @@ pytest.importorskip("feast")
 
 import dill  # noqa: E402
 import pandas as pd  # noqa: E402
+from feast.on_demand_feature_view import OnDemandFeatureView  # noqa: E402
 from feast.repo_operations import py_path_to_module  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -40,11 +42,18 @@ DEFINITIONS = FEATURE_REPO / "feature_definitions.py"
 # deploy/feast/apply-job.yaml이 `cd /app/feature_repo` 후 feast apply를 실행하므로
 # 정의 파일의 모듈명은 패키지 경로가 아니라 bare 이름이 된다.
 APPLY_MODULE_NAME = "feature_definitions"
+# 이 저장소가 소유한 최상위 패키지. 역직렬화 직전에 sys.modules에서 비워, 이미 로드돼
+# 있다는 이유로 통과하는 대신 소비자 경로에서 **실제로 import되는지**를 확인한다.
+_PROJECT_TOP_LEVEL = frozenset({"src", "feature_repo"})
 
 
 @pytest.fixture()
-def apply_time_definitions(monkeypatch: pytest.MonkeyPatch) -> Iterator[object]:
-    """배포 apply job과 **같은 모듈명**으로 feature_definitions를 로드한다."""
+def apply_time_definitions(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
+    """배포 apply job과 **같은 모듈명**으로 feature_definitions를 로드한다.
+
+    등록도 ``monkeypatch``에 맡긴다 — 아래 테스트가 같은 키를 ``delitem``하므로, 직접
+    ``sys.modules``를 지우면 그 undo(재삽입)가 나중에 돌아 모듈이 세션에 남는다.
+    """
     # 정의 파일이 import 시점에 요구하는 값(실제 값은 직렬화 결과와 무관).
     monkeypatch.setenv("GCP_PROJECT_ID", "odfv-portability-gate")
     monkeypatch.setenv("BQ_DATASET", "odfv-portability-gate")
@@ -52,12 +61,37 @@ def apply_time_definitions(monkeypatch: pytest.MonkeyPatch) -> Iterator[object]:
     spec = importlib.util.spec_from_file_location(APPLY_MODULE_NAME, DEFINITIONS)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules[APPLY_MODULE_NAME] = module
-    try:
-        spec.loader.exec_module(module)
-        yield module
-    finally:
-        sys.modules.pop(APPLY_MODULE_NAME, None)
+    monkeypatch.setitem(sys.modules, APPLY_MODULE_NAME, module)
+    spec.loader.exec_module(module)
+    yield module
+
+
+def _udf_bodies(definitions: ModuleType) -> dict[str, bytes]:
+    """정의 파일의 **모든** ODFV에서 레지스트리에 기록될 UDF 바이트를 뽑는다.
+
+    이름을 하드코딩하지 않는다 — ODFV가 늘어나면 자동으로 이 게이트에 들어와야 한다.
+    """
+    odfvs = [v for v in vars(definitions).values() if isinstance(v, OnDemandFeatureView)]
+    assert odfvs, "정의 파일에서 ODFV를 찾지 못했다 — 게이트가 무력화된 상태다"
+    return {
+        odfv.name: odfv.to_proto().spec.feature_transformation.user_defined_function.body
+        for odfv in odfvs
+    }
+
+
+def _isolate_consumer_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """소비자(학습·서빙 파드)의 import 경로를 재현한다.
+
+    ``feature_repo`` 디렉터리를 ``sys.path``에서 빼 apply 전용 bare 이름을 막고, 이 저장소
+    소유 모듈을 ``sys.modules``에서 비워 **repo 루트 기준으로 다시 import되는지**까지 보게
+    한다(테스트 프로세스에 이미 로드돼 있다는 이유로 통과하는 것을 막는다).
+    """
+    monkeypatch.setattr(
+        sys, "path", [p for p in sys.path if Path(p or ".").resolve() != FEATURE_REPO]
+    )
+    for name in list(sys.modules):
+        if name == APPLY_MODULE_NAME or name.split(".")[0] in _PROJECT_TOP_LEVEL:
+            monkeypatch.delitem(sys.modules, name, raising=False)
 
 
 def test_apply_job_module_name_matches_this_gate(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,30 +113,33 @@ def test_apply_job_module_name_matches_this_gate(monkeypatch: pytest.MonkeyPatch
     assert py_path_to_module(DEFINITIONS) == APPLY_MODULE_NAME
 
 
-def test_odfv_udf_deserializes_without_feature_repo_on_sys_path(
-    apply_time_definitions: object, monkeypatch: pytest.MonkeyPatch
+def test_every_odfv_udf_deserializes_in_consumer_import_path(
+    apply_time_definitions: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """apply와 같은 모듈명으로 절인 UDF가 소비자 import 경로에서 되살아나는지 (#409)."""
-    odfv = apply_time_definitions.category_match_view  # type: ignore[attr-defined]
+    """apply와 같은 모듈명으로 절인 UDF가 소비자 import 경로에서 전부 되살아나는지 (#409)."""
     # 레지스트리에 실제로 기록되는 바이트와 같은 경로로 뽑는다(apply가 쓰는 것과 동일).
-    body = odfv.to_proto().spec.feature_transformation.user_defined_function.body
+    bodies = _udf_bodies(apply_time_definitions)
+    _isolate_consumer_import_path(monkeypatch)
 
-    # 소비자(학습·서빙)의 import 경로 재현: repo 루트만 보이고 feature_repo 디렉터리는
-    # sys.path에 없으며, apply가 쓰던 bare 모듈명도 이미 사라진 상태다.
-    monkeypatch.delitem(sys.modules, APPLY_MODULE_NAME)
-    monkeypatch.setattr(
-        sys, "path", [p for p in sys.path if Path(p or ".").resolve() != FEATURE_REPO]
-    )
+    for name, body in bodies.items():
+        try:
+            dill.loads(body)
+        except (ModuleNotFoundError, AttributeError) as error:  # pragma: no cover - 진단용
+            pytest.fail(
+                f"ODFV '{name}'의 UDF가 소비자 경로에서 해소되지 않는 이름을 참조한다: "
+                f"{type(error).__name__}: {error}. UDF가 부르는 헬퍼를 feature_repo 밖"
+                "(src.features.*)으로 옮겨라 (#409)."
+            )
 
-    try:
-        udf = dill.loads(body)
-    except ModuleNotFoundError as error:  # pragma: no cover - 실패 경로 진단용
-        pytest.fail(
-            f"ODFV UDF가 apply 실행 위치에 묶인 모듈을 참조한다: {error}. "
-            "UDF가 부르는 헬퍼를 feature_repo 밖(src.features.*)으로 옮겨라 (#409)."
-        )
 
-    # 되살린 UDF가 실제로 동작하는지까지 확인한다(이름만 맞고 몸통이 깨지는 경우 방지).
+def test_category_match_udf_still_computes_after_round_trip(
+    apply_time_definitions: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """되살린 UDF가 실제로 동작하는지까지 확인한다(이름만 맞고 몸통이 깨지는 경우 방지)."""
+    body = _udf_bodies(apply_time_definitions)["category_match_view"]
+    _isolate_consumer_import_path(monkeypatch)
+
+    udf = dill.loads(body)
     result = udf(
         pd.DataFrame(
             {
