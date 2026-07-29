@@ -26,9 +26,27 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FEATURE_REPO = REPO_ROOT / "feature_repo"
 DEFINITIONS = FEATURE_REPO / "feature_definitions.py"
 APPLY_MODULE_NAME = "feature_definitions"
+# 이 저장소가 소유한 최상위 패키지. 역직렬화 직전에 sys.modules에서 비워, 이미 로드돼 있다는
+# 이유로 통과하는 대신 소비자 경로에서 실제로 import되는지를 보게 한다(형제 게이트와 동일).
+_PROJECT_TOP_LEVEL = frozenset({"src", "feature_repo"})
 
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
-import verify_registry_portability as verifier  # noqa: E402
+
+def _load_verifier() -> ModuleType:
+    """sys.path를 건드리지 않고 검증 스크립트를 로드한다.
+
+    ``sys.path.insert(0, "scripts")``로 가져오면 그 오염이 세션 끝까지 남아, 뒤 테스트가
+    ``scripts`` 밑 모듈을 최상위 이름으로 import할 수 있게 된다.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "verify_registry_portability", REPO_ROOT / "scripts" / "verify_registry_portability.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+verifier = _load_verifier()
 
 
 def _load_as_apply_does(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
@@ -77,16 +95,19 @@ def stale_match_view(inputs):
 '''
 
 
-def _make_stale_registry(path: Path, definitions: ModuleType, workdir: Path) -> None:
-    """UDF가 **자기 모듈의 헬퍼**를 부르는 ODFV를 직렬화해 stale 레지스트리를 만든다.
+def _write_module_registry(
+    path: Path,
+    definitions: ModuleType,
+    module_name: str,
+    source: str,
+    view_name: str,
+    workdir: Path,
+) -> None:
+    """주어진 소스를 임시 모듈로 실행해 그 ODFV 하나만 담은 레지스트리를 쓴다."""
+    source_path = workdir / f"{module_name}.py"
+    source_path.write_text(source, encoding="utf-8")
 
-    그 모듈은 어디서도 import할 수 없는 이름이라, dill이 by-reference로 기록한 순간
-    소비자 경로에서 해소되지 않는다 — prod에서 실제로 벌어진 일과 같은 구조다.
-    """
-    source_path = workdir / f"{_STALE_MODULE_NAME}.py"
-    source_path.write_text(_STALE_SOURCE, encoding="utf-8")
-
-    spec = importlib.util.spec_from_file_location(_STALE_MODULE_NAME, source_path)
+    spec = importlib.util.spec_from_file_location(module_name, source_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     # 소스 뷰는 실제 정의에서 빌려 온다(ODFV 생성에 필요할 뿐 판정과 무관).
@@ -95,14 +116,57 @@ def _make_stale_registry(path: Path, definitions: ModuleType, workdir: Path) -> 
         definitions.user_dynamic_view,
         definitions.video_feature_view,
     ]
-    sys.modules[_STALE_MODULE_NAME] = module
+    sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
         registry = RegistryProto()
-        registry.on_demand_feature_views.append(module.stale_match_view.to_proto())
+        registry.on_demand_feature_views.append(getattr(module, view_name).to_proto())
         path.write_bytes(registry.SerializeToString())
     finally:
-        sys.modules.pop(_STALE_MODULE_NAME, None)
+        sys.modules.pop(module_name, None)
+
+
+def _make_stale_registry(path: Path, definitions: ModuleType, workdir: Path) -> None:
+    """UDF가 **자기 모듈의 헬퍼**를 부르는 ODFV를 직렬화해 stale 레지스트리를 만든다.
+
+    그 모듈은 어디서도 import할 수 없는 이름이라, dill이 by-reference로 기록한 순간
+    소비자 경로에서 해소되지 않는다 — prod에서 실제로 벌어진 일과 같은 구조다.
+    """
+    _write_module_registry(
+        path, definitions, _STALE_MODULE_NAME, _STALE_SOURCE, "stale_match_view", workdir
+    )
+
+
+# src/ 밖이지만 **import는 되는** 참조. 소비자 파드의 /app에는 저장소 전체가 풀리므로
+# feature_repo.* 도 import된다 — 역직렬화 성공만 보면 이 갈래를 놓친다.
+_REPO_LOCAL_MODULE_NAME = "repo_local_definitions"
+_REPO_LOCAL_SOURCE = '''
+from feast import Field
+from feast.on_demand_feature_view import on_demand_feature_view
+from feast.types import Int64
+
+from feature_repo.bootstrap import ensure_repo_importable
+
+
+@on_demand_feature_view(
+    sources=SOURCES,
+    schema=[
+        Field(name="preferred_category_match", dtype=Int64),
+        Field(name="historical_category_match", dtype=Int64),
+    ],
+)
+def repo_local_view(inputs):
+    _ = ensure_repo_importable
+    return inputs
+'''
+
+
+def _make_repo_local_registry(path: Path, definitions: ModuleType) -> None:
+    """UDF가 ``feature_repo.*``(= src/ 밖)를 참조하는 레지스트리를 만든다."""
+    _write_module_registry(
+        path, definitions, _REPO_LOCAL_MODULE_NAME, _REPO_LOCAL_SOURCE, "repo_local_view",
+        path.parent,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -111,13 +175,24 @@ def consumer_import_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "path", list(sys.path))
 
 
+def _clear_project_modules(monkeypatch: pytest.MonkeyPatch) -> None:
+    """이 저장소 소유 모듈을 sys.modules에서 비운다.
+
+    이걸 안 하면 ``dill``이 by-reference 참조를 캐시로 해소해 ``sys.path``를 아예 안 탄다 —
+    소비자 경로가 망가져 있어도 초록불이 되어 테스트가 이름값을 못 한다.
+    """
+    for name in list(sys.modules):
+        if name == APPLY_MODULE_NAME or name.split(".")[0] in _PROJECT_TOP_LEVEL:
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+
 def test_passes_on_a_registry_written_by_current_definitions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     definitions = _load_as_apply_does(monkeypatch)
     registry_path = tmp_path / "registry.db"
     _write_registry(registry_path, definitions)
-    monkeypatch.delitem(sys.modules, APPLY_MODULE_NAME)
+    _clear_project_modules(monkeypatch)
 
     assert verifier.main([str(registry_path)]) == 0
 
@@ -128,9 +203,25 @@ def test_fails_on_a_stale_registry_bound_to_the_apply_cwd(
     definitions = _load_as_apply_does(monkeypatch)
     registry_path = tmp_path / "registry.db"
     _make_stale_registry(registry_path, definitions, tmp_path)
-    monkeypatch.delitem(sys.modules, APPLY_MODULE_NAME)
+    _clear_project_modules(monkeypatch)
 
     # 이게 통과하면 배포 검증이 무력해진 것 — #409가 그대로 프로덕션까지 간다.
+    assert verifier.main([str(registry_path)]) == 1
+
+
+def test_fails_when_the_udf_references_a_repo_module_outside_src(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """import는 되지만 src/ 밖인 참조 — 역직렬화 성공만 보면 놓치는 갈래.
+
+    소비자 파드의 /app은 git archive로 푼 저장소 전체라 ``feature_repo.*``도 import된다.
+    그래서 "되살아나는가"만으로는 부족하고 **어디를 참조하는가**까지 봐야 한다.
+    """
+    definitions = _load_as_apply_does(monkeypatch)
+    registry_path = tmp_path / "registry.db"
+    _make_repo_local_registry(registry_path, definitions)
+    _clear_project_modules(monkeypatch)
+
     assert verifier.main([str(registry_path)]) == 1
 
 
