@@ -249,6 +249,88 @@ def test_streaming_writer_appends_user_row_groups_and_jsonl_in_order(tmp_path) -
     assert [row["user_id"] for row in quarantined] == ["u2"]
 
 
+def test_streaming_writer_closes_open_resources_when_later_open_fails(tmp_path, monkeypatch) -> None:
+    class _CloseTracker:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    parquet = _CloseTracker()
+    warehouse = _CloseTracker()
+    open_results = iter([warehouse, OSError("quarantine open failed")])
+    monkeypatch.setattr(pipeline_module.pq, "ParquetWriter", lambda *_: parquet)
+
+    def fake_open(self, *args, **kwargs):
+        result = next(open_results)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(Path, "open", fake_open)
+
+    with pytest.raises(OSError, match="quarantine open failed"):
+        pipeline_module._StreamingActionLogWriter(
+            request=_request(tmp_path),
+            model_name="test-model",
+            generated_at="2026-07-29T00:00:00+00:00",
+        ).__enter__()
+
+    assert parquet.closed is True
+    assert warehouse.closed is True
+
+
+def test_streaming_writer_closes_remaining_resources_after_close_failure(tmp_path, monkeypatch) -> None:
+    class _CloseTracker:
+        def __init__(self, error: Exception | None = None) -> None:
+            self.closed = False
+            self._error = error
+
+        def close(self) -> None:
+            self.closed = True
+            if self._error is not None:
+                raise self._error
+
+    parquet = _CloseTracker(RuntimeError("parquet close failed"))
+    warehouse = _CloseTracker()
+    quarantine = _CloseTracker()
+    open_results = iter([warehouse, quarantine])
+    monkeypatch.setattr(pipeline_module.pq, "ParquetWriter", lambda *_: parquet)
+    monkeypatch.setattr(Path, "open", lambda *args, **kwargs: next(open_results))
+    writer = pipeline_module._StreamingActionLogWriter(
+        request=_request(tmp_path),
+        model_name="test-model",
+        generated_at="2026-07-29T00:00:00+00:00",
+    )
+    writer.__enter__()
+
+    with pytest.raises(RuntimeError, match="parquet close failed"):
+        writer.__exit__(None, None, None)
+
+    assert parquet.closed is True
+    assert warehouse.closed is True
+    assert quarantine.closed is True
+
+
+def test_streaming_writer_creates_schema_only_parquet_without_events(tmp_path) -> None:
+    request = _request(tmp_path)
+
+    with pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+        generated_at="2026-07-29T00:00:00+00:00",
+    ):
+        pass
+
+    parquet = pq.ParquetFile(request.output_path)
+    assert parquet.metadata.num_rows == 0
+    assert parquet.num_row_groups == 0
+    assert parquet.schema_arrow == pipeline_module.EVENT_LOG_PARQUET_SCHEMA
+    assert Path(request.warehouse_output_path).read_text(encoding="utf-8") == ""
+    assert Path(request.quarantine_output_path).read_text(encoding="utf-8") == ""
+
+
 def test_user_isolation_quarantines_bad_row(tmp_path):
     class _OneBadUserGen(RuleBasedActionLogGenerator):
         def generate(self, virtual_user, videos):

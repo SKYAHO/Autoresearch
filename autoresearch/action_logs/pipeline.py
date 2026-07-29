@@ -14,6 +14,7 @@ import random
 from collections import defaultdict
 from collections.abc import Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, timedelta, timezone
 from pathlib import Path
@@ -903,26 +904,36 @@ class _StreamingActionLogWriter:
         self._parquet_writer: pq.ParquetWriter | None = None
         self._warehouse_file = None
         self._quarantine_file = None
+        self._exit_stack: ExitStack | None = None
 
     def __enter__(self) -> Self:
-        for raw_path in (
-            self._request.output_path,
-            self._request.warehouse_output_path,
-            self._request.quarantine_output_path,
-        ):
-            Path(raw_path).parent.mkdir(parents=True, exist_ok=True)
-        self._parquet_writer = pq.ParquetWriter(
-            self._request.output_path,
-            EVENT_LOG_PARQUET_SCHEMA,
-        )
-        self._warehouse_file = Path(self._request.warehouse_output_path).open(
-            "w",
-            encoding="utf-8",
-        )
-        self._quarantine_file = Path(self._request.quarantine_output_path).open(
-            "w",
-            encoding="utf-8",
-        )
+        stack = ExitStack()
+        try:
+            for raw_path in (
+                self._request.output_path,
+                self._request.warehouse_output_path,
+                self._request.quarantine_output_path,
+            ):
+                Path(raw_path).parent.mkdir(parents=True, exist_ok=True)
+            self._parquet_writer = pq.ParquetWriter(
+                self._request.output_path,
+                EVENT_LOG_PARQUET_SCHEMA,
+            )
+            stack.callback(self._parquet_writer.close)
+            self._warehouse_file = Path(self._request.warehouse_output_path).open(
+                "w",
+                encoding="utf-8",
+            )
+            stack.callback(self._warehouse_file.close)
+            self._quarantine_file = Path(self._request.quarantine_output_path).open(
+                "w",
+                encoding="utf-8",
+            )
+            stack.callback(self._quarantine_file.close)
+        except BaseException:
+            stack.close()
+            raise
+        self._exit_stack = stack
         return self
 
     def write_events(self, events: list[EventLog]) -> None:
@@ -970,12 +981,11 @@ class _StreamingActionLogWriter:
         exc: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        if self._parquet_writer is not None:
-            self._parquet_writer.close()
-        if self._warehouse_file is not None:
-            self._warehouse_file.close()
-        if self._quarantine_file is not None:
-            self._quarantine_file.close()
+        assert self._exit_stack is not None
+        try:
+            self._exit_stack.__exit__(exc_type, exc, traceback)
+        finally:
+            self._exit_stack = None
 
 
 def _draft_rows(drafts: list[ImpressionDraft]) -> list[dict]:
