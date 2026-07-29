@@ -837,9 +837,16 @@ jobs:
           fi
 
           # 코드(feature_repo)는 이미지에 없고 ENTRYPOINT가 GCS 부트스트랩이므로,
-          # 엔트리포인트를 우회해 baked venv의 feast 계열 의존성만 검증한다.
+          # 엔트리포인트를 우회해 baked venv의 의존성만 검증한다.
+          # #359 C2로 run-pipeline(build-features + train-model)이 이 이미지로 옮겨왔으므로,
+          # train 이미지 verify가 지키던 학습 런타임 계약을 그대로 여기서도 지킨다:
+          # - lightgbm: import 시점에 libgomp(OpenMP)를 dlopen -> 네이티브 누락(#401) 차단
+          # - onnxmltools/onnxruntime: train-model이 부르는 convert_lgbm_to_onnx가
+          #   함수 안에서 지연 import한다. 모듈 최상단 import 체인(=CI의 run-pipeline --help)
+          #   으로는 안 태워지므로, 누락 시 학습 막바지 ONNX 변환에서야 터진다(#336 사고).
+          #   릴리스 시점에 명시적으로 import해 그 경로를 막는다.
           docker run --rm --entrypoint python "$digest_ref" \
-            -c "import feast, pyarrow"
+            -c "import feast, pyarrow, lightgbm, onnxmltools, onnxruntime, joblib, mlflow"
 
           echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
 
