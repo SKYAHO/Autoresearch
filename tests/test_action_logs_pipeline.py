@@ -8,6 +8,8 @@ from concurrent.futures import Future
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
+from types import TracebackType
+from typing import Callable, Never, Self
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -19,8 +21,11 @@ from autoresearch.action_logs.candidate import build_candidates
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
 from autoresearch.action_logs.pipeline import (
     ACTION_LOG_DRAFT_PARQUET_SCHEMA,
+    ActionLogGenerator,
     ActionLogGenerationError,
     ExposureMetadata,
+    _ActionLogCallResult,
+    _ActionLogWorkItem,
     _build_user_drafts,
     attach_exposure_tags,
     expand_action_log_drafts,
@@ -588,12 +593,16 @@ def test_streaming_single_schema_retry_final_failure_preserves_quarantine(
 
     generator = _AlwaysInvalidGenerator()
     videos = build_fixture_video_records(4)
+
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        return list(videos)
+
     result = pipeline_module.generate_action_log_single(
         _request(tmp_path, candidates_per_user=4),
         _fixture_users(1),
         videos,
         generator,
-        candidate_provider=lambda virtual_user, user_rng: list(videos),
+        candidate_provider=provider,
     )
 
     assert generator.retry_calls == 1
@@ -610,7 +619,11 @@ def test_streaming_single_propagates_unexpected_parser_exception(
     tmp_path,
     monkeypatch,
 ) -> None:
-    def _raise_internal_error(virtual_user, candidates, raw_text):
+    def _raise_internal_error(
+        virtual_user: dict[str, object],
+        candidates: list[dict[str, object]],
+        raw_text: str,
+    ) -> Never:
         raise RuntimeError("unexpected parser bug")
 
     monkeypatch.setattr(
@@ -620,13 +633,16 @@ def test_streaming_single_propagates_unexpected_parser_exception(
     )
     videos = build_fixture_video_records(1)
 
+    def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
+        return list(videos)
+
     with pytest.raises(RuntimeError, match="unexpected parser bug"):
         pipeline_module.generate_action_log_single(
             _request(tmp_path, candidates_per_user=1),
             _fixture_users(1),
             videos,
             RuleBasedActionLogGenerator(),
-            candidate_provider=lambda virtual_user, user_rng: list(videos),
+            candidate_provider=provider,
         )
 
 
@@ -1079,35 +1095,62 @@ def test_streaming_single_releases_completed_future_drafts_before_next_provider(
     first_draft_refs: list[weakref.ReferenceType[ImpressionDraft]] = []
     zero_buffer_after_first_user = Event()
     provider_order: list[str] = []
-    original_work = pipeline_module._generate_action_log_work
+    original_work: Callable[..., _ActionLogCallResult] = (
+        pipeline_module._generate_action_log_work
+    )
 
     class _InlineExecutor:
         def __init__(self, *, max_workers: int) -> None:
             self.max_workers = max_workers
 
-        def __enter__(self):
+        def __enter__(self) -> Self:
             return self
 
-        def __exit__(self, exc_type, exc, traceback) -> None:
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
             return None
 
-        def submit(self, fn, /, *args, **kwargs):
-            future = Future()
+        def submit(
+            self,
+            fn: Callable[..., _ActionLogCallResult],
+            generator: ActionLogGenerator,
+            item: _ActionLogWorkItem,
+            /,
+            *,
+            work_sequence: int,
+            submitted_at: float,
+            shard_index: int | None,
+            detailed_telemetry: bool,
+        ) -> Future[_ActionLogCallResult]:
+            future: Future[_ActionLogCallResult] = Future()
             try:
-                future.set_result(fn(*args, **kwargs))
+                future.set_result(
+                    fn(
+                        generator,
+                        item,
+                        work_sequence=work_sequence,
+                        submitted_at=submitted_at,
+                        shard_index=shard_index,
+                        detailed_telemetry=detailed_telemetry,
+                    )
+                )
             except BaseException as error:  # noqa: BLE001 - Future worker boundary
                 future.set_exception(error)
             return future
 
     def _capture_first_user_drafts(
-        generator,
-        item,
+        generator: ActionLogGenerator,
+        item: _ActionLogWorkItem,
         *,
-        work_sequence,
-        submitted_at,
-        shard_index,
-        detailed_telemetry,
-    ):
+        work_sequence: int,
+        submitted_at: float,
+        shard_index: int | None,
+        detailed_telemetry: bool,
+    ) -> _ActionLogCallResult:
         result = original_work(
             generator,
             item,
@@ -1122,7 +1165,7 @@ def test_streaming_single_releases_completed_future_drafts_before_next_provider(
         return result
 
     def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
-        user_id = virtual_user["user_id"]
+        user_id = str(virtual_user["user_id"])
         provider_order.append(user_id)
         if user_id == second_user:
             assert zero_buffer_after_first_user.is_set()
@@ -1196,32 +1239,58 @@ def test_streaming_single_matches_legacy_when_later_work_finishes_first(
     later_user = users[1]["user_id"]
     first_chunk_video = str(videos[0]["video_id"])
     later_chunk_video = str(videos[2]["video_id"])
-    original_work = pipeline_module._generate_action_log_work
+    original_work: Callable[..., _ActionLogCallResult] = (
+        pipeline_module._generate_action_log_work
+    )
 
     class _CompletionTrackingExecutor(pipeline_module.ThreadPoolExecutor):
-        def submit(self, fn, /, *args, **kwargs):
-            future = super().submit(fn, *args, **kwargs)
-            item = args[1]
+        def submit(
+            self,
+            fn: Callable[..., _ActionLogCallResult],
+            generator: ActionLogGenerator,
+            item: _ActionLogWorkItem,
+            /,
+            *,
+            work_sequence: int,
+            submitted_at: float,
+            shard_index: int | None,
+            detailed_telemetry: bool,
+        ) -> Future[_ActionLogCallResult]:
+            future = super().submit(
+                fn,
+                generator,
+                item,
+                work_sequence=work_sequence,
+                submitted_at=submitted_at,
+                shard_index=shard_index,
+                detailed_telemetry=detailed_telemetry,
+            )
             key = (item.user_id, str(item.candidates[0]["video_id"]))
             if key == (first_user, later_chunk_video):
-                future.add_done_callback(
-                    lambda _future: later_chunk_future_finished.set()
-                )
+                future.add_done_callback(_mark_later_chunk_future_finished)
             elif key == (later_user, first_chunk_video):
-                future.add_done_callback(
-                    lambda _future: later_user_future_finished.set()
-                )
+                future.add_done_callback(_mark_later_user_future_finished)
             return future
 
+    def _mark_later_chunk_future_finished(
+        completed_future: Future[_ActionLogCallResult],
+    ) -> None:
+        later_chunk_future_finished.set()
+
+    def _mark_later_user_future_finished(
+        completed_future: Future[_ActionLogCallResult],
+    ) -> None:
+        later_user_future_finished.set()
+
     def _complete_out_of_order(
-        generator,
-        item,
+        generator: ActionLogGenerator,
+        item: _ActionLogWorkItem,
         *,
-        work_sequence,
-        submitted_at,
-        shard_index,
-        detailed_telemetry,
-    ):
+        work_sequence: int,
+        submitted_at: float,
+        shard_index: int | None,
+        detailed_telemetry: bool,
+    ) -> _ActionLogCallResult:
         result = original_work(
             generator,
             item,
