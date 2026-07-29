@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-29T07:17:57Z",
+  "generated_at": "2026-07-29T08:31:11Z",
   "reports": [
+    {
+      "number": 410,
+      "title": "fix: ODFV 변환 본체를 feature_repo 밖으로 이동 (레지스트리 위치 종속 제거 #409)",
+      "author": "waieiches",
+      "merged_at": "2026-07-29T08:30:57Z",
+      "summary_ko": [
+        "Feast 레지스트리 로드 시 ODFV UDF의 모듈 위치 종속성으로 발생하던 역직렬화 오류를 수정하였습니다.",
+        "ODFV 변환 본체 함수를 feature_repo 외부인 src.features.feature_builder로 이동시켰습니다.",
+        "레지스트리가 실행 디렉터리에 종속되지 않도록 검증하는 포터빌리티 테스트를 CI에 배치하였습니다."
+      ],
+      "report_url": "pr/410/"
+    },
     {
       "number": 398,
       "title": "feat: Auto Research 가설 등록용 이슈 템플릿 추가 (#397)",
