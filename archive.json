@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-29T01:00:11Z",
+  "generated_at": "2026-07-29T02:12:55Z",
   "reports": [
+    {
+      "number": 389,
+      "title": "feat: 학습 DuckDB 조립 경로 제거 — build_training_dataset feast-only (#359 C2)",
+      "author": "waieiches",
+      "merged_at": "2026-07-29T02:12:35Z",
+      "summary_ko": [
+        "학습 데이터셋 조립 시 DuckDB 재계산 경로를 제거하고 Feast offline store 단일 경로로 통합했습니다.",
+        "CLI 명령어에서 더 이상 사용하지 않는 데이터 소스 선택 옵션을 삭제하고 학습 기간 인자만 남겼습니다.",
+        "Airflow DAG가 삭제된 CLI 인자를 전달하고 있어 Airflow 및 환경 변수 설정과의 동기 배포가 필요합니다."
+      ],
+      "report_url": "pr/389/"
+    },
     {
       "number": 392,
       "title": "chore: 문서 전용 PR에서 자동 LLM 리뷰·리포트 제외 (#391)",
