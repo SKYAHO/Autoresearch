@@ -13,9 +13,10 @@ from src.features.model_contract import MODEL_FEATURE_COLUMNS
 from src.pipeline import build_training_dataset as btd
 
 
-def test_feast_requires_bigquery_source_and_dates() -> None:
-    with pytest.raises(ValueError, match="assembly_source='feast'"):
-        btd.main(assembly_source="feast", events_source="csv")
+def test_main_requires_event_dates() -> None:
+    # C2 feast-only: 기간(events_start_date/events_end_date) 없이는 조립할 spine을 못 정해 실패.
+    with pytest.raises(ValueError, match="events_start_date/events_end_date"):
+        btd.main()
 
 
 def test_apply_cold_start_defaults_fills_nulls_serving_rule() -> None:
@@ -85,6 +86,28 @@ def test_assemble_via_feast_writes_contract_columns(tmp_path, monkeypatch) -> No
     assert list(written.columns) == [*MODEL_FEATURE_COLUMNS, "clicked"]
     assert len(written) == 1
     assert int(written["clicked"].iloc[0]) == 1
+
+
+def test_assemble_via_feast_empty_warns_and_reports_counts(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    # 관측성(#359 C2 리뷰): UserDynamic 전량 결손(#365)으로 전 행이 gap 드롭돼 학습 0행이면
+    # 조용히 성공하지 않고 조회->드롭->학습 행 수 + 경고를 stdout에 남긴다.
+    row = {c: 0 for c in MODEL_FEATURE_COLUMNS}
+    for c in feast_retrieval._USER_DYNAMIC_COLUMNS:
+        row[c] = None  # 전 UserDynamic null → gap 드롭 대상
+    features = pd.DataFrame([row])
+    features["clicked"] = 1
+    _fake_env(monkeypatch, features)
+
+    out_path = str(tmp_path / "out.csv")
+    btd._assemble_via_feast(out_path, "2026-07-07", "2026-07-21")
+
+    written = pd.read_csv(out_path)
+    assert len(written) == 0  # 전량 드롭
+    out = capsys.readouterr().out
+    assert "조회 1행" in out and "드롭 1행" in out and "학습 0행" in out
+    assert "[경고]" in out
 
 
 def test_assemble_via_feast_missing_feature_raises(tmp_path, monkeypatch) -> None:

@@ -13,30 +13,18 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src import cli  # noqa: E402
 
 
-def test_run_pipeline_forwards_bigquery_sources_to_build_features(monkeypatch):
+def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     build_features_call = {}
-    train_call = {}
-
-    def fake_build_features(**kwargs):
-        build_features_call.update(kwargs)
-
-    def fake_train(**kwargs):
-        train_call.update(kwargs)
-
-    monkeypatch.setattr(cli.build_training_dataset, "main", fake_build_features)
-    monkeypatch.setattr(cli.train, "main", fake_train)
+    # build-features 성공 뒤 lineage가 GCS_REGISTRY_PATH를 필수로 읽는다(#359 C2, 무조건 기록).
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", lambda **kw: build_features_call.update(kw))
+    monkeypatch.setattr(cli.train, "main", lambda **kw: None)
     monkeypatch.setattr(cli.evaluate, "main", MagicMock())
 
     cli.run_pipeline(
-        raw_dir="raw",
-        events_path=None,
         dataset_path="dataset.csv",
-        videos_source="bigquery",
-        personas_path="personas.csv",
-        events_source="bigquery",
         events_start_date="2026-07-01",
         events_end_date="2026-07-08",
-        topic_similarity_source="inmemory",
         config_path=None,
         model_output=None,
         test_set_output="test_set.csv",
@@ -47,69 +35,27 @@ def test_run_pipeline_forwards_bigquery_sources_to_build_features(monkeypatch):
         random_state=None,
     )
 
-    assert build_features_call["videos_source"] == "bigquery"
-    assert build_features_call["events_source"] == "bigquery"
-    assert build_features_call["events_start_date"] == "2026-07-01"
-    assert build_features_call["events_end_date"] == "2026-07-08"
-    assert build_features_call["personas_path"] == "personas.csv"
-
-
-def test_run_pipeline_logs_data_source_lineage_as_train_extra_params(monkeypatch):
-    train_call = {}
-
-    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
-    monkeypatch.setattr(cli.train, "main", lambda **kwargs: train_call.update(kwargs))
-    monkeypatch.setattr(cli.evaluate, "main", MagicMock())
-
-    cli.run_pipeline(
-        raw_dir=None,
-        events_path=None,
-        dataset_path=None,
-        videos_source="bigquery",
-        personas_path=None,
-        events_source="bigquery",
-        events_start_date="2026-07-01",
-        events_end_date="2026-07-08",
-        topic_similarity_source="bigquery",
-        assembly_source="duckdb",
-        config_path=None,
-        model_output=None,
-        test_set_output=None,
-        feature_columns_output=None,
-        categorical_columns_output=None,
-        test_size=None,
-        val_size=None,
-        random_state=None,
-    )
-
-    assert train_call["extra_params"] == {
-        "videos_source": "bigquery",
-        "events_source": "bigquery",
-        "topic_similarity_source": "bigquery",
-        "assembly_source": "duckdb",
+    # C2로 feast-only: build-features에 output_path + 기간만 넘긴다(duckdb 인자 없음).
+    assert build_features_call == {
+        "output_path": "dataset.csv",
         "events_start_date": "2026-07-01",
         "events_end_date": "2026-07-08",
     }
 
 
-def test_run_pipeline_omits_event_dates_from_extra_params_for_csv_source(monkeypatch):
-    train_call = {}
+def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
+    from src.features.feast_retrieval import DEFAULT_SERVICE
 
+    train_call = {}
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
     monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
-    monkeypatch.setattr(cli.train, "main", lambda **kwargs: train_call.update(kwargs))
+    monkeypatch.setattr(cli.train, "main", lambda **kw: train_call.update(kw))
     monkeypatch.setattr(cli.evaluate, "main", MagicMock())
 
     cli.run_pipeline(
-        raw_dir=None,
-        events_path=None,
         dataset_path=None,
-        videos_source="csv",
-        personas_path=None,
-        events_source="csv",
-        events_start_date=None,
-        events_end_date=None,
-        topic_similarity_source="inmemory",
-        assembly_source="duckdb",
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
         config_path=None,
         model_output=None,
         test_set_output=None,
@@ -120,11 +66,13 @@ def test_run_pipeline_omits_event_dates_from_extra_params_for_csv_source(monkeyp
         random_state=None,
     )
 
+    # feast-only lineage: assembly_source=feast + FeatureService + registry + 기간.
     assert train_call["extra_params"] == {
-        "videos_source": "csv",
-        "events_source": "csv",
-        "topic_similarity_source": "inmemory",
-        "assembly_source": "duckdb",
+        "assembly_source": "feast",
+        "feature_service": DEFAULT_SERVICE,
+        "events_start_date": "2026-07-01",
+        "events_end_date": "2026-07-08",
+        "feast_registry_path": "gs://fake/registry.db",
     }
 
 

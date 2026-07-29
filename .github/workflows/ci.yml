@@ -151,6 +151,10 @@ jobs:
       - name: Run training image smoke check
         # 코드가 이미지에 없으므로 로컬 아카이브 주입 모드로 부트스트랩
         # 압축 해제·실행 경로를 검증한다 (Dockerfile.feast와 동일 패턴).
+        # build-features/run-pipeline은 #359 C2에서 feast offline PIT로 조립하도록
+        # 바뀌어 Dockerfile.feast로 실행한다 — feast를 담지 않는 이 train 이미지에서는
+        # 런타임에 feast import가 터지므로, 여기서 --help로 스모크하지 않는다(거짓 green
+        # 방지). 이 이미지가 실제로 실행하는 feast 불필요 서브커맨드만 검증한다.
         run: |
           git archive --format=tar.gz -o /tmp/code-archive.tar.gz HEAD
           run_training() {
@@ -160,10 +164,9 @@ jobs:
               autoresearch-training:ci "$@"
           }
           run_training
-          run_training python -m src.cli build-features --help
           run_training python -m src.cli train-model --help
           run_training python -m src.cli evaluate-model --help
-          run_training python -m src.cli run-pipeline --help
+          run_training python -m src.cli promote-model --help
           if docker run --rm autoresearch-training:ci 2>/dev/null; then
             echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
             exit 1

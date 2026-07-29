@@ -190,28 +190,33 @@ daily는 feast 경로가 이미 정렬돼 있고 default만 미전환(신규 이
   학습 assembly 경로는 C1에서 미변경(C1-1은 daily만) → 4.36GB 그대로 유효.
 - [x] C1-3. 삭제 없음 → duckdb 폴백 유지한 채 병존. C2에서 삭제.
 
-#### C2 (PR 2) — 삭제: 되돌리기 어려움, 공개 계약 무관
-- [ ] C2-0. **착수 전 blast radius 확인**(A2 패턴): in-repo 호출자는 `src/cli.py`뿐(build-features/
-  run-pipeline typer 기본값). **Autoresearch-airflow 학습 DAG가 `--assembly-source`를 명시로 넘기는지
-  (기본 전환 무영향) / 기본에 의존하는지(영향)** 확인 후 cli.py 기본을 feast로 전환.
-- [ ] C2-1. `build_training_dataset` DuckDB 경로 삭제 + 기본 feast. duckdb 전용 함수
-  (`load_videos_from_bigquery`/`load_events_from_bigquery`/`load_user_category_similarity_from_bigquery`/
-  `derive_wide_events`/`padded_dt_range`/`events_kst_window`/`validate_events`/Step 1~3, `assembly_source`
-  스위치)를 정리. cli.py `--assembly-source` 정리.
-- [ ] C2-2. `simulate_policy_round` duckdb 분기 제거(feast-only): `build_pool_feature_frame`(duckdb) +
-  `assembly` import 제거, `--assembly-source` 스위치 제거.
-- [ ] C2-3. **`assembly.compute_*`는 제거하지 않는다(확정)** — daily_recommendations가 여전히
-  `build_pool_feature_frame`로 소비. **최종 제거는 C3(별도 이슈) 완료 후.** daily만 쓰게 된
-  `build_pool_feature_frame`은 `simulate_policy_round`에서 daily가 접근 가능한 위치로 남기거나 이동만.
-- [ ] C2-4. 도구 은퇴: `scripts/diff_feature_contract.py`(#357 diff 하네스, 목적 완료)·
-  `scripts/bench/bench_feature_assembly.py`(duckdb 벤치, 구식) 제거. dead 테스트 정리
-  (`tests/test_features_assembly.py`는 compute_*가 C3까지 남으므로 **유지**; duckdb 경로 전용 테스트만 정리).
-- [ ] C2-5. **#224 close** — 학습 `days_since_upload`가 이벤트 시점(offline snapshot) 기준임을 실측 1건
-  대조 후 #224 close. 모듈 docstring·문서(`--assembly-source` 서술) 정합.
+#### C2 (PR 2) — 삭제: 학습 경로만 (범위 재조정 2026-07-28)
+**범위 재조정:** C2는 **학습(build_training_dataset) DuckDB 제거**로 한정한다. 당초 simulate도
+포함하려 했으나, simulate-feast-only는 (a) `build_pool_feature_frame`(duckdb)을 실제로 못 지우고
+(daily가 import해 소비) (b) 시뮬 라운드 테스트 전체를 fake-store로 갈아엎는 큰 churn인데 삭제 이득은
+스위치뿐 (c) simulate도 기본 duckdb라 feast-only 전환은 daily처럼 airflow 조율이 걸림. simulate는
+daily와 `build_pool_feature_frame`으로 엮여 있으므로 **둘을 함께 C3에서** feast-only+삭제한다.
+- [x] C2-0. **blast radius 확인**(A2 패턴): build_training_dataset `--assembly-source` in-repo 호출자는
+  `src/cli.py`뿐(build-features/run-pipeline). **Autoresearch-airflow 학습 DAG가 이 인자를 명시로 넘기는지
+  확인**은 cross-repo(PR merge gate). cli.py는 duckdb 인자 제거+feast 전환 완료.
+- [x] C2-1. `build_training_dataset` feast-only: main을 (output_path, events 기간)만 받게 축소,
+  duckdb 전용 함수(`load_videos_from_bigquery`/`load_user_category_similarity_from_bigquery`/
+  `padded_dt_range`/`events_kst_window`/`validate_events`/`validate_point_in_time_count`/Step 1~3) 제거.
+  **유지(daily 공유)**: `derive_wide_events`/`load_events_from_bigquery`/`raw`·`feature_table_id`/
+  `connect_duckdb`. cli.py `--assembly-source` 등 duckdb 인자 제거, lineage는 feast로. duckdb 경로
+  테스트 22 + orphan 헬퍼 5 제거, cli/feast_path 테스트 갱신. (커밋 5173904)
+- [x] C2-4. 도구 은퇴: `scripts/diff_feature_contract.py`(#357 diff 하네스) + 테스트 제거. (커밋 25d3909)
+  (`bench_feature_assembly.py`는 git 미추적 로컬 파일이라 무관.)
+- [ ] C2-5. **#224 close** — 학습 `days_since_upload`가 offline snapshot(collected_at, event-time) 기준으로
+  나오는지 대장님 BQ에서 실측 1건 대조 후 #224 close(코드는 C2-1로 이미 feast=offline).
+- **`assembly.compute_*`는 C2에서 제거하지 않는다(확정)** — simulate·daily가 `build_pool_feature_frame`로
+  소비. 최종 제거는 C3.
 
 #### C3 (별도 새 이슈, #299 아래, cross-repo) — #359 밖
-- daily feast-only 전환: 공개 batch 계약 v2 + Autoresearch-airflow(feast 이미지·env·DAG) 조율.
-- 이때 **`assembly.compute_*`·`build_pool_feature_frame`·잔여 duckdb·`test_features_assembly.py` 최종 제거**.
+- **simulate + daily feast-only 전환**(둘이 `build_pool_feature_frame`으로 엮임): `--assembly-source`
+  스위치 제거, 기본 feast. daily는 공개 batch 계약 v2 + Autoresearch-airflow(feast 이미지·env·DAG) 조율.
+- 이때 **`assembly.compute_*`·`build_pool_feature_frame`·잔여 duckdb·`test_features_assembly.py`·
+  시뮬 duckdb 라운드 테스트 최종 제거**.
 - 신규 이슈 발행 시 cross-repo 담당 배정 앵커로 사용.
 
 ## 검증

@@ -21,48 +21,21 @@ app = typer.Typer()
 
 @app.command()
 def build_features(
-    raw_dir: Optional[str] = typer.Option(None, help="Raw 데이터 디렉토리 (기본: data/raw)"),
-    events_path: Optional[str] = typer.Option(None, help="Event log CSV 경로 (기본: data/processed/events.csv)"),
-    output_path: Optional[str] = typer.Option(None, help="출력 CSV 경로 (기본: data/processed/training_dataset.csv)"),
-    videos_source: str = typer.Option(
-        "csv", help="videos 입력 소스: csv(mock) 또는 bigquery(data_lake_youtube_trending_kr)"
-    ),
-    personas_path: Optional[str] = typer.Option(
-        None, help="Persona 파일 경로(로컬 CSV 또는 gs://.../*.parquet, 기본: <raw_dir>/personas.csv)"
-    ),
-    events_source: str = typer.Option(
-        "csv", help="events 입력 소스: csv(mock) 또는 bigquery(data_lake_action_log)"
+    output_path: Optional[str] = typer.Option(
+        None, help="출력 CSV 경로 (기본: data/processed/training_dataset.csv)"
     ),
     events_start_date: Optional[str] = typer.Option(
-        None, help="events-source bigquery일 때 학습 기간 시작일(YYYY-MM-DD)"
+        None, help="학습 기간 시작일 KST YYYY-MM-DD (spine=training_entity 조회)"
     ),
     events_end_date: Optional[str] = typer.Option(
-        None, help="events-source bigquery일 때 학습 기간 종료일(YYYY-MM-DD)"
-    ),
-    topic_similarity_source: str = typer.Option(
-        "inmemory",
-        help="topic_similarity 소스: inmemory(Vertex AI 즉석 계산) 또는 "
-        "bigquery(feast_offline_store.user_category_similarity 사전 계산값 조회, #214/#244)",
-    ),
-    assembly_source: str = typer.Option(
-        "duckdb",
-        help="피처 조립 소스: duckdb(raw 재계산, 기본) 또는 "
-        "feast(offline store를 get_historical_features PIT로 조회, #358). "
-        "feast는 events-source bigquery + 기간 인자 필요.",
+        None, help="학습 기간 종료일 KST YYYY-MM-DD (포함)"
     ),
 ) -> None:
-    """training_dataset.csv 생성."""
+    """training_dataset.csv 생성 (offline feature store PIT 조회, #359 C2로 feast-only)."""
     build_training_dataset.main(
-        raw_dir=raw_dir,
-        events_path=events_path,
         output_path=output_path,
-        videos_source=videos_source,
-        personas_path=personas_path,
-        events_source=events_source,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
-        topic_similarity_source=topic_similarity_source,
-        assembly_source=assembly_source,
     )
 
 
@@ -112,33 +85,12 @@ def evaluate_model(
 
 @app.command()
 def run_pipeline(
-    raw_dir: Optional[str] = typer.Option(None, help="Raw 데이터 디렉토리 (기본: data/raw)"),
-    events_path: Optional[str] = typer.Option(None, help="Event log CSV 경로 (기본: data/processed/events.csv)"),
     dataset_path: Optional[str] = typer.Option(None, help="Training dataset 경로 (기본: data/processed/training_dataset.csv)"),
-    videos_source: str = typer.Option(
-        "csv", help="videos 입력 소스: csv(mock) 또는 bigquery(data_lake_youtube_trending_kr)"
-    ),
-    personas_path: Optional[str] = typer.Option(
-        None, help="Persona 파일 경로(로컬 CSV 또는 gs://.../*.parquet, 기본: <raw_dir>/personas.csv)"
-    ),
-    events_source: str = typer.Option(
-        "csv", help="events 입력 소스: csv(mock) 또는 bigquery(data_lake_action_log)"
-    ),
     events_start_date: Optional[str] = typer.Option(
-        None, help="events-source bigquery일 때 학습 기간 시작일(YYYY-MM-DD)"
+        None, help="학습 기간 시작일 KST YYYY-MM-DD (spine=training_entity 조회)"
     ),
     events_end_date: Optional[str] = typer.Option(
-        None, help="events-source bigquery일 때 학습 기간 종료일(YYYY-MM-DD)"
-    ),
-    topic_similarity_source: str = typer.Option(
-        "inmemory",
-        help="topic_similarity 소스: inmemory(Vertex AI 즉석 계산) 또는 "
-        "bigquery(feast_offline_store.user_category_similarity 사전 계산값 조회, #214/#244)",
-    ),
-    assembly_source: str = typer.Option(
-        "duckdb",
-        help="피처 조립 소스: duckdb(raw 재계산, 기본) 또는 "
-        "feast(offline store PIT 조회, #358). feast는 events-source bigquery + 기간 필요.",
+        None, help="학습 기간 종료일 KST YYYY-MM-DD (포함)"
     ),
     config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
     model_output: Optional[str] = typer.Option(None, help="모델 저장 경로 (config override)"),
@@ -151,45 +103,34 @@ def run_pipeline(
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
     random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
 ) -> None:
-    """전체 파이프라인 실행: build-features -> train-model -> evaluate-model."""
+    """전체 파이프라인 실행: build-features -> train-model -> evaluate-model (#359 C2로 feast-only)."""
     typer.echo("=" * 70)
     typer.echo("전체 파이프라인 실행")
     typer.echo("=" * 70)
 
     typer.echo("\n[1/3] build-features 실행...")
     build_training_dataset.main(
-        raw_dir=raw_dir,
-        events_path=events_path,
         output_path=dataset_path,
-        videos_source=videos_source,
-        personas_path=personas_path,
-        events_source=events_source,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
-        topic_similarity_source=topic_similarity_source,
-        assembly_source=assembly_source,
     )
 
-    # 어떤 소스·기간의 데이터로 학습했는지 MLflow run에 항상 남긴다 — 기본값을
-    # 썼는지 명시값을 썼는지와 무관하게 나중에 조회 가능해야 한다.
-    data_source_params = {
-        "videos_source": videos_source,
-        "events_source": events_source,
-        "topic_similarity_source": topic_similarity_source,
-        "assembly_source": assembly_source,
-    }
-    if events_source == "bigquery":
-        data_source_params["events_start_date"] = events_start_date
-        data_source_params["events_end_date"] = events_end_date
-    if assembly_source == "feast":
-        # feast 경로의 재현성 계보: 어떤 FeatureService 정의와 registry로 만든
-        # 데이터인지 남긴다(#359). registry는 build 단계가 이미 읽은 env를 재사용한다.
-        from src.features.feast_retrieval import DEFAULT_SERVICE
+    # 어떤 기간·소스로 학습했는지 MLflow run에 lineage로 남긴다(#359). C2로 조립 경로는
+    # feast(offline store PIT)가 유일하므로 FeatureService·registry·기간을 기록한다.
+    from src.features.feast_retrieval import DEFAULT_SERVICE
 
-        data_source_params["feature_service"] = DEFAULT_SERVICE
-        feast_registry_path = os.environ.get("GCS_REGISTRY_PATH")
-        if feast_registry_path:
-            data_source_params["feast_registry_path"] = feast_registry_path
+    # run-pipeline은 C2로 feast-only다. 위 build-features(_assemble_via_feast)가
+    # events 기간을 필수로 검증하고 GCS_REGISTRY_PATH를 필수로 읽으므로(미설정이면
+    # 여기 도달 전에 멈춤), 이 시점엔 셋 다 항상 존재한다. 따라서 조립이 필수로 읽는
+    # 값을 lineage는 "있으면 기록"으로 두던 비대칭을 없애고 무조건 기록해, registry나
+    # 기간이 빠진 재현 불가 run이 남지 않게 한다(#359 C2 리뷰).
+    data_source_params = {
+        "assembly_source": "feast",
+        "feature_service": DEFAULT_SERVICE,
+        "events_start_date": events_start_date,
+        "events_end_date": events_end_date,
+        "feast_registry_path": os.environ["GCS_REGISTRY_PATH"],
+    }
 
     typer.echo("\n[2/3] train-model 실행...")
     # train.main은 실현 sampling_rate(#300)를 반환한다 — evaluate가 오프라인
