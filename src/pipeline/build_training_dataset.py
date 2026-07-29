@@ -10,9 +10,11 @@ offline store가 정본(#357)이라 그 값을 그대로 읽는다.
 model input의 이름·순서·categorical 분류는 ``src/features/model_contract.py``가, staged PIT 조회는
 ``src/features/feast_retrieval.py``가 소유한다(이 모듈은 재정의하지 않는다).
 
-[비책임] ``derive_wide_events``(long→wide attribution)와 ``load_events_from_bigquery``는
-일일추천(``daily_recommendations``)이 공유하는 헬퍼라 이 모듈에 남아 있으나, 학습 조립(feast)은
-쓰지 않는다. DuckDB 재계산·mock CSV 입력 경로는 #359 C2에서 제거됐다.
+[비책임] 학습 조립(feast)이 쓰지 않지만 인접 소비자와 공유하느라 이 모듈에 남은 헬퍼:
+``derive_wide_events``(long→wide attribution)·``load_events_from_bigquery``는 일일추천
+(``daily_recommendations``)이, ``load_personas``(+ ``to_personas_frame`` import)는 정책 시뮬레이션
+(``simulate_policy_round``)과 벤치(``scripts/bench/bench_feature_assembly.py``)가 쓴다 —
+이들의 feast 전환(#359 C3)에서 함께 정리한다. DuckDB 재계산·mock CSV 입력 경로는 #359 C2에서 제거됐다.
 """
 
 import os
@@ -326,7 +328,3 @@ def main(
     if output_path is None:
         output_path = os.path.join(get_data_dir(), "processed", "training_dataset.csv")
     _assemble_via_feast(output_path, events_start_date, events_end_date)
-
-
-if __name__ == "__main__":
-    main()
