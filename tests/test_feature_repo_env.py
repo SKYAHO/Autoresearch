@@ -88,3 +88,30 @@ def test_ensure_online_store_env_does_not_override_existing() -> None:
     env = {"AUTORESEARCH_ENV": "dev", "FEAST_ONLINE_FULL_SCAN_FOR_DELETION": "true"}
     assert ensure_online_store_env(env) == "true"
     assert env["FEAST_ONLINE_FULL_SCAN_FOR_DELETION"] == "true"
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_ensure_online_store_env_overwrites_blank(blank: str) -> None:
+    # blank 를 setdefault 로 유지하면 yaml 치환이 `full_scan_for_deletion:` (null)이
+    # 되어 prod 고아 키 GC 가 조용히 꺼진다. 트리거는 .env.example 에서 주석만 푼
+    # `FEAST_ONLINE_FULL_SCAN_FOR_DELETION=` 이다.
+    env = {"FEAST_ONLINE_FULL_SCAN_FOR_DELETION": blank}
+    assert ensure_online_store_env(env) == "true"
+    assert env["FEAST_ONLINE_FULL_SCAN_FOR_DELETION"] == "true"
+
+
+@pytest.mark.parametrize("blank", ["", "   "])
+def test_ensure_online_store_env_blank_derives_dev(blank: str) -> None:
+    # blank 는 미설정과 같으므로 AUTORESEARCH_ENV 파생을 따른다.
+    env = {"AUTORESEARCH_ENV": "dev", "FEAST_ONLINE_FULL_SCAN_FOR_DELETION": blank}
+    assert ensure_online_store_env(env) == "false"
+    assert env["FEAST_ONLINE_FULL_SCAN_FOR_DELETION"] == "false"
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t"])
+def test_ensure_online_store_env_always_returns_yaml_boolean(blank: str) -> None:
+    # 반환 계약: YAML 이 boolean 으로 파싱하는 "true"/"false" 만 나온다.
+    assert ensure_online_store_env({"FEAST_ONLINE_FULL_SCAN_FOR_DELETION": blank}) in {
+        "true",
+        "false",
+    }

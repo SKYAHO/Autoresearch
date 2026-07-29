@@ -104,8 +104,15 @@ def ensure_online_store_env(
     직전에 호출해, materialize·서빙 등 Python 경로가 무설정 시에도 prod(True)로 안전하게
     해석되도록 한다. 배포가 이미 값을 심었으면 덮지 않는다. 반환 문자열은 YAML 이
     boolean 으로 파싱하도록 ``"true"``/``"false"`` 소문자다.
+
+    blank(빈 문자열·공백)는 ``online_full_scan_for_deletion`` 과 동일하게 **미설정**으로
+    보고 덮어쓴다. ``setdefault`` 는 blank 를 "이미 설정됨"으로 취급해 그대로 두는데,
+    그러면 두 함수의 해석이 어긋나고 yaml 치환 결과가 ``full_scan_for_deletion:`` (YAML
+    null)이 된다. Feast 의 해당 필드는 ``Optional[bool]`` 이라 null 이 falsy 로 떨어지면
+    prod 고아 키 GC 가 조용히 꺼진다 — 이 모듈이 막으려는 바로 그 사고다.
     """
     env = os.environ if environment is None else environment
     value = "true" if online_full_scan_for_deletion(env) else "false"
-    env.setdefault(FULL_SCAN_ENV_VAR, value)
+    if not env.get(FULL_SCAN_ENV_VAR, "").strip():
+        env[FULL_SCAN_ENV_VAR] = value
     return env[FULL_SCAN_ENV_VAR]
