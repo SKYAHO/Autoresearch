@@ -318,9 +318,10 @@ def test_main_downsampling_with_explicit_scale_pos_weight_fails_closed(tmp_path,
         _run_train(tmp_path, config_path)
 
 
-def test_main_downsampling_registers_calibration_model(tmp_path, monkeypatch) -> None:
-    # #302: downsampling 학습은 calibration 모델을 별도 등록명으로 등록하고, 그 버전에
-    # main run_id를 짝 식별 tag로 남긴다(서빙 페어링 검증용).
+def test_main_downsampling_logs_calibration_artifact_in_main_run(tmp_path, monkeypatch) -> None:
+    # #390: downsampling 학습은 calibration을 별도 등록하지 않고 main과 같은 run의
+    # 아티팩트(calibration/calibration.json)로 로깅한다(run_id 종속). 서빙은 main run_id로
+    # 이 아티팩트를 읽어 체이닝한다.
     tracking_uri = (tmp_path / "mlruns").as_uri()
     monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
     config_path = tmp_path / "config.yaml"
@@ -331,14 +332,15 @@ def test_main_downsampling_registers_calibration_model(tmp_path, monkeypatch) ->
 
     client = MlflowClient(tracking_uri=tracking_uri)
     [main_version] = client.search_model_versions("name='ctr-model'")
-    [cal_version] = client.search_model_versions("name='ctr-calibration-model'")
-    tags = client.get_model_version("ctr-calibration-model", str(cal_version.version)).tags
-    assert tags["main_run_id"] == main_version.run_id
-    assert float(tags["sampling_rate"]) < 1.0
+    # calibration은 별도 등록 모델이 아니다.
+    assert client.search_model_versions("name='ctr-calibration-model'") == []
+    # 대신 main과 같은 run에 calibration 아티팩트가 있어야 한다.
+    artifacts = client.list_artifacts(main_version.run_id, "calibration")
+    assert any(entry.path.endswith("calibration.json") for entry in artifacts)
 
 
-def test_main_no_downsampling_registers_no_calibration_model(tmp_path, monkeypatch) -> None:
-    # 하위호환: downsampling 미사용(w=1.0)이면 calibration 모델을 등록하지 않는다.
+def test_main_no_downsampling_logs_no_calibration_artifact(tmp_path, monkeypatch) -> None:
+    # 하위호환: downsampling 미사용(w=1.0)이면 calibration 아티팩트를 로깅하지 않는다.
     tracking_uri = (tmp_path / "mlruns").as_uri()
     monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
     config_path = tmp_path / "config.yaml"
@@ -348,7 +350,45 @@ def test_main_no_downsampling_registers_no_calibration_model(tmp_path, monkeypat
     _run_train(tmp_path, config_path)
 
     client = MlflowClient(tracking_uri=tracking_uri)
-    assert client.search_model_versions("name='ctr-calibration-model'") == []
+    [main_version] = client.search_model_versions("name='ctr-model'")
+    assert client.list_artifacts(main_version.run_id, "calibration") == []
+
+
+def test_downsampling_main_without_calibration_artifact_fails_closed(tmp_path, monkeypatch) -> None:
+    # #390 fail-closed(PR #395 리뷰 5): downsampling main(sampling_rate<1.0 tag)인데 그 run에
+    # calibration 아티팩트가 없으면, 서빙 로드가 ModelArtifactError로 기동을 거부해야 한다
+    # (보정 안 된 편향 확률 서빙 방지). 정상 경로는 아티팩트가 항상 있지만, 이 마지막 보루를
+    # 회귀 테스트로 고정한다 — sampling_rate=1.0으로 학습해 calibration 아티팩트 없는 run을
+    # 만든 뒤, main 버전 tag를 0.5로 덮어써 "downsampling인데 아티팩트 없음" 상황을 재현한다.
+    from mlflow.tracking import MlflowClient as _Client
+
+    from src.serving.model_loader import (
+        ModelArtifactError,
+        RegistryModelSettings,
+        load_reranker_with_lineage,
+    )
+
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=1.0)
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    _run_train(tmp_path, config_path)
+
+    client = _Client(tracking_uri=tracking_uri)
+    [main_version] = client.search_model_versions("name='ctr-model'")
+    # calibration 아티팩트가 없는 run인데 downsampling인 것처럼 tag를 덮어쓴다.
+    assert client.list_artifacts(main_version.run_id, "calibration") == []
+    client.set_model_version_tag("ctr-model", main_version.version, "sampling_rate", "0.5")
+    client.set_registered_model_alias("ctr-model", "champion", main_version.version)
+
+    with pytest.raises(ModelArtifactError, match="calibration"):
+        load_reranker_with_lineage(
+            RegistryModelSettings(
+                tracking_uri=tracking_uri, model_name="ctr-model", alias="champion"
+            )
+        )
 
 
 def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> None:
