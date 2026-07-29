@@ -441,6 +441,134 @@ def test_streaming_writer_restores_existing_outputs_when_commit_fails(
     }
 
 
+def test_streaming_writer_retries_unrestored_backup_after_publish_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _request(tmp_path)
+    previous_outputs = {
+        Path(request.output_path): b"previous parquet",
+        Path(request.warehouse_output_path): b'{"previous": "warehouse"}\n',
+        Path(request.quarantine_output_path): b'{"previous": "quarantine"}\n',
+    }
+    for path, contents in previous_outputs.items():
+        path.write_bytes(contents)
+    event = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    original_replace = Path.replace
+    warehouse_target_attempts = 0
+    writer = pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    )
+
+    def fail_publish_then_first_restore(source: Path, target: str | Path) -> Path:
+        nonlocal warehouse_target_attempts
+        if Path(target) == Path(request.warehouse_output_path):
+            warehouse_target_attempts += 1
+            if warehouse_target_attempts == 1:
+                raise OSError("warehouse publish failed")
+            if warehouse_target_attempts == 2:
+                raise OSError("warehouse restore failed")
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", fail_publish_then_first_restore)
+
+    with pytest.raises(OSError, match="warehouse publish failed") as error:
+        with writer:
+            writer.write_events([event])
+            writer.finalize_success("2026-07-30T09:00:00+00:00")
+
+    assert isinstance(error.value.__cause__, ExceptionGroup)
+    assert warehouse_target_attempts == 3
+    assert {path: path.read_bytes() for path in previous_outputs} == previous_outputs
+    assert writer._unrestored_backup_paths == []
+    assert {path.name for path in tmp_path.iterdir()} == {
+        path.name for path in previous_outputs
+    }
+
+
+def test_streaming_writer_preserves_publish_error_and_unrestored_backup_when_cleanup_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    request = _request(tmp_path)
+    previous_outputs = {
+        Path(request.output_path): b"previous parquet",
+        Path(request.warehouse_output_path): b'{"previous": "warehouse"}\n',
+        Path(request.quarantine_output_path): b'{"previous": "quarantine"}\n',
+    }
+    for path, contents in previous_outputs.items():
+        path.write_bytes(contents)
+    event = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    original_replace = Path.replace
+    original_unlink = Path.unlink
+    warehouse_target_attempts = 0
+    writer = pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    )
+
+    def fail_publish_and_all_warehouse_restores(
+        source: Path,
+        target: str | Path,
+    ) -> Path:
+        nonlocal warehouse_target_attempts
+        if Path(target) == Path(request.warehouse_output_path):
+            warehouse_target_attempts += 1
+            if warehouse_target_attempts == 1:
+                raise OSError("warehouse publish failed")
+            raise OSError("warehouse restore failed")
+        return original_replace(source, target)
+
+    def fail_warehouse_spool_cleanup(path: Path, *, missing_ok: bool = False) -> None:
+        if path == writer._warehouse_spool_path:
+            raise OSError("warehouse spool cleanup failed")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "replace", fail_publish_and_all_warehouse_restores)
+    monkeypatch.setattr(Path, "unlink", fail_warehouse_spool_cleanup)
+
+    with caplog.at_level(logging.WARNING, logger=pipeline_module.__name__):
+        with pytest.raises(OSError, match="warehouse publish failed") as error:
+            with writer:
+                writer.write_events([event])
+                writer.finalize_success("2026-07-30T09:00:00+00:00")
+
+    assert isinstance(error.value.__cause__, ExceptionGroup)
+    assert warehouse_target_attempts == 3
+    assert Path(request.output_path).read_bytes() == previous_outputs[
+        Path(request.output_path)
+    ]
+    assert Path(request.quarantine_output_path).read_bytes() == previous_outputs[
+        Path(request.quarantine_output_path)
+    ]
+    assert not Path(request.warehouse_output_path).exists()
+    assert writer._unrestored_backup_paths
+    backup_path, final_path = writer._unrestored_backup_paths[0]
+    assert final_path == Path(request.warehouse_output_path)
+    assert backup_path.exists()
+    assert backup_path.read_bytes() == previous_outputs[final_path]
+    assert backup_path not in writer._spool_paths()
+    assert writer._warehouse_spool_path is not None
+    assert writer._warehouse_spool_path.exists()
+    assert "Unable to remove committed action log spool" in caplog.messages
+
+
 def test_streaming_writer_cleans_tracked_backup_after_unlink_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

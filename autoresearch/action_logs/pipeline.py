@@ -1018,6 +1018,7 @@ class _StreamingActionLogWriter:
         self._warehouse_spool_path: Path | None = None
         self._quarantine_spool_path: Path | None = None
         self._commit_backup_paths: list[Path] = []
+        self._unrestored_backup_paths: list[tuple[Path, Path]] = []
         self._committed = False
 
     @staticmethod
@@ -1075,6 +1076,27 @@ class _StreamingActionLogWriter:
         self._quarantine_file = None
         self._event_sink = None
         self._event_stream = None
+
+    def _restore_unrestored_backups(self) -> None:
+        """이전 rollback에서 복원하지 못한 backup을 best-effort로 다시 복원한다."""
+
+        remaining_backups: list[tuple[Path, Path]] = []
+        for backup_path, final_path in self._unrestored_backup_paths:
+            if not backup_path.exists():
+                continue
+            try:
+                backup_path.replace(final_path)
+            except OSError:
+                remaining_backups.append((backup_path, final_path))
+                logger.error(
+                    "Unable to restore action log backup after failed publish",
+                    extra={
+                        "backup_spool_path": str(backup_path),
+                        "final_path": str(final_path),
+                    },
+                    exc_info=True,
+                )
+        self._unrestored_backup_paths = remaining_backups
 
     def _close_generation_resources(self) -> None:
         if self._exit_stack is None:
@@ -1250,12 +1272,43 @@ class _StreamingActionLogWriter:
             for spool_path, final_path in output_pairs:
                 spool_path.replace(final_path)
                 published_paths.append(final_path)
-        except BaseException:
+        except BaseException as publish_error:
+            rollback_errors: list[Exception] = []
             for published_path in reversed(published_paths):
-                published_path.unlink(missing_ok=True)
+                try:
+                    published_path.unlink(missing_ok=True)
+                except OSError as rollback_error:
+                    rollback_errors.append(rollback_error)
+                    logger.error(
+                        "Unable to remove newly published action log output during rollback",
+                        extra={"final_path": str(published_path)},
+                        exc_info=True,
+                    )
             for backup_path, final_path in reversed(backups):
                 if backup_path.exists():
-                    backup_path.replace(final_path)
+                    try:
+                        backup_path.replace(final_path)
+                    except OSError as rollback_error:
+                        rollback_errors.append(rollback_error)
+                        self._unrestored_backup_paths.append(
+                            (backup_path, final_path)
+                        )
+                        self._commit_backup_paths.remove(backup_path)
+                        logger.error(
+                            "Unable to restore action log backup after failed publish",
+                            extra={
+                                "backup_spool_path": str(backup_path),
+                                "final_path": str(final_path),
+                            },
+                            exc_info=True,
+                        )
+                    else:
+                        self._commit_backup_paths.remove(backup_path)
+            if rollback_errors:
+                raise publish_error from ExceptionGroup(
+                    "action log output rollback failed",
+                    rollback_errors,
+                )
             raise
 
     def finalize_success(
@@ -1300,7 +1353,9 @@ class _StreamingActionLogWriter:
         try:
             self._close_generation_resources()
         finally:
-            self._remove_spools(best_effort=self._committed)
+            if not self._committed:
+                self._restore_unrestored_backups()
+            self._remove_spools(best_effort=self._committed or exc is not None)
 
 
 def _draft_rows(drafts: list[ImpressionDraft]) -> list[dict]:
