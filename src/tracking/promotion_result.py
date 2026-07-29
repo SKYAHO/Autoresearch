@@ -12,10 +12,15 @@
 
 from __future__ import annotations
 
+import os
 from enum import Enum
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Literal
 
 from pydantic import BaseModel
+
+MODEL_PROMOTION_RESULT_CONTRACT = "model-promotion-result-v1"
 
 
 class PromotionOutcome(str, Enum):
@@ -73,3 +78,28 @@ class PromotionExecutionError(RuntimeError):
     ) -> None:
         super().__init__(message)
         self.reason_code = reason_code
+
+
+def write_result_file(result: ModelPromotionResult, path: Path) -> None:
+    """구조화 결과를 같은 디렉토리의 임시 파일을 거쳐 원자적으로 교체한다."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+            temporary_file.write(result.model_dump_json())
+            temporary_file.flush()
+            os.fsync(temporary_file.fileno())
+
+        os.replace(temporary_path, path)
+        temporary_path = None
+    finally:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)

@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
+from src.tracking import promotion_result
 from src.tracking.promotion_result import (
     ModelPromotionResult,
     PromotionOutcome,
     PromotionReasonCode,
+    write_result_file,
 )
 
 
@@ -32,3 +38,54 @@ def test_result_serializes_exact_v1_envelope() -> None:
         "champion_metric": 0.7931,
         "reason_code": "metric_below_champion",
     }
+
+
+def _promoted_result() -> ModelPromotionResult:
+    return ModelPromotionResult(
+        outcome=PromotionOutcome.PROMOTED,
+        model_name="ctr-model",
+        champion_alias="champion",
+        candidate_version="13",
+        champion_version="12",
+        candidate_metric=0.81,
+        champion_metric=0.80,
+        reason_code=PromotionReasonCode.METRIC_NOT_DEGRADED,
+    )
+
+
+def test_write_result_file_creates_parent_and_writes_one_json_object(
+    tmp_path,
+) -> None:
+    target = tmp_path / "xcom" / "return.json"
+
+    write_result_file(_promoted_result(), target)
+
+    assert json.loads(target.read_text(encoding="utf-8"))["outcome"] == "promoted"
+    assert list(target.parent.glob(f".{target.name}.*.tmp")) == []
+
+
+def test_write_result_file_atomically_replaces_existing_target(tmp_path) -> None:
+    target = tmp_path / "return.json"
+    target.write_text('{"outcome":"old"}', encoding="utf-8")
+
+    write_result_file(_promoted_result(), target)
+
+    assert json.loads(target.read_text(encoding="utf-8"))["outcome"] == "promoted"
+
+
+def test_write_result_file_cleans_temporary_file_when_replace_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    target = tmp_path / "return.json"
+
+    def _fail_replace(_source, _target) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(promotion_result.os, "replace", _fail_replace)
+
+    with pytest.raises(OSError, match="replace failed"):
+        write_result_file(_promoted_result(), target)
+
+    assert not target.exists()
+    assert list(tmp_path.glob(f".{target.name}.*.tmp")) == []
