@@ -15,19 +15,26 @@ logger = logging.getLogger(__name__)
 
 
 def _serving_calibration_ready() -> bool:
-    """서빙 추론에 downsampling 보정이 편입됐는지 여부(#300/#302).
+    """서빙 추론에 downsampling 보정이 편입됐는지 여부(#300/#302/#390).
 
-    #302가 서빙에 calibration 체이닝(main → calibration)을 편입·배포하면 이 플래그를
-    켠다. 그 전까지 기본값 False라 downsampling 모델(`sampling_rate<1.0`)은 champion으로
-    승격되지 못한다(보정 안 된 편향 확률이 서빙에 나가는 것 방지).
+    서빙이 calibration 체이닝(main → calibration)을 편입·배포하면 이 플래그를 켠다. 그
+    전까지 기본값 False라 downsampling 모델(`sampling_rate<1.0`)은 champion으로 승격되지
+    못한다(보정 안 된 편향 확률이 서빙에 나가는 것 방지).
 
-    검토 결론(#302): 게이트를 "calibration_model이 Registry에 존재하는가"로 바꾸지 않고
-    **env 플래그를 유지**한다. calibration 모델이 등록돼 있어도 서빙이 실제로 그것을
-    로드·체이닝하려면 배포 측에서 `RERANK_REGISTRY_CALIBRATION_MODEL_NAME` 등을 세팅해야
-    하므로, "모델 존재"는 "서빙이 보정을 적용함"의 충분조건이 아니다. 이 플래그는 서빙
-    calibration 배선이 실제로 라이브임을 나타내는 **배포 결합 신호**이고, main↔calibration
-    버전이 어긋난 조합을 막는 것은 로더의 페어링 fail-closed 검증(model_loader
-    `_resolve_paired_calibration_run_id`)이 런타임에서 담당한다(승격 게이트와 역할 분담).
+    이 플래그는 "서빙 배포본이 실제로 보정을 적용함"을 나타내는 **배포 결합 신호**다.
+    #390에서 calibration은 main과 같은 run의 아티팩트로 종속되어(별도 등록·alias·배선 env
+    없음) 서빙이 main run_id로 함께 로드하므로, main↔calibration 버전이 어긋난 조합은
+    구조적으로 발생하지 않는다(이전의 페어링 검증이 불필요해짐).
+
+    #390 이후 플래그를 `true`로 뒤집기 전 참이어야 하는 조건과 롤백 절차(리뷰 반영):
+
+    - **true의 전제**: 서빙 배포본이 **#390 코드(main run_id로 같은 run의 calibration을
+      로드·체이닝)를 포함**해 라이브여야 한다. "모델·아티팩트 존재"가 아니라 "서빙이 실제로
+      체이닝하도록 배포됨"이 기준이다(자동 판정 불가라 배포 사실을 아는 사람이 명시적으로 켠다).
+    - **롤백 시**: 서빙을 #390 이전(체이닝 미포함)으로 되돌리면, 배포를 수행하는 주체가 이
+      플래그를 **다시 false로 되돌려야** 한다. 안 되돌리면 보정 못 하는 서빙 위에 downsampling
+      champion 승격이 열려 편향 확률이 나갈 수 있다. 이 플래그는 서빙 배포 수명주기에 종속된
+      수동 신호이므로 배포·승격 env를 관리하는 쪽이 소유한다.
     """
     return os.environ.get("CTR_SERVING_CALIBRATION_READY", "false").lower() in (
         "1",

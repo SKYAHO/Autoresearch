@@ -102,107 +102,68 @@ def test_lineage_for_mlflow_and_local_sources(monkeypatch, tmp_path):
     assert (local_resolved.run_id, local_resolved.model_version) == ("local", None)
 
 
-# ── #302 calibration 페어링 fail-closed 검증 ──────────────────
+# ── #390 calibration run_id 종속(같은 run) ──────────────────
 
 
-class _PairingClient:
-    """main / calibration 두 등록 모델을 name으로 분기해 resolve하는 가짜 client.
+class _MainVersionClient:
+    """main alias만 resolve하는 가짜 client(#390 — calibration은 별도 등록하지 않는다).
 
-    main_sampling_rate=None이면 main에 sampling_rate tag 없음(non-downsampling, 예 v6).
+    main_sampling_rate=None이면 sampling_rate tag 없음(non-downsampling, 예 v6).
     """
 
-    def __init__(self, calibration_main_run_id, main_sampling_rate="0.5"):
-        self._cal_main = calibration_main_run_id
+    def __init__(self, main_sampling_rate="0.5"):
         self._main_sr = main_sampling_rate
 
     def get_model_version_by_alias(self, name, alias):
-        if name == "ctr-model":
-            tags = {} if self._main_sr is None else {"sampling_rate": self._main_sr}
-            return SimpleNamespace(run_id="run-main", version=8, tags=tags)
-        return SimpleNamespace(
-            run_id="run-cal", version=3, tags={"main_run_id": self._cal_main}
-        )
+        tags = {} if self._main_sr is None else {"sampling_rate": self._main_sr}
+        return SimpleNamespace(run_id="run-main", version=8, tags=tags)
 
 
 def _registry_settings():
     return RegistryModelSettings(
-        tracking_uri="http://mlflow:5000",
-        model_name="ctr-model",
-        alias="champion",
-        calibration_model_name="ctr-calibration-model",
-        calibration_alias="champion",
+        tracking_uri="http://mlflow:5000", model_name="ctr-model", alias="champion"
     )
 
 
-def test_pairing_mismatch_raises_model_artifact_error(monkeypatch):
-    # calibration이 다른 main(run_id)을 가리키면 서빙 기동을 fail-closed로 막는다.
-    monkeypatch.setattr(model_loader, "MlflowClient", lambda: _PairingClient("OTHER-run"))
-    monkeypatch.setattr(model_loader, "load_mlflow_model", lambda s: _SentinelReranker())
-    with pytest.raises(model_loader.ModelArtifactError, match="페어링"):
-        load_reranker_with_lineage(_registry_settings())
-
-
-def test_pairing_match_loads_and_threads_calibration_run_id(monkeypatch):
-    # 짝이 맞으면 정상 로드하고 calibration run_id를 load_mlflow_model로 넘긴다.
-    captured = {}
-    monkeypatch.setattr(model_loader, "MlflowClient", lambda: _PairingClient("run-main"))
-
+def _capture_load(monkeypatch, captured):
     def _fake(settings):
         captured["settings"] = settings
         return _SentinelReranker()
 
     monkeypatch.setattr(model_loader, "load_mlflow_model", _fake)
+
+
+def test_downsampling_main_threads_same_run_calibration(monkeypatch):
+    # downsampling main이면 calibration을 같은 run(run_id)에서 읽도록 main run_id를 넘긴다.
+    captured = {}
+    monkeypatch.setattr(model_loader, "MlflowClient", lambda: _MainVersionClient("0.5"))
+    _capture_load(monkeypatch, captured)
+
     resolved = load_reranker_with_lineage(_registry_settings())
+
     assert resolved.run_id == "run-main"
-    assert captured["settings"].calibration_run_id == "run-cal"
+    assert captured["settings"].calibration_run_id == "run-main"
 
 
-def test_non_downsampling_main_without_calibration_threads_none(monkeypatch):
-    # non-downsampling main(v6, sampling_rate tag 없음) + calibration 미지정(하위호환)
-    # → 페어링 검증 없이 calibration_run_id=None(항등).
+def test_non_downsampling_main_threads_none(monkeypatch):
+    # non-downsampling main(sampling_rate>=1.0)이면 보정 불필요 → calibration_run_id=None.
     captured = {}
-    monkeypatch.setattr(
-        model_loader, "MlflowClient", lambda: _PairingClient("irrelevant", main_sampling_rate=None)
-    )
+    monkeypatch.setattr(model_loader, "MlflowClient", lambda: _MainVersionClient("1.0"))
+    _capture_load(monkeypatch, captured)
 
-    def _fake(settings):
-        captured["settings"] = settings
-        return _SentinelReranker()
-
-    monkeypatch.setattr(model_loader, "load_mlflow_model", _fake)
-    load_reranker_with_lineage(
-        RegistryModelSettings(
-            tracking_uri="http://mlflow:5000", model_name="ctr-model", alias="champion"
-        )
-    )
-    assert captured["settings"].calibration_run_id is None
-
-
-def test_non_downsampling_main_skips_calibration_even_when_configured(monkeypatch):
-    # 롤백 시나리오(리뷰 반영): main을 v6(non-downsampling)로 롤백했는데 calibration env는
-    # 여전히 설정돼 있어도, main이 보정 불필요이므로 calibration을 스킵한다(서빙 기동 정상).
-    captured = {}
-    monkeypatch.setattr(
-        model_loader, "MlflowClient", lambda: _PairingClient("OTHER-run", main_sampling_rate=None)
-    )
-
-    def _fake(settings):
-        captured["settings"] = settings
-        return _SentinelReranker()
-
-    monkeypatch.setattr(model_loader, "load_mlflow_model", _fake)
     load_reranker_with_lineage(_registry_settings())
+
     assert captured["settings"].calibration_run_id is None
 
 
-def test_downsampling_main_without_calibration_fails_closed(monkeypatch):
-    # downsampling main인데 서빙에 calibration이 구성되지 않았으면 편향 확률 방지를 위해
-    # fail-closed(리뷰 반영 — defense-in-depth).
-    monkeypatch.setattr(model_loader, "MlflowClient", lambda: _PairingClient("run-main"))
-    monkeypatch.setattr(model_loader, "load_mlflow_model", lambda s: _SentinelReranker())
-    with pytest.raises(model_loader.ModelArtifactError, match="calibration이 구성되지"):
-        load_reranker_with_lineage(
-            RegistryModelSettings(
-                tracking_uri="http://mlflow:5000", model_name="ctr-model", alias="champion"
-            )
-        )
+def test_missing_sampling_rate_tag_threads_none(monkeypatch):
+    # sampling_rate tag 없는 기존 모델(v6)은 non-downsampling으로 간주 → 항등(None).
+    captured = {}
+    monkeypatch.setattr(
+        model_loader, "MlflowClient", lambda: _MainVersionClient(main_sampling_rate=None)
+    )
+    _capture_load(monkeypatch, captured)
+
+    load_reranker_with_lineage(_registry_settings())
+
+    assert captured["settings"].calibration_run_id is None

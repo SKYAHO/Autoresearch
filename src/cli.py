@@ -172,15 +172,30 @@ def promote_model(
     model_name: str = typer.Option("ctr-model", help="Registry에 등록된 main 모델 이름"),
     champion_alias: str = typer.Option("champion", help="승격 대상 alias"),
     calibration_model_name: str = typer.Option(
-        "ctr-calibration-model", help="짝 calibration 모델 이름(downsampling 후보용)"
+        "ctr-calibration-model",
+        help="[DEPRECATED · 무시됨] #390에서 calibration은 main run에 종속돼 별도 등록하지 않습니다. "
+        "호출 계약 하위호환을 위해 인자만 남겨두며 값은 사용하지 않습니다.",
     ),
 ) -> None:
-    """게이트(지표 비교 + downsampling 페어링) 통과 시 신규 후보를 champion으로 승격."""
+    """게이트(지표 비교 + downsampling calibration 아티팩트 존재) 통과 시 신규 후보를 champion으로 승격.
+
+    calibration_model_name은 #390에서 무시된다(deprecated). Airflow DAG(Autoresearch-airflow#137)가
+    아직 이 플래그를 넘기더라도 기동이 깨지지 않도록 인자 표면만 유지하며, DAG에서 플래그를 제거한
+    뒤 후속 PR로 이 인자를 걷어낸다.
+    """
+    # 기본값과 다른 값이 명시적으로 넘어오면 stderr에 deprecation 경고를 남긴다 — DAG가
+    # 기본값과 같은 문자열을 넘기면 감지 못하지만(한계), 다른 값이면 "아직 호출부가 이 플래그를
+    # 쓰고 있다"는 신호를 로그로 남겨 언제 걷어내도 되는지 추적하게 한다(#395 리뷰).
+    if calibration_model_name != "ctr-calibration-model":
+        typer.echo(
+            "[경고] --calibration-model-name은 #390에서 무시됩니다(deprecated). "
+            "호출부(DAG)에서 이 플래그를 제거해 주세요.",
+            err=True,
+        )
     try:
         promoted_version = promote.main(
             model_name=model_name,
             champion_alias=champion_alias,
-            calibration_model_name=calibration_model_name,
         )
     except promote.GateRejectedError as exc:
         typer.echo(f"[게이트 미달] {exc}", err=True)

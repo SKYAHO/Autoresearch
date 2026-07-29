@@ -6,11 +6,11 @@
 호출하는 promote-model CLI(src/cli.py)의 판정 본체다.
 
 [기능] 최신 등록 버전을 후보로 삼아 held-out 지표(val_roc_auc)가 현재
-champion 이상인지, downsampling 후보면 짝 calibration 버전이 등록돼 있는지
-확인한 뒤 게이트를 통과하면 champion(+짝 calibration) alias를 옮긴다.
+champion 이상인지, downsampling 후보면 같은 run에 calibration 아티팩트가
+있는지 확인한 뒤 게이트를 통과하면 champion alias를 옮긴다(#390 단일 기준).
 
-[비책임] 서빙 시점 alias resolve·페어링 검증(src/serving/model_loader.py의
-_resolve_paired_calibration_run_id), Airflow DAG 스케줄링·재시도
+[비책임] 서빙 시점 alias resolve·calibration 로드(src/serving/model_loader.py의
+_resolve_calibration_run_id), Airflow DAG 스케줄링·재시도
 (Autoresearch-airflow).
 """
 
@@ -20,6 +20,7 @@ import os
 from typing import Optional
 
 from mlflow.tracking import MlflowClient
+from src.models.calibration import CALIBRATION_PARAM_FILENAME
 from src.tracking.client import set_tracking_uri
 from src.tracking.registry import (
     get_latest_version,
@@ -30,7 +31,7 @@ from src.tracking.registry import (
 
 
 class GateRejectedError(RuntimeError):
-    """게이트 조건(지표 비교 또는 downsampling 페어링) 미달로 승격이 거부됨."""
+    """게이트 조건(지표 비교 또는 downsampling calibration 아티팩트 부재) 미달로 승격이 거부됨."""
 
 
 def _run_id_for_version(versions: list[dict], version: str) -> str:
@@ -40,33 +41,33 @@ def _run_id_for_version(versions: list[dict], version: str) -> str:
     raise ValueError(f"버전 {version}의 run_id를 찾을 수 없습니다.")
 
 
-def _find_paired_calibration_version(
-    client: MlflowClient, calibration_model_name: str, main_run_id: str
-) -> Optional[str]:
-    """calibration_model_name 버전 중 main_run_id tag가 일치하는 버전을 찾는다.
+def _run_has_calibration_artifact(client: MlflowClient, run_id: str) -> bool:
+    """run에 calibration 아티팩트(calibration/calibration.json)가 있으면 True.
 
-    model_loader._resolve_paired_calibration_run_id와 검증 불변식은 같지만
-    조회 방향이 다르다(그쪽은 "이미 alias된 조합이 맞는가", 이쪽은 "alias
-    걸기 전에 짝이 존재하는가") — 그래서 직접 재사용 대신 경량 재구현한다.
+    아티팩트 스토어 접근 실패(인프라 오류)는 "게이트 미달"(GateRejectedError)과 구분해야
+    한다 — 전자는 재시도·인프라 점검 대상이고 후자는 재학습 대상이라 운영 대응이 다르다.
+    그래서 list_artifacts 예외를 GateRejectedError로 삼키지 않고 RuntimeError로 감싸 그대로
+    전파한다(CLI에서 "[게이트 미달]"이 아니라 "[에러]"로 갈리고, DAG 알림도 구분 가능).
     """
-    versions = client.search_model_versions(f"name='{calibration_model_name}'")
-    matches = [v for v in versions if (v.tags or {}).get("main_run_id") == main_run_id]
-    if not matches:
-        return None
-    return max(matches, key=lambda v: int(v.version)).version
+    try:
+        artifacts = client.list_artifacts(run_id, "calibration")
+    except Exception as error:
+        raise RuntimeError(
+            f"calibration 아티팩트 존재 확인 중 아티팩트 스토어 접근에 실패했습니다"
+            f"(인프라 오류, run={run_id}): {error}"
+        ) from error
+    return any(entry.path.endswith(CALIBRATION_PARAM_FILENAME) for entry in artifacts)
 
 
 def main(
     model_name: str,
     champion_alias: str,
-    calibration_model_name: str,
 ) -> Optional[str]:
-    """게이트 통과 시 champion(+짝 calibration) alias를 최신 후보 버전으로 옮긴다.
+    """게이트 통과 시 champion alias를 최신 후보 버전으로 옮긴다(#390 단일 기준).
 
     Args:
         model_name: main 모델 registry 이름.
         champion_alias: 승격 대상 alias(보통 'champion').
-        calibration_model_name: 짝 calibration 모델 registry 이름.
 
     Returns:
         승격된 후보 버전 문자열. 평가할 신규 후보가 없으면(등록된 버전이
@@ -75,7 +76,7 @@ def main(
     Raises:
         GateRejectedError: 게이트 조건 미달로 승격 거부.
         ValueError: 후보 버전의 run에 val_roc_auc 지표가 없음(데이터 결함).
-        (기타) MLflow 연결 실패 등 실행 중 오류는 그대로 전파한다.
+        (기타) MLflow 연결·아티팩트 스토어 접근 실패 등 실행 중 오류는 그대로 전파한다.
     """
     set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
     candidate_version = get_latest_version(model_name)
@@ -118,26 +119,19 @@ def main(
 
     candidate_mv = client.get_model_version(name=model_name, version=candidate_version)
     sampling_rate = float((candidate_mv.tags or {}).get("sampling_rate", 1.0))
-    calibration_version: Optional[str] = None
     if sampling_rate < 1.0:
-        calibration_version = _find_paired_calibration_version(
-            client, calibration_model_name, candidate_run_id
-        )
-        if calibration_version is None:
+        # downsampling 후보는 같은 run에 calibration 아티팩트가 있어야 한다(#390 run_id 종속).
+        # 서빙이 승격 후 main run_id로 이 아티팩트를 로드하므로, 없으면 보정 안 된 편향 확률이
+        # 나간다 — 승격 전에 fail-closed로 막는다(서빙 로더도 런타임에서 한 번 더 방어).
+        if not _run_has_calibration_artifact(client, candidate_run_id):
             raise GateRejectedError(
                 f"게이트2 미달: 후보 {model_name} v{candidate_version}는 "
-                f"downsampling(sampling_rate={sampling_rate})인데 "
-                f"{calibration_model_name}에 main_run_id={candidate_run_id}와 "
-                "짝지어진 버전이 없습니다."
+                f"downsampling(sampling_rate={sampling_rate})인데 run({candidate_run_id})에 "
+                f"calibration 아티팩트(calibration/{CALIBRATION_PARAM_FILENAME})가 없습니다."
             )
 
-    # main alias를 먼저, calibration을 나중에 옮긴다 — 부분 실패(main 성공 후
-    # calibration 실패) 시 "main=새 버전, calibration=옛 버전" 조합이 남을 수
-    # 있다("calibration=새, main=옛" 조합은 이 순서상 애초에 발생할 수 없다).
-    # 어느 조합이든 서빙의 fail-closed 페어링 검증(main_run_id tag 불일치)이
-    # 막아주므로 안전하지만, 이 재현 자체를 자동으로 정합화하지는 않는다 —
-    # 재실행 시 같은 candidate_run_id로 다시 페어링을 찾아 이어간다.
+    # 승격 기준은 main 하나뿐이다(#390). calibration은 이 후보와 같은 run에 종속돼 있어 서빙이
+    # main run_id로 함께 로드하므로, 별도 alias를 옮길 필요가 없고 두 alias의 비원자 전환에서
+    # 오던 어긋난 조합(동기화) 문제 자체가 사라진다.
     set_model_alias(model_name, champion_alias, candidate_version)
-    if calibration_version is not None:
-        set_model_alias(calibration_model_name, champion_alias, calibration_version)
     return candidate_version
