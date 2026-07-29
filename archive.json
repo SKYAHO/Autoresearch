@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-29T09:18:21Z",
+  "generated_at": "2026-07-29T09:59:36Z",
   "reports": [
+    {
+      "number": 414,
+      "title": "feat: 모델 승격 구조화 결과 계약 추가",
+      "author": "Noah-JuYong",
+      "merged_at": "2026-07-29T09:59:14Z",
+      "summary_ko": [
+        "MLflow 모델 승격 과정에서 게이트 판정 결과를 정형화하여 전달하기 위한 model-promotion-result-v1 JSON 계약을 추가하였습니다.",
+        "게이트 미달(rejected), 후보 없음(no_candidate), 승격 완료(promoted)를 실제 장애(error)와 분리하여 처리할 수 있도록 개선하였습니다.",
+        "Airflow XCom 파일 기록 및 stdout 출력을 지원하며, 옵션 미지정 시 기존 레거시 출력과 종료 코드를 유지하여 하위 호환성을 보장합니다."
+      ],
+      "report_url": "pr/414/"
+    },
     {
       "number": 410,
       "title": "fix: ODFV 변환 본체를 feature_repo 밖으로 이동 (레지스트리 위치 종속 제거 #409)",
