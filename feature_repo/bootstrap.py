@@ -105,8 +105,16 @@ def ensure_repo_importable(repo_path: str | Path) -> Path:
 
 
 def load_feature_store(repo_path: str | Path) -> object:
-    """지정한 repository path로 Feast FeatureStore를 생성한다."""
+    """지정한 repository path로 Feast FeatureStore를 생성한다.
+
+    ``feature_store.yaml``의 ``full_scan_for_deletion: ${FEAST_ONLINE_FULL_SCAN_FOR_DELETION}``
+    치환이 성립하도록, config를 읽기 전에 그 env 기본값을 채운다(prod/dev 환경
+    분리, #399 — prod=true, dev=false). 배포가 이미 심은 값은 덮지 않는다.
+    """
     resolved = ensure_repo_importable(repo_path)
+    from feature_repo.env import ensure_online_store_env
+
+    ensure_online_store_env()
     from feast import FeatureStore
 
     return FeatureStore(repo_path=str(resolved))

@@ -336,8 +336,10 @@ def build_offline_feature_store(
     store를 sqlite 더미로 둔다. 덕분에 offline 학습 잡이 REDIS_* / redis 어댑터에 의존하지
     않으며, 검증 스크립트가 실제로 돌린 것과 동일한 store 구성이 정본 경로가 된다.
 
-    ``registry_path``는 배포 apply job(#346)이 갱신하는 prod 레지스트리(GCS)를 가리킨다.
-    ``project``는 Feast 프로젝트명(feature_store.yaml과 동일, 변경 시 registry 분리).
+    ``registry_path``는 배포 apply job(#346)이 갱신하는 레지스트리(GCS)를 가리킨다 —
+    prod/dev 환경 분리(#399)에서 배포가 환경별 경로(prod/dev)를 주입한다. Feast
+    ``project`` 네임스페이스는 registry 경로가 이미 환경을 가르므로 prod/dev 공통이다.
+    ``project`` 인자는 offline BigQuery의 GCP project_id 이며 네임스페이스와는 별개다.
     """
     from feast import FeatureStore, RepoConfig
     from feast.repo_config import RegistryConfig
