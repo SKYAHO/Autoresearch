@@ -172,15 +172,21 @@ def promote_model(
     model_name: str = typer.Option("ctr-model", help="Registry에 등록된 main 모델 이름"),
     champion_alias: str = typer.Option("champion", help="승격 대상 alias"),
     calibration_model_name: str = typer.Option(
-        "ctr-calibration-model", help="짝 calibration 모델 이름(downsampling 후보용)"
+        "ctr-calibration-model",
+        help="[DEPRECATED · 무시됨] #390에서 calibration은 main run에 종속돼 별도 등록하지 않습니다. "
+        "호출 계약 하위호환을 위해 인자만 남겨두며 값은 사용하지 않습니다.",
     ),
 ) -> None:
-    """게이트(지표 비교 + downsampling 페어링) 통과 시 신규 후보를 champion으로 승격."""
+    """게이트(지표 비교 + downsampling calibration 아티팩트 존재) 통과 시 신규 후보를 champion으로 승격.
+
+    calibration_model_name은 #390에서 무시된다(deprecated). Airflow DAG(Autoresearch-airflow#137)가
+    아직 이 플래그를 넘기더라도 기동이 깨지지 않도록 인자 표면만 유지하며, DAG에서 플래그를 제거한
+    뒤 후속 PR로 이 인자를 걷어낸다.
+    """
     try:
         promoted_version = promote.main(
             model_name=model_name,
             champion_alias=champion_alias,
-            calibration_model_name=calibration_model_name,
         )
     except promote.GateRejectedError as exc:
         typer.echo(f"[게이트 미달] {exc}", err=True)

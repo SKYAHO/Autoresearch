@@ -82,12 +82,32 @@ def test_promote_model_prints_ok_and_exits_zero_on_success(monkeypatch, capsys):
     cli.promote_model(
         model_name="ctr-model",
         champion_alias="champion",
-        calibration_model_name="ctr-calibration-model",
     )
 
     out = capsys.readouterr().out
     assert "[OK]" in out
     assert "v4" in out
+
+
+def test_promote_model_accepts_deprecated_calibration_flag_and_ignores_it(monkeypatch, capsys):
+    # #390: calibration_model_name은 무시되지만, Airflow DAG 하위호환을 위해 인자는 받아들여야
+    # 하고 promote.main으로는 전달되지 않아야 한다.
+    captured = {}
+
+    def _fake_main(**kwargs):
+        captured.update(kwargs)
+        return "4"
+
+    monkeypatch.setattr(cli.promote, "main", _fake_main)
+
+    cli.promote_model(
+        model_name="ctr-model",
+        champion_alias="champion",
+        calibration_model_name="ctr-calibration-model",
+    )
+
+    assert "calibration_model_name" not in captured
+    assert "[OK]" in capsys.readouterr().out
 
 
 def test_promote_model_prints_noop_message_when_no_candidate(monkeypatch, capsys):
@@ -96,7 +116,6 @@ def test_promote_model_prints_noop_message_when_no_candidate(monkeypatch, capsys
     cli.promote_model(
         model_name="ctr-model",
         champion_alias="champion",
-        calibration_model_name="ctr-calibration-model",
     )
 
     out = capsys.readouterr().out
@@ -113,7 +132,6 @@ def test_promote_model_exits_nonzero_with_gate_rejected_prefix(monkeypatch, caps
         cli.promote_model(
             model_name="ctr-model",
             champion_alias="champion",
-            calibration_model_name="ctr-calibration-model",
         )
 
     assert exc_info.value.exit_code == 1
@@ -133,7 +151,6 @@ def test_promote_model_exits_nonzero_with_error_prefix_on_unexpected_exception(
         cli.promote_model(
             model_name="ctr-model",
             champion_alias="champion",
-            calibration_model_name="ctr-calibration-model",
         )
 
     assert exc_info.value.exit_code == 1
