@@ -1082,9 +1082,9 @@ class _StreamingActionLogWriter:
 
         remaining_backups: list[tuple[Path, Path]] = []
         for backup_path, final_path in self._unrestored_backup_paths:
-            if not backup_path.exists():
-                continue
             try:
+                if not backup_path.exists():
+                    continue
                 backup_path.replace(final_path)
             except OSError:
                 remaining_backups.append((backup_path, final_path))
@@ -1285,25 +1285,24 @@ class _StreamingActionLogWriter:
                         exc_info=True,
                     )
             for backup_path, final_path in reversed(backups):
-                if backup_path.exists():
-                    try:
+                restore_pair = (backup_path, final_path)
+                self._commit_backup_paths.remove(backup_path)
+                self._unrestored_backup_paths.append(restore_pair)
+                try:
+                    if backup_path.exists():
                         backup_path.replace(final_path)
-                    except OSError as rollback_error:
-                        rollback_errors.append(rollback_error)
-                        self._unrestored_backup_paths.append(
-                            (backup_path, final_path)
-                        )
-                        self._commit_backup_paths.remove(backup_path)
-                        logger.error(
-                            "Unable to restore action log backup after failed publish",
-                            extra={
-                                "backup_spool_path": str(backup_path),
-                                "final_path": str(final_path),
-                            },
-                            exc_info=True,
-                        )
-                    else:
-                        self._commit_backup_paths.remove(backup_path)
+                except OSError as rollback_error:
+                    rollback_errors.append(rollback_error)
+                    logger.error(
+                        "Unable to restore action log backup after failed publish",
+                        extra={
+                            "backup_spool_path": str(backup_path),
+                            "final_path": str(final_path),
+                        },
+                        exc_info=True,
+                    )
+                else:
+                    self._unrestored_backup_paths.remove(restore_pair)
             if rollback_errors:
                 raise publish_error from ExceptionGroup(
                     "action log output rollback failed",
