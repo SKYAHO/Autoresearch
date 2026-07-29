@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-29T11:36:07Z",
+  "generated_at": "2026-07-29T13:37:57Z",
   "reports": [
+    {
+      "number": 400,
+      "title": "feat: 피처 스토어 prod/dev 환경 셀렉터 도입 (Redis-free dev, #399)",
+      "author": "hyochangsung",
+      "merged_at": "2026-07-29T13:37:35Z",
+      "summary_ko": [
+        "피처 스토어에 prod/dev 환경 셀렉터를 도입하여 운영 및 실험 네임스페이스를 분리하였습니다.",
+        "AUTORESEARCH_ENV 및 FEAST_PROJECT 환경 변수를 통해 네임스페이스를 동적으로 해석하도록 구성하였습니다.",
+        "기본값 prod 설정을 유지하여 기존 프로덕션 환경의 정상 동작과 하위 호환성을 보증합니다."
+      ],
+      "report_url": "pr/400/"
+    },
     {
       "number": 414,
       "title": "feat: 모델 승격 구조화 결과 계약 추가",
