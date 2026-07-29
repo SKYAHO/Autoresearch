@@ -7,7 +7,7 @@ import weakref
 from concurrent.futures import Future
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Event
+from threading import Event, Thread
 from types import MappingProxyType, TracebackType
 from typing import Callable, Never, Self
 
@@ -1536,7 +1536,7 @@ def test_streaming_single_bounds_active_users_and_invokes_provider_on_coordinato
     coordinator_thread = get_ident()
     provider_threads: list[int] = []
     provider_order: list[str] = []
-    provider_calls_seen_by_generator: list[int] = []
+    snapshots: list[pipeline_module._StreamingRetentionSnapshot] = []
     videos = build_fixture_video_records(2)
 
     def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
@@ -1544,12 +1544,7 @@ def test_streaming_single_bounds_active_users_and_invokes_provider_on_coordinato
         provider_order.append(virtual_user["user_id"])
         return [videos[0]]
 
-    class _RecordingGenerator(RuleBasedActionLogGenerator):
-        def generate(self, virtual_user: dict, candidates: list[dict]) -> str:
-            provider_calls_seen_by_generator.append(len(provider_order))
-            return super().generate(virtual_user, candidates)
-
-    users = _fixture_users(7)
+    users = _fixture_users(9)
     pipeline_module.generate_action_log_single(
         _request(
             tmp_path,
@@ -1558,13 +1553,14 @@ def test_streaming_single_bounds_active_users_and_invokes_provider_on_coordinato
         ),
         users,
         videos,
-        _RecordingGenerator(),
+        RuleBasedActionLogGenerator(),
         candidate_provider=provider,
+        _retention_observer=snapshots.append,
     )
 
     assert provider_order == [user["user_id"] for user in users]
     assert set(provider_threads) == {coordinator_thread}
-    assert min(provider_calls_seen_by_generator) <= 2
+    assert max(snapshot.active_users for snapshot in snapshots) <= 4 * 2
 
 
 def test_streaming_single_consumes_mutable_exposure_metadata_per_drained_user(
@@ -1603,7 +1599,9 @@ def test_streaming_single_consumes_mutable_exposure_metadata_per_drained_user(
     )
 
     assert result.execution_mode == "streaming"
-    assert max(sizes_before_provider) <= 2
+    assert max(sizes_before_provider) <= (
+        4 * request.max_concurrency * request.candidates_per_user
+    )
     assert metadata == {}
     rows = pq.read_table(request.output_path, columns=["exposure_source"]).to_pylist()
     assert {row["exposure_source"] for row in rows} == {"model"}
@@ -1835,11 +1833,13 @@ def test_streaming_single_preserves_quarantine_order_counts_and_file(
         max_concurrency=3,
         max_quarantine_ratio=0.5,
     )
+    snapshots: list[pipeline_module._StreamingRetentionSnapshot] = []
     result = pipeline_module.generate_action_log_single(
         request,
         _fixture_users(5),
         build_fixture_video_records(4),
         _TwoBadUsers(),
+        _retention_observer=snapshots.append,
     )
 
     quarantined = [
@@ -1851,6 +1851,10 @@ def test_streaming_single_preserves_quarantine_order_counts_and_file(
     assert result.summary["quarantined_users"] == 2
     assert result.summary["invalid_json"] == 2
     assert [row["user_id"] for row in quarantined] == ["vu_0001", "vu_0003"]
+    final_snapshot = snapshots[-1]
+    assert final_snapshot.completed_work == final_snapshot.total_work == 5
+    assert final_snapshot.failed_work == 2
+    assert final_snapshot.pending_work == 0
 
 
 def test_streaming_single_raises_after_writing_quarantine_when_ratio_exceeded(
@@ -1883,6 +1887,60 @@ def test_streaming_single_raises_after_writing_quarantine_when_ratio_exceeded(
     ) == 3
 
 
+def test_streaming_single_keeps_workers_busy_behind_slow_head_user(
+    tmp_path,
+) -> None:
+    """완료된 뒤쪽 work가 느린 선두 user를 기다리지 않고 worker를 이어받는다."""
+
+    users = _fixture_users(3)
+    videos = build_fixture_video_records(1)
+    first_user = users[0]["user_id"]
+    third_user = users[2]["user_id"]
+    first_started = Event()
+    third_started = Event()
+    release_first = Event()
+    worker_errors: list[BaseException] = []
+
+    class _SlowHeadGenerator(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user: dict, candidates: list[dict]) -> str:
+            user_id = virtual_user["user_id"]
+            if user_id == first_user:
+                first_started.set()
+                assert release_first.wait(timeout=5.0)
+            elif user_id == third_user:
+                third_started.set()
+            return super().generate(virtual_user, candidates)
+
+    def run_generation() -> None:
+        try:
+            pipeline_module.generate_action_log_single(
+                _request(
+                    tmp_path,
+                    candidates_per_user=1,
+                    chunk_size=1,
+                    max_concurrency=2,
+                ),
+                users,
+                videos,
+                _SlowHeadGenerator(),
+                candidate_provider=lambda _virtual_user, _user_rng: list(videos),
+            )
+        except BaseException as error:  # noqa: BLE001 - test thread boundary
+            worker_errors.append(error)
+
+    generation_thread = Thread(target=run_generation)
+    generation_thread.start()
+    try:
+        assert first_started.wait(timeout=2.0)
+        assert third_started.wait(timeout=2.0)
+    finally:
+        release_first.set()
+        generation_thread.join(timeout=5.0)
+
+    assert not generation_thread.is_alive()
+    assert worker_errors == []
+
+
 def test_streaming_single_retained_payload_is_bounded_by_active_users(
     tmp_path,
 ) -> None:
@@ -1906,25 +1964,82 @@ def test_streaming_single_retained_payload_is_bounded_by_active_users(
     )
 
     assert snapshots
-    assert max(item.active_users for item in snapshots) <= max_concurrency
+    assert all(
+        item.phase in {"generating", "finalizing"} for item in snapshots
+    )
+    assert all(isinstance(item.active_users, int) for item in snapshots)
+    assert all(isinstance(item.buffered_drafts, int) for item in snapshots)
+    assert all(isinstance(item.buffered_events, int) for item in snapshots)
+    assert all(isinstance(item.in_flight_work, int) for item in snapshots)
+    assert all(isinstance(item.activated_users, int) for item in snapshots)
+    assert all(isinstance(item.total_users, int) for item in snapshots)
+    assert all(isinstance(item.submitted_work, int) for item in snapshots)
+    assert all(
+        item.total_work is None or isinstance(item.total_work, int)
+        for item in snapshots
+    )
+    assert all(isinstance(item.completed_work, int) for item in snapshots)
+    assert all(isinstance(item.failed_work, int) for item in snapshots)
+    assert all(
+        item.pending_work is None or isinstance(item.pending_work, int)
+        for item in snapshots
+    )
+    assert max(item.active_users for item in snapshots) <= 4 * max_concurrency
+    assert max(item.in_flight_work for item in snapshots) <= max_concurrency
     assert max(item.buffered_drafts for item in snapshots) <= (
-        max_concurrency * candidates_per_user
+        4 * max_concurrency * candidates_per_user
     )
-    # 한 사용자는 impressions N개와 최대 click/view/like 각 1개만 만든다.
-    assert max(item.buffered_events for item in snapshots) <= (
-        candidates_per_user + 3
+    assert max(item.buffered_events for item in snapshots) <= 50_000
+    assert [item.activated_users for item in snapshots] == sorted(
+        item.activated_users for item in snapshots
     )
+    assert any(
+        item.total_work is None and item.pending_work is None for item in snapshots
+    )
+    exhausted_snapshots = [
+        item for item in snapshots if item.total_work is not None
+    ]
+    assert exhausted_snapshots
+    assert any(
+        item.pending_work is not None
+        and item.pending_work > 0
+        and item.pending_work
+        == item.total_work - item.completed_work - item.in_flight_work
+        for item in exhausted_snapshots
+    )
+    assert all(
+        item.pending_work
+        == item.total_work - item.completed_work - item.in_flight_work
+        for item in exhausted_snapshots
+    )
+    generating_snapshots = [
+        item for item in snapshots if item.phase == "generating"
+    ]
+    assert generating_snapshots[-1].pending_work == 0
     event_buffer_positions = [
         index
-        for index, item in enumerate(snapshots)
+        for index, item in enumerate(generating_snapshots)
         if item.buffered_events > 0
     ]
     assert len(event_buffer_positions) == len(users)
     assert all(
-        snapshots[index + 1].buffered_events == 0
+        generating_snapshots[index + 1].buffered_events == 0
         for index in event_buffer_positions
     )
-    assert snapshots[-1].buffered_events == 0
+    final_snapshot = snapshots[-1]
+    assert final_snapshot.phase == "finalizing"
+    assert final_snapshot.active_users == 0
+    assert final_snapshot.buffered_drafts == 0
+    assert final_snapshot.buffered_events == 0
+    assert final_snapshot.in_flight_work == 0
+    assert final_snapshot.pending_work == 0
+    assert final_snapshot.activated_users == len(users)
+    assert final_snapshot.total_users == len(users)
+    assert final_snapshot.completed_work == final_snapshot.total_work
+    assert any(
+        item.phase == "finalizing" and item.buffered_events > 0
+        for item in snapshots
+    )
     assert any(item.buffered_drafts == 0 for item in snapshots)
 
 
@@ -1932,12 +2047,11 @@ def test_streaming_single_releases_completed_future_drafts_before_next_provider(
     tmp_path,
     monkeypatch,
 ) -> None:
-    users = _fixture_users(2)
+    users = _fixture_users(5)
     videos = build_fixture_video_records(3)
     first_user = users[0]["user_id"]
-    second_user = users[1]["user_id"]
+    next_user = users[4]["user_id"]
     first_draft_refs: list[weakref.ReferenceType[ImpressionDraft]] = []
-    zero_buffer_after_first_user = Event()
     provider_order: list[str] = []
     original_work: Callable[..., _ActionLogCallResult] = (
         pipeline_module._generate_action_log_work
@@ -2011,16 +2125,11 @@ def test_streaming_single_releases_completed_future_drafts_before_next_provider(
     def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
         user_id = str(virtual_user["user_id"])
         provider_order.append(user_id)
-        if user_id == second_user:
-            assert zero_buffer_after_first_user.is_set()
+        if user_id == next_user:
             assert first_draft_refs
             gc.collect()
             assert all(draft_ref() is None for draft_ref in first_draft_refs)
         return list(videos)
-
-    def observer(snapshot: pipeline_module._StreamingRetentionSnapshot) -> None:
-        if snapshot.active_users == 0 and snapshot.buffered_drafts == 0:
-            zero_buffer_after_first_user.set()
 
     monkeypatch.setattr(
         pipeline_module,
@@ -2038,11 +2147,10 @@ def test_streaming_single_releases_completed_future_drafts_before_next_provider(
         videos,
         RuleBasedActionLogGenerator(),
         candidate_provider=provider,
-        _retention_observer=observer,
     )
 
-    assert provider_order == [first_user, second_user]
-    assert result.summary["impressions"] == 6
+    assert provider_order == [user["user_id"] for user in users]
+    assert result.summary["impressions"] == 15
 
 
 def test_streaming_single_matches_legacy_when_later_work_finishes_first(

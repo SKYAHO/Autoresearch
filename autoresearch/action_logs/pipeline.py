@@ -64,6 +64,7 @@ _MIN_IMPRESSION_HOURS = max(1, math.ceil(_MAX_SESSION_SPAN_SEC / 3600))
 
 # 이벤트 KST 날짜가 event_id 네임스페이스다(#295 A안: dt 파티션 = KST 당일 슬라이스).
 _KST = timezone(timedelta(hours=9))
+_STREAMING_ACTIVE_USER_MULTIPLIER = 4
 
 
 class ActionLogGenerator(Protocol):
@@ -154,9 +155,18 @@ ActionLogCheckpointCallback = Callable[[str, int, list[ImpressionDraft]], None]
 class _StreamingRetentionSnapshot:
     """active-user streaming 경로의 현재 보존 payload 수량."""
 
+    phase: Literal["generating", "finalizing"]
     active_users: int
     buffered_drafts: int
     buffered_events: int
+    in_flight_work: int
+    activated_users: int
+    total_users: int
+    submitted_work: int
+    total_work: int | None
+    completed_work: int
+    failed_work: int
+    pending_work: int | None
 
 # 유저별 노출 후보를 외부에서 결정할 때 쓰는 주입 지점. (virtual_user, user_rng)를
 # 받아 video dict 목록을 반환한다. None이면 기존 build_candidates 휴리스틱을 쓴다.
@@ -1708,22 +1718,45 @@ def generate_action_log_single(
         assert isinstance(exposure_metadata, MutableMapping)
         mutable_exposure_metadata = exposure_metadata
 
-    max_active_users = max(1, request.max_concurrency)
+    max_workers = max(1, request.max_concurrency)
+    max_active_users = _STREAMING_ACTIVE_USER_MULTIPLIER * max_workers
     active_users: deque[_StreamingUserState] = deque()
     user_iterator = iter(enumerate(virtual_users))
+    total_users = len(virtual_users)
+    provider_exhausted = False
     next_work_sequence = 0
     next_event_sequence = 0
+    activated_users = 0
+    submitted_work = 0
+    completed_work = 0
+    failed_work = 0
     total_events = 0
     impressions = 0
     clicks = 0
     quarantined_users = 0
     error_counts = {"api_error": 0, "invalid_json": 0, "schema_fail": 0}
+    futures: dict[
+        Future[_ActionLogCallResult],
+        tuple[_StreamingUserState, int, int],
+    ] = {}
+    unsent_work: deque[tuple[_StreamingUserState, int, int]] = deque()
 
-    def _observe(buffered_events: int = 0) -> None:
+    def _observe(
+        buffered_events: int = 0,
+        *,
+        phase: Literal["generating", "finalizing"] = "generating",
+    ) -> None:
         if _retention_observer is None:
             return
+        if provider_exhausted:
+            total_work: int | None = next_work_sequence
+            pending_work: int | None = total_work - completed_work - len(futures)
+        else:
+            total_work = None
+            pending_work = None
         _retention_observer(
             _StreamingRetentionSnapshot(
+                phase=phase,
                 active_users=len(active_users),
                 buffered_drafts=sum(
                     len(drafts)
@@ -1731,25 +1764,34 @@ def generate_action_log_single(
                     for drafts in state.drafts_by_chunk.values()
                 ),
                 buffered_events=buffered_events,
+                in_flight_work=len(futures),
+                activated_users=activated_users,
+                total_users=total_users,
+                submitted_work=submitted_work,
+                total_work=total_work,
+                completed_work=completed_work,
+                failed_work=failed_work,
+                pending_work=pending_work,
             )
         )
 
     with _StreamingActionLogWriter(
         request=request,
         model_name=generator.model_name,
-    ) as writer, ThreadPoolExecutor(max_workers=max_active_users) as executor:
-        futures: dict[
-            Future[_ActionLogCallResult],
-            tuple[_StreamingUserState, int, int],
-        ] = {}
+    ) as writer, ThreadPoolExecutor(max_workers=max_workers) as executor:
 
         def _activate_next_user() -> bool:
-            nonlocal next_work_sequence
+            nonlocal activated_users, next_work_sequence, provider_exhausted
+            if activated_users == total_users:
+                provider_exhausted = True
+                return False
             try:
                 user_sequence, virtual_user = next(user_iterator)
             except StopIteration:
+                provider_exhausted = True
                 return False
 
+            activated_users += 1
             user_id = str(virtual_user.get("user_id", f"user_{user_sequence}"))
             user_rng = random.Random(f"{request.seed}:{user_id}")
             if candidate_provider is not None:
@@ -1770,6 +1812,9 @@ def generate_action_log_single(
                         mutable_exposure_metadata,
                         user_id,
                     ).clear()
+                if activated_users == total_users:
+                    provider_exhausted = True
+                _observe()
                 return True
 
             work: list[_ActionLogWorkItem] = []
@@ -1797,40 +1842,52 @@ def generate_action_log_single(
                 quarantine_by_chunk={},
                 remaining_chunks=len(work),
             )
+            active_users.append(state)
             for chunk_index, (item, work_sequence) in enumerate(
                 zip(work, work_sequences, strict=True)
             ):
+                unsent_work.append((state, chunk_index, work_sequence))
+            if activated_users == total_users:
+                provider_exhausted = True
+            _observe()
+            return True
+
+        def _fill_active_users() -> None:
+            while len(active_users) < max_active_users and not provider_exhausted:
+                if not _activate_next_user():
+                    return
+
+        def _submit_available_work() -> None:
+            nonlocal submitted_work
+            while unsent_work and len(futures) < max_workers:
+                state, chunk_index, work_sequence = unsent_work.popleft()
                 submitted_at = monotonic()
                 futures[
                     executor.submit(
                         _generate_action_log_work,
                         generator,
-                        item,
+                        state.work[chunk_index],
                         work_sequence=work_sequence,
                         submitted_at=submitted_at,
                         shard_index=None,
                         detailed_telemetry=False,
                     )
                 ] = (state, chunk_index, work_sequence)
-            active_users.append(state)
-            _observe()
-            return True
-
-        def _fill_active_users() -> None:
-            while len(active_users) < max_active_users:
-                if not _activate_next_user():
-                    return
+                submitted_work += 1
+                _observe()
 
         def _store_work_result(
             state: _StreamingUserState,
             chunk_index: int,
             call_result: _ActionLogCallResult,
         ) -> None:
+            nonlocal completed_work, failed_work
             if call_result.drafts is not None:
                 state.drafts_by_chunk[chunk_index] = call_result.drafts
             else:
                 assert call_result.error_type is not None
                 assert call_result.error is not None
+                failed_work += 1
                 state.quarantine_by_chunk[chunk_index] = QuarantineRecord(
                     user_id=state.user_id,
                     virtual_user=state.virtual_user,
@@ -1839,6 +1896,7 @@ def generate_action_log_single(
                     error_message=str(call_result.error),
                 )
             state.remaining_chunks -= 1
+            completed_work += 1
             _observe()
 
         def _collect_completed_futures() -> None:
@@ -1851,9 +1909,11 @@ def generate_action_log_single(
                 _store_work_result(state, chunk_index, completed_future.result())
 
         _fill_active_users()
+        _submit_available_work()
         while active_users or futures:
             if futures:
                 _collect_completed_futures()
+                _submit_available_work()
 
             while active_users and active_users[0].remaining_chunks == 0:
                 state = active_users[0]
@@ -1907,6 +1967,7 @@ def generate_action_log_single(
                 active_users.popleft()
                 _observe()
                 _fill_active_users()
+                _submit_available_work()
 
         try:
             _raise_if_quarantine_count_exceeds(
@@ -1916,10 +1977,20 @@ def generate_action_log_single(
                 len(virtual_users),
             )
         except ActionLogGenerationError:
+            _observe(phase="finalizing")
             writer.finalize_quarantine_failure()
+            _observe(phase="finalizing")
             raise
         generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
-        writer.finalize_success(generated_at)
+        _observe(phase="finalizing")
+        writer.finalize_success(
+            generated_at,
+            buffered_events_observer=lambda buffered_events: _observe(
+                buffered_events,
+                phase="finalizing",
+            ),
+        )
+        _observe(phase="finalizing")
 
     result = ActionLogSingleResult(
         execution_mode="streaming",
