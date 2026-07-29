@@ -109,6 +109,7 @@ event 이름은 `action_log_streaming_progress`이고 기본 15초 간격으로 
 - `activated_users`
 - `total_users`
 - `submitted_work`
+- `total_work`: 모든 provider를 순회하기 전에는 `null`, 이후에는 정확한 값
 - `completed_work`
 - `failed_work`
 - `pending_work`: 모든 provider를 순회하기 전에는 `null`, 이후에는 정확한 값
