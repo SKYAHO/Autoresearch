@@ -34,7 +34,6 @@ os.environ.setdefault("BQ_DATASET", "smoke")
 
 from feature_repo.feature_definitions import (
     category_entity,
-    compute_category_matches,
     user_category_similarity_view,
     user_dynamic_view,
     user_entity,
@@ -46,6 +45,7 @@ from src.features.feast_retrieval import (
     build_pool_feature_frame_feast,
     retrieve_training_features,
 )
+from src.features.feature_builder import compute_category_matches
 from src.features.model_contract import MODEL_FEATURE_COLUMNS
 
 _UTC = "UTC"

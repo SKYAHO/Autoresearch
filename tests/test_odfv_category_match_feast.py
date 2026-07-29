@@ -32,7 +32,6 @@ os.environ.setdefault("GCP_PROJECT_ID", "smoke")
 os.environ.setdefault("BQ_DATASET", "smoke")
 
 from feature_repo.feature_definitions import (  # noqa: E402
-    compute_category_matches,
     ctr_training_service,
     user_dynamic_view,
     user_entity,
@@ -40,6 +39,7 @@ from feature_repo.feature_definitions import (  # noqa: E402
     video_entity,
     video_feature_view,
 )
+from src.features.feature_builder import compute_category_matches  # noqa: E402
 from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
 
 _UTC = "UTC"
