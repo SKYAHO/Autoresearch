@@ -339,6 +339,25 @@ def main(
         except Exception as exc:
             print(f"  ⚠️  ONNX 변환 실패 — joblib 모델·아티팩트는 정상 저장됨(서빙은 joblib 폴백): {exc}")
 
+        # [Step 8c] calibration 상수(He 2014 w)를 main과 **같은 run**의 아티팩트로 로깅한다(#390).
+        # 별도 등록 모델로 올리지 않는다 — 서빙이 main을 alias로 로드한 뒤 그 run_id로 같은 run의
+        # 이 아티팩트를 함께 읽어 체이닝하므로(run_id 종속), main·calibration이 서로 다른 시점에
+        # 승격돼 어긋나는 동기화(race)가 구조적으로 사라진다. downsampling 미사용(w=1.0)이면 보정할
+        # 게 없어 생략한다(하위호환 — 서빙은 sampling_rate>=1.0을 항등 처리).
+        #
+        # register_model(아래 Step 9) **앞에** 로깅한다: 승격 게이트2가 "등록된 후보 버전의 run에
+        # calibration 아티팩트가 있는가"를 보므로, 등록보다 먼저 아티팩트를 남겨 "등록 버전이 존재
+        # ⇒ 같은 run에 아티팩트가 있다"를 불변식으로 만든다(등록 후 로깅이면 그 사이 run 중단 시
+        # "버전은 보이는데 아티팩트는 없는" 상태가 영구화될 수 있다 — PR #395 리뷰 반영).
+        if realized_sampling_rate < 1.0:
+            calibration_path = os.path.join(
+                os.path.dirname(model_path), CALIBRATION_PARAM_FILENAME
+            )
+            DownsamplingCalibrator(realized_sampling_rate).save(calibration_path)
+            # 서빙 로더의 MLFLOW_CALIBRATION_ARTIFACT_PATH(calibration/calibration.json)와 계약.
+            log_artifact(local_path=calibration_path, artifact_path="calibration")
+            print("  [OK] calibration 아티팩트 로깅 완료 (calibration/)")
+
         print("\n[Step 9] Model Registry 등록...")
         model_name = config["registry"]["model_name"]
         # log_artifact(..., artifact_path="model")과 짝을 맞춰야 한다 — 서빙 로더의
@@ -361,40 +380,6 @@ def main(
             print(f"  [OK] {model_name} v{registered_version} 등록 완료")
         except Exception as exc:
             print(f"  ⚠️  Model Registry 등록 실패 — 학습 결과(모델·아티팩트)는 정상 저장됨: {exc}")
-
-        # calibration을 별도 아티팩트(JSON w) + 별도 등록 모델로 패키징한다(#302).
-        # 배포 단위를 "메인 + calibration" 2개로 만들어 서빙이 main→calibration으로
-        # 체이닝한다. 수식은 상수(He 2014)지만 멘토 요구(14차 코칭)대로 물리적으로 분리된
-        # 모델로 등록한다. downsampling 미사용(w=1.0)이면 보정할 게 없어 생략한다(하위호환).
-        calibration_model_name = config["registry"].get(
-            "calibration_model_name", "ctr-calibration-model"
-        )
-        calibration_version = None
-        # main 등록이 실패했으면(registered_version None) calibration도 등록하지 않는다 —
-        # main_run_id 짝 tag가 Registry에 없는 main을 가리키는 고아 calibration 버전이
-        # 남는 것을 방지한다(main과 짝지을 대상이 없으므로 등록해도 무의미).
-        if realized_sampling_rate < 1.0 and registered_version is not None:
-            calibration_path = os.path.join(
-                os.path.dirname(model_path), CALIBRATION_PARAM_FILENAME
-            )
-            DownsamplingCalibrator(realized_sampling_rate).save(calibration_path)
-            # 서빙 로더의 MLFLOW_CALIBRATION_ARTIFACT_PATH(calibration/calibration.json)와 계약.
-            log_artifact(local_path=calibration_path, artifact_path="calibration")
-            # 짝 식별: calibration 버전에 main run_id를 tag로 남겨, 서빙이 두 alias를
-            # resolve할 때 맞는 조합인지 fail-closed로 검증하게 한다(model_loader 페어링 검증).
-            calibration_tags = {
-                "sampling_rate": f"{realized_sampling_rate}",
-                "main_run_id": run.info.run_id,
-            }
-            try:
-                calibration_version = register_model(
-                    f"runs:/{run.info.run_id}/calibration",
-                    calibration_model_name,
-                    tags=calibration_tags,
-                )
-                print(f"  [OK] {calibration_model_name} v{calibration_version} 등록 완료")
-            except Exception as exc:
-                print(f"  ⚠️  calibration 모델 등록 실패 — 학습 결과는 정상 저장됨: {exc}")
 
     print("\n" + "=" * 70)
     print("훈련 완료")

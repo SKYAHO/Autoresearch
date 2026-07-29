@@ -40,8 +40,8 @@ _JSON_METADATA_ERRORS: Final = (
 MLFLOW_MODEL_ARTIFACT_PATH: Final = "model/lgbm_model.joblib"
 MLFLOW_FEATURE_COLUMNS_ARTIFACT_PATH: Final = "features/feature_columns.json"
 MLFLOW_CATEGORICAL_COLUMNS_ARTIFACT_PATH: Final = "features/categorical_columns.json"
-# calibration 모델 아티팩트(JSON w). 학습 train.py Step 9의 artifact_path="calibration"와 계약.
-# 별도 등록 모델(config.registry.calibration_model_name)의 run 아래 이 경로로 로깅된다(#302).
+# calibration 상수 아티팩트(JSON w). 학습 train.py의 artifact_path="calibration"와 계약.
+# main과 **같은 run** 아래 이 경로로 로깅된다(#390 run_id 종속) — 별도 등록 모델이 아니다.
 MLFLOW_CALIBRATION_ARTIFACT_PATH: Final = f"calibration/{CALIBRATION_PARAM_FILENAME}"
 # ONNX 모델 아티팩트 디렉토리(#302/#179). 학습 train.py [Step 8b]의
 # log_onnx_model(artifact_path="model_onnx")와 계약 — mlflow.onnx.log_model이 이 경로 아래
@@ -95,17 +95,14 @@ class MlflowModelSettings:
 class RegistryModelSettings:
     """Model Registry alias(예: models:/ctr-model@champion)로 로드할 때 필요한 설정.
 
-    calibration_model_name은 optional이다(#302). 지정하면 그 등록 모델의 alias를
-    resolve해 main과 짝이 맞는지(main_run_id tag) fail-closed로 검증한 뒤 체이닝하고,
-    None이면 calibration 없이(항등) 동작한다(하위호환). calibration_alias 미지정 시
-    main alias를 재사용한다.
+    main을 alias로 resolve한 뒤, main이 downsampling(`sampling_rate` tag < 1.0)이면 그 버전의
+    run_id로 **같은 run**의 calibration 아티팩트를 함께 로드해 체이닝한다(#390 run_id 종속).
+    calibration은 별도 등록 모델·alias가 아니므로 여기서 지정하지 않는다.
     """
 
     tracking_uri: str
     model_name: str
     alias: str
-    calibration_model_name: str | None = None
-    calibration_alias: str | None = None
 
 
 ModelSettings: TypeAlias = LocalModelSettings | MlflowModelSettings | RegistryModelSettings
@@ -182,8 +179,6 @@ def load_model_settings_from_environment() -> ModelSettings:
                 tracking_uri=_required_environment_value("MLFLOW_TRACKING_URI"),
                 model_name=os.getenv("RERANK_REGISTRY_MODEL_NAME", "ctr-model"),
                 alias=os.getenv("RERANK_REGISTRY_ALIAS", "champion"),
-                calibration_model_name=os.getenv("RERANK_REGISTRY_CALIBRATION_MODEL_NAME"),
-                calibration_alias=os.getenv("RERANK_REGISTRY_CALIBRATION_ALIAS"),
             )
         case unreachable:
             assert_never(unreachable)
@@ -358,8 +353,8 @@ def _load_calibration_from_run(run_id: str) -> DownsamplingCalibrator:
 def _load_registry_model(settings: RegistryModelSettings) -> ResolvedModel:
     """Registry alias를 run_id로 해석한 뒤 기존 run 아티팩트 다운로드 경로를 재사용한다.
 
-    calibration_model_name이 지정되면 calibration alias도 resolve해 main과 짝이 맞는지
-    fail-closed로 검증한다(#302 페어링 검증).
+    main이 downsampling이면 그 run_id로 같은 run의 calibration 아티팩트를 함께 로드한다
+    (#390 run_id 종속).
     """
     mlflow.set_tracking_uri(settings.tracking_uri)
     try:
@@ -371,7 +366,7 @@ def _load_registry_model(settings: RegistryModelSettings) -> ResolvedModel:
                 f"@{settings.alias}: {error}"
             )
         ) from error
-    calibration_run_id = _resolve_paired_calibration_run_id(settings, main_version=version)
+    calibration_run_id = _resolve_calibration_run_id(version)
     reranker = load_mlflow_model(
         MlflowModelSettings(
             tracking_uri=settings.tracking_uri,
@@ -384,65 +379,28 @@ def _load_registry_model(settings: RegistryModelSettings) -> ResolvedModel:
     )
 
 
-def _resolve_paired_calibration_run_id(
-    settings: RegistryModelSettings, *, main_version: object
-) -> str | None:
-    """calibration을 쓸지 판단하고, 쓴다면 main과 짝이 맞는지 fail-closed로 검증한다.
+def _resolve_calibration_run_id(main_version: object) -> str | None:
+    """main 버전으로 calibration 사용 여부를 판단하고, 쓴다면 같은 run_id를 반환한다(#390).
 
     판단 기준은 **main 모델 버전의 `sampling_rate` tag**다:
 
     - main이 non-downsampling(`sampling_rate >= 1.0` 또는 tag 없음, 예 #300 이전 v6)이면
-      보정할 것이 없으므로 calibration을 **스킵**하고 None(항등)을 반환한다. calibration env가
-      설정돼 있어도 무시한다 — main을 v6로 **롤백**했는데 `ctr-calibration-model@champion`은
-      옛 downsampling을 가리키는 상황에서, 롤백이 서빙 기동을 막지 않게 하려는 것이다.
-    - main이 downsampling(`sampling_rate < 1.0`)이면 calibration이 **반드시** 있어야 한다.
-      calibration이 구성되지 않았으면(모델명 미설정) 보정 안 된 편향 확률을 서빙하는 것을
-      막기 위해 `ModelArtifactError`로 기동을 거부한다.
-    - calibration을 쓰는 경우, calibration 버전의 `main_run_id` tag가 지금 resolve된 main
-      run_id와 다르면(main@champion=v8, calibration@champion=v3처럼 각자 다른 시점에 승격돼
-      어긋난 조합) `ModelArtifactError`로 기동을 거부한다.
+      보정할 것이 없으므로 None(항등)을 반환한다.
+    - main이 downsampling(`sampling_rate < 1.0`)이면 calibration은 main과 **같은 run**에
+      아티팩트로 로깅돼 있으므로(train.py) main run_id를 그대로 반환해 같은 run에서 읽는다.
+      calibration이 별도 등록·alias가 아니라 main run에 종속되므로, main·calibration이 서로
+      다른 시점에 승격돼 어긋난 조합이 구조적으로 발생하지 않는다(이전 페어링 검증 불필요).
+      아티팩트가 실제로 없으면 `_load_calibration_from_run`이 `ModelArtifactError`로 기동을
+      거부한다(보정 안 된 편향 확률이 서빙에 나가는 것 방지, fail-closed).
 
-    이 판단·검증은 Registry 경로 전용이다. MLflow 직접 run 지정(`MlflowModelSettings`)은
-    실험·수동 경로라 alias 자동 승격처럼 몰래 어긋날 리스크가 없어 대상이 아니다.
+    이 판단은 Registry 경로 전용이다. MLflow 직접 run 지정(`MlflowModelSettings`)은 실험·수동
+    경로라 대상이 아니다.
     """
-    main_run_id = main_version.run_id
     main_tags = getattr(main_version, "tags", None) or {}
     main_sampling_rate = float(main_tags.get("sampling_rate", 1.0))
     if main_sampling_rate >= 1.0:
-        # non-downsampling main → 보정 불필요. calibration env가 있어도(롤백 등) 항등.
         return None
-    if settings.calibration_model_name is None:
-        raise ModelArtifactError(
-            reason=(
-                f"main 모델이 downsampling(sampling_rate={main_sampling_rate})인데 서빙에 "
-                "calibration이 구성되지 않았습니다(RERANK_REGISTRY_CALIBRATION_MODEL_NAME 미설정). "
-                "보정 안 된 편향 확률이 서빙에 나가는 것을 막기 위해 기동을 거부합니다 — "
-                "calibration 모델을 배선하거나 non-downsampling 모델을 champion으로 두세요."
-            )
-        )
-    calibration_alias = settings.calibration_alias or settings.alias
-    try:
-        cal_version = MlflowClient().get_model_version_by_alias(
-            settings.calibration_model_name, calibration_alias
-        )
-    except Exception as error:
-        raise ModelArtifactError(
-            reason=(
-                f"calibration alias models:/{settings.calibration_model_name}"
-                f"@{calibration_alias}를 resolve하지 못했습니다: {error}"
-            )
-        ) from error
-    paired_main_run_id = (cal_version.tags or {}).get("main_run_id")
-    if paired_main_run_id != main_run_id:
-        raise ModelArtifactError(
-            reason=(
-                "calibration 모델과 main 모델의 짝이 맞지 않습니다(#302 페어링 검증). "
-                f"main run_id={main_run_id}, calibration이 가리키는 main_run_id="
-                f"{paired_main_run_id}. 서로 다른 학습에서 나온 조합이라 서빙을 거부합니다 — "
-                "main과 calibration alias를 같은 학습 버전으로 맞춰 승격하세요."
-            )
-        )
-    return cal_version.run_id
+    return main_version.run_id
 
 
 def load_reranker_with_lineage(settings: ModelSettings) -> ResolvedModel:
