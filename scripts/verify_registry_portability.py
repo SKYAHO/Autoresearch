@@ -18,11 +18,21 @@ ODFV의 그 판정은 ``PandasTransformation.__eq__`` = (``udf_string``, ``co_co
      저장소 전체라 ``feature_repo.*``/``tests.*`` 참조도 "import는 되기" 때문에, import
      성공만 보면 통과해 버린다. 참조 위치를 직접 보고 좁힌다.
 
-[보장하지 못하는 것] "레지스트리가 현재 코드와 일치하는가"는 보지 않는다. apply가 갱신을
-스킵해도 **남은 옛 payload가 위 ①②를 만족하면 통과**한다. 이번 사고가 걸린 것은 옛 payload가
-apply 전용 bare 이름을 물고 있었기 때문이다. 코드↔레지스트리 동등성 자체를 보려면 로컬에서
-정의를 다시 직렬화해 대조해야 하는데, dill 출력이 실행 환경(파이썬 패치 버전 등)에 따라
-달라질 수 있어 별도 설계가 필요하다.
+[보장하지 못하는 것] "레지스트리가 현재 코드와 **동등한가**"는 직접 보지 않는다 — apply가
+갱신을 스킵해도 남은 옛 payload가 위 ①②를 만족하면 통과한다. 다만 그렇게 남을 수 있는 것은
+많지 않다.
+
+  - UDF 본체는 by-value로 절여지는데, 그게 달라지면 ``udf_string``/바이트코드가 달라져
+    feast가 갱신을 스킵하지 않는다. 스키마(``features``)·mode·소스 투영·entity_columns도
+    ``_schema_or_udf_changed``가 비교한다.
+  - UDF가 부르는 **헬퍼는 by-reference**라 역직렬화 시점에 현재 코드에서 해소된다. 헬퍼의
+    구현이 바뀌어도 레지스트리는 손댈 필요가 없고, 실제로 옛 payload를 읽어도 새 헬퍼가
+    호출된다(실측). 즉 헬퍼 변경은 stale의 원인이 아니다.
+  - 그래서 실질적으로 남는 stale 표면은 **by-reference 대상의 모듈 경로가 바뀐 경우**이고,
+    그건 ①②가 잡는다. 그 밖에는 비교 대상에서 빠진 description/tags 정도다.
+
+헬퍼 출력이 선언된 스키마와 어긋나는 부류(ODFV 계약 위반)는 이 스크립트가 아니라 CI의
+``tests/test_odfv_category_match_feast.py``(실제 store로 조회해 컬럼을 대조)가 담당한다.
 
 [전제] 소비자 파드의 ``/app``은 ``scripts/upload_code_archive.sh``의 ``git archive`` 결과다
 (``.gitattributes``에 ``export-ignore`` 없음 = 추적 파일 전체). 그래서 이 스크립트를 저장소

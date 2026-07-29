@@ -17,6 +17,9 @@ on:
       - feature_repo/bootstrap.py
       - deploy/feast/apply-job.yaml
       - scripts/fetch_redis_ca.py
+      # apply 후 검증 스크립트. 이게 빠져 있으면 게이트만 고친 커밋이 다음 정의 변경
+      # 전까지 한 번도 실행되지 않는다.
+      - scripts/verify_registry_portability.py
       - pyproject.toml
       - uv.lock
       - .github/workflows/feast-apply.yml
@@ -290,10 +293,22 @@ jobs:
       - name: Verify the applied registry loads in the consumer import path
         env:
           GCS_REGISTRY_PATH: ${{ vars.GCS_REGISTRY_PATH }}
+          BEFORE_GENERATION: ${{ steps.before.outputs.generation }}
         shell: bash
         run: |
           gcloud storage cp "$GCS_REGISTRY_PATH" applied-registry.db
-          if ! uv run --no-sync python scripts/verify_registry_portability.py applied-registry.db; then
-            echo "::error::applied registry is not loadable by training/serving (see output above)"
-            exit 1
+          if uv run --no-sync python scripts/verify_registry_portability.py applied-registry.db; then
+            exit 0
           fi
+          # 이 스텝은 apply가 prod 레지스트리를 이미 덮어쓴 뒤에 돈다. 여기서 닫히는 것은
+          # 배포가 아니라 "성공했다는 신호"이므로, 운영자가 바로 되돌릴 수 있게 명령을 남긴다.
+          # 레지스트리 버킷은 object versioning이 켜져 있어 apply 직전 generation으로 복구된다.
+          echo "prod 레지스트리는 이미 덮어써진 상태다 — 학습·materialize는 지금 이 레지스트리를 읽는다."
+          if [[ -n "$BEFORE_GENERATION" ]]; then
+            echo "롤백: gcloud storage cp \"${GCS_REGISTRY_PATH}#${BEFORE_GENERATION}\" \"${GCS_REGISTRY_PATH}\""
+          else
+            echo "롤백: gcloud storage ls -a \"$GCS_REGISTRY_PATH\" 로 apply 직전 generation을 찾아 같은 방식으로 복사"
+          fi
+          echo "재적용: 정의를 고쳤는데도 갱신이 안 되면 UDF의 udf_string(소스 텍스트)이나 바이트코드를 바꿔야 한다 (#409)"
+          echo "::error::applied registry is not loadable by training/serving — roll back to generation ${BEFORE_GENERATION:-unknown}, then fix and re-apply (see log above)"
+          exit 1
