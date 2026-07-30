@@ -31,6 +31,7 @@ autoresearch/        # 런타임 패키지
 ├── virtual_users/        # LLM 기반 가상 유저(페르소나) 생성
 ├── action_logs/          # action log 생성·shard·merge·품질 계약
 └── jobs/                 # Airflow 비종속 공개 batch CLI
+agent_orchestration/  # 실험형 FastAPI 채팅 API + PostgreSQL 저장
 src/                 # CTR 학습·서빙 파이프라인
 ├── features/             # 피처 엔지니어링·조립
 ├── models/               # LightGBM 모델
