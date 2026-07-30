@@ -5,8 +5,8 @@
 본 모듈은 서비스 런타임 시작/재시작에서 필요한 환경 설정 값을 검증한다.
 
 [기능]
-OpenAI API 키, 모델/타임아웃, PostgreSQL 연결 정보 등 FastAPI 런타임이
-필요로 하는 공통 설정 값을 단일 진입점으로 정규화한다.
+공유 API 토큰, Codex 전용 홈, OpenAI API 키, 모델/타임아웃, PostgreSQL 연결
+정보 등 FastAPI 런타임이 필요로 하는 공통 설정 값을 단일 진입점으로 정규화한다.
 
 [비책임]
 실제 LLM 호출 및 PostgreSQL 스키마 생성/영속화 동작.
@@ -14,8 +14,8 @@ OpenAI API 키, 모델/타임아웃, PostgreSQL 연결 정보 등 FastAPI 런타
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 
@@ -33,6 +33,14 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"Environment variable '{name}' must be an integer.") from error
 
 
+def _positive_env_int(name: str, default: int) -> int:
+    """양의 정수 환경 변수를 읽는다."""
+    value = _env_int(name, default)
+    if value < 1:
+        raise ValueError(f"Environment variable '{name}' must be greater than zero.")
+    return value
+
+
 @dataclass(frozen=True)
 class ServiceSettings:
     """서비스 실행에 필요한 설정 값."""
@@ -43,10 +51,13 @@ class ServiceSettings:
     openai_timeout_sec: int
     database_url: str
     interactions_table: str
+    api_token: str
     llm_backend: str = "codex_cli"
     codex_cli_path: str = "codex"
+    codex_home: str = ""
     codex_model: str | None = None
     codex_timeout_sec: int = 120
+    database_connect_timeout_sec: int = 10
 
 
 def load_settings() -> ServiceSettings:
@@ -64,8 +75,15 @@ def load_settings() -> ServiceSettings:
     openai_max_tokens = _env_int("OPENAI_MAX_TOKENS", 1024)
     openai_timeout_sec = _env_int("OPENAI_TIMEOUT_SEC", 60)
     codex_cli_path = _require_env("CODEX_CLI_PATH", os.getenv("CODEX_CLI_PATH", "codex"))
+    codex_home = (
+        _require_env("CODEX_HOME", os.getenv("CODEX_HOME"))
+        if llm_backend == "codex_cli"
+        else os.getenv("CODEX_HOME", "").strip()
+    )
     codex_model = os.getenv("CODEX_MODEL", "").strip() or None
     codex_timeout_sec = _env_int("CODEX_TIMEOUT_SEC", 120)
+    api_token = _require_env("ORCH_API_TOKEN", os.getenv("ORCH_API_TOKEN"))
+    database_connect_timeout_sec = _positive_env_int("ORCH_DB_CONNECT_TIMEOUT_SEC", 10)
 
     database_url = os.getenv("ORCH_DATABASE_URL") or os.getenv("DATABASE_URL")
     if not database_url:
@@ -86,8 +104,11 @@ def load_settings() -> ServiceSettings:
         openai_timeout_sec=openai_timeout_sec,
         database_url=database_url,
         interactions_table=interactions_table,
+        api_token=api_token,
         llm_backend=llm_backend,
         codex_cli_path=codex_cli_path,
+        codex_home=codex_home,
         codex_model=codex_model,
         codex_timeout_sec=codex_timeout_sec,
+        database_connect_timeout_sec=database_connect_timeout_sec,
     )

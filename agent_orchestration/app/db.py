@@ -35,17 +35,17 @@ class ChatRow:
     created_at: datetime
 
 
-def _quote_identifier(value: str) -> str:
-    """테이블명에 대한 기본적인 안전 문자열 처리."""
+def _validate_identifier(value: str) -> str:
+    """테이블명으로 사용할 안전한 SQL 식별자만 허용한다."""
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
         raise ValueError("Invalid table name.")
     return value
 
 
-def ensure_schema(database_url: str, table_name: str) -> None:
+def ensure_schema(database_url: str, table_name: str, connect_timeout_sec: int = 10) -> None:
     """`chat_interactions` 저장 테이블을 최초 실행 시 보장."""
-    safe_table = _quote_identifier(table_name)
-    with connect(database_url) as connection:
+    safe_table = _validate_identifier(table_name)
+    with connect(database_url, connect_timeout=connect_timeout_sec) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
                 f"""
@@ -72,9 +72,10 @@ def save_interaction(
     model: str,
     latency_ms: int,
     token_count: int | None,
+    connect_timeout_sec: int = 10,
 ) -> ChatRow:
     """채팅 결과를 DB에 저장하고 생성된 레코드를 반환."""
-    safe_table = _quote_identifier(table_name)
+    safe_table = _validate_identifier(table_name)
     params = {
         "prompt": prompt,
         "response": response,
@@ -88,7 +89,11 @@ def save_interaction(
         RETURNING id, prompt, response, model, latency_ms, token_count, created_at
     """
     row_factory = class_row(ChatRow)
-    with connect(database_url, row_factory=row_factory) as connection:
+    with connect(
+        database_url,
+        row_factory=row_factory,
+        connect_timeout=connect_timeout_sec,
+    ) as connection:
         with connection.cursor() as cursor:
             cursor.execute(query, params)
             row = cursor.fetchone()

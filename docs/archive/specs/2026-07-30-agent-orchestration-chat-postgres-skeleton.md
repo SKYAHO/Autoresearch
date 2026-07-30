@@ -22,19 +22,22 @@ OpenAI API 키나 API 크레딧을 요구하지 않는다.
 
 - `LLM_BACKEND=codex_cli`일 때만 Codex CLI를 호출한다.
 - Codex CLI는 `--sandbox read-only`, `--ephemeral`, `--skip-git-repo-check`로
-  비어 있는 임시 작업 디렉터리에서 실행한다. 따라서 요청 프롬프트는 저장소를
-  수정·열람하지 않고, 세션 자격 증명이나 대화 기록도 앱이 저장하지 않는다.
+  비어 있는 임시 작업 디렉터리에서 실행한다. 하위 프로세스에는 전용
+  `CODEX_HOME`과 `PATH`만 전달하며, 부모 프로세스의 DB·API 토큰 환경 변수는
+  상속하지 않는다. 이 격리는 임의 프롬프트가 신뢰 경계 밖에서 실행되어도 안전함을
+  보장하지 않으므로, `/chat`은 공유 토큰과 비공개 네트워크 경계 안에서만 사용한다.
 - CLI가 반환한 최종 텍스트만 PostgreSQL에 저장한다. Codex CLI는 이 경로에서
   토큰 사용량을 제공하지 않으므로 `token_count`는 `NULL`로 저장한다.
 - `CODEX_MODEL`을 설정하면 해당 모델을 Codex CLI에 전달하고, 비워 두면 이미
   로그인된 Codex CLI의 기본 모델을 사용한다.
 - CLI 실행 실패·시간 초과는 `502`로 변환한다. 로그에는 프롬프트나 OAuth 토큰을
   기록하지 않는다.
-- 서비스 시작 전에 서버 운영 계정으로 `codex login`을 완료해야 한다. OAuth
-  자격 증명은 운영 계정의 Codex 홈 디렉터리/시크릿 볼륨에만 보관하며, 환경 변수·
+- 서비스 시작 전에 서버 운영 계정의 전용 `CODEX_HOME`으로 `codex login`을 완료해야
+  한다. OAuth 자격 증명은 전용 Codex 홈 디렉터리/시크릿 볼륨에만 보관하며, 환경 변수·
   PostgreSQL·애플리케이션 로그에는 복사하지 않는다.
 - 모든 요청은 같은 공용 계정의 구독 한도와 사용량을 공유한다. 사용자별 계정 연결,
-  사용자 인증, 요청 한도는 후속 범위다.
+  사용자 인증, 요청 한도는 후속 범위다. 1단계의 `X-Orch-Token`은 사용자 인증이
+  아니라 신뢰된 내부 호출자를 제한하는 공유 비밀이다.
 
 `openai` 백엔드는 후속 전환을 위해 유지한다. `LLM_BACKEND=openai`로 설정한
 경우에만 OpenAI Responses API를 사용하며 `OPENAI_API_KEY`가 필수다.
@@ -43,6 +46,9 @@ OpenAI API 키나 API 크레딧을 요구하지 않는다.
 
 - 필수:
   - `ORCH_DATABASE_URL` 또는 기존 공용 `DATABASE_URL`
+  - `ORCH_API_TOKEN` (`/chat`의 `X-Orch-Token`과 비교하는 공유 비밀)
+- `LLM_BACKEND=codex_cli`일 때 필수:
+  - `CODEX_HOME` (OAuth 로그인 정보가 있는 전용 절대 경로)
 - `LLM_BACKEND=openai`일 때 필수:
   - `OPENAI_API_KEY`
 - 기본값:
@@ -51,6 +57,7 @@ OpenAI API 키나 API 크레딧을 요구하지 않는다.
   - `OPENAI_MAX_TOKENS=1024`
   - `OPENAI_TIMEOUT_SEC=60`
   - `ORCH_INTERACTIONS_TABLE=chat_interactions`
+  - `ORCH_DB_CONNECT_TIMEOUT_SEC=10`
 - `LLM_BACKEND=codex_cli`일 때 선택값:
   - `CODEX_CLI_PATH=codex`
   - `CODEX_MODEL=` (비우면 Codex CLI 기본 모델 사용)
@@ -60,7 +67,8 @@ OpenAI API 키나 API 크레딧을 요구하지 않는다.
 
 ### `GET /healthcheck`
 - 성공: `200 {"status":"ok","service":"agent-orchestration"}`
-- 초기화 미완료: `503` (service unavailable)
+- 설정 또는 DB 스키마 초기화에 실패하면 앱이 기동하지 않아 orchestration layer가
+  재시작을 수행한다.
 
 ### `POST /chat`
 
@@ -68,6 +76,8 @@ OpenAI API 키나 API 크레딧을 요구하지 않는다.
 ```json
 {"prompt":"string (1~8192)"}
 ```
+
+필수 헤더: `X-Orch-Token: <ORCH_API_TOKEN>`
 
 성공 응답(201):
 ```json
@@ -86,6 +96,7 @@ OpenAI API 키나 API 크레딧을 요구하지 않는다.
 - Codex CLI 또는 OpenAI 호출 실패: `502`
 - LLM 응답 비정상(빈 text output): `502`
 - DB 저장 실패: `500`
+- 토큰 누락 또는 불일치: `401`
 
 ## DB 계약
 
@@ -97,3 +108,7 @@ OpenAI API 키나 API 크레딧을 요구하지 않는다.
 - `latency_ms INTEGER NOT NULL`
 - `token_count INTEGER NULL`
 - `created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`
+
+1단계는 `CREATE TABLE IF NOT EXISTS`로 최초 테이블만 보장한다. 스키마 변경에는
+별도 마이그레이션 도구를 도입한다. 프롬프트와 응답은 평문 저장이므로 로컬 검증에는
+민감정보를 넣지 않으며, 배포 전 보존 기간·마스킹 정책을 별도 계약으로 정한다.

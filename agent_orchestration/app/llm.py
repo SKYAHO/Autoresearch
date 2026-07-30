@@ -18,12 +18,18 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+import logging
+import os
 from pathlib import Path
+import signal
 from tempfile import TemporaryDirectory
 
 from openai import AsyncOpenAI, OpenAIError
 
 from agent_orchestration.app.config import ServiceSettings
+
+
+logger = logging.getLogger(__name__)
 
 
 class LLMBackendError(RuntimeError):
@@ -49,7 +55,7 @@ async def generate_response(settings: ServiceSettings, prompt: str) -> LLMResult
 
 
 async def _generate_codex_cli(settings: ServiceSettings, prompt: str) -> LLMResult:
-    """공용 운영 계정으로 로그인된 Codex CLI를 격리 실행한다."""
+    """전용 Codex 홈과 최소 환경으로 로그인된 Codex CLI를 격리 실행한다."""
     with TemporaryDirectory(prefix="agent-orchestration-codex-") as workdir:
         output_path = Path(workdir) / "last_message.txt"
         command = [
@@ -76,19 +82,31 @@ async def _generate_codex_cli(settings: ServiceSettings, prompt: str) -> LLMResu
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
+                env=_codex_environment(settings.codex_home),
+                start_new_session=True,
             )
-            await asyncio.wait_for(
-                process.communicate(prompt.encode("utf-8")),
+            communicate_task = asyncio.create_task(process.communicate(prompt.encode("utf-8")))
+            _, stderr_bytes = await asyncio.wait_for(
+                asyncio.shield(communicate_task),
                 timeout=settings.codex_timeout_sec,
             )
         except TimeoutError as error:
-            process.kill()
-            await process.communicate()
+            _terminate_process_group(process)
+            try:
+                await asyncio.wait_for(communicate_task, timeout=5)
+            except TimeoutError:
+                communicate_task.cancel()
+                await asyncio.gather(communicate_task, return_exceptions=True)
             raise LLMBackendError("Codex CLI timed out.") from error
         except OSError as error:
             raise LLMBackendError("Failed to start Codex CLI.") from error
 
         if process.returncode != 0:
+            logger.warning(
+                "Codex CLI exited with returncode=%s stderr=%r",
+                process.returncode,
+                _redact_stderr(stderr_bytes, prompt),
+            )
             raise LLMBackendError("Codex CLI failed.")
         if not output_path.exists():
             raise LLMBackendError("Codex CLI returned no output.")
@@ -102,6 +120,34 @@ async def _generate_codex_cli(settings: ServiceSettings, prompt: str) -> LLMResu
         model=settings.codex_model or "codex-cli",
         token_count=None,
     )
+
+
+def _codex_environment(codex_home: str) -> dict[str, str]:
+    """Codex 하위 프로세스에 토큰 이외의 부모 환경 변수를 넘기지 않는다."""
+    return {
+        "CODEX_HOME": codex_home,
+        "HOME": codex_home,
+        "PATH": os.environ.get("PATH", ""),
+    }
+
+
+def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
+    """Codex와 같은 세션의 하위 프로세스를 함께 종료한다."""
+    if process.returncode is not None:
+        return
+    if os.name == "posix" and process.pid is not None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+            return
+        except ProcessLookupError:
+            return
+    process.kill()
+
+
+def _redact_stderr(stderr_bytes: bytes, prompt: str) -> str:
+    """운영 로그용 Codex 오류를 길이 제한하고 원문 프롬프트를 제거한다."""
+    stderr = stderr_bytes.decode("utf-8", errors="replace").replace(prompt, "[REDACTED_PROMPT]")
+    return stderr.strip()[-2000:]
 
 
 async def _generate_openai(settings: ServiceSettings, prompt: str) -> LLMResult:

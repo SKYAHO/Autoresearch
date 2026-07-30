@@ -12,12 +12,18 @@
 사용자 인증·세션 관리, OAuth 라우팅, 정책 라우팅·멀티턴 대화 상태.
 """
 
+from __future__ import annotations
+
+import asyncio
 import logging
+import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from time import perf_counter
+from typing import Annotated
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, status
+
 from agent_orchestration.app.config import ServiceSettings, load_settings
 from agent_orchestration.app.db import ensure_schema, save_interaction
 from agent_orchestration.app.llm import LLMBackendError, generate_response
@@ -25,28 +31,27 @@ from agent_orchestration.app.schemas import ChatRequest, ChatResponse
 
 logger = logging.getLogger(__name__)
 
+
 def create_app() -> FastAPI:
     """FastAPI 앱과 의존성(설정, LLM 백엔드, DB)을 구성."""
     settings: ServiceSettings | None = None
-    initialization_error: str | None = None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        nonlocal settings, initialization_error
+        nonlocal settings
         logger.info("agent_orchestration startup")
-        try:
-            settings = load_settings()
-            ensure_schema(settings.database_url, settings.interactions_table)
-            initialization_error = None
-            logger.info(
-                "agent_orchestration initialized with backend=%s table=%s",
-                settings.llm_backend,
-                settings.interactions_table,
-            )
-        except Exception as error:
-            logger.exception("startup initialization failed")
-            initialization_error = str(error)
-            settings = None
+        settings = load_settings()
+        await asyncio.to_thread(
+            ensure_schema,
+            settings.database_url,
+            settings.interactions_table,
+            settings.database_connect_timeout_sec,
+        )
+        logger.info(
+            "agent_orchestration initialized with backend=%s table=%s",
+            settings.llm_backend,
+            settings.interactions_table,
+        )
         yield
 
     app = FastAPI(
@@ -57,11 +62,6 @@ def create_app() -> FastAPI:
 
     def _require_runtime() -> ServiceSettings:
         if settings is None:
-            if initialization_error:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="Service is unavailable. Initialization failed.",
-                )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Service is unavailable.",
@@ -78,9 +78,17 @@ def create_app() -> FastAPI:
         return {"status": "ok", "service": "agent-orchestration"}
 
     @app.post("/chat", response_model=ChatResponse, status_code=status.HTTP_201_CREATED)
-    async def chat(request: ChatRequest) -> ChatResponse:
+    async def chat(
+        request: ChatRequest,
+        x_orch_token: Annotated[str | None, Header()] = None,
+    ) -> ChatResponse:
         """채팅 프롬프트를 LLM으로 전송 후 PostgreSQL에 저장하고 결과를 반환."""
         runtime_settings = _require_runtime()
+        if not x_orch_token or not secrets.compare_digest(x_orch_token, runtime_settings.api_token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid orchestration API token.",
+            )
         start = perf_counter()
         try:
             completion = await generate_response(runtime_settings, request.prompt)
@@ -94,7 +102,8 @@ def create_app() -> FastAPI:
         latency_ms = int((perf_counter() - start) * 1000)
 
         try:
-            row = save_interaction(
+            row = await asyncio.to_thread(
+                save_interaction,
                 database_url=runtime_settings.database_url,
                 table_name=runtime_settings.interactions_table,
                 prompt=request.prompt,
@@ -102,6 +111,7 @@ def create_app() -> FastAPI:
                 model=completion.model,
                 latency_ms=latency_ms,
                 token_count=completion.token_count,
+                connect_timeout_sec=runtime_settings.database_connect_timeout_sec,
             )
         except Exception as error:
             logger.error("Persist interaction failed: %s", error)
