@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-30T12:48:21Z",
+  "generated_at": "2026-07-30T13:17:00Z",
   "reports": [
+    {
+      "number": 431,
+      "title": "feat: Codex CLI 기반 Agent Orchestration 채팅 저장 스켈레톤",
+      "author": "Noah-JuYong",
+      "merged_at": "2026-07-30T13:16:47Z",
+      "summary_ko": [
+        "Codex CLI 및 OpenAI 백엔드를 지원하는 FastAPI 기반 에이전트 오케스트레이션 채팅 API 스켈레톤을 신규 구현하였습니다.",
+        "요청 프롬프트와 LLM 응답, 사용 모델명, 응답 지연시간 지표를 PostgreSQL(chat_interactions 테이블)에 영속화합니다.",
+        "OpenAI API 크레딧 소모 없이 공용 OAuth 로그인 상태의 Codex CLI를 읽기 전용 격리 프로세스로 호출할 수 있습니다."
+      ],
+      "report_url": "pr/431/"
+    },
     {
       "number": 433,
       "title": "feat: CTRModel 인터페이스 포팅 — LGBMModel 리팩터 (#424)",
