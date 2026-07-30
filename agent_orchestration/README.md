@@ -104,3 +104,10 @@ API 키나 API 크레딧을 사용하지 않습니다.
 
 API 결제 방식으로 전환할 때만 `LLM_BACKEND=openai`와 `OPENAI_API_KEY`를 설정한다.
 그 외 `/chat`과 PostgreSQL 저장 계약은 유지한다.
+
+## Codex OAuth 배포 설계(후속)
+
+공용 Codex OAuth를 계속 사용할 경우 API 서버에서 Codex CLI를 직접 실행하지 않는다.
+구체적인 보안 경계·모델 전환·배포 전 검증 기준은
+[`docs/specs/2026-07-30-codex-oauth-runner-isolation.md`](../docs/specs/2026-07-30-codex-oauth-runner-isolation.md)를
+따른다. 이 설계가 구현·검증되기 전에는 Codex OAuth 모드로 외부 배포하지 않는다.
