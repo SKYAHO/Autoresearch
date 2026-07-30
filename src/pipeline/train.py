@@ -47,7 +47,6 @@ from src.utils.model_utils import (  # noqa: E402
     convert_lgbm_to_onnx,
     save_categorical_columns,
     save_feature_columns,
-    save_model,
 )
 from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
 from src.tracking.logger import (  # noqa: E402
@@ -484,7 +483,7 @@ def main(
         else:
             categorical_columns_path = categorical_columns_output
 
-        save_model(model.model, model_path)
+        model.save(model_path)
         save_feature_columns(feature_columns, feature_columns_path)
         save_categorical_columns(categories_by_column, categorical_columns_path)
 
