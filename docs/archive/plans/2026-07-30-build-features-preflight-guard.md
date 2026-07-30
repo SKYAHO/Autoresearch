@@ -22,7 +22,7 @@ import → GCP 자격증명(가장 저렴한 것부터). GKE는 `KUBERNETES_SERV
 - 새 함수의 예외는 이 모듈의 기존 스타일과 동일하게 `ValueError`를 쓴다
   (`main()`의 날짜 검증이 이미 그렇게 한다).
 - 커밋 메시지 형식은 `<type>: <한국어 설명>` (`.claude/docs/agent-workflow-reference.md`).
-- 관련 설계 문서: `docs/specs/2026-07-30-build-features-preflight-guard.md`.
+- 관련 설계 문서: `docs/archive/specs/2026-07-30-build-features-preflight-guard.md`.
   관련 이슈: #404.
 
 ---
@@ -37,7 +37,7 @@ import → GCP 자격증명(가장 저렴한 것부터). GKE는 `KUBERNETES_SERV
 - Produces: `src.pipeline.build_training_dataset._verify_assembly_environment() -> None`
   — 통과하면 아무것도 반환하지 않음, 실패 조건마다 `ValueError`.
 
-- [ ] **Step 1: 실패하는 테스트 작성**
+- [x] **Step 1: 실패하는 테스트 작성**
 
 `tests/test_build_training_dataset.py` 끝에 추가한다(파일 상단에 이미
 `import os`, `from src.pipeline import build_training_dataset`가 있다):
@@ -108,12 +108,12 @@ def test_main_env_check_runs_before_bigquery_call(monkeypatch) -> None:
     assert raised
 ```
 
-- [ ] **Step 2: 테스트 실행해서 실패 확인**
+- [x] **Step 2: 테스트 실행해서 실패 확인**
 
 Run: `uv run python -m pytest tests/test_build_training_dataset.py -k verify_assembly_environment -v`
 Expected: FAIL — `AttributeError: module 'src.pipeline.build_training_dataset' has no attribute '_verify_assembly_environment'`
 
-- [ ] **Step 3: `_verify_assembly_environment()` 구현**
+- [x] **Step 3: `_verify_assembly_environment()` 구현**
 
 `src/pipeline/build_training_dataset.py`의 `_assemble_via_feast` 함수 **바로 위**에
 추가한다:
@@ -160,7 +160,7 @@ def _verify_assembly_environment() -> None:
         )
 ```
 
-- [ ] **Step 4: `main()`에서 호출**
+- [x] **Step 4: `main()`에서 호출**
 
 `src/pipeline/build_training_dataset.py`의 `main()` 함수(파일 끝 부분)를 수정한다:
 
@@ -187,12 +187,12 @@ def _verify_assembly_environment() -> None:
     _assemble_via_feast(output_path, events_start_date, events_end_date)
 ```
 
-- [ ] **Step 5: 테스트 실행해서 통과 확인**
+- [x] **Step 5: 테스트 실행해서 통과 확인**
 
 Run: `uv run python -m pytest tests/test_build_training_dataset.py -v`
 Expected: PASS 전체(기존 테스트 포함, 신규 4건 포함)
 
-- [ ] **Step 6: 기존 feast 경로 테스트(dev 그룹) 회귀 확인**
+- [x] **Step 6: 기존 feast 경로 테스트(dev 그룹) 회귀 확인**
 
 Run: `uv run python -m pytest tests/test_build_training_dataset_feast_path.py -v`
 Expected: PASS 전체 — 이 파일의 `test_main_requires_event_dates`처럼 환경변수를
@@ -200,12 +200,12 @@ Expected: PASS 전체 — 이 파일의 `test_main_requires_event_dates`처럼 �
 확인한다(실패한다면 해당 테스트에 `monkeypatch.setenv`로 필수 환경변수를 추가해야
 할 수 있다 — 발견 시 이 스텝에서 바로 잡는다).
 
-- [ ] **Step 7: lint 확인**
+- [x] **Step 7: lint 확인**
 
 Run: `uv run --no-sync ruff check src/pipeline/build_training_dataset.py tests/test_build_training_dataset.py`
 Expected: `All checks passed!`
 
-- [ ] **Step 8: 커밋**
+- [x] **Step 8: 커밋**
 
 ```bash
 git add src/pipeline/build_training_dataset.py tests/test_build_training_dataset.py
@@ -223,7 +223,7 @@ git commit -m "feat: build-features에 사전 점검 fail-fast 가드 추가 (#4
 **Interfaces:**
 - Consumes: `src.pipeline.build_training_dataset._verify_assembly_environment()` (Task 1)
 
-- [ ] **Step 1: 실패하는 테스트 작성**
+- [x] **Step 1: 실패하는 테스트 작성**
 
 ```python
 """_verify_assembly_environment()의 GCP 자격증명 체크 — feast 설치가 필요한 부분만
@@ -281,7 +281,7 @@ def test_verify_assembly_environment_passes_with_google_application_credentials(
     build_training_dataset._verify_assembly_environment()  # 예외 없이 통과해야 한다
 ```
 
-- [ ] **Step 2: feast 그룹 환경에서 테스트 실행해서 실패 확인**
+- [x] **Step 2: feast 그룹 환경에서 테스트 실행해서 실패 확인**
 
 Run: `uv sync --only-group feast` (아직 안 했다면), 이어서
 `uv run python -m pytest tests/test_build_training_dataset_env_check_feast.py -v`
@@ -289,14 +289,14 @@ Expected: 첫 번째 테스트는 Task 1이 이미 구현했으므로 실제로�
 — 이 태스크의 진짜 신규 산출물은 테스트 파일 자체와 CI 배선이다. 만약 세 테스트가
 이미 모두 PASS라면 Step 3(구현)은 건너뛰고 바로 Step 4(CI 배선)로 간다.
 
-- [ ] **Step 3: 실패하는 테스트가 있다면 `_verify_assembly_environment()` 조정**
+- [x] **Step 3: 실패하는 테스트가 있다면 `_verify_assembly_environment()` 조정**
 
 Task 1의 구현이 설계대로라면 이 스텝은 필요 없다. 실패하는 테스트가 있다면
 `src/pipeline/build_training_dataset.py`의 `_verify_assembly_environment()`를
 테스트가 요구하는 대로 조정한다(단, Task 1의 Global Constraints를 어기지 않는
 범위에서).
 
-- [ ] **Step 4: CI 워크플로우에 새 테스트 파일 추가**
+- [x] **Step 4: CI 워크플로우에 새 테스트 파일 추가**
 
 `.github/workflows/ci.yml`의 `pytest-feast` job "Run feast pytest" 스텝이 실행하는
 파일 목록(정확한 현재 내용은 직접 파일을 열어 확인할 것 — 아래는 이 플랜 작성
@@ -323,22 +323,22 @@ Task 1의 구현이 설계대로라면 이 스텝은 필요 없다. 실패하는
 (즉 기존 목록 순서를 유지하고, `test_feast_retrieval_integration_feast.py`와
 `test_serving_api.py` 사이에 새 파일 한 줄만 끼워 넣는다.)
 
-- [ ] **Step 5: 테스트 실행해서 통과 확인**
+- [x] **Step 5: 테스트 실행해서 통과 확인**
 
 Run: `uv run python -m pytest tests/test_build_training_dataset_env_check_feast.py -v`
 Expected: PASS (3 tests)
 
-- [ ] **Step 6: `git diff --check`로 워크플로우 파일 검증**
+- [x] **Step 6: `git diff --check`로 워크플로우 파일 검증**
 
 Run: `git diff --check`
 Expected: 출력 없음(trailing whitespace 등 없음)
 
-- [ ] **Step 7: lint 확인**
+- [x] **Step 7: lint 확인**
 
 Run: `uv run --no-sync ruff check tests/test_build_training_dataset_env_check_feast.py`
 Expected: `All checks passed!`
 
-- [ ] **Step 8: 커밋**
+- [x] **Step 8: 커밋**
 
 ```bash
 git add tests/test_build_training_dataset_env_check_feast.py .github/workflows/ci.yml

@@ -258,11 +258,12 @@ def test_verify_assembly_environment_requires_staging_location(monkeypatch) -> N
 
 
 def test_verify_assembly_environment_requires_feast_package(monkeypatch) -> None:
-    # 이 저장소 dev 그룹에는 실제로 feast가 설치돼 있지 않다(격리 그룹) — mocking 없이
-    # 실제 ImportError를 검증한다. feast 그룹에서 이 테스트를 돌리면 통과하지 않으므로
-    # dev 그룹 전용이다.
+    # feast 설치 여부(dev 그룹엔 없고 feast 그룹엔 있다)에 의존하지 않도록, sys.modules에
+    # None을 넣어 ``import feast``가 항상 ImportError를 내게 만든다 — 어느 venv에서 돌려도
+    # 결정적으로 같은 조건을 검증한다.
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://registry/registry.db")
     monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://staging/")
+    monkeypatch.setitem(sys.modules, "feast", None)
     try:
         build_training_dataset._verify_assembly_environment()
         raised = False
@@ -296,5 +297,23 @@ def test_main_env_check_runs_before_bigquery_call(monkeypatch) -> None:
         raised = True
         assert "GCS_REGISTRY_PATH" in str(error)
     assert raised
+
+
+def test_main_runs_assembly_when_env_check_passes(monkeypatch, tmp_path) -> None:
+    # 계약: 가드가 통과하면 조립이 실제로 실행된다(가드가 happy path를 막지 않는다).
+    # 가드 자체는 위 테스트들이 커버하므로 여기서는 no-op으로 치환한다 — dev venv에는
+    # feast도 ADC도 없어 실제 가드를 통과시킬 수 없기 때문이다.
+    monkeypatch.setattr(build_training_dataset, "_verify_assembly_environment", lambda: None)
+    assemble = MagicMock()
+    monkeypatch.setattr(build_training_dataset, "_assemble_via_feast", assemble)
+    output_path = str(tmp_path / "training_dataset.csv")
+
+    build_training_dataset.main(
+        output_path=output_path,
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-02",
+    )
+
+    assemble.assert_called_once_with(output_path, "2026-07-01", "2026-07-02")
 
 

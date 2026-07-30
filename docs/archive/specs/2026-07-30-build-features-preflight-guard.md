@@ -1,6 +1,6 @@
 # build-features 사전 점검 가드 — 설계 문서
 
-> Status: Draft | Issue: #404 | Branch: `feat/404-build-features-preflight-guard`
+> Status: Implemented | Issue: #404 | Branch: `feat/404-build-features-preflight-guard`
 
 ## 배경
 
@@ -161,13 +161,13 @@ feast 설치 여부와 무관하게 dev 그룹에서 검증 가능하다.
 
 ## 완료 조건
 
-- [ ] 에이전트가 기간(KST `YYYY-MM-DD ~ YYYY-MM-DD`)만 주면 학습 CSV가 만들어진다
+- [x] 에이전트가 기간(KST `YYYY-MM-DD ~ YYYY-MM-DD`)만 주면 학습 CSV가 만들어진다
       (기존 경로 유지, 회귀 없음)
-- [ ] 필수 환경변수/feast 패키지/GCP 자격증명 중 하나라도 없으면, BigQuery 호출
+- [x] 필수 환경변수/feast 패키지/GCP 자격증명 중 하나라도 없으면, BigQuery 호출
       전에 명확한 안내와 함께 즉시 중단한다(조용히 스냅샷으로 넘어가지 않음)
-- [ ] GKE 등 컨테이너 환경(`KUBERNETES_SERVICE_HOST` 존재)에서는 자격증명 파일
+- [x] GKE 등 컨테이너 환경(`KUBERNETES_SERVICE_HOST` 존재)에서는 자격증명 파일
       체크가 오탐으로 막지 않는다
-- [ ] champion 공정 비교 절차가 이 문서에 기록된다(코드 없음)
+- [x] champion 공정 비교 절차가 이 문서에 기록된다(코드 없음)
 
 ## 관련
 

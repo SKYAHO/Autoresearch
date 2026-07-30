@@ -6,6 +6,10 @@
 #359 C2에서 DuckDB 재계산 경로(raw에서 자체 계산)를 제거하고 feast를 **유일 경로**로 만들었다 —
 offline store가 정본(#357)이라 그 값을 그대로 읽는다.
 
+[기능] ``main()``은 조립 전에 ``_verify_assembly_environment()``로 실행 가능 여부를 fail-fast
+확인한다(환경변수 → feast import → GCP 자격증명 순, #404) — 자격증명 없는 환경에서 BigQuery
+접속이 응답 없이 멈추는 대신 즉시 명확한 이유로 중단한다.
+
 출력: data/processed/training_dataset.csv (21 모델 피처 + ``clicked`` label = 22 물리 컬럼).
 model input의 이름·순서·categorical 분류는 ``src/features/model_contract.py``가, staged PIT 조회는
 ``src/features/feast_retrieval.py``가 소유한다(이 모듈은 재정의하지 않는다).
