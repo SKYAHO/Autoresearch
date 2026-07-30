@@ -50,7 +50,7 @@ def test_orchestration_images_do_not_embed_runtime_secrets() -> None:
     dockerignore = DOCKERIGNORE.read_text(encoding="utf-8")
     assert ".codex" in dockerignore
     assert ".env" in dockerignore
-    assert "auth.json" in dockerignore
+    assert "**/auth.json" in dockerignore
 
 
 def test_api_and_runner_images_copy_only_their_runtime_modules() -> None:

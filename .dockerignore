@@ -11,7 +11,7 @@ env
 .env.*
 .codex
 .codex/
-auth.json
+**/auth.json
 gha-creds-*.json
 data
 *.parquet
