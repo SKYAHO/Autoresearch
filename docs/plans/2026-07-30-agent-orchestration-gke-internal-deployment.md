@@ -1,86 +1,148 @@
 # Agent Orchestration GKE 내부 배포 구현 계획
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 공용 Codex CLI OAuth를 단일 PVC에 안전하게 보존하면서 Agent Orchestration API를 GKE dev와 기존 Cloud SQL에 내부 전용으로 배포한다.
+**Goal:** 공용 Codex OAuth를 Runner에만 제공하고, API가 Runner 응답을 Cloud SQL에 저장하는 내부 dev 배포 경로를 구축한다.
 
-**Architecture:** Agent 이미지는 FastAPI·Codex CLI·시크릿 부트스트랩 모듈을 제공한다. GKE init container는 동일 이미지와 Workload Identity로 Secret Manager에서 DB 비밀번호·OAuth 초기 인증 파일을 읽어 Pod 공유 임시 볼륨과 `CODEX_HOME` PVC를 준비하고, 앱 컨테이너는 Cloud SQL Private IP로 연결한다.
+**Architecture:** API는 `/chat` 인증·요청 검증·PostgreSQL 저장을 담당하고 `codex_runner` 백엔드에서 private Runner의 `/v1/generate`를 호출한다. Runner는 Codex CLI와 Runner 전용 `CODEX_HOME` PVC만 가지며, OAuth 초기 파일은 Runner 전용 Workload Identity가 Secret Manager에서 읽어 최초 한 번 초기화한다.
 
-**Tech Stack:** Python 3.12, FastAPI/Uvicorn, `@openai/codex` 0.146.0, psycopg 3, Google Secret Manager, Workload Identity, Cloud SQL PostgreSQL 15, GKE Standard, PVC, Terraform, ArgoCD, GAR.
+**Tech Stack:** Python 3.12, FastAPI, httpx, psycopg 3, `@openai/codex` 0.146.0, Google Secret Manager, Workload Identity, Cloud SQL PostgreSQL 15, GKE, PVC, ArgoCD, GAR.
 
 ## Global Constraints
 
-- PR #431이 `main`에 병합된 뒤 최신 `origin/main`에서 구현한다.
-- API는 `ClusterIP`만 사용하며, Ingress·LoadBalancer·외부 공개·다중 replica는 만들지 않는다.
-- Cloud SQL DB/user는 `agent_orchestration`/`agent_orchestration_app`, Deployment는 `replicas: 1`, PVC는 `ReadWriteOnce`로 고정한다.
-- OAuth `auth.json`, DB 비밀번호, 완성 DB URL은 Git·이미지·ConfigMap·Kubernetes Secret·환경 변수·일반 로그에 넣지 않는다.
-- Secret Manager CSI는 추가하지 않는다. 전용 GSA/KSA의 Workload Identity와 동일 Agent 이미지 init container를 사용한다.
-- Codex 호출 옵션은 `--sandbox read-only --ephemeral --skip-git-repo-check`을 유지한다.
-- 배포 manifest는 GAR immutable digest만 참조한다.
-
-## 파일 구조
-
-| 저장소 | 생성·변경 파일 | 책임 |
-|---|---|---|
-| Autoresearch | `agent_orchestration/bootstrap_secrets.py`, `agent_orchestration/entrypoint.sh` | Secret Manager 읽기, DB 런타임 파일, 앱 시작 |
-| Autoresearch | `deploy/agent_orchestration/Dockerfile`, `tests/test_agent_orchestration_{bootstrap,container}.py` | Codex 포함 non-root 이미지와 계약 테스트 |
-| Autoresearch | `.github/workflows/{ci,release}.yml` | Agent 이미지 build, GAR push, digest verify |
-| Autoresearch-infra | `terraform/envs/dev/{cloud_sql,secret_manager,gke,locals,variables,outputs}.tf` | 전용 DB/user, GSA, 최소 Secret Manager IAM |
-| Autoresearch-infra | `terraform/admin/autoresearch-k8s/{main,variables,locals,outputs}.tf` | `agent-orchestration` KSA와 GSA 매핑 |
-| Autoresearch-infra | `terraform/admin/argocd-k8s/{main,variables,locals}.tf`, `deploy/agent-orchestration/{deployment,service}.yaml` | 수동 ArgoCD Application과 내부 GKE workload |
-| Autoresearch-infra | `docs/runbooks/2026-07-30-agent-orchestration-gke.md` | OAuth 등록·복구, smoke, rollback |
+- API와 Runner는 서로 다른 Deployment·KSA·GSA·ClusterIP Service를 사용하며 API Pod에는 OAuth 시크릿·PVC를 마운트하지 않는다.
+- API GSA는 DB 비밀번호·Cloud SQL에만, Runner GSA는 Codex OAuth 초기 인증 시크릿 하나에만 접근한다.
+- OAuth `auth.json`, DB 비밀번호, 완성 DB URL은 Git·이미지·ConfigMap·환경 변수·일반 로그에 넣지 않는다.
+- Runner는 `replicas: 1`과 전용 `ReadWriteOnce` PVC를 사용한다. 외부 Ingress·LoadBalancer·사용자별 OAuth·다중 replica는 추가하지 않는다.
+- `codex_cli` 로컬 백엔드와 `openai` 백엔드의 기존 계약을 유지하고, 서버 배포용으로만 `codex_runner`를 추가한다.
+- 모든 새 Python 런타임 모듈은 책임 docstring과 반환 타입을 가지며, 요청·응답은 Pydantic으로 검증한다.
 
 ---
 
-### Task 1: 병합 기준점 동기화
-
-**Files:** 없음 (Git 상태만 변경)
-
-**Consumes:** PR #431의 Agent API 구현.
-
-**Produces:** #431을 포함한 최신 `main` 기반 배포 브랜치.
-
-- [ ] **Step 1: #431 병합을 확인한다.**
-
-```bash
-gh pr view 431 --json state,mergedAt,mergeCommit
-```
-
-Expected: `state=MERGED`이며 `mergedAt`과 `mergeCommit`이 비어 있지 않다.
-
-- [ ] **Step 2: 배포 브랜치를 rebase한다.**
-
-```bash
-git fetch origin main
-git rebase origin/main
-uv run python -m pytest tests/test_agent_orchestration.py -q
-```
-
-Expected: 충돌 없이 완료되고 기존 Agent API 테스트가 통과한다. rebase 충돌 해소가 필요하면 해소 파일만 `chore: 배포 브랜치 기준점 동기화`로 커밋한다.
-
-### Task 2: 런타임 시크릿 부트스트랩 구현
+### Task 1: API·Runner 내부 생성 계약 구현
 
 **Files:**
-- Create: `agent_orchestration/bootstrap_secrets.py`
-- Create: `agent_orchestration/entrypoint.sh`
-- Create: `tests/test_agent_orchestration_bootstrap.py`
-- Modify: `pyproject.toml`, `uv.lock`
+- Create: `agent_orchestration/contracts.py`
+- Create: `agent_orchestration/codex.py`
+- Create: `agent_orchestration/runner/__init__.py`
+- Create: `agent_orchestration/runner/config.py`
+- Create: `agent_orchestration/runner/app.py`
+- Modify: `agent_orchestration/app/config.py`
+- Modify: `agent_orchestration/app/llm.py`
+- Modify: `tests/test_agent_orchestration.py`
+- Create: `tests/test_agent_orchestration_runner.py`
+- Modify: `pyproject.toml`, `uv.lock`, `.env.example`, `agent_orchestration/README.md`
 
-**Consumes:** `ORCH_DB_PASSWORD_SECRET_ID`, `ORCH_CODEX_AUTH_SECRET_ID`, `ORCH_DB_HOST`, `ORCH_DB_NAME`, `ORCH_DB_USER`, `ORCH_RUNTIME_DIR`, `CODEX_HOME`과 Workload Identity ADC.
+**Consumes:** Existing `POST /chat` request/response contract and `CODEX_CLI_PATH`, `CODEX_HOME`, `CODEX_MODEL`, `CODEX_TIMEOUT_SEC` settings.
 
-**Produces:** `bootstrap_runtime_secrets(settings, read_secret) -> None` 및 권한 제한 `db.env`.
+**Produces:** `LLM_BACKEND=codex_runner`에서 `CODEX_RUNNER_URL`의 private Runner를 호출하는 API와 `POST /v1/generate` Runner API.
 
-- [ ] **Step 1: 실패하는 단위 테스트를 작성한다.**
+- [ ] **Step 1: 실패하는 API→Runner·Runner 계약 테스트를 작성한다.**
 
 ```python
-def test_bootstrap_writes_database_env_and_initial_auth_once(tmp_path: Path) -> None:
-    bootstrap_runtime_secrets(settings, secret_reader)
-    assert runtime_env.read_text().startswith("ORCH_DATABASE_URL=postgresql://")
-    assert auth_path.read_bytes() == b'{"tokens":"secret"}'
-    assert stat.S_IMODE(auth_path.stat().st_mode) == 0o600
+async def test_generate_response_uses_private_runner(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = make_settings(llm_backend="codex_runner", codex_runner_url="http://runner:8080")
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post_returning_runner_result)
+    result = await generate_response(settings, "hello")
+    assert result == LLMResult(text="runner answer", model="codex-cli", token_count=None)
+
+def test_runner_rejects_unknown_request_fields() -> None:
+    response = TestClient(create_runner_app()).post("/v1/generate", json={"prompt": "x", "model": "x"})
+    assert response.status_code == 422
 ```
 
-추가 테스트는 기존 `auth.json`을 덮어쓰지 않고, 예외·로그에 비밀번호/OAuth payload가 없음을 검증한다.
+- [ ] **Step 2: 실패를 확인한다.**
+
+```bash
+uv run python -m pytest tests/test_agent_orchestration_runner.py -q
+```
+
+Expected: `agent_orchestration.runner` 및 `codex_runner` 백엔드 부재로 실패한다.
+
+- [ ] **Step 3: 공통 Codex 실행 경계와 Runner를 구현한다.**
+
+`agent_orchestration/contracts.py`에 다음 타입을 둔다.
+
+```python
+class LLMBackendError(RuntimeError): ...
+
+@dataclass(frozen=True)
+class LLMResult:
+    text: str
+    model: str
+    token_count: int | None
+```
+
+`agent_orchestration/codex.py`에는 다음 공개 경계를 둔다.
+
+```python
+@dataclass(frozen=True)
+class CodexSettings:
+    cli_path: str
+    home: str
+    model: str | None
+    timeout_sec: int
+
+async def generate_codex_response(settings: CodexSettings, prompt: str) -> LLMResult: ...
+```
+
+기존 `codex exec --sandbox read-only --ephemeral --skip-git-repo-check` 호출·요청별
+임시 작업 디렉터리·프로세스 그룹 종료를 이 함수로 옮긴다. API `llm.py`는
+`codex_cli`에서 이 함수를 재사용하고, `codex_runner`에서는 `httpx.AsyncClient`
+(`trust_env=False`)로 `${CODEX_RUNNER_URL}/v1/generate`를 호출한다. 타임아웃,
+HTTP 오류, 형식 오류는 `LLMBackendError("Codex runner call failed.")`로 정규화한다.
+
+`RunnerSettings`는 Codex 설정과 `RUNNER_MAX_CONCURRENCY`(기본 1)만 읽는다.
+Runner의 Pydantic `GenerateRequest(prompt)`와 `GenerateResponse(response, model,
+latency_ms, token_count)`는 `extra="forbid"`이며, app은 semaphore 안에서
+`generate_codex_response()`를 호출한다. Runner는 DB·API 공유 토큰을 읽지 않는다.
+
+- [ ] **Step 4: 설정·문서를 갱신한다.**
+
+`ServiceSettings`에 `codex_runner_url: str | None` 및 `codex_runner_timeout_sec: int`
+를 추가한다. `LLM_BACKEND` 허용값은 `codex_cli`, `codex_runner`, `openai`이며,
+`codex_runner`에는 절대 URL `CODEX_RUNNER_URL`을 요구한다. `.env.example`과
+`agent_orchestration/README.md`에는 로컬 기본값은 `codex_cli`, GKE API는
+`codex_runner`이라는 구분만 기록하고 OAuth 값은 기록하지 않는다. `httpx`를
+`orchestration` 의존성 그룹에 추가하고 lockfile을 갱신한다.
+
+- [ ] **Step 5: 테스트·lint·커밋을 수행한다.**
+
+```bash
+uv lock
+uv run python -m pytest tests/test_agent_orchestration.py tests/test_agent_orchestration_runner.py -q
+uv run --no-sync ruff check agent_orchestration tests/test_agent_orchestration.py tests/test_agent_orchestration_runner.py
+git add agent_orchestration tests/test_agent_orchestration.py tests/test_agent_orchestration_runner.py pyproject.toml uv.lock .env.example
+git commit -m "feat: 오케스트레이션 Codex runner 분리"
+```
+
+Expected: 기존 로컬 Codex/OpenAI 테스트와 새 API→Runner·Runner 스키마 테스트가 모두 통과한다.
+
+### Task 2: API DB와 Runner OAuth 부트스트랩 분리
+
+**Files:**
+- Modify: `agent_orchestration/bootstrap_secrets.py`
+- Modify: `agent_orchestration/entrypoint.sh`
+- Create: `agent_orchestration/runner_entrypoint.sh`
+- Modify: `tests/test_agent_orchestration_bootstrap.py`
+
+**Consumes:** Task 1의 API·Runner 경계와 Secret Manager의 resource-level accessor 권한.
+
+**Produces:** API는 `db.env`만, Runner는 최초 `auth.json`만 준비하는 독립 bootstrap 함수.
+
+- [ ] **Step 1: 실패하는 분리 테스트를 작성한다.**
+
+```python
+def test_api_bootstrap_never_reads_codex_auth_secret(tmp_path: Path) -> None:
+    bootstrap_api_database(settings, reader)
+    assert reader.calls == [settings.db_password_secret_id]
+
+def test_runner_bootstrap_preserves_refreshed_auth_file(tmp_path: Path) -> None:
+    bootstrap_runner_codex_auth(settings, reader)
+    auth_path.write_bytes(b'{"access_token":"refreshed"}')
+    bootstrap_runner_codex_auth(settings, reader)
+    assert auth_path.read_bytes() == b'{"access_token":"refreshed"}'
+```
 
 - [ ] **Step 2: 실패를 확인한다.**
 
@@ -88,252 +150,245 @@ def test_bootstrap_writes_database_env_and_initial_auth_once(tmp_path: Path) -> 
 uv run python -m pytest tests/test_agent_orchestration_bootstrap.py -q
 ```
 
-Expected: 모듈 또는 함수 부재로 실패한다.
+Expected: 분리된 public bootstrap 함수 부재로 실패한다.
 
-- [ ] **Step 3: 최소 구현을 추가한다.**
+- [ ] **Step 3: 최소 분리 구현을 추가한다.**
 
-`google-cloud-secret-manager`를 런타임 의존성으로 추가한다. 아래 계약의 `BootstrapSettings`와 `bootstrap_runtime_secrets()`를 구현한다.
+`DatabaseBootstrapSettings`와 `RunnerAuthBootstrapSettings`를 별도 dataclass로
+정의한다. `bootstrap_api_database()`는 DB 비밀번호만 읽고 mode `0600`의
+`$ORCH_RUNTIME_DIR/db.env`만 쓴다. `bootstrap_runner_codex_auth()`는 OAuth 시크릿을
+`$CODEX_HOME/auth.json`이 없을 때만 mode `0600`으로 쓰며 기존 regular file을
+덮어쓰지 않는다. 두 함수의 오류·로그에는 시크릿 resource ID만 포함하고 본문은
+포함하지 않는다.
 
-```python
-@dataclass(frozen=True)
-class BootstrapSettings:
-    db_password_secret_id: str
-    codex_auth_secret_id: str
-    db_host: str
-    db_name: str
-    db_user: str
-    runtime_dir: Path
-    codex_home: Path
-
-def bootstrap_runtime_secrets(
-    settings: BootstrapSettings,
-    read_secret: Callable[[str], bytes],
-) -> None: ...
-```
-
-DB 비밀번호와 비민감 DB 좌표로 `ORCH_DATABASE_URL=` 한 줄만 담은 `db.env`를 mode `0600`으로 쓴다. `auth.json`은 없을 때만 Secret Manager에서 가져와 mode `0600`으로 쓴다. 로그에는 시크릿 ID만 남긴다.
-
-`entrypoint.sh`는 `set -eu`, `set -a; . "$ORCH_RUNTIME_DIR/db.env"; set +a` 후 다음으로 종료한다.
+API `entrypoint.sh`는 `db.env`를 source한 뒤 API uvicorn을 exec한다. Runner
+`runner_entrypoint.sh`는 DB 파일을 읽지 않고 다음만 실행한다.
 
 ```sh
-exec uvicorn agent_orchestration.app.main:app --host 0.0.0.0 --port 8000
+exec uvicorn agent_orchestration.runner.app:app --host 0.0.0.0 --port 8080
 ```
 
 - [ ] **Step 4: 테스트·lint·커밋을 수행한다.**
 
 ```bash
-uv lock
-uv run python -m pytest tests/test_agent_orchestration.py tests/test_agent_orchestration_bootstrap.py -q
-uv run --no-sync ruff check agent_orchestration tests/test_agent_orchestration_bootstrap.py
-git add pyproject.toml uv.lock agent_orchestration/bootstrap_secrets.py agent_orchestration/entrypoint.sh tests/test_agent_orchestration_bootstrap.py
-git commit -m "feat: 오케스트레이션 런타임 시크릿 부트스트랩 추가"
+uv run python -m pytest tests/test_agent_orchestration_bootstrap.py -q
+uv run --no-sync ruff check agent_orchestration/bootstrap_secrets.py tests/test_agent_orchestration_bootstrap.py
+git add agent_orchestration/bootstrap_secrets.py agent_orchestration/entrypoint.sh agent_orchestration/runner_entrypoint.sh tests/test_agent_orchestration_bootstrap.py
+git commit -m "refactor: 오케스트레이션 시크릿 부트스트랩 분리"
 ```
 
-Expected: 테스트와 lint가 통과하고 시크릿 원문은 staged diff에 없다.
+Expected: API bootstrap은 OAuth 시크릿을 읽지 않고 Runner bootstrap은 DB 시크릿을 읽지 않는다.
 
-### Task 3: Agent 이미지와 CI 계약 추가
+### Task 3: 분리된 API·Runner 이미지와 CI 계약 추가
 
 **Files:**
-- Create: `deploy/agent_orchestration/Dockerfile`
+- Create: `deploy/agent_orchestration/api.Dockerfile`
+- Create: `deploy/agent_orchestration/runner.Dockerfile`
 - Create: `tests/test_agent_orchestration_container.py`
 - Modify: `.dockerignore`, `.github/workflows/ci.yml`, `agent_orchestration/README.md`
 
-**Consumes:** Task 2 모듈과 root `pyproject.toml`/`uv.lock`.
+**Consumes:** Task 1·2 코드와 root `pyproject.toml`/`uv.lock`.
 
-**Produces:** `autoresearch-agent-orchestration:ci` non-root 이미지.
+**Produces:** `autoresearch-agent-orchestration-api:ci`, `autoresearch-agent-orchestration-runner:ci` non-root 이미지.
 
-- [ ] **Step 1: 실패하는 컨테이너 계약 테스트를 작성한다.**
+- [ ] **Step 1: 실패하는 이미지 계약 테스트를 작성한다.**
 
 ```python
-def test_agent_dockerfile_pins_codex_and_uses_nonroot_entrypoint() -> None:
-    dockerfile = Path("deploy/agent_orchestration/Dockerfile").read_text()
-    assert "@openai/codex@0.146.0" in dockerfile
-    assert "USER appuser" in dockerfile
-    assert "agent_orchestration/entrypoint.sh" in dockerfile
-    assert "auth.json" not in dockerfile
+def test_api_image_excludes_codex_and_runner_image_pins_codex() -> None:
+    assert "@openai/codex" not in Path("deploy/agent_orchestration/api.Dockerfile").read_text()
+    assert "@openai/codex@0.146.0" in Path("deploy/agent_orchestration/runner.Dockerfile").read_text()
+    assert "USER appuser" in both_dockerfiles
 ```
 
-또한 `.dockerignore`가 `.env`와 `.codex`를 build context에서 제외하는지 검증한다.
+추가 검사로 두 Dockerfile이 `auth.json`, `.env`, DB URL을 COPY·ARG·ENV로 포함하지
+않고 `.dockerignore`가 `.codex`와 `.env`를 제외하는지 확인한다.
 
-- [ ] **Step 2: Dockerfile 부재 실패를 확인한다.**
+- [ ] **Step 2: 실패를 확인한다.**
 
 ```bash
 uv run python -m pytest tests/test_agent_orchestration_container.py -q
 ```
 
-Expected: `FileNotFoundError`로 실패한다.
+Expected: Dockerfile 부재로 실패한다.
 
 - [ ] **Step 3: multi-stage Dockerfile을 구현한다.**
 
-`node:22-bookworm-slim` stage에서 아래처럼 고정 Codex CLI를 설치하고, 최종 `python:3.12-slim-bookworm` stage에 필요한 `/usr/local` runtime을 복사한다.
-
-```dockerfile
-ARG CODEX_VERSION=0.146.0
-RUN npm install --global "@openai/codex@${CODEX_VERSION}"
-```
-
-최종 stage는 UID `10001`의 `appuser`, `HOME=/home/appuser`, `CODEX_HOME=/var/lib/codex`, `ORCH_RUNTIME_DIR=/var/run/agent-orchestration`을 설정하고 `entrypoint.sh`를 `CMD`로 실행한다. OAuth·DB 값은 `COPY`, `ARG`, `ENV`에 넣지 않는다.
+두 이미지 모두 uv export의 `orchestration` 그룹만 설치하고 UID/GID `10001`의
+`appuser`로 실행한다. API 이미지는 `agent_orchestration/app`, bootstrap, API
+entrypoint만 복사한다. Runner 이미지는 node stage에서 고정 Codex CLI를 설치하고
+Runner·Codex 실행 모듈·Runner entrypoint만 복사한다. Runner의 기본 `CODEX_HOME`은
+`/var/lib/codex`, scratch 경로는 `/tmp`이며 Kubernetes가 전용 볼륨으로 마운트한다.
 
 - [ ] **Step 4: build·smoke·CI를 검증하고 커밋한다.**
 
 ```bash
-docker build -f deploy/agent_orchestration/Dockerfile -t autoresearch-agent-orchestration:ci .
-docker run --rm autoresearch-agent-orchestration:ci codex --version
-docker run --rm autoresearch-agent-orchestration:ci python -c "import agent_orchestration.app.main, agent_orchestration.bootstrap_secrets"
+docker build -f deploy/agent_orchestration/api.Dockerfile -t autoresearch-agent-orchestration-api:ci .
+docker build -f deploy/agent_orchestration/runner.Dockerfile -t autoresearch-agent-orchestration-runner:ci .
+docker run --rm autoresearch-agent-orchestration-api:ci python -c "import agent_orchestration.app.main"
+docker run --rm autoresearch-agent-orchestration-runner:ci codex --version
+docker run --rm autoresearch-agent-orchestration-runner:ci python -c "import agent_orchestration.runner.app"
 uv run python -m pytest tests/test_agent_orchestration_container.py -q
-git add deploy/agent_orchestration/Dockerfile tests/test_agent_orchestration_container.py .dockerignore .github/workflows/ci.yml agent_orchestration/README.md
-git commit -m "feat: 오케스트레이션 배포 이미지 추가"
+git add deploy/agent_orchestration tests/test_agent_orchestration_container.py .dockerignore .github/workflows/ci.yml agent_orchestration/README.md
+git commit -m "feat: 오케스트레이션 API와 runner 이미지 추가"
 ```
 
-Expected: Codex 버전은 `0.146.0`, 이미지 사용자는 non-root, import와 CI smoke는 성공한다.
+Expected: 두 이미지는 non-root로 실행되고 API에는 Codex binary가 없으며 Runner만 Codex 버전을 출력한다.
 
-### Task 4: GAR release digest 발행 추가
+### Task 4: GAR release와 운영 문서 갱신
 
 **Files:**
-- Modify: `.github/workflows/release.yml`, `docs/guides/release-pipeline.md`, `tests/test_agent_orchestration_container.py`
+- Modify: `.github/workflows/release.yml`
+- Modify: `docs/guides/release-pipeline.md`
+- Modify: `tests/test_agent_orchestration_container.py`
 
-**Consumes:** Task 3 Dockerfile.
+**Consumes:** Task 3 API·Runner Dockerfiles.
 
-**Produces:** `autoresearch-agent-orchestration@sha256:...`를 출력하는 `publish-agent-orchestration-image` job.
+**Produces:** `autoresearch-agent-orchestration-api@sha256:...`와 `autoresearch-agent-orchestration-runner@sha256:...` release digest.
 
-- [ ] **Step 1: workflow 계약 테스트를 추가하고 실패를 확인한다.**
+- [ ] **Step 1: release workflow 계약 테스트를 작성하고 실패를 확인한다.**
 
 ```python
-def test_release_workflow_publishes_agent_orchestration_digest() -> None:
+def test_release_workflow_publishes_api_and_runner_digests() -> None:
     workflow = Path(".github/workflows/release.yml").read_text()
-    assert "publish-agent-orchestration-image" in workflow
-    assert "deploy/agent_orchestration/Dockerfile" in workflow
+    assert "publish-agent-orchestration-api-image" in workflow
+    assert "publish-agent-orchestration-runner-image" in workflow
 ```
 
 ```bash
-uv run python -m pytest tests/test_agent_orchestration_container.py::test_release_workflow_publishes_agent_orchestration_digest -q
+uv run python -m pytest tests/test_agent_orchestration_container.py::test_release_workflow_publishes_api_and_runner_digests -q
 ```
 
-Expected: 새 job 부재로 실패한다.
+Expected: 두 release job 부재로 실패한다.
 
-- [ ] **Step 2: release job을 추가한다.**
+- [ ] **Step 2: immutable release job을 추가한다.**
 
-`publish-serving-image`의 immutable checkout/WIF/GAR 패턴을 사용하되 URI를 `${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/autoresearch-agent-orchestration`으로 고정한다. verify는 digest, OCI revision, non-root user, `codex --version`, `import agent_orchestration.app.main, agent_orchestration.bootstrap_secrets`를 확인하고 summary에 digest/source SHA만 기록한다.
+기존 `publish-serving-image`의 immutable checkout·WIF·Buildx 패턴을 각각
+`autoresearch-agent-orchestration-api`와 `autoresearch-agent-orchestration-runner`
+URI에 적용한다. 각 verify는 digest, OCI revision, non-root user, 해당 import를
+검사하며 Runner verify만 `codex --version`을 실행한다. summary에는 digest와 source
+SHA만 기록한다.
 
-- [ ] **Step 3: workflow를 검증하고 커밋한다.**
+- [ ] **Step 3: 검증·커밋을 수행한다.**
 
 ```bash
 actionlint .github/workflows/release.yml
 git diff --check
 uv run python -m pytest tests/test_agent_orchestration_container.py -q
 git add .github/workflows/release.yml docs/guides/release-pipeline.md tests/test_agent_orchestration_container.py
-git commit -m "feat: 오케스트레이션 이미지 release 발행 추가"
+git commit -m "feat: 오케스트레이션 분리 이미지 release 발행"
 ```
 
-Expected: 세 검증이 통과한다. `actionlint` 미설치 시 CI workflow syntax 결과를 PR에 남긴다.
+Expected: workflow 문법과 이미지 release 계약 테스트가 통과한다.
 
-### Task 5: Infra DB, 전용 Workload Identity, Secret Manager 추가
+### Task 5: 인프라 저장소의 최소 권한·내부 네트워크 배포
 
 **Files:**
-- Modify: `Autoresearch-infra/terraform/envs/dev/{cloud_sql,secret_manager,gke,locals,variables,outputs}.tf`
-- Modify: `Autoresearch-infra/terraform/admin/autoresearch-k8s/{main,variables,locals,outputs}.tf`
+- Create or modify in `SKYAHO/Autoresearch-infra`: `terraform/envs/dev/{cloud_sql,secret_manager,gke,locals,variables,outputs}.tf`
+- Create or modify in `SKYAHO/Autoresearch-infra`: `terraform/admin/autoresearch-k8s/{main,variables,locals,outputs}.tf`
+- Create: `SKYAHO/Autoresearch-infra/deploy/agent-orchestration/{api-deployment,runner-deployment,api-service,runner-service,network-policy}.yaml`
+- Create: `SKYAHO/Autoresearch-infra/docs/runbooks/2026-07-30-agent-orchestration-gke.md`
 
-**Consumes:** Task 4 digest와 기존 `autoresearch-dev-pg`/`autoresearch` namespace.
+**Consumes:** Task 4 API·Runner immutable digest와 이 문서의 GSA/KSA/PVC 계약.
 
-**Produces:** 전용 DB/user, `autoresearch-dev-agent-orchestration` GSA, `agent-orchestration` KSA, 두 시크릿 최소 권한.
+**Produces:** Cloud SQL 전용 DB/user, API GSA/KSA, Runner GSA/KSA, OAuth PVC, private services와 restricted NetworkPolicy.
 
-- [ ] **Step 1: infra 저장소에 별도 feature 이슈와 연결 브랜치를 만든다.**
+- [ ] **Step 1: 인프라 저장소에서 #432을 참조하는 feature 이슈와 Create-a-branch 브랜치를 만든다.**
 
-완료 조건은 전용 DB/user, OAuth bootstrap secret, DB password secret, GSA/KSA, ArgoCD Deployment, 내부 smoke와 rollback이다. 브랜치는 GitHub Issue의 `Create a branch`에서 만들어 `main` 기준 worktree로 checkout한다.
+이슈 완료 조건은 API GSA의 DB 접근, Runner GSA의 OAuth 시크릿 단일 접근, API/Runner
+서로 다른 KSA, `ReadWriteOnce` PVC, ClusterIP 두 개, API→Runner ingress만 허용하는
+NetworkPolicy, dry-run과 Terraform plan이다.
 
-- [ ] **Step 2: plan 실패 상태를 기록한다.**
+- [ ] **Step 2: Terraform plan의 실패 기준을 기록한다.**
 
 ```bash
 terraform -chdir=terraform/envs/dev plan -out=/tmp/agent-orchestration.tfplan
 terraform -chdir=terraform/envs/dev show -json /tmp/agent-orchestration.tfplan | jq -e '[.resource_changes[].address] | index("google_sql_database.agent_orchestration")'
 ```
 
-Expected before implementation: 대상 resource가 없어 jq가 실패한다.
+Expected before implementation: 신규 DB resource가 없어 `jq`가 실패한다.
 
-- [ ] **Step 3: 최소 권한 Terraform을 구현한다.**
+- [ ] **Step 3: 최소 권한 Terraform과 manifest를 구현한다.**
 
-`cloud_sql.tf`에 `random_password.agent_orchestration_db_password`, `google_sql_database.agent_orchestration`, `google_sql_user.agent_orchestration`을 추가하고 기존 URI-safe 문자 집합 `-_.~`을 유지한다. `secret_manager.tf`에는 Terraform이 version을 관리하는 `autoresearch-dev-agent-orchestration-db-password`와 operator payload 전용의 빈 `autoresearch-dev-agent-orchestration-codex-auth-bootstrap` secret(`prevent_destroy = true`)을 분리한다.
+DB/user `agent_orchestration`/`agent_orchestration_app`와 DB 비밀번호 시크릿을
+생성한다. OAuth bootstrap 시크릿은 Terraform이 payload를 관리하지 않는
+`autoresearch-dev-agent-orchestration-codex-auth-bootstrap`으로 만들고
+`prevent_destroy = true`를 둔다. API GSA에는 `roles/cloudsql.client`와 DB password
+시크릿의 accessor만, Runner GSA에는 OAuth 시크릿의 accessor만 준다.
 
-`gke.tf`에는 전용 GSA, `roles/cloudsql.client`, 두 시크릿에 한정한 `roles/secretmanager.secretAccessor`, KSA subject의 `roles/iam.workloadIdentityUser`를 추가한다. 기존 `gke_app` 권한은 넓히지 않는다. admin root는 `agent-orchestration` KSA annotation을 전용 GSA email로 설정한다.
+API Deployment는 `LLM_BACKEND=codex_runner`, Runner ClusterIP URL, DB 관련
+비민감 좌표를 받으며 OAuth PVC를 마운트하지 않는다. Runner init container는
+`bootstrap_runner_codex_auth`을 실행하고, main container만 OAuth PVC를
+`/var/lib/codex`로 마운트한다. Runner Deployment는 `replicas: 1`, PVC는 1Gi
+`ReadWriteOnce`, 두 Service는 `ClusterIP`다. NetworkPolicy는 API→Runner:8080,
+API→Cloud SQL:5432, API/Runner의 DNS·필요 HTTPS만 허용하고 외부 ingress를 만들지
+않는다.
 
-- [ ] **Step 4: Terraform을 검증하고 커밋한다.**
+- [ ] **Step 4: Terraform·manifest·runbook을 검증하고 커밋한다.**
 
 ```bash
 terraform -chdir=terraform/envs/dev fmt -check
 terraform -chdir=terraform/envs/dev validate
 terraform -chdir=terraform/admin/autoresearch-k8s fmt -check
 terraform -chdir=terraform/admin/autoresearch-k8s validate
-git add terraform/envs/dev terraform/admin/autoresearch-k8s
-git commit -m "feat: 오케스트레이션 GKE 인증 기반 추가"
+kubectl apply --dry-run=client -f deploy/agent-orchestration/api-deployment.yaml
+kubectl apply --dry-run=client -f deploy/agent-orchestration/runner-deployment.yaml
 ```
 
-Expected: 신규 DB/user/GSA/secret/IAM만 plan에 나타나며 기존 Cloud SQL 인스턴스 교체는 없다.
+Expected: 기존 Cloud SQL instance 교체 없이 신규 DB/user/시크릿/GSA/KSA/PVC와
+internal-only workload만 plan에 나타난다.
 
-### Task 6: ArgoCD workload, runbook, 실배포 검증
+### Task 6: dev 배포·저장 경로 검증
 
 **Files:**
-- Create: `Autoresearch-infra/deploy/agent-orchestration/{deployment,service}.yaml`
-- Modify: `Autoresearch-infra/terraform/admin/argocd-k8s/{main,variables,locals}.tf`
-- Create: `Autoresearch-infra/docs/runbooks/2026-07-30-agent-orchestration-gke.md`
+- Modify: `SKYAHO/Autoresearch-infra/docs/runbooks/2026-07-30-agent-orchestration-gke.md`
 
-**Consumes:** Task 5 GSA/KSA/secret IDs와 Task 4 immutable digest.
+**Consumes:** Task 4 immutable digests and Task 5 applied infrastructure.
 
-**Produces:** 수동 ArgoCD sync가 가능한 single Pod 내부 API와 OAuth 복구·rollback runbook.
+**Produces:** 재현 가능한 healthcheck/chat/DB 저장/rollback 검증 기록.
 
-- [ ] **Step 1: manifest 부재 실패를 확인한다.**
+- [ ] **Step 1: OAuth 초기 인증 시크릿을 안전한 운영 절차로 등록한다.**
 
-```bash
-kubectl apply --dry-run=client -f deploy/agent-orchestration/deployment.yaml
-kubectl apply --dry-run=client -f deploy/agent-orchestration/service.yaml
-```
+신뢰된 로컬 환경에서 `CODEX_HOME`을 별도 임시 경로로 설정해 `codex login` 후
+`auth.json`을 얻는다. 값은 터미널 출력·Git·티켓에 붙이지 않고 Secret Manager의
+이미 생성된 bootstrap 시크릿 version으로만 등록한다.
 
-Expected: 파일 부재로 실패한다.
-
-- [ ] **Step 2: Deployment와 Service를 구현한다.**
-
-Deployment는 `namespace: autoresearch`, `serviceAccountName: agent-orchestration`, `replicas: 1`, immutable Agent digest를 사용한다. 명시적 1Gi `ReadWriteOnce` PVC `agent-orchestration-codex-state`를 `/var/lib/codex`, `emptyDir`를 `/var/run/agent-orchestration`에 마운트한다.
-
-init container는 동일 Agent digest에서 다음을 실행한다.
-
-```yaml
-command: ["python", "-m", "agent_orchestration.bootstrap_secrets"]
-```
-
-컨테이너에는 시크릿 ID와 비민감 DB 좌표만 전달한다. `runAsUser`, `runAsGroup`, `fsGroup`은 `10001`, privilege escalation은 금지한다. startup/readiness는 `/healthcheck`, liveness는 TCP 8000이며 Service는 port 8000 `ClusterIP`만 가진다.
-
-- [ ] **Step 3: ArgoCD와 runbook을 추가한다.**
-
-`application_agent_orchestration`은 `deploy/agent-orchestration`을 `autoresearch` namespace로 수동 sync하고 `CreateNamespace=false`만 사용한다. runbook에는 `codex login` 후 payload를 출력하지 않고 Secret Manager version 등록, `kubectl port-forward` smoke, id/model/latency/created_at만 DB 조회, 이전 digest rollback, Deployment 0→PVC auth 교체→1 복구 순서를 적는다.
-
-- [ ] **Step 4: manifest·Terraform·실배포를 검증한다.**
+- [ ] **Step 2: ArgoCD로 두 immutable digest를 수동 sync하고 Ready를 확인한다.**
 
 ```bash
-kubectl apply --dry-run=client -f deploy/agent-orchestration/deployment.yaml
-kubectl apply --dry-run=client -f deploy/agent-orchestration/service.yaml
-terraform -chdir=terraform/admin/argocd-k8s fmt -check
-terraform -chdir=terraform/admin/argocd-k8s validate
-kubectl -n autoresearch rollout status deployment/agent-orchestration --timeout=5m
+kubectl -n autoresearch rollout status deployment/agent-orchestration-runner --timeout=5m
+kubectl -n autoresearch rollout status deployment/agent-orchestration-api --timeout=5m
 ```
 
-Expected: single Ready Pod가 된다. `kubectl port-forward service/agent-orchestration 8000:8000` 뒤 `/healthcheck`은 200, 짧은 `/chat`은 201을 반환하며 DB에는 `model=codex-cli`, `token_count=NULL` 행이 저장된다.
+Expected: API와 Runner가 단일 Ready Pod로 실행된다.
 
-- [ ] **Step 5: infra 변경을 커밋한다.**
+- [ ] **Step 3: 내부 smoke와 DB 메타데이터 저장을 검증한다.**
 
 ```bash
-git add deploy/agent-orchestration terraform/admin/argocd-k8s docs/runbooks/2026-07-30-agent-orchestration-gke.md
-git commit -m "feat: 오케스트레이션 내부 GKE 배포 추가"
+kubectl -n autoresearch port-forward service/agent-orchestration-api 8000:8000
+curl --fail --silent http://127.0.0.1:8000/healthcheck
+curl --fail --silent --request POST http://127.0.0.1:8000/chat --header "Content-Type: application/json" --header "X-Orch-Token: ${ORCH_API_TOKEN}" --data '{"prompt":"한 문장으로 상태를 알려주세요."}'
 ```
+
+Cloud SQL에서는 `id, model, latency_ms, created_at`만 조회한다. 프롬프트·응답·토큰·OAuth
+본문을 출력하지 않는다.
+
+- [ ] **Step 4: rollback·시크릿 복구 절차를 기록하고 완료 조건을 확인한다.**
+
+이전 API/Runner digest로의 ArgoCD sync, Runner Deployment를 0으로 축소한 뒤 OAuth
+PVC의 인증 상태를 안전하게 교체하고 1로 복구하는 절차를 runbook에 검증 결과와 함께
+기록한다. 최종으로 API와 Runner manifest·logs·image history·Git diff에 OAuth 본문,
+DB 비밀번호, 완성 DB URL이 없는지 확인한다.
 
 ## 최종 검증 체크리스트
 
 - [ ] `uv run python -m pytest -q` 및 `uv run --no-sync ruff check autoresearch tests tools agent_orchestration`
-- [ ] Agent Docker build, `codex --version`, app import, release workflow actionlint
-- [ ] Infra Terraform `fmt -check`, `validate`, 신규 리소스만 추가하는 plan
-- [ ] ArgoCD manual diff, single Pod readiness, internal healthcheck/chat, Cloud SQL 메타데이터 저장
-- [ ] Git diff·이미지 history·Pod manifest·로그에 OAuth payload, DB 비밀번호, 완성 DB URL이 없음
+- [ ] API·Runner Docker build, non-root·import smoke, Runner `codex --version`, release workflow `actionlint`
+- [ ] Infra Terraform `fmt -check`, `validate`, 신규 리소스만 포함한 plan, Kubernetes manifest dry-run
+- [ ] API/Runner Ready, private `/healthcheck`·`/chat`, Cloud SQL 메타데이터 저장, 이전 digest rollback
+- [ ] OAuth payload·DB 비밀번호·완성 DB URL이 Git·이미지·manifest·일반 로그에 없음
 
 ## Plan Self-Review
 
-- **Spec coverage:** 내부 ClusterIP, 단일 PVC/replica, Workload Identity의 직접 Secret Manager 읽기, 전용 DB/user, 전용 GSA/KSA, immutable GAR digest, ArgoCD manual sync, OAuth 복구, 실제 smoke/rollback을 Task 1~6에 배정했다.
-- **Placeholder scan:** 리소스명·파일 경로·시크릿 전달 방식·검증 명령을 모두 명시했다.
-- **Type consistency:** `BootstrapSettings`/`bootstrap_runtime_secrets()`와 init command, runtime/CodeX 경로, DB 환경 변수명이 모든 작업에서 동일하다.
+- **Spec coverage:** API/Runner 분리, 기존 Secret Manager·Workload Identity 사용, API DB와 Runner OAuth의 최소 권한, PVC, ClusterIP·NetworkPolicy, API→Runner 오류 처리, 이미지 release, 실제 dev smoke·rollback을 Task 1~6에 배정했다.
+- **Placeholder scan:** 리소스명, 환경 변수, 서비스/포트, 역할별 권한과 검증 명령을 명시했다.
+- **Type consistency:** `LLMResult`, `CodexSettings`, `GenerateRequest/GenerateResponse`, `codex_runner`, `CODEX_RUNNER_URL`, bootstrap 함수와 Runner 포트 8080을 모든 작업에서 동일하게 사용한다.
