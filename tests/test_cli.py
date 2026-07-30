@@ -186,6 +186,44 @@ def test_run_pipeline_skips_registration_when_evaluation_fails(monkeypatch):
     assert registered == []
 
 
+def test_run_pipeline_fails_loudly_when_registration_fails(monkeypatch):
+    """#421 리뷰(중간): 미룬 등록이 실패하면 run-pipeline이 실패해야 한다.
+
+    삼키면 "파이프라인 완료" + exit 0으로 끝나 Airflow 태스크가 초록불이 되고,
+    후속 promote-model은 어제 버전(=이미 champion)을 후보로 잡아 no-op이 된다.
+    결과적으로 신규 후보가 없는 날이 어디에도 드러나지 않는다.
+    """
+    steps = []
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "main", lambda **kw: _pipeline_outcome())
+    monkeypatch.setattr(cli.evaluate, "main", lambda **kw: steps.append("evaluate"))
+
+    def _fail_register(pending):
+        steps.append("register")
+        raise RuntimeError("registry 백엔드 없음(시뮬레이션)")
+
+    monkeypatch.setattr(cli.train, "register_pending_model", _fail_register)
+
+    with pytest.raises(RuntimeError, match="registry 백엔드 없음"):
+        cli.run_pipeline(
+            dataset_path=None,
+            events_start_date="2026-07-01",
+            events_end_date="2026-07-08",
+            config_path=None,
+            model_output=None,
+            test_set_output=None,
+            feature_columns_output=None,
+            categorical_columns_output=None,
+            test_size=None,
+            val_size=None,
+            random_state=None,
+        )
+
+    # 평가는 통과한 뒤 등록에서 실패한 경로임을 고정한다.
+    assert steps == ["evaluate", "register"]
+
+
 def test_promote_model_prints_ok_and_exits_zero_on_success(monkeypatch, capsys):
     monkeypatch.setattr(
         cli.promote,

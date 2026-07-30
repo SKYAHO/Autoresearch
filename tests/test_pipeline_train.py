@@ -291,6 +291,27 @@ def test_main_survives_registry_registration_failure(tmp_path, monkeypatch) -> N
     assert model_output.exists()
 
 
+def test_register_pending_model_propagates_registry_failure(monkeypatch) -> None:
+    """#421 리뷰(중간): 미룬 등록의 실패는 삼키면 안 된다.
+
+    run이 닫힌 뒤 호출되므로 "끝난 run을 FAILED로 만들지 않는다"는 best-effort
+    근거가 성립하지 않는다. 삼키면 run-pipeline이 exit 0으로 끝나고, 후속
+    promote-model이 어제 버전(=이미 champion)을 집어 ALREADY_CHAMPION으로
+    조용히 지나가 "평가까지 통과했는데 신규 후보가 없는 날"이 드러나지 않는다.
+    """
+
+    def fake_register_model_raises(model_uri, model_name, tags=None):
+        raise RuntimeError("registry 백엔드 없음(시뮬레이션)")
+
+    monkeypatch.setattr(train, "register_model", fake_register_model_raises)
+    pending = train.PendingRegistration(
+        model_uri="runs:/abc123/model", model_name="ctr-model", tags={}
+    )
+
+    with pytest.raises(RuntimeError, match="registry 백엔드 없음"):
+        train.register_pending_model(pending)
+
+
 def test_main_registers_lineage_tags_from_extra_params(tmp_path, monkeypatch) -> None:
     """extra_params(데이터 계보)로 넘긴 값이 실제로 등록된 버전의 태그에
     반영되는지 검증(run params 기록뿐 아니라 registry 태그까지 전파)."""

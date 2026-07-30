@@ -124,12 +124,16 @@ def run_pipeline(
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
     random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
 ) -> None:
-    """전체 파이프라인 실행: build-features -> train-model -> evaluate-model (#359 C2로 feast-only)."""
+    """전체 파이프라인 실행: build-features -> train-model -> evaluate-model -> 등록.
+
+    등록(Model Registry 버전 생성)은 평가 통과 뒤에만 수행하는 별도 단계다(#421).
+    조립 경로는 #359 C2로 feast-only다.
+    """
     typer.echo("=" * 70)
     typer.echo("전체 파이프라인 실행")
     typer.echo("=" * 70)
 
-    typer.echo("\n[1/3] build-features 실행...")
+    typer.echo("\n[1/4] build-features 실행...")
     build_training_dataset.main(
         output_path=dataset_path,
         events_start_date=events_start_date,
@@ -153,7 +157,7 @@ def run_pipeline(
         "feast_registry_path": os.environ["GCS_REGISTRY_PATH"],
     }
 
-    typer.echo("\n[2/3] train-model 실행...")
+    typer.echo("\n[2/4] train-model 실행...")
     # train.main은 실현 sampling_rate(#300)를 담은 TrainingOutcome을 반환한다 —
     # evaluate가 오프라인 지표(LogLoss/calibration)를 원분포 기준으로 재도록 넘긴다.
     # defer_registration=True: registered model 버전 생성만 평가 뒤로 미룬다(#421).
@@ -177,7 +181,7 @@ def run_pipeline(
     # 넘기면 data leakage가 재발한다. 대신 test_set_output/feature_columns_output을
     # 그대로 전달해서, 병렬로 여러 run-pipeline을 돌릴 때도(각자 다른 경로를 줬다면)
     # 자기 자신이 만든 test set/feature 목록으로 채점되도록 짝을 맞춘다.
-    typer.echo("\n[3/3] evaluate-model 실행...")
+    typer.echo("\n[3/4] evaluate-model 실행...")
     evaluate.main(
         config_path=config_path,
         data_path=test_set_output,

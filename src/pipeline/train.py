@@ -156,25 +156,29 @@ def compute_auto_scale_pos_weight(labels: pd.Series) -> float:
     return negative / positive
 
 
-def register_pending_model(pending: PendingRegistration) -> Optional[str]:
-    """보류해둔 registered model 버전을 만든다(best-effort, #421).
+def register_pending_model(pending: PendingRegistration) -> str:
+    """보류해둔 registered model 버전을 만든다(#421).
 
-    등록 실패로 이미 끝난 학습 run을 실패 처리하지 않는다 — 모델·아티팩트는
-    이미 저장·로깅된 뒤이므로 경고만 남기고 None을 돌려준다.
+    실패를 삼키지 않고 그대로 전파한다. 삼킬지 말지는 호출 지점의 사정이라
+    이 함수가 정하지 않는다 — run이 열려 있는 학습 중 등록(`main()`)은 이미
+    끝난 run을 FAILED로 만들지 않으려고 호출부에서 감싸지만, 평가 통과 뒤
+    등록(`run-pipeline`)은 run이 이미 닫혀 있어 그 근거가 성립하지 않는다.
+    거기서 삼키면 "평가까지 통과했는데 신규 후보가 없는 날"이 exit 0으로
+    지나가고, 후속 promote-model이 어제 버전(=이미 champion)을 집어
+    ALREADY_CHAMPION으로 조용히 끝난다.
 
     Args:
         pending: 학습 시점에 확정된 등록 정보.
 
     Returns:
-        생성된 모델 버전 문자열 (등록 실패 시 None).
+        생성된 모델 버전 문자열.
+
+    Raises:
+        Exception: registry 등록이 실패하면 그대로 전파한다.
     """
-    try:
-        version = register_model(pending.model_uri, pending.model_name, tags=pending.tags)
-        print(f"  [OK] {pending.model_name} v{version} 등록 완료")
-        return version
-    except Exception as exc:
-        print(f"  ⚠️  Model Registry 등록 실패 — 학습 결과(모델·아티팩트)는 정상 저장됨: {exc}")
-        return None
+    version = register_model(pending.model_uri, pending.model_name, tags=pending.tags)
+    print(f"  [OK] {pending.model_name} v{version} 등록 완료")
+    return version
 
 
 def get_project_root():
@@ -540,7 +544,6 @@ def main(
         pending_registration = PendingRegistration(
             model_uri=model_uri, model_name=model_name, tags=registry_tags
         )
-        # 등록 실패로 이미 끝난 학습 run을 FAILED 처리하지 않는다(best-effort).
         registered_version = None
         if defer_registration:
             # 평가 통과 뒤에 등록한다(#421). 여기서 등록해버리면 평가가 실패해도
@@ -548,7 +551,17 @@ def main(
             # 아티팩트는 위에서 이미 끝났으므로 미뤄도 잃는 정보가 없다.
             print("  [보류] 평가 통과 후 등록합니다 — run 로깅·아티팩트는 이미 저장됨(#421)")
         else:
-            registered_version = register_pending_model(pending_registration)
+            # 여기는 아직 run 컨텍스트 안이다. 등록 실패로 예외를 올리면 이미 끝난
+            # 학습 run이 FAILED로 마감되고 모델·아티팩트가 실패한 run에 묶인다.
+            # 그래서 이 경로에서만 삼킨다(best-effort). 미룬 경로는 run이 닫힌 뒤
+            # 호출되므로 이 근거가 없어 호출부에서 그대로 실패시킨다.
+            try:
+                registered_version = register_pending_model(pending_registration)
+            except Exception as exc:
+                print(
+                    "  ⚠️  Model Registry 등록 실패 — 학습 결과(모델·아티팩트)는 "
+                    f"정상 저장됨: {exc}"
+                )
             pending_registration = None
 
     print("\n" + "=" * 70)
