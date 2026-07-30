@@ -30,6 +30,20 @@ docker build -f Dockerfile.train --tag autoresearch-training:local .
 docker run --rm autoresearch-training:local python -m src.cli train-model --help
 ```
 
+## build-features 사전 점검 (fail-fast)
+
+`build-features`/`run-pipeline`은 조립을 시작하기 전에 실행 환경을 먼저 확인하고,
+문제가 있으면 즉시 명확한 이유와 함께 중단합니다(#404). 확인 순서는 필수 환경변수
+(`GCS_REGISTRY_PATH`/`GCS_STAGING_LOCATION`) → GCP 자격증명 → `feast` 패키지 설치
+여부이며, 예전처럼 자격증명 없이 BigQuery에 접속해 응답 없이 멈추는 일(#396/#423
+실측)이 없습니다. 자격증명은 `GOOGLE_APPLICATION_CREDENTIALS`가 가리키는 파일이나
+ADC 파일(`$CLOUDSDK_CONFIG` 또는 `~/.config/gcloud`의
+`application_default_credentials.json`)이 **실제로 존재**하는지로 판단합니다.
+
+단, GKE 안에서는 이 자격증명 확인을 건너뜁니다 — 운영은 로컬 자격증명 파일이 아니라
+Workload Identity(metadata server)로 인증하기 때문입니다. 모든 k8s pod에 자동으로
+주입되는 `KUBERNETES_SERVICE_HOST` 환경변수의 존재로 컨테이너 실행을 감지합니다.
+
 ## MLflow 연동
 
 `src/pipeline/train.py`는 `MLFLOW_TRACKING_URI` 환경변수를 읽고, 없으면
