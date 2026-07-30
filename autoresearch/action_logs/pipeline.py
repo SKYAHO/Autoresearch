@@ -1740,9 +1740,12 @@ def generate_action_log_single(
         if not telemetry_enabled:
             return
         telemetry_enabled = False
-        logger.warning(
-            "Action log streaming telemetry disabled after reporter failure"
-        )
+        try:
+            logger.warning(
+                "Action log streaming telemetry disabled after reporter failure"
+            )
+        except Exception:  # noqa: BLE001 - warning sink is also best effort
+            pass
 
     try:
         telemetry = ActionLogStreamingTelemetryReporter(logger=logger)

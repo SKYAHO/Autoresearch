@@ -2198,6 +2198,39 @@ def test_streaming_single_keeps_success_when_finish_telemetry_fails(
     assert Path(request.quarantine_output_path).is_file()
 
 
+def test_streaming_single_keeps_success_when_telemetry_warning_sink_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """reporter constructor와 disable warning 오류가 겹쳐도 성공을 유지한다."""
+
+    def _raise_reporter_error(*, logger: logging.Logger) -> _NoopStreamingTelemetry:
+        raise RuntimeError("telemetry constructor failed")
+
+    def _raise_warning_error(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("warning sink failed")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "ActionLogStreamingTelemetryReporter",
+        _raise_reporter_error,
+    )
+    monkeypatch.setattr(pipeline_module.logger, "warning", _raise_warning_error)
+    request = _request(tmp_path, candidates_per_user=1, max_concurrency=1)
+
+    result = pipeline_module.generate_action_log_single(
+        request,
+        _fixture_users(1),
+        build_fixture_video_records(1),
+        RuleBasedActionLogGenerator(),
+    )
+
+    assert result.execution_mode == "streaming"
+    assert Path(request.output_path).is_file()
+    assert Path(request.warehouse_output_path).is_file()
+    assert Path(request.quarantine_output_path).is_file()
+
+
 def test_streaming_single_commits_quarantine_when_final_observe_telemetry_fails(
     tmp_path,
     monkeypatch,
@@ -2218,6 +2251,54 @@ def test_streaming_single_commits_quarantine_when_final_observe_telemetry_fails(
         "ActionLogStreamingTelemetryReporter",
         lambda *, logger: _FailingFinalObserveTelemetry(),
     )
+    request = _request(
+        tmp_path,
+        candidates_per_user=1,
+        max_quarantine_ratio=0.25,
+    )
+
+    with pytest.raises(
+        ActionLogGenerationError,
+        match="quarantine ratio 1.00 exceeds",
+    ):
+        pipeline_module.generate_action_log_single(
+            request,
+            _fixture_users(1),
+            build_fixture_video_records(1),
+            _AllBad(),
+        )
+
+    assert not Path(request.output_path).exists()
+    assert not Path(request.warehouse_output_path).exists()
+    assert Path(request.quarantine_output_path).read_text(encoding="utf-8").count(
+        "\n"
+    ) == 1
+
+
+def test_streaming_single_preserves_quarantine_when_telemetry_warning_sink_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """final reporter와 warning 오류가 겹쳐도 q commit 뒤 원래 오류를 전파한다."""
+
+    class _FailingFinalObserveTelemetry(_NoopStreamingTelemetry):
+        def observe(self, snapshot: object) -> None:
+            if getattr(snapshot, "phase") == "finalizing":
+                raise RuntimeError("telemetry observe failed")
+
+    class _AllBad(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+            return "{broken"
+
+    def _raise_warning_error(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("warning sink failed")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "ActionLogStreamingTelemetryReporter",
+        lambda *, logger: _FailingFinalObserveTelemetry(),
+    )
+    monkeypatch.setattr(pipeline_module.logger, "warning", _raise_warning_error)
     request = _request(
         tmp_path,
         candidates_per_user=1,
