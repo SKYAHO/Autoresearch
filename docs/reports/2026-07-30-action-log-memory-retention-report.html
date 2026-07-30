@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Issue #393 Action Log 메모리 보관 문제와 bounded streaming 수정 설명">
+  <title>Action Log 메모리 보관 문제 — 무엇을 왜 바꿨나</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #fff;
+      --ink: #182033;
+      --muted: #5f6b80;
+      --line: #dce2ed;
+      --blue: #2864d7;
+      --blue-soft: #eaf1ff;
+      --green: #16845b;
+      --green-soft: #e7f7ef;
+      --orange: #b66a00;
+      --orange-soft: #fff3dc;
+      --red: #b53a45;
+      --red-soft: #ffebee;
+      --code: #111827;
+      --shadow: 0 10px 28px rgba(32, 50, 84, 0.08);
+      --radius: 12px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: "Pretendard", "Noto Sans KR", "Apple SD Gothic Neo", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; color: var(--ink); background: var(--bg); font-family: var(--sans); line-height: 1.65; }
+    a { color: var(--blue); }
+    code, pre, .mono { font-family: var(--mono); }
+    .shell { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+    header { padding: 42px 0 30px; }
+    .eyebrow { margin: 0 0 10px; color: var(--blue); font: 700 0.78rem var(--mono); letter-spacing: 0.08em; }
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { max-width: 820px; margin-bottom: 16px; font-size: clamp(2rem, 5vw, 4rem); line-height: 1.08; letter-spacing: -0.06em; }
+    h1 span { color: var(--blue); }
+    h2 { margin-bottom: 10px; font-size: clamp(1.45rem, 3vw, 2.1rem); line-height: 1.2; letter-spacing: -0.04em; }
+    h3 { margin-bottom: 8px; font-size: 1.08rem; }
+    .lead { max-width: 800px; color: var(--muted); font-size: 1.08rem; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 22px; }
+    .tag { padding: 5px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 0.82rem; }
+    main { padding-bottom: 70px; }
+    section { margin-top: 28px; padding: 28px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); box-shadow: var(--shadow); }
+    .section-intro { margin-bottom: 22px; color: var(--muted); }
+    .callout { padding: 18px 20px; border-left: 4px solid var(--blue); background: var(--blue-soft); }
+    .callout strong { color: var(--blue); }
+    .metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 22px; }
+    .metric { padding: 16px; border-top: 3px solid var(--blue); background: #fafbfe; }
+    .metric:nth-child(2) { border-top-color: var(--orange); }
+    .metric:nth-child(3) { border-top-color: var(--red); }
+    .metric:nth-child(4) { border-top-color: var(--green); }
+    .metric strong { display: block; margin-bottom: 4px; font: 700 1.55rem var(--mono); }
+    .metric span { color: var(--muted); font-size: 0.82rem; }
+    .diagram { display: grid; gap: 18px; }
+    .lane { padding: 18px; border: 1px solid var(--line); border-radius: 10px; }
+    .lane.old { background: #fffafa; border-color: #f0cfd2; }
+    .lane.new { background: #f8fffb; border-color: #c8ead8; }
+    .lane-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 13px; }
+    .lane-title h3 { margin: 0; }
+    .pill { padding: 3px 8px; border-radius: 999px; font: 700 0.72rem var(--mono); }
+    .old .pill { background: var(--red-soft); color: var(--red); }
+    .new .pill { background: var(--green-soft); color: var(--green); }
+    .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+    .node { flex: 1 1 145px; min-width: 130px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+    .node b { display: block; margin-bottom: 4px; font-size: 0.9rem; }
+    .node small { display: block; color: var(--muted); line-height: 1.45; }
+    .arrow { align-self: center; color: var(--muted); font-size: 1.35rem; }
+    .memory-visual { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 22px; }
+    .chart { padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: #fafbfe; }
+    .chart h3 { margin-bottom: 14px; }
+    .bars { display: flex; align-items: end; gap: 9px; height: 145px; padding: 8px 8px 0; border-bottom: 1px solid var(--line); }
+    .bar { flex: 1; min-width: 16px; border-radius: 5px 5px 0 0; background: var(--red); }
+    .bar.new { background: var(--green); }
+    .bar-labels { display: flex; gap: 9px; padding: 7px 8px 0; color: var(--muted); font: 0.68rem var(--mono); }
+    .bar-labels span { flex: 1; text-align: center; }
+    .caption { margin: 10px 0 0; color: var(--muted); font-size: 0.83rem; }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .card { padding: 17px; border: 1px solid var(--line); border-radius: 10px; background: #fafbfe; }
+    .card p:last-child, .card ul:last-child { margin-bottom: 0; }
+    .card ul { margin: 8px 0 0; padding-left: 20px; }
+    .card li + li { margin-top: 5px; }
+    .why { border-top: 3px solid var(--blue); }
+    .why.green { border-top-color: var(--green); }
+    .why.orange { border-top-color: var(--orange); }
+    .why.red { border-top-color: var(--red); }
+    .file { display: inline-block; margin-bottom: 8px; padding: 3px 7px; border-radius: 5px; background: var(--code); color: #e5e7eb; font: 0.75rem var(--mono); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { padding: 11px 10px; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+    th { color: var(--muted); font-size: 0.78rem; white-space: nowrap; }
+    tr:last-child td { border-bottom: 0; }
+    .status-ok { color: var(--green); font-weight: 700; }
+    .status-note { color: var(--orange); font-weight: 700; }
+    .status-risk { color: var(--red); font-weight: 700; }
+    .timeline { display: grid; gap: 10px; }
+    .step { display: grid; grid-template-columns: 105px 1fr; gap: 16px; align-items: start; padding: 13px 0; border-bottom: 1px dashed var(--line); }
+    .step:last-child { border-bottom: 0; }
+    .step time { color: var(--blue); font: 700 0.78rem var(--mono); }
+    .step p { margin-bottom: 0; }
+    pre { overflow-x: auto; margin: 14px 0 0; padding: 14px; border-radius: 8px; background: var(--code); color: #e5e7eb; font-size: 0.78rem; line-height: 1.55; }
+    .verify { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .verify .card strong { display: block; margin-bottom: 4px; font: 700 1.35rem var(--mono); color: var(--green); }
+    details { margin-top: 14px; }
+    summary { cursor: pointer; color: var(--blue); font-weight: 700; }
+    footer { padding: 26px 0 50px; color: var(--muted); font-size: 0.86rem; }
+    footer p { margin-bottom: 6px; }
+    @media (max-width: 760px) {
+      section { padding: 20px; }
+      .metrics, .memory-visual, .grid-2, .verify { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .flow { flex-direction: column; }
+      .node { min-width: 0; }
+      .step { grid-template-columns: 1fr; gap: 3px; }
+      table { display: block; overflow-x: auto; white-space: normal; }
+    }
+  </style>
+</head>
+<body>
+  <header class="shell">
+    <p class="eyebrow">SKYAHO / Autoresearch · Issue #393 · PR #415</p>
+    <h1>Action Log 메모리 문제를<br><span>어떻게 고쳤나</span></h1>
+    <p class="lead">
+      12시간짜리 single-mode 실행에서 메모리가 계속 늘어난 이유와, 결과를 잃지 않으면서
+      메모리에 동시에 들고 있는 사용자 수를 제한한 bounded streaming 수정 내용을 한 장으로 정리한 문서입니다.
+    </p>
+    <div class="meta">
+      <span class="tag">최종 커밋 e692219</span>
+      <span class="tag">브랜치 fix/393-action-log-memory-retention</span>
+      <span class="tag">generated_at = 완료 시각 유지</span>
+      <span class="tag">Airflow 변경 없음</span>
+    </div>
+  </header>
+  <main class="shell">
+    <section id="answer">
+      <h2>먼저 결론</h2>
+      <div class="callout">
+        <strong>문제는 Python의 free() 누락이 아니라, 끝난 사용자 결과를 계속 참조하던 구조였습니다.</strong>
+        이제는 사용자별 처리가 끝나는 즉시 이벤트를 임시 저장소에 기록하고 참조를 해제합니다.
+        따라서 실행 시간이 길어져도 메모리는 전체 사용자 수가 아니라 제한된 활성 사용자 수에 비례합니다.
+      </div>
+      <div class="metrics" aria-label="핵심 숫자">
+        <div class="metric"><strong>250Mi → 502Mi</strong><span>기존 0~8시간 관측 증가</span></div>
+        <div class="metric"><strong>25~30Mi/h</strong><span>기존 시간당 증가 추정</span></div>
+        <div class="metric"><strong>4 × worker</strong><span>새 active-user 상한</span></div>
+        <div class="metric"><strong>50,000행</strong><span>최종 Parquet row group 목표</span></div>
+      </div>
+    </section>
+    <section id="problem">
+      <h2>기존에는 왜 메모리가 늘었나</h2>
+      <p class="section-intro">아래 그림에서 빨간 경로의 핵심은 “끝난 결과도 마지막까지 리스트에 남아 있었다”는 점입니다.</p>
+      <div class="diagram">
+        <div class="lane old">
+          <div class="lane-title"><h3>기존 구조: 전체 결과를 끝까지 보관</h3><span class="pill">메모리 ∝ 전체 사용자</span></div>
+          <div class="flow">
+            <div class="node"><b>전체 work 생성</b><small><code>work</code> 리스트를 미리 materialize</small></div><span class="arrow">→</span>
+            <div class="node"><b>draft 누적</b><small><code>drafts_by_index</code>에 완료 결과를 계속 보관</small></div><span class="arrow">→</span>
+            <div class="node"><b>전체 drafts 조립</b><small>마지막에 다시 <code>drafts</code> 리스트 생성</small></div><span class="arrow">→</span>
+            <div class="node"><b>일괄 변환</b><small>click 선택·event 확장·Parquet row 생성</small></div>
+          </div>
+        </div>
+        <div class="lane new">
+          <div class="lane-title"><h3>새 구조: 사용자 단위로 처리 후 해제</h3><span class="pill">메모리 ∝ 활성 사용자</span></div>
+          <div class="flow">
+            <div class="node"><b>제한된 window</b><small>worker와 active user 상한을 별도로 관리</small></div><span class="arrow">→</span>
+            <div class="node"><b>사용자 청크 모으기</b><small>한 사용자의 모든 청크가 끝날 때까지 유지</small></div><span class="arrow">→</span>
+            <div class="node"><b>한 번만 변환</b><small>click 선정 → event ID/순서 유지 → sink 기록</small></div><span class="arrow">→</span>
+            <div class="node"><b>즉시 참조 해제</b><small>draft·event·chunk 결과를 지움</small></div>
+          </div>
+        </div>
+      </div>
+      <div class="memory-visual">
+        <div class="chart">
+          <h3>기존 메모리 모양</h3>
+          <div class="bars" aria-label="기존 선형 증가 막대 그래프">
+            <div class="bar" style="height:32%"></div><div class="bar" style="height:43%"></div><div class="bar" style="height:55%"></div><div class="bar" style="height:68%"></div><div class="bar" style="height:82%"></div><div class="bar" style="height:96%"></div>
+          </div>
+          <div class="bar-labels"><span>0h</span><span>2h</span><span>4h</span><span>6h</span><span>8h</span><span>12h</span></div>
+          <p class="caption">끝난 사용자도 전역 리스트에 남아 시간이 갈수록 증가했습니다.</p>
+        </div>
+        <div class="chart">
+          <h3>새 메모리 모양</h3>
+          <div class="bars" aria-label="새 bounded memory 막대 그래프">
+            <div class="bar new" style="height:52%"></div><div class="bar new" style="height:59%"></div><div class="bar new" style="height:55%"></div><div class="bar new" style="height:62%"></div><div class="bar new" style="height:57%"></div><div class="bar new" style="height:60%"></div>
+          </div>
+          <div class="bar-labels"><span>0h</span><span>2h</span><span>4h</span><span>6h</span><span>8h</span><span>12h</span></div>
+          <p class="caption">활성 window와 최종화 buffer가 상한을 제공하므로 plateau를 기대합니다.</p>
+        </div>
+      </div>
+    </section>
+    <section id="changes">
+      <h2>어떤 코드를 왜 바꿨나</h2>
+      <p class="section-intro">코드 위치를 누르면 최종 커밋의 해당 파일로 이동합니다. 세부 계약은 <a href="../specs/2026-07-30-action-log-review-remediation.md">승인된 spec</a>에 있습니다.</p>
+      <div class="grid-2">
+        <article class="card why">
+          <a class="file" href="https://github.com/SKYAHO/Autoresearch/blob/e692219ea6a53347fa4e4701fb0c71e7400321aa/autoresearch/action_logs/pipeline.py#L1686-L2097">pipeline.py · generate_action_log_single</a>
+          <h3>1. 사용자 단위 bounded scheduler</h3>
+          <p>전체 drafts를 만드는 대신 <code>_StreamingUserState</code>에 현재 활성 사용자만 보관합니다.</p>
+          <ul><li>worker 수: <code>max(1, max_concurrency)</code></li><li>active user 수: <code>4 × worker</code></li><li>Future는 worker 수만큼만 유지</li><li>느린 첫 사용자가 있어도 window 안의 다른 work를 제출</li></ul>
+        </article>
+        <article class="card why green">
+          <a class="file" href="https://github.com/SKYAHO/Autoresearch/blob/e692219ea6a53347fa4e4701fb0c71e7400321aa/autoresearch/action_logs/pipeline.py#L1012-L1378">pipeline.py · _StreamingActionLogWriter</a>
+          <h3>2. 직접 Parquet 대신 임시 spool</h3>
+          <p>사용자마다 최종 Parquet row group을 만들지 않고 Arrow IPC와 JSONL에 순서대로 기록합니다.</p>
+          <ul><li>최종화 때 최대 50,000행 단위로 Parquet 작성</li><li>Parquet row group 수가 사용자 수에 따라 폭증하지 않음</li><li>성공 교체 전에는 임시 파일만 사용</li><li>실패 시 기존 파일 rollback</li></ul>
+        </article>
+        <article class="card why orange">
+          <a class="file" href="https://github.com/SKYAHO/Autoresearch/blob/e692219ea6a53347fa4e4701fb0c71e7400321aa/autoresearch/action_logs/pipeline.py#L2063-L2084">pipeline.py · finalize 순서</a>
+          <h3>3. generated_at 의미 복원</h3>
+          <p>처음에는 streaming 시작 시각을 넣을 위험이 있었습니다. 이제 quarantine 검사까지 끝낸 뒤 한 번 계산합니다.</p>
+          <pre>quarantine 검사 → generated_at = now(UTC)
+→ IPC를 Parquet으로 최종화 → atomic publish</pre>
+          <p>따라서 모든 row의 값은 기존 legacy처럼 “전체 생성 완료 시각”을 뜻합니다.</p>
+        </article>
+        <article class="card why red">
+          <a class="file" href="https://github.com/SKYAHO/Autoresearch/blob/e692219ea6a53347fa4e4701fb0c71e7400321aa/autoresearch/action_logs/observability.py#L247-L470">observability.py · ActionLogStreamingTelemetryReporter</a>
+          <h3>4. 운영 중 메모리 상태를 JSON으로 출력</h3>
+          <p>private <code>_retention_observer</code>는 테스트 hook으로 남기고, DAG에서는 같은 snapshot을 사용합니다.</p>
+          <ul><li><code>action_log_streaming_progress</code></li><li>active user / buffered draft·event / in-flight work</li><li>completed / failed / pending work, throughput</li><li>latency p50/p95는 고정 크기 sample</li></ul>
+        </article>
+        <article class="card why green">
+          <a class="file" href="https://github.com/SKYAHO/Autoresearch/blob/e692219ea6a53347fa4e4701fb0c71e7400321aa/autoresearch/action_logs/pipeline.py#L1356-L1364">pipeline.py · quarantine failure</a>
+          <h3>5. 실패 산출물의 의미 분리</h3>
+          <p>quarantine 비율이 한도를 넘으면 quarantine JSONL만 남기고 Parquet/warehouse는 성공 산출물로 publish하지 않습니다.</p>
+          <p>정상 성공 시에는 세 파일을 함께 publish하고, 중간 교체 실패면 기존 파일을 복구합니다.</p>
+        </article>
+        <article class="card why orange">
+          <a class="file" href="https://github.com/SKYAHO/Autoresearch/blob/e692219ea6a53347fa4e4701fb0c71e7400321aa/autoresearch/action_logs/pipeline.py#L1693-L1726">pipeline.py · compatibility fallback</a>
+          <h3>6. 기존 호출자 보호</h3>
+          <p><code>exposure_metadata</code>가 mutable mapping이 아니거나 user ID가 누락·중복이면 legacy batch로 fallback합니다.</p>
+          <p>정상 streaming에서는 drain된 사용자의 metadata entry를 제거하므로 해당 사용자 결과도 함께 수명을 다합니다.</p>
+        </article>
+      </div>
+    </section>
+    <section id="contracts">
+      <h2>무엇을 바꾸지 않았나</h2>
+      <p class="section-intro">메모리 구조는 바꿨지만, downstream이 기대하는 논리 결과는 유지해야 했습니다.</p>
+      <table>
+        <thead><tr><th>계약</th><th>보존 방법</th><th>검증</th></tr></thead>
+        <tbody>
+          <tr><td>사용자 순서</td><td>Future 완료 순서가 아니라 입력 사용자 순서로 drain</td><td class="status-ok">streaming vs legacy 비교</td></tr>
+          <tr><td>click 선정</td><td>한 사용자의 모든 chunk가 모인 뒤 한 번만 <code>select_clicks_per_slate()</code> 호출</td><td class="status-ok">user-level click 회귀 테스트</td></tr>
+          <tr><td>event ID / seed</td><td>전역 sequence와 seed 계산을 원래 순서에 맞춰 유지</td><td class="status-ok">out-of-order Future 테스트</td></tr>
+          <tr><td>quarantine</td><td>순서·error classification 유지, ratio 초과 시 q-only publish</td><td class="status-ok">failure/rollback 테스트</td></tr>
+          <tr><td>public CLI / daily</td><td><code>--mode single</code> 운영 경로와 daily 반환 summary 유지</td><td class="status-ok">daily 42개 통과</td></tr>
+          <tr><td>shard/checkpoint</td><td>이번 PR의 직접 경로가 아니므로 변경하지 않음</td><td class="status-note">범위 밖으로 유지</td></tr>
+        </tbody>
+      </table>
+    </section>
+    <section id="risks">
+      <h2>이번 코드에도 남아 있는 가능성</h2>
+      <div class="grid-2">
+        <article class="card"><h3 class="status-risk">1. 메모리 상한이 0은 아님</h3><p>활성 사용자 window, 현재 사용자 청크, 최종화 중 최대 50,000행 buffer와 현재 IPC batch는 여전히 메모리를 사용합니다. 목표는 “일정한 상한”이지 “메모리 없음”이 아닙니다.</p></article>
+        <article class="card"><h3 class="status-risk">2. 느린 head는 backpressure를 만듦</h3><p>window 안의 work가 모두 끝났는데 첫 사용자가 느리면 더 많은 사용자를 열지 않습니다. worker 활용보다 메모리 상한을 우선한 의도적인 trade-off입니다.</p></article>
+        <article class="card"><h3 class="status-note">3. 파일시스템 장애는 별도 위험</h3><p>atomic replace, backup 복구, 삭제가 실패할 수 있습니다. 원래 publish 오류를 보존하고 best-effort 진단을 남기지만, 운영자는 backup spool과 last-known-good 파일을 확인해야 합니다.</p></article>
+        <article class="card"><h3 class="status-note">4. telemetry는 관찰 도구</h3><p>logger나 telemetry sink 자체가 고장 나면 경고를 남기지 못할 수 있지만, 본 작업을 실패시키지 않도록 설계했습니다. 따라서 로그가 없다는 사실만으로 작업이 실패했다고 판단하면 안 됩니다.</p></article>
+        <article class="card"><h3 class="status-note">5. 잘못된 metadata 입력은 legacy로 감</h3><p>read-only mapping, 누락·중복 user ID는 호환성을 위해 legacy fallback을 택합니다. 이 경우 bounded streaming 메모리 특성이 적용되지 않을 수 있으므로 caller 계약을 지켜야 합니다.</p></article>
+        <article class="card"><h3 class="status-risk">6. 실제 12시간 plateau는 배포 후 확인 필요</h3><p>로컬·CI 테스트는 구조와 계약을 검증합니다. GCP 프로젝트 <code>autoresearch-503903</code>의 Airflow 실제 run에서 progress 로그와 RSS/Grafana를 함께 확인해야 운영 결론을 낼 수 있습니다.</p></article>
+      </div>
+    </section>
+    <section id="troubleshooting">
+      <h2>구현하면서 겪은 문제와 해결</h2>
+      <div class="timeline">
+        <div class="step"><time>문제 01</time><p><b>streaming으로 바꾸자 generated_at이 시작 시각이 됨</b><br>writer를 여는 시각에 값을 만들지 않고, quarantine 검사를 통과한 직후 한 번 계산하도록 이동했습니다.</p></div>
+        <div class="step"><time>문제 02</time><p><b>active user 수를 worker 수와 같게 묶어 head-of-line blocking 발생</b><br>worker 상한과 memory window를 분리하고 active user를 <code>4 × worker</code>로 늘렸습니다. Future 자체는 worker 수만 유지합니다.</p></div>
+        <div class="step"><time>문제 03</time><p><b>사용자마다 Parquet row group을 만들면 footer가 커짐</b><br>Arrow IPC spool에 먼저 쓰고, 최종화 때 50,000행 단위로 Parquet row group을 만들도록 바꿨습니다.</p></div>
+        <div class="step"><time>문제 04</time><p><b>새 경로에서 기존 운영 telemetry가 사라짐</b><br>retention snapshot을 structured event로 연결하고, 시작·종료 snapshot은 interval과 상관없이 강제 기록했습니다.</p></div>
+        <div class="step"><time>문제 05</time><p><b>telemetry/로그 실패가 원래 작업 실패를 덮을 위험</b><br>telemetry와 rollback 진단은 best-effort 경계로 격리했습니다. 원래 publish/quarantine 오류와 기존 파일 복구를 우선합니다.</p></div>
+        <div class="step"><time>문제 06</time><p><b>quarantine 초과 실행도 최종 Parquet을 다 쓴 뒤 실패</b><br>spool을 닫은 뒤 ratio를 먼저 검사하고, 초과 시 quarantine만 최종 경로로 이동합니다.</p></div>
+        <div class="step"><time>문제 07</time><p><b>리뷰 중 rollback logger handler가 예외를 던지는 경우 발견</b><br>진단 logger 예외를 별도로 삼켜 복구 loop가 계속 돌도록 보완하고, 원래 오류가 그대로 보존되는지 테스트했습니다.</p></div>
+      </div>
+    </section>
+    <section id="verification">
+      <h2>어떻게 확인했나</h2>
+      <div class="verify">
+        <div class="card"><strong>106</strong><span>pipeline 테스트 통과</span></div>
+        <div class="card"><strong>14</strong><span>observability 테스트 통과</span></div>
+        <div class="card"><strong>42</strong><span>daily 테스트 통과</span></div>
+        <div class="card"><strong>918</strong><span>전체 테스트 통과</span></div>
+        <div class="card"><strong>6/6</strong><span>GitHub CI 성공</span></div>
+        <div class="card"><strong>clean</strong><span>ruff / diff check / 원격 parity</span></div>
+      </div>
+      <details>
+        <summary>검증 명령 보기</summary>
+        <pre>uv run python -m pytest tests/test_action_logs_pipeline.py -v
+uv run python -m pytest tests/test_action_logs_observability.py -v
+uv run python -m pytest tests/test_action_logs_daily.py -v
+uv run python -m pytest -v
+uv run --no-sync ruff check autoresearch tests tools
+git diff --check
+gh pr checks 415</pre>
+      </details>
+      <p class="section-intro" style="margin-top:18px; margin-bottom:0;">
+        최종 PR은 <a href="https://github.com/SKYAHO/Autoresearch/pull/415">#415</a>이며,
+        GitHub는 현재 mergeable로 보고합니다. Airflow의 memory request나 GCP 배포 설정은 이 코드 변경에 포함하지 않았습니다.
+      </p>
+    </section>
+  </main>
+  <footer class="shell">
+    <p><b>읽는 순서:</b> 결론 → 기존/새 흐름 그림 → 파일별 변경 이유 → 남은 위험 → troubleshooting → 검증.</p>
+    <p>작성 기준 커밋: <a href="https://github.com/SKYAHO/Autoresearch/commit/e692219ea6a53347fa4e4701fb0c71e7400321aa">e692219</a> · 문서는 이해를 위한 요약이며, 실행 계약의 정본은 <a href="../specs/2026-07-30-action-log-review-remediation.md">spec</a>입니다.</p>
+  </footer>
+</body>
+</html>

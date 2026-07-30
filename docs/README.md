@@ -37,6 +37,7 @@
 
 - [가이드 — action_logs 모듈 사용법](guides/action-log.md)
 - [가이드 — Agent Simulator 명세 (action log SSOT)](guides/agent-simulator-spec.md)
+- [시각화 — Action Log 메모리 보관 문제와 bounded streaming 수정](reports/2026-07-30-action-log-memory-retention-report.html)
 
 ### 🎯 Feature Engineering
 
