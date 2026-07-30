@@ -8,14 +8,13 @@ from types import SimpleNamespace
 
 from fastapi import status
 from fastapi.testclient import TestClient
-from openai import OpenAIError
 import pytest
 
 from agent_orchestration.app.config import ServiceSettings, load_settings
 from agent_orchestration.app import db as db_module
 from agent_orchestration.app import llm as llm_module
 from agent_orchestration.app import main as main_module
-from agent_orchestration.app.llm import LLMResult, generate_response
+from agent_orchestration.app.llm import LLMBackendError, LLMResult, generate_response
 
 
 def test_load_settings_prefers_orchestration_database_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -170,7 +169,7 @@ def test_main_chat_succeeds_after_mocked_dependencies(monkeypatch: pytest.Monkey
     """정상 경로에서 201과 저장된 레코드가 그대로 반환된다."""
 
     settings = ServiceSettings(
-        openai_api_key="test-key",
+        openai_api_key=None,
         openai_model="gpt-5.3-codex-spark",
         openai_max_tokens=1024,
         openai_timeout_sec=60,
@@ -178,20 +177,12 @@ def test_main_chat_succeeds_after_mocked_dependencies(monkeypatch: pytest.Monkey
         interactions_table="chat_interactions",
     )
 
-    class FakeResponses:
-        async def create(self, **kwargs):
-            return SimpleNamespace(
-                output_text="안녕하세요",
-                usage=SimpleNamespace(total_tokens=7),
-            )
-
-    class FakeOpenAI:
-        def __init__(self, **kwargs):
-            self.responses = FakeResponses()
+    async def fake_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
+        return LLMResult(text="안녕하세요", model="codex-cli", token_count=None)
 
     monkeypatch.setattr(main_module, "load_settings", lambda: settings)
     monkeypatch.setattr(main_module, "ensure_schema", lambda database_url, table_name: None)
-    monkeypatch.setattr(main_module, "AsyncOpenAI", FakeOpenAI)
+    monkeypatch.setattr(main_module, "generate_response", fake_generate_response)
     monkeypatch.setattr(
         main_module,
         "save_interaction",
@@ -214,13 +205,14 @@ def test_main_chat_succeeds_after_mocked_dependencies(monkeypatch: pytest.Monkey
     body = response.json()
     assert body["id"] == 12
     assert body["response"] == "안녕하세요"
-    assert body["token_count"] == 7
+    assert body["model"] == "codex-cli"
+    assert body["token_count"] is None
 
 
-def test_main_chat_uses_responses_api_for_codex_model(
+def test_generate_response_uses_responses_api_for_openai_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Codex 모델 요청은 Responses API의 입력·출력 계약으로 처리한다."""
+    """향후 OpenAI API 백엔드는 Responses API의 입력·출력 계약으로 처리한다."""
     settings = ServiceSettings(
         openai_api_key="test-key",
         openai_model="gpt-5.3-codex-spark",
@@ -228,6 +220,7 @@ def test_main_chat_uses_responses_api_for_codex_model(
         openai_timeout_sec=60,
         database_url="postgresql://orch:pw@localhost:5432/orch",
         interactions_table="chat_interactions",
+        llm_backend="openai",
     )
     received_request: dict[str, object] = {}
 
@@ -243,29 +236,18 @@ def test_main_chat_uses_responses_api_for_codex_model(
         def __init__(self, **kwargs):
             self.responses = FakeResponses()
 
-    monkeypatch.setattr(main_module, "load_settings", lambda: settings)
-    monkeypatch.setattr(main_module, "ensure_schema", lambda database_url, table_name: None)
-    monkeypatch.setattr(main_module, "AsyncOpenAI", FakeOpenAI)
-    monkeypatch.setattr(
-        main_module,
-        "save_interaction",
-        lambda **kwargs: SimpleNamespace(
-            id=13,
-            prompt=kwargs["prompt"],
-            response=kwargs["response"],
-            model=kwargs["model"],
-            latency_ms=kwargs["latency_ms"],
-            token_count=kwargs["token_count"],
-            created_at="2026-07-30T00:00:00Z",
-        ),
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(llm_module, "AsyncOpenAI", FakeOpenAI)
+
+    result = asyncio.run(generate_response(settings, "Responses API로 호출"))
+
+    assert result == LLMResult(
+        text="Responses API 응답",
+        model="gpt-5.3-codex-spark",
+        token_count=11,
     )
-
-    app = main_module.create_app()
-    with TestClient(app) as client:
-        response = client.post("/chat", json={"prompt": "Responses API로 호출"})
-
-    assert response.status_code == status.HTTP_201_CREATED
-    assert response.json()["response"] == "Responses API 응답"
     assert received_request == {
         "model": "gpt-5.3-codex-spark",
         "input": "Responses API로 호출",
@@ -273,10 +255,12 @@ def test_main_chat_uses_responses_api_for_codex_model(
     }
 
 
-def test_main_chat_returns_bad_gateway_when_openai_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    """OpenAI 호출 실패는 502로 변환한다."""
+def test_main_chat_returns_bad_gateway_when_codex_cli_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex CLI 실패는 공통 LLM 백엔드 오류로 502를 반환한다."""
     settings = ServiceSettings(
-        openai_api_key="test-key",
+        openai_api_key=None,
         openai_model="gpt-5.3-codex-spark",
         openai_max_tokens=1024,
         openai_timeout_sec=60,
@@ -284,18 +268,12 @@ def test_main_chat_returns_bad_gateway_when_openai_fails(monkeypatch: pytest.Mon
         interactions_table="chat_interactions",
     )
 
-    class FakeResponses:
-        async def create(self, **kwargs):
-            raise OpenAIError("boom")
-
-    class FakeOpenAI:
-        def __init__(self, **kwargs):
-            self.responses = FakeResponses()
+    async def failing_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
+        raise LLMBackendError("Codex CLI failed")
 
     monkeypatch.setattr(main_module, "load_settings", lambda: settings)
     monkeypatch.setattr(main_module, "ensure_schema", lambda database_url, table_name: None)
-    monkeypatch.setattr(main_module, "AsyncOpenAI", FakeOpenAI)
-    monkeypatch.setattr(main_module, "save_interaction", lambda **kwargs: SimpleNamespace())
+    monkeypatch.setattr(main_module, "generate_response", failing_generate_response)
 
     app = main_module.create_app()
     with TestClient(app) as client:

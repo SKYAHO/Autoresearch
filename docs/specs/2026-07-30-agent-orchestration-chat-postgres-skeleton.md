@@ -77,7 +77,7 @@ OpenAI API 키나 API 크레딧을 요구하지 않는다.
   "response": "...",
   "model": "codex-cli",
   "latency_ms": 123,
-  "token_count": 45,
+  "token_count": null,
   "created_at": "2026-07-30T00:00:00Z"
 }
 ```
