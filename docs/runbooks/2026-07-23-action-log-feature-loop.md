@@ -239,7 +239,7 @@ rm -f /tmp/${POD}.yaml
 ## 이번 검증 기록 (2026-07-23)
 
 - 입력: `data/generated/round_a/event_log.parquet`, 174행, `click=6`.
-- 업로드: `gs://autoresearch-503903-autoresearch-dev-raw-data/data_lake/action_log/dt=2026-07-23/part-0.parquet`.
+- 업로드: `gs://ar-infra-501607-autoresearch-dev-raw-data/data_lake/action_log/dt=2026-07-23/part-0.parquet` (이전 프로젝트 시점 기록 — infra#404 이전 이전).
 - raw 적재: `data_lake_action_log` 성공, `dt=2026-07-23` 복원 174행.
 - feature build: `user_dynamic_feature`, `status=succeeded`.
 - 계약을 지킨 offline 결과: `vu_0403`의 `recent_click_count_7d=1`.
