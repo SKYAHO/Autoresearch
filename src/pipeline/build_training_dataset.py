@@ -7,7 +7,7 @@
 offline store가 정본(#357)이라 그 값을 그대로 읽는다.
 
 [기능] ``main()``은 조립 전에 ``_verify_assembly_environment()``로 실행 가능 여부를 fail-fast
-확인한다(환경변수 → feast import → GCP 자격증명 순, #404) — 자격증명 없는 환경에서 BigQuery
+확인한다(환경변수 → GCP 자격증명 → feast import 순, #404) — 자격증명 없는 환경에서 BigQuery
 접속이 응답 없이 멈추는 대신 즉시 명확한 이유로 중단한다.
 
 출력: data/processed/training_dataset.csv (21 모델 피처 + ``clicked`` label = 22 물리 컬럼).
@@ -144,8 +144,10 @@ def _verify_assembly_environment() -> None:
 
     순서가 중요하다 — BigQuery 클라이언트 생성(load_training_entity_spine)보다
     먼저 실행돼야, 자격증명 없는 환경에서 응답 없이 멈추는 대신(#396/#423 실측)
-    즉시 명확한 이유와 함께 실패한다. 검사는 가장 빠른 것부터: 환경변수 →
-    feast import → GCP 자격증명.
+    즉시 명확한 이유와 함께 실패한다. 검사는 싼 것부터: 환경변수 → GCP 자격증명
+    → feast import. 앞의 둘은 환경변수 읽기와 ``os.path.exists`` 몇 번이라
+    마이크로초 수준이지만, ``import feast``는 pandas/pyarrow/protobuf까지 끌어와
+    실제로 수 초가 걸린다 — 흔한 실패(환경 미설정·미인증)를 더 빨리 되돌려준다.
     """
     missing_env = [
         name for name in ("GCS_REGISTRY_PATH", "GCS_STAGING_LOCATION")
@@ -156,6 +158,29 @@ def _verify_assembly_environment() -> None:
             f"{', '.join(missing_env)} 환경변수가 필요합니다. .env.example을 참고해 설정하세요."
         )
 
+    # GKE 등 컨테이너 환경은 Workload Identity(metadata server)로 인증하므로
+    # 로컬 자격증명 파일이 없어도 정상이다(docs/guides/training-image.md,
+    # deploy/feast/apply-job.yaml 확인). KUBERNETES_SERVICE_HOST(모든 k8s pod에
+    # 자동 존재)가 있으면 이 체크를 건너뛴다.
+    if not os.environ.get("KUBERNETES_SERVICE_HOST"):
+        # gcloud/google-auth 모두 CLOUDSDK_CONFIG로 config 디렉토리를 옮길 수 있다
+        # (멀티 계정·CI 격리 셋업에서 흔하다) — 하드코딩하면 정상 인증된 개발자를
+        # 잘못 막는다.
+        gcloud_config_dir = os.environ.get("CLOUDSDK_CONFIG") or os.path.expanduser(
+            "~/.config/gcloud"
+        )
+        adc_path = os.path.join(gcloud_config_dir, "application_default_credentials.json")
+        # 환경변수가 "설정만" 된 것으로는 부족하다 — 가리키는 파일이 실제로 있어야
+        # 인증이 성립하므로 ADC 경로와 같은 기준(존재 여부)으로 판단한다.
+        gac_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+        gac_valid = bool(gac_path) and os.path.exists(gac_path)
+        if not gac_valid and not os.path.exists(adc_path):
+            raise ValueError(
+                "GCP 자격증명이 감지되지 않습니다 — BigQuery 접속이 응답 없이 멈출 수 "
+                "있습니다(#396/#423 실측). `gcloud auth application-default login`을 "
+                "실행하거나 GOOGLE_APPLICATION_CREDENTIALS를 설정하세요."
+            )
+
     try:
         import feast  # noqa: F401
     except ImportError as error:
@@ -163,21 +188,6 @@ def _verify_assembly_environment() -> None:
             "feast 패키지가 설치되어 있지 않습니다. dev 그룹과 의존성 충돌로 "
             "격리 그룹입니다 — `uv sync --only-group feast`로 설치하세요."
         ) from error
-
-    # GKE 등 컨테이너 환경은 Workload Identity(metadata server)로 인증하므로
-    # 로컬 자격증명 파일이 없어도 정상이다(docs/guides/training-image.md,
-    # deploy/feast/apply-job.yaml 확인). KUBERNETES_SERVICE_HOST(모든 k8s pod에
-    # 자동 존재)가 있으면 이 체크를 건너뛴다.
-    if os.environ.get("KUBERNETES_SERVICE_HOST"):
-        return
-
-    adc_path = os.path.expanduser("~/.config/gcloud/application_default_credentials.json")
-    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") and not os.path.exists(adc_path):
-        raise ValueError(
-            "GCP 자격증명이 감지되지 않습니다 — BigQuery 접속이 응답 없이 멈출 수 "
-            "있습니다(#396/#423 실측). `gcloud auth application-default login`을 "
-            "실행하거나 GOOGLE_APPLICATION_CREDENTIALS를 설정하세요."
-        )
 
 
 def _assemble_via_feast(

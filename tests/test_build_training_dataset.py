@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pandas as pd
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -236,41 +237,32 @@ def test_load_events_from_bigquery_reads_raw_dataset(monkeypatch):
 def test_verify_assembly_environment_requires_registry_path(monkeypatch) -> None:
     monkeypatch.delenv("GCS_REGISTRY_PATH", raising=False)
     monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://staging/")
-    try:
+
+    with pytest.raises(ValueError, match="GCS_REGISTRY_PATH"):
         build_training_dataset._verify_assembly_environment()
-        raised = False
-    except ValueError as error:
-        raised = True
-        assert "GCS_REGISTRY_PATH" in str(error)
-    assert raised
 
 
 def test_verify_assembly_environment_requires_staging_location(monkeypatch) -> None:
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://registry/registry.db")
     monkeypatch.delenv("GCS_STAGING_LOCATION", raising=False)
-    try:
+
+    with pytest.raises(ValueError, match="GCS_STAGING_LOCATION"):
         build_training_dataset._verify_assembly_environment()
-        raised = False
-    except ValueError as error:
-        raised = True
-        assert "GCS_STAGING_LOCATION" in str(error)
-    assert raised
 
 
 def test_verify_assembly_environment_requires_feast_package(monkeypatch) -> None:
     # feast 설치 여부(dev 그룹엔 없고 feast 그룹엔 있다)에 의존하지 않도록, sys.modules에
     # None을 넣어 ``import feast``가 항상 ImportError를 내게 만든다 — 어느 venv에서 돌려도
-    # 결정적으로 같은 조건을 검증한다.
+    # 결정적으로 같은 조건을 검증한다. 자격증명 체크가 feast import보다 먼저 실행되므로
+    # (#404 리뷰 반영 순서 변경), 호스트에 실제 ADC 파일이 있든 없든 같은 결과를 내도록
+    # KUBERNETES_SERVICE_HOST를 넣어 자격증명 체크를 결정적으로 건너뛴다.
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://registry/registry.db")
     monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://staging/")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
     monkeypatch.setitem(sys.modules, "feast", None)
-    try:
+
+    with pytest.raises(ValueError, match="feast"):
         build_training_dataset._verify_assembly_environment()
-        raised = False
-    except ValueError as error:
-        raised = True
-        assert "feast" in str(error)
-    assert raised
 
 
 def test_main_env_check_runs_before_bigquery_call(monkeypatch) -> None:
@@ -288,15 +280,10 @@ def test_main_env_check_runs_before_bigquery_call(monkeypatch) -> None:
         build_training_dataset, "load_training_entity_spine", _should_not_be_called
     )
 
-    try:
+    with pytest.raises(ValueError, match="GCS_REGISTRY_PATH"):
         build_training_dataset.main(
             events_start_date="2026-07-01", events_end_date="2026-07-01"
         )
-        raised = False
-    except ValueError as error:
-        raised = True
-        assert "GCS_REGISTRY_PATH" in str(error)
-    assert raised
 
 
 def test_main_runs_assembly_when_env_check_passes(monkeypatch, tmp_path) -> None:
