@@ -5,9 +5,10 @@
 FastAPI·Codex CLI가 사용할 권한 제한 런타임 파일로 준비한다.
 
 [기능]
-Workload Identity로 읽은 DB 비밀번호를 ``db.env``에 기록하고, 최초 기동에만
-공용 Codex OAuth ``auth.json``을 영속 PVC에 초기화한다. 시크릿 원문은 로그,
-환경 변수, 예외 메시지에 노출하지 않는다.
+API용 DB 연결 파일과 Runner용 최초 Codex OAuth 파일을 각각 독립적으로
+준비한다. 각 부트스트랩은 자기 역할의 시크릿 식별자와 파일 경로만 받아 다른
+워크로드의 런타임 시크릿에는 접근하지 않는다. 시크릿 원문은 로그, 환경 변수,
+예외 메시지에 노출하지 않는다.
 
 [비책임]
 FastAPI 요청 처리와 PostgreSQL 저장은 ``agent_orchestration.app``이 담당하며,
@@ -30,15 +31,21 @@ SecretReader = Callable[[str], bytes]
 
 
 @dataclass(frozen=True)
-class BootstrapSettings:
-    """GKE init container가 사용할 비민감 경로·시크릿 식별자 설정."""
+class DatabaseBootstrapSettings:
+    """API init container가 사용할 DB 시크릿 식별자와 런타임 경로."""
 
     db_password_secret_id: str
-    codex_auth_secret_id: str
     db_host: str
     db_name: str
     db_user: str
     runtime_dir: Path
+
+
+@dataclass(frozen=True)
+class RunnerAuthBootstrapSettings:
+    """Runner init container가 사용할 OAuth 시크릿 식별자와 Codex 경로."""
+
+    codex_auth_secret_id: str
     codex_home: Path
 
 
@@ -50,21 +57,32 @@ def _require_value(name: str, value: str | None) -> str:
     return normalized
 
 
-def load_bootstrap_settings(environ: Mapping[str, str] | None = None) -> BootstrapSettings:
-    """init container 환경 변수에서 부트스트랩 설정을 읽는다."""
+def load_api_database_bootstrap_settings(
+    environ: Mapping[str, str] | None = None,
+) -> DatabaseBootstrapSettings:
+    """API init container 환경 변수에서 DB 부트스트랩 설정만 읽는다."""
     values = os.environ if environ is None else environ
-    return BootstrapSettings(
+    return DatabaseBootstrapSettings(
         db_password_secret_id=_require_value(
             "ORCH_DB_PASSWORD_SECRET_ID", values.get("ORCH_DB_PASSWORD_SECRET_ID")
-        ),
-        codex_auth_secret_id=_require_value(
-            "ORCH_CODEX_AUTH_SECRET_ID", values.get("ORCH_CODEX_AUTH_SECRET_ID")
         ),
         db_host=_require_value("ORCH_DB_HOST", values.get("ORCH_DB_HOST")),
         db_name=_require_value("ORCH_DB_NAME", values.get("ORCH_DB_NAME")),
         db_user=_require_value("ORCH_DB_USER", values.get("ORCH_DB_USER")),
         runtime_dir=Path(
             _require_value("ORCH_RUNTIME_DIR", values.get("ORCH_RUNTIME_DIR"))
+        ),
+    )
+
+
+def load_runner_codex_auth_bootstrap_settings(
+    environ: Mapping[str, str] | None = None,
+) -> RunnerAuthBootstrapSettings:
+    """Runner init container 환경 변수에서 OAuth 부트스트랩 설정만 읽는다."""
+    values = os.environ if environ is None else environ
+    return RunnerAuthBootstrapSettings(
+        codex_auth_secret_id=_require_value(
+            "ORCH_CODEX_AUTH_SECRET_ID", values.get("ORCH_CODEX_AUTH_SECRET_ID")
         ),
         codex_home=Path(_require_value("CODEX_HOME", values.get("CODEX_HOME"))),
     )
@@ -113,7 +131,7 @@ def _write_private_file(path: Path, contents: bytes) -> None:
             temporary_path.unlink()
 
 
-def _database_url(settings: BootstrapSettings, password: bytes) -> str:
+def _database_url(settings: DatabaseBootstrapSettings, password: bytes) -> str:
     """DB 비밀번호가 URL 의미를 바꾸지 않도록 percent-encoding 한다."""
     try:
         decoded_password = password.decode("utf-8")
@@ -128,12 +146,21 @@ def _database_url(settings: BootstrapSettings, password: bytes) -> str:
     )
 
 
-def bootstrap_runtime_secrets(settings: BootstrapSettings, read_secret: SecretReader) -> None:
-    """DB 연결 파일과 최초 Codex OAuth 상태를 안전한 볼륨에 준비한다."""
+def bootstrap_api_database(
+    settings: DatabaseBootstrapSettings,
+    read_secret: SecretReader,
+) -> None:
+    """API가 사용할 DB 연결 파일만 권한 제한 런타임 볼륨에 준비한다."""
     database_password = _read_secret(settings.db_password_secret_id, read_secret)
     database_env = f"ORCH_DATABASE_URL={_database_url(settings, database_password)}\n"
     _write_private_file(settings.runtime_dir / "db.env", database_env.encode("utf-8"))
 
+
+def bootstrap_runner_codex_auth(
+    settings: RunnerAuthBootstrapSettings,
+    read_secret: SecretReader,
+) -> None:
+    """Runner의 최초 Codex OAuth 파일만 안전한 영속 볼륨에 준비한다."""
     auth_path = settings.codex_home / "auth.json"
     if auth_path.exists():
         if auth_path.is_symlink() or not auth_path.is_file():
@@ -147,8 +174,11 @@ def bootstrap_runtime_secrets(settings: BootstrapSettings, read_secret: SecretRe
 
 
 def main() -> int:
-    """Kubernetes init container 진입점으로 시크릿 부트스트랩을 수행한다."""
-    bootstrap_runtime_secrets(load_bootstrap_settings(), read_secret_manager_secret)
+    """API init container 진입점으로 DB 시크릿 부트스트랩을 수행한다."""
+    bootstrap_api_database(
+        load_api_database_bootstrap_settings(),
+        read_secret_manager_secret,
+    )
     return 0
 
 
