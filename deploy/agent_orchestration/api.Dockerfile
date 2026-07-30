@@ -27,6 +27,9 @@ COPY agent_orchestration/bootstrap_secrets.py ./agent_orchestration/
 COPY agent_orchestration/entrypoint.sh ./agent_orchestration/
 RUN chmod 0555 ./agent_orchestration/entrypoint.sh
 
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision="${VCS_REF}"
+
 USER appuser
 
 EXPOSE 8000

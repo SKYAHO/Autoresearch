@@ -9,9 +9,10 @@ PR merge부터 GKE 배포·Airflow 실행까지의 자동화 흐름을 설명합
 
 - 코드 변경이 main에 merge되면 Release Drafter가 draft release에 누적
 - 담당자가 release를 게시하면 semantic version git tag 생성 및 Docker 이미지 빌드 트리거
-- 빌드된 batch·serving 이미지를 Google Artifact Registry(GAR)에 push하고 OCI 메타데이터·실행 계약 검증
+- 빌드된 batch·serving·Agent Orchestration API·Runner 이미지를 Google Artifact Registry(GAR)에 push하고 OCI 메타데이터·실행 계약 검증
 - batch 이미지 digest를 배포 리포 values에 자동 반영하는 승격 PR 생성
 - serving 이미지 digest를 인프라 리포가 GKE 배포에 소비할 수 있도록 job summary에 기록
+- Agent Orchestration API·Runner digest를 인프라 리포의 내부 전용 GKE 배포에 소비할 수 있도록 각각 job summary에 기록
 - 승격 PR merge 시 GKE에 안전하게 배포 (DAG 일시정지 → helm upgrade → 검증 → 자동 롤백)
 - 비용 민감한 batch workload는 Spot node pool로 격리
 
@@ -37,6 +38,12 @@ flowchart TD
         RY --> SERVING[deploy/serving/Dockerfile 빌드<br/>autoresearch-serving]
         SERVING --> SVERIFY[OCI revision / non-root /<br/>Feast·serving import smoke]
         SVERIFY --> SSUMMARY[serving digest_ref<br/>job summary → infra 리포]
+        RY --> ORCHAPI[agent orchestration API 빌드<br/>autoresearch-agent-orchestration-api]
+        ORCHAPI --> ORCHAPIVERIFY[OCI revision / non-root /<br/>API import smoke]
+        ORCHAPIVERIFY --> ORCHAPISUMMARY[API digest_ref<br/>job summary → infra 리포]
+        RY --> ORCHRUNNER[agent orchestration Runner 빌드<br/>autoresearch-agent-orchestration-runner]
+        ORCHRUNNER --> ORCHRUNNERVERIFY[OCI revision / non-root /<br/>Codex 0.146.0·Runner import smoke]
+        ORCHRUNNERVERIFY --> ORCHRUNNERSUMMARY[Runner digest_ref<br/>job summary → infra 리포]
     end
 
     PRAUTO --> MERGE2[리뷰 후 머지]
@@ -77,9 +84,10 @@ PR에 붙은 라벨을 기반으로 semantic version을 자동 계산하여 draf
 
 ### 애플리케이션 이미지 빌드 및 GAR push (release.yml)
 
-코드 리포의 `release.yml`은 release가 게시되면 batch와 serving 이미지를 각각
-빌드하여 GAR에 push합니다. serving job은 batch job이 검증한 동일한
-`source_sha`를 checkout하므로 두 이미지의 소스 계보가 일치합니다.
+코드 리포의 `release.yml`은 release가 게시되면 batch·serving·Agent Orchestration
+API·Runner 이미지를 각각 빌드하여 GAR에 push합니다. serving·API·Runner job은
+batch job이 검증한 동일한 `source_sha`를 checkout하므로 네 이미지의 소스 계보가
+일치합니다.
 
 **주요 단계**:
 
@@ -109,6 +117,27 @@ workflow_dispatch(`source_sha` 입력)로 수동 실행도 가능합니다.
 
 이 단계는 실제 모델, Redis, Secret Manager, GKE endpoint에 접속하지 않습니다.
 실제 serving Deployment/Service rollout과 runtime connectivity 검증은
+`SKYAHO/Autoresearch-infra`가 소유합니다.
+
+#### Agent Orchestration 이미지 release job
+
+`publish-agent-orchestration-api-image`와
+`publish-agent-orchestration-runner-image` job은 다음 계약으로 두 개의 내부
+서비스 이미지를 별도로 발행합니다.
+
+1. 각 job은 batch job이 검증한 full source SHA를 immutable checkout하고,
+   `sha-<full-sha>` 태그와 release tag를 GAR에 push합니다.
+2. push 결과 digest를 pull하여 `org.opencontainers.image.revision`과 source SHA,
+   non-root 실행을 각각 검증합니다.
+3. API 이미지는 `agent_orchestration.app.main` import smoke를 실행하며, Runner
+   이미지는 `codex --version`이 `codex-cli 0.146.0`인지와
+   `agent_orchestration.runner.app` import를 검증합니다.
+4. 검증된 `IMAGE_URI@sha256:<digest>`를 각 job summary의 API/Runner
+   `digest_ref`로 기록합니다. 이는 인프라 리포의 API·Runner Deployment가
+   사용할 수 있는 immutable handoff입니다.
+
+이 단계는 OAuth 인증 파일·DB 연결·GKE endpoint에 접속하지 않습니다. OAuth
+초기 시크릿과 Runner PVC, API DB 연결의 실제 배포·runtime 검증은
 `SKYAHO/Autoresearch-infra`가 소유합니다.
 
 ### Digest 승격 PR 자동화
@@ -180,7 +209,7 @@ Spot VM 회수에 대비해 `retries >= 1` 유지.
 1. PR에 적절한 라벨 부여 (`feature`/`enhancement`/`bug`/`breaking`)
 2. PR을 main에 merge → Release Drafter가 draft release 갱신
 3. GitHub Releases에서 draft release 게시 (Publish release)
-4. release.yml이 자동 실행: batch·serving 이미지 빌드 → GAR push → batch digest 승격 PR 생성 및 serving digest summary 기록
+4. release.yml이 자동 실행: batch·serving·Agent Orchestration API·Runner 이미지 빌드 → GAR push → batch digest 승격 PR 생성 및 serving·API·Runner digest summary 기록
 5. batch 승격 PR 리뷰 후 머지 → deploy-gke-dev.yml이 자동 실행: GKE 배포 + 검증
 6. infra serving 배포는 release summary의 serving `digest_ref`를 사용
 
@@ -203,6 +232,12 @@ gcloud artifacts docker images describe \
 # serving 이미지 목록
 gcloud artifacts docker images list \
   asia-northeast3-docker.pkg.dev/ar-infra-501607/autoresearch-dev-docker/autoresearch-serving
+
+# Agent Orchestration API·Runner 이미지 목록
+gcloud artifacts docker images list \
+  asia-northeast3-docker.pkg.dev/ar-infra-501607/autoresearch-dev-docker/autoresearch-agent-orchestration-api
+gcloud artifacts docker images list \
+  asia-northeast3-docker.pkg.dev/ar-infra-501607/autoresearch-dev-docker/autoresearch-agent-orchestration-runner
 ```
 
 ## 워크플로우 파일 참조
@@ -213,9 +248,11 @@ gcloud artifacts docker images list \
 |------|------|
 | `.github/release-drafter.yml` | 라벨 → semver 매핑 규칙 |
 | `.github/workflows/release-drafter.yml` | push to main 트리거 |
-| `.github/workflows/release.yml` | release:published → batch·serving 빌드/GAR push/digest 승격 PR |
+| `.github/workflows/release.yml` | release:published → batch·serving·Agent Orchestration API·Runner 빌드/GAR push/digest 승격 PR |
 | `Dockerfile.app` | multi-stage batch 이미지 (uv lock-export → python:3.12-slim, non-root) |
 | `deploy/serving/Dockerfile` | Feast 호환 serving 이미지 (FastAPI/Uvicorn, non-root) |
+| `deploy/agent_orchestration/api.Dockerfile` | API 전용 FastAPI 이미지 (non-root, OAuth·Codex CLI 미포함) |
+| `deploy/agent_orchestration/runner.Dockerfile` | Runner 전용 Codex CLI 이미지 (non-root, Codex 0.146.0 고정) |
 
 ### 배포 리포 (`SKYAHO/Autoresearch-airflow`)
 

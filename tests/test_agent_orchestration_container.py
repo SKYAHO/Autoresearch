@@ -11,6 +11,7 @@ RUNNER_DOCKERFILE = (
 )
 DOCKERIGNORE = REPOSITORY_ROOT / ".dockerignore"
 CI_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
+RELEASE_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "release.yml"
 API_LLM_MODULE = REPOSITORY_ROOT / "agent_orchestration" / "app" / "llm.py"
 
 
@@ -25,6 +26,13 @@ def test_api_image_excludes_codex_and_runner_image_pins_codex() -> None:
     assert "@openai/codex@0.146.0" in runner_dockerfile
     assert "CODEX_HOME=/var/lib/codex" in runner_dockerfile
     assert "TMPDIR=/tmp" in runner_dockerfile
+    assert "COPY --from=codex-cli /usr/local/bin/codex /usr/local/bin/codex" not in (
+        runner_dockerfile
+    )
+    assert (
+        "ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js "
+        "/usr/local/bin/codex"
+    ) in runner_dockerfile
 
 
 def test_orchestration_images_install_only_runtime_group_and_run_as_fixed_user() -> None:
@@ -37,6 +45,18 @@ def test_orchestration_images_install_only_runtime_group_and_run_as_fixed_user()
         assert "addgroup --gid 10001 appuser" in dockerfile
         assert "adduser --uid 10001 --gid 10001" in dockerfile
         assert "USER appuser" in dockerfile
+
+
+def test_revision_label_preserves_runtime_dependency_cache() -> None:
+    """소스 revision 라벨은 대용량 런타임 의존성 설치 이후에 설정한다."""
+    label = 'LABEL org.opencontainers.image.revision="${VCS_REF}"'
+
+    for dockerfile_path in (API_DOCKERFILE, RUNNER_DOCKERFILE):
+        dockerfile = dockerfile_path.read_text(encoding="utf-8")
+
+        assert dockerfile.index(label) > dockerfile.index(
+            "RUN python -m pip install --no-cache-dir --no-deps -r requirements.lock"
+        )
 
 
 def test_orchestration_images_do_not_embed_runtime_secrets() -> None:
@@ -100,3 +120,24 @@ def test_ci_builds_and_smokes_both_orchestration_images() -> None:
     assert 'codex_version="$(docker run --rm autoresearch-agent-orchestration-runner:ci codex --version)"' in workflow
     assert 'test "${codex_version}" = "codex-cli 0.146.0"' in workflow
     assert 'import agent_orchestration.runner.app' in workflow
+
+
+def test_release_workflow_publishes_api_and_runner_digests() -> None:
+    """Release는 동일 source SHA의 API·Runner immutable digest를 각각 발행한다."""
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    api_dockerfile = API_DOCKERFILE.read_text(encoding="utf-8")
+    runner_dockerfile = RUNNER_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "publish-agent-orchestration-api-image:" in workflow
+    assert "publish-agent-orchestration-runner-image:" in workflow
+    assert "file: deploy/agent_orchestration/api.Dockerfile" in workflow
+    assert "file: deploy/agent_orchestration/runner.Dockerfile" in workflow
+    assert "autoresearch-agent-orchestration-api" in workflow
+    assert "autoresearch-agent-orchestration-runner" in workflow
+    assert workflow.count("needs: publish-application-image") >= 3
+    assert workflow.count("org.opencontainers.image.revision") >= 4
+    assert workflow.count("digest_ref=$digest_ref") >= 4
+
+    for dockerfile in (api_dockerfile, runner_dockerfile):
+        assert "ARG VCS_REF=unknown" in dockerfile
+        assert 'org.opencontainers.image.revision="${VCS_REF}"' in dockerfile

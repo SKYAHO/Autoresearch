@@ -31,8 +31,8 @@ RUN python -m pip install --no-cache-dir --no-deps -r requirements.lock \
 
 # Codex CLI와 이에 필요한 Node 런타임만 Runner 이미지에 반입한다.
 COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
-COPY --from=codex-cli /usr/local/bin/codex /usr/local/bin/codex
 COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
 
 COPY agent_orchestration/__init__.py ./agent_orchestration/
 COPY agent_orchestration/contracts.py ./agent_orchestration/
@@ -40,6 +40,9 @@ COPY agent_orchestration/codex.py ./agent_orchestration/
 COPY agent_orchestration/runner ./agent_orchestration/runner
 COPY agent_orchestration/runner_entrypoint.sh ./agent_orchestration/
 RUN chmod 0555 ./agent_orchestration/runner_entrypoint.sh
+
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision="${VCS_REF}"
 
 USER appuser
 
