@@ -10,10 +10,16 @@ CTR 학습 파이프라인(`src/`)을 컨테이너에서 실행하기 위한 이
 + `uv.lock`을 공유하지만, 각각 자신이 필요한 패키지만 담습니다(`Dockerfile.app`은
 `autoresearch/`만, `Dockerfile.train`은 `src/`만 COPY).
 
+> **#359 C2 이후 이미지 분리:** `build-features`/`run-pipeline`은 학습 피처를 Feast
+> offline store(`get_historical_features` PIT)로 조립하므로 feast 런타임이 담긴
+> `Dockerfile.feast`(feast 격리 그룹 포함) 이미지로 실행합니다. `Dockerfile.train`은
+> feast를 담지 않으므로(`uv sync --no-dev`) feast 불필요 서브커맨드(`promote-model`
+> 및 `train-model`/`evaluate-model`)만 실행합니다.
+
 | 항목 | 값 |
 |---|---|
 | 베이스 이미지 | `python:3.12-slim` (multi-stage, uv 기반) |
-| 진입점 | `python -m src.cli <command>` (Typer CLI: `build-features`, `train-model`, `evaluate-model`, `run-pipeline`) |
+| 진입점 | `python -m src.cli <command>` (`Dockerfile.train`: `promote-model`/`train-model`/`evaluate-model` — feast 불필요. `build-features`/`run-pipeline`은 `Dockerfile.feast`) |
 | 실행 유저 | non-root (`appuser`) |
 | CI 검증 | `.github/workflows/ci.yml`의 `docker-build` job (빌드 + `--help` 스모크 체크) |
 

@@ -142,7 +142,7 @@ PR은 작게 유지합니다. 무관한 리팩터링과 기능 변경을 섞지 
 - `Closes #이슈번호`가 있는가
 - 불필요한 파일, 캐시, 시크릿이 포함되지 않았는가
 
-**Claude 자동 리뷰**: PR이 처음 열리거나 Ready for review로 전환되면 Claude 리뷰가 자동 실행됩니다. 피드백 반영 후 최신 diff를 다시 리뷰받으려면 PR conversation에 `/claude-review` 댓글을 작성합니다 (PR에서만 동작).
+**Claude 자동 리뷰**: PR이 처음 열리거나 Ready for review로 전환되면 Claude 리뷰가 자동 실행됩니다. 피드백 반영 후 최신 diff를 다시 리뷰받으려면 PR conversation에 `/claude-review` 댓글을 작성합니다 (PR에서만 동작). 변경 파일이 전부 문서(`**.md`, `docs/**`)인 PR은 자동 리뷰와 PR 이해 리포트를 실행하지 않으며, 필요하면 `/claude-review`, `/claude-report` 댓글로 수동 실행합니다.
 
 **머지 후 자동 흐름**:
 

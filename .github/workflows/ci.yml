@@ -66,6 +66,8 @@ jobs:
           tests/test_serving_feast_reader_feast.py
           tests/test_offline_retrieval_smoke_feast.py
           tests/test_odfv_category_match_feast.py
+          tests/test_odfv_registry_portability_feast.py
+          tests/test_verify_registry_portability_feast.py
           tests/test_feast_retrieval_integration_feast.py
           tests/test_serving_api.py
           tests/test_serving_deployment.py
@@ -151,6 +153,10 @@ jobs:
       - name: Run training image smoke check
         # 코드가 이미지에 없으므로 로컬 아카이브 주입 모드로 부트스트랩
         # 압축 해제·실행 경로를 검증한다 (Dockerfile.feast와 동일 패턴).
+        # build-features/run-pipeline은 #359 C2에서 feast offline PIT로 조립하도록
+        # 바뀌어 Dockerfile.feast로 실행한다 — feast를 담지 않는 이 train 이미지에서는
+        # 런타임에 feast import가 터지므로, 여기서 --help로 스모크하지 않는다(거짓 green
+        # 방지). 이 이미지가 실제로 실행하는 feast 불필요 서브커맨드만 검증한다.
         run: |
           git archive --format=tar.gz -o /tmp/code-archive.tar.gz HEAD
           run_training() {
@@ -160,10 +166,9 @@ jobs:
               autoresearch-training:ci "$@"
           }
           run_training
-          run_training python -m src.cli build-features --help
           run_training python -m src.cli train-model --help
           run_training python -m src.cli evaluate-model --help
-          run_training python -m src.cli run-pipeline --help
+          run_training python -m src.cli promote-model --help
           if docker run --rm autoresearch-training:ci 2>/dev/null; then
             echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
             exit 1
@@ -202,6 +207,15 @@ jobs:
           run_feast
           run_feast python -m autoresearch.jobs.feast_materialize --help
           run_feast python -m autoresearch.jobs.feast_materialize --version
+          # #359 C2로 학습 run-pipeline이 이 이미지로 옮겨왔으므로 여기서 스모크한다
+          # (train 이미지는 위에서 더 이상 스모크하지 않는다). --help는 커맨드 본문을
+          # 실행하지 않지만 src.cli의 모듈 최상단 import(build_training_dataset/train/
+          # evaluate -> lightgbm)를 전부 태우므로, #401(libgomp1)처럼 import 시점에
+          # 드러나는 누락을 잡는다.
+          # 한계: 함수 안에서 지연 import되는 것(convert_lgbm_to_onnx의 onnxmltools 등)은
+          # 이 체인에 안 걸린다. 그 계열은 release.yml의 feast 이미지 verify가 명시적
+          # import로 따로 지킨다.
+          run_feast python -m src.cli run-pipeline --help
           if docker run --rm autoresearch-feast:ci 2>/dev/null; then
             echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
             exit 1

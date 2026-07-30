@@ -7,8 +7,10 @@ name: PR Comprehension Report
 # docs/specs/2026-07-24-pr-comprehension-report.md
 #
 # 갱신은 PR에 /claude-report 코멘트로 수동 트리거합니다 (synchronize 자동
-# 재생성은 비용·소음 때문에 제외). 이 워크플로우는 required check가 아니며
-# 실패해도 머지를 막지 않습니다 (soft-fail).
+# 재생성은 비용·소음 때문에 제외). 문서만 바뀌는 PR도 같은 이유로 자동
+# 트리거에서 제외합니다 (#391 — 아래 paths-ignore). 필요하면 문서 PR에서도
+# /claude-report로 수동 생성할 수 있습니다. 이 워크플로우는 required check가
+# 아니며 실패해도 머지를 막지 않습니다 (soft-fail).
 #
 # 분석은 OpenRouter chat completions API를 사용합니다 (#319). 모델은 아래
 # PR_REPORT_MODEL 한 줄로 교체할 수 있습니다 (슬러그: openrouter.ai/models).
@@ -20,6 +22,9 @@ env:
 on:
   pull_request:
     types: [opened, ready_for_review]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
   issue_comment:
     types: [created]
   workflow_dispatch:

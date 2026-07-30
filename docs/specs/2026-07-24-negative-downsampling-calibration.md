@@ -184,6 +184,13 @@ He 보정 공식은 **"모델이 다운샘플 분포를 그대로 학습했다"*
   > 패키징 방침에 따라 #302에서 supersede됨. calibration 수식(He 2014) 자체는 그대로이나
   > 패키징이 별도 등록 모델로 바뀐다. 상세는 `docs/guides/ctr-model-specification.md`의
   > Model Packaging / Deployment 섹션(#302) 참조.
+  >
+  > **[재-정정 — #390, 2026-07-28]**: 위 #302의 "별도 등록 모델 2개"는 main·calibration 두
+  > alias의 비원자적 champion 전환에서 **동기화(race)** 위험이 있어(멘토 코칭 2026-07-28)
+  > #390에서 다시 supersede됨. calibration을 별도 등록하지 않고 **main과 같은 run의 아티팩트로
+  > 종속**(서빙이 main run_id로 함께 조회)시켜 어긋난 조합을 구조적으로 제거한다. 결과적으로
+  > 이 항목의 "calibration은 상수+수식(별도 학습 아티팩트 아님)" 관점과 다시 정합한다(아티팩트로는
+  > 남지만 별도 등록·승격 대상이 아님). 상세는 위 가이드 Model Packaging 섹션(#390) 참조.
 - **#302와의 경계**: #302가 manifest(`sampling_rate` 포함)와 ONNX 그래프 노드로
   이 값을 정식 편입한다. #300은 값의 산출·기록·오프라인 보정까지 책임지고,
   서빙 추론에의 ONNX 편입은 #302가 이어받는다.

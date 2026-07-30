@@ -93,6 +93,126 @@ def test_collect_categorical_categories_skips_missing_columns() -> None:
     assert result == {}
 
 
+def test_require_binary_labels_rejects_all_negative_with_counts() -> None:
+    """#421: 양성 0건이면 학습 전에 행 수·양성/음성 개수가 드러나는 에러로 막는다."""
+    with pytest.raises(ValueError, match="단일 클래스") as exc_info:
+        train.require_binary_labels(pd.Series([0] * 10), stage="학습 데이터셋")
+
+    message = str(exc_info.value)
+    assert "학습 데이터셋" in message
+    assert "rows=10" in message
+    assert "positive(clicked=1)=0" in message
+    assert "negative(clicked=0)=10" in message
+
+
+def test_require_binary_labels_rejects_all_positive() -> None:
+    # 음성 0건도 같은 이유로 지표(ROC-AUC/LogLoss)가 정의되지 않는다.
+    with pytest.raises(ValueError, match="단일 클래스"):
+        train.require_binary_labels(pd.Series([1] * 5), stage="Train split")
+
+
+def test_require_binary_labels_returns_counts_when_both_present() -> None:
+    assert train.require_binary_labels(pd.Series([0, 0, 1]), stage="Train split") == (1, 2)
+
+
+def test_compute_auto_scale_pos_weight_returns_negative_over_positive() -> None:
+    assert train.compute_auto_scale_pos_weight(pd.Series([0, 0, 0, 1])) == 3.0
+
+
+def test_compute_auto_scale_pos_weight_rejects_zero_positive() -> None:
+    """#421: neg/pos 0 나눗셈(RuntimeWarning divide by zero → inf) 경로를 fail-closed로 막는다."""
+    with pytest.raises(ValueError, match="양성"):
+        train.compute_auto_scale_pos_weight(pd.Series([0, 0, 0]))
+
+
+def test_main_rejects_single_class_dataset_before_training(tmp_path, monkeypatch) -> None:
+    """#421: 라벨이 전부 0인 데이터셋은 학습·저장·등록 전에 중단되어야 한다."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    dataset = _synthetic_ctr_dataset(n=240)
+    dataset["clicked"] = 0
+    dataset.to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    with pytest.raises(ValueError, match="단일 클래스") as exc_info:
+        _run_train(tmp_path, config_path)
+
+    message = str(exc_info.value)
+    assert "rows=240" in message
+    assert "positive(clicked=1)=0" in message
+
+    # 모델 파일도, registry 버전도 생기지 않아야 한다(쓰레기 버전 방지).
+    assert not (tmp_path / "model.joblib").exists()
+    client = MlflowClient(tracking_uri=tracking_uri)
+    assert client.search_model_versions("name='ctr-model'") == []
+
+
+def test_main_rejects_single_class_split(tmp_path, monkeypatch) -> None:
+    """#421: 데이터셋 전체엔 양성이 있어도 분할 결과가 단일 클래스면 막는다.
+
+    양성이 2건뿐이면 stratified split이 train에만 양성을 몰아주고 val/test는
+    전부 음성이 된다 — 이 상태로 진행하면 평가 단계 log_loss에서 터진다.
+    """
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    dataset = _synthetic_ctr_dataset(n=200)
+    dataset["clicked"] = 0
+    dataset.loc[[0, 1], "clicked"] = 1
+    dataset.to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    with pytest.raises(ValueError, match="단일 클래스") as exc_info:
+        _run_train(tmp_path, config_path)
+
+    assert "split" in str(exc_info.value)
+    assert not (tmp_path / "model.joblib").exists()
+    client = MlflowClient(tracking_uri=tracking_uri)
+    assert client.search_model_versions("name='ctr-model'") == []
+
+
+def test_main_defer_registration_returns_pending_without_registering(tmp_path, monkeypatch) -> None:
+    """#421: defer_registration=True면 run 로깅·아티팩트는 그대로 남기되
+    registered model 버전은 만들지 않고, 호출자가 평가 통과 뒤 직접 등록한다."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    outcome = train.main(
+        config_path=str(config_path),
+        data_path=str(tmp_path / "training_dataset.csv"),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.json"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.json"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+        defer_registration=True,
+    )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    # 등록은 아직 없다. 반면 run 로깅(메트릭)과 모델 아티팩트는 이미 남아 있다.
+    assert client.search_model_versions("name='ctr-model'") == []
+    assert outcome.registered_version is None
+    assert (tmp_path / "model.joblib").exists()
+    assert "val_roc_auc" in client.get_run(outcome.run_id).data.metrics
+
+    pending = outcome.pending_registration
+    assert pending is not None
+    assert pending.model_name == "ctr-model"
+    assert pending.model_uri == f"runs:/{outcome.run_id}/model"
+
+    # 평가 통과 후 호출하면 그때 버전이 생기고 태그도 함께 붙는다.
+    version = train.register_pending_model(pending)
+    [registered] = client.search_model_versions("name='ctr-model'")
+    assert registered.version == version
+    assert "val_roc_auc" in client.get_model_version("ctr-model", version).tags
+
+
 def test_main_registers_model_and_auto_increments_version(tmp_path, monkeypatch) -> None:
     """#96: 학습 완료 후 ctr-model이 Model Registry에 등록되고 버전이 자동 증가하는지 검증."""
     tracking_uri = (tmp_path / "mlruns").as_uri()
@@ -169,6 +289,27 @@ def test_main_survives_registry_registration_failure(tmp_path, monkeypatch) -> N
 
     # 모델 파일은 registry 등록 실패와 무관하게 이미 저장되어 있어야 한다.
     assert model_output.exists()
+
+
+def test_register_pending_model_propagates_registry_failure(monkeypatch) -> None:
+    """#421 리뷰(중간): 미룬 등록의 실패는 삼키면 안 된다.
+
+    run이 닫힌 뒤 호출되므로 "끝난 run을 FAILED로 만들지 않는다"는 best-effort
+    근거가 성립하지 않는다. 삼키면 run-pipeline이 exit 0으로 끝나고, 후속
+    promote-model이 어제 버전(=이미 champion)을 집어 ALREADY_CHAMPION으로
+    조용히 지나가 "평가까지 통과했는데 신규 후보가 없는 날"이 드러나지 않는다.
+    """
+
+    def fake_register_model_raises(model_uri, model_name, tags=None):
+        raise RuntimeError("registry 백엔드 없음(시뮬레이션)")
+
+    monkeypatch.setattr(train, "register_model", fake_register_model_raises)
+    pending = train.PendingRegistration(
+        model_uri="runs:/abc123/model", model_name="ctr-model", tags={}
+    )
+
+    with pytest.raises(RuntimeError, match="registry 백엔드 없음"):
+        train.register_pending_model(pending)
 
 
 def test_main_registers_lineage_tags_from_extra_params(tmp_path, monkeypatch) -> None:
@@ -275,8 +416,8 @@ def test_main_downsampling_records_sampling_rate_and_preserves_test_set(tmp_path
     _write_train_config_with(config_path, sampling_rate=0.5)
     _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
 
-    realized = _run_train(tmp_path, config_path)
-    assert 0.0 < realized < 1.0
+    outcome = _run_train(tmp_path, config_path)
+    assert 0.0 < outcome.sampling_rate < 1.0
 
     client = MlflowClient(tracking_uri=tracking_uri)
     [version] = client.search_model_versions("name='ctr-model'")
@@ -318,9 +459,10 @@ def test_main_downsampling_with_explicit_scale_pos_weight_fails_closed(tmp_path,
         _run_train(tmp_path, config_path)
 
 
-def test_main_downsampling_registers_calibration_model(tmp_path, monkeypatch) -> None:
-    # #302: downsampling 학습은 calibration 모델을 별도 등록명으로 등록하고, 그 버전에
-    # main run_id를 짝 식별 tag로 남긴다(서빙 페어링 검증용).
+def test_main_downsampling_logs_calibration_artifact_in_main_run(tmp_path, monkeypatch) -> None:
+    # #390: downsampling 학습은 calibration을 별도 등록하지 않고 main과 같은 run의
+    # 아티팩트(calibration/calibration.json)로 로깅한다(run_id 종속). 서빙은 main run_id로
+    # 이 아티팩트를 읽어 체이닝한다.
     tracking_uri = (tmp_path / "mlruns").as_uri()
     monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
     config_path = tmp_path / "config.yaml"
@@ -331,14 +473,15 @@ def test_main_downsampling_registers_calibration_model(tmp_path, monkeypatch) ->
 
     client = MlflowClient(tracking_uri=tracking_uri)
     [main_version] = client.search_model_versions("name='ctr-model'")
-    [cal_version] = client.search_model_versions("name='ctr-calibration-model'")
-    tags = client.get_model_version("ctr-calibration-model", str(cal_version.version)).tags
-    assert tags["main_run_id"] == main_version.run_id
-    assert float(tags["sampling_rate"]) < 1.0
+    # calibration은 별도 등록 모델이 아니다.
+    assert client.search_model_versions("name='ctr-calibration-model'") == []
+    # 대신 main과 같은 run에 calibration 아티팩트가 있어야 한다.
+    artifacts = client.list_artifacts(main_version.run_id, "calibration")
+    assert any(entry.path.endswith("calibration.json") for entry in artifacts)
 
 
-def test_main_no_downsampling_registers_no_calibration_model(tmp_path, monkeypatch) -> None:
-    # 하위호환: downsampling 미사용(w=1.0)이면 calibration 모델을 등록하지 않는다.
+def test_main_no_downsampling_logs_no_calibration_artifact(tmp_path, monkeypatch) -> None:
+    # 하위호환: downsampling 미사용(w=1.0)이면 calibration 아티팩트를 로깅하지 않는다.
     tracking_uri = (tmp_path / "mlruns").as_uri()
     monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
     config_path = tmp_path / "config.yaml"
@@ -348,7 +491,45 @@ def test_main_no_downsampling_registers_no_calibration_model(tmp_path, monkeypat
     _run_train(tmp_path, config_path)
 
     client = MlflowClient(tracking_uri=tracking_uri)
-    assert client.search_model_versions("name='ctr-calibration-model'") == []
+    [main_version] = client.search_model_versions("name='ctr-model'")
+    assert client.list_artifacts(main_version.run_id, "calibration") == []
+
+
+def test_downsampling_main_without_calibration_artifact_fails_closed(tmp_path, monkeypatch) -> None:
+    # #390 fail-closed(PR #395 리뷰 5): downsampling main(sampling_rate<1.0 tag)인데 그 run에
+    # calibration 아티팩트가 없으면, 서빙 로드가 ModelArtifactError로 기동을 거부해야 한다
+    # (보정 안 된 편향 확률 서빙 방지). 정상 경로는 아티팩트가 항상 있지만, 이 마지막 보루를
+    # 회귀 테스트로 고정한다 — sampling_rate=1.0으로 학습해 calibration 아티팩트 없는 run을
+    # 만든 뒤, main 버전 tag를 0.5로 덮어써 "downsampling인데 아티팩트 없음" 상황을 재현한다.
+    from mlflow.tracking import MlflowClient as _Client
+
+    from src.serving.model_loader import (
+        ModelArtifactError,
+        RegistryModelSettings,
+        load_reranker_with_lineage,
+    )
+
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=1.0)
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    _run_train(tmp_path, config_path)
+
+    client = _Client(tracking_uri=tracking_uri)
+    [main_version] = client.search_model_versions("name='ctr-model'")
+    # calibration 아티팩트가 없는 run인데 downsampling인 것처럼 tag를 덮어쓴다.
+    assert client.list_artifacts(main_version.run_id, "calibration") == []
+    client.set_model_version_tag("ctr-model", main_version.version, "sampling_rate", "0.5")
+    client.set_registered_model_alias("ctr-model", "champion", main_version.version)
+
+    with pytest.raises(ModelArtifactError, match="calibration"):
+        load_reranker_with_lineage(
+            RegistryModelSettings(
+                tracking_uri=tracking_uri, model_name="ctr-model", alias="champion"
+            )
+        )
 
 
 def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> None:

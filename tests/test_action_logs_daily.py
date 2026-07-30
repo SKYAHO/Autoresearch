@@ -1,9 +1,10 @@
 import json
 import re
 import shutil
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, tzinfo
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NoReturn
 from zoneinfo import ZoneInfo
 
 import pyarrow as pa
@@ -12,6 +13,7 @@ import pytest
 from pyarrow.fs import FileInfo, FileType
 
 import autoresearch.action_logs.daily as daily_module
+import autoresearch.action_logs.pipeline as pipeline_module
 from autoresearch.action_logs.daily import (
     merge_daily_action_log_shards,
     run_daily_action_log,
@@ -19,6 +21,7 @@ from autoresearch.action_logs.daily import (
 )
 from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
 from autoresearch.action_logs.pipeline import ActionLogGenerationError, ExposureMetadata
+from autoresearch.action_logs.schema import EventLog
 
 
 class _SelectorFilesystem:
@@ -155,6 +158,252 @@ def test_run_daily_action_log_writes_dt_partition(tmp_path):
     assert summary["clicks"] == 3
     assert table.num_rows == summary["total_events"]
     assert quarantine_path.exists()
+
+
+def test_run_daily_action_log_coalesces_small_output_into_one_target_row_group(
+    tmp_path: Path,
+) -> None:
+    """작은 daily output은 사용자 수와 무관하게 하나의 target row group으로 coalesce한다."""
+
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube"
+    output_base = tmp_path / "action_log"
+    _write_virtual_users(virtual_users_path, count=4)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    summary = run_daily_action_log(
+        partition_date=partition_date,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(output_base),
+        candidates_per_user=3,
+        click_threshold=0.2,
+        max_concurrency=2,
+        chunk_size=1,
+        generator_name="rule_based",
+    )
+
+    parquet = pq.ParquetFile(output_base / "dt=2026-07-01" / "part-0.parquet")
+    table = parquet.read(columns=["event_id"])
+    assert summary["users"] == 4
+    assert table.num_rows == summary["total_events"]
+    assert table.column("event_id").to_pylist() == sorted(
+        table.column("event_id").to_pylist()
+    )
+    assert parquet.num_row_groups == 1
+
+
+def test_single_daily_publishes_completion_generated_at_without_full_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """single daily final은 generation 시작이 아닌 완료 시각을 모든 row에 기록한다."""
+
+    generation_started_at = "2026-07-30T08:00:00+00:00"
+    completed_at = "2026-07-30T09:00:00+00:00"
+    frozen_times = iter(
+        [
+            datetime.fromisoformat(generation_started_at),
+            datetime.fromisoformat(completed_at),
+        ]
+    )
+
+    class _FrozenPipelineDatetime(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> datetime:
+            return next(frozen_times)
+
+    class _GenerationStartClockGenerator(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+            assert (
+                pipeline_module.datetime.now(UTC)
+                .replace(microsecond=0)
+                .isoformat()
+                == generation_started_at
+            )
+            return super().generate(virtual_user, videos)
+
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube"
+    output_base = tmp_path / "action_log"
+    _write_virtual_users(virtual_users_path, count=1)
+    _write_youtube_partition(youtube_base, partition_date)
+    monkeypatch.setattr(pipeline_module, "datetime", _FrozenPipelineDatetime)
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda _generator_name, _model_name=None: _GenerationStartClockGenerator(),
+    )
+
+    summary = run_daily_action_log(
+        partition_date=partition_date,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(output_base),
+        candidates_per_user=2,
+        click_threshold=0.2,
+        max_concurrency=1,
+        generator_name="rule_based",
+    )
+
+    final_path = output_base / "dt=2026-07-01" / "part-0.parquet"
+    assert summary["status"] == "succeeded"
+    assert {
+        row["generated_at"]
+        for row in pq.read_table(final_path, columns=["generated_at"]).to_pylist()
+    } == {completed_at}
+
+
+def test_validate_staged_event_parquet_reads_row_groups_without_read_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """staging 검증은 전체 파일이 아니라 필요한 컬럼의 row group만 읽어야 한다."""
+
+    partition_date = date(2026, 7, 1)
+    request = daily_module._build_request(
+        partition_date=partition_date,
+        tmp_dir=tmp_path,
+        candidates_per_user=1,
+        click_threshold=0.2,
+        personalized_ratio=0.7,
+        popular_ratio=0.2,
+        exploration_ratio=0.1,
+        seed=1,
+        max_concurrency=1,
+        chunk_size=0,
+        max_quarantine_ratio=0.5,
+        history_end=None,
+    )
+    events = [
+        EventLog(
+            event_id=f"evt_20260701_{index:08d}",
+            event_timestamp=datetime(2026, 7, 1, 3 + index, tzinfo=UTC),
+            user_id=f"u{index}",
+            event_type="impression",
+            video_id=f"v{index}",
+            source="historical",
+        )
+        for index in range(2)
+    ]
+    with pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    ) as writer:
+        writer.write_events([events[0]])
+        writer.write_events([events[1]])
+        writer.finalize_success("2026-07-30T09:00:00+00:00")
+
+    def _whole_file_read_must_not_run(
+        *_args: object,
+        **_kwargs: object,
+    ) -> NoReturn:
+        pytest.fail("whole-file read is forbidden")
+
+    monkeypatch.setattr(daily_module.pq, "read_table", _whole_file_read_must_not_run)
+    daily_module._validate_staged_event_parquet(
+        request.output_path,
+        partition_date,
+    )
+
+
+def test_validate_staged_event_parquet_rejects_unrelated_schema(tmp_path: Path) -> None:
+    """staging parquet은 action log의 exact schema여야 한다."""
+
+    path = tmp_path / "bad.parquet"
+    pq.write_table(pa.table({"unexpected": [1]}), path)
+
+    with pytest.raises(ValueError, match="schema does not match"):
+        daily_module._validate_staged_event_parquet(
+            path,
+            date(2026, 7, 1),
+        )
+
+
+def test_validate_staged_event_parquet_accepts_empty_event_file(tmp_path: Path) -> None:
+    """모든 사용자가 quarantine된 빈 final parquet은 유효한 staging 산출물이다."""
+
+    partition_date = date(2026, 7, 1)
+    request = daily_module._build_request(
+        partition_date=partition_date,
+        tmp_dir=tmp_path,
+        candidates_per_user=1,
+        click_threshold=0.2,
+        personalized_ratio=0.7,
+        popular_ratio=0.2,
+        exploration_ratio=0.1,
+        seed=1,
+        max_concurrency=1,
+        chunk_size=0,
+        max_quarantine_ratio=1.0,
+        history_end=None,
+    )
+    with pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    ) as writer:
+        writer.finalize_success("2026-07-30T09:00:00+00:00")
+
+    daily_module._validate_staged_event_parquet(request.output_path, partition_date)
+
+
+def test_validate_staged_event_parquet_rejects_null_timestamp(tmp_path: Path) -> None:
+    """nullable Arrow schema라도 final event timestamp null은 publish 전에 거부해야 한다."""
+
+    path = tmp_path / "null-timestamp.parquet"
+    table = pa.Table.from_pylist(
+        [{"event_id": "evt_20260701_00000000", "event_timestamp": None}],
+        schema=pipeline_module.EVENT_LOG_PARQUET_SCHEMA,
+    )
+    pq.write_table(table, path)
+
+    with pytest.raises(ValueError, match="invalid event_timestamp"):
+        daily_module._validate_staged_event_parquet(path, date(2026, 7, 1))
+
+
+def test_run_daily_action_log_publishes_duplicate_user_id_legacy_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """중복 user_id는 legacy fallback이어도 daily final partition을 publish해야 한다."""
+
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube"
+    output_base = tmp_path / "action_log"
+    _write_virtual_users(virtual_users_path, count=2)
+    users = pq.read_table(virtual_users_path).to_pylist()
+    users[1]["user_id"] = users[0]["user_id"]
+    pq.write_table(pa.Table.from_pylist(users), virtual_users_path)
+    _write_youtube_partition(youtube_base, partition_date)
+
+    def _legacy_batch_must_not_run(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("daily must delegate duplicate IDs through generate_action_log_single")
+
+    monkeypatch.setattr(
+        daily_module,
+        "generate_action_log_batch",
+        _legacy_batch_must_not_run,
+        raising=False,
+    )
+
+    summary = run_daily_action_log(
+        partition_date=partition_date,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(output_base),
+        candidates_per_user=3,
+        click_threshold=0.2,
+        generator_name="rule_based",
+    )
+
+    final_path = output_base / "dt=2026-07-01" / "part-0.parquet"
+    assert summary["status"] == "succeeded"
+    assert summary["users"] == 2
+    assert pq.read_table(final_path).num_rows == summary["total_events"]
+    assert pq.ParquetFile(final_path).num_row_groups == 1
 
 
 def test_run_daily_action_log_applies_deterministic_max_users(tmp_path):

@@ -25,10 +25,14 @@ from feast.value_type import ValueType
 
 # 파생 2종 ODFV 본체 재사용(#357 (A)). 순수 문자열 비교 함수라 embeddings의 지연
 # import(vertexai)는 이 경로에서 로드되지 않는다.
-from src.features.feature_builder import (
-    compute_historical_category_match,
-    compute_preferred_category_match,
-)
+#
+# ODFV UDF가 부르는 헬퍼를 이 파일에 두면 안 된다(#409). feast apply는 이 파일을
+# **cwd 기준** 모듈명으로 import하는데(apply job은 `cd /app/feature_repo`라 bare
+# `feature_definitions`), UDF가 이 모듈의 전역을 참조하면 dill이 그 이름을
+# by-reference로 레지스트리에 박는다. `/app`에서 도는 학습·서빙은 그 이름을 import할
+# 수 없어 레지스트리를 읽는 순간 ModuleNotFoundError로 죽는다. 그래서 변환 본체는
+# import 경로가 고정된 src.features.feature_builder에 둔다.
+from src.features.feature_builder import compute_category_matches
 
 # FeatureView ttl 정책 (#357 spec (C) 확정, 2026-07-27):
 # - 일 스냅샷 뷰(UserDynamic)만 60h — 당일(≤24h)+1일 결손(≤48h)까지 stale 허용, 2일+는 null.
@@ -197,24 +201,6 @@ user_category_similarity_view = FeatureView(
 # ============================================================================
 
 
-def compute_category_matches(inputs: pd.DataFrame) -> pd.DataFrame:
-    """ODFV 변환 본체(스토어 없이 단위 테스트 가능하도록 분리).
-
-    inputs는 세 소스 뷰를 조인한 컬럼(preferred_category, historical_category_affinity,
-    category_id)을 가진다. 두 파생 매칭을 계산해 반환한다.
-    """
-    out = pd.DataFrame(index=inputs.index)
-    out["preferred_category_match"] = [
-        compute_preferred_category_match(pref, cat)
-        for pref, cat in zip(inputs["preferred_category"], inputs["category_id"])
-    ]
-    out["historical_category_match"] = [
-        compute_historical_category_match(hist, cat)
-        for hist, cat in zip(inputs["historical_category_affinity"], inputs["category_id"])
-    ]
-    return out
-
-
 @on_demand_feature_view(
     # 소스는 뷰 전체를 준다(투영 아님). 필요한 건 3컬럼뿐이지만, 같은 뷰를 FeatureService가
     # 다르게 투영(예: UserStatic에서 age_group/occupation/watch_time_band)하는데 ODFV가
@@ -227,6 +213,16 @@ def compute_category_matches(inputs: pd.DataFrame) -> pd.DataFrame:
     ],
 )
 def category_match_view(inputs: pd.DataFrame) -> pd.DataFrame:
+    # 변환 본체는 src.features.feature_builder에 있다(#409, 위 import 주석 참조).
+    #
+    # 이 주석은 문서이면서 동시에 **레지스트리 갱신 트리거**다. feast의 변경 감지는
+    # PandasTransformation.__eq__ = (udf_string, 바이트코드) 두 가지뿐이라, 헬퍼의 소속
+    # 모듈만 바뀐 변경을 못 본다 — apply가 "변경 없음"으로 판정해 옛 dill body를 그대로
+    # 두므로 코드를 고쳐도 레지스트리가 안 따라온다. udf_string은 이 함수의 소스 텍스트라
+    # 주석 변경만으로 판정이 뒤집힌다.
+    #
+    # 이건 이번 갱신을 밀어 넣기 위한 수단이지 방어선이 아니다. 같은 부류를 실제로 막는
+    # 층은 apply 후 검증(scripts/verify_registry_portability.py + feast-apply 워크플로)이다.
     return compute_category_matches(inputs)
 
 

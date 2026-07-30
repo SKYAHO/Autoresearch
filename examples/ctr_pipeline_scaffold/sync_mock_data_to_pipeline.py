@@ -98,7 +98,16 @@ def sync():
     print(f"  data/raw/youtube_videos.csv")
     print(f"  data/raw/personas.csv")
     print(f"  data/processed/events.csv")
-    print("\nNext: python src/pipeline/build_training_dataset.py")
+    # #359 C2에서 학습셋 조립이 Feast offline store(BigQuery training_entity의
+    # point-in-time 조회) 전용으로 바뀌어, 이 로컬 mock CSV로 학습셋을 만드는
+    # 흐름은 더 이상 없다. 학습셋 생성은 feast 이미지에서 아래 CLI로 실행한다
+    # (GCS_REGISTRY_PATH/GCS_STAGING_LOCATION + BigQuery training_entity 필요).
+    print(
+        "\nNote: #359 C2 이후 mock CSV -> 학습셋 로컬 흐름은 제거되었습니다. "
+        "학습셋 조립은 Feast offline(BigQuery)에서 다음으로 실행합니다:\n"
+        "  python -m src.cli build-features "
+        "--events-start-date <YYYY-MM-DD> --events-end-date <YYYY-MM-DD>"
+    )
 
 
 if __name__ == "__main__":

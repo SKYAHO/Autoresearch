@@ -1,113 +1,46 @@
 #!/usr/bin/env python3
-"""
-training_dataset.csv 생성 파이프라인.
+"""training_dataset.csv 생성 파이프라인 — offline feature store PIT 조회 (#359 C2로 feast-only).
 
-입력:
-- videos: mock CSV(data/raw/youtube_videos.csv) 또는 실제 BigQuery
-  data_lake_youtube_trending_kr 테이블(--videos-source bigquery)
-- data/raw/personas.csv 또는 gs:// parquet (가상 사용자 페르소나, 확장자로 자동 판별)
-- events: mock CSV(data/processed/events.csv) 또는 실제 BigQuery
-  data_lake_action_log 테이블(--events-source bigquery). 실제 테이블은
-  long-format(impression/click/view/like 이벤트별 1행)이라 derive_wide_events()가
-  attribution을 거쳐 wide-format(행당 clicked/liked/watch_time_sec)으로 변환한다
-  (docs/guides/data-warehouse.md의 training_entity 참고, issue #172)
+[파이프라인] 피처 구간 — spine(``training_entity``, KST 날짜 폐구간 [start, end])에 21개 모델
+피처를 Feast ``get_historical_features``(point-in-time)로 붙여 CSV로 쓴다(``_assemble_via_feast``).
+#359 C2에서 DuckDB 재계산 경로(raw에서 자체 계산)를 제거하고 feast를 **유일 경로**로 만들었다 —
+offline store가 정본(#357)이라 그 값을 그대로 읽는다.
 
-출력:
-- data/processed/training_dataset.csv (21개 model input feature와 `clicked`
-  label을 포함한 총 22개 물리 컬럼. model input의 이름·순서와 categorical
-  분류는 `src/features/model_contract.py`가 소유하며, 이 모듈은 feature 목록을
-  별도로 정의하지 않는다. `clicked`는 22번째 label physical column이며 model
-  input이 아니다. 조립 경로는 `--assembly-source`로 고른다: duckdb(기본, raw 재계산)와
-  feast(#358, offline store를 get_historical_features PIT로 조회 — offline이 정본 #357).
-  아래 topic_similarity 옵션은 duckdb 경로에 국한된다. 단 topic_similarity 컬럼만은
-  --topic-similarity-source bigquery로 Feast offline 테이블
-  (`feast_offline_store.user_category_similarity`, #242가 적재)을 as-of join으로
-  조회할 수 있다 — 기본값 `inmemory`는 기존과 동일하게 Vertex AI 즉석 계산을
-  쓴다(issue #214, #244 쿼터 회피 목적)
+출력: data/processed/training_dataset.csv (21 모델 피처 + ``clicked`` label = 22 물리 컬럼).
+model input의 이름·순서·categorical 분류는 ``src/features/model_contract.py``가, staged PIT 조회는
+``src/features/feast_retrieval.py``가 소유한다(이 모듈은 재정의하지 않는다).
 
-NOTE: mock 입력 CSV는 examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py
-      스크립트의 산출물이며, 스펙 변경 시에는 scaffold를 수정한 후 해당 스크립트를
-      재실행해 입력값을 갱신할 것. 이 파일들을 직접 수정하면 stale 상태로 남아
-      다음 조사/버그 시 같은 문제가 반복된다.
+[비책임] 학습 조립(feast)이 쓰지 않지만 인접 소비자와 공유하느라 이 모듈에 남은 헬퍼:
+``derive_wide_events``(long→wide attribution)·``load_events_from_bigquery``는 일일추천
+(``daily_recommendations``)이, ``load_personas``(+ ``to_personas_frame`` import)는 정책 시뮬레이션
+(``simulate_policy_round``)과 벤치(``scripts/bench/bench_feature_assembly.py``)가 쓴다 —
+이들의 feast 전환(#359 C3)에서 함께 정리한다. DuckDB 재계산·mock CSV 입력 경로는 #359 C2에서 제거됐다.
 """
 
 import os
 import sys
+
 import pandas as pd
-from datetime import datetime, timedelta
-
-BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "ar-infra-501607")
-# feature/서빙 계층 dataset — Feast feature 테이블 4종(user_static_feature,
-# user_dynamic_feature, video_feature, user_category_similarity)과 배치 출력
-# 테이블(user_recommendations)이 여기에 있다.
-BIGQUERY_DATASET = os.environ.get("CTR_TRAINING_BQ_DATASET", "feast_offline_store")
-# raw(데이터 레이크 적재) 계층 dataset — data_lake_* 테이블 전용. feature 계층과
-# 물리적으로 분리되어 있으므로 raw 테이블은 반드시 이 dataset 으로 해석한다.
-BIGQUERY_RAW_DATASET = os.environ.get("CTR_TRAINING_BQ_RAW_DATASET", "data_lake_raw")
-BIGQUERY_VIDEOS_TABLE = os.environ.get(
-    "CTR_TRAINING_BQ_VIDEOS_TABLE", "data_lake_youtube_trending_kr"
-)
-BIGQUERY_ACTION_LOG_TABLE = os.environ.get(
-    "CTR_TRAINING_BQ_ACTION_LOG_TABLE", "data_lake_action_log"
-)
-# impression -> click 귀속 윈도우(docs/guides/data-warehouse.md의 training_entity와 동일 이름/기본값).
-LABEL_WINDOW_SEC = int(os.environ.get("CTR_TRAINING_LABEL_WINDOW_SEC", "1800"))
-# click -> view -> like 체이닝 윈도우(문서에 없는 신규 규칙, docs/guides/data-warehouse.md에 반영 예정).
-FOLLOWUP_WINDOW_SEC = int(os.environ.get("CTR_TRAINING_FOLLOWUP_WINDOW_SEC", "600"))
-# online_features의 7일 lookback 자기조인이 학습 기간 첫 7일에도 온전한 과거 데이터를
-# 보도록 왼쪽으로 미리 당겨서 조회하는 padding.
-_LOOKBACK_PAD_DAYS = 7
-
-# action log dt 파티션과 이벤트 timestamp가 공유하는 시각 체계 (#295 슬라이스 계약).
-_KST_UTC_OFFSET = timedelta(hours=9)
-
-
-def padded_dt_range(events_start_date: str, events_end_date: str) -> tuple[str, str]:
-    """dt 파티션 프루닝 범위를 계산한다 (#286).
-
-    왼쪽은 7일 lookback, 오른쪽은 click→view→like 세션이 KST 자정을 넘어
-    다음 날 파티션에 실린 경우를 위해 세션 윈도우 합을 일 단위로 올림해
-    넓힌다. (기존 구현은 자정에 초를 더한 뒤 날짜로 재포맷해 오른쪽
-    padding이 항상 no-op이었다.)
-    """
-    start = datetime.strptime(events_start_date, "%Y-%m-%d") - timedelta(
-        days=_LOOKBACK_PAD_DAYS
-    )
-    session_pad_days = (LABEL_WINDOW_SEC + 2 * FOLLOWUP_WINDOW_SEC + 86399) // 86400
-    end = datetime.strptime(events_end_date, "%Y-%m-%d") + timedelta(
-        days=session_pad_days
-    )
-    return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
-
-
-def events_kst_window(events_start_date: str, events_end_date: str) -> tuple[str, str]:
-    """학습 구간 인자의 단일 의미 — "이벤트 발생 KST 날짜 폐구간 [start, end]" —
-    를 UTC naive timestamp 경계 [start 00:00 KST, end+1 00:00 KST)로 환산한다 (#286).
-
-    raw event_timestamp는 UTC로 저장되므로 트림 비교는 이 경계 문자열을
-    naive UTC 리터럴로 사용한다.
-    """
-    lo = datetime.strptime(events_start_date, "%Y-%m-%d") - _KST_UTC_OFFSET
-    hi = (
-        datetime.strptime(events_end_date, "%Y-%m-%d")
-        + timedelta(days=1)
-        - _KST_UTC_OFFSET
-    )
-    return lo.strftime("%Y-%m-%d %H:%M:%S"), hi.strftime("%Y-%m-%d %H:%M:%S")
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
+from src.features.assembly import connect_duckdb  # noqa: E402
 from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
-
-from src.features.assembly import (  # noqa: E402
-    compute_point_in_time_user_features,
-    compute_user_offline_features,
-    compute_user_topic_features,
-    compute_video_features,
-    connect_duckdb,
-)
 from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
+
+BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "autoresearch-503903")
+# feature/서빙 계층 dataset — Feast feature 테이블 4종과 배치 출력 테이블(user_recommendations).
+BIGQUERY_DATASET = os.environ.get("CTR_TRAINING_BQ_DATASET", "feast_offline_store")
+# raw(데이터 레이크) 계층 dataset — data_lake_* 테이블 전용(feature 계층과 물리 분리).
+BIGQUERY_RAW_DATASET = os.environ.get("CTR_TRAINING_BQ_RAW_DATASET", "data_lake_raw")
+BIGQUERY_ACTION_LOG_TABLE = os.environ.get(
+    "CTR_TRAINING_BQ_ACTION_LOG_TABLE", "data_lake_action_log"
+)
+# derive_wide_events attribution 윈도우(daily_recommendations가 공유하는 헬퍼). impression→click
+# 귀속(label) / click→view→like 체이닝(followup). docs/guides/data-warehouse.md training_entity.
+LABEL_WINDOW_SEC = int(os.environ.get("CTR_TRAINING_LABEL_WINDOW_SEC", "1800"))
+FOLLOWUP_WINDOW_SEC = int(os.environ.get("CTR_TRAINING_FOLLOWUP_WINDOW_SEC", "600"))
 
 
 def raw_table_id(table: str) -> str:
@@ -146,75 +79,6 @@ def get_data_dir():
     return data_dir
 
 
-def validate_events(events: pd.DataFrame) -> None:
-    """events.csv 데이터 품질 검증."""
-    print("\n[검증 Step 0] events.csv 데이터 품질...")
-
-    bad_rows = (events["clicked"] == 0) & (events["watch_time_sec"] > 0)
-    if bad_rows.any():
-        print(f"  [WARNING] clicked=0인데 watch_time_sec > 0: {bad_rows.sum()}개 (spec 비준수)")
-    else:
-        print("  [OK] clicked=0 → watch_time_sec=0")
-
-    bad_rows = (events["clicked"] == 0) & (events["liked"] == 1)
-    if bad_rows.any():
-        print(f"  [WARNING] clicked=0인데 liked=1: {bad_rows.sum()}개 (spec 비준수)")
-    else:
-        print("  [OK] clicked=0 → liked=0")
-
-    click_rate = events["clicked"].mean()
-    try:
-        assert 0.005 <= click_rate <= 0.10
-        print(f"  [OK] click rate = {click_rate:.3%}")
-    except AssertionError:
-        print(f"  [WARNING] click rate {click_rate:.3%} (예상: 0.5~10%)")
-
-
-def validate_point_in_time_count(row_count: int) -> None:
-    """point-in-time correctness spot check (스트리밍 경로: 행 수만 받는다)."""
-    print("\n[검증 Step 4] point-in-time correctness spot check...")
-    print(f"  [OK] {row_count} 샘플 확인 완료")
-
-
-def load_videos_from_bigquery() -> pd.DataFrame:
-    """실제 data_lake_youtube_trending_kr 테이블에서 videos_raw와 동일한
-    컬럼 이름으로 매핑해 로드한다(다운스트림 duckdb SQL은 변경하지 않는다).
-
-    video_category는 이미 카테고리 이름 문자열이라(src.features.category_reference
-    의 CATEGORY_DESCRIPTIONS 키와 동일 체계) 별도 ID→이름 변환이 필요 없다.
-
-    video_title/video_description은 조회하지 않는다 — compute_video_features()/
-    compute_point_in_time_user_features() 어디에서도 쓰지 않고, joined SELECT도
-    더 이상 참조하지 않는다(#238). 실 데이터 규모(12만+ 행)에서 텍스트 컬럼
-    2개를 그냥 들고만 있는 건 순수 낭비라 애초에 조회하지 않는다(#249).
-
-    video_trending_date는 반드시 함께 조회한다(#297). 이 테이블은 영상이
-    트렌딩에 오른 날마다 한 행이 쌓이는 스냅샷 테이블이라 video_id가 유일하지
-    않다(실측: 128,561행 / 고유 48,422개 = 영상당 평균 2.66행, 최대 32행).
-    이 날짜가 없으면 다운스트림이 이벤트 시점 기준 스냅샷 1건을 고를 수 없어
-    이벤트가 스냅샷 수만큼 복제된다.
-    """
-    from google.cloud import bigquery
-
-    client = bigquery.Client(project=BIGQUERY_PROJECT)
-    query = f"""
-        SELECT
-            video_id,
-            video_trending_date,
-            video_category AS categoryId,
-            video_duration AS duration,
-            video_view_count AS viewCount,
-            video_like_count AS likeCount,
-            video_comment_count AS commentCount,
-            video_published_at AS publishedAt,
-            channel_subscriber_count AS channelSubscriberCount,
-            channel_view_count AS channelViewCount,
-            channel_video_count AS channelVideoCount
-        FROM `{raw_table_id(BIGQUERY_VIDEOS_TABLE)}`
-    """
-    return client.query(query).to_dataframe()
-
-
 def load_personas(personas_path: str) -> pd.DataFrame:
     """personas 입력을 확장자로 판별해 로드한다.
 
@@ -235,7 +99,8 @@ def load_events_from_bigquery(start_date: str, end_date: str) -> pd.DataFrame:
     그대로 가져온다. attribution(long→wide 변환)은 여기서 하지 않는다 —
     derive_wide_events()가 DuckDB로 순수하게 수행한다. BigQuery SQL 안에서
     조인하면 attribution 로직을 실제 데이터로 단위 테스트할 방법이 없어서
-    (load_videos_from_bigquery와 같은 이유로) 조회와 변환을 분리한다.
+    조회와 변환을 분리한다. (이 함수와 derive_wide_events는 #359 C2 이후
+    일일추천(daily_recommendations)만 쓰는 공유 헬퍼다 — 학습 조립은 feast 경로.)
 
     start_date/end_date는 dt 파티션 필터용 KST 캘린더 날짜 문자열
     (YYYY-MM-DD)이다. dt 자체가 timezone 없이 생성 시점에 이미 Asia/Seoul
@@ -248,25 +113,6 @@ def load_events_from_bigquery(start_date: str, end_date: str) -> pd.DataFrame:
         SELECT event_id, event_timestamp, user_id, event_type, video_id, watch_time_sec
         FROM `{raw_table_id(BIGQUERY_ACTION_LOG_TABLE)}`
         WHERE dt BETWEEN '{start_date}' AND '{end_date}'
-    """
-    return client.query(query).to_dataframe()
-
-
-def load_user_category_similarity_from_bigquery() -> pd.DataFrame:
-    """`feast_offline_store.user_category_similarity`에서 사전 계산된 topic_similarity를
-    전체 로드한다(#214).
-
-    이 테이블은 `scripts/build_static_features.py`(#242)가 Vertex AI 임베딩으로
-    미리 채워둔 (user_id, category_id) 단위 준정적 스냅샷이다 — 여기서는 그
-    결과를 그대로 읽기만 하고 임베딩을 다시 계산하지 않는다. event_timestamp를
-    포함해 반환하므로 호출부가 as-of(point-in-time) join을 수행할 수 있다.
-    """
-    from google.cloud import bigquery
-
-    client = bigquery.Client(project=BIGQUERY_PROJECT)
-    query = f"""
-        SELECT user_id, category_id, event_timestamp, topic_similarity
-        FROM `{feature_table_id("user_category_similarity")}`
     """
     return client.query(query).to_dataframe()
 
@@ -332,9 +178,25 @@ def _assemble_via_feast(
     # (C) 결손 가시화: UserDynamic 전체 null(ttl 초과·#365 결손)은 채우지 않고 드롭
     # (활동 유저를 "신규 유저"로 위장시키지 않는다). 이 뒤에 남는 null(영상 미발견 등)만
     # 서빙과 같은 cold-start 기본값으로 채운다. 제자리 채움 + 선택 시 추가 copy 안 함(리뷰 OOM).
+    n_retrieved = len(features)
     features = drop_user_dynamic_gap_rows(features)
+    n_dropped = n_retrieved - len(features)
     features = apply_cold_start_defaults(features)
     features["clicked"] = features["clicked"].astype(int)
+    # 관측성(#359 C2 리뷰): validate_events/Step3 통계가 사라진 자리를 최소 지표로 대체한다.
+    # 조용한 데이터 급감·전량 드롭을 운영자가 stdout으로 알아채게, 조회→드롭→학습 행 수와
+    # click_rate를 남긴다. 학습 행이 0이면 성공으로 조용히 끝내지 않고 경고를 크게 찍는다
+    # (하드 실패로 막을지는 후속 판단 — 지금은 실패 의미를 바꾸지 않는다).
+    click_rate = float(features["clicked"].mean()) if len(features) else 0.0
+    print(
+        f"  [관측] 조회 {n_retrieved}행 -> UserDynamic gap 드롭 {n_dropped}행 "
+        f"-> 학습 {len(features)}행, click_rate={click_rate:.4f}"
+    )
+    if features.empty:
+        print(
+            "  [경고] 학습 행이 0입니다 — spine이 비었거나 UserDynamic 결손(#365)으로 "
+            "전량 드롭됐습니다. 이어지는 train-model이 빈 데이터로 실패할 수 있습니다."
+        )
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     features[[*MODEL_FEATURE_COLUMNS, "clicked"]].to_csv(output_path, index=False)
     print(f"\n[저장] {output_path} ({len(features)} rows, feast 경로)")
@@ -464,365 +326,21 @@ def derive_wide_events(
 
 
 def main(
-    raw_dir: str = None,
-    events_path: str = None,
     output_path: str = None,
-    videos_source: str = "csv",
-    personas_path: str = None,
-    events_source: str = "csv",
     events_start_date: str = None,
     events_end_date: str = None,
-    topic_similarity_source: str = "inmemory",
-    assembly_source: str = "duckdb",
 ):
-    if videos_source not in ("csv", "bigquery"):
-        raise ValueError(f"videos_source must be 'csv' or 'bigquery': {videos_source!r}")
-    if events_source not in ("csv", "bigquery"):
-        raise ValueError(f"events_source must be 'csv' or 'bigquery': {events_source!r}")
-    if events_source == "bigquery" and (not events_start_date or not events_end_date):
-        raise ValueError(
-            "events_source='bigquery' requires events_start_date and events_end_date"
-        )
-    if topic_similarity_source not in ("inmemory", "bigquery"):
-        raise ValueError(
-            f"topic_similarity_source must be 'inmemory' or 'bigquery': {topic_similarity_source!r}"
-        )
-    if assembly_source not in ("duckdb", "feast"):
-        raise ValueError(f"assembly_source must be 'duckdb' or 'feast': {assembly_source!r}")
-    if assembly_source == "feast" and (
-        events_source != "bigquery" or not events_start_date or not events_end_date
-    ):
-        raise ValueError(
-            "assembly_source='feast' requires events_source='bigquery' with "
-            "events_start_date/events_end_date (spine=training_entity를 BQ에서 읽는다)"
-        )
+    """training_dataset.csv를 offline feature store(Feast PIT) 조회로 생성한다(#359 C2, feast-only).
 
-    # get_data_dir()는 저장소 안의 data/ 디렉토리를 걸어 올라가며 찾는데,
-    # BigQuery 소스처럼 모든 경로가 이미 명시적으로 주어진 경우(CI 컨테이너 등
-    # data/가 없는 환경 포함)에는 아예 필요 없다 — 실제로 필요할 때만 지연 호출한다.
-    _data_dir_cache = None
-
-    def _resolve_data_dir():
-        nonlocal _data_dir_cache
-        if _data_dir_cache is None:
-            _data_dir_cache = get_data_dir()
-        return _data_dir_cache
-
-    if videos_source == "csv" and raw_dir is None:
-        raw_dir = os.path.join(_resolve_data_dir(), "raw")
-    if events_source == "csv" and events_path is None:
-        events_path = os.path.join(_resolve_data_dir(), "processed", "events.csv")
+    #359 C2에서 DuckDB 재계산 경로를 제거하고 feast를 유일 경로로 만들었다. spine
+    (``training_entity``)에 21피처를 ``get_historical_features``(PIT)로 붙여 CSV로 쓴다
+    (``_assemble_via_feast``). offline store가 정본(#357)이라 그 값을 그대로 읽는다.
+    """
+    if not events_start_date or not events_end_date:
+        raise ValueError(
+            "events_start_date/events_end_date가 필요합니다 "
+            "(spine=training_entity를 BQ에서 KST 날짜 폐구간으로 조회한다)"
+        )
     if output_path is None:
-        output_path = os.path.join(_resolve_data_dir(), "processed", "training_dataset.csv")
-
-    # feast 경로: DuckDB 재계산 대신 offline store 정본(#357)을 PIT 조회로 읽는다(#358).
-    # raw videos/personas/events가 필요 없으므로 여기서 갈라져 조기 반환한다.
-    if assembly_source == "feast":
-        _assemble_via_feast(output_path, events_start_date, events_end_date)
-        return
-
-    if personas_path is None:
-        if raw_dir is None:
-            raw_dir = os.path.join(_resolve_data_dir(), "raw")
-        personas_path = os.path.join(raw_dir, "personas.csv")
-
-    print("=" * 70)
-    print("training_dataset.csv 생성 파이프라인")
-    print("=" * 70)
-
-    print("\n[로드] 데이터 로드 중...")
-    if videos_source == "bigquery":
-        videos = load_videos_from_bigquery()
-    else:
-        videos = pd.read_csv(os.path.join(raw_dir, "youtube_videos.csv"))
-    personas = load_personas(personas_path)
-    if events_source == "bigquery":
-        # online_features의 7일 lookback이 학습 기간 첫 7일에도 온전한 과거
-        # 데이터를 보도록 왼쪽 padding, click->view->like 세션이 KST 자정을
-        # 넘어 dt=end+1 파티션에 실린 경우를 위해 오른쪽도 일 단위로 padding
-        # 해서 가져온다(#286). 최종 출력 단계에서 padding 구간은 잘라낸다.
-        padded_start, padded_end = padded_dt_range(events_start_date, events_end_date)
-        long_events = load_events_from_bigquery(padded_start, padded_end)
-        if getattr(long_events["event_timestamp"].dtype, "tz", None) is not None:
-            # BigQuery TIMESTAMP는 tz-aware UTC로 도착한다. 아래 DuckDB 트림
-            # 비교가 세션 timezone 설정에 좌우되지 않도록 naive UTC로 정규화한다.
-            long_events["event_timestamp"] = (
-                long_events["event_timestamp"].dt.tz_convert("UTC").dt.tz_localize(None)
-            )
-        events = derive_wide_events(long_events)
-        # long-format은 이벤트 종류(impression/click/view/like)별로 별도 행이라
-        # wide-format(impression 1행에 결과를 합침)보다 훨씬 크다. 변환 직후로는
-        # 다시 쓰이지 않으므로 실 데이터 규모에서 불필요하게 두 배로 들고 있지
-        # 않도록 명시적으로 해제한다(#231/#249).
-        del long_events
-    else:
-        events = pd.read_csv(events_path)
-
-    # Parse ISO 8601 duration to seconds (e.g., "PT4M29S" → 269)
-    def parse_iso8601_duration(duration_str):
-        """Parse ISO 8601 duration string to seconds."""
-        if pd.isna(duration_str) or not isinstance(duration_str, str):
-            return 0
-        try:
-            import re
-            match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_str)
-            if match:
-                hours, minutes, seconds = match.groups()
-                total = int(hours or 0) * 3600 + int(minutes or 0) * 60 + int(seconds or 0)
-                return total
-        except Exception:
-            pass
-        return 0
-
-    if 'duration' in videos.columns:
-        videos['duration'] = videos['duration'].apply(parse_iso8601_duration)
-
-    print(f"  [OK] videos ({videos_source}): {len(videos)} rows")
-    print(f"  [OK] personas ({personas_path}): {len(personas)} rows")
-    print(f"  [OK] events ({events_source}): {len(events)} rows")
-
-    validate_events(events)
-
-    print("\n[Step 1] DuckDB SQL 처리...")
-    con = connect_duckdb()
-
-    snapshot_date = datetime.now().strftime("%Y-%m-%d")
-
-    video_feature = compute_video_features(videos, snapshot_date)
-    print(f"  [OK] video_feature: {len(video_feature)} rows")
-
-    user_feature_offline = compute_user_offline_features(personas)
-    print(f"  [OK] user_feature_offline: {len(user_feature_offline)} rows")
-
-    query_points = events.rename(columns={"timestamp": "as_of"})[
-        ["user_id", "as_of", "event_id", "video_id", "clicked"]
-    ]
-    online_features = compute_point_in_time_user_features(events, videos, query_points)
-    online_features = online_features.rename(columns={"as_of": "timestamp"})
-    online_features["timestamp"] = pd.to_datetime(online_features["timestamp"])
-    print(f"  [OK] online_features: {len(online_features)} rows")
-
-    # videos/events는 위 point-in-time 계산이 마지막 사용처다 — 이후 단계는
-    # video_feature/online_features(이미 파생됨)만 쓰므로, 실 데이터 규모에서
-    # 원본 raw 프레임을 계속 들고 있지 않도록 여기서 해제한다(#231/#249).
-    del videos, events
-
-    con.register("video_feature", video_feature)
-    con.register("online_features", online_features)
-
-    # persona의 hobbies_and_interests_list/primary_categories를 이벤트(수백만
-    # 행) 단위로 직접 조인하면 유저당 평균 노출 수만큼 리스트/임베딩 컬럼이
-    # 복제되어 OOM을 유발한다(#231/#238 이후에도 재현, #240). topic_similarity/
-    # preferred_category_match는 (user, category_id) 조합에만 의존하고
-    # category_id는 관측되는 값이 적으므로, persona 단위로 미리 계산해 작은
-    # 유저x카테고리 테이블만 조인한다.
-    #
-    # topic_similarity_source="bigquery"일 때는 preferred_category_match만
-    # user_topic_feature(skip_embedding=True, Vertex AI 미호출)에서 가져오고,
-    # topic_similarity는 사전 계산된 `user_category_similarity`(#242)를
-    # as-of(point-in-time) join으로 조회한다(#214, docs/guides/
-    # training-dataset.md의 `user_category_similarity_joined` CTE와 동일 패턴).
-    if topic_similarity_source == "bigquery":
-        user_topic_feature = compute_user_topic_features(
-            personas, video_feature["category_id"].unique(), skip_embedding=True
-        )
-        con.register("user_topic_feature", user_topic_feature)
-        user_category_similarity = load_user_category_similarity_from_bigquery()
-        con.register("user_category_similarity", user_category_similarity)
-        topic_similarity_column = "COALESCE(ucs.topic_similarity, 0.0)"
-        # as-of join: 이벤트 시각 이하(<=) 중 가장 최근 similarity 스냅샷 1건.
-        # 예전엔 LEFT JOIN + QUALIFY ROW_NUMBER() OVER (PARTITION BY ...)로 같은
-        # 결과를 냈는데, 그 윈도우는 조인 결과 1.77M행을 전량 정렬해 #292의
-        # memory_limit 아래에서 디스크로 spill됐고 노드 ephemeral-storage를 채워
-        # 파드가 Evicted됐다(#293). DuckDB 네이티브 ASOF JOIN은 같은 의미론을
-        # 전량 정렬 없이 처리한다 — 매칭이 없으면 LEFT라 행이 보존되고
-        # COALESCE로 0.0이 되는 것도 동일하다.
-        topic_similarity_join = """
-        ASOF LEFT JOIN user_category_similarity ucs
-            ON ucs.user_id = o.user_id
-           AND ucs.category_id = vf.category_id
-           AND ucs.event_timestamp <= o.timestamp"""
-    else:
-        user_topic_feature = compute_user_topic_features(personas, video_feature["category_id"].unique())
-        con.register("user_topic_feature", user_topic_feature)
-        topic_similarity_column = "utf.topic_similarity"
-        topic_similarity_join = ""
-
-    con.register("user_feature_offline", user_feature_offline)
-
-    feature_sql_expressions = {
-        "age_group": "uo.age_group",
-        "occupation": "uo.occupation",
-        "watch_time_band": "uo.watch_time_band",
-        "recent_click_count_7d": "CAST(j.recent_click_count_7d AS INTEGER)",
-        "recent_view_count_7d": "CAST(j.recent_view_count_7d AS INTEGER)",
-        "recent_watch_time_7d": "CAST(j.recent_watch_time_7d AS INTEGER)",
-        "recent_like_count_7d": "CAST(j.recent_like_count_7d AS INTEGER)",
-        "historical_category_affinity": "j.historical_category_affinity",
-        "total_event_count_7d": "CAST(j.total_event_count_7d AS INTEGER)",
-        "category_id": "j.category_id",
-        "duration_sec": "CAST(j.duration_sec AS INTEGER)",
-        "view_count": "CAST(j.view_count AS BIGINT)",
-        "like_ratio": "j.like_ratio",
-        "comment_ratio": "j.comment_ratio",
-        "days_since_upload": "CAST(j.days_since_upload AS INTEGER)",
-        "channel_subscriber_count": "CAST(j.channel_subscriber_count AS BIGINT)",
-        "channel_view_count": "CAST(j.channel_view_count AS BIGINT)",
-        "channel_video_count": "CAST(j.channel_video_count AS BIGINT)",
-        "topic_similarity": "j.topic_similarity",
-        "preferred_category_match": "CAST(j.preferred_category_match AS INTEGER)",
-        "historical_category_match": "CAST(j.historical_category_match AS INTEGER)",
-    }
-    feature_projection = ",\n            ".join(
-        f"{feature_sql_expressions[column]} AS {column}"
-        for column in MODEL_FEATURE_COLUMNS
-    )
-
-    # BigQuery 경로에서만 적용: load_events_from_bigquery가 lookback/세션 완성을
-    # 위해 [events_start_date, events_end_date] 바깥까지 padding해서 가져왔으므로,
-    # 최종 학습 데이터에는 원래 요청한 구간만 남기고 양쪽 다 잘라낸다. 왼쪽만
-    # 자르면 end_date 이후 padding 구간의 impression이 조용히 섞여 들어간다.
-    # 경계는 인자의 단일 의미("이벤트 발생 KST 날짜 폐구간")를 따른다(#286) —
-    # 과거 구현은 UTC 자정 + end 미포함이라 KST 가장자리 9시간이 어긋났다.
-    trim_clause = ""
-    if events_source == "bigquery":
-        window_lo, window_hi = events_kst_window(events_start_date, events_end_date)
-        trim_clause = (
-            f"WHERE j.timestamp >= TIMESTAMP '{window_lo}' "
-            f"AND j.timestamp < TIMESTAMP '{window_hi}'"
-        )
-
-    # joined(online_features x video x user_topic)와 최종 feature projection을
-    # 하나의 DuckDB 쿼리로 합쳐 CSV로 스트리밍한다. 예전엔 joined(1.77M행)와
-    # training_dataset(1.77M행)을 각각 pandas로 materialize + historical_category_match를
-    # 행 단위 pandas .apply로 계산해, 실 규모에서 대형 pandas 프레임 2벌 + apply
-    # 중간 결과가 동시 상주하며 ~18GB로 튀어 OOM됐다(#271/#287). DuckDB의
-    # COPY ... TO csv는 조인 결과를 pandas로 물리지 않고 디스크로 흘려보내
-    # 피크 메모리를 online_features 등 입력 프레임 크기 수준으로 낮춘다.
-    #
-    # historical_category_match는 단순 문자열 비교라 pandas .apply 대신 SQL CASE로
-    # 계산한다(compute_historical_category_match와 동일: unknown이면 0,
-    # affinity==category_id면 1, 아니면 0).
-    #
-    # 이 쿼리에는 의도적으로 ORDER BY가 없다(#293). 예전엔 `ORDER BY j.timestamp`로
-    # 1.77M행을 전량 정렬했는데, #292의 memory_limit이 그 정렬을 디스크로 spill시키자
-    # 이번엔 노드 ephemeral-storage가 차서 파드가 Evicted됐다(2026-07-23 실측).
-    # 그런데 이 정렬은 소비처가 없다: train.py는 train_test_split(random_state,
-    # stratify)로 **무작위 층화 분할**을 하므로 행 순서를 버리고, timestamp는 출력
-    # 컬럼도 아니며(21 feature + clicked), 동률이 많아 결정적 총순서를 보장하지도
-    # 못했다. 정렬을 없애면 조인 결과가 곧바로 CSV로 흘러가 메모리·디스크 모두
-    # 입력 프레임 수준으로 유지된다(해시 조인 빌드 측은 video 128K/user 7K로 작다).
-    # 트렌딩 원본은 (영상, 트렌딩 날짜) 스냅샷이라 video_id가 유일하지 않다 —
-    # 실측 128,561행 / 고유 48,422개(영상당 평균 2.66행, 최대 32행). 평면 조인이면
-    # 이벤트 1건이 그 영상의 스냅샷 수만큼 복제되어, ① 같은 impression이 학습셋에
-    # 중복 수록되고(오래 트렌딩한 영상이 최대 32배 과대 가중) ② 조인 결과가 약
-    # 4.7M행으로 불어나 13.3GB를 디스크로 spill했다(#297, GKE remeasure v12).
-    #
-    # ASOF JOIN으로 "이벤트 시각 이하 중 가장 최근 스냅샷 1건"만 고른다. 중복
-    # 제거와 미래 정보 차단(이벤트 이후에 갱신된 조회수를 쓰지 않음)이 동시에
-    # 해결된다. 이벤트 시점 이전 스냅샷이 없는 경우는 실측 61건/1,710,571
-    # (0.004%)이며, 기존 평면 조인도 INNER라 매칭 없는 행은 떨어뜨렸으므로
-    # ASOF(INNER)로 그대로 두어 "그 시점에 알 수 없는 영상"을 제외한다.
-    if "video_trending_date" in video_feature.columns:
-        video_feature_join = (
-            "ASOF JOIN video_feature vf\n"
-            "                    ON vf.video_id = o.video_id\n"
-            "                   AND CAST(vf.video_trending_date AS TIMESTAMP)"
-            " <= CAST(o.timestamp AS TIMESTAMP)"
-        )
-    else:
-        # mock CSV 등 스냅샷 날짜가 없는 입력: video_id가 유일하다고 보고 기존 동작 유지.
-        video_feature_join = "JOIN video_feature vf ON vf.video_id = o.video_id"
-
-    print("\n[Step 2] training_dataset 스트리밍 생성 (DuckDB COPY)...")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    escaped_output = output_path.replace("'", "''")
-    # 출력 행 순서를 보존하려고 결과를 버퍼링하지 않게 해 스트리밍 COPY의 메모리를
-    # 더 낮춘다. 위와 같은 이유로 이 CSV의 행 순서에 의존하는 소비처가 없다.
-    con.execute("SET preserve_insertion_order = false")
-    con.execute(
-        f"""
-        COPY (
-            WITH joined AS (
-                SELECT
-                    o.user_id,
-                    o.clicked,
-                    o.timestamp,
-                    o.historical_category_affinity,
-                    o.recent_click_count_7d,
-                    o.recent_view_count_7d,
-                    o.recent_watch_time_7d,
-                    o.recent_like_count_7d,
-                    o.total_event_count_7d,
-                    vf.category_id,
-                    vf.duration_sec,
-                    vf.view_count,
-                    vf.like_ratio,
-                    vf.comment_ratio,
-                    vf.days_since_upload,
-                    vf.channel_subscriber_count,
-                    vf.channel_view_count,
-                    vf.channel_video_count,
-                    {topic_similarity_column} AS topic_similarity,
-                    utf.preferred_category_match,
-                    CASE
-                        WHEN CAST(o.historical_category_affinity AS VARCHAR) = 'unknown' THEN 0
-                        WHEN CAST(o.historical_category_affinity AS VARCHAR)
-                             = CAST(vf.category_id AS VARCHAR) THEN 1
-                        ELSE 0
-                    END AS historical_category_match
-                FROM online_features o
-                {video_feature_join}
-                JOIN user_topic_feature utf ON utf.user_id = o.user_id
-                    AND COALESCE(utf.category_id, '') = COALESCE(vf.category_id, '')
-                {topic_similarity_join}
-            )
-            SELECT
-                {feature_projection},
-                CAST(j.clicked AS INTEGER) AS clicked
-            FROM joined j
-            JOIN user_feature_offline uo ON uo.user_id = j.user_id
-            {trim_clause}
-        ) TO '{escaped_output}' (FORMAT CSV, HEADER)
-        """
-    )
-    print(f"\n[저장] {output_path}")
-
-    # 입력 프레임 정리(#231/#249): COPY가 끝났으니 registered pandas 프레임을 해제.
-    con.unregister("video_feature")
-    con.unregister("online_features")
-    con.unregister("user_topic_feature")
-    del video_feature, online_features, user_topic_feature
-    if topic_similarity_source == "bigquery":
-        con.unregister("user_category_similarity")
-        del user_category_similarity
-
-    # 통계는 대형 pandas 프레임 없이 출력 CSV를 DuckDB로 재스캔해 집계한다.
-    print("\n[Step 3] 생성 결과 검증...")
-    n, click_rate, hist_match_1, pref_match_1, topic_sim_mean = con.execute(
-        f"""
-        SELECT
-            COUNT(*),
-            AVG(clicked),
-            SUM(historical_category_match),
-            SUM(preferred_category_match),
-            AVG(topic_similarity)
-        FROM read_csv_auto('{escaped_output}')
-        """
-    ).fetchone()
-    validate_point_in_time_count(n)
-
-    print("\n" + "=" * 70)
-    print("생성 완료 통계")
-    print("=" * 70)
-    print(f"Rows: {n}, Columns: {len(MODEL_FEATURE_COLUMNS) + 1}")
-    print(f"Click rate: {click_rate:.3%}")
-    print(f"  [OK] topic_similarity: mean={topic_sim_mean:.3f}")
-    print(f"  [OK] historical_category_match: 0={n - hist_match_1}, 1={hist_match_1}")
-    if hist_match_1 == 0:
-        print("  ⚠️  historical_category_match에 1이 없음 (dtype 불일치 가능성)")
-    print(f"  [OK] preferred_category_match: 0={n - pref_match_1}, 1={pref_match_1}")
-
-
-if __name__ == "__main__":
-    main()
+        output_path = os.path.join(get_data_dir(), "processed", "training_dataset.csv")
+    _assemble_via_feast(output_path, events_start_date, events_end_date)

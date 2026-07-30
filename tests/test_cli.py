@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -11,32 +12,43 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import cli  # noqa: E402
+from src.tracking.promotion_result import (  # noqa: E402
+    ModelPromotionResult,
+    PromotionExecutionError,
+    PromotionOutcome,
+    PromotionReasonCode,
+)
 
 
-def test_run_pipeline_forwards_bigquery_sources_to_build_features(monkeypatch):
+def _promotion_result(
+    outcome: PromotionOutcome,
+    reason_code: PromotionReasonCode,
+) -> ModelPromotionResult:
+    return ModelPromotionResult(
+        outcome=outcome,
+        model_name="ctr-model",
+        champion_alias="champion",
+        candidate_version="4",
+        champion_version="3",
+        candidate_metric=0.80,
+        champion_metric=0.75,
+        reason_code=reason_code,
+    )
+
+
+def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     build_features_call = {}
-    train_call = {}
-
-    def fake_build_features(**kwargs):
-        build_features_call.update(kwargs)
-
-    def fake_train(**kwargs):
-        train_call.update(kwargs)
-
-    monkeypatch.setattr(cli.build_training_dataset, "main", fake_build_features)
-    monkeypatch.setattr(cli.train, "main", fake_train)
+    # build-features 성공 뒤 lineage가 GCS_REGISTRY_PATH를 필수로 읽는다(#359 C2, 무조건 기록).
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", lambda **kw: build_features_call.update(kw))
+    monkeypatch.setattr(cli.train, "main", lambda **kw: _pipeline_outcome())
     monkeypatch.setattr(cli.evaluate, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
 
     cli.run_pipeline(
-        raw_dir="raw",
-        events_path=None,
         dataset_path="dataset.csv",
-        videos_source="bigquery",
-        personas_path="personas.csv",
-        events_source="bigquery",
         events_start_date="2026-07-01",
         events_end_date="2026-07-08",
-        topic_similarity_source="inmemory",
         config_path=None,
         model_output=None,
         test_set_output="test_set.csv",
@@ -47,69 +59,30 @@ def test_run_pipeline_forwards_bigquery_sources_to_build_features(monkeypatch):
         random_state=None,
     )
 
-    assert build_features_call["videos_source"] == "bigquery"
-    assert build_features_call["events_source"] == "bigquery"
-    assert build_features_call["events_start_date"] == "2026-07-01"
-    assert build_features_call["events_end_date"] == "2026-07-08"
-    assert build_features_call["personas_path"] == "personas.csv"
-
-
-def test_run_pipeline_logs_data_source_lineage_as_train_extra_params(monkeypatch):
-    train_call = {}
-
-    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
-    monkeypatch.setattr(cli.train, "main", lambda **kwargs: train_call.update(kwargs))
-    monkeypatch.setattr(cli.evaluate, "main", MagicMock())
-
-    cli.run_pipeline(
-        raw_dir=None,
-        events_path=None,
-        dataset_path=None,
-        videos_source="bigquery",
-        personas_path=None,
-        events_source="bigquery",
-        events_start_date="2026-07-01",
-        events_end_date="2026-07-08",
-        topic_similarity_source="bigquery",
-        assembly_source="duckdb",
-        config_path=None,
-        model_output=None,
-        test_set_output=None,
-        feature_columns_output=None,
-        categorical_columns_output=None,
-        test_size=None,
-        val_size=None,
-        random_state=None,
-    )
-
-    assert train_call["extra_params"] == {
-        "videos_source": "bigquery",
-        "events_source": "bigquery",
-        "topic_similarity_source": "bigquery",
-        "assembly_source": "duckdb",
+    # C2로 feast-only: build-features에 output_path + 기간만 넘긴다(duckdb 인자 없음).
+    assert build_features_call == {
+        "output_path": "dataset.csv",
         "events_start_date": "2026-07-01",
         "events_end_date": "2026-07-08",
     }
 
 
-def test_run_pipeline_omits_event_dates_from_extra_params_for_csv_source(monkeypatch):
-    train_call = {}
+def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
+    from src.features.feast_retrieval import DEFAULT_SERVICE
 
+    train_call = {}
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
     monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
-    monkeypatch.setattr(cli.train, "main", lambda **kwargs: train_call.update(kwargs))
+    monkeypatch.setattr(
+        cli.train, "main", lambda **kw: train_call.update(kw) or _pipeline_outcome()
+    )
     monkeypatch.setattr(cli.evaluate, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
 
     cli.run_pipeline(
-        raw_dir=None,
-        events_path=None,
         dataset_path=None,
-        videos_source="csv",
-        personas_path=None,
-        events_source="csv",
-        events_start_date=None,
-        events_end_date=None,
-        topic_similarity_source="inmemory",
-        assembly_source="duckdb",
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
         config_path=None,
         model_output=None,
         test_set_output=None,
@@ -120,21 +93,152 @@ def test_run_pipeline_omits_event_dates_from_extra_params_for_csv_source(monkeyp
         random_state=None,
     )
 
+    # feast-only lineage: assembly_source=feast + FeatureService + registry + 기간.
     assert train_call["extra_params"] == {
-        "videos_source": "csv",
-        "events_source": "csv",
-        "topic_similarity_source": "inmemory",
-        "assembly_source": "duckdb",
+        "assembly_source": "feast",
+        "feature_service": DEFAULT_SERVICE,
+        "events_start_date": "2026-07-01",
+        "events_end_date": "2026-07-08",
+        "feast_registry_path": "gs://fake/registry.db",
     }
 
 
+def _pipeline_outcome():
+    """run-pipeline이 train.main에서 받는 반환값(#421)."""
+    return cli.train.TrainingOutcome(
+        sampling_rate=1.0,
+        run_id="run-1",
+        registered_version=None,
+        pending_registration=cli.train.PendingRegistration(
+            model_uri="runs:/run-1/model", model_name="ctr-model", tags={"val_roc_auc": "0.7"}
+        ),
+    )
+
+
+def test_run_pipeline_registers_model_only_after_evaluation(monkeypatch):
+    """#421: registered model 버전 생성은 evaluate 성공 뒤에 일어나야 한다."""
+    calls = []
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+
+    def _fake_train(**kwargs):
+        calls.append(("train", kwargs.get("defer_registration")))
+        return _pipeline_outcome()
+
+    monkeypatch.setattr(cli.train, "main", _fake_train)
+    monkeypatch.setattr(cli.evaluate, "main", lambda **kw: calls.append(("evaluate", None)))
+    monkeypatch.setattr(
+        cli.train,
+        "register_pending_model",
+        lambda pending: calls.append(("register", pending.model_name)) or "7",
+    )
+
+    cli.run_pipeline(
+        dataset_path=None,
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
+        config_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+    )
+
+    assert [step for step, _ in calls] == ["train", "evaluate", "register"]
+    # train 단계에서는 등록을 보류하도록 요청해야 한다.
+    assert calls[0][1] is True
+    assert calls[2][1] == "ctr-model"
+
+
+def test_run_pipeline_skips_registration_when_evaluation_fails(monkeypatch):
+    """#421: 평가가 실패하면 쓰레기 버전이 registry에 쌓이지 않아야 한다."""
+    registered = []
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "main", lambda **kw: _pipeline_outcome())
+
+    def _fail_evaluate(**kwargs):
+        raise ValueError("y_true contains only one label (0)")
+
+    monkeypatch.setattr(cli.evaluate, "main", _fail_evaluate)
+    monkeypatch.setattr(
+        cli.train, "register_pending_model", lambda pending: registered.append(pending)
+    )
+
+    with pytest.raises(ValueError, match="only one label"):
+        cli.run_pipeline(
+            dataset_path=None,
+            events_start_date="2026-07-01",
+            events_end_date="2026-07-08",
+            config_path=None,
+            model_output=None,
+            test_set_output=None,
+            feature_columns_output=None,
+            categorical_columns_output=None,
+            test_size=None,
+            val_size=None,
+            random_state=None,
+        )
+
+    assert registered == []
+
+
+def test_run_pipeline_fails_loudly_when_registration_fails(monkeypatch):
+    """#421 리뷰(중간): 미룬 등록이 실패하면 run-pipeline이 실패해야 한다.
+
+    삼키면 "파이프라인 완료" + exit 0으로 끝나 Airflow 태스크가 초록불이 되고,
+    후속 promote-model은 어제 버전(=이미 champion)을 후보로 잡아 no-op이 된다.
+    결과적으로 신규 후보가 없는 날이 어디에도 드러나지 않는다.
+    """
+    steps = []
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "main", lambda **kw: _pipeline_outcome())
+    monkeypatch.setattr(cli.evaluate, "main", lambda **kw: steps.append("evaluate"))
+
+    def _fail_register(pending):
+        steps.append("register")
+        raise RuntimeError("registry 백엔드 없음(시뮬레이션)")
+
+    monkeypatch.setattr(cli.train, "register_pending_model", _fail_register)
+
+    with pytest.raises(RuntimeError, match="registry 백엔드 없음"):
+        cli.run_pipeline(
+            dataset_path=None,
+            events_start_date="2026-07-01",
+            events_end_date="2026-07-08",
+            config_path=None,
+            model_output=None,
+            test_set_output=None,
+            feature_columns_output=None,
+            categorical_columns_output=None,
+            test_size=None,
+            val_size=None,
+            random_state=None,
+        )
+
+    # 평가는 통과한 뒤 등록에서 실패한 경로임을 고정한다.
+    assert steps == ["evaluate", "register"]
+
+
 def test_promote_model_prints_ok_and_exits_zero_on_success(monkeypatch, capsys):
-    monkeypatch.setattr(cli.promote, "main", lambda **kwargs: "4")
+    monkeypatch.setattr(
+        cli.promote,
+        "main",
+        lambda **kwargs: _promotion_result(
+            PromotionOutcome.PROMOTED,
+            PromotionReasonCode.METRIC_NOT_DEGRADED,
+        ),
+    )
 
     cli.promote_model(
         model_name="ctr-model",
         champion_alias="champion",
-        calibration_model_name="ctr-calibration-model",
+        result_contract=None,
+        result_path=None,
     )
 
     out = capsys.readouterr().out
@@ -142,35 +246,106 @@ def test_promote_model_prints_ok_and_exits_zero_on_success(monkeypatch, capsys):
     assert "v4" in out
 
 
-def test_promote_model_prints_noop_message_when_no_candidate(monkeypatch, capsys):
-    monkeypatch.setattr(cli.promote, "main", lambda **kwargs: None)
+def test_promote_model_accepts_deprecated_calibration_flag_and_warns(monkeypatch, capsys):
+    # #390: calibration_model_name은 무시되지만, Airflow DAG 하위호환을 위해 인자는 받아들여야
+    # 하고 promote.main으로는 전달되지 않아야 한다. 기본값과 다른 값이면 stderr 경고를 남긴다.
+    captured = {}
+
+    def _fake_main(**kwargs):
+        captured.update(kwargs)
+        return _promotion_result(
+            PromotionOutcome.PROMOTED,
+            PromotionReasonCode.METRIC_NOT_DEGRADED,
+        )
+
+    monkeypatch.setattr(cli.promote, "main", _fake_main)
 
     cli.promote_model(
         model_name="ctr-model",
         champion_alias="champion",
-        calibration_model_name="ctr-calibration-model",
+        calibration_model_name="something-else",
+        result_contract=None,
+        result_path=None,
+    )
+
+    assert "calibration_model_name" not in captured
+    streams = capsys.readouterr()
+    assert "[OK]" in streams.out
+    assert "deprecated" in streams.err.lower()
+
+
+def test_promote_model_prints_noop_message_when_no_candidate(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.promote,
+        "main",
+        lambda **kwargs: _promotion_result(
+            PromotionOutcome.NO_CANDIDATE,
+            PromotionReasonCode.ALREADY_CHAMPION,
+        ),
+    )
+
+    cli.promote_model(
+        model_name="ctr-model",
+        champion_alias="champion",
+        result_contract=None,
+        result_path=None,
     )
 
     out = capsys.readouterr().out
     assert "no-op" in out
 
 
-def test_promote_model_exits_nonzero_with_gate_rejected_prefix(monkeypatch, capsys):
-    def _raise(**kwargs):
-        raise cli.promote.GateRejectedError("게이트1 미달: 예시 사유")
-
-    monkeypatch.setattr(cli.promote, "main", _raise)
+def test_promote_model_legacy_rejection_exits_nonzero(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.promote,
+        "main",
+        lambda **kwargs: _promotion_result(
+            PromotionOutcome.REJECTED,
+            PromotionReasonCode.METRIC_BELOW_CHAMPION,
+        ),
+    )
 
     with pytest.raises(typer.Exit) as exc_info:
         cli.promote_model(
             model_name="ctr-model",
             champion_alias="champion",
-            calibration_model_name="ctr-calibration-model",
+            result_contract=None,
+            result_path=None,
         )
 
     assert exc_info.value.exit_code == 1
     err = capsys.readouterr().err
     assert "[게이트 미달]" in err
+    assert "후보 ctr-model v4 val_roc_auc=0.8000" in err
+    assert "champion(champion) val_roc_auc=0.7500" in err
+
+
+def test_promote_model_preserves_legacy_calibration_rejection_detail(
+    monkeypatch, capsys
+) -> None:
+    result = _promotion_result(
+        PromotionOutcome.REJECTED,
+        PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING,
+    ).with_legacy_message(
+        "게이트2 미달: 후보 ctr-model v4는 "
+        "downsampling(sampling_rate=0.5)인데 run(run-v4)에 "
+        "calibration 아티팩트(calibration/calibration.json)가 없습니다."
+    )
+    monkeypatch.setattr(cli.promote, "main", lambda **kwargs: result)
+
+    with pytest.raises(typer.Exit):
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract=None,
+            result_path=None,
+        )
+
+    err = capsys.readouterr().err
+    assert "sampling_rate=0.5" in err
+    assert "run(run-v4)" in err
+    assert "calibration/calibration.json" in err
+    assert "legacy_message" not in result.model_dump_json()
 
 
 def test_promote_model_exits_nonzero_with_error_prefix_on_unexpected_exception(
@@ -185,9 +360,192 @@ def test_promote_model_exits_nonzero_with_error_prefix_on_unexpected_exception(
         cli.promote_model(
             model_name="ctr-model",
             champion_alias="champion",
-            calibration_model_name="ctr-calibration-model",
+            result_contract=None,
+            result_path=None,
         )
 
     assert exc_info.value.exit_code == 1
     err = capsys.readouterr().err
     assert "[에러]" in err
+
+
+def test_promote_model_structured_rejection_writes_json_and_exits_zero(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    result_path = tmp_path / "xcom" / "return.json"
+    monkeypatch.setattr(
+        cli.promote,
+        "main",
+        lambda **kwargs: _promotion_result(
+            PromotionOutcome.REJECTED,
+            PromotionReasonCode.METRIC_BELOW_CHAMPION,
+        ),
+    )
+
+    cli.promote_model(
+        model_name="ctr-model",
+        champion_alias="champion",
+        result_contract="model-promotion-result-v1",
+        result_path=result_path,
+    )
+
+    stdout_result = json.loads(capsys.readouterr().out.strip())
+    file_result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert stdout_result == file_result
+    assert file_result["outcome"] == "rejected"
+
+
+@pytest.mark.parametrize(
+    ("result_contract", "result_path"),
+    [
+        ("model-promotion-result-v1", None),
+        (None, Path("/airflow/xcom/return.json")),
+        ("unknown-contract", Path("/airflow/xcom/return.json")),
+    ],
+)
+def test_promote_model_rejects_invalid_structured_option_combinations_before_run(
+    monkeypatch,
+    result_contract,
+    result_path,
+) -> None:
+    main = MagicMock()
+    monkeypatch.setattr(cli.promote, "main", main)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract=result_contract,
+            result_path=result_path,
+        )
+
+    assert exc_info.value.exit_code == 2
+    main.assert_not_called()
+
+
+def test_promote_model_structured_error_writes_safe_json_and_exits_one(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    result_path = tmp_path / "return.json"
+
+    def _raise(**kwargs):
+        raise PromotionExecutionError(
+            PromotionReasonCode.REGISTRY_ACCESS_FAILED,
+            "credential=synthetic-private-value",
+        )
+
+    monkeypatch.setattr(cli.promote, "main", _raise)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract="model-promotion-result-v1",
+            result_path=result_path,
+        )
+
+    assert exc_info.value.exit_code == 1
+    streams = capsys.readouterr()
+    payload = json.loads(streams.out.strip())
+    assert payload["outcome"] == "error"
+    assert payload["reason_code"] == "registry_access_failed"
+    assert "synthetic-private-value" not in streams.out
+    assert "registry_access_failed" in streams.err
+    assert "synthetic-private-value" not in streams.err
+    assert "synthetic-private-value" not in result_path.read_text(encoding="utf-8")
+
+
+def test_promote_model_structured_error_preserves_known_context(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    def _raise(**kwargs):
+        raise PromotionExecutionError(
+            PromotionReasonCode.ALIAS_UPDATE_FAILED,
+            "safe diagnostic",
+            candidate_version="4",
+            champion_version="3",
+            candidate_metric=0.80,
+            champion_metric=0.75,
+        )
+
+    monkeypatch.setattr(cli.promote, "main", _raise)
+
+    with pytest.raises(typer.Exit):
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract="model-promotion-result-v1",
+            result_path=tmp_path / "return.json",
+        )
+
+    streams = capsys.readouterr()
+    payload = json.loads(streams.out)
+    assert payload["candidate_version"] == "4"
+    assert payload["champion_version"] == "3"
+    assert payload["candidate_metric"] == 0.80
+    assert payload["champion_metric"] == 0.75
+
+
+def test_promote_model_structured_unexpected_error_emits_safe_stack(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    def _raise(**kwargs):
+        raise RuntimeError("password=synthetic-private-value")
+
+    monkeypatch.setattr(cli.promote, "main", _raise)
+
+    with pytest.raises(typer.Exit):
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract="model-promotion-result-v1",
+            result_path=tmp_path / "return.json",
+        )
+
+    streams = capsys.readouterr()
+    assert "unexpected_error" in streams.err
+    assert "RuntimeError" in streams.err
+    assert "tests/test_cli.py" in streams.err
+    assert "in _raise" in streams.err
+    assert "synthetic-private-value" not in streams.err
+
+
+def test_promote_model_result_write_failure_emits_safe_stdout_and_exits_one(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        cli.promote,
+        "main",
+        lambda **kwargs: _promotion_result(
+            PromotionOutcome.PROMOTED,
+            PromotionReasonCode.METRIC_NOT_DEGRADED,
+        ),
+    )
+
+    def _fail_write(*_args, **_kwargs) -> None:
+        raise OSError("credential=synthetic-write-secret")
+
+    monkeypatch.setattr(cli, "write_result_file", _fail_write)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract="model-promotion-result-v1",
+            result_path=tmp_path / "return.json",
+        )
+
+    assert exc_info.value.exit_code == 1
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["outcome"] == "error"
+    assert payload["reason_code"] == "result_write_failed"

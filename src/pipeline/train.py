@@ -1,12 +1,28 @@
 #!/usr/bin/env python3
-"""
-모델 훈련 스크립트.
+"""LightGBM CTR 모델 학습 스크립트.
 
-config.yaml의 설정을 읽어 LightGBM 모델을 훈련하고 저장한다.
+[파이프라인] 학습 데이터셋(training_dataset.csv) → 모델 학습 구간을 담당한다.
+train/val/test 3-way 분할, negative downsampling, LightGBM 학습, 아티팩트
+저장(joblib·ONNX·feature/categorical 목록·calibration), MLflow run 로깅,
+registered model 버전 생성이 이 모듈의 책임이다.
+
+[기능] config.yaml 기반 학습 실행과 함께, 학습 시작 전 라벨 분포를 검증해
+단일 클래스(양성 0건/음성 0건)면 원인이 드러나는 메시지로 즉시 중단한다(#421).
+`scale_pos_weight="auto"` 계산의 0 나눗셈도 같은 이유로 fail-closed다. 결과는
+`TrainingOutcome`으로 반환하며, `defer_registration=True`면 registered model
+버전 생성을 보류하고 `PendingRegistration`을 넘겨 호출자가 평가 통과 뒤에
+`register_pending_model()`로 등록하게 한다.
+
+[비책임] 데이터셋 조립(src/pipeline/build_training_dataset.py), held-out test set
+채점(src/pipeline/evaluate.py), champion 승격 게이트(src/tracking/promote.py),
+서빙 로드(src/serving/model_loader.py)는 이 모듈이 다루지 않는다.
 """
 
 import os
 import sys
+from dataclasses import dataclass
+from typing import Optional
+
 import yaml
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -42,6 +58,127 @@ from src.tracking.logger import (  # noqa: E402
     log_parameters,
 )
 from src.tracking.registry import register_model  # noqa: E402
+
+LABEL_COLUMN = "clicked"
+
+
+@dataclass(frozen=True)
+class PendingRegistration:
+    """평가 통과 후 만들 registered model 버전 정보(#421).
+
+    학습이 끝난 run의 model URI·모델 이름·버전 태그를 담아둔다. 등록 시점만
+    미룰 뿐 내용은 학습 시점에 확정된다 — 평가가 실패하면 이 값은 버려지고
+    registry에는 아무 버전도 생기지 않는다.
+    """
+
+    model_uri: str
+    model_name: str
+    tags: dict[str, str]
+
+
+@dataclass(frozen=True)
+class TrainingOutcome:
+    """`main()`의 반환 계약(#421).
+
+    Attributes:
+        sampling_rate: 실현 negative downsampling 비율(#300). evaluate가
+            오프라인 지표를 원분포 기준으로 재는 데 쓴다.
+        run_id: 학습 MLflow run id.
+        registered_version: 이 호출에서 만든 registered model 버전
+            (등록을 미뤘거나 등록에 실패했으면 None).
+        pending_registration: 등록을 미뤘을 때 호출자가 평가 통과 뒤
+            `register_pending_model()`에 넘길 정보(미루지 않았으면 None).
+    """
+
+    sampling_rate: float
+    run_id: str
+    registered_version: Optional[str] = None
+    pending_registration: Optional[PendingRegistration] = None
+
+
+def require_binary_labels(labels: pd.Series, *, stage: str) -> tuple[int, int]:
+    """라벨에 양성·음성이 모두 있는지 검증하고 (양성, 음성) 개수를 반환한다(#421).
+
+    단일 클래스면 학습 자체는 돌아가지만 지표가 정의되지 않는다. 설치된
+    scikit-learn의 `roc_auc_score`는 이 경우 예외 대신 경고 + `np.nan`을
+    돌려주므로 학습·등록이 통과한 것처럼 흘러가고, 파이프라인 마지막
+    `log_loss`에서야 "y_true contains only one label"로 터진다. 그 시점에는
+    원인이 데이터라는 사실이 메시지에 드러나지 않으므로, 여기서 행 수와
+    양성/음성 개수를 담아 먼저 막는다.
+
+    Args:
+        labels: 라벨(0/1) Series.
+        stage: 에러 메시지에 넣을 검증 대상 이름(예: "학습 데이터셋", "Val split").
+
+    Returns:
+        (양성 개수, 음성 개수).
+
+    Raises:
+        ValueError: 양성 또는 음성이 0건이면.
+    """
+    positive = int((labels == 1).sum())
+    negative = int((labels == 0).sum())
+    if positive == 0 or negative == 0:
+        raise ValueError(
+            f"{stage} 라벨이 단일 클래스입니다 — rows={len(labels)}, "
+            f"positive({LABEL_COLUMN}=1)={positive}, "
+            f"negative({LABEL_COLUMN}=0)={negative}. "
+            "양성·음성이 모두 있어야 학습과 평가 지표(ROC-AUC/LogLoss)가 성립합니다. "
+            "action log 수집 결과와 클릭 임계값(click threshold) 설정을 확인하세요."
+        )
+    return positive, negative
+
+
+def compute_auto_scale_pos_weight(labels: pd.Series) -> float:
+    """`scale_pos_weight="auto"`의 음성/양성 비율을 계산한다(#421).
+
+    양성이 0건이면 0으로 나누며 `RuntimeWarning: divide by zero` 뒤 `inf`가
+    조용히 흘러가므로, 계산 대신 즉시 중단한다. 정상 경로에서는
+    `require_binary_labels()`가 먼저 막으므로 여기까지 오지 않는다 — 마지막 보루다.
+
+    Args:
+        labels: train split 라벨(0/1) Series.
+
+    Returns:
+        음성/양성 비율.
+
+    Raises:
+        ValueError: 양성이 0건이면.
+    """
+    negative = int((labels == 0).sum())
+    positive = int((labels == 1).sum())
+    if positive == 0:
+        raise ValueError(
+            "scale_pos_weight='auto'인데 train split의 양성"
+            f"({LABEL_COLUMN}=1)이 0건입니다 — rows={len(labels)}, "
+            f"negative={negative}. 음성/양성 비율을 0으로 나눌 수 없습니다."
+        )
+    return negative / positive
+
+
+def register_pending_model(pending: PendingRegistration) -> str:
+    """보류해둔 registered model 버전을 만든다(#421).
+
+    실패를 삼키지 않고 그대로 전파한다. 삼킬지 말지는 호출 지점의 사정이라
+    이 함수가 정하지 않는다 — run이 열려 있는 학습 중 등록(`main()`)은 이미
+    끝난 run을 FAILED로 만들지 않으려고 호출부에서 감싸지만, 평가 통과 뒤
+    등록(`run-pipeline`)은 run이 이미 닫혀 있어 그 근거가 성립하지 않는다.
+    거기서 삼키면 "평가까지 통과했는데 신규 후보가 없는 날"이 exit 0으로
+    지나가고, 후속 promote-model이 어제 버전(=이미 champion)을 집어
+    ALREADY_CHAMPION으로 조용히 끝난다.
+
+    Args:
+        pending: 학습 시점에 확정된 등록 정보.
+
+    Returns:
+        생성된 모델 버전 문자열.
+
+    Raises:
+        Exception: registry 등록이 실패하면 그대로 전파한다.
+    """
+    version = register_model(pending.model_uri, pending.model_name, tags=pending.tags)
+    print(f"  [OK] {pending.model_name} v{version} 등록 완료")
+    return version
 
 
 def get_project_root():
@@ -93,7 +230,19 @@ def main(
     val_size: float = None,
     random_state: int = None,
     extra_params: dict = None,
-):
+    defer_registration: bool = False,
+) -> TrainingOutcome:
+    """LightGBM 모델을 학습하고 MLflow에 기록한다.
+
+    Args:
+        defer_registration: True면 registered model 버전을 만들지 않고
+            `TrainingOutcome.pending_registration`으로 넘긴다(#421). run 로깅
+            (파라미터·메트릭·아티팩트)은 그대로 수행한다. run-pipeline이 평가
+            통과 뒤에 등록하도록 이 경로를 쓴다.
+
+    Returns:
+        학습 결과(TrainingOutcome).
+    """
     project_root = get_project_root()
     if config_path is None:
         config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
@@ -137,6 +286,13 @@ def main(
             tags=dataset_tags,
         )
 
+        # 라벨 분포 사전 검증(#421). 학습·저장·등록을 시작하기 전에 막아, 단일
+        # 클래스 데이터가 지표 nan인 모델 버전을 registry에 남기지 못하게 한다.
+        positive_count, negative_count = require_binary_labels(
+            dataset[LABEL_COLUMN], stage="학습 데이터셋"
+        )
+        print(f"  [OK] 라벨 분포: positive={positive_count}, negative={negative_count}")
+
         print("\n[Step 2] Train/Val/Test 분할 (Test는 완전 held-out)...")
         if test_size is None:
             test_size = config["data"]["test_size"]
@@ -166,6 +322,17 @@ def main(
             stratify=train_val_df["clicked"],
         )
         print(f"  [OK] Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)} (Test는 학습에 미사용)")
+
+        # 분할별 라벨 검증(#421). stratify를 쓰므로 전체가 정상이면 대개 각 분할도
+        # 정상이지만, 양성이 극소수면 반올림으로 특정 분할의 양성이 0이 될 수 있다
+        # (예: 200행 중 양성 2건 → val/test 양성 0건). 그대로 두면 Val ROC-AUC가
+        # nan이 되거나 평가 단계 log_loss에서 터지므로 여기서 막는다.
+        for stage, split_df in (
+            ("Train split", train_df),
+            ("Val split", val_df),
+            ("Test split", test_df),
+        ):
+            require_binary_labels(split_df[LABEL_COLUMN], stage=stage)
 
         if test_set_output is None:
             test_set_path = os.path.join(project_root, config["artifacts"]["test_set_path"])
@@ -239,9 +406,10 @@ def main(
             scale_pos_weight = 1
             print("  [OK] downsampling 활성 → scale_pos_weight=1 강제(이중 보정 방지)")
         elif configured_spw == "auto":
-            neg_count = (y_train == 0).sum()
-            pos_count = (y_train == 1).sum()
-            scale_pos_weight = neg_count / pos_count
+            # 0 나눗셈(양성 0건)은 compute_auto_scale_pos_weight가 fail-closed로 막는다(#421).
+            neg_count = int((y_train == 0).sum())
+            pos_count = int((y_train == 1).sum())
+            scale_pos_weight = compute_auto_scale_pos_weight(y_train)
             print(f"  [OK] auto 계산: neg={neg_count}, pos={pos_count}, ratio={scale_pos_weight:.2f}")
         else:
             scale_pos_weight = configured_spw
@@ -339,6 +507,25 @@ def main(
         except Exception as exc:
             print(f"  ⚠️  ONNX 변환 실패 — joblib 모델·아티팩트는 정상 저장됨(서빙은 joblib 폴백): {exc}")
 
+        # [Step 8c] calibration 상수(He 2014 w)를 main과 **같은 run**의 아티팩트로 로깅한다(#390).
+        # 별도 등록 모델로 올리지 않는다 — 서빙이 main을 alias로 로드한 뒤 그 run_id로 같은 run의
+        # 이 아티팩트를 함께 읽어 체이닝하므로(run_id 종속), main·calibration이 서로 다른 시점에
+        # 승격돼 어긋나는 동기화(race)가 구조적으로 사라진다. downsampling 미사용(w=1.0)이면 보정할
+        # 게 없어 생략한다(하위호환 — 서빙은 sampling_rate>=1.0을 항등 처리).
+        #
+        # register_model(아래 Step 9) **앞에** 로깅한다: 승격 게이트2가 "등록된 후보 버전의 run에
+        # calibration 아티팩트가 있는가"를 보므로, 등록보다 먼저 아티팩트를 남겨 "등록 버전이 존재
+        # ⇒ 같은 run에 아티팩트가 있다"를 불변식으로 만든다(등록 후 로깅이면 그 사이 run 중단 시
+        # "버전은 보이는데 아티팩트는 없는" 상태가 영구화될 수 있다 — PR #395 리뷰 반영).
+        if realized_sampling_rate < 1.0:
+            calibration_path = os.path.join(
+                os.path.dirname(model_path), CALIBRATION_PARAM_FILENAME
+            )
+            DownsamplingCalibrator(realized_sampling_rate).save(calibration_path)
+            # 서빙 로더의 MLFLOW_CALIBRATION_ARTIFACT_PATH(calibration/calibration.json)와 계약.
+            log_artifact(local_path=calibration_path, artifact_path="calibration")
+            print("  [OK] calibration 아티팩트 로깅 완료 (calibration/)")
+
         print("\n[Step 9] Model Registry 등록...")
         model_name = config["registry"]["model_name"]
         # log_artifact(..., artifact_path="model")과 짝을 맞춰야 한다 — 서빙 로더의
@@ -354,47 +541,28 @@ def main(
         }
         if extra_params:
             registry_tags.update({k: str(v) for k, v in extra_params.items()})
-        # 등록 실패로 이미 끝난 학습 run을 FAILED 처리하지 않는다(best-effort).
-        registered_version = None
-        try:
-            registered_version = register_model(model_uri, model_name, tags=registry_tags)
-            print(f"  [OK] {model_name} v{registered_version} 등록 완료")
-        except Exception as exc:
-            print(f"  ⚠️  Model Registry 등록 실패 — 학습 결과(모델·아티팩트)는 정상 저장됨: {exc}")
-
-        # calibration을 별도 아티팩트(JSON w) + 별도 등록 모델로 패키징한다(#302).
-        # 배포 단위를 "메인 + calibration" 2개로 만들어 서빙이 main→calibration으로
-        # 체이닝한다. 수식은 상수(He 2014)지만 멘토 요구(14차 코칭)대로 물리적으로 분리된
-        # 모델로 등록한다. downsampling 미사용(w=1.0)이면 보정할 게 없어 생략한다(하위호환).
-        calibration_model_name = config["registry"].get(
-            "calibration_model_name", "ctr-calibration-model"
+        pending_registration = PendingRegistration(
+            model_uri=model_uri, model_name=model_name, tags=registry_tags
         )
-        calibration_version = None
-        # main 등록이 실패했으면(registered_version None) calibration도 등록하지 않는다 —
-        # main_run_id 짝 tag가 Registry에 없는 main을 가리키는 고아 calibration 버전이
-        # 남는 것을 방지한다(main과 짝지을 대상이 없으므로 등록해도 무의미).
-        if realized_sampling_rate < 1.0 and registered_version is not None:
-            calibration_path = os.path.join(
-                os.path.dirname(model_path), CALIBRATION_PARAM_FILENAME
-            )
-            DownsamplingCalibrator(realized_sampling_rate).save(calibration_path)
-            # 서빙 로더의 MLFLOW_CALIBRATION_ARTIFACT_PATH(calibration/calibration.json)와 계약.
-            log_artifact(local_path=calibration_path, artifact_path="calibration")
-            # 짝 식별: calibration 버전에 main run_id를 tag로 남겨, 서빙이 두 alias를
-            # resolve할 때 맞는 조합인지 fail-closed로 검증하게 한다(model_loader 페어링 검증).
-            calibration_tags = {
-                "sampling_rate": f"{realized_sampling_rate}",
-                "main_run_id": run.info.run_id,
-            }
+        registered_version = None
+        if defer_registration:
+            # 평가 통과 뒤에 등록한다(#421). 여기서 등록해버리면 평가가 실패해도
+            # 지표를 신뢰할 수 없는 후보 버전이 registry에 남는다. run 로깅과
+            # 아티팩트는 위에서 이미 끝났으므로 미뤄도 잃는 정보가 없다.
+            print("  [보류] 평가 통과 후 등록합니다 — run 로깅·아티팩트는 이미 저장됨(#421)")
+        else:
+            # 여기는 아직 run 컨텍스트 안이다. 등록 실패로 예외를 올리면 이미 끝난
+            # 학습 run이 FAILED로 마감되고 모델·아티팩트가 실패한 run에 묶인다.
+            # 그래서 이 경로에서만 삼킨다(best-effort). 미룬 경로는 run이 닫힌 뒤
+            # 호출되므로 이 근거가 없어 호출부에서 그대로 실패시킨다.
             try:
-                calibration_version = register_model(
-                    f"runs:/{run.info.run_id}/calibration",
-                    calibration_model_name,
-                    tags=calibration_tags,
-                )
-                print(f"  [OK] {calibration_model_name} v{calibration_version} 등록 완료")
+                registered_version = register_pending_model(pending_registration)
             except Exception as exc:
-                print(f"  ⚠️  calibration 모델 등록 실패 — 학습 결과는 정상 저장됨: {exc}")
+                print(
+                    "  ⚠️  Model Registry 등록 실패 — 학습 결과(모델·아티팩트)는 "
+                    f"정상 저장됨: {exc}"
+                )
+            pending_registration = None
 
     print("\n" + "=" * 70)
     print("훈련 완료")
@@ -403,15 +571,23 @@ def main(
     print(f"Model: {model_path}")
     print(f"Feature columns: {feature_columns_path}")
     print(f"Categorical columns: {categorical_columns_path}")
-    print(
-        f"Registered model: {model_name} v{registered_version}"
-        if registered_version is not None
-        else f"Registered model: 등록 실패 (건너뜀 — 위 경고 로그 참고, run_id={run.info.run_id})"
-    )
+    if registered_version is not None:
+        print(f"Registered model: {model_name} v{registered_version}")
+    elif pending_registration is not None:
+        print(f"Registered model: 등록 보류 (평가 통과 후 등록, run_id={run.info.run_id})")
+    else:
+        print(f"Registered model: 등록 실패 (건너뜀 — 위 경고 로그 참고, run_id={run.info.run_id})")
 
-    # 실현 sampling_rate를 반환한다 — run-pipeline이 evaluate에 넘겨 오프라인
-    # 지표(LogLoss/calibration)를 원분포 기준으로 재게 한다(#300 결정 4).
-    return realized_sampling_rate
+    # 실현 sampling_rate는 run-pipeline이 evaluate에 넘겨 오프라인 지표
+    # (LogLoss/calibration)를 원분포 기준으로 재게 한다(#300 결정 4). 등록을
+    # 미뤘으면 pending_registration도 함께 돌려줘, 호출자가 평가 통과 뒤
+    # register_pending_model()로 버전을 만든다(#421).
+    return TrainingOutcome(
+        sampling_rate=realized_sampling_rate,
+        run_id=run.info.run_id,
+        registered_version=registered_version,
+        pending_registration=pending_registration,
+    )
 
 
 if __name__ == "__main__":

@@ -2,6 +2,34 @@
 
 > 작성: 2026-07-25 | 상태: 설계(리뷰 대기) | 선행: Autoresearch-airflow#137, #302(PR #334), #300
 
+> [!IMPORTANT]
+> **[결과 계약 supersede — #411, 2026-07-29]** 아래의 문자열 반환,
+> `GateRejectedError`, “게이트 미달과 실행 오류 모두 nonzero” 서술은 구조화
+> 결과 도입 전 legacy 호출 계약이다. 판정 본체는 이제
+> `ModelPromotionResult`를 반환하며, `--result-contract`의 값을
+> `model-promotion-result-v1`로 두고 `--result-path`를 지정한 opt-in 호출은
+> `promoted`, `rejected`,
+> `no_candidate`를 exit 0, `error`를 exit 1로 구분한다. 정본은
+> `docs/specs/2026-07-29-model-promotion-structured-outcome.md`와
+> `docs/specs/2026-07-13-public-batch-execution-contract.md`의
+> “모델 승격 구조화 결과” 절이다. 구조화 인자를 생략한 호출에서만 아래의
+> legacy 종료 코드와 사람용 문구를 보존한다.
+
+> [!IMPORTANT]
+> **[부분 supersede — #390, 2026-07-28]** 이 문서의 **게이트 2(downsampling 페어링)** 와
+> **dual-alias 이동**은 #390에서 개정됐다. calibration을 별도 등록 모델로 두던 #302 패키징이
+> main·calibration 두 alias의 비원자적 전환에서 **동기화(race)** 위험이 있어, #390이 calibration을
+> **main과 같은 run의 아티팩트로 종속**(별도 등록 제거)시켰다. 변경점:
+> - **게이트 2**: "짝 calibration **버전**(`main_run_id` tag 일치)이 등록돼 있는가" → "후보 run에
+>   calibration **아티팩트**(`calibration/calibration.json`)가 있는가"로 대체.
+> - **alias 이동**: main·calibration 2회 → **main 1회**(calibration은 run_id 종속이라 alias 불필요).
+> - **CLI 인자** `--calibration-model-name`: **deprecated 무시**. DAG 하위호환을 위해 인자 표면만
+>   유지하며, DAG에서 플래그 제거 후 후속 PR로 걷어낸다.
+> - 게이트 1(지표 비교)과 `CTR_SERVING_CALIBRATION_READY` 순서 가드는 그대로 유효.
+>
+> 나머지 서술은 역사적 설계 기록으로 남긴다. 정본은 `docs/guides/ctr-model-specification.md`의
+> Model Packaging 섹션(#390)과 `src/tracking/promote.py`다.
+
 ## 목표
 
 `Autoresearch-airflow`가 준비 중인 `ctr_model_promote` DAG(Autoresearch-airflow#137)가
@@ -13,7 +41,7 @@ Airflow는 이 CLI를 실행하는 것 외에 아무 판정 로직도 갖지 않
 저장소 경계 원칙 — 애플리케이션 로직은 전부 이 저장소). 게이트 판정은 전부 이
 저장소 안에 있어야 한다.
 
-## CLI 계약 (Airflow DAG가 의존 — 임의 변경 금지)
+## Legacy CLI 계약 (구조화 opt-in 전 호출만 해당)
 
 ```text
 python -m src.cli promote-model \

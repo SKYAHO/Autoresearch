@@ -283,14 +283,25 @@ GCS_REGISTRY_PATH=gs://<registry-bucket>/registry.db
 GCS_STAGING_LOCATION=gs://<staging-bucket>/
 REDIS_HOST=localhost                      # 터널링 시 localhost
 REDIS_PORT=6379
+FEAST_ONLINE_FULL_SCAN_FOR_DELETION=true  # 아래 주의 참조 (#399)
 ```
 
 ### feature_store.yaml (수정 불필요)
 
 `feature_repo/feature_store.yaml`은 위 환경 변수를 `${...}`로 참조하므로
-직접 수정하지 않습니다. `.env`만 채우면 됩니다. (`GCS_REGISTRY_PATH`,
-`GCS_STAGING_LOCATION`, `GCP_PROJECT_ID`, `BQ_DATASET`, `REDIS_HOST`,
-`REDIS_PORT`가 로드 시 주입됩니다.)
+직접 수정하지 않습니다. (`GCS_REGISTRY_PATH`, `GCS_STAGING_LOCATION`,
+`GCP_PROJECT_ID`, `BQ_DATASET`, `REDIS_HOST`, `REDIS_PORT`,
+`FEAST_ONLINE_FULL_SCAN_FOR_DELETION`이 로드 시 주입됩니다.)
+
+> **주의 — 아래 8·9단계의 `feast` CLI는 `.env`를 읽지 않습니다(#399).**
+> Python 경로(`autoresearch.jobs.*`, 검증 스크립트)는 `feature_repo/bootstrap.py`가
+> `FEAST_ONLINE_FULL_SCAN_FOR_DELETION`을 `AUTORESEARCH_ENV`에서 파생해
+> 채워 주지만, `feast` CLI는 bootstrap을 거치지 않아 그 치환이 해소되지
+> 않습니다. CLI를 쓰기 전에 `.env`를 셸로 내보내십시오.
+>
+> ```bash
+> set -a; source .env; set +a
+> ```
 
 - [ ] .env 설정 완료
 - [ ] feature_store.yaml 수정 완료
@@ -317,11 +328,15 @@ BigQuery Console에서 3개 테이블에 데이터가 적재되었는지 확인:
 ## 8. Feast 적용 (Registry 등록)
 
 ```bash
+set -a; source .env; set +a    # feast CLI는 .env를 읽지 않습니다 (6단계 주의 참조)
 cd feature_repo
 feast apply
 ```
 
 > Registry가 `GCS_REGISTRY_PATH`로 지정한 GCS 버킷에 저장됩니다.
+>
+> `${FEAST_ONLINE_FULL_SCAN_FOR_DELETION} is not a valid boolean` 류의 오류가
+> 나면 위 `source .env`를 건너뛴 것입니다.
 
 > **운영 경로 (GHA → GKE Job, 정본)**: `feature_repo/` 정의·설정,
 > `deploy/feast/apply-job.yaml`, `scripts/fetch_redis_ca.py`,
@@ -433,6 +448,7 @@ Job은 `scripts/fetch_redis_ca.py`로 Secret Manager의 CA를 고정 경로
 ## 9. Materialize (BigQuery → Redis 동기화)
 
 ```bash
+set -a; source .env; set +a    # feast CLI는 .env를 읽지 않습니다 (6단계 주의 참조)
 # feature_repo/ 디렉토리 안에서 실행
 feast materialize-incremental $(date -u +"%Y-%m-%dT%H:%M:%S")
 ```
