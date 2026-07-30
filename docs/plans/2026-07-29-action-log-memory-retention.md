@@ -2,6 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Status (2026-07-30): Historical implementation record — not an active executable plan.**
+> 아래 unchecked box, RED expectation, command, commit message는 당시 작업 과정을
+> 보존할 뿐 재실행하면 안 됩니다. 2026-07-30 이후의 현재 계약 정본은
+> [Action Log Streaming Review Remediation](../specs/2026-07-30-action-log-review-remediation.md)이며,
+> 아래와 충돌하는 historical 설명은 모두 그 정본으로 supersede됩니다.
+
 **Goal:** 단일 action log 실행이 완료된 사용자 객체를 즉시 해제하고 Parquet row group과 JSONL을 순차 기록해, 전체 파티션 크기와 무관한 active-user 메모리 상한을 갖게 합니다.
 
 **Architecture:** 기존 `generate_action_log_batch()`와 `generate_action_log_drafts()`는 shard/checkpoint 및 외부 Python 호출의 legacy 계약으로 그대로 유지합니다. 새 `generate_action_log_single()`은 coordinator 스레드에서 원본 순서로 provider를 호출하고 최대 `4 * max_workers`명의 active user만 유지하며, 한 사용자의 모든 chunk가 끝난 뒤 원본 사용자 순서로 클릭 선정·이벤트 확장·파일 기록을 수행합니다. 중복 `user_id`나 변경 불가능한 exposure metadata는 의미 보존을 위해 legacy batch로 위임합니다. 이 상한과 row-group 계약은 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)을 따른다.
@@ -198,14 +204,24 @@ git commit -m "refactor: action log 스트리밍 writer 기반 추가"
   - `ActionLogSingleResult` frozen dataclass
   - `ActionLogSingleResult.execution_mode: Literal["streaming", "legacy"]`
   - `ActionLogSingleResult.summary -> dict[str, int | float]`
-  - `_StreamingRetentionSnapshot(active_users: int, buffered_drafts: int, buffered_events: int)` frozen dataclass
-  - `generate_action_log_single(request: EventGenerationRequest, virtual_users: list[dict], videos: list[dict], generator: ActionLogGenerator, *, candidate_provider: CandidateProvider | None = None, exposure_metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None, _retention_observer: Callable[[_StreamingRetentionSnapshot], None] | None = None) -> ActionLogSingleResult`
+  - `_StreamingRetentionSnapshot` frozen dataclass:
+    `phase: Literal["generating", "finalizing"]`, `active_users: int`,
+    `buffered_drafts: int`, `buffered_events: int`, `in_flight_work: int`,
+    `activated_users: int`, `total_users: int`, `submitted_work: int`,
+    `total_work: int | None`, `completed_work: int`, `failed_work: int`,
+    `pending_work: int | None`
+  - `generate_action_log_single(..., *, candidate_provider: CandidateProvider | None = None, exposure_metadata: MutableMapping[tuple[str, str], ExposureMetadata] | None = None, _retention_observer: Callable[[_StreamingRetentionSnapshot], None] | None = None) -> ActionLogSingleResult`
 - Internal state:
   - `_StreamingUserState`는 사용자 sequence, `user_id`, 원본 dict, 해당 사용자의 `_ActionLogWorkItem` 전부, chunk-index별 성공/격리 결과, 남은 chunk 수만 보관합니다.
 - Consumes:
   - `_generate_action_log_work()`의 schema retry·에러 분류
   - `select_clicks_per_slate()`, `attach_exposure_tags()`, `_expand_events()`
   - Task 1의 writer
+
+`exposure_metadata`의 annotation은 drain 시 entry를 제거하는 mutable 계약을 나타낸다.
+런타임에서 read-only `Mapping` 또는 untyped caller가 전달한 비-`MutableMapping`은
+legacy batch로 fallback하며 변경하지 않는다. `_retention_observer`는 private regression
+hook이고, 같은 identifier-free snapshot은 operational DAG structured telemetry에도 전달된다.
 
 - [ ] **Step 1: chunk 병렬 완료 순서와 무관한 legacy 동등성 실패 테스트를 작성합니다.**
 
@@ -439,12 +455,14 @@ class _StreamingUserState:
 2. coordinator가 다음 `virtual_user`를 꺼내 `random.Random(f"{request.seed}:{user_id}")`를 만들고, `candidate_provider` 또는 기존 `build_candidates()`를 호출합니다.
 3. 그 사용자 candidates를 기존 `_chunked()`로 전부 나누고, global `work_sequence` 순서로 `work_{work_sequence:08d}`를 부여합니다.
 4. active state의 chunk는 deterministic unsent-work deque에 넣고, Future 수가 `max_workers`보다 작은 동안에만 submit합니다. active state 수가 `max_active_users`가 될 때까지만 다음 provider를 호출하며, 완료 Future마다 replacement를 먼저 submit합니다.
-5. future 완료 결과는 `(state, chunk_index, work_sequence)`로 찾아 state의 `drafts_by_chunk` 또는 `quarantine_by_chunk`에 저장합니다. `_generate_action_log_work()`는 schema retry와 에러 분류를 재사용하고, detailed telemetry는 provider 소진 뒤 정확한 total work가 확인되어 small-run threshold 이하일 때만 요청합니다.
+5. future 완료 결과는 `(state, chunk_index, work_sequence)`로 찾아 state의 `drafts_by_chunk` 또는 `quarantine_by_chunk`에 저장합니다. 모든 완료 work의 queue/request/parse/total timing은 bounded aggregate interval에 수집합니다. worker detailed context는 provider 소진 뒤 정확한 total work가 확인되고 small-run threshold 이하일 때만 enable하며, detailed event도 그 확인 뒤 finish에서만 emit합니다.
 6. deque 맨 앞 state의 `remaining_chunks == 0`일 때만 drain합니다. chunk index 오름차순으로 drafts와 quarantine을 조립하고, 모든 drafts에 대해 `select_clicks_per_slate()`를 한 번 호출합니다.
 7. `_expand_events(..., event_id_sequence_start=next_event_sequence)`로 이벤트를 만들고 writer에 기록한 뒤 `next_event_sequence += len(events)`로 갱신합니다.
 8. summary counter만 누적하고 state의 work/candidates/drafts/events 참조를 deque에서 제거합니다. 그 뒤에만 다음 사용자를 활성화합니다.
 9. 입력이 끝나고 active deque와 futures가 모두 빌 때까지 4~8을 반복합니다.
-10. active state 변경, work 결과 저장, 사용자-local event 생성 직전/기록 직후에 observer가 있으면 현재 active state의 draft 합계와 현재 event 수만 계산해 snapshot을 보냅니다. 기록 직후 snapshot의 `buffered_events`는 0이어야 합니다.
+10. generation/drain 뒤에도 writer context를 열린 채로 quarantine ratio guard를 실행합니다. guard가 실패하면 `finalize_quarantine_failure()`로 quarantine만 commit한 뒤 원래 `ActionLogGenerationError`를 다시 발생시킵니다.
+11. guard가 성공하면 completion `generated_at`을 한 번 계산하고 `finalize_success(generated_at, ...)`로 IPC spool을 최종 Parquet/JSONL로 commit합니다.
+12. active state 변경, work 결과 저장, 사용자-local event 생성 직전/기록 직후와 finalization 중에 observer가 있으면 현재 ownership 수량 snapshot을 보냅니다. private hook과 DAG structured telemetry는 같은 snapshot을 사용하고, 기록 직후 snapshot의 `buffered_events`는 0이어야 합니다.
 
 이 구조의 retained working set은 `virtual_users` 입력 목록 자체를 제외하면 `max_active_users × 한 사용자 candidates/chunks/results`와 executor worker 수에 의해 제한됩니다. 결과 `EventLogBatch.events`나 전체 `drafts_by_index`는 만들지 않습니다. 단일 경로는 progress/checkpoint callback을 받지 않으며, 그 계약은 기존 `generate_action_log_drafts()`에 남깁니다.
 
@@ -748,7 +766,7 @@ def _raise_if_quarantine_count_exceeds(
     )
 ```
 
-streaming drain은 chunk-index 순으로 quarantine record를 writer에 즉시 쓰고 `quarantined_users`, `api_error`, `invalid_json`, `schema_fail` counter만 올립니다. writer context가 닫힌 다음 count helper를 호출해, 임계 초과 시에도 완전한 quarantine 파일이 daily 예외 처리에 남도록 합니다. 기존 `_raise_if_quarantine_exceeds()`는 먼저 `write_quarantine_jsonl()`을 호출하는 현재 동작을 유지한 채 count helper를 재사용합니다.
+streaming drain은 chunk-index 순으로 quarantine record를 writer spool에 즉시 쓰고 `quarantined_users`, `api_error`, `invalid_json`, `schema_fail` counter만 올립니다. generation/drain 뒤 writer context가 아직 열린 상태에서 count helper를 호출합니다. 임계 초과면 `finalize_quarantine_failure()`가 quarantine만 최종 경로로 transactional commit하고 Parquet/warehouse spool은 제거한 뒤 원래 오류를 다시 발생시킵니다. 허용 범위면 completion `generated_at`으로 `finalize_success()`가 Parquet, warehouse JSONL, quarantine JSONL을 함께 transactional commit합니다. 기존 `_raise_if_quarantine_exceeds()`는 먼저 `write_quarantine_jsonl()`을 호출하는 legacy 동작을 유지한 채 count helper를 재사용합니다.
 
 - [ ] **Step 8: Task 3 GREEN과 legacy quarantine 회귀를 확인합니다.**
 
@@ -985,6 +1003,12 @@ SKYAHO/Autoresearch-airflow가 소유한다.
 """
 ```
 
+위 block은 현재 `pipeline.py` module docstring의 정확한 사본이다. streaming의
+telemetry 책임은 현재 `generate_action_log_single()` docstring과 구현이 명시한다:
+`_retention_observer`는 private regression hook이고, observer에 전달하는 것과 같은
+identifier-free retention snapshot이 DAG structured telemetry에도 전달된다. 이 설명은
+bounded active-user, completion-time finalization, shard/checkpoint 비책임을 바꾸지 않는다.
+
 `daily.py` 최상단은 다음 책임을 포함합니다.
 
 ```python
@@ -993,8 +1017,9 @@ SKYAHO/Autoresearch-airflow가 소유한다.
 [파이프라인] 공개 action log batch CLI와 LLM 판정 pipeline 사이에서 일일 입력
 partition을 읽고 single 또는 shard 실행을 선택한 뒤 final partition을 publish한다.
 
-[기능] 단일 모드 streaming staging 검증·원자적 publish와 기존
-shard/checkpoint/merge 실행을 제공한다.
+[기능] 단일 coordinator가 daily temporary directory에 completion-time Parquet/JSONL을
+최종 commit한 뒤 row-group staging 검증과 last-known-good publish를 수행하며, 기존
+shard/checkpoint/merge 실행도 제공한다.
 
 [비책임] LLM 판정·클릭·이벤트 의미는 autoresearch/action_logs/pipeline.py,
 CLI 인자 계약은 autoresearch/jobs/action_log.py, Airflow KPO resource는
