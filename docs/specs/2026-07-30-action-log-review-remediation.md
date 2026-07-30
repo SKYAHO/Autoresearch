@@ -113,9 +113,17 @@ event 이름은 `action_log_streaming_progress`이고 기본 15초 간격으로 
 - `completed_work`
 - `failed_work`
 - `pending_work`: 모든 provider를 순회하기 전에는 `null`, 이후에는 정확한 값
-- `throughput_per_min`
+- `throughput_per_min`: 시작/0 완료에서는 `0`, 이후에는 monotonic 경과 시간 기준
+  누적 completed work의 분당 처리량
 - `latency_p50_ms`
 - `latency_p95_ms`
+
+`aggregation_window_work`는 이번 interval에 실제로 완료된 work 수이며,
+`aggregation_sample_work`는 percentile에 쓴 latency sample 수다. work 수와 네
+timing 평균은 online sum으로 정확하다. p50/p95는 sample이 2,048 work 이하일 때
+정확하고, 이를 넘으면 work sequence만으로 선택한 고정 크기 deterministic sample의
+근사값이다. 따라서 interval 시간이 길어져도 aggregate telemetry 보존량은 work 수에
+비례해 증가하지 않는다.
 
 시작과 종료 snapshot은 interval과 무관하게 강제로 기록한다.
 `ACTION_LOG_TELEMETRY_INTERVAL_SEC`은 기존 10~30초 검증을 그대로 사용한다.

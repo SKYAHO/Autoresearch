@@ -5,12 +5,12 @@
 > **Status (2026-07-30): Historical implementation record — not an active executable plan.**
 > 아래 unchecked box, RED expectation, command, commit message는 당시 작업 과정을
 > 보존할 뿐 재실행하면 안 됩니다. 2026-07-30 이후의 현재 계약 정본은
-> [Action Log Streaming Review Remediation](../specs/2026-07-30-action-log-review-remediation.md)이며,
+> [Action Log Streaming Review Remediation](../../specs/2026-07-30-action-log-review-remediation.md)이며,
 > 아래와 충돌하는 historical 설명은 모두 그 정본으로 supersede됩니다.
 
 **Goal:** 단일 action log 실행이 완료된 사용자 객체를 즉시 해제하고 Parquet row group과 JSONL을 순차 기록해, 전체 파티션 크기와 무관한 active-user 메모리 상한을 갖게 합니다.
 
-**Architecture:** 기존 `generate_action_log_batch()`와 `generate_action_log_drafts()`는 shard/checkpoint 및 외부 Python 호출의 legacy 계약으로 그대로 유지합니다. 새 `generate_action_log_single()`은 coordinator 스레드에서 원본 순서로 provider를 호출하고 최대 `4 * max_workers`명의 active user만 유지하며, 한 사용자의 모든 chunk가 끝난 뒤 원본 사용자 순서로 클릭 선정·이벤트 확장·파일 기록을 수행합니다. 중복 `user_id`나 변경 불가능한 exposure metadata는 의미 보존을 위해 legacy batch로 위임합니다. 이 상한과 row-group 계약은 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)을 따른다.
+**Architecture:** 기존 `generate_action_log_batch()`와 `generate_action_log_drafts()`는 shard/checkpoint 및 외부 Python 호출의 legacy 계약으로 그대로 유지합니다. 새 `generate_action_log_single()`은 coordinator 스레드에서 원본 순서로 provider를 호출하고 최대 `4 * max_workers`명의 active user만 유지하며, 한 사용자의 모든 chunk가 끝난 뒤 원본 사용자 순서로 클릭 선정·이벤트 확장·파일 기록을 수행합니다. 중복 `user_id`나 변경 불가능한 exposure metadata는 의미 보존을 위해 legacy batch로 위임합니다. 이 상한과 row-group 계약은 승인된 [2026-07-30 remediation](../../specs/2026-07-30-action-log-review-remediation.md)을 따른다.
 
 **Tech Stack:** Python 3.11/3.12, `concurrent.futures`, Pydantic v2, PyArrow `ParquetWriter`/`ParquetFile`, pytest, ruff
 
@@ -23,7 +23,7 @@
 - click 선정, 한 사용자 내부 이벤트 순서, `seed` 기반 timestamp, KST 날짜가 포함된 전역 event-id 연속 sequence를 legacy 결과와 동일하게 유지합니다.
 - quarantine record 순서·JSONL·비율 제한·에러 분류와 공개 CLI 인자/출력 계약을 유지합니다.
 - 변경 가능한 exposure metadata는 사용자가 drain될 때 그 사용자 키를 `pop`해 해제합니다. 중복 `user_id` 또는 `collections.abc.MutableMapping`이 아닌 metadata는 legacy batch로 위임합니다.
-- 단일 모드 Parquet은 사용자 경계와 무관하게 최대 50,000 rows의 row group으로 최종화하고 warehouse/quarantine JSONL은 열린 spool에 순차 기록합니다. 이 계약은 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)이 정본입니다.
+- 단일 모드 Parquet은 사용자 경계와 무관하게 최대 50,000 rows의 row group으로 최종화하고 warehouse/quarantine JSONL은 열린 spool에 순차 기록합니다. 이 계약은 승인된 [2026-07-30 remediation](../../specs/2026-07-30-action-log-review-remediation.md)이 정본입니다.
 - 단일 모드 staging 검증은 전체 파일 `pq.read_table()` 대신 `pq.ParquetFile` schema 검사와 row-group 단위 `event_id`/`event_timestamp` 읽기를 사용합니다.
 - `autoresearch.jobs.action_log`의 CLI 옵션·dispatch와 Autoresearch-airflow의 KPO memory request는 변경하지 않습니다.
 - 런타임 모듈 변경과 같은 커밋에서 `pipeline.py`와 `daily.py` 최상단 docstring을 `[파이프라인]`·`[기능]`·`[비책임]` 형식으로 갱신합니다.
@@ -354,7 +354,7 @@ def test_streaming_single_bounds_active_users_and_invokes_provider_on_coordinato
 private observer는 active state에 실제로 저장된 draft 수와 writer에 넘기기 직전의
 사용자-local event 수를 보고합니다. 전체 사용자 수를 크게 늘려도 draft 상한은
 `4 * max_workers * candidates_per_user`, event 상한은 50,000 rows를 넘지 않아야
-합니다. 이는 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)의
+합니다. 이는 승인된 [2026-07-30 remediation](../../specs/2026-07-30-action-log-review-remediation.md)의
 최종 계약입니다.
 
 ```python
@@ -451,7 +451,7 @@ class _StreamingUserState:
 
 `generate_action_log_single()`의 성공 경로 순서는 다음과 같습니다.
 
-1. `max_workers = max(1, request.max_concurrency)`, `max_active_users = 4 * max_workers`와 `ThreadPoolExecutor(max_workers=max_workers)`를 만듭니다. 이 최종 상한은 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)을 따른다.
+1. `max_workers = max(1, request.max_concurrency)`, `max_active_users = 4 * max_workers`와 `ThreadPoolExecutor(max_workers=max_workers)`를 만듭니다. 이 최종 상한은 승인된 [2026-07-30 remediation](../../specs/2026-07-30-action-log-review-remediation.md)을 따른다.
 2. coordinator가 다음 `virtual_user`를 꺼내 `random.Random(f"{request.seed}:{user_id}")`를 만들고, `candidate_provider` 또는 기존 `build_candidates()`를 호출합니다.
 3. 그 사용자 candidates를 기존 `_chunked()`로 전부 나누고, global `work_sequence` 순서로 `work_{work_sequence:08d}`를 부여합니다.
 4. active state의 chunk는 deterministic unsent-work deque에 넣고, Future 수가 `max_workers`보다 작은 동안에만 submit합니다. active state 수가 `max_active_users`가 될 때까지만 다음 provider를 호출하며, 완료 Future마다 replacement를 먼저 submit합니다.
@@ -959,7 +959,7 @@ def _validate_staged_event_parquet(
                 )
 ```
 
-schema 확인 후 필요한 두 column만 row group별로 읽습니다. 최종 streaming 경로에서는 row group이 최대 50,000 rows이므로 검증 메모리도 이 상한으로 제한됩니다. 이는 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)의 계약입니다.
+schema 확인 후 필요한 두 column만 row group별로 읽습니다. 최종 streaming 경로에서는 row group이 최대 50,000 rows이므로 검증 메모리도 이 상한으로 제한됩니다. 이는 승인된 [2026-07-30 remediation](../../specs/2026-07-30-action-log-review-remediation.md)의 계약입니다.
 
 - [ ] **Step 6: `run_daily_action_log()`만 새 single API에 연결합니다.**
 
@@ -1122,7 +1122,7 @@ git diff origin/main...HEAD -- autoresearch/action_logs/pipeline.py autoresearch
 - production 변경은 `pipeline.py`, `daily.py`뿐입니다.
 - `generate_action_log_batch()`와 shard/checkpoint/merge API가 삭제·변경되지 않았습니다.
 - 단일 streaming coordinator에는 파티션 전체 `work`, `drafts`, `events`, quarantine list가 없습니다.
-- active deque는 `4 * max_workers` 사용자 이하이고 submitted Future는 `max_workers` 이하이며, provider 호출과 drain 순서가 입력 순서를 따릅니다. 이는 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)의 최종 계약입니다.
+- active deque는 `4 * max_workers` 사용자 이하이고 submitted Future는 `max_workers` 이하이며, provider 호출과 drain 순서가 입력 순서를 따릅니다. 이는 승인된 [2026-07-30 remediation](../../specs/2026-07-30-action-log-review-remediation.md)의 최종 계약입니다.
 - mutable metadata는 drain마다 `pop`되고 duplicate/read-only 조건은 legacy로 갑니다.
 - 단일 staging 검증에 전체 파일 `pq.read_table(request.output_path)`가 없습니다.
 - `jobs/action_log.py`, action log schema, Airflow resource request 변경이 없습니다.

@@ -454,7 +454,7 @@ git commit -m "fix: single action log retention telemetry 복구"
 - Modify: `autoresearch/action_logs/daily.py`
 - Test: `tests/test_action_logs_pipeline.py`
 - Test: `tests/test_action_logs_daily.py`
-- Modify: `docs/plans/2026-07-29-action-log-memory-retention.md`
+- Modify: `docs/archive/plans/2026-07-29-action-log-memory-retention.md`
 
 **Interfaces:**
 - Consumes: Tasks 1~3 complete single-mode API
@@ -538,7 +538,7 @@ git add \
   autoresearch/action_logs/daily.py \
   tests/test_action_logs_pipeline.py \
   tests/test_action_logs_daily.py \
-  docs/plans/2026-07-29-action-log-memory-retention.md
+  docs/archive/plans/2026-07-29-action-log-memory-retention.md
 git commit -m "fix: action log streaming 계약과 daily 회귀 정리"
 ```
 
