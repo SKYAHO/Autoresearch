@@ -9,8 +9,16 @@ if [ ! -r "${database_env}" ]; then
   exit 1
 fi
 
-set -a
-. "${database_env}"
-set +a
+IFS= read -r database_env_line < "${database_env}" || true
+case "${database_env_line}" in
+  ORCH_DATABASE_URL=*)
+    ORCH_DATABASE_URL="${database_env_line#ORCH_DATABASE_URL=}"
+    export ORCH_DATABASE_URL
+    ;;
+  *)
+    echo "Agent Orchestration DB runtime configuration is invalid." >&2
+    exit 1
+    ;;
+esac
 
 exec uvicorn agent_orchestration.app.main:app --host 0.0.0.0 --port 8000

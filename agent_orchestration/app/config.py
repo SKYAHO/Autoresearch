@@ -60,7 +60,7 @@ class ServiceSettings:
     codex_cli_path: str = "codex"
     codex_home: str = ""
     codex_model: str | None = None
-    codex_timeout_sec: int = 120
+    codex_timeout_sec: int = 110
     codex_runner_url: str | None = None
     codex_runner_timeout_sec: int = 120
     codex_runner_token: str | None = None
@@ -92,7 +92,7 @@ def load_settings() -> ServiceSettings:
         else os.getenv("CODEX_HOME", "").strip()
     )
     codex_model = os.getenv("CODEX_MODEL", "").strip() or None
-    codex_timeout_sec = _positive_env_int("CODEX_TIMEOUT_SEC", 120)
+    codex_timeout_sec = _positive_env_int("CODEX_TIMEOUT_SEC", 110)
     codex_runner_timeout_sec = _positive_env_int("CODEX_RUNNER_TIMEOUT_SEC", 120)
     codex_runner_url = os.getenv("CODEX_RUNNER_URL", "").strip() or None
     codex_runner_token = os.getenv("ORCH_RUNNER_TOKEN", "").strip() or None

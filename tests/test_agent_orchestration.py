@@ -186,7 +186,7 @@ def test_load_settings_rejects_invalid_interactions_table(
 @pytest.mark.parametrize(
     ("name", "attribute", "default"),
     [
-        ("CODEX_TIMEOUT_SEC", "codex_timeout_sec", 120),
+        ("CODEX_TIMEOUT_SEC", "codex_timeout_sec", 110),
         ("CODEX_RUNNER_TIMEOUT_SEC", "codex_runner_timeout_sec", 120),
         ("OPENAI_MAX_TOKENS", "openai_max_tokens", 1024),
         ("OPENAI_TIMEOUT_SEC", "openai_timeout_sec", 60),
@@ -211,7 +211,7 @@ def test_load_settings_uses_default_for_blank_numeric_value(
 def test_api_entrypoint_reports_missing_runtime_dir() -> None:
     """API 컨테이너는 bootstrap runtime 경로 누락 원인을 직접 출력한다."""
     result = subprocess.run(
-        ["sh", "agent_orchestration/entrypoint.sh"],
+        ["/bin/sh", "agent_orchestration/entrypoint.sh"],
         capture_output=True,
         check=False,
         env={"PATH": os.environ["PATH"]},
@@ -220,6 +220,38 @@ def test_api_entrypoint_reports_missing_runtime_dir() -> None:
 
     assert result.returncode != 0
     assert "ORCH_RUNTIME_DIR is required" in result.stderr
+
+
+def test_api_entrypoint_reads_database_url_without_shell_evaluation(tmp_path: Path) -> None:
+    """DB runtime 파일의 URL 값은 셸 명령으로 해석하지 않는다."""
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    marker = tmp_path / "must-not-exist"
+    database_url = f"postgresql://orch:pw@$(touch {marker})/orch"
+    (runtime_dir / "db.env").write_text(
+        f"ORCH_DATABASE_URL={database_url}\n",
+        encoding="utf-8",
+    )
+    executable_dir = tmp_path / "bin"
+    executable_dir.mkdir()
+    uvicorn = executable_dir / "uvicorn"
+    uvicorn.write_text('#!/bin/sh\nprintf "%s" "$ORCH_DATABASE_URL"\n', encoding="utf-8")
+    uvicorn.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", "agent_orchestration/entrypoint.sh"],
+        capture_output=True,
+        check=False,
+        env={
+            "ORCH_RUNTIME_DIR": str(runtime_dir),
+            "PATH": str(executable_dir) + os.pathsep + os.environ["PATH"],
+        },
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == database_url
+    assert not marker.exists()
 
 
 def test_load_settings_requires_database_url(monkeypatch: pytest.MonkeyPatch) -> None:

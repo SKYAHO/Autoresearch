@@ -5,9 +5,9 @@
 실행하고, 결과를 API 서버로 반환하는 구간이다.
 
 [기능]
-엄격한 생성 요청·응답 스키마, API 전용 내부 요청 토큰 검증, 즉시 거절하는
-동시 실행 상한을 제공하고 공용 Codex 실행 경계의 결과에 Runner 처리 시간을
-추가한다.
+엄격한 생성 요청·응답 스키마, API 전용 내부 요청 토큰 검증, 비대기 용량 토큰으로
+즉시 거절하는 동시 실행 상한을 제공하고 공용 Codex 실행 경계의 결과에 Runner 처리
+시간을 추가한다.
 
 [비책임]
 외부 호출자 인증·DB 저장·OpenAI API 선택(agent_orchestration.app), OAuth
@@ -54,6 +54,14 @@ def _runner_tokens_match(provided_token: str, expected_token: str) -> bool:
     )
 
 
+def _create_execution_slots(max_concurrency: int) -> asyncio.Queue[object]:
+    """대기열 없이 즉시 획득할 수 있는 Runner 실행 용량 토큰을 만든다."""
+    slots: asyncio.Queue[object] = asyncio.Queue(maxsize=max_concurrency)
+    for _ in range(max_concurrency):
+        slots.put_nowait(object())
+    return slots
+
+
 def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
     """Runner FastAPI 앱을 생성한다.
 
@@ -62,19 +70,19 @@ def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
     """
     app = FastAPI()
     app.state.settings = settings
-    app.state.semaphore = (
-        asyncio.Semaphore(settings.max_concurrency) if settings is not None else None
+    app.state.execution_slots = (
+        _create_execution_slots(settings.max_concurrency) if settings is not None else None
     )
 
-    def runtime() -> tuple[RunnerSettings, asyncio.Semaphore]:
+    def runtime() -> tuple[RunnerSettings, asyncio.Queue[object]]:
         runtime_settings = app.state.settings
-        semaphore = app.state.semaphore
-        if runtime_settings is None:
+        execution_slots = app.state.execution_slots
+        if runtime_settings is None or execution_slots is None:
             runtime_settings = load_runner_settings()
-            semaphore = asyncio.Semaphore(runtime_settings.max_concurrency)
+            execution_slots = _create_execution_slots(runtime_settings.max_concurrency)
             app.state.settings = runtime_settings
-            app.state.semaphore = semaphore
-        return runtime_settings, semaphore
+            app.state.execution_slots = execution_slots
+        return runtime_settings, execution_slots
 
     @app.get("/healthcheck")
     async def healthcheck() -> dict[str, str]:
@@ -88,7 +96,7 @@ def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
         x_runner_token: str | None = Header(default=None, alias="X-Runner-Token"),
     ) -> GenerateResponse:
         """하나의 프롬프트를 동시성 상한 안에서 Codex CLI에 위임한다."""
-        runtime_settings, semaphore = runtime()
+        runtime_settings, execution_slots = runtime()
         if not x_runner_token or not _runner_tokens_match(
             x_runner_token, runtime_settings.api_token
         ):
@@ -96,14 +104,18 @@ def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid runner API token.",
             )
-        if semaphore.locked():
+        try:
+            slot = execution_slots.get_nowait()
+        except asyncio.QueueEmpty:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Runner is temporarily overloaded.",
-            )
+            ) from None
         started_at = perf_counter()
-        async with semaphore:
+        try:
             result = await generate_codex_response(runtime_settings.codex, request.prompt)
+        finally:
+            execution_slots.put_nowait(slot)
         return GenerateResponse(
             response=result.text,
             model=result.model,

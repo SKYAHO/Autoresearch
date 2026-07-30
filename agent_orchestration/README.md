@@ -101,8 +101,8 @@
   스키마를 먼저 확장한 뒤 해당 컬럼을 선택적으로 쓰는 코드를 배포하며, 롤백은 코드만
   되돌리고 확장 컬럼은 유지하는 방식으로 관리한다.
 - API `/healthcheck`는 설정 검증과 초기 스키마 준비를 통과해 프로세스가 기동했음을
-  보장한다. Runner `/healthcheck`는 첫 생성 요청 전에 Runner 전용 설정과 semaphore를
-  준비해 Kubernetes readiness/liveness probe에 사용한다. 두 endpoint 모두 Codex OAuth
+  보장한다. Runner `/healthcheck`는 첫 생성 요청 전에 Runner 전용 설정과 비대기 실행
+  용량 토큰을 준비해 Kubernetes readiness/liveness probe에 사용한다. 두 endpoint 모두 Codex OAuth
   세션·실제 Codex 호출·기동 후 PostgreSQL 연결 상태는 검사하지 않는다.
 - 현재는 요청마다 PostgreSQL 연결을 만들며 connection pool은 후속 범위다. GKE Runner는
   `RUNNER_MAX_CONCURRENCY`(기본 1)로 Codex 실행을 제한하고, 사용 중인 슬롯이 있으면
@@ -130,6 +130,8 @@ API 결제 방식으로 전환할 때만 `LLM_BACKEND=openai`와 `OPENAI_API_KEY
   `ORCH_RUNNER_TOKEN`을 설정합니다. API는 `X-Runner-Token`으로 비공개 Runner의
   `POST /v1/generate`만 호출합니다. Runner Codex 시간 제한은 110초, API HTTP 시간
   제한은 120초로 API가 Runner의 정리 결과를 먼저 받을 여유를 둡니다.
+- 로컬 `codex_cli`도 `CODEX_TIMEOUT_SEC`을 별도로 설정하지 않으면 110초를 사용합니다.
+  `CODEX_RUNNER_TIMEOUT_SEC` 120초는 GKE API의 Runner HTTP 호출에만 적용합니다.
 - Runner는 API 공유 토큰·PostgreSQL 설정을 읽지 않으며, `ORCH_RUNNER_TOKEN`만 API와
   공유합니다. OAuth 자격 증명 값은
   문서·환경 예시·애플리케이션 로그에 기록하지 않습니다.

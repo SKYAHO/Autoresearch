@@ -98,8 +98,9 @@ HTTP 오류, 형식 오류는 `LLMBackendError("Codex runner call failed.")`로 
 
 `RunnerSettings`는 Codex 설정과 `RUNNER_MAX_CONCURRENCY`(기본 1)만 읽는다.
 Runner의 Pydantic `GenerateRequest(prompt)`와 `GenerateResponse(response, model,
-latency_ms, token_count)`는 `extra="forbid"`이며, app은 semaphore 안에서
-`generate_codex_response()`를 호출한다. Runner는 DB·API 공유 토큰을 읽지 않는다.
+latency_ms, token_count)`는 `extra="forbid"`이며, app은
+비대기 용량 토큰을 획득한 뒤 `generate_codex_response()`를 호출한다. 상한에 도달하면
+요청을 대기시키지 않고 503을 반환한다. Runner는 DB·API 공유 토큰을 읽지 않는다.
 
 - [ ] **Step 4: 설정·문서를 갱신한다.**
 
@@ -165,7 +166,8 @@ Expected: 분리된 public bootstrap 함수 부재로 실패한다.
 덮어쓰지 않는다. 두 함수의 오류·로그에는 시크릿 resource ID만 포함하고 본문은
 포함하지 않는다.
 
-API `entrypoint.sh`는 `db.env`를 source한 뒤 API uvicorn을 exec한다. Runner
+API `entrypoint.sh`는 `db.env`의 단일 `ORCH_DATABASE_URL=` 행을 셸 평가 없이 읽은 뒤
+API uvicorn을 exec한다. Runner
 `runner_entrypoint.sh`는 DB 파일을 읽지 않고 다음만 실행한다.
 
 ```sh

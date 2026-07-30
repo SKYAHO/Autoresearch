@@ -6,6 +6,7 @@ import asyncio
 import json
 from typing import Any
 
+from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 import httpx
 import pytest
@@ -192,12 +193,12 @@ def test_runner_rejects_request_when_concurrency_limit_is_reached() -> None:
         api_token="runner-token-must-be-at-least-32-characters",
     )
 
-    class FullSemaphore:
-        def locked(self) -> bool:
-            return True
+    class FullExecutionSlots:
+        def get_nowait(self) -> object:
+            raise asyncio.QueueEmpty
 
     app = runner_app_module.create_runner_app(settings)
-    app.state.semaphore = FullSemaphore()
+    app.state.execution_slots = FullExecutionSlots()
 
     response = TestClient(app).post(
         "/v1/generate",
@@ -206,6 +207,178 @@ def test_runner_rejects_request_when_concurrency_limit_is_reached() -> None:
     )
 
     assert response.status_code == 503
+
+
+def test_runner_returns_immediate_503_when_all_real_slots_are_busy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """실행 중인 요청이 상한을 채우면 다음 요청은 대기하지 않고 즉시 거절한다."""
+    codex_settings = codex_module.CodexSettings(
+        cli_path="codex",
+        home="/tmp/codex-home",
+        model=None,
+        timeout_sec=110,
+    )
+    settings = RunnerSettings(
+        codex=codex_settings,
+        max_concurrency=2,
+        api_token="runner-token-must-be-at-least-32-characters",
+    )
+    started_count = 0
+    all_slots_busy = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_generate(
+        _settings: codex_module.CodexSettings,
+        _prompt: str,
+    ) -> LLMResult:
+        nonlocal started_count
+        started_count += 1
+        if started_count == settings.max_concurrency:
+            all_slots_busy.set()
+        await release.wait()
+        return LLMResult(text="runner answer", model="codex-cli", token_count=None)
+
+    monkeypatch.setattr(runner_app_module, "generate_codex_response", blocking_generate)
+    app = runner_app_module.create_runner_app(settings)
+    generate = next(
+        route.endpoint
+        for route in app.routes
+        if getattr(route, "path", None) == "/v1/generate"
+    )
+
+    async def exercise() -> None:
+        first = asyncio.create_task(
+            generate(
+                runner_app_module.GenerateRequest(prompt="first"),
+                "runner-token-must-be-at-least-32-characters",
+            )
+        )
+        second = asyncio.create_task(
+            generate(
+                runner_app_module.GenerateRequest(prompt="second"),
+                "runner-token-must-be-at-least-32-characters",
+            )
+        )
+        await all_slots_busy.wait()
+        with pytest.raises(HTTPException) as error:
+            await asyncio.wait_for(
+                generate(
+                    runner_app_module.GenerateRequest(prompt="third"),
+                    "runner-token-must-be-at-least-32-characters",
+                ),
+                timeout=0.1,
+            )
+        assert error.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+        release.set()
+        await asyncio.gather(first, second)
+
+    asyncio.run(exercise())
+
+
+def test_runner_returns_slot_after_codex_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Codex 오류 뒤에도 반환된 용량 토큰으로 다음 요청을 수용한다."""
+    codex_settings = codex_module.CodexSettings(
+        cli_path="codex",
+        home="/tmp/codex-home",
+        model=None,
+        timeout_sec=110,
+    )
+    settings = RunnerSettings(
+        codex=codex_settings,
+        max_concurrency=1,
+        api_token="runner-token-must-be-at-least-32-characters",
+    )
+    attempts = 0
+
+    async def fail_once(
+        _settings: codex_module.CodexSettings,
+        _prompt: str,
+    ) -> LLMResult:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise LLMBackendError("Codex CLI failed.")
+        return LLMResult(text="runner answer", model="codex-cli", token_count=None)
+
+    monkeypatch.setattr(runner_app_module, "generate_codex_response", fail_once)
+    app = runner_app_module.create_runner_app(settings)
+    generate = next(
+        route.endpoint
+        for route in app.routes
+        if getattr(route, "path", None) == "/v1/generate"
+    )
+
+    async def exercise() -> None:
+        with pytest.raises(LLMBackendError, match="Codex CLI failed"):
+            await generate(
+                runner_app_module.GenerateRequest(prompt="first"),
+                "runner-token-must-be-at-least-32-characters",
+            )
+        response = await generate(
+            runner_app_module.GenerateRequest(prompt="second"),
+            "runner-token-must-be-at-least-32-characters",
+        )
+        assert response.response == "runner answer"
+
+    asyncio.run(exercise())
+
+
+def test_runner_returns_slot_after_request_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """취소된 Codex 요청도 용량 토큰을 반환해 다음 요청을 수용한다."""
+    codex_settings = codex_module.CodexSettings(
+        cli_path="codex",
+        home="/tmp/codex-home",
+        model=None,
+        timeout_sec=110,
+    )
+    settings = RunnerSettings(
+        codex=codex_settings,
+        max_concurrency=1,
+        api_token="runner-token-must-be-at-least-32-characters",
+    )
+    started = asyncio.Event()
+    attempts = 0
+
+    async def block_once(
+        _settings: codex_module.CodexSettings,
+        _prompt: str,
+    ) -> LLMResult:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            started.set()
+            await asyncio.Event().wait()
+        return LLMResult(text="runner answer", model="codex-cli", token_count=None)
+
+    monkeypatch.setattr(runner_app_module, "generate_codex_response", block_once)
+    app = runner_app_module.create_runner_app(settings)
+    generate = next(
+        route.endpoint
+        for route in app.routes
+        if getattr(route, "path", None) == "/v1/generate"
+    )
+
+    async def exercise() -> None:
+        first = asyncio.create_task(
+            generate(
+                runner_app_module.GenerateRequest(prompt="first"),
+                "runner-token-must-be-at-least-32-characters",
+            )
+        )
+        await started.wait()
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        response = await generate(
+            runner_app_module.GenerateRequest(prompt="second"),
+            "runner-token-must-be-at-least-32-characters",
+        )
+        assert response.response == "runner answer"
+
+    asyncio.run(exercise())
 
 
 def test_generate_response_preserves_runner_overload_status(
