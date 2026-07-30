@@ -21,18 +21,15 @@ Agent Orchestration을 GKE dev에 내부 전용으로 배포한다.
   담당한다.
 - Runner는 승인된 Codex 모델로 한 요청을 실행하고 결과만 API에 반환한다.
 - API만 Cloud SQL 전용 DB·사용자·DB 비밀번호 Secret Manager 접근 권한을 가진다.
-- Runner는 `readOnlyRootFilesystem`, non-root, `automountServiceAccountToken: false`,
-  scratch `emptyDir`, 최소 NetworkPolicy로 실행한다.
-- GKE에서 `cli_auth_credentials_store = "keyring"` OAuth가 비대화형 실행·Pod
-  재시작·침투 테스트를 통과하는지 먼저 검증한다.
-- 성공한 경우에만 내부 `/healthcheck`와 `/chat` 및 Cloud SQL 저장을 검증하고
-  runbook을 작성한다.
+- Runner는 non-root, 전용 `CODEX_HOME` PVC, scratch `emptyDir`, 최소
+  NetworkPolicy로 실행한다.
+- Runner만 Workload Identity로 공용 Codex OAuth 초기 인증 시크릿 하나를 읽고,
+  API와 다른 어떤 워크로드도 이 시크릿에 접근하지 못한다.
+- 내부 `/healthcheck`와 `/chat` 및 Cloud SQL 저장을 검증하고 runbook을 작성한다.
 
 ### 비범위
 
 - Ingress, LoadBalancer, 공개 URL, 외부 사용자 인증·인가
-- OAuth `auth.json`을 Secret Manager, Kubernetes Secret, PVC, 이미지, 환경 변수로
-  주입하거나 보관하는 방식
 - OpenAI API 키 기반 백엔드, 사용자별 OAuth, 사용자별 사용량 분리
 - 고가용성, 다중 replica, 자동 수평 확장, 실험 생성·상태·이벤트 API
 
@@ -49,15 +46,14 @@ Agent Orchestration을 GKE dev에 내부 전용으로 배포한다.
   → ClusterIP: agent-orchestration-runner
       → Runner Pod
           - Codex CLI OAuth 실행만 담당
-          - OS keyring 자격 증명 저장소
-          - read-only root + scratch emptyDir
-          - DB URL·앱 API 토큰·GCP 서비스 계정 토큰 없음
+          - OAuth 전용 Secret Manager 접근·CODEX_HOME PVC
+          - DB URL·Cloud SQL 권한·앱 API 토큰 없음
 ```
 
-API와 Runner는 서로 다른 Kubernetes ServiceAccount를 사용한다. API만
-Workload Identity로 DB 비밀번호 Secret Manager 버전을 읽는다. Runner에는
-Workload Identity annotation과 Kubernetes 서비스 계정 토큰 자동 마운트를 두지
-않는다.
+API와 Runner는 서로 다른 Kubernetes ServiceAccount와 GCP ServiceAccount를
+사용한다. API는 DB 비밀번호 Secret Manager 버전과 Cloud SQL에만 접근한다.
+Runner는 Codex OAuth 초기 인증 시크릿 하나에만 접근하며 Cloud SQL·DB 비밀번호
+시크릿·다른 GCP 리소스 권한을 받지 않는다.
 
 Runner Service는 ClusterIP이며, NetworkPolicy는 API Pod label에서 오는 지정
 포트 요청만 허용한다. API Service 역시 외부 Ingress를 만들지 않는다. 초기
@@ -93,30 +89,28 @@ POST /v1/generate
 - 초기 모델은 Runner deployment 설정의 허용된 `CODEX_MODEL` 하나로 고정한다.
   `/chat` 요청 본문에 모델명은 받지 않는다.
 
-## OAuth 자격 증명 게이트
+## OAuth 자격 증명 계약
 
-Codex CLI는 `cli_auth_credentials_store = "keyring"`을 지원하며, file·auto
-저장소는 `CODEX_HOME/auth.json`을 사용할 수 있다. OAuth 파일은 access token을
-포함하므로 Runner의 프롬프트 실행 범위에 제공하지 않는다.
+Codex CLI의 파일 기반 `CODEX_HOME/auth.json`은 access token을 포함하므로
+비밀번호와 같은 민감도로 취급한다. 이 MVP는 기존 인프라의 Secret Manager+
+Workload Identity 패턴을 따른다.
 
-배포 전에 아래를 모두 만족해야 한다.
+1. 운영자는 신뢰된 로컬 환경에서 팀 공용 계정으로 `codex login`을 수행한다.
+2. `auth.json`은 전용 Secret Manager 시크릿의 초기값으로만 보관한다. Git,
+   이미지, ConfigMap, 환경 변수, 일반 로그에는 넣지 않는다.
+3. Runner init container가 Runner 전용 GSA로 초기 시크릿을 읽는다. 전용
+   `CODEX_HOME` PVC에 인증 파일이 없을 때만 `auth.json`을 mode `0600`으로
+   기록한다.
+4. Runner 컨테이너는 동일 PVC를 읽기·쓰기로 마운트한다. Codex CLI가 갱신한
+   인증 상태는 단일 replica의 `ReadWriteOnce` PVC에 남는다.
+5. API Pod는 OAuth 시크릿과 PVC를 절대 읽거나 마운트하지 않는다. Runner GSA는
+   OAuth 시크릿 외의 Secret Manager·Cloud SQL·데이터 접근 권한을 받지 않는다.
 
-1. GKE Runner에서 keyring 설정으로 비대화형 `codex login status`와 짧은
-   `codex exec`가 성공한다.
-2. Pod 재시작 후에도 인증 상태가 안전하게 유지되거나, 승인된 운영 절차로
-   재인증할 수 있다. 인증 상태를 파일·PVC·Kubernetes Secret으로 복사하지
-   않는다.
-3. 프롬프트 기반 침투 테스트가 `auth.json`, `/proc/*/environ`, GCP ADC,
-   Kubernetes 서비스 계정 토큰, API 소스, DB 연결 정보에 접근하지 못한다.
-4. Runner root filesystem은 read-only이고, `HOME`, `TMPDIR`, `XDG_CACHE_HOME`,
-   `XDG_STATE_HOME`은 요청 scratch `emptyDir`에만 쓴다.
-5. Runner가 필요한 Codex 외부 목적지 외로 통신하지 않고, API 이외의 Pod가
-   Runner Service를 호출하지 못한다.
-
-위 조건 하나라도 실패하면 공용 OAuth 기반 `/chat` 배포는 중단한다. 이 경우
-API·Cloud SQL·Runner 네트워크 배선만 검증할 수 있으며, 실제 LLM smoke는
-OpenAI API 전환 또는 별도 승인된 인증 경계가 마련될 때까지 완료로 주장하지
-않는다.
+Runner는 OAuth 파일에 접근해야 하는 실행 환경이므로, 프롬프트가 이를 읽으려는
+위험을 완전히 제거할 수 없다. 따라서 이 배포는 신뢰된 dev 내부 서비스와
+비민감 프롬프트로만 시작하며, 외부 Ingress·사용자별 공개 API를 추가하지 않는다.
+API/DB/GCP 권한을 Runner에서 분리해 유출 영향 범위를 OAuth 실행 계정으로
+제한한다. OS keyring 지원은 이 MVP의 선행 조건이 아니라 후속 보안 개선 항목이다.
 
 ## Cloud SQL·시크릿 계약
 
@@ -147,16 +141,18 @@ OpenAI API 전환 또는 별도 승인된 인증 경계가 마련될 때까지 �
 
 - Cloud SQL DB·사용자·Secret Manager·API GSA/KSA와 최소 IAM을 Terraform으로
   선언한다.
-- API/Runner Deployment, 각 ClusterIP Service, `ReadWriteOnce` OAuth PVC가 아닌
-  scratch `emptyDir`, NetworkPolicy를 선언한다.
-- Runner에는 Secret Manager 권한, Cloud SQL 권한, Workload Identity annotation,
-  서비스 계정 토큰 자동 마운트를 추가하지 않는다.
+- API/Runner Deployment, 각 ClusterIP Service, Runner 전용 `ReadWriteOnce`
+  OAuth PVC, scratch `emptyDir`, NetworkPolicy를 선언한다.
+- Runner GSA에는 OAuth 초기 인증 시크릿 하나의 `secretAccessor`만 부여한다.
+  Cloud SQL·DB 비밀번호 시크릿·다른 Secret Manager 리소스 권한은 추가하지
+  않는다.
 - 검증된 immutable GAR digest만 참조하며 ArgoCD는 수동 sync로 시작한다.
 
 ## 배포 순서와 성공 기준
 
 1. API→Runner 내부 계약과 분리된 이미지를 구현·검증한다.
-2. GKE에서 OAuth keyring 사전 검증을 수행하고 결과를 runbook에 기록한다.
+2. Runner 전용 Secret Manager 시크릿·PVC 초기화와 `codex login status`를
+   검증하고 결과를 runbook에 기록한다.
 3. API DB·Secret Manager·GKE NetworkPolicy Terraform을 적용한다.
 4. 두 immutable image digest를 사용해 dev에 수동 동기화한다.
 5. `kubectl port-forward`로 API `/healthcheck`와 짧은 `/chat`을 호출한다.
@@ -166,10 +162,9 @@ OpenAI API 전환 또는 별도 승인된 인증 경계가 마련될 때까지 �
 성공은 다음을 모두 만족할 때다.
 
 - API와 Runner가 서로 다른 Pod·서비스 계정·권한 집합으로 Ready 상태다.
-- API Pod에는 OAuth 자격 증명이, Runner Pod에는 DB URL·DB 비밀번호·GCP 서비스
-  계정 토큰이 없다.
-- keyring·침투 검증 게이트가 통과한 경우에만 `/chat`이 `201`을 반환하고 Cloud
-  SQL에 행을 저장한다.
+- API Pod에는 OAuth 자격 증명이, Runner Pod에는 DB URL·DB 비밀번호·Cloud SQL
+  권한이 없다. Runner GSA의 Secret Manager 권한은 OAuth 시크릿 하나로 제한된다.
+- `/chat`이 `201`을 반환하고 Cloud SQL에 행을 저장한다.
 - API·Runner의 로그, 이미지, manifest, Git에 OAuth·DB 비밀번호·완성 DB URL이
   없다.
 - 이전 immutable digest로의 롤백과 OAuth 장애 대응 절차가 runbook으로 재현된다.
