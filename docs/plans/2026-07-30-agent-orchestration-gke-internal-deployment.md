@@ -16,6 +16,8 @@
 - Runner는 `replicas: 1`과 전용 `ReadWriteOnce` PVC를 사용한다. 외부 Ingress·LoadBalancer·사용자별 OAuth·다중 replica는 추가하지 않는다.
 - Runner의 `/healthcheck`는 요청 처리 전 전용 설정을 로드해 readiness/liveness probe가 OAuth 실행 경계의 기본 구성을 검증한다. Codex stderr 원문은 수집·로그화하지 않는다.
 - API·Runner 이미지는 `uv export --only-group orchestration`으로 오케스트레이션 런타임 의존성만 설치한다. CI 워크플로 문자열 비교 대신 실제 이미지 build/smoke를 실행한다.
+- Runner는 API만 아는 별도 `X-Runner-Token`을 상수 시간 비교해 심층 방어를 제공한다. 토큰은 API의 `ORCH_API_TOKEN`과 다르며, Kubernetes Secret으로 API·Runner에만 주입한다.
+- 동시성 상한에 도달한 Runner 요청은 대기열에 쌓지 않고 503을 반환하며, API는 이를 503으로 보존한다. Runner Codex 시간 제한은 110초, API Runner HTTP 시간 제한은 120초로 둔다.
 - `codex_cli` 로컬 백엔드와 `openai` 백엔드의 기존 계약을 유지하고, 서버 배포용으로만 `codex_runner`를 추가한다.
 - 모든 새 Python 런타임 모듈은 책임 docstring과 반환 타입을 가지며, 요청·응답은 Pydantic으로 검증한다.
 

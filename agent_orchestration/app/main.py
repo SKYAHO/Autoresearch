@@ -27,6 +27,7 @@ from fastapi import FastAPI, Header, HTTPException, status
 from agent_orchestration.app.config import ServiceSettings, load_settings
 from agent_orchestration.app.db import ensure_schema, save_interaction
 from agent_orchestration.app.llm import LLMBackendError, generate_response
+from agent_orchestration.contracts import LLMBackendOverloadedError
 from agent_orchestration.app.schemas import ChatRequest, ChatResponse, ErrorResponse
 
 logger = logging.getLogger(__name__)
@@ -102,6 +103,10 @@ def create_app() -> FastAPI:
                 "description": "Failed to call LLM backend.",
                 "model": ErrorResponse,
             },
+            status.HTTP_503_SERVICE_UNAVAILABLE: {
+                "description": "LLM backend is temporarily overloaded.",
+                "model": ErrorResponse,
+            },
         },
     )
     async def chat(
@@ -121,6 +126,11 @@ def create_app() -> FastAPI:
         start = perf_counter()
         try:
             completion = await generate_response(runtime_settings, request.prompt)
+        except LLMBackendOverloadedError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="LLM backend is temporarily overloaded.",
+            ) from error
         except LLMBackendError as error:
             logger.error("LLM backend call failed: %s", error)
             raise HTTPException(

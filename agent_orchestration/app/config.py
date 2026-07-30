@@ -63,6 +63,7 @@ class ServiceSettings:
     codex_timeout_sec: int = 120
     codex_runner_url: str | None = None
     codex_runner_timeout_sec: int = 120
+    codex_runner_token: str | None = None
     database_connect_timeout_sec: int = 10
 
 
@@ -94,8 +95,12 @@ def load_settings() -> ServiceSettings:
     codex_timeout_sec = _positive_env_int("CODEX_TIMEOUT_SEC", 120)
     codex_runner_timeout_sec = _positive_env_int("CODEX_RUNNER_TIMEOUT_SEC", 120)
     codex_runner_url = os.getenv("CODEX_RUNNER_URL", "").strip() or None
+    codex_runner_token = os.getenv("ORCH_RUNNER_TOKEN", "").strip() or None
     if llm_backend == "codex_runner":
         codex_runner_url = _require_env("CODEX_RUNNER_URL", codex_runner_url)
+        codex_runner_token = _require_env("ORCH_RUNNER_TOKEN", codex_runner_token)
+        if len(codex_runner_token) < 32:
+            raise ValueError("ORCH_RUNNER_TOKEN must be at least 32 characters long.")
         parsed_runner_url = urlparse(codex_runner_url)
         if parsed_runner_url.scheme not in {"http", "https"} or not parsed_runner_url.netloc:
             raise ValueError("CODEX_RUNNER_URL must be an absolute HTTP(S) URL.")
@@ -133,5 +138,6 @@ def load_settings() -> ServiceSettings:
         codex_timeout_sec=codex_timeout_sec,
         codex_runner_url=codex_runner_url,
         codex_runner_timeout_sec=codex_runner_timeout_sec,
+        codex_runner_token=codex_runner_token,
         database_connect_timeout_sec=database_connect_timeout_sec,
     )

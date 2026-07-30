@@ -114,6 +114,7 @@ def test_load_settings_codex_runner_uses_private_url_without_local_codex_home(
     """Runner 백엔드는 API 프로세스의 로컬 Codex 홈을 요구하지 않는다."""
     monkeypatch.setenv("LLM_BACKEND", "codex_runner")
     monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
+    monkeypatch.setenv("ORCH_RUNNER_TOKEN", "runner-token-must-be-at-least-32-characters")
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
     monkeypatch.setenv("CODEX_CLI_PATH", "   ")
     monkeypatch.delenv("CODEX_HOME", raising=False)
@@ -123,7 +124,21 @@ def test_load_settings_codex_runner_uses_private_url_without_local_codex_home(
     assert settings.llm_backend == "codex_runner"
     assert settings.codex_runner_url == "http://runner:8080"
     assert settings.codex_runner_timeout_sec == 120
+    assert settings.codex_runner_token == "runner-token-must-be-at-least-32-characters"
     assert settings.codex_home == ""
+
+
+def test_load_settings_codex_runner_requires_private_api_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner 백엔드는 API가 전송할 별도 내부 토큰 없이는 기동하지 않는다."""
+    monkeypatch.setenv("LLM_BACKEND", "codex_runner")
+    monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
+    monkeypatch.delenv("ORCH_RUNNER_TOKEN", raising=False)
+
+    with pytest.raises(ValueError, match="ORCH_RUNNER_TOKEN"):
+        load_settings()
 
 
 @pytest.mark.parametrize("runner_url", ("", "runner:8080", "/v1/generate"))
@@ -134,6 +149,7 @@ def test_load_settings_codex_runner_requires_absolute_url(
     """API가 private Runner에 요청을 위임하려면 절대 URL이 필요하다."""
     monkeypatch.setenv("LLM_BACKEND", "codex_runner")
     monkeypatch.setenv("CODEX_RUNNER_URL", runner_url)
+    monkeypatch.setenv("ORCH_RUNNER_TOKEN", "runner-token-must-be-at-least-32-characters")
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
 
     with pytest.raises(ValueError, match="CODEX_RUNNER_URL"):
@@ -190,6 +206,20 @@ def test_load_settings_uses_default_for_blank_numeric_value(
     settings = load_settings()
 
     assert getattr(settings, attribute) == default
+
+
+def test_api_entrypoint_reports_missing_runtime_dir() -> None:
+    """API 컨테이너는 bootstrap runtime 경로 누락 원인을 직접 출력한다."""
+    result = subprocess.run(
+        ["sh", "agent_orchestration/entrypoint.sh"],
+        capture_output=True,
+        check=False,
+        env={"PATH": os.environ["PATH"]},
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "ORCH_RUNTIME_DIR is required" in result.stderr
 
 
 def test_load_settings_requires_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -808,6 +838,7 @@ def test_chat_openapi_documents_required_token_and_error_responses() -> None:
     assert "401" in operation["responses"]
     assert "500" in operation["responses"]
     assert "502" in operation["responses"]
+    assert "503" in operation["responses"]
     assert operation["responses"]["401"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ErrorResponse"
     }
@@ -944,3 +975,37 @@ def test_main_chat_returns_bad_gateway_when_codex_cli_fails(
         )
 
     assert response.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+def test_main_chat_returns_service_unavailable_when_runner_is_overloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner 과부하는 API가 502가 아닌 503으로 호출자에게 전달한다."""
+    from agent_orchestration.contracts import LLMBackendOverloadedError
+
+    settings = ServiceSettings(
+        openai_api_key=None,
+        openai_model="gpt-5.3-codex-spark",
+        openai_max_tokens=1024,
+        openai_timeout_sec=60,
+        database_url="postgresql://orch:pw@localhost:5432/orch",
+        interactions_table="chat_interactions",
+        api_token="test-api-token",
+    )
+
+    async def overloaded_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
+        raise LLMBackendOverloadedError("Codex runner is overloaded.")
+
+    monkeypatch.setattr(main_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)
+    monkeypatch.setattr(main_module, "generate_response", overloaded_generate_response)
+
+    app = main_module.create_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            headers={"X-Orch-Token": "test-api-token"},
+            json={"prompt": "테스트"},
+        )
+
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE

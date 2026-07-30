@@ -23,10 +23,15 @@ import httpx
 from openai import AsyncOpenAI, OpenAIError
 
 from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.contracts import LLMBackendError, LLMResult
+from agent_orchestration.contracts import (
+    LLMBackendError,
+    LLMBackendOverloadedError,
+    LLMResult,
+)
 
 
 logger = logging.getLogger(__name__)
+
 
 async def generate_response(settings: ServiceSettings, prompt: str) -> LLMResult:
     """선택한 백엔드로 프롬프트를 전송해 저장 가능한 최종 응답을 반환한다."""
@@ -58,7 +63,7 @@ async def _generate_codex_cli(settings: ServiceSettings, prompt: str) -> LLMResu
 
 async def _generate_codex_runner(settings: ServiceSettings, prompt: str) -> LLMResult:
     """비공개 Runner HTTP 계약을 공통 LLM 결과 계약으로 정규화한다."""
-    if not settings.codex_runner_url:
+    if not settings.codex_runner_url or not settings.codex_runner_token:
         raise LLMBackendError("Codex runner call failed.")
 
     try:
@@ -69,7 +74,10 @@ async def _generate_codex_runner(settings: ServiceSettings, prompt: str) -> LLMR
             response = await client.post(
                 f"{settings.codex_runner_url.rstrip('/')}/v1/generate",
                 json={"prompt": prompt},
+                headers={"X-Runner-Token": settings.codex_runner_token},
             )
+            if response.status_code == 503:
+                raise LLMBackendOverloadedError("Codex runner is overloaded.")
             response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):

@@ -2,7 +2,7 @@
 set -eu
 
 # API 컨테이너는 API DB bootstrap이 작성한 런타임 파일만 사용한다.
-database_env="${ORCH_RUNTIME_DIR}/db.env"
+database_env="${ORCH_RUNTIME_DIR:?ORCH_RUNTIME_DIR is required for the Agent Orchestration API container.}/db.env"
 
 if [ ! -r "${database_env}" ]; then
   echo "Agent Orchestration DB runtime configuration is unavailable." >&2

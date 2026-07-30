@@ -5,8 +5,8 @@
 저장하기 전 공유하는 경계에 위치한다.
 
 [기능]
-모든 LLM 백엔드가 반환하는 텍스트·모델·토큰 사용량과, API 계층이 502로 변환할
-백엔드 오류를 하나의 불변 계약으로 정의한다.
+모든 LLM 백엔드가 반환하는 텍스트·모델·토큰 사용량과, API 계층이 502 또는
+503으로 변환할 백엔드 오류를 하나의 불변 계약으로 정의한다.
 
 [비책임]
 Codex CLI 실행(agent_orchestration.codex), Runner HTTP 라우팅
@@ -20,6 +20,10 @@ from dataclasses import dataclass
 
 class LLMBackendError(RuntimeError):
     """외부 LLM 백엔드 호출을 안전하게 API 계층으로 전달하는 오류."""
+
+
+class LLMBackendOverloadedError(LLMBackendError):
+    """LLM 실행 경계가 즉시 재시도 불가한 과부하를 반환한 오류."""
 
 
 @dataclass(frozen=True)

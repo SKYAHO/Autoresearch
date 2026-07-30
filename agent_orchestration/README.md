@@ -104,13 +104,13 @@
   보장한다. Runner `/healthcheck`는 첫 생성 요청 전에 Runner 전용 설정과 semaphore를
   준비해 Kubernetes readiness/liveness probe에 사용한다. 두 endpoint 모두 Codex OAuth
   세션·실제 Codex 호출·기동 후 PostgreSQL 연결 상태는 검사하지 않는다.
-- 현재는 요청마다 PostgreSQL 연결과 Codex 하위 프로세스를 하나씩 만들며 동시 요청
-  상한이 없다. 배포 전에는 `psycopg_pool.ConnectionPool`과 Codex 실행
-  `asyncio.Semaphore`를 도입하고, 한도를 넘는 요청의 `429` 또는 `503` 계약을 정한다.
+- 현재는 요청마다 PostgreSQL 연결을 만들며 connection pool은 후속 범위다. GKE Runner는
+  `RUNNER_MAX_CONCURRENCY`(기본 1)로 Codex 실행을 제한하고, 사용 중인 슬롯이 있으면
+  대기열을 만들지 않고 `503`을 반환한다. API는 이 `503`을 그대로 호출자에게 전달한다.
 - 응답의 `latency_ms`는 LLM 호출 시간만 나타내며 PostgreSQL 저장 시간은 포함하지
   않는다.
 - Swagger(`/docs`)는 `X-Orch-Token`을 필수 헤더로 표시하고, 인증 실패(`401`), LLM
-  호출 실패(`502`), 저장 실패(`500`) 응답을 명시한다. 헤더가 실제로 누락되거나
+  호출 실패(`502`), Runner 과부하(`503`), 저장 실패(`500`) 응답을 명시한다. 헤더가 실제로 누락되거나
   틀린 경우에도 런타임 응답은 `401`이다.
 - Codex 하위 프로세스의 `HOME`, `TMPDIR`, XDG cache/state 경로는 요청별 임시 디렉터리로
   한정한다. 배포 runner는 이 쓰기 경로를 별도 emptyDir로 제공하고, 프록시·CA 등
@@ -126,10 +126,12 @@ API 결제 방식으로 전환할 때만 `LLM_BACKEND=openai`와 `OPENAI_API_KEY
 
 - 로컬 개발: `LLM_BACKEND=codex_cli`(기본값). API 프로세스가 요청별 격리된
   Codex CLI를 직접 실행합니다.
-- GKE API: `LLM_BACKEND=codex_runner`와 절대 URL `CODEX_RUNNER_URL`을 설정합니다.
-  API는 비공개 Runner의 `POST /v1/generate`만 호출하며, Runner의 Codex 실행
-  동시성은 `RUNNER_MAX_CONCURRENCY`(기본 1)로 제한합니다.
-- Runner는 API 공유 토큰과 PostgreSQL 설정을 읽지 않습니다. OAuth 자격 증명 값은
+- GKE API: `LLM_BACKEND=codex_runner`, 절대 URL `CODEX_RUNNER_URL`, 별도 내부 토큰
+  `ORCH_RUNNER_TOKEN`을 설정합니다. API는 `X-Runner-Token`으로 비공개 Runner의
+  `POST /v1/generate`만 호출합니다. Runner Codex 시간 제한은 110초, API HTTP 시간
+  제한은 120초로 API가 Runner의 정리 결과를 먼저 받을 여유를 둡니다.
+- Runner는 API 공유 토큰·PostgreSQL 설정을 읽지 않으며, `ORCH_RUNNER_TOKEN`만 API와
+  공유합니다. OAuth 자격 증명 값은
   문서·환경 예시·애플리케이션 로그에 기록하지 않습니다.
 
 ## Codex OAuth 배포 설계
@@ -139,3 +141,6 @@ API 결제 방식으로 전환할 때만 `LLM_BACKEND=openai`와 `OPENAI_API_KEY
 [`docs/specs/2026-07-30-codex-oauth-runner-isolation.md`](../docs/specs/2026-07-30-codex-oauth-runner-isolation.md)를
 따른다. API와 Runner는 별도 이미지·KSA/GSA·Service·NetworkPolicy로 배포하며,
 이미지 digest와 Terraform 입력이 확정되기 전에는 ArgoCD sync를 수행하지 않는다.
+Runner OAuth bootstrap init container는 **API 이미지**를 실행하지만 Runner 전용
+KSA/GSA와 PVC를 사용해 OAuth 시크릿 하나만 읽는다. 이는 API 런타임 Pod에 OAuth
+파일·PVC·Secret Manager 권한을 주지 않는 분리 경계를 유지하기 위한 선택이다.

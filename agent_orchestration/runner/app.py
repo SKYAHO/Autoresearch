@@ -5,8 +5,9 @@
 실행하고, 결과를 API 서버로 반환하는 구간이다.
 
 [기능]
-엄격한 생성 요청·응답 스키마와 동시 실행 상한을 제공하고, 공용 Codex 실행
-경계의 결과에 Runner 처리 시간을 추가한다.
+엄격한 생성 요청·응답 스키마, API 전용 내부 요청 토큰 검증, 즉시 거절하는
+동시 실행 상한을 제공하고 공용 Codex 실행 경계의 결과에 Runner 처리 시간을
+추가한다.
 
 [비책임]
 외부 호출자 인증·DB 저장·OpenAI API 선택(agent_orchestration.app), OAuth
@@ -16,9 +17,10 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from time import perf_counter
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, ConfigDict
 
 from agent_orchestration.codex import generate_codex_response
@@ -44,6 +46,14 @@ class GenerateResponse(BaseModel):
     token_count: int | None
 
 
+def _runner_tokens_match(provided_token: str, expected_token: str) -> bool:
+    """Runner 내부 토큰을 Unicode 입력에도 안전하게 비교한다."""
+    return secrets.compare_digest(
+        provided_token.encode("utf-8"),
+        expected_token.encode("utf-8"),
+    )
+
+
 def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
     """Runner FastAPI 앱을 생성한다.
 
@@ -67,15 +77,30 @@ def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
         return runtime_settings, semaphore
 
     @app.get("/healthcheck")
-    def healthcheck() -> dict[str, str]:
+    async def healthcheck() -> dict[str, str]:
         """배포 probe에서 Runner 설정과 동시성 제어 준비 상태를 검증한다."""
         runtime()
         return {"status": "ok"}
 
     @app.post("/v1/generate", response_model=GenerateResponse)
-    async def generate(request: GenerateRequest) -> GenerateResponse:
+    async def generate(
+        request: GenerateRequest,
+        x_runner_token: str | None = Header(default=None, alias="X-Runner-Token"),
+    ) -> GenerateResponse:
         """하나의 프롬프트를 동시성 상한 안에서 Codex CLI에 위임한다."""
         runtime_settings, semaphore = runtime()
+        if not x_runner_token or not _runner_tokens_match(
+            x_runner_token, runtime_settings.api_token
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid runner API token.",
+            )
+        if semaphore.locked():
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Runner is temporarily overloaded.",
+            )
         started_at = perf_counter()
         async with semaphore:
             result = await generate_codex_response(runtime_settings.codex, request.prompt)
