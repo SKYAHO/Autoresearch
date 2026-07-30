@@ -61,8 +61,8 @@
 
 ### 🤖 오케스트레이션 (Experiment API)
 
-- [Spec — Agent Orchestration 채팅 저장 스켈레톤](specs/2026-07-30-agent-orchestration-chat-postgres-skeleton.md)
-- [Plan — Agent Orchestration 1단계 구현 계획](plans/2026-07-30-agent-orchestration-chat-postgres-skeleton.md)
+- [Spec — Agent Orchestration 채팅 저장 스켈레톤](archive/specs/2026-07-30-agent-orchestration-chat-postgres-skeleton.md) (구현 완료)
+- [Plan — Agent Orchestration 1단계 구현 계획](archive/plans/2026-07-30-agent-orchestration-chat-postgres-skeleton.md) (구현 완료)
 - `agent_orchestration/` (FastAPI + Codex CLI/OpenAI + PostgreSQL 실험 API)
 
 ### 🌬️ 오케스트레이션 (Airflow)
@@ -102,7 +102,6 @@
   GitHub Pages에 누적된 merge PR 리포트의 정적 검색 인덱스
 - [모델 승격 구조화 결과 계약](specs/2026-07-29-model-promotion-structured-outcome.md) —
   승격·게이트 미달·후보 없음·실행 오류의 기계 판독 결과와 Airflow 인계 계약
-- [Agent Orchestration 채팅 저장 스켈레톤](specs/2026-07-30-agent-orchestration-chat-postgres-skeleton.md) — `/chat` 기본 저장 계약
 
 ## 가이드
 
