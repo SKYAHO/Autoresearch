@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -99,6 +100,34 @@ def test_load_settings_requires_api_token(monkeypatch: pytest.MonkeyPatch) -> No
 
     with pytest.raises(ValueError, match="ORCH_API_TOKEN"):
         load_settings()
+
+
+@pytest.mark.parametrize(
+    "name",
+    (
+        "CODEX_TIMEOUT_SEC",
+        "OPENAI_MAX_TOKENS",
+        "OPENAI_TIMEOUT_SEC",
+        "ORCH_DB_CONNECT_TIMEOUT_SEC",
+    ),
+)
+@pytest.mark.parametrize("value", ("0", "-1"))
+def test_load_settings_rejects_non_positive_numeric_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    value: str,
+) -> None:
+    """0 이하의 요청 제한값은 기동 시점에 거부한다."""
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=name):
+        load_settings()
+
+
+def test_api_token_comparison_handles_non_ascii_values() -> None:
+    """비 ASCII 토큰은 500 없이 불일치 인증으로 처리한다."""
+    assert not main_module._api_tokens_match("잘못된 토큰", "정상 토큰")
 
 
 def test_generate_response_uses_read_only_ephemeral_codex_cli(
@@ -277,6 +306,58 @@ def test_generate_codex_cli_terminates_process_group_after_timeout(
         asyncio.run(generate_response(settings, "질문"))
 
     assert process_group_terminated
+
+
+def test_generate_codex_cli_logs_redacted_stderr_after_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """시간 초과 후 회수한 stderr는 프롬프트를 제거한 서버 로그로 남긴다."""
+    prompt = "비밀 프롬프트"
+
+    class FakeProcess:
+        returncode = -9
+        pid = 123
+
+        async def communicate(self, input: bytes) -> tuple[bytes, bytes]:
+            await asyncio.sleep(0.01)
+            return b"", f"failed for {input.decode()}".encode()
+
+    async def fake_create_subprocess_exec(*_args: str, **_kwargs: object) -> FakeProcess:
+        return FakeProcess()
+
+    settings = ServiceSettings(
+        openai_api_key=None,
+        openai_model="gpt-5.3-codex-spark",
+        openai_max_tokens=1024,
+        openai_timeout_sec=60,
+        database_url="postgresql://orch:pw@localhost:5432/orch",
+        interactions_table="chat_interactions",
+        api_token="test-api-token",
+        codex_home="/tmp/test-codex-home",
+        codex_timeout_sec=0,
+    )
+    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(llm_module, "_terminate_process_group", lambda _process: None)
+    caplog.set_level(logging.WARNING, logger=llm_module.__name__)
+
+    with pytest.raises(LLMBackendError, match="Codex CLI timed out."):
+        asyncio.run(generate_response(settings, prompt))
+
+    assert "[REDACTED_PROMPT]" in caplog.text
+    assert prompt not in caplog.text
+
+
+def test_redact_stderr_removes_credential_like_values() -> None:
+    """운영 stderr 로그에서 자격 증명 값은 남기지 않는다."""
+    redacted = llm_module._redact_stderr(
+        b"refresh_token=shared-oauth-secret\nauthorization: Bearer another-secret",
+        "unrelated prompt",
+    )
+
+    assert "shared-oauth-secret" not in redacted
+    assert "another-secret" not in redacted
+    assert redacted.count("[REDACTED_SECRET]") == 2
 
 
 def test_db_validate_table_name() -> None:

@@ -354,6 +354,7 @@ dev = [
     { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" } },
     { name = "google-cloud-bigquery" },
     { name = "httpx" },
+    { name = "openai" },
     { name = "prometheus-client" },
     { name = "psycopg", extra = ["binary"], marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-orchestration') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "pytest" },
@@ -376,6 +377,7 @@ lint = [
 ]
 orchestration = [
     { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" } },
+    { name = "openai" },
     { name = "psycopg", extra = ["binary"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
@@ -423,6 +425,7 @@ dev = [
     { name = "fastapi", specifier = ">=0.115,<0.129" },
     { name = "google-cloud-bigquery", specifier = ">=3.20" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
+    { name = "openai", specifier = ">=1.0" },
     { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "pytest", specifier = ">=8.0" },
@@ -443,6 +446,7 @@ feast = [
 lint = [{ name = "ruff", specifier = "==0.15.18" }]
 orchestration = [
     { name = "fastapi", specifier = ">=0.115,<0.129" },
+    { name = "openai", specifier = ">=1.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]

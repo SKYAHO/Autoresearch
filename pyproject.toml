@@ -85,6 +85,7 @@ orchestration = [
     "fastapi>=0.115,<0.129",
     "uvicorn[standard]>=0.32,<0.35",
     "psycopg[binary]>=3.2,<4",
+    "openai>=1.0",
 ]
 [tool.pytest.ini_options]
 # scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외

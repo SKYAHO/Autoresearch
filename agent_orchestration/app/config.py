@@ -72,8 +72,8 @@ def load_settings() -> ServiceSettings:
         else None
     )
     openai_model = os.getenv("OPENAI_MODEL", "gpt-5.3-codex-spark").strip()
-    openai_max_tokens = _env_int("OPENAI_MAX_TOKENS", 1024)
-    openai_timeout_sec = _env_int("OPENAI_TIMEOUT_SEC", 60)
+    openai_max_tokens = _positive_env_int("OPENAI_MAX_TOKENS", 1024)
+    openai_timeout_sec = _positive_env_int("OPENAI_TIMEOUT_SEC", 60)
     codex_cli_path = _require_env("CODEX_CLI_PATH", os.getenv("CODEX_CLI_PATH", "codex"))
     codex_home = (
         _require_env("CODEX_HOME", os.getenv("CODEX_HOME"))
@@ -81,7 +81,7 @@ def load_settings() -> ServiceSettings:
         else os.getenv("CODEX_HOME", "").strip()
     )
     codex_model = os.getenv("CODEX_MODEL", "").strip() or None
-    codex_timeout_sec = _env_int("CODEX_TIMEOUT_SEC", 120)
+    codex_timeout_sec = _positive_env_int("CODEX_TIMEOUT_SEC", 120)
     api_token = _require_env("ORCH_API_TOKEN", os.getenv("ORCH_API_TOKEN"))
     database_connect_timeout_sec = _positive_env_int("ORCH_DB_CONNECT_TIMEOUT_SEC", 10)
 

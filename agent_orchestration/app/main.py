@@ -32,6 +32,14 @@ from agent_orchestration.app.schemas import ChatRequest, ChatResponse
 logger = logging.getLogger(__name__)
 
 
+def _api_tokens_match(provided_token: str, expected_token: str) -> bool:
+    """HTTP 헤더의 비 ASCII 값도 예외 없이 안전하게 비교한다."""
+    return secrets.compare_digest(
+        provided_token.encode("utf-8"),
+        expected_token.encode("utf-8"),
+    )
+
+
 def create_app() -> FastAPI:
     """FastAPI 앱과 의존성(설정, LLM 백엔드, DB)을 구성."""
     settings: ServiceSettings | None = None
@@ -84,7 +92,7 @@ def create_app() -> FastAPI:
     ) -> ChatResponse:
         """채팅 프롬프트를 LLM으로 전송 후 PostgreSQL에 저장하고 결과를 반환."""
         runtime_settings = _require_runtime()
-        if not x_orch_token or not secrets.compare_digest(x_orch_token, runtime_settings.api_token):
+        if not x_orch_token or not _api_tokens_match(x_orch_token, runtime_settings.api_token):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid orchestration API token.",
