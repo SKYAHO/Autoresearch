@@ -1,9 +1,9 @@
 # agent_orchestration
 
 `FastAPI + Codex CLI + PostgreSQL` 기반 기본 스켈레톤입니다.
-1단계 목표는 `/chat` 호출 결과를 팀 공용 ChatGPT 계정으로 OAuth 로그인된 Codex
-CLI에서 받은 텍스트와 함께 PostgreSQL에 저장하는 것입니다. 기본 모드는 OpenAI
-API 키나 API 크레딧을 사용하지 않습니다.
+`/chat` 호출 결과를 Codex에서 받은 텍스트와 함께 PostgreSQL에 저장합니다. 로컬
+개발의 기본 백엔드는 `codex_cli`이며, GKE API는 비공개 `codex_runner` Service를
+호출합니다. 기본 모드는 OpenAI API 키나 API 크레딧을 사용하지 않습니다.
 
 ## 로컬 실행(1단계)
 
@@ -112,6 +112,16 @@ API 키나 API 크레딧을 사용하지 않습니다.
 
 API 결제 방식으로 전환할 때만 `LLM_BACKEND=openai`와 `OPENAI_API_KEY`를 설정한다.
 그 외 `/chat`과 PostgreSQL 저장 계약은 유지한다.
+
+## Codex 백엔드 구분
+
+- 로컬 개발: `LLM_BACKEND=codex_cli`(기본값). API 프로세스가 요청별 격리된
+  Codex CLI를 직접 실행합니다.
+- GKE API: `LLM_BACKEND=codex_runner`와 절대 URL `CODEX_RUNNER_URL`을 설정합니다.
+  API는 비공개 Runner의 `POST /v1/generate`만 호출하며, Runner의 Codex 실행
+  동시성은 `RUNNER_MAX_CONCURRENCY`(기본 1)로 제한합니다.
+- Runner는 API 공유 토큰과 PostgreSQL 설정을 읽지 않습니다. OAuth 자격 증명 값은
+  문서·환경 예시·애플리케이션 로그에 기록하지 않습니다.
 
 ## Codex OAuth 배포 설계(후속)
 

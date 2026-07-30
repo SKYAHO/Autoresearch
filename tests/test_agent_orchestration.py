@@ -20,12 +20,15 @@ from agent_orchestration.app import db as db_module
 from agent_orchestration.app import llm as llm_module
 from agent_orchestration.app import main as main_module
 from agent_orchestration.app.llm import LLMBackendError, LLMResult, generate_response
+from agent_orchestration import codex as codex_module
 
 
 _SETTINGS_ENV_VARS = (
     "CODEX_CLI_PATH",
     "CODEX_HOME",
     "CODEX_MODEL",
+    "CODEX_RUNNER_TIMEOUT_SEC",
+    "CODEX_RUNNER_URL",
     "CODEX_TIMEOUT_SEC",
     "DATABASE_URL",
     "LLM_BACKEND",
@@ -105,6 +108,38 @@ def test_load_settings_openai_does_not_require_codex_runtime_settings(
     assert settings.codex_home == ""
 
 
+def test_load_settings_codex_runner_uses_private_url_without_local_codex_home(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner 백엔드는 API 프로세스의 로컬 Codex 홈을 요구하지 않는다."""
+    monkeypatch.setenv("LLM_BACKEND", "codex_runner")
+    monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
+    monkeypatch.setenv("CODEX_CLI_PATH", "   ")
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+
+    settings = load_settings()
+
+    assert settings.llm_backend == "codex_runner"
+    assert settings.codex_runner_url == "http://runner:8080"
+    assert settings.codex_runner_timeout_sec == 120
+    assert settings.codex_home == ""
+
+
+@pytest.mark.parametrize("runner_url", ("", "runner:8080", "/v1/generate"))
+def test_load_settings_codex_runner_requires_absolute_url(
+    monkeypatch: pytest.MonkeyPatch,
+    runner_url: str,
+) -> None:
+    """API가 private Runner에 요청을 위임하려면 절대 URL이 필요하다."""
+    monkeypatch.setenv("LLM_BACKEND", "codex_runner")
+    monkeypatch.setenv("CODEX_RUNNER_URL", runner_url)
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
+
+    with pytest.raises(ValueError, match="CODEX_RUNNER_URL"):
+        load_settings()
+
+
 def test_load_settings_uses_default_for_blank_openai_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -136,6 +171,7 @@ def test_load_settings_rejects_invalid_interactions_table(
     ("name", "attribute", "default"),
     [
         ("CODEX_TIMEOUT_SEC", "codex_timeout_sec", 120),
+        ("CODEX_RUNNER_TIMEOUT_SEC", "codex_runner_timeout_sec", 120),
         ("OPENAI_MAX_TOKENS", "openai_max_tokens", 1024),
         ("OPENAI_TIMEOUT_SEC", "openai_timeout_sec", 60),
         ("ORCH_DB_CONNECT_TIMEOUT_SEC", "database_connect_timeout_sec", 10),
@@ -201,6 +237,7 @@ def test_load_settings_rejects_whitespace_only_required_values(
     "name",
     (
         "CODEX_TIMEOUT_SEC",
+        "CODEX_RUNNER_TIMEOUT_SEC",
         "OPENAI_MAX_TOKENS",
         "OPENAI_TIMEOUT_SEC",
         "ORCH_DB_CONNECT_TIMEOUT_SEC",
@@ -259,7 +296,7 @@ def test_generate_response_uses_read_only_ephemeral_codex_cli(
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
     result = asyncio.run(generate_response(settings, "질문"))
 
@@ -310,7 +347,7 @@ def test_generate_codex_cli_passes_configured_model(monkeypatch: pytest.MonkeyPa
         codex_home="/tmp/test-codex-home",
         codex_model="gpt-5.3-codex-spark",
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
     result = asyncio.run(generate_response(settings, "질문"))
 
@@ -360,7 +397,7 @@ def test_generate_codex_cli_rejects_invalid_process_output(
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
     with pytest.raises(LLMBackendError, match=expected_message):
         asyncio.run(generate_response(settings, "질문"))
@@ -398,8 +435,8 @@ def test_generate_codex_cli_terminates_process_group_after_timeout(
         codex_home="/tmp/test-codex-home",
         codex_timeout_sec=1,
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(llm_module, "_terminate_process_group", fake_terminate_process_group)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module, "_terminate_process_group", fake_terminate_process_group)
 
     with pytest.raises(LLMBackendError, match="Codex CLI timed out."):
         asyncio.run(generate_response(settings, "질문"))
@@ -415,9 +452,9 @@ def test_terminate_process_group_targets_dedicated_process_group(
     killed: list[tuple[int, signal.Signals]] = []
     process = SimpleNamespace(returncode=None, pid=12345)
 
-    monkeypatch.setattr(llm_module.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(codex_module.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
 
-    llm_module._terminate_process_group(process)
+    codex_module._terminate_process_group(process)
 
     assert killed == [(12345, signal.SIGKILL)]
 
@@ -452,9 +489,9 @@ def test_generate_codex_cli_omits_stderr_from_timeout_logs(
         codex_home="/tmp/test-codex-home",
         codex_timeout_sec=1,
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(llm_module, "_terminate_process_group", lambda _process: None)
-    caplog.set_level(logging.WARNING, logger=llm_module.__name__)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module, "_terminate_process_group", lambda _process: None)
+    caplog.set_level(logging.WARNING, logger=codex_module.__name__)
 
     with pytest.raises(LLMBackendError, match="Codex CLI timed out."):
         asyncio.run(generate_response(settings, prompt))
@@ -498,8 +535,8 @@ def test_generate_codex_cli_terminates_process_group_when_request_is_cancelled(
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(llm_module, "_terminate_process_group", fake_terminate_process_group)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module, "_terminate_process_group", fake_terminate_process_group)
 
     async def cancel_request() -> None:
         request_task = asyncio.create_task(generate_response(settings, "질문"))

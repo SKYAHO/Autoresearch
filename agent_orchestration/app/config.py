@@ -61,14 +61,16 @@ class ServiceSettings:
     codex_home: str = ""
     codex_model: str | None = None
     codex_timeout_sec: int = 120
+    codex_runner_url: str | None = None
+    codex_runner_timeout_sec: int = 120
     database_connect_timeout_sec: int = 10
 
 
 def load_settings() -> ServiceSettings:
     """환경 변수에서 설정을 읽어 타입/기본값을 정합."""
     llm_backend = os.getenv("LLM_BACKEND", "codex_cli").strip().lower()
-    if llm_backend not in {"codex_cli", "openai"}:
-        raise ValueError("LLM_BACKEND must be one of: codex_cli, openai.")
+    if llm_backend not in {"codex_cli", "codex_runner", "openai"}:
+        raise ValueError("LLM_BACKEND must be one of: codex_cli, codex_runner, openai.")
 
     openai_api_key = (
         _require_env("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
@@ -90,6 +92,13 @@ def load_settings() -> ServiceSettings:
     )
     codex_model = os.getenv("CODEX_MODEL", "").strip() or None
     codex_timeout_sec = _positive_env_int("CODEX_TIMEOUT_SEC", 120)
+    codex_runner_timeout_sec = _positive_env_int("CODEX_RUNNER_TIMEOUT_SEC", 120)
+    codex_runner_url = os.getenv("CODEX_RUNNER_URL", "").strip() or None
+    if llm_backend == "codex_runner":
+        codex_runner_url = _require_env("CODEX_RUNNER_URL", codex_runner_url)
+        parsed_runner_url = urlparse(codex_runner_url)
+        if parsed_runner_url.scheme not in {"http", "https"} or not parsed_runner_url.netloc:
+            raise ValueError("CODEX_RUNNER_URL must be an absolute HTTP(S) URL.")
     api_token = _require_env("ORCH_API_TOKEN", os.getenv("ORCH_API_TOKEN"))
     if len(api_token) < 32:
         raise ValueError("ORCH_API_TOKEN must be at least 32 characters long.")
@@ -122,5 +131,7 @@ def load_settings() -> ServiceSettings:
         codex_home=codex_home,
         codex_model=codex_model,
         codex_timeout_sec=codex_timeout_sec,
+        codex_runner_url=codex_runner_url,
+        codex_runner_timeout_sec=codex_runner_timeout_sec,
         database_connect_timeout_sec=database_connect_timeout_sec,
     )
