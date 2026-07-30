@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-30T00:48:03Z",
+  "generated_at": "2026-07-30T01:16:41Z",
   "reports": [
+    {
+      "number": 420,
+      "title": "fix: 프로젝트 이전 잔여 참조 정리 — 로컬 기본값·runbook (#419)",
+      "author": "hyeongyu-data",
+      "merged_at": "2026-07-30T01:16:22Z",
+      "summary_ko": [
+        "인프라 프로젝트 이전 후 앱에 남아 있던 구 GCP 프로젝트(ar-infra-501607) 잔여 참조를 정리했습니다.",
+        "피처 스토어 빌드 배치 작업의 로컬 기본 설정과 환경 변수 예시(.env.example)의 프로젝트 ID를 갱신했습니다.",
+        "액션 로그 피처 루프 운영 런북 문서의 GCP 프로젝트 ID 및 GCS 버킷 명칭 예시를 현행화했습니다."
+      ],
+      "report_url": "pr/420/"
+    },
     {
       "number": 418,
       "title": "chore: feast apply Environment 좌표 배선",
