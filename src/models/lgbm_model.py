@@ -1,11 +1,27 @@
-"""LightGBM 모델 wrapper."""
+"""LightGBM 모델 wrapper.
+
+[파이프라인] 학습(src/pipeline/train.py)이 사용하는 champion 계열 모델 구현체.
+model_contract 스칼라 피처를 축정렬 분할(tree split)로 학습한다.
+
+[기능] src.models.base.CTRModel 인터페이스(fit/predict_proba/save/load)를 구현해,
+향후 train.py가 다른 모델 구현체와 다형적으로 다룰 수 있게 한다. save/load는 기존
+프로덕션 경로(src.utils.model_utils.save_model/load_model이 raw LightGBM booster를
+직접 joblib 저장)와 동일한 결과를 내도록 override한다 — 인터페이스 추가가 기존 저장
+아티팩트 포맷을 바꾸지 않는다(additive,
+docs/specs/2026-07-30-ctr-model-interface-port.md 참고).
+
+[비책임] ONNX 변환은 여전히 src.utils.model_utils.convert_lgbm_to_onnx가 전담한다
+(이 클래스는 변환하지 않는다).
+"""
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
+from src.models.base import CTRModel
 
-class LGBMModel:
+
+class LGBMModel(CTRModel):
     """LightGBM 이진 분류 모델 wrapper."""
 
     def __init__(
@@ -88,3 +104,25 @@ class LGBMModel:
         if self.model is None:
             raise ValueError("모델이 학습되지 않았습니다.")
         return self.model.predict(X)
+
+    def save(self, path: str) -> None:
+        """raw LightGBM booster(self.model)를 joblib으로 저장한다.
+
+        기존 src.pipeline.train이 호출해온 save_model(model.model, model_path)와
+        동일한 결과물(raw booster, wrapper 아님)을 만든다 — 서빙(model_loader)이
+        이 포맷을 그대로 기대하므로 아티팩트 포맷은 바뀌지 않는다.
+        """
+        if self.model is None:
+            raise ValueError("모델이 학습되지 않았습니다.")
+        from src.utils.model_utils import save_model
+
+        save_model(self.model, path)
+
+    @classmethod
+    def load(cls, path: str) -> "LGBMModel":
+        """joblib으로 저장된 raw LightGBM booster를 불러와 wrapper에 담는다."""
+        from src.utils.model_utils import load_model
+
+        instance = cls(scale_pos_weight=1)
+        instance.model = load_model(path)
+        return instance

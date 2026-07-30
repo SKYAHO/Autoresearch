@@ -61,3 +61,46 @@ def test_ctr_model_load_missing_file_raises_file_not_found_error(tmp_path) -> No
     missing_path = tmp_path / "does_not_exist.joblib"
     with pytest.raises(FileNotFoundError):
         CTRModel.load(str(missing_path))
+
+
+def test_lgbm_model_save_load_round_trip_matches_serving_contract(tmp_path) -> None:
+    import joblib
+    import lightgbm as lgb
+
+    from src.models.lgbm_model import LGBMModel
+
+    X, y = _tiny_dataset()
+    # LightGBM 4.x는 categorical_feature로 지정한 컬럼이 pandas "category" dtype이어야
+    # 한다(object dtype은 ValueError) — 프로덕션 경로(src/pipeline/train.py의
+    # collect_categorical_categories)와 동일한 캐스팅을 테스트 픽스처에도 적용한다.
+    X = X.assign(cat_feature=X["cat_feature"].astype("category"))
+    model = LGBMModel(scale_pos_weight=1.0, n_estimators=5, num_leaves=3, random_state=42)
+    model.fit(X, y, categorical_features=["cat_feature"])
+
+    model_path = tmp_path / "model.joblib"
+    model.save(str(model_path))
+
+    # 서빙(src/serving/model_loader.py)과 동일한 로드 경로 — joblib.load를 직접 호출한다.
+    loaded = joblib.load(model_path)
+
+    assert isinstance(loaded, lgb.LGBMClassifier)
+    proba = loaded.predict_proba(X)
+    assert proba.shape == (len(X), 2)
+
+
+def test_lgbm_model_load_classmethod_round_trip(tmp_path) -> None:
+    from src.models.lgbm_model import LGBMModel
+
+    X, y = _tiny_dataset()
+    X = X.assign(cat_feature=X["cat_feature"].astype("category"))
+    model = LGBMModel(scale_pos_weight=1.0, n_estimators=5, num_leaves=3, random_state=42)
+    model.fit(X, y, categorical_features=["cat_feature"])
+
+    model_path = tmp_path / "model.joblib"
+    model.save(str(model_path))
+
+    loaded = LGBMModel.load(str(model_path))
+
+    assert isinstance(loaded, LGBMModel)
+    proba = loaded.predict_proba(X)
+    assert proba.shape == (len(X), 2)
