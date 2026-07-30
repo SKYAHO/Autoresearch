@@ -352,6 +352,120 @@ def test_streaming_writer_exception_removes_spools(tmp_path) -> None:
     assert list(tmp_path.iterdir()) == []
 
 
+def test_streaming_writer_keeps_new_outputs_after_post_commit_stat_failure(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """세 output replace가 끝난 뒤의 stat 실패는 committed publish를 되돌리지 않는다."""
+
+    request = _request(tmp_path)
+    final_paths = {
+        Path(request.output_path),
+        Path(request.warehouse_output_path),
+        Path(request.quarantine_output_path),
+    }
+    for path in final_paths:
+        path.write_bytes(b"previous output")
+    event = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    original_replace = Path.replace
+    original_exists = Path.exists
+    committed_replaces = 0
+    post_commit_stat_attempted = False
+
+    def record_final_replace(source: Path, target: str | Path) -> Path:
+        nonlocal committed_replaces
+        result = original_replace(source, target)
+        if Path(target) in final_paths:
+            committed_replaces += 1
+        return result
+
+    def fail_post_commit_final_stat(path: Path) -> bool:
+        nonlocal post_commit_stat_attempted
+        if committed_replaces == 3 and path in final_paths:
+            post_commit_stat_attempted = True
+            raise OSError("post-commit final stat failed")
+        return original_exists(path)
+
+    monkeypatch.setattr(Path, "replace", record_final_replace)
+    monkeypatch.setattr(Path, "exists", fail_post_commit_final_stat)
+
+    with pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    ) as writer:
+        writer.write_events([event])
+        writer.finalize_success("2026-07-30T09:00:00+00:00")
+        assert writer._committed is True
+
+    assert committed_replaces == 3
+    assert post_commit_stat_attempted is False
+    assert pq.ParquetFile(request.output_path).read(columns=["event_id"]).column(
+        0
+    ).to_pylist() == [event.event_id]
+    assert [
+        json.loads(line)["event_id"]
+        for line in Path(request.warehouse_output_path).read_text(encoding="utf-8").splitlines()
+    ] == [event.event_id]
+    assert Path(request.quarantine_output_path).read_text(encoding="utf-8") == ""
+
+
+def test_streaming_writer_keeps_quarantine_commit_when_post_commit_cleanup_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """q-only commit 뒤 cleanup과 warning sink가 실패해도 원래 quarantine 오류가 우선이다."""
+
+    request = _request(tmp_path)
+    quarantine = QuarantineRecord(
+        user_id="u1",
+        error_type="invalid_json",
+        error_message="broken",
+    )
+    writer = pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    )
+    original_unlink = Path.unlink
+
+    with pytest.raises(ActionLogGenerationError, match="quarantine threshold"):
+        with writer:
+            cleanup_paths = {
+                writer._event_spool_path,
+                writer._parquet_spool_path,
+                writer._warehouse_spool_path,
+            }
+
+            def fail_post_commit_cleanup(
+                path: Path,
+                *,
+                missing_ok: bool = False,
+            ) -> None:
+                if path in cleanup_paths:
+                    raise OSError("post-commit spool cleanup failed")
+                original_unlink(path, missing_ok=missing_ok)
+
+            def fail_cleanup_warning(*_args: object, **_kwargs: object) -> None:
+                raise RuntimeError("cleanup warning sink failed")
+
+            monkeypatch.setattr(Path, "unlink", fail_post_commit_cleanup)
+            monkeypatch.setattr(pipeline_module.logger, "warning", fail_cleanup_warning)
+            writer.write_quarantine([quarantine])
+            writer.finalize_quarantine_failure()
+            assert writer._committed is True
+            raise ActionLogGenerationError("quarantine threshold")
+
+    assert Path(request.quarantine_output_path).read_text(encoding="utf-8").count("\n") == 1
+    assert not Path(request.output_path).exists()
+    assert not Path(request.warehouse_output_path).exists()
+
+
 def test_streaming_writer_rolls_back_success_outputs_when_commit_fails(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

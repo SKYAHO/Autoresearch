@@ -4,7 +4,9 @@
 LLM 판정 worker와 single coordinator가 운영 상태를 기록하는 구간을 담당한다.
 
 [기능] shard micro-work progress와 bounded single-mode retention progress를
-식별자·원문 없이 JSON event로 기록하고, 상세/집계 telemetry 설정을 검증한다.
+식별자·원문 없이 JSON event로 기록한다. Streaming interval의 work 수·평균은
+정확히 집계하고, latency percentile은 고정 크기 deterministic sample로 제한한다.
+상세/집계 telemetry 설정도 검증한다.
 
 [비책임] LLM 요청·draft/event 생성과 output writer
 (autoresearch/action_logs/pipeline.py), OpenRouter client 호출
@@ -21,12 +23,21 @@ import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from heapq import heappush, heapreplace
 from time import monotonic
-from typing import Iterator, Literal, Protocol
+from typing import Final, Iterator, Literal, Protocol
 
 
 DEFAULT_TELEMETRY_DETAIL_MAX_WORK = 100
 DEFAULT_TELEMETRY_INTERVAL_SEC = 15.0
+STREAMING_TELEMETRY_PERCENTILE_SAMPLE_MAX_WORK: Final[int] = 2_048
+_STREAMING_AGGREGATE_METRIC_NAMES: Final[tuple[str, ...]] = (
+    "queue_wait_ms",
+    "request_elapsed_ms",
+    "parse_elapsed_ms",
+    "total_elapsed_ms",
+)
+_SAMPLE_PRIORITY_MASK: Final[int] = (1 << 64) - 1
 
 
 @dataclass(frozen=True)
@@ -207,6 +218,15 @@ def _average(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def _streaming_sample_priority(work_sequence: int) -> int:
+    """work 순서만으로 고정 크기 latency sample의 재현 가능한 우선순위를 만든다."""
+
+    value = (work_sequence + 0x9E3779B97F4A7C15) & _SAMPLE_PRIORITY_MASK
+    value = (value ^ (value >> 30)) * 0xBF58476D1CE4E5B9 & _SAMPLE_PRIORITY_MASK
+    value = (value ^ (value >> 27)) * 0x94D049BB133111EB & _SAMPLE_PRIORITY_MASK
+    return value ^ (value >> 31)
+
+
 class _StreamingRetentionSnapshot(Protocol):
     """single-mode coordinator가 reporter에 전달하는 식별자 없는 보존 수량."""
 
@@ -225,7 +245,12 @@ class _StreamingRetentionSnapshot(Protocol):
 
 
 class ActionLogStreamingTelemetryReporter:
-    """bounded single-mode retention progress와 확인된 작은 실행의 timing을 기록한다."""
+    """bounded single-mode retention progress와 안전한 timing을 기록한다.
+
+    Interval count와 평균은 online sum으로 정확히 유지한다. latency percentile은
+    ``STREAMING_TELEMETRY_PERCENTILE_SAMPLE_MAX_WORK`` 이하에서는 정확하고, 이를
+    넘으면 work sequence 기반의 고정 크기 deterministic sample로 근사한다.
+    """
 
     def __init__(
         self,
@@ -265,8 +290,14 @@ class ActionLogStreamingTelemetryReporter:
         self._logger = logger
         self._detail_max_work = resolved_detail_max_work
         self._aggregate_interval_sec = resolved_interval_sec
-        self._last_emit_at = monotonic()
-        self._window: list[dict[str, float]] = []
+        self._started_at = monotonic()
+        self._last_emit_at = self._started_at
+        self._aggregation_window_work = 0
+        self._aggregate_metric_sums: dict[str, float] = {
+            name: 0.0 for name in _STREAMING_AGGREGATE_METRIC_NAMES
+        }
+        # (-priority, -work_sequence, total_elapsed_ms) max-heap by sample priority.
+        self._latency_sample: list[tuple[int, int, float]] = []
         self._detail_metrics: list[dict[str, float | int]] = []
         self._detail_disabled = resolved_detail_max_work == 0
         self._provider_exhausted = False
@@ -312,7 +343,10 @@ class ActionLogStreamingTelemetryReporter:
             "parse_elapsed_ms": parse_elapsed_ms,
             "total_elapsed_ms": total_elapsed_ms,
         }
-        self._window.append(window_metrics)
+        self._aggregation_window_work += 1
+        for name, value in window_metrics.items():
+            self._aggregate_metric_sums[name] += value
+        self._record_latency_sample(work_sequence, total_elapsed_ms)
         if self._detail_disabled or len(self._detail_metrics) >= self._detail_max_work:
             return
         self._detail_metrics.append(
@@ -334,6 +368,39 @@ class ActionLogStreamingTelemetryReporter:
         self._detail_disabled = True
         self._detail_metrics.clear()
 
+    def _record_latency_sample(self, work_sequence: int, total_elapsed_ms: float) -> None:
+        """percentile 계산에 필요한 fixed-cap latency sample만 보관한다."""
+
+        priority = _streaming_sample_priority(work_sequence)
+        entry = (-priority, -work_sequence, total_elapsed_ms)
+        if len(self._latency_sample) < STREAMING_TELEMETRY_PERCENTILE_SAMPLE_MAX_WORK:
+            heappush(self._latency_sample, entry)
+            return
+
+        highest_retained_priority = -self._latency_sample[0][0]
+        highest_retained_work_sequence = -self._latency_sample[0][1]
+        if (priority, work_sequence) < (
+            highest_retained_priority,
+            highest_retained_work_sequence,
+        ):
+            heapreplace(self._latency_sample, entry)
+
+    def _reset_aggregate_window(self) -> None:
+        """다음 interval이 이전 aggregate state를 보유하지 않게 초기화한다."""
+
+        self._aggregation_window_work = 0
+        for name in _STREAMING_AGGREGATE_METRIC_NAMES:
+            self._aggregate_metric_sums[name] = 0.0
+        self._latency_sample.clear()
+
+    def _throughput_per_min(self, completed_work: int, *, now: float) -> float:
+        """streaming 시작 뒤 완료한 work의 누적 분당 처리량을 반환한다."""
+
+        elapsed_seconds = now - self._started_at
+        if completed_work <= 0 or elapsed_seconds <= 0.0:
+            return 0.0
+        return round(max(0, completed_work) / (elapsed_seconds / 60.0), 3)
+
     def _observe(self, snapshot: _StreamingRetentionSnapshot, *, force: bool) -> None:
         if snapshot.total_work is not None:
             self._provider_exhausted = True
@@ -352,7 +419,7 @@ class ActionLogStreamingTelemetryReporter:
         if not force and now - self._last_emit_at < self._aggregate_interval_sec:
             return
 
-        total_latencies = [metrics["total_elapsed_ms"] for metrics in self._window]
+        total_latencies = [entry[2] for entry in self._latency_sample]
         latency_p50_ms, latency_p95_ms = _latency_percentiles(total_latencies)
         fields: dict[str, object] = {
             "phase": snapshot.phase,
@@ -368,20 +435,22 @@ class ActionLogStreamingTelemetryReporter:
             "completed_work": snapshot.completed_work,
             "failed_work": snapshot.failed_work,
             "pending_work": snapshot.pending_work,
-            "aggregation_window_work": len(self._window),
+            "aggregation_window_work": self._aggregation_window_work,
+            "aggregation_sample_work": len(self._latency_sample),
+            "throughput_per_min": self._throughput_per_min(
+                snapshot.completed_work,
+                now=now,
+            ),
             "latency_p50_ms": round(latency_p50_ms, 3),
             "latency_p95_ms": round(latency_p95_ms, 3),
         }
-        for name in (
-            "queue_wait_ms",
-            "request_elapsed_ms",
-            "parse_elapsed_ms",
-            "total_elapsed_ms",
-        ):
-            fields[name] = round(
-                _average([metrics[name] for metrics in self._window]),
-                3,
+        for name in _STREAMING_AGGREGATE_METRIC_NAMES:
+            average = (
+                self._aggregate_metric_sums[name] / self._aggregation_window_work
+                if self._aggregation_window_work
+                else 0.0
             )
+            fields[name] = round(average, 3)
         emit_action_log_event(
             self._logger,
             logging.INFO,
@@ -389,7 +458,7 @@ class ActionLogStreamingTelemetryReporter:
             include_none_fields=True,
             **fields,
         )
-        self._window.clear()
+        self._reset_aggregate_window()
         self._last_emit_at = now
 
     def _emit_details(self, snapshot: _StreamingRetentionSnapshot) -> None:

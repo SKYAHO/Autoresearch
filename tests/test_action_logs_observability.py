@@ -145,6 +145,120 @@ def test_streaming_telemetry_emits_retention_and_progress_fields(
     assert progress["failed_work"] == 0
     assert "pending_work" in progress
     assert progress["pending_work"] is None
+    assert progress_events[0]["throughput_per_min"] == 0.0
+    assert progress["throughput_per_min"] == 12.0
+
+
+def test_streaming_telemetry_bounds_aggregate_percentile_sample_and_reports_actual_window_count(
+    caplog,
+    monkeypatch,
+) -> None:
+    """interval 집계는 100,000 work에서도 고정 크기 telemetry 상태만 보관한다."""
+
+    logger = logging.getLogger("test.action_log.streaming.bounded_aggregate")
+    now = [0.0]
+    monkeypatch.setattr(observability, "monotonic", lambda: now[0])
+    reporter = observability.ActionLogStreamingTelemetryReporter(
+        logger=logger,
+        detail_max_work=0,
+        aggregate_interval_sec=10.0,
+    )
+    final = _streaming_snapshot(
+        total_users=100_000,
+        activated_users=100_000,
+        submitted_work=100_000,
+        total_work=100_000,
+        completed_work=100_000,
+        pending_work=0,
+    )
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        reporter.start(_streaming_snapshot(total_users=100_000))
+        for work_sequence in range(100_000):
+            reporter.record_work(
+                work_sequence=work_sequence,
+                queue_wait_ms=1.0,
+                request_elapsed_ms=2.0,
+                parse_elapsed_ms=3.0,
+                total_elapsed_ms=4.0,
+            )
+
+        retained_metric_containers = [
+            value
+            for value in vars(reporter).values()
+            if isinstance(value, (dict, list))
+        ]
+        assert all(len(value) <= 2_048 for value in retained_metric_containers)
+        assert observability.STREAMING_TELEMETRY_PERCENTILE_SAMPLE_MAX_WORK == 2_048
+        assert reporter._aggregation_window_work == 100_000
+        assert len(reporter._latency_sample) == 2_048
+        assert reporter._detail_metrics == []
+
+        now[0] = 10.0
+        reporter.observe(final)
+
+    progress_events = [
+        json.loads(record.message)
+        for record in caplog.records
+        if json.loads(record.message)["event"] == "action_log_streaming_progress"
+    ]
+    progress = progress_events[-1]
+    assert progress["aggregation_window_work"] == 100_000
+    assert progress["aggregation_sample_work"] == 2_048
+    assert progress["queue_wait_ms"] == 1.0
+    assert progress["request_elapsed_ms"] == 2.0
+    assert progress["parse_elapsed_ms"] == 3.0
+    assert progress["total_elapsed_ms"] == 4.0
+    assert reporter._aggregation_window_work == 0
+    assert reporter._latency_sample == []
+
+
+def test_streaming_telemetry_keeps_exact_percentiles_within_sample_cap(
+    caplog,
+    monkeypatch,
+) -> None:
+    """sample cap 미만 interval은 모든 latency를 보관해 legacy percentile을 그대로 낸다."""
+
+    logger = logging.getLogger("test.action_log.streaming.exact_percentiles")
+    now = [0.0]
+    monkeypatch.setattr(observability, "monotonic", lambda: now[0])
+    reporter = observability.ActionLogStreamingTelemetryReporter(
+        logger=logger,
+        detail_max_work=0,
+        aggregate_interval_sec=10.0,
+    )
+    latencies = [80.0, 10.0, 60.0, 20.0, 40.0]
+    complete = _streaming_snapshot(
+        total_users=5,
+        activated_users=5,
+        submitted_work=5,
+        total_work=5,
+        completed_work=5,
+        pending_work=0,
+    )
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        reporter.start(_streaming_snapshot(total_users=5))
+        for work_sequence, total_elapsed_ms in enumerate(latencies):
+            reporter.record_work(
+                work_sequence=work_sequence,
+                queue_wait_ms=1.0,
+                request_elapsed_ms=2.0,
+                parse_elapsed_ms=3.0,
+                total_elapsed_ms=total_elapsed_ms,
+            )
+        now[0] = 10.0
+        reporter.observe(complete)
+
+    progress = [
+        json.loads(record.message)
+        for record in caplog.records
+        if json.loads(record.message)["event"] == "action_log_streaming_progress"
+    ][-1]
+    assert progress["aggregation_window_work"] == 5
+    assert progress["aggregation_sample_work"] == 5
+    assert progress["latency_p50_ms"] == 40.0
+    assert progress["latency_p95_ms"] == 80.0
 
 
 def test_streaming_telemetry_emits_details_only_after_small_total_is_known(

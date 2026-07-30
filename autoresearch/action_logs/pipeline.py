@@ -1072,11 +1072,14 @@ class _StreamingActionLogWriter:
                     message = "Unable to remove committed action log backup spool"
                 else:
                     message = "Unable to remove committed action log spool"
-                logger.warning(
-                    message,
-                    extra={"spool_path": str(spool_path)},
-                    exc_info=True,
-                )
+                try:
+                    logger.warning(
+                        message,
+                        extra={"spool_path": str(spool_path)},
+                        exc_info=True,
+                    )
+                except Exception:  # noqa: BLE001 - committed cleanup must not fail
+                    pass
         if best_effort:
             self._commit_backup_paths = remaining_backup_paths
         else:
@@ -1332,15 +1335,8 @@ class _StreamingActionLogWriter:
         self._close_generation_resources()
         self._write_final_parquet(generated_at, buffered_events_observer)
         self._commit_success_outputs()
-        self._remove_spools(best_effort=True)
-        final_paths = (
-            Path(self._request.output_path),
-            Path(self._request.warehouse_output_path),
-            Path(self._request.quarantine_output_path),
-        )
-        if not all(path.exists() for path in final_paths):
-            raise RuntimeError("streaming action log finalization did not publish all outputs")
         self._committed = True
+        self._remove_spools(best_effort=True)
 
     def finalize_quarantine_failure(self) -> None:
         """격리 비율 초과 시 quarantine JSONL만 최종 경로에 남긴다."""
@@ -1349,10 +1345,8 @@ class _StreamingActionLogWriter:
         self._close_generation_resources()
         assert self._quarantine_spool_path is not None
         self._quarantine_spool_path.replace(self._request.quarantine_output_path)
-        self._remove_spools()
-        if not Path(self._request.quarantine_output_path).exists():
-            raise RuntimeError("streaming action log quarantine finalization did not publish output")
         self._committed = True
+        self._remove_spools(best_effort=True)
 
     def __exit__(
         self,
