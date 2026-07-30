@@ -66,7 +66,7 @@ async def generate_codex_response(settings: CodexSettings, prompt: str) -> LLMRe
                 *command,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
                 env=_codex_environment(settings.home, workdir),
                 start_new_session=True,
             )

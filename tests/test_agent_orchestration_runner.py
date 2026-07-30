@@ -126,6 +126,29 @@ def test_runner_rejects_unknown_request_fields() -> None:
     assert response.status_code == 422
 
 
+def test_runner_healthcheck_loads_runtime_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner 헬스체크는 첫 생성 요청 전에 런타임 설정을 검증한다."""
+    codex_settings = codex_module.CodexSettings(
+        cli_path="codex",
+        home="/tmp/codex-home",
+        model=None,
+        timeout_sec=120,
+    )
+    expected_settings = RunnerSettings(codex=codex_settings, max_concurrency=1)
+    monkeypatch.setattr(
+        runner_app_module,
+        "load_runner_settings",
+        lambda: expected_settings,
+    )
+
+    response = TestClient(runner_app_module.create_runner_app()).get("/healthcheck")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_runner_returns_codex_result_with_latency(monkeypatch: pytest.MonkeyPatch) -> None:
     """Runner는 공용 Codex 결과를 엄격한 HTTP 응답 계약으로 변환한다."""
     codex_settings = codex_module.CodexSettings(

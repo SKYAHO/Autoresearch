@@ -466,6 +466,7 @@ def test_generate_codex_cli_omits_stderr_from_timeout_logs(
     """시간 초과 stderr 원문은 프롬프트·자격 증명과 함께 로그에서 제외한다."""
     prompt = "비밀 프롬프트"
     opaque_credential = "unstructured oauth credential material"
+    subprocess_options: dict[str, object] = {}
 
     class FakeProcess:
         returncode = -9
@@ -475,7 +476,8 @@ def test_generate_codex_cli_omits_stderr_from_timeout_logs(
             await asyncio.sleep(2)
             return b"", f"{opaque_credential}\nfailed for {input.decode()}".encode()
 
-    async def fake_create_subprocess_exec(*_args: str, **_kwargs: object) -> FakeProcess:
+    async def fake_create_subprocess_exec(*_args: str, **kwargs: object) -> FakeProcess:
+        subprocess_options.update(kwargs)
         return FakeProcess()
 
     settings = ServiceSettings(
@@ -498,6 +500,7 @@ def test_generate_codex_cli_omits_stderr_from_timeout_logs(
 
     assert prompt not in caplog.text
     assert opaque_credential not in caplog.text
+    assert subprocess_options["stderr"] is asyncio.subprocess.DEVNULL
 
 
 def test_generate_codex_cli_terminates_process_group_when_request_is_cancelled(

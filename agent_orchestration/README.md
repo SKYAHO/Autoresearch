@@ -74,14 +74,12 @@
 - 단일 채팅 저장만 구현
 - 사용자별 인증/권한/세션은 제외 (2단계 또는 추후 스펙). 대신 `/chat`은 공유
   `X-Orch-Token` 헤더를 요구한다.
-- **현재 스켈레톤에는 Codex OAuth 홈이나 시크릿 볼륨을 마운트해 배포하지 않는다.**
-  Codex 하위 프로세스는 `CODEX_HOME`을 읽을 수 있고, `read-only` sandbox도 파일
-  읽기는 허용하므로 `$CODEX_HOME/auth.json`을 프롬프트 기반 파일 읽기에서 보호하지
-  못한다. 후속 runner 격리 구현·침투 검증을 통과한 경우에만 그 runner에 한정해
-  자격 증명 저장소 제공을 검토한다. 유출 의심 시 `codex logout`·재로그인을 수행한다.
-  이 제한은 로컬 공용 계정 검증에도 동일하므로, 신뢰하는 개인 개발 환경에서만
-  비민감 프롬프트로 실행한다. Codex `stderr` 원문은 애플리케이션 로그에 남기지
-  않으며, 응답 문자열의 마스킹은 OAuth 자격 증명 보호 경계가 아니다.
+- **배포 시 Codex OAuth 홈은 비공개 Runner에만 전용 PVC로 마운트한다.** API Pod와
+  API 이미지는 OAuth 파일을 갖지 않는다. Codex 하위 프로세스는 `CODEX_HOME`을 읽을
+  수 있고 `read-only` sandbox도 파일 읽기를 허용하므로, Runner 자체도 신뢰 네트워크·
+  최소 권한·비민감 프롬프트 범위 안에서만 사용한다. 유출 의심 시 `codex logout`·
+  재로그인을 수행한다. Codex `stderr`는 수집하거나 애플리케이션 로그에 남기지 않으며,
+  응답 문자열의 마스킹은 OAuth 자격 증명 보호 경계가 아니다.
 - 사용자별 Google/Codex 계정 연결과 사용자별 사용량 분리는 후속 범위다.
 - **신뢰 네트워크 밖에 노출하지 않는다.** 로컬 실행은 반드시 `127.0.0.1`에만
   바인딩한다. 배포 시에는 저권한 전용 컨테이너/계정, 비공개 Service와 네트워크
@@ -102,9 +100,10 @@
   성공하지만 첫 저장 시 SQL 오류로 `500`을 반환한다. 이후 호환 가능한 컬럼 추가는
   스키마를 먼저 확장한 뒤 해당 컬럼을 선택적으로 쓰는 코드를 배포하며, 롤백은 코드만
   되돌리고 확장 컬럼은 유지하는 방식으로 관리한다.
-- `/healthcheck`는 설정 검증과 초기 스키마 준비를 통과해 프로세스가 기동했음을
-  보장한다. Codex OAuth 세션, Codex 바이너리, 기동 후 PostgreSQL 연결 상태는 검사하지
-  않으므로 Kubernetes readiness probe로 사용하기 전에 별도 상태 확인 계약을 정한다.
+- API `/healthcheck`는 설정 검증과 초기 스키마 준비를 통과해 프로세스가 기동했음을
+  보장한다. Runner `/healthcheck`는 첫 생성 요청 전에 Runner 전용 설정과 semaphore를
+  준비해 Kubernetes readiness/liveness probe에 사용한다. 두 endpoint 모두 Codex OAuth
+  세션·실제 Codex 호출·기동 후 PostgreSQL 연결 상태는 검사하지 않는다.
 - 현재는 요청마다 PostgreSQL 연결과 Codex 하위 프로세스를 하나씩 만들며 동시 요청
   상한이 없다. 배포 전에는 `psycopg_pool.ConnectionPool`과 Codex 실행
   `asyncio.Semaphore`를 도입하고, 한도를 넘는 요청의 `429` 또는 `503` 계약을 정한다.
@@ -133,9 +132,10 @@ API 결제 방식으로 전환할 때만 `LLM_BACKEND=openai`와 `OPENAI_API_KEY
 - Runner는 API 공유 토큰과 PostgreSQL 설정을 읽지 않습니다. OAuth 자격 증명 값은
   문서·환경 예시·애플리케이션 로그에 기록하지 않습니다.
 
-## Codex OAuth 배포 설계(후속)
+## Codex OAuth 배포 설계
 
 공용 Codex OAuth를 계속 사용할 경우 API 서버에서 Codex CLI를 직접 실행하지 않는다.
 구체적인 보안 경계·모델 전환·배포 전 검증 기준은
 [`docs/specs/2026-07-30-codex-oauth-runner-isolation.md`](../docs/specs/2026-07-30-codex-oauth-runner-isolation.md)를
-따른다. 이 설계가 구현·검증되기 전에는 Codex OAuth 모드로 외부 배포하지 않는다.
+따른다. API와 Runner는 별도 이미지·KSA/GSA·Service·NetworkPolicy로 배포하며,
+이미지 digest와 Terraform 입력이 확정되기 전에는 ArgoCD sync를 수행하지 않는다.

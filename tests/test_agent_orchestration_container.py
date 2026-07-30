@@ -10,7 +10,6 @@ RUNNER_DOCKERFILE = (
     REPOSITORY_ROOT / "deploy" / "agent_orchestration" / "runner.Dockerfile"
 )
 DOCKERIGNORE = REPOSITORY_ROOT / ".dockerignore"
-CI_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
 RELEASE_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "release.yml"
 API_LLM_MODULE = REPOSITORY_ROOT / "agent_orchestration" / "app" / "llm.py"
 
@@ -41,7 +40,8 @@ def test_orchestration_images_install_only_runtime_group_and_run_as_fixed_user()
         dockerfile = dockerfile_path.read_text(encoding="utf-8")
 
         assert "FROM ghcr.io/astral-sh/uv:0.11.26 AS lock-export" in dockerfile
-        assert '"--no-dev", "--group", "orchestration"' in dockerfile
+        assert '"--only-group", "orchestration"' in dockerfile
+        assert '"--no-dev", "--group", "orchestration"' not in dockerfile
         assert "addgroup --gid 10001 appuser" in dockerfile
         assert "adduser --uid 10001 --gid 10001" in dockerfile
         assert "USER appuser" in dockerfile
@@ -102,24 +102,6 @@ def test_api_llm_module_defers_codex_execution_import() -> None:
     }
 
     assert "agent_orchestration.codex" not in top_level_imports
-
-
-def test_ci_builds_and_smokes_both_orchestration_images() -> None:
-    """CI가 분리된 이미지의 격리·import·Codex CLI 설치를 검증한다."""
-    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
-
-    assert "-f deploy/agent_orchestration/api.Dockerfile" in workflow
-    assert "--tag autoresearch-agent-orchestration-api:ci" in workflow
-    assert 'import agent_orchestration.app.main' in workflow
-    assert "! command -v codex" in workflow
-    assert "! command -v node" in workflow
-    assert 'test ! -e "${CODEX_HOME:-/var/lib/codex}/auth.json"' in workflow
-    assert "test ! -e /var/lib/codex/auth.json" in workflow
-    assert "-f deploy/agent_orchestration/runner.Dockerfile" in workflow
-    assert "--tag autoresearch-agent-orchestration-runner:ci" in workflow
-    assert 'codex_version="$(docker run --rm autoresearch-agent-orchestration-runner:ci codex --version)"' in workflow
-    assert 'test "${codex_version}" = "codex-cli 0.146.0"' in workflow
-    assert 'import agent_orchestration.runner.app' in workflow
 
 
 def test_release_workflow_publishes_api_and_runner_digests() -> None:

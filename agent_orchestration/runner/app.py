@@ -66,6 +66,12 @@ def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
             app.state.semaphore = semaphore
         return runtime_settings, semaphore
 
+    @app.get("/healthcheck")
+    def healthcheck() -> dict[str, str]:
+        """배포 probe에서 Runner 설정과 동시성 제어 준비 상태를 검증한다."""
+        runtime()
+        return {"status": "ok"}
+
     @app.post("/v1/generate", response_model=GenerateResponse)
     async def generate(request: GenerateRequest) -> GenerateResponse:
         """하나의 프롬프트를 동시성 상한 안에서 Codex CLI에 위임한다."""

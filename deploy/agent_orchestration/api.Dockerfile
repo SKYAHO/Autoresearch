@@ -3,7 +3,7 @@ FROM ghcr.io/astral-sh/uv:0.11.26 AS lock-export
 WORKDIR /source
 
 COPY pyproject.toml uv.lock ./
-RUN ["/uv", "export", "--frozen", "--no-dev", "--group", "orchestration", "--no-hashes", "--output-file", "/requirements.lock"]
+RUN ["/uv", "export", "--frozen", "--only-group", "orchestration", "--no-hashes", "--output-file", "/requirements.lock"]
 
 FROM python:3.12-slim
 
