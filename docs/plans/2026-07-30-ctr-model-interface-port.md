@@ -231,6 +231,10 @@ def test_lgbm_model_save_load_round_trip_matches_serving_contract(tmp_path) -> N
     from src.models.lgbm_model import LGBMModel
 
     X, y = _tiny_dataset()
+    # LightGBM 4.x는 categorical_feature로 지정한 컬럼이 pandas "category" dtype이어야
+    # 한다(object dtype은 ValueError) — 프로덕션 경로(src/pipeline/train.py의
+    # collect_categorical_categories)와 동일한 캐스팅을 테스트 픽스처에도 적용한다.
+    X = X.assign(cat_feature=X["cat_feature"].astype("category"))
     model = LGBMModel(scale_pos_weight=1.0, n_estimators=5, num_leaves=3, random_state=42)
     model.fit(X, y, categorical_features=["cat_feature"])
 
@@ -249,6 +253,7 @@ def test_lgbm_model_load_classmethod_round_trip(tmp_path) -> None:
     from src.models.lgbm_model import LGBMModel
 
     X, y = _tiny_dataset()
+    X = X.assign(cat_feature=X["cat_feature"].astype("category"))
     model = LGBMModel(scale_pos_weight=1.0, n_estimators=5, num_leaves=3, random_state=42)
     model.fit(X, y, categorical_features=["cat_feature"])
 
