@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-30T12:11:21Z",
+  "generated_at": "2026-07-30T12:34:06Z",
   "reports": [
+    {
+      "number": 433,
+      "title": "feat: CTRModel 인터페이스 포팅 — LGBMModel 리팩터 (#424)",
+      "author": "bbungjun",
+      "merged_at": "2026-07-30T12:33:53Z",
+      "summary_ko": [
+        "CTR 이진 분류 모델 계열의 공통 인터페이스인 CTRModel 추상 클래스를 신설하였습니다.",
+        "LGBMModel이 CTRModel을 구현하도록 리팩터링하고, 기존 서빙 호환성을 위해 raw booster 저장 방식의 save/load 오버라이드를 유지하였습니다.",
+        "학습 파이프라인 train.py의 모델 저장 호출부를 model.save()로 통합하고, 모델 저장 계약을 검증하는 테스트 5건을 추가하였습니다."
+      ],
+      "report_url": "pr/433/"
+    },
     {
       "number": 422,
       "title": "fix: 라벨 단일 클래스 사전 차단·모델 등록을 평가 이후로 (#421)",
