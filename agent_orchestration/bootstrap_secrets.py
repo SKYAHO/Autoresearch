@@ -110,9 +110,13 @@ def _read_secret(secret_id: str, read_secret: SecretReader) -> bytes:
 
 
 def _write_private_file(path: Path, contents: bytes) -> None:
-    """원자적으로 교체되는 소유자 전용 파일을 기록한다."""
+    """원자적으로 교체되는 소유자 전용 파일을 기록한다.
+
+    Kubernetes ``emptyDir``와 PVC mount root는 kubelet이 소유할 수 있으므로
+    비루트 init container는 부모 디렉터리 mode를 변경하지 않는다. 파일 자체만
+    생성과 교체 뒤 0600으로 제한한다.
+    """
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    path.parent.chmod(0o700)
     temporary_path = path.parent / f".{path.name}.{secrets.token_hex(16)}.tmp"
     descriptor = os.open(
         temporary_path,

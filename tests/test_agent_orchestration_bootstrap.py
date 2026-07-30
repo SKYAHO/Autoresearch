@@ -52,6 +52,27 @@ def test_api_bootstrap_never_reads_codex_auth_secret(tmp_path: Path) -> None:
     assert stat.S_IMODE(runtime_env.stat().st_mode) == 0o600
 
 
+def test_api_bootstrap_does_not_change_existing_volume_root_permissions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """fsGroup로 쓰기 가능한 볼륨 루트는 비루트 init container가 chmod하지 않는다."""
+    settings = _database_settings(tmp_path)
+    settings.runtime_dir.mkdir()
+    original_chmod = Path.chmod
+
+    def reject_volume_root_chmod(path: Path, mode: int) -> None:
+        if path == settings.runtime_dir:
+            raise PermissionError("volume root is owned by kubelet")
+        original_chmod(path, mode)
+
+    monkeypatch.setattr(Path, "chmod", reject_volume_root_chmod)
+
+    bootstrap_api_database(settings, lambda _secret_id: b"password")
+
+    assert (settings.runtime_dir / "db.env").is_file()
+
+
 def test_runner_bootstrap_preserves_refreshed_auth_file(tmp_path: Path) -> None:
     """Runner는 최초 OAuth 파일만 쓰고 이후 Codex 갱신본을 보존한다."""
     settings = _runner_settings(tmp_path)
