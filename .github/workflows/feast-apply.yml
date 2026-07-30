@@ -15,12 +15,24 @@ on:
       - feature_repo/.feastignore
       - feature_repo/redis_iam.py
       - feature_repo/bootstrap.py
+      - feature_repo/env.py
       - deploy/feast/apply-job.yaml
       - scripts/fetch_redis_ca.py
+      # apply 후 검증 스크립트. 이게 빠져 있으면 게이트만 고친 커밋이 다음 정의 변경
+      # 전까지 한 번도 실행되지 않는다.
+      - scripts/verify_registry_portability.py
       - pyproject.toml
       - uv.lock
       - .github/workflows/feast-apply.yml
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "apply 대상 환경 (prod|dev, #399). push는 항상 prod."
+        type: choice
+        default: prod
+        options:
+          - prod
+          - dev
 
 permissions:
   contents: read
@@ -32,6 +44,7 @@ concurrency:
 jobs:
   feast-apply:
     name: Apply Feast feature definitions to registry
+    environment: ${{ inputs.environment || 'prod' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -143,17 +156,30 @@ jobs:
           REDIS_PORT: ${{ vars.REDIS_PORT }}
           REDIS_CA_SECRET_ID: ${{ vars.REDIS_CA_SECRET_ID }}
           CODE_ARTIFACTS_BUCKET: ${{ secrets.CODE_ARTIFACTS_BUCKET }}
+          # prod/dev 환경 분리(#399). push(main)는 항상 prod, 수동 dispatch만 dev
+          # 선택 가능. FEAST_ONLINE_FULL_SCAN_FOR_DELETION 은 feature_repo/env.py 의
+          # 파생 규칙과 동일하게 계산한다(prod=true, dev=false). dev=false 면 apply 가
+          # Redis 에 접속하지 않아 dev registry apply 가 prod Redis 를 건드리지 않는다.
+          AUTORESEARCH_ENV: ${{ inputs.environment || 'prod' }}
         shell: bash
         run: |
           # Job 이름은 63자 제한이 있어 커밋 SHA 앞 12자만 쓴다.
           FEAST_APPLY_JOB_NAME="feast-apply-${CODE_ARCHIVE_SHA:0:12}"
           export FEAST_APPLY_JOB_NAME
+          # env.py 의 파생 규칙을 그대로 재현한다(prod=true, dev=false).
+          if [[ "$AUTORESEARCH_ENV" == "dev" ]]; then
+            FEAST_ONLINE_FULL_SCAN_FOR_DELETION="false"
+          else
+            FEAST_ONLINE_FULL_SCAN_FOR_DELETION="true"
+          fi
+          export FEAST_ONLINE_FULL_SCAN_FOR_DELETION
           envsubst '
             ${FEAST_APPLY_JOB_NAME} ${FEAST_APPLY_NAMESPACE}
             ${FEAST_APPLY_SERVICE_ACCOUNT} ${FEAST_IMAGE}
             ${CODE_ARTIFACTS_BUCKET} ${CODE_ARCHIVE_SHA} ${GCP_PROJECT_ID}
             ${BQ_DATASET} ${GCS_REGISTRY_PATH} ${GCS_STAGING_LOCATION}
             ${REDIS_HOST} ${REDIS_PORT} ${REDIS_CA_SECRET_ID}
+            ${AUTORESEARCH_ENV} ${FEAST_ONLINE_FULL_SCAN_FOR_DELETION}
           ' < deploy/feast/apply-job.yaml > job.yaml
           if grep -n '\${' job.yaml; then
             echo "::error::unresolved placeholder in the rendered Job manifest"
@@ -270,3 +296,42 @@ jobs:
             echo "::error::registry generation unchanged after apply (silent failure)"
             exit 1
           fi
+
+      # 위 두 가드는 "apply가 돌았는가"만 본다. 아래는 "의도한 내용이 들어갔는가"를 본다 —
+      # #409에서 apply가 성공하고 generation도 바뀌었는데(meta만 갱신) ODFV의 dill body는
+      # 그대로여서 학습이 계속 깨진 사례가 실제로 있었다. feast의 변경 감지가
+      # (udf_string, 바이트코드)만 보기 때문에 헬퍼의 소속 모듈 변경을 놓친 것이라,
+      # 정의 파일 쪽 가드로는 못 막고 **결과물을 읽어봐야만** 드러난다.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.26"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install feast group for registry verification
+        # feast 그룹은 dev 그룹과 충돌하므로 --no-dev 로 격리 설치한다(ci.yml과 동일).
+        run: uv sync --frozen --no-dev --group feast
+
+      - name: Verify the applied registry loads in the consumer import path
+        env:
+          GCS_REGISTRY_PATH: ${{ vars.GCS_REGISTRY_PATH }}
+          BEFORE_GENERATION: ${{ steps.before.outputs.generation }}
+        shell: bash
+        run: |
+          gcloud storage cp "$GCS_REGISTRY_PATH" applied-registry.db
+          if uv run --no-sync python scripts/verify_registry_portability.py applied-registry.db; then
+            exit 0
+          fi
+          # 이 스텝은 apply가 prod 레지스트리를 이미 덮어쓴 뒤에 돈다. 여기서 닫히는 것은
+          # 배포가 아니라 "성공했다는 신호"이므로, 운영자가 바로 되돌릴 수 있게 명령을 남긴다.
+          # 레지스트리 버킷은 object versioning이 켜져 있어 apply 직전 generation으로 복구된다.
+          echo "prod 레지스트리는 이미 덮어써진 상태다 — 학습·materialize는 지금 이 레지스트리를 읽는다."
+          if [[ -n "$BEFORE_GENERATION" ]]; then
+            echo "롤백: gcloud storage cp \"${GCS_REGISTRY_PATH}#${BEFORE_GENERATION}\" \"${GCS_REGISTRY_PATH}\""
+          else
+            echo "롤백: gcloud storage ls -a \"$GCS_REGISTRY_PATH\" 로 apply 직전 generation을 찾아 같은 방식으로 복사"
+          fi
+          echo "재적용: 정의를 고쳤는데도 갱신이 안 되면 UDF의 udf_string(소스 텍스트)이나 바이트코드를 바꿔야 한다 (#409)"
+          echo "::error::applied registry is not loadable by training/serving — roll back to generation ${BEFORE_GENERATION:-unknown}, then fix and re-apply (see log above)"
+          exit 1

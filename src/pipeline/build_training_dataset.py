@@ -29,7 +29,7 @@ from src.features.assembly import connect_duckdb  # noqa: E402
 from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
 from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
 
-BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "ar-infra-501607")
+BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "autoresearch-503903")
 # feature/서빙 계층 dataset — Feast feature 테이블 4종과 배치 출력 테이블(user_recommendations).
 BIGQUERY_DATASET = os.environ.get("CTR_TRAINING_BQ_DATASET", "feast_offline_store")
 # raw(데이터 레이크) 계층 dataset — data_lake_* 테이블 전용(feature 계층과 물리 분리).

@@ -59,6 +59,16 @@ spec:
             # feature_repo.redis_iam.IAMRedisOnlineStore라 /app이 import 경로에 있어야 한다.
             - name: PYTHONPATH
               value: "/app"
+            # prod/dev 환경 분리(#399). bare `feast apply`는 bootstrap을 거치지
+            # 않으므로 feature_store.yaml의 ${FEAST_ONLINE_FULL_SCAN_FOR_DELETION}
+            # 치환을 위해 Job이 값을 직접 주입한다. 워크플로우가 AUTORESEARCH_ENV에서
+            # 파생하며(prod=true, dev=false), dev로 apply하면 full_scan=false라 apply가
+            # Redis에 접속하지 않아 prod Redis를 건드리지 않는다. AUTORESEARCH_ENV는
+            # 추적용으로 함께 주입한다.
+            - name: AUTORESEARCH_ENV
+              value: "${AUTORESEARCH_ENV}"
+            - name: FEAST_ONLINE_FULL_SCAN_FOR_DELETION
+              value: "${FEAST_ONLINE_FULL_SCAN_FOR_DELETION}"
             - name: GCP_PROJECT_ID
               value: "${GCP_PROJECT_ID}"
             # feast GCS registry의 storage.Client()가 프로젝트를 추론하도록 명시.

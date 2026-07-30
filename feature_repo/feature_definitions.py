@@ -213,6 +213,16 @@ user_category_similarity_view = FeatureView(
     ],
 )
 def category_match_view(inputs: pd.DataFrame) -> pd.DataFrame:
+    # 변환 본체는 src.features.feature_builder에 있다(#409, 위 import 주석 참조).
+    #
+    # 이 주석은 문서이면서 동시에 **레지스트리 갱신 트리거**다. feast의 변경 감지는
+    # PandasTransformation.__eq__ = (udf_string, 바이트코드) 두 가지뿐이라, 헬퍼의 소속
+    # 모듈만 바뀐 변경을 못 본다 — apply가 "변경 없음"으로 판정해 옛 dill body를 그대로
+    # 두므로 코드를 고쳐도 레지스트리가 안 따라온다. udf_string은 이 함수의 소스 텍스트라
+    # 주석 변경만으로 판정이 뒤집힌다.
+    #
+    # 이건 이번 갱신을 밀어 넣기 위한 수단이지 방어선이 아니다. 같은 부류를 실제로 막는
+    # 층은 apply 후 검증(scripts/verify_registry_portability.py + feast-apply 워크플로)이다.
     return compute_category_matches(inputs)
 
 
