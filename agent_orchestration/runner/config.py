@@ -30,10 +30,12 @@ def _require_env(name: str, value: str | None) -> str:
     return stripped
 
 
-def _positive_env_int(name: str, default: int) -> int:
+def _positive_env_int(name: str, default: int | None) -> int:
     """양의 정수 환경 변수를 읽는다."""
     raw_value = os.getenv(name, "").strip()
     if not raw_value:
+        if default is None:
+            raise ValueError(f"Required environment variable '{name}' is not set.")
         return default
     try:
         value = int(raw_value)
@@ -51,7 +53,6 @@ class RunnerSettings:
     codex: CodexSettings
     max_concurrency: int
     api_token: str
-    api_runner_timeout_sec: int = 120
 
 
 def load_runner_settings() -> RunnerSettings:
@@ -60,10 +61,10 @@ def load_runner_settings() -> RunnerSettings:
     if len(api_token) < 32:
         raise ValueError("ORCH_RUNNER_TOKEN must be at least 32 characters long.")
     codex_timeout_sec = _positive_env_int("CODEX_TIMEOUT_SEC", 110)
-    api_runner_timeout_sec = _positive_env_int("ORCH_API_RUNNER_TIMEOUT_SEC", 120)
-    if codex_timeout_sec + 5 >= api_runner_timeout_sec:
+    runner_timeout_sec = _positive_env_int("CODEX_RUNNER_TIMEOUT_SEC", None)
+    if codex_timeout_sec + 5 >= runner_timeout_sec:
         raise ValueError(
-            "CODEX_TIMEOUT_SEC + 5 must be less than ORCH_API_RUNNER_TIMEOUT_SEC."
+            "CODEX_TIMEOUT_SEC + 5 must be less than CODEX_RUNNER_TIMEOUT_SEC."
         )
     return RunnerSettings(
         codex=CodexSettings(
@@ -74,5 +75,4 @@ def load_runner_settings() -> RunnerSettings:
         ),
         max_concurrency=_positive_env_int("RUNNER_MAX_CONCURRENCY", 1),
         api_token=api_token,
-        api_runner_timeout_sec=api_runner_timeout_sec,
     )

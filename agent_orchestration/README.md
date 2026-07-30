@@ -130,12 +130,12 @@ API 결제 방식으로 전환할 때만 `LLM_BACKEND=openai`와 `OPENAI_API_KEY
   `ORCH_RUNNER_TOKEN`을 설정합니다. API는 `X-Runner-Token`으로 비공개 Runner의
   `POST /v1/generate`만 호출합니다. `ORCH_API_TOKEN`과 `ORCH_RUNNER_TOKEN`은 각각
   32자 이상이어야 하며 서로 다른 값이어야 합니다. 같으면 API는 기동을 거부합니다.
-  Runner는 기동 시 `CODEX_TIMEOUT_SEC + 5 < ORCH_API_RUNNER_TIMEOUT_SEC`를 검증합니다.
-  GKE에서는 Codex 제한 110초, API Runner HTTP 제한 120초를 양쪽 manifest에 같은 값으로
-  설정해 Codex 하위 프로세스 종료에 5초를 남깁니다.
+  Runner는 기동 시 `CODEX_TIMEOUT_SEC + 5 < CODEX_RUNNER_TIMEOUT_SEC`를 검증합니다.
+  GKE에서는 Codex 제한 110초, API Runner HTTP 제한 120초를 하나의 ConfigMap key로
+  양쪽 deployment에 주입해 Codex 하위 프로세스 종료에 5초를 남깁니다.
 - 로컬 `codex_cli`도 `CODEX_TIMEOUT_SEC`을 별도로 설정하지 않으면 110초를 사용합니다.
-  `CODEX_RUNNER_TIMEOUT_SEC` 120초는 GKE API의 Runner HTTP 호출에, 같은 값의
-  `ORCH_API_RUNNER_TIMEOUT_SEC`는 Runner 기동 검증에만 적용합니다.
+  `CODEX_RUNNER_TIMEOUT_SEC`은 GKE API의 Runner HTTP 호출과 Runner 기동 검증에 모두
+  적용됩니다. Runner에서는 이 값을 생략하면 fail-close합니다.
 - Runner는 API 공유 토큰·PostgreSQL 설정을 읽지 않으며, `ORCH_RUNNER_TOKEN`만 API와
   공유합니다. OAuth 자격 증명 값은
   문서·환경 예시·애플리케이션 로그에 기록하지 않습니다.

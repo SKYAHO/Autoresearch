@@ -63,6 +63,56 @@ def _connected_http_request() -> Request:
     )
 
 
+async def _request_then_disconnect(
+    app: Any,
+    *,
+    path: str,
+    headers: list[tuple[bytes, bytes]],
+    payload: dict[str, str],
+    started: asyncio.Event,
+) -> list[dict[str, Any]]:
+    """실제 ASGI 앱에 request body 뒤 disconnect message를 전달한다."""
+    request_body = json.dumps(payload).encode("utf-8")
+    receive_calls = 0
+    sent: list[dict[str, Any]] = []
+
+    async def receive() -> dict[str, Any]:
+        nonlocal receive_calls
+        if receive_calls == 0:
+            receive_calls += 1
+            return {
+                "type": "http.request",
+                "body": request_body,
+                "more_body": False,
+            }
+        await started.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    await app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": b"",
+            "root_path": "",
+            "headers": headers,
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+            "state": {},
+        },
+        receive,
+        send,
+    )
+    return sent
+
+
 def test_generate_response_uses_private_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     """API의 Runner 백엔드는 비공개 Runner 응답을 공통 결과 계약으로 반환한다."""
     called: dict[str, object] = {}
@@ -227,9 +277,27 @@ def test_load_runner_settings_rejects_timeout_without_cleanup_headroom(
     monkeypatch.setenv("ORCH_RUNNER_TOKEN", "runner-token-must-be-at-least-32-characters")
     monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
     monkeypatch.setenv("CODEX_TIMEOUT_SEC", "115")
-    monkeypatch.setenv("ORCH_API_RUNNER_TIMEOUT_SEC", "120")
+    monkeypatch.setenv("CODEX_RUNNER_TIMEOUT_SEC", "120")
 
-    with pytest.raises(ValueError, match=r"CODEX_TIMEOUT_SEC \+ 5"):
+    with pytest.raises(
+        ValueError,
+        match=r"CODEX_TIMEOUT_SEC \+ 5 must be less than CODEX_RUNNER_TIMEOUT_SEC",
+    ):
+        runner_config_module.load_runner_settings()
+
+
+def test_load_runner_settings_requires_shared_runner_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner는 ConfigMap의 공통 HTTP timeout이 없으면 fail-close한다."""
+    monkeypatch.setenv("ORCH_RUNNER_TOKEN", "runner-token-must-be-at-least-32-characters")
+    monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
+    monkeypatch.delenv("CODEX_RUNNER_TIMEOUT_SEC", raising=False)
+
+    with pytest.raises(
+        ValueError,
+        match="Required environment variable 'CODEX_RUNNER_TIMEOUT_SEC' is not set",
+    ):
         runner_config_module.load_runner_settings()
 
 
@@ -442,7 +510,7 @@ def test_runner_returns_slot_after_request_cancellation(
     asyncio.run(exercise())
 
 
-def test_runner_cancels_codex_task_after_http_disconnect(
+def test_runner_returns_499_after_http_disconnect_and_recovers_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """ASGI 연결 종료는 진행 중인 Codex task를 취소하고 실행 슬롯을 회수한다."""
@@ -491,8 +559,8 @@ def test_runner_cancels_codex_task_after_http_disconnect(
             )
         )
         await started.wait()
-        with pytest.raises(asyncio.CancelledError):
-            await disconnected
+        response = await disconnected
+        assert response.status_code == 499
         await cancelled.wait()
 
         response = await generate(
@@ -507,7 +575,57 @@ def test_runner_cancels_codex_task_after_http_disconnect(
     asyncio.run(exercise())
 
 
-def test_api_cancels_runner_request_after_http_disconnect(
+def test_runner_asgi_request_body_disconnect_cancels_codex_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ASGI body parsing 뒤 disconnect도 499·Codex 취소·slot 회수로 처리한다."""
+    settings = RunnerSettings(
+        codex=codex_module.CodexSettings(
+            cli_path="codex",
+            home="/tmp/codex-home",
+            model=None,
+            timeout_sec=110,
+        ),
+        max_concurrency=1,
+        api_token="runner-token-must-be-at-least-32-characters",
+    )
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def blocking_generate(
+        _settings: codex_module.CodexSettings,
+        _prompt: str,
+    ) -> LLMResult:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(runner_app_module, "generate_codex_response", blocking_generate)
+    app = runner_app_module.create_runner_app(settings)
+
+    async def exercise() -> None:
+        sent = await _request_then_disconnect(
+            app,
+            path="/v1/generate",
+            headers=[
+                (b"content-type", b"application/json"),
+                (b"x-runner-token", settings.api_token.encode("ascii")),
+            ],
+            payload={"prompt": "runner prompt"},
+            started=started,
+        )
+
+        assert sent[0]["type"] == "http.response.start"
+        assert sent[0]["status"] == 499
+        await cancelled.wait()
+        assert app.state.execution_slots.qsize() == 1
+
+    asyncio.run(exercise())
+
+
+def test_api_returns_499_after_http_disconnect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """외부 ASGI 연결 종료는 API의 진행 중인 Runner HTTP 요청을 취소한다."""
@@ -546,12 +664,60 @@ def test_api_cancels_runner_request_after_http_disconnect(
             )
         )
         await started.wait()
-        with pytest.raises(asyncio.CancelledError):
-            await disconnected
+        response = await disconnected
+        assert response.status_code == 499
         await cancelled.wait()
 
     with TestClient(app):
         asyncio.run(exercise())
+
+
+def test_api_asgi_disconnect_cancels_runner_http_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ASGI body parsing 뒤 API 연결 종료는 실제 Runner HTTPX task를 취소한다."""
+    settings = make_settings(
+        codex_runner_token="runner-token-must-be-at-least-32-characters"
+    )
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def blocking_post(
+        _self: httpx.AsyncClient,
+        _url: str,
+        **_kwargs: object,
+    ) -> httpx.Response:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    from agent_orchestration.app import main as main_module
+
+    monkeypatch.setattr(main_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)
+    monkeypatch.setattr(httpx.AsyncClient, "post", blocking_post)
+    app = main_module.create_app()
+
+    async def exercise() -> None:
+        async with app.router.lifespan_context(app):
+            sent = await _request_then_disconnect(
+                app,
+                path="/chat",
+                headers=[
+                    (b"content-type", b"application/json"),
+                    (b"x-orch-token", settings.api_token.encode("ascii")),
+                ],
+                payload={"prompt": "runner prompt"},
+                started=started,
+            )
+
+        assert sent[0]["type"] == "http.response.start"
+        assert sent[0]["status"] == 499
+        await cancelled.wait()
+
+    asyncio.run(exercise())
 
 
 def test_generate_response_preserves_runner_overload_status(

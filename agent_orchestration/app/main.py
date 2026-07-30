@@ -24,6 +24,7 @@ from time import perf_counter
 from typing import Annotated, TypeVar
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
+from starlette.responses import Response
 
 from agent_orchestration.app.config import ServiceSettings, load_settings
 from agent_orchestration.app.db import ensure_schema, save_interaction
@@ -49,8 +50,8 @@ def _api_tokens_match(provided_token: str, expected_token: str) -> bool:
 async def _await_request_task(
     http_request: Request,
     task: asyncio.Task[TaskResult],
-) -> TaskResult:
-    """연결 종료 시 실행 중인 백엔드 task를 취소하고 완료·오류·취소 뒤 회수한다."""
+) -> TaskResult | None:
+    """연결 종료 시 백엔드 task를 취소·회수하고, 처리된 disconnect에는 None을 반환한다."""
     try:
         while not task.done():
             done, _ = await asyncio.wait(
@@ -62,7 +63,7 @@ async def _await_request_task(
             if await http_request.is_disconnected():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-                raise asyncio.CancelledError
+                return None
         return await task
     finally:
         if not task.done():
@@ -145,7 +146,7 @@ def create_app() -> FastAPI:
             str | None,
             Header(alias="X-Orch-Token", description="공유 오케스트레이션 API 토큰"),
         ] = None,
-    ) -> ChatResponse:
+    ) -> ChatResponse | Response:
         """채팅 프롬프트를 LLM으로 전송 후 PostgreSQL에 저장하고 결과를 반환."""
         runtime_settings = _require_runtime()
         if not x_orch_token or not _api_tokens_match(x_orch_token, runtime_settings.api_token):
@@ -159,6 +160,8 @@ def create_app() -> FastAPI:
                 generate_response(runtime_settings, request.prompt)
             )
             completion = await _await_request_task(http_request, completion_task)
+            if completion is None:
+                return Response(status_code=499)
         except LLMBackendOverloadedError as error:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

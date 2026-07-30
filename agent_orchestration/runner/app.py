@@ -25,6 +25,7 @@ from typing import TypeVar
 
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
+from starlette.responses import Response
 
 from agent_orchestration.codex import generate_codex_response
 from agent_orchestration.runner.config import RunnerSettings, load_runner_settings
@@ -72,8 +73,8 @@ def _create_execution_slots(max_concurrency: int) -> asyncio.Queue[object]:
 async def _await_request_task(
     http_request: Request,
     task: asyncio.Task[TaskResult],
-) -> TaskResult:
-    """연결 종료 시 작업을 취소하고 완료·오류·취소 뒤 task를 회수한다."""
+) -> TaskResult | None:
+    """연결 종료 시 작업을 취소·회수하고, 처리된 disconnect에는 None을 반환한다."""
     try:
         while not task.done():
             done, _ = await asyncio.wait(
@@ -85,7 +86,7 @@ async def _await_request_task(
             if await http_request.is_disconnected():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-                raise asyncio.CancelledError
+                return None
         return await task
     finally:
         if not task.done():
@@ -132,7 +133,7 @@ def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
         http_request: Request,
         request: GenerateRequest,
         x_runner_token: str | None = Header(default=None, alias="X-Runner-Token"),
-    ) -> GenerateResponse:
+    ) -> GenerateResponse | Response:
         """하나의 프롬프트를 동시성 상한 안에서 Codex CLI에 위임한다."""
         runtime_settings, execution_slots = runtime()
         if not x_runner_token or not _runner_tokens_match(
@@ -157,6 +158,8 @@ def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
             result = await _await_request_task(http_request, codex_task)
         finally:
             execution_slots.put_nowait(slot)
+        if result is None:
+            return Response(status_code=499)
         return GenerateResponse(
             response=result.text,
             model=result.model,
