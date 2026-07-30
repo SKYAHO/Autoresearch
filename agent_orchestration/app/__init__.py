@@ -1,17 +1,13 @@
-"""Agent Orchestration 실행 계층.
+"""Agent Orchestration 런타임 패키지.
 
-담당 구간:
-- FastAPI 앱 라우팅 엔트리(`main.py`) 조립과 런타임 부트스트랩.
-- Codex CLI/OpenAI 호출, 공유 토큰 요청 검증, 저장 경로를 연결하는 인바운드 적재
-  파이프라인.
+[파이프라인]
+오케스트레이션 실험 API의 HTTP 진입점, LLM 호출, PostgreSQL 영속화 모듈을
+묶는 패키지 경계다.
 
-담당하지 않는 구간:
-- 클라우드 인증, Google OAuth, VPC/네트워크 라우팅.
-- 대화 세션 확장(사용자별 히스토리, 장기 사용자 상태 관리).
+[기능]
+서브모듈 import 경로만 제공하며, 이 패키지 자체는 환경을 읽거나 FastAPI 앱을
+생성하지 않는다. 앱 엔트리포인트는 `agent_orchestration.app.main:app`이다.
+
+[비책임]
+클라우드 인증, Google OAuth, VPC/네트워크 라우팅과 사용자별 대화 세션.
 """
-
-from __future__ import annotations
-
-from .main import app
-
-__all__ = ["app"]

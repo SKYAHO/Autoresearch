@@ -28,6 +28,10 @@ OpenAI API 키 없이 팀 공용 ChatGPT OAuth로 Codex CLI를 사용하는 경�
   `.env`, 소스 저장소, GCP ADC, Kubernetes 서비스 계정 토큰을 두지 않는다.
 - runner는 non-root, read-only root filesystem, 빈 임시 볼륨, 최소 CPU·메모리·PID
   제한으로 실행한다. `hostPath`와 서비스 계정 토큰 자동 마운트는 금지한다.
+- runner는 Codex 캐시·세션·임시 파일 전용 writable emptyDir를 `HOME`, `TMPDIR`,
+  `XDG_CACHE_HOME`, `XDG_STATE_HOME`으로 제공한다. OAuth 자격 증명 저장소와 이
+  요청별 쓰기 경로는 분리하며, 프록시·CA 등 Codex 연결에 필요한 비밀 아닌 환경 변수도
+  부모 프로세스 상속 대신 허용 목록으로 명시한다.
 - NetworkPolicy는 API → runner 내부 호출과 runner → Codex가 필요한 승인된 외부
   목적지만 허용한다.
 
@@ -75,5 +79,8 @@ API 내부 매핑 예시는 `fast → 승인된 Codex 모델명`이다. 모델�
    인자 계약을 배포 이미지에서 smoke test로 검증한다.
 5. Codex 실행 동시성 상한과 초과 시 `429` 또는 `503` 응답 계약, PostgreSQL 커넥션 풀
    정책을 확정한다.
+6. read-only root filesystem과 writable scratch `HOME`/`TMPDIR` 환경에서 OAuth 상태를
+   포함하지 않는 `codex exec` smoke test를 통과하고, 필요한 프록시·CA 설정이 허용
+   목록 외의 부모 환경 없이 동작함을 확인한다.
 
 위 조건 중 하나라도 충족하지 못하면 Codex OAuth 배포는 차단한다.

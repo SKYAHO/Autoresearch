@@ -5,8 +5,9 @@
 적재해 추후 분석 및 비용/품질 회귀 점검에 사용한다.
 
 [기능]
-요청·응답 테이블 스키마 생성과 저장 동작을 담당하고, 저장 결과를
-응답 가능한 도메인 모델로 반환한다.
+요청·응답 테이블 스키마 생성과 저장 동작을 담당한다. 시작 시 PostgreSQL advisory
+lock으로 다중 인스턴스의 최초 DDL을 직렬화하고, 저장 결과를 응답 가능한 도메인
+모델로 반환한다.
 
 [비책임]
 LLM 호출 본문 생성·라우팅, 사용자 인증, API 라우트 핸들링.
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import re
 
-from psycopg import connect
+from psycopg import connect, sql
 from psycopg.rows import class_row
 
 
@@ -48,7 +49,12 @@ def ensure_schema(database_url: str, table_name: str, connect_timeout_sec: int =
     with connect(database_url, connect_timeout=connect_timeout_sec) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                f"""
+                "SELECT pg_advisory_xact_lock(hashtext(%s))",
+                (f"agent_orchestration_schema:{safe_table}",),
+            )
+            cursor.execute(
+                sql.SQL(
+                    """
                 CREATE TABLE IF NOT EXISTS {safe_table}
                 (
                     id BIGSERIAL PRIMARY KEY,
@@ -60,6 +66,7 @@ def ensure_schema(database_url: str, table_name: str, connect_timeout_sec: int =
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
+                ).format(safe_table=sql.Identifier(safe_table))
             )
         connection.commit()
 
@@ -83,11 +90,13 @@ def save_interaction(
         "latency_ms": latency_ms,
         "token_count": token_count,
     }
-    query = f"""
+    query = sql.SQL(
+        """
         INSERT INTO {safe_table} (prompt, response, model, latency_ms, token_count)
         VALUES (%(prompt)s, %(response)s, %(model)s, %(latency_ms)s, %(token_count)s)
         RETURNING id, prompt, response, model, latency_ms, token_count, created_at
-    """
+        """
+    ).format(safe_table=sql.Identifier(safe_table))
     row_factory = class_row(ChatRow)
     with connect(
         database_url,

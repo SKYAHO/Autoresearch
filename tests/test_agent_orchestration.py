@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
+import signal
+import subprocess
+import sys
 from types import SimpleNamespace
 
 from fastapi import status
@@ -82,6 +86,47 @@ def test_load_settings_allows_codex_without_openai_key(monkeypatch: pytest.Monke
 
     assert settings.llm_backend == "codex_cli"
     assert settings.openai_api_key is None
+
+
+def test_load_settings_openai_does_not_require_codex_runtime_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenAI 모드에서는 Codex 실행 파일과 홈이 없어도 기동한다."""
+    monkeypatch.setenv("LLM_BACKEND", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
+    monkeypatch.setenv("CODEX_CLI_PATH", "   ")
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+
+    settings = load_settings()
+
+    assert settings.llm_backend == "openai"
+    assert settings.codex_cli_path == "codex"
+    assert settings.codex_home == ""
+
+
+@pytest.mark.parametrize(
+    ("name", "attribute", "default"),
+    [
+        ("CODEX_TIMEOUT_SEC", "codex_timeout_sec", 120),
+        ("OPENAI_MAX_TOKENS", "openai_max_tokens", 1024),
+        ("OPENAI_TIMEOUT_SEC", "openai_timeout_sec", 60),
+        ("ORCH_DB_CONNECT_TIMEOUT_SEC", "database_connect_timeout_sec", 10),
+    ],
+)
+def test_load_settings_uses_default_for_blank_numeric_value(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    attribute: str,
+    default: int,
+) -> None:
+    """빈 선택 환경 변수는 .env.example의 기본값 계약을 따른다."""
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
+    monkeypatch.setenv(name, "")
+
+    settings = load_settings()
+
+    assert getattr(settings, attribute) == default
 
 
 def test_load_settings_requires_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,9 +244,13 @@ def test_generate_response_uses_read_only_ephemeral_codex_cli(
     assert "--skip-git-repo-check" in command
     assert stdin_payload == "질문".encode()
     assert received_kwargs["start_new_session"] is True
+    codex_workdir = command[command.index("-C") + 1]
     assert received_kwargs["env"] == {
         "CODEX_HOME": "/tmp/test-codex-home",
-        "HOME": "/tmp/test-codex-home",
+        "HOME": codex_workdir,
+        "TMPDIR": codex_workdir,
+        "XDG_CACHE_HOME": codex_workdir,
+        "XDG_STATE_HOME": codex_workdir,
         "PATH": received_kwargs["env"]["PATH"],
     }
 
@@ -297,11 +346,11 @@ def test_generate_codex_cli_terminates_process_group_after_timeout(
     process_group_terminated = False
 
     class FakeProcess:
-        returncode = -9
+        returncode = None
         pid = 123
 
         async def communicate(self, input: bytes) -> tuple[bytes, bytes]:
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
             return b"", b""
 
     async def fake_create_subprocess_exec(*_args: str, **_kwargs: object) -> FakeProcess:
@@ -320,7 +369,7 @@ def test_generate_codex_cli_terminates_process_group_after_timeout(
         interactions_table="chat_interactions",
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
-        codex_timeout_sec=0,
+        codex_timeout_sec=1,
     )
     monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(llm_module, "_terminate_process_group", fake_terminate_process_group)
@@ -329,6 +378,21 @@ def test_generate_codex_cli_terminates_process_group_after_timeout(
         asyncio.run(generate_response(settings, "질문"))
 
     assert process_group_terminated
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process group is POSIX-specific")
+def test_terminate_process_group_targets_dedicated_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex가 만든 새 세션의 PGID로 종료 신호를 보낸다."""
+    killed: list[tuple[int, signal.Signals]] = []
+    process = SimpleNamespace(returncode=None, pid=12345)
+
+    monkeypatch.setattr(llm_module.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+
+    llm_module._terminate_process_group(process)
+
+    assert killed == [(12345, signal.SIGKILL)]
 
 
 def test_generate_codex_cli_logs_redacted_stderr_after_timeout(
@@ -343,7 +407,7 @@ def test_generate_codex_cli_logs_redacted_stderr_after_timeout(
         pid = 123
 
         async def communicate(self, input: bytes) -> tuple[bytes, bytes]:
-            await asyncio.sleep(0.01)
+            await asyncio.sleep(2)
             return b"", f"failed for {input.decode()}".encode()
 
     async def fake_create_subprocess_exec(*_args: str, **_kwargs: object) -> FakeProcess:
@@ -358,7 +422,7 @@ def test_generate_codex_cli_logs_redacted_stderr_after_timeout(
         interactions_table="chat_interactions",
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
-        codex_timeout_sec=0,
+        codex_timeout_sec=1,
     )
     monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(llm_module, "_terminate_process_group", lambda _process: None)
@@ -454,8 +518,9 @@ def test_ensure_schema_executes_ddl_with_expected_table(monkeypatch: pytest.Monk
         def __exit__(self, exc_type, exc, tb) -> None:
             return None
 
-        def execute(self, query: str) -> None:
-            executed.append(query)
+        def execute(self, query: object, params: object = None) -> None:
+            rendered = query.as_string(None) if hasattr(query, "as_string") else str(query)
+            executed.append(rendered)
 
     class FakeConnection:
         def __enter__(self) -> "FakeConnection":
@@ -479,8 +544,65 @@ def test_ensure_schema_executes_ddl_with_expected_table(monkeypatch: pytest.Monk
     monkeypatch.setattr(db_module, "connect", connect_factory)
     db_module.ensure_schema("postgresql://example", "chat_interactions", connect_timeout_sec=7)
 
-    assert any("CREATE TABLE IF NOT EXISTS chat_interactions" in query for query in executed)
+    assert any("pg_advisory_xact_lock" in query for query in executed)
+    assert any('CREATE TABLE IF NOT EXISTS "chat_interactions"' in query for query in executed)
     assert connect_kwargs == {"connect_timeout": 7}
+
+
+def test_db_quotes_reserved_table_name_in_ddl_and_insert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """예약어 테이블명도 DDL과 INSERT에서 동일하게 식별자로 인용한다."""
+    executed: list[str] = []
+
+    class FakeCursor:
+        def __enter__(self) -> "FakeCursor":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def execute(self, query: object, params: object = None) -> None:
+            rendered = query.as_string(None) if hasattr(query, "as_string") else str(query)
+            executed.append(rendered)
+
+        def fetchone(self) -> db_module.ChatRow:
+            return db_module.ChatRow(
+                id=1,
+                prompt="prompt",
+                response="response",
+                model="model",
+                latency_ms=1,
+                token_count=None,
+                created_at="2026-07-30T00:00:00Z",  # type: ignore[arg-type]
+            )
+
+    class FakeConnection:
+        def __enter__(self) -> "FakeConnection":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def cursor(self) -> FakeCursor:
+            return FakeCursor()
+
+        def commit(self) -> None:
+            return None
+
+    monkeypatch.setattr(db_module, "connect", lambda *_args, **_kwargs: FakeConnection())
+
+    db_module.ensure_schema("postgresql://example", "order")
+    db_module.save_interaction(
+        "postgresql://example",
+        "order",
+        "prompt",
+        "response",
+        "model",
+        1,
+        None,
+    )
+
+    assert any('CREATE TABLE IF NOT EXISTS "order"' in query for query in executed)
+    assert any('INSERT INTO "order"' in query for query in executed)
 
 
 def test_main_startup_fails_when_runtime_initialization_fails(
@@ -574,6 +696,49 @@ def test_main_chat_rejects_missing_api_token(monkeypatch: pytest.MonkeyPatch) ->
     assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
 
+def test_main_chat_rejects_unknown_request_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    """현재 계약에 없는 model_key는 조용히 무시하지 않고 거부한다."""
+    settings = ServiceSettings(
+        openai_api_key=None,
+        openai_model="gpt-5.3-codex-spark",
+        openai_max_tokens=1024,
+        openai_timeout_sec=60,
+        database_url="postgresql://orch:pw@localhost:5432/orch",
+        interactions_table="chat_interactions",
+        api_token="test-api-token",
+    )
+
+    async def fake_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
+        return LLMResult(text="unused", model="unused", token_count=None)
+
+    monkeypatch.setattr(main_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)
+    monkeypatch.setattr(main_module, "generate_response", fake_generate_response)
+    monkeypatch.setattr(
+        main_module,
+        "save_interaction",
+        lambda **kwargs: SimpleNamespace(
+            id=1,
+            prompt=kwargs["prompt"],
+            response=kwargs["response"],
+            model=kwargs["model"],
+            latency_ms=kwargs["latency_ms"],
+            token_count=kwargs["token_count"],
+            created_at="2026-07-30T00:00:00Z",
+        ),
+    )
+
+    app = main_module.create_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            headers={"X-Orch-Token": "test-api-token"},
+            json={"prompt": "테스트", "model_key": "fast"},
+        )
+
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
 def test_generate_response_uses_responses_api_for_openai_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -594,6 +759,7 @@ def test_generate_response_uses_responses_api_for_openai_backend(
         async def create(self, **kwargs):
             received_request.update(kwargs)
             return SimpleNamespace(
+                status="completed",
                 output_text="Responses API 응답",
                 usage=SimpleNamespace(total_tokens=11),
             )
@@ -619,6 +785,59 @@ def test_generate_response_uses_responses_api_for_openai_backend(
         "input": "Responses API로 호출",
         "max_output_tokens": 1024,
     }
+
+
+def test_generate_openai_response_rejects_incomplete_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """출력 토큰 제한 등으로 끝나지 않은 OpenAI 응답은 저장하지 않는다."""
+    settings = ServiceSettings(
+        openai_api_key="test-key",
+        openai_model="gpt-5.3-codex-spark",
+        openai_max_tokens=1024,
+        openai_timeout_sec=60,
+        database_url="postgresql://orch:pw@localhost:5432/orch",
+        interactions_table="chat_interactions",
+        api_token="test-api-token",
+        llm_backend="openai",
+    )
+
+    class FakeResponses:
+        async def create(self, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                status="incomplete",
+                output_text="잘린 응답",
+                usage=SimpleNamespace(total_tokens=11),
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **_kwargs: object) -> None:
+            self.responses = FakeResponses()
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(llm_module, "AsyncOpenAI", FakeOpenAI)
+
+    with pytest.raises(LLMBackendError, match="did not complete"):
+        asyncio.run(generate_response(settings, "Responses API로 호출"))
+
+
+def test_app_package_does_not_eagerly_import_fastapi_application() -> None:
+    """패키지 import는 환경을 읽는 FastAPI 앱 생성을 유발하지 않는다."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import agent_orchestration.app; import sys; "
+            "assert 'agent_orchestration.app.main' not in sys.modules",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_main_chat_returns_bad_gateway_when_codex_cli_fails(

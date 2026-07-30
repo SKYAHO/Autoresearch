@@ -7,7 +7,8 @@
 
 [기능]
 읽기 전용·일회성 Codex CLI 실행과 OpenAI Responses API 호출을 수행하고,
-텍스트·모델명·토큰 사용량을 API 계층이 저장 가능한 결과로 반환한다.
+텍스트·모델명·토큰 사용량을 API 계층이 저장 가능한 결과로 반환한다. Codex의
+캐시·임시 파일은 요청별 작업 디렉터리에만 기록한다.
 
 [비책임]
 HTTP 라우팅과 상태 코드 변환(main.py), PostgreSQL 스키마·저장(db.py),
@@ -88,7 +89,7 @@ async def _generate_codex_cli(settings: ServiceSettings, prompt: str) -> LLMResu
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
-                env=_codex_environment(settings.codex_home),
+                env=_codex_environment(settings.codex_home, workdir),
                 start_new_session=True,
             )
         except OSError as error:
@@ -134,11 +135,14 @@ async def _generate_codex_cli(settings: ServiceSettings, prompt: str) -> LLMResu
     )
 
 
-def _codex_environment(codex_home: str) -> dict[str, str]:
-    """Codex 하위 프로세스에 토큰 이외의 부모 환경 변수를 넘기지 않는다."""
+def _codex_environment(codex_home: str, workdir: str) -> dict[str, str]:
+    """Codex 자격 증명과 요청별 쓰기 경로만 하위 프로세스에 전달한다."""
     return {
         "CODEX_HOME": codex_home,
-        "HOME": codex_home,
+        "HOME": workdir,
+        "TMPDIR": workdir,
+        "XDG_CACHE_HOME": workdir,
+        "XDG_STATE_HOME": workdir,
         "PATH": os.environ.get("PATH", ""),
     }
 
@@ -198,6 +202,9 @@ async def _generate_openai(settings: ServiceSettings, prompt: str) -> LLMResult:
     finally:
         await client.close()
 
+    if response.status != "completed":
+        logger.warning("OpenAI Responses API returned incomplete status=%s", response.status)
+        raise LLMBackendError("OpenAI API response did not complete.")
     if not response.output_text:
         raise LLMBackendError("OpenAI API returned empty output.")
     return LLMResult(

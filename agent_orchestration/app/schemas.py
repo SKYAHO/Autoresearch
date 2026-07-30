@@ -5,7 +5,7 @@
 결과를 상호 계약으로 검증한다.
 
 [기능]
-`/chat` 요청의 입력 제한과, 응답으로 노출되는 저장 메타데이터 구조를
+`/chat` 요청의 엄격한 입력 제한과, 응답으로 노출되는 저장 메타데이터 구조를
 정의한다.
 
 [비책임]
@@ -16,11 +16,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ChatRequest(BaseModel):
     """단일 채팅 요청."""
+
+    model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(
         min_length=1,
@@ -36,6 +38,6 @@ class ChatResponse(BaseModel):
     prompt: str
     response: str
     model: str
-    latency_ms: int
+    latency_ms: int = Field(description="LLM 호출 시간(밀리초, PostgreSQL 저장 시간 제외)")
     token_count: int | None
     created_at: datetime

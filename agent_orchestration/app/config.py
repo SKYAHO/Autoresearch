@@ -5,8 +5,8 @@
 본 모듈은 서비스 런타임 시작/재시작에서 필요한 환경 설정 값을 검증한다.
 
 [기능]
-공유 API 토큰, Codex 전용 홈, OpenAI API 키, 모델/타임아웃, PostgreSQL 연결
-정보 등 FastAPI 런타임이 필요로 하는 공통 설정 값을 단일 진입점으로 정규화한다.
+공유 API 토큰, 선택한 LLM 백엔드에 필요한 Codex 또는 OpenAI 설정, 모델/타임아웃,
+PostgreSQL 연결 정보 등 FastAPI 런타임의 공통 설정 값을 단일 진입점으로 정규화한다.
 
 [비책임]
 실제 LLM 호출 및 PostgreSQL 스키마 생성/영속화 동작.
@@ -27,7 +27,9 @@ def _require_env(name: str, value: str | None) -> str:
 
 
 def _env_int(name: str, default: int) -> int:
-    raw_value = os.getenv(name, str(default)).strip()
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
     try:
         return int(raw_value)
     except ValueError as error:
@@ -75,7 +77,11 @@ def load_settings() -> ServiceSettings:
     openai_model = os.getenv("OPENAI_MODEL", "gpt-5.3-codex-spark").strip()
     openai_max_tokens = _positive_env_int("OPENAI_MAX_TOKENS", 1024)
     openai_timeout_sec = _positive_env_int("OPENAI_TIMEOUT_SEC", 60)
-    codex_cli_path = _require_env("CODEX_CLI_PATH", os.getenv("CODEX_CLI_PATH", "codex"))
+    codex_cli_path = (
+        _require_env("CODEX_CLI_PATH", os.getenv("CODEX_CLI_PATH", "codex"))
+        if llm_backend == "codex_cli"
+        else os.getenv("CODEX_CLI_PATH", "codex").strip() or "codex"
+    )
     codex_home = (
         _require_env("CODEX_HOME", os.getenv("CODEX_HOME"))
         if llm_backend == "codex_cli"
