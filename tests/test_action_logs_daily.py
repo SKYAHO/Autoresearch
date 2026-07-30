@@ -194,6 +194,68 @@ def test_run_daily_action_log_coalesces_small_output_into_one_target_row_group(
     assert parquet.num_row_groups == 1
 
 
+def test_single_daily_publishes_completion_generated_at_without_full_materialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """single daily final은 generation 시작이 아닌 완료 시각을 모든 row에 기록한다."""
+
+    generation_started_at = "2026-07-30T08:00:00+00:00"
+    completed_at = "2026-07-30T09:00:00+00:00"
+    frozen_times = iter(
+        [
+            datetime.fromisoformat(generation_started_at),
+            datetime.fromisoformat(completed_at),
+        ]
+    )
+
+    class _FrozenPipelineDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(frozen_times)
+
+    class _GenerationStartClockGenerator(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+            assert (
+                pipeline_module.datetime.now(UTC)
+                .replace(microsecond=0)
+                .isoformat()
+                == generation_started_at
+            )
+            return super().generate(virtual_user, videos)
+
+    partition_date = date(2026, 7, 1)
+    virtual_users_path = tmp_path / "virtual_users.parquet"
+    youtube_base = tmp_path / "youtube"
+    output_base = tmp_path / "action_log"
+    _write_virtual_users(virtual_users_path, count=1)
+    _write_youtube_partition(youtube_base, partition_date)
+    monkeypatch.setattr(pipeline_module, "datetime", _FrozenPipelineDatetime)
+    monkeypatch.setattr(
+        daily_module,
+        "_build_generator",
+        lambda _generator_name, _model_name=None: _GenerationStartClockGenerator(),
+    )
+
+    summary = run_daily_action_log(
+        partition_date=partition_date,
+        youtube_base_path=str(youtube_base),
+        virtual_users_path=str(virtual_users_path),
+        output_base_path=str(output_base),
+        candidates_per_user=2,
+        click_threshold=0.2,
+        max_concurrency=1,
+        generator_name="rule_based",
+    )
+
+    final_path = output_base / "dt=2026-07-01" / "part-0.parquet"
+    assert summary["status"] == "succeeded"
+    assert {
+        row["generated_at"]
+        for row in pq.read_table(final_path, columns=["generated_at"]).to_pylist()
+    } == {completed_at}
+
+
 def test_validate_staged_event_parquet_reads_row_groups_without_read_table(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

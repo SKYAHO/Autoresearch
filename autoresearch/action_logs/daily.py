@@ -3,8 +3,9 @@
 [파이프라인] 공개 action log batch CLI와 LLM 판정 pipeline 사이에서 일일 입력
 partition을 읽고 single 또는 shard 실행을 선택한 뒤 final partition을 publish한다.
 
-[기능] 단일 모드 streaming staging 검증·원자적 publish와 기존
-shard/checkpoint/merge 실행을 제공한다.
+[기능] 단일 coordinator가 daily temporary directory에 completion-time Parquet/JSONL을
+최종 commit한 뒤 row-group staging 검증과 last-known-good publish를 수행하며, 기존
+shard/checkpoint/merge 실행도 제공한다.
 
 [비책임] LLM 판정·클릭·이벤트 의미는 autoresearch/action_logs/pipeline.py,
 CLI 인자 계약은 autoresearch/jobs/action_log.py, Airflow KPO resource는

@@ -1681,7 +1681,9 @@ def generate_action_log_single(
     generator: ActionLogGenerator,
     *,
     candidate_provider: CandidateProvider | None = None,
-    exposure_metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None,
+    exposure_metadata: (
+        MutableMapping[tuple[str, str], ExposureMetadata] | None
+    ) = None,
     _retention_observer: Callable[[_StreamingRetentionSnapshot], None] | None = None,
 ) -> ActionLogSingleResult:
     """active user 수를 제한해 action log를 사용자 순서대로 증분 기록한다.
@@ -1689,7 +1691,11 @@ def generate_action_log_single(
     후보 provider는 coordinator에서 입력 순서대로 호출한다. 각 사용자의 모든
     chunk 결과가 모인 뒤에만 click을 한 번 선정하고, user-local event를 writer에
     기록한 즉시 참조를 해제한다. 기존 draft/shard 경로의 progress와 checkpoint
-    계약은 이 단일 실행 경로에서 사용하지 않는다.
+    계약은 이 단일 실행 경로에서 사용하지 않는다. 변경 가능한 exposure metadata는
+    사용자가 drain될 때 해당 entry를 제거하므로 정상 streaming 종료 후 비어 있다.
+    read-only mapping은 변경하지 않고 legacy batch 경로로 위임한다.
+    `_retention_observer`는 회귀 검증용 private hook이며, 동일 snapshot은 DAG
+    structured telemetry에도 기록된다.
     """
 
     if (
