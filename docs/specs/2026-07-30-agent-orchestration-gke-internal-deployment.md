@@ -18,8 +18,8 @@ FastAPI를 기존 GKE dev 클러스터와 Cloud SQL PostgreSQL에 내부 전용�
 - 기존 `autoresearch-dev-pg` Cloud SQL(PostgreSQL 15)에 전용 데이터베이스와
   전용 SQL 사용자를 만든다.
 - GKE에 단일 replica Deployment와 ClusterIP Service를 만든다.
-- Cloud SQL 접속 정보와 공용 Codex OAuth 초기 인증 파일을 Secret Manager에서
-  주입한다.
+- Cloud SQL 비밀번호와 공용 Codex OAuth 초기 인증 파일을 Workload Identity를
+  사용한 init container가 Secret Manager에서 직접 읽는다.
 - Codex 인증 상태를 단일 PVC에 보존해 토큰 갱신 후에도 Pod 재시작을 견딘다.
 - 내부 `/healthcheck`, `/chat`, PostgreSQL 저장을 실제로 검증하고 운영
   runbook을 남긴다.
@@ -41,7 +41,7 @@ GKE 내부 호출 또는 kubectl port-forward
       → codex exec (read-only, ephemeral)
       → Cloud SQL Private IP: agent_orchestration DB
       → PVC: CODEX_HOME (공용 OAuth 갱신 상태)
-      ← Secret Manager: DB URL, OAuth 초기 auth.json
+      ← init container ← Secret Manager: DB 비밀번호, OAuth 초기 auth.json
 ```
 
 Pod는 non-root 사용자로 실행한다. `/healthcheck`는 DB 초기화 성공 여부만
@@ -54,8 +54,11 @@ Pod는 non-root 사용자로 실행한다. `/healthcheck`는 DB 초기화 성공
 - 신규 DB: `agent_orchestration`
 - 신규 SQL 사용자: `agent_orchestration_app`
 - 비밀번호는 Terraform이 생성하고 Secret Manager에 저장한다.
-- 애플리케이션에는 완성된 `ORCH_DATABASE_URL`만 Secret Manager 기반 시크릿으로
-  주입한다. 비밀번호를 ConfigMap, 이미지, Git, 로그에 두지 않는다.
+- init container가 Secret Manager에서 비밀번호를 읽고, Private IP·DB명·SQL
+  사용자와 조합한 `ORCH_DATABASE_URL`을 Pod 공유 임시 볼륨의 권한 제한 파일에
+  기록한다. 앱 시작 명령만 이 파일을 읽어 환경 변수로 내보낸다.
+- 비밀번호 또는 완성된 DB URL을 ConfigMap, Kubernetes Secret, 이미지, Git,
+  로그에 두지 않는다.
 - 스키마는 현재 앱의 `ensure_schema()`가 `chat_interactions` 테이블을 최초
   생성하는 방식으로 유지한다. 파괴적 마이그레이션은 이번 범위에 없다.
 
@@ -70,8 +73,9 @@ Codex CLI의 `CODEX_HOME`에는 인증 정보와 갱신 상태가 저장된다. 
 1. 운영자가 신뢰된 로컬 환경에서 팀 공용 계정으로 `codex login`을 수행한다.
 2. 파일 기반 자격 증명(`auth.json`)을 Secret Manager의 초기 인증 시크릿으로
    저장한다. 이 파일은 비밀번호와 동등한 민감도로 취급한다.
-3. Pod init container가 PVC에 인증 파일이 없을 때만 초기 시크릿을
-   `CODEX_HOME/auth.json`으로 복사하고 권한을 소유자 읽기/쓰기로 제한한다.
+3. Pod init container가 Workload Identity로 Secret Manager의 초기 인증 파일을
+   직접 읽고, PVC에 인증 파일이 없을 때만 `CODEX_HOME/auth.json`으로 복사한다.
+   파일 권한은 소유자 읽기/쓰기로 제한한다.
 4. 애플리케이션 컨테이너는 같은 PVC를 읽기/쓰기로 마운트하고
    `CODEX_HOME`을 그 경로로 설정한다. Codex CLI가 실행 중 갱신한 인증 상태는
    PVC에 남는다.
@@ -79,9 +83,9 @@ Codex CLI의 `CODEX_HOME`에는 인증 정보와 갱신 상태가 저장된다. 
    계정의 사용량과 인증 상태를 여러 Pod가 동시에 갱신하지 않게 한다.
 
 OAuth 초기 인증 파일은 Kubernetes Secret, ConfigMap, 환경 변수로 직접 넣지
-않는다. Secret Manager CSI 또는 동등한 읽기 전용 파일 주입 경로를 사용한다.
-PVC에는 `CODEX_HOME` 외의 애플리케이션 데이터나 사용자 프롬프트를 저장하지
-않는다.
+않는다. init container가 Secret Manager API에서 읽으며, Pod에는 시크릿 ID만
+비민감 환경 변수로 전달한다. PVC에는 `CODEX_HOME` 외의 애플리케이션 데이터나
+사용자 프롬프트를 저장하지 않는다.
 
 ## OAuth 갱신·복구 운영 절차
 
@@ -111,17 +115,19 @@ PVC에는 `CODEX_HOME` 외의 애플리케이션 데이터나 사용자 프롬�
 ### `SKYAHO/Autoresearch-infra`
 
 - Cloud SQL DB·사용자·Secret Manager 시크릿을 Terraform으로 선언한다.
-- GKE namespace, Kubernetes ServiceAccount, Workload Identity, Secret Manager
-  접근 권한, PVC, Deployment, ClusterIP Service를 선언한다.
+- GKE namespace, 전용 Kubernetes ServiceAccount, Workload Identity, Secret
+  Manager 접근 권한, PVC, Deployment, ClusterIP Service를 선언한다.
 - Deployment는 검증된 immutable GAR digest만 참조한다.
-- Secret Manager CSI 마운트, init container, `CODEX_HOME` 권한을 구성한다.
+- Secret Manager API를 호출하는 init container, 공유 임시 볼륨, `CODEX_HOME`
+  권한을 구성한다. GKE Secret Manager CSI 애드온은 추가하지 않는다.
 
 ## 네트워크·보안 계약
 
 - Service type은 `ClusterIP`이며 Ingress와 LoadBalancer를 만들지 않는다.
 - 초기 검증은 같은 클러스터의 허용된 워크로드 또는 `kubectl port-forward`로만
   수행한다.
-- Workload Identity는 DB URL과 OAuth 초기 인증 시크릿을 읽는 최소 권한만 가진다.
+- Workload Identity는 DB 비밀번호와 OAuth 초기 인증 시크릿을 읽는 최소 권한만
+  가진다.
 - 앱 로그에는 프롬프트, LLM 응답 전문, OAuth 인증 정보, DB URL/비밀번호를
   기록하지 않는다.
 - Pod와 PVC의 파일 권한은 앱 non-root UID와 필요한 init container 외에는
