@@ -63,6 +63,7 @@
 
 - [Spec — Agent Orchestration 채팅 저장 스켈레톤](archive/specs/2026-07-30-agent-orchestration-chat-postgres-skeleton.md) (구현 완료)
 - [Plan — Agent Orchestration 1단계 구현 계획](archive/plans/2026-07-30-agent-orchestration-chat-postgres-skeleton.md) (구현 완료)
+- [Plan — Agent Orchestration PR 사전 병합 강화](archive/plans/2026-07-31-agent-orchestration-premerge-hardening.md) (구현 완료)
 - `agent_orchestration/` (FastAPI + Codex CLI/OpenAI + PostgreSQL 실험 API)
 - [Spec — Agent Orchestration GKE 내부 배포](specs/2026-07-30-agent-orchestration-gke-internal-deployment.md)
 - [Plan — Agent Orchestration GKE 내부 배포](plans/2026-07-30-agent-orchestration-gke-internal-deployment.md)
