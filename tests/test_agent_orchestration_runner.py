@@ -6,16 +6,18 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 from fastapi.testclient import TestClient
 import httpx
 import pytest
 
 from agent_orchestration.app.config import ServiceSettings
 from agent_orchestration.app.llm import LLMBackendError, generate_response
+from agent_orchestration.app.schemas import ChatRequest
 from agent_orchestration import codex as codex_module
 from agent_orchestration.contracts import LLMBackendOverloadedError, LLMResult
 from agent_orchestration.runner import app as runner_app_module
+from agent_orchestration.runner import config as runner_config_module
 from agent_orchestration.runner.config import RunnerSettings
 
 
@@ -35,6 +37,30 @@ def make_settings(**overrides: Any) -> ServiceSettings:
     }
     values.update(overrides)
     return ServiceSettings(**values)
+
+
+def _disconnecting_http_request() -> Request:
+    """실제 ASGI 연결 종료 메시지를 반환하는 HTTP 요청을 만든다."""
+
+    async def receive() -> dict[str, str]:
+        return {"type": "http.disconnect"}
+
+    return Request(
+        {"type": "http", "method": "POST", "path": "/", "headers": []},
+        receive,
+    )
+
+
+def _connected_http_request() -> Request:
+    """연결이 유지되는 동안 완료되는 직접 endpoint 테스트용 요청을 만든다."""
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    return Request(
+        {"type": "http", "method": "POST", "path": "/", "headers": []},
+        receive,
+    )
 
 
 def test_generate_response_uses_private_runner(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,6 +205,34 @@ def test_runner_rejects_request_without_private_api_token(
     assert response.status_code == 401
 
 
+def test_runner_startup_fails_when_runtime_settings_are_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """잘못된 Runner 설정은 요청 전 TestClient lifespan 기동을 실패시킨다."""
+    monkeypatch.setattr(
+        runner_app_module,
+        "load_runner_settings",
+        lambda: (_ for _ in ()).throw(ValueError("invalid runner settings")),
+    )
+
+    with pytest.raises(ValueError, match="invalid runner settings"):
+        with TestClient(runner_app_module.create_runner_app()):
+            pass
+
+
+def test_load_runner_settings_rejects_timeout_without_cleanup_headroom(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex 종료 여유 5초가 없는 Runner HTTP timeout 조합은 기동 전에 거부한다."""
+    monkeypatch.setenv("ORCH_RUNNER_TOKEN", "runner-token-must-be-at-least-32-characters")
+    monkeypatch.setenv("CODEX_HOME", "/tmp/codex-home")
+    monkeypatch.setenv("CODEX_TIMEOUT_SEC", "115")
+    monkeypatch.setenv("ORCH_API_RUNNER_TIMEOUT_SEC", "120")
+
+    with pytest.raises(ValueError, match=r"CODEX_TIMEOUT_SEC \+ 5"):
+        runner_config_module.load_runner_settings()
+
+
 def test_runner_rejects_request_when_concurrency_limit_is_reached() -> None:
     """Runner는 실행 슬롯이 모두 사용 중이면 요청을 대기시키지 않고 503을 반환한다."""
     codex_settings = codex_module.CodexSettings(
@@ -250,22 +304,25 @@ def test_runner_returns_immediate_503_when_all_real_slots_are_busy(
     async def exercise() -> None:
         first = asyncio.create_task(
             generate(
-                runner_app_module.GenerateRequest(prompt="first"),
-                "runner-token-must-be-at-least-32-characters",
+                http_request=_connected_http_request(),
+                request=runner_app_module.GenerateRequest(prompt="first"),
+                x_runner_token="runner-token-must-be-at-least-32-characters",
             )
         )
         second = asyncio.create_task(
             generate(
-                runner_app_module.GenerateRequest(prompt="second"),
-                "runner-token-must-be-at-least-32-characters",
+                http_request=_connected_http_request(),
+                request=runner_app_module.GenerateRequest(prompt="second"),
+                x_runner_token="runner-token-must-be-at-least-32-characters",
             )
         )
         await all_slots_busy.wait()
         with pytest.raises(HTTPException) as error:
             await asyncio.wait_for(
                 generate(
-                    runner_app_module.GenerateRequest(prompt="third"),
-                    "runner-token-must-be-at-least-32-characters",
+                    http_request=_connected_http_request(),
+                    request=runner_app_module.GenerateRequest(prompt="third"),
+                    x_runner_token="runner-token-must-be-at-least-32-characters",
                 ),
                 timeout=0.1,
             )
@@ -312,12 +369,14 @@ def test_runner_returns_slot_after_codex_error(monkeypatch: pytest.MonkeyPatch) 
     async def exercise() -> None:
         with pytest.raises(LLMBackendError, match="Codex CLI failed"):
             await generate(
-                runner_app_module.GenerateRequest(prompt="first"),
-                "runner-token-must-be-at-least-32-characters",
+                http_request=_connected_http_request(),
+                request=runner_app_module.GenerateRequest(prompt="first"),
+                x_runner_token="runner-token-must-be-at-least-32-characters",
             )
         response = await generate(
-            runner_app_module.GenerateRequest(prompt="second"),
-            "runner-token-must-be-at-least-32-characters",
+            http_request=_connected_http_request(),
+            request=runner_app_module.GenerateRequest(prompt="second"),
+            x_runner_token="runner-token-must-be-at-least-32-characters",
         )
         assert response.response == "runner answer"
 
@@ -364,8 +423,9 @@ def test_runner_returns_slot_after_request_cancellation(
     async def exercise() -> None:
         first = asyncio.create_task(
             generate(
-                runner_app_module.GenerateRequest(prompt="first"),
-                "runner-token-must-be-at-least-32-characters",
+                http_request=_connected_http_request(),
+                request=runner_app_module.GenerateRequest(prompt="first"),
+                x_runner_token="runner-token-must-be-at-least-32-characters",
             )
         )
         await started.wait()
@@ -373,12 +433,125 @@ def test_runner_returns_slot_after_request_cancellation(
         with pytest.raises(asyncio.CancelledError):
             await first
         response = await generate(
-            runner_app_module.GenerateRequest(prompt="second"),
-            "runner-token-must-be-at-least-32-characters",
+            http_request=_connected_http_request(),
+            request=runner_app_module.GenerateRequest(prompt="second"),
+            x_runner_token="runner-token-must-be-at-least-32-characters",
         )
         assert response.response == "runner answer"
 
     asyncio.run(exercise())
+
+
+def test_runner_cancels_codex_task_after_http_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ASGI 연결 종료는 진행 중인 Codex task를 취소하고 실행 슬롯을 회수한다."""
+    settings = RunnerSettings(
+        codex=codex_module.CodexSettings(
+            cli_path="codex",
+            home="/tmp/codex-home",
+            model=None,
+            timeout_sec=110,
+        ),
+        max_concurrency=1,
+        api_token="runner-token-must-be-at-least-32-characters",
+    )
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    attempts = 0
+
+    async def blocking_generate(
+        _settings: codex_module.CodexSettings,
+        _prompt: str,
+    ) -> LLMResult:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        return LLMResult(text="runner answer", model="codex-cli", token_count=None)
+
+    monkeypatch.setattr(runner_app_module, "generate_codex_response", blocking_generate)
+    app = runner_app_module.create_runner_app(settings)
+    generate = next(
+        route.endpoint
+        for route in app.routes
+        if getattr(route, "path", None) == "/v1/generate"
+    )
+
+    async def exercise() -> None:
+        disconnected = asyncio.create_task(
+            generate(
+                request=runner_app_module.GenerateRequest(prompt="first"),
+                x_runner_token="runner-token-must-be-at-least-32-characters",
+                http_request=_disconnecting_http_request(),
+            )
+        )
+        await started.wait()
+        with pytest.raises(asyncio.CancelledError):
+            await disconnected
+        await cancelled.wait()
+
+        response = await generate(
+            request=runner_app_module.GenerateRequest(prompt="second"),
+            x_runner_token="runner-token-must-be-at-least-32-characters",
+            http_request=_disconnecting_http_request(),
+        )
+
+        assert response.response == "runner answer"
+        assert app.state.execution_slots.qsize() == 1
+
+    asyncio.run(exercise())
+
+
+def test_api_cancels_runner_request_after_http_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """외부 ASGI 연결 종료는 API의 진행 중인 Runner HTTP 요청을 취소한다."""
+    settings = make_settings(
+        codex_runner_token="runner-token-must-be-at-least-32-characters"
+    )
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def blocking_generate_response(
+        _settings: ServiceSettings,
+        _prompt: str,
+    ) -> LLMResult:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    from agent_orchestration.app import main as main_module
+
+    monkeypatch.setattr(main_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)
+    monkeypatch.setattr(main_module, "generate_response", blocking_generate_response)
+    app = main_module.create_app()
+    chat = next(
+        route.endpoint for route in app.routes if getattr(route, "path", None) == "/chat"
+    )
+
+    async def exercise() -> None:
+        disconnected = asyncio.create_task(
+            chat(
+                request=ChatRequest(prompt="runner prompt"),
+                x_orch_token=settings.api_token,
+                http_request=_disconnecting_http_request(),
+            )
+        )
+        await started.wait()
+        with pytest.raises(asyncio.CancelledError):
+            await disconnected
+        await cancelled.wait()
+
+    with TestClient(app):
+        asyncio.run(exercise())
 
 
 def test_generate_response_preserves_runner_overload_status(

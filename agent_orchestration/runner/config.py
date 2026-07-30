@@ -6,7 +6,8 @@
 
 [기능]
 Codex 실행 경계 설정, Runner 동시성 상한, API가 전달한 내부 요청 토큰을 환경
-변수에서 읽어 정규화한다.
+변수에서 읽어 정규화하고, Codex 하위 프로세스 정리 시간까지 포함한 API-to-Runner
+HTTP timeout 관계를 기동 전에 검증한다.
 
 [비책임]
 API 공유 토큰·데이터베이스·OpenAI 설정(agent_orchestration.app.config),
@@ -50,6 +51,7 @@ class RunnerSettings:
     codex: CodexSettings
     max_concurrency: int
     api_token: str
+    api_runner_timeout_sec: int = 120
 
 
 def load_runner_settings() -> RunnerSettings:
@@ -57,13 +59,20 @@ def load_runner_settings() -> RunnerSettings:
     api_token = _require_env("ORCH_RUNNER_TOKEN", os.getenv("ORCH_RUNNER_TOKEN"))
     if len(api_token) < 32:
         raise ValueError("ORCH_RUNNER_TOKEN must be at least 32 characters long.")
+    codex_timeout_sec = _positive_env_int("CODEX_TIMEOUT_SEC", 110)
+    api_runner_timeout_sec = _positive_env_int("ORCH_API_RUNNER_TIMEOUT_SEC", 120)
+    if codex_timeout_sec + 5 >= api_runner_timeout_sec:
+        raise ValueError(
+            "CODEX_TIMEOUT_SEC + 5 must be less than ORCH_API_RUNNER_TIMEOUT_SEC."
+        )
     return RunnerSettings(
         codex=CodexSettings(
             cli_path=_require_env("CODEX_CLI_PATH", os.getenv("CODEX_CLI_PATH", "codex")),
             home=_require_env("CODEX_HOME", os.getenv("CODEX_HOME")),
             model=os.getenv("CODEX_MODEL", "").strip() or None,
-            timeout_sec=_positive_env_int("CODEX_TIMEOUT_SEC", 110),
+            timeout_sec=codex_timeout_sec,
         ),
         max_concurrency=_positive_env_int("RUNNER_MAX_CONCURRENCY", 1),
         api_token=api_token,
+        api_runner_timeout_sec=api_runner_timeout_sec,
     )

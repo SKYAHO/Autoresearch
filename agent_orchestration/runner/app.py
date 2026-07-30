@@ -6,8 +6,8 @@
 
 [기능]
 엄격한 생성 요청·응답 스키마, API 전용 내부 요청 토큰 검증, 비대기 용량 토큰으로
-즉시 거절하는 동시 실행 상한을 제공하고 공용 Codex 실행 경계의 결과에 Runner 처리
-시간을 추가한다.
+즉시 거절하는 동시 실행 상한을 제공한다. lifespan startup에서 설정을 검증하고, 연결
+종료 시 공용 Codex 실행 task를 취소·회수하며 결과에 Runner 처리 시간을 추가한다.
 
 [비책임]
 외부 호출자 인증·DB 저장·OpenAI API 선택(agent_orchestration.app), OAuth
@@ -18,13 +18,20 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from time import perf_counter
+from typing import TypeVar
 
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 
 from agent_orchestration.codex import generate_codex_response
 from agent_orchestration.runner.config import RunnerSettings, load_runner_settings
+
+
+TaskResult = TypeVar("TaskResult")
+_REQUEST_DISCONNECT_POLL_INTERVAL_SEC = 0.1
 
 
 class GenerateRequest(BaseModel):
@@ -62,17 +69,36 @@ def _create_execution_slots(max_concurrency: int) -> asyncio.Queue[object]:
     return slots
 
 
+async def _await_request_task(
+    http_request: Request,
+    task: asyncio.Task[TaskResult],
+) -> TaskResult:
+    """연결 종료 시 작업을 취소하고 완료·오류·취소 뒤 task를 회수한다."""
+    try:
+        while not task.done():
+            done, _ = await asyncio.wait(
+                {task},
+                timeout=_REQUEST_DISCONNECT_POLL_INTERVAL_SEC,
+            )
+            if task in done:
+                break
+            if await http_request.is_disconnected():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                raise asyncio.CancelledError
+        return await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
     """Runner FastAPI 앱을 생성한다.
 
-    설정을 넘기지 않으면 유효한 요청 처리 시점에 Runner 전용 환경에서 로드한다.
-    따라서 입력 스키마 오류는 Codex 자격 증명 설정과 독립적으로 422를 반환한다.
+    설정을 넘기지 않으면 lifespan startup에서 Runner 전용 환경을 검증한다. 설정이
+    잘못되면 Ready 상태가 되지 않으며, 입력 스키마 오류는 여전히 422를 반환한다.
     """
-    app = FastAPI()
-    app.state.settings = settings
-    app.state.execution_slots = (
-        _create_execution_slots(settings.max_concurrency) if settings is not None else None
-    )
 
     def runtime() -> tuple[RunnerSettings, asyncio.Queue[object]]:
         runtime_settings = app.state.settings
@@ -84,6 +110,17 @@ def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
             app.state.execution_slots = execution_slots
         return runtime_settings, execution_slots
 
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        runtime()
+        yield
+
+    app = FastAPI(lifespan=lifespan)
+    app.state.settings = settings
+    app.state.execution_slots = (
+        _create_execution_slots(settings.max_concurrency) if settings is not None else None
+    )
+
     @app.get("/healthcheck")
     async def healthcheck() -> dict[str, str]:
         """배포 probe에서 Runner 설정과 동시성 제어 준비 상태를 검증한다."""
@@ -92,6 +129,7 @@ def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
 
     @app.post("/v1/generate", response_model=GenerateResponse)
     async def generate(
+        http_request: Request,
         request: GenerateRequest,
         x_runner_token: str | None = Header(default=None, alias="X-Runner-Token"),
     ) -> GenerateResponse:
@@ -113,7 +151,10 @@ def create_runner_app(settings: RunnerSettings | None = None) -> FastAPI:
             ) from None
         started_at = perf_counter()
         try:
-            result = await generate_codex_response(runtime_settings.codex, request.prompt)
+            codex_task = asyncio.create_task(
+                generate_codex_response(runtime_settings.codex, request.prompt)
+            )
+            result = await _await_request_task(http_request, codex_task)
         finally:
             execution_slots.put_nowait(slot)
         return GenerateResponse(
