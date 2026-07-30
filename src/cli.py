@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
 """LightGBM 학습 파이프라인 Typer CLI.
 
-python -m src.cli build-features / train-model / evaluate-model / run-pipeline
+[파이프라인] 피처 조립 → 학습 → 평가 → champion 승격 구간의 진입점(배선)을
+담당한다: `python -m src.cli build-features / train-model / evaluate-model /
+run-pipeline / promote-model`.
+
+[기능] 각 단계 모듈에 인자를 전달하고 단계 순서를 정한다. run-pipeline은
+build-features → train-model → evaluate-model 순서로 실행하며, registered model
+버전 생성은 평가가 통과한 뒤에 수행한다(#421) — 평가가 실패하면 지표를 신뢰할
+수 없는 후보 버전이 registry에 남지 않는다.
+
+[비책임] 실제 조립·학습·평가·승격 로직은 각 모듈(src/pipeline/*.py,
+src/tracking/promote.py)이 소유한다. DAG·스케줄·재시도는 인접 저장소
+Autoresearch-airflow 소유다.
 """
 
 import os
@@ -143,9 +154,11 @@ def run_pipeline(
     }
 
     typer.echo("\n[2/3] train-model 실행...")
-    # train.main은 실현 sampling_rate(#300)를 반환한다 — evaluate가 오프라인
-    # 지표(LogLoss/calibration)를 원분포 기준으로 재도록 그대로 넘긴다.
-    realized_sampling_rate = train.main(
+    # train.main은 실현 sampling_rate(#300)를 담은 TrainingOutcome을 반환한다 —
+    # evaluate가 오프라인 지표(LogLoss/calibration)를 원분포 기준으로 재도록 넘긴다.
+    # defer_registration=True: registered model 버전 생성만 평가 뒤로 미룬다(#421).
+    # run 로깅(파라미터·메트릭·아티팩트)은 학습 시점에 그대로 남는다.
+    outcome = train.main(
         config_path=config_path,
         data_path=dataset_path,
         model_output=model_output,
@@ -156,6 +169,7 @@ def run_pipeline(
         val_size=val_size,
         random_state=random_state,
         extra_params=data_source_params,
+        defer_registration=True,
     )
 
     # dataset_path(방금 만든 train+val+test 전체)는 넘기지 않는다: evaluate는
@@ -169,8 +183,16 @@ def run_pipeline(
         data_path=test_set_output,
         model_path=model_output,
         feature_columns_path=feature_columns_output,
-        sampling_rate=realized_sampling_rate if realized_sampling_rate is not None else 1.0,
+        sampling_rate=outcome.sampling_rate,
     )
+
+    # 평가가 통과한 뒤에야 registered model 버전을 만든다(#421). 평가가 실패하면
+    # evaluate.main의 예외가 여기까지 오지 않으므로, 지표를 신뢰할 수 없는 후보
+    # 버전이 registry에 쌓이지 않는다. 학습 run과 아티팩트는 이미 남아 있어,
+    # 데이터를 고친 뒤 재학습하면 정상 후보가 다시 만들어진다.
+    if outcome.pending_registration is not None:
+        typer.echo("\n[등록] 평가 통과 — Model Registry 등록...")
+        train.register_pending_model(outcome.pending_registration)
 
     typer.echo("\n" + "=" * 70)
     typer.echo("파이프라인 완료")

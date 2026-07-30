@@ -93,6 +93,126 @@ def test_collect_categorical_categories_skips_missing_columns() -> None:
     assert result == {}
 
 
+def test_require_binary_labels_rejects_all_negative_with_counts() -> None:
+    """#421: 양성 0건이면 학습 전에 행 수·양성/음성 개수가 드러나는 에러로 막는다."""
+    with pytest.raises(ValueError, match="단일 클래스") as exc_info:
+        train.require_binary_labels(pd.Series([0] * 10), stage="학습 데이터셋")
+
+    message = str(exc_info.value)
+    assert "학습 데이터셋" in message
+    assert "rows=10" in message
+    assert "positive(clicked=1)=0" in message
+    assert "negative(clicked=0)=10" in message
+
+
+def test_require_binary_labels_rejects_all_positive() -> None:
+    # 음성 0건도 같은 이유로 지표(ROC-AUC/LogLoss)가 정의되지 않는다.
+    with pytest.raises(ValueError, match="단일 클래스"):
+        train.require_binary_labels(pd.Series([1] * 5), stage="Train split")
+
+
+def test_require_binary_labels_returns_counts_when_both_present() -> None:
+    assert train.require_binary_labels(pd.Series([0, 0, 1]), stage="Train split") == (1, 2)
+
+
+def test_compute_auto_scale_pos_weight_returns_negative_over_positive() -> None:
+    assert train.compute_auto_scale_pos_weight(pd.Series([0, 0, 0, 1])) == 3.0
+
+
+def test_compute_auto_scale_pos_weight_rejects_zero_positive() -> None:
+    """#421: neg/pos 0 나눗셈(RuntimeWarning divide by zero → inf) 경로를 fail-closed로 막는다."""
+    with pytest.raises(ValueError, match="양성"):
+        train.compute_auto_scale_pos_weight(pd.Series([0, 0, 0]))
+
+
+def test_main_rejects_single_class_dataset_before_training(tmp_path, monkeypatch) -> None:
+    """#421: 라벨이 전부 0인 데이터셋은 학습·저장·등록 전에 중단되어야 한다."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    dataset = _synthetic_ctr_dataset(n=240)
+    dataset["clicked"] = 0
+    dataset.to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    with pytest.raises(ValueError, match="단일 클래스") as exc_info:
+        _run_train(tmp_path, config_path)
+
+    message = str(exc_info.value)
+    assert "rows=240" in message
+    assert "positive(clicked=1)=0" in message
+
+    # 모델 파일도, registry 버전도 생기지 않아야 한다(쓰레기 버전 방지).
+    assert not (tmp_path / "model.joblib").exists()
+    client = MlflowClient(tracking_uri=tracking_uri)
+    assert client.search_model_versions("name='ctr-model'") == []
+
+
+def test_main_rejects_single_class_split(tmp_path, monkeypatch) -> None:
+    """#421: 데이터셋 전체엔 양성이 있어도 분할 결과가 단일 클래스면 막는다.
+
+    양성이 2건뿐이면 stratified split이 train에만 양성을 몰아주고 val/test는
+    전부 음성이 된다 — 이 상태로 진행하면 평가 단계 log_loss에서 터진다.
+    """
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    dataset = _synthetic_ctr_dataset(n=200)
+    dataset["clicked"] = 0
+    dataset.loc[[0, 1], "clicked"] = 1
+    dataset.to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    with pytest.raises(ValueError, match="단일 클래스") as exc_info:
+        _run_train(tmp_path, config_path)
+
+    assert "split" in str(exc_info.value)
+    assert not (tmp_path / "model.joblib").exists()
+    client = MlflowClient(tracking_uri=tracking_uri)
+    assert client.search_model_versions("name='ctr-model'") == []
+
+
+def test_main_defer_registration_returns_pending_without_registering(tmp_path, monkeypatch) -> None:
+    """#421: defer_registration=True면 run 로깅·아티팩트는 그대로 남기되
+    registered model 버전은 만들지 않고, 호출자가 평가 통과 뒤 직접 등록한다."""
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    outcome = train.main(
+        config_path=str(config_path),
+        data_path=str(tmp_path / "training_dataset.csv"),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.json"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.json"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+        defer_registration=True,
+    )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    # 등록은 아직 없다. 반면 run 로깅(메트릭)과 모델 아티팩트는 이미 남아 있다.
+    assert client.search_model_versions("name='ctr-model'") == []
+    assert outcome.registered_version is None
+    assert (tmp_path / "model.joblib").exists()
+    assert "val_roc_auc" in client.get_run(outcome.run_id).data.metrics
+
+    pending = outcome.pending_registration
+    assert pending is not None
+    assert pending.model_name == "ctr-model"
+    assert pending.model_uri == f"runs:/{outcome.run_id}/model"
+
+    # 평가 통과 후 호출하면 그때 버전이 생기고 태그도 함께 붙는다.
+    version = train.register_pending_model(pending)
+    [registered] = client.search_model_versions("name='ctr-model'")
+    assert registered.version == version
+    assert "val_roc_auc" in client.get_model_version("ctr-model", version).tags
+
+
 def test_main_registers_model_and_auto_increments_version(tmp_path, monkeypatch) -> None:
     """#96: 학습 완료 후 ctr-model이 Model Registry에 등록되고 버전이 자동 증가하는지 검증."""
     tracking_uri = (tmp_path / "mlruns").as_uri()
@@ -275,8 +395,8 @@ def test_main_downsampling_records_sampling_rate_and_preserves_test_set(tmp_path
     _write_train_config_with(config_path, sampling_rate=0.5)
     _synthetic_ctr_dataset(n=200).to_csv(tmp_path / "training_dataset.csv", index=False)
 
-    realized = _run_train(tmp_path, config_path)
-    assert 0.0 < realized < 1.0
+    outcome = _run_train(tmp_path, config_path)
+    assert 0.0 < outcome.sampling_rate < 1.0
 
     client = MlflowClient(tracking_uri=tracking_uri)
     [version] = client.search_model_versions("name='ctr-model'")

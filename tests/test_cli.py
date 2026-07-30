@@ -41,8 +41,9 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     # build-features 성공 뒤 lineage가 GCS_REGISTRY_PATH를 필수로 읽는다(#359 C2, 무조건 기록).
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
     monkeypatch.setattr(cli.build_training_dataset, "main", lambda **kw: build_features_call.update(kw))
-    monkeypatch.setattr(cli.train, "main", lambda **kw: None)
+    monkeypatch.setattr(cli.train, "main", lambda **kw: _pipeline_outcome())
     monkeypatch.setattr(cli.evaluate, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
 
     cli.run_pipeline(
         dataset_path="dataset.csv",
@@ -72,8 +73,11 @@ def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
     train_call = {}
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
     monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
-    monkeypatch.setattr(cli.train, "main", lambda **kw: train_call.update(kw))
+    monkeypatch.setattr(
+        cli.train, "main", lambda **kw: train_call.update(kw) or _pipeline_outcome()
+    )
     monkeypatch.setattr(cli.evaluate, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
 
     cli.run_pipeline(
         dataset_path=None,
@@ -97,6 +101,89 @@ def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
         "events_end_date": "2026-07-08",
         "feast_registry_path": "gs://fake/registry.db",
     }
+
+
+def _pipeline_outcome():
+    """run-pipeline이 train.main에서 받는 반환값(#421)."""
+    return cli.train.TrainingOutcome(
+        sampling_rate=1.0,
+        run_id="run-1",
+        registered_version=None,
+        pending_registration=cli.train.PendingRegistration(
+            model_uri="runs:/run-1/model", model_name="ctr-model", tags={"val_roc_auc": "0.7"}
+        ),
+    )
+
+
+def test_run_pipeline_registers_model_only_after_evaluation(monkeypatch):
+    """#421: registered model 버전 생성은 evaluate 성공 뒤에 일어나야 한다."""
+    calls = []
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+
+    def _fake_train(**kwargs):
+        calls.append(("train", kwargs.get("defer_registration")))
+        return _pipeline_outcome()
+
+    monkeypatch.setattr(cli.train, "main", _fake_train)
+    monkeypatch.setattr(cli.evaluate, "main", lambda **kw: calls.append(("evaluate", None)))
+    monkeypatch.setattr(
+        cli.train,
+        "register_pending_model",
+        lambda pending: calls.append(("register", pending.model_name)) or "7",
+    )
+
+    cli.run_pipeline(
+        dataset_path=None,
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
+        config_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+    )
+
+    assert [step for step, _ in calls] == ["train", "evaluate", "register"]
+    # train 단계에서는 등록을 보류하도록 요청해야 한다.
+    assert calls[0][1] is True
+    assert calls[2][1] == "ctr-model"
+
+
+def test_run_pipeline_skips_registration_when_evaluation_fails(monkeypatch):
+    """#421: 평가가 실패하면 쓰레기 버전이 registry에 쌓이지 않아야 한다."""
+    registered = []
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "main", lambda **kw: _pipeline_outcome())
+
+    def _fail_evaluate(**kwargs):
+        raise ValueError("y_true contains only one label (0)")
+
+    monkeypatch.setattr(cli.evaluate, "main", _fail_evaluate)
+    monkeypatch.setattr(
+        cli.train, "register_pending_model", lambda pending: registered.append(pending)
+    )
+
+    with pytest.raises(ValueError, match="only one label"):
+        cli.run_pipeline(
+            dataset_path=None,
+            events_start_date="2026-07-01",
+            events_end_date="2026-07-08",
+            config_path=None,
+            model_output=None,
+            test_set_output=None,
+            feature_columns_output=None,
+            categorical_columns_output=None,
+            test_size=None,
+            val_size=None,
+            random_state=None,
+        )
+
+    assert registered == []
 
 
 def test_promote_model_prints_ok_and_exits_zero_on_success(monkeypatch, capsys):
