@@ -27,7 +27,7 @@ from fastapi import FastAPI, Header, HTTPException, status
 from agent_orchestration.app.config import ServiceSettings, load_settings
 from agent_orchestration.app.db import ensure_schema, save_interaction
 from agent_orchestration.app.llm import LLMBackendError, generate_response
-from agent_orchestration.app.schemas import ChatRequest, ChatResponse
+from agent_orchestration.app.schemas import ChatRequest, ChatResponse, ErrorResponse
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +85,31 @@ def create_app() -> FastAPI:
             )
         return {"status": "ok", "service": "agent-orchestration"}
 
-    @app.post("/chat", response_model=ChatResponse, status_code=status.HTTP_201_CREATED)
+    @app.post(
+        "/chat",
+        response_model=ChatResponse,
+        status_code=status.HTTP_201_CREATED,
+        responses={
+            status.HTTP_401_UNAUTHORIZED: {
+                "description": "Invalid orchestration API token.",
+                "model": ErrorResponse,
+            },
+            status.HTTP_500_INTERNAL_SERVER_ERROR: {
+                "description": "Failed to save chat interaction.",
+                "model": ErrorResponse,
+            },
+            status.HTTP_502_BAD_GATEWAY: {
+                "description": "Failed to call LLM backend.",
+                "model": ErrorResponse,
+            },
+        },
+    )
     async def chat(
         request: ChatRequest,
-        x_orch_token: Annotated[str | None, Header()] = None,
+        x_orch_token: Annotated[
+            str | None,
+            Header(alias="X-Orch-Token", description="공유 오케스트레이션 API 토큰"),
+        ] = None,
     ) -> ChatResponse:
         """채팅 프롬프트를 LLM으로 전송 후 PostgreSQL에 저장하고 결과를 반환."""
         runtime_settings = _require_runtime()
@@ -137,6 +158,21 @@ def create_app() -> FastAPI:
             token_count=row.token_count,
             created_at=row.created_at,
         )
+
+    default_openapi = app.openapi
+
+    def documented_openapi() -> dict:
+        """누락 헤더도 401로 처리하는 인증 계약을 Swagger에 명시한다."""
+        schema = default_openapi()
+        parameters = schema["paths"]["/chat"]["post"]["parameters"]
+        for parameter in parameters:
+            if parameter["name"] == "X-Orch-Token" and parameter["in"] == "header":
+                parameter["required"] = True
+                parameter["schema"] = {"type": "string"}
+                break
+        return schema
+
+    app.openapi = documented_openapi
 
     return app
 

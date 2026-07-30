@@ -22,7 +22,6 @@ from dataclasses import dataclass
 import logging
 import os
 from pathlib import Path
-import re
 import signal
 from tempfile import TemporaryDirectory
 
@@ -32,12 +31,6 @@ from agent_orchestration.app.config import ServiceSettings
 
 
 logger = logging.getLogger(__name__)
-
-_SENSITIVE_STDERR_VALUE = re.compile(
-    r"(?im)([\"']?\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|secret|"
-    r"password|authorization|cookie)\b[\"']?\s*[:=]\s*[\"']?)(?:Bearer\s+)?[^\s,\"'}]+"
-)
-
 
 class LLMBackendError(RuntimeError):
     """외부 LLM 백엔드 호출을 안전하게 API 계층으로 전달하는 오류."""
@@ -97,29 +90,22 @@ async def _generate_codex_cli(settings: ServiceSettings, prompt: str) -> LLMResu
 
         communicate_task = asyncio.create_task(process.communicate(prompt.encode("utf-8")))
         try:
-            _, stderr_bytes = await asyncio.wait_for(
+            await asyncio.wait_for(
                 asyncio.shield(communicate_task),
                 timeout=settings.codex_timeout_sec,
             )
         except TimeoutError as error:
-            stderr_bytes = await _terminate_and_collect_stderr(process, communicate_task)
-            logger.warning(
-                "Codex CLI timed out stderr=%r",
-                _redact_stderr(stderr_bytes, prompt),
-            )
+            await _terminate_and_wait(process, communicate_task)
+            logger.warning("Codex CLI timed out")
             raise LLMBackendError("Codex CLI timed out.") from error
         except asyncio.CancelledError:
-            await _terminate_and_collect_stderr(process, communicate_task)
+            await _terminate_and_wait(process, communicate_task)
             raise
         except OSError as error:
             raise LLMBackendError("Codex CLI execution failed.") from error
 
         if process.returncode != 0:
-            logger.warning(
-                "Codex CLI exited with returncode=%s stderr=%r",
-                process.returncode,
-                _redact_stderr(stderr_bytes, prompt),
-            )
+            logger.warning("Codex CLI exited with returncode=%s", process.returncode)
             raise LLMBackendError("Codex CLI failed.")
         if not output_path.exists():
             raise LLMBackendError("Codex CLI returned no output.")
@@ -160,26 +146,17 @@ def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
     process.kill()
 
 
-async def _terminate_and_collect_stderr(
+async def _terminate_and_wait(
     process: asyncio.subprocess.Process,
     communicate_task: asyncio.Task[tuple[bytes, bytes]],
-) -> bytes:
-    """프로세스 그룹 종료 뒤 제한된 시간 안에 stderr를 회수한다."""
+) -> None:
+    """프로세스 그룹 종료 뒤 파이프를 닫고 하위 프로세스를 회수한다."""
     _terminate_process_group(process)
     try:
-        _, stderr_bytes = await asyncio.wait_for(asyncio.shield(communicate_task), timeout=5)
+        await asyncio.wait_for(asyncio.shield(communicate_task), timeout=5)
     except (OSError, TimeoutError):
         communicate_task.cancel()
         await asyncio.gather(communicate_task, return_exceptions=True)
-        return b""
-    return stderr_bytes
-
-
-def _redact_stderr(stderr_bytes: bytes, prompt: str) -> str:
-    """운영 로그용 Codex 오류에서 프롬프트·자격 증명 값을 제거한다."""
-    stderr = stderr_bytes.decode("utf-8", errors="replace").replace(prompt, "[REDACTED_PROMPT]")
-    stderr = _SENSITIVE_STDERR_VALUE.sub(r"\1[REDACTED_SECRET]", stderr)
-    return stderr.strip()[-2000:]
 
 
 async def _generate_openai(settings: ServiceSettings, prompt: str) -> LLMResult:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+import re
 from urllib.parse import urlparse
 
 
@@ -74,7 +75,7 @@ def load_settings() -> ServiceSettings:
         if llm_backend == "openai"
         else None
     )
-    openai_model = os.getenv("OPENAI_MODEL", "gpt-5.3-codex-spark").strip()
+    openai_model = os.getenv("OPENAI_MODEL", "").strip() or "gpt-5.3-codex-spark"
     openai_max_tokens = _positive_env_int("OPENAI_MAX_TOKENS", 1024)
     openai_timeout_sec = _positive_env_int("OPENAI_TIMEOUT_SEC", 60)
     codex_cli_path = (
@@ -106,6 +107,8 @@ def load_settings() -> ServiceSettings:
         )
 
     interactions_table = os.getenv("ORCH_INTERACTIONS_TABLE", "chat_interactions").strip()
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", interactions_table):
+        raise ValueError("ORCH_INTERACTIONS_TABLE must be a valid SQL identifier.")
     return ServiceSettings(
         openai_api_key=openai_api_key,
         openai_model=openai_model,

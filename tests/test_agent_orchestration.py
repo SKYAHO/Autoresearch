@@ -105,6 +105,33 @@ def test_load_settings_openai_does_not_require_codex_runtime_settings(
     assert settings.codex_home == ""
 
 
+def test_load_settings_uses_default_for_blank_openai_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """빈 OPENAI_MODEL은 요청 시점 실패 대신 안전한 기본 모델로 정규화한다."""
+    monkeypatch.setenv("LLM_BACKEND", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "   ")
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
+
+    settings = load_settings()
+
+    assert settings.openai_model == "gpt-5.3-codex-spark"
+
+
+@pytest.mark.parametrize("table_name", ("", "chat-interactions"))
+def test_load_settings_rejects_invalid_interactions_table(
+    monkeypatch: pytest.MonkeyPatch,
+    table_name: str,
+) -> None:
+    """테이블 설정 오류는 DB 기동 전 환경 검증 단계에서 거부한다."""
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
+    monkeypatch.setenv("ORCH_INTERACTIONS_TABLE", table_name)
+
+    with pytest.raises(ValueError, match="ORCH_INTERACTIONS_TABLE"):
+        load_settings()
+
+
 @pytest.mark.parametrize(
     ("name", "attribute", "default"),
     [
@@ -395,12 +422,13 @@ def test_terminate_process_group_targets_dedicated_process_group(
     assert killed == [(12345, signal.SIGKILL)]
 
 
-def test_generate_codex_cli_logs_redacted_stderr_after_timeout(
+def test_generate_codex_cli_omits_stderr_from_timeout_logs(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """시간 초과 후 회수한 stderr는 프롬프트를 제거한 서버 로그로 남긴다."""
+    """시간 초과 stderr 원문은 프롬프트·자격 증명과 함께 로그에서 제외한다."""
     prompt = "비밀 프롬프트"
+    opaque_credential = "unstructured oauth credential material"
 
     class FakeProcess:
         returncode = -9
@@ -408,7 +436,7 @@ def test_generate_codex_cli_logs_redacted_stderr_after_timeout(
 
         async def communicate(self, input: bytes) -> tuple[bytes, bytes]:
             await asyncio.sleep(2)
-            return b"", f"failed for {input.decode()}".encode()
+            return b"", f"{opaque_credential}\nfailed for {input.decode()}".encode()
 
     async def fake_create_subprocess_exec(*_args: str, **_kwargs: object) -> FakeProcess:
         return FakeProcess()
@@ -431,8 +459,8 @@ def test_generate_codex_cli_logs_redacted_stderr_after_timeout(
     with pytest.raises(LLMBackendError, match="Codex CLI timed out."):
         asyncio.run(generate_response(settings, prompt))
 
-    assert "[REDACTED_PROMPT]" in caplog.text
     assert prompt not in caplog.text
+    assert opaque_credential not in caplog.text
 
 
 def test_generate_codex_cli_terminates_process_group_when_request_is_cancelled(
@@ -483,21 +511,6 @@ def test_generate_codex_cli_terminates_process_group_when_request_is_cancelled(
     asyncio.run(cancel_request())
 
     assert process_group_terminated
-
-
-def test_redact_stderr_removes_credential_like_values() -> None:
-    """운영 stderr 로그에서 자격 증명 값은 남기지 않는다."""
-    redacted = llm_module._redact_stderr(
-        b"refresh_token=shared-oauth-secret\nauthorization: Bearer another-secret\n"
-        b'{"access_token": "json-secret"}\n{\'refresh_token\': \'single-quoted-secret\'}',
-        "unrelated prompt",
-    )
-
-    assert "shared-oauth-secret" not in redacted
-    assert "another-secret" not in redacted
-    assert "json-secret" not in redacted
-    assert "single-quoted-secret" not in redacted
-    assert redacted.count("[REDACTED_SECRET]") == 4
 
 
 def test_db_validate_table_name() -> None:
@@ -737,6 +750,27 @@ def test_main_chat_rejects_unknown_request_fields(monkeypatch: pytest.MonkeyPatc
         )
 
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+
+
+def test_chat_openapi_documents_required_token_and_error_responses() -> None:
+    """Swagger 계약은 실제 인증 헤더와 오류 상태 코드를 노출한다."""
+    operation = main_module.create_app().openapi()["paths"]["/chat"]["post"]
+    token_parameters = [
+        parameter
+        for parameter in operation["parameters"]
+        if parameter["name"] == "X-Orch-Token" and parameter["in"] == "header"
+    ]
+
+    assert len(token_parameters) == 1
+    token_parameter = token_parameters[0]
+    assert token_parameter["required"] is True
+    assert token_parameter["schema"] == {"type": "string"}
+    assert "401" in operation["responses"]
+    assert "500" in operation["responses"]
+    assert "502" in operation["responses"]
+    assert operation["responses"]["401"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ErrorResponse"
+    }
 
 
 def test_generate_response_uses_responses_api_for_openai_backend(

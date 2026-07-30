@@ -46,8 +46,9 @@ OpenAI API 키 없이 팀 공용 ChatGPT OAuth로 Codex CLI를 사용하는 경�
   <https://learn.chatgpt.com/docs/auth.md>
 - keyring이 runner에서 안전하게 동작하지 않거나, runner의 Codex 도구가 자격 증명에
   접근할 수 있음을 배제하지 못하면 OAuth 기반 배포는 진행하지 않는다.
-- stderr 또는 LLM 응답의 문자열 마스킹은 진단 보조 수단일 뿐 자격 증명 보호 대책이
-  아니다. 인증 파일·환경 변수·프로세스 환경을 읽을 수 없는 격리 자체가 필요하다.
+- runner는 Codex `stderr` 원문을 일반 애플리케이션 로그에 남기지 않는다. stderr 또는
+  LLM 응답의 문자열 마스킹은 진단 보조 수단일 뿐 자격 증명 보호 대책이 아니다. 인증
+  파일·환경 변수·프로세스 환경을 읽을 수 없는 격리 자체가 필요하다.
 - 유출 의심 시 runner를 즉시 중지하고 `codex logout` 후 팀 공용 계정을 재로그인한다.
 
 ## 모델 전환과 라우팅
@@ -77,8 +78,8 @@ API 내부 매핑 예시는 `fast → 승인된 Codex 모델명`이다. 모델�
 3. API와 runner의 로그·응답·PostgreSQL 저장에 자격 증명 값이 남지 않는지 확인한다.
 4. Codex CLI 버전과 `--sandbox`, `--ephemeral`, `--skip-git-repo-check`, `-C`, `-o`
    인자 계약을 배포 이미지에서 smoke test로 검증한다.
-5. Codex 실행 동시성 상한과 초과 시 `429` 또는 `503` 응답 계약, PostgreSQL 커넥션 풀
-   정책을 확정한다.
+5. Codex 실행 동시성 상한과 초과 시 `429` 또는 `503` 응답 계약, PostgreSQL 커넥션 풀,
+   API Gateway/Ingress의 요청 본문 상한과 IP·인증 주체별 rate limit 정책을 확정한다.
 6. read-only root filesystem과 writable scratch `HOME`/`TMPDIR` 환경에서 OAuth 상태를
    포함하지 않는 `codex exec` smoke test를 통과하고, 필요한 프록시·CA 설정이 허용
    목록 외의 부모 환경 없이 동작함을 확인한다.
