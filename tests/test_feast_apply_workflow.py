@@ -83,10 +83,10 @@ def test_workflow_renders_environment_into_job_manifest() -> None:
     assert "- name: FEAST_ONLINE_FULL_SCAN_FOR_DELETION" in manifest
 
 
-def test_workflow_blocks_dev_dispatch_while_coordinates_are_prod() -> None:
-    # #399: dev 좌표가 배선되기 전의 dev dispatch 는 prod registry 를 오염시키면서
-    # prod 고아 키 GC 까지 끈다. 좌표 주입 PR 에서 이 가드를 제거한다.
+def test_workflow_selects_environment_scoped_coordinates() -> None:
+    # GitHub Environment 를 선택해야 같은 이름의 repo-level vars 보다
+    # prod/dev Environment 좌표가 우선하며, 임시 dev 차단 가드는 더 이상 필요 없다.
     workflow = _workflow_text()
 
-    assert "Guard against dev dispatch before dev coordinates are wired" in workflow
-    assert '[[ "$AUTORESEARCH_ENV" != "prod" ]]' in workflow
+    assert "    environment: ${{ inputs.environment || 'prod' }}" in workflow
+    assert "Guard against dev dispatch before dev coordinates are wired" not in workflow
