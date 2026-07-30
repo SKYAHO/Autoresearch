@@ -6,9 +6,9 @@ FastAPI·Codex CLI가 사용할 권한 제한 런타임 파일로 준비한다.
 
 [기능]
 API용 DB 연결 파일과 Runner용 최초 Codex OAuth 파일을 각각 독립적으로
-준비한다. 각 부트스트랩은 자기 역할의 시크릿 식별자와 파일 경로만 받아 다른
-워크로드의 런타임 시크릿에는 접근하지 않는다. 시크릿 원문은 로그, 환경 변수,
-예외 메시지에 노출하지 않는다.
+준비한다. ``api-database``와 ``runner-codex-auth`` 명시 CLI 역할은 각자 필요한
+환경 변수와 Secret Manager reader만 사용하며, 인자 없는 기존 모듈 실행은 API DB
+bootstrap과 호환된다. 시크릿 원문은 로그, 환경 변수, 예외 메시지에 노출하지 않는다.
 
 [비책임]
 FastAPI 요청 처리와 PostgreSQL 저장은 ``agent_orchestration.app``이 담당하며,
@@ -17,7 +17,8 @@ Secret Manager·Kubernetes 리소스 생성은 Autoresearch-infra 저장소가 �
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+import argparse
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 import logging
 import os
@@ -177,12 +178,24 @@ def bootstrap_runner_codex_auth(
     LOGGER.info("Codex OAuth 초기 인증 파일을 준비했습니다: %s", settings.codex_auth_secret_id)
 
 
-def main() -> int:
-    """API init container 진입점으로 DB 시크릿 부트스트랩을 수행한다."""
-    bootstrap_api_database(
-        load_api_database_bootstrap_settings(),
-        read_secret_manager_secret,
+def main(argv: Sequence[str] | None = None) -> int:
+    """선택한 init container 역할의 권한 제한 시크릿 부트스트랩을 수행한다."""
+    parser = argparse.ArgumentParser(description="Bootstrap Agent Orchestration secrets.")
+    parser.add_argument(
+        "role",
+        nargs="?",
+        choices=("api-database", "runner-codex-auth"),
+        help="Bootstrap role. Defaults to api-database for compatibility.",
     )
+    role = parser.parse_args(argv).role
+    if role == "runner-codex-auth":
+        bootstrap_runner_codex_auth(
+            load_runner_codex_auth_bootstrap_settings(),
+            read_secret_manager_secret,
+        )
+        return 0
+
+    bootstrap_api_database(load_api_database_bootstrap_settings(), read_secret_manager_secret)
     return 0
 
 

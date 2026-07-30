@@ -294,6 +294,8 @@ jobs:
           docker run --rm autoresearch-agent-orchestration-api:ci \
             python -c "import agent_orchestration.app.main"
           docker run --rm autoresearch-agent-orchestration-api:ci \
+            python -c "import agent_orchestration.bootstrap_secrets; from google.cloud import secretmanager"
+          docker run --rm autoresearch-agent-orchestration-api:ci \
             python -c "import importlib.util; assert importlib.util.find_spec('lightgbm') is None"
           docker run --rm autoresearch-agent-orchestration-runner:ci id -u | grep --fixed-strings 10001
           codex_version="$(docker run --rm autoresearch-agent-orchestration-runner:ci codex --version)"

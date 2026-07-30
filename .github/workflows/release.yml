@@ -543,6 +543,7 @@ jobs:
           fi
 
           docker run --rm "$digest_ref" python -c "import agent_orchestration.app.main"
+          docker run --rm "$digest_ref" python -c "import agent_orchestration.bootstrap_secrets; from google.cloud import secretmanager"
 
           echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
 

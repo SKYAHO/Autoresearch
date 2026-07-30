@@ -128,7 +128,9 @@ API 결제 방식으로 전환할 때만 `LLM_BACKEND=openai`와 `OPENAI_API_KEY
   Codex CLI를 직접 실행합니다.
 - GKE API: `LLM_BACKEND=codex_runner`, 절대 URL `CODEX_RUNNER_URL`, 별도 내부 토큰
   `ORCH_RUNNER_TOKEN`을 설정합니다. API는 `X-Runner-Token`으로 비공개 Runner의
-  `POST /v1/generate`만 호출합니다. Runner Codex 시간 제한은 110초, API HTTP 시간
+  `POST /v1/generate`만 호출합니다. `ORCH_API_TOKEN`과 `ORCH_RUNNER_TOKEN`은 각각
+  32자 이상이어야 하며 서로 다른 값이어야 합니다. 같으면 API는 기동을 거부합니다.
+  Runner Codex 시간 제한은 110초, API HTTP 시간
   제한은 120초로 API가 Runner의 정리 결과를 먼저 받을 여유를 둡니다.
 - 로컬 `codex_cli`도 `CODEX_TIMEOUT_SEC`을 별도로 설정하지 않으면 110초를 사용합니다.
   `CODEX_RUNNER_TIMEOUT_SEC` 120초는 GKE API의 Runner HTTP 호출에만 적용합니다.
@@ -146,3 +148,6 @@ API 결제 방식으로 전환할 때만 `LLM_BACKEND=openai`와 `OPENAI_API_KEY
 Runner OAuth bootstrap init container는 **API 이미지**를 실행하지만 Runner 전용
 KSA/GSA와 PVC를 사용해 OAuth 시크릿 하나만 읽는다. 이는 API 런타임 Pod에 OAuth
 파일·PVC·Secret Manager 권한을 주지 않는 분리 경계를 유지하기 위한 선택이다.
+이 init container는 `python -m agent_orchestration.bootstrap_secrets runner-codex-auth`
+CLI 역할을 호출한다. `api-database` 역할은 API DB runtime 파일만 만들며, 기존의
+인자 없는 모듈 실행도 이 API DB 역할과 호환된다.

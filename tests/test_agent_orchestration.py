@@ -37,6 +37,7 @@ _SETTINGS_ENV_VARS = (
     "OPENAI_MODEL",
     "OPENAI_TIMEOUT_SEC",
     "ORCH_API_TOKEN",
+    "ORCH_RUNNER_TOKEN",
     "ORCH_DATABASE_URL",
     "ORCH_DB_CONNECT_TIMEOUT_SEC",
     "ORCH_INTERACTIONS_TABLE",
@@ -138,6 +139,21 @@ def test_load_settings_codex_runner_requires_private_api_token(
     monkeypatch.delenv("ORCH_RUNNER_TOKEN", raising=False)
 
     with pytest.raises(ValueError, match="ORCH_RUNNER_TOKEN"):
+        load_settings()
+
+
+def test_load_settings_codex_runner_rejects_shared_api_and_runner_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """서로 다른 인증 경계를 같은 토큰으로 합치면 API 기동을 거부한다."""
+    shared_token = "test-shared-token-must-be-at-least-32-characters"
+    monkeypatch.setenv("LLM_BACKEND", "codex_runner")
+    monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
+    monkeypatch.setenv("ORCH_API_TOKEN", shared_token)
+    monkeypatch.setenv("ORCH_RUNNER_TOKEN", shared_token)
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
+
+    with pytest.raises(ValueError, match="must differ"):
         load_settings()
 
 

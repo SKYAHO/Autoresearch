@@ -8,6 +8,7 @@ import stat
 
 import pytest
 
+from agent_orchestration import bootstrap_secrets as bootstrap_module
 from agent_orchestration.bootstrap_secrets import (
     DatabaseBootstrapSettings,
     RunnerAuthBootstrapSettings,
@@ -111,3 +112,70 @@ def test_bootstrap_does_not_log_or_raise_secret_payload(
     assert sensitive_payload not in str(error.value)
     assert sensitive_payload not in caplog.text
     assert settings.db_password_secret_id in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("role", "environment", "expected_path"),
+    [
+        (
+            "api-database",
+            {
+                "ORCH_DB_PASSWORD_SECRET_ID": "projects/test/secrets/orch-db-password/versions/latest",
+                "ORCH_DB_HOST": "10.0.0.15",
+                "ORCH_DB_NAME": "agent_orchestration",
+                "ORCH_DB_USER": "agent_orchestration_app",
+            },
+            "runtime/db.env",
+        ),
+        (
+            "runner-codex-auth",
+            {
+                "ORCH_CODEX_AUTH_SECRET_ID": "projects/test/secrets/codex-auth/versions/latest",
+            },
+            "codex/auth.json",
+        ),
+    ],
+)
+def test_bootstrap_cli_role_uses_only_its_runtime_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    role: str,
+    environment: dict[str, str],
+    expected_path: str,
+) -> None:
+    """각 CLI 역할은 다른 워크로드 설정 없이 자기 런타임 파일만 준비한다."""
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("ORCH_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    monkeypatch.setattr(
+        bootstrap_module,
+        "read_secret_manager_secret",
+        lambda _secret_id: b"placeholder",
+    )
+
+    assert bootstrap_module.main([role]) == 0
+    assert (tmp_path / expected_path).is_file()
+
+
+def test_bootstrap_cli_without_role_remains_api_database_compatible(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """기존 인자 없는 모듈 실행은 API DB bootstrap으로 계속 동작한다."""
+    monkeypatch.setenv(
+        "ORCH_DB_PASSWORD_SECRET_ID",
+        "projects/test/secrets/orch-db-password/versions/latest",
+    )
+    monkeypatch.setenv("ORCH_DB_HOST", "10.0.0.15")
+    monkeypatch.setenv("ORCH_DB_NAME", "agent_orchestration")
+    monkeypatch.setenv("ORCH_DB_USER", "agent_orchestration_app")
+    monkeypatch.setenv("ORCH_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setattr(
+        bootstrap_module,
+        "read_secret_manager_secret",
+        lambda _secret_id: b"placeholder",
+    )
+
+    assert bootstrap_module.main([]) == 0
+    assert (tmp_path / "runtime" / "db.env").is_file()
