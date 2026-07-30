@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-30T15:57:27Z",
+  "generated_at": "2026-07-30T16:13:08Z",
   "reports": [
+    {
+      "number": 434,
+      "title": "feat: build-features 사전 점검 fail-fast 가드 (#404)",
+      "author": "bbungjun",
+      "merged_at": "2026-07-30T16:12:53Z",
+      "summary_ko": [
+        "학습 데이터셋 조립(build-features) 실행 시 BigQuery 접속 전에 필수 환경을 사전 검증하는 fail-fast 가드를 구현하였습니다.",
+        "환경변수, GCP 자격증명 파일 존재, Feast 패키지 설치를 검사하며 Kubernetes(GKE) 환경은 Workload Identity를 감지해 정상 통과시킵니다.",
+        "자격증명이 없는 개발 환경에서 BigQuery 접속 시 수십 초간 무응답 상태로 멈추던 문제를 방지하고 즉시 명확한 오류를 반환합니다."
+      ],
+      "report_url": "pr/434/"
+    },
     {
       "number": 431,
       "title": "feat: Codex CLI 기반 Agent Orchestration 채팅 저장 스켈레톤",
