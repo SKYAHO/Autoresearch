@@ -24,7 +24,7 @@
 - 새 파일의 모듈 최상단 docstring은 `.claude/docs/agent-python-reference.md`의
   Module Responsibility 형식([파이프라인]/[기능]/[비책임])을 따른다.
 - 커밋 메시지 형식은 `<type>: <한국어 설명>` (`.claude/docs/agent-workflow-reference.md`).
-- 관련 설계 문서: `docs/specs/2026-07-30-ctr-model-interface-port.md`. 관련 이슈: #424.
+- 관련 설계 문서: `docs/archive/specs/2026-07-30-ctr-model-interface-port.md`. 관련 이슈: #424.
 
 ---
 
@@ -42,7 +42,7 @@
   -> None`과 `classmethod load(cls, path: str) -> "CTRModel"`은 joblib 기반
   기본 구현을 제공하며 override 가능하다.
 
-- [ ] **Step 1: 실패하는 테스트 작성**
+- [x] **Step 1: 실패하는 테스트 작성**
 
 `tests/test_models_contract.py`를 새로 만든다.
 
@@ -112,12 +112,12 @@ def test_ctr_model_load_missing_file_raises_file_not_found_error(tmp_path) -> No
         CTRModel.load(str(missing_path))
 ```
 
-- [ ] **Step 2: 테스트 실행해서 실패 확인**
+- [x] **Step 2: 테스트 실행해서 실패 확인**
 
 Run: `uv run python -m pytest tests/test_models_contract.py -v`
 Expected: FAIL — `ModuleNotFoundError: No module named 'src.models.base'`
 
-- [ ] **Step 3: `src/models/base.py` 구현**
+- [x] **Step 3: `src/models/base.py` 구현**
 
 ```python
 """CTR 이진 분류 모델 계열의 최소 추상 인터페이스.
@@ -189,17 +189,17 @@ class CTRModel(ABC):
         return joblib.load(path)
 ```
 
-- [ ] **Step 4: 테스트 실행해서 통과 확인**
+- [x] **Step 4: 테스트 실행해서 통과 확인**
 
 Run: `uv run python -m pytest tests/test_models_contract.py -v`
 Expected: PASS (3 tests)
 
-- [ ] **Step 5: lint 확인**
+- [x] **Step 5: lint 확인**
 
 Run: `uv run --no-sync ruff check src/models/base.py tests/test_models_contract.py`
 Expected: `All checks passed!`
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add src/models/base.py tests/test_models_contract.py
@@ -219,7 +219,7 @@ git commit -m "feat: CTRModel 추상 인터페이스 포팅 (#424)"
 - Produces: `LGBMModel.save(path: str) -> None`, `LGBMModel.load(path: str) ->
   LGBMModel`(classmethod) — 이후 Task 3이 `save()`를 호출한다.
 
-- [ ] **Step 1: 실패하는 테스트 작성**
+- [x] **Step 1: 실패하는 테스트 작성**
 
 `tests/test_models_contract.py`에 이어서 추가:
 
@@ -267,13 +267,13 @@ def test_lgbm_model_load_classmethod_round_trip(tmp_path) -> None:
     assert proba.shape == (len(X), 2)
 ```
 
-- [ ] **Step 2: 테스트 실행해서 실패 확인**
+- [x] **Step 2: 테스트 실행해서 실패 확인**
 
 Run: `uv run python -m pytest tests/test_models_contract.py -v`
 Expected: FAIL — `AttributeError: 'LGBMModel' object has no attribute 'save'`
 (`LGBMModel`이 아직 `CTRModel`을 상속하지 않음)
 
-- [ ] **Step 3: `src/models/lgbm_model.py` 수정**
+- [x] **Step 3: `src/models/lgbm_model.py` 수정**
 
 파일 최상단 docstring과 클래스 선언부를 아래처럼 바꾼다(기존 `fit`/`predict_proba`/
 `predict` 본문은 그대로 유지, `save`/`load`만 추가):
@@ -334,17 +334,17 @@ class LGBMModel(CTRModel):
 `from src.models.base import CTRModel`를 추가하는 것, 그리고 `save`/`load`
 메서드를 클래스 끝에 추가하는 것 외에는 기존 코드를 수정하지 않는다.
 
-- [ ] **Step 4: 테스트 실행해서 통과 확인**
+- [x] **Step 4: 테스트 실행해서 통과 확인**
 
 Run: `uv run python -m pytest tests/test_models_contract.py -v`
 Expected: PASS (5 tests)
 
-- [ ] **Step 5: lint 확인**
+- [x] **Step 5: lint 확인**
 
 Run: `uv run --no-sync ruff check src/models/lgbm_model.py tests/test_models_contract.py`
 Expected: `All checks passed!`
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add src/models/lgbm_model.py tests/test_models_contract.py
@@ -361,7 +361,7 @@ git commit -m "feat: LGBMModel이 CTRModel 인터페이스를 구현하도록 �
 **Interfaces:**
 - Consumes: `LGBMModel.save(path: str) -> None` (Task 2)
 
-- [ ] **Step 1: 저장 호출부 교체**
+- [x] **Step 1: 저장 호출부 교체**
 
 `src/pipeline/train.py`의 487번째 줄:
 
@@ -373,7 +373,7 @@ save_model(model.model, model_path)
 model.save(model_path)
 ```
 
-- [ ] **Step 2: 이제 쓰이지 않는 import 제거**
+- [x] **Step 2: 이제 쓰이지 않는 import 제거**
 
 `src/pipeline/train.py` 46~51번째 줄:
 
@@ -396,7 +396,7 @@ from src.utils.model_utils import (  # noqa: E402
 
 (`save_model`은 이제 `LGBMModel.save()` 내부에서만 import되므로 여기서는 미사용이 된다.)
 
-- [ ] **Step 3: 기존 학습 파이프라인 테스트 전체 실행 — 회귀 확인**
+- [x] **Step 3: 기존 학습 파이프라인 테스트 전체 실행 — 회귀 확인**
 
 Run: `uv run python -m pytest tests/test_pipeline_train.py -v`
 Expected: 전체 PASS, 특히
@@ -405,22 +405,22 @@ Expected: 전체 PASS, 특히
 sampling_rate_and_preserves_test_set` 계열이 기존과 동일하게 통과해야 한다 —
 저장 아티팩트 바이트가 바뀌지 않았다는 직접적인 증거.
 
-- [ ] **Step 4: 새 계약 테스트도 함께 재확인**
+- [x] **Step 4: 새 계약 테스트도 함께 재확인**
 
 Run: `uv run python -m pytest tests/test_models_contract.py -v`
 Expected: PASS (5 tests)
 
-- [ ] **Step 5: lint 확인**
+- [x] **Step 5: lint 확인**
 
 Run: `uv run --no-sync ruff check src/pipeline/train.py`
 Expected: `All checks passed!` (미사용 import 경고 없음)
 
-- [ ] **Step 6: 전체 스위트 실행**
+- [x] **Step 6: 전체 스위트 실행**
 
 Run: `uv run python -m pytest -v`
 Expected: 기존 실패 목록(관련 없는 사전 실패) 외 신규 실패 없음
 
-- [ ] **Step 7: 커밋**
+- [x] **Step 7: 커밋**
 
 ```bash
 git add src/pipeline/train.py
@@ -433,7 +433,7 @@ git commit -m "refactor: train.py가 LGBMModel.save()로 저장하도록 통합 
 
 - **Spec coverage**: 설계 문서의 "완료 조건" 중 첫 2개(`CTRModel` 인터페이스 + 저장
   계약 테스트)는 Task 1·2·3이 구현한다. 나머지 3개(중첩 스키마/전처리 가이드/
-  FM·MLP 제외)는 이미 `docs/specs/2026-07-30-ctr-model-interface-port.md`
+  FM·MLP 제외)는 이미 `docs/archive/specs/2026-07-30-ctr-model-interface-port.md`
   문서 자체로 충족되어 있어 별도 코드 태스크가 필요 없다.
 - **Placeholder scan**: 없음 — 모든 스텝에 실제 코드/명령이 있다.
 - **Type consistency**: `CTRModel.fit`/`predict_proba` 시그니처가 Task 1~2 전체에서

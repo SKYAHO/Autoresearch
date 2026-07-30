@@ -1,6 +1,6 @@
 # CTRModel 인터페이스 포팅 — 설계 문서
 
-> Status: Draft | Issue: #424 | Branch: `feat/424-ctr-model-interface-port`
+> Status: Implemented | Issue: #424 | Branch: `feat/424-ctr-model-interface-port`
 
 ## 배경
 
@@ -82,7 +82,7 @@ def load(cls, path: str) -> "LGBMModel":
 
 ### `src/pipeline/train.py` (변경, 1줄)
 
-319번째 줄의 저장 호출부만 인터페이스 메서드로 교체합니다.
+486번째 줄의 저장 호출부만 인터페이스 메서드로 교체합니다.
 
 ```python
 # 변경 전
@@ -157,13 +157,13 @@ one-hot 인코딩 + UNKNOWN fallback + 수치형 표준화 로직은 두 번째 
 
 ## 완료 조건 (이 문서 기준, #424 완료 조건과 동기화)
 
-- [ ] `CTRModel` 인터페이스가 main에 존재하고 `LGBMModel`이 이를 구현한다(기존
+- [x] `CTRModel` 인터페이스가 main에 존재하고 `LGBMModel`이 이를 구현한다(기존
       저장 아티팩트 포맷 불변)
-- [ ] 저장 포맷↔인터페이스 계약을 검증하는 자동 테스트가 있다
-- [ ] 하이퍼파라미터 중첩 스키마 컨벤션이 이 설계 문서로 남는다(실제 마이그레이션은
+- [x] 저장 포맷↔인터페이스 계약을 검증하는 자동 테스트가 있다
+- [x] 하이퍼파라미터 중첩 스키마 컨벤션이 이 설계 문서로 남는다(실제 마이그레이션은
       다음 모델 추가 시)
-- [ ] 공용 전처리 유틸의 설계 가이드가 이 문서로 남는다(실제 추출은 다음 모델 추가 시)
-- [ ] `FMModel`/`MLPModel`은 이 범위에서 명시적으로 제외되고, `worktree-agent-capability-probe`
+- [x] 공용 전처리 유틸의 설계 가이드가 이 문서로 남는다(실제 추출은 다음 모델 추가 시)
+- [x] `FMModel`/`MLPModel`은 이 범위에서 명시적으로 제외되고, `worktree-agent-capability-probe`
       브랜치에 참고용으로만 남는다
 
 ## 관련
