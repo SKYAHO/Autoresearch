@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pandas as pd
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -231,5 +232,75 @@ def test_load_events_from_bigquery_reads_raw_dataset(monkeypatch):
     query_text = fake_client.query.call_args[0][0]
     assert "`proj.data_lake_raw.data_lake_action_log`" in query_text
     assert "feast_offline_store" not in query_text
+
+
+def test_verify_assembly_environment_requires_registry_path(monkeypatch) -> None:
+    monkeypatch.delenv("GCS_REGISTRY_PATH", raising=False)
+    monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://staging/")
+
+    with pytest.raises(ValueError, match="GCS_REGISTRY_PATH"):
+        build_training_dataset._verify_assembly_environment()
+
+
+def test_verify_assembly_environment_requires_staging_location(monkeypatch) -> None:
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://registry/registry.db")
+    monkeypatch.delenv("GCS_STAGING_LOCATION", raising=False)
+
+    with pytest.raises(ValueError, match="GCS_STAGING_LOCATION"):
+        build_training_dataset._verify_assembly_environment()
+
+
+def test_verify_assembly_environment_requires_feast_package(monkeypatch) -> None:
+    # feast 설치 여부(dev 그룹엔 없고 feast 그룹엔 있다)에 의존하지 않도록, sys.modules에
+    # None을 넣어 ``import feast``가 항상 ImportError를 내게 만든다 — 어느 venv에서 돌려도
+    # 결정적으로 같은 조건을 검증한다. 자격증명 체크가 feast import보다 먼저 실행되므로
+    # (#404 리뷰 반영 순서 변경), 호스트에 실제 ADC 파일이 있든 없든 같은 결과를 내도록
+    # KUBERNETES_SERVICE_HOST를 넣어 자격증명 체크를 결정적으로 건너뛴다.
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://registry/registry.db")
+    monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://staging/")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setitem(sys.modules, "feast", None)
+
+    with pytest.raises(ValueError, match="feast"):
+        build_training_dataset._verify_assembly_environment()
+
+
+def test_main_env_check_runs_before_bigquery_call(monkeypatch) -> None:
+    # 회귀 테스트: 원래 버그(환경변수 확인보다 BigQuery 호출이 먼저 실행됨)를 잡는다.
+    # 필수 환경변수를 비우고 main()을 호출했을 때 load_training_entity_spine이
+    # 아예 호출되지 않는지 확인한다(호출되면 AssertionError로 즉시 실패).
+    monkeypatch.delenv("GCS_REGISTRY_PATH", raising=False)
+    monkeypatch.delenv("GCS_STAGING_LOCATION", raising=False)
+
+    def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("load_training_entity_spine이 호출되면 안 됩니다 — "
+                              "환경변수 확인이 먼저 실행돼야 합니다.")
+
+    monkeypatch.setattr(
+        build_training_dataset, "load_training_entity_spine", _should_not_be_called
+    )
+
+    with pytest.raises(ValueError, match="GCS_REGISTRY_PATH"):
+        build_training_dataset.main(
+            events_start_date="2026-07-01", events_end_date="2026-07-01"
+        )
+
+
+def test_main_runs_assembly_when_env_check_passes(monkeypatch, tmp_path) -> None:
+    # 계약: 가드가 통과하면 조립이 실제로 실행된다(가드가 happy path를 막지 않는다).
+    # 가드 자체는 위 테스트들이 커버하므로 여기서는 no-op으로 치환한다 — dev venv에는
+    # feast도 ADC도 없어 실제 가드를 통과시킬 수 없기 때문이다.
+    monkeypatch.setattr(build_training_dataset, "_verify_assembly_environment", lambda: None)
+    assemble = MagicMock()
+    monkeypatch.setattr(build_training_dataset, "_assemble_via_feast", assemble)
+    output_path = str(tmp_path / "training_dataset.csv")
+
+    build_training_dataset.main(
+        output_path=output_path,
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-02",
+    )
+
+    assemble.assert_called_once_with(output_path, "2026-07-01", "2026-07-02")
 
 
