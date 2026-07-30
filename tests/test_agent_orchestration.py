@@ -34,6 +34,7 @@ _SETTINGS_ENV_VARS = (
     "ORCH_DB_CONNECT_TIMEOUT_SEC",
     "ORCH_INTERACTIONS_TABLE",
 )
+_TEST_API_TOKEN = "test-api-token-must-be-at-least-32-characters"
 
 
 @pytest.fixture(autouse=True)
@@ -41,7 +42,7 @@ def clear_agent_orchestration_environment(monkeypatch: pytest.MonkeyPatch) -> No
     """설정 테스트가 개발 셸의 환경 변수에 영향을 받지 않게 한다."""
     for name in _SETTINGS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("ORCH_API_TOKEN", "test-api-token")
+    monkeypatch.setenv("ORCH_API_TOKEN", _TEST_API_TOKEN)
     monkeypatch.setenv("CODEX_HOME", "/tmp/test-codex-home")
 
 
@@ -56,7 +57,7 @@ def test_load_settings_prefers_orchestration_database_env(monkeypatch: pytest.Mo
     assert settings.openai_model == "gpt-5.3-codex-spark"
     assert settings.database_url == "postgresql://orch:pw@localhost:5432/orch_db"
     assert settings.interactions_table == "chat_interactions"
-    assert settings.api_token == "test-api-token"
+    assert settings.api_token == _TEST_API_TOKEN
     assert settings.codex_home == "/tmp/test-codex-home"
 
 
@@ -99,6 +100,28 @@ def test_load_settings_requires_api_token(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
 
     with pytest.raises(ValueError, match="ORCH_API_TOKEN"):
+        load_settings()
+
+
+def test_load_settings_requires_long_enough_api_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """공유 토큰이 문서 계약보다 짧으면 기동을 거부한다."""
+    monkeypatch.setenv("ORCH_API_TOKEN", "too-short")
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
+
+    with pytest.raises(ValueError, match="ORCH_API_TOKEN"):
+        load_settings()
+
+
+@pytest.mark.parametrize("name", ("CODEX_CLI_PATH", "CODEX_HOME"))
+def test_load_settings_rejects_whitespace_only_required_values(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+) -> None:
+    """공백뿐인 필수 설정은 기동 시점에 거부한다."""
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
+    monkeypatch.setenv(name, "   ")
+
+    with pytest.raises(ValueError, match=name):
         load_settings()
 
 
@@ -348,16 +371,69 @@ def test_generate_codex_cli_logs_redacted_stderr_after_timeout(
     assert prompt not in caplog.text
 
 
+def test_generate_codex_cli_terminates_process_group_when_request_is_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """요청 취소는 실행 중인 Codex 프로세스 그룹을 즉시 정리한다."""
+    process_group_terminated = False
+    started = asyncio.Event()
+    terminated = asyncio.Event()
+
+    class FakeProcess:
+        returncode = None
+        pid = 123
+
+        async def communicate(self, _input: bytes) -> tuple[bytes, bytes]:
+            started.set()
+            await terminated.wait()
+            return b"", b""
+
+    async def fake_create_subprocess_exec(*_args: str, **_kwargs: object) -> FakeProcess:
+        return FakeProcess()
+
+    def fake_terminate_process_group(_process: FakeProcess) -> None:
+        nonlocal process_group_terminated
+        process_group_terminated = True
+        terminated.set()
+
+    settings = ServiceSettings(
+        openai_api_key=None,
+        openai_model="gpt-5.3-codex-spark",
+        openai_max_tokens=1024,
+        openai_timeout_sec=60,
+        database_url="postgresql://orch:pw@localhost:5432/orch",
+        interactions_table="chat_interactions",
+        api_token="test-api-token",
+        codex_home="/tmp/test-codex-home",
+    )
+    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(llm_module, "_terminate_process_group", fake_terminate_process_group)
+
+    async def cancel_request() -> None:
+        request_task = asyncio.create_task(generate_response(settings, "질문"))
+        await started.wait()
+        request_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+    asyncio.run(cancel_request())
+
+    assert process_group_terminated
+
+
 def test_redact_stderr_removes_credential_like_values() -> None:
     """운영 stderr 로그에서 자격 증명 값은 남기지 않는다."""
     redacted = llm_module._redact_stderr(
-        b"refresh_token=shared-oauth-secret\nauthorization: Bearer another-secret",
+        b"refresh_token=shared-oauth-secret\nauthorization: Bearer another-secret\n"
+        b'{"access_token": "json-secret"}\n{\'refresh_token\': \'single-quoted-secret\'}',
         "unrelated prompt",
     )
 
     assert "shared-oauth-secret" not in redacted
     assert "another-secret" not in redacted
-    assert redacted.count("[REDACTED_SECRET]") == 2
+    assert "json-secret" not in redacted
+    assert "single-quoted-secret" not in redacted
+    assert redacted.count("[REDACTED_SECRET]") == 4
 
 
 def test_db_validate_table_name() -> None:

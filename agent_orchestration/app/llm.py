@@ -33,8 +33,8 @@ from agent_orchestration.app.config import ServiceSettings
 logger = logging.getLogger(__name__)
 
 _SENSITIVE_STDERR_VALUE = re.compile(
-    r"(?im)(\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|secret|"
-    r"password|authorization|cookie)\b\s*(?:[:=]\s*|:\s*[\"']?))(?:Bearer\s+)?[^\s,\"'}]+"
+    r"(?im)([\"']?\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|token|secret|"
+    r"password|authorization|cookie)\b[\"']?\s*[:=]\s*[\"']?)(?:Bearer\s+)?[^\s,\"'}]+"
 )
 
 
@@ -101,18 +101,15 @@ async def _generate_codex_cli(settings: ServiceSettings, prompt: str) -> LLMResu
                 timeout=settings.codex_timeout_sec,
             )
         except TimeoutError as error:
-            _terminate_process_group(process)
-            stderr_bytes = b""
-            try:
-                _, stderr_bytes = await asyncio.wait_for(communicate_task, timeout=5)
-            except TimeoutError:
-                communicate_task.cancel()
-                await asyncio.gather(communicate_task, return_exceptions=True)
+            stderr_bytes = await _terminate_and_collect_stderr(process, communicate_task)
             logger.warning(
                 "Codex CLI timed out stderr=%r",
                 _redact_stderr(stderr_bytes, prompt),
             )
             raise LLMBackendError("Codex CLI timed out.") from error
+        except asyncio.CancelledError:
+            await _terminate_and_collect_stderr(process, communicate_task)
+            raise
         except OSError as error:
             raise LLMBackendError("Codex CLI execution failed.") from error
 
@@ -157,6 +154,21 @@ def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
         except ProcessLookupError:
             return
     process.kill()
+
+
+async def _terminate_and_collect_stderr(
+    process: asyncio.subprocess.Process,
+    communicate_task: asyncio.Task[tuple[bytes, bytes]],
+) -> bytes:
+    """프로세스 그룹 종료 뒤 제한된 시간 안에 stderr를 회수한다."""
+    _terminate_process_group(process)
+    try:
+        _, stderr_bytes = await asyncio.wait_for(asyncio.shield(communicate_task), timeout=5)
+    except (OSError, TimeoutError):
+        communicate_task.cancel()
+        await asyncio.gather(communicate_task, return_exceptions=True)
+        return b""
+    return stderr_bytes
 
 
 def _redact_stderr(stderr_bytes: bytes, prompt: str) -> str:

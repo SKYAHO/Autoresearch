@@ -16,6 +16,10 @@ API 키나 API 크레딧을 사용하지 않습니다.
    CODEX_HOME="$CODEX_HOME" codex login
    CODEX_HOME="$CODEX_HOME" codex login status
    ```
+   이 개발 환경에서 확인한 CLI 버전은 `codex-cli 0.146.0`입니다. 배포 이미지는
+   이 명령 인자 계약을 검증한 Codex CLI 버전을 고정해야 하며, 업그레이드 시에는
+   `--sandbox`, `--ephemeral`, `--skip-git-repo-check`, `-C`, `-o` 호출을
+   별도 smoke test로 다시 검증합니다.
 2. 저장소 루트에서 가상환경을 준비한 뒤 의존성을 반영합니다.
    ```bash
    uv sync
@@ -68,6 +72,9 @@ API 키나 API 크레딧을 사용하지 않습니다.
   **현재 스켈레톤은 공용 OAuth 자격 증명을 가진 채로 배포할 수 없다.** 배포 전에는
   Codex 도구 프로세스가 자격 증명 파일을 읽을 수 없도록 보장하는 전용 실행 격리와
   유출 시 `codex logout`·재로그인 절차를 별도 배포 스펙으로 확정해야 한다.
+  이 제한은 로컬 공용 계정 검증에도 동일하므로, 신뢰하는 개인 개발 환경에서만
+  비민감 프롬프트로 실행한다. 응답·stderr 마스킹은 보조 진단 수단일 뿐 OAuth
+  자격 증명 보호 경계가 아니다.
 - 사용자별 Google/Codex 계정 연결과 사용자별 사용량 분리는 후속 범위다.
 - **신뢰 네트워크 밖에 노출하지 않는다.** 로컬 실행은 반드시 `127.0.0.1`에만
   바인딩한다. 배포 시에는 저권한 전용 컨테이너/계정, 비공개 Service와 네트워크
@@ -89,6 +96,9 @@ API 키나 API 크레딧을 사용하지 않습니다.
 - `/healthcheck`는 설정 검증과 초기 스키마 준비를 통과해 프로세스가 기동했음을
   보장한다. Codex OAuth 세션, Codex 바이너리, 기동 후 PostgreSQL 연결 상태는 검사하지
   않으므로 Kubernetes readiness probe로 사용하기 전에 별도 상태 확인 계약을 정한다.
+- 현재는 요청마다 PostgreSQL 연결과 Codex 하위 프로세스를 하나씩 만들며 동시 요청
+  상한이 없다. 배포 전에는 `psycopg_pool.ConnectionPool`과 Codex 실행
+  `asyncio.Semaphore`를 도입하고, 한도를 넘는 요청의 `429` 또는 `503` 계약을 정한다.
 
 ## OpenAI API 전환(후속)
 

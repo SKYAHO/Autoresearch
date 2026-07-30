@@ -406,7 +406,7 @@ requires-dist = [
     { name = "mlflow-skinny", specifier = "==2.22.1" },
     { name = "onnxmltools", specifier = ">=1.12" },
     { name = "onnxruntime", specifier = ">=1.18" },
-    { name = "openai", specifier = ">=1.0" },
+    { name = "openai", specifier = ">=1.66,<3" },
     { name = "pandas", specifier = ">=2.0,<3" },
     { name = "protobuf", specifier = "<7" },
     { name = "pyarrow", specifier = ">=15.0" },
@@ -425,7 +425,7 @@ dev = [
     { name = "fastapi", specifier = ">=0.115,<0.129" },
     { name = "google-cloud-bigquery", specifier = ">=3.20" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
-    { name = "openai", specifier = ">=1.0" },
+    { name = "openai", specifier = ">=1.66,<3" },
     { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "pytest", specifier = ">=8.0" },
@@ -446,7 +446,7 @@ feast = [
 lint = [{ name = "ruff", specifier = "==0.15.18" }]
 orchestration = [
     { name = "fastapi", specifier = ">=0.115,<0.129" },
-    { name = "openai", specifier = ">=1.0" },
+    { name = "openai", specifier = ">=1.66,<3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]

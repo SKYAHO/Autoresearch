@@ -20,9 +20,10 @@ from urllib.parse import urlparse
 
 
 def _require_env(name: str, value: str | None) -> str:
-    if not value:
+    stripped = (value or "").strip()
+    if not stripped:
         raise ValueError(f"Required environment variable '{name}' is not set.")
-    return value.strip()
+    return stripped
 
 
 def _env_int(name: str, default: int) -> int:
@@ -83,6 +84,8 @@ def load_settings() -> ServiceSettings:
     codex_model = os.getenv("CODEX_MODEL", "").strip() or None
     codex_timeout_sec = _positive_env_int("CODEX_TIMEOUT_SEC", 120)
     api_token = _require_env("ORCH_API_TOKEN", os.getenv("ORCH_API_TOKEN"))
+    if len(api_token) < 32:
+        raise ValueError("ORCH_API_TOKEN must be at least 32 characters long.")
     database_connect_timeout_sec = _positive_env_int("ORCH_DB_CONNECT_TIMEOUT_SEC", 10)
 
     database_url = os.getenv("ORCH_DATABASE_URL") or os.getenv("DATABASE_URL")

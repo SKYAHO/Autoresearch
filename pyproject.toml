@@ -19,7 +19,7 @@ dependencies = [
     "gcsfs>=2024.0",
     "tenacity>=8.2,<10",
     "requests>=2.32,<3",
-    "openai>=1.0",
+    "openai>=1.66,<3",
     # CTR Model Training (Issue #33)
     "duckdb>=0.8.0",
     "lightgbm>=4.0.0",
@@ -85,7 +85,7 @@ orchestration = [
     "fastapi>=0.115,<0.129",
     "uvicorn[standard]>=0.32,<0.35",
     "psycopg[binary]>=3.2,<4",
-    "openai>=1.0",
+    "openai>=1.66,<3",
 ]
 [tool.pytest.ini_options]
 # scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외
