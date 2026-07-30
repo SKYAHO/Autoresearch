@@ -11,7 +11,7 @@ joblib 직렬화 기본 구현을 제공해 구현체가 필요할 때만 overri
 .convert_lgbm_to_onnx), MLflow 아티팩트 로깅(src/pipeline/train.py)은 이 인터페이스를
 소비하지 않는다 — 기존 LightGBM 프로덕션 저장 경로는 이 인터페이스 도입으로 바뀌지
 않는다(additive, capability probe round_001/round_002 검증을 거쳐 포팅,
-docs/specs/2026-07-30-ctr-model-interface-port.md 참고).
+docs/archive/specs/2026-07-30-ctr-model-interface-port.md 참고).
 """
 
 from __future__ import annotations
@@ -54,14 +54,29 @@ class CTRModel(ABC):
         """
         import joblib
 
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
         joblib.dump(self, path)
 
     @classmethod
     def load(cls, path: str) -> "CTRModel":
-        """joblib으로 역직렬화하는 기본 구현."""
+        """joblib으로 역직렬화하는 기본 구현.
+
+        역직렬화된 객체가 cls의 인스턴스가 아니면 TypeError를 던진다 — 구현체가
+        save()를 override해 다른 타입(예: 프레임워크 네이티브 객체)을 저장했다면
+        load()도 함께 override해야 한다는 계약을 지키지 않은 경우를 조용히
+        통과시키지 않기 위함이다.
+        """
         import joblib
 
         if not os.path.exists(path):
             raise FileNotFoundError(f"모델 파일을 찾을 수 없습니다: {path}")
-        return joblib.load(path)
+        obj = joblib.load(path)
+        if not isinstance(obj, cls):
+            raise TypeError(
+                f"{path}에서 역직렬화한 객체가 {cls.__name__} 인스턴스가 아닙니다: "
+                f"{type(obj).__name__}. save()를 override했다면 load()도 함께 "
+                "override해야 합니다."
+            )
+        return obj

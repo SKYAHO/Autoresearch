@@ -104,3 +104,12 @@ def test_lgbm_model_load_classmethod_round_trip(tmp_path) -> None:
     assert isinstance(loaded, LGBMModel)
     proba = loaded.predict_proba(X)
     assert proba.shape == (len(X), 2)
+    np.testing.assert_allclose(proba, model.predict_proba(X))
+
+
+def test_lgbm_model_save_before_fit_raises_value_error(tmp_path) -> None:
+    from src.models.lgbm_model import LGBMModel
+
+    model = LGBMModel(scale_pos_weight=1.0)
+    with pytest.raises(ValueError):
+        model.save(str(tmp_path / "unfitted.joblib"))

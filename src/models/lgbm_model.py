@@ -8,7 +8,7 @@ model_contract 스칼라 피처를 축정렬 분할(tree split)로 학습한다.
 프로덕션 경로(src.utils.model_utils.save_model/load_model이 raw LightGBM booster를
 직접 joblib 저장)와 동일한 결과를 내도록 override한다 — 인터페이스 추가가 기존 저장
 아티팩트 포맷을 바꾸지 않는다(additive,
-docs/specs/2026-07-30-ctr-model-interface-port.md 참고).
+docs/archive/specs/2026-07-30-ctr-model-interface-port.md 참고).
 
 [비책임] ONNX 변환은 여전히 src.utils.model_utils.convert_lgbm_to_onnx가 전담한다
 (이 클래스는 변환하지 않는다).
@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from src.models.base import CTRModel
+from src.utils.model_utils import load_model, save_model
 
 
 class LGBMModel(CTRModel):
@@ -114,15 +115,24 @@ class LGBMModel(CTRModel):
         """
         if self.model is None:
             raise ValueError("모델이 학습되지 않았습니다.")
-        from src.utils.model_utils import save_model
-
         save_model(self.model, path)
 
     @classmethod
     def load(cls, path: str) -> "LGBMModel":
-        """joblib으로 저장된 raw LightGBM booster를 불러와 wrapper에 담는다."""
-        from src.utils.model_utils import load_model
+        """joblib으로 저장된 raw LightGBM booster를 불러와 wrapper에 담는다.
 
-        instance = cls(scale_pos_weight=1)
-        instance.model = load_model(path)
+        복원한 booster의 get_params()로 wrapper의 하이퍼파라미터 속성도 함께
+        복원한다 — 그렇지 않으면 load() 이후 wrapper에 다시 fit()을 호출했을 때
+        저장 당시가 아니라 생성자 기본값으로 학습되는 오류가 생긴다.
+        """
+        booster = load_model(path)
+        params = booster.get_params()
+        instance = cls(
+            scale_pos_weight=params.get("scale_pos_weight", 1),
+            n_estimators=params.get("n_estimators", 200),
+            learning_rate=params.get("learning_rate", 0.05),
+            num_leaves=params.get("num_leaves", 31),
+            random_state=params.get("random_state", 42),
+        )
+        instance.model = booster
         return instance
