@@ -284,9 +284,16 @@ jobs:
       - name: Run Agent Orchestration image smoke checks
         run: |
           docker run --rm autoresearch-agent-orchestration-api:ci id -u | grep --fixed-strings 10001
+          docker run --rm autoresearch-agent-orchestration-api:ci sh -ec '
+            ! command -v codex >/dev/null 2>&1
+            ! command -v node >/dev/null 2>&1
+            test ! -e "${CODEX_HOME:-/var/lib/codex}/auth.json"
+            test ! -e /var/lib/codex/auth.json
+          '
           docker run --rm autoresearch-agent-orchestration-api:ci \
             python -c "import agent_orchestration.app.main"
           docker run --rm autoresearch-agent-orchestration-runner:ci id -u | grep --fixed-strings 10001
-          docker run --rm autoresearch-agent-orchestration-runner:ci codex --version
+          codex_version="$(docker run --rm autoresearch-agent-orchestration-runner:ci codex --version)"
+          test "${codex_version}" = "codex-cli 0.146.0"
           docker run --rm autoresearch-agent-orchestration-runner:ci \
             python -c "import agent_orchestration.runner.app"

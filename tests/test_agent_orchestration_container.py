@@ -50,6 +50,7 @@ def test_orchestration_images_do_not_embed_runtime_secrets() -> None:
     dockerignore = DOCKERIGNORE.read_text(encoding="utf-8")
     assert ".codex" in dockerignore
     assert ".env" in dockerignore
+    assert "auth.json" in dockerignore
 
 
 def test_api_and_runner_images_copy_only_their_runtime_modules() -> None:
@@ -84,13 +85,18 @@ def test_api_llm_module_defers_codex_execution_import() -> None:
 
 
 def test_ci_builds_and_smokes_both_orchestration_images() -> None:
-    """CI가 분리된 이미지의 import와 Codex CLI 설치를 검증한다."""
+    """CI가 분리된 이미지의 격리·import·Codex CLI 설치를 검증한다."""
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
     assert "-f deploy/agent_orchestration/api.Dockerfile" in workflow
     assert "--tag autoresearch-agent-orchestration-api:ci" in workflow
     assert 'import agent_orchestration.app.main' in workflow
+    assert "! command -v codex" in workflow
+    assert "! command -v node" in workflow
+    assert 'test ! -e "${CODEX_HOME:-/var/lib/codex}/auth.json"' in workflow
+    assert "test ! -e /var/lib/codex/auth.json" in workflow
     assert "-f deploy/agent_orchestration/runner.Dockerfile" in workflow
     assert "--tag autoresearch-agent-orchestration-runner:ci" in workflow
-    assert "codex --version" in workflow
+    assert 'codex_version="$(docker run --rm autoresearch-agent-orchestration-runner:ci codex --version)"' in workflow
+    assert 'test "${codex_version}" = "codex-cli 0.146.0"' in workflow
     assert 'import agent_orchestration.runner.app' in workflow
