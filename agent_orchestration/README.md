@@ -5,6 +5,16 @@
 개발의 기본 백엔드는 `codex_cli`이며, GKE API는 비공개 `codex_runner` Service를
 호출합니다. 기본 모드는 OpenAI API 키나 API 크레딧을 사용하지 않습니다.
 
+## GKE 이미지 경계
+
+- `deploy/agent_orchestration/api.Dockerfile`은 FastAPI·PostgreSQL 런타임과 API
+  소스만 포함합니다. Codex CLI, Node 런타임, OAuth 상태는 포함하지 않습니다.
+- `deploy/agent_orchestration/runner.Dockerfile`만 `@openai/codex@0.146.0`과 Runner
+  소스를 포함합니다. 기본 `CODEX_HOME`은 `/var/lib/codex`, 임시 경로는 `/tmp`이며,
+  Kubernetes는 각각 Runner 전용 PVC와 scratch `emptyDir`를 마운트합니다.
+- 두 이미지는 UID/GID `10001`의 `appuser`로 실행합니다. OAuth 파일·`.env`·완성
+  데이터베이스 URL은 빌드 문맥과 이미지에 넣지 않습니다.
+
 ## 로컬 실행(1단계)
 
 1. Codex 전용 홈 디렉터리를 만들고, 서버를 실행할 **운영 계정**에서 그 경로로

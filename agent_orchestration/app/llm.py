@@ -23,7 +23,6 @@ import httpx
 from openai import AsyncOpenAI, OpenAIError
 
 from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.codex import CodexSettings, generate_codex_response
 from agent_orchestration.contracts import LLMBackendError, LLMResult
 
 
@@ -42,6 +41,10 @@ async def generate_response(settings: ServiceSettings, prompt: str) -> LLMResult
 
 async def _generate_codex_cli(settings: ServiceSettings, prompt: str) -> LLMResult:
     """기존 로컬 Codex CLI 백엔드를 공통 실행 경계로 위임한다."""
+    # GKE API 이미지는 Runner로만 Codex 실행을 위임하므로, Runner 전용 실행 모듈을
+    # 앱 import 시점에 적재하지 않는다. 로컬 codex_cli 백엔드만 이 의존성을 읽는다.
+    from agent_orchestration.codex import CodexSettings, generate_codex_response
+
     return await generate_codex_response(
         CodexSettings(
             cli_path=settings.codex_cli_path,

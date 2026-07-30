@@ -1,0 +1,48 @@
+FROM ghcr.io/astral-sh/uv:0.11.26 AS lock-export
+
+WORKDIR /source
+
+COPY pyproject.toml uv.lock ./
+RUN ["/uv", "export", "--frozen", "--no-dev", "--group", "orchestration", "--no-hashes", "--output-file", "/requirements.lock"]
+
+FROM node:22.16.0-slim AS codex-cli
+
+RUN npm install --global @openai/codex@0.146.0 \
+    && codex --version
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    CODEX_HOME=/var/lib/codex \
+    TMPDIR=/tmp
+
+WORKDIR /app
+
+RUN addgroup --gid 10001 appuser \
+    && adduser --uid 10001 --gid 10001 --disabled-password --gecos "" --no-create-home appuser \
+    && mkdir --parents /var/lib/codex \
+    && chown appuser:appuser /var/lib/codex
+
+COPY --from=lock-export /requirements.lock ./
+# uv.lock의 고정된 orchestration 런타임 전이 의존성만 설치한다.
+RUN python -m pip install --no-cache-dir --no-deps -r requirements.lock \
+    && rm requirements.lock
+
+# Codex CLI와 이에 필요한 Node 런타임만 Runner 이미지에 반입한다.
+COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
+COPY --from=codex-cli /usr/local/bin/codex /usr/local/bin/codex
+COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
+
+COPY agent_orchestration/__init__.py ./agent_orchestration/
+COPY agent_orchestration/contracts.py ./agent_orchestration/
+COPY agent_orchestration/codex.py ./agent_orchestration/
+COPY agent_orchestration/runner ./agent_orchestration/runner
+COPY agent_orchestration/runner_entrypoint.sh ./agent_orchestration/
+RUN chmod 0555 ./agent_orchestration/runner_entrypoint.sh
+
+USER appuser
+
+EXPOSE 8080
+
+CMD ["./agent_orchestration/runner_entrypoint.sh"]

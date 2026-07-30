@@ -9,6 +9,8 @@ venv
 env
 .env
 .env.*
+.codex
+.codex/
 gha-creds-*.json
 data
 *.parquet

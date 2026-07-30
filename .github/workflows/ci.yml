@@ -269,3 +269,24 @@ jobs:
           docker logs "${container_name}"
           echo "::error::모델·Feast 자격 증명 없이 malformed /rerank는 422이고 /healthcheck는 503이어야 한다"
           exit 1
+
+      - name: Build Agent Orchestration API and Runner images
+        run: |
+          docker build \
+            -f deploy/agent_orchestration/api.Dockerfile \
+            --tag autoresearch-agent-orchestration-api:ci \
+            .
+          docker build \
+            -f deploy/agent_orchestration/runner.Dockerfile \
+            --tag autoresearch-agent-orchestration-runner:ci \
+            .
+
+      - name: Run Agent Orchestration image smoke checks
+        run: |
+          docker run --rm autoresearch-agent-orchestration-api:ci id -u | grep --fixed-strings 10001
+          docker run --rm autoresearch-agent-orchestration-api:ci \
+            python -c "import agent_orchestration.app.main"
+          docker run --rm autoresearch-agent-orchestration-runner:ci id -u | grep --fixed-strings 10001
+          docker run --rm autoresearch-agent-orchestration-runner:ci codex --version
+          docker run --rm autoresearch-agent-orchestration-runner:ci \
+            python -c "import agent_orchestration.runner.app"
