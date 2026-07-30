@@ -4,7 +4,7 @@
 
 **Goal:** 단일 action log 실행이 완료된 사용자 객체를 즉시 해제하고 Parquet row group과 JSONL을 순차 기록해, 전체 파티션 크기와 무관한 active-user 메모리 상한을 갖게 합니다.
 
-**Architecture:** 기존 `generate_action_log_batch()`와 `generate_action_log_drafts()`는 shard/checkpoint 및 외부 Python 호출의 legacy 계약으로 그대로 유지합니다. 새 `generate_action_log_single()`은 coordinator 스레드에서 원본 순서로 provider를 호출하고 최대 `4 * max_workers`명의 active user만 유지하며, 한 사용자의 모든 chunk가 끝난 뒤 원본 사용자 순서로 클릭 선정·이벤트 확장·파일 기록을 수행합니다. 중복 `user_id`나 변경 불가능한 exposure metadata는 의미 보존을 위해 legacy batch로 위임합니다. 이 상한과 row-group 계약은 승인된 [2026-07-30 remediation](2026-07-30-action-log-review-remediation.md)을 따른다.
+**Architecture:** 기존 `generate_action_log_batch()`와 `generate_action_log_drafts()`는 shard/checkpoint 및 외부 Python 호출의 legacy 계약으로 그대로 유지합니다. 새 `generate_action_log_single()`은 coordinator 스레드에서 원본 순서로 provider를 호출하고 최대 `4 * max_workers`명의 active user만 유지하며, 한 사용자의 모든 chunk가 끝난 뒤 원본 사용자 순서로 클릭 선정·이벤트 확장·파일 기록을 수행합니다. 중복 `user_id`나 변경 불가능한 exposure metadata는 의미 보존을 위해 legacy batch로 위임합니다. 이 상한과 row-group 계약은 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)을 따른다.
 
 **Tech Stack:** Python 3.11/3.12, `concurrent.futures`, Pydantic v2, PyArrow `ParquetWriter`/`ParquetFile`, pytest, ruff
 
@@ -17,7 +17,7 @@
 - click 선정, 한 사용자 내부 이벤트 순서, `seed` 기반 timestamp, KST 날짜가 포함된 전역 event-id 연속 sequence를 legacy 결과와 동일하게 유지합니다.
 - quarantine record 순서·JSONL·비율 제한·에러 분류와 공개 CLI 인자/출력 계약을 유지합니다.
 - 변경 가능한 exposure metadata는 사용자가 drain될 때 그 사용자 키를 `pop`해 해제합니다. 중복 `user_id` 또는 `collections.abc.MutableMapping`이 아닌 metadata는 legacy batch로 위임합니다.
-- 단일 모드 Parquet은 사용자 경계와 무관하게 최대 50,000 rows의 row group으로 최종화하고 warehouse/quarantine JSONL은 열린 spool에 순차 기록합니다. 이 계약은 승인된 [2026-07-30 remediation](2026-07-30-action-log-review-remediation.md)이 정본입니다.
+- 단일 모드 Parquet은 사용자 경계와 무관하게 최대 50,000 rows의 row group으로 최종화하고 warehouse/quarantine JSONL은 열린 spool에 순차 기록합니다. 이 계약은 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)이 정본입니다.
 - 단일 모드 staging 검증은 전체 파일 `pq.read_table()` 대신 `pq.ParquetFile` schema 검사와 row-group 단위 `event_id`/`event_timestamp` 읽기를 사용합니다.
 - `autoresearch.jobs.action_log`의 CLI 옵션·dispatch와 Autoresearch-airflow의 KPO memory request는 변경하지 않습니다.
 - 런타임 모듈 변경과 같은 커밋에서 `pipeline.py`와 `daily.py` 최상단 docstring을 `[파이프라인]`·`[기능]`·`[비책임]` 형식으로 갱신합니다.
@@ -55,9 +55,11 @@
 **Interfaces:**
 - Produces:
   - `_expand_events(..., event_id_sequence_start: int = 0) -> list[EventLog]`
-  - `_StreamingActionLogWriter(request: EventGenerationRequest, model_name: str, generated_at: str)`
+  - `_StreamingActionLogWriter(request: EventGenerationRequest, model_name: str)`
   - `_StreamingActionLogWriter.write_events(events: list[EventLog]) -> None`
   - `_StreamingActionLogWriter.write_quarantine(records: list[QuarantineRecord]) -> None`
+  - `_StreamingActionLogWriter.finalize_success(generated_at: str) -> None`
+  - `_StreamingActionLogWriter.finalize_quarantine_failure() -> None`
   - context-manager `__enter__() -> _StreamingActionLogWriter` / typed `__exit__(...) -> None`
 - Preserves:
   - `_expand_events()`의 기존 호출은 default offset `0`으로 동일한 ID를 생성합니다.
@@ -136,181 +138,40 @@ uv run python -m pytest tests/test_action_logs_pipeline.py::test_expand_events_r
 
 Expected: 세 테스트가 모두 PASS합니다.
 
-- [ ] **Step 5: Parquet row group과 두 JSONL stream을 요구하는 실패 테스트를 작성합니다.**
+- [ ] **Step 5: completion-time writer와 bounded row-group 실패 테스트를 작성합니다.**
 
-테스트 import에 `from pathlib import Path`와 `QuarantineRecord`를 추가하고 아래 테스트를 작성합니다. 두 `write_events()` 호출의 순서가 Parquet/warehouse JSONL에서 유지되고, 호출마다 Parquet row group 하나가 생겨야 합니다.
-
-```python
-def test_streaming_writer_appends_user_row_groups_and_jsonl_in_order(tmp_path) -> None:
-    request = _request(tmp_path)
-    first = EventLog(
-        event_id="evt_20260701_00000000",
-        event_timestamp=_FIXED_END,
-        user_id="u1",
-        event_type="impression",
-        video_id="v1",
-        source="historical",
-    )
-    second = EventLog(
-        event_id="evt_20260701_00000001",
-        event_timestamp=_FIXED_END,
-        user_id="u2",
-        event_type="impression",
-        video_id="v2",
-        source="historical",
-    )
-    quarantine = QuarantineRecord(
-        user_id="u2",
-        error_type="invalid_json",
-        error_message="broken",
-    )
-
-    with pipeline_module._StreamingActionLogWriter(
-        request=request,
-        model_name="test-model",
-        generated_at="2026-07-29T00:00:00+00:00",
-    ) as writer:
-        writer.write_events([first])
-        writer.write_events([second])
-        writer.write_quarantine([quarantine])
-
-    parquet = pq.ParquetFile(request.output_path)
-    assert parquet.num_row_groups == 2
-    assert parquet.read().column("event_id").to_pylist() == [
-        first.event_id,
-        second.event_id,
-    ]
-    warehouse = [
-        json.loads(line)
-        for line in Path(request.warehouse_output_path)
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
-    assert [row["event_id"] for row in warehouse] == [
-        first.event_id,
-        second.event_id,
-    ]
-    quarantined = [
-        json.loads(line)
-        for line in Path(request.quarantine_output_path)
-        .read_text(encoding="utf-8")
-        .splitlines()
-    ]
-    assert [row["user_id"] for row in quarantined] == ["u2"]
-```
+이전 per-user row-group 예시는 **superseded** 되었으며 실행하지 않습니다. 현 계약은
+IPC spool에 event/warehouse/quarantine을 append한 뒤,
+`finalize_success("2026-07-30T09:00:00+00:00")`에서만 completion `generated_at`을
+붙이는 것입니다. `_PARQUET_TARGET_ROW_GROUP_ROWS = 3`으로 고정한 네 event 테스트는
+두 `write_events()` 호출과 무관하게 row group 크기 `3`, `1`, 입력 event/JSONL 순서,
+그리고 모든 `generated_at`이 completion literal임을 검증해야 합니다.
 
 - [ ] **Step 6: writer RED를 확인합니다.**
 
 Run:
 
 ```bash
-uv run python -m pytest tests/test_action_logs_pipeline.py::test_streaming_writer_appends_user_row_groups_and_jsonl_in_order -v
+uv run python -m pytest tests/test_action_logs_pipeline.py::test_streaming_writer_finalizes_completion_time_and_bounded_row_groups -v
 ```
 
-Expected: `_StreamingActionLogWriter`가 없어 `AttributeError`로 실패합니다.
+Expected: IPC spool/finalize API가 없거나 `write_events()` 경계마다 row group을 만들면 실패합니다.
 
-- [ ] **Step 7: 세 output을 한 번만 열고 증분 기록하는 writer를 구현합니다.**
+- [ ] **Step 7: transactional IPC spool writer를 구현합니다.**
 
-`pipeline.py`에 `TracebackType`과 `Self` import를 추가합니다. 구현은 다음 계약을 그대로 따릅니다.
-
-```python
-class _StreamingActionLogWriter:
-    def __init__(
-        self,
-        *,
-        request: EventGenerationRequest,
-        model_name: str,
-        generated_at: str,
-    ) -> None:
-        self._request = request
-        self._model_name = model_name
-        self._generated_at = generated_at
-        self._parquet_writer: pq.ParquetWriter | None = None
-        self._warehouse_file = None
-        self._quarantine_file = None
-
-    def __enter__(self) -> Self:
-        for raw_path in (
-            self._request.output_path,
-            self._request.warehouse_output_path,
-            self._request.quarantine_output_path,
-        ):
-            Path(raw_path).parent.mkdir(parents=True, exist_ok=True)
-        self._parquet_writer = pq.ParquetWriter(
-            self._request.output_path,
-            EVENT_LOG_PARQUET_SCHEMA,
-        )
-        self._warehouse_file = Path(self._request.warehouse_output_path).open(
-            "w",
-            encoding="utf-8",
-        )
-        self._quarantine_file = Path(self._request.quarantine_output_path).open(
-            "w",
-            encoding="utf-8",
-        )
-        return self
-
-    def write_events(self, events: list[EventLog]) -> None:
-        if not events:
-            return
-        assert self._parquet_writer is not None
-        assert self._warehouse_file is not None
-        batch = EventLogBatch(
-            schema_version=ACTION_LOG_SCHEMA_VERSION,
-            prompt_version=PROMPT_VERSION,
-            request=self._request,
-            events=events,
-            generated_at=self._generated_at,
-        )
-        table = pa.Table.from_pylist(
-            _event_rows(batch, self._model_name),
-            schema=EVENT_LOG_PARQUET_SCHEMA,
-        )
-        self._parquet_writer.write_table(table)
-        for event in events:
-            self._warehouse_file.write(
-                json.dumps(
-                    event.to_warehouse_row(),
-                    ensure_ascii=False,
-                    default=str,
-                )
-                + "\n"
-            )
-
-    def write_quarantine(self, records: list[QuarantineRecord]) -> None:
-        assert self._quarantine_file is not None
-        for record in records:
-            self._quarantine_file.write(
-                json.dumps(
-                    record.model_dump(),
-                    ensure_ascii=False,
-                    default=str,
-                )
-                + "\n"
-            )
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        if self._parquet_writer is not None:
-            self._parquet_writer.close()
-        if self._warehouse_file is not None:
-            self._warehouse_file.close()
-        if self._quarantine_file is not None:
-            self._quarantine_file.close()
-```
-
-Writer가 생성 즉시 `ParquetWriter`를 열게 하여 event가 0건이어도 schema가 있는 빈 Parquet을 남깁니다. 각 non-empty 사용자 drain은 `write_table()`을 정확히 한 번 호출해 row group 경계를 만듭니다.
+`_StreamingActionLogWriter(request, model_name)`는 event IPC, warehouse JSONL,
+quarantine JSONL을 sibling spool에 열고 `write_events()`에서 최종 Parquet을 만들지
+않습니다. quarantine ratio가 허용되면 `finalize_success(generated_at)`가 IPC를 순서대로
+읽어 completion column을 붙이고 최대 50,000 rows 단위의 Parquet row group으로
+최종화한 뒤 세 산출물을 publish합니다. ratio 초과면
+`finalize_quarantine_failure()`가 quarantine만 publish합니다.
 
 - [ ] **Step 8: writer GREEN과 기존 whole-batch writer 회귀를 확인합니다.**
 
 Run:
 
 ```bash
-uv run python -m pytest tests/test_action_logs_pipeline.py::test_streaming_writer_appends_user_row_groups_and_jsonl_in_order tests/test_action_logs_pipeline.py::test_parquet_matches_events -v
+uv run python -m pytest tests/test_action_logs_pipeline.py::test_streaming_writer_finalizes_completion_time_and_bounded_row_groups tests/test_action_logs_pipeline.py::test_parquet_matches_events -v
 ```
 
 Expected: 두 테스트가 PASS합니다.
@@ -477,7 +338,7 @@ def test_streaming_single_bounds_active_users_and_invokes_provider_on_coordinato
 private observer는 active state에 실제로 저장된 draft 수와 writer에 넘기기 직전의
 사용자-local event 수를 보고합니다. 전체 사용자 수를 크게 늘려도 draft 상한은
 `4 * max_workers * candidates_per_user`, event 상한은 50,000 rows를 넘지 않아야
-합니다. 이는 승인된 [2026-07-30 remediation](2026-07-30-action-log-review-remediation.md)의
+합니다. 이는 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)의
 최종 계약입니다.
 
 ```python
@@ -574,11 +435,11 @@ class _StreamingUserState:
 
 `generate_action_log_single()`의 성공 경로 순서는 다음과 같습니다.
 
-1. `max_workers = max(1, request.max_concurrency)`, `max_active_users = 4 * max_workers`와 `ThreadPoolExecutor(max_workers=max_workers)`를 만듭니다. 이 최종 상한은 승인된 [2026-07-30 remediation](2026-07-30-action-log-review-remediation.md)을 따른다.
+1. `max_workers = max(1, request.max_concurrency)`, `max_active_users = 4 * max_workers`와 `ThreadPoolExecutor(max_workers=max_workers)`를 만듭니다. 이 최종 상한은 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)을 따른다.
 2. coordinator가 다음 `virtual_user`를 꺼내 `random.Random(f"{request.seed}:{user_id}")`를 만들고, `candidate_provider` 또는 기존 `build_candidates()`를 호출합니다.
 3. 그 사용자 candidates를 기존 `_chunked()`로 전부 나누고, global `work_sequence` 순서로 `work_{work_sequence:08d}`를 부여합니다.
-4. 한 `_StreamingUserState`의 모든 chunk future를 submit한 뒤 active deque에 넣습니다. active state 수가 `max_active_users`가 될 때까지만 다음 provider를 호출합니다.
-5. future 완료 결과는 `(state, chunk_index, work_sequence)`로 찾아 state의 `drafts_by_chunk` 또는 `quarantine_by_chunk`에 저장합니다. `_generate_action_log_work(..., shard_index=None, detailed_telemetry=False)`를 재사용해 schema retry와 에러 분류를 바꾸지 않습니다.
+4. active state의 chunk는 deterministic unsent-work deque에 넣고, Future 수가 `max_workers`보다 작은 동안에만 submit합니다. active state 수가 `max_active_users`가 될 때까지만 다음 provider를 호출하며, 완료 Future마다 replacement를 먼저 submit합니다.
+5. future 완료 결과는 `(state, chunk_index, work_sequence)`로 찾아 state의 `drafts_by_chunk` 또는 `quarantine_by_chunk`에 저장합니다. `_generate_action_log_work()`는 schema retry와 에러 분류를 재사용하고, detailed telemetry는 provider 소진 뒤 정확한 total work가 확인되어 small-run threshold 이하일 때만 요청합니다.
 6. deque 맨 앞 state의 `remaining_chunks == 0`일 때만 drain합니다. chunk index 오름차순으로 drafts와 quarantine을 조립하고, 모든 drafts에 대해 `select_clicks_per_slate()`를 한 번 호출합니다.
 7. `_expand_events(..., event_id_sequence_start=next_event_sequence)`로 이벤트를 만들고 writer에 기록한 뒤 `next_event_sequence += len(events)`로 갱신합니다.
 8. summary counter만 누적하고 state의 work/candidates/drafts/events 참조를 deque에서 제거합니다. 그 뒤에만 다음 사용자를 활성화합니다.
@@ -963,7 +824,8 @@ def test_run_daily_action_log_coalesces_target_row_groups(
 
 - [ ] **Step 2: whole-file read 없이 row-group 검증하는 실패 테스트를 작성합니다.**
 
-`_StreamingActionLogWriter`로 두 row group을 만든 후 `pq.read_table`을 금지해 새 helper가 `ParquetFile.read_row_group()`만 쓰는지 확인합니다.
+`_StreamingActionLogWriter`로 최종화된 bounded-row-group Parquet을 만든 후
+`pq.read_table`을 금지해 새 helper가 `ParquetFile.read_row_group()`만 쓰는지 확인합니다.
 
 ```python
 def test_validate_staged_event_parquet_reads_row_groups_without_read_table(
@@ -999,10 +861,10 @@ def test_validate_staged_event_parquet_reads_row_groups_without_read_table(
     with pipeline_module._StreamingActionLogWriter(
         request=request,
         model_name="test-model",
-        generated_at="2026-07-29T00:00:00+00:00",
     ) as writer:
         writer.write_events([events[0]])
         writer.write_events([events[1]])
+        writer.finalize_success("2026-07-30T09:00:00+00:00")
 
     monkeypatch.setattr(
         daily_module.pq,
@@ -1038,10 +900,11 @@ def test_validate_staged_event_parquet_rejects_unrelated_schema(tmp_path) -> Non
 Run:
 
 ```bash
-uv run python -m pytest tests/test_action_logs_daily.py::test_run_daily_action_log_streams_one_parquet_row_group_per_user tests/test_action_logs_daily.py::test_validate_staged_event_parquet_reads_row_groups_without_read_table tests/test_action_logs_daily.py::test_validate_staged_event_parquet_rejects_unrelated_schema -v
+uv run python -m pytest tests/test_action_logs_daily.py::test_run_daily_action_log_coalesces_small_output_into_one_target_row_group tests/test_action_logs_daily.py::test_validate_staged_event_parquet_reads_row_groups_without_read_table tests/test_action_logs_daily.py::test_validate_staged_event_parquet_rejects_unrelated_schema -v
 ```
 
-Expected: daily가 아직 legacy one-row-group batch를 쓰고 validator가 없어 FAIL합니다.
+Expected: historical RED가 해결된 뒤에는 세 테스트가 PASS하며, daily는 최종화된
+bounded row group만 staging validator에 전달합니다.
 
 - [ ] **Step 5: row-group staging validator를 구현합니다.**
 
@@ -1078,7 +941,7 @@ def _validate_staged_event_parquet(
                 )
 ```
 
-schema 확인 후 필요한 두 column만 row group별로 읽습니다. 최종 streaming 경로에서는 row group이 최대 50,000 rows이므로 검증 메모리도 이 상한으로 제한됩니다. 이는 승인된 [2026-07-30 remediation](2026-07-30-action-log-review-remediation.md)의 계약입니다.
+schema 확인 후 필요한 두 column만 row group별로 읽습니다. 최종 streaming 경로에서는 row group이 최대 50,000 rows이므로 검증 메모리도 이 상한으로 제한됩니다. 이는 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)의 계약입니다.
 
 - [ ] **Step 6: `run_daily_action_log()`만 새 single API에 연결합니다.**
 
@@ -1144,7 +1007,7 @@ SKYAHO/Autoresearch-airflow가 소유한다.
 Run:
 
 ```bash
-uv run python -m pytest tests/test_action_logs_daily.py::test_run_daily_action_log_streams_one_parquet_row_group_per_user tests/test_action_logs_daily.py::test_validate_staged_event_parquet_reads_row_groups_without_read_table tests/test_action_logs_daily.py::test_validate_staged_event_parquet_rejects_unrelated_schema tests/test_action_logs_daily.py::test_run_daily_action_log_writes_dt_partition tests/test_action_logs_daily.py::test_run_daily_action_log_rejects_timestamp_outside_partition_date tests/test_action_logs_daily.py::test_single_quarantine_publish_failure_warns_and_keeps_final_success tests/test_action_logs_daily.py::test_single_failed_overwrite_preserves_previous_final tests/test_action_logs_daily.py::test_shard_merge_matches_single_run_event_contract tests/test_action_logs_daily.py::test_daily_single_joins_exposure_tags_into_final_parquet tests/test_action_logs_daily.py::test_daily_shard_then_merge_carries_exposure_tags tests/test_action_logs_daily.py::test_cli_parses_click_threshold tests/test_action_logs_daily.py::test_cli_requires_click_threshold -v
+uv run python -m pytest tests/test_action_logs_daily.py::test_run_daily_action_log_coalesces_small_output_into_one_target_row_group tests/test_action_logs_daily.py::test_validate_staged_event_parquet_reads_row_groups_without_read_table tests/test_action_logs_daily.py::test_validate_staged_event_parquet_rejects_unrelated_schema tests/test_action_logs_daily.py::test_run_daily_action_log_writes_dt_partition tests/test_action_logs_daily.py::test_run_daily_action_log_rejects_timestamp_outside_partition_date tests/test_action_logs_daily.py::test_single_quarantine_publish_failure_warns_and_keeps_final_success tests/test_action_logs_daily.py::test_single_failed_overwrite_preserves_previous_final tests/test_action_logs_daily.py::test_shard_merge_matches_single_run_event_contract tests/test_action_logs_daily.py::test_daily_single_joins_exposure_tags_into_final_parquet tests/test_action_logs_daily.py::test_daily_shard_then_merge_carries_exposure_tags tests/test_action_logs_daily.py::test_cli_parses_click_threshold tests/test_action_logs_daily.py::test_cli_requires_click_threshold -v
 ```
 
 Expected: 새 세 테스트와 기존 single/shard/publish/CLI 테스트가 모두 PASS합니다.
@@ -1234,7 +1097,7 @@ git diff origin/main...HEAD -- autoresearch/action_logs/pipeline.py autoresearch
 - production 변경은 `pipeline.py`, `daily.py`뿐입니다.
 - `generate_action_log_batch()`와 shard/checkpoint/merge API가 삭제·변경되지 않았습니다.
 - 단일 streaming coordinator에는 파티션 전체 `work`, `drafts`, `events`, quarantine list가 없습니다.
-- active deque는 `4 * max_workers` 사용자 이하이고 submitted Future는 `max_workers` 이하이며, provider 호출과 drain 순서가 입력 순서를 따릅니다. 이는 승인된 [2026-07-30 remediation](2026-07-30-action-log-review-remediation.md)의 최종 계약입니다.
+- active deque는 `4 * max_workers` 사용자 이하이고 submitted Future는 `max_workers` 이하이며, provider 호출과 drain 순서가 입력 순서를 따릅니다. 이는 승인된 [2026-07-30 remediation](../specs/2026-07-30-action-log-review-remediation.md)의 최종 계약입니다.
 - mutable metadata는 drain마다 `pop`되고 duplicate/read-only 조건은 legacy로 갑니다.
 - 단일 staging 검증에 전체 파일 `pq.read_table(request.output_path)`가 없습니다.
 - `jobs/action_log.py`, action log schema, Airflow resource request 변경이 없습니다.

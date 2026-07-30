@@ -1,7 +1,7 @@
 import json
 import re
 import shutil
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, tzinfo
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NoReturn
@@ -211,7 +211,7 @@ def test_single_daily_publishes_completion_generated_at_without_full_materializa
 
     class _FrozenPipelineDatetime(datetime):
         @classmethod
-        def now(cls, tz=None):
+        def now(cls, tz: tzinfo | None = None) -> datetime:
             return next(frozen_times)
 
     class _GenerationStartClockGenerator(RuleBasedActionLogGenerator):
