@@ -2063,6 +2063,221 @@ def test_streaming_single_finishes_telemetry_after_writer_finalization(
     assert order == ["finalize_success", "finish"]
 
 
+class _NoopStreamingTelemetry:
+    """pipeline의 operational reporter 경계만 검사하는 test double."""
+
+    @property
+    def detailed_candidate(self) -> bool:
+        return False
+
+    def start(self, _snapshot: object) -> None:
+        return None
+
+    def note_submission(self, _submitted_work: int) -> None:
+        return None
+
+    def record_work(self, **_metrics: object) -> None:
+        return None
+
+    def observe(self, _snapshot: object) -> None:
+        return None
+
+    def finish(self, _snapshot: object) -> None:
+        return None
+
+
+@pytest.mark.parametrize(
+    "failure_stage",
+    [
+        "constructor",
+        "start",
+        "observe",
+        "note_submission",
+        "detailed_candidate",
+        "record_work",
+    ],
+)
+def test_streaming_single_isolates_nonfinal_telemetry_failures(
+    tmp_path,
+    caplog,
+    monkeypatch,
+    failure_stage: str,
+) -> None:
+    """운영 reporter의 non-final API 오류는 generation/output을 실패시키지 않는다."""
+
+    class _FailOnceTelemetry(_NoopStreamingTelemetry):
+        failed = False
+
+        def _fail_once(self, stage: str) -> None:
+            if not self.failed and failure_stage == stage:
+                self.failed = True
+                raise RuntimeError("private prompt raw response")
+
+        @property
+        def detailed_candidate(self) -> bool:
+            self._fail_once("detailed_candidate")
+            return False
+
+        def start(self, _snapshot: object) -> None:
+            self._fail_once("start")
+
+        def note_submission(self, _submitted_work: int) -> None:
+            self._fail_once("note_submission")
+
+        def record_work(self, **_metrics: object) -> None:
+            self._fail_once("record_work")
+
+        def observe(self, _snapshot: object) -> None:
+            self._fail_once("observe")
+
+    reporter = _FailOnceTelemetry()
+
+    def _reporter_factory(*, logger: logging.Logger) -> _NoopStreamingTelemetry:
+        if failure_stage == "constructor":
+            raise RuntimeError("private prompt raw response")
+        return reporter
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "ActionLogStreamingTelemetryReporter",
+        _reporter_factory,
+    )
+    request = _request(tmp_path, candidates_per_user=1, max_concurrency=1)
+
+    with caplog.at_level(logging.WARNING, logger="autoresearch.action_logs.pipeline"):
+        result = pipeline_module.generate_action_log_single(
+            request,
+            _fixture_users(1),
+            build_fixture_video_records(1),
+            RuleBasedActionLogGenerator(),
+        )
+
+    assert result.execution_mode == "streaming"
+    assert Path(request.output_path).is_file()
+    assert Path(request.warehouse_output_path).is_file()
+    assert Path(request.quarantine_output_path).is_file()
+    warning_messages = [
+        record.message
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    ]
+    assert warning_messages == [
+        "Action log streaming telemetry disabled after reporter failure"
+    ]
+    assert "private prompt" not in "\n".join(warning_messages)
+    assert "raw response" not in "\n".join(warning_messages)
+
+
+def test_streaming_single_keeps_success_when_finish_telemetry_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """세 출력 commit 뒤 finish reporter 오류는 성공 결과를 거짓 실패로 바꾸지 않는다."""
+
+    class _FailingFinishTelemetry(_NoopStreamingTelemetry):
+        def finish(self, _snapshot: object) -> None:
+            raise RuntimeError("telemetry finish failed")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "ActionLogStreamingTelemetryReporter",
+        lambda *, logger: _FailingFinishTelemetry(),
+    )
+    request = _request(tmp_path, candidates_per_user=1, max_concurrency=1)
+
+    result = pipeline_module.generate_action_log_single(
+        request,
+        _fixture_users(1),
+        build_fixture_video_records(1),
+        RuleBasedActionLogGenerator(),
+    )
+
+    assert result.execution_mode == "streaming"
+    assert Path(request.output_path).is_file()
+    assert Path(request.warehouse_output_path).is_file()
+    assert Path(request.quarantine_output_path).is_file()
+
+
+def test_streaming_single_commits_quarantine_when_final_observe_telemetry_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """quarantine 전 final observe 오류에도 q만 commit하고 원래 오류를 재전파한다."""
+
+    class _FailingFinalObserveTelemetry(_NoopStreamingTelemetry):
+        def observe(self, snapshot: object) -> None:
+            if getattr(snapshot, "phase") == "finalizing":
+                raise RuntimeError("telemetry observe failed")
+
+    class _AllBad(RuleBasedActionLogGenerator):
+        def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+            return "{broken"
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "ActionLogStreamingTelemetryReporter",
+        lambda *, logger: _FailingFinalObserveTelemetry(),
+    )
+    request = _request(
+        tmp_path,
+        candidates_per_user=1,
+        max_quarantine_ratio=0.25,
+    )
+
+    with pytest.raises(
+        ActionLogGenerationError,
+        match="quarantine ratio 1.00 exceeds",
+    ):
+        pipeline_module.generate_action_log_single(
+            request,
+            _fixture_users(1),
+            build_fixture_video_records(1),
+            _AllBad(),
+        )
+
+    assert not Path(request.output_path).exists()
+    assert not Path(request.warehouse_output_path).exists()
+    assert Path(request.quarantine_output_path).read_text(encoding="utf-8").count(
+        "\n"
+    ) == 1
+
+
+def test_streaming_single_ignores_finalizer_callback_telemetry_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """row-buffer observer의 reporter 오류는 Parquet 최종화와 commit을 중단하지 않는다."""
+
+    class _FailingFinalizerObserveTelemetry(_NoopStreamingTelemetry):
+        finalizing_observations = 0
+
+        def observe(self, snapshot: object) -> None:
+            if getattr(snapshot, "phase") != "finalizing":
+                return
+            self.finalizing_observations += 1
+            if self.finalizing_observations == 2:
+                raise RuntimeError("telemetry finalizer callback failed")
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "ActionLogStreamingTelemetryReporter",
+        lambda *, logger: _FailingFinalizerObserveTelemetry(),
+    )
+    request = _request(tmp_path, candidates_per_user=2, max_concurrency=1)
+
+    result = pipeline_module.generate_action_log_single(
+        request,
+        _fixture_users(1),
+        build_fixture_video_records(2),
+        RuleBasedActionLogGenerator(),
+    )
+
+    assert result.execution_mode == "streaming"
+    assert Path(request.output_path).is_file()
+    assert Path(request.warehouse_output_path).is_file()
+    assert Path(request.quarantine_output_path).is_file()
+
+
 def test_streaming_single_preserves_quarantine_error_when_finish_telemetry_fails(
     tmp_path,
     monkeypatch,
@@ -2115,16 +2330,18 @@ def test_streaming_single_preserves_quarantine_error_when_finish_telemetry_fails
         )
 
 
-def test_streaming_single_disables_worker_detail_context_after_threshold(
+def test_streaming_single_waits_for_known_total_before_worker_detail_context(
     tmp_path,
     caplog,
     monkeypatch,
 ) -> None:
-    """threshold를 넘는 submit부터 worker의 detailed-only context를 끈다."""
+    """unknown total의 active window에서는 detailed-only worker event를 남기지 않는다."""
+
+    from autoresearch.action_logs.observability import emit_action_log_event
 
     monkeypatch.setenv("ACTION_LOG_TELEMETRY_DETAIL_MAX_WORK", "2")
     videos = build_fixture_video_records(1)
-    context_flags: list[tuple[int, bool]] = []
+    context_flags: dict[int, bool] = {}
     original_work: Callable[..., _ActionLogCallResult] = (
         pipeline_module._generate_action_log_work
     )
@@ -2138,7 +2355,18 @@ def test_streaming_single_disables_worker_detail_context_after_threshold(
         shard_index: int | None,
         detailed_telemetry: bool,
     ) -> _ActionLogCallResult:
-        context_flags.append((work_sequence, detailed_telemetry))
+        context_flags[work_sequence] = detailed_telemetry
+        with pipeline_module.action_log_work_log_context(
+            shard_index=shard_index,
+            work_sequence=work_sequence,
+            detailed=detailed_telemetry,
+        ):
+            emit_action_log_event(
+                pipeline_module.logger,
+                logging.INFO,
+                "test_action_log_detailed_only_probe",
+                detailed_only=True,
+            )
         return original_work(
             generator,
             item,
@@ -2159,21 +2387,24 @@ def test_streaming_single_disables_worker_detail_context_after_threshold(
                 tmp_path,
                 candidates_per_user=1,
                 chunk_size=1,
-                max_concurrency=1,
+                max_concurrency=2,
             ),
-            _fixture_users(5),
+            _fixture_users(9),
             videos,
             RuleBasedActionLogGenerator(),
             candidate_provider=lambda _virtual_user, _user_rng: [videos[0]],
         )
 
-    assert context_flags[:3] == [(0, True), (1, True), (2, False)]
-    assert all(detailed is False for _sequence, detailed in context_flags[2:])
+    assert context_flags == {sequence: False for sequence in range(9)}
+    assert context_flags[8] is False
     events = [
         json.loads(record.message)
         for record in caplog.records
         if record.message.startswith("{")
     ]
+    assert not any(
+        event["event"] == "test_action_log_detailed_only_probe" for event in events
+    )
     assert not any(
         event["event"] == "action_log_micro_work_complete" for event in events
     )

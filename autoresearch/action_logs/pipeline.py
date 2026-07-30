@@ -1732,7 +1732,42 @@ def generate_action_log_single(
 
     max_workers = max(1, request.max_concurrency)
     max_active_users = _STREAMING_ACTIVE_USER_MULTIPLIER * max_workers
-    telemetry = ActionLogStreamingTelemetryReporter(logger=logger)
+    telemetry: ActionLogStreamingTelemetryReporter | None = None
+    telemetry_enabled = True
+
+    def _disable_telemetry() -> None:
+        nonlocal telemetry_enabled
+        if not telemetry_enabled:
+            return
+        telemetry_enabled = False
+        logger.warning(
+            "Action log streaming telemetry disabled after reporter failure"
+        )
+
+    try:
+        telemetry = ActionLogStreamingTelemetryReporter(logger=logger)
+    except Exception:  # noqa: BLE001 - operational telemetry is best effort
+        _disable_telemetry()
+
+    def _report_telemetry(
+        operation: Callable[[ActionLogStreamingTelemetryReporter], None],
+    ) -> None:
+        if not telemetry_enabled or telemetry is None:
+            return
+        try:
+            operation(telemetry)
+        except Exception:  # noqa: BLE001 - operational telemetry is best effort
+            _disable_telemetry()
+
+    def _telemetry_detailed_candidate() -> bool:
+        if not telemetry_enabled or telemetry is None:
+            return False
+        try:
+            return telemetry.detailed_candidate
+        except Exception:  # noqa: BLE001 - operational telemetry is best effort
+            _disable_telemetry()
+            return False
+
     active_users: deque[_StreamingUserState] = deque()
     user_iterator = iter(enumerate(virtual_users))
     total_users = len(virtual_users)
@@ -1788,11 +1823,11 @@ def generate_action_log_single(
         if _retention_observer is not None:
             _retention_observer(snapshot)
         if start:
-            telemetry.start(snapshot)
+            _report_telemetry(lambda reporter: reporter.start(snapshot))
         elif finish:
-            telemetry.finish(snapshot)
+            _report_telemetry(lambda reporter: reporter.finish(snapshot))
         else:
-            telemetry.observe(snapshot)
+            _report_telemetry(lambda reporter: reporter.observe(snapshot))
 
     with _StreamingActionLogWriter(
         request=request,
@@ -1882,7 +1917,9 @@ def generate_action_log_single(
                 state, chunk_index, work_sequence = unsent_work.popleft()
                 submitted_at = monotonic()
                 submitted_work += 1
-                telemetry.note_submission(submitted_work)
+                _report_telemetry(
+                    lambda reporter: reporter.note_submission(submitted_work)
+                )
                 futures[
                     executor.submit(
                         _generate_action_log_work,
@@ -1891,7 +1928,7 @@ def generate_action_log_single(
                         work_sequence=work_sequence,
                         submitted_at=submitted_at,
                         shard_index=None,
-                        detailed_telemetry=telemetry.detailed_candidate,
+                        detailed_telemetry=_telemetry_detailed_candidate(),
                     )
                 ] = (state, chunk_index, work_sequence)
                 _observe()
@@ -1917,18 +1954,20 @@ def generate_action_log_single(
                 )
             state.remaining_chunks -= 1
             completed_work += 1
-            telemetry.record_work(
-                work_sequence=call_result.work_sequence,
-                queue_wait_ms=max(
-                    0.0,
-                    (call_result.started_at - call_result.submitted_at) * 1000,
-                ),
-                request_elapsed_ms=call_result.request_elapsed_ms,
-                parse_elapsed_ms=call_result.parse_elapsed_ms,
-                total_elapsed_ms=max(
-                    0.0,
-                    (monotonic() - call_result.submitted_at) * 1000,
-                ),
+            _report_telemetry(
+                lambda reporter: reporter.record_work(
+                    work_sequence=call_result.work_sequence,
+                    queue_wait_ms=max(
+                        0.0,
+                        (call_result.started_at - call_result.submitted_at) * 1000,
+                    ),
+                    request_elapsed_ms=call_result.request_elapsed_ms,
+                    parse_elapsed_ms=call_result.parse_elapsed_ms,
+                    total_elapsed_ms=max(
+                        0.0,
+                        (monotonic() - call_result.submitted_at) * 1000,
+                    ),
+                )
             )
             _observe()
 
@@ -2013,10 +2052,7 @@ def generate_action_log_single(
         except ActionLogGenerationError:
             _observe(phase="finalizing")
             writer.finalize_quarantine_failure()
-            try:
-                _observe(phase="finalizing", finish=True)
-            except Exception:  # noqa: BLE001 - telemetry must not mask quarantine error
-                logger.exception("Failed to emit final action log streaming telemetry")
+            _observe(phase="finalizing", finish=True)
             raise
         generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
         _observe(phase="finalizing")

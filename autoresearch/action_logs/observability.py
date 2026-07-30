@@ -277,7 +277,12 @@ class ActionLogStreamingTelemetryReporter:
     def detailed_candidate(self) -> bool:
         """worker context에 상세 로그를 허용해도 되는지 반환한다."""
 
-        return not self._detail_disabled
+        return (
+            not self._detail_disabled
+            and self._provider_exhausted
+            and self._exact_total_work is not None
+            and self._exact_total_work <= self._detail_max_work
+        )
 
     def start(self, snapshot: _StreamingRetentionSnapshot) -> None:
         """streaming coordinator가 활성 user를 채우기 전의 시작 상태를 강제 기록한다."""

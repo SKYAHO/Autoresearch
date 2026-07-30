@@ -77,6 +77,7 @@ def test_streaming_telemetry_emits_retention_and_progress_fields(
         detail_max_work=2,
         aggregate_interval_sec=10.0,
     )
+    assert reporter.detailed_candidate is False
     start = _streaming_snapshot()
     progress_snapshot = _streaming_snapshot(
         active_users=4,
@@ -160,6 +161,7 @@ def test_streaming_telemetry_emits_details_only_after_small_total_is_known(
         detail_max_work=2,
         aggregate_interval_sec=10.0,
     )
+    assert reporter.detailed_candidate is False
     unknown_total = _streaming_snapshot(
         active_users=2,
         in_flight_work=1,
@@ -210,6 +212,7 @@ def test_streaming_telemetry_emits_details_only_after_small_total_is_known(
             total_elapsed_ms=50.0,
         )
         reporter.observe(known_total)
+        assert reporter.detailed_candidate is True
         now[0] = 12.0
         reporter.finish(finish)
 
