@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -11,6 +12,28 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import cli  # noqa: E402
+from src.tracking.promotion_result import (  # noqa: E402
+    ModelPromotionResult,
+    PromotionExecutionError,
+    PromotionOutcome,
+    PromotionReasonCode,
+)
+
+
+def _promotion_result(
+    outcome: PromotionOutcome,
+    reason_code: PromotionReasonCode,
+) -> ModelPromotionResult:
+    return ModelPromotionResult(
+        outcome=outcome,
+        model_name="ctr-model",
+        champion_alias="champion",
+        candidate_version="4",
+        champion_version="3",
+        candidate_metric=0.80,
+        champion_metric=0.75,
+        reason_code=reason_code,
+    )
 
 
 def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
@@ -77,11 +100,20 @@ def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
 
 
 def test_promote_model_prints_ok_and_exits_zero_on_success(monkeypatch, capsys):
-    monkeypatch.setattr(cli.promote, "main", lambda **kwargs: "4")
+    monkeypatch.setattr(
+        cli.promote,
+        "main",
+        lambda **kwargs: _promotion_result(
+            PromotionOutcome.PROMOTED,
+            PromotionReasonCode.METRIC_NOT_DEGRADED,
+        ),
+    )
 
     cli.promote_model(
         model_name="ctr-model",
         champion_alias="champion",
+        result_contract=None,
+        result_path=None,
     )
 
     out = capsys.readouterr().out
@@ -96,7 +128,10 @@ def test_promote_model_accepts_deprecated_calibration_flag_and_warns(monkeypatch
 
     def _fake_main(**kwargs):
         captured.update(kwargs)
-        return "4"
+        return _promotion_result(
+            PromotionOutcome.PROMOTED,
+            PromotionReasonCode.METRIC_NOT_DEGRADED,
+        )
 
     monkeypatch.setattr(cli.promote, "main", _fake_main)
 
@@ -104,6 +139,8 @@ def test_promote_model_accepts_deprecated_calibration_flag_and_warns(monkeypatch
         model_name="ctr-model",
         champion_alias="champion",
         calibration_model_name="something-else",
+        result_contract=None,
+        result_path=None,
     )
 
     assert "calibration_model_name" not in captured
@@ -113,32 +150,77 @@ def test_promote_model_accepts_deprecated_calibration_flag_and_warns(monkeypatch
 
 
 def test_promote_model_prints_noop_message_when_no_candidate(monkeypatch, capsys):
-    monkeypatch.setattr(cli.promote, "main", lambda **kwargs: None)
+    monkeypatch.setattr(
+        cli.promote,
+        "main",
+        lambda **kwargs: _promotion_result(
+            PromotionOutcome.NO_CANDIDATE,
+            PromotionReasonCode.ALREADY_CHAMPION,
+        ),
+    )
 
     cli.promote_model(
         model_name="ctr-model",
         champion_alias="champion",
+        result_contract=None,
+        result_path=None,
     )
 
     out = capsys.readouterr().out
     assert "no-op" in out
 
 
-def test_promote_model_exits_nonzero_with_gate_rejected_prefix(monkeypatch, capsys):
-    def _raise(**kwargs):
-        raise cli.promote.GateRejectedError("게이트1 미달: 예시 사유")
-
-    monkeypatch.setattr(cli.promote, "main", _raise)
+def test_promote_model_legacy_rejection_exits_nonzero(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli.promote,
+        "main",
+        lambda **kwargs: _promotion_result(
+            PromotionOutcome.REJECTED,
+            PromotionReasonCode.METRIC_BELOW_CHAMPION,
+        ),
+    )
 
     with pytest.raises(typer.Exit) as exc_info:
         cli.promote_model(
             model_name="ctr-model",
             champion_alias="champion",
+            result_contract=None,
+            result_path=None,
         )
 
     assert exc_info.value.exit_code == 1
     err = capsys.readouterr().err
     assert "[게이트 미달]" in err
+    assert "후보 ctr-model v4 val_roc_auc=0.8000" in err
+    assert "champion(champion) val_roc_auc=0.7500" in err
+
+
+def test_promote_model_preserves_legacy_calibration_rejection_detail(
+    monkeypatch, capsys
+) -> None:
+    result = _promotion_result(
+        PromotionOutcome.REJECTED,
+        PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING,
+    ).with_legacy_message(
+        "게이트2 미달: 후보 ctr-model v4는 "
+        "downsampling(sampling_rate=0.5)인데 run(run-v4)에 "
+        "calibration 아티팩트(calibration/calibration.json)가 없습니다."
+    )
+    monkeypatch.setattr(cli.promote, "main", lambda **kwargs: result)
+
+    with pytest.raises(typer.Exit):
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract=None,
+            result_path=None,
+        )
+
+    err = capsys.readouterr().err
+    assert "sampling_rate=0.5" in err
+    assert "run(run-v4)" in err
+    assert "calibration/calibration.json" in err
+    assert "legacy_message" not in result.model_dump_json()
 
 
 def test_promote_model_exits_nonzero_with_error_prefix_on_unexpected_exception(
@@ -153,8 +235,192 @@ def test_promote_model_exits_nonzero_with_error_prefix_on_unexpected_exception(
         cli.promote_model(
             model_name="ctr-model",
             champion_alias="champion",
+            result_contract=None,
+            result_path=None,
         )
 
     assert exc_info.value.exit_code == 1
     err = capsys.readouterr().err
     assert "[에러]" in err
+
+
+def test_promote_model_structured_rejection_writes_json_and_exits_zero(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    result_path = tmp_path / "xcom" / "return.json"
+    monkeypatch.setattr(
+        cli.promote,
+        "main",
+        lambda **kwargs: _promotion_result(
+            PromotionOutcome.REJECTED,
+            PromotionReasonCode.METRIC_BELOW_CHAMPION,
+        ),
+    )
+
+    cli.promote_model(
+        model_name="ctr-model",
+        champion_alias="champion",
+        result_contract="model-promotion-result-v1",
+        result_path=result_path,
+    )
+
+    stdout_result = json.loads(capsys.readouterr().out.strip())
+    file_result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert stdout_result == file_result
+    assert file_result["outcome"] == "rejected"
+
+
+@pytest.mark.parametrize(
+    ("result_contract", "result_path"),
+    [
+        ("model-promotion-result-v1", None),
+        (None, Path("/airflow/xcom/return.json")),
+        ("unknown-contract", Path("/airflow/xcom/return.json")),
+    ],
+)
+def test_promote_model_rejects_invalid_structured_option_combinations_before_run(
+    monkeypatch,
+    result_contract,
+    result_path,
+) -> None:
+    main = MagicMock()
+    monkeypatch.setattr(cli.promote, "main", main)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract=result_contract,
+            result_path=result_path,
+        )
+
+    assert exc_info.value.exit_code == 2
+    main.assert_not_called()
+
+
+def test_promote_model_structured_error_writes_safe_json_and_exits_one(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    result_path = tmp_path / "return.json"
+
+    def _raise(**kwargs):
+        raise PromotionExecutionError(
+            PromotionReasonCode.REGISTRY_ACCESS_FAILED,
+            "credential=synthetic-private-value",
+        )
+
+    monkeypatch.setattr(cli.promote, "main", _raise)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract="model-promotion-result-v1",
+            result_path=result_path,
+        )
+
+    assert exc_info.value.exit_code == 1
+    streams = capsys.readouterr()
+    payload = json.loads(streams.out.strip())
+    assert payload["outcome"] == "error"
+    assert payload["reason_code"] == "registry_access_failed"
+    assert "synthetic-private-value" not in streams.out
+    assert "registry_access_failed" in streams.err
+    assert "synthetic-private-value" not in streams.err
+    assert "synthetic-private-value" not in result_path.read_text(encoding="utf-8")
+
+
+def test_promote_model_structured_error_preserves_known_context(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    def _raise(**kwargs):
+        raise PromotionExecutionError(
+            PromotionReasonCode.ALIAS_UPDATE_FAILED,
+            "safe diagnostic",
+            candidate_version="4",
+            champion_version="3",
+            candidate_metric=0.80,
+            champion_metric=0.75,
+        )
+
+    monkeypatch.setattr(cli.promote, "main", _raise)
+
+    with pytest.raises(typer.Exit):
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract="model-promotion-result-v1",
+            result_path=tmp_path / "return.json",
+        )
+
+    streams = capsys.readouterr()
+    payload = json.loads(streams.out)
+    assert payload["candidate_version"] == "4"
+    assert payload["champion_version"] == "3"
+    assert payload["candidate_metric"] == 0.80
+    assert payload["champion_metric"] == 0.75
+
+
+def test_promote_model_structured_unexpected_error_emits_safe_stack(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    def _raise(**kwargs):
+        raise RuntimeError("password=synthetic-private-value")
+
+    monkeypatch.setattr(cli.promote, "main", _raise)
+
+    with pytest.raises(typer.Exit):
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract="model-promotion-result-v1",
+            result_path=tmp_path / "return.json",
+        )
+
+    streams = capsys.readouterr()
+    assert "unexpected_error" in streams.err
+    assert "RuntimeError" in streams.err
+    assert "tests/test_cli.py" in streams.err
+    assert "in _raise" in streams.err
+    assert "synthetic-private-value" not in streams.err
+
+
+def test_promote_model_result_write_failure_emits_safe_stdout_and_exits_one(
+    monkeypatch,
+    capsys,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(
+        cli.promote,
+        "main",
+        lambda **kwargs: _promotion_result(
+            PromotionOutcome.PROMOTED,
+            PromotionReasonCode.METRIC_NOT_DEGRADED,
+        ),
+    )
+
+    def _fail_write(*_args, **_kwargs) -> None:
+        raise OSError("credential=synthetic-write-secret")
+
+    monkeypatch.setattr(cli, "write_result_file", _fail_write)
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cli.promote_model(
+            model_name="ctr-model",
+            champion_alias="champion",
+            result_contract="model-promotion-result-v1",
+            result_path=tmp_path / "return.json",
+        )
+
+    assert exc_info.value.exit_code == 1
+    payload = json.loads(capsys.readouterr().out.strip())
+    assert payload["outcome"] == "error"
+    assert payload["reason_code"] == "result_write_failed"

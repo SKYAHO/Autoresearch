@@ -13,8 +13,8 @@
 
 이 계약은 현재 운영 범위인 YouTube 일일 수집, YouTube backfill, action-log
 single/shard/merge, action-log 품질 검사, offline feature build, Feast apply,
-Feast materialize, 일일 추천 결과 적재를 다룬다. 학습·평가,
-MLflow, FastAPI serving command는 각 기능이 운영화될 때 별도
+Feast materialize, 일일 추천 결과 적재와 MLflow 모델 승격 결과 인계를 다룬다.
+그 밖의 학습·평가와 FastAPI serving command는 각 기능이 운영화될 때 별도
 revision으로 추가한다.
 
 ## 계약 버전
@@ -48,6 +48,7 @@ python -m autoresearch.jobs.action_log_quality [options]
 python -m autoresearch.jobs.feature_store_build [options]
 python -m autoresearch.jobs.feast_materialize [options]
 python -m src.pipeline.daily_recommendations [options]
+python -m src.cli promote-model [options]
 ```
 
 console script alias를 추가할 수 있지만 Airflow는 v1 동안 위 module 경로를
@@ -519,6 +520,61 @@ python -m src.pipeline.daily_recommendations \
   예외 메시지는 기록하지 않는다. 공통 식별자 로그 금지 규칙의 범위가 stdout
   telemetry임을 이 명령 섹션에서 명시한다.
 - 스케줄·재시도·타임아웃은 `Autoresearch-airflow` 소유.
+
+## 모델 승격 구조화 결과
+
+Airflow가 모델 승격 판정을 문자열 로그 파싱 없이 소비할 때 다음 opt-in
+호출을 사용한다.
+
+```text
+python -m src.cli promote-model \
+  --model-name ctr-model \
+  --champion-alias champion \
+  --result-contract model-promotion-result-v1 \
+  --result-path /airflow/xcom/return.json
+```
+
+- `--result-contract`와 `--result-path`는 함께만 지정한다.
+  일부만 지정하거나 v1 이외의 contract를 지정하면 판정 전에 exit 2다.
+- `promoted`, `rejected`, `no_candidate`는 정상 판정으로 exit 0이다.
+  판정 또는 실행을 신뢰할 수 없는 `error`는 exit 1이다.
+- 결과 파일은 application이 부모 디렉터리를 만든 뒤 같은 filesystem의
+  임시 파일에서 `os.replace`로 교체한다. stdout 마지막 줄에도 같은 JSON
+  object를 한 줄로 출력한다.
+- 파일 쓰기에 실패하면 stdout에 `outcome=error`,
+  `reason_code=result_write_failed`인 안전한 결과를 남기고 exit 1이다.
+- 원본 예외, traceback, credential, URI userinfo와 MLflow run ID는 구조화
+  결과에 넣지 않는다.
+- 두 구조화 인자를 모두 생략한 legacy 호출은 호환성을 위해 `rejected`와
+  `error`를 exit 1로 유지하고 사람용 텍스트를 출력한다.
+
+v1 결과의 전체 필드는 다음과 같다.
+
+```json
+{
+  "event": "model_promotion_result",
+  "contract_version": "model-promotion-result-v1",
+  "outcome": "rejected",
+  "model_name": "ctr-model",
+  "champion_alias": "champion",
+  "candidate_version": "13",
+  "champion_version": "12",
+  "metric_name": "val_roc_auc",
+  "candidate_metric": 0.7812,
+  "champion_metric": 0.7931,
+  "reason_code": "metric_below_champion"
+}
+```
+
+`outcome`은 `promoted`, `rejected`, `no_candidate`, `error` 중 하나다.
+버전과 지표는 후보·champion 부재 또는 조회 전 오류일 때 null일 수 있다.
+허용 `reason_code`와 outcome별 의미의 정본은
+`docs/specs/2026-07-29-model-promotion-structured-outcome.md`다.
+
+결과 schema와 판정은 이 저장소가 소유한다. Airflow는 지정한 결과 경로를
+XCom으로 운반하고 알림을 렌더링할 뿐 `src.tracking` 내부 API를 import하거나
+승격 판정을 재구현하지 않는다. `/airflow/xcom/return.json`은 Airflow
+KubernetesPodOperator의 운반 경로이며 application의 영속 저장소가 아니다.
 
 ## Airflow 호출 계약
 

@@ -80,6 +80,11 @@ docs/
   명령만 소비하며 내부 Python API를 직접 import하지 않습니다.
 - 공개 batch 명령·인자 계약:
   `docs/specs/2026-07-13-public-batch-execution-contract.md`
+- 모델 승격 판정과 `model-promotion-result-v1` schema는 이 저장소가
+  소유합니다. Airflow는 `--result-path` 파일을 XCom으로 운반하고 알림으로
+  렌더링하지만 `src.tracking` 내부 API를 import하거나 outcome을 다시
+  판정하지 않습니다. 결과 정본:
+  `docs/specs/2026-07-29-model-promotion-structured-outcome.md`
 
 ### `tests/`
 - **책임:** 모듈별 단위 테스트. `tests/test_<module>.py` 플랫 구조를
@@ -99,7 +104,12 @@ docs/
 - **데이터 저장:** GCS 데이터 레이크(parquet), BigQuery(피처·학습 데이터셋
   운영 중)
 - **피처 스토어:** Feast 0.64 (`feature_repo/`, BigQuery offline / Redis
-  online) — dev와 의존성 충돌로 격리 그룹(`uv sync --only-group feast`)
+  online) — dev와 의존성 충돌로 격리 그룹(`uv sync --only-group feast`).
+  prod/dev 환경은 `AUTORESEARCH_ENV`(기본 prod)로 선택한다. dev는 오프라인 전용
+  (apply + BigQuery PIT)이라 registry(`GCS_REGISTRY_PATH`)·offline(`BQ_DATASET`)만
+  분리하고 online 서빙·materialize는 prod만 한다. dev apply는
+  `full_scan_for_deletion=false`(`feature_repo/env.py`)로 Redis에 접속하지 않는다
+  (#399, `docs/specs/2026-07-29-feature-store-prod-dev-environment.md`)
 - **모델·추적:** LightGBM + MLflow (Tracking Server는 `deploy/mlflow/`)
 - **서빙:** FastAPI (`src/serving/`), GKE 배포(`deploy/serving/`)
 - **오케스트레이션:** 외부 `Autoresearch-airflow`가 배포 이미지의 공개

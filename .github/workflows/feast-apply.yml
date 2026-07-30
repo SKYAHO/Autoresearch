@@ -15,6 +15,7 @@ on:
       - feature_repo/.feastignore
       - feature_repo/redis_iam.py
       - feature_repo/bootstrap.py
+      - feature_repo/env.py
       - deploy/feast/apply-job.yaml
       - scripts/fetch_redis_ca.py
       # apply 후 검증 스크립트. 이게 빠져 있으면 게이트만 고친 커밋이 다음 정의 변경
@@ -24,6 +25,14 @@ on:
       - uv.lock
       - .github/workflows/feast-apply.yml
   workflow_dispatch:
+    inputs:
+      environment:
+        description: "apply 대상 환경 (prod|dev, #399). push는 항상 prod."
+        type: choice
+        default: prod
+        options:
+          - prod
+          - dev
 
 permissions:
   contents: read
@@ -35,6 +44,7 @@ concurrency:
 jobs:
   feast-apply:
     name: Apply Feast feature definitions to registry
+    environment: ${{ inputs.environment || 'prod' }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -146,17 +156,30 @@ jobs:
           REDIS_PORT: ${{ vars.REDIS_PORT }}
           REDIS_CA_SECRET_ID: ${{ vars.REDIS_CA_SECRET_ID }}
           CODE_ARTIFACTS_BUCKET: ${{ secrets.CODE_ARTIFACTS_BUCKET }}
+          # prod/dev 환경 분리(#399). push(main)는 항상 prod, 수동 dispatch만 dev
+          # 선택 가능. FEAST_ONLINE_FULL_SCAN_FOR_DELETION 은 feature_repo/env.py 의
+          # 파생 규칙과 동일하게 계산한다(prod=true, dev=false). dev=false 면 apply 가
+          # Redis 에 접속하지 않아 dev registry apply 가 prod Redis 를 건드리지 않는다.
+          AUTORESEARCH_ENV: ${{ inputs.environment || 'prod' }}
         shell: bash
         run: |
           # Job 이름은 63자 제한이 있어 커밋 SHA 앞 12자만 쓴다.
           FEAST_APPLY_JOB_NAME="feast-apply-${CODE_ARCHIVE_SHA:0:12}"
           export FEAST_APPLY_JOB_NAME
+          # env.py 의 파생 규칙을 그대로 재현한다(prod=true, dev=false).
+          if [[ "$AUTORESEARCH_ENV" == "dev" ]]; then
+            FEAST_ONLINE_FULL_SCAN_FOR_DELETION="false"
+          else
+            FEAST_ONLINE_FULL_SCAN_FOR_DELETION="true"
+          fi
+          export FEAST_ONLINE_FULL_SCAN_FOR_DELETION
           envsubst '
             ${FEAST_APPLY_JOB_NAME} ${FEAST_APPLY_NAMESPACE}
             ${FEAST_APPLY_SERVICE_ACCOUNT} ${FEAST_IMAGE}
             ${CODE_ARTIFACTS_BUCKET} ${CODE_ARCHIVE_SHA} ${GCP_PROJECT_ID}
             ${BQ_DATASET} ${GCS_REGISTRY_PATH} ${GCS_STAGING_LOCATION}
             ${REDIS_HOST} ${REDIS_PORT} ${REDIS_CA_SECRET_ID}
+            ${AUTORESEARCH_ENV} ${FEAST_ONLINE_FULL_SCAN_FOR_DELETION}
           ' < deploy/feast/apply-job.yaml > job.yaml
           if grep -n '\${' job.yaml; then
             echo "::error::unresolved placeholder in the rendered Job manifest"
