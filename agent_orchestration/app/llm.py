@@ -80,8 +80,8 @@ async def _generate_codex_runner(settings: ServiceSettings, prompt: str) -> LLMR
             not isinstance(token_count, int) or isinstance(token_count, bool)
         ):
             raise ValueError("Runner response contains invalid token count.")
-    except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
-        raise LLMBackendError("Codex runner call failed.") from error
+    except (httpx.HTTPError, KeyError, TypeError, ValueError):
+        raise LLMBackendError("Codex runner call failed.") from None
 
     return LLMResult(text=text, model=model, token_count=token_count)
 

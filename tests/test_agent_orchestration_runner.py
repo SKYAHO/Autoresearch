@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -10,7 +11,7 @@ import httpx
 import pytest
 
 from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.app.llm import generate_response
+from agent_orchestration.app.llm import LLMBackendError, generate_response
 from agent_orchestration import codex as codex_module
 from agent_orchestration.contracts import LLMResult
 from agent_orchestration.runner import app as runner_app_module
@@ -66,6 +67,53 @@ def test_generate_response_uses_private_runner(monkeypatch: pytest.MonkeyPatch) 
 
     assert result == LLMResult(text="runner answer", model="codex-cli", token_count=None)
     assert called == {"url": "http://runner:8080/v1/generate", "json": {"prompt": "hello"}}
+
+
+@pytest.mark.parametrize(
+    "failure_kind",
+    ("timeout", "http_status", "malformed_json", "missing_field", "invalid_field_type"),
+)
+def test_generate_response_hides_private_runner_failure_details(
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+) -> None:
+    """Runner 호출의 전송·HTTP·응답 오류는 같은 안전한 백엔드 오류로 정규화한다."""
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            if failure_kind == "http_status":
+                request = httpx.Request("POST", "http://runner:8080/v1/generate")
+                raise httpx.HTTPStatusError(
+                    "private runner returned diagnostic detail",
+                    request=request,
+                    response=httpx.Response(503, request=request),
+                )
+
+        def json(self) -> object:
+            if failure_kind == "malformed_json":
+                raise json.JSONDecodeError("invalid private runner response", "{", 1)
+            if failure_kind == "missing_field":
+                return {"model": "codex-cli", "token_count": None}
+            if failure_kind == "invalid_field_type":
+                return {"response": 1, "model": "codex-cli", "token_count": None}
+            return {"response": "unused", "model": "codex-cli", "token_count": None}
+
+    async def fake_post(
+        self: httpx.AsyncClient,
+        url: str,
+        **kwargs: object,
+    ) -> FakeResponse:
+        del self, url, kwargs
+        if failure_kind == "timeout":
+            raise httpx.TimeoutException("private runner timeout detail")
+        return FakeResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    with pytest.raises(LLMBackendError) as error:
+        asyncio.run(generate_response(make_settings(), "hello"))
+
+    assert str(error.value) == "Codex runner call failed."
+    assert error.value.__cause__ is None
 
 
 def test_runner_rejects_unknown_request_fields() -> None:
