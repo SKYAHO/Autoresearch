@@ -233,3 +233,68 @@ def test_load_events_from_bigquery_reads_raw_dataset(monkeypatch):
     assert "feast_offline_store" not in query_text
 
 
+def test_verify_assembly_environment_requires_registry_path(monkeypatch) -> None:
+    monkeypatch.delenv("GCS_REGISTRY_PATH", raising=False)
+    monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://staging/")
+    try:
+        build_training_dataset._verify_assembly_environment()
+        raised = False
+    except ValueError as error:
+        raised = True
+        assert "GCS_REGISTRY_PATH" in str(error)
+    assert raised
+
+
+def test_verify_assembly_environment_requires_staging_location(monkeypatch) -> None:
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://registry/registry.db")
+    monkeypatch.delenv("GCS_STAGING_LOCATION", raising=False)
+    try:
+        build_training_dataset._verify_assembly_environment()
+        raised = False
+    except ValueError as error:
+        raised = True
+        assert "GCS_STAGING_LOCATION" in str(error)
+    assert raised
+
+
+def test_verify_assembly_environment_requires_feast_package(monkeypatch) -> None:
+    # 이 저장소 dev 그룹에는 실제로 feast가 설치돼 있지 않다(격리 그룹) — mocking 없이
+    # 실제 ImportError를 검증한다. feast 그룹에서 이 테스트를 돌리면 통과하지 않으므로
+    # dev 그룹 전용이다.
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://registry/registry.db")
+    monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://staging/")
+    try:
+        build_training_dataset._verify_assembly_environment()
+        raised = False
+    except ValueError as error:
+        raised = True
+        assert "feast" in str(error)
+    assert raised
+
+
+def test_main_env_check_runs_before_bigquery_call(monkeypatch) -> None:
+    # 회귀 테스트: 원래 버그(환경변수 확인보다 BigQuery 호출이 먼저 실행됨)를 잡는다.
+    # 필수 환경변수를 비우고 main()을 호출했을 때 load_training_entity_spine이
+    # 아예 호출되지 않는지 확인한다(호출되면 AssertionError로 즉시 실패).
+    monkeypatch.delenv("GCS_REGISTRY_PATH", raising=False)
+    monkeypatch.delenv("GCS_STAGING_LOCATION", raising=False)
+
+    def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("load_training_entity_spine이 호출되면 안 됩니다 — "
+                              "환경변수 확인이 먼저 실행돼야 합니다.")
+
+    monkeypatch.setattr(
+        build_training_dataset, "load_training_entity_spine", _should_not_be_called
+    )
+
+    try:
+        build_training_dataset.main(
+            events_start_date="2026-07-01", events_end_date="2026-07-01"
+        )
+        raised = False
+    except ValueError as error:
+        raised = True
+        assert "GCS_REGISTRY_PATH" in str(error)
+    assert raised
+
+

@@ -135,6 +135,47 @@ def load_training_entity_spine(start_date: str, end_date: str) -> pd.DataFrame:
     return client.query(query).to_dataframe()
 
 
+def _verify_assembly_environment() -> None:
+    """feast 조립에 필요한 환경을 BigQuery 접속 전에 확인한다(#404/#423).
+
+    순서가 중요하다 — BigQuery 클라이언트 생성(load_training_entity_spine)보다
+    먼저 실행돼야, 자격증명 없는 환경에서 응답 없이 멈추는 대신(#396/#423 실측)
+    즉시 명확한 이유와 함께 실패한다. 검사는 가장 빠른 것부터: 환경변수 →
+    feast import → GCP 자격증명.
+    """
+    missing_env = [
+        name for name in ("GCS_REGISTRY_PATH", "GCS_STAGING_LOCATION")
+        if not os.environ.get(name)
+    ]
+    if missing_env:
+        raise ValueError(
+            f"{', '.join(missing_env)} 환경변수가 필요합니다. .env.example을 참고해 설정하세요."
+        )
+
+    try:
+        import feast  # noqa: F401
+    except ImportError as error:
+        raise ValueError(
+            "feast 패키지가 설치되어 있지 않습니다. dev 그룹과 의존성 충돌로 "
+            "격리 그룹입니다 — `uv sync --only-group feast`로 설치하세요."
+        ) from error
+
+    # GKE 등 컨테이너 환경은 Workload Identity(metadata server)로 인증하므로
+    # 로컬 자격증명 파일이 없어도 정상이다(docs/guides/training-image.md,
+    # deploy/feast/apply-job.yaml 확인). KUBERNETES_SERVICE_HOST(모든 k8s pod에
+    # 자동 존재)가 있으면 이 체크를 건너뛴다.
+    if os.environ.get("KUBERNETES_SERVICE_HOST"):
+        return
+
+    adc_path = os.path.expanduser("~/.config/gcloud/application_default_credentials.json")
+    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") and not os.path.exists(adc_path):
+        raise ValueError(
+            "GCP 자격증명이 감지되지 않습니다 — BigQuery 접속이 응답 없이 멈출 수 "
+            "있습니다(#396/#423 실측). `gcloud auth application-default login`을 "
+            "실행하거나 GOOGLE_APPLICATION_CREDENTIALS를 설정하세요."
+        )
+
+
 def _assemble_via_feast(
     output_path: str, events_start_date: str, events_end_date: str
 ) -> None:
@@ -341,6 +382,7 @@ def main(
             "events_start_date/events_end_date가 필요합니다 "
             "(spine=training_entity를 BQ에서 KST 날짜 폐구간으로 조회한다)"
         )
+    _verify_assembly_environment()
     if output_path is None:
         output_path = os.path.join(get_data_dir(), "processed", "training_dataset.csv")
     _assemble_via_feast(output_path, events_start_date, events_end_date)
