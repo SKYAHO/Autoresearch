@@ -7,7 +7,8 @@ FastAPI·Codex CLI가 사용할 권한 제한 런타임 파일로 준비한다.
 [기능]
 API용 DB 연결 파일과 Runner용 최초 Codex OAuth 파일을 각각 독립적으로
 준비한다. ``api-database``와 ``runner-codex-auth`` 명시 CLI 역할은 각자 필요한
-환경 변수와 Secret Manager reader만 사용하며, 인자 없는 기존 모듈 실행은 API DB
+환경 변수와 Secret Manager reader만 사용하며, Runner 역할의 명시적 복구 opt-in만
+기존 OAuth 파일을 새 시크릿 값으로 교체한다. 인자 없는 기존 모듈 실행은 API DB
 bootstrap과 호환된다. 시크릿 원문은 로그, 환경 변수, 예외 메시지에 노출하지 않는다.
 
 [비책임]
@@ -164,18 +165,21 @@ def bootstrap_api_database(
 def bootstrap_runner_codex_auth(
     settings: RunnerAuthBootstrapSettings,
     read_secret: SecretReader,
+    *,
+    replace_existing: bool = False,
 ) -> None:
-    """Runner의 최초 Codex OAuth 파일만 안전한 영속 볼륨에 준비한다."""
+    """Runner의 최초 OAuth 파일을 준비하거나 명시 opt-in으로 기존 파일을 교체한다."""
     auth_path = settings.codex_home / "auth.json"
     if auth_path.exists():
         if auth_path.is_symlink() or not auth_path.is_file():
             raise RuntimeError("CODEX_HOME/auth.json must be a regular file.")
-        auth_path.chmod(0o600)
-        return
+        if not replace_existing:
+            auth_path.chmod(0o600)
+            return
 
     auth_payload = _read_secret(settings.codex_auth_secret_id, read_secret)
     _write_private_file(auth_path, auth_payload)
-    LOGGER.info("Codex OAuth 초기 인증 파일을 준비했습니다: %s", settings.codex_auth_secret_id)
+    LOGGER.info("Codex OAuth 인증 파일을 준비했습니다: %s", settings.codex_auth_secret_id)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -187,11 +191,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=("api-database", "runner-codex-auth"),
         help="Bootstrap role. Defaults to api-database for compatibility.",
     )
-    role = parser.parse_args(argv).role
+    parser.add_argument(
+        "--replace-existing",
+        action="store_true",
+        help="Replace an existing Runner Codex OAuth file from Secret Manager.",
+    )
+    arguments = parser.parse_args(argv)
+    role = arguments.role
+    if arguments.replace_existing and role != "runner-codex-auth":
+        parser.error("--replace-existing is only valid for runner-codex-auth.")
     if role == "runner-codex-auth":
         bootstrap_runner_codex_auth(
             load_runner_codex_auth_bootstrap_settings(),
             read_secret_manager_secret,
+            replace_existing=arguments.replace_existing,
         )
         return 0
 

@@ -153,3 +153,7 @@ KSA/GSA와 PVC를 사용해 OAuth 시크릿 하나만 읽는다. 이는 API 런�
 이 init container는 `python -m agent_orchestration.bootstrap_secrets runner-codex-auth`
 CLI 역할을 호출한다. `api-database` 역할은 API DB runtime 파일만 만들며, 기존의
 인자 없는 모듈 실행도 이 API DB 역할과 호환된다.
+기본 Runner bootstrap은 PVC의 기존 `auth.json`을 보존하고 Secret Manager를 다시
+읽지 않는다. OAuth 장애 복구 또는 계정 교체에서만 Runner CLI에
+`--replace-existing`을 명시해 파일을 0600으로 원자 교체할 수 있다. 이 flag는
+`api-database` 역할에서 허용되지 않는다.

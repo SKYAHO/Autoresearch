@@ -74,10 +74,16 @@ def test_api_bootstrap_does_not_change_existing_volume_root_permissions(
     assert (settings.runtime_dir / "db.env").is_file()
 
 
-def test_runner_bootstrap_preserves_refreshed_auth_file(tmp_path: Path) -> None:
-    """Runner는 최초 OAuth 파일만 쓰고 이후 Codex 갱신본을 보존한다."""
+def test_runner_bootstrap_preserves_existing_auth_file_without_reading_secret(
+    tmp_path: Path,
+) -> None:
+    """기본 Runner bootstrap은 갱신된 OAuth 파일과 Secret Manager 조회를 보존한다."""
     settings = _runner_settings(tmp_path)
     calls: list[str] = []
+    auth_path = settings.codex_home / "auth.json"
+    auth_path.parent.mkdir()
+    refreshed_contents = bytes((82,))
+    auth_path.write_bytes(refreshed_contents)
 
     def reader(secret_id: str) -> bytes:
         calls.append(secret_id)
@@ -85,13 +91,31 @@ def test_runner_bootstrap_preserves_refreshed_auth_file(tmp_path: Path) -> None:
 
     bootstrap_runner_codex_auth(settings, reader)
 
+    assert calls == []
+    assert auth_path.read_bytes() == refreshed_contents
+    assert stat.S_IMODE(auth_path.stat().st_mode) == 0o600
+
+
+def test_runner_bootstrap_replace_existing_replaces_auth_file_with_private_mode(
+    tmp_path: Path,
+) -> None:
+    """명시 opt-in Runner bootstrap만 OAuth 시크릿으로 기존 파일을 원자 교체한다."""
+    settings = _runner_settings(tmp_path)
     auth_path = settings.codex_home / "auth.json"
-    refreshed_contents = bytes((82,))
-    auth_path.write_bytes(refreshed_contents)
-    bootstrap_runner_codex_auth(settings, reader)
+    auth_path.parent.mkdir()
+    auth_path.write_bytes(b"refreshed-auth")
+    auth_path.chmod(0o644)
+    replacement_payload = b"replacement-auth"
+    calls: list[str] = []
+
+    def reader(secret_id: str) -> bytes:
+        calls.append(secret_id)
+        return replacement_payload
+
+    bootstrap_runner_codex_auth(settings, reader, replace_existing=True)
 
     assert calls == [settings.codex_auth_secret_id]
-    assert auth_path.read_bytes() == refreshed_contents
+    assert auth_path.read_bytes() == replacement_payload
     assert stat.S_IMODE(auth_path.stat().st_mode) == 0o600
 
 
@@ -179,3 +203,17 @@ def test_bootstrap_cli_without_role_remains_api_database_compatible(
 
     assert bootstrap_module.main([]) == 0
     assert (tmp_path / "runtime" / "db.env").is_file()
+
+
+def test_bootstrap_cli_rejects_replace_existing_for_api_database(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """API DB 역할은 Runner OAuth 복구 flag를 받을 수 없다."""
+    with pytest.raises(SystemExit) as error:
+        bootstrap_module.main(["api-database", "--replace-existing"])
+
+    assert error.value.code == 2
+    assert (
+        "--replace-existing is only valid for runner-codex-auth."
+        in capsys.readouterr().err
+    )
