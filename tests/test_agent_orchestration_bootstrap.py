@@ -119,6 +119,33 @@ def test_runner_bootstrap_replace_existing_replaces_auth_file_with_private_mode(
     assert stat.S_IMODE(auth_path.stat().st_mode) == 0o600
 
 
+@pytest.mark.parametrize("replace_existing", (False, True))
+def test_runner_bootstrap_rejects_dangling_auth_symlink_without_reading_secret(
+    tmp_path: Path,
+    replace_existing: bool,
+) -> None:
+    """기본·복구 Runner bootstrap은 dangling auth symlink를 Secret 조회 전에 거부한다."""
+    settings = _runner_settings(tmp_path)
+    auth_path = settings.codex_home / "auth.json"
+    auth_path.parent.mkdir()
+    auth_path.symlink_to(tmp_path / "missing-auth.json")
+    calls: list[str] = []
+
+    def reader(secret_id: str) -> bytes:
+        calls.append(secret_id)
+        return b"replacement-auth"
+
+    with pytest.raises(RuntimeError, match="must be a regular file"):
+        bootstrap_runner_codex_auth(
+            settings,
+            reader,
+            replace_existing=replace_existing,
+        )
+
+    assert calls == []
+    assert auth_path.is_symlink()
+
+
 def test_bootstrap_does_not_log_or_raise_secret_payload(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -217,3 +244,31 @@ def test_bootstrap_cli_rejects_replace_existing_for_api_database(
         "--replace-existing is only valid for runner-codex-auth."
         in capsys.readouterr().err
     )
+
+
+def test_bootstrap_cli_replaces_existing_runner_auth_when_opted_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner CLI의 명시 opt-in은 기존 OAuth 파일을 새 시크릿으로 교체한다."""
+    monkeypatch.setenv(
+        "ORCH_CODEX_AUTH_SECRET_ID",
+        "projects/test/secrets/codex-auth/versions/latest",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
+    auth_path = tmp_path / "codex" / "auth.json"
+    auth_path.parent.mkdir()
+    auth_path.write_bytes(b"refreshed-auth")
+    auth_path.chmod(0o644)
+    calls: list[str] = []
+
+    def reader(secret_id: str) -> bytes:
+        calls.append(secret_id)
+        return b"replacement-auth"
+
+    monkeypatch.setattr(bootstrap_module, "read_secret_manager_secret", reader)
+
+    assert bootstrap_module.main(["runner-codex-auth", "--replace-existing"]) == 0
+    assert calls == ["projects/test/secrets/codex-auth/versions/latest"]
+    assert auth_path.read_bytes() == b"replacement-auth"
+    assert stat.S_IMODE(auth_path.stat().st_mode) == 0o600
