@@ -29,10 +29,10 @@ data/generated/round_a/event_log.parquet
 실제 프로젝트 값은 `Autoresearch-infra` 출력과 현재 serving deployment에서 확인한다.
 
 ```bash
-export PROJECT_ID="ar-infra-501607"
+export PROJECT_ID="autoresearch-503903"
 export REGION="asia-northeast3"
 export ZONE="asia-northeast3-a"
-export BUCKET="ar-infra-501607-autoresearch-dev-raw-data"
+export BUCKET="autoresearch-503903-autoresearch-dev-raw-data"
 export RAW_DATASET="data_lake_raw"
 export FEATURE_DATASET="feast_offline_store"
 export PARTITION_DATE="2026-07-23"
@@ -239,7 +239,7 @@ rm -f /tmp/${POD}.yaml
 ## 이번 검증 기록 (2026-07-23)
 
 - 입력: `data/generated/round_a/event_log.parquet`, 174행, `click=6`.
-- 업로드: `gs://ar-infra-501607-autoresearch-dev-raw-data/data_lake/action_log/dt=2026-07-23/part-0.parquet`.
+- 업로드: `gs://ar-infra-501607-autoresearch-dev-raw-data/data_lake/action_log/dt=2026-07-23/part-0.parquet` (이전 프로젝트 시점 기록 — infra#404 이전 이전).
 - raw 적재: `data_lake_action_log` 성공, `dt=2026-07-23` 복원 174행.
 - feature build: `user_dynamic_feature`, `status=succeeded`.
 - 계약을 지킨 offline 결과: `vu_0403`의 `recent_click_count_7d=1`.

@@ -54,7 +54,7 @@ except ImportError:  # pragma: no cover - 실행 환경 안내
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.features.embeddings import EMBEDDING_DIM, EMBEDDING_MODEL  # noqa: E402
 
-DEFAULT_PROJECT = "ar-infra-501607"
+DEFAULT_PROJECT = "autoresearch-503903"
 DEFAULT_FEATURE_DATASET = "feast_offline_store"
 DEFAULT_EMBEDDING_DATASET = "autoresearch_dev_analytics"
 DEFAULT_LOCATION = "asia-northeast3"

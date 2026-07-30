@@ -24,9 +24,9 @@
 미는 것을 권장한다.
 
 사용법:
-  uv run --no-dev --group feast python scripts/backfill_feature_store.py --project ar-infra-501607
-  uv run --no-dev --group feast python scripts/backfill_feature_store.py --project ar-infra-501607 --tables training_entity --limit 1 --apply
-  uv run --no-dev --group feast python scripts/backfill_feature_store.py --project ar-infra-501607 --apply
+  uv run --no-dev --group feast python scripts/backfill_feature_store.py --project autoresearch-503903
+  uv run --no-dev --group feast python scripts/backfill_feature_store.py --project autoresearch-503903 --tables training_entity --limit 1 --apply
+  uv run --no-dev --group feast python scripts/backfill_feature_store.py --project autoresearch-503903 --apply
 """
 
 import argparse
