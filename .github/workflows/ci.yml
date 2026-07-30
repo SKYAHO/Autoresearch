@@ -69,6 +69,7 @@ jobs:
           tests/test_odfv_registry_portability_feast.py
           tests/test_verify_registry_portability_feast.py
           tests/test_feast_retrieval_integration_feast.py
+          tests/test_build_training_dataset_env_check_feast.py
           tests/test_serving_api.py
           tests/test_serving_deployment.py
           -v
