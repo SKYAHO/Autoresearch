@@ -2,160 +2,174 @@
 
 ## 목적
 
-공용 ChatGPT 계정으로 OAuth 로그인한 Codex CLI를 사용하는 Agent Orchestration
-FastAPI를 기존 GKE dev 클러스터와 Cloud SQL PostgreSQL에 내부 전용으로 배포한다.
-로컬에서 검증한 `/chat` → Codex CLI → PostgreSQL 저장 경로를 서버에서도 같은
-보안 경계로 운영하는 것이 목표다.
+공용 ChatGPT OAuth로 인증한 Codex CLI를 사용하면서도, 외부 입력 프롬프트가
+OAuth 자격 증명·PostgreSQL 연결 정보·GCP 자격 증명을 읽거나 저장하지 못하도록
+Agent Orchestration을 GKE dev에 내부 전용으로 배포한다.
 
-이 계약은 구현 코드 PR #431이 `main`에 병합된 뒤 적용한다. 사용자 인증과 외부
-인터넷 공개는 이 배포의 범위가 아니다.
+로컬에서 검증한 `/chat` → LLM 응답 → PostgreSQL 저장 경로를 서버에서
+검증하되, FastAPI API와 Codex 실행기를 같은 Pod에 두지 않는다. 이 계약은
+이슈 #432의 구현 정본이며, 실험 생명주기 API·외부 공개·사용자별 계정은 범위가
+아니다.
 
 ## 범위와 비범위
 
 ### 범위
 
-- `agent_orchestration` 전용 컨테이너 이미지를 GAR에 발행한다.
-- 기존 `autoresearch-dev-pg` Cloud SQL(PostgreSQL 15)에 전용 데이터베이스와
-  전용 SQL 사용자를 만든다.
-- GKE에 단일 replica Deployment와 ClusterIP Service를 만든다.
-- Cloud SQL 비밀번호와 공용 Codex OAuth 초기 인증 파일을 Workload Identity를
-  사용한 init container가 Secret Manager에서 직접 읽는다.
-- Codex 인증 상태를 단일 PVC에 보존해 토큰 갱신 후에도 Pod 재시작을 견딘다.
-- 내부 `/healthcheck`, `/chat`, PostgreSQL 저장을 실제로 검증하고 운영
-  runbook을 남긴다.
+- API Deployment와 private Codex Runner Deployment를 별도 Pod·서비스 계정·파일
+  시스템으로 배포한다.
+- API는 `/chat` 요청 검증, Runner 호출, PostgreSQL `chat_interactions` 저장만
+  담당한다.
+- Runner는 승인된 Codex 모델로 한 요청을 실행하고 결과만 API에 반환한다.
+- API만 Cloud SQL 전용 DB·사용자·DB 비밀번호 Secret Manager 접근 권한을 가진다.
+- Runner는 `readOnlyRootFilesystem`, non-root, `automountServiceAccountToken: false`,
+  scratch `emptyDir`, 최소 NetworkPolicy로 실행한다.
+- GKE에서 `cli_auth_credentials_store = "keyring"` OAuth가 비대화형 실행·Pod
+  재시작·침투 테스트를 통과하는지 먼저 검증한다.
+- 성공한 경우에만 내부 `/healthcheck`와 `/chat` 및 Cloud SQL 저장을 검증하고
+  runbook을 작성한다.
 
 ### 비범위
 
-- Ingress, LoadBalancer, 공개 URL, 외부 사용자 인증/인가
-- 사용자별 Google/Codex OAuth, 사용자별 모델 사용량 분리
-- 고가용성, 다중 replica, 자동 수평 확장
-- OpenAI API 키 기반 백엔드로의 전환
+- Ingress, LoadBalancer, 공개 URL, 외부 사용자 인증·인가
+- OAuth `auth.json`을 Secret Manager, Kubernetes Secret, PVC, 이미지, 환경 변수로
+  주입하거나 보관하는 방식
+- OpenAI API 키 기반 백엔드, 사용자별 OAuth, 사용자별 사용량 분리
+- 고가용성, 다중 replica, 자동 수평 확장, 실험 생성·상태·이벤트 API
 
 ## 대상 아키텍처
 
 ```text
-GKE 내부 호출 또는 kubectl port-forward
-  → ClusterIP Service
-  → agent-orchestration Deployment (replicas=1)
-      → FastAPI /chat
-      → codex exec (read-only, ephemeral)
-      → Cloud SQL Private IP: agent_orchestration DB
-      → PVC: CODEX_HOME (공용 OAuth 갱신 상태)
-      ← init container ← Secret Manager: DB 비밀번호, OAuth 초기 auth.json
+허용된 클러스터 워크로드 또는 kubectl port-forward
+  → ClusterIP: agent-orchestration-api
+      → API Pod
+          - X-Orch-Token·요청 스키마 검증
+          - private runner HTTP 호출
+          - Cloud SQL Private IP 저장
+          - DB Secret Manager 접근만 허용
+  → ClusterIP: agent-orchestration-runner
+      → Runner Pod
+          - Codex CLI OAuth 실행만 담당
+          - OS keyring 자격 증명 저장소
+          - read-only root + scratch emptyDir
+          - DB URL·앱 API 토큰·GCP 서비스 계정 토큰 없음
 ```
 
-Pod는 non-root 사용자로 실행한다. `/healthcheck`는 DB 초기화 성공 여부만
-확인하며 외부 LLM 호출을 수행하지 않는다. `/chat`은 기존 구현처럼 빈 임시
-작업 디렉터리에서 `codex exec --sandbox read-only --ephemeral`을 호출한다.
+API와 Runner는 서로 다른 Kubernetes ServiceAccount를 사용한다. API만
+Workload Identity로 DB 비밀번호 Secret Manager 버전을 읽는다. Runner에는
+Workload Identity annotation과 Kubernetes 서비스 계정 토큰 자동 마운트를 두지
+않는다.
 
-## Cloud SQL 계약
+Runner Service는 ClusterIP이며, NetworkPolicy는 API Pod label에서 오는 지정
+포트 요청만 허용한다. API Service 역시 외부 Ingress를 만들지 않는다. 초기
+검증은 승인된 같은 클러스터 워크로드 또는 `kubectl port-forward`로 한정한다.
+
+## API·Runner 내부 계약
+
+API가 Runner에 요청하는 내부 HTTP 계약은 외부 `/chat` 계약과 분리한다.
+
+```json
+POST /v1/generate
+{
+  "prompt": "CTR 개선안을 세 줄로 정리해 주세요."
+}
+```
+
+```json
+{
+  "response": "...",
+  "model": "codex-cli",
+  "latency_ms": 1234,
+  "token_count": null
+}
+```
+
+- Runner는 API와 NetworkPolicy로만 연결되며 외부 노출하지 않는다.
+- API는 Runner 오류를 기존 `/chat`의 안전한 `502` 응답으로 변환한다. Runner의
+  stderr 원문, OAuth 상태, 내부 파일 경로는 API 로그·응답에 전달하지 않는다.
+- API가 PostgreSQL 저장에 실패하면 응답을 성공으로 반환하지 않는다.
+- Runner 요청 동시성은 하나로 시작하고, 한도를 넘는 요청은 API가 `503`으로
+  거절한다. API의 PostgreSQL pool과 외부 요청 rate limit은 실험 API 단계에서
+  별도 계약으로 확장한다.
+- 초기 모델은 Runner deployment 설정의 허용된 `CODEX_MODEL` 하나로 고정한다.
+  `/chat` 요청 본문에 모델명은 받지 않는다.
+
+## OAuth 자격 증명 게이트
+
+Codex CLI는 `cli_auth_credentials_store = "keyring"`을 지원하며, file·auto
+저장소는 `CODEX_HOME/auth.json`을 사용할 수 있다. OAuth 파일은 access token을
+포함하므로 Runner의 프롬프트 실행 범위에 제공하지 않는다.
+
+배포 전에 아래를 모두 만족해야 한다.
+
+1. GKE Runner에서 keyring 설정으로 비대화형 `codex login status`와 짧은
+   `codex exec`가 성공한다.
+2. Pod 재시작 후에도 인증 상태가 안전하게 유지되거나, 승인된 운영 절차로
+   재인증할 수 있다. 인증 상태를 파일·PVC·Kubernetes Secret으로 복사하지
+   않는다.
+3. 프롬프트 기반 침투 테스트가 `auth.json`, `/proc/*/environ`, GCP ADC,
+   Kubernetes 서비스 계정 토큰, API 소스, DB 연결 정보에 접근하지 못한다.
+4. Runner root filesystem은 read-only이고, `HOME`, `TMPDIR`, `XDG_CACHE_HOME`,
+   `XDG_STATE_HOME`은 요청 scratch `emptyDir`에만 쓴다.
+5. Runner가 필요한 Codex 외부 목적지 외로 통신하지 않고, API 이외의 Pod가
+   Runner Service를 호출하지 못한다.
+
+위 조건 하나라도 실패하면 공용 OAuth 기반 `/chat` 배포는 중단한다. 이 경우
+API·Cloud SQL·Runner 네트워크 배선만 검증할 수 있으며, 실제 LLM smoke는
+OpenAI API 전환 또는 별도 승인된 인증 경계가 마련될 때까지 완료로 주장하지
+않는다.
+
+## Cloud SQL·시크릿 계약
 
 - 인스턴스: 기존 `autoresearch-dev-pg` (PostgreSQL 15, Private IP)
 - 신규 DB: `agent_orchestration`
 - 신규 SQL 사용자: `agent_orchestration_app`
-- 비밀번호는 Terraform이 생성하고 Secret Manager에 저장한다.
-- init container가 Secret Manager에서 비밀번호를 읽고, Private IP·DB명·SQL
-  사용자와 조합한 `ORCH_DATABASE_URL`을 Pod 공유 임시 볼륨의 권한 제한 파일에
-  기록한다. 앱 시작 명령만 이 파일을 읽어 환경 변수로 내보낸다.
-- 비밀번호 또는 완성된 DB URL을 ConfigMap, Kubernetes Secret, 이미지, Git,
-  로그에 두지 않는다.
-- 스키마는 현재 앱의 `ensure_schema()`가 `chat_interactions` 테이블을 최초
-  생성하는 방식으로 유지한다. 파괴적 마이그레이션은 이번 범위에 없다.
+- DB 비밀번호는 Terraform이 생성하고 Secret Manager에 보관한다.
+- API init container만 Workload Identity로 DB 비밀번호를 읽어 API 전용 권한
+  제한 runtime 파일을 준비한다. 완성 DB URL·비밀번호를 Git, 이미지, ConfigMap,
+  Kubernetes Secret, Pod manifest, 일반 로그에 두지 않는다.
+- 현재 `ensure_schema()`의 `chat_interactions` 최초 생성은 이 배포 검증에서만
+  유지한다. 실험 Control Plane 단계에서 Alembic으로 전환한다.
 
-GKE 워크로드는 기존 VPC를 통해 Cloud SQL Private IP에만 접속한다. public IP와
-공개 Cloud SQL Auth Proxy 엔드포인트는 추가하지 않는다.
-
-## 공용 Codex OAuth 상태 계약
-
-Codex CLI의 `CODEX_HOME`에는 인증 정보와 갱신 상태가 저장된다. 공용 OAuth를
-지속해서 쓰려면 이 상태를 읽기 전용 Secret 볼륨에만 두면 안 된다.
-
-1. 운영자가 신뢰된 로컬 환경에서 팀 공용 계정으로 `codex login`을 수행한다.
-2. 파일 기반 자격 증명(`auth.json`)을 Secret Manager의 초기 인증 시크릿으로
-   저장한다. 이 파일은 비밀번호와 동등한 민감도로 취급한다.
-3. Pod init container가 Workload Identity로 Secret Manager의 초기 인증 파일을
-   직접 읽고, PVC에 인증 파일이 없을 때만 `CODEX_HOME/auth.json`으로 복사한다.
-   파일 권한은 소유자 읽기/쓰기로 제한한다.
-4. 애플리케이션 컨테이너는 같은 PVC를 읽기/쓰기로 마운트하고
-   `CODEX_HOME`을 그 경로로 설정한다. Codex CLI가 실행 중 갱신한 인증 상태는
-   PVC에 남는다.
-5. Deployment는 `replicas: 1`, PVC는 `ReadWriteOnce`로 고정한다. 하나의 공용
-   계정의 사용량과 인증 상태를 여러 Pod가 동시에 갱신하지 않게 한다.
-
-OAuth 초기 인증 파일은 Kubernetes Secret, ConfigMap, 환경 변수로 직접 넣지
-않는다. init container가 Secret Manager API에서 읽으며, Pod에는 시크릿 ID만
-비민감 환경 변수로 전달한다. PVC에는 `CODEX_HOME` 외의 애플리케이션 데이터나
-사용자 프롬프트를 저장하지 않는다.
-
-## OAuth 갱신·복구 운영 절차
-
-- 정상 실행 중 토큰 갱신은 PVC에 보존된다.
-- `codex login status` 실패, 공용 계정 로그아웃, PVC 손실이 발생하면 운영자는
-  신뢰된 로컬 환경에서 다시 로그인한 뒤 초기 인증 시크릿을 갱신한다.
-- 기존 PVC를 새 인증 상태로 교체할 때는 Deployment를 0으로 축소하고, 승인된
-  일회성 관리 Pod에서 새 파일을 복사한 후 권한을 재설정한다. 완료 후에만
-  Deployment를 1로 복구한다.
-- 인증 파일의 값, 복사 명령 출력, Secret Manager 버전 내용은 티켓·PR·로그에
-  기록하지 않는다.
-
-이 방식은 공용 OAuth를 요구하는 신뢰된 내부 단일 워크로드용이다. 자동화의
-일반적인 기본 인증 수단으로 확장하지 않는다.
-
-## 이미지·배포 책임
+## 이미지·저장소 책임
 
 ### `SKYAHO/Autoresearch`
 
-- `agent_orchestration` 전용 Dockerfile을 추가해 FastAPI와 호환되는 Codex CLI를
-  포함한 non-root 이미지를 만든다.
-- 이미지에는 OAuth 인증 파일, DB URL, `.env`를 넣지 않는다.
-- 기존 release 이미지 발행 흐름에 `agent-orchestration` GAR 이미지와 immutable
-  digest 검증을 추가한다.
-- Docker build, 앱 import, 단위 테스트를 CI에서 검증한다.
+- API 이미지에는 FastAPI·PostgreSQL 의존성만 포함하고 Codex CLI·OAuth 상태를
+  포함하지 않는다.
+- Runner 이미지는 고정된 Codex CLI와 internal `/v1/generate` 서비스만 포함한다.
+  애플리케이션 저장소 전체, DB URL, `.env`를 포함하지 않는다.
+- 두 이미지의 non-root 실행, OAuth 파일 부재, API→Runner 오류 변환, Runner
+  sandbox 인자 계약을 테스트·CI에서 검증한다.
+- GAR에 두 immutable digest를 발행하고 runbook에 digest 기반 배포·롤백 절차를
+  기록한다.
 
 ### `SKYAHO/Autoresearch-infra`
 
-- Cloud SQL DB·사용자·Secret Manager 시크릿을 Terraform으로 선언한다.
-- GKE namespace, 전용 Kubernetes ServiceAccount, Workload Identity, Secret
-  Manager 접근 권한, PVC, Deployment, ClusterIP Service를 선언한다.
-- Deployment는 검증된 immutable GAR digest만 참조한다.
-- Secret Manager API를 호출하는 init container, 공유 임시 볼륨, `CODEX_HOME`
-  권한을 구성한다. GKE Secret Manager CSI 애드온은 추가하지 않는다.
+- Cloud SQL DB·사용자·Secret Manager·API GSA/KSA와 최소 IAM을 Terraform으로
+  선언한다.
+- API/Runner Deployment, 각 ClusterIP Service, `ReadWriteOnce` OAuth PVC가 아닌
+  scratch `emptyDir`, NetworkPolicy를 선언한다.
+- Runner에는 Secret Manager 권한, Cloud SQL 권한, Workload Identity annotation,
+  서비스 계정 토큰 자동 마운트를 추가하지 않는다.
+- 검증된 immutable GAR digest만 참조하며 ArgoCD는 수동 sync로 시작한다.
 
-## 네트워크·보안 계약
+## 배포 순서와 성공 기준
 
-- Service type은 `ClusterIP`이며 Ingress와 LoadBalancer를 만들지 않는다.
-- 초기 검증은 같은 클러스터의 허용된 워크로드 또는 `kubectl port-forward`로만
-  수행한다.
-- Workload Identity는 DB 비밀번호와 OAuth 초기 인증 시크릿을 읽는 최소 권한만
-  가진다.
-- 앱 로그에는 프롬프트, LLM 응답 전문, OAuth 인증 정보, DB URL/비밀번호를
-  기록하지 않는다.
-- Pod와 PVC의 파일 권한은 앱 non-root UID와 필요한 init container 외에는
-  읽을 수 없도록 제한한다.
+1. API→Runner 내부 계약과 분리된 이미지를 구현·검증한다.
+2. GKE에서 OAuth keyring 사전 검증을 수행하고 결과를 runbook에 기록한다.
+3. API DB·Secret Manager·GKE NetworkPolicy Terraform을 적용한다.
+4. 두 immutable image digest를 사용해 dev에 수동 동기화한다.
+5. `kubectl port-forward`로 API `/healthcheck`와 짧은 `/chat`을 호출한다.
+6. `agent_orchestration.chat_interactions`에는 ID·모델·지연 시간·생성 시각만
+   조회해 저장을 확인한다. 프롬프트·응답·토큰·OAuth 내용은 출력하지 않는다.
 
-## 배포 순서
+성공은 다음을 모두 만족할 때다.
 
-1. PR #431을 병합하고 Agent Orchestration 이미지 생성 코드를 별도 PR로 병합한다.
-2. 검증된 이미지를 GAR에 push하고 digest를 확정한다.
-3. 인프라 저장소에서 Cloud SQL·Secret Manager·GKE 리소스 PR을 작성해 적용한다.
-4. 초기 OAuth 시크릿을 운영자가 안전한 경로로 등록한다.
-5. GKE Deployment를 digest로 배포하고 readiness를 확인한다.
-6. 내부 `/healthcheck`와 짧은 `/chat` 요청을 실행한다.
-7. `agent_orchestration.chat_interactions`에 저장된 모델명·지연시간·생성 시각을
-   확인한다. 토큰·프롬프트·응답 전문은 운영 검증 출력에 노출하지 않는다.
-
-## 롤백·성공 기준
-
-롤백은 이전 검증 이미지 digest로 Deployment를 되돌린다. DB 변경은 신규
-데이터베이스·테이블 생성뿐이므로 이미지 롤백 시에도 호환된다. OAuth PVC는
-롤백 대상 이미지와 분리해 보존한다.
-
-성공 기준은 다음과 같다.
-
-- 단일 non-root Pod가 Ready 상태이고 Cloud SQL에 연결된다.
-- Pod의 `codex login status`가 공용 ChatGPT 로그인 상태를 확인한다.
-- 내부 `/chat` 호출이 201을 반환하고 전용 DB의 `chat_interactions`에 행을
-  저장한다.
-- OAuth 인증 파일과 DB 비밀번호가 Git, 이미지, 환경 변수, ConfigMap, 일반
-  로그에 존재하지 않는다.
-- 이미지 digest 롤백과 OAuth 재로그인/PVC 복구 절차가 runbook으로 재현 가능하다.
+- API와 Runner가 서로 다른 Pod·서비스 계정·권한 집합으로 Ready 상태다.
+- API Pod에는 OAuth 자격 증명이, Runner Pod에는 DB URL·DB 비밀번호·GCP 서비스
+  계정 토큰이 없다.
+- keyring·침투 검증 게이트가 통과한 경우에만 `/chat`이 `201`을 반환하고 Cloud
+  SQL에 행을 저장한다.
+- API·Runner의 로그, 이미지, manifest, Git에 OAuth·DB 비밀번호·완성 DB URL이
+  없다.
+- 이전 immutable digest로의 롤백과 OAuth 장애 대응 절차가 runbook으로 재현된다.
