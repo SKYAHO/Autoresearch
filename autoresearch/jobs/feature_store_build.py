@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 _REVISION = os.getenv("AUTORESEARCH_REVISION", "unknown")
 JOB_NAME = "feature_store_build"
 
-DEFAULT_PROJECT = "ar-infra-501607"
+DEFAULT_PROJECT = "autoresearch-503903"
 DEFAULT_DATASET = "feast_offline_store"
 DEFAULT_RAW_DATASET = "data_lake_raw"
 DEFAULT_LOCATION = "asia-northeast3"
