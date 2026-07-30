@@ -1,0 +1,156 @@
+"""Agent Orchestration GKE 런타임 시크릿 부트스트랩.
+
+[파이프라인]
+내부 Agent Orchestration API의 GKE 기동 구간에서 Secret Manager 인증을
+FastAPI·Codex CLI가 사용할 권한 제한 런타임 파일로 준비한다.
+
+[기능]
+Workload Identity로 읽은 DB 비밀번호를 ``db.env``에 기록하고, 최초 기동에만
+공용 Codex OAuth ``auth.json``을 영속 PVC에 초기화한다. 시크릿 원문은 로그,
+환경 변수, 예외 메시지에 노출하지 않는다.
+
+[비책임]
+FastAPI 요청 처리와 PostgreSQL 저장은 ``agent_orchestration.app``이 담당하며,
+Secret Manager·Kubernetes 리소스 생성은 Autoresearch-infra 저장소가 담당한다.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+import logging
+import os
+from pathlib import Path
+import secrets
+from urllib.parse import quote
+
+
+LOGGER = logging.getLogger(__name__)
+SecretReader = Callable[[str], bytes]
+
+
+@dataclass(frozen=True)
+class BootstrapSettings:
+    """GKE init container가 사용할 비민감 경로·시크릿 식별자 설정."""
+
+    db_password_secret_id: str
+    codex_auth_secret_id: str
+    db_host: str
+    db_name: str
+    db_user: str
+    runtime_dir: Path
+    codex_home: Path
+
+
+def _require_value(name: str, value: str | None) -> str:
+    """공백이 아닌 필수 부트스트랩 환경 값을 검증한다."""
+    normalized = (value or "").strip()
+    if not normalized:
+        raise ValueError(f"Required environment variable '{name}' is not set.")
+    return normalized
+
+
+def load_bootstrap_settings(environ: Mapping[str, str] | None = None) -> BootstrapSettings:
+    """init container 환경 변수에서 부트스트랩 설정을 읽는다."""
+    values = os.environ if environ is None else environ
+    return BootstrapSettings(
+        db_password_secret_id=_require_value(
+            "ORCH_DB_PASSWORD_SECRET_ID", values.get("ORCH_DB_PASSWORD_SECRET_ID")
+        ),
+        codex_auth_secret_id=_require_value(
+            "ORCH_CODEX_AUTH_SECRET_ID", values.get("ORCH_CODEX_AUTH_SECRET_ID")
+        ),
+        db_host=_require_value("ORCH_DB_HOST", values.get("ORCH_DB_HOST")),
+        db_name=_require_value("ORCH_DB_NAME", values.get("ORCH_DB_NAME")),
+        db_user=_require_value("ORCH_DB_USER", values.get("ORCH_DB_USER")),
+        runtime_dir=Path(
+            _require_value("ORCH_RUNTIME_DIR", values.get("ORCH_RUNTIME_DIR"))
+        ),
+        codex_home=Path(_require_value("CODEX_HOME", values.get("CODEX_HOME"))),
+    )
+
+
+def read_secret_manager_secret(secret_id: str) -> bytes:
+    """Workload Identity ADC로 Secret Manager의 한 버전을 읽는다."""
+    from google.cloud import secretmanager
+
+    client = secretmanager.SecretManagerServiceClient()
+    response = client.access_secret_version(request={"name": secret_id})
+    return response.payload.data
+
+
+def _read_secret(secret_id: str, read_secret: SecretReader) -> bytes:
+    """시크릿 조회 실패에서 시크릿 원문을 제거한 오류만 노출한다."""
+    try:
+        value = read_secret(secret_id)
+    except Exception:
+        LOGGER.error("Secret Manager 시크릿을 읽지 못했습니다: %s", secret_id)
+        raise RuntimeError(f"Failed to read bootstrap secret '{secret_id}'.") from None
+    if not value:
+        raise RuntimeError(f"Bootstrap secret '{secret_id}' is empty.")
+    return value
+
+
+def _write_private_file(path: Path, contents: bytes) -> None:
+    """원자적으로 교체되는 소유자 전용 파일을 기록한다."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    temporary_path = path.parent / f".{path.name}.{secrets.token_hex(16)}.tmp"
+    descriptor = os.open(
+        temporary_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as file_handle:
+            file_handle.write(contents)
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
+        os.replace(temporary_path, path)
+        path.chmod(0o600)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
+def _database_url(settings: BootstrapSettings, password: bytes) -> str:
+    """DB 비밀번호가 URL 의미를 바꾸지 않도록 percent-encoding 한다."""
+    try:
+        decoded_password = password.decode("utf-8")
+    except UnicodeDecodeError:
+        raise RuntimeError(
+            f"Bootstrap secret '{settings.db_password_secret_id}' is not valid UTF-8."
+        ) from None
+    return (
+        "postgresql://"
+        f"{quote(settings.db_user, safe='')}:{quote(decoded_password, safe='')}"
+        f"@{settings.db_host}/{quote(settings.db_name, safe='')}"
+    )
+
+
+def bootstrap_runtime_secrets(settings: BootstrapSettings, read_secret: SecretReader) -> None:
+    """DB 연결 파일과 최초 Codex OAuth 상태를 안전한 볼륨에 준비한다."""
+    database_password = _read_secret(settings.db_password_secret_id, read_secret)
+    database_env = f"ORCH_DATABASE_URL={_database_url(settings, database_password)}\n"
+    _write_private_file(settings.runtime_dir / "db.env", database_env.encode("utf-8"))
+
+    auth_path = settings.codex_home / "auth.json"
+    if auth_path.exists():
+        if auth_path.is_symlink() or not auth_path.is_file():
+            raise RuntimeError("CODEX_HOME/auth.json must be a regular file.")
+        auth_path.chmod(0o600)
+        return
+
+    auth_payload = _read_secret(settings.codex_auth_secret_id, read_secret)
+    _write_private_file(auth_path, auth_payload)
+    LOGGER.info("Codex OAuth 초기 인증 파일을 준비했습니다: %s", settings.codex_auth_secret_id)
+
+
+def main() -> int:
+    """Kubernetes init container 진입점으로 시크릿 부트스트랩을 수행한다."""
+    bootstrap_runtime_secrets(load_bootstrap_settings(), read_secret_manager_secret)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
