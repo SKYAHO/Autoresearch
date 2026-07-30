@@ -4,7 +4,8 @@
 LLM 판정·클릭 선정·이벤트 확장·로컬 산출물 기록을 담당한다.
 
 [기능] shard/checkpoint가 사용하는 legacy draft/batch 계약과 단일 모드의
-bounded active-user 스트리밍, Parquet row-group 및 JSONL 기록을 제공한다.
+bounded active-user 스트리밍, Parquet row-group 및 JSONL 기록, completion-time
+publish 실패 시 기존 산출물 복구를 제공한다.
 
 [비책임] 일일 partition 검증·publish는 autoresearch/action_logs/daily.py,
 공개 CLI dispatch는 autoresearch/jobs/action_log.py, KPO resource 설정은
@@ -1059,6 +1060,23 @@ class _StreamingActionLogWriter:
         )
         return (*base_spool_paths, *self._commit_backup_paths)
 
+    def _write_best_effort_diagnostic(
+        self,
+        *,
+        level: Literal["warning", "error"],
+        message: str,
+        extra: Mapping[str, str],
+    ) -> None:
+        """writer의 cleanup/rollback 진단이 복구 흐름을 중단시키지 않게 기록한다."""
+
+        try:
+            if level == "warning":
+                logger.warning(message, extra=dict(extra), exc_info=True)
+            else:
+                logger.error(message, extra=dict(extra), exc_info=True)
+        except Exception:  # noqa: BLE001 - diagnostic sink must not mask recovery
+            pass
+
     def _remove_spools(self, *, best_effort: bool = False) -> None:
         remaining_backup_paths: list[Path] = []
         for spool_path in self._spool_paths():
@@ -1072,14 +1090,11 @@ class _StreamingActionLogWriter:
                     message = "Unable to remove committed action log backup spool"
                 else:
                     message = "Unable to remove committed action log spool"
-                try:
-                    logger.warning(
-                        message,
-                        extra={"spool_path": str(spool_path)},
-                        exc_info=True,
-                    )
-                except Exception:  # noqa: BLE001 - committed cleanup must not fail
-                    pass
+                self._write_best_effort_diagnostic(
+                    level="warning",
+                    message=message,
+                    extra={"spool_path": str(spool_path)},
+                )
         if best_effort:
             self._commit_backup_paths = remaining_backup_paths
         else:
@@ -1102,13 +1117,13 @@ class _StreamingActionLogWriter:
                 backup_path.replace(final_path)
             except OSError:
                 remaining_backups.append((backup_path, final_path))
-                logger.error(
-                    "Unable to restore action log backup after failed publish",
+                self._write_best_effort_diagnostic(
+                    level="error",
+                    message="Unable to restore action log backup after failed publish",
                     extra={
                         "backup_spool_path": str(backup_path),
                         "final_path": str(final_path),
                     },
-                    exc_info=True,
                 )
         self._unrestored_backup_paths = remaining_backups
 
@@ -1293,10 +1308,10 @@ class _StreamingActionLogWriter:
                     published_path.unlink(missing_ok=True)
                 except OSError as rollback_error:
                     rollback_errors.append(rollback_error)
-                    logger.error(
-                        "Unable to remove newly published action log output during rollback",
+                    self._write_best_effort_diagnostic(
+                        level="error",
+                        message="Unable to remove newly published action log output during rollback",
                         extra={"final_path": str(published_path)},
-                        exc_info=True,
                     )
             for backup_path, final_path in reversed(backups):
                 restore_pair = (backup_path, final_path)
@@ -1307,13 +1322,13 @@ class _StreamingActionLogWriter:
                         backup_path.replace(final_path)
                 except OSError as rollback_error:
                     rollback_errors.append(rollback_error)
-                    logger.error(
-                        "Unable to restore action log backup after failed publish",
+                    self._write_best_effort_diagnostic(
+                        level="error",
+                        message="Unable to restore action log backup after failed publish",
                         extra={
                             "backup_spool_path": str(backup_path),
                             "final_path": str(final_path),
                         },
-                        exc_info=True,
                     )
                 else:
                     self._unrestored_backup_paths.remove(restore_pair)

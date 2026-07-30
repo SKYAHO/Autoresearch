@@ -608,6 +608,160 @@ def test_streaming_writer_retries_unrestored_backup_after_publish_failure(
     }
 
 
+def test_streaming_writer_continues_rollback_when_error_logging_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rollback diagnostic sink failure도 원래 publish 오류와 기존 출력 복구를 가리지 않는다."""
+
+    request = _request(tmp_path)
+    previous_outputs = {
+        Path(request.output_path): b"previous parquet",
+        Path(request.warehouse_output_path): b'{"previous": "warehouse"}\n',
+        Path(request.quarantine_output_path): b'{"previous": "quarantine"}\n',
+    }
+    for path, contents in previous_outputs.items():
+        path.write_bytes(contents)
+    event = EventLog(
+        event_id="evt_20260701_00000000",
+        event_timestamp=_FIXED_END,
+        user_id="u1",
+        event_type="impression",
+        video_id="v1",
+        source="historical",
+    )
+    original_replace = Path.replace
+    original_unlink = Path.unlink
+    parquet_final = Path(request.output_path)
+    warehouse_final = Path(request.warehouse_output_path)
+    final_paths = set(previous_outputs)
+    restored_paths: list[Path] = []
+    warehouse_publish_failed = False
+    parquet_rollback_unlink_failed = False
+    writer_error_log_calls = 0
+    writer = pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    )
+
+    with pytest.raises(OSError, match="warehouse publish failed") as error:
+        with writer:
+            initial_spool_paths = set(writer._spool_paths())
+
+            def fail_warehouse_publish(source: Path, target: str | Path) -> Path:
+                nonlocal warehouse_publish_failed
+                source_path = Path(source)
+                target_path = Path(target)
+                if (
+                    source_path == writer._warehouse_spool_path
+                    and target_path == warehouse_final
+                    and not warehouse_publish_failed
+                ):
+                    warehouse_publish_failed = True
+                    raise OSError("warehouse publish failed")
+                result = original_replace(source, target)
+                if source_path not in initial_spool_paths and target_path in final_paths:
+                    restored_paths.append(target_path)
+                return result
+
+            def fail_published_parquet_rollback_unlink(
+                path: Path,
+                *,
+                missing_ok: bool = False,
+            ) -> None:
+                nonlocal parquet_rollback_unlink_failed
+                if path == parquet_final and not parquet_rollback_unlink_failed:
+                    parquet_rollback_unlink_failed = True
+                    raise OSError("published parquet rollback unlink failed")
+                original_unlink(path, missing_ok=missing_ok)
+
+            def fail_writer_error_log(*_args: object, **_kwargs: object) -> None:
+                nonlocal writer_error_log_calls
+                writer_error_log_calls += 1
+                raise RuntimeError("rollback error sink failed")
+
+            monkeypatch.setattr(Path, "replace", fail_warehouse_publish)
+            monkeypatch.setattr(Path, "unlink", fail_published_parquet_rollback_unlink)
+            monkeypatch.setattr(pipeline_module.logger, "error", fail_writer_error_log)
+            writer.write_events([event])
+            writer.finalize_success("2026-07-30T09:00:00+00:00")
+
+    assert isinstance(error.value.__cause__, ExceptionGroup)
+    assert any(
+        str(rollback_error) == "published parquet rollback unlink failed"
+        for rollback_error in error.value.__cause__.exceptions
+    )
+    assert warehouse_publish_failed is True
+    assert parquet_rollback_unlink_failed is True
+    assert writer_error_log_calls == 1
+    assert restored_paths == [
+        Path(request.quarantine_output_path),
+        Path(request.warehouse_output_path),
+        Path(request.output_path),
+    ]
+    assert {path: path.read_bytes() for path in previous_outputs} == previous_outputs
+    assert writer._commit_backup_paths == []
+    assert writer._unrestored_backup_paths == []
+    assert {path.name for path in tmp_path.iterdir()} == {
+        path.name for path in previous_outputs
+    }
+
+
+def test_streaming_writer_continues_unrestored_backup_retry_when_error_logging_fails(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """한 backup 복구와 error sink가 실패해도 다음 backup 복구를 계속 시도한다."""
+
+    request = _request(tmp_path)
+    writer = pipeline_module._StreamingActionLogWriter(
+        request=request,
+        model_name="test-model",
+    )
+    first_backup = tmp_path / ".e.parquet.first.spool"
+    second_backup = tmp_path / ".e.jsonl.second.spool"
+    first_final = Path(request.output_path)
+    second_final = Path(request.warehouse_output_path)
+    first_backup.write_bytes(b"first previous output")
+    second_backup.write_bytes(b"second previous output")
+    writer._unrestored_backup_paths = [
+        (first_backup, first_final),
+        (second_backup, second_final),
+    ]
+    original_replace = Path.replace
+    restore_attempts: list[tuple[Path, Path]] = []
+    writer_error_log_calls = 0
+
+    def fail_first_restore(source: Path, target: str | Path) -> Path:
+        source_path = Path(source)
+        target_path = Path(target)
+        restore_attempts.append((source_path, target_path))
+        if source_path == first_backup:
+            raise OSError("first backup restore failed")
+        return original_replace(source, target)
+
+    def fail_writer_error_log(*_args: object, **_kwargs: object) -> None:
+        nonlocal writer_error_log_calls
+        writer_error_log_calls += 1
+        raise RuntimeError("restore error sink failed")
+
+    monkeypatch.setattr(Path, "replace", fail_first_restore)
+    monkeypatch.setattr(pipeline_module.logger, "error", fail_writer_error_log)
+
+    writer._restore_unrestored_backups()
+
+    assert restore_attempts == [
+        (first_backup, first_final),
+        (second_backup, second_final),
+    ]
+    assert writer_error_log_calls == 1
+    assert first_backup.read_bytes() == b"first previous output"
+    assert not first_final.exists()
+    assert second_final.read_bytes() == b"second previous output"
+    assert not second_backup.exists()
+    assert writer._unrestored_backup_paths == [(first_backup, first_final)]
+
+
 def test_streaming_writer_retries_backup_after_rollback_stat_failure(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
