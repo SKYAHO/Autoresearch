@@ -271,3 +271,42 @@ def test_validate_seeds_can_run_before_side_effects() -> None:
         validate_seeds([])
     with pytest.raises(ValueError):
         validate_seeds([42, 42])
+
+
+# --- NaN 지표 가드 (#445) ---
+
+
+def test_run_seed_sweep_rejects_nan_metric() -> None:
+    """학습이 NaN 지표를 돌려주면 즉시 실패한다(#445).
+
+    `TrainingOutcome.val_roc_auc`의 기본값이 NaN이라, 학습을 거치지 않은 outcome이
+    섞이면 평균·편차가 조용히 NaN이 된다. 요약이 NaN이면 판정도 NaN이라 "노이즈
+    안/밖"이 아니라 아무 말도 못 하는 결과가 나온다.
+    """
+    with pytest.raises(SeedSweepError) as excinfo:
+        run_seed_sweep([42, 43], train_once=lambda *, random_state, **_: float("nan"))
+
+    assert "42" in str(excinfo.value)
+
+
+def test_run_seed_sweep_rejects_infinite_metric() -> None:
+    with pytest.raises(SeedSweepError):
+        run_seed_sweep([42], train_once=lambda *, random_state, **_: float("inf"))
+
+
+def test_run_seed_sweep_nan_error_keeps_earlier_seeds() -> None:
+    """NaN으로 멈춰도 앞선 시드 결과는 남는다."""
+
+    def flaky(*, random_state, **_):
+        return 0.70 if random_state == 42 else float("nan")
+
+    with pytest.raises(SeedSweepError) as excinfo:
+        run_seed_sweep([42, 43], train_once=flaky)
+
+    assert excinfo.value.completed == {42: 0.70}
+
+
+def test_summarize_metric_rejects_nan() -> None:
+    """통계 계층도 NaN을 받지 않는다 — 평균·편차가 조용히 NaN이 되는 것을 막는다."""
+    with pytest.raises(ValueError):
+        summarize_metric([0.70, float("nan")])

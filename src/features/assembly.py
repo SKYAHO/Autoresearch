@@ -463,7 +463,9 @@ def compute_user_topic_features(
     )
 
 
-def compute_interaction_columns(joined: pd.DataFrame) -> pd.DataFrame:
+def compute_interaction_columns(
+    joined: pd.DataFrame, skip_embedding: bool = False
+) -> pd.DataFrame:
     """preferred/topic/match 상호작용 피처를 계산해 컬럼으로 추가한다.
 
     입력 필수 컬럼: hobbies_and_interests_list, historical_category_affinity,
@@ -477,6 +479,17 @@ def compute_interaction_columns(joined: pd.DataFrame) -> pd.DataFrame:
     임베딩한다(#206) — joined는 유저 1명당 여러 행(impression마다 1행)을
     가지므로, 행마다 개별 임베딩하면 같은 키워드를 Vertex AI에 반복
     요청하게 된다.
+
+    Args:
+        skip_embedding: True면 embed_texts() 호출(Vertex AI)을 건너뛰고
+            topic_similarity를 전부 None으로 채운다(#426,
+            compute_user_topic_features와 동일한 패턴). historical_category_match/
+            preferred_category_match는 이 값과 무관하게 항상 계산된다.
+            단, 형제 함수 compute_user_topic_features의 skip_embedding과 계약이
+            다르다(#214) — 그쪽은 호출자가 이후 BigQuery의 사전계산 값으로
+            topic_similarity를 다시 채우는 것을 전제하지만, 여기에는 그런 재충전
+            단계가 없다. 따라서 자체 재충전 로직 없이 True를 넘기면 영구 null인
+            topic_similarity가 그대로 모델에 들어간다.
     """
     out = joined.copy()
     out["preferred_topics"] = out["hobbies_and_interests_list"].apply(extract_keywords_safe)
@@ -485,16 +498,22 @@ def compute_interaction_columns(joined: pd.DataFrame) -> pd.DataFrame:
     else:
         out["preferred_category"] = out["preferred_topics"].apply(derive_preferred_category)
 
-    unique_keywords = sorted({kw for kws in out["preferred_topics"] for kw in kws})
-    keyword_vectors = embed_texts(unique_keywords, task_type="RETRIEVAL_QUERY")
-    keyword_embedding_cache = dict(zip(unique_keywords, keyword_vectors))
-    out["user_keyword_embeddings"] = out["preferred_topics"].apply(
-        lambda kws: [keyword_embedding_cache[kw] for kw in kws]
-    )
-    out["topic_similarity"] = out.apply(
-        lambda row: compute_topic_similarity(row["user_keyword_embeddings"], row["category_id"]),
-        axis=1,
-    )
+    if skip_embedding:
+        out["user_keyword_embeddings"] = pd.Series([None] * len(out), index=out.index)
+        out["topic_similarity"] = None
+    else:
+        unique_keywords = sorted({kw for kws in out["preferred_topics"] for kw in kws})
+        keyword_vectors = embed_texts(unique_keywords, task_type="RETRIEVAL_QUERY")
+        keyword_embedding_cache = dict(zip(unique_keywords, keyword_vectors))
+        out["user_keyword_embeddings"] = out["preferred_topics"].apply(
+            lambda kws: [keyword_embedding_cache[kw] for kw in kws]
+        )
+        out["topic_similarity"] = out.apply(
+            lambda row: compute_topic_similarity(
+                row["user_keyword_embeddings"], row["category_id"]
+            ),
+            axis=1,
+        )
     out["historical_category_match"] = out.apply(
         lambda row: compute_historical_category_match(
             row["historical_category_affinity"], row["category_id"]

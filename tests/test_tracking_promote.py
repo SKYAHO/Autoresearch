@@ -20,6 +20,21 @@ from src.tracking.promotion_result import (  # noqa: E402
 MODEL_NAME = "ctr-model"
 
 
+@pytest.fixture(autouse=True)
+def _promote_tracking_uri(monkeypatch):
+    """승격 경로가 요구하는 tracking URI를 테스트가 스스로 설정한다.
+
+    `promote.main()`은 `MLFLOW_TRACKING_URI`가 비면 fail-fast한다(#406). 이 파일의
+    테스트들은 그 값을 설정하지 않았는데도 전체 스위트에서는 통과했다 — 앞서 실행된
+    학습 테스트가 `mlflow.set_tracking_uri()`를 부르면 **MLflow가 os.environ에 값을
+    써서** 뒤 테스트로 새기 때문이다(실측 확인).
+
+    그래서 단독 실행하면 23건이 무더기로 실패했다. 실행 순서에 기대는 통과는 통과가
+    아니므로 여기서 명시적으로 준다.
+    """
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow-test:5000")
+
+
 def _version(version, *, aliases=None, run_id=None, tags=None):
     return SimpleNamespace(
         version=version,
