@@ -1,4 +1,16 @@
-"""Feast offline store를 Redis online store로 materialize하는 공개 batch 명령."""
+"""Feast offline feature를 Redis online store로 materialize하는 공개 batch 명령.
+
+[파이프라인] 피처 구간에서 prod Feast registry·offline store의 피처를 Redis
+online store로 적재한다. dev 환경의 오프라인 실험과 Redis online serving은
+각각 ``feature_repo`` 정의·serving 경로가 소유하며, 이 모듈은 담당하지 않는다.
+
+[기능] 공개 CLI 인자와 실행 환경을 검증하고, prod에서만 CA 준비와 FeatureStore
+materialize를 수행해 batch 계약의 JSON summary와 종료 코드를 반환한다. dev에서는
+repo·CA·FeatureStore·Redis에 접근하기 전에 명확히 실행을 거부한다.
+
+[비책임] FeatureView 정의·Feast 설정은 ``feature_repo/``가, 배포 환경 변수와
+스케줄·재시도 정책은 ``Autoresearch-airflow``가 소유한다.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +24,7 @@ from typing import Any, Sequence
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
 from feature_repo.bootstrap import ensure_redis_ca_bundle, load_feature_store
+from feature_repo.env import ENV_DEV, resolve_environment
 
 logger = logging.getLogger(__name__)
 _REVISION = os.getenv("AUTORESEARCH_REVISION", "unknown")
@@ -118,7 +131,15 @@ def _validate_repo_path(repo_path: str) -> None:
         raise BatchArgumentError(f"feature_store.yaml not found under {repo_path}")
 
 
+def _validate_execution_environment() -> None:
+    if resolve_environment() == ENV_DEV:
+        raise RuntimeError(
+            "feast_materialize is unavailable when AUTORESEARCH_ENV=dev"
+        )
+
+
 def _run(args: argparse.Namespace) -> dict[str, object]:
+    _validate_execution_environment()
     _validate_repo_path(args.repo_path)
     ensure_redis_ca_bundle()
     store = load_feature_store(args.repo_path)
