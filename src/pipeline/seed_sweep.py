@@ -27,11 +27,47 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Optional
 
-# 차이가 노이즈 밖이라고 부르기 위한 배수. 차이의 표준오차 대비 이 값을 넘어야 한다.
-# 정규 근사에서 약 95%에 해당하는 관습적 기준이며, 시드 3개로 t 검정을 하기에는
-# 표본이 너무 작아 p값 대신 "편차 대비 몇 배인가"를 근거로 남긴다.
-NOISE_SIGMA_MULTIPLIER = 2.0
 DEFAULT_METRIC_NAME = "val_roc_auc"
+
+# 양측 95% t 임계값(자유도별). 시드 3개면 자유도 2라 임계값이 4.303으로, 정규
+# 근사의 1.96보다 훨씬 크다. 2.0 같은 고정 배수를 쓰면 작은 표본에서 "노이즈 밖"을
+# 실제보다 자주 선언한다 — 거짓 채택을 막으려는 모듈이 관대한 쪽으로 기우는 셈이라
+# 자유도에 맞는 값을 쓴다(#407 리뷰 3).
+_T_CRITICAL_95 = {
+    1: 12.706,
+    2: 4.303,
+    3: 3.182,
+    4: 2.776,
+    5: 2.571,
+    6: 2.447,
+    7: 2.365,
+    8: 2.306,
+    9: 2.262,
+    10: 2.228,
+    15: 2.131,
+    20: 2.086,
+    30: 2.042,
+}
+# 자유도가 표에 없을 만큼 크면 정규 근사로 수렴한다.
+_T_CRITICAL_LARGE_SAMPLE = 1.96
+
+
+def _t_critical_95(degrees_of_freedom: int) -> float:
+    if degrees_of_freedom in _T_CRITICAL_95:
+        return _T_CRITICAL_95[degrees_of_freedom]
+    larger = [df for df in _T_CRITICAL_95 if df > degrees_of_freedom]
+    if larger:
+        # 표에 없는 중간 자유도는 보수적으로 더 큰 임계값 쪽을 쓴다.
+        return _T_CRITICAL_95[min(larger)]
+    return _T_CRITICAL_LARGE_SAMPLE
+
+
+class SeedSweepError(RuntimeError):
+    """시드 스윕이 중간에 실패했을 때, 이미 끝난 시드 결과를 함께 전달한다(#407)."""
+
+    def __init__(self, message: str, *, completed: dict[int, float]) -> None:
+        super().__init__(message)
+        self.completed = completed
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,39 +176,71 @@ def summarize_metric(values: Sequence[float]) -> MetricSummary:
 
 
 def compare_to_baseline(
-    *, candidate: MetricSummary, baseline: MetricSummary
+    *,
+    candidate: MetricSummary,
+    baseline: MetricSummary,
+    paired_deltas: Optional[Sequence[float]] = None,
 ) -> SignificanceVerdict:
     """baseline 대비 차이가 편차 범위 안인지 판단할 근거를 만든다.
 
     채택/기각을 대신 정하지 않는다 — 가설의 성공 기준이 그 판단을 소유하고,
     이 함수는 "그 차이가 시드를 바꿨을 때도 남는 크기인가"만 답한다.
 
+    **짝지음(pairing)이 기본이다.** baseline과 candidate를 같은 시드 목록으로 돌리면
+    `random_state`가 split과 모델 양쪽에 쓰이므로 시드 42의 두 조건은 같은 분할을
+    본다. 이때 분할 노이즈는 짝지어 빼면 상쇄되는데, 독립 표본 식을 쓰면 그 노이즈가
+    분모에 그대로 남아 실제보다 둔감해진다 — 두 조건이 같은 방향으로 함께 움직이는
+    경우 결론이 갈린다(#407 리뷰 2).
+
     Args:
         candidate: 변경군 요약.
         baseline: 대조군 요약.
+        paired_deltas: 같은 시드끼리 뺀 차이 목록. 주면 짝지은 식을 쓴다.
 
     Returns:
         차이·표준오차·경계·판정을 담은 근거.
     """
     delta = candidate.mean - baseline.mean
 
-    if candidate.n < 2 or baseline.n < 2:
+    if paired_deltas is not None:
+        n = len(paired_deltas)
+        if n < 2:
+            return _undecidable(
+                delta,
+                f"짝지은 시드가 {n}개뿐이라 편차를 잴 수 없습니다. "
+                "최소 2개 시드로 두 조건을 모두 돌려야 합니다.",
+            )
+        paired = summarize_metric(paired_deltas)
+        standard_error = paired.std / math.sqrt(n)
+        critical = _t_critical_95(n - 1)
+        threshold = critical * standard_error
+        within_noise = abs(paired.mean) <= threshold
         return SignificanceVerdict(
-            delta=delta,
-            standard_error=float("nan"),
-            threshold=float("nan"),
-            within_noise=None,
+            delta=paired.mean,
+            standard_error=standard_error,
+            threshold=threshold,
+            within_noise=within_noise,
             reason=(
-                f"시드가 부족해 편차를 잴 수 없습니다"
-                f"(candidate n={candidate.n}, baseline n={baseline.n}). "
-                "노이즈인지 판정하려면 각 조건을 최소 2개 시드로 돌려야 합니다."
+                f"짝지은 Δ 평균={paired.mean:+.4f}, 표준오차={standard_error:.4f}, "
+                f"경계(±t{critical:.3f}, df={n - 1})={threshold:.4f} — "
+                + ("편차 범위 안" if within_noise else "편차 범위 밖")
             ),
+        )
+
+    if candidate.n < 2 or baseline.n < 2:
+        return _undecidable(
+            delta,
+            f"시드가 부족해 편차를 잴 수 없습니다"
+            f"(candidate n={candidate.n}, baseline n={baseline.n}). "
+            "노이즈인지 판정하려면 각 조건을 최소 2개 시드로 돌려야 합니다.",
         )
 
     standard_error = math.sqrt(
         candidate.std**2 / candidate.n + baseline.std**2 / baseline.n
     )
-    threshold = NOISE_SIGMA_MULTIPLIER * standard_error
+    # Welch 근사 대신 보수적으로 작은 쪽 자유도를 쓴다.
+    critical = _t_critical_95(min(candidate.n, baseline.n) - 1)
+    threshold = critical * standard_error
     within_noise = abs(delta) <= threshold
     return SignificanceVerdict(
         delta=delta,
@@ -181,10 +249,57 @@ def compare_to_baseline(
         within_noise=within_noise,
         reason=(
             f"Δ={delta:+.4f}, 차이의 표준오차={standard_error:.4f}, "
-            f"경계(±{NOISE_SIGMA_MULTIPLIER:g}SE)={threshold:.4f} — "
+            f"경계(±t{critical:.3f})={threshold:.4f} — "
             + ("편차 범위 안" if within_noise else "편차 범위 밖")
+            + " (짝짓지 않은 비교 — 같은 시드로 두 조건을 돌렸다면 "
+            "paired_deltas를 주는 편이 민감합니다)"
         ),
     )
+
+
+def _undecidable(delta: float, reason: str) -> SignificanceVerdict:
+    return SignificanceVerdict(
+        delta=delta,
+        standard_error=float("nan"),
+        threshold=float("nan"),
+        within_noise=None,
+        reason=reason,
+    )
+
+
+def paired_deltas_by_seed(
+    *, candidate: SeedSweepResult, baseline: SeedSweepResult
+) -> list[float]:
+    """같은 시드끼리 뺀 차이를 만든다(#407 리뷰 2).
+
+    Raises:
+        ValueError: 두 스윕의 시드 목록이 다르면. 짝지을 수 없는데 짝지은 척하면
+            분할 노이즈가 상쇄된 것처럼 보여 판정이 낙관적으로 기운다.
+    """
+    if list(candidate.seeds) != list(baseline.seeds):
+        raise ValueError(
+            f"시드 목록이 다릅니다 — candidate={list(candidate.seeds)}, "
+            f"baseline={list(baseline.seeds)}. 짝지은 비교는 두 조건을 "
+            "같은 시드로 돌렸을 때만 성립합니다."
+        )
+    return [c - b for c, b in zip(candidate.metrics, baseline.metrics)]
+
+
+def validate_seeds(seeds: Sequence[int]) -> None:
+    """시드 목록이 반복 학습에 쓸 수 있는지 확인한다.
+
+    호출부가 부수효과(디렉토리 생성 등)를 만들기 **전에** 부를 수 있도록 분리했다.
+
+    Raises:
+        ValueError: 비었거나 중복이 있으면.
+    """
+    if not seeds:
+        raise ValueError("시드 목록이 비었습니다 — 반복할 대상이 없습니다.")
+    if len(set(seeds)) != len(seeds):
+        raise ValueError(
+            f"시드 목록에 중복이 있습니다: {list(seeds)}. "
+            "같은 시드는 같은 결과를 내므로 편차가 인위적으로 작아집니다."
+        )
 
 
 def run_seed_sweep(
@@ -208,17 +323,21 @@ def run_seed_sweep(
     Raises:
         ValueError: 시드 목록이 비었거나 중복이 있으면.
     """
-    if not seeds:
-        raise ValueError("시드 목록이 비었습니다 — 반복할 대상이 없습니다.")
-    if len(set(seeds)) != len(seeds):
-        raise ValueError(
-            f"시드 목록에 중복이 있습니다: {list(seeds)}. "
-            "같은 시드는 같은 결과를 내므로 편차가 인위적으로 작아집니다."
-        )
+    validate_seeds(seeds)
 
     metrics: list[float] = []
-    for seed in seeds:
-        metrics.append(float(train_once(random_state=seed, **train_kwargs)))
+    for index, seed in enumerate(seeds):
+        try:
+            metrics.append(float(train_once(random_state=seed, **train_kwargs)))
+        except Exception as error:
+            # 학습 1회가 비싼 명령이라, 중간에 죽었을 때 앞선 시드 결과까지 버리면
+            # 재실행 비용이 크다. 이미 끝난 지표를 메시지에 담아 올린다(#407 리뷰 4).
+            done = dict(zip(list(seeds)[:index], metrics))
+            raise SeedSweepError(
+                f"시드 {seed} 학습이 실패했습니다({index + 1}/{len(seeds)}번째). "
+                f"이미 끝난 시드: {done or '없음'}",
+                completed=done,
+            ) from error
 
     return SeedSweepResult(
         seeds=list(seeds),

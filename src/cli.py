@@ -29,7 +29,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.pipeline import build_training_dataset, train, evaluate  # noqa: E402
-from src.pipeline.seed_sweep import run_seed_sweep  # noqa: E402
+from src.pipeline.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
 from src.tracking import promote  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
     MODEL_PROMOTION_RESULT_CONTRACT,
@@ -530,14 +530,26 @@ def sweep_seeds(
 
     시드마다 아티팩트가 덮어써지지 않도록 `--output-dir` 아래에 시드별로 저장한다.
     """
-    seed_list = [int(s.strip()) for s in seeds.split(",") if s.strip()]
+    try:
+        seed_list = [int(s.strip()) for s in seeds.split(",") if s.strip()]
+    except ValueError as error:
+        typer.echo(
+            f"[에러] --seeds는 쉼표로 구분된 정수 목록이어야 합니다: {seeds!r}", err=True
+        )
+        raise typer.Exit(code=2) from error
+
+    # 부수효과(디렉토리 생성) 전에 시드 목록을 검증한다(#407 리뷰 5).
+    validate_seeds(seed_list)
     experiment_features = _parse_extra_features(extra_features)
     base_dir = output_dir or os.path.join("data", "processed", "seed_sweep")
-    os.makedirs(base_dir, exist_ok=True)
 
     def _train_once(*, random_state: int) -> float:
         typer.echo(f"\n[시드 {random_state}] 학습 시작...")
         outcome = train.main(
+            # 스윕의 산출물은 승격 후보가 아니라 요약이다. 시드마다 등록하면
+            # registry에 버전이 시드 수만큼 쌓이고, 마지막 시드의 모델이 후보
+            # 자리에 앉는다(#407 리뷰 1). 등록 없이 지표만 받는다.
+            defer_registration=True,
             config_path=config_path,
             data_path=data_path,
             model_output=os.path.join(base_dir, f"model_seed{random_state}.joblib"),
@@ -556,6 +568,9 @@ def sweep_seeds(
         )
         return outcome.val_roc_auc
 
+    # 시드 검증(빈 목록·중복)이 끝난 뒤에 디렉토리를 만든다 — 실패 경로에서
+    # 빈 디렉토리가 남지 않도록(#407 리뷰 5).
+    os.makedirs(base_dir, exist_ok=True)
     result = run_seed_sweep(seed_list, train_once=_train_once)
     payload = result.to_dict()
 
