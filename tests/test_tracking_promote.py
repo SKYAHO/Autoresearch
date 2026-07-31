@@ -386,3 +386,15 @@ def test_main_ignores_empty_experiment_tag(monkeypatch):
     result = promote.main(MODEL_NAME, "champion")
 
     assert result.outcome is PromotionOutcome.PROMOTED
+
+
+def test_main_rejects_experiment_namespace_model_name(monkeypatch):
+    """실험 네임스페이스 이름으로 승격을 부르면 registry 조회 전에 거부한다(#406)."""
+    client = _PromoteClient(main_versions=[])
+    _patch_client(monkeypatch, client)
+
+    result = promote.main("ctr-model-exp-views-per-day", "champion")
+
+    assert result.outcome is PromotionOutcome.REJECTED
+    assert result.reason_code is PromotionReasonCode.EXPERIMENT_MODEL
+    assert client.set_alias_calls == []

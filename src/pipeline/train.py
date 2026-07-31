@@ -11,7 +11,10 @@ registered model 버전 생성이 이 모듈의 책임이다.
 `extra_features`를 주면 prod 모델 계약(`MODEL_FEATURE_COLUMNS`)을 건드리지 않고
 그 뒤에 실험 피처를 덧붙여 학습한다(#405). 데이터셋에 없는 컬럼이면 정규 경로
 (Feast ODFV, #399) 안내와 함께 중단하며, 실험 모델은 registry tag로 표시돼
-승격 게이트가 거부한다.
+승격 게이트가 거부한다. `experiment`를 주면 MLflow experiment·registry 이름이
+prod와 분리되고 트래킹 URI 기본값이 로컬 파일 스토어가 된다(#406) — 좌표 결정은
+`src/tracking/namespace.py`가 소유한다. 운영 경로에서 `MLFLOW_TRACKING_URI`가
+비어 있으면 조용히 localhost로 넘어가지 않고 즉시 중단한다.
 `scale_pos_weight="auto"` 계산의 0 나눗셈도 같은 이유로 fail-closed다. 결과는
 `TrainingOutcome`으로 반환하며, `defer_registration=True`면 registered model
 버전 생성을 보류하고 `PendingRegistration`을 넘겨 호출자가 평가 통과 뒤에
@@ -55,6 +58,7 @@ from src.utils.model_utils import (  # noqa: E402
     save_feature_columns,
 )
 from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
+from src.tracking.namespace import resolve_tracking_namespace  # noqa: E402
 from src.tracking.logger import (  # noqa: E402
     log_artifact,
     log_dataset,
@@ -271,6 +275,7 @@ def main(
     extra_params: dict = None,
     defer_registration: bool = False,
     extra_features: Optional[Sequence[str]] = None,
+    experiment: Optional[str] = None,
 ) -> TrainingOutcome:
     """LightGBM 모델을 학습하고 MLflow에 기록한다.
 
@@ -290,14 +295,23 @@ def main(
         config_path = os.path.join(project_root, config_path)
     config = load_config(config_path)
 
-    # MLflow 초기화
-    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
-    set_tracking_uri(tracking_uri)
-    experiment_id = get_or_create_experiment("ctr-model-training")
+    # MLflow 초기화 — 운영/실험 좌표를 한 번에 정한다(#406). tracking URI만 바꾸고
+    # 등록 이름을 그대로 두면 로컬 스토어에 prod와 동명인 모델이 쌓인다.
+    namespace = resolve_tracking_namespace(
+        prod_model_name=config["registry"]["model_name"],
+        experiment=experiment,
+        tracking_uri_env=os.getenv("MLFLOW_TRACKING_URI"),
+    )
+    set_tracking_uri(namespace.tracking_uri)
+    experiment_id = get_or_create_experiment(namespace.experiment_name)
 
     print("=" * 70)
     print("LightGBM 모델 훈련")
     print("=" * 70)
+    if namespace.is_experiment:
+        print(f"  [실험] experiment={namespace.experiment_name}")
+        print(f"  [실험] registry={namespace.registry_model_name} (prod 승격 대상 아님)")
+        print(f"  [실험] tracking_uri={namespace.tracking_uri}")
 
     with mlflow.start_run(experiment_id=experiment_id) as run:
         print("\n[Step 1] 데이터 로드...")
@@ -577,7 +591,9 @@ def main(
             print("  [OK] calibration 아티팩트 로깅 완료 (calibration/)")
 
         print("\n[Step 9] Model Registry 등록...")
-        model_name = config["registry"]["model_name"]
+        # 실험이면 prod와 다른 registry 이름으로 등록된다(#406). 승격 게이트는
+        # prod 이름만 조회하므로 실험 버전이 champion 후보로 섞이지 않는다.
+        model_name = namespace.registry_model_name
         # log_artifact(..., artifact_path="model")과 짝을 맞춰야 한다 — 서빙 로더의
         # MLFLOW_MODEL_ARTIFACT_PATH 상수(model/lgbm_model.joblib)도 같은
         # "model/" 아티팩트 경로 아래 파일을 참조한다.

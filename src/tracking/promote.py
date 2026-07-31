@@ -23,6 +23,7 @@ import os
 from mlflow.tracking import MlflowClient
 from src.models.calibration import CALIBRATION_PARAM_FILENAME
 from src.tracking.client import set_tracking_uri
+from src.tracking.namespace import is_experiment_model_name
 from src.tracking.promotion_result import (
     ModelPromotionResult,
     PromotionExecutionError,
@@ -78,6 +79,17 @@ def main(
     Raises:
         PromotionExecutionError: registry·지표·아티팩트·alias 실행 오류.
     """
+    # 실험 네임스페이스 모델은 애초에 승격 대상이 아니다(#406). 실험은 prod와 다른
+    # 이름으로 등록되므로 정상 경로에서는 여기 도달하지 않지만, 이름을 직접 넘겨
+    # 부르는 경우까지 막아 "실행해도 prod champion에 영향이 없음"을 보장한다.
+    if is_experiment_model_name(model_name):
+        return ModelPromotionResult(
+            outcome=PromotionOutcome.REJECTED,
+            model_name=model_name,
+            champion_alias=champion_alias,
+            reason_code=PromotionReasonCode.EXPERIMENT_MODEL,
+        )
+
     try:
         set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
         candidate_version = get_latest_version(model_name)

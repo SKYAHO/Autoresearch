@@ -84,6 +84,15 @@ def train_model(
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
     random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
+    experiment: Optional[str] = typer.Option(
+        None,
+        "--experiment",
+        help=(
+            "실험 이름. 지정하면 prod와 분리된 MLflow experiment·registry 이름"
+            "(<model>-exp-<slug>)으로 기록되고, 트래킹 URI 미설정 시 로컬 파일 스토어를 "
+            "기본값으로 씁니다(#406). 이 모델은 champion 승격 대상이 아닙니다."
+        ),
+    ),
     extra_features: Optional[str] = typer.Option(
         None,
         "--extra-features",
@@ -105,6 +114,7 @@ def train_model(
         val_size=val_size,
         random_state=random_state,
         extra_features=_parse_extra_features(extra_features),
+        experiment=experiment,
     )
 
 
@@ -143,6 +153,15 @@ def run_pipeline(
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
     random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
+    experiment: Optional[str] = typer.Option(
+        None,
+        "--experiment",
+        help=(
+            "실험 이름. 지정하면 prod와 분리된 MLflow experiment·registry 이름"
+            "(<model>-exp-<slug>)으로 기록되고, 트래킹 URI 미설정 시 로컬 파일 스토어를 "
+            "기본값으로 씁니다(#406). 이 모델은 champion 승격 대상이 아닙니다."
+        ),
+    ),
     extra_features: Optional[str] = typer.Option(
         None,
         "--extra-features",
@@ -205,6 +224,7 @@ def run_pipeline(
         extra_params=data_source_params,
         defer_registration=True,
         extra_features=experiment_features,
+        experiment=experiment,
     )
 
     # dataset_path(방금 만든 train+val+test 전체)는 넘기지 않는다: evaluate는

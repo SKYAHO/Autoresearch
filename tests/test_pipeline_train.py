@@ -690,3 +690,26 @@ def test_main_without_extra_features_has_no_experiment_tag(tmp_path, monkeypatch
     [registered] = client.search_model_versions("name='ctr-model'")
     tags = client.get_model_version("ctr-model", registered.version).tags
     assert "experiment_features" not in tags
+
+
+def test_main_experiment_registers_under_separate_registry_name(tmp_path, monkeypatch) -> None:
+    """실험 학습은 prod와 다른 registry 이름으로 등록된다(#406 완료조건 1)."""
+    config_path, data_path, tracking_uri = _prepared_dataset(tmp_path, monkeypatch)
+
+    _train_once(tmp_path, config_path, data_path, "ns", experiment="views_per_day")
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    # prod 이름으로는 아무것도 등록되지 않는다 — 승격 게이트가 보는 대상이 오염되지 않는다.
+    assert client.search_model_versions("name='ctr-model'") == []
+    [registered] = client.search_model_versions("name='ctr-model-exp-views-per-day'")
+    assert str(registered.version) == "1"
+
+
+def test_main_prod_path_still_uses_prod_registry_name(tmp_path, monkeypatch) -> None:
+    """experiment 미지정이면 기존과 동일하게 prod 이름으로 등록된다(#406 회귀 방지)."""
+    config_path, data_path, tracking_uri = _prepared_dataset(tmp_path, monkeypatch)
+
+    _train_once(tmp_path, config_path, data_path, "prodns")
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    assert len(client.search_model_versions("name='ctr-model'")) == 1
