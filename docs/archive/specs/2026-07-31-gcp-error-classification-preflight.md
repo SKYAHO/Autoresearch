@@ -1,6 +1,6 @@
 # GCP/Vertex AI 외부 API 실패 분류·사전점검·우회 옵션 통일 — 설계 문서
 
-> Status: Draft | Issue: #426 | Branch: `feat/426-gcp-error-classification-preflight`
+> Status: Implemented | Issue: #426 | Branch: `feat/426-gcp-error-classification-preflight`
 
 ## 배경
 
@@ -163,16 +163,21 @@ def compute_interaction_columns(joined: pd.DataFrame, skip_embedding: bool = Fal
   `feature_builder.py`)에 대한 사전점검 추가 — 이번 이슈의 실측 근거(round_001/002)가
   전부 정책시뮬레이션 경로이므로 그 경로만 다룸. 다른 호출부도 같은 문제가 있다면
   별도 이슈로 판단
+- `src/pipeline/daily_recommendations.py`의 duckdb 경로도 이번 PR이 건드린 같은
+  함수(`build_pool_feature_frame`)를 호출하지만, 자격증명 사전점검을 의도적으로
+  붙이지 않았다 — 이 배치는 Kubernetes 서비스 계정으로 실행돼 capability probe의
+  로컬 에이전트 환경과 달리 대화형 ADC 만료 위험이 없기 때문이다. 이 전제가
+  바뀌면(예: 로컬/대화형 실행 경로 추가) 재검토한다
 
 ## 완료 조건
 
-- [ ] `_get_embeddings_chunk`가 재시도 가능한 예외(429/503/DeadlineExceeded 등)만
+- [x] `_get_embeddings_chunk`가 재시도 가능한 예외(429/503/DeadlineExceeded 등)만
       재시도하고, 나머지(`RefreshError` 등)는 즉시 전파한다
-- [ ] `verify_vertex_ai_credentials()`가 신설되고, `simulate_policy_round.py`의
+- [x] `verify_vertex_ai_credentials()`가 신설되고, `simulate_policy_round.py`의
       `main()`이 `assembly_source == "duckdb"`일 때 라운드 시작 시 이를 호출한다
-- [ ] `compute_interaction_columns`에 `skip_embedding` 옵션이 추가되고
+- [x] `compute_interaction_columns`에 `skip_embedding` 옵션이 추가되고
       `build_pool_feature_frame`이 이를 전달한다
-- [ ] 서비스 계정 기반 인증 절차가 `docs/guides/feast-gcp-setup.md`에 문서화된다
+- [x] 서비스 계정 기반 인증 절차가 `docs/guides/feast-gcp-setup.md`에 문서화된다
 
 ## 관련
 

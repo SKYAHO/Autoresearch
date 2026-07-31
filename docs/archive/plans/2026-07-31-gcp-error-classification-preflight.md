@@ -25,7 +25,7 @@
   계산 로직은 `skip_embedding` 값과 무관하게 완전히 동일해야 한다(#214/#245/#246과
   같은 원칙 — 로직을 복제하지 않고 같은 함수를 공유).
 - 커밋 메시지 형식은 `<type>: <한국어 설명>` (`.claude/docs/agent-workflow-reference.md`).
-- 관련 설계 문서: `docs/specs/2026-07-31-gcp-error-classification-preflight.md`.
+- 관련 설계 문서: `docs/archive/specs/2026-07-31-gcp-error-classification-preflight.md`.
   관련 이슈: #426.
 
 ---
@@ -41,7 +41,7 @@
   types) — 이후 태스크가 참조하지 않으므로 이 모듈 내부 전용.
 - `_get_embeddings_chunk`의 외부 시그니처(인자·반환 타입)는 변경 없음.
 
-- [ ] **Step 1: 실패하는 테스트 작성**
+- [x] **Step 1: 실패하는 테스트 작성**
 
 `tests/test_embeddings.py`에 추가한다(파일 상단에 이미 `from src.features import
 embeddings as embeddings_module`, `_install_recording_fake` 헬퍼가 있다):
@@ -88,7 +88,7 @@ def test_get_embeddings_chunk_does_not_retry_refresh_error(monkeypatch):
 
 (파일 상단에 `import pytest`가 없다면 추가한다 — 먼저 `grep -n "^import\|^from" tests/test_embeddings.py`로 확인.)
 
-- [ ] **Step 2: 테스트 실행해서 실패 확인**
+- [x] **Step 2: 테스트 실행해서 실패 확인**
 
 Run: `uv run python -m pytest tests/test_embeddings.py -k "retries_resource_exhausted or does_not_retry_refresh_error" -v`
 Expected: `test_get_embeddings_chunk_does_not_retry_refresh_error` FAIL — 현재는
@@ -97,7 +97,7 @@ Expected: `test_get_embeddings_chunk_does_not_retry_refresh_error` FAIL — 현�
 기존 코드도 모든 예외를 재시도하기 때문. 그래도 이번 변경 후에도 계속 통과해야
 하므로 함께 추가한다.)
 
-- [ ] **Step 3: `_get_embeddings_chunk`의 재시도 조건 좁히기**
+- [x] **Step 3: `_get_embeddings_chunk`의 재시도 조건 좁히기**
 
 `src/features/embeddings.py` 21~24번째 줄(import)과 52번째 줄(`@retry` 데코레이터)을 수정한다:
 
@@ -164,17 +164,17 @@ def _get_embeddings_chunk(model, texts: list[str], task_type: str) -> list[np.nd
 
 본문(61~66번째 줄)은 그대로 유지한다.
 
-- [ ] **Step 4: 테스트 실행해서 통과 확인**
+- [x] **Step 4: 테스트 실행해서 통과 확인**
 
 Run: `uv run python -m pytest tests/test_embeddings.py -v`
 Expected: PASS 전체(기존 테스트 포함, 신규 2건 포함)
 
-- [ ] **Step 5: lint 확인**
+- [x] **Step 5: lint 확인**
 
 Run: `uv run --no-sync ruff check src/features/embeddings.py tests/test_embeddings.py`
 Expected: `All checks passed!`
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add src/features/embeddings.py tests/test_embeddings.py
@@ -197,7 +197,7 @@ git commit -m "fix: Vertex AI 임베딩 재시도를 회복 가능한 예외로 
   (성공 시 반환값 없음, 실패 시 `ValueError`) — Task 2의 `simulate_policy_round.py`
   통합이 이 시그니처를 그대로 소비한다.
 
-- [ ] **Step 1: 실패하는 테스트 작성 (embeddings.py)**
+- [x] **Step 1: 실패하는 테스트 작성 (embeddings.py)**
 
 `tests/test_embeddings.py`에 추가:
 
@@ -241,12 +241,12 @@ def test_verify_vertex_ai_credentials_passes_when_refresh_succeeds(monkeypatch):
     embeddings_module.verify_vertex_ai_credentials()  # 예외 없이 통과해야 한다
 ```
 
-- [ ] **Step 2: 테스트 실행해서 실패 확인**
+- [x] **Step 2: 테스트 실행해서 실패 확인**
 
 Run: `uv run python -m pytest tests/test_embeddings.py -k verify_vertex_ai_credentials -v`
 Expected: FAIL — `AttributeError: module 'src.features.embeddings' has no attribute 'verify_vertex_ai_credentials'`
 
-- [ ] **Step 3: `verify_vertex_ai_credentials()` 구현**
+- [x] **Step 3: `verify_vertex_ai_credentials()` 구현**
 
 `src/features/embeddings.py`의 `cosine_similarity` 함수 앞(파일 끝)에 추가:
 
@@ -278,12 +278,12 @@ def verify_vertex_ai_credentials() -> None:
         ) from error
 ```
 
-- [ ] **Step 4: 테스트 실행해서 통과 확인 (embeddings.py)**
+- [x] **Step 4: 테스트 실행해서 통과 확인 (embeddings.py)**
 
 Run: `uv run python -m pytest tests/test_embeddings.py -v`
 Expected: PASS 전체(Task 1의 2건 + 이번 3건 포함)
 
-- [ ] **Step 5: `simulate_policy_round.py`에 통합 — 실패하는 테스트 작성**
+- [x] **Step 5: `simulate_policy_round.py`에 통합 — 실패하는 테스트 작성**
 
 먼저 `grep -n "^def test_" tests/test_simulate_policy_round.py | head -5`와
 `grep -n "^from\|^import" tests/test_simulate_policy_round.py`로 기존 임포트·
@@ -333,12 +333,12 @@ def test_main_skips_credential_check_when_assembly_source_is_feast(monkeypatch):
 채워졌는지/`fail_if_called`가 안 불렸는지만 확인하면 된다(필요하면 이후 단계의
 예외를 `pytest.raises`나 `try/except`로 흡수한다).
 
-- [ ] **Step 6: 테스트 실행해서 실패 확인**
+- [x] **Step 6: 테스트 실행해서 실패 확인**
 
 Run: `uv run python -m pytest tests/test_simulate_policy_round.py -k "verifies_credentials or skips_credential_check" -v`
 Expected: FAIL — `main()`이 아직 `verify_vertex_ai_credentials`를 호출하지 않음
 
-- [ ] **Step 7: `main()`에 사전점검 배선**
+- [x] **Step 7: `main()`에 사전점검 배선**
 
 `src/pipeline/simulate_policy_round.py` 상단 import에 추가(다른 `src.features.*`
 import 근처):
@@ -371,12 +371,12 @@ from src.features.embeddings import verify_vertex_ai_credentials
         reranker = load_reranker(load_model_settings_from_environment())  # fail-fast
 ```
 
-- [ ] **Step 8: 테스트 실행해서 통과 확인**
+- [x] **Step 8: 테스트 실행해서 통과 확인**
 
 Run: `uv run python -m pytest tests/test_simulate_policy_round.py -v`
 Expected: PASS 전체(기존 테스트 포함, 신규 2건 포함 — 회귀 없음)
 
-- [ ] **Step 9: 서비스 계정 인증 문서화**
+- [x] **Step 9: 서비스 계정 인증 문서화**
 
 `docs/guides/feast-gcp-setup.md`의 "## 1. 서비스 계정 생성" 절 바로 다음(또는
 문서 끝)에 새 절을 추가한다:
@@ -408,7 +408,7 @@ Expected: PASS 전체(기존 테스트 포함, 신규 2건 포함 — 회귀 없
 (정확한 삽입 위치·기존 `SA_EMAIL` 변수명 등은 파일을 먼저 읽어 기존 절과 톤·
 변수명을 맞출 것 — 위 내용은 뼈대이며 문서 전체 스타일에 맞춰 다듬는다.)
 
-- [ ] **Step 10: lint + 문서 검증**
+- [x] **Step 10: lint + 문서 검증**
 
 Run: `uv run --no-sync ruff check src/features/embeddings.py src/pipeline/simulate_policy_round.py tests/test_embeddings.py tests/test_simulate_policy_round.py`
 Expected: `All checks passed!`
@@ -416,7 +416,7 @@ Expected: `All checks passed!`
 Run: `git diff --check`
 Expected: 출력 없음
 
-- [ ] **Step 11: 커밋**
+- [x] **Step 11: 커밋**
 
 ```bash
 git add src/features/embeddings.py src/pipeline/simulate_policy_round.py \
@@ -438,7 +438,7 @@ git commit -m "feat: 정책시뮬레이션 라운드 시작 GCP 자격증명 사
 - Produces: `compute_interaction_columns(joined, skip_embedding=False)` —
   `build_pool_feature_frame`이 이 시그니처를 소비한다.
 
-- [ ] **Step 1: 실패하는 테스트 작성**
+- [x] **Step 1: 실패하는 테스트 작성**
 
 `tests/test_features_assembly.py`에 기존 `compute_user_topic_features` 테스트
 (420~458번째 줄 부근의 `test_compute_user_topic_features_skip_embedding_*` 2건)를
@@ -486,12 +486,12 @@ def test_compute_interaction_columns_skip_embedding_preserves_other_matches():
 (257번째 줄 부근) 픽스처를 참고해 맞출 것 — 위 코드는 뼈대이며, 실제 테스트 데이터는
 기존 테스트의 `joined` 픽스처와 일치시켜 재사용하는 편이 안전하다.)
 
-- [ ] **Step 2: 테스트 실행해서 실패 확인**
+- [x] **Step 2: 테스트 실행해서 실패 확인**
 
 Run: `uv run python -m pytest tests/test_features_assembly.py -k "compute_interaction_columns_skip_embedding" -v`
 Expected: FAIL — `TypeError: compute_interaction_columns() got an unexpected keyword argument 'skip_embedding'`
 
-- [ ] **Step 3: `compute_interaction_columns`에 `skip_embedding` 추가**
+- [x] **Step 3: `compute_interaction_columns`에 `skip_embedding` 추가**
 
 `src/features/assembly.py`의 `compute_interaction_columns`(466~508번째 줄)을 수정한다:
 
@@ -597,7 +597,7 @@ def compute_interaction_columns(joined: pd.DataFrame, skip_embedding: bool = Fal
     return out
 ```
 
-- [ ] **Step 4: `build_pool_feature_frame`도 인자 전달하도록 확장**
+- [x] **Step 4: `build_pool_feature_frame`도 인자 전달하도록 확장**
 
 `src/pipeline/simulate_policy_round.py`의 `build_pool_feature_frame`(117~148번째
 줄 부근)을 수정한다:
@@ -651,17 +651,17 @@ def build_pool_feature_frame(
 호출하지 않는다. 실제로 언제 `skip_embedding=True`로 호출할지는 이 이슈의
 범위 밖이다.)
 
-- [ ] **Step 5: 테스트 실행해서 통과 확인**
+- [x] **Step 5: 테스트 실행해서 통과 확인**
 
 Run: `uv run python -m pytest tests/test_features_assembly.py tests/test_simulate_policy_round.py -v`
 Expected: PASS 전체(신규 2건 포함, 회귀 없음)
 
-- [ ] **Step 6: lint 확인**
+- [x] **Step 6: lint 확인**
 
 Run: `uv run --no-sync ruff check src/features/assembly.py src/pipeline/simulate_policy_round.py tests/test_features_assembly.py`
 Expected: `All checks passed!`
 
-- [ ] **Step 7: 커밋**
+- [x] **Step 7: 커밋**
 
 ```bash
 git add src/features/assembly.py src/pipeline/simulate_policy_round.py tests/test_features_assembly.py

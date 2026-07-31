@@ -30,9 +30,11 @@ import numpy as np
 from google.api_core.exceptions import (
     Aborted,
     DeadlineExceeded,
+    GatewayTimeout,
     InternalServerError,
     ResourceExhausted,
     ServiceUnavailable,
+    TooManyRequests,
 )
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
@@ -45,6 +47,11 @@ _RECOVERABLE_ERRORS = (
     DeadlineExceeded,
     InternalServerError,
     Aborted,
+    # REST transport 대응 등가 예외 — TooManyRequests(429)/GatewayTimeout(504)는
+    # ResourceExhausted/DeadlineExceeded의 subclass가 아니라 부모 쪽이라 위 항목으로는
+    # 안 잡힌다. 현재 vertexai 기본 transport는 gRPC지만 방어적으로 함께 둔다.
+    TooManyRequests,
+    GatewayTimeout,
 )
 
 EMBEDDING_MODEL = "text-multilingual-embedding-002"
