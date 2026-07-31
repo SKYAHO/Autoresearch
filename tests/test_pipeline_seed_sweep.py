@@ -15,6 +15,9 @@ import pytest
 
 from src.pipeline.seed_sweep import (
     MetricSummary,
+    SeedSweepError,
+    paired_deltas_by_seed,
+    validate_seeds,
     SignificanceVerdict,
     compare_to_baseline,
     run_seed_sweep,
@@ -94,18 +97,19 @@ def test_same_delta_flips_verdict_depending_on_seed_spread() -> None:
     그 Δ가 편차 대비 큰지 작은지는 시드를 늘려야만 알 수 있는데, 아래 두
     경우가 정확히 그 차이를 보여준다.
     """
-    # 시드 간 흔들림이 작으면 같은 Δ가 노이즈 밖이다.
+    # 시드 간 흔들림이 작으면 같은 Δ(=0.1)가 노이즈 밖이다.
     tight = compare_to_baseline(
-        candidate=summarize_metric([0.7465, 0.7455, 0.7470]),
-        baseline=summarize_metric([0.7446, 0.7440, 0.7452]),
+        candidate=summarize_metric([0.801, 0.800, 0.799]),
+        baseline=summarize_metric([0.701, 0.700, 0.699]),
     )
     # 흔들림이 크면 같은 Δ가 노이즈에 묻힌다.
     noisy = compare_to_baseline(
-        candidate=summarize_metric([0.7565, 0.7355, 0.7470]),
-        baseline=summarize_metric([0.7546, 0.7340, 0.7452]),
+        candidate=summarize_metric([0.85, 0.75, 0.80]),
+        baseline=summarize_metric([0.75, 0.65, 0.70]),
     )
 
-    assert tight.delta == pytest.approx(noisy.delta, abs=1e-3)
+    assert tight.delta == pytest.approx(0.1, abs=1e-6)
+    assert noisy.delta == pytest.approx(0.1, abs=1e-6)
     assert tight.within_noise is False
     assert noisy.within_noise is True
 
@@ -166,3 +170,104 @@ def test_significance_verdict_carries_reason() -> None:
     )
 
     assert verdict.reason
+
+
+# --- 리뷰 반영: 시드 짝지음 · t 임계값 · 부분 결과 (#407 리뷰) ---
+
+
+def test_paired_comparison_is_more_sensitive_than_unpaired() -> None:
+    """같은 시드로 두 조건을 돌렸으면 분할 노이즈는 짝지어 빼면 상쇄된다(#407 리뷰 2).
+
+    아래 두 조건은 세 시드에서 **같은 방향으로 함께** 움직이고 시드별 Δ가 매우
+    안정적이다. 짝짓지 않으면 그 공통 흔들림이 분모에 남아 "노이즈 안"으로
+    둔감해진다 — #396류 판정에서 결론이 갈리는 지점이다.
+    """
+    baseline_values = [0.7546, 0.7340, 0.7452]
+    candidate_values = [0.7565, 0.7355, 0.7470]
+    deltas = [c - b for c, b in zip(candidate_values, baseline_values)]
+
+    unpaired = compare_to_baseline(
+        candidate=summarize_metric(candidate_values),
+        baseline=summarize_metric(baseline_values),
+    )
+    paired = compare_to_baseline(
+        candidate=summarize_metric(candidate_values),
+        baseline=summarize_metric(baseline_values),
+        paired_deltas=deltas,
+    )
+
+    assert unpaired.within_noise is True
+    assert paired.within_noise is False
+    # 짝지으면 표준오차가 훨씬 작아진다.
+    assert paired.standard_error < unpaired.standard_error
+
+
+def test_paired_deltas_by_seed_requires_identical_seed_lists() -> None:
+    """짝지을 수 없는데 짝지은 척하면 판정이 낙관적으로 기운다."""
+    a = run_seed_sweep([42, 43], train_once=lambda *, random_state, **_: 0.7)
+    b = run_seed_sweep([42, 44], train_once=lambda *, random_state, **_: 0.7)
+
+    with pytest.raises(ValueError):
+        paired_deltas_by_seed(candidate=a, baseline=b)
+
+
+def test_paired_deltas_by_seed_pairs_in_order() -> None:
+    a = run_seed_sweep([42, 43], train_once=lambda *, random_state, **_: {42: 0.80, 43: 0.82}[random_state])
+    b = run_seed_sweep([42, 43], train_once=lambda *, random_state, **_: {42: 0.78, 43: 0.79}[random_state])
+
+    deltas = paired_deltas_by_seed(candidate=a, baseline=b)
+
+    assert deltas == pytest.approx([0.02, 0.03])
+
+
+def test_threshold_uses_t_critical_not_fixed_two_sigma() -> None:
+    """시드 3개(자유도 2)의 임계값은 2.0이 아니라 4.303이어야 한다(#407 리뷰 3).
+
+    고정 2.0을 쓰면 작은 표본에서 '노이즈 밖'을 실제보다 자주 선언한다 —
+    거짓 채택을 막으려는 모듈이 관대한 쪽으로 기우는 셈이다.
+    """
+    deltas = [0.0019, 0.0015, 0.0018]
+    verdict = compare_to_baseline(
+        candidate=summarize_metric([0.75, 0.76, 0.77]),
+        baseline=summarize_metric([0.74, 0.75, 0.76]),
+        paired_deltas=deltas,
+    )
+
+    paired = summarize_metric(deltas)
+    expected_se = paired.std / math.sqrt(3)
+    assert verdict.standard_error == pytest.approx(expected_se)
+    assert verdict.threshold == pytest.approx(4.303 * expected_se)
+
+
+def test_paired_comparison_needs_two_seeds() -> None:
+    verdict = compare_to_baseline(
+        candidate=summarize_metric([0.75]),
+        baseline=summarize_metric([0.74]),
+        paired_deltas=[0.01],
+    )
+
+    assert verdict.within_noise is None
+
+
+def test_run_seed_sweep_keeps_completed_metrics_on_failure() -> None:
+    """중간에 죽어도 이미 끝난 시드 결과가 남는다 — 학습 1회가 비싸다(#407 리뷰 4)."""
+
+    def flaky(*, random_state, **_):
+        if random_state == 44:
+            raise RuntimeError("학습 실패(시뮬레이션)")
+        return {42: 0.70, 43: 0.72}[random_state]
+
+    with pytest.raises(SeedSweepError) as excinfo:
+        run_seed_sweep([42, 43, 44], train_once=flaky)
+
+    assert excinfo.value.completed == {42: 0.70, 43: 0.72}
+    assert "44" in str(excinfo.value)
+
+
+def test_validate_seeds_can_run_before_side_effects() -> None:
+    """호출부가 디렉토리 생성 전에 부를 수 있어야 한다(#407 리뷰 5)."""
+    validate_seeds([42, 43])
+    with pytest.raises(ValueError):
+        validate_seeds([])
+    with pytest.raises(ValueError):
+        validate_seeds([42, 42])
