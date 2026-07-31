@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -15,6 +17,15 @@ from src.features.model_contract import (
 )
 from src.pipeline import train
 from src.pipeline.train import collect_categorical_categories
+from src.pipeline.training_provenance import (
+    ProvenanceValidationError,
+    RegistryProvenance,
+    TrainingSplitManifest,
+    build_snapshot_manifest,
+    snapshot_manifest_path,
+    split_manifest_path,
+    write_manifest_atomic,
+)
 
 
 def _synthetic_ctr_dataset(n: int = 60, seed: int = 7) -> pd.DataFrame:
@@ -617,6 +628,141 @@ def _prepared_dataset(tmp_path, monkeypatch, *, extra_column: str | None = None)
     data_path = tmp_path / "training_dataset.csv"
     dataset.to_csv(data_path, index=False)
     return config_path, data_path, tracking_uri
+
+
+def _prepared_verified_dataset(tmp_path, monkeypatch):
+    config_path, data_path, tracking_uri = _prepared_dataset(tmp_path, monkeypatch)
+    manifest = build_snapshot_manifest(
+        dataset_path=Path(data_path),
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-30",
+        feature_service="ctr_training_v1",
+        registry=RegistryProvenance(
+            uri="gs://bucket/registry.db",
+            generation="7",
+            sha256="a" * 64,
+        ),
+        code_archive_sha=None,
+    )
+    write_manifest_atomic(manifest, snapshot_manifest_path(Path(data_path)))
+    return config_path, data_path, tracking_uri
+
+
+def _artifact_paths(client: MlflowClient, run_id: str, artifact_path: str) -> set[str]:
+    return {entry.path for entry in client.list_artifacts(run_id, artifact_path)}
+
+
+def test_main_logs_verified_snapshot_and_split_artifacts(tmp_path, monkeypatch) -> None:
+    config_path, data_path, tracking_uri = _prepared_verified_dataset(tmp_path, monkeypatch)
+
+    outcome = train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "features.json"),
+        categorical_columns_output=str(tmp_path / "categories.json"),
+        split_seed=11,
+        model_seed=12,
+        sampler_seed=13,
+        require_snapshot=True,
+        defer_registration=True,
+    )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    assert _artifact_paths(client, outcome.run_id, "reproducibility/snapshot") == {
+        "reproducibility/snapshot/training_dataset.csv",
+        "reproducibility/snapshot/snapshot_manifest.json",
+    }
+    assert _artifact_paths(client, outcome.run_id, "reproducibility/split") == {
+        "reproducibility/split/split_manifest.json",
+    }
+    split = TrainingSplitManifest.model_validate_json(
+        split_manifest_path(tmp_path / "test_set.csv").read_text(encoding="utf-8")
+    )
+    assert (split.split_seed, split.model_seed, split.sampler_seed) == (11, 12, 13)
+    assert split.snapshot_sha256
+    assert split.feature_columns == list(MODEL_FEATURE_COLUMNS)
+
+
+def test_main_rejects_stale_snapshot_before_model_fit(tmp_path, monkeypatch) -> None:
+    config_path, data_path, _ = _prepared_verified_dataset(tmp_path, monkeypatch)
+    data_path.write_text("changed", encoding="utf-8")
+    fit = MagicMock()
+    monkeypatch.setattr(train.LGBMModel, "fit", fit)
+
+    with pytest.raises(ProvenanceValidationError, match="dataset_sha256"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            model_output=str(tmp_path / "model.joblib"),
+            test_set_output=str(tmp_path / "test_set.csv"),
+            feature_columns_output=str(tmp_path / "features.json"),
+            categorical_columns_output=str(tmp_path / "categories.json"),
+            require_snapshot=True,
+            defer_registration=True,
+        )
+
+    fit.assert_not_called()
+    assert not (tmp_path / "model.joblib").exists()
+    assert not (tmp_path / "test_set.csv").exists()
+
+
+def test_main_rejects_incomplete_explicit_seed_triplet_before_model_fit(
+    tmp_path, monkeypatch
+) -> None:
+    config_path, data_path, _ = _prepared_verified_dataset(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="모두 지정"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            model_output=str(tmp_path / "model.joblib"),
+            test_set_output=str(tmp_path / "test_set.csv"),
+            feature_columns_output=str(tmp_path / "features.json"),
+            categorical_columns_output=str(tmp_path / "categories.json"),
+            split_seed=11,
+            model_seed=12,
+            require_snapshot=True,
+            defer_registration=True,
+        )
+
+    assert not (tmp_path / "model.joblib").exists()
+    assert not (tmp_path / "test_set.csv").exists()
+
+
+def test_main_legacy_random_state_records_three_effective_seed_params(tmp_path, monkeypatch) -> None:
+    config_path, data_path, tracking_uri = _prepared_dataset(tmp_path, monkeypatch)
+
+    outcome = _train_once(tmp_path, config_path, data_path, "legacy", defer_registration=True)
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    params = client.get_run(outcome.run_id).data.params
+    assert params["split_seed"] == "42"
+    assert params["model_seed"] == "42"
+    assert params["sampler_seed"] == "42"
+    assert _artifact_paths(client, outcome.run_id, "reproducibility") == set()
+
+
+def test_main_verified_model_version_tags_provenance_hashes(tmp_path, monkeypatch) -> None:
+    config_path, data_path, tracking_uri = _prepared_verified_dataset(tmp_path, monkeypatch)
+
+    outcome = train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "features.json"),
+        categorical_columns_output=str(tmp_path / "categories.json"),
+        require_snapshot=True,
+    )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    [version] = client.search_model_versions("name='ctr-model'")
+    tags = client.get_model_version("ctr-model", str(version.version)).tags
+    assert tags["snapshot_sha256"]
+    assert tags["split_manifest_sha256"]
+    assert version.run_id == outcome.run_id
 
 
 def test_main_without_extra_features_keeps_prod_contract(tmp_path, monkeypatch) -> None:
