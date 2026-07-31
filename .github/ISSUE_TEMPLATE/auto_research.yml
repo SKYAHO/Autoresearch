@@ -137,6 +137,11 @@ body:
 
         **미체크는 불허입니다.** 실험이 성립하려면 미체크 항목을 건드려야 한다고 판단되면,
         에이전트는 진행하지 않고 이 이슈에 질문 코멘트를 남기고 대기합니다.
+
+        첫 항목이 **미체크**면 계약을 고치는 대신 `--extra-features`로 실험 피처를 얹습니다(#405).
+        prod 계약 뒤에 덧붙는 방식이라 테스트 43개가 깨지지 않고, 그렇게 학습한 모델은
+        champion 승격이 자동으로 차단됩니다. 단 데이터셋에 **이미 있는** 컬럼만 지정할 수
+        있습니다 — 컬럼을 새로 만들려면 Feast 정의가 필요하며 두 번째 항목의 허용 범위입니다.
       options:
         - label: prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다
         - label: Feast 정의(`feature_repo/`) 수정을 허용한다
@@ -154,7 +159,7 @@ body:
         - 판정 (지지/기각):
         - 지표 요약 (baseline 대비):
         - 실제 사용 데이터 (스냅샷 재사용 여부 포함):
-        - MLflow run:
+        - MLflow run (tracking URI / experiment / run_id / registry 모델 이름):
         - 막힌 지점 (= 스킬/인프라 백로그):
     validations:
       required: false
