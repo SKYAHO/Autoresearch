@@ -4,8 +4,8 @@
 있는 비교 리포트로 변환하는 구간이다.
 
 [기능] 외부 의존성·네트워크 요청 없이 정책별 스탯 타일·가로 막대·데이터
-테이블을 가진 단일 HTML 문서를 만든다. 팔레트(baseline 파랑/model 초록)는
-dataviz validator로 light/dark 모두 검증 완료 — 색 변경 시 재검증할 것.
+테이블을 가진 단일 HTML 문서를 만든다. baseline/model의 기존 파랑·초록을
+선두로 하는 고정 팔레트를 정책 입력 순서대로 적용한다.
 
 [비책임] 정책 선택, 이벤트 생성, JSON 리포트 저장은
 `src.pipeline.simulate_policy_round`가 담당한다.
@@ -21,7 +21,8 @@ _CSS = """
   color-scheme: light;
   --surface: #fcfcfb; --card: #ffffff; --border: #e4e3df;
   --text-primary: #0b0b0b; --text-secondary: #52514e;
-  --series-baseline: #2a78d6; --series-model: #008300;
+  --series-0: #2a78d6; --series-1: #008300; --series-2: #b05a00;
+  --series-3: #7b55c7; --series-4: #b52f67; --series-5: #007f83;
   --track: #eeede9;
 }
 @media (prefers-color-scheme: dark) {
@@ -29,7 +30,8 @@ _CSS = """
     color-scheme: dark;
     --surface: #1a1a19; --card: #232322; --border: #3a3a38;
     --text-primary: #ffffff; --text-secondary: #c3c2b7;
-    --series-baseline: #3987e5; --series-model: #008300;
+    --series-0: #3987e5; --series-1: #30a84a; --series-2: #e18a3a;
+    --series-3: #a98ae6; --series-4: #e16a9c; --series-5: #3db5b8;
     --track: #2e2e2c;
   }
 }
@@ -37,7 +39,8 @@ _CSS = """
   color-scheme: dark;
   --surface: #1a1a19; --card: #232322; --border: #3a3a38;
   --text-primary: #ffffff; --text-secondary: #c3c2b7;
-  --series-baseline: #3987e5; --series-model: #008300;
+  --series-0: #3987e5; --series-1: #30a84a; --series-2: #e18a3a;
+  --series-3: #a98ae6; --series-4: #e16a9c; --series-5: #3db5b8;
   --track: #2e2e2c;
 }
 * { box-sizing: border-box; }
@@ -58,8 +61,6 @@ h1 { font-size: 20px; margin: 0 0 4px; }
 .row .track { flex: 1; background: var(--track); height: 20px; border-radius: 0 4px 4px 0; }
 .row .fill { height: 100%; border-radius: 0 4px 4px 0; min-width: 2px; }
 .row .val { width: 70px; text-align: right; font-variant-numeric: tabular-nums; }
-.fill.baseline { background: var(--series-baseline); }
-.fill.model { background: var(--series-model); }
 .legend { display: flex; gap: 16px; margin: 4px 0 16px; color: var(--text-secondary); font-size: 12px; }
 .chip { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; }
 table { border-collapse: collapse; margin-top: 8px; }
@@ -77,13 +78,14 @@ def _bar_rows(values: dict[str, float], fmt: Callable[[float], str]) -> str:
     """정책별 가로 막대 행 HTML. 최대값 기준 폭, 값은 직접 라벨."""
     vmax = max(values.values()) or 1.0
     rows = []
-    for policy, value in values.items():
+    for index, (policy, value) in enumerate(values.items()):
         width = max(1.0, value / vmax * 100)
         rows.append(
             f'<div class="row" title="{escape(policy)}: {escape(fmt(value))}">'
             f'<span class="name">{escape(policy)}</span>'
-            f'<span class="track"><span class="fill {escape(policy)}" '
-            f'style="width:{width:.1f}%"></span></span>'
+            f'<span class="track"><span class="fill" '
+            f'style="width:{width:.1f}%;background:var(--series-{index % 6})">'
+            "</span></span>"
             f'<span class="val">{escape(fmt(value))}</span></div>'
         )
     return "".join(rows)
@@ -96,30 +98,59 @@ def render_report_html(report: dict) -> str:
     policy_names = list(policies)
     if len(policy_names) < 2:
         raise ValueError("HTML 리포트는 비교할 정책이 두 개 이상 필요합니다")
-    baseline_name = "baseline" if "baseline" in policies else policy_names[0]
-    model_name = "model" if "model" in policies else next(
-        name for name in policy_names if name != baseline_name
-    )
-    baseline, model = policies[baseline_name], policies[model_name]
-    legend = (
-        '<div class="legend">'
-        f'<span><span class="chip" style="background:var(--series-baseline)"></span>{escape(baseline_name)}</span>'
-        f'<span><span class="chip" style="background:var(--series-model)"></span>{escape(model_name)}</span>'
-        "</div>"
-    )
-    lift = model["ctr"] - baseline["ctr"]
-    explo_imps = model["exploration_impressions"]
-    explo_ctr = model["exploration_clicks"] / explo_imps if explo_imps else 0.0
-    tiles = "".join(
-        f'<div class="tile"><div class="label">{escape(label)}</div>'
-        f'<div class="value">{escape(value)}</div></div>'
-        for label, value in (
+    legend = '<div class="legend">' + "".join(
+        f'<span><span class="chip" '
+        f'style="background:var(--series-{index % 6})"></span>'
+        f"{escape(name)}</span>"
+        for index, name in enumerate(policy_names)
+    ) + "</div>"
+
+    if len(policy_names) == 2:
+        baseline_name = "baseline" if "baseline" in policies else policy_names[0]
+        model_name = "model" if "model" in policies else next(
+            name for name in policy_names if name != baseline_name
+        )
+        baseline, model = policies[baseline_name], policies[model_name]
+        lift = model["ctr"] - baseline["ctr"]
+        tile_values = (
             (f"{model_name} CTR", _pct(model["ctr"])),
             (f"{baseline_name} CTR", _pct(baseline["ctr"])),
             ("CTR lift", f"{'+' if lift >= 0 else ''}{_pct(lift)}"),
             ("노출 겹침 (Jaccard)", f"{report['overlap_jaccard_mean']:.2f}"),
             ("유저 수", str(report["users"])),
         )
+        explo_imps = model["exploration_impressions"]
+        explo_ctr = model["exploration_clicks"] / explo_imps if explo_imps else 0.0
+        exploration_summary = (
+            f"exploration CTR ({escape(model_name)}): "
+            f"{escape(_pct(explo_ctr))}"
+        )
+    else:
+        tile_values = (
+            *(
+                (f"{name} CTR", _pct(policy["ctr"]))
+                for name, policy in policies.items()
+            ),
+            ("노출 겹침 평균 (Jaccard)", f"{report['overlap_jaccard_mean']:.2f}"),
+            ("유저 수", str(report["users"])),
+        )
+        exploration_values = []
+        for name, policy in policies.items():
+            impressions = policy["exploration_impressions"]
+            ctr = (
+                policy["exploration_clicks"] / impressions
+                if impressions
+                else 0.0
+            )
+            exploration_values.append(f"{escape(name)}={escape(_pct(ctr))}")
+        exploration_summary = "exploration CTRs: " + ", ".join(
+            exploration_values
+        )
+
+    tiles = "".join(
+        f'<div class="tile"><div class="label">{escape(label)}</div>'
+        f'<div class="value">{escape(value)}</div></div>'
+        for label, value in tile_values
     )
     table_rows = "".join(
         f"<tr><td>{escape(name)}</td><td>{p['impressions']}</td><td>{p['clicks']}</td>"
@@ -127,6 +158,19 @@ def render_report_html(report: dict) -> str:
         f"<td>{p['exploration_impressions']}</td><td>{p['exploration_clicks']}</td></tr>"
         for name, p in policies.items()
     )
+    overlap_by_pair = report.get("overlap_jaccard_by_pair", {})
+    pairwise_section = ""
+    if len(policy_names) > 2 and overlap_by_pair:
+        pair_rows = "".join(
+            f"<tr><td>{escape(pair.replace('|', ' ↔ ', 1))}</td>"
+            f"<td>{float(value):.4f}</td></tr>"
+            for pair, value in overlap_by_pair.items()
+        )
+        pairwise_section = f"""<div class="chart"><h2>정책 쌍별 노출 겹침</h2>
+<table>
+<tr><th>policy pair</th><th>Jaccard mean</th></tr>
+{pair_rows}
+</table></div>"""
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -152,12 +196,13 @@ seed={report["seed"]}</div>
 <th>mean propensity</th><th>explo imps</th><th>explo clicks</th></tr>
 {table_rows}
 </table>
-<p class="meta">exploration CTR ({escape(model_name)}): {escape(_pct(explo_ctr))} ·
+<p class="meta">{exploration_summary} ·
 skipped users: {len(report["skipped_users"])} ·
 dropped exposures: {report["dropped_exposures_without_judgment"]} ·
 quarantined chunks: {report["quarantined_chunks"]} ·
 replay: {str(bool(report.get("replay", False))).lower()} ·
 llm_model={escape(str(report.get("llm_model", "-")))}</p></div>
+{pairwise_section}
 </body>
 </html>
 """

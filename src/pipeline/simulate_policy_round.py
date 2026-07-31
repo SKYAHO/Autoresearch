@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """정책 시뮬레이션 라운드 배치.
 
-baseline(키워드 휴리스틱) vs model(Reranker Top-K) 정책을 같은 유저·영상
+키워드 휴리스틱 또는 Reranker Top-K로 구성한 여러 정책을 같은 유저·영상
 pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 판정을 거쳐 정책
 태깅된 event log와 비교 리포트를 산출한다.
 
@@ -11,7 +11,7 @@ pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 
 
 제공 기능:
 
-- 유저별 두 정책 노출 결정과 스코어링 진단 수집(다중 정책 실행은 Task 3 소유)
+- 유저별 N개 정책 노출 결정과 정책별 스코어링 진단 수집
 - LLM 판정 1회 실행(합집합 후보)과 판정 덤프
   (`action_log_drafts.parquet` + 계보·노출 인자·노출 키 집합 사이드카
   `action_log_drafts_meta.json`) — `click_threshold` 캘리브레이션 입력
@@ -22,7 +22,7 @@ pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 
   휴리스틱으로 폴백한다
 - 정책별 event log(parquet/JSONL)·quarantine·비교 리포트(JSON/HTML) 산출
 
-주의: 두 정책이 같은 (user, video)를 노출하면 동일 판정을 공유하되 이벤트
+주의: 여러 정책이 같은 (user, video)를 노출하면 동일 판정을 공유하되 이벤트
 행은 정책별로 분리 생성된다. 재학습 등 downstream은 반드시 policy 컬럼으로
 필터링해야 한다(정책 간 attribution 오염 방지).
 
@@ -36,8 +36,10 @@ import argparse
 import json
 import os
 import random
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -86,7 +88,11 @@ from src.serving.model_loader import (
     load_reranker,
 )
 from src.serving.schemas import CandidateVideo
-from src.serving.service import Reranker
+from src.serving.service import (
+    MissingFeatureColumnsError,
+    PredictionError,
+    Reranker,
+)
 
 if TYPE_CHECKING:
     from feast import FeatureStore
@@ -118,10 +124,10 @@ class DraftReplay:
 
     판정과 계보는 항상 함께 다뤄야 하므로(계보 없는 event log를 쓰지 않는다)
     한 값으로 묶는다. exposure_args는 판정 라운드의 노출 결정 인자이며 CLI가
-    인자 상속·불일치 검사에 사용한다. exposure_keys는 판정 라운드의 유저별
-    노출 video_id 집합으로, 있으면 리플레이 커버리지를 휴리스틱 대신 원본
-    노출과의 정확 비교로 검사한다(#274). 구버전 사이드카에는 없으므로 None을
-    허용한다.
+    인자 상속·불일치 검사에 사용한다. policy_exposures는 정책별 순서·rank·
+    score·exploration·version을 보존하는 엄격한 리플레이 스냅샷이다.
+    exposure_keys는 이 스냅샷이 없는 구버전 사이드카의 유저별 합집합
+    video_id 비교에 사용한다(#274).
     """
 
     drafts: list[ImpressionDraft]
@@ -129,7 +135,10 @@ class DraftReplay:
     exposure_args: Mapping[str, object]
     exposure_keys: Mapping[str, frozenset[str]] | None = None
     round_id: str | None = None
-    policy_exposures: Mapping[str, Mapping[str, Sequence[str]]] | None = None
+    policy_versions: Mapping[str, str] | None = None
+    policy_exposures: (
+        Mapping[str, Mapping[str, Sequence[Mapping[str, object]]]] | None
+    ) = None
 
 
 def build_pool_feature_frame(
@@ -197,7 +206,10 @@ def _write_drafts_meta(
     llm_model: str,
     exposure_args: Mapping[str, object],
     exposure_keys: Mapping[str, list[str]],
-    policy_exposures: Mapping[str, Mapping[str, list[str]]],
+    policy_versions: Mapping[str, str],
+    policy_exposures: Mapping[
+        str, Mapping[str, Sequence[Mapping[str, object]]]
+    ],
     policy_version: str,
     round_id: str,
     virtual_users: int,
@@ -220,8 +232,12 @@ def _write_drafts_meta(
         "schema_version": ACTION_LOG_SCHEMA_VERSION,
         "exposure_args": dict(exposure_args),
         "exposure_keys": {user: sorted(keys) for user, keys in exposure_keys.items()},
+        "policy_versions": dict(policy_versions),
         "policy_exposures": {
-            user: {policy: list(videos) for policy, videos in by_policy.items()}
+            user: {
+                policy: [dict(exposure) for exposure in exposures]
+                for policy, exposures in by_policy.items()
+            }
             for user, by_policy in policy_exposures.items()
         },
         "policy_version": policy_version,
@@ -362,12 +378,22 @@ def _validate_replay_exposure_keys(
 
 def _policy_exposure_snapshot(
     exposures_by_user: Mapping[str, Mapping[str, Sequence[Exposure]]],
-) -> dict[str, dict[str, list[str]]]:
-    """리플레이 비교용 유저별 정책 노출 순서 스냅샷을 만든다."""
+    policy_versions: Mapping[str, str],
+) -> dict[str, dict[str, list[dict[str, object]]]]:
+    """리플레이용 유저별 정책 노출·계보 스냅샷을 만든다."""
 
     return {
         user_id: {
-            policy: [exposure.video_id for exposure in exposures]
+            policy: [
+                {
+                    "video_id": exposure.video_id,
+                    "rank": exposure.rank,
+                    "ctr_score": exposure.ctr_score,
+                    "is_exploration": exposure.is_exploration,
+                    "policy_version": policy_versions[policy],
+                }
+                for exposure in exposures
+            ]
             for policy, exposures in by_policy.items()
         }
         for user_id, by_policy in exposures_by_user.items()
@@ -375,20 +401,106 @@ def _policy_exposure_snapshot(
 
 
 def _validate_replay_policy_exposures(
-    original: Mapping[str, Mapping[str, Sequence[str]]],
+    original: Mapping[
+        str, Mapping[str, Sequence[Mapping[str, object]]]
+    ],
     exposures_by_user: Mapping[str, Mapping[str, Sequence[Exposure]]],
+    policy_versions: Mapping[str, str],
 ) -> None:
-    """정책별 노출 스냅샷이 리플레이 실행과 동일한지 검증한다."""
+    """정책별 노출 순서와 모든 노출 메타데이터가 같은지 검증한다."""
 
-    current = _policy_exposure_snapshot(exposures_by_user)
-    if current != {
-        str(user_id): {
-            str(policy): [str(video_id) for video_id in video_ids]
-            for policy, video_ids in by_policy.items()
-        }
-        for user_id, by_policy in original.items()
-    }:
-        raise ValueError("replay 정책 노출 snapshot이 판정 라운드와 다릅니다")
+    current = _policy_exposure_snapshot(exposures_by_user, policy_versions)
+    original_by_user = {
+        str(user_id): by_policy for user_id, by_policy in original.items()
+    }
+    if set(current) != set(original_by_user):
+        raise ValueError(
+            "replay 정책 노출 snapshot의 유저 집합이 판정 라운드와 다릅니다"
+        )
+
+    for user_id, current_by_policy in current.items():
+        original_by_policy = original_by_user[user_id]
+        current_policies = list(current_by_policy)
+        original_policies = [str(policy) for policy in original_by_policy]
+        if current_policies != original_policies:
+            raise ValueError(
+                "replay 정책 노출 snapshot의 정책 이름 또는 정책 순서가 "
+                f"판정 라운드와 다릅니다 (user={user_id})"
+            )
+        for policy, current_exposures in current_by_policy.items():
+            original_exposures = original_by_policy[policy]
+            if len(current_exposures) != len(original_exposures):
+                raise ValueError(
+                    "replay 정책 노출 snapshot의 노출 수가 판정 라운드와 "
+                    f"다릅니다 (user={user_id}, policy={policy})"
+                )
+            for index, (current_exposure, original_exposure) in enumerate(
+                zip(current_exposures, original_exposures, strict=True)
+            ):
+                if not isinstance(original_exposure, Mapping):
+                    raise ValueError(
+                        "replay 정책 노출 snapshot 항목에 전체 노출 메타데이터가 "
+                        f"없습니다 (user={user_id}, policy={policy}, index={index})"
+                    )
+                if current_exposure != dict(original_exposure):
+                    raise ValueError(
+                        "replay 정책 노출 snapshot이 판정 라운드와 다릅니다 "
+                        f"(user={user_id}, policy={policy}, index={index})"
+                    )
+
+
+def _parse_policy_exposure_snapshot(
+    raw: object,
+) -> dict[str, dict[str, tuple[dict[str, object], ...]]] | None:
+    """JSON sidecar의 정책 노출 스냅샷을 타입이 보존된 값으로 읽는다.
+
+    Task 2가 쓴 video_id 문자열 전용 스냅샷은 새 엄격 스냅샷으로 취급하지 않고
+    None을 반환해 exposure_keys/legacy 커버리지 검증으로 폴백한다.
+    """
+
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("policy_exposures 메타는 유저별 mapping이어야 합니다")
+
+    parsed: dict[str, dict[str, tuple[dict[str, object], ...]]] = {}
+    saw_rich_item = False
+    saw_legacy_item = False
+    for user_id, by_policy in raw.items():
+        if not isinstance(by_policy, Mapping):
+            raise ValueError(
+                f"policy_exposures[{user_id!r}]는 정책별 mapping이어야 합니다"
+            )
+        parsed_by_policy: dict[str, tuple[dict[str, object], ...]] = {}
+        for policy, exposures in by_policy.items():
+            if isinstance(exposures, (str, bytes)) or not isinstance(
+                exposures, Sequence
+            ):
+                raise ValueError(
+                    f"policy_exposures[{user_id!r}][{policy!r}]는 노출 목록이어야 합니다"
+                )
+            parsed_exposures: list[dict[str, object]] = []
+            for index, exposure in enumerate(exposures):
+                if not isinstance(exposure, Mapping):
+                    if isinstance(exposure, str):
+                        saw_legacy_item = True
+                        continue
+                    raise ValueError(
+                        "policy_exposures 스냅샷 항목에 video_id, rank, ctr_score, "
+                        "is_exploration, policy_version이 필요합니다 "
+                        f"(user={user_id}, policy={policy}, index={index})"
+                    )
+                saw_rich_item = True
+                parsed_exposures.append(
+                    {str(key): value for key, value in exposure.items()}
+                )
+            parsed_by_policy[str(policy)] = tuple(parsed_exposures)
+        parsed[str(user_id)] = parsed_by_policy
+    if saw_rich_item and saw_legacy_item:
+        raise ValueError("policy_exposures 메타에 신규·구형 snapshot 형식이 섞였습니다")
+    if saw_legacy_item:
+        return None
+    return parsed
 
 
 def _validate_unique_event_ids(events: Sequence[EventLog]) -> None:
@@ -460,20 +572,32 @@ def main(
             raise ValueError("policies와 reranker는 함께 지정할 수 없습니다")
 
     names = [policy.name for policy in policy_specs]
+    if len(policy_specs) < 2:
+        raise ValueError("policy round requires at least two policies")
     if len(names) != len(set(names)):
         raise ValueError("policy names must be unique (중복 정책 이름 불가)")
-    baseline_specs = [policy for policy in policy_specs if policy.reranker is None]
-    model_specs = [policy for policy in policy_specs if policy.reranker is not None]
-    if len(baseline_specs) != 1 or len(model_specs) != 1:
-        raise ValueError(
-            "Task 2 정책 실행은 baseline 1개와 model 1개만 지원합니다; "
-            "다중 정책 실행은 Task 3에서 제공합니다"
-        )
-    baseline_policy = baseline_specs[0]
-    model_policy = model_specs[0]
-    assert model_policy.reranker is not None
-    reranker = model_policy.reranker
-    effective_round_id = round_id or (replay.round_id if replay and replay.round_id else f"round-{seed}")
+    policy_versions = {
+        policy.name: policy.version or policy_version for policy in policy_specs
+    }
+    if replay is not None and replay.round_id is not None and round_id is not None:
+        if replay.round_id != round_id:
+            raise ValueError(
+                "replay round_id가 이번 실행과 다릅니다 "
+                f"(판정 라운드={replay.round_id!r}, 이번 실행={round_id!r})"
+            )
+    if replay is not None and replay.policy_versions is not None:
+        if (
+            list(replay.policy_versions) != names
+            or dict(replay.policy_versions) != policy_versions
+        ):
+            raise ValueError(
+                "replay 정책 이름, 순서 또는 policy version이 판정 라운드와 다릅니다"
+            )
+    effective_round_id = (
+        round_id
+        or (replay.round_id if replay and replay.round_id else None)
+        or f"round-{uuid.uuid4().hex}"
+    )
     validate_policy_name(effective_round_id)
 
     exposure_args = {
@@ -501,48 +625,115 @@ def main(
         def _model_feature_frame(user_id: str) -> pd.DataFrame:
             return build_pool_feature_frame(personas, events, videos_raw, user_id, as_of)
 
-    # 1) 유저별 두 정책의 노출 결정 (+ 스코어링 진단 수집)
+    # 1) 유저별 모든 정책의 노출 결정 (+ 정책별 스코어링 진단 수집)
     exposures_by_user: dict[str, dict[str, list[Exposure]]] = {}
     unseen_counts: dict[str, int] = {}
+    unseen_counts_by_policy: dict[str, dict[str, int]] = {
+        policy.name: {} for policy in policy_specs
+    }
     skipped_users: list[str] = []
+    skipped_users_by_policy: dict[str, list[str]] = {
+        policy.name: [] for policy in policy_specs
+    }
+    model_policy_specs = tuple(
+        policy for policy in policy_specs if policy.reranker is not None
+    )
     for index, virtual_user in enumerate(virtual_users):
         user_id = str(virtual_user.get("user_id", f"user_{index}"))
-        try:
-            frame = _model_feature_frame(user_id)
-            candidates = _to_candidate_videos(frame, reranker.feature_columns)
-            outcome = reranker.rerank_with_diagnostics(candidates)
-        except KeyError:
-            if assembly_source == "feast":
-                # feast 경로의 KeyError는 유저별 결손이 아니라 전 유저 공통 구성 오류다
-                # (registry/FeatureService 불일치 → retrieve_training_features 내부 컬럼
-                # 접근 실패). 유저 스킵으로 위장하면 빈 노출 리포트가 성공으로 끝나 은폐되므로
-                # 그대로 전파한다(리뷰 #377). persona 누락 격리는 duckdb 경로 전용이다.
-                raise
-            skipped_users.append(user_id)  # duckdb: persona 누락 등 유저 단위 격리
+        frame: pd.DataFrame | None = None
+        if model_policy_specs:
+            try:
+                # 한 유저의 raw/Feast 피처 조립은 모델 정책 수와 무관하게 한 번만 한다.
+                frame = _model_feature_frame(user_id)
+            except KeyError:
+                if assembly_source == "feast":
+                    # feast KeyError는 registry/FeatureService 구성 오류이므로 fail-fast.
+                    raise
+                skipped_users.append(user_id)
+                for policy in model_policy_specs:
+                    skipped_users_by_policy[policy.name].append(user_id)
+                continue
+
+        by_policy: dict[str, list[Exposure]] = {}
+        candidates_by_contract: dict[tuple[str, ...], list[CandidateVideo]] = {}
+        user_unseen: dict[str, dict[str, int]] = {}
+        failed_policy: str | None = None
+        for policy_spec in policy_specs:
+            policy = policy_spec.name
+            if policy_spec.reranker is None:
+                # baseline 이름은 기존 seed 관례를 보존하고, 추가 baseline은 이름으로 격리한다.
+                rng_seed = (
+                    f"{seed}:{user_id}"
+                    if policy == BASELINE
+                    else f"{seed}:{policy}:{user_id}"
+                )
+                baseline_videos = build_candidates(
+                    virtual_user,
+                    list(video_by_id.values()),
+                    k,
+                    exploration_ratio,
+                    random.Random(rng_seed),
+                )
+                by_policy[policy] = [
+                    Exposure(
+                        video_id=str(video["video_id"]),
+                        rank=rank,
+                        ctr_score=None,
+                        is_exploration=None,
+                    )
+                    for rank, video in enumerate(baseline_videos, start=1)
+                ]
+                continue
+
+            assert frame is not None
+            reranker_for_policy = policy_spec.reranker
+            try:
+                candidates = candidates_by_contract.get(
+                    reranker_for_policy.feature_columns
+                )
+                if candidates is None:
+                    candidates = _to_candidate_videos(
+                        frame, reranker_for_policy.feature_columns
+                    )
+                    candidates_by_contract[
+                        reranker_for_policy.feature_columns
+                    ] = candidates
+                outcome = reranker_for_policy.rerank_with_diagnostics(candidates)
+                by_policy[policy] = select_exposures(
+                    outcome.items,
+                    k,
+                    exploration_ratio,
+                    random.Random(f"{seed}:{policy}:{user_id}"),
+                )
+            except KeyError:
+                if assembly_source == "feast":
+                    raise
+                failed_policy = policy
+                break
+            except (MissingFeatureColumnsError, PredictionError):
+                failed_policy = policy
+                break
+            user_unseen[policy] = {
+                column: len(values)
+                for column, values in outcome.unseen_categories.items()
+            }
+
+        if failed_policy is not None:
+            skipped_users.append(user_id)
+            skipped_users_by_policy[failed_policy].append(user_id)
             continue
-        for column, values in outcome.unseen_categories.items():
-            unseen_counts[column] = unseen_counts.get(column, 0) + len(values)
 
-        model_rng = random.Random(f"{seed}:model:{user_id}")
-        model_exposures = select_exposures(outcome.items, k, exploration_ratio, model_rng)
-
-        baseline_rng = random.Random(f"{seed}:{user_id}")  # 기존 pipeline seed 관례와 동일
-        baseline_videos = build_candidates(
-            virtual_user, list(video_by_id.values()), k, exploration_ratio, baseline_rng
-        )
-        baseline_exposures = [
-            Exposure(video_id=str(v["video_id"]), rank=i + 1, ctr_score=None, is_exploration=None)
-            for i, v in enumerate(baseline_videos)
-        ]
-        exposures_by_user[user_id] = {
-            model_policy.name: model_exposures,
-            baseline_policy.name: baseline_exposures,
-        }
+        exposures_by_user[user_id] = by_policy
+        for policy, counts in user_unseen.items():
+            policy_counts = unseen_counts_by_policy[policy]
+            for column, count in counts.items():
+                policy_counts[column] = policy_counts.get(column, 0) + count
+                unseen_counts[column] = unseen_counts.get(column, 0) + count
 
     # 2) 판정 확보 — 신규 라운드는 LLM 1회, 리플레이는 저장된 판정 재사용
     request = EventGenerationRequest(
         click_threshold=click_threshold,
-        candidates_per_user=max(1, 2 * k),
+        candidates_per_user=max(1, len(policy_specs) * k),
         seed=seed,
         chunk_size=chunk_size,
         max_concurrency=max_concurrency,
@@ -553,11 +744,11 @@ def main(
     if replay is None:
         assert generator is not None  # 위 XOR 검증이 보장한다
         union_by_user: dict[str, list[dict]] = {}
-        for user_id, both in exposures_by_user.items():
+        for user_id, by_policy in exposures_by_user.items():
             seen: set[str] = set()
             union: list[dict] = []
-            for policy_exposures in both.values():
-                for exposure in policy_exposures:
+            for policy_spec in policy_specs:
+                for exposure in by_policy[policy_spec.name]:
                     if exposure.video_id in seen:
                         continue
                     seen.add(exposure.video_id)
@@ -583,7 +774,10 @@ def main(
                 user_id: [str(v["video_id"]) for v in union]
                 for user_id, union in union_by_user.items()
             },
-            policy_exposures=_policy_exposure_snapshot(exposures_by_user),
+            policy_versions=policy_versions,
+            policy_exposures=_policy_exposure_snapshot(
+                exposures_by_user, policy_versions
+            ),
             policy_version=policy_version,
             round_id=effective_round_id,
             virtual_users=len(virtual_users),
@@ -615,7 +809,11 @@ def main(
             )
 
         if replay.policy_exposures is not None:
-            _validate_replay_policy_exposures(replay.policy_exposures, exposures_by_user)
+            _validate_replay_policy_exposures(
+                replay.policy_exposures,
+                exposures_by_user,
+                policy_versions,
+            )
         elif replay.exposure_keys is not None:
             # 사이드카에 원본 노출 키 집합이 있으면 정확 비교한다. 통과하면
             # 판정 없는 노출은 전부 원본 quarantine(chunk 부분 격리 포함)이므로
@@ -657,7 +855,7 @@ def main(
     all_events: list[EventLog] = []
     dropped = 0
     per_policy: dict[str, dict[str, float]] = {}
-    for policy_spec, seed_offset in ((baseline_policy, 0), (model_policy, 1000)):
+    for policy_index, policy_spec in enumerate(policy_specs):
         policy = policy_spec.name
         policy_drafts: list[ImpressionDraft] = []
         metadata: dict[tuple[str, str], ExposureMetadata] = {}
@@ -677,7 +875,7 @@ def main(
                     rank=exposure.rank,
                     ctr_score=exposure.ctr_score,
                     is_exploration=exposure.is_exploration,
-                    policy_version=policy_spec.version or policy_version,
+                    policy_version=policy_versions[policy],
                 )
                 if exposure.is_exploration:
                     exploration_imps += 1
@@ -686,7 +884,9 @@ def main(
         clicked_indices = {
             i for i, d in enumerate(policy_drafts) if (d.user_id, d.video_id) in clicked_keys
         }
-        policy_request = request.model_copy(update={"seed": seed + seed_offset})
+        policy_request = request.model_copy(
+            update={"seed": seed + policy_index * 1000}
+        )
         events_out = _expand_events(
             policy_drafts, clicked_indices, policy_request,
             metadata=metadata,
@@ -697,6 +897,7 @@ def main(
         impressions = len(policy_drafts)
         clicks = len(clicked_indices)
         per_policy[policy] = {
+            "policy_version": policy_versions[policy],
             "impressions": impressions,
             "clicks": clicks,
             "ctr": round(clicks / impressions, 4) if impressions else 0.0,
@@ -709,14 +910,30 @@ def main(
 
     _validate_unique_event_ids(all_events)
 
-    # 5) 노출 겹침률 (유저별 Jaccard 평균)
-    jaccards: list[float] = []
-    for both in exposures_by_user.values():
-        a = {e.video_id for e in both[baseline_policy.name]}
-        b = {e.video_id for e in both[model_policy.name]}
-        if a | b:
-            jaccards.append(len(a & b) / len(a | b))
-    overlap = round(sum(jaccards) / len(jaccards), 4) if jaccards else 0.0
+    # 5) 모든 정책 쌍의 유저별 Jaccard 평균. "|"는 정책 이름에 허용되지 않아
+    # pair key를 모호하지 않게 직렬화한다.
+    overlap_by_pair: dict[str, float] = {}
+    all_jaccards: list[float] = []
+    for left, right in combinations(names, 2):
+        pair_jaccards: list[float] = []
+        for by_policy in exposures_by_user.values():
+            left_ids = {exposure.video_id for exposure in by_policy[left]}
+            right_ids = {exposure.video_id for exposure in by_policy[right]}
+            if left_ids | right_ids:
+                pair_jaccards.append(
+                    len(left_ids & right_ids) / len(left_ids | right_ids)
+                )
+        overlap_by_pair[f"{left}|{right}"] = (
+            round(sum(pair_jaccards) / len(pair_jaccards), 4)
+            if pair_jaccards
+            else 0.0
+        )
+        all_jaccards.extend(pair_jaccards)
+    overlap = (
+        round(sum(all_jaccards) / len(all_jaccards), 4)
+        if all_jaccards
+        else 0.0
+    )
 
     # 6) 저장 + 리포트
     batch = EventLogBatch(
@@ -733,6 +950,7 @@ def main(
 
     report = {
         "policy_version": policy_version,
+        "policy_versions": policy_versions,
         "round_id": effective_round_id,
         "replay": replay is not None,
         "llm_model": llm_model,
@@ -742,10 +960,13 @@ def main(
         "seed": seed,
         "users": len(exposures_by_user),
         "skipped_users": skipped_users,
+        "skipped_users_by_policy": skipped_users_by_policy,
         "dropped_exposures_without_judgment": dropped,
         "policies": per_policy,
         "overlap_jaccard_mean": overlap,
+        "overlap_jaccard_by_pair": overlap_by_pair,
         "unseen_category_counts": unseen_counts,
+        "unseen_category_counts_by_policy": unseen_counts_by_policy,
         "quarantined_chunks": len(quarantine),
     }
     report_path = Path(output_dir) / "policy_round_report.json"
@@ -763,7 +984,7 @@ def _cli() -> None:
     parser = argparse.ArgumentParser(description="정책 시뮬레이션 라운드 실행")
     parser.add_argument("--personas", required=True, help="persona csv/parquet 경로")
     parser.add_argument("--virtual-users", required=True, help="virtual user parquet 경로")
-    parser.add_argument("--videos", required=True, help="videos_raw csv 경로 (youtube_videos.csv 형식)")
+    parser.add_argument("--videos", required=True, help="사전 파싱된 videos.csv 경로")
     parser.add_argument("--events", required=True, help="historical wide events csv 경로")
     parser.add_argument("--k", type=int, default=None, help="기본 10 (리플레이면 판정 라운드에서 상속)")
     parser.add_argument("--exploration-ratio", type=float, default=None, help="기본 0.1 (리플레이면 상속)")
@@ -856,6 +1077,11 @@ def _cli() -> None:
         meta_exposure_args = meta["exposure_args"]
         raw_exposure_keys = meta.get("exposure_keys")  # 구버전 사이드카에는 없다
         raw_policy_exposures = meta.get("policy_exposures")
+        raw_policy_versions = meta.get("policy_versions")
+        if raw_policy_versions is not None and not isinstance(
+            raw_policy_versions, Mapping
+        ):
+            raise ValueError("policy_versions 메타는 정책별 mapping이어야 합니다")
         replay = DraftReplay(
             drafts=read_action_log_draft_parquet(args.replay_drafts),
             llm_model=str(meta["llm_model"]),
@@ -869,16 +1095,16 @@ def _cli() -> None:
                 else None
             ),
             round_id=(str(meta["round_id"]) if meta.get("round_id") is not None else None),
-            policy_exposures=(
+            policy_versions=(
                 {
-                    str(user): {
-                        str(policy): tuple(str(video) for video in videos)
-                        for policy, videos in by_policy.items()
-                    }
-                    for user, by_policy in raw_policy_exposures.items()
+                    str(policy): str(version)
+                    for policy, version in raw_policy_versions.items()
                 }
-                if raw_policy_exposures is not None
+                if raw_policy_versions is not None
                 else None
+            ),
+            policy_exposures=_parse_policy_exposure_snapshot(
+                raw_policy_exposures
             ),
         )
     else:
