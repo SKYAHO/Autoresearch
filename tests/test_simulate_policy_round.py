@@ -237,6 +237,136 @@ def test_round_events_are_tagged_per_policy(tmp_path, stub_reranker):
     assert (model_imps["policy_version"] == "stub-run").all()
 
 
+def test_round_supports_three_named_policies(tmp_path, stub_reranker):
+    """실제 main()이 세 개의 임의 정책을 모든 산출물에 보존해야 한다."""
+    import json
+
+    import pyarrow.parquet as pq
+
+    from src.pipeline.simulate_policy_round import PolicySpec
+
+    report = main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        policies=[
+            PolicySpec(name="baseline", reranker=None, version="baseline-v1"),
+            PolicySpec(name="model-a", reranker=stub_reranker, version="model-a-v1"),
+            PolicySpec(name="model-b", reranker=stub_reranker, version="model-b-v1"),
+        ],
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        output_dir=str(tmp_path),
+    )
+
+    expected = {"baseline", "model-a", "model-b"}
+    assert set(report["policies"]) == expected
+    persisted = json.loads(
+        (tmp_path / "policy_round_report.json").read_text(encoding="utf-8")
+    )
+    assert set(persisted["policies"]) == expected
+    html = (tmp_path / "policy_round_report.html").read_text(encoding="utf-8")
+    assert all(policy in html for policy in expected)
+    table = pq.read_table(tmp_path / "event_log.parquet").to_pandas()
+    assert set(table["policy"].dropna().unique()) == expected
+
+
+def test_round_event_ids_are_unique_and_policy_versions_are_per_policy(
+    tmp_path, stub_reranker
+):
+    import pyarrow.parquet as pq
+
+    from src.pipeline.simulate_policy_round import PolicySpec
+
+    main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        policies=[
+            PolicySpec(name="baseline", reranker=None, version="baseline-v2"),
+            PolicySpec(name="ranker", reranker=stub_reranker, version="ranker-v7"),
+        ],
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        round_id="round-427",
+        output_dir=str(tmp_path),
+    )
+    table = pq.read_table(tmp_path / "event_log.parquet").to_pandas()
+
+    assert table["event_id"].is_unique
+    assert set(table.loc[table["policy"] == "baseline", "policy_version"]) == {"baseline-v2"}
+    assert set(table.loc[table["policy"] == "ranker", "policy_version"]) == {"ranker-v7"}
+
+
+def test_round_replay_rejects_policy_exposure_snapshot_mismatch(tmp_path, stub_reranker):
+    import copy
+    import json
+
+    from autoresearch.action_logs.pipeline import read_action_log_draft_parquet
+    from src.pipeline.simulate_policy_round import (
+        DRAFTS_FILENAME,
+        DRAFTS_META_FILENAME,
+        DraftReplay,
+        PolicySpec,
+    )
+
+    first_dir = tmp_path / "first"
+    policies = [
+        PolicySpec(name="baseline", reranker=None, version="baseline-v1"),
+        PolicySpec(name="ranker", reranker=stub_reranker, version="ranker-v1"),
+    ]
+    main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        policies=policies,
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        output_dir=str(first_dir),
+    )
+    meta = json.loads(
+        (first_dir / DRAFTS_META_FILENAME).read_text(encoding="utf-8")
+    )
+    snapshot = copy.deepcopy(meta["policy_exposures"])
+    user_id = next(iter(snapshot))
+    snapshot[user_id]["ranker"].pop()
+    replay = DraftReplay(
+        drafts=read_action_log_draft_parquet(first_dir / DRAFTS_FILENAME),
+        llm_model=str(meta["llm_model"]),
+        exposure_args=meta["exposure_args"],
+        round_id=str(meta["round_id"]),
+        policy_exposures=snapshot,
+    )
+
+    with pytest.raises(ValueError, match="정책|노출|snapshot"):
+        main(
+            personas=_personas(),
+            virtual_users=_virtual_users(),
+            videos_raw=_videos_raw(),
+            events=_empty_events(),
+            generator=None,
+            policies=policies,
+            replay=replay,
+            k=6,
+            exploration_ratio=0.0,
+            click_threshold=0.0,
+            seed=42,
+            output_dir=str(tmp_path / "replayed"),
+        )
+
+
 def test_round_output_feeds_retraining_path(tmp_path, stub_reranker):
     """policy=model 필터 후 derive_wide_events가 라벨을 복원할 수 있어야 한다."""
     import pyarrow.parquet as pq

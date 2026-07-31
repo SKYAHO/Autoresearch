@@ -55,6 +55,13 @@ def test_baseline_policy_allows_null_score():
     assert event.ctr_score is None
 
 
+def test_event_log_accepts_named_policy():
+    event = EventLog(**_base_kwargs(), policy="exploration-v2")
+
+    assert event.policy == "exploration-v2"
+    assert event.to_warehouse_row()["policy"] == "exploration-v2"
+
+
 def test_exposure_source_roundtrip_and_validation():
     event = _policy_event(exposure_source="model")
     assert event.to_warehouse_row()["exposure_source"] == "model"
@@ -65,3 +72,17 @@ def test_exposure_source_roundtrip_and_validation():
 
     with pytest.raises(ValidationError):
         _policy_event(exposure_source="heuristic")  # 세 값 외 거부
+
+
+def test_cli_videos_help_describes_videos_csv(capsys, monkeypatch):
+    import sys
+
+    from src.pipeline import simulate_policy_round as module
+
+    monkeypatch.setattr(sys, "argv", ["simulate_policy_round", "--help"])
+    with pytest.raises(SystemExit):
+        module._cli()
+
+    help_text = capsys.readouterr().out
+    assert "사전 파싱된 videos.csv 경로" in help_text
+    assert "youtube_videos.csv" not in help_text
