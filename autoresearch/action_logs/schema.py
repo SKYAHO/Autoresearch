@@ -1,11 +1,19 @@
-"""action log(event log) 생성 파이프라인의 데이터 계약.
+"""action log 생성·저장의 데이터 계약.
 
-출력 스키마·규칙은 `docs/guides/agent-simulator-spec.md`(Single Source of Truth)를 따른다.
-이번 구현은 Phase 1(historical)만 다룬다.
+[파이프라인] LLM 판정 뒤의 event log 확장과 warehouse/parquet 저장 사이에서
+이벤트·draft·batch의 검증 가능한 공통 스키마를 제공한다.
+
+[기능] historical 및 정책 시뮬레이션 event log의 메타데이터, 정책 이름, shard
+산출물 계약을 검증한다.
+
+[비책임] 후보 노출 선택과 정책 라운드 실행은
+`src.pipeline.simulate_policy_round`, LLM 판정·이벤트 확장은
+`autoresearch.action_logs.pipeline`이 담당한다.
 """
 from datetime import UTC, date, datetime
 import logging
 import math
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -18,6 +26,19 @@ PROMPT_VERSION = "action_log_ctr_v4"
 SOURCE_HISTORICAL = "historical"
 SOURCE_ONLINE_SIMULATED = "online_simulated"
 QuarantineErrorType = Literal["api_error", "invalid_json", "schema_fail"]
+
+_POLICY_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+
+
+def validate_policy_name(value: str) -> str:
+    """정책 식별자는 소문자 영숫자·하이픈 1~64자로 제한한다."""
+
+    if not _POLICY_NAME_PATTERN.fullmatch(value):
+        raise ValueError(
+            "policy name must be 1-64 lowercase alphanumeric or hyphen characters "
+            "and start with a letter"
+        )
+    return value
 
 
 def validate_candidate_ratios(
@@ -52,13 +73,20 @@ class EventLog(BaseModel):
     source: Literal["historical", "online_simulated"] = SOURCE_HISTORICAL
     # 정책 시뮬레이션 라운드 메타데이터 (docs/specs/2026-07-20-policy-simulation-round.md).
     # 전부 optional — 기존 historical 로그와 하위 호환.
-    policy: Literal["baseline", "model"] | None = None
+    policy: str | None = None
     ctr_score: float | None = None
     is_exploration: bool | None = None
     policy_version: str | None = None
     # 노출 조립 출처 태그 (#221). 노출별 model/trending/random 출처를 로그에 남긴다.
     # optional — exposure_source가 없는 기존 로그와 하위 호환.
     exposure_source: Literal["model", "trending", "random"] | None = None
+
+    @field_validator("policy")
+    @classmethod
+    def policy_name_is_valid(cls, value: str | None) -> str | None:
+        """명명 정책은 정책 식별자 계약을 따라야 한다."""
+
+        return None if value is None else validate_policy_name(value)
 
     @model_validator(mode="after")
     def watch_time_only_for_view(self) -> "EventLog":

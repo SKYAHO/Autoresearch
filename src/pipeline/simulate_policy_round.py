@@ -11,7 +11,7 @@ pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 
 
 제공 기능:
 
-- 유저별 두 정책 노출 결정과 스코어링 진단 수집
+- 유저별 두 정책 노출 결정과 스코어링 진단 수집(다중 정책 실행은 Task 3 소유)
 - LLM 판정 1회 실행(합집합 후보)과 판정 덤프
   (`action_log_drafts.parquet` + 계보·노출 인자·노출 키 집합 사이드카
   `action_log_drafts_meta.json`) — `click_threshold` 캘리브레이션 입력
@@ -36,7 +36,7 @@ import argparse
 import json
 import os
 import random
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -52,6 +52,7 @@ from autoresearch.action_logs.pipeline import (
     ActionLogGenerator,
     ExposureMetadata,
     _expand_events,
+    build_round_policy_event_id_prefix,
     generate_action_log_drafts,
     read_action_log_draft_parquet,
     select_clicks_per_slate,
@@ -68,6 +69,7 @@ from autoresearch.action_logs.schema import (
     EventLog,
     EventLogBatch,
     ImpressionDraft,
+    validate_policy_name,
 )
 from src.features.assembly import (
     compute_interaction_columns,
@@ -97,6 +99,20 @@ DRAFTS_META_FILENAME = "action_log_drafts_meta.json"
 
 
 @dataclass(frozen=True)
+class PolicySpec:
+    """정책 라운드에 투입할 baseline 또는 reranker 기반 정책 명세."""
+
+    name: str
+    reranker: Reranker | None
+    version: str | None = None
+
+    def __post_init__(self) -> None:
+        """정책 이름이 event log와 sidecar에서 안전한 식별자인지 검증한다."""
+
+        validate_policy_name(self.name)
+
+
+@dataclass(frozen=True)
 class DraftReplay:
     """저장된 LLM 판정과 그 계보.
 
@@ -112,6 +128,8 @@ class DraftReplay:
     llm_model: str
     exposure_args: Mapping[str, object]
     exposure_keys: Mapping[str, frozenset[str]] | None = None
+    round_id: str | None = None
+    policy_exposures: Mapping[str, Mapping[str, Sequence[str]]] | None = None
 
 
 def build_pool_feature_frame(
@@ -179,7 +197,9 @@ def _write_drafts_meta(
     llm_model: str,
     exposure_args: Mapping[str, object],
     exposure_keys: Mapping[str, list[str]],
+    policy_exposures: Mapping[str, Mapping[str, list[str]]],
     policy_version: str,
+    round_id: str,
     virtual_users: int,
     users: int,
     drafts: int,
@@ -200,7 +220,12 @@ def _write_drafts_meta(
         "schema_version": ACTION_LOG_SCHEMA_VERSION,
         "exposure_args": dict(exposure_args),
         "exposure_keys": {user: sorted(keys) for user, keys in exposure_keys.items()},
+        "policy_exposures": {
+            user: {policy: list(videos) for policy, videos in by_policy.items()}
+            for user, by_policy in policy_exposures.items()
+        },
         "policy_version": policy_version,
+        "round_id": round_id,
         "virtual_users": virtual_users,
         "users": users,
         "drafts": drafts,
@@ -313,8 +338,12 @@ def _validate_replay_exposure_keys(
         )
     mismatched: list[str] = []
     first_detail = ""
-    for user_id, both in exposures_by_user.items():
-        current_keys = frozenset(e.video_id for e in both[MODEL] + both[BASELINE])
+    for user_id, by_policy in exposures_by_user.items():
+        current_keys = frozenset(
+            exposure.video_id
+            for exposures in by_policy.values()
+            for exposure in exposures
+        )
         if current_keys != original[user_id]:
             if not mismatched:
                 only_original = sorted(original[user_id] - current_keys)[:3]
@@ -331,6 +360,45 @@ def _validate_replay_exposure_keys(
         )
 
 
+def _policy_exposure_snapshot(
+    exposures_by_user: Mapping[str, Mapping[str, Sequence[Exposure]]],
+) -> dict[str, dict[str, list[str]]]:
+    """리플레이 비교용 유저별 정책 노출 순서 스냅샷을 만든다."""
+
+    return {
+        user_id: {
+            policy: [exposure.video_id for exposure in exposures]
+            for policy, exposures in by_policy.items()
+        }
+        for user_id, by_policy in exposures_by_user.items()
+    }
+
+
+def _validate_replay_policy_exposures(
+    original: Mapping[str, Mapping[str, Sequence[str]]],
+    exposures_by_user: Mapping[str, Mapping[str, Sequence[Exposure]]],
+) -> None:
+    """정책별 노출 스냅샷이 리플레이 실행과 동일한지 검증한다."""
+
+    current = _policy_exposure_snapshot(exposures_by_user)
+    if current != {
+        str(user_id): {
+            str(policy): [str(video_id) for video_id in video_ids]
+            for policy, video_ids in by_policy.items()
+        }
+        for user_id, by_policy in original.items()
+    }:
+        raise ValueError("replay 정책 노출 snapshot이 판정 라운드와 다릅니다")
+
+
+def _validate_unique_event_ids(events: Sequence[EventLog]) -> None:
+    """최종 event stream에 중복 event_id가 없음을 보장한다."""
+
+    event_ids = [event.event_id for event in events]
+    if len(event_ids) != len(set(event_ids)):
+        raise ValueError("정책 라운드 event_id가 중복되었습니다")
+
+
 def main(
     personas: pd.DataFrame,
     virtual_users: list[dict],
@@ -339,14 +407,17 @@ def main(
     generator: ActionLogGenerator | None = None,
     reranker: Reranker | None = None,
     *,
+    policies: Sequence[PolicySpec] | None = None,
     replay: DraftReplay | None = None,
     k: int = 10,
     exploration_ratio: float = 0.1,
     click_threshold: float,
     seed: int = 42,
+    judgment_repeats: int = 1,
     chunk_size: int = 0,
     max_concurrency: int = 1,
     policy_version: str = "local",
+    round_id: str | None = None,
     as_of: str = "2026-07-20 00:00:00",
     output_dir: str = "data/generated/policy_round",
     input_paths: Mapping[str, str] | None = None,
@@ -373,6 +444,38 @@ def main(
             "assembly_source='feast'는 feature_store 주입이 필요합니다 "
             "(offline PIT 조회 store) — _cli()가 env로 만들어 주입한다"
         )
+    if judgment_repeats < 1:
+        raise ValueError("judgment_repeats must be at least 1")
+
+    if policies is None:
+        if reranker is None:
+            reranker = load_reranker(load_model_settings_from_environment())  # fail-fast
+        policy_specs = (
+            PolicySpec(name=BASELINE, reranker=None, version=policy_version),
+            PolicySpec(name=MODEL, reranker=reranker, version=policy_version),
+        )
+    else:
+        policy_specs = tuple(policies)
+        if reranker is not None:
+            raise ValueError("policies와 reranker는 함께 지정할 수 없습니다")
+
+    names = [policy.name for policy in policy_specs]
+    if len(names) != len(set(names)):
+        raise ValueError("policy names must be unique (중복 정책 이름 불가)")
+    baseline_specs = [policy for policy in policy_specs if policy.reranker is None]
+    model_specs = [policy for policy in policy_specs if policy.reranker is not None]
+    if len(baseline_specs) != 1 or len(model_specs) != 1:
+        raise ValueError(
+            "Task 2 정책 실행은 baseline 1개와 model 1개만 지원합니다; "
+            "다중 정책 실행은 Task 3에서 제공합니다"
+        )
+    baseline_policy = baseline_specs[0]
+    model_policy = model_specs[0]
+    assert model_policy.reranker is not None
+    reranker = model_policy.reranker
+    effective_round_id = round_id or (replay.round_id if replay and replay.round_id else f"round-{seed}")
+    validate_policy_name(effective_round_id)
+
     exposure_args = {
         "seed": seed,
         "k": k,
@@ -382,9 +485,6 @@ def main(
     # 인자 불일치는 모델 로드·유저별 피처 조립(임베딩 호출 포함) 전에 걸러낸다.
     if replay is not None:
         _validate_replay_exposure_args(replay.exposure_args, exposure_args)
-
-    if reranker is None:
-        reranker = load_reranker(load_model_settings_from_environment())  # fail-fast
 
     video_by_id = {str(v["video_id"]): v for v in videos_raw.to_dict("records")}
     candidate_video_ids = list(video_by_id)
@@ -434,7 +534,10 @@ def main(
             Exposure(video_id=str(v["video_id"]), rank=i + 1, ctr_score=None, is_exploration=None)
             for i, v in enumerate(baseline_videos)
         ]
-        exposures_by_user[user_id] = {MODEL: model_exposures, BASELINE: baseline_exposures}
+        exposures_by_user[user_id] = {
+            model_policy.name: model_exposures,
+            baseline_policy.name: baseline_exposures,
+        }
 
     # 2) 판정 확보 — 신규 라운드는 LLM 1회, 리플레이는 저장된 판정 재사용
     request = EventGenerationRequest(
@@ -453,11 +556,12 @@ def main(
         for user_id, both in exposures_by_user.items():
             seen: set[str] = set()
             union: list[dict] = []
-            for exposure in both[MODEL] + both[BASELINE]:
-                if exposure.video_id in seen:
-                    continue
-                seen.add(exposure.video_id)
-                union.append(video_by_id[exposure.video_id])
+            for policy_exposures in both.values():
+                for exposure in policy_exposures:
+                    if exposure.video_id in seen:
+                        continue
+                    seen.add(exposure.video_id)
+                    union.append(video_by_id[exposure.video_id])
             union_by_user[user_id] = union
 
         def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
@@ -479,7 +583,9 @@ def main(
                 user_id: [str(v["video_id"]) for v in union]
                 for user_id, union in union_by_user.items()
             },
+            policy_exposures=_policy_exposure_snapshot(exposures_by_user),
             policy_version=policy_version,
+            round_id=effective_round_id,
             virtual_users=len(virtual_users),
             users=len(exposures_by_user),
             drafts=len(drafts),
@@ -508,7 +614,9 @@ def main(
                 "판정 라운드와 다릅니다"
             )
 
-        if replay.exposure_keys is not None:
+        if replay.policy_exposures is not None:
+            _validate_replay_policy_exposures(replay.policy_exposures, exposures_by_user)
+        elif replay.exposure_keys is not None:
             # 사이드카에 원본 노출 키 집합이 있으면 정확 비교한다. 통과하면
             # 판정 없는 노출은 전부 원본 quarantine(chunk 부분 격리 포함)이므로
             # 아래 4단계에서 dropped_exposures_without_judgment로 계수만 한다.
@@ -524,7 +632,9 @@ def main(
             partially_covered_users: list[str] = []
             for user_id, both in exposures_by_user.items():
                 exposure_keys = {
-                    (user_id, exposure.video_id) for exposure in both[MODEL] + both[BASELINE]
+                    (user_id, exposure.video_id)
+                    for policy_exposures in both.values()
+                    for exposure in policy_exposures
                 }
                 covered = sum(1 for key in exposure_keys if key in draft_by_key)
                 if 0 < covered < len(exposure_keys):
@@ -547,7 +657,8 @@ def main(
     all_events: list[EventLog] = []
     dropped = 0
     per_policy: dict[str, dict[str, float]] = {}
-    for policy, prefix, seed_offset in ((BASELINE, "evt_b", 0), (MODEL, "evt_m", 1000)):
+    for policy_spec, seed_offset in ((baseline_policy, 0), (model_policy, 1000)):
+        policy = policy_spec.name
         policy_drafts: list[ImpressionDraft] = []
         metadata: dict[tuple[str, str], ExposureMetadata] = {}
         propensities: list[float] = []
@@ -562,11 +673,11 @@ def main(
                 policy_drafts.append(draft)
                 propensities.append(draft.click_propensity)
                 metadata[(user_id, exposure.video_id)] = ExposureMetadata(
-                    policy=policy,  # type: ignore[arg-type]
+                    policy=policy,
                     rank=exposure.rank,
                     ctr_score=exposure.ctr_score,
                     is_exploration=exposure.is_exploration,
-                    policy_version=policy_version,
+                    policy_version=policy_spec.version or policy_version,
                 )
                 if exposure.is_exploration:
                     exploration_imps += 1
@@ -578,7 +689,9 @@ def main(
         policy_request = request.model_copy(update={"seed": seed + seed_offset})
         events_out = _expand_events(
             policy_drafts, clicked_indices, policy_request,
-            metadata=metadata, source=SOURCE_ONLINE_SIMULATED, event_id_prefix=prefix,
+            metadata=metadata,
+            source=SOURCE_ONLINE_SIMULATED,
+            event_id_prefix=build_round_policy_event_id_prefix(effective_round_id, policy),
         )
         all_events.extend(events_out)
         impressions = len(policy_drafts)
@@ -594,11 +707,13 @@ def main(
             "exploration_clicks": exploration_clicks,
         }
 
+    _validate_unique_event_ids(all_events)
+
     # 5) 노출 겹침률 (유저별 Jaccard 평균)
     jaccards: list[float] = []
     for both in exposures_by_user.values():
-        a = {e.video_id for e in both[BASELINE]}
-        b = {e.video_id for e in both[MODEL]}
+        a = {e.video_id for e in both[baseline_policy.name]}
+        b = {e.video_id for e in both[model_policy.name]}
         if a | b:
             jaccards.append(len(a & b) / len(a | b))
     overlap = round(sum(jaccards) / len(jaccards), 4) if jaccards else 0.0
@@ -618,6 +733,7 @@ def main(
 
     report = {
         "policy_version": policy_version,
+        "round_id": effective_round_id,
         "replay": replay is not None,
         "llm_model": llm_model,
         "k": k,
@@ -739,6 +855,7 @@ def _cli() -> None:
             )
         meta_exposure_args = meta["exposure_args"]
         raw_exposure_keys = meta.get("exposure_keys")  # 구버전 사이드카에는 없다
+        raw_policy_exposures = meta.get("policy_exposures")
         replay = DraftReplay(
             drafts=read_action_log_draft_parquet(args.replay_drafts),
             llm_model=str(meta["llm_model"]),
@@ -749,6 +866,18 @@ def _cli() -> None:
                     for user, videos in raw_exposure_keys.items()
                 }
                 if raw_exposure_keys is not None
+                else None
+            ),
+            round_id=(str(meta["round_id"]) if meta.get("round_id") is not None else None),
+            policy_exposures=(
+                {
+                    str(user): {
+                        str(policy): tuple(str(video) for video in videos)
+                        for policy, videos in by_policy.items()
+                    }
+                    for user, by_policy in raw_policy_exposures.items()
+                }
+                if raw_policy_exposures is not None
                 else None
             ),
         )

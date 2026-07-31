@@ -1,8 +1,14 @@
 """정책 시뮬레이션 라운드 리포트의 자기완결 HTML 렌더러.
 
-외부 의존성·네트워크 요청 없이 stdlib만으로 스탯 타일·가로 막대 비교·데이터
+[파이프라인] 정책 노출·판정·event log 생성 뒤, 라운드 결과를 사람이 읽을 수
+있는 비교 리포트로 변환하는 구간이다.
+
+[기능] 외부 의존성·네트워크 요청 없이 정책별 스탯 타일·가로 막대·데이터
 테이블을 가진 단일 HTML 문서를 만든다. 팔레트(baseline 파랑/model 초록)는
 dataviz validator로 light/dark 모두 검증 완료 — 색 변경 시 재검증할 것.
+
+[비책임] 정책 선택, 이벤트 생성, JSON 리포트 저장은
+`src.pipeline.simulate_policy_round`가 담당한다.
 """
 
 from __future__ import annotations
@@ -85,12 +91,20 @@ def _bar_rows(values: dict[str, float], fmt: Callable[[float], str]) -> str:
 
 def render_report_html(report: dict) -> str:
     """리포트 dict를 자기완결 HTML 문서 문자열로 렌더링한다."""
+
     policies = report["policies"]
-    baseline, model = policies["baseline"], policies["model"]
+    policy_names = list(policies)
+    if len(policy_names) < 2:
+        raise ValueError("HTML 리포트는 비교할 정책이 두 개 이상 필요합니다")
+    baseline_name = "baseline" if "baseline" in policies else policy_names[0]
+    model_name = "model" if "model" in policies else next(
+        name for name in policy_names if name != baseline_name
+    )
+    baseline, model = policies[baseline_name], policies[model_name]
     legend = (
         '<div class="legend">'
-        '<span><span class="chip" style="background:var(--series-baseline)"></span>baseline</span>'
-        '<span><span class="chip" style="background:var(--series-model)"></span>model</span>'
+        f'<span><span class="chip" style="background:var(--series-baseline)"></span>{escape(baseline_name)}</span>'
+        f'<span><span class="chip" style="background:var(--series-model)"></span>{escape(model_name)}</span>'
         "</div>"
     )
     lift = model["ctr"] - baseline["ctr"]
@@ -100,8 +114,8 @@ def render_report_html(report: dict) -> str:
         f'<div class="tile"><div class="label">{escape(label)}</div>'
         f'<div class="value">{escape(value)}</div></div>'
         for label, value in (
-            ("model CTR", _pct(model["ctr"])),
-            ("baseline CTR", _pct(baseline["ctr"])),
+            (f"{model_name} CTR", _pct(model["ctr"])),
+            (f"{baseline_name} CTR", _pct(baseline["ctr"])),
             ("CTR lift", f"{'+' if lift >= 0 else ''}{_pct(lift)}"),
             ("노출 겹침 (Jaccard)", f"{report['overlap_jaccard_mean']:.2f}"),
             ("유저 수", str(report["users"])),
@@ -129,16 +143,16 @@ seed={report["seed"]}</div>
 <div class="tiles">{tiles}</div>
 {legend}
 <div class="chart"><h2>정책별 CTR (합동 커트라인 판정 후)</h2>
-{_bar_rows({"baseline": baseline["ctr"], "model": model["ctr"]}, _pct)}</div>
+{_bar_rows({name: policy["ctr"] for name, policy in policies.items()}, _pct)}</div>
 <div class="chart"><h2>정책별 평균 click propensity (커트라인 판정 전 raw)</h2>
-{_bar_rows({"baseline": baseline["mean_click_propensity"], "model": model["mean_click_propensity"]}, lambda v: f"{v:.4f}")}</div>
+{_bar_rows({name: policy["mean_click_propensity"] for name, policy in policies.items()}, lambda v: f"{v:.4f}")}</div>
 <div class="chart"><h2>데이터 테이블</h2>
 <table>
 <tr><th>policy</th><th>impressions</th><th>clicks</th><th>CTR</th>
 <th>mean propensity</th><th>explo imps</th><th>explo clicks</th></tr>
 {table_rows}
 </table>
-<p class="meta">exploration CTR (model): {escape(_pct(explo_ctr))} ·
+<p class="meta">exploration CTR ({escape(model_name)}): {escape(_pct(explo_ctr))} ·
 skipped users: {len(report["skipped_users"])} ·
 dropped exposures: {report["dropped_exposures_without_judgment"]} ·
 quarantined chunks: {report["quarantined_chunks"]} ·

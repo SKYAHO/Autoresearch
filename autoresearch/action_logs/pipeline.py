@@ -1,10 +1,16 @@
-"""VirtualUser + TrendingVideo pool로 Phase 1(historical) event log를 생성한다.
+"""VirtualUser + TrendingVideo pool로 action log를 생성·저장한다.
 
-흐름: 유저 단위 격리(LLM 판단, 후보별 click_propensity/watch_fraction만 산출) →
+ [파이프라인] 후보 노출이 결정된 뒤 LLM 판단을 draft로 만들고, 클릭 선정 뒤
+long event stream으로 확장하는 구간이다.
+
+[기능] 유저 단위 격리(LLM 판단, 후보별 click_propensity/watch_fraction만 산출) →
 select_clicks_per_slate로 유저(슬레이트)별 최고 1건을 click_threshold
 커트라인으로 클릭 선정 → 이벤트 확장(_expand_events: 노출마다 impression 1행,
 클릭 선정분엔 click/view(+like)를 추가 배치) → parquet/warehouse/quarantine
 저장. 한 유저의 실패가 배치를 죽이지 않는다.
+
+[비책임] 정책별 노출 선택·라운드 리포팅은
+`src.pipeline.simulate_policy_round`가 담당한다.
 """
 import json
 import logging
@@ -38,6 +44,7 @@ from autoresearch.action_logs.schema import (
     EventLogBatch,
     ImpressionDraft,
     QuarantineRecord,
+    validate_policy_name,
 )
 from autoresearch.action_logs.video_source import _MAX_DURATION, nominal_duration_sec
 
@@ -708,12 +715,23 @@ def select_clicks_per_slate(
 class ExposureMetadata:
     """정책 시뮬레이션 노출 1건의 로그 태깅 메타데이터. 키는 (user_id, video_id)."""
 
-    policy: Literal["baseline", "model"]
+    policy: str
     rank: int
     ctr_score: float | None
     is_exploration: bool | None
     policy_version: str | None
     exposure_source: Literal["model", "trending", "random"] | None = None
+
+    def __post_init__(self) -> None:
+        """정책 태그는 EventLog와 같은 명명 규칙을 사용한다."""
+
+        validate_policy_name(self.policy)
+
+
+def build_round_policy_event_id_prefix(round_id: str, policy_name: str) -> str:
+    """정책 라운드의 충돌 없는 안정적 event_id 접두사를 만든다."""
+
+    return f"evt_{validate_policy_name(round_id)}_{validate_policy_name(policy_name)}"
 
 
 def attach_exposure_tags(
