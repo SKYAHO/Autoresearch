@@ -76,6 +76,7 @@
   .pipeline-row { display: grid; gap: 18px; align-items: center; grid-template-columns: 110px 1fr; }
   .pipeline-row .lane-label { font-size: 12px; font-weight: 500; color: var(--mu); text-align: right; line-height: 1.5; }
   .pipeline-row .lane-nodes { display: grid; gap: 10px; padding-left: 18px; border-left: 1px solid var(--bd); }
+  .node-slot { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
   .node-cell {
     padding: 13px 14px; border-radius: 9px; font: inherit; font-size: 13px; line-height: 1.5;
     text-align: center; text-wrap: balance; min-height: 48px; display: flex; align-items: center; justify-content: center;
@@ -91,6 +92,13 @@
   .legend .lg-item { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--mu); white-space: nowrap; }
   .legend .lg-item .sw { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; border: 1px solid var(--bd); }
   .legend .lg-hint { font-size: 12px; color: var(--mu); }
+
+  .edge-list { display: flex; flex-direction: column; gap: 8px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--bd); }
+  .edge-list .edge-title { font-size: 11px; font-weight: 700; letter-spacing: .14em; color: var(--mu); }
+  .edge-list .edge-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--tx2); }
+  .edge-item .edge-arrow { color: var(--mu); }
+  .edge-item .edge-status { color: var(--ac); font-size: 11px; }
+  .edge-item.is-dashed { border-left: 2px dashed var(--bd); padding-left: 10px; }
 
   .node-detail { margin-top: 16px; padding: 26px 30px 30px; background: var(--sf); border: 1px solid var(--bd); border-radius: 14px; }
   .node-detail .nd-head { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
@@ -178,6 +186,7 @@
     </div>
     <div class="pipeline-card">
       <div class="pipeline-grid" id="pipeline-grid"></div>
+      <div class="edge-list" id="edge-list" hidden></div>
       <div class="legend" id="legend"></div>
     </div>
     <div class="node-detail" id="node-detail" hidden></div>
@@ -202,7 +211,7 @@
   <footer class="page-footer" id="page-footer"></footer>
 </main>
 
-<script id="report-data" type="application/json">{"schema_version": 2, "pr": {"number": 452, "title": "chore: PR 리포트 디자인 동기화", "author": "hyeongyu-data", "issue_refs": [443], "generated_at": "2026-07-31T05:57:53+00:00", "head_sha": "21883922db9ad5dba3f4f2bfd397c9428e446671"}, "summary_ko": ["PR 이해 리포트의 단일 페이지 템플릿을 최신 Airflow 리포트 디자인 언어 스타일로 동기화하였습니다.", "Noto Sans KR 및 Space Grotesk 폰트, 라이트/다크 테마 수동 토글, sticky 상단바, 카드형 레이아웃을 도입하였습니다.", "기존 다중 저장소 검색·필터 아카이브 기능 회귀를 방지하면서 레일 헤더 고정 스타일을 추가 보강하였습니다."], "plain_points_ko": ["PR 분석 결과 리포트의 전체적인 화면 디자인이 최신 디자인 시스템 기준으로 개편됩니다.", "라이트 모드와 다크 모드를 사용자가 직접 선택할 수 있는 테마 전환 버튼이 추가됩니다.", "리포트 상단 메뉴와 아카이브 목록 헤더가 고정되어 스크롤 중에도 손쉽게 탐색할 수 있습니다.", "요약, 파이프라인, 상세 변경사항 등 단계별 정보가 카드 및 배지 형태로 한눈에 들어오도록 개선됩니다."], "motivation_ko": "PR 이해 리포트 개별 페이지가 구버전 스타일로 유지되어 있어 최신 Airflow 리포트 디자인과의 시각적 일관성이 부족했습니다. 다크 모드가 고정되어 있고 상단바가 스크롤 시 사라져 리포트를 읽고 탐색하는 데 불편함이 존재했습니다.", "expected_effects_ko": ["Airflow 리포트 프로젝트와의 디자인 동기화를 통해 팀 내 문서 및 리포트의 시각적 일관성을 확보합니다.", "수동 테마 전환 및 상단바 고정(sticky) 기능을 통해 다양한 디스플레이 환경에서의 가독성과 탐색 편의성을 높입니다.", "기존 다중 저장소 아카이브 기능의 안정적 유지와 함께 리포트 시각 요소를 개선합니다."], "pipeline": {"nodes": [{"id": "collect", "label": "YouTube 수집", "lane": "batch", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/", "proxy/"]}, {"id": "virtual_users", "label": "가상 유저 생성", "lane": "batch", "order": 2, "status": "unchanged", "paths": ["autoresearch/virtual_users/"]}, {"id": "action_log", "label": "Action Log 생성·품질", "lane": "batch", "order": 3, "status": "unchanged", "paths": ["autoresearch/action_logs/"]}, {"id": "data_lake", "label": "Data Lake (GCS parquet)", "lane": "data", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/load.py", "autoresearch/action_logs/load.py"]}, {"id": "feature_store", "label": "Feature Store (BQ·Feast·Redis)", "lane": "data", "order": 2, "status": "unchanged", "paths": ["feature_repo/", "src/features/", "src/pipeline/build_feature_tables.py"]}, {"id": "training_dataset", "label": "학습 데이터셋 조립", "lane": "train", "order": 1, "status": "unchanged", "paths": ["src/pipeline/build_training_dataset.py"]}, {"id": "train_eval", "label": "모델 학습·평가 (LightGBM·MLflow)", "lane": "train", "order": 2, "status": "unchanged", "paths": ["src/models/", "src/pipeline/train.py", "src/pipeline/evaluate.py", "src/tracking/"]}, {"id": "registry", "label": "Model Registry (MLflow)", "lane": "train", "order": 3, "status": "unchanged", "paths": ["deploy/mlflow/"]}, {"id": "serving", "label": "리랭킹 서빙 API (FastAPI)", "lane": "serve", "order": 1, "status": "unchanged", "paths": ["src/serving/", "deploy/serving/"]}, {"id": "daily_reco", "label": "일일 추천·노출 조립", "lane": "serve", "order": 2, "status": "unchanged", "paths": ["src/pipeline/daily_recommendations.py", "src/pipeline/model_exposure_provider.py", "src/pipeline/policy_selector.py"]}, {"id": "simulation", "label": "가상 유저 클릭 시뮬레이션", "lane": "serve", "order": 3, "status": "unchanged", "paths": ["src/pipeline/simulate_policy_round.py", "src/pipeline/virtual_user_adapter.py"]}, {"id": "batch_cli", "label": "공개 Batch CLI (Airflow 계약)", "lane": "cross", "order": 1, "status": "unchanged", "paths": ["autoresearch/jobs/"]}, {"id": "ci_release", "label": "CI·이미지·릴리스", "lane": "cross", "order": 2, "status": "modified", "as_is_ko": "PR 리포트 단일 페이지 HTML 템플릿이 구버전 디자인 및 고정 색상 스타일을 사용하고 있었습니다.", "to_be_ko": "최신 Airflow 디자인 시스템과 동기화되어 테마 토글, sticky 상단바, 카드형 레이아웃이 적용되었습니다.", "paths": [".github/workflows/", "Dockerfile.app", "Dockerfile.serving", "pyproject.toml", ".github/pr-report/"]}, {"id": "docs", "label": "문서·스펙", "lane": "cross", "order": 3, "status": "unchanged", "paths": ["docs/", ".claude/docs/", "CLAUDE.md", "README.md"]}, {"id": "ext_airflow", "label": "(외부) Airflow 오케스트레이션", "lane": "external", "order": 1, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-airflow"]}, {"id": "ext_infra", "label": "(외부) GCP 인프라", "lane": "external", "order": 2, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-infra"]}], "edges": [{"from": "collect", "to": "data_lake"}, {"from": "virtual_users", "to": "action_log"}, {"from": "action_log", "to": "data_lake"}, {"from": "data_lake", "to": "feature_store"}, {"from": "feature_store", "to": "training_dataset"}, {"from": "training_dataset", "to": "train_eval"}, {"from": "train_eval", "to": "registry"}, {"from": "registry", "to": "serving"}, {"from": "feature_store", "to": "serving", "style": "dashed"}, {"from": "serving", "to": "daily_reco"}, {"from": "daily_reco", "to": "simulation"}, {"from": "simulation", "to": "action_log", "style": "dashed"}, {"from": "batch_cli", "to": "ext_airflow", "style": "dashed"}, {"from": "ext_infra", "to": "ci_release", "style": "dashed"}], "focus": ["ci_release"]}, "changes": [{"rank": 1, "importance": "config", "module": ".github/pr-report", "symbol": "template.html", "file": ".github/pr-report/template.html", "explanation_ko": "PR 리포트 단일 페이지 HTML 템플릿을 최신 Airflow 리포트 디자인 언어로 포팅하였습니다. Noto Sans KR/Space Grotesk 폰트, 라이트/다크 수동 테마 토글, sticky 상단바 및 카드형 마크업 구조가 반영되었습니다.", "risk_notes_ko": "리포트 생성 파이프라인에서 치환하는 스크립트 플레이스홀더 요소들과 템플릿 마크업 간의 렌더링 호환성을 유지해야 합니다."}, {"rank": 2, "importance": "config", "module": ".github/pr-report", "symbol": "archive-template.html", "file": ".github/pr-report/archive-template.html", "explanation_ko": "아카이브 페이지의 레일 헤더(.rail-head) 영역에 sticky 위치 지정을 추가하여 스크롤 중에도 검색창과 테마 토글 메뉴가 고정되도록 변경하였습니다.", "risk_notes_ko": "다중 저장소 검색 및 필터 UI 레이아웃이 상단 고정 시 요소를 가리지 않는지 확인이 필요합니다."}], "qa_note_ko": "코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오. 본 PR은 PR 리포트 HTML 템플릿 및 아카이브 UI 디자인 동기화 작업을 포함하고 있습니다."}</script>
+<script id="report-data" type="application/json">{"schema_version": 2, "pr": {"number": 452, "title": "chore: PR 리포트 디자인 동기화", "author": "hyeongyu-data", "issue_refs": [443], "generated_at": "2026-07-31T07:10:21+00:00", "head_sha": "f4ea78c0aa15850b86ff0a2eaf89a7a8410fc38a"}, "summary_ko": ["PR 이해 리포트의 개별 페이지 디자인을 최신 Airflow 리포트 디자인 언어와 동기화했습니다.", "template.html에 Noto Sans KR 폰트, 테마 토글, sticky 상단바 및 카드 레이아웃을 포팅했습니다.", "기존 다중 저장소 아카이브 기능은 호환성을 보존하면서 시각적 요소만 최신 사양으로 보강했습니다."], "plain_points_ko": ["PR 이해 리포트 개별 페이지의 화면 디자인과 글꼴, 색상 테마를 최신 스타일로 변경했습니다.", "상단바 고정, 다크 및 라이트 테마 전환 기능, 카드 형태의 레이아웃을 적용해 가독성을 높였습니다.", "기존 리포트 아카이브 및 다중 저장소 탐색 기능은 기존 동작을 그대로 보존했습니다."], "motivation_ko": "기존 PR 이해 리포트의 HTML 템플릿 디자인이 최신 Airflow 리포트 디자인 언어와 달라 시각적 일관성이 떨어졌습니다. 이에 최신 디자인 포팅을 진행하되, 기존 Autoresearch 저장소의 다중 저장소 아카이브 기능 회귀를 방지하면서 리포트 UI의 가독성과 열람 편의성을 향상시키기 위해 이번 작업을 진행했습니다.", "expected_effects_ko": ["PR 이해 리포트 디자인이 최신 스타일로 통일되어 문서 읽기 편의성이 향상됩니다.", "다크/라이트 테마 전환 및 상단바 고정 기능으로 리포트 검토 환경이 개선됩니다.", "기존 아카이브 기능 회귀 없이 안정적으로 리포트 시각화를 제공합니다."], "pipeline": {"nodes": [{"id": "collect", "label": "YouTube 수집", "lane": "batch", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/", "proxy/"]}, {"id": "virtual_users", "label": "가상 유저 생성", "lane": "batch", "order": 2, "status": "unchanged", "paths": ["autoresearch/virtual_users/"]}, {"id": "action_log", "label": "Action Log 생성·품질", "lane": "batch", "order": 3, "status": "unchanged", "paths": ["autoresearch/action_logs/"]}, {"id": "data_lake", "label": "Data Lake (GCS parquet)", "lane": "data", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/load.py", "autoresearch/action_logs/load.py"]}, {"id": "feature_store", "label": "Feature Store (BQ·Feast·Redis)", "lane": "data", "order": 2, "status": "unchanged", "paths": ["feature_repo/", "src/features/", "src/pipeline/build_feature_tables.py"]}, {"id": "training_dataset", "label": "학습 데이터셋 조립", "lane": "train", "order": 1, "status": "unchanged", "paths": ["src/pipeline/build_training_dataset.py"]}, {"id": "train_eval", "label": "모델 학습·평가 (LightGBM·MLflow)", "lane": "train", "order": 2, "status": "unchanged", "paths": ["src/models/", "src/pipeline/train.py", "src/pipeline/evaluate.py", "src/tracking/"]}, {"id": "registry", "label": "Model Registry (MLflow)", "lane": "train", "order": 3, "status": "unchanged", "paths": ["deploy/mlflow/"]}, {"id": "serving", "label": "리랭킹 서빙 API (FastAPI)", "lane": "serve", "order": 1, "status": "unchanged", "paths": ["src/serving/", "deploy/serving/"]}, {"id": "daily_reco", "label": "일일 추천·노출 조립", "lane": "serve", "order": 2, "status": "unchanged", "paths": ["src/pipeline/daily_recommendations.py", "src/pipeline/model_exposure_provider.py", "src/pipeline/policy_selector.py"]}, {"id": "simulation", "label": "가상 유저 클릭 시뮬레이션", "lane": "serve", "order": 3, "status": "unchanged", "paths": ["src/pipeline/simulate_policy_round.py", "src/pipeline/virtual_user_adapter.py"]}, {"id": "batch_cli", "label": "공개 Batch CLI (Airflow 계약)", "lane": "cross", "order": 1, "status": "unchanged", "paths": ["autoresearch/jobs/"]}, {"id": "ci_release", "label": "CI·이미지·릴리스", "lane": "cross", "order": 2, "status": "modified", "as_is_ko": "구버전 스타일 기반의 PR 이해 리포트 HTML 템플릿을 보유하고 있었습니다.", "to_be_ko": "최신 Airflow 디자인 언어가 적용된 리포트 HTML 템플릿으로 업데이트되었습니다.", "paths": [".github/workflows/", "Dockerfile.app", "Dockerfile.serving", "pyproject.toml"]}, {"id": "docs", "label": "문서·스펙", "lane": "cross", "order": 3, "status": "unchanged", "paths": ["docs/", ".claude/docs/", "CLAUDE.md", "README.md"]}, {"id": "ext_airflow", "label": "(외부) Airflow 오케스트레이션", "lane": "external", "order": 1, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-airflow"]}, {"id": "ext_infra", "label": "(외부) GCP 인프라", "lane": "external", "order": 2, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-infra"]}], "edges": [{"from": "collect", "to": "data_lake"}, {"from": "virtual_users", "to": "action_log"}, {"from": "action_log", "to": "data_lake"}, {"from": "data_lake", "to": "feature_store"}, {"from": "feature_store", "to": "training_dataset"}, {"from": "training_dataset", "to": "train_eval"}, {"from": "train_eval", "to": "registry"}, {"from": "registry", "to": "serving"}, {"from": "feature_store", "to": "serving", "style": "dashed"}, {"from": "serving", "to": "daily_reco"}, {"from": "daily_reco", "to": "simulation"}, {"from": "simulation", "to": "action_log", "style": "dashed"}, {"from": "batch_cli", "to": "ext_airflow", "style": "dashed"}, {"from": "ext_infra", "to": "ci_release", "style": "dashed"}], "focus": ["ci_release"]}, "changes": [{"rank": 1, "importance": "config", "module": ".github/pr-report", "symbol": "template.html", "file": ".github/pr-report/template.html", "explanation_ko": "PR 이해 리포트 개별 페이지 HTML 템플릿을 최신 Airflow 리포트 디자인 사양(Noto Sans KR 폰트, 수동 다크/라이트 테마 토글, sticky 상단바, 카드 및 스텝 레이아웃)으로 포팅하고 Autoresearch 저장소 브랜딩 상수를 연결했습니다.", "risk_notes_ko": "템플릿 구조 변경 후 생성된 HTML이 브라우저에서 올바르게 렌더링되는지 및 기존 archive.js와의 통합에 문제가 없는지 확인이 필요합니다."}], "qa_note_ko": "코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오. 본 PR은 PR 이해 리포트 HTML 템플릿 디자인 동기화 작업이므로, 리포트 UI의 정상 렌더링 및 기존 다중 저장소 아카이브 기능의 동작 여부를 점검해 주시기 바랍니다."}</script>
 <script>
 "use strict";
 (function () {
@@ -314,7 +323,7 @@
     return "var(" + (STATUS_VARS[status] || "--st-none") + ")";
   }
 
-  function showDetail(node) {
+  function showDetail(node, shouldScroll) {
     selectedId = node.id;
     nodeDetail.hidden = false;
     nodeDetail.innerHTML = "";
@@ -367,13 +376,14 @@
     document.querySelectorAll(".node-cell").forEach(function (cell) {
       cell.classList.toggle("is-selected", cell.getAttribute("data-node-id") === node.id);
     });
+    if (shouldScroll) {
+      nodeDetail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   }
 
-  grid.style.gridTemplateColumns = "none";
   usedLanes.forEach(function (lane) {
     var row = document.createElement("div");
     row.className = "pipeline-row";
-    row.style.gridTemplateColumns = "110px repeat(" + maxOrder + ", 1fr)";
     var laneLabelEl = document.createElement("span");
     laneLabelEl.className = "lane-label";
     laneLabelEl.textContent = LANE_LABELS[lane] || lane;
@@ -384,33 +394,74 @@
     laneNodes.style.gridTemplateColumns = "repeat(" + maxOrder + ", 1fr)";
     var byOrder = {};
     nodes.forEach(function (n) {
-      if (n.lane === lane) byOrder[n.order] = n;
+      if (n.lane !== lane) return;
+      if (!byOrder[n.order]) byOrder[n.order] = [];
+      byOrder[n.order].push(n);
     });
     for (var order = 1; order <= maxOrder; order++) {
-      var n = byOrder[order];
-      if (!n) {
+      var slotNodes = byOrder[order] || [];
+      if (!slotNodes.length) {
         var empty = document.createElement("div");
         empty.className = "node-cell empty";
         laneNodes.appendChild(empty);
         continue;
       }
-      var hasDetail = !!(n.as_is_ko || n.to_be_ko);
-      var isOn = n.status !== "unchanged";
-      var cell = document.createElement(hasDetail ? "button" : "div");
-      if (hasDetail) cell.type = "button";
-      cell.className = "node-cell" + (isOn ? " on" : "") + (hasDetail ? " clickable" : "") + (focusSet[n.id] ? " is-focus" : "");
-      cell.setAttribute("data-node-id", n.id);
-      cell.textContent = n.label;
-      if (isOn) cell.style.color = statusColor(n.status);
-      if (isOn) cell.style.borderColor = statusColor(n.status);
-      if (hasDetail) cell.addEventListener("click", function (node) {
-        return function () { showDetail(node); };
-      }(n));
-      laneNodes.appendChild(cell);
+      var slot = document.createElement("div");
+      slot.className = "node-slot";
+      slotNodes.forEach(function (n) {
+        var hasDetail = !!(n.as_is_ko || n.to_be_ko);
+        var isOn = n.status !== "unchanged";
+        var cell = document.createElement(hasDetail ? "button" : "div");
+        if (hasDetail) cell.type = "button";
+        cell.className = "node-cell" + (isOn ? " on" : "") + (hasDetail ? " clickable" : "") + (focusSet[n.id] ? " is-focus" : "");
+        cell.setAttribute("data-node-id", n.id);
+        cell.textContent = n.label;
+        if (isOn) cell.style.color = statusColor(n.status);
+        if (isOn) cell.style.borderColor = statusColor(n.status);
+        if (hasDetail) cell.addEventListener("click", function (node) {
+          return function () { showDetail(node, true); };
+        }(n));
+        slot.appendChild(cell);
+      });
+      laneNodes.appendChild(slot);
     }
     row.appendChild(laneNodes);
     grid.appendChild(row);
   });
+
+  // edges: preserve data-flow and feedback relationships from the report contract.
+  var edgeList = document.getElementById("edge-list");
+  var edges = (r.pipeline.edges || []).filter(function (edge) {
+    return byId[edge.from] && byId[edge.to];
+  });
+  if (edges.length) {
+    edgeList.hidden = false;
+    var edgeTitle = document.createElement("div");
+    edgeTitle.className = "edge-title";
+    edgeTitle.textContent = "파이프라인 연결";
+    edgeList.appendChild(edgeTitle);
+    edges.forEach(function (edge) {
+      var item = document.createElement("div");
+      item.className = "edge-item" + (edge.style === "dashed" ? " is-dashed" : "");
+      var from = document.createElement("span");
+      from.textContent = byId[edge.from].label;
+      item.appendChild(from);
+      var arrow = document.createElement("span");
+      arrow.className = "edge-arrow";
+      arrow.textContent = edge.style === "dashed" ? "⇢" : "→";
+      item.appendChild(arrow);
+      var to = document.createElement("span");
+      to.textContent = byId[edge.to].label;
+      item.appendChild(to);
+      if (edge.status && edge.status !== "unchanged") {
+        var status = document.createElement("span");
+        status.className = "edge-status";
+        status.textContent = "(" + (STATUS_LABELS[edge.status] || edge.status) + ")";
+        item.appendChild(status);
+      }
+      edgeList.appendChild(item);
+    });
+  }
 
   // legend
   var legend = document.getElementById("legend");
@@ -434,7 +485,7 @@
     (r.pipeline.focus || []).map(function (id) { return byId[id]; })
       .filter(function (n) { return n && (n.as_is_ko || n.to_be_ko); })[0] ||
     nodes.filter(function (n) { return n.status !== "unchanged" && (n.as_is_ko || n.to_be_ko); })[0];
-  if (defaultNode) showDetail(defaultNode);
+  if (defaultNode) showDetail(defaultNode, false);
 
   // ---------- 2단계: 쉬운 설명 ----------
   var easyList = document.getElementById("easy-list");
