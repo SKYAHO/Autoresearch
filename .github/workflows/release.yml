@@ -75,6 +75,11 @@ jobs:
             echo "::error::Checked out SHA does not match source_sha"
             exit 1
           fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$source_sha" origin/main; then
+            echo "::error::Release source SHA must be an ancestor of origin/main"
+            exit 1
+          fi
 
           echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
 
@@ -540,6 +545,11 @@ jobs:
             echo "::error::Checked out SHA does not match source_sha"
             exit 1
           fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$source_sha" origin/main; then
+            echo "::error::Release source SHA must be an ancestor of origin/main"
+            exit 1
+          fi
 
           echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
 
@@ -731,6 +741,11 @@ jobs:
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]] \
             && [[ "$source_sha" != "${MANUAL_SOURCE_SHA,,}" ]]; then
             echo "::error::Checked out SHA does not match source_sha"
+            exit 1
+          fi
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$source_sha" origin/main; then
+            echo "::error::Release source SHA must be an ancestor of origin/main"
             exit 1
           fi
 
