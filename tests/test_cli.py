@@ -62,9 +62,11 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
         random_state=None,
         extra_features=None,
         experiment=None,
+        min_coverage_days=None,
     )
 
     # C2로 feast-only: build-features에 output_path + 기간만 넘긴다(duckdb 인자 없음).
+    # min_coverage_days 미지정(None)이면 키 자체를 넘기지 않아 모듈 기본값이 살아 있다(#464).
     assert build_features_call == {
         "output_path": "dataset.csv",
         "events_start_date": "2026-07-01",
@@ -140,6 +142,36 @@ def test_run_pipeline_requires_verified_snapshot_and_forwards_seed_triplet(monke
         train_call["model_seed"],
         train_call["sampler_seed"],
     ) == (11, 12, 13)
+
+
+def test_run_pipeline_forwards_coverage_override(monkeypatch):
+    # 백필처럼 의도적으로 좁은 구간을 쓸 때 0으로 우회할 수 있어야 한다(#464).
+    # None과 0을 구분하지 못하면(falsy 판정 등) 우회구가 조용히 무시된다.
+    build_features_call = {}
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", lambda **kw: build_features_call.update(kw))
+    monkeypatch.setattr(cli.train, "main", lambda **kw: _pipeline_outcome())
+    monkeypatch.setattr(cli.evaluate, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
+
+    cli.run_pipeline(
+        dataset_path="dataset.csv",
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
+        config_path=None,
+        model_output=None,
+        test_set_output="test_set.csv",
+        feature_columns_output="feature_columns.json",
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        extra_features=None,
+        experiment=None,
+        min_coverage_days=0,
+    )
+
+    assert build_features_call["min_coverage_days"] == 0
 
 
 def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):

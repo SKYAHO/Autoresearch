@@ -218,7 +218,9 @@ def test_assemble_via_feast_writes_contract_columns(tmp_path, monkeypatch) -> No
     _fake_env(monkeypatch, features)
 
     out_path = str(tmp_path / "out.csv")
-    btd._assemble_via_feast(out_path, "2026-07-07", "2026-07-21")
+    # 이 테스트가 보는 건 컬럼 계약이지 커버리지가 아니다 — 1행 mock spine이
+    # 커버리지 가드(#464)에 걸리지 않도록 명시적으로 우회한다.
+    btd._assemble_via_feast(out_path, "2026-07-07", "2026-07-21", min_coverage_days=0)
 
     written = pd.read_csv(out_path)
     # 정확히 21피처 + clicked, 순서도 계약대로.
@@ -240,7 +242,7 @@ def test_assemble_via_feast_empty_warns_and_reports_counts(
     _fake_env(monkeypatch, features)
 
     out_path = str(tmp_path / "out.csv")
-    btd._assemble_via_feast(out_path, "2026-07-07", "2026-07-21")
+    btd._assemble_via_feast(out_path, "2026-07-07", "2026-07-21", min_coverage_days=0)
 
     written = pd.read_csv(out_path)
     assert len(written) == 0  # 전량 드롭
@@ -254,4 +256,6 @@ def test_assemble_via_feast_missing_feature_raises(tmp_path, monkeypatch) -> Non
     features = pd.DataFrame([{"category_id": "Gaming", "clicked": 1}])
     _fake_env(monkeypatch, features)
     with pytest.raises(ValueError, match="누락된 모델 피처"):
-        btd._assemble_via_feast(str(tmp_path / "out.csv"), "2026-07-07", "2026-07-21")
+        btd._assemble_via_feast(
+            str(tmp_path / "out.csv"), "2026-07-07", "2026-07-21", min_coverage_days=0
+        )

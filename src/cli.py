@@ -62,13 +62,31 @@ def build_features(
     events_end_date: Optional[str] = typer.Option(
         None, help="학습 기간 종료일 KST YYYY-MM-DD (포함)"
     ),
+    min_coverage_days: Optional[int] = typer.Option(
+        None,
+        "--min-coverage-days",
+        help=(
+            "학습에 쓸 수 있는 최소 날짜 수(#464). 요청 기간에 데이터 없는 날이 섞여 "
+            "이 값 미만이면 조립을 실패시킵니다. 백필처럼 의도적으로 좁은 구간을 쓸 때는 "
+            "0으로 우회합니다."
+        ),
+    ),
 ) -> None:
     """training_dataset.csv 생성 (offline feature store PIT 조회, #359 C2로 feast-only)."""
     build_training_dataset.main(
         output_path=output_path,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
+        **_coverage_kwargs(min_coverage_days),
     )
+
+
+def _coverage_kwargs(min_coverage_days: Optional[int]) -> dict:
+    """`--min-coverage-days` 미지정 시 모듈 기본값을 그대로 쓰게 한다(#464).
+
+    None을 그대로 넘기면 기본값이 덮여 검증이 꺼지므로, 지정된 경우에만 키를 만든다.
+    """
+    return {} if min_coverage_days is None else {"min_coverage_days": min_coverage_days}
 
 
 def _parse_extra_features(value: Optional[str]) -> Optional[list[str]]:
@@ -177,6 +195,14 @@ def run_pipeline(
     events_end_date: Optional[str] = typer.Option(
         None, help="학습 기간 종료일 KST YYYY-MM-DD (포함)"
     ),
+    min_coverage_days: Optional[int] = typer.Option(
+        None,
+        "--min-coverage-days",
+        help=(
+            "학습에 쓸 수 있는 최소 날짜 수(#464). 미달이면 조립 단계에서 실패합니다. "
+            "백필 등 의도적으로 좁은 구간을 쓸 때는 0으로 우회합니다."
+        ),
+    ),
     config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
     model_output: Optional[str] = typer.Option(None, help="모델 저장 경로 (config override)"),
     test_set_output: Optional[str] = typer.Option(
@@ -234,6 +260,7 @@ def run_pipeline(
         output_path=dataset_path,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
+        **_coverage_kwargs(min_coverage_days),
     )
 
     # 어떤 기간·소스로 학습했는지 MLflow run에 lineage로 남긴다(#359). C2로 조립 경로는

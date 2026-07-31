@@ -10,6 +10,13 @@ offline store가 정본(#357)이라 그 값을 그대로 읽는다.
 확인한다(환경변수 → GCP 자격증명 → feast import 순, #404) — 자격증명 없는 환경에서 BigQuery
 접속이 응답 없이 멈추는 대신 즉시 명확한 이유로 중단한다.
 
+spine 로드 직후에는 ``summarize_spine_coverage``/``require_spine_coverage``로 **요청 기간 대비
+실제 확보한 날짜 수**를 검증한다(#464). 기간 조회는 없는 파티션을 에러가 아니라 "행 없음"으로
+돌려주므로, 이 검사가 없으면 데이터가 며칠씩 비어도 조립·학습이 조용히 성공한다 — champion
+v12가 사실상 2일치로 학습돼 재현 불가능한 지표로 굳었던 사고의 직접 원인이다. 두 함수는
+BigQuery 없이 단위 테스트 가능한 순수 함수이며, 검증은 비싼 PIT 조회 **전에** 수행한다.
+백필처럼 의도적으로 좁은 구간을 쓸 때는 ``min_coverage_days=0``으로 우회한다.
+
 출력: data/processed/training_dataset.csv와 snapshot sidecar (21 모델 피처 + ``clicked``
 label = 22 물리 컬럼).
 model input의 이름·순서·categorical 분류는 ``src/features/model_contract.py``가, staged PIT 조회는
@@ -26,6 +33,7 @@ from __future__ import annotations
 
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
 from urllib.parse import urlparse
@@ -46,6 +54,17 @@ from src.pipeline.training_provenance import (  # noqa: E402
     snapshot_manifest_path,
     write_manifest_atomic,
 )
+
+# spine 커버리지 가드(#464). 요청 기간에 데이터 없는 날이 섞여도 조용히 성공하던 것을 막는다 —
+# champion v12가 사실상 2일치로 학습돼 재현 불가능한 val_roc_auc=0.80으로 굳고, 이후 정상
+# 모델의 승격을 전부 막았던 사고가 근거다(2026-07-31 조사).
+#
+# 기준값은 잠정이며 experiments/2026-07-31_training-window-length 결과로 확정한다.
+# - MIN_COVERAGE_DAYS: v12(정상 2일)를 막고 v18(정상 4일)은 통과시키는 선.
+# - MIN_ROWS_PER_DAY: 2026-07-23/24처럼 유저 10명(240행)만 남은 붕괴일을 "있음"으로 세지 않기
+#   위한 하한. 정상일은 12만~17만 행이라 5,000은 충분히 느슨하다.
+DEFAULT_MIN_COVERAGE_DAYS = int(os.environ.get("CTR_TRAINING_MIN_COVERAGE_DAYS", "3"))
+DEFAULT_MIN_ROWS_PER_DAY = int(os.environ.get("CTR_TRAINING_MIN_ROWS_PER_DAY", "5000"))
 
 BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "autoresearch-503903")
 # feature/서빙 계층 dataset — Feast feature 테이블 4종과 배치 출력 테이블(user_recommendations).
@@ -151,6 +170,126 @@ def load_training_entity_spine(start_date: str, end_date: str) -> pd.DataFrame:
         WHERE DATE(event_timestamp, 'Asia/Seoul') BETWEEN '{start_date}' AND '{end_date}'
     """
     return client.query(query).to_dataframe()
+
+
+@dataclass(frozen=True)
+class SpineCoverage:
+    """요청 기간 대비 spine이 실제로 덮은 날짜 구성(#464).
+
+    학습이 "몇 일치로 돌았는지"를 판정 가능한 형태로 만든다. 행 수만으로는
+    하루가 통째로 빠진 것과 모든 날이 조금씩 적은 것을 구분할 수 없다.
+    """
+
+    requested_days: tuple[str, ...]
+    usable_days: tuple[str, ...]
+    sparse_days: tuple[str, ...]
+    missing_days: tuple[str, ...]
+    zero_click_days: tuple[str, ...]
+    total_rows: int
+    total_clicks: int
+
+    def describe(self) -> str:
+        """사람이 읽고 바로 원인을 알 수 있는 한 줄 요약."""
+        return (
+            f"요청 {len(self.requested_days)}일 중 사용 가능 {len(self.usable_days)}일 "
+            f"(빈 날 {len(self.missing_days)}, 희박한 날 {len(self.sparse_days)}), "
+            f"총 {self.total_rows:,}행 / {self.total_clicks:,}클릭"
+        )
+
+
+def summarize_spine_coverage(
+    spine: pd.DataFrame,
+    start_date: str,
+    end_date: str,
+    *,
+    min_rows_per_day: int = DEFAULT_MIN_ROWS_PER_DAY,
+) -> SpineCoverage:
+    """spine을 KST 날짜로 집계해 요청 기간의 커버리지를 만든다(순수 함수, #464).
+
+    BigQuery 없이 단위 테스트 가능하도록 조회와 분리한다. ``min_rows_per_day``
+    미만인 날은 "있다"고 세지 않는다 — 2026-07-23/24처럼 유저 10명(240행)만 남은
+    붕괴일을 정상일과 같이 세면 커버리지 판정이 무의미해진다.
+    """
+    requested = tuple(
+        d.strftime("%Y-%m-%d")
+        for d in pd.date_range(start=start_date, end=end_date, freq="D")
+    )
+    if not requested:
+        raise ValueError(
+            f"요청 기간이 비었습니다: start={start_date!r} end={end_date!r} "
+            "(start가 end보다 뒤인지 확인하세요)"
+        )
+
+    if spine.empty:
+        return SpineCoverage(
+            requested_days=requested,
+            usable_days=(),
+            sparse_days=(),
+            missing_days=requested,
+            zero_click_days=(),
+            total_rows=0,
+            total_clicks=0,
+        )
+
+    # BigQuery TIMESTAMP는 tz-aware(UTC)로 오지만, 테스트가 naive로 만들 수도 있다.
+    # KST 날짜가 파티션 계약(#295)의 기준이므로 어느 쪽이든 KST로 맞춘다.
+    ts = pd.to_datetime(spine["event_timestamp"])
+    ts = ts.dt.tz_localize("UTC") if ts.dt.tz is None else ts.dt.tz_convert("UTC")
+    day = ts.dt.tz_convert("Asia/Seoul").dt.strftime("%Y-%m-%d")
+
+    grouped = spine.groupby(day)["clicked"].agg(["size", "sum"])
+    usable, sparse, missing, zero_click = [], [], [], []
+    for d in requested:
+        if d not in grouped.index:
+            missing.append(d)
+            continue
+        rows = int(grouped.loc[d, "size"])
+        clicks = int(grouped.loc[d, "sum"])
+        (usable if rows >= min_rows_per_day else sparse).append(d)
+        if clicks == 0:
+            zero_click.append(d)
+
+    return SpineCoverage(
+        requested_days=requested,
+        usable_days=tuple(usable),
+        sparse_days=tuple(sparse),
+        missing_days=tuple(missing),
+        zero_click_days=tuple(zero_click),
+        total_rows=int(len(spine)),
+        total_clicks=int(spine["clicked"].sum()),
+    )
+
+
+def require_spine_coverage(
+    coverage: SpineCoverage, *, min_days: int = DEFAULT_MIN_COVERAGE_DAYS
+) -> None:
+    """커버리지가 기준 미달이면 원인을 드러내며 실패시킨다(#464).
+
+    ``min_days=0``이면 검사를 건너뛴다 — 백필·좁은 구간 재현처럼 의도적으로
+    적은 날짜를 쓰는 경우를 막지 않기 위한 명시적 우회구다.
+    """
+    if min_days <= 0:
+        print("  [경고] spine 커버리지 검증이 꺼져 있습니다(min_days<=0).")
+        return
+
+    if len(coverage.usable_days) < min_days:
+        raise ValueError(
+            "학습에 쓸 수 있는 날이 부족합니다 — "
+            f"{coverage.describe()}. 최소 {min_days}일이 필요합니다.\n"
+            f"  요청 기간: {coverage.requested_days[0]} ~ {coverage.requested_days[-1]}\n"
+            f"  사용 가능: {list(coverage.usable_days) or '없음'}\n"
+            f"  데이터 없음: {list(coverage.missing_days) or '없음'}\n"
+            f"  행이 너무 적음: {list(coverage.sparse_days) or '없음'}\n"
+            "기간을 넓히거나, 의도한 축소라면 min_coverage_days=0으로 우회하세요."
+        )
+
+    # 클릭 0인 날은 그 자체로 실패는 아니다(다른 날에 양성이 있으면 학습 가능).
+    # 다만 val 분할이 그 날에 몰리면 단일 클래스로 지표가 nan이 되므로(#445) 남긴다.
+    if coverage.zero_click_days:
+        print(
+            f"  [경고] 클릭이 0인 날: {list(coverage.zero_click_days)} "
+            "— 분할에 따라 지표가 nan이 될 수 있습니다(#445)."
+        )
 
 
 def _verify_assembly_environment() -> None:
@@ -261,7 +400,11 @@ def _download_pinned_registry(
 
 
 def _assemble_via_feast(
-    output_path: str, events_start_date: str, events_end_date: str
+    output_path: str,
+    events_start_date: str,
+    events_end_date: str,
+    *,
+    min_coverage_days: int = DEFAULT_MIN_COVERAGE_DAYS,
 ) -> None:
     """Feast get_historical_features(PIT)로 spine에 21피처를 붙여 CSV로 쓴다(#358).
 
@@ -279,6 +422,12 @@ def _assemble_via_feast(
     print("\n[feast] training_entity spine 로드...")
     spine = load_training_entity_spine(events_start_date, events_end_date)
     print(f"  [OK] spine: {len(spine)} rows")
+
+    # 커버리지 검증은 비싼 조회(get_historical_features) **전에** 한다 — 어차피 실패할
+    # 조립에 수 분과 BigQuery 스캔을 쓰지 않기 위해서다(#464).
+    coverage = summarize_spine_coverage(spine, events_start_date, events_end_date)
+    print(f"  [커버리지] {coverage.describe()}")
+    require_spine_coverage(coverage, min_days=min_coverage_days)
 
     # offline 전용 store: prod feature_store.yaml(Redis)을 로드하지 않고, generation을
     # 고정한 local registry snapshot만 읽어 BigQuery offline을 조회한다(#423).
@@ -491,6 +640,7 @@ def main(
     output_path: str = None,
     events_start_date: str = None,
     events_end_date: str = None,
+    min_coverage_days: int = DEFAULT_MIN_COVERAGE_DAYS,
 ):
     """training_dataset.csv를 offline feature store(Feast PIT) 조회로 생성한다(#359 C2, feast-only).
 
@@ -506,4 +656,9 @@ def main(
     _verify_assembly_environment()
     if output_path is None:
         output_path = os.path.join(get_data_dir(), "processed", "training_dataset.csv")
-    _assemble_via_feast(output_path, events_start_date, events_end_date)
+    _assemble_via_feast(
+        output_path,
+        events_start_date,
+        events_end_date,
+        min_coverage_days=min_coverage_days,
+    )
