@@ -57,6 +57,7 @@
 ### 🚀 서빙 (Serving)
 
 - [Spec — YouTube 리랭킹 서빙 API](specs/2026-07-16-reranking-serving-api.md)
+- [Spec — Rerank Serving 성능·비용·안정성 벤치마크](specs/2026-07-31-rerank-serving-performance-benchmark.md)
 - [Plan — Reranking Serving API 구현](archive/plans/2026-07-16-reranking-serving-api.md) (완료·아카이브)
 - [시각화 — Serving Feature Build: 무엇이 바뀌었나](reports/2026-07-22-serving-feature-build-overview.html) — 비개발 팀원용 변경 흐름·운영 경계 안내
 - `src/serving/` (FastAPI 추론 서버), `deploy/serving/` (이미지 정의)
@@ -107,6 +108,7 @@
   GitHub Pages에 누적된 merge PR 리포트의 정적 검색 인덱스
 - [모델 승격 구조화 결과 계약](specs/2026-07-29-model-promotion-structured-outcome.md) —
   승격·게이트 미달·후보 없음·실행 오류의 기계 판독 결과와 Airflow 인계 계약
+- [Rerank Serving 성능·비용·안정성 벤치마크](specs/2026-07-31-rerank-serving-performance-benchmark.md)
 
 ## 가이드
 
