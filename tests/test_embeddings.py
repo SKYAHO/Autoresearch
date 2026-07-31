@@ -152,7 +152,9 @@ def test_verify_vertex_ai_credentials_raises_on_refresh_error(monkeypatch):
         def refresh(self, request):
             raise RefreshError("invalid_grant")
 
-    monkeypatch.setattr(google.auth, "default", lambda: (_FakeCredentials(), "proj"))
+    monkeypatch.setattr(
+        google.auth, "default", lambda *args, **kwargs: (_FakeCredentials(), "proj")
+    )
 
     with pytest.raises(ValueError, match="세션이 만료"):
         embeddings_module.verify_vertex_ai_credentials()
@@ -162,7 +164,7 @@ def test_verify_vertex_ai_credentials_raises_on_missing_credentials(monkeypatch)
     import google.auth
     from google.auth.exceptions import DefaultCredentialsError
 
-    def raise_default_credentials_error():
+    def raise_default_credentials_error(*args, **kwargs):
         raise DefaultCredentialsError("no ADC found")
 
     monkeypatch.setattr(google.auth, "default", raise_default_credentials_error)
@@ -178,9 +180,19 @@ def test_verify_vertex_ai_credentials_passes_when_refresh_succeeds(monkeypatch):
         def refresh(self, request):
             pass  # 성공 — 아무것도 하지 않는다.
 
-    monkeypatch.setattr(google.auth, "default", lambda: (_FakeCredentials(), "proj"))
+    captured: dict = {}
+
+    def fake_default(*args, **kwargs):
+        captured.update(kwargs)
+        return _FakeCredentials(), "proj"
+
+    monkeypatch.setattr(google.auth, "default", fake_default)
 
     embeddings_module.verify_vertex_ai_credentials()  # 예외 없이 통과해야 한다
+
+    # scopes를 넘기지 않으면 서비스 계정 키(requires_scopes=True)가 invalid_scope로
+    # 거부되고, 그 RefreshError가 "세션 만료"로 오인된다(#426).
+    assert captured["scopes"] == ["https://www.googleapis.com/auth/cloud-platform"]
 
 
 def test_get_embeddings_chunk_does_not_retry_refresh_error(monkeypatch):

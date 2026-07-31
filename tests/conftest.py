@@ -62,8 +62,6 @@ class _FakeTextEmbeddingModel:
 class _FakeCredentials:
     """google.auth.default()가 돌려주는 자격증명 대역 — refresh가 항상 성공한다."""
 
-    token = "fake-token"
-
     def refresh(self, request):
         return None
 

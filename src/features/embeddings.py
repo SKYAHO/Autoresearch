@@ -133,7 +133,14 @@ def verify_vertex_ai_credentials() -> None:
     from google.auth.transport.requests import Request
 
     try:
-        credentials, _ = google.auth.default()
+        # scopes 지정은 서비스 계정 키 경로에 필수다(#426). 서비스 계정 자격증명은
+        # requires_scopes=True로 돌아오는데, scope 없이 refresh하면 토큰 엔드포인트가
+        # invalid_scope로 거부하고 그 RefreshError가 아래에서 "세션 만료"로 오인된다 —
+        # 문서가 권장하는 서비스 계정 전환이 오히려 라운드를 막는 결과가 된다.
+        # 사용자 ADC에는 영향이 없다(있으나 없으나 동일하게 갱신 성공).
+        credentials, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
         credentials.refresh(Request())
     except google.auth.exceptions.RefreshError as error:
         raise ValueError(
