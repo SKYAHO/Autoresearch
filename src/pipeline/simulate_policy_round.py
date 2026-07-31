@@ -11,6 +11,9 @@ pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 
 
 제공 기능:
 
+- 라운드 시작 시 GCP 자격증명 사전점검(duckdb 조립 경로 한정, #426) — 자격증명
+  발급·갱신은 gcloud ADC/서비스 계정 키의 몫이고, 여기서는 만료를 조기에
+  실패시키기 위해 `verify_vertex_ai_credentials()`를 1회 호출만 한다
 - 유저별 두 정책 노출 결정과 스코어링 진단 수집
 - LLM 판정 1회 실행(합집합 후보)과 판정 덤프
   (`action_log_drafts.parquet` + 계보·노출 인자·노출 키 집합 사이드카
@@ -75,6 +78,7 @@ from src.features.assembly import (
     compute_user_offline_features,
     compute_video_features,
 )
+from src.features.embeddings import verify_vertex_ai_credentials
 from src.features.feast_retrieval import build_pool_feature_frame_feast
 from src.features.model_contract import require_model_feature_columns
 from src.pipeline.policy_selector import Exposure, select_exposures
@@ -121,11 +125,13 @@ def build_pool_feature_frame(
     user_id: str,
     as_of: str,
     snapshot_date: str | None = None,
+    skip_embedding: bool = False,
 ) -> pd.DataFrame:
     """유저 1명 × 전체 영상 pool의 21개 모델 피처 프레임을 학습과 동일 경로로 만든다.
 
     snapshot_date(YYYY-MM-DD)는 영상 나이(days_since_upload) 기준일이며, 유저
     이력 기준(as_of)과 다를 수 있다. 없으면 as_of의 날짜를 사용한다(기존 동작).
+    skip_embedding은 compute_interaction_columns에 그대로 전달한다(#426).
     """
     video_features = compute_video_features(videos_raw, snapshot_date or as_of.split(" ")[0])
     offline = compute_user_offline_features(personas)
@@ -149,7 +155,7 @@ def build_pool_feature_frame(
         frame[column] = online.iloc[0][column]
     persona_row = personas[personas["uuid"] == user_id].iloc[0]
     frame["hobbies_and_interests_list"] = persona_row["hobbies_and_interests_list"]
-    frame = compute_interaction_columns(frame)
+    frame = compute_interaction_columns(frame, skip_embedding=skip_embedding)
     return frame
 
 
@@ -382,6 +388,13 @@ def main(
     # 인자 불일치는 모델 로드·유저별 피처 조립(임베딩 호출 포함) 전에 걸러낸다.
     if replay is not None:
         _validate_replay_exposure_args(replay.exposure_args, exposure_args)
+
+    # duckdb 경로는 유저별 피처 조립에서 Vertex AI 임베딩을 호출하므로, 자격증명
+    # 만료를 5단계 전부 실행한 뒤가 아니라 여기서 잡는다(#426). feast 경로는
+    # build_pool_feature_frame_feast가 BigQuery 사전계산값을 읽어 embed_texts를
+    # 호출하지 않으므로 이 점검이 불필요하다.
+    if assembly_source == "duckdb":
+        verify_vertex_ai_credentials()
 
     if reranker is None:
         reranker = load_reranker(load_model_settings_from_environment())  # fail-fast

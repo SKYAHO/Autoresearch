@@ -9,6 +9,9 @@ import sys
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
+from google.api_core.exceptions import BadGateway, Unknown
+from google.auth.exceptions import TransportError
 
 from src.features import embeddings as embeddings_module
 
@@ -120,3 +123,225 @@ def test_embed_texts_reuses_model_across_calls(monkeypatch):
     # from_pretrained는 1회만 호출되고(_model 캐시), get_embeddings만 2번 호출된다.
     assert model_cls.from_pretrained_call_count == 1
     assert len(model_cls.calls) == 2
+
+
+def test_get_embeddings_chunk_retries_resource_exhausted(monkeypatch):
+    from google.api_core.exceptions import ResourceExhausted
+
+    model_cls = _install_recording_fake(monkeypatch)
+    call_count = {"n": 0}
+    original_get_embeddings = model_cls.get_embeddings
+
+    def flaky_get_embeddings(self, texts, *, auto_truncate=True, output_dimensionality=None):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise ResourceExhausted("429 quota exceeded")
+        return original_get_embeddings(self, texts, output_dimensionality=output_dimensionality)
+
+    monkeypatch.setattr(model_cls, "get_embeddings", flaky_get_embeddings)
+
+    result = embeddings_module.embed_texts(["hello"], task_type="RETRIEVAL_QUERY")
+
+    assert call_count["n"] == 3
+    assert len(result) == 1
+
+
+def _disable_retry_wait(monkeypatch, func):
+    """재시도 대기(초 단위 backoff)를 제거해 테스트를 즉시 끝낸다."""
+    from tenacity import wait_none
+
+    monkeypatch.setattr(func.retry, "wait", wait_none())
+
+
+def test_get_embeddings_chunk_reraises_original_error_when_retries_exhausted(monkeypatch):
+    """3회를 모두 소진하면 tenacity.RetryError가 아니라 원래 예외가 올라와야 한다.
+
+    호출자는 예외 타입으로 실패 원인을 분류하므로(#426), RetryError로 감싸이면
+    except ResourceExhausted가 영영 걸리지 않는다.
+    """
+    import tenacity
+    from google.api_core.exceptions import ResourceExhausted
+
+    _disable_retry_wait(monkeypatch, embeddings_module._get_embeddings_chunk)
+    model_cls = _install_recording_fake(monkeypatch)
+    call_count = {"n": 0}
+
+    def always_resource_exhausted(self, texts, *, auto_truncate=True, output_dimensionality=None):
+        call_count["n"] += 1
+        raise ResourceExhausted("429 quota exceeded")
+
+    monkeypatch.setattr(model_cls, "get_embeddings", always_resource_exhausted)
+
+    with pytest.raises(ResourceExhausted):
+        embeddings_module.embed_texts(["hello"], task_type="RETRIEVAL_QUERY")
+
+    assert call_count["n"] == 3
+    assert not issubclass(ResourceExhausted, tenacity.RetryError)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        Unknown("gRPC UNKNOWN: stream terminated"),
+        BadGateway("502"),
+        TransportError("connection reset by peer"),
+    ],
+    ids=["unknown", "bad_gateway", "transport_error"],
+)
+def test_get_embeddings_chunk_retries_transient_errors(monkeypatch, error):
+    """Unknown(gRPC)·BadGateway(502)·TransportError(전송 계층)도 재시도 대상이다(#426)."""
+    _disable_retry_wait(monkeypatch, embeddings_module._get_embeddings_chunk)
+    model_cls = _install_recording_fake(monkeypatch)
+    call_count = {"n": 0}
+    original_get_embeddings = model_cls.get_embeddings
+
+    def flaky_get_embeddings(self, texts, *, auto_truncate=True, output_dimensionality=None):
+        call_count["n"] += 1
+        if call_count["n"] < 2:
+            raise error
+        return original_get_embeddings(self, texts, output_dimensionality=output_dimensionality)
+
+    monkeypatch.setattr(model_cls, "get_embeddings", flaky_get_embeddings)
+
+    result = embeddings_module.embed_texts(["hello"], task_type="RETRIEVAL_QUERY")
+
+    assert call_count["n"] == 2
+    assert len(result) == 1
+
+
+def test_verify_vertex_ai_credentials_retries_transport_error(monkeypatch):
+    """사전점검의 토큰 갱신은 순단(TransportError) 1회는 흡수하고 통과해야 한다(#426)."""
+    import google.auth
+    from google.auth.exceptions import TransportError
+
+    _disable_retry_wait(monkeypatch, embeddings_module._refresh_credentials)
+    call_count = {"n": 0}
+
+    class _FlakyCredentials:
+        def refresh(self, request):
+            call_count["n"] += 1
+            if call_count["n"] < 2:
+                raise TransportError("connection reset by peer")
+
+    monkeypatch.setattr(
+        google.auth, "default", lambda *args, **kwargs: (_FlakyCredentials(), "proj")
+    )
+
+    embeddings_module.verify_vertex_ai_credentials()  # 예외 없이 통과해야 한다
+
+    assert call_count["n"] == 2
+
+
+def test_verify_vertex_ai_credentials_raises_when_transport_error_persists(monkeypatch):
+    """재시도를 모두 소진하면 조치 안내가 담긴 ValueError로 실패한다 — 조용히 통과 금지."""
+    import google.auth
+    from google.auth.exceptions import TransportError
+
+    _disable_retry_wait(monkeypatch, embeddings_module._refresh_credentials)
+    call_count = {"n": 0}
+
+    class _BrokenCredentials:
+        def refresh(self, request):
+            call_count["n"] += 1
+            raise TransportError("connection reset by peer")
+
+    monkeypatch.setattr(
+        google.auth, "default", lambda *args, **kwargs: (_BrokenCredentials(), "proj")
+    )
+
+    with pytest.raises(ValueError, match="연결하지 못했습니다"):
+        embeddings_module.verify_vertex_ai_credentials()
+
+    assert call_count["n"] == 2
+
+
+def test_verify_vertex_ai_credentials_does_not_retry_refresh_error(monkeypatch):
+    """RefreshError는 재시도해도 풀리지 않으므로 1회 시도 후 즉시 실패한다."""
+    import google.auth
+    from google.auth.exceptions import RefreshError
+
+    _disable_retry_wait(monkeypatch, embeddings_module._refresh_credentials)
+    call_count = {"n": 0}
+
+    class _ExpiredCredentials:
+        def refresh(self, request):
+            call_count["n"] += 1
+            raise RefreshError("invalid_grant")
+
+    monkeypatch.setattr(
+        google.auth, "default", lambda *args, **kwargs: (_ExpiredCredentials(), "proj")
+    )
+
+    with pytest.raises(ValueError, match="세션이 만료"):
+        embeddings_module.verify_vertex_ai_credentials()
+
+    assert call_count["n"] == 1
+
+
+def test_verify_vertex_ai_credentials_raises_on_refresh_error(monkeypatch):
+    import google.auth
+    from google.auth.exceptions import RefreshError
+
+    class _FakeCredentials:
+        def refresh(self, request):
+            raise RefreshError("invalid_grant")
+
+    monkeypatch.setattr(
+        google.auth, "default", lambda *args, **kwargs: (_FakeCredentials(), "proj")
+    )
+
+    with pytest.raises(ValueError, match="세션이 만료"):
+        embeddings_module.verify_vertex_ai_credentials()
+
+
+def test_verify_vertex_ai_credentials_raises_on_missing_credentials(monkeypatch):
+    import google.auth
+    from google.auth.exceptions import DefaultCredentialsError
+
+    def raise_default_credentials_error(*args, **kwargs):
+        raise DefaultCredentialsError("no ADC found")
+
+    monkeypatch.setattr(google.auth, "default", raise_default_credentials_error)
+
+    with pytest.raises(ValueError, match="찾을 수 없습니다"):
+        embeddings_module.verify_vertex_ai_credentials()
+
+
+def test_verify_vertex_ai_credentials_passes_when_refresh_succeeds(monkeypatch):
+    import google.auth
+
+    class _FakeCredentials:
+        def refresh(self, request):
+            pass  # 성공 — 아무것도 하지 않는다.
+
+    captured: dict = {}
+
+    def fake_default(*args, **kwargs):
+        captured.update(kwargs)
+        return _FakeCredentials(), "proj"
+
+    monkeypatch.setattr(google.auth, "default", fake_default)
+
+    embeddings_module.verify_vertex_ai_credentials()  # 예외 없이 통과해야 한다
+
+    # scopes를 넘기지 않으면 서비스 계정 키(requires_scopes=True)가 invalid_scope로
+    # 거부되고, 그 RefreshError가 "세션 만료"로 오인된다(#426).
+    assert captured["scopes"] == ["https://www.googleapis.com/auth/cloud-platform"]
+
+
+def test_get_embeddings_chunk_does_not_retry_refresh_error(monkeypatch):
+    from google.auth.exceptions import RefreshError
+
+    model_cls = _install_recording_fake(monkeypatch)
+    call_count = {"n": 0}
+
+    def always_refresh_error(self, texts, *, auto_truncate=True, output_dimensionality=None):
+        call_count["n"] += 1
+        raise RefreshError("invalid_grant")
+
+    monkeypatch.setattr(model_cls, "get_embeddings", always_refresh_error)
+
+    with pytest.raises(RefreshError):
+        embeddings_module.embed_texts(["hello"], task_type="RETRIEVAL_QUERY")
+
+    assert call_count["n"] == 1

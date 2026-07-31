@@ -39,6 +39,10 @@ dependencies = [
     # FieldDescriptor.label 오류를 낸다.
     "protobuf<7",
     "google-cloud-aiplatform>=1.148.1",
+    # embeddings.py가 재시도 화이트리스트에서 직접 import한다(#426) — 지금까지는
+    # google-cloud-aiplatform의 transitive 의존이었지만 직접 의존이므로 명시한다.
+    "google-api-core>=2.31.0",
+    "google-auth>=2.53.0",
 ]
 
 [dependency-groups]
