@@ -12,7 +12,8 @@ experiment에 run을 남기고, registered model을 어떤 이름으로 등록�
 
 [기능] `resolve_tracking_namespace()`가 운영/실험 두 경로를 갈라 세 값(tracking URI,
 experiment 이름, registry 모델 이름)을 함께 정한다. 세 값을 따로 만지면 하나만 빠뜨려
-오염되므로 묶어서 돌려준다.
+오염되므로 묶어서 돌려준다. 실험의 로컬 스토어 기본값은 프로젝트 루트 기준 **절대
+경로**다 — CWD 상대면 실행 위치에 따라 실험 이력이 갈린다(#444).
 
 [비책임] MLflow 호출 자체(`set_tracking_uri`, `get_or_create_experiment`)는
 `src/tracking/client.py`가, 승격 판정은 `src/tracking/promote.py`가 소유한다.
@@ -20,6 +21,7 @@ experiment 이름, registry 모델 이름)을 함께 정한다. 세 값을 따�
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -30,7 +32,13 @@ PROD_EXPERIMENT_NAME = "ctr-model-training"
 # 실험 run 전용 experiment.
 EXPERIMENT_EXPERIMENT_NAME = "ctr-model-experiment"
 # 실험에서 트래킹 URI가 없을 때의 기본 경로. 로컬 파일 스토어라 서버 없이 돌아간다.
-EXPERIMENT_TRACKING_URI_DEFAULT = "file:./mlruns"
+#
+# **프로젝트 루트 기준 절대 경로**로 고정한다(#444). 예전에는 `file:./mlruns`라 CWD
+# 상대였는데, 저장소 루트에서 돌리면 `<repo>/mlruns`, 하위 디렉토리에서 돌리면
+# `<repo>/<subdir>/mlruns`로 갈렸다. 에이전트가 여러 라운드를 이어 돌릴 때 앞 라운드
+# 이력을 못 찾는다.
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+EXPERIMENT_TRACKING_URI_DEFAULT = "file:" + os.path.join(_PROJECT_ROOT, "mlruns")
 # registry 이름의 실험 네임스페이스 구분자.
 EXPERIMENT_MODEL_NAME_INFIX = "-exp-"
 

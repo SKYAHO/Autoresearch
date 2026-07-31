@@ -13,6 +13,8 @@
 
 [기능] 순수 통계 계층(`summarize_metric`, `compare_to_baseline`)과 반복 실행
 (`run_seed_sweep`)을 분리한다. 통계 계층은 학습 없이 단위 테스트할 수 있다.
+유한하지 않은 지표(NaN/inf)는 두 계층 모두에서 거부한다 — 흘려보내면 평균·편차가
+조용히 NaN이 되고 판정이 "노이즈 안/밖"이 아니라 아무 말도 못 하게 된다(#445).
 
 [비책임] 학습 자체는 `src/pipeline/train.py`, 채점은 `src/pipeline/evaluate.py`,
 MLflow 좌표는 `src/tracking/namespace.py`가 소유한다. 이 모듈은 판정을 대신하지
@@ -166,6 +168,16 @@ def summarize_metric(values: Sequence[float]) -> MetricSummary:
     if not values:
         raise ValueError("지표 값이 비었습니다 — 요약할 대상이 없습니다.")
     numbers = [float(v) for v in values]
+    # NaN/inf가 섞이면 평균·편차가 조용히 NaN이 되고, 판정도 "노이즈 안/밖"이
+    # 아니라 아무 말도 못 하는 결과가 된다(#445).
+    non_finite = [
+        (index, value) for index, value in enumerate(numbers) if not math.isfinite(value)
+    ]
+    if non_finite:
+        raise ValueError(
+            f"유한하지 않은 지표가 있습니다: {non_finite} (위치, 값). "
+            "평균·편차가 NaN이 되어 판정이 성립하지 않습니다."
+        )
     return MetricSummary(
         n=len(numbers),
         mean=statistics.fmean(numbers),
@@ -328,7 +340,16 @@ def run_seed_sweep(
     metrics: list[float] = []
     for index, seed in enumerate(seeds):
         try:
-            metrics.append(float(train_once(random_state=seed, **train_kwargs)))
+            metric = float(train_once(random_state=seed, **train_kwargs))
+            if not math.isfinite(metric):
+                # TrainingOutcome.val_roc_auc의 기본값이 NaN이라, 학습을 거치지 않은
+                # outcome이 섞이면 여기로 들어온다. 요약까지 흘려보내면 평균·편차가
+                # 조용히 NaN이 되므로 시드를 지목해 즉시 멈춘다(#445).
+                raise ValueError(
+                    f"시드 {seed} 학습이 유한하지 않은 지표({metric})를 돌려줬습니다. "
+                    "학습이 실제로 수행됐는지, 지표가 계산 가능한 데이터였는지 확인하세요."
+                )
+            metrics.append(metric)
         except Exception as error:
             # 학습 1회가 비싼 명령이라, 중간에 죽었을 때 앞선 시드 결과까지 버리면
             # 재실행 비용이 크다. 이미 끝난 지표를 메시지에 담아 올린다(#407 리뷰 4).
