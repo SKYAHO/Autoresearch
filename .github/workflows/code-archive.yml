@@ -2,7 +2,7 @@ name: Code archive upload
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
     inputs:
       source_sha:
