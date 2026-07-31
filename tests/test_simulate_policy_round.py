@@ -269,6 +269,14 @@ def test_round_supports_three_named_policies(tmp_path, stub_reranker):
         (tmp_path / "policy_round_report.json").read_text(encoding="utf-8")
     )
     assert set(persisted["policies"]) == expected
+    meta = json.loads(
+        (tmp_path / "action_log_drafts_meta.json").read_text(encoding="utf-8")
+    )
+    assert [(policy["name"], policy["version"]) for policy in meta["policies"]] == [
+        ("baseline", "baseline-v1"),
+        ("model-a", "model-a-v1"),
+        ("model-b", "model-b-v1"),
+    ]
     html = (tmp_path / "policy_round_report.html").read_text(encoding="utf-8")
     assert all(policy in html for policy in expected)
     table = pq.read_table(tmp_path / "event_log.parquet").to_pandas()
@@ -939,6 +947,89 @@ class _FlakyGenerator:
         return self._delegate.generate(virtual_user, videos)
 
 
+class _StatefulGenerator:
+    """반복마다 판정을 바꾸고 호출 후보 순서를 기록하는 가짜 판정기."""
+
+    def __init__(self, user_count: int) -> None:
+        self.model_name = "stateful-judge"
+        self.user_count = user_count
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def generate(self, virtual_user: dict, videos: list[dict]) -> str:
+        call_index = len(self.calls)
+        repeat = call_index // self.user_count
+        user_id = str(virtual_user.get("user_id", ""))
+        video_ids = tuple(str(video["video_id"]) for video in videos)
+        self.calls.append((user_id, video_ids))
+        rows = []
+        for index, video_id in enumerate(video_ids):
+            propensity = 0.9 if repeat == 0 and index == 0 else 0.1
+            rows.append([index, propensity, propensity])
+        import json
+
+        return json.dumps({"j": rows})
+
+
+def test_repeated_judgments_keep_union_and_report_repeat_statistics(
+    tmp_path, stub_reranker
+):
+    generator = _StatefulGenerator(user_count=len(_virtual_users()))
+    report = main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=generator,
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.5,
+        judgment_repeats=2,
+        max_concurrency=1,
+        output_dir=str(tmp_path),
+    )
+
+    assert len(generator.calls) == 2 * len(_virtual_users())
+    first_repeat = generator.calls[: len(_virtual_users())]
+    second_repeat = generator.calls[len(_virtual_users()) :]
+    assert [user_id for user_id, _ in first_repeat] == [
+        user_id for user_id, _ in second_repeat
+    ]
+    assert [videos for _, videos in first_repeat] == [
+        videos for _, videos in second_repeat
+    ]
+
+    assert report["judgment_repeats"] == 2
+    assert report["reliability"]["meets_recommended_minimum"] is False
+    baseline = report["policies"]["baseline"]
+    assert baseline["judgment_repeats"] == 2
+    assert baseline["intended_impressions"] == 4 * 6
+    assert baseline["judged_impressions"] == 4 * 6
+    assert len(report["judgment_repeat_metrics"]) == 2
+    assert report["judgment_repeat_metrics"][0]["canonical"] is True
+    assert report["judgment_repeat_metrics"][1]["canonical"] is False
+    assert (
+        report["judgment_repeat_metrics"][0]["policies"]["baseline"]["ctr"]
+        != report["judgment_repeat_metrics"][1]["policies"]["baseline"]["ctr"]
+    )
+    assert baseline["clicks"] == report["judgment_repeat_metrics"][0]["policies"]["baseline"]["clicks"]
+
+
+def test_judgment_repeats_rejects_zero(tmp_path, stub_reranker):
+    with pytest.raises(ValueError, match="judgment_repeats"):
+        main(
+            personas=_personas(1),
+            virtual_users=_virtual_users(1),
+            videos_raw=_videos_raw(3),
+            events=_empty_events(),
+            generator=RuleBasedActionLogGenerator(),
+            reranker=stub_reranker,
+            click_threshold=0.0,
+            judgment_repeats=0,
+            output_dir=str(tmp_path),
+        )
+
+
 def test_partially_quarantined_chunk_round_replays_successfully(tmp_path, stub_reranker):
     """chunk_size > 0 부분 격리 라운드를 같은 노출 인자로 리플레이하면 성공해야 한다(#274).
 
@@ -1155,6 +1246,74 @@ def test_cli_replay_runs_without_generator(tmp_path, stub_reranker, monkeypatch)
     original = json.loads((round_a / "policy_round_report.json").read_text(encoding="utf-8"))
     replayed = json.loads((round_b / "policy_round_report.json").read_text(encoding="utf-8"))
     assert replayed["policies"] == original["policies"]
+
+
+def test_cli_replay_restores_named_policy_metadata(tmp_path, stub_reranker, monkeypatch):
+    """CLI replay가 sidecar의 N-policy 이름과 정책별 버전을 복원한다."""
+    import json
+    import sys
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from src.pipeline import simulate_policy_round as module
+    from src.pipeline.simulate_policy_round import PolicySpec
+
+    personas_path = tmp_path / "personas.csv"
+    _personas().to_csv(personas_path, index=False)
+    videos_path = tmp_path / "videos.csv"
+    _videos_raw().to_csv(videos_path, index=False)
+    events_path = tmp_path / "events.csv"
+    _events_with_history().to_csv(events_path, index=False)
+    users_path = tmp_path / "virtual_users.parquet"
+    pq.write_table(pa.Table.from_pylist(_virtual_users()), users_path)
+
+    first_dir = tmp_path / "first"
+    main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        policies=[
+            PolicySpec(name="baseline", reranker=None, version="baseline-v3"),
+            PolicySpec(name="ranker", reranker=stub_reranker, version="ranker-v8"),
+        ],
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        output_dir=str(first_dir),
+    )
+
+    monkeypatch.setattr(module, "load_reranker", lambda settings: stub_reranker)
+    monkeypatch.setattr(module, "load_model_settings_from_environment", lambda: None)
+    second_dir = tmp_path / "second"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "prog",
+            "--personas", str(personas_path),
+            "--virtual-users", str(users_path),
+            "--videos", str(videos_path),
+            "--events", str(events_path),
+            "--replay-drafts", str(first_dir / "action_log_drafts.parquet"),
+            "--click-threshold", "0.0",
+            "--output-dir", str(second_dir),
+        ],
+    )
+    module._cli()
+
+    replayed = json.loads(
+        (second_dir / "policy_round_report.json").read_text(encoding="utf-8")
+    )
+    assert list(replayed["policies"]) == ["baseline", "ranker"]
+    assert replayed["policy_versions"] == {
+        "baseline": "baseline-v3",
+        "ranker": "ranker-v8",
+    }
+    assert replayed["judgment_repeats"] == 1
 
 
 def test_cli_replay_rejects_generator_flag(tmp_path, monkeypatch):

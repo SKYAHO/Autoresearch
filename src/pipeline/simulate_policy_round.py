@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import uuid
@@ -71,6 +72,7 @@ from autoresearch.action_logs.schema import (
     EventLog,
     EventLogBatch,
     ImpressionDraft,
+    QuarantineRecord,
     validate_policy_name,
 )
 from src.features.assembly import (
@@ -207,9 +209,11 @@ def _write_drafts_meta(
     exposure_args: Mapping[str, object],
     exposure_keys: Mapping[str, list[str]],
     policy_versions: Mapping[str, str],
+    policies: Sequence[PolicySpec],
     policy_exposures: Mapping[
         str, Mapping[str, Sequence[Mapping[str, object]]]
     ],
+    judgment_repeats: int,
     policy_version: str,
     round_id: str,
     virtual_users: int,
@@ -233,6 +237,14 @@ def _write_drafts_meta(
         "exposure_args": dict(exposure_args),
         "exposure_keys": {user: sorted(keys) for user, keys in exposure_keys.items()},
         "policy_versions": dict(policy_versions),
+        "policies": [
+            {
+                "name": policy.name,
+                "version": policy_versions[policy.name],
+                "kind": "baseline" if policy.reranker is None else "reranker",
+            }
+            for policy in policies
+        ],
         "policy_exposures": {
             user: {
                 policy: [dict(exposure) for exposure in exposures]
@@ -242,6 +254,7 @@ def _write_drafts_meta(
         },
         "policy_version": policy_version,
         "round_id": round_id,
+        "judgment_repeats": judgment_repeats,
         "virtual_users": virtual_users,
         "users": users,
         "drafts": drafts,
@@ -511,6 +524,161 @@ def _validate_unique_event_ids(events: Sequence[EventLog]) -> None:
         raise ValueError("정책 라운드 event_id가 중복되었습니다")
 
 
+def _build_policy_metrics_and_events(
+    drafts: Sequence[ImpressionDraft],
+    exposures_by_user: Mapping[str, Mapping[str, Sequence[Exposure]]],
+    policy_specs: Sequence[PolicySpec],
+    policy_versions: Mapping[str, str],
+    click_threshold: float,
+    request: EventGenerationRequest,
+    *,
+    round_id: str,
+    seed: int,
+    emit_events: bool,
+) -> tuple[dict[str, dict[str, object]], list[EventLog], int]:
+    """한 번의 판정 결과를 정책별 통계와 선택적 canonical event로 확장한다."""
+
+    draft_by_key = {(draft.user_id, draft.video_id): draft for draft in drafts}
+    clicked_keys = {
+        (drafts[index].user_id, drafts[index].video_id)
+        for index in select_clicks_per_slate(list(drafts), click_threshold)
+    }
+    all_events: list[EventLog] = []
+    dropped = 0
+    per_policy: dict[str, dict[str, object]] = {}
+    for policy_index, policy_spec in enumerate(policy_specs):
+        policy = policy_spec.name
+        policy_drafts: list[ImpressionDraft] = []
+        metadata: dict[tuple[str, str], ExposureMetadata] = {}
+        propensities: list[float] = []
+        exploration_clicks = 0
+        exploration_imps = 0
+        intended_impressions = 0
+        for user_id, by_policy in exposures_by_user.items():
+            exposures = by_policy[policy]
+            intended_impressions += len(exposures)
+            for exposure in exposures:
+                draft = draft_by_key.get((user_id, exposure.video_id))
+                if draft is None:
+                    dropped += 1
+                    continue
+                policy_drafts.append(draft)
+                propensities.append(draft.click_propensity)
+                metadata[(user_id, exposure.video_id)] = ExposureMetadata(
+                    policy=policy,
+                    rank=exposure.rank,
+                    ctr_score=exposure.ctr_score,
+                    is_exploration=exposure.is_exploration,
+                    policy_version=policy_versions[policy],
+                )
+                if exposure.is_exploration:
+                    exploration_imps += 1
+                    if (user_id, exposure.video_id) in clicked_keys:
+                        exploration_clicks += 1
+        clicked_indices = {
+            index
+            for index, draft in enumerate(policy_drafts)
+            if (draft.user_id, draft.video_id) in clicked_keys
+        }
+        if emit_events:
+            policy_request = request.model_copy(
+                update={"seed": seed + policy_index * 1000}
+            )
+            all_events.extend(
+                _expand_events(
+                    policy_drafts,
+                    clicked_indices,
+                    policy_request,
+                    metadata=metadata,
+                    source=SOURCE_ONLINE_SIMULATED,
+                    event_id_prefix=build_round_policy_event_id_prefix(
+                        round_id, policy
+                    ),
+                )
+            )
+        impressions = len(policy_drafts)
+        clicks = len(clicked_indices)
+        per_policy[policy] = {
+            "policy_version": policy_versions[policy],
+            "impressions": impressions,
+            "clicks": clicks,
+            "ctr": round(clicks / impressions, 4) if impressions else 0.0,
+            "mean_click_propensity": (
+                round(sum(propensities) / len(propensities), 4)
+                if propensities
+                else 0.0
+            ),
+            "exploration_impressions": exploration_imps,
+            "exploration_clicks": exploration_clicks,
+            "intended_impressions": intended_impressions,
+            "judged_impressions": impressions,
+        }
+    return per_policy, all_events, dropped
+
+
+def _add_repeat_statistics(
+    canonical_metrics: dict[str, dict[str, object]],
+    repeat_metrics: Sequence[Mapping[str, object]],
+    exposures_by_user: Mapping[str, Mapping[str, Sequence[Exposure]]],
+) -> tuple[dict[str, dict[str, object]], dict[str, object]]:
+    """canonical 정책 지표에 반복 CTR 통계와 신뢰도 판정을 덧붙인다."""
+
+    repeat_count = len(repeat_metrics)
+    for policy, metrics in canonical_metrics.items():
+        values = [
+            float(repeat["policies"][policy]["ctr"])
+            for repeat in repeat_metrics
+        ]
+        ctr_mean = sum(values) / len(values) if values else 0.0
+        ctr_stddev = (
+            math.sqrt(
+                sum((value - ctr_mean) ** 2 for value in values)
+                / (len(values) - 1)
+            )
+            if len(values) >= 2
+            else 0.0
+        )
+        standard_error = ctr_stddev / math.sqrt(len(values)) if values else 0.0
+        metrics.update(
+            {
+                "judgment_repeats": repeat_count,
+                "ctr_mean": round(ctr_mean, 4),
+                "ctr_stddev": round(ctr_stddev, 4),
+                "ctr_interval_95": {
+                    "lower": round(max(0.0, ctr_mean - 1.96 * standard_error), 4),
+                    "upper": round(min(1.0, ctr_mean + 1.96 * standard_error), 4),
+                },
+                "intended_impressions": sum(
+                    len(by_policy[policy]) for by_policy in exposures_by_user.values()
+                ),
+                "judged_impressions": int(metrics["impressions"]),
+            }
+        )
+
+    unique_intended = {
+        (user_id, exposure.video_id)
+        for user_id, by_policy in exposures_by_user.items()
+        for exposures in by_policy.values()
+        for exposure in exposures
+    }
+    warnings: list[str] = []
+    if repeat_count < 3:
+        warnings.append("권장 반복 횟수 3회 미만입니다")
+    if len(unique_intended) < 100:
+        warnings.append("정책 합집합 기준 unique intended impressions 100건 미만입니다")
+    reliability = {
+        "recommended_minimum": {
+            "judgment_repeats": 3,
+            "unique_intended_impressions": 100,
+        },
+        "judgment_repeats": repeat_count,
+        "unique_intended_impressions": len(unique_intended),
+        "meets_recommended_minimum": not warnings,
+        "warning": "; ".join(warnings) if warnings else None,
+    }
+    return canonical_metrics, reliability
+
+
 def main(
     personas: pd.DataFrame,
     virtual_users: list[dict],
@@ -730,7 +898,7 @@ def main(
                 policy_counts[column] = policy_counts.get(column, 0) + count
                 unseen_counts[column] = unseen_counts.get(column, 0) + count
 
-    # 2) 판정 확보 — 신규 라운드는 LLM 1회, 리플레이는 저장된 판정 재사용
+    # 2) 판정 확보 — 신규 라운드는 동일 노출에 대해 반복하고, repeat 0만 canonical
     request = EventGenerationRequest(
         click_threshold=click_threshold,
         candidates_per_user=max(1, len(policy_specs) * k),
@@ -741,9 +909,9 @@ def main(
         warehouse_output_path=str(Path(output_dir) / "event_log.jsonl"),
         quarantine_output_path=str(Path(output_dir) / "event_log_quarantine.jsonl"),
     )
+    union_by_user: dict[str, list[dict]] = {}
     if replay is None:
         assert generator is not None  # 위 XOR 검증이 보장한다
-        union_by_user: dict[str, list[dict]] = {}
         for user_id, by_policy in exposures_by_user.items():
             seen: set[str] = set()
             union: list[dict] = []
@@ -758,12 +926,18 @@ def main(
         def provider(virtual_user: dict, user_rng: random.Random) -> list[dict]:
             return union_by_user.get(str(virtual_user.get("user_id", "")), [])
 
-        draft_result = generate_action_log_drafts(
-            request, virtual_users, list(video_by_id.values()), generator,
-            candidate_provider=provider,
-        )
-        drafts = draft_result.drafts
-        quarantine = draft_result.quarantine
+        repeat_results: list[tuple[list[ImpressionDraft], list[QuarantineRecord]]] = []
+        for repeat in range(judgment_repeats):
+            repeat_request = request.model_copy(update={"seed": seed + repeat})
+            draft_result = generate_action_log_drafts(
+                repeat_request,
+                virtual_users,
+                list(video_by_id.values()),
+                generator,
+                candidate_provider=provider,
+            )
+            repeat_results.append((draft_result.drafts, draft_result.quarantine))
+        drafts, quarantine = repeat_results[0]
         llm_model = generator.model_name
 
         _write_drafts_meta(
@@ -775,9 +949,11 @@ def main(
                 for user_id, union in union_by_user.items()
             },
             policy_versions=policy_versions,
+            policies=policy_specs,
             policy_exposures=_policy_exposure_snapshot(
                 exposures_by_user, policy_versions
             ),
+            judgment_repeats=judgment_repeats,
             policy_version=policy_version,
             round_id=effective_round_id,
             virtual_users=len(virtual_users),
@@ -790,6 +966,7 @@ def main(
         drafts = replay.drafts
         quarantine = []  # 이번 실행에서 새로 격리된 판정이 없다
         llm_model = replay.llm_model
+        repeat_results = [(drafts, quarantine)]
 
     draft_by_key: dict[tuple[str, str], ImpressionDraft] = {
         (d.user_id, d.video_id): d for d in drafts
@@ -845,69 +1022,50 @@ def main(
                     "노출 집합(virtual users 등)이 판정 라운드와 다르다는 신호입니다"
                 )
 
-    # 3) 합동 per-slate 선정 1회 → clicked (user, video) 키셋
-    clicked_keys = {
-        (drafts[i].user_id, drafts[i].video_id)
-        for i in select_clicks_per_slate(drafts, click_threshold)
-    }
-
-    # 4) 정책별 이벤트 확장 (판정 없는 노출은 quarantine 여파로 제외하고 계수)
+    # 3) repeat별 per-slate 선정. repeat 0의 결과만 event log와 report canonical 값이다.
+    repeat_metrics: list[dict[str, object]] = []
+    canonical_metrics: dict[str, dict[str, object]] | None = None
     all_events: list[EventLog] = []
     dropped = 0
-    per_policy: dict[str, dict[str, float]] = {}
-    for policy_index, policy_spec in enumerate(policy_specs):
-        policy = policy_spec.name
-        policy_drafts: list[ImpressionDraft] = []
-        metadata: dict[tuple[str, str], ExposureMetadata] = {}
-        propensities: list[float] = []
-        exploration_clicks = 0
-        exploration_imps = 0
-        for user_id, both in exposures_by_user.items():
-            for exposure in both[policy]:
-                draft = draft_by_key.get((user_id, exposure.video_id))
-                if draft is None:
-                    dropped += 1
-                    continue
-                policy_drafts.append(draft)
-                propensities.append(draft.click_propensity)
-                metadata[(user_id, exposure.video_id)] = ExposureMetadata(
-                    policy=policy,
-                    rank=exposure.rank,
-                    ctr_score=exposure.ctr_score,
-                    is_exploration=exposure.is_exploration,
-                    policy_version=policy_versions[policy],
-                )
-                if exposure.is_exploration:
-                    exploration_imps += 1
-                    if (user_id, exposure.video_id) in clicked_keys:
-                        exploration_clicks += 1
-        clicked_indices = {
-            i for i, d in enumerate(policy_drafts) if (d.user_id, d.video_id) in clicked_keys
-        }
-        policy_request = request.model_copy(
-            update={"seed": seed + policy_index * 1000}
+    for repeat, (repeat_drafts, repeat_quarantine) in enumerate(repeat_results):
+        metrics, events_out, repeat_dropped = _build_policy_metrics_and_events(
+            repeat_drafts,
+            exposures_by_user,
+            policy_specs,
+            policy_versions,
+            click_threshold,
+            request,
+            round_id=effective_round_id,
+            seed=seed,
+            emit_events=repeat == 0,
         )
-        events_out = _expand_events(
-            policy_drafts, clicked_indices, policy_request,
-            metadata=metadata,
-            source=SOURCE_ONLINE_SIMULATED,
-            event_id_prefix=build_round_policy_event_id_prefix(effective_round_id, policy),
+        if repeat == 0:
+            canonical_metrics = metrics
+            all_events = events_out
+            dropped = repeat_dropped
+        repeat_metrics.append(
+            {
+                "repeat": repeat,
+                "canonical": repeat == 0,
+                "policies": {
+                    policy: {
+                        "impressions": int(values["impressions"]),
+                        "clicks": int(values["clicks"]),
+                        "ctr": float(values["ctr"]),
+                    }
+                    for policy, values in metrics.items()
+                },
+                "quarantined_chunks": len(repeat_quarantine),
+                "dropped_exposures_without_judgment": repeat_dropped,
+            }
         )
-        all_events.extend(events_out)
-        impressions = len(policy_drafts)
-        clicks = len(clicked_indices)
-        per_policy[policy] = {
-            "policy_version": policy_versions[policy],
-            "impressions": impressions,
-            "clicks": clicks,
-            "ctr": round(clicks / impressions, 4) if impressions else 0.0,
-            "mean_click_propensity": (
-                round(sum(propensities) / len(propensities), 4) if propensities else 0.0
-            ),
-            "exploration_impressions": exploration_imps,
-            "exploration_clicks": exploration_clicks,
-        }
 
+    assert canonical_metrics is not None
+    per_policy, reliability = _add_repeat_statistics(
+        canonical_metrics,
+        repeat_metrics,
+        exposures_by_user,
+    )
     _validate_unique_event_ids(all_events)
 
     # 5) 모든 정책 쌍의 유저별 Jaccard 평균. "|"는 정책 이름에 허용되지 않아
@@ -958,6 +1116,9 @@ def main(
         "exploration_ratio": exploration_ratio,
         "click_threshold": click_threshold,
         "seed": seed,
+        "judgment_repeats": len(repeat_metrics),
+        "judgment_repeat_metrics": repeat_metrics,
+        "reliability": reliability,
         "users": len(exposures_by_user),
         "skipped_users": skipped_users,
         "skipped_users_by_policy": skipped_users_by_policy,
@@ -979,6 +1140,40 @@ def main(
     return report
 
 
+def _policy_specs_from_metadata(
+    raw_policies: object,
+    raw_policy_versions: object,
+    reranker: Reranker,
+    fallback_version: str,
+) -> tuple[PolicySpec, ...]:
+    """판정 라운드 sidecar의 정책 이름·종류·버전을 CLI replay 명세로 복원한다."""
+
+    if not isinstance(raw_policies, Sequence) or isinstance(raw_policies, (str, bytes)):
+        raise ValueError("policies 메타는 정책 명세 목록이어야 합니다")
+    versions = raw_policy_versions if isinstance(raw_policy_versions, Mapping) else {}
+    restored: list[PolicySpec] = []
+    for index, raw_policy in enumerate(raw_policies):
+        if not isinstance(raw_policy, Mapping):
+            raise ValueError(f"policies[{index}] 메타는 mapping이어야 합니다")
+        name = raw_policy.get("name")
+        if not isinstance(name, str):
+            raise ValueError(f"policies[{index}].name이 없습니다")
+        kind = raw_policy.get("kind", "reranker")
+        if kind not in {"baseline", "reranker"}:
+            raise ValueError(f"policies[{index}].kind가 잘못되었습니다: {kind!r}")
+        raw_version = raw_policy.get("version", versions.get(name, fallback_version))
+        if not isinstance(raw_version, str):
+            raise ValueError(f"policies[{index}].version이 문자열이 아닙니다")
+        restored.append(
+            PolicySpec(
+                name=name,
+                reranker=None if kind == "baseline" else reranker,
+                version=raw_version,
+            )
+        )
+    return tuple(restored)
+
+
 def _cli() -> None:
     """파일 경로 인자를 로드해 main()에 전달하는 CLI 어댑터."""
     parser = argparse.ArgumentParser(description="정책 시뮬레이션 라운드 실행")
@@ -993,6 +1188,12 @@ def _cli() -> None:
     parser.add_argument("--seed", type=int, default=None, help="기본 42 (리플레이면 상속)")
     parser.add_argument("--chunk-size", type=int, default=0)
     parser.add_argument("--max-concurrency", type=int, default=1)
+    parser.add_argument(
+        "--judgment-repeats",
+        type=int,
+        default=1,
+        help="동일 노출에 대한 LLM 판정 반복 횟수 (기본 1, replay는 저장 판정 1회)",
+    )
     parser.add_argument("--policy-version", default="local")
     parser.add_argument("--as-of", default=None, help="기준 시각 (기본: 현재 UTC)")
     parser.add_argument("--output-dir", default="data/generated/policy_round")
@@ -1065,6 +1266,7 @@ def _cli() -> None:
 
     replay = None
     generator = None
+    replay_policies: tuple[PolicySpec, ...] | None = None
     meta_exposure_args = None
     if args.replay_drafts is not None:
         meta = _read_drafts_meta(Path(args.replay_drafts).with_name(DRAFTS_META_FILENAME))
@@ -1082,6 +1284,17 @@ def _cli() -> None:
             raw_policy_versions, Mapping
         ):
             raise ValueError("policy_versions 메타는 정책별 mapping이어야 합니다")
+        raw_policies = meta.get("policies")
+        if raw_policies is not None:
+            replay_reranker = load_reranker(
+                load_model_settings_from_environment()
+            )
+            replay_policies = _policy_specs_from_metadata(
+                raw_policies,
+                raw_policy_versions,
+                replay_reranker,
+                args.policy_version,
+            )
         replay = DraftReplay(
             drafts=read_action_log_draft_parquet(args.replay_drafts),
             llm_model=str(meta["llm_model"]),
@@ -1133,6 +1346,7 @@ def _cli() -> None:
         videos_raw=videos_raw,
         events=events,
         generator=generator,
+        policies=replay_policies,
         replay=replay,
         k=int(resolved["k"]),
         exploration_ratio=float(resolved["exploration_ratio"]),
@@ -1140,6 +1354,7 @@ def _cli() -> None:
         seed=int(resolved["seed"]),
         chunk_size=args.chunk_size,
         max_concurrency=args.max_concurrency,
+        judgment_repeats=args.judgment_repeats,
         policy_version=args.policy_version,
         as_of=str(resolved["as_of"]),
         output_dir=args.output_dir,

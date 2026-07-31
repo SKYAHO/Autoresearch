@@ -5,7 +5,8 @@
 
 [기능] 외부 의존성·네트워크 요청 없이 정책별 스탯 타일·가로 막대·데이터
 테이블을 가진 단일 HTML 문서를 만든다. baseline/model의 기존 파랑·초록을
-선두로 하는 고정 팔레트를 정책 입력 순서대로 적용한다.
+선두로 하는 고정 팔레트를 정책 입력 순서대로 적용하고 반복 판정 신뢰도
+경고를 표시한다.
 
 [비책임] 정책 선택, 이벤트 생성, JSON 리포트 저장은
 `src.pipeline.simulate_policy_round`가 담당한다.
@@ -155,9 +156,20 @@ def render_report_html(report: dict) -> str:
     table_rows = "".join(
         f"<tr><td>{escape(name)}</td><td>{p['impressions']}</td><td>{p['clicks']}</td>"
         f"<td>{escape(_pct(p['ctr']))}</td><td>{p['mean_click_propensity']:.4f}</td>"
-        f"<td>{p['exploration_impressions']}</td><td>{p['exploration_clicks']}</td></tr>"
+        f"<td>{p['exploration_impressions']}</td><td>{p['exploration_clicks']}</td>"
+        f"<td>{p.get('judgment_repeats', 1)}</td>"
+        f"<td>{escape(_pct(float(p.get('ctr_mean', p['ctr']))))}</td></tr>"
         for name, p in policies.items()
     )
+    reliability = report.get("reliability", {})
+    reliability_warning = reliability.get("warning")
+    reliability_summary = (
+        f"judgment repeats: {report.get('judgment_repeats', 1)} · "
+        f"unique intended impressions: "
+        f"{reliability.get('unique_intended_impressions', '-') }"
+    )
+    if reliability_warning:
+        reliability_summary += f" · 신뢰도 경고: {escape(str(reliability_warning))}"
     overlap_by_pair = report.get("overlap_jaccard_by_pair", {})
     pairwise_section = ""
     if len(policy_names) > 2 and overlap_by_pair:
@@ -193,7 +205,8 @@ seed={report["seed"]}</div>
 <div class="chart"><h2>데이터 테이블</h2>
 <table>
 <tr><th>policy</th><th>impressions</th><th>clicks</th><th>CTR</th>
-<th>mean propensity</th><th>explo imps</th><th>explo clicks</th></tr>
+<th>mean propensity</th><th>explo imps</th><th>explo clicks</th>
+<th>judgment repeats</th><th>CTR mean</th></tr>
 {table_rows}
 </table>
 <p class="meta">{exploration_summary} ·
@@ -201,7 +214,8 @@ skipped users: {len(report["skipped_users"])} ·
 dropped exposures: {report["dropped_exposures_without_judgment"]} ·
 quarantined chunks: {report["quarantined_chunks"]} ·
 replay: {str(bool(report.get("replay", False))).lower()} ·
-llm_model={escape(str(report.get("llm_model", "-")))}</p></div>
+llm_model={escape(str(report.get("llm_model", "-")))} ·
+{reliability_summary}</p></div>
 {pairwise_section}
 </body>
 </html>
