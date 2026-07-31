@@ -82,8 +82,11 @@ def main(
     # 이름으로 등록되므로 정상 경로에서는 여기 도달하지 않지만, 이름을 직접 넘겨
     # 부르는 경우까지 막아 "실행해도 prod champion에 영향이 없음"을 보장한다.
     if is_experiment_model_name(model_name):
+        # NO_CANDIDATE인 이유는 #405의 후보 제외와 같다 — 게이트를 못 넘은 게 아니라
+        # 애초에 승격 가능한 후보가 없는 상태다. 두 경로가 같은 분류를 쓰므로 일일
+        # DAG의 알람 해석이 한 가지로 유지된다.
         return ModelPromotionResult(
-            outcome=PromotionOutcome.REJECTED,
+            outcome=PromotionOutcome.NO_CANDIDATE,
             model_name=model_name,
             champion_alias=champion_alias,
             reason_code=PromotionReasonCode.EXPERIMENT_MODEL,

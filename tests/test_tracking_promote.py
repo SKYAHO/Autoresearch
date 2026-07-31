@@ -402,7 +402,8 @@ def test_main_rejects_experiment_namespace_model_name(monkeypatch):
 
     result = promote.main("ctr-model-exp-views-per-day", "champion")
 
-    assert result.outcome is PromotionOutcome.REJECTED
+    # #405의 후보 제외와 같은 분류 — 게이트 미달이 아니라 심사 대상 부재다.
+    assert result.outcome is PromotionOutcome.NO_CANDIDATE
     assert result.reason_code is PromotionReasonCode.EXPERIMENT_MODEL
     assert client.set_alias_calls == []
 
