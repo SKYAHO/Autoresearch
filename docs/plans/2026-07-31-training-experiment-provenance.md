@@ -150,15 +150,26 @@ Extend _fake_env with a fake pinned registry download and collect the registry_p
 ~~~python
 def test_assemble_pins_registry_and_writes_snapshot(tmp_path, monkeypatch) -> None:
     seen: dict[str, str] = {}
-    monkeypatch.setattr(
-        btd, "_download_pinned_registry",
-        lambda uri, destination: destination.write_bytes(b"registry-v7") or RegistryProvenance(
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    _fake_env(monkeypatch, features)
+
+    def _fake_download(uri: str, destination: Path) -> RegistryProvenance:
+        destination.write_bytes(b"registry-v7")
+        return RegistryProvenance(
             uri=uri, generation="7", sha256=hashlib.sha256(b"registry-v7").hexdigest()
-        ),
-    )
+        )
+
     monkeypatch.setattr(
-        feast_retrieval, "build_offline_feature_store",
-        lambda registry_path, **kwargs: seen.setdefault("registry_path", registry_path) or object(),
+        btd, "_download_pinned_registry", _fake_download,
+    )
+
+    def _fake_store(registry_path: str, **kwargs: object) -> object:
+        seen["registry_path"] = registry_path
+        return object()
+
+    monkeypatch.setattr(
+        feast_retrieval, "build_offline_feature_store", _fake_store,
     )
     btd._assemble_via_feast(str(tmp_path / "out.csv"), "2026-07-01", "2026-07-30")
     assert seen["registry_path"].endswith("registry.db")
@@ -398,7 +409,16 @@ def test_seed_mismatch_has_no_output_or_challenger_upload(tmp_path) -> None:
     assert _comparison_artifacts(challenger_run) == []
 ~~~
 
-Add independent cases for missing artifact, tampered CSV, manifest byte hash mismatch, each split membership/row-count mismatch, model_seed mismatch, sampler_seed mismatch, and a CLI error that does not echo a synthetic secret.
+Add independent cases for missing artifact, tampered CSV, manifest byte hash mismatch, each split membership/row-count mismatch, model_seed mismatch, sampler_seed mismatch, a CLI error that does not echo a synthetic secret, and the command help contract below.
+
+~~~python
+def test_verify_comparison_help_exposes_required_options() -> None:
+    result = CliRunner().invoke(cli.app, ["verify-comparison", "--help"])
+    assert result.exit_code == 0
+    assert "--baseline-run-id" in result.output
+    assert "--challenger-run-id" in result.output
+    assert "--output" in result.output
+~~~
 
 - [ ] **Step 2: Run the comparison tests and verify they fail**
 
@@ -451,34 +471,22 @@ git commit -m "feat: MLflow 학습 run 공정 비교 검증 추가"
 **Files:**
 - Modify: docs/guides/training-experiment-provenance.md
 - Move after successful implementation: docs/plans/2026-07-31-training-experiment-provenance.md to docs/archive/plans/2026-07-31-training-experiment-provenance.md
-- Modify: tests/test_cli.py
 
 **Interfaces:**
 - Consumes: final Task 1–5 contracts.
 - Produces: current application design guide and archived completed implementation plan.
 
-- [ ] **Step 1: Write the failing command-surface test**
-
-~~~python
-def test_verify_comparison_help_exposes_required_options() -> None:
-    result = CliRunner().invoke(cli.app, ["verify-comparison", "--help"])
-    assert result.exit_code == 0
-    assert "--baseline-run-id" in result.output
-    assert "--challenger-run-id" in result.output
-    assert "--output" in result.output
-~~~
-
-- [ ] **Step 2: Run the help test and verify the command surface**
+- [ ] **Step 1: Run the command-surface test and verify the final CLI contract**
 
 Run: uv run python -m pytest tests/test_cli.py::test_verify_comparison_help_exposes_required_options -v
 
 Expected: PASS after Task 5. If it fails, return to Task 5; do not alter the guide to describe a missing option.
 
-- [ ] **Step 3: Reconcile the guide with executable contracts**
+- [ ] **Step 2: Reconcile the guide with executable contracts**
 
 Compare the guide’s CLI example, artifact table, explicit seed semantics, and repository boundary table to Tasks 1–5. Modify only statements that differ. Do not add Airflow deployment instructions, registry champion gates, or a canonical GCS snapshot registry implementation.
 
-- [ ] **Step 4: Run final verification**
+- [ ] **Step 3: Run final verification**
 
 Run: uv run python -m pytest
 
@@ -492,7 +500,7 @@ Run: git diff --check
 
 Expected: exit 0 with no whitespace errors.
 
-- [ ] **Step 5: Archive plan and commit final documentation**
+- [ ] **Step 4: Archive plan and commit final documentation**
 
 ~~~bash
 git mv docs/plans/2026-07-31-training-experiment-provenance.md \
