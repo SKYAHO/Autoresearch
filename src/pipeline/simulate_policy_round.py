@@ -2,7 +2,7 @@
 """정책 시뮬레이션 라운드 배치.
 
 키워드 휴리스틱 또는 Reranker Top-K로 구성한 여러 정책을 같은 유저·영상
-pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 판정을 거쳐 정책
+pool에서 병행 노출하고, LLM 판정(합집합 1회 이상)·합동 커트라인 판정을 거쳐 정책
 태깅된 event log와 비교 리포트를 산출한다.
 
 이 모듈이 담당하는 구간은 "노출 결정 → 판정 확보 → 커트라인 적용 → event log
@@ -12,7 +12,7 @@ pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 
 제공 기능:
 
 - 유저별 N개 정책 노출 결정과 정책별 스코어링 진단 수집
-- LLM 판정 1회 실행(합집합 후보)과 판정 덤프
+- LLM 판정 1회 이상 실행(반복 시 동일 합집합 후보)과 canonical 판정 덤프
   (`action_log_drafts.parquet` + 계보·노출 인자·노출 키 집합 사이드카
   `action_log_drafts_meta.json`) — `click_threshold` 캘리브레이션 입력
 - 저장된 판정 리플레이(`--replay-drafts`) — LLM 호출 없이 커트라인만 다시
@@ -1195,6 +1195,11 @@ def _cli() -> None:
         help="동일 노출에 대한 LLM 판정 반복 횟수 (기본 1, replay는 저장 판정 1회)",
     )
     parser.add_argument("--policy-version", default="local")
+    parser.add_argument(
+        "--round-id",
+        default=None,
+        help="라운드 식별자 (미지정 시 자동 생성, replay는 저장된 값 사용)",
+    )
     parser.add_argument("--as-of", default=None, help="기준 시각 (기본: 현재 UTC)")
     parser.add_argument("--output-dir", default="data/generated/policy_round")
     parser.add_argument(
@@ -1356,6 +1361,7 @@ def _cli() -> None:
         max_concurrency=args.max_concurrency,
         judgment_repeats=args.judgment_repeats,
         policy_version=args.policy_version,
+        round_id=args.round_id,
         as_of=str(resolved["as_of"]),
         output_dir=args.output_dir,
         input_paths={

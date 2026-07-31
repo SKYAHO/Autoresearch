@@ -14,6 +14,22 @@
 - **TO-BE:** 판정을 parquet + 사이드카 메타로 남기고(`덤프`), 그 판정을 다시
   읽어 **커트라인만 바꿔 재실행**할 수 있게 한다(`리플레이`).
 
+## 2026-07-31 구현 보완 (#427)
+
+정책 라운드가 N개 정책을 지원하면서 draft 사이드카는 기존 합집합
+`exposure_keys`와 함께 다음 계보를 보존한다.
+
+- `round_id`, 정책 순서와 정책별 `policy_versions`
+- `policies`: 정책 이름, `baseline`/`reranker` 종류, 버전
+- `policy_exposures`: 유저·정책별 순서 보존 노출 목록과 각 항목의 `video_id`,
+  `rank`, `ctr_score`, `is_exploration`, `policy_version`
+
+신규 리플레이는 이 정책 명세와 전체 노출 snapshot을 복원·비교한 뒤 이벤트를
+생성한다. snapshot이 없는 구버전 사이드카는 `exposure_keys` 또는 기존 유저 단위
+커버리지 검증으로 폴백한다. `judgment_repeats > 1`로 생성한 덤프도 repeat 0의
+draft만 canonical parquet으로 저장하며, 리플레이 결과는 항상 판정 1회로
+보고한다.
+
 ## 배경 — 왜 리플레이까지 필요한가
 
 `recommend_click_threshold`는 **유저별 최고 `click_propensity` 분포**에서

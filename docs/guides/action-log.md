@@ -398,12 +398,17 @@ Variable이며, 그 값 옆 주석에 마지막 재캘리브레이션 근거를 
    받지 않는다(반려) — merge는 각 shard manifest에 이미 기록된 값을 쓴다.
 
 **(부수) 합동 pool 클릭 의미론 (`src/pipeline/simulate_policy_round.py`)**
-정책 A/B 비교 시뮬레이션은 위 daily 운영 파이프라인과 별개로, 두 정책 노출의
-합집합에 `select_clicks_per_slate`를 1회만 적용한다 — 유저(슬레이트)별
-`click_propensity` 최고 1건이 합집합의 승자다. 승자 영상이 두 정책의 노출에
-모두 겹치면 두 정책이 그 클릭을 공유 판정으로 나눠 가지므로, 유저 합계 클릭은
-최대 2건(정책별 1건씩)까지 가능하지만 각 (policy, user) 쌍은 여전히 최대
-1클릭으로 보장된다.
+정책 라운드는 위 daily 운영 파이프라인과 별개로, N개 정책 노출의 합집합에
+`select_clicks_per_slate`를 1회만 적용한다 — 유저(슬레이트)별
+`click_propensity` 최고 1건이 합집합의 승자다. 동일 `(user, video)`가 여러 정책에
+겹치면 판정은 공유하지만 event log 행은 `policy`와 `policy_version`으로 분리한다.
+따라서 downstream 학습·분석은 반드시 대상 정책을 필터링해야 하며, 정책별
+`intended_impressions`와 실제 판정이 있는 `judged_impressions`를 구분해 해석한다.
+
+LLM 판정 변동성을 측정할 때는 동일한 노출 합집합을 `judgment_repeats`만큼
+반복하고, repeat 0만 canonical event log로 사용한다. 추가 반복은 CTR 평균·표본
+표준편차·95% 경험 구간 및 권장 기준(반복 3회, unique intended impressions 100건)
+충족 여부를 리포트에 남긴다.
 
 ### 7.3 환경
 - Python 3.12 venv에서 실행/테스트. 시스템 python3(3.10)은 프로젝트 실행 불가.

@@ -7,6 +7,29 @@
 폐루프 재학습에 그대로 재사용 가능한 형태(정책·점수·exploration 메타데이터 포함)로
 남긴다.
 
+## 2026-07-31 구현 보완 (#427, #428)
+
+이 절은 아래의 초기 설계 중 `paired 2-정책` 표현을 확장한 현재 계약이다.
+기본 실행은 기존처럼 `baseline`과 `model`을 비교하지만, Python API는 순서가
+있는 `PolicySpec` 목록으로 두 개 이상의 정책을 비교할 수 있다. 각 명세는
+정책 이름·버전·선택기를 가지며, 정책 이름은
+`[A-Za-z0-9][A-Za-z0-9_.-]{0,63}` 규칙을 따른다.
+
+- 모든 정책은 같은 유저·영상 pool에서 독립적으로 노출을 결정한다.
+- LLM 판정 후보는 정책별 노출의 순서 보존 합집합이며, 같은 `(user, video)`의
+  판정은 정책들이 공유한다. 이벤트 행과 `policy_version`은 정책별로 분리한다.
+- 리포트는 정책별 지표와 모든 정책 쌍의 `overlap_jaccard_by_pair`를 기록하고,
+  기존 2정책 호출과 `overlap_jaccard_mean`도 유지한다.
+- 라운드는 `round_id`를 가지며 정책별 event-id prefix를 사용한다. 최종 batch의
+  event ID 중복은 저장 전에 검증한다.
+- `judgment_repeats`가 1보다 크면 동일한 노출·합집합을 반복 판정한다. repeat 0의
+  draft/event log가 canonical 산출물이고, 나머지는 `judgment_repeat_metrics`와
+  정책별 `ctr_mean`, `ctr_stddev`, `ctr_interval_95` 통계에만 반영한다.
+  `reliability`는 권장 기준 반복 3회·unique intended impressions 100건의 충족
+  여부와 경고를 함께 기록한다. 리플레이는 저장된 canonical 판정 1회만 사용한다.
+- CLI `--videos`는 사전 파싱된 `videos.csv` 경로를 받는다. 반복 판정은 선택적
+  `--judgment-repeats`로, 재현 가능한 라운드 식별자는 `--round-id`로 지정한다.
+
 ## 배경
 
 현재 파이프라인의 노출 선정은 `autoresearch/action_logs/candidate.py`의 키워드
