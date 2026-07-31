@@ -314,37 +314,51 @@ def test_summarize_metric_rejects_nan() -> None:
         summarize_metric([0.70, float("nan")])
 
 
-def test_t_critical_interpolates_toward_the_conservative_side() -> None:
-    """표에 없는 자유도는 더 작은 자유도 쪽(=더 큰 임계값)으로 내림한다.
+def test_t_critical_table_covers_realistic_seed_counts_without_approximating() -> None:
+    """df 1~30은 표에서 정확히 조회된다 — 이 구간에 근사가 끼면 안 된다.
 
-    t는 자유도가 커질수록 작아지므로, 표에서 더 큰 자유도를 고르면 경계가 실제보다
-    작아져 "노이즈 밖"을 실제보다 자주 선언한다 — 거짓 채택을 막으려는 모듈이 관대한
-    쪽으로 기우는 셈이다(#407 리뷰 3과 같은 이유).
+    빈칸을 남기면 `reason` 문자열에 "경계(±t2.228, df=14)"처럼 **df와 맞지 않는
+    t값**이 짝지어 기록된다. 판정 근거를 만드는 모듈이라 그 기록 자체가 틀리면
+    안 된다(#456 리뷰 1).
     """
-    # df 11~14는 표에 없다. 참값은 각각 2.201/2.179/2.160/2.145로 모두 df=10의
-    # 2.228보다 작고 df=15의 2.131보다 크다 — 둘 중 보수적인 2.228을 써야 한다.
-    for degrees_of_freedom in (11, 12, 13, 14):
-        assert _t_critical_95(degrees_of_freedom) == _T_CRITICAL_95[10]
+    assert set(_T_CRITICAL_95) == set(range(1, 31))
+    for degrees_of_freedom in range(1, 31):
+        assert _t_critical_95(degrees_of_freedom) == _T_CRITICAL_95[degrees_of_freedom]
 
-    assert _t_critical_95(16) == _T_CRITICAL_95[15]
-    assert _t_critical_95(25) == _T_CRITICAL_95[20]
-    # 표에 있는 자유도는 그대로 쓴다.
-    assert _t_critical_95(15) == _T_CRITICAL_95[15]
-    # 표를 넘어서면 최댓값(df=30)을 하한으로 유지한다. 1.96으로 낮추면 df 31~60
-    # 구간에서 실제보다 관대해진다.
-    assert _t_critical_95(100) == _T_CRITICAL_95[30]
+
+def test_t_critical_beyond_the_table_holds_the_most_conservative_entry() -> None:
+    """표를 넘는 자유도는 하한(df=30)을 유지한다.
+
+    1.96(정규 근사)으로 낮추면 df 31~60 구간에서 실제보다 관대해진다 — t(40)=2.023이라
+    1.96은 참값보다 작다. 2.042를 유지하면 오차가 4.19%로 수렴하며 방향은 늘 보수적이다.
+    """
+    for degrees_of_freedom in (31, 39, 100, 1000):
+        assert _t_critical_95(degrees_of_freedom) == _T_CRITICAL_95[30]
+
+
+def test_t_critical_rejects_degrees_of_freedom_below_the_table() -> None:
+    """자유도 1 미만은 호출부 계약이 깨진 신호라 조용히 흡수하지 않는다.
+
+    두 호출부 모두 시드 2개 이상(df >= 1)을 보장하므로 실제로는 도달하지 않는다.
+    도달했다면 그 보장이 깨진 것이므로 12.706을 돌려주는 대신 즉시 세운다.
+    """
+    with pytest.raises(ValueError, match="호출부 계약"):
+        _t_critical_95(0)
 
 
 def test_t_critical_never_declares_outside_noise_more_easily_than_the_true_value() -> None:
     """자유도별 임계값이 참 t값 이상이어야 한다 — 회귀 방지용 성질 검사.
 
-    참값은 scipy 없이 검증할 수 있도록 표로 박아둔다(양측 95%, 소수 3자리).
-    수정 전 코드는 df 11~14에서 2.131을 돌려줘 이 성질을 깼다.
+    표를 채우든 비우든 이 성질만은 유지돼야 하므로 구현 방식이 아니라 **의도**를
+    고정한다. 참값은 scipy 없이 검증할 수 있도록 박아둔다(양측 95%, 소수 3자리).
+    이 PR 이전 코드는 df 11~14에서 2.131을 돌려줘 이 성질을 깼다.
     """
     true_t = {
         11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
         16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
         21: 2.080, 25: 2.060, 29: 2.045,
+        # 표 밖 — 근사가 남은 유일한 구간이라 여기가 실질적인 회귀 위험 지점이다.
+        39: 2.023, 60: 2.000, 100: 1.984,
     }
     for degrees_of_freedom, expected in true_t.items():
         used = _t_critical_95(degrees_of_freedom)
