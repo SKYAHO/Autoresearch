@@ -5,6 +5,10 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from autoresearch.action_logs.pipeline import (
+    ExposureMetadata,
+    build_round_policy_event_id_prefix,
+)
 from autoresearch.action_logs.schema import SOURCE_ONLINE_SIMULATED, EventLog
 
 
@@ -60,6 +64,26 @@ def test_event_log_accepts_named_policy():
 
     assert event.policy == "exploration-v2"
     assert event.to_warehouse_row()["policy"] == "exploration-v2"
+
+
+@pytest.mark.parametrize("policy_name", ["Model.V2", "1st_policy", "policy.name", "a" * 64])
+def test_policy_metadata_accepts_contract_boundary_names(policy_name):
+    """정책 이름 계약의 대소문자·숫자 선행·밑줄·점·64자 상한을 보존한다."""
+
+    event = EventLog(**_base_kwargs(), policy=policy_name)
+    metadata = ExposureMetadata(
+        policy=policy_name,
+        rank=1,
+        ctr_score=None,
+        is_exploration=None,
+        policy_version=None,
+    )
+
+    assert event.policy == policy_name
+    assert metadata.policy == policy_name
+    assert build_round_policy_event_id_prefix("Round.1", policy_name) == (
+        f"evt_Round.1_{policy_name}"
+    )
 
 
 def test_exposure_source_roundtrip_and_validation():

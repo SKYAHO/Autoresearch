@@ -27,16 +27,15 @@ SOURCE_HISTORICAL = "historical"
 SOURCE_ONLINE_SIMULATED = "online_simulated"
 QuarantineErrorType = Literal["api_error", "invalid_json", "schema_fail"]
 
-_POLICY_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+_POLICY_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 
 
 def validate_policy_name(value: str) -> str:
-    """정책 식별자는 소문자 영숫자·하이픈 1~64자로 제한한다."""
+    """정책 식별자는 영숫자로 시작하는 영숫자·밑줄·점·하이픈 1~64자다."""
 
     if not _POLICY_NAME_PATTERN.fullmatch(value):
         raise ValueError(
-            "policy name must be 1-64 lowercase alphanumeric or hyphen characters "
-            "and start with a letter"
+            "policy name must match [A-Za-z0-9][A-Za-z0-9_.-]{0,63}"
         )
     return value
 

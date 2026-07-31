@@ -294,6 +294,14 @@ def test_policy_spec_rejects_invalid_names(name, stub_reranker):
         PolicySpec(name=name, reranker=stub_reranker, version="test-v1")
 
 
+@pytest.mark.parametrize("name", ["Model.V2", "1st_policy", "policy.name", "a" * 64])
+def test_policy_spec_accepts_contract_boundary_names(name, stub_reranker):
+    """PolicySpec도 event log와 같은 정책 이름 계약을 수용해야 한다."""
+    from src.pipeline.simulate_policy_round import PolicySpec
+
+    assert PolicySpec(name=name, reranker=stub_reranker, version="test-v1").name == name
+
+
 def test_main_rejects_duplicate_policy_names(tmp_path, stub_reranker):
     from src.pipeline.simulate_policy_round import PolicySpec
 
