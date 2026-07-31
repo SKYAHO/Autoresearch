@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-31T04:47:01Z",
+  "generated_at": "2026-07-31T04:59:52Z",
   "reports": [
+    {
+      "number": 447,
+      "title": "chore: CI Docker build 경로 기반 선택 실행",
+      "author": "hyeongyu-data",
+      "merged_at": "2026-07-31T04:59:33Z",
+      "summary_ko": [
+        "CI 워크플로우에서 5개 도커 이미지를 매번 전부 순차 빌드하던 구조를 경로 변경 감지 기반 선택적 병렬 빌드로 변경하였습니다.",
+        "PR 이벤트 시 변경 경로와 관련이 있는 도커 이미지 서브잡만 실행하며, main 브랜치 push 시에는 전체 이미지를 재빌드합니다.",
+        "브랜치 보호 규칙의 필수 상태 체크명을 유지하는 집계 잡을 구성하고 관련 CI 가이드 문서를 업데이트하였습니다."
+      ],
+      "report_url": "pr/447/"
+    },
     {
       "number": 442,
       "title": "fix: dev Feast materialize를 차단",
