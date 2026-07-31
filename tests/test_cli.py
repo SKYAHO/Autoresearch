@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -737,3 +738,41 @@ def test_sweep_seeds_rejects_duplicate_seeds(tmp_path, monkeypatch):
             extra_features=None,
             result_path=None,
         )
+
+
+def test_verify_comparison_help_exposes_required_options() -> None:
+    result = CliRunner().invoke(cli.app, ["verify-comparison", "--help"])
+
+    assert result.exit_code == 0
+    assert "--baseline-run-id" in result.output
+    assert "--challenger-run-id" in result.output
+    assert "--output" in result.output
+
+
+def test_verify_comparison_cli_maps_validation_error_without_secret(
+    monkeypatch,
+) -> None:
+    secret = "synthetic-private-value"
+
+    def _raise(*_args, **_kwargs):
+        raise cli.training_comparison.ComparisonValidationError(
+            f"credential={secret}"
+        )
+
+    monkeypatch.setattr(cli.training_comparison, "verify_training_comparison", _raise)
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "verify-comparison",
+            "--baseline-run-id",
+            "baseline",
+            "--challenger-run-id",
+            "challenger",
+            "--output",
+            "comparison.json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "synthetic-private-value" not in result.output
+    assert "ComparisonValidationError" in result.output

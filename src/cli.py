@@ -31,7 +31,12 @@ import typer
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.pipeline import build_training_dataset, train, evaluate  # noqa: E402
+from src.pipeline import (  # noqa: E402
+    build_training_dataset,
+    evaluate,
+    train,
+    training_comparison,
+)
 from src.pipeline.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
 from src.tracking import promote  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
@@ -300,6 +305,38 @@ def run_pipeline(
     typer.echo("\n" + "=" * 70)
     typer.echo("파이프라인 완료")
     typer.echo("=" * 70)
+
+
+@app.command()
+def verify_comparison(
+    baseline_run_id: str = typer.Option(
+        ..., "--baseline-run-id", help="비교 기준(baseline) MLflow run ID"
+    ),
+    challenger_run_id: str = typer.Option(
+        ..., "--challenger-run-id", help="비교 대상(challenger) MLflow run ID"
+    ),
+    output: Path = typer.Option(
+        ..., "--output", help="검증된 comparison manifest를 저장할 로컬 JSON 경로"
+    ),
+) -> None:
+    """두 MLflow 학습 run의 snapshot·split·seed 공정성을 검증한다(#423)."""
+    try:
+        result = training_comparison.verify_training_comparison(
+            baseline_run_id=baseline_run_id,
+            challenger_run_id=challenger_run_id,
+            output_path=output,
+        )
+    except training_comparison.ComparisonValidationError as error:
+        # 예외 원문은 backend credential이나 signed URL을 포함할 수 있으므로 CLI에는
+        # type과 고정된 안전 진단만 출력한다.
+        typer.echo(
+            f"[비교 검증 실패] {type(error).__name__}: "
+            "verified comparison manifest를 만들지 않았습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+
+    typer.echo(result.model_dump_json(indent=2))
 
 
 @app.command()
