@@ -58,6 +58,7 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
         val_size=None,
         random_state=None,
         extra_features=None,
+        experiment=None,
     )
 
     # C2로 feast-only: build-features에 output_path + 기간만 넘긴다(duckdb 인자 없음).
@@ -93,6 +94,7 @@ def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
         val_size=None,
         random_state=None,
         extra_features=None,
+        experiment=None,
     )
 
     # feast-only lineage: assembly_source=feast + FeatureService + registry + 기간.
@@ -148,6 +150,7 @@ def test_run_pipeline_registers_model_only_after_evaluation(monkeypatch):
         val_size=None,
         random_state=None,
         extra_features=None,
+        experiment=None,
     )
 
     assert [step for step, _ in calls] == ["train", "evaluate", "register"]
@@ -185,6 +188,7 @@ def test_run_pipeline_skips_registration_when_evaluation_fails(monkeypatch):
             val_size=None,
             random_state=None,
             extra_features=None,
+            experiment=None,
         )
 
     assert registered == []
@@ -223,6 +227,7 @@ def test_run_pipeline_fails_loudly_when_registration_fails(monkeypatch):
             val_size=None,
             random_state=None,
             extra_features=None,
+            experiment=None,
         )
 
     # 평가는 통과한 뒤 등록에서 실패한 경로임을 고정한다.
@@ -599,6 +604,7 @@ def test_run_pipeline_shares_extra_features_between_train_and_evaluate(monkeypat
         val_size=None,
         random_state=None,
         extra_features="views_per_day",
+        experiment=None,
     )
 
     assert seen["train"] == ["views_per_day"]

@@ -391,6 +391,23 @@ def test_main_ignores_empty_experiment_tag(monkeypatch):
     assert result.outcome is PromotionOutcome.PROMOTED
 
 
+def test_main_rejects_experiment_namespace_model_name(monkeypatch):
+    """실험 네임스페이스 이름으로 승격을 부르면 registry 조회 전에 거부한다(#406).
+
+    #405의 후보 제외와 층이 다르다 — 저쪽은 prod 이름 안에 섞인 실험 **버전**을
+    거르고, 이쪽은 실험 전용 registry **이름**으로 부른 호출 자체를 막는다.
+    """
+    client = _PromoteClient(main_versions=[])
+    _patch_client(monkeypatch, client)
+
+    result = promote.main("ctr-model-exp-views-per-day", "champion")
+
+    # #405의 후보 제외와 같은 분류 — 게이트 미달이 아니라 심사 대상 부재다.
+    assert result.outcome is PromotionOutcome.NO_CANDIDATE
+    assert result.reason_code is PromotionReasonCode.EXPERIMENT_MODEL
+    assert client.set_alias_calls == []
+
+
 def test_experiment_version_does_not_block_earlier_prod_candidate(monkeypatch):
     """실험 버전이 번호상 최신이어도 그 앞의 prod 후보가 승격된다(#405 리뷰 1).
 

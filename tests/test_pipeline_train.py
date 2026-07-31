@@ -670,7 +670,11 @@ def test_main_extra_features_missing_column_routes_to_feast_path(
 
 
 def test_main_extra_features_tags_registered_version(tmp_path, monkeypatch) -> None:
-    """실험 모델은 registry tag로 구분돼야 승격 게이트가 막을 수 있다(#405 완료조건 4)."""
+    """실험 모델은 registry tag로 구분된다(#405 완료조건 4).
+
+    #406 리뷰 반영 후로는 `--extra-features`만 줘도 실험 네임스페이스를 쓰므로
+    prod 이름에는 아무것도 등록되지 않는다 — tag는 그 안에서 한 번 더 구분한다.
+    """
     config_path, data_path, tracking_uri = _prepared_dataset(
         tmp_path, monkeypatch, extra_column="views_per_day"
     )
@@ -680,8 +684,10 @@ def test_main_extra_features_tags_registered_version(tmp_path, monkeypatch) -> N
     )
 
     client = MlflowClient(tracking_uri=tracking_uri)
-    [registered] = client.search_model_versions("name='ctr-model'")
-    tags = client.get_model_version("ctr-model", registered.version).tags
+    assert client.search_model_versions("name='ctr-model'") == []
+    experiment_model = "ctr-model-exp-views-per-day"
+    [registered] = client.search_model_versions(f"name='{experiment_model}'")
+    tags = client.get_model_version(experiment_model, registered.version).tags
     assert tags["experiment_features"] == "views_per_day"
 
 
@@ -696,6 +702,27 @@ def test_main_without_extra_features_has_no_experiment_tag(tmp_path, monkeypatch
     assert "experiment_features" not in tags
 
 
+def test_main_experiment_registers_under_separate_registry_name(tmp_path, monkeypatch) -> None:
+    """실험 학습은 prod와 다른 registry 이름으로 등록된다(#406 완료조건 1)."""
+    config_path, data_path, tracking_uri = _prepared_dataset(tmp_path, monkeypatch)
+
+    _train_once(tmp_path, config_path, data_path, "ns", experiment="views_per_day")
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    # prod 이름으로는 아무것도 등록되지 않는다 — 승격 게이트가 보는 대상이 오염되지 않는다.
+    assert client.search_model_versions("name='ctr-model'") == []
+    [registered] = client.search_model_versions("name='ctr-model-exp-views-per-day'")
+    assert str(registered.version) == "1"
+
+
+def test_main_prod_path_still_uses_prod_registry_name(tmp_path, monkeypatch) -> None:
+    """experiment 미지정이면 기존과 동일하게 prod 이름으로 등록된다(#406 회귀 방지)."""
+    config_path, data_path, tracking_uri = _prepared_dataset(tmp_path, monkeypatch)
+
+    _train_once(tmp_path, config_path, data_path, "prodns")
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    assert len(client.search_model_versions("name='ctr-model'")) == 1
 def test_main_duplicate_extra_features_stops_before_writing_test_set(
     tmp_path, monkeypatch
 ) -> None:

@@ -23,6 +23,7 @@ import os
 from mlflow.tracking import MlflowClient
 from src.models.calibration import CALIBRATION_PARAM_FILENAME
 from src.tracking.client import set_tracking_uri
+from src.tracking.namespace import is_experiment_model_name
 from src.tracking.promotion_result import (
     ModelPromotionResult,
     PromotionExecutionError,
@@ -77,8 +78,33 @@ def main(
     Raises:
         PromotionExecutionError: registry·지표·아티팩트·alias 실행 오류.
     """
+    # 실험 네임스페이스 모델은 애초에 승격 대상이 아니다(#406). 실험은 prod와 다른
+    # 이름으로 등록되므로 정상 경로에서는 여기 도달하지 않지만, 이름을 직접 넘겨
+    # 부르는 경우까지 막아 "실행해도 prod champion에 영향이 없음"을 보장한다.
+    if is_experiment_model_name(model_name):
+        # NO_CANDIDATE인 이유는 #405의 후보 제외와 같다 — 게이트를 못 넘은 게 아니라
+        # 애초에 승격 가능한 후보가 없는 상태다. 두 경로가 같은 분류를 쓰므로 일일
+        # DAG의 알람 해석이 한 가지로 유지된다.
+        return ModelPromotionResult(
+            outcome=PromotionOutcome.NO_CANDIDATE,
+            model_name=model_name,
+            champion_alias=champion_alias,
+            reason_code=PromotionReasonCode.EXPERIMENT_MODEL,
+        )
+
+    # os.getenv(name, default)는 **빈 문자열**에 default를 적용하지 않는다. .env.example
+    # 대로 `MLFLOW_TRACKING_URI=`가 주입된 환경에서는 set_tracking_uri("")가 불려
+    # 조용히 엉뚱한 곳을 보게 된다 — 학습은 #406에서 막았으므로 승격도 같이 막아
+    # 한 폐루프 안에 fail-fast와 silent fallback이 공존하지 않게 한다(#406 리뷰 3).
+    promote_tracking_uri = (os.getenv("MLFLOW_TRACKING_URI") or "").strip()
+    if not promote_tracking_uri:
+        raise PromotionExecutionError(
+            PromotionReasonCode.REGISTRY_ACCESS_FAILED,
+            "MLFLOW_TRACKING_URI가 설정되지 않아 승격 대상 registry를 특정할 수 없습니다.",
+        )
+
     try:
-        set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
+        set_tracking_uri(promote_tracking_uri)
         existing_versions = get_model_versions(model_name)
     except Exception as error:
         raise PromotionExecutionError(

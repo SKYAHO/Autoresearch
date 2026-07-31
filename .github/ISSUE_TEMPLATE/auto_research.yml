@@ -159,7 +159,7 @@ body:
         - 판정 (지지/기각):
         - 지표 요약 (baseline 대비):
         - 실제 사용 데이터 (스냅샷 재사용 여부 포함):
-        - MLflow run:
+        - MLflow run (tracking URI / experiment / run_id / registry 모델 이름):
         - 막힌 지점 (= 스킬/인프라 백로그):
     validations:
       required: false
