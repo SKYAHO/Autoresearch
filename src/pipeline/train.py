@@ -103,6 +103,9 @@ class TrainingOutcome:
     run_id: str
     registered_version: Optional[str] = None
     pending_registration: Optional[PendingRegistration] = None
+    # 시드 스윕이 시드별로 모아 평균·편차를 내는 지표(#407). 여기서 돌려주지 않으면
+    # 반복 실행이 MLflow run을 다시 조회해야 한다.
+    val_roc_auc: float = float("nan")
 
 
 def require_binary_labels(labels: pd.Series, *, stage: str) -> tuple[int, int]:
@@ -657,6 +660,7 @@ def main(
         run_id=run.info.run_id,
         registered_version=registered_version,
         pending_registration=pending_registration,
+        val_roc_auc=val_roc_auc,
     )
 
 

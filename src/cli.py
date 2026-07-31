@@ -15,6 +15,8 @@ src/tracking/promote.py)이 소유한다. DAG·스케줄·재시도는 인접 �
 Autoresearch-airflow 소유다.
 """
 
+import json
+import math
 import os
 import sys
 import traceback
@@ -27,6 +29,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.pipeline import build_training_dataset, train, evaluate  # noqa: E402
+from src.pipeline.seed_sweep import run_seed_sweep  # noqa: E402
 from src.tracking import promote  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
     MODEL_PROMOTION_RESULT_CONTRACT,
@@ -476,6 +479,89 @@ def _run_legacy_promotion(
         f"[OK] {model_name} v{result.candidate_version} "
         f"-> @{champion_alias} 승격 완료"
     )
+
+
+@app.command()
+def sweep_seeds(
+    seeds: str = typer.Option(
+        "42,43,44",
+        "--seeds",
+        help="반복할 시드 목록(쉼표 구분). 기본값은 이슈 템플릿의 재현 조건과 같은 3개입니다.",
+    ),
+    config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
+    data_path: Optional[str] = typer.Option(None, help="training dataset 경로 (config override)"),
+    output_dir: Optional[str] = typer.Option(
+        None, help="시드별 아티팩트 저장 디렉토리 (기본: data/processed/seed_sweep)"
+    ),
+    test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
+    val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
+    experiment: Optional[str] = typer.Option(
+        None, "--experiment", help="실험 이름. prod와 분리된 네임스페이스로 기록합니다(#406)."
+    ),
+    extra_features: Optional[str] = typer.Option(
+        None, "--extra-features", help="실험 피처(쉼표 구분). prod 계약을 수정하지 않습니다(#405)."
+    ),
+    result_path: Optional[str] = typer.Option(
+        None, "--result-path", help="요약 JSON 저장 경로. 미지정이면 표준출력에만 남깁니다."
+    ),
+) -> None:
+    """같은 조건을 여러 시드로 반복 학습하고 지표 평균·편차를 요약한다 (#407).
+
+    시드 1개로 1회만 돌리면 지표 차이가 진짜 개선인지 분할이 흔들려 나온 노이즈인지
+    판정할 수 없다. 이 명령은 판정을 대신하지 않고 **판정 근거**만 만든다 —
+    채택/기각은 가설의 성공 기준이 정한다.
+
+    시드마다 아티팩트가 덮어써지지 않도록 `--output-dir` 아래에 시드별로 저장한다.
+    """
+    seed_list = [int(s.strip()) for s in seeds.split(",") if s.strip()]
+    experiment_features = _parse_extra_features(extra_features)
+    base_dir = output_dir or os.path.join("data", "processed", "seed_sweep")
+    os.makedirs(base_dir, exist_ok=True)
+
+    def _train_once(*, random_state: int) -> float:
+        typer.echo(f"\n[시드 {random_state}] 학습 시작...")
+        outcome = train.main(
+            config_path=config_path,
+            data_path=data_path,
+            model_output=os.path.join(base_dir, f"model_seed{random_state}.joblib"),
+            test_set_output=os.path.join(base_dir, f"test_set_seed{random_state}.csv"),
+            feature_columns_output=os.path.join(
+                base_dir, f"feature_columns_seed{random_state}.json"
+            ),
+            categorical_columns_output=os.path.join(
+                base_dir, f"categorical_columns_seed{random_state}.json"
+            ),
+            test_size=test_size,
+            val_size=val_size,
+            random_state=random_state,
+            extra_features=experiment_features,
+            experiment=experiment,
+        )
+        return outcome.val_roc_auc
+
+    result = run_seed_sweep(seed_list, train_once=_train_once)
+    payload = result.to_dict()
+
+    typer.echo("\n" + "=" * 70)
+    typer.echo("시드 스윕 요약")
+    typer.echo("=" * 70)
+    for seed, metric in zip(result.seeds, result.metrics):
+        typer.echo(f"  seed {seed}: {result.metric_name}={metric:.4f}")
+    summary = result.summary
+    std_text = "판정 불가(시드 1개)" if math.isnan(summary.std) else f"{summary.std:.4f}"
+    typer.echo(
+        f"\n  n={summary.n} mean={summary.mean:.4f} std={std_text} "
+        f"min={summary.minimum:.4f} max={summary.maximum:.4f}"
+    )
+    typer.echo(
+        "\n  baseline과 비교하려면 두 조건의 요약을 compare_to_baseline에 넘기십시오 "
+        "— 이 명령은 한 조건의 편차만 잽니다."
+    )
+
+    if result_path:
+        with open(result_path, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+        typer.echo(f"\n[저장] 요약 JSON: {result_path}")
 
 
 if __name__ == "__main__":
