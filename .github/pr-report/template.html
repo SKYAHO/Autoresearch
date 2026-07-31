@@ -76,6 +76,7 @@
   .pipeline-row { display: grid; gap: 18px; align-items: center; grid-template-columns: 110px 1fr; }
   .pipeline-row .lane-label { font-size: 12px; font-weight: 500; color: var(--mu); text-align: right; line-height: 1.5; }
   .pipeline-row .lane-nodes { display: grid; gap: 10px; padding-left: 18px; border-left: 1px solid var(--bd); }
+  .node-slot { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
   .node-cell {
     padding: 13px 14px; border-radius: 9px; font: inherit; font-size: 13px; line-height: 1.5;
     text-align: center; text-wrap: balance; min-height: 48px; display: flex; align-items: center; justify-content: center;
@@ -91,6 +92,13 @@
   .legend .lg-item { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--mu); white-space: nowrap; }
   .legend .lg-item .sw { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; border: 1px solid var(--bd); }
   .legend .lg-hint { font-size: 12px; color: var(--mu); }
+
+  .edge-list { display: flex; flex-direction: column; gap: 8px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--bd); }
+  .edge-list .edge-title { font-size: 11px; font-weight: 700; letter-spacing: .14em; color: var(--mu); }
+  .edge-list .edge-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--tx2); }
+  .edge-item .edge-arrow { color: var(--mu); }
+  .edge-item .edge-status { color: var(--ac); font-size: 11px; }
+  .edge-item.is-dashed { border-left: 2px dashed var(--bd); padding-left: 10px; }
 
   .node-detail { margin-top: 16px; padding: 26px 30px 30px; background: var(--sf); border: 1px solid var(--bd); border-radius: 14px; }
   .node-detail .nd-head { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
@@ -178,6 +186,7 @@
     </div>
     <div class="pipeline-card">
       <div class="pipeline-grid" id="pipeline-grid"></div>
+      <div class="edge-list" id="edge-list" hidden></div>
       <div class="legend" id="legend"></div>
     </div>
     <div class="node-detail" id="node-detail" hidden></div>
@@ -314,7 +323,7 @@
     return "var(" + (STATUS_VARS[status] || "--st-none") + ")";
   }
 
-  function showDetail(node) {
+  function showDetail(node, shouldScroll) {
     selectedId = node.id;
     nodeDetail.hidden = false;
     nodeDetail.innerHTML = "";
@@ -367,13 +376,14 @@
     document.querySelectorAll(".node-cell").forEach(function (cell) {
       cell.classList.toggle("is-selected", cell.getAttribute("data-node-id") === node.id);
     });
+    if (shouldScroll) {
+      nodeDetail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
   }
 
-  grid.style.gridTemplateColumns = "none";
   usedLanes.forEach(function (lane) {
     var row = document.createElement("div");
     row.className = "pipeline-row";
-    row.style.gridTemplateColumns = "110px repeat(" + maxOrder + ", 1fr)";
     var laneLabelEl = document.createElement("span");
     laneLabelEl.className = "lane-label";
     laneLabelEl.textContent = LANE_LABELS[lane] || lane;
@@ -384,33 +394,74 @@
     laneNodes.style.gridTemplateColumns = "repeat(" + maxOrder + ", 1fr)";
     var byOrder = {};
     nodes.forEach(function (n) {
-      if (n.lane === lane) byOrder[n.order] = n;
+      if (n.lane !== lane) return;
+      if (!byOrder[n.order]) byOrder[n.order] = [];
+      byOrder[n.order].push(n);
     });
     for (var order = 1; order <= maxOrder; order++) {
-      var n = byOrder[order];
-      if (!n) {
+      var slotNodes = byOrder[order] || [];
+      if (!slotNodes.length) {
         var empty = document.createElement("div");
         empty.className = "node-cell empty";
         laneNodes.appendChild(empty);
         continue;
       }
-      var hasDetail = !!(n.as_is_ko || n.to_be_ko);
-      var isOn = n.status !== "unchanged";
-      var cell = document.createElement(hasDetail ? "button" : "div");
-      if (hasDetail) cell.type = "button";
-      cell.className = "node-cell" + (isOn ? " on" : "") + (hasDetail ? " clickable" : "") + (focusSet[n.id] ? " is-focus" : "");
-      cell.setAttribute("data-node-id", n.id);
-      cell.textContent = n.label;
-      if (isOn) cell.style.color = statusColor(n.status);
-      if (isOn) cell.style.borderColor = statusColor(n.status);
-      if (hasDetail) cell.addEventListener("click", function (node) {
-        return function () { showDetail(node); };
-      }(n));
-      laneNodes.appendChild(cell);
+      var slot = document.createElement("div");
+      slot.className = "node-slot";
+      slotNodes.forEach(function (n) {
+        var hasDetail = !!(n.as_is_ko || n.to_be_ko);
+        var isOn = n.status !== "unchanged";
+        var cell = document.createElement(hasDetail ? "button" : "div");
+        if (hasDetail) cell.type = "button";
+        cell.className = "node-cell" + (isOn ? " on" : "") + (hasDetail ? " clickable" : "") + (focusSet[n.id] ? " is-focus" : "");
+        cell.setAttribute("data-node-id", n.id);
+        cell.textContent = n.label;
+        if (isOn) cell.style.color = statusColor(n.status);
+        if (isOn) cell.style.borderColor = statusColor(n.status);
+        if (hasDetail) cell.addEventListener("click", function (node) {
+          return function () { showDetail(node, true); };
+        }(n));
+        slot.appendChild(cell);
+      });
+      laneNodes.appendChild(slot);
     }
     row.appendChild(laneNodes);
     grid.appendChild(row);
   });
+
+  // edges: preserve data-flow and feedback relationships from the report contract.
+  var edgeList = document.getElementById("edge-list");
+  var edges = (r.pipeline.edges || []).filter(function (edge) {
+    return byId[edge.from] && byId[edge.to];
+  });
+  if (edges.length) {
+    edgeList.hidden = false;
+    var edgeTitle = document.createElement("div");
+    edgeTitle.className = "edge-title";
+    edgeTitle.textContent = "파이프라인 연결";
+    edgeList.appendChild(edgeTitle);
+    edges.forEach(function (edge) {
+      var item = document.createElement("div");
+      item.className = "edge-item" + (edge.style === "dashed" ? " is-dashed" : "");
+      var from = document.createElement("span");
+      from.textContent = byId[edge.from].label;
+      item.appendChild(from);
+      var arrow = document.createElement("span");
+      arrow.className = "edge-arrow";
+      arrow.textContent = edge.style === "dashed" ? "⇢" : "→";
+      item.appendChild(arrow);
+      var to = document.createElement("span");
+      to.textContent = byId[edge.to].label;
+      item.appendChild(to);
+      if (edge.status && edge.status !== "unchanged") {
+        var status = document.createElement("span");
+        status.className = "edge-status";
+        status.textContent = "(" + (STATUS_LABELS[edge.status] || edge.status) + ")";
+        item.appendChild(status);
+      }
+      edgeList.appendChild(item);
+    });
+  }
 
   // legend
   var legend = document.getElementById("legend");
@@ -434,7 +485,7 @@
     (r.pipeline.focus || []).map(function (id) { return byId[id]; })
       .filter(function (n) { return n && (n.as_is_ko || n.to_be_ko); })[0] ||
     nodes.filter(function (n) { return n.status !== "unchanged" && (n.as_is_ko || n.to_be_ko); })[0];
-  if (defaultNode) showDetail(defaultNode);
+  if (defaultNode) showDetail(defaultNode, false);
 
   // ---------- 2단계: 쉬운 설명 ----------
   var easyList = document.getElementById("easy-list");
