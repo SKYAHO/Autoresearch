@@ -8,7 +8,11 @@ import pytest
 import yaml
 from mlflow.tracking import MlflowClient
 
-from src.features.model_contract import CATEGORICAL_FEATURE_COLUMNS, MODEL_FEATURE_COLUMNS
+from src.features.model_contract import (
+    CATEGORICAL_FEATURE_COLUMNS,
+    MODEL_FEATURE_COLUMNS,
+    FeatureContractError,
+)
 from src.pipeline import train
 from src.pipeline.train import collect_categorical_categories
 
@@ -579,3 +583,162 @@ def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> 
     onnx_by_id = {int(item.video_id[1:]): item.ctr_score for item in items}
     onnx_positive = np.array([onnx_by_id[i] for i in range(len(candidates))])
     np.testing.assert_allclose(onnx_positive, lgbm_positive, atol=1e-4)
+
+
+# --- 실험용 피처 오버라이드 (#405) ---
+# 계약 정본: docs/specs/2026-07-31-experiment-feature-override.md
+
+
+def _train_once(tmp_path, config_path, data_path, suffix, **kwargs):
+    return train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        model_output=str(tmp_path / f"model_{suffix}.joblib"),
+        test_set_output=str(tmp_path / f"test_set_{suffix}.csv"),
+        feature_columns_output=str(tmp_path / f"feature_columns_{suffix}.json"),
+        categorical_columns_output=str(tmp_path / f"categorical_{suffix}.json"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+        **kwargs,
+    )
+
+
+def _prepared_dataset(tmp_path, monkeypatch, *, extra_column: str | None = None):
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    dataset = _synthetic_ctr_dataset()
+    if extra_column is not None:
+        # 실험 피처는 데이터셋에 **이미 있는** 컬럼만 승격시킨다. 여기서는 조립
+        # 단계가 이미 넣어준 상황을 흉내낸다.
+        dataset[extra_column] = dataset["view_count"] / 7.0
+    data_path = tmp_path / "training_dataset.csv"
+    dataset.to_csv(data_path, index=False)
+    return config_path, data_path, tracking_uri
+
+
+def test_main_without_extra_features_keeps_prod_contract(tmp_path, monkeypatch) -> None:
+    """기본값(None)이면 지금까지와 완전히 동일한 입력 순서다(#405 완료조건 3)."""
+    config_path, data_path, _ = _prepared_dataset(tmp_path, monkeypatch)
+
+    _train_once(tmp_path, config_path, data_path, "base")
+
+    with (tmp_path / "feature_columns_base.json").open(encoding="utf-8") as stream:
+        assert tuple(json.load(stream)) == MODEL_FEATURE_COLUMNS
+
+
+def test_main_extra_features_appends_after_prod_contract(tmp_path, monkeypatch) -> None:
+    config_path, data_path, _ = _prepared_dataset(
+        tmp_path, monkeypatch, extra_column="views_per_day"
+    )
+
+    _train_once(
+        tmp_path, config_path, data_path, "exp", extra_features=["views_per_day"]
+    )
+
+    with (tmp_path / "feature_columns_exp.json").open(encoding="utf-8") as stream:
+        columns = tuple(json.load(stream))
+    # prod 접두부가 그대로여야 ONNX 입력(이름 없는 순서 배열) 해석이 안 깨진다.
+    assert columns[: len(MODEL_FEATURE_COLUMNS)] == MODEL_FEATURE_COLUMNS
+    assert columns[len(MODEL_FEATURE_COLUMNS) :] == ("views_per_day",)
+    # 실험 피처가 prod 계약으로 새어들어가지 않는다(#405 완료조건 1).
+    assert "views_per_day" not in MODEL_FEATURE_COLUMNS
+
+
+def test_main_extra_features_missing_column_routes_to_feast_path(
+    tmp_path, monkeypatch
+) -> None:
+    """데이터셋에 없는 컬럼이면 정규 경로(#399) 안내와 함께 중단한다."""
+    config_path, data_path, _ = _prepared_dataset(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError) as excinfo:
+        _train_once(
+            tmp_path, config_path, data_path, "missing", extra_features=["views_per_day"]
+        )
+
+    message = str(excinfo.value)
+    assert "views_per_day" in message
+    # 오타인지 부재인지 구분할 수 있게 데이터셋 컬럼 수를 알려준다.
+    assert "데이터셋" in message
+    # 팀원이 헷갈릴 때 바로 정규 경로로 라우팅되도록 한다.
+    assert "#399" in message
+    assert "feast apply" in message
+    # 학습을 시작하기 전에 막았으므로 모델 파일이 없어야 한다.
+    assert not (tmp_path / "model_missing.joblib").exists()
+
+
+def test_main_extra_features_tags_registered_version(tmp_path, monkeypatch) -> None:
+    """실험 모델은 registry tag로 구분돼야 승격 게이트가 막을 수 있다(#405 완료조건 4)."""
+    config_path, data_path, tracking_uri = _prepared_dataset(
+        tmp_path, monkeypatch, extra_column="views_per_day"
+    )
+
+    _train_once(
+        tmp_path, config_path, data_path, "tag", extra_features=["views_per_day"]
+    )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    [registered] = client.search_model_versions("name='ctr-model'")
+    tags = client.get_model_version("ctr-model", registered.version).tags
+    assert tags["experiment_features"] == "views_per_day"
+
+
+def test_main_without_extra_features_has_no_experiment_tag(tmp_path, monkeypatch) -> None:
+    config_path, data_path, tracking_uri = _prepared_dataset(tmp_path, monkeypatch)
+
+    _train_once(tmp_path, config_path, data_path, "notag")
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    [registered] = client.search_model_versions("name='ctr-model'")
+    tags = client.get_model_version("ctr-model", registered.version).tags
+    assert "experiment_features" not in tags
+
+
+def test_main_duplicate_extra_features_stops_before_writing_test_set(
+    tmp_path, monkeypatch
+) -> None:
+    """계약 거부가 부수효과보다 먼저다(#405 리뷰 2).
+
+    중복 지정은 계약 위반인데, 예전에는 Step 3에서야 걸려 그 전에 held-out
+    test set 파일이 이미 덮어써지고 FAILED run만 남았다.
+    """
+    config_path, data_path, _ = _prepared_dataset(
+        tmp_path, monkeypatch, extra_column="views_per_day"
+    )
+    test_set_path = tmp_path / "test_set_dup.csv"
+    test_set_path.write_text("sentinel", encoding="utf-8")
+
+    with pytest.raises(FeatureContractError):
+        _train_once(
+            tmp_path,
+            config_path,
+            data_path,
+            "dup",
+            extra_features=["views_per_day", "views_per_day"],
+        )
+
+    # 공유 test set 파일이 그대로 남아 있어야 한다.
+    assert test_set_path.read_text(encoding="utf-8") == "sentinel"
+    assert not (tmp_path / "model_dup.joblib").exists()
+
+
+def test_main_rejects_non_numeric_extra_feature(tmp_path, monkeypatch) -> None:
+    """범주형 실험 피처는 문서상 비범위이고 코드에서도 막힌다(#405 리뷰 5).
+
+    막지 않으면 LightGBM fit()에서야 터지는데, 그때는 test set 저장과 run 생성이
+    이미 끝난 뒤다.
+    """
+    config_path, data_path, _ = _prepared_dataset(tmp_path, monkeypatch)
+    dataset = pd.read_csv(data_path)
+    dataset["region"] = ["seoul", "busan"] * (len(dataset) // 2)
+    dataset.to_csv(data_path, index=False)
+
+    with pytest.raises(ValueError) as excinfo:
+        _train_once(tmp_path, config_path, data_path, "cat", extra_features=["region"])
+
+    message = str(excinfo.value)
+    assert "region" in message
+    assert "수치형" in message
+    assert not (tmp_path / "model_cat.joblib").exists()

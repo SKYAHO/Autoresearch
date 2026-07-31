@@ -8,6 +8,10 @@ registered model 버전 생성이 이 모듈의 책임이다.
 
 [기능] config.yaml 기반 학습 실행과 함께, 학습 시작 전 라벨 분포를 검증해
 단일 클래스(양성 0건/음성 0건)면 원인이 드러나는 메시지로 즉시 중단한다(#421).
+`extra_features`를 주면 prod 모델 계약(`MODEL_FEATURE_COLUMNS`)을 건드리지 않고
+그 뒤에 실험 피처를 덧붙여 학습한다(#405). 데이터셋에 없는 컬럼이면 정규 경로
+(Feast ODFV, #399) 안내와 함께 중단하며, 실험 모델은 registry tag로 표시돼
+승격 게이트가 거부한다.
 `scale_pos_weight="auto"` 계산의 0 나눗셈도 같은 이유로 fail-closed다. 결과는
 `TrainingOutcome`으로 반환하며, `defer_registration=True`면 registered model
 버전 생성을 보류하고 `PendingRegistration`을 넘겨 호출자가 평가 통과 뒤에
@@ -20,6 +24,7 @@ registered model 버전 생성이 이 모듈의 책임이다.
 
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Optional
 
@@ -42,6 +47,7 @@ from src.models.calibration import (  # noqa: E402
 from src.features.model_contract import (  # noqa: E402
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
+    resolve_experiment_feature_columns,
 )
 from src.utils.model_utils import (  # noqa: E402
     convert_lgbm_to_onnx,
@@ -155,6 +161,68 @@ def compute_auto_scale_pos_weight(labels: pd.Series) -> float:
     return negative / positive
 
 
+def require_experiment_features_in_dataset(
+    dataset: pd.DataFrame, extra_features: Sequence[str]
+) -> tuple[str, ...]:
+    """실험 피처가 학습 데이터셋에 쓸 수 있는 상태인지 확인하고 최종 입력 순서를 만든다(#405).
+
+    이 경로는 데이터셋에 **이미 있는** 컬럼을 모델 입력으로 승격시킬 뿐 컬럼을
+    만들어내지 않는다. 없는 컬럼을 즉석에서 계산해 채우면 서빙 시점에는 Feast
+    online store에 그 피처가 없어 학습/서빙 스큐가 그대로 재현된다
+    (`src/features/feature_builder.py`가 막으려는 바로 그것).
+
+    그래서 fail-closed로 막되, 팀원이 정규 경로를 바로 찾아가도록 안내를 함께 낸다.
+
+    검증을 **부수효과 이전에** 모두 끝내는 것이 이 함수의 두 번째 목적이다. 계약
+    거부 조건(빈 목록·중복·prod 이름 충돌)을 나중 단계에서 확인하면, 그 사이에 MLflow
+    run 생성과 held-out test set 덮어쓰기가 이미 끝나 공유 파일이 갈아엎히고 FAILED
+    run만 남는다. 그래서 여기서 `resolve_experiment_feature_columns()`까지 함께 부른다.
+
+    Args:
+        dataset: 학습 데이터셋.
+        extra_features: `--extra-features`로 지정한 실험 피처.
+
+    Returns:
+        prod 계약 + 실험 피처 순서의 최종 모델 입력 컬럼.
+
+    Raises:
+        ValueError: 지정한 컬럼이 데이터셋에 없거나 수치형이 아니면.
+        FeatureContractError: 계약 계층의 거부 조건(빈 목록·중복·prod 충돌)에 걸리면.
+    """
+    # 계약 거부가 먼저다 — 데이터셋을 훑기 전에 목록 자체가 유효해야 한다.
+    resolved = resolve_experiment_feature_columns(extra_features)
+
+    missing = [name for name in extra_features if name not in dataset.columns]
+    if missing:
+        raise ValueError(
+            f"실험 피처 {missing}가 학습 데이터셋에 없습니다. "
+            "prod 계약(MODEL_FEATURE_COLUMNS)에도 없는 컬럼입니다.\n"
+            f"데이터셋 컬럼 {len(dataset.columns)}개: {sorted(dataset.columns)}\n\n"
+            "--extra-features는 데이터셋에 이미 있는 컬럼만 모델 입력으로 승격시킵니다. "
+            "컬럼을 새로 만들려면 Feast ODFV 정의 → feast apply → "
+            "FeatureService(ctr_training_v1) 갱신이 필요합니다. "
+            "정규 경로는 #399를 참고하세요."
+        )
+
+    # 범주형 실험 피처는 이번 범위가 아니다. 그대로 두면 LightGBM fit()에서야
+    # 터지는데, 그 시점엔 test set 덮어쓰기와 run 생성이 이미 끝난 뒤다.
+    non_numeric = [
+        name
+        for name in extra_features
+        if not pd.api.types.is_numeric_dtype(dataset[name])
+    ]
+    if non_numeric:
+        raise ValueError(
+            f"실험 피처 {non_numeric}가 수치형이 아닙니다"
+            f"(dtype: {[str(dataset[n].dtype) for n in non_numeric]}).\n"
+            "--extra-features는 수치형 컬럼만 지원합니다 — 범주형은 카테고리 코드 매핑이 "
+            "서빙 로더와 얽혀 있어 별도 작업이 필요합니다. "
+            "범주형 실험 피처가 필요하면 이슈로 올려 주세요."
+        )
+
+    return resolved
+
+
 def register_pending_model(pending: PendingRegistration) -> str:
     """보류해둔 registered model 버전을 만든다(#421).
 
@@ -230,6 +298,7 @@ def main(
     random_state: int = None,
     extra_params: dict = None,
     defer_registration: bool = False,
+    extra_features: Optional[Sequence[str]] = None,
 ) -> TrainingOutcome:
     """LightGBM 모델을 학습하고 MLflow에 기록한다.
 
@@ -292,6 +361,15 @@ def main(
         )
         print(f"  [OK] 라벨 분포: positive={positive_count}, negative={negative_count}")
 
+        # 실험 피처 사전 검증(#405). 분할·test set 저장·run 로깅·등록을 시작하기
+        # 전에 계약 거부를 모두 끝낸다 — 여기서 확정한 순서를 Step 3에서 그대로 쓴다.
+        experiment_feature_columns: Optional[tuple[str, ...]] = None
+        if extra_features:
+            experiment_feature_columns = require_experiment_features_in_dataset(
+                dataset, extra_features
+            )
+            print(f"  [OK] 실험 피처 {list(extra_features)} 확인 — prod 계약 뒤에 덧붙입니다")
+
         print("\n[Step 2] Train/Val/Test 분할 (Test는 완전 held-out)...")
         if test_size is None:
             test_size = config["data"]["test_size"]
@@ -344,7 +422,13 @@ def main(
         print(f"  [저장] Test set (held-out): {test_set_path}")
 
         print("\n[Step 3] Feature/Label 분리...")
-        feature_columns = list(MODEL_FEATURE_COLUMNS)
+        # 실험 피처가 없으면 prod 계약 그대로다. 있으면 Step 1에서 이미 검증하며
+        # 확정한 순서를 재사용한다 — 여기서 다시 계산하면 거부 시점이 부수효과
+        # 뒤로 밀린다(#405).
+        if experiment_feature_columns is not None:
+            feature_columns = list(experiment_feature_columns)
+        else:
+            feature_columns = list(MODEL_FEATURE_COLUMNS)
         categorical_columns = list(CATEGORICAL_FEATURE_COLUMNS)
 
         X_train = train_df[feature_columns].copy()
@@ -538,6 +622,10 @@ def main(
             "val_roc_auc": f"{val_roc_auc:.4f}",
             "sampling_rate": f"{realized_sampling_rate}",
         }
+        # 실험 피처로 학습한 모델은 prod 승격 대상이 아니다. 승격 게이트가 지표를
+        # 보기 전에 이 tag로 거부한다(#405 완료조건 4).
+        if extra_features:
+            registry_tags["experiment_features"] = ",".join(extra_features)
         if extra_params:
             registry_tags.update({k: str(v) for k, v in extra_params.items()})
         pending_registration = PendingRegistration(

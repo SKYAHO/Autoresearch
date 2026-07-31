@@ -78,7 +78,7 @@ def get_model_versions(model_name: str) -> list[Dict]:
         model_name: 모델 이름
 
     Returns:
-        버전 정보 리스트 (version, aliases, run_id, creation_timestamp 포함)
+        버전 정보 리스트 (version, aliases, run_id, creation_timestamp, tags 포함)
     """
     client = MlflowClient()
     versions = client.search_model_versions(f"name='{model_name}'")
@@ -88,6 +88,8 @@ def get_model_versions(model_name: str) -> list[Dict]:
             "aliases": list(v.aliases) if v.aliases else [],
             "run_id": v.run_id,
             "creation_timestamp": v.creation_timestamp,
+            # 승격 게이트가 실험 버전을 후보에서 제외하는 데 쓴다(#405 리뷰).
+            "tags": dict(v.tags or {}),
         }
         for v in versions
     ]

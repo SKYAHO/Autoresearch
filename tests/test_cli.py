@@ -57,6 +57,7 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
         test_size=None,
         val_size=None,
         random_state=None,
+        extra_features=None,
     )
 
     # C2로 feast-only: build-features에 output_path + 기간만 넘긴다(duckdb 인자 없음).
@@ -91,6 +92,7 @@ def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
         test_size=None,
         val_size=None,
         random_state=None,
+        extra_features=None,
     )
 
     # feast-only lineage: assembly_source=feast + FeatureService + registry + 기간.
@@ -145,6 +147,7 @@ def test_run_pipeline_registers_model_only_after_evaluation(monkeypatch):
         test_size=None,
         val_size=None,
         random_state=None,
+        extra_features=None,
     )
 
     assert [step for step, _ in calls] == ["train", "evaluate", "register"]
@@ -181,6 +184,7 @@ def test_run_pipeline_skips_registration_when_evaluation_fails(monkeypatch):
             test_size=None,
             val_size=None,
             random_state=None,
+            extra_features=None,
         )
 
     assert registered == []
@@ -218,6 +222,7 @@ def test_run_pipeline_fails_loudly_when_registration_fails(monkeypatch):
             test_size=None,
             val_size=None,
             random_state=None,
+            extra_features=None,
         )
 
     # 평가는 통과한 뒤 등록에서 실패한 경로임을 고정한다.
@@ -549,3 +554,52 @@ def test_promote_model_result_write_failure_emits_safe_stdout_and_exits_one(
     payload = json.loads(capsys.readouterr().out.strip())
     assert payload["outcome"] == "error"
     assert payload["reason_code"] == "result_write_failed"
+
+
+# --- 실험용 피처 오버라이드 (#405) ---
+
+
+def test_parse_extra_features_splits_and_trims():
+    assert cli._parse_extra_features("a, b ,c") == ["a", "b", "c"]
+
+
+def test_parse_extra_features_returns_none_for_blank():
+    # 미지정·빈 문자열이면 prod 경로(계약 그대로)를 유지해야 한다.
+    assert cli._parse_extra_features(None) is None
+    assert cli._parse_extra_features("") is None
+    assert cli._parse_extra_features("  ,  ") is None
+
+
+def test_run_pipeline_shares_extra_features_between_train_and_evaluate(monkeypatch):
+    """학습과 평가가 같은 실험 피처 목록을 써야 계약 검증이 어긋나지 않는다(#405)."""
+    seen = {}
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+
+    def _fake_train(**kwargs):
+        seen["train"] = kwargs.get("extra_features")
+        return _pipeline_outcome()
+
+    monkeypatch.setattr(cli.train, "main", _fake_train)
+    monkeypatch.setattr(
+        cli.evaluate, "main", lambda **kw: seen.__setitem__("evaluate", kw.get("extra_features"))
+    )
+    monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
+
+    cli.run_pipeline(
+        dataset_path=None,
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
+        config_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        extra_features="views_per_day",
+    )
+
+    assert seen["train"] == ["views_per_day"]
+    assert seen["evaluate"] == ["views_per_day"]
