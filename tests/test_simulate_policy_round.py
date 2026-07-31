@@ -272,7 +272,50 @@ def test_round_supports_three_named_policies(tmp_path, stub_reranker):
     html = (tmp_path / "policy_round_report.html").read_text(encoding="utf-8")
     assert all(policy in html for policy in expected)
     table = pq.read_table(tmp_path / "event_log.parquet").to_pandas()
+    assert not table.empty
     assert set(table["policy"].dropna().unique()) == expected
+    for policy in expected:
+        assert report["policies"][policy]["impressions"] > 0
+        policy_rows = table[table["policy"] == policy]
+        assert not policy_rows.empty
+        assert set(policy_rows["policy_version"]) == {
+            f"{policy}-v1"
+        }
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["", "has space", "has/slash", "_leading", "a" * 65],
+)
+def test_policy_spec_rejects_invalid_names(name, stub_reranker):
+    from src.pipeline.simulate_policy_round import PolicySpec
+
+    with pytest.raises(ValueError):
+        PolicySpec(name=name, reranker=stub_reranker, version="test-v1")
+
+
+def test_main_rejects_duplicate_policy_names(tmp_path, stub_reranker):
+    from src.pipeline.simulate_policy_round import PolicySpec
+
+    duplicate_policies = [
+        PolicySpec(name="candidate", reranker=None, version="v1"),
+        PolicySpec(name="candidate", reranker=stub_reranker, version="v2"),
+    ]
+
+    with pytest.raises(ValueError, match="중복|duplicate|unique"):
+        main(
+            personas=_personas(),
+            virtual_users=_virtual_users(),
+            videos_raw=_videos_raw(),
+            events=_empty_events(),
+            generator=RuleBasedActionLogGenerator(),
+            policies=duplicate_policies,
+            k=6,
+            exploration_ratio=0.0,
+            click_threshold=0.0,
+            seed=42,
+            output_dir=str(tmp_path),
+        )
 
 
 def test_round_event_ids_are_unique_and_policy_versions_are_per_policy(
@@ -365,6 +408,41 @@ def test_round_replay_rejects_policy_exposure_snapshot_mismatch(tmp_path, stub_r
             seed=42,
             output_dir=str(tmp_path / "replayed"),
         )
+
+
+def test_legacy_main_reranker_adapter_preserves_baseline_and_model(
+    tmp_path, stub_reranker
+):
+    """기존 reranker= 호출은 baseline/model 두 정책을 계속 생성해야 한다."""
+    import pyarrow.parquet as pq
+
+    report = _run_round(tmp_path, stub_reranker, generator=RuleBasedActionLogGenerator())
+    table = pq.read_table(tmp_path / "event_log.parquet").to_pandas()
+
+    assert set(report["policies"]) == {"baseline", "model"}
+    assert not table.empty
+    assert set(table["policy"].dropna().unique()) == {"baseline", "model"}
+
+
+def test_replay_without_exposure_keys_uses_legacy_fallback(tmp_path, stub_reranker):
+    """구버전 DraftReplay(exposure_keys=None)는 union-key 휴리스틱으로 재생된다."""
+    first_dir = tmp_path / "first"
+    original = _run_round(
+        first_dir, stub_reranker, generator=RuleBasedActionLogGenerator()
+    )
+    replay = _load_replay(first_dir, with_exposure_keys=False)
+
+    assert replay.exposure_keys is None
+    replayed = _run_round(
+        tmp_path / "replayed",
+        stub_reranker,
+        generator=None,
+        replay=replay,
+        output_dir=str(tmp_path / "replayed"),
+    )
+
+    assert replayed["replay"] is True
+    assert replayed["policies"] == original["policies"]
 
 
 def test_round_output_feeds_retraining_path(tmp_path, stub_reranker):
