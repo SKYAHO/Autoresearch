@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from src.tracking.namespace import (
@@ -177,3 +179,44 @@ def test_slug_error_message_states_ascii_constraint() -> None:
         )
 
     assert "ASCII" in str(excinfo.value)
+
+
+# --- 실험 로컬 스토어 경로 (#444) ---
+
+
+def test_experiment_local_store_is_absolute() -> None:
+    """CWD 상대 경로면 실행 위치에 따라 실험 이력이 갈린다(#444).
+
+    에이전트가 여러 라운드를 이어 돌릴 때 앞 라운드 이력을 못 찾는다.
+    """
+    ns = resolve_tracking_namespace(
+        prod_model_name=PROD_MODEL, experiment="exp1", tracking_uri_env=None
+    )
+
+    assert ns.tracking_uri.startswith("file:")
+    path = ns.tracking_uri.removeprefix("file:")
+    assert os.path.isabs(path), f"절대 경로가 아님: {path}"
+    assert not path.startswith("./")
+
+
+def test_experiment_local_store_is_stable_across_cwd(tmp_path, monkeypatch) -> None:
+    """어느 디렉토리에서 실행하든 같은 위치를 가리켜야 한다."""
+    from_root = resolve_tracking_namespace(
+        prod_model_name=PROD_MODEL, experiment="exp1", tracking_uri_env=None
+    ).tracking_uri
+
+    monkeypatch.chdir(tmp_path)
+    from_elsewhere = resolve_tracking_namespace(
+        prod_model_name=PROD_MODEL, experiment="exp1", tracking_uri_env=None
+    ).tracking_uri
+
+    assert from_root == from_elsewhere
+
+
+def test_explicit_tracking_uri_is_not_rewritten() -> None:
+    """명시한 URI는 건드리지 않는다 — 절대 경로화는 기본값에만 적용된다."""
+    ns = resolve_tracking_namespace(
+        prod_model_name=PROD_MODEL, experiment="exp1", tracking_uri_env="file:./custom"
+    )
+
+    assert ns.tracking_uri == "file:./custom"
