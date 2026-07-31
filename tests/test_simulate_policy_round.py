@@ -1066,6 +1066,54 @@ def test_main_feast_source_routes_through_offline_pit(tmp_path, stub_reranker, m
     assert len(calls[0][2]) == 30
 
 
+def test_main_verifies_credentials_when_assembly_source_is_duckdb(
+    tmp_path, stub_reranker, monkeypatch
+):
+    # duckdb 경로는 유저별 피처 조립에서 embed_texts를 실제로 호출하므로, 라운드
+    # 시작 시 자격증명 사전점검이 1회 실행돼야 한다(#426).
+    from src.pipeline import simulate_policy_round as module
+
+    calls: list[str] = []
+    monkeypatch.setattr(module, "verify_vertex_ai_credentials", lambda: calls.append("called"))
+
+    _run_round(tmp_path, stub_reranker, generator=RuleBasedActionLogGenerator())
+
+    assert calls == ["called"]
+
+
+def test_main_skips_credential_check_when_assembly_source_is_feast(
+    tmp_path, stub_reranker, monkeypatch
+):
+    # feast 경로는 build_pool_feature_frame_feast가 BigQuery 사전계산값을 읽어
+    # embed_texts를 호출하지 않으므로 사전점검이 불필요하다 — 실행되면 안 된다(#426).
+    from src.pipeline import simulate_policy_round as module
+
+    def _fail_if_called():
+        raise AssertionError("assembly_source='feast'인데 자격증명 사전점검이 호출됨")
+
+    monkeypatch.setattr(module, "verify_vertex_ai_credentials", _fail_if_called)
+    monkeypatch.setattr(module, "build_pool_feature_frame_feast", _fake_pool_frame)
+
+    report = main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        policy_version="feast-run",
+        output_dir=str(tmp_path),
+        assembly_source="feast",
+        feature_store=object(),
+    )
+
+    assert set(report["policies"]) == {"baseline", "model"}
+
+
 def test_main_feast_requires_feature_store(stub_reranker):
     with pytest.raises(ValueError, match="feature_store 주입이 필요"):
         main(

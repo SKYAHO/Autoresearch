@@ -16,6 +16,12 @@ RETRIEVAL_QUERY(사용자 관심 키워드처럼 "질의" 역할)와 RETRIEVAL_D
 (카테고리 설명문처럼 "검색 대상 문서" 역할)를 구분해서 호출해야 Vertex AI가
 권장하는 정확도를 얻는다. 호출부(category_reference.py, feature_builder.py)가
 각자의 역할에 맞는 task_type을 지정한다.
+
+임베딩 호출(`embed_texts`)·코사인 유사도(`cosine_similarity`) 외에, Vertex AI
+호출에 쓰이는 GCP 자격증명이 아직 유효한지 확인하는 사전점검
+(`verify_vertex_ai_credentials`)을 제공한다(#426). 자격증명을 발급·갱신하는
+주체는 gcloud ADC 또는 서비스 계정 키이며 이 모듈이 아니다 — 여기서는 만료를
+감지해 배치 초반에 실패시키는 역할만 한다.
 """
 
 import os
@@ -112,6 +118,34 @@ def embed_texts(texts: list[str], task_type: str) -> list[np.ndarray]:
         chunk = texts[start : start + _MAX_BATCH_SIZE]
         vectors.extend(_get_embeddings_chunk(model, chunk, task_type))
     return vectors
+
+
+def verify_vertex_ai_credentials() -> None:
+    """GCP 자격증명이 유효한지 가볍게 확인한다(#426) — 라운드 시작 시 1회.
+
+    `gcloud auth application-default print-access-token`과 동일한 효과 — 실제
+    토큰 갱신을 한 번 시도해 세션 만료(invalid_grant)를 정책 시뮬레이션 5단계를
+    모두 실행한 뒤가 아니라 시작 시점에 감지한다. 성공하면 아무것도 반환하지
+    않고, 실패하면 조치 방법을 담은 ValueError를 던진다.
+    """
+    import google.auth
+    import google.auth.exceptions
+    from google.auth.transport.requests import Request
+
+    try:
+        credentials, _ = google.auth.default()
+        credentials.refresh(Request())
+    except google.auth.exceptions.RefreshError as error:
+        raise ValueError(
+            "GCP 자격증명 세션이 만료됐습니다. `gcloud auth application-default "
+            "login`으로 재인증하거나, 서비스 계정 키를 GOOGLE_APPLICATION_CREDENTIALS로 "
+            "설정하세요(재인증이 필요 없어집니다 — docs/guides/feast-gcp-setup.md 참고)."
+        ) from error
+    except google.auth.exceptions.DefaultCredentialsError as error:
+        raise ValueError(
+            "GCP 자격증명을 찾을 수 없습니다. `gcloud auth application-default login` "
+            "또는 GOOGLE_APPLICATION_CREDENTIALS 설정이 필요합니다."
+        ) from error
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:

@@ -525,6 +525,42 @@ GCS(registry·staging 버킷) `storage.objectAdmin`.
 
 ---
 
+## 부록: 무인 실행용 Vertex AI 서비스 계정 (재인증 없이)
+
+`gcloud auth application-default login`으로 얻은 개인 계정 ADC 세션은 일정
+기간이 지나면 만료되고(capability probe round_002에서 라운드 사이에 만료 실측,
+#426), 만료되면 사람이 브라우저로 다시 인증해야 합니다. 에이전트가 정책
+시뮬레이션 라운드를 사람 개입 없이 이어서 돌리려면 서비스 계정 키를 쓰는 편이
+낫습니다. **코드 변경은 필요 없습니다** — `google.auth.default()`가
+`GOOGLE_APPLICATION_CREDENTIALS`를 gcloud ADC보다 먼저 확인하므로, 환경 변수만
+지정하면 Vertex AI 임베딩 호출이 그대로 서비스 계정으로 나갑니다.
+
+1. "1. 서비스 계정 생성"의 절차로 서비스 계정(`feast-sa`)을 만들거나 기존 것을
+   재사용하고, 키를 `keys/service-account.json`으로 내려받습니다.
+2. Vertex AI 임베딩 호출 권한을 추가로 부여합니다:
+
+   ```bash
+   SA_EMAIL="feast-sa@${GCP_PROJECT}.iam.gserviceaccount.com"
+
+   gcloud projects add-iam-policy-binding $GCP_PROJECT \
+     --member="serviceAccount:${SA_EMAIL}" --role="roles/aiplatform.user"
+   ```
+
+3. `.env`(또는 셸)에서 키 파일 경로를 지정합니다:
+
+   ```bash
+   export GOOGLE_APPLICATION_CREDENTIALS="./keys/service-account.json"
+   ```
+
+4. 이후 `gcloud auth application-default login` 재인증 없이 계속 동작합니다.
+   **키 파일은 시크릿이므로 커밋 금지**입니다.
+
+정책 시뮬레이션 라운드는 시작 시점에 자격증명을 한 번 점검하므로(duckdb 조립
+경로 한정, `src/features/embeddings.py`의 `verify_vertex_ai_credentials`),
+세션이 만료된 상태면 5단계를 다 돌린 뒤가 아니라 즉시 실패합니다.
+
+---
+
 ## 문제 해결
 
 | 증상 | 원인 / 해결 |
@@ -535,3 +571,4 @@ GCS(registry·staging 버킷) `storage.objectAdmin`.
 | Python 호환성 에러 | Python 3.12 사용 권장 (3.14 미지원) |
 | `feast apply` schema error | BigQuery 테이블 컬럼명/타입이 FeatureView schema와 일치하는지 확인 |
 | `Registry` 접근 실패 | GCS Registry 버킷 권한 확인 (Storage Admin) |
+| `GCP 자격증명 세션이 만료됐습니다` (정책 라운드 시작 직후) | ADC 세션 만료 — `gcloud auth application-default login` 재인증, 또는 위 "부록: 무인 실행용 Vertex AI 서비스 계정"으로 전환 |

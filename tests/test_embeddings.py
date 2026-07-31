@@ -144,6 +144,45 @@ def test_get_embeddings_chunk_retries_resource_exhausted(monkeypatch):
     assert len(result) == 1
 
 
+def test_verify_vertex_ai_credentials_raises_on_refresh_error(monkeypatch):
+    import google.auth
+    from google.auth.exceptions import RefreshError
+
+    class _FakeCredentials:
+        def refresh(self, request):
+            raise RefreshError("invalid_grant")
+
+    monkeypatch.setattr(google.auth, "default", lambda: (_FakeCredentials(), "proj"))
+
+    with pytest.raises(ValueError, match="세션이 만료"):
+        embeddings_module.verify_vertex_ai_credentials()
+
+
+def test_verify_vertex_ai_credentials_raises_on_missing_credentials(monkeypatch):
+    import google.auth
+    from google.auth.exceptions import DefaultCredentialsError
+
+    def raise_default_credentials_error():
+        raise DefaultCredentialsError("no ADC found")
+
+    monkeypatch.setattr(google.auth, "default", raise_default_credentials_error)
+
+    with pytest.raises(ValueError, match="찾을 수 없습니다"):
+        embeddings_module.verify_vertex_ai_credentials()
+
+
+def test_verify_vertex_ai_credentials_passes_when_refresh_succeeds(monkeypatch):
+    import google.auth
+
+    class _FakeCredentials:
+        def refresh(self, request):
+            pass  # 성공 — 아무것도 하지 않는다.
+
+    monkeypatch.setattr(google.auth, "default", lambda: (_FakeCredentials(), "proj"))
+
+    embeddings_module.verify_vertex_ai_credentials()  # 예외 없이 통과해야 한다
+
+
 def test_get_embeddings_chunk_does_not_retry_refresh_error(monkeypatch):
     from google.auth.exceptions import RefreshError
 
