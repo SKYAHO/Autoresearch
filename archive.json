@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-31T03:11:42Z",
+  "generated_at": "2026-07-31T03:23:23Z",
   "reports": [
+    {
+      "number": 439,
+      "title": "chore: 실험 tracking·registry 네임스페이스 분리 (#406)",
+      "author": "waieiches",
+      "merged_at": "2026-07-31T03:23:06Z",
+      "summary_ko": [
+        "MLflow tracking URI, experiment 이름, registry 모델명을 단일 위치에서 결정하는 네임스페이스 관리 모듈을 도입했습니다.",
+        "운영 학습 실행 시 MLFLOW_TRACKING_URI 미설정 상태를 감지하면 localhost 오접속 대신 명확한 에러 메시지와 함께 즉시 중단합니다.",
+        "실험 학습 실행 시 운영용 네임스페이스와 격리된 모델명 및 로컬 스토어 경로를 사용하며 승격 대상에서 자동으로 제외시킵니다."
+      ],
+      "report_url": "pr/439/"
+    },
     {
       "number": 438,
       "title": "feat: 실험용 피처 오버라이드 경로 — prod 계약 무수정 (#405)",
