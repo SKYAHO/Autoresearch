@@ -21,6 +21,7 @@ experiment 이름, registry 모델 이름)을 함께 정한다. 세 값을 따�
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Optional
 
@@ -57,6 +58,30 @@ def _slugify(value: str) -> str:
     return _SLUG_SEPARATORS.sub("-", value.strip().lower()).strip("-")
 
 
+def derive_experiment_name(
+    experiment: Optional[str], extra_features: Optional[Sequence[str]]
+) -> Optional[str]:
+    """실험 좌표를 쓸지, 쓴다면 어떤 이름으로 쓸지 정한다(#406 리뷰 1).
+
+    `--extra-features`만 주고 `--experiment`를 빼면 prod 계약에 없는 입력으로 학습한
+    산출물이 **prod registry 이름 아래** 쌓인다. 이 이슈가 없애려던 상황이 그대로
+    재현되므로, 실험 피처가 있으면 실험 좌표를 암시한다.
+
+    Args:
+        experiment: 명시한 실험 이름(없으면 None).
+        extra_features: 실험 피처 목록(없으면 None).
+
+    Returns:
+        실험 이름. 운영 경로면 None.
+    """
+    if experiment is not None:
+        return experiment
+    if extra_features:
+        # 이름을 안 줬어도 어떤 피처를 얹은 실험인지는 이름에 남는다.
+        return "-".join(extra_features)
+    return None
+
+
 def resolve_tracking_namespace(
     *,
     prod_model_name: str,
@@ -77,6 +102,16 @@ def resolve_tracking_namespace(
         ValueError: 운영 경로인데 tracking URI가 없거나, 실험 이름이 쓸 수 있는
             slug를 만들지 못하면.
     """
+    if EXPERIMENT_MODEL_NAME_INFIX in prod_model_name:
+        # 운영 모델 이름에 실험 구분자가 들어가면 is_experiment_model_name()이
+        # 운영 승격까지 조용히 막는다(#406 리뷰 4).
+        raise ValueError(
+            f"운영 모델 이름 {prod_model_name!r}에 실험 구분자"
+            f"({EXPERIMENT_MODEL_NAME_INFIX!r})가 들어 있습니다. "
+            "승격 게이트가 이 이름을 실험 모델로 오인해 운영 승격을 막습니다 — "
+            "config의 registry.model_name을 다른 이름으로 바꾸십시오."
+        )
+
     configured_uri = (tracking_uri_env or "").strip()
 
     if experiment is None:
@@ -100,7 +135,9 @@ def resolve_tracking_namespace(
     if not slug:
         raise ValueError(
             f"실험 이름 {experiment!r}에서 쓸 수 있는 식별자를 만들 수 없습니다. "
-            "영문자와 숫자를 최소 하나 포함해 주십시오(예: views_per_day)."
+            "registry 이름에 들어가야 해서 ASCII 영숫자만 남기므로, 한글만으로 된 "
+            "이름은 쓸 수 없습니다. 영문자·숫자를 최소 하나 포함해 주십시오"
+            "(예: views_per_day)."
         )
 
     return TrackingNamespace(
