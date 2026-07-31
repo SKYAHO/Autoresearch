@@ -331,3 +331,58 @@ def test_main_rejects_when_serving_calibration_is_not_ready(monkeypatch):
         is PromotionReasonCode.SERVING_CALIBRATION_NOT_READY
     )
     assert client.set_alias_calls == []
+
+
+# --- 실험 모델 승격 차단 (#405) ---
+
+
+def test_main_rejects_experiment_feature_candidate_before_metric_gate(monkeypatch):
+    """실험 피처로 학습한 후보는 지표가 아무리 좋아도 승격되지 않는다.
+
+    prod 계약에 없는 입력으로 학습된 모델이라 서빙이 그 피처를 만들어낼 수 없다.
+    그래서 게이트가 지표 비교보다 **앞**에 있다 — 이 테스트의 후보는 champion보다
+    지표가 높은데도 거부돼야 한다.
+    """
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4", tags={"experiment_features": "views_per_day"})
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        runs={"run-3": {"val_roc_auc": 0.75}, "run-4": {"val_roc_auc": 0.99}},
+    )
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.REJECTED
+    assert result.reason_code is PromotionReasonCode.EXPERIMENT_MODEL
+    assert result.candidate_version == "4"
+    assert result.champion_version == "3"
+    # alias는 건드리지 않는다 — champion이 그대로 유지된다.
+    assert client.set_alias_calls == []
+
+
+def test_main_promotes_when_experiment_tag_is_absent(monkeypatch):
+    """일반 후보는 태그가 없으므로 기존 경로 그대로 승격된다(#405 회귀 방지)."""
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4", tags={"sampling_rate": "1.0"})
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        runs={"run-3": {"val_roc_auc": 0.75}, "run-4": {"val_roc_auc": 0.80}},
+    )
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.PROMOTED
+    assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]
+
+
+def test_main_ignores_empty_experiment_tag(monkeypatch):
+    """빈 문자열 태그는 실험 표식으로 보지 않는다."""
+    candidate = _version("1", run_id="run-1", tags={"experiment_features": ""})
+    client = _PromoteClient(main_versions=[candidate], runs={"run-1": {"val_roc_auc": 0.70}})
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.PROMOTED

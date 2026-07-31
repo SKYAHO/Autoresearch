@@ -60,6 +60,17 @@ def build_features(
     )
 
 
+def _parse_extra_features(value: Optional[str]) -> Optional[list[str]]:
+    """`--extra-features` 쉼표 목록을 파싱한다(#405).
+
+    미지정·빈 문자열이면 None을 돌려 prod 경로(계약 그대로)를 유지한다.
+    """
+    if not value:
+        return None
+    names = [name.strip() for name in value.split(",") if name.strip()]
+    return names or None
+
+
 @app.command()
 def train_model(
     config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
@@ -73,6 +84,14 @@ def train_model(
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
     random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
+    extra_features: Optional[str] = typer.Option(
+        None,
+        "--extra-features",
+        help=(
+            "실험 피처(쉼표 구분). prod 모델 계약을 수정하지 않고 그 뒤에 덧붙여 학습합니다(#405). "
+            "데이터셋에 이미 있는 컬럼만 지정할 수 있으며, 이 모델은 champion 승격이 차단됩니다."
+        ),
+    ),
 ) -> None:
     """LightGBM 모델 훈련 (train/val/test 3-way split, test는 완전 held-out)."""
     train.main(
@@ -85,6 +104,7 @@ def train_model(
         test_size=test_size,
         val_size=val_size,
         random_state=random_state,
+        extra_features=_parse_extra_features(extra_features),
     )
 
 
@@ -123,12 +143,22 @@ def run_pipeline(
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
     random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
+    extra_features: Optional[str] = typer.Option(
+        None,
+        "--extra-features",
+        help=(
+            "실험 피처(쉼표 구분). prod 모델 계약을 수정하지 않고 그 뒤에 덧붙여 학습·평가합니다(#405). "
+            "데이터셋에 이미 있는 컬럼만 지정할 수 있으며, 이 모델은 champion 승격이 차단됩니다."
+        ),
+    ),
 ) -> None:
     """전체 파이프라인 실행: build-features -> train-model -> evaluate-model -> 등록.
 
     등록(Model Registry 버전 생성)은 평가 통과 뒤에만 수행하는 별도 단계다(#421).
-    조립 경로는 #359 C2로 feast-only다.
+    조립 경로는 #359 C2로 feast-only다. `--extra-features`를 주면 prod 모델 계약을
+    건드리지 않고 실험 피처를 덧붙여 학습하며, 학습과 평가가 같은 목록을 공유한다(#405).
     """
+    experiment_features = _parse_extra_features(extra_features)
     typer.echo("=" * 70)
     typer.echo("전체 파이프라인 실행")
     typer.echo("=" * 70)
@@ -174,6 +204,7 @@ def run_pipeline(
         random_state=random_state,
         extra_params=data_source_params,
         defer_registration=True,
+        extra_features=experiment_features,
     )
 
     # dataset_path(방금 만든 train+val+test 전체)는 넘기지 않는다: evaluate는
@@ -188,6 +219,8 @@ def run_pipeline(
         model_path=model_output,
         feature_columns_path=feature_columns_output,
         sampling_rate=outcome.sampling_rate,
+        # 학습이 쓴 것과 같은 목록을 넘겨야 계약 검증이 어긋나지 않는다(#405).
+        extra_features=experiment_features,
     )
 
     # 평가가 통과한 뒤에야 registered model 버전을 만든다(#421). 평가가 실패하면

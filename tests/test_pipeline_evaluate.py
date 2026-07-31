@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 
-from src.features.model_contract import CATEGORICAL_FEATURE_COLUMNS, MODEL_FEATURE_COLUMNS
+from src.features.model_contract import (
+    CATEGORICAL_FEATURE_COLUMNS,
+    MODEL_FEATURE_COLUMNS,
+    FeatureContractError,
+)
 from src.pipeline import evaluate
 
 
@@ -113,3 +118,56 @@ def test_main_defaults_to_no_calibration(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(evaluate, "apply_downsampling_calibration", spy)
     evaluate.main(config_path=str(config_path), data_path=str(data_path))
     assert seen["rate"] == 1.0
+
+
+# --- 실험용 피처 오버라이드 (#405) ---
+
+
+def _eval_config_and_data_with_extra(tmp_path, extra_column):
+    config_path, data_path = _eval_config_and_data(tmp_path)
+    dataset = pd.read_csv(data_path)
+    dataset[extra_column] = np.arange(len(dataset), dtype=float)
+    dataset.to_csv(data_path, index=False)
+    return config_path, data_path
+
+
+def test_main_accepts_experiment_columns_when_declared(tmp_path, monkeypatch) -> None:
+    """실험 경로에서는 계약 검증이 학습을 막지 않는다(#405 완료조건 2)."""
+    config_path, data_path = _eval_config_and_data_with_extra(tmp_path, "views_per_day")
+    columns = list(MODEL_FEATURE_COLUMNS) + ["views_per_day"]
+    monkeypatch.setattr(evaluate, "load_model", lambda _: _FakeModel())
+    monkeypatch.setattr(evaluate, "load_feature_columns", lambda _: columns)
+
+    evaluate.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        extra_features=["views_per_day"],
+    )
+
+
+def test_main_rejects_experiment_columns_that_differ_from_declaration(
+    tmp_path, monkeypatch
+) -> None:
+    """아티팩트가 선언과 다른 실험 피처를 담고 있으면 채점 대상이 어긋난다."""
+    config_path, data_path = _eval_config_and_data_with_extra(tmp_path, "views_per_day")
+    columns = list(MODEL_FEATURE_COLUMNS) + ["views_per_day"]
+    monkeypatch.setattr(evaluate, "load_model", lambda _: _FakeModel())
+    monkeypatch.setattr(evaluate, "load_feature_columns", lambda _: columns)
+
+    with pytest.raises(FeatureContractError):
+        evaluate.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            extra_features=["other_feature"],
+        )
+
+
+def test_main_keeps_strict_contract_when_no_extra_features(tmp_path, monkeypatch) -> None:
+    """미지정이면 prod 경로의 엄격한 동등 검사가 그대로 유지된다(#405 회귀 방지)."""
+    config_path, data_path = _eval_config_and_data_with_extra(tmp_path, "views_per_day")
+    columns = list(MODEL_FEATURE_COLUMNS) + ["views_per_day"]
+    monkeypatch.setattr(evaluate, "load_model", lambda _: _FakeModel())
+    monkeypatch.setattr(evaluate, "load_feature_columns", lambda _: columns)
+
+    with pytest.raises(FeatureContractError):
+        evaluate.main(config_path=str(config_path), data_path=str(data_path))

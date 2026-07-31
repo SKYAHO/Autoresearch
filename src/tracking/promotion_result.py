@@ -42,6 +42,7 @@ class PromotionReasonCode(str, Enum):
     SERVING_CALIBRATION_NOT_READY = "serving_calibration_not_ready"
     REGISTRY_EMPTY = "registry_empty"
     ALREADY_CHAMPION = "already_champion"
+    EXPERIMENT_MODEL = "experiment_model"
     REGISTRY_ACCESS_FAILED = "registry_access_failed"
     METRIC_MISSING = "metric_missing"
     ARTIFACT_LOOKUP_FAILED = "artifact_lookup_failed"
@@ -92,6 +93,8 @@ class ModelPromotionResult(BaseModel):
                 PromotionReasonCode.METRIC_BELOW_CHAMPION,
                 PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING,
                 PromotionReasonCode.SERVING_CALIBRATION_NOT_READY,
+                # 실험 피처로 학습한 후보(#405). 지표 비교 이전 단계에서 거부된다.
+                PromotionReasonCode.EXPERIMENT_MODEL,
             },
             PromotionOutcome.NO_CANDIDATE: {
                 PromotionReasonCode.REGISTRY_EMPTY,

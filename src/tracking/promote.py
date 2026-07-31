@@ -119,8 +119,33 @@ def main(
             reason_code=PromotionReasonCode.ALREADY_CHAMPION,
         )
 
+    # 실험 피처로 학습한 후보는 지표를 보기 전에 막는다(#405). prod 계약에 없는
+    # 입력으로 학습된 모델이라 서빙이 그 피처를 만들어낼 수 없다 — 지표가 아무리
+    # 좋아도 승격 대상이 아니다. 그래서 이 게이트는 지표 비교보다 **앞**에 있다.
     try:
         client = MlflowClient()
+        candidate_tags = (
+            client.get_model_version(model_name, candidate_version).tags or {}
+        )
+    except Exception as error:
+        raise PromotionExecutionError(
+            PromotionReasonCode.REGISTRY_ACCESS_FAILED,
+            "후보 모델 태그 조회에 실패했습니다.",
+            candidate_version=candidate_version,
+            champion_version=champion_version,
+        ) from error
+    experiment_features = candidate_tags.get("experiment_features")
+    if experiment_features:
+        return ModelPromotionResult(
+            outcome=PromotionOutcome.REJECTED,
+            model_name=model_name,
+            champion_alias=champion_alias,
+            candidate_version=candidate_version,
+            champion_version=champion_version,
+            reason_code=PromotionReasonCode.EXPERIMENT_MODEL,
+        )
+
+    try:
         candidate_run_id = _run_id_for_version(existing_versions, candidate_version)
         candidate_metrics = client.get_run(candidate_run_id).data.metrics
     except Exception as error:

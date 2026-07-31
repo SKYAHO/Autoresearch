@@ -8,6 +8,10 @@ registered model 버전 생성이 이 모듈의 책임이다.
 
 [기능] config.yaml 기반 학습 실행과 함께, 학습 시작 전 라벨 분포를 검증해
 단일 클래스(양성 0건/음성 0건)면 원인이 드러나는 메시지로 즉시 중단한다(#421).
+`extra_features`를 주면 prod 모델 계약(`MODEL_FEATURE_COLUMNS`)을 건드리지 않고
+그 뒤에 실험 피처를 덧붙여 학습한다(#405). 데이터셋에 없는 컬럼이면 정규 경로
+(Feast ODFV, #399) 안내와 함께 중단하며, 실험 모델은 registry tag로 표시돼
+승격 게이트가 거부한다.
 `scale_pos_weight="auto"` 계산의 0 나눗셈도 같은 이유로 fail-closed다. 결과는
 `TrainingOutcome`으로 반환하며, `defer_registration=True`면 registered model
 버전 생성을 보류하고 `PendingRegistration`을 넘겨 호출자가 평가 통과 뒤에
@@ -20,6 +24,7 @@ registered model 버전 생성이 이 모듈의 책임이다.
 
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Optional
 
@@ -42,6 +47,7 @@ from src.models.calibration import (  # noqa: E402
 from src.features.model_contract import (  # noqa: E402
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
+    resolve_experiment_feature_columns,
 )
 from src.utils.model_utils import (  # noqa: E402
     convert_lgbm_to_onnx,
@@ -155,6 +161,40 @@ def compute_auto_scale_pos_weight(labels: pd.Series) -> float:
     return negative / positive
 
 
+def require_experiment_features_in_dataset(
+    dataset: pd.DataFrame, extra_features: Sequence[str]
+) -> None:
+    """실험 피처가 학습 데이터셋에 실제로 있는지 확인한다(#405).
+
+    이 경로는 데이터셋에 **이미 있는** 컬럼을 모델 입력으로 승격시킬 뿐 컬럼을
+    만들어내지 않는다. 없는 컬럼을 즉석에서 계산해 채우면 서빙 시점에는 Feast
+    online store에 그 피처가 없어 학습/서빙 스큐가 그대로 재현된다
+    (`src/features/feature_builder.py`가 막으려는 바로 그것).
+
+    그래서 fail-closed로 막되, 팀원이 정규 경로를 바로 찾아가도록 안내를 함께 낸다.
+
+    Args:
+        dataset: 학습 데이터셋.
+        extra_features: `--extra-features`로 지정한 실험 피처.
+
+    Raises:
+        ValueError: 지정한 컬럼이 데이터셋에 없으면.
+    """
+    missing = [name for name in extra_features if name not in dataset.columns]
+    if not missing:
+        return
+
+    raise ValueError(
+        f"실험 피처 {missing}가 학습 데이터셋에 없습니다. "
+        "prod 계약(MODEL_FEATURE_COLUMNS)에도 없는 컬럼입니다.\n"
+        f"데이터셋 컬럼 {len(dataset.columns)}개: {sorted(dataset.columns)}\n\n"
+        "--extra-features는 데이터셋에 이미 있는 컬럼만 모델 입력으로 승격시킵니다. "
+        "컬럼을 새로 만들려면 Feast ODFV 정의 → feast apply → "
+        "FeatureService(ctr_training_v1) 갱신이 필요합니다. "
+        "정규 경로는 #399를 참고하세요."
+    )
+
+
 def register_pending_model(pending: PendingRegistration) -> str:
     """보류해둔 registered model 버전을 만든다(#421).
 
@@ -230,6 +270,7 @@ def main(
     random_state: int = None,
     extra_params: dict = None,
     defer_registration: bool = False,
+    extra_features: Optional[Sequence[str]] = None,
 ) -> TrainingOutcome:
     """LightGBM 모델을 학습하고 MLflow에 기록한다.
 
@@ -292,6 +333,11 @@ def main(
         )
         print(f"  [OK] 라벨 분포: positive={positive_count}, negative={negative_count}")
 
+        # 실험 피처 사전 검증(#405). 분할·학습·저장·등록을 시작하기 전에 막는다.
+        if extra_features:
+            require_experiment_features_in_dataset(dataset, extra_features)
+            print(f"  [OK] 실험 피처 {list(extra_features)} 확인 — prod 계약 뒤에 덧붙입니다")
+
         print("\n[Step 2] Train/Val/Test 분할 (Test는 완전 held-out)...")
         if test_size is None:
             test_size = config["data"]["test_size"]
@@ -344,7 +390,12 @@ def main(
         print(f"  [저장] Test set (held-out): {test_set_path}")
 
         print("\n[Step 3] Feature/Label 분리...")
-        feature_columns = list(MODEL_FEATURE_COLUMNS)
+        # 실험 피처가 없으면 prod 계약 그대로다. 있으면 계약을 건드리지 않고
+        # 그 뒤에 덧붙인 순서를 쓴다(#405).
+        if extra_features:
+            feature_columns = list(resolve_experiment_feature_columns(extra_features))
+        else:
+            feature_columns = list(MODEL_FEATURE_COLUMNS)
         categorical_columns = list(CATEGORICAL_FEATURE_COLUMNS)
 
         X_train = train_df[feature_columns].copy()
@@ -538,6 +589,10 @@ def main(
             "val_roc_auc": f"{val_roc_auc:.4f}",
             "sampling_rate": f"{realized_sampling_rate}",
         }
+        # 실험 피처로 학습한 모델은 prod 승격 대상이 아니다. 승격 게이트가 지표를
+        # 보기 전에 이 tag로 거부한다(#405 완료조건 4).
+        if extra_features:
+            registry_tags["experiment_features"] = ",".join(extra_features)
         if extra_params:
             registry_tags.update({k: str(v) for k, v in extra_params.items()})
         pending_registration = PendingRegistration(
