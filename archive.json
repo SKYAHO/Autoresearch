@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-31T04:38:00Z",
+  "generated_at": "2026-07-31T04:47:01Z",
   "reports": [
+    {
+      "number": 442,
+      "title": "fix: dev Feast materialize를 차단",
+      "author": "hyochangsung",
+      "merged_at": "2026-07-31T04:46:41Z",
+      "summary_ko": [
+        "개발(dev) 환경에서 Feast materialize 작업이 실행되는 것을 방지하도록 런타임 환경 검증 로직을 추가했습니다.",
+        "AUTORESEARCH_ENV가 dev로 설정된 경우 저장소 경로 검증 및 Redis CA/온라인 스토어 접근 전에 즉시 예외를 발생시킵니다.",
+        "dev 환경의 오프라인 전용 feature-store 계약을 강제하며 상용(prod) 및 기본 환경의 기존 동기화 동작은 유지했습니다."
+      ],
+      "report_url": "pr/442/"
+    },
     {
       "number": 440,
       "title": "feat: main과 dev 배포 경로 분리",
