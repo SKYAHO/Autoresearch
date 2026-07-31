@@ -127,6 +127,14 @@ def evaluate_model(
     data_path: Optional[str] = typer.Option(None, help="평가용 데이터 경로 (config override, 기본: held-out test set)"),
     model_path: Optional[str] = typer.Option(None, help="모델 로드 경로 (config override)"),
     feature_columns_path: Optional[str] = typer.Option(None, help="Feature 목록 경로 (config override)"),
+    extra_features: Optional[str] = typer.Option(
+        None,
+        "--extra-features",
+        help=(
+            "실험 피처(쉼표 구분). 학습이 --extra-features로 만든 모델을 단독으로 "
+            "재평가할 때 학습과 **같은 목록**을 주십시오(#405). 다르면 계약 검증이 막습니다."
+        ),
+    ),
 ) -> None:
     """저장된 모델을 held-out test set으로 평가."""
     evaluate.main(
@@ -134,6 +142,7 @@ def evaluate_model(
         data_path=data_path,
         model_path=model_path,
         feature_columns_path=feature_columns_path,
+        extra_features=_parse_extra_features(extra_features),
     )
 
 
@@ -461,10 +470,18 @@ def _run_legacy_promotion(
                 f"v{result.candidate_version}에 필요한 calibration "
                 "아티팩트가 없습니다."
             )
-        else:
+        elif result.reason_code is PromotionReasonCode.SERVING_CALIBRATION_NOT_READY:
             detail = (
                 f"후보 {result.model_name} v{result.candidate_version}: "
                 "서빙 calibration 준비가 완료되지 않았습니다."
+            )
+        else:
+            # 새 reason code가 생겼는데 분기를 안 만든 경우. 엉뚱한 진단을 찍는 대신
+            # 코드 자체를 드러낸다(#405 리뷰 — EXPERIMENT_MODEL이 calibration 문제로
+            # 잘못 보고되던 문제).
+            detail = (
+                f"후보 {result.model_name} v{result.candidate_version}: "
+                f"{result.reason_code.value}"
             )
         typer.echo(f"[게이트 미달] {detail}", err=True)
         raise typer.Exit(code=1)

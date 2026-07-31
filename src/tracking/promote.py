@@ -32,7 +32,6 @@ from src.tracking.promotion_result import (
 )
 from src.tracking.registry import (
     ServingCalibrationNotReadyError,
-    get_latest_version,
     get_model_metrics_by_alias,
     get_model_versions,
     set_model_alias,
@@ -83,8 +82,11 @@ def main(
     # 이름으로 등록되므로 정상 경로에서는 여기 도달하지 않지만, 이름을 직접 넘겨
     # 부르는 경우까지 막아 "실행해도 prod champion에 영향이 없음"을 보장한다.
     if is_experiment_model_name(model_name):
+        # NO_CANDIDATE인 이유는 #405의 후보 제외와 같다 — 게이트를 못 넘은 게 아니라
+        # 애초에 승격 가능한 후보가 없는 상태다. 두 경로가 같은 분류를 쓰므로 일일
+        # DAG의 알람 해석이 한 가지로 유지된다.
         return ModelPromotionResult(
-            outcome=PromotionOutcome.REJECTED,
+            outcome=PromotionOutcome.NO_CANDIDATE,
             model_name=model_name,
             champion_alias=champion_alias,
             reason_code=PromotionReasonCode.EXPERIMENT_MODEL,
@@ -92,14 +94,14 @@ def main(
 
     try:
         set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
-        candidate_version = get_latest_version(model_name)
+        existing_versions = get_model_versions(model_name)
     except Exception as error:
         raise PromotionExecutionError(
             PromotionReasonCode.REGISTRY_ACCESS_FAILED,
             "모델 후보 조회에 실패했습니다.",
         ) from error
 
-    if candidate_version is None:
+    if not existing_versions:
         return ModelPromotionResult(
             outcome=PromotionOutcome.NO_CANDIDATE,
             model_name=model_name,
@@ -107,20 +109,35 @@ def main(
             reason_code=PromotionReasonCode.REGISTRY_EMPTY,
         )
 
-    try:
-        existing_versions = get_model_versions(model_name)
-    except Exception as error:
-        raise PromotionExecutionError(
-            PromotionReasonCode.REGISTRY_ACCESS_FAILED,
-            "모델 버전 목록 조회에 실패했습니다.",
-            candidate_version=candidate_version,
-        ) from error
     champion_entry = next(
         (v for v in existing_versions if champion_alias in v["aliases"]), None
     )
     champion_version = (
         champion_entry["version"] if champion_entry is not None else None
     )
+
+    # 실험 피처로 학습한 버전은 후보 **선택에서 제외**한다(#405). 단순히 거부만 하면
+    # 실험 학습이 만든 버전이 번호상 최신이라는 이유로 후보를 차지하고, 그 앞의
+    # 정상 prod 후보가 영원히 승격되지 못한다 — 실험을 돌린 날의 champion 갱신이
+    # 조용히 유실된다. prod 계약에 없는 입력으로 학습돼 서빙이 그 피처를 만들어낼
+    # 수 없으므로 애초에 후보 자격이 없다.
+    promotable = [
+        entry for entry in existing_versions if not entry["tags"].get("experiment_features")
+    ]
+    if not promotable:
+        return ModelPromotionResult(
+            outcome=PromotionOutcome.NO_CANDIDATE,
+            model_name=model_name,
+            champion_alias=champion_alias,
+            champion_version=champion_version,
+            reason_code=PromotionReasonCode.EXPERIMENT_MODEL,
+        )
+
+    candidate_entry = max(promotable, key=lambda entry: int(entry["version"]))
+    candidate_version = candidate_entry["version"]
+    # 아래 sampling_rate 게이트가 다시 조회하지 않도록 여기서 한 번만 읽는다.
+    candidate_tags = candidate_entry["tags"]
+
     if champion_entry is not None and champion_entry["version"] == candidate_version:
         return ModelPromotionResult(
             outcome=PromotionOutcome.NO_CANDIDATE,
@@ -131,33 +148,8 @@ def main(
             reason_code=PromotionReasonCode.ALREADY_CHAMPION,
         )
 
-    # 실험 피처로 학습한 후보는 지표를 보기 전에 막는다(#405). prod 계약에 없는
-    # 입력으로 학습된 모델이라 서빙이 그 피처를 만들어낼 수 없다 — 지표가 아무리
-    # 좋아도 승격 대상이 아니다. 그래서 이 게이트는 지표 비교보다 **앞**에 있다.
     try:
         client = MlflowClient()
-        candidate_tags = (
-            client.get_model_version(model_name, candidate_version).tags or {}
-        )
-    except Exception as error:
-        raise PromotionExecutionError(
-            PromotionReasonCode.REGISTRY_ACCESS_FAILED,
-            "후보 모델 태그 조회에 실패했습니다.",
-            candidate_version=candidate_version,
-            champion_version=champion_version,
-        ) from error
-    experiment_features = candidate_tags.get("experiment_features")
-    if experiment_features:
-        return ModelPromotionResult(
-            outcome=PromotionOutcome.REJECTED,
-            model_name=model_name,
-            champion_alias=champion_alias,
-            candidate_version=candidate_version,
-            champion_version=champion_version,
-            reason_code=PromotionReasonCode.EXPERIMENT_MODEL,
-        )
-
-    try:
         candidate_run_id = _run_id_for_version(existing_versions, candidate_version)
         candidate_metrics = client.get_run(candidate_run_id).data.metrics
     except Exception as error:
@@ -209,16 +201,14 @@ def main(
                 reason_code=PromotionReasonCode.METRIC_BELOW_CHAMPION,
             )
 
+    # 후보 선택 때 읽은 tag를 재사용한다 — registry 왕복을 한 번 줄이고, 두 조회
+    # 사이에 tag가 바뀔 여지도 없앤다(#405 리뷰).
     try:
-        candidate_mv = client.get_model_version(
-            name=model_name,
-            version=candidate_version,
-        )
-        sampling_rate = float((candidate_mv.tags or {}).get("sampling_rate", 1.0))
-    except Exception as error:
+        sampling_rate = float(candidate_tags.get("sampling_rate", 1.0))
+    except (TypeError, ValueError) as error:
         raise PromotionExecutionError(
             PromotionReasonCode.REGISTRY_ACCESS_FAILED,
-            "후보 모델 tag 조회에 실패했습니다.",
+            "후보 모델 sampling_rate tag를 해석할 수 없습니다.",
             candidate_version=candidate_version,
             champion_version=champion_version,
             candidate_metric=candidate_val_roc_auc,
