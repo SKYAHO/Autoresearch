@@ -3,12 +3,12 @@ name: feast-apply
 # #346 이후 apply는 GHA 러너가 아니라 VPC 안의 GKE Job에서 실행된다. 러너는
 # VPC 밖이라 private Redis(PSC)에 닿지 못해 `full_scan_for_deletion: true`가
 # 요구하는 online store 삭제 스캔을 수행할 수 없기 때문이다. 이 워크플로우는
-# Job을 만들고 결과를 판정하는 역할만 한다. 트리거 의미(main 머지 시 registry
-# 반영)와 소유 경계("registry apply는 GHA, materialize는 Airflow")는 그대로다.
+# Job을 만들고 결과를 판정하는 역할만 한다. main은 prod, dev는 dev registry를
+# 반영하며, 소유 경계("registry apply는 GHA, materialize는 Airflow")는 그대로다.
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - feature_repo/feature_definitions.py
       - feature_repo/feature_store.yaml
@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
     inputs:
       environment:
-        description: "apply 대상 환경 (prod|dev, #399). push는 항상 prod."
+        description: "apply 대상 환경 (prod|dev, #399). push는 브랜치(main/dev)와 같은 환경."
         type: choice
         default: prod
         options:
@@ -44,7 +44,7 @@ concurrency:
 jobs:
   feast-apply:
     name: Apply Feast feature definitions to registry
-    environment: ${{ inputs.environment || 'prod' }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.ref_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -156,11 +156,11 @@ jobs:
           REDIS_PORT: ${{ vars.REDIS_PORT }}
           REDIS_CA_SECRET_ID: ${{ vars.REDIS_CA_SECRET_ID }}
           CODE_ARTIFACTS_BUCKET: ${{ secrets.CODE_ARTIFACTS_BUCKET }}
-          # prod/dev 환경 분리(#399). push(main)는 항상 prod, 수동 dispatch만 dev
-          # 선택 가능. FEAST_ONLINE_FULL_SCAN_FOR_DELETION 은 feature_repo/env.py 의
+          # prod/dev 환경 분리(#399). push는 main→prod/dev→dev로 고정하고 수동
+          # dispatch만 입력값을 선택한다. FEAST_ONLINE_FULL_SCAN_FOR_DELETION 은 feature_repo/env.py 의
           # 파생 규칙과 동일하게 계산한다(prod=true, dev=false). dev=false 면 apply 가
           # Redis 에 접속하지 않아 dev registry apply 가 prod Redis 를 건드리지 않는다.
-          AUTORESEARCH_ENV: ${{ inputs.environment || 'prod' }}
+          AUTORESEARCH_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.ref_name }}
         shell: bash
         run: |
           # Job 이름은 63자 제한이 있어 커밋 SHA 앞 12자만 쓴다.
