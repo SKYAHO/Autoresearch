@@ -804,7 +804,16 @@ def _cli() -> None:
         from src.tracking.client import get_or_create_experiment, set_tracking_uri
         from src.tracking.logger import log_metrics, log_parameters
 
-        set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
+        # os.getenv(name, default)는 빈 문자열에 default를 적용하지 않는다.
+        # .env.example대로 `MLFLOW_TRACKING_URI=`가 주입되면 set_tracking_uri("")가
+        # 불려 조용히 엉뚱한 곳을 본다 — 학습(#406)·승격과 같은 기준으로 막는다.
+        simulation_tracking_uri = (os.getenv("MLFLOW_TRACKING_URI") or "").strip()
+        if not simulation_tracking_uri:
+            raise ValueError(
+                "MLFLOW_TRACKING_URI가 설정되지 않아 --log-mlflow를 수행할 수 없습니다. "
+                "tracking 서버 주소를 지정하거나 --log-mlflow 없이 실행하십시오."
+            )
+        set_tracking_uri(simulation_tracking_uri)
         experiment_id = get_or_create_experiment("ctr-model-training")
         with mlflow.start_run(experiment_id=experiment_id, run_name="policy-simulation-round"):
             log_parameters(

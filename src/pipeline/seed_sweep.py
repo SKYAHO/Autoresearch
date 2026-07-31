@@ -163,7 +163,7 @@ def summarize_metric(values: Sequence[float]) -> MetricSummary:
         요약 통계.
 
     Raises:
-        ValueError: 값이 하나도 없으면.
+        ValueError: 값이 하나도 없거나, 유한하지 않은 값(NaN/inf)이 섞여 있으면(#445).
     """
     if not values:
         raise ValueError("지표 값이 비었습니다 — 요약할 대상이 없습니다.")
@@ -334,6 +334,8 @@ def run_seed_sweep(
 
     Raises:
         ValueError: 시드 목록이 비었거나 중복이 있으면.
+        SeedSweepError: 시드 하나가 실패하거나 유한하지 않은 지표를 돌려주면(#445).
+            이미 끝난 시드 지표는 `completed`에 담겨 함께 전달된다.
     """
     validate_seeds(seeds)
 
