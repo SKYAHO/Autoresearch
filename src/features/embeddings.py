@@ -21,7 +21,25 @@ RETRIEVAL_QUERY(사용자 관심 키워드처럼 "질의" 역할)와 RETRIEVAL_D
 import os
 
 import numpy as np
-from tenacity import retry, stop_after_attempt, wait_exponential_jitter
+from google.api_core.exceptions import (
+    Aborted,
+    DeadlineExceeded,
+    InternalServerError,
+    ResourceExhausted,
+    ServiceUnavailable,
+)
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
+
+# 재시도할 가치가 있는 전송/서버 쪽 일시적 오류만 명시한다(#426). google.auth.
+# exceptions.RefreshError(invalid_grant, 세션 만료)나 PermissionDenied 등은
+# 재시도로 해결되지 않으므로 여기 없으면 즉시 호출자에게 전파된다.
+_RECOVERABLE_ERRORS = (
+    ResourceExhausted,  # 429 쿼터 초과
+    ServiceUnavailable,  # 503
+    DeadlineExceeded,
+    InternalServerError,
+    Aborted,
+)
 
 EMBEDDING_MODEL = "text-multilingual-embedding-002"
 EMBEDDING_DIM = 768
@@ -49,10 +67,15 @@ def _get_model():
     return _model
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential_jitter(initial=1, max=20))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential_jitter(initial=1, max=20),
+    retry=retry_if_exception_type(_RECOVERABLE_ERRORS),
+)
 def _get_embeddings_chunk(model, texts: list[str], task_type: str) -> list[np.ndarray]:
-    """단일 청크(최대 _MAX_BATCH_SIZE개)를 Vertex AI에 요청한다. 일시적 오류는 재시도한다.
+    """단일 청크(최대 _MAX_BATCH_SIZE개)를 Vertex AI에 요청한다.
 
+    _RECOVERABLE_ERRORS(429/503/DeadlineExceeded 등 일시적 오류)만 재시도한다(#426).
     text-multilingual-embedding-002의 기본(=768) 출력은 이미 정규화된 단위
     벡터이지만, cosine_similarity()가 내적만으로 코사인 유사도를 계산하는
     전제(단위 벡터)를 API 스펙 변경과 무관하게 항상 지키도록 여기서도 방어적으로

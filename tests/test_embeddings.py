@@ -9,6 +9,7 @@ import sys
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
 from src.features import embeddings as embeddings_module
 
@@ -120,3 +121,42 @@ def test_embed_texts_reuses_model_across_calls(monkeypatch):
     # from_pretrained는 1회만 호출되고(_model 캐시), get_embeddings만 2번 호출된다.
     assert model_cls.from_pretrained_call_count == 1
     assert len(model_cls.calls) == 2
+
+
+def test_get_embeddings_chunk_retries_resource_exhausted(monkeypatch):
+    from google.api_core.exceptions import ResourceExhausted
+
+    model_cls = _install_recording_fake(monkeypatch)
+    call_count = {"n": 0}
+    original_get_embeddings = model_cls.get_embeddings
+
+    def flaky_get_embeddings(self, texts, *, auto_truncate=True, output_dimensionality=None):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise ResourceExhausted("429 quota exceeded")
+        return original_get_embeddings(self, texts, output_dimensionality=output_dimensionality)
+
+    monkeypatch.setattr(model_cls, "get_embeddings", flaky_get_embeddings)
+
+    result = embeddings_module.embed_texts(["hello"], task_type="RETRIEVAL_QUERY")
+
+    assert call_count["n"] == 3
+    assert len(result) == 1
+
+
+def test_get_embeddings_chunk_does_not_retry_refresh_error(monkeypatch):
+    from google.auth.exceptions import RefreshError
+
+    model_cls = _install_recording_fake(monkeypatch)
+    call_count = {"n": 0}
+
+    def always_refresh_error(self, texts, *, auto_truncate=True, output_dimensionality=None):
+        call_count["n"] += 1
+        raise RefreshError("invalid_grant")
+
+    monkeypatch.setattr(model_cls, "get_embeddings", always_refresh_error)
+
+    with pytest.raises(RefreshError):
+        embeddings_module.embed_texts(["hello"], task_type="RETRIEVAL_QUERY")
+
+    assert call_count["n"] == 1
