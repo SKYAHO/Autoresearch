@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-31T04:59:52Z",
+  "generated_at": "2026-07-31T05:39:50Z",
   "reports": [
+    {
+      "number": 435,
+      "title": "feat: 오케스트레이션 이미지 릴리스 자동화 추가",
+      "author": "Noah-JuYong",
+      "merged_at": "2026-07-31T05:39:38Z",
+      "summary_ko": [
+        "에이전트 오케스트레이션의 API와 실행기(Runner) 역할을 분리된 Docker 이미지로 빌드하는 환경을 구축하였습니다.",
+        "GitHub CI 및 Release 워크플로우에 두 이미지의 자동 빌드, 검증, GAR 푸시 및 요약 리포트 기록 절차를 추가하였습니다.",
+        "API가 비공개 Runner 서비스를 HTTP로 호출할 수 있도록 백엔드 계약 및 비밀번호·인증서 부트스트랩 모듈을 분리하였습니다."
+      ],
+      "report_url": "pr/435/"
+    },
     {
       "number": 447,
       "title": "chore: CI Docker build 경로 기반 선택 실행",
