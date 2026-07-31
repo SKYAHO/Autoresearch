@@ -6,7 +6,8 @@
 
 [기능]
 환경 설정과 DB 스키마를 준비하고 `/healthcheck`와 `/chat` 엔드포인트를 노출한다.
-`/chat`은 선택된 LLM 백엔드의 응답 및 지연 지표, 토큰 사용량을 영속화 후 반환한다.
+`/chat`은 외부 연결 종료 시 진행 중인 LLM task를 취소하고, 선택된 LLM 백엔드의 응답
+및 지연 지표, 토큰 사용량을 영속화 후 반환한다.
 
 [비책임]
 사용자 인증·세션 관리, OAuth 라우팅, 정책 라우팅·멀티턴 대화 상태.
@@ -20,16 +21,22 @@ import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from time import perf_counter
-from typing import Annotated
+from typing import Annotated, TypeVar
 
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
+from starlette.responses import Response
 
 from agent_orchestration.app.config import ServiceSettings, load_settings
 from agent_orchestration.app.db import ensure_schema, save_interaction
 from agent_orchestration.app.llm import LLMBackendError, generate_response
+from agent_orchestration.contracts import LLMBackendOverloadedError
 from agent_orchestration.app.schemas import ChatRequest, ChatResponse, ErrorResponse
 
 logger = logging.getLogger(__name__)
+
+
+TaskResult = TypeVar("TaskResult")
+_REQUEST_DISCONNECT_POLL_INTERVAL_SEC = 0.1
 
 
 def _api_tokens_match(provided_token: str, expected_token: str) -> bool:
@@ -38,6 +45,30 @@ def _api_tokens_match(provided_token: str, expected_token: str) -> bool:
         provided_token.encode("utf-8"),
         expected_token.encode("utf-8"),
     )
+
+
+async def _await_request_task(
+    http_request: Request,
+    task: asyncio.Task[TaskResult],
+) -> TaskResult | None:
+    """연결 종료 시 백엔드 task를 취소·회수하고, 처리된 disconnect에는 None을 반환한다."""
+    try:
+        while not task.done():
+            done, _ = await asyncio.wait(
+                {task},
+                timeout=_REQUEST_DISCONNECT_POLL_INTERVAL_SEC,
+            )
+            if task in done:
+                break
+            if await http_request.is_disconnected():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+                return None
+        return await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
 
 def create_app() -> FastAPI:
@@ -102,15 +133,20 @@ def create_app() -> FastAPI:
                 "description": "Failed to call LLM backend.",
                 "model": ErrorResponse,
             },
+            status.HTTP_503_SERVICE_UNAVAILABLE: {
+                "description": "LLM backend is temporarily overloaded.",
+                "model": ErrorResponse,
+            },
         },
     )
     async def chat(
         request: ChatRequest,
+        http_request: Request,
         x_orch_token: Annotated[
             str | None,
             Header(alias="X-Orch-Token", description="공유 오케스트레이션 API 토큰"),
         ] = None,
-    ) -> ChatResponse:
+    ) -> ChatResponse | Response:
         """채팅 프롬프트를 LLM으로 전송 후 PostgreSQL에 저장하고 결과를 반환."""
         runtime_settings = _require_runtime()
         if not x_orch_token or not _api_tokens_match(x_orch_token, runtime_settings.api_token):
@@ -120,7 +156,17 @@ def create_app() -> FastAPI:
             )
         start = perf_counter()
         try:
-            completion = await generate_response(runtime_settings, request.prompt)
+            completion_task = asyncio.create_task(
+                generate_response(runtime_settings, request.prompt)
+            )
+            completion = await _await_request_task(http_request, completion_task)
+            if completion is None:
+                return Response(status_code=499)
+        except LLMBackendOverloadedError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="LLM backend is temporarily overloaded.",
+            ) from error
         except LLMBackendError as error:
             logger.error("LLM backend call failed: %s", error)
             raise HTTPException(

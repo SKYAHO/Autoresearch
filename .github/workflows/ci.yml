@@ -12,6 +12,80 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changed image dependencies
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ github.event_name != 'pull_request' || steps.filter.outputs.app }}
+      train: ${{ github.event_name != 'pull_request' || steps.filter.outputs.train }}
+      mlflow: ${{ github.event_name != 'pull_request' || steps.filter.outputs.mlflow }}
+      feast: ${{ github.event_name != 'pull_request' || steps.filter.outputs.feast }}
+      serving: ${{ github.event_name != 'pull_request' || steps.filter.outputs.serving }}
+      agent_orchestration: ${{ github.event_name != 'pull_request' || steps.filter.outputs.agent_orchestration }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Filter changed paths
+        id: filter
+        # PR 이벤트에서만 사용한다. main push는 위 outputs에서 필터를 우회해 항상
+        # 전체 빌드한다(배포 대상 이미지 최신성 보장).
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          # '.github/workflows/ci.yml'과 '.dockerignore'는 5개 이미지 전부의 빌드
+          # 인자·컨텍스트를 결정하므로 모든 필터에 공통으로 넣는다(누락 시 이
+          # 워크플로우 자체를 고친 PR이 어떤 이미지 검증도 없이 통과한다 — 이 PR의
+          # 최초 버전이 그 사례였다). 새 공용 의존 경로를 추가할 때는 5개 목록을
+          # 모두 갱신해야 한다.
+          filters: |
+            app:
+              - '.github/workflows/ci.yml'
+              - '.dockerignore'
+              - 'Dockerfile.app'
+              - 'autoresearch/**'
+              - 'src/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            train:
+              - '.github/workflows/ci.yml'
+              - '.dockerignore'
+              - 'Dockerfile.train'
+              - 'scripts/gcs_code_bootstrap.sh'
+              - 'src/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            mlflow:
+              - '.github/workflows/ci.yml'
+              - '.dockerignore'
+              - 'deploy/mlflow/**'
+            feast:
+              - '.github/workflows/ci.yml'
+              - '.dockerignore'
+              - 'Dockerfile.feast'
+              - 'scripts/gcs_code_bootstrap.sh'
+              - 'autoresearch/**'
+              - 'src/**'
+              - 'feature_repo/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            serving:
+              - '.github/workflows/ci.yml'
+              - '.dockerignore'
+              - 'deploy/serving/**'
+              - 'autoresearch/**'
+              - 'feature_repo/**'
+              - 'src/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            agent_orchestration:
+              - '.github/workflows/ci.yml'
+              - '.dockerignore'
+              - 'agent_orchestration/**'
+              - 'deploy/agent_orchestration/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+
   pytest:
     name: pytest (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -101,8 +175,10 @@ jobs:
           uv export --frozen --only-group proxy --no-hashes -o proxy/requirements.txt
           git diff --exit-code proxy/requirements.txt
 
-  docker-build:
-    name: Docker build
+  docker-build-app:
+    name: Docker build (app)
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -141,6 +217,15 @@ jobs:
           docker run --rm autoresearch:ci \
             python -m src.pipeline.daily_recommendations --version
 
+  docker-build-train:
+    name: Docker build (train)
+    needs: changes
+    if: needs.changes.outputs.train == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
       - name: Build training image
         # CTR 학습 파이프라인(src/)을 담는 이미지. Dockerfile.app과 별도로
         # 관리한다 — 배치 CLI(autoresearch/)와 학습 코드(src/)는 책임이 다르다.
@@ -175,6 +260,15 @@ jobs:
             exit 1
           fi
 
+  docker-build-mlflow:
+    name: Docker build (mlflow)
+    needs: changes
+    if: needs.changes.outputs.mlflow == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
       - name: Build MLflow runtime image
         # deploy/mlflow/runtime의 uv.lock 기반 최소 파생 이미지를 검증한다.
         # Dockerfile 안의 psycopg2/boto3/google-cloud-storage import 스모크 체크가
@@ -184,6 +278,15 @@ jobs:
             -f deploy/mlflow/Dockerfile \
             --tag mlflow-runtime:ci \
             .
+
+  docker-build-feast:
+    name: Docker build (feast)
+    needs: changes
+    if: needs.changes.outputs.feast == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
       - name: Build Feast Docker image
         # feast 그룹 파생 이미지 (materialize 실행·GKE 검증용)
@@ -221,6 +324,15 @@ jobs:
             echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
             exit 1
           fi
+
+  docker-build-serving:
+    name: Docker build (serving)
+    needs: changes
+    if: needs.changes.outputs.serving == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
       - name: Build serving Docker image
         run: |
@@ -269,4 +381,82 @@ jobs:
 
           docker logs "${container_name}"
           echo "::error::모델·Feast 자격 증명 없이 malformed /rerank는 422이고 /healthcheck는 503이어야 한다"
+          exit 1
+
+  docker-build-agent-orchestration:
+    name: Docker build (agent orchestration)
+    needs: changes
+    if: needs.changes.outputs.agent_orchestration == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Build Agent Orchestration API and Runner images
+        run: |
+          docker build \
+            -f deploy/agent_orchestration/api.Dockerfile \
+            --tag autoresearch-agent-orchestration-api:ci \
+            .
+          docker build \
+            -f deploy/agent_orchestration/runner.Dockerfile \
+            --tag autoresearch-agent-orchestration-runner:ci \
+            .
+
+      - name: Run Agent Orchestration image smoke checks
+        run: |
+          docker run --rm autoresearch-agent-orchestration-api:ci id -u | grep --fixed-strings 10001
+          docker run --rm autoresearch-agent-orchestration-api:ci sh -ec '
+            ! command -v codex >/dev/null 2>&1
+            ! command -v node >/dev/null 2>&1
+            test ! -e "${CODEX_HOME:-/var/lib/codex}/auth.json"
+            test ! -e /var/lib/codex/auth.json
+          '
+          docker run --rm autoresearch-agent-orchestration-api:ci \
+            python -c "import agent_orchestration.app.main"
+          docker run --rm autoresearch-agent-orchestration-api:ci \
+            python -c "import agent_orchestration.bootstrap_secrets; from google.cloud import secretmanager"
+          docker run --rm autoresearch-agent-orchestration-api:ci \
+            python -c "import importlib.util; assert importlib.util.find_spec('lightgbm') is None"
+          docker run --rm autoresearch-agent-orchestration-runner:ci id -u | grep --fixed-strings 10001
+          codex_version="$(docker run --rm autoresearch-agent-orchestration-runner:ci codex --version)"
+          test "${codex_version}" = "codex-cli 0.146.0"
+          docker run --rm autoresearch-agent-orchestration-runner:ci \
+            python -c "import agent_orchestration.runner.app"
+          docker run --rm autoresearch-agent-orchestration-runner:ci \
+            python -c "import importlib.util; assert importlib.util.find_spec('lightgbm') is None"
+
+  docker-build:
+    name: Docker build
+    # 브랜치 룰셋의 필수 상태 체크가 "Docker build" 컨텍스트 이름을 그대로 요구한다.
+    # 서브잡 6개로 쪼갠 뒤에도 이 이름을 보고해야 하므로, 결과를 모으는 fan-in
+    # 집계 잡을 이 이름으로 유지한다(룰셋 수정 불필요).
+    needs:
+      - changes
+      - docker-build-app
+      - docker-build-train
+      - docker-build-mlflow
+      - docker-build-feast
+      - docker-build-serving
+      - docker-build-agent-orchestration
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if changes job failed or any sub-build did not succeed
+        # changes 잡이 실패하면(checkout·paths-filter 다운로드·filters YAML 파싱
+        # 실패 등) 서브잡 6개의 if 조건(needs.changes.outputs.*)이 전부 비어
+        # false로 평가되어 skipped가 된다 — failure가 아니므로 아래 조건만으로는
+        # 못 잡는다. changes.result를 별도로 확인해야 "빌드 0개인데 green"을 막는다.
+        # cancelled도 failure와 동일하게 취급한다(러너 회수 등으로 서브잡이 취소돼도
+        # 필수 체크가 green이 되면 안 된다).
+        if: |
+          needs.changes.result != 'success' ||
+          contains(fromJSON('["failure", "cancelled"]'), needs.docker-build-app.result) ||
+          contains(fromJSON('["failure", "cancelled"]'), needs.docker-build-train.result) ||
+          contains(fromJSON('["failure", "cancelled"]'), needs.docker-build-mlflow.result) ||
+          contains(fromJSON('["failure", "cancelled"]'), needs.docker-build-feast.result) ||
+          contains(fromJSON('["failure", "cancelled"]'), needs.docker-build-serving.result) ||
+          contains(fromJSON('["failure", "cancelled"]'), needs.docker-build-agent-orchestration.result)
+        run: |
+          echo "::error::changes 잡 실패 또는 하나 이상의 Docker build 서브잡이 실패/취소되었습니다"
           exit 1

@@ -58,6 +58,8 @@ docs/                # 문서 — docs/README.md 인덱스 참조
 | `Dockerfile.feast` | Feast apply/materialize + feast 필요 학습 조립 — `build-features`/`run-pipeline`이 offline PIT로 피처를 조립하므로(#359 C2) 이 이미지로 실행 |
 | `deploy/serving/Dockerfile` | 리랭킹 서빙 API (GKE) |
 | `deploy/mlflow/Dockerfile` | MLflow Tracking Server |
+| `deploy/agent_orchestration/api.Dockerfile` | Agent Orchestration FastAPI·PostgreSQL 저장 API (GKE 내부) |
+| `deploy/agent_orchestration/runner.Dockerfile` | API 전용 Codex Runner (GKE 내부, OAuth PVC 분리) |
 
 DAG·스케줄·Airflow 배포는 [`SKYAHO/Autoresearch-airflow`](https://github.com/SKYAHO/Autoresearch-airflow),
 GCP 인프라는 [`SKYAHO/Autoresearch-infra`](https://github.com/SKYAHO/Autoresearch-infra)가 소유합니다.

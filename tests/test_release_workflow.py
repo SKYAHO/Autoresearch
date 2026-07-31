@@ -35,6 +35,18 @@ def test_release_workflow_publishes_application_image_directly():
     ]
 
 
+def test_release_workflow_requires_main_ancestor_for_source_sha():
+    workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert (
+        workflow_text.count(
+            "git fetch --no-tags origin main:refs/remotes/origin/main"
+        )
+        == 3
+    )
+    assert workflow_text.count('git merge-base --is-ancestor "$source_sha" origin/main') == 3
+
+
 def test_release_workflow_publishes_serving_image_with_immutable_verification():
     workflow = _load_workflow()
     job = workflow["jobs"]["publish-serving-image"]
