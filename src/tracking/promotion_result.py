@@ -93,12 +93,14 @@ class ModelPromotionResult(BaseModel):
                 PromotionReasonCode.METRIC_BELOW_CHAMPION,
                 PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING,
                 PromotionReasonCode.SERVING_CALIBRATION_NOT_READY,
-                # 실험 피처로 학습한 후보(#405). 지표 비교 이전 단계에서 거부된다.
-                PromotionReasonCode.EXPERIMENT_MODEL,
             },
             PromotionOutcome.NO_CANDIDATE: {
                 PromotionReasonCode.REGISTRY_EMPTY,
                 PromotionReasonCode.ALREADY_CHAMPION,
+                # 등록된 버전이 전부 실험 모델이라 승격 가능한 후보가 없다(#405).
+                # REJECTED가 아니라 NO_CANDIDATE인 이유: 게이트를 못 넘은 게 아니라
+                # 애초에 심사 대상이 없는 상태라, 일일 DAG의 알람 해석이 어긋나지 않는다.
+                PromotionReasonCode.EXPERIMENT_MODEL,
             },
             PromotionOutcome.ERROR: {
                 PromotionReasonCode.REGISTRY_ACCESS_FAILED,

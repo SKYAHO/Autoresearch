@@ -1,6 +1,6 @@
 # 실험용 피처 오버라이드 경로 계약
 
-- Status: Draft
+- Status: Accepted (구현 완료 — 머지 후 `docs/archive/specs/`로 이동)
 - Issue: #405 (#396 ②) · 상위 트래킹: #403
 - 근거: `docs/specs/2026-07-29-auto-research-minimum-loop-gaps.md` ②
 - 관련: #399(파생 피처 정규 경로, ③ 대체) · #406(실험 네임스페이스) · #407(다중 시드)
@@ -94,11 +94,17 @@ require_experiment_feature_columns(columns, *, extra) -> tuple[str, ...]
 
 ### 4. 승격 차단 — `promote.py`
 
-후보 버전 태그에 `experiment_features`가 있으면 승격을 거부한다.
-`PromotionReasonCode`에 `EXPERIMENT_MODEL` 을 추가한다.
+`experiment_features` 태그가 붙은 버전을 **후보 선택에서 제외**한다.
 
-`promote.main()`은 이미 `candidate_mv.tags`를 읽고 있어(`sampling_rate`) 붙일 자리가 있다.
-게이트 순서는 **지표 비교보다 앞**에 둔다 — 실험 모델은 지표가 좋아도 승격 대상이 아니다.
+거부(REJECTED)가 아니라 제외인 이유가 중요하다. 후보는 버전 번호 최대값 하나로
+고르는데, 거부만 하면 실험이 만든 버전이 후보 자리를 차지하고 **그 앞의 정상 prod
+후보가 영원히 승격되지 못한다** — 실험을 돌린 날의 champion 갱신이 조용히 유실된다.
+
+등록된 버전이 전부 실험 모델이면 `NO_CANDIDATE` + `EXPERIMENT_MODEL`로 끝낸다.
+게이트를 못 넘은 게 아니라 애초에 심사 대상이 없는 상태라, 일일 DAG의 알람 해석이
+어긋나지 않는다.
+
+`PromotionReasonCode`에 `EXPERIMENT_MODEL`을 추가한다.
 
 ### 5. CLI — `src/cli.py`
 
@@ -150,6 +156,19 @@ prod 계약(MODEL_FEATURE_COLUMNS)에도 없는 컬럼입니다.
   감수한다는 뜻이다
 
 이 대응 관계를 템플릿 설명문에 한 줄 추가한다.
+
+## 에러 타입이 둘인 이유
+
+계약 계층은 `FeatureContractError`, `train.py`의 데이터셋 검증은 `ValueError`를 던진다.
+둘 다 "실험 피처 계약 위반"이지만 층이 다르다.
+
+- `FeatureContractError` — **목록 자체**가 계약을 어김(빈 목록·중복·prod 이름 충돌).
+  데이터가 무엇이든 성립하는 판단이라 계약 계층이 소유한다
+- `ValueError` — **이 데이터셋에서** 쓸 수 없음(컬럼 부재·수치형 아님). 같은 목록이라도
+  데이터셋이 바뀌면 결과가 달라진다. `require_binary_labels`가 같은 결로 `ValueError`를
+  쓰므로 `train.py`의 데이터 검증 관례를 따른다
+
+호출부가 두 타입을 잡아야 하는 비용은 있지만, 층을 흐리는 것보다 낫다고 판단했다.
 
 ## 비범위
 
