@@ -329,11 +329,36 @@ def test_t_critical_table_covers_realistic_seed_counts_without_approximating() -
 def test_t_critical_beyond_the_table_holds_the_most_conservative_entry() -> None:
     """표를 넘는 자유도는 하한(df=30)을 유지한다.
 
-    1.96(정규 근사)으로 낮추면 df 31~60 구간에서 실제보다 관대해진다 — t(40)=2.023이라
+    1.96(정규 근사)으로 낮추면 df 31~60 구간에서 실제보다 관대해진다 — t(40)=2.021이라
     1.96은 참값보다 작다. 2.042를 유지하면 오차가 4.19%로 수렴하며 방향은 늘 보수적이다.
     """
     for degrees_of_freedom in (31, 39, 100, 1000):
         assert _t_critical_95(degrees_of_freedom) == _T_CRITICAL_95[30]
+
+
+def test_reason_marks_the_threshold_as_a_floor_beyond_the_table() -> None:
+    """df>30은 하한을 쓰므로 `reason`에 그 사실이 남아야 한다(#456 리뷰 1).
+
+    `reason`은 `to_dict()`를 거쳐 이슈 본문에 옮겨 적힌다. 표시가 없으면 읽는
+    사람이 "df=39의 t는 2.042"로 오해한다 — 표를 채운 이유와 같은 문제다.
+    """
+    exact = compare_to_baseline(
+        candidate=summarize_metric([0.75] * 15),
+        baseline=summarize_metric([0.74] * 15),
+        paired_deltas=[0.01 + 0.001 * i for i in range(15)],
+    )
+    floored = compare_to_baseline(
+        candidate=summarize_metric([0.75] * 40),
+        baseline=summarize_metric([0.74] * 40),
+        paired_deltas=[0.01 + 0.001 * i for i in range(40)],
+    )
+
+    # df=14는 표에 있으므로 꼬리표가 붙지 않는다.
+    assert "df=14" in exact.reason
+    assert "하한" not in exact.reason
+    # df=39는 표 밖이라 하한임이 드러나야 한다.
+    assert "df=39" in floored.reason
+    assert "하한" in floored.reason
 
 
 def test_t_critical_rejects_degrees_of_freedom_below_the_table() -> None:

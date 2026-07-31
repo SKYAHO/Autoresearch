@@ -85,12 +85,15 @@ _T_CRITICAL_LARGEST_DF = max(_T_CRITICAL_95)
 def _t_critical_95(degrees_of_freedom: int) -> float:
     """자유도에 맞는 양측 95% t 임계값.
 
-    df 1~30은 표에서 정확히 조회된다 — 이 구간에 근사는 없다. 표를 넘는 자유도만
-    가장 보수적인 항목(df=30)을 하한으로 쓴다.
+    df 1~30은 표에서 **정확히** 조회된다 — 이 구간에 근사는 없다. 표를 넘는
+    자유도만 가장 보수적인 항목(df=30, 2.042)을 하한으로 쓴다. t는 자유도가
+    커질수록 작아지므로 이 하한은 늘 참값 이상이고, 오차는 df→∞에서 4.19%로
+    수렴한다(발산하지 않는다).
 
-    표에 빈칸이 생기더라도 **더 작은** 자유도 쪽 값으로 내려간다. t는 자유도가
-    커질수록 작아지므로 더 큰 자유도를 고르면 경계가 실제보다 작아지는데, 그러면
-    이 모듈이 막으려는 방향(관대한 판정)으로 기운다(#396 15시드 재측정 중 발견).
+    표 1~30이 연속이라는 것이 이 함수의 전제다. 그 전제는 코드가 아니라
+    `test_t_critical_table_covers_realistic_seed_counts_without_approximating`가
+    지킨다 — 빈칸을 메꾸는 분기를 코드에 두면 어떤 입력으로도 실행되지 않는
+    죽은 코드가 된다(#456 리뷰 2).
 
     Raises:
         ValueError: 자유도가 1 미만이면. 호출부가 시드 2개 이상을 보장하므로
@@ -103,9 +106,17 @@ def _t_critical_95(degrees_of_freedom: int) -> float:
         )
     if degrees_of_freedom in _T_CRITICAL_95:
         return _T_CRITICAL_95[degrees_of_freedom]
-    if degrees_of_freedom > _T_CRITICAL_LARGEST_DF:
-        return _T_CRITICAL_95[_T_CRITICAL_LARGEST_DF]
-    return _T_CRITICAL_95[max(df for df in _T_CRITICAL_95 if df < degrees_of_freedom)]
+    return _T_CRITICAL_95[_T_CRITICAL_LARGEST_DF]
+
+
+def _t_critical_note(degrees_of_freedom: int) -> str:
+    """임계값이 표의 하한으로 대체됐으면 그 사실을 `reason`에 남길 꼬리표를 만든다.
+
+    `reason`은 `to_dict()`를 거쳐 이슈 본문에 그대로 옮겨 적힌다. df 1~30은 정확한
+    값이지만 df>30은 하한(2.042)이라, 표시가 없으면 읽는 사람이 "df=39의 t는
+    2.042"로 오해한다 — 표를 채운 이유와 같은 문제다(#456 리뷰 1).
+    """
+    return "" if degrees_of_freedom in _T_CRITICAL_95 else " 하한"
 
 
 class SeedSweepError(RuntimeError):
@@ -278,7 +289,8 @@ def compare_to_baseline(
             within_noise=within_noise,
             reason=(
                 f"짝지은 Δ 평균={paired.mean:+.4f}, 표준오차={standard_error:.4f}, "
-                f"경계(±t{critical:.3f}, df={n - 1})={threshold:.4f} — "
+                f"경계(±t{critical:.3f}{_t_critical_note(n - 1)}, df={n - 1})"
+                f"={threshold:.4f} — "
                 + ("편차 범위 안" if within_noise else "편차 범위 밖")
             ),
         )
@@ -305,7 +317,8 @@ def compare_to_baseline(
         within_noise=within_noise,
         reason=(
             f"Δ={delta:+.4f}, 차이의 표준오차={standard_error:.4f}, "
-            f"경계(±t{critical:.3f})={threshold:.4f} — "
+            f"경계(±t{critical:.3f}{_t_critical_note(min(candidate.n, baseline.n) - 1)})"
+            f"={threshold:.4f} — "
             + ("편차 범위 안" if within_noise else "편차 범위 밖")
             + " (짝짓지 않은 비교 — 같은 시드로 두 조건을 돌렸다면 "
             "paired_deltas를 주는 편이 민감합니다)"
