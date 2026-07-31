@@ -8,7 +8,11 @@ import pytest
 import yaml
 from mlflow.tracking import MlflowClient
 
-from src.features.model_contract import CATEGORICAL_FEATURE_COLUMNS, MODEL_FEATURE_COLUMNS
+from src.features.model_contract import (
+    CATEGORICAL_FEATURE_COLUMNS,
+    MODEL_FEATURE_COLUMNS,
+    FeatureContractError,
+)
 from src.pipeline import train
 from src.pipeline.train import collect_categorical_categories
 
@@ -690,3 +694,51 @@ def test_main_without_extra_features_has_no_experiment_tag(tmp_path, monkeypatch
     [registered] = client.search_model_versions("name='ctr-model'")
     tags = client.get_model_version("ctr-model", registered.version).tags
     assert "experiment_features" not in tags
+
+
+def test_main_duplicate_extra_features_stops_before_writing_test_set(
+    tmp_path, monkeypatch
+) -> None:
+    """계약 거부가 부수효과보다 먼저다(#405 리뷰 2).
+
+    중복 지정은 계약 위반인데, 예전에는 Step 3에서야 걸려 그 전에 held-out
+    test set 파일이 이미 덮어써지고 FAILED run만 남았다.
+    """
+    config_path, data_path, _ = _prepared_dataset(
+        tmp_path, monkeypatch, extra_column="views_per_day"
+    )
+    test_set_path = tmp_path / "test_set_dup.csv"
+    test_set_path.write_text("sentinel", encoding="utf-8")
+
+    with pytest.raises(FeatureContractError):
+        _train_once(
+            tmp_path,
+            config_path,
+            data_path,
+            "dup",
+            extra_features=["views_per_day", "views_per_day"],
+        )
+
+    # 공유 test set 파일이 그대로 남아 있어야 한다.
+    assert test_set_path.read_text(encoding="utf-8") == "sentinel"
+    assert not (tmp_path / "model_dup.joblib").exists()
+
+
+def test_main_rejects_non_numeric_extra_feature(tmp_path, monkeypatch) -> None:
+    """범주형 실험 피처는 문서상 비범위이고 코드에서도 막힌다(#405 리뷰 5).
+
+    막지 않으면 LightGBM fit()에서야 터지는데, 그때는 test set 저장과 run 생성이
+    이미 끝난 뒤다.
+    """
+    config_path, data_path, _ = _prepared_dataset(tmp_path, monkeypatch)
+    dataset = pd.read_csv(data_path)
+    dataset["region"] = ["seoul", "busan"] * (len(dataset) // 2)
+    dataset.to_csv(data_path, index=False)
+
+    with pytest.raises(ValueError) as excinfo:
+        _train_once(tmp_path, config_path, data_path, "cat", extra_features=["region"])
+
+    message = str(excinfo.value)
+    assert "region" in message
+    assert "수치형" in message
+    assert not (tmp_path / "model_cat.joblib").exists()
