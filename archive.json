@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-31T07:14:34Z",
+  "generated_at": "2026-07-31T07:40:53Z",
   "reports": [
+    {
+      "number": 452,
+      "title": "chore: PR 리포트 디자인 동기화",
+      "author": "hyeongyu-data",
+      "merged_at": "2026-07-31T07:40:34Z",
+      "summary_ko": [
+        "PR 이해 리포트의 개별 페이지 디자인을 최신 Airflow 리포트 디자인 언어와 동기화했습니다.",
+        "template.html에 Noto Sans KR 폰트, 테마 토글, sticky 상단바 및 카드 레이아웃을 포팅했습니다.",
+        "기존 다중 저장소 아카이브 기능은 호환성을 보존하면서 시각적 요소만 최신 사양으로 보강했습니다."
+      ],
+      "report_url": "pr/452/"
+    },
     {
       "number": 453,
       "title": "fix: 실험 로컬 스토어 절대 경로 고정 + NaN 지표 가드 (#444, #445)",
