@@ -125,11 +125,13 @@ def build_pool_feature_frame(
     user_id: str,
     as_of: str,
     snapshot_date: str | None = None,
+    skip_embedding: bool = False,
 ) -> pd.DataFrame:
     """유저 1명 × 전체 영상 pool의 21개 모델 피처 프레임을 학습과 동일 경로로 만든다.
 
     snapshot_date(YYYY-MM-DD)는 영상 나이(days_since_upload) 기준일이며, 유저
     이력 기준(as_of)과 다를 수 있다. 없으면 as_of의 날짜를 사용한다(기존 동작).
+    skip_embedding은 compute_interaction_columns에 그대로 전달한다(#426).
     """
     video_features = compute_video_features(videos_raw, snapshot_date or as_of.split(" ")[0])
     offline = compute_user_offline_features(personas)
@@ -153,7 +155,7 @@ def build_pool_feature_frame(
         frame[column] = online.iloc[0][column]
     persona_row = personas[personas["uuid"] == user_id].iloc[0]
     frame["hobbies_and_interests_list"] = persona_row["hobbies_and_interests_list"]
-    frame = compute_interaction_columns(frame)
+    frame = compute_interaction_columns(frame, skip_embedding=skip_embedding)
     return frame
 
 
