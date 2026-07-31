@@ -50,18 +50,26 @@ _T_CRITICAL_95 = {
     20: 2.086,
     30: 2.042,
 }
-# 자유도가 표에 없을 만큼 크면 정규 근사로 수렴한다.
-_T_CRITICAL_LARGE_SAMPLE = 1.96
+# 자유도가 1 미만일 수는 없다(시드 2개 = df 1이 최소). 표의 최댓값(df=30)은 그보다 큰
+# 자유도의 하한으로도 쓴다 — t는 자유도 ∞에서 1.96으로 수렴하므로 2.042를 계속 쓰면
+# 최대 4% 보수적일 뿐이고, 반대 방향(1.96으로 낮추기)은 df 31~60 구간에서 실제보다
+# 관대해진다.
+_T_CRITICAL_SMALLEST_DF = min(_T_CRITICAL_95)
 
 
 def _t_critical_95(degrees_of_freedom: int) -> float:
+    """자유도에 맞는 양측 95% t 임계값. 표에 없으면 보수적인 쪽으로 내림한다.
+
+    표에 없는 자유도는 **더 작은** 자유도 쪽 값을 쓴다. t는 자유도가 커질수록
+    작아지므로 더 큰 자유도를 고르면 경계가 실제보다 작아지는데, 그러면 이 모듈이
+    막으려는 방향(관대한 판정)으로 기운다 — 시드 12개(df=11)면 올바른 2.201 대신
+    2.131이 쓰여 경계가 3.2% 작아진다(#396 15시드 재측정 중 발견).
+    """
     if degrees_of_freedom in _T_CRITICAL_95:
         return _T_CRITICAL_95[degrees_of_freedom]
-    larger = [df for df in _T_CRITICAL_95 if df > degrees_of_freedom]
-    if larger:
-        # 표에 없는 중간 자유도는 보수적으로 더 큰 임계값 쪽을 쓴다.
-        return _T_CRITICAL_95[min(larger)]
-    return _T_CRITICAL_LARGE_SAMPLE
+    if degrees_of_freedom < _T_CRITICAL_SMALLEST_DF:
+        return _T_CRITICAL_95[_T_CRITICAL_SMALLEST_DF]
+    return _T_CRITICAL_95[max(df for df in _T_CRITICAL_95 if df < degrees_of_freedom)]
 
 
 class SeedSweepError(RuntimeError):

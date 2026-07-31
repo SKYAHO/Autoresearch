@@ -14,8 +14,10 @@ import math
 import pytest
 
 from src.pipeline.seed_sweep import (
+    _T_CRITICAL_95,
     MetricSummary,
     SeedSweepError,
+    _t_critical_95,
     paired_deltas_by_seed,
     validate_seeds,
     SignificanceVerdict,
@@ -310,3 +312,43 @@ def test_summarize_metric_rejects_nan() -> None:
     """통계 계층도 NaN을 받지 않는다 — 평균·편차가 조용히 NaN이 되는 것을 막는다."""
     with pytest.raises(ValueError):
         summarize_metric([0.70, float("nan")])
+
+
+def test_t_critical_interpolates_toward_the_conservative_side() -> None:
+    """표에 없는 자유도는 더 작은 자유도 쪽(=더 큰 임계값)으로 내림한다.
+
+    t는 자유도가 커질수록 작아지므로, 표에서 더 큰 자유도를 고르면 경계가 실제보다
+    작아져 "노이즈 밖"을 실제보다 자주 선언한다 — 거짓 채택을 막으려는 모듈이 관대한
+    쪽으로 기우는 셈이다(#407 리뷰 3과 같은 이유).
+    """
+    # df 11~14는 표에 없다. 참값은 각각 2.201/2.179/2.160/2.145로 모두 df=10의
+    # 2.228보다 작고 df=15의 2.131보다 크다 — 둘 중 보수적인 2.228을 써야 한다.
+    for degrees_of_freedom in (11, 12, 13, 14):
+        assert _t_critical_95(degrees_of_freedom) == _T_CRITICAL_95[10]
+
+    assert _t_critical_95(16) == _T_CRITICAL_95[15]
+    assert _t_critical_95(25) == _T_CRITICAL_95[20]
+    # 표에 있는 자유도는 그대로 쓴다.
+    assert _t_critical_95(15) == _T_CRITICAL_95[15]
+    # 표를 넘어서면 최댓값(df=30)을 하한으로 유지한다. 1.96으로 낮추면 df 31~60
+    # 구간에서 실제보다 관대해진다.
+    assert _t_critical_95(100) == _T_CRITICAL_95[30]
+
+
+def test_t_critical_never_declares_outside_noise_more_easily_than_the_true_value() -> None:
+    """자유도별 임계값이 참 t값 이상이어야 한다 — 회귀 방지용 성질 검사.
+
+    참값은 scipy 없이 검증할 수 있도록 표로 박아둔다(양측 95%, 소수 3자리).
+    수정 전 코드는 df 11~14에서 2.131을 돌려줘 이 성질을 깼다.
+    """
+    true_t = {
+        11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
+        16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
+        21: 2.080, 25: 2.060, 29: 2.045,
+    }
+    for degrees_of_freedom, expected in true_t.items():
+        used = _t_critical_95(degrees_of_freedom)
+        assert used >= expected, (
+            f"df={degrees_of_freedom}: 임계값 {used}가 참값 {expected}보다 작다 — "
+            "경계가 실제보다 좁아져 유의 판정이 쉬워진다."
+        )
