@@ -12,6 +12,56 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect changed image dependencies
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ github.event_name != 'pull_request' || steps.filter.outputs.app }}
+      train: ${{ github.event_name != 'pull_request' || steps.filter.outputs.train }}
+      mlflow: ${{ github.event_name != 'pull_request' || steps.filter.outputs.mlflow }}
+      feast: ${{ github.event_name != 'pull_request' || steps.filter.outputs.feast }}
+      serving: ${{ github.event_name != 'pull_request' || steps.filter.outputs.serving }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Filter changed paths
+        id: filter
+        # PR 이벤트에서만 사용한다. main push는 위 outputs에서 필터를 우회해 항상
+        # 전체 빌드한다(배포 대상 이미지 최신성 보장).
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            app:
+              - 'Dockerfile.app'
+              - 'autoresearch/**'
+              - 'src/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            train:
+              - 'Dockerfile.train'
+              - 'scripts/gcs_code_bootstrap.sh'
+              - 'src/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            mlflow:
+              - 'deploy/mlflow/**'
+            feast:
+              - 'Dockerfile.feast'
+              - 'scripts/gcs_code_bootstrap.sh'
+              - 'autoresearch/**'
+              - 'src/**'
+              - 'feature_repo/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+            serving:
+              - 'deploy/serving/**'
+              - 'autoresearch/**'
+              - 'feature_repo/**'
+              - 'src/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+
   pytest:
     name: pytest (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -101,8 +151,10 @@ jobs:
           uv export --frozen --only-group proxy --no-hashes -o proxy/requirements.txt
           git diff --exit-code proxy/requirements.txt
 
-  docker-build:
-    name: Docker build
+  docker-build-app:
+    name: Docker build (app)
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -141,6 +193,15 @@ jobs:
           docker run --rm autoresearch:ci \
             python -m src.pipeline.daily_recommendations --version
 
+  docker-build-train:
+    name: Docker build (train)
+    needs: changes
+    if: needs.changes.outputs.train == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
       - name: Build training image
         # CTR 학습 파이프라인(src/)을 담는 이미지. Dockerfile.app과 별도로
         # 관리한다 — 배치 CLI(autoresearch/)와 학습 코드(src/)는 책임이 다르다.
@@ -175,6 +236,15 @@ jobs:
             exit 1
           fi
 
+  docker-build-mlflow:
+    name: Docker build (mlflow)
+    needs: changes
+    if: needs.changes.outputs.mlflow == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
       - name: Build MLflow runtime image
         # deploy/mlflow/runtime의 uv.lock 기반 최소 파생 이미지를 검증한다.
         # Dockerfile 안의 psycopg2/boto3/google-cloud-storage import 스모크 체크가
@@ -184,6 +254,15 @@ jobs:
             -f deploy/mlflow/Dockerfile \
             --tag mlflow-runtime:ci \
             .
+
+  docker-build-feast:
+    name: Docker build (feast)
+    needs: changes
+    if: needs.changes.outputs.feast == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
       - name: Build Feast Docker image
         # feast 그룹 파생 이미지 (materialize 실행·GKE 검증용)
@@ -221,6 +300,15 @@ jobs:
             echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
             exit 1
           fi
+
+  docker-build-serving:
+    name: Docker build (serving)
+    needs: changes
+    if: needs.changes.outputs.serving == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
 
       - name: Build serving Docker image
         run: |
@@ -269,4 +357,29 @@ jobs:
 
           docker logs "${container_name}"
           echo "::error::모델·Feast 자격 증명 없이 malformed /rerank는 422이고 /healthcheck는 503이어야 한다"
+          exit 1
+
+  docker-build:
+    name: Docker build
+    # 브랜치 룰셋의 필수 상태 체크가 "Docker build" 컨텍스트 이름을 그대로 요구한다.
+    # 서브잡 5개로 쪼갠 뒤에도 이 이름을 보고해야 하므로, 결과를 모으는 fan-in
+    # 집계 잡을 이 이름으로 유지한다(룰셋 수정 불필요).
+    needs:
+      - docker-build-app
+      - docker-build-train
+      - docker-build-mlflow
+      - docker-build-feast
+      - docker-build-serving
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any sub-build failed
+        if: |
+          needs.docker-build-app.result == 'failure' ||
+          needs.docker-build-train.result == 'failure' ||
+          needs.docker-build-mlflow.result == 'failure' ||
+          needs.docker-build-feast.result == 'failure' ||
+          needs.docker-build-serving.result == 'failure'
+        run: |
+          echo "::error::하나 이상의 Docker build 서브잡이 실패했습니다"
           exit 1
