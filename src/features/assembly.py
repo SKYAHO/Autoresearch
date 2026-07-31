@@ -485,6 +485,11 @@ def compute_interaction_columns(
             topic_similarity를 전부 None으로 채운다(#426,
             compute_user_topic_features와 동일한 패턴). historical_category_match/
             preferred_category_match는 이 값과 무관하게 항상 계산된다.
+            단, 형제 함수 compute_user_topic_features의 skip_embedding과 계약이
+            다르다(#214) — 그쪽은 호출자가 이후 BigQuery의 사전계산 값으로
+            topic_similarity를 다시 채우는 것을 전제하지만, 여기에는 그런 재충전
+            단계가 없다. 따라서 자체 재충전 로직 없이 True를 넘기면 영구 null인
+            topic_similarity가 그대로 모델에 들어간다.
     """
     out = joined.copy()
     out["preferred_topics"] = out["hobbies_and_interests_list"].apply(extract_keywords_safe)

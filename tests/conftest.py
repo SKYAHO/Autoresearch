@@ -62,6 +62,10 @@ class _FakeTextEmbeddingModel:
 class _FakeCredentials:
     """google.auth.default()가 돌려주는 자격증명 대역 — refresh가 항상 성공한다."""
 
+    # 실제 Credentials는 refresh 후 token을 채운다. 대역에도 두어, 나중에 .token을
+    # 읽는 코드가 생겨도 원인 불명의 AttributeError 대신 알아볼 수 있는 값이 나온다.
+    token = "fake-token"
+
     def refresh(self, request):
         return None
 

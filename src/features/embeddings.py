@@ -29,13 +29,16 @@ import os
 import numpy as np
 from google.api_core.exceptions import (
     Aborted,
+    BadGateway,
     DeadlineExceeded,
     GatewayTimeout,
     InternalServerError,
     ResourceExhausted,
     ServiceUnavailable,
     TooManyRequests,
+    Unknown,
 )
+from google.auth.exceptions import TransportError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential_jitter
 
 # 재시도할 가치가 있는 전송/서버 쪽 일시적 오류만 명시한다(#426). google.auth.
@@ -52,6 +55,11 @@ _RECOVERABLE_ERRORS = (
     # 안 잡힌다. 현재 vertexai 기본 transport는 gRPC지만 방어적으로 함께 둔다.
     TooManyRequests,
     GatewayTimeout,
+    # ServerError의 형제들 — 위 항목(503/500)으로는 안 잡힌다.
+    Unknown,  # gRPC UNKNOWN. 스트림이 중간에 끊길 때 흔히 나오는 일시적 오류다.
+    BadGateway,  # 502. ServiceUnavailable(503)의 형제라 그쪽으로 커버되지 않는다.
+    # api_core가 아니라 google.auth 쪽 별도 계층 — connection reset·DNS 순단.
+    TransportError,
 )
 
 EMBEDDING_MODEL = "text-multilingual-embedding-002"
@@ -84,6 +92,9 @@ def _get_model():
     stop=stop_after_attempt(3),
     wait=wait_exponential_jitter(initial=1, max=20),
     retry=retry_if_exception_type(_RECOVERABLE_ERRORS),
+    # 재시도를 모두 소진했을 때 tenacity.RetryError로 감싸지 않고 원래 예외를
+    # 그대로 올린다 — 호출자가 예외 타입으로 실패를 분류하는 것이 이 경로의 목적이다.
+    reraise=True,
 )
 def _get_embeddings_chunk(model, texts: list[str], task_type: str) -> list[np.ndarray]:
     """단일 청크(최대 _MAX_BATCH_SIZE개)를 Vertex AI에 요청한다.
@@ -127,6 +138,25 @@ def embed_texts(texts: list[str], task_type: str) -> list[np.ndarray]:
     return vectors
 
 
+@retry(
+    stop=stop_after_attempt(2),
+    wait=wait_exponential_jitter(initial=1, max=5),
+    retry=retry_if_exception_type(TransportError),
+    reraise=True,
+)
+def _refresh_credentials(credentials) -> None:
+    """토큰 갱신(네트워크 왕복) 1회 — 순간적 전송 오류만 짧게 재시도한다(#426).
+
+    사전점검은 배치 전체를 막는 단일 실패점이라, 토큰 엔드포인트/메타데이터 서버로
+    가는 왕복이 순단(connection reset·DNS)으로 한 번 실패했다고 라운드를 통째로
+    포기하지 않는다. 다만 배치 호출이 아닌 가벼운 단발 호출이므로 2회로 짧게 끊는다.
+    RefreshError·DefaultCredentialsError는 재시도해도 풀리지 않으므로 여기서 잡지 않는다.
+    """
+    from google.auth.transport.requests import Request
+
+    credentials.refresh(Request())
+
+
 def verify_vertex_ai_credentials() -> None:
     """GCP 자격증명이 유효한지 가볍게 확인한다(#426) — 라운드 시작 시 1회.
 
@@ -134,10 +164,14 @@ def verify_vertex_ai_credentials() -> None:
     토큰 갱신을 한 번 시도해 세션 만료(invalid_grant)를 정책 시뮬레이션 5단계를
     모두 실행한 뒤가 아니라 시작 시점에 감지한다. 성공하면 아무것도 반환하지
     않고, 실패하면 조치 방법을 담은 ValueError를 던진다.
+
+    이 함수는 ADC 토큰 갱신 성공만 확인한다 — Vertex AI 호출 권한
+    (roles/aiplatform.user) 자체는 검증하지 않으므로, 권한이 누락된 서비스 계정도
+    이 사전점검은 그대로 통과하고 나중에 embed_texts() 시점에 PermissionDenied로
+    드러난다.
     """
     import google.auth
     import google.auth.exceptions
-    from google.auth.transport.requests import Request
 
     try:
         # scopes 지정은 서비스 계정 키 경로에 필수다(#426). 서비스 계정 자격증명은
@@ -148,7 +182,12 @@ def verify_vertex_ai_credentials() -> None:
         credentials, _ = google.auth.default(
             scopes=["https://www.googleapis.com/auth/cloud-platform"]
         )
-        credentials.refresh(Request())
+        _refresh_credentials(credentials)
+    except google.auth.exceptions.TransportError as error:
+        raise ValueError(
+            "GCP 토큰 엔드포인트에 연결하지 못했습니다(재시도 후에도 실패). 네트워크 "
+            "연결과 메타데이터 서버 접근을 확인한 뒤 다시 실행하세요."
+        ) from error
     except google.auth.exceptions.RefreshError as error:
         raise ValueError(
             "GCP 자격증명 세션이 만료됐습니다. `gcloud auth application-default "
