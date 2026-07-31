@@ -7,6 +7,8 @@
 [기능]
 공유 API 토큰, 선택한 LLM 백엔드에 필요한 Codex 또는 OpenAI 설정, 모델/타임아웃,
 PostgreSQL 연결 정보 등 FastAPI 런타임의 공통 설정 값을 단일 진입점으로 정규화한다.
+Runner 백엔드에서는 외부 API 인증과 API-to-Runner 내부 인증이 같은 토큰을 재사용하지
+않도록 기동 전에 거부한다.
 
 [비책임]
 실제 LLM 호출 및 PostgreSQL 스키마 생성/영속화 동작.
@@ -60,15 +62,18 @@ class ServiceSettings:
     codex_cli_path: str = "codex"
     codex_home: str = ""
     codex_model: str | None = None
-    codex_timeout_sec: int = 120
+    codex_timeout_sec: int = 110
+    codex_runner_url: str | None = None
+    codex_runner_timeout_sec: int = 120
+    codex_runner_token: str | None = None
     database_connect_timeout_sec: int = 10
 
 
 def load_settings() -> ServiceSettings:
     """환경 변수에서 설정을 읽어 타입/기본값을 정합."""
     llm_backend = os.getenv("LLM_BACKEND", "codex_cli").strip().lower()
-    if llm_backend not in {"codex_cli", "openai"}:
-        raise ValueError("LLM_BACKEND must be one of: codex_cli, openai.")
+    if llm_backend not in {"codex_cli", "codex_runner", "openai"}:
+        raise ValueError("LLM_BACKEND must be one of: codex_cli, codex_runner, openai.")
 
     openai_api_key = (
         _require_env("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY"))
@@ -89,10 +94,23 @@ def load_settings() -> ServiceSettings:
         else os.getenv("CODEX_HOME", "").strip()
     )
     codex_model = os.getenv("CODEX_MODEL", "").strip() or None
-    codex_timeout_sec = _positive_env_int("CODEX_TIMEOUT_SEC", 120)
+    codex_timeout_sec = _positive_env_int("CODEX_TIMEOUT_SEC", 110)
+    codex_runner_timeout_sec = _positive_env_int("CODEX_RUNNER_TIMEOUT_SEC", 120)
+    codex_runner_url = os.getenv("CODEX_RUNNER_URL", "").strip() or None
+    codex_runner_token = os.getenv("ORCH_RUNNER_TOKEN", "").strip() or None
+    if llm_backend == "codex_runner":
+        codex_runner_url = _require_env("CODEX_RUNNER_URL", codex_runner_url)
+        codex_runner_token = _require_env("ORCH_RUNNER_TOKEN", codex_runner_token)
+        if len(codex_runner_token) < 32:
+            raise ValueError("ORCH_RUNNER_TOKEN must be at least 32 characters long.")
+        parsed_runner_url = urlparse(codex_runner_url)
+        if parsed_runner_url.scheme not in {"http", "https"} or not parsed_runner_url.netloc:
+            raise ValueError("CODEX_RUNNER_URL must be an absolute HTTP(S) URL.")
     api_token = _require_env("ORCH_API_TOKEN", os.getenv("ORCH_API_TOKEN"))
     if len(api_token) < 32:
         raise ValueError("ORCH_API_TOKEN must be at least 32 characters long.")
+    if llm_backend == "codex_runner" and codex_runner_token == api_token:
+        raise ValueError("ORCH_API_TOKEN and ORCH_RUNNER_TOKEN must differ.")
     database_connect_timeout_sec = _positive_env_int("ORCH_DB_CONNECT_TIMEOUT_SEC", 10)
 
     database_url = os.getenv("ORCH_DATABASE_URL") or os.getenv("DATABASE_URL")
@@ -122,5 +140,8 @@ def load_settings() -> ServiceSettings:
         codex_home=codex_home,
         codex_model=codex_model,
         codex_timeout_sec=codex_timeout_sec,
+        codex_runner_url=codex_runner_url,
+        codex_runner_timeout_sec=codex_runner_timeout_sec,
+        codex_runner_token=codex_runner_token,
         database_connect_timeout_sec=database_connect_timeout_sec,
     )
