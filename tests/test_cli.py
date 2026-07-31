@@ -12,6 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import cli  # noqa: E402
+from src.pipeline import train as train_module  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
     ModelPromotionResult,
     PromotionExecutionError,
@@ -609,3 +610,60 @@ def test_run_pipeline_shares_extra_features_between_train_and_evaluate(monkeypat
 
     assert seen["train"] == ["views_per_day"]
     assert seen["evaluate"] == ["views_per_day"]
+
+
+# --- 다중 시드 반복 학습 (#407) ---
+
+
+def test_sweep_seeds_trains_per_seed_and_writes_summary(tmp_path, monkeypatch):
+    """시드마다 학습하고 요약을 남긴다. 아티팩트는 시드별로 분리돼 덮어써지지 않는다."""
+    calls = []
+
+    def _fake_train(**kwargs):
+        calls.append((kwargs["random_state"], kwargs["model_output"]))
+        return train_module.TrainingOutcome(
+            sampling_rate=1.0,
+            run_id=f"run-{kwargs['random_state']}",
+            val_roc_auc=0.70 + 0.01 * len(calls),
+        )
+
+    monkeypatch.setattr(cli.train, "main", _fake_train)
+    result_path = tmp_path / "sweep.json"
+
+    cli.sweep_seeds(
+        seeds="42,43,44",
+        config_path=None,
+        data_path=None,
+        output_dir=str(tmp_path / "artifacts"),
+        test_size=None,
+        val_size=None,
+        experiment=None,
+        extra_features=None,
+        result_path=str(result_path),
+    )
+
+    assert [seed for seed, _ in calls] == [42, 43, 44]
+    # 시드별 모델 경로가 서로 달라야 마지막 시드가 앞 시드를 덮어쓰지 않는다.
+    assert len({path for _, path in calls}) == 3
+
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    assert payload["seeds"] == [42, 43, 44]
+    assert payload["summary"]["n"] == 3
+    assert payload["summary"]["std"] is not None
+
+
+def test_sweep_seeds_rejects_duplicate_seeds(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli.train, "main", MagicMock())
+
+    with pytest.raises(ValueError):
+        cli.sweep_seeds(
+            seeds="42,42",
+            config_path=None,
+            data_path=None,
+            output_dir=str(tmp_path / "artifacts"),
+            test_size=None,
+            val_size=None,
+            experiment=None,
+            extra_features=None,
+            result_path=None,
+        )
