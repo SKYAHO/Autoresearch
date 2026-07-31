@@ -12,6 +12,7 @@ import pytest
 
 from src.tracking.namespace import (
     EXPERIMENT_TRACKING_URI_DEFAULT,
+    derive_experiment_name,
     PROD_EXPERIMENT_NAME,
     TrackingNamespace,
     is_experiment_model_name,
@@ -133,3 +134,46 @@ def test_is_experiment_model_name_detects_experiment_namespace() -> None:
     assert is_experiment_model_name("ctr-model") is False
     # prod 이름을 접두사로 가진 다른 정식 모델은 실험이 아니다.
     assert is_experiment_model_name("ctr-model-v2") is False
+
+
+# --- 실험 좌표 암시 (#406 리뷰 1) ---
+
+
+def test_extra_features_alone_implies_experiment_namespace() -> None:
+    """--experiment 없이 --extra-features만 줘도 실험 좌표를 쓴다.
+
+    그러지 않으면 prod 계약에 없는 입력으로 학습한 산출물이 prod registry 이름
+    아래 쌓여, 이 이슈가 없애려던 상황이 그대로 재현된다.
+    """
+    assert derive_experiment_name(None, ["views_per_day"]) == "views_per_day"
+    assert derive_experiment_name(None, ["a", "b"]) == "a-b"
+
+
+def test_explicit_experiment_name_wins_over_derived() -> None:
+    assert derive_experiment_name("my_exp", ["views_per_day"]) == "my_exp"
+
+
+def test_no_experiment_and_no_extra_features_stays_prod() -> None:
+    assert derive_experiment_name(None, None) is None
+    assert derive_experiment_name(None, []) is None
+
+
+def test_prod_model_name_containing_experiment_infix_is_rejected() -> None:
+    """운영 이름에 구분자가 들어가면 승격 게이트가 운영 승격을 조용히 막는다."""
+    with pytest.raises(ValueError) as excinfo:
+        resolve_tracking_namespace(
+            prod_model_name="ctr-model-exp-oops",
+            experiment=None,
+            tracking_uri_env="http://mlflow:5000",
+        )
+
+    assert "실험 구분자" in str(excinfo.value)
+
+
+def test_slug_error_message_states_ascii_constraint() -> None:
+    with pytest.raises(ValueError) as excinfo:
+        resolve_tracking_namespace(
+            prod_model_name=PROD_MODEL, experiment="실험", tracking_uri_env=None
+        )
+
+    assert "ASCII" in str(excinfo.value)

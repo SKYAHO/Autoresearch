@@ -92,8 +92,19 @@ def main(
             reason_code=PromotionReasonCode.EXPERIMENT_MODEL,
         )
 
+    # os.getenv(name, default)는 **빈 문자열**에 default를 적용하지 않는다. .env.example
+    # 대로 `MLFLOW_TRACKING_URI=`가 주입된 환경에서는 set_tracking_uri("")가 불려
+    # 조용히 엉뚱한 곳을 보게 된다 — 학습은 #406에서 막았으므로 승격도 같이 막아
+    # 한 폐루프 안에 fail-fast와 silent fallback이 공존하지 않게 한다(#406 리뷰 3).
+    promote_tracking_uri = (os.getenv("MLFLOW_TRACKING_URI") or "").strip()
+    if not promote_tracking_uri:
+        raise PromotionExecutionError(
+            PromotionReasonCode.REGISTRY_ACCESS_FAILED,
+            "MLFLOW_TRACKING_URI가 설정되지 않아 승격 대상 registry를 특정할 수 없습니다.",
+        )
+
     try:
-        set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
+        set_tracking_uri(promote_tracking_uri)
         existing_versions = get_model_versions(model_name)
     except Exception as error:
         raise PromotionExecutionError(

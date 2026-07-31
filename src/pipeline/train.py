@@ -58,7 +58,10 @@ from src.utils.model_utils import (  # noqa: E402
     save_feature_columns,
 )
 from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
-from src.tracking.namespace import resolve_tracking_namespace  # noqa: E402
+from src.tracking.namespace import (  # noqa: E402
+    derive_experiment_name,
+    resolve_tracking_namespace,
+)
 from src.tracking.logger import (  # noqa: E402
     log_artifact,
     log_dataset,
@@ -325,9 +328,13 @@ def main(
 
     # MLflow 초기화 — 운영/실험 좌표를 한 번에 정한다(#406). tracking URI만 바꾸고
     # 등록 이름을 그대로 두면 로컬 스토어에 prod와 동명인 모델이 쌓인다.
+    # --extra-features만 주고 --experiment를 빼도 실험 좌표를 쓴다(#406 리뷰 1).
+    # 그러지 않으면 prod 계약에 없는 입력으로 학습한 산출물이 prod registry 이름
+    # 아래 쌓여, 이 분리가 없애려던 상황이 그대로 재현된다.
+    resolved_experiment = derive_experiment_name(experiment, extra_features)
     namespace = resolve_tracking_namespace(
         prod_model_name=config["registry"]["model_name"],
-        experiment=experiment,
+        experiment=resolved_experiment,
         tracking_uri_env=os.getenv("MLFLOW_TRACKING_URI"),
     )
     set_tracking_uri(namespace.tracking_uri)
@@ -530,6 +537,15 @@ def main(
             # 데이터 소스 계보(예: events_source/events_start_date/events_end_date)를
             # run에 남겨서, 어떤 기간의 데이터로 학습했는지 항상 조회 가능하게 한다.
             params.update(extra_params)
+        # 실험 좌표를 run에 남긴다(#406 리뷰 2). 모든 실험이 같은 experiment를
+        # 공유하므로 이게 없으면 어느 실험의 run인지 registry 이름으로만 알 수
+        # 있는데, run-pipeline은 등록을 평가 뒤로 미루므로 **평가에서 실패한 run은
+        # 영영 식별 불가**가 된다.
+        if namespace.is_experiment:
+            params["experiment_name"] = resolved_experiment
+            params["registry_model_name"] = namespace.registry_model_name
+            if extra_features:
+                params["experiment_features"] = ",".join(extra_features)
         log_parameters(params)
 
         print("\n[Step 6] LightGBM 모델 훈련...")
