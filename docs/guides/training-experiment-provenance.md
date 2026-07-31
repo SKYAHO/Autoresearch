@@ -65,9 +65,12 @@ manifest를 마지막에 원자적으로 게시한다.
 
 ### 2. training
 
-`train.main`은 학습·모델 등록보다 먼저 CSV와 snapshot manifest의 hash, schema,
-행 수를 재검증한다. 검증된 dataset에서 train/validation/test 3-way split을 확정한
-뒤 `test_set.csv.split.json`을 만든다.
+`train.main`은 snapshot sidecar가 있으면 학습·모델 등록보다 먼저 CSV와 snapshot
+manifest의 hash, schema, 행 수를 재검증한다. `require_snapshot=True` 호출은 sidecar가
+없거나 검증에 실패할 때 model fit 전에 중단한다. `run-pipeline`이 이 옵션을 사용하고,
+직접 `train-model`은 sidecar 없이도 기존 학습을 유지하지만 verified comparison
+artifact를 만들지 않는다. 검증된 dataset에서 train/validation/test 3-way split을
+확정한 뒤 `test_set.csv.split.json`을 만든다.
 
 split manifest에는 snapshot hash, snapshot manifest 파일 hash, 세 분할의 행 수와
 membership hash, effective seed, 최종 모델 입력 피처 목록·hash를 기록한다.
@@ -87,6 +90,11 @@ position** 목록을 canonical JSON으로 만든 SHA-256이다. snapshot hash와
 값을 모두 지정해야 하며, `random_state`와 함께 사용하면 오류로 끝낸다. 새 seed가
 없으면 기존 `random_state`, 그다음 config `data.random_state`를 세 effective seed에
 동일하게 적용한다.
+
+`train-model`과 `run-pipeline`은 `--split-seed`, `--model-seed`,
+`--sampler-seed` 옵션을 제공한다. `run-pipeline`은 이 값을 검증된 snapshot과 함께
+학습에 전달하고 `require_snapshot=True`를 강제한다. `sweep-seeds`는 기존
+`--seeds` 목록을 각 호출의 `random_state`로 전달하는 호환 경로를 유지한다.
 
 ### 3. MLflow run artifact
 
@@ -159,8 +167,9 @@ Airflow는 그 application CLI를 **언제 어떤 재시도 정책으로 실행�
 - split manifest 생성 또는 required MLflow artifact upload에 실패하면 해당 run은
   verified comparison을 주장할 수 없으므로 실패한다.
 - 비교 입력 중 하나라도 누락·변조·불일치하면 두 run을 수정하지 않고 실패한다.
-- 오류에는 안전한 대상 경로, run ID, expected/actual hash만 포함하며 credential,
-  signed URL, 전체 환경 변수는 포함하지 않는다.
+- 내부 검증 오류에는 안전한 대상 경로, run ID, expected/actual hash만 포함하며
+  credential, signed URL, 전체 환경 변수는 포함하지 않는다. CLI는 backend 예외
+  원문을 노출하지 않고 고정된 `ComparisonValidationError` 진단만 stderr에 출력한다.
 
 구현 검증은 manifest 단위 테스트, assembly의 generation pinning 테스트, training의
 artifact·seed·split 테스트, CLI의 성공 및 각 불일치 실패 테스트로 구성한다. 회귀
