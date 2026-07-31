@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-07-31T03:26:49Z",
+  "generated_at": "2026-07-31T03:32:04Z",
   "reports": [
+    {
+      "number": 441,
+      "title": "feat: 다중 시드 반복 학습으로 유의성 판정 근거 (#407)",
+      "author": "waieiches",
+      "merged_at": "2026-07-31T03:31:52Z",
+      "summary_ko": [
+        "단일 시드 1회 학습의 평가 한계를 극복하기 위해 다중 시드 반복 학습 및 지표 요약 기능(seed_sweep)을 도입하였습니다.",
+        "학습 결과의 평균·표준편차·범위를 계산하고 baseline 대비 성능 차이가 편차(노이즈) 범위 내인지 판단하는 통계적 근거를 제공합니다.",
+        "`sweep-seeds` CLI 명령어를 신설하여 시드별 모델 및 평가 아티팩트를 분리 저장하고 요약 JSON을 출력하도록 구성하였습니다."
+      ],
+      "report_url": "pr/441/"
+    },
     {
       "number": 439,
       "title": "chore: 실험 tracking·registry 네임스페이스 분리 (#406)",
