@@ -1179,7 +1179,11 @@ def _cli() -> None:
     parser = argparse.ArgumentParser(description="정책 시뮬레이션 라운드 실행")
     parser.add_argument("--personas", required=True, help="persona csv/parquet 경로")
     parser.add_argument("--virtual-users", required=True, help="virtual user parquet 경로")
-    parser.add_argument("--videos", required=True, help="사전 파싱된 videos.csv 경로")
+    parser.add_argument(
+        "--videos",
+        required=True,
+        help="videos_raw csv 경로 (youtube_videos.csv 형식)",
+    )
     parser.add_argument("--events", required=True, help="historical wide events csv 경로")
     parser.add_argument("--k", type=int, default=None, help="기본 10 (리플레이면 판정 라운드에서 상속)")
     parser.add_argument("--exploration-ratio", type=float, default=None, help="기본 0.1 (리플레이면 상속)")

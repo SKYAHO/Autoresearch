@@ -7,7 +7,7 @@
 폐루프 재학습에 그대로 재사용 가능한 형태(정책·점수·exploration 메타데이터 포함)로
 남긴다.
 
-## 2026-07-31 구현 보완 (#427, #428)
+## 2026-07-31 구현 보완 (#427)
 
 이 절은 아래의 초기 설계 중 `paired 2-정책` 표현을 확장한 현재 계약이다.
 기본 실행은 기존처럼 `baseline`과 `model`을 비교하지만, Python API는 순서가
@@ -27,8 +27,8 @@
   정책별 `ctr_mean`, `ctr_stddev`, `ctr_interval_95` 통계에만 반영한다.
   `reliability`는 권장 기준 반복 3회·unique intended impressions 100건의 충족
   여부와 경고를 함께 기록한다. 리플레이는 저장된 canonical 판정 1회만 사용한다.
-- CLI `--videos`는 사전 파싱된 `videos.csv` 경로를 받는다. 반복 판정은 선택적
-  `--judgment-repeats`로, 재현 가능한 라운드 식별자는 `--round-id`로 지정한다.
+- 반복 판정은 선택적 `--judgment-repeats`로, 재현 가능한 라운드 식별자는
+  `--round-id`로 지정한다.
 
 ## 배경
 

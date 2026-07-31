@@ -97,16 +97,3 @@ def test_exposure_source_roundtrip_and_validation():
     with pytest.raises(ValidationError):
         _policy_event(exposure_source="heuristic")  # 세 값 외 거부
 
-
-def test_cli_videos_help_describes_videos_csv(capsys, monkeypatch):
-    import sys
-
-    from src.pipeline import simulate_policy_round as module
-
-    monkeypatch.setattr(sys, "argv", ["simulate_policy_round", "--help"])
-    with pytest.raises(SystemExit):
-        module._cli()
-
-    help_text = capsys.readouterr().out
-    assert "사전 파싱된 videos.csv 경로" in help_text
-    assert "youtube_videos.csv" not in help_text
