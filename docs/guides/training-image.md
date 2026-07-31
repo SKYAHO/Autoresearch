@@ -21,7 +21,7 @@ CTR 학습 파이프라인(`src/`)을 컨테이너에서 실행하기 위한 이
 | 베이스 이미지 | `python:3.12-slim` (multi-stage, uv 기반) |
 | 진입점 | `python -m src.cli <command>` (`Dockerfile.train`: `promote-model`/`train-model`/`evaluate-model` — feast 불필요. `build-features`/`run-pipeline`은 `Dockerfile.feast`) |
 | 실행 유저 | non-root (`appuser`) |
-| CI 검증 | `.github/workflows/ci.yml`의 `docker-build` job (빌드 + `--help` 스모크 체크) |
+| CI 검증 | `.github/workflows/ci.yml`의 `docker-build-train` job (빌드 + `--help` 스모크 체크, `src/**` 등 관련 경로 변경 시에만 실행) |
 
 ## 로컬 빌드
 
