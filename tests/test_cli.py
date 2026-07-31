@@ -70,6 +70,76 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     }
 
 
+def test_train_model_forwards_explicit_seed_triplet(monkeypatch):
+    train_call = {}
+    monkeypatch.setattr(
+        cli.train, "main", lambda **kwargs: train_call.update(kwargs)
+    )
+
+    cli.train_model(
+        config_path=None,
+        data_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=11,
+        model_seed=12,
+        sampler_seed=13,
+        extra_features=None,
+        experiment=None,
+    )
+
+    assert (
+        train_call["split_seed"],
+        train_call["model_seed"],
+        train_call["sampler_seed"],
+    ) == (11, 12, 13)
+    assert "require_snapshot" not in train_call
+
+
+def test_run_pipeline_requires_verified_snapshot_and_forwards_seed_triplet(monkeypatch):
+    train_call = {}
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+    monkeypatch.setattr(
+        cli.train,
+        "main",
+        lambda **kwargs: train_call.update(kwargs) or _pipeline_outcome(),
+    )
+    monkeypatch.setattr(cli.evaluate, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
+
+    cli.run_pipeline(
+        dataset_path=None,
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
+        config_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=11,
+        model_seed=12,
+        sampler_seed=13,
+        extra_features=None,
+        experiment=None,
+    )
+
+    assert train_call["require_snapshot"] is True
+    assert (
+        train_call["split_seed"],
+        train_call["model_seed"],
+        train_call["sampler_seed"],
+    ) == (11, 12, 13)
+
+
 def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
     from src.features.feast_retrieval import DEFAULT_SERVICE
 
