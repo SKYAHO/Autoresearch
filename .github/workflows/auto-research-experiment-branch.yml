@@ -1,0 +1,90 @@
+name: Auto Research experiment branch
+
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  create-experiment-branch:
+    if: >-
+      contains(github.event.issue.labels.*.name, 'auto-research') &&
+      contains(github.event.issue.labels.*.name, 'experiment')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create immutable dev-based experiment branch
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+            const experimentIdMatch = body.match(
+              /###\s+실험 식별자\s+\n+\s*([^\n]+)/,
+            );
+            const experimentId = (experimentIdMatch?.[1] || 'primary').trim();
+            if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(experimentId)) {
+              throw new Error('experiment_id must use lowercase letters, digits, and hyphens');
+            }
+            const branchName = `exp/${issue.number}-${experimentId}`;
+            const { data: devRef } = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'heads/dev',
+            });
+
+            try {
+              await github.rest.git.createRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `refs/heads/${branchName}`,
+                sha: devRef.object.sha,
+              });
+            } catch (error) {
+              if (error.status !== 422) {
+                throw error;
+              }
+              const { data: existingRef } = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchName}`,
+              });
+              if (existingRef.object.sha !== devRef.object.sha) {
+                throw new Error(
+                  `${branchName} already exists at ${existingRef.object.sha}; refusing to move it from dev ${devRef.object.sha}`,
+                );
+              }
+              core.info(`${branchName} already exists at the current dev SHA`);
+            }
+
+            const registryKey =
+              `experiments/${issue.number}/${experimentId}/${devRef.object.sha}/registry.db`;
+            const marker =
+              `<!-- autoresearch-branch:${issue.number}:${experimentId}:${devRef.object.sha} -->`;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              per_page: 100,
+            });
+            if (comments.some((comment) => comment.body?.includes(marker))) {
+              core.info('An identical experiment context comment already exists');
+              return;
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: [
+                marker,
+                `실험 context를 준비했습니다: [\`${branchName}\`](https://github.com/${context.repo.owner}/${context.repo.repo}/tree/${branchName})`,
+                `- experiment_id: \`${experimentId}\``,
+                `- candidate_sha: \`${devRef.object.sha}\``,
+                `- registry_key: \`${registryKey}\``,
+                '',
+                'Registry의 실제 GCS bucket URI와 격리 Job 실행은 실험 실행 workflow가 주입합니다.',
+              ].join('\\n'),
+            });
