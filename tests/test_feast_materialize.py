@@ -51,6 +51,33 @@ def test_missing_repo_path_exits_two(tmp_path, capsys):
     assert summary["error_type"] == "invalid_arguments"
 
 
+def test_dev_environment_exits_one_before_accessing_online_dependencies(
+    monkeypatch, capsys
+):
+    accessed: list[str] = []
+
+    monkeypatch.setenv("AUTORESEARCH_ENV", "dev")
+    monkeypatch.setattr(
+        job, "_validate_repo_path", lambda repo_path: accessed.append("repo_path")
+    )
+    monkeypatch.setattr(
+        job, "ensure_redis_ca_bundle", lambda env=None: accessed.append("ca")
+    )
+    monkeypatch.setattr(
+        job,
+        "load_feature_store",
+        lambda repo_path: accessed.append("store")
+        or _FakeStore(["UserStaticView"]),
+    )
+
+    assert job.main([]) == 1
+
+    summary = _json_lines(capsys.readouterr().out)[-1]
+    assert summary["status"] == "failed"
+    assert summary["error_type"] == "runtime_failure"
+    assert accessed == []
+
+
 def test_ensure_ca_bundle_uses_existing_path(tmp_path):
     ca = tmp_path / "ca.pem"
     ca.write_text("pem")
@@ -226,7 +253,15 @@ def fake_store(monkeypatch):
     return store
 
 
-def test_incremental_materialize_all_views(fake_store, capsys):
+@pytest.mark.parametrize("environment", [None, "prod"])
+def test_incremental_materialize_all_views(
+    fake_store, monkeypatch, capsys, environment
+):
+    if environment is None:
+        monkeypatch.delenv("AUTORESEARCH_ENV", raising=False)
+    else:
+        monkeypatch.setenv("AUTORESEARCH_ENV", environment)
+
     assert job.main([]) == 0
 
     summary = _json_lines(capsys.readouterr().out)[-1]
