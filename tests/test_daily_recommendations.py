@@ -25,6 +25,14 @@ from src.serving.service import Reranker
 _GENERATED_AT = datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
 
 
+@pytest.fixture(autouse=True)
+def configured_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """정상 일일 추천 경로에 명시 BigQuery 프로젝트를 제공한다."""
+    from src.pipeline import build_training_dataset as btd
+
+    monkeypatch.setattr(btd, "BIGQUERY_PROJECT", "test-project")
+
+
 def _rows(ranked):
     return to_recommendation_rows(
         "vu_0001",

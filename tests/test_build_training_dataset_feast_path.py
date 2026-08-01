@@ -24,6 +24,12 @@ from src.pipeline.training_provenance import (
 )
 
 
+@pytest.fixture(autouse=True)
+def configured_project(monkeypatch: pytest.MonkeyPatch) -> None:
+    """정상 Feast 조립 경로에 명시 BigQuery 프로젝트를 제공한다."""
+    monkeypatch.setattr(btd, "BIGQUERY_PROJECT", "test-project")
+
+
 def test_main_requires_event_dates() -> None:
     # C2 feast-only: 기간(events_start_date/events_end_date) 없이는 조립할 spine을 못 정해 실패.
     with pytest.raises(ValueError, match="events_start_date/events_end_date"):
