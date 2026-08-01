@@ -33,6 +33,23 @@ from src.features.model_contract import (  # noqa: E402
 )
 
 
+def evaluate_held_out_roc_auc(
+    model: object,
+    dataset: pd.DataFrame,
+    feature_columns: Sequence[str],
+) -> float:
+    """held-out test dataset의 원본 예측 ROC-AUC를 계산한다.
+
+    학습 runtime과 standalone 평가가 같은 feature cast·ROC-AUC 정의를 쓰도록
+    공통화한다. downsampling 보정은 순위를 바꾸지 않으므로 ROC-AUC에는 적용하지
+    않는다.
+    """
+    features = dataset[list(feature_columns)].copy()
+    for column in CATEGORICAL_FEATURE_COLUMNS:
+        features[column] = features[column].astype("category")
+    return float(roc_auc_score(dataset["clicked"], model.predict_proba(features)[:, 1]))
+
+
 def get_project_root():
     """프로젝트 루트 경로 반환."""
     current = os.path.dirname(os.path.abspath(__file__))
@@ -122,7 +139,7 @@ def main(
 
     print("\n[Step 4] 평가 지표 계산...")
     # AUC 계열은 순위 기반이라 보정 전/후 동일하므로 어느 확률로 재도 같다.
-    roc_auc = roc_auc_score(y, y_pred_proba)
+    roc_auc = evaluate_held_out_roc_auc(model, dataset, feature_columns)
     pr_auc = average_precision_score(y, y_pred_proba)
     # LogLoss/Brier는 보정된 확률(원분포 기준)로 잰다 — 보정 검증 근거(결정 5).
     logloss = log_loss(y, y_pred_proba)

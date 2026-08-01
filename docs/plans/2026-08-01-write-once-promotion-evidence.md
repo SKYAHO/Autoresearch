@@ -175,7 +175,7 @@ git commit -m "feat: add write-once promotion evidence receipts"
 - TrainingOutcome.held_out_metric_receipt: HeldOutMetricReceipt | None = None lets the caller observe a successfully published metric without using it as the trust source.
 - evaluate_held_out_roc_auc(model: object, dataset: pd.DataFrame, feature_columns: Sequence[str]) -> float is shared by train and standalone evaluation.
 
-- [ ] **Step 1: Write failing training evidence tests**
+- [x] **Step 1: Write failing training evidence tests**
 
 ~~~python
 def test_main_binds_verified_plan_and_publishes_held_out_metric_inside_run(tmp_path, monkeypatch) -> None:
@@ -208,13 +208,13 @@ def test_main_binds_verified_plan_and_publishes_held_out_metric_inside_run(tmp_p
 
 Add tests that pass only one promotion option, request promotion without require_snapshot, supply a tampered local plan receipt, or make metric publish fail. Assert the first three fail before LGBMModel.fit; metric publish failure leaves no successful TrainingOutcome or automatic-evaluation artifact.
 
-- [ ] **Step 2: Run the targeted tests to verify they fail**
+- [x] **Step 2: Run the targeted tests to verify they fail**
 
 Run: uv run python -m pytest tests/test_pipeline_train.py::test_main_binds_verified_plan_and_publishes_held_out_metric_inside_run -v
 
 Expected: FAIL because train.main has no promotion evidence arguments.
 
-- [ ] **Step 3: Extend provenance without changing legacy parsing**
+- [x] **Step 3: Extend provenance without changing legacy parsing**
 
 ~~~python
 class TrainingSplitManifest(_ImmutableModel):
@@ -242,7 +242,7 @@ def build_split_manifest(
 
 Import only the receipt model; do not make training_provenance.py create network clients. Add a regression assertion that a pre-change TrainingSplitManifest JSON with no new key parses with experiment_plan_receipt is None.
 
-- [ ] **Step 4: Add one shared held-out ROC-AUC helper and use it from training**
+- [x] **Step 4: Add one shared held-out ROC-AUC helper and use it from training**
 
 ~~~python
 def evaluate_held_out_roc_auc(model: object, dataset: pd.DataFrame, feature_columns: Sequence[str]) -> float:
@@ -254,7 +254,7 @@ def evaluate_held_out_roc_auc(model: object, dataset: pd.DataFrame, feature_colu
 
 Have evaluate.main call this helper for ROC-AUC while retaining its PR-AUC, LogLoss, Brier, and calibration behavior. After model.save() and the existing model artifact upload, call the helper on the held-out test_df, build HeldOutMetricEvidence with sha256_file(model_path), the split manifest SHA, and split_manifest.splits["test"].membership_sha256, then publish it through the injected/default store while the mlflow.start_run context is active.
 
-- [ ] **Step 5: Verify required ordering and artifact correlation**
+- [x] **Step 5: Verify required ordering and artifact correlation**
 
 Keep promotion evidence disabled unless both options are present. When enabled, load the local receipt and run store.verify_plan_receipt() before model fit; pass that exact receipt to build_split_manifest. Write the metric receipt atomically, then upload it as `reproducibility/metrics/held_out_metric_receipt.json` for coordinate discovery only. Comparison/evaluation must later re-read GCS rather than trust this MLflow copy. Derive model_artifact_path as `model/<Path(model_path).name>` so comparison can download and hash the same MLflow file.
 
@@ -262,7 +262,7 @@ Run: uv run python -m pytest tests/test_pipeline_train.py -v
 
 Expected: PASS, including existing legacy training tests that do not supply promotion options.
 
-- [ ] **Step 6: Commit the training binding**
+- [x] **Step 6: Commit the training binding**
 
 ~~~bash
 git add src/pipeline/training_provenance.py src/pipeline/train.py src/pipeline/evaluate.py tests/test_pipeline_train.py

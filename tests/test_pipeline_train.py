@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -17,15 +19,115 @@ from src.features.model_contract import (
 )
 from src.pipeline import train
 from src.pipeline.train import collect_categorical_categories
+from src.pipeline.promotion_evidence import (
+    ExperimentPlanReceipt,
+    PromotionEvidenceStore,
+    PromotionEvidenceValidationError,
+    create_experiment_plan,
+)
 from src.pipeline.training_provenance import (
     ProvenanceValidationError,
     RegistryProvenance,
     TrainingSplitManifest,
     build_snapshot_manifest,
+    sha256_file,
     snapshot_manifest_path,
     split_manifest_path,
     write_manifest_atomic,
 )
+
+
+@dataclass
+class _EvidenceStoredObject:
+    """training evidence test용 immutable fake GCS object."""
+
+    payload: bytes
+    generation: int
+    metageneration: int
+    time_created: datetime
+
+
+class _EvidenceBlob:
+    """PromotionEvidenceStore가 쓰는 최소 Blob API fake."""
+
+    def __init__(
+        self,
+        bucket: "_EvidenceBucket",
+        name: str,
+        generation: int | None,
+    ) -> None:
+        self._bucket = bucket
+        self.name = name
+        self._requested_generation = generation
+        self.generation: int | None = generation
+        self.metageneration: int | None = None
+        self.time_created: datetime | None = None
+
+    def upload_from_string(
+        self, payload: bytes, *, content_type: str, if_generation_match: int
+    ) -> None:
+        assert content_type == "application/json"
+        self._bucket.create(self.name, payload, if_generation_match=if_generation_match)
+
+    def reload(self) -> None:
+        stored = self._bucket.get(self.name, self._requested_generation)
+        self.generation = stored.generation
+        self.metageneration = stored.metageneration
+        self.time_created = stored.time_created
+
+    def download_as_bytes(self) -> bytes:
+        return self._bucket.get(self.name, self._requested_generation).payload
+
+
+class _EvidenceBucket:
+    """generation-pinned read와 create-only write를 제공하는 fake bucket."""
+
+    def __init__(self) -> None:
+        self._objects: dict[tuple[str, int], _EvidenceStoredObject] = {}
+
+    def blob(self, name: str, generation: int | None = None) -> _EvidenceBlob:
+        return _EvidenceBlob(self, name, generation)
+
+    def create(self, name: str, payload: bytes, *, if_generation_match: int) -> None:
+        if if_generation_match != 0 or any(key[0] == name for key in self._objects):
+            raise RuntimeError("create-only precondition failed")
+        self._objects[(name, 1)] = _EvidenceStoredObject(
+            payload=payload,
+            generation=1,
+            metageneration=1,
+            time_created=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        )
+
+    def get(self, name: str, generation: int | None) -> _EvidenceStoredObject:
+        requested = 1 if generation is None else generation
+        try:
+            return self._objects[(name, requested)]
+        except KeyError:
+            raise RuntimeError("object generation not found") from None
+
+
+class _EvidenceStorageClient:
+    """단일 evidence bucket을 제공하는 fake storage client."""
+
+    def __init__(self, bucket: _EvidenceBucket) -> None:
+        self._bucket = bucket
+
+    def bucket(self, name: str) -> _EvidenceBucket:
+        assert name == "evidence"
+        return self._bucket
+
+
+class _MetricPublishFailureStore:
+    """metric publish 실패가 학습 성공으로 위장되지 않는지 검증하는 adapter."""
+
+    def __init__(self, delegate: PromotionEvidenceStore) -> None:
+        self._delegate = delegate
+
+    def verify_plan_receipt(self, receipt: ExperimentPlanReceipt):
+        return self._delegate.verify_plan_receipt(receipt)
+
+    def publish_held_out_metric(self, evidence: object) -> object:
+        raise PromotionEvidenceValidationError("promotion evidence publish에 실패했습니다")
 
 
 def _synthetic_ctr_dataset(n: int = 60, seed: int = 7) -> pd.DataFrame:
@@ -648,8 +750,167 @@ def _prepared_verified_dataset(tmp_path, monkeypatch):
     return config_path, data_path, tracking_uri
 
 
+def _evidence_store() -> PromotionEvidenceStore:
+    return PromotionEvidenceStore(
+        "gs://evidence/promotion-evidence",
+        client=_EvidenceStorageClient(_EvidenceBucket()),
+    )
+
+
+def _write_plan_receipt(
+    tmp_path: Path, store: PromotionEvidenceStore
+) -> tuple[Path, ExperimentPlanReceipt]:
+    plan = create_experiment_plan(
+        hypothesis_id="issue-466-h1",
+        control_id="control-revision",
+        candidate_ids=("candidate-revision",),
+        created_at=datetime(2026, 7, 31, tzinfo=timezone.utc),
+    )
+    receipt = store.publish_plan(plan)
+    path = tmp_path / "experiment_plan_receipt.json"
+    write_manifest_atomic(receipt, path)
+    return path, receipt
+
+
+def _promotion_train_kwargs(tmp_path: Path, receipt_path: Path) -> dict[str, object]:
+    return {
+        "model_output": str(tmp_path / "model.joblib"),
+        "test_set_output": str(tmp_path / "test_set.csv"),
+        "feature_columns_output": str(tmp_path / "features.json"),
+        "categorical_columns_output": str(tmp_path / "categories.json"),
+        "require_snapshot": True,
+        "defer_registration": True,
+        "experiment_plan_receipt_path": str(receipt_path),
+        "promotion_evidence_root": "gs://evidence/promotion-evidence",
+    }
+
+
 def _artifact_paths(client: MlflowClient, run_id: str, artifact_path: str) -> set[str]:
     return {entry.path for entry in client.list_artifacts(run_id, artifact_path)}
+
+
+def test_main_binds_verified_plan_and_publishes_held_out_metric_inside_run(
+    tmp_path, monkeypatch
+) -> None:
+    config_path, data_path, tracking_uri = _prepared_verified_dataset(tmp_path, monkeypatch)
+    store = _evidence_store()
+    receipt_path, receipt = _write_plan_receipt(tmp_path, store)
+
+    outcome = train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        promotion_evidence_store=store,
+        **_promotion_train_kwargs(tmp_path, receipt_path),
+    )
+
+    split = TrainingSplitManifest.model_validate_json(
+        split_manifest_path(tmp_path / "test_set.csv").read_text(encoding="utf-8")
+    )
+    assert split.experiment_plan_receipt == receipt
+    assert outcome.held_out_metric_receipt is not None
+    metric = store.verify_held_out_metric_receipt(outcome.held_out_metric_receipt)
+    assert metric.run_id == outcome.run_id
+    assert metric.dataset_split == "test"
+    assert metric.model_artifact_sha256 == sha256_file(tmp_path / "model.joblib")
+    assert _artifact_paths(
+        MlflowClient(tracking_uri=tracking_uri),
+        outcome.run_id,
+        "reproducibility/metrics",
+    ) == {"reproducibility/metrics/held_out_metric_receipt.json"}
+
+
+@pytest.mark.parametrize(
+    "promotion_options",
+    [
+        {"experiment_plan_receipt_path": "plan.json"},
+        {"promotion_evidence_root": "gs://evidence/promotion-evidence"},
+    ],
+)
+def test_main_rejects_incomplete_promotion_options_before_model_fit(
+    tmp_path, monkeypatch, promotion_options: dict[str, str]
+) -> None:
+    config_path, data_path, _ = _prepared_verified_dataset(tmp_path, monkeypatch)
+    fit = MagicMock()
+    monkeypatch.setattr(train.LGBMModel, "fit", fit)
+
+    with pytest.raises(ValueError, match="함께"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            require_snapshot=True,
+            defer_registration=True,
+            **promotion_options,
+        )
+
+    fit.assert_not_called()
+
+
+def test_main_rejects_promotion_evidence_without_verified_snapshot_before_model_fit(
+    tmp_path, monkeypatch
+) -> None:
+    config_path, data_path, _ = _prepared_dataset(tmp_path, monkeypatch)
+    store = _evidence_store()
+    receipt_path, _ = _write_plan_receipt(tmp_path, store)
+    fit = MagicMock()
+    monkeypatch.setattr(train.LGBMModel, "fit", fit)
+    promotion_kwargs = _promotion_train_kwargs(tmp_path, receipt_path)
+    promotion_kwargs["require_snapshot"] = False
+
+    with pytest.raises(ValueError, match="require_snapshot"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            promotion_evidence_store=store,
+            **promotion_kwargs,
+        )
+
+    fit.assert_not_called()
+
+
+def test_main_rejects_tampered_local_plan_receipt_before_model_fit(
+    tmp_path, monkeypatch
+) -> None:
+    config_path, data_path, _ = _prepared_verified_dataset(tmp_path, monkeypatch)
+    store = _evidence_store()
+    receipt_path, receipt = _write_plan_receipt(tmp_path, store)
+    tampered = receipt.model_copy(
+        update={"object": receipt.object.model_copy(update={"sha256": "f" * 64})}
+    )
+    write_manifest_atomic(tampered, receipt_path)
+    fit = MagicMock()
+    monkeypatch.setattr(train.LGBMModel, "fit", fit)
+
+    with pytest.raises(PromotionEvidenceValidationError, match="sha256"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            promotion_evidence_store=store,
+            **_promotion_train_kwargs(tmp_path, receipt_path),
+        )
+
+    fit.assert_not_called()
+
+
+def test_main_fails_when_held_out_metric_publish_fails_without_metric_receipt_artifact(
+    tmp_path, monkeypatch
+) -> None:
+    config_path, data_path, tracking_uri = _prepared_verified_dataset(tmp_path, monkeypatch)
+    store = _evidence_store()
+    receipt_path, _ = _write_plan_receipt(tmp_path, store)
+
+    with pytest.raises(PromotionEvidenceValidationError, match="publish"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            promotion_evidence_store=_MetricPublishFailureStore(store),
+            **_promotion_train_kwargs(tmp_path, receipt_path),
+        )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    experiment = client.get_experiment_by_name("ctr-model-training")
+    assert experiment is not None
+    [failed_run] = client.search_runs([experiment.experiment_id])
+    assert _artifact_paths(client, failed_run.info.run_id, "reproducibility/metrics") == set()
 
 
 def test_main_logs_verified_snapshot_and_split_artifacts(tmp_path, monkeypatch) -> None:

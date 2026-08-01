@@ -79,9 +79,18 @@ from src.tracking.logger import (  # noqa: E402
     log_parameters,
 )
 from src.tracking.registry import register_model  # noqa: E402
+from src.pipeline.evaluate import evaluate_held_out_roc_auc  # noqa: E402
+from src.pipeline.promotion_evidence import (  # noqa: E402
+    ExperimentPlanReceipt,
+    HeldOutMetricEvidence,
+    HeldOutMetricReceipt,
+    PromotionEvidenceStore,
+    PromotionEvidenceValidationError,
+)
 from src.pipeline.training_provenance import (  # noqa: E402
     ProvenanceValidationError,
     TrainingSnapshotManifest,
+    TrainingSplitManifest,
     build_split_manifest,
     load_training_snapshot_manifest,
     resolve_training_seeds,
@@ -129,6 +138,9 @@ class TrainingOutcome:
     # 시드 스윕이 시드별로 모아 평균·편차를 내는 지표(#407). 여기서 돌려주지 않으면
     # 반복 실행이 MLflow run을 다시 조회해야 한다.
     val_roc_auc: float = float("nan")
+    # write-once GCS receipt는 다음 comparison/evaluation 단계가 재검증할 좌표다.
+    # None은 기존 학습 호출과의 하위호환을 의미한다.
+    held_out_metric_receipt: HeldOutMetricReceipt | None = None
 
 
 def require_binary_labels(labels: pd.Series, *, stage: str) -> tuple[int, int]:
@@ -346,6 +358,27 @@ def _log_reproducibility_artifacts(
         )
 
 
+def _load_experiment_plan_receipt(path: Path) -> ExperimentPlanReceipt:
+    """로컬 전달 receipt를 strict 계약으로 읽되 raw body를 오류에 싣지 않는다."""
+    try:
+        return ExperimentPlanReceipt.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise PromotionEvidenceValidationError(
+            "experiment plan receipt를 읽거나 검증할 수 없습니다"
+        ) from None
+
+
+def _log_held_out_metric_receipt(receipt: HeldOutMetricReceipt) -> None:
+    """metric receipt를 MLflow 좌표 탐색용 복사본으로만 기록한다."""
+    with TemporaryDirectory(prefix="held_out_metric_receipt_") as temporary_dir:
+        receipt_path = Path(temporary_dir) / "held_out_metric_receipt.json"
+        write_manifest_atomic(receipt, receipt_path)
+        log_artifact(
+            local_path=str(receipt_path),
+            artifact_path="reproducibility/metrics",
+        )
+
+
 def main(
     config_path: str = None,
     data_path: str = None,
@@ -364,6 +397,9 @@ def main(
     extra_features: Optional[Sequence[str]] = None,
     experiment: Optional[str] = None,
     require_snapshot: bool = False,
+    experiment_plan_receipt_path: str | None = None,
+    promotion_evidence_root: str | None = None,
+    promotion_evidence_store: PromotionEvidenceStore | None = None,
 ) -> TrainingOutcome:
     """LightGBM 모델을 학습하고 MLflow에 기록한다.
 
@@ -376,6 +412,31 @@ def main(
     Returns:
         학습 결과(TrainingOutcome).
     """
+    promotion_evidence_enabled = experiment_plan_receipt_path is not None
+    if promotion_evidence_enabled != (promotion_evidence_root is not None):
+        raise ValueError(
+            "experiment_plan_receipt_path와 promotion_evidence_root는 함께 지정해야 합니다"
+        )
+    if promotion_evidence_store is not None and not promotion_evidence_enabled:
+        raise ValueError(
+            "promotion_evidence_store는 promotion evidence 옵션과 함께만 지정할 수 있습니다"
+        )
+    if promotion_evidence_enabled and not require_snapshot:
+        raise ValueError(
+            "promotion evidence를 사용하려면 require_snapshot=True가 필요합니다"
+        )
+
+    experiment_plan_receipt: ExperimentPlanReceipt | None = None
+    evidence_store: PromotionEvidenceStore | None = None
+    if promotion_evidence_enabled:
+        experiment_plan_receipt = _load_experiment_plan_receipt(
+            Path(experiment_plan_receipt_path)
+        )
+        evidence_store = promotion_evidence_store or PromotionEvidenceStore(
+            promotion_evidence_root
+        )
+        evidence_store.verify_plan_receipt(experiment_plan_receipt)
+
     project_root = get_project_root()
     if config_path is None:
         config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
@@ -536,6 +597,7 @@ def main(
 
         split_manifest_path_local: Path | None = None
         split_manifest_sha256: str | None = None
+        split_manifest: TrainingSplitManifest | None = None
         if snapshot_manifest is not None:
             split_manifest_path_local = split_manifest_path(Path(test_set_path))
             split_manifest = build_split_manifest(
@@ -551,6 +613,7 @@ def main(
                     "test": test_positions.tolist(),
                 },
                 feature_columns=feature_columns,
+                experiment_plan_receipt=experiment_plan_receipt,
             )
             write_manifest_atomic(split_manifest, split_manifest_path_local)
             split_manifest_sha256 = sha256_file(split_manifest_path_local)
@@ -722,6 +785,34 @@ def main(
         log_artifact(local_path=feature_columns_path, artifact_path="features")
         log_artifact(local_path=categorical_columns_path, artifact_path="features")
 
+        held_out_metric_receipt: HeldOutMetricReceipt | None = None
+        if promotion_evidence_enabled:
+            if (
+                evidence_store is None
+                or experiment_plan_receipt is None
+                or split_manifest is None
+                or split_manifest_sha256 is None
+            ):
+                raise RuntimeError("promotion evidence 학습 상태가 불완전합니다")
+            held_out_roc_auc = evaluate_held_out_roc_auc(
+                model, test_df, feature_columns
+            )
+            log_metrics({"held_out_roc_auc": held_out_roc_auc})
+            held_out_metric_receipt = evidence_store.publish_held_out_metric(
+                HeldOutMetricEvidence(
+                    run_id=run.info.run_id,
+                    plan_receipt=experiment_plan_receipt,
+                    value=held_out_roc_auc,
+                    split_manifest_sha256=split_manifest_sha256,
+                    test_membership_sha256=split_manifest.splits[
+                        "test"
+                    ].membership_sha256,
+                    model_artifact_path=f"model/{Path(model_path).name}",
+                    model_artifact_sha256=sha256_file(Path(model_path)),
+                )
+            )
+            _log_held_out_metric_receipt(held_out_metric_receipt)
+
         # [Step 8b] 모델 바이너리 ONNX 전환(#302/#179). joblib 저장·로깅 직후 같은 모델을
         # ONNX로 변환해 model_onnx/로 로깅한다 — 서빙(model_loader)이 이 아티팩트가 있으면
         # onnxruntime로 추론해 pickle 역직렬화 위험을 없앤다. 입력은 feature_columns 순서의
@@ -825,6 +916,7 @@ def main(
         registered_version=registered_version,
         pending_registration=pending_registration,
         val_roc_auc=val_roc_auc,
+        held_out_metric_receipt=held_out_metric_receipt,
     )
 
 

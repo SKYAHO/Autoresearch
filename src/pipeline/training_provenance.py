@@ -26,6 +26,8 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, ValidationError
 
+from src.pipeline.promotion_evidence import ExperimentPlanReceipt
+
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
@@ -135,6 +137,9 @@ class TrainingSplitManifest(_ImmutableModel):
     splits: dict[str, SplitMembership]
     feature_columns_sha256: str = Field(pattern=SHA256_PATTERN)
     feature_columns: list[str]
+    # 기존 v1 split manifest JSON은 이 필드가 없으므로 None으로 읽는다. receipt가
+    # 있는 새 run만 자동 승격 evidence 경로에서 사용할 수 있다.
+    experiment_plan_receipt: ExperimentPlanReceipt | None = None
 
 
 class TrainingComparisonManifest(_ImmutableModel):
@@ -329,6 +334,7 @@ def build_split_manifest(
     val_size: float,
     split_positions: Mapping[str, Sequence[int]],
     feature_columns: Sequence[str],
+    experiment_plan_receipt: ExperimentPlanReceipt | None = None,
 ) -> TrainingSplitManifest:
     """source row position과 feature 순서로 split manifest를 만든다."""
     expected_names = {"train", "validation", "test"}
@@ -353,4 +359,5 @@ def build_split_manifest(
         splits=splits,
         feature_columns_sha256=feature_columns_sha256(feature_columns),
         feature_columns=list(feature_columns),
+        experiment_plan_receipt=experiment_plan_receipt,
     )
