@@ -36,8 +36,8 @@ _ALLOWED_TABLES: Final[frozenset[str]] = frozenset(
         "user_category_similarity",
     }
 )
-_PROJECT_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,61}[A-Za-z0-9]$")
-_DATASET_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,1023}$")
+_PROJECT_IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+_DATASET_IDENTIFIER = re.compile(r"^[A-Za-z0-9_]{1,1024}$")
 
 
 @dataclass(frozen=True, slots=True)

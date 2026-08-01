@@ -1,9 +1,13 @@
 """리랭킹 부하테스트 fixture의 결정성 및 BigQuery DML 안전성 계약을 검증한다."""
 
+from __future__ import annotations
+
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 
+from scripts import provision_rerank_loadtest_fixture as provisioner
 from autoresearch.loadtest.rerank_fixture import (
     FIXTURE_USER_ID,
     FIXTURE_VIDEO_IDS,
@@ -11,6 +15,27 @@ from autoresearch.loadtest.rerank_fixture import (
     targeted_delete_sql,
     targeted_insert_sql,
 )
+
+
+class _FakeQueryJob:
+    def __init__(self, sql: str) -> None:
+        self._sql = sql
+        self.num_dml_affected_rows = 1
+
+    def result(self) -> list[SimpleNamespace] | _FakeQueryJob:
+        if self._sql.startswith("SELECT"):
+            return [SimpleNamespace(row_count=3)]
+        return self
+
+
+class _FakeBigQueryClient:
+    def __init__(self, project: str) -> None:
+        self.project = project
+        self.calls: list[tuple[str, object]] = []
+
+    def query(self, sql: str, job_config: object = None) -> _FakeQueryJob:
+        self.calls.append((sql, job_config))
+        return _FakeQueryJob(sql)
 
 
 def test_fixture_has_exact_row_counts() -> None:
@@ -109,3 +134,53 @@ def test_dml_rejects_invalid_identifier(project: str, dataset: str) -> None:
         targeted_delete_sql(project, dataset, table)
     with pytest.raises(ValueError):
         targeted_insert_sql(project, dataset, table)
+
+
+@pytest.mark.parametrize("project", ["Project-1", "short", "-project-1", "project-"])
+def test_dml_rejects_non_gcp_project_identifier(project: str) -> None:
+    """GCP project ID가 아닌 식별자는 BigQuery DML에 쓸 수 없다."""
+    table = build_fixture(datetime(2026, 8, 1, tzinfo=UTC))[0]
+
+    with pytest.raises(ValueError):
+        targeted_delete_sql(project, "feast_offline_store", table)
+
+
+def test_dml_accepts_bigquery_dataset_identifier_starting_with_number() -> None:
+    """BigQuery dataset ID는 숫자로 시작해도 문자·숫자·밑줄만 쓰면 유효하다."""
+    table = build_fixture(datetime(2026, 8, 1, tzinfo=UTC))[0]
+
+    sql, _ = targeted_delete_sql("project-1", "1_loadtest", table)
+
+    assert "`project-1.1_loadtest.user_static_feature`" in sql
+
+
+def test_provisioner_default_dry_run_executes_only_count_selects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """기본 CLI는 fixture 행 수만 읽고 어떠한 DML도 실행하지 않는다."""
+    client = _FakeBigQueryClient("project-1")
+    monkeypatch.setattr(provisioner.bigquery, "Client", lambda project: client)
+
+    assert provisioner.main(["--project", "project-1"]) == 0
+
+    assert len(client.calls) == 4
+    assert all(sql.startswith("SELECT COUNT(*) AS row_count") for sql, _ in client.calls)
+    assert all("DELETE FROM" not in sql and "INSERT INTO" not in sql for sql, _ in client.calls)
+    assert all(config is not None for _, config in client.calls)
+
+
+def test_provisioner_apply_executes_only_targeted_delete_and_insert(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """명시적 --apply는 네 fixture table의 DELETE/INSERT만 실행한다."""
+    client = _FakeBigQueryClient("project-1")
+    monkeypatch.setattr(provisioner.bigquery, "Client", lambda project: client)
+
+    assert provisioner.main(["--project", "project-1", "--apply"]) == 0
+
+    assert len(client.calls) == 8
+    delete_sqls = [sql for sql, _ in client.calls if sql.startswith("DELETE FROM")]
+    insert_sqls = [sql for sql, _ in client.calls if sql.startswith("INSERT INTO")]
+    assert len(delete_sqls) == len(insert_sqls) == 4
+    assert all("WHERE user_id = @user_id" in sql or "WHERE video_id IN UNNEST(@video_ids)" in sql for sql in delete_sqls)
+    assert all("WRITE_TRUNCATE" not in sql and "CREATE OR REPLACE" not in sql for sql, _ in client.calls)
