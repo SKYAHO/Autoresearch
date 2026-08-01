@@ -65,10 +65,10 @@ Alembic, PostgreSQL, pytest.
 - Test: `tests/test_experiment_models.py`
 - Test: `tests/test_experiment_transition_service.py`
 
-- [ ] 허용 전이 7개와 거부 전이의 실패 테스트를 작성한다.
-- [ ] ORM 모델과 순수 `validate_transition()`을 최소 구현한다.
-- [ ] ORM과 migration의 UUID/default/index 정합성을 검증한다.
-- [ ] 관련 테스트와 lint를 통과하고 Task 커밋을 만든다.
+- [x] 허용 전이 7개와 거부 전이의 실패 테스트를 작성한다.
+- [x] ORM 모델과 순수 `validate_transition()`을 최소 구현한다.
+- [x] ORM과 migration의 UUID/default/index 정합성을 검증한다.
+- [x] 관련 테스트와 lint를 통과하고 Task 커밋을 만든다.
 
 ### Task 4: 실험 생성과 조회
 
@@ -141,6 +141,8 @@ Alembic, PostgreSQL, pytest.
 - Modify: `docs/README.md`
 
 - [ ] API 사용법과 spec 링크를 문서화한다.
+- [ ] PostgreSQL 15 컨테이너에서 Alembic `upgrade head`와 `downgrade base`를 실행하고
+      `gen_random_uuid()`가 extension 추가 없이 동작하는지 확인한다.
 - [ ] `uv run python -m pytest`를 실행한다.
 - [ ] `uv run --no-sync ruff check agent_orchestration autoresearch tests tools`를 실행한다.
 - [ ] `git diff --check`를 실행한다.

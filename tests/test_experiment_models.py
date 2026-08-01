@@ -12,8 +12,15 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from sqlalchemy import CheckConstraint, UniqueConstraint
 
 from agent_orchestration.app.database import create_database_engine
+from agent_orchestration.app.experiments.models import (
+    Experiment,
+    ExperimentEvent,
+    ExperimentLog,
+    ExperimentMetadata,
+)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -50,3 +57,54 @@ def test_initial_migration_offline_sql_contains_workbench_contract() -> None:
     assert "CONSTRAINT uq_experiment_events_idempotency" in sql
     assert "CONSTRAINT uq_experiment_logs_idempotency" in sql
     assert "CONSTRAINT ck_experiment_status_valid" in sql
+
+
+def test_orm_primary_keys_use_the_migration_server_uuid_default() -> None:
+    """ORM만 uuid4를 생성해 migration의 server default와 갈라지는 회귀를 잡는다."""
+    for model in (Experiment, ExperimentEvent, ExperimentLog, ExperimentMetadata):
+        id_column = model.__table__.c.id
+        assert id_column.default is None
+        assert str(id_column.server_default.arg) == "gen_random_uuid()"
+
+
+def test_orm_indexes_match_the_initial_migration() -> None:
+    """ORM의 index=True가 migration에 없는 중복 단일 인덱스를 만드는 회귀를 잡는다."""
+    assert {index.name for index in Experiment.__table__.indexes} == {
+        "ix_experiments_status"
+    }
+    assert {index.name for index in ExperimentEvent.__table__.indexes} == {
+        "ix_events_experiment_created"
+    }
+    assert {index.name for index in ExperimentLog.__table__.indexes} == {
+        "ix_logs_experiment_created"
+    }
+    assert ExperimentMetadata.__table__.indexes == set()
+
+
+def test_orm_constraints_match_the_initial_migration() -> None:
+    """상태 check와 두 멱등성·metadata unique 제약이 ORM에서 누락되는 회귀를 잡는다."""
+    experiment_checks = {
+        constraint.name
+        for constraint in Experiment.__table__.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert experiment_checks == {"ck_experiment_status_valid"}
+
+    for model, constraint_name in (
+        (ExperimentEvent, "uq_experiment_events_idempotency"),
+        (ExperimentLog, "uq_experiment_logs_idempotency"),
+        (ExperimentMetadata, "uq_experiment_metadata_key"),
+    ):
+        unique_names = {
+            constraint.name
+            for constraint in model.__table__.constraints
+            if isinstance(constraint, UniqueConstraint)
+        }
+        assert unique_names == {constraint_name}
+
+
+def test_orm_foreign_keys_keep_database_cascade_delete() -> None:
+    """부모 실험 삭제 시 자식 row가 남는 FK 매핑 회귀를 잡는다."""
+    for model in (ExperimentEvent, ExperimentLog, ExperimentMetadata):
+        foreign_key = next(iter(model.__table__.c.experiment_id.foreign_keys))
+        assert foreign_key.ondelete == "CASCADE"
