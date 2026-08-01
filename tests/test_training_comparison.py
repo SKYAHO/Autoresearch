@@ -25,6 +25,7 @@ from src.pipeline.promotion_evidence import (
 from src.pipeline.training_provenance import (
     RegistryProvenance,
     TrainingSeeds,
+    TrainingSplitManifest,
     build_snapshot_manifest,
     build_split_manifest,
     sha256_file,
@@ -477,6 +478,23 @@ def _overwrite_metric_receipt_artifact(
     )
 
 
+def _overwrite_split_plan_receipt(
+    tmp_path: Path, *, run_id: str, receipt: ExperimentPlanReceipt
+) -> None:
+    original = TrainingSplitManifest.model_validate_json(
+        (tmp_path / run_id / "split_manifest.json").read_text(encoding="utf-8")
+    )
+    split_path = tmp_path / "split_manifest.json"
+    write_manifest_atomic(
+        original.model_copy(update={"experiment_plan_receipt": receipt}), split_path
+    )
+    MlflowClient().log_artifact(
+        run_id,
+        str(split_path),
+        artifact_path="reproducibility/split",
+    )
+
+
 def test_comparison_rejects_gcs_metric_body_changed_after_receipt_creation(
     tmp_path, monkeypatch
 ) -> None:
@@ -663,6 +681,109 @@ def test_comparison_rejects_metric_created_outside_its_run_time_range(
         snapshot_path=snapshot_path,
         plan_receipt=plan_receipt,
         store=store,
+    )
+    output = tmp_path / "comparison.json"
+
+    with pytest.raises(ComparisonValidationError, match="범위 밖"):
+        verify_training_comparison(
+            baseline_run, challenger_run, output, promotion_evidence_store=store
+        )
+
+    _assert_no_comparison_publication(output, challenger_run=challenger_run)
+
+
+def test_comparison_rejects_plan_created_999_microseconds_after_run_start(
+    tmp_path, monkeypatch
+) -> None:
+    dataset_path, snapshot_path, experiment_id = _comparison_fixture(tmp_path, monkeypatch)
+    store, bucket = _evidence_store()
+    original_plan_receipt = _plan_receipt(store, candidate_id="candidate-revision")
+    baseline_run, _ = _log_verified_run_with_promotion_evidence(
+        tmp_path,
+        experiment_id=experiment_id,
+        dataset_path=dataset_path,
+        snapshot_path=snapshot_path,
+        plan_receipt=original_plan_receipt,
+        store=store,
+    )
+    challenger_run, _ = _log_verified_run_with_promotion_evidence(
+        tmp_path,
+        experiment_id=experiment_id,
+        dataset_path=dataset_path,
+        snapshot_path=snapshot_path,
+        plan_receipt=original_plan_receipt,
+        store=store,
+    )
+    run_start = datetime.fromtimestamp(
+        MlflowClient().get_run(baseline_run).info.start_time / 1000,
+        tz=timezone.utc,
+    )
+    delayed_plan_receipt = original_plan_receipt.model_copy(
+        update={
+            "object": original_plan_receipt.object.model_copy(
+                update={"time_created": run_start + timedelta(microseconds=999)}
+            )
+        }
+    )
+    bucket.replace_time_created(
+        original_plan_receipt.object.uri.removeprefix("gs://evidence/"),
+        delayed_plan_receipt.object.time_created,
+    )
+    _overwrite_split_plan_receipt(
+        tmp_path, run_id=baseline_run, receipt=delayed_plan_receipt
+    )
+    _overwrite_split_plan_receipt(
+        tmp_path, run_id=challenger_run, receipt=delayed_plan_receipt
+    )
+    output = tmp_path / "comparison.json"
+
+    with pytest.raises(ComparisonValidationError, match="시작 뒤"):
+        verify_training_comparison(
+            baseline_run, challenger_run, output, promotion_evidence_store=store
+        )
+
+    _assert_no_comparison_publication(output, challenger_run=challenger_run)
+
+
+def test_comparison_rejects_metric_created_999_microseconds_after_run_end(
+    tmp_path, monkeypatch
+) -> None:
+    dataset_path, snapshot_path, experiment_id = _comparison_fixture(tmp_path, monkeypatch)
+    store, bucket = _evidence_store()
+    plan_receipt = _plan_receipt(store, candidate_id="candidate-revision")
+    baseline_run, baseline_metric = _log_verified_run_with_promotion_evidence(
+        tmp_path,
+        experiment_id=experiment_id,
+        dataset_path=dataset_path,
+        snapshot_path=snapshot_path,
+        plan_receipt=plan_receipt,
+        store=store,
+    )
+    challenger_run, _ = _log_verified_run_with_promotion_evidence(
+        tmp_path,
+        experiment_id=experiment_id,
+        dataset_path=dataset_path,
+        snapshot_path=snapshot_path,
+        plan_receipt=plan_receipt,
+        store=store,
+    )
+    run_end = datetime.fromtimestamp(
+        MlflowClient().get_run(baseline_run).info.end_time / 1000,
+        tz=timezone.utc,
+    )
+    delayed_metric = baseline_metric.model_copy(
+        update={
+            "object": baseline_metric.object.model_copy(
+                update={"time_created": run_end + timedelta(microseconds=999)}
+            )
+        }
+    )
+    bucket.replace_time_created(
+        baseline_metric.object.uri.removeprefix("gs://evidence/"),
+        delayed_metric.object.time_created,
+    )
+    _overwrite_metric_receipt_artifact(
+        tmp_path, run_id=baseline_run, receipt=delayed_metric
     )
     output = tmp_path / "comparison.json"
 

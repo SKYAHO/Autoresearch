@@ -313,16 +313,11 @@ def _mlflow_time(value: int | None, *, label: str, run_id: str) -> datetime:
     return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
 
 
-def _millisecond_precision(value: datetime) -> datetime:
-    """MLflow server timestamp의 millisecond 정밀도에 맞춰 비교한다."""
-    return value.replace(microsecond=(value.microsecond // 1000) * 1000)
-
-
 def _assert_plan_precedes_run(
     receipt: object, *, run: object, run_id: str
 ) -> None:
     """GCS server plan 시각이 MLflow run 시작보다 늦지 않은지 확인한다."""
-    plan_time = _millisecond_precision(receipt.object.time_created)
+    plan_time = receipt.object.time_created
     run_start = _mlflow_time(run.info.start_time, label="run start", run_id=run_id)
     if plan_time > run_start:
         raise ComparisonValidationError(
@@ -355,7 +350,7 @@ def _assert_metric_binding(
         )
     run_start = _mlflow_time(run.info.start_time, label="run start", run_id=run_id)
     run_end = _mlflow_time(run.info.end_time, label="run end", run_id=run_id)
-    metric_time = _millisecond_precision(metric_receipt.object.time_created)
+    metric_time = metric_receipt.object.time_created
     if not run_start <= metric_time <= run_end:
         raise ComparisonValidationError(
             f"metric receipt 시간이 run {run_id} 범위 밖입니다"
