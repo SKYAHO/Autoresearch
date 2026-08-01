@@ -251,6 +251,13 @@ def test_bigquery_loaders_require_project_before_client_import(monkeypatch, load
     """프로젝트가 없으면 각 loader는 BigQuery import/client 생성 전에 중단한다."""
     monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
 
+    fake_bigquery = MagicMock()
+    fake_bigquery.Client.side_effect = AssertionError(
+        "프로젝트 확인 전에 BigQuery 클라이언트를 만들면 안 됩니다"
+    )
+    monkeypatch.setitem(sys.modules, "google.cloud.bigquery", fake_bigquery)
+    monkeypatch.setitem(sys.modules, "google.cloud", MagicMock(bigquery=fake_bigquery))
+
     with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
         loader(*args)
 

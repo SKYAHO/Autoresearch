@@ -182,6 +182,16 @@ def test_main_requires_explicit_project_before_bigquery_import(monkeypatch, caps
     """환경 기본값이 없으면 BigQuery import보다 먼저 argparse 오류로 중단한다."""
     monkeypatch.setattr(bsf, "load_dotenv", lambda: None)
     monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    fake_bigquery = types.ModuleType("google.cloud.bigquery")
+
+    def _should_not_create_client(*args, **kwargs) -> object:
+        raise AssertionError("프로젝트 확인 전에 BigQuery 클라이언트를 만들면 안 됩니다")
+
+    fake_bigquery.Client = _should_not_create_client
+    fake_cloud = types.ModuleType("google.cloud")
+    fake_cloud.bigquery = fake_bigquery
+    monkeypatch.setitem(sys.modules, "google.cloud.bigquery", fake_bigquery)
+    monkeypatch.setitem(sys.modules, "google.cloud", fake_cloud)
 
     with pytest.raises(SystemExit) as excinfo:
         bsf.main(["--bucket", "bucket"])
