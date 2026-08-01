@@ -50,11 +50,11 @@ Alembic, PostgreSQL, pytest.
 - Modify: `uv.lock`
 - Test: `tests/test_experiment_models.py`
 
-- [ ] migration/ORM 정합성 실패 테스트를 먼저 작성하고 실패 원인을 확인한다.
-- [ ] SQLAlchemy·Alembic 직접 의존성을 추가하고 lock을 갱신한다.
-- [ ] 동기 engine, session factory와 요청 단위 Session dependency를 구현한다.
-- [ ] 네 테이블, FK cascade, check와 unique constraint를 migration에 구현한다.
-- [ ] migration 및 dependency 검증을 통과하고 Task 커밋을 만든다.
+- [x] migration/ORM 정합성 실패 테스트를 먼저 작성하고 실패 원인을 확인한다.
+- [x] SQLAlchemy·Alembic 직접 의존성을 추가하고 lock을 갱신한다.
+- [x] 동기 engine, session factory와 요청 단위 Session dependency를 구현한다.
+- [x] 네 테이블, FK cascade, check와 unique constraint를 migration에 구현한다.
+- [x] offline migration 및 dependency 검증을 통과하고 Task 커밋을 만든다.
 
 ### Task 3: ORM 모델과 상태 전이 검증
 
