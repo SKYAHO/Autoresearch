@@ -232,6 +232,7 @@ def test_manual_workflow_keeps_load_and_snapshot_identities_separate() -> None:
     assert "RERANK_PROMETHEUS_SNAPSHOT_READER_SA" in text
     assert text.count("google-github-actions/auth@v2") == 2
     assert text.count("google-github-actions/get-gke-credentials@v2") == 2
+    assert text.count("project_id: ${{ vars.GCP_PROJECT_ID }}") == 2
     assert "k6-summary-" in text and "metadata-" in text
     assert "creation_timestamp" in text and "completion_timestamp" in text
     assert "PROMETHEUS_SERVICE_PROXY:" in text
