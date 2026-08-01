@@ -26,7 +26,7 @@ python -m autoresearch.jobs.feature_store_build [options]
 
 | 인자 | 기본값 | 설명 |
 | --- | --- | --- |
-| `--project` | `CTR_TRAINING_BQ_PROJECT` 또는 `ar-infra-501607` | GCP 프로젝트 |
+| `--project` | `CTR_TRAINING_BQ_PROJECT` (필수) | GCP 프로젝트 |
 | `--dataset` | `CTR_TRAINING_BQ_DATASET` 또는 `feast_offline_store` | feature 계층 dataset |
 | `--raw-dataset` | `CTR_TRAINING_BQ_RAW_DATASET` 또는 `data_lake_raw` | raw 계층 dataset |
 | `--location` | `CTR_TRAINING_BQ_LOCATION` 또는 `asia-northeast3` | BigQuery job location |
@@ -37,6 +37,9 @@ python -m autoresearch.jobs.feature_store_build [options]
 exit code는 batch-contract-v1을 따른다: `0` 성공, `2` 인자 오류, `1` 실행 실패.
 stdout 마지막 줄은 `job_summary` JSON 한 줄이며 `job=feature_store_build`,
 `mode`(`incremental` 또는 `dry_run`), `partition_date`, `tables`를 포함한다.
+
+`CTR_TRAINING_BQ_PROJECT`와 `--project`는 둘 다 생략할 수 없다. `--project`를
+명시하지 않으면 `CTR_TRAINING_BQ_PROJECT`를 반드시 설정해야 한다.
 
 `--partition-date`는 `YYYY-MM-DD`만 받는다. 이 값이 SQL 리터럴로 전개되므로 형식
 검증이 곧 주입 방어다. 형식 위반과 인자 누락은 모두 exit 2다.

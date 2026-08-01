@@ -96,13 +96,16 @@ Terraform (`Autoresearch-infra`) 이 보장하고 스키마는 적재 스크립�
 
 | 환경 변수 | 기본값 | 용도 |
 | --- | --- | --- |
-| `CTR_TRAINING_BQ_PROJECT` | `ar-infra-501607` | GCP 프로젝트 |
+| `CTR_TRAINING_BQ_PROJECT` | 없음 (필수 설정) | GCP 프로젝트 |
 | `CTR_TRAINING_BQ_RAW_DATASET` | `data_lake_raw` | raw 테이블 dataset |
 | `CTR_TRAINING_BQ_DATASET` | `feast_offline_store` | feature/서빙 테이블 dataset |
 
 구현은 `src/pipeline/build_training_dataset.py` 의 `raw_table_id()` 와
 `feature_table_id()` 두 헬퍼로 단일화되어 있습니다. 새 BigQuery 조회를 추가할
 때 dataset 문자열을 직접 조립하지 말고 이 헬퍼를 사용합니다.
+
+`CTR_TRAINING_BQ_PROJECT`에는 기본값이 없습니다. CTR 학습·추천 배치를 실행하기
+전에 반드시 환경 변수로 프로젝트 ID를 설정해야 합니다.
 
 - raw 테이블 조회: `load_videos_from_bigquery()`,
   `load_events_from_bigquery()`, `daily_recommendations.run_batch()` 의 후보
