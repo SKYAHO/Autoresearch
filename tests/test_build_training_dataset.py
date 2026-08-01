@@ -1,3 +1,4 @@
+import builtins
 import os
 import sys
 from pathlib import Path
@@ -251,12 +252,14 @@ def test_bigquery_loaders_require_project_before_client_import(monkeypatch, load
     """프로젝트가 없으면 각 loader는 BigQuery import/client 생성 전에 중단한다."""
     monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
 
-    fake_bigquery = MagicMock()
-    fake_bigquery.Client.side_effect = AssertionError(
-        "프로젝트 확인 전에 BigQuery 클라이언트를 만들면 안 됩니다"
-    )
-    monkeypatch.setitem(sys.modules, "google.cloud.bigquery", fake_bigquery)
-    monkeypatch.setitem(sys.modules, "google.cloud", MagicMock(bigquery=fake_bigquery))
+    original_import = builtins.__import__
+
+    def _forbid_bigquery_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in {"google.cloud", "google.cloud.bigquery"}:
+            raise AssertionError("프로젝트 확인 전에 BigQuery를 import하면 안 됩니다")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _forbid_bigquery_import)
 
     with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
         loader(*args)
@@ -265,7 +268,14 @@ def test_bigquery_loaders_require_project_before_client_import(monkeypatch, load
 def test_assemble_via_feast_requires_project_before_feast_import(monkeypatch, tmp_path) -> None:
     """프로젝트가 없으면 Feast retrieval import보다 먼저 중단한다."""
     monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
-    monkeypatch.setitem(sys.modules, "src.features.feast_retrieval", None)
+    original_import = builtins.__import__
+
+    def _forbid_feast_retrieval_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "src.features.feast_retrieval":
+            raise AssertionError("프로젝트 확인 전에 Feast retrieval을 import하면 안 됩니다")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _forbid_feast_retrieval_import)
 
     with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
         build_training_dataset._assemble_via_feast(

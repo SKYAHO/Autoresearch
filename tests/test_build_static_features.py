@@ -6,6 +6,7 @@ BigQuery/Vertex AI 호출은 대상이 아니다. dataset 계층 분리, TRUNCAT
 
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import json
 import sys
@@ -182,16 +183,14 @@ def test_main_requires_explicit_project_before_bigquery_import(monkeypatch, caps
     """환경 기본값이 없으면 BigQuery import보다 먼저 argparse 오류로 중단한다."""
     monkeypatch.setattr(bsf, "load_dotenv", lambda: None)
     monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
-    fake_bigquery = types.ModuleType("google.cloud.bigquery")
+    original_import = builtins.__import__
 
-    def _should_not_create_client(*args, **kwargs) -> object:
-        raise AssertionError("프로젝트 확인 전에 BigQuery 클라이언트를 만들면 안 됩니다")
+    def _forbid_bigquery_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in {"google.cloud", "google.cloud.bigquery"}:
+            raise AssertionError("프로젝트 확인 전에 BigQuery를 import하면 안 됩니다")
+        return original_import(name, globals, locals, fromlist, level)
 
-    fake_bigquery.Client = _should_not_create_client
-    fake_cloud = types.ModuleType("google.cloud")
-    fake_cloud.bigquery = fake_bigquery
-    monkeypatch.setitem(sys.modules, "google.cloud.bigquery", fake_bigquery)
-    monkeypatch.setitem(sys.modules, "google.cloud", fake_cloud)
+    monkeypatch.setattr(builtins, "__import__", _forbid_bigquery_import)
 
     with pytest.raises(SystemExit) as excinfo:
         bsf.main(["--bucket", "bucket"])
