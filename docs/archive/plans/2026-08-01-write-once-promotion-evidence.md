@@ -457,7 +457,7 @@ git commit -m "feat: evaluate promotions from verified evidence receipts"
 - train-model and run-pipeline add optional paired --experiment-plan-receipt and --promotion-evidence-root arguments, forwarding them unchanged to train.main.
 - verify-comparison adds optional --promotion-evidence-root; when provided it constructs PromotionEvidenceStore and passes it to comparison. Omission preserves only the no-receipt legacy comparison path.
 
-- [ ] **Step 1: Write failing CLI tests**
+- [x] **Step 1: Write failing CLI tests**
 
 ~~~python
 def test_create_experiment_plan_cli_publishes_receipt_atomically(monkeypatch, tmp_path) -> None:
@@ -477,13 +477,13 @@ def test_create_experiment_plan_cli_publishes_receipt_atomically(monkeypatch, tm
 
 Add parameterized tests for supplying only one training option, for a comparison with receipts but no root, and for a backend error containing a synthetic secret. Assert Typer returns non-zero, writes no requested output, and does not echo the secret.
 
-- [ ] **Step 2: Run CLI tests to verify they fail**
+- [x] **Step 2: Run CLI tests to verify they fail**
 
 Run: uv run python -m pytest tests/test_cli.py -k "experiment_plan or promotion_evidence or verify_comparison" -v
 
 Expected: FAIL because the command and options are absent.
 
-- [ ] **Step 3: Implement additive CLI wiring and safe errors**
+- [x] **Step 3: Implement additive CLI wiring and safe errors**
 
 ~~~python
 @app.command("create-experiment-plan")
@@ -502,11 +502,11 @@ def create_experiment_plan_command(
 
 Use the existing CLI style for ComparisonValidationError: show the exception type and a stable Korean failure message, not backend text. Do not add a default root, a new environment variable, or registry promotion behavior. Keep current CLI calls byte-for-byte compatible when none of the new options is supplied.
 
-- [ ] **Step 4: Update the guide from target design to implemented interface**
+- [x] **Step 4: Update the guide from target design to implemented interface**
 
 Replace the #466, 구현 대상 label with its committed behavior. Add the exact three command invocations, explain that receipt JSON is an untrusted transport envelope revalidated against GCS, document legacy no-receipt hold, and state that no Airflow argument or Model Registry alias behavior changes in this PR. Do not add a separate application spec.
 
-- [ ] **Step 5: Run targeted and full verification**
+- [x] **Step 5: Run targeted and full verification**
 
 Run:
 
@@ -519,7 +519,7 @@ git diff --check
 
 Expected: all tests and Ruff pass; git diff --check produces no output. If a test fails, stop at its first failure and use superpowers:systematic-debugging before changing production code.
 
-- [ ] **Step 6: Commit CLI/docs and request the agreed checkpoint review**
+- [x] **Step 6: Commit CLI/docs and request the agreed checkpoint review**
 
 ~~~bash
 git add src/cli.py tests/test_cli.py docs/guides/training-experiment-provenance.md
