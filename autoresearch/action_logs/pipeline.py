@@ -1,29 +1,39 @@
-"""VirtualUser + TrendingVideo pool로 action log를 생성·저장한다.
+"""Virtual user 후보를 LLM 판정에서 action log 산출물로 변환한다.
 
- [파이프라인] 후보 노출이 결정된 뒤 LLM 판단을 draft로 만들고, 클릭 선정 뒤
-long event stream으로 확장하는 구간이다.
+[파이프라인] 노출 후보 조립 다음, action log 파티션 publish 이전 구간에서
+LLM 판정·클릭 선정·이벤트 확장·로컬 산출물 기록을 담당한다.
 
 [기능] 유저 단위 격리(LLM 판단, 후보별 click_propensity/watch_fraction만 산출) →
 select_clicks_per_slate로 유저(슬레이트)별 최고 1건을 click_threshold
 커트라인으로 클릭 선정 → 이벤트 확장(_expand_events: 노출마다 impression 1행,
 클릭 선정분엔 click/view(+like)를 추가 배치) → parquet/warehouse/quarantine
-저장. 한 유저의 실패가 배치를 죽이지 않는다.
+저장. shard/checkpoint가 사용하는 legacy draft/batch 계약과 단일 모드의
+bounded active-user 스트리밍, Parquet row-group 및 JSONL 기록,
+completion-time publish 실패 시 기존 산출물 복구를 제공한다. 한 유저의 실패가
+배치를 죽이지 않는다.
 
 [비책임] 정책별 노출 선택·라운드 리포팅은
-`src.pipeline.simulate_policy_round`가 담당한다.
+`src.pipeline.simulate_policy_round`가 담당한다. 일일 partition 검증·publish는
+autoresearch/action_logs/daily.py,
+공개 CLI dispatch는 autoresearch/jobs/action_log.py, KPO resource 설정은
+SKYAHO/Autoresearch-airflow가 소유한다.
 """
 import json
 import logging
 import math
+import os
 import random
-from collections import defaultdict
-from collections.abc import Mapping
+import tempfile
+from collections import defaultdict, deque
+from collections.abc import Mapping, MutableMapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from contextlib import ExitStack
 from dataclasses import dataclass
-from datetime import UTC, timedelta, timezone
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
-from typing import Callable, Literal, Protocol
+from types import TracebackType
+from typing import Callable, Literal, Protocol, Self, TextIO
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -31,6 +41,7 @@ from pydantic import ValidationError
 
 from autoresearch.action_logs.candidate import build_candidates
 from autoresearch.action_logs.observability import (
+    ActionLogStreamingTelemetryReporter,
     ActionLogTelemetryReporter,
     action_log_work_log_context,
 )
@@ -63,6 +74,7 @@ _MIN_IMPRESSION_HOURS = max(1, math.ceil(_MAX_SESSION_SPAN_SEC / 3600))
 
 # 이벤트 KST 날짜가 event_id 네임스페이스다(#295 A안: dt 파티션 = KST 당일 슬라이스).
 _KST = timezone(timedelta(hours=9))
+_STREAMING_ACTIVE_USER_MULTIPLIER = 4
 
 
 class ActionLogGenerator(Protocol):
@@ -102,6 +114,37 @@ class ActionLogDraftGenerationResult:
 
 
 @dataclass(frozen=True)
+class ActionLogSingleResult:
+    """bounded active-user 단일 실행의 파일 기록 결과 요약."""
+
+    execution_mode: Literal["streaming", "legacy"]
+    total_events: int
+    impressions: int
+    clicks: int
+    quarantined_users: int
+    api_error: int
+    invalid_json: int
+    schema_fail: int
+
+    @property
+    def summary(self) -> dict[str, int | float]:
+        """legacy batch summary와 같은 집계 필드를 반환한다."""
+
+        return {
+            "total_events": self.total_events,
+            "impressions": self.impressions,
+            "clicks": self.clicks,
+            "ctr": round(self.clicks / self.impressions, 4)
+            if self.impressions
+            else 0.0,
+            "quarantined_users": self.quarantined_users,
+            "api_error": self.api_error,
+            "invalid_json": self.invalid_json,
+            "schema_fail": self.schema_fail,
+        }
+
+
+@dataclass(frozen=True)
 class ActionLogProgressSnapshot:
     """LLM chunk 생성 진행률을 외부 reporter로 전달하기 위한 스냅샷."""
 
@@ -116,6 +159,24 @@ class ActionLogProgressSnapshot:
 ActionLogProgressCallback = Callable[[ActionLogProgressSnapshot], float | None]
 ActionLogWorkIdFactory = Callable[[str, int], str]
 ActionLogCheckpointCallback = Callable[[str, int, list[ImpressionDraft]], None]
+
+
+@dataclass(frozen=True)
+class _StreamingRetentionSnapshot:
+    """active-user streaming 경로의 현재 보존 payload 수량."""
+
+    phase: Literal["generating", "finalizing"]
+    active_users: int
+    buffered_drafts: int
+    buffered_events: int
+    in_flight_work: int
+    activated_users: int
+    total_users: int
+    submitted_work: int
+    total_work: int | None
+    completed_work: int
+    failed_work: int
+    pending_work: int | None
 
 # 유저별 노출 후보를 외부에서 결정할 때 쓰는 주입 지점. (virtual_user, user_rng)를
 # 받아 video dict 목록을 반환한다. None이면 기존 build_candidates 휴리스틱을 쓴다.
@@ -139,6 +200,19 @@ class _ActionLogWorkItem:
     user_id: str
     virtual_user: dict
     candidates: list[dict]
+
+
+@dataclass
+class _StreamingUserState:
+    """drain 전 한 사용자의 chunk 결과만 보관하는 bounded coordinator 상태."""
+
+    user_sequence: int
+    user_id: str
+    virtual_user: dict
+    work: list[_ActionLogWorkItem]
+    drafts_by_chunk: dict[int, list[ImpressionDraft]]
+    quarantine_by_chunk: dict[int, QuarantineRecord]
+    remaining_chunks: int
 
 
 @dataclass(frozen=True)
@@ -177,6 +251,11 @@ EVENT_LOG_PARQUET_SCHEMA = pa.schema(
         pa.field("generated_at", pa.string()),
     ]
 )
+
+_EVENT_SPOOL_SCHEMA = pa.schema(
+    [field for field in EVENT_LOG_PARQUET_SCHEMA if field.name != "generated_at"]
+)
+_PARQUET_TARGET_ROW_GROUP_ROWS = 50_000
 
 # additive 확장 컬럼 — 이 컬럼이 없는 legacy 파티션 스키마도 event log 계약에서
 # 관용한다 (#221). event log 스키마 계약의 단일 출처로 이곳에 둔다.
@@ -734,6 +813,23 @@ def build_round_policy_event_id_prefix(round_id: str, policy_name: str) -> str:
     return f"evt_{validate_policy_name(round_id)}_{validate_policy_name(policy_name)}"
 
 
+def _has_duplicate_user_ids(virtual_users: list[dict]) -> bool:
+    """streaming이 보존할 수 없는 중복 user_id 입력을 감지한다."""
+
+    user_ids = [str(user.get("user_id", "")) for user in virtual_users]
+    return len(user_ids) != len(set(user_ids))
+
+
+def _consume_user_exposure_metadata(
+    metadata: MutableMapping[tuple[str, str], ExposureMetadata],
+    user_id: str,
+) -> dict[tuple[str, str], ExposureMetadata]:
+    """drain 완료 사용자의 노출 metadata를 반환하고 공유 맵에서 제거한다."""
+
+    keys = [key for key in metadata if key[0] == user_id]
+    return {key: metadata.pop(key) for key in keys}
+
+
 def attach_exposure_tags(
     drafts: list[ImpressionDraft],
     metadata: Mapping[tuple[str, str], ExposureMetadata],
@@ -787,6 +883,7 @@ def _expand_events(
     metadata: Mapping[tuple[str, str], ExposureMetadata] | None = None,
     source: str = SOURCE_HISTORICAL,
     event_id_prefix: str = "evt",
+    event_id_sequence_start: int = 0,
 ) -> list[EventLog]:
     """draft + 클릭 결정 → long EventLog 스트림.
 
@@ -808,7 +905,7 @@ def _expand_events(
         by_user[draft.user_id].append(idx)
 
     events: list[EventLog] = []
-    seq = 0
+    seq = event_id_sequence_start
 
     def _emit(timestamp, user_id, event_type, video_id, watch=None):
         nonlocal seq
@@ -900,6 +997,403 @@ def _event_rows(batch: EventLogBatch, model_name: str) -> list[dict]:
             }
         )
     return rows
+
+
+def _event_spool_rows(
+    events: list[EventLog],
+    model_name: str,
+) -> list[dict[str, object]]:
+    """완료 시각을 제외한 event rows를 IPC spool schema에 맞춰 변환한다."""
+
+    return [
+        {
+            "event_id": event.event_id,
+            "event_timestamp": event.event_timestamp,
+            "user_id": event.user_id,
+            "event_type": event.event_type,
+            "video_id": event.video_id,
+            "watch_time_sec": event.watch_time_sec,
+            "rank": event.rank,
+            "source": event.source,
+            "policy": event.policy,
+            "ctr_score": event.ctr_score,
+            "is_exploration": event.is_exploration,
+            "policy_version": event.policy_version,
+            "exposure_source": event.exposure_source,
+            "schema_version": ACTION_LOG_SCHEMA_VERSION,
+            "prompt_version": PROMPT_VERSION,
+            "llm_model": model_name,
+        }
+        for event in events
+    ]
+
+
+class _StreamingActionLogWriter:
+    """IPC spool을 completion-time Parquet/JSONL 산출물로 최종화한다."""
+
+    def __init__(
+        self,
+        *,
+        request: EventGenerationRequest,
+        model_name: str,
+    ) -> None:
+        self._request = request
+        self._model_name = model_name
+        self._warehouse_file: TextIO | None = None
+        self._quarantine_file: TextIO | None = None
+        self._event_sink: pa.OSFile | None = None
+        self._event_stream: pa.ipc.RecordBatchStreamWriter | None = None
+        self._exit_stack: ExitStack | None = None
+        self._event_spool_path: Path | None = None
+        self._parquet_spool_path: Path | None = None
+        self._warehouse_spool_path: Path | None = None
+        self._quarantine_spool_path: Path | None = None
+        self._commit_backup_paths: list[Path] = []
+        self._unrestored_backup_paths: list[tuple[Path, Path]] = []
+        self._committed = False
+
+    @staticmethod
+    def _create_sibling_spool_path(target_path: str) -> Path:
+        """최종 target과 같은 filesystem에 임시 spool 파일을 만든다."""
+
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        descriptor, raw_path = tempfile.mkstemp(
+            prefix=f".{target.name}.",
+            suffix=".spool",
+            dir=str(target.parent),
+        )
+        os.close(descriptor)
+        return Path(raw_path)
+
+    def _spool_paths(self) -> tuple[Path, ...]:
+        base_spool_paths = tuple(
+            path
+            for path in (
+                self._event_spool_path,
+                self._parquet_spool_path,
+                self._warehouse_spool_path,
+                self._quarantine_spool_path,
+            )
+            if path is not None
+        )
+        return (*base_spool_paths, *self._commit_backup_paths)
+
+    def _write_best_effort_diagnostic(
+        self,
+        *,
+        level: Literal["warning", "error"],
+        message: str,
+        extra: Mapping[str, str],
+    ) -> None:
+        """writer의 cleanup/rollback 진단이 복구 흐름을 중단시키지 않게 기록한다."""
+
+        try:
+            if level == "warning":
+                logger.warning(message, extra=dict(extra), exc_info=True)
+            else:
+                logger.error(message, extra=dict(extra), exc_info=True)
+        except Exception:  # noqa: BLE001 - diagnostic sink must not mask recovery
+            pass
+
+    def _remove_spools(self, *, best_effort: bool = False) -> None:
+        remaining_backup_paths: list[Path] = []
+        for spool_path in self._spool_paths():
+            try:
+                spool_path.unlink(missing_ok=True)
+            except OSError:
+                if not best_effort:
+                    raise
+                if spool_path in self._commit_backup_paths:
+                    remaining_backup_paths.append(spool_path)
+                    message = "Unable to remove committed action log backup spool"
+                else:
+                    message = "Unable to remove committed action log spool"
+                self._write_best_effort_diagnostic(
+                    level="warning",
+                    message=message,
+                    extra={"spool_path": str(spool_path)},
+                )
+        if best_effort:
+            self._commit_backup_paths = remaining_backup_paths
+        else:
+            self._commit_backup_paths.clear()
+
+    def _clear_open_resources(self) -> None:
+        self._warehouse_file = None
+        self._quarantine_file = None
+        self._event_sink = None
+        self._event_stream = None
+
+    def _restore_unrestored_backups(self) -> None:
+        """이전 rollback에서 복원하지 못한 backup을 best-effort로 다시 복원한다."""
+
+        remaining_backups: list[tuple[Path, Path]] = []
+        for backup_path, final_path in self._unrestored_backup_paths:
+            try:
+                if not backup_path.exists():
+                    continue
+                backup_path.replace(final_path)
+            except OSError:
+                remaining_backups.append((backup_path, final_path))
+                self._write_best_effort_diagnostic(
+                    level="error",
+                    message="Unable to restore action log backup after failed publish",
+                    extra={
+                        "backup_spool_path": str(backup_path),
+                        "final_path": str(final_path),
+                    },
+                )
+        self._unrestored_backup_paths = remaining_backups
+
+    def _close_generation_resources(self) -> None:
+        if self._exit_stack is None:
+            return
+        stack, self._exit_stack = self._exit_stack, None
+        try:
+            stack.close()
+        finally:
+            self._clear_open_resources()
+
+    def _ensure_open_and_uncommitted(self) -> None:
+        if self._committed:
+            raise RuntimeError("streaming action log writer is already finalized")
+        if self._exit_stack is None:
+            raise RuntimeError("streaming action log writer is not open")
+
+    def __enter__(self) -> Self:
+        stack = ExitStack()
+        try:
+            self._event_spool_path = self._create_sibling_spool_path(
+                self._request.output_path
+            )
+            self._parquet_spool_path = self._create_sibling_spool_path(
+                self._request.output_path
+            )
+            self._warehouse_spool_path = self._create_sibling_spool_path(
+                self._request.warehouse_output_path
+            )
+            self._quarantine_spool_path = self._create_sibling_spool_path(
+                self._request.quarantine_output_path
+            )
+            self._warehouse_file = stack.enter_context(self._warehouse_spool_path.open(
+                "w",
+                encoding="utf-8",
+            ))
+            self._quarantine_file = stack.enter_context(self._quarantine_spool_path.open(
+                "w",
+                encoding="utf-8",
+            ))
+            self._event_sink = pa.OSFile(str(self._event_spool_path), "wb")
+            stack.callback(self._event_sink.close)
+            self._event_stream = pa.ipc.new_stream(
+                self._event_sink,
+                _EVENT_SPOOL_SCHEMA,
+            )
+            stack.callback(self._event_stream.close)
+        except BaseException:
+            try:
+                stack.close()
+            finally:
+                self._clear_open_resources()
+                self._remove_spools()
+            raise
+        self._exit_stack = stack
+        return self
+
+    def write_events(self, events: list[EventLog]) -> None:
+        if not events:
+            return
+        self._ensure_open_and_uncommitted()
+        assert self._event_stream is not None
+        assert self._warehouse_file is not None
+        event_batch = pa.RecordBatch.from_pylist(
+            _event_spool_rows(events, self._model_name),
+            schema=_EVENT_SPOOL_SCHEMA,
+        )
+        self._event_stream.write_batch(event_batch)
+        for event in events:
+            self._warehouse_file.write(
+                json.dumps(
+                    event.to_warehouse_row(),
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+            )
+
+    def write_quarantine(self, records: list[QuarantineRecord]) -> None:
+        self._ensure_open_and_uncommitted()
+        assert self._quarantine_file is not None
+        for record in records:
+            self._quarantine_file.write(
+                json.dumps(
+                    record.model_dump(),
+                    ensure_ascii=False,
+                    default=str,
+                )
+                + "\n"
+            )
+
+    def _write_final_parquet(
+        self,
+        generated_at: str,
+        buffered_events_observer: Callable[[int], None] | None,
+    ) -> None:
+        assert self._event_spool_path is not None
+        assert self._parquet_spool_path is not None
+        with ExitStack() as stack:
+            event_source = pa.OSFile(str(self._event_spool_path), "rb")
+            stack.callback(event_source.close)
+            event_reader = pa.ipc.open_stream(event_source)
+            stack.callback(event_reader.close)
+            parquet_writer = pq.ParquetWriter(
+                str(self._parquet_spool_path),
+                EVENT_LOG_PARQUET_SCHEMA,
+            )
+            stack.callback(parquet_writer.close)
+            buffered_batches: list[pa.RecordBatch] = []
+            buffered_rows = 0
+
+            def flush_buffer() -> None:
+                nonlocal buffered_rows
+                if buffered_events_observer is not None:
+                    buffered_events_observer(buffered_rows)
+                table = pa.Table.from_batches(
+                    buffered_batches,
+                    schema=_EVENT_SPOOL_SCHEMA,
+                )
+                generated_column = pa.array(
+                    [generated_at] * table.num_rows,
+                    type=pa.string(),
+                )
+                table = table.append_column("generated_at", generated_column)
+                table = table.select(EVENT_LOG_PARQUET_SCHEMA.names).cast(
+                    EVENT_LOG_PARQUET_SCHEMA
+                )
+                parquet_writer.write_table(
+                    table,
+                    row_group_size=_PARQUET_TARGET_ROW_GROUP_ROWS,
+                )
+                buffered_batches.clear()
+                buffered_rows = 0
+                del generated_column
+                del table
+                if buffered_events_observer is not None:
+                    buffered_events_observer(0)
+
+            for event_batch in event_reader:
+                start = 0
+                while start < event_batch.num_rows:
+                    rows_to_buffer = min(
+                        _PARQUET_TARGET_ROW_GROUP_ROWS - buffered_rows,
+                        event_batch.num_rows - start,
+                    )
+                    buffered_batches.append(event_batch.slice(start, rows_to_buffer))
+                    buffered_rows += rows_to_buffer
+                    start += rows_to_buffer
+                    if buffered_rows == _PARQUET_TARGET_ROW_GROUP_ROWS:
+                        flush_buffer()
+            if buffered_batches:
+                flush_buffer()
+
+    def _commit_success_outputs(self) -> None:
+        """세 final output을 함께 publish하고 중간 실패 시 기존 상태로 되돌린다."""
+
+        assert self._parquet_spool_path is not None
+        assert self._warehouse_spool_path is not None
+        assert self._quarantine_spool_path is not None
+        output_pairs = (
+            (self._parquet_spool_path, Path(self._request.output_path)),
+            (self._warehouse_spool_path, Path(self._request.warehouse_output_path)),
+            (self._quarantine_spool_path, Path(self._request.quarantine_output_path)),
+        )
+        backups: list[tuple[Path, Path]] = []
+        published_paths: list[Path] = []
+        try:
+            for _spool_path, final_path in output_pairs:
+                if final_path.exists():
+                    backup_path = self._create_sibling_spool_path(str(final_path))
+                    self._commit_backup_paths.append(backup_path)
+                    final_path.replace(backup_path)
+                    backups.append((backup_path, final_path))
+            for spool_path, final_path in output_pairs:
+                spool_path.replace(final_path)
+                published_paths.append(final_path)
+        except BaseException as publish_error:
+            rollback_errors: list[Exception] = []
+            for published_path in reversed(published_paths):
+                try:
+                    published_path.unlink(missing_ok=True)
+                except OSError as rollback_error:
+                    rollback_errors.append(rollback_error)
+                    self._write_best_effort_diagnostic(
+                        level="error",
+                        message="Unable to remove newly published action log output during rollback",
+                        extra={"final_path": str(published_path)},
+                    )
+            for backup_path, final_path in reversed(backups):
+                restore_pair = (backup_path, final_path)
+                self._commit_backup_paths.remove(backup_path)
+                self._unrestored_backup_paths.append(restore_pair)
+                try:
+                    if backup_path.exists():
+                        backup_path.replace(final_path)
+                except OSError as rollback_error:
+                    rollback_errors.append(rollback_error)
+                    self._write_best_effort_diagnostic(
+                        level="error",
+                        message="Unable to restore action log backup after failed publish",
+                        extra={
+                            "backup_spool_path": str(backup_path),
+                            "final_path": str(final_path),
+                        },
+                    )
+                else:
+                    self._unrestored_backup_paths.remove(restore_pair)
+            if rollback_errors:
+                raise publish_error from ExceptionGroup(
+                    "action log output rollback failed",
+                    rollback_errors,
+                )
+            raise
+
+    def finalize_success(
+        self,
+        generated_at: str,
+        buffered_events_observer: Callable[[int], None] | None = None,
+    ) -> None:
+        """IPC spool을 completion-time Parquet와 최종 JSONL 산출물로 publish한다."""
+
+        self._ensure_open_and_uncommitted()
+        self._close_generation_resources()
+        self._write_final_parquet(generated_at, buffered_events_observer)
+        self._commit_success_outputs()
+        self._committed = True
+        self._remove_spools(best_effort=True)
+
+    def finalize_quarantine_failure(self) -> None:
+        """격리 비율 초과 시 quarantine JSONL만 최종 경로에 남긴다."""
+
+        self._ensure_open_and_uncommitted()
+        self._close_generation_resources()
+        assert self._quarantine_spool_path is not None
+        self._quarantine_spool_path.replace(self._request.quarantine_output_path)
+        self._committed = True
+        self._remove_spools(best_effort=True)
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        try:
+            self._close_generation_resources()
+        finally:
+            if not self._committed:
+                self._restore_unrestored_backups()
+            self._remove_spools(best_effort=self._committed or exc is not None)
 
 
 def _draft_rows(drafts: list[ImpressionDraft]) -> list[dict]:
@@ -1038,10 +1532,33 @@ def _raise_if_quarantine_exceeds(
         return
 
     write_quarantine_jsonl(quarantine, request.quarantine_output_path)
+    _raise_if_quarantine_count_exceeds(
+        len(quarantine),
+        total_work,
+        request,
+        user_count,
+    )
+
+
+def _raise_if_quarantine_count_exceeds(
+    quarantine_count: int,
+    total_work: int,
+    request: EventGenerationRequest,
+    user_count: int,
+) -> None:
+    """quarantine 목록을 보관하지 않고 실패 비율을 검증한다."""
+
+    if not total_work:
+        return
+
+    quarantine_ratio = quarantine_count / total_work
+    if quarantine_ratio <= request.max_quarantine_ratio:
+        return
+
     raise ActionLogGenerationError(
         f"quarantine ratio {quarantine_ratio:.2f} exceeds max_quarantine_ratio "
         f"{request.max_quarantine_ratio:.2f} "
-        f"(quarantined={len(quarantine)}, total_chunks={total_work}, "
+        f"(quarantined={quarantine_count}, total_chunks={total_work}, "
         f"users={user_count})"
     )
 
@@ -1164,4 +1681,436 @@ def generate_action_log_batch(
         "Wrote action log outputs",
         extra={"output_path": str(output_path), **result.summary},
     )
+    return result
+
+
+def _single_result_from_legacy(
+    result: EventGenerationResult,
+) -> ActionLogSingleResult:
+    """legacy batch 결과를 단일 실행 결과 계약으로 변환한다."""
+
+    summary = result.summary
+    return ActionLogSingleResult(
+        execution_mode="legacy",
+        total_events=int(summary["total_events"]),
+        impressions=int(summary["impressions"]),
+        clicks=int(summary["clicks"]),
+        quarantined_users=int(summary["quarantined_users"]),
+        api_error=int(summary["api_error"]),
+        invalid_json=int(summary["invalid_json"]),
+        schema_fail=int(summary["schema_fail"]),
+    )
+
+
+def generate_action_log_single(
+    request: EventGenerationRequest,
+    virtual_users: list[dict],
+    videos: list[dict],
+    generator: ActionLogGenerator,
+    *,
+    candidate_provider: CandidateProvider | None = None,
+    exposure_metadata: (
+        MutableMapping[tuple[str, str], ExposureMetadata] | None
+    ) = None,
+    _retention_observer: Callable[[_StreamingRetentionSnapshot], None] | None = None,
+) -> ActionLogSingleResult:
+    """active user 수를 제한해 action log를 사용자 순서대로 증분 기록한다.
+
+    후보 provider는 coordinator에서 입력 순서대로 호출한다. 각 사용자의 모든
+    chunk 결과가 모인 뒤에만 click을 한 번 선정하고, user-local event를 writer에
+    기록한 즉시 참조를 해제한다. 기존 draft/shard 경로의 progress와 checkpoint
+    계약은 이 단일 실행 경로에서 사용하지 않는다. 변경 가능한 exposure metadata는
+    사용자가 drain될 때 해당 entry를 제거하므로 정상 streaming 종료 후 비어 있다.
+    read-only mapping은 변경하지 않고 legacy batch 경로로 위임한다.
+    `_retention_observer`는 회귀 검증용 private hook이며, 동일 snapshot은 DAG
+    structured telemetry에도 기록된다.
+    """
+
+    if (
+        any("user_id" not in virtual_user for virtual_user in virtual_users)
+        or _has_duplicate_user_ids(virtual_users)
+        or (
+            exposure_metadata is not None
+            and not isinstance(exposure_metadata, MutableMapping)
+        )
+    ):
+        legacy = generate_action_log_batch(
+            request,
+            virtual_users,
+            videos,
+            generator,
+            candidate_provider=candidate_provider,
+            exposure_metadata=exposure_metadata,
+        )
+        return _single_result_from_legacy(legacy)
+
+    mutable_exposure_metadata: (
+        MutableMapping[tuple[str, str], ExposureMetadata] | None
+    )
+    if exposure_metadata is None:
+        mutable_exposure_metadata = None
+    else:
+        assert isinstance(exposure_metadata, MutableMapping)
+        mutable_exposure_metadata = exposure_metadata
+
+    logger.info(
+        "Starting action log draft generation",
+        extra={
+            "users": len(virtual_users),
+            "videos": len(videos),
+            "click_threshold": request.click_threshold,
+            "candidates_per_user": request.candidates_per_user,
+            "seed": request.seed,
+        },
+    )
+
+    max_workers = max(1, request.max_concurrency)
+    max_active_users = _STREAMING_ACTIVE_USER_MULTIPLIER * max_workers
+    telemetry: ActionLogStreamingTelemetryReporter | None = None
+    telemetry_enabled = True
+
+    def _disable_telemetry() -> None:
+        nonlocal telemetry_enabled
+        if not telemetry_enabled:
+            return
+        telemetry_enabled = False
+        try:
+            logger.warning(
+                "Action log streaming telemetry disabled after reporter failure"
+            )
+        except Exception:  # noqa: BLE001 - warning sink is also best effort
+            pass
+
+    try:
+        telemetry = ActionLogStreamingTelemetryReporter(logger=logger)
+    except Exception:  # noqa: BLE001 - operational telemetry is best effort
+        _disable_telemetry()
+
+    def _report_telemetry(
+        operation: Callable[[ActionLogStreamingTelemetryReporter], None],
+    ) -> None:
+        if not telemetry_enabled or telemetry is None:
+            return
+        try:
+            operation(telemetry)
+        except Exception:  # noqa: BLE001 - operational telemetry is best effort
+            _disable_telemetry()
+
+    def _telemetry_detailed_candidate() -> bool:
+        if not telemetry_enabled or telemetry is None:
+            return False
+        try:
+            return telemetry.detailed_candidate
+        except Exception:  # noqa: BLE001 - operational telemetry is best effort
+            _disable_telemetry()
+            return False
+
+    active_users: deque[_StreamingUserState] = deque()
+    user_iterator = iter(enumerate(virtual_users))
+    total_users = len(virtual_users)
+    provider_exhausted = False
+    next_work_sequence = 0
+    next_event_sequence = 0
+    activated_users = 0
+    submitted_work = 0
+    completed_work = 0
+    failed_work = 0
+    total_events = 0
+    impressions = 0
+    clicks = 0
+    quarantined_users = 0
+    error_counts = {"api_error": 0, "invalid_json": 0, "schema_fail": 0}
+    futures: dict[
+        Future[_ActionLogCallResult],
+        tuple[_StreamingUserState, int, int],
+    ] = {}
+    unsent_work: deque[tuple[_StreamingUserState, int, int]] = deque()
+
+    def _observe(
+        buffered_events: int = 0,
+        *,
+        phase: Literal["generating", "finalizing"] = "generating",
+        start: bool = False,
+        finish: bool = False,
+    ) -> None:
+        if provider_exhausted:
+            total_work: int | None = next_work_sequence
+            pending_work: int | None = total_work - completed_work - len(futures)
+        else:
+            total_work = None
+            pending_work = None
+        snapshot = _StreamingRetentionSnapshot(
+            phase=phase,
+            active_users=len(active_users),
+            buffered_drafts=sum(
+                len(drafts)
+                for state in active_users
+                for drafts in state.drafts_by_chunk.values()
+            ),
+            buffered_events=buffered_events,
+            in_flight_work=len(futures),
+            activated_users=activated_users,
+            total_users=total_users,
+            submitted_work=submitted_work,
+            total_work=total_work,
+            completed_work=completed_work,
+            failed_work=failed_work,
+            pending_work=pending_work,
+        )
+        if _retention_observer is not None:
+            _retention_observer(snapshot)
+        if start:
+            _report_telemetry(lambda reporter: reporter.start(snapshot))
+        elif finish:
+            _report_telemetry(lambda reporter: reporter.finish(snapshot))
+        else:
+            _report_telemetry(lambda reporter: reporter.observe(snapshot))
+
+    with _StreamingActionLogWriter(
+        request=request,
+        model_name=generator.model_name,
+    ) as writer, ThreadPoolExecutor(max_workers=max_workers) as executor:
+
+        def _activate_next_user() -> bool:
+            nonlocal activated_users, next_work_sequence, provider_exhausted
+            if activated_users == total_users:
+                provider_exhausted = True
+                return False
+            try:
+                user_sequence, virtual_user = next(user_iterator)
+            except StopIteration:
+                provider_exhausted = True
+                return False
+
+            activated_users += 1
+            user_id = str(virtual_user.get("user_id", f"user_{user_sequence}"))
+            user_rng = random.Random(f"{request.seed}:{user_id}")
+            if candidate_provider is not None:
+                candidates = candidate_provider(virtual_user, user_rng)
+            else:
+                candidates = build_candidates(
+                    virtual_user,
+                    videos,
+                    request.candidates_per_user,
+                    request.exploration_ratio,
+                    user_rng,
+                    personalized_ratio=request.personalized_ratio,
+                    popular_ratio=request.popular_ratio,
+                )
+            if not candidates:
+                if mutable_exposure_metadata is not None:
+                    _consume_user_exposure_metadata(
+                        mutable_exposure_metadata,
+                        user_id,
+                    ).clear()
+                if activated_users == total_users:
+                    provider_exhausted = True
+                _observe()
+                return True
+
+            work: list[_ActionLogWorkItem] = []
+            work_sequences: list[int] = []
+            for chunk_index, chunk in enumerate(
+                _chunked(candidates, request.chunk_size)
+            ):
+                work.append(
+                    _ActionLogWorkItem(
+                        work_id=f"work_{next_work_sequence:08d}",
+                        user_id=user_id,
+                        virtual_user=virtual_user,
+                        candidates=chunk,
+                    )
+                )
+                work_sequences.append(next_work_sequence)
+                next_work_sequence += 1
+
+            state = _StreamingUserState(
+                user_sequence=user_sequence,
+                user_id=user_id,
+                virtual_user=virtual_user,
+                work=work,
+                drafts_by_chunk={},
+                quarantine_by_chunk={},
+                remaining_chunks=len(work),
+            )
+            active_users.append(state)
+            for chunk_index, (item, work_sequence) in enumerate(
+                zip(work, work_sequences, strict=True)
+            ):
+                unsent_work.append((state, chunk_index, work_sequence))
+            if activated_users == total_users:
+                provider_exhausted = True
+            _observe()
+            return True
+
+        def _fill_active_users() -> None:
+            while len(active_users) < max_active_users and not provider_exhausted:
+                if not _activate_next_user():
+                    return
+
+        def _submit_available_work() -> None:
+            nonlocal submitted_work
+            while unsent_work and len(futures) < max_workers:
+                state, chunk_index, work_sequence = unsent_work.popleft()
+                submitted_at = monotonic()
+                submitted_work += 1
+                _report_telemetry(
+                    lambda reporter: reporter.note_submission(submitted_work)
+                )
+                futures[
+                    executor.submit(
+                        _generate_action_log_work,
+                        generator,
+                        state.work[chunk_index],
+                        work_sequence=work_sequence,
+                        submitted_at=submitted_at,
+                        shard_index=None,
+                        detailed_telemetry=_telemetry_detailed_candidate(),
+                    )
+                ] = (state, chunk_index, work_sequence)
+                _observe()
+
+        def _store_work_result(
+            state: _StreamingUserState,
+            chunk_index: int,
+            call_result: _ActionLogCallResult,
+        ) -> None:
+            nonlocal completed_work, failed_work
+            if call_result.drafts is not None:
+                state.drafts_by_chunk[chunk_index] = call_result.drafts
+            else:
+                assert call_result.error_type is not None
+                assert call_result.error is not None
+                failed_work += 1
+                state.quarantine_by_chunk[chunk_index] = QuarantineRecord(
+                    user_id=state.user_id,
+                    virtual_user=state.virtual_user,
+                    raw_llm_response=call_result.raw_text,
+                    error_type=call_result.error_type,
+                    error_message=str(call_result.error),
+                )
+            state.remaining_chunks -= 1
+            completed_work += 1
+            _report_telemetry(
+                lambda reporter: reporter.record_work(
+                    work_sequence=call_result.work_sequence,
+                    queue_wait_ms=max(
+                        0.0,
+                        (call_result.started_at - call_result.submitted_at) * 1000,
+                    ),
+                    request_elapsed_ms=call_result.request_elapsed_ms,
+                    parse_elapsed_ms=call_result.parse_elapsed_ms,
+                    total_elapsed_ms=max(
+                        0.0,
+                        (monotonic() - call_result.submitted_at) * 1000,
+                    ),
+                )
+            )
+            _observe()
+
+        def _collect_completed_futures() -> None:
+            completed, _pending = wait(futures, return_when=FIRST_COMPLETED)
+            for completed_future in sorted(
+                completed,
+                key=lambda item: futures[item][2],
+            ):
+                state, chunk_index, _work_sequence = futures.pop(completed_future)
+                _store_work_result(state, chunk_index, completed_future.result())
+
+        _observe(start=True)
+        _fill_active_users()
+        _submit_available_work()
+        while active_users or futures:
+            if futures:
+                _collect_completed_futures()
+                _submit_available_work()
+
+            while active_users and active_users[0].remaining_chunks == 0:
+                state = active_users[0]
+                drafts: list[ImpressionDraft] = []
+                quarantine: list[QuarantineRecord] = []
+                for chunk_index in range(len(state.work)):
+                    if chunk_index in state.quarantine_by_chunk:
+                        quarantine.append(state.quarantine_by_chunk[chunk_index])
+                    else:
+                        drafts.extend(state.drafts_by_chunk[chunk_index])
+                if mutable_exposure_metadata is not None:
+                    user_exposure_metadata = _consume_user_exposure_metadata(
+                        mutable_exposure_metadata,
+                        state.user_id,
+                    )
+                    drafts = attach_exposure_tags(drafts, user_exposure_metadata)
+                    user_exposure_metadata.clear()
+
+                clicked_drafts = select_clicks_per_slate(
+                    drafts,
+                    request.click_threshold,
+                )
+                events = _expand_events(
+                    drafts,
+                    clicked_drafts,
+                    request,
+                    event_id_sequence_start=next_event_sequence,
+                )
+                event_count = len(events)
+                total_events += event_count
+                impressions += sum(
+                    event.event_type == "impression" for event in events
+                )
+                clicks += sum(event.event_type == "click" for event in events)
+                quarantined_users += len(quarantine)
+                for record in quarantine:
+                    error_counts[record.error_type] += 1
+
+                _observe(buffered_events=event_count)
+                writer.write_events(events)
+                next_event_sequence += event_count
+                events.clear()
+                _observe()
+                writer.write_quarantine(quarantine)
+
+                drafts.clear()
+                quarantine.clear()
+                state.work.clear()
+                state.drafts_by_chunk.clear()
+                state.quarantine_by_chunk.clear()
+                active_users.popleft()
+                _observe()
+                _fill_active_users()
+                _submit_available_work()
+
+        try:
+            _raise_if_quarantine_count_exceeds(
+                quarantined_users,
+                next_work_sequence,
+                request,
+                len(virtual_users),
+            )
+        except ActionLogGenerationError:
+            _observe(phase="finalizing")
+            writer.finalize_quarantine_failure()
+            _observe(phase="finalizing", finish=True)
+            raise
+        generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+        _observe(phase="finalizing")
+        writer.finalize_success(
+            generated_at,
+            buffered_events_observer=lambda buffered_events: _observe(
+                buffered_events,
+                phase="finalizing",
+            ),
+        )
+        _observe(phase="finalizing", finish=True)
+
+    result = ActionLogSingleResult(
+        execution_mode="streaming",
+        total_events=total_events,
+        impressions=impressions,
+        clicks=clicks,
+        quarantined_users=quarantined_users,
+        api_error=error_counts["api_error"],
+        invalid_json=error_counts["invalid_json"],
+        schema_fail=error_counts["schema_fail"],
+    )
+    logger.info("Wrote streaming action log outputs", extra=result.summary)
     return result

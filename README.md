@@ -31,6 +31,7 @@ autoresearch/        # 런타임 패키지
 ├── virtual_users/        # LLM 기반 가상 유저(페르소나) 생성
 ├── action_logs/          # action log 생성·shard·merge·품질 계약
 └── jobs/                 # Airflow 비종속 공개 batch CLI
+agent_orchestration/  # 실험형 FastAPI 채팅 API + PostgreSQL 저장
 src/                 # CTR 학습·서빙 파이프라인
 ├── features/             # 피처 엔지니어링·조립
 ├── models/               # LightGBM 모델
@@ -53,10 +54,12 @@ docs/                # 문서 — docs/README.md 인덱스 참조
 | 이미지 | 용도 |
 |---|---|
 | `Dockerfile.app` | 공개 batch CLI 실행 (Airflow가 소비하는 canonical application image) |
-| `Dockerfile.train` | feast 불필요 학습 서브커맨드 — `promote-model`(alias 승격), `train-model`/`evaluate-model`. GCS code archive 부트스트랩, MLflow 연동 |
+| `Dockerfile.train` | feast 불필요 학습 서브커맨드 — `promote-model`(alias 승격), `train-model`/`evaluate-model`/`sweep-seeds`(다중 시드 반복 학습·유의성 판정 근거, #407). GCS code archive 부트스트랩, MLflow 연동 |
 | `Dockerfile.feast` | Feast apply/materialize + feast 필요 학습 조립 — `build-features`/`run-pipeline`이 offline PIT로 피처를 조립하므로(#359 C2) 이 이미지로 실행 |
 | `deploy/serving/Dockerfile` | 리랭킹 서빙 API (GKE) |
 | `deploy/mlflow/Dockerfile` | MLflow Tracking Server |
+| `deploy/agent_orchestration/api.Dockerfile` | Agent Orchestration FastAPI·PostgreSQL 저장 API (GKE 내부) |
+| `deploy/agent_orchestration/runner.Dockerfile` | API 전용 Codex Runner (GKE 내부, OAuth PVC 분리) |
 
 DAG·스케줄·Airflow 배포는 [`SKYAHO/Autoresearch-airflow`](https://github.com/SKYAHO/Autoresearch-airflow),
 GCP 인프라는 [`SKYAHO/Autoresearch-infra`](https://github.com/SKYAHO/Autoresearch-infra)가 소유합니다.

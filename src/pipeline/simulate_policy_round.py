@@ -11,6 +11,9 @@ pool에서 병행 노출하고, LLM 판정(합집합 1회 이상)·합동 커트
 
 제공 기능:
 
+- 라운드 시작 시 GCP 자격증명 사전점검(duckdb 조립 경로 한정, #426) — 자격증명
+  발급·갱신은 gcloud ADC/서비스 계정 키의 몫이고, 여기서는 만료를 조기에
+  실패시키기 위해 `verify_vertex_ai_credentials()`를 1회 호출만 한다
 - 유저별 N개 정책 노출 결정과 정책별 스코어링 진단 수집
 - LLM 판정 1회 이상 실행(반복 시 동일 합집합 후보)과 canonical 판정 덤프
   (`action_log_drafts.parquet` + 계보·노출 인자·노출 키 집합 사이드카
@@ -81,6 +84,7 @@ from src.features.assembly import (
     compute_user_offline_features,
     compute_video_features,
 )
+from src.features.embeddings import verify_vertex_ai_credentials
 from src.features.feast_retrieval import build_pool_feature_frame_feast
 from src.features.model_contract import require_model_feature_columns
 from src.pipeline.policy_selector import Exposure, select_exposures
@@ -150,11 +154,13 @@ def build_pool_feature_frame(
     user_id: str,
     as_of: str,
     snapshot_date: str | None = None,
+    skip_embedding: bool = False,
 ) -> pd.DataFrame:
     """유저 1명 × 전체 영상 pool의 21개 모델 피처 프레임을 학습과 동일 경로로 만든다.
 
     snapshot_date(YYYY-MM-DD)는 영상 나이(days_since_upload) 기준일이며, 유저
     이력 기준(as_of)과 다를 수 있다. 없으면 as_of의 날짜를 사용한다(기존 동작).
+    skip_embedding은 compute_interaction_columns에 그대로 전달한다(#426).
     """
     video_features = compute_video_features(videos_raw, snapshot_date or as_of.split(" ")[0])
     offline = compute_user_offline_features(personas)
@@ -178,7 +184,7 @@ def build_pool_feature_frame(
         frame[column] = online.iloc[0][column]
     persona_row = personas[personas["uuid"] == user_id].iloc[0]
     frame["hobbies_and_interests_list"] = persona_row["hobbies_and_interests_list"]
-    frame = compute_interaction_columns(frame)
+    frame = compute_interaction_columns(frame, skip_embedding=skip_embedding)
     return frame
 
 
@@ -726,6 +732,13 @@ def main(
         )
     if judgment_repeats < 1:
         raise ValueError("judgment_repeats must be at least 1")
+
+    # duckdb 경로는 유저별 피처 조립에서 Vertex AI 임베딩을 호출하므로, 자격증명
+    # 만료를 5단계 전부 실행한 뒤가 아니라 모델 로드 전에 잡는다(#426). feast 경로는
+    # build_pool_feature_frame_feast가 BigQuery 사전계산값을 읽어 embed_texts를
+    # 호출하지 않으므로 이 점검이 불필요하다.
+    if assembly_source == "duckdb":
+        verify_vertex_ai_credentials()
 
     if policies is None:
         if reranker is None:
@@ -1384,7 +1397,16 @@ def _cli() -> None:
         from src.tracking.client import get_or_create_experiment, set_tracking_uri
         from src.tracking.logger import log_metrics, log_parameters
 
-        set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000"))
+        # os.getenv(name, default)는 빈 문자열에 default를 적용하지 않는다.
+        # .env.example대로 `MLFLOW_TRACKING_URI=`가 주입되면 set_tracking_uri("")가
+        # 불려 조용히 엉뚱한 곳을 본다 — 학습(#406)·승격과 같은 기준으로 막는다.
+        simulation_tracking_uri = (os.getenv("MLFLOW_TRACKING_URI") or "").strip()
+        if not simulation_tracking_uri:
+            raise ValueError(
+                "MLFLOW_TRACKING_URI가 설정되지 않아 --log-mlflow를 수행할 수 없습니다. "
+                "tracking 서버 주소를 지정하거나 --log-mlflow 없이 실행하십시오."
+            )
+        set_tracking_uri(simulation_tracking_uri)
         experiment_id = get_or_create_experiment("ctr-model-training")
         with mlflow.start_run(experiment_id=experiment_id, run_name="policy-simulation-round"):
             log_parameters(

@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
 """LightGBM 학습 파이프라인 Typer CLI.
 
-python -m src.cli build-features / train-model / evaluate-model / run-pipeline
+[파이프라인] 피처 조립 → 학습 → 평가 → champion 승격 구간의 진입점(배선)을
+담당한다: `python -m src.cli build-features / train-model / evaluate-model /
+run-pipeline / promote-model`.
+
+[기능] 각 단계 모듈에 인자를 전달하고 단계 순서를 정한다. run-pipeline은
+build-features → train-model → evaluate-model 순서로 실행하며, registered model
+버전 생성은 평가가 통과한 뒤에 수행한다(#421) — 평가가 실패하면 지표를 신뢰할
+수 없는 후보 버전이 registry에 남지 않는다.
+
+[비책임] 실제 조립·학습·평가·승격 로직은 각 모듈(src/pipeline/*.py,
+src/tracking/promote.py)이 소유한다. DAG·스케줄·재시도는 인접 저장소
+Autoresearch-airflow 소유다.
 """
 
+import json
+import math
 import os
 import sys
 import traceback
@@ -16,6 +29,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.pipeline import build_training_dataset, train, evaluate  # noqa: E402
+from src.pipeline.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
 from src.tracking import promote  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
     MODEL_PROMOTION_RESULT_CONTRACT,
@@ -49,6 +63,17 @@ def build_features(
     )
 
 
+def _parse_extra_features(value: Optional[str]) -> Optional[list[str]]:
+    """`--extra-features` 쉼표 목록을 파싱한다(#405).
+
+    미지정·빈 문자열이면 None을 돌려 prod 경로(계약 그대로)를 유지한다.
+    """
+    if not value:
+        return None
+    names = [name.strip() for name in value.split(",") if name.strip()]
+    return names or None
+
+
 @app.command()
 def train_model(
     config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
@@ -62,6 +87,23 @@ def train_model(
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
     random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
+    experiment: Optional[str] = typer.Option(
+        None,
+        "--experiment",
+        help=(
+            "실험 이름. 지정하면 prod와 분리된 MLflow experiment·registry 이름"
+            "(<model>-exp-<slug>)으로 기록되고, 트래킹 URI 미설정 시 로컬 파일 스토어를 "
+            "기본값으로 씁니다(#406). 이 모델은 champion 승격 대상이 아닙니다."
+        ),
+    ),
+    extra_features: Optional[str] = typer.Option(
+        None,
+        "--extra-features",
+        help=(
+            "실험 피처(쉼표 구분). prod 모델 계약을 수정하지 않고 그 뒤에 덧붙여 학습합니다(#405). "
+            "데이터셋에 이미 있는 컬럼만 지정할 수 있으며, 이 모델은 champion 승격이 차단됩니다."
+        ),
+    ),
 ) -> None:
     """LightGBM 모델 훈련 (train/val/test 3-way split, test는 완전 held-out)."""
     train.main(
@@ -74,6 +116,8 @@ def train_model(
         test_size=test_size,
         val_size=val_size,
         random_state=random_state,
+        extra_features=_parse_extra_features(extra_features),
+        experiment=experiment,
     )
 
 
@@ -83,6 +127,14 @@ def evaluate_model(
     data_path: Optional[str] = typer.Option(None, help="평가용 데이터 경로 (config override, 기본: held-out test set)"),
     model_path: Optional[str] = typer.Option(None, help="모델 로드 경로 (config override)"),
     feature_columns_path: Optional[str] = typer.Option(None, help="Feature 목록 경로 (config override)"),
+    extra_features: Optional[str] = typer.Option(
+        None,
+        "--extra-features",
+        help=(
+            "실험 피처(쉼표 구분). 학습이 --extra-features로 만든 모델을 단독으로 "
+            "재평가할 때 학습과 **같은 목록**을 주십시오(#405). 다르면 계약 검증이 막습니다."
+        ),
+    ),
 ) -> None:
     """저장된 모델을 held-out test set으로 평가."""
     evaluate.main(
@@ -90,6 +142,7 @@ def evaluate_model(
         data_path=data_path,
         model_path=model_path,
         feature_columns_path=feature_columns_path,
+        extra_features=_parse_extra_features(extra_features),
     )
 
 
@@ -112,13 +165,36 @@ def run_pipeline(
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
     random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
+    experiment: Optional[str] = typer.Option(
+        None,
+        "--experiment",
+        help=(
+            "실험 이름. 지정하면 prod와 분리된 MLflow experiment·registry 이름"
+            "(<model>-exp-<slug>)으로 기록되고, 트래킹 URI 미설정 시 로컬 파일 스토어를 "
+            "기본값으로 씁니다(#406). 이 모델은 champion 승격 대상이 아닙니다."
+        ),
+    ),
+    extra_features: Optional[str] = typer.Option(
+        None,
+        "--extra-features",
+        help=(
+            "실험 피처(쉼표 구분). prod 모델 계약을 수정하지 않고 그 뒤에 덧붙여 학습·평가합니다(#405). "
+            "데이터셋에 이미 있는 컬럼만 지정할 수 있으며, 이 모델은 champion 승격이 차단됩니다."
+        ),
+    ),
 ) -> None:
-    """전체 파이프라인 실행: build-features -> train-model -> evaluate-model (#359 C2로 feast-only)."""
+    """전체 파이프라인 실행: build-features -> train-model -> evaluate-model -> 등록.
+
+    등록(Model Registry 버전 생성)은 평가 통과 뒤에만 수행하는 별도 단계다(#421).
+    조립 경로는 #359 C2로 feast-only다. `--extra-features`를 주면 prod 모델 계약을
+    건드리지 않고 실험 피처를 덧붙여 학습하며, 학습과 평가가 같은 목록을 공유한다(#405).
+    """
+    experiment_features = _parse_extra_features(extra_features)
     typer.echo("=" * 70)
     typer.echo("전체 파이프라인 실행")
     typer.echo("=" * 70)
 
-    typer.echo("\n[1/3] build-features 실행...")
+    typer.echo("\n[1/4] build-features 실행...")
     build_training_dataset.main(
         output_path=dataset_path,
         events_start_date=events_start_date,
@@ -142,10 +218,12 @@ def run_pipeline(
         "feast_registry_path": os.environ["GCS_REGISTRY_PATH"],
     }
 
-    typer.echo("\n[2/3] train-model 실행...")
-    # train.main은 실현 sampling_rate(#300)를 반환한다 — evaluate가 오프라인
-    # 지표(LogLoss/calibration)를 원분포 기준으로 재도록 그대로 넘긴다.
-    realized_sampling_rate = train.main(
+    typer.echo("\n[2/4] train-model 실행...")
+    # train.main은 실현 sampling_rate(#300)를 담은 TrainingOutcome을 반환한다 —
+    # evaluate가 오프라인 지표(LogLoss/calibration)를 원분포 기준으로 재도록 넘긴다.
+    # defer_registration=True: registered model 버전 생성만 평가 뒤로 미룬다(#421).
+    # run 로깅(파라미터·메트릭·아티팩트)은 학습 시점에 그대로 남는다.
+    outcome = train.main(
         config_path=config_path,
         data_path=dataset_path,
         model_output=model_output,
@@ -156,6 +234,9 @@ def run_pipeline(
         val_size=val_size,
         random_state=random_state,
         extra_params=data_source_params,
+        defer_registration=True,
+        extra_features=experiment_features,
+        experiment=experiment,
     )
 
     # dataset_path(방금 만든 train+val+test 전체)는 넘기지 않는다: evaluate는
@@ -163,14 +244,24 @@ def run_pipeline(
     # 넘기면 data leakage가 재발한다. 대신 test_set_output/feature_columns_output을
     # 그대로 전달해서, 병렬로 여러 run-pipeline을 돌릴 때도(각자 다른 경로를 줬다면)
     # 자기 자신이 만든 test set/feature 목록으로 채점되도록 짝을 맞춘다.
-    typer.echo("\n[3/3] evaluate-model 실행...")
+    typer.echo("\n[3/4] evaluate-model 실행...")
     evaluate.main(
         config_path=config_path,
         data_path=test_set_output,
         model_path=model_output,
         feature_columns_path=feature_columns_output,
-        sampling_rate=realized_sampling_rate if realized_sampling_rate is not None else 1.0,
+        sampling_rate=outcome.sampling_rate,
+        # 학습이 쓴 것과 같은 목록을 넘겨야 계약 검증이 어긋나지 않는다(#405).
+        extra_features=experiment_features,
     )
+
+    # 평가가 통과한 뒤에야 registered model 버전을 만든다(#421). 평가가 실패하면
+    # evaluate.main의 예외가 여기까지 오지 않으므로, 지표를 신뢰할 수 없는 후보
+    # 버전이 registry에 쌓이지 않는다. 학습 run과 아티팩트는 이미 남아 있어,
+    # 데이터를 고친 뒤 재학습하면 정상 후보가 다시 만들어진다.
+    if outcome.pending_registration is not None:
+        typer.echo("\n[등록] 평가 통과 — Model Registry 등록...")
+        train.register_pending_model(outcome.pending_registration)
 
     typer.echo("\n" + "=" * 70)
     typer.echo("파이프라인 완료")
@@ -379,10 +470,18 @@ def _run_legacy_promotion(
                 f"v{result.candidate_version}에 필요한 calibration "
                 "아티팩트가 없습니다."
             )
-        else:
+        elif result.reason_code is PromotionReasonCode.SERVING_CALIBRATION_NOT_READY:
             detail = (
                 f"후보 {result.model_name} v{result.candidate_version}: "
                 "서빙 calibration 준비가 완료되지 않았습니다."
+            )
+        else:
+            # 새 reason code가 생겼는데 분기를 안 만든 경우. 엉뚱한 진단을 찍는 대신
+            # 코드 자체를 드러낸다(#405 리뷰 — EXPERIMENT_MODEL이 calibration 문제로
+            # 잘못 보고되던 문제).
+            detail = (
+                f"후보 {result.model_name} v{result.candidate_version}: "
+                f"{result.reason_code.value}"
             )
         typer.echo(f"[게이트 미달] {detail}", err=True)
         raise typer.Exit(code=1)
@@ -397,6 +496,104 @@ def _run_legacy_promotion(
         f"[OK] {model_name} v{result.candidate_version} "
         f"-> @{champion_alias} 승격 완료"
     )
+
+
+@app.command()
+def sweep_seeds(
+    seeds: str = typer.Option(
+        "42,43,44",
+        "--seeds",
+        help="반복할 시드 목록(쉼표 구분). 기본값은 이슈 템플릿의 재현 조건과 같은 3개입니다.",
+    ),
+    config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
+    data_path: Optional[str] = typer.Option(None, help="training dataset 경로 (config override)"),
+    output_dir: Optional[str] = typer.Option(
+        None, help="시드별 아티팩트 저장 디렉토리 (기본: data/processed/seed_sweep)"
+    ),
+    test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
+    val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
+    experiment: Optional[str] = typer.Option(
+        None, "--experiment", help="실험 이름. prod와 분리된 네임스페이스로 기록합니다(#406)."
+    ),
+    extra_features: Optional[str] = typer.Option(
+        None, "--extra-features", help="실험 피처(쉼표 구분). prod 계약을 수정하지 않습니다(#405)."
+    ),
+    result_path: Optional[str] = typer.Option(
+        None, "--result-path", help="요약 JSON 저장 경로. 미지정이면 표준출력에만 남깁니다."
+    ),
+) -> None:
+    """같은 조건을 여러 시드로 반복 학습하고 지표 평균·편차를 요약한다 (#407).
+
+    시드 1개로 1회만 돌리면 지표 차이가 진짜 개선인지 분할이 흔들려 나온 노이즈인지
+    판정할 수 없다. 이 명령은 판정을 대신하지 않고 **판정 근거**만 만든다 —
+    채택/기각은 가설의 성공 기준이 정한다.
+
+    시드마다 아티팩트가 덮어써지지 않도록 `--output-dir` 아래에 시드별로 저장한다.
+    """
+    try:
+        seed_list = [int(s.strip()) for s in seeds.split(",") if s.strip()]
+    except ValueError as error:
+        typer.echo(
+            f"[에러] --seeds는 쉼표로 구분된 정수 목록이어야 합니다: {seeds!r}", err=True
+        )
+        raise typer.Exit(code=2) from error
+
+    # 부수효과(디렉토리 생성) 전에 시드 목록을 검증한다(#407 리뷰 5).
+    validate_seeds(seed_list)
+    experiment_features = _parse_extra_features(extra_features)
+    base_dir = output_dir or os.path.join("data", "processed", "seed_sweep")
+
+    def _train_once(*, random_state: int) -> float:
+        typer.echo(f"\n[시드 {random_state}] 학습 시작...")
+        outcome = train.main(
+            # 스윕의 산출물은 승격 후보가 아니라 요약이다. 시드마다 등록하면
+            # registry에 버전이 시드 수만큼 쌓이고, 마지막 시드의 모델이 후보
+            # 자리에 앉는다(#407 리뷰 1). 등록 없이 지표만 받는다.
+            defer_registration=True,
+            config_path=config_path,
+            data_path=data_path,
+            model_output=os.path.join(base_dir, f"model_seed{random_state}.joblib"),
+            test_set_output=os.path.join(base_dir, f"test_set_seed{random_state}.csv"),
+            feature_columns_output=os.path.join(
+                base_dir, f"feature_columns_seed{random_state}.json"
+            ),
+            categorical_columns_output=os.path.join(
+                base_dir, f"categorical_columns_seed{random_state}.json"
+            ),
+            test_size=test_size,
+            val_size=val_size,
+            random_state=random_state,
+            extra_features=experiment_features,
+            experiment=experiment,
+        )
+        return outcome.val_roc_auc
+
+    # 시드 검증(빈 목록·중복)이 끝난 뒤에 디렉토리를 만든다 — 실패 경로에서
+    # 빈 디렉토리가 남지 않도록(#407 리뷰 5).
+    os.makedirs(base_dir, exist_ok=True)
+    result = run_seed_sweep(seed_list, train_once=_train_once)
+    payload = result.to_dict()
+
+    typer.echo("\n" + "=" * 70)
+    typer.echo("시드 스윕 요약")
+    typer.echo("=" * 70)
+    for seed, metric in zip(result.seeds, result.metrics):
+        typer.echo(f"  seed {seed}: {result.metric_name}={metric:.4f}")
+    summary = result.summary
+    std_text = "판정 불가(시드 1개)" if math.isnan(summary.std) else f"{summary.std:.4f}"
+    typer.echo(
+        f"\n  n={summary.n} mean={summary.mean:.4f} std={std_text} "
+        f"min={summary.minimum:.4f} max={summary.maximum:.4f}"
+    )
+    typer.echo(
+        "\n  baseline과 비교하려면 두 조건의 요약을 compare_to_baseline에 넘기십시오 "
+        "— 이 명령은 한 조건의 편차만 잽니다."
+    )
+
+    if result_path:
+        with open(result_path, "w", encoding="utf-8") as stream:
+            json.dump(payload, stream, ensure_ascii=False, indent=2)
+        typer.echo(f"\n[저장] 요약 JSON: {result_path}")
 
 
 if __name__ == "__main__":

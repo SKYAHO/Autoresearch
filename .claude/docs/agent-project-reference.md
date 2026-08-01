@@ -40,6 +40,7 @@ docs/
 | **YouTube Collection & Release** | Noah-JuYong | YouTube 수집 파이프라인·복원력 레이어·프록시, release/배포 자동화 워크플로우 | `autoresearch/youtube_collection/`, `proxy/`, `.github/workflows/` |
 | **Airflow Orchestration** | bbungjun | DAG 정의, 스케줄링, 오케스트레이션 | `SKYAHO/Autoresearch-airflow` |
 | **GCP Infrastructure** | hyeongyu-data | 클라우드·Kubernetes 리소스, IAM, 시크릿 기반 | `SKYAHO/Autoresearch-infra` |
+| **Agent Orchestration** | (미지정) | FastAPI 채팅 저장 API, Codex CLI/OpenAI 호출, PostgreSQL 저장 | `agent_orchestration/` |
 
 > `src/serving/`(리랭킹 API)과 정책 라운드·일일 추천 폐루프의 도메인 소유는
 > 미지정입니다(#149 구조 논의에서 확정 예정). 해당 영역 변경은 팀 확인 후
@@ -73,6 +74,15 @@ docs/
 - **참고:** `src/` → `autoresearch/` 패키지 통합이 논의 중입니다
   (`docs/specs/2026-07-15-repo-restructure.md` 결정 3, 팀 합의 대기).
   통합 전까지 신규 학습·서빙 코드는 기존 `src/` 배치를 따릅니다.
+
+### `agent_orchestration/`
+- **책임:** 실험형 오케스트레이션 API와 비공개 Codex Runner. `/chat`의
+  프롬프트 처리·PostgreSQL 영속화, API→Runner 내부 토큰 계약을 제공한다.
+- **배포 경계:** `deploy/agent_orchestration/api.Dockerfile`은 DB·API만,
+  `runner.Dockerfile`은 Codex CLI·OAuth PVC만 소유한다. KSA/GSA·PVC·NetworkPolicy는
+  `SKYAHO/Autoresearch-infra` 소유이다.
+- **비책임:** 사용자 OAuth, 세션/사용자 히스토리, 정책 라우팅은 후속 단계다.
+- **패턴:** `src/`와 패키지 경계를 분리해 새로운 배포 단위를 별도로 둔다.
 
 ### 외부 오케스트레이션 경계
 - DAG와 Airflow 배포는 `Autoresearch-airflow`에만 둡니다.

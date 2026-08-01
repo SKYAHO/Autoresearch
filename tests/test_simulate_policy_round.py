@@ -168,6 +168,23 @@ def test_to_candidate_videos_rejects_noncanonical_feature_contract(feature_colum
         _to_candidate_videos(pd.DataFrame(), feature_columns)
 
 
+def test_build_pool_feature_frame_skip_embedding_passes_through():
+    # skip_embedding이 compute_interaction_columns까지 그대로 전달되는지 고정한다(#426).
+    # 전달이 끊기면 conftest의 임베딩 대역이 실수를 채워 넣어 이 단언이 깨진다.
+    common = dict(
+        personas=_personas(1),
+        events=_empty_events(),
+        videos_raw=_videos_raw(3),
+        user_id="u0",
+        as_of="2026-07-20 00:00:00",
+    )
+    skipped = build_pool_feature_frame(**common, skip_embedding=True)
+    assert skipped["topic_similarity"].isna().all()
+
+    default = build_pool_feature_frame(**common)  # 기본값은 기존 동작(임베딩 계산) 유지
+    assert default["topic_similarity"].notna().all()
+
+
 def test_build_pool_feature_frame_snapshot_date_decoupled_from_as_of():
     # 영상 나이(days_since_upload)는 snapshot_date 기준, 유저 이력은 as_of 기준으로 분리한다.
     common = dict(
@@ -1439,6 +1456,81 @@ def test_main_feast_source_routes_through_offline_pit(tmp_path, stub_reranker, m
     assert len(calls) == len(_virtual_users())
     assert calls[0][0] is sentinel_store
     assert len(calls[0][2]) == 30
+
+
+def test_main_verifies_credentials_when_assembly_source_is_duckdb(
+    tmp_path, stub_reranker, monkeypatch
+):
+    # duckdb 경로는 유저별 피처 조립에서 embed_texts를 실제로 호출하므로, 라운드
+    # 시작 시 자격증명 사전점검이 1회 실행돼야 한다(#426).
+    from src.pipeline import simulate_policy_round as module
+
+    calls: list[str] = []
+    monkeypatch.setattr(module, "verify_vertex_ai_credentials", lambda: calls.append("called"))
+
+    _run_round(tmp_path, stub_reranker, generator=RuleBasedActionLogGenerator())
+
+    assert calls == ["called"]
+
+
+class _PreflightMarker(Exception):
+    """자격증명 사전점검이 실행된 지점을 식별하기 위한 마커 예외."""
+
+
+def test_main_credential_check_runs_before_simulation_stages(
+    tmp_path, stub_reranker, monkeypatch
+):
+    # "언젠가 호출됐다"가 아니라 "비싼 단계보다 먼저 호출됐다"를 고정한다(#426 최종리뷰).
+    # 사전점검이 뒤로 밀리면 피처 조립(_boom)이 먼저 터져 마커 예외가 안 나오고,
+    # 5단계를 지나 밀리면 산출물이 이미 쓰인 뒤라 두 번째 단언도 깨진다.
+    from src.pipeline import simulate_policy_round as module
+
+    def _raise_marker():
+        raise _PreflightMarker("preflight")
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("자격증명 사전점검보다 피처 조립이 먼저 실행됨")
+
+    monkeypatch.setattr(module, "verify_vertex_ai_credentials", _raise_marker)
+    monkeypatch.setattr(module, "build_pool_feature_frame", _boom)
+
+    with pytest.raises(_PreflightMarker):
+        _run_round(tmp_path, stub_reranker, generator=RuleBasedActionLogGenerator())
+
+    assert list(tmp_path.iterdir()) == []  # 어떤 산출물도 쓰이기 전에 멈췄다
+
+
+def test_main_skips_credential_check_when_assembly_source_is_feast(
+    tmp_path, stub_reranker, monkeypatch
+):
+    # feast 경로는 build_pool_feature_frame_feast가 BigQuery 사전계산값을 읽어
+    # embed_texts를 호출하지 않으므로 사전점검이 불필요하다 — 실행되면 안 된다(#426).
+    from src.pipeline import simulate_policy_round as module
+
+    def _fail_if_called():
+        raise AssertionError("assembly_source='feast'인데 자격증명 사전점검이 호출됨")
+
+    monkeypatch.setattr(module, "verify_vertex_ai_credentials", _fail_if_called)
+    monkeypatch.setattr(module, "build_pool_feature_frame_feast", _fake_pool_frame)
+
+    report = main(
+        personas=_personas(),
+        virtual_users=_virtual_users(),
+        videos_raw=_videos_raw(),
+        events=_empty_events(),
+        generator=RuleBasedActionLogGenerator(),
+        reranker=stub_reranker,
+        k=6,
+        exploration_ratio=0.0,
+        click_threshold=0.0,
+        seed=42,
+        policy_version="feast-run",
+        output_dir=str(tmp_path),
+        assembly_source="feast",
+        feature_store=object(),
+    )
+
+    assert set(report["policies"]) == {"baseline", "model"}
 
 
 def test_main_feast_requires_feature_store(stub_reranker):

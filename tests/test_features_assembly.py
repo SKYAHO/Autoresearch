@@ -321,6 +321,49 @@ def test_compute_interaction_columns_falls_back_without_primary_categories():
     assert out["preferred_category"].iloc[0] == ["Gaming"]
 
 
+def test_compute_interaction_columns_skip_embedding_never_calls_embed_texts(monkeypatch):
+    # skip_embedding=True(#426, Vertex AI 장애 시 우회 경로)는 topic_similarity를
+    # 포기하는 대신 embed_texts(Vertex AI)를 절대 호출하면 안 된다 — 호출되면
+    # 즉시 실패하도록 예외를 던지는 스텁으로 교체.
+    def fail_if_called(texts, task_type):
+        raise AssertionError("skip_embedding=True인데 embed_texts가 호출됨")
+
+    monkeypatch.setattr(assembly_module, "embed_texts", fail_if_called)
+
+    joined = pd.DataFrame(
+        {
+            "hobbies_and_interests_list": ['["gaming"]', '["music"]'],
+            "historical_category_affinity": ["Gaming", "Music"],
+            "category_id": ["Gaming", "Music"],
+        }
+    )
+    out = compute_interaction_columns(joined, skip_embedding=True)
+
+    assert out["topic_similarity"].isna().all()
+
+
+def test_compute_interaction_columns_skip_embedding_preserves_other_matches():
+    # historical_category_match/preferred_category_match 산출 로직은 skip_embedding
+    # 값과 무관하게 완전히 동일해야 한다(compute_user_topic_features와 같은 이유로
+    # 별도 함수로 복제하지 않고 같은 함수를 공유한다 — #426).
+    joined = pd.DataFrame(
+        {
+            "hobbies_and_interests_list": ['["gaming"]', '["music"]'],
+            "historical_category_affinity": ["Gaming", "Music"],
+            "category_id": ["Gaming", "Music"],
+        }
+    )
+    with_embedding = compute_interaction_columns(joined)
+    without_embedding = compute_interaction_columns(joined, skip_embedding=True)
+
+    assert list(without_embedding["historical_category_match"]) == list(
+        with_embedding["historical_category_match"]
+    )
+    assert list(without_embedding["preferred_category_match"]) == list(
+        with_embedding["preferred_category_match"]
+    )
+
+
 def test_compute_user_topic_features_shape_and_values():
     personas = pd.DataFrame(
         {

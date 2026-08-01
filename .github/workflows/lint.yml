@@ -30,4 +30,4 @@ jobs:
         run: uv sync --frozen --only-group lint
 
       - name: Run Ruff
-        run: uv run --no-sync ruff check autoresearch tests tools
+        run: uv run --no-sync ruff check agent_orchestration autoresearch tests tools

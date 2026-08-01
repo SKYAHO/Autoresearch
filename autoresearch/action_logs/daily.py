@@ -1,7 +1,15 @@
-"""Daily action log 생성 실행기.
+"""Daily action log partition 실행과 산출물 publish를 조정한다.
 
-공개 batch entrypoint가 이 모듈을 호출한다. 입력은 같은 날짜의 YouTube daily
-partition과 virtual user parquet이고, 출력은 action log dt partition이다.
+[파이프라인] 공개 action log batch CLI와 LLM 판정 pipeline 사이에서 일일 입력
+partition을 읽고 single 또는 shard 실행을 선택한 뒤 final partition을 publish한다.
+
+[기능] 단일 coordinator가 daily temporary directory에 completion-time Parquet/JSONL을
+최종 commit한 뒤 row-group staging 검증과 last-known-good publish를 수행하며, 기존
+shard/checkpoint/merge 실행도 제공한다.
+
+[비책임] LLM 판정·클릭·이벤트 의미는 autoresearch/action_logs/pipeline.py,
+CLI 인자 계약은 autoresearch/jobs/action_log.py, Airflow KPO resource는
+SKYAHO/Autoresearch-airflow가 소유한다.
 """
 from __future__ import annotations
 
@@ -35,8 +43,8 @@ from autoresearch.action_logs.pipeline import (
     ExposureMetadata,
     attach_exposure_tags,
     expand_action_log_drafts,
-    generate_action_log_batch,
     generate_action_log_drafts,
+    generate_action_log_single,
     read_action_log_checkpoint_part,
     read_action_log_draft_parquet,
     write_action_log_checkpoint_part,
@@ -775,6 +783,44 @@ def _validate_event_partition_dates(events, partition_date: date) -> None:
             )
 
 
+def _validate_staged_event_parquet(
+    path: str | Path,
+    partition_date: date,
+) -> None:
+    """single staging parquet의 schema와 row-group별 KST partition 날짜를 검증한다."""
+
+    try:
+        parquet = pq.ParquetFile(path)
+    except Exception as exc:  # noqa: BLE001 - pyarrow errors vary by file failure
+        raise ValueError("staged final parquet is unreadable") from exc
+    if not parquet.schema_arrow.equals(EVENT_LOG_PARQUET_SCHEMA):
+        raise ValueError(
+            "staged final parquet schema does not match action log contract"
+        )
+
+    for row_group_index in range(parquet.num_row_groups):
+        table = parquet.read_row_group(
+            row_group_index,
+            columns=["event_id", "event_timestamp"],
+        )
+        for row in table.to_pylist():
+            timestamp = row["event_timestamp"]
+            if not isinstance(timestamp, datetime):
+                raise ValueError(
+                    "staged final parquet has invalid event_timestamp "
+                    f"(event_id={row['event_id']})"
+                )
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=UTC)
+            event_date = timestamp.astimezone(_KST).date()
+            if event_date != partition_date:
+                raise ValueError(
+                    "event_timestamp outside partition_date "
+                    f"(event_id={row['event_id']}, event_date={event_date}, "
+                    f"partition_date={partition_date})"
+                )
+
+
 def _build_request(
     *,
     partition_date: date,
@@ -912,7 +958,7 @@ def run_daily_action_log(
         )
         try:
             try:
-                result = generate_action_log_batch(
+                result = generate_action_log_single(
                     request,
                     virtual_users,
                     videos,
@@ -932,8 +978,7 @@ def run_daily_action_log(
                 )
             raise
 
-        _validate_event_partition_dates(result.batch.events, partition_date)
-        pq.read_table(request.output_path)
+        _validate_staged_event_parquet(request.output_path, partition_date)
         warnings: list[dict[str, str]] = []
         if quarantine_path:
             warning = _publish_quarantine_best_effort(

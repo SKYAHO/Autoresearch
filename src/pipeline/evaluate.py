@@ -8,6 +8,9 @@ baseline 모델과 비교한다.
 
 import os
 import sys
+from collections.abc import Sequence
+from typing import Optional
+
 import yaml
 import pickle
 import pandas as pd
@@ -25,6 +28,7 @@ from src.utils.model_utils import load_model, load_feature_columns  # noqa: E402
 from src.models.downsampling import apply_downsampling_calibration  # noqa: E402
 from src.features.model_contract import (  # noqa: E402
     CATEGORICAL_FEATURE_COLUMNS,
+    require_experiment_feature_columns,
     require_model_feature_columns,
 )
 
@@ -51,7 +55,11 @@ def main(
     model_path: str = None,
     feature_columns_path: str = None,
     sampling_rate: float = 1.0,
+    extra_features: Optional[Sequence[str]] = None,
 ):
+    # extra_features: 학습이 prod 계약 뒤에 덧붙인 실험 피처(#405). 지정하면 계약
+    # 검증이 "prod 접두부 정확 일치 + 나머지가 선언한 실험 피처"로 바뀐다. 미지정
+    # (기본값)이면 기존의 엄격한 동등 검사 그대로다 — prod 경로는 느슨해지지 않는다.
     # sampling_rate: 학습 시 쓴 negative downsampling 실현 비율(#300). 다운샘플된
     # 분포로 학습된 모델의 출력 확률을 원분포로 보정해 LogLoss/Brier/calibration을
     # 올바른 분포에서 잰다. 기본 1.0 = 보정 없음(항등) — downsampling 미사용
@@ -78,7 +86,13 @@ def main(
         feature_columns_path = os.path.join(project_root, feature_columns_path)
 
     model = load_model(model_path)
-    feature_columns = require_model_feature_columns(load_feature_columns(feature_columns_path))
+    loaded_columns = load_feature_columns(feature_columns_path)
+    if extra_features:
+        feature_columns = require_experiment_feature_columns(
+            loaded_columns, extra=extra_features
+        )
+    else:
+        feature_columns = require_model_feature_columns(loaded_columns)
 
     print("\n[Step 2] 데이터 로드 (held-out test set)...")
     if data_path is None:

@@ -20,6 +20,21 @@ from src.tracking.promotion_result import (  # noqa: E402
 MODEL_NAME = "ctr-model"
 
 
+@pytest.fixture(autouse=True)
+def _promote_tracking_uri(monkeypatch):
+    """승격 경로가 요구하는 tracking URI를 테스트가 스스로 설정한다.
+
+    `promote.main()`은 `MLFLOW_TRACKING_URI`가 비면 fail-fast한다(#406). 이 파일의
+    테스트들은 그 값을 설정하지 않았는데도 전체 스위트에서는 통과했다 — 앞서 실행된
+    학습 테스트가 `mlflow.set_tracking_uri()`를 부르면 **MLflow가 os.environ에 값을
+    써서** 뒤 테스트로 새기 때문이다(실측 확인).
+
+    그래서 단독 실행하면 23건이 무더기로 실패했다. 실행 순서에 기대는 통과는 통과가
+    아니므로 여기서 명시적으로 준다.
+    """
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow-test:5000")
+
+
 def _version(version, *, aliases=None, run_id=None, tags=None):
     return SimpleNamespace(
         version=version,
@@ -330,4 +345,122 @@ def test_main_rejects_when_serving_calibration_is_not_ready(monkeypatch):
         result.reason_code
         is PromotionReasonCode.SERVING_CALIBRATION_NOT_READY
     )
+    assert client.set_alias_calls == []
+
+
+# --- 실험 모델 승격 차단 (#405) ---
+
+
+def test_experiment_feature_version_never_becomes_candidate(monkeypatch):
+    """실험 피처로 학습한 버전은 지표가 아무리 좋아도 후보가 되지 않는다.
+
+    prod 계약에 없는 입력으로 학습된 모델이라 서빙이 그 피처를 만들어낼 수 없다.
+    거부가 아니라 **후보 선택에서 제외**한다 — 거부만 하면 그 버전이 후보 자리를
+    차지해 앞의 정상 후보까지 막힌다(#405 리뷰 1).
+
+    여기서는 champion(v3) 말고 승격 가능한 버전이 없으므로 champion 유지로 끝난다.
+    """
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    experiment = _version(
+        "4", run_id="run-4", tags={"experiment_features": "views_per_day"}
+    )
+    client = _PromoteClient(
+        main_versions=[champion, experiment],
+        runs={"run-3": {"val_roc_auc": 0.75}, "run-4": {"val_roc_auc": 0.99}},
+    )
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.NO_CANDIDATE
+    assert result.reason_code is PromotionReasonCode.ALREADY_CHAMPION
+    assert result.candidate_version == "3"
+    # 지표 0.99짜리 실험 버전이 champion을 가져가지 않는다.
+    assert client.set_alias_calls == []
+
+
+def test_main_promotes_when_experiment_tag_is_absent(monkeypatch):
+    """일반 후보는 태그가 없으므로 기존 경로 그대로 승격된다(#405 회귀 방지)."""
+    champion = _version("3", aliases=["champion"], run_id="run-3")
+    candidate = _version("4", run_id="run-4", tags={"sampling_rate": "1.0"})
+    client = _PromoteClient(
+        main_versions=[champion, candidate],
+        runs={"run-3": {"val_roc_auc": 0.75}, "run-4": {"val_roc_auc": 0.80}},
+    )
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.PROMOTED
+    assert client.set_alias_calls == [(MODEL_NAME, "champion", "4")]
+
+
+def test_main_ignores_empty_experiment_tag(monkeypatch):
+    """빈 문자열 태그는 실험 표식으로 보지 않는다."""
+    candidate = _version("1", run_id="run-1", tags={"experiment_features": ""})
+    client = _PromoteClient(main_versions=[candidate], runs={"run-1": {"val_roc_auc": 0.70}})
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.PROMOTED
+
+
+def test_main_rejects_experiment_namespace_model_name(monkeypatch):
+    """실험 네임스페이스 이름으로 승격을 부르면 registry 조회 전에 거부한다(#406).
+
+    #405의 후보 제외와 층이 다르다 — 저쪽은 prod 이름 안에 섞인 실험 **버전**을
+    거르고, 이쪽은 실험 전용 registry **이름**으로 부른 호출 자체를 막는다.
+    """
+    client = _PromoteClient(main_versions=[])
+    _patch_client(monkeypatch, client)
+
+    result = promote.main("ctr-model-exp-views-per-day", "champion")
+
+    # #405의 후보 제외와 같은 분류 — 게이트 미달이 아니라 심사 대상 부재다.
+    assert result.outcome is PromotionOutcome.NO_CANDIDATE
+    assert result.reason_code is PromotionReasonCode.EXPERIMENT_MODEL
+    assert client.set_alias_calls == []
+
+
+def test_experiment_version_does_not_block_earlier_prod_candidate(monkeypatch):
+    """실험 버전이 번호상 최신이어도 그 앞의 prod 후보가 승격된다(#405 리뷰 1).
+
+    예전에는 후보를 버전 번호 최대값 하나로 골라 거부만 했다. 그러면 실험이
+    만든 v11이 후보를 차지하고 정상 후보 v10은 영원히 승격되지 못해, 실험을
+    돌린 날의 champion 갱신이 조용히 유실됐다.
+    """
+    champion = _version("9", aliases=["champion"], run_id="run-9")
+    prod_candidate = _version("10", run_id="run-10")
+    experiment = _version(
+        "11", run_id="run-11", tags={"experiment_features": "views_per_day"}
+    )
+    client = _PromoteClient(
+        main_versions=[champion, prod_candidate, experiment],
+        runs={"run-9": {"val_roc_auc": 0.75}, "run-10": {"val_roc_auc": 0.80}},
+    )
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.PROMOTED
+    assert result.candidate_version == "10"
+    assert client.set_alias_calls == [(MODEL_NAME, "champion", "10")]
+
+
+def test_all_experiment_versions_report_no_candidate(monkeypatch):
+    """등록된 게 전부 실험 모델이면 '게이트 미달'이 아니라 '후보 없음'이다.
+
+    일일 DAG의 알람 해석이 어긋나지 않도록 REJECTED가 아닌 NO_CANDIDATE로 분류한다.
+    """
+    experiment = _version(
+        "1", run_id="run-1", tags={"experiment_features": "views_per_day"}
+    )
+    client = _PromoteClient(main_versions=[experiment], runs={"run-1": {"val_roc_auc": 0.9}})
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.NO_CANDIDATE
+    assert result.reason_code is PromotionReasonCode.EXPERIMENT_MODEL
     assert client.set_alias_calls == []
