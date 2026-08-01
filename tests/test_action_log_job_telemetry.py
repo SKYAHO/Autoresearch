@@ -21,6 +21,8 @@ _SINGLE_ARGS = [
     "gs://test-bucket/data_lake/action_log",
     "--click-threshold",
     "0.5",
+    "--exposure-source",
+    "heuristic",
 ]
 
 
