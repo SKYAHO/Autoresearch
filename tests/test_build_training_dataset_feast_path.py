@@ -259,3 +259,57 @@ def test_assemble_via_feast_missing_feature_raises(tmp_path, monkeypatch) -> Non
         btd._assemble_via_feast(
             str(tmp_path / "out.csv"), "2026-07-07", "2026-07-21", min_coverage_days=0
         )
+
+
+def test_assemble_via_feast_guard_fires_before_expensive_retrieval(
+    tmp_path, monkeypatch
+) -> None:
+    """가드가 조립 안에서 실제로 발동하고, **비싼 조회 전에** 멈추는지 고정한다(#464).
+
+    순수 함수 테스트(test_spine_coverage_guard.py)와 별개로 **배선**을 본다. 검증 호출이
+    나중에 retrieve_training_features 아래로 옮겨져도 이 테스트가 잡는다 — 그것이 이 PR이
+    내세운 "실패할 조립에 BigQuery 스캔을 쓰지 않는다"는 근거이기 때문이다.
+    """
+    called = {"store": 0, "retrieve": 0}
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    _fake_env(monkeypatch, features)
+
+    def _fail_if_called(name):
+        def _inner(*args, **kwargs):
+            called[name] += 1
+            return object() if name == "store" else features
+
+        return _inner
+
+    monkeypatch.setattr(
+        feast_retrieval, "build_offline_feature_store", _fail_if_called("store")
+    )
+    monkeypatch.setattr(
+        feast_retrieval, "retrieve_training_features", _fail_if_called("retrieve")
+    )
+
+    # _fake_env의 spine은 2026-07-02 하루뿐 — 기본 기준(3일)에 미달한다.
+    with pytest.raises(ValueError, match="학습에 쓸 수 있는 날이 부족합니다"):
+        btd._assemble_via_feast(str(tmp_path / "out.csv"), "2026-07-01", "2026-07-07")
+
+    assert called == {"store": 0, "retrieve": 0}
+
+
+def test_assemble_via_feast_returns_coverage_for_lineage(tmp_path, monkeypatch) -> None:
+    # 조립이 실측 커버리지를 돌려줘야 run-pipeline이 MLflow lineage에 남길 수 있다(#464 리뷰).
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    _fake_env(monkeypatch, features)
+
+    coverage = btd._assemble_via_feast(
+        str(tmp_path / "out.csv"), "2026-07-01", "2026-07-03", min_coverage_days=0
+    )
+
+    assert coverage.requested_days == ("2026-07-01", "2026-07-02", "2026-07-03")
+    # 1행짜리 mock spine이라 정상일로 세지 않는다 — 그 사실이 그대로 lineage에 남아야 한다.
+    assert coverage.usable_days == ()
+    assert coverage.sparse_days == ("2026-07-02",)
+    params = coverage.as_lineage_params(min_days=0)
+    assert params["spine_coverage_guard"] == "off"
+    assert params["spine_requested_days"] == "3"

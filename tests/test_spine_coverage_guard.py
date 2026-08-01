@@ -148,6 +148,58 @@ def test_day_boundary_uses_kst_not_utc():
     assert coverage.missing_days == ("2026-07-27",)
 
 
+def test_undated_rows_are_counted_and_warned(capsys):
+    # event_timestamp가 NaT면 어느 날짜에도 안 잡힌다. 조용히 버리면 "총 N행"과 일별
+    # 합계가 어긋난 채로 남으므로 따로 세어 드러낸다(#464 리뷰).
+    spine = _spine({"2026-07-27": (6000, 50), "2026-07-28": (6000, 50), "2026-07-29": (6000, 50)})
+    spine.loc[0, "event_timestamp"] = pd.NaT
+
+    coverage = summarize_spine_coverage(spine, "2026-07-27", "2026-07-29")
+
+    assert coverage.undated_rows == 1
+    assert coverage.total_rows == 18000
+    assert "날짜 없음 1행" in coverage.describe()
+    require_spine_coverage(coverage, min_days=3)
+    assert "날짜에 귀속되지 않은 행" in capsys.readouterr().out
+
+
+def test_lineage_params_expose_actual_coverage_and_guard_state():
+    # 요청 구간만 기록하면 v12의 비대칭이 남는다 — 실측 커버리지와 적용 기준을 남긴다.
+    spine = _spine({"2026-07-24": (6000, 50), "2026-07-27": (6000, 50)})
+
+    coverage = summarize_spine_coverage(spine, "2026-07-24", "2026-07-27")
+    params = coverage.as_lineage_params(min_days=3)
+
+    assert params["spine_requested_days"] == "4"
+    assert params["spine_usable_days"] == "2"
+    assert params["spine_missing_days"] == "2"
+    assert params["spine_missing_day_list"] == "2026-07-25,2026-07-26"
+    assert params["spine_coverage_min_days_applied"] == "3"
+    assert params["spine_coverage_guard"] == "on"
+    # 우회 실행은 정상 실행과 run 파라미터만으로 구별돼야 한다.
+    assert coverage.as_lineage_params(min_days=0)["spine_coverage_guard"] == "off"
+
+
+def test_lineage_missing_day_list_is_truncated_with_marker():
+    # 요청 기간이 길면 목록이 길어진다. 잘라 담되 "전부"인 것처럼 읽히면 안 된다.
+    spine = _spine({"2026-07-31": (6000, 50)})
+
+    coverage = summarize_spine_coverage(spine, "2026-07-01", "2026-07-31")
+    value = coverage.as_lineage_params(min_days=3)["spine_missing_day_list"]
+
+    assert value.count(",") == 10  # 10개 + 잘림 표시
+    assert value.endswith(",+20more")
+    assert coverage.as_lineage_params(min_days=3)["spine_missing_days"] == "30"
+
+
+def test_lineage_missing_day_list_is_none_when_complete():
+    spine = _spine({"2026-07-27": (6000, 50), "2026-07-28": (6000, 50)})
+
+    coverage = summarize_spine_coverage(spine, "2026-07-27", "2026-07-28")
+
+    assert coverage.as_lineage_params(min_days=2)["spine_missing_day_list"] == "none"
+
+
 def test_reversed_range_is_rejected():
     with pytest.raises(ValueError, match="요청 기간이 비었습니다"):
         summarize_spine_coverage(
