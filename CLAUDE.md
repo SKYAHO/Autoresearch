@@ -80,6 +80,9 @@ Autoresearch의 최종 목표는 **ML 리서처·엔지니어를 위한 자율 �
 
 ## Core Rules
 
+- GitHub에서 이슈·브랜치·PR을 생성·수정·삭제하기 전에는 `CONTRIBUTING.md`와
+  `.claude/docs/agent-workflow-reference.md`를 모두 읽고, 작업 유형과 Issue Form 또는
+  CLI 요구사항(제목 prefix, label, assignee)을 확인합니다.
 - 코드가 변경되는 작업은 반드시 이슈를 먼저 발행하고, 그 이슈의 `Create a
   branch`로 브랜치를 생성합니다(이슈-브랜치 자동 연결). 상세는
   `.claude/docs/agent-workflow-reference.md` 참조.
