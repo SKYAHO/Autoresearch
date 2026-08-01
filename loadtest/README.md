@@ -28,8 +28,11 @@ HTTP 200, 후보 수·입력 순서, 단일 비어 있지 않은 model ID, 유�
 시나리오는 동일 VU의 `constant-vus` warmup 뒤에 같은 VU의 측정 구간을 지연
 시작합니다. `rerank_measure_duration_seconds`,
 `rerank_measure_requests`, `rerank_measure_failure`,
-`rerank_measure_status_code`는 측정 구간에서만 기록합니다. 오류율 threshold는
-`rerank_measure_failure < 0.01`입니다.
+`rerank_measure_status_code_200`, `_422`, `_500`, `_503`, `_other`는 측정
+구간에서만 기록합니다. duration Trend에는 k6 HTTP timing의 milliseconds를 1,000으로
+나눈 **seconds 숫자**를 기록하며, time Trend flag는 사용하지 않습니다. 따라서 raw
+summary에서 상태별 request count와 seconds 단위 p50/p95/p99를 태그 해석 없이 읽을 수
+있습니다. 오류율 threshold는 `rerank_measure_failure < 0.01`입니다.
 
 ## 정적·구문 검증
 

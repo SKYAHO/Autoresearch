@@ -166,6 +166,11 @@ def test_k6_script_has_warmup_and_measurement_contract() -> None:
     assert "rate<0.01" in script
     assert "loadtest-user-001" in script
     assert "loadtest-video-200" in script
+    assert 'new Trend("rerank_measure_duration_seconds")' in script
+    assert 'new Trend("rerank_measure_duration_seconds", true)' not in script
+    assert "response.timings.duration / 1000" in script
+    for status_code in ("200", "422", "500", "503", "other"):
+        assert f"rerank_measure_status_code_{status_code}" in script
 
 
 def test_provisioner_default_dry_run_executes_only_count_selects(

@@ -46,10 +46,14 @@ if (allVideoIds[allVideoIds.length - 1] !== LAST_VIDEO_ID) {
 }
 
 const selectedVideoIds = allVideoIds.slice(0, candidateCount);
-const measurementDuration = new Trend("rerank_measure_duration_seconds", true);
+const measurementDuration = new Trend("rerank_measure_duration_seconds");
 const measurementRequests = new Counter("rerank_measure_requests");
 const measurementFailure = new Rate("rerank_measure_failure");
-const measurementStatusCode = new Counter("rerank_measure_status_code");
+const measurementStatusCode200 = new Counter("rerank_measure_status_code_200");
+const measurementStatusCode422 = new Counter("rerank_measure_status_code_422");
+const measurementStatusCode500 = new Counter("rerank_measure_status_code_500");
+const measurementStatusCode503 = new Counter("rerank_measure_status_code_503");
+const measurementStatusCodeOther = new Counter("rerank_measure_status_code_other");
 
 export const options = {
   scenarios: {
@@ -114,6 +118,25 @@ function validateResponse(response, requestedVideoIds) {
   };
 }
 
+function recordMeasurementStatus(statusCode) {
+  switch (statusCode) {
+    case 200:
+      measurementStatusCode200.add(1);
+      break;
+    case 422:
+      measurementStatusCode422.add(1);
+      break;
+    case 500:
+      measurementStatusCode500.add(1);
+      break;
+    case 503:
+      measurementStatusCode503.add(1);
+      break;
+    default:
+      measurementStatusCodeOther.add(1);
+  }
+}
+
 function postAndValidate(requestedVideoIds, recordMeasurement) {
   const response = http.post(
     `${baseUrl}/rerank`,
@@ -132,10 +155,11 @@ function postAndValidate(requestedVideoIds, recordMeasurement) {
   });
 
   if (recordMeasurement) {
+    // k6 response timing은 milliseconds다. isTime flag 없는 Trend에는 seconds로 기록한다.
     measurementDuration.add(response.timings.duration / 1000);
     measurementRequests.add(1);
     measurementFailure.add(!isValid);
-    measurementStatusCode.add(1, { status_code: String(response.status) });
+    recordMeasurementStatus(response.status);
   }
 
   return isValid;
