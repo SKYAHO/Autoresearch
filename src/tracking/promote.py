@@ -10,8 +10,8 @@ champion 이상인지, downsampling 후보면 같은 run에 calibration 아티�
 있는지 확인한다. 정상 판정은 구조화 결과로 반환하고 게이트를 통과하면
 champion alias를 옮긴다(#390 단일 기준).
 
-[비책임] 서빙 시점 alias resolve·calibration 로드(src/serving/model_loader.py의
-_resolve_calibration_run_id), Airflow DAG 스케줄링·재시도
+[비책임] 서빙 시점 alias resolve·manifest/calibration 로드(src/serving/model_loader.py),
+Airflow DAG 스케줄링·재시도
 (Autoresearch-airflow).
 """
 

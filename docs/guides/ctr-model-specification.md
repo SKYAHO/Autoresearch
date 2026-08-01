@@ -335,26 +335,26 @@ Training Dataset의 한 행은 `(user_id, video_id, clicked)` pointwise 구조�
 > 하나로 모여 어긋난 조합이 구조적으로 불가능해진다. #300 스펙의 "calibration은 모델이 아니라
 > 상수+수식" 관점이 이 종속 방식과 다시 정합한다.
 >
-> **점진 로드맵**: 본 섹션(#390)은 1단계다. 2단계는 LightGBM→ONNX 변환 그래프의 뒷단을 확장해
+> **후속 로드맵**: LightGBM→ONNX 변환 그래프의 뒷단을 확장해
 > calibration 계수를 심어 **단일 모델 하나**로 패키징하는 것(별도 이슈). 관련 완료 슬라이스:
 > 모델 바이너리 **ONNX 전환**(#336, 학습측 #179 흡수), feature 메타 **JSON 전환**(#344).
-> **joblib 폴백 제거**와 **manifest.json 해시 검증**은 아직 남은 목표다.
+> #302에서 **joblib 폴백 제거**와 **manifest.json 해시 검증**도 완료했다.
 
 ### Deployment Package Composition
 
 배포 단위는 champion 승격·롤백 시 **원자적으로 함께 이동**해야 하는 아티팩트들의 묶음이다.
 
-| Artifact | 현행 | 남은 목표 | 생성 시점 | 등록 위치 |
-| --- | --- | --- | --- | --- |
-| 메인 모델 | `model/lgbm_model.joblib` + `model_onnx/`(`onnxruntime` 추론, joblib 폴백) (#336) | joblib 폴백 제거 | 학습(train.py) | Registry `ctr-model` |
-| feature 컬럼 | `features/feature_columns.json` (JSON) (#344) | — | 학습 | 메인 모델 run |
-| categorical 매핑 | `features/categorical_columns.json` (JSON) (#344) | — | 학습 | 메인 모델 run |
-| **calibration** | `calibration/calibration.json` (JSON `w`) | 동일(JSON) | 학습(downsampling 시) | **메인 모델 run**(아티팩트, 별도 등록 없음) |
-| manifest | — | `manifest/manifest.json` | 학습 | 메인 모델 run |
+| Artifact | 현행 | 생성 시점 | 등록 위치 |
+| --- | --- | --- | --- |
+| 메인 모델 | `model_onnx/`(고정 entrypoint `model.onnx`) | 학습(train.py) | Registry `ctr-model` |
+| feature 컬럼 | `features/feature_columns.json` | 학습 | 메인 모델 run |
+| categorical 매핑 | `features/categorical_columns.json` | 학습 | 메인 모델 run |
+| **calibration** | `calibration/calibration.json` (JSON `w`) | 학습(downsampling 시) | **메인 모델 run** |
+| manifest | `manifest/manifest.json` (`ctr-model-package-v1`) | 학습 | 메인 모델 run |
 
 > ⚠️ calibration 아티팩트는 downsampling 학습(`sampling_rate < 1.0`)에서만 생성·로깅된다.
-> `w = 1.0`(미사용)이거나 #300 이전 모델(예 champion v6)은 calibration 아티팩트가 없으며, 서빙은
-> 이를 **항등(no-op)**으로 처리해 기존 1-모델 배포가 그대로 동작한다(하위호환).
+> `w = 1.0`이면 calibration 아티팩트가 없고 항등(no-op)이다. manifest 없는 기존 모델은
+> 호환 모델로 간주하지 않으며 서빙 기동을 fail-closed로 거부한다.
 
 ### Calibration Definition
 
@@ -383,7 +383,7 @@ Training Dataset의 한 행은 `(user_id, video_id, clicked)` pointwise 구조�
   거부된다(`src/tracking/registry.py:set_model_alias`, #300 순서 가드). 이 플래그는 "서빙이 실제로
   체이닝하도록 배포됨"을 나타내는 배포 결합 신호다.
 
-### manifest 스키마 (목표 — 구현은 #302 후속)
+### manifest 스키마
 
 manifest는 배포 단위의 아티팩트들이 **서로 맞는 조합인지 검증**하는 용도이며, feature 계약의
 SSOT가 아니다 — 계약 SSOT는 `src/features/model_contract.py`이고 manifest가 이를 대체하지 않는다
@@ -392,22 +392,15 @@ SSOT가 아니다 — 계약 SSOT는 `src/features/model_contract.py`이고 mani
 
 | 필드 | 내용 |
 | --- | --- |
-| feature 이름·순서 | model_contract 계약 재현(검증용, SSOT 아님) |
-| Feast Entity/FeatureView 참조 | 서빙이 조회할 FeatureService/View 식별 |
-| 입출력 스키마 | 메인 모델 입력 텐서·출력, calibration 입출력 |
-| calibration `w` 위치 | calibration 모델 아티팩트 참조 |
-| 아티팩트 해시 | 메인·calibration 모델 바이너리 해시(짝 검증) |
+| `contract_version` | `ctr-model-package-v1` |
+| `feature_service` | `ctr_training_v1` |
+| `sampling_rate` | 유일한 배포 계약 값, 유한한 `(0, 1]` |
+| `artifacts` | 고정 경로와 canonical SHA-256, 조건부 calibration |
 
 - **형식은 JSON**(pickle 금지 — 역직렬화 보안 위험·버전 의존성 제거).
-- 서버 기동 시 해시 짝 검증이 불일치하면 **fail-closed**(기동 거부)한다.
-- **현행(#390)**: calibration이 메인과 **같은 run**에 종속되므로(run_id 종속) "서로 다른 학습에서
-  나온 조합" 자체가 구조적으로 불가능하다 — 별도 짝 검증이 필요 없다. manifest 해시 검증은 후속
-  슬라이스에서 아티팩트 무결성(손상·변조) 검증 용도로 이 자리를 채운다.
-
-> #### ⚠️ 잔여 fail-open — mutable tag 의존
-> 서빙의 calibration 사용 판단은 메인 버전의 `sampling_rate` tag에 의존한다. tag가 **없으면**
-> non-downsampling으로 간주해 calibration을 스킵하는데(v6 하위호환), downsampling 모델인데 tag가
-> **유실**된 이상 상황이 champion으로 오르면 보정 안 된 확률을 서빙하는 유일한 fail-open 지점이다.
+- 서버는 프로세스 전용 workspace에 같은 run의 아티팩트를 받은 뒤 manifest 해시·calibration 값과
+  ONNX 입출력 계약을 검증한다. 불일치·누락·손상 시 **fail-closed**로 기동을 거부한다.
+- sampling rate 판단은 mutable Registry tag가 아니라 manifest 값만 사용한다.
 > 정상 경로에선 `train.py`가 tag를 항상 기록해 발생하지 않으며(승격 게이트도 동일 가정), **근본
 > 해소는 `sampling_rate`를 mutable tag가 아니라 해시 검증되는 immutable manifest 번들에 넣는 것**
 > (후속 슬라이스)이다.
