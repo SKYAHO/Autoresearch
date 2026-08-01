@@ -114,7 +114,11 @@ def test_assemble_pins_registry_and_writes_snapshot(tmp_path, monkeypatch) -> No
     monkeypatch.setattr(feast_retrieval, "build_offline_feature_store", fake_store)
 
     output_path = tmp_path / "out.csv"
-    btd._assemble_via_feast(str(output_path), "2026-07-01", "2026-07-30")
+    # 이 테스트가 보는 건 registry pinning·snapshot이지 커버리지가 아니다 — 1행 mock
+    # spine이 커버리지 가드(#464)에 걸리지 않도록 명시적으로 우회한다.
+    btd._assemble_via_feast(
+        str(output_path), "2026-07-01", "2026-07-30", min_coverage_days=0
+    )
 
     assert seen["registry_path"].endswith("registry.db")
     assert not seen["registry_path"].startswith("gs://")
@@ -135,8 +139,12 @@ def test_registry_download_failure_creates_no_dataset_or_sidecar(tmp_path, monke
     monkeypatch.setattr(btd, "_download_pinned_registry", fail_download)
     output_path = tmp_path / "out.csv"
 
+    # 이 테스트가 보는 건 registry download 실패 처리지 커버리지가 아니다 — 1행 mock
+    # spine이 커버리지 가드(#464)에 걸리지 않도록 명시적으로 우회한다.
     with pytest.raises(ProvenanceValidationError, match="registry"):
-        btd._assemble_via_feast(str(output_path), "2026-07-01", "2026-07-30")
+        btd._assemble_via_feast(
+            str(output_path), "2026-07-01", "2026-07-30", min_coverage_days=0
+        )
 
     assert not output_path.exists()
     assert not snapshot_manifest_path(output_path).exists()
