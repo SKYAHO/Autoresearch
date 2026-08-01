@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-01T06:55:47Z",
+  "generated_at": "2026-08-01T07:36:33Z",
   "reports": [
+    {
+      "number": 463,
+      "title": "fix: videos CLI help 문구 정정",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-01T07:36:20Z",
+      "summary_ko": [
+        "정책 시뮬레이션 CLI의 --videos 인자 도움말 문구를 실제 입력 스키마에 맞게 정정했습니다.",
+        "도움말 문구가 과거의 잘못된 설명으로 회귀하지 않도록 검증하는 테스트 코드를 추가했습니다.",
+        "정책 시뮬레이션 명세 문서에 --videos 입력 데이터 계약을 명시하여 보완했습니다."
+      ],
+      "report_url": "pr/463/"
+    },
     {
       "number": 469,
       "title": "fix: 학습 윈도우 spine 커버리지 가드 추가 — 데이터 없는 날 조용한 통과 차단 (#464)",
