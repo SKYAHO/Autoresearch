@@ -121,13 +121,15 @@ jobs:
 
           write_metadata() {
             local status="$1"
-            local creation_timestamp="$2"
-            local completion_timestamp="$3"
-            local job_name="$4"
-            local vus="$5"
-            local settings_config_map="$6"
+            local job_result="$2"
+            local creation_timestamp="$3"
+            local completion_timestamp="$4"
+            local job_name="$5"
+            local vus="$6"
+            local settings_config_map="$7"
             jq -n \
               --arg status "$status" \
+              --arg job_result "$job_result" \
               --arg creation_timestamp "$creation_timestamp" \
               --arg completion_timestamp "$completion_timestamp" \
               --argjson candidate_count "$CANDIDATE_COUNT" \
@@ -140,6 +142,7 @@ jobs:
               --arg settings_config_map "$settings_config_map" \
               '{
                 status: $status,
+                job_result: $job_result,
                 creation_timestamp: $creation_timestamp,
                 completion_timestamp: $completion_timestamp,
                 candidate_count: $candidate_count,
@@ -190,6 +193,25 @@ jobs:
             job_name="$(kubectl create \
               -f "$job_manifest" \
               -o jsonpath='{.metadata.name}')"
+            job_uid="$(kubectl get job "$job_name" \
+              -n "$LOADTEST_NAMESPACE" -o jsonpath='{.metadata.uid}')"
+            owner_reference_patch="$(jq -nc \
+              --arg name "$job_name" \
+              --arg uid "$job_uid" \
+              '{metadata: {ownerReferences: [{
+                apiVersion: "batch/v1",
+                kind: "Job",
+                name: $name,
+                uid: $uid,
+                controller: false,
+                blockOwnerDeletion: false
+              }]}}')"
+            if ! kubectl patch configmap "$settings_config_map" \
+              -n "$LOADTEST_NAMESPACE" --type=merge \
+              -p "$owner_reference_patch"; then
+              echo "::error::Could not attach Job ownerReference to $settings_config_map."
+              exit 1
+            fi
             creation_timestamp="$(kubectl get job "$job_name" \
               -n "$LOADTEST_NAMESPACE" \
               -o jsonpath='{.metadata.creationTimestamp}')"
@@ -219,8 +241,8 @@ jobs:
             if [[ -z "$completion_timestamp" ]]; then
               completion_timestamp="$(date --utc +'%Y-%m-%dT%H:%M:%SZ')"
             fi
-            write_metadata "$result" "$creation_timestamp" "$completion_timestamp" \
-              "$job_name" "$vus" "$settings_config_map"
+            write_metadata "$result" "$result" "$creation_timestamp" \
+              "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
 
             if [[ "$result" != "complete" ]]; then
               capture_diagnostics "$job_name" "$vus"
@@ -232,7 +254,7 @@ jobs:
               -l "job-name=${job_name}" -o jsonpath='{.items[0].metadata.name}' \
               2>/dev/null || true)"
             if [[ -z "$pod_name" ]]; then
-              write_metadata "pod_not_found" "$creation_timestamp" \
+              write_metadata "pod_not_found" "complete" "$creation_timestamp" \
                 "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
               capture_diagnostics "$job_name" "$vus"
               echo "::error::Pod for Job $job_name was not found."
@@ -240,7 +262,7 @@ jobs:
             fi
             summary_path="runner/raw/k6-summary-${job_name}.json"
             if ! kubectl logs "$pod_name" -n "$LOADTEST_NAMESPACE" > "$summary_path"; then
-              write_metadata "summary_retrieval_failed" "$creation_timestamp" \
+              write_metadata "summary_retrieval_failed" "complete" "$creation_timestamp" \
                 "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
               capture_diagnostics "$job_name" "$vus"
               echo "::error::Could not retrieve summary for Job $job_name."
@@ -259,15 +281,15 @@ jobs:
               | ($rate | type) == "number" and $rate < 0.01
               )
             ' "$summary_path" >/dev/null; then
-              write_metadata "measurement_gate_failed" "$creation_timestamp" \
+              write_metadata "measurement_gate_failed" "complete" "$creation_timestamp" \
                 "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
               capture_diagnostics "$job_name" "$vus"
               echo "::error::Summary provenance is invalid or failure rate is at least 1%."
               exit 1
             fi
 
-            write_metadata "succeeded" "$creation_timestamp" "$completion_timestamp" \
-              "$job_name" "$vus" "$settings_config_map"
+            write_metadata "succeeded" "complete" "$creation_timestamp" \
+              "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
           done
 
       - name: Upload runner evidence
@@ -282,6 +304,7 @@ jobs:
   prometheus-snapshot-reader:
     name: Export raw Prometheus ranges
     needs: loadtest-runner
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -295,20 +318,55 @@ jobs:
     steps:
       - name: Download runner evidence
         uses: actions/download-artifact@v5
+        continue-on-error: true
         with:
           name: rerank-loadtest-runner-${{ github.run_id }}
           path: runner/raw
 
+      - name: Inspect completed Job evidence
+        id: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runner/raw
+          shopt -s nullglob
+          metadata_files=(runner/raw/metadata-vu-*.json)
+          metadata_count=${#metadata_files[@]}
+          if (( metadata_count > 4 )); then
+            echo "::error::Expected at most four VU metadata files, found $metadata_count."
+            exit 1
+          fi
+
+          completed_count=0
+          for metadata_path in "${metadata_files[@]}"; do
+            if jq -e 'select(.job_result == "complete")' \
+              "$metadata_path" >/dev/null; then
+              completed_count=$((completed_count + 1))
+            fi
+          done
+          echo "completed_count=$completed_count" >> "$GITHUB_OUTPUT"
+
+          if (( completed_count == 0 )); then
+            echo "::warning::No completed Job metadata; Prometheus export is skipped."
+            jq -n \
+              --argjson metadata_count "$metadata_count" \
+              '{status: "skipped", reason: "no_completed_job", metadata_count: $metadata_count}' \
+              > runner/raw/prometheus-reader-diagnostic.json
+          fi
+
       - name: Authenticate snapshot reader with Workload Identity Federation
+        if: steps.evidence.outputs.completed_count != '0'
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER_ID }}
           service_account: ${{ vars.RERANK_PROMETHEUS_SNAPSHOT_READER_SA }}
 
       - name: Set up Cloud SDK
+        if: steps.evidence.outputs.completed_count != '0'
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Get read-only GKE credentials
+        if: steps.evidence.outputs.completed_count != '0'
         uses: google-github-actions/get-gke-credentials@v2
         with:
           cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
@@ -316,15 +374,18 @@ jobs:
           use_dns_based_endpoint: true
 
       - name: Query padded Prometheus ranges
+        if: steps.evidence.outputs.completed_count != '0'
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
-          metadata_files=(runner/raw/metadata-vu-*.json)
-          if [[ ${#metadata_files[@]} -ne 4 ]]; then
-            echo "::error::Expected metadata for VU 1, 2, 4, and 8."
-            exit 1
-          fi
+          metadata_files=()
+          for metadata_path in runner/raw/metadata-vu-*.json; do
+            if jq -e 'select(.job_result == "complete")' \
+              "$metadata_path" >/dev/null; then
+              metadata_files+=("$metadata_path")
+            fi
+          done
 
           declare -A queries=(
             [phase_p50]='histogram_quantile(0.50, sum by (le, phase) (rate(rerank_phase_duration_seconds_bucket{namespace="autoresearch"}[5m])))'

@@ -323,6 +323,7 @@ def test_failure_metadata_precedes_summary_and_records_status() -> None:
     assert first_metadata_write < summary_retrieval
     assert 'completion_timestamp="$(date --utc' in text
     assert "result=timeout" in text
+    assert "job_result: $job_result" in text
     for status in (
         "pod_not_found",
         "summary_retrieval_failed",
@@ -330,6 +331,39 @@ def test_failure_metadata_precedes_summary_and_records_status() -> None:
         "succeeded",
     ):
         assert f'write_metadata "{status}"' in text
+
+
+def test_snapshot_reader_exports_partial_completed_jobs_after_runner_failure() -> None:
+    """runner 실패 후에도 reader는 완료된 1~4개 Job의 raw range만 보존한다."""
+    text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+
+    reader_start = text.index("  prometheus-snapshot-reader:")
+    reader = text[reader_start:]
+    assert "needs: loadtest-runner" in reader
+    assert "if: ${{ always() }}" in reader
+    assert "continue-on-error: true" in reader
+    assert "metadata_count" in reader and "metadata_count > 4" in reader
+    assert "metadata_count -ne 4" not in reader
+    assert 'select(.job_result == "complete")' in reader
+    assert "No completed Job metadata" in reader
+    assert "steps.evidence.outputs.completed_count != '0'" in reader
+    assert "path: runner/raw" in reader
+
+
+def test_settings_configmap_is_owned_by_ttl_job() -> None:
+    """VU별 settings ConfigMap은 Job UID ownerReference로 TTL GC에 연결된다."""
+    workflow = Path(".github/workflows/rerank-loadtest.yml").read_text()
+    manifest = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
+
+    assert 'job_uid="$(kubectl get job "$job_name"' in workflow
+    assert 'kubectl patch configmap "$settings_config_map"' in workflow
+    assert "ownerReferences" in workflow
+    assert 'apiVersion: "batch/v1"' in workflow
+    assert 'kind: "Job"' in workflow
+    assert "controller: false" in workflow
+    assert "blockOwnerDeletion: false" in workflow
+    assert "Could not attach Job ownerReference" in workflow
+    assert "ttlSecondsAfterFinished: 86400" in manifest
 
 
 def test_provisioner_default_dry_run_executes_only_count_selects(
