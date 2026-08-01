@@ -28,6 +28,9 @@ D 행뿐이지만 귀속 계산은 D+1까지 본다(#245, 계약 정본은
   feature이며 ``scripts/build_static_features.py``가 소유한다.
 - 전체 기간 재계산 경로는 제공하지 않는다. 과거를 다시 만들어야 하면 날짜별로
   이 명령을 반복 실행한다.
+
+BigQuery 프로젝트는 ``--project`` 또는 ``CTR_TRAINING_BQ_PROJECT``로 명시해야
+하며, 설정이 없으면 BigQuery 클라이언트를 만들기 전에 실패한다.
 """
 
 from __future__ import annotations
@@ -49,7 +52,6 @@ logger = logging.getLogger(__name__)
 _REVISION = os.getenv("AUTORESEARCH_REVISION", "unknown")
 JOB_NAME = "feature_store_build"
 
-DEFAULT_PROJECT = "autoresearch-503903"
 DEFAULT_DATASET = "feast_offline_store"
 DEFAULT_RAW_DATASET = "data_lake_raw"
 DEFAULT_LOCATION = "asia-northeast3"
@@ -483,7 +485,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--project",
-        default=os.getenv("CTR_TRAINING_BQ_PROJECT", DEFAULT_PROJECT),
+        default=os.getenv("CTR_TRAINING_BQ_PROJECT"),
     )
     parser.add_argument(
         "--dataset",
@@ -518,7 +520,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _validate_args(args: argparse.Namespace) -> None:
-    for name in ("project", "dataset", "raw_dataset", "location"):
+    project = args.project
+    if project is None or not project.strip():
+        raise BatchArgumentError(
+            "CTR_TRAINING_BQ_PROJECT 또는 --project가 필요합니다"
+        )
+    for name in ("dataset", "raw_dataset", "location"):
         if not str(getattr(args, name)).strip():
             raise BatchArgumentError(
                 f"--{name.replace('_', '-')} must not be empty"

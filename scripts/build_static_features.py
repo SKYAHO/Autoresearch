@@ -33,6 +33,9 @@ SQL 계약 출처: docs/guides/data-warehouse.md.
   python scripts/build_static_features.py                 # 4단계 전부
   python scripts/build_static_features.py --steps user_static_feature
   python scripts/build_static_features.py --dry-run       # BQ dry-run(임베딩은 스킵)
+
+BigQuery 프로젝트는 ``--project`` 또는 ``GCP_PROJECT_ID``로 명시해야 하며,
+설정이 없으면 BigQuery import 전에 중단한다.
 """
 
 from __future__ import annotations
@@ -54,7 +57,6 @@ except ImportError:  # pragma: no cover - 실행 환경 안내
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.features.embeddings import EMBEDDING_DIM, EMBEDDING_MODEL  # noqa: E402
 
-DEFAULT_PROJECT = "autoresearch-503903"
 DEFAULT_FEATURE_DATASET = "feast_offline_store"
 DEFAULT_EMBEDDING_DATASET = "autoresearch_dev_analytics"
 DEFAULT_LOCATION = "asia-northeast3"
@@ -594,7 +596,7 @@ def select_steps(steps_arg: str | None) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--project", default=os.getenv("GCP_PROJECT_ID", DEFAULT_PROJECT))
+    parser.add_argument("--project", default=os.getenv("GCP_PROJECT_ID"))
     parser.add_argument(
         "--feature-dataset",
         default=os.getenv("BQ_DATASET", DEFAULT_FEATURE_DATASET),
@@ -617,6 +619,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
+    if args.project is None or not args.project.strip():
+        parser.error("GCP_PROJECT_ID 또는 --project가 필요합니다")
     if not args.bucket:
         parser.error("--bucket 또는 YOUTUBE_LAKE_BUCKET 이 필요합니다")
     if args.feature_dataset == args.embedding_dataset:

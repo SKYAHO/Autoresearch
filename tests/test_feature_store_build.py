@@ -13,6 +13,12 @@ _PARTITION_DATE = date(2026, 7, 21)
 _PARTITION_ARGS = ["--partition-date", "2026-07-21"]
 
 
+@pytest.fixture(autouse=True)
+def configured_project(monkeypatch) -> None:
+    """명시 프로젝트가 필요한 정상 경로에 controlled input을 제공한다."""
+    monkeypatch.setenv("CTR_TRAINING_BQ_PROJECT", "test-project")
+
+
 class _FakeQueryJob:
     def __init__(self) -> None:
         self.result_calls = 0
@@ -354,6 +360,22 @@ def test_main_rejects_identical_raw_and_feature_dataset(capsys) -> None:
 
     assert exit_code == 2
     assert _summary_line(capsys)["error_type"] == "invalid_arguments"
+
+
+def test_main_requires_explicit_project_before_creating_client(monkeypatch, caplog) -> None:
+    """기본 프로젝트가 없으면 BigQuery 클라이언트를 만들기 전에 중단한다."""
+    monkeypatch.delenv("CTR_TRAINING_BQ_PROJECT", raising=False)
+
+    def _should_not_be_called(project: str, location: str) -> None:
+        raise AssertionError("프로젝트 없이 BigQuery 클라이언트를 만들면 안 됩니다")
+
+    monkeypatch.setattr(feature_store_build, "_client", _should_not_be_called)
+
+    exit_code = feature_store_build.main(_PARTITION_ARGS)
+
+    assert exit_code == 2
+    assert "CTR_TRAINING_BQ_PROJECT" in caplog.text
+    assert "--project" in caplog.text
 
 
 def test_main_maps_runtime_failure_to_exit_one(monkeypatch, capsys) -> None:
