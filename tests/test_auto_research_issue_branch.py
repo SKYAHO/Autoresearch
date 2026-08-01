@@ -980,7 +980,13 @@ def load_promotion_workflow() -> dict[object, object]:
 def test_promotion_workflow_has_only_completion_triggers_and_minimum_permissions() -> None:
     workflow = load_promotion_workflow()
 
-    assert workflow["permissions"] == {"contents": "write", "issues": "write"}
+    assert "permissions" not in workflow
+    validation_job = workflow["jobs"]["validate-coordinate"]
+    promotion_job = workflow["jobs"]["promote-completed-experiment"]
+    assert isinstance(validation_job, dict)
+    assert isinstance(promotion_job, dict)
+    assert validation_job["permissions"] == {}
+    assert promotion_job["permissions"] == {"contents": "write", "issues": "write"}
     assert workflow_trigger(workflow) == {
         "repository_dispatch": {"types": ["auto-research-experiment-completed"]},
         "workflow_dispatch": {
@@ -997,8 +1003,10 @@ def test_promotion_workflow_uses_all_candidate_lineage_before_selector_and_dev_m
     workflow = load_promotion_workflow()
     job = workflow["jobs"]["promote-completed-experiment"]
     assert isinstance(job, dict)
+    assert job["needs"] == "validate-coordinate"
     assert job["concurrency"] == {
-        "group": "auto-research-dev-promotion-${{ github.event.client_payload.issue_number || inputs.issue_number }}-${{ github.event.client_payload.experiment_id || inputs.experiment_id }}",
+        "group": "auto-research-dev-promotion",
+        "queue": "max",
         "cancel-in-progress": False,
     }
     steps = job["steps"]
@@ -1095,6 +1103,114 @@ def test_selection_keeps_subnormal_and_precise_thresholds_as_decimal() -> None:
     assert selection.candidate_sha == "a" * 40
 
 
+def test_selection_preserves_64_digit_primary_delta_threshold_beyond_default_context() -> None:
+    baseline = f"1.{'0' * 63}"
+    minimum_delta = f"0.1234567890123456789012345678{'1'}{'0' * 34}"
+    criteria = parse_issue_input(
+        449,
+        "[AR] metric",
+        structured_body(minimum_primary_delta=minimum_delta),
+    )
+    selection = select_best_candidate(
+        criteria,
+        "exp-449-20260801",
+        "d" * 40,
+        [
+            completion_candidate(
+                "a" * 40,
+                f"1.{minimum_delta[2:]}",
+                primary_baseline_metric=baseline,
+                criteria=criteria,
+            )
+        ],
+    )
+
+    assert criteria.minimum_primary_delta == Decimal(minimum_delta)
+    assert selection.candidate_sha == "a" * 40
+
+
+def test_selection_preserves_threshold_boundary_across_permitted_decimal_exponents() -> None:
+    criteria = parse_issue_input(
+        449,
+        "[AR] metric",
+        structured_body(minimum_primary_delta="1e1000"),
+    )
+    selection = select_best_candidate(
+        criteria,
+        "exp-449-20260801",
+        "d" * 40,
+        [
+            completion_candidate(
+                "a" * 40,
+                "1e1000",
+                primary_baseline_metric="1e-1000",
+                criteria=criteria,
+            )
+        ],
+    )
+
+    assert selection.selection_reason == "no_qualified_candidate"
+
+
+def test_selection_rejects_guardrail_regression_beyond_default_decimal_context() -> None:
+    baseline = f"1.{'0' * 63}"
+    maximum_regression = "0.1234567890123456789012345678"
+    actual_regression = f"{maximum_regression}1{'0' * 34}"
+    criteria = parse_issue_input(
+        449,
+        "[AR] metric",
+        structured_body(
+            minimum_primary_delta="0",
+            guardrail_metric_name="log_loss",
+            guardrail_metric_direction="lower_is_better",
+            maximum_guardrail_regression=maximum_regression,
+        ),
+    )
+    selection = select_best_candidate(
+        criteria,
+        "exp-449-20260801",
+        "d" * 40,
+        [
+            completion_candidate(
+                "a" * 40,
+                baseline,
+                primary_baseline_metric=baseline,
+                guardrail_candidate_metric=f"1.{actual_regression[2:]}",
+                guardrail_baseline_metric=baseline,
+                criteria=criteria,
+            )
+        ],
+    )
+
+    assert selection.selection_reason == "no_qualified_candidate"
+
+
+def test_selection_ranks_64_digit_primary_metrics_beyond_default_decimal_context() -> None:
+    baseline = f"1.{'0' * 63}"
+    criteria = parse_issue_input(449, "[AR] metric", structured_body(minimum_primary_delta="0"))
+    selection = select_best_candidate(
+        criteria,
+        "exp-449-20260801",
+        "d" * 40,
+        [
+            completion_candidate(
+                "a" * 40,
+                f"1.{'0' * 62}1",
+                primary_baseline_metric=baseline,
+                criteria=criteria,
+            ),
+            completion_candidate(
+                "b" * 40,
+                f"1.{'0' * 62}2",
+                primary_baseline_metric=baseline,
+                criteria=criteria,
+            ),
+        ],
+    )
+
+    assert selection.candidate_sha == "b" * 40
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -1152,15 +1268,32 @@ def test_select_best_candidate_rejects_candidate_count_above_contract_limit() ->
         )
 
 
-def test_promotion_workflow_uses_trusted_checkout_scoped_env_and_per_event_concurrency() -> None:
+def test_promotion_workflow_validates_coordinate_before_global_queue_and_uses_trusted_checkout() -> None:
     workflow = load_promotion_workflow()
+    validation_job = workflow["jobs"]["validate-coordinate"]
     job = workflow["jobs"]["promote-completed-experiment"]
+    assert isinstance(validation_job, dict)
     assert isinstance(job, dict)
     assert job["concurrency"] == {
-        "group": "auto-research-dev-promotion-${{ github.event.client_payload.issue_number || inputs.issue_number }}-${{ github.event.client_payload.experiment_id || inputs.experiment_id }}",
+        "group": "auto-research-dev-promotion",
+        "queue": "max",
         "cancel-in-progress": False,
     }
-    assert "queue" not in job["concurrency"]
+    validation_steps = validation_job["steps"]
+    assert isinstance(validation_steps, list)
+    validation_script = next(
+        step["with"]["script"]
+        for step in validation_steps
+        if "with" in step and "script" in step["with"]
+    )
+    assert isinstance(validation_script, str)
+    assert "typeof rawIssueNumber !== 'string'" in validation_script
+    assert "/^[1-9][0-9]*$/" in validation_script
+    assert "typeof rawExperimentId !== 'string'" in validation_script
+    assert "/^[a-z0-9][a-z0-9._:-]{0,127}$/" in validation_script
+    assert "core.setOutput('issue_number', rawIssueNumber);" in validation_script
+    assert "core.setOutput('experiment_id', rawExperimentId);" in validation_script
+    assert "actions/checkout" not in str(validation_steps)
     steps = job["steps"]
     assert isinstance(steps, list)
     checkout_step = next(step for step in steps if step["name"] == "Checkout trusted selector")
@@ -1187,6 +1320,29 @@ def test_promotion_workflow_uses_trusted_checkout_scoped_env_and_per_event_concu
     )
     assert exec_call is not None
     assert "...process.env" not in exec_call.group(0)
+
+    promotion_script_step = next(
+        step for step in steps if "with" in step and "script" in step["with"]
+    )
+    assert promotion_script_step["env"] == {
+        "ISSUE_NUMBER": "${{ needs.validate-coordinate.outputs.issue_number }}",
+        "EXPERIMENT_ID": "${{ needs.validate-coordinate.outputs.experiment_id }}",
+    }
+
+
+def test_promotion_workflow_caps_candidates_before_lineage_or_compare_requests() -> None:
+    workflow = load_promotion_workflow()
+    steps = workflow["jobs"]["promote-completed-experiment"]["steps"]
+    assert isinstance(steps, list)
+    script = next(step["with"]["script"] for step in steps if "with" in step and "script" in step["with"])
+    assert isinstance(script, str)
+
+    cap_check = "if (!Array.isArray(candidates) || candidates.length === 0 || candidates.length > _MAX_COMPLETION_CANDIDATES)"
+    assert "const _MAX_COMPLETION_CANDIDATES = 50;" in script
+    assert cap_check in script
+    assert script.index(cap_check) < script.index("const issue = await github.rest.issues.get")
+    assert script.index(cap_check) < script.index("for (const candidate of candidates)")
+    assert script.index(cap_check) < script.index("github.rest.repos.compareCommits")
 
 
 def test_promotion_workflow_claims_before_merge_and_recovers_pending_state() -> None:

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 import hashlib
 import json
 import math
@@ -86,6 +86,10 @@ MAX_DECIMAL_TEXT_LENGTH = 128
 MAX_DECIMAL_DIGITS = 64
 MAX_DECIMAL_EXPONENT = 1000
 MAX_RESULT_REFERENCE_LENGTH = 2048
+_SELECTION_DECIMAL_PRECISION = max(
+    MAX_DECIMAL_DIGITS * 2 + 8,
+    MAX_DECIMAL_DIGITS + (MAX_DECIMAL_EXPONENT * 2) + 8,
+)
 
 
 @dataclass(frozen=True)
@@ -409,25 +413,27 @@ def _result_set_id(
 
 def _is_qualified_candidate(candidate: CompletionCandidate, criteria: IssueInput) -> bool:
     """주 지표 최소 개선과 optional guardrail 최대 악화를 모두 판정합니다."""
-    primary_delta = (
-        candidate.primary_candidate_metric - candidate.primary_baseline_metric
-        if criteria.primary_metric_direction == "higher_is_better"
-        else candidate.primary_baseline_metric - candidate.primary_candidate_metric
-    )
-    if primary_delta < criteria.minimum_primary_delta:
-        return False
-    if criteria.guardrail_metric_name is None:
-        return True
+    with localcontext() as decimal_context:
+        decimal_context.prec = _SELECTION_DECIMAL_PRECISION
+        primary_delta = (
+            candidate.primary_candidate_metric - candidate.primary_baseline_metric
+            if criteria.primary_metric_direction == "higher_is_better"
+            else candidate.primary_baseline_metric - candidate.primary_candidate_metric
+        )
+        if primary_delta < criteria.minimum_primary_delta:
+            return False
+        if criteria.guardrail_metric_name is None:
+            return True
 
-    assert candidate.guardrail_candidate_metric is not None
-    assert candidate.guardrail_baseline_metric is not None
-    regression = (
-        candidate.guardrail_baseline_metric - candidate.guardrail_candidate_metric
-        if criteria.guardrail_metric_direction == "higher_is_better"
-        else candidate.guardrail_candidate_metric - candidate.guardrail_baseline_metric
-    )
-    assert criteria.maximum_guardrail_regression is not None
-    return regression <= criteria.maximum_guardrail_regression
+        assert candidate.guardrail_candidate_metric is not None
+        assert candidate.guardrail_baseline_metric is not None
+        regression = (
+            candidate.guardrail_baseline_metric - candidate.guardrail_candidate_metric
+            if criteria.guardrail_metric_direction == "higher_is_better"
+            else candidate.guardrail_candidate_metric - candidate.guardrail_baseline_metric
+        )
+        assert criteria.maximum_guardrail_regression is not None
+        return regression <= criteria.maximum_guardrail_regression
 
 
 def _best_qualified_candidate(
@@ -435,15 +441,19 @@ def _best_qualified_candidate(
     primary_direction: str,
 ) -> CompletionCandidate:
     """방향을 반영한 primary metric과 SHA 오름차순 동률 규칙으로 하나를 반환합니다."""
-    if primary_direction == "higher_is_better":
-        return min(
-            candidates,
-            key=lambda candidate: (-candidate.primary_candidate_metric, candidate.candidate_sha),
+    selected = candidates[0]
+    for candidate in candidates[1:]:
+        metric_is_better = (
+            candidate.primary_candidate_metric > selected.primary_candidate_metric
+            if primary_direction == "higher_is_better"
+            else candidate.primary_candidate_metric < selected.primary_candidate_metric
         )
-    return min(
-        candidates,
-        key=lambda candidate: (candidate.primary_candidate_metric, candidate.candidate_sha),
-    )
+        metric_is_equal = candidate.primary_candidate_metric == selected.primary_candidate_metric
+        if metric_is_better or (
+            metric_is_equal and candidate.candidate_sha < selected.candidate_sha
+        ):
+            selected = candidate
+    return selected
 
 
 def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> IssueInput:

@@ -59,16 +59,21 @@ Issue Form 자체의 `required`는 빈 입력만 막으므로, workflow가 위 �
 ## 완료 event와 dev 병합 계약
 
 1. `repository_dispatch`의 `auto-research-experiment-completed` 또는 동일 입력의
-   `workflow_dispatch`가 이슈 번호·`experiment_id`·후보 결과 배열을 전달한다.
+   `workflow_dispatch`가 이슈 번호·`experiment_id`·후보 결과 배열을 전달한다. mutation 없는
+   선행 job이 이슈 번호를 선행 0 없는 양의 10진 문자열로, `experiment_id`를 소문자 safe
+   identifier로 엄격히 검증해 canonical output으로 전달한다.
 2. 후보 배열은 schema version 1의 정확한 key 집합이고 최대 50개다. 후보는
    `candidate_sha`, candidate ID, primary candidate/baseline metric, 선택 guardrail metric,
    `criteria_id`, `reproducibility_id`, artifact·log 식별자를 모두 가진다. 수치는
    128자 이하·계수 64자리 이하·지수 절댓값 1,000 이하의 유한 `Decimal` 문자열이며,
    artifact·log는 제어문자·공백 전용·2,048자 초과를 허용하지 않는 단일행 식별자다.
    형식·기록 marker의 두 식별자·baseline lineage·이슈 branch ancestor 검사를 하나라도
-   통과하지 못하면 전체 event를 fail-closed한다.
+   통과하지 못하면 전체 event를 fail-closed한다. workflow도 JSON parse 직후, 후보 object·lineage
+   loop 또는 `compareCommits` 호출 전에 비어 있지 않음과 최대 50개를 함께 검사한다.
 3. gate는 primary direction에 맞춰 최소 delta를, guardrail direction에 맞춰 최대 비열화를
-   판단한다. 적격 후보 중 primary metric이 가장 좋은 하나를 고르고 동률은
+   판단한다. 두 subtraction은 최대 64자리 입력의 반올림 경계가 판정에 영향을 주지 않도록
+   최소 136자리이고 현재 지수 한도까지 고려한 2,072자리 `Decimal` local context에서 수행한다.
+   적격 후보 중 primary metric이 가장 좋은 하나를 직접 `Decimal` 비교로 고르고 동률은
    `candidate_sha` 오름차순으로 결정한다.
 4. 이슈+`experiment_id`별 결과 marker는 `pending`, `merged`, `no_qualified`,
    `merge_conflict`, `merge_api_failed` 중 하나의 strict state와 result-set ID·선택 SHA를
@@ -85,15 +90,17 @@ Issue Form 자체의 `required`는 빈 입력만 막으므로, workflow가 위 �
 
 - 이슈 제목·본문은 환경 변수로 Python validator에 전달할 뿐 shell source로 보간하지
   않는다.
-- workflow 권한은 `contents: write`, `issues: write`만 사용한다.
+- mutation 없는 좌표 검증 job은 `permissions: {}`를 사용하고, 이후 promotion job만
+  `contents: write`, `issues: write`를 명시한다.
 - 권한 있는 workflow는 `github.workflow_sha`를 checkout하고 checkout credential을 남기지
   않는다. selector child process에는 `PATH`, `LANG`, `PYTHONUTF8`, `GITHUB_OUTPUT`만 전달한다.
 - selector가 반환한 선택 SHA는 merge 직전에 lineage 검증을 통과한 후보 SHA 집합에 다시
   포함되는지 확인한다.
 - 이슈별 concurrency group을 직렬화해 같은 이벤트의 create-ref 경합을 막는다.
-- 완료 event concurrency는 `issue_number + experiment_id`별이다. 서로 다른 experiment의
-  `dev` 경쟁은 merge REST API의 atomic conflict와 source issue marker state로 처리하며,
-  지원하지 않는 queue 크기 문법을 사용하지 않는다.
+- 완료 event는 검증된 좌표 output만 사용해 전역 `auto-research-dev-promotion` concurrency
+  group에 들어가며 `queue: max`, `cancel-in-progress: false`로 dev merge를 직렬화한다. GitHub
+  Actions의 최대 100개 pending event를 보존하며 raw 이슈 번호·실험 ID로 concurrency group을
+  만들지 않아 context 사전 우회를 막는다.
 - 생성 branch는 공용 `prod` 배포 branch가 아니며 PR·prod 배포·champion 변경을 만들지 않는다.
 - GitHub의 `issues`·`repository_dispatch` 이벤트는 기본 브랜치 `main`에 있는 workflow
   정의를 실행한다. 따라서 이 변경의 workflow 파일은 `main`에도 존재해야 하지만, `main`은

@@ -17,9 +17,16 @@
 - selection threshold는 parse부터 gate까지 `Decimal`으로 유지하며, completion 후보는 최대
   50개, Decimal 문자열은 128자·64 digits·절댓값 1,000 exponent, artifact/log 식별자는
   2,048자로 제한한다.
+- gate subtraction과 guardrail subtraction은 최소 136자리(현재 지수 한도에서는 2,072자리)
+  `Decimal` local context를 사용하고, 후보 순위는 unary minus 정렬 대신 직접 `Decimal` 비교와
+  SHA tie-break로 결정한다.
 - candidate snapshot과 실험 Job 자체는 구현하지 않지만, 완료 event의 후보 결과 집합을 받아 결과 판정과 `dev` 병합을 구현한다.
 - 권한 있는 workflow는 `github.workflow_sha`를 credential 없이 checkout하고, completion
   selector 자식 process에는 최소 allowlist 환경만 전달한다.
+- mutation 없는 좌표 검증 job은 `permissions: {}`로 raw issue number와 experiment ID를
+  canonical output으로 검증하고, promotion job은 전역 `auto-research-dev-promotion` group의
+  `queue: max`로 dev merge를 직렬화한다. 후보 수는 workflow JSON parse 직후에도 1~50으로
+  제한한다.
 - `main` ref·main PR·prod 배포·champion alias는 workflow가 생성·갱신·병합하지 않는다.
 - GitHub event 수신을 위해 workflow 정의는 기본 브랜치 `main`에도 반영하되, `main`은
   정의 위치일 뿐 자동 merge 대상이 아니며 모든 후보 ref 조작과 merge base는 `dev`로 고정한다.
@@ -209,8 +216,10 @@ descendant이자 issue branch의 ancestor임을 확인하고, selector SHA가 �
 포함될 때만 진행한다. 새 적격 result-set은 source issue에 strict `pending` marker를 먼저
 생성한 뒤 `github.rest.repos.merge({base: 'dev', head: selectedCandidateSha})`를 호출한다.
 201/204는 `merged`, 409은 `merge_conflict`, 그 밖의 실패는 `merge_api_failed`로 marker를
-update하며 update 실패는 pending reconciliation으로 복구한다. concurrency는
-`issue_number + experiment_id`별이고 `main` base·PR·ref API는 사용하지 않는다.
+update하며 update 실패는 pending reconciliation으로 복구한다. mutation 없는 선행 job이
+canonical issue number·experiment ID output을 만들고, promotion은 전역
+`auto-research-dev-promotion` group의 `queue: max`에서 직렬 실행한다. 후보 수는 JSON parse
+직후 object/lineage loop 전에 1~50으로 제한하며 `main` base·PR·ref API는 사용하지 않는다.
 
 - [ ] **Step 4: Run tests to verify they pass**
 

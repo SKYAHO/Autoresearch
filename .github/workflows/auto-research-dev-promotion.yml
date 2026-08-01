@@ -15,15 +15,55 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-  issues: write
-
 jobs:
+  validate-coordinate:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      issue_number: ${{ steps.validate.outputs.issue_number }}
+      experiment_id: ${{ steps.validate.outputs.experiment_id }}
+    steps:
+      - id: validate
+        name: Validate promotion coordinate
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const payload = context.payload;
+            const isDispatch = payload.action === 'auto-research-experiment-completed';
+            const rawIssueNumber = isDispatch
+              ? payload.client_payload?.issue_number
+              : payload.inputs?.issue_number;
+            const rawExperimentId = isDispatch
+              ? payload.client_payload?.experiment_id
+              : payload.inputs?.experiment_id;
+
+            function failClosed(message) {
+              core.setFailed(message);
+              throw new Error(message);
+            }
+
+            if (typeof rawIssueNumber !== 'string' || !/^[1-9][0-9]*$/.test(rawIssueNumber)) {
+              failClosed('issue_number must be a canonical positive decimal string');
+            }
+            if (
+              typeof rawExperimentId !== 'string' ||
+              !/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(rawExperimentId)
+            ) {
+              failClosed('experiment_id must use the lowercase safe identifier syntax');
+            }
+
+            core.setOutput('issue_number', rawIssueNumber);
+            core.setOutput('experiment_id', rawExperimentId);
+
   promote-completed-experiment:
     runs-on: ubuntu-latest
+    needs: validate-coordinate
+    permissions:
+      contents: write
+      issues: write
     concurrency:
-      group: auto-research-dev-promotion-${{ github.event.client_payload.issue_number || inputs.issue_number }}-${{ github.event.client_payload.experiment_id || inputs.experiment_id }}
+      group: auto-research-dev-promotion
+      queue: max
       cancel-in-progress: false
     steps:
       - name: Checkout trusted selector
@@ -35,6 +75,9 @@ jobs:
 
       - name: Validate complete result set and promote one candidate
         uses: actions/github-script@v8
+        env:
+          ISSUE_NUMBER: ${{ needs.validate-coordinate.outputs.issue_number }}
+          EXPERIMENT_ID: ${{ needs.validate-coordinate.outputs.experiment_id }}
         with:
           script: |
             const { execFileSync } = require('child_process');
@@ -44,16 +87,13 @@ jobs:
             const issueBranchMarker = '<!-- auto-research-issue-branch:v1 -->';
             const resultMarkerPrefix = '<!-- auto-research-experiment-result:';
             const resultMarker = '<!-- auto-research-experiment-result:v2 -->';
+            const _MAX_COMPLETION_CANDIDATES = 50;
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const payload = context.payload;
             const isDispatch = payload.action === 'auto-research-experiment-completed';
-            const rawIssueNumber = isDispatch
-              ? payload.client_payload?.issue_number
-              : payload.inputs?.issue_number;
-            const experimentId = isDispatch
-              ? payload.client_payload?.experiment_id
-              : payload.inputs?.experiment_id;
+            const issueNumberText = process.env.ISSUE_NUMBER;
+            const experimentId = process.env.EXPERIMENT_ID;
             const candidatesJson = isDispatch
               ? JSON.stringify(payload.client_payload?.candidates)
               : payload.inputs?.candidates_json;
@@ -128,19 +168,22 @@ jobs:
               ].join('\n');
             }
 
-            const issueNumber = Number(rawIssueNumber);
-            if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) {
-              failClosed('invalid issue number');
+            if (typeof issueNumberText !== 'string' || !/^[1-9][0-9]*$/.test(issueNumberText)) {
+              failClosed('validated issue number is malformed');
             }
-            requireMatch(experimentId, /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/, 'experiment_id');
+            const issueNumber = Number(issueNumberText);
+            if (!Number.isSafeInteger(issueNumber)) {
+              failClosed('validated issue number is outside the safe integer range');
+            }
+            requireMatch(experimentId, /^[a-z0-9][a-z0-9._:-]{0,127}$/, 'experiment_id');
             let candidates;
             try {
               candidates = JSON.parse(candidatesJson);
             } catch (error) {
               failClosed('candidates_json must be valid JSON');
             }
-            if (!Array.isArray(candidates) || candidates.length === 0) {
-              failClosed('candidates_json must be a non-empty array');
+            if (!Array.isArray(candidates) || candidates.length === 0 || candidates.length > _MAX_COMPLETION_CANDIDATES) {
+              failClosed(`candidates_json must contain between 1 and ${_MAX_COMPLETION_CANDIDATES} candidates`);
             }
 
             const issue = await github.rest.issues.get({
