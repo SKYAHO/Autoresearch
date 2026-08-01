@@ -9,6 +9,8 @@ offline store가 정본(#357)이라 그 값을 그대로 읽는다.
 [기능] ``main()``은 조립 전에 ``_verify_assembly_environment()``로 실행 가능 여부를 fail-fast
 확인한다(환경변수 → GCP 자격증명 → feast import 순, #404) — 자격증명 없는 환경에서 BigQuery
 접속이 응답 없이 멈추는 대신 즉시 명확한 이유로 중단한다.
+BigQuery 프로젝트는 ``CTR_TRAINING_BQ_PROJECT``로 명시해야 하며, 이 설정은 모든
+BigQuery/Feast import와 클라이언트 생성보다 먼저 앞뒤 공백을 정규화해 검증한다.
 
 spine 로드 직후에는 ``summarize_spine_coverage``/``require_spine_coverage``로 **요청 기간 대비
 실제 확보한 날짜 수**를 검증한다(#464). 기간 조회는 없는 파티션을 에러가 아니라 "행 없음"으로
@@ -73,7 +75,7 @@ from src.pipeline.training_provenance import (  # noqa: E402
 DEFAULT_MIN_COVERAGE_DAYS = int(os.environ.get("CTR_TRAINING_MIN_COVERAGE_DAYS", "3"))
 DEFAULT_MIN_ROWS_PER_DAY = int(os.environ.get("CTR_TRAINING_MIN_ROWS_PER_DAY", "5000"))
 
-BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "autoresearch-503903")
+BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT")
 # feature/서빙 계층 dataset — Feast feature 테이블 4종과 배치 출력 테이블(user_recommendations).
 BIGQUERY_DATASET = os.environ.get("CTR_TRAINING_BQ_DATASET", "feast_offline_store")
 # raw(데이터 레이크) 계층 dataset — data_lake_* 테이블 전용(feature 계층과 물리 분리).
@@ -87,6 +89,14 @@ LABEL_WINDOW_SEC = int(os.environ.get("CTR_TRAINING_LABEL_WINDOW_SEC", "1800"))
 FOLLOWUP_WINDOW_SEC = int(os.environ.get("CTR_TRAINING_FOLLOWUP_WINDOW_SEC", "600"))
 
 
+def require_bigquery_project() -> str:
+    """명시적으로 설정된 정규화 BigQuery 프로젝트를 반환한다."""
+    project = (BIGQUERY_PROJECT or "").strip()
+    if not project:
+        raise ValueError("CTR_TRAINING_BQ_PROJECT 환경변수가 필요합니다")
+    return project
+
+
 def raw_table_id(table: str) -> str:
     """raw(데이터 레이크) 테이블의 완전한 BigQuery 식별자를 만든다.
 
@@ -94,7 +104,7 @@ def raw_table_id(table: str) -> str:
     (`CTR_TRAINING_BQ_RAW_DATASET`, 기본 `data_lake_raw`)에 있다. 모듈
     전역을 호출 시점에 읽으므로 테스트에서 monkeypatch 로 재정의할 수 있다.
     """
-    return f"{BIGQUERY_PROJECT}.{BIGQUERY_RAW_DATASET}.{table}"
+    return f"{require_bigquery_project()}.{BIGQUERY_RAW_DATASET}.{table}"
 
 
 def feature_table_id(table: str) -> str:
@@ -103,7 +113,7 @@ def feature_table_id(table: str) -> str:
     Feast feature 테이블과 배치 출력 테이블은 계속
     `CTR_TRAINING_BQ_DATASET`(기본 `feast_offline_store`)에 있다.
     """
-    return f"{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{table}"
+    return f"{require_bigquery_project()}.{BIGQUERY_DATASET}.{table}"
 
 
 def get_data_dir():
@@ -150,9 +160,11 @@ def load_events_from_bigquery(start_date: str, end_date: str) -> pd.DataFrame:
     (YYYY-MM-DD)이다. dt 자체가 timezone 없이 생성 시점에 이미 Asia/Seoul
     날짜 경계로 버킷팅되어 있으므로 여기서 timezone 변환은 하지 않는다.
     """
+    project = require_bigquery_project()
+
     from google.cloud import bigquery
 
-    client = bigquery.Client(project=BIGQUERY_PROJECT)
+    client = bigquery.Client(project=project)
     query = f"""
         SELECT event_id, event_timestamp, user_id, event_type, video_id, watch_time_sec
         FROM `{raw_table_id(BIGQUERY_ACTION_LOG_TABLE)}`
@@ -168,9 +180,11 @@ def load_training_entity_spine(start_date: str, end_date: str) -> pd.DataFrame:
     이며, feast get_historical_features의 entity dataframe이 된다. DuckDB 경로처럼 raw를
     재계산하지 않고 여기에 offline 피처를 PIT로 붙인다.
     """
+    project = require_bigquery_project()
+
     from google.cloud import bigquery
 
-    client = bigquery.Client(project=BIGQUERY_PROJECT)
+    client = bigquery.Client(project=project)
     query = f"""
         SELECT user_id, video_id, event_timestamp, clicked
         FROM `{feature_table_id("training_entity")}`
@@ -496,6 +510,8 @@ def _assemble_via_feast(
         실측 spine 커버리지(#464). 호출부(run-pipeline)가 MLflow lineage에 남겨
         "요청 구간 ≠ 실제 학습 구간"을 사후에 판별할 수 있게 한다.
     """
+    project = require_bigquery_project()
+
     from src.features.feast_retrieval import (
         DEFAULT_SERVICE,
         apply_cold_start_defaults,
@@ -529,7 +545,7 @@ def _assemble_via_feast(
             online_db = Path(temporary_dir) / "online.db"
             store = build_offline_feature_store(
                 str(registry_path),
-                project=BIGQUERY_PROJECT,
+                project=project,
                 dataset=BIGQUERY_DATASET,
                 gcs_staging=gcs_staging,
                 online_db_path=str(online_db),
@@ -743,6 +759,7 @@ def main(
             "events_start_date/events_end_date가 필요합니다 "
             "(spine=training_entity를 BQ에서 KST 날짜 폐구간으로 조회한다)"
         )
+    require_bigquery_project()
     _verify_assembly_environment()
     if output_path is None:
         output_path = os.path.join(get_data_dir(), "processed", "training_dataset.csv")

@@ -1,5 +1,8 @@
 """simulate_policy_round 배치 테스트 — stub Reranker + rule-based LLM."""
 
+import builtins
+import sys
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -1171,3 +1174,43 @@ def test_main_feast_requires_feature_store(stub_reranker):
             assembly_source="feast",
             feature_store=None,
         )
+
+
+def test_cli_feast_requires_project_before_feast_import(monkeypatch):
+    """프로젝트가 없으면 Feast import와 offline store 구성 전에 실패한다."""
+    from src.pipeline import build_training_dataset
+    from src.pipeline import simulate_policy_round as module
+
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://test-bucket/registry.pb")
+    monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://test-bucket/staging")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "simulate_policy_round.py",
+            "--personas",
+            "personas.parquet",
+            "--virtual-users",
+            "virtual-users.parquet",
+            "--videos",
+            "videos.csv",
+            "--events",
+            "events.csv",
+            "--click-threshold",
+            "0.0",
+            "--assembly-source",
+            "feast",
+        ],
+    )
+    original_import = builtins.__import__
+
+    def _forbid_feast_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "src.features.feast_retrieval":
+            raise AssertionError("프로젝트 확인 전에 Feast를 import하면 안 됩니다")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _forbid_feast_import)
+
+    with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
+        module._cli()

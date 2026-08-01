@@ -17,11 +17,33 @@ from src.pipeline.model_exposure_provider import (
 
 
 def test_resolve_recommendations_table_id_defaults_and_override(monkeypatch):
+    from src.pipeline import build_training_dataset
+
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "test-project")
     monkeypatch.delenv("CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE", raising=False)
-    assert resolve_recommendations_table_id(None).endswith(".user_recommendations")
-    assert resolve_recommendations_table_id("alt_table").endswith(".alt_table")
+    assert (
+        resolve_recommendations_table_id(None)
+        == "test-project.feast_offline_store.user_recommendations"
+    )
+    assert (
+        resolve_recommendations_table_id("alt_table")
+        == "test-project.feast_offline_store.alt_table"
+    )
     monkeypatch.setenv("CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE", "env_table")
-    assert resolve_recommendations_table_id(None).endswith(".env_table")
+    assert (
+        resolve_recommendations_table_id(None)
+        == "test-project.feast_offline_store.env_table"
+    )
+
+
+def test_resolve_recommendations_table_id_requires_project(monkeypatch):
+    """프로젝트가 없으면 ``None.<dataset>.<table>``을 만들지 않는다."""
+    from src.pipeline import build_training_dataset
+
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
+
+    with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
+        resolve_recommendations_table_id(None)
 
 
 def _videos(n: int = 40) -> list[dict]:
