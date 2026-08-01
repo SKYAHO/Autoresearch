@@ -201,10 +201,10 @@ def test_main_requires_explicit_project_before_bigquery_import(monkeypatch, caps
     assert "--project" in stderr
 
 
-def test_main_explicit_project_overrides_missing_environment(monkeypatch) -> None:
-    """명시한 --project가 환경 기본값 없이도 BigQuery 클라이언트에 전달된다."""
+def test_main_explicit_project_overrides_environment(monkeypatch) -> None:
+    """명시한 --project가 환경값보다 우선해 BigQuery 클라이언트에 전달된다."""
     monkeypatch.setattr(bsf, "load_dotenv", lambda: None)
-    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    monkeypatch.setenv("GCP_PROJECT_ID", "environment-project")
     client_calls: list[tuple[str, str]] = []
 
     fake_bigquery = types.ModuleType("google.cloud.bigquery")

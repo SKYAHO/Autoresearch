@@ -6,7 +6,8 @@
 `user_recommendations` 파티션), `rerank-api`(Inference Server `/rerank` 실시간
 호출, single 전용), `heuristic`(규칙 기반). 노출 조립·클릭 판정·저장 로직은
 각각 `src.pipeline`·`autoresearch.action_logs`가 소유하며 여기서 담당하지
-않는다.
+않는다. model 경로는 명시 BigQuery 프로젝트를 외부 import·클라이언트 생성보다
+먼저 검증한다.
 
 spec: docs/specs/2026-07-13-public-batch-execution-contract.md,
       docs/specs/2026-07-23-rerank-api-exposure-source.md
@@ -229,9 +230,12 @@ def _build_candidate_provider_factory(
         return None
 
     def factory(videos: list[dict]) -> tuple[CandidateProvider, Mapping[tuple[str, str], ExposureMetadata]]:
+        from src.pipeline.build_training_dataset import require_bigquery_project
+
+        project = require_bigquery_project()
+
         from google.cloud import bigquery
 
-        from src.pipeline.build_training_dataset import BIGQUERY_PROJECT
         from src.pipeline.model_exposure_provider import (
             load_user_rankings,
             make_model_exposure_provider,
@@ -239,7 +243,7 @@ def _build_candidate_provider_factory(
         )
 
         table_id = resolve_recommendations_table_id(args.recommendations_table)
-        client = bigquery.Client(project=BIGQUERY_PROJECT)
+        client = bigquery.Client(project=project)
         rankings = load_user_rankings(client, table_id, args.partition_date)
         round_ = make_model_exposure_provider(
             rankings,

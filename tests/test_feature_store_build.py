@@ -362,7 +362,9 @@ def test_main_rejects_identical_raw_and_feature_dataset(capsys) -> None:
     assert _summary_line(capsys)["error_type"] == "invalid_arguments"
 
 
-def test_main_requires_explicit_project_before_creating_client(monkeypatch, caplog) -> None:
+def test_main_requires_explicit_project_before_creating_client(
+    monkeypatch, caplog, capsys
+) -> None:
     """기본 프로젝트가 없으면 BigQuery 클라이언트를 만들기 전에 중단한다."""
     monkeypatch.delenv("CTR_TRAINING_BQ_PROJECT", raising=False)
 
@@ -376,6 +378,9 @@ def test_main_requires_explicit_project_before_creating_client(monkeypatch, capl
     assert exit_code == 2
     assert "CTR_TRAINING_BQ_PROJECT" in caplog.text
     assert "--project" in caplog.text
+    summary = _summary_line(capsys)
+    assert summary["status"] == "failed"
+    assert summary["error_type"] == "invalid_arguments"
 
 
 def test_main_maps_runtime_failure_to_exit_one(monkeypatch, capsys) -> None:

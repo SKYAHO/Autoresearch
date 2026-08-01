@@ -1,4 +1,5 @@
 import argparse
+import builtins
 import json
 from types import SimpleNamespace
 
@@ -143,6 +144,28 @@ def test_run_passes_factory_only_in_model_mode(monkeypatch):
         _parse_valid_single_args("--exposure-source", "heuristic")
     )
     assert captured["candidate_provider_factory"] is None
+
+
+def test_model_factory_requires_project_before_bigquery_import(monkeypatch):
+    """프로젝트가 없으면 model factory가 BigQuery import 전에 실패한다."""
+    from src.pipeline import build_training_dataset
+
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
+    original_import = builtins.__import__
+
+    def _forbid_bigquery_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in {"google.cloud", "google.cloud.bigquery"}:
+            raise AssertionError("프로젝트 확인 전에 BigQuery를 import하면 안 됩니다")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _forbid_bigquery_import)
+    factory = action_log_job._build_candidate_provider_factory(
+        _parse_valid_single_args()
+    )
+
+    assert factory is not None
+    with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
+        factory([])
 
 
 def _json_lines(output: str) -> list[dict[str, object]]:
