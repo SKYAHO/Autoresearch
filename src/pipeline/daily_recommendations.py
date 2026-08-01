@@ -3,6 +3,8 @@
 champion 모델(models:/ctr-model@champion)로 일일 트렌딩 후보 전체를 가상 유저
 전원에 대해 canonical 21개 피처로 채점해, 유저별 전체 순위를 user_recommendations 파티션 테이블에
 멱등 적재한다. 비교 실험·노출 선정은 이 배치의 책임이 아니다(spec 참조).
+BigQuery 프로젝트는 배치 진입 시 명시 설정을 검증하고, 모든 BigQuery·Feast 호출에 같은
+정규화된 값을 전달한다.
 
 피처 조립 소스는 `--assembly-source`로 고른다(#359): duckdb(기본, raw 재계산)와 feast(학습과
 같은 offline store를 get_historical_features PIT로 조회 — 단일 as_of=candidate_dt+1로 영상·유저
@@ -33,11 +35,11 @@ from src.features.feast_retrieval import build_pool_feature_frames_feast
 from src.features.model_contract import require_model_feature_columns
 from src.pipeline.build_training_dataset import (
     BIGQUERY_DATASET,
-    BIGQUERY_PROJECT,
     derive_wide_events,
     feature_table_id,
     load_events_from_bigquery,
     raw_table_id,
+    require_bigquery_project,
 )
 from src.pipeline.virtual_user_adapter import to_personas_frame
 from src.serving.model_loader import (
@@ -244,6 +246,8 @@ def run_batch(
     if assembly_source not in ("duckdb", "feast"):
         raise ValueError(f"assembly_source must be 'duckdb' or 'feast': {assembly_source!r}")
 
+    project = require_bigquery_project()
+
     # dataset 계층 분리: raw(data_lake_*)는 CTR_TRAINING_BQ_RAW_DATASET,
     # feature/서빙 테이블은 기존 CTR_TRAINING_BQ_DATASET 으로 해석한다.
     trending_table = raw_table_id(
@@ -268,7 +272,7 @@ def run_batch(
     reranker = resolved.reranker
     feature_columns = require_model_feature_columns(reranker.feature_columns)
     if bq_client is None:
-        bq_client = bigquery.Client(project=BIGQUERY_PROJECT)
+        bq_client = bigquery.Client(project=project)
 
     if candidate_dt is None:
         candidate_dt = _max_partition_date(bq_client, trending_table)
@@ -323,7 +327,7 @@ def run_batch(
             atexit.register(shutil.rmtree, store_dir, ignore_errors=True)
             feature_store = build_offline_feature_store(
                 registry_path,
-                project=BIGQUERY_PROJECT,
+                project=project,
                 dataset=BIGQUERY_DATASET,
                 gcs_staging=gcs_staging,
                 online_db_path=os.path.join(store_dir, "online.db"),

@@ -148,6 +148,61 @@ def test_write_partition_is_idempotent_by_truncate_decorator():
     assert len(client.partitions["proj.ds.user_recommendations$20260721"]) == 1
 
 
+def test_run_batch_requires_project_before_bigquery_client(monkeypatch) -> None:
+    """테이블 해석 순서와 무관하게 프로젝트 누락을 client 생성 전에 거부한다."""
+    from src.pipeline import build_training_dataset as btd
+
+    monkeypatch.setattr(btd, "BIGQUERY_PROJECT", None)
+    monkeypatch.setattr(daily, "raw_table_id", lambda table: f"raw.{table}")
+    monkeypatch.setattr(daily, "feature_table_id", lambda table: f"feature.{table}")
+
+    def _must_not_create_client(*args, **kwargs):
+        raise AssertionError("프로젝트 확인 전에 BigQuery 클라이언트를 만들면 안 됩니다")
+
+    monkeypatch.setattr(daily.bigquery, "Client", _must_not_create_client)
+
+    with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
+        run_batch(resolved=_stub_resolved())
+
+
+def test_run_batch_feast_uses_resolved_project_for_store(monkeypatch) -> None:
+    """Feast store 생성에는 검증·정규화된 프로젝트만 전달한다."""
+    from src.features import feast_retrieval
+
+    captured: dict[str, object] = {}
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://test-bucket/registry.pb")
+    monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://test-bucket/staging")
+
+    def _store(*args, **kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(feast_retrieval, "build_offline_feature_store", _store)
+    monkeypatch.setattr(
+        daily,
+        "build_pool_feature_frames_feast",
+        lambda store, user_ids, candidate_video_ids, as_of, diagnostics: {
+            user_id: pd.DataFrame(
+                [{**{column: 0 for column in MODEL_FEATURE_COLUMNS}, "video_id": video_id}
+                for video_id in candidate_video_ids]
+            )
+            for user_id in user_ids
+        },
+    )
+
+    run_batch(
+        candidate_dt=date(2026, 7, 21),
+        events_dt=date(2026, 7, 21),
+        bq_client=_FakeClient(),
+        resolved=_stub_resolved(),
+        videos_raw=_videos_raw(1),
+        personas=_personas(["u1"]),
+        assembly_source="feast",
+    )
+
+    assert captured["project"] == "test-project"
+
+
 class _EverythingHalfModel:
     """모든 후보에 0.5를 주는 stub — 채점 경로만 검증한다."""
 

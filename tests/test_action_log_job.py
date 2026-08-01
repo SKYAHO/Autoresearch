@@ -41,6 +41,14 @@ _MERGE_ARGS = [
 _MODE_ARGS = {"single": _SINGLE_ARGS, "merge": _MERGE_ARGS}
 
 
+@pytest.fixture(autouse=True)
+def configured_project(monkeypatch) -> None:
+    """model 노출 정상 경로에 명시 BigQuery 프로젝트를 제공한다."""
+    from src.pipeline import build_training_dataset
+
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "test-project")
+
+
 def _parse_valid_single_args(*extra: str) -> argparse.Namespace:
     parser = action_log_job._build_parser()
     args = parser.parse_args([*_SINGLE_ARGS, *extra])
@@ -150,6 +158,7 @@ def test_model_factory_requires_project_before_bigquery_import(monkeypatch):
     """프로젝트가 없으면 model factory가 BigQuery import 전에 실패한다."""
     from src.pipeline import build_training_dataset
 
+    args = _parse_valid_single_args()
     monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
     original_import = builtins.__import__
 
@@ -159,13 +168,27 @@ def test_model_factory_requires_project_before_bigquery_import(monkeypatch):
         return original_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", _forbid_bigquery_import)
-    factory = action_log_job._build_candidate_provider_factory(
-        _parse_valid_single_args()
-    )
+    factory = action_log_job._build_candidate_provider_factory(args)
 
     assert factory is not None
     with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
         factory([])
+
+
+def test_main_model_requires_project_before_gcs_initialization(monkeypatch, capsys) -> None:
+    """model 설정 누락은 GCS 작업 전에 인자 오류(exit 2)로 끝난다."""
+    from src.pipeline import build_training_dataset
+
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
+
+    def _must_not_initialize_gcs() -> None:
+        raise AssertionError("프로젝트 확인 전에 GCS를 초기화하면 안 됩니다")
+
+    monkeypatch.setattr(action_log_job, "GcsFileSystem", _must_not_initialize_gcs)
+
+    assert action_log_job.main(_SINGLE_ARGS) == 2
+    summary = _json_lines(capsys.readouterr().out)[-1]
+    assert summary["error_type"] == "invalid_arguments"
 
 
 def _json_lines(output: str) -> list[dict[str, object]]:

@@ -19,6 +19,13 @@ def configured_project(monkeypatch) -> None:
     monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "test-project")
 
 
+def test_require_bigquery_project_strips_whitespace(monkeypatch) -> None:
+    """공백이 섞인 프로젝트 값은 BigQuery 식별자에 전달하지 않는다."""
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", " test-project ")
+
+    assert build_training_dataset.require_bigquery_project() == "test-project"
+
+
 def test_load_personas_reads_csv(tmp_path):
     csv_path = tmp_path / "personas.csv"
     pd.DataFrame({"uuid": ["u1"], "age": [25], "occupation": ["Student"]}).to_csv(

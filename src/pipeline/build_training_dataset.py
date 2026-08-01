@@ -10,7 +10,7 @@ offline store가 정본(#357)이라 그 값을 그대로 읽는다.
 확인한다(환경변수 → GCP 자격증명 → feast import 순, #404) — 자격증명 없는 환경에서 BigQuery
 접속이 응답 없이 멈추는 대신 즉시 명확한 이유로 중단한다.
 BigQuery 프로젝트는 ``CTR_TRAINING_BQ_PROJECT``로 명시해야 하며, 이 설정은 모든
-BigQuery/Feast import와 클라이언트 생성보다 먼저 검증한다.
+BigQuery/Feast import와 클라이언트 생성보다 먼저 앞뒤 공백을 정규화해 검증한다.
 
 spine 로드 직후에는 ``summarize_spine_coverage``/``require_spine_coverage``로 **요청 기간 대비
 실제 확보한 날짜 수**를 검증한다(#464). 기간 조회는 없는 파티션을 에러가 아니라 "행 없음"으로
@@ -90,10 +90,11 @@ FOLLOWUP_WINDOW_SEC = int(os.environ.get("CTR_TRAINING_FOLLOWUP_WINDOW_SEC", "60
 
 
 def require_bigquery_project() -> str:
-    """명시적으로 설정된 BigQuery 프로젝트를 반환한다."""
-    if BIGQUERY_PROJECT is None or not BIGQUERY_PROJECT.strip():
+    """명시적으로 설정된 정규화 BigQuery 프로젝트를 반환한다."""
+    project = (BIGQUERY_PROJECT or "").strip()
+    if not project:
         raise ValueError("CTR_TRAINING_BQ_PROJECT 환경변수가 필요합니다")
-    return BIGQUERY_PROJECT
+    return project
 
 
 def raw_table_id(table: str) -> str:

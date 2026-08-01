@@ -30,7 +30,8 @@ D 행뿐이지만 귀속 계산은 D+1까지 본다(#245, 계약 정본은
   이 명령을 반복 실행한다.
 
 BigQuery 프로젝트는 ``--project`` 또는 ``CTR_TRAINING_BQ_PROJECT``로 명시해야
-하며, 설정이 없으면 BigQuery 클라이언트를 만들기 전에 실패한다.
+하며, 앞뒤 공백을 정규화한 뒤 설정이 없으면 BigQuery 클라이언트를 만들기 전에
+실패한다.
 """
 
 from __future__ import annotations
@@ -525,6 +526,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise BatchArgumentError(
             "CTR_TRAINING_BQ_PROJECT 또는 --project가 필요합니다"
         )
+    args.project = project.strip()
     for name in ("dataset", "raw_dataset", "location"):
         if not str(getattr(args, name)).strip():
             raise BatchArgumentError(

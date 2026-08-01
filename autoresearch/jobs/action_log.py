@@ -7,7 +7,7 @@
 호출, single 전용), `heuristic`(규칙 기반). 노출 조립·클릭 판정·저장 로직은
 각각 `src.pipeline`·`autoresearch.action_logs`가 소유하며 여기서 담당하지
 않는다. model 경로는 명시 BigQuery 프로젝트를 외부 import·클라이언트 생성보다
-먼저 검증한다.
+먼저 인자 검증 단계에서 확인한다.
 
 spec: docs/specs/2026-07-13-public-batch-execution-contract.md,
       docs/specs/2026-07-23-rerank-api-exposure-source.md
@@ -261,6 +261,13 @@ def _build_candidate_provider_factory(
 def _validate_args(args: argparse.Namespace) -> None:
     if args.mode in {"single", "shard"}:
         args.exposure_source = args.exposure_source or "model"
+        if args.exposure_source == "model":
+            from src.pipeline.build_training_dataset import require_bigquery_project
+
+            try:
+                require_bigquery_project()
+            except ValueError as exc:
+                raise BatchArgumentError(str(exc)) from exc
         if args.exposure_source != "model" and args.recommendations_table is not None:
             raise BatchArgumentError(
                 "--recommendations-table is only valid with "

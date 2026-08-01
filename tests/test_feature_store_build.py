@@ -383,6 +383,17 @@ def test_main_requires_explicit_project_before_creating_client(
     assert summary["error_type"] == "invalid_arguments"
 
 
+def test_validate_args_strips_project_whitespace() -> None:
+    """공백이 섞인 프로젝트 값은 BigQuery client에 전달하기 전에 정규화한다."""
+    args = feature_store_build._build_parser().parse_args(
+        ["--project", " test-project ", *_PARTITION_ARGS]
+    )
+
+    feature_store_build._validate_args(args)
+
+    assert args.project == "test-project"
+
+
 def test_main_maps_runtime_failure_to_exit_one(monkeypatch, capsys) -> None:
     def _boom(project: str, location: str):
         raise RuntimeError("bigquery unavailable")
