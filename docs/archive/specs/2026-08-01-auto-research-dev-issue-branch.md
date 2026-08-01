@@ -80,11 +80,14 @@ Issue Form 자체의 `required`는 빈 입력만 막으므로, workflow가 위 �
    기록한다. 새 적격 결과는 marker를 먼저 `pending`으로 생성한 뒤에만 merge한다. 같은
    result-set의 final state는 no-op이고, pending 재실행은 선택 SHA가 이미 `dev` ancestor면
    marker를 `merged`로 복구하며 아니면 merge를 재개한다. 다른 result-set은 fail-closed하고
-   같은 이슈의 다른 experiment marker는 허용한다.
+   같은 이슈의 다른 experiment marker는 허용한다. `merge_conflict`와 `merge_api_failed`는
+   terminal failure이므로 marker update가 성공한 뒤 job도 실패하고, 같은 result-set의 재실행도
+   재조정·재병합 없이 실패한다.
 5. 적격 후보가 하나면 GitHub merge API의 base를 `dev`, head를 선택 `candidate_sha`로
    고정한다. 201 merge와 204 already-contained는 성공으로, 409은 `merge_conflict`, 그 밖의
    API 오류는 `merge_api_failed`로 marker를 갱신한다. marker update 실패는 pending을 남겨
-   재실행 reconciliation으로 복구한다.
+   재실행 reconciliation으로 복구한다. 201 response의 merge SHA가 형식 계약을 어기면 marker를
+   갱신하지 않고 pending을 남긴 채 fail-closed한다.
 
 ## 보안과 운영 제약
 
@@ -106,6 +109,10 @@ Issue Form 자체의 `required`는 빈 입력만 막으므로, workflow가 위 �
   정의를 실행한다. 따라서 이 변경의 workflow 파일은 `main`에도 존재해야 하지만, `main`은
   정의 위치일 뿐 자동 merge·ref 생성/갱신·PR 생성 대상이 아니다.
 - 완료 event workflow는 `dev` 외 ref를 merge base로 사용하지 않는다.
+- `GITHUB_TOKEN`으로 수행한 `dev` merge는 `dev` CI를 새로 trigger하지 않는다. 현재 candidate
+  lifecycle은 candidate SHA의 CI success check나 그 결과 뒤 producer 재dispatch 계약을 요구하지
+  않으므로, metric 통과 자동 병합은 CI 통과 보증이 아니다. check-run gate와 producer 재dispatch는
+  별도 후속 계약 범위다.
 
 ## 검증
 

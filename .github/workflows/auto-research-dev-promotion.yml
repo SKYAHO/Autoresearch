@@ -322,6 +322,9 @@ jobs:
                 failClosed('experiment result marker rejects a changed result set');
               }
               if (recordedResult.state !== 'pending') {
+                if (['merge_conflict', 'merge_api_failed'].includes(recordedResult.state)) {
+                  failClosed(`previous promotion ended with ${recordedResult.state}`);
+                }
                 return;
               }
               const pendingCommentId = matchingResultMarkers[0].commentId;
@@ -359,30 +362,32 @@ jobs:
             await mergePendingCandidate(pendingCommentId);
 
             async function mergePendingCandidate(pendingCommentId) {
-              let finalState;
+              let mergeResponse;
               try {
-                const mergeResponse = await github.rest.repos.merge({
+                mergeResponse = await github.rest.repos.merge({
                   owner,
                   repo,
                   base: 'dev',
                   head: selectedCandidateSha,
                 });
-                if (mergeResponse.status === 201 || mergeResponse.status === 204) {
-                  if (mergeResponse.status === 201) {
-                    requireMatch(mergeResponse.data.sha, /^[0-9a-f]{40}$/, 'merge SHA');
-                  }
-                  finalState = 'merged';
-                } else {
-                  finalState = 'merge_api_failed';
-                }
               } catch (error) {
-                if (error.status === 409) {
-                  finalState = 'merge_conflict';
-                } else {
-                  finalState = 'merge_api_failed';
-                }
+                const finalState = error.status === 409 ? 'merge_conflict' : 'merge_api_failed';
+                await updateResultMarker(pendingCommentId, finalState);
+                failClosed(`dev merge ended with ${finalState}`);
               }
+
+              if (mergeResponse.status === 201) {
+                requireMatch(mergeResponse.data.sha, /^[0-9a-f]{40}$/, 'merge SHA');
+              }
+              const finalState = (
+                mergeResponse.status === 201 || mergeResponse.status === 204
+              )
+                ? 'merged'
+                : 'merge_api_failed';
               await updateResultMarker(pendingCommentId, finalState);
+              if (finalState !== 'merged') {
+                failClosed(`dev merge ended with ${finalState}`);
+              }
             }
 
             async function updateResultMarker(pendingCommentId, state) {

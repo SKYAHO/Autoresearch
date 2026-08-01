@@ -72,7 +72,7 @@ _SCOPE_LABELS = {
     "Feast 정의(`feature_repo/`) 수정을 허용한다": "feast_definition",
     "실험 결과를 champion으로 승격하는 것까지 검토한다": "promotion",
 }
-_SECTION_PATTERN = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+_SECTION_PATTERN = re.compile(r"^###\s+(.+?)\s*$", re.MULTILINE)
 _CHECKBOX_PATTERN = re.compile(r"^- \[([ xX])\]\s+(.+)$")
 _METRIC_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
 _NON_NEGATIVE_INTEGER_PATTERN = re.compile(r"^[0-9]+$")
@@ -569,7 +569,7 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
 
 
 def _parse_sections(issue_body: str) -> dict[str, str]:
-    """최상위 Markdown heading 사이의 본문을 Form label로 인덱싱합니다."""
+    """GitHub Issue Form의 ``###`` heading 사이 본문을 label로 인덱싱합니다."""
     matches = list(_SECTION_PATTERN.finditer(issue_body))
     if not matches:
         raise ValueError("issue_body must contain Issue Form headings")

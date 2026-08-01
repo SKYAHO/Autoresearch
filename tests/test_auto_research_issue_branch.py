@@ -46,65 +46,65 @@ def structured_body(
     allowed_scope: str = "- [ ] prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다",
 ) -> str:
     """GitHub가 구조화 Form 응답에서 생성하는 실제 heading 본문을 만듭니다."""
-    return f"""## 연구 가설
+    return f"""### 연구 가설
 비율 피처가 ROC-AUC를 높인다.
 
-## 변경할 피처 · 모델
+### 변경할 피처 · 모델
 - 추가 피처: views_per_day = views / (days + 1)
 
-## 주 지표 이름
+### 주 지표 이름
 {primary_metric_name}
 
-## 주 지표 방향
+### 주 지표 방향
 {primary_metric_direction}
 
-## 최소 주 지표 개선폭
+### 최소 주 지표 개선폭
 {minimum_primary_delta}
 
-## Guardrail 지표 이름
+### Guardrail 지표 이름
 {guardrail_metric_name}
 
-## Guardrail 지표 방향
+### Guardrail 지표 방향
 {guardrail_metric_direction}
 
-## 최대 Guardrail 악화폭
+### 최대 Guardrail 악화폭
 {maximum_guardrail_regression}
 
-## 보조 관측 지표
+### 보조 관측 지표
 pr_auc
 
-## 비교 대상
+### 비교 대상
 동일 조건 baseline 재학습 (권장)
 
-## 데이터셋 스냅샷
+### 데이터셋 스냅샷
 {dataset_snapshot}
 
-## 랜덤 시드 목록
+### 랜덤 시드 목록
 {random_seeds}
 
-## Split 시드
+### Split 시드
 {split_seed}
 
-## Test 비율
+### Test 비율
 {test_size}
 
-## Validation 비율
+### Validation 비율
 {validation_size}
 
-## 학습 설정 참조
+### 학습 설정 참조
 {training_config_ref}
 
-## 대상 데이터 · 기간
+### 대상 데이터 · 기간
 - 데이터셋 / 경로: data/train.csv
 - 기간 (KST YYYY-MM-DD ~ YYYY-MM-DD): 2026-07-01 ~ 2026-07-31
 
-## 스냅샷 재사용
+### 스냅샷 재사용
 허용 (진행하되 실제로 쓴 데이터를 결과에 명시)
 
-## 허용 범위
+### 허용 범위
 {allowed_scope}
 
-## 결과 (에이전트가 채웁니다)
+### 결과 (에이전트가 채웁니다)
 - 판정 (지지/기각):
 """
 
@@ -167,7 +167,7 @@ def body_rendered_from_form() -> str:
     sections = []
     for field_id, field in form_fields().items():
         label = field["attributes"]["label"]
-        sections.append(f"## {label}\n{values[field_id]}")
+        sections.append(f"### {label}\n{values[field_id]}")
     return "\n\n".join(sections) + "\n"
 
 
@@ -415,6 +415,13 @@ def test_parse_issue_input_reads_body_rendered_from_actual_form() -> None:
     assert len(issue_input.reproducibility_id) == 64
 
 
+def test_parse_issue_input_rejects_legacy_h2_issue_form_headings() -> None:
+    legacy_body = structured_body().replace("### ", "## ")
+
+    with pytest.raises(ValueError, match="issue_body must contain Issue Form headings"):
+        parse_issue_input(449, "[AR] metric", legacy_body)
+
+
 def test_parse_issue_input_reads_configured_guardrail() -> None:
     issue_input = parse_issue_input(
         449,
@@ -652,8 +659,8 @@ def test_identifiers_canonicalize_equivalent_decimal_spellings() -> None:
 
 def test_parse_issue_input_rejects_legacy_unstructured_headings() -> None:
     legacy_body = structured_body().replace(
-        "## 주 지표 이름\nroc_auc\n\n",
-        "## 성공 기준 — 주 지표 1개와 수치 임계\nROC-AUC +0.002\n\n",
+        "### 주 지표 이름\nroc_auc\n\n",
+        "### 성공 기준 — 주 지표 1개와 수치 임계\nROC-AUC +0.002\n\n",
     )
 
     with pytest.raises(ValueError, match="unknown Issue Form heading"):
@@ -661,7 +668,7 @@ def test_parse_issue_input_rejects_legacy_unstructured_headings() -> None:
 
 
 def test_parse_issue_input_rejects_missing_structured_heading() -> None:
-    body = structured_body().replace("## Split 시드\n20260731\n\n", "")
+    body = structured_body().replace("### Split 시드\n20260731\n\n", "")
 
     with pytest.raises(ValueError, match="split_seed"):
         parse_issue_input(449, "[AR] metric", body)
@@ -669,8 +676,8 @@ def test_parse_issue_input_rejects_missing_structured_heading() -> None:
 
 def test_parse_issue_input_rejects_duplicate_structured_heading() -> None:
     body = structured_body().replace(
-        "## Split 시드\n20260731",
-        "## Split 시드\n20260731\n\n## Split 시드\n7",
+        "### Split 시드\n20260731",
+        "### Split 시드\n20260731\n\n### Split 시드\n7",
     )
 
     with pytest.raises(ValueError, match="duplicate Issue Form heading"):
@@ -1361,7 +1368,7 @@ def test_promotion_workflow_claims_before_merge_and_recovers_pending_state() -> 
     assert "issue_number: issueNumber" in pending_create.group("arguments")
     assert "'pending'" in pending_create.group("arguments")
     merge_call = re.search(
-        r"const mergeResponse = await github\.rest\.repos\.merge\(\{(?P<arguments>.*?)\}\);",
+        r"mergeResponse = await github\.rest\.repos\.merge\(\{(?P<arguments>.*?)\}\);",
         script,
         flags=re.DOTALL,
     )
@@ -1424,6 +1431,75 @@ def test_promotion_workflow_leaves_pending_marker_when_state_update_fails() -> N
     )
     assert state_machine is not None
     body = state_machine.group("body")
-    assert "let finalState;" in body
+    assert "let mergeResponse;" in body
     assert "await updateResultMarker(pendingCommentId, finalState);" in body
-    assert body.index("} catch (error) {") < body.index("await updateResultMarker(pendingCommentId, finalState);")
+    assert body.index("await updateResultMarker(pendingCommentId, finalState);") < body.index(
+        "if (finalState !== 'merged')"
+    )
+
+
+def test_promotion_workflow_keeps_malformed_201_response_outside_merge_api_catch() -> None:
+    workflow = load_promotion_workflow()
+    steps = workflow["jobs"]["promote-completed-experiment"]["steps"]
+    assert isinstance(steps, list)
+    script = next(step["with"]["script"] for step in steps if "with" in step and "script" in step["with"])
+    assert isinstance(script, str)
+
+    state_machine = re.search(
+        r"async function mergePendingCandidate\(pendingCommentId\) \{(?P<body>.*?)\n\s*\}\n\n\s*async function updateResultMarker",
+        script,
+        flags=re.DOTALL,
+    )
+    assert state_machine is not None
+    body = state_machine.group("body")
+    transport_boundary = re.search(
+        r"let mergeResponse;\n\s*try \{(?P<transport>.*?)\n\s*\} catch \(error\) \{(?P<failure>.*?)\n\s*\}\n\n\s*if \(mergeResponse\.status === 201\)",
+        body,
+        flags=re.DOTALL,
+    )
+    assert transport_boundary is not None
+    assert "github.rest.repos.merge" in transport_boundary.group("transport")
+    assert "requireMatch(mergeResponse.data.sha" not in transport_boundary.group("failure")
+    assert "requireMatch(mergeResponse.data.sha" in body
+    assert body.index("} catch (error) {") < body.index("requireMatch(mergeResponse.data.sha")
+
+
+def test_promotion_workflow_fails_terminal_merge_failure_without_reconciliation_or_remerge() -> None:
+    workflow = load_promotion_workflow()
+    steps = workflow["jobs"]["promote-completed-experiment"]["steps"]
+    assert isinstance(steps, list)
+    script = next(step["with"]["script"] for step in steps if "with" in step and "script" in step["with"])
+    assert isinstance(script, str)
+
+    terminal_state = re.search(
+        r"if \(recordedResult\.state !== 'pending'\) \{(?P<body>.*?)\n\s*\}\n\s*const pendingCommentId",
+        script,
+        flags=re.DOTALL,
+    )
+    assert terminal_state is not None
+    body = terminal_state.group("body")
+    assert "['merge_conflict', 'merge_api_failed'].includes(recordedResult.state)" in body
+    assert "failClosed(" in body
+    assert terminal_state.start() < script.index("const reconciliation")
+    assert terminal_state.start() < script.index("github.rest.repos.merge")
+
+
+def test_promotion_workflow_fails_after_recording_new_merge_failure_state() -> None:
+    workflow = load_promotion_workflow()
+    steps = workflow["jobs"]["promote-completed-experiment"]["steps"]
+    assert isinstance(steps, list)
+    script = next(step["with"]["script"] for step in steps if "with" in step and "script" in step["with"])
+    assert isinstance(script, str)
+
+    state_machine = re.search(
+        r"async function mergePendingCandidate\(pendingCommentId\) \{(?P<body>.*?)\n\s*\}\n\n\s*async function updateResultMarker",
+        script,
+        flags=re.DOTALL,
+    )
+    assert state_machine is not None
+    body = state_machine.group("body")
+    update_failure = re.search(
+        r"await updateResultMarker\(pendingCommentId, (?P<state>\w+)\);\n\s*failClosed\(",
+        body,
+    )
+    assert update_failure is not None
