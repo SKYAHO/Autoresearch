@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-01T07:36:33Z",
+  "generated_at": "2026-08-01T07:52:11Z",
   "reports": [
+    {
+      "number": 461,
+      "title": "feat: 실험 metric 승격 게이트와 실패 결과 issue comment",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-01T07:51:54Z",
+      "summary_ko": [
+        "실험 결과 지표를 이슈 본문의 승격 기준과 자동 비교하여 승격 여부를 판정하는 도구를 추가하였습니다.",
+        "기준을 통과한 후보에 대해서만 불변 승격 브랜치 및 main 대상 Draft PR을 자동 생성합니다.",
+        "기준 미달이나 계보 검증 실패 시 main PR 생성 없이 원본 이슈 주석에 결과를 기록하도록 구성했습니다."
+      ],
+      "report_url": "pr/461/"
+    },
     {
       "number": 463,
       "title": "fix: videos CLI help 문구 정정",
