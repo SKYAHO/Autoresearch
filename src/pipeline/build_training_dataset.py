@@ -59,10 +59,14 @@ from src.pipeline.training_provenance import (  # noqa: E402
 # champion v12가 사실상 2일치로 학습돼 재현 불가능한 val_roc_auc=0.80으로 굳고, 이후 정상
 # 모델의 승격을 전부 막았던 사고가 근거다(2026-07-31 조사).
 #
-# 기준값은 잠정이며 experiments/2026-07-31_training-window-length 결과로 확정한다.
-# - MIN_COVERAGE_DAYS: v12(정상 2일)를 막고 v18(정상 4일)은 통과시키는 선.
-# - MIN_ROWS_PER_DAY: 2026-07-23/24처럼 유저 10명(240행)만 남은 붕괴일을 "있음"으로 세지 않기
-#   위한 하한. 정상일은 12만~17만 행이라 5,000은 충분히 느슨하다.
+# 기준값은 experiments/2026-07-31_training-window-length 실측으로 확정했다.
+# - MIN_ROWS_PER_DAY: 붕괴일 240행 vs 정상일 125,760~167,592행 — 두 군집이 500배 떨어져 있어
+#   그 사이 어디에 두든 판정이 같다. 5,000은 경계에 민감하지 않은 값으로 골랐다.
+# - MIN_COVERAGE_DAYS: **정확도 최적점이 아니라 사고 재발 차단선이다.** 같은 실험이 공통
+#   홀드아웃(07-29)에서 정상 2일과 13일의 차이가 없음을 보였다(Δ=+0.0039, 노이즈 경계
+#   0.0184) — 이 가드를 "날짜가 많을수록 좋은 모델"의 근거로 쓰면 안 된다. 가드의 목적은
+#   요청한 기간과 실제 학습된 기간의 불일치를 드러내는 것이고, 3일은 v12(정상 2일)를 막고
+#   v18(정상 4일)은 통과시키는 선이다.
 DEFAULT_MIN_COVERAGE_DAYS = int(os.environ.get("CTR_TRAINING_MIN_COVERAGE_DAYS", "3"))
 DEFAULT_MIN_ROWS_PER_DAY = int(os.environ.get("CTR_TRAINING_MIN_ROWS_PER_DAY", "5000"))
 
