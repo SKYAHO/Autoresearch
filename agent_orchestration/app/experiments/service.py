@@ -11,9 +11,14 @@ import hashlib
 import json
 import uuid
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from agent_orchestration.app.experiments.exceptions import ExperimentNotFoundError
+from agent_orchestration.app.experiments.exceptions import (
+    ExperimentNotFoundError,
+    IdempotencyConflictError,
+    PromotionRequiresDedicatedEndpointError,
+)
 from agent_orchestration.app.experiments.models import (
     Experiment,
     ExperimentEvent,
@@ -22,10 +27,16 @@ from agent_orchestration.app.experiments.models import (
 )
 from agent_orchestration.app.experiments.repository import (
     find_experiment,
+    find_event_by_idempotency_key,
     find_experiment_metadata,
     find_experiments,
 )
-from agent_orchestration.app.experiments.schemas import ExperimentCreate
+from agent_orchestration.app.experiments.schemas import (
+    ExperimentCreate,
+    ExperimentEventCreate,
+    StatusUpdateRequest,
+)
+from agent_orchestration.app.experiments.transition_service import validate_transition
 
 
 @dataclass(frozen=True)
@@ -111,3 +122,121 @@ def get_experiment_metadata(
     """존재하는 실험의 metadata를 mapping으로 반환한다."""
     get_experiment(session, experiment_id)
     return find_experiment_metadata(session, experiment_id)
+
+
+def _require_general_transition(requested: ExperimentStatus) -> None:
+    """수동 승격 전용 상태가 일반 쓰기 경로로 들어오면 거부한다."""
+    if requested is ExperimentStatus.PROMOTED:
+        raise PromotionRequiresDedicatedEndpointError
+
+
+def _transition_experiment(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    requested: ExperimentStatus,
+    reason: str | None,
+    metric_snapshot: dict | None,
+    idempotency_key: str,
+    request_fingerprint: str,
+    check_idempotency: bool,
+) -> tuple[Experiment, ExperimentEvent]:
+    """row lock 안에서 상태와 event를 한 transaction으로 갱신한다."""
+    _require_general_transition(requested)
+    with session.begin():
+        experiment = find_experiment(session, experiment_id, for_update=True)
+        if experiment is None:
+            raise ExperimentNotFoundError(experiment_id)
+
+        if check_idempotency:
+            existing_event = find_event_by_idempotency_key(
+                session,
+                experiment_id,
+                idempotency_key,
+            )
+            if existing_event is not None:
+                if existing_event.request_fingerprint != request_fingerprint:
+                    raise IdempotencyConflictError(idempotency_key)
+                return experiment, existing_event
+
+        current = ExperimentStatus(experiment.status)
+        validate_transition(current, requested)
+        experiment.status = requested.value
+        if metric_snapshot is not None:
+            experiment.metric_summary = metric_snapshot
+        event_row = ExperimentEvent(
+            experiment_id=experiment.id,
+            idempotency_key=idempotency_key,
+            request_fingerprint=request_fingerprint,
+            from_status=current.value,
+            to_status=requested.value,
+            reason=reason,
+            metric_snapshot=metric_snapshot,
+        )
+        session.add(event_row)
+        session.flush()
+    return experiment, event_row
+
+
+def update_experiment_status(
+    session: Session,
+    experiment_id: uuid.UUID,
+    request: StatusUpdateRequest,
+) -> Experiment:
+    """클라이언트 멱등성을 제공하지 않는 일반 상태 변경을 수행한다."""
+    requested = ExperimentStatus(request.status)
+    payload = {
+        "to_status": requested.value,
+        "reason": request.reason,
+        "metric_snapshot": request.metric_snapshot,
+    }
+    experiment, _event = _transition_experiment(
+        session,
+        experiment_id,
+        requested=requested,
+        reason=request.reason,
+        metric_snapshot=request.metric_snapshot,
+        idempotency_key=f"status-update:{uuid.uuid4()}",
+        request_fingerprint=_request_fingerprint(payload),
+        check_idempotency=False,
+    )
+    return experiment
+
+
+def create_experiment_event(
+    session: Session,
+    experiment_id: uuid.UUID,
+    request: ExperimentEventCreate,
+) -> ExperimentEvent:
+    """멱등성 key를 적용해 상태 전이 event를 생성한다."""
+    requested = ExperimentStatus(request.to_status)
+    payload = {
+        "to_status": requested.value,
+        "reason": request.reason,
+        "metric_snapshot": request.metric_snapshot,
+    }
+    fingerprint = _request_fingerprint(payload)
+    try:
+        _experiment, event_row = _transition_experiment(
+            session,
+            experiment_id,
+            requested=requested,
+            reason=request.reason,
+            metric_snapshot=request.metric_snapshot,
+            idempotency_key=request.idempotency_key,
+            request_fingerprint=fingerprint,
+            check_idempotency=True,
+        )
+        return event_row
+    except IntegrityError as error:
+        session.rollback()
+        existing_event = find_event_by_idempotency_key(
+            session,
+            experiment_id,
+            request.idempotency_key,
+        )
+        if existing_event is None:
+            raise error
+        if existing_event.request_fingerprint != fingerprint:
+            raise IdempotencyConflictError(request.idempotency_key) from error
+        return existing_event

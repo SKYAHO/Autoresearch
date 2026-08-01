@@ -91,11 +91,11 @@ Alembic, PostgreSQL, pytest.
 - Modify: `agent_orchestration/app/experiments/schemas.py`
 - Test: `tests/test_experiment_service.py`
 
-- [ ] row lock, 원자성, rollback과 `EVALUATING -> ERROR` 실패 테스트를 작성한다.
-- [ ] 일반 endpoint의 `PROMOTED` 거부 테스트를 작성한다.
-- [ ] 같은 key·같은 payload와 같은 key·다른 payload 테스트를 작성한다.
-- [ ] 상태 전이와 Event 멱등 service를 최소 구현한다.
-- [ ] 관련 테스트와 lint를 통과하고 Task 커밋을 만든다.
+- [x] row lock, 원자성, rollback과 `EVALUATING -> ERROR` 실패 테스트를 작성한다.
+- [x] 일반 endpoint의 `PROMOTED` 거부 테스트를 작성한다.
+- [x] 같은 key·같은 payload와 같은 key·다른 payload 테스트를 작성한다.
+- [x] 상태 전이와 Event 멱등 service를 최소 구현한다.
+- [x] 관련 테스트와 lint를 통과하고 Task 커밋을 만든다.
 
 ### Task 6: Log 저장과 polling 조회
 

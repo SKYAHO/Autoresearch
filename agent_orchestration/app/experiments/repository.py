@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from agent_orchestration.app.experiments.models import (
     Experiment,
+    ExperimentEvent,
     ExperimentMetadata,
     ExperimentStatus,
 )
@@ -62,3 +63,17 @@ def find_experiment_metadata(
         .order_by(ExperimentMetadata.key)
     ).all()
     return {entry.key: entry.value for entry in entries}
+
+
+def find_event_by_idempotency_key(
+    session: Session,
+    experiment_id: uuid.UUID,
+    idempotency_key: str,
+) -> ExperimentEvent | None:
+    """한 실험에서 멱등성 key가 같은 기존 event를 조회한다."""
+    return session.scalar(
+        select(ExperimentEvent).where(
+            ExperimentEvent.experiment_id == experiment_id,
+            ExperimentEvent.idempotency_key == idempotency_key,
+        )
+    )
