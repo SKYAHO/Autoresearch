@@ -301,6 +301,12 @@ def test_main_runs_assembly_when_env_check_passes(monkeypatch, tmp_path) -> None
         events_end_date="2026-07-02",
     )
 
-    assemble.assert_called_once_with(output_path, "2026-07-01", "2026-07-02")
+    # 커버리지 기준(#464)은 조립에 그대로 전달된다 — main이 임의로 낮추지 않는다.
+    assemble.assert_called_once_with(
+        output_path,
+        "2026-07-01",
+        "2026-07-02",
+        min_coverage_days=build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS,
+    )
 
 
