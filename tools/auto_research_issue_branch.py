@@ -183,7 +183,6 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
 
     criteria_id = _identifier(
         {
-            "issue_number": issue_number,
             "primary_metric_name": primary_metric_name,
             "primary_metric_direction": primary_metric_direction,
             "minimum_primary_delta": _decimal_text(minimum_primary_delta),
@@ -194,20 +193,16 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
                 if maximum_guardrail_regression is not None
                 else _NONE_VALUE
             ),
-            "comparison": comparison,
-            "allowed_scope": allowed_scope,
         }
     )
     reproducibility_id = _identifier(
         {
-            "issue_number": issue_number,
             "dataset_snapshot": dataset_snapshot,
             "random_seeds": random_seeds,
             "split_seed": split_seed,
             "test_size": _decimal_text(test_size),
             "validation_size": _decimal_text(validation_size),
             "training_config_ref": training_config_ref,
-            "snapshot_reuse": snapshot_reuse,
         }
     )
     return IssueInput(
@@ -358,8 +353,14 @@ def _parse_split_sizes(test_value: str, validation_value: str) -> tuple[Decimal,
         or test_size + validation_size >= 1
     ):
         raise ValueError("test_size and validation_size must leave training data")
-    _finite_float(test_size, "test_size")
-    _finite_float(validation_size, "validation_size")
+    test_float = _finite_float(test_size, "test_size")
+    validation_float = _finite_float(validation_size, "validation_size")
+    if (
+        not 0 < test_float < 1
+        or not 0 < validation_float < 1
+        or test_float + validation_float >= 1
+    ):
+        raise ValueError("test_size and validation_size must remain valid as floats")
     return test_size, validation_size
 
 
@@ -417,8 +418,13 @@ def _identifier(contract: dict[str, object]) -> str:
 
 
 def _decimal_text(value: Decimal) -> str:
-    """식별자 입력에 사용할 Decimal의 안정적인 일반 표기를 반환합니다."""
-    return format(value, "f")
+    """식별자 입력에 사용할 Decimal의 동치 표기 canonical string을 반환합니다."""
+    if value.is_zero():
+        return "0"
+    text = format(value, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
 
 
 def _parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:

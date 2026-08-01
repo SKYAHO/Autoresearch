@@ -331,6 +331,9 @@ def test_parse_issue_input_rejects_invalid_split_seed(split_seed: str) -> None:
         ("0.7", "0.3"),
         ("NaN", "0.2"),
         ("0.2", "Infinity"),
+        ("1e-400", "0.2"),
+        ("0.2", "1e-400"),
+        ("0.1", "0.89999999999999999"),
     ],
 )
 def test_parse_issue_input_rejects_invalid_split_sizes(
@@ -412,6 +415,36 @@ def test_criteria_id_includes_guardrail_direction_and_maximum_regression() -> No
     assert changed_maximum.criteria_id != original.criteria_id
 
 
+def test_identifiers_canonicalize_equivalent_decimal_spellings() -> None:
+    original = parse_issue_input(
+        449,
+        "[AR] metric",
+        structured_body(
+            minimum_primary_delta="0.20",
+            guardrail_metric_name="log_loss",
+            guardrail_metric_direction="lower_is_better",
+            maximum_guardrail_regression="0.010",
+            test_size="0.20",
+            validation_size="0.20",
+        ),
+    )
+    equivalent = parse_issue_input(
+        449,
+        "[AR] metric",
+        structured_body(
+            minimum_primary_delta="0.2",
+            guardrail_metric_name="log_loss",
+            guardrail_metric_direction="lower_is_better",
+            maximum_guardrail_regression="0.01",
+            test_size="0.2",
+            validation_size="0.2",
+        ),
+    )
+
+    assert equivalent.criteria_id == original.criteria_id
+    assert equivalent.reproducibility_id == original.reproducibility_id
+
+
 def test_parse_issue_input_rejects_legacy_unstructured_headings() -> None:
     legacy_body = structured_body().replace(
         "## 주 지표 이름\nroc_auc\n\n",
@@ -463,8 +496,9 @@ def test_identifiers_ignore_human_oriented_free_text() -> None:
     assert changed.reproducibility_id == original.reproducibility_id
 
 
-def test_identifiers_include_existing_structured_choices() -> None:
+def test_identifiers_ignore_fields_outside_fixed_structured_contracts() -> None:
     original = parse_issue_input(449, "[AR] metric", structured_body())
+    changed_issue_number = parse_issue_input(450, "[AR] metric", structured_body())
     changed_comparison = parse_issue_input(
         449,
         "[AR] metric",
@@ -486,9 +520,14 @@ def test_identifiers_include_existing_structured_choices() -> None:
         ),
     )
 
-    assert changed_comparison.criteria_id != original.criteria_id
-    assert changed_scope.criteria_id != original.criteria_id
-    assert changed_snapshot_reuse.reproducibility_id != original.reproducibility_id
+    for changed in (
+        changed_issue_number,
+        changed_comparison,
+        changed_scope,
+        changed_snapshot_reuse,
+    ):
+        assert changed.criteria_id == original.criteria_id
+        assert changed.reproducibility_id == original.reproducibility_id
 
 
 def test_branch_name_is_single_issue_coordinate() -> None:
