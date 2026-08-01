@@ -5,8 +5,10 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from click import unstyle
 import pytest
 import typer
+from typer.testing import CliRunner
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -68,6 +70,76 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
         "events_start_date": "2026-07-01",
         "events_end_date": "2026-07-08",
     }
+
+
+def test_train_model_forwards_explicit_seed_triplet(monkeypatch):
+    train_call = {}
+    monkeypatch.setattr(
+        cli.train, "main", lambda **kwargs: train_call.update(kwargs)
+    )
+
+    cli.train_model(
+        config_path=None,
+        data_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=11,
+        model_seed=12,
+        sampler_seed=13,
+        extra_features=None,
+        experiment=None,
+    )
+
+    assert (
+        train_call["split_seed"],
+        train_call["model_seed"],
+        train_call["sampler_seed"],
+    ) == (11, 12, 13)
+    assert "require_snapshot" not in train_call
+
+
+def test_run_pipeline_requires_verified_snapshot_and_forwards_seed_triplet(monkeypatch):
+    train_call = {}
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+    monkeypatch.setattr(
+        cli.train,
+        "main",
+        lambda **kwargs: train_call.update(kwargs) or _pipeline_outcome(),
+    )
+    monkeypatch.setattr(cli.evaluate, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
+
+    cli.run_pipeline(
+        dataset_path=None,
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
+        config_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=11,
+        model_seed=12,
+        sampler_seed=13,
+        extra_features=None,
+        experiment=None,
+    )
+
+    assert train_call["require_snapshot"] is True
+    assert (
+        train_call["split_seed"],
+        train_call["model_seed"],
+        train_call["sampler_seed"],
+    ) == (11, 12, 13)
 
 
 def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
@@ -667,3 +739,46 @@ def test_sweep_seeds_rejects_duplicate_seeds(tmp_path, monkeypatch):
             extra_features=None,
             result_path=None,
         )
+
+
+def test_verify_comparison_help_exposes_required_options() -> None:
+    result = CliRunner().invoke(
+        cli.app,
+        ["verify-comparison", "--help"],
+        color=False,
+    )
+    help_output = unstyle(result.output)
+
+    assert result.exit_code == 0
+    assert "--baseline-run-id" in help_output
+    assert "--challenger-run-id" in help_output
+    assert "--output" in help_output
+
+
+def test_verify_comparison_cli_maps_validation_error_without_secret(
+    monkeypatch,
+) -> None:
+    secret = "synthetic-private-value"
+
+    def _raise(*_args, **_kwargs):
+        raise cli.training_comparison.ComparisonValidationError(
+            f"credential={secret}"
+        )
+
+    monkeypatch.setattr(cli.training_comparison, "verify_training_comparison", _raise)
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "verify-comparison",
+            "--baseline-run-id",
+            "baseline",
+            "--challenger-run-id",
+            "challenger",
+            "--output",
+            "comparison.json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "synthetic-private-value" not in result.output
+    assert "ComparisonValidationError" in result.output
