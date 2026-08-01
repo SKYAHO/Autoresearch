@@ -1,9 +1,14 @@
-"""Auto Research 이슈 입력을 실행 전 계약으로 정규화하는 순수 도구입니다.
+"""Auto Research 이슈의 구조화 실행 전 계약을 정규화하는 순수 도구입니다.
 
-이 모듈은 Autoresearch 일일 폐루프의 자율 실험 진입점에서 GitHub Issue Form
-본문을 fail-closed 방식으로 검증하고, 이슈별 실험 브랜치와 판정·재현 계약
-식별자를 만듭니다. 후보 스냅샷 생성, 실험 실행 context, GitHub workflow
-제어, Issue Form 변경 및 champion 승격은 이 모듈의 책임이 아닙니다.
+[파이프라인] 자율 실험 진입점에서 GitHub Issue Form 등록과 이슈별 실험 실행
+사이 — 지표 판정과 데이터·seed·split·학습 설정 재현 조건을 검증하는 구간을
+담당합니다.
+
+[기능] 실제 Issue Form heading 본문을 fail-closed 방식으로 파싱하고, 이슈별
+실험 브랜치 이름과 판정·재현 계약 식별자 및 GitHub Actions output을 만듭니다.
+
+[비책임] 후보 스냅샷 생성·실험 실행 context·GitHub ref 제어·champion 승격은
+후속 #449 workflow와 실험 실행 계층의 책임입니다.
 """
 
 from __future__ import annotations
@@ -23,10 +28,20 @@ from typing import Sequence
 _HEADING_NAMES = {
     "연구 가설": "hypothesis",
     "변경할 피처 · 모델": "change",
-    "성공 기준 — 주 지표 1개와 수치 임계": "success_criteria",
+    "주 지표 이름": "primary_metric_name",
+    "주 지표 방향": "primary_metric_direction",
+    "최소 주 지표 개선폭": "minimum_primary_delta",
+    "Guardrail 지표 이름": "guardrail_metric_name",
+    "Guardrail 지표 방향": "guardrail_metric_direction",
+    "최대 Guardrail 악화폭": "maximum_guardrail_regression",
     "보조 관측 지표": "secondary_metrics",
     "비교 대상": "comparison",
-    "재현 조건 고정값": "reproducibility",
+    "데이터셋 스냅샷": "dataset_snapshot",
+    "랜덤 시드 목록": "random_seeds",
+    "Split 시드": "split_seed",
+    "Test 비율": "test_size",
+    "Validation 비율": "validation_size",
+    "학습 설정 참조": "training_config_ref",
     "대상 데이터 · 기간": "dataset",
     "스냅샷 재사용": "snapshot_reuse",
     "허용 범위": "allowed_scope",
@@ -46,20 +61,18 @@ _SNAPSHOT_REUSE = frozenset(
         "불허 (정규 조립 경로 실패 시 중단)",
     }
 )
+_METRIC_DIRECTIONS = frozenset({"higher_is_better", "lower_is_better"})
+_NOT_APPLICABLE = "not_applicable"
+_NONE_VALUE = "없음"
 _SCOPE_LABELS = {
     "prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다": "prod_model_contract",
     "Feast 정의(`feature_repo/`) 수정을 허용한다": "feast_definition",
     "실험 결과를 champion으로 승격하는 것까지 검토한다": "promotion",
 }
 _SECTION_PATTERN = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
-_PRIMARY_DELTA_PATTERN = re.compile(
-    r"^.+?,\s*baseline\s+대비\s+"
-    r"(?P<delta>[+-]?(?:NaN|Infinity|\d+(?:\.\d*)?|\.\d+))\s+이상$"
-)
 _CHECKBOX_PATTERN = re.compile(r"^- \[([ xX])\]\s+(.+)$")
-_SPLIT_ROW_PATTERN = re.compile(r"^-\s*test_size\s*/\s*val_size:\s*(\S+)\s*/\s*(\S+)\s*$")
-_SEEDS_ROW_PATTERN = re.compile(r"^-\s*시드 목록:\s*(.+?)\s*$")
-_SEED_COUNT_ROW_PATTERN = re.compile(r"^-\s*반복 시드 수:\s*(\d+)\s*$")
+_METRIC_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
+_NON_NEGATIVE_INTEGER_PATTERN = re.compile(r"^[0-9]+$")
 
 
 @dataclass(frozen=True)
@@ -70,13 +83,20 @@ class IssueInput:
     issue_branch: str
     hypothesis: str
     change: str
-    success_criteria: str
+    primary_metric_name: str
+    primary_metric_direction: str
+    minimum_primary_delta: float
+    guardrail_metric_name: str | None
+    guardrail_metric_direction: str
+    maximum_guardrail_regression: float | None
     secondary_metrics: str
     comparison: str
-    minimum_primary_delta: float
+    dataset_snapshot: str
+    random_seeds: tuple[int, ...]
+    split_seed: int
     test_size: float
-    val_size: float
-    seeds: tuple[int, ...]
+    validation_size: float
+    training_config_ref: str
     dataset: str
     snapshot_reuse: str
     allowed_scope: tuple[str, ...]
@@ -111,9 +131,43 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
 
     hypothesis = _required_content(sections, "연구 가설")
     change = _required_content(sections, "변경할 피처 · 모델")
-    success_criteria = _required_content(sections, "성공 기준 — 주 지표 1개와 수치 임계")
+    primary_metric_name = _metric_name(
+        _required_content(sections, "주 지표 이름"),
+        "primary_metric_name",
+    )
+    primary_metric_direction = _metric_direction(
+        _required_content(sections, "주 지표 방향"),
+        "primary_metric_direction",
+    )
+    minimum_primary_delta = _non_negative_decimal(
+        _required_content(sections, "최소 주 지표 개선폭"),
+        "minimum_primary_delta",
+    )
+    guardrail_metric_name, guardrail_metric_direction, maximum_guardrail_regression = (
+        _parse_guardrail(
+            _required_content(sections, "Guardrail 지표 이름"),
+            _required_content(sections, "Guardrail 지표 방향"),
+            _required_content(sections, "최대 Guardrail 악화폭"),
+        )
+    )
     comparison = _required_content(sections, "비교 대상")
-    reproducibility = _required_content(sections, "재현 조건 고정값")
+    dataset_snapshot = _text_reference(
+        _required_content(sections, "데이터셋 스냅샷"),
+        "dataset_snapshot",
+    )
+    random_seeds = _parse_random_seeds(_required_content(sections, "랜덤 시드 목록"))
+    split_seed = _non_negative_integer(
+        _required_content(sections, "Split 시드"),
+        "split_seed",
+    )
+    test_size, validation_size = _parse_split_sizes(
+        _required_content(sections, "Test 비율"),
+        _required_content(sections, "Validation 비율"),
+    )
+    training_config_ref = _text_reference(
+        _required_content(sections, "학습 설정 참조"),
+        "training_config_ref",
+    )
     dataset = _required_content(sections, "대상 데이터 · 기간")
     snapshot_reuse = _required_content(sections, "스냅샷 재사용")
     allowed_scope_text = _required_content(sections, "허용 범위")
@@ -123,8 +177,6 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
     if snapshot_reuse not in _SNAPSHOT_REUSE:
         raise ValueError("snapshot_reuse must be an Issue Form option")
 
-    minimum_primary_delta = _minimum_primary_delta(success_criteria)
-    test_size, val_size, seeds = _parse_reproducibility(reproducibility)
     allowed_scope = _parse_allowed_scope(allowed_scope_text)
     issue_branch = branch_name_for(issue_number, issue_title)
     secondary_metrics = sections.get("보조 관측 지표", "").strip()
@@ -132,18 +184,29 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
     criteria_id = _identifier(
         {
             "issue_number": issue_number,
-            "success_criteria": success_criteria,
-            "comparison": comparison,
+            "primary_metric_name": primary_metric_name,
+            "primary_metric_direction": primary_metric_direction,
             "minimum_primary_delta": _decimal_text(minimum_primary_delta),
+            "guardrail_metric_name": guardrail_metric_name or _NONE_VALUE,
+            "guardrail_metric_direction": guardrail_metric_direction,
+            "maximum_guardrail_regression": (
+                _decimal_text(maximum_guardrail_regression)
+                if maximum_guardrail_regression is not None
+                else _NONE_VALUE
+            ),
+            "comparison": comparison,
+            "allowed_scope": allowed_scope,
         }
     )
     reproducibility_id = _identifier(
         {
             "issue_number": issue_number,
+            "dataset_snapshot": dataset_snapshot,
+            "random_seeds": random_seeds,
+            "split_seed": split_seed,
             "test_size": _decimal_text(test_size),
-            "val_size": _decimal_text(val_size),
-            "seeds": seeds,
-            "dataset": dataset,
+            "validation_size": _decimal_text(validation_size),
+            "training_config_ref": training_config_ref,
             "snapshot_reuse": snapshot_reuse,
         }
     )
@@ -152,13 +215,24 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
         issue_branch=issue_branch,
         hypothesis=hypothesis,
         change=change,
-        success_criteria=success_criteria,
+        primary_metric_name=primary_metric_name,
+        primary_metric_direction=primary_metric_direction,
+        minimum_primary_delta=_finite_float(minimum_primary_delta, "minimum_primary_delta"),
+        guardrail_metric_name=guardrail_metric_name,
+        guardrail_metric_direction=guardrail_metric_direction,
+        maximum_guardrail_regression=(
+            _finite_float(maximum_guardrail_regression, "maximum_guardrail_regression")
+            if maximum_guardrail_regression is not None
+            else None
+        ),
         secondary_metrics=secondary_metrics,
         comparison=comparison,
-        minimum_primary_delta=_finite_float(minimum_primary_delta, "minimum_primary_delta"),
+        dataset_snapshot=dataset_snapshot,
+        random_seeds=random_seeds,
+        split_seed=split_seed,
         test_size=_finite_float(test_size, "test_size"),
-        val_size=_finite_float(val_size, "val_size"),
-        seeds=seeds,
+        validation_size=_finite_float(validation_size, "validation_size"),
+        training_config_ref=training_config_ref,
         dataset=dataset,
         snapshot_reuse=snapshot_reuse,
         allowed_scope=allowed_scope,
@@ -200,64 +274,93 @@ def _required_content(sections: dict[str, str], heading: str) -> str:
     return content
 
 
-def _minimum_primary_delta(success_criteria: str) -> Decimal:
-    """성공 기준에서 유한하고 양수인 최소 주 지표 개선폭을 추출합니다."""
-    match = _PRIMARY_DELTA_PATTERN.fullmatch(success_criteria.strip())
-    if match is None:
-        raise ValueError("minimum_primary_delta must use 'baseline 대비 <delta> 이상'")
-    value = _finite_decimal(match.group("delta"), "minimum_primary_delta")
-    if value <= 0:
-        raise ValueError("minimum_primary_delta must be positive")
-    _finite_float(value, "minimum_primary_delta")
+def _metric_name(value: str, field_name: str) -> str:
+    """Issue Form metric 이름 규칙에 맞는 값을 반환합니다."""
+    if _METRIC_NAME_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must match [A-Za-z][A-Za-z0-9._-]{{0,63}}")
     return value
 
 
-def _parse_reproducibility(reproducibility: str) -> tuple[Decimal, Decimal, tuple[int, ...]]:
-    """재현 조건의 split과 시드 목록·개수를 교차 검증합니다."""
-    rows = _parse_reproducibility_rows(reproducibility)
-    split_match = rows.get("split")
-    if split_match is None:
-        raise ValueError("test_size / val_size is required")
-    test_size = _finite_decimal(split_match.group(1), "test_size / val_size")
-    val_size = _finite_decimal(split_match.group(2), "test_size / val_size")
-    if not 0 < test_size < 1 or not 0 < val_size < 1 or test_size + val_size >= 1:
-        raise ValueError("test_size / val_size must leave training data")
-
-    seeds_match = rows.get("seeds")
-    if seeds_match is None:
-        raise ValueError("seeds are required")
-    seed_tokens = [token.strip() for token in seeds_match.group(1).split(",")]
-    if not seed_tokens or any(not token.isdecimal() for token in seed_tokens):
-        raise ValueError("seeds must be comma-separated non-negative integers")
-    seeds = tuple(int(token) for token in seed_tokens)
-    if len(set(seeds)) != len(seeds):
-        raise ValueError("seeds must be unique")
-
-    seed_count_match = rows.get("seed_count")
-    if seed_count_match is None:
-        raise ValueError("seed_count is required")
-    if int(seed_count_match.group(1)) != len(seeds):
-        raise ValueError("seed_count must match seeds")
-    return test_size, val_size, seeds
+def _metric_direction(value: str, field_name: str) -> str:
+    """비교 가능한 metric 방향 두 값 중 하나만 반환합니다."""
+    if value not in _METRIC_DIRECTIONS:
+        raise ValueError(f"{field_name} must be an Issue Form direction")
+    return value
 
 
-def _parse_reproducibility_rows(reproducibility: str) -> dict[str, re.Match[str]]:
-    """재현 조건의 알려진 행을 중복·누락·미지 행 없이 모두 소비합니다."""
-    rows: dict[str, re.Match[str]] = {}
-    patterns = (
-        ("split", _SPLIT_ROW_PATTERN),
-        ("seeds", _SEEDS_ROW_PATTERN),
-        ("seed_count", _SEED_COUNT_ROW_PATTERN),
+def _non_negative_decimal(value: str, field_name: str) -> Decimal:
+    """유한하고 0 이상이며 공개 float 범위에 드는 Decimal을 반환합니다."""
+    decimal = _finite_decimal(value, field_name)
+    if decimal < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    _finite_float(decimal, field_name)
+    return decimal
+
+
+def _parse_guardrail(
+    name: str,
+    direction: str,
+    maximum_regression: str,
+) -> tuple[str | None, str, Decimal | None]:
+    """Guardrail 미사용 sentinel 또는 완전한 metric 계약만 반환합니다."""
+    if name == _NONE_VALUE:
+        if direction != _NOT_APPLICABLE or maximum_regression != _NONE_VALUE:
+            raise ValueError(
+                "guardrail without a metric must use 없음/not_applicable/없음"
+            )
+        return None, direction, None
+
+    metric_name = _metric_name(name, "guardrail_metric_name")
+    if direction == _NOT_APPLICABLE:
+        raise ValueError("guardrail_metric_direction must compare a configured metric")
+    metric_direction = _metric_direction(direction, "guardrail_metric_direction")
+    if maximum_regression == _NONE_VALUE:
+        raise ValueError("maximum_guardrail_regression is required for a guardrail")
+    regression = _non_negative_decimal(
+        maximum_regression,
+        "maximum_guardrail_regression",
     )
-    for line in reproducibility.splitlines():
-        matching_rows = [(key, pattern.fullmatch(line)) for key, pattern in patterns]
-        key, match = next(((key, match) for key, match in matching_rows if match), (None, None))
-        if key is None or match is None:
-            raise ValueError("reproducibility contains an unknown structured row")
-        if key in rows:
-            raise ValueError(f"reproducibility contains a duplicate {key} row")
-        rows[key] = match
-    return rows
+    return metric_name, metric_direction, regression
+
+
+def _text_reference(value: str, field_name: str) -> str:
+    """1~256자의 비어 있지 않은 식별자·참조 문자열을 반환합니다."""
+    if not 1 <= len(value) <= 256:
+        raise ValueError(f"{field_name} must contain 1 to 256 characters")
+    return value
+
+
+def _parse_random_seeds(value: str) -> tuple[int, ...]:
+    """쉼표로 구분한 고유 0 이상 ASCII 정수 시드를 반환합니다."""
+    tokens = [token.strip() for token in value.split(",")]
+    if not tokens or any(_NON_NEGATIVE_INTEGER_PATTERN.fullmatch(token) is None for token in tokens):
+        raise ValueError("random_seeds must be comma-separated non-negative integers")
+    seeds = tuple(int(token) for token in tokens)
+    if len(set(seeds)) != len(seeds):
+        raise ValueError("random_seeds must be unique")
+    return seeds
+
+
+def _non_negative_integer(value: str, field_name: str) -> int:
+    """0 이상 ASCII 정수 문자열을 int로 반환합니다."""
+    if _NON_NEGATIVE_INTEGER_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    return int(value)
+
+
+def _parse_split_sizes(test_value: str, validation_value: str) -> tuple[Decimal, Decimal]:
+    """train 몫이 남는 0~1 사이 test·validation 비율을 반환합니다."""
+    test_size = _finite_decimal(test_value, "test_size")
+    validation_size = _finite_decimal(validation_value, "validation_size")
+    if (
+        not 0 < test_size < 1
+        or not 0 < validation_size < 1
+        or test_size + validation_size >= 1
+    ):
+        raise ValueError("test_size and validation_size must leave training data")
+    _finite_float(test_size, "test_size")
+    _finite_float(validation_size, "validation_size")
+    return test_size, validation_size
 
 
 def _finite_decimal(value: str, field_name: str) -> Decimal:
@@ -273,7 +376,10 @@ def _finite_decimal(value: str, field_name: str) -> Decimal:
 
 def _finite_float(value: Decimal, field_name: str) -> float:
     """공개 float 필드로 변환한 값도 유한한지 확인합니다."""
-    float_value = float(value)
+    try:
+        float_value = float(value)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(f"{field_name} must fit in a finite float") from error
     if not math.isfinite(float_value):
         raise ValueError(f"{field_name} must fit in a finite float")
     return float_value
