@@ -13,6 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FORM_PATH = PROJECT_ROOT / ".github/ISSUE_TEMPLATE/auto_research.yml"
 BRANCH_WORKFLOW = PROJECT_ROOT / ".github/workflows/auto-research-issue-branch.yml"
 PROMOTION_WORKFLOW = PROJECT_ROOT / ".github/workflows/auto-research-dev-promotion.yml"
+RENDERED_FORM_FIXTURE = PROJECT_ROOT / "tests/fixtures/auto_research_issue_form_rendered.md"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.auto_research_issue_branch import (  # noqa: E402
@@ -138,37 +139,6 @@ def workflow_trigger(workflow: dict[object, object]) -> dict[str, object]:
     trigger = workflow.get("on", workflow.get(True))
     assert isinstance(trigger, dict)
     return trigger
-
-
-def body_rendered_from_form() -> str:
-    """실제 Form label과 유효 입력값으로 GitHub 이슈 본문을 렌더링합니다."""
-    values = {
-        "hypothesis": "비율 피처가 ROC-AUC를 높인다.",
-        "change": "- 추가 피처: views_per_day = views / (days + 1)",
-        "primary_metric_name": "roc_auc",
-        "primary_metric_direction": "higher_is_better",
-        "minimum_primary_delta": "0.002",
-        "guardrail_metric_name": "없음",
-        "guardrail_metric_direction": "not_applicable",
-        "maximum_guardrail_regression": "없음",
-        "secondary_metrics": "pr_auc",
-        "comparison": "동일 조건 baseline 재학습 (권장)",
-        "dataset_snapshot": "bq://autoresearch/train@2026-07-31",
-        "random_seeds": "42, 43, 44",
-        "split_seed": "20260731",
-        "test_size": "0.2",
-        "validation_size": "0.2",
-        "training_config_ref": "configs/train/lgbm-v1.yaml@abc1234",
-        "dataset": "- 데이터셋 / 경로: data/train.csv",
-        "snapshot_reuse": "허용 (진행하되 실제로 쓴 데이터를 결과에 명시)",
-        "allowed_scope": "- [ ] prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다",
-        "result": "- 판정 (지지/기각):",
-    }
-    sections = []
-    for field_id, field in form_fields().items():
-        label = field["attributes"]["label"]
-        sections.append(f"### {label}\n{values[field_id]}")
-    return "\n\n".join(sections) + "\n"
 
 
 def test_form_uses_machine_readable_metric_and_reproducibility_fields() -> None:
@@ -396,7 +366,11 @@ def test_issue_branch_workflow_carries_one_dev_baseline_to_ref_and_marker() -> N
 
 
 def test_parse_issue_input_reads_body_rendered_from_actual_form() -> None:
-    issue_input = parse_issue_input(449, "[AR] CTR ratio", body_rendered_from_form())
+    issue_input = parse_issue_input(
+        449,
+        "[AR] CTR ratio",
+        RENDERED_FORM_FIXTURE.read_text(encoding="utf-8"),
+    )
 
     assert issue_input.issue_branch == "exp/449-ctr-ratio"
     assert issue_input.primary_metric_name == "roc_auc"
