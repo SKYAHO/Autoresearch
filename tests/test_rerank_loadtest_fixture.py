@@ -255,6 +255,18 @@ def test_manual_workflow_keeps_load_and_snapshot_identities_separate() -> None:
     assert "actions/upload-artifact@v4" in text
 
 
+def test_runbook_requires_materialize_and_raw_artifacts() -> None:
+    """운영 절차에는 materialize 완료와 원시 증거 보존이 필수다."""
+    text = Path("docs/runbooks/rerank-loadtest.md").read_text()
+
+    assert "feast_online_store_materialize" in text
+    assert "job_summary.status=succeeded" in text
+    assert "rerank-v1" in text
+    assert "k6-summary-" in text
+    assert "prometheus-range-" in text
+    assert "CPU-seconds/request" in text
+
+
 def test_manual_workflow_serializes_shared_configmaps_and_waits_for_padding() -> None:
     """공유 ConfigMap 실행은 직렬화하고 Prometheus 종료 패딩은 미래를 조회하지 않는다."""
     text = Path(".github/workflows/rerank-loadtest.yml").read_text()
