@@ -19,13 +19,48 @@ import numpy as np
 import pandas as pd
 
 
+def validate_onnx_session_contract(session, feature_count: int) -> None:
+    """ONNX 세션의 입력·확률 출력 계약을 기동 시 fail-closed 검증한다."""
+    inputs = session.get_inputs()
+    if len(inputs) != 1:
+        raise ValueError("ONNX 입력은 정확히 하나여야 합니다.")
+    input_metadata = inputs[0]
+    if input_metadata.name != "input":
+        raise ValueError("ONNX 입력 이름은 input이어야 합니다.")
+    if input_metadata.type != "tensor(float)":
+        raise ValueError("ONNX 입력 dtype은 tensor(float)이어야 합니다.")
+    input_shape = list(input_metadata.shape)
+    if len(input_shape) != 2 or input_shape[1] != feature_count:
+        raise ValueError(
+            f"ONNX 입력 shape는 [batch, {feature_count}]여야 합니다: {input_shape}"
+        )
+    probability_outputs = [
+        output
+        for output in session.get_outputs()
+        if output.type == "tensor(float)"
+        and len(output.shape) == 2
+        and output.shape[1] == 2
+    ]
+    if len(probability_outputs) != 1:
+        raise ValueError("ONNX 출력에는 [batch, 2] float 확률 tensor가 정확히 하나여야 합니다.")
+
+
 class OnnxProbabilityModel:
     """`onnxruntime.InferenceSession`을 감싸 `predict_proba(DataFrame)`를 제공한다."""
 
-    def __init__(self, session, feature_columns: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        session,
+        feature_columns: tuple[str, ...],
+        workspace_owner: object | None = None,
+    ) -> None:
+        validate_onnx_session_contract(session, len(feature_columns))
         self._session = session
         self._feature_columns = tuple(feature_columns)
         self._input_name = session.get_inputs()[0].name
+        # MLflow 다운로드 복사본을 소유한 TemporaryDirectory다. ORT 세션과 같은 모델
+        # 인스턴스가 강하게 참조해 세션 수명보다 먼저 정리되는 TOCTOU를 막는다.
+        self._workspace_owner = workspace_owner
 
     def predict_proba(self, features: pd.DataFrame) -> np.ndarray:
         """학습 피처 순서로 float32 행렬을 만들어 ONNX 추론, `(n, 2)` 확률을 반환한다.
@@ -48,4 +83,8 @@ class OnnxProbabilityModel:
         )
         if probabilities is None:
             raise ValueError("ONNX 모델 출력에서 (n, 2) 확률 텐서를 찾지 못했습니다.")
+        if probabilities.shape != (len(features), 2):
+            raise ValueError(
+                f"ONNX 확률 출력 shape가 예상과 다릅니다: {probabilities.shape}"
+            )
         return np.asarray(probabilities, dtype=float)

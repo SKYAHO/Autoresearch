@@ -11,6 +11,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import gc
+import tempfile
+
 import pytest
 
 from src.features.model_contract import (
@@ -20,7 +23,7 @@ from src.features.model_contract import (
 from src.models.calibration import DownsamplingCalibrator
 from src.models.lgbm_model import LGBMModel
 from src.serving.model_loader import LocalModelSettings, load_local_model
-from src.serving.onnx_model import OnnxProbabilityModel
+from src.serving.onnx_model import OnnxProbabilityModel, validate_onnx_session_contract
 from src.serving.schemas import CandidateVideo
 from src.serving.service import Reranker
 from src.utils.model_utils import (
@@ -106,6 +109,73 @@ def test_onnx_adapter_matches_lgbm_on_categorical_input() -> None:
 
     assert onnx_proba.shape == (len(serve_frame), 2)
     np.testing.assert_allclose(onnx_proba, lgbm_proba, atol=1e-4)
+
+
+class _Metadata:
+    def __init__(self, name: str, type_: str, shape: list[object]) -> None:
+        self.name = name
+        self.type = type_
+        self.shape = shape
+
+
+class _ContractSession:
+    def __init__(self, inputs, outputs) -> None:
+        self._inputs = inputs
+        self._outputs = outputs
+
+    def get_inputs(self):
+        return self._inputs
+
+    def get_outputs(self):
+        return self._outputs
+
+
+def test_onnx_contract_rejects_wrong_input_name() -> None:
+    session = _ContractSession(
+        [_Metadata("wrong", "tensor(float)", [None, 21])],
+        [_Metadata("probabilities", "tensor(float)", [None, 2])],
+    )
+    with pytest.raises(ValueError, match="input"):
+        validate_onnx_session_contract(session, feature_count=21)
+
+
+@pytest.mark.parametrize(
+    ("input_type", "input_shape", "output_type", "output_shape"),
+    [
+        ("tensor(double)", [None, 21], "tensor(float)", [None, 2]),
+        ("tensor(float)", [None, 20], "tensor(float)", [None, 2]),
+        ("tensor(float)", [None, 21], "tensor(double)", [None, 2]),
+        ("tensor(float)", [None, 21], "tensor(float)", [None, 1]),
+    ],
+)
+def test_onnx_contract_rejects_incompatible_metadata(
+    input_type: str,
+    input_shape: list[object],
+    output_type: str,
+    output_shape: list[object],
+) -> None:
+    session = _ContractSession(
+        [_Metadata("input", input_type, input_shape)],
+        [_Metadata("probabilities", output_type, output_shape)],
+    )
+    with pytest.raises(ValueError, match="ONNX"):
+        validate_onnx_session_contract(session, feature_count=21)
+
+
+def test_onnx_model_owns_temporary_workspace_for_session_lifetime() -> None:
+    owner = tempfile.TemporaryDirectory()
+    workspace = Path(owner.name)
+    session = _ContractSession(
+        [_Metadata("input", "tensor(float)", [None, 1])],
+        [_Metadata("probabilities", "tensor(float)", [None, 2])],
+    )
+    model = OnnxProbabilityModel(session, ("feature",), workspace_owner=owner)
+    del owner
+    gc.collect()
+    assert workspace.exists()
+    del model
+    gc.collect()
+    assert not workspace.exists()
 
 
 # ── 로더: model_onnx/(로컬 .onnx) 있으면 ONNX, 없으면 joblib 폴백 ──
