@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-01T04:39:34Z",
+  "generated_at": "2026-08-01T04:49:56Z",
   "reports": [
     {
       "number": 456,
@@ -16,7 +16,7 @@
     },
     {
       "number": 452,
-      "title": "chore: PR 리포트 디자인 동기화",
+      "title": "chore: PR 리포트 디자인을 동기화",
       "author": "hyeongyu-data",
       "merged_at": "2026-07-31T07:40:34Z",
       "summary_ko": [
@@ -64,7 +64,7 @@
     },
     {
       "number": 447,
-      "title": "chore: CI Docker build 경로 기반 선택 실행",
+      "title": "chore: CI Docker 빌드를 경로 기반으로 선택 실행",
       "author": "hyeongyu-data",
       "merged_at": "2026-07-31T04:59:33Z",
       "summary_ko": [
