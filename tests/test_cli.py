@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from click import unstyle
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -746,11 +747,12 @@ def test_verify_comparison_help_exposes_required_options() -> None:
         ["verify-comparison", "--help"],
         color=False,
     )
+    help_output = unstyle(result.output)
 
     assert result.exit_code == 0
-    assert "--baseline-run-id" in result.output
-    assert "--challenger-run-id" in result.output
-    assert "--output" in result.output
+    assert "--baseline-run-id" in help_output
+    assert "--challenger-run-id" in help_output
+    assert "--output" in help_output
 
 
 def test_verify_comparison_cli_maps_validation_error_without_secret(
