@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: rerank-k6-
+  namespace: loadtest
+  labels:
+    app.kubernetes.io/name: rerank-k6
+    app.kubernetes.io/part-of: rerank-loadtest
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 600
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rerank-k6
+        app.kubernetes.io/part-of: rerank-loadtest
+    spec:
+      serviceAccountName: rerank-loadtest
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 12345
+        runAsGroup: 12345
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: k6
+          image: grafana/k6@sha256:1f40432b1cbe7234e977f96c362c9bc550a2d2b583d014dd8669fe40d3e9e755
+          imagePullPolicy: IfNotPresent
+          command:
+            - k6
+          args:
+            - run
+            - --quiet
+            - /scripts/rerank.js
+          envFrom:
+            - configMapRef:
+                name: rerank-loadtest-settings-placeholder
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+              readOnly: true
+            - name: settings
+              mountPath: /settings
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: rerank-loadtest-script
+            defaultMode: 0444
+        - name: settings
+          configMap:
+            name: rerank-loadtest-settings-placeholder
+            defaultMode: 0444

@@ -1,19 +1,17 @@
-from __future__ import annotations
+"""온라인 피처 기반 CTR 리랭킹 HTTP 서빙 경계.
 
-__arch__ = {
-    "stage": "training",
-    "role": "모델 계보와 온라인 피처 조립기를 연결해 reranking HTTP runtime을 제공합니다.",
-    "owns": [
-        "FastAPI lifespan 의존성 초기화와 readiness 판정",
-        "healthcheck·rerank·metrics HTTP 계약",
-        "요청 순서 응답·모델 계보·서빙 메트릭 노출",
-    ],
-    "not_owns": [
-        "모델 아티팩트 해석",
-        "온라인 피처 조회와 조립 구현",
-        "CTR 예측 구현",
-    ],
-}
+[파이프라인] 일일 추천 배치와 action log 재학습 사이의 실시간 요청 경로에서,
+학습된 CTR 모델과 온라인 피처를 사용해 요청 영상의 리랭킹 결과를 제공한다.
+
+[기능] FastAPI 수명주기 의존성 초기화와 readiness 판정, healthcheck·rerank·metrics
+HTTP 계약, 요청 순서 응답과 고정 카디널리티의 단계별 서빙 메트릭을 담당한다.
+
+[비책임] 모델 아티팩트 해석(src/serving/model_loader.py), 온라인 피처 조회·조립
+(src/serving/online_features.py), CTR 예측 구현(src/serving/service.py), Airflow 배포
+및 스케줄링(Autoresearch-airflow 저장소).
+"""
+
+from __future__ import annotations
 
 import logging
 import os
@@ -68,6 +66,20 @@ RERANK_CANDIDATES = Histogram(
     buckets=(1, 2, 5, 10, 20, 50, 100, 200, 500),
 )
 RERANK_DURATION = Histogram("rerank_duration_seconds", "Reranking request duration.")
+RERANK_PHASE_DURATION = Histogram(
+    "rerank_phase_duration_seconds",
+    "Duration of fixed reranking request phases.",
+    ["phase"],
+)
+RERANK_OUTCOMES = Counter(
+    "rerank_outcomes",
+    "Reranking request outcomes after request validation.",
+    ["outcome"],
+)
+RERANK_IN_FLIGHT = Gauge(
+    "rerank_in_flight",
+    "Reranking requests currently executing after request validation.",
+)
 RERANK_MODEL_READY = Gauge(
     "rerank_model_ready",
     "Whether the model, online feature store, and feature contract are ready.",
@@ -148,68 +160,94 @@ def create_app(
 
     @app.post("/rerank", response_model=RerankResponse)
     def rerank(request: RerankRequest) -> RerankResponse:
-        detail = unavailable_detail()
-        if detail is not None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=detail,
-            )
-
-        RERANK_REQUESTS.inc()
-        video_id_count = len(request.video_ids)
-        RERANK_VIDEO_IDS.observe(video_id_count)
-        RERANK_CANDIDATES.observe(video_id_count)
-        with RERANK_DURATION.time():
-            try:
-                candidates = active_feature_builder.build(
-                    user_id=request.user_id,
-                    video_ids=request.video_ids,
-                    feature_columns=active_model.reranker.feature_columns,
-                )
-                outcome = active_model.reranker.rerank_with_diagnostics(candidates)
-                requested_video_ids = set(request.video_ids)
-                outcome_video_ids = [item.video_id for item in outcome.items]
-                if (
-                    len(outcome_video_ids) != len(requested_video_ids)
-                    or set(outcome_video_ids) != requested_video_ids
-                ):
-                    raise PredictionError(
-                        reason="Reranker returned unexpected video IDs."
+        RERANK_IN_FLIGHT.inc()
+        try:
+            with RERANK_DURATION.time():
+                detail = unavailable_detail()
+                if detail is not None:
+                    RERANK_OUTCOMES.labels(outcome="unavailable").inc()
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=detail,
                     )
-            # Pydantic이 호출자 요청 형태를 422로 검증한다. 여기의 오류는 그 이후
-            # 모델·Feast 경계에서 발견된 서버측 계약/조회 장애이므로 503으로 표면화한다.
-            except (FeatureContractError, FeatureRetrievalError) as error:
-                raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail=str(error),
-                ) from error
-            except PredictionError as error:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Reranking model returned an invalid prediction.",
-                ) from error
 
-        # 학습에 없던 카테고리 값은 조용히 NaN이 되어 예측을 오염시키므로, 계측·로깅해 감지한다.
-        for column, values in outcome.unseen_categories.items():
-            RERANK_UNSEEN_CATEGORY.labels(column=column).inc(len(values))
-            logger.warning(
-                "Unseen categorical values coerced to NaN (retraining may be needed): "
-                "column=%s count=%d sample=%s",
-                column,
-                len(values),
-                sorted({str(value) for value in values})[:10],
-            )
-        scores_by_video_id = {item.video_id: item.ctr_score for item in outcome.items}
-        return RerankResponse(
-            items=[
-                RerankResponseItem(
-                    video_id=video_id,
-                    ctr_score=scores_by_video_id[video_id],
-                    model_id=active_model.run_id,
-                )
-                for video_id in request.video_ids
-            ]
-        )
+                RERANK_REQUESTS.inc()
+                video_id_count = len(request.video_ids)
+                RERANK_VIDEO_IDS.observe(video_id_count)
+                RERANK_CANDIDATES.observe(video_id_count)
+                try:
+                    feature_build = active_feature_builder.build_with_timings(
+                        user_id=request.user_id,
+                        video_ids=request.video_ids,
+                        feature_columns=active_model.reranker.feature_columns,
+                    )
+                    RERANK_PHASE_DURATION.labels(phase="feature_read_first").observe(
+                        feature_build.timings.first_read_seconds
+                    )
+                    RERANK_PHASE_DURATION.labels(phase="feature_read_second").observe(
+                        feature_build.timings.second_read_seconds
+                    )
+                    RERANK_PHASE_DURATION.labels(phase="feature_assemble").observe(
+                        feature_build.timings.assemble_seconds
+                    )
+
+                    with RERANK_PHASE_DURATION.labels(phase="model_predict").time():
+                        outcome = active_model.reranker.rerank_with_diagnostics(
+                            feature_build.candidates
+                        )
+                        requested_video_ids = set(request.video_ids)
+                        outcome_video_ids = [item.video_id for item in outcome.items]
+                        if (
+                            len(outcome_video_ids) != len(requested_video_ids)
+                            or set(outcome_video_ids) != requested_video_ids
+                        ):
+                            raise PredictionError(
+                                reason="Reranker returned unexpected video IDs."
+                            )
+                # Pydantic이 호출자 요청 형태를 422로 검증한다. 여기의 오류는 그 이후
+                # 모델·Feast 경계에서 발견된 서버측 계약/조회 장애이므로 503으로 표면화한다.
+                except (FeatureContractError, FeatureRetrievalError) as error:
+                    RERANK_OUTCOMES.labels(outcome="feature_error").inc()
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=str(error),
+                    ) from error
+                except PredictionError as error:
+                    RERANK_OUTCOMES.labels(outcome="prediction_error").inc()
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Reranking model returned an invalid prediction.",
+                    ) from error
+
+                with RERANK_PHASE_DURATION.labels(phase="response_build").time():
+                    # 학습에 없던 카테고리 값은 조용히 NaN이 되어 예측을 오염시키므로,
+                    # 계측·로깅해 감지한다.
+                    for column, values in outcome.unseen_categories.items():
+                        RERANK_UNSEEN_CATEGORY.labels(column=column).inc(len(values))
+                        logger.warning(
+                            "Unseen categorical values coerced to NaN (retraining may be needed): "
+                            "column=%s count=%d sample=%s",
+                            column,
+                            len(values),
+                            sorted({str(value) for value in values})[:10],
+                        )
+                    scores_by_video_id = {
+                        item.video_id: item.ctr_score for item in outcome.items
+                    }
+                    response = RerankResponse(
+                        items=[
+                            RerankResponseItem(
+                                video_id=video_id,
+                                ctr_score=scores_by_video_id[video_id],
+                                model_id=active_model.run_id,
+                            )
+                            for video_id in request.video_ids
+                        ]
+                    )
+                RERANK_OUTCOMES.labels(outcome="success").inc()
+                return response
+        finally:
+            RERANK_IN_FLIGHT.dec()
 
     @app.get("/metrics", include_in_schema=False)
     def metrics() -> Response:
