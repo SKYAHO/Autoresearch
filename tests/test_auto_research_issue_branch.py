@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -252,6 +253,73 @@ def test_issue_branch_workflow_uses_validator_and_never_updates_a_ref() -> None:
     assert "updateRef" not in branch_script
     assert "force:" not in branch_script
     assert "기준선은 항상 dev" in workflow_text
+
+
+def test_issue_branch_workflow_enforces_immutable_ref_api_data_flow_and_order() -> None:
+    workflow = load_branch_workflow()
+    job = workflow["jobs"]["create-or-verify-issue-branch"]
+    assert isinstance(job, dict)
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    branch_step = next(step for step in steps if step.get("id") == "branch")
+    branch_script = branch_step["with"]["script"]
+    assert isinstance(branch_script, str)
+
+    marker_path = re.search(
+        r"if \(markerComments\.length === 1\) \{(?P<recorded>.*?)\n\s*\} else \{"
+        r"(?P<missing>.*?)\n\s*\}\n\n\s*core\.setOutput",
+        branch_script,
+        flags=re.DOTALL,
+    )
+    assert marker_path is not None
+    recorded_path = marker_path.group("recorded")
+    missing_marker_path = marker_path.group("missing")
+
+    assert "markerComments[0].user.login !== 'github-actions[bot]'" in recorded_path
+    assert "recorded.sourceIssue !== issueNumber" in recorded_path
+    assert "recorded.issueBranch !== issueBranch" in recorded_path
+    assert "recorded.criteriaId !== criteriaId" in recorded_path
+    assert "recorded.reproducibilityId !== reproducibilityId" in recorded_path
+    assert "base: recorded.baseDevSha" in recorded_path
+    assert "head: branchTipSha" in recorded_path
+    assert "['ahead', 'identical'].includes(comparison.data.status)" in recorded_path
+    assert "github.rest.git.createRef" not in recorded_path
+
+    dev_ref = re.search(
+        r"const devRef = await github\.rest\.git\.getRef\(\{.*?"
+        r"ref: 'heads/dev',.*?\}\);",
+        missing_marker_path,
+        flags=re.DOTALL,
+    )
+    create_ref = re.search(
+        r"await github\.rest\.git\.createRef\(\{.*?"
+        r"ref: `refs/heads/\$\{issueBranch\}`,.*?"
+        r"sha: devRef\.data\.object\.sha,.*?\}\);",
+        missing_marker_path,
+        flags=re.DOTALL,
+    )
+    assert dev_ref is not None
+    assert create_ref is not None
+    assert dev_ref.start() < create_ref.start()
+    assert branch_script.count("github.rest.git.createRef") == 1
+
+    compare_calls = re.findall(
+        r"github\.rest\.repos\.compareCommits\(\{(?P<arguments>.*?)\}\);",
+        branch_script,
+        flags=re.DOTALL,
+    )
+    assert len(compare_calls) == 1
+    assert [line.strip() for line in compare_calls[0].splitlines() if line.strip()] == [
+        "owner,",
+        "repo,",
+        "base: recorded.baseDevSha,",
+        "head: branchTipSha,",
+    ]
+    assert "devRef" not in compare_calls[0]
+    assert not re.search(r"ref:\s*[^,\n]*main", branch_script)
+    assert "github.rest.repos.merge" not in branch_script
+    assert "github.rest.git.updateRef" not in branch_script
+    assert not re.search(r"\bforce\s*:", branch_script)
 
 
 def test_parse_issue_input_reads_body_rendered_from_actual_form() -> None:
