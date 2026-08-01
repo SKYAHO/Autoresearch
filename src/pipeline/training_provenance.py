@@ -26,7 +26,7 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, ValidationError
 
-from src.pipeline.promotion_evidence import ExperimentPlanReceipt
+from src.pipeline.promotion_evidence import ExperimentPlanReceipt, HeldOutMetricReceipt
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
@@ -142,6 +142,14 @@ class TrainingSplitManifest(_ImmutableModel):
     experiment_plan_receipt: ExperimentPlanReceipt | None = None
 
 
+class VerifiedComparisonPromotionEvidence(_ImmutableModel):
+    """fair comparison이 GCS에서 재검증한 plan·두 held-out metric receipt."""
+
+    plan_receipt: ExperimentPlanReceipt
+    baseline_metric: HeldOutMetricReceipt
+    challenger_metric: HeldOutMetricReceipt
+
+
 class TrainingComparisonManifest(_ImmutableModel):
     """두 MLflow run의 verified comparison 결과."""
 
@@ -166,6 +174,7 @@ class TrainingComparisonManifest(_ImmutableModel):
     # fail-closed 한다.
     effective_seeds: TrainingSeeds | None = None
     experiment_plan_id: str | None = Field(default=None, min_length=1)
+    promotion_evidence: VerifiedComparisonPromotionEvidence | None = None
     validated_at: datetime
     validation_status: Literal["verified"] = "verified"
 

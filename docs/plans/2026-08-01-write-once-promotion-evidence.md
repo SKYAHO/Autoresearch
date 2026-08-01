@@ -285,7 +285,7 @@ git commit -m "feat: bind held-out metrics to experiment plans"
 - Extend `verify_training_comparison` with `promotion_evidence_store: PromotionEvidenceStore | None = None`; its existing run IDs and output path are unchanged. It creates legacy output only if both run split manifests have no plan receipt; any partial/malformed evidence raises ComparisonValidationError before output or challenger artifact publish.
 - Extend the private `_VerifiedRun` with `held_out_metric_receipt: HeldOutMetricReceipt | None`, loaded only from `reproducibility/metrics/held_out_metric_receipt.json` and parsed before the comparison can use it.
 
-- [ ] **Step 1: Write failing comparison tests with a fake GCS store**
+- [x] **Step 1: Write failing comparison tests with a fake GCS store**
 
 ~~~python
 def test_verify_comparison_rechecks_receipts_and_records_verified_metrics(tmp_path, monkeypatch) -> None:
@@ -304,13 +304,13 @@ def test_verify_comparison_rechecks_receipts_and_records_verified_metrics(tmp_pa
 
 Add parameterized tests for: GCS bytes changed after receipt creation, receipt generation changed, baseline/challenger plan receipt mismatch, plan time_created after either MLflow run start, metric time outside its run start/end, metric run ID/split hash/test membership/model artifact hash mismatch, and exactly one run carrying a plan receipt. Every case must assert no local comparison file and no reproducibility/comparisons upload.
 
-- [ ] **Step 2: Run the targeted comparison test to verify it fails**
+- [x] **Step 2: Run the targeted comparison test to verify it fails**
 
 Run: uv run python -m pytest tests/test_training_comparison.py::test_verify_comparison_rechecks_receipts_and_records_verified_metrics -v
 
 Expected: FAIL because comparison has no promotion_evidence_store parameter or evidence output field.
 
-- [ ] **Step 3: Add the comparison evidence manifest model**
+- [x] **Step 3: Add the comparison evidence manifest model**
 
 ~~~python
 class VerifiedComparisonPromotionEvidence(_ImmutableModel):
@@ -326,7 +326,7 @@ class TrainingComparisonManifest(_ImmutableModel):
 
 Use None as the only legacy representation. Do not make an incomplete object parse as legacy. Calculate the comparison ID from the two run IDs, common snapshot, challenger split hash, and the verified plan object SHA-256 when promotion evidence is present.
 
-- [ ] **Step 4: Re-read all GCS evidence and correlate it to MLflow artifacts**
+- [x] **Step 4: Re-read all GCS evidence and correlate it to MLflow artifacts**
 
 ~~~python
 def _verify_promotion_evidence(
@@ -359,7 +359,7 @@ def _verify_promotion_evidence(
 
 Read MLflow run start_time and end_time as UTC server timestamps. Require plan time_created <= start_time for both runs and start_time <= metric.time_created <= end_time for its own completed run. Download metric.model_artifact_path through the existing safe artifact helper, recalculate SHA-256, and compare to the metric body. Keep the existing snapshot/split/seed equality checks unchanged and invoke this new gate only after they pass.
 
-- [ ] **Step 5: Run all comparison tests and commit**
+- [x] **Step 5: Run all comparison tests and commit**
 
 Run: uv run python -m pytest tests/test_training_comparison.py -v
 
