@@ -1,13 +1,20 @@
-"""Feast SDK와 분리된 온라인 모델 피처 조립 계약."""
+"""Feast SDK와 분리된 온라인 모델 피처 조립 계약.
+
+[파이프라인] 리랭킹 서빙 요청에서 CTR 모델 추론 직전 — 두 단계의 온라인
+피처 조회 결과를 후보별 21개 모델 피처로 조립하는 구간을 담당한다.
+
+[기능] keyed batch 조회, cold-start 기본값과 파생 피처를 조립하고 각 조회와
+조립 구간의 소요 시간을 typed 결과로 제공한다.
+
+[비책임] Feast SDK·Redis bootstrap(src/serving/feast_reader.py), CTR 모델
+추론과 점수 정렬, HTTP 요청·응답 계약(src/serving/app.py).
+"""
 
 from __future__ import annotations
 
-__arch__ = {"stage": "training", "role": "두 단계 온라인 조회와 cold-start 처리로 모델 피처를 조립합니다.",
-            "owns": ["canonical 21개 모델 피처 벡터 조립", "keyed batch 조회 조립", "typed cold-start와 파생 피처", "entity·shape·피처 계약 검증"],
-            "not_owns": ["Feast SDK와 Redis bootstrap", "CTR 모델 추론과 점수 정렬", "HTTP 요청·응답 계약"]}
-
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Final, Protocol, TypeAlias
 
 from src.features.feature_builder import (
@@ -93,6 +100,23 @@ class FeatureRetrievalError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class FeatureBuildTimings:
+    """온라인 피처 조회와 조립 단계별 소요 시간이다."""
+
+    first_read_seconds: float
+    second_read_seconds: float
+    assemble_seconds: float
+
+
+@dataclass(frozen=True, slots=True)
+class TimedFeatureBuild:
+    """조립된 후보 피처와 내부 단계별 소요 시간이다."""
+
+    candidates: list[CandidateVideo]
+    timings: FeatureBuildTimings
+
+
+@dataclass(frozen=True, slots=True)
 class ServingFeatureBuilder:
     """두 번의 keyed batch read로 Reranker 입력을 구성한다."""
 
@@ -106,6 +130,23 @@ class ServingFeatureBuilder:
         feature_columns: Sequence[str],
     ) -> list[CandidateVideo]:
         """모델 artifact 순서를 검증하고 입력 영상 순서의 후보 피처를 반환한다."""
+        return self.build_with_timings(
+            user_id=user_id,
+            video_ids=video_ids,
+            feature_columns=feature_columns,
+        ).candidates
+
+    def build_with_timings(
+        self,
+        *,
+        user_id: str,
+        video_ids: Sequence[str],
+        feature_columns: Sequence[str],
+    ) -> TimedFeatureBuild:
+        """후보 피처와 두 조회 및 조립 단계의 소요 시간을 반환한다."""
+        assemble_seconds = 0.0
+
+        assemble_started = perf_counter()
         _validate_build_request(
             user_id=user_id,
             video_ids=video_ids,
@@ -114,11 +155,18 @@ class ServingFeatureBuilder:
         first_entities = tuple(
             {"user_id": user_id, "video_id": video_id} for video_id in video_ids
         )
+        assemble_seconds += _elapsed_seconds(assemble_started)
+
+        first_read_started = perf_counter()
+        first_response = self.reader.read(
+            feature_refs=_FIRST_READ_FEATURE_REFS,
+            entity_rows=first_entities,
+        )
+        first_read_seconds = _elapsed_seconds(first_read_started)
+
+        assemble_started = perf_counter()
         first_rows = _keyed_rows(
-            rows=self.reader.read(
-                feature_refs=_FIRST_READ_FEATURE_REFS,
-                entity_rows=first_entities,
-            ),
+            rows=first_response,
             expected_keys=tuple((user_id, video_id) for video_id in video_ids),
             key_names=("user_id", "video_id"),
             required_columns=_FIRST_READ_COLUMNS,
@@ -139,17 +187,24 @@ class ServingFeatureBuilder:
             {"user_id": user_id, "category_key": category_id}
             for category_id in category_ids
         )
+        assemble_seconds += _elapsed_seconds(assemble_started)
+
+        second_read_started = perf_counter()
+        similarity_response = self.reader.read(
+            feature_refs=_SECOND_READ_FEATURE_REFS,
+            entity_rows=second_entities,
+        )
+        second_read_seconds = _elapsed_seconds(second_read_started)
+
+        assemble_started = perf_counter()
         similarity_rows = _keyed_rows(
-            rows=self.reader.read(
-                feature_refs=_SECOND_READ_FEATURE_REFS,
-                entity_rows=second_entities,
-            ),
+            rows=similarity_response,
             expected_keys=tuple((user_id, category_id) for category_id in category_ids),
             key_names=("user_id", "category_key"),
             required_columns=("topic_similarity",),
         )
 
-        return [
+        candidates = [
             _candidate_from_row(
                 video_id=video_id,
                 row=first_rows[(user_id, video_id)],
@@ -160,6 +215,19 @@ class ServingFeatureBuilder:
             )
             for video_id in video_ids
         ]
+        assemble_seconds += _elapsed_seconds(assemble_started)
+        return TimedFeatureBuild(
+            candidates=candidates,
+            timings=FeatureBuildTimings(
+                first_read_seconds=first_read_seconds,
+                second_read_seconds=second_read_seconds,
+                assemble_seconds=assemble_seconds,
+            ),
+        )
+
+
+def _elapsed_seconds(started: float) -> float:
+    return round(perf_counter() - started, 6)
 
 
 def _validate_build_request(

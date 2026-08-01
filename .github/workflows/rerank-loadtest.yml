@@ -1,0 +1,431 @@
+name: Rerank serving load test
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_count:
+        description: "요청당 후보 수"
+        type: choice
+        required: true
+        options:
+          - 24
+          - 200
+      benchmark_label:
+        description: "비교 실행 구분"
+        type: choice
+        required: true
+        options:
+          - baseline
+          - optimized
+      fixture_version:
+        description: "materialize 완료를 확인한 fixture 버전"
+        type: string
+        required: true
+        default: rerank-v1
+      serving_image_ref:
+        description: "실행 중인 serving image digest ref"
+        type: string
+        required: true
+      serving_git_sha:
+        description: "serving image의 Git SHA"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # 모든 실행이 같은 script/settings ConfigMap 이름을 쓰므로 입력과 무관하게 직렬화한다.
+  group: rerank-loadtest
+  cancel-in-progress: false
+
+jobs:
+  loadtest-runner:
+    name: Run sequential k6 Jobs
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      LOADTEST_NAMESPACE: loadtest
+      CANDIDATE_COUNT: ${{ inputs.candidate_count }}
+      BENCHMARK_LABEL: ${{ inputs.benchmark_label }}
+      FIXTURE_VERSION: ${{ inputs.fixture_version }}
+      SERVING_IMAGE_REF: ${{ inputs.serving_image_ref }}
+      SERVING_GIT_SHA: ${{ inputs.serving_git_sha }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Validate immutable benchmark metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::The load-test identities are bound only to refs/heads/main."
+            exit 1
+          fi
+          if [[ ! "$SERVING_IMAGE_REF" =~ @sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::serving_image_ref must be an immutable digest reference."
+            exit 1
+          fi
+          if [[ ! "$SERVING_GIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::serving_git_sha must be a full lowercase 40-character SHA."
+            exit 1
+          fi
+          if [[ ! "$FIXTURE_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+            echo "::error::fixture_version contains unsupported characters."
+            exit 1
+          fi
+
+      - name: Authenticate load-test runner with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER_ID }}
+          service_account: ${{ vars.RERANK_LOADTEST_RUNNER_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get scoped GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
+          location: ${{ vars.GKE_LOCATION }}
+          use_dns_based_endpoint: true
+
+      - name: Run VU gates sequentially
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runner/raw
+
+          capture_diagnostics() {
+            local job_name="$1"
+            local vus="$2"
+            local pod_name
+            kubectl describe job "$job_name" -n "$LOADTEST_NAMESPACE" \
+              > "runner/raw/job-describe-vu-${vus}.txt" 2>&1 || true
+            pod_name="$(kubectl get pods -n "$LOADTEST_NAMESPACE" \
+              -l "job-name=${job_name}" -o jsonpath='{.items[0].metadata.name}' \
+              2>/dev/null || true)"
+            if [[ -n "$pod_name" ]]; then
+              kubectl describe pod "$pod_name" -n "$LOADTEST_NAMESPACE" \
+                > "runner/raw/pod-describe-vu-${vus}.txt" 2>&1 || true
+              kubectl logs "$pod_name" -n "$LOADTEST_NAMESPACE" \
+                > "runner/raw/pod-log-vu-${vus}.txt" 2>&1 || true
+            fi
+          }
+
+          write_metadata() {
+            local status="$1"
+            local job_result="$2"
+            local creation_timestamp="$3"
+            local completion_timestamp="$4"
+            local job_name="$5"
+            local vus="$6"
+            local settings_config_map="$7"
+            jq -n \
+              --arg status "$status" \
+              --arg job_result "$job_result" \
+              --arg creation_timestamp "$creation_timestamp" \
+              --arg completion_timestamp "$completion_timestamp" \
+              --argjson candidate_count "$CANDIDATE_COUNT" \
+              --argjson vus "$vus" \
+              --arg fixture_version "$FIXTURE_VERSION" \
+              --arg benchmark_label "$BENCHMARK_LABEL" \
+              --arg serving_image_ref "$SERVING_IMAGE_REF" \
+              --arg serving_git_sha "$SERVING_GIT_SHA" \
+              --arg job_name "$job_name" \
+              --arg settings_config_map "$settings_config_map" \
+              '{
+                status: $status,
+                job_result: $job_result,
+                creation_timestamp: $creation_timestamp,
+                completion_timestamp: $completion_timestamp,
+                candidate_count: $candidate_count,
+                vus: $vus,
+                fixture_version: $fixture_version,
+                benchmark_label: $benchmark_label,
+                serving_image_ref: $serving_image_ref,
+                serving_git_sha: $serving_git_sha,
+                job_name: $job_name,
+                settings_config_map: $settings_config_map
+              }' > "runner/raw/metadata-vu-${vus}.json"
+          }
+
+          kubectl create configmap rerank-loadtest-script \
+            -n "$LOADTEST_NAMESPACE" \
+            --from-file=rerank.js=loadtest/rerank.js \
+            --dry-run=client -o yaml \
+            | kubectl label --local -f - \
+                app.kubernetes.io/part-of=rerank-loadtest -o yaml \
+            | kubectl apply -f -
+
+          for vus in 1 2 4 8; do
+            settings_config_map="rerank-loadtest-settings-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${vus}"
+            kubectl create configmap "$settings_config_map" \
+              -n "$LOADTEST_NAMESPACE" \
+              --from-literal=BASE_URL=http://autoresearch-serving.autoresearch.svc.cluster.local:8000 \
+              --from-literal=CANDIDATE_COUNT="$CANDIDATE_COUNT" \
+              --from-literal=VUS="$vus" \
+              --from-literal=WARMUP_SECONDS=60 \
+              --from-literal=MEASURE_SECONDS=300 \
+              --from-literal=FIXTURE_VERSION="$FIXTURE_VERSION" \
+              --from-literal=BENCHMARK_LABEL="$BENCHMARK_LABEL" \
+              --from-literal=SERVING_IMAGE_REF="$SERVING_IMAGE_REF" \
+              --from-literal=SERVING_GIT_SHA="$SERVING_GIT_SHA" \
+              --dry-run=client -o json \
+              | jq '.metadata.labels["app.kubernetes.io/part-of"] = "rerank-loadtest"
+                    | .immutable = true' \
+              | kubectl create -f -
+
+            job_manifest="runner/job-vu-${vus}.yaml"
+            sed "s/rerank-loadtest-settings-placeholder/${settings_config_map}/g" \
+              deploy/loadtest/rerank-k6-job.yaml > "$job_manifest"
+            if grep -q "rerank-loadtest-settings-placeholder" "$job_manifest"; then
+              echo "::error::settings ConfigMap placeholder was not rendered."
+              exit 1
+            fi
+
+            job_name="$(kubectl create \
+              -f "$job_manifest" \
+              -o jsonpath='{.metadata.name}')"
+            job_uid="$(kubectl get job "$job_name" \
+              -n "$LOADTEST_NAMESPACE" -o jsonpath='{.metadata.uid}')"
+            owner_reference_patch="$(jq -nc \
+              --arg name "$job_name" \
+              --arg uid "$job_uid" \
+              '{metadata: {ownerReferences: [{
+                apiVersion: "batch/v1",
+                kind: "Job",
+                name: $name,
+                uid: $uid,
+                controller: false,
+                blockOwnerDeletion: false
+              }]}}')"
+            if ! kubectl patch configmap "$settings_config_map" \
+              -n "$LOADTEST_NAMESPACE" --type=merge \
+              -p "$owner_reference_patch"; then
+              echo "::error::Could not attach Job ownerReference to $settings_config_map."
+              exit 1
+            fi
+            creation_timestamp="$(kubectl get job "$job_name" \
+              -n "$LOADTEST_NAMESPACE" \
+              -o jsonpath='{.metadata.creationTimestamp}')"
+
+            result=running
+            for _ in $(seq 1 120); do
+              result="$(kubectl get job "$job_name" -n "$LOADTEST_NAMESPACE" -o json \
+                | jq -r '
+                  if any(.status.conditions[]?;
+                    .type == "Complete" and .status == "True") then "complete"
+                  elif any(.status.conditions[]?;
+                    .type == "Failed" and .status == "True") then "failed"
+                  else "running"
+                  end')"
+              if [[ "$result" != "running" ]]; then
+                break
+              fi
+              sleep 5
+            done
+
+            if [[ "$result" == "running" ]]; then
+              result=timeout
+            fi
+            completion_timestamp="$(kubectl get job "$job_name" \
+              -n "$LOADTEST_NAMESPACE" \
+              -o jsonpath='{.status.completionTime}' 2>/dev/null || true)"
+            if [[ -z "$completion_timestamp" ]]; then
+              completion_timestamp="$(date --utc +'%Y-%m-%dT%H:%M:%SZ')"
+            fi
+            write_metadata "$result" "$result" "$creation_timestamp" \
+              "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
+
+            if [[ "$result" != "complete" ]]; then
+              capture_diagnostics "$job_name" "$vus"
+              echo "::error::Job $job_name ended with state $result."
+              exit 1
+            fi
+
+            pod_name="$(kubectl get pods -n "$LOADTEST_NAMESPACE" \
+              -l "job-name=${job_name}" -o jsonpath='{.items[0].metadata.name}' \
+              2>/dev/null || true)"
+            if [[ -z "$pod_name" ]]; then
+              write_metadata "pod_not_found" "complete" "$creation_timestamp" \
+                "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
+              capture_diagnostics "$job_name" "$vus"
+              echo "::error::Pod for Job $job_name was not found."
+              exit 1
+            fi
+            summary_path="runner/raw/k6-summary-${job_name}.json"
+            if ! kubectl logs "$pod_name" -n "$LOADTEST_NAMESPACE" > "$summary_path"; then
+              write_metadata "summary_retrieval_failed" "complete" "$creation_timestamp" \
+                "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
+              capture_diagnostics "$job_name" "$vus"
+              echo "::error::Could not retrieve summary for Job $job_name."
+              exit 1
+            fi
+
+            if ! jq -e \
+              --argjson expected_vus "$vus" \
+              --argjson expected_candidate_count "$CANDIDATE_COUNT" \
+              --arg expected_fixture_version "$FIXTURE_VERSION" '
+              .metadata.vus == $expected_vus
+              and .metadata.candidate_count == $expected_candidate_count
+              and .metadata.fixture_version == $expected_fixture_version
+              and (
+              .data.metrics.rerank_measure_failure.values.rate as $rate
+              | ($rate | type) == "number" and $rate < 0.01
+              )
+            ' "$summary_path" >/dev/null; then
+              write_metadata "measurement_gate_failed" "complete" "$creation_timestamp" \
+                "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
+              capture_diagnostics "$job_name" "$vus"
+              echo "::error::Summary provenance is invalid or failure rate is at least 1%."
+              exit 1
+            fi
+
+            write_metadata "succeeded" "complete" "$creation_timestamp" \
+              "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
+          done
+
+      - name: Upload runner evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rerank-loadtest-runner-${{ github.run_id }}
+          path: runner/raw
+          if-no-files-found: error
+          retention-days: 14
+
+  prometheus-snapshot-reader:
+    name: Export raw Prometheus ranges
+    needs: loadtest-runner
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # infra의 kube-prometheus-stack releaseName에서 도출한 Service proxy다.
+      # live Service/port 존재 검증은 별도 infra 배포 게이트가 담당한다.
+      PROMETHEUS_SERVICE_PROXY: /api/v1/namespaces/monitoring/services/http:kube-prometheus-stack-prometheus:9090/proxy
+
+    steps:
+      - name: Download runner evidence
+        uses: actions/download-artifact@v5
+        continue-on-error: true
+        with:
+          name: rerank-loadtest-runner-${{ github.run_id }}
+          path: runner/raw
+
+      - name: Inspect completed Job evidence
+        id: evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runner/raw
+          shopt -s nullglob
+          metadata_files=(runner/raw/metadata-vu-*.json)
+          metadata_count=${#metadata_files[@]}
+          if (( metadata_count > 4 )); then
+            echo "::error::Expected at most four VU metadata files, found $metadata_count."
+            exit 1
+          fi
+
+          completed_count=0
+          for metadata_path in "${metadata_files[@]}"; do
+            if jq -e 'select(.job_result == "complete")' \
+              "$metadata_path" >/dev/null; then
+              completed_count=$((completed_count + 1))
+            fi
+          done
+          echo "completed_count=$completed_count" >> "$GITHUB_OUTPUT"
+
+          if (( completed_count == 0 )); then
+            echo "::warning::No completed Job metadata; Prometheus export is skipped."
+            jq -n \
+              --argjson metadata_count "$metadata_count" \
+              '{status: "skipped", reason: "no_completed_job", metadata_count: $metadata_count}' \
+              > runner/raw/prometheus-reader-diagnostic.json
+          fi
+
+      - name: Authenticate snapshot reader with Workload Identity Federation
+        if: steps.evidence.outputs.completed_count != '0'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER_ID }}
+          service_account: ${{ vars.RERANK_PROMETHEUS_SNAPSHOT_READER_SA }}
+
+      - name: Set up Cloud SDK
+        if: steps.evidence.outputs.completed_count != '0'
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Get read-only GKE credentials
+        if: steps.evidence.outputs.completed_count != '0'
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
+          location: ${{ vars.GKE_LOCATION }}
+          use_dns_based_endpoint: true
+
+      - name: Query padded Prometheus ranges
+        if: steps.evidence.outputs.completed_count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          metadata_files=()
+          for metadata_path in runner/raw/metadata-vu-*.json; do
+            if jq -e 'select(.job_result == "complete")' \
+              "$metadata_path" >/dev/null; then
+              metadata_files+=("$metadata_path")
+            fi
+          done
+
+          declare -A queries=(
+            [phase_p50]='histogram_quantile(0.50, sum by (le, phase) (rate(rerank_phase_duration_seconds_bucket{namespace="autoresearch"}[5m])))'
+            [phase_p95]='histogram_quantile(0.95, sum by (le, phase) (rate(rerank_phase_duration_seconds_bucket{namespace="autoresearch"}[5m])))'
+            [outcome_rate]='sum by (outcome) (rate(rerank_outcomes_total{namespace="autoresearch"}[5m]))'
+            [max_in_flight]='max_over_time(rerank_in_flight{namespace="autoresearch"}[5m])'
+            [cpu_seconds]='sum(rate(container_cpu_usage_seconds_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m]))'
+            [rss]='sum(container_memory_rss{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"})'
+            [cfs_throttling]='sum(rate(container_cpu_cfs_throttled_seconds_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m]))'
+          )
+
+          for metadata_path in "${metadata_files[@]}"; do
+            vus="$(jq -r '.vus' "$metadata_path")"
+            creation_timestamp="$(jq -er '.creation_timestamp' "$metadata_path")"
+            completion_timestamp="$(jq -er '.completion_timestamp' "$metadata_path")"
+            start="$(date --utc --date="$creation_timestamp - 30 seconds" +%s)"
+            padded_end="$(date --utc --date="$completion_timestamp + 30 seconds" +%s)"
+            current_time="$(date --utc +%s)"
+            if (( padded_end > current_time )); then
+              sleep "$((padded_end - current_time))"
+            fi
+            end="$padded_end"
+
+            for query_name in "${!queries[@]}"; do
+              query="${queries[$query_name]}"
+              encoded_query="$(jq -rn --arg query "$query" '$query | @uri')"
+              response_path="runner/raw/prometheus-${query_name}-vu-${vus}.json"
+              request_path="${PROMETHEUS_SERVICE_PROXY}/api/v1/query_range?query=${encoded_query}&start=${start}&end=${end}&step=30"
+              kubectl get --raw "$request_path" > "$response_path"
+              jq -e '.status == "success"' "$response_path" >/dev/null
+            done
+          done
+
+          sha256sum runner/raw/*.json > runner/raw/SHA256SUMS
+
+      - name: Upload raw benchmark evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rerank-loadtest-${{ inputs.benchmark_label }}-c${{ inputs.candidate_count }}-${{ github.run_id }}
+          path: runner/raw
+          if-no-files-found: error
+          retention-days: 14
