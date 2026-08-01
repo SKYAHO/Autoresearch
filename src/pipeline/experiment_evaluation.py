@@ -20,18 +20,30 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.pipeline.seed_sweep import compare_to_baseline, summarize_metric
-from src.pipeline.training_provenance import TrainingComparisonManifest
+from src.pipeline.seed_sweep import compare_to_baseline, summarize_metric, t_critical_95
+from src.pipeline.training_provenance import SHA256_PATTERN, TrainingComparisonManifest
 
 
 POLICY_VERSION = "promotion-policy-v1"
 PRIMARY_METRIC = "roc_auc"
 POLICY_SEEDS = tuple(range(42, 72))
 CONFIDENCE_LEVEL = 0.95
+
+
+def _normalize_utc_datetime(value: datetime) -> datetime:
+    """시각을 UTC-aware datetime으로 정규화하고, timezone 없는 값은 거부한다."""
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("timezone 정보를 포함한 UTC 시각이 필요합니다")
+    return value.astimezone(timezone.utc)
+
+
+def _has_timezone(value: datetime) -> bool:
+    """legacy manifest의 시각을 비교해도 되는지 확인한다."""
+    return value.tzinfo is not None and value.utcoffset() is not None
 
 
 class _ImmutableModel(BaseModel):
@@ -76,6 +88,10 @@ class EvaluationReasonCode(str, Enum):
     PLAN_NOT_PREDECLARED = "plan_not_predeclared"
     PLAN_EVIDENCE_MISMATCH = "plan_evidence_mismatch"
     DUPLICATE_COMPARISON_EVIDENCE = "duplicate_comparison_evidence"
+    PLAN_ID_MISMATCH = "plan_id_mismatch"
+    COMPARISON_PLAN_MISMATCH = "comparison_plan_mismatch"
+    METRIC_SPLIT_MISMATCH = "metric_split_mismatch"
+    TIMESTAMP_TIMEZONE_MISSING = "timestamp_timezone_missing"
 
 
 class PromotionPolicy(_ImmutableModel):
@@ -98,17 +114,31 @@ class ExperimentPlan(_ImmutableModel):
     plan_id: str = Field(min_length=1)
     hypothesis_id: str = Field(min_length=1)
     control_id: str = Field(min_length=1)
-    candidate_ids: tuple[str, ...] = Field(min_length=1)
+    candidate_ids: tuple[Annotated[str, Field(min_length=1)], ...] = Field(min_length=1)
     policy_version: Literal["promotion-policy-v1"] = POLICY_VERSION
     created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def _normalize_created_at(cls, value: datetime) -> datetime:
+        return _normalize_utc_datetime(value)
+
+
+class HeldOutRocAucEvidence(_ImmutableModel):
+    """immutable held-out test ROC-AUC와 해당 test split의 provenance."""
+
+    metric_name: Literal["roc_auc"] = PRIMARY_METRIC
+    dataset_split: Literal["test"] = "test"
+    value: float = Field(ge=0, le=1)
+    split_manifest_sha256: str = Field(pattern=SHA256_PATTERN)
 
 
 class PairedSeedObservation(_ImmutableModel):
     """하나의 시드에서 같은 조건으로 비교한 baseline/challenger ROC-AUC."""
 
     seed: int
-    baseline_roc_auc: float
-    challenger_roc_auc: float
+    baseline: HeldOutRocAucEvidence
+    challenger: HeldOutRocAucEvidence
     comparison: TrainingComparisonManifest
 
 
@@ -141,6 +171,11 @@ class ExperimentEvaluation(_ImmutableModel):
     reason_codes: tuple[EvaluationReasonCode, ...]
     evaluated_at: datetime
 
+    @field_validator("evaluated_at")
+    @classmethod
+    def _normalize_evaluated_at(cls, value: datetime) -> datetime:
+        return _normalize_utc_datetime(value)
+
 
 class PromotionDecision(_ImmutableModel):
     """평가 결과를 이후 승격 작업이 소비할 수 있게 고정한 판정 레코드."""
@@ -152,6 +187,11 @@ class PromotionDecision(_ImmutableModel):
     verdict: EvaluationVerdict
     reason_codes: tuple[EvaluationReasonCode, ...]
     decided_at: datetime
+
+    @field_validator("decided_at")
+    @classmethod
+    def _normalize_decided_at(cls, value: datetime) -> datetime:
+        return _normalize_utc_datetime(value)
 
 
 class PromotionDecisionRecord(_ImmutableModel):
@@ -193,8 +233,36 @@ def _utc_now() -> datetime:
 
 
 def _stable_id(prefix: str, value: object) -> str:
-    """외부 저장소 좌표 없이 계약 내용만으로 stable identifier를 만든다."""
-    return f"{prefix}-{_canonical_sha256(value)[:16]}"
+    """외부 저장소 좌표 없이 계약 내용 전체로 stable identifier를 만든다."""
+    return f"{prefix}-{_canonical_sha256(value)}"
+
+
+def _plan_identity_payload(
+    *,
+    hypothesis_id: str,
+    control_id: str,
+    candidate_ids: tuple[str, ...],
+    created_at: datetime,
+) -> dict[str, object]:
+    """사전 선언 plan identity에 포함할 변경 불가능한 내용을 만든다."""
+    return {
+        "hypothesis_id": hypothesis_id,
+        "control_id": control_id,
+        "candidate_ids": candidate_ids,
+        "policy_version": POLICY_VERSION,
+        "created_at": created_at,
+    }
+
+
+def _expected_plan_id(plan: ExperimentPlan) -> str:
+    """수신한 plan의 내용이 plan_id와 일치하는지 확인할 기대 식별자를 만든다."""
+    payload = _plan_identity_payload(
+        hypothesis_id=plan.hypothesis_id,
+        control_id=plan.control_id,
+        candidate_ids=plan.candidate_ids,
+        created_at=plan.created_at,
+    )
+    return _stable_id("experiment-plan", payload)
 
 
 def promotion_policy_v1() -> PromotionPolicy:
@@ -217,13 +285,13 @@ def create_experiment_plan(
         candidate_ids: 자동 판정을 시도할 후보 식별자. v1은 하나만 허용한다.
         created_at: 계획을 고정한 UTC 시각. 생략하면 현재 UTC를 쓴다.
     """
-    payload = {
-        "hypothesis_id": hypothesis_id,
-        "control_id": control_id,
-        "candidate_ids": candidate_ids,
-        "policy_version": POLICY_VERSION,
-        "created_at": created_at or _utc_now(),
-    }
+    plan_time = _normalize_utc_datetime(created_at or _utc_now())
+    payload = _plan_identity_payload(
+        hypothesis_id=hypothesis_id,
+        control_id=control_id,
+        candidate_ids=candidate_ids,
+        created_at=plan_time,
+    )
     return ExperimentPlan(
         plan_id=_stable_id("experiment-plan", payload),
         **payload,
@@ -291,6 +359,8 @@ def _evidence_reason_codes(
     reasons: set[EvaluationReasonCode] = set()
     if plan.plan_id != evidence.plan_id:
         reasons.add(EvaluationReasonCode.PLAN_EVIDENCE_MISMATCH)
+    if plan.plan_id != _expected_plan_id(plan):
+        reasons.add(EvaluationReasonCode.PLAN_ID_MISMATCH)
     if len(plan.candidate_ids) != 1:
         reasons.add(
             EvaluationReasonCode.MULTIPLE_CANDIDATES_REQUIRE_INDEPENDENT_HOLDOUT
@@ -308,6 +378,9 @@ def _evidence_reason_codes(
             reasons.add(EvaluationReasonCode.DUPLICATE_COMPARISON_EVIDENCE)
         comparison_ids.add(comparison.comparison_id)
 
+        if comparison.experiment_plan_id != plan.plan_id:
+            reasons.add(EvaluationReasonCode.COMPARISON_PLAN_MISMATCH)
+
         effective_seeds = comparison.effective_seeds
         if effective_seeds is None:
             reasons.add(EvaluationReasonCode.EFFECTIVE_SEEDS_MISSING)
@@ -323,12 +396,18 @@ def _evidence_reason_codes(
         snapshot_hashes.add(comparison.baseline_snapshot_sha256)
         snapshot_hashes.add(comparison.challenger_snapshot_sha256)
 
-        try:
-            plan_predeclared = plan.created_at <= comparison.validated_at
-        except TypeError:
-            plan_predeclared = False
-        if not plan_predeclared:
+        if not _has_timezone(comparison.validated_at):
+            reasons.add(EvaluationReasonCode.TIMESTAMP_TIMEZONE_MISSING)
+        elif plan.created_at > comparison.validated_at:
             reasons.add(EvaluationReasonCode.PLAN_NOT_PREDECLARED)
+
+        if (
+            observation.baseline.split_manifest_sha256
+            != comparison.baseline_split_manifest_sha256
+            or observation.challenger.split_manifest_sha256
+            != comparison.challenger_split_manifest_sha256
+        ):
+            reasons.add(EvaluationReasonCode.METRIC_SPLIT_MISMATCH)
 
     if len(snapshot_hashes) != 1:
         reasons.add(EvaluationReasonCode.SNAPSHOT_MISMATCH)
@@ -348,7 +427,7 @@ def evaluate_experiment(
     않고 `hold`로 fail-closed 한다.
     """
     policy = promotion_policy_v1()
-    evaluation_time = evaluated_at or _utc_now()
+    evaluation_time = _normalize_utc_datetime(evaluated_at or _utc_now())
     reasons = _evidence_reason_codes(plan=plan, evidence=evidence, policy=policy)
     if reasons:
         return _failed_evaluation(
@@ -359,10 +438,10 @@ def evaluate_experiment(
         )
 
     baseline_values = tuple(
-        observation.baseline_roc_auc for observation in evidence.observations
+        observation.baseline.value for observation in evidence.observations
     )
     challenger_values = tuple(
-        observation.challenger_roc_auc for observation in evidence.observations
+        observation.challenger.value for observation in evidence.observations
     )
     paired_deltas = tuple(
         challenger - baseline
@@ -375,11 +454,7 @@ def evaluate_experiment(
         baseline=baseline,
         paired_deltas=paired_deltas,
     )
-    t_critical = (
-        0.0
-        if significance.standard_error == 0
-        else significance.threshold / significance.standard_error
-    )
+    t_critical = t_critical_95(len(paired_deltas) - 1)
     confidence_interval_lower = significance.delta - significance.threshold
     confidence_interval_upper = significance.delta + significance.threshold
 
@@ -451,5 +526,5 @@ def decide_promotion(
         plan_id=evaluation.plan_id,
         verdict=evaluation.verdict,
         reason_codes=evaluation.reason_codes,
-        decided_at=decided_at or _utc_now(),
+        decided_at=_normalize_utc_datetime(decided_at or _utc_now()),
     )

@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+from pydantic import ValidationError
+
 from src.pipeline.experiment_evaluation import (
     EvaluationReasonCode,
     EvaluationVerdict,
+    HeldOutRocAucEvidence,
     PairedSeedObservation,
     PromotionDecisionRecord,
     create_experiment_plan,
@@ -31,6 +35,7 @@ def _comparison(
     *,
     snapshot_sha256: str = _SHA_A,
     effective_seeds: TrainingSeeds | None | object = ...,
+    experiment_plan_id: str | None = None,
     validated_at: datetime = PLAN_TIME + timedelta(minutes=1),
 ) -> TrainingComparisonManifest:
     if effective_seeds is ...:
@@ -54,6 +59,7 @@ def _comparison(
         baseline_feature_columns=("feature",),
         challenger_feature_columns=("feature", "challenger_feature"),
         effective_seeds=effective_seeds,
+        experiment_plan_id=experiment_plan_id,
         validated_at=validated_at,
     )
 
@@ -64,13 +70,26 @@ def _evidence(
     deltas: tuple[float, ...] = (0.010, 0.011) * 15,
     seeds: tuple[int, ...] = POLICY_SEEDS,
     comparison_overrides: dict[int, TrainingComparisonManifest] | None = None,
+    metric_split_overrides: dict[int, str] | None = None,
 ):
     observations = tuple(
         PairedSeedObservation(
             seed=seed,
-            baseline_roc_auc=0.80,
-            challenger_roc_auc=0.80 + delta,
-            comparison=(comparison_overrides or {}).get(seed, _comparison(seed)),
+            baseline=HeldOutRocAucEvidence(
+                value=0.80,
+                split_manifest_sha256=(metric_split_overrides or {}).get(
+                    seed, f"{seed:064x}"
+                ),
+            ),
+            challenger=HeldOutRocAucEvidence(
+                value=0.80 + delta,
+                split_manifest_sha256=(metric_split_overrides or {}).get(
+                    seed, f"{seed:064x}"
+                ),
+            ),
+            comparison=(comparison_overrides or {}).get(
+                seed, _comparison(seed, experiment_plan_id=plan_id)
+            ),
         )
         for seed, delta in zip(seeds, deltas)
     )
@@ -153,6 +172,7 @@ def test_v1_holds_for_unpaired_effective_seed_evidence() -> None:
     mismatched = _comparison(
         42,
         effective_seeds=TrainingSeeds(split_seed=42, model_seed=43, sampler_seed=42),
+        experiment_plan_id=plan.plan_id,
     )
     evidence = _evidence(plan.plan_id, comparison_overrides={42: mismatched})
 
@@ -177,6 +197,7 @@ def test_v1_holds_for_a_multi_candidate_plan() -> None:
 def test_v1_holds_for_legacy_comparison_without_effective_seed_evidence() -> None:
     plan = _plan()
     legacy = _comparison(42, effective_seeds=None)
+    legacy = legacy.model_copy(update={"experiment_plan_id": plan.plan_id})
     evidence = _evidence(plan.plan_id, comparison_overrides={42: legacy})
 
     evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
@@ -187,7 +208,11 @@ def test_v1_holds_for_legacy_comparison_without_effective_seed_evidence() -> Non
 
 def test_v1_holds_when_comparisons_use_different_snapshots() -> None:
     plan = _plan()
-    other_snapshot = _comparison(42, snapshot_sha256="e" * 64)
+    other_snapshot = _comparison(
+        42,
+        snapshot_sha256="e" * 64,
+        experiment_plan_id=plan.plan_id,
+    )
     evidence = _evidence(plan.plan_id, comparison_overrides={42: other_snapshot})
 
     evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
@@ -204,6 +229,104 @@ def test_v1_holds_when_plan_was_not_predeclared_before_comparison() -> None:
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.reason_codes == (EvaluationReasonCode.PLAN_NOT_PREDECLARED,)
+
+
+def test_v1_holds_when_comparison_is_bound_to_a_different_plan() -> None:
+    declared_plan = _plan(candidate_ids=("candidate-declared",))
+    different_plan = _plan(candidate_ids=("candidate-evaluated",))
+    comparison = _comparison(42, experiment_plan_id=declared_plan.plan_id)
+    evidence = _evidence(different_plan.plan_id, comparison_overrides={42: comparison})
+
+    evaluation = evaluate_experiment(different_plan, evidence, evaluated_at=PLAN_TIME)
+
+    assert evaluation.verdict is EvaluationVerdict.HOLD
+    assert evaluation.reason_codes == (
+        EvaluationReasonCode.COMPARISON_PLAN_MISMATCH,
+    )
+
+
+def test_v1_holds_when_comparison_has_no_predeclared_plan_binding() -> None:
+    plan = _plan()
+    unbound = _comparison(42)
+    evidence = _evidence(plan.plan_id, comparison_overrides={42: unbound})
+
+    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+
+    assert evaluation.verdict is EvaluationVerdict.HOLD
+    assert evaluation.reason_codes == (
+        EvaluationReasonCode.COMPARISON_PLAN_MISMATCH,
+    )
+
+
+def test_v1_holds_when_metric_evidence_uses_another_test_split() -> None:
+    plan = _plan()
+    evidence = _evidence(
+        plan.plan_id,
+        metric_split_overrides={42: "f" * 64},
+    )
+
+    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+
+    assert evaluation.verdict is EvaluationVerdict.HOLD
+    assert evaluation.reason_codes == (EvaluationReasonCode.METRIC_SPLIT_MISMATCH,)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "field_name"),
+    [
+        ({"value": 1.001}, "value"),
+        ({"metric_name": "val_roc_auc"}, "metric_name"),
+        ({"dataset_split": "validation"}, "dataset_split"),
+    ],
+)
+def test_held_out_roc_auc_evidence_rejects_invalid_metric_contract(
+    kwargs: dict[str, object], field_name: str
+) -> None:
+    payload = {
+        "value": 0.80,
+        "split_manifest_sha256": "a" * 64,
+        **kwargs,
+    }
+    with pytest.raises(ValidationError, match=field_name):
+        HeldOutRocAucEvidence(**payload)
+
+
+def test_experiment_plan_rejects_an_empty_candidate_identifier() -> None:
+    with pytest.raises(ValidationError, match="candidate_ids"):
+        create_experiment_plan(
+            hypothesis_id="issue-466-h1",
+            control_id="lgbm-2026-08-01",
+            candidate_ids=("",),
+            created_at=PLAN_TIME,
+        )
+
+
+def test_v1_holds_when_comparison_timestamp_has_no_timezone() -> None:
+    plan = _plan()
+    naive = _comparison(
+        42,
+        experiment_plan_id=plan.plan_id,
+        validated_at=datetime(2026, 8, 1, 0, 1),
+    )
+    evidence = _evidence(plan.plan_id, comparison_overrides={42: naive})
+
+    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+
+    assert evaluation.verdict is EvaluationVerdict.HOLD
+    assert evaluation.reason_codes == (
+        EvaluationReasonCode.TIMESTAMP_TIMEZONE_MISSING,
+    )
+
+
+def test_v1_records_the_actual_t_critical_for_zero_standard_error() -> None:
+    plan = _plan()
+    evidence = _evidence(plan.plan_id, deltas=(0.010,) * 30)
+
+    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+
+    assert evaluation.verdict is EvaluationVerdict.ELIGIBLE
+    assert evaluation.standard_error == 0
+    assert evaluation.t_critical == pytest.approx(2.045)
 
 
 def test_decision_record_is_deterministic_and_excludes_registry_coordinates() -> None:

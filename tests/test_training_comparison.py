@@ -165,7 +165,12 @@ def test_verify_training_comparison_writes_output_and_challenger_artifact(
     )
     output = tmp_path / "comparison.json"
 
-    result = verify_training_comparison(baseline_run, challenger_run, output)
+    result = verify_training_comparison(
+        baseline_run,
+        challenger_run,
+        output,
+        experiment_plan_id="experiment-plan-predeclared",
+    )
 
     assert result.validation_status == "verified"
     assert result.effective_seeds == TrainingSeeds(
@@ -173,6 +178,7 @@ def test_verify_training_comparison_writes_output_and_challenger_artifact(
         model_seed=42,
         sampler_seed=42,
     )
+    assert result.experiment_plan_id == "experiment-plan-predeclared"
     assert output.is_file()
     client = MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
     assert any(
@@ -186,6 +192,7 @@ def test_verify_training_comparison_writes_output_and_challenger_artifact(
         "model_seed": 42,
         "sampler_seed": 42,
     }
+    assert output_payload["experiment_plan_id"] == "experiment-plan-predeclared"
 
 
 def test_seed_mismatch_has_no_output_or_challenger_upload(tmp_path, monkeypatch) -> None:

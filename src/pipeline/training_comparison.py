@@ -2,7 +2,8 @@
 
 [파이프라인] 두 MLflow run에서 canonical snapshot·split artifact를 내려받아
 무결성을 재검증하고, snapshot·split membership·effective seed가 같은지 확인한 뒤
-검증된 comparison manifest를 로컬 파일과 challenger run에 게시한다.
+사전 선언한 experiment plan에 바인딩된 comparison manifest를 로컬 파일과 challenger
+run에 게시한다.
 
 [기능] MLflow artifact 다운로드, Task 1 provenance 계약 재검증, 공정 비교 equality
 검사, deterministic comparison ID 생성, challenger artifact 원자 게시를 제공한다.
@@ -206,22 +207,30 @@ def _assert_equal(label: str, baseline: object, challenger: object) -> None:
         )
 
 
-def _comparison_id(baseline: _VerifiedRun, challenger: _VerifiedRun) -> str:
-    """run pair·공통 snapshot·challenger split으로 deterministic ID를 만든다."""
-    payload = "\0".join(
-        (
-            baseline.run_id,
-            challenger.run_id,
-            baseline.snapshot.dataset_sha256,
-            challenger.split_manifest_sha256,
-        )
-    ).encode("utf-8")
+def _comparison_id(
+    baseline: _VerifiedRun,
+    challenger: _VerifiedRun,
+    *,
+    experiment_plan_id: str | None,
+) -> str:
+    """run pair·공통 snapshot·plan binding으로 deterministic ID를 만든다."""
+    identity_parts = [
+        baseline.run_id,
+        challenger.run_id,
+        baseline.snapshot.dataset_sha256,
+        challenger.split_manifest_sha256,
+    ]
+    if experiment_plan_id is not None:
+        identity_parts.append(experiment_plan_id)
+    payload = "\0".join(identity_parts).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:16]
 
 
 def _build_comparison_manifest(
     baseline: _VerifiedRun,
     challenger: _VerifiedRun,
+    *,
+    experiment_plan_id: str | None,
 ) -> TrainingComparisonManifest:
     """equality 검증을 모두 통과한 두 run의 comparison manifest를 만든다."""
     _assert_equal(
@@ -250,7 +259,11 @@ def _build_comparison_manifest(
     _assert_equal("sampler_seed", baseline.split.sampler_seed, challenger.split.sampler_seed)
 
     return TrainingComparisonManifest(
-        comparison_id=_comparison_id(baseline, challenger),
+        comparison_id=_comparison_id(
+            baseline,
+            challenger,
+            experiment_plan_id=experiment_plan_id,
+        ),
         baseline_run_id=baseline.run_id,
         challenger_run_id=challenger.run_id,
         baseline_snapshot_sha256=baseline.snapshot.dataset_sha256,
@@ -268,6 +281,7 @@ def _build_comparison_manifest(
             model_seed=baseline.split.model_seed,
             sampler_seed=baseline.split.sampler_seed,
         ),
+        experiment_plan_id=experiment_plan_id,
         validated_at=datetime.now(timezone.utc),
     )
 
@@ -307,8 +321,18 @@ def verify_training_comparison(
     baseline_run_id: str,
     challenger_run_id: str,
     output_path: Path,
+    *,
+    experiment_plan_id: str | None = None,
 ) -> TrainingComparisonManifest:
-    """두 run의 provenance equality를 검증하고 성공 manifest를 게시한다."""
+    """두 run의 provenance equality를 검증하고 성공 manifest를 게시한다.
+
+    Args:
+        baseline_run_id: 비교 기준 MLflow run ID.
+        challenger_run_id: 비교 대상 MLflow run ID.
+        output_path: 검증된 manifest를 원자 게시할 로컬 JSON 경로.
+        experiment_plan_id: 학습 전에 고정한 experiment plan 식별자. 생략한 legacy
+            manifest는 #466 자동 승격 평가에서 fail-closed `hold`가 된다.
+    """
     output_path = Path(output_path)
     try:
         client = MlflowClient()
@@ -318,7 +342,11 @@ def verify_training_comparison(
         workspace = Path(temporary_dir)
         baseline = _load_verified_run(baseline_run_id, workspace)
         challenger = _load_verified_run(challenger_run_id, workspace)
-        result = _build_comparison_manifest(baseline, challenger)
+        result = _build_comparison_manifest(
+            baseline,
+            challenger,
+            experiment_plan_id=experiment_plan_id,
+        )
         _publish_verified_comparison(
             result=result,
             challenger_run_id=challenger_run_id,

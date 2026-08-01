@@ -157,8 +157,10 @@ class TrainingComparisonManifest(_ImmutableModel):
     baseline_feature_columns: list[str]
     challenger_feature_columns: list[str]
     # 이전에 기록된 comparison artifact도 읽어야 한다. 다만 None이면 자동 승격
-    # 정책이 요구하는 effective seed 근거가 없으므로 이후 evaluator가 fail-closed 한다.
+    # 정책이 요구하는 effective seed·사전 선언 plan 근거가 없으므로 이후 evaluator가
+    # fail-closed 한다.
     effective_seeds: TrainingSeeds | None = None
+    experiment_plan_id: str | None = Field(default=None, min_length=1)
     validated_at: datetime
     validation_status: Literal["verified"] = "verified"
 

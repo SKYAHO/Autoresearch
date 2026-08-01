@@ -62,6 +62,7 @@ def test_existing_comparison_manifest_without_seed_triplet_still_parses() -> Non
     )
 
     assert manifest.effective_seeds is None
+    assert manifest.experiment_plan_id is None
 
 
 def test_snapshot_manifest_round_trip_validates_csv(tmp_path: Path) -> None:
