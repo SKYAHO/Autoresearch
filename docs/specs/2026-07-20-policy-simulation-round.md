@@ -7,6 +7,12 @@
 폐루프 재학습에 그대로 재사용 가능한 형태(정책·점수·exploration 메타데이터 포함)로
 남긴다.
 
+## 2026-07-31 CLI 계약 보완 (#428)
+
+`simulate_policy_round`의 `--videos` 인자는 YouTube API 원본 응답이 아니라
+사전 파싱된 `videos.csv` 경로를 받는다. CLI help도 이 실제 입력 계약을 그대로
+설명한다.
+
 ## 배경
 
 현재 파이프라인의 노출 선정은 `autoresearch/action_logs/candidate.py`의 키워드
