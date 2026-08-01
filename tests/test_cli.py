@@ -741,7 +741,11 @@ def test_sweep_seeds_rejects_duplicate_seeds(tmp_path, monkeypatch):
 
 
 def test_verify_comparison_help_exposes_required_options() -> None:
-    result = CliRunner().invoke(cli.app, ["verify-comparison", "--help"])
+    result = CliRunner().invoke(
+        cli.app,
+        ["verify-comparison", "--help"],
+        color=False,
+    )
 
     assert result.exit_code == 0
     assert "--baseline-run-id" in result.output
