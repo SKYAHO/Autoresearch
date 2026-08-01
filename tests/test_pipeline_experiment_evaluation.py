@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -10,7 +11,6 @@ from pydantic import ValidationError
 from src.pipeline.experiment_evaluation import (
     EvaluationReasonCode,
     EvaluationVerdict,
-    HeldOutRocAucEvidence,
     PairedSeedObservation,
     PromotionDecisionRecord,
     create_experiment_plan,
@@ -19,7 +19,18 @@ from src.pipeline.experiment_evaluation import (
     evaluate_experiment,
     promotion_policy_v1,
 )
-from src.pipeline.training_provenance import TrainingComparisonManifest, TrainingSeeds
+from src.pipeline.promotion_evidence import (
+    ExperimentPlanReceipt,
+    GcsObjectReceipt,
+    HeldOutMetricEvidence,
+    HeldOutMetricReceipt,
+    PromotionEvidenceValidationError,
+)
+from src.pipeline.training_provenance import (
+    TrainingComparisonManifest,
+    TrainingSeeds,
+    VerifiedComparisonPromotionEvidence,
+)
 
 
 PLAN_TIME = datetime(2026, 8, 1, tzinfo=timezone.utc)
@@ -30,12 +41,81 @@ _SHA_C = "c" * 64
 _SHA_D = "d" * 64
 
 
+@dataclass
+class _ReceiptStore:
+    """evaluator가 GCS receipt를 재검증하는지 확인하는 strict fake store."""
+
+    plan_receipt: ExperimentPlanReceipt
+    metric_receipts: list[HeldOutMetricReceipt] = field(default_factory=list)
+
+    def verify_plan_receipt(self, receipt: ExperimentPlanReceipt):
+        if receipt != self.plan_receipt:
+            raise PromotionEvidenceValidationError("plan receipt가 최신 GCS object와 다릅니다")
+        return receipt.plan
+
+    def verify_held_out_metric_receipt(self, receipt: HeldOutMetricReceipt):
+        if receipt not in self.metric_receipts:
+            raise PromotionEvidenceValidationError("metric receipt sha256가 최신 GCS object와 다릅니다")
+        return receipt.evidence
+
+
+def _object_receipt(*, path: str, sha256: str) -> GcsObjectReceipt:
+    return GcsObjectReceipt(
+        uri=f"gs://evidence/promotion-evidence/{path}",
+        generation="1",
+        metageneration="1",
+        time_created=PLAN_TIME,
+        sha256=sha256,
+    )
+
+
+def _published_plan_store(*, plan=None) -> tuple[_ReceiptStore, ExperimentPlanReceipt]:
+    resolved_plan = plan or _plan()
+    receipt = ExperimentPlanReceipt(
+        plan=resolved_plan,
+        object=_object_receipt(path=f"plans/{resolved_plan.plan_id}.json", sha256=_SHA_A),
+    )
+    return _ReceiptStore(plan_receipt=receipt), receipt
+
+
+def _metric_receipt(
+    *,
+    store: _ReceiptStore,
+    run_id: str,
+    plan_receipt: ExperimentPlanReceipt,
+    value: float,
+    split_manifest_sha256: str,
+    suffix: int,
+) -> HeldOutMetricReceipt:
+    receipt = HeldOutMetricReceipt(
+        evidence=HeldOutMetricEvidence(
+            run_id=run_id,
+            plan_receipt=plan_receipt,
+            value=value,
+            split_manifest_sha256=split_manifest_sha256,
+            test_membership_sha256=_SHA_B,
+            model_artifact_path=f"model/{run_id}.joblib",
+            model_artifact_sha256=_SHA_C,
+        ),
+        object=_object_receipt(
+            path=f"metrics/{run_id}/{suffix:064x}.json",
+            sha256=f"{suffix:064x}",
+        ),
+    )
+    store.metric_receipts.append(receipt)
+    return receipt
+
+
 def _comparison(
     seed: int,
     *,
+    store: _ReceiptStore,
+    plan_receipt: ExperimentPlanReceipt,
+    baseline_value: float = 0.80,
+    challenger_value: float = 0.81,
     snapshot_sha256: str = _SHA_A,
     effective_seeds: TrainingSeeds | None | object = ...,
-    experiment_plan_id: str | None = None,
+    promotion_evidence: VerifiedComparisonPromotionEvidence | None | object = ...,
     validated_at: datetime = PLAN_TIME + timedelta(minutes=1),
 ) -> TrainingComparisonManifest:
     if effective_seeds is ...:
@@ -43,6 +123,28 @@ def _comparison(
             split_seed=seed,
             model_seed=seed,
             sampler_seed=seed,
+        )
+    baseline_split = f"{seed:064x}"
+    challenger_split = f"{seed:064x}"
+    if promotion_evidence is ...:
+        promotion_evidence = VerifiedComparisonPromotionEvidence(
+            plan_receipt=plan_receipt,
+            baseline_metric=_metric_receipt(
+                store=store,
+                run_id=f"baseline-{seed}",
+                plan_receipt=plan_receipt,
+                value=baseline_value,
+                split_manifest_sha256=baseline_split,
+                suffix=seed,
+            ),
+            challenger_metric=_metric_receipt(
+                store=store,
+                run_id=f"challenger-{seed}",
+                plan_receipt=plan_receipt,
+                value=challenger_value,
+                split_manifest_sha256=challenger_split,
+                suffix=seed + 100,
+            ),
         )
     return TrainingComparisonManifest(
         comparison_id=f"comparison-{seed}",
@@ -52,21 +154,22 @@ def _comparison(
         challenger_snapshot_sha256=snapshot_sha256,
         baseline_snapshot_manifest_sha256=_SHA_B,
         challenger_snapshot_manifest_sha256=_SHA_B,
-        baseline_split_manifest_sha256=f"{seed:064x}",
-        challenger_split_manifest_sha256=f"{seed:064x}",
+        baseline_split_manifest_sha256=baseline_split,
+        challenger_split_manifest_sha256=challenger_split,
         baseline_feature_columns_sha256=_SHA_C,
         challenger_feature_columns_sha256=_SHA_D,
         baseline_feature_columns=("feature",),
         challenger_feature_columns=("feature", "challenger_feature"),
         effective_seeds=effective_seeds,
-        experiment_plan_id=experiment_plan_id,
+        promotion_evidence=promotion_evidence,
         validated_at=validated_at,
     )
 
 
 def _evidence(
-    plan_id: str,
+    plan_receipt: ExperimentPlanReceipt,
     *,
+    store: _ReceiptStore,
     deltas: tuple[float, ...] = (0.010, 0.011) * 15,
     seeds: tuple[int, ...] = POLICY_SEEDS,
     comparison_overrides: dict[int, TrainingComparisonManifest] | None = None,
@@ -75,25 +178,44 @@ def _evidence(
     observations = tuple(
         PairedSeedObservation(
             seed=seed,
-            baseline=HeldOutRocAucEvidence(
-                value=0.80,
-                split_manifest_sha256=(metric_split_overrides or {}).get(
-                    seed, f"{seed:064x}"
-                ),
-            ),
-            challenger=HeldOutRocAucEvidence(
-                value=0.80 + delta,
-                split_manifest_sha256=(metric_split_overrides or {}).get(
-                    seed, f"{seed:064x}"
-                ),
-            ),
             comparison=(comparison_overrides or {}).get(
-                seed, _comparison(seed, experiment_plan_id=plan_id)
+                seed,
+                _comparison(
+                    seed,
+                    store=store,
+                    plan_receipt=plan_receipt,
+                    baseline_value=0.80,
+                    challenger_value=0.80 + delta,
+                ),
             ),
         )
         for seed, delta in zip(seeds, deltas)
     )
-    return create_paired_seed_evidence(plan_id=plan_id, observations=observations)
+    evidence = create_paired_seed_evidence(
+        plan_receipt=plan_receipt, observations=observations
+    )
+    if metric_split_overrides:
+        # 새로운 evaluator는 comparison receipt의 split binding을 재검증해야 하므로
+        # 이 legacy helper 인자는 직접 metric JSON 주입 대신 comparison을 변조한다.
+        observations = tuple(
+            observation.model_copy(
+                update={
+                    "comparison": observation.comparison.model_copy(
+                        update={
+                            "baseline_split_manifest_sha256": metric_split_overrides.get(
+                                observation.seed,
+                                observation.comparison.baseline_split_manifest_sha256,
+                            )
+                        }
+                    )
+                }
+            )
+            for observation in observations
+        )
+        evidence = create_paired_seed_evidence(
+            plan_receipt=plan_receipt, observations=observations
+        )
+    return evidence
 
 
 def _plan(*, candidate_ids: tuple[str, ...] = ("candidate-sha",), created_at=PLAN_TIME):
@@ -121,11 +243,13 @@ def test_legacy_plan_id_mismatch_reason_code_remains_parseable_during_transition
     )
 
 
-def test_v1_marks_positive_paired_30_seed_evidence_eligible() -> None:
-    plan = _plan()
-    evidence = _evidence(plan.plan_id)
+def test_v1_marks_verified_positive_paired_30_seed_evidence_eligible() -> None:
+    store, receipt = _published_plan_store()
+    evidence = _evidence(receipt, store=store)
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
     decision = decide_promotion(evaluation, decided_at=PLAN_TIME)
 
     assert evaluation.metric_name == "roc_auc"
@@ -142,10 +266,12 @@ def test_v1_marks_positive_paired_30_seed_evidence_eligible() -> None:
 
 
 def test_v1_rejects_when_upper_confidence_bound_is_not_positive() -> None:
-    plan = _plan()
-    evidence = _evidence(plan.plan_id, deltas=(-0.020, -0.019) * 15)
+    store, receipt = _published_plan_store()
+    evidence = _evidence(receipt, store=store, deltas=(-0.020, -0.019) * 15)
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.REJECT
     assert evaluation.confidence_interval_upper is not None
@@ -154,20 +280,24 @@ def test_v1_rejects_when_upper_confidence_bound_is_not_positive() -> None:
 
 
 def test_v1_holds_when_primary_roc_auc_is_inconclusive() -> None:
-    plan = _plan()
-    evidence = _evidence(plan.plan_id, deltas=(-0.020, 0.020) * 15)
+    store, receipt = _published_plan_store()
+    evidence = _evidence(receipt, store=store, deltas=(-0.020, 0.020) * 15)
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.reason_codes == (EvaluationReasonCode.PRIMARY_ROC_AUC_INCONCLUSIVE,)
 
 
 def test_v1_holds_for_a_seed_list_that_differs_from_policy() -> None:
-    plan = _plan()
-    evidence = _evidence(plan.plan_id, seeds=tuple(range(43, 73)))
+    store, receipt = _published_plan_store()
+    evidence = _evidence(receipt, store=store, seeds=tuple(range(43, 73)))
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.paired is False
@@ -175,15 +305,18 @@ def test_v1_holds_for_a_seed_list_that_differs_from_policy() -> None:
 
 
 def test_v1_holds_for_unpaired_effective_seed_evidence() -> None:
-    plan = _plan()
+    store, receipt = _published_plan_store()
     mismatched = _comparison(
         42,
+        store=store,
+        plan_receipt=receipt,
         effective_seeds=TrainingSeeds(split_seed=42, model_seed=43, sampler_seed=42),
-        experiment_plan_id=plan.plan_id,
     )
-    evidence = _evidence(plan.plan_id, comparison_overrides={42: mismatched})
+    evidence = _evidence(receipt, store=store, comparison_overrides={42: mismatched})
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.reason_codes == (EvaluationReasonCode.UNPAIRED_SEED_EVIDENCE,)
@@ -191,9 +324,12 @@ def test_v1_holds_for_unpaired_effective_seed_evidence() -> None:
 
 def test_v1_holds_for_a_multi_candidate_plan() -> None:
     plan = _plan(candidate_ids=("candidate-a", "candidate-b"))
-    evidence = _evidence(plan.plan_id)
+    store, receipt = _published_plan_store(plan=plan)
+    evidence = _evidence(receipt, store=store)
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.reason_codes == (
@@ -202,27 +338,39 @@ def test_v1_holds_for_a_multi_candidate_plan() -> None:
 
 
 def test_v1_holds_for_legacy_comparison_without_effective_seed_evidence() -> None:
-    plan = _plan()
-    legacy = _comparison(42, effective_seeds=None)
-    legacy = legacy.model_copy(update={"experiment_plan_id": plan.plan_id})
-    evidence = _evidence(plan.plan_id, comparison_overrides={42: legacy})
+    store, receipt = _published_plan_store()
+    legacy = _comparison(
+        42,
+        store=store,
+        plan_receipt=receipt,
+        effective_seeds=None,
+        promotion_evidence=None,
+    )
+    evidence = _evidence(receipt, store=store, comparison_overrides={42: legacy})
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
-    assert evaluation.reason_codes == (EvaluationReasonCode.EFFECTIVE_SEEDS_MISSING,)
+    assert evaluation.paired is False
+    assert EvaluationReasonCode.PLAN_RECEIPT_MISSING in evaluation.reason_codes
+    assert EvaluationReasonCode.EFFECTIVE_SEEDS_MISSING in evaluation.reason_codes
 
 
 def test_v1_holds_when_comparisons_use_different_snapshots() -> None:
-    plan = _plan()
+    store, receipt = _published_plan_store()
     other_snapshot = _comparison(
         42,
+        store=store,
+        plan_receipt=receipt,
         snapshot_sha256="e" * 64,
-        experiment_plan_id=plan.plan_id,
     )
-    evidence = _evidence(plan.plan_id, comparison_overrides={42: other_snapshot})
+    evidence = _evidence(receipt, store=store, comparison_overrides={42: other_snapshot})
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.reason_codes == (EvaluationReasonCode.SNAPSHOT_MISMATCH,)
@@ -230,9 +378,12 @@ def test_v1_holds_when_comparisons_use_different_snapshots() -> None:
 
 def test_v1_holds_when_plan_was_not_predeclared_before_comparison() -> None:
     plan = _plan(created_at=PLAN_TIME + timedelta(minutes=2))
-    evidence = _evidence(plan.plan_id)
+    store, receipt = _published_plan_store(plan=plan)
+    evidence = _evidence(receipt, store=store)
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.reason_codes == (EvaluationReasonCode.PLAN_NOT_PREDECLARED,)
@@ -241,61 +392,102 @@ def test_v1_holds_when_plan_was_not_predeclared_before_comparison() -> None:
 def test_v1_holds_when_comparison_is_bound_to_a_different_plan() -> None:
     declared_plan = _plan(candidate_ids=("candidate-declared",))
     different_plan = _plan(candidate_ids=("candidate-evaluated",))
-    comparison = _comparison(42, experiment_plan_id=declared_plan.plan_id)
-    evidence = _evidence(different_plan.plan_id, comparison_overrides={42: comparison})
+    store, receipt = _published_plan_store(plan=different_plan)
+    _, declared_receipt = _published_plan_store(plan=declared_plan)
+    comparison = _comparison(42, store=store, plan_receipt=declared_receipt)
+    evidence = _evidence(receipt, store=store, comparison_overrides={42: comparison})
 
-    evaluation = evaluate_experiment(different_plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.reason_codes == (
-        EvaluationReasonCode.COMPARISON_PLAN_MISMATCH,
+        EvaluationReasonCode.METRIC_BINDING_MISMATCH,
     )
 
 
 def test_v1_holds_when_comparison_has_no_predeclared_plan_binding() -> None:
-    plan = _plan()
-    unbound = _comparison(42)
-    evidence = _evidence(plan.plan_id, comparison_overrides={42: unbound})
+    store, receipt = _published_plan_store()
+    unbound = _comparison(
+        42, store=store, plan_receipt=receipt, promotion_evidence=None
+    )
+    evidence = _evidence(receipt, store=store, comparison_overrides={42: unbound})
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.reason_codes == (
-        EvaluationReasonCode.COMPARISON_PLAN_MISMATCH,
+        EvaluationReasonCode.PLAN_RECEIPT_MISSING,
     )
 
 
 def test_v1_holds_when_metric_evidence_uses_another_test_split() -> None:
-    plan = _plan()
+    store, receipt = _published_plan_store()
     evidence = _evidence(
-        plan.plan_id,
+        receipt,
+        store=store,
         metric_split_overrides={42: "f" * 64},
     )
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
-    assert evaluation.reason_codes == (EvaluationReasonCode.METRIC_SPLIT_MISMATCH,)
+    assert evaluation.paired is False
+    assert evaluation.reason_codes == (EvaluationReasonCode.METRIC_BINDING_MISMATCH,)
 
 
-@pytest.mark.parametrize(
-    ("kwargs", "field_name"),
-    [
-        ({"value": 1.001}, "value"),
-        ({"metric_name": "val_roc_auc"}, "metric_name"),
-        ({"dataset_split": "validation"}, "dataset_split"),
-    ],
-)
-def test_held_out_roc_auc_evidence_rejects_invalid_metric_contract(
-    kwargs: dict[str, object], field_name: str
-) -> None:
-    payload = {
-        "value": 0.80,
-        "split_manifest_sha256": "a" * 64,
-        **kwargs,
-    }
-    with pytest.raises(ValidationError, match=field_name):
-        HeldOutRocAucEvidence(**payload)
+def test_v1_holds_without_statistics_when_metric_receipt_sha_is_stale() -> None:
+    store, receipt = _published_plan_store()
+    comparison = _comparison(42, store=store, plan_receipt=receipt)
+    promotion = comparison.promotion_evidence
+    assert promotion is not None
+    stale_baseline = promotion.baseline_metric.model_copy(
+        update={
+            "object": promotion.baseline_metric.object.model_copy(
+                update={"sha256": "f" * 64}
+            )
+        }
+    )
+    stale_comparison = comparison.model_copy(
+        update={
+            "promotion_evidence": promotion.model_copy(
+                update={"baseline_metric": stale_baseline}
+            )
+        }
+    )
+    evidence = _evidence(
+        receipt,
+        store=store,
+        comparison_overrides={42: stale_comparison},
+    )
+
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
+
+    assert evaluation.verdict is EvaluationVerdict.HOLD
+    assert evaluation.paired is False
+    assert evaluation.confidence_interval_lower is None
+    assert evaluation.reason_codes == (
+        EvaluationReasonCode.RECEIPT_REVALIDATION_FAILED,
+    )
+
+
+def test_paired_observation_rejects_caller_supplied_raw_metric_values() -> None:
+    store, receipt = _published_plan_store()
+    comparison = _comparison(42, store=store, plan_receipt=receipt)
+
+    with pytest.raises(ValidationError, match="baseline"):
+        PairedSeedObservation(
+            seed=42,
+            comparison=comparison,
+            baseline={"value": 0.99},
+        )
 
 
 def test_experiment_plan_rejects_an_empty_candidate_identifier() -> None:
@@ -309,15 +501,18 @@ def test_experiment_plan_rejects_an_empty_candidate_identifier() -> None:
 
 
 def test_v1_holds_when_comparison_timestamp_has_no_timezone() -> None:
-    plan = _plan()
+    store, receipt = _published_plan_store()
     naive = _comparison(
         42,
-        experiment_plan_id=plan.plan_id,
+        store=store,
+        plan_receipt=receipt,
         validated_at=datetime(2026, 8, 1, 0, 1),
     )
-    evidence = _evidence(plan.plan_id, comparison_overrides={42: naive})
+    evidence = _evidence(receipt, store=store, comparison_overrides={42: naive})
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.reason_codes == (
@@ -326,10 +521,12 @@ def test_v1_holds_when_comparison_timestamp_has_no_timezone() -> None:
 
 
 def test_v1_records_the_actual_t_critical_for_zero_standard_error() -> None:
-    plan = _plan()
-    evidence = _evidence(plan.plan_id, deltas=(0.010,) * 30)
+    store, receipt = _published_plan_store()
+    evidence = _evidence(receipt, store=store, deltas=(0.010,) * 30)
 
-    evaluation = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    evaluation = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     assert evaluation.verdict is EvaluationVerdict.ELIGIBLE
     assert evaluation.standard_error == 0
@@ -337,10 +534,14 @@ def test_v1_records_the_actual_t_critical_for_zero_standard_error() -> None:
 
 
 def test_decision_record_is_deterministic_and_excludes_registry_coordinates() -> None:
-    plan = _plan()
-    evidence = _evidence(plan.plan_id)
-    first = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
-    second = evaluate_experiment(plan, evidence, evaluated_at=PLAN_TIME)
+    store, receipt = _published_plan_store()
+    evidence = _evidence(receipt, store=store)
+    first = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
+    second = evaluate_experiment(
+        evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
+    )
 
     record = PromotionDecisionRecord(
         evaluation=first,

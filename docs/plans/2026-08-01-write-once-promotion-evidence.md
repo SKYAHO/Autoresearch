@@ -384,7 +384,7 @@ git commit -m "feat: verify write-once promotion evidence in comparisons"
 - create_paired_seed_evidence(plan_receipt, observations) -> PairedSeedEvidence creates the stable evidence ID from receipt coordinates and comparison IDs.
 - evaluate_experiment(evidence, *, promotion_evidence_store: PromotionEvidenceStore, evaluated_at: datetime | None = None) -> ExperimentEvaluation re-reads plan and metric receipts before calculating statistics.
 
-- [ ] **Step 1: Rewrite a passing raw-number test as a failing receipt test**
+- [x] **Step 1: Rewrite a passing raw-number test as a failing receipt test**
 
 ~~~python
 def test_v1_marks_verified_positive_paired_30_seed_evidence_eligible() -> None:
@@ -404,13 +404,13 @@ def test_v1_marks_verified_positive_paired_30_seed_evidence_eligible() -> None:
 
 Replace tests that inject HeldOutRocAucEvidence with a caller-supplied metric value with receipts published to the fake store. Add tests that use valid-looking raw comparison fields but omit promotion_evidence, have a stale receipt byte SHA, or attach metrics from another split; each must return hold without estimating a confidence interval.
 
-- [ ] **Step 2: Run the rewritten tests to verify they fail**
+- [x] **Step 2: Run the rewritten tests to verify they fail**
 
 Run: uv run python -m pytest tests/test_pipeline_experiment_evaluation.py -v
 
 Expected: FAIL because observations still accept raw metric evidence and the evaluator has no store parameter.
 
-- [ ] **Step 3: Remove raw metric injection from the evaluation path**
+- [x] **Step 3: Remove raw metric injection from the evaluation path**
 
 ~~~python
 class PairedSeedObservation(_ImmutableModel):
@@ -430,13 +430,13 @@ def _verified_metric_values(observation, store, plan_receipt) -> tuple[float, fl
 
 Verify the plan receipt first, then re-read each comparison's plan and metric receipts. Retain the current policy checks for single candidate, exact ordered seeds, equal snapshot, exact effective seed triplet, duplicate comparisons, and finite metric values. Replace obsolete reason codes with explicit PLAN_RECEIPT_MISSING, RECEIPT_REVALIDATION_FAILED, and METRIC_BINDING_MISMATCH codes; all such failures use the existing no-statistics hold result.
 
-- [ ] **Step 4: Verify eligible, reject, hold, and legacy behavior**
+- [x] **Step 4: Verify eligible, reject, hold, and legacy behavior**
 
 Run: uv run python -m pytest tests/test_pipeline_experiment_evaluation.py tests/test_pipeline_seed_sweep.py -v
 
 Expected: PASS. Preserve the existing positive/negative/inconclusive t-interval assertions, including zero standard error recording its real df=29 critical value. Verify a legacy comparison with no promotion evidence produces hold, never eligible.
 
-- [ ] **Step 5: Commit the receipt-only evaluator**
+- [x] **Step 5: Commit the receipt-only evaluator**
 
 ~~~bash
 git add src/pipeline/experiment_evaluation.py tests/test_pipeline_experiment_evaluation.py

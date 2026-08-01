@@ -20,6 +20,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from enum import Enum
+from math import isfinite
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -27,10 +28,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.pipeline.promotion_evidence import (
     PROMOTION_POLICY_VERSION,
     ExperimentPlan,
+    ExperimentPlanReceipt,
+    PromotionEvidenceStore,
+    PromotionEvidenceValidationError,
     create_experiment_plan,  # noqa: F401 - 기존 import 경로 호환 re-export
 )
 from src.pipeline.seed_sweep import compare_to_baseline, summarize_metric, t_critical_95
-from src.pipeline.training_provenance import SHA256_PATTERN, TrainingComparisonManifest
+from src.pipeline.training_provenance import TrainingComparisonManifest
 
 
 POLICY_VERSION = PROMOTION_POLICY_VERSION
@@ -97,6 +101,9 @@ class EvaluationReasonCode(str, Enum):
     COMPARISON_PLAN_MISMATCH = "comparison_plan_mismatch"
     METRIC_SPLIT_MISMATCH = "metric_split_mismatch"
     TIMESTAMP_TIMEZONE_MISSING = "timestamp_timezone_missing"
+    PLAN_RECEIPT_MISSING = "plan_receipt_missing"
+    RECEIPT_REVALIDATION_FAILED = "receipt_revalidation_failed"
+    METRIC_BINDING_MISMATCH = "metric_binding_mismatch"
 
 
 class PromotionPolicy(_ImmutableModel):
@@ -113,21 +120,10 @@ class PromotionPolicy(_ImmutableModel):
     )
 
 
-class HeldOutRocAucEvidence(_ImmutableModel):
-    """immutable held-out test ROC-AUC와 해당 test split의 provenance."""
-
-    metric_name: Literal["roc_auc"] = PRIMARY_METRIC
-    dataset_split: Literal["test"] = "test"
-    value: float = Field(ge=0, le=1)
-    split_manifest_sha256: str = Field(pattern=SHA256_PATTERN)
-
-
 class PairedSeedObservation(_ImmutableModel):
-    """하나의 시드에서 같은 조건으로 비교한 baseline/challenger ROC-AUC."""
+    """하나의 시드에서 이미 verified comparison을 가리키는 관측."""
 
     seed: int
-    baseline: HeldOutRocAucEvidence
-    challenger: HeldOutRocAucEvidence
     comparison: TrainingComparisonManifest
 
 
@@ -135,7 +131,7 @@ class PairedSeedEvidence(_ImmutableModel):
     """하나의 사전 선언된 실험 계획에 귀속되는 시드별 비교 증거."""
 
     evidence_id: str = Field(min_length=1)
-    plan_id: str = Field(min_length=1)
+    plan_receipt: ExperimentPlanReceipt
     observations: tuple[PairedSeedObservation, ...]
 
 
@@ -233,26 +229,30 @@ def promotion_policy_v1() -> PromotionPolicy:
 
 def create_paired_seed_evidence(
     *,
-    plan_id: str,
+    plan_receipt: ExperimentPlanReceipt,
     observations: tuple[PairedSeedObservation, ...],
 ) -> PairedSeedEvidence:
-    """시드별 원본 관측치를 보존한 이식 가능한 증거 레코드를 만든다."""
+    """plan receipt 좌표와 comparison ID로 이식 가능한 증거 레코드를 만든다."""
     payload = {
-        "plan_id": plan_id,
+        "plan_receipt": _model_payload(plan_receipt),
         "observations": [
-            _model_payload(observation) for observation in observations
+            {
+                "seed": observation.seed,
+                "comparison_id": observation.comparison.comparison_id,
+            }
+            for observation in observations
         ],
     }
     return PairedSeedEvidence(
         evidence_id=_stable_id("paired-seed-evidence", payload),
-        plan_id=plan_id,
+        plan_receipt=plan_receipt,
         observations=observations,
     )
 
 
 def _failed_evaluation(
     *,
-    plan: ExperimentPlan,
+    plan_id: str,
     evidence: PairedSeedEvidence,
     reason_codes: set[EvaluationReasonCode],
     evaluated_at: datetime,
@@ -261,7 +261,7 @@ def _failed_evaluation(
     reasons = tuple(sorted(reason_codes, key=lambda reason: reason.value))
     payload = {
         "evidence_id": evidence.evidence_id,
-        "plan_id": plan.plan_id,
+        "plan_id": plan_id,
         "policy_version": POLICY_VERSION,
         "paired": False,
         "verdict": EvaluationVerdict.HOLD.value,
@@ -270,7 +270,7 @@ def _failed_evaluation(
     return ExperimentEvaluation(
         evaluation_id=_stable_id("experiment-evaluation", payload),
         evidence_id=evidence.evidence_id,
-        plan_id=plan.plan_id,
+        plan_id=plan_id,
         paired=False,
         baseline_mean=None,
         challenger_mean=None,
@@ -290,8 +290,6 @@ def _evidence_reason_codes(
 ) -> set[EvaluationReasonCode]:
     """자동 승격에 필요한 provenance·사전 선언·짝지음 근거를 검사한다."""
     reasons: set[EvaluationReasonCode] = set()
-    if plan.plan_id != evidence.plan_id:
-        reasons.add(EvaluationReasonCode.PLAN_EVIDENCE_MISMATCH)
     if len(plan.candidate_ids) != 1:
         reasons.add(
             EvaluationReasonCode.MULTIPLE_CANDIDATES_REQUIRE_INDEPENDENT_HOLDOUT
@@ -309,8 +307,8 @@ def _evidence_reason_codes(
             reasons.add(EvaluationReasonCode.DUPLICATE_COMPARISON_EVIDENCE)
         comparison_ids.add(comparison.comparison_id)
 
-        if comparison.experiment_plan_id != plan.plan_id:
-            reasons.add(EvaluationReasonCode.COMPARISON_PLAN_MISMATCH)
+        if comparison.promotion_evidence is None:
+            reasons.add(EvaluationReasonCode.PLAN_RECEIPT_MISSING)
 
         effective_seeds = comparison.effective_seeds
         if effective_seeds is None:
@@ -332,23 +330,48 @@ def _evidence_reason_codes(
         elif plan.created_at > comparison.validated_at:
             reasons.add(EvaluationReasonCode.PLAN_NOT_PREDECLARED)
 
-        if (
-            observation.baseline.split_manifest_sha256
-            != comparison.baseline_split_manifest_sha256
-            or observation.challenger.split_manifest_sha256
-            != comparison.challenger_split_manifest_sha256
-        ):
-            reasons.add(EvaluationReasonCode.METRIC_SPLIT_MISMATCH)
-
     if len(snapshot_hashes) != 1:
         reasons.add(EvaluationReasonCode.SNAPSHOT_MISMATCH)
     return reasons
 
 
+def _verified_metric_values(
+    observation: PairedSeedObservation,
+    *,
+    store: PromotionEvidenceStore,
+    plan_receipt: ExperimentPlanReceipt,
+) -> tuple[float, float]:
+    """comparison receipt를 GCS에서 다시 읽어 실제 paired ROC-AUC만 반환한다."""
+    promotion = observation.comparison.promotion_evidence
+    if promotion is None:
+        raise PromotionEvidenceValidationError("comparison promotion evidence가 없습니다")
+    if promotion.plan_receipt != plan_receipt:
+        raise ValueError("comparison plan receipt가 evidence와 다릅니다")
+    baseline = store.verify_held_out_metric_receipt(promotion.baseline_metric)
+    challenger = store.verify_held_out_metric_receipt(promotion.challenger_metric)
+    comparison = observation.comparison
+    if (
+        baseline.plan_receipt != plan_receipt
+        or challenger.plan_receipt != plan_receipt
+        or baseline.run_id != comparison.baseline_run_id
+        or challenger.run_id != comparison.challenger_run_id
+        or baseline.split_manifest_sha256 != comparison.baseline_split_manifest_sha256
+        or challenger.split_manifest_sha256 != comparison.challenger_split_manifest_sha256
+        or baseline.metric_name != PRIMARY_METRIC
+        or challenger.metric_name != PRIMARY_METRIC
+        or baseline.dataset_split != "test"
+        or challenger.dataset_split != "test"
+        or not isfinite(baseline.value)
+        or not isfinite(challenger.value)
+    ):
+        raise ValueError("verified metric가 comparison binding과 다릅니다")
+    return baseline.value, challenger.value
+
+
 def evaluate_experiment(
-    plan: ExperimentPlan,
     evidence: PairedSeedEvidence,
     *,
+    promotion_evidence_store: PromotionEvidenceStore,
     evaluated_at: datetime | None = None,
 ) -> ExperimentEvaluation:
     """고정된 v1 정책으로 실험 증거를 평가한다.
@@ -359,21 +382,49 @@ def evaluate_experiment(
     """
     policy = promotion_policy_v1()
     evaluation_time = _normalize_utc_datetime(evaluated_at or _utc_now())
+    plan_id = evidence.plan_receipt.plan.plan_id
+    try:
+        plan = promotion_evidence_store.verify_plan_receipt(evidence.plan_receipt)
+    except PromotionEvidenceValidationError:
+        return _failed_evaluation(
+            plan_id=plan_id,
+            evidence=evidence,
+            reason_codes={EvaluationReasonCode.RECEIPT_REVALIDATION_FAILED},
+            evaluated_at=evaluation_time,
+        )
     reasons = _evidence_reason_codes(plan=plan, evidence=evidence, policy=policy)
     if reasons:
         return _failed_evaluation(
-            plan=plan,
+            plan_id=plan.plan_id,
             evidence=evidence,
             reason_codes=reasons,
             evaluated_at=evaluation_time,
         )
 
-    baseline_values = tuple(
-        observation.baseline.value for observation in evidence.observations
-    )
-    challenger_values = tuple(
-        observation.challenger.value for observation in evidence.observations
-    )
+    metric_values: list[tuple[float, float]] = []
+    for observation in evidence.observations:
+        try:
+            metric_values.append(
+                _verified_metric_values(
+                    observation,
+                    store=promotion_evidence_store,
+                    plan_receipt=evidence.plan_receipt,
+                )
+            )
+        except PromotionEvidenceValidationError:
+            reasons.add(EvaluationReasonCode.RECEIPT_REVALIDATION_FAILED)
+        except ValueError:
+            reasons.add(EvaluationReasonCode.METRIC_BINDING_MISMATCH)
+    if reasons:
+        return _failed_evaluation(
+            plan_id=plan.plan_id,
+            evidence=evidence,
+            reason_codes=reasons,
+            evaluated_at=evaluation_time,
+        )
+
+    baseline_values = tuple(values[0] for values in metric_values)
+    challenger_values = tuple(values[1] for values in metric_values)
     paired_deltas = tuple(
         challenger - baseline
         for baseline, challenger in zip(baseline_values, challenger_values)
