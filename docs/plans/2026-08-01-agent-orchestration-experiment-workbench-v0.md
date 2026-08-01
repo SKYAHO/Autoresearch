@@ -79,10 +79,10 @@ Alembic, PostgreSQL, pytest.
 - Create: `agent_orchestration/app/experiments/exceptions.py`
 - Test: `tests/test_experiment_service.py`
 
-- [ ] 생성·최초 event·metadata 원자성의 실패 테스트를 작성한다.
-- [ ] 목록·상세·pagination·not-found 실패 테스트를 작성한다.
-- [ ] repository와 service를 최소 구현한다.
-- [ ] 관련 테스트와 lint를 통과하고 Task 커밋을 만든다.
+- [x] 생성·최초 event·metadata 원자성의 실패 테스트를 작성한다.
+- [x] 목록·상세·pagination·not-found 실패 테스트를 작성한다.
+- [x] repository와 service를 최소 구현한다.
+- [x] 관련 테스트와 lint를 통과하고 Task 커밋을 만든다.
 
 ### Task 5: 일반 상태 전이와 Event
 
@@ -141,6 +141,8 @@ Alembic, PostgreSQL, pytest.
 - Modify: `docs/README.md`
 
 - [ ] API 사용법과 spec 링크를 문서화한다.
+- [ ] PR report에 Task 1~6의 목적·변경·검증을 각각 설명하고 SQLAlchemy ORM,
+      요청 단위 Session, Alembic migration과 멱등성 fingerprint 개념을 포함한다.
 - [ ] PostgreSQL 15 컨테이너에서 Alembic `upgrade head`와 `downgrade base`를 실행하고
       `gen_random_uuid()`가 extension 추가 없이 동작하는지 확인한다.
 - [ ] `uv run python -m pytest`를 실행한다.

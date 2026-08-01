@@ -18,13 +18,15 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    JSON,
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agent_orchestration.app.database import Base
@@ -71,6 +73,7 @@ ALLOWED_TRANSITIONS: dict[ExperimentStatus, frozenset[ExperimentStatus]] = {
 _STATUS_CHECK_SQL = "status IN (" + ", ".join(
     f"'{status.value}'" for status in ExperimentStatus
 ) + ")"
+_JSON_OBJECT = JSON().with_variant(JSONB(), "postgresql")
 
 
 class Experiment(Base):
@@ -79,7 +82,7 @@ class Experiment(Base):
     __tablename__ = "experiments"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+        Uuid(as_uuid=True),
         primary_key=True,
         server_default=text("gen_random_uuid()"),
     )
@@ -90,7 +93,7 @@ class Experiment(Base):
         default=ExperimentStatus.CREATED.value,
         server_default=text("'CREATED'"),
     )
-    metric_summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    metric_summary: Mapped[dict | None] = mapped_column(_JSON_OBJECT, nullable=True)
     agent_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -132,7 +135,7 @@ class ExperimentEvent(Base):
     __tablename__ = "experiment_events"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+        Uuid(as_uuid=True),
         primary_key=True,
         server_default=text("gen_random_uuid()"),
     )
@@ -144,7 +147,7 @@ class ExperimentEvent(Base):
     from_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
     to_status: Mapped[str] = mapped_column(String(20), nullable=False)
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    metric_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    metric_snapshot: Mapped[dict | None] = mapped_column(_JSON_OBJECT, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -167,7 +170,7 @@ class ExperimentLog(Base):
     __tablename__ = "experiment_logs"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+        Uuid(as_uuid=True),
         primary_key=True,
         server_default=text("gen_random_uuid()"),
     )
@@ -202,7 +205,7 @@ class ExperimentMetadata(Base):
     __tablename__ = "experiment_metadata"
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
+        Uuid(as_uuid=True),
         primary_key=True,
         server_default=text("gen_random_uuid()"),
     )
