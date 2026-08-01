@@ -196,7 +196,7 @@ jobs:
                 owner,
                 repo,
                 ref: `refs/heads/${issueBranch}`,
-                sha: devRef.data.object.sha,
+                sha: baseDevSha,
               });
               await github.rest.issues.createComment({
                 owner,

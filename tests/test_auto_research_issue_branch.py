@@ -294,7 +294,7 @@ def test_issue_branch_workflow_enforces_immutable_ref_api_data_flow_and_order() 
     create_ref = re.search(
         r"await github\.rest\.git\.createRef\(\{.*?"
         r"ref: `refs/heads/\$\{issueBranch\}`,.*?"
-        r"sha: devRef\.data\.object\.sha,.*?\}\);",
+        r"sha: baseDevSha,.*?\}\);",
         missing_marker_path,
         flags=re.DOTALL,
     )
@@ -320,6 +320,66 @@ def test_issue_branch_workflow_enforces_immutable_ref_api_data_flow_and_order() 
     assert "github.rest.repos.merge" not in branch_script
     assert "github.rest.git.updateRef" not in branch_script
     assert not re.search(r"\bforce\s*:", branch_script)
+
+
+def test_issue_branch_workflow_carries_one_dev_baseline_to_ref_and_marker() -> None:
+    workflow = load_branch_workflow()
+    job = workflow["jobs"]["create-or-verify-issue-branch"]
+    assert isinstance(job, dict)
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    branch_step = next(step for step in steps if step.get("id") == "branch")
+    branch_script = branch_step["with"]["script"]
+    assert isinstance(branch_script, str)
+
+    marker_path = re.search(
+        r"if \(markerComments\.length === 1\) \{(?P<recorded>.*?)\n\s*\} else \{"
+        r"(?P<missing>.*?)\n\s*\}\n\n\s*core\.setOutput",
+        branch_script,
+        flags=re.DOTALL,
+    )
+    assert marker_path is not None
+    recorded_path = marker_path.group("recorded")
+    missing_marker_path = marker_path.group("missing")
+
+    assert branch_script.count("ref: 'heads/dev'") == 1
+    dev_ref = re.search(
+        r"const devRef = await github\.rest\.git\.getRef\(\{.*?"
+        r"ref: 'heads/dev',.*?\}\);",
+        missing_marker_path,
+        flags=re.DOTALL,
+    )
+    baseline_assignment = re.search(
+        r"baseDevSha = devRef\.data\.object\.sha;",
+        missing_marker_path,
+    )
+    create_ref = re.search(
+        r"await github\.rest\.git\.createRef\(\{.*?"
+        r"ref: `refs/heads/\$\{issueBranch\}`,.*?"
+        r"sha: baseDevSha,.*?\}\);",
+        missing_marker_path,
+        flags=re.DOTALL,
+    )
+    create_comment = re.search(
+        r"await github\.rest\.issues\.createComment\(\{.*?"
+        r"body: markerBody\(baseDevSha\),.*?\}\);",
+        missing_marker_path,
+        flags=re.DOTALL,
+    )
+    assert dev_ref is not None
+    assert baseline_assignment is not None
+    assert create_ref is not None
+    assert create_comment is not None
+    assert dev_ref.start() < baseline_assignment.start() < create_ref.start() < create_comment.start()
+    assert "function markerBody(baseDevSha)" in branch_script
+    assert "`- base_dev_sha: \\`${baseDevSha}\\``" in branch_script
+
+    assert "github.rest.git.createRef" not in recorded_path
+    assert "markerComments[0].user.login !== 'github-actions[bot]'" in recorded_path
+    assert "recorded.criteriaId !== criteriaId" in recorded_path
+    assert "base: recorded.baseDevSha" in recorded_path
+    assert "head: branchTipSha" in recorded_path
+    assert "['ahead', 'identical'].includes(comparison.data.status)" in recorded_path
 
 
 def test_parse_issue_input_reads_body_rendered_from_actual_form() -> None:
