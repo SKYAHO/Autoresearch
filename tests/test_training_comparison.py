@@ -168,13 +168,24 @@ def test_verify_training_comparison_writes_output_and_challenger_artifact(
     result = verify_training_comparison(baseline_run, challenger_run, output)
 
     assert result.validation_status == "verified"
+    assert result.effective_seeds == TrainingSeeds(
+        split_seed=42,
+        model_seed=42,
+        sampler_seed=42,
+    )
     assert output.is_file()
     client = MlflowClient(tracking_uri=(tmp_path / "mlruns").as_uri())
     assert any(
         entry.path == f"reproducibility/comparisons/{result.comparison_id}.json"
         for entry in client.list_artifacts(challenger_run, "reproducibility/comparisons")
     )
-    assert json.loads(output.read_text(encoding="utf-8"))["comparison_id"] == result.comparison_id
+    output_payload = json.loads(output.read_text(encoding="utf-8"))
+    assert output_payload["comparison_id"] == result.comparison_id
+    assert output_payload["effective_seeds"] == {
+        "split_seed": 42,
+        "model_seed": 42,
+        "sampler_seed": 42,
+    }
 
 
 def test_seed_mismatch_has_no_output_or_challenger_upload(tmp_path, monkeypatch) -> None:

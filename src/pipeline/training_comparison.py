@@ -29,6 +29,7 @@ from pydantic import ValidationError
 
 from src.pipeline.training_provenance import (
     TrainingComparisonManifest,
+    TrainingSeeds,
     TrainingSnapshotManifest,
     TrainingSplitManifest,
     feature_columns_sha256,
@@ -262,6 +263,11 @@ def _build_comparison_manifest(
         challenger_feature_columns_sha256=challenger.split.feature_columns_sha256,
         baseline_feature_columns=baseline.split.feature_columns,
         challenger_feature_columns=challenger.split.feature_columns,
+        effective_seeds=TrainingSeeds(
+            split_seed=baseline.split.split_seed,
+            model_seed=baseline.split.model_seed,
+            sampler_seed=baseline.split.sampler_seed,
+        ),
         validated_at=datetime.now(timezone.utc),
     )
 

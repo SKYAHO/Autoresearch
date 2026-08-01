@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -10,6 +10,7 @@ import pytest
 
 from src.pipeline.training_provenance import (
     RegistryProvenance,
+    TrainingComparisonManifest,
     TrainingSeeds,
     build_snapshot_manifest,
     build_split_manifest,
@@ -38,6 +39,29 @@ def _dataset(path: Path) -> None:
             "clicked": pd.Series([0, 1], dtype="int64"),
         }
     ).to_csv(path, index=False)
+
+
+def test_existing_comparison_manifest_without_seed_triplet_still_parses() -> None:
+    manifest = TrainingComparisonManifest.model_validate(
+        {
+            "comparison_id": "comparison-1",
+            "baseline_run_id": "baseline-run",
+            "challenger_run_id": "challenger-run",
+            "baseline_snapshot_sha256": "a" * 64,
+            "challenger_snapshot_sha256": "a" * 64,
+            "baseline_snapshot_manifest_sha256": "b" * 64,
+            "challenger_snapshot_manifest_sha256": "b" * 64,
+            "baseline_split_manifest_sha256": "c" * 64,
+            "challenger_split_manifest_sha256": "c" * 64,
+            "baseline_feature_columns_sha256": "d" * 64,
+            "challenger_feature_columns_sha256": "d" * 64,
+            "baseline_feature_columns": ["views"],
+            "challenger_feature_columns": ["views", "new_feature"],
+            "validated_at": datetime(2026, 8, 1, tzinfo=timezone.utc),
+        }
+    )
+
+    assert manifest.effective_seeds is None
 
 
 def test_snapshot_manifest_round_trip_validates_csv(tmp_path: Path) -> None:
