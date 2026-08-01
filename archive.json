@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-01T05:05:37Z",
+  "generated_at": "2026-08-01T05:07:23Z",
   "reports": [
+    {
+      "number": 468,
+      "title": "feat: 학습 provenance 기반 공정 비교 검증 추가 (#423)",
+      "author": "bbungjun",
+      "merged_at": "2026-08-01T05:07:00Z",
+      "summary_ko": [
+        "학습 데이터 조립 시 Feast 레지스트리 버전을 고정하고 무결성을 검증하는 snapshot manifest 생성 로직을 구축하였습니다.",
+        "학습 실행 시 데이터 분할, 모델 초기화, 샘플링 난수를 독립 분리하고 MLflow에 무결성 증명 아티팩트를 보관하도록 개선하였습니다.",
+        "두 MLflow 실험 실행 간 데이터 해시와 무결성 조건이 동일한지 엄격하게 검증하는 공정 비교 CLI 명령을 추가하였습니다."
+      ],
+      "report_url": "pr/468/"
+    },
     {
       "number": 456,
       "title": "fix: seed_sweep._t_critical_95 보간 방향 오류 수정",
