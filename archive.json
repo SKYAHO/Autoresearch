@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-01T16:14:03Z",
+  "generated_at": "2026-08-01T16:18:20Z",
   "reports": [
+    {
+      "number": 475,
+      "title": "fix: GCP 프로젝트 기본값을 제거",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-01T16:17:59Z",
+      "summary_ko": [
+        "GCP 프로젝트 ID의 런타임 기본값을 제거하여 명시적인 CLI 인자나 환경변수가 필수로 전달되도록 수정하였습니다.",
+        "BigQuery 및 Feast 클라이언트 생성 및 외부 서비스 조회 전에 프로젝트 ID 설정 유무를 즉시 검증하는 fail-fast 로직을 적용하였습니다.",
+        "배치 CLI 실행 계약, 설정 예시(.env.example), 운영 문서 및 관련 회귀 테스트 코드를 갱신하였습니다."
+      ],
+      "report_url": "pr/475/"
+    },
     {
       "number": 474,
       "title": "feat: 리랭킹 서빙 부하테스트와 단계별 metric 추가",
