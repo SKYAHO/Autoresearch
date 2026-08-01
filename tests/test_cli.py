@@ -929,13 +929,21 @@ def test_create_experiment_plan_cli_publishes_receipt_atomically(
 
 
 @pytest.mark.parametrize("command", ["train-model", "run-pipeline"])
-def test_training_cli_rejects_partial_promotion_evidence_options(command: str) -> None:
+@pytest.mark.parametrize(
+    "partial_option",
+    [
+        ("--experiment-plan-receipt", "plan-receipt.json"),
+        ("--promotion-evidence-root", "gs://evidence/promotion-evidence"),
+    ],
+)
+def test_training_cli_rejects_partial_promotion_evidence_options(
+    command: str, partial_option: tuple[str, str]
+) -> None:
     result = CliRunner().invoke(
         cli.app,
         [
             command,
-            "--experiment-plan-receipt",
-            "plan-receipt.json",
+            *partial_option,
         ],
     )
 
@@ -982,6 +990,35 @@ def test_verify_comparison_cli_forwards_evidence_store_when_root_is_present(
     assert invocation["promotion_evidence_store"] is store
 
 
+def test_verify_comparison_cli_omits_evidence_store_for_legacy_runs(
+    monkeypatch, tmp_path
+) -> None:
+    invocation = {}
+    result_model = MagicMock()
+    result_model.model_dump_json.return_value = "{}"
+    monkeypatch.setattr(
+        cli.training_comparison,
+        "verify_training_comparison",
+        lambda **kwargs: invocation.update(kwargs) or result_model,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "verify-comparison",
+            "--baseline-run-id",
+            "baseline",
+            "--challenger-run-id",
+            "challenger",
+            "--output",
+            str(tmp_path / "comparison.json"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "promotion_evidence_store" not in invocation
+
+
 def test_create_experiment_plan_cli_hides_backend_error_and_does_not_write_output(
     monkeypatch, tmp_path
 ) -> None:
@@ -1019,3 +1056,39 @@ def test_create_experiment_plan_cli_hides_backend_error_and_does_not_write_outpu
     assert not output.exists()
     assert secret not in result.output
     assert "PromotionEvidenceValidationError" in result.output
+
+
+def test_create_experiment_plan_cli_preserves_published_receipt_when_local_write_fails(
+    monkeypatch, tmp_path
+) -> None:
+    store = _PlanPublisher()
+    monkeypatch.setattr(cli, "PromotionEvidenceStore", lambda root: store)
+
+    def _raise_local_write(*_args, **_kwargs) -> None:
+        raise OSError("synthetic local output failure")
+
+    monkeypatch.setattr(cli, "write_manifest_atomic", _raise_local_write)
+    output = tmp_path / "plan-receipt.json"
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "create-experiment-plan",
+            "--hypothesis-id",
+            "issue-466-h1",
+            "--control-id",
+            "control-revision",
+            "--candidate-id",
+            "candidate-revision",
+            "--promotion-evidence-root",
+            "gs://evidence/promotion-evidence",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert not output.exists()
+    assert store.plan is not None
+    assert "[실험 계획 receipt 저장 실패] OSError" in result.output
+    assert "GCS plan은 이미 publish되었습니다" in result.output
+    assert store.plan.plan_id in result.output

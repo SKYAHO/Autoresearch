@@ -172,13 +172,23 @@ def create_experiment_plan_command(
             candidate_ids=(candidate_id,),
         )
         receipt = PromotionEvidenceStore(promotion_evidence_root).publish_plan(plan)
-        write_manifest_atomic(receipt, output)
-    except (PromotionEvidenceValidationError, OSError) as error:
+    except PromotionEvidenceValidationError as error:
         typer.echo(
             f"[실험 계획 publish 실패] {type(error).__name__}: "
             "plan receipt를 만들지 않았습니다.",
             err=True,
         )
+        raise typer.Exit(code=1) from error
+    try:
+        write_manifest_atomic(receipt, output)
+    except OSError as error:
+        typer.echo(
+            f"[실험 계획 receipt 저장 실패] {type(error).__name__}: "
+            "GCS plan은 이미 publish되었습니다. 아래 receipt를 안전한 경로에 저장한 뒤 "
+            "학습에 사용해 주세요.",
+            err=True,
+        )
+        typer.echo(receipt.model_dump_json(), err=True)
         raise typer.Exit(code=1) from error
     typer.echo(receipt.model_dump_json())
 
