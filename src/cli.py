@@ -9,6 +9,9 @@ run-pipeline / promote-model`.
 build-features → train-model → evaluate-model 순서로 실행하며, registered model
 버전 생성은 평가가 통과한 뒤에 수행한다(#421) — 평가가 실패하면 지표를 신뢰할
 수 없는 후보 버전이 registry에 남지 않는다.
+학습 CLI의 `split_seed`·`model_seed`·`sampler_seed`는 각각 데이터 분할·모델 초기화·
+negative downsampling 난수를 분리하며, `run-pipeline`은 검증된 snapshot sidecar를
+요구한다(#423). `sweep-seeds`는 기존 `random_state` 호환 경로를 유지한다(#407).
 
 [비책임] 실제 조립·학습·평가·승격 로직은 각 모듈(src/pipeline/*.py,
 src/tracking/promote.py)이 소유한다. DAG·스케줄·재시도는 인접 저장소
@@ -28,7 +31,12 @@ import typer
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.pipeline import build_training_dataset, train, evaluate  # noqa: E402
+from src.pipeline import (  # noqa: E402
+    build_training_dataset,
+    evaluate,
+    train,
+    training_comparison,
+)
 from src.pipeline.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
 from src.tracking import promote  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
@@ -86,7 +94,18 @@ def train_model(
     categorical_columns_output: Optional[str] = typer.Option(None, help="Categorical 카테고리 저장 경로 (config override)"),
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
-    random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
+    random_state: Optional[int] = typer.Option(
+        None, help="기존 호환용 random state (세 effective seed에 동일 적용)"
+    ),
+    split_seed: Optional[int] = typer.Option(
+        None, "--split-seed", help="Train/validation/test 분할에 사용할 seed"
+    ),
+    model_seed: Optional[int] = typer.Option(
+        None, "--model-seed", help="LightGBM 모델 초기화에 사용할 seed"
+    ),
+    sampler_seed: Optional[int] = typer.Option(
+        None, "--sampler-seed", help="Train split negative downsampling에 사용할 seed"
+    ),
     experiment: Optional[str] = typer.Option(
         None,
         "--experiment",
@@ -116,6 +135,9 @@ def train_model(
         test_size=test_size,
         val_size=val_size,
         random_state=random_state,
+        split_seed=split_seed,
+        model_seed=model_seed,
+        sampler_seed=sampler_seed,
         extra_features=_parse_extra_features(extra_features),
         experiment=experiment,
     )
@@ -164,7 +186,18 @@ def run_pipeline(
     categorical_columns_output: Optional[str] = typer.Option(None, help="Categorical 카테고리 저장 경로 (config override)"),
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
-    random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
+    random_state: Optional[int] = typer.Option(
+        None, help="기존 호환용 random state (세 effective seed에 동일 적용)"
+    ),
+    split_seed: Optional[int] = typer.Option(
+        None, "--split-seed", help="Train/validation/test 분할에 사용할 seed"
+    ),
+    model_seed: Optional[int] = typer.Option(
+        None, "--model-seed", help="LightGBM 모델 초기화에 사용할 seed"
+    ),
+    sampler_seed: Optional[int] = typer.Option(
+        None, "--sampler-seed", help="Train split negative downsampling에 사용할 seed"
+    ),
     experiment: Optional[str] = typer.Option(
         None,
         "--experiment",
@@ -188,6 +221,8 @@ def run_pipeline(
     등록(Model Registry 버전 생성)은 평가 통과 뒤에만 수행하는 별도 단계다(#421).
     조립 경로는 #359 C2로 feast-only다. `--extra-features`를 주면 prod 모델 계약을
     건드리지 않고 실험 피처를 덧붙여 학습하며, 학습과 평가가 같은 목록을 공유한다(#405).
+    `--split-seed`, `--model-seed`, `--sampler-seed`는 verified comparison용으로
+    분리해 전달하며, snapshot sidecar가 없거나 검증에 실패하면 학습을 시작하지 않는다.
     """
     experiment_features = _parse_extra_features(extra_features)
     typer.echo("=" * 70)
@@ -233,10 +268,14 @@ def run_pipeline(
         test_size=test_size,
         val_size=val_size,
         random_state=random_state,
+        split_seed=split_seed,
+        model_seed=model_seed,
+        sampler_seed=sampler_seed,
         extra_params=data_source_params,
         defer_registration=True,
         extra_features=experiment_features,
         experiment=experiment,
+        require_snapshot=True,
     )
 
     # dataset_path(방금 만든 train+val+test 전체)는 넘기지 않는다: evaluate는
@@ -266,6 +305,38 @@ def run_pipeline(
     typer.echo("\n" + "=" * 70)
     typer.echo("파이프라인 완료")
     typer.echo("=" * 70)
+
+
+@app.command()
+def verify_comparison(
+    baseline_run_id: str = typer.Option(
+        ..., "--baseline-run-id", help="비교 기준(baseline) MLflow run ID"
+    ),
+    challenger_run_id: str = typer.Option(
+        ..., "--challenger-run-id", help="비교 대상(challenger) MLflow run ID"
+    ),
+    output: Path = typer.Option(
+        ..., "--output", help="검증된 comparison manifest를 저장할 로컬 JSON 경로"
+    ),
+) -> None:
+    """두 MLflow 학습 run의 snapshot·split·seed 공정성을 검증한다(#423)."""
+    try:
+        result = training_comparison.verify_training_comparison(
+            baseline_run_id=baseline_run_id,
+            challenger_run_id=challenger_run_id,
+            output_path=output,
+        )
+    except training_comparison.ComparisonValidationError as error:
+        # 예외 원문은 backend credential이나 signed URL을 포함할 수 있으므로 CLI에는
+        # type과 고정된 안전 진단만 출력한다.
+        typer.echo(
+            f"[비교 검증 실패] {type(error).__name__}: "
+            "verified comparison manifest를 만들지 않았습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+
+    typer.echo(result.model_dump_json(indent=2))
 
 
 @app.command()

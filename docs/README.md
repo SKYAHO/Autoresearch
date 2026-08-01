@@ -48,6 +48,7 @@
 
 - [가이드 — 학습 데이터셋](guides/training-dataset.md)
 - [가이드 — CTR 모델 명세](guides/ctr-model-specification.md)
+- [가이드 — 학습 실험 provenance 애플리케이션 설계](guides/training-experiment-provenance.md)
 - [Spec — 모델 승격 구조화 결과 계약](specs/2026-07-29-model-promotion-structured-outcome.md)
 - [Plan — `src/` → `autoresearch/` 패키지 통합](plans/2026-07-15-src-package-merge.md) (팀 합의 대기)
 - `src/pipeline/`, `src/models/`, `src/features/` (CTR 학습·평가 코드)
@@ -113,6 +114,7 @@
 - [학습 데이터셋](guides/training-dataset.md)
 - [피처 스토어](guides/feature-store.md) · [Feast GCP 설정](guides/feast-gcp-setup.md)
 - [CTR 모델 명세](guides/ctr-model-specification.md)
+- [학습 실험 provenance 애플리케이션 설계](guides/training-experiment-provenance.md)
 - [Agent Simulator 명세 (action log SSOT)](guides/agent-simulator-spec.md)
 - [action_logs 모듈 사용법](guides/action-log.md)
 - [Release & 배포 파이프라인](guides/release-pipeline.md) — CI/CD·GAR push·digest 승격·GKE 배포 자동화

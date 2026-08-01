@@ -20,17 +20,26 @@ prod와 분리되고 트래킹 URI 기본값이 로컬 파일 스토어가 된�
 버전 생성을 보류하고 `PendingRegistration`을 넘겨 호출자가 평가 통과 뒤에
 `register_pending_model()`로 등록하게 한다.
 
+검증된 dataset sidecar가 있으면 snapshot·split manifest와 실제 CSV를 같은 MLflow run의
+`reproducibility/` artifact로 보관하고, split/model/sampler seed를 분리해 기록한다(#423).
+`require_snapshot=True` 호출은 sidecar가 없거나 현재 CSV와 불일치할 때 모델 fit 전에
+실패한다.
+
 [비책임] 데이터셋 조립(src/pipeline/build_training_dataset.py), held-out test set
 채점(src/pipeline/evaluate.py), champion 승격 게이트(src/tracking/promote.py),
 서빙 로드(src/serving/model_loader.py)는 이 모듈이 다루지 않는다.
 """
 
 import os
+import shutil
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Optional
 
+import numpy as np
 import yaml
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -70,6 +79,17 @@ from src.tracking.logger import (  # noqa: E402
     log_parameters,
 )
 from src.tracking.registry import register_model  # noqa: E402
+from src.pipeline.training_provenance import (  # noqa: E402
+    ProvenanceValidationError,
+    TrainingSnapshotManifest,
+    build_split_manifest,
+    load_training_snapshot_manifest,
+    resolve_training_seeds,
+    sha256_file,
+    snapshot_manifest_path,
+    split_manifest_path,
+    write_manifest_atomic,
+)
 
 LABEL_COLUMN = "clicked"
 
@@ -296,6 +316,36 @@ def collect_categorical_categories(
     return categories_by_column
 
 
+def _log_reproducibility_artifacts(
+    *,
+    dataset_path: Path,
+    snapshot_path: Path,
+    split_path: Path,
+) -> None:
+    """verified training 입력을 canonical MLflow artifact 이름으로 기록한다."""
+    with TemporaryDirectory(prefix="training_reproducibility_") as temporary_dir:
+        temporary_root = Path(temporary_dir)
+        canonical_dataset = temporary_root / "training_dataset.csv"
+        canonical_snapshot = temporary_root / "snapshot_manifest.json"
+        canonical_split = temporary_root / "split_manifest.json"
+        shutil.copyfile(dataset_path, canonical_dataset)
+        shutil.copyfile(snapshot_path, canonical_snapshot)
+        shutil.copyfile(split_path, canonical_split)
+
+        log_artifact(
+            local_path=str(canonical_dataset),
+            artifact_path="reproducibility/snapshot",
+        )
+        log_artifact(
+            local_path=str(canonical_snapshot),
+            artifact_path="reproducibility/snapshot",
+        )
+        log_artifact(
+            local_path=str(canonical_split),
+            artifact_path="reproducibility/split",
+        )
+
+
 def main(
     config_path: str = None,
     data_path: str = None,
@@ -306,10 +356,14 @@ def main(
     test_size: float = None,
     val_size: float = None,
     random_state: int = None,
+    split_seed: int = None,
+    model_seed: int = None,
+    sampler_seed: int = None,
     extra_params: dict = None,
     defer_registration: bool = False,
     extra_features: Optional[Sequence[str]] = None,
     experiment: Optional[str] = None,
+    require_snapshot: bool = False,
 ) -> TrainingOutcome:
     """LightGBM 모델을 학습하고 MLflow에 기록한다.
 
@@ -328,6 +382,33 @@ def main(
     elif not os.path.isabs(config_path):
         config_path = os.path.join(project_root, config_path)
     config = load_config(config_path)
+
+    if data_path is None:
+        data_path = os.path.join(project_root, config["data"]["path"])
+    elif not os.path.isabs(data_path):
+        data_path = os.path.join(project_root, data_path)
+
+    snapshot_manifest: TrainingSnapshotManifest | None = None
+    snapshot_path = snapshot_manifest_path(Path(data_path))
+    if snapshot_path.is_file():
+        snapshot_manifest = load_training_snapshot_manifest(Path(data_path))
+    elif require_snapshot:
+        raise ProvenanceValidationError(
+            f"verified training snapshot이 필요하지만 sidecar가 없습니다: {snapshot_path}"
+        )
+
+    explicit_seed_values = (split_seed, model_seed, sampler_seed)
+    effective_seeds = resolve_training_seeds(
+        random_state=random_state,
+        split_seed=split_seed,
+        model_seed=model_seed,
+        sampler_seed=sampler_seed,
+        config_seed=int(config["data"]["random_state"]),
+    )
+    legacy_seed_path = not any(seed is not None for seed in explicit_seed_values)
+    if legacy_seed_path:
+        # 기존 random_state parameter와 모델 동작을 유지한다.
+        random_state = effective_seeds.model_seed
 
     # MLflow 초기화 — 운영/실험 좌표를 한 번에 정한다(#406). tracking URI만 바꾸고
     # 등록 이름을 그대로 두면 로컬 스토어에 prod와 동명인 모델이 쌓인다.
@@ -353,10 +434,6 @@ def main(
 
     with mlflow.start_run(experiment_id=experiment_id) as run:
         print("\n[Step 1] 데이터 로드...")
-        if data_path is None:
-            data_path = os.path.join(project_root, config["data"]["path"])
-        elif not os.path.isabs(data_path):
-            data_path = os.path.join(project_root, data_path)
         dataset = pd.read_csv(data_path)
         print(f"  [OK] {len(dataset)} rows, {len(dataset.columns)} columns")
 
@@ -399,8 +476,6 @@ def main(
             test_size = config["data"]["test_size"]
         if val_size is None:
             val_size = config["data"]["val_size"]
-        if random_state is None:
-            random_state = config["data"]["random_state"]
 
         if test_size + val_size >= 1:
             raise ValueError(
@@ -409,19 +484,23 @@ def main(
                 "두 값의 합이 1보다 작아야 합니다 (예: test_size=0.2, val_size=0.2)."
             )
 
-        train_val_df, test_df = train_test_split(
-            dataset,
+        source_positions = np.arange(len(dataset))
+        train_val_positions, test_positions = train_test_split(
+            source_positions,
             test_size=test_size,
-            random_state=random_state,
+            random_state=effective_seeds.split_seed,
             stratify=dataset["clicked"],
         )
         val_ratio_within_train_val = val_size / (1 - test_size)
-        train_df, val_df = train_test_split(
-            train_val_df,
+        train_positions, val_positions = train_test_split(
+            train_val_positions,
             test_size=val_ratio_within_train_val,
-            random_state=random_state,
-            stratify=train_val_df["clicked"],
+            random_state=effective_seeds.split_seed,
+            stratify=dataset.iloc[train_val_positions]["clicked"],
         )
+        train_df = dataset.iloc[train_positions].copy()
+        val_df = dataset.iloc[val_positions].copy()
+        test_df = dataset.iloc[test_positions].copy()
         print(f"  [OK] Train: {len(train_df)}, Val: {len(val_df)}, Test: {len(test_df)} (Test는 학습에 미사용)")
 
         # 분할별 라벨 검증(#421). stratify를 쓰므로 전체가 정상이면 대개 각 분할도
@@ -455,6 +534,32 @@ def main(
             feature_columns = list(MODEL_FEATURE_COLUMNS)
         categorical_columns = list(CATEGORICAL_FEATURE_COLUMNS)
 
+        split_manifest_path_local: Path | None = None
+        split_manifest_sha256: str | None = None
+        if snapshot_manifest is not None:
+            split_manifest_path_local = split_manifest_path(Path(test_set_path))
+            split_manifest = build_split_manifest(
+                run_id=run.info.run_id,
+                snapshot=snapshot_manifest,
+                snapshot_manifest_sha256=sha256_file(snapshot_path),
+                seeds=effective_seeds,
+                test_size=test_size,
+                val_size=val_size,
+                split_positions={
+                    "train": train_positions.tolist(),
+                    "validation": val_positions.tolist(),
+                    "test": test_positions.tolist(),
+                },
+                feature_columns=feature_columns,
+            )
+            write_manifest_atomic(split_manifest, split_manifest_path_local)
+            split_manifest_sha256 = sha256_file(split_manifest_path_local)
+            _log_reproducibility_artifacts(
+                dataset_path=Path(data_path),
+                snapshot_path=snapshot_path,
+                split_path=split_manifest_path_local,
+            )
+
         X_train = train_df[feature_columns].copy()
         y_train = train_df["clicked"].copy()
         X_val = val_df[feature_columns].copy()
@@ -473,7 +578,10 @@ def main(
             print("\n[Step 3b] Negative downsampling (train split only)...")
             n_train_before = len(y_train)
             X_train, y_train, realized_sampling_rate = downsample_negatives(
-                X_train, y_train, nominal_sampling_rate, random_state=random_state
+                X_train,
+                y_train,
+                nominal_sampling_rate,
+                random_state=effective_seeds.sampler_seed,
             )
             print(
                 f"  [OK] {n_train_before} → {len(y_train)} rows "
@@ -528,7 +636,9 @@ def main(
             "learning_rate": config["model"]["learning_rate"],
             "num_leaves": config["model"]["num_leaves"],
             "scale_pos_weight": scale_pos_weight,
-            "random_state": random_state,
+            "split_seed": effective_seeds.split_seed,
+            "model_seed": effective_seeds.model_seed,
+            "sampler_seed": effective_seeds.sampler_seed,
             # downsampling 실현 비율(#300). 1.0이면 downsampling 미적용. 서빙 보정은
             # 이 값을 쓰므로 실현값(nominal 아님)을 기록한다.
             "sampling_rate": realized_sampling_rate,
@@ -536,6 +646,8 @@ def main(
             "val_size": len(val_df),
             "test_size": len(test_df),
         }
+        if legacy_seed_path:
+            params["random_state"] = random_state
         if extra_params:
             # 데이터 소스 계보(예: events_source/events_start_date/events_end_date)를
             # run에 남겨서, 어떤 기간의 데이터로 학습했는지 항상 조회 가능하게 한다.
@@ -557,7 +669,7 @@ def main(
             n_estimators=config["model"]["n_estimators"],
             learning_rate=config["model"]["learning_rate"],
             num_leaves=config["model"]["num_leaves"],
-            random_state=random_state,
+            random_state=effective_seeds.model_seed,
         )
         model.fit(X_train, y_train, categorical_features=categorical_columns)
         print("  [OK] 훈련 완료")
@@ -663,6 +775,9 @@ def main(
             registry_tags["experiment_features"] = ",".join(extra_features)
         if extra_params:
             registry_tags.update({k: str(v) for k, v in extra_params.items()})
+        if snapshot_manifest is not None and split_manifest_sha256 is not None:
+            registry_tags["snapshot_sha256"] = snapshot_manifest.dataset_sha256
+            registry_tags["split_manifest_sha256"] = split_manifest_sha256
         pending_registration = PendingRegistration(
             model_uri=model_uri, model_name=model_name, tags=registry_tags
         )

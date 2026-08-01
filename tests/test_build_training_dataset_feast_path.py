@@ -5,12 +5,23 @@
 실물(로컬 File store)로 검증한다.
 """
 
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
 from src.features import feast_retrieval
 from src.features.model_contract import MODEL_FEATURE_COLUMNS
 from src.pipeline import build_training_dataset as btd
+from src.pipeline.training_provenance import (
+    ProvenanceValidationError,
+    RegistryProvenance,
+    load_training_snapshot_manifest,
+    snapshot_manifest_path,
+)
 
 
 def test_main_requires_event_dates() -> None:
@@ -68,8 +79,136 @@ def _fake_env(monkeypatch, features: pd.DataFrame) -> None:
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
     monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://fake/staging/")
     monkeypatch.setattr(btd, "load_training_entity_spine", lambda s, e: spine)
+    def fake_download(uri: str, destination: Path) -> RegistryProvenance:
+        destination.write_bytes(b"registry-v1")
+        return RegistryProvenance(
+            uri=uri,
+            generation="1",
+            sha256=hashlib.sha256(b"registry-v1").hexdigest(),
+        )
+
+    monkeypatch.setattr(btd, "_download_pinned_registry", fake_download)
     monkeypatch.setattr(feast_retrieval, "build_offline_feature_store", lambda *a, **k: object())
     monkeypatch.setattr(feast_retrieval, "retrieve_training_features", lambda store, sp: features)
+
+
+def test_assemble_pins_registry_and_writes_snapshot(tmp_path, monkeypatch) -> None:
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    _fake_env(monkeypatch, features)
+    seen: dict[str, str] = {}
+
+    def fake_download(uri: str, destination: Path) -> RegistryProvenance:
+        destination.write_bytes(b"registry-v7")
+        return RegistryProvenance(
+            uri=uri,
+            generation="7",
+            sha256=hashlib.sha256(b"registry-v7").hexdigest(),
+        )
+
+    def fake_store(registry_path: str, **kwargs: object) -> object:
+        seen["registry_path"] = registry_path
+        return object()
+
+    monkeypatch.setattr(btd, "_download_pinned_registry", fake_download)
+    monkeypatch.setattr(feast_retrieval, "build_offline_feature_store", fake_store)
+
+    output_path = tmp_path / "out.csv"
+    btd._assemble_via_feast(str(output_path), "2026-07-01", "2026-07-30")
+
+    assert seen["registry_path"].endswith("registry.db")
+    assert not seen["registry_path"].startswith("gs://")
+    manifest = load_training_snapshot_manifest(output_path)
+    assert manifest.registry_generation == "7"
+    assert manifest.registry_sha256 == hashlib.sha256(b"registry-v7").hexdigest()
+    assert snapshot_manifest_path(output_path).is_file()
+
+
+def test_registry_download_failure_creates_no_dataset_or_sidecar(tmp_path, monkeypatch) -> None:
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    _fake_env(monkeypatch, features)
+
+    def fail_download(*args: object, **kwargs: object) -> RegistryProvenance:
+        raise ProvenanceValidationError("registry download failed")
+
+    monkeypatch.setattr(btd, "_download_pinned_registry", fail_download)
+    output_path = tmp_path / "out.csv"
+
+    with pytest.raises(ProvenanceValidationError, match="registry"):
+        btd._assemble_via_feast(str(output_path), "2026-07-01", "2026-07-30")
+
+    assert not output_path.exists()
+    assert not snapshot_manifest_path(output_path).exists()
+
+
+class _FakeBlob:
+    def __init__(self, *, generation: int | None, payload: bytes = b"registry-v7") -> None:
+        self.generation = generation
+        self.payload = payload
+        self.reload_called = False
+
+    def reload(self) -> None:
+        self.reload_called = True
+
+    def download_to_filename(self, filename: str) -> None:
+        Path(filename).write_bytes(self.payload)
+
+
+class _FakeBucket:
+    def __init__(self, metadata_blob: _FakeBlob, pinned_blob: _FakeBlob) -> None:
+        self.metadata_blob = metadata_blob
+        self.pinned_blob = pinned_blob
+        self.calls: list[tuple[str, int | None]] = []
+
+    def blob(self, name: str, generation: int | None = None) -> _FakeBlob:
+        self.calls.append((name, generation))
+        return self.metadata_blob if generation is None else self.pinned_blob
+
+
+class _FakeStorageClient:
+    def __init__(self, bucket: _FakeBucket) -> None:
+        self._bucket = bucket
+
+    def bucket(self, name: str) -> _FakeBucket:
+        assert name == "bucket"
+        return self._bucket
+
+
+def test_download_pinned_registry_uses_metadata_generation(tmp_path) -> None:
+    metadata_blob = _FakeBlob(generation=7)
+    pinned_blob = _FakeBlob(generation=7, payload=b"exact-registry")
+    bucket = _FakeBucket(metadata_blob, pinned_blob)
+    client = _FakeStorageClient(bucket)
+    destination = tmp_path / "registry.db"
+
+    provenance = btd._download_pinned_registry(
+        "gs://bucket/path/registry.db", destination, client=client
+    )
+
+    assert metadata_blob.reload_called is True
+    assert bucket.calls == [("path/registry.db", None), ("path/registry.db", 7)]
+    assert destination.read_bytes() == b"exact-registry"
+    assert provenance.uri == "gs://bucket/path/registry.db"
+    assert provenance.generation == "7"
+    assert provenance.sha256 == hashlib.sha256(b"exact-registry").hexdigest()
+
+
+def test_download_pinned_registry_rejects_non_gs_uri(tmp_path) -> None:
+    with pytest.raises(ProvenanceValidationError, match="gs://"):
+        btd._download_pinned_registry("https://bucket/registry.db", tmp_path / "registry.db")
+
+
+def test_download_pinned_registry_rejects_missing_generation(tmp_path) -> None:
+    metadata_blob = _FakeBlob(generation=None)
+    bucket = _FakeBucket(metadata_blob, _FakeBlob(generation=None))
+
+    with pytest.raises(ProvenanceValidationError, match="generation"):
+        btd._download_pinned_registry(
+            "gs://bucket/registry.db",
+            tmp_path / "registry.db",
+            client=_FakeStorageClient(bucket),
+        )
 
 
 def test_assemble_via_feast_writes_contract_columns(tmp_path, monkeypatch) -> None:

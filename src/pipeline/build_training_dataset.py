@@ -10,7 +10,8 @@ offline store가 정본(#357)이라 그 값을 그대로 읽는다.
 확인한다(환경변수 → GCP 자격증명 → feast import 순, #404) — 자격증명 없는 환경에서 BigQuery
 접속이 응답 없이 멈추는 대신 즉시 명확한 이유로 중단한다.
 
-출력: data/processed/training_dataset.csv (21 모델 피처 + ``clicked`` label = 22 물리 컬럼).
+출력: data/processed/training_dataset.csv와 snapshot sidecar (21 모델 피처 + ``clicked``
+label = 22 물리 컬럼).
 model input의 이름·순서·categorical 분류는 ``src/features/model_contract.py``가, staged PIT 조회는
 ``src/features/feast_retrieval.py``가 소유한다(이 모듈은 재정의하지 않는다).
 
@@ -21,8 +22,13 @@ model input의 이름·순서·categorical 분류는 ``src/features/model_contra
 이들의 feast 전환(#359 C3)에서 함께 정리한다. DuckDB 재계산·mock CSV 입력 경로는 #359 C2에서 제거됐다.
 """
 
+from __future__ import annotations
+
 import os
 import sys
+from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
+from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -32,6 +38,14 @@ sys.path.insert(0, PROJECT_ROOT)
 from src.features.assembly import connect_duckdb  # noqa: E402
 from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
 from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
+from src.pipeline.training_provenance import (  # noqa: E402
+    ProvenanceValidationError,
+    RegistryProvenance,
+    build_snapshot_manifest,
+    sha256_file,
+    snapshot_manifest_path,
+    write_manifest_atomic,
+)
 
 BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "autoresearch-503903")
 # feature/서빙 계층 dataset — Feast feature 테이블 4종과 배치 출력 테이블(user_recommendations).
@@ -190,6 +204,62 @@ def _verify_assembly_environment() -> None:
         ) from error
 
 
+def _download_pinned_registry(
+    uri: str,
+    destination: Path,
+    *,
+    client: object | None = None,
+) -> RegistryProvenance:
+    """GCS registry object의 현재 generation을 고정해 local file로 내려받는다.
+
+    URI metadata를 먼저 읽고 같은 generation을 지정한 Blob만 다운로드한다. Feast에는
+    원격 URI를 전달하지 않고 이 local path를 전달해, manifest가 식별한 registry와 실제
+    PIT 조회 registry가 달라지는 경로를 차단한다.
+    """
+    parsed = urlparse(uri)
+    if parsed.scheme != "gs" or not parsed.netloc or not parsed.path.strip("/"):
+        raise ProvenanceValidationError(
+            f"registry URI는 gs://bucket/object 형식이어야 합니다: {uri}"
+        )
+
+    if client is None:
+        from google.cloud import storage
+
+        client = storage.Client()
+
+    bucket_name = parsed.netloc
+    object_name = parsed.path.lstrip("/")
+    try:
+        bucket = client.bucket(bucket_name)
+        metadata_blob = bucket.blob(object_name)
+        metadata_blob.reload()
+    except Exception as error:
+        raise ProvenanceValidationError(
+            f"registry metadata를 읽지 못했습니다: {uri}"
+        ) from error
+
+    generation = getattr(metadata_blob, "generation", None)
+    if generation is None:
+        raise ProvenanceValidationError(f"registry object generation이 없습니다: {uri}")
+
+    try:
+        pinned_blob = bucket.blob(object_name, generation=int(generation))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        pinned_blob.download_to_filename(str(destination))
+        registry_sha256 = sha256_file(destination)
+    except Exception as error:
+        destination.unlink(missing_ok=True)
+        raise ProvenanceValidationError(
+            f"registry generation={generation}을 내려받지 못했습니다: {uri}"
+        ) from error
+
+    return RegistryProvenance(
+        uri=uri,
+        generation=str(generation),
+        sha256=registry_sha256,
+    )
+
+
 def _assemble_via_feast(
     output_path: str, events_start_date: str, events_end_date: str
 ) -> None:
@@ -198,9 +268,8 @@ def _assemble_via_feast(
     DuckDB 재계산 경로를 대체한다. offline store가 정본(#357)이라 그 값을 그대로 읽는다.
     feast/feature_repo는 이 경로에서만 필요하므로 지연 import한다(격리 그룹).
     """
-    import tempfile
-
     from src.features.feast_retrieval import (
+        DEFAULT_SERVICE,
         apply_cold_start_defaults,
         build_offline_feature_store,
         drop_user_dynamic_gap_rows,
@@ -211,50 +280,88 @@ def _assemble_via_feast(
     spine = load_training_entity_spine(events_start_date, events_end_date)
     print(f"  [OK] spine: {len(spine)} rows")
 
-    # offline 전용 store: prod feature_store.yaml(Redis)을 로드하지 않고, 배포 job이 apply한
-    # prod 레지스트리(GCS_REGISTRY_PATH)만 읽어 BigQuery offline을 조회한다(#358 리뷰).
-    registry_path = os.environ["GCS_REGISTRY_PATH"]
+    # offline 전용 store: prod feature_store.yaml(Redis)을 로드하지 않고, generation을
+    # 고정한 local registry snapshot만 읽어 BigQuery offline을 조회한다(#423).
+    registry_uri = os.environ["GCS_REGISTRY_PATH"]
     gcs_staging = os.environ["GCS_STAGING_LOCATION"]
-    online_db = os.path.join(tempfile.mkdtemp(prefix="feast_assemble_"), "online.db")
-    store = build_offline_feature_store(
-        registry_path,
-        project=BIGQUERY_PROJECT,
-        dataset=BIGQUERY_DATASET,
-        gcs_staging=gcs_staging,
-        online_db_path=online_db,
-    )
-    print("\n[feast] get_historical_features(PIT) 조회...")
-    features = retrieve_training_features(store, spine)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
 
-    missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
-    if missing:
-        raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
+    staged_csv: Path | None = None
+    try:
+        with TemporaryDirectory(prefix="feast_assemble_") as temporary_dir:
+            registry_path = Path(temporary_dir) / "registry.db"
+            registry = _download_pinned_registry(registry_uri, registry_path)
+            online_db = Path(temporary_dir) / "online.db"
+            store = build_offline_feature_store(
+                str(registry_path),
+                project=BIGQUERY_PROJECT,
+                dataset=BIGQUERY_DATASET,
+                gcs_staging=gcs_staging,
+                online_db_path=str(online_db),
+            )
+            print("\n[feast] get_historical_features(PIT) 조회...")
+            features = retrieve_training_features(store, spine)
 
-    # (C) 결손 가시화: UserDynamic 전체 null(ttl 초과·#365 결손)은 채우지 않고 드롭
-    # (활동 유저를 "신규 유저"로 위장시키지 않는다). 이 뒤에 남는 null(영상 미발견 등)만
-    # 서빙과 같은 cold-start 기본값으로 채운다. 제자리 채움 + 선택 시 추가 copy 안 함(리뷰 OOM).
-    n_retrieved = len(features)
-    features = drop_user_dynamic_gap_rows(features)
-    n_dropped = n_retrieved - len(features)
-    features = apply_cold_start_defaults(features)
-    features["clicked"] = features["clicked"].astype(int)
-    # 관측성(#359 C2 리뷰): validate_events/Step3 통계가 사라진 자리를 최소 지표로 대체한다.
-    # 조용한 데이터 급감·전량 드롭을 운영자가 stdout으로 알아채게, 조회→드롭→학습 행 수와
-    # click_rate를 남긴다. 학습 행이 0이면 성공으로 조용히 끝내지 않고 경고를 크게 찍는다
-    # (하드 실패로 막을지는 후속 판단 — 지금은 실패 의미를 바꾸지 않는다).
-    click_rate = float(features["clicked"].mean()) if len(features) else 0.0
-    print(
-        f"  [관측] 조회 {n_retrieved}행 -> UserDynamic gap 드롭 {n_dropped}행 "
-        f"-> 학습 {len(features)}행, click_rate={click_rate:.4f}"
-    )
-    if features.empty:
-        print(
-            "  [경고] 학습 행이 0입니다 — spine이 비었거나 UserDynamic 결손(#365)으로 "
-            "전량 드롭됐습니다. 이어지는 train-model이 빈 데이터로 실패할 수 있습니다."
-        )
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    features[[*MODEL_FEATURE_COLUMNS, "clicked"]].to_csv(output_path, index=False)
-    print(f"\n[저장] {output_path} ({len(features)} rows, feast 경로)")
+            missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
+            if missing:
+                raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
+
+            # (C) 결손 가시화: UserDynamic 전체 null(ttl 초과·#365 결손)은 채우지 않고 드롭
+            # (활동 유저를 "신규 유저"로 위장시키지 않는다). 이 뒤에 남는 null(영상 미발견 등)만
+            # 서빙과 같은 cold-start 기본값으로 채운다. 제자리 채움 + 선택 시 추가 copy 안 함(리뷰 OOM).
+            n_retrieved = len(features)
+            features = drop_user_dynamic_gap_rows(features)
+            n_dropped = n_retrieved - len(features)
+            features = apply_cold_start_defaults(features)
+            features["clicked"] = features["clicked"].astype(int)
+            # 관측성(#359 C2 리뷰): validate_events/Step3 통계가 사라진 자리를 최소 지표로 대체한다.
+            # 조용한 데이터 급감·전량 드롭을 운영자가 stdout으로 알아채게, 조회→드롭→학습 행 수와
+            # click_rate를 남긴다. 학습 행이 0이면 성공으로 조용히 끝내지 않고 경고를 크게 찍는다
+            # (하드 실패로 막을지는 후속 판단 — 지금은 실패 의미를 바꾸지 않는다).
+            click_rate = float(features["clicked"].mean()) if len(features) else 0.0
+            print(
+                f"  [관측] 조회 {n_retrieved}행 -> UserDynamic gap 드롭 {n_dropped}행 "
+                f"-> 학습 {len(features)}행, click_rate={click_rate:.4f}"
+            )
+            if features.empty:
+                print(
+                    "  [경고] 학습 행이 0입니다 — spine이 비었거나 UserDynamic 결손(#365)으로 "
+                    "전량 드롭됐습니다. 이어지는 train-model이 빈 데이터로 실패할 수 있습니다."
+                )
+
+            with NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=output.parent,
+                prefix=f".{output.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                staged_csv = Path(temporary_file.name)
+                features[[*MODEL_FEATURE_COLUMNS, "clicked"]].to_csv(
+                    temporary_file, index=False
+                )
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+
+            manifest = build_snapshot_manifest(
+                dataset_path=staged_csv,
+                events_start_date=events_start_date,
+                events_end_date=events_end_date,
+                feature_service=DEFAULT_SERVICE,
+                registry=registry,
+                code_archive_sha=os.environ.get("CODE_ARCHIVE_SHA"),
+            )
+            os.replace(staged_csv, output)
+            staged_csv = None
+            write_manifest_atomic(manifest, snapshot_manifest_path(output))
+
+    finally:
+        if staged_csv is not None:
+            staged_csv.unlink(missing_ok=True)
+
+    print(f"\n[저장] {output} ({len(features)} rows, feast 경로 + snapshot provenance)")
 
 
 def derive_wide_events(
