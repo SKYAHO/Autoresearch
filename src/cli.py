@@ -62,13 +62,46 @@ def build_features(
     events_end_date: Optional[str] = typer.Option(
         None, help="학습 기간 종료일 KST YYYY-MM-DD (포함)"
     ),
+    min_coverage_days: Optional[int] = typer.Option(
+        None,
+        "--min-coverage-days",
+        help=(
+            "학습에 쓸 수 있는 최소 날짜 수(#464). 요청 기간에 데이터 없는 날이 섞여 "
+            "이 값 미만이면 조립을 실패시킵니다. 백필처럼 의도적으로 좁은 구간을 쓸 때는 "
+            "0으로 우회합니다. 일별 행수 하한은 실행 단위로 조정할 수 없습니다 "
+            "(전역 CTR_TRAINING_MIN_ROWS_PER_DAY만)."
+        ),
+    ),
 ) -> None:
     """training_dataset.csv 생성 (offline feature store PIT 조회, #359 C2로 feast-only)."""
     build_training_dataset.main(
         output_path=output_path,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
+        **_coverage_kwargs(min_coverage_days),
     )
+
+
+def _requested_min_coverage_days(value: object) -> Optional[int]:
+    """사용자가 실제로 지정한 `--min-coverage-days` 값만 정수로 돌려준다(#464).
+
+    미지정이면 None이다. Typer가 붙인 함수를 테스트가 **직접 호출**하면 기본값 자리에
+    `OptionInfo` 객체가 들어오므로(CLI 경유일 때만 None으로 치환됨), 정수인지로 판정한다.
+    `bool`은 파이썬에서 `int`의 하위 타입이라 명시적으로 배제한다.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _coverage_kwargs(min_coverage_days: Optional[int]) -> dict:
+    """`--min-coverage-days` 미지정 시 모듈 기본값을 그대로 쓰게 한다(#464).
+
+    None을 그대로 넘기면 기본값이 덮여 검증이 꺼지므로, 지정된 경우에만 키를 만든다.
+    `0`(명시적 우회)과 None(미지정)을 참/거짓으로 뭉개면 우회구가 조용히 무시된다.
+    """
+    resolved = _requested_min_coverage_days(min_coverage_days)
+    return {} if resolved is None else {"min_coverage_days": resolved}
 
 
 def _parse_extra_features(value: Optional[str]) -> Optional[list[str]]:
@@ -177,6 +210,15 @@ def run_pipeline(
     events_end_date: Optional[str] = typer.Option(
         None, help="학습 기간 종료일 KST YYYY-MM-DD (포함)"
     ),
+    min_coverage_days: Optional[int] = typer.Option(
+        None,
+        "--min-coverage-days",
+        help=(
+            "학습에 쓸 수 있는 최소 날짜 수(#464). 미달이면 조립 단계에서 실패합니다. "
+            "실측 커버리지와 이 값은 MLflow lineage에 기록됩니다. "
+            "백필 등 의도적으로 좁은 구간을 쓸 때는 0으로 우회합니다."
+        ),
+    ),
     config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
     model_output: Optional[str] = typer.Option(None, help="모델 저장 경로 (config override)"),
     test_set_output: Optional[str] = typer.Option(
@@ -230,10 +272,11 @@ def run_pipeline(
     typer.echo("=" * 70)
 
     typer.echo("\n[1/4] build-features 실행...")
-    build_training_dataset.main(
+    coverage = build_training_dataset.main(
         output_path=dataset_path,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
+        **_coverage_kwargs(min_coverage_days),
     )
 
     # 어떤 기간·소스로 학습했는지 MLflow run에 lineage로 남긴다(#359). C2로 조립 경로는
@@ -252,6 +295,19 @@ def run_pipeline(
         "events_end_date": events_end_date,
         "feast_registry_path": os.environ["GCS_REGISTRY_PATH"],
     }
+    # 요청 구간만 남기면 v12 사고의 비대칭("요청 7일 ≠ 실제 2일")이 그대로 남는다.
+    # 실측 커버리지와 적용된 기준(우회 여부 포함)을 함께 남겨, 나중에 champion 후보를
+    # 볼 때 run 파라미터만으로 판별할 수 있게 한다(#464 리뷰).
+    requested_min_days = _requested_min_coverage_days(min_coverage_days)
+    data_source_params.update(
+        coverage.as_lineage_params(
+            min_days=(
+                build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
+                if requested_min_days is None
+                else requested_min_days
+            )
+        )
+    )
 
     typer.echo("\n[2/4] train-model 실행...")
     # train.main은 실현 sampling_rate(#300)를 담은 TrainingOutcome을 반환한다 —
