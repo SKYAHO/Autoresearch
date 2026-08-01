@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -152,6 +153,19 @@ def test_dml_accepts_bigquery_dataset_identifier_starting_with_number() -> None:
     sql, _ = targeted_delete_sql("project-1", "1_loadtest", table)
 
     assert "`project-1.1_loadtest.user_static_feature`" in sql
+
+
+def test_k6_script_has_warmup_and_measurement_contract() -> None:
+    """k6는 warmup을 분리하고 측정 전용 오류율을 노출해야 한다."""
+    script = Path("loadtest/rerank.js").read_text()
+
+    assert 'exec: "warmup"' in script
+    assert 'exec: "measure"' in script
+    assert "rerank_measure_duration_seconds" in script
+    assert "rerank_measure_failure" in script
+    assert "rate<0.01" in script
+    assert "loadtest-user-001" in script
+    assert "loadtest-video-200" in script
 
 
 def test_provisioner_default_dry_run_executes_only_count_selects(
