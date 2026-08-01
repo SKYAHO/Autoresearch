@@ -1,0 +1,233 @@
+name: Auto Research promotion Draft PR
+
+on:
+  repository_dispatch:
+    types: [experiment_result]
+  workflow_dispatch:
+    inputs:
+      issue_number: {required: true, type: string}
+      experiment_id: {required: true, type: string}
+      candidate_sha: {required: true, type: string}
+      registry_uri: {required: true, type: string}
+      run_id: {required: true, type: string}
+      primary_candidate: {required: true, type: string}
+      primary_baseline: {required: true, type: string}
+      guardrail_candidate: {required: false, type: string}
+      guardrail_baseline: {required: false, type: string}
+      image_digest: {required: false, type: string}
+      artifact_uri: {required: false, type: string}
+      log_uri: {required: false, type: string}
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  create-promotion-pr:
+    runs-on: ubuntu-latest
+    env:
+      ISSUE_NUMBER: ${{ inputs.issue_number || github.event.client_payload.issue_number }}
+      EXPERIMENT_ID: ${{ inputs.experiment_id || github.event.client_payload.experiment_id }}
+      CANDIDATE_SHA: ${{ inputs.candidate_sha || github.event.client_payload.candidate_sha }}
+      REGISTRY_URI: ${{ inputs.registry_uri || github.event.client_payload.registry_uri }}
+      RUN_ID: ${{ inputs.run_id || github.event.client_payload.run_id }}
+      PRIMARY_CANDIDATE: ${{ inputs.primary_candidate || github.event.client_payload.primary_candidate }}
+      PRIMARY_BASELINE: ${{ inputs.primary_baseline || github.event.client_payload.primary_baseline }}
+      GUARDRAIL_CANDIDATE: ${{ inputs.guardrail_candidate || github.event.client_payload.guardrail_candidate }}
+      GUARDRAIL_BASELINE: ${{ inputs.guardrail_baseline || github.event.client_payload.guardrail_baseline }}
+      IMAGE_DIGEST: ${{ inputs.image_digest || github.event.client_payload.image_digest }}
+      ARTIFACT_URI: ${{ inputs.artifact_uri || github.event.client_payload.artifact_uri }}
+      LOG_URI: ${{ inputs.log_uri || github.event.client_payload.log_uri }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Fetch Auto Research issue body
+        id: issue
+        uses: actions/github-script@v8
+        env:
+          ISSUE_BODY_PATH: ${{ runner.temp }}/issue.md
+        with:
+          script: |
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+              throw new Error('issue_number must be a positive integer');
+            }
+            const { data: issue } = await github.rest.issues.get({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: issueNumber,
+            });
+            if (!issue.labels.some((label) => label.name === 'auto-research')) {
+              throw new Error('issue must have the auto-research label');
+            }
+            require('fs').writeFileSync(process.env.ISSUE_BODY_PATH, issue.body || '');
+
+      - name: Validate experiment lineage
+        id: lineage
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const candidateSha = process.env.CANDIDATE_SHA || '';
+            const experimentId = process.env.EXPERIMENT_ID || '';
+            const registryUri = process.env.REGISTRY_URI || '';
+            const runId = process.env.RUN_ID || '';
+            try {
+              if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
+                throw new Error('issue_number must be a positive integer');
+              }
+              if (!/^[0-9a-f]{40}$/.test(candidateSha)) {
+                throw new Error('candidate_sha must be a 40-character lowercase SHA');
+              }
+              if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(experimentId)) {
+                throw new Error('experiment_id is invalid');
+              }
+              if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(runId)) {
+                throw new Error('run_id is invalid');
+              }
+              const expectedRegistrySuffix =
+                `/experiments/${issueNumber}/${experimentId}/${candidateSha}/registry.db`;
+              if (!registryUri.endsWith(expectedRegistrySuffix)) {
+                throw new Error(`registry_uri must end with ${expectedRegistrySuffix}`);
+              }
+              const comparison = await github.rest.repos.compareCommits({
+                owner: context.repo.owner, repo: context.repo.repo, base: candidateSha, head: 'dev',
+              });
+              if (!['ahead', 'identical'].includes(comparison.data.status)) {
+                throw new Error('candidate_sha must be an ancestor of dev');
+              }
+              core.setOutput('valid', 'true');
+              core.setOutput('reason', 'lineage_valid');
+            } catch (error) {
+              core.setOutput('valid', 'false');
+              core.setOutput('reason', `lineage_invalid:${error.message}`);
+              core.warning(`Experiment lineage rejected: ${error.message}`);
+            }
+
+      - name: Evaluate structured metric gate
+        id: gate
+        if: steps.lineage.outputs.valid == 'true'
+        env:
+          ISSUE_BODY_PATH: ${{ runner.temp }}/issue.md
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          from autoresearch.experiments.promotion_gate import evaluate, parse_criteria
+
+          criteria = parse_criteria(open(os.environ["ISSUE_BODY_PATH"], encoding="utf-8").read())
+          decision = evaluate(
+              criteria,
+              primary_candidate=float(os.environ["PRIMARY_CANDIDATE"]),
+              primary_baseline=float(os.environ["PRIMARY_BASELINE"]),
+              guardrail_candidate=float(os.environ["GUARDRAIL_CANDIDATE"]) if os.environ.get("GUARDRAIL_CANDIDATE") else None,
+              guardrail_baseline=float(os.environ["GUARDRAIL_BASELINE"]) if os.environ.get("GUARDRAIL_BASELINE") else None,
+          )
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"passed={'true' if decision.passed else 'false'}\nreason={decision.reason}\n")
+          PY
+
+      - name: Create immutable promotion branch and Draft PR
+        if: steps.lineage.outputs.valid == 'true' && steps.gate.outputs.passed == 'true'
+        uses: actions/github-script@v8
+        env:
+          GATE_REASON: ${{ steps.gate.outputs.reason }}
+        with:
+          script: |
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const candidateSha = process.env.CANDIDATE_SHA;
+            const experimentId = process.env.EXPERIMENT_ID;
+            const registryUri = process.env.REGISTRY_URI;
+            const runId = process.env.RUN_ID;
+            const branchName = `promote/${issueNumber}-${experimentId}-${candidateSha.slice(0, 12)}`;
+            try {
+              await github.rest.git.createRef({
+                owner: context.repo.owner, repo: context.repo.repo,
+                ref: `refs/heads/promote/${issueNumber}-${experimentId}-${candidateSha.slice(0, 12)}`,
+                sha: candidateSha,
+              });
+            } catch (error) {
+              if (error.status !== 422) throw error;
+              const { data: existingRef } = await github.rest.git.getRef({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref: `heads/${branchName}`,
+              });
+              if (existingRef.object.sha !== candidateSha) {
+                throw new Error(
+                  `${branchName} already exists at ${existingRef.object.sha}; refusing to reuse it for ${candidateSha}`,
+                );
+              }
+            }
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner, repo: context.repo.repo, state: 'open', base: 'main', head: `${context.repo.owner}:${branchName}`,
+            });
+            if (prs.length === 0) {
+              await github.rest.pulls.create({
+                owner: context.repo.owner, repo: context.repo.repo, base: 'main', head: branchName,
+                title: `exp: #${issueNumber} ${experimentId} metric 통과 후보`, draft: true,
+                body: [
+                  `Closes #${issueNumber}`,
+                  '',
+                  `구조화 metric gate를 통과한 dev 후보 SHA: \`${candidateSha}\``,
+                  `experiment_id: \`${experimentId}\``,
+                  `run_id: \`${runId}\``,
+                  `registry_uri: \`${registryUri}\``,
+                  `image_digest: \`${process.env.IMAGE_DIGEST || '미제공'}\``,
+                  `artifact_uri: \`${process.env.ARTIFACT_URI || '미제공'}\``,
+                  `log_uri: \`${process.env.LOG_URI || '미제공'}\``,
+                  `사유: \`${process.env.GATE_REASON}\``,
+                ].join('\\n'),
+              });
+            }
+
+      - name: Comment failed or rejected experiment result on source issue
+        if: >-
+          always() && steps.issue.outcome == 'success' &&
+          (steps.lineage.outputs.valid != 'true' ||
+          (steps.gate.outcome == 'success' && steps.gate.outputs.passed != 'true'))
+        uses: actions/github-script@v8
+        env:
+          GATE_REASON: ${{ steps.gate.outputs.reason || steps.lineage.outputs.reason }}
+        with:
+          script: |
+            const issueNumber = Number(process.env.ISSUE_NUMBER);
+            const experimentId = process.env.EXPERIMENT_ID || 'unknown';
+            const candidateSha = process.env.CANDIDATE_SHA || 'unknown';
+            const runId = process.env.RUN_ID || 'unknown';
+            const marker = `<!-- autoresearch-result:${issueNumber}:${experimentId}:${candidateSha}:${runId} -->`;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            if (comments.some((comment) => comment.body?.includes(marker))) {
+              core.info('An identical experiment result comment already exists');
+              return;
+            }
+            const body = [
+              '## Auto Research 실험 결과: 실패 또는 기각',
+              marker,
+              '',
+              `- experiment_id: \`${experimentId}\``,
+              `- candidate_sha: \`${candidateSha}\``,
+              `- run_id: \`${runId}\``,
+              `- registry_uri: \`${process.env.REGISTRY_URI || '미제공'}\``,
+              `- primary candidate: \`${process.env.PRIMARY_CANDIDATE}\``,
+              `- primary baseline: \`${process.env.PRIMARY_BASELINE}\``,
+              `- 판정 사유: \`${process.env.GATE_REASON}\``,
+              `- artifact_uri: \`${process.env.ARTIFACT_URI || '미제공'}\``,
+              `- log_uri: \`${process.env.LOG_URI || '미제공'}\``,
+              '',
+              'main 승격 PR은 생성하지 않았습니다.',
+            ].join('\\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body,
+            });
+      - name: Write result summary
+        env:
+          GATE_REASON: ${{ steps.gate.outputs.reason }}
+        run: 'echo "experiment promotion gate: ${GATE_REASON}" >> "$GITHUB_STEP_SUMMARY"'
