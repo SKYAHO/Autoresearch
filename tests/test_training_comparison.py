@@ -13,6 +13,7 @@ from mlflow.tracking import MlflowClient
 
 from src.pipeline.training_comparison import (
     ComparisonValidationError,
+    revalidate_training_comparison,
     verify_training_comparison,
 )
 from src.pipeline.promotion_evidence import (
@@ -24,8 +25,10 @@ from src.pipeline.promotion_evidence import (
 )
 from src.pipeline.training_provenance import (
     RegistryProvenance,
+    TrainingComparisonManifest,
     TrainingSeeds,
     TrainingSplitManifest,
+    VerifiedComparisonPromotionEvidence,
     build_snapshot_manifest,
     build_split_manifest,
     sha256_file,
@@ -466,6 +469,37 @@ def _assert_no_comparison_publication(
     ) == []
 
 
+def _direct_comparison_transport(
+    *,
+    baseline_run_id: str,
+    challenger_run_id: str,
+    promotion_evidence: VerifiedComparisonPromotionEvidence,
+) -> TrainingComparisonManifest:
+    """caller가 직접 조립한 comparison payload를 만드는 test helper."""
+    return TrainingComparisonManifest(
+        comparison_id="caller-assembled-comparison",
+        baseline_run_id=baseline_run_id,
+        challenger_run_id=challenger_run_id,
+        baseline_snapshot_sha256="a" * 64,
+        challenger_snapshot_sha256="a" * 64,
+        baseline_snapshot_manifest_sha256="b" * 64,
+        challenger_snapshot_manifest_sha256="b" * 64,
+        baseline_split_manifest_sha256="c" * 64,
+        challenger_split_manifest_sha256="c" * 64,
+        baseline_feature_columns_sha256="d" * 64,
+        challenger_feature_columns_sha256="d" * 64,
+        baseline_feature_columns=["views"],
+        challenger_feature_columns=["views"],
+        effective_seeds=TrainingSeeds(
+            split_seed=42,
+            model_seed=42,
+            sampler_seed=42,
+        ),
+        promotion_evidence=promotion_evidence,
+        validated_at=datetime.now(timezone.utc),
+    )
+
+
 def _overwrite_metric_receipt_artifact(
     tmp_path: Path, *, run_id: str, receipt: HeldOutMetricReceipt
 ) -> None:
@@ -628,12 +662,14 @@ def test_comparison_rejects_partial_promotion_evidence(tmp_path, monkeypatch) ->
     _assert_no_comparison_publication(output, challenger_run=challenger_run)
 
 
-def test_comparison_rejects_plan_created_after_mlflow_run_start(tmp_path, monkeypatch) -> None:
+def test_revalidation_rejects_direct_comparison_when_plan_is_created_after_run_start(
+    tmp_path, monkeypatch
+) -> None:
     dataset_path, snapshot_path, experiment_id = _comparison_fixture(tmp_path, monkeypatch)
     store, bucket = _evidence_store()
     bucket.next_plan_time_created = datetime.now(timezone.utc) + timedelta(days=1)
     plan_receipt = _plan_receipt(store, candidate_id="candidate-revision")
-    baseline_run, _ = _log_verified_run_with_promotion_evidence(
+    baseline_run, baseline_metric = _log_verified_run_with_promotion_evidence(
         tmp_path,
         experiment_id=experiment_id,
         dataset_path=dataset_path,
@@ -641,7 +677,7 @@ def test_comparison_rejects_plan_created_after_mlflow_run_start(tmp_path, monkey
         plan_receipt=plan_receipt,
         store=store,
     )
-    challenger_run, _ = _log_verified_run_with_promotion_evidence(
+    challenger_run, challenger_metric = _log_verified_run_with_promotion_evidence(
         tmp_path,
         experiment_id=experiment_id,
         dataset_path=dataset_path,
@@ -649,14 +685,21 @@ def test_comparison_rejects_plan_created_after_mlflow_run_start(tmp_path, monkey
         plan_receipt=plan_receipt,
         store=store,
     )
-    output = tmp_path / "comparison.json"
+    direct_comparison = _direct_comparison_transport(
+        baseline_run_id=baseline_run,
+        challenger_run_id=challenger_run,
+        promotion_evidence=VerifiedComparisonPromotionEvidence(
+            plan_receipt=plan_receipt,
+            baseline_metric=baseline_metric,
+            challenger_metric=challenger_metric,
+        ),
+    )
 
     with pytest.raises(ComparisonValidationError, match="시작 뒤"):
-        verify_training_comparison(
-            baseline_run, challenger_run, output, promotion_evidence_store=store
+        revalidate_training_comparison(
+            direct_comparison,
+            promotion_evidence_store=store,
         )
-
-    _assert_no_comparison_publication(output, challenger_run=challenger_run)
 
 
 def test_comparison_rejects_metric_created_outside_its_run_time_range(

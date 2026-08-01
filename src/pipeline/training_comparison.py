@@ -555,3 +555,47 @@ def verify_training_comparison(
             workspace=workspace,
         )
         return result
+
+
+def revalidate_training_comparison(
+    comparison: TrainingComparisonManifest,
+    *,
+    promotion_evidence_store: PromotionEvidenceStore,
+) -> TrainingComparisonManifest:
+    """전달받은 comparison JSON을 신뢰하지 않고 MLflow·GCS에서 다시 구성한다.
+
+    evaluator가 로컬 comparison 파일이나 API payload를 직접 받아도, 이 함수는
+    run ID에서 snapshot/split/model artifact와 write-once receipt를 다시 읽는다.
+    전달값의 `validated_at`·legacy `experiment_plan_id`는 trust source가 아니므로
+    canonical 결과 대조에서 제외한다.
+    """
+    try:
+        client = MlflowClient()
+    except Exception:
+        raise ComparisonValidationError("MLflow client 초기화에 실패했습니다") from None
+    with TemporaryDirectory(prefix="training_comparison_revalidation_") as temporary_dir:
+        workspace = Path(temporary_dir)
+        baseline = _load_verified_run(comparison.baseline_run_id, workspace, client)
+        challenger = _load_verified_run(comparison.challenger_run_id, workspace, client)
+        _validate_fairness(baseline, challenger)
+        promotion_evidence = _verify_promotion_evidence(
+            baseline=baseline,
+            challenger=challenger,
+            client=client,
+            store=promotion_evidence_store,
+            workspace=workspace,
+        )
+        if promotion_evidence is None:
+            raise ComparisonValidationError("promotion evidence가 없는 legacy comparison입니다")
+        canonical = _build_comparison_manifest(
+            baseline,
+            challenger,
+            experiment_plan_id=None,
+            promotion_evidence=promotion_evidence,
+        )
+    excluded = {"validated_at", "experiment_plan_id"}
+    if comparison.model_dump(exclude=excluded) != canonical.model_dump(exclude=excluded):
+        raise ComparisonValidationError(
+            "comparison transport 내용이 canonical verified result와 다릅니다"
+        )
+    return canonical

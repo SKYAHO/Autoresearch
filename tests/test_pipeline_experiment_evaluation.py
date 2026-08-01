@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
+from src.pipeline import experiment_evaluation
 from src.pipeline.experiment_evaluation import (
     EvaluationReasonCode,
     EvaluationVerdict,
@@ -31,6 +32,7 @@ from src.pipeline.training_provenance import (
     TrainingSeeds,
     VerifiedComparisonPromotionEvidence,
 )
+from src.pipeline.training_comparison import ComparisonValidationError
 
 
 PLAN_TIME = datetime(2026, 8, 1, tzinfo=timezone.utc)
@@ -39,6 +41,20 @@ _SHA_A = "a" * 64
 _SHA_B = "b" * 64
 _SHA_C = "c" * 64
 _SHA_D = "d" * 64
+
+
+@pytest.fixture(autouse=True)
+def _use_verified_comparison_test_double(monkeypatch):
+    """evaluator 단위 테스트에서는 Task 3 verifier의 network I/O만 대체한다."""
+
+    def _revalidate(
+        comparison: TrainingComparisonManifest, *, promotion_evidence_store: object
+    ) -> TrainingComparisonManifest:
+        return comparison
+
+    monkeypatch.setattr(
+        experiment_evaluation, "revalidate_training_comparison", _revalidate
+    )
 
 
 @dataclass
@@ -354,8 +370,7 @@ def test_v1_holds_for_legacy_comparison_without_effective_seed_evidence() -> Non
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
     assert evaluation.paired is False
-    assert EvaluationReasonCode.PLAN_RECEIPT_MISSING in evaluation.reason_codes
-    assert EvaluationReasonCode.EFFECTIVE_SEEDS_MISSING in evaluation.reason_codes
+    assert evaluation.reason_codes == (EvaluationReasonCode.PLAN_RECEIPT_MISSING,)
 
 
 def test_v1_holds_when_comparisons_use_different_snapshots() -> None:
@@ -376,7 +391,7 @@ def test_v1_holds_when_comparisons_use_different_snapshots() -> None:
     assert evaluation.reason_codes == (EvaluationReasonCode.SNAPSHOT_MISMATCH,)
 
 
-def test_v1_holds_when_plan_was_not_predeclared_before_comparison() -> None:
+def test_v1_does_not_use_caller_comparison_timestamp_as_a_trust_source() -> None:
     plan = _plan(created_at=PLAN_TIME + timedelta(minutes=2))
     store, receipt = _published_plan_store(plan=plan)
     evidence = _evidence(receipt, store=store)
@@ -385,8 +400,10 @@ def test_v1_holds_when_plan_was_not_predeclared_before_comparison() -> None:
         evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
     )
 
-    assert evaluation.verdict is EvaluationVerdict.HOLD
-    assert evaluation.reason_codes == (EvaluationReasonCode.PLAN_NOT_PREDECLARED,)
+    assert evaluation.verdict is EvaluationVerdict.ELIGIBLE
+    assert evaluation.reason_codes == (
+        EvaluationReasonCode.PRIMARY_ROC_AUC_IMPROVED_WITH_95PCT_CONFIDENCE,
+    )
 
 
 def test_v1_holds_when_comparison_is_bound_to_a_different_plan() -> None:
@@ -500,23 +517,29 @@ def test_experiment_plan_rejects_an_empty_candidate_identifier() -> None:
         )
 
 
-def test_v1_holds_when_comparison_timestamp_has_no_timezone() -> None:
+def test_v1_holds_without_statistics_when_canonical_revalidation_rejects_transport(
+    monkeypatch,
+) -> None:
     store, receipt = _published_plan_store()
-    naive = _comparison(
-        42,
-        store=store,
-        plan_receipt=receipt,
-        validated_at=datetime(2026, 8, 1, 0, 1),
+
+    def _reject_post_hoc_plan(
+        comparison: TrainingComparisonManifest, *, promotion_evidence_store: object
+    ) -> TrainingComparisonManifest:
+        raise ComparisonValidationError("plan receipt가 MLflow run 시작 뒤에 생성됐습니다")
+
+    monkeypatch.setattr(
+        experiment_evaluation, "revalidate_training_comparison", _reject_post_hoc_plan
     )
-    evidence = _evidence(receipt, store=store, comparison_overrides={42: naive})
+    evidence = _evidence(receipt, store=store)
 
     evaluation = evaluate_experiment(
         evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
     )
 
     assert evaluation.verdict is EvaluationVerdict.HOLD
+    assert evaluation.confidence_interval_lower is None
     assert evaluation.reason_codes == (
-        EvaluationReasonCode.TIMESTAMP_TIMEZONE_MISSING,
+        EvaluationReasonCode.RECEIPT_REVALIDATION_FAILED,
     )
 
 

@@ -9,9 +9,9 @@
 
 [비책임] 모델 학습은 `src/pipeline/train.py`, 지표 산출은
 `src/pipeline/evaluate.py`, MLflow artifact 비교 검증은
-`src/pipeline/training_comparison.py`가 소유한다. 레지스트리 alias 이동과 dev/
-production 경계 집행은 후속 #470의 책임이며 이 모듈은 외부 시스템을 호출하지
-않는다.
+`src/pipeline/training_comparison.py`가 소유한다. 이 모듈은 그 verifier를 호출해
+전달된 comparison JSON을 다시 구성하지만 MLflow/GCS 검증 규칙을 자체 소유하지
+않는다. 레지스트리 alias 이동과 dev/production 경계 집행은 후속 #470의 책임이다.
 """
 
 from __future__ import annotations
@@ -34,6 +34,10 @@ from src.pipeline.promotion_evidence import (
     create_experiment_plan,  # noqa: F401 - 기존 import 경로 호환 re-export
 )
 from src.pipeline.seed_sweep import compare_to_baseline, summarize_metric, t_critical_95
+from src.pipeline.training_comparison import (
+    ComparisonValidationError,
+    revalidate_training_comparison,
+)
 from src.pipeline.training_provenance import TrainingComparisonManifest
 
 
@@ -48,11 +52,6 @@ def _normalize_utc_datetime(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("timezone 정보를 포함한 UTC 시각이 필요합니다")
     return value.astimezone(timezone.utc)
-
-
-def _has_timezone(value: datetime) -> bool:
-    """legacy manifest의 시각을 비교해도 되는지 확인한다."""
-    return value.tzinfo is not None and value.utcoffset() is not None
 
 
 class _ImmutableModel(BaseModel):
@@ -325,11 +324,6 @@ def _evidence_reason_codes(
         snapshot_hashes.add(comparison.baseline_snapshot_sha256)
         snapshot_hashes.add(comparison.challenger_snapshot_sha256)
 
-        if not _has_timezone(comparison.validated_at):
-            reasons.add(EvaluationReasonCode.TIMESTAMP_TIMEZONE_MISSING)
-        elif plan.created_at > comparison.validated_at:
-            reasons.add(EvaluationReasonCode.PLAN_NOT_PREDECLARED)
-
     if len(snapshot_hashes) != 1:
         reasons.add(EvaluationReasonCode.SNAPSHOT_MISMATCH)
     return reasons
@@ -392,7 +386,36 @@ def evaluate_experiment(
             reason_codes={EvaluationReasonCode.RECEIPT_REVALIDATION_FAILED},
             evaluated_at=evaluation_time,
         )
-    reasons = _evidence_reason_codes(plan=plan, evidence=evidence, policy=policy)
+    reasons: set[EvaluationReasonCode] = set()
+    canonical_observations: list[PairedSeedObservation] = []
+    for observation in evidence.observations:
+        if observation.comparison.promotion_evidence is None:
+            reasons.add(EvaluationReasonCode.PLAN_RECEIPT_MISSING)
+            continue
+        try:
+            canonical_comparison = revalidate_training_comparison(
+                observation.comparison,
+                promotion_evidence_store=promotion_evidence_store,
+            )
+        except ComparisonValidationError:
+            reasons.add(EvaluationReasonCode.RECEIPT_REVALIDATION_FAILED)
+            continue
+        canonical_observations.append(
+            observation.model_copy(update={"comparison": canonical_comparison})
+        )
+    if reasons:
+        return _failed_evaluation(
+            plan_id=plan.plan_id,
+            evidence=evidence,
+            reason_codes=reasons,
+            evaluated_at=evaluation_time,
+        )
+    canonical_evidence = evidence.model_copy(
+        update={"observations": tuple(canonical_observations)}
+    )
+    reasons = _evidence_reason_codes(
+        plan=plan, evidence=canonical_evidence, policy=policy
+    )
     if reasons:
         return _failed_evaluation(
             plan_id=plan.plan_id,
@@ -402,7 +425,7 @@ def evaluate_experiment(
         )
 
     metric_values: list[tuple[float, float]] = []
-    for observation in evidence.observations:
+    for observation in canonical_evidence.observations:
         try:
             metric_values.append(
                 _verified_metric_values(
