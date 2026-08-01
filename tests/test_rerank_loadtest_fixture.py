@@ -173,6 +173,98 @@ def test_k6_script_has_warmup_and_measurement_contract() -> None:
         assert f"rerank_measure_status_code_{status_code}" in script
 
 
+def test_k6_job_has_no_identity_or_token_mount() -> None:
+    """k6 Job은 전용 KSA만 쓰고 토큰·Secret·권한 상승을 허용하지 않는다."""
+    text = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
+
+    assert "serviceAccountName: rerank-loadtest" in text
+    assert "automountServiceAccountToken: false" in text
+    assert "restartPolicy: Never" in text
+    assert "allowPrivilegeEscalation: false" in text
+    assert "readOnlyRootFilesystem: true" in text
+    assert "REDIS_" not in text and "secretKeyRef:" not in text
+
+
+def test_k6_job_is_immutable_hardened_and_configmap_only() -> None:
+    """k6 Job은 고정 digest와 one-shot 제한을 쓰며 두 ConfigMap만 mount한다."""
+    text = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
+
+    assert "generateName: rerank-k6-" in text
+    assert "namespace: loadtest" in text
+    assert "app.kubernetes.io/part-of: rerank-loadtest" in text
+    assert "backoffLimit: 0" in text
+    assert "activeDeadlineSeconds: 600" in text
+    assert "ttlSecondsAfterFinished: 86400" in text
+    assert (
+        "grafana/k6@sha256:1f40432b1cbe7234e977f96c362c9bc5"
+        "50a2d2b583d014dd8669fe40d3e9e755" in text
+    )
+    assert "k6 run" in text and "/scripts/rerank.js" in text
+    assert "runAsNonRoot: true" in text
+    assert "drop:" in text and "- ALL" in text
+    assert "type: RuntimeDefault" in text
+    assert text.count("configMap:") == 2
+    for forbidden in (
+        "hostPath:",
+        "persistentVolumeClaim:",
+        "projected:",
+        "serviceAccountToken:",
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "DB_",
+    ):
+        assert forbidden not in text
+
+
+def test_manual_workflow_keeps_load_and_snapshot_identities_separate() -> None:
+    """수동 workflow는 VU gate와 Prometheus 조회를 서로 다른 identity로 실행한다."""
+    text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+
+    assert "workflow_dispatch:" in text
+    assert "candidate_count:" in text and "- 24" in text and "- 200" in text
+    assert "benchmark_label:" in text
+    assert "- baseline" in text and "- optimized" in text
+    assert "fixture_version:" in text and "default: rerank-v1" in text
+    assert "serving_image_ref:" in text and "serving_git_sha:" in text
+    assert "for vus in 1 2 4 8" in text
+    assert ".data.metrics.rerank_measure_failure.values.rate" in text
+    assert "< 0.01" in text
+    assert "RERANK_LOADTEST_RUNNER_SA" in text
+    assert "RERANK_PROMETHEUS_SNAPSHOT_READER_SA" in text
+    assert text.count("google-github-actions/auth@v2") == 2
+    assert text.count("google-github-actions/get-gke-credentials@v2") == 2
+    assert "k6-summary-" in text and "metadata-" in text
+    assert "creation_timestamp" in text and "completion_timestamp" in text
+    assert "PROMETHEUS_SERVICE_PROXY:" in text
+    assert (
+        "/api/v1/namespaces/monitoring/services/"
+        "http:kube-prometheus-stack-prometheus:9090/proxy" in text
+    )
+    assert "/api/v1/query_range" in text
+    assert "step=30" in text
+    for query_name in (
+        "phase_p50",
+        "phase_p95",
+        "outcome_rate",
+        "max_in_flight",
+        "cpu_seconds",
+        "rss",
+        "cfs_throttling",
+    ):
+        assert query_name in text
+    assert ".status == \"success\"" in text
+    assert "actions/upload-artifact@v4" in text
+
+
+def test_manual_workflow_serializes_shared_configmaps_and_waits_for_padding() -> None:
+    """공유 ConfigMap 실행은 직렬화하고 Prometheus 종료 패딩은 미래를 조회하지 않는다."""
+    text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+
+    assert "group: rerank-loadtest\n" in text
+    assert "padded_end=" in text
+    assert "current_time=" in text
+    assert 'sleep "$((padded_end - current_time))"' in text
+
+
 def test_provisioner_default_dry_run_executes_only_count_selects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
