@@ -86,13 +86,14 @@ def log_artifact(
     mlflow.log_artifact(local_path, artifact_path=artifact_path)
 
 
-def log_artifacts(artifact_dir: str) -> None:
+def log_artifacts(artifact_dir: str, artifact_path: str | None = None) -> None:
     """Artifact 디렉토리 기록.
 
     Args:
         artifact_dir: 디렉토리 경로
+        artifact_path: MLflow run 안의 대상 디렉터리
     """
-    mlflow.log_artifacts(artifact_dir)
+    mlflow.log_artifacts(artifact_dir, artifact_path=artifact_path)
 
 
 def start_run(run_name: Optional[str] = None, tags: Optional[Dict[str, str]] = None) -> str:

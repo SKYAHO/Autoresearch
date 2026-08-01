@@ -566,6 +566,17 @@ def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> 
     [version] = client.search_model_versions("name='ctr-model'")
     artifact_paths = {artifact.path for artifact in client.list_artifacts(version.run_id)}
     assert "model_onnx" in artifact_paths
+    assert "manifest" in artifact_paths
+    download_root = tmp_path / "download"
+    download_root.mkdir()
+    manifest_path = client.download_artifacts(
+        version.run_id, "manifest/manifest.json", dst_path=str(download_root)
+    )
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["contract_version"] == "ctr-model-package-v1"
+    assert manifest["sampling_rate"] == 1.0
+    assert manifest["artifacts"]["calibration"] is None
+    assert version.source.endswith("/model_onnx")
 
     reranker = load_mlflow_model(
         MlflowModelSettings(tracking_uri=tracking_uri, run_id=version.run_id)
