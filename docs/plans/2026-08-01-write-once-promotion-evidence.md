@@ -53,7 +53,7 @@
 - PromotionEvidenceStore(evidence_root: str, client: object | None = None) exposes publish_plan(plan) -> ExperimentPlanReceipt, verify_plan_receipt(receipt) -> ExperimentPlan, publish_held_out_metric(evidence) -> HeldOutMetricReceipt, and verify_held_out_metric_receipt(receipt) -> HeldOutMetricEvidence.
 - experiment_evaluation.py re-exports ExperimentPlan and create_experiment_plan from this module during the compatibility transition; it must not own a second copy of the model.
 
-- [ ] **Step 1: Write the failing object receipt tests**
+- [x] **Step 1: Write the failing object receipt tests**
 
 ~~~python
 def test_publish_plan_uses_create_only_path_and_returns_server_receipt() -> None:
@@ -79,13 +79,13 @@ def test_publish_plan_uses_create_only_path_and_returns_server_receipt() -> None
 
 Add negative tests that mutate returned byte content, receipt generation, receipt SHA-256, object metageneration, or root/path. Assert PromotionEvidenceValidationError and never fall back to an unpinned latest object. Add a fake `upload_from_string(payload, content_type="application/json", if_generation_match=0)` that raises on a second write and assert the adapter raises rather than returning a receipt.
 
-- [ ] **Step 2: Run the new tests to verify they fail**
+- [x] **Step 2: Run the new tests to verify they fail**
 
 Run: uv run python -m pytest tests/test_pipeline_promotion_evidence.py -v
 
 Expected: FAIL during collection because src.pipeline.promotion_evidence does not exist.
 
-- [ ] **Step 3: Implement immutable evidence models and canonical serialization**
+- [x] **Step 3: Implement immutable evidence models and canonical serialization**
 
 ~~~python
 class GcsObjectReceipt(_ImmutableModel):
@@ -120,7 +120,7 @@ class HeldOutMetricReceipt(_ImmutableModel):
 
 Use sorted-key UTF-8 JSON with compact separators for every SHA-derived ID and stored body. Normalize all receipt timestamps to timezone-aware UTC and reject gs:// roots with no bucket, empty prefix, duplicate slash, . or .. component. Keep plan IDs content-addressed using hypothesis, control, candidates, policy version, and audit timestamp exactly as the current implementation does.
 
-- [ ] **Step 4: Implement the GCS adapter with pinned reads**
+- [x] **Step 4: Implement the GCS adapter with pinned reads**
 
 ~~~python
 def _read_receipted_bytes(self, receipt: GcsObjectReceipt) -> bytes:
@@ -143,7 +143,7 @@ def publish_plan(self, plan: ExperimentPlan) -> ExperimentPlanReceipt:
 
 Derive the metric object name from its canonical evidence SHA: <prefix>/metrics/<run_id>/<metric-sha256>.json. Verify the parsed body against the receipt's nested model after rehashing; do not trust just metadata or just a caller-supplied Pydantic object. Wrap GCS/backend exceptions in the fixed safe validation error without copying credentials, signed URLs, or raw backend text.
 
-- [ ] **Step 5: Move shared plan symbols and run the adapter tests**
+- [x] **Step 5: Move shared plan symbols and run the adapter tests**
 
 Replace local ExperimentPlan, immutable base model, canonical plan ID helpers, and create_experiment_plan() in experiment_evaluation.py with imports/re-exports from promotion_evidence.py. Preserve the existing public import names while the evaluator is refactored in Task 4.
 
@@ -151,7 +151,7 @@ Run: uv run python -m pytest tests/test_pipeline_promotion_evidence.py tests/tes
 
 Expected: PASS. Existing evaluation tests may still construct legacy raw evidence at this checkpoint; only the shared plan model moves here.
 
-- [ ] **Step 6: Commit the evidence adapter**
+- [x] **Step 6: Commit the evidence adapter**
 
 ~~~bash
 git add src/pipeline/promotion_evidence.py tests/test_pipeline_promotion_evidence.py src/pipeline/experiment_evaluation.py

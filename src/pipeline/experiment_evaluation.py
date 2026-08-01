@@ -20,15 +20,20 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Annotated, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from src.pipeline.promotion_evidence import (
+    PROMOTION_POLICY_VERSION,
+    ExperimentPlan,
+    create_experiment_plan,  # noqa: F401 - 기존 import 경로 호환 re-export
+)
 from src.pipeline.seed_sweep import compare_to_baseline, summarize_metric, t_critical_95
 from src.pipeline.training_provenance import SHA256_PATTERN, TrainingComparisonManifest
 
 
-POLICY_VERSION = "promotion-policy-v1"
+POLICY_VERSION = PROMOTION_POLICY_VERSION
 PRIMARY_METRIC = "roc_auc"
 POLICY_SEEDS = tuple(range(42, 72))
 CONFIDENCE_LEVEL = 0.95
@@ -88,7 +93,6 @@ class EvaluationReasonCode(str, Enum):
     PLAN_NOT_PREDECLARED = "plan_not_predeclared"
     PLAN_EVIDENCE_MISMATCH = "plan_evidence_mismatch"
     DUPLICATE_COMPARISON_EVIDENCE = "duplicate_comparison_evidence"
-    PLAN_ID_MISMATCH = "plan_id_mismatch"
     COMPARISON_PLAN_MISMATCH = "comparison_plan_mismatch"
     METRIC_SPLIT_MISMATCH = "metric_split_mismatch"
     TIMESTAMP_TIMEZONE_MISSING = "timestamp_timezone_missing"
@@ -106,22 +110,6 @@ class PromotionPolicy(_ImmutableModel):
     multiple_candidate_policy: Literal["independent_holdout_required"] = (
         "independent_holdout_required"
     )
-
-
-class ExperimentPlan(_ImmutableModel):
-    """실험을 시작하기 전에 고정하는 비교 대상과 정책 참조."""
-
-    plan_id: str = Field(min_length=1)
-    hypothesis_id: str = Field(min_length=1)
-    control_id: str = Field(min_length=1)
-    candidate_ids: tuple[Annotated[str, Field(min_length=1)], ...] = Field(min_length=1)
-    policy_version: Literal["promotion-policy-v1"] = POLICY_VERSION
-    created_at: datetime
-
-    @field_validator("created_at")
-    @classmethod
-    def _normalize_created_at(cls, value: datetime) -> datetime:
-        return _normalize_utc_datetime(value)
 
 
 class HeldOutRocAucEvidence(_ImmutableModel):
@@ -237,65 +225,9 @@ def _stable_id(prefix: str, value: object) -> str:
     return f"{prefix}-{_canonical_sha256(value)}"
 
 
-def _plan_identity_payload(
-    *,
-    hypothesis_id: str,
-    control_id: str,
-    candidate_ids: tuple[str, ...],
-    created_at: datetime,
-) -> dict[str, object]:
-    """사전 선언 plan identity에 포함할 변경 불가능한 내용을 만든다."""
-    return {
-        "hypothesis_id": hypothesis_id,
-        "control_id": control_id,
-        "candidate_ids": candidate_ids,
-        "policy_version": POLICY_VERSION,
-        "created_at": created_at,
-    }
-
-
-def _expected_plan_id(plan: ExperimentPlan) -> str:
-    """수신한 plan의 내용이 plan_id와 일치하는지 확인할 기대 식별자를 만든다."""
-    payload = _plan_identity_payload(
-        hypothesis_id=plan.hypothesis_id,
-        control_id=plan.control_id,
-        candidate_ids=plan.candidate_ids,
-        created_at=plan.created_at,
-    )
-    return _stable_id("experiment-plan", payload)
-
-
 def promotion_policy_v1() -> PromotionPolicy:
     """호출자가 완화할 수 없는 v1 자동 승격 정책을 반환한다."""
     return PromotionPolicy()
-
-
-def create_experiment_plan(
-    *,
-    hypothesis_id: str,
-    control_id: str,
-    candidate_ids: tuple[str, ...],
-    created_at: datetime | None = None,
-) -> ExperimentPlan:
-    """사전 선언된 실험 계획을 식별 가능한 불변 계약으로 만든다.
-
-    Args:
-        hypothesis_id: 가설 또는 이슈에서 안정적으로 참조할 식별자.
-        control_id: 비교 기준인 baseline 식별자.
-        candidate_ids: 자동 판정을 시도할 후보 식별자. v1은 하나만 허용한다.
-        created_at: 계획을 고정한 UTC 시각. 생략하면 현재 UTC를 쓴다.
-    """
-    plan_time = _normalize_utc_datetime(created_at or _utc_now())
-    payload = _plan_identity_payload(
-        hypothesis_id=hypothesis_id,
-        control_id=control_id,
-        candidate_ids=candidate_ids,
-        created_at=plan_time,
-    )
-    return ExperimentPlan(
-        plan_id=_stable_id("experiment-plan", payload),
-        **payload,
-    )
 
 
 def create_paired_seed_evidence(
@@ -359,8 +291,6 @@ def _evidence_reason_codes(
     reasons: set[EvaluationReasonCode] = set()
     if plan.plan_id != evidence.plan_id:
         reasons.add(EvaluationReasonCode.PLAN_EVIDENCE_MISMATCH)
-    if plan.plan_id != _expected_plan_id(plan):
-        reasons.add(EvaluationReasonCode.PLAN_ID_MISMATCH)
     if len(plan.candidate_ids) != 1:
         reasons.add(
             EvaluationReasonCode.MULTIPLE_CANDIDATES_REQUIRE_INDEPENDENT_HOLDOUT
