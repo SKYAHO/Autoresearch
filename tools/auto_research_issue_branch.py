@@ -25,6 +25,7 @@ import os
 from pathlib import Path
 import re
 from typing import Mapping, Sequence
+import unicodedata
 
 
 _HEADING_NAMES = {
@@ -80,6 +81,11 @@ _IDENTIFIER_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _EXPERIMENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 _CANDIDATE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 COMPLETION_CANDIDATE_SCHEMA_VERSION = 1
+MAX_COMPLETION_CANDIDATES = 50
+MAX_DECIMAL_TEXT_LENGTH = 128
+MAX_DECIMAL_DIGITS = 64
+MAX_DECIMAL_EXPONENT = 1000
+MAX_RESULT_REFERENCE_LENGTH = 2048
 
 
 @dataclass(frozen=True)
@@ -92,10 +98,10 @@ class IssueInput:
     change: str
     primary_metric_name: str
     primary_metric_direction: str
-    minimum_primary_delta: float
+    minimum_primary_delta: Decimal
     guardrail_metric_name: str | None
     guardrail_metric_direction: str
-    maximum_guardrail_regression: float | None
+    maximum_guardrail_regression: Decimal | None
     secondary_metrics: str
     comparison: str
     dataset_snapshot: str
@@ -202,6 +208,10 @@ def select_best_candidate(
     _validate_event_identifier(base_dev_sha, "base_dev_sha", _SHA_PATTERN)
     if not candidates:
         raise ValueError("candidates must contain at least one candidate")
+    if len(candidates) > MAX_COMPLETION_CANDIDATES:
+        raise ValueError(
+            f"candidates must contain at most {MAX_COMPLETION_CANDIDATES} candidates"
+        )
 
     parsed_candidates = tuple(
         _parse_completion_candidate(candidate, criteria, experiment_id, base_dev_sha)
@@ -267,13 +277,12 @@ def _parse_completion_candidate(
         raise ValueError("unknown candidate keys: " + ", ".join(sorted(unknown_keys)))
     if missing_keys:
         raise ValueError("missing candidate keys: " + ", ".join(sorted(missing_keys)))
-    if candidate["schema_version"] != COMPLETION_CANDIDATE_SCHEMA_VERSION or isinstance(
-        candidate["schema_version"], bool
+    if (
+        type(candidate["schema_version"]) is not int
+        or candidate["schema_version"] != COMPLETION_CANDIDATE_SCHEMA_VERSION
     ):
         raise ValueError("schema_version must be 1")
-    if candidate["issue_number"] != criteria.issue_number or isinstance(
-        candidate["issue_number"], bool
-    ):
+    if type(candidate["issue_number"]) is not int or candidate["issue_number"] != criteria.issue_number:
         raise ValueError("issue_number does not match issue criteria")
     _validate_equal_identifier(candidate["experiment_id"], experiment_id, "experiment_id", _EXPERIMENT_ID_PATTERN)
     _validate_equal_identifier(candidate["base_dev_sha"], base_dev_sha, "base_dev_sha", _SHA_PATTERN)
@@ -351,10 +360,9 @@ def _single_line_reference(value: object, field_name: str) -> str:
     """artifact/log의 비어 있지 않은 단일 줄 식별자를 반환합니다."""
     if (
         not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or "\n" in value
-        or "\r" in value
+        or not value.strip()
+        or len(value) > MAX_RESULT_REFERENCE_LENGTH
+        or any(unicodedata.category(character).startswith("C") for character in value)
     ):
         raise ValueError(f"{field_name} must be a non-empty single-line reference")
     return value
@@ -406,7 +414,7 @@ def _is_qualified_candidate(candidate: CompletionCandidate, criteria: IssueInput
         if criteria.primary_metric_direction == "higher_is_better"
         else candidate.primary_baseline_metric - candidate.primary_candidate_metric
     )
-    if primary_delta < Decimal(str(criteria.minimum_primary_delta)):
+    if primary_delta < criteria.minimum_primary_delta:
         return False
     if criteria.guardrail_metric_name is None:
         return True
@@ -419,7 +427,7 @@ def _is_qualified_candidate(candidate: CompletionCandidate, criteria: IssueInput
         else candidate.guardrail_candidate_metric - candidate.guardrail_baseline_metric
     )
     assert criteria.maximum_guardrail_regression is not None
-    return regression <= Decimal(str(criteria.maximum_guardrail_regression))
+    return regression <= criteria.maximum_guardrail_regression
 
 
 def _best_qualified_candidate(
@@ -526,11 +534,11 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
         change=change,
         primary_metric_name=primary_metric_name,
         primary_metric_direction=primary_metric_direction,
-        minimum_primary_delta=_finite_float(minimum_primary_delta, "minimum_primary_delta"),
+        minimum_primary_delta=minimum_primary_delta,
         guardrail_metric_name=guardrail_metric_name,
         guardrail_metric_direction=guardrail_metric_direction,
         maximum_guardrail_regression=(
-            _finite_float(maximum_guardrail_regression, "maximum_guardrail_regression")
+            maximum_guardrail_regression
             if maximum_guardrail_regression is not None
             else None
         ),
@@ -598,11 +606,10 @@ def _metric_direction(value: str, field_name: str) -> str:
 
 
 def _non_negative_decimal(value: str, field_name: str) -> Decimal:
-    """유한하고 0 이상이며 공개 float 범위에 드는 Decimal을 반환합니다."""
+    """유한하고 0 이상인 bounded Decimal을 반환합니다."""
     decimal = _finite_decimal(value, field_name)
     if decimal < 0:
         raise ValueError(f"{field_name} must be non-negative")
-    _finite_float(decimal, field_name)
     return decimal
 
 
@@ -679,14 +686,26 @@ def _parse_split_sizes(test_value: str, validation_value: str) -> tuple[Decimal,
 
 
 def _finite_decimal(value: str, field_name: str) -> Decimal:
-    """유한한 Decimal 문자열만 받아 숫자 경계 검증에 사용합니다."""
+    """길이·digit·exponent 경계를 만족하는 유한 Decimal 문자열만 반환합니다."""
+    if len(value) > MAX_DECIMAL_TEXT_LENGTH:
+        raise ValueError(f"{field_name} exceeds the decimal text length limit")
     try:
         decimal = Decimal(value)
     except InvalidOperation as error:
         raise ValueError(f"{field_name} must be a finite decimal") from error
     if not decimal.is_finite():
         raise ValueError(f"{field_name} must be a finite decimal")
+    _validate_decimal_bounds(decimal, field_name)
     return decimal
+
+
+def _validate_decimal_bounds(value: Decimal, field_name: str) -> None:
+    """Decimal 내부 digit·exponent가 bounded contract를 넘지 않는지 검사합니다."""
+    decimal_tuple = value.as_tuple()
+    if len(decimal_tuple.digits) > MAX_DECIMAL_DIGITS:
+        raise ValueError(f"{field_name} exceeds the decimal digit limit")
+    if abs(decimal_tuple.exponent) > MAX_DECIMAL_EXPONENT:
+        raise ValueError(f"{field_name} exceeds the decimal exponent limit")
 
 
 def _finite_float(value: Decimal, field_name: str) -> float:
@@ -733,12 +752,40 @@ def _identifier(contract: dict[str, object]) -> str:
 
 def _decimal_text(value: Decimal) -> str:
     """식별자 입력에 사용할 Decimal의 동치 표기 canonical string을 반환합니다."""
+    _validate_decimal_bounds(value, "decimal")
     if value.is_zero():
         return "0"
-    text = format(value, "f")
-    if "." in text:
-        text = text.rstrip("0").rstrip(".")
-    return text
+    decimal_tuple = value.as_tuple()
+    digits = list(decimal_tuple.digits)
+    exponent = decimal_tuple.exponent
+    while digits[-1] == 0:
+        digits.pop()
+        exponent += 1
+    sign = "-" if decimal_tuple.sign else ""
+    coefficient = "".join(str(digit) for digit in digits)
+    fixed_text = _bounded_fixed_decimal_text(sign, coefficient, exponent)
+    if fixed_text is not None:
+        return fixed_text
+    return f"{sign}{coefficient}e{exponent}"
+
+
+def _bounded_fixed_decimal_text(sign: str, coefficient: str, exponent: int) -> str | None:
+    """길이 제한 안에서만 고정소수점 canonical 표기를 만들고, 아니면 None을 반환합니다."""
+    if exponent >= 0:
+        text_length = len(sign) + len(coefficient) + exponent
+        if text_length > MAX_DECIMAL_TEXT_LENGTH:
+            return None
+        return sign + coefficient + "0" * exponent
+    decimal_position = len(coefficient) + exponent
+    if decimal_position > 0:
+        text_length = len(sign) + len(coefficient) + 1
+        if text_length > MAX_DECIMAL_TEXT_LENGTH:
+            return None
+        return sign + coefficient[:decimal_position] + "." + coefficient[decimal_position:]
+    text_length = len(sign) + 2 - decimal_position + len(coefficient)
+    if text_length > MAX_DECIMAL_TEXT_LENGTH:
+        return None
+    return sign + "0." + "0" * -decimal_position + coefficient
 
 
 def _parse_arguments(argv: Sequence[str] | None) -> argparse.Namespace:

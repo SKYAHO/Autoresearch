@@ -23,14 +23,15 @@ jobs:
   promote-completed-experiment:
     runs-on: ubuntu-latest
     concurrency:
-      group: auto-research-dev-promotion
+      group: auto-research-dev-promotion-${{ github.event.client_payload.issue_number || inputs.issue_number }}-${{ github.event.client_payload.experiment_id || inputs.experiment_id }}
       cancel-in-progress: false
     steps:
-      - name: Checkout dev selector
+      - name: Checkout trusted selector
         uses: actions/checkout@v6
         with:
-          ref: dev
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Validate complete result set and promote one candidate
         uses: actions/github-script@v8
@@ -41,7 +42,8 @@ jobs:
             const os = require('os');
             const path = require('path');
             const issueBranchMarker = '<!-- auto-research-issue-branch:v1 -->';
-            const resultMarker = '<!-- auto-research-experiment-result:v1 -->';
+            const resultMarkerPrefix = '<!-- auto-research-experiment-result:';
+            const resultMarker = '<!-- auto-research-experiment-result:v2 -->';
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const payload = context.payload;
@@ -86,19 +88,34 @@ jobs:
 
             function parseResultMarker(body) {
               const match = body.match(
-                /^<!-- auto-research-experiment-result:v1 -->\n## Auto Research experiment result\n- source_issue: #(\d+)\n- experiment_id: `([^`]+)`\n- result_set_id: `([0-9a-f]{64})`\n- selection_reason: `([^`]+)`\n- selected_candidate_sha: `([^`]+)`\n- outcome: `([^`]+)`\n- merge_sha: `([^`]+)`$/,
+                /^<!-- auto-research-experiment-result:v2 -->\n## Auto Research experiment result\n- source_issue: #(\d+)\n- experiment_id: `([^`]+)`\n- result_set_id: `([0-9a-f]{64})`\n- selection_reason: `(qualified_candidate|no_qualified_candidate)`\n- selected_candidate_sha: `(none|[0-9a-f]{40})`\n- state: `(pending|merged|no_qualified|merge_conflict|merge_api_failed)`$/,
               );
               if (match === null) {
                 failClosed('experiment result marker is malformed');
               }
-              return {
+              const result = {
                 sourceIssue: Number(match[1]),
                 experimentId: match[2],
                 resultSetId: match[3],
+                selectionReason: match[4],
+                selectedCandidateSha: match[5] === 'none' ? '' : match[5],
+                state: match[6],
               };
+              const requiresCandidate = result.state !== 'no_qualified';
+              if (
+                (requiresCandidate && (
+                  result.selectionReason !== 'qualified_candidate' || result.selectedCandidateSha === ''
+                )) ||
+                (!requiresCandidate && (
+                  result.selectionReason !== 'no_qualified_candidate' || result.selectedCandidateSha !== ''
+                ))
+              ) {
+                failClosed('experiment result marker state is inconsistent');
+              }
+              return result;
             }
 
-            function resultMarkerBody(resultSetId, selectionReason, selectedCandidateSha, outcome, mergeSha) {
+            function resultMarkerBody(resultSetId, selectionReason, selectedCandidateSha, state) {
               return [
                 resultMarker,
                 '## Auto Research experiment result',
@@ -107,8 +124,7 @@ jobs:
                 `- result_set_id: \`${resultSetId}\``,
                 `- selection_reason: \`${selectionReason}\``,
                 `- selected_candidate_sha: \`${selectedCandidateSha || 'none'}\``,
-                `- outcome: \`${outcome}\``,
-                `- merge_sha: \`${mergeSha || 'none'}\``,
+                `- state: \`${state}\``,
               ].join('\n');
             }
 
@@ -156,6 +172,7 @@ jobs:
               failClosed('issue branch marker source issue does not match event');
             }
 
+            const verifiedCandidateShas = new Set();
             for (const candidate of candidates) {
               if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
                 failClosed('candidate must be an object before lineage verification');
@@ -179,10 +196,17 @@ jobs:
               if (!['ahead', 'identical'].includes(branchComparison.data.status)) {
                 failClosed('candidate is not an ancestor of the recorded issue branch');
               }
+              verifiedCandidateShas.add(candidate.candidate_sha);
             }
 
             const bodyPath = path.join(os.tmpdir(), `auto-research-issue-${issueNumber}.md`);
             fs.writeFileSync(bodyPath, issue.data.body, 'utf8');
+            const selectorEnvironment = {
+              PATH: process.env.PATH,
+              LANG: process.env.LANG || 'C.UTF-8',
+              PYTHONUTF8: '1',
+              GITHUB_OUTPUT: '',
+            };
             let selectorOutput;
             try {
               selectorOutput = execFileSync(
@@ -196,7 +220,7 @@ jobs:
                   '--base-dev-sha', recorded.baseDevSha,
                   '--candidates-json', candidatesJson,
                 ],
-                { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: '' } },
+                { encoding: 'utf8', env: selectorEnvironment },
               );
             } catch (error) {
               failClosed(`completion selector rejected result set: ${error.message}`);
@@ -219,12 +243,15 @@ jobs:
             const selectedCandidateSha = selector.selected_candidate_sha || '';
             if (selector.selection_reason === 'qualified_candidate') {
               requireMatch(selectedCandidateSha, /^[0-9a-f]{40}$/, 'selected candidate SHA');
+              if (!verifiedCandidateShas.has(selectedCandidateSha)) {
+                failClosed('selector chose a candidate that did not pass lineage verification');
+              }
             } else if (selectedCandidateSha !== '') {
               failClosed('unqualified selector result must not name a candidate');
             }
 
             const markerComments = comments.filter((comment) =>
-              typeof comment.body === 'string' && comment.body.includes(resultMarker),
+              typeof comment.body === 'string' && comment.body.includes(resultMarkerPrefix),
             );
             const parsedResultMarkers = markerComments.map((comment) => {
               if (comment.user.login !== 'github-actions[bot]') {
@@ -234,7 +261,7 @@ jobs:
               if (recordedResult.sourceIssue !== issueNumber) {
                 failClosed('experiment result marker source issue does not match event');
               }
-              return { recordedResult };
+              return { commentId: comment.id, recordedResult };
             });
             const matchingResultMarkers = parsedResultMarkers.filter(
               ({ recordedResult }) => recordedResult.experimentId === experimentId,
@@ -244,9 +271,28 @@ jobs:
             }
             if (matchingResultMarkers.length === 1) {
               const recordedResult = matchingResultMarkers[0].recordedResult;
-              if (recordedResult.resultSetId !== selector.result_set_id) {
+              if (
+                recordedResult.resultSetId !== selector.result_set_id ||
+                recordedResult.selectionReason !== selector.selection_reason ||
+                recordedResult.selectedCandidateSha !== selectedCandidateSha
+              ) {
                 failClosed('experiment result marker rejects a changed result set');
               }
+              if (recordedResult.state !== 'pending') {
+                return;
+              }
+              const pendingCommentId = matchingResultMarkers[0].commentId;
+              const reconciliation = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: selectedCandidateSha,
+                head: 'dev',
+              });
+              if (['ahead', 'identical'].includes(reconciliation.data.status)) {
+                await updateResultMarker(pendingCommentId, 'merged');
+                return;
+              }
+              await mergePendingCandidate(pendingCommentId);
               return;
             }
 
@@ -255,31 +301,52 @@ jobs:
                 owner,
                 repo,
                 issue_number: issueNumber,
-                body: resultMarkerBody(selector.result_set_id, selector.selection_reason, '', 'no_qualified_candidate', ''),
+                body: resultMarkerBody(selector.result_set_id, selector.selection_reason, '', 'no_qualified'),
               });
               return;
             }
 
-            let outcome = 'merged';
-            let mergeSha = '';
-            try {
-              const merged = await github.rest.repos.merge({
-                owner,
-                repo,
-                base: 'dev',
-                head: selectedCandidateSha,
-              });
-              if (merged.data.merged) {
-                mergeSha = merged.data.sha || '';
-              } else {
-                outcome = 'merge_rejected';
-              }
-            } catch (error) {
-              outcome = 'merge_api_failed';
-            }
-            await github.rest.issues.createComment({
+            const pendingComment = await github.rest.issues.createComment({
               owner,
               repo,
               issue_number: issueNumber,
-              body: resultMarkerBody(selector.result_set_id, selector.selection_reason, selectedCandidateSha, outcome, mergeSha),
+              body: resultMarkerBody(selector.result_set_id, selector.selection_reason, selectedCandidateSha, 'pending'),
             });
+            const pendingCommentId = pendingComment.data.id;
+            await mergePendingCandidate(pendingCommentId);
+
+            async function mergePendingCandidate(pendingCommentId) {
+              let finalState;
+              try {
+                const mergeResponse = await github.rest.repos.merge({
+                  owner,
+                  repo,
+                  base: 'dev',
+                  head: selectedCandidateSha,
+                });
+                if (mergeResponse.status === 201 || mergeResponse.status === 204) {
+                  if (mergeResponse.status === 201) {
+                    requireMatch(mergeResponse.data.sha, /^[0-9a-f]{40}$/, 'merge SHA');
+                  }
+                  finalState = 'merged';
+                } else {
+                  finalState = 'merge_api_failed';
+                }
+              } catch (error) {
+                if (error.status === 409) {
+                  finalState = 'merge_conflict';
+                } else {
+                  finalState = 'merge_api_failed';
+                }
+              }
+              await updateResultMarker(pendingCommentId, finalState);
+            }
+
+            async function updateResultMarker(pendingCommentId, state) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: pendingCommentId,
+                body: resultMarkerBody(selector.result_set_id, selector.selection_reason, selectedCandidateSha, state),
+              });
+            }

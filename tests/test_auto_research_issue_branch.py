@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 import pytest
 import yaml
@@ -15,6 +16,11 @@ PROMOTION_WORKFLOW = PROJECT_ROOT / ".github/workflows/auto-research-dev-promoti
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.auto_research_issue_branch import (  # noqa: E402
+    MAX_COMPLETION_CANDIDATES,
+    MAX_DECIMAL_DIGITS,
+    MAX_DECIMAL_EXPONENT,
+    MAX_DECIMAL_TEXT_LENGTH,
+    MAX_RESULT_REFERENCE_LENGTH,
     IssueInput,
     branch_name_for,
     is_descendant,
@@ -232,8 +238,12 @@ def test_issue_branch_workflow_uses_validator_and_never_updates_a_ref() -> None:
 
     steps = job["steps"]
     assert isinstance(steps, list)
-    checkout_step = next(step for step in steps if step["name"] == "Checkout dev validator")
-    assert checkout_step["with"] == {"ref": "dev", "fetch-depth": 1}
+    checkout_step = next(step for step in steps if step["name"] == "Checkout trusted validator")
+    assert checkout_step["with"] == {
+        "ref": "${{ github.workflow_sha }}",
+        "fetch-depth": 1,
+        "persist-credentials": False,
+    }
     validate_step = next(step for step in steps if step.get("id") == "validate")
     validate_run = validate_step["run"]
     assert isinstance(validate_run, str)
@@ -391,7 +401,7 @@ def test_parse_issue_input_reads_body_rendered_from_actual_form() -> None:
     assert issue_input.issue_branch == "exp/449-ctr-ratio"
     assert issue_input.primary_metric_name == "roc_auc"
     assert issue_input.primary_metric_direction == "higher_is_better"
-    assert issue_input.minimum_primary_delta == 0.002
+    assert issue_input.minimum_primary_delta == Decimal("0.002")
     assert issue_input.guardrail_metric_name is None
     assert issue_input.guardrail_metric_direction == "not_applicable"
     assert issue_input.maximum_guardrail_regression is None
@@ -418,7 +428,7 @@ def test_parse_issue_input_reads_configured_guardrail() -> None:
 
     assert issue_input.guardrail_metric_name == "log_loss"
     assert issue_input.guardrail_metric_direction == "lower_is_better"
-    assert issue_input.maximum_guardrail_regression == 0.01
+    assert issue_input.maximum_guardrail_regression == Decimal("0.01")
 
 
 @pytest.mark.parametrize("metric_name", ["", "1auc", "한글", "a b", "a/b", "a" * 65])
@@ -443,11 +453,11 @@ def test_parse_issue_input_accepts_zero_primary_delta() -> None:
     assert (
         parse_issue_input(449, "[AR] metric", structured_body(minimum_primary_delta="0"))
         .minimum_primary_delta
-        == 0
+        == Decimal("0")
     )
 
 
-def test_parse_issue_input_rejects_primary_delta_that_overflows_float() -> None:
+def test_parse_issue_input_rejects_primary_delta_that_exceeds_decimal_input_bound() -> None:
     with pytest.raises(ValueError, match="minimum_primary_delta"):
         parse_issue_input(
             449,
@@ -485,7 +495,7 @@ def test_parse_issue_input_rejects_inconsistent_guardrail(
         )
 
 
-def test_parse_issue_input_rejects_guardrail_regression_that_overflows_float() -> None:
+def test_parse_issue_input_rejects_guardrail_regression_that_exceeds_decimal_input_bound() -> None:
     with pytest.raises(ValueError, match="maximum_guardrail_regression"):
         parse_issue_input(
             449,
@@ -797,6 +807,8 @@ def completion_candidate(
     criteria_id: str | None = None,
     reproducibility_id: str | None = None,
     primary_baseline_metric: str = "0.75",
+    artifact_uri: str = "gs://autoresearch/experiments/artifact.json",
+    log_uri: str = "https://logs.example.test/run/449",
     guardrail_candidate_metric: str | None = None,
     guardrail_baseline_metric: str | None = None,
     criteria: IssueInput | None = None,
@@ -814,8 +826,8 @@ def completion_candidate(
         "reproducibility_id": reproducibility_id or issue_criteria.reproducibility_id,
         "primary_candidate_metric": primary_candidate_metric,
         "primary_baseline_metric": primary_baseline_metric,
-        "artifact_uri": "gs://autoresearch/experiments/artifact.json",
-        "log_uri": "https://logs.example.test/run/449",
+        "artifact_uri": artifact_uri,
+        "log_uri": log_uri,
     }
     if guardrail_candidate_metric is not None and guardrail_baseline_metric is not None:
         payload["guardrail_candidate_metric"] = guardrail_candidate_metric
@@ -985,7 +997,10 @@ def test_promotion_workflow_uses_all_candidate_lineage_before_selector_and_dev_m
     workflow = load_promotion_workflow()
     job = workflow["jobs"]["promote-completed-experiment"]
     assert isinstance(job, dict)
-    assert job["concurrency"] == {"group": "auto-research-dev-promotion", "cancel-in-progress": False}
+    assert job["concurrency"] == {
+        "group": "auto-research-dev-promotion-${{ github.event.client_payload.issue_number || inputs.issue_number }}-${{ github.event.client_payload.experiment_id || inputs.experiment_id }}",
+        "cancel-in-progress": False,
+    }
     steps = job["steps"]
     assert isinstance(steps, list)
     scripts = [step["with"]["script"] for step in steps if "with" in step and "script" in step["with"]]
@@ -1046,3 +1061,213 @@ def test_promotion_workflow_marker_idempotency_blocks_changed_result_sets_before
     assert "return;" in idempotency
     assert idempotency.index("recordedResult.resultSetId !== selector.result_set_id") < idempotency.index("return;")
     assert script.index("recordedResult.resultSetId !== selector.result_set_id") < script.index("github.rest.repos.merge")
+
+
+def test_selection_keeps_subnormal_and_precise_thresholds_as_decimal() -> None:
+    subnormal_criteria = parse_issue_input(
+        449,
+        "[AR] metric",
+        structured_body(minimum_primary_delta="1e-400"),
+    )
+    assert subnormal_criteria.minimum_primary_delta == Decimal("1e-400")
+
+    precise_delta = "0.1234567890123456789012345678901234567890"
+    precise_criteria = parse_issue_input(
+        449,
+        "[AR] metric",
+        structured_body(minimum_primary_delta=precise_delta),
+    )
+    selection = select_best_candidate(
+        precise_criteria,
+        "exp-449-20260801",
+        "d" * 40,
+        [
+            completion_candidate(
+                "a" * 40,
+                precise_delta,
+                primary_baseline_metric="0",
+                criteria=precise_criteria,
+            )
+        ],
+    )
+
+    assert precise_criteria.minimum_primary_delta == Decimal(precise_delta)
+    assert selection.candidate_sha == "a" * 40
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", True),
+        ("schema_version", 1.0),
+        ("issue_number", True),
+        ("issue_number", 449.0),
+    ],
+)
+def test_select_best_candidate_rejects_non_integer_schema_coordinates(
+    field: str,
+    value: object,
+) -> None:
+    criteria = parse_issue_input(449, "[AR] metric", structured_body())
+    candidate = completion_candidate("a" * 40, "0.79")
+    candidate[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        select_best_candidate(criteria, "exp-449-20260801", "d" * 40, [candidate])
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("primary_candidate_metric", "1" * (MAX_DECIMAL_DIGITS + 1)),
+        ("primary_candidate_metric", f"1e-{MAX_DECIMAL_EXPONENT + 1}"),
+        ("primary_candidate_metric", "1" * (MAX_DECIMAL_TEXT_LENGTH + 1)),
+        ("artifact_uri", " \t "),
+        ("log_uri", "line-one\nline-two"),
+        ("artifact_uri", "a" * (MAX_RESULT_REFERENCE_LENGTH + 1)),
+    ],
+)
+def test_select_best_candidate_rejects_resource_exhaustion_and_invalid_references(
+    field: str,
+    value: str,
+) -> None:
+    criteria = parse_issue_input(449, "[AR] metric", structured_body())
+    candidate = completion_candidate("a" * 40, "0.79")
+    candidate[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        select_best_candidate(criteria, "exp-449-20260801", "d" * 40, [candidate])
+
+
+def test_select_best_candidate_rejects_candidate_count_above_contract_limit() -> None:
+    criteria = parse_issue_input(449, "[AR] metric", structured_body())
+    candidate = completion_candidate("a" * 40, "0.79")
+
+    with pytest.raises(ValueError, match="candidates must contain at most"):
+        select_best_candidate(
+            criteria,
+            "exp-449-20260801",
+            "d" * 40,
+            [candidate] * (MAX_COMPLETION_CANDIDATES + 1),
+        )
+
+
+def test_promotion_workflow_uses_trusted_checkout_scoped_env_and_per_event_concurrency() -> None:
+    workflow = load_promotion_workflow()
+    job = workflow["jobs"]["promote-completed-experiment"]
+    assert isinstance(job, dict)
+    assert job["concurrency"] == {
+        "group": "auto-research-dev-promotion-${{ github.event.client_payload.issue_number || inputs.issue_number }}-${{ github.event.client_payload.experiment_id || inputs.experiment_id }}",
+        "cancel-in-progress": False,
+    }
+    assert "queue" not in job["concurrency"]
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    checkout_step = next(step for step in steps if step["name"] == "Checkout trusted selector")
+    assert checkout_step["with"] == {
+        "ref": "${{ github.workflow_sha }}",
+        "fetch-depth": 1,
+        "persist-credentials": False,
+    }
+    script = next(step["with"]["script"] for step in steps if "with" in step and "script" in step["with"])
+    assert isinstance(script, str)
+
+    selector_env = re.search(
+        r"const selectorEnvironment = \{(?P<entries>.*?)\n\s*\};",
+        script,
+        flags=re.DOTALL,
+    )
+    assert selector_env is not None
+    env_names = re.findall(r"^\s*([A-Z0-9_]+):", selector_env.group("entries"), flags=re.MULTILINE)
+    assert env_names == ["PATH", "LANG", "PYTHONUTF8", "GITHUB_OUTPUT"]
+    exec_call = re.search(
+        r"selectorOutput = execFileSync\(.*?\{ encoding: 'utf8', env: selectorEnvironment \},",
+        script,
+        flags=re.DOTALL,
+    )
+    assert exec_call is not None
+    assert "...process.env" not in exec_call.group(0)
+
+
+def test_promotion_workflow_claims_before_merge_and_recovers_pending_state() -> None:
+    workflow = load_promotion_workflow()
+    steps = workflow["jobs"]["promote-completed-experiment"]["steps"]
+    assert isinstance(steps, list)
+    script = next(step["with"]["script"] for step in steps if "with" in step and "script" in step["with"])
+    assert isinstance(script, str)
+
+    pending_create = re.search(
+        r"const pendingComment = await github\.rest\.issues\.createComment\(\{(?P<arguments>.*?)\}\);",
+        script,
+        flags=re.DOTALL,
+    )
+    assert pending_create is not None
+    assert "issue_number: issueNumber" in pending_create.group("arguments")
+    assert "'pending'" in pending_create.group("arguments")
+    merge_call = re.search(
+        r"const mergeResponse = await github\.rest\.repos\.merge\(\{(?P<arguments>.*?)\}\);",
+        script,
+        flags=re.DOTALL,
+    )
+    assert merge_call is not None
+    assert "base: 'dev'" in merge_call.group("arguments")
+    assert "head: selectedCandidateSha" in merge_call.group("arguments")
+    assert pending_create.start() < merge_call.start()
+    assert "mergeResponse.status === 201 || mergeResponse.status === 204" in script
+    assert "error.status === 409" in script
+
+    reconciliation = re.search(
+        r"const reconciliation = await github\.rest\.repos\.compareCommits\(\{(?P<arguments>.*?)\}\);",
+        script,
+        flags=re.DOTALL,
+    )
+    assert reconciliation is not None
+    assert [line.strip() for line in reconciliation.group("arguments").splitlines() if line.strip()] == [
+        "owner,",
+        "repo,",
+        "base: selectedCandidateSha,",
+        "head: 'dev',",
+    ]
+    assert reconciliation.start() < merge_call.start()
+    marker_update = re.search(
+        r"await github\.rest\.issues\.updateComment\(\{(?P<arguments>.*?)\}\);",
+        script,
+        flags=re.DOTALL,
+    )
+    assert marker_update is not None
+    assert "comment_id: pendingCommentId" in marker_update.group("arguments")
+    assert merge_call.start() < marker_update.start()
+
+
+def test_promotion_workflow_confirms_selector_sha_was_lineage_verified_before_merge() -> None:
+    workflow = load_promotion_workflow()
+    steps = workflow["jobs"]["promote-completed-experiment"]["steps"]
+    assert isinstance(steps, list)
+    script = next(step["with"]["script"] for step in steps if "with" in step and "script" in step["with"])
+    assert isinstance(script, str)
+
+    lineage_loop = script.index("for (const candidate of candidates)")
+    add_verified_sha = script.index("verifiedCandidateShas.add(candidate.candidate_sha)")
+    membership_check = script.index("if (!verifiedCandidateShas.has(selectedCandidateSha))")
+    merge_call = script.index("github.rest.repos.merge")
+    assert lineage_loop < add_verified_sha < membership_check < merge_call
+    assert "pending|merged|no_qualified|merge_conflict|merge_api_failed" in script
+
+
+def test_promotion_workflow_leaves_pending_marker_when_state_update_fails() -> None:
+    workflow = load_promotion_workflow()
+    steps = workflow["jobs"]["promote-completed-experiment"]["steps"]
+    assert isinstance(steps, list)
+    script = next(step["with"]["script"] for step in steps if "with" in step and "script" in step["with"])
+    assert isinstance(script, str)
+
+    state_machine = re.search(
+        r"async function mergePendingCandidate\(pendingCommentId\) \{(?P<body>.*?)\n\s*\}\n\n\s*async function updateResultMarker",
+        script,
+        flags=re.DOTALL,
+    )
+    assert state_machine is not None
+    body = state_machine.group("body")
+    assert "let finalState;" in body
+    assert "await updateResultMarker(pendingCommentId, finalState);" in body
+    assert body.index("} catch (error) {") < body.index("await updateResultMarker(pendingCommentId, finalState);")

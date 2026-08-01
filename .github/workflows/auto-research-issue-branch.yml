@@ -1,7 +1,8 @@
 name: Auto Research issue branch
 
 # GitHub issues 이벤트는 기본 브랜치(main)에 있는 workflow 정의만 실행한다.
-# 그러나 main은 정의의 위치일 뿐이며, validator checkout과 새 ref의 기준선은 항상 dev다.
+# 그러나 main은 정의의 위치일 뿐이며, validator는 workflow SHA를 checkout하고
+# 새 ref의 기준선은 항상 dev다.
 on:
   issues:
     types: [opened, labeled]
@@ -22,11 +23,12 @@ jobs:
     outputs:
       base_dev_sha: ${{ steps.branch.outputs.base_dev_sha }}
     steps:
-      - name: Checkout dev validator
+      - name: Checkout trusted validator
         uses: actions/checkout@v6
         with:
-          ref: dev
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Write Issue Form body
         env:
