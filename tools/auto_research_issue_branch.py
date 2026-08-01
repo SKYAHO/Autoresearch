@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -51,8 +52,14 @@ _SCOPE_LABELS = {
     "실험 결과를 champion으로 승격하는 것까지 검토한다": "promotion",
 }
 _SECTION_PATTERN = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
-_DECIMAL_PATTERN = re.compile(r"[+-]?(?:NaN|Infinity|\d+(?:\.\d*)?|\.\d+)")
+_PRIMARY_DELTA_PATTERN = re.compile(
+    r"^.+?,\s*baseline\s+대비\s+"
+    r"(?P<delta>[+-]?(?:NaN|Infinity|\d+(?:\.\d*)?|\.\d+))\s+이상$"
+)
 _CHECKBOX_PATTERN = re.compile(r"^- \[([ xX])\]\s+(.+)$")
+_SPLIT_ROW_PATTERN = re.compile(r"^-\s*test_size\s*/\s*val_size:\s*(\S+)\s*/\s*(\S+)\s*$")
+_SEEDS_ROW_PATTERN = re.compile(r"^-\s*시드 목록:\s*(.+?)\s*$")
+_SEED_COUNT_ROW_PATTERN = re.compile(r"^-\s*반복 시드 수:\s*(\d+)\s*$")
 
 
 @dataclass(frozen=True)
@@ -85,7 +92,10 @@ def branch_name_for(issue_number: int, issue_title: str) -> str:
     title_without_prefix = re.sub(r"^\s*\[AR\]\s*", "", issue_title, flags=re.IGNORECASE)
     slug = re.sub(r"[^a-z0-9]+", "-", title_without_prefix.lower()).strip("-")
     if not slug:
-        raise ValueError("issue_title must contain an ASCII branch slug")
+        if not title_without_prefix.strip():
+            raise ValueError("issue_title must not be empty")
+        title_digest = hashlib.sha256(title_without_prefix.encode("utf-8")).hexdigest()[:12]
+        slug = f"issue-{title_digest}"
     return f"exp/{issue_number}-{slug}"
 
 
@@ -145,9 +155,9 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
         success_criteria=success_criteria,
         secondary_metrics=secondary_metrics,
         comparison=comparison,
-        minimum_primary_delta=float(minimum_primary_delta),
-        test_size=float(test_size),
-        val_size=float(val_size),
+        minimum_primary_delta=_finite_float(minimum_primary_delta, "minimum_primary_delta"),
+        test_size=_finite_float(test_size, "test_size"),
+        val_size=_finite_float(val_size, "val_size"),
         seeds=seeds,
         dataset=dataset,
         snapshot_reuse=snapshot_reuse,
@@ -192,22 +202,20 @@ def _required_content(sections: dict[str, str], heading: str) -> str:
 
 def _minimum_primary_delta(success_criteria: str) -> Decimal:
     """성공 기준에서 유한하고 양수인 최소 주 지표 개선폭을 추출합니다."""
-    match = _DECIMAL_PATTERN.search(success_criteria)
+    match = _PRIMARY_DELTA_PATTERN.fullmatch(success_criteria.strip())
     if match is None:
-        raise ValueError("minimum_primary_delta is required")
-    value = _finite_decimal(match.group(), "minimum_primary_delta")
+        raise ValueError("minimum_primary_delta must use 'baseline 대비 <delta> 이상'")
+    value = _finite_decimal(match.group("delta"), "minimum_primary_delta")
     if value <= 0:
         raise ValueError("minimum_primary_delta must be positive")
+    _finite_float(value, "minimum_primary_delta")
     return value
 
 
 def _parse_reproducibility(reproducibility: str) -> tuple[Decimal, Decimal, tuple[int, ...]]:
     """재현 조건의 split과 시드 목록·개수를 교차 검증합니다."""
-    split_match = re.search(
-        r"^-\s*test_size\s*/\s*val_size:\s*(\S+)\s*/\s*(\S+)\s*$",
-        reproducibility,
-        flags=re.MULTILINE,
-    )
+    rows = _parse_reproducibility_rows(reproducibility)
+    split_match = rows.get("split")
     if split_match is None:
         raise ValueError("test_size / val_size is required")
     test_size = _finite_decimal(split_match.group(1), "test_size / val_size")
@@ -215,7 +223,7 @@ def _parse_reproducibility(reproducibility: str) -> tuple[Decimal, Decimal, tupl
     if not 0 < test_size < 1 or not 0 < val_size < 1 or test_size + val_size >= 1:
         raise ValueError("test_size / val_size must leave training data")
 
-    seeds_match = re.search(r"^-\s*시드 목록:\s*(.+?)\s*$", reproducibility, flags=re.MULTILINE)
+    seeds_match = rows.get("seeds")
     if seeds_match is None:
         raise ValueError("seeds are required")
     seed_tokens = [token.strip() for token in seeds_match.group(1).split(",")]
@@ -225,12 +233,31 @@ def _parse_reproducibility(reproducibility: str) -> tuple[Decimal, Decimal, tupl
     if len(set(seeds)) != len(seeds):
         raise ValueError("seeds must be unique")
 
-    seed_count_match = re.search(r"^-\s*반복 시드 수:\s*(\d+)\s*$", reproducibility, flags=re.MULTILINE)
+    seed_count_match = rows.get("seed_count")
     if seed_count_match is None:
         raise ValueError("seed_count is required")
     if int(seed_count_match.group(1)) != len(seeds):
         raise ValueError("seed_count must match seeds")
     return test_size, val_size, seeds
+
+
+def _parse_reproducibility_rows(reproducibility: str) -> dict[str, re.Match[str]]:
+    """재현 조건의 알려진 행을 중복·누락·미지 행 없이 모두 소비합니다."""
+    rows: dict[str, re.Match[str]] = {}
+    patterns = (
+        ("split", _SPLIT_ROW_PATTERN),
+        ("seeds", _SEEDS_ROW_PATTERN),
+        ("seed_count", _SEED_COUNT_ROW_PATTERN),
+    )
+    for line in reproducibility.splitlines():
+        matching_rows = [(key, pattern.fullmatch(line)) for key, pattern in patterns]
+        key, match = next(((key, match) for key, match in matching_rows if match), (None, None))
+        if key is None or match is None:
+            raise ValueError("reproducibility contains an unknown structured row")
+        if key in rows:
+            raise ValueError(f"reproducibility contains a duplicate {key} row")
+        rows[key] = match
+    return rows
 
 
 def _finite_decimal(value: str, field_name: str) -> Decimal:
@@ -242,6 +269,14 @@ def _finite_decimal(value: str, field_name: str) -> Decimal:
     if not decimal.is_finite():
         raise ValueError(f"{field_name} must be a finite decimal")
     return decimal
+
+
+def _finite_float(value: Decimal, field_name: str) -> float:
+    """공개 float 필드로 변환한 값도 유한한지 확인합니다."""
+    float_value = float(value)
+    if not math.isfinite(float_value):
+        raise ValueError(f"{field_name} must fit in a finite float")
+    return float_value
 
 
 def _parse_allowed_scope(allowed_scope_text: str) -> tuple[str, ...]:

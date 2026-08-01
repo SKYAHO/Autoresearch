@@ -66,8 +66,36 @@ def test_parse_issue_input_rejects_nan_delta() -> None:
         parse_issue_input(449, "[AR] metric", valid_body(minimum_primary_delta="NaN"))
 
 
+def test_parse_issue_input_reads_delta_after_metric_name_with_number() -> None:
+    body = valid_body().replace(
+        "held-out test ROC-AUC, baseline 대비 +0.002 이상",
+        "held-out test F1-score, baseline 대비 +0.002 이상",
+    )
+
+    assert parse_issue_input(449, "[AR] metric", body).minimum_primary_delta == 0.002
+
+
+def test_parse_issue_input_rejects_nan_after_metric_name_with_number() -> None:
+    body = valid_body(minimum_primary_delta="NaN").replace(
+        "held-out test ROC-AUC, baseline 대비 NaN 이상",
+        "held-out test F1-score, baseline 대비 NaN 이상",
+    )
+
+    with pytest.raises(ValueError, match="minimum_primary_delta"):
+        parse_issue_input(449, "[AR] metric", body)
+
+
+def test_parse_issue_input_rejects_delta_that_overflows_float() -> None:
+    with pytest.raises(ValueError, match="minimum_primary_delta"):
+        parse_issue_input(449, "[AR] metric", valid_body(minimum_primary_delta="1" + "0" * 400))
+
+
 def test_branch_name_is_single_issue_coordinate() -> None:
     assert branch_name_for(449, "[AR] CTR ratio") == "exp/449-ctr-ratio"
+
+
+def test_branch_name_uses_deterministic_ascii_fallback_for_korean_title() -> None:
+    assert branch_name_for(449, "[AR] 비율 피처 실험") == "exp/449-issue-09a97f67112d"
 
 
 @pytest.mark.parametrize("minimum_primary_delta", ["Infinity", "-Infinity"])
@@ -111,6 +139,26 @@ def test_parse_issue_input_rejects_invalid_split_sizes(test_size: str, val_size:
 def test_parse_issue_input_rejects_seed_count_mismatch() -> None:
     with pytest.raises(ValueError, match="seed_count"):
         parse_issue_input(449, "[AR] metric", valid_body(seeds="42, 43", seed_count="3"))
+
+
+def test_parse_issue_input_rejects_duplicate_reproducibility_key() -> None:
+    body = valid_body().replace(
+        "- 반복 시드 수: 3",
+        "- 반복 시드 수: 3\n- 반복 시드 수: 999",
+    )
+
+    with pytest.raises(ValueError, match="reproducibility"):
+        parse_issue_input(449, "[AR] metric", body)
+
+
+def test_parse_issue_input_rejects_unknown_reproducibility_row() -> None:
+    body = valid_body().replace(
+        "- 반복 시드 수: 3",
+        "- 반복 시드 수: 3\n- 알 수 없는 고정값: 1",
+    )
+
+    with pytest.raises(ValueError, match="reproducibility"):
+        parse_issue_input(449, "[AR] metric", body)
 
 
 def test_parse_issue_input_rejects_duplicate_or_non_integer_seed() -> None:
