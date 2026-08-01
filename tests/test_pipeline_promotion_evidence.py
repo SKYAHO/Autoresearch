@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import traceback
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -124,6 +125,13 @@ class _FakeStorageClient:
         return self._bucket
 
 
+class _FailingStorageClient:
+    """backend 원문이 안전 오류로 새지 않는지 검증하는 fake."""
+
+    def bucket(self, name: str) -> _FakeBucket:
+        raise RuntimeError("credential=synthetic-private-value")
+
+
 def _store() -> tuple[PromotionEvidenceStore, _FakeBucket]:
     bucket = _FakeBucket(datetime(2026, 8, 1, tzinfo=timezone.utc))
     return (
@@ -185,6 +193,41 @@ def test_publish_plan_treats_duplicate_create_precondition_as_failure() -> None:
 
     with pytest.raises(PromotionEvidenceValidationError, match="publish"):
         store.publish_plan(plan)
+
+
+def test_backend_error_does_not_expose_its_raw_message_in_traceback() -> None:
+    store = PromotionEvidenceStore(
+        "gs://evidence/promotion-evidence",
+        client=_FailingStorageClient(),
+    )
+
+    with pytest.raises(PromotionEvidenceValidationError) as raised:
+        store.publish_plan(_plan())
+
+    formatted = "".join(traceback.format_exception(raised.value))
+    assert "synthetic-private-value" not in formatted
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value", "error_fragment"),
+    [
+        ("generation", "999", "receipt generation"),
+        ("metageneration", "999", "metageneration"),
+        ("sha256", "f" * 64, "sha256"),
+        ("uri", "gs://evidence/outside/plan.json", "prefix 밖"),
+    ],
+)
+def test_verify_plan_receipt_fails_closed_for_tampered_receipt_fields(
+    field_name: str, value: str, error_fragment: str
+) -> None:
+    store, _ = _store()
+    receipt = store.publish_plan(_plan())
+    tampered = receipt.model_copy(
+        update={"object": receipt.object.model_copy(update={field_name: value})}
+    )
+
+    with pytest.raises(PromotionEvidenceValidationError, match=error_fragment):
+        store.verify_plan_receipt(tampered)
 
 
 def test_publish_metric_binds_plan_run_split_and_model_hash() -> None:

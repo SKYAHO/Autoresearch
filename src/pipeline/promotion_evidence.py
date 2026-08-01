@@ -257,10 +257,10 @@ class PromotionEvidenceStore:
         """configured bucket을 backend에서 얻고 안전한 오류로 감싼다."""
         try:
             return self._client.bucket(self._root.bucket)
-        except Exception as error:
+        except Exception:
             raise PromotionEvidenceValidationError(
                 "promotion evidence bucket을 초기화할 수 없습니다"
-            ) from error
+            ) from None
 
     def _object_receipt(self, blob: object, *, payload: bytes) -> GcsObjectReceipt:
         """reload된 blob metadata와 현재 payload byte로 immutable receipt를 만든다."""
@@ -291,10 +291,10 @@ class PromotionEvidenceStore:
             return self._object_receipt(blob, payload=payload)
         except PromotionEvidenceValidationError:
             raise
-        except Exception as error:
+        except Exception:
             raise PromotionEvidenceValidationError(
                 "promotion evidence publish에 실패했습니다"
-            ) from error
+            ) from None
 
     def _read_receipted_bytes(self, receipt: GcsObjectReceipt) -> bytes:
         """receipt generation만 읽고 metadata·byte hash가 모두 맞는지 검증한다."""
@@ -303,10 +303,10 @@ class PromotionEvidenceStore:
             blob = self._bucket().blob(object_name, generation=int(receipt.generation))
             blob.reload()
             payload = blob.download_as_bytes()
-        except Exception as error:
+        except Exception:
             raise PromotionEvidenceValidationError(
                 "promotion evidence receipt generation을 읽을 수 없습니다"
-            ) from error
+            ) from None
 
         actual = self._object_receipt(blob, payload=payload)
         if actual.generation != receipt.generation:
@@ -337,8 +337,10 @@ class PromotionEvidenceStore:
         payload = self._read_receipted_bytes(receipt.object)
         try:
             plan = ExperimentPlan.model_validate_json(payload)
-        except Exception as error:
-            raise PromotionEvidenceValidationError("promotion experiment plan body가 유효하지 않습니다") from error
+        except Exception:
+            raise PromotionEvidenceValidationError(
+                "promotion experiment plan body가 유효하지 않습니다"
+            ) from None
         if plan != receipt.plan:
             raise PromotionEvidenceValidationError("promotion experiment plan body가 receipt와 다릅니다")
         expected_name = f"{self._root.prefix}/plans/{plan.plan_id}.json"
@@ -365,8 +367,10 @@ class PromotionEvidenceStore:
         payload = self._read_receipted_bytes(receipt.object)
         try:
             evidence = HeldOutMetricEvidence.model_validate_json(payload)
-        except Exception as error:
-            raise PromotionEvidenceValidationError("held-out metric body가 유효하지 않습니다") from error
+        except Exception:
+            raise PromotionEvidenceValidationError(
+                "held-out metric body가 유효하지 않습니다"
+            ) from None
         if evidence != receipt.evidence:
             raise PromotionEvidenceValidationError("held-out metric body가 receipt와 다릅니다")
         expected_name = (

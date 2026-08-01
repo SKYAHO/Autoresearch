@@ -93,6 +93,7 @@ class EvaluationReasonCode(str, Enum):
     PLAN_NOT_PREDECLARED = "plan_not_predeclared"
     PLAN_EVIDENCE_MISMATCH = "plan_evidence_mismatch"
     DUPLICATE_COMPARISON_EVIDENCE = "duplicate_comparison_evidence"
+    PLAN_ID_MISMATCH = "plan_id_mismatch"
     COMPARISON_PLAN_MISMATCH = "comparison_plan_mismatch"
     METRIC_SPLIT_MISMATCH = "metric_split_mismatch"
     TIMESTAMP_TIMEZONE_MISSING = "timestamp_timezone_missing"

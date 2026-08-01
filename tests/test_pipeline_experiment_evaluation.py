@@ -114,6 +114,13 @@ def test_policy_v1_is_exact_and_not_caller_configurable() -> None:
     assert policy.require_paired_comparison is True
 
 
+def test_legacy_plan_id_mismatch_reason_code_remains_parseable_during_transition() -> None:
+    assert (
+        EvaluationReasonCode("plan_id_mismatch")
+        is EvaluationReasonCode.PLAN_ID_MISMATCH
+    )
+
+
 def test_v1_marks_positive_paired_30_seed_evidence_eligible() -> None:
     plan = _plan()
     evidence = _evidence(plan.plan_id)
