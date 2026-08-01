@@ -129,7 +129,8 @@ reproducibility artifact가 없으므로 verified comparison의 입력으로는 
 python -m src.cli verify-comparison \
   --baseline-run-id <run-id> \
   --challenger-run-id <run-id> \
-  --output comparison.json
+  --output comparison.json \
+  --promotion-evidence-root gs://<bucket>/<prefix>
 ```
 
 명령은 두 MLflow run의 snapshot·split artifact를 내려받아 CSV와 manifest의 무결성을
@@ -145,11 +146,15 @@ python -m src.cli verify-comparison \
 다르거나 artifact가 누락·변조되면 명령은 non-zero로 종료하며 output 파일과 challenger
 artifact를 만들지 않는다.
 
+`--promotion-evidence-root`를 생략한 비교는 plan·metric receipt가 모두 없는 legacy
+run에만 쓸 수 있다. receipt가 하나라도 있으면 root 없이 comparison을 만들지 않으며,
+자동 승격 평가는 legacy comparison을 항상 `hold`로 처리한다.
+
 성공한 `TrainingComparisonManifest`에는 두 run ID, 검증한 snapshot·split manifest
 hash, 두 final feature column 목록·hash, UTC 검증 시각, `validation_status="verified"`를
 기록한다. 통계적 유의성 계산(#407)이나 champion 승격은 이 CLI의 책임이 아니다.
 
-### 5. write-once 승격 evidence (#466, 구현 대상)
+### 5. write-once 승격 evidence (#466, 구현됨)
 
 자동 승격의 입력은 사람이 작성한 JSON이나 LLM의 서술이 아니라, 학습 전에
 write-once GCS에 고정한 계획과 학습 runtime이 만든 held-out metric object다. 이 둘의
@@ -180,6 +185,38 @@ write-once GCS에 고정한 계획과 학습 runtime이 만든 held-out metric o
       30개 comparison의 결정론적 평가 ──► #470의 후속 소비자
 ```
 
+#### 실제 CLI 실행 순서
+
+아래 세 명령은 application이 제공하는 plan publish, 학습, evidence-aware comparison
+순서다. `<...>`는 실행마다 정하는 식별자·경로이며, root는 infra #485가 제공하는
+`gs://bucket/prefix`를 명시한다.
+
+```bash
+python -m src.cli create-experiment-plan \
+  --hypothesis-id issue-466-h1 \
+  --control-id <baseline-control-id> \
+  --candidate-id <challenger-candidate-id> \
+  --promotion-evidence-root gs://<bucket>/<prefix> \
+  --output data/processed/experiment-plan-receipt.json
+
+python -m src.cli train-model \
+  --experiment-plan-receipt data/processed/experiment-plan-receipt.json \
+  --promotion-evidence-root gs://<bucket>/<prefix> \
+  --split-seed 42 --model-seed 42 --sampler-seed 42
+
+python -m src.cli verify-comparison \
+  --baseline-run-id <baseline-run-id> \
+  --challenger-run-id <challenger-run-id> \
+  --output data/processed/comparison-42.json \
+  --promotion-evidence-root gs://<bucket>/<prefix>
+```
+
+`run-pipeline`도 `train-model`과 같은
+`--experiment-plan-receipt`·`--promotion-evidence-root` 쌍을 받으며 둘 중 하나만
+주면 학습 전에 종료한다. 생성된 receipt JSON과 comparison JSON은 전달용 envelope일
+뿐 신뢰 근거가 아니다. 다음 단계는 항상 receipt의 `(uri, generation)`으로 GCS를
+다시 읽어 server metadata와 byte SHA-256을 재검증한다.
+
 #### 계획의 사전 선언과 receipt
 
 application은 `ExperimentPlan`에 가설 식별자, control 식별자, 정확히 하나인
@@ -187,7 +224,8 @@ candidate 식별자, `promotion-policy-v1`, 그리고 감사용 `created_at`을 
 기록한다. `plan_id`는 이 내용의 SHA-256 기반 식별자다. payload의 `created_at`은
 호출자가 제공할 수 있으므로 사전 선언의 신뢰 근거가 아니다.
 
-계획 publisher는 infra가 전달한 명시적 `--promotion-evidence-root` 아래
+`create-experiment-plan` 명령은 infra가 전달한 명시적
+`--promotion-evidence-root` 아래
 `plans/<plan-sha256>.json`에 `ifGenerationMatch=0`으로만 object를 만든다. 성공하면
 application은 아래 정보를 가진 `ExperimentPlanReceipt`를 다음 학습 단계에 전달한다.
 
@@ -249,7 +287,9 @@ object의 GCS `time_created`가 baseline과 challenger의 MLflow server run star
 legacy snapshot/split/comparison manifest는 읽을 수 있게 유지한다. 그러나 plan receipt나
 metric receipt가 없는 legacy run은 공정 비교 용도로만 쓸 수 있고, 자동 승격 평가는
 반드시 `hold`한다. 부분 receipt, generation 불일치, SHA 불일치, plan 사후 생성,
-metric 시간 범위 이탈, 중복·누락 seed도 같은 방식으로 fail-closed 한다.
+metric 시간 범위 이탈, 중복·누락 seed도 같은 방식으로 fail-closed 한다. comparison
+또는 paired evidence를 호출자가 직접 JSON으로 조립해도 evaluator는 MLflow run과 GCS
+receipt에서 canonical comparison을 다시 만들지 못하면 통계를 계산하지 않는다.
 
 ## 저장소 경계
 
@@ -294,9 +334,12 @@ test로 검증한다. 회귀 검증은 전체 pytest, Ruff, `git diff --check`�
 ## 이번 범위에서 하지 않는 일
 
 - Model Registry alias 이동, compare-and-swap, lock, 자동 rollback (#470 후속)
-- Airflow DAG 인자·schedule·retry·artifact 전달 변경
+- Airflow DAG 인자·schedule·retry·artifact 전달 변경 — 새 CLI 인자는 이 PR에서
+  Airflow에 전달하지 않는다.
 - FeatureView/FeatureService 정의 변경
 - run 간 중복 CSV를 제거하는 canonical GCS snapshot registry 도입
+
+따라서 이 PR은 Model Registry alias를 이동하거나 dev/production 상태를 바꾸지 않는다.
 
 마지막 항목은 application이 비교 artifact를 이미 만들 수 있는지와 별개의 인프라
 운영 문제다. canonical snapshot 저장소의 infra 계약이 완료되면 application은 해당 저장소를
