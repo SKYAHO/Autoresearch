@@ -9,6 +9,9 @@ run-pipeline / promote-model`.
 build-features → train-model → evaluate-model 순서로 실행하며, registered model
 버전 생성은 평가가 통과한 뒤에 수행한다(#421) — 평가가 실패하면 지표를 신뢰할
 수 없는 후보 버전이 registry에 남지 않는다.
+학습 CLI의 `split_seed`·`model_seed`·`sampler_seed`는 각각 데이터 분할·모델 초기화·
+negative downsampling 난수를 분리하며, `run-pipeline`은 검증된 snapshot sidecar를
+요구한다(#423). `sweep-seeds`는 기존 `random_state` 호환 경로를 유지한다(#407).
 
 [비책임] 실제 조립·학습·평가·승격 로직은 각 모듈(src/pipeline/*.py,
 src/tracking/promote.py)이 소유한다. DAG·스케줄·재시도는 인접 저장소
@@ -28,7 +31,12 @@ import typer
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.pipeline import build_training_dataset, train, evaluate  # noqa: E402
+from src.pipeline import (  # noqa: E402
+    build_training_dataset,
+    evaluate,
+    train,
+    training_comparison,
+)
 from src.pipeline.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
 from src.tracking import promote  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
@@ -54,13 +62,46 @@ def build_features(
     events_end_date: Optional[str] = typer.Option(
         None, help="학습 기간 종료일 KST YYYY-MM-DD (포함)"
     ),
+    min_coverage_days: Optional[int] = typer.Option(
+        None,
+        "--min-coverage-days",
+        help=(
+            "학습에 쓸 수 있는 최소 날짜 수(#464). 요청 기간에 데이터 없는 날이 섞여 "
+            "이 값 미만이면 조립을 실패시킵니다. 백필처럼 의도적으로 좁은 구간을 쓸 때는 "
+            "0으로 우회합니다. 일별 행수 하한은 실행 단위로 조정할 수 없습니다 "
+            "(전역 CTR_TRAINING_MIN_ROWS_PER_DAY만)."
+        ),
+    ),
 ) -> None:
     """training_dataset.csv 생성 (offline feature store PIT 조회, #359 C2로 feast-only)."""
     build_training_dataset.main(
         output_path=output_path,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
+        **_coverage_kwargs(min_coverage_days),
     )
+
+
+def _requested_min_coverage_days(value: object) -> Optional[int]:
+    """사용자가 실제로 지정한 `--min-coverage-days` 값만 정수로 돌려준다(#464).
+
+    미지정이면 None이다. Typer가 붙인 함수를 테스트가 **직접 호출**하면 기본값 자리에
+    `OptionInfo` 객체가 들어오므로(CLI 경유일 때만 None으로 치환됨), 정수인지로 판정한다.
+    `bool`은 파이썬에서 `int`의 하위 타입이라 명시적으로 배제한다.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _coverage_kwargs(min_coverage_days: Optional[int]) -> dict:
+    """`--min-coverage-days` 미지정 시 모듈 기본값을 그대로 쓰게 한다(#464).
+
+    None을 그대로 넘기면 기본값이 덮여 검증이 꺼지므로, 지정된 경우에만 키를 만든다.
+    `0`(명시적 우회)과 None(미지정)을 참/거짓으로 뭉개면 우회구가 조용히 무시된다.
+    """
+    resolved = _requested_min_coverage_days(min_coverage_days)
+    return {} if resolved is None else {"min_coverage_days": resolved}
 
 
 def _parse_extra_features(value: Optional[str]) -> Optional[list[str]]:
@@ -86,7 +127,18 @@ def train_model(
     categorical_columns_output: Optional[str] = typer.Option(None, help="Categorical 카테고리 저장 경로 (config override)"),
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
-    random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
+    random_state: Optional[int] = typer.Option(
+        None, help="기존 호환용 random state (세 effective seed에 동일 적용)"
+    ),
+    split_seed: Optional[int] = typer.Option(
+        None, "--split-seed", help="Train/validation/test 분할에 사용할 seed"
+    ),
+    model_seed: Optional[int] = typer.Option(
+        None, "--model-seed", help="LightGBM 모델 초기화에 사용할 seed"
+    ),
+    sampler_seed: Optional[int] = typer.Option(
+        None, "--sampler-seed", help="Train split negative downsampling에 사용할 seed"
+    ),
     experiment: Optional[str] = typer.Option(
         None,
         "--experiment",
@@ -116,6 +168,9 @@ def train_model(
         test_size=test_size,
         val_size=val_size,
         random_state=random_state,
+        split_seed=split_seed,
+        model_seed=model_seed,
+        sampler_seed=sampler_seed,
         extra_features=_parse_extra_features(extra_features),
         experiment=experiment,
     )
@@ -155,6 +210,15 @@ def run_pipeline(
     events_end_date: Optional[str] = typer.Option(
         None, help="학습 기간 종료일 KST YYYY-MM-DD (포함)"
     ),
+    min_coverage_days: Optional[int] = typer.Option(
+        None,
+        "--min-coverage-days",
+        help=(
+            "학습에 쓸 수 있는 최소 날짜 수(#464). 미달이면 조립 단계에서 실패합니다. "
+            "실측 커버리지와 이 값은 MLflow lineage에 기록됩니다. "
+            "백필 등 의도적으로 좁은 구간을 쓸 때는 0으로 우회합니다."
+        ),
+    ),
     config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
     model_output: Optional[str] = typer.Option(None, help="모델 저장 경로 (config override)"),
     test_set_output: Optional[str] = typer.Option(
@@ -164,7 +228,18 @@ def run_pipeline(
     categorical_columns_output: Optional[str] = typer.Option(None, help="Categorical 카테고리 저장 경로 (config override)"),
     test_size: Optional[float] = typer.Option(None, help="Test set 비율 (config override)"),
     val_size: Optional[float] = typer.Option(None, help="Val set 비율 (config override)"),
-    random_state: Optional[int] = typer.Option(None, help="Random state (config override, 데이터 split과 모델 둘 다 적용)"),
+    random_state: Optional[int] = typer.Option(
+        None, help="기존 호환용 random state (세 effective seed에 동일 적용)"
+    ),
+    split_seed: Optional[int] = typer.Option(
+        None, "--split-seed", help="Train/validation/test 분할에 사용할 seed"
+    ),
+    model_seed: Optional[int] = typer.Option(
+        None, "--model-seed", help="LightGBM 모델 초기화에 사용할 seed"
+    ),
+    sampler_seed: Optional[int] = typer.Option(
+        None, "--sampler-seed", help="Train split negative downsampling에 사용할 seed"
+    ),
     experiment: Optional[str] = typer.Option(
         None,
         "--experiment",
@@ -188,6 +263,8 @@ def run_pipeline(
     등록(Model Registry 버전 생성)은 평가 통과 뒤에만 수행하는 별도 단계다(#421).
     조립 경로는 #359 C2로 feast-only다. `--extra-features`를 주면 prod 모델 계약을
     건드리지 않고 실험 피처를 덧붙여 학습하며, 학습과 평가가 같은 목록을 공유한다(#405).
+    `--split-seed`, `--model-seed`, `--sampler-seed`는 verified comparison용으로
+    분리해 전달하며, snapshot sidecar가 없거나 검증에 실패하면 학습을 시작하지 않는다.
     """
     experiment_features = _parse_extra_features(extra_features)
     typer.echo("=" * 70)
@@ -195,10 +272,11 @@ def run_pipeline(
     typer.echo("=" * 70)
 
     typer.echo("\n[1/4] build-features 실행...")
-    build_training_dataset.main(
+    coverage = build_training_dataset.main(
         output_path=dataset_path,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
+        **_coverage_kwargs(min_coverage_days),
     )
 
     # 어떤 기간·소스로 학습했는지 MLflow run에 lineage로 남긴다(#359). C2로 조립 경로는
@@ -217,6 +295,19 @@ def run_pipeline(
         "events_end_date": events_end_date,
         "feast_registry_path": os.environ["GCS_REGISTRY_PATH"],
     }
+    # 요청 구간만 남기면 v12 사고의 비대칭("요청 7일 ≠ 실제 2일")이 그대로 남는다.
+    # 실측 커버리지와 적용된 기준(우회 여부 포함)을 함께 남겨, 나중에 champion 후보를
+    # 볼 때 run 파라미터만으로 판별할 수 있게 한다(#464 리뷰).
+    requested_min_days = _requested_min_coverage_days(min_coverage_days)
+    data_source_params.update(
+        coverage.as_lineage_params(
+            min_days=(
+                build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
+                if requested_min_days is None
+                else requested_min_days
+            )
+        )
+    )
 
     typer.echo("\n[2/4] train-model 실행...")
     # train.main은 실현 sampling_rate(#300)를 담은 TrainingOutcome을 반환한다 —
@@ -233,10 +324,14 @@ def run_pipeline(
         test_size=test_size,
         val_size=val_size,
         random_state=random_state,
+        split_seed=split_seed,
+        model_seed=model_seed,
+        sampler_seed=sampler_seed,
         extra_params=data_source_params,
         defer_registration=True,
         extra_features=experiment_features,
         experiment=experiment,
+        require_snapshot=True,
     )
 
     # dataset_path(방금 만든 train+val+test 전체)는 넘기지 않는다: evaluate는
@@ -266,6 +361,38 @@ def run_pipeline(
     typer.echo("\n" + "=" * 70)
     typer.echo("파이프라인 완료")
     typer.echo("=" * 70)
+
+
+@app.command()
+def verify_comparison(
+    baseline_run_id: str = typer.Option(
+        ..., "--baseline-run-id", help="비교 기준(baseline) MLflow run ID"
+    ),
+    challenger_run_id: str = typer.Option(
+        ..., "--challenger-run-id", help="비교 대상(challenger) MLflow run ID"
+    ),
+    output: Path = typer.Option(
+        ..., "--output", help="검증된 comparison manifest를 저장할 로컬 JSON 경로"
+    ),
+) -> None:
+    """두 MLflow 학습 run의 snapshot·split·seed 공정성을 검증한다(#423)."""
+    try:
+        result = training_comparison.verify_training_comparison(
+            baseline_run_id=baseline_run_id,
+            challenger_run_id=challenger_run_id,
+            output_path=output,
+        )
+    except training_comparison.ComparisonValidationError as error:
+        # 예외 원문은 backend credential이나 signed URL을 포함할 수 있으므로 CLI에는
+        # type과 고정된 안전 진단만 출력한다.
+        typer.echo(
+            f"[비교 검증 실패] {type(error).__name__}: "
+            "verified comparison manifest를 만들지 않았습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+
+    typer.echo(result.model_dump_json(indent=2))
 
 
 @app.command()

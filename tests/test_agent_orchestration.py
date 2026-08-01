@@ -20,12 +20,15 @@ from agent_orchestration.app import db as db_module
 from agent_orchestration.app import llm as llm_module
 from agent_orchestration.app import main as main_module
 from agent_orchestration.app.llm import LLMBackendError, LLMResult, generate_response
+from agent_orchestration import codex as codex_module
 
 
 _SETTINGS_ENV_VARS = (
     "CODEX_CLI_PATH",
     "CODEX_HOME",
     "CODEX_MODEL",
+    "CODEX_RUNNER_TIMEOUT_SEC",
+    "CODEX_RUNNER_URL",
     "CODEX_TIMEOUT_SEC",
     "DATABASE_URL",
     "LLM_BACKEND",
@@ -34,6 +37,7 @@ _SETTINGS_ENV_VARS = (
     "OPENAI_MODEL",
     "OPENAI_TIMEOUT_SEC",
     "ORCH_API_TOKEN",
+    "ORCH_RUNNER_TOKEN",
     "ORCH_DATABASE_URL",
     "ORCH_DB_CONNECT_TIMEOUT_SEC",
     "ORCH_INTERACTIONS_TABLE",
@@ -105,6 +109,69 @@ def test_load_settings_openai_does_not_require_codex_runtime_settings(
     assert settings.codex_home == ""
 
 
+def test_load_settings_codex_runner_uses_private_url_without_local_codex_home(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner 백엔드는 API 프로세스의 로컬 Codex 홈을 요구하지 않는다."""
+    monkeypatch.setenv("LLM_BACKEND", "codex_runner")
+    monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
+    monkeypatch.setenv("ORCH_RUNNER_TOKEN", "runner-token-must-be-at-least-32-characters")
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
+    monkeypatch.setenv("CODEX_CLI_PATH", "   ")
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+
+    settings = load_settings()
+
+    assert settings.llm_backend == "codex_runner"
+    assert settings.codex_runner_url == "http://runner:8080"
+    assert settings.codex_runner_timeout_sec == 120
+    assert settings.codex_runner_token == "runner-token-must-be-at-least-32-characters"
+    assert settings.codex_home == ""
+
+
+def test_load_settings_codex_runner_requires_private_api_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner 백엔드는 API가 전송할 별도 내부 토큰 없이는 기동하지 않는다."""
+    monkeypatch.setenv("LLM_BACKEND", "codex_runner")
+    monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
+    monkeypatch.delenv("ORCH_RUNNER_TOKEN", raising=False)
+
+    with pytest.raises(ValueError, match="ORCH_RUNNER_TOKEN"):
+        load_settings()
+
+
+def test_load_settings_codex_runner_rejects_shared_api_and_runner_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """서로 다른 인증 경계를 같은 토큰으로 합치면 API 기동을 거부한다."""
+    shared_token = "test-shared-token-must-be-at-least-32-characters"
+    monkeypatch.setenv("LLM_BACKEND", "codex_runner")
+    monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
+    monkeypatch.setenv("ORCH_API_TOKEN", shared_token)
+    monkeypatch.setenv("ORCH_RUNNER_TOKEN", shared_token)
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
+
+    with pytest.raises(ValueError, match="must differ"):
+        load_settings()
+
+
+@pytest.mark.parametrize("runner_url", ("", "runner:8080", "/v1/generate"))
+def test_load_settings_codex_runner_requires_absolute_url(
+    monkeypatch: pytest.MonkeyPatch,
+    runner_url: str,
+) -> None:
+    """API가 private Runner에 요청을 위임하려면 절대 URL이 필요하다."""
+    monkeypatch.setenv("LLM_BACKEND", "codex_runner")
+    monkeypatch.setenv("CODEX_RUNNER_URL", runner_url)
+    monkeypatch.setenv("ORCH_RUNNER_TOKEN", "runner-token-must-be-at-least-32-characters")
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
+
+    with pytest.raises(ValueError, match="CODEX_RUNNER_URL"):
+        load_settings()
+
+
 def test_load_settings_uses_default_for_blank_openai_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -135,7 +202,8 @@ def test_load_settings_rejects_invalid_interactions_table(
 @pytest.mark.parametrize(
     ("name", "attribute", "default"),
     [
-        ("CODEX_TIMEOUT_SEC", "codex_timeout_sec", 120),
+        ("CODEX_TIMEOUT_SEC", "codex_timeout_sec", 110),
+        ("CODEX_RUNNER_TIMEOUT_SEC", "codex_runner_timeout_sec", 120),
         ("OPENAI_MAX_TOKENS", "openai_max_tokens", 1024),
         ("OPENAI_TIMEOUT_SEC", "openai_timeout_sec", 60),
         ("ORCH_DB_CONNECT_TIMEOUT_SEC", "database_connect_timeout_sec", 10),
@@ -154,6 +222,52 @@ def test_load_settings_uses_default_for_blank_numeric_value(
     settings = load_settings()
 
     assert getattr(settings, attribute) == default
+
+
+def test_api_entrypoint_reports_missing_runtime_dir() -> None:
+    """API 컨테이너는 bootstrap runtime 경로 누락 원인을 직접 출력한다."""
+    result = subprocess.run(
+        ["/bin/sh", "agent_orchestration/entrypoint.sh"],
+        capture_output=True,
+        check=False,
+        env={"PATH": os.environ["PATH"]},
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "ORCH_RUNTIME_DIR is required" in result.stderr
+
+
+def test_api_entrypoint_reads_database_url_without_shell_evaluation(tmp_path: Path) -> None:
+    """DB runtime 파일의 URL 값은 셸 명령으로 해석하지 않는다."""
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    marker = tmp_path / "must-not-exist"
+    database_url = f"postgresql://orch:pw@$(touch {marker})/orch"
+    (runtime_dir / "db.env").write_text(
+        f"ORCH_DATABASE_URL={database_url}\n",
+        encoding="utf-8",
+    )
+    executable_dir = tmp_path / "bin"
+    executable_dir.mkdir()
+    uvicorn = executable_dir / "uvicorn"
+    uvicorn.write_text('#!/bin/sh\nprintf "%s" "$ORCH_DATABASE_URL"\n', encoding="utf-8")
+    uvicorn.chmod(0o755)
+
+    result = subprocess.run(
+        ["/bin/sh", "agent_orchestration/entrypoint.sh"],
+        capture_output=True,
+        check=False,
+        env={
+            "ORCH_RUNTIME_DIR": str(runtime_dir),
+            "PATH": str(executable_dir) + os.pathsep + os.environ["PATH"],
+        },
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == database_url
+    assert not marker.exists()
 
 
 def test_load_settings_requires_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -201,6 +315,7 @@ def test_load_settings_rejects_whitespace_only_required_values(
     "name",
     (
         "CODEX_TIMEOUT_SEC",
+        "CODEX_RUNNER_TIMEOUT_SEC",
         "OPENAI_MAX_TOKENS",
         "OPENAI_TIMEOUT_SEC",
         "ORCH_DB_CONNECT_TIMEOUT_SEC",
@@ -259,7 +374,7 @@ def test_generate_response_uses_read_only_ephemeral_codex_cli(
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
     result = asyncio.run(generate_response(settings, "질문"))
 
@@ -310,7 +425,7 @@ def test_generate_codex_cli_passes_configured_model(monkeypatch: pytest.MonkeyPa
         codex_home="/tmp/test-codex-home",
         codex_model="gpt-5.3-codex-spark",
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
     result = asyncio.run(generate_response(settings, "질문"))
 
@@ -360,7 +475,7 @@ def test_generate_codex_cli_rejects_invalid_process_output(
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
     with pytest.raises(LLMBackendError, match=expected_message):
         asyncio.run(generate_response(settings, "질문"))
@@ -398,8 +513,8 @@ def test_generate_codex_cli_terminates_process_group_after_timeout(
         codex_home="/tmp/test-codex-home",
         codex_timeout_sec=1,
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(llm_module, "_terminate_process_group", fake_terminate_process_group)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module, "_terminate_process_group", fake_terminate_process_group)
 
     with pytest.raises(LLMBackendError, match="Codex CLI timed out."):
         asyncio.run(generate_response(settings, "질문"))
@@ -415,9 +530,9 @@ def test_terminate_process_group_targets_dedicated_process_group(
     killed: list[tuple[int, signal.Signals]] = []
     process = SimpleNamespace(returncode=None, pid=12345)
 
-    monkeypatch.setattr(llm_module.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
+    monkeypatch.setattr(codex_module.os, "killpg", lambda pid, sig: killed.append((pid, sig)))
 
-    llm_module._terminate_process_group(process)
+    codex_module._terminate_process_group(process)
 
     assert killed == [(12345, signal.SIGKILL)]
 
@@ -429,6 +544,7 @@ def test_generate_codex_cli_omits_stderr_from_timeout_logs(
     """시간 초과 stderr 원문은 프롬프트·자격 증명과 함께 로그에서 제외한다."""
     prompt = "비밀 프롬프트"
     opaque_credential = "unstructured oauth credential material"
+    subprocess_options: dict[str, object] = {}
 
     class FakeProcess:
         returncode = -9
@@ -438,7 +554,8 @@ def test_generate_codex_cli_omits_stderr_from_timeout_logs(
             await asyncio.sleep(2)
             return b"", f"{opaque_credential}\nfailed for {input.decode()}".encode()
 
-    async def fake_create_subprocess_exec(*_args: str, **_kwargs: object) -> FakeProcess:
+    async def fake_create_subprocess_exec(*_args: str, **kwargs: object) -> FakeProcess:
+        subprocess_options.update(kwargs)
         return FakeProcess()
 
     settings = ServiceSettings(
@@ -452,15 +569,16 @@ def test_generate_codex_cli_omits_stderr_from_timeout_logs(
         codex_home="/tmp/test-codex-home",
         codex_timeout_sec=1,
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(llm_module, "_terminate_process_group", lambda _process: None)
-    caplog.set_level(logging.WARNING, logger=llm_module.__name__)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module, "_terminate_process_group", lambda _process: None)
+    caplog.set_level(logging.WARNING, logger=codex_module.__name__)
 
     with pytest.raises(LLMBackendError, match="Codex CLI timed out."):
         asyncio.run(generate_response(settings, prompt))
 
     assert prompt not in caplog.text
     assert opaque_credential not in caplog.text
+    assert subprocess_options["stderr"] is asyncio.subprocess.DEVNULL
 
 
 def test_generate_codex_cli_terminates_process_group_when_request_is_cancelled(
@@ -498,8 +616,8 @@ def test_generate_codex_cli_terminates_process_group_when_request_is_cancelled(
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
     )
-    monkeypatch.setattr(llm_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(llm_module, "_terminate_process_group", fake_terminate_process_group)
+    monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(codex_module, "_terminate_process_group", fake_terminate_process_group)
 
     async def cancel_request() -> None:
         request_task = asyncio.create_task(generate_response(settings, "질문"))
@@ -768,6 +886,7 @@ def test_chat_openapi_documents_required_token_and_error_responses() -> None:
     assert "401" in operation["responses"]
     assert "500" in operation["responses"]
     assert "502" in operation["responses"]
+    assert "503" in operation["responses"]
     assert operation["responses"]["401"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/ErrorResponse"
     }
@@ -904,3 +1023,37 @@ def test_main_chat_returns_bad_gateway_when_codex_cli_fails(
         )
 
     assert response.status_code == status.HTTP_502_BAD_GATEWAY
+
+
+def test_main_chat_returns_service_unavailable_when_runner_is_overloaded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Runner 과부하는 API가 502가 아닌 503으로 호출자에게 전달한다."""
+    from agent_orchestration.contracts import LLMBackendOverloadedError
+
+    settings = ServiceSettings(
+        openai_api_key=None,
+        openai_model="gpt-5.3-codex-spark",
+        openai_max_tokens=1024,
+        openai_timeout_sec=60,
+        database_url="postgresql://orch:pw@localhost:5432/orch",
+        interactions_table="chat_interactions",
+        api_token="test-api-token",
+    )
+
+    async def overloaded_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
+        raise LLMBackendOverloadedError("Codex runner is overloaded.")
+
+    monkeypatch.setattr(main_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)
+    monkeypatch.setattr(main_module, "generate_response", overloaded_generate_response)
+
+    app = main_module.create_app()
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            headers={"X-Orch-Token": "test-api-token"},
+            json={"prompt": "테스트"},
+        )
+
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE

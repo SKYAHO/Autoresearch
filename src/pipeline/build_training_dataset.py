@@ -10,7 +10,18 @@ offline store가 정본(#357)이라 그 값을 그대로 읽는다.
 확인한다(환경변수 → GCP 자격증명 → feast import 순, #404) — 자격증명 없는 환경에서 BigQuery
 접속이 응답 없이 멈추는 대신 즉시 명확한 이유로 중단한다.
 
-출력: data/processed/training_dataset.csv (21 모델 피처 + ``clicked`` label = 22 물리 컬럼).
+spine 로드 직후에는 ``summarize_spine_coverage``/``require_spine_coverage``로 **요청 기간 대비
+실제 확보한 날짜 수**를 검증한다(#464). 기간 조회는 없는 파티션을 에러가 아니라 "행 없음"으로
+돌려주므로, 이 검사가 없으면 데이터가 며칠씩 비어도 조립·학습이 조용히 성공한다 — champion
+v12가 사실상 2일치로 학습돼 재현 불가능한 지표로 굳었던 사고의 직접 원인이다. 두 함수는
+BigQuery 없이 단위 테스트 가능한 순수 함수이며, 검증은 비싼 PIT 조회 **전에** 수행한다.
+백필처럼 의도적으로 좁은 구간을 쓸 때는 ``min_coverage_days=0``으로 우회한다. 실측 커버리지는
+``SpineCoverage``로 호출부에 돌려주며, ``run-pipeline``이 MLflow lineage에 남겨 "요청 구간 ≠
+실제 학습 구간"을 사후에 판별할 수 있게 한다. 기준값 근거·동작 계약·이 가드가 막지 못하는
+것은 ``docs/specs/2026-08-01-training-window-coverage-guard.md``가 정본이다.
+
+출력: data/processed/training_dataset.csv와 snapshot sidecar (21 모델 피처 + ``clicked``
+label = 22 물리 컬럼).
 model input의 이름·순서·categorical 분류는 ``src/features/model_contract.py``가, staged PIT 조회는
 ``src/features/feast_retrieval.py``가 소유한다(이 모듈은 재정의하지 않는다).
 
@@ -21,8 +32,14 @@ model input의 이름·순서·categorical 분류는 ``src/features/model_contra
 이들의 feast 전환(#359 C3)에서 함께 정리한다. DuckDB 재계산·mock CSV 입력 경로는 #359 C2에서 제거됐다.
 """
 
+from __future__ import annotations
+
 import os
 import sys
+from dataclasses import dataclass
+from pathlib import Path
+from tempfile import NamedTemporaryFile, TemporaryDirectory
+from urllib.parse import urlparse
 
 import pandas as pd
 
@@ -32,6 +49,29 @@ sys.path.insert(0, PROJECT_ROOT)
 from src.features.assembly import connect_duckdb  # noqa: E402
 from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
 from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
+from src.pipeline.training_provenance import (  # noqa: E402
+    ProvenanceValidationError,
+    RegistryProvenance,
+    build_snapshot_manifest,
+    sha256_file,
+    snapshot_manifest_path,
+    write_manifest_atomic,
+)
+
+# spine 커버리지 가드(#464). 요청 기간에 데이터 없는 날이 섞여도 조용히 성공하던 것을 막는다 —
+# champion v12가 사실상 2일치로 학습돼 재현 불가능한 val_roc_auc=0.80으로 굳고, 이후 정상
+# 모델의 승격을 전부 막았던 사고가 근거다(2026-07-31 조사).
+#
+# 기준값의 근거·동작 계약·한계는 docs/specs/2026-08-01-training-window-coverage-guard.md가
+# 정본이다(실측으로 확정). 요약:
+# - MIN_ROWS_PER_DAY: 붕괴일 240행 vs 정상일 125,760~167,592행 — 두 군집이 500배 떨어져 있어
+#   그 사이 어디에 두든 판정이 같다. 5,000은 경계에 민감하지 않은 값으로 골랐다.
+# - MIN_COVERAGE_DAYS: **정확도 최적점이 아니라 사고 재발 차단선이다.** 공통 홀드아웃(07-29)
+#   에서 정상 2일과 13일의 차이가 없었다(Δ=+0.0039, 노이즈 경계 0.0184) — 이 가드를 "날짜가
+#   많을수록 좋은 모델"의 근거로 쓰면 안 된다. 가드의 목적은 요청한 기간과 실제 학습된
+#   기간의 불일치를 드러내는 것이고, 3일은 v12(정상 2일)를 막고 v18(정상 4일)은 통과시키는 선이다.
+DEFAULT_MIN_COVERAGE_DAYS = int(os.environ.get("CTR_TRAINING_MIN_COVERAGE_DAYS", "3"))
+DEFAULT_MIN_ROWS_PER_DAY = int(os.environ.get("CTR_TRAINING_MIN_ROWS_PER_DAY", "5000"))
 
 BIGQUERY_PROJECT = os.environ.get("CTR_TRAINING_BQ_PROJECT", "autoresearch-503903")
 # feature/서빙 계층 dataset — Feast feature 테이블 4종과 배치 출력 테이블(user_recommendations).
@@ -139,6 +179,200 @@ def load_training_entity_spine(start_date: str, end_date: str) -> pd.DataFrame:
     return client.query(query).to_dataframe()
 
 
+# MLflow 파라미터 값은 길이 제한이 있고(백엔드마다 상이) 날짜 목록은 요청 기간이 길수록
+# 길어진다. 잘라 담되 **잘렸다는 사실을 값 안에 남겨** 목록이 전부인 것처럼 읽히지 않게 한다.
+_MAX_LINEAGE_DAY_LIST = 10
+
+
+def _truncate_day_list(days: tuple[str, ...]) -> str:
+    if not days:
+        return "none"
+    head = ",".join(days[:_MAX_LINEAGE_DAY_LIST])
+    rest = len(days) - _MAX_LINEAGE_DAY_LIST
+    return head if rest <= 0 else f"{head},+{rest}more"
+
+
+@dataclass(frozen=True)
+class SpineCoverage:
+    """요청 기간 대비 spine이 실제로 덮은 날짜 구성(#464).
+
+    학습이 "몇 일치로 돌았는지"를 판정 가능한 형태로 만든다. 행 수만으로는
+    하루가 통째로 빠진 것과 모든 날이 조금씩 적은 것을 구분할 수 없다.
+    """
+
+    requested_days: tuple[str, ...]
+    usable_days: tuple[str, ...]
+    sparse_days: tuple[str, ...]
+    missing_days: tuple[str, ...]
+    zero_click_days: tuple[str, ...]
+    total_rows: int
+    total_clicks: int
+    undated_rows: int = 0
+
+    def describe(self) -> str:
+        """사람이 읽고 바로 원인을 알 수 있는 한 줄 요약."""
+        undated = f", 날짜 없음 {self.undated_rows:,}행" if self.undated_rows else ""
+        return (
+            f"요청 {len(self.requested_days)}일 중 사용 가능 {len(self.usable_days)}일 "
+            f"(빈 날 {len(self.missing_days)}, 희박한 날 {len(self.sparse_days)}), "
+            f"총 {self.total_rows:,}행 / {self.total_clicks:,}클릭{undated}"
+        )
+
+    def as_lineage_params(self, *, min_days: int) -> dict[str, str]:
+        """MLflow run에 남길 lineage 파라미터로 변환한다(#464 리뷰).
+
+        v12 사고의 본질은 "요청 구간 ≠ 실제 학습 구간인데 메타데이터로는 구분할 수
+        없었다"는 것이다. 요청 구간만 기록하면 그 비대칭이 그대로 남으므로, **실측
+        커버리지와 적용된 기준**을 함께 남겨 사후에 run만 보고 판별할 수 있게 한다.
+
+        빠진 날짜는 개수만이 아니라 **목록**으로 남긴다 — 개수만으로는 "어느 날이
+        빠졌는지"를 알 수 없어 재현·백필 대상을 특정할 수 없다. MLflow 파라미터 값
+        길이 제한을 고려해 목록은 잘라 담고, 잘렸으면 그 사실을 표시한다.
+
+        Args:
+            min_days: 이 실행에 실제로 적용된 최소 일수 기준. ``0``이면 우회 실행이며,
+                그 사실 자체가 lineage에 남아야 정상 실행과 구별된다.
+        """
+        return {
+            "spine_requested_days": str(len(self.requested_days)),
+            "spine_usable_days": str(len(self.usable_days)),
+            "spine_missing_days": str(len(self.missing_days)),
+            "spine_sparse_days": str(len(self.sparse_days)),
+            "spine_missing_day_list": _truncate_day_list(self.missing_days),
+            "spine_coverage_min_days_applied": str(min_days),
+            "spine_coverage_guard": "off" if min_days <= 0 else "on",
+        }
+
+
+def summarize_spine_coverage(
+    spine: pd.DataFrame,
+    start_date: str,
+    end_date: str,
+    *,
+    min_rows_per_day: int = DEFAULT_MIN_ROWS_PER_DAY,
+) -> SpineCoverage:
+    """spine을 KST 날짜로 집계해 요청 기간의 커버리지를 만든다(순수 함수, #464).
+
+    BigQuery 없이 단위 테스트 가능하도록 조회와 분리한다. ``min_rows_per_day``
+    미만인 날은 "있다"고 세지 않는다 — 2026-07-23/24처럼 유저 10명(240행)만 남은
+    붕괴일을 정상일과 같이 세면 커버리지 판정이 무의미해진다.
+
+    ``min_rows_per_day``는 **실행 단위로 조정할 수 없다** — CLI 플래그가 없고
+    ``CTR_TRAINING_MIN_ROWS_PER_DAY``(전역)로만 바꾼다. ``min_coverage_days``와
+    비대칭인 것은 의도다: 하한 자체는 붕괴일(240행)과 정상일(12만+)을 가르는
+    값이라 실행마다 바꿀 이유가 없고, 실행 단위로 완화해야 하는 상황은
+    ``--min-coverage-days 0``(검사 전체 우회)으로 충분하다.
+
+    시각이 ``NaT``인 행은 어느 날짜에도 귀속되지 않으므로 ``undated_rows``로
+    따로 센다 — 조용히 사라지면 ``total_rows``와 일별 합계가 어긋난 채로 남는다.
+    """
+    requested = tuple(
+        d.strftime("%Y-%m-%d")
+        for d in pd.date_range(start=start_date, end=end_date, freq="D")
+    )
+    if not requested:
+        raise ValueError(
+            f"요청 기간이 비었습니다: start={start_date!r} end={end_date!r} "
+            "(start가 end보다 뒤인지 확인하세요)"
+        )
+
+    if spine.empty:
+        return SpineCoverage(
+            requested_days=requested,
+            usable_days=(),
+            sparse_days=(),
+            missing_days=requested,
+            zero_click_days=(),
+            total_rows=0,
+            total_clicks=0,
+        )
+
+    # BigQuery TIMESTAMP는 tz-aware(UTC)로 오지만, 테스트가 naive로 만들 수도 있다.
+    # KST 날짜가 파티션 계약(#295)의 기준이므로 어느 쪽이든 KST로 맞춘다.
+    ts = pd.to_datetime(spine["event_timestamp"])
+    ts = ts.dt.tz_localize("UTC") if ts.dt.tz is None else ts.dt.tz_convert("UTC")
+    day = ts.dt.tz_convert("Asia/Seoul").dt.strftime("%Y-%m-%d")
+
+    # NaT는 strftime이 NaN을 내고 groupby가 조용히 버린다. 버린 채로 두면 "총 N행"과
+    # 일별 합계가 어긋나므로 개수를 세어 드러낸다(#464 리뷰).
+    undated_rows = int(day.isna().sum())
+
+    grouped = spine.groupby(day)["clicked"].agg(["size", "sum"])
+    usable, sparse, missing, zero_click = [], [], [], []
+    for d in requested:
+        if d not in grouped.index:
+            missing.append(d)
+            continue
+        rows = int(grouped.loc[d, "size"])
+        clicks = int(grouped.loc[d, "sum"])
+        (usable if rows >= min_rows_per_day else sparse).append(d)
+        if clicks == 0:
+            zero_click.append(d)
+
+    return SpineCoverage(
+        requested_days=requested,
+        usable_days=tuple(usable),
+        sparse_days=tuple(sparse),
+        missing_days=tuple(missing),
+        zero_click_days=tuple(zero_click),
+        total_rows=int(len(spine)),
+        total_clicks=int(spine["clicked"].sum()),
+        undated_rows=undated_rows,
+    )
+
+
+def require_spine_coverage(
+    coverage: SpineCoverage, *, min_days: int = DEFAULT_MIN_COVERAGE_DAYS
+) -> None:
+    """커버리지가 기준 미달이면 원인을 드러내며 실패시킨다(#464).
+
+    판정은 요청 대비 **비율이 아니라 절대 하한**이다. 30일을 요청해 4일만 확보한
+    실행은 이 검사를 통과한다 — 비율 기준을 두면 짧은 윈도우(7일 중 3일 = 43%)와
+    긴 윈도우(30일 중 4일 = 13%)에 같은 잣대를 댈 수 없어서다. 대신 결손이 큰
+    실행을 사후에 식별할 수 있도록 실측 커버리지를 MLflow lineage에 남긴다
+    (``SpineCoverage.as_lineage_params``) — run 파라미터만 보고
+    "요청 30일 / 사용 가능 4일"을 판별할 수 있다.
+
+    ``min_days=0``이면 검사를 건너뛴다 — 백필·좁은 구간 재현처럼 의도적으로
+    적은 날짜를 쓰는 경우를 막지 않기 위한 명시적 우회구다. 우회한 사실도
+    lineage에 ``spine_coverage_guard=off``로 남아 정상 실행과 구별된다.
+    """
+    if coverage.undated_rows:
+        # 어느 날짜에도 귀속되지 않은 행이다. 커버리지 판정에서 빠지므로
+        # "총 N행"만 보고 안심하면 안 된다.
+        print(
+            f"  [경고] event_timestamp가 비어 날짜에 귀속되지 않은 행: "
+            f"{coverage.undated_rows:,}행 — 커버리지 집계에서 제외됩니다."
+        )
+
+    if min_days <= 0:
+        print(
+            "  [경고] spine 커버리지 검증이 꺼져 있습니다(min_days<=0). "
+            "이 실행은 MLflow lineage에 spine_coverage_guard=off로 기록됩니다."
+        )
+        return
+
+    if len(coverage.usable_days) < min_days:
+        raise ValueError(
+            "학습에 쓸 수 있는 날이 부족합니다 — "
+            f"{coverage.describe()}. 최소 {min_days}일이 필요합니다.\n"
+            f"  요청 기간: {coverage.requested_days[0]} ~ {coverage.requested_days[-1]}\n"
+            f"  사용 가능: {list(coverage.usable_days) or '없음'}\n"
+            f"  데이터 없음: {list(coverage.missing_days) or '없음'}\n"
+            f"  행이 너무 적음: {list(coverage.sparse_days) or '없음'}\n"
+            "기간을 넓히거나, 의도한 축소라면 `--min-coverage-days 0`으로 우회하세요"
+            "(Python API에서는 min_coverage_days=0)."
+        )
+
+    # 클릭 0인 날은 그 자체로 실패는 아니다(다른 날에 양성이 있으면 학습 가능).
+    # 다만 val 분할이 그 날에 몰리면 단일 클래스로 지표가 nan이 되므로(#445) 남긴다.
+    if coverage.zero_click_days:
+        print(
+            f"  [경고] 클릭이 0인 날: {list(coverage.zero_click_days)} "
+            "— 분할에 따라 지표가 nan이 될 수 있습니다(#445)."
+        )
+
+
 def _verify_assembly_environment() -> None:
     """feast 조립에 필요한 환경을 BigQuery 접속 전에 확인한다(#404/#423).
 
@@ -190,17 +424,80 @@ def _verify_assembly_environment() -> None:
         ) from error
 
 
+def _download_pinned_registry(
+    uri: str,
+    destination: Path,
+    *,
+    client: object | None = None,
+) -> RegistryProvenance:
+    """GCS registry object의 현재 generation을 고정해 local file로 내려받는다.
+
+    URI metadata를 먼저 읽고 같은 generation을 지정한 Blob만 다운로드한다. Feast에는
+    원격 URI를 전달하지 않고 이 local path를 전달해, manifest가 식별한 registry와 실제
+    PIT 조회 registry가 달라지는 경로를 차단한다.
+    """
+    parsed = urlparse(uri)
+    if parsed.scheme != "gs" or not parsed.netloc or not parsed.path.strip("/"):
+        raise ProvenanceValidationError(
+            f"registry URI는 gs://bucket/object 형식이어야 합니다: {uri}"
+        )
+
+    if client is None:
+        from google.cloud import storage
+
+        client = storage.Client()
+
+    bucket_name = parsed.netloc
+    object_name = parsed.path.lstrip("/")
+    try:
+        bucket = client.bucket(bucket_name)
+        metadata_blob = bucket.blob(object_name)
+        metadata_blob.reload()
+    except Exception as error:
+        raise ProvenanceValidationError(
+            f"registry metadata를 읽지 못했습니다: {uri}"
+        ) from error
+
+    generation = getattr(metadata_blob, "generation", None)
+    if generation is None:
+        raise ProvenanceValidationError(f"registry object generation이 없습니다: {uri}")
+
+    try:
+        pinned_blob = bucket.blob(object_name, generation=int(generation))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        pinned_blob.download_to_filename(str(destination))
+        registry_sha256 = sha256_file(destination)
+    except Exception as error:
+        destination.unlink(missing_ok=True)
+        raise ProvenanceValidationError(
+            f"registry generation={generation}을 내려받지 못했습니다: {uri}"
+        ) from error
+
+    return RegistryProvenance(
+        uri=uri,
+        generation=str(generation),
+        sha256=registry_sha256,
+    )
+
+
 def _assemble_via_feast(
-    output_path: str, events_start_date: str, events_end_date: str
-) -> None:
+    output_path: str,
+    events_start_date: str,
+    events_end_date: str,
+    *,
+    min_coverage_days: int = DEFAULT_MIN_COVERAGE_DAYS,
+) -> SpineCoverage:
     """Feast get_historical_features(PIT)로 spine에 21피처를 붙여 CSV로 쓴다(#358).
 
     DuckDB 재계산 경로를 대체한다. offline store가 정본(#357)이라 그 값을 그대로 읽는다.
     feast/feature_repo는 이 경로에서만 필요하므로 지연 import한다(격리 그룹).
-    """
-    import tempfile
 
+    Returns:
+        실측 spine 커버리지(#464). 호출부(run-pipeline)가 MLflow lineage에 남겨
+        "요청 구간 ≠ 실제 학습 구간"을 사후에 판별할 수 있게 한다.
+    """
     from src.features.feast_retrieval import (
+        DEFAULT_SERVICE,
         apply_cold_start_defaults,
         build_offline_feature_store,
         drop_user_dynamic_gap_rows,
@@ -211,50 +508,95 @@ def _assemble_via_feast(
     spine = load_training_entity_spine(events_start_date, events_end_date)
     print(f"  [OK] spine: {len(spine)} rows")
 
-    # offline 전용 store: prod feature_store.yaml(Redis)을 로드하지 않고, 배포 job이 apply한
-    # prod 레지스트리(GCS_REGISTRY_PATH)만 읽어 BigQuery offline을 조회한다(#358 리뷰).
-    registry_path = os.environ["GCS_REGISTRY_PATH"]
+    # 커버리지 검증은 비싼 조회(get_historical_features) **전에** 한다 — 어차피 실패할
+    # 조립에 수 분과 BigQuery 스캔을 쓰지 않기 위해서다(#464).
+    coverage = summarize_spine_coverage(spine, events_start_date, events_end_date)
+    print(f"  [커버리지] {coverage.describe()}")
+    require_spine_coverage(coverage, min_days=min_coverage_days)
+
+    # offline 전용 store: prod feature_store.yaml(Redis)을 로드하지 않고, generation을
+    # 고정한 local registry snapshot만 읽어 BigQuery offline을 조회한다(#423).
+    registry_uri = os.environ["GCS_REGISTRY_PATH"]
     gcs_staging = os.environ["GCS_STAGING_LOCATION"]
-    online_db = os.path.join(tempfile.mkdtemp(prefix="feast_assemble_"), "online.db")
-    store = build_offline_feature_store(
-        registry_path,
-        project=BIGQUERY_PROJECT,
-        dataset=BIGQUERY_DATASET,
-        gcs_staging=gcs_staging,
-        online_db_path=online_db,
-    )
-    print("\n[feast] get_historical_features(PIT) 조회...")
-    features = retrieve_training_features(store, spine)
+    output = Path(output_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
 
-    missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
-    if missing:
-        raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
+    staged_csv: Path | None = None
+    try:
+        with TemporaryDirectory(prefix="feast_assemble_") as temporary_dir:
+            registry_path = Path(temporary_dir) / "registry.db"
+            registry = _download_pinned_registry(registry_uri, registry_path)
+            online_db = Path(temporary_dir) / "online.db"
+            store = build_offline_feature_store(
+                str(registry_path),
+                project=BIGQUERY_PROJECT,
+                dataset=BIGQUERY_DATASET,
+                gcs_staging=gcs_staging,
+                online_db_path=str(online_db),
+            )
+            print("\n[feast] get_historical_features(PIT) 조회...")
+            features = retrieve_training_features(store, spine)
 
-    # (C) 결손 가시화: UserDynamic 전체 null(ttl 초과·#365 결손)은 채우지 않고 드롭
-    # (활동 유저를 "신규 유저"로 위장시키지 않는다). 이 뒤에 남는 null(영상 미발견 등)만
-    # 서빙과 같은 cold-start 기본값으로 채운다. 제자리 채움 + 선택 시 추가 copy 안 함(리뷰 OOM).
-    n_retrieved = len(features)
-    features = drop_user_dynamic_gap_rows(features)
-    n_dropped = n_retrieved - len(features)
-    features = apply_cold_start_defaults(features)
-    features["clicked"] = features["clicked"].astype(int)
-    # 관측성(#359 C2 리뷰): validate_events/Step3 통계가 사라진 자리를 최소 지표로 대체한다.
-    # 조용한 데이터 급감·전량 드롭을 운영자가 stdout으로 알아채게, 조회→드롭→학습 행 수와
-    # click_rate를 남긴다. 학습 행이 0이면 성공으로 조용히 끝내지 않고 경고를 크게 찍는다
-    # (하드 실패로 막을지는 후속 판단 — 지금은 실패 의미를 바꾸지 않는다).
-    click_rate = float(features["clicked"].mean()) if len(features) else 0.0
-    print(
-        f"  [관측] 조회 {n_retrieved}행 -> UserDynamic gap 드롭 {n_dropped}행 "
-        f"-> 학습 {len(features)}행, click_rate={click_rate:.4f}"
-    )
-    if features.empty:
-        print(
-            "  [경고] 학습 행이 0입니다 — spine이 비었거나 UserDynamic 결손(#365)으로 "
-            "전량 드롭됐습니다. 이어지는 train-model이 빈 데이터로 실패할 수 있습니다."
-        )
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    features[[*MODEL_FEATURE_COLUMNS, "clicked"]].to_csv(output_path, index=False)
-    print(f"\n[저장] {output_path} ({len(features)} rows, feast 경로)")
+            missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
+            if missing:
+                raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
+
+            # (C) 결손 가시화: UserDynamic 전체 null(ttl 초과·#365 결손)은 채우지 않고 드롭
+            # (활동 유저를 "신규 유저"로 위장시키지 않는다). 이 뒤에 남는 null(영상 미발견 등)만
+            # 서빙과 같은 cold-start 기본값으로 채운다. 제자리 채움 + 선택 시 추가 copy 안 함(리뷰 OOM).
+            n_retrieved = len(features)
+            features = drop_user_dynamic_gap_rows(features)
+            n_dropped = n_retrieved - len(features)
+            features = apply_cold_start_defaults(features)
+            features["clicked"] = features["clicked"].astype(int)
+            # 관측성(#359 C2 리뷰): validate_events/Step3 통계가 사라진 자리를 최소 지표로 대체한다.
+            # 조용한 데이터 급감·전량 드롭을 운영자가 stdout으로 알아채게, 조회→드롭→학습 행 수와
+            # click_rate를 남긴다. 학습 행이 0이면 성공으로 조용히 끝내지 않고 경고를 크게 찍는다
+            # (하드 실패로 막을지는 후속 판단 — 지금은 실패 의미를 바꾸지 않는다).
+            click_rate = float(features["clicked"].mean()) if len(features) else 0.0
+            print(
+                f"  [관측] 조회 {n_retrieved}행 -> UserDynamic gap 드롭 {n_dropped}행 "
+                f"-> 학습 {len(features)}행, click_rate={click_rate:.4f}"
+            )
+            if features.empty:
+                print(
+                    "  [경고] 학습 행이 0입니다 — spine이 비었거나 UserDynamic 결손(#365)으로 "
+                    "전량 드롭됐습니다. 이어지는 train-model이 빈 데이터로 실패할 수 있습니다."
+                )
+
+            with NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=output.parent,
+                prefix=f".{output.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temporary_file:
+                staged_csv = Path(temporary_file.name)
+                features[[*MODEL_FEATURE_COLUMNS, "clicked"]].to_csv(
+                    temporary_file, index=False
+                )
+                temporary_file.flush()
+                os.fsync(temporary_file.fileno())
+
+            manifest = build_snapshot_manifest(
+                dataset_path=staged_csv,
+                events_start_date=events_start_date,
+                events_end_date=events_end_date,
+                feature_service=DEFAULT_SERVICE,
+                registry=registry,
+                code_archive_sha=os.environ.get("CODE_ARCHIVE_SHA"),
+            )
+            os.replace(staged_csv, output)
+            staged_csv = None
+            write_manifest_atomic(manifest, snapshot_manifest_path(output))
+
+    finally:
+        if staged_csv is not None:
+            staged_csv.unlink(missing_ok=True)
+
+    print(f"\n[저장] {output} ({len(features)} rows, feast 경로 + snapshot provenance)")
+    return coverage
 
 
 def derive_wide_events(
@@ -384,12 +726,17 @@ def main(
     output_path: str = None,
     events_start_date: str = None,
     events_end_date: str = None,
-):
+    min_coverage_days: int = DEFAULT_MIN_COVERAGE_DAYS,
+) -> SpineCoverage:
     """training_dataset.csv를 offline feature store(Feast PIT) 조회로 생성한다(#359 C2, feast-only).
 
     #359 C2에서 DuckDB 재계산 경로를 제거하고 feast를 유일 경로로 만들었다. spine
     (``training_entity``)에 21피처를 ``get_historical_features``(PIT)로 붙여 CSV로 쓴다
     (``_assemble_via_feast``). offline store가 정본(#357)이라 그 값을 그대로 읽는다.
+
+    Returns:
+        실측 spine 커버리지(#464). ``build-features``는 쓰지 않지만 ``run-pipeline``이
+        MLflow lineage에 남긴다.
     """
     if not events_start_date or not events_end_date:
         raise ValueError(
@@ -399,4 +746,9 @@ def main(
     _verify_assembly_environment()
     if output_path is None:
         output_path = os.path.join(get_data_dir(), "processed", "training_dataset.csv")
-    _assemble_via_feast(output_path, events_start_date, events_end_date)
+    return _assemble_via_feast(
+        output_path,
+        events_start_date,
+        events_end_date,
+        min_coverage_days=min_coverage_days,
+    )

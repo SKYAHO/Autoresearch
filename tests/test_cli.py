@@ -5,8 +5,10 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from click import unstyle
 import pytest
 import typer
+from typer.testing import CliRunner
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -37,11 +39,29 @@ def _promotion_result(
     )
 
 
+def _fake_coverage(usable=2, missing=1):
+    """build-features가 돌려주는 실측 커버리지(#464) — lineage 기록에 쓰인다."""
+    days = [f"2026-07-{d:02d}" for d in range(1, usable + missing + 1)]
+    return cli.build_training_dataset.SpineCoverage(
+        requested_days=tuple(days),
+        usable_days=tuple(days[:usable]),
+        sparse_days=(),
+        missing_days=tuple(days[usable:]),
+        zero_click_days=(),
+        total_rows=100,
+        total_clicks=5,
+    )
+
+
 def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     build_features_call = {}
     # build-features 성공 뒤 lineage가 GCS_REGISTRY_PATH를 필수로 읽는다(#359 C2, 무조건 기록).
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
-    monkeypatch.setattr(cli.build_training_dataset, "main", lambda **kw: build_features_call.update(kw))
+    monkeypatch.setattr(
+        cli.build_training_dataset,
+        "main",
+        lambda **kw: (build_features_call.update(kw), _fake_coverage())[1],
+    )
     monkeypatch.setattr(cli.train, "main", lambda **kw: _pipeline_outcome())
     monkeypatch.setattr(cli.evaluate, "main", MagicMock())
     monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
@@ -60,9 +80,11 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
         random_state=None,
         extra_features=None,
         experiment=None,
+        min_coverage_days=None,
     )
 
     # C2로 feast-only: build-features에 output_path + 기간만 넘긴다(duckdb 인자 없음).
+    # min_coverage_days 미지정(None)이면 키 자체를 넘기지 않아 모듈 기본값이 살아 있다(#464).
     assert build_features_call == {
         "output_path": "dataset.csv",
         "events_start_date": "2026-07-01",
@@ -70,12 +92,124 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     }
 
 
+def test_train_model_forwards_explicit_seed_triplet(monkeypatch):
+    train_call = {}
+    monkeypatch.setattr(
+        cli.train, "main", lambda **kwargs: train_call.update(kwargs)
+    )
+
+    cli.train_model(
+        config_path=None,
+        data_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=11,
+        model_seed=12,
+        sampler_seed=13,
+        extra_features=None,
+        experiment=None,
+    )
+
+    assert (
+        train_call["split_seed"],
+        train_call["model_seed"],
+        train_call["sampler_seed"],
+    ) == (11, 12, 13)
+    assert "require_snapshot" not in train_call
+
+
+def test_run_pipeline_requires_verified_snapshot_and_forwards_seed_triplet(monkeypatch):
+    train_call = {}
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+    monkeypatch.setattr(
+        cli.train,
+        "main",
+        lambda **kwargs: train_call.update(kwargs) or _pipeline_outcome(),
+    )
+    monkeypatch.setattr(cli.evaluate, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
+
+    cli.run_pipeline(
+        dataset_path=None,
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
+        config_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=11,
+        model_seed=12,
+        sampler_seed=13,
+        extra_features=None,
+        experiment=None,
+    )
+
+    assert train_call["require_snapshot"] is True
+    assert (
+        train_call["split_seed"],
+        train_call["model_seed"],
+        train_call["sampler_seed"],
+    ) == (11, 12, 13)
+
+
+def test_run_pipeline_forwards_coverage_override(monkeypatch):
+    # 백필처럼 의도적으로 좁은 구간을 쓸 때 0으로 우회할 수 있어야 한다(#464).
+    # None과 0을 구분하지 못하면(falsy 판정 등) 우회구가 조용히 무시된다.
+    build_features_call = {}
+    train_call = {}
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(
+        cli.build_training_dataset,
+        "main",
+        lambda **kw: (build_features_call.update(kw), _fake_coverage())[1],
+    )
+    monkeypatch.setattr(
+        cli.train, "main", lambda **kw: train_call.update(kw) or _pipeline_outcome()
+    )
+    monkeypatch.setattr(cli.evaluate, "main", MagicMock())
+    monkeypatch.setattr(cli.train, "register_pending_model", MagicMock())
+
+    cli.run_pipeline(
+        dataset_path="dataset.csv",
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
+        config_path=None,
+        model_output=None,
+        test_set_output="test_set.csv",
+        feature_columns_output="feature_columns.json",
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        extra_features=None,
+        experiment=None,
+        min_coverage_days=0,
+    )
+
+    assert build_features_call["min_coverage_days"] == 0
+    # 우회한 사실이 lineage에 남아야 정상 실행과 구별된다(#464 리뷰).
+    assert train_call["extra_params"]["spine_coverage_guard"] == "off"
+    assert train_call["extra_params"]["spine_coverage_min_days_applied"] == "0"
+
+
 def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
     from src.features.feast_retrieval import DEFAULT_SERVICE
 
     train_call = {}
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
-    monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
+    monkeypatch.setattr(
+        cli.build_training_dataset, "main", MagicMock(return_value=_fake_coverage())
+    )
     monkeypatch.setattr(
         cli.train, "main", lambda **kw: train_call.update(kw) or _pipeline_outcome()
     )
@@ -98,13 +232,24 @@ def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
         experiment=None,
     )
 
-    # feast-only lineage: assembly_source=feast + FeatureService + registry + 기간.
+    # feast-only lineage: assembly_source=feast + FeatureService + registry + 기간에,
+    # 실측 spine 커버리지(#464 리뷰)를 더한다 — 요청 구간만으로는 v12처럼
+    # "요청 3일 / 실제 2일"인 run을 사후에 구별할 수 없다.
     assert train_call["extra_params"] == {
         "assembly_source": "feast",
         "feature_service": DEFAULT_SERVICE,
         "events_start_date": "2026-07-01",
         "events_end_date": "2026-07-08",
         "feast_registry_path": "gs://fake/registry.db",
+        "spine_requested_days": "3",
+        "spine_usable_days": "2",
+        "spine_missing_days": "1",
+        "spine_sparse_days": "0",
+        "spine_missing_day_list": "2026-07-03",
+        "spine_coverage_min_days_applied": str(
+            cli.build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
+        ),
+        "spine_coverage_guard": "on",
     }
 
 
@@ -667,3 +812,46 @@ def test_sweep_seeds_rejects_duplicate_seeds(tmp_path, monkeypatch):
             extra_features=None,
             result_path=None,
         )
+
+
+def test_verify_comparison_help_exposes_required_options() -> None:
+    result = CliRunner().invoke(
+        cli.app,
+        ["verify-comparison", "--help"],
+        color=False,
+    )
+    help_output = unstyle(result.output)
+
+    assert result.exit_code == 0
+    assert "--baseline-run-id" in help_output
+    assert "--challenger-run-id" in help_output
+    assert "--output" in help_output
+
+
+def test_verify_comparison_cli_maps_validation_error_without_secret(
+    monkeypatch,
+) -> None:
+    secret = "synthetic-private-value"
+
+    def _raise(*_args, **_kwargs):
+        raise cli.training_comparison.ComparisonValidationError(
+            f"credential={secret}"
+        )
+
+    monkeypatch.setattr(cli.training_comparison, "verify_training_comparison", _raise)
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "verify-comparison",
+            "--baseline-run-id",
+            "baseline",
+            "--challenger-run-id",
+            "challenger",
+            "--output",
+            "comparison.json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "synthetic-private-value" not in result.output
+    assert "ComparisonValidationError" in result.output

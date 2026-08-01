@@ -324,7 +324,9 @@ dependencies = [
     { name = "db-dtypes" },
     { name = "duckdb" },
     { name = "gcsfs" },
+    { name = "google-api-core" },
     { name = "google-api-python-client" },
+    { name = "google-auth" },
     { name = "google-cloud-aiplatform", version = "1.148.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.13' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-orchestration') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "google-cloud-aiplatform", version = "1.162.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.13' or extra == 'group-12-autoresearch-dev' or extra != 'group-12-autoresearch-feast' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-orchestration') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "google-cloud-bigquery" },
@@ -353,6 +355,7 @@ dev = [
     { name = "datasets" },
     { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" } },
     { name = "google-cloud-bigquery" },
+    { name = "google-cloud-secret-manager" },
     { name = "httpx" },
     { name = "openai" },
     { name = "prometheus-client" },
@@ -377,6 +380,8 @@ lint = [
 ]
 orchestration = [
     { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" } },
+    { name = "google-cloud-secret-manager" },
+    { name = "httpx" },
     { name = "openai" },
     { name = "psycopg", extra = ["binary"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
@@ -397,7 +402,9 @@ requires-dist = [
     { name = "db-dtypes", specifier = ">=1.2" },
     { name = "duckdb", specifier = ">=0.8.0" },
     { name = "gcsfs", specifier = ">=2024.0" },
+    { name = "google-api-core", specifier = ">=2.31.0" },
     { name = "google-api-python-client", specifier = ">=2.100,<3" },
+    { name = "google-auth", specifier = ">=2.53.0" },
     { name = "google-cloud-aiplatform", specifier = ">=1.148.1" },
     { name = "google-cloud-bigquery", specifier = ">=3.20" },
     { name = "google-cloud-storage", specifier = ">=2.10" },
@@ -424,6 +431,7 @@ dev = [
     { name = "datasets", specifier = ">=2.19" },
     { name = "fastapi", specifier = ">=0.115,<0.129" },
     { name = "google-cloud-bigquery", specifier = ">=3.20" },
+    { name = "google-cloud-secret-manager", specifier = ">=2.20,<3" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
     { name = "openai", specifier = ">=1.66,<3" },
     { name = "prometheus-client", specifier = ">=0.20,<1" },
@@ -446,6 +454,8 @@ feast = [
 lint = [{ name = "ruff", specifier = "==0.15.18" }]
 orchestration = [
     { name = "fastapi", specifier = ">=0.115,<0.129" },
+    { name = "google-cloud-secret-manager", specifier = ">=2.20,<3" },
+    { name = "httpx", specifier = ">=0.28,<0.29" },
     { name = "openai", specifier = ">=1.66,<3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
@@ -1442,7 +1452,7 @@ name = "google-cloud-secret-manager"
 version = "2.30.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "google-api-core", extra = ["grpc"], marker = "extra == 'group-12-autoresearch-feast'" },
+    { name = "google-api-core", extra = ["grpc"], marker = "extra == 'group-12-autoresearch-dev' or extra == 'group-12-autoresearch-feast' or extra == 'group-12-autoresearch-orchestration'" },
     { name = "google-auth" },
     { name = "grpc-google-iam-v1" },
     { name = "grpcio" },

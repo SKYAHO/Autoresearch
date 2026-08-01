@@ -22,6 +22,7 @@ from feature_repo.env import online_full_scan_for_deletion
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 APPLY_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "feast-apply.yml"
+CODE_ARCHIVE_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "code-archive.yml"
 APPLY_JOB_MANIFEST = REPOSITORY_ROOT / "deploy" / "feast" / "apply-job.yaml"
 
 _DERIVATION_START = 'if [[ "$AUTORESEARCH_ENV" == "dev" ]]'
@@ -67,9 +68,22 @@ def test_workflow_full_scan_derivation_matches_env_module(environment: str) -> N
     assert completed.stdout == ("true" if expected else "false")
 
 
-def test_workflow_defaults_to_prod_outside_manual_dispatch() -> None:
-    # push(main) 에는 inputs 컨텍스트가 없다 — prod 로 떨어져야 회귀가 없다.
-    assert "AUTORESEARCH_ENV: ${{ inputs.environment || 'prod' }}" in _workflow_text()
+def test_workflow_routes_each_push_branch_to_its_own_environment() -> None:
+    # main/dev push는 수동 입력이 없으므로 ref 이름에서 대상 환경을 선택해야 한다.
+    workflow = _workflow_text()
+
+    assert "branches: [main, dev]" in workflow
+    assert (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.ref_name }}"
+        in workflow
+    )
+
+
+def test_code_archive_uploads_dev_commit_for_dev_feast_apply() -> None:
+    # Feast apply는 현재 SHA의 immutable archive를 기다리므로 dev push도 archive를 만든다.
+    archive_workflow = CODE_ARCHIVE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "branches: [main, dev]" in archive_workflow
 
 
 def test_workflow_renders_environment_into_job_manifest() -> None:
@@ -88,5 +102,8 @@ def test_workflow_selects_environment_scoped_coordinates() -> None:
     # prod/dev Environment 좌표가 우선하며, 임시 dev 차단 가드는 더 이상 필요 없다.
     workflow = _workflow_text()
 
-    assert "    environment: ${{ inputs.environment || 'prod' }}" in workflow
+    assert (
+        "    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.ref_name }}"
+        in workflow
+    )
     assert "Guard against dev dispatch before dev coordinates are wired" not in workflow

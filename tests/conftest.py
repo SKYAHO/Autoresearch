@@ -7,6 +7,12 @@ Vertex AI 임베딩 API를 기본적으로 mock한다 (#206). 실제 GCP 자격 
 placeholder와 아이디어는 같지만, 이제는 프로덕션 코드가 아니라 테스트 더블로만
 쓰인다.
 
+같은 이유로 `google.auth.default()`도 대역으로 치환한다 — 라운드 시작
+자격증명 사전점검(`verify_vertex_ai_credentials`, #426)이 실제 토큰 갱신을
+시도하므로, 치환하지 않으면 ADC가 없는 CI에서 실패하고 개발자 머신에서는 매
+테스트마다 네트워크 왕복이 생긴다. 사전점검 자체의 실패 분기를 검증하는
+테스트는 이 위에 자체 monkeypatch를 다시 씌운다.
+
 Vertex AI SDK 호출 자체의 정확한 형태(task_type/output_dimensionality/청킹)를
 검증하는 테스트는 tests/test_embeddings.py에서 이 fixture 위에 자체 monkeypatch를
 추가로 씌운다(같은 monkeypatch 인스턴스에 다시 setitem하면 나중 설정이 이긴다).
@@ -53,8 +59,25 @@ class _FakeTextEmbeddingModel:
         return vectors
 
 
+class _FakeCredentials:
+    """google.auth.default()가 돌려주는 자격증명 대역 — refresh가 항상 성공한다."""
+
+    # 실제 Credentials는 refresh 후 token을 채운다. 대역에도 두어, 나중에 .token을
+    # 읽는 코드가 생겨도 원인 불명의 AttributeError 대신 알아볼 수 있는 값이 나온다.
+    token = "fake-token"
+
+    def refresh(self, request):
+        return None
+
+
 @pytest.fixture(autouse=True)
 def mock_vertex_embeddings(monkeypatch):
+    import google.auth
+
+    monkeypatch.setattr(
+        google.auth, "default", lambda *args, **kwargs: (_FakeCredentials(), "test-project")
+    )
+
     fake_language_models = MagicMock()
     fake_language_models.TextEmbeddingModel = _FakeTextEmbeddingModel
     fake_language_models.TextEmbeddingInput = _FakeTextEmbeddingInput

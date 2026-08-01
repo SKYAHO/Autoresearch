@@ -14,8 +14,10 @@ import math
 import pytest
 
 from src.pipeline.seed_sweep import (
+    _T_CRITICAL_95,
     MetricSummary,
     SeedSweepError,
+    _t_critical_95,
     paired_deltas_by_seed,
     validate_seeds,
     SignificanceVerdict,
@@ -271,3 +273,121 @@ def test_validate_seeds_can_run_before_side_effects() -> None:
         validate_seeds([])
     with pytest.raises(ValueError):
         validate_seeds([42, 42])
+
+
+# --- NaN 지표 가드 (#445) ---
+
+
+def test_run_seed_sweep_rejects_nan_metric() -> None:
+    """학습이 NaN 지표를 돌려주면 즉시 실패한다(#445).
+
+    `TrainingOutcome.val_roc_auc`의 기본값이 NaN이라, 학습을 거치지 않은 outcome이
+    섞이면 평균·편차가 조용히 NaN이 된다. 요약이 NaN이면 판정도 NaN이라 "노이즈
+    안/밖"이 아니라 아무 말도 못 하는 결과가 나온다.
+    """
+    with pytest.raises(SeedSweepError) as excinfo:
+        run_seed_sweep([42, 43], train_once=lambda *, random_state, **_: float("nan"))
+
+    assert "42" in str(excinfo.value)
+
+
+def test_run_seed_sweep_rejects_infinite_metric() -> None:
+    with pytest.raises(SeedSweepError):
+        run_seed_sweep([42], train_once=lambda *, random_state, **_: float("inf"))
+
+
+def test_run_seed_sweep_nan_error_keeps_earlier_seeds() -> None:
+    """NaN으로 멈춰도 앞선 시드 결과는 남는다."""
+
+    def flaky(*, random_state, **_):
+        return 0.70 if random_state == 42 else float("nan")
+
+    with pytest.raises(SeedSweepError) as excinfo:
+        run_seed_sweep([42, 43], train_once=flaky)
+
+    assert excinfo.value.completed == {42: 0.70}
+
+
+def test_summarize_metric_rejects_nan() -> None:
+    """통계 계층도 NaN을 받지 않는다 — 평균·편차가 조용히 NaN이 되는 것을 막는다."""
+    with pytest.raises(ValueError):
+        summarize_metric([0.70, float("nan")])
+
+
+def test_t_critical_table_covers_realistic_seed_counts_without_approximating() -> None:
+    """df 1~30은 표에서 정확히 조회된다 — 이 구간에 근사가 끼면 안 된다.
+
+    빈칸을 남기면 `reason` 문자열에 "경계(±t2.228, df=14)"처럼 **df와 맞지 않는
+    t값**이 짝지어 기록된다. 판정 근거를 만드는 모듈이라 그 기록 자체가 틀리면
+    안 된다(#456 리뷰 1).
+    """
+    assert set(_T_CRITICAL_95) == set(range(1, 31))
+    for degrees_of_freedom in range(1, 31):
+        assert _t_critical_95(degrees_of_freedom) == _T_CRITICAL_95[degrees_of_freedom]
+
+
+def test_t_critical_beyond_the_table_holds_the_most_conservative_entry() -> None:
+    """표를 넘는 자유도는 하한(df=30)을 유지한다.
+
+    1.96(정규 근사)으로 낮추면 df 31~60 구간에서 실제보다 관대해진다 — t(40)=2.021이라
+    1.96은 참값보다 작다. 2.042를 유지하면 오차가 4.19%로 수렴하며 방향은 늘 보수적이다.
+    """
+    for degrees_of_freedom in (31, 39, 100, 1000):
+        assert _t_critical_95(degrees_of_freedom) == _T_CRITICAL_95[30]
+
+
+def test_reason_marks_the_threshold_as_a_floor_beyond_the_table() -> None:
+    """df>30은 하한을 쓰므로 `reason`에 그 사실이 남아야 한다(#456 리뷰 1).
+
+    `reason`은 `to_dict()`를 거쳐 이슈 본문에 옮겨 적힌다. 표시가 없으면 읽는
+    사람이 "df=39의 t는 2.042"로 오해한다 — 표를 채운 이유와 같은 문제다.
+    """
+    exact = compare_to_baseline(
+        candidate=summarize_metric([0.75] * 15),
+        baseline=summarize_metric([0.74] * 15),
+        paired_deltas=[0.01 + 0.001 * i for i in range(15)],
+    )
+    floored = compare_to_baseline(
+        candidate=summarize_metric([0.75] * 40),
+        baseline=summarize_metric([0.74] * 40),
+        paired_deltas=[0.01 + 0.001 * i for i in range(40)],
+    )
+
+    # df=14는 표에 있으므로 꼬리표가 붙지 않는다.
+    assert "df=14" in exact.reason
+    assert "하한" not in exact.reason
+    # df=39는 표 밖이라 하한임이 드러나야 한다.
+    assert "df=39" in floored.reason
+    assert "하한" in floored.reason
+
+
+def test_t_critical_rejects_degrees_of_freedom_below_the_table() -> None:
+    """자유도 1 미만은 호출부 계약이 깨진 신호라 조용히 흡수하지 않는다.
+
+    두 호출부 모두 시드 2개 이상(df >= 1)을 보장하므로 실제로는 도달하지 않는다.
+    도달했다면 그 보장이 깨진 것이므로 12.706을 돌려주는 대신 즉시 세운다.
+    """
+    with pytest.raises(ValueError, match="호출부 계약"):
+        _t_critical_95(0)
+
+
+def test_t_critical_never_declares_outside_noise_more_easily_than_the_true_value() -> None:
+    """자유도별 임계값이 참 t값 이상이어야 한다 — 회귀 방지용 성질 검사.
+
+    표를 채우든 비우든 이 성질만은 유지돼야 하므로 구현 방식이 아니라 **의도**를
+    고정한다. 참값은 scipy 없이 검증할 수 있도록 박아둔다(양측 95%, 소수 3자리).
+    이 PR 이전 코드는 df 11~14에서 2.131을 돌려줘 이 성질을 깼다.
+    """
+    true_t = {
+        11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145,
+        16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
+        21: 2.080, 25: 2.060, 29: 2.045,
+        # 표 밖 — 근사가 남은 유일한 구간이라 여기가 실질적인 회귀 위험 지점이다.
+        39: 2.023, 60: 2.000, 100: 1.984,
+    }
+    for degrees_of_freedom, expected in true_t.items():
+        used = _t_critical_95(degrees_of_freedom)
+        assert used >= expected, (
+            f"df={degrees_of_freedom}: 임계값 {used}가 참값 {expected}보다 작다 — "
+            "경계가 실제보다 좁아져 유의 판정이 쉬워진다."
+        )

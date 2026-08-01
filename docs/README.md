@@ -48,7 +48,9 @@
 
 - [가이드 — 학습 데이터셋](guides/training-dataset.md)
 - [가이드 — CTR 모델 명세](guides/ctr-model-specification.md)
+- [가이드 — 학습 실험 provenance 애플리케이션 설계](guides/training-experiment-provenance.md)
 - [Spec — 모델 승격 구조화 결과 계약](specs/2026-07-29-model-promotion-structured-outcome.md)
+- [Spec — 학습 윈도우 spine 커버리지 가드](specs/2026-08-01-training-window-coverage-guard.md) — 기준값 근거·lineage 계약·가드의 한계 (#464)
 - [Plan — `src/` → `autoresearch/` 패키지 통합](plans/2026-07-15-src-package-merge.md) (팀 합의 대기)
 - `src/pipeline/`, `src/models/`, `src/features/` (CTR 학습·평가 코드)
 
@@ -63,7 +65,10 @@
 
 - [Spec — Agent Orchestration 채팅 저장 스켈레톤](archive/specs/2026-07-30-agent-orchestration-chat-postgres-skeleton.md) (구현 완료)
 - [Plan — Agent Orchestration 1단계 구현 계획](archive/plans/2026-07-30-agent-orchestration-chat-postgres-skeleton.md) (구현 완료)
+- [Plan — Agent Orchestration PR 사전 병합 강화](archive/plans/2026-07-31-agent-orchestration-premerge-hardening.md) (구현 완료)
 - `agent_orchestration/` (FastAPI + Codex CLI/OpenAI + PostgreSQL 실험 API)
+- [Spec — Agent Orchestration GKE 내부 배포](specs/2026-07-30-agent-orchestration-gke-internal-deployment.md)
+- [Plan — Agent Orchestration GKE 내부 배포](plans/2026-07-30-agent-orchestration-gke-internal-deployment.md)
 
 ### 🌬️ 오케스트레이션 (Airflow)
 
@@ -110,6 +115,7 @@
 - [학습 데이터셋](guides/training-dataset.md)
 - [피처 스토어](guides/feature-store.md) · [Feast GCP 설정](guides/feast-gcp-setup.md)
 - [CTR 모델 명세](guides/ctr-model-specification.md)
+- [학습 실험 provenance 애플리케이션 설계](guides/training-experiment-provenance.md)
 - [Agent Simulator 명세 (action log SSOT)](guides/agent-simulator-spec.md)
 - [action_logs 모듈 사용법](guides/action-log.md)
 - [Release & 배포 파이프라인](guides/release-pipeline.md) — CI/CD·GAR push·digest 승격·GKE 배포 자동화
