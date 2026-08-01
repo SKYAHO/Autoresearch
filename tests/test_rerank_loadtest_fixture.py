@@ -199,7 +199,7 @@ def test_k6_job_is_immutable_hardened_and_configmap_only() -> None:
         "grafana/k6@sha256:1f40432b1cbe7234e977f96c362c9bc5"
         "50a2d2b583d014dd8669fe40d3e9e755" in text
     )
-    assert "k6 run" in text and "/scripts/rerank.js" in text
+    assert "- k6" in text and "- run" in text and "/scripts/rerank.js" in text
     assert "runAsNonRoot: true" in text
     assert "drop:" in text and "- ALL" in text
     assert "type: RuntimeDefault" in text
@@ -263,6 +263,73 @@ def test_manual_workflow_serializes_shared_configmaps_and_waits_for_padding() ->
     assert "padded_end=" in text
     assert "current_time=" in text
     assert 'sleep "$((padded_end - current_time))"' in text
+
+
+def test_manual_workflow_preserves_runner_artifact_layout_for_reader() -> None:
+    """runner upload, reader download·glob, 최종 upload는 같은 raw 경로를 사용한다."""
+    text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+
+    assert text.count("path: runner/raw") == 3
+    assert "metadata_files=(runner/raw/metadata-vu-*.json)" in text
+    assert 'response_path="runner/raw/prometheus-' in text
+
+
+def test_workflow_validates_fixture_and_avoids_sourced_settings() -> None:
+    """자유 입력은 allowlist를 통과하고 settings 값은 shell source되지 않는다."""
+    workflow = Path(".github/workflows/rerank-loadtest.yml").read_text()
+    manifest = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
+
+    assert "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" in workflow
+    assert "--from-literal=rerank.env" not in workflow
+    for key in (
+        "BASE_URL",
+        "CANDIDATE_COUNT",
+        "VUS",
+        "WARMUP_SECONDS",
+        "MEASURE_SECONDS",
+        "FIXTURE_VERSION",
+        "BENCHMARK_LABEL",
+        "SERVING_IMAGE_REF",
+        "SERVING_GIT_SHA",
+    ):
+        assert f"--from-literal={key}=" in workflow
+    assert ". /settings/" not in manifest
+    assert "envFrom:" in manifest and "configMapRef:" in manifest
+
+
+def test_each_vu_binds_one_versioned_immutable_settings_configmap() -> None:
+    """각 VU Job은 생성 시점의 고유 settings ConfigMap을 env와 volume에 함께 bind한다."""
+    workflow = Path(".github/workflows/rerank-loadtest.yml").read_text()
+    manifest = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
+
+    assert (
+        'settings_config_map="rerank-loadtest-settings-'
+        '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${vus}"' in workflow
+    )
+    assert "immutable = true" in workflow
+    assert "job_manifest=" in workflow
+    assert "rerank-loadtest-settings-placeholder" in workflow
+    assert manifest.count("name: rerank-loadtest-settings-placeholder") == 2
+    assert 'settings_config_map: $settings_config_map' in workflow
+    assert ".metadata.vus == $expected_vus" in workflow
+
+
+def test_failure_metadata_precedes_summary_and_records_status() -> None:
+    """Job 종료 metadata는 summary보다 먼저 남고 후속 실패 상태도 갱신된다."""
+    text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+
+    first_metadata_write = text.index('write_metadata "$result"')
+    summary_retrieval = text.index('summary_path="runner/raw/k6-summary-')
+    assert first_metadata_write < summary_retrieval
+    assert 'completion_timestamp="$(date --utc' in text
+    assert "result=timeout" in text
+    for status in (
+        "pod_not_found",
+        "summary_retrieval_failed",
+        "measurement_gate_failed",
+        "succeeded",
+    ):
+        assert f'write_metadata "{status}"' in text
 
 
 def test_provisioner_default_dry_run_executes_only_count_selects(

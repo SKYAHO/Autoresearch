@@ -75,6 +75,10 @@ jobs:
             echo "::error::serving_git_sha must be a full lowercase 40-character SHA."
             exit 1
           fi
+          if [[ ! "$FIXTURE_VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]; then
+            echo "::error::fixture_version contains unsupported characters."
+            exit 1
+          fi
 
       - name: Authenticate load-test runner with Workload Identity Federation
         uses: google-github-actions/auth@v2
@@ -115,6 +119,40 @@ jobs:
             fi
           }
 
+          write_metadata() {
+            local status="$1"
+            local creation_timestamp="$2"
+            local completion_timestamp="$3"
+            local job_name="$4"
+            local vus="$5"
+            local settings_config_map="$6"
+            jq -n \
+              --arg status "$status" \
+              --arg creation_timestamp "$creation_timestamp" \
+              --arg completion_timestamp "$completion_timestamp" \
+              --argjson candidate_count "$CANDIDATE_COUNT" \
+              --argjson vus "$vus" \
+              --arg fixture_version "$FIXTURE_VERSION" \
+              --arg benchmark_label "$BENCHMARK_LABEL" \
+              --arg serving_image_ref "$SERVING_IMAGE_REF" \
+              --arg serving_git_sha "$SERVING_GIT_SHA" \
+              --arg job_name "$job_name" \
+              --arg settings_config_map "$settings_config_map" \
+              '{
+                status: $status,
+                creation_timestamp: $creation_timestamp,
+                completion_timestamp: $completion_timestamp,
+                candidate_count: $candidate_count,
+                vus: $vus,
+                fixture_version: $fixture_version,
+                benchmark_label: $benchmark_label,
+                serving_image_ref: $serving_image_ref,
+                serving_git_sha: $serving_git_sha,
+                job_name: $job_name,
+                settings_config_map: $settings_config_map
+              }' > "runner/raw/metadata-vu-${vus}.json"
+          }
+
           kubectl create configmap rerank-loadtest-script \
             -n "$LOADTEST_NAMESPACE" \
             --from-file=rerank.js=loadtest/rerank.js \
@@ -124,24 +162,33 @@ jobs:
             | kubectl apply -f -
 
           for vus in 1 2 4 8; do
-            kubectl create configmap rerank-loadtest-settings \
+            settings_config_map="rerank-loadtest-settings-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${vus}"
+            kubectl create configmap "$settings_config_map" \
               -n "$LOADTEST_NAMESPACE" \
-              --from-literal=rerank.env="BASE_URL=http://autoresearch-serving.autoresearch.svc.cluster.local:8000
-          CANDIDATE_COUNT=${CANDIDATE_COUNT}
-          VUS=${vus}
-          WARMUP_SECONDS=60
-          MEASURE_SECONDS=300
-          FIXTURE_VERSION=${FIXTURE_VERSION}
-          BENCHMARK_LABEL=${BENCHMARK_LABEL}
-          SERVING_IMAGE_REF=${SERVING_IMAGE_REF}
-          SERVING_GIT_SHA=${SERVING_GIT_SHA}" \
-              --dry-run=client -o yaml \
-              | kubectl label --local -f - \
-                  app.kubernetes.io/part-of=rerank-loadtest -o yaml \
-              | kubectl apply -f -
+              --from-literal=BASE_URL=http://autoresearch-serving.autoresearch.svc.cluster.local:8000 \
+              --from-literal=CANDIDATE_COUNT="$CANDIDATE_COUNT" \
+              --from-literal=VUS="$vus" \
+              --from-literal=WARMUP_SECONDS=60 \
+              --from-literal=MEASURE_SECONDS=300 \
+              --from-literal=FIXTURE_VERSION="$FIXTURE_VERSION" \
+              --from-literal=BENCHMARK_LABEL="$BENCHMARK_LABEL" \
+              --from-literal=SERVING_IMAGE_REF="$SERVING_IMAGE_REF" \
+              --from-literal=SERVING_GIT_SHA="$SERVING_GIT_SHA" \
+              --dry-run=client -o json \
+              | jq '.metadata.labels["app.kubernetes.io/part-of"] = "rerank-loadtest"
+                    | .immutable = true' \
+              | kubectl create -f -
+
+            job_manifest="runner/job-vu-${vus}.yaml"
+            sed "s/rerank-loadtest-settings-placeholder/${settings_config_map}/g" \
+              deploy/loadtest/rerank-k6-job.yaml > "$job_manifest"
+            if grep -q "rerank-loadtest-settings-placeholder" "$job_manifest"; then
+              echo "::error::settings ConfigMap placeholder was not rendered."
+              exit 1
+            fi
 
             job_name="$(kubectl create \
-              -f deploy/loadtest/rerank-k6-job.yaml \
+              -f "$job_manifest" \
               -o jsonpath='{.metadata.name}')"
             creation_timestamp="$(kubectl get job "$job_name" \
               -n "$LOADTEST_NAMESPACE" \
@@ -163,50 +210,64 @@ jobs:
               sleep 5
             done
 
+            if [[ "$result" == "running" ]]; then
+              result=timeout
+            fi
+            completion_timestamp="$(kubectl get job "$job_name" \
+              -n "$LOADTEST_NAMESPACE" \
+              -o jsonpath='{.status.completionTime}' 2>/dev/null || true)"
+            if [[ -z "$completion_timestamp" ]]; then
+              completion_timestamp="$(date --utc +'%Y-%m-%dT%H:%M:%SZ')"
+            fi
+            write_metadata "$result" "$creation_timestamp" "$completion_timestamp" \
+              "$job_name" "$vus" "$settings_config_map"
+
             if [[ "$result" != "complete" ]]; then
               capture_diagnostics "$job_name" "$vus"
               echo "::error::Job $job_name ended with state $result."
               exit 1
             fi
 
-            completion_timestamp="$(kubectl get job "$job_name" \
-              -n "$LOADTEST_NAMESPACE" \
-              -o jsonpath='{.status.completionTime}')"
             pod_name="$(kubectl get pods -n "$LOADTEST_NAMESPACE" \
-              -l "job-name=${job_name}" -o jsonpath='{.items[0].metadata.name}')"
-            summary_path="runner/raw/k6-summary-${job_name}.json"
-            kubectl logs "$pod_name" -n "$LOADTEST_NAMESPACE" > "$summary_path"
-
-            if ! jq -e '
-              .data.metrics.rerank_measure_failure.values.rate as $rate
-              | ($rate | type) == "number" and $rate < 0.01
-            ' "$summary_path" >/dev/null; then
+              -l "job-name=${job_name}" -o jsonpath='{.items[0].metadata.name}' \
+              2>/dev/null || true)"
+            if [[ -z "$pod_name" ]]; then
+              write_metadata "pod_not_found" "$creation_timestamp" \
+                "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
               capture_diagnostics "$job_name" "$vus"
-              echo "::error::Measurement failure rate is missing or at least 1%."
+              echo "::error::Pod for Job $job_name was not found."
+              exit 1
+            fi
+            summary_path="runner/raw/k6-summary-${job_name}.json"
+            if ! kubectl logs "$pod_name" -n "$LOADTEST_NAMESPACE" > "$summary_path"; then
+              write_metadata "summary_retrieval_failed" "$creation_timestamp" \
+                "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
+              capture_diagnostics "$job_name" "$vus"
+              echo "::error::Could not retrieve summary for Job $job_name."
               exit 1
             fi
 
-            jq -n \
-              --arg creation_timestamp "$creation_timestamp" \
-              --arg completion_timestamp "$completion_timestamp" \
-              --argjson candidate_count "$CANDIDATE_COUNT" \
-              --argjson vus "$vus" \
-              --arg fixture_version "$FIXTURE_VERSION" \
-              --arg benchmark_label "$BENCHMARK_LABEL" \
-              --arg serving_image_ref "$SERVING_IMAGE_REF" \
-              --arg serving_git_sha "$SERVING_GIT_SHA" \
-              --arg job_name "$job_name" \
-              '{
-                creation_timestamp: $creation_timestamp,
-                completion_timestamp: $completion_timestamp,
-                candidate_count: $candidate_count,
-                vus: $vus,
-                fixture_version: $fixture_version,
-                benchmark_label: $benchmark_label,
-                serving_image_ref: $serving_image_ref,
-                serving_git_sha: $serving_git_sha,
-                job_name: $job_name
-              }' > "runner/raw/metadata-vu-${vus}.json"
+            if ! jq -e \
+              --argjson expected_vus "$vus" \
+              --argjson expected_candidate_count "$CANDIDATE_COUNT" \
+              --arg expected_fixture_version "$FIXTURE_VERSION" '
+              .metadata.vus == $expected_vus
+              and .metadata.candidate_count == $expected_candidate_count
+              and .metadata.fixture_version == $expected_fixture_version
+              and (
+              .data.metrics.rerank_measure_failure.values.rate as $rate
+              | ($rate | type) == "number" and $rate < 0.01
+              )
+            ' "$summary_path" >/dev/null; then
+              write_metadata "measurement_gate_failed" "$creation_timestamp" \
+                "$completion_timestamp" "$job_name" "$vus" "$settings_config_map"
+              capture_diagnostics "$job_name" "$vus"
+              echo "::error::Summary provenance is invalid or failure rate is at least 1%."
+              exit 1
+            fi
+
+            write_metadata "succeeded" "$creation_timestamp" "$completion_timestamp" \
+              "$job_name" "$vus" "$settings_config_map"
           done
 
       - name: Upload runner evidence
@@ -236,7 +297,7 @@ jobs:
         uses: actions/download-artifact@v5
         with:
           name: rerank-loadtest-runner-${{ github.run_id }}
-          path: runner
+          path: runner/raw
 
       - name: Authenticate snapshot reader with Workload Identity Federation
         uses: google-github-actions/auth@v2

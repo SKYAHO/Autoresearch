@@ -30,14 +30,14 @@ spec:
           image: grafana/k6@sha256:1f40432b1cbe7234e977f96c362c9bc550a2d2b583d014dd8669fe40d3e9e755
           imagePullPolicy: IfNotPresent
           command:
-            - /bin/sh
-            - -ceu
+            - k6
           args:
-            - |
-              set -a
-              . /settings/rerank.env
-              set +a
-              exec k6 run --quiet /scripts/rerank.js
+            - run
+            - --quiet
+            - /scripts/rerank.js
+          envFrom:
+            - configMapRef:
+                name: rerank-loadtest-settings-placeholder
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -58,5 +58,5 @@ spec:
             defaultMode: 0444
         - name: settings
           configMap:
-            name: rerank-loadtest-settings
+            name: rerank-loadtest-settings-placeholder
             defaultMode: 0444
