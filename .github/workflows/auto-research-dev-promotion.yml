@@ -1,0 +1,285 @@
+name: Auto Research dev promotion
+
+on:
+  repository_dispatch:
+    types: [auto-research-experiment-completed]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        required: true
+        type: string
+      experiment_id:
+        required: true
+        type: string
+      candidates_json:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  promote-completed-experiment:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: auto-research-dev-promotion
+      cancel-in-progress: false
+    steps:
+      - name: Checkout dev selector
+        uses: actions/checkout@v6
+        with:
+          ref: dev
+          fetch-depth: 1
+
+      - name: Validate complete result set and promote one candidate
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { execFileSync } = require('child_process');
+            const fs = require('fs');
+            const os = require('os');
+            const path = require('path');
+            const issueBranchMarker = '<!-- auto-research-issue-branch:v1 -->';
+            const resultMarker = '<!-- auto-research-experiment-result:v1 -->';
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const payload = context.payload;
+            const isDispatch = payload.action === 'auto-research-experiment-completed';
+            const rawIssueNumber = isDispatch
+              ? payload.client_payload?.issue_number
+              : payload.inputs?.issue_number;
+            const experimentId = isDispatch
+              ? payload.client_payload?.experiment_id
+              : payload.inputs?.experiment_id;
+            const candidatesJson = isDispatch
+              ? JSON.stringify(payload.client_payload?.candidates)
+              : payload.inputs?.candidates_json;
+
+            function failClosed(message) {
+              core.setFailed(message);
+              throw new Error(message);
+            }
+
+            function requireMatch(value, expression, name) {
+              if (typeof value !== 'string' || !expression.test(value)) {
+                failClosed(`invalid ${name}`);
+              }
+              return value;
+            }
+
+            function parseIssueBranchMarker(body) {
+              const match = body.match(
+                /^<!-- auto-research-issue-branch:v1 -->\n## Auto Research issue branch\n- source_issue: #(\d+)\n- issue_branch: `([^`]+)`\n- base_dev_sha: `([0-9a-f]{40})`\n- criteria_id: `([0-9a-f]{64})`\n- reproducibility_id: `([0-9a-f]{64})`$/,
+              );
+              if (match === null) {
+                failClosed('issue branch marker is malformed');
+              }
+              return {
+                sourceIssue: Number(match[1]),
+                issueBranch: match[2],
+                baseDevSha: match[3],
+                criteriaId: match[4],
+                reproducibilityId: match[5],
+              };
+            }
+
+            function parseResultMarker(body) {
+              const match = body.match(
+                /^<!-- auto-research-experiment-result:v1 -->\n## Auto Research experiment result\n- source_issue: #(\d+)\n- experiment_id: `([^`]+)`\n- result_set_id: `([0-9a-f]{64})`\n- selection_reason: `([^`]+)`\n- selected_candidate_sha: `([^`]+)`\n- outcome: `([^`]+)`\n- merge_sha: `([^`]+)`$/,
+              );
+              if (match === null) {
+                failClosed('experiment result marker is malformed');
+              }
+              return {
+                sourceIssue: Number(match[1]),
+                experimentId: match[2],
+                resultSetId: match[3],
+              };
+            }
+
+            function resultMarkerBody(resultSetId, selectionReason, selectedCandidateSha, outcome, mergeSha) {
+              return [
+                resultMarker,
+                '## Auto Research experiment result',
+                `- source_issue: #${issueNumber}`,
+                `- experiment_id: \`${experimentId}\``,
+                `- result_set_id: \`${resultSetId}\``,
+                `- selection_reason: \`${selectionReason}\``,
+                `- selected_candidate_sha: \`${selectedCandidateSha || 'none'}\``,
+                `- outcome: \`${outcome}\``,
+                `- merge_sha: \`${mergeSha || 'none'}\``,
+              ].join('\n');
+            }
+
+            const issueNumber = Number(rawIssueNumber);
+            if (!Number.isSafeInteger(issueNumber) || issueNumber < 1) {
+              failClosed('invalid issue number');
+            }
+            requireMatch(experimentId, /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/, 'experiment_id');
+            let candidates;
+            try {
+              candidates = JSON.parse(candidatesJson);
+            } catch (error) {
+              failClosed('candidates_json must be valid JSON');
+            }
+            if (!Array.isArray(candidates) || candidates.length === 0) {
+              failClosed('candidates_json must be a non-empty array');
+            }
+
+            const issue = await github.rest.issues.get({
+              owner,
+              repo,
+              issue_number: issueNumber,
+            });
+            if (typeof issue.data.title !== 'string' || typeof issue.data.body !== 'string') {
+              failClosed('source issue must have a title and Issue Form body');
+            }
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            const issueBranchMarkers = comments.filter((comment) =>
+              typeof comment.body === 'string' && comment.body.includes(issueBranchMarker),
+            );
+            if (issueBranchMarkers.length !== 1) {
+              failClosed('exactly one issue branch marker comment is required');
+            }
+            const issueBranchComment = issueBranchMarkers[0];
+            if (issueBranchComment.user.login !== 'github-actions[bot]') {
+              failClosed('issue branch marker was not created by github-actions[bot]');
+            }
+            const recorded = parseIssueBranchMarker(issueBranchComment.body);
+            if (recorded.sourceIssue !== issueNumber) {
+              failClosed('issue branch marker source issue does not match event');
+            }
+
+            for (const candidate of candidates) {
+              if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) {
+                failClosed('candidate must be an object before lineage verification');
+              }
+              requireMatch(candidate.candidate_sha, /^[0-9a-f]{40}$/, 'candidate SHA');
+              const baselineComparison = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: recorded.baseDevSha,
+                head: candidate.candidate_sha,
+              });
+              if (!['ahead', 'identical'].includes(baselineComparison.data.status)) {
+                failClosed('candidate is not descended from recorded base_dev_sha');
+              }
+              const branchComparison = await github.rest.repos.compareCommits({
+                owner,
+                repo,
+                base: candidate.candidate_sha,
+                head: recorded.issueBranch,
+              });
+              if (!['ahead', 'identical'].includes(branchComparison.data.status)) {
+                failClosed('candidate is not an ancestor of the recorded issue branch');
+              }
+            }
+
+            const bodyPath = path.join(os.tmpdir(), `auto-research-issue-${issueNumber}.md`);
+            fs.writeFileSync(bodyPath, issue.data.body, 'utf8');
+            let selectorOutput;
+            try {
+              selectorOutput = execFileSync(
+                'python',
+                [
+                  'tools/auto_research_issue_branch.py',
+                  '--issue-number', String(issueNumber),
+                  '--issue-title', issue.data.title,
+                  '--issue-body-file', bodyPath,
+                  '--experiment-id', experimentId,
+                  '--base-dev-sha', recorded.baseDevSha,
+                  '--candidates-json', candidatesJson,
+                ],
+                { encoding: 'utf8', env: { ...process.env, GITHUB_OUTPUT: '' } },
+              );
+            } catch (error) {
+              failClosed(`completion selector rejected result set: ${error.message}`);
+            } finally {
+              fs.rmSync(bodyPath, { force: true });
+            }
+            const selector = Object.fromEntries(
+              selectorOutput.trim().split('\n').map((line) => line.split(/=(.*)/s, 2)),
+            );
+            if (
+              selector.criteria_id !== recorded.criteriaId ||
+              selector.reproducibility_id !== recorded.reproducibilityId
+            ) {
+              failClosed('source Issue Form criteria or reproducibility ID changed after branch creation');
+            }
+            requireMatch(selector.result_set_id, /^[0-9a-f]{64}$/, 'result_set_id');
+            if (!['qualified_candidate', 'no_qualified_candidate'].includes(selector.selection_reason)) {
+              failClosed('selector returned an invalid selection reason');
+            }
+            const selectedCandidateSha = selector.selected_candidate_sha || '';
+            if (selector.selection_reason === 'qualified_candidate') {
+              requireMatch(selectedCandidateSha, /^[0-9a-f]{40}$/, 'selected candidate SHA');
+            } else if (selectedCandidateSha !== '') {
+              failClosed('unqualified selector result must not name a candidate');
+            }
+
+            const markerComments = comments.filter((comment) =>
+              typeof comment.body === 'string' && comment.body.includes(resultMarker),
+            );
+            const parsedResultMarkers = markerComments.map((comment) => {
+              if (comment.user.login !== 'github-actions[bot]') {
+                failClosed('experiment result marker was not created by github-actions[bot]');
+              }
+              const recordedResult = parseResultMarker(comment.body);
+              if (recordedResult.sourceIssue !== issueNumber) {
+                failClosed('experiment result marker source issue does not match event');
+              }
+              return { recordedResult };
+            });
+            const matchingResultMarkers = parsedResultMarkers.filter(
+              ({ recordedResult }) => recordedResult.experimentId === experimentId,
+            );
+            if (matchingResultMarkers.length > 1) {
+              failClosed('multiple experiment result marker comments found');
+            }
+            if (matchingResultMarkers.length === 1) {
+              const recordedResult = matchingResultMarkers[0].recordedResult;
+              if (recordedResult.resultSetId !== selector.result_set_id) {
+                failClosed('experiment result marker rejects a changed result set');
+              }
+              return;
+            }
+
+            if (selector.selection_reason === 'no_qualified_candidate') {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body: resultMarkerBody(selector.result_set_id, selector.selection_reason, '', 'no_qualified_candidate', ''),
+              });
+              return;
+            }
+
+            let outcome = 'merged';
+            let mergeSha = '';
+            try {
+              const merged = await github.rest.repos.merge({
+                owner,
+                repo,
+                base: 'dev',
+                head: selectedCandidateSha,
+              });
+              if (merged.data.merged) {
+                mergeSha = merged.data.sha || '';
+              } else {
+                outcome = 'merge_rejected';
+              }
+            } catch (error) {
+              outcome = 'merge_api_failed';
+            }
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issueNumber,
+              body: resultMarkerBody(selector.result_set_id, selector.selection_reason, selectedCandidateSha, outcome, mergeSha),
+            });

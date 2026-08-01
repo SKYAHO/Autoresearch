@@ -11,12 +11,15 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FORM_PATH = PROJECT_ROOT / ".github/ISSUE_TEMPLATE/auto_research.yml"
 BRANCH_WORKFLOW = PROJECT_ROOT / ".github/workflows/auto-research-issue-branch.yml"
+PROMOTION_WORKFLOW = PROJECT_ROOT / ".github/workflows/auto-research-dev-promotion.yml"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.auto_research_issue_branch import (  # noqa: E402
+    IssueInput,
     branch_name_for,
     is_descendant,
     parse_issue_input,
+    select_best_candidate,
 )
 
 
@@ -784,3 +787,262 @@ def test_cli_fails_closed_without_outputs_for_invalid_form_body(tmp_path: Path) 
     assert result.returncode != 0
     assert "random_seeds" in result.stderr
     assert not output_path.exists()
+
+
+def completion_candidate(
+    candidate_sha: str,
+    primary_candidate_metric: str,
+    *,
+    candidate_id: str | None = None,
+    criteria_id: str | None = None,
+    reproducibility_id: str | None = None,
+    primary_baseline_metric: str = "0.75",
+    guardrail_candidate_metric: str | None = None,
+    guardrail_baseline_metric: str | None = None,
+    criteria: IssueInput | None = None,
+) -> dict[str, object]:
+    """완료 event producer가 전달해야 하는 완전한 후보 payload를 만듭니다."""
+    issue_criteria = criteria or parse_issue_input(449, "[AR] metric", structured_body())
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "issue_number": 449,
+        "experiment_id": "exp-449-20260801",
+        "base_dev_sha": "d" * 40,
+        "candidate_id": candidate_id or f"candidate-{candidate_sha[:12]}",
+        "candidate_sha": candidate_sha,
+        "criteria_id": criteria_id or issue_criteria.criteria_id,
+        "reproducibility_id": reproducibility_id or issue_criteria.reproducibility_id,
+        "primary_candidate_metric": primary_candidate_metric,
+        "primary_baseline_metric": primary_baseline_metric,
+        "artifact_uri": "gs://autoresearch/experiments/artifact.json",
+        "log_uri": "https://logs.example.test/run/449",
+    }
+    if guardrail_candidate_metric is not None and guardrail_baseline_metric is not None:
+        payload["guardrail_candidate_metric"] = guardrail_candidate_metric
+        payload["guardrail_baseline_metric"] = guardrail_baseline_metric
+    return payload
+
+
+def test_select_best_candidate_uses_primary_direction_then_sha() -> None:
+    criteria = parse_issue_input(449, "[AR] metric", structured_body(minimum_primary_delta="0"))
+
+    selection = select_best_candidate(
+        criteria,
+        "exp-449-20260801",
+        "d" * 40,
+        [
+            completion_candidate("b" * 40, "0.79", criteria=criteria),
+            completion_candidate("a" * 40, "0.79", criteria=criteria),
+        ],
+    )
+
+    assert selection.candidate_sha == "a" * 40
+    assert selection.selection_reason == "qualified_candidate"
+
+
+def test_select_best_candidate_returns_normal_no_qualified_result() -> None:
+    criteria = parse_issue_input(449, "[AR] metric", structured_body(minimum_primary_delta="0.05"))
+
+    selection = select_best_candidate(
+        criteria,
+        "exp-449-20260801",
+        "d" * 40,
+        [completion_candidate("a" * 40, "0.79", criteria=criteria)],
+    )
+
+    assert selection.candidate_sha is None
+    assert selection.selection_reason == "no_qualified_candidate"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("criteria_id", "0" * 64),
+        ("reproducibility_id", "0" * 64),
+        ("issue_number", 450),
+        ("experiment_id", "another-experiment"),
+        ("base_dev_sha", "a" * 40),
+    ],
+)
+def test_select_best_candidate_rejects_mismatched_event_coordinates(
+    field: str,
+    value: object,
+) -> None:
+    criteria = parse_issue_input(449, "[AR] metric", structured_body())
+    candidate = completion_candidate("a" * 40, "0.79")
+    candidate[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        select_best_candidate(
+            criteria,
+            "exp-449-20260801",
+            "d" * 40,
+            [candidate],
+        )
+
+
+@pytest.mark.parametrize("metric", [0.79, True, "NaN", "Infinity", " 0.79", "0.79 "])
+def test_select_best_candidate_rejects_noncanonical_or_nonfinite_metrics(metric: object) -> None:
+    criteria = parse_issue_input(449, "[AR] metric", structured_body())
+    candidate = completion_candidate("a" * 40, "0.79")
+    candidate["primary_candidate_metric"] = metric
+
+    with pytest.raises(ValueError, match="primary_candidate_metric"):
+        select_best_candidate(
+            criteria,
+            "exp-449-20260801",
+            "d" * 40,
+            [candidate],
+        )
+
+
+def test_select_best_candidate_rejects_unknown_keys_duplicate_sha_and_baseline_mismatch() -> None:
+    criteria = parse_issue_input(449, "[AR] metric", structured_body())
+    unknown = completion_candidate("a" * 40, "0.79")
+    unknown["untrusted"] = "value"
+    with pytest.raises(ValueError, match="unknown candidate keys"):
+        select_best_candidate(criteria, "exp-449-20260801", "d" * 40, [unknown])
+
+    duplicate_sha = [
+        completion_candidate("a" * 40, "0.79"),
+        completion_candidate("a" * 40, "0.80", candidate_id="candidate-other"),
+    ]
+    with pytest.raises(ValueError, match="candidate_sha must be unique"):
+        select_best_candidate(criteria, "exp-449-20260801", "d" * 40, duplicate_sha)
+
+    mismatched_baseline = [
+        completion_candidate("a" * 40, "0.79", primary_baseline_metric="0.75"),
+        completion_candidate("b" * 40, "0.80", primary_baseline_metric="0.76"),
+    ]
+    with pytest.raises(ValueError, match="primary_baseline_metric"):
+        select_best_candidate(criteria, "exp-449-20260801", "d" * 40, mismatched_baseline)
+
+
+def test_select_best_candidate_rejects_non_object_candidate_as_schema_error() -> None:
+    criteria = parse_issue_input(449, "[AR] metric", structured_body())
+
+    with pytest.raises(ValueError, match="candidate must be an object"):
+        select_best_candidate(criteria, "exp-449-20260801", "d" * 40, ["not-an-object"])  # type: ignore[list-item]
+
+
+def test_select_best_candidate_enforces_guardrail_direction_and_result_set_order_independence() -> None:
+    criteria = parse_issue_input(
+        449,
+        "[AR] metric",
+        structured_body(
+            minimum_primary_delta="0",
+            guardrail_metric_name="log_loss",
+            guardrail_metric_direction="lower_is_better",
+            maximum_guardrail_regression="0.01",
+        ),
+    )
+    qualified = completion_candidate(
+        "a" * 40,
+        "0.80",
+        guardrail_candidate_metric="0.31",
+        guardrail_baseline_metric="0.30",
+        criteria=criteria,
+    )
+    rejected = completion_candidate(
+        "b" * 40,
+        "0.90",
+        guardrail_candidate_metric="0.32",
+        guardrail_baseline_metric="0.30",
+        criteria=criteria,
+    )
+
+    forward = select_best_candidate(criteria, "exp-449-20260801", "d" * 40, [qualified, rejected])
+    reverse = select_best_candidate(criteria, "exp-449-20260801", "d" * 40, [rejected, qualified])
+
+    assert forward.candidate_sha == "a" * 40
+    assert forward.result_set_id == reverse.result_set_id
+
+
+def load_promotion_workflow() -> dict[object, object]:
+    """완료 event의 dev promotion workflow를 실제 YAML parser로 읽습니다."""
+    parsed = yaml.safe_load(PROMOTION_WORKFLOW.read_text(encoding="utf-8"))
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def test_promotion_workflow_has_only_completion_triggers_and_minimum_permissions() -> None:
+    workflow = load_promotion_workflow()
+
+    assert workflow["permissions"] == {"contents": "write", "issues": "write"}
+    assert workflow_trigger(workflow) == {
+        "repository_dispatch": {"types": ["auto-research-experiment-completed"]},
+        "workflow_dispatch": {
+            "inputs": {
+                "issue_number": {"required": True, "type": "string"},
+                "experiment_id": {"required": True, "type": "string"},
+                "candidates_json": {"required": True, "type": "string"},
+            }
+        },
+    }
+
+
+def test_promotion_workflow_uses_all_candidate_lineage_before_selector_and_dev_merge_only() -> None:
+    workflow = load_promotion_workflow()
+    job = workflow["jobs"]["promote-completed-experiment"]
+    assert isinstance(job, dict)
+    assert job["concurrency"] == {"group": "auto-research-dev-promotion", "cancel-in-progress": False}
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    scripts = [step["with"]["script"] for step in steps if "with" in step and "script" in step["with"]]
+    assert len(scripts) == 1
+    script = scripts[0]
+    assert isinstance(script, str)
+
+    candidate_loop = re.search(
+        r"for \(const candidate of candidates\) \{(?P<body>.*?)\n\s*\}\n\n\s*const bodyPath",
+        script,
+        flags=re.DOTALL,
+    )
+    assert candidate_loop is not None
+    loop_body = candidate_loop.group("body")
+    assert "base: recorded.baseDevSha" in loop_body
+    assert "head: candidate.candidate_sha" in loop_body
+    assert "base: candidate.candidate_sha" in loop_body
+    assert "head: recorded.issueBranch" in loop_body
+    assert loop_body.index("base: recorded.baseDevSha") < loop_body.index("base: candidate.candidate_sha")
+    assert script.index("for (const candidate of candidates)") < script.index("selectorOutput = execFileSync")
+    assert "selector.criteria_id !== recorded.criteriaId" in script
+    assert "selector.reproducibility_id !== recorded.reproducibilityId" in script
+    assert script.index("selector.criteria_id !== recorded.criteriaId") < script.index("github.rest.repos.merge")
+
+    merge_call = re.search(
+        r"await github\.rest\.repos\.merge\(\{(?P<arguments>.*?)\}\);",
+        script,
+        flags=re.DOTALL,
+    )
+    assert merge_call is not None
+    merge_arguments = merge_call.group("arguments")
+    assert "base: 'dev'" in merge_arguments
+    assert "head: selectedCandidateSha" in merge_arguments
+    assert "main" not in merge_arguments
+    assert "updateRef" not in script
+    assert "createRef" not in script
+    assert "pulls." not in script
+
+
+def test_promotion_workflow_marker_idempotency_blocks_changed_result_sets_before_merge() -> None:
+    workflow = load_promotion_workflow()
+    steps = workflow["jobs"]["promote-completed-experiment"]["steps"]
+    assert isinstance(steps, list)
+    script = next(step["with"]["script"] for step in steps if "with" in step and "script" in step["with"])
+    assert isinstance(script, str)
+
+    marker_path = re.search(
+        r"const markerComments = .*?\n(?P<idempotency>.*?)\n\s*if \(selector\.selection_reason",
+        script,
+        flags=re.DOTALL,
+    )
+    assert marker_path is not None
+    idempotency = marker_path.group("idempotency")
+    assert "github-actions[bot]" in idempotency
+    assert "matchingResultMarkers" in idempotency
+    assert "recordedResult.experimentId === experimentId" in idempotency
+    assert "recordedResult.resultSetId !== selector.result_set_id" in idempotency
+    assert "return;" in idempotency
+    assert idempotency.index("recordedResult.resultSetId !== selector.result_set_id") < idempotency.index("return;")
+    assert script.index("recordedResult.resultSetId !== selector.result_set_id") < script.index("github.rest.repos.merge")
