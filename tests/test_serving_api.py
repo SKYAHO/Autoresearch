@@ -6,16 +6,15 @@ import json
 from pathlib import Path
 from typing import BinaryIO
 
-import joblib
 import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
 from prometheus_client import REGISTRY
 from prometheus_client.parser import text_string_to_metric_families
 
 import src.serving.app as serving_app
+import src.serving.model_loader as model_loader_module
 from src.features.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     FeatureContractError,
@@ -36,6 +35,36 @@ from src.serving.online_features import (
 )
 from src.serving.schemas import CandidateVideo, FeatureValue, RerankedVideo
 from src.serving.service import PredictionError, RerankOutcome, Reranker
+from src.tracking.model_package import ModelPackageManifest, save_manifest
+
+
+class _OnnxMetadata:
+    def __init__(self, name: str, type_: str, shape: list[object]) -> None:
+        self.name = name
+        self.type = type_
+        self.shape = shape
+
+
+class _FakeOnnxSession:
+    def get_inputs(self):
+        return [_OnnxMetadata("input", "tensor(float)", [None, len(MODEL_FEATURE_COLUMNS)])]
+
+    def get_outputs(self):
+        return [_OnnxMetadata("probabilities", "tensor(float)", [None, 2])]
+
+    def run(self, _outputs, feeds):
+        matrix = next(iter(feeds.values()))
+        scores = matrix[:, MODEL_FEATURE_COLUMNS.index("view_count")]
+        return [np.column_stack((1.0 - scores, scores)).astype(np.float32)]
+
+
+@pytest.fixture(autouse=True)
+def _stub_local_onnx_session(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        model_loader_module,
+        "_build_onnx_session_from_path",
+        lambda _path: _FakeOnnxSession(),
+    )
 
 
 class RecordingModel:
@@ -127,7 +156,7 @@ class FakeOnlineFeatureReader:
 def test_lifespan_loads_model_and_feast_builder_from_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = LocalModelSettings(Path("model"), Path("features"), Path("categories"))
+    settings = LocalModelSettings(Path("model.onnx"), Path("features"), Path("categories"), Path("manifest"))
     model_settings_calls: list[None] = []
     model_load_calls: list[LocalModelSettings] = []
     feast_load_calls: list[str] = []
@@ -165,7 +194,7 @@ def test_healthcheck_is_503_when_feast_initialization_fails(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    settings = LocalModelSettings(Path("model"), Path("features"), Path("categories"))
+    settings = LocalModelSettings(Path("model.onnx"), Path("features"), Path("categories"), Path("manifest"))
     feast_load_calls: list[str] = []
 
     monkeypatch.setattr(
@@ -207,7 +236,7 @@ def test_healthcheck_is_503_when_model_initialization_fails(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    settings = LocalModelSettings(Path("model"), Path("features"), Path("categories"))
+    settings = LocalModelSettings(Path("model.onnx"), Path("features"), Path("categories"), Path("manifest"))
     feast_load_calls: list[str] = []
 
     monkeypatch.setattr(
@@ -559,19 +588,33 @@ def _write_local_model_artifacts(
     categorical_columns: Sequence[str] = CATEGORICAL_FEATURE_COLUMNS,
     category_values: Mapping[str, Sequence[str | int | float | bool]] | None = None,
 ) -> LocalModelSettings:
-    model_path = tmp_path / "model.joblib"
-    feature_columns_path = tmp_path / "feature_columns.json"
-    categorical_columns_path = tmp_path / "categorical_columns.json"
+    onnx_dir = tmp_path / "model_onnx"
+    onnx_dir.mkdir(parents=True, exist_ok=True)
+    onnx_path = onnx_dir / "model.onnx"
+    onnx_path.write_bytes(b"test-onnx")
+    feature_columns_path = tmp_path / "features" / "feature_columns.json"
+    categorical_columns_path = tmp_path / "features" / "categorical_columns.json"
+    feature_columns_path.parent.mkdir(parents=True, exist_ok=True)
     categories = {
         column: list(category_values.get(column, ())) if category_values is not None else []
         for column in categorical_columns
     }
-    joblib.dump(RankingModel(), model_path)
     with feature_columns_path.open("w", encoding="utf-8") as feature_columns_file:
         json.dump(list(feature_columns), feature_columns_file)
     with categorical_columns_path.open("w", encoding="utf-8") as categorical_columns_file:
         json.dump(categories, categorical_columns_file)
-    return LocalModelSettings(model_path, feature_columns_path, categorical_columns_path)
+    manifest = ModelPackageManifest.build(
+        sampling_rate=1.0,
+        model_onnx=onnx_dir,
+        feature_columns=feature_columns_path,
+        categorical_columns=categorical_columns_path,
+        calibration=None,
+    )
+    manifest_path = tmp_path / "manifest" / "manifest.json"
+    save_manifest(manifest, manifest_path)
+    return LocalModelSettings(
+        onnx_path, feature_columns_path, categorical_columns_path, manifest_path
+    )
 
 
 class CategoricalCodeModel:
@@ -780,13 +823,10 @@ def test_local_model_loader_rejects_truncated_feature_columns_artifact(
     settings = _write_local_model_artifacts(tmp_path)
     settings.feature_columns_path.write_bytes(b"[")  # 잘린 JSON
 
-    with pytest.raises(
-        ModelArtifactError,
-        match="Feature-column artifact could not be deserialized",
-    ) as error_info:
+    with pytest.raises(ModelArtifactError, match="패키지 검증 실패") as error_info:
         load_local_model(settings)
 
-    assert isinstance(error_info.value.__cause__, json.JSONDecodeError)
+    assert "feature_columns SHA-256" in str(error_info.value)
 
 
 def test_local_model_loader_rejects_malformed_categorical_columns_artifact(
@@ -795,13 +835,10 @@ def test_local_model_loader_rejects_malformed_categorical_columns_artifact(
     settings = _write_local_model_artifacts(tmp_path)
     settings.categorical_columns_path.write_bytes(b"not json")
 
-    with pytest.raises(
-        ModelArtifactError,
-        match="Categorical-column artifact could not be deserialized",
-    ) as error_info:
+    with pytest.raises(ModelArtifactError, match="패키지 검증 실패") as error_info:
         load_local_model(settings)
 
-    assert isinstance(error_info.value.__cause__, json.JSONDecodeError)
+    assert "categorical_columns SHA-256" in str(error_info.value)
 
 
 def test_local_model_loader_normalizes_unreadable_metadata_artifact(
@@ -832,14 +869,10 @@ def test_local_model_loader_normalizes_unreadable_metadata_artifact(
 
     monkeypatch.setattr(Path, "open", fail_for_feature_columns)
 
-    with pytest.raises(
-        ModelArtifactError,
-        match="Feature-column artifact could not be deserialized",
-    ) as error_info:
+    with pytest.raises(ModelArtifactError, match="패키지 검증 실패") as error_info:
         load_local_model(settings)
 
     assert error_info.value.__cause__ is read_error
-    assert str(settings.feature_columns_path) in str(error_info.value)
 
 
 def test_local_model_loader_normalizes_schema_malformed_metadata_artifact(
@@ -850,65 +883,10 @@ def test_local_model_loader_normalizes_schema_malformed_metadata_artifact(
         json.dumps({"not": "columns"}), encoding="utf-8"
     )
 
-    with pytest.raises(
-        ModelArtifactError,
-        match="Feature-column artifact must contain a sequence of strings",
-    ) as error_info:
+    with pytest.raises(ModelArtifactError, match="패키지 검증 실패") as error_info:
         load_local_model(settings)
 
-    assert isinstance(error_info.value.__cause__, ValidationError)
-    assert str(settings.feature_columns_path) in str(error_info.value)
-
-
-def test_mlflow_model_loader_normalizes_unreadable_metadata_artifact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    settings = _write_local_model_artifacts(tmp_path)
-    read_error = PermissionError("downloaded metadata file is unreadable")
-    original_open = Path.open
-
-    def fail_for_feature_columns(
-        path: Path,
-        mode: str = "r",
-        buffering: int = -1,
-        encoding: str | None = None,
-        errors: str | None = None,
-        newline: str | None = None,
-    ) -> BinaryIO:
-        if path == settings.feature_columns_path:
-            raise read_error
-        return original_open(
-            path,
-            mode=mode,
-            buffering=buffering,
-            encoding=encoding,
-            errors=errors,
-            newline=newline,
-        )
-
-    def download_artifacts(*, artifact_uri: str) -> str:
-        if artifact_uri.endswith("lgbm_model.joblib"):
-            return str(settings.model_path)
-        if artifact_uri.endswith("categorical_columns.json"):
-            return str(settings.categorical_columns_path)
-        return str(settings.feature_columns_path)
-
-    monkeypatch.setattr(Path, "open", fail_for_feature_columns)
-    monkeypatch.setattr(
-        "src.serving.model_loader.mlflow.artifacts.download_artifacts",
-        download_artifacts,
-    )
-
-    with pytest.raises(
-        ModelArtifactError,
-        match="Feature-column artifact could not be deserialized",
-    ) as error_info:
-        load_mlflow_model(
-            MlflowModelSettings(tracking_uri="http://mlflow.example", run_id="run-123")
-        )
-
-    assert error_info.value.__cause__ is read_error
-    assert str(settings.feature_columns_path) in str(error_info.value)
+    assert "feature_columns SHA-256" in str(error_info.value)
 
 
 def test_local_model_loader_preserves_categorical_value_types(tmp_path: Path) -> None:
@@ -977,55 +955,30 @@ def test_local_model_loader_requires_categorical_artifact(tmp_path: Path) -> Non
     with pytest.raises(ModelArtifactError):
         load_local_model(
             LocalModelSettings(
-                settings.model_path,
+                settings.onnx_model_path,
                 settings.feature_columns_path,
                 tmp_path / "missing.json",
+                settings.manifest_path,
             )
         )
 
 
-def test_mlflow_model_loader_downloads_training_artifacts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_mlflow_model_loader_fails_closed_without_manifest(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    model_path = tmp_path / "lgbm_model.joblib"
-    feature_columns_path = tmp_path / "feature_columns.json"
-    categorical_columns_path = tmp_path / "categorical_columns.json"
-    joblib.dump(RankingModel(), model_path)
-    with feature_columns_path.open("w", encoding="utf-8") as feature_columns_file:
-        json.dump(list(MODEL_FEATURE_COLUMNS), feature_columns_file)
-    with categorical_columns_path.open("w", encoding="utf-8") as categorical_columns_file:
-        json.dump(
-            {column: [] for column in CATEGORICAL_FEATURE_COLUMNS},
-            categorical_columns_file,
-        )
     downloaded_uris: list[str] = []
 
-    def download_artifacts(*, artifact_uri: str) -> str:
+    def download_artifacts(*, artifact_uri: str, dst_path: str) -> str:
         downloaded_uris.append(artifact_uri)
-        if artifact_uri.endswith("model_onnx"):
-            # 기존 champion(joblib-only)에는 model_onnx/가 없다 → 다운로드 실패로 부재 신호.
-            raise FileNotFoundError("model_onnx artifact does not exist")
-        if artifact_uri.endswith("lgbm_model.joblib"):
-            return str(model_path)
-        if artifact_uri.endswith("categorical_columns.json"):
-            return str(categorical_columns_path)
-        return str(feature_columns_path)
+        raise FileNotFoundError(f"manifest does not exist in {dst_path}")
 
     monkeypatch.setattr(
         "src.serving.model_loader.mlflow.artifacts.download_artifacts",
         download_artifacts,
     )
 
-    reranker = load_mlflow_model(
-        MlflowModelSettings(tracking_uri="http://mlflow.example", run_id="run-123")
-    )
-
-    assert reranker.feature_columns == MODEL_FEATURE_COLUMNS
-    # model_onnx/ 부재를 확인한 뒤 joblib으로 폴백한다(#302/#179 하위호환). ONNX 프로브와
-    # 세 학습 아티팩트를 모두 요청하되, 순서가 아니라 계약 경로 집합으로 검증한다.
-    assert set(downloaded_uris) == {
-        "runs:/run-123/model_onnx",
-        "runs:/run-123/model/lgbm_model.joblib",
-        "runs:/run-123/features/feature_columns.json",
-        "runs:/run-123/features/categorical_columns.json",
-    }
+    with pytest.raises(ModelArtifactError, match="manifest"):
+        load_mlflow_model(
+            MlflowModelSettings(tracking_uri="http://mlflow.example", run_id="run-123")
+        )
+    assert downloaded_uris == ["runs:/run-123/manifest/manifest.json"]

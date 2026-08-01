@@ -162,6 +162,7 @@ def hash_file(path: Path) -> str:
     if not path.is_file():
         raise ValueError(f"일반 파일이 아닙니다: {path}")
     digest = hashlib.sha256()
+    _reject_reparse_point(path)
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
@@ -190,10 +191,12 @@ def hash_directory(root: Path) -> str:
         raise ValueError("빈 디렉터리는 해시할 수 없습니다")
     digest = hashlib.sha256()
     for relative, path in sorted(files, key=lambda item: item[0]):
+        _reject_reparse_point(path)
         size = path.stat().st_size
         digest.update(struct.pack(">Q", len(relative)))
         digest.update(relative)
         digest.update(struct.pack(">Q", size))
+        _reject_reparse_point(path)
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)

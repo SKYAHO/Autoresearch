@@ -1,8 +1,7 @@
 """서빙 ONNX 전환(#302/#179) 단위·통합 테스트.
 
-핵심 계약: 표현(joblib→ONNX)만 바뀌고 예측·랭킹·calibration 체이닝은 안 바뀐다 —
-ONNX 어댑터가 joblib LightGBM과 수치 허용오차 내로 동일해야 하고, model_onnx/가 없는
-기존 champion은 joblib으로 폴백해야 한다(하위호환).
+핵심 계약: ONNX 어댑터가 학습 LightGBM과 수치 허용오차 내로 동일하고,
+manifest로 검증된 ONNX 패키지만 로드하며 calibration 체이닝을 보존한다.
 """
 
 from __future__ import annotations
@@ -22,15 +21,15 @@ from src.features.model_contract import (
 )
 from src.models.calibration import DownsamplingCalibrator
 from src.models.lgbm_model import LGBMModel
-from src.serving.model_loader import LocalModelSettings, load_local_model
+from src.serving.model_loader import LocalModelSettings, ModelArtifactError, load_local_model
 from src.serving.onnx_model import OnnxProbabilityModel, validate_onnx_session_contract
 from src.serving.schemas import CandidateVideo
 from src.serving.service import Reranker
+from src.tracking.model_package import ModelPackageManifest, save_manifest
 from src.utils.model_utils import (
     convert_lgbm_to_onnx,
     save_categorical_columns,
     save_feature_columns,
-    save_model,
 )
 
 
@@ -178,26 +177,37 @@ def test_onnx_model_owns_temporary_workspace_for_session_lifetime() -> None:
     assert not workspace.exists()
 
 
-# ── 로더: model_onnx/(로컬 .onnx) 있으면 ONNX, 없으면 joblib 폴백 ──
+# ── 로더: 검증된 ONNX package 전용 ──
 
 
 def _save_contract_artifacts(tmp_path: Path, model, categories, *, with_onnx: bool):
-    model_path = tmp_path / "model.joblib"
-    feature_path = tmp_path / "feature_columns.json"
-    categorical_path = tmp_path / "categorical_columns.json"
-    save_model(model.model, str(model_path))
+    onnx_dir = tmp_path / "model_onnx"
+    feature_path = tmp_path / "features" / "feature_columns.json"
+    categorical_path = tmp_path / "features" / "categorical_columns.json"
     save_feature_columns(list(MODEL_FEATURE_COLUMNS), str(feature_path))
     save_categorical_columns(categories, str(categorical_path))
-    onnx_path = None
+    onnx_path = onnx_dir / "model.onnx"
     if with_onnx:
-        onnx_path = tmp_path / "model.onnx"
+        onnx_dir.mkdir(parents=True, exist_ok=True)
         onnx_model = convert_lgbm_to_onnx(model, n_features=len(MODEL_FEATURE_COLUMNS))
         onnx_path.write_bytes(onnx_model.SerializeToString())
+    else:
+        onnx_dir.mkdir(parents=True, exist_ok=True)
+        (onnx_dir / "placeholder").write_bytes(b"not-an-onnx-model")
+    manifest = ModelPackageManifest.build(
+        sampling_rate=1.0,
+        model_onnx=onnx_dir,
+        feature_columns=feature_path,
+        categorical_columns=categorical_path,
+        calibration=None,
+    )
+    manifest_path = tmp_path / "manifest" / "manifest.json"
+    save_manifest(manifest, manifest_path)
     return LocalModelSettings(
-        model_path=model_path,
+        onnx_model_path=onnx_path,
         feature_columns_path=feature_path,
         categorical_columns_path=categorical_path,
-        onnx_model_path=onnx_path,
+        manifest_path=manifest_path,
     )
 
 
@@ -209,31 +219,14 @@ def _candidates_from_frame(frame: pd.DataFrame) -> list[CandidateVideo]:
     ]
 
 
-def test_local_loader_onnx_and_joblib_produce_equivalent_ranking(tmp_path: Path) -> None:
-    # 하위호환 핵심: 같은 학습에서 나온 ONNX 로드와 joblib 폴백 로드가 동일 순위·
-    # 허용오차 내 동일 점수를 낸다. (model_onnx/ 없는 기존 champion은 joblib으로 폴백.)
+def test_local_loader_requires_onnx_without_joblib_fallback(tmp_path: Path) -> None:
     model, categories = _fit_contract_model()
-
     onnx_settings = _save_contract_artifacts(tmp_path / "onnx", model, categories, with_onnx=True)
-    joblib_settings = _save_contract_artifacts(
-        tmp_path / "joblib", model, categories, with_onnx=False
-    )
-
     onnx_reranker = load_local_model(onnx_settings)
-    joblib_reranker = load_local_model(joblib_settings)
-
     assert isinstance(onnx_reranker.model, OnnxProbabilityModel)
-    assert not isinstance(joblib_reranker.model, OnnxProbabilityModel)
-
-    candidates = _candidates_from_frame(_synthetic_contract_frame(40, seed=123))
-    onnx_items = onnx_reranker.rerank(candidates)
-    joblib_items = joblib_reranker.rerank(candidates)
-
-    assert [i.video_id for i in onnx_items] == [i.video_id for i in joblib_items]
-    onnx_scores = {i.video_id: i.ctr_score for i in onnx_items}
-    joblib_scores = {i.video_id: i.ctr_score for i in joblib_items}
-    for video_id, score in joblib_scores.items():
-        assert onnx_scores[video_id] == pytest.approx(score, abs=1e-4)
+    invalid = _save_contract_artifacts(tmp_path / "invalid", model, categories, with_onnx=False)
+    with pytest.raises(ModelArtifactError, match="ONNX"):
+        load_local_model(invalid)
 
 
 def test_onnx_reranker_preserves_calibration_chaining(tmp_path: Path) -> None:
