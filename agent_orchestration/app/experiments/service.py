@@ -1,6 +1,6 @@
 """Agent Orchestration 실험 생성·조회와 상태 쓰기 유스케이스를 제공한다.
 
-전체 파이프라인에서 검증된 API 입력을 SQLAlchemy transaction으로 실험·event·metadata에
+전체 파이프라인에서 검증된 API 입력을 SQLAlchemy transaction으로 실험·event·log·metadata에
 반영하는 구간을 담당한다. HTTP 인증·상태 코드 변환과 실제 학습 실행은 담당하지 않는다.
 """
 
@@ -22,18 +22,22 @@ from agent_orchestration.app.experiments.exceptions import (
 from agent_orchestration.app.experiments.models import (
     Experiment,
     ExperimentEvent,
+    ExperimentLog,
     ExperimentMetadata,
     ExperimentStatus,
 )
 from agent_orchestration.app.experiments.repository import (
     find_experiment,
     find_event_by_idempotency_key,
+    find_experiment_logs,
     find_experiment_metadata,
     find_experiments,
+    find_log_by_idempotency_key,
 )
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     ExperimentEventCreate,
+    ExperimentLogCreate,
     StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.transition_service import validate_transition
@@ -45,6 +49,14 @@ class ExperimentPageResult:
 
     items: list[Experiment]
     total: int
+
+
+@dataclass(frozen=True)
+class ExperimentLogPageResult:
+    """polling용 Log page와 다음 cursor."""
+
+    items: list[ExperimentLog]
+    next_cursor: uuid.UUID | None
 
 
 def _request_fingerprint(payload: dict) -> str:
@@ -238,5 +250,80 @@ def create_experiment_event(
         if existing_event is None:
             raise error
         if existing_event.request_fingerprint != fingerprint:
+            session.rollback()
             raise IdempotencyConflictError(request.idempotency_key) from error
+        session.expunge(existing_event)
+        session.rollback()
         return existing_event
+
+
+def create_experiment_log(
+    session: Session,
+    experiment_id: uuid.UUID,
+    request: ExperimentLogCreate,
+) -> ExperimentLog:
+    """상태와 무관하게 멱등성이 보장되는 실행 Log를 추가한다."""
+    payload = {"log_type": request.log_type, "content": request.content}
+    fingerprint = _request_fingerprint(payload)
+    try:
+        with session.begin():
+            if find_experiment(session, experiment_id) is None:
+                raise ExperimentNotFoundError(experiment_id)
+            existing_log = find_log_by_idempotency_key(
+                session,
+                experiment_id,
+                request.idempotency_key,
+            )
+            if existing_log is not None:
+                if existing_log.request_fingerprint != fingerprint:
+                    raise IdempotencyConflictError(request.idempotency_key)
+                return existing_log
+            log_row = ExperimentLog(
+                experiment_id=experiment_id,
+                idempotency_key=request.idempotency_key,
+                request_fingerprint=fingerprint,
+                log_type=request.log_type,
+                content=request.content,
+            )
+            session.add(log_row)
+            session.flush()
+        return log_row
+    except IntegrityError as error:
+        session.rollback()
+        existing_log = find_log_by_idempotency_key(
+            session,
+            experiment_id,
+            request.idempotency_key,
+        )
+        if existing_log is None:
+            session.rollback()
+            raise error
+        if existing_log.request_fingerprint != fingerprint:
+            session.rollback()
+            raise IdempotencyConflictError(request.idempotency_key) from error
+        session.expunge(existing_log)
+        session.rollback()
+        return existing_log
+
+
+def list_experiment_logs(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    limit: int,
+    after_id: uuid.UUID | None = None,
+    log_type: str | None = None,
+) -> ExperimentLogPageResult:
+    """append 순서와 UUID tie-breaker를 적용한 polling page를 반환한다."""
+    get_experiment(session, experiment_id)
+    items = find_experiment_logs(
+        session,
+        experiment_id,
+        limit=limit,
+        after_id=after_id,
+        log_type=log_type,
+    )
+    return ExperimentLogPageResult(
+        items=items,
+        next_cursor=items[-1].id if items else after_id,
+    )

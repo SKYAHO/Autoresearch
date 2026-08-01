@@ -1,6 +1,6 @@
 """실험 워크벤치 service의 생성·조회·상태 쓰기 계약을 검증한다.
 
-전체 파이프라인에서 FastAPI 입력이 SQLAlchemy transaction을 통해 실험, event,
+전체 파이프라인에서 FastAPI 입력이 SQLAlchemy transaction을 통해 실험, event, log,
 metadata로 일관되게 저장되는 경계를 담당한다. HTTP 인증과 실제 PostgreSQL migration은
 이 모듈의 검증 범위가 아니다.
 """
@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from pathlib import Path
 import threading
 import uuid
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import Engine, create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -26,20 +28,25 @@ from agent_orchestration.app.experiments.exceptions import (
 from agent_orchestration.app.experiments.models import (
     Experiment,
     ExperimentEvent,
+    ExperimentLog,
     ExperimentMetadata,
     ExperimentStatus,
 )
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     ExperimentEventCreate,
+    ExperimentLogCreate,
+    ExperimentLogListQuery,
     StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.service import (
     create_experiment_event,
     create_experiment,
+    create_experiment_log,
     get_experiment,
     get_experiment_metadata,
     list_experiments,
+    list_experiment_logs,
     update_experiment_status,
 )
 from agent_orchestration.app.experiments.transition_service import InvalidTransitionError
@@ -209,6 +216,52 @@ def test_invalid_status_update_rolls_back_without_new_event(db_session: Session)
     ) == 1
 
 
+@pytest.mark.parametrize(
+    ("current", "requested"),
+    [
+        (ExperimentStatus.CREATED, ExperimentStatus.CREATED),
+        (ExperimentStatus.RUNNING, ExperimentStatus.CREATED),
+        (ExperimentStatus.CREATED, ExperimentStatus.PASSED),
+        (ExperimentStatus.FAILED, ExperimentStatus.RUNNING),
+        (ExperimentStatus.ERROR, ExperimentStatus.RUNNING),
+        (ExperimentStatus.PROMOTED, ExperimentStatus.RUNNING),
+    ],
+)
+def test_invalid_status_update_preserves_state_and_event_atomicity(
+    db_session: Session,
+    current: ExperimentStatus,
+    requested: ExperimentStatus,
+) -> None:
+    """잘못된 서비스 전이가 상태·event를 바꾸거나 Session을 망가뜨리지 않는다."""
+    experiment = create_experiment(
+        db_session,
+        ExperimentCreate(hypothesis=f"invalid {current.value} to {requested.value}"),
+    )
+    experiment.status = current.value
+    db_session.commit()
+    experiment_id = experiment.id
+    event_count_before = db_session.scalar(
+        select(func.count())
+        .select_from(ExperimentEvent)
+        .where(ExperimentEvent.experiment_id == experiment_id)
+    )
+    db_session.rollback()
+    request = StatusUpdateRequest.model_construct(status=requested)
+
+    with pytest.raises(InvalidTransitionError):
+        update_experiment_status(db_session, experiment_id, request)
+
+    assert not db_session.in_transaction()
+    persisted = db_session.get(Experiment, experiment_id)
+    assert persisted is not None
+    assert persisted.status == current.value
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(ExperimentEvent)
+        .where(ExperimentEvent.experiment_id == experiment_id)
+    ) == event_count_before
+
+
 def test_event_retry_with_same_key_and_payload_returns_original_event(
     db_session: Session,
 ) -> None:
@@ -358,3 +411,147 @@ def test_concurrent_event_retries_return_one_persisted_event(tmp_path: Path) -> 
 
     assert len(set(event_ids)) == 1
     assert count == 1
+
+
+def test_log_query_limit_policy_is_default_100_and_range_1_to_100() -> None:
+    """polling 조회가 승인된 기본값과 상한을 벗어나지 않는다."""
+    assert ExperimentLogListQuery().limit == 100
+    assert ExperimentLogListQuery(limit=1).limit == 1
+    assert ExperimentLogListQuery(limit=100).limit == 100
+    with pytest.raises(ValidationError):
+        ExperimentLogListQuery(limit=0)
+    with pytest.raises(ValidationError):
+        ExperimentLogListQuery(limit=101)
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [ExperimentStatus.FAILED, ExperimentStatus.ERROR, ExperimentStatus.PROMOTED],
+)
+def test_log_append_is_allowed_in_terminal_status(
+    db_session: Session,
+    terminal_status: ExperimentStatus,
+) -> None:
+    """종료된 실험의 마지막 출력도 상태 변경 없이 보존한다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="terminal log"))
+    experiment.status = terminal_status.value
+    db_session.commit()
+
+    row = create_experiment_log(
+        db_session,
+        experiment.id,
+        ExperimentLogCreate(
+            idempotency_key=f"terminal-{terminal_status.value}",
+            log_type="stderr",
+            content="worker stopped",
+        ),
+    )
+
+    assert row.content == "worker stopped"
+    assert get_experiment(db_session, experiment.id).status == terminal_status.value
+
+
+def test_log_retry_with_same_key_and_payload_returns_identical_resource(
+    db_session: Session,
+) -> None:
+    """동일 Log 재시도가 row나 응답 resource를 중복 생성하지 않는다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="log retry"))
+    request = ExperimentLogCreate(
+        idempotency_key="log-retry-0001",
+        log_type="stdout",
+        content="epoch=1",
+    )
+
+    first = create_experiment_log(db_session, experiment.id, request)
+    retried = create_experiment_log(db_session, experiment.id, request)
+
+    assert retried.id == first.id
+    assert retried.experiment_id == first.experiment_id
+    assert retried.idempotency_key == first.idempotency_key
+    assert retried.log_type == first.log_type
+    assert retried.content == first.content
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(ExperimentLog)
+        .where(ExperimentLog.idempotency_key == request.idempotency_key)
+    ) == 1
+
+
+def test_log_retry_with_same_key_and_different_payload_is_atomic(
+    db_session: Session,
+) -> None:
+    """충돌 요청이 원본 Log를 바꾸지 않고 Session rollback 뒤 재사용 가능하다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="log conflict"))
+    experiment_id = experiment.id
+    create_experiment_log(
+        db_session,
+        experiment_id,
+        ExperimentLogCreate(
+            idempotency_key="log-conflict-0001",
+            log_type="stdout",
+            content="original",
+        ),
+    )
+
+    with pytest.raises(IdempotencyConflictError):
+        create_experiment_log(
+            db_session,
+            experiment_id,
+            ExperimentLogCreate(
+                idempotency_key="log-conflict-0001",
+                log_type="stderr",
+                content="different",
+            ),
+        )
+
+    assert not db_session.in_transaction()
+    rows = db_session.scalars(
+        select(ExperimentLog).where(ExperimentLog.experiment_id == experiment_id)
+    ).all()
+    assert [(row.log_type, row.content) for row in rows] == [("stdout", "original")]
+
+
+def test_log_polling_orders_by_created_at_then_id_and_advances_after_cursor(
+    db_session: Session,
+) -> None:
+    """동일 timestamp에서도 UUID tie-breaker로 polling 누락과 중복을 막는다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="log cursor"))
+    rows = [
+        create_experiment_log(
+            db_session,
+            experiment.id,
+            ExperimentLogCreate(
+                idempotency_key=f"cursor-{index}",
+                log_type="stdout" if index != 2 else "metric",
+                content=f"line-{index}",
+            ),
+        )
+        for index in range(3)
+    ]
+    tied_at = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+    for row in rows:
+        row.created_at = tied_at
+    db_session.commit()
+    expected = sorted(rows, key=lambda row: row.id)
+
+    first_page = list_experiment_logs(db_session, experiment.id, limit=2)
+    second_page = list_experiment_logs(
+        db_session,
+        experiment.id,
+        limit=2,
+        after_id=first_page.next_cursor,
+    )
+    stdout_only = list_experiment_logs(
+        db_session,
+        experiment.id,
+        limit=100,
+        log_type="stdout",
+    )
+
+    assert [row.id for row in first_page.items] == [row.id for row in expected[:2]]
+    assert first_page.next_cursor == expected[1].id
+    assert [row.id for row in second_page.items] == [expected[2].id]
+    assert second_page.next_cursor == expected[2].id
+    assert [row.content for row in stdout_only.items] == [
+        row.content for row in expected if row.log_type == "stdout"
+    ]

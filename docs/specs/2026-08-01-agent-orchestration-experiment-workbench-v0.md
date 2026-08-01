@@ -154,8 +154,10 @@ Experiment를 반환한다. Event와 Log는 중첩하지 않는다.
 
 ### `GET /experiments/{id}/logs`
 
-`limit=200`(1~500), 선택적 `after_id`, 선택적 `log_type`을 받는다. `created_at ASC,
-id ASC` 순으로 `items`, `next_cursor`를 반환한다.
+`limit=100`(1~100), 선택적 `after_id`, 선택적 `log_type`을 받는다. `created_at ASC,
+id ASC` 순으로 정렬하며 동일 timestamp에서는 UUID `id`를 tie-breaker로 사용한다.
+`after_id`가 가리키는 `(created_at, id)`보다 뒤의 `items`와 마지막 item의 ID인
+`next_cursor`를 반환한다.
 
 ### `GET /experiments/{id}/metadata`
 

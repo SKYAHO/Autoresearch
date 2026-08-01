@@ -3,7 +3,7 @@
 전체 파이프라인에서 FastAPI 호출자와 실험 service 사이의 입력·응답 형태를 검증한다.
 DB query, 상태 전이와 인증은 담당하지 않는다.
 
-실험 생성·조회와 일반 상태 event에 필요한 엄격한 Pydantic v2 모델을 제공한다.
+실험 생성·조회, 일반 상태 event와 polling log에 필요한 엄격한 Pydantic v2 모델을 제공한다.
 """
 
 from __future__ import annotations
@@ -92,4 +92,37 @@ class ExperimentEventResponse(BaseModel):
     to_status: ExperimentStatus
     reason: str | None
     metric_snapshot: dict | None
+    created_at: datetime
+
+
+class ExperimentLogCreate(BaseModel):
+    """멱등성이 보장되는 실행 Log 생성 요청."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    log_type: str = Field(default="stdout", min_length=1, max_length=32)
+    content: str = Field(min_length=1)
+
+
+class ExperimentLogListQuery(BaseModel):
+    """1초 polling용 Log cursor 조회 조건."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=100, ge=1, le=100)
+    after_id: uuid.UUID | None = None
+    log_type: str | None = Field(default=None, min_length=1, max_length=32)
+
+
+class ExperimentLogResponse(BaseModel):
+    """내부 fingerprint를 제외한 실행 Log 응답."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    experiment_id: uuid.UUID
+    idempotency_key: str
+    log_type: str
+    content: str
     created_at: datetime

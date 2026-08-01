@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from agent_orchestration.app.experiments.models import (
     Experiment,
     ExperimentEvent,
+    ExperimentLog,
     ExperimentMetadata,
     ExperimentStatus,
 )
@@ -76,4 +77,58 @@ def find_event_by_idempotency_key(
             ExperimentEvent.experiment_id == experiment_id,
             ExperimentEvent.idempotency_key == idempotency_key,
         )
+    )
+
+
+def find_log_by_idempotency_key(
+    session: Session,
+    experiment_id: uuid.UUID,
+    idempotency_key: str,
+) -> ExperimentLog | None:
+    """한 실험에서 멱등성 key가 같은 기존 Log를 조회한다."""
+    return session.scalar(
+        select(ExperimentLog).where(
+            ExperimentLog.experiment_id == experiment_id,
+            ExperimentLog.idempotency_key == idempotency_key,
+        )
+    )
+
+
+def find_experiment_logs(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    limit: int,
+    after_id: uuid.UUID | None,
+    log_type: str | None,
+) -> list[ExperimentLog]:
+    """created_at ASC, id ASC cursor 규칙으로 새 Log를 조회한다."""
+    filters = [ExperimentLog.experiment_id == experiment_id]
+    if log_type is not None:
+        filters.append(ExperimentLog.log_type == log_type)
+    if after_id is not None:
+        cursor = session.scalar(
+            select(ExperimentLog).where(
+                ExperimentLog.experiment_id == experiment_id,
+                ExperimentLog.id == after_id,
+            )
+        )
+        if cursor is None:
+            return []
+        filters.append(
+            or_(
+                ExperimentLog.created_at > cursor.created_at,
+                and_(
+                    ExperimentLog.created_at == cursor.created_at,
+                    ExperimentLog.id > cursor.id,
+                ),
+            )
+        )
+    return list(
+        session.scalars(
+            select(ExperimentLog)
+            .where(*filters)
+            .order_by(ExperimentLog.created_at.asc(), ExperimentLog.id.asc())
+            .limit(limit)
+        ).all()
     )
