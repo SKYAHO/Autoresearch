@@ -446,6 +446,19 @@ def test_main_downsampling_records_sampling_rate_and_preserves_test_set(tmp_path
     assert test_df["clicked"].mean() == pytest.approx(0.5, abs=0.1)
 
 
+@pytest.mark.parametrize("sampling_rate", [0.0, -0.1, 1.1, float("nan"), float("inf")])
+def test_main_rejects_invalid_sampling_rate_before_training(
+    tmp_path, monkeypatch, sampling_rate
+) -> None:
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", (tmp_path / "mlruns").as_uri())
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=sampling_rate)
+    _synthetic_ctr_dataset(n=40).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    with pytest.raises(ValueError, match="sampling_rate"):
+        _run_train(tmp_path, config_path)
+
+
 def test_main_downsampling_forces_scale_pos_weight_to_one(tmp_path, monkeypatch) -> None:
     # #300 결정 6: downsampling 켜지면 scale_pos_weight(auto)가 1로 강제된다(이중 보정 방지).
     tracking_uri = (tmp_path / "mlruns").as_uri()

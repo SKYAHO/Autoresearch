@@ -31,6 +31,7 @@ prod와 분리되고 트래킹 URI 기본값이 로컬 파일 스토어가 된�
 """
 
 import os
+import math
 import shutil
 import sys
 from collections.abc import Sequence
@@ -580,6 +581,10 @@ def main(
         # 반환(no-op)한다. realized_sampling_rate는 라운딩으로 nominal과 미세하게
         # 다를 수 있어 실현값을 이후 보정·기록에 쓴다.
         nominal_sampling_rate = float(config["model"].get("sampling_rate", 1.0))
+        if not math.isfinite(nominal_sampling_rate) or not (
+            0.0 < nominal_sampling_rate <= 1.0
+        ):
+            raise ValueError("sampling_rate는 유한한 (0, 1] 값이어야 합니다")
         realized_sampling_rate = 1.0
         if nominal_sampling_rate < 1.0:
             print("\n[Step 3b] Negative downsampling (train split only)...")
@@ -726,8 +731,6 @@ def main(
         # artifact 경로(model/, features/)는 서빙 로더(src/serving/model_loader.py)의
         # MLflow 다운로드 경로 상수와 계약이다 — 변경 시 양쪽을 함께 갱신한다.
         log_artifact(local_path=model_path, artifact_path="model")
-        log_artifact(local_path=feature_columns_path, artifact_path="features")
-        log_artifact(local_path=categorical_columns_path, artifact_path="features")
 
         # [Step 8b] 배포 패키지는 프로세스 전용 staging에서 완성·자체 검증한 뒤 기록한다.
         # 실패를 삼키지 않는다. 불완전한 run은 FAILED로 남지만 registered model version은
@@ -735,6 +738,12 @@ def main(
         with TemporaryDirectory(prefix="ctr-model-package-") as package_root_text:
             package_root = Path(package_root_text)
             onnx_dir = package_root / "model_onnx"
+            package_features_dir = package_root / "features"
+            package_features_dir.mkdir(parents=True)
+            package_feature_columns = package_features_dir / "feature_columns.json"
+            package_categorical_columns = package_features_dir / "categorical_columns.json"
+            shutil.copy2(feature_columns_path, package_feature_columns)
+            shutil.copy2(categorical_columns_path, package_categorical_columns)
             onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
             mlflow.onnx.save_model(onnx_model, path=str(onnx_dir))
 
@@ -750,8 +759,8 @@ def main(
             manifest = ModelPackageManifest.build(
                 sampling_rate=realized_sampling_rate,
                 model_onnx=onnx_dir,
-                feature_columns=Path(feature_columns_path),
-                categorical_columns=Path(categorical_columns_path),
+                feature_columns=package_feature_columns,
+                categorical_columns=package_categorical_columns,
                 calibration=calibration_path,
             )
             manifest_path = package_root / "manifest.json"
@@ -760,12 +769,14 @@ def main(
             verify_model_package(
                 loaded_manifest,
                 model_onnx=onnx_dir,
-                feature_columns=Path(feature_columns_path),
-                categorical_columns=Path(categorical_columns_path),
+                feature_columns=package_feature_columns,
+                categorical_columns=package_categorical_columns,
                 calibration=calibration_path,
             )
 
             log_artifacts(str(onnx_dir), artifact_path="model_onnx")
+            log_artifact(local_path=str(package_feature_columns), artifact_path="features")
+            log_artifact(local_path=str(package_categorical_columns), artifact_path="features")
             if calibration_path is not None:
                 log_artifact(local_path=str(calibration_path), artifact_path="calibration")
             log_artifact(local_path=str(manifest_path), artifact_path="manifest")

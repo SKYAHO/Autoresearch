@@ -181,6 +181,14 @@ def load_local_model(settings: LocalModelSettings) -> Reranker:
     try:
         manifest = load_manifest(settings.manifest_path)
         onnx_dir = settings.onnx_model_path.parent
+        manifest_onnx_path = onnx_dir / manifest.artifacts.model_onnx.entrypoint
+        if settings.onnx_model_path != manifest_onnx_path:
+            raise ModelArtifactError(
+                reason=(
+                    "로컬 ONNX 경로는 manifest entrypoint와 일치해야 합니다: "
+                    f"{manifest_onnx_path}"
+                )
+            )
         verify_model_package(
             manifest,
             model_onnx=onnx_dir,
@@ -193,7 +201,7 @@ def load_local_model(settings: LocalModelSettings) -> Reranker:
             raise
         raise ModelArtifactError(reason=f"로컬 모델 패키지 검증 실패: {error}") from error
     calibration = _load_calibration(settings.calibration_model_path)
-    onnx_session = _build_onnx_session_from_path(settings.onnx_model_path)
+    onnx_session = _build_onnx_session_from_path(manifest_onnx_path)
     return _load_reranker(
         feature_columns_path=settings.feature_columns_path,
         categorical_columns_path=settings.categorical_columns_path,

@@ -34,6 +34,13 @@ def _reject_reparse_point(path: Path) -> None:
         raise ValueError(f"링크 또는 reparse point는 허용하지 않습니다: {path}")
 
 
+def _reject_reparse_ancestors(path: Path) -> None:
+    """경로 자체와 존재하는 모든 상위 경로의 reparse point를 거부한다."""
+    for candidate in (path, *path.parents):
+        if candidate.exists() or candidate.is_symlink():
+            _reject_reparse_point(candidate)
+
+
 def _validate_relative_path(value: str) -> str:
     if not value or "\\" in value or "://" in value:
         raise ValueError("POSIX 상대 경로여야 합니다")
@@ -126,6 +133,10 @@ class ModelPackageManifest(BaseModel):
         calibration: Path | None,
     ) -> "ModelPackageManifest":
         """로컬 staging 아티팩트로 manifest를 생성한다."""
+        entrypoint = model_onnx / "model.onnx"
+        _reject_reparse_ancestors(entrypoint)
+        if not entrypoint.is_file():
+            raise ValueError(f"ONNX entrypoint가 없습니다: {entrypoint}")
         calibration_digest = (
             ArtifactDigest(
                 path="calibration/calibration.json", sha256=hash_file(calibration)
@@ -158,11 +169,11 @@ class ModelPackageManifest(BaseModel):
 
 def hash_file(path: Path) -> str:
     """일반 파일 바이트의 SHA-256을 반환한다."""
-    _reject_reparse_point(path)
+    _reject_reparse_ancestors(path)
     if not path.is_file():
         raise ValueError(f"일반 파일이 아닙니다: {path}")
     digest = hashlib.sha256()
-    _reject_reparse_point(path)
+    _reject_reparse_ancestors(path)
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
@@ -224,6 +235,10 @@ def verify_model_package(
 ) -> None:
     """manifest와 로컬 아티팩트의 hash·calibration 계약을 검증한다."""
     expected = manifest.artifacts
+    entrypoint = model_onnx / expected.model_onnx.entrypoint
+    _reject_reparse_ancestors(entrypoint)
+    if not entrypoint.is_file():
+        raise ValueError(f"ONNX entrypoint가 없습니다: {entrypoint}")
     if hash_directory(model_onnx) != expected.model_onnx.sha256:
         raise ValueError("model_onnx SHA-256 불일치")
     if hash_file(feature_columns) != expected.feature_columns.sha256:

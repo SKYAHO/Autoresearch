@@ -2,6 +2,8 @@
 
 import json
 import math
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,7 @@ from src.tracking.model_package import (
     ModelPackageManifest,
     OnnxArtifactDigest,
     hash_directory,
+    hash_file,
     load_manifest,
     verify_model_package,
 )
@@ -88,6 +91,41 @@ def test_directory_hash_includes_names_and_unlisted_files(tmp_path: Path) -> Non
     assert renamed != first
     (root / "extra").write_bytes(b"")
     assert hash_directory(root) != renamed
+
+
+def test_manifest_build_rejects_missing_onnx_entrypoint(tmp_path: Path) -> None:
+    model_dir = tmp_path / "model_onnx"
+    model_dir.mkdir()
+    (model_dir / "MLmodel").write_text("metadata", encoding="utf-8")
+    features = tmp_path / "feature_columns.json"
+    features.write_text("[]", encoding="utf-8")
+    categories = tmp_path / "categorical_columns.json"
+    categories.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="entrypoint"):
+        ModelPackageManifest.build(
+            sampling_rate=1.0,
+            model_onnx=model_dir,
+            feature_columns=features,
+            categorical_columns=categories,
+            calibration=None,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows reparse-point contract")
+def test_hash_file_rejects_parent_junction(tmp_path: Path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "feature.json").write_text("[]", encoding="utf-8")
+    junction = tmp_path / "junction"
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(junction), str(target)],
+        check=True,
+        capture_output=True,
+    )
+
+    with pytest.raises(ValueError, match="reparse"):
+        hash_file(junction / "feature.json")
 
 
 def test_verify_rejects_calibration_value_mismatch(tmp_path: Path) -> None:

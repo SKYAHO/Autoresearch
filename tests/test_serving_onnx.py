@@ -138,6 +138,43 @@ def test_onnx_contract_rejects_wrong_input_name() -> None:
         validate_onnx_session_contract(session, feature_count=21)
 
 
+def test_onnx_contract_rejects_fixed_batch_dimensions() -> None:
+    fixed_input = _ContractSession(
+        [_Metadata("input", "tensor(float)", [1, 21])],
+        [_Metadata("probabilities", "tensor(float)", [None, 2])],
+    )
+    with pytest.raises(ValueError, match="batch"):
+        validate_onnx_session_contract(fixed_input, feature_count=21)
+    fixed_output = _ContractSession(
+        [_Metadata("input", "tensor(float)", [None, 21])],
+        [_Metadata("probabilities", "tensor(float)", [1, 2])],
+    )
+    with pytest.raises(ValueError, match="batch"):
+        validate_onnx_session_contract(fixed_output, feature_count=21)
+
+
+def test_onnx_adapter_requests_only_validated_probability_output() -> None:
+    class MultiOutputSession(_ContractSession):
+        def run(self, output_names, inputs):
+            assert output_names == ["probabilities"]
+            batch = len(next(iter(inputs.values())))
+            return [np.tile([[0.25, 0.75]], (batch, 1)).astype(np.float32)]
+
+    session = MultiOutputSession(
+        [_Metadata("input", "tensor(float)", [None, 21])],
+        [
+            _Metadata("auxiliary", "tensor(int64)", [None, 2]),
+            _Metadata("probabilities", "tensor(float)", [None, 2]),
+        ],
+    )
+    model = OnnxProbabilityModel(session, MODEL_FEATURE_COLUMNS)
+
+    frame = _synthetic_contract_frame(2, seed=101)
+    result = model.predict_proba(_cast_categoricals(frame, _categorical_categories(frame)))
+
+    np.testing.assert_allclose(result, [[0.25, 0.75], [0.25, 0.75]])
+
+
 @pytest.mark.parametrize(
     ("input_type", "input_shape", "output_type", "output_shape"),
     [
@@ -224,9 +261,26 @@ def test_local_loader_requires_onnx_without_joblib_fallback(tmp_path: Path) -> N
     onnx_settings = _save_contract_artifacts(tmp_path / "onnx", model, categories, with_onnx=True)
     onnx_reranker = load_local_model(onnx_settings)
     assert isinstance(onnx_reranker.model, OnnxProbabilityModel)
-    invalid = _save_contract_artifacts(tmp_path / "invalid", model, categories, with_onnx=False)
+    invalid = _save_contract_artifacts(tmp_path / "invalid", model, categories, with_onnx=True)
+    invalid.onnx_model_path.unlink()
     with pytest.raises(ModelArtifactError, match="ONNX"):
         load_local_model(invalid)
+
+
+def test_local_loader_rejects_non_manifest_onnx_entrypoint(tmp_path: Path) -> None:
+    model, categories = _fit_contract_model()
+    settings = _save_contract_artifacts(tmp_path, model, categories, with_onnx=True)
+    alternate = settings.onnx_model_path.parent / "alternate.onnx"
+    alternate.write_bytes(settings.onnx_model_path.read_bytes())
+    with pytest.raises(ModelArtifactError, match="entrypoint"):
+        load_local_model(
+            LocalModelSettings(
+                onnx_model_path=alternate,
+                feature_columns_path=settings.feature_columns_path,
+                categorical_columns_path=settings.categorical_columns_path,
+                manifest_path=settings.manifest_path,
+            )
+        )
 
 
 def test_onnx_reranker_preserves_calibration_chaining(tmp_path: Path) -> None:

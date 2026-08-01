@@ -34,6 +34,8 @@ def validate_onnx_session_contract(session, feature_count: int) -> None:
         raise ValueError(
             f"ONNX 입력 shape는 [batch, {feature_count}]여야 합니다: {input_shape}"
         )
+    if input_shape[0] is not None and not isinstance(input_shape[0], str):
+        raise ValueError(f"ONNX 입력 batch 차원은 동적이어야 합니다: {input_shape}")
     probability_outputs = [
         output
         for output in session.get_outputs()
@@ -43,6 +45,9 @@ def validate_onnx_session_contract(session, feature_count: int) -> None:
     ]
     if len(probability_outputs) != 1:
         raise ValueError("ONNX 출력에는 [batch, 2] float 확률 tensor가 정확히 하나여야 합니다.")
+    output_shape = list(probability_outputs[0].shape)
+    if output_shape[0] is not None and not isinstance(output_shape[0], str):
+        raise ValueError(f"ONNX 출력 batch 차원은 동적이어야 합니다: {output_shape}")
 
 
 class OnnxProbabilityModel:
@@ -58,6 +63,13 @@ class OnnxProbabilityModel:
         self._session = session
         self._feature_columns = tuple(feature_columns)
         self._input_name = session.get_inputs()[0].name
+        self._probability_output_name = next(
+            output.name
+            for output in session.get_outputs()
+            if output.type == "tensor(float)"
+            and len(output.shape) == 2
+            and output.shape[1] == 2
+        )
         # MLflow 다운로드 복사본을 소유한 TemporaryDirectory다. ORT 세션과 같은 모델
         # 인스턴스가 강하게 참조해 세션 수명보다 먼저 정리되는 TOCTOU를 막는다.
         self._workspace_owner = workspace_owner
@@ -76,7 +88,9 @@ class OnnxProbabilityModel:
             else:
                 matrix[:, i] = series.to_numpy(dtype=np.float32)
 
-        outputs = self._session.run(None, {self._input_name: matrix})
+        outputs = self._session.run(
+            [self._probability_output_name], {self._input_name: matrix}
+        )
         # zipmap=False로 변환했으므로 확률은 (n, 2) 텐서다(label 출력은 1D). 2차원 출력을 고른다.
         probabilities = next(
             (out for out in outputs if getattr(out, "ndim", 0) == 2), None
