@@ -1,9 +1,10 @@
 # agent_orchestration
 
-`FastAPI + Codex CLI + PostgreSQL` 기반 기본 스켈레톤입니다.
-`/chat` 호출 결과를 Codex에서 받은 텍스트와 함께 PostgreSQL에 저장합니다. 로컬
-개발의 기본 백엔드는 `codex_cli`이며, GKE API는 비공개 `codex_runner` Service를
-호출합니다. 기본 모드는 OpenAI API 키나 API 크레딧을 사용하지 않습니다.
+`FastAPI + Codex CLI + PostgreSQL` 기반 Agent Orchestration API입니다. 기존 `/chat`은
+Codex 응답을 PostgreSQL에 저장하며, 실험 워크벤치 v0은 Agent와 Streamlit이 실험 상태,
+Event, Log, metadata를 조회·기록하는 별도 API를 제공합니다. 로컬 개발의 기본 백엔드는
+`codex_cli`이며, GKE API는 비공개 `codex_runner` Service를 호출합니다. 기본 모드는
+OpenAI API 키나 API 크레딧을 사용하지 않습니다.
 
 ## GKE 이미지 경계
 
@@ -51,27 +52,68 @@
    ```bash
    docker compose -f agent_orchestration/docker-compose.yml up -d --wait
    ```
-6. 앱 실행
+6. 실험 워크벤치 테이블 migration 적용
+   ```bash
+   uv run alembic -c agent_orchestration/alembic.ini upgrade head
+   ```
+   `/chat`의 `chat_interactions` 초기 테이블은 기존 psycopg 경로가 기동 시 보장하며,
+   `experiments`, `experiment_events`, `experiment_logs`, `experiment_metadata`는 Alembic이
+   관리합니다.
+7. 앱 실행
    ```bash
    uv run uvicorn agent_orchestration.app.main:app --env-file .env --host 127.0.0.1 --port 8000
    ```
-7. 요청 예시
+8. 요청 예시
    ```bash
    curl -X POST http://127.0.0.1:8000/chat \
      -H "Content-Type: application/json" \
      -H "X-Orch-Token: <ORCH_API_TOKEN>" \
      -d '{"prompt":"CTR 개선 방안을 3줄로 요약해줘"}'
    ```
-8. 저장 확인
+9. 저장 확인
    ```bash
    docker compose -f agent_orchestration/docker-compose.yml exec postgres \
      psql -U orch_user -d orch_orchestration \
      -c "SELECT id, model, created_at FROM chat_interactions ORDER BY id DESC LIMIT 3;"
    ```
 
+## 실험 워크벤치 v0
+
+- 모든 실험 endpoint는 기존 `/chat`과 동일한 `X-Orch-Token`을 요구합니다.
+- `POST /experiments`, `GET /experiments`, `GET /experiments/{id}`로 실험을 생성·조회합니다.
+- `PATCH /experiments/{id}/status`와 `POST /experiments/{id}/events`는 승인된 상태 전이만
+  허용하며, 그래프에 없는 전이(예: `CREATED -> PASSED`)는 `409`를 반환합니다. `PROMOTED`는
+  일반 경로에서 허용하지 않으며, 요청 body의 `status`/`to_status` 타입 자체가 `PROMOTED`를
+  제외하므로 이 위반은 `409`가 아니라 스키마 검증 단계의 `422`로 먼저 걸립니다(서비스
+  계층의 별도 거부는 스키마를 우회하는 직접 호출자를 위한 방어선입니다).
+  `PATCH /status`는 서버가 매 요청마다 새 operation key를 생성해 클라이언트 재시도
+  멱등성을 제공하지 않으므로(같은 요청을 재시도하면 이미 도달한 상태로의 재전이가
+  `409`가 됩니다), 자동 재시도가 가능한 호출자(Agent 실행기)는 반드시 `idempotency_key`가
+  있는 `POST /events`를 사용해야 합니다. `PATCH /status`는 사람이 대시보드에서 단발성으로
+  조작하는 용도로만 사용합니다.
+- `POST/GET /experiments/{id}/logs`와 `GET /experiments/{id}/events`는 idempotency key와
+  cursor polling을 제공하며, Streamlit은 1초마다 `after_id`를 사용해 새 row만 조회합니다.
+- `POST /experiments/{id}/promote`는 `PASSED` 실험에 대해 운영자가 필수 `reason`과
+  idempotency key를 남기는 전용 수동 승격 경로입니다.
+- **DB migration은 이미지 기동 시 자동 실행되지 않습니다.** `agent_orchestration/entrypoint.sh`는
+  `uvicorn`만 실행하며, 실험 테이블 4개(`experiments`/`experiment_events`/
+  `experiment_logs`/`experiment_metadata`)는 Alembic으로만 생성됩니다. API 이미지에는
+  `alembic upgrade head`를 실행할 수 있도록 `agent_orchestration/alembic.ini`와
+  `agent_orchestration/migrations/`가 포함되어 있고 CI가 오프라인 SQL 생성으로 이를
+  검증하지만, **이 이미지를 대상으로 migration을 실제로 실행하는 시점·주체(K8s
+  Job/initContainer 등)는 배포 오케스트레이션(`Autoresearch-infra`) 쪽에서 앱
+  롤아웃보다 먼저 끝나도록 별도로 구성해야 합니다.** 이 단계 없이 배포하면
+  `POST /experiments`를 포함한 모든 실험 endpoint가 `UndefinedTable` 기반 `500`을
+  반환합니다.
+
+상세 계약과 구현 이력은
+[`docs/archive/specs/2026-08-01-agent-orchestration-experiment-workbench-v0.md`](../docs/archive/specs/2026-08-01-agent-orchestration-experiment-workbench-v0.md)를
+참조합니다.
+
 ## 현재 범위(스케일 업 전)
 
-- 단일 채팅 저장만 구현
+- `/chat` 저장과 실험 워크벤치 v0 API만 구현. GitHub webhook 자동 승격, 사람·Agent 인증
+  분리, 실제 실험 실행기는 후속 범위
 - 사용자별 인증/권한/세션은 제외 (2단계 또는 추후 스펙). 대신 `/chat`은 공유
   `X-Orch-Token` 헤더를 요구한다.
 - **배포 시 Codex OAuth 홈은 비공개 Runner에만 전용 PVC로 마운트한다.** API Pod와

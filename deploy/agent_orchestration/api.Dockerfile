@@ -25,6 +25,11 @@ COPY agent_orchestration/app ./agent_orchestration/app
 COPY agent_orchestration/contracts.py ./agent_orchestration/
 COPY agent_orchestration/bootstrap_secrets.py ./agent_orchestration/
 COPY agent_orchestration/entrypoint.sh ./agent_orchestration/
+# 실험 워크벤치 스키마 migration 실행용. entrypoint.sh는 이 파일을 실행하지 않는다 —
+# 이 이미지를 대상으로 `alembic -c agent_orchestration/alembic.ini upgrade head`를
+# API 기동 전에 실행하는 것은 배포 오케스트레이션(K8s Job/initContainer) 쪽 책임이다.
+COPY agent_orchestration/alembic.ini ./agent_orchestration/
+COPY agent_orchestration/migrations ./agent_orchestration/migrations
 RUN chmod 0555 ./agent_orchestration/entrypoint.sh
 
 ARG VCS_REF=unknown

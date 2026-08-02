@@ -86,10 +86,12 @@ serving = [
 ]
 # agent_orchestration/ FastAPI 채팅 저장 서비스 전용 런타임 표면.
 orchestration = [
+    "alembic>=1.13,<2",
     "fastapi>=0.115,<0.129",
     "uvicorn[standard]>=0.32,<0.35",
     "httpx>=0.28,<0.29",
     "psycopg[binary]>=3.2,<4",
+    "sqlalchemy>=2.0,<3",
     "openai>=1.66,<3",
     "google-cloud-secret-manager>=2.20,<3",
 ]
