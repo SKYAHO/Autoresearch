@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-02T02:09:10Z",
+  "generated_at": "2026-08-02T02:32:45Z",
   "reports": [
+    {
+      "number": 473,
+      "title": "feat: CTR 모델 배포 패키지 manifest 검증",
+      "author": "waieiches",
+      "merged_at": "2026-08-02T02:32:29Z",
+      "summary_ko": [
+        "CTR 모델 배포 단위를 단일 MLflow run의 ONNX 패키지로 고정하고 manifest 검증을 도입했습니다.",
+        "서빙 서버에서 파이썬 객체 역직렬화(joblib/pickle) 폴백을 완전히 제거하여 보안 위험을 차단했습니다.",
+        "학습 단계에서 배포 패키지를 자체 검증한 후 통과한 경우에만 모델 버전을 생성하도록 개선했습니다."
+      ],
+      "report_url": "pr/473/"
+    },
     {
       "number": 475,
       "title": "fix: GCP 프로젝트 기본값을 제거",
