@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-02T10:06:50Z",
+  "generated_at": "2026-08-02T10:32:24Z",
   "reports": [
+    {
+      "number": 487,
+      "title": "[BUG] rerank loadtest summary에 p99 포함",
+      "author": "bbungjun",
+      "merged_at": "2026-08-02T10:32:12Z",
+      "summary_ko": [
+        "리랭킹 서빙 API 부하 테스트 요약에 p99 지연 시간 지표를 추가하였습니다.",
+        "k6 설정의 summaryTrendStats 옵션을 구성하여 p99 지표가 측정 아티팩트에 보존되도록 개선하였습니다.",
+        "p99 수집 설정 유지를 보장하는 계약 테스트를 새로 작성하였습니다."
+      ],
+      "report_url": "pr/487/"
+    },
     {
       "number": 478,
       "title": "feat: 승격 evidence 검증 워크플로우 구현 (#466)",
