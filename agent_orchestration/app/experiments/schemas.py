@@ -3,7 +3,8 @@
 전체 파이프라인에서 FastAPI 호출자와 실험 service 사이의 입력·응답 형태를 검증한다.
 DB query, 상태 전이와 인증은 담당하지 않는다.
 
-실험 생성·조회, 일반 상태 event와 polling log에 필요한 엄격한 Pydantic v2 모델을 제공한다.
+실험 생성·조회, 일반 상태 event, polling log와 수동 승격에 필요한 엄격한 Pydantic v2
+모델을 제공한다.
 """
 
 from __future__ import annotations
@@ -126,3 +127,21 @@ class ExperimentLogResponse(BaseModel):
     log_type: str
     content: str
     created_at: datetime
+
+
+class PromotionRequest(BaseModel):
+    """운영자가 merge·배포 근거를 남기는 전용 수동 승격 요청."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1)
+    deployment_metadata: dict | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("reason must not be blank")
+        return stripped

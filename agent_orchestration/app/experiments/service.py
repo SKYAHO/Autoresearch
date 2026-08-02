@@ -38,6 +38,7 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     ExperimentEventCreate,
     ExperimentLogCreate,
+    PromotionRequest,
     StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.transition_service import validate_transition
@@ -327,3 +328,47 @@ def list_experiment_logs(
         items=items,
         next_cursor=items[-1].id if items else after_id,
     )
+
+
+def promote_experiment(
+    session: Session,
+    experiment_id: uuid.UUID,
+    request: PromotionRequest,
+) -> Experiment:
+    """PASSED 실험을 운영 근거와 함께 멱등하게 PROMOTED로 전환한다."""
+    payload = {
+        "reason": request.reason,
+        "deployment_metadata": request.deployment_metadata,
+    }
+    fingerprint = _request_fingerprint(payload)
+    with session.begin():
+        experiment = find_experiment(session, experiment_id, for_update=True)
+        if experiment is None:
+            raise ExperimentNotFoundError(experiment_id)
+
+        existing_event = find_event_by_idempotency_key(
+            session,
+            experiment_id,
+            request.idempotency_key,
+        )
+        if existing_event is not None:
+            if existing_event.request_fingerprint != fingerprint:
+                raise IdempotencyConflictError(request.idempotency_key)
+            return experiment
+
+        current = ExperimentStatus(experiment.status)
+        validate_transition(current, ExperimentStatus.PROMOTED)
+        experiment.status = ExperimentStatus.PROMOTED.value
+        session.add(
+            ExperimentEvent(
+                experiment_id=experiment.id,
+                idempotency_key=request.idempotency_key,
+                request_fingerprint=fingerprint,
+                from_status=current.value,
+                to_status=ExperimentStatus.PROMOTED.value,
+                reason=request.reason,
+                metric_snapshot=request.deployment_metadata,
+            )
+        )
+        session.flush()
+    return experiment

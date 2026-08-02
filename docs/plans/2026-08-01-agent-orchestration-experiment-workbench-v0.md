@@ -118,10 +118,10 @@ Alembic, PostgreSQL, pytest.
 - Modify: `agent_orchestration/app/experiments/schemas.py`
 - Test: `tests/test_experiment_service.py`
 
-- [ ] non-PASSED `409`, 필수 reason과 우회 승격 차단 테스트를 작성한다.
-- [ ] 재요청 성공과 다른 payload 충돌 테스트를 작성한다.
-- [ ] promotion transaction과 event를 최소 구현한다.
-- [ ] 관련 테스트와 lint를 통과하고 Task 커밋을 만든다.
+- [x] non-PASSED `409`, 필수 reason과 우회 승격 차단 테스트를 작성한다.
+- [x] 재요청 성공과 다른 payload 충돌 테스트를 작성한다.
+- [x] promotion transaction과 event를 최소 구현한다.
+- [x] 관련 테스트와 lint를 통과하고 Task 커밋을 만든다.
 
 ### Task 8: Router, 인증과 OpenAPI
 

@@ -37,6 +37,8 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentEventCreate,
     ExperimentLogCreate,
     ExperimentLogListQuery,
+    ExperimentResponse,
+    PromotionRequest,
     StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.service import (
@@ -47,6 +49,7 @@ from agent_orchestration.app.experiments.service import (
     get_experiment_metadata,
     list_experiments,
     list_experiment_logs,
+    promote_experiment,
     update_experiment_status,
 )
 from agent_orchestration.app.experiments.transition_service import InvalidTransitionError
@@ -555,3 +558,193 @@ def test_log_polling_orders_by_created_at_then_id_and_advances_after_cursor(
     assert [row.content for row in stdout_only.items] == [
         row.content for row in expected if row.log_type == "stdout"
     ]
+
+
+@pytest.mark.parametrize("reason", ["", "   ", "\t\n"])
+def test_promotion_request_requires_non_blank_operator_reason(reason: str) -> None:
+    """운영 근거가 없는 수동 승격 요청을 스키마 단계에서 차단한다."""
+    with pytest.raises(ValidationError):
+        PromotionRequest(idempotency_key="promotion-reason", reason=reason)
+
+
+@pytest.mark.parametrize(
+    "current",
+    [
+        ExperimentStatus.CREATED,
+        ExperimentStatus.RUNNING,
+        ExperimentStatus.EVALUATING,
+        ExperimentStatus.FAILED,
+        ExperimentStatus.ERROR,
+        ExperimentStatus.PROMOTED,
+    ],
+)
+def test_promotion_rejects_non_passed_state_without_side_effects(
+    db_session: Session,
+    current: ExperimentStatus,
+) -> None:
+    """PASSED가 아닌 승격 요청은 상태와 Event를 보존하고 transaction을 롤백한다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="not passed"))
+    experiment.status = current.value
+    db_session.commit()
+    experiment_id = experiment.id
+    event_count_before = db_session.scalar(
+        select(func.count())
+        .select_from(ExperimentEvent)
+        .where(ExperimentEvent.experiment_id == experiment_id)
+    )
+    db_session.rollback()
+
+    with pytest.raises(InvalidTransitionError):
+        promote_experiment(
+            db_session,
+            experiment_id,
+            PromotionRequest(
+                idempotency_key=f"promotion-{current.value}",
+                reason="operator verified deployment",
+            ),
+        )
+
+    assert not db_session.in_transaction()
+    persisted = db_session.get(Experiment, experiment_id)
+    assert persisted is not None
+    assert persisted.status == current.value
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(ExperimentEvent)
+        .where(ExperimentEvent.experiment_id == experiment_id)
+    ) == event_count_before
+
+
+def test_promotion_updates_status_and_records_audit_event_atomically(
+    db_session: Session,
+) -> None:
+    """PASSED 승격이 운영 근거와 배포 metadata를 한 transaction에 저장한다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="promotion"))
+    experiment.status = ExperimentStatus.PASSED.value
+    db_session.commit()
+    deployment_metadata = {"pr": 461, "environment": "production"}
+
+    promoted = promote_experiment(
+        db_session,
+        experiment.id,
+        PromotionRequest(
+            idempotency_key="promotion-success-0001",
+            reason="PR #461 merged and production deployment verified",
+            deployment_metadata=deployment_metadata,
+        ),
+    )
+
+    event_row = db_session.scalar(
+        select(ExperimentEvent).where(
+            ExperimentEvent.experiment_id == experiment.id,
+            ExperimentEvent.idempotency_key == "promotion-success-0001",
+        )
+    )
+    assert promoted.status == ExperimentStatus.PROMOTED.value
+    assert promoted.metric_summary is None
+    assert event_row is not None
+    assert event_row.from_status == ExperimentStatus.PASSED.value
+    assert event_row.to_status == ExperimentStatus.PROMOTED.value
+    assert event_row.reason == "PR #461 merged and production deployment verified"
+    assert event_row.metric_snapshot == deployment_metadata
+
+
+def test_promotion_retry_with_same_key_and_payload_returns_identical_response(
+    db_session: Session,
+) -> None:
+    """운영자 재클릭이 중복 Event 없이 최초 승격 응답을 반환한다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="promotion retry"))
+    experiment.status = ExperimentStatus.PASSED.value
+    db_session.commit()
+    experiment_id = experiment.id
+    request = PromotionRequest(
+        idempotency_key="promotion-retry-0001",
+        reason="deployment verified",
+        deployment_metadata={"sha": "abc123"},
+    )
+
+    first = promote_experiment(db_session, experiment_id, request)
+    first_response = ExperimentResponse.model_validate(first).model_dump()
+    db_session.rollback()
+    retried = promote_experiment(db_session, experiment_id, request)
+
+    assert ExperimentResponse.model_validate(retried).model_dump() == first_response
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(ExperimentEvent)
+        .where(ExperimentEvent.idempotency_key == request.idempotency_key)
+    ) == 1
+
+
+def test_promotion_retry_with_same_key_and_different_payload_conflicts_atomically(
+    db_session: Session,
+) -> None:
+    """승격 key 재사용 충돌이 최초 감사 Event와 PROMOTED 상태를 훼손하지 않는다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="promotion conflict"))
+    experiment.status = ExperimentStatus.PASSED.value
+    db_session.commit()
+    experiment_id = experiment.id
+    promote_experiment(
+        db_session,
+        experiment_id,
+        PromotionRequest(
+            idempotency_key="promotion-conflict-0001",
+            reason="first deployment evidence",
+        ),
+    )
+
+    with pytest.raises(IdempotencyConflictError):
+        promote_experiment(
+            db_session,
+            experiment_id,
+            PromotionRequest(
+                idempotency_key="promotion-conflict-0001",
+                reason="different deployment evidence",
+            ),
+        )
+
+    assert not db_session.in_transaction()
+    persisted = db_session.get(Experiment, experiment_id)
+    events = db_session.scalars(
+        select(ExperimentEvent).where(
+            ExperimentEvent.experiment_id == experiment_id,
+            ExperimentEvent.idempotency_key == "promotion-conflict-0001",
+        )
+    ).all()
+    assert persisted is not None
+    assert persisted.status == ExperimentStatus.PROMOTED.value
+    assert [(row.reason, row.to_status) for row in events] == [
+        ("first deployment evidence", ExperimentStatus.PROMOTED.value)
+    ]
+
+
+def test_promotion_event_failure_rolls_back_status_change(db_session: Session) -> None:
+    """promotion Event flush 실패 시 Experiment만 PROMOTED로 남지 않는다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="promotion rollback"))
+    experiment.status = ExperimentStatus.PASSED.value
+    db_session.commit()
+    experiment_id = experiment.id
+
+    @event.listens_for(db_session, "before_flush")
+    def fail_promotion_event(session: Session, _flush_context, _instances) -> None:
+        if any(
+            isinstance(row, ExperimentEvent)
+            and row.to_status == ExperimentStatus.PROMOTED.value
+            for row in session.new
+        ):
+            raise RuntimeError("controlled promotion event failure")
+
+    with pytest.raises(RuntimeError, match="controlled promotion event failure"):
+        promote_experiment(
+            db_session,
+            experiment_id,
+            PromotionRequest(
+                idempotency_key="promotion-rollback-0001",
+                reason="deployment verified",
+            ),
+        )
+
+    assert not db_session.in_transaction()
+    persisted = db_session.get(Experiment, experiment_id)
+    assert persisted is not None
+    assert persisted.status == ExperimentStatus.PASSED.value

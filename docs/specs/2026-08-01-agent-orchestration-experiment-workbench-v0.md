@@ -169,6 +169,8 @@ id ASC` 순으로 정렬하며 동일 timestamp에서는 UUID `id`를 tie-breake
 `reason`은 공백 제거 후 한 글자 이상이어야 하며 운영자가 확인한 merge·배포 근거를
 반드시 남긴다. 현재 상태가 `PASSED`가 아니면 `409`다. 성공 시 `PROMOTED` 상태와
 promotion event를 한 transaction에 저장하고 `200` Experiment 응답을 반환한다.
+`deployment_metadata`는 promotion event의 JSON `metric_snapshot`에 감사 데이터로
+보존하며 평가 결과인 Experiment `metric_summary`는 변경하지 않는다.
 
 ## DB와 migration
 
