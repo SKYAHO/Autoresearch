@@ -56,6 +56,7 @@ const measurementStatusCode503 = new Counter("rerank_measure_status_code_503");
 const measurementStatusCodeOther = new Counter("rerank_measure_status_code_other");
 
 export const options = {
+  summaryTrendStats: ["avg", "min", "med", "max", "p(90)", "p(95)", "p(99)"],
   scenarios: {
     warmup: {
       executor: "constant-vus",

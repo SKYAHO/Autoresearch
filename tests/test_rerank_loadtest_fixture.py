@@ -174,6 +174,16 @@ def test_k6_script_has_warmup_and_measurement_contract() -> None:
         assert f"rerank_measure_status_code_{status_code}" in script
 
 
+def test_k6_summary_includes_p99_for_exact_latency_reporting() -> None:
+    """k6 summary는 측정 latency의 p99를 원시 artifact에 보존해야 한다."""
+    script = Path("loadtest/rerank.js").read_text()
+
+    assert (
+        'summaryTrendStats: ["avg", "min", "med", "max", "p(90)", "p(95)", "p(99)"]'
+        in script
+    )
+
+
 def test_k6_job_has_no_identity_or_token_mount() -> None:
     """k6 Job은 전용 KSA만 쓰고 토큰·Secret·권한 상승을 허용하지 않는다."""
     text = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
