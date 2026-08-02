@@ -14,10 +14,11 @@ import threading
 import uuid
 
 import pytest
-from sqlalchemy import Engine, create_engine, event, func, select
+from sqlalchemy import Engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_orchestration.app.experiments.exceptions import IdempotencyConflictError
+from agent_orchestration.app.database import create_database_engine
 from agent_orchestration.app.experiments.models import Experiment, ExperimentLog
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
@@ -39,7 +40,7 @@ def postgres_engine() -> Iterator[Engine]:
     database_url = os.getenv("ORCH_TEST_POSTGRES_URL")
     if not database_url:
         pytest.skip("ORCH_TEST_POSTGRES_URL is required for PostgreSQL integration tests")
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = create_database_engine(database_url)
     try:
         yield engine
     finally:
