@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-02T04:27:55Z",
+  "generated_at": "2026-08-02T05:20:06Z",
   "reports": [
+    {
+      "number": 483,
+      "title": "feat: 실험 워크벤치 v0 추가",
+      "author": "waieiches",
+      "merged_at": "2026-08-02T05:19:49Z",
+      "summary_ko": [
+        "Agent Orchestration 영역에 가설, 상태 전이, 이벤트, 로그, 메타데이터를 저장하고 관찰하는 실험 워크벤치 v0 API를 구축하였습니다.",
+        "SQLAlchemy 2.x ORM과 Alembic 마이그레이션을 도입하여 기존 `/chat` 계약을 유지하면서 독립적인 실험 영속화 스키마를 구성하였습니다.",
+        "멱등성 처리, SELECT FOR UPDATE 기반 상태 전이 직렬화, 커서 기반 로그/이벤트 조회, 수동 승격(/promote) 전용 엔드포인트를 제공합니다."
+      ],
+      "report_url": "pr/483/"
+    },
     {
       "number": 473,
       "title": "feat: CTR 모델 배포 패키지 manifest 검증",
