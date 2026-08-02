@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-02T09:13:21Z",
+  "generated_at": "2026-08-02T10:06:50Z",
   "reports": [
+    {
+      "number": 478,
+      "title": "feat: 승격 evidence 검증 워크플로우 구현 (#466)",
+      "author": "bbungjun",
+      "merged_at": "2026-08-02T10:06:37Z",
+      "summary_ko": [
+        "실험 목적 및 지표 위변조를 방지하기 위해 GCS 기반의 변경 불가(write-once) 실험 계획 및 평가 영수증 검증 체계를 구축하였습니다.",
+        "학습 전 사전 선언된 실험 계획과 학습 후 산출된 held-out test ROC-AUC 지표를 고정된 30개 시드(42..71)에 대해 95% 신뢰구간 통계 검정으로 판정합니다.",
+        "CLI 및 학습·비교 파이프라인에 증거 생성·검증 경로를 바인딩하여 조건 불일치 시 자동 fail-closed(보류) 되도록 구현하였습니다."
+      ],
+      "report_url": "pr/478/"
+    },
     {
       "number": 480,
       "title": "fix: rerank loadtest GKE project ID 전달",
