@@ -321,7 +321,7 @@ def test_main_defer_registration_returns_pending_without_registering(tmp_path, m
     pending = outcome.pending_registration
     assert pending is not None
     assert pending.model_name == "ctr-model"
-    assert pending.model_uri == f"runs:/{outcome.run_id}/model"
+    assert pending.model_uri == f"runs:/{outcome.run_id}/model_onnx"
 
     # 평가 통과 후 호출하면 그때 버전이 생기고 태그도 함께 붙는다.
     version = train.register_pending_model(pending)
@@ -548,6 +548,19 @@ def test_main_downsampling_records_sampling_rate_and_preserves_test_set(tmp_path
     assert test_df["clicked"].mean() == pytest.approx(0.5, abs=0.1)
 
 
+@pytest.mark.parametrize("sampling_rate", [0.0, -0.1, 1.1, float("nan"), float("inf")])
+def test_main_rejects_invalid_sampling_rate_before_training(
+    tmp_path, monkeypatch, sampling_rate
+) -> None:
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", (tmp_path / "mlruns").as_uri())
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=sampling_rate)
+    _synthetic_ctr_dataset(n=40).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    with pytest.raises(ValueError, match="sampling_rate"):
+        _run_train(tmp_path, config_path)
+
+
 def test_main_downsampling_forces_scale_pos_weight_to_one(tmp_path, monkeypatch) -> None:
     # #300 결정 6: downsampling 켜지면 scale_pos_weight(auto)가 1로 강제된다(이중 보정 방지).
     tracking_uri = (tmp_path / "mlruns").as_uri()
@@ -612,19 +625,11 @@ def test_main_no_downsampling_logs_no_calibration_artifact(tmp_path, monkeypatch
     assert client.list_artifacts(main_version.run_id, "calibration") == []
 
 
-def test_downsampling_main_without_calibration_artifact_fails_closed(tmp_path, monkeypatch) -> None:
-    # #390 fail-closed(PR #395 리뷰 5): downsampling main(sampling_rate<1.0 tag)인데 그 run에
-    # calibration 아티팩트가 없으면, 서빙 로드가 ModelArtifactError로 기동을 거부해야 한다
-    # (보정 안 된 편향 확률 서빙 방지). 정상 경로는 아티팩트가 항상 있지만, 이 마지막 보루를
-    # 회귀 테스트로 고정한다 — sampling_rate=1.0으로 학습해 calibration 아티팩트 없는 run을
-    # 만든 뒤, main 버전 tag를 0.5로 덮어써 "downsampling인데 아티팩트 없음" 상황을 재현한다.
+def test_registry_sampling_rate_tag_cannot_override_manifest(tmp_path, monkeypatch) -> None:
+    # #302: mutable Registry tag가 변조돼도 서빙의 calibration 판단은 manifest만 사용한다.
     from mlflow.tracking import MlflowClient as _Client
 
-    from src.serving.model_loader import (
-        ModelArtifactError,
-        RegistryModelSettings,
-        load_reranker_with_lineage,
-    )
+    from src.serving.model_loader import RegistryModelSettings, load_reranker_with_lineage
 
     tracking_uri = (tmp_path / "mlruns").as_uri()
     monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
@@ -641,12 +646,12 @@ def test_downsampling_main_without_calibration_artifact_fails_closed(tmp_path, m
     client.set_model_version_tag("ctr-model", main_version.version, "sampling_rate", "0.5")
     client.set_registered_model_alias("ctr-model", "champion", main_version.version)
 
-    with pytest.raises(ModelArtifactError, match="calibration"):
-        load_reranker_with_lineage(
-            RegistryModelSettings(
-                tracking_uri=tracking_uri, model_name="ctr-model", alias="champion"
-            )
+    resolved = load_reranker_with_lineage(
+        RegistryModelSettings(
+            tracking_uri=tracking_uri, model_name="ctr-model", alias="champion"
         )
+    )
+    assert resolved.reranker.calibration is None
 
 
 def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> None:
@@ -668,6 +673,17 @@ def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> 
     [version] = client.search_model_versions("name='ctr-model'")
     artifact_paths = {artifact.path for artifact in client.list_artifacts(version.run_id)}
     assert "model_onnx" in artifact_paths
+    assert "manifest" in artifact_paths
+    download_root = tmp_path / "download"
+    download_root.mkdir()
+    manifest_path = client.download_artifacts(
+        version.run_id, "manifest/manifest.json", dst_path=str(download_root)
+    )
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["contract_version"] == "ctr-model-package-v1"
+    assert manifest["sampling_rate"] == 1.0
+    assert manifest["artifacts"]["calibration"] is None
+    assert version.source.endswith("/model_onnx")
 
     reranker = load_mlflow_model(
         MlflowModelSettings(tracking_uri=tracking_uri, run_id=version.run_id)

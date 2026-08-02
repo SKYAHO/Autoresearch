@@ -1,8 +1,13 @@
 """user_recommendations 기반 모델 노출 조립 provider.
 
-champion 모델의 유저별 순위(70%) + 트렌딩(20%) + 랜덤(10%)으로 노출 batch를
-구성하고, 노출별 정책 태그(ExposureMetadata)를 별도 맵으로 유지한다 — LLM
-프롬프트에는 태그·점수를 노출하지 않는다.
+[파이프라인] 일일 추천 배치의 BigQuery ``user_recommendations``와 action log
+생성 사이에서 champion 모델 순위를 노출 후보로 조립한다.
+
+[기능] 명시 BigQuery 프로젝트를 검증해 테이블 ID를 만들고, 유저별 순위(70%) +
+트렌딩(20%) + 랜덤(10%) 노출과 정책 태그(ExposureMetadata)를 구성한다.
+
+[비책임] LLM 프롬프트·클릭 판정·저장은 ``autoresearch.action_logs``가 소유하며,
+이 모듈은 태그·점수를 프롬프트에 노출하지 않는다.
 
 spec: docs/specs/2026-07-22-model-exposure-assembly.md
 """
@@ -44,12 +49,16 @@ def resolve_recommendations_table_id(table: str | None) -> str:
     """user_recommendations 대상 테이블의 정규화된 id를 만든다(기본값 단일 출처)."""
     import os
 
-    from src.pipeline.build_training_dataset import BIGQUERY_DATASET, BIGQUERY_PROJECT
+    from src.pipeline.build_training_dataset import (
+        BIGQUERY_DATASET,
+        require_bigquery_project,
+    )
 
+    project = require_bigquery_project()
     resolved = table or os.environ.get(
         "CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE", "user_recommendations"
     )
-    return f"{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{resolved}"
+    return f"{project}.{BIGQUERY_DATASET}.{resolved}"
 
 
 def load_user_rankings(

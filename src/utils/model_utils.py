@@ -32,7 +32,7 @@ def convert_lgbm_to_onnx(model, n_features: int) -> Any:
         n_features: 학습에 사용한 피처 개수(입력 텐서 shape 결정용).
 
     Returns:
-        onnx.ModelProto. `src.tracking.logger.log_onnx_model`로 기록할 수 있다.
+        onnx.ModelProto. 학습 패키지 staging에서 `mlflow.onnx.save_model`로 저장한다.
     """
     from onnxmltools import convert_lightgbm
     from onnxmltools.convert.common.data_types import FloatTensorType

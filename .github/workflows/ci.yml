@@ -148,6 +148,47 @@ jobs:
           tests/test_serving_deployment.py
           -v
 
+  pytest-postgres:
+    name: pytest (postgres group)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: orch
+          POSTGRES_PASSWORD: orch
+          POSTGRES_DB: orch_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ORCH_TEST_POSTGRES_URL: postgresql://orch:orch@localhost:5432/orch_test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.26"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Apply Alembic migrations to the ephemeral PostgreSQL service
+        env:
+          ORCH_DATABASE_URL: ${{ env.ORCH_TEST_POSTGRES_URL }}
+        run: uv run --no-sync alembic -c agent_orchestration/alembic.ini upgrade head
+
+      - name: Run PostgreSQL concurrency contract tests
+        run: uv run --no-sync python -m pytest tests/test_experiment_postgres.py -v
+
   uv-lock-check:
     name: uv lock & proxy export drift
     runs-on: ubuntu-latest
@@ -418,6 +459,8 @@ jobs:
             python -c "import agent_orchestration.bootstrap_secrets; from google.cloud import secretmanager"
           docker run --rm autoresearch-agent-orchestration-api:ci \
             python -c "import importlib.util; assert importlib.util.find_spec('lightgbm') is None"
+          docker run --rm autoresearch-agent-orchestration-api:ci \
+            alembic -c agent_orchestration/alembic.ini upgrade head --sql >/dev/null
           docker run --rm autoresearch-agent-orchestration-runner:ci id -u | grep --fixed-strings 10001
           codex_version="$(docker run --rm autoresearch-agent-orchestration-runner:ci codex --version)"
           test "${codex_version}" = "codex-cli 0.146.0"

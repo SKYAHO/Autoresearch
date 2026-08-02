@@ -6,9 +6,11 @@ BigQuery/Vertex AI 호출은 대상이 아니다. dataset 계층 분리, TRUNCAT
 
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import json
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -175,6 +177,54 @@ def test_select_steps_orders_by_dependency_and_rejects_unknown() -> None:
     assert bsf.select_steps(None) == list(bsf.STEPS)
     with pytest.raises(ValueError):
         bsf.select_steps("nope")
+
+
+def test_main_requires_explicit_project_before_bigquery_import(monkeypatch, capsys) -> None:
+    """환경 기본값이 없으면 BigQuery import보다 먼저 argparse 오류로 중단한다."""
+    monkeypatch.setattr(bsf, "load_dotenv", lambda: None)
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    original_import = builtins.__import__
+
+    def _forbid_bigquery_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in {"google.cloud", "google.cloud.bigquery"}:
+            raise AssertionError("프로젝트 확인 전에 BigQuery를 import하면 안 됩니다")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _forbid_bigquery_import)
+
+    with pytest.raises(SystemExit) as excinfo:
+        bsf.main(["--bucket", "bucket"])
+
+    assert excinfo.value.code == 2
+    stderr = capsys.readouterr().err
+    assert "GCP_PROJECT_ID" in stderr
+    assert "--project" in stderr
+
+
+def test_main_explicit_project_overrides_environment(monkeypatch) -> None:
+    """명시한 --project가 환경값보다 우선해 BigQuery 클라이언트에 전달된다."""
+    monkeypatch.setattr(bsf, "load_dotenv", lambda: None)
+    monkeypatch.setenv("GCP_PROJECT_ID", "environment-project")
+    monkeypatch.delenv("BQ_LOCATION", raising=False)
+    client_calls: list[tuple[str, str]] = []
+
+    fake_bigquery = types.ModuleType("google.cloud.bigquery")
+
+    def _client(*, project: str, location: str) -> object:
+        client_calls.append((project, location))
+        return object()
+
+    fake_bigquery.Client = _client
+    fake_cloud = types.ModuleType("google.cloud")
+    fake_cloud.bigquery = fake_bigquery
+    monkeypatch.setitem(sys.modules, "google.cloud.bigquery", fake_bigquery)
+    monkeypatch.setitem(sys.modules, "google.cloud", fake_cloud)
+    monkeypatch.setitem(bsf.STEP_FUNCS, "user_static_feature", lambda *_: None)
+
+    assert bsf.main(
+        ["--project", "explicit-project", "--bucket", "bucket", "--steps", "user_static_feature"]
+    ) == 0
+    assert client_calls == [("explicit-project", bsf.DEFAULT_LOCATION)]
 
 
 def test_embed_reuses_cache_and_only_calls_api_for_new_topics(monkeypatch, tmp_path):

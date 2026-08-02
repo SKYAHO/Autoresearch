@@ -24,7 +24,7 @@
 ## 실측 방법 (재현 가능)
 
 diff 하네스: `scripts/diff_feature_contract.py` (BigQuery 필요, `uv run python
-scripts/diff_feature_contract.py --project ar-infra-501607`). verify_offline_coverage
+scripts/diff_feature_contract.py --project <gcp-project-id>`). verify_offline_coverage
 스타일 read-only.
 
 - **offline 경로**: `_USER_DYNAMIC_SELECT` / `_VIDEO_SELECT`를 partition_date별

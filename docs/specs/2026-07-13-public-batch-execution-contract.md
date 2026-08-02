@@ -327,6 +327,8 @@ task를 실패시키지 않는다. 격리 비율 판정에 필요한 count와 �
 - `--exposure-source model`(기본)은 champion 모델의 유저별 순위를
   `user_recommendations`에서 읽어 70/20/10(모델/트렌딩/랜덤)으로 노출을
   조립하고 노출별 정책 태그를 로그에 싣는다. 이 모드는 BigQuery에 의존한다.
+- `model` 모드는 `CTR_TRAINING_BQ_PROJECT`를 필수로 요구한다. 값이 없으면
+  GCS 초기화·BigQuery import 전에 exit 2(`invalid_arguments`)로 실패한다.
 - 대상 테이블 id는 `{CTR_TRAINING_BQ_PROJECT}.{CTR_TRAINING_BQ_DATASET}.<name>`으로
   정규화한다. `<name>`은 `--recommendations-table` → 환경 변수
   `CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE` → `user_recommendations` 순으로 해석한다.
