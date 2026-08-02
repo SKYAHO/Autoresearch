@@ -339,7 +339,6 @@ def create_experiment_log(
             request.idempotency_key,
         )
         if existing_log is None:
-            session.rollback()
             raise error
         if existing_log.request_fingerprint != fingerprint:
             session.rollback()
