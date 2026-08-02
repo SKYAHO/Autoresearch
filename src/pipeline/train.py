@@ -30,6 +30,7 @@ prod와 분리되고 트래킹 URI 기본값이 로컬 파일 스토어가 된�
 서빙 로드(src/serving/model_loader.py)는 이 모듈이 다루지 않는다.
 """
 
+import math
 import os
 import shutil
 import sys
@@ -49,6 +50,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 import mlflow  # noqa: E402
+import mlflow.onnx  # noqa: E402
 
 from src.models.lgbm_model import LGBMModel  # noqa: E402
 from src.models.downsampling import downsample_negatives  # noqa: E402
@@ -73,10 +75,16 @@ from src.tracking.namespace import (  # noqa: E402
 )
 from src.tracking.logger import (  # noqa: E402
     log_artifact,
+    log_artifacts,
     log_dataset,
     log_metrics,
-    log_onnx_model,
     log_parameters,
+)
+from src.tracking.model_package import (  # noqa: E402
+    ModelPackageManifest,
+    load_manifest,
+    save_manifest,
+    verify_model_package,
 )
 from src.tracking.registry import register_model  # noqa: E402
 from src.pipeline.training_provenance import (  # noqa: E402
@@ -573,6 +581,10 @@ def main(
         # 반환(no-op)한다. realized_sampling_rate는 라운딩으로 nominal과 미세하게
         # 다를 수 있어 실현값을 이후 보정·기록에 쓴다.
         nominal_sampling_rate = float(config["model"].get("sampling_rate", 1.0))
+        if not math.isfinite(nominal_sampling_rate) or not (
+            0.0 < nominal_sampling_rate <= 1.0
+        ):
+            raise ValueError("sampling_rate는 유한한 (0, 1] 값이어야 합니다")
         realized_sampling_rate = 1.0
         if nominal_sampling_rate < 1.0:
             print("\n[Step 3b] Negative downsampling (train split only)...")
@@ -719,49 +731,62 @@ def main(
         # artifact 경로(model/, features/)는 서빙 로더(src/serving/model_loader.py)의
         # MLflow 다운로드 경로 상수와 계약이다 — 변경 시 양쪽을 함께 갱신한다.
         log_artifact(local_path=model_path, artifact_path="model")
-        log_artifact(local_path=feature_columns_path, artifact_path="features")
-        log_artifact(local_path=categorical_columns_path, artifact_path="features")
 
-        # [Step 8b] 모델 바이너리 ONNX 전환(#302/#179). joblib 저장·로깅 직후 같은 모델을
-        # ONNX로 변환해 model_onnx/로 로깅한다 — 서빙(model_loader)이 이 아티팩트가 있으면
-        # onnxruntime로 추론해 pickle 역직렬화 위험을 없앤다. 입력은 feature_columns 순서의
-        # 단일 float32 텐서([None, n_features])이고, 카테고리는 서빙이 학습 카테고리로 캐스팅해
-        # 뽑은 정수 코드다. 변환 실패는 best-effort로 흘려보낸다 — joblib 모델·아티팩트는 이미
-        # 저장됐고, 서빙은 model_onnx/가 없으면 joblib으로 폴백하기 때문이다(registry 등록과 동일 정책).
-        try:
+        # [Step 8b] 배포 패키지는 프로세스 전용 staging에서 완성·자체 검증한 뒤 기록한다.
+        # 실패를 삼키지 않는다. 불완전한 run은 FAILED로 남지만 registered model version은
+        # 아래 단계까지 도달하지 않아 생성되지 않는다(#302).
+        with TemporaryDirectory(prefix="ctr-model-package-") as package_root_text:
+            package_root = Path(package_root_text)
+            onnx_dir = package_root / "model_onnx"
+            package_features_dir = package_root / "features"
+            package_features_dir.mkdir(parents=True)
+            package_feature_columns = package_features_dir / "feature_columns.json"
+            package_categorical_columns = package_features_dir / "categorical_columns.json"
+            shutil.copy2(feature_columns_path, package_feature_columns)
+            shutil.copy2(categorical_columns_path, package_categorical_columns)
             onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
-            log_onnx_model(onnx_model, artifact_path="model_onnx")
-            print("  [OK] ONNX 변환·로깅 완료 (model_onnx/)")
-        except Exception as exc:
-            print(f"  ⚠️  ONNX 변환 실패 — joblib 모델·아티팩트는 정상 저장됨(서빙은 joblib 폴백): {exc}")
+            mlflow.onnx.save_model(onnx_model, path=str(onnx_dir))
 
-        # [Step 8c] calibration 상수(He 2014 w)를 main과 **같은 run**의 아티팩트로 로깅한다(#390).
-        # 별도 등록 모델로 올리지 않는다 — 서빙이 main을 alias로 로드한 뒤 그 run_id로 같은 run의
-        # 이 아티팩트를 함께 읽어 체이닝하므로(run_id 종속), main·calibration이 서로 다른 시점에
-        # 승격돼 어긋나는 동기화(race)가 구조적으로 사라진다. downsampling 미사용(w=1.0)이면 보정할
-        # 게 없어 생략한다(하위호환 — 서빙은 sampling_rate>=1.0을 항등 처리).
-        #
-        # register_model(아래 Step 9) **앞에** 로깅한다: 승격 게이트2가 "등록된 후보 버전의 run에
-        # calibration 아티팩트가 있는가"를 보므로, 등록보다 먼저 아티팩트를 남겨 "등록 버전이 존재
-        # ⇒ 같은 run에 아티팩트가 있다"를 불변식으로 만든다(등록 후 로깅이면 그 사이 run 중단 시
-        # "버전은 보이는데 아티팩트는 없는" 상태가 영구화될 수 있다 — PR #395 리뷰 반영).
-        if realized_sampling_rate < 1.0:
-            calibration_path = os.path.join(
-                os.path.dirname(model_path), CALIBRATION_PARAM_FILENAME
+            if not (0.0 < realized_sampling_rate <= 1.0):
+                raise ValueError("realized sampling_rate는 (0, 1] 범위여야 합니다")
+            calibration_path: Path | None
+            if realized_sampling_rate < 1.0:
+                calibration_path = package_root / CALIBRATION_PARAM_FILENAME
+                DownsamplingCalibrator(realized_sampling_rate).save(calibration_path)
+            else:
+                calibration_path = None
+
+            manifest = ModelPackageManifest.build(
+                sampling_rate=realized_sampling_rate,
+                model_onnx=onnx_dir,
+                feature_columns=package_feature_columns,
+                categorical_columns=package_categorical_columns,
+                calibration=calibration_path,
             )
-            DownsamplingCalibrator(realized_sampling_rate).save(calibration_path)
-            # 서빙 로더의 MLFLOW_CALIBRATION_ARTIFACT_PATH(calibration/calibration.json)와 계약.
-            log_artifact(local_path=calibration_path, artifact_path="calibration")
-            print("  [OK] calibration 아티팩트 로깅 완료 (calibration/)")
+            manifest_path = package_root / "manifest.json"
+            save_manifest(manifest, manifest_path)
+            loaded_manifest = load_manifest(manifest_path)
+            verify_model_package(
+                loaded_manifest,
+                model_onnx=onnx_dir,
+                feature_columns=package_feature_columns,
+                categorical_columns=package_categorical_columns,
+                calibration=calibration_path,
+            )
+
+            log_artifacts(str(onnx_dir), artifact_path="model_onnx")
+            log_artifact(local_path=str(package_feature_columns), artifact_path="features")
+            log_artifact(local_path=str(package_categorical_columns), artifact_path="features")
+            if calibration_path is not None:
+                log_artifact(local_path=str(calibration_path), artifact_path="calibration")
+            log_artifact(local_path=str(manifest_path), artifact_path="manifest")
+            print("  [OK] ONNX + manifest 배포 패키지 검증·로깅 완료")
 
         print("\n[Step 9] Model Registry 등록...")
         # 실험이면 prod와 다른 registry 이름으로 등록된다(#406). 승격 게이트는
         # prod 이름만 조회하므로 실험 버전이 champion 후보로 섞이지 않는다.
         model_name = namespace.registry_model_name
-        # log_artifact(..., artifact_path="model")과 짝을 맞춰야 한다 — 서빙 로더의
-        # MLFLOW_MODEL_ARTIFACT_PATH 상수(model/lgbm_model.joblib)도 같은
-        # "model/" 아티팩트 경로 아래 파일을 참조한다.
-        model_uri = f"runs:/{run.info.run_id}/model"
+        model_uri = f"runs:/{run.info.run_id}/model_onnx"
         # sampling_rate를 모델 버전 tag로도 기록한다(#300 결정 7). 서빙이 alias로
         # 모델 버전을 로드하는 순간 tag에서 직접 읽어(run→param 간접 조회 없이)
         # 로드 시 1회 캐싱한다. 승격 게이트(set_model_alias)도 이 tag를 본다.

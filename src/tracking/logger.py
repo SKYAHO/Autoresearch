@@ -86,13 +86,14 @@ def log_artifact(
     mlflow.log_artifact(local_path, artifact_path=artifact_path)
 
 
-def log_artifacts(artifact_dir: str) -> None:
+def log_artifacts(artifact_dir: str, artifact_path: str | None = None) -> None:
     """Artifact 디렉토리 기록.
 
     Args:
         artifact_dir: 디렉토리 경로
+        artifact_path: MLflow run 안의 대상 디렉터리
     """
-    mlflow.log_artifacts(artifact_dir)
+    mlflow.log_artifacts(artifact_dir, artifact_path=artifact_path)
 
 
 def start_run(run_name: Optional[str] = None, tags: Optional[Dict[str, str]] = None) -> str:
@@ -112,15 +113,3 @@ def start_run(run_name: Optional[str] = None, tags: Optional[Dict[str, str]] = N
 def end_run() -> None:
     """MLflow Run 종료."""
     mlflow.end_run()
-
-
-def log_onnx_model(onnx_model: Any, artifact_path: str = "model_onnx") -> None:
-    """ONNX로 변환된 모델을 MLflow에 기록한다(mlflow.onnx.log_model 래퍼, #302/#179).
-
-    Args:
-        onnx_model: onnx.ModelProto (예: src.utils.model_utils.convert_lgbm_to_onnx 반환값).
-        artifact_path: MLflow artifact 저장 경로(서빙 로더의 ONNX 경로 상수와 계약).
-    """
-    import mlflow.onnx
-
-    mlflow.onnx.log_model(onnx_model, artifact_path=artifact_path)
