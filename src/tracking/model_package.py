@@ -34,11 +34,15 @@ def _reject_reparse_point(path: Path) -> None:
         raise ValueError(f"링크 또는 reparse point는 허용하지 않습니다: {path}")
 
 
-def _reject_reparse_ancestors(path: Path) -> None:
-    """경로 자체와 존재하는 모든 상위 경로의 reparse point를 거부한다."""
+def _reject_reparse_ancestors(path: Path, *, boundary: Path | None = None) -> None:
+    """경로부터 신뢰 경계까지만 reparse point를 거부한다."""
+    boundary = boundary or path.parent
     for candidate in (path, *path.parents):
         if candidate.exists() or candidate.is_symlink():
             _reject_reparse_point(candidate)
+        if candidate == boundary:
+            return
+    raise ValueError(f"경로가 신뢰 경계 아래에 있지 않습니다: {path}")
 
 
 def _validate_relative_path(value: str) -> str:
@@ -134,12 +138,14 @@ class ModelPackageManifest(BaseModel):
     ) -> "ModelPackageManifest":
         """로컬 staging 아티팩트로 manifest를 생성한다."""
         entrypoint = model_onnx / "model.onnx"
-        _reject_reparse_ancestors(entrypoint)
+        package_root = model_onnx.parent
+        _reject_reparse_ancestors(entrypoint, boundary=package_root)
         if not entrypoint.is_file():
             raise ValueError(f"ONNX entrypoint가 없습니다: {entrypoint}")
         calibration_digest = (
             ArtifactDigest(
-                path="calibration/calibration.json", sha256=hash_file(calibration)
+                path="calibration/calibration.json",
+                sha256=hash_file(calibration, boundary=package_root),
             )
             if calibration is not None
             else None
@@ -156,24 +162,23 @@ class ModelPackageManifest(BaseModel):
                 ),
                 feature_columns=ArtifactDigest(
                     path="features/feature_columns.json",
-                    sha256=hash_file(feature_columns),
+                    sha256=hash_file(feature_columns, boundary=package_root),
                 ),
                 categorical_columns=ArtifactDigest(
                     path="features/categorical_columns.json",
-                    sha256=hash_file(categorical_columns),
+                    sha256=hash_file(categorical_columns, boundary=package_root),
                 ),
                 calibration=calibration_digest,
             ),
         )
 
 
-def hash_file(path: Path) -> str:
+def hash_file(path: Path, *, boundary: Path | None = None) -> str:
     """일반 파일 바이트의 SHA-256을 반환한다."""
-    _reject_reparse_ancestors(path)
+    _reject_reparse_ancestors(path, boundary=boundary)
     if not path.is_file():
         raise ValueError(f"일반 파일이 아닙니다: {path}")
     digest = hashlib.sha256()
-    _reject_reparse_ancestors(path)
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
@@ -236,20 +241,21 @@ def verify_model_package(
     """manifest와 로컬 아티팩트의 hash·calibration 계약을 검증한다."""
     expected = manifest.artifacts
     entrypoint = model_onnx / expected.model_onnx.entrypoint
-    _reject_reparse_ancestors(entrypoint)
+    package_root = model_onnx.parent
+    _reject_reparse_ancestors(entrypoint, boundary=package_root)
     if not entrypoint.is_file():
         raise ValueError(f"ONNX entrypoint가 없습니다: {entrypoint}")
     if hash_directory(model_onnx) != expected.model_onnx.sha256:
         raise ValueError("model_onnx SHA-256 불일치")
-    if hash_file(feature_columns) != expected.feature_columns.sha256:
+    if hash_file(feature_columns, boundary=package_root) != expected.feature_columns.sha256:
         raise ValueError("feature_columns SHA-256 불일치")
-    if hash_file(categorical_columns) != expected.categorical_columns.sha256:
+    if hash_file(categorical_columns, boundary=package_root) != expected.categorical_columns.sha256:
         raise ValueError("categorical_columns SHA-256 불일치")
     rate = manifest.sampling_rate
     if rate < 1.0:
         if calibration is None or expected.calibration is None:
             raise ValueError("calibration 아티팩트가 없습니다")
-        if hash_file(calibration) != expected.calibration.sha256:
+        if hash_file(calibration, boundary=package_root) != expected.calibration.sha256:
             raise ValueError("calibration SHA-256 불일치")
         payload = json.loads(calibration.read_text(encoding="utf-8"))
         if set(payload) != {"sampling_rate"} or payload["sampling_rate"] != rate:

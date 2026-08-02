@@ -19,11 +19,14 @@ from __future__ import annotations
 
 import math
 import os
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from mlflow.tracking import MlflowClient
 from src.models.calibration import CALIBRATION_PARAM_FILENAME
 from src.tracking.client import set_tracking_uri
 from src.tracking.namespace import is_experiment_model_name
+from src.tracking.model_package import load_manifest
 from src.tracking.promotion_result import (
     ModelPromotionResult,
     PromotionExecutionError,
@@ -60,6 +63,28 @@ def _run_has_calibration_artifact(client: MlflowClient, run_id: str) -> bool:
             "calibration 아티팩트 존재 확인 중 저장소 접근에 실패했습니다.",
         ) from error
     return any(entry.path.endswith(CALIBRATION_PARAM_FILENAME) for entry in artifacts)
+
+
+def _run_has_valid_manifest(client: MlflowClient, run_id: str) -> bool:
+    """후보 run의 고정 manifest가 존재하고 v1 스키마를 만족하는지 확인한다."""
+    try:
+        artifacts = client.list_artifacts(run_id, "manifest")
+    except Exception as error:
+        raise PromotionExecutionError(
+            PromotionReasonCode.ARTIFACT_LOOKUP_FAILED,
+            "manifest 아티팩트 존재 확인 중 저장소 접근에 실패했습니다.",
+        ) from error
+    if not any(entry.path == "manifest/manifest.json" for entry in artifacts):
+        return False
+    try:
+        with TemporaryDirectory(prefix="ctr-promotion-manifest-") as workspace:
+            path = client.download_artifacts(
+                run_id, "manifest/manifest.json", dst_path=workspace
+            )
+            load_manifest(Path(path))
+    except Exception:
+        return False
+    return True
 
 
 def main(
@@ -177,6 +202,20 @@ def main(
             "후보 모델에 유한한 val_roc_auc 지표가 없습니다.",
             candidate_version=candidate_version,
             champion_version=champion_version,
+        )
+
+    if not _run_has_valid_manifest(client, candidate_run_id):
+        return ModelPromotionResult(
+            outcome=PromotionOutcome.REJECTED,
+            model_name=model_name,
+            champion_alias=champion_alias,
+            candidate_version=candidate_version,
+            champion_version=champion_version,
+            candidate_metric=candidate_val_roc_auc,
+            reason_code=PromotionReasonCode.MANIFEST_ARTIFACT_INVALID,
+        ).with_legacy_message(
+            f"게이트 미달: 후보 {model_name} v{candidate_version}의 "
+            "manifest/manifest.json이 없거나 ctr-model-package-v1 계약에 맞지 않습니다."
         )
 
     try:

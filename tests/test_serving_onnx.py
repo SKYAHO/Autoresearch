@@ -283,6 +283,21 @@ def test_local_loader_rejects_non_manifest_onnx_entrypoint(tmp_path: Path) -> No
         )
 
 
+def test_local_loader_normalizes_onnx_contract_error(tmp_path: Path, monkeypatch) -> None:
+    model, categories = _fit_contract_model()
+    settings = _save_contract_artifacts(tmp_path, model, categories, with_onnx=True)
+    monkeypatch.setattr(
+        "src.serving.model_loader._build_onnx_session_from_path",
+        lambda path: _ContractSession(
+            [_Metadata("wrong", "tensor(float)", [None, 21])],
+            [_Metadata("probabilities", "tensor(float)", [None, 2])],
+        ),
+    )
+
+    with pytest.raises(ModelArtifactError, match="로컬 모델 패키지"):
+        load_local_model(settings)
+
+
 def test_onnx_reranker_preserves_calibration_chaining(tmp_path: Path) -> None:
     # ONNX 어댑터로 로드해도 main→calibration 체이닝은 그대로: calibration 적용 점수가
     # raw ONNX 점수를 He 보정한 값과 일치하고, monotonic이라 순위는 불변.

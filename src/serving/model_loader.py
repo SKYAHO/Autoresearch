@@ -104,6 +104,7 @@ class ResolvedModel:
     model_version: str | None
 
 
+# Exception traceback은 런타임이 속성을 할당하므로 frozen dataclass로 만들지 않는다.
 @dataclass(slots=True)
 class ModelConfigurationError(Exception):
     """환경변수 설정이 잘못됐을 때 발생한다(소스 값 오류·필수 변수 누락 등)."""
@@ -114,6 +115,7 @@ class ModelConfigurationError(Exception):
         return self.reason
 
 
+# 위와 동일하게 traceback chaining을 허용한다.
 @dataclass(slots=True)
 class ModelArtifactError(Exception):
     """아티팩트 자체가 없거나 형식·계약이 어긋날 때 발생한다."""
@@ -196,19 +198,19 @@ def load_local_model(settings: LocalModelSettings) -> Reranker:
             categorical_columns=settings.categorical_columns_path,
             calibration=settings.calibration_model_path,
         )
+        calibration = _load_calibration(settings.calibration_model_path)
+        onnx_session = _build_onnx_session_from_path(manifest_onnx_path)
+        return _load_reranker(
+            feature_columns_path=settings.feature_columns_path,
+            categorical_columns_path=settings.categorical_columns_path,
+            calibration=calibration,
+            onnx_session=onnx_session,
+            workspace_owner=None,
+        )
     except Exception as error:
         if isinstance(error, ModelArtifactError):
             raise
         raise ModelArtifactError(reason=f"로컬 모델 패키지 검증 실패: {error}") from error
-    calibration = _load_calibration(settings.calibration_model_path)
-    onnx_session = _build_onnx_session_from_path(manifest_onnx_path)
-    return _load_reranker(
-        feature_columns_path=settings.feature_columns_path,
-        categorical_columns_path=settings.categorical_columns_path,
-        calibration=calibration,
-        onnx_session=onnx_session,
-        workspace_owner=None,
-    )
 
 
 def load_mlflow_model(settings: MlflowModelSettings) -> Reranker:

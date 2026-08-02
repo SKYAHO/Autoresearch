@@ -39,6 +39,7 @@ class PromotionReasonCode(str, Enum):
     METRIC_NOT_DEGRADED = "metric_not_degraded"
     METRIC_BELOW_CHAMPION = "metric_below_champion"
     CALIBRATION_ARTIFACT_MISSING = "calibration_artifact_missing"
+    MANIFEST_ARTIFACT_INVALID = "manifest_artifact_invalid"
     SERVING_CALIBRATION_NOT_READY = "serving_calibration_not_ready"
     REGISTRY_EMPTY = "registry_empty"
     ALREADY_CHAMPION = "already_champion"
@@ -92,6 +93,7 @@ class ModelPromotionResult(BaseModel):
             PromotionOutcome.REJECTED: {
                 PromotionReasonCode.METRIC_BELOW_CHAMPION,
                 PromotionReasonCode.CALIBRATION_ARTIFACT_MISSING,
+                PromotionReasonCode.MANIFEST_ARTIFACT_INVALID,
                 PromotionReasonCode.SERVING_CALIBRATION_NOT_READY,
             },
             PromotionOutcome.NO_CANDIDATE: {

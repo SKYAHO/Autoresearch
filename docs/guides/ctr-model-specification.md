@@ -401,10 +401,6 @@ SSOT가 아니다 — 계약 SSOT는 `src/features/model_contract.py`이고 mani
 - 서버는 프로세스 전용 workspace에 같은 run의 아티팩트를 받은 뒤 manifest 해시·calibration 값과
   ONNX 입출력 계약을 검증한다. 불일치·누락·손상 시 **fail-closed**로 기동을 거부한다.
 - sampling rate 판단은 mutable Registry tag가 아니라 manifest 값만 사용한다.
-> 정상 경로에선 `train.py`가 tag를 항상 기록해 발생하지 않으며(승격 게이트도 동일 가정), **근본
-> 해소는 `sampling_rate`를 mutable tag가 아니라 해시 검증되는 immutable manifest 번들에 넣는 것**
-> (후속 슬라이스)이다.
-
 ### 서빙 로딩 / 체이닝 순서
 
 - **체이닝**: `main_model` 추론(raw `q`) → `calibration_model` 적용(`p`) → 최종 CTR. calibration은
