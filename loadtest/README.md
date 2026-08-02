@@ -31,8 +31,11 @@ HTTP 200, 후보 수·입력 순서, 단일 비어 있지 않은 model ID, 유�
 `rerank_measure_status_code_200`, `_422`, `_500`, `_503`, `_other`는 측정
 구간에서만 기록합니다. duration Trend에는 k6 HTTP timing의 milliseconds를 1,000으로
 나눈 **seconds 숫자**를 기록하며, time Trend flag는 사용하지 않습니다. 따라서 raw
-summary에서 상태별 request count와 seconds 단위 p50/p95/p99를 태그 해석 없이 읽을 수
-있습니다. 오류율 threshold는 `rerank_measure_failure < 0.01`입니다.
+summary에서 상태별 request count와 seconds 단위 중앙값(`med`, p50)/p95/p99를 태그
+해석 없이 읽을 수 있습니다. `summaryTrendStats`는 k6의 전역 Trend 설정이므로
+`rerank_measure_duration_seconds`뿐 아니라 `http_req_duration` 같은 내장 Trend에도
+동일한 통계 키가 보존됩니다. 이는 raw artifact의 진단 범위를 넓히기 위한 의도된
+동작이며, 오류율 threshold는 `rerank_measure_failure < 0.01`입니다.
 
 ## 정적·구문 검증
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -175,13 +177,17 @@ def test_k6_script_has_warmup_and_measurement_contract() -> None:
 
 
 def test_k6_summary_includes_p99_for_exact_latency_reporting() -> None:
-    """k6 summary는 측정 latency의 p99를 원시 artifact에 보존해야 한다."""
+    """k6 summary 설정은 측정 latency의 p99를 포함해야 한다."""
     script = Path("loadtest/rerank.js").read_text()
 
-    assert (
-        'summaryTrendStats: ["avg", "min", "med", "max", "p(90)", "p(95)", "p(99)"]'
-        in script
+    trend_stats_match = re.search(
+        r"summaryTrendStats\s*:\s*(\[[^\]]*\])",
+        script,
     )
+    assert trend_stats_match is not None
+
+    trend_stats = json.loads(trend_stats_match.group(1))
+    assert "p(99)" in trend_stats
 
 
 def test_k6_job_has_no_identity_or_token_mount() -> None:
