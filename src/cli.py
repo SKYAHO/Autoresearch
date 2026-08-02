@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """LightGBM 학습 파이프라인 Typer CLI.
 
-[파이프라인] 피처 조립 → 학습 → 평가 → champion 승격 구간의 진입점(배선)을
-담당한다: `python -m src.cli build-features / train-model / evaluate-model /
-run-pipeline / promote-model`.
+[파이프라인] 피처 조립 → 학습 → 평가 → comparison → champion 승격 구간의
+진입점(배선)을 담당한다: `python -m src.cli create-experiment-plan /
+build-features / train-model / evaluate-model / run-pipeline / verify-comparison /
+promote-model`.
 
-[기능] 각 단계 모듈에 인자를 전달하고 단계 순서를 정한다. run-pipeline은
-build-features → train-model → evaluate-model 순서로 실행하며, registered model
-버전 생성은 평가가 통과한 뒤에 수행한다(#421) — 평가가 실패하면 지표를 신뢰할
-수 없는 후보 버전이 registry에 남지 않는다.
+[기능] 각 단계 모듈에 인자를 전달하고 단계 순서를 정한다. #466의
+create-experiment-plan은 write-once GCS plan receipt를 만들고, 학습·comparison
+명령은 그 receipt를 전달하거나 검증할 evidence store를 생성한다. run-pipeline은
+build-features → train-model → evaluate-model 순서로 실행하며, registered model 버전
+생성은 평가가 통과한 뒤에 수행한다(#421) — 평가가 실패하면 지표를 신뢰할 수 없는
+후보 버전이 registry에 남지 않는다.
 학습 CLI의 `split_seed`·`model_seed`·`sampler_seed`는 각각 데이터 분할·모델 초기화·
 negative downsampling 난수를 분리하며, `run-pipeline`은 검증된 snapshot sidecar를
 요구한다(#423). `sweep-seeds`는 기존 `random_state` 호환 경로를 유지한다(#407).
@@ -38,6 +41,12 @@ from src.pipeline import (  # noqa: E402
     training_comparison,
 )
 from src.pipeline.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
+from src.pipeline.promotion_evidence import (  # noqa: E402
+    PromotionEvidenceStore,
+    PromotionEvidenceValidationError,
+    create_experiment_plan,
+)
+from src.pipeline.training_provenance import write_manifest_atomic  # noqa: E402
 from src.tracking import promote  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
     MODEL_PROMOTION_RESULT_CONTRACT,
@@ -115,6 +124,75 @@ def _parse_extra_features(value: Optional[str]) -> Optional[list[str]]:
     return names or None
 
 
+def _optional_cli_string(value: object) -> Optional[str]:
+    """직접 함수 호출의 Typer OptionInfo 기본값을 미지정(None)으로 정규화한다."""
+    return value if isinstance(value, str) else None
+
+
+def _promotion_evidence_kwargs(
+    *,
+    experiment_plan_receipt: object,
+    promotion_evidence_root: object,
+) -> dict[str, str]:
+    """두 promotion evidence 옵션을 함께 받았을 때만 train 인자로 만든다."""
+    receipt = _optional_cli_string(experiment_plan_receipt)
+    root = _optional_cli_string(promotion_evidence_root)
+    if (receipt is None) != (root is None):
+        typer.echo(
+            "[인자 오류] --experiment-plan-receipt와 --promotion-evidence-root는 "
+            "함께 지정해야 합니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if receipt is None:
+        return {}
+    return {
+        "experiment_plan_receipt_path": receipt,
+        "promotion_evidence_root": root,
+    }
+
+
+@app.command("create-experiment-plan")
+def create_experiment_plan_command(
+    hypothesis_id: str = typer.Option(..., "--hypothesis-id", help="가설 식별자"),
+    control_id: str = typer.Option(..., "--control-id", help="대조군 식별자"),
+    candidate_id: str = typer.Option(..., "--candidate-id", help="후보 식별자"),
+    promotion_evidence_root: str = typer.Option(
+        ...,
+        "--promotion-evidence-root",
+        help="write-once plan을 기록할 gs://bucket/prefix root",
+    ),
+    output: Path = typer.Option(..., "--output", help="published plan receipt JSON 경로"),
+) -> None:
+    """학습 전에 immutable experiment plan을 publish하고 receipt를 원자 저장한다."""
+    try:
+        plan = create_experiment_plan(
+            hypothesis_id=hypothesis_id,
+            control_id=control_id,
+            candidate_ids=(candidate_id,),
+        )
+        receipt = PromotionEvidenceStore(promotion_evidence_root).publish_plan(plan)
+    except PromotionEvidenceValidationError as error:
+        typer.echo(
+            f"[실험 계획 publish 실패] {type(error).__name__}: "
+            "plan receipt를 만들지 않았습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+    try:
+        write_manifest_atomic(receipt, output)
+    except OSError as error:
+        typer.echo(
+            f"[실험 계획 receipt 저장 실패] {type(error).__name__}: "
+            "GCS plan은 이미 publish되었습니다. 아래 receipt를 안전한 경로에 저장한 뒤 "
+            "학습에 사용해 주세요.",
+            err=True,
+        )
+        typer.echo(receipt.model_dump_json(), err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(receipt.model_dump_json())
+
+
 @app.command()
 def train_model(
     config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
@@ -156,8 +234,22 @@ def train_model(
             "데이터셋에 이미 있는 컬럼만 지정할 수 있으며, 이 모델은 champion 승격이 차단됩니다."
         ),
     ),
+    experiment_plan_receipt: Optional[str] = typer.Option(
+        None,
+        "--experiment-plan-receipt",
+        help="학습 전에 publish한 ExperimentPlanReceipt JSON 경로",
+    ),
+    promotion_evidence_root: Optional[str] = typer.Option(
+        None,
+        "--promotion-evidence-root",
+        help="plan/held-out metric receipt를 검증·기록할 gs://bucket/prefix root",
+    ),
 ) -> None:
     """LightGBM 모델 훈련 (train/val/test 3-way split, test는 완전 held-out)."""
+    promotion_evidence_kwargs = _promotion_evidence_kwargs(
+        experiment_plan_receipt=experiment_plan_receipt,
+        promotion_evidence_root=promotion_evidence_root,
+    )
     train.main(
         config_path=config_path,
         data_path=data_path,
@@ -173,6 +265,7 @@ def train_model(
         sampler_seed=sampler_seed,
         extra_features=_parse_extra_features(extra_features),
         experiment=experiment,
+        **promotion_evidence_kwargs,
     )
 
 
@@ -257,6 +350,16 @@ def run_pipeline(
             "데이터셋에 이미 있는 컬럼만 지정할 수 있으며, 이 모델은 champion 승격이 차단됩니다."
         ),
     ),
+    experiment_plan_receipt: Optional[str] = typer.Option(
+        None,
+        "--experiment-plan-receipt",
+        help="학습 전에 publish한 ExperimentPlanReceipt JSON 경로",
+    ),
+    promotion_evidence_root: Optional[str] = typer.Option(
+        None,
+        "--promotion-evidence-root",
+        help="plan/held-out metric receipt를 검증·기록할 gs://bucket/prefix root",
+    ),
 ) -> None:
     """전체 파이프라인 실행: build-features -> train-model -> evaluate-model -> 등록.
 
@@ -267,6 +370,10 @@ def run_pipeline(
     분리해 전달하며, snapshot sidecar가 없거나 검증에 실패하면 학습을 시작하지 않는다.
     """
     experiment_features = _parse_extra_features(extra_features)
+    promotion_evidence_kwargs = _promotion_evidence_kwargs(
+        experiment_plan_receipt=experiment_plan_receipt,
+        promotion_evidence_root=promotion_evidence_root,
+    )
     typer.echo("=" * 70)
     typer.echo("전체 파이프라인 실행")
     typer.echo("=" * 70)
@@ -332,6 +439,7 @@ def run_pipeline(
         extra_features=experiment_features,
         experiment=experiment,
         require_snapshot=True,
+        **promotion_evidence_kwargs,
     )
 
     # dataset_path(방금 만든 train+val+test 전체)는 넘기지 않는다: evaluate는
@@ -374,15 +482,24 @@ def verify_comparison(
     output: Path = typer.Option(
         ..., "--output", help="검증된 comparison manifest를 저장할 로컬 JSON 경로"
     ),
+    promotion_evidence_root: Optional[str] = typer.Option(
+        None,
+        "--promotion-evidence-root",
+        help="plan/held-out metric receipt를 재검증할 gs://bucket/prefix root",
+    ),
 ) -> None:
-    """두 MLflow 학습 run의 snapshot·split·seed 공정성을 검증한다(#423)."""
+    """두 MLflow run의 공정성과 선택적 promotion evidence를 검증한다(#423, #466)."""
+    comparison_kwargs: dict[str, object] = {
+        "baseline_run_id": baseline_run_id,
+        "challenger_run_id": challenger_run_id,
+        "output_path": output,
+    }
     try:
-        result = training_comparison.verify_training_comparison(
-            baseline_run_id=baseline_run_id,
-            challenger_run_id=challenger_run_id,
-            output_path=output,
-        )
-    except training_comparison.ComparisonValidationError as error:
+        root = _optional_cli_string(promotion_evidence_root)
+        if root is not None:
+            comparison_kwargs["promotion_evidence_store"] = PromotionEvidenceStore(root)
+        result = training_comparison.verify_training_comparison(**comparison_kwargs)
+    except (PromotionEvidenceValidationError, training_comparison.ComparisonValidationError) as error:
         # 예외 원문은 backend credential이나 signed URL을 포함할 수 있으므로 CLI에는
         # type과 고정된 안전 진단만 출력한다.
         typer.echo(
