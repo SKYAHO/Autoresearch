@@ -8,6 +8,7 @@ SQLAlchemy 연결·DDL 경계를 담당한다. 상태 전이와 API 동작은 �
 from __future__ import annotations
 
 from io import StringIO
+import logging
 from pathlib import Path
 
 from alembic import command
@@ -57,6 +58,23 @@ def test_initial_migration_offline_sql_contains_workbench_contract() -> None:
     assert "CONSTRAINT uq_experiment_events_idempotency" in sql
     assert "CONSTRAINT uq_experiment_logs_idempotency" in sql
     assert "CONSTRAINT ck_experiment_status_valid" in sql
+
+
+def test_offline_migration_does_not_disable_existing_application_loggers() -> None:
+    """Alembic SQL 생성이 이후 테스트와 앱 logger를 전역 비활성화하지 않는다."""
+    logger = logging.getLogger("autoresearch.migration-regression")
+    original_disabled = logger.disabled
+    logger.disabled = False
+    output = StringIO()
+    config = Config(str(_REPO_ROOT / "agent_orchestration" / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", "postgresql+psycopg://offline")
+    config.output_buffer = output
+
+    try:
+        command.upgrade(config, "head", sql=True)
+        assert logger.disabled is False
+    finally:
+        logger.disabled = original_disabled
 
 
 def test_orm_primary_keys_use_the_migration_server_uuid_default() -> None:
