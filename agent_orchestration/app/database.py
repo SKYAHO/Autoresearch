@@ -37,11 +37,18 @@ _MAX_OVERFLOW = 20
 def create_database_engine(database_url: str, connect_timeout_sec: int = 10) -> Engine:
     """실험 API가 공유할 SQLAlchemy engine을 생성한다.
 
-    실험 endpoint는 모두 동기 `def`라 Starlette가 anyio 기본 thread pool(상한 40)에서
-    실행한다. SQLAlchemy 기본 pool(5 + overflow 10 = 15)은 이 상한보다 작아, 동시
-    요청이 15를 넘으면 남는 요청이 `pool_timeout`(기본 30초) 동안 블로킹된다.
-    `pool_size`/`max_overflow`를 40으로 맞춰 pod당 최대 동시 요청 수와 커넥션 상한을
-    일치시킨다.
+    실험 endpoint는 모두 동기 `def`라 Starlette가 anyio worker thread pool(기본 상한
+    40)에서 실행한다. SQLAlchemy 기본 pool(5 + overflow 10 = 15)은 이 상한보다 작아,
+    동시 요청이 15를 넘으면 남는 요청이 `pool_timeout`(기본 30초) 동안 블로킹된 뒤
+    `TimeoutError`로 실패한다. `pool_size`/`max_overflow`를 40으로 맞춰 이 engine
+    자체의 커넥션 상한이 이 endpoint 그룹의 동시 요청 상한 아래로 내려가지 않게 한다.
+
+    이 상한은 이 engine에 한정된다 — 기존 `/chat`의 psycopg 경로(`agent_orchestration.
+    app.db`)는 별도의 pool 없이 `psycopg.connect()`를 요청마다 열고 닫으며, 그 경로는
+    `asyncio.to_thread`(asyncio 기본 executor, anyio worker pool과는 별개)에서
+    실행되므로 이 40과 상한을 공유하지 않고 커넥션 사용량이 더해진다. pod당 총
+    PostgreSQL 커넥션 상한, replica 수를 곱한 총합, 그리고 그 값이 배포 환경의
+    PostgreSQL `max_connections`보다 작은지는 이 모듈만으로는 확정할 수 없다.
     """
     sqlalchemy_url = _sqlalchemy_database_url(database_url)
     connect_args = (

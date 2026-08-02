@@ -25,18 +25,31 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
-def _migration_database_url() -> str:
-    """환경 변수를 우선하여 migration용 SQLAlchemy URL을 반환한다."""
+def _migration_database_url(*, allow_placeholder: bool) -> str:
+    """환경 변수를 우선하여 migration용 SQLAlchemy URL을 반환한다.
+
+    `allow_placeholder=False`(online 실행)에서 환경 변수가 없으면 alembic.ini의
+    `postgresql+psycopg://localhost/autoresearch` placeholder로 조용히 fallback하지
+    않고 즉시 실패한다 — 이 placeholder가 실제 접속 가능한 localhost Postgres(예:
+    Cloud SQL Auth Proxy sidecar)를 가리키는 배포 환경에서는 의도하지 않은 DB에
+    migration이 적용될 위험이 있다. `allow_placeholder=True`(offline `--sql` 생성)는
+    실제로 연결하지 않으므로 placeholder를 그대로 허용한다.
+    """
     database_url = os.getenv("ORCH_DATABASE_URL") or os.getenv("DATABASE_URL")
     if database_url:
         return _sqlalchemy_database_url(database_url.strip())
-    return config.get_main_option("sqlalchemy.url")
+    if allow_placeholder:
+        return config.get_main_option("sqlalchemy.url")
+    raise RuntimeError(
+        "ORCH_DATABASE_URL (or DATABASE_URL) must be set to run online migrations; "
+        "refusing to fall back to alembic.ini's placeholder URL."
+    )
 
 
 def run_migrations_offline() -> None:
     """DB 연결 없이 SQL migration을 생성한다."""
     context.configure(
-        url=_migration_database_url(),
+        url=_migration_database_url(allow_placeholder=True),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -48,7 +61,7 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """대상 PostgreSQL 연결에서 migration을 실행한다."""
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = _migration_database_url()
+    configuration["sqlalchemy.url"] = _migration_database_url(allow_placeholder=False)
     connectable = engine_from_config(
         configuration,
         prefix="sqlalchemy.",

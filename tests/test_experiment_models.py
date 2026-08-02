@@ -11,6 +11,7 @@ from io import StringIO
 import logging
 from pathlib import Path
 
+import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import CheckConstraint, UniqueConstraint
@@ -86,6 +87,18 @@ def test_offline_migration_does_not_disable_existing_application_loggers() -> No
         assert logger.disabled is False
     finally:
         logger.disabled = original_disabled
+
+
+def test_online_migration_fails_fast_without_database_url_env_var(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """online migration이 환경 변수 없이 alembic.ini의 localhost placeholder로 새지 않는다."""
+    monkeypatch.delenv("ORCH_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    config = Config(str(_REPO_ROOT / "agent_orchestration" / "alembic.ini"))
+
+    with pytest.raises(RuntimeError, match="ORCH_DATABASE_URL"):
+        command.upgrade(config, "head")
 
 
 def test_orm_primary_keys_use_the_migration_server_uuid_default() -> None:

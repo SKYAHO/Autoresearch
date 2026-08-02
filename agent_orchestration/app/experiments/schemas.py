@@ -67,7 +67,7 @@ class StatusUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     status: GeneralTransitionStatus
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=8192)
     metric_snapshot: dict | None = None
 
 
@@ -78,7 +78,7 @@ class ExperimentEventCreate(BaseModel):
 
     idempotency_key: str = Field(min_length=1, max_length=128)
     to_status: GeneralTransitionStatus
-    reason: str | None = None
+    reason: str | None = Field(default=None, max_length=8192)
     metric_snapshot: dict | None = None
 
 
@@ -155,7 +155,7 @@ class PromotionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     idempotency_key: str = Field(min_length=1, max_length=128)
-    reason: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=8192)
     deployment_metadata: dict | None = None
 
     @field_validator("reason")

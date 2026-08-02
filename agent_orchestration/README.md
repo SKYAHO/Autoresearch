@@ -82,7 +82,10 @@ OpenAI API 키나 API 크레딧을 사용하지 않습니다.
 - 모든 실험 endpoint는 기존 `/chat`과 동일한 `X-Orch-Token`을 요구합니다.
 - `POST /experiments`, `GET /experiments`, `GET /experiments/{id}`로 실험을 생성·조회합니다.
 - `PATCH /experiments/{id}/status`와 `POST /experiments/{id}/events`는 승인된 상태 전이만
-  허용하며 위반은 `409`를 반환합니다. `PROMOTED`는 일반 경로에서 허용하지 않습니다.
+  허용하며, 그래프에 없는 전이(예: `CREATED -> PASSED`)는 `409`를 반환합니다. `PROMOTED`는
+  일반 경로에서 허용하지 않으며, 요청 body의 `status`/`to_status` 타입 자체가 `PROMOTED`를
+  제외하므로 이 위반은 `409`가 아니라 스키마 검증 단계의 `422`로 먼저 걸립니다(서비스
+  계층의 별도 거부는 스키마를 우회하는 직접 호출자를 위한 방어선입니다).
   `PATCH /status`는 서버가 매 요청마다 새 operation key를 생성해 클라이언트 재시도
   멱등성을 제공하지 않으므로(같은 요청을 재시도하면 이미 도달한 상태로의 재전이가
   `409`가 됩니다), 자동 재시도가 가능한 호출자(Agent 실행기)는 반드시 `idempotency_key`가
