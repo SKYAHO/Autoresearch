@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from scripts import provision_rerank_loadtest_fixture as provisioner
 from autoresearch.loadtest.rerank_fixture import (
@@ -218,6 +219,7 @@ def test_k6_job_is_immutable_hardened_and_configmap_only() -> None:
 def test_manual_workflow_keeps_load_and_snapshot_identities_separate() -> None:
     """수동 workflow는 VU gate와 Prometheus 조회를 서로 다른 identity로 실행한다."""
     text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+    workflow = yaml.load(text, Loader=yaml.BaseLoader)
 
     assert "workflow_dispatch:" in text
     assert "candidate_count:" in text and "- 24" in text and "- 200" in text
@@ -232,6 +234,17 @@ def test_manual_workflow_keeps_load_and_snapshot_identities_separate() -> None:
     assert "RERANK_PROMETHEUS_SNAPSHOT_READER_SA" in text
     assert text.count("google-github-actions/auth@v2") == 2
     assert text.count("google-github-actions/get-gke-credentials@v2") == 2
+    credential_steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("uses") == "google-github-actions/get-gke-credentials@v2"
+    ]
+    assert len(credential_steps) == 2
+    assert all(
+        step["with"]["project_id"] == "${{ vars.GCP_PROJECT_ID }}"
+        for step in credential_steps
+    )
     assert "k6-summary-" in text and "metadata-" in text
     assert "creation_timestamp" in text and "completion_timestamp" in text
     assert "PROMETHEUS_SERVICE_PROXY:" in text
