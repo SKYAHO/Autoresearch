@@ -94,15 +94,16 @@ def test_lineage_for_mlflow_and_local_sources(monkeypatch, tmp_path):
 
     local_resolved = load_reranker_with_lineage(
         LocalModelSettings(
-            model_path=tmp_path / "m.joblib",
-            feature_columns_path=tmp_path / "f.pkl",
-            categorical_columns_path=tmp_path / "c.pkl",
+            onnx_model_path=tmp_path / "model_onnx" / "model.onnx",
+            feature_columns_path=tmp_path / "f.json",
+            categorical_columns_path=tmp_path / "c.json",
+            manifest_path=tmp_path / "manifest.json",
         )
     )
     assert (local_resolved.run_id, local_resolved.model_version) == ("local", None)
 
 
-# ── #390 calibration run_id 종속(같은 run) ──────────────────
+# ── #302 단일 run manifest 종속 ──────────────────
 
 
 class _MainVersionClient:
@@ -133,8 +134,7 @@ def _capture_load(monkeypatch, captured):
     monkeypatch.setattr(model_loader, "load_mlflow_model", _fake)
 
 
-def test_downsampling_main_threads_same_run_calibration(monkeypatch):
-    # downsampling main이면 calibration을 같은 run(run_id)에서 읽도록 main run_id를 넘긴다.
+def test_registry_threads_only_resolved_main_run(monkeypatch):
     captured = {}
     monkeypatch.setattr(model_loader, "MlflowClient", lambda: _MainVersionClient("0.5"))
     _capture_load(monkeypatch, captured)
@@ -142,28 +142,4 @@ def test_downsampling_main_threads_same_run_calibration(monkeypatch):
     resolved = load_reranker_with_lineage(_registry_settings())
 
     assert resolved.run_id == "run-main"
-    assert captured["settings"].calibration_run_id == "run-main"
-
-
-def test_non_downsampling_main_threads_none(monkeypatch):
-    # non-downsampling main(sampling_rate>=1.0)이면 보정 불필요 → calibration_run_id=None.
-    captured = {}
-    monkeypatch.setattr(model_loader, "MlflowClient", lambda: _MainVersionClient("1.0"))
-    _capture_load(monkeypatch, captured)
-
-    load_reranker_with_lineage(_registry_settings())
-
-    assert captured["settings"].calibration_run_id is None
-
-
-def test_missing_sampling_rate_tag_threads_none(monkeypatch):
-    # sampling_rate tag 없는 기존 모델(v6)은 non-downsampling으로 간주 → 항등(None).
-    captured = {}
-    monkeypatch.setattr(
-        model_loader, "MlflowClient", lambda: _MainVersionClient(main_sampling_rate=None)
-    )
-    _capture_load(monkeypatch, captured)
-
-    load_reranker_with_lineage(_registry_settings())
-
-    assert captured["settings"].calibration_run_id is None
+    assert captured["settings"].run_id == "run-main"

@@ -1,15 +1,13 @@
-"""Downsampling calibration을 별도 배포 모델로 패키징하는 얇은 wrapper.
+"""Downsampling calibration JSON 아티팩트 wrapper.
 
 전체 CTR 파이프라인 기준 이 모듈이 담당하는 구간:
 - **담당**: negative downsampling으로 왜곡된 메인 모델 출력 확률 q를 원분포 확률 p로
-  되돌리는 calibration을 **별도 모델 아티팩트**로 감싼다. 배포 단위를 "메인 모델 +
-  calibration 모델" 2개로 만들어 서빙이 main → calibration 순서로 체이닝할 수 있게
-  한다(#302). 파라미터는 sampling_rate `w` 하나뿐이며 JSON으로 직렬화한다(pickle 금지).
+  되돌리는 calibration을 메인 모델과 같은 run의 JSON 아티팩트로 감싼다. 파라미터는
+  sampling_rate `w` 하나뿐이며 pickle 없이 직렬화한다(#302/#390).
 - **담당 아님(인접 책임)**: 보정 수식 자체는 `downsampling.apply_downsampling_calibration`
   (He 2014, #300)이 소유하며 이 모듈은 그것을 재사용만 한다 — 알고리즘 변경이 아니라
-  패키징이다. 학습 시 calibrator 생성·등록은 `train.py`, 서빙 로딩·체이닝은
-  `serving/model_loader.py`/`serving/service.py`, 두 모델 짝 검증도 로더가 담당한다.
-  ONNX 변환·manifest 해시 검증은 #302 후속 슬라이스로 이 모듈 범위 밖이다.
+  패키징이다. 학습 시 생성·manifest 편입은 `train.py`/`tracking/model_package.py`,
+  서빙 로딩·체이닝은 `serving/model_loader.py`/`serving/service.py`가 담당한다.
 
 설계: `docs/guides/ctr-model-specification.md`의 Model Packaging / Deployment 섹션.
 """
