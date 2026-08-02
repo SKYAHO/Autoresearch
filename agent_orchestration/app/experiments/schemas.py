@@ -96,6 +96,22 @@ class ExperimentEventResponse(BaseModel):
     created_at: datetime
 
 
+class ExperimentEventListQuery(BaseModel):
+    """1초 polling용 Event cursor 조회 조건."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=100, ge=1, le=200)
+    after_id: uuid.UUID | None = None
+
+
+class ExperimentEventPageResponse(BaseModel):
+    """Event polling 결과와 다음 cursor."""
+
+    items: list[ExperimentEventResponse]
+    next_cursor: uuid.UUID | None
+
+
 class ExperimentLogCreate(BaseModel):
     """멱등성이 보장되는 실행 Log 생성 요청."""
 
@@ -127,6 +143,28 @@ class ExperimentLogResponse(BaseModel):
     log_type: str
     content: str
     created_at: datetime
+
+
+class ExperimentLogPageResponse(BaseModel):
+    """Log polling 결과와 다음 cursor."""
+
+    items: list[ExperimentLogResponse]
+    next_cursor: uuid.UUID | None
+
+
+class ExperimentPageResponse(BaseModel):
+    """Experiment offset pagination 응답."""
+
+    items: list[ExperimentResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class ExperimentMetadataResponse(BaseModel):
+    """실험 metadata key-value 응답."""
+
+    entries: dict[str, str]
 
 
 class PromotionRequest(BaseModel):

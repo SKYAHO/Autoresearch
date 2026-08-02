@@ -5,12 +5,13 @@
 결과를 PostgreSQL에 보존해 다음 단계의 실험 분석 단계로 넘긴다.
 
 [기능]
-환경 설정과 DB 스키마를 준비하고 `/healthcheck`와 `/chat` 엔드포인트를 노출한다.
+환경 설정과 DB 스키마를 준비하고 `/healthcheck`, `/chat`, 실험 워크벤치 endpoint를
+노출한다.
 `/chat`은 외부 연결 종료 시 진행 중인 LLM task를 취소하고, 선택된 LLM 백엔드의 응답
 및 지연 지표, 토큰 사용량을 영속화 후 반환한다.
 
 [비책임]
-사용자 인증·세션 관리, OAuth 라우팅, 정책 라우팅·멀티턴 대화 상태.
+OAuth 라우팅, 정책 라우팅·멀티턴 대화 상태와 실험 도메인 상태 전이 판단.
 """
 
 from __future__ import annotations
@@ -23,11 +24,22 @@ from contextlib import asynccontextmanager
 from time import perf_counter
 from typing import Annotated, TypeVar
 
-from fastapi import FastAPI, Header, HTTPException, Request, status
-from starlette.responses import Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from starlette.responses import JSONResponse, Response
 
 from agent_orchestration.app.config import ServiceSettings, load_settings
+from agent_orchestration.app.database import (
+    create_database_engine,
+    create_session_factory,
+)
 from agent_orchestration.app.db import ensure_schema, save_interaction
+from agent_orchestration.app.experiments.exceptions import (
+    ExperimentNotFoundError,
+    IdempotencyConflictError,
+    PromotionRequiresDedicatedEndpointError,
+)
+from agent_orchestration.app.experiments.router import router as experiment_router
+from agent_orchestration.app.experiments.transition_service import InvalidTransitionError
 from agent_orchestration.app.llm import LLMBackendError, generate_response
 from agent_orchestration.contracts import LLMBackendOverloadedError
 from agent_orchestration.app.schemas import ChatRequest, ChatResponse, ErrorResponse
@@ -86,12 +98,20 @@ def create_app() -> FastAPI:
             settings.interactions_table,
             settings.database_connect_timeout_sec,
         )
+        experiment_engine = create_database_engine(
+            settings.database_url,
+            settings.database_connect_timeout_sec,
+        )
+        app.state.experiment_session_factory = create_session_factory(experiment_engine)
         logger.info(
             "agent_orchestration initialized with backend=%s table=%s",
             settings.llm_backend,
             settings.interactions_table,
         )
-        yield
+        try:
+            yield
+        finally:
+            experiment_engine.dispose()
 
     app = FastAPI(
         title="Autoresearch Agent Orchestration API",
@@ -106,6 +126,38 @@ def create_app() -> FastAPI:
                 detail="Service is unavailable.",
             )
         return settings
+
+    def _require_orchestration_token(
+        x_orch_token: Annotated[
+            str | None,
+            Header(alias="X-Orch-Token", description="공유 오케스트레이션 API 토큰"),
+        ] = None,
+    ) -> None:
+        """기존 `/chat`과 같은 공유 API 토큰을 실험 endpoint에 적용한다."""
+        runtime_settings = _require_runtime()
+        if not x_orch_token or not _api_tokens_match(x_orch_token, runtime_settings.api_token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid orchestration API token.",
+            )
+
+    @app.exception_handler(ExperimentNotFoundError)
+    def handle_experiment_not_found(
+        _request: Request,
+        error: ExperimentNotFoundError,
+    ) -> JSONResponse:
+        """도메인 not-found를 공개 404 detail로 변환한다."""
+        return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(error)})
+
+    @app.exception_handler(InvalidTransitionError)
+    @app.exception_handler(IdempotencyConflictError)
+    @app.exception_handler(PromotionRequiresDedicatedEndpointError)
+    def handle_experiment_conflict(
+        _request: Request,
+        error: InvalidTransitionError | IdempotencyConflictError | PromotionRequiresDedicatedEndpointError,
+    ) -> JSONResponse:
+        """상태 전이·멱등성·승격 우회 오류를 공개 409 detail로 변환한다."""
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(error)})
 
     @app.get("/healthcheck")
     def healthcheck() -> dict[str, str]:
@@ -205,17 +257,24 @@ def create_app() -> FastAPI:
             created_at=row.created_at,
         )
 
+    app.include_router(
+        experiment_router,
+        dependencies=[Depends(_require_orchestration_token)],
+    )
+
     default_openapi = app.openapi
 
     def documented_openapi() -> dict:
         """누락 헤더도 401로 처리하는 인증 계약을 Swagger에 명시한다."""
         schema = default_openapi()
-        parameters = schema["paths"]["/chat"]["post"]["parameters"]
-        for parameter in parameters:
-            if parameter["name"] == "X-Orch-Token" and parameter["in"] == "header":
-                parameter["required"] = True
-                parameter["schema"] = {"type": "string"}
-                break
+        for path_item in schema["paths"].values():
+            for operation in path_item.values():
+                if not isinstance(operation, dict):
+                    continue
+                for parameter in operation.get("parameters", []):
+                    if parameter["name"] == "X-Orch-Token" and parameter["in"] == "header":
+                        parameter["required"] = True
+                        parameter["schema"] = {"type": "string"}
         return schema
 
     app.openapi = documented_openapi

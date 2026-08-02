@@ -80,6 +80,43 @@ def find_event_by_idempotency_key(
     )
 
 
+def find_experiment_events(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    limit: int,
+    after_id: uuid.UUID | None,
+) -> list[ExperimentEvent]:
+    """created_at ASC, id ASC cursor 규칙으로 새 Event를 조회한다."""
+    filters = [ExperimentEvent.experiment_id == experiment_id]
+    if after_id is not None:
+        cursor = session.scalar(
+            select(ExperimentEvent).where(
+                ExperimentEvent.experiment_id == experiment_id,
+                ExperimentEvent.id == after_id,
+            )
+        )
+        if cursor is None:
+            return []
+        filters.append(
+            or_(
+                ExperimentEvent.created_at > cursor.created_at,
+                and_(
+                    ExperimentEvent.created_at == cursor.created_at,
+                    ExperimentEvent.id > cursor.id,
+                ),
+            )
+        )
+    return list(
+        session.scalars(
+            select(ExperimentEvent)
+            .where(*filters)
+            .order_by(ExperimentEvent.created_at.asc(), ExperimentEvent.id.asc())
+            .limit(limit)
+        ).all()
+    )
+
+
 def find_log_by_idempotency_key(
     session: Session,
     experiment_id: uuid.UUID,

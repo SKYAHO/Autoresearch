@@ -28,6 +28,7 @@ from agent_orchestration.app.experiments.models import (
 )
 from agent_orchestration.app.experiments.repository import (
     find_experiment,
+    find_experiment_events,
     find_event_by_idempotency_key,
     find_experiment_logs,
     find_experiment_metadata,
@@ -57,6 +58,14 @@ class ExperimentLogPageResult:
     """polling용 Log page와 다음 cursor."""
 
     items: list[ExperimentLog]
+    next_cursor: uuid.UUID | None
+
+
+@dataclass(frozen=True)
+class ExperimentEventPageResult:
+    """polling용 Event page와 다음 cursor."""
+
+    items: list[ExperimentEvent]
     next_cursor: uuid.UUID | None
 
 
@@ -135,6 +144,27 @@ def get_experiment_metadata(
     """존재하는 실험의 metadata를 mapping으로 반환한다."""
     get_experiment(session, experiment_id)
     return find_experiment_metadata(session, experiment_id)
+
+
+def list_experiment_events(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    limit: int,
+    after_id: uuid.UUID | None = None,
+) -> ExperimentEventPageResult:
+    """append 순서와 UUID tie-breaker를 적용한 Event polling page를 반환한다."""
+    get_experiment(session, experiment_id)
+    items = find_experiment_events(
+        session,
+        experiment_id,
+        limit=limit,
+        after_id=after_id,
+    )
+    return ExperimentEventPageResult(
+        items=items,
+        next_cursor=items[-1].id if items else after_id,
+    )
 
 
 def _require_general_transition(requested: ExperimentStatus) -> None:

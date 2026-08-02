@@ -131,10 +131,10 @@ Alembic, PostgreSQL, pytest.
 - Test: `tests/test_experiment_router.py`
 - Test: `tests/test_agent_orchestration.py`
 
-- [ ] 10개 endpoint의 성공·오류·인증·OpenAPI 실패 테스트를 작성한다.
-- [ ] router, exception handler와 기존 토큰 dependency를 연결한다.
-- [ ] 기존 `/chat` 회귀 테스트를 통과한다.
-- [ ] 관련 테스트와 lint를 통과하고 Task 커밋을 만든다.
+- [x] 10개 endpoint의 성공·오류·인증·OpenAPI 실패 테스트를 작성한다.
+- [x] router, exception handler와 기존 토큰 dependency를 연결한다.
+- [x] 기존 `/chat` 회귀 테스트를 통과한다.
+- [x] 관련 테스트와 lint를 통과하고 Task 커밋을 만든다.
 
 ### Task 9: 전체 회귀 검증
 
