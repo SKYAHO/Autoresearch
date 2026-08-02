@@ -30,8 +30,10 @@ from src.serving.model_loader import (
     load_mlflow_model,
 )
 from src.serving.online_features import (
+    FeatureBuildTimings,
     FeatureRows,
     FeatureRetrievalError,
+    TimedFeatureBuild,
 )
 from src.serving.schemas import CandidateVideo, FeatureValue, RerankedVideo
 from src.serving.service import PredictionError, RerankOutcome, Reranker
@@ -105,6 +107,22 @@ class FakeFeatureBuilder:
             for index, video_id in enumerate(video_ids)
         ]
 
+    def build_with_timings(
+        self,
+        *,
+        user_id: str,
+        video_ids: Sequence[str],
+        feature_columns: Sequence[str],
+    ) -> TimedFeatureBuild:
+        return TimedFeatureBuild(
+            candidates=self.build(
+                user_id=user_id,
+                video_ids=video_ids,
+                feature_columns=feature_columns,
+            ),
+            timings=FeatureBuildTimings(0.01, 0.02, 0.03),
+        )
+
 
 @dataclass
 class FailingFeatureBuilder:
@@ -117,6 +135,22 @@ class FailingFeatureBuilder:
     ) -> list[CandidateVideo]:
         raise FeatureRetrievalError(reason="online feature store is unavailable")
 
+    def build_with_timings(
+        self,
+        *,
+        user_id: str,
+        video_ids: Sequence[str],
+        feature_columns: Sequence[str],
+    ) -> TimedFeatureBuild:
+        return TimedFeatureBuild(
+            candidates=self.build(
+                user_id=user_id,
+                video_ids=video_ids,
+                feature_columns=feature_columns,
+            ),
+            timings=FeatureBuildTimings(0.01, 0.02, 0.03),
+        )
+
 
 @dataclass
 class ContractFailingFeatureBuilder:
@@ -128,6 +162,22 @@ class ContractFailingFeatureBuilder:
         feature_columns: Sequence[str],
     ) -> list[CandidateVideo]:
         raise FeatureContractError(reason="model and feature-store contract disagree")
+
+    def build_with_timings(
+        self,
+        *,
+        user_id: str,
+        video_ids: Sequence[str],
+        feature_columns: Sequence[str],
+    ) -> TimedFeatureBuild:
+        return TimedFeatureBuild(
+            candidates=self.build(
+                user_id=user_id,
+                video_ids=video_ids,
+                feature_columns=feature_columns,
+            ),
+            timings=FeatureBuildTimings(0.01, 0.02, 0.03),
+        )
 
 
 def _resolved_model(model: RecordingModel | None = None) -> ResolvedModel:
@@ -421,6 +471,100 @@ def test_healthcheck_requires_both_model_and_feature_store() -> None:
         assert response.status_code == 503
 
 
+def _sample_value(
+    client: TestClient, name: str, labels: Mapping[str, str]
+) -> float:
+    for family in text_string_to_metric_families(client.get("/metrics").text):
+        for sample in family.samples:
+            if sample.name == name and sample.labels == labels:
+                return float(sample.value)
+    return 0.0
+
+
+def test_rerank_observes_fixed_phases_success_and_in_flight() -> None:
+    app = create_app(resolved_model=_resolved_model(), feature_builder=FakeFeatureBuilder())
+
+    with TestClient(app) as client:
+        before = _sample_value(client, "rerank_outcomes_total", {"outcome": "success"})
+        response = client.post(
+            "/rerank", json={"user_id": "user-1", "video_ids": ["video-1"]}
+        )
+        after = _sample_value(client, "rerank_outcomes_total", {"outcome": "success"})
+        in_flight = _sample_value(client, "rerank_in_flight", {})
+        text = client.get("/metrics").text
+
+    assert response.status_code == 200
+    assert after == before + 1
+    assert in_flight == 0
+    assert "feature_read_first" in text and "response_build" in text
+    assert "user-1" not in text and "video-1" not in text and "run-123" not in text
+
+
+def test_rerank_observes_feature_and_prediction_outcome_metrics() -> None:
+    feature_app = create_app(
+        resolved_model=_resolved_model(), feature_builder=FailingFeatureBuilder()
+    )
+    prediction_model = ResolvedModel(
+        reranker=Reranker(
+            model=RaisingModel(),
+            feature_columns=MODEL_FEATURE_COLUMNS,
+            categorical_categories={},
+        ),
+        run_id="run-123",
+        model_version="7",
+    )
+    prediction_app = create_app(
+        resolved_model=prediction_model, feature_builder=FakeFeatureBuilder()
+    )
+
+    with TestClient(feature_app) as client:
+        before = _sample_value(
+            client, "rerank_outcomes_total", {"outcome": "feature_error"}
+        )
+        feature_response = client.post(
+            "/rerank", json={"user_id": "user-1", "video_ids": ["video-1"]}
+        )
+        after = _sample_value(
+            client, "rerank_outcomes_total", {"outcome": "feature_error"}
+        )
+        feature_in_flight = _sample_value(client, "rerank_in_flight", {})
+
+    with TestClient(prediction_app) as client:
+        before_prediction = _sample_value(
+            client, "rerank_outcomes_total", {"outcome": "prediction_error"}
+        )
+        prediction_response = client.post(
+            "/rerank", json={"user_id": "user-1", "video_ids": ["video-1"]}
+        )
+        after_prediction = _sample_value(
+            client, "rerank_outcomes_total", {"outcome": "prediction_error"}
+        )
+        prediction_in_flight = _sample_value(client, "rerank_in_flight", {})
+
+    assert feature_response.status_code == 503
+    assert after == before + 1
+    assert feature_in_flight == 0
+    assert prediction_response.status_code == 500
+    assert after_prediction == before_prediction + 1
+    assert prediction_in_flight == 0
+
+
+def test_rerank_observes_unavailable_outcome_metric() -> None:
+    app = create_app(resolved_model=None, feature_builder=FakeFeatureBuilder())
+
+    with TestClient(app) as client:
+        before = _sample_value(client, "rerank_outcomes_total", {"outcome": "unavailable"})
+        response = client.post(
+            "/rerank", json={"user_id": "user-1", "video_ids": ["video-1"]}
+        )
+        after = _sample_value(client, "rerank_outcomes_total", {"outcome": "unavailable"})
+        in_flight = _sample_value(client, "rerank_in_flight", {})
+
+    assert response.status_code == 503
+    assert after == before + 1
+    assert in_flight == 0
+
+
 def test_metrics_scrape_observes_legacy_and_current_video_id_count() -> None:
     # Given: both metric identities start from their current registry values.
     builder = FakeFeatureBuilder()
@@ -647,6 +791,22 @@ class CategoricalFeatureBuilder:
             )
             for index, video_id in enumerate(video_ids)
         ]
+
+    def build_with_timings(
+        self,
+        *,
+        user_id: str,
+        video_ids: Sequence[str],
+        feature_columns: Sequence[str],
+    ) -> TimedFeatureBuild:
+        return TimedFeatureBuild(
+            candidates=self.build(
+                user_id=user_id,
+                video_ids=video_ids,
+                feature_columns=feature_columns,
+            ),
+            timings=FeatureBuildTimings(0.01, 0.02, 0.03),
+        )
 
 
 def test_healthcheck_rejects_non_string_categories_for_string_serving_features() -> None:

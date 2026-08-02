@@ -223,21 +223,21 @@ Spot VM 회수에 대비해 `retries >= 1` 유지.
 ```bash
 # GAR의 batch 이미지 목록
 gcloud artifacts docker images list \
-  asia-northeast3-docker.pkg.dev/ar-infra-501607/autoresearch-dev-docker/autoresearch-batch
+  asia-northeast3-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/autoresearch-batch
 
 # 특정 태그의 digest
 gcloud artifacts docker images describe \
-  asia-northeast3-docker.pkg.dev/ar-infra-501607/autoresearch-dev-docker/autoresearch-batch:v0.0.2
+  asia-northeast3-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/autoresearch-batch:v0.0.2
 
 # serving 이미지 목록
 gcloud artifacts docker images list \
-  asia-northeast3-docker.pkg.dev/ar-infra-501607/autoresearch-dev-docker/autoresearch-serving
+  asia-northeast3-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/autoresearch-serving
 
 # Agent Orchestration API·Runner 이미지 목록
 gcloud artifacts docker images list \
-  asia-northeast3-docker.pkg.dev/ar-infra-501607/autoresearch-dev-docker/autoresearch-agent-orchestration-api
+  asia-northeast3-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/autoresearch-agent-orchestration-api
 gcloud artifacts docker images list \
-  asia-northeast3-docker.pkg.dev/ar-infra-501607/autoresearch-dev-docker/autoresearch-agent-orchestration-runner
+  asia-northeast3-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/autoresearch-agent-orchestration-runner
 ```
 
 ## 워크플로우 파일 참조

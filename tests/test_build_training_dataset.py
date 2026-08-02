@@ -1,3 +1,4 @@
+import builtins
 import os
 import sys
 from pathlib import Path
@@ -10,6 +11,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.pipeline import build_training_dataset  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def configured_project(monkeypatch) -> None:
+    """정상 경로 테스트에 명시 BigQuery 프로젝트를 제공한다."""
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "test-project")
+
+
+def test_require_bigquery_project_strips_whitespace(monkeypatch) -> None:
+    """공백이 섞인 프로젝트 값은 BigQuery 식별자에 전달하지 않는다."""
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", " test-project ")
+
+    assert build_training_dataset.require_bigquery_project() == "test-project"
 
 
 def test_load_personas_reads_csv(tmp_path):
@@ -234,6 +248,67 @@ def test_load_events_from_bigquery_reads_raw_dataset(monkeypatch):
     assert "feast_offline_store" not in query_text
 
 
+@pytest.mark.parametrize(
+    "loader,args",
+    [
+        (build_training_dataset.load_events_from_bigquery, ("2026-07-01", "2026-07-01")),
+        (build_training_dataset.load_training_entity_spine, ("2026-07-01", "2026-07-01")),
+    ],
+)
+def test_bigquery_loaders_require_project_before_client_import(monkeypatch, loader, args) -> None:
+    """프로젝트가 없으면 각 loader는 BigQuery import/client 생성 전에 중단한다."""
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
+
+    original_import = builtins.__import__
+
+    def _forbid_bigquery_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name in {"google.cloud", "google.cloud.bigquery"}:
+            raise AssertionError("프로젝트 확인 전에 BigQuery를 import하면 안 됩니다")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _forbid_bigquery_import)
+
+    with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
+        loader(*args)
+
+
+def test_assemble_via_feast_requires_project_before_feast_import(monkeypatch, tmp_path) -> None:
+    """프로젝트가 없으면 Feast retrieval import보다 먼저 중단한다."""
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
+    original_import = builtins.__import__
+
+    def _forbid_feast_retrieval_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "src.features.feast_retrieval":
+            raise AssertionError("프로젝트 확인 전에 Feast retrieval을 import하면 안 됩니다")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", _forbid_feast_retrieval_import)
+
+    with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
+        build_training_dataset._assemble_via_feast(
+            str(tmp_path / "training_dataset.csv"), "2026-07-01", "2026-07-01"
+        )
+
+
+def test_main_requires_project_before_assembly_environment_check(monkeypatch) -> None:
+    """main은 다른 환경 검증이나 spine 조회보다 프로젝트 설정을 먼저 확인한다."""
+    monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://registry/registry.db")
+    monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://staging/")
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setitem(sys.modules, "feast", object())
+
+    def _should_not_be_called(*args, **kwargs):
+        raise AssertionError("프로젝트 확인 전에 BigQuery spine을 읽으면 안 됩니다")
+
+    monkeypatch.setattr(build_training_dataset, "load_training_entity_spine", _should_not_be_called)
+
+    with pytest.raises(ValueError, match="CTR_TRAINING_BQ_PROJECT"):
+        build_training_dataset.main(
+            events_start_date="2026-07-01", events_end_date="2026-07-01"
+        )
+
+
 def test_verify_assembly_environment_requires_registry_path(monkeypatch) -> None:
     monkeypatch.delenv("GCS_REGISTRY_PATH", raising=False)
     monkeypatch.setenv("GCS_STAGING_LOCATION", "gs://staging/")
@@ -308,5 +383,3 @@ def test_main_runs_assembly_when_env_check_passes(monkeypatch, tmp_path) -> None
         "2026-07-02",
         min_coverage_days=build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS,
     )
-
-

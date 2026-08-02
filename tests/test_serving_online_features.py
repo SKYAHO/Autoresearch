@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 import pytest
 
 from src.features.model_contract import FeatureContractError, MODEL_FEATURE_COLUMNS
+from src.serving import online_features
 from src.serving.online_features import (
+    FeatureBuildTimings,
     FeatureRetrievalError,
     ServingFeatureBuilder,
 )
@@ -88,6 +90,26 @@ def _similarity_response() -> Mapping[str, Sequence[object]]:
         "category_key": ["20", "10"],
         "topic_similarity": [0.2, 0.1],
     }
+
+
+def test_build_with_timings_preserves_candidate_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = FakeReader(responses=[_first_response(), _similarity_response()])
+    clocks = iter((0.00, 0.02, 0.02, 0.12, 0.12, 0.17, 0.17, 0.37, 0.37, 0.52))
+    monkeypatch.setattr(online_features, "perf_counter", lambda: next(clocks))
+
+    result = ServingFeatureBuilder(reader=reader).build_with_timings(
+        user_id="user-1",
+        video_ids=["video-a", "video-b", "video-c"],
+        feature_columns=MODEL_FEATURE_COLUMNS,
+    )
+
+    assert [item.video_id for item in result.candidates] == [
+        "video-a", "video-b", "video-c"
+    ]
+    assert result.timings == FeatureBuildTimings(0.10, 0.20, 0.22)
+    assert len(reader.calls) == 2
 
 
 def test_build_uses_two_keyed_batch_reads_and_returns_ordered_model_features() -> None:

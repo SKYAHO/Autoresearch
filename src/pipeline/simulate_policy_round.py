@@ -14,6 +14,8 @@ pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 
 - 라운드 시작 시 GCP 자격증명 사전점검(duckdb 조립 경로 한정, #426) — 자격증명
   발급·갱신은 gcloud ADC/서비스 계정 키의 몫이고, 여기서는 만료를 조기에
   실패시키기 위해 `verify_vertex_ai_credentials()`를 1회 호출만 한다
+- Feast offline 조립 경로는 명시 BigQuery 프로젝트를 Feast import·store 구성보다
+  먼저 검증한다
 - 유저별 두 정책 노출 결정과 스코어링 진단 수집
 - LLM 판정 1회 실행(합집합 후보)과 판정 덤프
   (`action_log_drafts.parquet` + 계보·노출 인자·노출 키 집합 사이드카
@@ -695,15 +697,18 @@ def _cli() -> None:
     # 주입한다(prod feature_store.yaml/Redis 불필요, registry는 배포 job이 apply한 GCS).
     feature_store = None
     if args.assembly_source == "feast":
+        from src.pipeline.build_training_dataset import (
+            BIGQUERY_DATASET,
+            require_bigquery_project,
+        )
+
+        project = require_bigquery_project()
+
         import atexit
         import shutil
         import tempfile
 
         from src.features.feast_retrieval import build_offline_feature_store
-        from src.pipeline.build_training_dataset import (
-            BIGQUERY_DATASET,
-            BIGQUERY_PROJECT,
-        )
 
         try:
             registry_path = os.environ["GCS_REGISTRY_PATH"]
@@ -720,7 +725,7 @@ def _cli() -> None:
         atexit.register(shutil.rmtree, store_dir, ignore_errors=True)
         feature_store = build_offline_feature_store(
             registry_path,
-            project=BIGQUERY_PROJECT,
+            project=project,
             dataset=BIGQUERY_DATASET,
             gcs_staging=gcs_staging,
             online_db_path=os.path.join(store_dir, "online.db"),
