@@ -11,6 +11,7 @@ import uuid
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
+from agent_orchestration.app.experiments.exceptions import InvalidCursorError
 from agent_orchestration.app.experiments.models import (
     Experiment,
     ExperimentEvent,
@@ -97,7 +98,7 @@ def find_experiment_events(
             )
         )
         if cursor is None:
-            return []
+            raise InvalidCursorError(after_id)
         filters.append(
             or_(
                 ExperimentEvent.created_at > cursor.created_at,
@@ -151,7 +152,7 @@ def find_experiment_logs(
             )
         )
         if cursor is None:
-            return []
+            raise InvalidCursorError(after_id)
         filters.append(
             or_(
                 ExperimentLog.created_at > cursor.created_at,

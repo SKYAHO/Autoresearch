@@ -83,6 +83,11 @@ OpenAI API 키나 API 크레딧을 사용하지 않습니다.
 - `POST /experiments`, `GET /experiments`, `GET /experiments/{id}`로 실험을 생성·조회합니다.
 - `PATCH /experiments/{id}/status`와 `POST /experiments/{id}/events`는 승인된 상태 전이만
   허용하며 위반은 `409`를 반환합니다. `PROMOTED`는 일반 경로에서 허용하지 않습니다.
+  `PATCH /status`는 서버가 매 요청마다 새 operation key를 생성해 클라이언트 재시도
+  멱등성을 제공하지 않으므로(같은 요청을 재시도하면 이미 도달한 상태로의 재전이가
+  `409`가 됩니다), 자동 재시도가 가능한 호출자(Agent 실행기)는 반드시 `idempotency_key`가
+  있는 `POST /events`를 사용해야 합니다. `PATCH /status`는 사람이 대시보드에서 단발성으로
+  조작하는 용도로만 사용합니다.
 - `POST/GET /experiments/{id}/logs`와 `GET /experiments/{id}/events`는 idempotency key와
   cursor polling을 제공하며, Streamlit은 1초마다 `after_id`를 사용해 새 row만 조회합니다.
 - `POST /experiments/{id}/promote`는 `PASSED` 실험에 대해 운영자가 필수 `reason`과

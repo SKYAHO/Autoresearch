@@ -17,6 +17,14 @@ class ExperimentNotFoundError(LookupError):
         super().__init__(f"Experiment '{experiment_id}' was not found.")
 
 
+class InvalidCursorError(LookupError):
+    """polling cursor(after_id)가 가리키는 row가 존재하지 않는다."""
+
+    def __init__(self, after_id: uuid.UUID) -> None:
+        self.after_id = after_id
+        super().__init__(f"Cursor '{after_id}' was not found.")
+
+
 class IdempotencyConflictError(ValueError):
     """같은 멱등성 key가 서로 다른 payload에 재사용됐다."""
 

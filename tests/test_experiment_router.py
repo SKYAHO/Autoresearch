@@ -11,14 +11,14 @@ from collections.abc import Iterator
 import uuid
 
 import pytest
-from fastapi import status
+from fastapi import HTTPException, status
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.pool import StaticPool
 
 from agent_orchestration.app import main as main_module
 from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.app.database import Base
+from agent_orchestration.app.database import Base, get_db_session
 
 
 API_TOKEN = "test-orchestration-token"
@@ -57,6 +57,26 @@ def experiment_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         yield client
     Base.metadata.drop_all(engine)
     engine.dispose()
+
+
+def test_get_db_session_returns_503_when_factory_not_ready() -> None:
+    """settings는 채워졌지만 experiment_session_factory가 아직 없는 startup 창에서
+    AttributeError로 인한 500 대신 503을 낸다."""
+
+    class _StubState:
+        pass
+
+    class _StubApp:
+        state = _StubState()
+
+    class _StubRequest:
+        app = _StubApp()
+
+    generator = get_db_session(_StubRequest())  # type: ignore[arg-type]
+    with pytest.raises(HTTPException) as exc_info:
+        next(generator)
+
+    assert exc_info.value.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
 
 
 def test_experiment_router_supports_full_workbench_lifecycle(
@@ -178,6 +198,67 @@ def test_experiment_router_maps_auth_not_found_conflict_and_validation_errors(
     assert "Invalid transition" in conflict.json()["detail"]
     assert first_event.status_code == status.HTTP_201_CREATED
     assert idempotency_conflict.status_code == status.HTTP_409_CONFLICT
+
+
+def test_experiment_router_enforces_polling_limit_bounds(
+    experiment_client: TestClient,
+) -> None:
+    """Event limit은 1~200, Log limit은 1~100으로 실제 HTTP 계약에서 거부된다."""
+    created = experiment_client.post(
+        "/experiments",
+        headers=AUTH_HEADERS,
+        json={"hypothesis": "limit bounds"},
+    )
+    experiment_id = created.json()["id"]
+
+    events_limit_zero = experiment_client.get(
+        f"/experiments/{experiment_id}/events?limit=0", headers=AUTH_HEADERS
+    )
+    events_limit_201 = experiment_client.get(
+        f"/experiments/{experiment_id}/events?limit=201", headers=AUTH_HEADERS
+    )
+    events_limit_200 = experiment_client.get(
+        f"/experiments/{experiment_id}/events?limit=200", headers=AUTH_HEADERS
+    )
+    logs_limit_zero = experiment_client.get(
+        f"/experiments/{experiment_id}/logs?limit=0", headers=AUTH_HEADERS
+    )
+    logs_limit_101 = experiment_client.get(
+        f"/experiments/{experiment_id}/logs?limit=101", headers=AUTH_HEADERS
+    )
+    logs_limit_100 = experiment_client.get(
+        f"/experiments/{experiment_id}/logs?limit=100", headers=AUTH_HEADERS
+    )
+
+    assert events_limit_zero.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert events_limit_201.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert events_limit_200.status_code == status.HTTP_200_OK
+    assert logs_limit_zero.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert logs_limit_101.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert logs_limit_100.status_code == status.HTTP_200_OK
+
+
+def test_experiment_router_rejects_cursor_that_does_not_exist(
+    experiment_client: TestClient,
+) -> None:
+    """존재하지 않는 after_id는 빈 목록이 아니라 404로 명시적으로 실패한다."""
+    created = experiment_client.post(
+        "/experiments",
+        headers=AUTH_HEADERS,
+        json={"hypothesis": "stale cursor over http"},
+    )
+    experiment_id = created.json()["id"]
+    stale_cursor = str(uuid.uuid4())
+
+    events = experiment_client.get(
+        f"/experiments/{experiment_id}/events?after_id={stale_cursor}", headers=AUTH_HEADERS
+    )
+    logs = experiment_client.get(
+        f"/experiments/{experiment_id}/logs?after_id={stale_cursor}", headers=AUTH_HEADERS
+    )
+
+    assert events.status_code == status.HTTP_404_NOT_FOUND
+    assert logs.status_code == status.HTTP_404_NOT_FOUND
 
 
 def test_experiment_router_openapi_documents_all_endpoints_and_errors() -> None:

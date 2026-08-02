@@ -272,6 +272,9 @@ def create_experiment_event(
         )
         return event_row
     except IntegrityError as error:
+        # _transition_experiment의 `with session.begin()`이 이미 __exit__에서 rollback을
+        # 수행했으므로 이 rollback은 사실상 no-op이다. 이후 SELECT는 session의 새
+        # implicit transaction을 연다.
         session.rollback()
         existing_event = find_event_by_idempotency_key(
             session,
@@ -283,6 +286,11 @@ def create_experiment_event(
         if existing_event.request_fingerprint != fingerprint:
             session.rollback()
             raise IdempotencyConflictError(request.idempotency_key) from error
+        # 순서 고정: expunge를 rollback보다 먼저 호출해 existing_event를 detach한다.
+        # rollback은 세션에 남은 객체를 expire시키므로, 순서가 바뀌면 이후
+        # ExperimentEventResponse.model_validate(existing_event)가 새 SELECT 없이 이미
+        # 로드된 컬럼만 읽는다는 전제가 깨지고, 이 스키마에 relationship 필드가 추가되면
+        # detach된 객체의 lazy-load 시도가 DetachedInstanceError로 즉시 실패한다.
         session.expunge(existing_event)
         session.rollback()
         return existing_event
@@ -332,6 +340,7 @@ def create_experiment_log(
         if existing_log.request_fingerprint != fingerprint:
             session.rollback()
             raise IdempotencyConflictError(request.idempotency_key) from error
+        # expunge-before-rollback 순서 의존성은 create_experiment_event와 동일 (위 주석 참고).
         session.expunge(existing_log)
         session.rollback()
         return existing_log
@@ -371,6 +380,14 @@ def promote_experiment(
         "deployment_metadata": request.deployment_metadata,
     }
     fingerprint = _request_fingerprint(payload)
+    # create_experiment_event/create_experiment_log와 달리 IntegrityError 복구가 없다.
+    # 이 경로도 동일하게 for_update=True로 experiment row를 잠그므로, PostgreSQL에서는
+    # 같은 idempotency_key의 동시 promote 요청이 이 lock으로 직렬화되어 unique
+    # constraint 위반 자체가 발생하지 않는다고 본다(테스트에서 재현된 race는 SQLite가
+    # FOR UPDATE를 같은 방식으로 지키지 않아서 나타난 것). promote는 운영자가 근거를 남기며
+    # 수동으로 1회 호출하는 경로라 event/log append처럼 Agent가 반복 재시도할 가능성이
+    # 낮다는 점도 이 판단의 근거다. 그럼에도 race가 실제로 발생하면 IntegrityError가
+    # 그대로 올라가 500으로 노출된다.
     with session.begin():
         experiment = find_experiment(session, experiment_id, for_update=True)
         if experiment is None:

@@ -36,6 +36,7 @@ from agent_orchestration.app.db import ensure_schema, save_interaction
 from agent_orchestration.app.experiments.exceptions import (
     ExperimentNotFoundError,
     IdempotencyConflictError,
+    InvalidCursorError,
     PromotionRequiresDedicatedEndpointError,
 )
 from agent_orchestration.app.experiments.router import router as experiment_router
@@ -142,11 +143,12 @@ def create_app() -> FastAPI:
             )
 
     @app.exception_handler(ExperimentNotFoundError)
+    @app.exception_handler(InvalidCursorError)
     def handle_experiment_not_found(
         _request: Request,
-        error: ExperimentNotFoundError,
+        error: ExperimentNotFoundError | InvalidCursorError,
     ) -> JSONResponse:
-        """도메인 not-found를 공개 404 detail로 변환한다."""
+        """도메인 not-found와 존재하지 않는 polling cursor를 공개 404 detail로 변환한다."""
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(error)})
 
     @app.exception_handler(InvalidTransitionError)

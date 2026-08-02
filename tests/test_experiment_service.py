@@ -23,6 +23,7 @@ from agent_orchestration.app.database import Base
 from agent_orchestration.app.experiments.exceptions import ExperimentNotFoundError
 from agent_orchestration.app.experiments.exceptions import (
     IdempotencyConflictError,
+    InvalidCursorError,
     PromotionRequiresDedicatedEndpointError,
 )
 from agent_orchestration.app.experiments.models import (
@@ -36,7 +37,6 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     ExperimentEventCreate,
     ExperimentLogCreate,
-    ExperimentLogListQuery,
     ExperimentResponse,
     PromotionRequest,
     StatusUpdateRequest,
@@ -47,6 +47,7 @@ from agent_orchestration.app.experiments.service import (
     create_experiment_log,
     get_experiment,
     get_experiment_metadata,
+    list_experiment_events,
     list_experiments,
     list_experiment_logs,
     promote_experiment,
@@ -416,15 +417,25 @@ def test_concurrent_event_retries_return_one_persisted_event(tmp_path: Path) -> 
     assert count == 1
 
 
-def test_log_query_limit_policy_is_default_100_and_range_1_to_100() -> None:
-    """polling 조회가 승인된 기본값과 상한을 벗어나지 않는다."""
-    assert ExperimentLogListQuery().limit == 100
-    assert ExperimentLogListQuery(limit=1).limit == 1
-    assert ExperimentLogListQuery(limit=100).limit == 100
-    with pytest.raises(ValidationError):
-        ExperimentLogListQuery(limit=0)
-    with pytest.raises(ValidationError):
-        ExperimentLogListQuery(limit=101)
+def test_log_polling_rejects_cursor_that_does_not_exist(db_session: Session) -> None:
+    """존재하지 않는 after_id는 빈 결과로 조용히 넘어가지 않고 명시적으로 실패한다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="stale log cursor"))
+    create_experiment_log(
+        db_session,
+        experiment.id,
+        ExperimentLogCreate(idempotency_key="log-0001", log_type="stdout", content="epoch=1"),
+    )
+
+    with pytest.raises(InvalidCursorError):
+        list_experiment_logs(db_session, experiment.id, limit=100, after_id=uuid.uuid4())
+
+
+def test_event_polling_rejects_cursor_that_does_not_exist(db_session: Session) -> None:
+    """존재하지 않는 after_id는 빈 결과로 조용히 넘어가지 않고 명시적으로 실패한다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="stale event cursor"))
+
+    with pytest.raises(InvalidCursorError):
+        list_experiment_events(db_session, experiment.id, limit=100, after_id=uuid.uuid4())
 
 
 @pytest.mark.parametrize(

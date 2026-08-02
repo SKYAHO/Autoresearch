@@ -4,7 +4,10 @@
 담당한다. 상태 전이 검증과 HTTP 요청 처리는 각각 service와 router의 책임이다.
 
 Alembic 초기 migration과 동일한 table, server default, FK, index와 unique constraint를
-SQLAlchemy 2.x declarative model로 제공한다.
+SQLAlchemy 2.x declarative model로 제공한다. 단, `Experiment.updated_at`의
+`onupdate=func.now()`는 이 ORM을 거치는 UPDATE에만 적용되는 애플리케이션 레벨 동작이며
+DB 트리거가 아니다 — migration에는 대응하는 트리거가 없어 `psql` 직접 UPDATE 등
+ORM을 우회하는 쓰기에는 적용되지 않는다.
 """
 
 from __future__ import annotations
@@ -101,6 +104,7 @@ class Experiment(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
+        # ORM UPDATE에만 적용되는 애플리케이션 레벨 갱신 — DB 트리거 아님 (모듈 docstring 참고)
         onupdate=func.now(),
         nullable=False,
     )

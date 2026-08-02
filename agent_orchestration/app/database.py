@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from fastapi import Request
+from fastapi import HTTPException, Request, status
 from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -51,7 +51,19 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 def get_db_session(request: Request) -> Iterator[Session]:
-    """FastAPI app state에 등록된 factory에서 요청 단위 Session을 제공한다."""
-    factory: sessionmaker[Session] = request.app.state.experiment_session_factory
+    """FastAPI app state에 등록된 factory에서 요청 단위 Session을 제공한다.
+
+    lifespan이 `settings`를 먼저 채우고 `experiment_session_factory`를 뒤이어 채우는
+    순서 때문에, startup 도중 인증은 통과했지만 factory가 아직 없는 짧은 창이 있다.
+    `/chat`의 `_require_runtime()`과 동일하게 503으로 응답해 그 창을 500과 구분한다.
+    """
+    factory: sessionmaker[Session] | None = getattr(
+        request.app.state, "experiment_session_factory", None
+    )
+    if factory is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service is unavailable.",
+        )
     with factory() as session:
         yield session

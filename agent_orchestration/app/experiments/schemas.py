@@ -96,15 +96,6 @@ class ExperimentEventResponse(BaseModel):
     created_at: datetime
 
 
-class ExperimentEventListQuery(BaseModel):
-    """1초 polling용 Event cursor 조회 조건."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    limit: int = Field(default=100, ge=1, le=200)
-    after_id: uuid.UUID | None = None
-
-
 class ExperimentEventPageResponse(BaseModel):
     """Event polling 결과와 다음 cursor."""
 
@@ -120,16 +111,6 @@ class ExperimentLogCreate(BaseModel):
     idempotency_key: str = Field(min_length=1, max_length=128)
     log_type: str = Field(default="stdout", min_length=1, max_length=32)
     content: str = Field(min_length=1)
-
-
-class ExperimentLogListQuery(BaseModel):
-    """1초 polling용 Log cursor 조회 조건."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    limit: int = Field(default=100, ge=1, le=100)
-    after_id: uuid.UUID | None = None
-    log_type: str | None = Field(default=None, min_length=1, max_length=32)
 
 
 class ExperimentLogResponse(BaseModel):
