@@ -182,28 +182,43 @@ def parse_registry_key(registry_key: str) -> RegistryCoordinates:
 def registry_uri_matches(
     registry_uri: str,
     *,
+    registry_root: str,
     issue_number: int,
     experiment_id: str,
     condition: str,
     source_sha: str,
 ) -> bool:
-    """Registry URI가 선언한 실험 좌표에서 나왔는지 확인한다.
+    """Registry URI가 선언한 root와 실험 좌표에서 나왔는지 확인한다.
+
+    suffix 비교가 아니라 **정확히 일치**하는 URI를 만들어 대조한다. suffix만 보면
+    다른 bucket·다른 스킴·상위 prefix가 붙은 URI가 통과하고, 이중 슬래시나 끝
+    슬래시처럼 같은 좌표를 주장하는 다른 object도 걸러지지 않는다.
 
     검증 실패를 예외가 아니라 ``False``로 돌려준다 — 호출부(paired 비교)는 개별
     사유를 모아 하나의 fail-closed 결과로 만들기 때문이다.
     """
     parsed = urlparse(registry_uri)
-    if parsed.scheme != "gs" or not parsed.netloc or parsed.query or parsed.fragment:
+    if parsed.scheme != "gs" or not parsed.netloc:
+        return False
+    # userinfo가 박힌 URI는 그대로 결과 payload와 로그로 나가므로 받지 않는다.
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
         return False
     try:
-        coordinates = parse_registry_key(parsed.path)
+        root = _normalise_root(registry_root, field="registry_root")
+        isolated_key = build_registry_key(
+            issue_number=issue_number,
+            experiment_id=experiment_id,
+            condition=condition,
+            source_sha=source_sha,
+        )
     except ValueError:
         return False
-    if coordinates.legacy and condition != CANDIDATE:
-        return False
-    return (
-        coordinates.issue_number == issue_number
-        and coordinates.experiment_id == experiment_id
-        and coordinates.condition == condition
-        and coordinates.source_sha == source_sha
-    )
+
+    expected = [f"{root}/{isolated_key}"]
+    if condition == CANDIDATE:
+        # 조건 격리 이전 형식(#450/#461)도 candidate 좌표로 계속 인정한다.
+        expected.append(
+            f"{root}/experiments/{issue_number}/{experiment_id}/"
+            f"{source_sha}/{_REGISTRY_FILENAME}"
+        )
+    return registry_uri in expected

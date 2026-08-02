@@ -2,8 +2,8 @@
 
 MLflow·GCS 없이 경계만 대체한다: comparison 검증(`verify_training_comparison`)과
 판정 엔진(`evaluate_experiment`)을 monkeypatch로 바꾸고, 이 모듈이 소유한 요청
-검증·fail-closed 규칙·outcome 사상·payload 구성을 본다. 통계 판정 자체는
-tests/test_pipeline_experiment_evaluation.py가 검증한다.
+검증·재검증 대조·fail-closed 규칙·outcome 사상·payload 구성을 본다. 통계 판정
+자체는 tests/test_pipeline_experiment_evaluation.py가 검증한다.
 """
 
 from __future__ import annotations
@@ -38,10 +38,15 @@ from src.pipeline.training_provenance import TrainingComparisonManifest, Trainin
 BASE_SHA = "a" * 40
 CANDIDATE_SHA = "b" * 40
 DIGEST = "sha256:" + "c" * 64
-FINGERPRINT = "d" * 64
+BASELINE_FINGERPRINT = "d" * 64
 CANDIDATE_FINGERPRINT = "e" * 64
+DATASET_FINGERPRINT = "1" * 64
+SPLIT_HASH = "2" * 64
 REGISTRY_ROOT = "gs://registry-bucket"
 ARTIFACT_ROOT = "gs://artifact-bucket"
+MODEL_URI = "models:/ctr-model/12"
+PROD_COLUMNS = ("view_count", "like_count")
+EXPERIMENT_COLUMN = "views_per_day"
 EVALUATED_AT = datetime(2026, 8, 3, tzinfo=timezone.utc)
 
 
@@ -77,8 +82,12 @@ def _condition(condition: str, source_sha: str, **overrides: object) -> dict[str
         "code_archive_sha": source_sha,
         "code_archive_uri": f"gs://code-bucket/code/{source_sha}.tar.gz",
         "registry_uri": _registry_uri(condition, source_sha),
-        "feature_schema_fingerprint": FINGERPRINT,
+        "feature_schema_fingerprint": (
+            BASELINE_FINGERPRINT if condition == "baseline" else CANDIDATE_FINGERPRINT
+        ),
     }
+    if condition == "candidate":
+        values["model_uri"] = MODEL_URI
     values.update(overrides)
     return values
 
@@ -106,38 +115,44 @@ def _request(**overrides: object) -> PairedExperimentRequest:
         "base_dev_sha": BASE_SHA,
         "candidate_sha": CANDIDATE_SHA,
         "feature_service": "ctr_training_v1",
-        "extra_features": [],
+        "extra_features": [EXPERIMENT_COLUMN],
+        "registry_root": REGISTRY_ROOT,
         "dataset_snapshot_uri": "gs://artifact-bucket/snapshots/manifest.json",
-        "dataset_fingerprint": "1" * 64,
-        "split_hash": "2" * 64,
+        "dataset_fingerprint": DATASET_FINGERPRINT,
+        "split_hash": SPLIT_HASH,
         "training_config_fingerprint": "3" * 64,
         "plan_receipt": _plan_receipt().model_dump(mode="json"),
         "baseline": _condition("baseline", BASE_SHA),
-        "candidate": _condition("candidate", CANDIDATE_SHA, model_uri="models:/ctr-model/12"),
+        "candidate": _condition("candidate", CANDIDATE_SHA),
         "runs": _runs(),
     }
     payload.update(overrides)
     return PairedExperimentRequest.model_validate(payload)
 
 
-def _comparison(seed: int) -> TrainingComparisonManifest:
-    return TrainingComparisonManifest(
-        comparison_id=f"comparison-{seed}",
-        baseline_run_id=f"baseline-{seed}",
-        challenger_run_id=f"candidate-{seed}",
-        baseline_snapshot_sha256="1" * 64,
-        challenger_snapshot_sha256="1" * 64,
-        baseline_snapshot_manifest_sha256="2" * 64,
-        challenger_snapshot_manifest_sha256="2" * 64,
-        baseline_split_manifest_sha256="3" * 64,
-        challenger_split_manifest_sha256="3" * 64,
-        baseline_feature_columns_sha256="4" * 64,
-        challenger_feature_columns_sha256="4" * 64,
-        baseline_feature_columns=["view_count"],
-        challenger_feature_columns=["view_count"],
-        effective_seeds=TrainingSeeds(split_seed=seed, model_seed=seed, sampler_seed=seed),
-        validated_at=EVALUATED_AT,
-    )
+def _comparison(seed: int, **overrides: object) -> TrainingComparisonManifest:
+    """재검증이 MLflow artifact에서 다시 만든 comparison manifest의 test double."""
+    values: dict[str, object] = {
+        "comparison_id": f"comparison-{seed}",
+        "baseline_run_id": f"baseline-{seed}",
+        "challenger_run_id": f"candidate-{seed}",
+        "baseline_snapshot_sha256": DATASET_FINGERPRINT,
+        "challenger_snapshot_sha256": DATASET_FINGERPRINT,
+        "baseline_snapshot_manifest_sha256": "4" * 64,
+        "challenger_snapshot_manifest_sha256": "4" * 64,
+        "baseline_split_manifest_sha256": SPLIT_HASH,
+        "challenger_split_manifest_sha256": SPLIT_HASH,
+        "baseline_feature_columns_sha256": BASELINE_FINGERPRINT,
+        "challenger_feature_columns_sha256": CANDIDATE_FINGERPRINT,
+        "baseline_feature_columns": list(PROD_COLUMNS),
+        "challenger_feature_columns": [*PROD_COLUMNS, EXPERIMENT_COLUMN],
+        "effective_seeds": TrainingSeeds(
+            split_seed=seed, model_seed=seed, sampler_seed=seed
+        ),
+        "validated_at": EVALUATED_AT,
+    }
+    values.update(overrides)
+    return TrainingComparisonManifest.model_validate(values)
 
 
 def _evaluation(
@@ -163,9 +178,13 @@ def _evaluation(
 
 
 @pytest.fixture
-def stubbed(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[object]]:
-    """comparison 검증과 판정 엔진을 대체하고 호출 이력을 남긴다."""
-    calls: dict[str, list[object]] = {"verify": [], "evaluate": []}
+def stubbed(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """comparison 검증과 판정 엔진을 대체하고 호출 이력을 남긴다.
+
+    `comparison_overrides`를 바꾸면 재검증이 돌려주는 manifest를 조정할 수 있어,
+    "요청이 신고한 값과 실제 run이 다르다"는 상황을 만들 수 있다.
+    """
+    calls: dict[str, object] = {"verify": [], "evaluate": [], "comparison_overrides": {}}
 
     def fake_verify(
         baseline_run_id: str,
@@ -175,7 +194,7 @@ def stubbed(monkeypatch: pytest.MonkeyPatch) -> dict[str, list[object]]:
     ) -> TrainingComparisonManifest:
         calls["verify"].append((baseline_run_id, challenger_run_id))
         seed = int(str(baseline_run_id).rsplit("-", 1)[-1])
-        return _comparison(seed)
+        return _comparison(seed, **calls["comparison_overrides"])
 
     def fake_evaluate(evidence: object, **kwargs: object) -> ExperimentEvaluation:
         calls["evaluate"].append(evidence)
@@ -205,8 +224,18 @@ def test_eligible_verdict_becomes_comparison_passed(tmp_path, stubbed) -> None:
     assert result.primary_baseline == pytest.approx(0.7780)
     assert result.primary_candidate == pytest.approx(0.7812)
     assert result.paired_delta_mean == pytest.approx(0.0032)
-    assert result.model_uri == "models:/ctr-model/12"
+    assert result.model_uri == MODEL_URI
     assert len(stubbed["verify"]) == len(POLICY_SEEDS)
+
+
+def test_passed_result_carries_audit_identifiers(tmp_path, stubbed) -> None:
+    # 판정 레코드를 되짚을 수 있어야 한다 — plan_id만으로는 같은 plan의 재실행을
+    # 구분하지 못한다.
+    result = _evaluate(_request(), tmp_path)
+
+    assert result.evidence_id == "evidence-1"
+    assert result.evaluation_id == "evaluation-1"
+    assert result.decision_id is not None
 
 
 def test_reject_verdict_becomes_comparison_rejected(tmp_path, monkeypatch, stubbed) -> None:
@@ -223,6 +252,9 @@ def test_reject_verdict_becomes_comparison_rejected(tmp_path, monkeypatch, stubb
     assert result.outcome == "comparison_rejected"
     assert result.decision_reason == "primary_roc_auc_not_improved"
     assert result.model_uri is None
+    # 조건 lineage에도 승격 후보 식별자를 남기지 않는다.
+    assert result.candidate.model_uri is None
+    assert result.candidate.image_digest == DIGEST
 
 
 def test_hold_verdict_becomes_comparison_failed(tmp_path, monkeypatch, stubbed) -> None:
@@ -243,12 +275,7 @@ def test_hold_verdict_becomes_comparison_failed(tmp_path, monkeypatch, stubbed) 
 
 def test_code_archive_sha_must_equal_condition_source_sha(tmp_path, stubbed) -> None:
     request = _request(
-        candidate=_condition(
-            "candidate",
-            CANDIDATE_SHA,
-            code_archive_sha="0" * 40,
-            model_uri="models:/ctr-model/12",
-        )
+        candidate=_condition("candidate", CANDIDATE_SHA, code_archive_sha="0" * 40)
     )
 
     result = _evaluate(request, tmp_path)
@@ -259,36 +286,38 @@ def test_code_archive_sha_must_equal_condition_source_sha(tmp_path, stubbed) -> 
     assert stubbed["verify"] == []
 
 
-def test_condition_registry_must_match_declared_coordinates(tmp_path, stubbed) -> None:
+@pytest.mark.parametrize(
+    "registry_uri",
+    [
+        # 다른 이슈·실험 좌표
+        "gs://registry-bucket/experiments/999/other/candidate/" + "b" * 40 + "/registry.db",
+        # 선언한 root 밖의 bucket
+        "gs://other-bucket/experiments/449/primary/candidate/" + "b" * 40 + "/registry.db",
+        # userinfo가 박힌 URI(결과·로그로 그대로 나간다)
+        "gs://user:token@registry-bucket/experiments/449/primary/candidate/"
+        + "b" * 40
+        + "/registry.db",
+        # 스킴 위조
+        "https://registry-bucket/experiments/449/primary/candidate/" + "b" * 40 + "/registry.db",
+        # 같은 좌표를 주장하는 다른 object(이중 슬래시·끝 슬래시)
+        "gs://registry-bucket//experiments/449/primary/candidate/" + "b" * 40 + "/registry.db",
+        "gs://registry-bucket/experiments/449/primary/candidate/" + "b" * 40 + "/registry.db/",
+        # baseline 조건 경로를 candidate로 신고
+        "gs://registry-bucket/experiments/449/primary/baseline/" + "b" * 40 + "/registry.db",
+    ],
+)
+def test_candidate_registry_must_match_declared_coordinates(
+    tmp_path, stubbed, registry_uri: str
+) -> None:
     request = _request(
-        candidate=_condition(
-            "candidate",
-            CANDIDATE_SHA,
-            registry_uri="gs://registry-bucket/experiments/999/other/candidate/"
-            + CANDIDATE_SHA
-            + "/registry.db",
-            model_uri="models:/ctr-model/12",
-        )
+        candidate=_condition("candidate", CANDIDATE_SHA, registry_uri=registry_uri)
     )
 
     result = _evaluate(request, tmp_path)
 
     assert result.outcome == "comparison_failed"
     assert PairedExperimentReason.REGISTRY_URI_MISMATCH.value in result.reason_codes
-
-
-def test_conditions_may_not_share_one_registry(tmp_path, stubbed) -> None:
-    # 같은 SHA로 두 조건을 돌리는 회귀 실험에서도 Registry는 분리돼야 한다.
-    shared = _registry_uri("candidate", CANDIDATE_SHA)
-    request = _request(
-        baseline=_condition("baseline", BASE_SHA, registry_uri=shared),
-        candidate=_condition("candidate", CANDIDATE_SHA, registry_uri=shared, model_uri="models:/m/1"),
-    )
-
-    result = _evaluate(request, tmp_path)
-
-    assert result.outcome == "comparison_failed"
-    assert PairedExperimentReason.REGISTRY_NOT_ISOLATED.value in result.reason_codes
+    assert stubbed["verify"] == []
 
 
 def test_legacy_candidate_registry_path_is_accepted(tmp_path, stubbed) -> None:
@@ -297,13 +326,28 @@ def test_legacy_candidate_registry_path_is_accepted(tmp_path, stubbed) -> None:
             "candidate",
             CANDIDATE_SHA,
             registry_uri=f"{REGISTRY_ROOT}/experiments/449/primary/{CANDIDATE_SHA}/registry.db",
-            model_uri="models:/ctr-model/12",
         )
     )
 
     result = _evaluate(request, tmp_path)
 
     assert result.outcome == "comparison_passed"
+
+
+def test_baseline_may_not_use_legacy_registry_path(tmp_path, stubbed) -> None:
+    # legacy 경로에는 조건 구간이 없어 candidate 산출물과 구분되지 않는다.
+    request = _request(
+        baseline=_condition(
+            "baseline",
+            BASE_SHA,
+            registry_uri=f"{REGISTRY_ROOT}/experiments/449/primary/{BASE_SHA}/registry.db",
+        )
+    )
+
+    result = _evaluate(request, tmp_path)
+
+    assert result.outcome == "comparison_failed"
+    assert PairedExperimentReason.REGISTRY_URI_MISMATCH.value in result.reason_codes
 
 
 def test_missing_paired_seed_never_passes(tmp_path, stubbed) -> None:
@@ -316,32 +360,46 @@ def test_missing_paired_seed_never_passes(tmp_path, stubbed) -> None:
     assert stubbed["verify"] == []
 
 
+def test_seed_outside_policy_stops_before_expensive_verification(tmp_path, stubbed) -> None:
+    request = _request(runs=_runs((*POLICY_SEEDS, 999)))
+
+    result = _evaluate(request, tmp_path)
+
+    assert result.outcome == "comparison_failed"
+    assert PairedExperimentReason.SEED_POLICY_MISMATCH.value in result.reason_codes
+    # 정책 밖 seed도 판정 엔진이 결국 거부하지만, 거기까지 가면 seed마다 MLflow·GCS
+    # 재검증을 모두 수행한 뒤에야 실패한다.
+    assert stubbed["verify"] == []
+
+
 def test_duplicate_seed_is_rejected_by_request_model() -> None:
     with pytest.raises(ValueError, match="seed"):
         _request(runs=_runs((POLICY_SEEDS[0], POLICY_SEEDS[0])))
 
 
-def test_declared_extra_feature_must_change_training_schema(tmp_path, stubbed) -> None:
-    # 두 조건의 학습 스키마가 같다면 선언한 실험 피처가 학습 CSV까지 오지 못한 것이다.
-    request = _request(extra_features=["views_per_day"])
+def test_declared_feature_must_appear_in_verified_training_columns(
+    tmp_path, stubbed
+) -> None:
+    # 조립이 실험 피처를 잘라내 두 조건이 같은 21피처로 학습된 상황. 요청은 여전히
+    # 서로 다른 fingerprint를 신고하므로, 자기신고 값만 보면 통과해 버린다.
+    stubbed["comparison_overrides"] = {
+        "challenger_feature_columns": list(PROD_COLUMNS),
+        "challenger_feature_columns_sha256": CANDIDATE_FINGERPRINT,
+    }
 
-    result = _evaluate(request, tmp_path)
+    result = _evaluate(_request(), tmp_path)
 
     assert result.outcome == "comparison_failed"
     assert PairedExperimentReason.DECLARED_FEATURES_ABSENT.value in result.reason_codes
+    assert stubbed["evaluate"] == []
 
 
-def test_undeclared_schema_difference_is_rejected(tmp_path, stubbed) -> None:
-    request = _request(
-        candidate=_condition(
-            "candidate",
-            CANDIDATE_SHA,
-            feature_schema_fingerprint=CANDIDATE_FINGERPRINT,
-            model_uri="models:/ctr-model/12",
-        )
-    )
+def test_undeclared_training_column_difference_is_rejected(tmp_path, stubbed) -> None:
+    stubbed["comparison_overrides"] = {
+        "challenger_feature_columns": [*PROD_COLUMNS, EXPERIMENT_COLUMN, "extra_column"],
+    }
 
-    result = _evaluate(request, tmp_path)
+    result = _evaluate(_request(), tmp_path)
 
     assert result.outcome == "comparison_failed"
     assert (
@@ -350,21 +408,72 @@ def test_undeclared_schema_difference_is_rejected(tmp_path, stubbed) -> None:
     )
 
 
-def test_declared_extra_feature_with_changed_schema_passes(tmp_path, stubbed) -> None:
+def test_dropped_training_column_is_rejected(tmp_path, stubbed) -> None:
+    # 컬럼이 빠지는 것은 어떤 실험 선언으로도 설명되지 않는다.
+    stubbed["comparison_overrides"] = {
+        "baseline_feature_columns": [*PROD_COLUMNS, "removed_column"],
+    }
+
+    result = _evaluate(_request(), tmp_path)
+
+    assert result.outcome == "comparison_failed"
+    assert (
+        PairedExperimentReason.UNDECLARED_FEATURE_SCHEMA_DIFFERENCE.value
+        in result.reason_codes
+    )
+
+
+def test_feature_schema_fingerprint_must_match_verified_manifest(
+    tmp_path, stubbed
+) -> None:
+    stubbed["comparison_overrides"] = {"challenger_feature_columns_sha256": "9" * 64}
+
+    result = _evaluate(_request(), tmp_path)
+
+    assert result.outcome == "comparison_failed"
+    assert (
+        PairedExperimentReason.FEATURE_SCHEMA_FINGERPRINT_MISMATCH.value
+        in result.reason_codes
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"baseline_snapshot_sha256": "9" * 64},
+        {"baseline_split_manifest_sha256": "9" * 64},
+    ],
+)
+def test_dataset_lineage_must_match_verified_manifest(
+    tmp_path, stubbed, overrides: dict[str, str]
+) -> None:
+    # 결과 payload의 dataset lineage가 실제 run의 것과 다르면 그 자체로 거짓 기록이다.
+    stubbed["comparison_overrides"] = overrides
+
+    result = _evaluate(_request(), tmp_path)
+
+    assert result.outcome == "comparison_failed"
+    assert PairedExperimentReason.DATASET_LINEAGE_MISMATCH.value in result.reason_codes
+
+
+def test_experiment_without_extra_features_requires_identical_columns(
+    tmp_path, stubbed
+) -> None:
+    stubbed["comparison_overrides"] = {
+        "baseline_feature_columns": list(PROD_COLUMNS),
+        "challenger_feature_columns": list(PROD_COLUMNS),
+        "challenger_feature_columns_sha256": BASELINE_FINGERPRINT,
+    }
     request = _request(
-        extra_features=["views_per_day"],
+        extra_features=[],
         candidate=_condition(
-            "candidate",
-            CANDIDATE_SHA,
-            feature_schema_fingerprint=CANDIDATE_FINGERPRINT,
-            model_uri="models:/ctr-model/12",
+            "candidate", CANDIDATE_SHA, feature_schema_fingerprint=BASELINE_FINGERPRINT
         ),
     )
 
     result = _evaluate(request, tmp_path)
 
     assert result.outcome == "comparison_passed"
-    assert result.extra_features == ("views_per_day",)
 
 
 def test_comparison_verification_failure_is_fail_closed(
@@ -385,12 +494,28 @@ def test_comparison_verification_failure_is_fail_closed(
 
 
 def test_passed_result_requires_immutable_model_identifier(tmp_path, stubbed) -> None:
-    request = _request(candidate=_condition("candidate", CANDIDATE_SHA))
+    request = _request(
+        candidate={
+            key: value
+            for key, value in _condition("candidate", CANDIDATE_SHA).items()
+            if key != "model_uri"
+        }
+    )
 
     result = _evaluate(request, tmp_path)
 
     assert result.outcome == "comparison_failed"
     assert PairedExperimentReason.MODEL_URI_MISSING.value in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    "model_uri",
+    ["models:/ctr-model@champion", "ctr-model/12", "models:/ctr-model", "runs:/abc/model"],
+)
+def test_model_uri_must_be_an_immutable_version_reference(model_uri: str) -> None:
+    # alias는 나중에 다른 버전을 가리킬 수 있어 승격 후보 식별자가 되지 못한다.
+    with pytest.raises(ValueError, match="model_uri"):
+        _request(candidate=_condition("candidate", CANDIDATE_SHA, model_uri=model_uri))
 
 
 def test_result_payload_carries_full_lineage(tmp_path, stubbed) -> None:
@@ -405,13 +530,23 @@ def test_result_payload_carries_full_lineage(tmp_path, stubbed) -> None:
     assert payload["candidate_sha"] == CANDIDATE_SHA
     assert payload["baseline"]["registry_uri"] == _registry_uri("baseline", BASE_SHA)
     assert payload["candidate"]["code_archive_uri"].endswith(f"{CANDIDATE_SHA}.tar.gz")
-    assert payload["dataset_fingerprint"] == "1" * 64
-    assert payload["split_hash"] == "2" * 64
+    assert payload["registry_root"] == REGISTRY_ROOT
+    assert payload["dataset_fingerprint"] == DATASET_FINGERPRINT
+    assert payload["split_hash"] == SPLIT_HASH
     assert payload["feature_service"] == "ctr_training_v1"
     assert payload["policy_version"] == "promotion-policy-v1"
     assert len(payload["runs"]) == len(POLICY_SEEDS)
     assert payload["runs"][0]["comparison_id"] == f"comparison-{POLICY_SEEDS[0]}"
     assert payload["seeds"] == list(POLICY_SEEDS)
+
+
+def test_result_runs_are_ordered_by_seed(tmp_path, stubbed) -> None:
+    # 비교는 seed 오름차순으로 수행하므로 payload도 같은 순서로 고정한다.
+    shuffled = (*POLICY_SEEDS[15:], *POLICY_SEEDS[:15])
+    result = _evaluate(_request(runs=_runs(shuffled)), tmp_path)
+
+    assert result.seeds == POLICY_SEEDS
+    assert [run.seed for run in result.runs] == list(POLICY_SEEDS)
 
 
 def test_failed_request_still_reports_lineage(tmp_path, stubbed) -> None:

@@ -125,54 +125,72 @@ def test_parse_registry_key_rejects_foreign_paths(registry_key: str) -> None:
         parse_registry_key(registry_key)
 
 
+def _matches(uri: str, **overrides: object) -> bool:
+    values: dict[str, object] = {
+        "registry_root": "gs://registry-bucket",
+        "issue_number": 449,
+        "experiment_id": "primary",
+        "condition": "candidate",
+        "source_sha": "a" * 40,
+    }
+    values.update(overrides)
+    return registry_uri_matches(uri, **values)  # type: ignore[arg-type]
+
+
 def test_registry_uri_matches_expected_condition_coordinates() -> None:
     uri = "gs://registry-bucket/experiments/449/primary/candidate/" + "a" * 40 + "/registry.db"
 
-    assert registry_uri_matches(
-        uri,
-        issue_number=449,
-        experiment_id="primary",
-        condition="candidate",
-        source_sha="a" * 40,
-    )
+    assert _matches(uri)
 
 
 def test_registry_uri_does_not_match_other_condition() -> None:
     uri = "gs://registry-bucket/experiments/449/primary/candidate/" + "a" * 40 + "/registry.db"
 
-    assert not registry_uri_matches(
-        uri,
-        issue_number=449,
-        experiment_id="primary",
-        condition="baseline",
-        source_sha="a" * 40,
-    )
+    assert not _matches(uri, condition="baseline")
 
 
 def test_legacy_uri_matches_candidate_but_never_baseline() -> None:
     uri = "gs://registry-bucket/experiments/449/primary/" + "a" * 40 + "/registry.db"
 
-    assert registry_uri_matches(
-        uri,
-        issue_number=449,
-        experiment_id="primary",
-        condition="candidate",
-        source_sha="a" * 40,
-    )
-    assert not registry_uri_matches(
-        uri,
-        issue_number=449,
-        experiment_id="primary",
-        condition="baseline",
-        source_sha="a" * 40,
-    )
+    assert _matches(uri)
+    assert not _matches(uri, condition="baseline")
 
 
-def test_registry_uri_match_rejects_malformed_uri() -> None:
-    assert not registry_uri_matches(
+@pytest.mark.parametrize(
+    "uri",
+    [
+        # 좌표는 맞지만 선언한 root 밖의 bucket
+        "gs://other-bucket/experiments/449/primary/candidate/" + "a" * 40 + "/registry.db",
+        # 스킴 위조
+        "https://registry-bucket/experiments/449/primary/candidate/" + "a" * 40 + "/registry.db",
+        # userinfo가 박힌 URI — 그대로 결과 payload와 로그로 나간다
+        "gs://user:token@registry-bucket/experiments/449/primary/candidate/"
+        + "a" * 40
+        + "/registry.db",
+        # 같은 좌표를 주장하는 다른 object
+        "gs://registry-bucket//experiments/449/primary/candidate/" + "a" * 40 + "/registry.db",
+        "gs://registry-bucket/experiments/449/primary/candidate/" + "a" * 40 + "/registry.db/",
+        "gs://registry-bucket/x/../experiments/449/primary/candidate/"
+        + "a" * 40
+        + "/registry.db",
+        # 상위 prefix를 덧붙인 URI
+        "gs://registry-bucket/tenant/experiments/449/primary/candidate/"
+        + "a" * 40
+        + "/registry.db",
+        # 좌표 자체가 형식에 맞지 않음
         "gs://registry-bucket/experiments/449/primary/candidate/registry.db",
-        issue_number=449,
-        experiment_id="primary",
-        condition="candidate",
-        source_sha="a" * 40,
-    )
+        # 쿼리스트링이 붙은 URI
+        "gs://registry-bucket/experiments/449/primary/candidate/"
+        + "a" * 40
+        + "/registry.db?generation=1",
+    ],
+)
+def test_registry_uri_match_rejects_foreign_or_malformed_uri(uri: str) -> None:
+    assert not _matches(uri)
+
+
+def test_registry_uri_match_rejects_invalid_root() -> None:
+    uri = "gs://registry-bucket/experiments/449/primary/candidate/" + "a" * 40 + "/registry.db"
+
+    assert not _matches(uri, registry_root="")
+    assert not _matches(uri, registry_root="s3://registry-bucket")

@@ -33,7 +33,9 @@ from src.pipeline.experiment_evaluation import (
     EvaluationVerdict,
     ExperimentEvaluation,
     PairedSeedObservation,
+    PromotionDecision,
     create_paired_seed_evidence,
+    decide_promotion,
     evaluate_experiment,
 )
 from src.pipeline.promotion_evidence import ExperimentPlanReceipt, PromotionEvidenceStore
@@ -56,6 +58,7 @@ _SHA256_PATTERN = r"^[0-9a-f]{64}$"
 _DIGEST_PATTERN = r"^sha256:[0-9a-f]{64}$"
 _EXPERIMENT_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,31}$"
 _RUN_ID_PATTERN = r"^[a-z0-9][a-z0-9-]{0,63}$"
+_MODEL_URI_PATTERN = r"^models:/[^/@]+/[0-9]+$"
 
 # 판정 엔진의 verdict를 실행 계약의 outcome으로 사상한다. `hold`(판정 불가)는
 # 성공이 아니다 — 후속 게이트가 승격 후보로 읽지 않도록 실패로 내린다.
@@ -72,11 +75,13 @@ class PairedExperimentReason(str, Enum):
     CONDITION_SOURCE_SHA_MISMATCH = "condition_source_sha_mismatch"
     CODE_ARCHIVE_SHA_MISMATCH = "code_archive_sha_mismatch"
     REGISTRY_URI_MISMATCH = "registry_uri_mismatch"
-    REGISTRY_NOT_ISOLATED = "registry_not_isolated"
     MISSING_PAIRED_RUN = "missing_paired_run"
+    SEED_POLICY_MISMATCH = "seed_policy_mismatch"
     DECLARED_FEATURES_ABSENT = "declared_features_absent"
     UNDECLARED_FEATURE_SCHEMA_DIFFERENCE = "undeclared_feature_schema_difference"
     COMPARISON_VERIFICATION_FAILED = "comparison_verification_failed"
+    FEATURE_SCHEMA_FINGERPRINT_MISMATCH = "feature_schema_fingerprint_mismatch"
+    DATASET_LINEAGE_MISMATCH = "dataset_lineage_mismatch"
     MODEL_URI_MISSING = "model_uri_missing"
 
 
@@ -96,7 +101,9 @@ class ConditionLineage(_ContractModel):
     registry_uri: str = Field(min_length=1)
     feature_schema_fingerprint: str = Field(pattern=_SHA256_PATTERN)
     # 승격 후보를 지목하려면 candidate 조건에 불변 모델 식별자가 있어야 한다.
-    model_uri: str | None = Field(default=None, min_length=1)
+    # 형식을 강제해 alias(`models:/name@champion`)처럼 움직이는 참조가 승격
+    # 후보로 실리지 않게 한다.
+    model_uri: str | None = Field(default=None, pattern=_MODEL_URI_PATTERN)
 
 
 class SeedRun(_ContractModel):
@@ -131,6 +138,7 @@ class PairedExperimentRequest(_ContractModel):
     candidate_sha: str = Field(pattern=_SHA_PATTERN)
     feature_service: str = Field(min_length=1)
     extra_features: tuple[str, ...] = ()
+    registry_root: str = Field(min_length=1)
     dataset_snapshot_uri: str = Field(min_length=1)
     dataset_fingerprint: str = Field(pattern=_SHA256_PATTERN)
     split_hash: str = Field(pattern=_SHA256_PATTERN)
@@ -179,11 +187,15 @@ class PairedExperimentResult(_ContractModel):
     candidate: ConditionLineage
     feature_service: str
     extra_features: tuple[str, ...]
+    registry_root: str
     dataset_snapshot_uri: str
     dataset_fingerprint: str
     split_hash: str
     training_config_fingerprint: str
     plan_id: str
+    evidence_id: str | None = None
+    evaluation_id: str | None = None
+    decision_id: str | None = None
     policy_version: str = POLICY_VERSION
     metric_name: str | None = None
     primary_baseline: float | None = None
@@ -202,6 +214,7 @@ def _validate_condition(
     *,
     condition: str,
     expected_sha: str,
+    registry_root: str,
     issue_number: int,
     experiment_id: str,
 ) -> list[PairedExperimentReason]:
@@ -215,6 +228,7 @@ def _validate_condition(
         reasons.append(PairedExperimentReason.CODE_ARCHIVE_SHA_MISMATCH)
     if not registry_uri_matches(
         lineage.registry_uri,
+        registry_root=registry_root,
         issue_number=issue_number,
         experiment_id=experiment_id,
         condition=condition,
@@ -232,6 +246,7 @@ def _validate_request(request: PairedExperimentRequest) -> list[PairedExperiment
             request.baseline,
             condition=BASELINE,
             expected_sha=request.base_dev_sha,
+            registry_root=request.registry_root,
             issue_number=request.issue_number,
             experiment_id=request.experiment_id,
         )
@@ -241,16 +256,20 @@ def _validate_request(request: PairedExperimentRequest) -> list[PairedExperiment
             request.candidate,
             condition=CANDIDATE,
             expected_sha=request.candidate_sha,
+            registry_root=request.registry_root,
             issue_number=request.issue_number,
             experiment_id=request.experiment_id,
         )
     )
-    if request.baseline.registry_uri == request.candidate.registry_uri:
-        reasons.append(PairedExperimentReason.REGISTRY_NOT_ISOLATED)
-
-    missing = sorted(set(POLICY_SEEDS) - {run.seed for run in request.runs})
-    if missing:
+    # 조건 격리 경로에는 condition 세그먼트가 들어가므로 두 조건의 Registry URI가
+    # 같아질 수 없다. 그 성질은 좌표 검증(위)이 이미 보장하므로 따로 비교하지 않는다.
+    seeds = {run.seed for run in request.runs}
+    if sorted(set(POLICY_SEEDS) - seeds):
         reasons.append(PairedExperimentReason.MISSING_PAIRED_RUN)
+    # 정책 밖 seed는 판정 엔진도 거부하지만, 거기까지 가면 seed마다 MLflow·GCS
+    # 재검증을 모두 수행한 뒤에야 실패한다. 비싼 검증 전에 멈춘다(#454).
+    if sorted(seeds - set(POLICY_SEEDS)):
+        reasons.append(PairedExperimentReason.SEED_POLICY_MISMATCH)
 
     # 학습 스키마 차이는 선언한 실험 피처로만 설명돼야 한다. 선언했는데 스키마가
     # 같으면 그 피처가 학습 CSV까지 오지 못한 것이고(조립 절단), 선언하지 않았는데
@@ -269,6 +288,61 @@ def _validate_request(request: PairedExperimentRequest) -> list[PairedExperiment
     return reasons
 
 
+def _validate_verified_lineage(
+    request: PairedExperimentRequest,
+    observations: list[PairedSeedObservation],
+) -> list[PairedExperimentReason]:
+    """요청이 **스스로 신고한** lineage를 재검증된 comparison과 대조한다.
+
+    요청의 fingerprint는 실행 Job이 적어 넣은 값이라 그것만으로는 아무것도
+    증명하지 못한다. ``verify_training_comparison``이 MLflow artifact에서 다시 만든
+    manifest에는 같은 성질의 값(학습 feature columns·dataset·split hash)이 들어
+    있으므로, 둘을 대조해야 "선언한 실험 피처가 실제로 학습에 들어갔는가"를 알 수
+    있다. 대조 없이 통과시키면 조립이 실험 피처를 잘라내 두 조건이 동일한 21피처로
+    학습됐는데도 fingerprint만 다르게 적어 `comparison_passed`가 나온다.
+    """
+    reasons: list[PairedExperimentReason] = []
+    declared = set(request.extra_features)
+    for observation in observations:
+        comparison = observation.comparison
+        if (
+            comparison.baseline_feature_columns_sha256
+            != request.baseline.feature_schema_fingerprint
+            or comparison.challenger_feature_columns_sha256
+            != request.candidate.feature_schema_fingerprint
+        ):
+            reasons.append(PairedExperimentReason.FEATURE_SCHEMA_FINGERPRINT_MISMATCH)
+            break
+    for observation in observations:
+        comparison = observation.comparison
+        added = set(comparison.challenger_feature_columns) - set(
+            comparison.baseline_feature_columns
+        )
+        removed = set(comparison.baseline_feature_columns) - set(
+            comparison.challenger_feature_columns
+        )
+        # 학습 입력의 차이는 선언한 가설로만 설명돼야 한다. 컬럼이 빠지는 것은
+        # 어떤 선언으로도 설명되지 않는다.
+        if added != declared or removed:
+            reasons.append(
+                PairedExperimentReason.DECLARED_FEATURES_ABSENT
+                if declared and not added
+                else PairedExperimentReason.UNDECLARED_FEATURE_SCHEMA_DIFFERENCE
+            )
+            break
+    for observation in observations:
+        comparison = observation.comparison
+        # dataset snapshot과 split은 두 조건이 공유한다(공정 비교의 전제). 요청이
+        # 신고한 값이 실제 run의 것과 다르면 결과 payload의 lineage가 거짓이 된다.
+        if (
+            comparison.baseline_snapshot_sha256 != request.dataset_fingerprint
+            or comparison.baseline_split_manifest_sha256 != request.split_hash
+        ):
+            reasons.append(PairedExperimentReason.DATASET_LINEAGE_MISMATCH)
+            break
+    return reasons
+
+
 def _result(
     request: PairedExperimentRequest,
     *,
@@ -277,9 +351,22 @@ def _result(
     evaluated_at: datetime,
     comparisons: dict[int, str] | None = None,
     evaluation: ExperimentEvaluation | None = None,
+    decision: PromotionDecision | None = None,
 ) -> PairedExperimentResult:
-    """실패·기각·통과가 같은 형식과 lineage를 갖도록 결과를 조립한다."""
+    """실패·기각·통과가 같은 형식과 lineage를 갖도록 결과를 조립한다.
+
+    통과가 아니면 candidate lineage의 ``model_uri``도 함께 지운다. 최상위
+    ``model_uri``만 비우면 조건 lineage에 같은 식별자가 그대로 남아, outcome을
+    먼저 보지 않는 소비자가 실패·기각 결과에서 승격 후보를 읽어낼 수 있다.
+    """
     resolved = comparisons or {}
+    promoted = outcome == OUTCOME_PASSED
+    candidate = (
+        request.candidate
+        if promoted
+        else request.candidate.model_copy(update={"model_uri": None})
+    )
+    ordered_runs = sorted(request.runs, key=lambda run: run.seed)
     return PairedExperimentResult(
         outcome=outcome,
         decision_reason=reasons[0] if reasons else "criteria_met",
@@ -290,14 +377,18 @@ def _result(
         base_dev_sha=request.base_dev_sha,
         candidate_sha=request.candidate_sha,
         baseline=request.baseline,
-        candidate=request.candidate,
+        candidate=candidate,
         feature_service=request.feature_service,
         extra_features=request.extra_features,
         dataset_snapshot_uri=request.dataset_snapshot_uri,
         dataset_fingerprint=request.dataset_fingerprint,
         split_hash=request.split_hash,
         training_config_fingerprint=request.training_config_fingerprint,
+        registry_root=request.registry_root,
         plan_id=request.plan_receipt.plan.plan_id,
+        evidence_id=evaluation.evidence_id if evaluation else None,
+        evaluation_id=evaluation.evaluation_id if evaluation else None,
+        decision_id=decision.decision_id if decision else None,
         metric_name=evaluation.metric_name if evaluation else None,
         primary_baseline=evaluation.baseline_mean if evaluation else None,
         primary_candidate=evaluation.challenger_mean if evaluation else None,
@@ -308,7 +399,9 @@ def _result(
         confidence_interval_upper=(
             evaluation.confidence_interval_upper if evaluation else None
         ),
-        seeds=tuple(run.seed for run in request.runs),
+        # seed 오름차순으로 고정한다 — 비교 수행 순서와 payload 순서가 달라지면
+        # 소비자가 seed를 다시 대조해야 한다.
+        seeds=tuple(run.seed for run in ordered_runs),
         runs=tuple(
             SeedRunResult(
                 seed=run.seed,
@@ -317,11 +410,9 @@ def _result(
                 artifact_uri=run.artifact_uri,
                 log_uri=run.log_uri,
             )
-            for run in request.runs
+            for run in ordered_runs
         ),
-        # 승격 후보 식별자는 통과한 결과에만 싣는다 — 실패·기각 payload가 승격
-        # 입력으로 재사용되는 사고를 구조적으로 막는다.
-        model_uri=request.candidate.model_uri if outcome == OUTCOME_PASSED else None,
+        model_uri=request.candidate.model_uri if promoted else None,
         evaluated_at=evaluated_at,
     )
 
@@ -380,6 +471,16 @@ def evaluate_paired_experiment(
         comparisons[run.seed] = comparison.comparison_id
         observations.append(PairedSeedObservation(seed=run.seed, comparison=comparison))
 
+    verified_reasons = _validate_verified_lineage(request, observations)
+    if verified_reasons:
+        return _result(
+            request,
+            outcome=OUTCOME_FAILED,
+            reasons=tuple(reason.value for reason in verified_reasons),
+            evaluated_at=decided_at,
+            comparisons=comparisons,
+        )
+
     evidence = create_paired_seed_evidence(
         plan_receipt=request.plan_receipt,
         observations=tuple(observations),
@@ -389,13 +490,15 @@ def evaluate_paired_experiment(
         promotion_evidence_store=promotion_evidence_store,
         evaluated_at=evaluated_at,
     )
+    decision = decide_promotion(evaluation, decided_at=evaluation.evaluated_at)
     return _result(
         request,
-        outcome=_VERDICT_OUTCOMES[evaluation.verdict],
-        reasons=tuple(reason.value for reason in evaluation.reason_codes),
+        outcome=_VERDICT_OUTCOMES[decision.verdict],
+        reasons=tuple(reason.value for reason in decision.reason_codes),
         evaluated_at=evaluation.evaluated_at,
         comparisons=comparisons,
         evaluation=evaluation,
+        decision=decision,
     )
 
 

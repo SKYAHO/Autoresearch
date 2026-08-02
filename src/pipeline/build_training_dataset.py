@@ -422,8 +422,10 @@ def resolve_extra_feature_columns(
     if not extra_features:
         return ()
 
-    requested = tuple(extra_features)
-    if any(not name.strip() for name in requested):
+    # 이름은 여기서 한 번 정규화한다 — 조립과 비교 계층이 서로 다른 문자열을 같은
+    # 실험 피처로 취급하면 "선언했는데 없다"는 오진이 난다.
+    requested = tuple(name.strip() for name in extra_features)
+    if any(not name for name in requested):
         raise FeatureContractError(
             f"실험 피처 이름이 비었습니다: {list(requested)}. "
             "공백만 있는 이름은 CSV 컬럼이 될 수 없습니다."
@@ -435,6 +437,31 @@ def resolve_extra_feature_columns(
         )
     resolve_experiment_feature_columns(requested)
     return requested
+
+
+def require_explicit_experiment_output(
+    *,
+    feature_service: str | None,
+    extra_features: Sequence[str] | None,
+) -> None:
+    """실험 조립이 prod 학습 데이터셋 기본 경로를 덮어쓰지 못하게 막는다(#454).
+
+    prod 경로가 실험 서비스로 조회된 CSV로 바뀌어도 학습은 ``MODEL_FEATURE_COLUMNS``만
+    선택하므로 여분 컬럼을 조용히 무시한다 — champion 후보가 실험 데이터로 학습됐다는
+    사실이 지표에도, 컬럼 수에도 드러나지 않는다. 그래서 경로를 명시하게 요구한다.
+    """
+    from src.features.feast_retrieval import DEFAULT_SERVICE
+
+    experiment_service = (
+        feature_service is not None and feature_service != DEFAULT_SERVICE
+    )
+    if not experiment_service and not extra_features:
+        return
+    raise FeatureContractError(
+        "실험 조립(--feature-service 또는 --extra-features)은 출력 경로를 명시해야 "
+        "합니다 — 기본 경로는 prod 학습 데이터셋이라 덮어쓰면 이후 prod 학습이 실험 "
+        "데이터로 조용히 진행됩니다."
+    )
 
 
 def _verify_assembly_environment() -> None:
@@ -830,12 +857,18 @@ def main(
 
     Args:
         feature_service: 조회할 FeatureService 이름(기본 ``ctr_training_v1``, #454).
-        extra_features: 학습 CSV에 함께 보존할 실험 피처 이름(#454). 지정하면 물리 스키마가
-            prod 데이터셋과 달라지므로 prod와 같은 ``output_path``를 재사용하지 않는다.
+        extra_features: 학습 CSV에 함께 보존할 실험 피처 이름(#454).
+
+    실험 조립(기본이 아닌 FeatureService 또는 실험 피처)은 ``output_path``를 명시해야
+    한다. 기본 경로는 prod 학습 데이터셋이라, 실험 조립이 그 자리를 덮어쓰면 이후 prod
+    학습이 실험 서비스로 조회된 데이터를 쓰면서도 컬럼 수만 맞아 조용히 성공한다.
 
     Returns:
         실측 spine 커버리지(#464). ``build-features``는 쓰지 않지만 ``run-pipeline``이
         MLflow lineage에 남긴다.
+
+    Raises:
+        FeatureContractError: 실험 조립인데 ``output_path``를 지정하지 않으면.
     """
     if not events_start_date or not events_end_date:
         raise ValueError(
@@ -845,6 +878,9 @@ def main(
     require_bigquery_project()
     _verify_assembly_environment()
     if output_path is None:
+        require_explicit_experiment_output(
+            feature_service=feature_service, extra_features=extra_features
+        )
         output_path = os.path.join(get_data_dir(), "processed", "training_dataset.csv")
     return _assemble_via_feast(
         output_path,

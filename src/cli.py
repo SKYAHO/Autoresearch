@@ -30,6 +30,7 @@ import math
 import os
 import sys
 import traceback
+from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Optional
@@ -626,12 +627,30 @@ def compare_paired_experiment(
         )
         raise typer.Exit(code=2) from error
 
-    with TemporaryDirectory(prefix="paired_experiment_") as temporary_dir:
-        result = paired_experiment.evaluate_paired_experiment(
-            parsed,
-            promotion_evidence_store=store,
-            workspace=Path(workspace) if workspace is not None else Path(temporary_dir),
-        )
+    with ExitStack() as stack:
+        if workspace is None:
+            # workspace를 명시하지 않으면 seed별 comparison manifest는 실행 동안만
+            # 필요하다. 지정한 경우에는 재사용·보존이 목적이므로 지우지 않는다.
+            resolved_workspace = Path(
+                stack.enter_context(TemporaryDirectory(prefix="paired_experiment_"))
+            )
+        else:
+            resolved_workspace = Path(workspace)
+        try:
+            result = paired_experiment.evaluate_paired_experiment(
+                parsed,
+                promotion_evidence_store=store,
+                workspace=resolved_workspace,
+            )
+        except OSError as error:
+            # workspace를 만들지 못하는 등 판정 자체를 시작할 수 없는 경우다.
+            # traceback을 그대로 흘리지 않고 안전한 진단만 남긴다.
+            typer.echo(
+                f"[비교 실행 실패] {type(error).__name__}: "
+                "paired 비교를 시작하지 못했습니다.",
+                err=True,
+            )
+            raise typer.Exit(code=1) from error
         try:
             paired_experiment.write_result(result, Path(output))
         except OSError as error:
