@@ -26,6 +26,8 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, ValidationError
 
+from src.pipeline.promotion_evidence import ExperimentPlanReceipt, HeldOutMetricReceipt
+
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
 
@@ -135,6 +137,17 @@ class TrainingSplitManifest(_ImmutableModel):
     splits: dict[str, SplitMembership]
     feature_columns_sha256: str = Field(pattern=SHA256_PATTERN)
     feature_columns: list[str]
+    # 기존 v1 split manifest JSON은 이 필드가 없으므로 None으로 읽는다. receipt가
+    # 있는 새 run만 자동 승격 evidence 경로에서 사용할 수 있다.
+    experiment_plan_receipt: ExperimentPlanReceipt | None = None
+
+
+class VerifiedComparisonPromotionEvidence(_ImmutableModel):
+    """fair comparison이 GCS에서 재검증한 plan·두 held-out metric receipt."""
+
+    plan_receipt: ExperimentPlanReceipt
+    baseline_metric: HeldOutMetricReceipt
+    challenger_metric: HeldOutMetricReceipt
 
 
 class TrainingComparisonManifest(_ImmutableModel):
@@ -156,6 +169,12 @@ class TrainingComparisonManifest(_ImmutableModel):
     challenger_feature_columns_sha256: str = Field(pattern=SHA256_PATTERN)
     baseline_feature_columns: list[str]
     challenger_feature_columns: list[str]
+    # 이전에 기록된 comparison artifact도 읽어야 한다. 다만 None이면 자동 승격
+    # 정책이 요구하는 effective seed·사전 선언 plan 근거가 없으므로 이후 evaluator가
+    # fail-closed 한다.
+    effective_seeds: TrainingSeeds | None = None
+    experiment_plan_id: str | None = Field(default=None, min_length=1)
+    promotion_evidence: VerifiedComparisonPromotionEvidence | None = None
     validated_at: datetime
     validation_status: Literal["verified"] = "verified"
 
@@ -324,6 +343,7 @@ def build_split_manifest(
     val_size: float,
     split_positions: Mapping[str, Sequence[int]],
     feature_columns: Sequence[str],
+    experiment_plan_receipt: ExperimentPlanReceipt | None = None,
 ) -> TrainingSplitManifest:
     """source row position과 feature 순서로 split manifest를 만든다."""
     expected_names = {"train", "validation", "test"}
@@ -348,4 +368,5 @@ def build_split_manifest(
         splits=splits,
         feature_columns_sha256=feature_columns_sha256(feature_columns),
         feature_columns=list(feature_columns),
+        experiment_plan_receipt=experiment_plan_receipt,
     )

@@ -81,8 +81,9 @@ ConfigMap 때문에 직렬화됩니다. 각 실행에는 후보 수 하나와 be
 GitHub Actions artifact `rerank-loadtest-${benchmark_label}-c${candidate_count}-${run_id}`의
 `runner/raw/`를 보관합니다. 각 VU마다 다음을 확보합니다.
 
-- `k6-summary-${job_name}.json`: custom measurement p50/p95/p99, request 수, status별
-  count, 오류율을 읽는 원본입니다.
+- `k6-summary-${job_name}.json`: custom measurement 중앙값(`med`, p50)/p95/p99,
+  request 수, status별 count, 오류율을 읽는 원본입니다. k6 summary의 `med` 키가
+  p50(중앙값)에 해당합니다.
 - `metadata-vu-${vus}.json`: Job 이름, 생성·완료 UTC, candidate/VU, fixture version,
   benchmark label, serving image digest, Git SHA를 확인합니다.
 - Prometheus range artifacts: 실제 파일명은
@@ -106,7 +107,7 @@ range-query 원시 응답의 범주를 뜻합니다. Task 5 workflow는
 | 구분 | 기록값 |
 | --- | --- |
 | 식별·재현 | benchmark phase, candidate count, VU, Job, UTC range, fixture/model/image digest/Git SHA/resources, artifact URL/hash, Prometheus query/time range |
-| k6 측정 | custom measurement p50/p95/p99, request count, status count, error count, `RPS = custom request count / 300` |
+| k6 측정 | custom measurement 중앙값(`med`, p50)/p95/p99, request count, status count, error count, `RPS = custom request count / 300` |
 | Prometheus phase·outcome | phase p95, outcome rate, in-flight max |
 | 리소스 | CPU, RSS, CFS throttling, `CPU-seconds/request = CPU seconds rate / RPS` |
 

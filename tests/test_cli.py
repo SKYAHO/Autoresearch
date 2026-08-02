@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -14,6 +15,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import cli  # noqa: E402
+from src.pipeline.promotion_evidence import (  # noqa: E402
+    ExperimentPlanReceipt,
+    GcsObjectReceipt,
+    PromotionEvidenceValidationError,
+)
 from src.pipeline import train as train_module  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
     ModelPromotionResult,
@@ -92,7 +98,7 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     }
 
 
-def test_train_model_forwards_explicit_seed_triplet(monkeypatch):
+def test_train_model_forwards_explicit_seed_triplet_and_promotion_evidence(monkeypatch):
     train_call = {}
     monkeypatch.setattr(
         cli.train, "main", lambda **kwargs: train_call.update(kwargs)
@@ -113,6 +119,8 @@ def test_train_model_forwards_explicit_seed_triplet(monkeypatch):
         sampler_seed=13,
         extra_features=None,
         experiment=None,
+        experiment_plan_receipt="plan-receipt.json",
+        promotion_evidence_root="gs://evidence/promotion-evidence",
     )
 
     assert (
@@ -121,9 +129,13 @@ def test_train_model_forwards_explicit_seed_triplet(monkeypatch):
         train_call["sampler_seed"],
     ) == (11, 12, 13)
     assert "require_snapshot" not in train_call
+    assert train_call["experiment_plan_receipt_path"] == "plan-receipt.json"
+    assert train_call["promotion_evidence_root"] == "gs://evidence/promotion-evidence"
 
 
-def test_run_pipeline_requires_verified_snapshot_and_forwards_seed_triplet(monkeypatch):
+def test_run_pipeline_requires_verified_snapshot_and_forwards_seed_triplet_and_promotion_evidence(
+    monkeypatch,
+):
     train_call = {}
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
     monkeypatch.setattr(cli.build_training_dataset, "main", MagicMock())
@@ -152,6 +164,8 @@ def test_run_pipeline_requires_verified_snapshot_and_forwards_seed_triplet(monke
         sampler_seed=13,
         extra_features=None,
         experiment=None,
+        experiment_plan_receipt="plan-receipt.json",
+        promotion_evidence_root="gs://evidence/promotion-evidence",
     )
 
     assert train_call["require_snapshot"] is True
@@ -160,6 +174,8 @@ def test_run_pipeline_requires_verified_snapshot_and_forwards_seed_triplet(monke
         train_call["model_seed"],
         train_call["sampler_seed"],
     ) == (11, 12, 13)
+    assert train_call["experiment_plan_receipt_path"] == "plan-receipt.json"
+    assert train_call["promotion_evidence_root"] == "gs://evidence/promotion-evidence"
 
 
 def test_run_pipeline_forwards_coverage_override(monkeypatch):
@@ -855,3 +871,224 @@ def test_verify_comparison_cli_maps_validation_error_without_secret(
     assert result.exit_code == 1
     assert "synthetic-private-value" not in result.output
     assert "ComparisonValidationError" in result.output
+
+
+class _PlanPublisher:
+    """create-experiment-plan CLI의 publish 결과를 고정하는 test double."""
+
+    def __init__(self) -> None:
+        self.plan = None
+
+    def publish_plan(self, plan):
+        self.plan = plan
+        return ExperimentPlanReceipt(
+            plan=plan,
+            object=GcsObjectReceipt(
+                uri=f"gs://evidence/promotion-evidence/plans/{plan.plan_id}.json",
+                generation="1",
+                metageneration="1",
+                time_created=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                sha256="a" * 64,
+            ),
+        )
+
+
+def test_create_experiment_plan_cli_publishes_receipt_atomically(
+    monkeypatch, tmp_path
+) -> None:
+    store = _PlanPublisher()
+    roots: list[str] = []
+
+    def _store(root: str) -> _PlanPublisher:
+        roots.append(root)
+        return store
+
+    monkeypatch.setattr(cli, "PromotionEvidenceStore", _store, raising=False)
+    output = tmp_path / "plan-receipt.json"
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "create-experiment-plan",
+            "--hypothesis-id",
+            "issue-466-h1",
+            "--control-id",
+            "control-revision",
+            "--candidate-id",
+            "candidate-revision",
+            "--promotion-evidence-root",
+            "gs://evidence/promotion-evidence",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert roots == ["gs://evidence/promotion-evidence"]
+    assert store.plan is not None
+    assert ExperimentPlanReceipt.model_validate_json(output.read_text(encoding="utf-8")).plan == store.plan
+
+
+@pytest.mark.parametrize("command", ["train-model", "run-pipeline"])
+@pytest.mark.parametrize(
+    "partial_option",
+    [
+        ("--experiment-plan-receipt", "plan-receipt.json"),
+        ("--promotion-evidence-root", "gs://evidence/promotion-evidence"),
+    ],
+)
+def test_training_cli_rejects_partial_promotion_evidence_options(
+    command: str, partial_option: tuple[str, str]
+) -> None:
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            command,
+            *partial_option,
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--experiment-plan-receipt와 --promotion-evidence-root는 함께 지정해야 합니다" in result.output
+
+
+def test_verify_comparison_cli_forwards_evidence_store_when_root_is_present(
+    monkeypatch, tmp_path
+) -> None:
+    store = object()
+    invocation = {}
+    monkeypatch.setattr(
+        cli,
+        "PromotionEvidenceStore",
+        lambda root: invocation.setdefault("root", root) and store,
+        raising=False,
+    )
+    result_model = MagicMock()
+    result_model.model_dump_json.return_value = "{}"
+    monkeypatch.setattr(
+        cli.training_comparison,
+        "verify_training_comparison",
+        lambda **kwargs: invocation.update(kwargs) or result_model,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "verify-comparison",
+            "--baseline-run-id",
+            "baseline",
+            "--challenger-run-id",
+            "challenger",
+            "--output",
+            str(tmp_path / "comparison.json"),
+            "--promotion-evidence-root",
+            "gs://evidence/promotion-evidence",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert invocation["root"] == "gs://evidence/promotion-evidence"
+    assert invocation["promotion_evidence_store"] is store
+
+
+def test_verify_comparison_cli_omits_evidence_store_for_legacy_runs(
+    monkeypatch, tmp_path
+) -> None:
+    invocation = {}
+    result_model = MagicMock()
+    result_model.model_dump_json.return_value = "{}"
+    monkeypatch.setattr(
+        cli.training_comparison,
+        "verify_training_comparison",
+        lambda **kwargs: invocation.update(kwargs) or result_model,
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "verify-comparison",
+            "--baseline-run-id",
+            "baseline",
+            "--challenger-run-id",
+            "challenger",
+            "--output",
+            str(tmp_path / "comparison.json"),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "promotion_evidence_store" not in invocation
+
+
+def test_create_experiment_plan_cli_hides_backend_error_and_does_not_write_output(
+    monkeypatch, tmp_path
+) -> None:
+    secret = "synthetic-publisher-secret"
+
+    class _FailingPublisher:
+        def publish_plan(self, plan):
+            raise PromotionEvidenceValidationError(f"credential={secret}")
+
+    monkeypatch.setattr(
+        cli,
+        "PromotionEvidenceStore",
+        lambda root: _FailingPublisher(),
+        raising=False,
+    )
+    output = tmp_path / "plan-receipt.json"
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "create-experiment-plan",
+            "--hypothesis-id",
+            "issue-466-h1",
+            "--control-id",
+            "control-revision",
+            "--candidate-id",
+            "candidate-revision",
+            "--promotion-evidence-root",
+            "gs://evidence/promotion-evidence",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert not output.exists()
+    assert secret not in result.output
+    assert "PromotionEvidenceValidationError" in result.output
+
+
+def test_create_experiment_plan_cli_preserves_published_receipt_when_local_write_fails(
+    monkeypatch, tmp_path
+) -> None:
+    store = _PlanPublisher()
+    monkeypatch.setattr(cli, "PromotionEvidenceStore", lambda root: store)
+
+    def _raise_local_write(*_args, **_kwargs) -> None:
+        raise OSError("synthetic local output failure")
+
+    monkeypatch.setattr(cli, "write_manifest_atomic", _raise_local_write)
+    output = tmp_path / "plan-receipt.json"
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "create-experiment-plan",
+            "--hypothesis-id",
+            "issue-466-h1",
+            "--control-id",
+            "control-revision",
+            "--candidate-id",
+            "candidate-revision",
+            "--promotion-evidence-root",
+            "gs://evidence/promotion-evidence",
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert not output.exists()
+    assert store.plan is not None
+    assert "[실험 계획 receipt 저장 실패] OSError" in result.output
+    assert "GCS plan은 이미 publish되었습니다" in result.output
+    assert store.plan.plan_id in result.output

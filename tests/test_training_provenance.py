@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -10,7 +10,9 @@ import pytest
 
 from src.pipeline.training_provenance import (
     RegistryProvenance,
+    TrainingComparisonManifest,
     TrainingSeeds,
+    TrainingSplitManifest,
     build_snapshot_manifest,
     build_split_manifest,
     load_training_snapshot_manifest,
@@ -38,6 +40,30 @@ def _dataset(path: Path) -> None:
             "clicked": pd.Series([0, 1], dtype="int64"),
         }
     ).to_csv(path, index=False)
+
+
+def test_existing_comparison_manifest_without_seed_triplet_still_parses() -> None:
+    manifest = TrainingComparisonManifest.model_validate(
+        {
+            "comparison_id": "comparison-1",
+            "baseline_run_id": "baseline-run",
+            "challenger_run_id": "challenger-run",
+            "baseline_snapshot_sha256": "a" * 64,
+            "challenger_snapshot_sha256": "a" * 64,
+            "baseline_snapshot_manifest_sha256": "b" * 64,
+            "challenger_snapshot_manifest_sha256": "b" * 64,
+            "baseline_split_manifest_sha256": "c" * 64,
+            "challenger_split_manifest_sha256": "c" * 64,
+            "baseline_feature_columns_sha256": "d" * 64,
+            "challenger_feature_columns_sha256": "d" * 64,
+            "baseline_feature_columns": ["views"],
+            "challenger_feature_columns": ["views", "new_feature"],
+            "validated_at": datetime(2026, 8, 1, tzinfo=timezone.utc),
+        }
+    )
+
+    assert manifest.effective_seeds is None
+    assert manifest.experiment_plan_id is None
 
 
 def test_snapshot_manifest_round_trip_validates_csv(tmp_path: Path) -> None:
@@ -188,3 +214,30 @@ def test_split_manifest_records_membership_and_feature_hashes(tmp_path: Path) ->
     assert split.run_id == "run-1"
     assert split.splits["train"].membership_sha256 == membership_sha256([0])
     assert split.feature_columns == ["views"]
+
+
+def test_existing_split_manifest_json_without_plan_receipt_still_parses(tmp_path: Path) -> None:
+    dataset_path = tmp_path / "training_dataset.csv"
+    _dataset(dataset_path)
+    snapshot = build_snapshot_manifest(
+        dataset_path=dataset_path,
+        events_start_date=date(2026, 7, 1),
+        events_end_date=date(2026, 7, 30),
+        feature_service="ctr_training_v1",
+        registry=_registry(),
+        code_archive_sha=None,
+    )
+    legacy_json = build_split_manifest(
+        run_id="run-1",
+        snapshot=snapshot,
+        snapshot_manifest_sha256="b" * 64,
+        seeds=TrainingSeeds(split_seed=11, model_seed=12, sampler_seed=13),
+        test_size=0.2,
+        val_size=0.2,
+        split_positions={"train": [0], "validation": [1], "test": [2]},
+        feature_columns=["views"],
+    ).model_dump_json()
+
+    parsed = TrainingSplitManifest.model_validate_json(legacy_json)
+
+    assert parsed.experiment_plan_receipt is None

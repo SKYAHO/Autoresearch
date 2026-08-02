@@ -92,6 +92,7 @@ jobs:
       - name: Get scoped GKE credentials
         uses: google-github-actions/get-gke-credentials@v2
         with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
           cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
           location: ${{ vars.GKE_LOCATION }}
           use_dns_based_endpoint: true
@@ -369,6 +370,7 @@ jobs:
         if: steps.evidence.outputs.completed_count != '0'
         uses: google-github-actions/get-gke-credentials@v2
         with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
           cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
           location: ${{ vars.GKE_LOCATION }}
           use_dns_based_endpoint: true

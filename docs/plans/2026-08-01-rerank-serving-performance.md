@@ -498,7 +498,7 @@ Expected: FAIL because runbook is absent.
 
 Operator executes provisioner dry-run then apply, records version/timestamp/1-1-200-5 counts, manually triggers materialize, and waits for job_summary succeeded. Operator verifies serving readiness and copies deployed image digest/Git SHA into workflow inputs because the loadtest identity cannot read Deployment. Run baseline 24 then 200; refresh fixture/materialize again before optimized and repeat same profiles.
 
-Report one row per candidate/VU; never average 24 and 200. Record custom measurement p50/p95/p99, RPS = custom request count / 300, request/status/error count, phase p95, CPU, RSS, throttling, in-flight max, and CPU-seconds/request = CPU seconds rate / RPS. Caption every row with Job, UTC range, fixture/model/image/SHA/resources, artifact URL/hash, and Prometheus query/time range. A missing raw query is N/A with query name, never an improvement.
+Report one row per candidate/VU; never average 24 and 200. Record custom measurement 중앙값(`med`, p50)/p95/p99, RPS = custom request count / 300, request/status/error count, phase p95, CPU, RSS, throttling, in-flight max, and CPU-seconds/request = CPU seconds rate / RPS. Caption every row with Job, UTC range, fixture/model/image/SHA/resources, artifact URL/hash, and Prometheus query/time range. A missing raw query is N/A with query name, never an improvement.
 
 - [ ] **Step 4: Verify and commit.**
 
