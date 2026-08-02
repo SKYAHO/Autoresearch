@@ -22,8 +22,13 @@ BigQuery 없이 단위 테스트 가능한 순수 함수이며, 검증은 비싼
 실제 학습 구간"을 사후에 판별할 수 있게 한다. 기준값 근거·동작 계약·이 가드가 막지 못하는
 것은 ``docs/specs/2026-08-01-training-window-coverage-guard.md``가 정본이다.
 
-출력: data/processed/training_dataset.csv와 snapshot sidecar (21 모델 피처 + ``clicked``
-label = 22 물리 컬럼).
+출력: data/processed/training_dataset.csv와 snapshot sidecar. 컬럼은
+``[*MODEL_FEATURE_COLUMNS, *extra_features, "clicked"]`` 순서이며, ``extra_features``가 비면
+기존 계약(21 모델 피처 + ``clicked`` label = 22 물리 컬럼)과 동일하다. 실험이
+``feature_service``/``extra_features``를 주면 그 FeatureService로 조회하고 선언한 파생 피처를
+잘라내지 않고 보존한다(#454) — 학습의 ``--extra-features``는 데이터셋에 **이미 있는** 컬럼만
+승격하므로, 조립이 보존하지 않으면 가설이 성립하지 않는다. 계약 정본은
+``docs/specs/2026-08-03-paired-offline-experiment-comparison.md`` §2다.
 model input의 이름·순서·categorical 분류는 ``src/features/model_contract.py``가, staged PIT 조회는
 ``src/features/feast_retrieval.py``가 소유한다(이 모듈은 재정의하지 않는다).
 
@@ -38,6 +43,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile, TemporaryDirectory
@@ -49,7 +55,11 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 from src.features.assembly import connect_duckdb  # noqa: E402
-from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
+from src.features.model_contract import (  # noqa: E402
+    MODEL_FEATURE_COLUMNS,
+    FeatureContractError,
+    resolve_experiment_feature_columns,
+)
 from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
 from src.pipeline.training_provenance import (  # noqa: E402
     ProvenanceValidationError,
@@ -387,6 +397,46 @@ def require_spine_coverage(
         )
 
 
+def resolve_extra_feature_columns(
+    extra_features: Sequence[str] | None,
+) -> tuple[str, ...]:
+    """CSV에 보존할 실험 피처 이름을 **비싼 조회 전에** 검증한다(#454).
+
+    ``require_spine_coverage``와 같은 이유로 앞에 세운다 — 이름이 잘못된 조립에
+    ``get_historical_features`` 수 분과 BigQuery 스캔을 쓰지 않는다.
+
+    중복과 prod 계약(``MODEL_FEATURE_COLUMNS``) 충돌 판정은 계약 계층
+    (``resolve_experiment_feature_columns``)이 이미 소유하므로 여기서 다시 정의하지
+    않는다. 조립 고유의 금지만 앞에 둔다: 빈 이름(CSV 컬럼이 될 수 없다)과 라벨
+    컬럼 ``clicked``(CSV 마지막에 따로 쓰므로 겹치면 같은 컬럼이 두 번 나간다).
+
+    미지정(None·빈 목록)은 실패가 아니라 prod 경로다 — 기존 22컬럼 계약을 그대로 쓴다.
+
+    Returns:
+        검증을 통과한 실험 피처 이름. 미지정이면 빈 튜플.
+
+    Raises:
+        FeatureContractError: 이름이 비었거나, ``clicked``거나, 중복이거나, prod 계약과
+            겹치면.
+    """
+    if not extra_features:
+        return ()
+
+    requested = tuple(extra_features)
+    if any(not name.strip() for name in requested):
+        raise FeatureContractError(
+            f"실험 피처 이름이 비었습니다: {list(requested)}. "
+            "공백만 있는 이름은 CSV 컬럼이 될 수 없습니다."
+        )
+    if "clicked" in requested:
+        raise FeatureContractError(
+            "실험 피처로 라벨 컬럼 'clicked'를 지정할 수 없습니다 — "
+            "학습 CSV는 라벨을 마지막 컬럼으로 따로 씁니다."
+        )
+    resolve_experiment_feature_columns(requested)
+    return requested
+
+
 def _verify_assembly_environment() -> None:
     """feast 조립에 필요한 환경을 BigQuery 접속 전에 확인한다(#404/#423).
 
@@ -500,11 +550,21 @@ def _assemble_via_feast(
     events_end_date: str,
     *,
     min_coverage_days: int = DEFAULT_MIN_COVERAGE_DAYS,
+    feature_service: str | None = None,
+    extra_features: Sequence[str] | None = None,
 ) -> SpineCoverage:
     """Feast get_historical_features(PIT)로 spine에 21피처를 붙여 CSV로 쓴다(#358).
 
     DuckDB 재계산 경로를 대체한다. offline store가 정본(#357)이라 그 값을 그대로 읽는다.
     feast/feature_repo는 이 경로에서만 필요하므로 지연 import한다(격리 그룹).
+
+    Args:
+        min_coverage_days: spine 커버리지 하한(#464). 0이면 검사를 건너뛴다.
+        feature_service: 조회할 FeatureService 이름. None이면 prod 기본값
+            (``DEFAULT_SERVICE``)이며, 실제로 쓴 이름이 snapshot manifest에 남는다(#454).
+        extra_features: prod 계약 뒤에 **보존**할 실험 피처 이름(#454). 학습의
+            ``--extra-features``는 데이터셋에 이미 있는 컬럼만 승격하므로, 여기서
+            보존하지 않으면 FeatureService에 파생 피처를 더해도 가설이 성립하지 않는다.
 
     Returns:
         실측 spine 커버리지(#464). 호출부(run-pipeline)가 MLflow lineage에 남겨
@@ -517,8 +577,13 @@ def _assemble_via_feast(
         apply_cold_start_defaults,
         build_offline_feature_store,
         drop_user_dynamic_gap_rows,
+        require_extra_feature_columns,
         retrieve_training_features,
     )
+
+    # 이름 검증도 커버리지 검사와 같은 이유로 spine 조회 **전에** 한다(#454).
+    service = feature_service or DEFAULT_SERVICE
+    experiment_columns = resolve_extra_feature_columns(extra_features)
 
     print("\n[feast] training_entity spine 로드...")
     spine = load_training_entity_spine(events_start_date, events_end_date)
@@ -550,12 +615,15 @@ def _assemble_via_feast(
                 gcs_staging=gcs_staging,
                 online_db_path=str(online_db),
             )
-            print("\n[feast] get_historical_features(PIT) 조회...")
-            features = retrieve_training_features(store, spine)
+            print(f"\n[feast] get_historical_features(PIT) 조회... (service={service})")
+            features = retrieve_training_features(store, spine, service=service)
 
             missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
             if missing:
                 raise ValueError(f"feast 조회 결과에 누락된 모델 피처: {missing}")
+            # 선언한 실험 피처가 없으면 CSV를 쓰기 **전에** 멈춘다(fail-closed, #454) —
+            # 잘린 데이터셋을 저장하면 학습 승격 단계에서야 실패해 조립 비용이 버려진다.
+            require_extra_feature_columns(features, experiment_columns, service=service)
 
             # (C) 결손 가시화: UserDynamic 전체 null(ttl 초과·#365 결손)은 채우지 않고 드롭
             # (활동 유저를 "신규 유저"로 위장시키지 않는다). 이 뒤에 남는 null(영상 미발견 등)만
@@ -589,7 +657,10 @@ def _assemble_via_feast(
                 delete=False,
             ) as temporary_file:
                 staged_csv = Path(temporary_file.name)
-                features[[*MODEL_FEATURE_COLUMNS, "clicked"]].to_csv(
+                # 실험 피처는 prod 계약 **뒤·라벨 앞**에 고정 순서로 붙인다(#454).
+                # 이 컬럼들의 null은 채우지 않는다 — apply_cold_start_defaults는 prod 계약
+                # 컬럼만 다루며, 가설이 더한 컬럼의 결측 의미는 가설 소유자가 정의한다.
+                features[[*MODEL_FEATURE_COLUMNS, *experiment_columns, "clicked"]].to_csv(
                     temporary_file, index=False
                 )
                 temporary_file.flush()
@@ -599,7 +670,7 @@ def _assemble_via_feast(
                 dataset_path=staged_csv,
                 events_start_date=events_start_date,
                 events_end_date=events_end_date,
-                feature_service=DEFAULT_SERVICE,
+                feature_service=service,
                 registry=registry,
                 code_archive_sha=os.environ.get("CODE_ARCHIVE_SHA"),
             )
@@ -611,7 +682,11 @@ def _assemble_via_feast(
         if staged_csv is not None:
             staged_csv.unlink(missing_ok=True)
 
-    print(f"\n[저장] {output} ({len(features)} rows, feast 경로 + snapshot provenance)")
+    experiment_note = f", 실험 피처 {list(experiment_columns)}" if experiment_columns else ""
+    print(
+        f"\n[저장] {output} ({len(features)} rows, feast 경로 + snapshot provenance"
+        f", service={service}{experiment_note})"
+    )
     return coverage
 
 
@@ -743,12 +818,20 @@ def main(
     events_start_date: str = None,
     events_end_date: str = None,
     min_coverage_days: int = DEFAULT_MIN_COVERAGE_DAYS,
+    *,
+    feature_service: str | None = None,
+    extra_features: Sequence[str] | None = None,
 ) -> SpineCoverage:
     """training_dataset.csv를 offline feature store(Feast PIT) 조회로 생성한다(#359 C2, feast-only).
 
     #359 C2에서 DuckDB 재계산 경로를 제거하고 feast를 유일 경로로 만들었다. spine
     (``training_entity``)에 21피처를 ``get_historical_features``(PIT)로 붙여 CSV로 쓴다
     (``_assemble_via_feast``). offline store가 정본(#357)이라 그 값을 그대로 읽는다.
+
+    Args:
+        feature_service: 조회할 FeatureService 이름(기본 ``ctr_training_v1``, #454).
+        extra_features: 학습 CSV에 함께 보존할 실험 피처 이름(#454). 지정하면 물리 스키마가
+            prod 데이터셋과 달라지므로 prod와 같은 ``output_path``를 재사용하지 않는다.
 
     Returns:
         실측 spine 커버리지(#464). ``build-features``는 쓰지 않지만 ``run-pipeline``이
@@ -768,4 +851,6 @@ def main(
         events_start_date,
         events_end_date,
         min_coverage_days=min_coverage_days,
+        feature_service=feature_service,
+        extra_features=extra_features,
     )

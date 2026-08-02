@@ -377,9 +377,13 @@ def test_main_runs_assembly_when_env_check_passes(monkeypatch, tmp_path) -> None
     )
 
     # 커버리지 기준(#464)은 조립에 그대로 전달된다 — main이 임의로 낮추지 않는다.
+    # 조립 피처 옵션(#454)은 미지정이면 None으로 전달되어 prod 기본값(ctr_training_v1 +
+    # 22컬럼 계약)이 그대로 쓰인다.
     assemble.assert_called_once_with(
         output_path,
         "2026-07-01",
         "2026-07-02",
         min_coverage_days=build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS,
+        feature_service=None,
+        extra_features=None,
     )
