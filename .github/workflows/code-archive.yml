@@ -70,6 +70,12 @@ jobs:
             echo "update_latest=$update_latest"
           } >> "$GITHUB_OUTPUT"
 
+      - name: dev 환경 좌표 확인
+        uses: ./.github/actions/resolve-dev-environment
+        with:
+          configured_project_id: ${{ vars.GCP_PROJECT_ID }}
+          configured_region: ${{ vars.GCP_REGION }}
+
       - name: Authenticate to GCP with Workload Identity Federation
         uses: google-github-actions/auth@v2
         with:

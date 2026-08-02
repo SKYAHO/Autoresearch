@@ -93,6 +93,13 @@ batch job이 검증한 동일한 `source_sha`를 checkout하므로 네 이미지
 
 1. **WIF 인증**: `GAR_PUSHER_SA` secret을 사용해 GCP Workload Identity Federation으로
    인증. 서비스 계정 키 없이 GitHub Actions에서 GCP 접근.
+
+   배포 전에는 `Autoresearch-infra`의
+   `config/environments/dev/environment.yaml`을 sparse checkout하여 GitHub 환경의
+   `GCP_PROJECT_ID`, `GCP_REGION`(Feast는 GKE 클러스터·존 포함)과 대조합니다.
+   값이 다르면 WIF 인증과 GCP 쓰기 전에 실패합니다. 프로젝트 이전 시에는
+   카탈로그와 bootstrap/WIF 설정을 먼저 갱신한 뒤 GitHub 변수를 같은 값으로
+   바꿉니다.
 2. **이미지 빌드**: `Dockerfile.app` (multi-stage, uv lock-export → python:3.12-slim,
    non-root user). 빌드 인자로 `VCS_REF`(commit SHA) 전달.
 3. **GAR push**: `autoresearch-batch:sha-<short>` + release tag (예: `v0.0.2`) 두 개 태그로 push.

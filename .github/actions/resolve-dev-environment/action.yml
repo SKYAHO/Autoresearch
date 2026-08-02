@@ -1,0 +1,79 @@
+name: dev 환경 좌표 확인
+description: 인프라 저장소 dev 카탈로그와 GitHub 환경 변수를 대조합니다.
+
+inputs:
+  configured_project_id:
+    description: GitHub 환경에 설정한 GCP 프로젝트 ID입니다.
+    required: true
+  configured_region:
+    description: GitHub 환경에 설정한 GCP 리전입니다.
+    required: true
+  configured_cluster:
+    description: GitHub 환경에 설정한 GKE 클러스터 이름입니다.
+    required: false
+  configured_location:
+    description: GitHub 환경에 설정한 GKE 위치입니다.
+    required: false
+
+outputs:
+  project_id:
+    description: 카탈로그에서 확인한 프로젝트 ID입니다.
+    value: ${{ steps.resolve.outputs.project_id }}
+  region:
+    description: 카탈로그에서 확인한 리전입니다.
+    value: ${{ steps.resolve.outputs.region }}
+  zone:
+    description: 카탈로그에서 확인한 존입니다.
+    value: ${{ steps.resolve.outputs.zone }}
+  gke_cluster_name:
+    description: 카탈로그에서 확인한 클러스터 이름입니다.
+    value: ${{ steps.resolve.outputs.gke_cluster_name }}
+
+runs:
+  using: composite
+  steps:
+    - name: 신뢰된 인프라 카탈로그 가져오기
+      uses: actions/checkout@v6
+      with:
+        repository: SKYAHO/Autoresearch-infra
+        ref: main
+        path: .environment-catalog
+        persist-credentials: false
+        sparse-checkout: |
+          config/environments/dev/environment.yaml
+          scripts/environment_catalog.rb
+    - name: dev 환경 좌표 대조
+      id: resolve
+      shell: bash
+      env:
+        CONFIGURED_PROJECT_ID: ${{ inputs.configured_project_id }}
+        CONFIGURED_REGION: ${{ inputs.configured_region }}
+        CONFIGURED_CLUSTER: ${{ inputs.configured_cluster }}
+        CONFIGURED_LOCATION: ${{ inputs.configured_location }}
+      run: |
+        set -euo pipefail
+        catalog='.environment-catalog/config/environments/dev/environment.yaml'
+        resolver='.environment-catalog/scripts/environment_catalog.rb'
+        resolve() { ruby "$resolver" --catalog "$catalog" --field "$1"; }
+        project_id="$(resolve gcp.project_id)"
+        region="$(resolve gcp.region)"
+        zone="$(resolve gcp.zone)"
+        cluster_name="$(resolve gke.cluster_name)"
+        require_match() {
+          if [[ -z "$1" || "$1" != "$2" ]]; then
+            echo "::error::$3 값이 인프라 dev 카탈로그와 일치하지 않습니다"
+            exit 1
+          fi
+        }
+        require_match "$CONFIGURED_PROJECT_ID" "$project_id" 'GCP_PROJECT_ID'
+        require_match "$CONFIGURED_REGION" "$region" 'GCP_REGION'
+        if [[ -n "$CONFIGURED_CLUSTER" || -n "$CONFIGURED_LOCATION" ]]; then
+          require_match "$CONFIGURED_CLUSTER" "$cluster_name" 'GKE_CLUSTER_NAME'
+          require_match "$CONFIGURED_LOCATION" "$zone" 'GKE_LOCATION'
+        fi
+        {
+          echo "project_id=$project_id"
+          echo "region=$region"
+          echo "zone=$zone"
+          echo "gke_cluster_name=$cluster_name"
+        } >> "$GITHUB_OUTPUT"
