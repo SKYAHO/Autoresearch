@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-02T10:32:24Z",
+  "generated_at": "2026-08-02T15:14:28Z",
   "reports": [
+    {
+      "number": 477,
+      "title": "feat: Auto Research dev 실험 자동 병합",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-02T15:14:10Z",
+      "summary_ko": [
+        "Auto Research 자율 실험을 위한 이슈 입력 양식을 구조화하고 재현성 및 평가 기준 식별자를 도입했습니다.",
+        "실험 이슈 등록 시 개발 기준선(dev) 기반의 고정 작업 브랜치를 자동 생성하고 검증 마커를 남기도록 작성했습니다.",
+        "실험 완료 이벤트 수신 시 성능 평가 기준을 충족한 최선의 후보를 개발 브랜치(dev)에 자동 병합하는 구조를 구현했습니다."
+      ],
+      "report_url": "pr/477/"
+    },
     {
       "number": 487,
       "title": "[BUG] rerank loadtest summary에 p99 포함",
