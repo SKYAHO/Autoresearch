@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,11 +55,14 @@ class _PromoteClient:
     """
 
     def __init__(
-        self, *, main_versions=None, runs=None, calibration_runs=None, list_artifacts_error=False
+        self, *, main_versions=None, runs=None, calibration_runs=None, manifest_runs=None,
+        invalid_manifest_runs=None, list_artifacts_error=False
     ):
         self.main_versions = main_versions or []
         self.runs = runs or {}
         self.calibration_runs = set(calibration_runs or [])
+        self.manifest_runs = set(self.runs if manifest_runs is None else manifest_runs)
+        self.invalid_manifest_runs = set(invalid_manifest_runs or [])
         self.list_artifacts_error = list_artifacts_error
         self.set_alias_calls: list[tuple[str, str, str]] = []
 
@@ -85,7 +89,27 @@ class _PromoteClient:
             raise RuntimeError("artifact store unreachable")
         if run_id in self.calibration_runs and path == "calibration":
             return [SimpleNamespace(path="calibration/calibration.json")]
+        if run_id in self.manifest_runs | self.invalid_manifest_runs and path == "manifest":
+            return [SimpleNamespace(path="manifest/manifest.json")]
         return []
+
+    def download_artifacts(self, run_id, path, dst_path):
+        target = Path(dst_path) / "manifest.json"
+        payload = {"contract_version": "wrong"}
+        if run_id in self.manifest_runs:
+            payload = {
+                "contract_version": "ctr-model-package-v1",
+                "feature_service": "ctr_training_v1",
+                "sampling_rate": 1.0,
+                "artifacts": {
+                    "model_onnx": {"path": "model_onnx", "entrypoint": "model.onnx", "sha256": "a" * 64},
+                    "feature_columns": {"path": "features/feature_columns.json", "sha256": "a" * 64},
+                    "categorical_columns": {"path": "features/categorical_columns.json", "sha256": "a" * 64},
+                    "calibration": None,
+                },
+            }
+        target.write_text(json.dumps(payload), encoding="utf-8")
+        return str(target)
 
     def set_registered_model_alias(self, name, alias, version):
         self.set_alias_calls.append((name, alias, str(version)))
@@ -125,7 +149,7 @@ def test_main_returns_no_candidate_when_latest_is_already_champion(monkeypatch):
 def test_main_promotes_when_no_champion_exists_bootstrap(monkeypatch):
     # champion alias가 아직 없으면 비교 대상이 없어 게이트 1을 자동 통과한다.
     v1 = _version("1", run_id="run-1")
-    client = _PromoteClient(main_versions=[v1], runs={"run-1": {"val_roc_auc": 0.70}})
+    client = _PromoteClient(main_versions=[v1], runs={"run-1": {"val_roc_auc": 0.70}}, manifest_runs=["run-1"])
     _patch_client(monkeypatch, client)
 
     result = promote.main(MODEL_NAME, "champion")
@@ -136,6 +160,23 @@ def test_main_promotes_when_no_champion_exists_bootstrap(monkeypatch):
     assert result.champion_version is None
     assert result.candidate_metric == 0.70
     assert client.set_alias_calls == [(MODEL_NAME, "champion", "1")]
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_main_rejects_candidate_without_valid_manifest(monkeypatch, invalid):
+    candidate = _version("1", run_id="run-1")
+    client = _PromoteClient(
+        main_versions=[candidate], runs={"run-1": {"val_roc_auc": 0.70}},
+        manifest_runs=[],
+        invalid_manifest_runs=["run-1"] if invalid else [],
+    )
+    _patch_client(monkeypatch, client)
+
+    result = promote.main(MODEL_NAME, "champion")
+
+    assert result.outcome is PromotionOutcome.REJECTED
+    assert result.reason_code is PromotionReasonCode.MANIFEST_ARTIFACT_INVALID
+    assert client.set_alias_calls == []
 
 
 def test_main_promotes_when_candidate_metric_is_better(monkeypatch):
