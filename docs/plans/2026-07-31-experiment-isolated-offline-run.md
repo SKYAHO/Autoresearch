@@ -1,10 +1,13 @@
 # 실험별 Feast Registry·offline 실행 격리 구현 계획
 
+> 후속 계획: `docs/plans/2026-08-03-paired-offline-experiment-comparison.md`(#454).
+> 실행 context는 조건(baseline/candidate) 격리 좌표로 확장됐다.
+
 ## 1. 실행 context 생성기
 
-- [ ] `experiment_id`, `candidate_sha`, issue 번호를 검증한다.
-- [ ] Registry key와 artifact prefix를 결정론적으로 만든다.
-- [ ] GCS root와 결합한 URI를 생성하고 다른 실험 경로를 거부한다.
+- [x] `experiment_id`, `condition`, `source_sha`, issue 번호를 검증한다.
+- [x] Registry key와 artifact prefix를 결정론적으로 만든다.
+- [x] GCS root와 결합한 URI를 생성하고 다른 실험 경로를 거부한다.
 
 ## 2. 실행 계약
 

@@ -49,6 +49,7 @@ python -m autoresearch.jobs.feature_store_build [options]
 python -m autoresearch.jobs.feast_materialize [options]
 python -m src.pipeline.daily_recommendations [options]
 python -m src.cli promote-model [options]
+python -m src.cli compare-paired-experiment [options]
 ```
 
 console script alias를 추가할 수 있지만 Airflow는 v1 동안 위 module 경로를
@@ -577,6 +578,31 @@ v1 결과의 전체 필드는 다음과 같다.
 XCom으로 운반하고 알림을 렌더링할 뿐 `src.tracking` 내부 API를 import하거나
 승격 판정을 재구현하지 않는다. `/airflow/xcom/return.json`은 Airflow
 KubernetesPodOperator의 운반 경로이며 application의 영속 저장소가 아니다.
+
+## paired offline 실험 비교 (#454)
+
+조건별 학습 Job이 모두 끝난 뒤, Airflow는 다음 호출로 비교·판정 결과를 얻는다.
+
+```text
+python -m src.cli compare-paired-experiment \
+  --request /airflow/xcom/paired-request.json \
+  --promotion-evidence-root gs://<bucket>/<prefix> \
+  --output /airflow/xcom/return.json
+```
+
+- 요청 파일은 `paired-offline-experiment-v1` 계약이며, 조건별 lineage
+  (`source_sha`, `image_digest`, `code_archive_sha`, `registry_uri`,
+  `feature_schema_fingerprint`)와 seed별 baseline/candidate MLflow run ID를 담는다.
+- 결과 파일은 `paired-offline-experiment-result-v1`이며 `outcome`은
+  `comparison_passed`, `comparison_rejected`, `comparison_failed` 중 하나다.
+- `comparison_passed`는 exit 0, `comparison_rejected`도 정상 판정이므로 exit 0,
+  `comparison_failed`는 exit 1이다. 인자·요청 schema 오류는 exit 2다.
+- 실패·기각도 같은 형식의 결과 파일을 남긴다. 결과가 없으면 후속 게이트가
+  판정을 추정할 수 없으므로, 판정 불가 상태는 통과가 아니라 실패로 기록한다.
+- 결과 파일은 임시 파일 fsync 후 `os.replace`로 원자 게시한다.
+- 원본 예외, traceback, credential, signed URL은 결과와 stdout에 넣지 않는다.
+- 필드·검증 규칙의 정본은
+  `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`다.
 
 ## Airflow 호출 계약
 

@@ -53,6 +53,9 @@
 - [Spec — CTR 모델 배포 패키지](archive/specs/2026-08-01-ctr-model-deployment-package.md) (구현 완료·아카이브)
 - [Plan — CTR 모델 배포 패키지 구현](archive/plans/2026-08-01-ctr-model-deployment-package.md) (구현 완료·아카이브)
 - [Spec — 학습 윈도우 spine 커버리지 가드](specs/2026-08-01-training-window-coverage-guard.md) — 기준값 근거·lineage 계약·가드의 한계 (#464)
+- [Spec — paired offline 실험 배치·비교 결과 계약](specs/2026-08-03-paired-offline-experiment-comparison.md) — 조건 격리 좌표·피처 보존·결과 payload (#454)
+- [Plan — paired offline 실험 배치·비교 결과 구현](plans/2026-08-03-paired-offline-experiment-comparison.md) (#454)
+- [Spec — 실험별 Feast Registry·offline 실행 격리](specs/2026-07-31-experiment-isolated-offline-run.md) (#454 실행 context)
 - [Plan — `src/` → `autoresearch/` 패키지 통합](plans/2026-07-15-src-package-merge.md) (팀 합의 대기)
 - `src/pipeline/`, `src/models/`, `src/features/` (CTR 학습·평가 코드)
 
@@ -114,6 +117,8 @@
   GitHub Pages에 누적된 merge PR 리포트의 정적 검색 인덱스
 - [모델 승격 구조화 결과 계약](specs/2026-07-29-model-promotion-structured-outcome.md) —
   승격·게이트 미달·후보 없음·실행 오류의 기계 판독 결과와 Airflow 인계 계약
+- [paired offline 실험 배치·비교 결과 계약](specs/2026-08-03-paired-offline-experiment-comparison.md) —
+  baseline/candidate 조건 격리, 실험 피처 보존, `comparison_passed`/`rejected`/`failed` 결과 payload
 - [Rerank Serving 성능·비용·안정성 벤치마크](specs/2026-07-31-rerank-serving-performance-benchmark.md)
 
 ## 가이드
