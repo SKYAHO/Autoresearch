@@ -119,7 +119,13 @@ def post_experiment_event(
     request: ExperimentEventCreate,
     session: SessionDependency,
 ) -> ExperimentEventResponse:
-    """멱등 상태 Event를 추가한다."""
+    """멱등 상태 Event를 추가한다.
+
+    같은 idempotency_key·같은 payload 재요청은 이 요청이 최초로 만든 event를 그대로
+    반환한다 — 응답의 to_status/from_status는 그 event가 기록된 시점의 스냅샷이며,
+    이후 다른 경로로 실험이 더 진행됐어도 갱신되지 않는다. 실험의 현재 상태는
+    `GET /experiments/{id}`로 별도 조회해야 한다.
+    """
     return ExperimentEventResponse.model_validate(create_experiment_event(session, experiment_id, request))
 
 

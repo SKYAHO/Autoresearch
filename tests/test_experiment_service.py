@@ -571,6 +571,20 @@ def test_log_polling_orders_by_created_at_then_id_and_advances_after_cursor(
     ]
 
 
+def test_experiment_create_rejects_oversized_hypothesis_and_metadata_value() -> None:
+    """/chat의 8192자 상한과 동일하게 대용량 body를 스키마 단계에서 거부한다."""
+    with pytest.raises(ValidationError):
+        ExperimentCreate(hypothesis="x" * 8193)
+    with pytest.raises(ValidationError):
+        ExperimentCreate(hypothesis="valid", metadata={"branch": "x" * 8193})
+
+
+def test_experiment_log_create_rejects_oversized_content() -> None:
+    """/chat의 8192자 상한과 동일하게 대용량 log content를 스키마 단계에서 거부한다."""
+    with pytest.raises(ValidationError):
+        ExperimentLogCreate(idempotency_key="oversized-log", content="x" * 8193)
+
+
 @pytest.mark.parametrize("reason", ["", "   ", "\t\n"])
 def test_promotion_request_requires_non_blank_operator_reason(reason: str) -> None:
     """운영 근거가 없는 수동 승격 요청을 스키마 단계에서 차단한다."""
@@ -759,3 +773,60 @@ def test_promotion_event_failure_rolls_back_status_change(db_session: Session) -
     persisted = db_session.get(Experiment, experiment_id)
     assert persisted is not None
     assert persisted.status == ExperimentStatus.PASSED.value
+
+
+def test_concurrent_promotion_retries_return_one_persisted_event(tmp_path: Path) -> None:
+    """for_update lock만으로 막히지 않는 동시 promote 재시도도 500으로 새지 않는다."""
+    engine = create_engine(
+        f"sqlite+pysqlite:///{tmp_path / 'concurrent_promotion.db'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+    )
+
+    @event.listens_for(engine, "connect")
+    def register_uuid_function(dbapi_connection, _connection_record) -> None:
+        dbapi_connection.create_function("gen_random_uuid", 0, lambda: uuid.uuid4().hex)
+
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as session:
+        experiment = create_experiment(session, ExperimentCreate(hypothesis="concurrent promotion"))
+        experiment.status = ExperimentStatus.PASSED.value
+        session.commit()
+        experiment_id = experiment.id
+
+    request = PromotionRequest(
+        idempotency_key="promotion-concurrent",
+        reason="same deployment evidence",
+    )
+    flush_barrier = threading.Barrier(2)
+
+    @event.listens_for(Session, "before_flush")
+    def synchronize_promotion_flush(session: Session, _flush_context, _instances) -> None:
+        if any(
+            isinstance(row, ExperimentEvent)
+            and row.idempotency_key == request.idempotency_key
+            for row in session.new
+        ):
+            flush_barrier.wait(timeout=5)
+
+    def submit_promotion() -> str:
+        with factory() as session:
+            return promote_experiment(session, experiment_id, request).status
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            statuses = list(executor.map(lambda _index: submit_promotion(), range(2)))
+    finally:
+        event.remove(Session, "before_flush", synchronize_promotion_flush)
+
+    with factory() as session:
+        count = session.scalar(
+            select(func.count())
+            .select_from(ExperimentEvent)
+            .where(ExperimentEvent.idempotency_key == request.idempotency_key)
+        )
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+    assert statuses == [ExperimentStatus.PROMOTED.value, ExperimentStatus.PROMOTED.value]
+    assert count == 1

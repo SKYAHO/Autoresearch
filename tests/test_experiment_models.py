@@ -40,6 +40,17 @@ def test_database_engine_uses_psycopg_driver_for_plain_postgresql_url() -> None:
         engine.dispose()
 
 
+def test_database_engine_pool_matches_sync_endpoint_threadpool_ceiling() -> None:
+    """pool_size+max_overflow가 SQLAlchemy 기본값(15)에 머물러 있는 회귀를 잡는다."""
+    engine = create_database_engine("postgresql://orch:pw@localhost:5432/orch")
+
+    try:
+        assert engine.pool.size() == 20
+        assert engine.pool._max_overflow == 20
+    finally:
+        engine.dispose()
+
+
 def test_initial_migration_offline_sql_contains_workbench_contract() -> None:
     """초기 migration에서 테이블·멱등 제약·서버 UUID 기본값이 빠지는 회귀를 잡는다."""
     output = StringIO()

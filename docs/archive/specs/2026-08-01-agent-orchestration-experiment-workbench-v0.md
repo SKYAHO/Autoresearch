@@ -209,6 +209,23 @@ metadata는 실험 선택 시 한 번 조회한다. 터미널 상태에서는 �
 더 가져온 뒤 polling을 중단한다. `PASSED`는 수동 승격 대기 상태이므로 polling을
 유지한다.
 
+### 알려진 한계 (구현 후 review에서 발견, v0에서는 보류)
+
+`created_at`은 `func.now()`(PostgreSQL 트랜잭션 시작 시각)로 채워지는데, 다른 세션에
+row가 보이는 시점은 트랜잭션 커밋 순간이다. 두 트랜잭션 중 먼저 시작(=더 이른
+`created_at`)했지만 나중에 커밋하는 경우, 그 사이 polling이 이미 cursor를 더 늦은
+`created_at`으로 전진시켰다면 먼저 시작한 트랜잭션의 row는 이후 어떤 polling에서도
+반환되지 않는다. `POST /logs`는 `experiments` row를 잠그지 않아 이 경합에 실제로
+노출된다(`POST /events`는 `for_update=True`로 같은 row를 잠가 시작 순서와 커밋 순서가
+거의 일치하지만, 코드가 이를 명시적으로 보장하지는 않는다). tie-breaker로 쓰이는
+`id`도 `gen_random_uuid()`라 append 순서를 보존하지 않아, 같은 `created_at`을 가진
+row들의 화면 표시 순서가 실제 기록 순서와 다를 수 있다.
+
+v0 범위에서는 BIGSERIAL 등 단조 증가 컬럼을 cursor 키로 추가하는 설계 변경 없이는
+근본 해결이 어렵다고 판단해 별도 이슈로 분리한다. 완화책 없이 남겨 두는 근거: 현재
+사용자는 소수 인원의 로컬/dev 워크벤치 조회이고, log append 동시성도 낮아 실제 노출
+빈도가 낮다고 본다.
+
 ## 완료 조건
 
 - 허용·거부 상태 전이가 서버에서 검증되고 위반은 `409`다.

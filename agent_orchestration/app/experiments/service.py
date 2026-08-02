@@ -153,7 +153,11 @@ def list_experiment_events(
     limit: int,
     after_id: uuid.UUID | None = None,
 ) -> ExperimentEventPageResult:
-    """append 순서와 UUID tie-breaker를 적용한 Event polling page를 반환한다."""
+    """created_at 우선·동률 시 UUID tie-breaker 순으로 정렬한 Event polling page를 반환한다.
+
+    tie-breaker인 `gen_random_uuid()`는 insert 순서와 무관한 난수라, 동률에서는 실제
+    append 순서를 보존하지 않는다(알려진 한계, spec의 "알려진 한계" 절 참고).
+    """
     get_experiment(session, experiment_id)
     items = find_experiment_events(
         session,
@@ -354,7 +358,11 @@ def list_experiment_logs(
     after_id: uuid.UUID | None = None,
     log_type: str | None = None,
 ) -> ExperimentLogPageResult:
-    """append 순서와 UUID tie-breaker를 적용한 polling page를 반환한다."""
+    """created_at 우선·동률 시 UUID tie-breaker 순으로 정렬한 Log polling page를 반환한다.
+
+    tie-breaker인 `gen_random_uuid()`는 insert 순서와 무관한 난수라, 동률에서는 실제
+    append 순서를 보존하지 않는다(알려진 한계, spec의 "알려진 한계" 절 참고).
+    """
     get_experiment(session, experiment_id)
     items = find_experiment_logs(
         session,
@@ -380,42 +388,58 @@ def promote_experiment(
         "deployment_metadata": request.deployment_metadata,
     }
     fingerprint = _request_fingerprint(payload)
-    # create_experiment_event/create_experiment_log와 달리 IntegrityError 복구가 없다.
-    # 이 경로도 동일하게 for_update=True로 experiment row를 잠그므로, PostgreSQL에서는
-    # 같은 idempotency_key의 동시 promote 요청이 이 lock으로 직렬화되어 unique
-    # constraint 위반 자체가 발생하지 않는다고 본다(테스트에서 재현된 race는 SQLite가
-    # FOR UPDATE를 같은 방식으로 지키지 않아서 나타난 것). promote는 운영자가 근거를 남기며
-    # 수동으로 1회 호출하는 경로라 event/log append처럼 Agent가 반복 재시도할 가능성이
-    # 낮다는 점도 이 판단의 근거다. 그럼에도 race가 실제로 발생하면 IntegrityError가
-    # 그대로 올라가 500으로 노출된다.
-    with session.begin():
-        experiment = find_experiment(session, experiment_id, for_update=True)
-        if experiment is None:
-            raise ExperimentNotFoundError(experiment_id)
+    # for_update=True로 experiment row를 잠그므로 PostgreSQL에서는 같은 idempotency_key의
+    # 동시 promote 요청 대부분이 이 lock만으로 직렬화된다. 그런데 _transition_experiment도
+    # 동일한 lock을 쓰면서 create_experiment_event/create_experiment_log는 여전히
+    # IntegrityError 복구를 둔다 — lock이 이론적 상한을 보장하지 않는 이상(예: 연결 재시도로
+    # 같은 요청이 서로 다른 트랜잭션으로 두 번 들어오는 경우) 세 경로 모두 같은 방어를
+    # 두는 편이 일관적이라 promote에도 동일한 복구를 추가한다.
+    try:
+        with session.begin():
+            experiment = find_experiment(session, experiment_id, for_update=True)
+            if experiment is None:
+                raise ExperimentNotFoundError(experiment_id)
 
+            existing_event = find_event_by_idempotency_key(
+                session,
+                experiment_id,
+                request.idempotency_key,
+            )
+            if existing_event is not None:
+                if existing_event.request_fingerprint != fingerprint:
+                    raise IdempotencyConflictError(request.idempotency_key)
+                return experiment
+
+            current = ExperimentStatus(experiment.status)
+            validate_transition(current, ExperimentStatus.PROMOTED)
+            experiment.status = ExperimentStatus.PROMOTED.value
+            session.add(
+                ExperimentEvent(
+                    experiment_id=experiment.id,
+                    idempotency_key=request.idempotency_key,
+                    request_fingerprint=fingerprint,
+                    from_status=current.value,
+                    to_status=ExperimentStatus.PROMOTED.value,
+                    reason=request.reason,
+                    metric_snapshot=request.deployment_metadata,
+                )
+            )
+            session.flush()
+        return experiment
+    except IntegrityError as error:
+        session.rollback()
         existing_event = find_event_by_idempotency_key(
             session,
             experiment_id,
             request.idempotency_key,
         )
-        if existing_event is not None:
-            if existing_event.request_fingerprint != fingerprint:
-                raise IdempotencyConflictError(request.idempotency_key)
-            return experiment
-
-        current = ExperimentStatus(experiment.status)
-        validate_transition(current, ExperimentStatus.PROMOTED)
-        experiment.status = ExperimentStatus.PROMOTED.value
-        session.add(
-            ExperimentEvent(
-                experiment_id=experiment.id,
-                idempotency_key=request.idempotency_key,
-                request_fingerprint=fingerprint,
-                from_status=current.value,
-                to_status=ExperimentStatus.PROMOTED.value,
-                reason=request.reason,
-                metric_snapshot=request.deployment_metadata,
-            )
-        )
-        session.flush()
-    return experiment
+        if existing_event is None:
+            raise error
+        if existing_event.request_fingerprint != fingerprint:
+            session.rollback()
+            raise IdempotencyConflictError(request.idempotency_key) from error
+        # expunge-before-rollback 순서 의존성은 create_experiment_event와 동일 (해당 주석 참고).
+        session.expunge(existing_event)
+        session.rollback()
+        experiment = get_experiment(session, experiment_id)
+        return experiment

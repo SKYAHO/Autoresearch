@@ -19,6 +19,7 @@ from agent_orchestration.app.experiments.models import ExperimentStatus
 
 
 MetadataKey = Annotated[str, Field(min_length=1, max_length=64)]
+MetadataValue = Annotated[str, Field(max_length=8192)]
 GeneralTransitionStatus = Literal[
     ExperimentStatus.RUNNING,
     ExperimentStatus.EVALUATING,
@@ -33,9 +34,9 @@ class ExperimentCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    hypothesis: str = Field(min_length=1)
+    hypothesis: str = Field(min_length=1, max_length=8192)
     agent_session_id: str | None = Field(default=None, max_length=64)
-    metadata: dict[MetadataKey, str] = Field(default_factory=dict)
+    metadata: dict[MetadataKey, MetadataValue] = Field(default_factory=dict)
 
     @field_validator("hypothesis")
     @classmethod
@@ -110,7 +111,7 @@ class ExperimentLogCreate(BaseModel):
 
     idempotency_key: str = Field(min_length=1, max_length=128)
     log_type: str = Field(default="stdout", min_length=1, max_length=32)
-    content: str = Field(min_length=1)
+    content: str = Field(min_length=1, max_length=8192)
 
 
 class ExperimentLogResponse(BaseModel):

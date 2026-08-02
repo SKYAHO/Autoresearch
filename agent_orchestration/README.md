@@ -92,6 +92,16 @@ OpenAI API 키나 API 크레딧을 사용하지 않습니다.
   cursor polling을 제공하며, Streamlit은 1초마다 `after_id`를 사용해 새 row만 조회합니다.
 - `POST /experiments/{id}/promote`는 `PASSED` 실험에 대해 운영자가 필수 `reason`과
   idempotency key를 남기는 전용 수동 승격 경로입니다.
+- **DB migration은 이미지 기동 시 자동 실행되지 않습니다.** `agent_orchestration/entrypoint.sh`는
+  `uvicorn`만 실행하며, 실험 테이블 4개(`experiments`/`experiment_events`/
+  `experiment_logs`/`experiment_metadata`)는 Alembic으로만 생성됩니다. API 이미지에는
+  `alembic upgrade head`를 실행할 수 있도록 `agent_orchestration/alembic.ini`와
+  `agent_orchestration/migrations/`가 포함되어 있고 CI가 오프라인 SQL 생성으로 이를
+  검증하지만, **이 이미지를 대상으로 migration을 실제로 실행하는 시점·주체(K8s
+  Job/initContainer 등)는 배포 오케스트레이션(`Autoresearch-infra`) 쪽에서 앱
+  롤아웃보다 먼저 끝나도록 별도로 구성해야 합니다.** 이 단계 없이 배포하면
+  `POST /experiments`를 포함한 모든 실험 endpoint가 `UndefinedTable` 기반 `500`을
+  반환합니다.
 
 상세 계약과 구현 이력은
 [`docs/archive/specs/2026-08-01-agent-orchestration-experiment-workbench-v0.md`](../docs/archive/specs/2026-08-01-agent-orchestration-experiment-workbench-v0.md)를

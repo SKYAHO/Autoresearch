@@ -30,8 +30,19 @@ def _sqlalchemy_database_url(database_url: str) -> str:
     return database_url
 
 
+_POOL_SIZE = 20
+_MAX_OVERFLOW = 20
+
+
 def create_database_engine(database_url: str, connect_timeout_sec: int = 10) -> Engine:
-    """실험 API가 공유할 SQLAlchemy engine을 생성한다."""
+    """실험 API가 공유할 SQLAlchemy engine을 생성한다.
+
+    실험 endpoint는 모두 동기 `def`라 Starlette가 anyio 기본 thread pool(상한 40)에서
+    실행한다. SQLAlchemy 기본 pool(5 + overflow 10 = 15)은 이 상한보다 작아, 동시
+    요청이 15를 넘으면 남는 요청이 `pool_timeout`(기본 30초) 동안 블로킹된다.
+    `pool_size`/`max_overflow`를 40으로 맞춰 pod당 최대 동시 요청 수와 커넥션 상한을
+    일치시킨다.
+    """
     sqlalchemy_url = _sqlalchemy_database_url(database_url)
     connect_args = (
         {"connect_timeout": connect_timeout_sec}
@@ -41,6 +52,8 @@ def create_database_engine(database_url: str, connect_timeout_sec: int = 10) -> 
     return create_engine(
         sqlalchemy_url,
         pool_pre_ping=True,
+        pool_size=_POOL_SIZE,
+        max_overflow=_MAX_OVERFLOW,
         connect_args=connect_args,
     )
 
