@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-02T05:46:15Z",
+  "generated_at": "2026-08-02T05:54:17Z",
   "reports": [
+    {
+      "number": 480,
+      "title": "fix: rerank loadtest GKE project ID 전달",
+      "author": "bbungjun",
+      "merged_at": "2026-08-02T05:54:03Z",
+      "summary_ko": [
+        "리랭킹 부하 테스트 워크플로우의 GKE 자격 증명 수집 단계에 GCP 프로젝트 ID를 명시하도록 수정했습니다.",
+        "GKE 인증 단계 실패로 인해 부하 테스트 자동 실행이 중단되던 원인을 해결했습니다.",
+        "동일한 워크플로우 구성 누락이 재발하지 않도록 검증 테스트 항목을 강화했습니다."
+      ],
+      "report_url": "pr/480/"
+    },
     {
       "number": 483,
       "title": "feat: 실험 워크벤치 v0 추가",
