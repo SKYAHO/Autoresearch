@@ -84,10 +84,21 @@ jobs:
               if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(runId)) {
                 throw new Error('run_id is invalid');
               }
-              const expectedRegistrySuffix =
+              // #454는 baseline/candidate를 조건별 Registry로 격리하므로 경로에
+              // condition 구간이 들어간다. 조건 격리 이전 형식(#450/#461)도 계속
+              // 받아들이되, candidate 조건 산출물만 승격 후보로 인정한다 —
+              // baseline 경로는 어느 형식에도 해당하지 않아 거부된다.
+              const isolatedRegistrySuffix =
+                `/experiments/${issueNumber}/${experimentId}/candidate/${candidateSha}/registry.db`;
+              const legacyRegistrySuffix =
                 `/experiments/${issueNumber}/${experimentId}/${candidateSha}/registry.db`;
-              if (!registryUri.endsWith(expectedRegistrySuffix)) {
-                throw new Error(`registry_uri must end with ${expectedRegistrySuffix}`);
+              if (
+                !registryUri.endsWith(isolatedRegistrySuffix) &&
+                !registryUri.endsWith(legacyRegistrySuffix)
+              ) {
+                throw new Error(
+                  `registry_uri must end with ${isolatedRegistrySuffix} or ${legacyRegistrySuffix}`,
+                );
               }
               const comparison = await github.rest.repos.compareCommits({
                 owner: context.repo.owner, repo: context.repo.repo, base: candidateSha, head: 'dev',

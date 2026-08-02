@@ -84,3 +84,23 @@ def test_promotion_workflow_uses_dispatch_gate_and_draft_pr() -> None:
     assert "github.paginate(github.rest.issues.listComments" in workflow
     assert "existingRef.object.sha !== candidateSha" in workflow
     assert "github.rest.git.updateRef" not in workflow
+
+
+def test_promotion_workflow_accepts_condition_isolated_registry_path() -> None:
+    """#454의 조건 격리 경로와 기존 경로를 모두 받아들이는지 고정한다.
+
+    조건 구간이 들어간 경로를 거부하면 paired 실험 결과가 전부 lineage_invalid로
+    떨어져 승격 경로가 통째로 막힌다.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert (
+        "`/experiments/${issueNumber}/${experimentId}/candidate/${candidateSha}/registry.db`"
+        in workflow
+    )
+    assert (
+        "`/experiments/${issueNumber}/${experimentId}/${candidateSha}/registry.db`"
+        in workflow
+    )
+    # baseline 조건 산출물은 승격 입력이 아니다 — 어느 suffix에도 걸리지 않아야 한다.
+    assert "/baseline/${candidateSha}/registry.db" not in workflow
