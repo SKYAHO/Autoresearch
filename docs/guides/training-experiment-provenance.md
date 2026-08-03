@@ -291,6 +291,20 @@ metric 시간 범위 이탈, 중복·누락 seed도 같은 방식으로 fail-clo
 또는 paired evidence를 호출자가 직접 JSON으로 조립해도 evaluator는 MLflow run과 GCS
 receipt에서 canonical comparison을 다시 만들지 못하면 통계를 계산하지 않는다.
 
+### 6. paired offline 실험 실행과의 접합 (#454)
+
+위 판정 엔진은 라이브러리이고, 그것을 실제 실험 실행 결과에 적용하는 진입점은
+`compare-paired-experiment`(`src/pipeline/paired_experiment.py`)다. 이 명령은
+조건별(baseline/candidate) 학습이 끝난 뒤 seed별 두 MLflow run을 짝지어
+`verify-comparison`과 같은 재검증을 수행하고, 판정 결과를
+`comparison_passed`/`comparison_rejected`/`comparison_failed`로 사상한다.
+
+판정 엔진을 부르기 전에 실행 계보 자체를 fail-closed로 검사한다: 조건별
+`code_archive_sha`가 그 조건의 source SHA와 같은지(코드 아카이브 fallback 차단),
+Registry URI가 조건 격리 좌표에서 나왔는지, 두 조건이 Registry를 공유하지 않는지,
+짝이 빠진 seed가 없는지, 학습 스키마 차이가 선언한 실험 피처로 설명되는지.
+계약 정본은 `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`다.
+
 ## 저장소 경계
 
 | 소유자 | 이 설계에서의 책임 |

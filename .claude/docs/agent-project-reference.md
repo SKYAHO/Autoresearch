@@ -95,6 +95,13 @@ docs/
   렌더링하지만 `src.tracking` 내부 API를 import하거나 outcome을 다시
   판정하지 않습니다. 결과 정본:
   `docs/specs/2026-07-29-model-promotion-structured-outcome.md`
+- paired offline 실험(#454)의 비교·판정도 이 저장소가 소유합니다. Airflow는
+  조건별(baseline|candidate) 학습 Job을 실행하고
+  `python -m src.cli compare-paired-experiment`의 결과 파일을 운반할 뿐,
+  `comparison_passed`/`comparison_rejected`/`comparison_failed` 판정을 다시
+  계산하지 않습니다. 실행 좌표는 `autoresearch/experiments/context.py`가,
+  결과 계약은 `src/pipeline/paired_experiment.py`가 소유하며 정본은
+  `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`입니다.
 
 ### `tests/`
 - **책임:** 모듈별 단위 테스트. `tests/test_<module>.py` 플랫 구조를

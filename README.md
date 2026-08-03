@@ -54,7 +54,7 @@ docs/                # 문서 — docs/README.md 인덱스 참조
 | 이미지 | 용도 |
 |---|---|
 | `Dockerfile.app` | 공개 batch CLI 실행 (Airflow가 소비하는 canonical application image) |
-| `Dockerfile.train` | feast 불필요 학습 서브커맨드 — `promote-model`(alias 승격), `train-model`/`evaluate-model`/`sweep-seeds`(다중 시드 반복 학습·유의성 판정 근거, #407). GCS code archive 부트스트랩, MLflow 연동 |
+| `Dockerfile.train` | feast 불필요 학습 서브커맨드 — `promote-model`(alias 승격), `train-model`/`evaluate-model`/`sweep-seeds`(다중 시드 반복 학습·유의성 판정 근거, #407), `compare-paired-experiment`(baseline/candidate paired 비교·판정, #454). GCS code archive 부트스트랩, MLflow 연동 |
 | `Dockerfile.feast` | Feast apply/materialize + feast 필요 학습 조립 — `build-features`/`run-pipeline`이 offline PIT로 피처를 조립하므로(#359 C2) 이 이미지로 실행 |
 | `deploy/serving/Dockerfile` | 리랭킹 서빙 API (GKE) |
 | `deploy/mlflow/Dockerfile` | MLflow Tracking Server |

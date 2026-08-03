@@ -11,6 +11,8 @@ offline store가 정본(#357)이라 그 값을 그대로 읽는다. DuckDB 재�
 [학습 vs 서빙 후처리] 결손 처리가 갈린다: 학습은 ``drop_user_dynamic_gap_rows``로
 활동 유저의 결손을 드러내 드롭((C) 결손 가시화)하지만, 서빙(pool 채점)은 콜드 유저·미발견
 영상도 반드시 채점 대상이라 ``apply_cold_start_defaults``만 적용하고 드롭하지 않는다.
+컬럼 계약도 갈린다: 학습 조립만 ``require_extra_feature_columns``로 실험 피처(#454)의
+존재를 확인하며, 서빙 pool 프레임(``_finalize_pool_frame``)은 prod 21피처 계약 그대로다.
 
 [staged 조회] ``topic_similarity``는 (user, **영상 category_id**) 키라 닭-달걀이다
 (#357 (B)). 1차로 video PIT로 category_id를 확정해 entity_df에 붙이고, 2차로 전체
@@ -125,6 +127,36 @@ def retrieve_training_features(
             len(spine) - len(result),
         )
     return result
+
+
+def require_extra_feature_columns(
+    features: pd.DataFrame, extra: Sequence[str], *, service: str
+) -> None:
+    """조회 결과에 선언한 실험 피처가 모두 있는지 확인한다(#454, 학습 조립 전용).
+
+    ``_require_model_features``가 prod 계약 21피처에 대해 하는 일을 실험 피처에 대해
+    한다. 호출부(``_assemble_via_feast``)가 **CSV를 쓰기 전에** 부르므로, 선언한 컬럼이
+    없으면 잘린 데이터셋이 만들어지지 않는다 — 그대로 저장하면 학습의
+    ``--extra-features`` 승격 단계에서야 실패해 조립 비용이 통째로 버려진다.
+
+    실패 메시지에 FeatureService 이름을 담는다. 컬럼이 없는 가장 흔한 원인이
+    "그 피처를 가진 서비스가 아니라 기본 서비스로 조회했다"이기 때문이다.
+
+    Args:
+        features: PIT 조회 결과.
+        extra: 이 실행이 보존을 선언한 실험 피처 이름.
+        service: 실제로 조회에 쓴 FeatureService 이름.
+
+    Raises:
+        ValueError: 선언한 컬럼이 조회 결과에 하나라도 없으면.
+    """
+    missing = [column for column in extra if column not in features.columns]
+    if missing:
+        raise ValueError(
+            f"FeatureService {service!r} 조회 결과에 선언한 실험 피처가 없습니다: {missing}. "
+            "해당 피처를 제공하는 FeatureService를 --feature-service로 지정했는지 "
+            "확인하세요(ODFV 포함 여부는 feature_repo가 정본)."
+        )
 
 
 def drop_user_dynamic_gap_rows(features: pd.DataFrame) -> pd.DataFrame:

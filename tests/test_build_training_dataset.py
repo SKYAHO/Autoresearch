@@ -377,9 +377,38 @@ def test_main_runs_assembly_when_env_check_passes(monkeypatch, tmp_path) -> None
     )
 
     # 커버리지 기준(#464)은 조립에 그대로 전달된다 — main이 임의로 낮추지 않는다.
+    # 조립 피처 옵션(#454)은 미지정이면 None으로 전달되어 prod 기본값(ctr_training_v1 +
+    # 22컬럼 계약)이 그대로 쓰인다.
     assemble.assert_called_once_with(
         output_path,
         "2026-07-01",
         "2026-07-02",
         min_coverage_days=build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS,
+        feature_service=None,
+        extra_features=None,
+    )
+
+
+def test_experiment_assembly_requires_explicit_output_path() -> None:
+    """실험 조립이 prod 학습 데이터셋 기본 경로를 덮어쓰지 못하게 한다(#454).
+
+    덮어쓰면 이후 prod 학습이 `MODEL_FEATURE_COLUMNS`만 선택하므로 여분 컬럼을
+    조용히 무시하고, 실험 FeatureService로 조회된 데이터로 champion 후보를 만든다 —
+    지표에도 컬럼 수에도 드러나지 않는다.
+    """
+    with pytest.raises(build_training_dataset.FeatureContractError, match="출력 경로"):
+        build_training_dataset.require_explicit_experiment_output(
+            feature_service=None, extra_features=["views_per_day"]
+        )
+    with pytest.raises(build_training_dataset.FeatureContractError, match="출력 경로"):
+        build_training_dataset.require_explicit_experiment_output(
+            feature_service="ctr_experiment_v2", extra_features=None
+        )
+
+
+def test_prod_assembly_keeps_default_output_path() -> None:
+    # 옵션 미지정과 prod FeatureService 명시는 기존 기본 경로 그대로다.
+    build_training_dataset.require_explicit_experiment_output(feature_service=None, extra_features=None)
+    build_training_dataset.require_explicit_experiment_output(
+        feature_service="ctr_training_v1", extra_features=[]
     )
