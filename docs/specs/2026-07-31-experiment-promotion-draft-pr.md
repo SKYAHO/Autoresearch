@@ -33,6 +33,40 @@ workflow_dispatch 또는 repository_dispatch(`experiment_result`)의 payload는 
 경로와 일치해야 한다. 실패·기각·기준 미달은 ref/PR을 만들지 않고 원래 실험 이슈에
 결과 comment를 남긴다.
 
+### Issue Form label 정본 (#495)
+
+`autoresearch/experiments/promotion_gate.py`의 `_LABELS`는 아래 여섯 문자열을
+`.github/ISSUE_TEMPLATE/auto_research.yml`의 `label:`과 **문자 그대로 동일하게**
+유지해야 한다. 한쪽만 바뀌거나 한쪽만 머지되면 `parse_criteria()`가 실제 이슈
+본문에서 항상 실패한다.
+
+| `_LABELS` 키 | Issue Form label |
+| --- | --- |
+| `primary_name` | `주 지표 이름` |
+| `primary_direction` | `주 지표 방향` |
+| `minimum_delta` | `최소 주 지표 개선폭` |
+| `guardrail_name` | `Guardrail 지표 이름` |
+| `guardrail_direction` | `Guardrail 지표 방향` |
+| `maximum_regression` | `최대 Guardrail 악화폭` |
+
+이 정합성은 `tests/test_experiment_promotion_gate.py`가 두 방향으로 고정한다 —
+정본 fixture(`tests/fixtures/auto_research_issue_form_rendered.md`)를 직접 파싱하는
+테스트와, `_LABELS`의 모든 값이 Issue Form에 실재하는지 확인하는 테스트다.
+Issue Form을 수정하는 PR은 같은 PR에서 `_LABELS`와 fixture를 함께 갱신한다.
+
+### `experiment_id` 형식 (#495)
+
+`experiment_id`는 `^[a-z0-9][a-z0-9-]{0,31}$`이며, 이 값이 저장소 전체의 단일
+계약이다. 정의 지점은 다섯 곳(`auto-research-promotion.yml`,
+`auto-research-dev-promotion.yml` 2곳, `tools/auto_research_issue_branch.py`,
+`src/pipeline/paired_experiment.py`, `autoresearch/experiments/context.py`)이며
+모두 같아야 한다 — 테스트가 동일성을 단언한다.
+
+이전에 dev 승격 워크플로와 선택기가 허용하던 `^[a-z0-9][a-z0-9._:-]{0,127}$`는
+런타임 계약보다 넓어, dev 병합을 통과한 값이 main 승격에서 거부될 수 있었다.
+좁은 쪽으로 통일했다. 넓은 형식이 허용하던 `:`는 git ref 이름 불허 문자이므로
+`promote/*` 브랜치 이름으로도 쓸 수 없다.
+
 ## 동작 계약
 
 1. Python gate가 이슈 본문 기준을 parse하고 기준 충족 여부를 계산한다.
@@ -41,6 +75,11 @@ workflow_dispatch 또는 repository_dispatch(`experiment_result`)의 payload는 
 4. main 대상 Draft PR에는 지표·기준·원본 이슈 링크와 Registry·image·run lineage를 기록한다.
 5. 실패·기각 comment에는 experiment_id·candidate SHA·run_id·metric·reason·artifact/log
    URI를 기록한다. 동일 결과 재전송은 marker로 중복 생성하지 않는다.
+   **gate step이 예외로 실패한 경우에도 comment를 남긴다**(#495) — 판정 코드가 죽으면
+   원인과 무관하게 흔적이 사라져 결함이 장기간 드러나지 않는다.
+   거부 사유는 세 갈래로 구분한다: `input_invalid:`(입력 형식이 계약을 벗어남),
+   `lineage_invalid:`(좌표·계보 불일치), `comparison_rejected:`(비교는 성립했으나
+   통과하지 못한 정상 결과). comment 제목도 이 구분을 반영한다.
 6. `repository_dispatch` producer는 Airflow 등 외부 소유이며, 이 저장소는 공개
    event payload만 소비한다.
 
