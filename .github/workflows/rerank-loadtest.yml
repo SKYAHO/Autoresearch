@@ -396,18 +396,51 @@ jobs:
             [max_in_flight]='max_over_time(rerank_in_flight{namespace="autoresearch"}[5m])'
             [cpu_seconds]='sum(rate(container_cpu_usage_seconds_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m]))'
             [rss]='sum(container_memory_rss{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"})'
-            [cfs_throttling]='sum(rate(container_cpu_cfs_throttled_periods_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m])) / clamp_min(sum(rate(container_cpu_cfs_periods_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m])), 1)'
+            [cfs_throttling_ratio]='sum(rate(container_cpu_cfs_throttled_periods_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m])) / sum(rate(container_cpu_cfs_periods_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m]))'
           )
+
+          query_names=(
+            phase_p50
+            phase_p95
+            outcome_rate
+            max_in_flight
+            cpu_seconds
+            rss
+            cfs_throttling_ratio
+          )
+          snapshot_failed=0
+          validation_failures=()
 
           validate_prometheus_result() {
             local query_name="$1"
             local response_path="$2"
+
+            if ! jq -e 'type == "object"' "$response_path" >/dev/null; then
+              echo "::error::Prometheus response is not valid JSON: $query_name ($response_path)"
+              return 1
+            fi
             if ! jq -e '
               .status == "success"
               and (.data.result | type == "array")
               and ((.data.result | length) > 0)
             ' "$response_path" >/dev/null; then
               echo "::error::Prometheus query returned no series: $query_name"
+              return 1
+            fi
+            if [[ "$query_name" == "cfs_throttling_ratio" ]] && ! jq -e '
+              all(.data.result[];
+                if (.value | type) != "array"
+                  or (.value | length) < 2
+                  or (.value[1] | type) != "string" then
+                  false
+                else
+                  (.value[1] | test("^(0|[1-9][0-9]*)(\\.[0-9]+)?([eE][+-]?[0-9]+)?$"))
+                  and ((.value[1] | tonumber) >= 0)
+                  and ((.value[1] | tonumber) <= 1)
+                end
+              )
+            ' "$response_path" >/dev/null; then
+              echo "::error::CFS throttling ratio is not a finite value in [0,1]: $response_path"
               return 1
             fi
           }
@@ -424,17 +457,37 @@ jobs:
             fi
             end="$padded_end"
 
-            for query_name in "${!queries[@]}"; do
+            for query_name in "${query_names[@]}"; do
               query="${queries[$query_name]}"
               encoded_query="$(jq -rn --arg query "$query" '$query | @uri')"
               response_path="runner/raw/prometheus-${query_name}-vu-${vus}.json"
               request_path="${PROMETHEUS_SERVICE_PROXY}/api/v1/query_range?query=${encoded_query}&start=${start}&end=${end}&step=30"
-              kubectl get --raw "$request_path" > "$response_path"
-              validate_prometheus_result "$query_name" "$response_path"
+              if ! kubectl get --raw "$request_path" > "$response_path"; then
+                echo "::error::Prometheus request failed: $query_name (VU $vus)"
+                validation_failures+=("VU $vus: $query_name request failed")
+                snapshot_failed=1
+                continue
+              fi
+              if ! validate_prometheus_result "$query_name" "$response_path"; then
+                validation_failures+=("VU $vus: $query_name validation failed")
+                snapshot_failed=1
+              fi
             done
           done
 
-          sha256sum runner/raw/*.json > runner/raw/SHA256SUMS
+          if (( snapshot_failed )); then
+            printf '%s\n' "${validation_failures[@]}" \
+              > runner/raw/prometheus-validation-failures.txt
+          fi
+          raw_files=(runner/raw/*.json)
+          if [[ -f runner/raw/prometheus-validation-failures.txt ]]; then
+            raw_files+=(runner/raw/prometheus-validation-failures.txt)
+          fi
+          sha256sum "${raw_files[@]}" > runner/raw/SHA256SUMS
+          if (( snapshot_failed )); then
+            echo "::error::Prometheus snapshot validation failed; see runner/raw/prometheus-validation-failures.txt"
+            exit 1
+          fi
 
       - name: Upload raw benchmark evidence
         if: always()

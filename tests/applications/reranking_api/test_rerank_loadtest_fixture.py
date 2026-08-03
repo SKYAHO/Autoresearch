@@ -277,7 +277,7 @@ def test_manual_workflow_keeps_load_and_snapshot_identities_separate() -> None:
         "max_in_flight",
         "cpu_seconds",
         "rss",
-        "cfs_throttling",
+        "cfs_throttling_ratio",
     ):
         assert query_name in text
     assert ".status == \"success\"" in text
@@ -309,12 +309,22 @@ def test_manual_workflow_serializes_shared_configmaps_and_waits_for_padding() ->
 def test_snapshot_reader_rejects_empty_series_and_uses_gke_cfs_periods() -> None:
     """필수 Prometheus series 누락과 GKE CFS metric 이름 불일치를 통과시키지 않는다."""
     text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+    cfs_line = next(
+        line for line in text.splitlines() if "[cfs_throttling_ratio]=" in line
+    )
 
     assert "data.result | length" in text
     assert "Prometheus query returned no series" in text
-    assert "container_cpu_cfs_throttled_periods_total" in text
-    assert "container_cpu_cfs_periods_total" in text
-    assert "container_cpu_cfs_throttled_seconds_total" not in text
+    assert "container_cpu_cfs_throttled_periods_total" in cfs_line
+    assert "container_cpu_cfs_periods_total" in cfs_line
+    assert "container_cpu_cfs_throttled_seconds_total" not in cfs_line
+    assert "clamp_min(" not in cfs_line
+    assert 'jq -e \'type == "object"\'' in text
+    assert "Prometheus response is not valid JSON" in text
+    assert 'validate_prometheus_result "$query_name" "$response_path"' in text
+    assert "snapshot_failed=0" in text
+    assert "prometheus-validation-failures.txt" in text
+    assert "if (( snapshot_failed )); then" in text
 
 
 def test_manual_workflow_preserves_runner_artifact_layout_for_reader() -> None:
