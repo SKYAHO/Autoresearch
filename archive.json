@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-03T00:53:55Z",
+  "generated_at": "2026-08-03T01:00:19Z",
   "reports": [
+    {
+      "number": 489,
+      "title": "feat: paired offline 실험 배치·비교 결과 계약 구현 (#454)",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-03T01:00:05Z",
+      "summary_ko": [
+        "baseline과 candidate 실험 조건을 격리하는 실행 좌표 계층 및 Registry 관리 규칙을 구현하였습니다.",
+        "Feast 조립 단계부터 실험용 FeatureService와 여분 피처가 잘리지 않고 학습 CSV까지 보존되도록 개선하였습니다.",
+        "시드별 실험 결과를 짝지어 유의성을 판정하고 단일 결과 payload를 생성하는 공개 CLI 및 승격 파이프라인 연동을 추가하였습니다."
+      ],
+      "report_url": "pr/489/"
+    },
     {
       "number": 477,
       "title": "feat: Auto Research dev 실험 자동 병합",
