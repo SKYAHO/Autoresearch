@@ -2,37 +2,77 @@
 
 ## 목적
 
-실험의 구조화된 baseline/candidate metric을 이슈 성공 기준과 비교하고, 통과한
-dev 후보 SHA를 변경 불가능한 `promote/<issue>-<experiment>-<sha>` ref로 고정해
-Draft main PR을 만든다. PR은 자동 병합하지 않는다.
+판정 엔진이 이미 내린 결과를 받아 신뢰 경계를 검증하고, 통과한 dev 후보 SHA를
+변경 불가능한 `promote/<issue>-<experiment>-<sha>` ref로 고정해 Draft main PR을
+만든다. PR은 자동 병합하지 않는다.
+
+**이 게이트는 판정하지 않는다 (#493).** 판정은
+`src/pipeline/experiment_evaluation.py` 한 곳에서만 계산하며, 여기는 소비자다.
+자세한 계약은 `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`
+§4 "판정 소재지 — 게이트는 판정하지 않는다"가 정본이다.
 
 ## 입력 계약
 
-workflow_dispatch 또는 repository_dispatch(`experiment_result`)의 payload는 다음을
-포함한다.
+**입력은 판정 결과 payload다 (#493).** 게이트는 metric을 받아 스스로 판정하지 않고,
+이미 끝난 판정 결과를 받아 신뢰 경계만 검증한다. 정본은
+`docs/specs/2026-08-03-paired-offline-experiment-comparison.md`의 결과 계약
+`paired-offline-experiment-result-v1`과 그 "완료 이벤트 투영"이다.
+
+`experiment_result` repository_dispatch 이벤트는 **폐지한다.** 완료 이벤트를
+`auto-research-experiment-completed` 하나로 합치고, dev 병합 워크플로가 후보를 고르고
+병합한 뒤 선택된 결과 하나로 이 게이트를 `workflow_call`로 호출한다. 두 이벤트를
+유지하면 producer가 같은 사실을 서로 다른 두 스키마로 두 번 말해야 하며, 실제로 두
+스키마는 `experiment_id` 정규식에서 이미 갈라졌던 전력이 있다(아래 참조).
+
+`workflow_dispatch` 수동 입력 경로는 **유지한다.** 게이트를 dev 병합 없이 단독
+재실행할 수 있는 유일한 운영 회복 경로다.
 
 ```json
 {
+  "contract_version": "paired-offline-experiment-result-v1",
+  "outcome": "comparison_passed",
+  "decision_reason": "criteria_met",
+  "reason_codes": ["primary_roc_auc_improved_with_95pct_confidence"],
   "issue_number": 449,
+  "issue_branch": "exp/449-...",
   "experiment_id": "primary",
+  "base_dev_sha": "40자리 소문자 SHA",
   "candidate_sha": "40자리 소문자 SHA",
-  "registry_uri": "gs://bucket/experiments/449/primary/<candidate_sha>/registry.db",
-  "run_id": "run-001",
-  "primary_candidate": 0.7812,
+  "registry_root": "gs://bucket/experiments/449/primary",
+  "plan_id": "...",
+  "evidence_id": "...",
+  "evaluation_id": "...",
+  "decision_id": "...",
+  "policy_version": "promotion-policy-v2",
+  "metric_name": "roc_auc",
   "primary_baseline": 0.778,
-  "guardrail_candidate": null,
-  "guardrail_baseline": null,
-  "image_digest": "sha256:...",
-  "artifact_uri": "gs://bucket/artifacts/449/primary/<candidate_sha>/run-001/",
-  "log_uri": "gs://bucket/logs/449/primary/<candidate_sha>/run-001/"
+  "primary_candidate": 0.7812,
+  "paired_delta_mean": 0.0032,
+  "confidence_interval_lower": 0.0011,
+  "confidence_interval_upper": 0.0053,
+  "seeds": [42, "...", 71],
+  "model_uri": "...",
+  "evaluated_at": "2026-08-03T00:00:00+00:00"
 }
 ```
 
+위는 발췌다. **정확한 필드 집합은 결과 모델(`PairedExperimentResult`)에서 파생된
+투영 상수 한 곳이 소유하며, 이 문서는 그 파생물이다.** 조건별 `ConditionLineage`
+(`baseline`/`candidate`), `feature_service`, `extra_features`, dataset/split
+fingerprint 등 나머지 필드도 함께 실린다. `runs`만 payload 크기 때문에 제외한다.
+
+`guardrail_candidate`/`guardrail_baseline`은 **입력에서 사라진다.** 판정 엔진이
+guardrail을 계산하지 않아 결과 계약에 실리지 않으므로, 게이트가 요구하면 영원히
+통과할 수 없다. guardrail을 선언한 실험은 브랜치 생성 시점에 자동 승격 대상이
+아님을 고지받는다.
+
 ### metric 필드 표기 (#495)
 
-`primary_candidate` / `primary_baseline`은 **필수**이며, `guardrail_candidate` /
-`guardrail_baseline`은 선언된 guardrail이 있을 때만 채운다. 네 값 모두 유한한 십진
-실수여야 하고, 표기는 다음을 모두 허용한다.
+> #493 이후로 이 규칙은 결과 payload의 수치 필드(`primary_baseline`,
+> `primary_candidate`, `paired_delta_mean`, `confidence_interval_lower`/`upper`)에
+> 적용된다. guardrail 두 필드는 입력에서 사라졌다.
+
+수치 필드는 유한한 십진 실수여야 하고, 표기는 다음을 모두 허용한다.
 
 - 일반 표기: `0.7812`, `-0.0004`, `0`
 - 지수 표기: `1e-05`, `2E+3` — producer가 작은 delta를 JSON 숫자로 실으면 흔히
@@ -48,26 +88,24 @@ producer의 정상 payload가 거부된다.
 경로와 일치해야 한다. 실패·기각·기준 미달은 ref/PR을 만들지 않고 원래 실험 이슈에
 결과 comment를 남긴다.
 
-### Issue Form label 정본 (#495)
+### Issue Form 파서는 게이트에서 제거한다 (#493)
 
-`autoresearch/experiments/promotion_gate.py`의 `_LABELS`는 아래 여섯 문자열을
-`.github/ISSUE_TEMPLATE/auto_research.yml`의 `label:`과 **문자 그대로 동일하게**
-유지해야 한다. 한쪽만 바뀌거나 한쪽만 머지되면 `parse_criteria()`가 실제 이슈
-본문에서 항상 실패한다.
+승격 게이트는 Issue Form 본문을 **파싱하지 않는다.** `parse_criteria()`와 `_LABELS`를
+제거하고, `rg -n "### " autoresearch/experiments/`가 비어 있는 상태를 유지한다.
 
-| `_LABELS` 키 | Issue Form label |
-| --- | --- |
-| `primary_name` | `주 지표 이름` |
-| `primary_direction` | `주 지표 방향` |
-| `minimum_delta` | `최소 주 지표 개선폭` |
-| `guardrail_name` | `Guardrail 지표 이름` |
-| `guardrail_direction` | `Guardrail 지표 방향` |
-| `maximum_regression` | `최대 Guardrail 악화폭` |
+근거는 #495가 남긴 교훈이다. 게이트가 자체 Issue Form 파서를 갖고 있었기 때문에,
+게이트를 도입한 커밋이 폼 변경분을 squash 과정에서 잃자 `_LABELS` 6개 중 3개가 실제
+폼에 존재하지 않는 heading을 가리키게 되었고, `parse_criteria()`가 실제 이슈 본문에서
+100% 실패했다. 자체 테스트가 실제 폼이 아니라 그 잘못된 label로 본문을 **합성**했기
+때문에 파서와 테스트가 같이 틀린 채 통과했다. `7b26a50`이 여섯 문자열을 폼에 맞춰
+복구했지만, **두 번째 파서가 존재하는 한 같은 드리프트가 다시 생길 수 있다.**
 
-이 정합성은 `tests/test_experiment_promotion_gate.py`가 두 방향으로 고정한다 —
-정본 fixture(`tests/fixtures/auto_research_issue_form_rendered.md`)를 직접 파싱하는
-테스트와, `_LABELS`의 모든 값이 Issue Form에 실재하는지 확인하는 테스트다.
-Issue Form을 수정하는 PR은 같은 PR에서 `_LABELS`와 fixture를 함께 갱신한다.
+Issue Form을 읽는 파서는 `tools/auto_research_issue_branch.py`의 `parse_issue_input`
+하나로 남긴다. 게이트가 필요로 하던 사용자 선언 임계는 `criteria_id`로 봉인된 채
+판정 엔진까지 전달되므로, 게이트가 본문을 다시 읽을 이유가 없다.
+
+Issue Form을 수정하는 PR은 같은 PR에서 `_HEADING_NAMES`와 정본 fixture
+(`tests/fixtures/auto_research_issue_form_rendered.md`)를 함께 갱신한다.
 
 ### `experiment_id` 형식 (#495)
 
@@ -103,7 +141,10 @@ Issue Form을 수정하는 PR은 같은 PR에서 `_LABELS`와 fixture를 함께 
 
 ## 동작 계약
 
-1. Python gate가 이슈 본문 기준을 parse하고 기준 충족 여부를 계산한다.
+1. 게이트가 결과 payload의 신뢰 경계를 검증한다 (#493) — `contract_version` /
+   `policy_version`이 아는 값인지, `outcome == "comparison_passed"`인지,
+   `criteria_id` / `reproducibility_id`가 issue branch marker와 일치하는지, SHA
+   lineage와 `registry_uri` 좌표가 맞는지. **metric을 임계와 비교하지 않는다.**
 2. 통과하면 GitHub Script가 candidate SHA에서 promotion ref를 생성한다.
 3. 같은 promotion ref/PR은 idempotent하게 재사용하며 ref를 이동하지 않는다.
 4. main 대상 Draft PR에는 지표·기준·원본 이슈 링크와 Registry·image·run lineage를 기록한다.
@@ -114,8 +155,10 @@ Issue Form을 수정하는 PR은 같은 PR에서 `_LABELS`와 fixture를 함께 
    거부 사유는 세 갈래로 구분한다: `input_invalid:`(입력 형식이 계약을 벗어남),
    `lineage_invalid:`(좌표·계보 불일치), `comparison_rejected:`(비교는 성립했으나
    통과하지 못한 정상 결과). comment 제목도 이 구분을 반영한다.
-6. `repository_dispatch` producer는 Airflow 등 외부 소유이며, 이 저장소는 공개
-   event payload만 소비한다.
+6. 이 게이트는 더 이상 `repository_dispatch`를 직접 받지 않는다 (#493). 진입점은
+   dev 병합 워크플로의 `workflow_call`과 `workflow_dispatch` 두 개다. 완료 이벤트
+   `auto-research-experiment-completed`의 producer는 Airflow 등 외부 소유이며, 이
+   저장소는 공개 event payload만 소비한다는 원칙은 그대로다.
 
 ## 제한
 
