@@ -396,8 +396,21 @@ jobs:
             [max_in_flight]='max_over_time(rerank_in_flight{namespace="autoresearch"}[5m])'
             [cpu_seconds]='sum(rate(container_cpu_usage_seconds_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m]))'
             [rss]='sum(container_memory_rss{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"})'
-            [cfs_throttling]='sum(rate(container_cpu_cfs_throttled_seconds_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m]))'
+            [cfs_throttling]='sum(rate(container_cpu_cfs_throttled_periods_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m])) / clamp_min(sum(rate(container_cpu_cfs_periods_total{namespace="autoresearch",pod=~"autoresearch-serving-.*",container!="",container!="POD"}[5m])), 1)'
           )
+
+          validate_prometheus_result() {
+            local query_name="$1"
+            local response_path="$2"
+            if ! jq -e '
+              .status == "success"
+              and (.data.result | type == "array")
+              and ((.data.result | length) > 0)
+            ' "$response_path" >/dev/null; then
+              echo "::error::Prometheus query returned no series: $query_name"
+              return 1
+            fi
+          }
 
           for metadata_path in "${metadata_files[@]}"; do
             vus="$(jq -r '.vus' "$metadata_path")"
@@ -417,7 +430,7 @@ jobs:
               response_path="runner/raw/prometheus-${query_name}-vu-${vus}.json"
               request_path="${PROMETHEUS_SERVICE_PROXY}/api/v1/query_range?query=${encoded_query}&start=${start}&end=${end}&step=30"
               kubectl get --raw "$request_path" > "$response_path"
-              jq -e '.status == "success"' "$response_path" >/dev/null
+              validate_prometheus_result "$query_name" "$response_path"
             done
           done
 

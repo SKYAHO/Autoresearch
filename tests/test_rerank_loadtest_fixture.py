@@ -306,6 +306,17 @@ def test_manual_workflow_serializes_shared_configmaps_and_waits_for_padding() ->
     assert 'sleep "$((padded_end - current_time))"' in text
 
 
+def test_snapshot_reader_rejects_empty_series_and_uses_gke_cfs_periods() -> None:
+    """필수 Prometheus series 누락과 GKE CFS metric 이름 불일치를 통과시키지 않는다."""
+    text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+
+    assert "data.result | length" in text
+    assert "Prometheus query returned no series" in text
+    assert "container_cpu_cfs_throttled_periods_total" in text
+    assert "container_cpu_cfs_periods_total" in text
+    assert "container_cpu_cfs_throttled_seconds_total" not in text
+
+
 def test_manual_workflow_preserves_runner_artifact_layout_for_reader() -> None:
     """runner upload, reader download·glob, 최종 upload는 같은 raw 경로를 사용한다."""
     text = Path(".github/workflows/rerank-loadtest.yml").read_text()
