@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-03T02:30:41Z",
+  "generated_at": "2026-08-03T04:19:57Z",
   "reports": [
+    {
+      "number": 496,
+      "title": "fix: 승격 게이트가 실제 Issue Form label을 읽도록 복구",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-03T04:19:43Z",
+      "summary_ko": [
+        "실험 결과 승격 게이트가 실제 이슈 폼 서식의 지표 항목명을 파싱하지 못하던 버그를 해결하였습니다.",
+        "워크플로의 개행 문자 조립 오류, 식별자 정규식 불일치, 판정 예외 시 알림 누락 현상을 함께 보완하였습니다.",
+        "실제 이슈 폼 픽스처 직접 파싱 및 워크플로 구문 검증을 포함한 회귀 방지 테스트를 대거 추가하였습니다."
+      ],
+      "report_url": "pr/496/"
+    },
     {
       "number": 489,
       "title": "feat: paired offline 실험 배치·비교 결과 계약 구현 (#454)",
