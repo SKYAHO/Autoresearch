@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -319,12 +321,64 @@ def test_snapshot_reader_rejects_empty_series_and_uses_gke_cfs_periods() -> None
     assert "container_cpu_cfs_periods_total" in cfs_line
     assert "container_cpu_cfs_throttled_seconds_total" not in cfs_line
     assert "clamp_min(" not in cfs_line
+    assert "all(.data.result[].values[];" in text
+    assert "(.value | type)" not in text
     assert 'jq -e \'type == "object"\'' in text
     assert "Prometheus response is not valid JSON" in text
     assert 'validate_prometheus_result "$query_name" "$response_path"' in text
     assert "snapshot_failed=0" in text
     assert "prometheus-validation-failures.txt" in text
     assert "if (( snapshot_failed )); then" in text
+
+
+def test_snapshot_reader_cfs_validation_accepts_query_range_matrix() -> None:
+    """CFS 검증식은 query_range matrix의 values를 실제 jq로 판정한다."""
+    if shutil.which("jq") is None:
+        pytest.skip("jq is required to execute the workflow validation expression")
+
+    text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+    match = re.search(
+        r'''if \[\[ "\$query_name" == "cfs_throttling_ratio" \]\] && ! jq -e '\n(?P<program>.*?)\n\s*' "\$response_path"''',
+        text,
+        re.DOTALL,
+    )
+    assert match is not None
+    jq_program = match.group("program")
+
+    def run_jq(response: dict[str, object]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["jq", "-e", jq_program],
+            input=json.dumps(response),
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+    valid = run_jq(
+        {
+            "data": {
+                "result": [
+                    {"metric": {}, "values": [[1, "0"], [2, "0.25"]]},
+                ]
+            }
+        }
+    )
+    out_of_range = run_jq(
+        {
+            "data": {
+                "result": [
+                    {"metric": {}, "values": [[1, "1.01"]]},
+                ]
+            }
+        }
+    )
+    empty_samples = run_jq(
+        {"data": {"result": [{"metric": {}, "values": []}]}}
+    )
+
+    assert valid.returncode == 0, valid.stderr
+    assert out_of_range.returncode != 0
+    assert empty_samples.returncode != 0
 
 
 def test_manual_workflow_preserves_runner_artifact_layout_for_reader() -> None:
