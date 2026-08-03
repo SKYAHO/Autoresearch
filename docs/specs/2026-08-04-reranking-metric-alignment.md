@@ -1,0 +1,162 @@
+# 리랭킹 지표 정합 — 평가 전용 패스스루 컬럼과 유저 단위 grouped AUC (2026-08-04)
+
+> 상태: 설계 확정, 구현 대기. 구현 이슈 #505.
+> 이 문서는 **왜 지금 지표를 바꾸는지**와 **동작 계약**의 정본이다.
+> 주 지표 교체와 판정 엔진 일반화는 #493이, 실험 실행기는 #492가 소유한다.
+
+## 목적
+
+제품 목표는 **유튜브 리랭킹**인데 실험 판정 지표는 **전역 분류 성능**이다. 둘이
+일치하는지 한 번도 확인한 적이 없다. 이 문서는 그 차이를 **측정 가능하게** 만드는
+최소 변경을 정의한다.
+
+## 문제 — 실측
+
+| 계층 | 슬레이트(유저별 후보 목록) 구조 | 근거 |
+| --- | --- | --- |
+| action log (원천) | **있음** | `autoresearch/action_logs/schema.py:48,51,110` — `event_type`, `rank`, `exposure_rank` |
+| `training_entity` (spine) | 부분적으로 있음 | `src/pipeline/build_training_dataset.py:199-200` — `(user_id, video_id, event_timestamp, clicked)` |
+| **최종 학습 CSV** | **없음** | `src/pipeline/build_training_dataset.py:690` |
+
+핵심은 마지막 줄이다.
+
+```python
+features[[*MODEL_FEATURE_COLUMNS, *experiment_columns, "clicked"]].to_csv(...)
+```
+
+CSV를 쓰는 순간 `user_id`·`video_id`·`event_timestamp`가 **전부 잘려 나간다.** 남는
+것은 21피처 + `clicked` = 22개 물리 컬럼뿐이다. 그 위에서 `src/pipeline/evaluate.py:50`이
+전역 ROC-AUC를 계산한다.
+
+```python
+roc_auc_score(dataset["clicked"], model.predict_proba(features)[:, 1])
+```
+
+순위 지표(NDCG / MRR / Recall@k / Precision@k)는 저장소 전체에 **0건**이다.
+
+### 왜 전역 AUC가 리랭킹 지표로 불충분한가
+
+1. **그룹 단위가 다르다.** ROC-AUC는 "무작위 양성이 무작위 음성보다 높은 점수를 받을
+   확률"이므로 그 자체로 순위 지표가 맞다. 문제는 **전체 (유저, 영상) 쌍에 대해
+   전역으로** 계산한다는 점이다. 리랭킹 품질은 **한 유저의 후보 목록 안에서의 순서**다.
+   전역 AUC가 높아도 유저별 목록 안 순서는 나쁠 수 있고 그 반대도 가능하다.
+2. **위치 가중이 없다.** 리랭킹은 실제로 노출되는 상위 k개만 의미가 있는데, ROC-AUC는
+   500등에서의 개선과 2등에서의 개선을 동일하게 센다.
+
+이 문서는 **1번만** 다룬다. 2번은 §후속 판단 분기 참조.
+
+## 왜 지금인가
+
+실험 실행기(#492)가 만들어지기 **전에** 지표를 맞추면 재작업이 0이다. 지표가 틀린
+채로 실행기를 돌리면 그 실행기가 생산한 모든 판정이 재작업 대상이 된다. 그리고 이
+작업은 실행기를 **전혀 기다리지 않는다** — 기존 스냅샷만으로 완결된다.
+
+## 범위
+
+**포함:**
+
+- 평가 전용 **패스스루 컬럼** 개념 도입
+- `user_id`를 패스스루 컬럼으로 학습 CSV와 held-out test set에 보존
+- 유저 단위 grouped ROC-AUC 산출, 기존 전역 지표와 **병기**
+- 패스스루 컬럼이 모델 입력으로 새지 않음을 강제하는 계약 가드
+
+**제외 (의도적):**
+
+- 주 지표 교체, 판정 엔진의 `PRIMARY_METRIC = "roc_auc"`
+  (`src/pipeline/experiment_evaluation.py:45`) 하드코딩 해제 → **#493**
+- NDCG@k / Recall@k, `rank` 패스스루 → 이 문서의 실측 결과로 결정 (§후속 판단 분기)
+- 실험 실행기 → **#492**
+- `MODEL_FEATURE_COLUMNS` 21개의 이름·개수·순서 변경 → 하지 않는다
+
+## 설계 결정
+
+### D1. 모델 입력 목록과 데이터셋 컬럼 목록을 서로 다른 정본으로 분리한다
+
+현재 저장소는 이 둘이 사실상 같아서 그룹화가 막혔다. "모델에 들어가지 않지만 데이터셋에
+동승하는 컬럼"이라는 개념이 없다.
+
+### D2. `extra_features` 경로를 재사용하지 않는다
+
+현재 여분 컬럼 통로는 `extra_features` 하나뿐인데, `src/features/model_contract.py:100`
+`resolve_experiment_feature_columns()`가 그것을 **prod 계약 뒤에 붙여 모델 입력으로
+승격**시킨다(#405의 의도된 동작이다). `user_id`를 이 경로로 넣으면 그대로 모델 피처가
+되어 **유저 암기(memorization)**가 발생한다 — capability probe round_003에서 ablation으로
+규명된 실패 패턴과 같은 종류다. 따라서 별도 개념이 필요하다.
+
+### D3. 패스스루 컬럼은 CSV **맨 끝**(`clicked` 뒤)에 붙인다
+
+기존 22컬럼 **접두부가 그대로 보존**되므로, 위치 기반으로 읽는 기존 소비자가 깨지지
+않는다. `MODEL_FEATURE_COLUMNS` 순서와 ONNX 텐서 해석에는 아무 영향이 없다.
+
+### D4. 주 지표를 교체하지 않고 병기한다
+
+교체하면 exp_001~003, round_001~004의 과거 판정과 **비교 불가**가 된다. 병기하면
+"전역과 grouped가 실제로 갈라지는가"를 데이터로 답할 수 있고, 그 답이 다음 단계를
+결정한다.
+
+## 동작 계약
+
+### 패스스루 컬럼
+
+- 정본: 패스스루 컬럼 이름 집합을 `src/features/model_contract.py`에 선언한다.
+  1차 범위는 `user_id` 하나다.
+- **불변식:** 패스스루 컬럼은 `feature_columns.json`에 **절대 포함되지 않는다.**
+- 가드: 패스스루 이름이 `extra_features`로 들어오면 `FeatureContractError`로 거부한다.
+  거부 지점은 라벨 컬럼 `clicked`를 이미 거부하고 있는
+  `resolve_extra_feature_columns()`(`src/pipeline/build_training_dataset.py:433`)와
+  같은 자리에 둔다 — 같은 종류의 "모델 입력이 되어서는 안 되는 이름" 규칙이다.
+- 조립 출력 컬럼 순서:
+  `[*MODEL_FEATURE_COLUMNS, *extra_features, "clicked", *passthrough_columns]`
+
+### 학습 경로 보존
+
+`evaluate`는 `train-model`이 분리 저장한 held-out test set으로만 채점한다
+(`src/cli.py` run-pipeline 3/4 단계 주석). 따라서 패스스루 컬럼은 **split을 거쳐
+test set 저장까지 살아남아야 한다.** 모델 학습 입력에서의 배제는 이름 기반 선택
+(`dataset[list(feature_columns)]`)이라 자동으로 보장된다.
+
+### grouped ROC-AUC 정의
+
+- **대상 유저:** 해당 평가 셋에서 양성 1개 **이상**과 음성 1개 **이상**을 모두 가진
+  유저. 한 클래스만 가진 유저는 AUC가 정의되지 않으므로 제외한다.
+- **집계:** 대상 유저별 ROC-AUC의 **매크로 평균**(유저 동등 가중). 유저별 후보 수가
+  달라도 큰 유저가 지표를 지배하지 않게 한다 — 리랭킹 품질은 유저 경험 단위이므로
+  유저 동등 가중이 옳다.
+- **함께 보고할 값 (필수):** 전체 유저 수, 대상 유저 수, 제외 유저 수와 비율.
+  제외 비율이 높으면 grouped 지표의 신뢰도가 낮다는 신호이므로 지표만 단독으로
+  내보내지 않는다.
+- 대상 유저가 0명이면 지표를 `None`으로 보고하고 실패시키지 않는다(관측 지표이며
+  판정 지표가 아니다).
+
+## 검증
+
+- 패스스루 컬럼이 학습 CSV와 held-out test set에 보존됨을 단언하는 테스트
+- `feature_columns.json` ∩ 패스스루 집합 = ∅ 을 단언하는 테스트
+- `extra_features`로 패스스루 이름을 주면 `FeatureContractError`가 나는 테스트
+- 기존 22컬럼 계약과 `MODEL_FEATURE_COLUMNS` 21개 순서가 불변임을 단언하는 기존
+  테스트 유지 (`tests/test_model_feature_contract.py`)
+- grouped AUC 계산의 경계 조건 테스트: 단일 클래스 유저 제외, 대상 유저 0명
+- 회귀: 전체 pytest, `ruff check`
+
+## 실측 산출물 (이 작업의 진짜 목적)
+
+동일 스냅샷에서 **전역 ROC-AUC와 grouped ROC-AUC를 나란히 산출한 값**을 이슈 #505에
+기록한다. 이 값이 다음 단계를 결정한다.
+
+## 후속 판단 분기
+
+| 실측 결과 | 해석 | 다음 행동 |
+| --- | --- | --- |
+| 두 지표가 같이 움직인다 | 전역 AUC가 리랭킹 품질의 충분한 대리 지표 | 현행 주 지표 유지. 그 **근거를 문서로 확보**한 것이 산출물 |
+| 두 지표가 갈라진다 | 전역 AUC로 판정하면 리랭킹을 잘못 재고 있었다 | `rank` 패스스루 + NDCG@k / Recall@k 후속 이슈 발행. 원천에 `rank`·`exposure_rank`가 이미 있어 데이터는 존재하나, spine(`training_entity`)이 `rank`를 들고 있지 않아 조립 상류(feature_store_build)까지 범위가 넓어진다 |
+
+어느 쪽이든 **추측이 아니라 실측으로** 결정된다는 것이 이 설계의 요점이다.
+
+## 관련
+
+- #505 — 이 문서의 구현 이슈
+- #493 — 판정 엔진 단일화, `PRIMARY_METRIC` 하드코딩 해제 (주 지표 교체의 전제)
+- #492 — 실험 실행기
+- #494 — 실험 결과 보고 양식
+- `docs/specs/2026-08-03-paired-offline-experiment-comparison.md` — 짝지은 비교 계약
+- `docs/specs/2026-07-31-experiment-feature-override.md` — #405 실험 피처 오버라이드 경로
