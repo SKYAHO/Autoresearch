@@ -10,7 +10,7 @@
 
 ### PR ① 본문 렌더러 + 발행 경로
 
-대상: `tools/`, `docs/guides/`, `.env.example`, `README.md`,
+대상: `tools/`, `docs/guides/`, `docs/README.md`, `.env.example`, `README.md`,
 `.claude/docs/agent-project-reference.md`, `tests/`
 
 1. **fixture를 실제 렌더에 맞춘다.** `tests/fixtures/auto_research_issue_form_rendered.md`의
@@ -26,7 +26,9 @@
 5. **토큰을 도입한다.** `issues: write`만 필요. `.env.example`에 빈 값 + 주석,
    `README.md`와 `.claude/docs/agent-project-reference.md`를 같은 PR에서 갱신
    (spec 결정 3).
-6. **가이드를 쓴다.** `docs/guides/auto-research-issue-authoring.md`. 정본이 아니라
+6. **가이드를 쓴다.** `docs/guides/auto-research-issue-authoring.md`. 새 가이드는
+   `docs/README.md`의 역할별 인덱스에 **함께 등재한다** — 현재 `docs/guides/` 아래
+   15개 파일이 모두 등재돼 있어 누락하면 이 가이드만 예외가 된다. 정본이 아니라
    파생물임을 명시하고 spec의 "작성 템플릿이 지켜야 할 제약"을 사례와 함께 담는다.
 7. **검수 발행 1건**을 spec 결정 6의 절차대로 수행한다.
 
@@ -56,6 +58,10 @@
       `test_size + validation_size >= 1`
 - [ ] 가이드 문서와 `_HEADING_NAMES` / `_SCOPE_LABELS` / Issue Form yml이 어긋나면
       실패하는 drift 테스트가 있다
+- [ ] 판정기준·재현조건이 같고 가설·피처만 다른 두 본문이 **차단되지 않는다**
+- [ ] 가설·피처가 같고 시드만 다른 두 본문이 **차단된다**
+- [ ] `docs/README.md`에 새 가이드가 등재되었다
+- [ ] fixture 3줄 변경 후에도 `tests/test_experiment_promotion_gate.py`가 통과한다
 - [ ] fixture 3줄 수정 후에도 `criteria_id`/`reproducibility_id`가 수정 전과 같음을
       고정하는 회귀 테스트가 있다
 - [ ] 실제로 발행한 이슈 1건이 `.github/workflows/auto-research-issue-branch.yml`을
