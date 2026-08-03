@@ -246,11 +246,13 @@ precondition 실패로 끝난다.
 
 각 baseline/challenger run은 위의 검증된 같은 plan receipt를 `TrainingSplitManifest`에
 기록한다. 학습 runtime은 model fit 뒤 **active MLflow run 안에서** held-out `test` split의
-`roc_auc`를 한 번 계산하고 다음 결합 정보를 가진 `HeldOutMetricEvidence` payload를
-write-once GCS에 게시한다.
+정책 지표(`roc_auc`, `pr_auc`, `log_loss`)를 예측 1회로 계산하고, **지표마다** 다음
+결합 정보를 가진 `HeldOutMetricEvidence` payload를 write-once GCS에 게시한다(#493).
 
 - MLflow `run_id`, `plan_id`와 plan receipt의 `(uri, generation, sha256)`
-- `metric_name="roc_auc"`, `dataset_split="test"`, 값 범위 `[0, 1]`
+- `metric_name`(정책 allowlist `SUPPORTED_HELD_OUT_METRIC_NAMES`),
+  `dataset_split="test"`, 지표별 값 범위 — `roc_auc`/`pr_auc`는 `[0, 1]`,
+  `log_loss`는 `[0, ∞)`이며 셋 다 유한해야 한다
 - 해당 split manifest SHA-256 및 test membership hash
 - 평가에 사용한 model artifact 경로와 byte SHA-256
 - GCS가 발급한 metric object의 `uri`, `generation`, `metageneration`, `time_created`,
@@ -258,6 +260,11 @@ write-once GCS에 게시한다.
 
 metric object는
 `metrics/<training-run-id>/<metric-sha256>.json`에 `ifGenerationMatch=0`으로만 쓴다.
+key가 evidence body 전체에 content-addressed 되어 있으므로 한 run이 지표 여러 건을
+게시해도 key가 서로 다르고, 기존 `roc_auc` evidence의 key도 그대로다.
+`verify-comparison`이 소비하는 MLflow artifact
+(`reproducibility/metrics/held_out_metric_receipt.json`)에는 주 지표 receipt만 남는다 —
+판정이 다중 지표를 받아들이는 것은 후속 단계다.
 runtime은 자기 `training-run-id` prefix에만 쓸 수 있고 plan prefix나 다른 run prefix에는
 쓸 수 없다. application은 metric receipt를 다시 generation pin으로 읽어 rehash하고,
 metric의 plan·run·split·model binding이 local manifest와 일치하는지 확인한다. 또한 plan

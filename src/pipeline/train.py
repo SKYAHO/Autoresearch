@@ -25,6 +25,11 @@ prod와 분리되고 트래킹 URI 기본값이 로컬 파일 스토어가 된�
 `require_snapshot=True` 호출은 sidecar가 없거나 현재 CSV와 불일치할 때 모델 fit 전에
 실패한다.
 
+승격 evidence 옵션(plan receipt + evidence root)을 주면 held-out test split에서
+`HELD_OUT_METRIC_NAMES`(ROC-AUC·PR-AUC·Log Loss)를 계산해 지표마다 write-once
+`HeldOutMetricEvidence`를 게시한다(#493). 주 지표 ROC-AUC receipt만 기존
+`reproducibility/metrics/` artifact 경로로도 남겨 비교 계약을 유지한다.
+
 [비책임] 데이터셋 조립(src/pipeline/build_training_dataset.py), held-out test set
 채점(src/pipeline/evaluate.py), champion 승격 게이트(src/tracking/promote.py),
 서빙 로드(src/serving/model_loader.py)는 이 모듈이 다루지 않는다.
@@ -87,8 +92,12 @@ from src.tracking.model_package import (  # noqa: E402
     verify_model_package,
 )
 from src.tracking.registry import register_model  # noqa: E402
-from src.pipeline.evaluate import evaluate_held_out_roc_auc  # noqa: E402
+from src.pipeline.evaluate import (  # noqa: E402
+    HELD_OUT_METRIC_NAMES,
+    evaluate_held_out_metrics,
+)
 from src.pipeline.promotion_evidence import (  # noqa: E402
+    DEFAULT_HELD_OUT_METRIC_NAME,
     ExperimentPlanReceipt,
     HeldOutMetricEvidence,
     HeldOutMetricReceipt,
@@ -136,6 +145,12 @@ class TrainingOutcome:
             (등록을 미뤘거나 등록에 실패했으면 None).
         pending_registration: 등록을 미뤘을 때 호출자가 평가 통과 뒤
             `register_pending_model()`에 넘길 정보(미루지 않았으면 None).
+        held_out_metric_receipt: 주 지표(ROC-AUC) held-out evidence receipt.
+            `held_out_metric_receipts`의 부분집합이며, 기존 소비 계약
+            (training_comparison.py)이 이 하나만 읽는다.
+        held_out_metric_receipts: 이 run이 게시한 held-out evidence receipt 전부
+            (`HELD_OUT_METRIC_NAMES` 순서, #493 D3). 승격 evidence를 끄고 학습하면
+            빈 튜플이다.
     """
 
     sampling_rate: float
@@ -146,6 +161,7 @@ class TrainingOutcome:
     # 반복 실행이 MLflow run을 다시 조회해야 한다.
     val_roc_auc: float = float("nan")
     held_out_metric_receipt: HeldOutMetricReceipt | None = None
+    held_out_metric_receipts: tuple[HeldOutMetricReceipt, ...] = ()
 
 
 def require_binary_labels(labels: pd.Series, *, stage: str) -> tuple[int, int]:
@@ -790,6 +806,7 @@ def main(
         log_artifact(local_path=model_path, artifact_path="model")
 
         held_out_metric_receipt: HeldOutMetricReceipt | None = None
+        held_out_metric_receipts: list[HeldOutMetricReceipt] = []
         if promotion_evidence_enabled:
             if (
                 evidence_store is None
@@ -798,23 +815,40 @@ def main(
                 or split_manifest_sha256 is None
             ):
                 raise RuntimeError("promotion evidence 학습 상태가 불완전합니다")
-            held_out_roc_auc = evaluate_held_out_roc_auc(
-                model, test_df, feature_columns
+            held_out_metrics = evaluate_held_out_metrics(
+                model, test_df, feature_columns, sampling_rate=realized_sampling_rate
             )
-            log_metrics({"held_out_roc_auc": held_out_roc_auc})
-            held_out_metric_receipt = evidence_store.publish_held_out_metric(
-                HeldOutMetricEvidence(
-                    run_id=run.info.run_id,
-                    plan_receipt=experiment_plan_receipt,
-                    value=held_out_roc_auc,
-                    split_manifest_sha256=split_manifest_sha256,
-                    test_membership_sha256=split_manifest.splits[
-                        "test"
-                    ].membership_sha256,
-                    model_artifact_path=f"model/{Path(model_path).name}",
-                    model_artifact_sha256=sha256_file(Path(model_path)),
+            log_metrics(
+                {f"held_out_{name}": value for name, value in held_out_metrics.items()}
+            )
+            # 지표마다 별도 evidence를 게시한다(#493 D3). object key가 evidence body에
+            # content-addressed 되어 있어 metric_name이 다르면 key도 달라지므로
+            # create-only publish가 충돌하지 않고, roc_auc의 key도 그대로다.
+            model_artifact_path = f"model/{Path(model_path).name}"
+            model_artifact_sha256 = sha256_file(Path(model_path))
+            for metric_name in HELD_OUT_METRIC_NAMES:
+                metric_receipt = evidence_store.publish_held_out_metric(
+                    HeldOutMetricEvidence(
+                        run_id=run.info.run_id,
+                        plan_receipt=experiment_plan_receipt,
+                        metric_name=metric_name,
+                        value=held_out_metrics[metric_name],
+                        split_manifest_sha256=split_manifest_sha256,
+                        test_membership_sha256=split_manifest.splits[
+                            "test"
+                        ].membership_sha256,
+                        model_artifact_path=model_artifact_path,
+                        model_artifact_sha256=model_artifact_sha256,
+                    )
                 )
-            )
+                held_out_metric_receipts.append(metric_receipt)
+                if metric_name == DEFAULT_HELD_OUT_METRIC_NAME:
+                    held_out_metric_receipt = metric_receipt
+            if held_out_metric_receipt is None:
+                raise RuntimeError("held-out 주 지표 evidence를 게시하지 못했습니다")
+            # 주 지표 receipt만 기존 artifact 경로로 남긴다. 이 경로는
+            # training_comparison.py의 소비 계약이며, 판정이 다중 지표를 받아들이는
+            # 것은 후속 단계(#493 3단계)다.
             _log_held_out_metric_receipt(held_out_metric_receipt)
 
         # [Step 8b] 배포 패키지는 프로세스 전용 staging에서 완성·자체 검증한 뒤 기록한다.
@@ -936,6 +970,7 @@ def main(
         pending_registration=pending_registration,
         val_roc_auc=val_roc_auc,
         held_out_metric_receipt=held_out_metric_receipt,
+        held_out_metric_receipts=tuple(held_out_metric_receipts),
     )
 
 

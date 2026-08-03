@@ -8,12 +8,43 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from pydantic import ValidationError
 
 from src.pipeline.promotion_evidence import (
+    _canonical_json_bytes,
+    _sha256,
+)
+from src.pipeline.promotion_evidence import (
+    SUPPORTED_HELD_OUT_METRIC_NAMES,
     HeldOutMetricEvidence,
     PromotionEvidenceStore,
     PromotionEvidenceValidationError,
     create_experiment_plan,
+)
+
+# #493 2단계 이전(`metric_name: Literal["roc_auc"]`, `value: Field(ge=0, le=1)`)
+# 스키마로 실제 직렬화해 얻은 canonical JSON byte와 그 sha256이다. GCS에 이미
+# 불변 객체로 쌓인 roc_auc receipt를 대표하며, 스키마 확장이 이 byte를 바꾸면
+# 기존 `GcsObjectReceipt.sha256`이 전부 어긋난다.
+_LEGACY_ROC_AUC_EVIDENCE_JSON = (
+    b'{"dataset_split":"test","metric_name":"roc_auc","model_artifact_path":'
+    b'"model/lgbm_model.joblib","model_artifact_sha256":"'
+    + b"c" * 64
+    + b'","plan_receipt":{"object":{"generation":"1","metageneration":"1",'
+    b'"sha256":"' + b"d" * 64 + b'","time_created":"2026-08-01T00:00:00Z",'
+    b'"uri":"gs://evidence/promotion-evidence/plans/experiment-plan-'
+    b'ed4864a41e386d45c91a1d5eef974e20a5ed69435014506ba69ecfa6177ac20e.json"},'
+    b'"plan":{"candidate_ids":["candidate-revision"],"control_id":'
+    b'"control-revision","created_at":"2026-07-31T00:00:00Z","hypothesis_id":'
+    b'"issue-466-h1","plan_id":"experiment-plan-'
+    b'ed4864a41e386d45c91a1d5eef974e20a5ed69435014506ba69ecfa6177ac20e",'
+    b'"policy_version":"promotion-policy-v1"}},"run_id":"run-42",'
+    b'"split_manifest_sha256":"' + b"a" * 64 + b'","test_membership_sha256":"'
+    + b"b" * 64
+    + b'","value":0.8125}'
+)
+_LEGACY_ROC_AUC_EVIDENCE_SHA256 = (
+    "1da6e627e125de56e794f4e0af58fc165e3b21169060b16c16efaaf929f4d8db"
 )
 
 
@@ -230,18 +261,24 @@ def test_verify_plan_receipt_fails_closed_for_tampered_receipt_fields(
         store.verify_plan_receipt(tampered)
 
 
+def _metric(plan_receipt, **overrides: object) -> HeldOutMetricEvidence:
+    fields: dict[str, object] = {
+        "run_id": "run-42",
+        "plan_receipt": plan_receipt,
+        "value": 0.8125,
+        "split_manifest_sha256": "a" * 64,
+        "test_membership_sha256": "b" * 64,
+        "model_artifact_path": "model/lgbm_model.joblib",
+        "model_artifact_sha256": "c" * 64,
+    }
+    fields.update(overrides)
+    return HeldOutMetricEvidence(**fields)
+
+
 def test_publish_metric_binds_plan_run_split_and_model_hash() -> None:
     store, bucket = _store()
     plan_receipt = store.publish_plan(_plan())
-    metric = HeldOutMetricEvidence(
-        run_id="run-42",
-        plan_receipt=plan_receipt,
-        value=0.8125,
-        split_manifest_sha256="a" * 64,
-        test_membership_sha256="b" * 64,
-        model_artifact_path="model/lgbm_model.joblib",
-        model_artifact_sha256="c" * 64,
-    )
+    metric = _metric(plan_receipt)
 
     receipt = store.publish_held_out_metric(metric)
 
@@ -249,3 +286,111 @@ def test_publish_metric_binds_plan_run_split_and_model_hash() -> None:
     assert receipt.object.uri.startswith("gs://evidence/promotion-evidence/metrics/run-42/")
     assert bucket.blob_calls[-1][0].startswith("promotion-evidence/metrics/run-42/")
     assert store.verify_held_out_metric_receipt(receipt) == metric
+
+
+def test_existing_roc_auc_evidence_deserializes_with_unchanged_sha256() -> None:
+    """확장된 스키마가 기존 roc_auc receipt의 byte와 sha256을 바꾸지 않는다(#493 D3).
+
+    이미 GCS에 쌓인 evidence는 마이그레이션하지 않으므로, ① 옛 byte가 그대로
+    역직렬화되고 ② 그 값을 다시 canonical 직렬화하면 byte가 동일하며 ③ sha256이
+    변하지 않아야 한다. 셋 중 하나라도 깨지면 기존 `GcsObjectReceipt.sha256`과
+    content-addressed object key가 전부 어긋난다.
+    """
+    evidence = HeldOutMetricEvidence.model_validate_json(_LEGACY_ROC_AUC_EVIDENCE_JSON)
+
+    assert evidence.metric_name == "roc_auc"
+    assert evidence.value == 0.8125
+    assert _canonical_json_bytes(evidence) == _LEGACY_ROC_AUC_EVIDENCE_JSON
+    assert (
+        hashlib.sha256(_LEGACY_ROC_AUC_EVIDENCE_JSON).hexdigest()
+        == _LEGACY_ROC_AUC_EVIDENCE_SHA256
+    )
+    assert _sha256(_canonical_json_bytes(evidence)) == _LEGACY_ROC_AUC_EVIDENCE_SHA256
+
+
+def test_existing_roc_auc_evidence_keeps_its_content_addressed_object_key() -> None:
+    """기존 roc_auc receipt의 object key가 스키마 확장 뒤에도 동일하다."""
+    store, bucket = _store()
+    plan_receipt = store.publish_plan(_plan())
+    plan_receipt = plan_receipt.model_copy(
+        update={"object": plan_receipt.object.model_copy(update={"sha256": "d" * 64})}
+    )
+
+    receipt = store.publish_held_out_metric(_metric(plan_receipt))
+
+    assert bucket.blob_calls[-1][0] == (
+        f"promotion-evidence/metrics/run-42/{_LEGACY_ROC_AUC_EVIDENCE_SHA256}.json"
+    )
+    assert receipt.object.sha256 == _LEGACY_ROC_AUC_EVIDENCE_SHA256
+
+
+def test_one_run_publishes_every_policy_metric_to_a_distinct_object_key() -> None:
+    """한 run이 지표 3건을 써도 create-only key가 충돌하지 않는다(#493 D3)."""
+    store, bucket = _store()
+    plan_receipt = store.publish_plan(_plan())
+    values = {"roc_auc": 0.8125, "pr_auc": 0.4, "log_loss": 0.37}
+
+    receipts = [
+        store.publish_held_out_metric(
+            _metric(plan_receipt, metric_name=name, value=values[name])
+        )
+        for name in SUPPORTED_HELD_OUT_METRIC_NAMES
+    ]
+
+    keys = {receipt.object.uri for receipt in receipts}
+    assert len(keys) == len(SUPPORTED_HELD_OUT_METRIC_NAMES)
+    for name, receipt in zip(SUPPORTED_HELD_OUT_METRIC_NAMES, receipts):
+        assert receipt.object.uri.startswith(
+            "gs://evidence/promotion-evidence/metrics/run-42/"
+        )
+        assert store.verify_held_out_metric_receipt(receipt).metric_name == name
+    assert len({name for name, _ in bucket.blob_calls}) == 1 + len(receipts)
+
+
+def test_metric_name_outside_the_policy_allowlist_is_rejected() -> None:
+    store, _ = _store()
+    plan_receipt = store.publish_plan(_plan())
+
+    with pytest.raises(ValidationError, match="allowlist"):
+        _metric(plan_receipt, metric_name="brier")
+
+
+@pytest.mark.parametrize(
+    ("metric_name", "value"),
+    [
+        ("roc_auc", 0.0),
+        ("roc_auc", 1.0),
+        ("pr_auc", 0.5),
+        ("log_loss", 0.0),
+        ("log_loss", 12.5),
+    ],
+)
+def test_metric_value_bounds_accept_in_range_values(metric_name: str, value: float) -> None:
+    store, _ = _store()
+    plan_receipt = store.publish_plan(_plan())
+
+    evidence = _metric(plan_receipt, metric_name=metric_name, value=value)
+
+    assert evidence.value == value
+
+
+@pytest.mark.parametrize(
+    ("metric_name", "value"),
+    [
+        ("roc_auc", 1.5),
+        ("roc_auc", -0.1),
+        ("pr_auc", 1.0000001),
+        ("log_loss", -0.000001),
+        ("log_loss", float("nan")),
+        ("log_loss", float("inf")),
+        ("roc_auc", float("nan")),
+    ],
+)
+def test_metric_value_outside_its_metric_range_is_rejected(
+    metric_name: str, value: float
+) -> None:
+    store, _ = _store()
+    plan_receipt = store.publish_plan(_plan())
+
+    with pytest.raises(ValidationError):
+        _metric(plan_receipt, metric_name=metric_name, value=value)

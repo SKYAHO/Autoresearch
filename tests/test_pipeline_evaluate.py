@@ -18,9 +18,11 @@ from src.pipeline import evaluate
 class _FakeModel:
     def __init__(self) -> None:
         self.received: pd.DataFrame | None = None
+        self.predict_calls = 0
 
     def predict_proba(self, frame: pd.DataFrame) -> np.ndarray:
         self.received = frame.copy()
+        self.predict_calls += 1
         positive = np.linspace(0.2, 0.8, len(frame))
         return np.column_stack([1 - positive, positive])
 
@@ -162,6 +164,64 @@ def test_main_rejects_experiment_columns_that_differ_from_declaration(
             data_path=str(data_path),
             extra_features=["other_feature"],
         )
+
+
+# --- held-out 다중 지표 (#493 D3) ---
+
+
+def _held_out_dataset() -> pd.DataFrame:
+    dataset = pd.DataFrame(
+        {column: np.arange(4, dtype=float) for column in MODEL_FEATURE_COLUMNS}
+    )
+    dataset["age_group"] = ["10s", "20s", "30s", "40s"]
+    dataset["occupation"] = ["Student", "Engineer", "Marketer", "Student"]
+    dataset["watch_time_band"] = ["morning", "evening", "night", "unknown"]
+    dataset["historical_category_affinity"] = ["A", "B", "C", "A"]
+    dataset["category_id"] = [1, 2, 1, 2]
+    dataset["clicked"] = [0, 0, 1, 1]
+    return dataset
+
+
+def test_held_out_metric_names_match_the_evidence_contract_allowlist() -> None:
+    """산출 지표 집합이 증거 계약 allowlist와 갈라지면 게시가 거부된다."""
+    from src.pipeline.promotion_evidence import SUPPORTED_HELD_OUT_METRIC_NAMES
+
+    assert set(evaluate.HELD_OUT_METRIC_NAMES) == set(SUPPORTED_HELD_OUT_METRIC_NAMES)
+
+
+def test_evaluate_held_out_metrics_computes_every_metric_from_one_prediction() -> None:
+    model = _FakeModel()
+    dataset = _held_out_dataset()
+
+    metrics = evaluate.evaluate_held_out_metrics(
+        model, dataset, MODEL_FEATURE_COLUMNS
+    )
+
+    assert model.predict_calls == 1
+    assert set(metrics) == set(evaluate.HELD_OUT_METRIC_NAMES)
+    assert all(isinstance(value, float) for value in metrics.values())
+    assert metrics["roc_auc"] == evaluate.evaluate_held_out_roc_auc(
+        model, dataset, MODEL_FEATURE_COLUMNS
+    )
+    assert model.received is not None
+    for column in CATEGORICAL_FEATURE_COLUMNS:
+        assert str(model.received[column].dtype) == "category"
+
+
+def test_evaluate_held_out_metrics_calibrates_log_loss_only() -> None:
+    """순위 기반 지표는 보정에 불변이고 Log Loss만 원분포로 이동한다(#300 결정 5)."""
+    dataset = _held_out_dataset()
+    raw = evaluate.evaluate_held_out_metrics(
+        _FakeModel(), dataset, MODEL_FEATURE_COLUMNS
+    )
+
+    calibrated = evaluate.evaluate_held_out_metrics(
+        _FakeModel(), dataset, MODEL_FEATURE_COLUMNS, sampling_rate=0.1
+    )
+
+    assert calibrated["roc_auc"] == raw["roc_auc"]
+    assert calibrated["pr_auc"] == raw["pr_auc"]
+    assert calibrated["log_loss"] != raw["log_loss"]
 
 
 def test_main_keeps_strict_contract_when_no_extra_features(tmp_path, monkeypatch) -> None:
