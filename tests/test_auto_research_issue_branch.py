@@ -1271,7 +1271,9 @@ def test_promotion_workflow_validates_coordinate_before_global_queue_and_uses_tr
     assert "typeof rawIssueNumber !== 'string'" in validation_script
     assert "/^[1-9][0-9]*$/" in validation_script
     assert "typeof rawExperimentId !== 'string'" in validation_script
-    assert "/^[a-z0-9][a-z0-9._:-]{0,127}$/" in validation_script
+    # 런타임 계약(`context.py`, `paired_experiment.py`)과 동일해야 한다 — 넓게 두면
+    # dev 병합을 통과한 값이 main 승격에서 거부된다(#495 버그 B).
+    assert "/^[a-z0-9][a-z0-9-]{0,31}$/" in validation_script
     assert "core.setOutput('issue_number', rawIssueNumber);" in validation_script
     assert "core.setOutput('experiment_id', rawExperimentId);" in validation_script
     assert "actions/checkout" not in str(validation_steps)

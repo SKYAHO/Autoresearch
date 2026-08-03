@@ -74,29 +74,64 @@ jobs:
             const registryUri = process.env.REGISTRY_URI || '';
             const runId = process.env.RUN_ID || '';
             const outcome = process.env.OUTCOME || '';
+            const primaryCandidate = process.env.PRIMARY_CANDIDATE || '';
+            const primaryBaseline = process.env.PRIMARY_BASELINE || '';
+            const guardrailCandidate = process.env.GUARDRAIL_CANDIDATE || '';
+            const guardrailBaseline = process.env.GUARDRAIL_BASELINE || '';
+            // 거부 사유를 세 갈래로 구분한다(#495 D-3).
+            //   input_invalid       — 입력 형식이 계약을 벗어남
+            //   comparison_rejected — 비교는 성립했으나 통과하지 못한 정상 결과
+            //   lineage_invalid     — 좌표·계보가 실제로 어긋남
+            class RejectionError extends Error {
+              constructor(kind, message) {
+                super(message);
+                this.kind = kind;
+              }
+            }
+            function isFiniteDecimal(value) {
+              return /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(value) && Number.isFinite(Number(value));
+            }
             try {
               if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
-                throw new Error('issue_number must be a positive integer');
+                throw new RejectionError('input_invalid', 'issue_number must be a positive integer');
               }
               if (!/^[0-9a-f]{40}$/.test(candidateSha)) {
-                throw new Error('candidate_sha must be a 40-character lowercase SHA');
+                throw new RejectionError('input_invalid', 'candidate_sha must be a 40-character lowercase SHA');
               }
               if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(experimentId)) {
-                throw new Error('experiment_id is invalid');
+                throw new RejectionError('input_invalid', 'experiment_id is invalid');
               }
               if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(runId)) {
-                throw new Error('run_id is invalid');
+                throw new RejectionError('input_invalid', 'run_id is invalid');
+              }
+              // 지표는 gate step이 float()으로 파싱한다. 여기서 걸러내지 않으면 그 step이
+              // 죽고 사유가 이슈에 남지 않는다(#495 D-1).
+              for (const [name, value] of [
+                ['primary_candidate', primaryCandidate],
+                ['primary_baseline', primaryBaseline],
+              ]) {
+                if (!isFiniteDecimal(value)) {
+                  throw new RejectionError('input_invalid', `${name} must be a finite decimal, got "${value}"`);
+                }
+              }
+              for (const [name, value] of [
+                ['guardrail_candidate', guardrailCandidate],
+                ['guardrail_baseline', guardrailBaseline],
+              ]) {
+                if (value !== '' && !isFiniteDecimal(value)) {
+                  throw new RejectionError('input_invalid', `${name} must be a finite decimal, got "${value}"`);
+                }
               }
               // paired 비교(#454) 결과를 보낸 producer는 outcome을 함께 싣는다.
               // 통과가 아닌 결과로 승격 브랜치·PR을 만들지 않는다. outcome이 없는
               // 기존 producer는 그대로 받아들인다(하위 호환).
               if (outcome && outcome !== 'comparison_passed') {
-                throw new Error(`outcome must be comparison_passed, got ${outcome}`);
+                throw new RejectionError('comparison_rejected', `outcome must be comparison_passed, got ${outcome}`);
               }
               // registry_uri는 실험 Registry bucket의 gs:// object여야 한다. suffix만
               // 보면 https 스킴이나 남의 bucket 경로도 통과한다.
               if (!registryUri.startsWith('gs://')) {
-                throw new Error('registry_uri must be a gs:// URI');
+                throw new RejectionError('input_invalid', 'registry_uri must be a gs:// URI');
               }
               // #454는 baseline/candidate를 조건별 Registry로 격리하므로 경로에
               // condition 구간이 들어간다. 조건 격리 이전 형식(#450/#461)도 계속
@@ -110,7 +145,8 @@ jobs:
                 !registryUri.endsWith(isolatedRegistrySuffix) &&
                 !registryUri.endsWith(legacyRegistrySuffix)
               ) {
-                throw new Error(
+                throw new RejectionError(
+                  'input_invalid',
                   `registry_uri must end with ${isolatedRegistrySuffix} or ${legacyRegistrySuffix}`,
                 );
               }
@@ -118,14 +154,15 @@ jobs:
                 owner: context.repo.owner, repo: context.repo.repo, base: candidateSha, head: 'dev',
               });
               if (!['ahead', 'identical'].includes(comparison.data.status)) {
-                throw new Error('candidate_sha must be an ancestor of dev');
+                throw new RejectionError('lineage_invalid', 'candidate_sha must be an ancestor of dev');
               }
               core.setOutput('valid', 'true');
               core.setOutput('reason', 'lineage_valid');
             } catch (error) {
+              const kind = error.kind || 'lineage_invalid';
               core.setOutput('valid', 'false');
-              core.setOutput('reason', `lineage_invalid:${error.message}`);
-              core.warning(`Experiment lineage rejected: ${error.message}`);
+              core.setOutput('reason', `${kind}:${error.message}`);
+              core.warning(`Experiment promotion rejected (${kind}): ${error.message}`);
             }
 
       - name: Evaluate structured metric gate
@@ -201,24 +238,38 @@ jobs:
                   `artifact_uri: \`${process.env.ARTIFACT_URI || '미제공'}\``,
                   `log_uri: \`${process.env.LOG_URI || '미제공'}\``,
                   `사유: \`${process.env.GATE_REASON}\``,
-                ].join('\\n'),
+                ].join('\n'),
               });
             }
 
+      # gate step이 **실패**해도 이슈에 기록이 남아야 한다(#495 C·D-1 공통). 이전 조건은
+      # `steps.gate.outcome == 'success'`를 요구해, gate가 예외로 죽으면 원인과 무관하게
+      # 흔적이 사라졌다 — `promotion_gate`의 label 불일치가 2일간 발견되지 않은 이유다.
       - name: Comment failed or rejected experiment result on source issue
         if: >-
           always() && steps.issue.outcome == 'success' &&
           (steps.lineage.outputs.valid != 'true' ||
+          steps.gate.outcome == 'failure' ||
           (steps.gate.outcome == 'success' && steps.gate.outputs.passed != 'true'))
         uses: actions/github-script@v8
         env:
-          GATE_REASON: ${{ steps.gate.outputs.reason || steps.lineage.outputs.reason }}
+          GATE_REASON: >-
+            ${{ steps.gate.outputs.reason
+            || steps.lineage.outputs.reason
+            || format('gate_step_failed:{0}', steps.gate.outcome) }}
         with:
           script: |
             const issueNumber = Number(process.env.ISSUE_NUMBER);
             const experimentId = process.env.EXPERIMENT_ID || 'unknown';
             const candidateSha = process.env.CANDIDATE_SHA || 'unknown';
             const runId = process.env.RUN_ID || 'unknown';
+            const gateReason = process.env.GATE_REASON || 'unknown';
+            // 입력 형식 거부는 "실패 또는 기각"과 성격이 다르므로 제목에서 구분한다.
+            const heading = gateReason.startsWith('input_invalid:')
+              ? '## Auto Research 실험 결과: 입력 거부'
+              : gateReason.startsWith('gate_step_failed:')
+                ? '## Auto Research 실험 결과: 판정 단계 오류'
+                : '## Auto Research 실험 결과: 실패 또는 기각';
             const marker = `<!-- autoresearch-result:${issueNumber}:${experimentId}:${candidateSha}:${runId} -->`;
             const comments = await github.paginate(github.rest.issues.listComments, {
               owner: context.repo.owner,
@@ -231,28 +282,34 @@ jobs:
               return;
             }
             const body = [
-              '## Auto Research 실험 결과: 실패 또는 기각',
+              heading,
               marker,
               '',
               `- experiment_id: \`${experimentId}\``,
               `- candidate_sha: \`${candidateSha}\``,
               `- run_id: \`${runId}\``,
               `- registry_uri: \`${process.env.REGISTRY_URI || '미제공'}\``,
-              `- primary candidate: \`${process.env.PRIMARY_CANDIDATE}\``,
-              `- primary baseline: \`${process.env.PRIMARY_BASELINE}\``,
-              `- 판정 사유: \`${process.env.GATE_REASON}\``,
+              `- primary candidate: \`${process.env.PRIMARY_CANDIDATE || '미제공'}\``,
+              `- primary baseline: \`${process.env.PRIMARY_BASELINE || '미제공'}\``,
+              `- 판정 사유: \`${gateReason}\``,
               `- artifact_uri: \`${process.env.ARTIFACT_URI || '미제공'}\``,
               `- log_uri: \`${process.env.LOG_URI || '미제공'}\``,
               '',
               'main 승격 PR은 생성하지 않았습니다.',
-            ].join('\\n');
+            ].join('\n');
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
               body,
             });
+      # gate가 skip되면 `steps.gate.outputs.reason`이 비어 summary가 빈 값만 남았다
+      # (#495 D-3). lineage 사유로 대체해 어떤 경로로 끝났는지 항상 드러나게 한다.
       - name: Write result summary
+        if: always()
         env:
-          GATE_REASON: ${{ steps.gate.outputs.reason }}
+          GATE_REASON: >-
+            ${{ steps.gate.outputs.reason
+            || steps.lineage.outputs.reason
+            || format('gate_step_{0}', steps.gate.outcome) }}
         run: 'echo "experiment promotion gate: ${GATE_REASON}" >> "$GITHUB_STEP_SUMMARY"'

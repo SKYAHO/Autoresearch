@@ -47,7 +47,7 @@ jobs:
             }
             if (
               typeof rawExperimentId !== 'string' ||
-              !/^[a-z0-9][a-z0-9._:-]{0,127}$/.test(rawExperimentId)
+              !/^[a-z0-9][a-z0-9-]{0,31}$/.test(rawExperimentId)
             ) {
               failClosed('experiment_id must use the lowercase safe identifier syntax');
             }
@@ -175,7 +175,7 @@ jobs:
             if (!Number.isSafeInteger(issueNumber)) {
               failClosed('validated issue number is outside the safe integer range');
             }
-            requireMatch(experimentId, /^[a-z0-9][a-z0-9._:-]{0,127}$/, 'experiment_id');
+            requireMatch(experimentId, /^[a-z0-9][a-z0-9-]{0,31}$/, 'experiment_id');
             let candidates;
             try {
               candidates = JSON.parse(candidatesJson);

@@ -78,7 +78,9 @@ _METRIC_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
 _NON_NEGATIVE_INTEGER_PATTERN = re.compile(r"^[0-9]+$")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _IDENTIFIER_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-_EXPERIMENT_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+# 런타임 계약(`autoresearch/experiments/context.py`, `src/pipeline/paired_experiment.py`)과
+# 동일해야 한다. 넓게 두면 dev 병합을 통과한 값이 main 승격에서 거부된다(#495).
+_EXPERIMENT_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
 _CANDIDATE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 COMPLETION_CANDIDATE_SCHEMA_VERSION = 1
 MAX_COMPLETION_CANDIDATES = 50
