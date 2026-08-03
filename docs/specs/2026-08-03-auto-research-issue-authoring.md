@@ -9,25 +9,84 @@
 
 ## 목적
 
-자율 실험 흐름의 첫 단계인 "가설 한 줄 → 구조화된 Auto Research 이슈"가 전적으로
-사람 손에 묶여 있다. 뒤따르는 단계는 자동화되어 있으나 시작점이 수동이라 폐루프가
-스스로 돌지 못한다.
+자율 실험 흐름의 첫 단계인 "가설 한 줄 → 구조화된 Auto Research 이슈"가 사람 손에
+묶여 있다. 뒤따르는 단계는 자동화되어 있으나 시작점이 수동이라 폐루프가 스스로
+돌지 못한다.
 
-이 문서는 **에이전트가 따를 작성 템플릿**과 **그 결과를 기존 파서로 자가 검증한 뒤
-발행하는 경로**를 정의한다. 파서를 새로 만들지 않는다 — 이미 있는
-`parse_issue_input()`을 발행 **전** 게이트로 재사용한다.
+이 문서는 **에이전트가 이슈를 직접 발행하기 위해 알아야 할 계약**을 정의한다.
+산출물은 작성 가이드와 drift 테스트이며, **새 도구를 만들지 않는다.**
 
-## 결정 1 — 렌더 정본은 기존 fixture를 실제 렌더에 맞춰 고친다
+## 결정 1 — 전용 발행 도구를 만들지 않는다
+
+에이전트는 본문을 작성해 `gh issue create`로 발행한다. 렌더러도 발행 CLI도 두지
+않는다.
+
+초안에서는 `tools/` 아래에 본문 렌더러(순수 함수)와 발행 CLI(dry-run 기본, 발행
+상한, 재발행 차단 키, 전용 토큰)를 두기로 했으나 **기각한다.** 근거는 다음과 같다.
+
+- **발행 전 검증에 새 코드가 필요 없다.** `tools/auto_research_issue_branch.py`는
+  이미 독립 CLI이며 placeholder 이슈 번호로 실행하면 본문을 그대로 검증한다.
+  `criteria_id`/`reproducibility_id`는 이슈 번호에 의존하지 않으므로 발행 전에
+  확정된 값을 그대로 신뢰할 수 있다.
+
+  ```console
+  $ python tools/auto_research_issue_branch.py \
+      --issue-number 1 --issue-title "[AR] test" --issue-body-file body.md
+  issue_branch=exp/1-test
+  criteria_id=1ae256dd8c58...
+  reproducibility_id=315f6fc3abe7...
+  ```
+
+- **새 토큰이 순손해다.** `gh`는 이미 인증되어 있는데 전용 토큰을 도입하면 시크릿
+  표면만 넓어진다. 초안은 이를 안전 장치로 서술했으나 실제로는 반대 방향이었다.
+- **폭주 방지를 걸 대상이 없다.** dry-run 기본값과 발행 상한은 호출 주체가 있을 때
+  의미가 있는데, 저장소 안에 그 도구를 호출할 주체가 하나도 없었다. 사람이 손으로
+  이슈를 채우던 것이 사람이 손으로 CLI를 돌리는 것으로 바뀔 뿐, 이 이슈가 풀려던
+  "시작점이 수동이다"가 그대로 남는다.
+- **잘못된 본문의 피해가 작다.** 워크플로의 검증 step이 브랜치 생성 step보다 먼저
+  실행되므로, 계약을 어긴 본문은 **브랜치를 만들지 못하고** 실패한 run만 남긴다.
+  이슈 본문을 고치고 label을 다시 붙이면 `labeled` 이벤트로 재시도된다.
+
+**남는 위험과 그 처리.** 전용 도구가 없으므로 발행 상한과 중복 차단이 사라진다.
+지금은 호출 주체가 없어 폭주가 발생할 수 없고, 자율 실행 주체(`agent_orchestration`
+endpoint 등)가 생기는 시점에 **그 주체에** 상한을 붙이는 것이 옳다. 도구 계층에
+미리 두면 실제 호출 경로와 어긋난 곳에 방어가 놓인다.
+
+## 결정 2 — label 두 개가 유일한 게이트다
+
+브랜치 생성 job은 `auto-research`와 `experiment`를 **동시에** 가질 때만 실행된다
+(`.github/workflows/auto-research-issue-branch.yml`의 `if:`). Issue Form을 쓰면 두
+label이 자동 부여되지만 `gh issue create`는 Form을 우회하므로 반드시 직접 지정한다.
+
+```bash
+gh issue create --title "[AR] ..." \
+  --label auto-research --label experiment --assignee @me --body-file body.md
+```
+
+하나라도 빠지면 job이 실패가 아니라 **skip**된다. skip은 체크도 알림도 남기지
+않으므로 브랜치 생성이 아무 흔적 없이 일어나지 않는다. 가이드가 이 명령을 그대로
+싣고, drift 테스트가 두 `--label`의 실재를 고정한다.
+
+## 결정 3 — 제목 `[AR] ` prefix는 강제하지 않는다
+
+저장소 계약 어디에도 요구가 없다. 워크플로는 제목을 검사하지 않고,
+`branch_name_for()`는 prefix가 있으면 slug 생성 전에 제거할 뿐 없다고 실패하지
+않는다. Issue Form이 미리 채워 주는 관례이므로 따르기를 권하되, 발행 게이트로
+승격시키지 않는다. **계약에 없는 제약을 도구가 만들면 그것이 곧 새로운 계약이 된다.**
+
+제목에 ASCII 영소문자·숫자가 전혀 없으면 slug가 비어 `issue-<sha256 앞 12자>`로
+대체된다. 이는 검증 실패가 아니라 **가독성 문제**다 — 그런 이름도 워크플로의 브랜치
+정규식을 정상 통과한다. 사람이 브랜치 목록에서 실험을 식별할 수 있도록 제목에
+ASCII slug 조각을 남기라는 것이 규정의 목적이다.
+
+## 결정 4 — 렌더 정본은 기존 fixture를 실제 렌더에 맞춰 고친다
 
 `tests/fixtures/auto_research_issue_form_rendered.md`의 `허용 범위` 절에는 체크박스가
-**한 줄뿐**이다. 반면 GitHub Issue Form의 `type: checkboxes`는 옵션 3개를 모두
-렌더한다(`.github/ISSUE_TEMPLATE/auto_research.yml`의 `options:` 3개). 즉 현재
-fixture는 이름과 달리 "GitHub이 실제로 렌더한 본문"이 아니라 **파서 최소 통과
-케이스**다.
+**한 줄뿐**이었다. 반면 GitHub Issue Form의 `type: checkboxes`는 옵션 3개를 모두
+렌더한다. 즉 이 fixture는 이름과 달리 "GitHub이 실제로 렌더한 본문"이 아니라
+**파서 최소 통과 케이스**였다.
 
 **결정: fixture를 3줄로 고친다. 별도 fixture를 만들지 않는다.**
-
-근거를 실측으로 확인했다.
 
 ```text
 1줄 fixture      criteria_id=1ae256dd8c58…  reproducibility_id=315f6fc3abe7…
@@ -37,97 +96,19 @@ criteria_id 동일: True     reproducibility_id 동일: True
 
 - `허용 범위`는 두 식별자의 해시 입력이 **아니다**. `criteria_id`는 주 지표 6필드,
   `reproducibility_id`는 dataset/seed/split/config 6필드만 묶는다. 따라서 fixture를
-  고쳐도 봉인된 ID가 달라지지 않고, marker 재검증이 깨지지 않는다.
+  고쳐도 봉인된 ID가 달라지지 않고 marker 재검증이 깨지지 않는다.
 - 파서는 3줄도 정상 통과한다(모두 미체크 → `allowed_scope == ()`).
 - fixture를 두 벌 두면 동기화 대상이 늘어난다. Issue Form 파서가 두 벌이어서 생긴
   드리프트가 #495였다. 같은 종류의 위험을 새로 만들지 않는다.
 - 이름이 `..._rendered.md`인 파일이 실제 렌더와 다른 것 자체가 결함이다.
 - **이 fixture의 두 번째 소비자도 안전하다.** `autoresearch/experiments/promotion_gate.py`의
-  `parse_criteria()`가 같은 fixture를 읽지만(`tests/test_experiment_promotion_gate.py`),
-  `_LABELS`의 지표 필드만 뽑아 쓰므로 `허용 범위` 줄 수에 영향받지 않는다. 실행으로
-  확인했다 — fixture 3줄 변경 후에도 해당 테스트 파일이 전부 통과한다.
+  `parse_criteria()`가 같은 fixture를 읽지만 `_LABELS`의 지표 필드만 뽑아 쓰므로
+  `허용 범위` 줄 수에 영향받지 않는다. 실행으로 확인했다.
 
-## 결정 2 — 발행 경로는 `tools/` 아래 독립 CLI
+이 fixture는 에이전트의 **작성 예시 정본**이기도 하다. 새 본문을 쓸 때 복사해 값만
+바꾸는 것이 가장 안전하다.
 
-세 후보를 검토했다.
-
-| 후보 | 장점 | 기각 사유 |
-| --- | --- | --- |
-| `agent_orchestration` 신규 endpoint | `/chat`과 같은 `X-Orch-Token` 인증 재사용 | 상시 기동 중인 서비스 프로세스가 GitHub **쓰기** 권한을 상시 보유하게 된다 |
-| **`tools/` 독립 CLI (채택)** | 실행 시점에만 토큰을 읽고 종료. dry-run 기본값. 폭주 위험 최소 | — |
-| `workflow_dispatch` 워크플로 | Actions 토큰 사용 | 자연어 입력을 사람이 넣어야 해 자율성이 떨어진다 |
-
-`tools/__init__.py`가 이미 있어 `from tools....` import가 가능하다. 렌더러는 순수
-함수로 `tools/` 아래 두고, CLI가 그 출력을 `parse_issue_input()`에 넣어 자가 검증한
-뒤 발행한다.
-
-## 결정 3 — 토큰과 권한
-
-- 필요한 권한은 **`issues: write` 하나뿐**이다. 차단 키 확인을 위해 열린 이슈 목록과
-  본문을 **읽어야** 하지만, fine-grained PAT의 Issues 권한은 read/write가 한 쌍이라
-  별도 read 권한이 필요 없다. 브랜치 생성은
-  `.github/workflows/auto-research-issue-branch.yml`이 자신의 `contents: write`
-  권한으로 수행하므로(`:10-12`), 발행 주체에 `contents` 권한을 주지 않는다.
-- 새 환경 변수는 `.env.example`에 **빈 값 + 용도 주석**으로 등록하고, Agent
-  Orchestration 절(`ORCH_API_TOKEN`·`ORCH_RUNNER_TOKEN` 블록)의 서술 관례를 따른다.
-- 토큰 값을 로그·에러 메시지·PR 본문·테스트 fixture 어디에도 남기지 않는다. 실패
-  보고에는 작업 이름과 정제된 엔드포인트만 포함한다.
-- 필수 환경 변수를 새로 도입하므로 **같은 PR에서** `README.md`와
-  `.claude/docs/agent-project-reference.md`를 갱신한다.
-
-## 결정 4 — 폭주 방지
-
-자동 발행은 `issues: [opened, labeled]` 워크플로를 즉시 트리거한다
-(`.github/workflows/auto-research-issue-branch.yml:7-8`). 되돌릴 수 없는 부작용이
-생기므로 세 겹으로 막는다.
-
-1. **dry-run이 기본값이다.** 발행하려면 명시적 플래그가 필요하다.
-2. **1회 실행당 발행 상한**을 둔다.
-3. **동일 가설 재발행 차단 키**를 둔다. 키는 `연구 가설`(`hypothesis`)과
-   `변경할 피처 · 모델`(`change`) **두 필드만** canonical JSON + SHA-256으로 묶은
-   별도 해시다(`_identifier()` 재사용). 이미 그 키로 발행된 열린 이슈가 있으면 거부한다.
-
-   > **`criteria_id`+`reproducibility_id` 조합을 쓰면 안 된다(리뷰 반영).** 두 해시의
-   > 입력은 판정기준 6필드와 재현조건 6필드뿐이고 `연구 가설`·`변경할 피처 · 모델`은
-   > **어느 쪽에도 들어가지 않는다.** 그 조합은 "동일 가설"이 아니라 "동일 판정기준 +
-   > 동일 재현조건"을 식별하므로, 같은 스냅샷·시드·`roc_auc` 기준 위에서 피처만 바꿔
-   > 반복하는 **이 폐루프의 정상 사용 패턴을 전부 중복으로 거부**하고, 반대로 가설을
-   > 그대로 두고 시드만 하나 바꾸면 차단을 우회한다. 막아야 할 것을 통과시키고
-   > 통과시켜야 할 것을 막는 방향이다.
-   >
-   > 한계도 기록한다 — 내용 해시이므로 같은 가설을 문구만 바꿔 쓰면 다른 키가 된다.
-   > 정규화로 동일 판정을 넓히면 서로 다른 가설을 합쳐 버릴 위험이 커지므로 넓히지
-   > 않는다.
-
-라벨은 반드시 함께 부여한다. Issue Form을 우회해 API로 발행하면 label이 자동
-적용되지 않는데, 워크플로 job은 `auto-research`와 `experiment`를 **동시에** 가질 때만
-실행된다(`.github/workflows/auto-research-issue-branch.yml:16-18`).
-
-## 결정 5 — 사전 검증은 placeholder 이슈 번호로 수행한다
-
-`parse_issue_input()`은 내부에서 `branch_name_for()`를 호출하고, 이 함수는
-`issue_number <= 0`이면 예외를 던진다. 발행 전에는 이슈 번호가 없으므로 사전 검증은
-placeholder 번호로 한다.
-
-**발행 후 재계산이 필요한 값은 `issue_branch` 하나뿐이다.** `criteria_id`와
-`reproducibility_id`는 이슈 번호에 의존하지 않으므로 발행 전에 확정된다. 사전 검증
-결과를 그대로 신뢰하고 **재계산 계약을 만들지 않는다** — 두 식별자에 이슈 번호를
-섞는 구현은 이슈 본문이 바뀌지 않았는데도 ID가 달라지게 만들어 marker 봉인
-재검증을 깨뜨린다.
-
-제목 생성 규칙도 템플릿에 포함한다. **`[AR] ` prefix는 강제하지 않는다** — 저장소
-계약 어디에도 요구가 없다. 워크플로는 제목을 검사하지 않고(job의 게이트는 label
-두 개뿐이다), `branch_name_for()`는 prefix가 있으면 제거할 뿐 없다고 실패하지
-않는다. Issue Form이 미리 채워 주는 관례이므로 따르기를 권하되, 발행 게이트로
-승격시키지 않는다. 계약에 없는 제약을 도구가 만들면 그것이 곧 새로운 계약이 된다.
-
-`branch_name_for()`가 `[AR] ` prefix를 제거한 뒤 slug를 만들므로, 제목에 ASCII
-영소문자·숫자가 전혀 없으면 slug가 비어
-`issue-<sha256 앞 12자>`로 대체된다. **이는 검증 실패가 아니라 가독성 문제다** —
-그런 이름도 워크플로의 브랜치 정규식을 정상 통과한다. 사람이 브랜치 목록에서 실험을
-식별할 수 있도록 제목에 ASCII slug 조각을 남기라는 것이 규정의 목적이다.
-
-## 결정 6 — 검수용 발행물의 정리 계약
+## 결정 5 — 검수용 발행물의 정리 계약
 
 marker 코멘트가 남는 순간 그 exp 브랜치를 함부로 지울 수 없다. 다만 흔한 오해와 달리
 **영구 차단은 아니다** — fail-closed는 marker가 남아 있을 때만 걸린다.
@@ -142,13 +123,9 @@ marker 코멘트가 남는 순간 그 exp 브랜치를 함부로 지울 수 없�
 어긋나도 **아무 데서도 실패하지 않는다.** fail-closed보다 이쪽이 위험한 실패 양식이다.
 
 - 검수 발행은 **1건만** 한다.
-- 검수 이슈에는 `auto-research`·`experiment` 외에 구분용 label을 함께 붙이고, 제목과
-  본문 첫 줄에 검수용임을 명시한다.
-- 검수가 끝나면 이슈는 **close**하되 **exp 브랜치는 남긴다.** 지우면 위 fail-closed에
-  걸리고, 남겨도 닫힌 이슈에 딸린 브랜치일 뿐 부작용이 없다.
-- 이 절차를 지키지 않으면 저장소에 회수 불가능한 잔여물이 쌓인다.
+- 검수가 끝나면 이슈는 **close**하되 **exp 브랜치는 남긴다.**
 
-## 결정 7 — `Experiment` lineage는 1급 컬럼으로 추가한다
+## 결정 6 — `Experiment` lineage는 1급 컬럼으로 추가한다
 
 현재는 자유형 key/value에 의존해야 한다. `ExperimentMetadata`는 `key` `String(64)` /
 `value` `Text`이고 API 계약도 `dict[MetadataKey, MetadataValue]`로 열려 있어,
@@ -163,14 +140,12 @@ marker 코멘트가 남는 순간 그 exp 브랜치를 함부로 지울 수 없�
 - Alembic revision을 추가한다. 기존 revision은 `0001_experiment_tables` 하나뿐이므로
   `down_revision = "0001_experiment_tables"`로 연결하고 `upgrade()`/`downgrade()`를
   대칭으로 작성한다. **기존 행이 있으므로 새 컬럼은 nullable로 추가한다.**
-- `models.py`의 모듈 docstring이 "Alembic 초기 migration과 동일한 table, server
-  default, FK, index와 unique constraint를 제공한다"고 단언하므로, 모델과 migration을
-  같은 커밋에서 갱신하고 docstring도 맞춘다.
+- `models.py`의 모듈 docstring이 migration과의 동일성을 단언하므로 같은 커밋에서
+  갱신한다.
 - 이슈 1건이 실험 N건을 가질 수 있으므로 `issue_number`에 **unique 제약을 두지
-  않는다.** 조회 성능을 위한 index는 둔다 — 대시보드(#338)가 이슈 기준으로 실험을
-  묶어 조회하는 것이 주 사용처다.
+  않는다.** 조회 성능을 위한 index는 둔다 — 대시보드(#338)가 주 사용처다.
 
-## 작성 템플릿이 지켜야 할 제약
+## 작성 가이드가 담아야 할 제약
 
 사람이 읽는 정본은 `docs/guides/auto-research-issue-authoring.md`에 둔다. 가이드는
 **정본이 아니라 파생물**임을 명시한다 — 필드 정본은 Issue Form yml, 파싱 계약 정본은
@@ -197,8 +172,8 @@ marker 코멘트가 남는 순간 그 exp 브랜치를 함부로 지울 수 없�
 - `허용 범위` 섹션은 **체크박스 줄만** 포함해야 하며 각 줄의 label은 `_SCOPE_LABELS`의
   세 문자열 중 하나와 정확히 일치해야 한다. 거부되는 것은 체크박스 줄 **사이에 낀**
   비체크박스 줄이다 — 섹션 앞뒤 개행은 무관하다. `_parse_allowed_scope()`가 받는 값은
-  `_required_content()`가 `strip()`한 뒤이므로 선행·후행 빈 줄은 이미 제거돼 있다.
-  미체크는 불허를 뜻하므로 에이전트는 세 줄을 모두 명시적으로 출력한다.
+  `_required_content()`가 `strip()`한 뒤이기 때문이다. 미체크는 불허를 뜻하므로
+  에이전트는 세 줄을 모두 명시적으로 출력한다.
 - `보조 관측 지표`는 `required: false`이고 기본값이 없어, 사람이 비워 두면 GitHub이
   `_No response_`를 넣는다. 파서는 이 섹션을 검증 없이 담으므로 실패하지는 않지만,
   에이전트가 만드는 본문에서는 이 섹션을 **채우거나 heading 자체를 생략**한다.
@@ -209,4 +184,4 @@ marker 코멘트가 남는 순간 그 exp 브랜치를 함부로 지울 수 없�
   실행기와 변형 큐·상태 머신 — #492
 - 실험 종료 후 `### 결과 (에이전트가 채웁니다)` 섹션을 채우는 결과 보고 양식 — #494
 - 지표 판정 엔진의 통합 — #493
-- `repository_dispatch` 이벤트 발신자 부재
+- 발행 상한·중복 차단 등 폭주 방지 — 자율 실행 주체가 생기는 시점에 그 주체에 둔다

@@ -81,7 +81,7 @@
 - [Plan — Agent Orchestration GKE 내부 배포](plans/2026-07-30-agent-orchestration-gke-internal-deployment.md)
 - [Spec — 자연어 가설 → Auto Research 이슈 발행 계약](specs/2026-08-03-auto-research-issue-authoring.md) (#490)
 - [Plan — 자연어 가설 → Auto Research 이슈 발행 경로](plans/2026-08-03-auto-research-issue-authoring.md) (#490)
-- [가이드 — Auto Research 이슈 작성·발행](guides/auto-research-issue-authoring.md) — 작성 제약과 발행 CLI 사용법
+- [가이드 — Auto Research 이슈 작성·발행](guides/auto-research-issue-authoring.md) — 본문 제약과 `gh issue create` 절차
 
 ### 🌬️ 오케스트레이션 (Airflow)
 

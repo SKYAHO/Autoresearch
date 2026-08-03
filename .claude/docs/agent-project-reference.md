@@ -103,25 +103,6 @@ docs/
   결과 계약은 `src/pipeline/paired_experiment.py`가 소유하며 정본은
   `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`입니다.
 
-### `tools/`
-- **책임:** GitHub 워크플로와 에이전트가 소비하는 Auto Research 계약 도구.
-  파싱·식별자 계산 정본은 `tools/auto_research_issue_branch.py`,
-  본문 렌더는 `tools/auto_research_issue_body.py`,
-  발행은 `tools/auto_research_issue_publish.py`입니다.
-- 렌더러는 heading 순서·문자열과 허용 범위 label을 파싱 정본에서 **파생**합니다.
-  두 벌로 두면 #495와 같은 드리프트가 다시 생깁니다.
-- 발행 CLI는 dry-run이 기본값이고, 1회 실행당 발행 상한과 `연구 가설`·
-  `변경할 피처 · 모델`만 묶은 재발행 차단 키를 적용하며, 발행 시
-  `auto-research`·`experiment` label을 함께 부여합니다. 차단 키는 발행 도구의
-  것이며 `IssueInput`·marker 봉인 계약에 들어가지 않습니다 —
-  `criteria_id`/`reproducibility_id`는 가설·변경 내용을 해시 입력에 담지 않아
-  차단 키로 쓸 수 없습니다. 필요한 권한은
-  `AUTO_RESEARCH_ISSUE_TOKEN`의 `issues: write` **하나뿐**입니다 — exp 브랜치는
-  `.github/workflows/auto-research-issue-branch.yml`이 자신의 `contents: write`로
-  만듭니다.
-- 계약 정본: `docs/specs/2026-08-03-auto-research-issue-authoring.md`,
-  작성 가이드: `docs/guides/auto-research-issue-authoring.md`.
-
 ### `tests/`
 - **책임:** 모듈별 단위 테스트. `tests/test_<module>.py` 플랫 구조를
   따릅니다. 새 모듈에는 대응하는 테스트 파일을 만듭니다.
