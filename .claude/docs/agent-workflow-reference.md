@@ -107,7 +107,8 @@ gh issue create \
 아니라 **`dev` tip에서 자동 분기**하고 그 SHA를 `base_dev_sha`로 marker
 코멘트에 봉인합니다. `exp/`는 사람과 자동화가 **같은 형식을 공유**하므로,
 자동 생성된 exp 브랜치를 삭제하거나 force-push하지 않습니다 — ruleset이
-막아 주지 않는데 복구 경로가 없습니다. 아래
+막아 주지 않고, 지우면 그 이슈가 fail-closed로 멈추거나 **다른 기준선으로
+조용히 재생성**됩니다. 아래
 [Branch protection](#branch-protection) 참조.
 
 ```bash
@@ -249,7 +250,13 @@ gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
 ### `main` — `main-protection` (id `18360502`)
 
 조건은 `refs/heads/main`이 아니라 `~DEFAULT_BRANCH`입니다(기본 브랜치가
-`main`이므로 효과는 같습니다). read-back 대조 시 유의합니다.
+`main`이므로 지금은 효과가 같습니다). read-back 대조 시 유의합니다.
+
+**기본 브랜치를 바꾸려면 ruleset을 먼저 고정합니다.** 기본 브랜치를 `dev`로
+바꾸는 순간 `main-protection`이 `main`을 떠나 `dev`를 따라갑니다. `main`은
+보호가 전부 풀리고, `dev`에는 `pull_request` rule이 붙어 아래에서 설명하는
+실험 자동 병합이 즉시 중단됩니다. 옮기기 전에 `main-protection`의 조건을
+`refs/heads/main`으로 명시 고정해야 합니다.
 
 - 직접 push 금지, PR을 통한 변경만 허용 (`pull_request`)
 - approve 1명 필수(`required_approving_review_count: 1`). approve 후 새
@@ -262,12 +269,22 @@ gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
   `pytest (feast group)`, `uv lock & proxy export drift`, `Docker build`
 - force-push 금지 (`non_fast_forward`), 삭제 금지 (`deletion`)
 - squash merge만 허용 (`allowed_merge_methods: ["squash"]`)
+- 우회 불가 (`bypass_actors: []`, `current_user_can_bypass: never`) —
+  classic branch protection의 "include administrators" 토글과 달리 ruleset은
+  bypass actor를 명시하지 않으면 **관리자도 우회하지 못합니다.**
 
 ### `dev` — `dev-protection` (id `20261204`)
 
 - 삭제 금지 (`deletion`)
 - force-push 금지 (`non_fast_forward`)
+- 우회 불가 (`bypass_actors: []`, `current_user_can_bypass: never`) — 팀
+  전원에게 예외 없이 적용됩니다.
 - **PR 필수·required status check는 걸지 않습니다** (아래 이유 참조)
+
+**`dev`가 오염되면 revert-forward만 가능합니다.** 우회가 불가능하므로 잘못된
+candidate가 병합됐을 때 force-push로 되돌릴 수 없고 revert 커밋으로 전진
+복구해야 합니다. 이 방식은 진행 중인 실험을 깨지 않습니다 — 기존
+`base_dev_sha`가 여전히 `dev`의 조상으로 남아 lineage 검증이 통과합니다.
 
 `dev`는 단순한 통합 브랜치가 아니라 **Auto Research 모든 실험의
 기준선**입니다.
@@ -283,13 +300,14 @@ gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
 | main Draft PR의 lineage 검사 | `auto-research-promotion.yml:158-163` (`head: 'dev'`) | 즉시 |
 | 진행 중 이슈의 후보 검증 | `auto-research-dev-promotion.yml:224-242` | 후보 제출 시 |
 
-**흔한 오해:** marker가 이미 있는 재검증 경로
-(`auto-research-issue-branch.yml:133-172`)는 `heads/dev`를 **한 번도 읽지
-않습니다** (그 파일의 `heads/dev`는 `:193` 한 곳뿐이며 marker가 없을 때만
-실행되는 분기입니다). 같은 파일 `:154-159`의
-`recorded issue branch ref is missing`은 `dev`가 아니라 **exp 브랜치**가
-사라졌을 때의 방어입니다 — `:149-152`가 조회하는 대상이
+**흔한 오해:** marker가 이미 있는 재검증 경로는 `heads/dev`를 **한 번도 읽지
+않습니다.** 그 파일의 `heads/dev` 조회는 **정확히 한 곳**뿐이며 marker가 없을
+때만 실행되는 분기입니다. `recorded issue branch ref is missing`도 `dev`가
+아니라 **exp 브랜치**가 사라졌을 때의 방어입니다 — 조회 대상이
 `heads/${recorded.issueBranch}`입니다.
+
+이 개수 단언은 위치가 아니라 **개수**에 대한 것이라 문서로는 지킬 수
+없습니다. `tests/test_branch_protection_contract.py`가 CI에서 고정합니다.
 
 **PR 필수·required status check를 `dev`에서 제외한 이유:**
 `auto-research-dev-promotion.yml:367-372`의
@@ -319,8 +337,12 @@ force-push·삭제는 막지 못합니다.**
 - `exp/*` 생성 시: `auto-research-issue-branch.yml:186-188`이 marker 없이
   존재하는 exp 브랜치를
   `issue branch ref exists without a trusted marker comment`로 거부합니다.
-- `exp/*` 삭제 후: `:154-159`가 fail-closed로 막고 재생성 경로가 없어
-  **해당 이슈가 영구 차단**됩니다.
+- `exp/*` 삭제 후: **브랜치만 지우면** marker가 남아
+  `recorded issue branch ref is missing`으로 fail-closed됩니다. **marker까지
+  함께 지우면** marker 없는 분기로 들어가 `dev`의 **현재 HEAD**로 브랜치를
+  다시 만들고 marker를 새로 씁니다. 영구 차단은 아니지만 이쪽이 더
+  위험합니다 — 재설정된 `base_dev_sha`가 원래 값과 다른데 아무 데서도
+  실패하지 않아, 이미 원래 값을 인용한 곳과 **조용히 어긋납니다.**
 - `exp/*` force-push: `:163-171`과
   `auto-research-dev-promotion.yml:224-242`가 후보를 거부합니다. 안전하게
   실패하지만 작업 결과는 소실됩니다.
@@ -373,6 +395,13 @@ Issue Form과 자동화를 단순하게 유지하기 위해 `feature`, `bug`,
 `experiment`를 우선 사용합니다. 보조: `documentation`,
 `good first issue`, `help wanted`, `question`. `enhancement`는
 `feature`와 겹치면 `feature`를 우선합니다.
+
+**자동화 트리거 label — 임의로 제거하지 않습니다.** `auto-research`는
+`experiment`와 **함께** 있을 때만 `auto-research-issue-branch.yml`의 브랜치
+생성 job을 실행시킵니다. 하나라도 떨어지면 `if:` 미충족으로 job이 **skip**되고,
+skip은 실패가 아니라 체크도 알림도 남지 않아 브랜치 생성이 **아무 흔적 없이
+일어나지 않습니다.** 이 조건은 `tests/test_branch_protection_contract.py`가
+계약으로 고정합니다.
 
 ## CI
 

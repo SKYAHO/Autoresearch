@@ -80,7 +80,7 @@ git switch feat/42-add-feature-store-schema
 - 영어 소문자, 숫자, 하이픈(`-`)만 사용합니다.
 - 이슈 번호를 반드시 포함합니다.
 - 한 브랜치에는 하나의 주요 목적만 담습니다.
-- `exp/`는 사람이 만드는 실험 브랜치와 Auto Research가 자동 생성하는 실험 브랜치가 **같은 형식을 공유**합니다. 자동 생성 브랜치는 `dev` tip에서 분기되어 marker 코멘트로 봉인되므로 **삭제하거나 force-push하지 마십시오** — ruleset이 막아 주지 않는데 복구 경로가 없어 해당 이슈가 영구 차단됩니다. [브랜치 보호 규칙](#브랜치-보호-규칙) 참조.
+- `exp/`는 사람이 만드는 실험 브랜치와 Auto Research가 자동 생성하는 실험 브랜치가 **같은 형식을 공유**합니다. 자동 생성 브랜치는 `dev` tip에서 분기되어 marker 코멘트로 봉인되므로 **삭제하거나 force-push하지 마십시오** — ruleset이 막아 주지 않고, 지우면 그 이슈가 fail-closed로 멈추거나 **다른 기준선으로 조용히 재생성**됩니다. [브랜치 보호 규칙](#브랜치-보호-규칙) 참조.
 
 ---
 
@@ -182,6 +182,14 @@ Project의 `Add item`으로 제목만 추가하면 Issue Form을 우회하게 �
 
 Issue Form과 자동화를 단순하게 유지하기 위해 `feature`, `bug`, `experiment`를 우선 사용합니다. 보조 label: `documentation`, `good first issue`, `help wanted`, `question`. `enhancement`는 `feature`와 겹치면 `feature`를 우선합니다.
 
+**자동화 트리거 label — 임의로 제거하지 마십시오.**
+
+| label | 역할 |
+|---|---|
+| `auto-research` | `experiment`와 **함께** 있을 때만 `.github/workflows/auto-research-issue-branch.yml`의 브랜치 생성 job이 실행됩니다 |
+
+이 두 label 중 하나라도 떨어지면 job의 `if:` 조건이 미충족되어 **skip**됩니다. skip은 실패가 아니므로 체크도 알림도 남지 않고, `[AR]` 이슈에서 브랜치 생성이 **아무 흔적 없이 그냥 일어나지 않습니다.** 분류 목적의 label 정리 중에 이 둘을 건드리지 마십시오. 이 조건은 `tests/test_branch_protection_contract.py`가 계약으로 고정합니다.
+
 ---
 
 ## CI
@@ -209,13 +217,16 @@ gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
 
 ### `main` — ruleset `main-protection` (id `18360502`)
 
-조건은 `refs/heads/main`이 아니라 `~DEFAULT_BRANCH`입니다(기본 브랜치가 `main`이므로 효과는 같습니다). read-back 대조 시 유의합니다.
+조건은 `refs/heads/main`이 아니라 `~DEFAULT_BRANCH`입니다(기본 브랜치가 `main`이므로 지금은 효과가 같습니다). read-back 대조 시 유의합니다.
+
+> **기본 브랜치를 바꾸려면 ruleset을 먼저 고정하십시오.** 기본 브랜치를 `dev`로 바꾸는 순간 `main-protection`이 `main`을 떠나 `dev`를 따라갑니다. 그러면 `main`은 보호가 전부 풀리고, `dev`에는 `pull_request` rule이 붙어 아래에서 설명하는 실험 자동 병합이 즉시 중단됩니다. 기본 브랜치를 옮기기 전에 `main-protection`의 조건을 `refs/heads/main`으로 명시 고정해야 합니다.
 
 - **직접 push 금지**(`pull_request`): 모든 변경은 PR을 통해서만 반영됩니다.
 - **리뷰 승인 필수**: 최소 1명의 팀원 Approve가 있어야 머지할 수 있습니다 (`required_approving_review_count: 1`). approve 후 push하면 approve가 초기화되고(`dismiss_stale_reviews_on_push`), 마지막 push에 대한 승인이 필요합니다(`require_last_push_approval`).
 - **CI 통과 필수**(`required_status_checks`, `strict_required_status_checks_policy: true`): 아래 6개 컨텍스트가 모두 통과해야 합니다. `Ruff`, `pytest (Python 3.11)`, `pytest (Python 3.12)`, `pytest (feast group)`, `uv lock & proxy export drift`, `Docker build`
 - **force-push 금지**(`non_fast_forward`), **삭제 금지**(`deletion`).
 - **머지 방식**: Squash and merge만 허용합니다 (`allowed_merge_methods: ["squash"]`).
+- **우회 불가**(`bypass_actors: []`, `current_user_can_bypass: never`): classic branch protection의 "include administrators" 토글과 달리, ruleset은 bypass actor를 명시하지 않으면 **관리자도 우회하지 못합니다.**
 
 저장소 Merge 설정: squash만 허용, merge commit·rebase merge 비활성, 머지 후 head 브랜치 자동 삭제.
 
@@ -223,7 +234,10 @@ gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
 
 - **삭제 금지**(`deletion`)
 - **force-push 금지**(`non_fast_forward`)
+- **우회 불가**(`bypass_actors: []`, `current_user_can_bypass: never`) — 팀 전원에게 예외 없이 적용됩니다.
 - **PR 필수·required status check는 걸지 않습니다** — 아래 "제외한 이유" 참조.
+
+> **`dev`가 오염되면 되감기가 아니라 revert-forward만 가능합니다.** 우회가 불가능하므로, 잘못된 candidate가 `dev`에 병합됐을 때 force-push로 되돌릴 수 없습니다. revert 커밋으로 전진 복구해야 합니다. 다행히 이 방식은 진행 중인 실험을 깨지 않습니다 — 기존 `base_dev_sha`가 여전히 `dev`의 조상으로 남아 lineage 검증이 그대로 통과합니다.
 
 `dev`는 단순한 통합 브랜치가 아니라 **Auto Research 모든 실험의 기준선**입니다. `.github/workflows/auto-research-issue-branch.yml:190-208`이 `heads/dev`의 tip SHA를 읽어 `base_dev_sha`로 고정하고, 그 SHA에서 `exp/<이슈번호>-<slug>` 브랜치를 만든 뒤 marker 코멘트(`<!-- auto-research-issue-branch:v1 -->`)에 봉인합니다. 이후 모든 계보 검증이 이 SHA를 기준점으로 삼으므로, `dev`가 force-push되거나 삭제되어 그 커밋이 사라지면 다음이 깨집니다.
 
@@ -234,7 +248,9 @@ gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
 | main Draft PR의 lineage 검사 | `auto-research-promotion.yml:158-163`이 `head: 'dev'`로 비교합니다 | 즉시 |
 | 진행 중 이슈의 후보 검증 | `auto-research-dev-promotion.yml:224-242`가 `base_dev_sha`를 base로 `compareCommits`를 호출합니다 | 후보 제출 시 |
 
-> **흔한 오해**: marker가 이미 있는 재검증 경로(`auto-research-issue-branch.yml:133-172`)는 `heads/dev`를 **한 번도 읽지 않습니다**(그 파일에서 `heads/dev`는 `:193` 한 곳뿐이며 marker가 없을 때만 실행되는 분기에 있습니다). 같은 파일 `:154-159`의 `recorded issue branch ref is missing`은 `dev`가 아니라 **exp 브랜치**가 사라졌을 때의 방어입니다 — `:149-152`가 조회하는 대상이 `heads/${recorded.issueBranch}`입니다.
+> **흔한 오해**: marker가 이미 있는 재검증 경로는 `heads/dev`를 **한 번도 읽지 않습니다.** 그 파일에서 `heads/dev` 조회는 **정확히 한 곳**뿐이며, marker가 없을 때만 실행되는 분기에 있습니다. 또 `recorded issue branch ref is missing`은 `dev`가 아니라 **exp 브랜치**가 사라졌을 때의 방어입니다 — 조회 대상이 `heads/${recorded.issueBranch}`입니다.
+>
+> 이 개수 단언은 위치가 아니라 **개수**에 대한 것이라 문서만으로는 지킬 수 없습니다. `tests/test_branch_protection_contract.py`가 CI에서 고정합니다 — `heads/dev` 조회가 하나라도 늘면 테스트가 실패합니다.
 
 #### `dev`에서 PR 필수·required status check를 의도적으로 제외한 이유
 
@@ -250,7 +266,7 @@ gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
 두 네임스페이스에는 ruleset을 적용하지 않습니다. 워크플로의 fail-closed 검사만 있으며, **생성 시점 방어일 뿐 생성 이후의 force-push·삭제는 막지 못합니다.**
 
 - `exp/*` 생성 시: `auto-research-issue-branch.yml:186-188`이 marker 없이 존재하는 exp 브랜치를 `issue branch ref exists without a trusted marker comment`로 거부합니다.
-- `exp/*` 삭제 후: `:154-159`가 fail-closed로 막고 재생성 경로가 없어 **해당 이슈가 영구 차단**됩니다.
+- `exp/*` 삭제 후: **브랜치만 지우면** marker가 남아 있어 `recorded issue branch ref is missing`으로 fail-closed됩니다. **marker 코멘트까지 함께 지우면** 워크플로가 marker 없는 분기로 들어가 `dev`의 **현재 HEAD**로 브랜치를 다시 만들고 marker를 새로 씁니다. 즉 영구 차단은 아니지만, 이쪽이 더 위험합니다 — 재설정된 `base_dev_sha`는 원래 값과 다른데 아무 데서도 실패하지 않아, 이미 원래 값을 인용해 둔 곳(paired 비교, 결과 코멘트)과 **조용히 어긋납니다.**
 - `exp/*` force-push: `:163-171`과 `auto-research-dev-promotion.yml:224-242`가 후보를 거부합니다. 안전하게 실패하지만 작업 결과는 소실됩니다.
 - `promote/*`: `auto-research-promotion.yml:215-227`이 이미 존재하는 promote 브랜치를 **다른 SHA로 재사용**하는 것만 거부합니다.
 
