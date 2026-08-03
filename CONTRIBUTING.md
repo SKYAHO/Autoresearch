@@ -19,6 +19,8 @@ AutoResearch 프로젝트에 기여해 주셔서 감사합니다.
 
 2. **브랜치 생성**: 브랜치는 **해당 이슈에서 생성**합니다. 이슈 우측 `Development > Create a branch`를 사용하면 브랜치가 이슈에 자동 연결되고, `main` 기준으로 분기됩니다. 브랜치 네이밍 규칙은 아래를 따릅니다.
 
+   > **예외 — Auto Research 실험 브랜치**: `[AR]` 이슈의 `exp/<이슈번호>-<slug>` 브랜치는 사람이 만들지 않습니다. `.github/workflows/auto-research-issue-branch.yml`이 `main`이 아니라 **`dev` tip에서 자동 분기**하고 그 SHA를 `base_dev_sha`로 봉인합니다. 자세한 내용은 [브랜치 보호 규칙](#브랜치-보호-규칙)을 참조하세요.
+
 3. **작업 및 커밋**: 커밋 컨벤션에 따라 커밋 메시지를 작성합니다.
 
 4. **PR 생성**: PR 템플릿을 채우고, 본문에 `Closes #이슈번호`를 포함합니다.
@@ -39,6 +41,11 @@ AutoResearch 프로젝트에 기여해 주셔서 감사합니다.
 | `feature.yml` | `[FEAT]` | `feature` | 새 기능, 기능 개선 |
 | `bug.yml` | `[BUG]` | `bug` | 오류, 장애, 기대와 다른 동작 |
 | `experiment.yml` | `[EXP]` | `experiment` | 모델, 데이터, 지표, 방법론 실험 |
+| `auto_research.yml` | `[AR]` | `experiment`, `auto-research` | 에이전트가 읽고 직접 수행할 실험 가설 |
+
+`[AR]` 이슈는 두 label이 **동시에** 있어야 `.github/workflows/auto-research-issue-branch.yml`이 동작합니다. Form을 우회해 API로 발행하면 label이 자동 적용되지 않으므로 직접 부여해야 합니다.
+
+**문서 전용 이슈** (`[DOCS]`): Issue Form이 없습니다(`[CHORE]`, `[PERF]` 등 관례로 쓰이는 다른 prefix도 마찬가지입니다). 문서·판단 기록만 산출물인 작업은 `gh issue create --title "[DOCS] ..." --label documentation`으로 만듭니다. Form이 없으므로 제목 prefix와 label을 직접 지정해야 합니다.
 
 **이슈를 만드는 경우**: 새 기능, 버그, 실험 계획·결과 기록, 문서·설정·리팩터링처럼 추적이 필요한 작업, PR 리뷰 중 생긴 범위 밖 후속 작업. 아주 작은 오타 수정은 바로 PR로 처리할 수 있습니다.
 
@@ -73,6 +80,7 @@ git switch feat/42-add-feature-store-schema
 - 영어 소문자, 숫자, 하이픈(`-`)만 사용합니다.
 - 이슈 번호를 반드시 포함합니다.
 - 한 브랜치에는 하나의 주요 목적만 담습니다.
+- `exp/`는 사람이 만드는 실험 브랜치와 Auto Research가 자동 생성하는 실험 브랜치가 **같은 형식을 공유**합니다. 자동 생성 브랜치는 `dev` tip에서 분기되어 marker 코멘트로 봉인되므로 **삭제하거나 force-push하지 마십시오** — ruleset이 막아 주지 않는데 복구 경로가 없어 해당 이슈가 영구 차단됩니다. [브랜치 보호 규칙](#브랜치-보호-규칙) 참조.
 
 ---
 
@@ -178,23 +186,75 @@ Issue Form과 자동화를 단순하게 유지하기 위해 `feature`, `bug`, `e
 
 ## CI
 
-`.github/workflows/ci.yml`이 PR과 `main` push에서 자동 실행됩니다.
+`.github/workflows/ci.yml`과 `.github/workflows/lint.yml`이 PR과 `main` push, 수동 실행(`workflow_dispatch`)에서 자동 실행됩니다.
 
-- Python 3.11 / 3.12에서 `python -m pytest`
-- `Dockerfile.app` 기반 이미지 빌드와 import smoke check
+- `ci.yml`: Python 3.11 / 3.12에서 `python -m pytest`, feast·postgres 그룹 테스트, `uv lock & proxy export drift`, 이미지 빌드와 import smoke check
+- `lint.yml`: `Ruff`
+
+두 파일 모두 `pull_request:` 트리거에 `branches:` 필터가 없어 base 브랜치를 가리지 않지만, `push:`는 `main` 전용입니다.
+
+`main`의 required status check 6개는 `ci.yml` 5개(`pytest (Python 3.11)`, `pytest (Python 3.12)`, `pytest (feast group)`, `uv lock & proxy export drift`, `Docker build`)와 `lint.yml` 1개(`Ruff`)입니다. `pytest (postgres group)`과 이미지별 `Docker build (...)` 서브잡은 실행되지만 required 컨텍스트가 아닙니다.
 
 ---
 
-## main 브랜치 보호 규칙
+## 브랜치 보호 규칙
 
-`main` 브랜치에는 아래 보호 규칙이 적용되어 있습니다.
+보호는 저장소 파일이 아니라 **GitHub ruleset**으로 적용되어 있습니다. 문서와 실제 설정이 어긋나는 것을 막기 위해 각 항목에 rule type 원문 식별자를 병기합니다. 아래 명령으로 읽어 대조할 수 있습니다.
 
-- **직접 push 금지**: 모든 변경은 PR을 통해서만 반영됩니다.
-- **리뷰 승인 필수**: 최소 1명의 팀원 Approve가 있어야 머지할 수 있습니다.
-- **CI 통과 필수**: CI 체크가 모두 통과해야 머지할 수 있습니다.
-- **머지 방식**: Squash and merge만 허용합니다.
+```bash
+gh api repos/SKYAHO/Autoresearch/rulesets
+gh api repos/SKYAHO/Autoresearch/rulesets/18360502   # main-protection
+gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
+```
+
+### `main` — ruleset `main-protection` (id `18360502`)
+
+조건은 `refs/heads/main`이 아니라 `~DEFAULT_BRANCH`입니다(기본 브랜치가 `main`이므로 효과는 같습니다). read-back 대조 시 유의합니다.
+
+- **직접 push 금지**(`pull_request`): 모든 변경은 PR을 통해서만 반영됩니다.
+- **리뷰 승인 필수**: 최소 1명의 팀원 Approve가 있어야 머지할 수 있습니다 (`required_approving_review_count: 1`). approve 후 push하면 approve가 초기화되고(`dismiss_stale_reviews_on_push`), 마지막 push에 대한 승인이 필요합니다(`require_last_push_approval`).
+- **CI 통과 필수**(`required_status_checks`, `strict_required_status_checks_policy: true`): 아래 6개 컨텍스트가 모두 통과해야 합니다. `Ruff`, `pytest (Python 3.11)`, `pytest (Python 3.12)`, `pytest (feast group)`, `uv lock & proxy export drift`, `Docker build`
+- **force-push 금지**(`non_fast_forward`), **삭제 금지**(`deletion`).
+- **머지 방식**: Squash and merge만 허용합니다 (`allowed_merge_methods: ["squash"]`).
 
 저장소 Merge 설정: squash만 허용, merge commit·rebase merge 비활성, 머지 후 head 브랜치 자동 삭제.
+
+### `dev` — ruleset `dev-protection` (id `20261204`)
+
+- **삭제 금지**(`deletion`)
+- **force-push 금지**(`non_fast_forward`)
+- **PR 필수·required status check는 걸지 않습니다** — 아래 "제외한 이유" 참조.
+
+`dev`는 단순한 통합 브랜치가 아니라 **Auto Research 모든 실험의 기준선**입니다. `.github/workflows/auto-research-issue-branch.yml:190-208`이 `heads/dev`의 tip SHA를 읽어 `base_dev_sha`로 고정하고, 그 SHA에서 `exp/<이슈번호>-<slug>` 브랜치를 만든 뒤 marker 코멘트(`<!-- auto-research-issue-branch:v1 -->`)에 봉인합니다. 이후 모든 계보 검증이 이 SHA를 기준점으로 삼으므로, `dev`가 force-push되거나 삭제되어 그 커밋이 사라지면 다음이 깨집니다.
+
+| 깨지는 것 | 근거 | 시점 |
+|---|---|---|
+| 신규 이슈의 exp 브랜치 생성 | `auto-research-issue-branch.yml:190-196`이 `heads/dev`를 읽어 `base_dev_sha`를 정합니다 | 즉시 |
+| dev 병합 | `auto-research-dev-promotion.yml:367-372`가 `base: 'dev'`로 머지합니다 | 즉시 |
+| main Draft PR의 lineage 검사 | `auto-research-promotion.yml:158-163`이 `head: 'dev'`로 비교합니다 | 즉시 |
+| 진행 중 이슈의 후보 검증 | `auto-research-dev-promotion.yml:224-242`가 `base_dev_sha`를 base로 `compareCommits`를 호출합니다 | 후보 제출 시 |
+
+> **흔한 오해**: marker가 이미 있는 재검증 경로(`auto-research-issue-branch.yml:133-172`)는 `heads/dev`를 **한 번도 읽지 않습니다**(그 파일에서 `heads/dev`는 `:193` 한 곳뿐이며 marker가 없을 때만 실행되는 분기에 있습니다). 같은 파일 `:154-159`의 `recorded issue branch ref is missing`은 `dev`가 아니라 **exp 브랜치**가 사라졌을 때의 방어입니다 — `:149-152`가 조회하는 대상이 `heads/${recorded.issueBranch}`입니다.
+
+#### `dev`에서 PR 필수·required status check를 의도적으로 제외한 이유
+
+`.github/workflows/auto-research-dev-promotion.yml:367-372`의 `github.rest.repos.merge({ base: 'dev', head: selectedCandidateSha })`는 **PR을 거치지 않고 `dev` ref를 직접 갱신**합니다.
+
+- `pull_request` rule을 걸면 이 호출 자체가 거부되어 실험 자동 병합이 즉시 멈춥니다.
+- `required_status_checks`를 걸어도 마찬가지입니다. `ci.yml:6-8`과 `lint.yml:6-8`의 `push` 트리거가 `main` 전용이고, 게다가 `GITHUB_TOKEN`으로 만든 커밋은 workflow를 재귀 트리거하지 않습니다. 두 이유 각각으로 **`repos.merge`가 만든 dev 커밋에는 check run이 하나도 생성되지 않아** 영구히 통과할 수 없습니다. 후자는 `docs/archive/specs/2026-08-01-auto-research-dev-issue-branch.md:112`에 이미 기록돼 있습니다.
+
+> "`dev`에는 지정할 컨텍스트가 없다"는 서술은 **틀립니다.** `ci.yml`과 `lint.yml` 모두 `pull_request:` 트리거에 `branches:` 필터가 없으므로 base가 `dev`인 PR에서는 위 6개 컨텍스트가 정상 생성되고, ruleset에 컨텍스트 이름을 직접 입력할 수도 있습니다. 성립하는 사실은 **"`repos.merge`로 만든 dev 커밋에는 CI가 돌지 않는다"** 입니다.
+
+### `exp/*`, `promote/*` — ruleset 없음 (2026-08-03 판단)
+
+두 네임스페이스에는 ruleset을 적용하지 않습니다. 워크플로의 fail-closed 검사만 있으며, **생성 시점 방어일 뿐 생성 이후의 force-push·삭제는 막지 못합니다.**
+
+- `exp/*` 생성 시: `auto-research-issue-branch.yml:186-188`이 marker 없이 존재하는 exp 브랜치를 `issue branch ref exists without a trusted marker comment`로 거부합니다.
+- `exp/*` 삭제 후: `:154-159`가 fail-closed로 막고 재생성 경로가 없어 **해당 이슈가 영구 차단**됩니다.
+- `exp/*` force-push: `:163-171`과 `auto-research-dev-promotion.yml:224-242`가 후보를 거부합니다. 안전하게 실패하지만 작업 결과는 소실됩니다.
+- `promote/*`: `auto-research-promotion.yml:215-227`이 이미 존재하는 promote 브랜치를 **다른 SHA로 재사용**하는 것만 거부합니다.
+
+**`exp/*`에 보호를 걸지 않은 이유**: `exp/`는 자동화 전용 네임스페이스가 아닙니다. 위 [브랜치 네이밍 규칙](#브랜치-네이밍-규칙)이 `exp/`를 사람이 쓰는 브랜치 type으로 규정하고 있고, 사람이 만든 `exp/116-openrouter-provider-ab`와 `exp/396-views-per-day`가 실제로 원격에 존재합니다. 사람 브랜치와 자동화 브랜치가 `exp/<이슈번호>-<설명>`이라는 **같은 형식**을 쓰므로 ruleset의 ref 패턴으로 구분할 수 없고, `non_fast_forward`를 걸면 사람의 rebase·force-push가, `deletion`을 걸면 작업 후 브랜치 정리가 함께 막힙니다. 보호를 걸려면 **자동화 전용 네임스페이스 분리가 선행**되어야 하며, 이는 브랜치명 생성 규칙과 이미 봉인된 marker 계약을 바꾸는 동작 변경이라 별도 이슈에서 다룹니다.
 
 ---
 
