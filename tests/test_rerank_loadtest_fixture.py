@@ -319,15 +319,22 @@ def test_snapshot_reader_rejects_empty_series_and_uses_gke_cfs_periods() -> None
     assert "Prometheus query returned no series" in text
     assert "container_cpu_cfs_throttled_periods_total" in cfs_line
     assert "container_cpu_cfs_periods_total" in cfs_line
+    assert cfs_line.count("sum by (pod, container)") == 2
     assert "container_cpu_cfs_throttled_seconds_total" not in cfs_line
     assert "clamp_min(" not in cfs_line
     assert "all(.data.result[].values[];" in text
     assert "(.value | type)" not in text
+    assert "expected_sample_count=" in text
+    assert "minimum_cfs_samples=" in text
+    assert '(.values | length) >= $minimum_samples' in text
+    assert 'queries(${#queries[@]})' in text
     assert 'jq -e \'type == "object"\'' in text
     assert "Prometheus response is not valid JSON" in text
     assert 'validate_prometheus_result "$query_name" "$response_path"' in text
     assert "snapshot_failed=0" in text
     assert "prometheus-validation-failures.txt" in text
+    assert ".request-status" in text
+    assert ".request-stderr" in text
     assert "if (( snapshot_failed )); then" in text
 
 
@@ -337,17 +344,41 @@ def test_snapshot_reader_cfs_validation_accepts_query_range_matrix() -> None:
         pytest.skip("jq is required to execute the workflow validation expression")
 
     text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+    workflow = yaml.safe_load(text)
+    query_step = next(
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("name") == "Query padded Prometheus ranges"
+    )
+    script = query_step["run"]
     match = re.search(
-        r'''if \[\[ "\$query_name" == "cfs_throttling_ratio" \]\] && ! jq -e '\n(?P<program>.*?)\n\s*' "\$response_path"''',
-        text,
+        r'''if \[\[ "\$query_name" == "cfs_throttling_ratio" \]\] && ! jq -e --argjson minimum_samples "\$minimum_cfs_samples" '\n(?P<program>.*?)\n\s*' "\$response_path"''',
+        script,
         re.DOTALL,
     )
-    assert match is not None
+    assert match is not None, "workflow CFS jq validation block format changed; update this test"
     jq_program = match.group("program")
+    generic_match = re.search(
+        r'''if ! jq -e '(?P<program>\s*\.status == "success".*?)\s*'\s+"\$response_path"''',
+        script,
+        re.DOTALL,
+    )
+    assert generic_match is not None, "workflow generic Prometheus jq validation block not found"
+    generic_jq_program = generic_match.group("program")
 
     def run_jq(response: dict[str, object]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["jq", "-e", jq_program],
+            ["jq", "-e", "--argjson", "minimum_samples", "2", jq_program],
+            input=json.dumps(response),
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+
+    def run_generic_jq(response: dict[str, object]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["jq", "-e", generic_jq_program],
             input=json.dumps(response),
             capture_output=True,
             check=False,
@@ -375,10 +406,20 @@ def test_snapshot_reader_cfs_validation_accepts_query_range_matrix() -> None:
     empty_samples = run_jq(
         {"data": {"result": [{"metric": {}, "values": []}]}}
     )
+    non_finite = [
+        run_jq({"data": {"result": [{"metric": {}, "values": [[1, value]]}]}})
+        for value in ("NaN", "+Inf", "-Inf")
+    ]
+    empty_series = run_generic_jq(
+        {"status": "success", "data": {"result": []}}
+    )
 
     assert valid.returncode == 0, valid.stderr
     assert out_of_range.returncode != 0
     assert empty_samples.returncode != 0
+    assert empty_series.returncode != 0
+    for result in non_finite:
+        assert result.returncode != 0
 
 
 def test_manual_workflow_preserves_runner_artifact_layout_for_reader() -> None:

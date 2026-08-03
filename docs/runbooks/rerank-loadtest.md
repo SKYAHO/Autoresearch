@@ -95,9 +95,12 @@ GitHub Actions artifact `rerank-loadtest-${benchmark_label}-c${candidate_count}-
   0이나 정상 측정값으로 보고하지 않습니다.
 - `cfs_throttling_ratio`는 GKE cAdvisor의
   `container_cpu_cfs_throttled_periods_total / container_cpu_cfs_periods_total`
-  5분 rate 비율입니다. 분모를 `1`로 보정하지 않으므로 분모 series가 없으면
-  빈 결과로, 분모 rate가 0이면 `NaN`으로 남고 둘 다 snapshot 단계에서 실패합니다.
-  유효한 결과만 0~1 비율로 기록합니다. 2026-08-03 dev GKE에서 확인한 예시는
+  5분 rate 비율입니다. 분자·분모를 `pod,container`별로 먼저 집계해 동일한
+  container label끼리 나눈 뒤 결과를 검증합니다. 분모를 `1`로 보정하지 않으므로
+  분모 series가 없으면 빈 결과로, 분모 rate가 0이면 `NaN`으로 남고 둘 다 snapshot
+  단계에서 실패합니다. range/step으로 계산한 예상 sample 수의 80% 이상(최소 2개)이
+  각 CFS series에 있어야 하며, 유효한 결과만 0~1 비율로 기록합니다.
+  2026-08-03 dev GKE에서 확인한 예시는
   throttled rate `0`, period rate `3.650252529797797`, ratio `0`이었으며,
   이는 해당 시점의 관측값이지 고정된 정상 범위의 추정값이 아닙니다.
 - PR #499 이전 run의 `prometheus-cfs_throttling-vu-*.json`은 존재하지 않는
@@ -108,6 +111,9 @@ GitHub Actions artifact `rerank-loadtest-${benchmark_label}-c${candidate_count}-
   값이 유효 범위를 벗어나면 각각 원인을 기록합니다. 모든 VU·query를 끝까지
   수집한 뒤 실패 목록을 `prometheus-validation-failures.txt`에 저장하고,
   `SHA256SUMS`를 만든 다음 workflow를 실패시켜 사후 분석용 증거를 보존합니다.
+- 각 요청에는 `<response>.request-status`와 `<response>.request-stderr` sidecar가
+  함께 남습니다. 따라서 빈 JSON 파일이 정상적인 빈 series 응답인지, `kubectl
+  get --raw` 요청 자체가 실패해 생긴 파일인지 구분할 수 있습니다.
 - `SHA256SUMS`와 Job/Pod describe·log 및 Prometheus reader diagnostic이 있으면 함께
   보관합니다. artifact URL과 각 파일 또는 archive의 SHA-256을 보고서에 기록합니다.
 
