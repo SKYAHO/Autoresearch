@@ -17,13 +17,16 @@ from dataclasses import dataclass
 import re
 
 
+# 값은 `.github/ISSUE_TEMPLATE/auto_research.yml`의 `label:`과 문자 그대로 같아야 한다.
+# 한쪽만 바뀌면 `parse_criteria`가 실제 이슈 본문에서 항상 실패한다(#495). 이 정합성은
+# `tests/test_experiment_promotion_gate.py`의 정본 fixture 파싱 테스트가 고정한다.
 _LABELS = {
     "primary_name": "주 지표 이름",
     "primary_direction": "주 지표 방향",
-    "minimum_delta": "baseline 대비 최소 개선폭",
-    "guardrail_name": "Guardrail 지표 이름 (선택)",
+    "minimum_delta": "최소 주 지표 개선폭",
+    "guardrail_name": "Guardrail 지표 이름",
     "guardrail_direction": "Guardrail 지표 방향",
-    "maximum_regression": "Guardrail 허용 최대 비열화 (선택)",
+    "maximum_regression": "최대 Guardrail 악화폭",
 }
 _DIRECTIONS = {"higher_is_better", "lower_is_better"}
 
