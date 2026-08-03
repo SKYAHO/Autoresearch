@@ -55,6 +55,8 @@ configs/train/lgbm-v1.yaml@abc1234
 
 ### 허용 범위
 - [ ] prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다
+- [ ] Feast 정의(`feature_repo/`) 수정을 허용한다
+- [ ] 실험 결과를 champion으로 승격하는 것까지 검토한다
 
 ### 결과 (에이전트가 채웁니다)
 - 판정 (지지/기각):

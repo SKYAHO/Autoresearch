@@ -45,6 +45,8 @@ deploy/              # 배포 산출물 (mlflow/ Tracking Server, serving/ 추�
 feature_repo/        # Feast 피처 스토어 정의 (BigQuery offline / Redis online)
 examples/            # CTR 파이프라인 예제 스캐폴드
 scripts/             # 검증·일회성 스크립트
+tools/               # GitHub 워크플로·에이전트가 소비하는 계약 도구
+                     # (Auto Research 이슈 파싱·본문 렌더·발행 CLI)
 tests/               # 모듈별 단위 테스트 (플랫 구조)
 docs/                # 문서 — docs/README.md 인덱스 참조
 ```
@@ -93,6 +95,24 @@ uv run --no-sync ruff check autoresearch tests tools   # lint (CI와 동일)
 - Python 3.12 (`.python-version`), 의존성 단일 출처는 `pyproject.toml` + `uv.lock`
 - 필수 환경 변수는 `.env.example` 참조
 - Feast 작업은 격리 그룹 사용: `uv sync --only-group feast`
+
+### Auto Research 이슈 발행
+
+자연어 가설을 구조화 Auto Research 이슈로 발행하는 경로입니다. **dry-run이
+기본값**이며, 실제 발행에는 `issues: write` 권한만 가진
+`AUTO_RESEARCH_ISSUE_TOKEN`이 필요합니다(`.env.example` 참조). 재발행 차단 키를
+확인하려면 열린 이슈를 읽어야 하지만, fine-grained PAT의 Issues 권한은 read/write가
+한 쌍이라 `issues: write`가 읽기까지 커버합니다 — 별도 read 권한은 필요 없습니다.
+
+```bash
+uv run python -m tools.auto_research_issue_publish --drafts-file drafts.json
+uv run python -m tools.auto_research_issue_publish --drafts-file drafts.json \
+  --publish --repository SKYAHO/Autoresearch
+```
+
+작성 규칙과 초안 형식은
+[`docs/guides/auto-research-issue-authoring.md`](docs/guides/auto-research-issue-authoring.md)를
+참조하십시오.
 
 ## 문서
 
