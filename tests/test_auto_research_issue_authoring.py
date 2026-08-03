@@ -27,6 +27,7 @@ from tools.auto_research_issue_body import (  # noqa: E402
 from tools.auto_research_issue_branch import (  # noqa: E402
     _HEADING_NAMES,
     _SCOPE_LABELS,
+    branch_name_for,
     parse_issue_input,
 )
 from tools.auto_research_issue_publish import (  # noqa: E402
@@ -559,9 +560,29 @@ def test_publish_does_not_recompute_identifiers_after_publication(
     assert outcome.published[0].issue_branch == "exp/502-ctr-ratio"
 
 
-def test_prepare_drafts_rejects_title_without_form_prefix() -> None:
-    with pytest.raises(ValueError, match=r"\[AR\]"):
-        prepare_drafts([valid_draft() | {"title": "CTR ratio"}])
+def test_prepare_drafts_accepts_title_without_form_prefix() -> None:
+    """`[AR] ` prefix는 강제하지 않는다.
+
+    저장소 계약 어디에도 요구가 없다 — 워크플로는 제목을 검사하지 않고
+    (`auto-research-issue-branch.yml`), `branch_name_for()`는 prefix가 있으면
+    slug 생성 전에 제거할 뿐 없다고 실패하지 않는다. Issue Form이 미리 채워 주는
+    관례를 발행 게이트로 승격시키면 계약에 없는 제약이 된다.
+    """
+    without_prefix = prepare_drafts([valid_draft() | {"title": "CTR ratio"}])
+    with_prefix = prepare_drafts([valid_draft() | {"title": "[AR] CTR ratio"}])
+
+    assert without_prefix[0].title == "CTR ratio"
+    assert without_prefix[0].readable_branch_slug
+    # prefix는 slug 생성 전에 제거되므로 두 제목이 같은 브랜치 이름으로 간다.
+    assert branch_name_for(1, without_prefix[0].title) == branch_name_for(
+        1, with_prefix[0].title
+    )
+
+
+def test_prepare_drafts_still_rejects_empty_title() -> None:
+    """제목 자체가 비면 거부한다 — 이쪽은 파서가 실제로 요구한다."""
+    with pytest.raises(ValueError, match="비어 있지 않은"):
+        prepare_drafts([valid_draft() | {"title": "   "}])
 
 
 def test_load_drafts_rejects_unknown_draft_key(tmp_path: Path) -> None:

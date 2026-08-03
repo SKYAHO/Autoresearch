@@ -44,8 +44,6 @@ PLACEHOLDER_ISSUE_NUMBER = 1
 #: 워크플로 job은 두 label을 동시에 가질 때만 실행된다
 #: (`.github/workflows/auto-research-issue-branch.yml`).
 REQUIRED_LABELS: tuple[str, ...] = ("auto-research", "experiment")
-#: 이슈 제목 정본은 Issue Form의 `title: "[AR] "`이다.
-TITLE_PREFIX = "[AR] "
 DEFAULT_MAX_ISSUES = 1
 GITHUB_API_ROOT = "https://api.github.com"
 ISSUE_PAGE_SIZE = 100
@@ -198,8 +196,10 @@ def _prepare_draft(draft: Mapping[str, object]) -> PreparedIssue:
     if not isinstance(title, str) or not title.strip():
         raise ValueError("title은 비어 있지 않은 문자열이어야 합니다")
     title = title.strip()
-    if not title.startswith(TITLE_PREFIX) or not title[len(TITLE_PREFIX) :].strip():
-        raise ValueError(f"title은 '{TITLE_PREFIX}' 뒤에 내용이 있어야 합니다")
+    # `[AR] ` prefix는 강제하지 않는다. 저장소 계약 어디에도 요구가 없다 —
+    # 워크플로는 제목을 검사하지 않고, `branch_name_for()`는 prefix가 있으면
+    # slug 생성 전에 제거할 뿐 없다고 실패하지 않는다. Issue Form이 미리 채워
+    # 주는 관례일 뿐이므로 발행 게이트로 승격시키지 않는다.
 
     fields = draft.get("fields")
     if not isinstance(fields, dict):
