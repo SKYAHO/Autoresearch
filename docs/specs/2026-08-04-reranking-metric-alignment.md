@@ -102,9 +102,19 @@ roc_auc_score(dataset["clicked"], model.predict_proba(features)[:, 1])
   1차 범위는 `user_id` 하나다.
 - **불변식:** 패스스루 컬럼은 `feature_columns.json`에 **절대 포함되지 않는다.**
 - 가드: 패스스루 이름이 `extra_features`로 들어오면 `FeatureContractError`로 거부한다.
-  거부 지점은 라벨 컬럼 `clicked`를 이미 거부하고 있는
-  `resolve_extra_feature_columns()`(`src/pipeline/build_training_dataset.py:433`)와
-  같은 자리에 둔다 — 같은 종류의 "모델 입력이 되어서는 안 되는 이름" 규칙이다.
+  거부 지점은 **계약 계층** `resolve_experiment_feature_columns()`
+  (`src/features/model_contract.py`)다. 조립의
+  `resolve_extra_feature_columns()`가 이 함수를 호출하고 학습의 `--extra-features`도
+  같은 계약을 거치므로, 계약 계층에 두면 **두 경로가 한 번에 막힌다**. (설계 시에는
+  `clicked` 거부와 같은 자리인 조립 계층을 고려했으나, 패스스루 누출은 조립 고유의
+  문제가 아니라 계약 문제이므로 상위 계층이 옳다.)
+- 조립 fail-closed: 조회 결과에 패스스루 컬럼이 없으면 CSV를 쓰기 **전에**
+  `FeatureContractError`로 멈춘다. 조용히 빠뜨리면 grouped 지표를 못 재는 데이터셋이
+  만들어지고, 그 사실은 평가 단계에 가서야 드러난다(#454의 `require_extra_feature_columns`
+  선례와 같은 이유).
+- 평가는 **관대**하다: 데이터셋에 패스스루가 없으면 grouped 지표만 건너뛰고 전역
+  지표는 그대로 낸다. 비대칭은 의도적이다 — 조립은 새 데이터의 품질을 강제해야 하지만,
+  평가까지 막으면 패스스루 이전에 만들어진 스냅샷의 재현 평가 경로가 끊긴다.
 - 조립 출력 컬럼 순서:
   `[*MODEL_FEATURE_COLUMNS, *extra_features, "clicked", *passthrough_columns]`
 
@@ -112,8 +122,13 @@ roc_auc_score(dataset["clicked"], model.predict_proba(features)[:, 1])
 
 `evaluate`는 `train-model`이 분리 저장한 held-out test set으로만 채점한다
 (`src/cli.py` run-pipeline 3/4 단계 주석). 따라서 패스스루 컬럼은 **split을 거쳐
-test set 저장까지 살아남아야 한다.** 모델 학습 입력에서의 배제는 이름 기반 선택
-(`dataset[list(feature_columns)]`)이라 자동으로 보장된다.
+test set 저장까지 살아남아야 한다.**
+
+**구현 결과 `train.py`는 변경이 필요 없었다.** 분할이 행 단위 위치 인덱싱
+(`dataset.iloc[test_positions]`)이라 모든 컬럼이 그대로 따라가고,
+`test_df.to_csv(test_set_path)`가 전 컬럼을 기록하며, 모델 입력은 이름 기반 선택
+(`train_df[feature_columns]`)이라 패스스루가 자동으로 배제된다. 즉 기존 구조가 이미
+패스스루를 지탱하고 있었고, 막혀 있던 것은 **조립이 컬럼을 잘라낸다는 사실 하나**였다.
 
 ### grouped ROC-AUC 정의
 

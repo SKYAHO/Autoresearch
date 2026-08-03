@@ -10,6 +10,8 @@ from src.features.model_contract import (
     MODEL_FEATURE_COLUMNS,
     FeatureContractError,
 )
+from sklearn.metrics import roc_auc_score
+
 from src.pipeline import evaluate
 
 
@@ -171,3 +173,114 @@ def test_main_keeps_strict_contract_when_no_extra_features(tmp_path, monkeypatch
 
     with pytest.raises(FeatureContractError):
         evaluate.main(config_path=str(config_path), data_path=str(data_path))
+
+
+def test_grouped_roc_auc_differs_from_global_roc_auc() -> None:
+    """유저 단위 AUC는 전역 AUC와 다른 값을 잰다(#505의 존재 이유).
+
+    두 유저 각각의 목록 안에서는 순서가 완벽하지만(유저별 1.0), 유저를 섞어 전역으로
+    재면 uB의 양성(0.2)이 uA의 음성(0.8)보다 낮아 0.75가 된다. 리랭킹 품질은 유저
+    목록 **안**의 순서이므로 전역 AUC는 이 차이를 감춘다.
+    """
+    labels = [1, 0, 1, 0]
+    scores = [0.9, 0.8, 0.2, 0.1]
+    groups = ["uA", "uA", "uB", "uB"]
+
+    result = evaluate.grouped_roc_auc(labels, scores, groups)
+
+    assert result.value == pytest.approx(1.0)
+    assert result.total_groups == 2
+    assert result.scored_groups == 2
+    assert result.skipped_groups == 0
+    # 같은 데이터의 전역 AUC는 0.75 — 두 지표가 갈린다.
+    assert roc_auc_score(labels, scores) == pytest.approx(0.75)
+
+
+def test_grouped_roc_auc_macro_averages_over_users() -> None:
+    """유저별 후보 수가 달라도 큰 유저가 지표를 지배하지 않는다(유저 동등 가중)."""
+    # uA: 완벽 정렬(1.0). uB: 완전 역순(0.0). 행 수는 uA가 2배.
+    labels = [1, 1, 0, 0, 1, 0]
+    scores = [0.9, 0.8, 0.2, 0.1, 0.1, 0.9]
+    groups = ["uA", "uA", "uA", "uA", "uB", "uB"]
+
+    result = evaluate.grouped_roc_auc(labels, scores, groups)
+
+    assert result.value == pytest.approx(0.5)
+    assert result.scored_groups == 2
+
+
+def test_grouped_roc_auc_skips_single_class_users_and_reports_counts() -> None:
+    """한 클래스만 가진 유저는 AUC가 정의되지 않으므로 제외하고, 제외 수를 보고한다."""
+    labels = [1, 0, 1, 1]
+    scores = [0.9, 0.1, 0.5, 0.4]
+    groups = ["uA", "uA", "uB", "uB"]  # uB는 양성만
+
+    result = evaluate.grouped_roc_auc(labels, scores, groups)
+
+    assert result.value == pytest.approx(1.0)  # uA만 반영
+    assert result.total_groups == 2
+    assert result.scored_groups == 1
+    assert result.skipped_groups == 1
+
+
+def test_grouped_roc_auc_returns_none_when_no_user_is_scorable() -> None:
+    """대상 유저가 0명이면 실패시키지 않고 None을 보고한다(관측 지표, 판정 지표 아님)."""
+    result = evaluate.grouped_roc_auc([1, 1], [0.9, 0.8], ["uA", "uB"])
+
+    assert result.value is None
+    assert result.total_groups == 2
+    assert result.scored_groups == 0
+    assert result.skipped_groups == 2
+
+
+def test_main_reports_grouped_roc_auc_when_passthrough_present(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """패스스루 컬럼이 있으면 전역 지표와 **나란히** grouped 지표를 보고한다(#505)."""
+    config_path, data_path = _eval_config_and_data(tmp_path)
+    frame = pd.read_csv(data_path)
+    frame["user_id"] = ["uA", "uA", "uB", "uB"]  # 조립이 보존하는 형태
+    frame.to_csv(data_path, index=False)
+    monkeypatch.setattr(evaluate, "load_model", lambda _: _FakeModel())
+    monkeypatch.setattr(
+        evaluate, "load_feature_columns", lambda _: list(MODEL_FEATURE_COLUMNS)
+    )
+
+    evaluate.main(config_path=str(config_path), data_path=str(data_path))
+
+    out = capsys.readouterr().out
+    assert "Grouped ROC-AUC" in out
+    # 값만 내보내지 않는다 — 집계 대상 수가 없으면 신뢰도를 알 수 없다.
+    assert "유저" in out
+
+
+def test_main_skips_grouped_roc_auc_without_passthrough(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """패스스루 이전에 만들어진 스냅샷도 그대로 평가된다(#505).
+
+    조립은 fail-closed지만 평가는 관대해야 한다 — 과거 데이터셋으로 재현 평가를
+    돌리는 경로를 끊으면 비교 가능성이 사라진다.
+    """
+    config_path, data_path = _eval_config_and_data(tmp_path)  # user_id 없음
+    monkeypatch.setattr(evaluate, "load_model", lambda _: _FakeModel())
+    monkeypatch.setattr(
+        evaluate, "load_feature_columns", lambda _: list(MODEL_FEATURE_COLUMNS)
+    )
+
+    evaluate.main(config_path=str(config_path), data_path=str(data_path))
+
+    out = capsys.readouterr().out
+    assert "ROC-AUC" in out  # 전역 지표는 그대로 나온다
+    assert "Grouped ROC-AUC" not in out
+
+
+def test_group_key_column_is_a_passthrough_column() -> None:
+    """그룹 키는 반드시 패스스루 컬럼이어야 한다(#505 드리프트 방지).
+
+    모델 입력 컬럼을 그룹 키로 쓰면 "모델이 본 것"으로 그룹을 나누게 되고, 패스스루가
+    아닌 컬럼은 조립이 CSV에 싣지 않아 평가가 조용히 건너뛴다.
+    """
+    from src.features.model_contract import PASSTHROUGH_COLUMNS
+
+    assert evaluate.GROUP_KEY_COLUMN in PASSTHROUGH_COLUMNS
