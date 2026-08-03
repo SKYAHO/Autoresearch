@@ -88,8 +88,13 @@ jobs:
                 this.kind = kind;
               }
             }
+            // 이전 동작(gate step의 float())이 받아들이던 범위를 좁히지 않는다.
+            // 지수 표기(1e-05)는 producer가 작은 delta를 JSON 숫자로 실어 보낼 때
+            // 흔히 나오므로 반드시 허용해야 한다. 목적은 형식을 좁히는 것이 아니라
+            // NaN·Infinity·빈 값·비숫자로 gate step이 죽는 것을 막는 것이다.
             function isFiniteDecimal(value) {
-              return /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(value) && Number.isFinite(Number(value));
+              return /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?$/.test(value)
+                && Number.isFinite(Number(value));
             }
             try {
               if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0) {
@@ -250,13 +255,21 @@ jobs:
           always() && steps.issue.outcome == 'success' &&
           (steps.lineage.outputs.valid != 'true' ||
           steps.gate.outcome == 'failure' ||
+          steps.gate.outcome == 'cancelled' ||
           (steps.gate.outcome == 'success' && steps.gate.outputs.passed != 'true'))
         uses: actions/github-script@v8
         env:
+          # 순서가 계약이다. gate는 lineage가 성공했을 때만 돌고, 그 경로에서
+          # steps.lineage.outputs.reason은 항상 'lineage_valid'(truthy)다. 따라서
+          # gate 실패 갈래를 lineage 사유보다 **먼저** 평가하지 않으면 gate가 죽어도
+          # 사유가 'lineage_valid'로 덮여, 이 PR이 복구하려는 바로 그 관측 경로가
+          # 다시 막힌다. 이 순서는 아래 테스트가 고정한다.
           GATE_REASON: >-
             ${{ steps.gate.outputs.reason
+            || ((steps.gate.outcome == 'failure' || steps.gate.outcome == 'cancelled')
+            && format('gate_step_failed:{0}', steps.gate.outcome))
             || steps.lineage.outputs.reason
-            || format('gate_step_failed:{0}', steps.gate.outcome) }}
+            || 'unknown' }}
         with:
           script: |
             const issueNumber = Number(process.env.ISSUE_NUMBER);
@@ -308,8 +321,11 @@ jobs:
       - name: Write result summary
         if: always()
         env:
+          # 실패 코멘트와 동일한 순서를 쓴다 — 이유는 그쪽 주석 참조.
           GATE_REASON: >-
             ${{ steps.gate.outputs.reason
+            || ((steps.gate.outcome == 'failure' || steps.gate.outcome == 'cancelled')
+            && format('gate_step_failed:{0}', steps.gate.outcome))
             || steps.lineage.outputs.reason
-            || format('gate_step_{0}', steps.gate.outcome) }}
+            || 'unknown' }}
         run: 'echo "experiment promotion gate: ${GATE_REASON}" >> "$GITHUB_STEP_SUMMARY"'

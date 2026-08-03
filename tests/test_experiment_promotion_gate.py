@@ -129,7 +129,11 @@ def test_workflows_do_not_join_with_escaped_newline() -> None:
     않는다. 따라서 JS가 받는 값이 `'\\\\n'`(백슬래시+n)이 되어 줄바꿈이 사라진다.
     """
     offenders = []
-    for workflow in sorted((PROJECT_ROOT / ".github/workflows").glob("*.yml")):
+    for workflow in sorted(
+        p
+        for pattern in ("*.yml", "*.yaml")
+        for p in (PROJECT_ROOT / ".github/workflows").glob(pattern)
+    ):
         text = workflow.read_text(encoding="utf-8")
         for number, line in enumerate(text.splitlines(), start=1):
             if r".join('\\n')" in line or r'.join("\\n")' in line:
@@ -228,12 +232,70 @@ def test_promotion_workflow_uses_dispatch_gate_and_draft_pr() -> None:
     assert "github.rest.git.updateRef" not in workflow
 
 
-def test_promotion_workflow_records_result_when_gate_step_fails() -> None:
-    """gate step이 예외로 죽어도 소스 이슈에 기록이 남아야 한다(#495 C·D-1)."""
-    workflow = WORKFLOW.read_text(encoding="utf-8")
+# gate가 실패·취소로 끝났을 때도 실행되는 step만 순서 계약의 대상이다.
+# Draft PR 생성 step은 gate 통과가 전제이므로 `steps.gate.outputs.reason` 단독으로 충분하다.
+_GATE_FAILURE_AWARE_STEPS = (
+    "Comment failed or rejected experiment result on source issue",
+    "Write result summary",
+)
 
-    assert "steps.gate.outcome == 'failure'" in workflow
-    assert "gate_step_failed:" in workflow
+
+def _gate_reason_expressions() -> dict[str, str]:
+    """gate 실패 시에도 도는 step의 `GATE_REASON` 표현식을 YAML에서 파싱한다."""
+    parsed = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = parsed["jobs"]["create-promotion-pr"]["steps"]
+    found = {
+        step["name"]: step["env"]["GATE_REASON"]
+        for step in steps
+        if step.get("name") in _GATE_FAILURE_AWARE_STEPS
+        and isinstance(step.get("env"), dict)
+        and "GATE_REASON" in step["env"]
+    }
+    missing = sorted(set(_GATE_FAILURE_AWARE_STEPS) - set(found))
+    assert not missing, f"GATE_REASON을 쓰지 않는 step: {missing}"
+    return found
+
+
+def test_gate_reason_prefers_gate_failure_over_lineage_success() -> None:
+    """gate 실패 갈래가 lineage 사유보다 **먼저** 평가되어야 한다(#495).
+
+    gate step은 `steps.lineage.outputs.valid == 'true'`일 때만 실행되므로, 그 경로에서
+    `steps.lineage.outputs.reason`은 항상 `lineage_valid`(truthy)다. 순서가 뒤집히면
+    gate가 예외로 죽어도 사유가 `lineage_valid`로 덮여 관측 경로가 다시 막힌다.
+
+    문자열 존재만 보는 검사로는 이 순서 결함이 드러나지 않으므로, `||` 피연산자의
+    **상대 순서**를 직접 고정한다.
+    """
+    for step_name, expression in _gate_reason_expressions().items():
+        gate_failure = expression.find("gate_step_failed")
+        lineage_reason = expression.find("steps.lineage.outputs.reason")
+
+        assert gate_failure != -1, f"{step_name}: gate 실패 갈래가 없습니다"
+        assert lineage_reason != -1, f"{step_name}: lineage 사유 갈래가 없습니다"
+        assert gate_failure < lineage_reason, (
+            f"{step_name}: gate 실패 갈래가 lineage 사유보다 뒤에 있어 "
+            f"절대 선택되지 않습니다 — {expression}"
+        )
+
+
+def test_gate_reason_covers_cancelled_outcome() -> None:
+    """gate가 cancelled로 끝나도 사유가 남아야 한다(#495)."""
+    for step_name, expression in _gate_reason_expressions().items():
+        assert "steps.gate.outcome == 'cancelled'" in expression, step_name
+
+
+def test_promotion_workflow_records_result_when_gate_step_fails() -> None:
+    """gate step이 실패·취소로 끝나도 소스 이슈에 코멘트가 남아야 한다(#495 C·D-1)."""
+    parsed = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    steps = parsed["jobs"]["create-promotion-pr"]["steps"]
+    condition = next(
+        step["if"]
+        for step in steps
+        if step.get("name", "").startswith("Comment failed or rejected")
+    )
+
+    assert "steps.gate.outcome == 'failure'" in condition
+    assert "steps.gate.outcome == 'cancelled'" in condition
 
 
 def test_promotion_workflow_validates_metric_inputs_before_gate() -> None:
@@ -241,8 +303,44 @@ def test_promotion_workflow_validates_metric_inputs_before_gate() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
     assert "isFiniteDecimal" in workflow
-    assert "primary_candidate must be a finite decimal" not in workflow  # 템플릿 리터럴로 조립
     assert "must be a finite decimal" in workflow
+
+
+@pytest.mark.parametrize(
+    ("value", "accepted"),
+    [
+        ("0.7812", True),
+        ("-0.0004", True),
+        ("0", True),
+        ("1e-05", True),  # producer가 작은 delta를 JSON 숫자로 실으면 이렇게 직렬화된다
+        ("2E+3", True),
+        ("0.7120000000000001", True),
+        ("", False),
+        ("abc", False),
+        ("NaN", False),
+        ("Infinity", False),
+        ("01.5", False),  # 선행 0
+        ("1.", False),
+    ],
+)
+def test_metric_input_pattern_matches_previous_float_behaviour(value: str, accepted: bool) -> None:
+    """지표 검증이 이전 `float()`이 받던 범위를 좁히지 않아야 한다(#495 D-1).
+
+    좁히면 외부 producer(#492)가 보내던 정상 payload가 `input_invalid`로 거부된다.
+    """
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    match = re.search(r"return /\^(.+?)\$/\.test\(value\)", workflow)
+    assert match, "isFiniteDecimal 정규식을 찾지 못했습니다"
+
+    matched = re.fullmatch(match.group(1), value) is not None
+    is_finite = False
+    if matched:
+        try:
+            is_finite = float(value) == float(value) and abs(float(value)) != float("inf")
+        except ValueError:
+            is_finite = False
+
+    assert (matched and is_finite) is accepted, f"{value!r} 판정이 기대와 다릅니다"
 
 
 def test_promotion_workflow_separates_rejection_kinds() -> None:
