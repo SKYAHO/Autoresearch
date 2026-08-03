@@ -1,6 +1,6 @@
 # Agent Workflow Reference
 
-> Last Updated: 2026-07-06
+> Last Updated: 2026-08-03
 
 GitHub 워크플로우 전체 가이드: Issue → Branch → Commit → PR → Review →
 Merge. 모든 기능 작업의 운영 표준입니다. 사람용 요약은
@@ -47,10 +47,25 @@ Issue 자동 close → Project Done
 | `feature.yml` | `[FEAT]` | `feature` | 목적, 작업 범위, 영향 컴포넌트, 완료 조건 |
 | `bug.yml` | `[BUG]` | `bug` | 현상, 재현 방법, 기대 동작, 환경, 로그 |
 | `experiment.yml` | `[EXP]` | `experiment` | 가설, 데이터셋, 모델, 피처, 평가지표, Champion 대비 결과, 결론 |
+| `auto_research.yml` | `[AR]` | `experiment`, `auto-research` | 입력 필드 20개 중 18개를 `tools/auto_research_issue_branch.py`가 fail-closed로 파싱 (`보조 관측 지표`는 선택, `결과`는 에이전트가 사후 기입) |
 
 GitHub는 `form 선택 → label 자동 적용` 방식으로 동작합니다. Project의
 `Add item`으로 제목만 추가하면 form을 우회하므로, 새 작업은 Issues
 화면에서 생성합니다.
+
+`[AR]` 이슈는 `experiment`와 `auto-research` 두 label을 **동시에** 가질
+때만 `.github/workflows/auto-research-issue-branch.yml`이 실행됩니다.
+Form을 우회해 API로 발행하면 label이 자동 적용되지 않으므로 반드시 직접
+부여합니다.
+
+**문서 전용 이슈 (`[DOCS]`)**: Issue Form이 없습니다(`[CHORE]`, `[PERF]`
+등 관례로 쓰이는 다른 prefix도 마찬가지입니다). 문서와 판단 기록만
+산출물인 작업에 사용하며, Form이 없으므로 제목 prefix와 label을 직접
+지정합니다.
+
+```bash
+gh issue create --title "[DOCS] ..." --label documentation --assignee @me
+```
 
 **에이전트로 이슈를 생성할 때 (`gh issue create`):**
 
@@ -85,6 +100,16 @@ gh issue create \
 - 영어 소문자, 숫자, 하이픈만 사용합니다.
 - 이슈 번호를 반드시 포함합니다.
 - 한 브랜치에는 하나의 주요 목적만 담습니다.
+
+**예외 — Auto Research 실험 브랜치:** `[AR]` 이슈의
+`exp/<이슈번호>-<slug>` 브랜치는 사람이 만들지 않습니다.
+`.github/workflows/auto-research-issue-branch.yml:190-208`이 `main`이
+아니라 **`dev` tip에서 자동 분기**하고 그 SHA를 `base_dev_sha`로 marker
+코멘트에 봉인합니다. `exp/`는 사람과 자동화가 **같은 형식을 공유**하므로,
+자동 생성된 exp 브랜치를 삭제하거나 force-push하지 않습니다 — ruleset이
+막아 주지 않고, 지우면 그 이슈가 fail-closed로 멈추거나 **다른 기준선으로
+조용히 재생성**됩니다. 아래
+[Branch protection](#branch-protection) 참조.
 
 ```bash
 # 이슈에서 Create a branch로 생성(예: feat/45-docs-system-phase1) 후
@@ -210,9 +235,129 @@ Closes #45
   종전대로 실행되며, 문서 PR도 `/claude-review`·`/claude-report` 댓글로
   수동 실행할 수 있습니다.
 
-**Branch protection (`main`):**
-- 직접 push 금지, PR을 통한 변경만 허용
-- approve 후 새 커밋이 push되면 approve가 초기화될 수 있습니다.
+## Branch protection
+
+보호는 저장소 파일이 아니라 **GitHub ruleset**으로 적용되어 있습니다.
+문서와 실제 설정이 어긋나지 않도록 각 항목에 rule type 원문 식별자를
+병기합니다. read-back으로 대조합니다:
+
+```bash
+gh api repos/SKYAHO/Autoresearch/rulesets
+gh api repos/SKYAHO/Autoresearch/rulesets/18360502   # main-protection
+gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
+```
+
+### `main` — `main-protection` (id `18360502`)
+
+조건은 `refs/heads/main`이 아니라 `~DEFAULT_BRANCH`입니다(기본 브랜치가
+`main`이므로 지금은 효과가 같습니다). read-back 대조 시 유의합니다.
+
+**기본 브랜치를 바꾸려면 ruleset을 먼저 고정합니다.** 기본 브랜치를 `dev`로
+바꾸는 순간 `main-protection`이 `main`을 떠나 `dev`를 따라갑니다. `main`은
+보호가 전부 풀리고, `dev`에는 `pull_request` rule이 붙어 아래에서 설명하는
+실험 자동 병합이 즉시 중단됩니다. 옮기기 전에 `main-protection`의 조건을
+`refs/heads/main`으로 명시 고정해야 합니다.
+
+- 직접 push 금지, PR을 통한 변경만 허용 (`pull_request`)
+- approve 1명 필수(`required_approving_review_count: 1`). approve 후 새
+  커밋이 push되면 approve가 초기화되고
+  (`dismiss_stale_reviews_on_push`), 마지막 push에 대한 승인이 필요합니다
+  (`require_last_push_approval`).
+- required status check 6개 (`required_status_checks`,
+  `strict_required_status_checks_policy: true`): `Ruff`,
+  `pytest (Python 3.11)`, `pytest (Python 3.12)`,
+  `pytest (feast group)`, `uv lock & proxy export drift`, `Docker build`
+- force-push 금지 (`non_fast_forward`), 삭제 금지 (`deletion`)
+- squash merge만 허용 (`allowed_merge_methods: ["squash"]`)
+- 우회 불가 (`bypass_actors: []`, `current_user_can_bypass: never`) —
+  classic branch protection의 "include administrators" 토글과 달리 ruleset은
+  bypass actor를 명시하지 않으면 **관리자도 우회하지 못합니다.**
+
+### `dev` — `dev-protection` (id `20261204`)
+
+- 삭제 금지 (`deletion`)
+- force-push 금지 (`non_fast_forward`)
+- 우회 불가 (`bypass_actors: []`, `current_user_can_bypass: never`) — 팀
+  전원에게 예외 없이 적용됩니다.
+- **PR 필수·required status check는 걸지 않습니다** (아래 이유 참조)
+
+**`dev`가 오염되면 revert-forward만 가능합니다.** 우회가 불가능하므로 잘못된
+candidate가 병합됐을 때 force-push로 되돌릴 수 없고 revert 커밋으로 전진
+복구해야 합니다. 이 방식은 진행 중인 실험을 깨지 않습니다 — 기존
+`base_dev_sha`가 여전히 `dev`의 조상으로 남아 lineage 검증이 통과합니다.
+
+`dev`는 단순한 통합 브랜치가 아니라 **Auto Research 모든 실험의
+기준선**입니다.
+`auto-research-issue-branch.yml:190-208`이 `heads/dev` tip을
+`base_dev_sha`로 고정해 marker 코멘트에 봉인하고, 이후 모든 계보 검증이
+그 SHA를 기준점으로 삼습니다. `dev`가 force-push·삭제되어 그 커밋이
+사라지면 다음이 깨집니다.
+
+| 깨지는 것 | 근거 | 시점 |
+|---|---|---|
+| 신규 이슈의 exp 브랜치 생성 | `auto-research-issue-branch.yml:190-196` | 즉시 |
+| dev 병합 | `auto-research-dev-promotion.yml:367-372` (`base: 'dev'`) | 즉시 |
+| main Draft PR의 lineage 검사 | `auto-research-promotion.yml:158-163` (`head: 'dev'`) | 즉시 |
+| 진행 중 이슈의 후보 검증 | `auto-research-dev-promotion.yml:224-242` | 후보 제출 시 |
+
+**흔한 오해:** marker가 이미 있는 재검증 경로는 `heads/dev`를 **한 번도 읽지
+않습니다.** 그 파일의 `heads/dev` 조회는 **정확히 한 곳**뿐이며 marker가 없을
+때만 실행되는 분기입니다. `recorded issue branch ref is missing`도 `dev`가
+아니라 **exp 브랜치**가 사라졌을 때의 방어입니다 — 조회 대상이
+`heads/${recorded.issueBranch}`입니다.
+
+이 개수 단언은 위치가 아니라 **개수**에 대한 것이라 문서로는 지킬 수
+없습니다. `tests/test_branch_protection_contract.py`가 CI에서 고정합니다.
+
+**PR 필수·required status check를 `dev`에서 제외한 이유:**
+`auto-research-dev-promotion.yml:367-372`의
+`github.rest.repos.merge({ base: 'dev', head: selectedCandidateSha })`는
+**PR을 거치지 않고 `dev` ref를 직접 갱신**합니다.
+
+- `pull_request` rule을 걸면 이 호출이 거부되어 자동 병합이 즉시 멈춥니다.
+- `required_status_checks`를 걸어도 마찬가지입니다. `ci.yml:6-8`과
+  `lint.yml:6-8`의 `push` 트리거가 `main` 전용이고, 게다가
+  `GITHUB_TOKEN`으로 만든 커밋은 workflow를 재귀 트리거하지 않습니다.
+  두 이유 각각으로 **`repos.merge`가 만든 dev 커밋에는 check run이
+  하나도 생성되지 않아** 영구히 통과할 수 없습니다. 후자는
+  `docs/archive/specs/2026-08-01-auto-research-dev-issue-branch.md:112`에
+  이미 기록돼 있습니다.
+
+> "`dev`에는 지정할 컨텍스트가 없다"는 서술은 **틀립니다.** `ci.yml`과
+> `lint.yml` 모두 `pull_request:` 트리거에 `branches:` 필터가 없어 base가
+> `dev`인 PR에서는 6개 컨텍스트가 정상 생성되고, ruleset에 컨텍스트
+> 이름을 직접 입력할 수도 있습니다. 성립하는 사실은 **"`repos.merge`로
+> 만든 dev 커밋에는 CI가 돌지 않는다"** 입니다.
+
+### `exp/*`, `promote/*` — ruleset 없음 (2026-08-03 판단)
+
+워크플로의 fail-closed 검사만 있으며 **생성 시점 방어일 뿐, 생성 이후의
+force-push·삭제는 막지 못합니다.**
+
+- `exp/*` 생성 시: `auto-research-issue-branch.yml:186-188`이 marker 없이
+  존재하는 exp 브랜치를
+  `issue branch ref exists without a trusted marker comment`로 거부합니다.
+- `exp/*` 삭제 후: **브랜치만 지우면** marker가 남아
+  `recorded issue branch ref is missing`으로 fail-closed됩니다. **marker까지
+  함께 지우면** marker 없는 분기로 들어가 `dev`의 **현재 HEAD**로 브랜치를
+  다시 만들고 marker를 새로 씁니다. 영구 차단은 아니지만 이쪽이 더
+  위험합니다 — 재설정된 `base_dev_sha`가 원래 값과 다른데 아무 데서도
+  실패하지 않아, 이미 원래 값을 인용한 곳과 **조용히 어긋납니다.**
+- `exp/*` force-push: `:163-171`과
+  `auto-research-dev-promotion.yml:224-242`가 후보를 거부합니다. 안전하게
+  실패하지만 작업 결과는 소실됩니다.
+- `promote/*`: `auto-research-promotion.yml:215-227`이 이미 존재하는
+  promote 브랜치를 **다른 SHA로 재사용**하는 것만 거부합니다.
+
+**보호를 걸지 않은 이유:** `exp/`는 자동화 전용 네임스페이스가 아닙니다.
+위 [Branch Naming](#branch-naming)이 `exp/`를 사람이 쓰는 type으로
+규정하고, 사람이 만든 `exp/116-openrouter-provider-ab`와
+`exp/396-views-per-day`가 원격에 존재합니다. 양쪽이
+`exp/<이슈번호>-<설명>`이라는 **같은 형식**을 쓰므로 ruleset의 ref
+패턴으로 구분할 수 없고, `non_fast_forward`는 사람의 rebase를,
+`deletion`은 작업 후 브랜치 정리를 함께 막습니다. 보호하려면 **자동화
+전용 네임스페이스 분리가 선행**되어야 하며, 이는 브랜치명 생성 규칙과
+이미 봉인된 marker 계약을 바꾸는 동작 변경이므로 별도 이슈에서 다룹니다.
 
 ## Merging
 
@@ -251,13 +396,31 @@ Issue Form과 자동화를 단순하게 유지하기 위해 `feature`, `bug`,
 `good first issue`, `help wanted`, `question`. `enhancement`는
 `feature`와 겹치면 `feature`를 우선합니다.
 
+**자동화 트리거 label — 임의로 제거하지 않습니다.** `auto-research`는
+`experiment`와 **함께** 있을 때만 `auto-research-issue-branch.yml`의 브랜치
+생성 job을 실행시킵니다. 하나라도 떨어지면 `if:` 미충족으로 job이 **skip**되고,
+skip은 실패가 아니라 체크도 알림도 남지 않아 브랜치 생성이 **아무 흔적 없이
+일어나지 않습니다.** 이 조건은 `tests/test_branch_protection_contract.py`가
+계약으로 고정합니다.
+
 ## CI
 
-`.github/workflows/ci.yml`이 PR과 `main` push, 수동 실행
-(`workflow_dispatch`)에서 동작합니다.
+`.github/workflows/ci.yml`과 `.github/workflows/lint.yml`이 PR과 `main`
+push, 수동 실행(`workflow_dispatch`)에서 동작합니다. 두 파일 모두
+`pull_request:` 트리거에 `branches:` 필터가 없어 base 브랜치를 가리지
+않지만, `push:`는 `main` 전용입니다.
 
-- Python 3.11 / 3.12에서 `python -m pytest`
-- `Dockerfile.app` 기반 이미지 빌드와 import smoke check
+- `ci.yml`: Python 3.11 / 3.12에서 `python -m pytest`, feast·postgres 그룹
+  테스트, `uv lock & proxy export drift`, 이미지 빌드와 import smoke check
+- `lint.yml`: `Ruff`
+
+`main`의 required status check 6개는 `ci.yml` 5개
+(`pytest (Python 3.11)`, `pytest (Python 3.12)`, `pytest (feast group)`,
+`uv lock & proxy export drift`, `Docker build`)와 `lint.yml` 1개
+(`Ruff`)입니다. `pytest (postgres group)`과 이미지별
+`Docker build (...)` 서브잡은 실행되지만 required 컨텍스트가 아닙니다.
+`Docker build`는 이미지별 서브잡을 모으는 fan-in 집계 잡의 이름이며,
+ruleset이 그 이름을 그대로 요구하므로 유지합니다(`ci.yml:474-476` 주석).
 
 ## Special Cases
 
