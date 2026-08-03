@@ -61,6 +61,9 @@ class GroupedRocAuc:
     total_groups: int
     scored_groups: int
     skipped_groups: int
+    # 그룹 키가 null이라 어느 그룹에도 귀속되지 못한 행 수. 그룹이 아니므로 위 세 수에
+    # 들어가지 않지만, 세지 않으면 조용히 사라져 커버리지 보고가 거짓이 된다.
+    null_key_rows: int
 
 
 def grouped_roc_auc(
@@ -83,10 +86,17 @@ def grouped_roc_auc(
         groups: 행이 속한 그룹 키(보통 ``user_id``).
 
     Returns:
-        매크로 평균과 집계 대상 수. 양성·음성을 모두 가진 그룹이 없으면 ``value``는
-        ``None``이다 — 관측 지표이므로 실패시키지 않는다.
+        매크로 평균과 집계 대상 수, 그리고 그룹 키가 null이라 귀속되지 못한 행 수.
+        양성·음성을 모두 가진 그룹이 없으면 ``value``는 ``None``이다 — 관측 지표이므로
+        실패시키지 않는다.
     """
     frame = pd.DataFrame({"label": labels, "score": scores, "group": groups})
+    # `groupby`의 기본값 dropna=True는 null 키 행을 그룹으로 세지도, 집계에 넣지도
+    # 않는다. 여기서 먼저 세지 않으면 그 행들이 어느 수치에도 남지 않아 커버리지
+    # 보고가 실제로 버려진 행을 감춘다. `dropna=False`로 묶지 않는 이유는 서로 무관한
+    # 행들이 하나의 가짜 그룹이 되어 의미 없는 AUC가 계산되기 때문이다.
+    null_key_rows = int(frame["group"].isna().sum())
+
     per_group: list[float] = []
     total_groups = 0
     for _, rows in frame.groupby("group", sort=False):
@@ -102,6 +112,7 @@ def grouped_roc_auc(
         total_groups=total_groups,
         scored_groups=scored_groups,
         skipped_groups=total_groups - scored_groups,
+        null_key_rows=null_key_rows,
     )
 
 
@@ -227,7 +238,13 @@ def main(
         grouped = grouped_roc_auc(y, y_pred_proba, dataset[GROUP_KEY_COLUMN])
         coverage = (
             f"(유저 {grouped.total_groups}명 중 {grouped.scored_groups}명 집계, "
-            f"{grouped.skipped_groups}명 제외)"
+            f"{grouped.skipped_groups}명 제외"
+        )
+        # 귀속 불가 행은 유저 수에 안 잡히므로 따로 보여야 커버리지가 정직해진다.
+        coverage += (
+            f", {GROUP_KEY_COLUMN} 결측 {grouped.null_key_rows}행 제외)"
+            if grouped.null_key_rows
+            else ")"
         )
         if grouped.value is None:
             print(

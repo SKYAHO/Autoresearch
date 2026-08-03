@@ -284,3 +284,25 @@ def test_group_key_column_is_a_passthrough_column() -> None:
     from src.features.model_contract import PASSTHROUGH_COLUMNS
 
     assert evaluate.GROUP_KEY_COLUMN in PASSTHROUGH_COLUMNS
+
+
+def test_grouped_roc_auc_reports_null_group_keys() -> None:
+    """그룹 키가 null인 행은 따로 세어 보고한다(#506 리뷰).
+
+    pandas ``groupby``의 기본값 ``dropna=True``는 이 행들을 그룹으로 세지도, 집계에
+    넣지도 않는다. 커버리지 숫자만 보면 멀쩡해 보이지만 실제로는 행이 조용히
+    사라져, 이 dataclass가 약속하는 "값을 얼마나 믿을 수 있는지의 근거"가 거짓이 된다.
+    """
+    labels = [1, 0, 1, 0]
+    scores = [0.9, 0.1, 0.8, 0.2]
+    groups = ["uA", "uA", None, None]
+
+    result = evaluate.grouped_roc_auc(labels, scores, groups)
+
+    assert result.value == pytest.approx(1.0)  # uA만 반영
+    # null 키는 어느 유저에도 귀속되지 않으므로 그룹으로 세지 않는다.
+    assert result.total_groups == 1
+    assert result.scored_groups == 1
+    assert result.skipped_groups == 0
+    # 그러나 사라지지도 않는다 — 버려진 행 수가 드러나야 한다.
+    assert result.null_key_rows == 2
