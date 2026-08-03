@@ -27,6 +27,26 @@
 `workflow_dispatch` 수동 입력 경로는 **유지한다.** 게이트를 dev 병합 없이 단독
 재실행할 수 있는 유일한 운영 회복 경로다.
 
+### 두 진입점 모두 단일 JSON 문자열 입력을 쓴다 (#493)
+
+GitHub Actions의 `inputs`는 `string`/`number`/`boolean`/`choice`만 지원하고 object·
+array 타입이 없다. 그런데 새 입력 계약의 정본인 `PairedExperimentResult`에는 중첩
+object(`baseline`/`candidate` = `ConditionLineage`)와 배열(`reason_codes`,
+`extra_features`, `seeds`)이 들어 있다. 따라서 결과 payload를 필드별 입력으로 표현할
+수 없다.
+
+**결정: `workflow_call`과 `workflow_dispatch` 모두 `result_payload`(`type: string`,
+`required: true`) 하나로 받는다.** 워크플로는 그 문자열을 파싱한 뒤 정확 일치
+fail-closed 검사를 수행한다. 검사가 입력 층이 아니라 파싱 이후로 내려가는 것을
+감수하는 대신, 두 진입점이 **같은 계약**을 받는다.
+
+이 결정을 명시하지 않으면 "수동 경로는 평면 필드, 자동 경로는 결과 payload"로 두
+진입점이 다시 갈린다 — 이 작업이 없애려는 바로 그 드리프트다. 현재
+`auto-research-promotion.yml`의 `workflow_dispatch` 입력은 평면 문자열 **13개**
+(`issue_number`~`outcome`)이며, 7단계에서 이를 `result_payload` 하나로 교체한다.
+GitHub이 문서화한 `workflow_dispatch` 입력 개수 상한(10개)과 현재 13개의 관계는
+교체 시점에 함께 확인한다 — 단일 입력으로 가면 이 문제 자체가 사라진다.
+
 ```json
 {
   "contract_version": "paired-offline-experiment-result-v1",

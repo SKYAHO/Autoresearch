@@ -71,6 +71,26 @@ eligible  ⟺  confidence_interval_lower > 0  AND  normalized_delta_mean >= decl
   않는다.
 - 새 reason code `PRIMARY_DELTA_BELOW_DECLARED_MINIMUM`
   (`primary_delta_below_declared_minimum`)를 추가한다.
+
+**전달 경로와 검증 지점 (리뷰 반영).** marker에는 `criteria_id`가 sha256
+**다이제스트**로만 실린다(`auto-research-issue-branch.yml`의 marker 정규식은 두 해시와
+`base_dev_sha`만 담는다). 임계의 **수치**는 어디에도 없으므로 전달 경로를 못박는다.
+
+1. 판정 엔진을 호출하는 주체(#492 실험 실행기)는 **이슈 본문을 `parse_issue_input()`에
+   넣어** `IssueInput.minimum_primary_delta`를 얻는다. D9가 남기는 단 하나의 Issue Form
+   파서가 그것이며, 새 파서를 만들지 않는다.
+2. 같은 호출에서 나온 `criteria_id`가 marker에 봉인된 값과 일치하는지 **호출자가 먼저
+   확인**한다. 일치하면 그 본문이 봉인 시점과 같으므로, 함께 나온 임계값도 봉인된
+   본문의 값이다.
+3. **판정 결과가 임계를 실제로 적용했음을 결과 계약이 증거로 남긴다.**
+   `PairedExperimentResult`에 `declared_minimum_primary_delta`와 `criteria_id`를
+   싣고, `evaluation_id` 해시 입력에 임계값을 포함한다. 그러면 게이트는 재판정 없이
+   "이 판정이 이 임계로 수행됐다"를 확인할 수 있다.
+4. 게이트 검증 항목에 다음을 추가한다 — 결과의 `criteria_id`가 marker와 일치하고,
+   결과의 `declared_minimum_primary_delta`가 그 이슈 본문에서 파생된 값과 같을 것.
+
+이 셋이 없으면 "게이트가 재판정할 이유를 없앤다"가 "아무도 검증하지 않는다"로
+바뀐다. 임계를 0으로 넣거나 아예 적용하지 않은 판정이 통과하기 때문이다.
 - **verdict는 `reject`다.** 통계적으로는 개선이 확인되었으나 사용자가 선언한
   실용적 유의성에 못 미치는 상태는 "판정 불가"가 아니라 명확한 기각이다.
   `hold`로 두면 `comparison_failed`가 되어 재시도 가치가 있는 것처럼 읽힌다.
@@ -114,9 +134,55 @@ sha256도 그대로이고, 기존 `roc_auc` receipt는 새 스키마에서도 �
   `confidence_interval_lower > 0`은 **방향과 무관하게 동일한 형태**로 유지된다.
 - `_verified_metric_values`는 상수 `PRIMARY_METRIC`이 아니라 **그 실험이 선언한
   주 지표**와 대조한다. `dataset_split == "test"` 고정은 유지한다.
-- `PROMOTION_POLICY_VERSION`을 `promotion-policy-v2`로 올린다. v1로 기록된 기존
-  plan·evidence는 그대로 읽히되, 새 판정은 v2로 수행한다. 버전 문자열을 비교하는
-  모든 지점을 찾아 함께 갱신한다.
+#### 정책 버전 인상은 그대로 하면 기존 증거를 못 읽는다 (리뷰 반영)
+
+초안은 "`PROMOTION_POLICY_VERSION`을 `promotion-policy-v2`로 올리되 v1로 기록된
+기존 plan·evidence는 그대로 읽힌다"고 적었다. **이 서술은 틀렸다.**
+
+`_plan_identity_payload()`(`src/pipeline/promotion_evidence.py:99-113`)는
+`policy_version` 자리에 `self.policy_version`이 아니라 **모듈 상수**
+`PROMOTION_POLICY_VERSION`을 넣는다. 그리고
+`ExperimentPlan._validate_content_addressed_plan_id`(`:132-144`)가 그 payload로
+`plan_id`를 재계산해 저장된 값과 대조한다. 따라서 상수를 바꾸는 순간 v1 시절에
+발행된 모든 plan은 재계산된 `plan_id`가 달라져 읽히지 않는다. 실측했다.
+
+```text
+v1에서 발행한 plan_id: experiment-plan-19e297ab32f639850eb45833...
+상수를 v2로 교체 후 재검증 → ValueError:
+  plan_id가 canonical experiment plan 내용과 다릅니다
+```
+
+`HeldOutMetricEvidence`가 `plan_receipt`로 plan을 통째로 품으므로
+(`promotion_evidence.py:155` 부근), `verify_held_out_metric_receipt()`의
+`model_validate_json()`도 함께 깨진다. **GCS object의 바이트와 sha256은 그대로지만
+더 이상 역직렬화되지 않는다.** 2단계의 무마이그레이션 논거("필드를 추가하지 않으므로
+직렬화가 안 바뀐다")는 **필드 추가**만 다루며 **상수 값 변경**은 다루지 않는다 —
+지표 확장은 실제로 안전하지만 정책 버전 인상은 안전하지 않다.
+
+추가로 `Literal["promotion-policy-v1"]`이 네 곳에 박혀 있어 상수만 바꾸면 v2 값이
+검증에서 거부된다 — `promotion_evidence.py:123`, `experiment_evaluation.py:111`·
+`:143`·`:170`. (`paired_experiment.py:199`는 `str`이라 영향이 없다.)
+
+**대응 방침:** plan 식별 payload에서 `policy_version`을 **제외**한다.
+
+- `plan_id`는 "무엇을 비교하기로 사전 선언했는가"(가설·control·candidate·시각)의
+  content address여야 한다. 그 선언을 **어떤 정책으로 판정할지**는 plan의 정체성이
+  아니라 판정 시점의 선택이므로, 식별 payload에 들어갈 이유가 없다.
+- `policy_version`은 필드로는 그대로 남긴다(어떤 정책으로 발행됐는지 기록은 필요).
+  `Literal`은 v1·v2 유니온으로 넓힌다.
+- **단, 이 변경 자체가 `plan_id` 계산식을 바꾼다.** 기존 v1 plan의 `plan_id`는 여전히
+  `policy_version`을 포함해 계산된 값이므로, 식별 payload에서 그냥 빼면 이번에는
+  그 이유로 읽히지 않는다. 따라서 `_validate_content_addressed_plan_id`가 **신규
+  계산식으로 먼저 대조하고, 실패하면 v1 legacy 계산식(정책 버전 포함)으로 한 번 더
+  대조**하는 2단 검증을 둔다. 신규 발행은 항상 신규 계산식을 쓴다.
+- legacy 경로는 읽기 전용이며 새 plan을 만들 때는 쓰지 않는다. 이 비대칭을 코드
+  주석과 이 문서에 남긴다.
+
+대안으로 "식별 payload가 상수 대신 `self.policy_version`을 쓰도록 바꾸는" 방법도
+있으나, 이는 v1 plan의 `plan_id`를 그대로 재현하므로 legacy 분기 없이 호환된다.
+**구현 시 이쪽을 먼저 검토한다** — v1 plan은 `policy_version`이 항상
+`"promotion-policy-v1"`이므로 상수를 읽든 필드를 읽든 결과가 같고, v2 plan만 새 값을
+갖게 되어 자연스럽게 갈린다. 이 경우 legacy 분기가 아예 필요 없다.
 
 ### D4. guardrail은 고지만 하고 엔진 확장은 별도 이슈로 넘긴다
 
@@ -168,6 +234,22 @@ repository_dispatch payload 한도를 넘긴다. 따라서 이벤트 투영을 *
   기대 키 집합만 이 투영에 맞춰 확장한다.
 - 투영은 코드 한 곳의 상수로 정의하고 결과 모델에서 파생시킨다. 결과 계약에 필드가
   늘면 투영도 함께 늘도록 하고, 그 동등성을 테스트로 고정한다.
+
+**선택 필드와 정확 일치의 양립 (리뷰 반영).** `_parse_completion_candidate`는
+`missing_keys`가 하나라도 있으면 거부하는데, 투영 대상에는 `evidence_id`·
+`evaluation_id`·`decision_id`·`metric_name`·`primary_baseline`·`primary_candidate`·
+`paired_delta_mean`·`confidence_interval_lower`/`upper`·`model_uri` 등 `X | None = None`
+필드가 많다. 다음을 계약으로 못박는다.
+
+- **투영은 "값이 `None`이어도 키는 싣는다"를 요구한다.** producer는
+  `model_dump_json(exclude_none=True)`를 쓰지 않는다. 정확 일치 fail-closed를 유지하는
+  대가이며, 소비 측이 선택 키를 허용하도록 느슨해지면 오탈자 키가 조용히 무시된다.
+- `hold`/`comparison_failed` 후보도 `candidates[]`에 **실어 보낸다.** 적격 판정은
+  `outcome`으로 하므로 실려도 안전하고, producer가 미리 거르면 "왜 후보가 사라졌는지"가
+  이벤트에 남지 않는다. 통계 필드가 `None`인 채로 실리며, 위 규칙 덕분에 키 집합은
+  통과 후보와 동일하다.
+- `schema_version`은 `contract_version`으로 **대체한다.** 두 버전 필드를 병존시키면
+  어느 쪽이 정본인지가 다시 갈린다. 5단계 작업에 이 교체를 명시한다.
 
 ### D7. Issue Form을 엔진 정책에 정렬한다
 
@@ -221,7 +303,7 @@ Issue Form heading 문자열이 이 패키지에 남지 않게 한다.
 | 2 | 증거 계약 지표 확장 (D3 전반부) | 1 | `promotion_evidence.py`, `train.py`, `evaluate.py` | 기존 `roc_auc` receipt 역직렬화 회귀 + 신규 지표 receipt 생산 테스트 |
 | 3 | 판정 엔진 확장 (D2, D3 후반부) | 2 | `experiment_evaluation.py` | 방향별 정규화·선언 임계·새 reason code 단위 테스트 |
 | 4 | 결과 계약·투영 (D6) | 3 | `paired_experiment.py` | 투영 ↔ 결과 모델 동등성 테스트 |
-| 5 | 경로 A 강등 (D8, D9) | 4 | `tools/auto_research_issue_branch.py` | 시나리오 1 회귀 테스트 |
+| 5 | 경로 A 강등 (D8, D9) + `schema_version`→`contract_version` 교체 | 4 | `tools/auto_research_issue_branch.py` | 시나리오 1 회귀 테스트 |
 | 6 | 경로 B 강등 (D9) | 4 | `promotion_gate.py`, `tests/test_experiment_promotion_gate.py` | 시나리오 5 회귀 테스트 |
 | 7 | 이벤트 통합 (D5) | 5, 6 | 워크플로 2건 | 두 워크플로 소비 필드 집합 동일성 테스트 |
 | 8 | Issue Form 정렬 + 분기 시점 검증·고지 (D4, D7) | 3, 5 | Issue Form, fixture, `auto-research-issue-branch.yml` | 폼 ↔ `_HEADING_NAMES` ↔ fixture drift 테스트 |
@@ -245,8 +327,18 @@ Issue Form heading 문자열이 이 패키지에 남지 않게 한다.
       `tests/fixtures/auto_research_issue_form_rendered.md`를 입력으로 쓴다
 - [ ] 두 워크플로가 소비하는 payload 필드 집합이 동일하고, 그 사실을 검증하는
       테스트가 있다
+- [ ] `None` 값을 가진 선택 필드가 키로 실린 payload가 거부되지 않고, `exclude_none`으로
+      키가 빠진 payload는 `missing candidate keys`로 거부된다
+- [ ] `workflow_call`/`workflow_dispatch` 진입점이 단일 JSON 문자열 입력을 쓰며, 평면
+      필드 입력이 남아 있지 않다
+- [ ] 결과의 `declared_minimum_primary_delta`가 이슈 본문에서 파생된 값과 일치하는지
+      게이트가 확인한다
 - [ ] 기존 `roc_auc` receipt가 새 스키마에서 그대로 역직렬화되고 sha256이 변하지
       않는다
+- [ ] **v1 시절에 발행된 plan receipt가 v2 코드에서 재검증을 통과한다.** 위 항목은
+      지표 확장만 검증하므로 정책 버전 인상 경로를 잡지 못한다. `plan_id` 재계산이
+      깨지지 않음을 별도로 확인한다
+- [ ] `Literal["promotion-policy-v1"]` 네 곳이 v1·v2를 모두 받아들이도록 갱신되었다
 - [ ] `MINIMIZE` 지표의 delta 정규화가 `eligible` 조건을 방향 무관하게 유지한다
 - [ ] Issue Form 기본값 그대로 발행한 이슈가 자동 승격 경로를 끝까지 통과하거나,
       통과할 수 없다면 브랜치 생성 시점에 이슈 코멘트로 고지된다
