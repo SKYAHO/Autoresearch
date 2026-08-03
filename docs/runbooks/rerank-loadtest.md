@@ -90,6 +90,13 @@ GitHub Actions artifact `rerank-loadtest-${benchmark_label}-c${candidate_count}-
   `prometheus-${query_name}-vu-${vus}.json`입니다. `phase_p50`, `phase_p95`,
   `outcome_rate`, `max_in_flight`, `cpu_seconds`, `rss`, `cfs_throttling` query와
   query time range를 함께 보관합니다.
+- Prometheus 응답은 HTTP/API `status=success`만으로 유효하다고 보지 않습니다.
+  필수 query의 `data.result`가 비어 있으면 workflow를 실패시키며, 빈 series를
+  0이나 정상 측정값으로 보고하지 않습니다.
+- `cfs_throttling`은 GKE cAdvisor의
+  `container_cpu_cfs_throttled_periods_total / container_cpu_cfs_periods_total`
+  5분 rate 비율입니다. 결과는 0~1 비율로 기록하며, 두 metric series가 없으면
+  `N/A`가 아니라 snapshot 단계 실패로 처리합니다.
 - `SHA256SUMS`와 Job/Pod describe·log 및 Prometheus reader diagnostic이 있으면 함께
   보관합니다. artifact URL과 각 파일 또는 archive의 SHA-256을 보고서에 기록합니다.
 
