@@ -21,8 +21,10 @@ RUN python -m pip install --no-cache-dir --no-deps -r requirements.lock \
     && rm requirements.lock
 
 # gh CLI — 이슈 발행에 사용한다(#516). 버전을 고정하지 않으면 stderr 문자열 기반
-# 오류 분류(github_issues.py)가 버전 변경으로 조용히 깨진다.
-ARG GH_VERSION=2.97.0
+# 오류 분류(github_issues.py)가 버전 변경으로 조용히 깨진다. `ARG`가 아니라 `ENV`로
+# 두어 `--build-arg`로 override할 수 없게 한다 — override 가능하면 CI가 검증하는
+# 버전(ci.yml에 하드코딩된 2.97.0)과 실제 빌드 결과가 조용히 갈릴 수 있다.
+ENV GH_VERSION=2.97.0
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl; \

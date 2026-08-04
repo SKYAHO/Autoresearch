@@ -1,6 +1,6 @@
 # 가설 수신부터 `[AR]` 이슈 발행까지 (#516)
 
-- **상태**: Proposed
+- **상태**: Accepted
 - **날짜**: 2026-08-04
 - **이슈**: #516
 - **선행 계약**: `.github/ISSUE_TEMPLATE/auto_research.yml`(필드 정본),
@@ -95,6 +95,12 @@ Issue Form 필수 18개를 다음과 같이 나눈다.
 **서버가 실행 설정 9개를 갖는 이유는 정확성이다.** 이 묶음에는 정확 문자열 옵션
 5개(`비교 대상` 3, `스냅샷 재사용` 2)와 정책값이 모두 들어 있다. 창작 대상이 아니라
 참조 대상이다.
+
+**`대상 데이터 · 기간`은 고정 문자열이 아니라 발행 시점에 계산한다.** `issue_authoring.
+training_window()`가 요청이 들어온 시각을 KST 날짜로 변환해 `[어제 - 29일, 어제]`
+30일 구간을 매번 새로 만든다(`docs/specs/2026-07-24-action-log-slice-semantics.md`의
+`dt BETWEEN P-30 AND P-1` 소비 계약을 따른다). 서버가 시계를 직접 읽는 대신 날짜를
+인자로 받아 테스트가 실행 날짜에 흔들리지 않게 한다.
 
 ## 결정 3 — 시드는 `42..71` 고정이다
 
@@ -240,9 +246,13 @@ POST /experiments/{experiment_id}/issue
 
 | 순서 | 검사 | 결과 |
 | --- | --- | --- |
-| 1 | `Experiment.issue_number`가 이미 있나 | 발행하지 않고 기존 값 반환 (200) |
+| 1 | `Experiment.issue_number`가 이미 있나 | 발행하지 않고 기존 값 반환 (201) |
 | 2 | 일일 발행 상한 초과했나 | 429 |
 | 3 | `gh` 성공 후 DB 쓰기 실패 | 본문 marker로 GitHub에서 기존 이슈 조회 |
+
+**1번의 재호출도 201을 반환한다.** 새로 발행했는지 기존 값을 반환했는지로 상태 코드를
+가르지 않는다 — 호출자 입장에서는 "이 endpoint를 부르면 이슈 좌표를 받는다"만 참이면
+되고, 항상 201로 두는 편이 분기 없이 단순하다.
 
 3번이 가장 까다롭다. `gh issue create`에는 멱등성이 없으므로, 이슈는 만들어졌는데 응답이
 소실되면 재시도가 중복 이슈를 만든다. 본문 첫 줄에 다음 marker를 넣어 재시도 시
@@ -295,28 +305,40 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
 
 ### 스키마
 
-`Experiment`에 세 컬럼을 1급으로 추가한다.
+`Experiment`에 다섯 컬럼을 1급으로 추가한다.
 
 | 컬럼 | 타입 | 채워지는 시점 |
 | --- | --- | --- |
 | `issue_body` | `Text` | 본문 생성 직후 (발행 **전**) |
+| `issue_title` | `String(256)` | 본문 생성 직후, `issue_body`와 같은 commit (발행 **전**) |
 | `issue_number` | `Integer` | 발행 성공 후 |
 | `issue_branch` | `String` | 발행 성공 후 |
+| `issue_published_at` | `DateTime` | 발행 성공 후 |
 
 - **`issue_body`가 발행보다 먼저 커밋되는 것이 핵심이다.** §결정 7의 재시도 결정성이
   여기에 의존한다. 길이 제약을 두지 않는다 — `Text`이고, 조립된 본문은 fixture 기준
   약 1,300자다.
+- **`issue_title`을 `issue_body`와 별도로 저장한다.** 저장하지 않으면 재발행 시 본문에서
+  제목을 복원해야 하는데, 그 복원 규칙(예: `### 연구 가설` 다음 줄 요약)이 LLM이 낸
+  실제 `title`과 달라 재발행마다 제목·브랜치 이름이 흔들린다. 상한을 GitHub 이슈 제목
+  상한(256자)과 같게 둔다 — `LlmIssueFields.title`은 120자, `hypothesis`(fallback)는
+  8192자까지 허용해 그보다 넉넉한 값이 저장으로 흘러들 수 있기 때문이다.
+- **`issue_published_at`은 `updated_at`을 대신하지 못한다.** `updated_at`은
+  `onupdate=func.now()`라 상태 전이·metric 기록 등 발행과 무관한 UPDATE에도 갱신되므로,
+  며칠 전 발행된 실험이 오늘 수정되면 "오늘 발행"으로 잘못 집계되어 일일 상한 질의가
+  왜곡된다.
 - `ExperimentMetadata`로 대신할 수 없다. `key` `String(64)` / `value` `Text`라 형식이
   보장되지 않고, 더 큰 문제로 **metadata는 `create_experiment()`가 생성 시 1회만
-  기록하며 갱신 endpoint가 없다.** 세 값 모두 생성 이후에 확정된다.
+  기록하며 갱신 endpoint가 없다.** 다섯 값 모두 생성 이후에 확정된다.
 - 기존 revision이 `0001_experiment_tables` 하나뿐이므로
   `down_revision = "0001_experiment_tables"`로 연결하고 `upgrade()`/`downgrade()`를
-  대칭으로 작성한다. 세 컬럼을 **한 revision**에 넣는다.
+  대칭으로 작성한다. 다섯 컬럼을 **한 revision**에 넣는다.
 - 기존 행이 있으므로 **전부 nullable**로 추가한다.
 - `issue_number`에 index를 두되 **unique 제약은 두지 않는다** — 이슈 1건이 실험 N건을
   가질 수 있다(대시보드 #338이 주 소비처다).
 - `ExperimentResponse`에는 `issue_number` / `issue_branch`만 노출한다. `issue_body`는
-  이슈 본문으로 이미 공개되어 있고 목록 응답을 크게 만들 뿐이다.
+  이슈 본문으로 이미 공개되어 있고 목록 응답을 크게 만들 뿐이다. `issue_title`은 재발행
+  전용 내부 값이고, `issue_published_at`은 일일 상한 질의 전용이라 둘 다 노출하지 않는다.
 - `models.py` 모듈 docstring이 migration과의 동일성을 단언하므로 같은 커밋에서 갱신한다.
 
 ## 실패 처리
@@ -343,8 +365,10 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
 | --- | --- |
 | `ORCH_GITHUB_TOKEN` | `gh`에 `GH_TOKEN`으로 전달. `issues: write` 전용 |
 | `ORCH_GITHUB_REPOSITORY` | `owner/repo`. 발행 대상 고정과 URL 검증 |
-| `ORCH_ISSUE_DAILY_LIMIT` | 일일 발행 상한 |
 | `ORCH_GH_TIMEOUT_SEC` | `gh` 서브프로세스 상한 |
+| `ORCH_ISSUE_DAILY_LIMIT` | 일일 발행 상한 |
+| `ORCH_EXPERIMENT_DATASET_SOURCE` | `데이터셋 스냅샷` heading에 쓰는 서버 소유 데이터 출처 좌표 |
+| `ORCH_EXPERIMENT_TRAINING_CONFIG_REF` | `학습 설정 참조` heading에 쓰는 서버 소유 학습 설정 좌표 |
 
 `load_settings()`가 기존 토큰들과 같은 방식으로 읽고, `.env.example`에 기재한다.
 필수 환경 변수를 도입하므로 같은 PR에서 `README.md`와
