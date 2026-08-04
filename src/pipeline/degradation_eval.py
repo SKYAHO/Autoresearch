@@ -14,7 +14,10 @@
 "2개 연속 유효 관측치에서 degraded"인 첫 시점을 찾는다(``detect_degradation_point``).
 열화 판정의 기준선은 ``per_day`` 중 첫 valid 관측치(``resolve_forward_baseline``)이며,
 cutoff 학습의 랜덤 val 지표가 아니다 — 산출 경로가 달라 약 4%p 오프셋이 있어서다
-(#485 §4.3이 선행 spec §2.4를 부분 supersede).
+(#485 §4.3이 선행 spec §2.4를 부분 supersede). 전체·최근 구간 지표를 나눠 내고
+(``summarize_valid_roc_auc``), 관측 결과에서 재학습 시점을 유도하며
+(``derive_hard_retrain_limit`` — 측정과 정책을 분리해 결과 payload에 얹지 않는다),
+통계 추정 없이 멈춰야 하는 상태를 판정한다(``evaluate_temporal_hold``).
 ``run_rolling_origin``이 cutoff 학습 1회 + 평가일 순회를 오케스트레이션하고, 각 실행의
 산출물을 ``run_root`` 아래 조건·평가일별로 격리해 이전 실행을 덮어쓰지 않는다(fail-closed).
 
@@ -498,6 +501,57 @@ def derive_hard_retrain_limit(
             limit_days=0, reason="safety_margin_exceeds_degradation_point"
         )
     return HardRetrainLimit(limit_days=limit_days)
+
+
+# ============================================================================
+# fail-closed `hold` 종료 조건 (#485 §6) — 통계 추정 없이 멈춰야 하는 상태.
+# `condition_mismatch`(두 조건의 cutoff·window·horizon·snapshot·split·seed 불일치)는
+# 두 조건 비교가 전제라 `#514` 소관이며 여기서 다루지 않는다.
+# ============================================================================
+
+
+class TemporalHoldReason(str, Enum):
+    """temporal 평가를 `hold`로 끝내야 하는 사유(#485 §6)."""
+
+    TEMPORAL_EVIDENCE_MISSING = "temporal_evidence_missing"
+    TEMPORAL_ORDERING_VIOLATED = "temporal_ordering_violated"
+    TEMPORAL_HORIZON_INCOMPLETE = "temporal_horizon_incomplete"
+    TEMPORAL_INSUFFICIENT_VALID_POINTS = "temporal_insufficient_valid_points"
+
+
+def evaluate_temporal_hold(
+    result: RollingOriginResult | None,
+) -> TemporalHoldReason | None:
+    """통계 추정 없이 멈춰야 하는 상태인지 판정한다(#485 §6).
+
+    Returns:
+        ``hold`` 사유. ``None``이면 hold가 아니다(정상 진행).
+
+    판정 순서는 **evidence 부재 → 시간 순서 위반 → 미래 구간 누락 → 데이터 부족**이다.
+    더 근본적인 결손을 먼저 보고한다 — 선행 spec §2.3의 ``classify_evaluation_day``가
+    "행 없음 → 행 부족 → 단일 클래스" 순으로 가르는 것과 같은 원칙이다. 예를 들어
+    구간이 잘려서(``horizon_incomplete``) 표본이 모자란(``insufficient_valid_points``)
+    경우, 원인인 앞쪽을 보고해야 운영자가 고칠 곳을 안다.
+    """
+    if result is None:
+        return TemporalHoldReason.TEMPORAL_EVIDENCE_MISSING
+
+    # 학습 구간이 cutoff 당일 이후까지 뻗으면 학습이 평가 구간을 본 것이다.
+    # 선행 spec §2.1이 events_end_date = cutoff - 1일로 고정하므로 정상 경로에서는
+    # 나올 수 없다 — 호출부가 결과를 손으로 만들어 넣는 경우를 막는 심층 방어다
+    # (#478의 "producer가 보낸 숫자를 믿지 않는다"와 같은 결).
+    cutoff = datetime.strptime(result.cutoff_date, _DATE_FORMAT).date()
+    if result.training_snapshot_manifest.events_end_date >= cutoff:
+        return TemporalHoldReason.TEMPORAL_ORDERING_VIOLATED
+
+    if len(result.per_day) < result.horizon_days:
+        return TemporalHoldReason.TEMPORAL_HORIZON_INCOMPLETE
+
+    valid_days = sum(1 for day in result.per_day if day.status == EvaluationStatus.VALID)
+    if valid_days < 2:
+        return TemporalHoldReason.TEMPORAL_INSUFFICIENT_VALID_POINTS
+
+    return None
 
 
 # ============================================================================
