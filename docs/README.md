@@ -80,8 +80,8 @@
 - [Plan — Agent Orchestration PR 사전 병합 강화](archive/plans/2026-07-31-agent-orchestration-premerge-hardening.md) (구현 완료)
 - [Spec — Agent Orchestration 실험 워크벤치 v0](archive/specs/2026-08-01-agent-orchestration-experiment-workbench-v0.md) (구현 완료)
 - [Plan — Agent Orchestration 실험 워크벤치 v0](archive/plans/2026-08-01-agent-orchestration-experiment-workbench-v0.md) (구현 완료)
-- [Spec — 실험 Step 추적 v0](specs/2026-08-04-experiment-step-tracking-v0.md) — 에이전트 진행 상황 실시간 관찰 계약 (#518, PR 리뷰 중)
-- [Plan — 실험 Step 추적 v0](plans/2026-08-04-experiment-step-tracking-v0.md) (#518, 머지 후 archive로)
+- [Spec — 실험 Step 추적 v0](specs/2026-08-04-experiment-step-tracking-v0.md) — 에이전트 진행 상황 실시간 관찰 계약 (#518 구현 완료, 계약은 유효)
+- [Plan — 실험 Step 추적 v0](archive/plans/2026-08-04-experiment-step-tracking-v0.md) (구현 완료·아카이브)
 - [Spec — Agent Orchestration `/chat` API 계약](specs/2026-08-01-agent-orchestration-chat-api-contract.md) — 내부 호출 서비스의 요청·응답·오류·저장 의미 정본
 - `agent_orchestration/` (FastAPI + Codex CLI/OpenAI + PostgreSQL 실험 API)
 - [Spec — Agent Orchestration GKE 내부 배포](specs/2026-07-30-agent-orchestration-gke-internal-deployment.md)
