@@ -9,11 +9,14 @@ SQLAlchemy 2.x declarative model로 제공한다. 단, `Experiment.updated_at`�
 DB 트리거가 아니다 — migration에는 대응하는 트리거가 없어 `psql` 직접 UPDATE 등
 ORM을 우회하는 쓰기에는 적용되지 않는다.
 
-`Experiment.issue_body`/`issue_number`/`issue_branch`/`issue_published_at`은
+`Experiment.issue_body`/`issue_title`/`issue_number`/`issue_branch`/`issue_published_at`은
 `0002_experiment_issue_lineage`
-revision이 nullable로 추가한 발행 lineage다. `issue_body`는 발행 **전**에, 나머지 셋은
-발행 성공 후에 채워진다. `issue_published_at`은 일일 발행 상한 질의 전용이며
-`ExperimentResponse`에 노출되지 않는다.
+revision이 nullable로 추가한 발행 lineage다. `issue_body`와 `issue_title`은 발행
+**전**에 같은 commit으로 채워지고, `issue_number`/`issue_branch`/`issue_published_at`은
+발행 성공 후에 채워진다. `issue_title`은 재발행 시 제목·브랜치 이름이 최초 발행과
+갈리지 않도록 본문에서 다시 파싱하지 않고 그대로 재사용하기 위한 값이며,
+`issue_published_at`은 일일 발행 상한 질의 전용이다. 둘 다 `ExperimentResponse`에
+노출되지 않는다.
 """
 
 from __future__ import annotations
@@ -108,6 +111,10 @@ class Experiment(Base):
     # 발행 전에 커밋되는 본문. 재시도가 LLM을 다시 부르지 않고 같은 본문으로 발행하게
     # 해 criteria_id/reproducibility_id가 흔들리지 않도록 한다(#516).
     issue_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # issue_body와 같은 commit에 저장되는 제목. 재발행 시 본문에서 다시 복원하지 않고
+    # 그대로 재사용해, 최초 발행과 재발행의 제목·브랜치 이름이 갈리지 않게 한다(#516).
+    # GitHub 이슈 제목 상한(256자)과 같게 둔다.
+    issue_title: Mapped[str | None] = mapped_column(String(256), nullable=True)
     issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     issue_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # 일일 발행 상한 질의 전용. `updated_at`은 `onupdate=func.now()`라 발행과 무관한

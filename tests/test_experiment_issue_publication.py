@@ -141,16 +141,77 @@ def test_publication_stores_body_before_creating_the_issue(
     assert result.issue_branch.startswith("exp/520-")
 
 
+def test_non_json_response_is_retried_once_then_succeeds(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LLM 호출은 부작용이 없어 재시도가 안전하다 — 첫 응답이 산문이어도 1회 재시도로 복구한다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
+    responses = iter(["이것은 산문입니다.", LLM_RESPONSE])
+    calls: list[str] = []
+
+    async def generate(prompt: str) -> str:
+        calls.append(prompt)
+        return next(responses)
+
+    async def fake_create_issue(_settings, *, title, body, labels):
+        return IssueRef(number=523, url="https://github.com/SKYAHO/Autoresearch/issues/523")
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
+    )
+
+    result = asyncio.run(
+        publish_experiment_issue(
+            db_session, _Settings(), experiment.id,
+            IssuePublicationRequest(), generate=generate,
+        )
+    )
+
+    assert result.issue_number == 523
+    assert len(calls) == 2, "1회만 재시도해야 한다"
+
+
+def test_non_json_response_fails_after_one_retry(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """두 번 다 산문이면 재시도를 소진하고 실패해야 한다 — 무한 재시도는 안 된다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
+    calls: list[str] = []
+
+    async def generate(prompt: str) -> str:
+        calls.append(prompt)
+        return "이것은 산문입니다."
+
+    async def unexpected_create_issue(_settings, *, title, body, labels):
+        raise AssertionError("본문 조립이 실패했으면 발행을 시도하면 안 된다")
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.create_issue", unexpected_create_issue
+    )
+
+    with pytest.raises(ValueError):
+        asyncio.run(
+            publish_experiment_issue(
+                db_session, _Settings(), experiment.id,
+                IssuePublicationRequest(), generate=generate,
+            )
+        )
+
+    assert len(calls) == 2, "1회 재시도 후에는 더 부르지 않아야 한다"
+
+
 def test_retry_after_publish_failure_reuses_the_stored_body(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """LLM은 비결정적이라 재생성하면 실험 정의가 바뀐다. 재호출은 같은 본문을 써야 한다."""
+    """LLM은 비결정적이라 재생성하면 실험 정의가 바뀐다. 재호출은 같은 본문·제목을 써야 한다."""
     experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
     recorder = _Recorder()
     attempts: list[str] = []
+    titles: list[str] = []
 
     async def failing_create_issue(_settings, *, title, body, labels):
         attempts.append(body)
+        titles.append(title)
         raise GitHubIssueError("network_error")
 
     monkeypatch.setattr(
@@ -166,6 +227,7 @@ def test_retry_after_publish_failure_reuses_the_stored_body(
 
     async def succeeding_create_issue(_settings, *, title, body, labels):
         attempts.append(body)
+        titles.append(title)
         return IssueRef(number=521, url="https://github.com/SKYAHO/Autoresearch/issues/521")
 
     monkeypatch.setattr(
@@ -180,6 +242,7 @@ def test_retry_after_publish_failure_reuses_the_stored_body(
 
     assert len(recorder.prompts) == 1, "LLM을 다시 부르면 안 된다"
     assert attempts[0] == attempts[1], "같은 본문으로 재발행해야 한다"
+    assert titles[0] == titles[1], "같은 제목으로 재발행해야 한다 — 본문에서 복원하면 갈릴 수 있다"
 
 
 def test_second_call_after_success_does_not_publish_again(

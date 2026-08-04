@@ -32,6 +32,7 @@ from agent_orchestration.app.experiments.github_issues import (
     find_issue_by_marker,
 )
 from agent_orchestration.app.experiments.issue_authoring import (
+    LlmIssueFields,
     build_issue_body,
     build_issue_title,
     build_prompt,
@@ -472,6 +473,22 @@ def promote_experiment(
 TRIGGER_LABEL = "auto-experiment"
 
 
+def _branch_slug(title: str) -> str:
+    """`_branch_name_for`가 쓰는 slug 계산. 이슈 번호와 무관해 발행 전에 미리 검증할 수 있다.
+
+    정본(`tools/auto_research_issue_branch.py`의 `branch_name_for()`)은 prefix를 떼고
+    남은 것이 공백뿐이면 거부한다. 이 가드가 없으면 그럴듯한 브랜치 이름을 만들어 내며
+    정본과 갈린다.
+    """
+    stripped = re.sub(r"^\s*\[AR\]\s*", "", title, flags=re.IGNORECASE)
+    if not stripped.strip():
+        raise ValueError("issue title must not be empty after the prefix")
+    slug = re.sub(r"[^a-z0-9]+", "-", stripped.lower()).strip("-")
+    if not slug:
+        slug = "issue-" + hashlib.sha256(stripped.encode("utf-8")).hexdigest()[:12]
+    return slug
+
+
 def _branch_name_for(issue_number: int, title: str) -> str:
     """워크플로가 만들 브랜치 이름을 응답에 미리 싣는다.
 
@@ -480,15 +497,25 @@ def _branch_name_for(issue_number: int, title: str) -> str:
     실제 브랜치는 워크플로가 만든다. 동일성은 `tests/test_experiment_issue_publication.py`의
     `test_branch_name_matches_the_workflow_rule`이 고정한다.
     """
-    stripped = re.sub(r"^\s*\[AR\]\s*", "", title, flags=re.IGNORECASE)
-    # 정본(`branch_name_for`)은 prefix를 떼고 남은 것이 공백뿐이면 거부한다. 이 가드가
-    # 없으면 그럴듯한 브랜치 이름을 만들어 내며 정본과 갈린다.
-    if not stripped.strip():
-        raise ValueError("issue title must not be empty after the prefix")
-    slug = re.sub(r"[^a-z0-9]+", "-", stripped.lower()).strip("-")
-    if not slug:
-        slug = "issue-" + hashlib.sha256(stripped.encode("utf-8")).hexdigest()[:12]
-    return f"exp/{issue_number}-{slug}"
+    return f"exp/{issue_number}-{_branch_slug(title)}"
+
+
+async def _generate_fields_with_retry(
+    generate: Callable[[str], Awaitable[str]], hypothesis: str
+) -> LlmIssueFields:
+    """LLM 응답이 JSON도 형식도 아니면 1회만 재시도한다.
+
+    LLM 호출은 부작용이 없어 재시도가 안전하다(spec 실패 처리 표 "LLM 응답이 JSON이
+    아님 → 1회 재시도 후 실패"). 두 번째도 실패하면 `parse_llm_fields`의 `ValueError`를
+    그대로 올린다.
+    """
+    prompt = build_prompt(hypothesis)
+    response = await generate(prompt)
+    try:
+        return parse_llm_fields(response)
+    except ValueError:
+        response = await generate(prompt)
+        return parse_llm_fields(response)
 
 
 async def publish_experiment_issue(
@@ -528,8 +555,7 @@ async def publish_experiment_issue(
 
     # ① 본문을 만들고 발행 전에 커밋한다. 이 커밋이 재시도 결정성의 근거다.
     if experiment.issue_body is None or request.regenerate:
-        response = await generate(build_prompt(experiment.hypothesis))
-        fields = parse_llm_fields(response)
+        fields = await _generate_fields_with_retry(generate, experiment.hypothesis)
         body = build_issue_body(
             experiment.id,
             fields,
@@ -546,13 +572,22 @@ async def publish_experiment_issue(
         # refresh는 새 SELECT를 던져 또 다른 autobegin을 열어 두므로 오히려 다음
         # 호출자의 `session.begin()`과 충돌한다.
         experiment.issue_body = body
+        # title도 같은 commit에 저장한다 — 저장하지 않으면 재발행 시 본문에서 제목을
+        # 복원해야 하고, 그 복원 규칙(첫 문장 요약)이 LLM이 낸 실제 title과 달라
+        # 재발행마다 제목·브랜치 이름이 흔들린다.
+        experiment.issue_title = title
         experiment.issue_branch = None
         session.commit()
     else:
         body = experiment.issue_body
-        title = _title_from_body(body, experiment.hypothesis)
+        title = experiment.issue_title
 
-    # ② 발행. gh 성공 후 응답이 소실된 경우를 위해 marker를 먼저 조회한다 — 멱등성
+    # ② 발행. 브랜치 이름의 slug는 이슈 번호와 무관하므로 발행 전에 미리 검증한다 —
+    # 여기서 실패하면 아직 이슈가 열리지 않았으므로 "이슈는 열렸지만 DB에 기록되지
+    # 않는" 상태가 생기지 않는다.
+    slug = _branch_slug(title)
+
+    # gh 성공 후 응답이 소실된 경우를 위해 marker를 먼저 조회한다 — 멱등성
     # 3중 방어의 3번째 층이다. 이 조회가 실패하면 "발행되지 않았다"가 아니라
     # "발행됐는지 알 수 없다"이므로, 예외를 삼키고 create_issue로 넘어가면 이 층이
     # 없는 것과 같아져 중복 이슈를 만들 수 있다. 그래서 예외를 그대로 올려 요청을
@@ -564,13 +599,7 @@ async def publish_experiment_issue(
     )
 
     experiment.issue_number = reference.number
-    experiment.issue_branch = _branch_name_for(reference.number, title)
+    experiment.issue_branch = f"exp/{reference.number}-{slug}"
     experiment.issue_published_at = datetime.now(UTC)
     session.commit()
     return experiment
-
-
-def _title_from_body(body: str, fallback: str) -> str:
-    """저장된 본문으로 재발행할 때 제목을 복원한다."""
-    match = re.search(r"^### 연구 가설\n(.+)$", body, re.MULTILINE)
-    return f"[AR] {match.group(1).strip() if match else fallback.strip()}"
