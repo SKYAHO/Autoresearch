@@ -246,8 +246,17 @@ id ASC` 순으로 정렬하며 동일 timestamp에서는 UUID `id`를 tie-breake
 워크벤치는 기존 1초 polling에 다음 호출을 추가한다.
 
 ```text
-GET /experiments/{id}/steps?after_id=<last_step_id>
+GET /experiments/{id}/steps
 ```
+
+**Step만 cursor를 쓰지 않고 매번 전체를 다시 읽는다.** Event·Log는 append-only라 `after_id`
+뒤의 새 row만 받으면 충분하지만, Step은 PATCH로 갱신되는 mutable 리소스다. cursor는
+`after_id` **뒤의** row만 돌려주므로, 이미 받아 cursor가 지나간 Step이 `STARTED`에서
+`COMPLETED`로 바뀌어도 그 변화를 영원히 관측하지 못한다 — 진행 표시가 목적인 화면에서
+스텝이 멈춘 것처럼 보인다.
+
+전체 재조회의 비용은 `limit` 상한(100)으로 묶인다. 실험당 스텝 수가 100을 넘으면 이후
+스텝이 표시되지 않으므로, 그때는 `updated_after` 같은 별도 필터를 도입한다(v0 범위 밖).
 
 - 프론트는 `step_kind`로 렌더 경로를 결정하고 `step_type`은 라벨로만 표시한다
 - 알 수 없는 `step_kind`는 발생할 수 없다(서버 CHECK로 강제). 알 수 없는 `step_type`은

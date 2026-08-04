@@ -21,7 +21,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from agent_orchestration.ui.models import Event, Experiment, Log
+from agent_orchestration.ui.models import Event, Experiment, Log, Step
 
 
 ParsedModel = TypeVar("ParsedModel")
@@ -131,6 +131,23 @@ class ExperimentClient:
         cursor = page.get("next_cursor")
         return (
             [self._parse_model(item, Log.from_json) for item in items],
+            str(cursor) if cursor is not None else None,
+        )
+
+    def get_steps(
+        self,
+        experiment_id: str,
+        after_id: str | None,
+    ) -> tuple[list[Step], str | None]:
+        """cursor 이후 Step과 다음 cursor를 조회한다."""
+        path = self._cursor_path(f"/experiments/{experiment_id}/steps", after_id)
+        page = self._object(self._request_json("GET", path))
+        items = page.get("items")
+        if not isinstance(items, list):
+            raise ApiUnavailableError("Experiment API returned an invalid step response.")
+        cursor = page.get("next_cursor")
+        return (
+            [self._parse_model(item, Step.from_json) for item in items],
             str(cursor) if cursor is not None else None,
         )
 

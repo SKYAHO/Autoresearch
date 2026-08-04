@@ -20,7 +20,14 @@ from datetime import datetime
 
 import streamlit as st
 
-from agent_orchestration.ui.models import Event, Experiment, status_label
+from agent_orchestration.ui.models import (
+    Event,
+    Experiment,
+    Step,
+    status_label,
+    step_kind_label,
+    step_status_color,
+)
 from agent_orchestration.ui.state import WorkbenchState
 from agent_orchestration.ui.styles import status_badge
 
@@ -137,8 +144,35 @@ def _render_timeline(events: Sequence[Event], current_status: str) -> None:
             st.write(event.reason)
 
 
+def _render_steps(steps: Sequence[Step]) -> None:
+    """에이전트가 지금 무엇을 하고 있는지 단계별로 표시한다."""
+    if not steps:
+        st.caption("아직 기록된 작업 단계가 없습니다.")
+        return
+    if len(steps) > 30:
+        st.caption(f"최근 30개 단계를 표시합니다. 전체 {len(steps)}개")
+    for step in steps[-30:]:
+        color = step_status_color(step.status)
+        st.markdown(
+            f"<span style='color:{color};font-weight:600'>&#9679; "
+            f"{step_kind_label(step.step_kind)}</span> "
+            f"<span style='opacity:0.7'>{step.step_type}</span> "
+            f"<span style='opacity:0.5'>· {format_time(step.updated_at)}</span>",
+            unsafe_allow_html=True,
+        )
+        # message가 없으면 display_line이 kind·type 라벨로 대신하므로 표시가 비지 않는다.
+        st.write(step.display_line)
+        if step.target:
+            with st.expander("상세", expanded=False):
+                st.json(step.target)
+
+
 def _render_tabs(state: WorkbenchState) -> None:
-    results_tab, events_tab, logs_tab = st.tabs(["결과", "이벤트", "원본 로그"])
+    progress_tab, results_tab, events_tab, logs_tab = st.tabs(
+        ["진행 단계", "결과", "이벤트", "원본 로그"]
+    )
+    with progress_tab:
+        _render_steps(state.steps)
     with results_tab:
         _render_metrics(state.experiment.metric_summary if state.experiment else None)
     with events_tab:
