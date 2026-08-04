@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T06:36:31Z",
+  "generated_at": "2026-08-04T06:37:34Z",
   "reports": [
+    {
+      "number": 517,
+      "title": "fix: 객체 저장소 action log publish에서 staging 경유 제거",
+      "author": "bbungjun",
+      "merged_at": "2026-08-04T06:37:23Z",
+      "summary_ko": [
+        "Action Log의 GCS 게시 임시 객체 생성 위치를 파티션 내부에서 외부 공용 공간(_publish_staging/)으로 변경했습니다.",
+        "임시 객체 삭제 권한이 없어 파일이 남아도 적재 파티션이 오염되지 않아 데이터 중복 적재 사고를 방지합니다.",
+        "네트워크 업로드 중단 시 기존 정상 파일(last-known-good)을 보존하도록 실패 격리 및 테스트를 보강했습니다."
+      ],
+      "report_url": "pr/517/"
+    },
     {
       "number": 513,
       "title": "feat: Streamlit UI 이미지 릴리스 추가",
