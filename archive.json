@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T08:45:57Z",
+  "generated_at": "2026-08-04T08:49:31Z",
   "reports": [
+    {
+      "number": 527,
+      "title": "feat: temporal signal을 #425 다중 신호 판정 스키마에 연결 (#485 Task 4)",
+      "author": "waieiches",
+      "merged_at": "2026-08-04T08:49:13Z",
+      "summary_ko": [
+        "시간축 열화 관측 결과를 신뢰도 및 방향성 신호로 요약하는 TemporalSignal 스키마를 실험 평가 산출물에 연동하였습니다.",
+        "판정 엔진이 머신러닝 라이브러리에 의존하지 않도록 직접 모듈 참조 대신 원시값 추출 함수 기반 전달 구조를 적용하였습니다.",
+        "관련 스펙 문서의 블로커 해제 근거 및 스키마 부착 안을 확정하고 신규 단위 테스트 13건을 추가하였습니다."
+      ],
+      "report_url": "pr/527/"
+    },
     {
       "number": 526,
       "title": "feat: 실험 Step 추적 API와 진행 단계 표시",
