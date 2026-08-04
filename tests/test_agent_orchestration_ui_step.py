@@ -13,10 +13,15 @@ from typing import Any
 import pytest
 
 from agent_orchestration.ui.models import Step, step_kind_label, step_status_color
+from agent_orchestration.ui.client import (
+    STEP_PAGE_BUDGET,
+    STEP_PAGE_SIZE,
+    ExperimentClient,
+)
 from agent_orchestration.ui.state import (
     WorkbenchState,
-    append_step_page,
     clear_activity_cache,
+    merge_steps,
     select_experiment,
 )
 
@@ -102,61 +107,128 @@ def test_step_requires_timezone_aware_timestamp() -> None:
         _step(updated_at="2026-08-04T00:00:00")
 
 
-def test_append_step_page_upserts_updated_step() -> None:
+def test_merge_steps_upserts_updated_step() -> None:
     """Step은 mutable이므로 같은 id가 다시 오면 최신 값으로 교체한다.
 
     Event·Log는 append-only라 중복 id를 무시하지만, Step은 진행 상태가 바뀌어 다시 온다.
     무시하면 STARTED로 굳어 화면이 멈춘 것처럼 보인다.
     """
     state = WorkbenchState()
-    append_step_page(state, [_step(status="STARTED", message="조립 시작")], "cursor-1")
+    merge_steps(state, [_step(status="STARTED", message="조립 시작")])
 
-    append_step_page(state, [_step(status="COMPLETED", message="조립 완료")], "cursor-1")
+    merge_steps(state, [_step(status="COMPLETED", message="조립 완료")])
 
     assert len(state.steps) == 1
     assert state.steps[0].status == "COMPLETED"
     assert state.steps[0].message == "조립 완료"
 
 
-def test_append_step_page_keeps_position_of_existing_step() -> None:
+def test_merge_steps_keeps_position_of_existing_step() -> None:
     """갱신된 Step이 목록 끝으로 튀지 않는다."""
     state = WorkbenchState()
-    append_step_page(state, [_step(id="a"), _step(id="b")], None)
+    merge_steps(state, [_step(id="a"), _step(id="b")])
 
-    append_step_page(state, [_step(id="a", status="COMPLETED")], None)
+    merge_steps(state, [_step(id="a", status="COMPLETED")])
 
     assert [step.id for step in state.steps] == ["a", "b"]
     assert state.steps[0].status == "COMPLETED"
 
 
-def test_append_step_page_advances_cursor_only_when_present() -> None:
-    """next_cursor가 null이면 기존 cursor를 유지한다."""
-    state = WorkbenchState()
-    append_step_page(state, [_step()], "cursor-1")
+def test_workbench_state_has_no_step_cursor() -> None:
+    """Step cursor는 상태로 보관하지 않는다.
 
-    append_step_page(state, [], None)
-
-    assert state.step_cursor == "cursor-1"
+    갱신 사이에 cursor를 들고 가면 이미 받은 Step의 상태 변화를 관측하지 못한다. 필드를
+    두면 event_cursor·log_cursor와 나란히 보여 다음 사람이 자연스럽게 연결하게 되므로,
+    아예 두지 않는 것으로 그 경로를 막는다.
+    """
+    assert not hasattr(WorkbenchState(), "step_cursor")
 
 
 def test_select_experiment_clears_step_cache() -> None:
-    """실험을 바꾸면 Step 캐시와 cursor도 초기화된다."""
+    """실험을 바꾸면 Step 캐시도 초기화된다."""
     state = WorkbenchState()
     state.selected_id = "one"
-    append_step_page(state, [_step()], "cursor-1")
+    merge_steps(state, [_step()])
 
     select_experiment(state, "two")
 
     assert state.steps == []
-    assert state.step_cursor is None
 
 
 def test_clear_activity_cache_clears_steps() -> None:
     """cursor 복구 경로가 Step 캐시도 함께 비운다."""
     state = WorkbenchState()
-    append_step_page(state, [_step()], "cursor-1")
+    merge_steps(state, [_step()])
 
     clear_activity_cache(state)
 
     assert state.steps == []
-    assert state.step_cursor is None
+
+
+class _RecordingClient(ExperimentClient):
+    """`_request_json`만 대체해 요청 경로와 페이지 응답을 통제하는 client."""
+
+    def __init__(self, pages: list[list[dict[str, Any]]]) -> None:
+        super().__init__("http://127.0.0.1:8000", "token")
+        self._pages = pages
+        self.paths: list[str] = []
+
+    def _request_json(self, method: str, path: str, payload: object = None) -> Any:
+        self.paths.append(path)
+        items = self._pages[len(self.paths) - 1] if len(self.paths) <= len(self._pages) else []
+        return {
+            "items": items,
+            "next_cursor": items[-1]["id"] if items else None,
+        }
+
+
+def test_get_steps_follows_pages_until_short_page() -> None:
+    """한 번의 갱신 안에서 페이지를 이어 받아 최신 Step까지 가져온다.
+
+    상한 100으로 한 페이지만 읽으면 화면이 **가장 오래된 100개에 고정**되어, 진행 표시가
+    목적인 이 기능이 최신 스텝을 영원히 못 보여준다.
+    """
+    first = [_payload(id=f"s{index}") for index in range(STEP_PAGE_SIZE)]
+    second = [_payload(id="tail-1"), _payload(id="tail-2")]
+    client = _RecordingClient([first, second])
+
+    steps = client.get_steps("exp-1")
+
+    assert [step.id for step in steps] == [item["id"] for item in first + second]
+    assert len(client.paths) == 2
+    assert f"limit={STEP_PAGE_SIZE}" in client.paths[0]
+    assert "after_id=" not in client.paths[0]
+    assert f"after_id=s{STEP_PAGE_SIZE - 1}" in client.paths[1]
+
+
+def test_get_steps_stops_on_first_short_page() -> None:
+    """상한보다 적게 오면 더 요청하지 않는다."""
+    client = _RecordingClient([[_payload(id="only")]])
+
+    steps = client.get_steps("exp-1")
+
+    assert [step.id for step in steps] == ["only"]
+    assert len(client.paths) == 1
+
+
+def test_get_steps_stops_at_page_budget() -> None:
+    """페이지 예산을 넘겨 1초 polling이 무한 요청이 되지 않는다."""
+    pages = [
+        [_payload(id=f"p{page}-s{index}") for index in range(STEP_PAGE_SIZE)]
+        for page in range(STEP_PAGE_BUDGET + 5)
+    ]
+    client = _RecordingClient(pages)
+
+    client.get_steps("exp-1")
+
+    assert len(client.paths) == STEP_PAGE_BUDGET
+
+
+def test_get_steps_stops_when_cursor_does_not_advance() -> None:
+    """cursor가 전진하지 않으면 같은 페이지를 무한 반복하지 않는다."""
+    same_page = [_payload(id=f"s{index}") for index in range(STEP_PAGE_SIZE)]
+    client = _RecordingClient([same_page] * 5)
+
+    client.get_steps("exp-1")
+
+    assert len(client.paths) == 2

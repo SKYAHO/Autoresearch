@@ -42,6 +42,8 @@ def validate_step_target_size(value: dict | None) -> dict | None:
             f"target must be at most {MAX_STEP_TARGET_BYTES} bytes when serialized"
         )
     return value
+
+
 GeneralTransitionStatus = Literal[
     ExperimentStatus.RUNNING,
     ExperimentStatus.EVALUATING,

@@ -26,6 +26,13 @@ from agent_orchestration.ui.models import Event, Experiment, Log, Step
 
 ParsedModel = TypeVar("ParsedModel")
 
+# 서버 `GET /steps`의 limit 상한과 같은 값이다. 이보다 크게 보내면 422다.
+STEP_PAGE_SIZE = 100
+# 한 갱신에서 이어 받을 최대 페이지 수. 폭주한 실험이 1초 polling을 무한 요청으로 바꾸지
+# 않도록 두는 상한이며, 여기에 걸리면 가장 오래된 STEP_PAGE_SIZE * STEP_PAGE_BUDGET개까지만
+# 표시된다.
+STEP_PAGE_BUDGET = 20
+
 
 class ExperimentApiError(RuntimeError):
     """Experiment API 호출 실패의 공통 기반 예외."""
@@ -134,13 +141,35 @@ class ExperimentClient:
             str(cursor) if cursor is not None else None,
         )
 
-    def get_steps(
+    def get_steps(self, experiment_id: str) -> list[Step]:
+        """실험의 Step 전체를 페이지를 이어 붙여 조회한다.
+
+        **cursor를 한 번의 갱신 안에서만 쓴다.** Step은 PATCH로 갱신되는 mutable 리소스라,
+        cursor를 갱신과 갱신 사이에 들고 가면 이미 받은 Step의 상태 변화를 영원히 관측하지
+        못한다. 그래서 매 갱신은 항상 처음부터 다시 읽되, 한 번에 `limit` 상한만 오므로
+        cursor로 나머지 페이지를 이어 받는다 — 그러지 않으면 화면이 **가장 오래된 100개에
+        고정**되어 최신 진행 상황이 보이지 않는다.
+        """
+        steps: list[Step] = []
+        after_id: str | None = None
+        for _page in range(STEP_PAGE_BUDGET):
+            page_steps, next_cursor = self._get_step_page(experiment_id, after_id)
+            steps.extend(page_steps)
+            if len(page_steps) < STEP_PAGE_SIZE or next_cursor is None or next_cursor == after_id:
+                break
+            after_id = next_cursor
+        return steps
+
+    def _get_step_page(
         self,
         experiment_id: str,
         after_id: str | None,
     ) -> tuple[list[Step], str | None]:
-        """cursor 이후 Step과 다음 cursor를 조회한다."""
-        path = self._cursor_path(f"/experiments/{experiment_id}/steps", after_id)
+        """Step 한 페이지와 다음 cursor를 조회한다."""
+        query: dict[str, object] = {"limit": STEP_PAGE_SIZE}
+        if after_id is not None:
+            query["after_id"] = after_id
+        path = f"/experiments/{experiment_id}/steps?{urlencode(query)}"
         page = self._object(self._request_json("GET", path))
         items = page.get("items")
         if not isinstance(items, list):

@@ -14,6 +14,7 @@ HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, GitHub 이슈 생�
 
 from __future__ import annotations
 
+import html
 import json
 from collections.abc import Sequence
 
@@ -148,10 +149,13 @@ def _render_steps(steps: Sequence[Step]) -> None:
         st.caption(f"최근 30개 단계를 표시합니다. 전체 {len(steps)}개")
     for step in steps[-30:]:
         color = step_status_color(step.status)
+        # step_type은 에이전트가 정하는 자유 문자열이라 이 마크업에서 유일하게 신뢰 경계를
+        # 넘는다. step_kind는 서버 CHECK로 닫혀 있지만 라벨 폴백이 원문을 그대로 내보내므로
+        # 함께 escape한다. color는 닫힌 집합, format_time은 포맷된 timestamp라 안전하다.
         st.markdown(
             f"<span style='color:{color};font-weight:600'>&#9679; "
-            f"{step_kind_label(step.step_kind)}</span> "
-            f"<span style='opacity:0.7'>{step.step_type}</span> "
+            f"{html.escape(step_kind_label(step.step_kind))}</span> "
+            f"<span style='opacity:0.7'>{html.escape(step.step_type)}</span> "
             f"<span style='opacity:0.5'>· {format_time(step.updated_at)}</span>",
             unsafe_allow_html=True,
         )

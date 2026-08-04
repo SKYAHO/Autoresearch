@@ -40,7 +40,6 @@ class WorkbenchState:
     metadata: dict[str, str] = field(default_factory=dict)
     event_cursor: str | None = None
     log_cursor: str | None = None
-    step_cursor: str | None = None
     metadata_loaded_for: str | None = None
     terminal_status_observed: str | None = None
     terminal_refresh_complete: bool = False
@@ -61,7 +60,6 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.metadata.clear()
     state.event_cursor = None
     state.log_cursor = None
-    state.step_cursor = None
     state.metadata_loaded_for = None
     state.terminal_status_observed = None
     state.terminal_refresh_complete = False
@@ -92,15 +90,15 @@ def append_log_page(
         state.log_cursor = next_cursor
 
 
-def append_step_page(
-    state: WorkbenchState,
-    steps: list[Step],
-    next_cursor: str | None,
-) -> None:
-    """중복 없이 Step page를 누적하고, 이미 있는 Step은 갱신된 내용으로 교체한다.
+def merge_steps(state: WorkbenchState, steps: list[Step]) -> None:
+    """조회한 Step 전체를 기존 목록에 병합한다.
 
     Step은 Event·Log와 달리 **PATCH로 갱신되는 mutable 리소스**다. 같은 id가 다시 오면
     새 row가 아니라 진행 상태가 바뀐 것이므로, 무시하지 않고 최신 값으로 덮어쓴다.
+
+    **cursor를 상태로 들고 있지 않는다.** `after_id`는 cursor 뒤의 row만 돌려주므로,
+    갱신과 갱신 사이에 cursor를 유지하면 이미 받은 Step의 상태 변화를 관측하지 못한다.
+    페이지 넘김은 `ExperimentClient.get_steps()`가 한 번의 갱신 안에서만 처리한다.
     """
     by_id = {step.id: index for index, step in enumerate(state.steps)}
     for step in steps:
@@ -110,8 +108,6 @@ def append_step_page(
             state.steps.append(step)
         else:
             state.steps[existing] = step
-    if next_cursor is not None:
-        state.step_cursor = next_cursor
 
 
 def clear_activity_cache(state: WorkbenchState) -> None:
@@ -121,7 +117,6 @@ def clear_activity_cache(state: WorkbenchState) -> None:
     state.steps.clear()
     state.event_cursor = None
     state.log_cursor = None
-    state.step_cursor = None
 
 
 def should_poll(state: WorkbenchState) -> bool:

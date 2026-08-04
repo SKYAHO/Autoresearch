@@ -473,7 +473,8 @@ def update_experiment_step(
     )
     terminal_values = [status.value for status in TERMINAL_STEP_STATUSES]
     with session.begin():
-        if find_experiment_step(session, experiment_id, step_id) is None:
+        step = find_experiment_step(session, experiment_id, step_id)
+        if step is None:
             raise ExperimentStepNotFoundError(step_id)
 
         # 조건을 **모든** 갱신에 건다. 터미널로 전이할 때만 걸면 두 가지가 새어 나간다.
@@ -484,6 +485,10 @@ def update_experiment_step(
         result = session.execute(
             update(ExperimentStep)
             .where(
+                # experiment_id를 함께 건다 — 위 존재 확인과 같은 조건이라야 확인과 실행이
+                # 한 곳에서 자명하고, 존재 확인이 옮겨지거나 캐시돼도 교차 실험 갱신이 열리지
+                # 않는다. `rowcount == 0`의 의미는 "저장된 row가 이미 터미널"로 유지된다.
+                ExperimentStep.experiment_id == experiment_id,
                 ExperimentStep.id == step_id,
                 ExperimentStep.status.not_in(terminal_values),
             )
@@ -495,9 +500,8 @@ def update_experiment_step(
             .execution_options(synchronize_session=False)
         )
         # 판정 근거는 세션 캐시가 아니라 새 SELECT여야 한다. refresh는 항상 SQL을 발행하므로
-        # 방금 다른 트랜잭션이 커밋한 값을 본다.
-        step = find_experiment_step(session, experiment_id, step_id)
-        assert step is not None  # 같은 transaction 안에서 위 존재 확인을 통과했다
+        # 방금 다른 트랜잭션이 커밋한 값을 본다. 위에서 받은 객체를 그대로 쓴다 — 같은
+        # 조건으로 다시 SELECT해도 identity map이 같은 객체를 돌려주므로 왕복만 늘어난다.
         session.refresh(step)
         if result.rowcount == 0:
             return _finalized_step_or_conflict(step, requested_fingerprint)

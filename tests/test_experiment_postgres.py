@@ -447,6 +447,44 @@ def test_step_update_rereads_state_committed_by_another_session(
     assert stored.message == "완료"
 
 
+def test_step_patch_advances_updated_at_through_core_update(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """Core UPDATE 경로에서도 `updated_at`이 갱신된다.
+
+    갱신은 ORM flush가 아니라 `session.execute(update(...))`이고 `.values()`에 `updated_at`이
+    없다. SQLAlchemy가 컬럼의 `onupdate=func.now()`를 SET 절에 넣어 주는 데 의존하므로,
+    그 가정이 깨지면 화면의 "마지막으로 바뀐 시각"이 생성 시각에 멈춘 채 조용히 틀린다.
+    """
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres step updated_at"),
+        ).id
+        created = create_experiment_step(
+            setup_session,
+            experiment_id,
+            ExperimentStepCreate(
+                idempotency_key=f"touch-{uuid.uuid4()}",
+                step_kind=StepKind.TRAIN,
+                step_type="train_candidate",
+            ),
+        )
+        step_id = created.id
+        created_at = created.created_at
+
+    with postgres_session_factory() as session:
+        updated = update_experiment_step(
+            session,
+            experiment_id,
+            step_id,
+            ExperimentStepUpdate(status=StepStatus.COMPLETED, message="완료"),
+        )
+
+    assert updated.updated_at > created_at
+    assert updated.created_at == created_at
+
+
 def test_step_cursor_pagination_advances_over_real_timestamps(
     postgres_session_factory: sessionmaker[Session],
 ) -> None:

@@ -77,6 +77,7 @@ ALLOWED_TRANSITIONS: dict[ExperimentStatus, frozenset[ExperimentStatus]] = {
     ExperimentStatus.PROMOTED: frozenset(),
 }
 
+
 class StepKind(str, enum.Enum):
     """Step의 대분류. 프론트 렌더 경로를 서버가 강제하기 위한 닫힌 집합."""
 
