@@ -55,6 +55,8 @@
 - [Spec — 학습 윈도우 spine 커버리지 가드](specs/2026-08-01-training-window-coverage-guard.md) — 기준값 근거·lineage 계약·가드의 한계 (#464)
 - [Spec — paired offline 실험 배치·비교 결과 계약](specs/2026-08-03-paired-offline-experiment-comparison.md) — 조건 격리 좌표·피처 보존·결과 payload (#454)
 - [Plan — paired offline 실험 배치·비교 결과 구현](plans/2026-08-03-paired-offline-experiment-comparison.md) (#454)
+- [Spec — 모델 성능 열화 시점 측정(rolling-origin 평가)](specs/2026-08-03-model-degradation-rolling-origin-evaluation.md) — 단일 cutoff 기반 forward degradation evaluation, 날짜 구간·평가일 상태 계약, video staleness (#471)
+- [Plan — 모델 성능 열화 시점 측정 구현](plans/2026-08-03-model-degradation-rolling-origin-evaluation.md) (#471)
 - [Spec — 실험별 Feast Registry·offline 실행 격리](specs/2026-07-31-experiment-isolated-offline-run.md) (#454 실행 context)
 - [Plan — `src/` → `autoresearch/` 패키지 통합](plans/2026-07-15-src-package-merge.md) (팀 합의 대기)
 - `src/pipeline/`, `src/models/`, `src/features/` (CTR 학습·평가 코드)
@@ -120,6 +122,8 @@
   승격·게이트 미달·후보 없음·실행 오류의 기계 판독 결과와 Airflow 인계 계약
 - [paired offline 실험 배치·비교 결과 계약](specs/2026-08-03-paired-offline-experiment-comparison.md) —
   baseline/candidate 조건 격리, 실험 피처 보존, `comparison_passed`/`rejected`/`failed` 결과 payload
+- [모델 성능 열화 시점 측정(rolling-origin 평가)](specs/2026-08-03-model-degradation-rolling-origin-evaluation.md) —
+  단일 cutoff 학습 → 하루 단위 순차 평가로 ROC-AUC 열화 곡선·열화 지점 산출, 데이터 가용성 제약(`A-D`)
 - [Rerank Serving 성능·비용·안정성 벤치마크](specs/2026-07-31-rerank-serving-performance-benchmark.md)
 - [Agent Orchestration `/chat` API 계약](specs/2026-08-01-agent-orchestration-chat-api-contract.md) —
   내부 호출 서비스의 요청·응답·오류·저장 의미 정본

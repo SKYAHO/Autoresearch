@@ -53,6 +53,9 @@ dev = [
     "httpx>=0.28,<0.29",
     "google-cloud-bigquery>=3.20",
     "python-dotenv>=1.0",
+    # scripts/bench/degradation_curve_plot.py(#471) 시각화 전용 — 애플리케이션 런타임은
+    # 쓰지 않는다.
+    "plotly>=5.24,<7",
     { include-group = "lint" },
     { include-group = "serving" },
     { include-group = "orchestration" },

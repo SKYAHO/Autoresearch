@@ -4,7 +4,7 @@
 [파이프라인] 피처 조립 → 학습 → 평가 → comparison → champion 승격 구간의
 진입점(배선)을 담당한다: `python -m src.cli create-experiment-plan /
 build-features / train-model / evaluate-model / run-pipeline / verify-comparison /
-compare-paired-experiment / promote-model`.
+compare-paired-experiment / promote-model / sweep-seeds / measure-degradation`.
 
 [기능] 각 단계 모듈에 인자를 전달하고 단계 순서를 정한다. #466의
 create-experiment-plan은 write-once GCS plan receipt를 만들고, 학습·comparison
@@ -19,6 +19,8 @@ negative downsampling 난수를 분리하며, `run-pipeline`은 검증된 snapsh
 전달되어 실험 피처가 학습 CSV에 보존되게 한다(#454). `compare-paired-experiment`는
 조건별 실행이 끝난 뒤 seed별 baseline/candidate run을 짝지어 판정하고
 `comparison_passed`/`comparison_rejected`/`comparison_failed` 결과 payload를 남긴다(#454).
+`measure-degradation`은 단일 cutoff로 학습한 모델을 이후 날짜에 하루씩 순차 적용해
+ROC-AUC 열화 곡선과 열화 지점을 낸다(#471) — 승격 판정이 아니라 측정 도구다.
 
 [비책임] 실제 조립·학습·평가·승격 로직은 각 모듈(src/pipeline/*.py,
 src/tracking/promote.py)이 소유한다. DAG·스케줄·재시도는 인접 저장소
@@ -43,6 +45,7 @@ sys.path.insert(0, PROJECT_ROOT)
 
 from src.pipeline import (  # noqa: E402
     build_training_dataset,
+    degradation_eval,
     evaluate,
     paired_experiment,
     train,
@@ -992,6 +995,95 @@ def sweep_seeds(
         with open(result_path, "w", encoding="utf-8") as stream:
             json.dump(payload, stream, ensure_ascii=False, indent=2)
         typer.echo(f"\n[저장] 요약 JSON: {result_path}")
+
+
+@app.command("measure-degradation")
+def measure_degradation(
+    cutoff_date: str = typer.Option(
+        ..., "--cutoff-date", help="학습 경계 날짜 KST YYYY-MM-DD (당일은 평가 첫날, 학습에 미포함)"
+    ),
+    window_days: int = typer.Option(..., "--window-days", help="cutoff 이전 학습 기간(일)"),
+    horizon_days: int = typer.Option(..., "--horizon-days", help="cutoff 이후 하루 단위 평가 기간(일)"),
+    run_root: str = typer.Option(
+        ..., "--run-root", help="학습·평가일별 산출물을 격리해 저장할 디렉터리"
+    ),
+    min_rows_per_day: int = typer.Option(
+        ..., "--min-rows-per-day", help="평가일을 유효로 판정할 최소 행수"
+    ),
+    min_auc_drop: float = typer.Option(
+        ...,
+        "--min-auc-drop",
+        help="열화 판정 절대 하락폭. sweep-seeds 등으로 미리 calibration한 값을 넘깁니다.",
+    ),
+    min_coverage_days: Optional[int] = typer.Option(
+        None, "--min-coverage-days", help="학습 spine 커버리지 가드 최소 일수(기본: 모듈 기본값)"
+    ),
+    seed: Optional[int] = typer.Option(None, "--seed", help="학습 random_state"),
+    feature_service: Optional[str] = typer.Option(None, "--feature-service"),
+    extra_features: Optional[str] = typer.Option(
+        None, "--extra-features", help="쉼표 구분 실험 피처(#454)"
+    ),
+    experiment: Optional[str] = typer.Option(
+        None, "--experiment", help="실험 이름. prod와 분리된 네임스페이스로 기록합니다(#406)."
+    ),
+    best_effort: bool = typer.Option(
+        False,
+        "--best-effort",
+        help="평가일 조립 실패를 evaluation_failed로 기록하고 계속 진행합니다"
+        "(기본: 즉시 중단 — 비싼 cutoff 학습을 버리지 않으려면 켜십시오).",
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="run-root가 이미 채워져 있어도 재사용합니다."
+    ),
+    output: Path = typer.Option(..., "--output", help="RollingOriginResult JSON을 게시할 경로"),
+) -> None:
+    """단일 cutoff 기반 모델 성능 열화 시점을 측정한다(#471).
+
+    cutoff 이전 데이터로 모델을 1회 학습하고, cutoff부터 하루씩 순회 평가해 ROC-AUC
+    곡선과 열화 지점을 낸다. 승격 판정이 아니라 측정·리포트 도구다 — 이 명령의
+    산출물은 champion 후보로 등록되지 않는다.
+
+    exit code: 성공 0(열화 탐지 여부와 무관 — 둘 다 유효한 측정 결과다),
+    run-root 재사용 오류(``--overwrite`` 필요) 2, 그 외 실행 실패 1.
+    """
+    try:
+        result = degradation_eval.run_rolling_origin(
+            cutoff_date,
+            window_days=window_days,
+            horizon_days=horizon_days,
+            run_root=run_root,
+            min_rows_per_day=min_rows_per_day,
+            min_auc_drop=min_auc_drop,
+            min_coverage_days=min_coverage_days,
+            seed=seed,
+            feature_service=feature_service,
+            extra_features=_parse_extra_features(extra_features),
+            experiment=experiment,
+            best_effort=best_effort,
+            overwrite=overwrite,
+        )
+    except degradation_eval.RunRootExistsError as error:
+        typer.echo(f"[에러] {error}", err=True)
+        raise typer.Exit(code=2) from error
+    except Exception as error:
+        # 예외 원문에 BigQuery/GCS 자격증명이나 경로가 섞일 수 있으므로(#454
+        # comparison_verification_failed와 같은 이유) 종류만 남기고 원문은 감춘다.
+        typer.echo(
+            f"[측정 실패] {type(error).__name__}: cutoff 학습 또는 평가일 조립 중 "
+            "오류가 발생했습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+
+    write_manifest_atomic(result, Path(output))
+    typer.echo(result.model_dump_json())
+    if result.degradation_point.elapsed_days is not None:
+        typer.echo(
+            f"\n[열화 탐지] elapsed_days={result.degradation_point.elapsed_days} "
+            f"date={result.degradation_point.date}"
+        )
+    else:
+        typer.echo(f"\n[열화 미탐지] 사유={result.degradation_point.reason}")
 
 
 if __name__ == "__main__":

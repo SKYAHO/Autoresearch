@@ -1398,3 +1398,168 @@ def test_compare_paired_experiment_help_exposes_required_options() -> None:
     assert "--request" in help_output
     assert "--promotion-evidence-root" in help_output
     assert "--output" in help_output
+
+
+def _degradation_result(**overrides):
+    from src.pipeline.degradation_eval import (
+        DegradationPoint,
+        RollingOriginResult,
+    )
+    from src.pipeline.training_provenance import (
+        DatasetColumn,
+        TrainingSnapshotManifest,
+    )
+
+    manifest = TrainingSnapshotManifest(
+        dataset_sha256="0" * 64,
+        schema_sha256="1" * 64,
+        row_count=10,
+        columns=[DatasetColumn(name="clicked", dtype="int64")],
+        created_at="2026-07-20T00:00:00Z",
+        events_start_date="2026-07-17",
+        events_end_date="2026-07-19",
+        feature_service="ctr_training_v1",
+        registry_uri="gs://fake/registry.db",
+        registry_generation="1",
+        registry_sha256="2" * 64,
+    )
+    defaults = dict(
+        cutoff_date="2026-07-20",
+        window_days=3,
+        horizon_days=1,
+        baseline_val_roc_auc=0.80,
+        min_auc_drop=0.05,
+        per_day=[],
+        degradation_point=DegradationPoint(reason="insufficient_valid_points"),
+        training_snapshot_manifest=manifest,
+    )
+    defaults.update(overrides)
+    return RollingOriginResult(**defaults)
+
+
+def test_measure_degradation_writes_result_and_exits_zero(monkeypatch, tmp_path):
+    output = tmp_path / "nested" / "result.json"
+    captured = {}
+
+    def _fake_run_rolling_origin(cutoff_date, **kwargs):
+        captured["cutoff_date"] = cutoff_date
+        captured.update(kwargs)
+        return _degradation_result()
+
+    monkeypatch.setattr(cli.degradation_eval, "run_rolling_origin", _fake_run_rolling_origin)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "measure-degradation",
+            "--cutoff-date", "2026-07-20",
+            "--window-days", "3",
+            "--horizon-days", "1",
+            "--run-root", str(tmp_path / "run"),
+            "--min-rows-per-day", "3",
+            "--min-auc-drop", "0.05",
+            "--output", str(output),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["cutoff_date"] == "2026-07-20"
+    assert captured["window_days"] == 3
+    assert captured["horizon_days"] == 1
+    assert captured["min_rows_per_day"] == 3
+    assert captured["min_auc_drop"] == 0.05
+    assert captured["best_effort"] is False
+    written = json.loads(output.read_text(encoding="utf-8"))
+    assert written["cutoff_date"] == "2026-07-20"
+
+
+def test_measure_degradation_forwards_best_effort_flag(monkeypatch, tmp_path):
+    captured = {}
+    monkeypatch.setattr(
+        cli.degradation_eval,
+        "run_rolling_origin",
+        lambda cutoff_date, **kwargs: (captured.update(kwargs), _degradation_result())[1],
+    )
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "measure-degradation",
+            "--cutoff-date", "2026-07-20",
+            "--window-days", "3",
+            "--horizon-days", "1",
+            "--run-root", str(tmp_path / "run"),
+            "--min-rows-per-day", "3",
+            "--min-auc-drop", "0.05",
+            "--output", str(tmp_path / "result.json"),
+            "--best-effort",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured["best_effort"] is True
+
+
+def test_measure_degradation_run_root_exists_error_exits_two(monkeypatch, tmp_path):
+    from src.pipeline.degradation_eval import RunRootExistsError
+
+    def _raise(cutoff_date, **kwargs):
+        raise RunRootExistsError("run_root가 이미 존재합니다")
+
+    monkeypatch.setattr(cli.degradation_eval, "run_rolling_origin", _raise)
+    output = tmp_path / "result.json"
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "measure-degradation",
+            "--cutoff-date", "2026-07-20",
+            "--window-days", "3",
+            "--horizon-days", "1",
+            "--run-root", str(tmp_path / "run"),
+            "--min-rows-per-day", "3",
+            "--min-auc-drop", "0.05",
+            "--output", str(output),
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert not output.exists()
+
+
+def test_measure_degradation_other_failure_exits_one(monkeypatch, tmp_path):
+    def _raise(cutoff_date, **kwargs):
+        raise RuntimeError("BigQuery 조립 실패")
+
+    monkeypatch.setattr(cli.degradation_eval, "run_rolling_origin", _raise)
+    output = tmp_path / "result.json"
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "measure-degradation",
+            "--cutoff-date", "2026-07-20",
+            "--window-days", "3",
+            "--horizon-days", "1",
+            "--run-root", str(tmp_path / "run"),
+            "--min-rows-per-day", "3",
+            "--min-auc-drop", "0.05",
+            "--output", str(output),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert not output.exists()
+    assert "BigQuery" not in result.output  # 원문 예외 메시지를 그대로 노출하지 않는다
+
+
+def test_measure_degradation_help_exposes_required_options() -> None:
+    result = CliRunner().invoke(cli.app, ["measure-degradation", "--help"], color=False)
+    help_output = unstyle(result.output)
+
+    assert result.exit_code == 0
+    assert "--cutoff-date" in help_output
+    assert "--window-days" in help_output
+    assert "--horizon-days" in help_output
+    assert "--min-auc-drop" in help_output
+    assert "--best-effort" in help_output
