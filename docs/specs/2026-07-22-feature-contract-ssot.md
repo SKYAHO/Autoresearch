@@ -25,7 +25,7 @@ CTR 모델이 사용하는 feature 이름, 순서, categorical 분류를 하나�
 
 | 계층 | 현재 계약 | 결과 |
 | --- | --- | --- |
-| `src/pipeline/build_training_dataset.py` | 21개 model input + `clicked` | 실제 CSV는 22컬럼 |
+| `src/pipeline/build_training_dataset.py` | 21개 model input + `clicked` | 모델 입력 계약은 22컬럼. 실제 CSV는 뒤에 패스스루가 붙어 23컬럼(#505) |
 | `feature_repo/feature_definitions.py` | 신규 6개를 포함한 FeatureView | online 조회 가능한 스키마는 준비됨 |
 | `src/pipeline/config.yaml` | model input 목록을 소유하지 않음 | 학습은 canonical contract를 직접 소비 |
 | `src/serving/online_features.py` | canonical contract 기반 read refs와 21개 builder output | serving은 별도 feature list를 정의하지 않음 |
@@ -117,10 +117,19 @@ category_id
 ```
 
 `clicked`는 label이며 model feature 계약에 포함하지 않는다. 따라서 최종
-`training_dataset.csv`의 22번째 physical column은 `clicked`이고, 전체는 21개
-input feature + label = 22컬럼이다.
+`training_dataset.csv`의 22번째 physical column은 `clicked`이고, 21개
+input feature + label = 22컬럼이 **모델 입력 계약의 전부**다.
+
 dataset의 물리적 컬럼 순서와 무관하게 학습 입력은
 `MODEL_FEATURE_COLUMNS`로 명시적으로 선택한다.
+
+> **갱신 (2026-08-04, #505):** 실제 CSV는 이 22컬럼 **뒤에** 평가 전용 패스스루
+> 컬럼(`PASSTHROUGH_COLUMNS`, 현재 `user_id`)이 붙어 23컬럼이다. 패스스루는 모델
+> 입력이 아니며 `feature_columns.json`에 들어가지 않는다 — 유저 단위 grouped 지표의
+> 그룹 키 용도다. 22컬럼 **접두부는 불변**이므로 ONNX 텐서 순서와 기존 소비자는
+> 영향을 받지 않는다. 위의 "물리적 컬럼 순서와 무관하게 이름으로 선택한다"는 원칙이
+> 이 확장을 안전하게 만든다. 패스스루 계약의 정본은
+> `docs/specs/2026-08-04-reranking-metric-alignment.md`다.
 
 ### 3. online read 계약은 serving 계층이 소유한다
 
@@ -259,6 +268,6 @@ model reload 여부 확인은 production cutover의 필수 사전 조건이다.
   사용한다.
 - 신규 6개 feature가 정의된 출처와 default로 조립된다.
 - 계약 불일치는 학습, startup 또는 batch 시작 경계에서 명확히 차단된다.
-- 21개 input feature와 `clicked` label을 합한 22컬럼 dataset 설명이 코드,
-  가이드, 테스트에서 일치한다.
+- 21개 input feature와 `clicked` label을 합한 22컬럼 **모델 입력 계약** 설명이
+  코드, 가이드, 테스트에서 일치한다(물리 CSV는 패스스루 포함 23컬럼, #505).
 - rollout 사전 조건과 champion promote 순서가 운영 담당자에게 인계된다.
