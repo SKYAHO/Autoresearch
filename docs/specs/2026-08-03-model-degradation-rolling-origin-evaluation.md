@@ -9,6 +9,33 @@
     이 spec이 다루지 **않는 것**의 경계 근거로 인용한다.
   - `docs/guides/training-experiment-provenance.md` §5 (write-once evidence, #423/#466)
 
+> [!IMPORTANT]
+> **[이슈 흡수 — #485, 2026-08-04]** 이 spec이 다루던 rolling-origin 측정 하네스는
+> 설계·구현 변경 없이 그대로 유효하다. `#485`(최신성·모델 열화 기반 시간축 평가)와
+> 범위가 겹쳐 `#471`을 close하고 이 문서·구현을 `#485`로 흡수했다 — 정정이나 대체가
+> 아니라 **소유 이슈 이동 + 범위 확장**이다. 구현물은 브랜치
+> `feat/471-model-degradation-rolling-origin`에 보존되어 있으며 그대로 재사용한다.
+> 재사용/신규 경계는 아래 "`#485` 흡수 경계" 절을 참고한다.
+
+## `#485` 흡수 경계 (재사용 vs 신규)
+
+`#485`로 이관된 뒤 이 문서·구현이 커버하는 범위와, `#485`가 새로 정의해야 하는 범위를
+명확히 가른다.
+
+| 구분 | 항목 | 출처 |
+| --- | --- | --- |
+| **재사용(이미 구현됨)** | rolling-origin 실행 하네스, 단일 cutoff 학습 → 하루 단위 순차 평가 | `#471`(`src/pipeline/degradation_eval.py`의 `run_rolling_origin`) |
+| | Plotly 열화 곡선 시각화 | `#471`(`scripts/bench/degradation_curve_plot.py`) |
+| | CLI 진입점(`measure-degradation`) | `#471`(`src/cli.py`) |
+| **신규(`#485`가 정의)** | hard retrain limit 산출 로직(성능과 무관하게 강제 재학습하는 시점) | `#485` 작업 범위 |
+| | baseline/challenger가 동일 as-of cutoff·feature snapshot·split 규칙·paired seed를 쓰는지 검증 | `#485` — `#478`의 30개 paired seed·write-once receipt 계약 재사용 |
+| | `#425` 판정 스키마(`confidence`/`robustness_note`/`direction_vs_*`)에 temporal signal 연결 | `#485` |
+| | 데이터 부족·미래 구간 누락·feature snapshot 불일치·시간 순서 위반 시 `hold`로 종료하는 fail-closed 로직 | `#485` |
+| | production Feature Service·production alias는 이 작업에서 직접 변경하지 않음 | `#485` 명시 제약 |
+
+`#472`(하드 리밋 값을 `#461` 게이트에 배선)와의 경계는 `#472` 본문(2026-08-04 갱신)을
+정본으로 한다 — 값 산정은 `#485`, 게이트 배선은 `#472`.
+
 ## 목적
 
 현재 모델 채택 기준(무작위 샘플링 + 다중 시드 유의성 판정, #407/#441)은 시간 흐름에
