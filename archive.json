@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T06:37:51Z",
+  "generated_at": "2026-08-04T06:48:00Z",
   "reports": [
+    {
+      "number": 522,
+      "title": "fix: Streamlit 시각을 KST로 표시",
+      "author": "Noah-JuYong",
+      "merged_at": "2026-08-04T06:47:38Z",
+      "summary_ko": [
+        "Streamlit 실험 워크벤치 UI에 표시되는 시각을 한국 표준시(KST)로 명시 변환하도록 수정하였습니다.",
+        "컨테이너 로컬 타임존 의존 방식을 제거하고 명시적인 Asia/Seoul 타임존 포맷팅 모듈을 추가하였습니다.",
+        "API 및 데이터베이스의 UTC 저장 계약은 그대로 유지하며 단위 테스트를 통해 포맷 변환을 검증하였습니다."
+      ],
+      "report_url": "pr/522/"
+    },
     {
       "number": 517,
       "title": "fix: 객체 저장소 action log publish에서 staging 경유 제거",
