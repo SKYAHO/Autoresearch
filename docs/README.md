@@ -59,6 +59,7 @@
 - [Plan — 모델 성능 열화 시점 측정 구현](plans/2026-08-03-model-degradation-rolling-origin-evaluation.md) (#471)
 - [Spec — temporal signal 승격 판정 연결](specs/2026-08-04-temporal-signal-promotion-integration.md) — baseline 재정의, hard retrain limit 산출 절차, #425 다중 신호 연결, fail-closed hold (#485 잔여 범위)
 - [Plan — temporal signal 승격 판정 연결 구현](plans/2026-08-04-temporal-signal-promotion-integration.md) (#485, Task 4는 #493 대기)
+- [Spec — 학습 데이터셋 스냅샷 GCS 게시·재사용 계약](specs/2026-08-04-training-dataset-snapshot-store.md) — content-addressed 스냅샷 레이아웃·write-once·by-date 포인터, `--dataset-uri` 재사용 학습 (#530)
 - [Spec — 실험별 Feast Registry·offline 실행 격리](specs/2026-07-31-experiment-isolated-offline-run.md) (#454 실행 context)
 - [Plan — `src/` → `autoresearch/` 패키지 통합](plans/2026-07-15-src-package-merge.md) (팀 합의 대기)
 - `src/pipeline/`, `src/models/`, `src/features/` (CTR 학습·평가 코드)
@@ -128,6 +129,9 @@
   baseline/candidate 조건 격리, 실험 피처 보존, `comparison_passed`/`rejected`/`failed` 결과 payload
 - [모델 성능 열화 시점 측정(rolling-origin 평가)](specs/2026-08-03-model-degradation-rolling-origin-evaluation.md) —
   단일 cutoff 학습 → 하루 단위 순차 평가로 ROC-AUC 열화 곡선·열화 지점 산출, 데이터 가용성 제약(`A-D`)
+- [학습 데이터셋 스냅샷 GCS 게시·재사용 계약](specs/2026-08-04-training-dataset-snapshot-store.md) —
+  content-addressed 불변 스냅샷 주소 체계, write-once 의미론, by-date 포인터 갱신 규칙,
+  `--dataset-uri` 재사용 학습의 재검증 계약
 - [Rerank Serving 성능·비용·안정성 벤치마크](specs/2026-07-31-rerank-serving-performance-benchmark.md)
 - [Agent Orchestration `/chat` API 계약](specs/2026-08-01-agent-orchestration-chat-api-contract.md) —
   내부 호출 서비스의 요청·응답·오류·저장 의미 정본
