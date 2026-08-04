@@ -5,8 +5,9 @@ partition을 읽고 single 또는 shard 실행을 선택한 뒤 final partition�
 
 [기능] 단일 coordinator가 daily temporary directory에 completion-time Parquet/JSONL을
 최종 commit한 뒤 row-group staging 검증과 last-known-good publish를 수행하며, 기존
-shard/checkpoint/merge 실행도 제공한다. 객체 저장소 publish는 최종 경로에 직접 쓰고
-임시 객체를 남기지 않는다(#515) — 삭제 권한에 의존하지 않는다.
+shard/checkpoint/merge 실행도 제공한다. 객체 저장소 publish는 임시 객체를 파티션 밖
+prefix에 만든 뒤 서버측 복사로 최종 경로를 바꾼다(#515) — 정리가 실패해도 적재가 읽는
+파티션은 오염되지 않는다.
 
 [비책임] LLM 판정·클릭·이벤트 의미는 autoresearch/action_logs/pipeline.py,
 CLI 인자 계약은 autoresearch/jobs/action_log.py, Airflow KPO resource는
@@ -226,6 +227,12 @@ def _read_json_file(path: str, *, filesystem=None) -> dict[str, object]:
     return payload
 
 
+# publish 임시 객체가 놓이는 버킷 루트 prefix(#515). 적재가 읽는 파티션
+# (`dt=<날짜>/`, `dt=.../shard=NNN/`) **밖**이어야 한다 — 안에 두면 정리 실패 시
+# 같은 내용이 두 번 적재된다. 고아 객체 회수는 버킷 수명주기 규칙이 담당한다.
+PUBLISH_STAGING_PREFIX = "_publish_staging"
+
+
 def _copy_local_file(source: str | Path, destination: str, *, filesystem=None) -> None:
     """로컬 임시 파일을 local/GCS 최종 경로로 복사한다."""
 
@@ -259,16 +266,36 @@ def _publish_final_file(
             staging_path.unlink(missing_ok=True)
         return
 
-    # 객체 저장소는 최종 경로에 바로 쓴다(#515). 예전에는 staging 객체를 만들고
-    # copy 후 delete하는 방식으로 POSIX rename을 흉내냈는데, 삭제 권한이 없으면
-    # 임시 객체가 파티션에 남아 적재가 같은 내용을 두 번 읽었다(event_id 전역 고유
-    # 계약 위반 → 폐루프 정지). 삭제 실패는 경고로만 남아 4일간 드러나지 않았다.
+    # 임시 객체는 파티션 **밖** 고정 prefix에 만든다(#515). 예전에는 destination 옆
+    # (`<destination>.staging-<uuid>`)에 만들었는데, 삭제 권한이 없으면 그 객체가
+    # `dt=<날짜>/`에 남고 적재가 와일드카드로 같은 내용을 두 번 읽었다(event_id 전역
+    # 고유 계약 위반 → 폐루프 정지). 삭제 실패는 경고로만 남아 4일간 드러나지 않았다.
     #
-    # GCS는 업로드가 finalize되어야 객체가 보이고 덮어쓰기도 원자적이므로, 부분 파일이
-    # 노출되지 않고 쓰기 도중 실패하면 기존 객체가 그대로 남는다. 즉 staging 경유 없이도
-    # "실패를 성공으로 보고하지 않고 기존 publish 대상을 보존한다"는 요구
-    # (docs/specs/2026-07-30-action-log-review-remediation.md)를 만족한다.
-    _copy_local_file(source, destination, filesystem=filesystem)
+    # 최종 경로에 직접 쓰지 않는 이유: pyarrow `NativeFile`에는 abort가 없어 업로드
+    # 도중 예외가 나도 `with` 종료 시 `close()`가 finalize한다. 직접 쓰면 잘린 객체가
+    # 최종 경로에 게시되어 last-known-good이 파괴된다. 임시 경로로 올린 뒤 서버측
+    # `copy_file`로 바꾸면 destination이 부분 상태로 노출되는 창이 없다.
+    bucket = destination.split("/", 1)[0]
+    staging_path = f"{bucket}/{PUBLISH_STAGING_PREFIX}/{uuid4().hex}.tmp"
+    try:
+        _copy_local_file(source, staging_path, filesystem=filesystem)
+        filesystem.copy_file(staging_path, destination)
+    finally:
+        try:
+            filesystem.delete_file(staging_path)
+        except FileNotFoundError:
+            pass
+        except Exception:  # noqa: BLE001 - 정리 실패가 게시 결과를 가리면 안 된다
+            # 정리에 실패해도 임시 객체는 파티션 밖이라 적재에 섞이지 않는다. 고아
+            # 객체 회수는 버킷 수명주기 규칙이 담당한다(인프라 소유).
+            logger.warning(
+                "Failed to clean up action log staging object",
+                extra={
+                    "artifact": "final_parquet_staging",
+                    "staging_path": staging_path,
+                },
+                exc_info=True,
+            )
 
 
 def _publish_quarantine_best_effort(

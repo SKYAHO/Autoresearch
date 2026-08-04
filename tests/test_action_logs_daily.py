@@ -1587,22 +1587,25 @@ def test_cli_requires_click_threshold() -> None:
         _validate_args(args)
 
 
-class _RecordingFilesystem:
-    """GCS 의미를 흉내내는 스텁 — 스트림이 닫혀야 객체가 보인다(#515).
 
-    실제 GCS는 업로드가 finalize되어야 객체가 나타나므로, 쓰기 도중 실패하면 기존
-    객체가 그대로 남는다. 이 스텁은 그 성질만 재현한다.
+class _RecordingFilesystem:
+    """publish 경로를 관찰하는 객체 저장소 대역(#515).
+
+    `written`은 `open_output_stream`으로 실제 업로드가 일어난 경로를 순서대로 담는다.
+    임시 객체가 파티션 프리픽스 **밖**에 만들어지는지 검증하는 데 쓴다.
     """
 
     def __init__(self, initial: dict[str, bytes] | None = None) -> None:
         self.objects: dict[str, bytes] = dict(initial or {})
+        self.written: list[str] = []
         self.deleted: list[str] = []
-        self.copied: list[tuple[str, str]] = []
+        self.delete_error: Exception | None = None
 
     def open_output_stream(self, path: str):
         import io
 
         filesystem = self
+        filesystem.written.append(path)
 
         class _Stream(io.BytesIO):
             def close(self) -> None:
@@ -1613,58 +1616,98 @@ class _RecordingFilesystem:
         return _Stream()
 
     def copy_file(self, source: str, destination: str) -> None:
-        self.copied.append((source, destination))
         self.objects[destination] = self.objects[source]
 
     def delete_file(self, path: str) -> None:
         self.deleted.append(path)
+        if self.delete_error is not None:
+            raise self.delete_error
         self.objects.pop(path, None)
 
 
-def test_remote_publish_writes_destination_without_staging_object(tmp_path):
-    """GCS 게시는 staging 객체를 만들지 않고 최종 경로에 직접 쓴다(#515).
+_PARTITION = "bucket/data_lake/action_log/dt=2026-07-01/"
+_DESTINATION = _PARTITION + "part-0.parquet"
 
-    staging 경유는 GCS에 rename이 없어 copy+delete로 흉내내던 것인데, 삭제 권한이
-    없으면 임시 파일이 파티션에 남아 적재가 같은 내용을 두 번 읽는다. GCS는 업로드가
-    끝나야 객체가 보이고 덮어쓰기도 원자적이므로 staging 자체가 필요 없다.
+
+def _under(filesystem: _RecordingFilesystem, prefix: str) -> list[str]:
+    return sorted(key for key in filesystem.objects if key.startswith(prefix))
+
+
+def test_remote_publish_stages_outside_partition_prefix(tmp_path):
+    """임시 객체는 파티션 프리픽스 **밖**에 만든다(#515).
+
+    적재가 ``dt=<날짜>/``를 와일드카드로 읽으므로, 임시 객체가 그 안에 있으면 정리가
+    실패했을 때 같은 내용이 두 번 적재된다(event_id 전역 고유 계약 위반).
     """
-    filesystem = _RecordingFilesystem({"bucket/dt=2026-07-01/part-0.parquet": b"old"})
+    filesystem = _RecordingFilesystem({_DESTINATION: b"last-known-good"})
     source = tmp_path / "new.parquet"
     source.write_bytes(b"new-result")
 
-    daily_module._publish_final_file(
-        source,
-        "bucket/dt=2026-07-01/part-0.parquet",
-        filesystem=filesystem,
+    daily_module._publish_final_file(source, _DESTINATION, filesystem=filesystem)
+
+    assert _under(filesystem, _PARTITION) == [_DESTINATION]
+    assert filesystem.objects[_DESTINATION] == b"new-result"
+    # 실제 업로드는 파티션 밖에서 일어났다.
+    assert filesystem.written and all(
+        not path.startswith(_PARTITION) for path in filesystem.written
     )
 
-    # 최종 객체 하나만 남는다 — staging 접미사 객체가 없어야 한다.
-    assert list(filesystem.objects) == ["bucket/dt=2026-07-01/part-0.parquet"]
-    assert filesystem.objects["bucket/dt=2026-07-01/part-0.parquet"] == b"new-result"
-    # 삭제 권한에 의존하지 않는다 — 이번 사고의 재발 조건을 제거한다.
-    assert filesystem.deleted == []
-    assert filesystem.copied == []
 
+def test_remote_publish_upload_failure_preserves_last_known_good(tmp_path, monkeypatch):
+    """업로드가 도중에 끊겨도 최종 경로는 건드리지 않는다(#515).
 
-def test_remote_publish_failure_preserves_last_known_good(tmp_path, monkeypatch):
-    """쓰기 도중 실패하면 기존 last-known-good 객체가 보존된다(#515).
-
-    2026-07-30 spec의 publish 요구("실패를 성공으로 보고하지 않고 기존 publish 대상을
-    보존한다")를 staging 없이도 유지한다.
+    pyarrow ``NativeFile``에는 abort가 없어 ``with`` 종료 시 ``close()``가 finalize한다.
+    따라서 최종 경로에 직접 쓰면 **잘린 객체가 게시되어** last-known-good이 파괴된다.
+    임시 경로로 먼저 올리고 서버측 ``copy_file``로 바꾸면 그 창이 사라진다.
     """
-    filesystem = _RecordingFilesystem({"bucket/final.parquet": b"last-known-good"})
+    filesystem = _RecordingFilesystem({_DESTINATION: b"last-known-good"})
     source = tmp_path / "new.parquet"
     source.write_bytes(b"new-result")
 
-    def failing_stream(path: str) -> NoReturn:
-        raise OSError("remote write failed")
+    def partial_then_fail(source_path, destination_path, *, filesystem=None):
+        filesystem.objects[destination_path] = b"new-res"  # 잘린 상태로 finalize
+        raise OSError("network dropped mid-upload")
 
-    monkeypatch.setattr(filesystem, "open_output_stream", failing_stream)
+    monkeypatch.setattr(daily_module, "_copy_local_file", partial_then_fail)
 
-    with pytest.raises(OSError, match="remote write failed"):
-        daily_module._publish_final_file(
-            source, "bucket/final.parquet", filesystem=filesystem
-        )
+    with pytest.raises(OSError, match="network dropped mid-upload"):
+        daily_module._publish_final_file(source, _DESTINATION, filesystem=filesystem)
 
-    assert filesystem.objects == {"bucket/final.parquet": b"last-known-good"}
-    assert filesystem.deleted == []
+    assert filesystem.objects[_DESTINATION] == b"last-known-good"
+    # 잘린 객체가 파티션 안에 남지 않는다.
+    assert _under(filesystem, _PARTITION) == [_DESTINATION]
+
+
+def test_remote_publish_cleanup_failure_keeps_partition_clean(tmp_path):
+    """정리가 실패해도 파티션은 오염되지 않고 게시는 성공한다(#515 회귀).
+
+    이번 사고의 조건(삭제 권한 없음)을 그대로 재현한다. 임시 객체가 파티션 밖이므로
+    남더라도 적재가 읽지 않는다.
+    """
+    filesystem = _RecordingFilesystem({_DESTINATION: b"last-known-good"})
+    filesystem.delete_error = PermissionError("storage.objects.delete denied")
+    source = tmp_path / "new.parquet"
+    source.write_bytes(b"new-result")
+
+    daily_module._publish_final_file(source, _DESTINATION, filesystem=filesystem)
+
+    assert filesystem.objects[_DESTINATION] == b"new-result"
+    assert _under(filesystem, _PARTITION) == [_DESTINATION]
+    # 고아 객체는 남지만 파티션 밖이다.
+    orphans = [key for key in filesystem.objects if key not in {_DESTINATION}]
+    assert orphans and all(not key.startswith(_PARTITION) for key in orphans)
+
+
+def test_remote_publish_stages_outside_shard_partition_prefix(tmp_path):
+    """shard 경로(``dt=.../shard=NNN/``)에서도 같은 보장이 성립한다(#515)."""
+    shard_prefix = "bucket/data_lake/action_log/dt=2026-07-01/shard=000/"
+    destination = shard_prefix + "part-0.parquet"
+    filesystem = _RecordingFilesystem({destination: b"last-known-good"})
+    filesystem.delete_error = PermissionError("storage.objects.delete denied")
+    source = tmp_path / "new.parquet"
+    source.write_bytes(b"new-result")
+
+    daily_module._publish_final_file(source, destination, filesystem=filesystem)
+
+    assert _under(filesystem, shard_prefix) == [destination]
+    assert all(not path.startswith(shard_prefix) for path in filesystem.written)
