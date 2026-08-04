@@ -76,6 +76,7 @@
 - [Plan — Agent Orchestration PR 사전 병합 강화](archive/plans/2026-07-31-agent-orchestration-premerge-hardening.md) (구현 완료)
 - [Spec — Agent Orchestration 실험 워크벤치 v0](archive/specs/2026-08-01-agent-orchestration-experiment-workbench-v0.md) (구현 완료)
 - [Plan — Agent Orchestration 실험 워크벤치 v0](archive/plans/2026-08-01-agent-orchestration-experiment-workbench-v0.md) (구현 완료)
+- [Spec — Agent Orchestration `/chat` API 계약](specs/2026-08-01-agent-orchestration-chat-api-contract.md) — 내부 호출 서비스의 요청·응답·오류·저장 의미 정본
 - `agent_orchestration/` (FastAPI + Codex CLI/OpenAI + PostgreSQL 실험 API)
 - [Spec — Agent Orchestration GKE 내부 배포](specs/2026-07-30-agent-orchestration-gke-internal-deployment.md)
 - [Plan — Agent Orchestration GKE 내부 배포](plans/2026-07-30-agent-orchestration-gke-internal-deployment.md)
@@ -120,6 +121,8 @@
 - [paired offline 실험 배치·비교 결과 계약](specs/2026-08-03-paired-offline-experiment-comparison.md) —
   baseline/candidate 조건 격리, 실험 피처 보존, `comparison_passed`/`rejected`/`failed` 결과 payload
 - [Rerank Serving 성능·비용·안정성 벤치마크](specs/2026-07-31-rerank-serving-performance-benchmark.md)
+- [Agent Orchestration `/chat` API 계약](specs/2026-08-01-agent-orchestration-chat-api-contract.md) —
+  내부 호출 서비스의 요청·응답·오류·저장 의미 정본
 
 ## 가이드
 
