@@ -49,7 +49,7 @@ spec의 결정을 뒤집지 않는다.
 
 | 파일 | 책임 |
 | --- | --- |
-| `agent_orchestration/app/experiments/models.py` (수정) | `issue_body` / `issue_number` / `issue_branch` 컬럼 |
+| `agent_orchestration/app/experiments/models.py` (수정) | `issue_body` / `issue_number` / `issue_branch` / `issue_published_at` 컬럼 |
 | `agent_orchestration/migrations/versions/0002_experiment_issue_lineage.py` (신규) | 위 세 컬럼과 index |
 | `agent_orchestration/app/experiments/issue_authoring.py` (신규) | 순수 함수. 프롬프트 조립, LLM JSON 파싱, 본문 조립 |
 | `agent_orchestration/app/experiments/github_issues.py` (신규) | `gh` CLI 경계. 발행·조회·오류 분류 |
@@ -90,6 +90,7 @@ def test_experiment_lineage_columns_default_to_none(db_session: Session) -> None
     assert experiment.issue_body is None
     assert experiment.issue_number is None
     assert experiment.issue_branch is None
+    assert experiment.issue_published_at is None
 
 
 def test_experiment_response_exposes_issue_lineage_without_body(
@@ -143,6 +144,11 @@ from sqlalchemy import (
     issue_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     issue_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 일일 발행 상한 질의 전용. `updated_at`은 `onupdate=func.now()`라 발행과 무관한
+    # UPDATE에도 갱신되어 며칠 전 발행분을 "오늘 발행"으로 잘못 센다.
+    issue_published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 ```
 
 `Experiment.__table_args__`(130행)의 튜플에 index를 더합니다.
@@ -166,7 +172,8 @@ from sqlalchemy import (
 동일성을 단언하므로 같은 커밋에서 갱신해야 합니다.
 
 ```
-`Experiment.issue_body`/`issue_number`/`issue_branch`는 `0002_experiment_issue_lineage`
+`Experiment.issue_body`/`issue_number`/`issue_branch`/`issue_published_at`은
+`0002_experiment_issue_lineage`
 revision이 nullable로 추가한 발행 lineage다. `issue_body`는 발행 **전**에, 나머지 둘은
 발행 성공 후에 채워진다.
 ```
@@ -186,7 +193,8 @@ Expected: PASS (2 passed)
 전체 파이프라인에서 가설이 GitHub `[AR]` 이슈로 발행된 사실을 실험 행에 남기는 구간을
 담당한다. 발행 절차와 HTTP 계약은 각각 service와 router의 책임이다.
 
-`issue_body`(발행 전 커밋), `issue_number`, `issue_branch`를 nullable로 추가하고
+`issue_body`(발행 전 커밋), `issue_number`, `issue_branch`, `issue_published_at`을
+nullable로 추가하고
 `issue_number` 조회 index를 만든 뒤 역순으로 제거한다.
 
 Revision ID: 0002_experiment_issue_lineage
@@ -213,12 +221,17 @@ def upgrade() -> None:
     op.add_column(
         "experiments", sa.Column("issue_branch", sa.String(length=255), nullable=True)
     )
+    op.add_column(
+        "experiments",
+        sa.Column("issue_published_at", sa.DateTime(timezone=True), nullable=True),
+    )
     op.create_index("ix_experiments_issue_number", "experiments", ["issue_number"])
 
 
 def downgrade() -> None:
     """upgrade의 역순으로 index와 컬럼을 제거한다."""
     op.drop_index("ix_experiments_issue_number", table_name="experiments")
+    op.drop_column("experiments", "issue_published_at")
     op.drop_column("experiments", "issue_branch")
     op.drop_column("experiments", "issue_number")
     op.drop_column("experiments", "issue_body")
@@ -252,7 +265,12 @@ MODELS = (
     PROJECT_ROOT / "agent_orchestration" / "app" / "experiments" / "models.py"
 )
 
-LINEAGE_COLUMNS = ("issue_body", "issue_number", "issue_branch")
+LINEAGE_COLUMNS = (
+    "issue_body",
+    "issue_number",
+    "issue_branch",
+    "issue_published_at",
+)
 
 
 def test_revision_chains_to_the_initial_revision() -> None:
@@ -2023,10 +2041,14 @@ def _branch_name_for(issue_number: int, title: str) -> str:
     모듈은 API 이미지에 없어 import할 수 없으므로 규칙을 복제한다 — 이 값은 표시용이며
     실제 브랜치는 워크플로가 만든다.
     """
-    stripped = re.sub(r"^\s*\[AR\]\s*", "", title)
+    stripped = re.sub(r"^\s*\[AR\]\s*", "", title, flags=re.IGNORECASE)
+    # 정본(`branch_name_for`)은 prefix를 떼고 남은 것이 공백뿐이면 거부한다. 이 가드가
+    # 없으면 그럴듯한 브랜치 이름을 만들어 내며 정본과 갈린다.
+    if not stripped.strip():
+        raise ValueError("issue title must not be empty after the prefix")
     slug = re.sub(r"[^a-z0-9]+", "-", stripped.lower()).strip("-")
     if not slug:
-        slug = "issue-" + hashlib.sha256(title.encode("utf-8")).hexdigest()[:12]
+        slug = "issue-" + hashlib.sha256(stripped.encode("utf-8")).hexdigest()[:12]
     return f"exp/{issue_number}-{slug}"
 
 
@@ -2047,11 +2069,14 @@ async def publish_experiment_issue(
     if experiment.issue_number is not None:
         return experiment
 
+    # `updated_at`으로 세면 안 된다 — `onupdate=func.now()`라 상태 전이·metric 기록 등
+    # 발행과 무관한 UPDATE도 갱신하므로, 며칠 전 발행된 실험이 오늘 수정되면 "오늘
+    # 발행"으로 잡혀 새 발행을 부당하게 막는다. 발행 시각 전용 컬럼을 쓴다.
     since = datetime.now(UTC) - timedelta(days=1)
     published_today = session.scalar(
         select(func.count())
         .select_from(Experiment)
-        .where(Experiment.issue_number.is_not(None), Experiment.updated_at >= since)
+        .where(Experiment.issue_published_at >= since)
     )
     if (published_today or 0) >= settings.issue_daily_limit:
         raise IssuePublicationLimitError(settings.issue_daily_limit)
@@ -2082,11 +2107,11 @@ async def publish_experiment_issue(
         settings, title=title, body=body, labels=(TRIGGER_LABEL,)
     )
 
-    with session.begin():
-        experiment.issue_number = reference.number
-        experiment.issue_branch = _branch_name_for(reference.number, title)
-        session.add(experiment)
-    session.refresh(experiment)
+    experiment.issue_number = reference.number
+    experiment.issue_branch = _branch_name_for(reference.number, title)
+    experiment.issue_published_at = datetime.now(UTC)
+    session.add(experiment)
+    session.commit()
     return experiment
 
 
