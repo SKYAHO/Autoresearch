@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from scripts import provision_rerank_loadtest_fixture as provisioner
 from autoresearch.loadtest.rerank_fixture import (
@@ -173,6 +176,20 @@ def test_k6_script_has_warmup_and_measurement_contract() -> None:
         assert f"rerank_measure_status_code_{status_code}" in script
 
 
+def test_k6_summary_includes_p99_for_exact_latency_reporting() -> None:
+    """k6 summary 설정은 측정 latency의 p99를 포함해야 한다."""
+    script = Path("loadtest/rerank.js").read_text()
+
+    trend_stats_match = re.search(
+        r"summaryTrendStats\s*:\s*(\[[^\]]*\])",
+        script,
+    )
+    assert trend_stats_match is not None
+
+    trend_stats = json.loads(trend_stats_match.group(1))
+    assert "p(99)" in trend_stats
+
+
 def test_k6_job_has_no_identity_or_token_mount() -> None:
     """k6 Job은 전용 KSA만 쓰고 토큰·Secret·권한 상승을 허용하지 않는다."""
     text = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
@@ -218,6 +235,7 @@ def test_k6_job_is_immutable_hardened_and_configmap_only() -> None:
 def test_manual_workflow_keeps_load_and_snapshot_identities_separate() -> None:
     """수동 workflow는 VU gate와 Prometheus 조회를 서로 다른 identity로 실행한다."""
     text = Path(".github/workflows/rerank-loadtest.yml").read_text()
+    workflow = yaml.load(text, Loader=yaml.BaseLoader)
 
     assert "workflow_dispatch:" in text
     assert "candidate_count:" in text and "- 24" in text and "- 200" in text
@@ -232,6 +250,17 @@ def test_manual_workflow_keeps_load_and_snapshot_identities_separate() -> None:
     assert "RERANK_PROMETHEUS_SNAPSHOT_READER_SA" in text
     assert text.count("google-github-actions/auth@v2") == 2
     assert text.count("google-github-actions/get-gke-credentials@v2") == 2
+    credential_steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job["steps"]
+        if step.get("uses") == "google-github-actions/get-gke-credentials@v2"
+    ]
+    assert len(credential_steps) == 2
+    assert all(
+        step["with"]["project_id"] == "${{ vars.GCP_PROJECT_ID }}"
+        for step in credential_steps
+    )
     assert "k6-summary-" in text and "metadata-" in text
     assert "creation_timestamp" in text and "completion_timestamp" in text
     assert "PROMETHEUS_SERVICE_PROXY:" in text

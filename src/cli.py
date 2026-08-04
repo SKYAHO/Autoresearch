@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
 """LightGBM 학습 파이프라인 Typer CLI.
 
-[파이프라인] 피처 조립 → 학습 → 평가 → champion 승격 구간의 진입점(배선)을
-담당한다: `python -m src.cli build-features / train-model / evaluate-model /
-run-pipeline / promote-model`.
+[파이프라인] 피처 조립 → 학습 → 평가 → comparison → champion 승격 구간의
+진입점(배선)을 담당한다: `python -m src.cli create-experiment-plan /
+build-features / train-model / evaluate-model / run-pipeline / verify-comparison /
+compare-paired-experiment / promote-model`.
 
-[기능] 각 단계 모듈에 인자를 전달하고 단계 순서를 정한다. run-pipeline은
-build-features → train-model → evaluate-model 순서로 실행하며, registered model
-버전 생성은 평가가 통과한 뒤에 수행한다(#421) — 평가가 실패하면 지표를 신뢰할
-수 없는 후보 버전이 registry에 남지 않는다.
+[기능] 각 단계 모듈에 인자를 전달하고 단계 순서를 정한다. #466의
+create-experiment-plan은 write-once GCS plan receipt를 만들고, 학습·comparison
+명령은 그 receipt를 전달하거나 검증할 evidence store를 생성한다. run-pipeline은
+build-features → train-model → evaluate-model 순서로 실행하며, registered model 버전
+생성은 평가가 통과한 뒤에 수행한다(#421) — 평가가 실패하면 지표를 신뢰할 수 없는
+후보 버전이 registry에 남지 않는다.
 학습 CLI의 `split_seed`·`model_seed`·`sampler_seed`는 각각 데이터 분할·모델 초기화·
 negative downsampling 난수를 분리하며, `run-pipeline`은 검증된 snapshot sidecar를
 요구한다(#423). `sweep-seeds`는 기존 `random_state` 호환 경로를 유지한다(#407).
+`build-features`/`run-pipeline`의 `--feature-service`·`--extra-features`는 조립 단계까지
+전달되어 실험 피처가 학습 CSV에 보존되게 한다(#454). `compare-paired-experiment`는
+조건별 실행이 끝난 뒤 seed별 baseline/candidate run을 짝지어 판정하고
+`comparison_passed`/`comparison_rejected`/`comparison_failed` 결과 payload를 남긴다(#454).
 
 [비책임] 실제 조립·학습·평가·승격 로직은 각 모듈(src/pipeline/*.py,
 src/tracking/promote.py)이 소유한다. DAG·스케줄·재시도는 인접 저장소
@@ -23,10 +30,13 @@ import math
 import os
 import sys
 import traceback
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Optional
 
 import typer
+from pydantic import ValidationError
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -34,10 +44,17 @@ sys.path.insert(0, PROJECT_ROOT)
 from src.pipeline import (  # noqa: E402
     build_training_dataset,
     evaluate,
+    paired_experiment,
     train,
     training_comparison,
 )
 from src.pipeline.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
+from src.pipeline.promotion_evidence import (  # noqa: E402
+    PromotionEvidenceStore,
+    PromotionEvidenceValidationError,
+    create_experiment_plan,
+)
+from src.pipeline.training_provenance import write_manifest_atomic  # noqa: E402
 from src.tracking import promote  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
     MODEL_PROMOTION_RESULT_CONTRACT,
@@ -72,6 +89,24 @@ def build_features(
             "(전역 CTR_TRAINING_MIN_ROWS_PER_DAY만)."
         ),
     ),
+    feature_service: Optional[str] = typer.Option(
+        None,
+        "--feature-service",
+        help=(
+            "조회할 Feast FeatureService 이름(기본 ctr_training_v1, #454). 실험용 파생 "
+            "피처를 가진 서비스를 지정하면 그 서비스로 PIT 조회하며, 실제로 쓴 이름이 "
+            "snapshot manifest에 기록됩니다."
+        ),
+    ),
+    extra_features: Optional[str] = typer.Option(
+        None,
+        "--extra-features",
+        help=(
+            "학습 CSV에 함께 보존할 실험 피처(쉼표 구분, #454). prod 계약 컬럼 뒤·라벨 앞에 "
+            "덧붙여 저장하며, 조회 결과에 없으면 CSV를 쓰기 전에 실패합니다. 물리 스키마가 "
+            "prod 데이터셋과 달라지므로 prod와 같은 출력 경로를 재사용하지 마십시오."
+        ),
+    ),
 ) -> None:
     """training_dataset.csv 생성 (offline feature store PIT 조회, #359 C2로 feast-only)."""
     build_training_dataset.main(
@@ -79,6 +114,10 @@ def build_features(
         events_start_date=events_start_date,
         events_end_date=events_end_date,
         **_coverage_kwargs(min_coverage_days),
+        **_assembly_feature_kwargs(
+            feature_service=feature_service,
+            extra_features=_parse_extra_features(extra_features),
+        ),
     )
 
 
@@ -113,6 +152,92 @@ def _parse_extra_features(value: Optional[str]) -> Optional[list[str]]:
         return None
     names = [name.strip() for name in value.split(",") if name.strip()]
     return names or None
+
+
+def _optional_cli_string(value: object) -> Optional[str]:
+    """직접 함수 호출의 Typer OptionInfo 기본값을 미지정(None)으로 정규화한다."""
+    return value if isinstance(value, str) else None
+
+
+def _assembly_feature_kwargs(
+    *, feature_service: object, extra_features: Optional[list[str]]
+) -> dict:
+    """지정된 조립 피처 옵션만 build-features 인자로 만든다(#454).
+
+    `_coverage_kwargs`와 같은 규칙이다 — 미지정 옵션을 None으로 넘겨 모듈 기본값을
+    덮지 않고, 아무것도 지정하지 않은 실행의 조립 인자를 기존과 완전히 동일하게 둔다.
+    """
+    kwargs: dict = {}
+    service = _optional_cli_string(feature_service)
+    if service is not None:
+        kwargs["feature_service"] = service
+    if extra_features:
+        kwargs["extra_features"] = extra_features
+    return kwargs
+
+
+def _promotion_evidence_kwargs(
+    *,
+    experiment_plan_receipt: object,
+    promotion_evidence_root: object,
+) -> dict[str, str]:
+    """두 promotion evidence 옵션을 함께 받았을 때만 train 인자로 만든다."""
+    receipt = _optional_cli_string(experiment_plan_receipt)
+    root = _optional_cli_string(promotion_evidence_root)
+    if (receipt is None) != (root is None):
+        typer.echo(
+            "[인자 오류] --experiment-plan-receipt와 --promotion-evidence-root는 "
+            "함께 지정해야 합니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    if receipt is None:
+        return {}
+    return {
+        "experiment_plan_receipt_path": receipt,
+        "promotion_evidence_root": root,
+    }
+
+
+@app.command("create-experiment-plan")
+def create_experiment_plan_command(
+    hypothesis_id: str = typer.Option(..., "--hypothesis-id", help="가설 식별자"),
+    control_id: str = typer.Option(..., "--control-id", help="대조군 식별자"),
+    candidate_id: str = typer.Option(..., "--candidate-id", help="후보 식별자"),
+    promotion_evidence_root: str = typer.Option(
+        ...,
+        "--promotion-evidence-root",
+        help="write-once plan을 기록할 gs://bucket/prefix root",
+    ),
+    output: Path = typer.Option(..., "--output", help="published plan receipt JSON 경로"),
+) -> None:
+    """학습 전에 immutable experiment plan을 publish하고 receipt를 원자 저장한다."""
+    try:
+        plan = create_experiment_plan(
+            hypothesis_id=hypothesis_id,
+            control_id=control_id,
+            candidate_ids=(candidate_id,),
+        )
+        receipt = PromotionEvidenceStore(promotion_evidence_root).publish_plan(plan)
+    except PromotionEvidenceValidationError as error:
+        typer.echo(
+            f"[실험 계획 publish 실패] {type(error).__name__}: "
+            "plan receipt를 만들지 않았습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+    try:
+        write_manifest_atomic(receipt, output)
+    except OSError as error:
+        typer.echo(
+            f"[실험 계획 receipt 저장 실패] {type(error).__name__}: "
+            "GCS plan은 이미 publish되었습니다. 아래 receipt를 안전한 경로에 저장한 뒤 "
+            "학습에 사용해 주세요.",
+            err=True,
+        )
+        typer.echo(receipt.model_dump_json(), err=True)
+        raise typer.Exit(code=1) from error
+    typer.echo(receipt.model_dump_json())
 
 
 @app.command()
@@ -156,8 +281,22 @@ def train_model(
             "데이터셋에 이미 있는 컬럼만 지정할 수 있으며, 이 모델은 champion 승격이 차단됩니다."
         ),
     ),
+    experiment_plan_receipt: Optional[str] = typer.Option(
+        None,
+        "--experiment-plan-receipt",
+        help="학습 전에 publish한 ExperimentPlanReceipt JSON 경로",
+    ),
+    promotion_evidence_root: Optional[str] = typer.Option(
+        None,
+        "--promotion-evidence-root",
+        help="plan/held-out metric receipt를 검증·기록할 gs://bucket/prefix root",
+    ),
 ) -> None:
     """LightGBM 모델 훈련 (train/val/test 3-way split, test는 완전 held-out)."""
+    promotion_evidence_kwargs = _promotion_evidence_kwargs(
+        experiment_plan_receipt=experiment_plan_receipt,
+        promotion_evidence_root=promotion_evidence_root,
+    )
     train.main(
         config_path=config_path,
         data_path=data_path,
@@ -173,6 +312,7 @@ def train_model(
         sampler_seed=sampler_seed,
         extra_features=_parse_extra_features(extra_features),
         experiment=experiment,
+        **promotion_evidence_kwargs,
     )
 
 
@@ -254,29 +394,59 @@ def run_pipeline(
         "--extra-features",
         help=(
             "실험 피처(쉼표 구분). prod 모델 계약을 수정하지 않고 그 뒤에 덧붙여 학습·평가합니다(#405). "
-            "데이터셋에 이미 있는 컬럼만 지정할 수 있으며, 이 모델은 champion 승격이 차단됩니다."
+            "조립 단계가 같은 목록을 CSV에 보존하므로(#454) FeatureService가 제공하는 파생 피처를 "
+            "그대로 쓸 수 있으며, 이 모델은 champion 승격이 차단됩니다."
         ),
+    ),
+    feature_service: Optional[str] = typer.Option(
+        None,
+        "--feature-service",
+        help=(
+            "조립이 조회할 Feast FeatureService 이름(기본 ctr_training_v1, #454). "
+            "실제로 쓴 이름이 snapshot manifest와 MLflow lineage에 기록됩니다."
+        ),
+    ),
+    experiment_plan_receipt: Optional[str] = typer.Option(
+        None,
+        "--experiment-plan-receipt",
+        help="학습 전에 publish한 ExperimentPlanReceipt JSON 경로",
+    ),
+    promotion_evidence_root: Optional[str] = typer.Option(
+        None,
+        "--promotion-evidence-root",
+        help="plan/held-out metric receipt를 검증·기록할 gs://bucket/prefix root",
     ),
 ) -> None:
     """전체 파이프라인 실행: build-features -> train-model -> evaluate-model -> 등록.
 
     등록(Model Registry 버전 생성)은 평가 통과 뒤에만 수행하는 별도 단계다(#421).
     조립 경로는 #359 C2로 feast-only다. `--extra-features`를 주면 prod 모델 계약을
-    건드리지 않고 실험 피처를 덧붙여 학습하며, 학습과 평가가 같은 목록을 공유한다(#405).
+    건드리지 않고 실험 피처를 덧붙여 학습하며, 조립·학습·평가가 같은 목록을 공유한다
+    (#405, 조립 보존은 #454). `--feature-service`로 조회할 FeatureService를 바꿀 수 있고,
+    실제로 쓴 이름이 MLflow lineage에 남는다.
     `--split-seed`, `--model-seed`, `--sampler-seed`는 verified comparison용으로
     분리해 전달하며, snapshot sidecar가 없거나 검증에 실패하면 학습을 시작하지 않는다.
     """
     experiment_features = _parse_extra_features(extra_features)
+    promotion_evidence_kwargs = _promotion_evidence_kwargs(
+        experiment_plan_receipt=experiment_plan_receipt,
+        promotion_evidence_root=promotion_evidence_root,
+    )
     typer.echo("=" * 70)
     typer.echo("전체 파이프라인 실행")
     typer.echo("=" * 70)
 
     typer.echo("\n[1/4] build-features 실행...")
+    # 실험 피처는 학습·평가만이 아니라 **조립에도** 넘긴다(#454) — 조립이 보존하지 않으면
+    # 학습의 --extra-features가 승격할 컬럼 자체가 CSV에 없어 실행이 성립하지 않는다.
     coverage = build_training_dataset.main(
         output_path=dataset_path,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
         **_coverage_kwargs(min_coverage_days),
+        **_assembly_feature_kwargs(
+            feature_service=feature_service, extra_features=experiment_features
+        ),
     )
 
     # 어떤 기간·소스로 학습했는지 MLflow run에 lineage로 남긴다(#359). C2로 조립 경로는
@@ -288,9 +458,11 @@ def run_pipeline(
     # 여기 도달 전에 멈춤), 이 시점엔 셋 다 항상 존재한다. 따라서 조립이 필수로 읽는
     # 값을 lineage는 "있으면 기록"으로 두던 비대칭을 없애고 무조건 기록해, registry나
     # 기간이 빠진 재현 불가 run이 남지 않게 한다(#359 C2 리뷰).
+    # FeatureService는 하드코딩하지 않고 조립이 실제로 쓴 이름을 남긴다(#454) —
+    # 실험 서비스로 조회한 run이 prod 서비스로 조회된 것처럼 기록되면 비교가 성립하지 않는다.
     data_source_params = {
         "assembly_source": "feast",
-        "feature_service": DEFAULT_SERVICE,
+        "feature_service": _optional_cli_string(feature_service) or DEFAULT_SERVICE,
         "events_start_date": events_start_date,
         "events_end_date": events_end_date,
         "feast_registry_path": os.environ["GCS_REGISTRY_PATH"],
@@ -332,6 +504,7 @@ def run_pipeline(
         extra_features=experiment_features,
         experiment=experiment,
         require_snapshot=True,
+        **promotion_evidence_kwargs,
     )
 
     # dataset_path(방금 만든 train+val+test 전체)는 넘기지 않는다: evaluate는
@@ -374,15 +547,24 @@ def verify_comparison(
     output: Path = typer.Option(
         ..., "--output", help="검증된 comparison manifest를 저장할 로컬 JSON 경로"
     ),
+    promotion_evidence_root: Optional[str] = typer.Option(
+        None,
+        "--promotion-evidence-root",
+        help="plan/held-out metric receipt를 재검증할 gs://bucket/prefix root",
+    ),
 ) -> None:
-    """두 MLflow 학습 run의 snapshot·split·seed 공정성을 검증한다(#423)."""
+    """두 MLflow run의 공정성과 선택적 promotion evidence를 검증한다(#423, #466)."""
+    comparison_kwargs: dict[str, object] = {
+        "baseline_run_id": baseline_run_id,
+        "challenger_run_id": challenger_run_id,
+        "output_path": output,
+    }
     try:
-        result = training_comparison.verify_training_comparison(
-            baseline_run_id=baseline_run_id,
-            challenger_run_id=challenger_run_id,
-            output_path=output,
-        )
-    except training_comparison.ComparisonValidationError as error:
+        root = _optional_cli_string(promotion_evidence_root)
+        if root is not None:
+            comparison_kwargs["promotion_evidence_store"] = PromotionEvidenceStore(root)
+        result = training_comparison.verify_training_comparison(**comparison_kwargs)
+    except (PromotionEvidenceValidationError, training_comparison.ComparisonValidationError) as error:
         # 예외 원문은 backend credential이나 signed URL을 포함할 수 있으므로 CLI에는
         # type과 고정된 안전 진단만 출력한다.
         typer.echo(
@@ -393,6 +575,95 @@ def verify_comparison(
         raise typer.Exit(code=1) from error
 
     typer.echo(result.model_dump_json(indent=2))
+
+
+@app.command()
+def compare_paired_experiment(
+    request: Path = typer.Option(
+        ..., "--request", help="paired-offline-experiment-v1 요청 JSON 경로"
+    ),
+    promotion_evidence_root: str = typer.Option(
+        ...,
+        "--promotion-evidence-root",
+        help="plan/held-out metric receipt를 재검증할 gs://bucket/prefix root",
+    ),
+    output: Path = typer.Option(
+        ..., "--output", help="비교 결과 payload를 게시할 로컬 JSON 경로"
+    ),
+    workspace: Optional[Path] = typer.Option(
+        None,
+        "--workspace",
+        help="seed별 verified comparison manifest를 둘 디렉터리(기본: 임시 디렉터리)",
+    ),
+) -> None:
+    """baseline/candidate paired 실행 결과를 비교·판정한다(#454).
+
+    조건별 학습은 서로 다른 이미지에서 끝난 뒤이므로, 이 명령은 실행이 아니라
+    **집계·판정**만 한다. 요청 검증이나 comparison 재검증이 실패하면 판정 엔진을
+    부르지 않고 `comparison_failed`를 남긴다 — 판정할 수 없는 상태를 통과로
+    해석하지 않기 위해서다.
+
+    exit code: 통과·기각은 0(정상 판정), 실패는 1, 인자·요청 계약 오류는 2.
+    """
+    try:
+        payload = json.loads(Path(request).read_text(encoding="utf-8"))
+        parsed = paired_experiment.PairedExperimentRequest.model_validate(payload)
+    except (OSError, json.JSONDecodeError, ValidationError) as error:
+        # 요청 payload 원문에는 URI·식별자가 섞여 있으므로 CLI에는 오류 종류만 남긴다.
+        typer.echo(
+            f"[요청 검증 실패] {type(error).__name__}: "
+            "paired-offline-experiment-v1 요청을 읽지 못했습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from error
+
+    try:
+        store = PromotionEvidenceStore(promotion_evidence_root)
+    except PromotionEvidenceValidationError as error:
+        typer.echo(
+            f"[요청 검증 실패] {type(error).__name__}: "
+            "promotion evidence root가 올바르지 않습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from error
+
+    with ExitStack() as stack:
+        if workspace is None:
+            # workspace를 명시하지 않으면 seed별 comparison manifest는 실행 동안만
+            # 필요하다. 지정한 경우에는 재사용·보존이 목적이므로 지우지 않는다.
+            resolved_workspace = Path(
+                stack.enter_context(TemporaryDirectory(prefix="paired_experiment_"))
+            )
+        else:
+            resolved_workspace = Path(workspace)
+        try:
+            result = paired_experiment.evaluate_paired_experiment(
+                parsed,
+                promotion_evidence_store=store,
+                workspace=resolved_workspace,
+            )
+        except OSError as error:
+            # workspace를 만들지 못하는 등 판정 자체를 시작할 수 없는 경우다.
+            # traceback을 그대로 흘리지 않고 안전한 진단만 남긴다.
+            typer.echo(
+                f"[비교 실행 실패] {type(error).__name__}: "
+                "paired 비교를 시작하지 못했습니다.",
+                err=True,
+            )
+            raise typer.Exit(code=1) from error
+        try:
+            paired_experiment.write_result(result, Path(output))
+        except OSError as error:
+            typer.echo(
+                f"[결과 게시 실패] {type(error).__name__}: "
+                "비교 결과 파일을 남기지 못했습니다.",
+                err=True,
+            )
+            raise typer.Exit(code=1) from error
+
+    typer.echo(result.model_dump_json())
+    if result.outcome == paired_experiment.OUTCOME_FAILED:
+        raise typer.Exit(code=1)
 
 
 @app.command()

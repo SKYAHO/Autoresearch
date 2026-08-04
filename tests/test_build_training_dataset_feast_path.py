@@ -1,8 +1,8 @@
 """build_training_dataset의 --assembly-source feast 경로 단위 테스트 (#358).
 
 실제 feast/BigQuery 없이 glue만 검증한다: 인자 검증, spine→조회→CSV 컬럼 선택,
-누락 피처 가드. feast 조회 자체는 tests/test_feast_retrieval_integration_feast.py가
-실물(로컬 File store)로 검증한다.
+누락 피처 가드, 실험 피처 보존 계약(#454). feast 조회 자체는
+tests/test_feast_retrieval_integration_feast.py가 실물(로컬 File store)로 검증한다.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from src.features import feast_retrieval
-from src.features.model_contract import MODEL_FEATURE_COLUMNS
+from src.features.model_contract import MODEL_FEATURE_COLUMNS, FeatureContractError
 from src.pipeline import build_training_dataset as btd
 from src.pipeline.training_provenance import (
     ProvenanceValidationError,
@@ -77,7 +77,13 @@ def test_drop_user_dynamic_gap_rows() -> None:
     assert out["clicked"].tolist() == [1, 0]
 
 
-def _fake_env(monkeypatch, features: pd.DataFrame) -> None:
+def _fake_env(monkeypatch, features: pd.DataFrame) -> dict:
+    """조립 경로의 외부 의존(BQ spine·GCS registry·feast store)을 스텁한다.
+
+    Returns:
+        조회 스텁이 실제로 받은 인자(`service`) — FeatureService 전달을 검증하는
+        테스트가 읽는다(#454).
+    """
     spine = pd.DataFrame(
         [{"user_id": "u1", "video_id": "v1",
           "event_timestamp": pd.Timestamp("2026-07-02", tz="UTC"), "clicked": 1}]
@@ -93,14 +99,22 @@ def _fake_env(monkeypatch, features: pd.DataFrame) -> None:
             sha256=hashlib.sha256(b"registry-v1").hexdigest(),
         )
 
+    seen: dict = {}
+
+    def fake_retrieve(store, sp, *, service=feast_retrieval.DEFAULT_SERVICE):
+        seen["service"] = service
+        return features
+
     monkeypatch.setattr(btd, "_download_pinned_registry", fake_download)
     monkeypatch.setattr(feast_retrieval, "build_offline_feature_store", lambda *a, **k: object())
-    monkeypatch.setattr(feast_retrieval, "retrieve_training_features", lambda store, sp: features)
+    monkeypatch.setattr(feast_retrieval, "retrieve_training_features", fake_retrieve)
+    return seen
 
 
 def test_assemble_pins_registry_and_writes_snapshot(tmp_path, monkeypatch) -> None:
     features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
     features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
     _fake_env(monkeypatch, features)
     seen: dict[str, str] = {}
 
@@ -228,7 +242,8 @@ def test_download_pinned_registry_rejects_missing_generation(tmp_path) -> None:
 def test_assemble_via_feast_writes_contract_columns(tmp_path, monkeypatch) -> None:
     features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
     features["clicked"] = 1
-    features["user_id"] = "u1"  # 여분 컬럼은 버려져야 한다
+    features["user_id"] = "u1"  # 패스스루 컬럼: 라벨 뒤에 보존된다(#505)
+    features["surplus"] = 9  # 계약에 없는 여분 컬럼은 여전히 버려진다
     _fake_env(monkeypatch, features)
 
     out_path = str(tmp_path / "out.csv")
@@ -237,8 +252,8 @@ def test_assemble_via_feast_writes_contract_columns(tmp_path, monkeypatch) -> No
     btd._assemble_via_feast(out_path, "2026-07-07", "2026-07-21", min_coverage_days=0)
 
     written = pd.read_csv(out_path)
-    # 정확히 21피처 + clicked, 순서도 계약대로.
-    assert list(written.columns) == [*MODEL_FEATURE_COLUMNS, "clicked"]
+    # 21피처 + clicked 접두부는 불변이고, 패스스루만 맨 끝에 붙는다(#505).
+    assert list(written.columns) == [*MODEL_FEATURE_COLUMNS, "clicked", "user_id"]
     assert len(written) == 1
     assert int(written["clicked"].iloc[0]) == 1
 
@@ -253,6 +268,7 @@ def test_assemble_via_feast_empty_warns_and_reports_counts(
         row[c] = None  # 전 UserDynamic null → gap 드롭 대상
     features = pd.DataFrame([row])
     features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
     _fake_env(monkeypatch, features)
 
     out_path = str(tmp_path / "out.csv")
@@ -314,6 +330,7 @@ def test_assemble_via_feast_returns_coverage_for_lineage(tmp_path, monkeypatch) 
     # 조립이 실측 커버리지를 돌려줘야 run-pipeline이 MLflow lineage에 남길 수 있다(#464 리뷰).
     features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
     features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
     _fake_env(monkeypatch, features)
 
     coverage = btd._assemble_via_feast(
@@ -327,3 +344,233 @@ def test_assemble_via_feast_returns_coverage_for_lineage(tmp_path, monkeypatch) 
     params = coverage.as_lineage_params(min_days=0)
     assert params["spine_coverage_guard"] == "off"
     assert params["spine_requested_days"] == "3"
+
+
+# --- 실험 피처 보존 계약 (#454) ---
+
+
+def test_assemble_via_feast_preserves_extra_feature_columns(tmp_path, monkeypatch) -> None:
+    # 선언한 실험 피처는 prod 계약 뒤·라벨 앞에 그대로 보존된다. 이 보존이 없으면
+    # FeatureService에 파생 피처를 추가해도 학습 직전에 잘려 가설이 실행되지 않는다.
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    features["views_per_day"] = 12.5
+    features["like_per_view"] = 0.25
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
+    features["surplus"] = 9  # 선언하지 않은 여분 컬럼은 여전히 버려져야 한다
+    _fake_env(monkeypatch, features)
+
+    out_path = str(tmp_path / "out.csv")
+    btd._assemble_via_feast(
+        out_path,
+        "2026-07-07",
+        "2026-07-21",
+        min_coverage_days=0,
+        extra_features=["views_per_day", "like_per_view"],
+    )
+
+    written = pd.read_csv(out_path)
+    assert list(written.columns) == [
+        *MODEL_FEATURE_COLUMNS,
+        "views_per_day",
+        "like_per_view",
+        "clicked",
+        "user_id",
+    ]
+    assert float(written["views_per_day"].iloc[0]) == 12.5
+    assert float(written["like_per_view"].iloc[0]) == 0.25
+
+
+def test_assemble_via_feast_keeps_extra_feature_nulls(tmp_path, monkeypatch) -> None:
+    # 추가 컬럼의 null은 cold-start 기본값으로 채우지 않는다 — 결측의 의미는 가설
+    # 소유자가 정의한다(prod 계약 컬럼만 apply_cold_start_defaults 대상).
+    features = pd.DataFrame([{c: None for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
+    features["recent_click_count_7d"] = 5  # UserDynamic gap 드롭을 피한다
+    features["views_per_day"] = None
+    _fake_env(monkeypatch, features)
+
+    out_path = str(tmp_path / "out.csv")
+    btd._assemble_via_feast(
+        out_path,
+        "2026-07-07",
+        "2026-07-21",
+        min_coverage_days=0,
+        extra_features=["views_per_day"],
+    )
+
+    written = pd.read_csv(out_path)
+    assert written["views_per_day"].isna().all()
+    # prod 계약 컬럼의 cold-start 규칙은 그대로다.
+    assert written["category_id"].iloc[0] == "unknown"
+    assert float(written["view_count"].iloc[0]) == 0.0
+
+
+def test_assemble_via_feast_fails_closed_when_extra_feature_missing(
+    tmp_path, monkeypatch
+) -> None:
+    # 조회 결과에 선언한 추가 컬럼이 없으면 CSV를 쓰기 **전에** 실패한다. 실패 메시지는
+    # 어떤 FeatureService로 조회했는지와 누락 컬럼을 함께 알린다.
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    _fake_env(monkeypatch, features)
+
+    output_path = tmp_path / "out.csv"
+    with pytest.raises(ValueError, match="views_per_day") as error:
+        btd._assemble_via_feast(
+            str(output_path),
+            "2026-07-07",
+            "2026-07-21",
+            min_coverage_days=0,
+            feature_service="ctr_experiment_v2",
+            extra_features=["views_per_day"],
+        )
+
+    assert "ctr_experiment_v2" in str(error.value)
+    assert not output_path.exists()
+    assert not snapshot_manifest_path(output_path).exists()
+
+
+@pytest.mark.parametrize(
+    ("extra_features", "expected"),
+    [
+        (["views_per_day", "views_per_day"], "중복"),
+        (["category_id"], "prod 계약"),
+        (["clicked"], "clicked"),
+        (["   "], "비었습니다"),
+    ],
+)
+def test_assemble_via_feast_rejects_invalid_extra_feature_names(
+    tmp_path, monkeypatch, extra_features, expected
+) -> None:
+    # 이름 검증은 비싼 조회 **전에** 한다(require_spine_coverage와 같은 이유) —
+    # 어차피 실패할 조립에 get_historical_features 비용을 쓰지 않는다.
+    called = {"store": 0, "retrieve": 0}
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    _fake_env(monkeypatch, features)
+    monkeypatch.setattr(
+        btd,
+        "load_training_entity_spine",
+        lambda s, e: pytest.fail("이름 검증 전에 spine을 조회했습니다"),
+    )
+    monkeypatch.setattr(
+        feast_retrieval,
+        "build_offline_feature_store",
+        lambda *a, **k: called.__setitem__("store", called["store"] + 1),
+    )
+    monkeypatch.setattr(
+        feast_retrieval,
+        "retrieve_training_features",
+        lambda *a, **k: called.__setitem__("retrieve", called["retrieve"] + 1),
+    )
+
+    with pytest.raises(FeatureContractError, match=expected):
+        btd._assemble_via_feast(
+            str(tmp_path / "out.csv"),
+            "2026-07-07",
+            "2026-07-21",
+            min_coverage_days=0,
+            extra_features=extra_features,
+        )
+
+    assert called == {"store": 0, "retrieve": 0}
+
+
+def test_assemble_via_feast_forwards_feature_service_and_records_it(
+    tmp_path, monkeypatch
+) -> None:
+    # 지정한 FeatureService로 조회하고, 그 이름을 snapshot manifest에 기록한다 —
+    # 기본값을 하드코딩하면 실험 조립이 prod 서비스로 조회된 것처럼 남는다.
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
+    seen = _fake_env(monkeypatch, features)
+
+    output_path = tmp_path / "out.csv"
+    btd._assemble_via_feast(
+        str(output_path), "2026-07-07", "2026-07-21", min_coverage_days=0,
+        feature_service="ctr_experiment_v2",
+    )
+
+    assert seen["service"] == "ctr_experiment_v2"
+    assert load_training_snapshot_manifest(output_path).feature_service == "ctr_experiment_v2"
+
+
+def test_assemble_via_feast_defaults_to_prod_feature_service(tmp_path, monkeypatch) -> None:
+    # 미지정이면 기존 계약(ctr_training_v1) 그대로다.
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
+    seen = _fake_env(monkeypatch, features)
+
+    output_path = tmp_path / "out.csv"
+    btd._assemble_via_feast(str(output_path), "2026-07-07", "2026-07-21", min_coverage_days=0)
+
+    assert seen["service"] == feast_retrieval.DEFAULT_SERVICE
+    manifest = load_training_snapshot_manifest(output_path)
+    assert manifest.feature_service == feast_retrieval.DEFAULT_SERVICE
+
+
+def test_main_forwards_feature_service_and_extra_features(monkeypatch) -> None:
+    # main은 배선만 한다 — 두 옵션이 조립까지 도달하지 않으면 CLI 옵션이 조용히 무시된다.
+    seen: dict = {}
+    monkeypatch.setattr(btd, "_verify_assembly_environment", lambda: None)
+    monkeypatch.setattr(
+        btd,
+        "_assemble_via_feast",
+        lambda *args, **kwargs: seen.update(args=args, kwargs=kwargs),
+    )
+
+    btd.main(
+        output_path="out.csv",
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-08",
+        feature_service="ctr_experiment_v2",
+        extra_features=["views_per_day"],
+    )
+
+    assert seen["kwargs"]["feature_service"] == "ctr_experiment_v2"
+    assert seen["kwargs"]["extra_features"] == ["views_per_day"]
+
+
+def test_assemble_via_feast_preserves_passthrough_columns(tmp_path, monkeypatch) -> None:
+    """평가 전용 패스스루 컬럼은 라벨 **뒤**에 보존된다(#505).
+
+    유저 단위 grouped 지표를 재려면 행이 누구 것인지 알아야 하는데, 지금까지 조립이
+    ``user_id``를 잘라내 그룹화 자체가 불가능했다. 기존 22컬럼 접두부는 그대로 두고
+    맨 끝에만 붙여 ONNX 텐서 순서와 기존 소비자를 건드리지 않는다.
+    """
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    features["user_id"] = "u1"
+    _fake_env(monkeypatch, features)
+
+    out_path = str(tmp_path / "out.csv")
+    btd._assemble_via_feast(out_path, "2026-07-07", "2026-07-21", min_coverage_days=0)
+
+    written = pd.read_csv(out_path)
+    assert list(written.columns) == [*MODEL_FEATURE_COLUMNS, "clicked", "user_id"]
+    assert written["user_id"].iloc[0] == "u1"
+
+
+def test_assemble_via_feast_fails_closed_when_passthrough_missing(
+    tmp_path, monkeypatch
+) -> None:
+    """패스스루 컬럼이 없으면 CSV를 쓰기 **전에** 멈춘다(#505).
+
+    조용히 빠뜨리면 grouped 지표를 못 재는 데이터셋이 만들어지고, 그 사실은 평가
+    단계에 가서야 드러난다. 측정 대상을 잃은 채로 실험이 진행되는 것이 이 작업이
+    막으려는 실패 모드이므로, 조립 단계에서 fail-closed로 끊는다(#454 선례).
+    """
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1  # user_id 없음
+    _fake_env(monkeypatch, features)
+
+    out_path = tmp_path / "out.csv"
+    with pytest.raises(FeatureContractError, match="user_id"):
+        btd._assemble_via_feast(
+            str(out_path), "2026-07-07", "2026-07-21", min_coverage_days=0
+        )
+    assert not out_path.exists()

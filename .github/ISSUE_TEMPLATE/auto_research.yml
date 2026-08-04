@@ -1,7 +1,7 @@
 name: Auto Research (에이전트 자율 실험)
 description: 에이전트가 읽고 직접 수행할 실험 가설을 등록합니다.
 title: "[AR] "
-labels: ["experiment", "auto-research"]
+labels: ["auto-experiment"]
 body:
   - type: markdown
     attributes:
@@ -45,13 +45,69 @@ body:
       required: true
 
   - type: input
-    id: success_criteria
+    id: primary_metric_name
     attributes:
-      label: 성공 기준 — 주 지표 1개와 수치 임계
+      label: 주 지표 이름
       description: |
-        **한 줄로 직접 적으세요(기본값 없음).** 이게 없으면 에이전트가 "지지/기각"을
-        판정할 수 없습니다. 임계 미달은 기각으로 기록되며, 기각도 유효한 결과입니다.
-      placeholder: 예) held-out test ROC-AUC, baseline 대비 +0.002 이상
+        판정에 사용할 지표 하나를 적습니다. 영문자로 시작하고 영문자·숫자·`.`·`_`·`-`만
+        사용할 수 있습니다(1~64자).
+      placeholder: 예) roc_auc
+    validations:
+      required: true
+
+  - type: dropdown
+    id: primary_metric_direction
+    attributes:
+      label: 주 지표 방향
+      description: 주 지표가 클수록 좋은지, 작을수록 좋은지 선택합니다.
+      options:
+        - higher_is_better
+        - lower_is_better
+      default: 0
+    validations:
+      required: true
+
+  - type: input
+    id: minimum_primary_delta
+    attributes:
+      label: 최소 주 지표 개선폭
+      description: baseline 대비 필요한 최소 개선폭입니다. 유한한 0 이상 숫자를 적습니다.
+      placeholder: 예) 0.002
+    validations:
+      required: true
+
+  - type: input
+    id: guardrail_metric_name
+    attributes:
+      label: Guardrail 지표 이름
+      description: |
+        허용 악화를 제한할 보조 지표입니다. 사용하지 않으면 `없음`을 유지하고, 사용하면
+        주 지표와 같은 이름 규칙을 적용합니다.
+      value: 없음
+    validations:
+      required: true
+
+  - type: dropdown
+    id: guardrail_metric_direction
+    attributes:
+      label: Guardrail 지표 방향
+      description: Guardrail을 사용하지 않으면 `not_applicable`을 유지합니다.
+      options:
+        - not_applicable
+        - higher_is_better
+        - lower_is_better
+      default: 0
+    validations:
+      required: true
+
+  - type: input
+    id: maximum_guardrail_regression
+    attributes:
+      label: 최대 Guardrail 악화폭
+      description: |
+        Guardrail을 사용하면 허용할 최대 악화폭을 유한한 0 이상 숫자로 적습니다.
+        사용하지 않으면 `없음`을 유지합니다.
+      value: 없음
     validations:
       required: true
 
@@ -80,18 +136,58 @@ body:
     validations:
       required: true
 
-  - type: textarea
-    id: reproducibility
+  - type: input
+    id: dataset_snapshot
     attributes:
-      label: 재현 조건 고정값
+      label: 데이터셋 스냅샷
       description: |
-        baseline과 변경군의 A/B가 성립하려면 split·seed가 같아야 합니다.
-        시드 1개로 1회만 돌리면 지표 차이가 노이즈인지 판정할 수 없어(#396이 그 사례),
-        기본값을 시드 3개로 둡니다. 줄이려면 그 이유를 가설에 적으세요.
-      value: |
-        - test_size / val_size: 0.2 / 0.2
-        - 시드 목록: 42, 43, 44
-        - 반복 시드 수: 3
+        baseline과 변경군이 함께 사용할 불변 데이터 식별자를 적습니다(1~256자).
+      placeholder: 예) bq://project.dataset.table@2026-07-31
+    validations:
+      required: true
+
+  - type: input
+    id: random_seeds
+    attributes:
+      label: 랜덤 시드 목록
+      description: 중복 없는 0 이상 정수를 쉼표로 구분합니다.
+      value: "42, 43, 44"
+    validations:
+      required: true
+
+  - type: input
+    id: split_seed
+    attributes:
+      label: Split 시드
+      description: train/test/validation 분할에 사용할 0 이상 정수입니다.
+      value: "42"
+    validations:
+      required: true
+
+  - type: input
+    id: test_size
+    attributes:
+      label: Test 비율
+      description: 0 초과 1 미만 값입니다. Validation 비율과 합은 1보다 작아야 합니다.
+      value: "0.2"
+    validations:
+      required: true
+
+  - type: input
+    id: validation_size
+    attributes:
+      label: Validation 비율
+      description: 0 초과 1 미만 값입니다. Test 비율과 합은 1보다 작아야 합니다.
+      value: "0.2"
+    validations:
+      required: true
+
+  - type: input
+    id: training_config_ref
+    attributes:
+      label: 학습 설정 참조
+      description: 재현할 수 있는 학습 설정 파일·artifact·commit 참조를 적습니다(1~256자).
+      placeholder: 예) configs/train/lgbm.yaml@abc1234
     validations:
       required: true
 

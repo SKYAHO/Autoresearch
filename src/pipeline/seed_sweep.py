@@ -109,6 +109,15 @@ def _t_critical_95(degrees_of_freedom: int) -> float:
     return _T_CRITICAL_95[_T_CRITICAL_LARGEST_DF]
 
 
+def t_critical_95(degrees_of_freedom: int) -> float:
+    """양측 95% t 신뢰구간에 실제 적용할 임계값을 반환한다.
+
+    통계 결과를 다른 immutable evidence 계약에 옮길 때도 표준오차가 0인 경우를
+    포함해 적용값을 정확히 기록하도록, 내부 표 조회를 공개한다.
+    """
+    return _t_critical_95(degrees_of_freedom)
+
+
 def _t_critical_note(degrees_of_freedom: int) -> str:
     """임계값이 표의 하한으로 대체됐으면 그 사실을 `reason`에 남길 꼬리표를 만든다.
 

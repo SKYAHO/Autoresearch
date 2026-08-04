@@ -25,11 +25,17 @@ prod와 분리되고 트래킹 URI 기본값이 로컬 파일 스토어가 된�
 `require_snapshot=True` 호출은 sidecar가 없거나 현재 CSV와 불일치할 때 모델 fit 전에
 실패한다.
 
+승격 evidence 옵션(plan receipt + evidence root)을 주면 held-out test split에서
+`HELD_OUT_METRIC_NAMES`(ROC-AUC·PR-AUC·Log Loss)를 계산해 지표마다 write-once
+`HeldOutMetricEvidence`를 게시한다(#493). 주 지표 ROC-AUC receipt만 기존
+`reproducibility/metrics/` artifact 경로로도 남겨 비교 계약을 유지한다.
+
 [비책임] 데이터셋 조립(src/pipeline/build_training_dataset.py), held-out test set
 채점(src/pipeline/evaluate.py), champion 승격 게이트(src/tracking/promote.py),
 서빙 로드(src/serving/model_loader.py)는 이 모듈이 다루지 않는다.
 """
 
+import math
 import os
 import shutil
 import sys
@@ -49,6 +55,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 import mlflow  # noqa: E402
+import mlflow.onnx  # noqa: E402
 
 from src.models.lgbm_model import LGBMModel  # noqa: E402
 from src.models.downsampling import downsample_negatives  # noqa: E402
@@ -73,12 +80,30 @@ from src.tracking.namespace import (  # noqa: E402
 )
 from src.tracking.logger import (  # noqa: E402
     log_artifact,
+    log_artifacts,
     log_dataset,
     log_metrics,
-    log_onnx_model,
     log_parameters,
 )
+from src.tracking.model_package import (  # noqa: E402
+    ModelPackageManifest,
+    load_manifest,
+    save_manifest,
+    verify_model_package,
+)
 from src.tracking.registry import register_model  # noqa: E402
+from src.pipeline.evaluate import (  # noqa: E402
+    HELD_OUT_METRIC_NAMES,
+    evaluate_held_out_metrics,
+)
+from src.pipeline.promotion_evidence import (  # noqa: E402
+    DEFAULT_HELD_OUT_METRIC_NAME,
+    ExperimentPlanReceipt,
+    HeldOutMetricEvidence,
+    HeldOutMetricReceipt,
+    PromotionEvidenceStore,
+    PromotionEvidenceValidationError,
+)
 from src.pipeline.training_provenance import (  # noqa: E402
     ProvenanceValidationError,
     TrainingSnapshotManifest,
@@ -120,6 +145,12 @@ class TrainingOutcome:
             (등록을 미뤘거나 등록에 실패했으면 None).
         pending_registration: 등록을 미뤘을 때 호출자가 평가 통과 뒤
             `register_pending_model()`에 넘길 정보(미루지 않았으면 None).
+        held_out_metric_receipt: 주 지표(ROC-AUC) held-out evidence receipt.
+            `held_out_metric_receipts`의 부분집합이며, 기존 소비 계약
+            (training_comparison.py)이 이 하나만 읽는다.
+        held_out_metric_receipts: 이 run이 게시한 held-out evidence receipt 전부
+            (`HELD_OUT_METRIC_NAMES` 순서, #493 D3). 승격 evidence를 끄고 학습하면
+            빈 튜플이다.
     """
 
     sampling_rate: float
@@ -129,6 +160,8 @@ class TrainingOutcome:
     # 시드 스윕이 시드별로 모아 평균·편차를 내는 지표(#407). 여기서 돌려주지 않으면
     # 반복 실행이 MLflow run을 다시 조회해야 한다.
     val_roc_auc: float = float("nan")
+    held_out_metric_receipt: HeldOutMetricReceipt | None = None
+    held_out_metric_receipts: tuple[HeldOutMetricReceipt, ...] = ()
 
 
 def require_binary_labels(labels: pd.Series, *, stage: str) -> tuple[int, int]:
@@ -346,6 +379,27 @@ def _log_reproducibility_artifacts(
         )
 
 
+def _load_experiment_plan_receipt(path: Path) -> ExperimentPlanReceipt:
+    """로컬 전달 receipt를 strict 계약으로 읽되 raw body를 오류에 싣지 않는다."""
+    try:
+        return ExperimentPlanReceipt.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise PromotionEvidenceValidationError(
+            "experiment plan receipt를 읽거나 검증할 수 없습니다"
+        ) from None
+
+
+def _log_held_out_metric_receipt(receipt: HeldOutMetricReceipt) -> None:
+    """metric receipt를 MLflow 좌표 탐색용 복사본으로만 기록한다."""
+    with TemporaryDirectory(prefix="held_out_metric_receipt_") as temporary_dir:
+        receipt_path = Path(temporary_dir) / "held_out_metric_receipt.json"
+        write_manifest_atomic(receipt, receipt_path)
+        log_artifact(
+            local_path=str(receipt_path),
+            artifact_path="reproducibility/metrics",
+        )
+
+
 def main(
     config_path: str = None,
     data_path: str = None,
@@ -364,6 +418,9 @@ def main(
     extra_features: Optional[Sequence[str]] = None,
     experiment: Optional[str] = None,
     require_snapshot: bool = False,
+    experiment_plan_receipt_path: str | None = None,
+    promotion_evidence_root: str | None = None,
+    promotion_evidence_store: PromotionEvidenceStore | None = None,
 ) -> TrainingOutcome:
     """LightGBM 모델을 학습하고 MLflow에 기록한다.
 
@@ -376,6 +433,29 @@ def main(
     Returns:
         학습 결과(TrainingOutcome).
     """
+    promotion_evidence_enabled = experiment_plan_receipt_path is not None
+    if promotion_evidence_enabled != (promotion_evidence_root is not None):
+        raise ValueError(
+            "experiment_plan_receipt_path와 promotion_evidence_root는 함께 지정해야 합니다"
+        )
+    if promotion_evidence_store is not None and not promotion_evidence_enabled:
+        raise ValueError(
+            "promotion_evidence_store는 promotion evidence 옵션과 함께만 지정할 수 있습니다"
+        )
+    if promotion_evidence_enabled and not require_snapshot:
+        raise ValueError("promotion evidence를 사용하려면 require_snapshot=True가 필요합니다")
+
+    experiment_plan_receipt: ExperimentPlanReceipt | None = None
+    evidence_store: PromotionEvidenceStore | None = None
+    if promotion_evidence_enabled:
+        experiment_plan_receipt = _load_experiment_plan_receipt(
+            Path(experiment_plan_receipt_path)
+        )
+        evidence_store = promotion_evidence_store or PromotionEvidenceStore(
+            promotion_evidence_root
+        )
+        evidence_store.verify_plan_receipt(experiment_plan_receipt)
+
     project_root = get_project_root()
     if config_path is None:
         config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
@@ -551,6 +631,7 @@ def main(
                     "test": test_positions.tolist(),
                 },
                 feature_columns=feature_columns,
+                experiment_plan_receipt=experiment_plan_receipt,
             )
             write_manifest_atomic(split_manifest, split_manifest_path_local)
             split_manifest_sha256 = sha256_file(split_manifest_path_local)
@@ -573,6 +654,10 @@ def main(
         # 반환(no-op)한다. realized_sampling_rate는 라운딩으로 nominal과 미세하게
         # 다를 수 있어 실현값을 이후 보정·기록에 쓴다.
         nominal_sampling_rate = float(config["model"].get("sampling_rate", 1.0))
+        if not math.isfinite(nominal_sampling_rate) or not (
+            0.0 < nominal_sampling_rate <= 1.0
+        ):
+            raise ValueError("sampling_rate는 유한한 (0, 1] 값이어야 합니다")
         realized_sampling_rate = 1.0
         if nominal_sampling_rate < 1.0:
             print("\n[Step 3b] Negative downsampling (train split only)...")
@@ -719,49 +804,108 @@ def main(
         # artifact 경로(model/, features/)는 서빙 로더(src/serving/model_loader.py)의
         # MLflow 다운로드 경로 상수와 계약이다 — 변경 시 양쪽을 함께 갱신한다.
         log_artifact(local_path=model_path, artifact_path="model")
-        log_artifact(local_path=feature_columns_path, artifact_path="features")
-        log_artifact(local_path=categorical_columns_path, artifact_path="features")
 
-        # [Step 8b] 모델 바이너리 ONNX 전환(#302/#179). joblib 저장·로깅 직후 같은 모델을
-        # ONNX로 변환해 model_onnx/로 로깅한다 — 서빙(model_loader)이 이 아티팩트가 있으면
-        # onnxruntime로 추론해 pickle 역직렬화 위험을 없앤다. 입력은 feature_columns 순서의
-        # 단일 float32 텐서([None, n_features])이고, 카테고리는 서빙이 학습 카테고리로 캐스팅해
-        # 뽑은 정수 코드다. 변환 실패는 best-effort로 흘려보낸다 — joblib 모델·아티팩트는 이미
-        # 저장됐고, 서빙은 model_onnx/가 없으면 joblib으로 폴백하기 때문이다(registry 등록과 동일 정책).
-        try:
-            onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
-            log_onnx_model(onnx_model, artifact_path="model_onnx")
-            print("  [OK] ONNX 변환·로깅 완료 (model_onnx/)")
-        except Exception as exc:
-            print(f"  ⚠️  ONNX 변환 실패 — joblib 모델·아티팩트는 정상 저장됨(서빙은 joblib 폴백): {exc}")
-
-        # [Step 8c] calibration 상수(He 2014 w)를 main과 **같은 run**의 아티팩트로 로깅한다(#390).
-        # 별도 등록 모델로 올리지 않는다 — 서빙이 main을 alias로 로드한 뒤 그 run_id로 같은 run의
-        # 이 아티팩트를 함께 읽어 체이닝하므로(run_id 종속), main·calibration이 서로 다른 시점에
-        # 승격돼 어긋나는 동기화(race)가 구조적으로 사라진다. downsampling 미사용(w=1.0)이면 보정할
-        # 게 없어 생략한다(하위호환 — 서빙은 sampling_rate>=1.0을 항등 처리).
-        #
-        # register_model(아래 Step 9) **앞에** 로깅한다: 승격 게이트2가 "등록된 후보 버전의 run에
-        # calibration 아티팩트가 있는가"를 보므로, 등록보다 먼저 아티팩트를 남겨 "등록 버전이 존재
-        # ⇒ 같은 run에 아티팩트가 있다"를 불변식으로 만든다(등록 후 로깅이면 그 사이 run 중단 시
-        # "버전은 보이는데 아티팩트는 없는" 상태가 영구화될 수 있다 — PR #395 리뷰 반영).
-        if realized_sampling_rate < 1.0:
-            calibration_path = os.path.join(
-                os.path.dirname(model_path), CALIBRATION_PARAM_FILENAME
+        held_out_metric_receipt: HeldOutMetricReceipt | None = None
+        held_out_metric_receipts: list[HeldOutMetricReceipt] = []
+        if promotion_evidence_enabled:
+            if (
+                evidence_store is None
+                or experiment_plan_receipt is None
+                or split_manifest is None
+                or split_manifest_sha256 is None
+            ):
+                raise RuntimeError("promotion evidence 학습 상태가 불완전합니다")
+            held_out_metrics = evaluate_held_out_metrics(
+                model, test_df, feature_columns, sampling_rate=realized_sampling_rate
             )
-            DownsamplingCalibrator(realized_sampling_rate).save(calibration_path)
-            # 서빙 로더의 MLFLOW_CALIBRATION_ARTIFACT_PATH(calibration/calibration.json)와 계약.
-            log_artifact(local_path=calibration_path, artifact_path="calibration")
-            print("  [OK] calibration 아티팩트 로깅 완료 (calibration/)")
+            log_metrics(
+                {f"held_out_{name}": value for name, value in held_out_metrics.items()}
+            )
+            # 지표마다 별도 evidence를 게시한다(#493 D3). object key가 evidence body에
+            # content-addressed 되어 있어 metric_name이 다르면 key도 달라지므로
+            # create-only publish가 충돌하지 않고, roc_auc의 key도 그대로다.
+            model_artifact_path = f"model/{Path(model_path).name}"
+            model_artifact_sha256 = sha256_file(Path(model_path))
+            for metric_name in HELD_OUT_METRIC_NAMES:
+                metric_receipt = evidence_store.publish_held_out_metric(
+                    HeldOutMetricEvidence(
+                        run_id=run.info.run_id,
+                        plan_receipt=experiment_plan_receipt,
+                        metric_name=metric_name,
+                        value=held_out_metrics[metric_name],
+                        split_manifest_sha256=split_manifest_sha256,
+                        test_membership_sha256=split_manifest.splits[
+                            "test"
+                        ].membership_sha256,
+                        model_artifact_path=model_artifact_path,
+                        model_artifact_sha256=model_artifact_sha256,
+                    )
+                )
+                held_out_metric_receipts.append(metric_receipt)
+                if metric_name == DEFAULT_HELD_OUT_METRIC_NAME:
+                    held_out_metric_receipt = metric_receipt
+            if held_out_metric_receipt is None:
+                raise RuntimeError("held-out 주 지표 evidence를 게시하지 못했습니다")
+            # 주 지표 receipt만 기존 artifact 경로로 남긴다. 이 경로는
+            # training_comparison.py의 소비 계약이며, 판정이 다중 지표를 받아들이는
+            # 것은 후속 단계(#493 3단계)다.
+            _log_held_out_metric_receipt(held_out_metric_receipt)
+
+        # [Step 8b] 배포 패키지는 프로세스 전용 staging에서 완성·자체 검증한 뒤 기록한다.
+        # 실패를 삼키지 않는다. 불완전한 run은 FAILED로 남지만 registered model version은
+        # 아래 단계까지 도달하지 않아 생성되지 않는다(#302).
+        with TemporaryDirectory(prefix="ctr-model-package-") as package_root_text:
+            package_root = Path(package_root_text)
+            onnx_dir = package_root / "model_onnx"
+            package_features_dir = package_root / "features"
+            package_features_dir.mkdir(parents=True)
+            package_feature_columns = package_features_dir / "feature_columns.json"
+            package_categorical_columns = package_features_dir / "categorical_columns.json"
+            shutil.copy2(feature_columns_path, package_feature_columns)
+            shutil.copy2(categorical_columns_path, package_categorical_columns)
+            onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
+            mlflow.onnx.save_model(onnx_model, path=str(onnx_dir))
+
+            if not (0.0 < realized_sampling_rate <= 1.0):
+                raise ValueError("realized sampling_rate는 (0, 1] 범위여야 합니다")
+            calibration_path: Path | None
+            if realized_sampling_rate < 1.0:
+                calibration_path = package_root / CALIBRATION_PARAM_FILENAME
+                DownsamplingCalibrator(realized_sampling_rate).save(calibration_path)
+            else:
+                calibration_path = None
+
+            manifest = ModelPackageManifest.build(
+                sampling_rate=realized_sampling_rate,
+                model_onnx=onnx_dir,
+                feature_columns=package_feature_columns,
+                categorical_columns=package_categorical_columns,
+                calibration=calibration_path,
+            )
+            manifest_path = package_root / "manifest.json"
+            save_manifest(manifest, manifest_path)
+            loaded_manifest = load_manifest(manifest_path)
+            verify_model_package(
+                loaded_manifest,
+                model_onnx=onnx_dir,
+                feature_columns=package_feature_columns,
+                categorical_columns=package_categorical_columns,
+                calibration=calibration_path,
+            )
+
+            log_artifacts(str(onnx_dir), artifact_path="model_onnx")
+            log_artifact(local_path=str(package_feature_columns), artifact_path="features")
+            log_artifact(local_path=str(package_categorical_columns), artifact_path="features")
+            if calibration_path is not None:
+                log_artifact(local_path=str(calibration_path), artifact_path="calibration")
+            log_artifact(local_path=str(manifest_path), artifact_path="manifest")
+            print("  [OK] ONNX + manifest 배포 패키지 검증·로깅 완료")
 
         print("\n[Step 9] Model Registry 등록...")
         # 실험이면 prod와 다른 registry 이름으로 등록된다(#406). 승격 게이트는
         # prod 이름만 조회하므로 실험 버전이 champion 후보로 섞이지 않는다.
         model_name = namespace.registry_model_name
-        # log_artifact(..., artifact_path="model")과 짝을 맞춰야 한다 — 서빙 로더의
-        # MLFLOW_MODEL_ARTIFACT_PATH 상수(model/lgbm_model.joblib)도 같은
-        # "model/" 아티팩트 경로 아래 파일을 참조한다.
-        model_uri = f"runs:/{run.info.run_id}/model"
+        model_uri = f"runs:/{run.info.run_id}/model_onnx"
         # sampling_rate를 모델 버전 tag로도 기록한다(#300 결정 7). 서빙이 alias로
         # 모델 버전을 로드하는 순간 tag에서 직접 읽어(run→param 간접 조회 없이)
         # 로드 시 1회 캐싱한다. 승격 게이트(set_model_alias)도 이 tag를 본다.
@@ -825,6 +969,8 @@ def main(
         registered_version=registered_version,
         pending_registration=pending_registration,
         val_roc_auc=val_roc_auc,
+        held_out_metric_receipt=held_out_metric_receipt,
+        held_out_metric_receipts=tuple(held_out_metric_receipts),
     )
 
 

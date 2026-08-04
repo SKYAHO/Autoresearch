@@ -56,6 +56,10 @@ const measurementStatusCode503 = new Counter("rerank_measure_status_code_503");
 const measurementStatusCodeOther = new Counter("rerank_measure_status_code_other");
 
 export const options = {
+  // k6 applies summaryTrendStats to every Trend, including built-in HTTP Trends.
+  // The raw artifact intentionally retains these p99 values for custom and
+  // built-in metrics alike.
+  summaryTrendStats: ["avg", "min", "med", "max", "p(90)", "p(95)", "p(99)"],
   scenarios: {
     warmup: {
       executor: "constant-vus",
@@ -185,6 +189,8 @@ export function measure() {
 }
 
 export function handleSummary(data) {
+  // k6 passes the configured Trend statistics through data.metrics; retain the
+  // complete map so the custom measurement p99 is present in the raw artifact.
   return {
     stdout: JSON.stringify({
       metadata: {

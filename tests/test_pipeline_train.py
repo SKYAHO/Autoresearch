@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -16,16 +18,117 @@ from src.features.model_contract import (
     FeatureContractError,
 )
 from src.pipeline import train
+from src.pipeline.evaluate import HELD_OUT_METRIC_NAMES
 from src.pipeline.train import collect_categorical_categories
+from src.pipeline.promotion_evidence import (
+    ExperimentPlanReceipt,
+    PromotionEvidenceStore,
+    PromotionEvidenceValidationError,
+    create_experiment_plan,
+)
 from src.pipeline.training_provenance import (
     ProvenanceValidationError,
     RegistryProvenance,
     TrainingSplitManifest,
     build_snapshot_manifest,
+    sha256_file,
     snapshot_manifest_path,
     split_manifest_path,
     write_manifest_atomic,
 )
+
+
+@dataclass
+class _EvidenceStoredObject:
+    """training evidence test용 immutable fake GCS object."""
+
+    payload: bytes
+    generation: int
+    metageneration: int
+    time_created: datetime
+
+
+class _EvidenceBlob:
+    """PromotionEvidenceStore가 쓰는 최소 Blob API fake."""
+
+    def __init__(
+        self,
+        bucket: "_EvidenceBucket",
+        name: str,
+        generation: int | None,
+    ) -> None:
+        self._bucket = bucket
+        self.name = name
+        self._requested_generation = generation
+        self.generation: int | None = generation
+        self.metageneration: int | None = None
+        self.time_created: datetime | None = None
+
+    def upload_from_string(
+        self, payload: bytes, *, content_type: str, if_generation_match: int
+    ) -> None:
+        assert content_type == "application/json"
+        self._bucket.create(self.name, payload, if_generation_match=if_generation_match)
+
+    def reload(self) -> None:
+        stored = self._bucket.get(self.name, self._requested_generation)
+        self.generation = stored.generation
+        self.metageneration = stored.metageneration
+        self.time_created = stored.time_created
+
+    def download_as_bytes(self) -> bytes:
+        return self._bucket.get(self.name, self._requested_generation).payload
+
+
+class _EvidenceBucket:
+    """generation-pinned read와 create-only write를 제공하는 fake bucket."""
+
+    def __init__(self) -> None:
+        self._objects: dict[tuple[str, int], _EvidenceStoredObject] = {}
+
+    def blob(self, name: str, generation: int | None = None) -> _EvidenceBlob:
+        return _EvidenceBlob(self, name, generation)
+
+    def create(self, name: str, payload: bytes, *, if_generation_match: int) -> None:
+        if if_generation_match != 0 or any(key[0] == name for key in self._objects):
+            raise RuntimeError("create-only precondition failed")
+        self._objects[(name, 1)] = _EvidenceStoredObject(
+            payload=payload,
+            generation=1,
+            metageneration=1,
+            time_created=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        )
+
+    def get(self, name: str, generation: int | None) -> _EvidenceStoredObject:
+        requested = 1 if generation is None else generation
+        try:
+            return self._objects[(name, requested)]
+        except KeyError:
+            raise RuntimeError("object generation not found") from None
+
+
+class _EvidenceStorageClient:
+    """단일 evidence bucket을 제공하는 fake storage client."""
+
+    def __init__(self, bucket: _EvidenceBucket) -> None:
+        self._bucket = bucket
+
+    def bucket(self, name: str) -> _EvidenceBucket:
+        assert name == "evidence"
+        return self._bucket
+
+
+class _MetricPublishFailureStore:
+    """metric publish 실패가 학습 성공으로 위장되지 않는지 검증하는 adapter."""
+
+    def __init__(self, delegate: PromotionEvidenceStore) -> None:
+        self._delegate = delegate
+
+    def verify_plan_receipt(self, receipt: ExperimentPlanReceipt):
+        return self._delegate.verify_plan_receipt(receipt)
+
+    def publish_held_out_metric(self, evidence: object) -> object:
+        raise PromotionEvidenceValidationError("promotion evidence publish에 실패했습니다")
 
 
 def _synthetic_ctr_dataset(n: int = 60, seed: int = 7) -> pd.DataFrame:
@@ -219,7 +322,7 @@ def test_main_defer_registration_returns_pending_without_registering(tmp_path, m
     pending = outcome.pending_registration
     assert pending is not None
     assert pending.model_name == "ctr-model"
-    assert pending.model_uri == f"runs:/{outcome.run_id}/model"
+    assert pending.model_uri == f"runs:/{outcome.run_id}/model_onnx"
 
     # 평가 통과 후 호출하면 그때 버전이 생기고 태그도 함께 붙는다.
     version = train.register_pending_model(pending)
@@ -446,6 +549,19 @@ def test_main_downsampling_records_sampling_rate_and_preserves_test_set(tmp_path
     assert test_df["clicked"].mean() == pytest.approx(0.5, abs=0.1)
 
 
+@pytest.mark.parametrize("sampling_rate", [0.0, -0.1, 1.1, float("nan"), float("inf")])
+def test_main_rejects_invalid_sampling_rate_before_training(
+    tmp_path, monkeypatch, sampling_rate
+) -> None:
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", (tmp_path / "mlruns").as_uri())
+    config_path = tmp_path / "config.yaml"
+    _write_train_config_with(config_path, sampling_rate=sampling_rate)
+    _synthetic_ctr_dataset(n=40).to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    with pytest.raises(ValueError, match="sampling_rate"):
+        _run_train(tmp_path, config_path)
+
+
 def test_main_downsampling_forces_scale_pos_weight_to_one(tmp_path, monkeypatch) -> None:
     # #300 결정 6: downsampling 켜지면 scale_pos_weight(auto)가 1로 강제된다(이중 보정 방지).
     tracking_uri = (tmp_path / "mlruns").as_uri()
@@ -510,19 +626,11 @@ def test_main_no_downsampling_logs_no_calibration_artifact(tmp_path, monkeypatch
     assert client.list_artifacts(main_version.run_id, "calibration") == []
 
 
-def test_downsampling_main_without_calibration_artifact_fails_closed(tmp_path, monkeypatch) -> None:
-    # #390 fail-closed(PR #395 리뷰 5): downsampling main(sampling_rate<1.0 tag)인데 그 run에
-    # calibration 아티팩트가 없으면, 서빙 로드가 ModelArtifactError로 기동을 거부해야 한다
-    # (보정 안 된 편향 확률 서빙 방지). 정상 경로는 아티팩트가 항상 있지만, 이 마지막 보루를
-    # 회귀 테스트로 고정한다 — sampling_rate=1.0으로 학습해 calibration 아티팩트 없는 run을
-    # 만든 뒤, main 버전 tag를 0.5로 덮어써 "downsampling인데 아티팩트 없음" 상황을 재현한다.
+def test_registry_sampling_rate_tag_cannot_override_manifest(tmp_path, monkeypatch) -> None:
+    # #302: mutable Registry tag가 변조돼도 서빙의 calibration 판단은 manifest만 사용한다.
     from mlflow.tracking import MlflowClient as _Client
 
-    from src.serving.model_loader import (
-        ModelArtifactError,
-        RegistryModelSettings,
-        load_reranker_with_lineage,
-    )
+    from src.serving.model_loader import RegistryModelSettings, load_reranker_with_lineage
 
     tracking_uri = (tmp_path / "mlruns").as_uri()
     monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
@@ -539,12 +647,12 @@ def test_downsampling_main_without_calibration_artifact_fails_closed(tmp_path, m
     client.set_model_version_tag("ctr-model", main_version.version, "sampling_rate", "0.5")
     client.set_registered_model_alias("ctr-model", "champion", main_version.version)
 
-    with pytest.raises(ModelArtifactError, match="calibration"):
-        load_reranker_with_lineage(
-            RegistryModelSettings(
-                tracking_uri=tracking_uri, model_name="ctr-model", alias="champion"
-            )
+    resolved = load_reranker_with_lineage(
+        RegistryModelSettings(
+            tracking_uri=tracking_uri, model_name="ctr-model", alias="champion"
         )
+    )
+    assert resolved.reranker.calibration is None
 
 
 def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> None:
@@ -566,6 +674,17 @@ def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> 
     [version] = client.search_model_versions("name='ctr-model'")
     artifact_paths = {artifact.path for artifact in client.list_artifacts(version.run_id)}
     assert "model_onnx" in artifact_paths
+    assert "manifest" in artifact_paths
+    download_root = tmp_path / "download"
+    download_root.mkdir()
+    manifest_path = client.download_artifacts(
+        version.run_id, "manifest/manifest.json", dst_path=str(download_root)
+    )
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+    assert manifest["contract_version"] == "ctr-model-package-v1"
+    assert manifest["sampling_rate"] == 1.0
+    assert manifest["artifacts"]["calibration"] is None
+    assert version.source.endswith("/model_onnx")
 
     reranker = load_mlflow_model(
         MlflowModelSettings(tracking_uri=tracking_uri, run_id=version.run_id)
@@ -648,8 +767,179 @@ def _prepared_verified_dataset(tmp_path, monkeypatch):
     return config_path, data_path, tracking_uri
 
 
+def _evidence_store() -> PromotionEvidenceStore:
+    return PromotionEvidenceStore(
+        "gs://evidence/promotion-evidence",
+        client=_EvidenceStorageClient(_EvidenceBucket()),
+    )
+
+
+def _write_plan_receipt(
+    tmp_path: Path, store: PromotionEvidenceStore
+) -> tuple[Path, ExperimentPlanReceipt]:
+    plan = create_experiment_plan(
+        hypothesis_id="issue-466-h1",
+        control_id="control-revision",
+        candidate_ids=("candidate-revision",),
+        created_at=datetime(2026, 7, 31, tzinfo=timezone.utc),
+    )
+    receipt = store.publish_plan(plan)
+    path = tmp_path / "experiment_plan_receipt.json"
+    write_manifest_atomic(receipt, path)
+    return path, receipt
+
+
+def _promotion_train_kwargs(tmp_path: Path, receipt_path: Path) -> dict[str, object]:
+    return {
+        "model_output": str(tmp_path / "model.joblib"),
+        "test_set_output": str(tmp_path / "test_set.csv"),
+        "feature_columns_output": str(tmp_path / "features.json"),
+        "categorical_columns_output": str(tmp_path / "categories.json"),
+        "require_snapshot": True,
+        "defer_registration": True,
+        "experiment_plan_receipt_path": str(receipt_path),
+        "promotion_evidence_root": "gs://evidence/promotion-evidence",
+    }
+
+
 def _artifact_paths(client: MlflowClient, run_id: str, artifact_path: str) -> set[str]:
     return {entry.path for entry in client.list_artifacts(run_id, artifact_path)}
+
+
+def test_main_binds_verified_plan_and_publishes_held_out_metric_inside_run(
+    tmp_path, monkeypatch
+) -> None:
+    config_path, data_path, tracking_uri = _prepared_verified_dataset(tmp_path, monkeypatch)
+    store = _evidence_store()
+    receipt_path, receipt = _write_plan_receipt(tmp_path, store)
+
+    outcome = train.main(
+        config_path=str(config_path),
+        data_path=str(data_path),
+        promotion_evidence_store=store,
+        **_promotion_train_kwargs(tmp_path, receipt_path),
+    )
+
+    split = TrainingSplitManifest.model_validate_json(
+        split_manifest_path(tmp_path / "test_set.csv").read_text(encoding="utf-8")
+    )
+    assert split.experiment_plan_receipt == receipt
+    assert outcome.held_out_metric_receipt is not None
+    metric = store.verify_held_out_metric_receipt(outcome.held_out_metric_receipt)
+    assert metric.run_id == outcome.run_id
+    assert metric.dataset_split == "test"
+    assert metric.metric_name == "roc_auc"
+    assert metric.model_artifact_sha256 == sha256_file(tmp_path / "model.joblib")
+    # #493 D3: 지표마다 별도 evidence를 게시하되, 주 지표 receipt만 기존 artifact
+    # 경로로 남긴다(training_comparison.py의 소비 계약).
+    published = [
+        store.verify_held_out_metric_receipt(item)
+        for item in outcome.held_out_metric_receipts
+    ]
+    assert tuple(item.metric_name for item in published) == HELD_OUT_METRIC_NAMES
+    assert len({item.object.uri for item in outcome.held_out_metric_receipts}) == len(
+        HELD_OUT_METRIC_NAMES
+    )
+    assert outcome.held_out_metric_receipt in outcome.held_out_metric_receipts
+    assert _artifact_paths(
+        MlflowClient(tracking_uri=tracking_uri),
+        outcome.run_id,
+        "reproducibility/metrics",
+    ) == {"reproducibility/metrics/held_out_metric_receipt.json"}
+
+
+@pytest.mark.parametrize(
+    "promotion_options",
+    [
+        {"experiment_plan_receipt_path": "plan.json"},
+        {"promotion_evidence_root": "gs://evidence/promotion-evidence"},
+    ],
+)
+def test_main_rejects_incomplete_promotion_options_before_model_fit(
+    tmp_path, monkeypatch, promotion_options: dict[str, str]
+) -> None:
+    config_path, data_path, _ = _prepared_verified_dataset(tmp_path, monkeypatch)
+    fit = MagicMock()
+    monkeypatch.setattr(train.LGBMModel, "fit", fit)
+
+    with pytest.raises(ValueError, match="함께"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            require_snapshot=True,
+            defer_registration=True,
+            **promotion_options,
+        )
+
+    fit.assert_not_called()
+
+
+def test_main_rejects_promotion_evidence_without_verified_snapshot_before_model_fit(
+    tmp_path, monkeypatch
+) -> None:
+    config_path, data_path, _ = _prepared_dataset(tmp_path, monkeypatch)
+    store = _evidence_store()
+    receipt_path, _ = _write_plan_receipt(tmp_path, store)
+    fit = MagicMock()
+    monkeypatch.setattr(train.LGBMModel, "fit", fit)
+    promotion_kwargs = _promotion_train_kwargs(tmp_path, receipt_path)
+    promotion_kwargs["require_snapshot"] = False
+
+    with pytest.raises(ValueError, match="require_snapshot"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            promotion_evidence_store=store,
+            **promotion_kwargs,
+        )
+
+    fit.assert_not_called()
+
+
+def test_main_rejects_tampered_local_plan_receipt_before_model_fit(
+    tmp_path, monkeypatch
+) -> None:
+    config_path, data_path, _ = _prepared_verified_dataset(tmp_path, monkeypatch)
+    store = _evidence_store()
+    receipt_path, receipt = _write_plan_receipt(tmp_path, store)
+    tampered = receipt.model_copy(
+        update={"object": receipt.object.model_copy(update={"sha256": "f" * 64})}
+    )
+    write_manifest_atomic(tampered, receipt_path)
+    fit = MagicMock()
+    monkeypatch.setattr(train.LGBMModel, "fit", fit)
+
+    with pytest.raises(PromotionEvidenceValidationError, match="sha256"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            promotion_evidence_store=store,
+            **_promotion_train_kwargs(tmp_path, receipt_path),
+        )
+
+    fit.assert_not_called()
+
+
+def test_main_fails_when_held_out_metric_publish_fails_without_metric_receipt_artifact(
+    tmp_path, monkeypatch
+) -> None:
+    config_path, data_path, tracking_uri = _prepared_verified_dataset(tmp_path, monkeypatch)
+    store = _evidence_store()
+    receipt_path, _ = _write_plan_receipt(tmp_path, store)
+
+    with pytest.raises(PromotionEvidenceValidationError, match="publish"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            promotion_evidence_store=_MetricPublishFailureStore(store),
+            **_promotion_train_kwargs(tmp_path, receipt_path),
+        )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    experiment = client.get_experiment_by_name("ctr-model-training")
+    assert experiment is not None
+    [failed_run] = client.search_runs([experiment.experiment_id])
+    assert _artifact_paths(client, failed_run.info.run_id, "reproducibility/metrics") == set()
 
 
 def test_main_logs_verified_snapshot_and_split_artifacts(tmp_path, monkeypatch) -> None:
@@ -915,3 +1205,43 @@ def test_main_rejects_non_numeric_extra_feature(tmp_path, monkeypatch) -> None:
     assert "region" in message
     assert "수치형" in message
     assert not (tmp_path / "model_cat.joblib").exists()
+
+
+def test_main_preserves_passthrough_columns_in_held_out_test_set(
+    tmp_path, monkeypatch
+) -> None:
+    """패스스루 컬럼은 held-out test set까지 살아남는다(#506 리뷰).
+
+    grouped 지표가 실제로 계산되는 입력은 조립 CSV가 아니라 train이 따로 쓰는 test
+    set이다. 그리고 평가는 컬럼이 없으면 **조용히 건너뛴다** — 누군가 저장을
+    ``test_df[[*feature_columns, "clicked"]]``처럼 좁히면 grouped 지표만 사라지고
+    어떤 테스트도 실패하지 않는다. 조립의 fail-closed로 막으려던 실패 모드가 한 단계
+    뒤에서 재현되는 것을 막는 회귀 테스트다.
+    """
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    dataset = _synthetic_ctr_dataset(n=200)
+    dataset["user_id"] = [f"u{index % 20}" for index in range(len(dataset))]
+    dataset.to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    train.main(
+        config_path=str(config_path),
+        data_path=str(tmp_path / "training_dataset.csv"),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.json"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.json"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+        defer_registration=True,
+    )
+
+    test_set = pd.read_csv(tmp_path / "test_set.csv")
+    assert "user_id" in test_set.columns
+    assert test_set["user_id"].notna().all()
+    # 그러나 모델 입력 아티팩트에는 들어가지 않는다 — 이 둘이 함께 성립해야 한다.
+    feature_columns = json.loads((tmp_path / "feature_columns.json").read_text())
+    assert "user_id" not in feature_columns
