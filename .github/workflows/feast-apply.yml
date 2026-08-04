@@ -61,6 +61,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
+      - name: dev 환경 좌표 확인
+        uses: ./.github/actions/resolve-dev-environment
+        with:
+          configured_project_id: ${{ vars.GCP_PROJECT_ID }}
+          configured_region: ${{ vars.GCP_REGION }}
+          configured_cluster: ${{ vars.GKE_CLUSTER_NAME }}
+          configured_location: ${{ vars.GKE_LOCATION }}
+
       - name: Authenticate to GCP with Workload Identity Federation
         uses: google-github-actions/auth@v2
         with:
