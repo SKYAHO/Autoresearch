@@ -7,8 +7,8 @@
 `issue_published_at`을 nullable로 추가하고
 `issue_number` 조회 index를 만든 뒤 역순으로 제거한다.
 
-Revision ID: 0002_experiment_issue_lineage
-Revises: 0001_experiment_tables
+Revision ID: 0003_experiment_issue_lineage
+Revises: 0002_experiment_steps
 Create Date: 2026-08-04
 """
 
@@ -16,8 +16,8 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0002_experiment_issue_lineage"
-down_revision = "0001_experiment_tables"
+revision = "0003_experiment_issue_lineage"
+down_revision = "0002_experiment_steps"
 branch_labels = None
 depends_on = None
 

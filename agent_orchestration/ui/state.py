@@ -17,7 +17,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from agent_orchestration.ui.models import Event, Experiment, Log, POLLING_STATUSES, TERMINAL_STATUSES
+from agent_orchestration.ui.models import (
+    Event,
+    Experiment,
+    Log,
+    POLLING_STATUSES,
+    Step,
+    TERMINAL_STATUSES,
+)
 
 
 @dataclass
@@ -29,6 +36,9 @@ class WorkbenchState:
     experiment: Experiment | None = None
     events: list[Event] = field(default_factory=list)
     logs: list[Log] = field(default_factory=list)
+    steps: list[Step] = field(default_factory=list)
+    # 페이지 예산에 걸려 뒷부분을 못 읽었는지. 화면에 반드시 드러낸다.
+    steps_truncated: bool = False
     metadata: dict[str, str] = field(default_factory=dict)
     event_cursor: str | None = None
     log_cursor: str | None = None
@@ -48,6 +58,8 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.experiment = None
     state.events.clear()
     state.logs.clear()
+    state.steps.clear()
+    state.steps_truncated = False
     state.metadata.clear()
     state.event_cursor = None
     state.log_cursor = None
@@ -81,10 +93,38 @@ def append_log_page(
         state.log_cursor = next_cursor
 
 
+def merge_steps(
+    state: WorkbenchState,
+    steps: list[Step],
+    *,
+    truncated: bool = False,
+) -> None:
+    """조회한 Step 전체를 기존 목록에 병합한다.
+
+    Step은 Event·Log와 달리 **PATCH로 갱신되는 mutable 리소스**다. 같은 id가 다시 오면
+    새 row가 아니라 진행 상태가 바뀐 것이므로, 무시하지 않고 최신 값으로 덮어쓴다.
+
+    **cursor를 상태로 들고 있지 않는다.** `after_id`는 cursor 뒤의 row만 돌려주므로,
+    갱신과 갱신 사이에 cursor를 유지하면 이미 받은 Step의 상태 변화를 관측하지 못한다.
+    페이지 넘김은 `ExperimentClient.get_steps()`가 한 번의 갱신 안에서만 처리한다.
+    """
+    by_id = {step.id: index for index, step in enumerate(state.steps)}
+    for step in steps:
+        existing = by_id.get(step.id)
+        if existing is None:
+            by_id[step.id] = len(state.steps)
+            state.steps.append(step)
+        else:
+            state.steps[existing] = step
+    state.steps_truncated = truncated
+
+
 def clear_activity_cache(state: WorkbenchState) -> None:
-    """만료된 cursor를 재조회할 수 있도록 Event·Log 캐시를 비운다."""
+    """만료된 cursor를 재조회할 수 있도록 Event·Log·Step 캐시를 비운다."""
     state.events.clear()
     state.logs.clear()
+    state.steps.clear()
+    state.steps_truncated = False
     state.event_cursor = None
     state.log_cursor = None
 

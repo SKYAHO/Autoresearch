@@ -57,6 +57,8 @@
 - [Plan — paired offline 실험 배치·비교 결과 구현](plans/2026-08-03-paired-offline-experiment-comparison.md) (#454)
 - [Spec — 모델 성능 열화 시점 측정(rolling-origin 평가)](specs/2026-08-03-model-degradation-rolling-origin-evaluation.md) — 단일 cutoff 기반 forward degradation evaluation, 날짜 구간·평가일 상태 계약, video staleness (#471)
 - [Plan — 모델 성능 열화 시점 측정 구현](plans/2026-08-03-model-degradation-rolling-origin-evaluation.md) (#471)
+- [Spec — temporal signal 승격 판정 연결](specs/2026-08-04-temporal-signal-promotion-integration.md) — baseline 재정의, hard retrain limit 산출 절차, #425 다중 신호 연결, fail-closed hold (#485 잔여 범위)
+- [Plan — temporal signal 승격 판정 연결 구현](plans/2026-08-04-temporal-signal-promotion-integration.md) (#485, Task 4는 #493 대기)
 - [Spec — 실험별 Feast Registry·offline 실행 격리](specs/2026-07-31-experiment-isolated-offline-run.md) (#454 실행 context)
 - [Plan — `src/` → `autoresearch/` 패키지 통합](plans/2026-07-15-src-package-merge.md) (팀 합의 대기)
 - `src/pipeline/`, `src/models/`, `src/features/` (CTR 학습·평가 코드)
@@ -78,6 +80,8 @@
 - [Plan — Agent Orchestration PR 사전 병합 강화](archive/plans/2026-07-31-agent-orchestration-premerge-hardening.md) (구현 완료)
 - [Spec — Agent Orchestration 실험 워크벤치 v0](archive/specs/2026-08-01-agent-orchestration-experiment-workbench-v0.md) (구현 완료)
 - [Plan — Agent Orchestration 실험 워크벤치 v0](archive/plans/2026-08-01-agent-orchestration-experiment-workbench-v0.md) (구현 완료)
+- [Spec — 실험 Step 추적 v0](specs/2026-08-04-experiment-step-tracking-v0.md) — 에이전트 진행 상황 실시간 관찰 계약 (#518 구현 완료, 계약은 유효)
+- [Plan — 실험 Step 추적 v0](archive/plans/2026-08-04-experiment-step-tracking-v0.md) (구현 완료·아카이브)
 - [Spec — Agent Orchestration `/chat` API 계약](specs/2026-08-01-agent-orchestration-chat-api-contract.md) — 내부 호출 서비스의 요청·응답·오류·저장 의미 정본
 - [Spec — 가설 수신부터 `[AR]` 이슈 발행까지](specs/2026-08-04-hypothesis-to-auto-research-issue.md) — 필드 소유권 3분할, 시드 고정, `gh` 발행 경계, 멱등성 (#516)
 - [Plan — 가설 수신부터 `[AR]` 이슈 발행까지 구현](plans/2026-08-04-hypothesis-to-auto-research-issue.md) (#516)

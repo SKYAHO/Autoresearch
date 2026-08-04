@@ -294,7 +294,7 @@ agent_orchestration/app/experiments/
 ├── router.py          기존 · endpoint 추가
 ├── models.py          기존 · issue_body / issue_number / issue_branch 컬럼
 └── schemas.py         기존 · 요청·응답 계약
-migrations/versions/0002_experiment_issue_lineage.py   신규
+migrations/versions/0003_experiment_issue_lineage.py   신규
 ```
 
 `issue_authoring.py`를 순수 함수로 유지하는 것이 중요하다 — **본문 조립을 LLM·GitHub 없이
@@ -330,8 +330,8 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
 - `ExperimentMetadata`로 대신할 수 없다. `key` `String(64)` / `value` `Text`라 형식이
   보장되지 않고, 더 큰 문제로 **metadata는 `create_experiment()`가 생성 시 1회만
   기록하며 갱신 endpoint가 없다.** 다섯 값 모두 생성 이후에 확정된다.
-- 기존 revision이 `0001_experiment_tables` 하나뿐이므로
-  `down_revision = "0001_experiment_tables"`로 연결하고 `upgrade()`/`downgrade()`를
+- 머지 시점의 head가 `0002_experiment_steps`(#518 실험 Step 추적)이므로
+  `down_revision = "0002_experiment_steps"`로 연결하고 `upgrade()`/`downgrade()`를
   대칭으로 작성한다. 다섯 컬럼을 **한 revision**에 넣는다.
 - 기존 행이 있으므로 **전부 nullable**로 추가한다.
 - `issue_number`에 index를 두되 **unique 제약은 두지 않는다** — 이슈 1건이 실험 N건을

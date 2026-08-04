@@ -6,7 +6,7 @@
 
 [기능]
 단일 화면 상단의 가설 작성 패널, 실험 선택 목록, 빈 관찰 패널, 상태 타임라인,
-결과·Event·원본 Log 탭, 요약 패널을 렌더링한다.
+결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 렌더링한다.
 
 [비책임]
 HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, GitHub 이슈 생성.
@@ -14,20 +14,23 @@ HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, GitHub 이슈 생�
 
 from __future__ import annotations
 
+import html
 import json
 from collections.abc import Sequence
-from datetime import datetime
 
 import streamlit as st
 
-from agent_orchestration.ui.models import Event, Experiment, status_label
+from agent_orchestration.ui.models import (
+    Event,
+    Experiment,
+    Step,
+    status_label,
+    step_kind_label,
+    step_status_color,
+)
 from agent_orchestration.ui.state import WorkbenchState
 from agent_orchestration.ui.styles import status_badge
-
-
-def format_time(value: datetime) -> str:
-    """화면용 지역 시각 문자열을 반환한다."""
-    return value.astimezone().strftime("%m-%d %H:%M")
+from agent_orchestration.ui.time import format_time
 
 
 def render_hypothesis_composer(api_error: str | None) -> str | None:
@@ -137,8 +140,44 @@ def _render_timeline(events: Sequence[Event], current_status: str) -> None:
             st.write(event.reason)
 
 
+def _render_steps(steps: Sequence[Step], truncated: bool = False) -> None:
+    """에이전트가 지금 무엇을 하고 있는지 단계별로 표시한다."""
+    if truncated:
+        # 조용히 버리지 않는다 — 뒷부분을 못 읽었으면 화면이 오래된 구간에 고정된 상태다.
+        st.warning(
+            f"작업 단계가 너무 많아 앞부분 {len(steps)}개까지만 읽었습니다. "
+            "아래 목록에 최신 단계가 없을 수 있습니다."
+        )
+    if not steps:
+        st.caption("아직 기록된 작업 단계가 없습니다.")
+        return
+    if len(steps) > 30:
+        st.caption(f"최근 30개 단계를 표시합니다. 전체 {len(steps)}개")
+    for step in steps[-30:]:
+        color = step_status_color(step.status)
+        # step_type은 에이전트가 정하는 자유 문자열이라 이 마크업에서 유일하게 신뢰 경계를
+        # 넘는다. step_kind는 서버 CHECK로 닫혀 있지만 라벨 폴백이 원문을 그대로 내보내므로
+        # 함께 escape한다. color는 닫힌 집합, format_time은 포맷된 timestamp라 안전하다.
+        st.markdown(
+            f"<span style='color:{color};font-weight:600'>&#9679; "
+            f"{html.escape(step_kind_label(step.step_kind))}</span> "
+            f"<span style='opacity:0.7'>{html.escape(step.step_type)}</span> "
+            f"<span style='opacity:0.5'>· {format_time(step.updated_at)}</span>",
+            unsafe_allow_html=True,
+        )
+        # message가 없으면 display_line이 kind·type 라벨로 대신하므로 표시가 비지 않는다.
+        st.write(step.display_line)
+        if step.target:
+            with st.expander("상세", expanded=False):
+                st.json(step.target)
+
+
 def _render_tabs(state: WorkbenchState) -> None:
-    results_tab, events_tab, logs_tab = st.tabs(["결과", "이벤트", "원본 로그"])
+    progress_tab, results_tab, events_tab, logs_tab = st.tabs(
+        ["진행 단계", "결과", "이벤트", "원본 로그"]
+    )
+    with progress_tab:
+        _render_steps(state.steps, state.steps_truncated)
     with results_tab:
         _render_metrics(state.experiment.metric_summary if state.experiment else None)
     with events_tab:

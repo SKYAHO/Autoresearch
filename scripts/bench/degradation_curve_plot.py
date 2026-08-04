@@ -48,12 +48,29 @@ def build_figure(result: dict) -> go.Figure:
         )
     )
 
-    baseline = result["baseline_val_roc_auc"]
+    # 판정에 **실제로 쓰인** 기준선을 그린다(#485 §4.3). baseline_val_roc_auc를 그리면
+    # 점선과 열화 마커가 약 4%p 어긋난 축 위에 놓여, 이 변경이 없애려던 불일치가
+    # 그림에서만 남는다("baseline보다 위인데 왜 열화지?"로 읽힌다).
+    # 옛 결과 JSON(#485 이전)에는 forward 필드가 없으므로 fallback을 둔다.
+    forward_baseline = result.get("forward_baseline_roc_auc")
+    baseline = forward_baseline if forward_baseline is not None else result["baseline_val_roc_auc"]
+    baseline_label = "forward_baseline" if forward_baseline is not None else "val_baseline(legacy)"
     figure.add_hline(
         y=baseline,
         line_dash="dot",
-        annotation_text=f"baseline={baseline:.4f}",
+        annotation_text=f"{baseline_label}={baseline:.4f}",
     )
+
+    # "2개 연속 유효 관측치가 이 선 이하" 규칙을 눈으로 검산할 수 있게 threshold도 그린다.
+    min_auc_drop = result.get("min_auc_drop")
+    if min_auc_drop is not None:
+        threshold = baseline - min_auc_drop
+        figure.add_hline(
+            y=threshold,
+            line_dash="dashdot",
+            line_color="orange",
+            annotation_text=f"threshold={threshold:.4f} (baseline-{min_auc_drop})",
+        )
 
     degradation_point = result.get("degradation_point") or {}
     if degradation_point.get("elapsed_days") is not None:

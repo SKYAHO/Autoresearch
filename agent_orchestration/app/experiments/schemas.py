@@ -10,16 +10,40 @@ DB query, 상태 전이와 인증은 담당하지 않는다.
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from typing import Annotated, Literal
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from agent_orchestration.app.experiments.models import ExperimentStatus
+from agent_orchestration.app.experiments.models import (
+    ExperimentStatus,
+    StepKind,
+    StepStatus,
+)
 
 
 MetadataKey = Annotated[str, Field(min_length=1, max_length=64)]
 MetadataValue = Annotated[str, Field(max_length=8192)]
+MAX_STEP_TARGET_BYTES = 4096
+
+
+def validate_step_target_size(value: dict | None) -> dict | None:
+    """Step `target`의 직렬화 크기를 제한한다.
+
+    생성과 갱신 스키마가 **같은 함수를 공유**한다. 한쪽에만 걸면 PATCH로 무제한 target이
+    들어와, 제한 근거(저장된 상태가 1초 polling으로 반복 조회됨)가 성립하지 않는다.
+    """
+    if value is None:
+        return None
+    encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_STEP_TARGET_BYTES:
+        raise ValueError(
+            f"target must be at most {MAX_STEP_TARGET_BYTES} bytes when serialized"
+        )
+    return value
+
+
 GeneralTransitionStatus = Literal[
     ExperimentStatus.RUNNING,
     ExperimentStatus.EVALUATING,
@@ -133,6 +157,74 @@ class ExperimentLogPageResponse(BaseModel):
     """Log polling 결과와 다음 cursor."""
 
     items: list[ExperimentLogResponse]
+    next_cursor: uuid.UUID | None
+
+
+class ExperimentStepCreate(BaseModel):
+    """멱등성이 보장되는 작업 단계 생성 요청."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    step_kind: StepKind
+    step_type: str = Field(min_length=1, max_length=64)
+    status: StepStatus = StepStatus.STARTED
+    message: str | None = Field(default=None, max_length=500)
+    target: dict | None = None
+
+    _validate_target = field_validator("target")(validate_step_target_size)
+
+    @field_validator("step_type")
+    @classmethod
+    def step_type_must_not_be_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("step_type must not be blank")
+        return stripped
+
+
+class ExperimentStepUpdate(BaseModel):
+    """작업 단계의 진행 상태를 갱신하는 **전체 교체** 요청.
+
+    부분 병합이 아니다 — 생략된 `message`/`target`은 이전 값 유지가 아니라 `null`로
+    갱신된다. 호출자는 갱신할 때마다 그 시점의 상태 전체를 보낸다.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: StepStatus
+    message: str | None = Field(default=None, max_length=500)
+    target: dict | None = None
+
+    # 생성 스키마와 같은 함수를 공유한다 — 한쪽만 막으면 PATCH로 무제한 target이 들어온다.
+    _validate_target = field_validator("target")(validate_step_target_size)
+
+
+class ExperimentStepResponse(BaseModel):
+    """내부 fingerprint를 제외한 작업 단계 응답.
+
+    relationship 필드를 두지 않는다 — `IntegrityError` 복구 경로가 expunge 후 rollback한
+    객체를 그대로 직렬화하므로, relationship이 있으면 만료된 세션에서 지연 로딩이 터진다.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    experiment_id: uuid.UUID
+    idempotency_key: str
+    step_kind: StepKind
+    step_type: str
+    status: StepStatus
+    message: str | None
+    target: dict | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ExperimentStepPageResponse(BaseModel):
+    """Step polling 결과와 다음 cursor."""
+
+    items: list[ExperimentStepResponse]
     next_cursor: uuid.UUID | None
 
 

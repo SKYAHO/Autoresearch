@@ -17,15 +17,17 @@ import re
 import uuid
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from agent_orchestration.app.experiments.exceptions import (
     ExperimentNotFoundError,
+    ExperimentStepNotFoundError,
     IdempotencyConflictError,
     IssuePublicationLimitError,
     PromotionRequiresDedicatedEndpointError,
+    StepAlreadyFinalizedError,
 )
 from agent_orchestration.app.experiments.github_issues import (
     create_issue,
@@ -46,6 +48,9 @@ from agent_orchestration.app.experiments.models import (
     ExperimentLog,
     ExperimentMetadata,
     ExperimentStatus,
+    ExperimentStep,
+    StepKind,
+    TERMINAL_STEP_STATUSES,
 )
 from agent_orchestration.app.experiments.repository import (
     find_experiment,
@@ -53,13 +58,18 @@ from agent_orchestration.app.experiments.repository import (
     find_event_by_idempotency_key,
     find_experiment_logs,
     find_experiment_metadata,
+    find_experiment_step,
+    find_experiment_steps,
     find_experiments,
     find_log_by_idempotency_key,
+    find_step_by_idempotency_key,
 )
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     ExperimentEventCreate,
     ExperimentLogCreate,
+    ExperimentStepCreate,
+    ExperimentStepUpdate,
     IssuePublicationRequest,
     PromotionRequest,
     StatusUpdateRequest,
@@ -92,6 +102,14 @@ class ExperimentEventPageResult:
     """polling용 Event page와 다음 cursor."""
 
     items: list[ExperimentEvent]
+    next_cursor: uuid.UUID | None
+
+
+@dataclass(frozen=True)
+class ExperimentStepPageResult:
+    """polling용 Step page와 다음 cursor."""
+
+    items: list[ExperimentStep]
     next_cursor: uuid.UUID | None
 
 
@@ -375,6 +393,146 @@ def create_experiment_log(
         return existing_log
 
 
+def create_experiment_step(
+    session: Session,
+    experiment_id: uuid.UUID,
+    request: ExperimentStepCreate,
+) -> ExperimentStep:
+    """실험 상태와 무관하게 멱등성이 보장되는 작업 단계를 추가한다.
+
+    Step은 `experiments.status`를 변경하지 않으므로 `create_experiment_log`와 같이 row
+    lock 없이 동작한다. 동시 요청의 최종 방어선은 unique constraint와 아래 IntegrityError
+    복구다.
+    """
+    payload = {
+        "step_kind": request.step_kind.value,
+        "step_type": request.step_type,
+        "status": request.status.value,
+        "message": request.message,
+        "target": request.target,
+    }
+    fingerprint = _request_fingerprint(payload)
+    try:
+        with session.begin():
+            if find_experiment(session, experiment_id) is None:
+                raise ExperimentNotFoundError(experiment_id)
+            existing_step = find_step_by_idempotency_key(
+                session,
+                experiment_id,
+                request.idempotency_key,
+            )
+            if existing_step is not None:
+                if existing_step.request_fingerprint != fingerprint:
+                    raise IdempotencyConflictError(request.idempotency_key)
+                return existing_step
+            step_row = ExperimentStep(
+                experiment_id=experiment_id,
+                idempotency_key=request.idempotency_key,
+                request_fingerprint=fingerprint,
+                step_kind=request.step_kind.value,
+                step_type=request.step_type,
+                status=request.status.value,
+                message=request.message,
+                target=request.target,
+            )
+            session.add(step_row)
+            session.flush()
+        return step_row
+    except IntegrityError as error:
+        session.rollback()
+        existing_step = find_step_by_idempotency_key(
+            session,
+            experiment_id,
+            request.idempotency_key,
+        )
+        if existing_step is None:
+            raise error
+        if existing_step.request_fingerprint != fingerprint:
+            session.rollback()
+            raise IdempotencyConflictError(request.idempotency_key) from error
+        # expunge-before-rollback 순서 의존성은 create_experiment_event와 동일 (위 주석 참고).
+        session.expunge(existing_step)
+        session.rollback()
+        return existing_step
+
+
+def _step_state_fingerprint(step: ExperimentStep) -> str:
+    """현재 저장된 Step 상태의 digest를 계산한다.
+
+    저장된 `request_fingerprint` 컬럼을 쓰지 않는다 — 그 값은 **생성 시점** payload
+    (`step_kind`·`step_type` 포함)의 digest라 key 집합이 다르다.
+    """
+    return _request_fingerprint(
+        {"status": step.status, "message": step.message, "target": step.target}
+    )
+
+
+def _finalized_step_or_conflict(
+    step: ExperimentStep,
+    requested_fingerprint: str,
+) -> ExperimentStep:
+    """확정된 Step에 대한 재시도만 통과시키고 다른 payload는 거부한다."""
+    if _step_state_fingerprint(step) == requested_fingerprint:
+        return step
+    raise StepAlreadyFinalizedError(step.id)
+
+
+def update_experiment_step(
+    session: Session,
+    experiment_id: uuid.UUID,
+    step_id: uuid.UUID,
+    request: ExperimentStepUpdate,
+) -> ExperimentStep:
+    """작업 단계를 전체 교체로 갱신하고 터미널 확정을 원자적으로 보장한다.
+
+    비터미널 사이의 전이는 자유롭게 허용한다. 터미널로 전이할 때만 조건부 UPDATE를 걸어
+    검사-후-실행 사이의 창을 없앤다 — 그러지 않으면 두 요청이 동시에 서로 다른 터미널
+    상태를 써도 둘 다 통과해 나중에 커밋한 쪽이 조용히 이긴다.
+    """
+    requested_fingerprint = _request_fingerprint(
+        {
+            "status": request.status.value,
+            "message": request.message,
+            "target": request.target,
+        }
+    )
+    terminal_values = [status.value for status in TERMINAL_STEP_STATUSES]
+    with session.begin():
+        step = find_experiment_step(session, experiment_id, step_id)
+        if step is None:
+            raise ExperimentStepNotFoundError(step_id)
+
+        # 조건을 **모든** 갱신에 건다. 터미널로 전이할 때만 걸면 두 가지가 새어 나간다.
+        #   1) 검사-후-실행 사이에 다른 트랜잭션이 터미널을 확정하는 창
+        #   2) 세션이 expire_on_commit=False라, 위 SELECT가 identity map의 stale 객체를
+        #      돌려줄 수 있다. stale 값이 비터미널이면 확정된 Step을 조용히 덮어쓴다.
+        # 비터미널 사이의 갱신은 이 조건에 걸리지 않으므로 "비터미널 자유 전이"는 그대로다.
+        result = session.execute(
+            update(ExperimentStep)
+            .where(
+                # experiment_id를 함께 건다 — 위 존재 확인과 같은 조건이라야 확인과 실행이
+                # 한 곳에서 자명하고, 존재 확인이 옮겨지거나 캐시돼도 교차 실험 갱신이 열리지
+                # 않는다. `rowcount == 0`의 의미는 "저장된 row가 이미 터미널"로 유지된다.
+                ExperimentStep.experiment_id == experiment_id,
+                ExperimentStep.id == step_id,
+                ExperimentStep.status.not_in(terminal_values),
+            )
+            .values(
+                status=request.status.value,
+                message=request.message,
+                target=request.target,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        # 판정 근거는 세션 캐시가 아니라 새 SELECT여야 한다. refresh는 항상 SQL을 발행하므로
+        # 방금 다른 트랜잭션이 커밋한 값을 본다. 위에서 받은 객체를 그대로 쓴다 — 같은
+        # 조건으로 다시 SELECT해도 identity map이 같은 객체를 돌려주므로 왕복만 늘어난다.
+        session.refresh(step)
+        if result.rowcount == 0:
+            return _finalized_step_or_conflict(step, requested_fingerprint)
+        return step
+
+
 def list_experiment_logs(
     session: Session,
     experiment_id: uuid.UUID,
@@ -397,6 +555,33 @@ def list_experiment_logs(
         log_type=log_type,
     )
     return ExperimentLogPageResult(
+        items=items,
+        next_cursor=items[-1].id if items else after_id,
+    )
+
+
+def list_experiment_steps(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    limit: int,
+    after_id: uuid.UUID | None = None,
+    step_kind: StepKind | None = None,
+) -> ExperimentStepPageResult:
+    """created_at 우선·동률 시 UUID tie-breaker 순으로 정렬한 Step polling page를 반환한다.
+
+    tie-breaker인 `gen_random_uuid()`는 insert 순서와 무관한 난수라, 동률에서는 실제
+    append 순서를 보존하지 않는다(알려진 한계, spec의 "알려진 한계" 절 참고).
+    """
+    get_experiment(session, experiment_id)
+    items = find_experiment_steps(
+        session,
+        experiment_id,
+        limit=limit,
+        after_id=after_id,
+        step_kind=None if step_kind is None else step_kind.value,
+    )
+    return ExperimentStepPageResult(
         items=items,
         next_cursor=items[-1].id if items else after_id,
     )

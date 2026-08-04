@@ -15,7 +15,7 @@ REVISION = (
     / "agent_orchestration"
     / "migrations"
     / "versions"
-    / "0002_experiment_issue_lineage.py"
+    / "0003_experiment_issue_lineage.py"
 )
 MODELS = (
     PROJECT_ROOT / "agent_orchestration" / "app" / "experiments" / "models.py"
@@ -30,12 +30,12 @@ LINEAGE_COLUMNS = (
 )
 
 
-def test_revision_chains_to_the_initial_revision() -> None:
+def test_revision_chains_to_the_step_revision() -> None:
     """revision 체인이 끊기면 배포 시 마이그레이션이 적용되지 않는다."""
     text = REVISION.read_text(encoding="utf-8")
 
-    assert 'revision = "0002_experiment_issue_lineage"' in text
-    assert 'down_revision = "0001_experiment_tables"' in text
+    assert 'revision = "0003_experiment_issue_lineage"' in text
+    assert 'down_revision = "0002_experiment_steps"' in text
 
 
 def test_upgrade_and_downgrade_are_symmetric() -> None:

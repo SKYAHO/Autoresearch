@@ -17,19 +17,34 @@ import pytest
 from sqlalchemy import Engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from agent_orchestration.app.experiments.exceptions import IdempotencyConflictError
+from agent_orchestration.app.experiments.exceptions import (
+    IdempotencyConflictError,
+    StepAlreadyFinalizedError,
+)
 from agent_orchestration.app.database import create_database_engine
-from agent_orchestration.app.experiments.models import Experiment, ExperimentLog
+from agent_orchestration.app.experiments.models import (
+    Experiment,
+    ExperimentLog,
+    ExperimentStep,
+    StepKind,
+    StepStatus,
+)
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     ExperimentLogCreate,
     ExperimentLogResponse,
+    ExperimentStepCreate,
+    ExperimentStepResponse,
+    ExperimentStepUpdate,
     StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.models import ExperimentStatus
 from agent_orchestration.app.experiments.service import (
     create_experiment,
     create_experiment_log,
+    create_experiment_step,
+    list_experiment_steps,
+    update_experiment_step,
     update_experiment_status,
 )
 
@@ -240,3 +255,339 @@ def test_concurrent_conflicting_log_request_has_one_success_and_no_loser_side_ef
     assert len(rows) == 1
     assert rows[0].content == successes[0]
     assert rows[0].content != conflicts[0]
+
+
+def test_concurrent_same_step_request_returns_one_identical_resource(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """동일 key·payload로 동시에 Step을 만들어도 row는 하나이고 응답이 같다."""
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres same step retry"),
+        ).id
+    request = ExperimentStepCreate(
+        idempotency_key=f"same-step-{uuid.uuid4()}",
+        step_kind=StepKind.FEATURE_ASSEMBLY,
+        step_type="assemble_training_dataset",
+        message="피처 2개 조립 중",
+        target={"features": ["views_per_day", "like_ratio"]},
+    )
+    flush_barrier = threading.Barrier(2)
+
+    @event.listens_for(Session, "before_flush")
+    def synchronize_step_flush(session: Session, _flush_context, _instances) -> None:
+        if any(
+            isinstance(row, ExperimentStep)
+            and row.idempotency_key == request.idempotency_key
+            for row in session.new
+        ):
+            flush_barrier.wait(timeout=5)
+
+    def submit() -> dict:
+        with postgres_session_factory() as session:
+            row = create_experiment_step(session, experiment_id, request)
+            assert not session.in_transaction()
+            with session.begin():
+                assert session.scalar(select(1)) == 1
+            return ExperimentStepResponse.model_validate(row).model_dump(mode="json")
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        futures = [executor.submit(submit) for _index in range(2)]
+        responses = [future.result(timeout=10) for future in futures]
+    finally:
+        event.remove(Session, "before_flush", synchronize_step_flush)
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    with postgres_session_factory() as session:
+        row_count = session.scalar(
+            select(func.count())
+            .select_from(ExperimentStep)
+            .where(ExperimentStep.idempotency_key == request.idempotency_key)
+        )
+    assert row_count == 1
+    assert responses[0]["id"] == responses[1]["id"]
+    assert responses[0] == responses[1]
+
+
+def test_concurrent_conflicting_step_request_has_one_success_and_no_loser_side_effect(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """동일 key·다른 payload 경쟁은 정확히 하나만 저장하고 loser를 원자적으로 롤백한다."""
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres conflicting step retry"),
+        ).id
+    idempotency_key = f"conflict-step-{uuid.uuid4()}"
+    requests = [
+        ExperimentStepCreate(
+            idempotency_key=idempotency_key,
+            step_kind=StepKind.FEATURE_ASSEMBLY,
+            step_type="assemble_training_dataset",
+        ),
+        ExperimentStepCreate(
+            idempotency_key=idempotency_key,
+            step_kind=StepKind.TRAIN,
+            step_type="train_candidate",
+        ),
+    ]
+    flush_barrier = threading.Barrier(2)
+
+    @event.listens_for(Session, "before_flush")
+    def synchronize_step_flush(session: Session, _flush_context, _instances) -> None:
+        if any(
+            isinstance(row, ExperimentStep) and row.idempotency_key == idempotency_key
+            for row in session.new
+        ):
+            flush_barrier.wait(timeout=5)
+
+    def submit(request: ExperimentStepCreate) -> tuple[str, str]:
+        with postgres_session_factory() as session:
+            try:
+                row = create_experiment_step(session, experiment_id, request)
+                outcome = ("success", row.step_type)
+            except IdempotencyConflictError:
+                outcome = ("conflict", request.step_type)
+            assert not session.in_transaction()
+            with session.begin():
+                assert session.scalar(select(1)) == 1
+            return outcome
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        futures = [executor.submit(submit, request) for request in requests]
+        outcomes = [future.result(timeout=10) for future in futures]
+    finally:
+        event.remove(Session, "before_flush", synchronize_step_flush)
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    with postgres_session_factory() as session:
+        rows = session.scalars(
+            select(ExperimentStep).where(
+                ExperimentStep.experiment_id == experiment_id,
+                ExperimentStep.idempotency_key == idempotency_key,
+            )
+        ).all()
+    successes = [step_type for status, step_type in outcomes if status == "success"]
+    conflicts = [step_type for status, step_type in outcomes if status == "conflict"]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert len(rows) == 1
+    assert rows[0].step_type == successes[0]
+    assert rows[0].step_type != conflicts[0]
+
+
+def test_step_update_rereads_state_committed_by_another_session(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """확정 판정은 세션 캐시가 아니라 새 SELECT로 한다.
+
+    session_a가 Step을 비터미널 상태로 들고 있는 동안 session_b가 COMPLETED를 커밋한다.
+    session factory는 expire_on_commit=False라 session_a의 객체는 stale하게 남는데,
+    그 stale 값으로 판정하면 확정된 결과를 조용히 덮어쓴다.
+    """
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres step stale read"),
+        ).id
+        step_id = create_experiment_step(
+            setup_session,
+            experiment_id,
+            ExperimentStepCreate(
+                idempotency_key=f"stale-{uuid.uuid4()}",
+                step_kind=StepKind.TRAIN,
+                step_type="train_candidate",
+            ),
+        ).id
+
+    session_a = postgres_session_factory()
+    session_b = postgres_session_factory()
+    try:
+        # session_a가 PROGRESS 상태를 identity map에 적재한다.
+        cached = update_experiment_step(
+            session_a,
+            experiment_id,
+            step_id,
+            ExperimentStepUpdate(status=StepStatus.PROGRESS, message="학습 중"),
+        )
+        assert cached.status == StepStatus.PROGRESS.value
+
+        # session_b가 그 사이 터미널을 확정한다.
+        update_experiment_step(
+            session_b,
+            experiment_id,
+            step_id,
+            ExperimentStepUpdate(status=StepStatus.COMPLETED, message="완료"),
+        )
+
+        # session_a는 여전히 stale 객체를 들고 있다.
+        assert cached.status == StepStatus.PROGRESS.value
+
+        # 비터미널로 되돌리는 갱신도 확정된 결과를 덮지 못해야 한다.
+        with pytest.raises(StepAlreadyFinalizedError):
+            update_experiment_step(
+                session_a,
+                experiment_id,
+                step_id,
+                ExperimentStepUpdate(status=StepStatus.PROGRESS, message="학습 중"),
+            )
+    finally:
+        session_a.close()
+        session_b.close()
+
+    with postgres_session_factory() as session:
+        stored = session.scalar(
+            select(ExperimentStep).where(ExperimentStep.id == step_id)
+        )
+    assert stored is not None
+    assert stored.status == StepStatus.COMPLETED.value
+    assert stored.message == "완료"
+
+
+def test_step_patch_advances_updated_at_through_core_update(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """Core UPDATE 경로에서도 `updated_at`이 갱신된다.
+
+    갱신은 ORM flush가 아니라 `session.execute(update(...))`이고 `.values()`에 `updated_at`이
+    없다. SQLAlchemy가 컬럼의 `onupdate=func.now()`를 SET 절에 넣어 주는 데 의존하므로,
+    그 가정이 깨지면 화면의 "마지막으로 바뀐 시각"이 생성 시각에 멈춘 채 조용히 틀린다.
+    """
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres step updated_at"),
+        ).id
+        created = create_experiment_step(
+            setup_session,
+            experiment_id,
+            ExperimentStepCreate(
+                idempotency_key=f"touch-{uuid.uuid4()}",
+                step_kind=StepKind.TRAIN,
+                step_type="train_candidate",
+            ),
+        )
+        step_id = created.id
+        created_at = created.created_at
+
+    with postgres_session_factory() as session:
+        updated = update_experiment_step(
+            session,
+            experiment_id,
+            step_id,
+            ExperimentStepUpdate(status=StepStatus.COMPLETED, message="완료"),
+        )
+
+    assert updated.updated_at > created_at
+    assert updated.created_at == created_at
+
+
+def test_step_cursor_pagination_advances_over_real_timestamps(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """Step cursor 계약은 실제 timestamp에서만 검증할 수 있다.
+
+    SQLite는 `CURRENT_TIMESTAMP`가 초 단위이고 파싱한 datetime을 다시 바인딩하면
+    `.000000`이 붙어 동등 비교가 성립하지 않아, keyset의 tie-breaker 분기가 매치되지
+    않는다. PostgreSQL은 microsecond 해상도 timestamptz라 이 계약이 실제로 성립한다.
+    """
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres step cursor"),
+        ).id
+    created_ids = []
+    for index in range(3):
+        with postgres_session_factory() as session:
+            created_ids.append(
+                create_experiment_step(
+                    session,
+                    experiment_id,
+                    ExperimentStepCreate(
+                        idempotency_key=f"cursor-{index}-{uuid.uuid4()}",
+                        step_kind=StepKind.TRAIN if index % 2 else StepKind.EVALUATE,
+                        step_type=f"stage-{index}",
+                    ),
+                ).id
+            )
+
+    with postgres_session_factory() as session:
+        first_page = list_experiment_steps(session, experiment_id, limit=100)
+        ordered_ids = [step.id for step in first_page.items]
+
+        after_first = list_experiment_steps(
+            session, experiment_id, limit=100, after_id=ordered_ids[0]
+        )
+        exhausted = list_experiment_steps(
+            session, experiment_id, limit=100, after_id=ordered_ids[-1]
+        )
+        limited = list_experiment_steps(session, experiment_id, limit=2)
+        filtered = list_experiment_steps(
+            session, experiment_id, limit=100, step_kind=StepKind.TRAIN
+        )
+
+    assert ordered_ids == created_ids
+    assert first_page.next_cursor == ordered_ids[-1]
+    assert [step.id for step in after_first.items] == ordered_ids[1:]
+    assert exhausted.items == []
+    # 새 row가 없으면 cursor는 전진하지 않는다 — polling이 뒤로 밀리지 않아야 한다.
+    assert exhausted.next_cursor == ordered_ids[-1]
+    assert len(limited.items) == 2
+    assert {step.step_kind for step in filtered.items} == {StepKind.TRAIN.value}
+
+
+def test_concurrent_terminal_transitions_finalize_exactly_one(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """비터미널 Step에 COMPLETED와 FAILED를 동시에 쓰면 한쪽만 확정된다."""
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres concurrent terminal"),
+        ).id
+        step_id = create_experiment_step(
+            setup_session,
+            experiment_id,
+            ExperimentStepCreate(
+                idempotency_key=f"terminal-{uuid.uuid4()}",
+                step_kind=StepKind.EVALUATE,
+                step_type="evaluate_candidate",
+                status=StepStatus.PROGRESS,
+            ),
+        ).id
+    start_barrier = threading.Barrier(2)
+
+    def submit(requested: StepStatus) -> tuple[str, str]:
+        with postgres_session_factory() as session:
+            request = ExperimentStepUpdate(status=requested, message=requested.value)
+            start_barrier.wait(timeout=5)
+            try:
+                row = update_experiment_step(session, experiment_id, step_id, request)
+                return ("success", row.status)
+            except StepAlreadyFinalizedError:
+                return ("conflict", requested.value)
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        futures = [
+            executor.submit(submit, requested)
+            for requested in (StepStatus.COMPLETED, StepStatus.FAILED)
+        ]
+        outcomes = [future.result(timeout=10) for future in futures]
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    with postgres_session_factory() as session:
+        stored = session.scalar(
+            select(ExperimentStep).where(ExperimentStep.id == step_id)
+        )
+    successes = [value for status, value in outcomes if status == "success"]
+    conflicts = [value for status, value in outcomes if status == "conflict"]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert stored is not None
+    assert stored.status == successes[0]
+    assert stored.status != conflicts[0]
