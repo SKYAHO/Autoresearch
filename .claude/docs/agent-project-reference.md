@@ -79,7 +79,8 @@ docs/
 - **책임:** 실험형 오케스트레이션 API와 비공개 Codex Runner. `/chat`의
   프롬프트 처리·PostgreSQL 영속화, API→Runner 내부 토큰 계약을 제공한다.
 - **배포 경계:** `deploy/agent_orchestration/api.Dockerfile`은 DB·API만,
-  `runner.Dockerfile`은 Codex CLI·OAuth PVC만 소유한다. KSA/GSA·PVC·NetworkPolicy는
+  `runner.Dockerfile`은 Codex CLI·OAuth PVC만, `ui.Dockerfile`은 Streamlit UI와
+  Experiment API 표시 모델만 소유한다. KSA/GSA·PVC·NetworkPolicy는
   `SKYAHO/Autoresearch-infra` 소유이다.
 - **비책임:** 사용자 OAuth, 세션/사용자 히스토리, 정책 라우팅은 후속 단계다.
 - **패턴:** `src/`와 패키지 경계를 분리해 새로운 배포 단위를 별도로 둔다.

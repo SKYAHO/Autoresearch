@@ -40,7 +40,7 @@ docker image inspect autoresearch-agent-orchestration-ui:local \
 
 - [ ] **Step 2: Streamlit UI Dockerfile을 추가한다**
 
-`uv export --frozen --only-group orchestration-ui`로 requirements를 고정 export한다.
+`uv export --frozen --only-group orchestration --only-group orchestration-ui`로 requirements를 고정 export한다.
 `python:3.12-slim` final stage에서 UID/GID `10001` appuser를 만들고 requirements와
 `agent_orchestration/ui`, UI가 import하는 Experiment API models, package initializer를
 복사한다. `VCS_REF` OCI label, `EXPOSE 8501`, `streamlit run` headless command를 둔다.

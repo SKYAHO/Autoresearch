@@ -2,7 +2,9 @@
 
 `FastAPI + Codex CLI + PostgreSQL` 기반 Agent Orchestration API입니다. 기존 `/chat`은
 Codex 응답을 PostgreSQL에 저장하며, 실험 워크벤치 v0은 Agent와 Streamlit이 실험 상태,
-Event, Log, metadata를 조회·기록하는 별도 API를 제공합니다. 로컬 개발의 기본 백엔드는
+Event, Log, metadata를 조회·기록하는 별도 API를 제공합니다. Streamlit UI는
+`deploy/agent_orchestration/ui.Dockerfile`의 별도 내부 이미지로 발행되며 API 요청 토큰은
+Kubernetes Pod 환경에만 주입합니다. 로컬 개발의 기본 백엔드는
 `codex_cli`이며, GKE API는 비공개 `codex_runner` Service를 호출합니다. 기본 모드는
 OpenAI API 키나 API 크레딧을 사용하지 않습니다.
 
