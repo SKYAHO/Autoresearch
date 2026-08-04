@@ -10,6 +10,8 @@ PostgreSQL 연결 정보 등 FastAPI 런타임의 공통 설정 값을 단일 �
 Runner 백엔드에서는 외부 API 인증과 API-to-Runner 내부 인증이 같은 토큰을 재사용하지
 않도록 기동 전에 거부한다. 이슈 발행 경로가 쓰는 GitHub 자격·발행 대상 저장소·서버
 소유 실험 기본값(`ExperimentDefaults`)도 여기서 검증해 `ServiceSettings`에 담는다.
+`get_settings`는 `app.state.settings`에서 요청 단위로 이 값을 꺼내는 FastAPI
+의존성이다 — 라우터가 `create_app()`의 클로저에 접근할 수 없어 필요하다.
 
 [비책임]
 실제 LLM 호출 및 PostgreSQL 스키마 생성/영속화 동작.
@@ -21,6 +23,8 @@ import os
 from dataclasses import dataclass
 import re
 from urllib.parse import urlparse
+
+from fastapi import HTTPException, Request, status
 
 from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 
@@ -182,3 +186,18 @@ def load_settings() -> ServiceSettings:
         codex_runner_token=codex_runner_token,
         database_connect_timeout_sec=database_connect_timeout_sec,
     )
+
+
+def get_settings(request: Request) -> ServiceSettings:
+    """FastAPI app state에 등록된 설정을 요청 단위로 제공한다.
+
+    `database.get_db_session`과 같은 이유다 — lifespan이 `settings`를 채우기 전의
+    startup 창에서는 500 대신 503으로 구분해 응답한다.
+    """
+    settings: ServiceSettings | None = getattr(request.app.state, "settings", None)
+    if settings is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service is unavailable.",
+        )
+    return settings

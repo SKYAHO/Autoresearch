@@ -37,8 +37,10 @@ from agent_orchestration.app.experiments.exceptions import (
     ExperimentNotFoundError,
     IdempotencyConflictError,
     InvalidCursorError,
+    IssuePublicationLimitError,
     PromotionRequiresDedicatedEndpointError,
 )
+from agent_orchestration.app.experiments.github_issues import GitHubIssueError
 from agent_orchestration.app.experiments.router import router as experiment_router
 from agent_orchestration.app.experiments.transition_service import InvalidTransitionError
 from agent_orchestration.app.llm import LLMBackendError, generate_response
@@ -93,6 +95,9 @@ def create_app() -> FastAPI:
         nonlocal settings
         logger.info("agent_orchestration startup")
         settings = load_settings()
+        # 라우터는 `create_app()`의 클로저에 접근할 수 없으므로, 요청 단위로 설정을
+        # 꺼내는 `config.get_settings` 의존성이 여기서 읽는다.
+        app.state.settings = settings
         await asyncio.to_thread(
             ensure_schema,
             settings.database_url,
@@ -160,6 +165,27 @@ def create_app() -> FastAPI:
     ) -> JSONResponse:
         """상태 전이·멱등성·승격 우회 오류를 공개 409 detail로 변환한다."""
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(error)})
+
+    @app.exception_handler(IssuePublicationLimitError)
+    async def handle_publication_limit(
+        _request: Request, error: IssuePublicationLimitError
+    ) -> JSONResponse:
+        """발행 상한 초과를 429로 변환한다."""
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": str(error)},
+        )
+
+    @app.exception_handler(GitHubIssueError)
+    async def handle_github_issue_error(
+        _request: Request, error: GitHubIssueError
+    ) -> JSONResponse:
+        """`gh` 실패를 502로 변환하되 사유만 노출한다."""
+        logger.error("Issue publication failed: %s", error)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={"detail": f"Failed to publish issue: {error.reason}"},
+        )
 
     @app.get("/healthcheck")
     def healthcheck() -> dict[str, str]:
