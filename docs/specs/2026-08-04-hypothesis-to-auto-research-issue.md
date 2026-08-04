@@ -43,6 +43,7 @@
 [UI/호출자] ──POST──▶ [API Pod] ──프롬프트──▶ [Runner Pod] ──▶ codex exec
                           │                                   (본문 값 JSON)
                           ├─ 서버가 heading과 결합해 본문 조립
+                          ├─ Experiment.issue_body 저장 (commit)   ← 발행 전
                           ├─ gh issue create + auto-experiment label
                           └─ Experiment.issue_number / issue_branch 기록
 ```
@@ -206,7 +207,34 @@ POST /experiments/{experiment_id}/issue
 호출을 포함해 수십 초가 걸리고 실패 지점이 다르다. 호출자는 두 번 호출한다.
 
 요청은 `allowed_scope`(`prod_model_contract` / `feast_definition` / `promotion` 중
-0개 이상)를 받는다. 응답은 `issue_number`, `issue_url`, `issue_branch`다.
+0개 이상)와 `regenerate`(기본 `false`)를 받는다. 응답은 `issue_number`, `issue_url`,
+`issue_branch`다.
+
+### 본문 생성과 발행을 분리한다
+
+한 요청 안에서 처리하되 **본문을 DB에 먼저 커밋한 뒤 발행한다.**
+
+```
+① issue_body가 이미 있나?
+     없음 → LLM 호출 → 조립 → Experiment.issue_body 저장 (commit)
+     있음 → 그대로 사용 (LLM 재호출 없음)
+② issue_number가 이미 있나?
+     있음 → 기존 값 반환
+     없음 → 저장된 본문으로 gh issue create → issue_number / issue_branch 기록
+```
+
+**본문을 저장하지 않으면 재시도가 다른 실험을 만든다.** LLM은 비결정적이므로 `gh`
+실패 후 재호출하면 지표 임계나 guardrail 설정이 달라질 수 있고, 파서가 그 값들로
+계산하는 `criteria_id`·`reproducibility_id`도 함께 달라진다. 같은 가설을 재시도했을
+뿐인데 실험 정의가 바뀌며, 호출자는 그 사실을 알 방법이 없다.
+
+저장하면 재시도가 **같은 본문으로** 발행되어 결정론적이고, 추론 비용도 아낀다. 발행에
+실패했을 때 "무엇을 발행하려 했는지"가 DB에 남아 원인을 볼 수 있다는 부수 효과도 있다.
+
+**`regenerate`가 필요한 이유.** 본문이 저장되면 파서를 통과하지 못하는 본문도 고착되어
+재시도가 같은 실패를 반복한다. `regenerate: true`면 저장된 `issue_body`를 버리고 다시
+만든다. 단 **`issue_number`가 이미 있으면 `regenerate`를 무시한다** — 이미 발행된
+이슈의 본문을 바꾸는 것은 이 endpoint의 책임이 아니다.
 
 ### 멱등성 3중 방어
 
@@ -250,16 +278,16 @@ POST /experiments/{experiment_id}/issue
 
 ```
 agent_orchestration/app/experiments/
-├── issue_body.py      신규 · 순수 함수. 프롬프트 조립, LLM JSON + 서버 값 → 본문 문자열
+├── issue_authoring.py 신규 · 순수 함수. 프롬프트 조립, LLM JSON + 서버 값 → 본문 문자열
 ├── github_issues.py   신규 · gh CLI 경계. 서브프로세스·환경 화이트리스트·timeout·오류 분류
-├── service.py         기존 · 오케스트레이션, 멱등성·상한 검사
+├── service.py         기존 · 생성→저장→발행 2단계 오케스트레이션, 멱등성·상한 검사
 ├── router.py          기존 · endpoint 추가
-├── models.py          기존 · issue_number / issue_branch 컬럼
+├── models.py          기존 · issue_body / issue_number / issue_branch 컬럼
 └── schemas.py         기존 · 요청·응답 계약
 migrations/versions/0002_experiment_issue_lineage.py   신규
 ```
 
-`issue_body.py`를 순수 함수로 유지하는 것이 중요하다 — **본문 조립을 LLM·GitHub 없이
+`issue_authoring.py`를 순수 함수로 유지하는 것이 중요하다 — **본문 조립을 LLM·GitHub 없이
 단독으로 테스트**할 수 있어야 §테스트의 파서 대조가 성립한다.
 
 `github_issues.py`는 `llm.py`가 LLM 바깥 경계를 맡는 것과 같은 위치다. 테스트에서
@@ -267,29 +295,44 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
 
 ### 스키마
 
-`Experiment`에 `issue_number`(int) / `issue_branch`(str)를 1급 컬럼으로 추가한다.
+`Experiment`에 세 컬럼을 1급으로 추가한다.
 
+| 컬럼 | 타입 | 채워지는 시점 |
+| --- | --- | --- |
+| `issue_body` | `Text` | 본문 생성 직후 (발행 **전**) |
+| `issue_number` | `Integer` | 발행 성공 후 |
+| `issue_branch` | `String` | 발행 성공 후 |
+
+- **`issue_body`가 발행보다 먼저 커밋되는 것이 핵심이다.** §결정 7의 재시도 결정성이
+  여기에 의존한다. 길이 제약을 두지 않는다 — `Text`이고, 조립된 본문은 fixture 기준
+  약 1,300자다.
 - `ExperimentMetadata`로 대신할 수 없다. `key` `String(64)` / `value` `Text`라 형식이
   보장되지 않고, 더 큰 문제로 **metadata는 `create_experiment()`가 생성 시 1회만
-  기록하며 갱신 endpoint가 없다.** 이슈 번호는 발행 이후에 확정된다.
+  기록하며 갱신 endpoint가 없다.** 세 값 모두 생성 이후에 확정된다.
 - 기존 revision이 `0001_experiment_tables` 하나뿐이므로
   `down_revision = "0001_experiment_tables"`로 연결하고 `upgrade()`/`downgrade()`를
-  대칭으로 작성한다.
-- 기존 행이 있으므로 **nullable**로 추가한다.
+  대칭으로 작성한다. 세 컬럼을 **한 revision**에 넣는다.
+- 기존 행이 있으므로 **전부 nullable**로 추가한다.
 - `issue_number`에 index를 두되 **unique 제약은 두지 않는다** — 이슈 1건이 실험 N건을
   가질 수 있다(대시보드 #338이 주 소비처다).
+- `ExperimentResponse`에는 `issue_number` / `issue_branch`만 노출한다. `issue_body`는
+  이슈 본문으로 이미 공개되어 있고 목록 응답을 크게 만들 뿐이다.
 - `models.py` 모듈 docstring이 migration과의 동일성을 단언하므로 같은 커밋에서 갱신한다.
 
 ## 실패 처리
 
-| 실패 | 처리 |
-| --- | --- |
-| LLM 호출 실패·timeout | 502. `Experiment`는 `CREATED` 유지, 재호출 가능 |
-| LLM 응답이 JSON이 아님 | 1회 재시도 후 실패 (LLM 호출은 부작용이 없어 재시도가 안전하다) |
-| LLM이 낸 값이 형식 위반 | 조립 단계에서 거부, 실패 |
-| `gh` 실패 | 사유를 분류해 알리되 **요청 안에서 재시도하지 않는다** |
-| `gh` timeout | 프로세스 그룹 회수 후 실패 (`codex.py` 패턴) |
-| 발행 성공 후 DB 쓰기 실패 | 다음 호출이 marker 조회로 복구 |
+| 실패 | 처리 | 재호출 시 |
+| --- | --- | --- |
+| LLM 호출 실패·timeout | 502. `Experiment`는 `CREATED` 유지 | 본문을 다시 생성 |
+| LLM 응답이 JSON이 아님 | 1회 재시도 후 실패 (LLM 호출은 부작용이 없어 재시도가 안전하다) | 본문을 다시 생성 |
+| LLM이 낸 값이 형식 위반 | 조립 단계에서 거부, 실패 | 본문을 다시 생성 |
+| `issue_body` 저장 실패 | 실패 | 본문을 다시 생성 |
+| `gh` 실패 | 사유를 분류해 알리되 **요청 안에서 재시도하지 않는다** | **저장된 같은 본문으로 발행** |
+| `gh` timeout | 프로세스 그룹 회수 후 실패 (`codex.py` 패턴) | **저장된 같은 본문으로 발행** |
+| 발행 성공 후 DB 쓰기 실패 | 실패 | marker 조회로 기존 이슈를 찾아 복구 |
+| 저장된 본문이 파서를 통과하지 못함 | 워크플로가 fail-closed, 브랜치 없음 | `regenerate: true`로 다시 생성 |
+
+`issue_body` 커밋을 경계로 **앞쪽 실패는 재생성, 뒤쪽 실패는 재발행**으로 갈린다.
 
 상태 기계는 건드리지 않는다. 발행 여부는 `issue_number`의 `NULL` 여부로 표현하며,
 `CREATED → RUNNING` 전이는 실험 실행기(#492)의 몫이다.
@@ -315,6 +358,10 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
   `_SCOPE_LABELS`, `_METRIC_DIRECTIONS`, `_HEADING_NAMES` 대조.
 - **서버가 쓰는 시드가 `POLICY_SEEDS`와 같다.**
 - **본문 marker가 파서와 봉인 식별자에 영향을 주지 않는다.**
+- **`gh` 실패 후 재호출이 LLM을 다시 부르지 않고 저장된 본문으로 발행한다.** LLM 스텁의
+  호출 횟수와 두 번의 발행 본문이 같은지로 고정한다 — §결정 7의 재시도 결정성이
+  이 테스트에 달려 있다.
+- **`regenerate: true`가 본문을 다시 만들고, `issue_number`가 있으면 무시된다.**
 - `gh` 경계를 스텁으로 대체해 멱등성 3중 방어·상한·실패 분류를 검증한다.
 - Alembic `upgrade()`/`downgrade()` 대칭.
 
@@ -323,6 +370,7 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
 - 로컬에서 가설을 보내면 실제 `[AR]` 이슈가 열리고, 워크플로가 `dev` tip을 봉인해
   `exp/<번호>-<slug>` 브랜치를 만들고 marker 코멘트를 남기는 것을 **1회 실증**한다.
 - 같은 실험에 발행을 두 번 요청해도 이슈가 하나만 생긴다.
+- 발행에 실패한 뒤 재호출하면 LLM을 다시 부르지 않고 저장된 본문으로 발행한다.
 - 발행된 본문의 `랜덤 시드 목록`이 `42..71`이다.
 - `uv run python -m pytest`와
   `uv run --no-sync ruff check agent_orchestration autoresearch tests tools` 통과.
