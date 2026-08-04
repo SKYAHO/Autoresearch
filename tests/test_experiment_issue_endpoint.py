@@ -21,6 +21,7 @@ from agent_orchestration.app.database import Base
 from agent_orchestration.app.experiments.exceptions import IssuePublicationLimitError
 from agent_orchestration.app.experiments.github_issues import IssueRef
 from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
+from agent_orchestration.app.llm import LLMBackendError
 from agent_orchestration.contracts import LLMResult
 
 API_TOKEN = "test-orchestration-token"
@@ -175,3 +176,57 @@ def test_daily_limit_maps_to_429(
     )
 
     assert response.status_code == 429
+
+
+def test_llm_backend_failure_maps_to_502_not_500(
+    client: TestClient, authorized_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LLM 호출 실패는 서버 결함(500)이 아니라 502로 알려야 호출자가 원인을 구분한다."""
+    created = client.post(
+        "/experiments", json={"hypothesis": "ratio"}, headers=authorized_headers
+    ).json()
+
+    async def failing_generate_response(
+        _settings: ServiceSettings, _prompt: str
+    ) -> LLMResult:
+        raise LLMBackendError("boom")
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.router.generate_response",
+        failing_generate_response,
+    )
+
+    response = client.post(
+        f"/experiments/{created['id']}/issue", json={}, headers=authorized_headers
+    )
+
+    assert response.status_code == 502
+
+
+def test_body_assembly_failure_maps_to_502_not_500(
+    client: TestClient, authorized_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LLM 출력 드리프트(가장 흔한 실패)는 500이 아니라 502여야 재생성 여지를 안다.
+
+    1회 재시도 후에도 계속 산문을 내는 상황을 스텁으로 만들어, 조립 단계의
+    `ValueError`가 서버 결함이 아니라 502로 도달함을 확인한다.
+    """
+    created = client.post(
+        "/experiments", json={"hypothesis": "ratio"}, headers=authorized_headers
+    ).json()
+
+    async def prose_generate_response(
+        _settings: ServiceSettings, _prompt: str
+    ) -> LLMResult:
+        return LLMResult(text="이것은 산문입니다.", model="stub-llm", token_count=None)
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.router.generate_response",
+        prose_generate_response,
+    )
+
+    response = client.post(
+        f"/experiments/{created['id']}/issue", json={}, headers=authorized_headers
+    )
+
+    assert response.status_code == 502

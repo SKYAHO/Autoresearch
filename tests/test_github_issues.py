@@ -77,6 +77,26 @@ def test_create_issue_rejects_a_url_from_another_repository(
         )
 
 
+def test_create_issue_accepts_a_repository_url_with_different_casing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """저장소 비교가 대소문자에 민감하면 설정 표기가 조금만 달라도 영구 실패한다.
+
+    GitHub 저장소 경로는 대소문자를 구분하지 않으므로, `gh`가 반환한 URL의 대소문자가
+    설정값과 다르다는 이유로 성공을 실패로 처리하면 안 된다.
+    """
+    _patch_subprocess(
+        monkeypatch,
+        _FakeProcess(b"https://github.com/SKYAHO/AUTORESEARCH/issues/520\n", b"", 0),
+    )
+
+    ref = asyncio.run(
+        create_issue(_Settings(), title="[AR] t", body="b", labels=("auto-experiment",))
+    )
+
+    assert ref.number == 520
+
+
 def test_create_issue_passes_the_label(monkeypatch: pytest.MonkeyPatch) -> None:
     """label이 빠지면 워크플로가 실패가 아니라 skip되어 흔적이 남지 않는다."""
     calls = _patch_subprocess(
@@ -197,11 +217,56 @@ def test_find_issue_by_marker_returns_none_when_absent(
 def test_find_issue_by_marker_returns_the_existing_issue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """발행 후 DB 쓰기가 실패한 경우의 복구 경로다."""
+    """발행 후 DB 쓰기가 실패한 경우의 복구 경로다. marker가 실제로 본문에 있어야 채택된다."""
     _patch_subprocess(
         monkeypatch,
         _FakeProcess(
-            b'[{"number": 520, "url": "https://github.com/SKYAHO/Autoresearch/issues/520"}]',
+            b'[{"number": 520, "url": "https://github.com/SKYAHO/Autoresearch/issues/520", '
+            b'"body": "<!-- experiment-id: x -->\\n\\n### heading\\nvalue"}]',
+            b"",
+            0,
+        ),
+    )
+
+    found = asyncio.run(find_issue_by_marker(_Settings(), marker="<!-- experiment-id: x -->"))
+
+    assert found == IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
+
+
+def test_find_issue_by_marker_ignores_rows_without_the_marker_in_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--search`는 전문 검색이라 marker와 무관한 이슈가 결과에 섞일 수 있다.
+
+    body에 실제로 marker가 없는 행을 "이미 발행됨"으로 채택하면, 무관한 이슈 번호를
+    실험에 기록하고 실제 발행을 건너뛰게 된다.
+    """
+    _patch_subprocess(
+        monkeypatch,
+        _FakeProcess(
+            b'[{"number": 999, "url": "https://github.com/SKYAHO/Autoresearch/issues/999", '
+            b'"body": "unrelated issue body"}]',
+            b"",
+            0,
+        ),
+    )
+
+    found = asyncio.run(find_issue_by_marker(_Settings(), marker="<!-- experiment-id: x -->"))
+
+    assert found is None
+
+
+def test_find_issue_by_marker_picks_only_the_row_with_the_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """오탐 행이 먼저 오더라도 marker가 실제로 있는 행만 채택한다."""
+    _patch_subprocess(
+        monkeypatch,
+        _FakeProcess(
+            b'[{"number": 999, "url": "https://github.com/SKYAHO/Autoresearch/issues/999", '
+            b'"body": "unrelated"}, '
+            b'{"number": 520, "url": "https://github.com/SKYAHO/Autoresearch/issues/520", '
+            b'"body": "<!-- experiment-id: x -->\\n\\n### heading"}]',
             b"",
             0,
         ),

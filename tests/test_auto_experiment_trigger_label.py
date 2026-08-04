@@ -115,6 +115,18 @@ def test_documents_list_the_same_labels_as_the_issue_form() -> None:
         )
 
 
+def test_service_publishes_issues_with_the_form_label() -> None:
+    """발행 endpoint가 붙이는 label이 Form의 트리거 label과 같음을 고정한다.
+
+    `service.TRIGGER_LABEL`은 이 문자열의 네 번째 복제본이다 — 여기가 어긋나면
+    서버가 발행한 이슈에 label이 빠지거나 달라져 브랜치 생성 job이 조용히 skip된다.
+    """
+    from agent_orchestration.app.experiments.service import TRIGGER_LABEL
+
+    (trigger_label,) = _form_labels()
+    assert TRIGGER_LABEL == trigger_label
+
+
 def test_documents_name_the_trigger_label_in_the_automation_label_section() -> None:
     """두 문서의 '자동화 트리거 label' 절이 실제 트리거 label을 지목함을 고정한다.
 

@@ -25,7 +25,7 @@ import json
 import re
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 
 # `src/pipeline/experiment_evaluation.py`의 POLICY_SEEDS와 같아야 한다. 어긋나면
@@ -198,7 +198,13 @@ def parse_llm_fields(text: str) -> LlmIssueFields:
         payload = json.loads(stripped[start : end + 1])
     except json.JSONDecodeError as error:
         raise ValueError("LLM response is not valid JSON") from error
-    return LlmIssueFields.model_validate(payload)
+    try:
+        return LlmIssueFields.model_validate(payload)
+    except ValidationError as error:
+        # `pydantic.ValidationError`는 `ValueError`의 하위 클래스이지만, FastAPI가
+        # 요청 검증에 이미 그 이름을 쓰고 있어 호출자를 혼동시키지 않도록 여기서
+        # 명시적으로 `ValueError`로 감싼다. main.py의 전역 handler가 502로 변환한다.
+        raise ValueError("LLM response failed field validation") from error
 
 
 def build_prompt(hypothesis: str) -> str:

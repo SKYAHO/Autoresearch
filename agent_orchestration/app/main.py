@@ -187,6 +187,61 @@ def create_app() -> FastAPI:
             content={"detail": f"Failed to publish issue: {error.reason}"},
         )
 
+    @app.exception_handler(LLMBackendOverloadedError)
+    async def handle_llm_backend_overloaded(
+        _request: Request, error: LLMBackendOverloadedError
+    ) -> JSONResponse:
+        """LLM 백엔드 과부하를 503으로 변환한다.
+
+        `/chat`은 함수 내부 try/except가 이 예외를 먼저 잡아 같은 503 응답으로
+        바꾸므로 이 전역 handler에 도달하지 않는다 — 이슈 발행처럼 내부에 별도
+        except가 없는 호출 경로를 위한 것이다.
+        """
+        logger.error("LLM backend is overloaded: %s", error)
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": "LLM backend is temporarily overloaded."},
+        )
+
+    @app.exception_handler(LLMBackendError)
+    async def handle_llm_backend_error(
+        _request: Request, error: LLMBackendError
+    ) -> JSONResponse:
+        """LLM 백엔드 호출 실패를 502로 변환한다.
+
+        `LLMBackendOverloadedError`는 `LLMBackendError`의 하위 클래스이지만,
+        Starlette가 예외의 MRO를 훑어 더 구체적으로 등록된 handler를 먼저 찾으므로
+        위 handler와 충돌하지 않는다. `/chat`은 위 handler와 같은 이유로 영향받지
+        않는다.
+        """
+        logger.error("LLM backend call failed: %s", error)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={"detail": "Failed to call LLM backend."},
+        )
+
+    @app.exception_handler(ValueError)
+    async def handle_issue_body_assembly_error(
+        _request: Request, error: ValueError
+    ) -> JSONResponse:
+        """이슈 본문 조립 단계의 실패(LLM 출력 드리프트 포함)를 502로 변환한다.
+
+        `parse_llm_fields`/`build_issue_body`/`_branch_slug`가 내는 `ValueError`가
+        여기로 온다 — LLM이 계약과 다른 값을 냈다는 뜻이며, 서버 결함(500)과 구분해야
+        호출자가 "재생성해야 한다"를 알 수 있다.
+
+        `IdempotencyConflictError`/`PromotionRequiresDedicatedEndpointError`도
+        `ValueError`의 하위 클래스이지만, 위와 같은 이유로 이 handler와 충돌하지
+        않는다 — Starlette가 더 구체적으로 등록된 409 handler를 먼저 찾는다. 다른
+        경로의 `ValueError`(`config.py`의 설정 검증 등)는 요청 처리 중에 발생하지
+        않으므로 이 handler에 도달하지 않는다.
+        """
+        logger.error("Issue body assembly failed: %s", error)
+        return JSONResponse(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            content={"detail": f"Failed to author or publish the issue: {error}"},
+        )
+
     @app.get("/healthcheck")
     def healthcheck() -> dict[str, str]:
         if settings is None:

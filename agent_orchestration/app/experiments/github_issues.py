@@ -162,7 +162,7 @@ def _parse_issue_url(url: str, repository: str) -> IssueRef:
     )
     if match is None:
         raise GitHubIssueError("unparsable_output", url)
-    if match.group(1) != repository:
+    if match.group(1).casefold() != repository.casefold():
         raise GitHubIssueError("unexpected_repository", url)
     return IssueRef(number=int(match.group(2)), url=url.strip())
 
@@ -196,7 +196,14 @@ async def create_issue(
 
 
 async def find_issue_by_marker(settings: _Settings, *, marker: str) -> IssueRef | None:
-    """본문 marker로 이미 발행된 이슈를 찾는다(발행 후 DB 쓰기 실패 복구용)."""
+    """본문 marker로 이미 발행된 이슈를 찾는다(발행 후 DB 쓰기 실패 복구용).
+
+    `--search`는 정확 일치가 아니라 GitHub의 전문 검색이다 — `experiment-id:`는
+    qualifier로, `-->`는 부정 토큰으로 해석될 수 있어 무관한 이슈가 결과에 섞일 수
+    있다. 그래서 `body`를 함께 받아 marker가 실제로 본문에 있는 행만 인정한다. 없으면
+    아직 발행되지 않은 것으로 취급해 `None`을 반환한다 — 오탐을 "이미 발행됨"으로
+    잘못 받아들이면 무관한 이슈 번호를 실험에 기록하고 실제 발행을 건너뛴다.
+    """
     stdout = await _run_gh(
         settings,
         (
@@ -209,7 +216,7 @@ async def find_issue_by_marker(settings: _Settings, *, marker: str) -> IssueRef 
             "--search",
             marker,
             "--json",
-            "number,url",
+            "number,url,body",
             "--limit",
             "5",
         ),
@@ -218,6 +225,7 @@ async def find_issue_by_marker(settings: _Settings, *, marker: str) -> IssueRef 
         rows = json.loads(stdout or "[]")
     except json.JSONDecodeError as error:
         raise GitHubIssueError("unparsable_output", stdout) from error
-    if not rows:
-        return None
-    return _parse_issue_url(str(rows[0]["url"]), settings.github_repository)
+    for row in rows:
+        if marker in str(row.get("body") or ""):
+            return _parse_issue_url(str(row["url"]), settings.github_repository)
+    return None
