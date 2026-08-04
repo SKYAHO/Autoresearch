@@ -44,7 +44,8 @@
 **비목표**
 
 - Airflow DAG 배선(Job spec에 환경변수 주입, Task 분리)은 `SKYAHO/Autoresearch-airflow`
-  소유다. 별도 이슈로 낸다.
+  소유다 — `Autoresearch-airflow#236`으로 분리했다. §8의 운영 계약이 그 이슈에서
+  실제로 강제된다.
 - dev/prod 네임스페이스 분리. `FEAST_ENV`가 `src/` 어디에도 없는 현재, 이 spec이
   독자적으로 dev/prod 개념을 발명하면 이후 Feast 환경 분리 작업과 정의가 어긋난다.
   §7의 운영 계약으로 대신한다.
@@ -270,7 +271,9 @@ dev 실험이 backfill을 짧게(≈7일) 쓰는 이유는 빠른 가설 검증�
   `main()` 게시·반환 타입(`AssemblyOutcome`)
 - `src/pipeline/train.py` — `--dataset-uri` 다운로드·검증
 - `src/cli.py` — `--snapshot-root`/`--dataset-uri` 인자, 환경변수 해석,
-  `run-pipeline` 조립 스킵
+  `run-pipeline` 조립 스킵, **`data_source_params`에 `training_snapshot_uri` 추가**
+  (`AssemblyOutcome`을 도입하는 이유 자체가 이 값을 lineage로 올리기 위해서다 —
+  이 한 줄이 빠지면 반환 타입만 바뀌고 그 값을 아무도 쓰지 않는 배관이 된다)
 
 **테스트 (기존 픽스처 갱신 대상)**
 - `tests/test_cli.py`, `tests/test_degradation_eval_hold.py`,
@@ -298,6 +301,9 @@ dev 실험이 backfill을 짧게(≈7일) 쓰는 이유는 빠른 가설 검증�
    불일치 또는 커버리지 미검증(`spine_usable_days is None` + `min_days>0`) 시 fit 전에
    중단한다.
 6. `run-pipeline --dataset-uri`가 조립을 건너뛰고 lineage를 manifest에서 채운다.
-7. 상호배타 인자 조합이 거부된다.
-8. `is_experiment_assembly` 추출이 동작 변경 없는 별도 커밋으로 들어간다.
-9. §9의 문서가 같은 PR에서 갱신된다.
+7. 게시된 경우 `run-pipeline`의 MLflow run 파라미터에 `training_snapshot_uri`가
+   남는다. 게시하지 않은 실행(루트 미지정)에서는 이 파라미터를 넣지 않는다 —
+   빈 문자열로 남기면 "게시했는데 URI가 비었다"와 구별되지 않는다.
+8. 상호배타 인자 조합이 거부된다.
+9. `is_experiment_assembly` 추출이 동작 변경 없는 별도 커밋으로 들어간다.
+10. §9의 문서가 같은 PR에서 갱신된다.
