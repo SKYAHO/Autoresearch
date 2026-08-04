@@ -486,3 +486,286 @@ def test_run_rolling_origin_aligns_categorical_codes_with_training(monkeypatch, 
 
     (scored_dataset,) = harness.evaluate_calls
     assert list(scored_dataset["category_id"].cat.categories) == ["A", "B", "C"]
+
+
+# ============================================================================
+# Task 1 — §4.3 baseline 재정의 (#485)
+# forward_baseline_roc_auc(per_day 중 첫 valid 관측치)를 판정 기준선으로 쓴다.
+# baseline_val_roc_auc(랜덤 val)는 결과 필드로만 유지한다(하위호환).
+# ============================================================================
+
+
+def test_forward_baseline_is_first_valid_observation(monkeypatch, tmp_path):
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={
+            "2026-07-20": _day_frame(5),
+            "2026-07-21": _day_frame(5),
+        },
+        val_roc_auc=0.80,
+    )
+    harness.roc_auc_sequence = [0.76, 0.75]
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=2,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.forward_baseline_roc_auc == pytest.approx(0.76)
+    assert result.forward_baseline_source == 0
+    # 랜덤 val 지표는 결과 필드로 그대로 남는다(하위호환).
+    assert result.baseline_val_roc_auc == pytest.approx(0.80)
+
+
+def test_forward_baseline_skips_invalid_days(monkeypatch, tmp_path):
+    # elapsed_days=0이 무효(행 부족)면 첫 valid는 elapsed_days=1이다.
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={
+            "2026-07-20": _day_frame(1),  # min_rows_per_day=3 미만 → insufficient_rows
+            "2026-07-21": _day_frame(5),
+        },
+        val_roc_auc=0.80,
+    )
+    harness.roc_auc_sequence = [0.73]
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=2,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.forward_baseline_roc_auc == pytest.approx(0.73)
+    assert result.forward_baseline_source == 1
+
+
+def test_forward_baseline_none_when_no_valid_days(monkeypatch, tmp_path):
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={"2026-07-20": _day_frame(1)},  # 유효일 0개
+        val_roc_auc=0.80,
+    )
+    harness.roc_auc_sequence = []
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=1,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.forward_baseline_roc_auc is None
+    assert result.forward_baseline_source is None
+    assert result.degradation_point.reason == "insufficient_valid_points"
+
+
+def test_degradation_point_uses_forward_baseline_not_val_roc_auc(monkeypatch, tmp_path):
+    """이 Task의 리트머스 — 두 기준선이 서로 다른 판정을 내는 시나리오.
+
+    baseline_val_roc_auc=0.80, min_auc_drop=0.05 → 옛 기준 threshold=0.75.
+    forward_baseline_roc_auc=per_day[0]=0.76 → 새 기준 threshold=0.71.
+
+    per_day = [0.76, 0.73, 0.72]
+    - 옛 기준(0.75): 0.73/0.72가 연속 degraded → elapsed_days=2에서 탐지(오탐)
+    - 새 기준(0.71): 셋 다 threshold 위 → 미탐지
+
+    4%p 오프셋이 만드는 정확히 그 오탐이라, 새 기준으로 바뀌었는지 이 하나로 갈린다.
+    """
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={
+            "2026-07-20": _day_frame(5),
+            "2026-07-21": _day_frame(5),
+            "2026-07-22": _day_frame(5),
+        },
+        val_roc_auc=0.80,
+    )
+    harness.roc_auc_sequence = [0.76, 0.73, 0.72]
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=3,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.forward_baseline_roc_auc == pytest.approx(0.76)
+    assert result.degradation_point.elapsed_days is None
+    assert result.degradation_point.reason == "no_degradation_detected"
+
+
+def test_degradation_point_still_detects_real_drop_against_forward_baseline(
+    monkeypatch, tmp_path
+):
+    # 새 기준선으로도 진짜 하락은 잡혀야 한다(위 테스트의 반대편).
+    # forward_baseline=0.76, min_auc_drop=0.05 → threshold=0.71.
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={
+            "2026-07-20": _day_frame(5),
+            "2026-07-21": _day_frame(5),
+            "2026-07-22": _day_frame(5),
+        },
+        val_roc_auc=0.80,
+    )
+    harness.roc_auc_sequence = [0.76, 0.70, 0.69]
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=3,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.degradation_point.elapsed_days == 2
+    assert result.degradation_point.reason is None
+
+
+# ============================================================================
+# Task 2 — §3 최근 구간 vs 전체 구간 지표 분리 (#485)
+# 날 동등 가중 평균(#506의 매크로 평균과 같은 근거 — 행 수가 많은 날이 지표를
+# 지배하면 "날의 평균"이 아니라 "행의 평균"이 된다).
+# ============================================================================
+
+
+def _five_declining_days() -> dict[str, pd.DataFrame]:
+    return {f"2026-07-{20 + i}": _day_frame(5) for i in range(5)}
+
+
+def test_overall_and_recent_means_differ_when_performance_declines(monkeypatch, tmp_path):
+    """분리가 실제로 되는지 — 두 값이 **반드시 달라야** 의미 있는 검증이다.
+
+    per_day = [0.80, 0.78, 0.70, 0.68, 0.66], recent_window_days=3
+      overall = 3.62 / 5 = 0.724
+      recent  = (0.70 + 0.68 + 0.66) / 3 = 0.68
+    뒤로 갈수록 하락하는 시나리오라 두 값이 갈린다 — 우연히 같아지지 않는다.
+    """
+    harness = _Harness(
+        monkeypatch, tmp_path, day_frames=_five_declining_days(), val_roc_auc=0.85
+    )
+    harness.roc_auc_sequence = [0.80, 0.78, 0.70, 0.68, 0.66]
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=5,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.50,  # 열화 판정이 이 테스트에 끼어들지 않게 크게 둔다
+        recent_window_days=3,
+    )
+
+    assert result.overall_roc_auc_mean == pytest.approx(0.724)
+    assert result.recent_roc_auc_mean == pytest.approx(0.68)
+    # 분리가 실제로 됐는지 — 같으면 이 테스트는 아무것도 검증하지 못한다.
+    assert result.overall_roc_auc_mean != pytest.approx(result.recent_roc_auc_mean)
+    assert result.recent_window_days == 3
+
+
+def test_recent_mean_uses_only_last_n_valid_days_skipping_invalid(monkeypatch, tmp_path):
+    # 무효일이 중간에 끼어도 "최근 N개 **유효일**"이지 "최근 N일"이 아니다.
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={
+            "2026-07-20": _day_frame(5),
+            "2026-07-21": _day_frame(1),  # insufficient_rows → 무효
+            "2026-07-22": _day_frame(5),
+            "2026-07-23": _day_frame(5),
+        },
+        val_roc_auc=0.85,
+    )
+    harness.roc_auc_sequence = [0.90, 0.60, 0.50]  # 유효일 3개
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=4,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.50,
+        recent_window_days=2,
+    )
+
+    assert result.overall_roc_auc_mean == pytest.approx((0.90 + 0.60 + 0.50) / 3)
+    assert result.recent_roc_auc_mean == pytest.approx((0.60 + 0.50) / 2)
+
+
+def test_recent_mean_is_none_when_fewer_valid_days_than_window(monkeypatch, tmp_path):
+    # 적은 표본으로 평균을 만들어 "최근 성능"이라고 부르지 않는다.
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={"2026-07-20": _day_frame(5), "2026-07-21": _day_frame(5)},
+        val_roc_auc=0.85,
+    )
+    harness.roc_auc_sequence = [0.80, 0.78]  # 유효일 2개 < recent_window_days=3
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=2,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.50,
+        recent_window_days=3,
+    )
+
+    assert result.overall_roc_auc_mean == pytest.approx(0.79)
+    assert result.recent_roc_auc_mean is None
+
+
+def test_means_are_none_when_no_valid_days(monkeypatch, tmp_path):
+    harness = _Harness(
+        monkeypatch, tmp_path, day_frames={"2026-07-20": _day_frame(1)}, val_roc_auc=0.85
+    )
+    harness.roc_auc_sequence = []
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=1,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.overall_roc_auc_mean is None
+    assert result.recent_roc_auc_mean is None
+
+
+def test_recent_window_days_defaults_to_three(monkeypatch, tmp_path):
+    # 하드코딩이 아니라 키워드 인자 기본값이다(spec §7.3 — 실측 후 재조정 대상).
+    harness = _Harness(
+        monkeypatch, tmp_path, day_frames={"2026-07-20": _day_frame(5)}, val_roc_auc=0.85
+    )
+    harness.roc_auc_sequence = [0.80]
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=1,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.50,
+    )
+
+    assert result.recent_window_days == 3

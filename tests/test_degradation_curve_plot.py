@@ -18,6 +18,8 @@ def _result(**overrides) -> dict:
     defaults = {
         "cutoff_date": "2026-07-20",
         "baseline_val_roc_auc": 0.80,
+        "forward_baseline_roc_auc": 0.80,
+        "min_auc_drop": 0.05,
         "per_day": [
             {"elapsed_days": 0, "date": "2026-07-20", "roc_auc": 0.80, "status": "valid"},
             {"elapsed_days": 1, "date": "2026-07-21", "roc_auc": None, "status": "missing_date"},
@@ -69,3 +71,31 @@ def test_build_figure_draws_degradation_marker_when_detected():
 
     vertical_lines = [shape for shape in figure.layout.shapes if shape.x0 == shape.x1]
     assert any(line.x0 == 2 for line in vertical_lines)
+
+
+def test_build_figure_draws_forward_baseline_not_val_baseline():
+    """PR #520 리뷰 High#1 — 그림의 기준선이 판정에 쓰인 값과 같아야 한다.
+
+    baseline_val_roc_auc(0.80)를 그리면 점선과 열화 마커가 4%p 어긋난 축에 놓인다.
+    """
+    figure = build_figure(
+        _result(baseline_val_roc_auc=0.80, forward_baseline_roc_auc=0.76, min_auc_drop=0.05)
+    )
+
+    horizontal = [s for s in figure.layout.shapes if s.y0 == s.y1]
+    ys = {round(s.y0, 4) for s in horizontal}
+
+    assert 0.76 in ys  # forward baseline
+    assert 0.80 not in ys  # 옛 기준선은 그리지 않는다
+    assert 0.71 in ys  # threshold = 0.76 - 0.05
+
+
+def test_build_figure_falls_back_to_val_baseline_for_legacy_results():
+    # #485 이전 결과 JSON에는 forward 필드가 없다 — 깨지지 않고 옛 값으로 그린다.
+    legacy = _result()
+    legacy.pop("forward_baseline_roc_auc", None)
+
+    figure = build_figure(legacy)
+
+    horizontal = [s for s in figure.layout.shapes if s.y0 == s.y1]
+    assert any(round(s.y0, 4) == 0.80 for s in horizontal)
