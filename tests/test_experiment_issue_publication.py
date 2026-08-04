@@ -92,6 +92,21 @@ class _Recorder:
         return LLM_RESPONSE
 
 
+@pytest.fixture(autouse=True)
+def _no_marker_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """marker 조회가 실제 GitHub으로 나가지 않게 한다.
+
+    이 조회를 검증하는 테스트는 각자 다시 monkeypatch한다.
+    """
+
+    async def _absent(_settings: object, *, marker: str) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.find_issue_by_marker", _absent
+    )
+
+
 def test_publication_stores_body_before_creating_the_issue(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -315,6 +330,41 @@ def test_marker_lookup_recovers_a_lost_publication(
     )
 
     assert result.issue_number == 530
+
+
+def test_marker_lookup_failure_does_not_publish(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """조회 실패는 "발행 안 됨"이 아니라 "알 수 없음"이다.
+
+    모르는 상태로 발행하면 멱등성 3중 방어의 3번째 층이 사라진다.
+    """
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
+    recorder = _Recorder()
+
+    async def failing_find(_settings, *, marker):
+        raise GitHubIssueError("authentication_failed")
+
+    async def unexpected_create(_settings, *, title, body, labels):
+        raise AssertionError("조회 실패 시 발행으로 넘어가면 안 된다")
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.find_issue_by_marker", failing_find
+    )
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.create_issue", unexpected_create
+    )
+
+    with pytest.raises(GitHubIssueError, match="authentication_failed"):
+        asyncio.run(
+            publish_experiment_issue(
+                db_session, _Settings(), experiment.id,
+                IssuePublicationRequest(), generate=recorder.generate,
+            )
+        )
+
+    assert experiment.issue_body is not None, "재시도 결정성을 위해 본문은 남아 있어야 한다"
+    assert experiment.issue_number is None
 
 
 @pytest.mark.parametrize(

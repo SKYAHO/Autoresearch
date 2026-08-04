@@ -27,7 +27,6 @@ from agent_orchestration.app.experiments.exceptions import (
     PromotionRequiresDedicatedEndpointError,
 )
 from agent_orchestration.app.experiments.github_issues import (
-    GitHubIssueError,
     create_issue,
     find_issue_by_marker,
 )
@@ -540,14 +539,13 @@ async def publish_experiment_issue(
         body = experiment.issue_body
         title = _title_from_body(body, experiment.hypothesis)
 
-    # ② 발행. gh 성공 후 응답이 소실된 경우를 위해 marker를 먼저 조회한다. 조회
-    # 자체의 실패(네트워크·인증 등)는 "찾지 못함"과 동일하게 취급해 create_issue로
-    # 넘어간다 — 이 조회는 중복 발행을 줄이는 최선노력 복구책일 뿐, 발행 자체를
-    # 막는 필수 관문이 아니다.
-    try:
-        existing = await find_issue_by_marker(settings, marker=marker_for(experiment.id))
-    except GitHubIssueError:
-        existing = None
+    # ② 발행. gh 성공 후 응답이 소실된 경우를 위해 marker를 먼저 조회한다 — 멱등성
+    # 3중 방어의 3번째 층이다. 이 조회가 실패하면 "발행되지 않았다"가 아니라
+    # "발행됐는지 알 수 없다"이므로, 예외를 삼키고 create_issue로 넘어가면 이 층이
+    # 없는 것과 같아져 중복 이슈를 만들 수 있다. 그래서 예외를 그대로 올려 요청을
+    # 실패시킨다 — 호출자는 사유(예: `authentication_failed`)를 보고 무엇을 고칠지
+    # 안다. 중복 이슈를 만드는 것보다 사람이 보는 편이 낫다.
+    existing = await find_issue_by_marker(settings, marker=marker_for(experiment.id))
     reference = existing or await create_issue(
         settings, title=title, body=body, labels=(TRIGGER_LABEL,)
     )
