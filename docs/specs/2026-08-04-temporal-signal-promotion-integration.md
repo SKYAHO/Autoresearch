@@ -118,6 +118,9 @@ next_retrain_at         = last_trained_at + hard_retrain_limit_days
 - `safety_margin_days` 기본값은 이 spec이 정하지 않는다 — 단일 cutoff·단일 시드 관측
   하나로 운영 정책 상수를 못 박으면 선행 spec §7이 경고한 "축소 설정의 결론을 정책
   근거로 쓰는 것"이 된다. 다중 origin(선행 spec §10) 관측이 쌓인 뒤 `#472`에서 확정한다.
+- `safety_margin_days`가 `degradation_point.elapsed_days`보다 크면 계산이 음수가 된다.
+  이 경우 `limit_days=0`으로 clamp하되 사유를 남긴다 — **소비자가 처리해야 하는 사유가
+  총 3가지**이며 §4.2의 표가 정본이다.
 
 ### 4.2 산출물은 `RollingOriginResult`에 얹지 않는다
 
@@ -132,6 +135,26 @@ next_retrain_at         = last_trained_at + hard_retrain_limit_days
 (선행 spec §3의 `A`/`D`, 실행 시점마다 달라짐)과 `min_auc_drop` calibration이
 선행돼야 하고, 둘 다 GCP 자격증명이 있는 환경에서만 가능하다. 이 스코프 조정은
 `#485`에 코멘트로 남겨 이슈 오너 확인을 받는다.
+
+#### `HardRetrainLimit`이 낼 수 있는 사유 — **소비자가 전부 처리해야 한다**
+
+`limit_days`가 `None`이거나 `0`일 때 `reason`이 함께 온다. **`#472`가 이 값을 `#461`
+게이트에 배선할 때 아래 세 가지를 모두 분기해야 한다** — `limit_days` 숫자만 보고
+판단하면 안 된다.
+
+| `limit_days` | `reason` | 의미 |
+| --- | --- | --- |
+| `None` | `no_degradation_observed_within_horizon` | 관측 범위 안에서 열화가 안 잡혔다. **"안전하다"가 아니다** — `horizon_days`가 짧아서 못 봤을 수 있다. |
+| `None` | `insufficient_valid_points` | 유효 관측치가 2개 미만이라 곡선 자체가 없다. 측정 단계의 사유를 그대로 전달한다. |
+| `0` | `safety_margin_exceeds_degradation_point` | `safety_margin_days`가 `degradation_point.elapsed_days`보다 커서 계산이 음수가 됐다. **이미 재학습 시점을 지났다**는 뜻이다. |
+| 양수 | `None` | 정상 산출. `elapsed_days - safety_margin_days`. |
+
+세 번째 행이 특히 함정이다: `limit_days=0`만 보고 "즉시 재학습"으로 읽으면 맞지만,
+**계산이 깨진 것과 구분이 안 된다.** 음수를 그대로 흘려보내는 대신 `0`으로 clamp하되
+사유를 남기는 이유가 이것이다 — 조용히 뭉개지 않는다(§4.1의 "관측되지 않은 것을
+'안전'으로 바꾸지 않는다"와 같은 결). 이 케이스는 spec 초안에 없던 분기이며
+구현(#485 Task 2) 중에 추가했고, `test_derive_hard_retrain_limit_clamps_negative_to_zero`로
+고정했다.
 
 ### 4.3 baseline 재정의 — `forward_baseline_roc_auc` (선행 과제)
 
