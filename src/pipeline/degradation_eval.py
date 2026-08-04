@@ -37,7 +37,7 @@ import shutil
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
@@ -380,6 +380,17 @@ def is_scorable(day: PerDayResult) -> bool:
     return day.status == EvaluationStatus.VALID and day.roc_auc is not None
 
 
+def count_scorable(per_day: Sequence[PerDayResult]) -> int:
+    """유효 평가일 수(PR #527 리뷰 Low#4).
+
+    ``is_scorable``을 한 곳에 모은 것과 같은 이유로 **세는 행위도** 한 곳에 모은다.
+    같은 표현이 ``evaluate_temporal_hold``와 ``temporal_signal_inputs``에 각각 있으면,
+    한쪽만 바뀌었을 때 "hold와 confidence가 서로 다른 유효일 수를 센다"는 상태가
+    조용히 만들어진다.
+    """
+    return sum(1 for day in per_day if is_scorable(day))
+
+
 def _ordered_by_elapsed(per_day: Sequence[PerDayResult]) -> list[PerDayResult]:
     """``elapsed_days`` 오름차순으로 정렬한다(PR #520 리뷰 Low#8).
 
@@ -476,6 +487,50 @@ class RollingOriginResult(_ResultModel):
     per_day: list[PerDayResult]
     degradation_point: DegradationPoint
     training_snapshot_manifest: TrainingSnapshotManifest
+
+
+class TemporalSignalInputs(TypedDict):
+    """``summarize_temporal_signal``의 키워드 인자 계약(PR #527 리뷰 Low#5).
+
+    ``dict[str, object]``로 두면 ``**`` 언패킹 시 모든 인자가 ``object``가 되어 키 오타도
+    타입 불일치도 정적으로 드러나지 않는다. ``TypedDict``는 ``experiment_evaluation``을
+    import하지 않으므로, 이 모듈의 ML 의존이 판정 경로로 새지 않는다는 결정(아래
+    docstring)과 충돌하지 않는다.
+    """
+
+    degradation_elapsed_days: int | None
+    recent_roc_auc_mean: float | None
+    valid_day_count: int
+    recent_window_days: int
+
+
+def temporal_signal_inputs(result: RollingOriginResult) -> TemporalSignalInputs:
+    """판정 엔진의 ``summarize_temporal_signal``에 넘길 원시값을 뽑는다(#485 §5.3).
+
+    이 모듈은 ``experiment_evaluation``을 **import하지 않는다** — 반대 방향(판정 엔진이
+    이 모듈을 import)도 마찬가지다. 판정 엔진은 지금 ML 의존이 전혀 없는데, 이 모듈은
+    ``train``(→ lightgbm)을 끌고 오기 때문이다. 그래서 값만 뽑아 주고 신호 계산은
+    판정 엔진이 한다:
+
+    ```python
+    signal = summarize_temporal_signal(**temporal_signal_inputs(result))
+    ```
+
+    ``offline_primary_delta``/``temporal_delta``는 여기서 채우지 않는다 — 두 조건 비교가
+    있어야 나오는 값이라 ``#514`` 이후에 호출부가 따로 넘긴다.
+
+    **주의(PR #527 리뷰 Low#5)**: ``valid_day_count``는 ``per_day``에서 **다시 세지만**
+    같은 결과의 ``recent_roc_auc_mean``은 측정 시점에 이미 확정된 값이다. 지금은 한
+    번의 ``run_rolling_origin``이 둘을 같은 ``per_day``로 만들어 어긋날 수 없다. 다만
+    ``#514``가 결과를 재조립하기 시작하면(``is_scorable`` docstring이 지목한 지점)
+    ``per_day``만 갈아끼운 결과에서 두 값이 서로 다른 관측을 근거로 삼을 수 있다.
+    """
+    return {
+        "degradation_elapsed_days": result.degradation_point.elapsed_days,
+        "recent_roc_auc_mean": result.recent_roc_auc_mean,
+        "valid_day_count": count_scorable(result.per_day),
+        "recent_window_days": result.recent_window_days,
+    }
 
 
 class HardRetrainLimit(_ResultModel):
@@ -602,7 +657,7 @@ def evaluate_temporal_hold(
 
     # 점수가 없는 VALID 행은 유효일로 세지 않는다 — 평균·기준선과 같은 술어를 쓴다
     # (PR #520 리뷰 Low#7).
-    valid_days = sum(1 for day in result.per_day if is_scorable(day))
+    valid_days = count_scorable(result.per_day)
     if valid_days < 2:
         return TemporalHoldReason.TEMPORAL_INSUFFICIENT_VALID_POINTS
 
