@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T05:11:42Z",
+  "generated_at": "2026-08-04T05:30:40Z",
   "reports": [
+    {
+      "number": 513,
+      "title": "feat: Streamlit UI 이미지 릴리스 추가",
+      "author": "Noah-JuYong",
+      "merged_at": "2026-08-04T05:30:15Z",
+      "summary_ko": [
+        "Streamlit 기반 실험 워크벤치 UI를 독립 빌드·배포하기 위한 전용 Dockerfile을 추가했습니다.",
+        "릴리스 워크플로우에 UI 컨테이너 이미지 빌드, 검증 및 Artifact Registry 푸시 작업을 신설했습니다.",
+        "아키텍처 명세, 배포 가이드 및 README 문서를 업데이트하여 UI 배포 경계를 명확히 정의했습니다."
+      ],
+      "report_url": "pr/513/"
+    },
     {
       "number": 510,
       "title": "feat: 단일 cutoff 기반 모델 열화 측정 하네스 (#485 재사용 컴포넌트)",
