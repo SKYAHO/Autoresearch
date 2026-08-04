@@ -60,6 +60,7 @@
 - [Spec — temporal signal 승격 판정 연결](specs/2026-08-04-temporal-signal-promotion-integration.md) — baseline 재정의, hard retrain limit 산출 절차, #425 다중 신호 연결, fail-closed hold (#485 잔여 범위)
 - [Plan — temporal signal 승격 판정 연결 구현](plans/2026-08-04-temporal-signal-promotion-integration.md) (#485, Task 4는 #493 대기)
 - [Spec — 학습 데이터셋 스냅샷 GCS 게시·재사용 계약](specs/2026-08-04-training-dataset-snapshot-store.md) — content-addressed 스냅샷 레이아웃·write-once·by-date 포인터, `--dataset-uri` 재사용 학습 (#530)
+- [Plan — 학습 데이터셋 스냅샷 게시·재사용 구현](plans/2026-08-04-training-dataset-snapshot-store.md) (#530)
 - [Spec — 실험별 Feast Registry·offline 실행 격리](specs/2026-07-31-experiment-isolated-offline-run.md) (#454 실행 context)
 - [Plan — `src/` → `autoresearch/` 패키지 통합](plans/2026-07-15-src-package-merge.md) (팀 합의 대기)
 - `src/pipeline/`, `src/models/`, `src/features/` (CTR 학습·평가 코드)
