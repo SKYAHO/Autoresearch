@@ -123,9 +123,10 @@ kubectl -n autoresearch port-forward service/agent-orchestration-api 8000:8000
 In a separate terminal, run the workbench:
 
 ```bash
+uv sync --group orchestration-ui
 ORCH_UI_API_BASE_URL=http://127.0.0.1:8000 \
 ORCH_UI_API_TOKEN="$ORCH_API_TOKEN" \
-PYTHONPATH=. uv run streamlit run agent_orchestration/ui/app.py
+PYTHONPATH=. uv run --group orchestration-ui streamlit run agent_orchestration/ui/app.py
 ```
 
 The v0 submit form calls `POST /experiments`, so it creates only a database

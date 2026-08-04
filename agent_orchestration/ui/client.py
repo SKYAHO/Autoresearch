@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, Callable, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from agent_orchestration.ui.models import Event, Experiment, Log
+
+
+ParsedModel = TypeVar("ParsedModel")
 
 
 class ExperimentApiError(RuntimeError):
@@ -79,7 +82,7 @@ class ExperimentClient:
             "/experiments",
             {"hypothesis": stripped, "metadata": {}},
         )
-        return Experiment.from_json(self._object(payload))
+        return self._parse_model(payload, Experiment.from_json)
 
     def list_experiments(self, *, limit: int = 50) -> list[Experiment]:
         """최근 Experiment 목록을 반환한다."""
@@ -88,12 +91,13 @@ class ExperimentClient:
         items = page.get("items")
         if not isinstance(items, list):
             raise ApiUnavailableError("Experiment API returned an invalid list response.")
-        return [Experiment.from_json(self._object(item)) for item in items]
+        return [self._parse_model(item, Experiment.from_json) for item in items]
 
     def get_experiment(self, experiment_id: str) -> Experiment:
         """선택 Experiment의 최신 상태를 조회한다."""
-        return Experiment.from_json(
-            self._object(self._request_json("GET", f"/experiments/{experiment_id}"))
+        return self._parse_model(
+            self._request_json("GET", f"/experiments/{experiment_id}"),
+            Experiment.from_json,
         )
 
     def get_events(
@@ -109,7 +113,7 @@ class ExperimentClient:
             raise ApiUnavailableError("Experiment API returned an invalid event response.")
         cursor = page.get("next_cursor")
         return (
-            [Event.from_json(self._object(item)) for item in items],
+            [self._parse_model(item, Event.from_json) for item in items],
             str(cursor) if cursor is not None else None,
         )
 
@@ -126,7 +130,7 @@ class ExperimentClient:
             raise ApiUnavailableError("Experiment API returned an invalid log response.")
         cursor = page.get("next_cursor")
         return (
-            [Log.from_json(self._object(item)) for item in items],
+            [self._parse_model(item, Log.from_json) for item in items],
             str(cursor) if cursor is not None else None,
         )
 
@@ -170,7 +174,7 @@ class ExperimentClient:
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as error:
             self._raise_http_error(error)
-        except (URLError, TimeoutError, json.JSONDecodeError) as error:
+        except (URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ApiUnavailableError("Experiment API에 연결할 수 없습니다.") from error
         raise AssertionError("HTTP error handling must raise.")
 
@@ -188,3 +192,15 @@ class ExperimentClient:
         if not isinstance(value, dict):
             raise ApiUnavailableError("Experiment API returned an invalid JSON response.")
         return value
+
+    @classmethod
+    def _parse_model(
+        cls,
+        value: object,
+        parser: Callable[[dict[str, Any]], ParsedModel],
+    ) -> ParsedModel:
+        """API 모델 필드 검증 오류를 UI용 API 오류로 정규화한다."""
+        try:
+            return parser(cls._object(value))
+        except (KeyError, TypeError, ValueError) as error:
+            raise ApiUnavailableError("Experiment API 응답 형식이 올바르지 않습니다.") from error

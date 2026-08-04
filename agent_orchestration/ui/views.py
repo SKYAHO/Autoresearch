@@ -59,6 +59,11 @@ def render_empty_workbench() -> None:
         st.caption("실행기가 연결되면 상태, 이벤트, 원본 로그, 평가 결과가 이곳에 실시간으로 표시됩니다.")
 
 
+def render_experiment_refresh_button() -> bool:
+    """sidebar의 Experiment 목록 수동 새로고침 버튼을 렌더링한다."""
+    return st.sidebar.button("실험 목록 새로고침", use_container_width=True)
+
+
 def render_experiment_list(
     experiments: Sequence[Experiment],
     selected_id: str | None,
@@ -74,7 +79,7 @@ def render_experiment_list(
         experiment.id: f"{experiment.status} | {experiment.hypothesis[:32]}"
         for experiment in experiments
     }
-    default_index = ids.index(selected_id) if selected_id in ids else 0
+    default_index = ids.index(selected_id) if selected_id in ids else None
     return st.sidebar.radio(
         "최근 실험",
         ids,

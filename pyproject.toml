@@ -88,13 +88,15 @@ serving = [
 orchestration = [
     "alembic>=1.13,<2",
     "fastapi>=0.115,<0.129",
-    "streamlit>=1.37,<2",
     "uvicorn[standard]>=0.32,<0.35",
     "httpx>=0.28,<0.29",
     "psycopg[binary]>=3.2,<4",
     "sqlalchemy>=2.0,<3",
     "openai>=1.66,<3",
     "google-cloud-secret-manager>=2.20,<3",
+]
+orchestration-ui = [
+    "streamlit>=1.37,<2",
 ]
 [tool.pytest.ini_options]
 # scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외

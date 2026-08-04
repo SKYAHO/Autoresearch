@@ -5,7 +5,7 @@ Experiment API에서 받은 목록·상세·Event·Log를 화면 상태로 누�
 Streamlit widget 렌더링은 담당하지 않는다.
 
 [기능]
-Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 마지막 갱신, 오류 보존을
+Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 오류 보존을
 제공한다.
 
 [비책임]
@@ -33,6 +33,7 @@ class WorkbenchState:
     event_cursor: str | None = None
     log_cursor: str | None = None
     metadata_loaded_for: str | None = None
+    terminal_status_observed: str | None = None
     terminal_refresh_complete: bool = False
     last_error: str | None = None
     last_updated_at: datetime | None = None
@@ -50,6 +51,7 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.event_cursor = None
     state.log_cursor = None
     state.metadata_loaded_for = None
+    state.terminal_status_observed = None
     state.terminal_refresh_complete = False
     state.last_error = None
 
@@ -89,10 +91,17 @@ def should_poll(state: WorkbenchState) -> bool:
     return False
 
 
-def mark_terminal_refresh_complete(state: WorkbenchState) -> None:
-    """terminal 상태의 마지막 Event/Log 조회 완료를 기록한다."""
-    if state.experiment is not None and state.experiment.status in TERMINAL_STATUSES:
+def record_terminal_refresh(state: WorkbenchState) -> None:
+    """종료 상태를 한 번 더 polling한 뒤에만 갱신 완료를 기록한다."""
+    if state.experiment is None or state.experiment.status not in TERMINAL_STATUSES:
+        state.terminal_status_observed = None
+        state.terminal_refresh_complete = False
+        return
+    if state.terminal_status_observed == state.experiment.status:
         state.terminal_refresh_complete = True
+        return
+    state.terminal_status_observed = state.experiment.status
+    state.terminal_refresh_complete = False
 
 
 def record_refresh_error(state: WorkbenchState, message: str) -> None:
