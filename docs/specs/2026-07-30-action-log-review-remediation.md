@@ -179,6 +179,38 @@ Arrow IPC는 내부 run-local 구현 세부사항이며 외부 산출물이나 c
   존재하던 last-known-good publish 대상은 daily publish 단계에서 그대로 보존한다.
 - 최종화 중 telemetry는 `phase=finalizing`과 현재 `buffered_events`를 기록한다.
 
+### 갱신 (2026-08-04, #515) — publish 임시 객체는 파티션 밖에 만든다
+
+위 "atomic move" 요구의 **구현 방식**이 바뀌었다. 요구 자체는 그대로다.
+
+기존에는 임시 객체를 `<destination>.staging-<uuid>`, 즉 **파티션 안**에 만들고
+`copy` 후 `delete`했다. 삭제 권한이 없으면 그 객체가 `dt=<날짜>/`에 남고, 적재가
+와일드카드로 읽어 **같은 내용을 두 번 적재**한다(`event_id` 전역 고유 계약 위반 →
+폐루프 정지). 삭제 실패는 경고로만 남아 4일간 드러나지 않았다. 사고 기록은 #515.
+
+**변경:** 임시 객체를 버킷 루트의 고정 prefix
+(`PUBLISH_STAGING_PREFIX = "_publish_staging"`)에 만들고, 서버측 `copy_file`로 최종
+경로를 바꾼다. 정리는 best-effort로 유지한다.
+
+- 적재가 읽는 경로(`dt=<날짜>/`, `dt=.../shard=NNN/`) **밖**이므로, 정리가 실패해
+  고아 객체가 남아도 **파티션은 오염되지 않는다.**
+- destination은 서버측 복사로만 바뀌므로 **부분 상태로 노출되는 창이 없다** —
+  "last-known-good 보존" 요구를 만족한다.
+- 고아 객체 회수는 버킷 수명주기 규칙이 담당한다(인프라 소유).
+
+**최종 경로에 직접 쓰지 않는 이유(검토 후 기각):** GCS 객체가 finalize 전까지 보이지
+않는 것은 맞지만, pyarrow `NativeFile`에는 abort가 없어 업로드 도중 예외가 나도 `with`
+종료 시 `close()`가 finalize한다. 즉 직접 쓰면 **잘린 객체가 최종 경로에 게시되어**
+last-known-good이 파괴된다. 스텁으로 재현해 확인했다(부분 업로드 후 예외 → destination이
+잘린 내용으로 대체됨).
+
+로컬 경로(`filesystem is None`)는 POSIX에 rename이 있으므로 기존 `copy` + `replace`를
+유지한다. 두 분기의 구현이 다른 것은 의도된 것이다.
+
+**인프라 의존:** `_publish_staging/` prefix에 대한 수명주기 규칙이 필요하다. 없으면
+삭제 권한이 복구될 때까지 고아 객체가 쌓인다(데이터 정합성에는 영향 없음).
+`SKYAHO/Autoresearch-infra#514`에서 함께 다룬다.
+
 ## TDD Acceptance Tests
 
 각 production 변경 전에 아래 실패 테스트를 먼저 추가하고 RED를 확인한다.

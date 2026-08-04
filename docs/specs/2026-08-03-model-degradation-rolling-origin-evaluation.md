@@ -185,6 +185,25 @@ video_staleness_summary        # §4
 
 ### 2.4 degradation_point 판정 규칙(확정)
 
+> [!IMPORTANT]
+> **[부분 supersede — #485, 2026-08-04]** 아래 `baseline` 정의(cutoff 학습의
+> `val_roc_auc`)는 `docs/specs/2026-08-04-temporal-signal-promotion-integration.md`
+> §4.3에서 개정됐다. 사유: §10이 기록한 산출 경로 불일치 — 랜덤 val 분할 지표와
+> forward held-out 지표는 이 저장소 실측에서 약 4%p 오프셋이 있어
+> (`experiments/2026-07-31_training-window-length/notes.md`), `elapsed_days` 0~1에서
+> 오탐이 난다. 개정 내용:
+>
+> ```text
+> baseline = forward_baseline_roc_auc (per_day 중 첫 valid 관측치)
+>            — 같은 산출 경로끼리 비교해 §10의 4%p 오프셋을 상쇄한다.
+> cutoff 학습의 val_roc_auc는 baseline_val_roc_auc로 결과 필드에 유지하되(하위호환),
+> 판정 로직(detect_degradation_point 호출)에는 사용하지 않는다.
+> ```
+>
+> `degraded`·`degradation_point`의 나머지 규칙(절대 하락폭, "2개 연속 유효 관측치")은
+> 그대로 유효하다. `run_rolling_origin` 실행 기록이 0건인 시점의 개정이라 소급 영향이
+> 없다.
+
 ```text
 baseline = cutoff 학습의 val_roc_auc (train.main() 내부 val split 검증 블록에서 계산된 값을 그대로 재사용)
 degraded(day) = day.status == valid  AND  day.roc_auc ≤ baseline - min_auc_drop
@@ -336,4 +355,4 @@ age를 뽑아내는 구체적 방법(`feast_retrieval.py` 쪽에 이미 노출�
 - **degradation_point → 승격 게이트 연결**: §8에서 명시한 대로 이 spec은 배선하지 않는다. 연결이 필요해지면 `#493`(experiment_evaluation.py 담당)과 조율이 선행돼야 한다.
 - **video 피처 age 추출 방법**: §4에서 "확인 실패"로 남긴 대로, `feast_retrieval.py`가 age를 이미 노출하는지는 plan 단계에서 조사가 필요하다.
 - **video staleness는 현재 CLI에서 도달 불가능**(PR #510 리뷰): 평가일 CSV는 `MODEL_FEATURE_COLUMNS + clicked`만 담고 `video_id`/`event_timestamp`(엔티티 키)를 보존하지 않는다. `_resolve_staleness_summary`는 이 두 컬럼이 없으면 `UNAVAILABLE`로 안전하게 떨어지도록 수정했지만(크래시 방지), `measure-degradation` CLI가 `bigquery_client`/`bigquery_project`/`bigquery_dataset`를 아예 받지 않아 이 기능은 지금 공개 경로로 켤 방법이 없다. 켜려면 (a) 평가일 조립이 엔티티 키를 보존하도록 계약을 확장하거나 (b) CLI에 BigQuery 연결 옵션을 추가해야 하며, 둘 다 이 PR 범위 밖이다. 또한 `_resolve_staleness_summary`는 하루 전체에 단일 as_of(그날 KST 자정)를 쓰므로, 실제 per-row PIT 대비 **체계적으로 더 stale한 방향**(최대 ~24h)으로 치우친다 — 정확한 값은 평가 CSV가 행별 `event_timestamp`를 보존해야 가능하다.
-- **baseline과 per-day forward ROC-AUC는 산출 경로가 다르다**(PR #510 리뷰): `baseline_val_roc_auc`는 cutoff 학습의 랜덤 val 분할 지표이고 `per_day`는 forward held-out 지표다. 이 저장소의 실측(`experiments/2026-07-31_training-window-length/notes.md`)은 랜덤 val이 실제 다음 날 성능보다 **약 4%p 높게** 나옴을 보였다 — `elapsed_days` 0~1 부근에서 잡히는 `degradation_point`가 이 상수 오프셋 때문인지 실제 열화인지는 이 결과만으로 구분되지 않는다. baseline 정의를 `per_day[0]` 기준으로 바꾸는 안은 §2.4 계약 변경이라 이 PR에서 다루지 않았다 — 후속 논의 대상이다.
+- **baseline과 per-day forward ROC-AUC는 산출 경로가 다르다**(PR #510 리뷰): `baseline_val_roc_auc`는 cutoff 학습의 랜덤 val 분할 지표이고 `per_day`는 forward held-out 지표다. 이 저장소의 실측(`experiments/2026-07-31_training-window-length/notes.md`)은 랜덤 val이 실제 다음 날 성능보다 **약 4%p 높게** 나옴을 보였다 — `elapsed_days` 0~1 부근에서 잡히는 `degradation_point`가 이 상수 오프셋 때문인지 실제 열화인지는 이 결과만으로 구분되지 않는다. baseline 정의를 `per_day[0]` 기준으로 바꾸는 안은 §2.4 계약 변경이라 이 PR에서 다루지 않았다 — **`#485`가 이어받아 §2.4를 부분 supersede했다**(`docs/specs/2026-08-04-temporal-signal-promotion-integration.md` §4.3, 위 §2.4의 admonition 참고).

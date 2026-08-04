@@ -6,7 +6,7 @@
 
 [기능]
 단일 화면 상단의 가설 작성 패널, 실험 선택 목록, 빈 관찰 패널, 상태 타임라인,
-결과·Event·원본 Log 탭, 요약 패널을 렌더링한다.
+결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 렌더링한다.
 
 [비책임]
 HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, GitHub 이슈 생성.
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import datetime
 
 import streamlit as st
 
@@ -30,11 +29,7 @@ from agent_orchestration.ui.models import (
 )
 from agent_orchestration.ui.state import WorkbenchState
 from agent_orchestration.ui.styles import status_badge
-
-
-def format_time(value: datetime) -> str:
-    """화면용 지역 시각 문자열을 반환한다."""
-    return value.astimezone().strftime("%m-%d %H:%M")
+from agent_orchestration.ui.time import format_time
 
 
 def render_hypothesis_composer(api_error: str | None) -> str | None:

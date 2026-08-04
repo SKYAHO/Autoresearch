@@ -1015,6 +1015,14 @@ def measure_degradation(
         "--min-auc-drop",
         help="열화 판정 절대 하락폭. sweep-seeds 등으로 미리 calibration한 값을 넘깁니다.",
     ),
+    recent_window_days: int = typer.Option(
+        3,
+        "--recent-window-days",
+        help=(
+            "'최근 성능' 평균에 쓸 최근 유효일 수(#485 §3). 실측 후 재조정 대상이라 "
+            "결과에도 함께 기록됩니다. 1 이상이어야 합니다."
+        ),
+    ),
     min_coverage_days: Optional[int] = typer.Option(
         None, "--min-coverage-days", help="학습 spine 커버리지 가드 최소 일수(기본: 모듈 기본값)"
     ),
@@ -1054,6 +1062,7 @@ def measure_degradation(
             run_root=run_root,
             min_rows_per_day=min_rows_per_day,
             min_auc_drop=min_auc_drop,
+            recent_window_days=recent_window_days,
             min_coverage_days=min_coverage_days,
             seed=seed,
             feature_service=feature_service,
