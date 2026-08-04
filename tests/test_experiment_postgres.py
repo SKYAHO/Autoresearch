@@ -19,17 +19,25 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agent_orchestration.app.experiments.exceptions import IdempotencyConflictError
 from agent_orchestration.app.database import create_database_engine
-from agent_orchestration.app.experiments.models import Experiment, ExperimentLog
+from agent_orchestration.app.experiments.models import (
+    Experiment,
+    ExperimentLog,
+    ExperimentStep,
+    StepKind,
+)
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     ExperimentLogCreate,
     ExperimentLogResponse,
+    ExperimentStepCreate,
+    ExperimentStepResponse,
     StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.models import ExperimentStatus
 from agent_orchestration.app.experiments.service import (
     create_experiment,
     create_experiment_log,
+    create_experiment_step,
     update_experiment_status,
 )
 
@@ -240,3 +248,125 @@ def test_concurrent_conflicting_log_request_has_one_success_and_no_loser_side_ef
     assert len(rows) == 1
     assert rows[0].content == successes[0]
     assert rows[0].content != conflicts[0]
+
+
+def test_concurrent_same_step_request_returns_one_identical_resource(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """동일 key·payload로 동시에 Step을 만들어도 row는 하나이고 응답이 같다."""
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres same step retry"),
+        ).id
+    request = ExperimentStepCreate(
+        idempotency_key=f"same-step-{uuid.uuid4()}",
+        step_kind=StepKind.FEATURE_ASSEMBLY,
+        step_type="assemble_training_dataset",
+        message="피처 2개 조립 중",
+        target={"features": ["views_per_day", "like_ratio"]},
+    )
+    flush_barrier = threading.Barrier(2)
+
+    @event.listens_for(Session, "before_flush")
+    def synchronize_step_flush(session: Session, _flush_context, _instances) -> None:
+        if any(
+            isinstance(row, ExperimentStep)
+            and row.idempotency_key == request.idempotency_key
+            for row in session.new
+        ):
+            flush_barrier.wait(timeout=5)
+
+    def submit() -> dict:
+        with postgres_session_factory() as session:
+            row = create_experiment_step(session, experiment_id, request)
+            assert not session.in_transaction()
+            with session.begin():
+                assert session.scalar(select(1)) == 1
+            return ExperimentStepResponse.model_validate(row).model_dump(mode="json")
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        futures = [executor.submit(submit) for _index in range(2)]
+        responses = [future.result(timeout=10) for future in futures]
+    finally:
+        event.remove(Session, "before_flush", synchronize_step_flush)
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    with postgres_session_factory() as session:
+        row_count = session.scalar(
+            select(func.count())
+            .select_from(ExperimentStep)
+            .where(ExperimentStep.idempotency_key == request.idempotency_key)
+        )
+    assert row_count == 1
+    assert responses[0]["id"] == responses[1]["id"]
+    assert responses[0] == responses[1]
+
+
+def test_concurrent_conflicting_step_request_has_one_success_and_no_loser_side_effect(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """동일 key·다른 payload 경쟁은 정확히 하나만 저장하고 loser를 원자적으로 롤백한다."""
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres conflicting step retry"),
+        ).id
+    idempotency_key = f"conflict-step-{uuid.uuid4()}"
+    requests = [
+        ExperimentStepCreate(
+            idempotency_key=idempotency_key,
+            step_kind=StepKind.FEATURE_ASSEMBLY,
+            step_type="assemble_training_dataset",
+        ),
+        ExperimentStepCreate(
+            idempotency_key=idempotency_key,
+            step_kind=StepKind.TRAIN,
+            step_type="train_candidate",
+        ),
+    ]
+    flush_barrier = threading.Barrier(2)
+
+    @event.listens_for(Session, "before_flush")
+    def synchronize_step_flush(session: Session, _flush_context, _instances) -> None:
+        if any(
+            isinstance(row, ExperimentStep) and row.idempotency_key == idempotency_key
+            for row in session.new
+        ):
+            flush_barrier.wait(timeout=5)
+
+    def submit(request: ExperimentStepCreate) -> tuple[str, str]:
+        with postgres_session_factory() as session:
+            try:
+                row = create_experiment_step(session, experiment_id, request)
+                outcome = ("success", row.step_type)
+            except IdempotencyConflictError:
+                outcome = ("conflict", request.step_type)
+            assert not session.in_transaction()
+            with session.begin():
+                assert session.scalar(select(1)) == 1
+            return outcome
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        futures = [executor.submit(submit, request) for request in requests]
+        outcomes = [future.result(timeout=10) for future in futures]
+    finally:
+        event.remove(Session, "before_flush", synchronize_step_flush)
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    with postgres_session_factory() as session:
+        rows = session.scalars(
+            select(ExperimentStep).where(
+                ExperimentStep.experiment_id == experiment_id,
+                ExperimentStep.idempotency_key == idempotency_key,
+            )
+        ).all()
+    successes = [step_type for status, step_type in outcomes if status == "success"]
+    conflicts = [step_type for status, step_type in outcomes if status == "conflict"]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert len(rows) == 1
+    assert rows[0].step_type == successes[0]
+    assert rows[0].step_type != conflicts[0]

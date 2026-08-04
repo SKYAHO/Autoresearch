@@ -26,6 +26,8 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentMetadataResponse,
     ExperimentPageResponse,
     ExperimentResponse,
+    ExperimentStepCreate,
+    ExperimentStepResponse,
     PromotionRequest,
     StatusUpdateRequest,
 )
@@ -33,6 +35,7 @@ from agent_orchestration.app.experiments.service import (
     create_experiment,
     create_experiment_event,
     create_experiment_log,
+    create_experiment_step,
     get_experiment,
     get_experiment_metadata,
     list_experiment_events,
@@ -161,6 +164,23 @@ def post_experiment_log(
 ) -> ExperimentLogResponse:
     """상태와 무관한 멱등 실행 Log를 추가한다."""
     return ExperimentLogResponse.model_validate(create_experiment_log(session, experiment_id, request))
+
+
+@router.post(
+    "/{experiment_id}/steps",
+    response_model=ExperimentStepResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE, **_CONFLICT_RESPONSE},
+)
+def post_experiment_step(
+    experiment_id: uuid.UUID,
+    request: ExperimentStepCreate,
+    session: SessionDependency,
+) -> ExperimentStepResponse:
+    """실험 상태와 무관한 멱등 작업 단계를 추가한다."""
+    return ExperimentStepResponse.model_validate(
+        create_experiment_step(session, experiment_id, request)
+    )
 
 
 @router.get(

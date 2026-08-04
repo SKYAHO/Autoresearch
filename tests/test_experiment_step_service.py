@@ -11,11 +11,16 @@ from collections.abc import Iterator
 import uuid
 
 import pytest
+from pydantic import ValidationError
 from sqlalchemy import Engine, create_engine, event, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_orchestration.app.database import Base
+from agent_orchestration.app.experiments.exceptions import (
+    ExperimentNotFoundError,
+    IdempotencyConflictError,
+)
 from agent_orchestration.app.experiments.models import (
     Experiment,
     ExperimentStep,
@@ -23,6 +28,11 @@ from agent_orchestration.app.experiments.models import (
     StepStatus,
     TERMINAL_STEP_STATUSES,
 )
+from agent_orchestration.app.experiments.schemas import (
+    MAX_STEP_TARGET_BYTES,
+    ExperimentStepCreate,
+)
+from agent_orchestration.app.experiments.service import create_experiment_step
 
 
 @pytest.fixture
@@ -145,3 +155,94 @@ def test_terminal_step_statuses_are_completed_and_failed() -> None:
     assert TERMINAL_STEP_STATUSES == frozenset(
         {StepStatus.COMPLETED, StepStatus.FAILED}
     )
+
+
+def _create_request(**overrides: object) -> ExperimentStepCreate:
+    values: dict[str, object] = {
+        "idempotency_key": "step-1",
+        "step_kind": StepKind.FEATURE_ASSEMBLY,
+        "step_type": "assemble_training_dataset",
+    }
+    values.update(overrides)
+    return ExperimentStepCreate(**values)
+
+
+def _persisted_experiment(session: Session) -> Experiment:
+    experiment = _experiment(session)
+    session.commit()
+    return experiment
+
+
+def test_create_step_persists_defaults(db_session: Session) -> None:
+    """status를 생략한 생성 요청은 STARTED로 저장된다."""
+    experiment = _persisted_experiment(db_session)
+
+    step = create_experiment_step(db_session, experiment.id, _create_request())
+
+    assert step.status == StepStatus.STARTED.value
+    assert step.step_kind == StepKind.FEATURE_ASSEMBLY.value
+    assert step.request_fingerprint != ""
+
+
+def test_create_step_for_missing_experiment_raises_not_found(db_session: Session) -> None:
+    """없는 실험에 Step을 붙이면 404로 변환될 도메인 오류가 난다."""
+    with pytest.raises(ExperimentNotFoundError):
+        create_experiment_step(db_session, uuid.uuid4(), _create_request())
+
+
+def test_same_key_and_payload_returns_existing_step(db_session: Session) -> None:
+    """같은 key·같은 payload 재요청은 중복 row를 만들지 않고 기존 row를 반환한다."""
+    experiment = _persisted_experiment(db_session)
+    first = create_experiment_step(db_session, experiment.id, _create_request())
+
+    second = create_experiment_step(db_session, experiment.id, _create_request())
+
+    assert second.id == first.id
+    assert len(db_session.scalars(select(ExperimentStep)).all()) == 1
+
+
+def test_same_key_with_different_payload_conflicts(db_session: Session) -> None:
+    """같은 key·다른 payload는 409로 변환될 멱등성 충돌이다."""
+    experiment = _persisted_experiment(db_session)
+    create_experiment_step(db_session, experiment.id, _create_request())
+
+    with pytest.raises(IdempotencyConflictError):
+        create_experiment_step(
+            db_session,
+            experiment.id,
+            _create_request(step_type="train_candidate"),
+        )
+
+
+def test_target_key_order_does_not_change_fingerprint(db_session: Session) -> None:
+    """target의 key 순서만 다른 재요청은 같은 요청으로 판정된다."""
+    experiment = _persisted_experiment(db_session)
+    first = create_experiment_step(
+        db_session,
+        experiment.id,
+        _create_request(target={"features": ["a", "b"], "base_model": "lightgbm"}),
+    )
+
+    second = create_experiment_step(
+        db_session,
+        experiment.id,
+        _create_request(target={"base_model": "lightgbm", "features": ["a", "b"]}),
+    )
+
+    assert second.id == first.id
+
+
+def test_target_over_size_limit_is_rejected() -> None:
+    """4096 byte를 넘는 target은 스키마 검증에서 막힌다."""
+    oversized = {"blob": "x" * (MAX_STEP_TARGET_BYTES + 1)}
+
+    with pytest.raises(ValidationError):
+        _create_request(target=oversized)
+
+
+def test_target_at_size_limit_is_accepted() -> None:
+    """경계값은 통과한다 — 제한이 한 칸 좁게 걸리는 회귀를 잡는다."""
+    filler_budget = MAX_STEP_TARGET_BYTES - len('{"blob":""}')
+    request = _create_request(target={"blob": "x" * filler_budget})
+
+    assert request.target is not None

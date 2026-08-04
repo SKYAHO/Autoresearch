@@ -18,6 +18,7 @@ from agent_orchestration.app.experiments.models import (
     ExperimentLog,
     ExperimentMetadata,
     ExperimentStatus,
+    ExperimentStep,
 )
 
 
@@ -128,6 +129,20 @@ def find_log_by_idempotency_key(
         select(ExperimentLog).where(
             ExperimentLog.experiment_id == experiment_id,
             ExperimentLog.idempotency_key == idempotency_key,
+        )
+    )
+
+
+def find_step_by_idempotency_key(
+    session: Session,
+    experiment_id: uuid.UUID,
+    idempotency_key: str,
+) -> ExperimentStep | None:
+    """한 실험에서 멱등성 key가 같은 기존 Step을 조회한다."""
+    return session.scalar(
+        select(ExperimentStep).where(
+            ExperimentStep.experiment_id == experiment_id,
+            ExperimentStep.idempotency_key == idempotency_key,
         )
     )
 

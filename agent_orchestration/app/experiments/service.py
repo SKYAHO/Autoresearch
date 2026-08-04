@@ -25,6 +25,7 @@ from agent_orchestration.app.experiments.models import (
     ExperimentLog,
     ExperimentMetadata,
     ExperimentStatus,
+    ExperimentStep,
 )
 from agent_orchestration.app.experiments.repository import (
     find_experiment,
@@ -34,11 +35,13 @@ from agent_orchestration.app.experiments.repository import (
     find_experiment_metadata,
     find_experiments,
     find_log_by_idempotency_key,
+    find_step_by_idempotency_key,
 )
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     ExperimentEventCreate,
     ExperimentLogCreate,
+    ExperimentStepCreate,
     PromotionRequest,
     StatusUpdateRequest,
 )
@@ -347,6 +350,69 @@ def create_experiment_log(
         session.expunge(existing_log)
         session.rollback()
         return existing_log
+
+
+def create_experiment_step(
+    session: Session,
+    experiment_id: uuid.UUID,
+    request: ExperimentStepCreate,
+) -> ExperimentStep:
+    """실험 상태와 무관하게 멱등성이 보장되는 작업 단계를 추가한다.
+
+    Step은 `experiments.status`를 변경하지 않으므로 `create_experiment_log`와 같이 row
+    lock 없이 동작한다. 동시 요청의 최종 방어선은 unique constraint와 아래 IntegrityError
+    복구다.
+    """
+    payload = {
+        "step_kind": request.step_kind.value,
+        "step_type": request.step_type,
+        "status": request.status.value,
+        "message": request.message,
+        "target": request.target,
+    }
+    fingerprint = _request_fingerprint(payload)
+    try:
+        with session.begin():
+            if find_experiment(session, experiment_id) is None:
+                raise ExperimentNotFoundError(experiment_id)
+            existing_step = find_step_by_idempotency_key(
+                session,
+                experiment_id,
+                request.idempotency_key,
+            )
+            if existing_step is not None:
+                if existing_step.request_fingerprint != fingerprint:
+                    raise IdempotencyConflictError(request.idempotency_key)
+                return existing_step
+            step_row = ExperimentStep(
+                experiment_id=experiment_id,
+                idempotency_key=request.idempotency_key,
+                request_fingerprint=fingerprint,
+                step_kind=request.step_kind.value,
+                step_type=request.step_type,
+                status=request.status.value,
+                message=request.message,
+                target=request.target,
+            )
+            session.add(step_row)
+            session.flush()
+        return step_row
+    except IntegrityError as error:
+        session.rollback()
+        existing_step = find_step_by_idempotency_key(
+            session,
+            experiment_id,
+            request.idempotency_key,
+        )
+        if existing_step is None:
+            raise error
+        if existing_step.request_fingerprint != fingerprint:
+            session.rollback()
+            raise IdempotencyConflictError(request.idempotency_key) from error
+        # expunge-before-rollback 순서 의존성은 create_experiment_event와 동일 (위 주석 참고).
+        session.expunge(existing_step)
+        session.rollback()
+        return existing_step
 
 
 def list_experiment_logs(
