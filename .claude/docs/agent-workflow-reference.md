@@ -47,14 +47,14 @@ Issue 자동 close → Project Done
 | `feature.yml` | `[FEAT]` | `feature` | 목적, 작업 범위, 영향 컴포넌트, 완료 조건 |
 | `bug.yml` | `[BUG]` | `bug` | 현상, 재현 방법, 기대 동작, 환경, 로그 |
 | `experiment.yml` | `[EXP]` | `experiment` | 가설, 데이터셋, 모델, 피처, 평가지표, Champion 대비 결과, 결론 |
-| `auto_research.yml` | `[AR]` | `experiment`, `auto-research` | 입력 필드 20개 중 18개를 `tools/auto_research_issue_branch.py`가 fail-closed로 파싱 (`보조 관측 지표`는 선택, `결과`는 에이전트가 사후 기입) |
+| `auto_research.yml` | `[AR]` | `auto-experiment` | 입력 필드 20개 중 18개를 `tools/auto_research_issue_branch.py`가 fail-closed로 파싱 (`보조 관측 지표`는 선택, `결과`는 에이전트가 사후 기입) |
 
 GitHub는 `form 선택 → label 자동 적용` 방식으로 동작합니다. Project의
 `Add item`으로 제목만 추가하면 form을 우회하므로, 새 작업은 Issues
 화면에서 생성합니다.
 
-`[AR]` 이슈는 `experiment`와 `auto-research` 두 label을 **동시에** 가질
-때만 `.github/workflows/auto-research-issue-branch.yml`이 실행됩니다.
+`[AR]` 이슈는 `auto-experiment` label **하나만으로**
+`.github/workflows/auto-research-issue-branch.yml`이 실행됩니다.
 Form을 우회해 API로 발행하면 label이 자동 적용되지 않으므로 반드시 직접
 부여합니다.
 
@@ -396,12 +396,16 @@ Issue Form과 자동화를 단순하게 유지하기 위해 `feature`, `bug`,
 `good first issue`, `help wanted`, `question`. `enhancement`는
 `feature`와 겹치면 `feature`를 우선합니다.
 
-**자동화 트리거 label — 임의로 제거하지 않습니다.** `auto-research`는
-`experiment`와 **함께** 있을 때만 `auto-research-issue-branch.yml`의 브랜치
-생성 job을 실행시킵니다. 하나라도 떨어지면 `if:` 미충족으로 job이 **skip**되고,
-skip은 실패가 아니라 체크도 알림도 남지 않아 브랜치 생성이 **아무 흔적 없이
-일어나지 않습니다.** 이 조건은 `tests/test_branch_protection_contract.py`가
-계약으로 고정합니다.
+**자동화 트리거 label — 임의로 제거하지 않습니다.** `auto-experiment`는
+이 label **하나만으로** `auto-research-issue-branch.yml`의 브랜치 생성 job을
+실행시킵니다. 떨어지면 `if:` 미충족으로 job이 **skip**되고, skip은 실패가 아니라
+체크도 알림도 남지 않아 브랜치 생성이 **아무 흔적 없이 일어나지 않습니다.**
+`auto-research-promotion.yml`도 같은 label을 요구하므로 승격 단계까지 함께
+막힙니다. 이 조건은 `tests/test_branch_protection_contract.py`와
+`tests/test_auto_experiment_trigger_label.py`가 계약으로 고정합니다.
+
+`auto-research`는 트리거가 **아닙니다.** Auto Research 주제를 가리키는 분류
+label이며 `[AR]` 이슈에는 붙지 않습니다.
 
 ## CI
 

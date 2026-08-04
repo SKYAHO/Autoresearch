@@ -41,9 +41,9 @@ AutoResearch 프로젝트에 기여해 주셔서 감사합니다.
 | `feature.yml` | `[FEAT]` | `feature` | 새 기능, 기능 개선 |
 | `bug.yml` | `[BUG]` | `bug` | 오류, 장애, 기대와 다른 동작 |
 | `experiment.yml` | `[EXP]` | `experiment` | 모델, 데이터, 지표, 방법론 실험 |
-| `auto_research.yml` | `[AR]` | `experiment`, `auto-research` | 에이전트가 읽고 직접 수행할 실험 가설 |
+| `auto_research.yml` | `[AR]` | `auto-experiment` | 에이전트가 읽고 직접 수행할 실험 가설 |
 
-`[AR]` 이슈는 두 label이 **동시에** 있어야 `.github/workflows/auto-research-issue-branch.yml`이 동작합니다. Form을 우회해 API로 발행하면 label이 자동 적용되지 않으므로 직접 부여해야 합니다.
+`[AR]` 이슈는 `auto-experiment` label **하나만으로** `.github/workflows/auto-research-issue-branch.yml`이 동작합니다. Form을 우회해 API로 발행하면 label이 자동 적용되지 않으므로 직접 부여해야 합니다.
 
 **문서 전용 이슈** (`[DOCS]`): Issue Form이 없습니다(`[CHORE]`, `[PERF]` 등 관례로 쓰이는 다른 prefix도 마찬가지입니다). 문서·판단 기록만 산출물인 작업은 `gh issue create --title "[DOCS] ..." --label documentation`으로 만듭니다. Form이 없으므로 제목 prefix와 label을 직접 지정해야 합니다.
 
@@ -186,9 +186,11 @@ Issue Form과 자동화를 단순하게 유지하기 위해 `feature`, `bug`, `e
 
 | label | 역할 |
 |---|---|
-| `auto-research` | `experiment`와 **함께** 있을 때만 `.github/workflows/auto-research-issue-branch.yml`의 브랜치 생성 job이 실행됩니다 |
+| `auto-experiment` | 이 label **하나만으로** `.github/workflows/auto-research-issue-branch.yml`의 브랜치 생성 job이 실행됩니다 |
 
-이 두 label 중 하나라도 떨어지면 job의 `if:` 조건이 미충족되어 **skip**됩니다. skip은 실패가 아니므로 체크도 알림도 남지 않고, `[AR]` 이슈에서 브랜치 생성이 **아무 흔적 없이 그냥 일어나지 않습니다.** 분류 목적의 label 정리 중에 이 둘을 건드리지 마십시오. 이 조건은 `tests/test_branch_protection_contract.py`가 계약으로 고정합니다.
+이 label이 떨어지면 job의 `if:` 조건이 미충족되어 **skip**됩니다. skip은 실패가 아니므로 체크도 알림도 남지 않고, `[AR]` 이슈에서 브랜치 생성이 **아무 흔적 없이 그냥 일어나지 않습니다.** 분류 목적의 label 정리 중에 건드리지 마십시오. `.github/workflows/auto-research-promotion.yml`도 같은 label을 요구하므로, 떨어지면 승격 단계가 실패합니다. 이 조건은 `tests/test_branch_protection_contract.py`와 `tests/test_auto_experiment_trigger_label.py`가 계약으로 고정합니다.
+
+`auto-research`는 트리거가 **아닙니다.** Auto Research 주제를 가리키는 분류 label이며, `[AR]` 이슈에는 붙지 않습니다.
 
 ---
 

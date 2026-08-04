@@ -58,8 +58,8 @@ jobs:
             const { data: issue } = await github.rest.issues.get({
               owner: context.repo.owner, repo: context.repo.repo, issue_number: issueNumber,
             });
-            if (!issue.labels.some((label) => label.name === 'auto-research')) {
-              throw new Error('issue must have the auto-research label');
+            if (!issue.labels.some((label) => label.name === 'auto-experiment')) {
+              throw new Error('issue must have the auto-experiment label');
             }
             require('fs').writeFileSync(process.env.ISSUE_BODY_PATH, issue.body || '');
 
