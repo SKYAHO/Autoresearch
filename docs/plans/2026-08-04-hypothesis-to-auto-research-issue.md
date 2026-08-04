@@ -2516,3 +2516,227 @@ PR 본문에는 `Closes #516`, 실증 결과, 그리고 **인접 저장소 의�
    `agent_orchestration`은 배포돼 있지 않아 실질 영향이 없지만, 로컬에서 이 변수 없이
    `uvicorn`을 띄우던 사람은 기동에 실패합니다. `.env.example` 갱신과 PR 본문 명시로
    대응합니다.
+
+---
+
+## Task 8: 학습 기간을 발행 시점 계산으로 전환
+
+**배경.** `ORCH_EXPERIMENT_DATASET_WINDOW`를 환경변수에 박힌 고정 문자열로 두면 한 번
+적은 날짜가 영원히 그대로다. 아무도 갱신하지 않을 것이고, 6개월 뒤 발행되는 이슈도 같은
+기간을 주장한다. **첫날부터 낡는 값**이다.
+
+기간은 **발행 시점**에 계산해야 한다. 실행 시점이 아니다 — baseline을 오늘, candidate를
+내일 돌리면 서로 다른 데이터를 보게 되어 실험의 전제가 깨진다. 발행 시점에 계산해 본문에
+박아 넣으면 `reproducibility_id`에 봉인되고 이후 실행이 그 값을 따른다.
+
+`docs/specs/2026-07-24-action-log-slice-semantics.md`가 소비 계약을 이미 정했다 —
+`dt BETWEEN P-30 AND P-1`, 즉 **어제까지 30일**. 오늘 파티션은 아직 채워지는 중이라
+포함하지 않는다.
+
+**Files:**
+- Modify: `agent_orchestration/app/experiments/issue_authoring.py`
+- Modify: `agent_orchestration/app/config.py`
+- Modify: `agent_orchestration/app/experiments/service.py`
+- Modify: `.env.example`, `README.md`, `.claude/docs/agent-project-reference.md`
+- Test: `tests/test_issue_authoring.py`, `tests/test_agent_orchestration.py`,
+  `tests/test_experiment_issue_publication.py`
+
+**Interfaces:**
+- Produces: `training_window(today: date) -> tuple[date, date]`,
+  `ExperimentDefaults(dataset_source, training_config_ref)`,
+  `build_issue_body(experiment_id, fields, defaults, allowed_scope, window)`
+
+- [ ] **Step 1: 실패하는 테스트를 쓴다**
+
+`tests/test_issue_authoring.py`에 추가합니다.
+
+```python
+def test_training_window_follows_the_slice_consumption_contract() -> None:
+    """`dt BETWEEN P-30 AND P-1` — 어제까지 30일.
+
+    오늘 파티션은 아직 채워지는 중이라 포함하지 않는다.
+    """
+    start, end = training_window(date(2026, 8, 4))
+
+    assert end == date(2026, 8, 3)
+    assert start == date(2026, 7, 5)
+    assert (end - start).days + 1 == 30
+
+
+def test_body_renders_the_computed_window_in_both_fields() -> None:
+    """`데이터셋 스냅샷`과 `대상 데이터 · 기간`이 같은 기간을 말해야 한다.
+
+    둘이 어긋나면 사람이 읽는 값과 봉인되는 값이 달라진다.
+    """
+    window = training_window(date(2026, 8, 4))
+    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, (), window)
+
+    parsed = parse_issue_input(1, "[AR] window", body)
+
+    assert parsed.dataset_snapshot.endswith("@2026-07-05..2026-08-03")
+    assert "2026-07-05 ~ 2026-08-03" in parsed.dataset
+```
+
+`DEFAULTS`를 새 형태로 바꿉니다.
+
+```python
+DEFAULTS = ExperimentDefaults(
+    dataset_source="feast://feast_offline_store/ctr_training_v1",
+    training_config_ref="src/pipeline/config.yaml@abc1234",
+)
+```
+
+기존 `build_issue_body(...)` 호출부에 `window` 인자를 더합니다. 고정 날짜를 쓰십시오 —
+`date.today()`를 테스트에서 부르면 실행 날짜에 따라 결과가 달라집니다.
+
+- [ ] **Step 2: 실패를 확인한다**
+
+Run: `uv run --no-sync python -m pytest tests/test_issue_authoring.py -k window -v`
+Expected: FAIL — `ImportError: cannot import name 'training_window'`
+
+- [ ] **Step 3: `issue_authoring.py`를 고친다**
+
+import에 `from datetime import date, timedelta`를 더하고, 상수와 함수를 추가합니다.
+
+```python
+# `docs/specs/2026-07-24-action-log-slice-semantics.md`의 소비 계약 `dt BETWEEN P-30
+# AND P-1`을 따른다. 이 값을 바꾸면 발행되는 실험의 학습 구간이 달라진다.
+TRAINING_WINDOW_DAYS = 30
+# `src/pipeline/config.yaml`의 `data.path`와 같은 값이다. 사람이 읽는 설명에만 쓰이고
+# `reproducibility_id` 해시에는 들어가지 않는다.
+DATASET_PATH = "data/processed/training_dataset.csv"
+
+
+def training_window(today: date) -> tuple[date, date]:
+    """학습 대상 기간을 KST 기준으로 계산한다.
+
+    오늘 파티션은 아직 채워지는 중이므로 어제까지 본다. 시계를 직접 읽지 않고 인자로
+    받는다 — 그래야 테스트가 실행 날짜에 흔들리지 않는다.
+    """
+    end = today - timedelta(days=1)
+    start = end - timedelta(days=TRAINING_WINDOW_DAYS - 1)
+    return start, end
+```
+
+`ExperimentDefaults`를 바꿉니다.
+
+```python
+class ExperimentDefaults(BaseModel):
+    """환경마다 달라지는 서버 소유 값.
+
+    기간은 여기 두지 않는다 — 고정 문자열로 두면 첫날부터 낡는다.
+    `training_window()`가 발행 시점에 계산한다.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_source: str = Field(min_length=1, max_length=200)
+    training_config_ref: str = Field(min_length=1, max_length=256)
+```
+
+`build_issue_body`가 `window`를 받아 두 필드를 렌더하게 합니다.
+
+```python
+def build_issue_body(
+    experiment_id: uuid.UUID,
+    fields: LlmIssueFields,
+    defaults: ExperimentDefaults,
+    allowed_scope: Sequence[str],
+    window: tuple[date, date],
+) -> str:
+```
+
+본문 조립에서 두 섹션을 이렇게 바꿉니다.
+
+```python
+    window_start, window_end = window
+    dataset_snapshot = f"{defaults.dataset_source}@{window_start}..{window_end}"
+    dataset_window = (
+        f"- 데이터셋 / 경로: {DATASET_PATH}\n"
+        f"- 기간 (KST YYYY-MM-DD ~ YYYY-MM-DD): {window_start} ~ {window_end}"
+    )
+```
+
+`sections` 목록에서 `("데이터셋 스냅샷", defaults.dataset_snapshot)`을
+`("데이터셋 스냅샷", dataset_snapshot)`으로, `("대상 데이터 · 기간",
+defaults.dataset_window)`를 `("대상 데이터 · 기간", dataset_window)`로 바꿉니다.
+
+- [ ] **Step 4: 설정을 고친다**
+
+`config.py`에서 `ExperimentDefaults` 생성부를 바꾸고 `ORCH_EXPERIMENT_DATASET_WINDOW`를
+제거합니다.
+
+```python
+    experiment_defaults = ExperimentDefaults(
+        dataset_source=_require_env(
+            "ORCH_EXPERIMENT_DATASET_SOURCE",
+            os.getenv("ORCH_EXPERIMENT_DATASET_SOURCE"),
+        ),
+        training_config_ref=_require_env(
+            "ORCH_EXPERIMENT_TRAINING_CONFIG_REF",
+            os.getenv("ORCH_EXPERIMENT_TRAINING_CONFIG_REF"),
+        ),
+    )
+```
+
+`.env.example`에서 세 줄을 두 줄로 바꿉니다.
+
+```dotenv
+# 학습 데이터 출처 좌표입니다. 기간은 발행 시점에 서버가 계산해 붙이므로 여기에
+# 날짜를 넣지 마십시오(`dt BETWEEN P-30 AND P-1`, 어제까지 30일).
+ORCH_EXPERIMENT_DATASET_SOURCE=feast://feast_offline_store/ctr_training_v1
+ORCH_EXPERIMENT_TRAINING_CONFIG_REF=
+```
+
+`README.md`와 `.claude/docs/agent-project-reference.md`의 환경 변수 목록도 갱신합니다
+(7개 → 6개, `ORCH_EXPERIMENT_DATASET_WINDOW` 삭제, `DATASET_SNAPSHOT` →
+`DATASET_SOURCE` 이름 변경).
+
+- [ ] **Step 5: 서비스가 기간을 계산해 넘기게 한다**
+
+`service.py`의 `publish_experiment_issue`에서 `build_issue_body` 호출부를 바꿉니다.
+
+```python
+        body = build_issue_body(
+            experiment.id,
+            fields,
+            settings.experiment_defaults,
+            request.allowed_scope,
+            training_window(datetime.now(_KST).date()),
+        )
+```
+
+모듈 상단에 추가합니다.
+
+```python
+from zoneinfo import ZoneInfo
+
+from agent_orchestration.app.experiments.issue_authoring import training_window
+
+# 학습 기간은 KST 날짜 경계로 계산한다. UTC로 계산하면 한국 시각 오전 9시 이전에
+# 발행된 실험이 하루 앞선 구간을 보게 된다.
+_KST = ZoneInfo("Asia/Seoul")
+```
+
+- [ ] **Step 6: 기존 테스트를 새 형태에 맞춘다**
+
+`ExperimentDefaults`를 생성하는 모든 테스트가 깨집니다. `tests/test_agent_orchestration.py`,
+`tests/test_experiment_issue_publication.py`, 그 밖에 `grep -rn "ExperimentDefaults\|
+ORCH_EXPERIMENT_" tests/`로 찾은 지점을 모두 새 필드로 바꾸십시오. **단언을 지우거나
+느슨하게 하지 마십시오** — 필드 이름만 바꿉니다.
+
+- [ ] **Step 7: 전체 확인**
+
+Run: `uv run --no-sync python -m pytest -q`
+Run: `uv run --no-sync ruff check agent_orchestration tests`
+
+- [ ] **Step 8: 커밋**
+
+```bash
+git add agent_orchestration/app/experiments/issue_authoring.py \
+        agent_orchestration/app/config.py \
+        agent_orchestration/app/experiments/service.py \
+        .env.example README.md .claude/docs/agent-project-reference.md \
+        tests/
+git commit -m "feat: 학습 기간을 발행 시점 KST 계산으로 전환"
+```
