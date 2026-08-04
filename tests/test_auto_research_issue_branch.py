@@ -199,8 +199,7 @@ def test_issue_branch_workflow_uses_validator_and_never_updates_a_ref() -> None:
     assert isinstance(job, dict)
     job_if = job["if"]
     assert isinstance(job_if, str)
-    assert "auto-research" in job_if
-    assert "experiment" in job_if
+    assert "auto-experiment" in job_if
     assert job["concurrency"] == {
         "group": "auto-research-issue-branch-${{ github.event.issue.number }}",
         "cancel-in-progress": False,
