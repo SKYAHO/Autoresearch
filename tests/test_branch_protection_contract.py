@@ -18,7 +18,7 @@
   필터가 없다는 사실. 두 가지가 함께 "`repos.merge`로 만든 dev 커밋에는 CI가
   돌지 않는다"의 근거다.
 - 문서가 인용하는 fail-closed 메시지 문자열의 실재.
-- `auto-research`가 브랜치 생성 job의 게이팅 label이라는 사실.
+- `auto-experiment` **단독**이 브랜치 생성 job의 게이팅 label이라는 사실.
 - main-protection의 required status check 컨텍스트 6개가 실제 job 이름으로
   존재한다는 사실.
 """
@@ -106,18 +106,23 @@ def test_documented_fail_closed_messages_exist() -> None:
     assert "candidate_sha must be an ancestor of dev" in promotion_text
 
 
-def test_auto_research_label_gates_issue_branch_creation() -> None:
-    """`auto-research`가 게이팅 label임을 고정한다.
+def test_auto_experiment_label_alone_gates_issue_branch_creation() -> None:
+    """`auto-experiment` **단독**이 게이팅 label임을 고정한다(#507).
 
     이 label이 떨어지면 job이 skip될 뿐 실패하지 않아 아무 알림도 남지 않는다.
     Label 컨벤션에서 임의로 제거되지 않도록 계약으로 못박는다.
+
+    조건을 다시 `&&`로 늘리면 label을 직접 부여하는 발행 주체가 하나만 붙였을 때
+    같은 방식으로 조용히 skip되므로, label 추가도 함께 막는다.
     """
     job = _load(ISSUE_BRANCH_WORKFLOW)["jobs"]["create-or-verify-issue-branch"]
     condition = job["if"]
 
-    assert "contains(github.event.issue.labels.*.name, 'auto-research')" in condition
-    assert "contains(github.event.issue.labels.*.name, 'experiment')" in condition
-    assert "&&" in condition
+    assert "contains(github.event.issue.labels.*.name, 'auto-experiment')" in condition
+    assert "&&" not in condition
+    assert "'auto-research'" not in condition
+    # `auto-experiment`가 `experiment`를 부분 문자열로 포함하므로 닫는 괄호까지 본다.
+    assert "'experiment')" not in condition
 
 
 def test_required_status_check_contexts_exist_as_job_names() -> None:

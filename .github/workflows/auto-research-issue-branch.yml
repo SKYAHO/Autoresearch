@@ -13,9 +13,9 @@ permissions:
 
 jobs:
   create-or-verify-issue-branch:
-    if: >-
-      contains(github.event.issue.labels.*.name, 'auto-research') &&
-      contains(github.event.issue.labels.*.name, 'experiment')
+    # `auto-experiment` 단독이 유일한 트리거다(#507). `auto-research`는 트리거가
+    # 아니라 주제 분류 label이고, `experiment`는 사람이 쓰는 `[EXP]` 이슈의 label이다.
+    if: contains(github.event.issue.labels.*.name, 'auto-experiment')
     runs-on: ubuntu-latest
     concurrency:
       group: auto-research-issue-branch-${{ github.event.issue.number }}
