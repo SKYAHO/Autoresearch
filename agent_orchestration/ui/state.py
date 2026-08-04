@@ -5,8 +5,8 @@ Experiment API에서 받은 목록·상세·Event·Log를 화면 상태로 누�
 Streamlit widget 렌더링은 담당하지 않는다.
 
 [기능]
-Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 오류 보존을
-제공한다.
+Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 목록·상세
+오류 분리 보존을 제공한다.
 
 [비책임]
 HTTP 요청, API 인증, 상태 전이 기록, Agent 실행, GitHub 이슈 처리.
@@ -35,7 +35,8 @@ class WorkbenchState:
     metadata_loaded_for: str | None = None
     terminal_status_observed: str | None = None
     terminal_refresh_complete: bool = False
-    last_error: str | None = None
+    list_error: str | None = None
+    detail_error: str | None = None
     last_updated_at: datetime | None = None
 
 
@@ -53,7 +54,7 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.metadata_loaded_for = None
     state.terminal_status_observed = None
     state.terminal_refresh_complete = False
-    state.last_error = None
+    state.detail_error = None
 
 
 def append_event_page(
@@ -80,6 +81,14 @@ def append_log_page(
         state.log_cursor = next_cursor
 
 
+def clear_activity_cache(state: WorkbenchState) -> None:
+    """만료된 cursor를 재조회할 수 있도록 Event·Log 캐시를 비운다."""
+    state.events.clear()
+    state.logs.clear()
+    state.event_cursor = None
+    state.log_cursor = None
+
+
 def should_poll(state: WorkbenchState) -> bool:
     """현재 선택 Experiment가 polling 대상인지 판단한다."""
     if state.experiment is None:
@@ -104,6 +113,11 @@ def record_terminal_refresh(state: WorkbenchState) -> None:
     state.terminal_refresh_complete = False
 
 
-def record_refresh_error(state: WorkbenchState, message: str) -> None:
-    """마지막 성공 데이터를 유지한 채 조회 오류를 기록한다."""
-    state.last_error = message
+def record_list_error(state: WorkbenchState, message: str) -> None:
+    """목록 영역의 마지막 조회 오류를 기록한다."""
+    state.list_error = message
+
+
+def record_detail_error(state: WorkbenchState, message: str) -> None:
+    """상세 workbench의 마지막 조회 오류를 기록한다."""
+    state.detail_error = message

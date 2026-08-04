@@ -6,7 +6,7 @@
 
 [기능]
 가설 기반 v0 Experiment 생성, 최근 실험 선택, 상세·Event·Log의 5초 cursor polling,
-API 오류의 사용자 표시를 제공한다.
+API 오류의 영역별 사용자 표시와 삭제·만료 cursor 복구를 제공한다.
 
 [비책임]
 GitHub Auto Research 이슈 발행, 실제 실험 실행, 상태·Event·Log·승격 쓰기, API 인증
@@ -29,8 +29,10 @@ from agent_orchestration.ui.state import (
     WorkbenchState,
     append_event_page,
     append_log_page,
+    clear_activity_cache,
+    record_detail_error,
+    record_list_error,
     record_terminal_refresh,
-    record_refresh_error,
     select_experiment,
     should_poll,
 )
@@ -73,6 +75,7 @@ def render_configuration_notice() -> None:
 def refresh_experiment_list(client: ExperimentClient, state: WorkbenchState) -> None:
     """최근 Experiment 목록을 갱신한다."""
     state.experiments = client.list_experiments()
+    state.list_error = None
     if state.selected_id is None and state.experiments:
         select_experiment(state, state.experiments[0].id)
 
@@ -82,25 +85,31 @@ def try_refresh_experiment_list(client: ExperimentClient, state: WorkbenchState)
     try:
         refresh_experiment_list(client, state)
     except ExperimentApiError as error:
-        record_refresh_error(state, str(error))
+        record_list_error(state, str(error))
 
 
-def refresh_selected_experiment(client: ExperimentClient, state: WorkbenchState) -> None:
-    """선택 Experiment와 cursor 이후 Event/Log를 갱신한다."""
+def remove_selected_experiment(state: WorkbenchState, message: str) -> bool:
+    """삭제된 선택 Experiment를 목록과 workbench에서 제거한다."""
+    selected_id = state.selected_id
+    if selected_id is None:
+        return False
+    state.experiments = [experiment for experiment in state.experiments if experiment.id != selected_id]
+    select_experiment(state, None)
+    record_detail_error(state, message)
+    return True
+
+
+def refresh_selected_experiment(client: ExperimentClient, state: WorkbenchState) -> bool:
+    """선택 Experiment를 갱신하고, 선택 변경 시 전체 재렌더링 여부를 반환한다."""
     if state.selected_id is None:
-        return
+        return False
     try:
         state.experiment = client.get_experiment(state.selected_id)
     except ApiNotFoundError as error:
-        state.experiments = [
-            experiment for experiment in state.experiments if experiment.id != state.selected_id
-        ]
-        select_experiment(state, None)
-        record_refresh_error(state, str(error))
-        return
+        return remove_selected_experiment(state, str(error))
     except ExperimentApiError as error:
-        record_refresh_error(state, str(error))
-        return
+        record_detail_error(state, str(error))
+        return False
 
     try:
         events, event_cursor = client.get_events(state.selected_id, state.event_cursor)
@@ -108,32 +117,34 @@ def refresh_selected_experiment(client: ExperimentClient, state: WorkbenchState)
         append_event_page(state, events, event_cursor)
         append_log_page(state, logs, log_cursor)
     except ApiNotFoundError:
-        state.event_cursor = None
-        state.log_cursor = None
-        record_refresh_error(state, "새 Event 또는 Log cursor를 다시 불러옵니다.")
-        return
+        try:
+            state.experiment = client.get_experiment(state.selected_id)
+        except ApiNotFoundError as error:
+            return remove_selected_experiment(state, str(error))
+        except ExperimentApiError as error:
+            record_detail_error(state, str(error))
+            return False
+        clear_activity_cache(state)
+        record_detail_error(state, "Event 또는 Log cursor를 초기화해 최신 기록을 다시 불러옵니다.")
+        return False
     except ExperimentApiError as error:
-        record_refresh_error(state, str(error))
-        return
+        record_detail_error(state, str(error))
+        return False
 
     try:
         if state.metadata_loaded_for != state.selected_id:
             state.metadata = client.get_metadata(state.selected_id)
             state.metadata_loaded_for = state.selected_id
     except ApiNotFoundError as error:
-        state.experiments = [
-            experiment for experiment in state.experiments if experiment.id != state.selected_id
-        ]
-        select_experiment(state, None)
-        record_refresh_error(state, str(error))
-        return
+        return remove_selected_experiment(state, str(error))
     except ExperimentApiError as error:
-        record_refresh_error(state, str(error))
-        return
+        record_detail_error(state, str(error))
+        return False
 
     record_terminal_refresh(state)
-    state.last_error = None
+    state.detail_error = None
     state.last_updated_at = datetime.now(timezone.utc)
+    return False
 
 
 def create_from_hypothesis(client: ExperimentClient, state: WorkbenchState, hypothesis: str) -> None:
@@ -141,7 +152,7 @@ def create_from_hypothesis(client: ExperimentClient, state: WorkbenchState, hypo
     try:
         experiment = client.create_experiment(hypothesis)
     except ExperimentApiError as error:
-        record_refresh_error(state, str(error))
+        record_detail_error(state, str(error))
         return
     state.experiments.insert(0, experiment)
     select_experiment(state, experiment.id)
@@ -158,7 +169,7 @@ def main() -> None:
     try:
         client = get_client()
     except ApiConfigurationError as error:
-        record_refresh_error(state, str(error))
+        record_list_error(state, str(error))
         configuration_error = True
     if client is not None and not state.experiments:
         try_refresh_experiment_list(client, state)
@@ -166,26 +177,25 @@ def main() -> None:
     if configuration_error:
         render_configuration_notice()
 
-    submitted_hypothesis = render_hypothesis_composer(state.last_error)
+    submitted_hypothesis = render_hypothesis_composer(state.detail_error)
     if submitted_hypothesis is not None:
         if client is None:
             st.error("Experiment API 연결을 먼저 복구해 주세요.")
         else:
             create_from_hypothesis(client, state, submitted_hypothesis)
-            if state.selected_id is not None:
-                st.rerun()
+            st.rerun()
 
     if render_experiment_refresh_button():
         if client is None:
-            record_refresh_error(state, "Experiment API 연결을 먼저 복구해 주세요.")
+            record_list_error(state, "Experiment API 연결을 먼저 복구해 주세요.")
         else:
             try_refresh_experiment_list(client, state)
     selected_id = render_experiment_list(state.experiments, state.selected_id)
     if selected_id != state.selected_id:
         select_experiment(state, selected_id)
         st.rerun()
-    if state.last_error:
-        st.warning(state.last_error)
+    if state.list_error:
+        st.warning(state.list_error)
     if state.selected_id is None:
         render_empty_workbench()
         return
@@ -193,7 +203,10 @@ def main() -> None:
     @st.fragment(run_every="5s")
     def live_workbench() -> None:
         if client is not None and (state.experiment is None or should_poll(state)):
-            refresh_selected_experiment(client, state)
+            if refresh_selected_experiment(client, state):
+                st.rerun()
+        if state.detail_error:
+            st.warning(state.detail_error)
         render_workbench(state)
 
     live_workbench()

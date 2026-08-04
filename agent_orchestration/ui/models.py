@@ -18,9 +18,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from agent_orchestration.app.experiments.models import (
+    TERMINAL_STATUSES as API_TERMINAL_STATUSES,
+    ExperimentStatus,
+)
 
-POLLING_STATUSES = frozenset({"CREATED", "RUNNING", "EVALUATING", "PASSED"})
-TERMINAL_STATUSES = frozenset({"FAILED", "ERROR", "PROMOTED"})
+
+TERMINAL_STATUSES = frozenset(status.value for status in API_TERMINAL_STATUSES)
+POLLING_STATUSES = frozenset(
+    status.value for status in ExperimentStatus if status not in API_TERMINAL_STATUSES
+)
 
 _STATUS_LABELS = {
     "CREATED": "실행 대기",
