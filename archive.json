@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T04:01:44Z",
+  "generated_at": "2026-08-04T04:03:45Z",
   "reports": [
+    {
+      "number": 482,
+      "title": "feat: GCP 배포 전 카탈로그를 검증",
+      "author": "hyeongyu-data",
+      "merged_at": "2026-08-04T04:03:30Z",
+      "summary_ko": [
+        "GCP 자원을 조작하는 주요 CI/CD 워크플로우 실행 전, 인프라 저장소의 dev 카탈로그 좌표와 GitHub 환경 변수를 사전 대조하도록 개선했습니다.",
+        "불일치하는 설정이 존재할 경우 GCP 인증 및 API 호출이 시작되기 전에 검증 실패 처리하여 불필요한 쓰기 시도를 방지했습니다.",
+        "배포 파이프라인 가이드 문서와 환경 좌표 연동 관련 기획 및 스펙 문서를 함께 작성 및 업데이트했습니다."
+      ],
+      "report_url": "pr/482/"
+    },
     {
       "number": 506,
       "title": "feat: 유저 단위 grouped ROC-AUC와 평가 전용 패스스루 컬럼 추가",
