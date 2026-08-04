@@ -149,6 +149,24 @@ next_retrain_at         = last_trained_at + hard_retrain_limit_days
 | `0` | `safety_margin_exceeds_degradation_point` | `safety_margin_days`가 `degradation_point.elapsed_days`보다 커서 계산이 음수가 됐다. **이미 재학습 시점을 지났다**는 뜻이다. |
 | 양수 | `None` | 정상 산출. `elapsed_days - safety_margin_days`. |
 
+#### 소비 순서 — **`hold`를 먼저 확인한다** (PR #520 리뷰)
+
+`derive_hard_retrain_limit`은 `evaluate_temporal_hold`를 **참조하지 않는다**. 따라서
+`temporal_ordering_violated`(곡선 자체가 오염됨)나 `temporal_horizon_incomplete`(잘린
+구간)인 결과에서도 **숫자 모양이 정상인 `limit_days`가 나온다.**
+
+```text
+소비자(#472)의 계약:
+  1. evaluate_temporal_hold(result)를 먼저 부른다.
+  2. hold 사유가 있으면 limit_days는 무시한다 — 근거 없는 곡선에서 나온 값이다.
+  3. hold가 None일 때만 derive_hard_retrain_limit 결과를 게이트에 쓴다.
+```
+
+함수 안에서 hold를 강제하지 않는 이유: hold 여부는 `#461` 게이트의 최종 판정에 들어가는
+**별도 신호**이고, 이 함수는 "관측에서 유도되는 값"만 책임진다. 두 함수가 서로를
+참조하면 측정 → 판정 → 정책 방향이 꼬이고, hold를 정책 함수 안에 숨기면 소비자가 hold
+자체를 따로 볼 수 없다. 대신 그 분업을 여기에 계약으로 고정한다.
+
 세 번째 행이 특히 함정이다: `limit_days=0`만 보고 "즉시 재학습"으로 읽으면 맞지만,
 **계산이 깨진 것과 구분이 안 된다.** 음수를 그대로 흘려보내는 대신 `0`으로 clamp하되
 사유를 남기는 이유가 이것이다 — 조용히 뭉개지 않는다(§4.1의 "관측되지 않은 것을

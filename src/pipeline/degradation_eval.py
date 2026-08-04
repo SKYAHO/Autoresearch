@@ -500,6 +500,13 @@ def derive_hard_retrain_limit(
     배선하는 것은 ``#472`` 소유이며, ``next_retrain_at``도 여기서 계산하지 않는다
     (``last_trained_at``은 이 모듈이 모르는 값이다).
 
+    **소비 순서 — 호출부가 ``evaluate_temporal_hold``를 먼저 확인해야 한다.**
+    이 함수는 hold를 참조하지 않으므로, ``temporal_ordering_violated``(곡선 자체가
+    오염됨)나 ``temporal_horizon_incomplete``(잘린 구간)인 결과에서도 숫자 모양이
+    정상인 ``limit_days``를 돌려준다. hold 사유가 있으면 이 값을 **무시해야 한다**
+    (spec §4.2 "소비 순서"). 함수 안에서 강제하지 않는 이유는 hold가 ``#461`` 게이트의
+    별도 신호이고, 여기 숨기면 소비자가 hold 자체를 따로 볼 수 없기 때문이다.
+
     **관측되지 않은 것을 "안전"으로 바꾸지 않는다.** ``degradation_point``가 없으면
     값을 만들지 않고 사유만 남긴다 — ``horizon_days``가 짧아서 못 본 것과 실제로 안
     꺾인 것은 다른 사실인데, 하한값으로 채우면 둘이 같은 숫자가 된다.
