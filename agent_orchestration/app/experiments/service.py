@@ -1,23 +1,42 @@
-"""Agent Orchestration 실험 생성·조회와 상태 쓰기 유스케이스를 제공한다.
+"""Agent Orchestration 실험 생성·조회·상태 쓰기와 이슈 발행 유스케이스를 제공한다.
 
 전체 파이프라인에서 검증된 API 입력을 SQLAlchemy transaction으로 실험·event·log·metadata에
-반영하는 구간을 담당한다. HTTP 인증·상태 코드 변환과 실제 학습 실행은 담당하지 않는다.
+반영하는 구간과, 가설을 `[AR]` 이슈로 발행하는 생성→저장→발행 2단계 절차를 담당한다.
+HTTP 인증·상태 코드 변환, 실제 학습 실행, 본문 조립(issue_authoring)과 `gh` 호출
+(github_issues) 자체는 담당하지 않는다.
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
+import re
 import uuid
 
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from agent_orchestration.app.experiments.exceptions import (
     ExperimentNotFoundError,
     IdempotencyConflictError,
+    IssuePublicationLimitError,
     PromotionRequiresDedicatedEndpointError,
+)
+from agent_orchestration.app.experiments.github_issues import (
+    GitHubIssueError,
+    create_issue,
+    find_issue_by_marker,
+)
+from agent_orchestration.app.experiments.issue_authoring import (
+    build_issue_body,
+    build_issue_title,
+    build_prompt,
+    marker_for,
+    parse_llm_fields,
 )
 from agent_orchestration.app.experiments.models import (
     Experiment,
@@ -39,6 +58,7 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     ExperimentEventCreate,
     ExperimentLogCreate,
+    IssuePublicationRequest,
     PromotionRequest,
     StatusUpdateRequest,
 )
@@ -442,3 +462,103 @@ def promote_experiment(
         session.rollback()
         experiment = get_experiment(session, experiment_id)
         return experiment
+
+
+TRIGGER_LABEL = "auto-experiment"
+
+
+def _branch_name_for(issue_number: int, title: str) -> str:
+    """워크플로가 만들 브랜치 이름을 응답에 미리 싣는다.
+
+    `tools/auto_research_issue_branch.py`의 `branch_name_for()`와 같은 규칙이다. 그
+    모듈은 API 이미지에 없어 import할 수 없으므로 규칙을 복제한다 — 이 값은 표시용이며
+    실제 브랜치는 워크플로가 만든다. 동일성은 `tests/test_experiment_issue_publication.py`의
+    `test_branch_name_matches_the_workflow_rule`이 고정한다.
+    """
+    title_without_prefix = re.sub(r"^\s*\[AR\]\s*", "", title, flags=re.IGNORECASE)
+    slug = re.sub(r"[^a-z0-9]+", "-", title_without_prefix.lower()).strip("-")
+    if not slug:
+        digest = hashlib.sha256(title_without_prefix.encode("utf-8")).hexdigest()[:12]
+        slug = f"issue-{digest}"
+    return f"exp/{issue_number}-{slug}"
+
+
+async def publish_experiment_issue(
+    session: Session,
+    settings: object,
+    experiment_id: uuid.UUID,
+    request: IssuePublicationRequest,
+    *,
+    generate: Callable[[str], Awaitable[str]],
+) -> Experiment:
+    """가설을 `[AR]` 이슈로 발행하고 lineage를 기록한다.
+
+    LLM은 비결정적이라, 발행 실패 후 재호출이 LLM을 다시 부르면 실험 정의(criteria_id·
+    reproducibility_id의 근거가 되는 지표·guardrail 값)가 바뀔 수 있다. 그래서 본문을
+    ①에서 발행 전에 커밋해 이 커밋을 경계로 앞쪽 실패는 재생성, 뒤쪽 실패는 재발행으로
+    가른다.
+    """
+    experiment = find_experiment(session, experiment_id)
+    if experiment is None:
+        raise ExperimentNotFoundError(experiment_id)
+
+    # 멱등성 1차 — 이미 발행됐으면 아무것도 하지 않는다. regenerate보다 우선한다.
+    if experiment.issue_number is not None:
+        return experiment
+
+    since = datetime.now(UTC) - timedelta(days=1)
+    published_today = session.scalar(
+        select(func.count())
+        .select_from(Experiment)
+        .where(Experiment.issue_number.is_not(None), Experiment.updated_at >= since)
+    )
+    if (published_today or 0) >= settings.issue_daily_limit:
+        raise IssuePublicationLimitError(settings.issue_daily_limit)
+
+    # ① 본문을 만들고 발행 전에 커밋한다. 이 커밋이 재시도 결정성의 근거다.
+    if experiment.issue_body is None or request.regenerate:
+        response = await generate(build_prompt(experiment.hypothesis))
+        fields = parse_llm_fields(response)
+        body = build_issue_body(
+            experiment.id,
+            fields,
+            settings.experiment_defaults,
+            allowed_scope=request.allowed_scope,
+        )
+        title = build_issue_title(fields)
+        # 이 시점에는 위 조회들이 autobegin으로 이미 transaction을 열어 두었으므로
+        # `with session.begin():`을 다시 쓰면 "이미 시작된 transaction" 오류가 난다.
+        # commit()으로 그 transaction을 끝맺는다 — 다음 statement가 필요하면 새
+        # transaction을 autobegin한다. `expire_on_commit=False`(database.py)라 커밋
+        # 후에도 방금 대입한 속성값을 그대로 읽을 수 있어 refresh가 필요하지 않다 —
+        # refresh는 새 SELECT를 던져 또 다른 autobegin을 열어 두므로 오히려 다음
+        # 호출자의 `session.begin()`과 충돌한다.
+        experiment.issue_body = body
+        experiment.issue_branch = None
+        session.commit()
+    else:
+        body = experiment.issue_body
+        title = _title_from_body(body, experiment.hypothesis)
+
+    # ② 발행. gh 성공 후 응답이 소실된 경우를 위해 marker를 먼저 조회한다. 조회
+    # 자체의 실패(네트워크·인증 등)는 "찾지 못함"과 동일하게 취급해 create_issue로
+    # 넘어간다 — 이 조회는 중복 발행을 줄이는 최선노력 복구책일 뿐, 발행 자체를
+    # 막는 필수 관문이 아니다.
+    try:
+        existing = await find_issue_by_marker(settings, marker=marker_for(experiment.id))
+    except GitHubIssueError:
+        existing = None
+    reference = existing or await create_issue(
+        settings, title=title, body=body, labels=(TRIGGER_LABEL,)
+    )
+
+    experiment.issue_number = reference.number
+    experiment.issue_branch = _branch_name_for(reference.number, title)
+    session.commit()
+    return experiment
+
+
+def _title_from_body(body: str, fallback: str) -> str:
+    """저장된 본문으로 재발행할 때 제목을 복원한다."""
+    match = re.search(r"^### 연구 가설\n(.+)$", body, re.MULTILINE)
+    return f"[AR] {match.group(1).strip() if match else fallback.strip()}"
