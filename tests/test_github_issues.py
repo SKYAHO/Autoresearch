@@ -118,6 +118,71 @@ def test_create_issue_classifies_unknown_failure(
         )
 
 
+def test_create_issue_separates_rate_limit_from_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GitHub은 rate limit도 403으로 답한다. 둘을 묶으면 호출자가 오해한다.
+
+    영구적 권한 문제를 `rate_limited`로 알리면 "기다리면 풀린다"로 읽힌다.
+    """
+    _patch_subprocess(
+        monkeypatch,
+        _FakeProcess(b"", b"gh: API rate limit exceeded (HTTP 403)\n", 1),
+    )
+    with pytest.raises(GitHubIssueError, match="rate_limited"):
+        asyncio.run(
+            create_issue(_Settings(), title="[AR] t", body="b", labels=("auto-experiment",))
+        )
+
+    _patch_subprocess(
+        monkeypatch,
+        _FakeProcess(b"", b"gh: Resource not accessible by integration (HTTP 403)\n", 1),
+    )
+    with pytest.raises(GitHubIssueError, match="permission_denied"):
+        asyncio.run(
+            create_issue(_Settings(), title="[AR] t", body="b", labels=("auto-experiment",))
+        )
+
+
+def test_cancellation_reclaims_the_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """상위 취소 시 `gh` 프로세스를 회수해야 한다.
+
+    회수하지 않으면 shield된 task가 참조 없이 남고, 임시 디렉터리가 실행 중인 `gh`보다
+    먼저 지워진다.
+    """
+    reclaimed: list[object] = []
+
+    class _HangingProcess:
+        returncode = None
+        pid = 4242
+
+        async def communicate(self, _stdin: bytes | None = None) -> tuple[bytes, bytes]:
+            await asyncio.sleep(3600)
+            return b"", b""
+
+    process = _HangingProcess()
+    _patch_subprocess(monkeypatch, process)
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.github_issues._terminate_process_group",
+        reclaimed.append,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            create_issue(
+                _Settings(), title="[AR] t", body="b", labels=("auto-experiment",)
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    assert reclaimed == [process]
+
+
 def test_find_issue_by_marker_returns_none_when_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
