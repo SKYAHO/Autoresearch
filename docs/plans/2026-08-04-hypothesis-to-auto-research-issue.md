@@ -369,6 +369,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agent_orchestration.app.experiments.issue_authoring import (  # noqa: E402
     COMPARISON,
+    MAX_DECIMAL_DIGITS,
+    MAX_DECIMAL_EXPONENT,
+    MAX_DECIMAL_TEXT_LENGTH,
     POLICY_SEEDS,
     SNAPSHOT_REUSE,
     ExperimentDefaults,
@@ -381,6 +384,15 @@ from agent_orchestration.app.experiments.issue_authoring import (  # noqa: E402
 )
 from src.pipeline.experiment_evaluation import (  # noqa: E402
     POLICY_SEEDS as ENGINE_POLICY_SEEDS,
+)
+from tools.auto_research_issue_branch import (  # noqa: E402
+    MAX_DECIMAL_DIGITS as PARSER_MAX_DECIMAL_DIGITS,
+)
+from tools.auto_research_issue_branch import (  # noqa: E402
+    MAX_DECIMAL_EXPONENT as PARSER_MAX_DECIMAL_EXPONENT,
+)
+from tools.auto_research_issue_branch import (  # noqa: E402
+    MAX_DECIMAL_TEXT_LENGTH as PARSER_MAX_DECIMAL_TEXT_LENGTH,
 )
 from tools.auto_research_issue_branch import (  # noqa: E402
     _COMPARISONS,
@@ -438,6 +450,30 @@ def test_assembled_body_uses_the_policy_seed_set() -> None:
 def test_local_policy_seeds_match_the_judgement_engine() -> None:
     """런타임 import가 불가능해 복제한 값의 드리프트를 잡는다."""
     assert POLICY_SEEDS == ENGINE_POLICY_SEEDS
+
+
+def test_local_decimal_bounds_match_the_parser() -> None:
+    """조립 전 검증이 파서보다 느슨해지는 드리프트를 잡는다.
+
+    한 축이라도 느슨하면 그 축의 극단값이 이슈 발행 후에야 거부된다.
+    """
+    assert MAX_DECIMAL_TEXT_LENGTH == PARSER_MAX_DECIMAL_TEXT_LENGTH
+    assert MAX_DECIMAL_DIGITS == PARSER_MAX_DECIMAL_DIGITS
+    assert MAX_DECIMAL_EXPONENT == PARSER_MAX_DECIMAL_EXPONENT
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "0." + "1" * 200,      # 길이 초과
+        "0." + "1" * 70,       # 자릿수 초과
+        "1e2000",              # 지수 초과
+    ],
+)
+def test_parse_llm_fields_rejects_out_of_bound_decimals(value: str) -> None:
+    """파서의 경계를 넘는 임계값도 조립 전에 끊는다."""
+    with pytest.raises(ValueError):
+        _fields(minimum_primary_delta=value)
 
 
 def test_guardrail_fields_round_trip_when_declared() -> None:
@@ -656,16 +692,32 @@ _NONE_VALUE = "없음"
 _METRIC_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
 # 값 안의 `### ` 줄은 heading을 하나 더 만들어 본문 구조를 깬다.
 _HEADING_LINE_PATTERN = re.compile(r"^### ", re.MULTILINE)
+# 파서의 `_finite_decimal`/`_validate_decimal_bounds`가 쓰는 경계와 같아야 한다.
+# 여기가 더 느슨하면 극단값이 조립을 통과해 이슈가 발행된 뒤에야 실패한다.
+MAX_DECIMAL_TEXT_LENGTH = 128
+MAX_DECIMAL_DIGITS = 64
+MAX_DECIMAL_EXPONENT = 1000
 
 
 def _require_non_negative_decimal(value: str, field_name: str) -> None:
-    """파서의 `_non_negative_decimal`이 받아들일 값인지 확인한다."""
+    """파서의 `_non_negative_decimal`이 받아들일 값인지 확인한다.
+
+    파서(`_finite_decimal` → `_validate_decimal_bounds`)와 **같은 순서로 같은 경계**를
+    본다. 한 축이라도 느슨하면 그 축의 극단값이 발행 후에야 거부된다.
+    """
+    if len(value) > MAX_DECIMAL_TEXT_LENGTH:
+        raise ValueError(f"{field_name} exceeds the decimal text length limit")
     try:
         parsed = Decimal(value)
     except InvalidOperation as error:
-        raise ValueError(f"{field_name} must be a decimal") from error
+        raise ValueError(f"{field_name} must be a finite decimal") from error
     if not parsed.is_finite():
-        raise ValueError(f"{field_name} must be finite")
+        raise ValueError(f"{field_name} must be a finite decimal")
+    decimal_tuple = parsed.as_tuple()
+    if len(decimal_tuple.digits) > MAX_DECIMAL_DIGITS:
+        raise ValueError(f"{field_name} exceeds the decimal digit limit")
+    if abs(decimal_tuple.exponent) > MAX_DECIMAL_EXPONENT:
+        raise ValueError(f"{field_name} exceeds the decimal exponent limit")
     if parsed < 0:
         raise ValueError(f"{field_name} must be non-negative")
 
