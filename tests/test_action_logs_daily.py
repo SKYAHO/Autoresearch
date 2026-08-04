@@ -1307,34 +1307,10 @@ def test_final_publish_staging_copy_failure_preserves_previous_file(
     assert list(destination.parent.glob("*.staging")) == []
 
 
-def test_remote_final_copy_failure_preserves_previous_object(tmp_path, monkeypatch):
-    class _FailingCopyFilesystem:
-        def __init__(self):
-            self.objects = {"bucket/final.parquet": b"last-known-good"}
-
-        def copy_file(self, source, destination):
-            raise OSError("remote copy failed")
-
-        def delete_file(self, path):
-            self.objects.pop(path, None)
-
-    filesystem = _FailingCopyFilesystem()
-    source = tmp_path / "new.parquet"
-    source.write_bytes(b"new-result")
-
-    def stage_file(source_path, destination_path, *, filesystem=None):
-        filesystem.objects[destination_path] = Path(source_path).read_bytes()
-
-    monkeypatch.setattr(daily_module, "_copy_local_file", stage_file)
-
-    with pytest.raises(OSError, match="remote copy failed"):
-        daily_module._publish_final_file(
-            source,
-            "bucket/final.parquet",
-            filesystem=filesystem,
-        )
-
-    assert filesystem.objects == {"bucket/final.parquet": b"last-known-good"}
+# 구 테스트 `test_remote_final_copy_failure_preserves_previous_object`는 staging→copy
+# 메커니즘(copy_file 실패)을 단언했으므로 #515에서 제거했다. 그것이 지키던 요구
+# ("publish 실패 시 last-known-good 보존")는
+# `test_remote_publish_failure_preserves_last_known_good`가 새 메커니즘 기준으로 승계한다.
 
 
 def test_merge_quality_failure_uses_manifest_counts_and_preserves_final(
@@ -1609,3 +1585,129 @@ def test_cli_requires_click_threshold() -> None:
     assert args.click_threshold is None
     with pytest.raises(BatchArgumentError):
         _validate_args(args)
+
+
+
+class _RecordingFilesystem:
+    """publish 경로를 관찰하는 객체 저장소 대역(#515).
+
+    `written`은 `open_output_stream`으로 실제 업로드가 일어난 경로를 순서대로 담는다.
+    임시 객체가 파티션 프리픽스 **밖**에 만들어지는지 검증하는 데 쓴다.
+    """
+
+    def __init__(self, initial: dict[str, bytes] | None = None) -> None:
+        self.objects: dict[str, bytes] = dict(initial or {})
+        self.written: list[str] = []
+        self.deleted: list[str] = []
+        self.delete_error: Exception | None = None
+
+    def open_output_stream(self, path: str):
+        import io
+
+        filesystem = self
+        filesystem.written.append(path)
+
+        class _Stream(io.BytesIO):
+            def close(self) -> None:
+                if not self.closed:
+                    filesystem.objects[path] = self.getvalue()
+                super().close()
+
+        return _Stream()
+
+    def copy_file(self, source: str, destination: str) -> None:
+        self.objects[destination] = self.objects[source]
+
+    def delete_file(self, path: str) -> None:
+        self.deleted.append(path)
+        if self.delete_error is not None:
+            raise self.delete_error
+        self.objects.pop(path, None)
+
+
+_PARTITION = "bucket/data_lake/action_log/dt=2026-07-01/"
+_DESTINATION = _PARTITION + "part-0.parquet"
+
+
+def _under(filesystem: _RecordingFilesystem, prefix: str) -> list[str]:
+    return sorted(key for key in filesystem.objects if key.startswith(prefix))
+
+
+def test_remote_publish_stages_outside_partition_prefix(tmp_path):
+    """임시 객체는 파티션 프리픽스 **밖**에 만든다(#515).
+
+    적재가 ``dt=<날짜>/``를 와일드카드로 읽으므로, 임시 객체가 그 안에 있으면 정리가
+    실패했을 때 같은 내용이 두 번 적재된다(event_id 전역 고유 계약 위반).
+    """
+    filesystem = _RecordingFilesystem({_DESTINATION: b"last-known-good"})
+    source = tmp_path / "new.parquet"
+    source.write_bytes(b"new-result")
+
+    daily_module._publish_final_file(source, _DESTINATION, filesystem=filesystem)
+
+    assert _under(filesystem, _PARTITION) == [_DESTINATION]
+    assert filesystem.objects[_DESTINATION] == b"new-result"
+    # 실제 업로드는 파티션 밖에서 일어났다.
+    assert filesystem.written and all(
+        not path.startswith(_PARTITION) for path in filesystem.written
+    )
+
+
+def test_remote_publish_upload_failure_preserves_last_known_good(tmp_path, monkeypatch):
+    """업로드가 도중에 끊겨도 최종 경로는 건드리지 않는다(#515).
+
+    pyarrow ``NativeFile``에는 abort가 없어 ``with`` 종료 시 ``close()``가 finalize한다.
+    따라서 최종 경로에 직접 쓰면 **잘린 객체가 게시되어** last-known-good이 파괴된다.
+    임시 경로로 먼저 올리고 서버측 ``copy_file``로 바꾸면 그 창이 사라진다.
+    """
+    filesystem = _RecordingFilesystem({_DESTINATION: b"last-known-good"})
+    source = tmp_path / "new.parquet"
+    source.write_bytes(b"new-result")
+
+    def partial_then_fail(source_path, destination_path, *, filesystem=None):
+        filesystem.objects[destination_path] = b"new-res"  # 잘린 상태로 finalize
+        raise OSError("network dropped mid-upload")
+
+    monkeypatch.setattr(daily_module, "_copy_local_file", partial_then_fail)
+
+    with pytest.raises(OSError, match="network dropped mid-upload"):
+        daily_module._publish_final_file(source, _DESTINATION, filesystem=filesystem)
+
+    assert filesystem.objects[_DESTINATION] == b"last-known-good"
+    # 잘린 객체가 파티션 안에 남지 않는다.
+    assert _under(filesystem, _PARTITION) == [_DESTINATION]
+
+
+def test_remote_publish_cleanup_failure_keeps_partition_clean(tmp_path):
+    """정리가 실패해도 파티션은 오염되지 않고 게시는 성공한다(#515 회귀).
+
+    이번 사고의 조건(삭제 권한 없음)을 그대로 재현한다. 임시 객체가 파티션 밖이므로
+    남더라도 적재가 읽지 않는다.
+    """
+    filesystem = _RecordingFilesystem({_DESTINATION: b"last-known-good"})
+    filesystem.delete_error = PermissionError("storage.objects.delete denied")
+    source = tmp_path / "new.parquet"
+    source.write_bytes(b"new-result")
+
+    daily_module._publish_final_file(source, _DESTINATION, filesystem=filesystem)
+
+    assert filesystem.objects[_DESTINATION] == b"new-result"
+    assert _under(filesystem, _PARTITION) == [_DESTINATION]
+    # 고아 객체는 남지만 파티션 밖이다.
+    orphans = [key for key in filesystem.objects if key not in {_DESTINATION}]
+    assert orphans and all(not key.startswith(_PARTITION) for key in orphans)
+
+
+def test_remote_publish_stages_outside_shard_partition_prefix(tmp_path):
+    """shard 경로(``dt=.../shard=NNN/``)에서도 같은 보장이 성립한다(#515)."""
+    shard_prefix = "bucket/data_lake/action_log/dt=2026-07-01/shard=000/"
+    destination = shard_prefix + "part-0.parquet"
+    filesystem = _RecordingFilesystem({destination: b"last-known-good"})
+    filesystem.delete_error = PermissionError("storage.objects.delete denied")
+    source = tmp_path / "new.parquet"
+    source.write_bytes(b"new-result")
+
+    daily_module._publish_final_file(source, destination, filesystem=filesystem)
+
+    assert _under(filesystem, shard_prefix) == [destination]
+    assert all(not path.startswith(shard_prefix) for path in filesystem.written)
