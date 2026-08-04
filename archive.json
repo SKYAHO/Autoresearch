@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T07:19:07Z",
+  "generated_at": "2026-08-04T08:04:01Z",
   "reports": [
+    {
+      "number": 526,
+      "title": "feat: 실험 Step 추적 API와 진행 단계 표시",
+      "author": "waieiches",
+      "merged_at": "2026-08-04T08:03:47Z",
+      "summary_ko": [
+        "에이전트가 실험 수행 중 진행하는 세부 작업(피처 조립, 파생 피처 생성, 학습, 평가 등)을 실시간으로 추적하기 위한 ExperimentStep 리소스를 신설하였습니다.",
+        "작업 단계를 멱등하게 생성하는 POST, 전체 교체 방식으로 갱신하는 PATCH, 키셋 커서 기반으로 조회하는 GET 엔드포인트를 구현하였습니다.",
+        "Streamlit UI에 '진행 단계' 탭을 추가하고, 조건부 UPDATE 가드와 PostgreSQL 동시성 검증을 통해 터미널 상태 전이의 원자성을 보장하도록 개선하였습니다."
+      ],
+      "report_url": "pr/526/"
+    },
     {
       "number": 520,
       "title": "feat: temporal signal 판정 기준선·구간 분리·hold 조건 (#485 Task 1~3, 부분 구현)",
