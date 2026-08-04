@@ -43,6 +43,7 @@ from agent_orchestration.app.experiments.service import (
     create_experiment,
     create_experiment_log,
     create_experiment_step,
+    list_experiment_steps,
     update_experiment_step,
     update_experiment_status,
 )
@@ -444,6 +445,60 @@ def test_step_update_rereads_state_committed_by_another_session(
     assert stored is not None
     assert stored.status == StepStatus.COMPLETED.value
     assert stored.message == "완료"
+
+
+def test_step_cursor_pagination_advances_over_real_timestamps(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """Step cursor 계약은 실제 timestamp에서만 검증할 수 있다.
+
+    SQLite는 `CURRENT_TIMESTAMP`가 초 단위이고 파싱한 datetime을 다시 바인딩하면
+    `.000000`이 붙어 동등 비교가 성립하지 않아, keyset의 tie-breaker 분기가 매치되지
+    않는다. PostgreSQL은 microsecond 해상도 timestamptz라 이 계약이 실제로 성립한다.
+    """
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres step cursor"),
+        ).id
+    created_ids = []
+    for index in range(3):
+        with postgres_session_factory() as session:
+            created_ids.append(
+                create_experiment_step(
+                    session,
+                    experiment_id,
+                    ExperimentStepCreate(
+                        idempotency_key=f"cursor-{index}-{uuid.uuid4()}",
+                        step_kind=StepKind.TRAIN if index % 2 else StepKind.EVALUATE,
+                        step_type=f"stage-{index}",
+                    ),
+                ).id
+            )
+
+    with postgres_session_factory() as session:
+        first_page = list_experiment_steps(session, experiment_id, limit=100)
+        ordered_ids = [step.id for step in first_page.items]
+
+        after_first = list_experiment_steps(
+            session, experiment_id, limit=100, after_id=ordered_ids[0]
+        )
+        exhausted = list_experiment_steps(
+            session, experiment_id, limit=100, after_id=ordered_ids[-1]
+        )
+        limited = list_experiment_steps(session, experiment_id, limit=2)
+        filtered = list_experiment_steps(
+            session, experiment_id, limit=100, step_kind=StepKind.TRAIN
+        )
+
+    assert ordered_ids == created_ids
+    assert first_page.next_cursor == ordered_ids[-1]
+    assert [step.id for step in after_first.items] == ordered_ids[1:]
+    assert exhausted.items == []
+    # 새 row가 없으면 cursor는 전진하지 않는다 — polling이 뒤로 밀리지 않아야 한다.
+    assert exhausted.next_cursor == ordered_ids[-1]
+    assert len(limited.items) == 2
+    assert {step.step_kind for step in filtered.items} == {StepKind.TRAIN.value}
 
 
 def test_concurrent_terminal_transitions_finalize_exactly_one(

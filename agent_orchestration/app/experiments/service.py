@@ -29,6 +29,7 @@ from agent_orchestration.app.experiments.models import (
     ExperimentMetadata,
     ExperimentStatus,
     ExperimentStep,
+    StepKind,
     TERMINAL_STEP_STATUSES,
 )
 from agent_orchestration.app.experiments.repository import (
@@ -38,6 +39,7 @@ from agent_orchestration.app.experiments.repository import (
     find_experiment_logs,
     find_experiment_metadata,
     find_experiment_step,
+    find_experiment_steps,
     find_experiments,
     find_log_by_idempotency_key,
     find_step_by_idempotency_key,
@@ -75,6 +77,14 @@ class ExperimentEventPageResult:
     """polling용 Event page와 다음 cursor."""
 
     items: list[ExperimentEvent]
+    next_cursor: uuid.UUID | None
+
+
+@dataclass(frozen=True)
+class ExperimentStepPageResult:
+    """polling용 Step page와 다음 cursor."""
+
+    items: list[ExperimentStep]
     next_cursor: uuid.UUID | None
 
 
@@ -516,6 +526,33 @@ def list_experiment_logs(
         log_type=log_type,
     )
     return ExperimentLogPageResult(
+        items=items,
+        next_cursor=items[-1].id if items else after_id,
+    )
+
+
+def list_experiment_steps(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    limit: int,
+    after_id: uuid.UUID | None = None,
+    step_kind: StepKind | None = None,
+) -> ExperimentStepPageResult:
+    """created_at 우선·동률 시 UUID tie-breaker 순으로 정렬한 Step polling page를 반환한다.
+
+    tie-breaker인 `gen_random_uuid()`는 insert 순서와 무관한 난수라, 동률에서는 실제
+    append 순서를 보존하지 않는다(알려진 한계, spec의 "알려진 한계" 절 참고).
+    """
+    get_experiment(session, experiment_id)
+    items = find_experiment_steps(
+        session,
+        experiment_id,
+        limit=limit,
+        after_id=after_id,
+        step_kind=None if step_kind is None else step_kind.value,
+    )
+    return ExperimentStepPageResult(
         items=items,
         next_cursor=items[-1].id if items else after_id,
     )

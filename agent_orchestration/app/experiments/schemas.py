@@ -217,6 +217,13 @@ class ExperimentStepResponse(BaseModel):
     updated_at: datetime
 
 
+class ExperimentStepPageResponse(BaseModel):
+    """Step polling 결과와 다음 cursor."""
+
+    items: list[ExperimentStepResponse]
+    next_cursor: uuid.UUID | None
+
+
 class ExperimentPageResponse(BaseModel):
     """Experiment offset pagination 응답."""
 

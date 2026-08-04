@@ -290,3 +290,106 @@ def test_openapi_declares_step_patch_responses(experiment_client: TestClient) ->
     operation = schema["paths"]["/experiments/{experiment_id}/steps/{step_id}"]["patch"]
 
     assert set(operation["responses"]) >= {"200", "401", "404", "409", "422"}
+
+
+def _create_steps(client: TestClient, experiment_id: str, count: int) -> list[str]:
+    ids = []
+    for index in range(count):
+        response = client.post(
+            f"/experiments/{experiment_id}/steps",
+            json=_step_payload(
+                idempotency_key=f"step-{index}",
+                step_kind="TRAIN" if index % 2 else "FEATURE_ASSEMBLY",
+                step_type=f"stage-{index}",
+            ),
+            headers=AUTH_HEADERS,
+        )
+        assert response.status_code == 201
+        ids.append(response.json()["id"])
+    return ids
+
+
+def test_get_steps_returns_all_rows_without_cursor(experiment_client: TestClient) -> None:
+    """cursor 없이 조회하면 그 실험의 Step을 모두 돌려주고 next_cursor를 채운다.
+
+    **순서와 cursor 전진은 여기서 검증하지 않는다.** SQLite의 `CURRENT_TIMESTAMP`는 초
+    단위이고, SQLAlchemy가 파싱한 datetime을 다시 바인딩하면 `.000000`이 붙어 저장 문자열과
+    동등 비교가 성립하지 않는다. 그래서 keyset의 tie-breaker 분기가 SQLite에서는 절대
+    매치되지 않는다. cursor 계약은 실제 timestamp를 쓰는
+    `tests/test_experiment_postgres.py`가 검증한다.
+    """
+    experiment_id = _create_experiment(experiment_client)
+    step_ids = _create_steps(experiment_client, experiment_id, 3)
+
+    response = experiment_client.get(
+        f"/experiments/{experiment_id}/steps", headers=AUTH_HEADERS
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert {item["id"] for item in body["items"]} == set(step_ids)
+    assert body["next_cursor"] == body["items"][-1]["id"]
+
+
+def test_get_steps_filters_by_step_kind(experiment_client: TestClient) -> None:
+    """step_kind 필터는 해당 대분류만 돌려준다."""
+    experiment_id = _create_experiment(experiment_client)
+    _create_steps(experiment_client, experiment_id, 4)
+
+    response = experiment_client.get(
+        f"/experiments/{experiment_id}/steps",
+        params={"step_kind": "TRAIN"},
+        headers=AUTH_HEADERS,
+    )
+
+    kinds = {item["step_kind"] for item in response.json()["items"]}
+    assert kinds == {"TRAIN"}
+
+
+def test_get_steps_rejects_unknown_step_kind_filter(experiment_client: TestClient) -> None:
+    """서버가 모르는 step_kind 필터는 422다."""
+    experiment_id = _create_experiment(experiment_client)
+
+    response = experiment_client.get(
+        f"/experiments/{experiment_id}/steps",
+        params={"step_kind": "DEPLOY"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 422
+
+
+def test_get_steps_unknown_cursor_returns_404(experiment_client: TestClient) -> None:
+    """이 실험에 없는 after_id는 404다."""
+    experiment_id = _create_experiment(experiment_client)
+
+    response = experiment_client.get(
+        f"/experiments/{experiment_id}/steps",
+        params={"after_id": str(uuid.uuid4())},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 404
+
+
+def test_get_steps_respects_limit(experiment_client: TestClient) -> None:
+    """limit을 넘겨 받지 않는다."""
+    experiment_id = _create_experiment(experiment_client)
+    _create_steps(experiment_client, experiment_id, 3)
+
+    response = experiment_client.get(
+        f"/experiments/{experiment_id}/steps",
+        params={"limit": 2},
+        headers=AUTH_HEADERS,
+    )
+
+    assert len(response.json()["items"]) == 2
+
+
+def test_get_steps_for_missing_experiment_returns_404(experiment_client: TestClient) -> None:
+    """없는 실험이면 404다."""
+    response = experiment_client.get(
+        f"/experiments/{uuid.uuid4()}/steps", headers=AUTH_HEADERS
+    )
+
+    assert response.status_code == 404

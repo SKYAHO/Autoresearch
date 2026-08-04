@@ -161,6 +161,46 @@ def find_step_by_idempotency_key(
     )
 
 
+def find_experiment_steps(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    limit: int,
+    after_id: uuid.UUID | None,
+    step_kind: str | None,
+) -> list[ExperimentStep]:
+    """created_at ASC, id ASC cursor 규칙으로 새 Step을 조회한다."""
+    filters = [ExperimentStep.experiment_id == experiment_id]
+    if step_kind is not None:
+        filters.append(ExperimentStep.step_kind == step_kind)
+    if after_id is not None:
+        cursor = session.scalar(
+            select(ExperimentStep).where(
+                ExperimentStep.experiment_id == experiment_id,
+                ExperimentStep.id == after_id,
+            )
+        )
+        if cursor is None:
+            raise InvalidCursorError(after_id)
+        filters.append(
+            or_(
+                ExperimentStep.created_at > cursor.created_at,
+                and_(
+                    ExperimentStep.created_at == cursor.created_at,
+                    ExperimentStep.id > cursor.id,
+                ),
+            )
+        )
+    return list(
+        session.scalars(
+            select(ExperimentStep)
+            .where(*filters)
+            .order_by(ExperimentStep.created_at.asc(), ExperimentStep.id.asc())
+            .limit(limit)
+        ).all()
+    )
+
+
 def find_experiment_logs(
     session: Session,
     experiment_id: uuid.UUID,
