@@ -21,7 +21,7 @@ MODELS = (
     PROJECT_ROOT / "agent_orchestration" / "app" / "experiments" / "models.py"
 )
 
-LINEAGE_COLUMNS = ("issue_body", "issue_number", "issue_branch")
+LINEAGE_COLUMNS = ("issue_body", "issue_number", "issue_branch", "issue_published_at")
 
 
 def test_revision_chains_to_the_initial_revision() -> None:

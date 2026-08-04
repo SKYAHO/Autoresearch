@@ -9,9 +9,11 @@ SQLAlchemy 2.x declarative model로 제공한다. 단, `Experiment.updated_at`�
 DB 트리거가 아니다 — migration에는 대응하는 트리거가 없어 `psql` 직접 UPDATE 등
 ORM을 우회하는 쓰기에는 적용되지 않는다.
 
-`Experiment.issue_body`/`issue_number`/`issue_branch`는 `0002_experiment_issue_lineage`
-revision이 nullable로 추가한 발행 lineage다. `issue_body`는 발행 **전**에, 나머지 둘은
-발행 성공 후에 채워진다.
+`Experiment.issue_body`/`issue_number`/`issue_branch`/`issue_published_at`은
+`0002_experiment_issue_lineage`
+revision이 nullable로 추가한 발행 lineage다. `issue_body`는 발행 **전**에, 나머지 셋은
+발행 성공 후에 채워진다. `issue_published_at`은 일일 발행 상한 질의 전용이며
+`ExperimentResponse`에 노출되지 않는다.
 """
 
 from __future__ import annotations
@@ -108,6 +110,11 @@ class Experiment(Base):
     issue_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     issue_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 일일 발행 상한 질의 전용. `updated_at`은 `onupdate=func.now()`라 발행과 무관한
+    # UPDATE에도 갱신되어 며칠 전 발행분을 "오늘 발행"으로 잘못 센다.
+    issue_published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

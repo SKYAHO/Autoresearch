@@ -833,12 +833,13 @@ def test_concurrent_promotion_retries_return_one_persisted_event(tmp_path: Path)
 
 
 def test_experiment_lineage_columns_default_to_none(db_session: Session) -> None:
-    """발행 전 실험은 세 lineage 값이 모두 비어 있다."""
+    """발행 전 실험은 네 lineage 값이 모두 비어 있다."""
     experiment = create_experiment(db_session, ExperimentCreate(hypothesis="lineage"))
 
     assert experiment.issue_body is None
     assert experiment.issue_number is None
     assert experiment.issue_branch is None
+    assert experiment.issue_published_at is None
 
 
 def test_experiment_response_exposes_issue_lineage_without_body(

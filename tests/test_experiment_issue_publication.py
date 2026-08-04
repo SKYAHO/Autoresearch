@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import sys
@@ -22,13 +23,16 @@ from agent_orchestration.app.database import Base
 from agent_orchestration.app.experiments.exceptions import IssuePublicationLimitError
 from agent_orchestration.app.experiments.github_issues import GitHubIssueError, IssueRef
 from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
+from agent_orchestration.app.experiments.models import ExperimentStatus
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     IssuePublicationRequest,
+    StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.service import (
     create_experiment,
     publish_experiment_issue,
+    update_experiment_status,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -302,6 +306,48 @@ def test_daily_limit_blocks_publication(
         )
 
 
+def test_daily_limit_ignores_unrelated_updated_at_bumps(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`updated_at`은 상태 전이 등 발행과 무관한 UPDATE에도 갱신된다.
+
+    `issue_published_at`이 아니라 `updated_at`으로 상한을 세면, 며칠 전 발행된
+    실험이 오늘 상태 전이만 겪어도 "오늘 발행"으로 잡혀 정당한 새 발행을 막는다.
+    """
+    recorder = _Recorder()
+
+    async def fake_create_issue(_settings, *, title, body, labels):
+        return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
+    )
+    old = create_experiment(db_session, ExperimentCreate(hypothesis="old"))
+    asyncio.run(
+        publish_experiment_issue(
+            db_session, _Settings(issue_daily_limit=1), old.id,
+            IssuePublicationRequest(), generate=recorder.generate,
+        )
+    )
+
+    # 발행 시각은 25시간 전으로 되돌리고, 상태 전이로 `updated_at`만 지금으로 갱신한다.
+    old.issue_published_at = datetime.now(UTC) - timedelta(hours=25)
+    db_session.commit()
+    update_experiment_status(
+        db_session, old.id, StatusUpdateRequest(status=ExperimentStatus.RUNNING)
+    )
+
+    new = create_experiment(db_session, ExperimentCreate(hypothesis="new"))
+    result = asyncio.run(
+        publish_experiment_issue(
+            db_session, _Settings(issue_daily_limit=1), new.id,
+            IssuePublicationRequest(), generate=recorder.generate,
+        )
+    )
+
+    assert result.issue_number == 520
+
+
 def test_marker_lookup_recovers_a_lost_publication(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -374,6 +420,7 @@ def test_marker_lookup_failure_does_not_publish(
         "[AR] 비율 피처 실험",
         "no prefix ascii title",
         "[AR]    공백만    ",
+        "접두어 없는 한글 제목",
     ],
 )
 def test_branch_name_matches_the_workflow_rule(title: str) -> None:
@@ -382,3 +429,14 @@ def test_branch_name_matches_the_workflow_rule(title: str) -> None:
     from tools.auto_research_issue_branch import branch_name_for
 
     assert _branch_name_for(520, title) == branch_name_for(520, title)
+
+
+def test_branch_name_matches_the_workflow_rule_for_an_empty_title() -> None:
+    """prefix를 떼고 남은 것이 공백뿐이면 양쪽 모두 거부해야 한다."""
+    from agent_orchestration.app.experiments.service import _branch_name_for
+    from tools.auto_research_issue_branch import branch_name_for
+
+    with pytest.raises(ValueError):
+        _branch_name_for(520, "[AR]    ")
+    with pytest.raises(ValueError):
+        branch_name_for(520, "[AR]    ")

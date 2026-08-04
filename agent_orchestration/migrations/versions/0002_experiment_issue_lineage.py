@@ -3,7 +3,8 @@
 전체 파이프라인에서 가설이 GitHub `[AR]` 이슈로 발행된 사실을 실험 행에 남기는 구간을
 담당한다. 발행 절차와 HTTP 계약은 각각 service와 router의 책임이다.
 
-`issue_body`(발행 전 커밋), `issue_number`, `issue_branch`를 nullable로 추가하고
+`issue_body`(발행 전 커밋), `issue_number`, `issue_branch`, `issue_published_at`을
+nullable로 추가하고
 `issue_number` 조회 index를 만든 뒤 역순으로 제거한다.
 
 Revision ID: 0002_experiment_issue_lineage
@@ -30,12 +31,17 @@ def upgrade() -> None:
     op.add_column(
         "experiments", sa.Column("issue_branch", sa.String(length=255), nullable=True)
     )
+    op.add_column(
+        "experiments",
+        sa.Column("issue_published_at", sa.DateTime(timezone=True), nullable=True),
+    )
     op.create_index("ix_experiments_issue_number", "experiments", ["issue_number"])
 
 
 def downgrade() -> None:
     """upgrade의 역순으로 index와 컬럼을 제거한다."""
     op.drop_index("ix_experiments_issue_number", table_name="experiments")
+    op.drop_column("experiments", "issue_published_at")
     op.drop_column("experiments", "issue_branch")
     op.drop_column("experiments", "issue_number")
     op.drop_column("experiments", "issue_body")

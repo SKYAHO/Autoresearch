@@ -474,11 +474,14 @@ def _branch_name_for(issue_number: int, title: str) -> str:
     실제 브랜치는 워크플로가 만든다. 동일성은 `tests/test_experiment_issue_publication.py`의
     `test_branch_name_matches_the_workflow_rule`이 고정한다.
     """
-    title_without_prefix = re.sub(r"^\s*\[AR\]\s*", "", title, flags=re.IGNORECASE)
-    slug = re.sub(r"[^a-z0-9]+", "-", title_without_prefix.lower()).strip("-")
+    stripped = re.sub(r"^\s*\[AR\]\s*", "", title, flags=re.IGNORECASE)
+    # 정본(`branch_name_for`)은 prefix를 떼고 남은 것이 공백뿐이면 거부한다. 이 가드가
+    # 없으면 그럴듯한 브랜치 이름을 만들어 내며 정본과 갈린다.
+    if not stripped.strip():
+        raise ValueError("issue title must not be empty after the prefix")
+    slug = re.sub(r"[^a-z0-9]+", "-", stripped.lower()).strip("-")
     if not slug:
-        digest = hashlib.sha256(title_without_prefix.encode("utf-8")).hexdigest()[:12]
-        slug = f"issue-{digest}"
+        slug = "issue-" + hashlib.sha256(stripped.encode("utf-8")).hexdigest()[:12]
     return f"exp/{issue_number}-{slug}"
 
 
@@ -505,11 +508,14 @@ async def publish_experiment_issue(
     if experiment.issue_number is not None:
         return experiment
 
+    # `updated_at`으로 세면 안 된다 — `onupdate=func.now()`라 상태 전이·metric 기록 등
+    # 발행과 무관한 UPDATE도 갱신하므로, 며칠 전 발행된 실험이 오늘 수정되면 "오늘
+    # 발행"으로 잡혀 새 발행을 부당하게 막는다. 발행 시각 전용 컬럼을 쓴다.
     since = datetime.now(UTC) - timedelta(days=1)
     published_today = session.scalar(
         select(func.count())
         .select_from(Experiment)
-        .where(Experiment.issue_number.is_not(None), Experiment.updated_at >= since)
+        .where(Experiment.issue_published_at >= since)
     )
     if (published_today or 0) >= settings.issue_daily_limit:
         raise IssuePublicationLimitError(settings.issue_daily_limit)
@@ -552,6 +558,7 @@ async def publish_experiment_issue(
 
     experiment.issue_number = reference.number
     experiment.issue_branch = _branch_name_for(reference.number, title)
+    experiment.issue_published_at = datetime.now(UTC)
     session.commit()
     return experiment
 
