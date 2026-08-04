@@ -1242,6 +1242,71 @@ def test_create_issue_classifies_unknown_failure(
         )
 
 
+def test_create_issue_separates_rate_limit_from_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GitHub은 rate limit도 403으로 답한다. 둘을 묶으면 호출자가 오해한다.
+
+    영구적 권한 문제를 `rate_limited`로 알리면 "기다리면 풀린다"로 읽힌다.
+    """
+    _patch_subprocess(
+        monkeypatch,
+        _FakeProcess(b"", b"gh: API rate limit exceeded (HTTP 403)\n", 1),
+    )
+    with pytest.raises(GitHubIssueError, match="rate_limited"):
+        asyncio.run(
+            create_issue(_Settings(), title="[AR] t", body="b", labels=("auto-experiment",))
+        )
+
+    _patch_subprocess(
+        monkeypatch,
+        _FakeProcess(b"", b"gh: Resource not accessible by integration (HTTP 403)\n", 1),
+    )
+    with pytest.raises(GitHubIssueError, match="permission_denied"):
+        asyncio.run(
+            create_issue(_Settings(), title="[AR] t", body="b", labels=("auto-experiment",))
+        )
+
+
+def test_cancellation_reclaims_the_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """상위 취소 시 `gh` 프로세스를 회수해야 한다.
+
+    회수하지 않으면 shield된 task가 참조 없이 남고, 임시 디렉터리가 실행 중인 `gh`보다
+    먼저 지워진다.
+    """
+    reclaimed: list[object] = []
+
+    class _HangingProcess:
+        returncode = None
+        pid = 4242
+
+        async def communicate(self, _stdin: bytes | None = None) -> tuple[bytes, bytes]:
+            await asyncio.sleep(3600)
+            return b"", b""
+
+    process = _HangingProcess()
+    _patch_subprocess(monkeypatch, process)
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.github_issues._terminate_process_group",
+        reclaimed.append,
+    )
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            create_issue(
+                _Settings(), title="[AR] t", body="b", labels=("auto-experiment",)
+            )
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    assert reclaimed == [process]
+
+
 def test_find_issue_by_marker_returns_none_when_absent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1362,9 +1427,16 @@ class GitHubIssueError(RuntimeError):
 
 
 # stderr 문자열 기반 분류다. gh 버전을 이미지에 고정해야 조용히 깨지지 않는다.
+# 순서가 의미를 갖는다 — GitHub은 rate limit도 HTTP 403으로 응답하므로 rate limit을
+# 먼저 본다. 403을 통째로 rate_limited로 묶으면 토큰 스코프 부족·SAML 미인가 같은
+# **영구적** 권한 문제를 "기다리면 풀린다"로 잘못 알리게 된다.
 _REASON_PATTERNS: tuple[tuple[str, str], ...] = (
     (r"bad credentials|authentication|HTTP 401", "authentication_failed"),
-    (r"HTTP 403|rate limit|api rate", "rate_limited"),
+    (r"rate limit|api rate", "rate_limited"),
+    (
+        r"HTTP 403|forbidden|resource not accessible|saml",
+        "permission_denied",
+    ),
     (r"could not add label|not found.*label|label.*not found", "label_missing"),
     (r"HTTP 404|could not resolve to a Repository", "repository_not_found"),
     (r"dial tcp|connection refused|timeout|network", "network_error"),
@@ -1392,14 +1464,35 @@ def _classify(stderr: str) -> str:
     return "unclassified"
 
 
-def _terminate(process: object) -> None:
-    """`gh`와 같은 세션의 하위 프로세스를 함께 회수한다."""
-    pid = getattr(process, "pid", None)
-    if os.name == "posix" and pid is not None:
+def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
+    """`gh`와 같은 세션의 하위 프로세스를 함께 종료한다.
+
+    `agent_orchestration/codex.py`의 같은 이름 함수와 동일한 계약이다. 비-POSIX에는
+    프로세스 그룹이 없으므로 `process.kill()`로 떨어진다 — 이 fallback이 없으면
+    아래 회수 단계가 무기한 대기해 `gh_timeout_sec`이 무의미해진다.
+    """
+    if process.returncode is not None:
+        return
+    if os.name == "posix" and process.pid is not None:
         try:
-            os.killpg(pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
             return
+        except ProcessLookupError:
+            return
+    process.kill()
+
+
+async def _terminate_and_wait(
+    process: asyncio.subprocess.Process,
+    communicate_task: asyncio.Task[tuple[bytes, bytes]],
+) -> None:
+    """프로세스 그룹 종료 뒤 파이프를 닫고 하위 프로세스를 회수한다."""
+    _terminate_process_group(process)
+    try:
+        await asyncio.wait_for(asyncio.shield(communicate_task), timeout=5)
+    except (OSError, TimeoutError):
+        communicate_task.cancel()
+        await asyncio.gather(communicate_task, return_exceptions=True)
 
 
 async def _run_gh(settings: _Settings, arguments: tuple[str, ...]) -> str:
@@ -1417,15 +1510,21 @@ async def _run_gh(settings: _Settings, arguments: tuple[str, ...]) -> str:
         except OSError as error:
             raise GitHubIssueError("gh_unavailable", str(error)) from error
 
-        task = asyncio.create_task(process.communicate())
+        communicate_task = asyncio.create_task(process.communicate())
         try:
             stdout, stderr = await asyncio.wait_for(
-                asyncio.shield(task), timeout=settings.gh_timeout_sec
+                asyncio.shield(communicate_task), timeout=settings.gh_timeout_sec
             )
         except TimeoutError as error:
-            _terminate(process)
-            await asyncio.gather(task, return_exceptions=True)
+            await _terminate_and_wait(process, communicate_task)
             raise GitHubIssueError("timeout") from error
+        except asyncio.CancelledError:
+            # 상위가 취소되면(클라이언트 연결 종료·서비스 종료) shield된 task가 참조
+            # 없이 남고, 아래 `with TemporaryDirectory`가 언와인드되며 `gh`가 아직
+            # 쓰고 있는 HOME/GH_CONFIG_DIR/TMPDIR을 지워버린다. codex.py와 같이
+            # 회수한 뒤 올린다.
+            await _terminate_and_wait(process, communicate_task)
+            raise
 
         if process.returncode != 0:
             message = stderr.decode("utf-8", errors="replace").strip()
@@ -1504,7 +1603,7 @@ async def find_issue_by_marker(settings: _Settings, *, marker: str) -> IssueRef 
 - [ ] **Step 5: 테스트 통과를 확인한다**
 
 Run: `uv run --no-sync python -m pytest tests/test_github_issues.py -v`
-Expected: PASS (8 passed)
+Expected: PASS (10 passed)
 
 - [ ] **Step 6: lint 후 커밋**
 
