@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T06:48:14Z",
+  "generated_at": "2026-08-04T06:52:26Z",
   "reports": [
+    {
+      "number": 520,
+      "title": "feat: temporal signal 판정 기준선·구간 분리·hold 조건 (#485 Task 1~3, 부분 구현)",
+      "author": "waieiches",
+      "merged_at": "2026-08-04T06:52:15Z",
+      "summary_ko": [
+        "시간축 평가 하네스의 열화 판정 기준선을 학습 무작위 검증 지표에서 첫 유효 관측치 지표로 교체하여 오탐을 방지했습니다.",
+        "전체 및 최근 평가 구간 지표 분리 기능과 측정 결과 기반의 재학습 한계 일수 계산 로직을 구현했습니다.",
+        "데이터 누락이나 시간 순서 위반 발생 시 안전하게 평가를 중단하는 fail-closed hold 판정 로직과 테스트를 추가했습니다."
+      ],
+      "report_url": "pr/520/"
+    },
     {
       "number": 522,
       "title": "fix: Streamlit 시각을 KST로 표시",
