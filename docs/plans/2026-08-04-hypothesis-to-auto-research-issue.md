@@ -2409,7 +2409,28 @@ RUN set -eux; \
     gh --version
 ```
 
-- [ ] **Step 2: 이미지를 빌드해 `gh`를 확인한다**
+- [ ] **Step 2: CI 스모크 체크에 `gh` 버전 단언을 추가한다**
+
+로컬에 Docker가 없어도 CI의 `Docker build (agent orchestration)` job이 이미지를 빌드하고
+스모크 체크를 돌립니다. 그 job에 `gh` 확인을 넣어 **버전 고정이 실제로 지켜지는지 CI가
+증명하게** 합니다.
+
+저장소에 이미 같은 패턴이 있습니다 — 같은 job이 runner 이미지의 `codex --version`을
+정확 문자열로 고정합니다(`ci.yml`의 `codex_version` 비교). 그것을 그대로 따릅니다.
+
+`.github/workflows/ci.yml`의 `Run Agent Orchestration image smoke checks` step에서
+`python -c "import agent_orchestration.app.main"` 줄 **뒤에** 추가합니다.
+
+```yaml
+          docker run --rm autoresearch-agent-orchestration-api:ci gh --version \
+            | grep --fixed-strings "gh version 2.97.0"
+```
+
+이 단언이 Dockerfile의 `ARG GH_VERSION`과 어긋나면 CI가 실패합니다. 두 곳이 같은 버전을
+말하도록 강제하는 것이 목적입니다 — `github_issues.py`의 오류 분류가 `gh`의 stderr
+문자열에 의존하므로, 버전이 조용히 바뀌면 분류가 깨집니다.
+
+로컬에서 Docker를 쓸 수 있으면 아래로 먼저 확인해도 됩니다(선택).
 
 ```bash
 docker build -f deploy/agent_orchestration/api.Dockerfile -t autoresearch-orch-api:ci .
@@ -2417,12 +2438,10 @@ docker run --rm autoresearch-orch-api:ci gh --version
 docker run --rm autoresearch-orch-api:ci python -c "import agent_orchestration.app.main"
 ```
 
-Expected: `gh version 2.97.0`이 출력되고 import가 성공합니다.
-
 - [ ] **Step 3: 커밋**
 
 ```bash
-git add deploy/agent_orchestration/api.Dockerfile
+git add deploy/agent_orchestration/api.Dockerfile .github/workflows/ci.yml
 git commit -m "chore: API 이미지에 gh CLI 버전 고정 설치"
 ```
 
