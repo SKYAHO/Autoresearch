@@ -5,7 +5,8 @@ partition을 읽고 single 또는 shard 실행을 선택한 뒤 final partition�
 
 [기능] 단일 coordinator가 daily temporary directory에 completion-time Parquet/JSONL을
 최종 commit한 뒤 row-group staging 검증과 last-known-good publish를 수행하며, 기존
-shard/checkpoint/merge 실행도 제공한다.
+shard/checkpoint/merge 실행도 제공한다. 객체 저장소 publish는 최종 경로에 직접 쓰고
+임시 객체를 남기지 않는다(#515) — 삭제 권한에 의존하지 않는다.
 
 [비책임] LLM 판정·클릭·이벤트 의미는 autoresearch/action_logs/pipeline.py,
 CLI 인자 계약은 autoresearch/jobs/action_log.py, Airflow KPO resource는
@@ -258,21 +259,16 @@ def _publish_final_file(
             staging_path.unlink(missing_ok=True)
         return
 
-    staging_path = f"{destination}.staging-{uuid4().hex}"
-    try:
-        _copy_local_file(source, staging_path, filesystem=filesystem)
-        filesystem.copy_file(staging_path, destination)
-    finally:
-        try:
-            filesystem.delete_file(staging_path)
-        except FileNotFoundError:
-            pass
-        except Exception:  # noqa: BLE001 - staging cleanup must not mask publish result
-            logger.warning(
-                "Failed to clean up action log staging object",
-                extra={"artifact": "final_parquet_staging"},
-                exc_info=True,
-            )
+    # 객체 저장소는 최종 경로에 바로 쓴다(#515). 예전에는 staging 객체를 만들고
+    # copy 후 delete하는 방식으로 POSIX rename을 흉내냈는데, 삭제 권한이 없으면
+    # 임시 객체가 파티션에 남아 적재가 같은 내용을 두 번 읽었다(event_id 전역 고유
+    # 계약 위반 → 폐루프 정지). 삭제 실패는 경고로만 남아 4일간 드러나지 않았다.
+    #
+    # GCS는 업로드가 finalize되어야 객체가 보이고 덮어쓰기도 원자적이므로, 부분 파일이
+    # 노출되지 않고 쓰기 도중 실패하면 기존 객체가 그대로 남는다. 즉 staging 경유 없이도
+    # "실패를 성공으로 보고하지 않고 기존 publish 대상을 보존한다"는 요구
+    # (docs/specs/2026-07-30-action-log-review-remediation.md)를 만족한다.
+    _copy_local_file(source, destination, filesystem=filesystem)
 
 
 def _publish_quarantine_best_effort(

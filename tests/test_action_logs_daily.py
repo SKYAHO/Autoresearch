@@ -1307,34 +1307,10 @@ def test_final_publish_staging_copy_failure_preserves_previous_file(
     assert list(destination.parent.glob("*.staging")) == []
 
 
-def test_remote_final_copy_failure_preserves_previous_object(tmp_path, monkeypatch):
-    class _FailingCopyFilesystem:
-        def __init__(self):
-            self.objects = {"bucket/final.parquet": b"last-known-good"}
-
-        def copy_file(self, source, destination):
-            raise OSError("remote copy failed")
-
-        def delete_file(self, path):
-            self.objects.pop(path, None)
-
-    filesystem = _FailingCopyFilesystem()
-    source = tmp_path / "new.parquet"
-    source.write_bytes(b"new-result")
-
-    def stage_file(source_path, destination_path, *, filesystem=None):
-        filesystem.objects[destination_path] = Path(source_path).read_bytes()
-
-    monkeypatch.setattr(daily_module, "_copy_local_file", stage_file)
-
-    with pytest.raises(OSError, match="remote copy failed"):
-        daily_module._publish_final_file(
-            source,
-            "bucket/final.parquet",
-            filesystem=filesystem,
-        )
-
-    assert filesystem.objects == {"bucket/final.parquet": b"last-known-good"}
+# 구 테스트 `test_remote_final_copy_failure_preserves_previous_object`는 staging→copy
+# 메커니즘(copy_file 실패)을 단언했으므로 #515에서 제거했다. 그것이 지키던 요구
+# ("publish 실패 시 last-known-good 보존")는
+# `test_remote_publish_failure_preserves_last_known_good`가 새 메커니즘 기준으로 승계한다.
 
 
 def test_merge_quality_failure_uses_manifest_counts_and_preserves_final(
@@ -1609,3 +1585,86 @@ def test_cli_requires_click_threshold() -> None:
     assert args.click_threshold is None
     with pytest.raises(BatchArgumentError):
         _validate_args(args)
+
+
+class _RecordingFilesystem:
+    """GCS 의미를 흉내내는 스텁 — 스트림이 닫혀야 객체가 보인다(#515).
+
+    실제 GCS는 업로드가 finalize되어야 객체가 나타나므로, 쓰기 도중 실패하면 기존
+    객체가 그대로 남는다. 이 스텁은 그 성질만 재현한다.
+    """
+
+    def __init__(self, initial: dict[str, bytes] | None = None) -> None:
+        self.objects: dict[str, bytes] = dict(initial or {})
+        self.deleted: list[str] = []
+        self.copied: list[tuple[str, str]] = []
+
+    def open_output_stream(self, path: str):
+        import io
+
+        filesystem = self
+
+        class _Stream(io.BytesIO):
+            def close(self) -> None:
+                if not self.closed:
+                    filesystem.objects[path] = self.getvalue()
+                super().close()
+
+        return _Stream()
+
+    def copy_file(self, source: str, destination: str) -> None:
+        self.copied.append((source, destination))
+        self.objects[destination] = self.objects[source]
+
+    def delete_file(self, path: str) -> None:
+        self.deleted.append(path)
+        self.objects.pop(path, None)
+
+
+def test_remote_publish_writes_destination_without_staging_object(tmp_path):
+    """GCS 게시는 staging 객체를 만들지 않고 최종 경로에 직접 쓴다(#515).
+
+    staging 경유는 GCS에 rename이 없어 copy+delete로 흉내내던 것인데, 삭제 권한이
+    없으면 임시 파일이 파티션에 남아 적재가 같은 내용을 두 번 읽는다. GCS는 업로드가
+    끝나야 객체가 보이고 덮어쓰기도 원자적이므로 staging 자체가 필요 없다.
+    """
+    filesystem = _RecordingFilesystem({"bucket/dt=2026-07-01/part-0.parquet": b"old"})
+    source = tmp_path / "new.parquet"
+    source.write_bytes(b"new-result")
+
+    daily_module._publish_final_file(
+        source,
+        "bucket/dt=2026-07-01/part-0.parquet",
+        filesystem=filesystem,
+    )
+
+    # 최종 객체 하나만 남는다 — staging 접미사 객체가 없어야 한다.
+    assert list(filesystem.objects) == ["bucket/dt=2026-07-01/part-0.parquet"]
+    assert filesystem.objects["bucket/dt=2026-07-01/part-0.parquet"] == b"new-result"
+    # 삭제 권한에 의존하지 않는다 — 이번 사고의 재발 조건을 제거한다.
+    assert filesystem.deleted == []
+    assert filesystem.copied == []
+
+
+def test_remote_publish_failure_preserves_last_known_good(tmp_path, monkeypatch):
+    """쓰기 도중 실패하면 기존 last-known-good 객체가 보존된다(#515).
+
+    2026-07-30 spec의 publish 요구("실패를 성공으로 보고하지 않고 기존 publish 대상을
+    보존한다")를 staging 없이도 유지한다.
+    """
+    filesystem = _RecordingFilesystem({"bucket/final.parquet": b"last-known-good"})
+    source = tmp_path / "new.parquet"
+    source.write_bytes(b"new-result")
+
+    def failing_stream(path: str) -> NoReturn:
+        raise OSError("remote write failed")
+
+    monkeypatch.setattr(filesystem, "open_output_stream", failing_stream)
+
+    with pytest.raises(OSError, match="remote write failed"):
+        daily_module._publish_final_file(
+            source, "bucket/final.parquet", filesystem=filesystem
+        )
+
+    assert filesystem.objects == {"bucket/final.parquet": b"last-known-good"}
+    assert filesystem.deleted == []
