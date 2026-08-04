@@ -47,16 +47,32 @@ _NONE_VALUE = "없음"
 _METRIC_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
 # 값 안의 `### ` 줄은 heading을 하나 더 만들어 본문 구조를 깬다.
 _HEADING_LINE_PATTERN = re.compile(r"^### ", re.MULTILINE)
+# 파서의 `_finite_decimal`/`_validate_decimal_bounds`가 쓰는 경계와 같아야 한다.
+# 여기가 더 느슨하면 극단값이 조립을 통과해 이슈가 발행된 뒤에야 실패한다.
+MAX_DECIMAL_TEXT_LENGTH = 128
+MAX_DECIMAL_DIGITS = 64
+MAX_DECIMAL_EXPONENT = 1000
 
 
 def _require_non_negative_decimal(value: str, field_name: str) -> None:
-    """파서의 `_non_negative_decimal`이 받아들일 값인지 확인한다."""
+    """파서의 `_non_negative_decimal`이 받아들일 값인지 확인한다.
+
+    파서(`_finite_decimal` → `_validate_decimal_bounds`)와 **같은 순서로 같은 경계**를
+    본다. 한 축이라도 느슨하면 그 축의 극단값이 발행 후에야 거부된다.
+    """
+    if len(value) > MAX_DECIMAL_TEXT_LENGTH:
+        raise ValueError(f"{field_name} exceeds the decimal text length limit")
     try:
         parsed = Decimal(value)
     except InvalidOperation as error:
-        raise ValueError(f"{field_name} must be a decimal") from error
+        raise ValueError(f"{field_name} must be a finite decimal") from error
     if not parsed.is_finite():
-        raise ValueError(f"{field_name} must be finite")
+        raise ValueError(f"{field_name} must be a finite decimal")
+    decimal_tuple = parsed.as_tuple()
+    if len(decimal_tuple.digits) > MAX_DECIMAL_DIGITS:
+        raise ValueError(f"{field_name} exceeds the decimal digit limit")
+    if abs(decimal_tuple.exponent) > MAX_DECIMAL_EXPONENT:
+        raise ValueError(f"{field_name} exceeds the decimal exponent limit")
     if parsed < 0:
         raise ValueError(f"{field_name} must be non-negative")
 

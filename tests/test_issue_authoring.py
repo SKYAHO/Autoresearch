@@ -21,6 +21,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agent_orchestration.app.experiments.issue_authoring import (  # noqa: E402
     COMPARISON,
+    MAX_DECIMAL_DIGITS,
+    MAX_DECIMAL_EXPONENT,
+    MAX_DECIMAL_TEXT_LENGTH,
     POLICY_SEEDS,
     SNAPSHOT_REUSE,
     ExperimentDefaults,
@@ -33,6 +36,15 @@ from agent_orchestration.app.experiments.issue_authoring import (  # noqa: E402
 )
 from src.pipeline.experiment_evaluation import (  # noqa: E402
     POLICY_SEEDS as ENGINE_POLICY_SEEDS,
+)
+from tools.auto_research_issue_branch import (  # noqa: E402
+    MAX_DECIMAL_DIGITS as PARSER_MAX_DECIMAL_DIGITS,
+)
+from tools.auto_research_issue_branch import (  # noqa: E402
+    MAX_DECIMAL_EXPONENT as PARSER_MAX_DECIMAL_EXPONENT,
+)
+from tools.auto_research_issue_branch import (  # noqa: E402
+    MAX_DECIMAL_TEXT_LENGTH as PARSER_MAX_DECIMAL_TEXT_LENGTH,
 )
 from tools.auto_research_issue_branch import (  # noqa: E402
     _COMPARISONS,
@@ -90,6 +102,30 @@ def test_assembled_body_uses_the_policy_seed_set() -> None:
 def test_local_policy_seeds_match_the_judgement_engine() -> None:
     """런타임 import가 불가능해 복제한 값의 드리프트를 잡는다."""
     assert POLICY_SEEDS == ENGINE_POLICY_SEEDS
+
+
+def test_local_decimal_bounds_match_the_parser() -> None:
+    """조립 전 검증이 파서보다 느슨해지는 드리프트를 잡는다.
+
+    한 축이라도 느슨하면 그 축의 극단값이 이슈 발행 후에야 거부된다.
+    """
+    assert MAX_DECIMAL_TEXT_LENGTH == PARSER_MAX_DECIMAL_TEXT_LENGTH
+    assert MAX_DECIMAL_DIGITS == PARSER_MAX_DECIMAL_DIGITS
+    assert MAX_DECIMAL_EXPONENT == PARSER_MAX_DECIMAL_EXPONENT
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "0." + "1" * 200,      # 길이 초과
+        "0." + "1" * 70,       # 자릿수 초과
+        "1e2000",              # 지수 초과
+    ],
+)
+def test_parse_llm_fields_rejects_out_of_bound_decimals(value: str) -> None:
+    """파서의 경계를 넘는 임계값도 조립 전에 끊는다."""
+    with pytest.raises(ValueError):
+        _fields(minimum_primary_delta=value)
 
 
 def test_guardrail_fields_round_trip_when_declared() -> None:
