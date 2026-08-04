@@ -389,6 +389,38 @@ def resolve_forward_baseline(
     return None, None
 
 
+def summarize_valid_roc_auc(
+    per_day: Sequence[PerDayResult], *, recent_window_days: int
+) -> tuple[float | None, float | None]:
+    """전체 구간과 최근 구간의 ROC-AUC 평균을 나눠 낸다(#485 §3).
+
+    **날 동등 가중** 평균이다 — 행 수가 많은 날이 지표를 지배하면 "날의 평균"이 아니라
+    "행의 평균"이 된다. 열화는 날 단위 현상이므로 날마다 같은 무게를 준다(#506이
+    grouped AUC에서 매크로 평균을 택한 것과 같은 근거).
+
+    "최근"은 **최근 N개 유효일**이지 최근 N일이 아니다 — 무효일이 사이에 끼면 달력상
+    더 멀리까지 거슬러 올라간다. 결손일을 빈 값으로 세면 표본이 조용히 줄어든다.
+
+    Returns:
+        (overall, recent). 유효일이 없으면 overall은 ``None``, 유효일이
+        ``recent_window_days`` 미만이면 recent는 ``None``이다 — 적은 표본으로 평균을
+        만들어 "최근 성능"이라고 부르지 않는다.
+    """
+    valid_scores = [
+        day.roc_auc
+        for day in per_day
+        if day.status == EvaluationStatus.VALID and day.roc_auc is not None
+    ]
+    if not valid_scores:
+        return None, None
+
+    overall = sum(valid_scores) / len(valid_scores)
+    if len(valid_scores) < recent_window_days:
+        return overall, None
+    recent_scores = valid_scores[-recent_window_days:]
+    return overall, sum(recent_scores) / len(recent_scores)
+
+
 class RollingOriginResult(_ResultModel):
     """``run_rolling_origin`` 실행 하나의 전체 결과(spec §2.2·§2.3)."""
 
@@ -404,9 +436,68 @@ class RollingOriginResult(_ResultModel):
     # 추적할 수 있어야 한다 — 결손이 앞에 끼면 0이 아닐 수 있다.
     forward_baseline_source: int | None = None
     min_auc_drop: float
+    # 전체 평가 기간의 성능(유효일 날 동등 가중 평균). 유효일 0개면 None.
+    overall_roc_auc_mean: float | None = None
+    # 최근 recent_window_days개 **유효일**의 평균. 유효일이 그보다 적으면 None —
+    # 적은 표본으로 평균을 만들어 "최근 성능"이라고 부르지 않는다(#485 §3).
+    recent_roc_auc_mean: float | None = None
+    # 위 "최근"의 폭. 실측 후 재조정 대상이라 결과에 함께 남겨 사후 해석이 가능하게 한다.
+    recent_window_days: int = 3
     per_day: list[PerDayResult]
     degradation_point: DegradationPoint
     training_snapshot_manifest: TrainingSnapshotManifest
+
+
+class HardRetrainLimit(_ResultModel):
+    """성능과 무관하게 재학습해야 하는 시점까지의 일수(#485 §4.1).
+
+    ``limit_days``가 ``None``이면 **값을 만들 수 없었다**는 뜻이고 ``reason``에 왜인지
+    남는다. "안전하다"는 뜻이 아니다 — 그 둘을 같은 값으로 표현하지 않는 것이 이
+    계약의 핵심이다.
+    """
+
+    limit_days: int | None = None
+    reason: str | None = None
+
+
+def derive_hard_retrain_limit(
+    result: RollingOriginResult, *, safety_margin_days: int
+) -> HardRetrainLimit:
+    """측정 결과에서 hard retrain limit을 유도한다(#485 §4.1·§4.2).
+
+    ``RollingOriginResult``에 얹지 않고 **별도 함수**로 둔다 — 측정(관측 사실)과
+    정책(운영 판단)을 같은 payload에 섞지 않기 위해서다. 값을 ``#461`` 승격 게이트에
+    배선하는 것은 ``#472`` 소유이며, ``next_retrain_at``도 여기서 계산하지 않는다
+    (``last_trained_at``은 이 모듈이 모르는 값이다).
+
+    **관측되지 않은 것을 "안전"으로 바꾸지 않는다.** ``degradation_point``가 없으면
+    값을 만들지 않고 사유만 남긴다 — ``horizon_days``가 짧아서 못 본 것과 실제로 안
+    꺾인 것은 다른 사실인데, 하한값으로 채우면 둘이 같은 숫자가 된다.
+
+    두 미탐지 사유는 **구분해서** 전달한다:
+
+    - ``insufficient_valid_points``: 그대로 전달한다. 측정 단계의 사실이 정책 단계에서
+      다른 말로 바뀌면 원인 추적이 끊긴다.
+    - ``no_degradation_detected`` → ``no_degradation_observed_within_horizon``:
+      이름을 바꾸는 유일한 경우다. 원래 사유는 곡선에 대한 진술("열화가 탐지되지
+      않았다")인데, 정책 관점에서 중요한 건 **관측 범위 안에서만** 그렇다는 한정이다.
+      뭉개는 게 아니라 한계를 드러내는 방향으로 좁힌다.
+    """
+    degradation_point = result.degradation_point
+    if degradation_point.elapsed_days is None:
+        reason = degradation_point.reason
+        if reason == "no_degradation_detected":
+            reason = "no_degradation_observed_within_horizon"
+        return HardRetrainLimit(limit_days=None, reason=reason)
+
+    limit_days = degradation_point.elapsed_days - safety_margin_days
+    if limit_days < 0:
+        # 여유 기간이 열화 시점보다 크면 "이미 지났다"는 뜻이다. 음수 일수는 의미가
+        # 없으므로 0으로 clamp하되, 그 사실을 사유로 남겨 조용히 뭉개지 않는다.
+        return HardRetrainLimit(
+            limit_days=0, reason="safety_margin_exceeds_degradation_point"
+        )
+    return HardRetrainLimit(limit_days=limit_days)
 
 
 # ============================================================================
@@ -505,6 +596,7 @@ def run_rolling_origin(
     run_root: str | Path,
     min_rows_per_day: int,
     min_auc_drop: float,
+    recent_window_days: int = 3,
     min_coverage_days: int | None = None,
     seed: int | None = None,
     feature_service: str | None = None,
@@ -689,6 +781,10 @@ def run_rolling_origin(
             per_day, baseline=forward_baseline, min_auc_drop=min_auc_drop
         )
 
+    overall_mean, recent_mean = summarize_valid_roc_auc(
+        per_day, recent_window_days=recent_window_days
+    )
+
     return RollingOriginResult(
         cutoff_date=cutoff_date,
         window_days=window_days,
@@ -697,6 +793,9 @@ def run_rolling_origin(
         forward_baseline_roc_auc=forward_baseline,
         forward_baseline_source=forward_baseline_source,
         min_auc_drop=min_auc_drop,
+        overall_roc_auc_mean=overall_mean,
+        recent_roc_auc_mean=recent_mean,
+        recent_window_days=recent_window_days,
         per_day=per_day,
         degradation_point=degradation_point,
         training_snapshot_manifest=training_manifest,

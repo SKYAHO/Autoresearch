@@ -13,10 +13,17 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.pipeline.degradation_eval import (  # noqa: E402
+    DegradationPoint,
     EvaluationStatus,
     PerDayResult,
+    RollingOriginResult,
     compute_min_auc_drop,
+    derive_hard_retrain_limit,
     detect_degradation_point,
+)
+from src.pipeline.training_provenance import (  # noqa: E402
+    DatasetColumn,
+    TrainingSnapshotManifest,
 )
 
 BASELINE = 0.80
@@ -111,3 +118,108 @@ def test_compute_min_auc_drop_uses_k_times_std_when_larger_than_floor():
     value = compute_min_auc_drop(seed_std=0.01, k=2.0, floor=0.005)
 
     assert value == pytest.approx(0.02)
+
+
+# ============================================================================
+# Task 2 — §4.1·§4.2 hard retrain limit (#485)
+# 측정(RollingOriginResult)과 정책(이 함수)을 분리한다. 관측되지 않은 것을
+# "안전"으로 바꾸지 않는다 — 미탐지는 값이 아니라 사유로 남는다.
+# ============================================================================
+
+
+def _result_with(degradation_point: DegradationPoint) -> RollingOriginResult:
+    """`derive_hard_retrain_limit` 단위 테스트용 최소 결과 객체."""
+    manifest = TrainingSnapshotManifest(
+        dataset_sha256="0" * 64,
+        schema_sha256="1" * 64,
+        row_count=10,
+        columns=[DatasetColumn(name="clicked", dtype="int64")],
+        created_at="2026-07-20T00:00:00Z",
+        events_start_date="2026-07-17",
+        events_end_date="2026-07-19",
+        feature_service="ctr_training_v1",
+        registry_uri="gs://fake/registry.db",
+        registry_generation="1",
+        registry_sha256="2" * 64,
+    )
+    return RollingOriginResult(
+        cutoff_date="2026-07-20",
+        window_days=3,
+        horizon_days=5,
+        baseline_val_roc_auc=0.80,
+        forward_baseline_roc_auc=0.76,
+        forward_baseline_source=0,
+        min_auc_drop=0.05,
+        per_day=[],
+        degradation_point=degradation_point,
+        training_snapshot_manifest=manifest,
+    )
+
+
+def test_derive_hard_retrain_limit_subtracts_safety_margin():
+    result = _result_with(DegradationPoint(elapsed_days=7, date="2026-07-27"))
+
+    limit = derive_hard_retrain_limit(result, safety_margin_days=2)
+
+    assert limit.limit_days == 5
+    assert limit.reason is None
+
+
+def test_derive_hard_retrain_limit_no_degradation_yields_none_not_safe():
+    """미탐지를 "안전"으로 바꾸지 않는다 — spec §4.1의 핵심 원칙.
+
+    horizon이 짧아서 못 본 것과 실제로 안 꺾인 것은 다른 사실인데, 값으로 채우면
+    둘이 같은 숫자가 된다.
+    """
+    result = _result_with(DegradationPoint(reason="no_degradation_detected"))
+
+    limit = derive_hard_retrain_limit(result, safety_margin_days=2)
+
+    assert limit.limit_days is None
+    assert limit.reason == "no_degradation_observed_within_horizon"
+
+
+def test_derive_hard_retrain_limit_passes_insufficient_valid_points_through():
+    # 이 사유는 이름을 바꾸지 않고 그대로 전달한다 — 측정 단계의 사실이 정책 단계에서
+    # 다른 말로 바뀌면 원인 추적이 끊긴다.
+    result = _result_with(DegradationPoint(reason="insufficient_valid_points"))
+
+    limit = derive_hard_retrain_limit(result, safety_margin_days=2)
+
+    assert limit.limit_days is None
+    assert limit.reason == "insufficient_valid_points"
+
+
+def test_derive_hard_retrain_limit_keeps_two_no_value_reasons_distinct():
+    """두 미탐지 사유가 하나로 뭉개지지 않는지 — 뭉개면 원인 구분이 사라진다."""
+    no_degradation = derive_hard_retrain_limit(
+        _result_with(DegradationPoint(reason="no_degradation_detected")),
+        safety_margin_days=2,
+    )
+    insufficient = derive_hard_retrain_limit(
+        _result_with(DegradationPoint(reason="insufficient_valid_points")),
+        safety_margin_days=2,
+    )
+
+    assert no_degradation.limit_days is None and insufficient.limit_days is None
+    assert no_degradation.reason != insufficient.reason
+
+
+def test_derive_hard_retrain_limit_clamps_negative_to_zero():
+    # safety_margin이 열화 시점보다 크면 "이미 지났다" — 음수 일수는 의미가 없다.
+    result = _result_with(DegradationPoint(elapsed_days=1, date="2026-07-21"))
+
+    limit = derive_hard_retrain_limit(result, safety_margin_days=3)
+
+    assert limit.limit_days == 0
+    assert limit.reason == "safety_margin_exceeds_degradation_point"
+
+
+def test_derive_hard_retrain_limit_does_not_compute_next_retrain_at():
+    # last_trained_at은 이 모듈이 모르는 값이다 — #472가 게이트에서 조합한다.
+    limit = derive_hard_retrain_limit(
+        _result_with(DegradationPoint(elapsed_days=7, date="2026-07-27")),
+        safety_margin_days=2,
+    )
+
+    assert not hasattr(limit, "next_retrain_at")
