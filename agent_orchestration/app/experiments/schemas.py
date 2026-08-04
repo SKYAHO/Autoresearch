@@ -57,6 +57,8 @@ class ExperimentResponse(BaseModel):
     status: ExperimentStatus
     metric_summary: dict | None
     agent_session_id: str | None
+    issue_number: int | None
+    issue_branch: str | None
     created_at: datetime
     updated_at: datetime
 

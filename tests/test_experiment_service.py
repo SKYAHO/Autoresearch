@@ -830,3 +830,29 @@ def test_concurrent_promotion_retries_return_one_persisted_event(tmp_path: Path)
 
     assert statuses == [ExperimentStatus.PROMOTED.value, ExperimentStatus.PROMOTED.value]
     assert count == 1
+
+
+def test_experiment_lineage_columns_default_to_none(db_session: Session) -> None:
+    """발행 전 실험은 세 lineage 값이 모두 비어 있다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="lineage"))
+
+    assert experiment.issue_body is None
+    assert experiment.issue_number is None
+    assert experiment.issue_branch is None
+
+
+def test_experiment_response_exposes_issue_lineage_without_body(
+    db_session: Session,
+) -> None:
+    """응답은 이슈 좌표만 싣고 본문은 싣지 않는다(목록 응답 비대화 방지)."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="lineage"))
+    experiment.issue_body = "### 연구 가설\n본문"
+    experiment.issue_number = 520
+    experiment.issue_branch = "exp/520-ratio-feature"
+    db_session.commit()
+
+    response = ExperimentResponse.model_validate(experiment)
+
+    assert response.issue_number == 520
+    assert response.issue_branch == "exp/520-ratio-feature"
+    assert not hasattr(response, "issue_body")

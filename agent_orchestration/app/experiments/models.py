@@ -8,6 +8,10 @@ SQLAlchemy 2.x declarative model로 제공한다. 단, `Experiment.updated_at`�
 `onupdate=func.now()`는 이 ORM을 거치는 UPDATE에만 적용되는 애플리케이션 레벨 동작이며
 DB 트리거가 아니다 — migration에는 대응하는 트리거가 없어 `psql` 직접 UPDATE 등
 ORM을 우회하는 쓰기에는 적용되지 않는다.
+
+`Experiment.issue_body`/`issue_number`/`issue_branch`는 `0002_experiment_issue_lineage`
+revision이 nullable로 추가한 발행 lineage다. `issue_body`는 발행 **전**에, 나머지 둘은
+발행 성공 후에 채워진다.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     JSON,
     String,
     Text,
@@ -98,6 +103,11 @@ class Experiment(Base):
     )
     metric_summary: Mapped[dict | None] = mapped_column(_JSON_OBJECT, nullable=True)
     agent_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 발행 전에 커밋되는 본문. 재시도가 LLM을 다시 부르지 않고 같은 본문으로 발행하게
+    # 해 criteria_id/reproducibility_id가 흔들리지 않도록 한다(#516).
+    issue_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    issue_branch: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -130,6 +140,7 @@ class Experiment(Base):
     __table_args__ = (
         CheckConstraint(_STATUS_CHECK_SQL, name="ck_experiment_status_valid"),
         Index("ix_experiments_status", "status"),
+        Index("ix_experiments_issue_number", "issue_number"),
     )
 
 
