@@ -37,6 +37,8 @@ class WorkbenchState:
     events: list[Event] = field(default_factory=list)
     logs: list[Log] = field(default_factory=list)
     steps: list[Step] = field(default_factory=list)
+    # 페이지 예산에 걸려 뒷부분을 못 읽었는지. 화면에 반드시 드러낸다.
+    steps_truncated: bool = False
     metadata: dict[str, str] = field(default_factory=dict)
     event_cursor: str | None = None
     log_cursor: str | None = None
@@ -57,6 +59,7 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.events.clear()
     state.logs.clear()
     state.steps.clear()
+    state.steps_truncated = False
     state.metadata.clear()
     state.event_cursor = None
     state.log_cursor = None
@@ -90,7 +93,12 @@ def append_log_page(
         state.log_cursor = next_cursor
 
 
-def merge_steps(state: WorkbenchState, steps: list[Step]) -> None:
+def merge_steps(
+    state: WorkbenchState,
+    steps: list[Step],
+    *,
+    truncated: bool = False,
+) -> None:
     """조회한 Step 전체를 기존 목록에 병합한다.
 
     Step은 Event·Log와 달리 **PATCH로 갱신되는 mutable 리소스**다. 같은 id가 다시 오면
@@ -108,6 +116,7 @@ def merge_steps(state: WorkbenchState, steps: list[Step]) -> None:
             state.steps.append(step)
         else:
             state.steps[existing] = step
+    state.steps_truncated = truncated
 
 
 def clear_activity_cache(state: WorkbenchState) -> None:
@@ -115,6 +124,7 @@ def clear_activity_cache(state: WorkbenchState) -> None:
     state.events.clear()
     state.logs.clear()
     state.steps.clear()
+    state.steps_truncated = False
     state.event_cursor = None
     state.log_cursor = None
 

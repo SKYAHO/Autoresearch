@@ -141,14 +141,18 @@ class ExperimentClient:
             str(cursor) if cursor is not None else None,
         )
 
-    def get_steps(self, experiment_id: str) -> list[Step]:
-        """실험의 Step 전체를 페이지를 이어 붙여 조회한다.
+    def get_steps(self, experiment_id: str) -> tuple[list[Step], bool]:
+        """실험의 Step 전체와 예산 초과 여부를 조회한다.
 
         **cursor를 한 번의 갱신 안에서만 쓴다.** Step은 PATCH로 갱신되는 mutable 리소스라,
         cursor를 갱신과 갱신 사이에 들고 가면 이미 받은 Step의 상태 변화를 영원히 관측하지
         못한다. 그래서 매 갱신은 항상 처음부터 다시 읽되, 한 번에 `limit` 상한만 오므로
         cursor로 나머지 페이지를 이어 받는다 — 그러지 않으면 화면이 **가장 오래된 100개에
         고정**되어 최신 진행 상황이 보이지 않는다.
+
+        두 번째 반환값은 `STEP_PAGE_BUDGET`에 걸려 **뒷부분을 못 읽었는지**를 알린다.
+        호출자는 이를 화면에 드러내야 한다 — 조용히 버리면 상한값만 커진 채 같은 문제가
+        남는다.
         """
         steps: list[Step] = []
         after_id: str | None = None
@@ -156,9 +160,9 @@ class ExperimentClient:
             page_steps, next_cursor = self._get_step_page(experiment_id, after_id)
             steps.extend(page_steps)
             if len(page_steps) < STEP_PAGE_SIZE or next_cursor is None or next_cursor == after_id:
-                break
+                return steps, False
             after_id = next_cursor
-        return steps
+        return steps, True
 
     def _get_step_page(
         self,

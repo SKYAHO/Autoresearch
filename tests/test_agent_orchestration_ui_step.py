@@ -192,9 +192,10 @@ def test_get_steps_follows_pages_until_short_page() -> None:
     second = [_payload(id="tail-1"), _payload(id="tail-2")]
     client = _RecordingClient([first, second])
 
-    steps = client.get_steps("exp-1")
+    steps, truncated = client.get_steps("exp-1")
 
     assert [step.id for step in steps] == [item["id"] for item in first + second]
+    assert truncated is False
     assert len(client.paths) == 2
     assert f"limit={STEP_PAGE_SIZE}" in client.paths[0]
     assert "after_id=" not in client.paths[0]
@@ -205,9 +206,10 @@ def test_get_steps_stops_on_first_short_page() -> None:
     """상한보다 적게 오면 더 요청하지 않는다."""
     client = _RecordingClient([[_payload(id="only")]])
 
-    steps = client.get_steps("exp-1")
+    steps, truncated = client.get_steps("exp-1")
 
     assert [step.id for step in steps] == ["only"]
+    assert truncated is False
     assert len(client.paths) == 1
 
 
@@ -219,9 +221,11 @@ def test_get_steps_stops_at_page_budget() -> None:
     ]
     client = _RecordingClient(pages)
 
-    client.get_steps("exp-1")
+    _steps, truncated = client.get_steps("exp-1")
 
     assert len(client.paths) == STEP_PAGE_BUDGET
+    # 조용히 버리지 않는다 — 예산에 걸렸음을 호출자가 알아야 화면에 드러낼 수 있다.
+    assert truncated is True
 
 
 def test_get_steps_stops_when_cursor_does_not_advance() -> None:
@@ -229,6 +233,37 @@ def test_get_steps_stops_when_cursor_does_not_advance() -> None:
     same_page = [_payload(id=f"s{index}") for index in range(STEP_PAGE_SIZE)]
     client = _RecordingClient([same_page] * 5)
 
-    client.get_steps("exp-1")
+    _steps, truncated = client.get_steps("exp-1")
 
     assert len(client.paths) == 2
+    assert truncated is False
+
+
+def test_merge_steps_records_truncation_flag() -> None:
+    """예산 초과 여부가 화면 상태로 전달된다."""
+    state = WorkbenchState()
+
+    merge_steps(state, [_step()], truncated=True)
+
+    assert state.steps_truncated is True
+
+
+def test_merge_steps_clears_truncation_when_fully_read() -> None:
+    """다음 갱신에서 전부 읽으면 경고가 사라진다."""
+    state = WorkbenchState()
+    merge_steps(state, [_step()], truncated=True)
+
+    merge_steps(state, [_step()], truncated=False)
+
+    assert state.steps_truncated is False
+
+
+def test_select_experiment_clears_truncation_flag() -> None:
+    """실험을 바꾸면 이전 실험의 경고가 남지 않는다."""
+    state = WorkbenchState()
+    state.selected_id = "one"
+    merge_steps(state, [_step()], truncated=True)
+
+    select_experiment(state, "two")
+
+    assert state.steps_truncated is False

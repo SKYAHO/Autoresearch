@@ -119,10 +119,10 @@ def refresh_selected_experiment(client: ExperimentClient, state: WorkbenchState)
         # PATCH로 갱신되는 mutable 리소스인데, cursor는 `after_id` **뒤의** row만 돌려주므로
         # 이미 받은 Step의 상태 변화(STARTED -> COMPLETED)를 영원히 관측하지 못한다.
         # 페이지 넘김은 client가 한 번의 갱신 안에서 처리한다.
-        steps = client.get_steps(state.selected_id)
+        steps, steps_truncated = client.get_steps(state.selected_id)
         append_event_page(state, events, event_cursor)
         append_log_page(state, logs, log_cursor)
-        merge_steps(state, steps)
+        merge_steps(state, steps, truncated=steps_truncated)
     except ApiNotFoundError:
         try:
             state.experiment = client.get_experiment(state.selected_id)

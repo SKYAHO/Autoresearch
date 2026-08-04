@@ -140,8 +140,14 @@ def _render_timeline(events: Sequence[Event], current_status: str) -> None:
             st.write(event.reason)
 
 
-def _render_steps(steps: Sequence[Step]) -> None:
+def _render_steps(steps: Sequence[Step], truncated: bool = False) -> None:
     """에이전트가 지금 무엇을 하고 있는지 단계별로 표시한다."""
+    if truncated:
+        # 조용히 버리지 않는다 — 뒷부분을 못 읽었으면 화면이 오래된 구간에 고정된 상태다.
+        st.warning(
+            f"작업 단계가 너무 많아 앞부분 {len(steps)}개까지만 읽었습니다. "
+            "아래 목록에 최신 단계가 없을 수 있습니다."
+        )
     if not steps:
         st.caption("아직 기록된 작업 단계가 없습니다.")
         return
@@ -171,7 +177,7 @@ def _render_tabs(state: WorkbenchState) -> None:
         ["진행 단계", "결과", "이벤트", "원본 로그"]
     )
     with progress_tab:
-        _render_steps(state.steps)
+        _render_steps(state.steps, state.steps_truncated)
     with results_tab:
         _render_metrics(state.experiment.metric_summary if state.experiment else None)
     with events_tab:
