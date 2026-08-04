@@ -25,6 +25,28 @@ class InvalidCursorError(LookupError):
         super().__init__(f"Cursor '{after_id}' was not found.")
 
 
+class ExperimentStepNotFoundError(LookupError):
+    """요청한 UUID의 작업 단계가 그 실험에 존재하지 않는다."""
+
+    def __init__(self, step_id: uuid.UUID) -> None:
+        self.step_id = step_id
+        super().__init__(f"Experiment step '{step_id}' was not found.")
+
+
+class StepAlreadyFinalizedError(ValueError):
+    """터미널로 확정된 작업 단계를 다른 payload로 다시 갱신하려 했다.
+
+    같은 payload 재시도는 오류가 아니라 `200`으로 통과한다 — 이 오류는 확정된 결과를
+    **다른 값으로** 덮으려는 경우에만 난다.
+    """
+
+    def __init__(self, step_id: uuid.UUID) -> None:
+        self.step_id = step_id
+        super().__init__(
+            f"Experiment step '{step_id}' is already finalized with a different payload."
+        )
+
+
 class IdempotencyConflictError(ValueError):
     """같은 멱등성 key가 서로 다른 payload에 재사용됐다."""
 

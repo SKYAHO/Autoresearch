@@ -95,6 +95,22 @@ OpenAI API 키나 API 크레딧을 사용하지 않습니다.
   조작하는 용도로만 사용합니다.
 - `POST/GET /experiments/{id}/logs`와 `GET /experiments/{id}/events`는 idempotency key와
   cursor polling을 제공하며, Streamlit은 1초마다 `after_id`를 사용해 새 row만 조회합니다.
+- **작업 단계(Step)** endpoint 3개는 에이전트가 실험 **도중** 무엇을 하고 있는지를
+  기록·조회합니다. 계약 정본은
+  [`docs/specs/2026-08-04-experiment-step-tracking-v0.md`](../docs/specs/2026-08-04-experiment-step-tracking-v0.md)입니다.
+  - `POST /experiments/{id}/steps` — `idempotency_key`, `step_kind`, `step_type`, 선택
+    `status`(기본 `STARTED`)·`message`·`target`. Log와 같은 멱등성 계약을 씁니다.
+  - `PATCH /experiments/{id}/steps/{step_id}` — **전체 교체**입니다. 요청에 없는 선택
+    필드는 이전 값 유지가 아니라 `null`로 갱신됩니다. `COMPLETED`/`FAILED`로 확정된 뒤에는
+    같은 payload 재시도만 `200`이고 다른 payload는 `409`입니다. 확정은 조건부 UPDATE로
+    원자적이라, 서로 다른 터미널 상태를 동시에 써도 한쪽만 반영됩니다.
+  - `GET /experiments/{id}/steps` — `limit`(1~100), `after_id`, `step_kind` 필터.
+  - `step_kind`는 닫힌 enum(`FEATURE_ASSEMBLY`/`FEATURE_DERIVE`/`TRAIN`/`EVALUATE`/`OTHER`)이라
+    프론트 렌더 경로를 서버가 강제하고, 세부 라벨은 자유 문자열 `step_type`이 담당합니다.
+  - `target`은 JSON object이며 직렬화 후 4096 byte로 **생성·갱신 양쪽에서** 제한됩니다.
+  - **Streamlit은 Step만 cursor 없이 매번 전체를 다시 읽습니다.** Step은 PATCH로 갱신되는
+    mutable 리소스인데 `after_id`는 cursor **뒤의** row만 돌려주므로, cursor를 쓰면 이미
+    받은 Step의 상태 변화를 관측하지 못합니다.
 - `POST /experiments/{id}/promote`는 `PASSED` 실험에 대해 운영자가 필수 `reason`과
   idempotency key를 남기는 전용 수동 승격 경로입니다.
 - **DB migration은 이미지 기동 시 자동 실행되지 않습니다.** `agent_orchestration/entrypoint.sh`는
