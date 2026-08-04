@@ -368,7 +368,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agent_orchestration.app.experiments.issue_authoring import (  # noqa: E402
+    COMPARISON,
     POLICY_SEEDS,
+    SNAPSHOT_REUSE,
     ExperimentDefaults,
     LlmIssueFields,
     build_issue_body,
@@ -507,12 +509,28 @@ def test_parse_llm_fields_rejects_invalid_metric_direction() -> None:
                          '"secondary_metrics": ""}')
 
 
-def test_prompt_carries_every_exact_string_option() -> None:
-    """프롬프트가 파서 상수와 어긋나면 LLM이 거부당할 값을 낸다."""
+def test_prompt_carries_every_llm_owned_exact_string() -> None:
+    """LLM 담당 필드의 정확 문자열이 빠지면 거부당할 값을 낸다."""
     prompt = build_prompt("비율 피처가 ROC-AUC를 높인다.")
 
-    for option in _COMPARISONS | _SNAPSHOT_REUSE | _METRIC_DIRECTIONS:
-        assert option in prompt
+    for direction in _METRIC_DIRECTIONS:
+        assert direction in prompt
+    assert "not_applicable" in prompt
+    assert "없음" in prompt
+
+
+def test_prompt_shows_only_the_server_chosen_options() -> None:
+    """서버 소유 필드는 고른 값만 참고로 싣는다.
+
+    나머지 옵션까지 실으면 LLM이 그중에서 고를 수 있다고 오해한다. `비교 대상`과
+    `스냅샷 재사용`은 §결정 2에서 서버 소유로 정해졌다.
+    """
+    prompt = build_prompt("비율 피처가 ROC-AUC를 높인다.")
+
+    assert COMPARISON in prompt
+    assert SNAPSHOT_REUSE in prompt
+    for option in (_COMPARISONS | _SNAPSHOT_REUSE) - {COMPARISON, SNAPSHOT_REUSE}:
+        assert option not in prompt
 
 
 def test_prompt_omits_server_owned_field_names() -> None:
