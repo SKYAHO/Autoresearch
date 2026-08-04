@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T04:28:34Z",
+  "generated_at": "2026-08-04T04:40:49Z",
   "reports": [
+    {
+      "number": 510,
+      "title": "feat: 단일 cutoff 기반 모델 열화 측정 하네스 (#485 재사용 컴포넌트)",
+      "author": "waieiches",
+      "merged_at": "2026-08-04T04:40:26Z",
+      "summary_ko": [
+        "특정 경계 날짜(cutoff) 기준 모델 학습 후, 이후 날짜별 순차 데이터에 적용하여 성능 열화 곡선과 하락 지점을 측정하는 하네스를 구축하였습니다.",
+        "측정 결과를 시각화하기 위한 Plotly 기반 평가 곡선 생성 스크립트 및 measure-degradation CLI 명령어를 추가하였습니다.",
+        "비즈니스 요구사항(#485) 중 재사용 가능한 시간축 성능 평가 및 열화 측정 컴포넌트를 우선 착지시켰습니다."
+      ],
+      "report_url": "pr/510/"
+    },
     {
       "number": 511,
       "title": "feat: add Streamlit experiment workbench",
