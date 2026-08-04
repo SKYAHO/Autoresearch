@@ -41,6 +41,12 @@ CATEGORICAL_FEATURE_COLUMNS: Final[tuple[str, ...]] = (
     "category_id",
 )
 
+# 평가 전용 패스스루 컬럼(#505). 학습 데이터셋에는 실리되 **모델 입력에는 절대
+# 들어가지 않는다** — 유저 단위 grouped 지표처럼 "무엇을 재는지"를 정하려면 행이 누구
+# 것인지 알아야 하지만, 그 식별자가 피처가 되면 유저 암기(memorization)가 발생한다.
+# 모델 입력 목록(MODEL_FEATURE_COLUMNS)과 데이터셋 컬럼 목록을 갈라놓는 정본이다.
+PASSTHROUGH_COLUMNS: Final[tuple[str, ...]] = ("user_id",)
+
 # 카테고리형 피처의 cold-start 기본값(값 없음 → 'unknown'). 학습(feast_retrieval)과
 # 서빙(online_features)이 이 단일 소스를 공유해 두 경로의 cold-start가 어긋나지 않게
 # 한다(#358). 계약 계층이 소유하고 두 계층이 import한다(레이어 방향 정렬).
@@ -140,6 +146,14 @@ def resolve_experiment_feature_columns(extra: Sequence[str]) -> tuple[str, ...]:
         raise FeatureContractError(
             f"실험 피처 {already_prod}는 이미 prod 계약(MODEL_FEATURE_COLUMNS)에 "
             "있습니다. 실험 피처는 계약에 없는 컬럼만 지정할 수 있습니다."
+        )
+
+    passthrough = [name for name in requested if name in PASSTHROUGH_COLUMNS]
+    if passthrough:
+        raise FeatureContractError(
+            f"실험 피처 {passthrough}는 평가 전용 패스스루 컬럼(PASSTHROUGH_COLUMNS)"
+            "입니다. 데이터셋에는 실리지만 모델 입력이 되어서는 안 됩니다 — "
+            "식별자를 피처로 넣으면 유저 암기가 발생해 오프라인 지표만 올라갑니다."
         )
 
     return MODEL_FEATURE_COLUMNS + requested
