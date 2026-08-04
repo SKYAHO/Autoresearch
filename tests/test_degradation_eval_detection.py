@@ -307,3 +307,42 @@ def test_resolve_forward_baseline_skips_valid_day_without_score():
 
     assert baseline == pytest.approx(0.80)
     assert source == 1
+
+
+# ============================================================================
+# Task 4 — 판정 엔진에 넘길 원시값 추출 (#485 §5.3)
+# degradation_eval은 experiment_evaluation을 import하지 않는다(의존 방향 유지) —
+# 값만 뽑아 주고, 신호 계산은 판정 엔진이 한다.
+# ============================================================================
+
+
+def test_temporal_signal_inputs_extracts_primitives():
+    from src.pipeline.degradation_eval import temporal_signal_inputs
+
+    days = [_scored(0, 0.80), _scored(1, 0.78), _scored(2, 0.70)]
+    result = _result_with(DegradationPoint(elapsed_days=2, date="2026-07-22"))
+    result = result.model_copy(
+        update={"per_day": days, "recent_roc_auc_mean": 0.74, "recent_window_days": 2}
+    )
+
+    inputs = temporal_signal_inputs(result)
+
+    assert inputs == {
+        "degradation_elapsed_days": 2,
+        "recent_roc_auc_mean": 0.74,
+        "valid_day_count": 3,
+        "recent_window_days": 2,
+    }
+
+
+def test_temporal_signal_inputs_counts_only_scorable_days():
+    from src.pipeline.degradation_eval import temporal_signal_inputs
+
+    days = [_scored(0, 0.80), _scored(1, None), _scored(2, None, EvaluationStatus.MISSING_DATE)]
+    result = _result_with(DegradationPoint(reason="no_degradation_detected"))
+    result = result.model_copy(update={"per_day": days})
+
+    inputs = temporal_signal_inputs(result)
+
+    assert inputs["valid_day_count"] == 1
+    assert inputs["degradation_elapsed_days"] is None

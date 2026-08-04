@@ -478,6 +478,29 @@ class RollingOriginResult(_ResultModel):
     training_snapshot_manifest: TrainingSnapshotManifest
 
 
+def temporal_signal_inputs(result: RollingOriginResult) -> dict[str, object]:
+    """판정 엔진의 ``summarize_temporal_signal``에 넘길 원시값을 뽑는다(#485 §5.3).
+
+    이 모듈은 ``experiment_evaluation``을 **import하지 않는다** — 반대 방향(판정 엔진이
+    이 모듈을 import)도 마찬가지다. 판정 엔진은 지금 ML 의존이 전혀 없는데, 이 모듈은
+    ``train``(→ lightgbm)을 끌고 오기 때문이다. 그래서 값만 뽑아 주고 신호 계산은
+    판정 엔진이 한다:
+
+    ```python
+    signal = summarize_temporal_signal(**temporal_signal_inputs(result))
+    ```
+
+    ``offline_primary_delta``/``temporal_delta``는 여기서 채우지 않는다 — 두 조건 비교가
+    있어야 나오는 값이라 ``#514`` 이후에 호출부가 따로 넘긴다.
+    """
+    return {
+        "degradation_elapsed_days": result.degradation_point.elapsed_days,
+        "recent_roc_auc_mean": result.recent_roc_auc_mean,
+        "valid_day_count": sum(1 for day in result.per_day if is_scorable(day)),
+        "recent_window_days": result.recent_window_days,
+    }
+
+
 class HardRetrainLimit(_ResultModel):
     """성능과 무관하게 재학습해야 하는 시점까지의 일수(#485 §4.1).
 

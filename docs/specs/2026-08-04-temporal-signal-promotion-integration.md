@@ -43,7 +43,7 @@
 | **신규** | 최근 구간 vs 전체 구간 지표 분리 (§3) | 이 spec |
 | **신규** | baseline 재정의(`forward_baseline_roc_auc`) (§4.3) | 이 spec |
 | **신규** | 유효 기간·hard retrain limit 산출 (§4.1·§4.2) | 이 spec |
-| **신규** | temporal signal → `#425` 스키마 연결 (§5) | 이 spec (부착 지점 미해결, §7.1) |
+| **신규** | temporal signal → `#425` 스키마 연결 (§5) | 이 spec (부착 지점 안 A 확정, §7.1 해제) |
 | **신규** | fail-closed `hold` 종료 조건 (§6) | 이 spec |
 | **이관** | baseline/challenger 두 조건 확장·시간축 paired 계약 (§2) | **`#514`** |
 
@@ -277,21 +277,28 @@ not_applicable ⟸ 어느 한쪽이 None
 정상 종료 경로"). `robustness_note`에 두 신호가 갈린 사실을 남기고 `confidence`를
 `medium` 이하로 낮춘 뒤 정상 종료한다.
 
-### 5.3 스키마 부착 지점 — **미해결, §7.1 참고**
+### 5.3 스키마 부착 지점 — **안 A 확정** (§7.1 해제)
 
-`confidence`/`robustness_note`/`direction_vs_*` 세 필드는 현재
-`ExperimentEvaluation`·`PromotionDecision`(`experiment_evaluation.py`)에 **없다**
-(코드 확인: `verdict`, `reason_codes`, CI 상·하한, 평균값만 존재). 두 배치안이 있고
-**이 spec은 어느 쪽도 확정하지 않는다**:
+`confidence`/`robustness_note`/`direction_vs_*` 세 필드는 이 spec 작성 시점의
+`ExperimentEvaluation`·`PromotionDecision`(`experiment_evaluation.py`)에 **없었다**
+(코드 확인: `verdict`, `reason_codes`, CI 상·하한, 평균값만 존재). 두 배치안 중
+`#493` assignee의 확장 승인(§7.1)으로 충돌 위험이 사라져 **안 A로 확정한다**:
 
-- **안 A — `ExperimentEvaluation`에 필드 추가**: `#425` 완료 조건 문구("판정 산출물
-  스키마")에 가장 충실하다. 단 `#493` 플랜 D2가 같은 함수 시그니처를 건드리므로 충돌
-  위험이 있다.
-- **안 B — temporal 결과에만 담고 판정 엔진은 소비만**: 충돌이 없고 `#485` 범위 안에서
-  닫힌다. 단 `#425`가 요구한 "판정 산출물"에 직접 들어가지 않아 완료 조건 해석이
-  느슨해진다.
+- **안 A(확정) — `ExperimentEvaluation`에 필드 추가**: `#425` 완료 조건 문구("판정
+  산출물 스키마")에 가장 충실하다. 충돌 우려였던 `#493` 플랜 D2는 착지하지 않고
+  종료됐다(§7.1).
+- **안 B(기각) — temporal 결과에만 담고 판정 엔진은 소비만**: `#425`가 요구한 "판정
+  산출물"에 직접 들어가지 않아 완료 조건 해석이 느슨해진다. 안 A의 충돌 위험이
+  해소된 이상 이 절충을 택할 이유가 없다.
 
-선택은 §7.1이 풀린 뒤에 한다.
+**하위호환**: `ExperimentEvaluation.temporal_signal`의 기본값은 `None`이고
+`evaluate_experiment(..., temporal_signal=None)`도 기본값을 가진다 — temporal 측정
+없이 판정을 부르는 기존 경로(단일 조건 오프라인 평가)가 그대로 동작해야 한다.
+
+**의존 방향**: `summarize_temporal_signal`은 `RollingOriginResult`를 받지 않고
+**원시값**을 받는다(`degradation_eval.temporal_signal_inputs`가 추출). 판정 엔진이
+`degradation_eval`을 import하면 `train` → lightgbm이 딸려와, 경량이어야 할 판정
+경로에 ML 의존이 들어온다.
 
 ## 6. fail-closed `hold` 종료 조건
 
@@ -325,7 +332,7 @@ not_applicable ⟸ 어느 한쪽이 None
 
 ## 7. 미해결 항목 (구현 착수 전 확정 필요)
 
-### 7.1 `#493` 판정 엔진 단일화와의 충돌 — **가장 중요**
+### 7.1 `#493` 판정 엔진 단일화와의 충돌 — **해결됨(2026-08-04)**
 
 `#493`은 2026-08-04에 CLOSED(COMPLETED)됐지만, **`src/pipeline/experiment_evaluation.py`
 코드는 바뀌지 않았다**(마지막 변경은 `f8bf611`/#478). 머지된 것은 계획 문서뿐이다
@@ -335,22 +342,30 @@ not_applicable ⟸ 어느 한쪽이 None
 `declared_minimum` 키워드 인자 추가, reason code
 `PRIMARY_DELTA_BELOW_DECLARED_MINIMUM` 신설, 미사용 reason code 6개 정리 등.
 
-**따라서 §5.3(스키마 부착 지점)을 지금 확정하면 그 재구조화와 충돌할 수 있다.**
-구현 착수 전에 확인해야 한다:
+**따라서 §5.3(스키마 부착 지점)을 그대로 확정하면 그 재구조화와 충돌할 수 있었다.**
+구현 착수 전 확인한 항목:
 
 - `#493`의 코드 구현이 별도 이슈로 남아 있는가, 아니면 계획만 남기고 종료된 것인가?
 - 남아 있다면 이 spec의 §5는 그 작업 이후로 미뤄야 한다.
-- 확인 대상: hyochangsung(#493 assignee).
 
-**현재 상태(2026-08-04 기준): 미해결.** `#493`에 질문 코멘트를 남겼으나
-(`issues/493#issuecomment-5174828099`) **답변이 아직 없다** — 그 코멘트가 이슈의
-마지막 코멘트다. 구두로 확인받았더라도 이 spec에 근거로 적지 않는다: 검증 불가능한
-근거가 GitHub 문서에 사실처럼 고정되면, 나중에 이 문서만 읽는 사람이 추적할 방법이
-없다("GitHub이 source of truth"). 유효한 확인이 있다면 `#493`에 코멘트로 남겨달라고
-요청한 뒤, 그 링크를 근거로 여기에 기록한다.
+**현재 상태(2026-08-04 기준): 해결 — §5 구현 가능.**
 
-이 항목이 풀리기 전까지 **§5(스키마 연결)는 구현하지 않는다.** §3·§4·§6은
-`experiment_evaluation.py`를 건드리지 않으므로 선행 가능하다.
+질문 코멘트(`issues/493#issuecomment-5174828099`)에 대해 `#493` assignee가 답변을
+남겼다(`issues/493#issuecomment-5175803521`, 2026-08-04):
+
+> 판정 엔진 재구조화는 계획만 남기고 종료, 후속은 `#485`/`#514`에서 진행.
+> `experiment_evaluation.py` 직접 확장 승인
+
+따라서 위 계획(D2 `declared_minimum` 등)은 **예정된 작업이 아니며**, 이 spec이
+`ExperimentEvaluation`에 필드를 더해도 충돌할 대상이 없다. §5.3은 안 A로 확정한다.
+
+**이 근거를 코멘트 링크로 남기는 이유**: 확인 자체는 Slack에서 먼저 이뤄졌으나,
+구두 확인은 이 spec의 근거로 쓰지 않는다 — 검증 불가능한 근거가 GitHub 문서에
+사실처럼 고정되면 나중에 이 문서만 읽는 사람이 추적할 방법이 없다("GitHub이
+source of truth"). 그래서 assignee에게 결정을 이슈 코멘트로 남겨달라고 요청한 뒤
+그 링크를 기록했다. 이슈 상태(CLOSED)나 assignee 필드처럼 **결정과 무관한 메타데이터는
+근거로 쓰지 않는다** — 그 둘은 "누가 맡았나"만 말할 뿐 "재구조화가 어떻게 됐나"에
+답하지 않는다.
 
 ### 7.2 video staleness 활성화 — `PASSTHROUGH_COLUMNS` 확장
 
