@@ -148,6 +148,44 @@ def test_parse_llm_fields_rejects_non_json() -> None:
         parse_llm_fields("죄송합니다. 요청을 이해하지 못했습니다.")
 
 
+def test_parse_llm_fields_rejects_a_malformed_guardrail_metric_name() -> None:
+    """선언된 guardrail 이름도 파서의 정규식을 받는다.
+
+    여기서 막지 못하면 이슈가 발행된 뒤에야 워크플로에서 실패한다.
+    """
+    with pytest.raises(ValueError):
+        _fields(
+            guardrail_metric_name="log loss",
+            guardrail_metric_direction="lower_is_better",
+            maximum_guardrail_regression="0.001",
+        )
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("minimum_primary_delta", "약간"),
+        ("minimum_primary_delta", "-0.002"),
+        ("maximum_guardrail_regression", "조금"),
+    ],
+)
+def test_parse_llm_fields_rejects_non_decimal_thresholds(field: str, value: str) -> None:
+    """임계값이 숫자가 아니면 조립 전에 끊는다."""
+    overrides: dict[str, object] = {field: value}
+    if field == "maximum_guardrail_regression":
+        overrides["guardrail_metric_name"] = "logloss"
+        overrides["guardrail_metric_direction"] = "lower_is_better"
+
+    with pytest.raises(ValueError):
+        _fields(**overrides)
+
+
+def test_parse_llm_fields_rejects_an_embedded_heading_line() -> None:
+    """값 안의 `### ` 줄은 heading을 하나 더 만들어 본문 구조를 깬다."""
+    with pytest.raises(ValueError):
+        _fields(hypothesis="가설 요약\n### 연구 가설\n(설명)")
+
+
 def test_parse_llm_fields_rejects_invalid_metric_direction() -> None:
     """파서가 거부할 값을 조립 전에 거부한다."""
     with pytest.raises(ValueError):
