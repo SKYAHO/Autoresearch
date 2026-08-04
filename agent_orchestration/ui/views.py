@@ -20,7 +20,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from agent_orchestration.ui.models import Event, Experiment, Log, status_label
+from agent_orchestration.ui.models import Event, Experiment, status_label
 from agent_orchestration.ui.state import WorkbenchState
 from agent_orchestration.ui.styles import status_badge
 
