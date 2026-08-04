@@ -9,6 +9,7 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
     HOME=/tmp
 
 WORKDIR /app
@@ -22,7 +23,12 @@ RUN python -m pip install --no-cache-dir --no-deps -r requirements.lock \
     && rm requirements.lock
 
 COPY agent_orchestration/__init__.py ./agent_orchestration/
-COPY agent_orchestration/app ./agent_orchestration/app
+# UI의 canonical status model은 SQLAlchemy Base를 import한다. API server·LLM·DB bootstrap
+# source는 포함하지 않고 이 표시 모델 의존성만 복사한다.
+COPY agent_orchestration/app/__init__.py ./agent_orchestration/app/
+COPY agent_orchestration/app/database.py ./agent_orchestration/app/
+COPY agent_orchestration/app/experiments/__init__.py ./agent_orchestration/app/experiments/
+COPY agent_orchestration/app/experiments/models.py ./agent_orchestration/app/experiments/
 COPY agent_orchestration/ui ./agent_orchestration/ui
 
 ARG VCS_REF=unknown
@@ -32,4 +38,4 @@ USER appuser
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "agent_orchestration/ui/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true"]
+CMD ["streamlit", "run", "agent_orchestration/ui/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false", "--server.fileWatcherType=none"]

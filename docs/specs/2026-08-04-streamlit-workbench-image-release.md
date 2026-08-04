@@ -22,14 +22,16 @@
 
 ## 이미지 경계
 
-UI 이미지는 Python과 `orchestration-ui` dependency group, `agent_orchestration/ui`,
-그리고 UI가 읽는 Experiment API 표시 모델 의존성만 포함한다. FastAPI 서버,
-Codex CLI, OAuth 상태, DB bootstrap, Runner 소스는 포함하지 않는다.
+UI 이미지는 Python과 `orchestration`·`orchestration-ui` dependency group,
+`agent_orchestration/ui`, 그리고 UI가 읽는 `app/database.py`와 Experiment API 표시 모델
+의존성만 포함한다. `app/main.py` FastAPI 서버, Codex CLI, OAuth 상태, DB bootstrap,
+Runner 소스는 포함하지 않는다.
 
 컨테이너는 UID/GID `10001`의 비루트 사용자로 실행한다. Streamlit은
-`0.0.0.0:8501`에서 headless 모드로 실행하며, `PYTHONPATH=.`로
-`agent_orchestration/ui/app.py`를 로드한다. API base URL과 토큰은 이미지에
-넣지 않으며, Kubernetes Deployment가 런타임 환경 변수로 주입한다.
+`0.0.0.0:8501`에서 headless 모드로 실행하며, `PYTHONPATH=/app`으로
+`agent_orchestration/ui/app.py`를 로드한다. telemetry와 source watcher는 비활성화한다.
+`/_stcore/health`가 readiness·liveness 경로다. API base URL과 토큰은 이미지에 넣지
+않으며, Kubernetes Deployment가 런타임 환경 변수로 주입한다.
 
 ## 릴리스 계약
 
@@ -39,8 +41,8 @@ Codex CLI, OAuth 상태, DB bootstrap, Runner 소스는 포함하지 않는다.
 1. `main`의 immutable source SHA를 checkout한다.
 2. `autoresearch-agent-orchestration-ui:sha-<source-sha>` 태그로 Artifact Registry에
    push한다.
-3. 반환된 OCI digest를 pull한 뒤 OCI revision label, 비루트 사용자, Streamlit UI
-   모듈 import를 검증한다.
+3. 반환된 OCI digest를 pull한 뒤 OCI revision label, 비루트 사용자, 실제 Streamlit
+   기동과 `/_stcore/health` 응답을 검증한다.
 4. release summary에 `digest_ref`를 기록한다.
 
 인프라 배포 manifest는 mutable tag가 아니라 이 `digest_ref`만 참조한다. UI 코드의

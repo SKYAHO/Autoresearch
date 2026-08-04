@@ -694,7 +694,7 @@ jobs:
             VCS_REF=${{ steps.source.outputs.sha }}
           tags: ${{ steps.image.outputs.tags }}
 
-      - name: Verify UI digest, metadata, and import contract
+      - name: Verify UI digest, metadata, and runtime contract
         id: verify
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -723,7 +723,21 @@ jobs:
             exit 1
           fi
 
-          docker run --rm "$digest_ref" python -c "import agent_orchestration.ui.app"
+          container_name="agent-orchestration-ui-release-verify"
+          docker run --detach --name "$container_name" --publish 127.0.0.1::8501 "$digest_ref"
+          trap 'docker rm --force "$container_name" >/dev/null 2>&1 || true' EXIT
+          host_port="$(docker port "$container_name" 8501/tcp | sed 's/.*://')"
+          for _ in $(seq 1 30); do
+            if curl --fail --silent "http://127.0.0.1:${host_port}/_stcore/health"; then
+              break
+            fi
+            sleep 1
+          done
+          if ! curl --fail --silent "http://127.0.0.1:${host_port}/_stcore/health" >/dev/null; then
+            docker logs "$container_name"
+            echo "::error::Streamlit UI healthcheck did not become ready"
+            exit 1
+          fi
 
           echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
 
