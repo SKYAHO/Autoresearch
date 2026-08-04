@@ -228,12 +228,66 @@ model_uri, evaluated_at
   결과에서 승격 후보를 읽어내지 못하게 한다.
 - `seeds`와 `runs`는 seed 오름차순으로 고정한다.
 - `comparison_passed`가 아닌 결과는 promote ref·PR을 만들지 않는다.
-- guardrail 지표는 이 결과가 **싣지 않는다**. 판정 엔진(`promotion-policy-v1`)이
-  guardrail을 다루지 않기 때문이다. Issue Form에 guardrail을 선언한 실험은 승격
-  게이트가 `guardrail_metric_missing`으로 fail-closed하므로, guardrail을 쓰는 실험의
-  자동 승격은 별도 작업이 필요하다(아래 "알려진 계약 간극").
+- guardrail 지표는 이 결과가 **싣지 않는다**. 판정 엔진이 guardrail을 다루지 않기
+  때문이다. guardrail을 선언한 실험은 브랜치 생성 시점에 "자동 승격 대상이 아님"을
+  고지받고, dev 병합 선택기가 그 후보를 적격에서 제외한다(#493 D4). guardrail paired
+  판정 구현은 별도 이슈다(아래 "알려진 계약 간극").
+
+### 완료 이벤트 투영 (#493)
+
+완료 이벤트(`auto-research-experiment-completed`)의 `client_payload.candidates[]`
+원소는 위 결과 계약에서 **`runs`만 제외한 전부**다. `seeds`는 싣는다.
+
+`runs`를 제외하는 이유는 payload 크기다 — 후보 1건의 `runs`가 seed 30개 기준 약
+6 KB이고, `_MAX_COMPLETION_CANDIDATES`(50)를 채우면 약 300 KB가 되어
+repository_dispatch 한도를 넘는다. seed별 run 좌표는 결과 artifact 안에 그대로
+남으며, 후보 수준 `artifact_uri`/`log_uri`가 그 위치를 가리킨다.
+
+투영은 코드 한 곳의 상수로 정의하고 결과 모델에서 파생시킨다. 결과 계약에 필드가
+늘면 투영도 함께 늘어야 하며, 그 동등성을 테스트가 고정한다. 소비 측
+(`_parse_completion_candidate`)의 정확 일치 fail-closed 성질은 유지한다 — 기대 키
+집합만 이 투영에 맞춘다.
 
 ## 4. 승격 게이트 수용 규칙
+
+### 판정 소재지 — 게이트는 판정하지 않는다 (#493)
+
+**판정은 `src/pipeline/experiment_evaluation.py` 한 곳에서만 계산한다.** dev 병합
+후보 선택기(`tools/auto_research_issue_branch.py`)와 main Draft PR 게이트
+(`autoresearch/experiments/promotion_gate.py`)는 판정을 재수행하지 않는 **소비자**다.
+
+두 게이트가 수행하는 검증은 신뢰 경계 검증으로 한정한다.
+
+- `contract_version` / `policy_version` 확인 — 알 수 없는 버전은 fail-closed
+- `outcome == "comparison_passed"`
+- `criteria_id` / `reproducibility_id`가 issue branch marker 값과 일치
+- SHA lineage (`base_dev_sha`의 자손, issue branch의 조상, `dev`의 조상)
+- `registry_uri` 좌표
+
+게이트는 metric을 빼거나 임계와 비교하지 않는다. 같은 실험이 경로에 따라 다른
+판정을 받던 원인이 두 곳의 자체 판정이었기 때문이다. 특히 승격 게이트는 Issue Form
+본문을 **더 이상 파싱하지 않는다** — Issue Form 파서가 두 벌이면 한쪽만 바뀌었을 때
+드리프트가 생기고, 실제로 #495가 그렇게 발생했다.
+
+사용자가 선언한 `최소 주 지표 개선폭`은 버려지지 않는다. 판정 엔진이 호출 인자로
+받아 `confidence_interval_lower > 0 AND normalized_delta_mean >= declared_minimum`으로
+함께 판정하고, 미달은 `primary_delta_below_declared_minimum` reason code와 함께
+`reject`가 된다.
+
+dev 병합 후보 선택은 계속 필요하므로 남기되, 기준을 판정 결과로 바꾼다.
+
+```text
+적격  = outcome == "comparison_passed"
+정렬  = paired_delta_mean 내림차순 → confidence_interval_lower 내림차순
+      → candidate_sha 사전순 오름차순   (결정론 보장)
+```
+
+`multiple_candidates_require_independent_holdout`과 후보 배열은 충돌하지 않는다.
+후보 N개는 **각각 독립된 plan/evidence로 개별 판정이 끝난 결과 N개**이며, 선택기는
+그중에서 고르기만 한다. 한 번의 판정 호출에 candidate가 여럿 들어가는 경우에만 이
+reason code가 나온다.
+
+### `registry_uri` 형태
 
 `.github/workflows/auto-research-promotion.yml`의 `registry_uri` 검증은 `gs://`로
 시작하는 URI 중 다음 두 형태를 모두 통과시킨다.
@@ -246,8 +300,12 @@ model_uri, evaluated_at
 `baseline` 조건 경로는 승격 입력으로 받지 않는다. 승격 후보는 candidate 조건의
 산출물만이다.
 
-producer가 `outcome`을 함께 보내면 `comparison_passed`가 아닌 결과는 승격 브랜치와
-Draft PR을 만들지 않는다. `outcome`을 보내지 않는 기존 producer는 그대로 받아들인다.
+`outcome`이 `comparison_passed`가 아닌 결과는 승격 브랜치와 Draft PR을 만들지 않는다.
+
+**`outcome` 없는 payload를 허용하던 하위 호환 분기는 폐지한다 (#493).** 저장소 안에
+두 완료 이벤트의 producer가 하나도 없어 깨뜨릴 실사용 producer가 없고, `outcome`을
+선택 필드로 두면 판정 결과 없이 승격이 일어나는 경로가 남는다. 두 워크플로의 하위
+호환 정책을 "`contract_version` 필수, 알 수 없는 버전은 fail-closed"로 통일한다.
 
 게이트의 suffix 검사는 애플리케이션의 `registry_uri_matches`보다 약하다(root
 anchoring이 없다). 두 검증은 각각 다른 신뢰 경계에서 동작하며, 결과 payload를 만드는
@@ -349,16 +407,25 @@ candidate로 제출됐지만 그 candidate가 오프라인 격자 탐색의 산�
 
 ## 알려진 계약 간극
 
-- Issue Form(`.github/ISSUE_TEMPLATE/auto_research.yml`)의 `랜덤 시드 목록`
-  기본값은 3개지만 `promotion-policy-v1`은 seed 42..71의 30개를 요구한다.
-  자동 승격 판정의 정본은 정책이며, Issue Form 기본값 정렬은 별도 이슈에서
-  다룬다. 이 간극 때문에 seed 집합이 어긋난 요청은 `comparison_failed`로
-  끝나고 승격되지 않는다 — 조용한 통과는 발생하지 않는다.
-- 판정 엔진은 단일 candidate만 자동 승격 대상으로 인정한다. 여러 candidate를
-  비교하려면 독립 holdout 재검증이 필요하다(`multiple_candidates_require_independent_holdout`).
+- ~~Issue Form의 `랜덤 시드 목록` 기본값 3개 vs 정책 seed 30개~~ → **#493에서
+  해소한다.** 폼 기본값을 정책 seed 42..71(30개)로 정렬하고, 정책과 다른 시드
+  집합을 선언한 이슈는 브랜치 생성 시점에 거부한다. 실행이 끝난 뒤
+  `comparison_failed`로 알게 되는 비용을 없앤다.
+- 판정 엔진은 **하나의 판정 호출**에 대해 단일 candidate만 자동 승격 대상으로
+  인정한다(`multiple_candidates_require_independent_holdout`). 완료 이벤트의 후보
+  배열은 이 제약과 충돌하지 않는다 — 후보 N개는 각각 독립 판정이 끝난 결과 N개이고
+  선택기는 그중에서 고르기만 한다.
 - guardrail 지표를 선언한 실험은 이 경로로 자동 승격될 수 없다. 판정 엔진이
-  guardrail을 계산하지 않으므로 결과 payload에도 싣지 않으며, 승격 게이트는
-  guardrail 값이 없으면 fail-closed한다. 안전한 방향의 실패지만 기능 공백이다.
+  guardrail을 계산하지 않으므로 결과 payload에도 싣지 않는다. **#493 이후로는 이
+  사실을 브랜치 생성 시점에 이슈 코멘트로 고지하고, dev 병합 선택기가 해당 후보를
+  적격에서 제외한다** — 조용한 무시도, 조용한 통과도 없다. guardrail paired 판정
+  구현은 별도 `feature` 이슈다.
+- 판정 대상 지표는 정책이 소유하는 allowlist다. `roc_auc`는 판정 엔진뿐 아니라
+  write-once 증거 계약(`HeldOutMetricEvidence.metric_name`,
+  `src/pipeline/promotion_evidence.py:156`)에도 고정되어 있으므로, 지표를 늘리려면
+  증거 생산 경로(`src/pipeline/train.py`)까지 함께 바꿔야 한다. #493이 이를
+  수행한다. 기존 receipt는 필드 직렬화가 바뀌지 않아 sha256이 유지되므로
+  마이그레이션 없이 계속 유효하다.
 - `extra_features` 이름은 prod 계약 충돌·중복·라벨만 거부한다. 조회 결과에 존재하는
   entity/passthrough 컬럼(`user_id` 등)을 선언하면 그대로 학습 입력이 된다.
 - 격자 탐색으로 고른 후보에 대한 **다중 비교 보정이 없다**(§5-4). 판정 엔진은
