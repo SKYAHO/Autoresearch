@@ -114,6 +114,7 @@ def _fake_env(monkeypatch, features: pd.DataFrame) -> dict:
 def test_assemble_pins_registry_and_writes_snapshot(tmp_path, monkeypatch) -> None:
     features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
     features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
     _fake_env(monkeypatch, features)
     seen: dict[str, str] = {}
 
@@ -241,7 +242,8 @@ def test_download_pinned_registry_rejects_missing_generation(tmp_path) -> None:
 def test_assemble_via_feast_writes_contract_columns(tmp_path, monkeypatch) -> None:
     features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
     features["clicked"] = 1
-    features["user_id"] = "u1"  # 여분 컬럼은 버려져야 한다
+    features["user_id"] = "u1"  # 패스스루 컬럼: 라벨 뒤에 보존된다(#505)
+    features["surplus"] = 9  # 계약에 없는 여분 컬럼은 여전히 버려진다
     _fake_env(monkeypatch, features)
 
     out_path = str(tmp_path / "out.csv")
@@ -250,8 +252,8 @@ def test_assemble_via_feast_writes_contract_columns(tmp_path, monkeypatch) -> No
     btd._assemble_via_feast(out_path, "2026-07-07", "2026-07-21", min_coverage_days=0)
 
     written = pd.read_csv(out_path)
-    # 정확히 21피처 + clicked, 순서도 계약대로.
-    assert list(written.columns) == [*MODEL_FEATURE_COLUMNS, "clicked"]
+    # 21피처 + clicked 접두부는 불변이고, 패스스루만 맨 끝에 붙는다(#505).
+    assert list(written.columns) == [*MODEL_FEATURE_COLUMNS, "clicked", "user_id"]
     assert len(written) == 1
     assert int(written["clicked"].iloc[0]) == 1
 
@@ -266,6 +268,7 @@ def test_assemble_via_feast_empty_warns_and_reports_counts(
         row[c] = None  # 전 UserDynamic null → gap 드롭 대상
     features = pd.DataFrame([row])
     features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
     _fake_env(monkeypatch, features)
 
     out_path = str(tmp_path / "out.csv")
@@ -327,6 +330,7 @@ def test_assemble_via_feast_returns_coverage_for_lineage(tmp_path, monkeypatch) 
     # 조립이 실측 커버리지를 돌려줘야 run-pipeline이 MLflow lineage에 남길 수 있다(#464 리뷰).
     features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
     features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
     _fake_env(monkeypatch, features)
 
     coverage = btd._assemble_via_feast(
@@ -352,7 +356,8 @@ def test_assemble_via_feast_preserves_extra_feature_columns(tmp_path, monkeypatc
     features["clicked"] = 1
     features["views_per_day"] = 12.5
     features["like_per_view"] = 0.25
-    features["user_id"] = "u1"  # 선언하지 않은 여분 컬럼은 여전히 버려져야 한다
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
+    features["surplus"] = 9  # 선언하지 않은 여분 컬럼은 여전히 버려져야 한다
     _fake_env(monkeypatch, features)
 
     out_path = str(tmp_path / "out.csv")
@@ -370,6 +375,7 @@ def test_assemble_via_feast_preserves_extra_feature_columns(tmp_path, monkeypatc
         "views_per_day",
         "like_per_view",
         "clicked",
+        "user_id",
     ]
     assert float(written["views_per_day"].iloc[0]) == 12.5
     assert float(written["like_per_view"].iloc[0]) == 0.25
@@ -380,6 +386,7 @@ def test_assemble_via_feast_keeps_extra_feature_nulls(tmp_path, monkeypatch) -> 
     # 소유자가 정의한다(prod 계약 컬럼만 apply_cold_start_defaults 대상).
     features = pd.DataFrame([{c: None for c in MODEL_FEATURE_COLUMNS}])
     features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
     features["recent_click_count_7d"] = 5  # UserDynamic gap 드롭을 피한다
     features["views_per_day"] = None
     _fake_env(monkeypatch, features)
@@ -478,6 +485,7 @@ def test_assemble_via_feast_forwards_feature_service_and_records_it(
     # 기본값을 하드코딩하면 실험 조립이 prod 서비스로 조회된 것처럼 남는다.
     features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
     features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
     seen = _fake_env(monkeypatch, features)
 
     output_path = tmp_path / "out.csv"
@@ -494,6 +502,7 @@ def test_assemble_via_feast_defaults_to_prod_feature_service(tmp_path, monkeypat
     # 미지정이면 기존 계약(ctr_training_v1) 그대로다.
     features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
     features["clicked"] = 1
+    features["user_id"] = "u1"  # spine이 싣는 entity 컬럼(#505)
     seen = _fake_env(monkeypatch, features)
 
     output_path = tmp_path / "out.csv"
@@ -524,3 +533,44 @@ def test_main_forwards_feature_service_and_extra_features(monkeypatch) -> None:
 
     assert seen["kwargs"]["feature_service"] == "ctr_experiment_v2"
     assert seen["kwargs"]["extra_features"] == ["views_per_day"]
+
+
+def test_assemble_via_feast_preserves_passthrough_columns(tmp_path, monkeypatch) -> None:
+    """평가 전용 패스스루 컬럼은 라벨 **뒤**에 보존된다(#505).
+
+    유저 단위 grouped 지표를 재려면 행이 누구 것인지 알아야 하는데, 지금까지 조립이
+    ``user_id``를 잘라내 그룹화 자체가 불가능했다. 기존 22컬럼 접두부는 그대로 두고
+    맨 끝에만 붙여 ONNX 텐서 순서와 기존 소비자를 건드리지 않는다.
+    """
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1
+    features["user_id"] = "u1"
+    _fake_env(monkeypatch, features)
+
+    out_path = str(tmp_path / "out.csv")
+    btd._assemble_via_feast(out_path, "2026-07-07", "2026-07-21", min_coverage_days=0)
+
+    written = pd.read_csv(out_path)
+    assert list(written.columns) == [*MODEL_FEATURE_COLUMNS, "clicked", "user_id"]
+    assert written["user_id"].iloc[0] == "u1"
+
+
+def test_assemble_via_feast_fails_closed_when_passthrough_missing(
+    tmp_path, monkeypatch
+) -> None:
+    """패스스루 컬럼이 없으면 CSV를 쓰기 **전에** 멈춘다(#505).
+
+    조용히 빠뜨리면 grouped 지표를 못 재는 데이터셋이 만들어지고, 그 사실은 평가
+    단계에 가서야 드러난다. 측정 대상을 잃은 채로 실험이 진행되는 것이 이 작업이
+    막으려는 실패 모드이므로, 조립 단계에서 fail-closed로 끊는다(#454 선례).
+    """
+    features = pd.DataFrame([{c: 0 for c in MODEL_FEATURE_COLUMNS}])
+    features["clicked"] = 1  # user_id 없음
+    _fake_env(monkeypatch, features)
+
+    out_path = tmp_path / "out.csv"
+    with pytest.raises(FeatureContractError, match="user_id"):
+        btd._assemble_via_feast(
+            str(out_path), "2026-07-07", "2026-07-21", min_coverage_days=0
+        )
+    assert not out_path.exists()

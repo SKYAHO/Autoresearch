@@ -4,8 +4,9 @@
 immutable GCS object로 식별해, training·comparison·evaluation 사이에서 신뢰할 수 있는
 승격 근거를 전달하는 구간을 담당한다.
 
-[기능] strict Pydantic receipt 계약, canonical JSON SHA-256, create-only publish,
-generation-pinned re-read와 GCS metadata 재검증을 제공한다.
+[기능] strict Pydantic receipt 계약, 정책이 소유하는 held-out metric allowlist와
+지표별 값 범위 검증, canonical JSON SHA-256, create-only publish, generation-pinned
+re-read와 GCS metadata 재검증을 제공한다.
 
 [비책임] IAM·retention·production prefix deny는 Autoresearch-infra #485가 집행하며,
 모델 fit은 train.py, 공정 comparison은 training_comparison.py, 통계 verdict는
@@ -16,8 +17,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from math import isfinite
+from types import MappingProxyType
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
@@ -26,6 +30,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 PROMOTION_POLICY_VERSION = "promotion-policy-v1"
+
+# held-out metric allowlist는 **정책이 소유**한다(#493 D3). 학습 경로가 실제로
+# 산출할 수 있는 세 지표만 증거로 인정하며, 값 범위는 지표마다 다르다 —
+# upper bound가 None이면 상한이 없다(log_loss). 사용자가 이 집합이나 범위를
+# 뒤집을 수 없다.
+HELD_OUT_METRIC_VALUE_BOUNDS: Mapping[str, tuple[float, float | None]] = MappingProxyType(
+    {
+        "roc_auc": (0.0, 1.0),
+        "pr_auc": (0.0, 1.0),
+        "log_loss": (0.0, None),
+    }
+)
+SUPPORTED_HELD_OUT_METRIC_NAMES: tuple[str, ...] = tuple(HELD_OUT_METRIC_VALUE_BOUNDS)
+DEFAULT_HELD_OUT_METRIC_NAME = "roc_auc"
 
 
 class PromotionEvidenceValidationError(ValueError):
@@ -149,17 +167,42 @@ class ExperimentPlanReceipt(_ImmutableModel):
 
 
 class HeldOutMetricEvidence(_ImmutableModel):
-    """하나의 training run이 계산한 held-out ROC-AUC와 provenance binding."""
+    """하나의 training run이 계산한 held-out 주 지표와 provenance binding.
+
+    `metric_name`은 `Literal["roc_auc"]`에서 정책 allowlist 검증으로 넓혔고
+    `value` 범위는 지표별 validator가 검사한다(#493 D3). **필드 집합·순서·타입
+    표현은 그대로**이므로 이미 GCS에 쌓인 roc_auc receipt의 canonical byte와
+    그 sha256이 변하지 않는다 — 기존 증거를 마이그레이션하지 않는다. 이 성질의
+    조건이 "새 필드를 추가하지 않는다"이므로 필드 추가는 금지한다.
+    """
 
     run_id: str = Field(min_length=1)
     plan_receipt: ExperimentPlanReceipt
-    metric_name: Literal["roc_auc"] = "roc_auc"
+    metric_name: str = DEFAULT_HELD_OUT_METRIC_NAME
     dataset_split: Literal["test"] = "test"
-    value: float = Field(ge=0, le=1)
+    value: float
     split_manifest_sha256: str = Field(pattern=SHA256_PATTERN)
     test_membership_sha256: str = Field(pattern=SHA256_PATTERN)
     model_artifact_path: str = Field(min_length=1)
     model_artifact_sha256: str = Field(pattern=SHA256_PATTERN)
+
+    @field_validator("metric_name")
+    @classmethod
+    def _validate_metric_name(cls, value: str) -> str:
+        if value not in HELD_OUT_METRIC_VALUE_BOUNDS:
+            raise ValueError("held-out metric_name이 정책 allowlist에 없습니다")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_metric_value_range(self) -> "HeldOutMetricEvidence":
+        # allow_inf_nan=False가 NaN·Infinity를 이미 막지만, 범위 검사가 유한성을
+        # 전제하므로 여기서도 명시적으로 확인한다.
+        if not isfinite(self.value):
+            raise ValueError("held-out metric value는 유한해야 합니다")
+        lower, upper = HELD_OUT_METRIC_VALUE_BOUNDS[self.metric_name]
+        if self.value < lower or (upper is not None and self.value > upper):
+            raise ValueError("held-out metric value가 지표 허용 범위 밖입니다")
+        return self
 
 
 class HeldOutMetricReceipt(_ImmutableModel):
@@ -349,7 +392,14 @@ class PromotionEvidenceStore:
         return plan
 
     def publish_held_out_metric(self, evidence: HeldOutMetricEvidence) -> HeldOutMetricReceipt:
-        """held-out metric body를 training run의 create-only prefix에 게시한다."""
+        """held-out metric body를 training run의 create-only prefix에 게시한다.
+
+        object key는 `metrics/{run_id}/{evidence-sha256}.json`으로 **body 전체에
+        content-addressed** 되어 있다. `metric_name`이 body에 포함되므로 한 run이
+        여러 지표를 게시해도 key가 서로 다르고, create-only precondition이 충돌하지
+        않는다. 동시에 기존 roc_auc receipt의 key도 그대로 유지된다 — key 구성을
+        바꿀 이유가 없으므로 바꾸지 않는다(#493 D3).
+        """
         payload = _canonical_json_bytes(evidence)
         evidence_sha256 = _sha256(payload)
         receipt = self._publish(

@@ -57,6 +57,7 @@ sys.path.insert(0, PROJECT_ROOT)
 from src.features.assembly import connect_duckdb  # noqa: E402
 from src.features.model_contract import (  # noqa: E402
     MODEL_FEATURE_COLUMNS,
+    PASSTHROUGH_COLUMNS,
     FeatureContractError,
     resolve_experiment_feature_columns,
 )
@@ -651,6 +652,18 @@ def _assemble_via_feast(
             # 선언한 실험 피처가 없으면 CSV를 쓰기 **전에** 멈춘다(fail-closed, #454) —
             # 잘린 데이터셋을 저장하면 학습 승격 단계에서야 실패해 조립 비용이 버려진다.
             require_extra_feature_columns(features, experiment_columns, service=service)
+            # 평가 전용 패스스루 컬럼도 같은 이유로 CSV를 쓰기 전에 확인한다(#505).
+            # 빠뜨리면 grouped 지표를 못 재는 데이터셋이 조용히 만들어지고, 그 사실은
+            # 평가 단계에 가서야 드러난다 — 조립 비용을 버리기 전에 여기서 끊는다.
+            missing_passthrough = [
+                column for column in PASSTHROUGH_COLUMNS if column not in features.columns
+            ]
+            if missing_passthrough:
+                raise FeatureContractError(
+                    f"조회 결과에 패스스루 컬럼이 없습니다: {missing_passthrough}. "
+                    "이 컬럼은 모델 입력이 아니라 유저 단위 grouped 지표의 그룹 키입니다 "
+                    f"(service={service}). spine이 해당 컬럼을 싣고 있는지 확인하십시오."
+                )
 
             # (C) 결손 가시화: UserDynamic 전체 null(ttl 초과·#365 결손)은 채우지 않고 드롭
             # (활동 유저를 "신규 유저"로 위장시키지 않는다). 이 뒤에 남는 null(영상 미발견 등)만
@@ -687,9 +700,14 @@ def _assemble_via_feast(
                 # 실험 피처는 prod 계약 **뒤·라벨 앞**에 고정 순서로 붙인다(#454).
                 # 이 컬럼들의 null은 채우지 않는다 — apply_cold_start_defaults는 prod 계약
                 # 컬럼만 다루며, 가설이 더한 컬럼의 결측 의미는 가설 소유자가 정의한다.
-                features[[*MODEL_FEATURE_COLUMNS, *experiment_columns, "clicked"]].to_csv(
-                    temporary_file, index=False
-                )
+                features[
+                    [
+                        *MODEL_FEATURE_COLUMNS,
+                        *experiment_columns,
+                        "clicked",
+                        *PASSTHROUGH_COLUMNS,
+                    ]
+                ].to_csv(temporary_file, index=False)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
 

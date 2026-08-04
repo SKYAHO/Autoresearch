@@ -18,6 +18,7 @@ from src.features.model_contract import (
     FeatureContractError,
 )
 from src.pipeline import train
+from src.pipeline.evaluate import HELD_OUT_METRIC_NAMES
 from src.pipeline.train import collect_categorical_categories
 from src.pipeline.promotion_evidence import (
     ExperimentPlanReceipt,
@@ -827,7 +828,19 @@ def test_main_binds_verified_plan_and_publishes_held_out_metric_inside_run(
     metric = store.verify_held_out_metric_receipt(outcome.held_out_metric_receipt)
     assert metric.run_id == outcome.run_id
     assert metric.dataset_split == "test"
+    assert metric.metric_name == "roc_auc"
     assert metric.model_artifact_sha256 == sha256_file(tmp_path / "model.joblib")
+    # #493 D3: 지표마다 별도 evidence를 게시하되, 주 지표 receipt만 기존 artifact
+    # 경로로 남긴다(training_comparison.py의 소비 계약).
+    published = [
+        store.verify_held_out_metric_receipt(item)
+        for item in outcome.held_out_metric_receipts
+    ]
+    assert tuple(item.metric_name for item in published) == HELD_OUT_METRIC_NAMES
+    assert len({item.object.uri for item in outcome.held_out_metric_receipts}) == len(
+        HELD_OUT_METRIC_NAMES
+    )
+    assert outcome.held_out_metric_receipt in outcome.held_out_metric_receipts
     assert _artifact_paths(
         MlflowClient(tracking_uri=tracking_uri),
         outcome.run_id,
@@ -1192,3 +1205,43 @@ def test_main_rejects_non_numeric_extra_feature(tmp_path, monkeypatch) -> None:
     assert "region" in message
     assert "수치형" in message
     assert not (tmp_path / "model_cat.joblib").exists()
+
+
+def test_main_preserves_passthrough_columns_in_held_out_test_set(
+    tmp_path, monkeypatch
+) -> None:
+    """패스스루 컬럼은 held-out test set까지 살아남는다(#506 리뷰).
+
+    grouped 지표가 실제로 계산되는 입력은 조립 CSV가 아니라 train이 따로 쓰는 test
+    set이다. 그리고 평가는 컬럼이 없으면 **조용히 건너뛴다** — 누군가 저장을
+    ``test_df[[*feature_columns, "clicked"]]``처럼 좁히면 grouped 지표만 사라지고
+    어떤 테스트도 실패하지 않는다. 조립의 fail-closed로 막으려던 실패 모드가 한 단계
+    뒤에서 재현되는 것을 막는 회귀 테스트다.
+    """
+    tracking_uri = (tmp_path / "mlruns").as_uri()
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
+    config_path = tmp_path / "config.yaml"
+    _write_train_config(config_path)
+    dataset = _synthetic_ctr_dataset(n=200)
+    dataset["user_id"] = [f"u{index % 20}" for index in range(len(dataset))]
+    dataset.to_csv(tmp_path / "training_dataset.csv", index=False)
+
+    train.main(
+        config_path=str(config_path),
+        data_path=str(tmp_path / "training_dataset.csv"),
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.json"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.json"),
+        test_size=0.2,
+        val_size=0.2,
+        random_state=42,
+        defer_registration=True,
+    )
+
+    test_set = pd.read_csv(tmp_path / "test_set.csv")
+    assert "user_id" in test_set.columns
+    assert test_set["user_id"].notna().all()
+    # 그러나 모델 입력 아티팩트에는 들어가지 않는다 — 이 둘이 함께 성립해야 한다.
+    feature_columns = json.loads((tmp_path / "feature_columns.json").read_text())
+    assert "user_id" not in feature_columns
