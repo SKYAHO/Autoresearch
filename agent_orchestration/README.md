@@ -110,6 +110,29 @@ OpenAI API 키나 API 크레딧을 사용하지 않습니다.
 [`docs/archive/specs/2026-08-01-agent-orchestration-experiment-workbench-v0.md`](../docs/archive/specs/2026-08-01-agent-orchestration-experiment-workbench-v0.md)를
 참조합니다.
 
+## Streamlit workbench local demo
+
+The Streamlit workbench consumes the Experiment API server-side. It never
+exposes `ORCH_UI_API_TOKEN` to the browser. To inspect the deployed GKE API
+locally, first forward the internal ClusterIP Service:
+
+```bash
+kubectl -n autoresearch port-forward service/agent-orchestration-api 8000:8000
+```
+
+In a separate terminal, run the workbench:
+
+```bash
+uv sync --group orchestration-ui
+ORCH_UI_API_BASE_URL=http://127.0.0.1:8000 \
+ORCH_UI_API_TOKEN="$ORCH_API_TOKEN" \
+PYTHONPATH=. uv run --group orchestration-ui streamlit run agent_orchestration/ui/app.py
+```
+
+The v0 submit form calls `POST /experiments`, so it creates only a database
+Experiment record. GitHub `[AR]` issue creation and the future experiment
+runner are separate follow-up integrations.
+
 ## 현재 범위(스케일 업 전)
 
 - `/chat` 저장과 실험 워크벤치 v0 API만 구현. GitHub webhook 자동 승격, 사람·Agent 인증

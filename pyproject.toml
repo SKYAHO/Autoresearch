@@ -95,6 +95,9 @@ orchestration = [
     "openai>=1.66,<3",
     "google-cloud-secret-manager>=2.20,<3",
 ]
+orchestration-ui = [
+    "streamlit>=1.37,<2",
+]
 [tool.pytest.ini_options]
 # scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외
 testpaths = ["tests"]
