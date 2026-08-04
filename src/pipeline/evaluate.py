@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
 """저장된 모델을 held-out test set으로 채점하는 평가 스크립트.
 
-[파이프라인] 학습이 분리 저장한 held-out test set과 승격 판정 사이 구간을 담당한다.
-모델과 `feature_columns.json`을 로드해 계약을 검증하고, 오프라인 지표를 산출해
-stdout과 호출자(`run-pipeline`)에 제공한다.
+[파이프라인] 학습(train.py)이 분리 저장한 held-out test set과 승격 판정 사이 구간을
+담당한다. 모델과 `feature_columns.json`을 로드해 계약을 검증하고, held-out 지표를
+산출해 stdout과 호출자(`run-pipeline`)에 제공한다. 학습 runtime이 승격 증거로 쓸
+held-out 지표도 여기 정의를 공유해, standalone 평가와 학습이 같은 지표 정의를 쓴다.
 
-[기능] 전역 지표(ROC-AUC, PR-AUC, LogLoss, Brier, calibration 요약)와 baseline 대비
-비교를 산출한다. 데이터셋에 평가 전용 패스스루 컬럼이 있으면 유저 단위
-`grouped_roc_auc`를 **전역 지표와 병기**해 리랭킹 품질을 함께 보고한다(#505).
-downsampling 보정은 순위를 바꾸지 않으므로 AUC 계열에는 적용하지 않는다(#300).
+[기능] held-out ROC-AUC/PR-AUC/Log Loss/Brier/calibration 요약과 baseline 대비
+비교를 산출한다(예측 1회 재사용). 데이터셋에 평가 전용 패스스루 컬럼이 있으면 유저
+단위 `grouped_roc_auc`를 **전역 지표와 병기**해 리랭킹 품질을 함께 보고한다(#505).
+downsampling 보정은 순위를 바꾸지 않으므로 ROC-AUC/PR-AUC 계열에는 적용하지
+않는다(#300).
 
 [비책임] 학습·분할은 `src/pipeline/train.py`, 데이터셋 조립과 패스스루 컬럼 보존은
-`src/pipeline/build_training_dataset.py`, 통계적 유의성 판정은
-`src/pipeline/seed_sweep.py`와 `src/pipeline/experiment_evaluation.py`가 소유한다.
-주 지표를 무엇으로 삼을지와 승격 판정은 이 모듈이 정하지 않는다(#493).
+`src/pipeline/build_training_dataset.py`, 공정 baseline·challenger 비교는
+`training_comparison.py`, write-once 증거 계약과 GCS 게시는
+`promotion_evidence.py`, 통계적 유의성 판정은 `src/pipeline/seed_sweep.py`와
+`src/pipeline/experiment_evaluation.py`가 소유한다. 주 지표를 무엇으로 삼을지와
+승격 판정은 이 모듈이 정하지 않는다(#493).
 """
 
 import os
@@ -24,6 +28,7 @@ from typing import Final, Optional
 
 import yaml
 import pickle
+import numpy as np
 import pandas as pd
 from sklearn.metrics import (  # noqa: E402
     roc_auc_score,
@@ -116,6 +121,26 @@ def grouped_roc_auc(
     )
 
 
+# 학습 경로가 승격 증거로 산출하는 held-out 지표 이름. 증거 계약이 인정하는
+# allowlist(promotion_evidence.SUPPORTED_HELD_OUT_METRIC_NAMES)와 같은 집합이어야
+# 하며, 그 동등성은 tests/test_pipeline_evaluate.py가 고정한다.
+# 여기서 promotion_evidence를 import하지 않는 이유는 평가 모듈이 승격 증거
+# 계약에 의존하지 않게 하기 위해서다.
+HELD_OUT_METRIC_NAMES: tuple[str, ...] = ("roc_auc", "pr_auc", "log_loss")
+
+
+def _held_out_positive_proba(
+    model: object,
+    dataset: pd.DataFrame,
+    feature_columns: Sequence[str],
+) -> np.ndarray:
+    """held-out dataset에 학습과 동일한 feature cast를 적용해 양성 확률을 낸다."""
+    features = dataset[list(feature_columns)].copy()
+    for column in CATEGORICAL_FEATURE_COLUMNS:
+        features[column] = features[column].astype("category")
+    return model.predict_proba(features)[:, 1]
+
+
 def evaluate_held_out_roc_auc(
     model: object,
     dataset: pd.DataFrame,
@@ -127,10 +152,42 @@ def evaluate_held_out_roc_auc(
     공통화한다. downsampling 보정은 순위를 바꾸지 않으므로 ROC-AUC에는 적용하지
     않는다.
     """
-    features = dataset[list(feature_columns)].copy()
-    for column in CATEGORICAL_FEATURE_COLUMNS:
-        features[column] = features[column].astype("category")
-    return float(roc_auc_score(dataset["clicked"], model.predict_proba(features)[:, 1]))
+    proba = _held_out_positive_proba(model, dataset, feature_columns)
+    return float(roc_auc_score(dataset["clicked"], proba))
+
+
+def evaluate_held_out_metrics(
+    model: object,
+    dataset: pd.DataFrame,
+    feature_columns: Sequence[str],
+    *,
+    sampling_rate: float = 1.0,
+) -> dict[str, float]:
+    """held-out test dataset의 `HELD_OUT_METRIC_NAMES` 지표를 한 번에 계산한다.
+
+    `predict_proba`는 한 번만 호출하고 지표마다 재사용한다.
+
+    ROC-AUC와 PR-AUC는 순위 기반이라 downsampling 보정에 불변이므로 원본 확률로
+    재고, Log Loss는 보정된 확률(원분포 기준)로 잰다 — `main()`의 지표 정의(#300
+    결정 5)와 같다. `sampling_rate=1.0`이면 보정은 항등(no-op)이다.
+
+    Args:
+        model: `predict_proba`를 제공하는 학습된 모델.
+        dataset: `clicked` 라벨과 피처를 가진 held-out test split.
+        feature_columns: 모델이 학습에 쓴 피처 순서.
+        sampling_rate: 학습에 쓴 negative downsampling 실현 비율.
+
+    Returns:
+        지표 이름 → 값 매핑. 키 집합은 `HELD_OUT_METRIC_NAMES`와 같다.
+    """
+    labels = dataset["clicked"]
+    raw_proba = _held_out_positive_proba(model, dataset, feature_columns)
+    calibrated_proba = apply_downsampling_calibration(raw_proba, sampling_rate)
+    return {
+        "roc_auc": float(roc_auc_score(labels, raw_proba)),
+        "pr_auc": float(average_precision_score(labels, raw_proba)),
+        "log_loss": float(log_loss(labels, calibrated_proba)),
+    }
 
 
 def get_project_root():

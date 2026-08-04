@@ -18,6 +18,7 @@ from src.features.model_contract import (
     FeatureContractError,
 )
 from src.pipeline import train
+from src.pipeline.evaluate import HELD_OUT_METRIC_NAMES
 from src.pipeline.train import collect_categorical_categories
 from src.pipeline.promotion_evidence import (
     ExperimentPlanReceipt,
@@ -827,7 +828,19 @@ def test_main_binds_verified_plan_and_publishes_held_out_metric_inside_run(
     metric = store.verify_held_out_metric_receipt(outcome.held_out_metric_receipt)
     assert metric.run_id == outcome.run_id
     assert metric.dataset_split == "test"
+    assert metric.metric_name == "roc_auc"
     assert metric.model_artifact_sha256 == sha256_file(tmp_path / "model.joblib")
+    # #493 D3: 지표마다 별도 evidence를 게시하되, 주 지표 receipt만 기존 artifact
+    # 경로로 남긴다(training_comparison.py의 소비 계약).
+    published = [
+        store.verify_held_out_metric_receipt(item)
+        for item in outcome.held_out_metric_receipts
+    ]
+    assert tuple(item.metric_name for item in published) == HELD_OUT_METRIC_NAMES
+    assert len({item.object.uri for item in outcome.held_out_metric_receipts}) == len(
+        HELD_OUT_METRIC_NAMES
+    )
+    assert outcome.held_out_metric_receipt in outcome.held_out_metric_receipts
     assert _artifact_paths(
         MlflowClient(tracking_uri=tracking_uri),
         outcome.run_id,
