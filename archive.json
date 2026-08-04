@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T04:06:58Z",
+  "generated_at": "2026-08-04T04:19:10Z",
   "reports": [
+    {
+      "number": 511,
+      "title": "feat: add Streamlit experiment workbench",
+      "author": "Noah-JuYong",
+      "merged_at": "2026-08-04T04:18:56Z",
+      "summary_ko": [
+        "에이전트 오케스트레이션 실험 관찰을 위한 Streamlit 기반 단일 화면 대시보드(Experiment Workbench)를 추가하였습니다.",
+        "가설 작성으로 실험을 생성하고 최근 실험 선택, 5초 주기 커서 기반 이벤트·로그 폴링 및 상태 타임라인 조회를 제공합니다.",
+        "Experiment API 서버 측 통신용 HTTP 클라이언트를 구현하고, 로컬 연동 가이드 및 포트포워딩 실행 방법을 문서화하였습니다."
+      ],
+      "report_url": "pr/511/"
+    },
     {
       "number": 482,
       "title": "feat: GCP 배포 전 카탈로그를 검증",
