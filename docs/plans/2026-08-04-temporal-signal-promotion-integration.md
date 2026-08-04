@@ -5,14 +5,15 @@
 
 ## 이 plan의 범위
 
-spec §8의 **1~3단계**를 구현한다. 4단계는 목록에 남기되 블로커가 풀릴 때까지 착수하지 않는다.
+spec §8의 **1~4단계**를 구현한다. 4단계는 작성 시점에 `#493` 블로커로 착수 금지였으나
+2026-08-04에 해제됐다(Task 4 참고).
 
 | 범위 | 상태 |
 | --- | --- |
 | Task 1 — §4.3 baseline 재정의 | 착수 가능 |
 | Task 2 — §3 구간 분리 + §4.1·§4.2 hard retrain limit | 착수 가능 |
 | Task 3 — §6 fail-closed `hold` 조건 4개 | 착수 가능 |
-| Task 4 — §5 `#425` 스키마 연결 | **blocked on `#493`** — 착수 금지 |
+| Task 4 — §5 `#425` 스키마 연결 | **블로커 해제됨(2026-08-04)** — 착수 완료 |
 
 ## 범위 제외 (이 plan이 다루지 않는 것과 사유)
 
@@ -31,15 +32,17 @@ spec §8의 **1~3단계**를 구현한다. 4단계는 목록에 남기되 블로
 
 | 파일 | 변경 |
 | --- | --- |
-| `src/pipeline/degradation_eval.py` | Task 1~3 전부 — 필드 추가, 함수 신설, hold 조건 |
+| `src/pipeline/degradation_eval.py` | Task 1~3 전부 — 필드 추가, 함수 신설, hold 조건. Task 4 — `temporal_signal_inputs` |
+| `src/pipeline/experiment_evaluation.py` | Task 4 — `TemporalSignal` 및 판정 산출물 필드(§7.1 해제 후) |
+| `tests/test_experiment_evaluation_temporal_signal.py` | Task 4 — 신규 |
 | `docs/specs/2026-08-03-model-degradation-rolling-origin-evaluation.md` | §2.4 부분 supersede 블록(Task 1에서 이미 커밋됨, 확인만) |
 | `tests/test_degradation_eval_detection.py` | Task 1 — baseline 재정의 |
 | `tests/test_degradation_eval.py` | Task 1~3 — 오케스트레이션 통합 |
 | `tests/test_degradation_eval_hold.py` | Task 3 — 신규 |
 | `src/cli.py` | Task 2 — `derive_hard_retrain_limit` 노출 여부는 Task 2에서 판단 |
 
-**건드리지 않는 파일**: `src/pipeline/experiment_evaluation.py`, `promotion_gate.py`,
-`paired_experiment.py`(spec §7.1 게이트). `model_contract.py`, `build_training_dataset.py`
+**건드리지 않는 파일**: `promotion_gate.py`,
+`paired_experiment.py`. `model_contract.py`, `build_training_dataset.py`
 (spec §7.2, bbungjun님 영역).
 
 ## Task 1 — §4.3 baseline 재정의
@@ -137,20 +140,28 @@ spec §6 표에서 **`condition_mismatch`를 제외한 4개**만 구현한다(�
 
 검증: `uv run python -m pytest tests/test_degradation_eval_hold.py -v`
 
-## Task 4 — §5 `#425` 스키마 연결 ⛔ blocked on `#493`
+## Task 4 — §5 `#425` 스키마 연결 ✅ 블로커 해제됨(2026-08-04)
 
-**착수 금지.** spec §7.1의 블로커가 풀리기 전까지 이 Task는 시작하지 않는다.
+- 블로커였던 것: `#493`이 CLOSED(COMPLETED)인데 `experiment_evaluation.py` 코드는
+  `f8bf611`(#478) 이후 변경이 없었다. `#500`으로 머지된 계획이 그 파일의 재구조화를
+  선언했으므로, 필드를 더하면 충돌할 수 있었다.
+- 해제 근거: `#493` assignee의 이슈 코멘트
+  (`issues/493#issuecomment-5175803521`) — "판정 엔진 재구조화는 계획만 남기고
+  종료, 후속은 `#485`/`#514`에서 진행. `experiment_evaluation.py` 직접 확장 승인".
+- **구두 확인은 근거로 쓰지 않았다** — 확인 자체는 Slack에서 먼저 이뤄졌으나,
+  검증 불가능한 근거를 문서·코드에 고정하지 않는다는 spec §7.1의 결정에 따라
+  assignee에게 이슈 코멘트를 요청한 뒤 그 링크를 근거로 삼았다. 이슈 상태(CLOSED)나
+  assignee 필드 같은 **결정과 무관한 메타데이터는 근거로 쓰지 않는다** — 그것들은
+  "누가 맡았나"만 말할 뿐 "재구조화가 어떻게 됐나"에 답하지 않는다.
+- 한 일: spec §5.3을 **안 A로 확정** → `EvaluationConfidence`/`SignalDirection`/
+  `TemporalSignal` + `summarize_temporal_signal`(§5.1·§5.2 산출 규칙),
+  `ExperimentEvaluation.temporal_signal`(기본 `None`),
+  `degradation_eval.temporal_signal_inputs`.
 
-- 블로커: `#493`이 CLOSED(COMPLETED)인데 `experiment_evaluation.py` 코드는
-  `f8bf611`(#478) 이후 변경이 없다. `#500`으로 머지된 계획이 그 파일의 재구조화를
-  선언했으므로, 지금 필드를 더하면 충돌할 수 있다.
-- 해제 조건: `#493`에 hyochangsung님이 코멘트로 (a) 구현이 별도 이슈로 남아 있는지
-  (b) 계획만 남기고 종료된 것인지 답변. 질문은 이미 남겼다
-  (`issues/493#issuecomment-5174828099`, 2026-08-04 기준 미답변).
-- 해제 후 할 일: spec §5.3의 안 A/안 B 중 선택 → `confidence`/`robustness_note`/
-  `direction_vs_offline_metric` 산출 규칙(spec §5.1·§5.2) 구현.
-- **구두 확인은 근거로 쓰지 않는다** — 검증 불가능한 근거를 문서·코드에 고정하지
-  않는다는 spec §7.1의 결정을 그대로 따른다.
+이 Task로 이 plan의 Task 1~4는 모두 끝난다. **`#485`에 남는 것**은 이 plan의 범위
+제외 항목뿐이다 — `#514`(두 조건 확장), spec §7.2(video staleness, bbungjun님 확인
+대기), spec §7.3(`safety_margin_days`/`recent_window_days`/`min_auc_drop` 값 확정,
+GCP 실측 선행).
 
 ## 전체 검증
 
