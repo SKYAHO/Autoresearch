@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from agent_orchestration.app.config import ServiceSettings
+from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 from agent_orchestration.app.llm import LLMBackendError, generate_response
 from agent_orchestration.app.schemas import ChatRequest
 from agent_orchestration import codex as codex_module
@@ -34,6 +35,15 @@ def make_settings(**overrides: Any) -> ServiceSettings:
         "llm_backend": "codex_runner",
         "codex_runner_url": "http://runner:8080",
         "codex_runner_timeout_sec": 30,
+        "github_token": "x" * 40,
+        "github_repository": "SKYAHO/Autoresearch",
+        "gh_timeout_sec": 30,
+        "issue_daily_limit": 20,
+        "experiment_defaults": ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     }
     values.update(overrides)
     return ServiceSettings(**values)

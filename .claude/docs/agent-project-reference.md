@@ -84,6 +84,19 @@ docs/
   `SKYAHO/Autoresearch-infra` 소유이다.
 - **비책임:** 사용자 OAuth, 세션/사용자 히스토리, 정책 라우팅은 후속 단계다.
 - **패턴:** `src/`와 패키지 경계를 분리해 새로운 배포 단위를 별도로 둔다.
+- **이슈 발행 환경 변수(#516):** 가설을 `[AR]` 이슈로 발행하는 경로가 쓰는
+  필수 환경 변수. 전체 기본값·형식은 `.env.example`이 정본.
+  - `ORCH_GITHUB_TOKEN`: 이슈 발행 전용 `issues: write` GitHub 토큰.
+  - `ORCH_GITHUB_REPOSITORY`: 발행 대상 저장소(`owner/repo`), 발행 결과 URL과
+    대조해 오발행을 막음.
+  - `ORCH_GH_TIMEOUT_SEC`: `gh` 서브프로세스 실행 상한(초).
+  - `ORCH_ISSUE_DAILY_LIMIT`: 일일 발행 상한, 초과 시 429 반환.
+  - `ORCH_EXPERIMENT_DATASET_SNAPSHOT`: 서버가 Issue Form에 채우는 데이터셋
+    스냅샷.
+  - `ORCH_EXPERIMENT_TRAINING_CONFIG_REF`: 서버가 Issue Form에 채우는 학습
+    설정 참조.
+  - `ORCH_EXPERIMENT_DATASET_WINDOW`: 서버가 Issue Form에 채우는 대상
+    데이터·기간.
 
 ### 외부 오케스트레이션 경계
 - DAG와 Airflow 배포는 `Autoresearch-airflow`에만 둡니다.

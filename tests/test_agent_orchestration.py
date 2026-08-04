@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from agent_orchestration.app.config import ServiceSettings, load_settings
+from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 from agent_orchestration.app import db as db_module
 from agent_orchestration.app import llm as llm_module
 from agent_orchestration.app import main as main_module
@@ -41,6 +42,13 @@ _SETTINGS_ENV_VARS = (
     "ORCH_DATABASE_URL",
     "ORCH_DB_CONNECT_TIMEOUT_SEC",
     "ORCH_INTERACTIONS_TABLE",
+    "ORCH_GITHUB_TOKEN",
+    "ORCH_GITHUB_REPOSITORY",
+    "ORCH_GH_TIMEOUT_SEC",
+    "ORCH_ISSUE_DAILY_LIMIT",
+    "ORCH_EXPERIMENT_DATASET_SNAPSHOT",
+    "ORCH_EXPERIMENT_TRAINING_CONFIG_REF",
+    "ORCH_EXPERIMENT_DATASET_WINDOW",
 )
 _TEST_API_TOKEN = "test-api-token-must-be-at-least-32-characters"
 
@@ -54,8 +62,24 @@ def clear_agent_orchestration_environment(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("CODEX_HOME", "/tmp/test-codex-home")
 
 
+def _set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`load_settings()`가 기본 backend(codex_cli)로 성공하는 데 필요한 값을 채운다.
+
+    `ORCH_API_TOKEN`과 `CODEX_HOME`은 `clear_agent_orchestration_environment`가 이미
+    채우므로 여기서는 그 외 필수 값만 다룬다. 각 테스트는 이 호출 뒤에 자신이 검증할
+    변수를 개별적으로 override하거나 delenv한다.
+    """
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
+    monkeypatch.setenv("ORCH_GITHUB_TOKEN", "x" * 40)
+    monkeypatch.setenv("ORCH_GITHUB_REPOSITORY", "SKYAHO/Autoresearch")
+    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_SNAPSHOT", "bq://a/b@2026-07-31")
+    monkeypatch.setenv("ORCH_EXPERIMENT_TRAINING_CONFIG_REF", "configs/train/x.yaml@abc")
+    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_WINDOW", "- 데이터셋 / 경로: data/train.csv")
+
+
 def test_load_settings_prefers_orchestration_database_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """ORCH_DATABASE_URL이 설정되면 DATABASE_URL보다 우선 사용한다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch_db")
     monkeypatch.setenv("DATABASE_URL", "postgresql://fallback:pw@localhost:5432/fallback")
@@ -71,6 +95,7 @@ def test_load_settings_prefers_orchestration_database_env(monkeypatch: pytest.Mo
 
 def test_load_settings_accepts_database_url_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     """ORCH_DATABASE_URL 미설정 시 DATABASE_URL을 사용한다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.delenv("ORCH_DATABASE_URL", raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgres://generic:pw@localhost:5432/generic_db")
@@ -82,6 +107,7 @@ def test_load_settings_accepts_database_url_fallback(monkeypatch: pytest.MonkeyP
 
 def test_load_settings_allows_codex_without_openai_key(monkeypatch: pytest.MonkeyPatch) -> None:
     """Codex CLI 공용 계정 모드는 OpenAI API 키를 요구하지 않는다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("LLM_BACKEND", "codex_cli")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
@@ -96,6 +122,7 @@ def test_load_settings_openai_does_not_require_codex_runtime_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """OpenAI 모드에서는 Codex 실행 파일과 홈이 없어도 기동한다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("LLM_BACKEND", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
@@ -113,6 +140,7 @@ def test_load_settings_codex_runner_uses_private_url_without_local_codex_home(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Runner 백엔드는 API 프로세스의 로컬 Codex 홈을 요구하지 않는다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("LLM_BACKEND", "codex_runner")
     monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
     monkeypatch.setenv("ORCH_RUNNER_TOKEN", "runner-token-must-be-at-least-32-characters")
@@ -133,6 +161,7 @@ def test_load_settings_codex_runner_requires_private_api_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Runner 백엔드는 API가 전송할 별도 내부 토큰 없이는 기동하지 않는다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("LLM_BACKEND", "codex_runner")
     monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
@@ -147,6 +176,7 @@ def test_load_settings_codex_runner_rejects_shared_api_and_runner_tokens(
 ) -> None:
     """서로 다른 인증 경계를 같은 토큰으로 합치면 API 기동을 거부한다."""
     shared_token = "test-shared-token-must-be-at-least-32-characters"
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("LLM_BACKEND", "codex_runner")
     monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
     monkeypatch.setenv("ORCH_API_TOKEN", shared_token)
@@ -163,6 +193,7 @@ def test_load_settings_codex_runner_requires_absolute_url(
     runner_url: str,
 ) -> None:
     """API가 private Runner에 요청을 위임하려면 절대 URL이 필요하다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("LLM_BACKEND", "codex_runner")
     monkeypatch.setenv("CODEX_RUNNER_URL", runner_url)
     monkeypatch.setenv("ORCH_RUNNER_TOKEN", "runner-token-must-be-at-least-32-characters")
@@ -176,6 +207,7 @@ def test_load_settings_uses_default_for_blank_openai_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """빈 OPENAI_MODEL은 요청 시점 실패 대신 안전한 기본 모델로 정규화한다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("LLM_BACKEND", "openai")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_MODEL", "   ")
@@ -192,6 +224,7 @@ def test_load_settings_rejects_invalid_interactions_table(
     table_name: str,
 ) -> None:
     """테이블 설정 오류는 DB 기동 전 환경 검증 단계에서 거부한다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
     monkeypatch.setenv("ORCH_INTERACTIONS_TABLE", table_name)
 
@@ -216,6 +249,7 @@ def test_load_settings_uses_default_for_blank_numeric_value(
     default: int,
 ) -> None:
     """빈 선택 환경 변수는 .env.example의 기본값 계약을 따른다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
     monkeypatch.setenv(name, "")
 
@@ -272,6 +306,7 @@ def test_api_entrypoint_reads_database_url_without_shell_evaluation(tmp_path: Pa
 
 def test_load_settings_requires_database_url(monkeypatch: pytest.MonkeyPatch) -> None:
     """필수 DB URL이 없으면 명확한 오류를 던진다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     monkeypatch.delenv("ORCH_DATABASE_URL", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -282,6 +317,7 @@ def test_load_settings_requires_database_url(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_load_settings_requires_api_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """무인증 LLM 호출을 막기 위해 공유 API 토큰을 필수로 요구한다."""
+    _set_required_env(monkeypatch)
     monkeypatch.delenv("ORCH_API_TOKEN", raising=False)
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
 
@@ -291,6 +327,7 @@ def test_load_settings_requires_api_token(monkeypatch: pytest.MonkeyPatch) -> No
 
 def test_load_settings_requires_long_enough_api_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """공유 토큰이 문서 계약보다 짧으면 기동을 거부한다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("ORCH_API_TOKEN", "too-short")
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
 
@@ -304,6 +341,7 @@ def test_load_settings_rejects_whitespace_only_required_values(
     name: str,
 ) -> None:
     """공백뿐인 필수 설정은 기동 시점에 거부한다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
     monkeypatch.setenv(name, "   ")
 
@@ -328,6 +366,7 @@ def test_load_settings_rejects_non_positive_numeric_limits(
     value: str,
 ) -> None:
     """0 이하의 요청 제한값은 기동 시점에 거부한다."""
+    _set_required_env(monkeypatch)
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
     monkeypatch.setenv(name, value)
 
@@ -373,6 +412,15 @@ def test_generate_response_uses_read_only_ephemeral_codex_cli(
         interactions_table="chat_interactions",
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
@@ -424,6 +472,15 @@ def test_generate_codex_cli_passes_configured_model(monkeypatch: pytest.MonkeyPa
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
         codex_model="gpt-5.3-codex-spark",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
@@ -474,6 +531,15 @@ def test_generate_codex_cli_rejects_invalid_process_output(
         interactions_table="chat_interactions",
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
@@ -512,6 +578,15 @@ def test_generate_codex_cli_terminates_process_group_after_timeout(
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
         codex_timeout_sec=1,
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(codex_module, "_terminate_process_group", fake_terminate_process_group)
@@ -568,6 +643,15 @@ def test_generate_codex_cli_omits_stderr_from_timeout_logs(
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
         codex_timeout_sec=1,
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(codex_module, "_terminate_process_group", lambda _process: None)
@@ -615,6 +699,15 @@ def test_generate_codex_cli_terminates_process_group_when_request_is_cancelled(
         interactions_table="chat_interactions",
         api_token="test-api-token",
         codex_home="/tmp/test-codex-home",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(codex_module, "_terminate_process_group", fake_terminate_process_group)
@@ -763,6 +856,15 @@ def test_main_chat_succeeds_after_mocked_dependencies(monkeypatch: pytest.Monkey
         database_url="postgresql://orch:pw@localhost:5432/orch",
         interactions_table="chat_interactions",
         api_token="test-api-token",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
 
     async def fake_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
@@ -811,6 +913,15 @@ def test_main_chat_rejects_missing_api_token(monkeypatch: pytest.MonkeyPatch) ->
         database_url="postgresql://orch:pw@localhost:5432/orch",
         interactions_table="chat_interactions",
         api_token="test-api-token",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
 
     async def unexpected_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
@@ -837,6 +948,15 @@ def test_main_chat_rejects_unknown_request_fields(monkeypatch: pytest.MonkeyPatc
         database_url="postgresql://orch:pw@localhost:5432/orch",
         interactions_table="chat_interactions",
         api_token="test-api-token",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
 
     async def fake_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
@@ -905,6 +1025,15 @@ def test_generate_response_uses_responses_api_for_openai_backend(
         interactions_table="chat_interactions",
         api_token="test-api-token",
         llm_backend="openai",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
     received_request: dict[str, object] = {}
 
@@ -953,6 +1082,15 @@ def test_generate_openai_response_rejects_incomplete_result(
         interactions_table="chat_interactions",
         api_token="test-api-token",
         llm_backend="openai",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
 
     class FakeResponses:
@@ -1005,6 +1143,15 @@ def test_main_chat_returns_bad_gateway_when_codex_cli_fails(
         database_url="postgresql://orch:pw@localhost:5432/orch",
         interactions_table="chat_interactions",
         api_token="test-api-token",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
 
     async def failing_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
@@ -1039,6 +1186,15 @@ def test_main_chat_returns_service_unavailable_when_runner_is_overloaded(
         database_url="postgresql://orch:pw@localhost:5432/orch",
         interactions_table="chat_interactions",
         api_token="test-api-token",
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+        experiment_defaults=ExperimentDefaults(
+            dataset_snapshot="bq://a/b@2026-07-31",
+            training_config_ref="configs/train/x.yaml@abc",
+            dataset_window="- 데이터셋 / 경로: data/train.csv",
+        ),
     )
 
     async def overloaded_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
@@ -1057,3 +1213,35 @@ def test_main_chat_returns_service_unavailable_when_runner_is_overloaded(
         )
 
     assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+
+
+def test_issue_publication_settings_are_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """발행 경로가 요구하는 설정이 누락되면 기동 시점에 드러나야 한다."""
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("ORCH_GITHUB_TOKEN", "x" * 40)
+    monkeypatch.setenv("ORCH_GITHUB_REPOSITORY", "SKYAHO/Autoresearch")
+    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_SNAPSHOT", "bq://a/b@2026-07-31")
+    monkeypatch.setenv("ORCH_EXPERIMENT_TRAINING_CONFIG_REF", "configs/train/x.yaml@abc")
+    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_WINDOW", "- 데이터셋 / 경로: data/train.csv")
+
+    settings = load_settings()
+
+    assert settings.github_repository == "SKYAHO/Autoresearch"
+    assert settings.gh_timeout_sec == 30
+    assert settings.issue_daily_limit == 20
+    assert settings.experiment_defaults.dataset_snapshot == "bq://a/b@2026-07-31"
+
+
+def test_github_repository_must_be_owner_slash_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """발행 대상 저장소를 잘못 두면 다른 저장소에 이슈가 열린다."""
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("ORCH_GITHUB_TOKEN", "x" * 40)
+    monkeypatch.setenv("ORCH_GITHUB_REPOSITORY", "Autoresearch")
+    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_SNAPSHOT", "bq://a/b@2026-07-31")
+    monkeypatch.setenv("ORCH_EXPERIMENT_TRAINING_CONFIG_REF", "configs/train/x.yaml@abc")
+    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_WINDOW", "- 데이터셋 / 경로: data/train.csv")
+
+    with pytest.raises(ValueError, match="ORCH_GITHUB_REPOSITORY"):
+        load_settings()

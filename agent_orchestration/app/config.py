@@ -8,7 +8,8 @@
 공유 API 토큰, 선택한 LLM 백엔드에 필요한 Codex 또는 OpenAI 설정, 모델/타임아웃,
 PostgreSQL 연결 정보 등 FastAPI 런타임의 공통 설정 값을 단일 진입점으로 정규화한다.
 Runner 백엔드에서는 외부 API 인증과 API-to-Runner 내부 인증이 같은 토큰을 재사용하지
-않도록 기동 전에 거부한다.
+않도록 기동 전에 거부한다. 이슈 발행 경로가 쓰는 GitHub 자격·발행 대상 저장소·서버
+소유 실험 기본값(`ExperimentDefaults`)도 여기서 검증해 `ServiceSettings`에 담는다.
 
 [비책임]
 실제 LLM 호출 및 PostgreSQL 스키마 생성/영속화 동작.
@@ -20,6 +21,8 @@ import os
 from dataclasses import dataclass
 import re
 from urllib.parse import urlparse
+
+from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -58,6 +61,11 @@ class ServiceSettings:
     database_url: str
     interactions_table: str
     api_token: str
+    github_token: str
+    github_repository: str
+    gh_timeout_sec: int
+    issue_daily_limit: int
+    experiment_defaults: ExperimentDefaults
     llm_backend: str = "codex_cli"
     codex_cli_path: str = "codex"
     codex_home: str = ""
@@ -127,6 +135,30 @@ def load_settings() -> ServiceSettings:
     interactions_table = os.getenv("ORCH_INTERACTIONS_TABLE", "chat_interactions").strip()
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", interactions_table):
         raise ValueError("ORCH_INTERACTIONS_TABLE must be a valid SQL identifier.")
+
+    github_token = _require_env("ORCH_GITHUB_TOKEN", os.getenv("ORCH_GITHUB_TOKEN"))
+    github_repository = _require_env(
+        "ORCH_GITHUB_REPOSITORY", os.getenv("ORCH_GITHUB_REPOSITORY")
+    )
+    # `gh issue create`의 결과 URL을 이 값과 대조해 다른 저장소에 열린 이슈를 거부한다.
+    if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", github_repository):
+        raise ValueError("ORCH_GITHUB_REPOSITORY must be 'owner/repo'.")
+    gh_timeout_sec = _positive_env_int("ORCH_GH_TIMEOUT_SEC", 30)
+    issue_daily_limit = _positive_env_int("ORCH_ISSUE_DAILY_LIMIT", 20)
+    experiment_defaults = ExperimentDefaults(
+        dataset_snapshot=_require_env(
+            "ORCH_EXPERIMENT_DATASET_SNAPSHOT",
+            os.getenv("ORCH_EXPERIMENT_DATASET_SNAPSHOT"),
+        ),
+        training_config_ref=_require_env(
+            "ORCH_EXPERIMENT_TRAINING_CONFIG_REF",
+            os.getenv("ORCH_EXPERIMENT_TRAINING_CONFIG_REF"),
+        ),
+        dataset_window=_require_env(
+            "ORCH_EXPERIMENT_DATASET_WINDOW",
+            os.getenv("ORCH_EXPERIMENT_DATASET_WINDOW"),
+        ),
+    )
     return ServiceSettings(
         openai_api_key=openai_api_key,
         openai_model=openai_model,
@@ -135,6 +167,11 @@ def load_settings() -> ServiceSettings:
         database_url=database_url,
         interactions_table=interactions_table,
         api_token=api_token,
+        github_token=github_token,
+        github_repository=github_repository,
+        gh_timeout_sec=gh_timeout_sec,
+        issue_daily_limit=issue_daily_limit,
+        experiment_defaults=experiment_defaults,
         llm_backend=llm_backend,
         codex_cli_path=codex_cli_path,
         codex_home=codex_home,
