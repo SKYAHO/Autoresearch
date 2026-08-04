@@ -486,3 +486,154 @@ def test_run_rolling_origin_aligns_categorical_codes_with_training(monkeypatch, 
 
     (scored_dataset,) = harness.evaluate_calls
     assert list(scored_dataset["category_id"].cat.categories) == ["A", "B", "C"]
+
+
+# ============================================================================
+# Task 1 — §4.3 baseline 재정의 (#485)
+# forward_baseline_roc_auc(per_day 중 첫 valid 관측치)를 판정 기준선으로 쓴다.
+# baseline_val_roc_auc(랜덤 val)는 결과 필드로만 유지한다(하위호환).
+# ============================================================================
+
+
+def test_forward_baseline_is_first_valid_observation(monkeypatch, tmp_path):
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={
+            "2026-07-20": _day_frame(5),
+            "2026-07-21": _day_frame(5),
+        },
+        val_roc_auc=0.80,
+    )
+    harness.roc_auc_sequence = [0.76, 0.75]
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=2,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.forward_baseline_roc_auc == pytest.approx(0.76)
+    assert result.forward_baseline_source == 0
+    # 랜덤 val 지표는 결과 필드로 그대로 남는다(하위호환).
+    assert result.baseline_val_roc_auc == pytest.approx(0.80)
+
+
+def test_forward_baseline_skips_invalid_days(monkeypatch, tmp_path):
+    # elapsed_days=0이 무효(행 부족)면 첫 valid는 elapsed_days=1이다.
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={
+            "2026-07-20": _day_frame(1),  # min_rows_per_day=3 미만 → insufficient_rows
+            "2026-07-21": _day_frame(5),
+        },
+        val_roc_auc=0.80,
+    )
+    harness.roc_auc_sequence = [0.73]
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=2,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.forward_baseline_roc_auc == pytest.approx(0.73)
+    assert result.forward_baseline_source == 1
+
+
+def test_forward_baseline_none_when_no_valid_days(monkeypatch, tmp_path):
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={"2026-07-20": _day_frame(1)},  # 유효일 0개
+        val_roc_auc=0.80,
+    )
+    harness.roc_auc_sequence = []
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=1,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.forward_baseline_roc_auc is None
+    assert result.forward_baseline_source is None
+    assert result.degradation_point.reason == "insufficient_valid_points"
+
+
+def test_degradation_point_uses_forward_baseline_not_val_roc_auc(monkeypatch, tmp_path):
+    """이 Task의 리트머스 — 두 기준선이 서로 다른 판정을 내는 시나리오.
+
+    baseline_val_roc_auc=0.80, min_auc_drop=0.05 → 옛 기준 threshold=0.75.
+    forward_baseline_roc_auc=per_day[0]=0.76 → 새 기준 threshold=0.71.
+
+    per_day = [0.76, 0.73, 0.72]
+    - 옛 기준(0.75): 0.73/0.72가 연속 degraded → elapsed_days=2에서 탐지(오탐)
+    - 새 기준(0.71): 셋 다 threshold 위 → 미탐지
+
+    4%p 오프셋이 만드는 정확히 그 오탐이라, 새 기준으로 바뀌었는지 이 하나로 갈린다.
+    """
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={
+            "2026-07-20": _day_frame(5),
+            "2026-07-21": _day_frame(5),
+            "2026-07-22": _day_frame(5),
+        },
+        val_roc_auc=0.80,
+    )
+    harness.roc_auc_sequence = [0.76, 0.73, 0.72]
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=3,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.forward_baseline_roc_auc == pytest.approx(0.76)
+    assert result.degradation_point.elapsed_days is None
+    assert result.degradation_point.reason == "no_degradation_detected"
+
+
+def test_degradation_point_still_detects_real_drop_against_forward_baseline(
+    monkeypatch, tmp_path
+):
+    # 새 기준선으로도 진짜 하락은 잡혀야 한다(위 테스트의 반대편).
+    # forward_baseline=0.76, min_auc_drop=0.05 → threshold=0.71.
+    harness = _Harness(
+        monkeypatch,
+        tmp_path,
+        day_frames={
+            "2026-07-20": _day_frame(5),
+            "2026-07-21": _day_frame(5),
+            "2026-07-22": _day_frame(5),
+        },
+        val_roc_auc=0.80,
+    )
+    harness.roc_auc_sequence = [0.76, 0.70, 0.69]
+
+    result = degradation_eval.run_rolling_origin(
+        "2026-07-20",
+        window_days=3,
+        horizon_days=3,
+        run_root=harness.run_root,
+        min_rows_per_day=3,
+        min_auc_drop=0.05,
+    )
+
+    assert result.degradation_point.elapsed_days == 2
+    assert result.degradation_point.reason is None

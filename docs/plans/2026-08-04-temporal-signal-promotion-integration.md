@@ -58,6 +58,13 @@ spec §8의 **1~3단계**를 구현한다. 4단계는 목록에 남기되 블로
 - [ ] `baseline_val_roc_auc`는 결과 필드로 유지하되 판정 로직에는 쓰지 않는다.
       기존 fail-fast(`math.isfinite` 검증)는 그대로 둔다 — 학습이 실제로 수행됐는지의
       신호로는 여전히 유효하다.
+      **`forward_baseline_roc_auc`에는 같은 검증을 넣지 않는다**(이유 두 가지):
+      (a) 시점 — 이 값은 `per_day`에서 파생돼 루프가 끝난 뒤에만 존재하므로, 비싼 평가
+      **전에** 멈추는 현재 fail-fast 자리에 놓을 수 없다.
+      (b) 스키마 — `PerDayResult`가 `_ResultModel`(`allow_inf_nan=False`)이라 `roc_auc`에
+      NaN/inf가 들어가면 `PerDayResult` 생성 시점에 이미 실패한다. 따라서
+      `forward_baseline_roc_auc`는 **유한값이거나 `None`**임이 스키마로 보장되고,
+      `None` 케이스는 아래 `insufficient_valid_points` 항목이 처리한다.
 - [ ] 선행 spec §2.4의 부분 supersede 블록이 실제로 들어갔는지 확인한다(커밋 `0f1c3db`).
 
 **테스트(TDD, RED 먼저 확인)**
@@ -153,12 +160,32 @@ uv run --no-sync ruff check agent_orchestration autoresearch tests tools
 docker build -f Dockerfile.app -t autoresearch:ci .
 ```
 
-- 이 저장소에는 GCP·Docker·K8s 툴체인이 없는 환경에서 **기존에 실패하는 테스트가 65건**
-  있다(`test_action_logs_daily.py`, `test_agent_orchestration*.py`,
-  `test_pr_report_archive_*.py`, `test_rerank_loadtest_fixture.py`,
-  `test_build_training_dataset_env_check_feast.py`, `test_cli.py::test_promote_model_structured_unexpected_error_emits_safe_stack`).
-  이 plan의 변경과 무관하며, clean main에서 동일하게 실패하는 것을 확인했다. **새로
-  실패하는 테스트가 이 목록 밖에 있으면 그것만 회귀다.**
+### 기존 실패 baseline (회귀 판정 기준)
+
+GCP·Docker·K8s 툴체인이 없는 이 개발 환경에서는 **이 plan과 무관하게 실패하는 테스트**가
+있다. **새로 실패하는 테스트가 아래 목록 밖에 있을 때만 회귀다.**
+
+> **확인 시점: 2026-08-04, clean main `b4553f1`** (이 브랜치의 코드 변경 0건 상태에서
+> `uv run python -m pytest -q --tb=no -rf` 실행). **64 failed / 1754 passed / 17 skipped.**
+
+| 파일 | 건수 |
+| --- | --- |
+| `tests/test_action_logs_daily.py` | 18 |
+| `tests/test_pr_report_archive_rail.py` | 13 |
+| `tests/test_rerank_loadtest_fixture.py` | 11 |
+| `tests/test_pr_report_archive_card_isolation.py` | 6 |
+| `tests/test_agent_orchestration_bootstrap.py` | 6 |
+| `tests/test_pr_report_archive_merge.py` | 3 |
+| `tests/test_pr_report_archive_search.py` | 2 |
+| `tests/test_pr_report_archive_category.py` | 2 |
+| `tests/test_agent_orchestration.py` | 2 |
+| `tests/test_cli.py` (`test_promote_model_structured_unexpected_error_emits_safe_stack`) | 1 |
+
+**이 목록은 main이 움직이면 낡는다.** 다음 Task 착수 전에 다시 찍고 시점·SHA를 갱신한다.
+
+> 측정 시 주의: 이 값을 잴 때는 작업 중인 변경을 stash해야 한다. 실제로 이 기준을
+> 처음 잴 때 백그라운드 실행 중에 RED 테스트를 추가해 68건으로 오염된 적이 있다
+> (64 baseline + RED 4건). 총계(failed+passed+skipped)가 예상과 다르면 오염을 의심한다.
 - feast 계열 변경이 없으므로 `pytest (feast group)` 별도 실행은 필요 없다.
 
 ## 체크포인트

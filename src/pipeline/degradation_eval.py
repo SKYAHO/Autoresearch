@@ -12,14 +12,19 @@
 조용히 건너뛰지 않고 상태로 남긴다. video feature staleness를 진단 전용 별도 조회로
 측정하고(``resolve_video_feature_snapshot_timestamps``, ``compute_video_staleness_summary``),
 "2개 연속 유효 관측치에서 degraded"인 첫 시점을 찾는다(``detect_degradation_point``).
+열화 판정의 기준선은 ``per_day`` 중 첫 valid 관측치(``resolve_forward_baseline``)이며,
+cutoff 학습의 랜덤 val 지표가 아니다 — 산출 경로가 달라 약 4%p 오프셋이 있어서다
+(#485 §4.3이 선행 spec §2.4를 부분 supersede).
 ``run_rolling_origin``이 cutoff 학습 1회 + 평가일 순회를 오케스트레이션하고, 각 실행의
 산출물을 ``run_root`` 아래 조건·평가일별로 격리해 이전 실행을 덮어쓰지 않는다(fail-closed).
 
 [비책임] 학습(``train.main``)·데이터 조립(``build_training_dataset.main``)·held-out
 ROC-AUC 계산(``evaluate.evaluate_held_out_roc_auc``) 자체는 재구현하지 않고 그대로
 호출한다. 승격 판정(``eligible``/``reject``/``hold``)은
-``src/pipeline/experiment_evaluation.py``(#493 작업 중) 소유이며 이 모듈은 호출·수정하지
-않는다. Plotly 시각화와 공개 CLI 명령은 각각 ``scripts/bench/``, ``src/cli.py``가 담당한다.
+``src/pipeline/experiment_evaluation.py`` 소유이며 이 모듈은 호출·수정하지 않는다
+(#485 §7.1 게이트 — `#425` 신호 필드를 그 스키마에 얹을지는 `#493` 확인 후 결정).
+두 조건(baseline/challenger) 비교와 시간축 paired 계약은 `#514` 소관이다.
+Plotly 시각화와 공개 CLI 명령은 각각 ``scripts/bench/``, ``src/cli.py``가 담당한다.
 """
 
 from __future__ import annotations
@@ -359,13 +364,45 @@ def detect_degradation_point(
     return DegradationPoint(reason="no_degradation_detected")
 
 
+def resolve_forward_baseline(
+    per_day: Sequence[PerDayResult],
+) -> tuple[float | None, int | None]:
+    """열화 판정의 기준선을 ``per_day`` 중 **첫 valid 관측치**에서 뽑는다(#485 §4.3).
+
+    ``baseline_val_roc_auc``(cutoff 학습의 랜덤 val 분할 지표)를 기준선으로 쓰면
+    산출 경로가 달라 오탐이 난다 — 이 저장소 실측에서 랜덤 val이 forward held-out보다
+    약 4%p 높았고(``experiments/2026-07-31_training-window-length/notes.md``),
+    그만큼 ``elapsed_days`` 0~1에서 "열화"로 잘못 잡힌다. 같은 산출 경로(forward
+    held-out)끼리 비교해 그 오프셋을 **정의상 상쇄**한다.
+
+    새 계산 경로가 없다 — ``run_rolling_origin``이 이미 만든 ``per_day`` 값을 읽기만
+    한다. ``PerDayResult``가 ``allow_inf_nan=False``라 여기서 나오는 값은 유한값이거나
+    ``None``임이 스키마로 보장된다(별도 ``math.isfinite`` 검증이 없는 이유).
+
+    Returns:
+        (첫 valid 관측치의 roc_auc, 그 관측치의 elapsed_days). valid가 하나도 없으면
+        ``(None, None)``.
+    """
+    for day in per_day:
+        if day.status == EvaluationStatus.VALID and day.roc_auc is not None:
+            return day.roc_auc, day.elapsed_days
+    return None, None
+
+
 class RollingOriginResult(_ResultModel):
     """``run_rolling_origin`` 실행 하나의 전체 결과(spec §2.2·§2.3)."""
 
     cutoff_date: str
     window_days: int
     horizon_days: int
+    # cutoff 학습의 랜덤 val 지표. **판정에는 쓰지 않는다**(#485 §4.3이 선행 spec §2.4를
+    # 부분 supersede) — 참고용·과거 실행과의 비교용으로 유지한다(하위호환).
     baseline_val_roc_auc: float
+    # 열화 판정의 실제 기준선. per_day 중 첫 valid 관측치의 roc_auc(#485 §4.3).
+    forward_baseline_roc_auc: float | None = None
+    # 그 기준선을 준 관측치의 elapsed_days. 기준선이 어느 날에서 왔는지 사후에
+    # 추적할 수 있어야 한다 — 결손이 앞에 끼면 0이 아닐 수 있다.
+    forward_baseline_source: int | None = None
     min_auc_drop: float
     per_day: list[PerDayResult]
     degradation_point: DegradationPoint
@@ -639,15 +676,26 @@ def run_rolling_origin(
             )
             continue
 
-    degradation_point = detect_degradation_point(
-        per_day, baseline=baseline, min_auc_drop=min_auc_drop
-    )
+    # 판정 기준선은 랜덤 val이 아니라 forward held-out이다(#485 §4.3, 선행 spec §2.4를
+    # 부분 supersede). baseline(=val_roc_auc)은 아래 결과 필드로만 남는다.
+    forward_baseline, forward_baseline_source = resolve_forward_baseline(per_day)
+    if forward_baseline is None:
+        # valid 관측치가 하나도 없으면 비교할 기준선 자체가 없다. detect_degradation_point도
+        # 같은 입력에서 insufficient_valid_points를 내지만, 여기서 먼저 끝내 "기준선 없이
+        # 판정했다"는 상태를 만들지 않는다.
+        degradation_point = DegradationPoint(reason="insufficient_valid_points")
+    else:
+        degradation_point = detect_degradation_point(
+            per_day, baseline=forward_baseline, min_auc_drop=min_auc_drop
+        )
 
     return RollingOriginResult(
         cutoff_date=cutoff_date,
         window_days=window_days,
         horizon_days=horizon_days,
         baseline_val_roc_auc=baseline,
+        forward_baseline_roc_auc=forward_baseline,
+        forward_baseline_source=forward_baseline_source,
         min_auc_drop=min_auc_drop,
         per_day=per_day,
         degradation_point=degradation_point,
