@@ -76,9 +76,8 @@ GCP 인프라는 [`SKYAHO/Autoresearch-infra`](https://github.com/SKYAHO/Autores
 | `ORCH_GITHUB_REPOSITORY` | 발행 대상 저장소(`owner/repo`), 발행 결과 URL과 대조해 오발행을 막음 |
 | `ORCH_GH_TIMEOUT_SEC` | `gh` 서브프로세스 실행 상한(초) |
 | `ORCH_ISSUE_DAILY_LIMIT` | 일일 발행 상한, 초과 시 429 반환 |
-| `ORCH_EXPERIMENT_DATASET_SNAPSHOT` | 서버가 Issue Form에 채우는 데이터셋 스냅샷 |
+| `ORCH_EXPERIMENT_DATASET_SOURCE` | 서버가 Issue Form에 채우는 학습 데이터 출처 좌표. 기간은 발행 시점에 서버가 계산해 붙임(`dt BETWEEN P-30 AND P-1`, 어제까지 30일) |
 | `ORCH_EXPERIMENT_TRAINING_CONFIG_REF` | 서버가 Issue Form에 채우는 학습 설정 참조 |
-| `ORCH_EXPERIMENT_DATASET_WINDOW` | 서버가 Issue Form에 채우는 대상 데이터·기간 |
 
 action log 데이터 레이크는 **일일 슬라이스 파티션**(`dt=D` = KST D일
 하루치, 파티션 간 서로소)으로 적재되며, 피처·학습 소비자는 `dt BETWEEN`

@@ -53,9 +53,8 @@ def experiment_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
     monkeypatch.setattr(main_module, "load_settings", lambda: settings)

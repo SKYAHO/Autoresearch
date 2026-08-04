@@ -64,9 +64,8 @@ class _Settings:
     issue_daily_limit: int = 20
     experiment_defaults: ExperimentDefaults = field(
         default_factory=lambda: ExperimentDefaults(
-            dataset_snapshot="bq://autoresearch/train@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/lgbm-v1.yaml@abc1234",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         )
     )
 

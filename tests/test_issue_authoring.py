@@ -9,6 +9,7 @@ GitHub 발행은 이 모듈의 범위가 아니다 — 조립은 순수 함수�
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 import sys
 import uuid
@@ -33,6 +34,7 @@ from agent_orchestration.app.experiments.issue_authoring import (  # noqa: E402
     build_prompt,
     marker_for,
     parse_llm_fields,
+    training_window,
 )
 from src.pipeline.experiment_evaluation import (  # noqa: E402
     POLICY_SEEDS as ENGINE_POLICY_SEEDS,
@@ -57,10 +59,12 @@ from tools.auto_research_issue_branch import (  # noqa: E402
 
 EXPERIMENT_ID = uuid.UUID("3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d")
 DEFAULTS = ExperimentDefaults(
-    dataset_snapshot="bq://autoresearch/train@2026-07-31",
-    training_config_ref="configs/train/lgbm-v1.yaml@abc1234",
-    dataset_window="- 데이터셋 / 경로: data/train.csv\n- 기간 (KST YYYY-MM-DD ~ YYYY-MM-DD): 2026-07-01 ~ 2026-07-31",
+    dataset_source="feast://feast_offline_store/ctr_training_v1",
+    training_config_ref="src/pipeline/config.yaml@abc1234",
 )
+# 대부분의 테스트는 조립 결과가 파서를 통과하는지만 보므로 고정된 기간을 쓴다.
+# `date.today()`를 부르면 실행 날짜에 따라 값이 흔들린다.
+WINDOW = (date(2026, 7, 1), date(2026, 7, 31))
 
 
 def _fields(**overrides: object) -> LlmIssueFields:
@@ -82,7 +86,7 @@ def _fields(**overrides: object) -> LlmIssueFields:
 
 def test_assembled_body_passes_the_real_parser() -> None:
     """조립 결과가 워크플로가 쓰는 파서를 그대로 통과해야 한다."""
-    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=())
+    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=(), window=WINDOW)
 
     parsed = parse_issue_input(1, build_issue_title(_fields()), body)
 
@@ -92,7 +96,7 @@ def test_assembled_body_passes_the_real_parser() -> None:
 
 def test_assembled_body_uses_the_policy_seed_set() -> None:
     """시드가 어긋나면 모든 실험이 comparison_failed로 끝난다(#493 시나리오 2)."""
-    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=())
+    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=(), window=WINDOW)
 
     parsed = parse_issue_input(1, "[AR] seed", body)
 
@@ -139,6 +143,7 @@ def test_guardrail_fields_round_trip_when_declared() -> None:
         ),
         DEFAULTS,
         allowed_scope=(),
+        window=WINDOW,
     )
 
     parsed = parse_issue_input(1, "[AR] guardrail", body)
@@ -153,6 +158,7 @@ def test_allowed_scope_checkboxes_are_rendered_and_parsed() -> None:
         _fields(),
         DEFAULTS,
         allowed_scope=("prod_model_contract", "promotion"),
+        window=WINDOW,
     )
 
     parsed = parse_issue_input(1, "[AR] scope", body)
@@ -163,7 +169,7 @@ def test_allowed_scope_checkboxes_are_rendered_and_parsed() -> None:
 def test_marker_does_not_change_sealed_identifiers() -> None:
     """marker는 재시도 복구용이며 실험 정의를 바꾸면 안 된다."""
     fields = _fields()
-    with_marker = build_issue_body(EXPERIMENT_ID, fields, DEFAULTS, allowed_scope=())
+    with_marker = build_issue_body(EXPERIMENT_ID, fields, DEFAULTS, allowed_scope=(), window=WINDOW)
     without_marker = with_marker.replace(marker_for(EXPERIMENT_ID) + "\n\n", "")
 
     sealed = parse_issue_input(1, "[AR] marker", with_marker)
@@ -269,7 +275,7 @@ def test_prompt_omits_server_owned_field_names() -> None:
 
 def test_body_covers_every_required_heading() -> None:
     """heading이 빠지면 파서가 fail-closed된다."""
-    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=())
+    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=(), window=WINDOW)
 
     for heading in _HEADING_NAMES:
         if heading == "결과 (에이전트가 채웁니다)":
@@ -279,7 +285,33 @@ def test_body_covers_every_required_heading() -> None:
 
 def test_scope_labels_match_the_parser() -> None:
     """체크박스 label 문자열이 어긋나면 allowed_scope 파싱이 실패한다."""
-    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=())
+    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=(), window=WINDOW)
 
     for label in _SCOPE_LABELS:
         assert f"- [ ] {label}" in body or f"- [x] {label}" in body
+
+
+def test_training_window_follows_the_slice_consumption_contract() -> None:
+    """`dt BETWEEN P-30 AND P-1` — 어제까지 30일.
+
+    오늘 파티션은 아직 채워지는 중이라 포함하지 않는다.
+    """
+    start, end = training_window(date(2026, 8, 4))
+
+    assert end == date(2026, 8, 3)
+    assert start == date(2026, 7, 5)
+    assert (end - start).days + 1 == 30
+
+
+def test_body_renders_the_computed_window_in_both_fields() -> None:
+    """`데이터셋 스냅샷`과 `대상 데이터 · 기간`이 같은 기간을 말해야 한다.
+
+    둘이 어긋나면 사람이 읽는 값과 봉인되는 값이 달라진다.
+    """
+    window = training_window(date(2026, 8, 4))
+    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, (), window)
+
+    parsed = parse_issue_input(1, "[AR] window", body)
+
+    assert parsed.dataset_snapshot.endswith("@2026-07-05..2026-08-03")
+    assert "2026-07-05 ~ 2026-08-03" in parsed.dataset

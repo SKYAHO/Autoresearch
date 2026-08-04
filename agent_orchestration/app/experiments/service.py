@@ -15,6 +15,7 @@ import hashlib
 import json
 import re
 import uuid
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -36,6 +37,7 @@ from agent_orchestration.app.experiments.issue_authoring import (
     build_prompt,
     marker_for,
     parse_llm_fields,
+    training_window,
 )
 from agent_orchestration.app.experiments.models import (
     Experiment,
@@ -62,6 +64,10 @@ from agent_orchestration.app.experiments.schemas import (
     StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.transition_service import validate_transition
+
+# 학습 기간은 KST 날짜 경계로 계산한다. UTC로 계산하면 한국 시각 오전 9시 이전에
+# 발행된 실험이 하루 앞선 구간을 보게 된다.
+_KST = ZoneInfo("Asia/Seoul")
 
 
 @dataclass(frozen=True)
@@ -529,6 +535,7 @@ async def publish_experiment_issue(
             fields,
             settings.experiment_defaults,
             allowed_scope=request.allowed_scope,
+            window=training_window(datetime.now(_KST).date()),
         )
         title = build_issue_title(fields)
         # 이 시점에는 위 조회들이 autobegin으로 이미 transaction을 열어 두었으므로

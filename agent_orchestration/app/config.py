@@ -150,17 +150,13 @@ def load_settings() -> ServiceSettings:
     gh_timeout_sec = _positive_env_int("ORCH_GH_TIMEOUT_SEC", 30)
     issue_daily_limit = _positive_env_int("ORCH_ISSUE_DAILY_LIMIT", 20)
     experiment_defaults = ExperimentDefaults(
-        dataset_snapshot=_require_env(
-            "ORCH_EXPERIMENT_DATASET_SNAPSHOT",
-            os.getenv("ORCH_EXPERIMENT_DATASET_SNAPSHOT"),
+        dataset_source=_require_env(
+            "ORCH_EXPERIMENT_DATASET_SOURCE",
+            os.getenv("ORCH_EXPERIMENT_DATASET_SOURCE"),
         ),
         training_config_ref=_require_env(
             "ORCH_EXPERIMENT_TRAINING_CONFIG_REF",
             os.getenv("ORCH_EXPERIMENT_TRAINING_CONFIG_REF"),
-        ),
-        dataset_window=_require_env(
-            "ORCH_EXPERIMENT_DATASET_WINDOW",
-            os.getenv("ORCH_EXPERIMENT_DATASET_WINDOW"),
         ),
     )
     return ServiceSettings(

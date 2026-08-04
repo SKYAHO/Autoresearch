@@ -19,6 +19,7 @@ API 이미지에 없어 import할 수 없으므로 값을 복제하며, 동일�
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 import json
 import re
@@ -39,6 +40,13 @@ SNAPSHOT_REUSE = "불허 (정규 조립 경로 실패 시 중단)"
 SPLIT_SEED = 20260801
 TEST_SIZE = "0.2"
 VALIDATION_SIZE = "0.2"
+
+# `docs/specs/2026-07-24-action-log-slice-semantics.md`의 소비 계약 `dt BETWEEN P-30
+# AND P-1`을 따른다. 이 값을 바꾸면 발행되는 실험의 학습 구간이 달라진다.
+TRAINING_WINDOW_DAYS = 30
+# `src/pipeline/config.yaml`의 `data.path`와 같은 값이다. 사람이 읽는 설명에만 쓰이고
+# `reproducibility_id` 해시에는 들어가지 않는다.
+DATASET_PATH = "data/processed/training_dataset.csv"
 
 _METRIC_DIRECTIONS = ("higher_is_better", "lower_is_better")
 _NOT_APPLICABLE = "not_applicable"
@@ -146,13 +154,27 @@ class LlmIssueFields(BaseModel):
 
 
 class ExperimentDefaults(BaseModel):
-    """환경마다 달라지는 서버 소유 값."""
+    """환경마다 달라지는 서버 소유 값.
+
+    기간은 여기 두지 않는다 — 고정 문자열로 두면 첫날부터 낡는다.
+    `training_window()`가 발행 시점에 계산한다.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    dataset_snapshot: str = Field(min_length=1, max_length=256)
+    dataset_source: str = Field(min_length=1, max_length=200)
     training_config_ref: str = Field(min_length=1, max_length=256)
-    dataset_window: str = Field(min_length=1)
+
+
+def training_window(today: date) -> tuple[date, date]:
+    """학습 대상 기간을 KST 기준으로 계산한다.
+
+    오늘 파티션은 아직 채워지는 중이므로 어제까지 본다. 시계를 직접 읽지 않고 인자로
+    받는다 — 그래야 테스트가 실행 날짜에 흔들리지 않는다.
+    """
+    end = today - timedelta(days=1)
+    start = end - timedelta(days=TRAINING_WINDOW_DAYS - 1)
+    return start, end
 
 
 def marker_for(experiment_id: uuid.UUID) -> str:
@@ -237,6 +259,7 @@ def build_issue_body(
     fields: LlmIssueFields,
     defaults: ExperimentDefaults,
     allowed_scope: Sequence[str],
+    window: tuple[date, date],
 ) -> str:
     """LLM 값과 서버 소유 값을 heading과 결합해 Issue Form 본문을 만든다."""
     unknown = set(allowed_scope) - set(SCOPE_LABELS)
@@ -249,6 +272,12 @@ def build_issue_body(
         for key, label in SCOPE_LABELS.items()
     )
     seeds = ", ".join(str(seed) for seed in POLICY_SEEDS)
+    window_start, window_end = window
+    dataset_snapshot = f"{defaults.dataset_source}@{window_start}..{window_end}"
+    dataset_window = (
+        f"- 데이터셋 / 경로: {DATASET_PATH}\n"
+        f"- 기간 (KST YYYY-MM-DD ~ YYYY-MM-DD): {window_start} ~ {window_end}"
+    )
     sections: list[tuple[str, str]] = [
         ("연구 가설", fields.hypothesis),
         ("변경할 피처 · 모델", fields.change),
@@ -259,13 +288,13 @@ def build_issue_body(
         ("Guardrail 지표 방향", fields.guardrail_metric_direction),
         ("최대 Guardrail 악화폭", fields.maximum_guardrail_regression),
         ("비교 대상", COMPARISON),
-        ("데이터셋 스냅샷", defaults.dataset_snapshot),
+        ("데이터셋 스냅샷", dataset_snapshot),
         ("랜덤 시드 목록", seeds),
         ("Split 시드", str(SPLIT_SEED)),
         ("Test 비율", TEST_SIZE),
         ("Validation 비율", VALIDATION_SIZE),
         ("학습 설정 참조", defaults.training_config_ref),
-        ("대상 데이터 · 기간", defaults.dataset_window),
+        ("대상 데이터 · 기간", dataset_window),
         ("스냅샷 재사용", SNAPSHOT_REUSE),
         ("허용 범위", scope_lines),
     ]

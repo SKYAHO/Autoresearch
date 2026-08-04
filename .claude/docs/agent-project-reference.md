@@ -91,12 +91,11 @@ docs/
     대조해 오발행을 막음.
   - `ORCH_GH_TIMEOUT_SEC`: `gh` 서브프로세스 실행 상한(초).
   - `ORCH_ISSUE_DAILY_LIMIT`: 일일 발행 상한, 초과 시 429 반환.
-  - `ORCH_EXPERIMENT_DATASET_SNAPSHOT`: 서버가 Issue Form에 채우는 데이터셋
-    스냅샷.
+  - `ORCH_EXPERIMENT_DATASET_SOURCE`: 서버가 Issue Form에 채우는 학습 데이터
+    출처 좌표. 기간은 발행 시점에 서버가 계산해 붙이므로(`dt BETWEEN P-30
+    AND P-1`, 어제까지 30일) 여기에 날짜를 넣지 않음.
   - `ORCH_EXPERIMENT_TRAINING_CONFIG_REF`: 서버가 Issue Form에 채우는 학습
     설정 참조.
-  - `ORCH_EXPERIMENT_DATASET_WINDOW`: 서버가 Issue Form에 채우는 대상
-    데이터·기간.
 
 ### 외부 오케스트레이션 경계
 - DAG와 Airflow 배포는 `Autoresearch-airflow`에만 둡니다.

@@ -46,9 +46,8 @@ _SETTINGS_ENV_VARS = (
     "ORCH_GITHUB_REPOSITORY",
     "ORCH_GH_TIMEOUT_SEC",
     "ORCH_ISSUE_DAILY_LIMIT",
-    "ORCH_EXPERIMENT_DATASET_SNAPSHOT",
+    "ORCH_EXPERIMENT_DATASET_SOURCE",
     "ORCH_EXPERIMENT_TRAINING_CONFIG_REF",
-    "ORCH_EXPERIMENT_DATASET_WINDOW",
 )
 _TEST_API_TOKEN = "test-api-token-must-be-at-least-32-characters"
 
@@ -72,9 +71,10 @@ def _set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
     monkeypatch.setenv("ORCH_GITHUB_TOKEN", "x" * 40)
     monkeypatch.setenv("ORCH_GITHUB_REPOSITORY", "SKYAHO/Autoresearch")
-    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_SNAPSHOT", "bq://a/b@2026-07-31")
+    monkeypatch.setenv(
+        "ORCH_EXPERIMENT_DATASET_SOURCE", "feast://feast_offline_store/ctr_training_v1"
+    )
     monkeypatch.setenv("ORCH_EXPERIMENT_TRAINING_CONFIG_REF", "configs/train/x.yaml@abc")
-    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_WINDOW", "- 데이터셋 / 경로: data/train.csv")
 
 
 def test_load_settings_prefers_orchestration_database_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -417,9 +417,8 @@ def test_generate_response_uses_read_only_ephemeral_codex_cli(
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
@@ -477,9 +476,8 @@ def test_generate_codex_cli_passes_configured_model(monkeypatch: pytest.MonkeyPa
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
@@ -536,9 +534,8 @@ def test_generate_codex_cli_rejects_invalid_process_output(
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
@@ -583,9 +580,8 @@ def test_generate_codex_cli_terminates_process_group_after_timeout(
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
@@ -648,9 +644,8 @@ def test_generate_codex_cli_omits_stderr_from_timeout_logs(
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
@@ -704,9 +699,8 @@ def test_generate_codex_cli_terminates_process_group_when_request_is_cancelled(
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
@@ -861,9 +855,8 @@ def test_main_chat_succeeds_after_mocked_dependencies(monkeypatch: pytest.Monkey
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
 
@@ -918,9 +911,8 @@ def test_main_chat_rejects_missing_api_token(monkeypatch: pytest.MonkeyPatch) ->
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
 
@@ -953,9 +945,8 @@ def test_main_chat_rejects_unknown_request_fields(monkeypatch: pytest.MonkeyPatc
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
 
@@ -1030,9 +1021,8 @@ def test_generate_response_uses_responses_api_for_openai_backend(
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
     received_request: dict[str, object] = {}
@@ -1087,9 +1077,8 @@ def test_generate_openai_response_rejects_incomplete_result(
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
 
@@ -1148,9 +1137,8 @@ def test_main_chat_returns_bad_gateway_when_codex_cli_fails(
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
 
@@ -1191,9 +1179,8 @@ def test_main_chat_returns_service_unavailable_when_runner_is_overloaded(
         gh_timeout_sec=30,
         issue_daily_limit=20,
         experiment_defaults=ExperimentDefaults(
-            dataset_snapshot="bq://a/b@2026-07-31",
+            dataset_source="feast://feast_offline_store/ctr_training_v1",
             training_config_ref="configs/train/x.yaml@abc",
-            dataset_window="- 데이터셋 / 경로: data/train.csv",
         ),
     )
 
@@ -1220,16 +1207,20 @@ def test_issue_publication_settings_are_loaded(monkeypatch: pytest.MonkeyPatch) 
     _set_required_env(monkeypatch)
     monkeypatch.setenv("ORCH_GITHUB_TOKEN", "x" * 40)
     monkeypatch.setenv("ORCH_GITHUB_REPOSITORY", "SKYAHO/Autoresearch")
-    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_SNAPSHOT", "bq://a/b@2026-07-31")
+    monkeypatch.setenv(
+        "ORCH_EXPERIMENT_DATASET_SOURCE", "feast://feast_offline_store/ctr_training_v1"
+    )
     monkeypatch.setenv("ORCH_EXPERIMENT_TRAINING_CONFIG_REF", "configs/train/x.yaml@abc")
-    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_WINDOW", "- 데이터셋 / 경로: data/train.csv")
 
     settings = load_settings()
 
     assert settings.github_repository == "SKYAHO/Autoresearch"
     assert settings.gh_timeout_sec == 30
     assert settings.issue_daily_limit == 20
-    assert settings.experiment_defaults.dataset_snapshot == "bq://a/b@2026-07-31"
+    assert (
+        settings.experiment_defaults.dataset_source
+        == "feast://feast_offline_store/ctr_training_v1"
+    )
 
 
 def test_github_repository_must_be_owner_slash_repo(
@@ -1239,9 +1230,10 @@ def test_github_repository_must_be_owner_slash_repo(
     _set_required_env(monkeypatch)
     monkeypatch.setenv("ORCH_GITHUB_TOKEN", "x" * 40)
     monkeypatch.setenv("ORCH_GITHUB_REPOSITORY", "Autoresearch")
-    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_SNAPSHOT", "bq://a/b@2026-07-31")
+    monkeypatch.setenv(
+        "ORCH_EXPERIMENT_DATASET_SOURCE", "feast://feast_offline_store/ctr_training_v1"
+    )
     monkeypatch.setenv("ORCH_EXPERIMENT_TRAINING_CONFIG_REF", "configs/train/x.yaml@abc")
-    monkeypatch.setenv("ORCH_EXPERIMENT_DATASET_WINDOW", "- 데이터셋 / 경로: data/train.csv")
 
     with pytest.raises(ValueError, match="ORCH_GITHUB_REPOSITORY"):
         load_settings()
