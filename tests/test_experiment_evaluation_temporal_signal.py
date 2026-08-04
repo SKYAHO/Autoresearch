@@ -131,3 +131,16 @@ def test_robustness_note_records_low_confidence_reason():
 
 def test_robustness_note_is_none_when_nothing_to_flag():
     assert _signal().robustness_note is None
+
+
+def test_rejects_recent_window_days_below_one():
+    """`summarize_valid_roc_auc`와 같은 가드(PR #527 리뷰 Low#3).
+
+    `RollingOriginResult.recent_window_days`에 `ge=1` 제약이 없어 JSON 왕복이나 손으로
+    조립한 결과로 0이 들어올 수 있다. 그러면 밀도 임계값이 `valid_day_count < 2`로
+    느슨해져 신뢰도가 **올라가는** 방향이라 조용히 넘기면 안 된다.
+    """
+    import pytest
+
+    with pytest.raises(ValueError, match="recent_window_days"):
+        _signal(recent_window_days=0)

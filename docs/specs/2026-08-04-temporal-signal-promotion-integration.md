@@ -300,6 +300,17 @@ not_applicable ⟸ 어느 한쪽이 None
 `degradation_eval`을 import하면 `train` → lightgbm이 딸려와, 경량이어야 할 판정
 경로에 ML 의존이 들어온다.
 
+**이 spec은 스키마 자리까지만 소유한다 — 프로덕션 배선은 범위 밖이다**
+(PR #527 리뷰 Medium#2). `paired_experiment.py`의 `evaluate_experiment` 호출은
+`temporal_signal`을 넘기지 않고, `PairedExperimentResult`·`PromotionDecision`에도 이
+필드가 없다(코드 확인). 따라서 이 spec 구현 직후 필드는 **항상 `None`**이며, 값이
+채워지는 경로는 결과를 직접 조립하는 호출부(측정 리포트·수동 분석)뿐이다.
+
+배선을 미루는 이유는 "어떤 rolling-origin 실행을 어떤 실험의 판정에 붙이는가"라는
+짝짓기 계약이 필요한데, 그것이 곧 §2에서 `#514`로 이관한 시간축 paired 계약이기
+때문이다. 짝짓기 규칙 없이 배선하면 아무 측정이나 아무 판정에 붙는 경로가 먼저
+생긴다. `#514` 확정 후 `#472`가 발행 payload에 싣는다.
+
 **`evaluation_id` 해시 payload에는 넣지 않는다 — 뒤집힐 수 있는 결정이다.**
 `temporal_signal`은 `verdict`에 영향을 주지 않는 **병기 신호**이므로(`#506`이 grouped
 ROC-AUC를 병기만 한 것과 같은 결), 같은 통계·같은 판정이면 temporal 유무와 무관하게

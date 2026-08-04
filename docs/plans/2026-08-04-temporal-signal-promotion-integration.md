@@ -159,9 +159,31 @@ spec §6 표에서 **`condition_mismatch`를 제외한 4개**만 구현한다(�
   `degradation_eval.temporal_signal_inputs`.
 
 이 Task로 이 plan의 Task 1~4는 모두 끝난다. **`#485`에 남는 것**은 이 plan의 범위
-제외 항목뿐이다 — `#514`(두 조건 확장), spec §7.2(video staleness, bbungjun님 확인
+제외 항목이다 — `#514`(두 조건 확장), spec §7.2(video staleness, bbungjun님 확인
 대기), spec §7.3(`safety_margin_days`/`recent_window_days`/`min_auc_drop` 값 확정,
-GCP 실측 선행).
+GCP 실측 선행), 그리고 아래 **프로덕션 배선**.
+
+### Task 4가 남기는 공백 — 프로덕션 배선 (PR #527 리뷰 Medium#2)
+
+**필드는 만들었지만 채워지는 경로도, 밖으로 나가는 경로도 아직 없다.** 코드 확인:
+
+- `paired_experiment.py:488`의 `evaluate_experiment` 호출은 `temporal_signal`을
+  넘기지 않는다(이 저장소의 유일한 프로덕션 호출부다).
+- `PairedExperimentResult`에 `temporal_signal`이 없다(`grep` 0건). `PromotionDecision`,
+  `promotion_gate.py`도 마찬가지다.
+
+즉 지금은 `ExperimentEvaluation.temporal_signal`이 항상 `None`이고,
+`summarize_temporal_signal`을 부르는 프로덕션 코드가 없다. **이 plan은 §5의 "판정
+산출물 스키마에 자리를 만드는 것"까지만 소유하고, 그 자리를 채우는 배선은 소유하지
+않는다.**
+
+미룬 이유: 배선은 "어떤 rolling-origin 실행 결과를 어떤 실험의 판정에 붙일 것인가"를
+정해야 하는데, 그 짝짓기 계약이 곧 `#514`(시간축 paired 계약, spec §2)다. 짝짓기
+규칙 없이 배선하면 "아무 측정이나 아무 판정에 붙는" 경로가 먼저 생긴다.
+
+**소비자에게 넘기는 것**: `#514`가 짝짓기를 확정한 뒤, `#472`가 `PairedExperimentResult`
+발행 payload에 이 필드를 싣는다. 그 전까지 이 필드는 **직접 조립하는 호출부(측정
+리포트·수동 분석)에서만** 관측된다.
 
 ## 전체 검증
 

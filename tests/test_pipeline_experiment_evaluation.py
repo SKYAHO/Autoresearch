@@ -10,9 +10,12 @@ from pydantic import ValidationError
 
 from src.pipeline import experiment_evaluation
 from src.pipeline.experiment_evaluation import (
+    EvaluationConfidence,
     EvaluationReasonCode,
     EvaluationVerdict,
+    ExperimentEvaluation,
     PairedSeedObservation,
+    TemporalSignal,
     PromotionDecisionRecord,
     create_experiment_plan,
     create_paired_seed_evidence,
@@ -575,3 +578,87 @@ def test_decision_record_is_deterministic_and_excludes_registry_coordinates() ->
     assert record.decision.evaluation_id == record.evaluation.evaluation_id
     assert '"tracking_uri"' not in record.model_dump_json()
     assert '"champion_alias"' not in record.model_dump_json()
+
+
+# ---------------------------------------------------------------------------
+# #485 §5.3 안 A — 스키마 부착 계약 (PR #527 리뷰 Medium#1)
+#
+# `summarize_temporal_signal`의 산출 규칙은 test_experiment_evaluation_temporal_signal.py가
+# 덮는다. 여기서 고정하는 것은 그 결과가 **판정 산출물에 실려 나가는지**다 — 규칙이
+# 맞아도 전파가 빠지면 필드는 영원히 None이고, 그 상태를 잡는 테스트가 없었다.
+# ---------------------------------------------------------------------------
+
+
+def _temporal_signal(
+    confidence: EvaluationConfidence = EvaluationConfidence.MEDIUM,
+) -> TemporalSignal:
+    return TemporalSignal(confidence=confidence, robustness_note="관측 밀도가 낮습니다.")
+
+
+def test_temporal_signal_rides_on_a_normal_evaluation() -> None:
+    store, receipt = _published_plan_store()
+    evidence = _evidence(receipt, store=store)
+    signal = _temporal_signal()
+
+    evaluation = evaluate_experiment(
+        evidence,
+        promotion_evidence_store=store,
+        evaluated_at=PLAN_TIME,
+        temporal_signal=signal,
+    )
+
+    assert evaluation.temporal_signal == signal
+    # 병기 신호이지 판정 입력이 아니다 — verdict·reason_codes는 그대로여야 한다.
+    assert evaluation.verdict is EvaluationVerdict.ELIGIBLE
+    assert evaluation.reason_codes == (
+        EvaluationReasonCode.PRIMARY_ROC_AUC_IMPROVED_WITH_95PCT_CONFIDENCE,
+    )
+
+
+def test_temporal_signal_rides_on_a_failed_evaluation_too() -> None:
+    """hold 경로에서도 버리지 않는다 — 호출 지점 4곳 중 하나만 빠져도 여기서 걸린다."""
+    store, receipt = _published_plan_store()
+    evidence = _evidence(receipt, store=store, seeds=tuple(range(43, 73)))
+    signal = _temporal_signal()
+
+    evaluation = evaluate_experiment(
+        evidence,
+        promotion_evidence_store=store,
+        evaluated_at=PLAN_TIME,
+        temporal_signal=signal,
+    )
+
+    assert evaluation.verdict is EvaluationVerdict.HOLD
+    assert evaluation.reason_codes == (EvaluationReasonCode.SEED_POLICY_MISMATCH,)
+    # 판정에 실패했다고 해서 호출부가 준 관측을 조용히 버리지 않는다.
+    assert evaluation.temporal_signal == signal
+
+
+def test_temporal_signal_does_not_change_evaluation_id() -> None:
+    """해시 payload 제외 결정의 회귀 가드(spec §5.3).
+
+    `_stable_id` payload를 나중에 `_model_payload(evaluation)` 같은 형태로 리팩터링하면
+    이 결정이 조용히 뒤집힌다. 같은 증거·같은 통계면 temporal 유무·내용과 무관하게
+    같은 id여야 한다.
+    """
+    store, receipt = _published_plan_store()
+    evidence = _evidence(receipt, store=store)
+
+    def _evaluate(signal: TemporalSignal | None) -> ExperimentEvaluation:
+        return evaluate_experiment(
+            evidence,
+            promotion_evidence_store=store,
+            evaluated_at=PLAN_TIME,
+            temporal_signal=signal,
+        )
+
+    without = _evaluate(None)
+    medium = _evaluate(_temporal_signal(EvaluationConfidence.MEDIUM))
+    high = _evaluate(_temporal_signal(EvaluationConfidence.HIGH))
+
+    assert without.evaluation_id == medium.evaluation_id == high.evaluation_id
+    # 같은 id를 쓰는 소비자(PairedExperimentResult, #472)도 같은 값을 본다.
+    assert (
+        decide_promotion(without, decided_at=PLAN_TIME).evaluation_id
+        == decide_promotion(high, decided_at=PLAN_TIME).evaluation_id
+    )

@@ -210,11 +210,33 @@ def summarize_temporal_signal(
         ``confidence``/``robustness_note``/``direction_vs_offline_metric``.
         ``disagree``나 ``low``는 **실패가 아니다** — 예외를 던지지 않고 정상 종료한다
         (`#425` 완료 조건).
+
+    Raises:
+        ValueError: ``recent_window_days``가 1 미만일 때.
     """
+    # `summarize_valid_roc_auc`(PR #520 리뷰 Medium#4)와 같은 가드를 여기에도 둔다
+    # (PR #527 리뷰 Low#3). `RollingOriginResult.recent_window_days`에는 `ge=1` 제약이
+    # 없어 JSON 왕복이나 손으로 조립한 결과로 0이 들어올 수 있는데, 그러면 아래 밀도
+    # 임계값이 `valid_day_count < 2`로 조용히 느슨해져 `high`가 더 쉽게 나온다.
+    # 잘못된 입력을 낮은 신뢰도가 아니라 **더 높은** 신뢰도로 바꾸는 방향이라 막는다.
+    if recent_window_days < 1:
+        raise ValueError("recent_window_days는 1 이상이어야 합니다")
+
     notes: list[str] = []
 
     if offline_primary_delta is None or temporal_delta is None:
         direction = SignalDirection.NOT_APPLICABLE
+    # `> 0` 하나로 갈라 `0.0`과 `-0.0`을 모두 "양수 아님"에 묶는다(PR #527 이해도 확인 1).
+    # 의도한 동작이다 — delta의 의미는 "개선했는가"이고, 개선하지 못한 것(`0.0`)은
+    # 악화(`-0.05`)와 같은 편에 서는 게 맞다. `0.0`을 제3의 상태로 두면 부동소수 연산
+    # 결과가 정확히 `0.0`이냐 `1e-18`이냐에 따라 판정이 갈리는데, 그 차이는 실험적으로
+    # 의미가 없다. `-0.0 > 0`도 `False`라 부호 붙은 0도 같은 편에 들어간다.
+    #
+    # 결과적으로 `offline=0.0, temporal=-0.05`는 `agree`(둘 다 개선 못 함),
+    # `offline=0.0, temporal=+0.05`는 `disagree`(한쪽만 개선)가 된다.
+    # `#514`에서 이 값이 판정 입력이 되면 전자는 "둘 다 개선 없음"으로 기각 근거가,
+    # 후자는 `robustness_note`가 붙은 낮은 신뢰도 결과가 된다 — 어느 쪽도 자동 승격이
+    # 아니므로 이 경계가 승격을 느슨하게 만들지는 않는다.
     elif (offline_primary_delta > 0) == (temporal_delta > 0):
         direction = SignalDirection.AGREE
     else:
@@ -225,6 +247,19 @@ def summarize_temporal_signal(
         )
 
     # low가 medium을 이긴다 — 두 조건이 동시 성립하면 신뢰도를 과대평가하지 않는다.
+    #
+    # spec §5.1은 이 조건을 `hard_retrain_limit_days is not None AND elapsed_days <= 1`로
+    # 적었는데 여기서는 앞 절을 `degradation_elapsed_days is not None`으로 쓴다 —
+    # `derive_hard_retrain_limit`의 반환 경로상 동치이기 때문이다(PR #527 이해도 확인 2).
+    #   - `degradation_point`가 없으면 `limit_days=None`(`no_degradation_observed_within_horizon`
+    #     또는 `insufficient_valid_points`)이므로 두 조건 모두 거짓이다.
+    #   - `degradation_point`가 있으면 `limit_days`는 양수이거나 `0`으로 clamp된
+    #     (`safety_margin_exceeds_degradation_point`) 값이며, **둘 다 `None`이 아니다.**
+    #     즉 `elapsed_days`가 있는데 `limit_days`만 `None`인 경우는 없다.
+    # 동치가 깨지려면 `derive_hard_retrain_limit`이 `degradation_point`가 있는데도
+    # `limit_days=None`을 내는 경로를 새로 만들어야 한다. 그때 이 함수는 `low`여야 할
+    # 결과를 `medium`/`high`로 **올려서** 내보내므로, 증상이 "예외"가 아니라 "조용한
+    # 신뢰도 과대평가"로 나타난다. 그래서 인자로 받지 않고 여기 근거를 남긴다.
     if degradation_elapsed_days is not None and degradation_elapsed_days <= 1:
         confidence = EvaluationConfidence.LOW
         notes.append(
