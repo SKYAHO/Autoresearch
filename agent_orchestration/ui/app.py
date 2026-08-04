@@ -30,6 +30,7 @@ from agent_orchestration.ui.state import (
     append_event_page,
     append_log_page,
     clear_activity_cache,
+    merge_steps,
     record_detail_error,
     record_list_error,
     record_terminal_refresh,
@@ -114,8 +115,14 @@ def refresh_selected_experiment(client: ExperimentClient, state: WorkbenchState)
     try:
         events, event_cursor = client.get_events(state.selected_id, state.event_cursor)
         logs, log_cursor = client.get_logs(state.selected_id, state.log_cursor)
+        # Step은 갱신 사이에 cursor를 들고 가지 않고 매번 처음부터 다시 읽는다. Step은
+        # PATCH로 갱신되는 mutable 리소스인데, cursor는 `after_id` **뒤의** row만 돌려주므로
+        # 이미 받은 Step의 상태 변화(STARTED -> COMPLETED)를 영원히 관측하지 못한다.
+        # 페이지 넘김은 client가 한 번의 갱신 안에서 처리한다.
+        steps, steps_truncated = client.get_steps(state.selected_id)
         append_event_page(state, events, event_cursor)
         append_log_page(state, logs, log_cursor)
+        merge_steps(state, steps, truncated=steps_truncated)
     except ApiNotFoundError:
         try:
             state.experiment = client.get_experiment(state.selected_id)

@@ -59,7 +59,9 @@ def test_initial_migration_offline_sql_contains_workbench_contract() -> None:
     config.set_main_option("sqlalchemy.url", "postgresql+psycopg://offline")
     config.output_buffer = output
 
-    command.upgrade(config, "head", sql=True)
+    # `head`가 아니라 revision을 고정한다 — 이 테스트는 초기 migration의 계약을 보며,
+    # `head`로 두면 migration이 추가될 때마다 아래 개수 단언이 깨진다.
+    command.upgrade(config, "0001_experiment_tables", sql=True)
 
     sql = output.getvalue()
     assert "CREATE TABLE experiments" in sql
@@ -70,6 +72,28 @@ def test_initial_migration_offline_sql_contains_workbench_contract() -> None:
     assert "CONSTRAINT uq_experiment_events_idempotency" in sql
     assert "CONSTRAINT uq_experiment_logs_idempotency" in sql
     assert "CONSTRAINT ck_experiment_status_valid" in sql
+
+
+def test_step_migration_offline_sql_contains_step_contract() -> None:
+    """Step 테이블의 CHECK·멱등 제약·3컬럼 polling index가 빠지는 회귀를 잡는다."""
+    output = StringIO()
+    config = Config(str(_REPO_ROOT / "agent_orchestration" / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", "postgresql+psycopg://offline")
+    config.output_buffer = output
+
+    command.upgrade(config, "head", sql=True)
+
+    sql = output.getvalue()
+    assert "CREATE TABLE experiment_steps" in sql
+    assert "CONSTRAINT uq_experiment_steps_idempotency" in sql
+    assert "CONSTRAINT ck_experiment_step_kind_valid" in sql
+    assert "CONSTRAINT ck_experiment_step_status_valid" in sql
+    # events/logs의 2컬럼 인덱스와 달리 id를 포함해야 cursor keyset을 정확히 덮는다.
+    assert (
+        "CREATE INDEX ix_steps_experiment_created "
+        "ON experiment_steps (experiment_id, created_at, id)"
+    ) in sql
+    assert "ON DELETE CASCADE" in sql
 
 
 def test_offline_migration_does_not_disable_existing_application_loggers() -> None:

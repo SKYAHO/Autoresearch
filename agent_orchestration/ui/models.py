@@ -39,6 +39,21 @@ _STATUS_LABELS = {
     "PROMOTED": "prod 승격 완료",
 }
 
+_STEP_KIND_LABELS = {
+    "FEATURE_ASSEMBLY": "피처 조립",
+    "FEATURE_DERIVE": "파생 피처 생성",
+    "TRAIN": "학습",
+    "EVALUATE": "평가",
+    "OTHER": "기타",
+}
+
+_STEP_STATUS_COLORS = {
+    "STARTED": "#6B7280",
+    "PROGRESS": "#2563EB",
+    "COMPLETED": "#16724A",
+    "FAILED": "#B42318",
+}
+
 _STATUS_COLORS = {
     "CREATED": "#6B7280",
     "RUNNING": "#2563EB",
@@ -149,6 +164,59 @@ class Log:
             content=str(payload["content"]),
             created_at=_timestamp(payload["created_at"]),
         )
+
+
+@dataclass(frozen=True)
+class Step:
+    """에이전트 작업 단계 화면 모델."""
+
+    id: str
+    experiment_id: str
+    step_kind: str
+    step_type: str
+    status: str
+    message: str | None
+    target: dict[str, object] | None
+    created_at: datetime
+    updated_at: datetime
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "Step":
+        """Step API JSON을 검증해 모델로 변환한다."""
+        return cls(
+            id=str(payload["id"]),
+            experiment_id=str(payload["experiment_id"]),
+            step_kind=str(payload["step_kind"]),
+            step_type=str(payload["step_type"]),
+            status=str(payload["status"]),
+            message=(
+                str(payload["message"]) if payload.get("message") is not None else None
+            ),
+            target=_mapping(payload.get("target"), "target"),
+            created_at=_timestamp(payload["created_at"]),
+            updated_at=_timestamp(payload["updated_at"]),
+        )
+
+    @property
+    def display_line(self) -> str:
+        """한 줄 표시 문구.
+
+        `message`는 선택이고 PATCH 전체 교체로 `null`이 될 수 있으므로, 없으면
+        `step_kind`·`step_type` 라벨로 대신한다 — 표시가 비는 경우는 없다.
+        """
+        if self.message:
+            return self.message
+        return f"{step_kind_label(self.step_kind)} · {self.step_type}"
+
+
+def step_kind_label(step_kind: str) -> str:
+    """Step 대분류를 사람이 읽을 수 있는 한국어 문구로 반환한다."""
+    return _STEP_KIND_LABELS.get(step_kind, step_kind)
+
+
+def step_status_color(step_status: str) -> str:
+    """Step 진행 상태를 배지 색상으로 반환한다."""
+    return _STEP_STATUS_COLORS.get(step_status, "#334155")
 
 
 def status_label(status: str) -> str:

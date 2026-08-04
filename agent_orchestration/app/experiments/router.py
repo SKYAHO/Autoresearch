@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
 from agent_orchestration.app.database import get_db_session
-from agent_orchestration.app.experiments.models import ExperimentStatus
+from agent_orchestration.app.experiments.models import ExperimentStatus, StepKind
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
     ExperimentEventCreate,
@@ -26,6 +26,10 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentMetadataResponse,
     ExperimentPageResponse,
     ExperimentResponse,
+    ExperimentStepCreate,
+    ExperimentStepPageResponse,
+    ExperimentStepResponse,
+    ExperimentStepUpdate,
     PromotionRequest,
     StatusUpdateRequest,
 )
@@ -33,13 +37,16 @@ from agent_orchestration.app.experiments.service import (
     create_experiment,
     create_experiment_event,
     create_experiment_log,
+    create_experiment_step,
     get_experiment,
     get_experiment_metadata,
     list_experiment_events,
     list_experiment_logs,
+    list_experiment_steps,
     list_experiments,
     promote_experiment,
     update_experiment_status,
+    update_experiment_step,
 )
 from agent_orchestration.app.schemas import ErrorResponse
 
@@ -161,6 +168,70 @@ def post_experiment_log(
 ) -> ExperimentLogResponse:
     """상태와 무관한 멱등 실행 Log를 추가한다."""
     return ExperimentLogResponse.model_validate(create_experiment_log(session, experiment_id, request))
+
+
+@router.post(
+    "/{experiment_id}/steps",
+    response_model=ExperimentStepResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE, **_CONFLICT_RESPONSE},
+)
+def post_experiment_step(
+    experiment_id: uuid.UUID,
+    request: ExperimentStepCreate,
+    session: SessionDependency,
+) -> ExperimentStepResponse:
+    """실험 상태와 무관한 멱등 작업 단계를 추가한다."""
+    return ExperimentStepResponse.model_validate(
+        create_experiment_step(session, experiment_id, request)
+    )
+
+
+@router.get(
+    "/{experiment_id}/steps",
+    response_model=ExperimentStepPageResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+)
+def get_experiment_steps(
+    experiment_id: uuid.UUID,
+    session: SessionDependency,
+    limit: int = Query(default=100, ge=1, le=100),
+    after_id: uuid.UUID | None = Query(default=None),
+    step_kind: StepKind | None = Query(default=None),
+) -> ExperimentStepPageResponse:
+    """1초 polling에 쓸 새 Step page를 조회한다."""
+    page = list_experiment_steps(
+        session,
+        experiment_id,
+        limit=limit,
+        after_id=after_id,
+        step_kind=step_kind,
+    )
+    return ExperimentStepPageResponse(
+        items=[ExperimentStepResponse.model_validate(item) for item in page.items],
+        next_cursor=page.next_cursor,
+    )
+
+
+@router.patch(
+    "/{experiment_id}/steps/{step_id}",
+    response_model=ExperimentStepResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE, **_CONFLICT_RESPONSE},
+)
+def patch_experiment_step(
+    experiment_id: uuid.UUID,
+    step_id: uuid.UUID,
+    request: ExperimentStepUpdate,
+    session: SessionDependency,
+) -> ExperimentStepResponse:
+    """작업 단계를 전체 교체로 갱신한다.
+
+    부분 병합이 아니다 — 요청에 없는 선택적 필드는 `null`로 갱신된다. 터미널로 확정된
+    Step에는 같은 payload 재시도만 `200`으로 통과하고 다른 payload는 `409`다.
+    """
+    return ExperimentStepResponse.model_validate(
+        update_experiment_step(session, experiment_id, step_id, request)
+    )
 
 
 @router.get(
