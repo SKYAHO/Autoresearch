@@ -18,6 +18,8 @@ from src.pipeline.degradation_eval import (  # noqa: E402
     PerDayResult,
     RollingOriginResult,
     compute_min_auc_drop,
+    resolve_forward_baseline,
+    summarize_valid_roc_auc,
     derive_hard_retrain_limit,
     detect_degradation_point,
 )
@@ -215,6 +217,17 @@ def test_derive_hard_retrain_limit_clamps_negative_to_zero():
     assert limit.reason == "safety_margin_exceeds_degradation_point"
 
 
+def test_derive_hard_retrain_limit_rejects_negative_safety_margin():
+    """PR #520 리뷰 이해도 확인 — 음수면 limit_days > elapsed_days가 되고 reason도 None.
+
+    소비자(`#472`)가 잘못된 입력이었음을 알 방법이 없으므로 입력에서 막는다.
+    """
+    result = _result_with(DegradationPoint(elapsed_days=7, date="2026-07-27"))
+
+    with pytest.raises(ValueError, match="safety_margin_days"):
+        derive_hard_retrain_limit(result, safety_margin_days=-3)
+
+
 def test_derive_hard_retrain_limit_does_not_compute_next_retrain_at():
     # last_trained_at은 이 모듈이 모르는 값이다 — #472가 게이트에서 조합한다.
     limit = derive_hard_retrain_limit(
@@ -223,3 +236,74 @@ def test_derive_hard_retrain_limit_does_not_compute_next_retrain_at():
     )
 
     assert not hasattr(limit, "next_retrain_at")
+
+
+# ============================================================================
+# PR #520 리뷰 — summarize_valid_roc_auc 입력 검증과 정렬 전제 (Medium#4, Low#7·#8)
+# ============================================================================
+
+
+def _scored(elapsed: int, roc_auc: float | None, status=EvaluationStatus.VALID):
+    return PerDayResult(
+        date=f"2026-07-{20 + elapsed:02d}",
+        elapsed_days=elapsed,
+        status=status,
+        roc_auc=roc_auc,
+    )
+
+
+def test_summarize_rejects_non_positive_recent_window():
+    """recent_window_days<=0이 조용히 틀린 값을 만들던 결함(리뷰 Medium#4).
+
+    0이면 valid_scores[-0:]가 전체 리스트가 되어 recent==overall이 되고, 음수면
+    앞쪽을 잘라낸 나머지 평균이 "최근 성능"으로 나간다 — 둘 다 None도 예외도 아니라
+    소비자가 잘못을 알 수 없다.
+    """
+    days = [_scored(i, 0.70 + i * 0.01) for i in range(5)]
+
+    for bad in (0, -2):
+        with pytest.raises(ValueError, match="recent_window_days"):
+            summarize_valid_roc_auc(days, recent_window_days=bad)
+
+
+def test_summarize_excludes_valid_days_without_score():
+    # VALID인데 roc_auc가 None인 행은 평균에 못 들어간다(리뷰 Low#7 — 술어 통일).
+    days = [_scored(0, 0.80), _scored(1, None), _scored(2, 0.70)]
+
+    overall, recent = summarize_valid_roc_auc(days, recent_window_days=2)
+
+    assert overall == pytest.approx(0.75)
+    assert recent == pytest.approx(0.75)
+
+
+def test_summarize_orders_by_elapsed_days_not_list_order():
+    """리뷰 Low#8 — "최근"이 리스트 꼬리가 아니라 elapsed_days 기준이어야 한다.
+
+    JSON 왕복이나 hand-built 결과를 받는 #472/#514 경로에서는 리스트 순서가
+    보장되지 않는다.
+    """
+    shuffled = [_scored(2, 0.70), _scored(0, 0.90), _scored(1, 0.80)]
+
+    overall, recent = summarize_valid_roc_auc(shuffled, recent_window_days=2)
+
+    assert overall == pytest.approx(0.80)
+    # elapsed_days 기준 최근 2개는 1일차(0.80)·2일차(0.70)다.
+    assert recent == pytest.approx(0.75)
+
+
+def test_resolve_forward_baseline_orders_by_elapsed_days():
+    shuffled = [_scored(2, 0.70), _scored(0, 0.90), _scored(1, 0.80)]
+
+    baseline, source = resolve_forward_baseline(shuffled)
+
+    assert baseline == pytest.approx(0.90)
+    assert source == 0
+
+
+def test_resolve_forward_baseline_skips_valid_day_without_score():
+    days = [_scored(0, None), _scored(1, 0.80)]
+
+    baseline, source = resolve_forward_baseline(days)
+
+    assert baseline == pytest.approx(0.80)
+    assert source == 1

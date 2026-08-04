@@ -191,6 +191,26 @@ forward_baseline_source   # 신규 — 그 값을 준 elapsed_days(없으면 Non
 `> [!IMPORTANT] **[부분 supersede — #485, 2026-08-04]**` 블록을 함께 남긴다.
 `run_rolling_origin` 실행 기록이 0건인 시점의 개정이라 소급 영향이 없다.
 
+#### 남은 트레이드오프 — 기준선이 단일 관측치다 (PR #520 리뷰 Low#6)
+
+기준선이 다수 행의 val 분할에서 **평가일 관측치 1개**로 바뀌었다. 4%p 계통 오프셋을
+없앤 대신, **그날의 표본 변동이 기준선에 그대로 실린다**. `min_auc_drop`은
+`compute_min_auc_drop`이 시드 간 변동폭(`k × seed_std`)으로 calibration한 값인데, 그
+전제(기준선이 안정적)가 약해진 셈이다.
+
+`#425` 배경(round_002)에서 "격차가 임계값의 2.6배였는데도 신뢰할 수 없었던 원인이 표본
+민감도"였던 것과 같은 종류의 위험이다. 이 spec은 그래서:
+
+- `forward_baseline_source`를 결과에 남겨 **어느 날이 기준선이 됐는지** 사후 추적을
+  가능하게 한다. 결손이 앞에 끼면 0이 아닐 수 있고, 그 날이 이미 떨어진 지점이면
+  threshold 전체가 낮게 잡힌다.
+- `degradation_point.elapsed_days <= 1`이면 `confidence=low`로 낮춘다(§5.1) — 표본
+  1~2개짜리 판정을 높은 신뢰도로 내보내지 않는다.
+
+**후속 과제**: "첫 K개 유효일 평균"을 기준선으로 쓰는 안은 열화가 K일 안에 시작되면
+기준선 자체가 오염되는 문제가 있어 이번 범위에서 채택하지 않았다. 실측 데이터가 쌓인
+뒤 `forward_baseline_source` 분포를 보고 재검토한다.
+
 ## 5. `#425` 다중 신호 판정 연결
 
 `#425` 완료 조건이 요구하는 필드를 temporal signal에 맞춰 채운다.
@@ -263,10 +283,21 @@ not_applicable ⟸ 어느 한쪽이 None
 | 조건 | 탐지 방법 | reason code(가칭) | 담당 |
 | --- | --- | --- | --- |
 | 데이터 부족 | 유효 평가일 < 2 | `temporal_insufficient_valid_points` | 이 spec |
-| 미래 구간 누락 | `per_day` 길이 < `horizon_days` | `temporal_horizon_incomplete` | 이 spec |
+| 미래 구간 누락 | `per_day` 길이 < `horizon_days` **또는 꼬리가 `missing_date`** | `temporal_horizon_incomplete` | 이 spec |
 | 시간 순서 위반 | `training_window` 종료일 >= `cutoff_date` | `temporal_ordering_violated` | 이 spec |
 | temporal evidence 부재 | `RollingOriginResult` 자체가 없음 | `temporal_evidence_missing` | 이 spec |
 | feature snapshot 불일치 | 두 조건의 cutoff·window·horizon·snapshot·split·seed 중 상이 | `temporal_condition_mismatch` | **`#514`**(두 조건 비교가 전제) |
+
+**"미래 구간 누락"이 길이 검사만으로는 안 잡히는 이유** (PR #520 리뷰 Medium#3):
+`run_rolling_origin`은 모든 평가일에 대해 `PerDayResult`를 **반드시 하나씩** append하므로
+(실패해도 `best_effort=True`면 `evaluation_failed`, `False`면 예외로 결과 자체가 안 생김),
+정상 산출물에서 `len(per_day) < horizon_days`는 성립하지 않는다 — 그 검사는 hand-built
+결과에 대한 심층 방어일 뿐이다. 실제 운영 케이스는 **꼬리가 `missing_date`로 채워지는 것**이다:
+`cutoff+H`가 아직 지나지 않았거나 데이터 레이크가 뒤처진 시점에 실행하면 길이 검사를
+통과해버리고, 앞쪽 유효일이 2개 이상이면 hold도 안 걸린 채 **잘린 구간 위에서 계산된**
+평균·열화 시점이 그대로 나간다. 그래서 꼬리 결손도 같은 사유로 잡는다.
+
+중간 결손은 여기 해당하지 않는다 — 관측이 horizon 끝까지 도달했기 때문이다.
 
 **"시간 순서 위반"의 실제 의미**: 선행 spec §2.1이 학습 구간을 `[cutoff-W, cutoff)`로
 고정하고 `events_end_date = cutoff - 1일`로 환산하므로, 정상 경로에서는 이 위반이 나올
@@ -324,7 +355,7 @@ staleness 없이도 §3~§6은 성립한다(staleness는 진단 보조 지표이
 | 값 | 결정 절차 | 현재 상태 |
 | --- | --- | --- |
 | `safety_margin_days` | §4.1, 다중 origin 관측 후 `#472`에서 확정 | 미확정 |
-| `recent_window_days` | §3, 기본 3 | 실측 후 재조정 |
+| `recent_window_days` | §3, 기본 3. `measure-degradation --recent-window-days`로 노출(PR #520 리뷰 Medium#5) | 실측 후 재조정 |
 | `min_auc_drop` | 선행 spec plan Task 7-A | 미확정(GCP 자격증명 필요) |
 
 셋 다 GCP 접근이 가능한 환경에서 선행 spec plan Task 1·7-A를 먼저 실행해야 한다.

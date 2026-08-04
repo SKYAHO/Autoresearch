@@ -351,7 +351,9 @@ def detect_degradation_point(
     끼어도 건너뛸 뿐 연속 카운트를 리셋하지 않는다(달력상 연속이 아니라 유효
     관측치 순서상 연속).
     """
-    valid_days = [day for day in per_day if day.status == EvaluationStatus.VALID]
+    # 유효일 술어·정렬을 다른 함수와 공유한다(PR #520 리뷰 Low#7·#8) — 같은 결과를
+    # 놓고 hold와 판정이 서로 다른 유효일 수를 세면 안 된다.
+    valid_days = [day for day in _ordered_by_elapsed(per_day) if is_scorable(day)]
     if len(valid_days) < 2:
         return DegradationPoint(reason="insufficient_valid_points")
 
@@ -365,6 +367,27 @@ def detect_degradation_point(
         else:
             consecutive = 0
     return DegradationPoint(reason="no_degradation_detected")
+
+
+def is_scorable(day: PerDayResult) -> bool:
+    """이 날이 지표 계산에 쓸 수 있는 관측치인지(#485, PR #520 리뷰 Low#7).
+
+    ``PerDayResult.roc_auc``가 Optional이라 스키마상 ``VALID``인데 점수가 없는 행이
+    가능하다. 그 행을 어떤 함수는 세고 어떤 함수는 빼면 hold 판정과 평균이 어긋난다 —
+    "유효일"의 정의를 이 한 곳에 모은다. ``#514``가 결과를 재조립하기 시작하면 실제로
+    갈릴 수 있는 지점이다.
+    """
+    return day.status == EvaluationStatus.VALID and day.roc_auc is not None
+
+
+def _ordered_by_elapsed(per_day: Sequence[PerDayResult]) -> list[PerDayResult]:
+    """``elapsed_days`` 오름차순으로 정렬한다(PR #520 리뷰 Low#8).
+
+    "첫 관측치"·"최근 N개"는 **리스트 순서가 아니라 시간 순서**여야 한다.
+    ``run_rolling_origin`` 산출물은 이미 정렬돼 있지만, JSON 왕복이나 hand-built
+    결과를 받는 ``#472``/``#514`` 경로에서는 보장되지 않는다.
+    """
+    return sorted(per_day, key=lambda day: day.elapsed_days)
 
 
 def resolve_forward_baseline(
@@ -386,8 +409,8 @@ def resolve_forward_baseline(
         (첫 valid 관측치의 roc_auc, 그 관측치의 elapsed_days). valid가 하나도 없으면
         ``(None, None)``.
     """
-    for day in per_day:
-        if day.status == EvaluationStatus.VALID and day.roc_auc is not None:
+    for day in _ordered_by_elapsed(per_day):
+        if is_scorable(day):
             return day.roc_auc, day.elapsed_days
     return None, None
 
@@ -409,11 +432,15 @@ def summarize_valid_roc_auc(
         ``recent_window_days`` 미만이면 recent는 ``None``이다 — 적은 표본으로 평균을
         만들어 "최근 성능"이라고 부르지 않는다.
     """
-    valid_scores = [
-        day.roc_auc
-        for day in per_day
-        if day.status == EvaluationStatus.VALID and day.roc_auc is not None
-    ]
+    if recent_window_days < 1:
+        # 0이면 valid_scores[-0:]가 전체 리스트가 되어 recent와 overall이 같은 값이
+        # 되고, 음수면 앞쪽을 잘라낸 나머지의 평균이 "최근"으로 나간다 — 둘 다 None도
+        # 예외도 아니라 소비자가 잘못을 알 수 없다(PR #520 리뷰 Medium#4).
+        raise ValueError(
+            f"recent_window_days는 1 이상이어야 합니다(받은 값: {recent_window_days})."
+        )
+
+    valid_scores = [day.roc_auc for day in _ordered_by_elapsed(per_day) if is_scorable(day)]
     if not valid_scores:
         return None, None
 
@@ -486,6 +513,13 @@ def derive_hard_retrain_limit(
       않았다")인데, 정책 관점에서 중요한 건 **관측 범위 안에서만** 그렇다는 한정이다.
       뭉개는 게 아니라 한계를 드러내는 방향으로 좁힌다.
     """
+    if safety_margin_days < 0:
+        # 음수면 limit_days가 degradation_point.elapsed_days보다 커지고 reason도 None으로
+        # 남아, 소비자가 잘못된 입력이었음을 알 방법이 없다(PR #520 리뷰).
+        raise ValueError(
+            f"safety_margin_days는 0 이상이어야 합니다(받은 값: {safety_margin_days})."
+        )
+
     degradation_point = result.degradation_point
     if degradation_point.elapsed_days is None:
         reason = degradation_point.reason
@@ -544,10 +578,24 @@ def evaluate_temporal_hold(
     if result.training_snapshot_manifest.events_end_date >= cutoff:
         return TemporalHoldReason.TEMPORAL_ORDERING_VIOLATED
 
+    # (a) 길이 자체가 모자란 경우. `run_rolling_origin`은 모든 평가일에 대해
+    #     PerDayResult를 반드시 하나씩 append하므로 정상 산출물에서는 성립하지 않는다 —
+    #     hand-built 결과에 대한 심층 방어다.
     if len(result.per_day) < result.horizon_days:
         return TemporalHoldReason.TEMPORAL_HORIZON_INCOMPLETE
 
-    valid_days = sum(1 for day in result.per_day if day.status == EvaluationStatus.VALID)
+    # (b) 길이는 맞는데 **꼬리가 통째로 결손**인 경우. 이게 실제 운영 케이스다
+    #     (PR #520 리뷰 Medium#3): `cutoff+H`가 아직 지나지 않았거나 데이터 레이크가
+    #     뒤처진 시점에 실행하면 뒷날들이 missing_date로 채워져 (a)를 통과한다. 그대로
+    #     두면 잘린 구간 위에서 계산된 평균·열화 시점이 그대로 나간다.
+    #     중간 결손은 여기 해당하지 않는다 — 관측이 horizon 끝까지는 도달했기 때문이다.
+    ordered = _ordered_by_elapsed(result.per_day)
+    if ordered and ordered[-1].status == EvaluationStatus.MISSING_DATE:
+        return TemporalHoldReason.TEMPORAL_HORIZON_INCOMPLETE
+
+    # 점수가 없는 VALID 행은 유효일로 세지 않는다 — 평균·기준선과 같은 술어를 쓴다
+    # (PR #520 리뷰 Low#7).
+    valid_days = sum(1 for day in result.per_day if is_scorable(day))
     if valid_days < 2:
         return TemporalHoldReason.TEMPORAL_INSUFFICIENT_VALID_POINTS
 
@@ -677,19 +725,19 @@ def run_rolling_origin(
     cutoff 학습을 버리지 않으려면 ``best_effort=True``로 개별 평가일 실패만
     ``evaluation_failed``로 기록하고 계속한다.
 
-    **baseline 해석 시 주의**: ``baseline_val_roc_auc``는 cutoff 학습의 **랜덤 val
-    분할** 지표이고, ``per_day``의 값은 cutoff 이후 새 날짜에 대한 **forward
-    held-out** 지표다 — 산출 경로도 대상 분포도 다르다. 이 저장소의 실측
-    (``experiments/2026-07-31_training-window-length/notes.md`` "홀드아웃 값이
-    val보다 4%p 낮다")은 랜덤 val이 실제 다음 날 성능보다 **약 4%p 높게** 나옴을
-    보였다 — 즉 ``elapsed_days=0``의 ROC-AUC가 baseline보다 낮게 나오는 것은
-    그 자체로는 "시간 경과에 따른 열화"가 아니라 이 측정 방식이 원래 갖는
-    **상수 오프셋**일 수 있다. ``degradation_point``가 ``elapsed_days`` 0~1에서
-    바로 잡히면, 그것이 실제 열화인지 이 오프셋인지 이 함수의 출력만으로는
-    구분되지 않는다 — 판단은 호출부(operator)가 ``per_day[0]`` 값을 함께 보고
-    내려야 한다. baseline 정의 자체를 바꾸는 것(예: ``per_day[0]``을 기준으로 쓰는
-    것)은 이 PR의 범위 밖이다(§2.4가 이미 확정한 계약이며, 바꾸려면 별도 spec
-    합의가 필요하다).
+    **판정 기준선(#485 §4.3, 선행 spec §2.4를 부분 supersede)**: 열화 판정에는
+    ``forward_baseline_roc_auc``(``per_day`` 중 첫 valid 관측치)를 쓴다.
+    ``baseline_val_roc_auc``(cutoff 학습의 랜덤 val 분할 지표)는 결과 필드로만 남기고
+    **판정에는 쓰지 않는다** — 두 값은 산출 경로도 대상 분포도 달라서, 이 저장소 실측
+    (``experiments/2026-07-31_training-window-length/notes.md`` "홀드아웃 값이 val보다
+    4%p 낮다")에서 랜덤 val이 실제 다음 날 성능보다 **약 4%p 높게** 나왔다. 그 상태로
+    비교하면 ``elapsed_days`` 0~1에서 오탐이 난다. 같은 산출 경로(forward held-out)
+    끼리 비교해 그 오프셋을 **정의상 상쇄**한다.
+
+    남은 트레이드오프: 기준선이 다수 행의 val 분할에서 **평가일 관측치 1개**로 바뀌었으므로,
+    그날의 표본 변동이 기준선에 그대로 실린다. 계통 오프셋을 없앤 대신 날 단위 분산이
+    threshold에 들어온 셈이다 — ``forward_baseline_source``를 결과에 남겨 어느 날이
+    기준선이 됐는지 사후에 추적할 수 있게 했다(spec §4.3).
     """
     run_root = Path(run_root)
     training_dir, evaluation_dir = _prepare_run_root(run_root, overwrite=overwrite)

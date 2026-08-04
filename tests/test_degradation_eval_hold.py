@@ -89,11 +89,16 @@ def test_missing_evidence_is_held():
 
 
 def test_insufficient_valid_points_is_held():
-    # 유효일 1개 < 2 — 곡선을 만들 수 없다.
+    """유효일 1개 < 2 — 곡선을 만들 수 없다.
+
+    꼬리를 `single_class`로 둔다. `missing_date`로 끝나면 그건 "구간이 잘렸다"는
+    더 근본적인 사유(`horizon_incomplete`)에 먼저 걸리기 때문이다 — 이 테스트는
+    구간은 온전한데 표본만 모자란 경우를 격리한다.
+    """
     per_day = [
         _day(0, EvaluationStatus.VALID, 0.75),
         _day(1, EvaluationStatus.MISSING_DATE, None),
-        _day(2, EvaluationStatus.MISSING_DATE, None),
+        _day(2, EvaluationStatus.SINGLE_CLASS, None),
     ]
 
     result = _result(per_day=per_day, horizon_days=3)
@@ -149,6 +154,59 @@ def test_incomplete_horizon_precedes_insufficient_valid_points():
     result = _result(per_day=per_day, horizon_days=5)
 
     assert evaluate_temporal_hold(result) is TemporalHoldReason.TEMPORAL_HORIZON_INCOMPLETE
+
+
+def test_trailing_missing_days_are_held_as_incomplete_horizon():
+    """PR #520 리뷰 Medium#3 — 길이 검사만으로는 실제 운영 케이스를 못 잡는다.
+
+    `run_rolling_origin`은 모든 평가일에 대해 `PerDayResult`를 반드시 하나씩 append하므로
+    `len(per_day) < horizon_days`는 손으로 만든 결과에서만 참이 된다. `cutoff+H`가 아직
+    지나지 않았거나 데이터 레이크가 뒤처진 실행에서는 뒷날들이 `missing_date`로 채워져
+    길이 검사를 통과해버린다 — 잘린 구간 위에서 계산된 지표가 그대로 나간다.
+    """
+    per_day = [
+        _day(0, EvaluationStatus.VALID, 0.75),
+        _day(1, EvaluationStatus.VALID, 0.74),
+        _day(2, EvaluationStatus.MISSING_DATE, None),
+        _day(3, EvaluationStatus.MISSING_DATE, None),
+    ]
+
+    result = _result(per_day=per_day, horizon_days=4)
+
+    assert evaluate_temporal_hold(result) is TemporalHoldReason.TEMPORAL_HORIZON_INCOMPLETE
+
+
+def test_missing_day_in_the_middle_is_not_incomplete_horizon():
+    # 중간 결손은 구간이 잘린 게 아니다 — 관측은 horizon 끝까지 도달했다.
+    per_day = [
+        _day(0, EvaluationStatus.VALID, 0.75),
+        _day(1, EvaluationStatus.MISSING_DATE, None),
+        _day(2, EvaluationStatus.VALID, 0.74),
+    ]
+
+    result = _result(per_day=per_day, horizon_days=3)
+
+    assert evaluate_temporal_hold(result) is None
+
+
+def test_hold_counts_only_scorable_days_as_valid():
+    """PR #520 리뷰 Low#7 — 유효일 술어가 함수마다 달랐다.
+
+    `PerDayResult.roc_auc`가 Optional이라 스키마상 `VALID + roc_auc=None`이 가능하다.
+    그 행이 hold의 카운트에는 세어지고 평균·기준선에서는 빠지면 두 판정이 어긋난다.
+    """
+    per_day = [
+        _day(0, EvaluationStatus.VALID, 0.75),
+        _day(1, EvaluationStatus.VALID, None),  # 점수가 없으면 유효일로 세지 않는다
+        _day(2, EvaluationStatus.VALID, None),
+    ]
+
+    result = _result(per_day=per_day, horizon_days=3)
+
+    assert (
+        evaluate_temporal_hold(result)
+        is TemporalHoldReason.TEMPORAL_INSUFFICIENT_VALID_POINTS
+    )
 
 
 def test_hold_reasons_are_distinct_values():
