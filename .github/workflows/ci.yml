@@ -433,7 +433,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Build Agent Orchestration API and Runner images
+      - name: Build Agent Orchestration API, Runner, and UI images
         run: |
           docker build \
             -f deploy/agent_orchestration/api.Dockerfile \
@@ -442,6 +442,10 @@ jobs:
           docker build \
             -f deploy/agent_orchestration/runner.Dockerfile \
             --tag autoresearch-agent-orchestration-runner:ci \
+            .
+          docker build \
+            -f deploy/agent_orchestration/ui.Dockerfile \
+            --tag autoresearch-agent-orchestration-ui:ci \
             .
 
       - name: Run Agent Orchestration image smoke checks
@@ -468,6 +472,21 @@ jobs:
             python -c "import agent_orchestration.runner.app"
           docker run --rm autoresearch-agent-orchestration-runner:ci \
             python -c "import importlib.util; assert importlib.util.find_spec('lightgbm') is None"
+          docker run --rm autoresearch-agent-orchestration-ui:ci id -u | grep --fixed-strings 10001
+          container_name="agent-orchestration-ui-ci"
+          docker run --detach --name "$container_name" --publish 127.0.0.1::8501 \
+            autoresearch-agent-orchestration-ui:ci
+          trap 'docker rm --force "$container_name" >/dev/null 2>&1 || true' EXIT
+          host_port="$(docker port "$container_name" 8501/tcp | sed 's/.*://')"
+          for _ in $(seq 1 30); do
+            if curl --fail --silent "http://127.0.0.1:${host_port}/_stcore/health"; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs "$container_name"
+          echo "::error::Streamlit UI healthcheck did not become ready"
+          exit 1
 
   docker-build:
     name: Docker build

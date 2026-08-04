@@ -9,7 +9,7 @@ PR merge부터 GKE 배포·Airflow 실행까지의 자동화 흐름을 설명합
 
 - 코드 변경이 main에 merge되면 Release Drafter가 draft release에 누적
 - 담당자가 release를 게시하면 semantic version git tag 생성 및 Docker 이미지 빌드 트리거
-- 빌드된 batch·serving·Agent Orchestration API·Runner 이미지를 Google Artifact Registry(GAR)에 push하고 OCI 메타데이터·실행 계약 검증
+- 빌드된 batch·serving·Agent Orchestration API·Runner·Streamlit UI 이미지를 Google Artifact Registry(GAR)에 push하고 OCI 메타데이터·실행 계약 검증
 - batch 이미지 digest를 배포 리포 values에 자동 반영하는 승격 PR 생성
 - serving 이미지 digest를 인프라 리포가 GKE 배포에 소비할 수 있도록 job summary에 기록
 - Agent Orchestration API·Runner digest를 인프라 리포의 내부 전용 GKE 배포에 소비할 수 있도록 각각 job summary에 기록
@@ -44,6 +44,9 @@ flowchart TD
         RY --> ORCHRUNNER[agent orchestration Runner 빌드<br/>autoresearch-agent-orchestration-runner]
         ORCHRUNNER --> ORCHRUNNERVERIFY[OCI revision / non-root /<br/>Codex 0.146.0·Runner import smoke]
         ORCHRUNNERVERIFY --> ORCHRUNNERSUMMARY[Runner digest_ref<br/>job summary → infra 리포]
+        RY --> ORCHUI[agent orchestration UI 빌드<br/>autoresearch-agent-orchestration-ui]
+        ORCHUI --> ORCHUIVERIFY[OCI revision / non-root /<br/>Streamlit UI import smoke]
+        ORCHUIVERIFY --> ORCHUISUMMARY[UI digest_ref<br/>job summary → infra 리포]
     end
 
     PRAUTO --> MERGE2[리뷰 후 머지]
@@ -85,8 +88,8 @@ PR에 붙은 라벨을 기반으로 semantic version을 자동 계산하여 draf
 ### 애플리케이션 이미지 빌드 및 GAR push (release.yml)
 
 코드 리포의 `release.yml`은 release가 게시되면 batch·serving·Agent Orchestration
-API·Runner 이미지를 각각 빌드하여 GAR에 push합니다. serving·API·Runner job은
-batch job이 검증한 동일한 `source_sha`를 checkout하므로 네 이미지의 소스 계보가
+API·Runner·Streamlit UI 이미지를 각각 빌드하여 GAR에 push합니다. serving·API·Runner·UI
+job은 batch job이 검증한 동일한 `source_sha`를 checkout하므로 다섯 이미지의 소스 계보가
 일치합니다.
 
 **주요 단계**:
