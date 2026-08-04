@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T03:29:56Z",
+  "generated_at": "2026-08-04T03:32:17Z",
   "reports": [
+    {
+      "number": 506,
+      "title": "feat: 유저 단위 grouped ROC-AUC와 평가 전용 패스스루 컬럼 추가",
+      "author": "bbungjun",
+      "merged_at": "2026-08-04T03:32:04Z",
+      "summary_ko": [
+        "리랭킹 평가 정확도를 높이기 위해 모델 입력에서 제외되면서 데이터셋에 보존되는 평가 전용 식별자(유저 ID) 컬럼 체계를 도입했습니다.",
+        "데이터셋 조립 과정에서 유저 식별자가 누락되지 않도록 조기 검증을 강화하고 기존 피처 순서 뒤에 보존하도록 수정했습니다.",
+        "평가 단계에서 전체 데이터 대상 전역 지표와 함께 유저 단위 순서 품질을 측정하는 그룹별 평가 지표를 병기 출력하도록 구현했습니다."
+      ],
+      "report_url": "pr/506/"
+    },
     {
       "number": 508,
       "title": "feat: Auto Research 트리거를 auto-experiment 단일 label로 전환",
