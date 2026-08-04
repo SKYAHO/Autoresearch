@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-04T01:27:43Z",
+  "generated_at": "2026-08-04T01:37:23Z",
   "reports": [
+    {
+      "number": 508,
+      "title": "feat: Auto Research 트리거를 auto-experiment 단일 label로 전환",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-04T01:37:06Z",
+      "summary_ko": [
+        "Auto Research 자율 실험 브랜치 생성 트리거를 기존 2개 라벨 조합에서 auto-experiment 단일 라벨로 변경하였습니다.",
+        "주제 분류 목적인 auto-research 라벨과 트리거 조건 간의 결합을 분리하여 라벨 정리 및 워크플로 누락 위험을 해소하였습니다.",
+        "이슈 템플릿, 승격 워크플로, 관련 문서와 이를 고정하는 드리프트 계약 테스트를 함께 추가·갱신하였습니다."
+      ],
+      "report_url": "pr/508/"
+    },
     {
       "number": 496,
       "title": "fix: 승격 게이트가 실제 Issue Form label을 읽도록 복구",
