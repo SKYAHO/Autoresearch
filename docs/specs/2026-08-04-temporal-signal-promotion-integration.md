@@ -300,6 +300,16 @@ not_applicable ⟸ 어느 한쪽이 None
 `degradation_eval`을 import하면 `train` → lightgbm이 딸려와, 경량이어야 할 판정
 경로에 ML 의존이 들어온다.
 
+**`evaluation_id` 해시 payload에는 넣지 않는다 — 뒤집힐 수 있는 결정이다.**
+`temporal_signal`은 `verdict`에 영향을 주지 않는 **병기 신호**이므로(`#506`이 grouped
+ROC-AUC를 병기만 한 것과 같은 결), 같은 통계·같은 판정이면 temporal 유무와 무관하게
+같은 `evaluation_id`가 나와야 한다고 봤다. 그래서 `_stable_id`의 payload에서 제외했다.
+
+다만 이 판단은 "temporal이 판정을 바꾸지 않는다"는 **현재 전제에 의존한다.**
+`#514`(두 조건 확장)에서 `direction_vs_offline_metric`이 실제 판정 입력이 되면
+전제가 깨지고, 그때는 같은 id가 서로 다른 판정 근거를 가리키게 된다 —
+**id 근거도 함께 바꿔야 한다.** 이 절을 뒤집을 수 있는 지점으로 남겨둔다.
+
 ## 6. fail-closed `hold` 종료 조건
 
 `#485` 작업 범위: "데이터 부족, 미래 구간 누락, feature snapshot 불일치, 시간 순서
