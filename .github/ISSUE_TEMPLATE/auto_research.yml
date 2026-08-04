@@ -1,7 +1,7 @@
 name: Auto Research (에이전트 자율 실험)
 description: 에이전트가 읽고 직접 수행할 실험 가설을 등록합니다.
 title: "[AR] "
-labels: ["experiment", "auto-research"]
+labels: ["auto-experiment"]
 body:
   - type: markdown
     attributes:
