@@ -24,6 +24,8 @@ ROC-AUC 계산(``evaluate.evaluate_held_out_roc_auc``) 자체는 재구현하지
 
 from __future__ import annotations
 
+import math
+import shutil
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -40,7 +42,7 @@ from src.pipeline.training_provenance import (
     sha256_file,
     write_manifest_atomic,
 )
-from src.utils.model_utils import load_feature_columns, load_model
+from src.utils.model_utils import load_categorical_columns, load_feature_columns, load_model
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -140,6 +142,18 @@ def video_feature_snapshot_query(
     학습 조립 경로(``retrieve_training_features``)와는 별개 쿼리이며, 모델 입력에는
     영향을 주지 않는다 — staleness 진단 전용이다. parameterized query로 만든다
     (``autoresearch/loadtest/rerank_fixture.py``의 ``targeted_delete_sql`` 관례를 따름).
+
+    ``as_of``는 ``"YYYY-MM-DD HH:MM:SS"`` 형식의 **KST 벽시계 시각**으로 해석한다
+    (spine의 날짜 절단 규칙 ``DATE(event_timestamp, 'Asia/Seoul')``,
+    ``build_training_dataset.py:201``과 같은 타임존). ``TIMESTAMP(string)``(타임존
+    인자 없는 1-인자 형태)은 BigQuery가 UTC로 해석하므로, KST 자정을 의도했는데
+    실제로는 KST 09:00 이후 스냅샷까지 포함되는 9시간 오차가 있었다 — 2-인자 형태로
+    타임존을 명시해 고정한다.
+
+    ``video_ids``를 하루치 전체를 한 번에 ``ArrayQueryParameter``로 싣는다 —
+    표본이 커지면 BigQuery 쿼리 파라미터 크기 상한에 걸릴 수 있다(현재는 진단
+    전용·저트래픽이라 배치 분할을 두지 않았다). 트래픽이 커지면 호출부에서
+    ``video_ids``를 나눠 여러 번 부르는 배치 분할이 필요하다.
     """
     from google.cloud import bigquery
 
@@ -148,7 +162,7 @@ def video_feature_snapshot_query(
         SELECT video_id, MAX(event_timestamp) AS selected_ts
         FROM `{table_id}`
         WHERE video_id IN UNNEST(@video_ids)
-          AND event_timestamp <= TIMESTAMP(@as_of)
+          AND event_timestamp <= TIMESTAMP(@as_of, 'Asia/Seoul')
         GROUP BY video_id
     """
     job_config = bigquery.QueryJobConfig(
@@ -213,6 +227,14 @@ def compute_video_staleness_summary(
 
     스냅샷을 못 찾은 행(cold-start 대체 대상)은 age 계산에서 제외한다 — 그대로 섞으면
     "오래된 영상"이 "방금 업로드된 영상"처럼 보이는 왜곡이 생긴다(spec §4).
+
+    **알려진 근사**: ``snapshot_timestamps``는 하루 전체에 대해 **단일 as_of**(그날
+    KST 자정)로 조회한 값이다(``_resolve_staleness_summary``). 실제 PIT join은 각 행의
+    ``event_timestamp``를 기준으로 스냅샷을 고르므로, 하루 중 늦게 발생한 행일수록 이
+    진단값은 실제보다 **더 오래된(더 stale한) 방향으로 체계적으로 치우친다**(최대
+    ~24시간). 정확한 per-row 값을 얻으려면 평가 CSV가 엔티티별 ``event_timestamp``를
+    보존해야 하는데, 현재 평가일 조립 계약(``MODEL_FEATURE_COLUMNS + clicked``)은
+    이를 보존하지 않는다 — 이 근사는 그 제약 안에서의 의도된 단순화다.
     """
     entity_ts = pd.to_datetime(dataset[entity_timestamp_column])
     ages: list[float] = []
@@ -301,6 +323,13 @@ def compute_min_auc_drop(*, seed_std: float, k: float = 2.0, floor: float = 0.00
     뿐, 통계적으로 보정된 신뢰구간이라고 주장하지 않는다. ``floor``는 ``seed_std``가
     우연히 0에 가까워 임계값이 퇴화하는 것을 막는 하한이다. ``k``·``floor`` 모두
     plan Task 7-A 실측 후 기록되는 초기 설정값이며 최종 정책값이 아니다.
+
+    ``run_rolling_origin``도 CLI(``measure-degradation``)도 이 함수를 호출하지
+    않는다 — operator가 calibration 단계(plan Task 7-A, 예: ``sweep-seeds``로 구한
+    ``seed_std``)에서 이 함수로 값을 미리 계산해 ``--min-auc-drop``으로 직접
+    넘기는 것이 계약이다. 자동 배선은 의도적으로 하지 않는다 — calibration은
+    cutoff 학습과 별개의(더 비싼) 실행이라, 매 ``measure-degradation`` 호출마다
+    반복하면 안 된다.
     """
     return max(floor, k * seed_std)
 
@@ -358,12 +387,21 @@ def _prepare_run_root(run_root: Path, *, overwrite: bool) -> tuple[Path, Path]:
     ``run_root``가 이미 존재하고 비어 있지 않으면 ``overwrite=True`` 없이는 막는다 —
     ``require_explicit_experiment_output``(build_training_dataset.py)이 이미 쓰는
     fail-closed 관례와 같다. 이 확인은 어떤 조립·학습 호출보다도 먼저 수행한다.
+
+    ``overwrite=True``면 기존 ``run_root``를 **완전히 비운 뒤** 다시 만든다 — 그냥
+    ``mkdir(exist_ok=True)``만 하면 이전 실행의 ``evaluation/<date>/`` 산출물이 이번
+    실행에 속하지 않는 날짜까지 남아, 결과 JSON과 디스크 내용이 어긋난다(예:
+    ``horizon_days=30``으로 돌린 뒤 ``horizon_days=7``로 재실행하면 8~30일차 잔재가
+    "성공한 날"처럼 남는다).
     """
-    if run_root.exists() and any(run_root.iterdir()) and not overwrite:
-        raise RunRootExistsError(
-            f"{run_root}가 이미 존재하고 비어 있지 않습니다 — 이전 실행 산출물을 "
-            "덮어쓰지 않기 위해 멈춥니다. 의도한 재실행이면 overwrite=True를 지정하세요."
-        )
+    if run_root.exists() and any(run_root.iterdir()):
+        if not overwrite:
+            raise RunRootExistsError(
+                f"{run_root}가 이미 존재하고 비어 있지 않습니다 — 이전 실행 산출물을 "
+                "덮어쓰지 않기 위해 멈춥니다. 의도한 재실행이면 overwrite=True를 "
+                "지정하세요."
+            )
+        shutil.rmtree(run_root)
     training_dir = run_root / "training"
     evaluation_dir = run_root / "evaluation"
     training_dir.mkdir(parents=True, exist_ok=True)
@@ -384,6 +422,12 @@ def _resolve_staleness_summary(
     BigQuery 클라이언트가 없거나(로컬 개발 환경 등) 평가 데이터가 비었으면 조회
     자체를 시도하지 않고 ``UNAVAILABLE``로 남긴다(spec §4 — 부정확한 값을 만들어내지
     않는다).
+
+    평가일 CSV는 ``MODEL_FEATURE_COLUMNS + extra_features + "clicked"``만 담고
+    (``build_training_dataset.py:690``), ``video_id``/``event_timestamp``(엔티티
+    키)는 없다 — 이 함수를 부르려면 그 두 컬럼이 필요하므로, 없으면 조회를 시도하지
+    않고 사유를 남긴다. 컬럼을 보존하도록 조립 계약을 확장하는 것은 이 PR 범위 밖이다
+    (측정 하네스 자체의 스키마 변경이라 별도 합의가 필요하다).
     """
     if bigquery_client is None or not bigquery_project or not bigquery_dataset or len(dataset) == 0:
         return VideoStalenessSummary(
@@ -391,6 +435,18 @@ def _resolve_staleness_summary(
             reason=(
                 "BigQuery 클라이언트/프로젝트/데이터셋이 제공되지 않았거나 평가 "
                 "데이터가 비어 staleness를 계산하지 않았습니다."
+            ),
+        )
+    missing_columns = [
+        column for column in ("video_id", "event_timestamp") if column not in dataset.columns
+    ]
+    if missing_columns:
+        return VideoStalenessSummary(
+            status=VideoStalenessStatus.UNAVAILABLE,
+            reason=(
+                f"평가 데이터셋에 {missing_columns}가 없어 staleness를 계산할 수 "
+                "없습니다(현재 평가 CSV 스키마는 MODEL_FEATURE_COLUMNS+clicked만 "
+                "포함하며 엔티티 키를 보존하지 않습니다)."
             ),
         )
     as_of = f"{date_str} 00:00:00"
@@ -430,10 +486,27 @@ def run_rolling_origin(
     ``training/``·``evaluation/<date>/``로 격리되며, 이미 채워진 ``run_root``는
     ``overwrite=True`` 없이는 거부한다(fail-closed, §2.2 "산출물 경로 격리 계약").
 
-    ``min_auc_drop``은 호출부가 미리 정해서 넘긴다(plan Task 7-A calibration) — 이
-    함수 자체는 계산하지 않는다. ``best_effort=False``(기본)에서는 평가일 조립 실패
-    (``evaluation_failed``)가 전체 실행을 즉시 실패시킨다(§2.3) — 비싼 cutoff 학습을
-    버리지 않으려면 ``best_effort=True``로 개별 평가일 실패만 기록하고 계속한다.
+    ``min_auc_drop``은 호출부가 미리 정해서 넘긴다(plan Task 7-A calibration,
+    ``compute_min_auc_drop`` 참고) — 이 함수는 그 계산을 호출하지 않는다; operator가
+    ``sweep-seeds`` 등으로 미리 calibration한 값을 ``--min-auc-drop``으로 직접
+    넘긴다. ``best_effort=False``(기본)에서는 평가일 하나의 실패(조립·상태 판정·
+    ROC-AUC 계산·provenance 기록 전체)가 전체 실행을 즉시 실패시킨다(§2.3) — 비싼
+    cutoff 학습을 버리지 않으려면 ``best_effort=True``로 개별 평가일 실패만
+    ``evaluation_failed``로 기록하고 계속한다.
+
+    **baseline 해석 시 주의**: ``baseline_val_roc_auc``는 cutoff 학습의 **랜덤 val
+    분할** 지표이고, ``per_day``의 값은 cutoff 이후 새 날짜에 대한 **forward
+    held-out** 지표다 — 산출 경로도 대상 분포도 다르다. 이 저장소의 실측
+    (``experiments/2026-07-31_training-window-length/notes.md`` "홀드아웃 값이
+    val보다 4%p 낮다")은 랜덤 val이 실제 다음 날 성능보다 **약 4%p 높게** 나옴을
+    보였다 — 즉 ``elapsed_days=0``의 ROC-AUC가 baseline보다 낮게 나오는 것은
+    그 자체로는 "시간 경과에 따른 열화"가 아니라 이 측정 방식이 원래 갖는
+    **상수 오프셋**일 수 있다. ``degradation_point``가 ``elapsed_days`` 0~1에서
+    바로 잡히면, 그것이 실제 열화인지 이 오프셋인지 이 함수의 출력만으로는
+    구분되지 않는다 — 판단은 호출부(operator)가 ``per_day[0]`` 값을 함께 보고
+    내려야 한다. baseline 정의 자체를 바꾸는 것(예: ``per_day[0]``을 기준으로 쓰는
+    것)은 이 PR의 범위 밖이다(§2.4가 이미 확정한 계약이며, 바꾸려면 별도 spec
+    합의가 필요하다).
     """
     run_root = Path(run_root)
     training_dir, evaluation_dir = _prepare_run_root(run_root, overwrite=overwrite)
@@ -473,9 +546,19 @@ def run_rolling_origin(
         defer_registration=True,
     )
     baseline = outcome.val_roc_auc
+    if not math.isfinite(baseline):
+        # TrainingOutcome.val_roc_auc의 기본값이 NaN이다(#445와 같은 이유 —
+        # 학습을 거치지 않은 outcome이 섞이면 여기로 들어온다). 여기서 멈추지 않으면
+        # horizon_days일치 평가를 전부 마친 뒤 RollingOriginResult 생성 시점에서야
+        # allow_inf_nan=False로 실패해, 이미 끝난 평가 결과가 통째로 버려진다.
+        raise ValueError(
+            f"cutoff 학습의 val_roc_auc가 유한하지 않습니다({baseline!r}) — 학습이 "
+            "실제로 수행됐는지 확인하세요. horizon_days 평가를 시작하기 전에 멈춥니다."
+        )
 
     model = load_model(str(model_output))
     feature_columns = load_feature_columns(str(feature_columns_output))
+    categorical_categories = load_categorical_columns(str(categorical_columns_output))
 
     per_day: list[PerDayResult] = []
     for date_str, elapsed in evaluation_dates(cutoff_date, horizon_days):
@@ -493,7 +576,58 @@ def run_rolling_origin(
                 feature_service=feature_service,
                 extra_features=extra_features,
             )
+
+            dataset = pd.read_csv(day_csv)
+            status = classify_evaluation_day(dataset, min_rows=min_rows_per_day)
+
+            roc_auc: float | None = None
+            if status == EvaluationStatus.VALID:
+                # 학습 시점 category→code 매핑을 그대로 재현해야 LightGBM이 같은
+                # 스플릿을 적용한다(src/serving/service.py:90-99와 같은 패턴). 이걸
+                # 안 하면 evaluate_held_out_roc_auc 내부의 무조건 astype("category")가
+                # 그날 데이터에 실제 등장한 값만으로 카테고리를 다시 매겨, 카테고리
+                # 구성이 날마다 달라질 때(예: category_id) 모델이 학습 때와 다른
+                # 코드로 예측한다 — 그 오차가 elapsed_days가 커질수록 누적되면
+                # "진짜 열화"와 구분 안 되는 가짜 하락 곡선이 나온다.
+                for column, categories in categorical_categories.items():
+                    if column in dataset.columns:
+                        dataset[column] = pd.Categorical(dataset[column], categories=categories)
+                roc_auc = evaluate_held_out_roc_auc(model, dataset, feature_columns)
+
+            positive_count = int(dataset["clicked"].sum()) if len(dataset) else 0
+            provenance = EvaluationSnapshotProvenance(
+                dataset_sha256=sha256_file(day_csv),
+                row_count=len(dataset),
+                positive_count=positive_count,
+                negative_count=len(dataset) - positive_count,
+                feature_service=feature_service,
+                evaluation_date=date_str,
+            )
+            write_manifest_atomic(provenance, day_dir / "dataset_manifest.json")
+
+            staleness_summary = _resolve_staleness_summary(
+                dataset,
+                date_str,
+                bigquery_client=bigquery_client,
+                bigquery_project=bigquery_project,
+                bigquery_dataset=bigquery_dataset,
+            )
+
+            per_day.append(
+                PerDayResult(
+                    date=date_str,
+                    elapsed_days=elapsed,
+                    status=status,
+                    roc_auc=roc_auc,
+                    evaluation_provenance=provenance,
+                    video_staleness_summary=staleness_summary,
+                )
+            )
         except Exception:
+            # spec §2.3의 evaluation_failed는 조립뿐 아니라 "환경·조회 오류(스키마
+            # 불일치·모델 로드 실패 등)"까지 포괄한다 — 그래서 이 평가일의 나머지
+            # 단계(읽기·상태 판정·ROC-AUC·provenance 기록·staleness 조회)도 전부
+            # try 안에 둔다. best_effort=False면 여기서 즉시 중단해 원인을 드러낸다.
             if not best_effort:
                 raise
             per_day.append(
@@ -504,43 +638,6 @@ def run_rolling_origin(
                 )
             )
             continue
-
-        dataset = pd.read_csv(day_csv)
-        status = classify_evaluation_day(dataset, min_rows=min_rows_per_day)
-
-        roc_auc: float | None = None
-        if status == EvaluationStatus.VALID:
-            roc_auc = evaluate_held_out_roc_auc(model, dataset, feature_columns)
-
-        positive_count = int(dataset["clicked"].sum()) if len(dataset) else 0
-        provenance = EvaluationSnapshotProvenance(
-            dataset_sha256=sha256_file(day_csv),
-            row_count=len(dataset),
-            positive_count=positive_count,
-            negative_count=len(dataset) - positive_count,
-            feature_service=feature_service,
-            evaluation_date=date_str,
-        )
-        write_manifest_atomic(provenance, day_dir / "dataset_manifest.json")
-
-        staleness_summary = _resolve_staleness_summary(
-            dataset,
-            date_str,
-            bigquery_client=bigquery_client,
-            bigquery_project=bigquery_project,
-            bigquery_dataset=bigquery_dataset,
-        )
-
-        per_day.append(
-            PerDayResult(
-                date=date_str,
-                elapsed_days=elapsed,
-                status=status,
-                roc_auc=roc_auc,
-                evaluation_provenance=provenance,
-                video_staleness_summary=staleness_summary,
-            )
-        )
 
     degradation_point = detect_degradation_point(
         per_day, baseline=baseline, min_auc_drop=min_auc_drop

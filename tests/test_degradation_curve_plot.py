@@ -19,9 +19,9 @@ def _result(**overrides) -> dict:
         "cutoff_date": "2026-07-20",
         "baseline_val_roc_auc": 0.80,
         "per_day": [
-            {"elapsed_days": 0, "roc_auc": 0.80, "status": "valid"},
-            {"elapsed_days": 1, "roc_auc": None, "status": "missing_date"},
-            {"elapsed_days": 2, "roc_auc": 0.70, "status": "valid"},
+            {"elapsed_days": 0, "date": "2026-07-20", "roc_auc": 0.80, "status": "valid"},
+            {"elapsed_days": 1, "date": "2026-07-21", "roc_auc": None, "status": "missing_date"},
+            {"elapsed_days": 2, "date": "2026-07-22", "roc_auc": 0.70, "status": "valid"},
         ],
         "degradation_point": {"elapsed_days": None, "date": None, "reason": "no_degradation_detected"},
     }
@@ -35,6 +35,15 @@ def test_build_figure_plots_roc_auc_with_gaps_for_invalid_days():
     trace = figure.data[0]
     assert list(trace.x) == [0, 1, 2]
     assert list(trace.y) == [0.80, None, 0.70]
+
+
+def test_build_figure_hover_text_shows_status_for_invalid_days():
+    # PR #510 리뷰 Low: 곡선의 결측 지점만 보고는 missing_date/insufficient_rows/
+    # single_class/evaluation_failed를 구분할 수 없었다 — hover text로 구분한다.
+    figure = build_figure(_result())
+
+    trace = figure.data[0]
+    assert "missing_date" in trace.text[1]
 
 
 def test_build_figure_draws_baseline_line():

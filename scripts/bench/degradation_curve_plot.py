@@ -29,6 +29,11 @@ def build_figure(result: dict) -> go.Figure:
     per_day = sorted(result["per_day"], key=lambda day: day["elapsed_days"])
     elapsed_days = [day["elapsed_days"] for day in per_day]
     roc_auc = [day["roc_auc"] for day in per_day]
+    # 무효일은 roc_auc=None이라 곡선에서 끊기지만(connectgaps=False), 그것만으로는
+    # missing_date/insufficient_rows/single_class/evaluation_failed를 구분할 수
+    # 없다 — hover text에 상태와 날짜를 함께 실어 곡선만 보고도 결손 원인을
+    # 판별할 수 있게 한다.
+    hover_text = [f"{day['date']} ({day['status']})" for day in per_day]
 
     figure = go.Figure()
     figure.add_trace(
@@ -38,6 +43,8 @@ def build_figure(result: dict) -> go.Figure:
             mode="lines+markers",
             name="ROC-AUC",
             connectgaps=False,
+            text=hover_text,
+            hovertemplate="%{text}<br>ROC-AUC=%{y:.4f}<extra></extra>",
         )
     )
 

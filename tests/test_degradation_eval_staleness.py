@@ -17,6 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.pipeline.degradation_eval import (  # noqa: E402
     VideoStalenessStatus,
+    _resolve_staleness_summary,
     compute_video_staleness_summary,
     resolve_video_feature_snapshot_timestamps,
     video_feature_snapshot_query,
@@ -30,7 +31,9 @@ def test_video_feature_snapshot_query_targets_video_feature_table():
 
     assert "proj.ds.video_feature" in sql
     assert "MAX(event_timestamp)" in sql
-    assert "event_timestamp <= " in sql
+    # TIMESTAMP(string) 1-인자 형태는 BigQuery가 UTC로 해석한다 — KST 자정을
+    # 의도했다면 2-인자 형태로 타임존을 명시해야 한다(PR #510 리뷰, 9시간 오차 수정).
+    assert "TIMESTAMP(@as_of, 'Asia/Seoul')" in sql
 
     param_names = {p.name for p in job_config.query_parameters}
     assert param_names == {"video_ids", "as_of"}
@@ -128,3 +131,39 @@ def test_compute_video_staleness_summary_unavailable_when_nothing_resolved():
     assert summary.resolved_count == 0
     assert summary.unresolved_count == 1
     assert summary.reason is not None
+
+
+def test_resolve_staleness_summary_degrades_gracefully_when_entity_columns_missing():
+    # 실제 평가일 CSV 스키마(MODEL_FEATURE_COLUMNS + clicked)는 video_id/event_timestamp를
+    # 담지 않는다(build_training_dataset.py의 조립 계약) — client가 있어도 KeyError로
+    # 죽지 않고 UNAVAILABLE로 떨어져야 한다(PR #510 리뷰 High).
+    dataset = pd.DataFrame({"category_id": ["a", "b"], "clicked": [1, 0]})
+    client = _FakeBigQueryClient(pd.DataFrame({"video_id": [], "selected_ts": []}))
+
+    summary = _resolve_staleness_summary(
+        dataset,
+        "2026-07-21",
+        bigquery_client=client,
+        bigquery_project="proj",
+        bigquery_dataset="ds",
+    )
+
+    assert summary.status == VideoStalenessStatus.UNAVAILABLE
+    assert "video_id" in summary.reason
+    assert "event_timestamp" in summary.reason
+    assert client.queries == []  # 컬럼이 없으면 조회 자체를 시도하지 않는다
+
+
+def test_resolve_staleness_summary_unavailable_without_client():
+    dataset = pd.DataFrame(
+        {
+            "video_id": ["v1"],
+            "event_timestamp": pd.to_datetime(["2026-07-21"], utc=True),
+        }
+    )
+
+    summary = _resolve_staleness_summary(
+        dataset, "2026-07-21", bigquery_client=None, bigquery_project=None, bigquery_dataset=None
+    )
+
+    assert summary.status == VideoStalenessStatus.UNAVAILABLE

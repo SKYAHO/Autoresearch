@@ -119,7 +119,7 @@ end_date`(`:177`)로 **양끝 포함(inclusive-inclusive)**이다. 이 spec은 h
   1. §2.1 계약대로 `events_end_date = cutoff_date - 1일`로 `build_training_dataset.main`을
      호출해 학습 데이터셋을 조립한다(기존 함수 재사용, §1).
   2. `train.main(...)`으로 모델을 1회 학습한다(기존 함수 재사용). 학습이 이미 계산하는
-     `val_roc_auc`(`train.py:679-688`)를 §2.4 기준선으로 그대로 가져오며, 별도로
+     `val_roc_auc`(`train.main()` 내부 val split 검증 블록, `roc_auc_score(y_val, y_val_pred_proba)` 호출 지점 — 라인 번호 대신 심볼로 참조한다, PR #510 리뷰)를 §2.4 기준선으로 그대로 가져오며, 별도로
      재계산하지 않는다.
   3. `cutoff_date`부터 `cutoff_date + horizon_days - 1`까지(경과일 `0..H-1`) 하루씩
      순회하며, 그날 하루치를 `build_training_dataset.main`(`events_start_date=
@@ -132,7 +132,7 @@ end_date`(`:177`)로 **양끝 포함(inclusive-inclusive)**이다. 이 spec은 h
   plan 단계에서 결정): x축 `elapsed_days`(달력 기준), y축 ROC-AUC. `missing_date`
   등 무효일은 결측으로 표시하고 선을 잇지 않는다. 기준선·열화 지점 마커를 포함한다.
 
-CLI: `src/cli.py`에 `measure-degradation` 명령 추가(가칭). `docs/specs/2026-07-13-public-batch-execution-contract.md:17-18`이 "그 밖의 학습·평가와 FastAPI serving command는 각 기능이 운영화될 때 별도 revision으로 추가한다"고 명시하므로, 이 명령을 그 계약에 즉시 등재할 필요는 없다.
+CLI: `src/cli.py`에 `measure-degradation` 명령 추가(가칭). `docs/specs/2026-07-13-public-batch-execution-contract.md:17-18`이 "그 밖의 학습·평가와 FastAPI serving command는 각 기능이 운영화될 때 별도 revision으로 추가한다"고 명시하므로, 이 명령을 그 계약에 즉시 등재할 필요는 없다. **판단 근거**: 이 명령은 Airflow DAG가 부르지 않는 **operator 수동 도구**다(`sweep-seeds`/`compare-paired-experiment`와 같은 성격) — 그래서 `public-batch-execution-contract.md`에는 등재하지 않되, `README.md`의 `Dockerfile.train` 서브커맨드 목록(PR #510 리뷰 지적)에는 다른 두 도구와 같은 이유로 등재한다.
 
 ### 2.3 평가일 상태와 결과 스키마
 
@@ -186,7 +186,7 @@ video_staleness_summary        # §4
 ### 2.4 degradation_point 판정 규칙(확정)
 
 ```text
-baseline = cutoff 학습의 val_roc_auc (train.py:679-688에서 계산된 값을 그대로 재사용)
+baseline = cutoff 학습의 val_roc_auc (train.main() 내부 val split 검증 블록에서 계산된 값을 그대로 재사용)
 degraded(day) = day.status == valid  AND  day.roc_auc ≤ baseline - min_auc_drop
 degradation_point = "2개 연속 유효 관측치에서 degraded"가 처음 성립하는 시점의 elapsed_days
 ```
@@ -335,3 +335,5 @@ age를 뽑아내는 구체적 방법(`feast_retrieval.py` 쪽에 이미 노출�
 - **시드 반복 범위 축소**: §1에서 1차 구현은 시드 1개로 좁혔다. `seed_sweep.run_seed_sweep`으로 일별 다중 시드까지 확장하면 비용이 `일수 × 시드수`로 곱해지므로, 확장 여부는 §3 실측 결과와 함께 plan 단계에서 재검토한다.
 - **degradation_point → 승격 게이트 연결**: §8에서 명시한 대로 이 spec은 배선하지 않는다. 연결이 필요해지면 `#493`(experiment_evaluation.py 담당)과 조율이 선행돼야 한다.
 - **video 피처 age 추출 방법**: §4에서 "확인 실패"로 남긴 대로, `feast_retrieval.py`가 age를 이미 노출하는지는 plan 단계에서 조사가 필요하다.
+- **video staleness는 현재 CLI에서 도달 불가능**(PR #510 리뷰): 평가일 CSV는 `MODEL_FEATURE_COLUMNS + clicked`만 담고 `video_id`/`event_timestamp`(엔티티 키)를 보존하지 않는다. `_resolve_staleness_summary`는 이 두 컬럼이 없으면 `UNAVAILABLE`로 안전하게 떨어지도록 수정했지만(크래시 방지), `measure-degradation` CLI가 `bigquery_client`/`bigquery_project`/`bigquery_dataset`를 아예 받지 않아 이 기능은 지금 공개 경로로 켤 방법이 없다. 켜려면 (a) 평가일 조립이 엔티티 키를 보존하도록 계약을 확장하거나 (b) CLI에 BigQuery 연결 옵션을 추가해야 하며, 둘 다 이 PR 범위 밖이다. 또한 `_resolve_staleness_summary`는 하루 전체에 단일 as_of(그날 KST 자정)를 쓰므로, 실제 per-row PIT 대비 **체계적으로 더 stale한 방향**(최대 ~24h)으로 치우친다 — 정확한 값은 평가 CSV가 행별 `event_timestamp`를 보존해야 가능하다.
+- **baseline과 per-day forward ROC-AUC는 산출 경로가 다르다**(PR #510 리뷰): `baseline_val_roc_auc`는 cutoff 학습의 랜덤 val 분할 지표이고 `per_day`는 forward held-out 지표다. 이 저장소의 실측(`experiments/2026-07-31_training-window-length/notes.md`)은 랜덤 val이 실제 다음 날 성능보다 **약 4%p 높게** 나옴을 보였다 — `elapsed_days` 0~1 부근에서 잡히는 `degradation_point`가 이 상수 오프셋 때문인지 실제 열화인지는 이 결과만으로 구분되지 않는다. baseline 정의를 `per_day[0]` 기준으로 바꾸는 안은 §2.4 계약 변경이라 이 PR에서 다루지 않았다 — 후속 논의 대상이다.
