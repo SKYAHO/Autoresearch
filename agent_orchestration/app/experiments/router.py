@@ -28,6 +28,7 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentResponse,
     ExperimentStepCreate,
     ExperimentStepResponse,
+    ExperimentStepUpdate,
     PromotionRequest,
     StatusUpdateRequest,
 )
@@ -43,6 +44,7 @@ from agent_orchestration.app.experiments.service import (
     list_experiments,
     promote_experiment,
     update_experiment_status,
+    update_experiment_step,
 )
 from agent_orchestration.app.schemas import ErrorResponse
 
@@ -180,6 +182,27 @@ def post_experiment_step(
     """실험 상태와 무관한 멱등 작업 단계를 추가한다."""
     return ExperimentStepResponse.model_validate(
         create_experiment_step(session, experiment_id, request)
+    )
+
+
+@router.patch(
+    "/{experiment_id}/steps/{step_id}",
+    response_model=ExperimentStepResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE, **_CONFLICT_RESPONSE},
+)
+def patch_experiment_step(
+    experiment_id: uuid.UUID,
+    step_id: uuid.UUID,
+    request: ExperimentStepUpdate,
+    session: SessionDependency,
+) -> ExperimentStepResponse:
+    """작업 단계를 전체 교체로 갱신한다.
+
+    부분 병합이 아니다 — 요청에 없는 선택적 필드는 `null`로 갱신된다. 터미널로 확정된
+    Step에는 같은 payload 재시도만 `200`으로 통과하고 다른 payload는 `409`다.
+    """
+    return ExperimentStepResponse.model_validate(
+        update_experiment_step(session, experiment_id, step_id, request)
     )
 
 

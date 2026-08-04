@@ -19,7 +19,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from agent_orchestration.app.database import Base
 from agent_orchestration.app.experiments.exceptions import (
     ExperimentNotFoundError,
+    ExperimentStepNotFoundError,
     IdempotencyConflictError,
+    StepAlreadyFinalizedError,
 )
 from agent_orchestration.app.experiments.models import (
     Experiment,
@@ -31,8 +33,12 @@ from agent_orchestration.app.experiments.models import (
 from agent_orchestration.app.experiments.schemas import (
     MAX_STEP_TARGET_BYTES,
     ExperimentStepCreate,
+    ExperimentStepUpdate,
 )
-from agent_orchestration.app.experiments.service import create_experiment_step
+from agent_orchestration.app.experiments.service import (
+    create_experiment_step,
+    update_experiment_step,
+)
 
 
 @pytest.fixture
@@ -246,3 +252,145 @@ def test_target_at_size_limit_is_accepted() -> None:
     request = _create_request(target={"blob": "x" * filler_budget})
 
     assert request.target is not None
+
+
+def _started_step(session: Session) -> tuple[uuid.UUID, ExperimentStep]:
+    experiment = _persisted_experiment(session)
+    step = create_experiment_step(
+        session,
+        experiment.id,
+        _create_request(message="조립 시작", target={"features": ["a"]}),
+    )
+    return experiment.id, step
+
+
+def test_update_step_replaces_omitted_fields_with_null(db_session: Session) -> None:
+    """PATCH는 부분 병합이 아니다 — 생략된 필드는 이전 값 유지가 아니라 null이 된다."""
+    experiment_id, step = _started_step(db_session)
+
+    updated = update_experiment_step(
+        db_session,
+        experiment_id,
+        step.id,
+        ExperimentStepUpdate(status=StepStatus.PROGRESS),
+    )
+
+    assert updated.status == StepStatus.PROGRESS.value
+    assert updated.message is None
+    assert updated.target is None
+
+
+def test_update_step_allows_free_transition_between_non_terminal(
+    db_session: Session,
+) -> None:
+    """비터미널 사이는 전이 그래프 없이 왕복할 수 있다."""
+    experiment_id, step = _started_step(db_session)
+
+    update_experiment_step(
+        db_session, experiment_id, step.id, ExperimentStepUpdate(status=StepStatus.PROGRESS)
+    )
+    reverted = update_experiment_step(
+        db_session, experiment_id, step.id, ExperimentStepUpdate(status=StepStatus.STARTED)
+    )
+
+    assert reverted.status == StepStatus.STARTED.value
+
+
+def test_update_missing_step_raises_not_found(db_session: Session) -> None:
+    """없는 Step은 404로 변환될 도메인 오류다."""
+    experiment = _persisted_experiment(db_session)
+
+    with pytest.raises(ExperimentStepNotFoundError):
+        update_experiment_step(
+            db_session,
+            experiment.id,
+            uuid.uuid4(),
+            ExperimentStepUpdate(status=StepStatus.PROGRESS),
+        )
+
+
+def test_terminal_step_accepts_identical_retry(db_session: Session) -> None:
+    """확정된 Step에 같은 payload를 다시 보내면 재시도로 보고 통과시킨다."""
+    experiment_id, step = _started_step(db_session)
+    request = ExperimentStepUpdate(
+        status=StepStatus.COMPLETED, message="완료", target={"rows": 1200}
+    )
+    first = update_experiment_step(db_session, experiment_id, step.id, request)
+
+    second = update_experiment_step(db_session, experiment_id, step.id, request)
+
+    assert first.id == second.id
+    assert second.status == StepStatus.COMPLETED.value
+    assert second.message == "완료"
+
+
+def test_terminal_step_retry_ignores_target_key_order(db_session: Session) -> None:
+    """재시도 판정은 target의 JSON key 순서에 영향받지 않는다."""
+    experiment_id, step = _started_step(db_session)
+    update_experiment_step(
+        db_session,
+        experiment_id,
+        step.id,
+        ExperimentStepUpdate(
+            status=StepStatus.COMPLETED, target={"rows": 1200, "auc": 0.71}
+        ),
+    )
+
+    retried = update_experiment_step(
+        db_session,
+        experiment_id,
+        step.id,
+        ExperimentStepUpdate(
+            status=StepStatus.COMPLETED, target={"auc": 0.71, "rows": 1200}
+        ),
+    )
+
+    assert retried.status == StepStatus.COMPLETED.value
+
+
+def test_terminal_step_rejects_different_payload(db_session: Session) -> None:
+    """확정된 결과를 다른 값으로 덮으려 하면 409로 변환될 충돌이다."""
+    experiment_id, step = _started_step(db_session)
+    update_experiment_step(
+        db_session,
+        experiment_id,
+        step.id,
+        ExperimentStepUpdate(status=StepStatus.COMPLETED, message="완료"),
+    )
+
+    with pytest.raises(StepAlreadyFinalizedError):
+        update_experiment_step(
+            db_session,
+            experiment_id,
+            step.id,
+            ExperimentStepUpdate(status=StepStatus.FAILED, message="실패"),
+        )
+
+
+def test_terminal_guard_does_not_compare_creation_fingerprint(
+    db_session: Session,
+) -> None:
+    """터미널 판정은 저장된 request_fingerprint 컬럼이 아니라 현재 상태로 계산한다.
+
+    생성 payload에는 step_kind·step_type이 들어 있어 key 집합이 다르다. 컬럼을 그대로
+    비교하면 어떤 재시도도 통과하지 못한다.
+    """
+    experiment_id, step = _started_step(db_session)
+    creation_fingerprint = step.request_fingerprint
+    request = ExperimentStepUpdate(status=StepStatus.COMPLETED, message="완료")
+    update_experiment_step(db_session, experiment_id, step.id, request)
+
+    retried = update_experiment_step(db_session, experiment_id, step.id, request)
+
+    assert retried.status == StepStatus.COMPLETED.value
+    # 생성 시점 digest는 갱신 이후에도 그대로 남아 있어야 한다(감사 목적).
+    assert retried.request_fingerprint == creation_fingerprint
+
+
+def test_update_step_rejects_oversized_target() -> None:
+    """갱신 경로에도 4096 byte 제한이 걸린다 — 생성에만 걸면 구멍이 된다."""
+    with pytest.raises(ValidationError):
+        ExperimentStepUpdate(
+            status=StepStatus.PROGRESS,
+            target={"blob": "x" * (MAX_STEP_TARGET_BYTES + 1)},
+        )

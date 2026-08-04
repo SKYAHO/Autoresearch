@@ -179,6 +179,23 @@ class ExperimentStepCreate(BaseModel):
         return stripped
 
 
+class ExperimentStepUpdate(BaseModel):
+    """작업 단계의 진행 상태를 갱신하는 **전체 교체** 요청.
+
+    부분 병합이 아니다 — 생략된 `message`/`target`은 이전 값 유지가 아니라 `null`로
+    갱신된다. 호출자는 갱신할 때마다 그 시점의 상태 전체를 보낸다.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: StepStatus
+    message: str | None = Field(default=None, max_length=500)
+    target: dict | None = None
+
+    # 생성 스키마와 같은 함수를 공유한다 — 한쪽만 막으면 PATCH로 무제한 target이 들어온다.
+    _validate_target = field_validator("target")(validate_step_target_size)
+
+
 class ExperimentStepResponse(BaseModel):
     """내부 fingerprint를 제외한 작업 단계 응답.
 

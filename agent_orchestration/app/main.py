@@ -35,9 +35,11 @@ from agent_orchestration.app.database import (
 from agent_orchestration.app.db import ensure_schema, save_interaction
 from agent_orchestration.app.experiments.exceptions import (
     ExperimentNotFoundError,
+    ExperimentStepNotFoundError,
     IdempotencyConflictError,
     InvalidCursorError,
     PromotionRequiresDedicatedEndpointError,
+    StepAlreadyFinalizedError,
 )
 from agent_orchestration.app.experiments.router import router as experiment_router
 from agent_orchestration.app.experiments.transition_service import InvalidTransitionError
@@ -143,10 +145,11 @@ def create_app() -> FastAPI:
             )
 
     @app.exception_handler(ExperimentNotFoundError)
+    @app.exception_handler(ExperimentStepNotFoundError)
     @app.exception_handler(InvalidCursorError)
     def handle_experiment_not_found(
         _request: Request,
-        error: ExperimentNotFoundError | InvalidCursorError,
+        error: ExperimentNotFoundError | ExperimentStepNotFoundError | InvalidCursorError,
     ) -> JSONResponse:
         """도메인 not-found와 존재하지 않는 polling cursor를 공개 404 detail로 변환한다."""
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(error)})
@@ -154,11 +157,15 @@ def create_app() -> FastAPI:
     @app.exception_handler(InvalidTransitionError)
     @app.exception_handler(IdempotencyConflictError)
     @app.exception_handler(PromotionRequiresDedicatedEndpointError)
+    @app.exception_handler(StepAlreadyFinalizedError)
     def handle_experiment_conflict(
         _request: Request,
-        error: InvalidTransitionError | IdempotencyConflictError | PromotionRequiresDedicatedEndpointError,
+        error: InvalidTransitionError
+        | IdempotencyConflictError
+        | PromotionRequiresDedicatedEndpointError
+        | StepAlreadyFinalizedError,
     ) -> JSONResponse:
-        """상태 전이·멱등성·승격 우회 오류를 공개 409 detail로 변환한다."""
+        """상태 전이·멱등성·승격 우회·Step 확정 충돌을 공개 409 detail로 변환한다."""
         return JSONResponse(status_code=status.HTTP_409_CONFLICT, content={"detail": str(error)})
 
     @app.get("/healthcheck")

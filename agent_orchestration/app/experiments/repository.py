@@ -133,6 +133,20 @@ def find_log_by_idempotency_key(
     )
 
 
+def find_experiment_step(
+    session: Session,
+    experiment_id: uuid.UUID,
+    step_id: uuid.UUID,
+) -> ExperimentStep | None:
+    """한 실험에 속한 Step을 UUID로 조회한다."""
+    return session.scalar(
+        select(ExperimentStep).where(
+            ExperimentStep.experiment_id == experiment_id,
+            ExperimentStep.id == step_id,
+        )
+    )
+
+
 def find_step_by_idempotency_key(
     session: Session,
     experiment_id: uuid.UUID,

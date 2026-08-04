@@ -184,3 +184,109 @@ def test_openapi_declares_step_endpoint_responses(experiment_client: TestClient)
     operation = schema["paths"]["/experiments/{experiment_id}/steps"]["post"]
 
     assert set(operation["responses"]) >= {"201", "401", "404", "409", "422"}
+
+
+def _create_step(client: TestClient, experiment_id: str) -> str:
+    response = client.post(
+        f"/experiments/{experiment_id}/steps",
+        json=_step_payload(message="조립 중", target={"features": ["a"]}),
+        headers=AUTH_HEADERS,
+    )
+    assert response.status_code == 201
+    return response.json()["id"]
+
+
+def test_patch_step_replaces_omitted_fields_with_null(experiment_client: TestClient) -> None:
+    """PATCH 전체 교체 — 생략된 message/target은 null이 된다."""
+    experiment_id = _create_experiment(experiment_client)
+    step_id = _create_step(experiment_client, experiment_id)
+
+    response = experiment_client.patch(
+        f"/experiments/{experiment_id}/steps/{step_id}",
+        json={"status": "PROGRESS"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "PROGRESS"
+    assert body["message"] is None
+    assert body["target"] is None
+
+
+def test_patch_terminal_step_identical_retry_returns_200(
+    experiment_client: TestClient,
+) -> None:
+    """확정된 Step에 같은 payload를 다시 보내면 200이다."""
+    experiment_id = _create_experiment(experiment_client)
+    step_id = _create_step(experiment_client, experiment_id)
+    payload = {"status": "COMPLETED", "message": "완료"}
+    experiment_client.patch(
+        f"/experiments/{experiment_id}/steps/{step_id}", json=payload, headers=AUTH_HEADERS
+    )
+
+    response = experiment_client.patch(
+        f"/experiments/{experiment_id}/steps/{step_id}", json=payload, headers=AUTH_HEADERS
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "COMPLETED"
+
+
+def test_patch_terminal_step_different_payload_returns_409(
+    experiment_client: TestClient,
+) -> None:
+    """확정된 결과를 다른 값으로 덮으려 하면 409다."""
+    experiment_id = _create_experiment(experiment_client)
+    step_id = _create_step(experiment_client, experiment_id)
+    experiment_client.patch(
+        f"/experiments/{experiment_id}/steps/{step_id}",
+        json={"status": "COMPLETED", "message": "완료"},
+        headers=AUTH_HEADERS,
+    )
+
+    response = experiment_client.patch(
+        f"/experiments/{experiment_id}/steps/{step_id}",
+        json={"status": "FAILED", "message": "실패"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 409
+
+
+def test_patch_missing_step_returns_404(experiment_client: TestClient) -> None:
+    """없는 Step은 404다."""
+    experiment_id = _create_experiment(experiment_client)
+
+    response = experiment_client.patch(
+        f"/experiments/{experiment_id}/steps/{uuid.uuid4()}",
+        json={"status": "PROGRESS"},
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 404
+
+
+def test_patch_step_rejects_oversized_target(experiment_client: TestClient) -> None:
+    """갱신 경로에도 4096 byte 제한이 걸린다."""
+    experiment_id = _create_experiment(experiment_client)
+    step_id = _create_step(experiment_client, experiment_id)
+
+    response = experiment_client.patch(
+        f"/experiments/{experiment_id}/steps/{step_id}",
+        json={
+            "status": "PROGRESS",
+            "target": {"blob": "x" * (MAX_STEP_TARGET_BYTES + 1)},
+        },
+        headers=AUTH_HEADERS,
+    )
+
+    assert response.status_code == 422
+
+
+def test_openapi_declares_step_patch_responses(experiment_client: TestClient) -> None:
+    """Swagger가 갱신 endpoint의 응답을 노출한다."""
+    schema = experiment_client.get("/openapi.json").json()
+    operation = schema["paths"]["/experiments/{experiment_id}/steps/{step_id}"]["patch"]
+
+    assert set(operation["responses"]) >= {"200", "401", "404", "409", "422"}

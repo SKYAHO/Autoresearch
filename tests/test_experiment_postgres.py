@@ -17,13 +17,17 @@ import pytest
 from sqlalchemy import Engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from agent_orchestration.app.experiments.exceptions import IdempotencyConflictError
+from agent_orchestration.app.experiments.exceptions import (
+    IdempotencyConflictError,
+    StepAlreadyFinalizedError,
+)
 from agent_orchestration.app.database import create_database_engine
 from agent_orchestration.app.experiments.models import (
     Experiment,
     ExperimentLog,
     ExperimentStep,
     StepKind,
+    StepStatus,
 )
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
@@ -31,6 +35,7 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentLogResponse,
     ExperimentStepCreate,
     ExperimentStepResponse,
+    ExperimentStepUpdate,
     StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.models import ExperimentStatus
@@ -38,6 +43,7 @@ from agent_orchestration.app.experiments.service import (
     create_experiment,
     create_experiment_log,
     create_experiment_step,
+    update_experiment_step,
     update_experiment_status,
 )
 
@@ -370,3 +376,125 @@ def test_concurrent_conflicting_step_request_has_one_success_and_no_loser_side_e
     assert len(rows) == 1
     assert rows[0].step_type == successes[0]
     assert rows[0].step_type != conflicts[0]
+
+
+def test_step_update_rereads_state_committed_by_another_session(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """확정 판정은 세션 캐시가 아니라 새 SELECT로 한다.
+
+    session_a가 Step을 비터미널 상태로 들고 있는 동안 session_b가 COMPLETED를 커밋한다.
+    session factory는 expire_on_commit=False라 session_a의 객체는 stale하게 남는데,
+    그 stale 값으로 판정하면 확정된 결과를 조용히 덮어쓴다.
+    """
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres step stale read"),
+        ).id
+        step_id = create_experiment_step(
+            setup_session,
+            experiment_id,
+            ExperimentStepCreate(
+                idempotency_key=f"stale-{uuid.uuid4()}",
+                step_kind=StepKind.TRAIN,
+                step_type="train_candidate",
+            ),
+        ).id
+
+    session_a = postgres_session_factory()
+    session_b = postgres_session_factory()
+    try:
+        # session_a가 PROGRESS 상태를 identity map에 적재한다.
+        cached = update_experiment_step(
+            session_a,
+            experiment_id,
+            step_id,
+            ExperimentStepUpdate(status=StepStatus.PROGRESS, message="학습 중"),
+        )
+        assert cached.status == StepStatus.PROGRESS.value
+
+        # session_b가 그 사이 터미널을 확정한다.
+        update_experiment_step(
+            session_b,
+            experiment_id,
+            step_id,
+            ExperimentStepUpdate(status=StepStatus.COMPLETED, message="완료"),
+        )
+
+        # session_a는 여전히 stale 객체를 들고 있다.
+        assert cached.status == StepStatus.PROGRESS.value
+
+        # 비터미널로 되돌리는 갱신도 확정된 결과를 덮지 못해야 한다.
+        with pytest.raises(StepAlreadyFinalizedError):
+            update_experiment_step(
+                session_a,
+                experiment_id,
+                step_id,
+                ExperimentStepUpdate(status=StepStatus.PROGRESS, message="학습 중"),
+            )
+    finally:
+        session_a.close()
+        session_b.close()
+
+    with postgres_session_factory() as session:
+        stored = session.scalar(
+            select(ExperimentStep).where(ExperimentStep.id == step_id)
+        )
+    assert stored is not None
+    assert stored.status == StepStatus.COMPLETED.value
+    assert stored.message == "완료"
+
+
+def test_concurrent_terminal_transitions_finalize_exactly_one(
+    postgres_session_factory: sessionmaker[Session],
+) -> None:
+    """비터미널 Step에 COMPLETED와 FAILED를 동시에 쓰면 한쪽만 확정된다."""
+    with postgres_session_factory() as setup_session:
+        experiment_id = create_experiment(
+            setup_session,
+            ExperimentCreate(hypothesis="postgres concurrent terminal"),
+        ).id
+        step_id = create_experiment_step(
+            setup_session,
+            experiment_id,
+            ExperimentStepCreate(
+                idempotency_key=f"terminal-{uuid.uuid4()}",
+                step_kind=StepKind.EVALUATE,
+                step_type="evaluate_candidate",
+                status=StepStatus.PROGRESS,
+            ),
+        ).id
+    start_barrier = threading.Barrier(2)
+
+    def submit(requested: StepStatus) -> tuple[str, str]:
+        with postgres_session_factory() as session:
+            request = ExperimentStepUpdate(status=requested, message=requested.value)
+            start_barrier.wait(timeout=5)
+            try:
+                row = update_experiment_step(session, experiment_id, step_id, request)
+                return ("success", row.status)
+            except StepAlreadyFinalizedError:
+                return ("conflict", requested.value)
+
+    executor = ThreadPoolExecutor(max_workers=2)
+    try:
+        futures = [
+            executor.submit(submit, requested)
+            for requested in (StepStatus.COMPLETED, StepStatus.FAILED)
+        ]
+        outcomes = [future.result(timeout=10) for future in futures]
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+    with postgres_session_factory() as session:
+        stored = session.scalar(
+            select(ExperimentStep).where(ExperimentStep.id == step_id)
+        )
+    successes = [value for status, value in outcomes if status == "success"]
+    conflicts = [value for status, value in outcomes if status == "conflict"]
+    assert len(successes) == 1
+    assert len(conflicts) == 1
+    assert stored is not None
+    assert stored.status == successes[0]
+    assert stored.status != conflicts[0]

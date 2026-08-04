@@ -11,13 +11,16 @@ import hashlib
 import json
 import uuid
 
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from agent_orchestration.app.experiments.exceptions import (
     ExperimentNotFoundError,
+    ExperimentStepNotFoundError,
     IdempotencyConflictError,
     PromotionRequiresDedicatedEndpointError,
+    StepAlreadyFinalizedError,
 )
 from agent_orchestration.app.experiments.models import (
     Experiment,
@@ -26,6 +29,7 @@ from agent_orchestration.app.experiments.models import (
     ExperimentMetadata,
     ExperimentStatus,
     ExperimentStep,
+    TERMINAL_STEP_STATUSES,
 )
 from agent_orchestration.app.experiments.repository import (
     find_experiment,
@@ -33,6 +37,7 @@ from agent_orchestration.app.experiments.repository import (
     find_event_by_idempotency_key,
     find_experiment_logs,
     find_experiment_metadata,
+    find_experiment_step,
     find_experiments,
     find_log_by_idempotency_key,
     find_step_by_idempotency_key,
@@ -42,6 +47,7 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentEventCreate,
     ExperimentLogCreate,
     ExperimentStepCreate,
+    ExperimentStepUpdate,
     PromotionRequest,
     StatusUpdateRequest,
 )
@@ -413,6 +419,79 @@ def create_experiment_step(
         session.expunge(existing_step)
         session.rollback()
         return existing_step
+
+
+def _step_state_fingerprint(step: ExperimentStep) -> str:
+    """현재 저장된 Step 상태의 digest를 계산한다.
+
+    저장된 `request_fingerprint` 컬럼을 쓰지 않는다 — 그 값은 **생성 시점** payload
+    (`step_kind`·`step_type` 포함)의 digest라 key 집합이 다르다.
+    """
+    return _request_fingerprint(
+        {"status": step.status, "message": step.message, "target": step.target}
+    )
+
+
+def _finalized_step_or_conflict(
+    step: ExperimentStep,
+    requested_fingerprint: str,
+) -> ExperimentStep:
+    """확정된 Step에 대한 재시도만 통과시키고 다른 payload는 거부한다."""
+    if _step_state_fingerprint(step) == requested_fingerprint:
+        return step
+    raise StepAlreadyFinalizedError(step.id)
+
+
+def update_experiment_step(
+    session: Session,
+    experiment_id: uuid.UUID,
+    step_id: uuid.UUID,
+    request: ExperimentStepUpdate,
+) -> ExperimentStep:
+    """작업 단계를 전체 교체로 갱신하고 터미널 확정을 원자적으로 보장한다.
+
+    비터미널 사이의 전이는 자유롭게 허용한다. 터미널로 전이할 때만 조건부 UPDATE를 걸어
+    검사-후-실행 사이의 창을 없앤다 — 그러지 않으면 두 요청이 동시에 서로 다른 터미널
+    상태를 써도 둘 다 통과해 나중에 커밋한 쪽이 조용히 이긴다.
+    """
+    requested_fingerprint = _request_fingerprint(
+        {
+            "status": request.status.value,
+            "message": request.message,
+            "target": request.target,
+        }
+    )
+    terminal_values = [status.value for status in TERMINAL_STEP_STATUSES]
+    with session.begin():
+        if find_experiment_step(session, experiment_id, step_id) is None:
+            raise ExperimentStepNotFoundError(step_id)
+
+        # 조건을 **모든** 갱신에 건다. 터미널로 전이할 때만 걸면 두 가지가 새어 나간다.
+        #   1) 검사-후-실행 사이에 다른 트랜잭션이 터미널을 확정하는 창
+        #   2) 세션이 expire_on_commit=False라, 위 SELECT가 identity map의 stale 객체를
+        #      돌려줄 수 있다. stale 값이 비터미널이면 확정된 Step을 조용히 덮어쓴다.
+        # 비터미널 사이의 갱신은 이 조건에 걸리지 않으므로 "비터미널 자유 전이"는 그대로다.
+        result = session.execute(
+            update(ExperimentStep)
+            .where(
+                ExperimentStep.id == step_id,
+                ExperimentStep.status.not_in(terminal_values),
+            )
+            .values(
+                status=request.status.value,
+                message=request.message,
+                target=request.target,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        # 판정 근거는 세션 캐시가 아니라 새 SELECT여야 한다. refresh는 항상 SQL을 발행하므로
+        # 방금 다른 트랜잭션이 커밋한 값을 본다.
+        step = find_experiment_step(session, experiment_id, step_id)
+        assert step is not None  # 같은 transaction 안에서 위 존재 확인을 통과했다
+        session.refresh(step)
+        if result.rowcount == 0:
+            return _finalized_step_or_conflict(step, requested_fingerprint)
+        return step
 
 
 def list_experiment_logs(
