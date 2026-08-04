@@ -5,9 +5,14 @@
 
 Alembic migration과 동일한 table, server default, FK, index와 unique constraint를
 SQLAlchemy 2.x declarative model로 제공한다. 단, `Experiment.updated_at`과
-`ExperimentStep.updated_at`의 `onupdate=func.now()`는 이 ORM을 거치는 UPDATE에만
+`ExperimentStep.updated_at`의 `onupdate=func.now()`는 **SQLAlchemy를 거치는 UPDATE**에만
 적용되는 애플리케이션 레벨 동작이며 DB 트리거가 아니다 — migration에는 대응하는 트리거가
-없어 `psql` 직접 UPDATE 등 ORM을 우회하는 쓰기에는 적용되지 않는다.
+없어 `psql` 직접 UPDATE 등 SQLAlchemy를 우회하는 쓰기에는 적용되지 않는다.
+
+여기서 "SQLAlchemy를 거치는"은 ORM flush와 Core `update()` 문을 **모두** 포함한다.
+`onupdate`는 Column 수준 구성이라 컴파일 시 SET 절에 주입되므로, `.values()`에 명시하지
+않아도 `SET ..., updated_at=now()`가 나간다. 대비 대상은 ORM이 아니라 SQLAlchemy 바깥의
+직접 SQL이다.
 
 Step은 실험 생명주기 상태(`ExperimentStatus`)와 독립적인 **작업 단계** 기록이다.
 `experiments.status`를 변경하지 않으며, 전이 그래프 대신 터미널 확정 가드만 가진다.
