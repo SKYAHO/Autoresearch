@@ -27,6 +27,20 @@
 - **승격 게이트 배선** — `#461`/`#472` 경계는 `#485` spec §4.2 그대로다.
 - **production Feature Service·production alias 변경** — `#485` 제약 승계.
 - **다중 origin(여러 cutoff)** — 선행 spec §10 범위. 이 spec도 단일 cutoff 기준이다.
+- **조건별로 데이터셋이 달라지는 실험** — §4.2·§8.3의 결과로 challenger의 정의가
+  **"같은 데이터셋 위에서 학습 피처 선택만 다른 경우"**로 좁혀진다. 따라서 조건마다
+  다른 `window_days`·`cutoff_date`·`feature_service`·backfill 구간을 쓰는 실험은 이
+  spec이 지원하지 않는다.
+
+  **왜 좁히는가**: `_validate_fairness`가 두 조건의 `dataset_sha256` 동일을 요구하고
+  (§8.3), 그것이 `paired_experiment`가 `dataset_fingerprint`를 최상위 단일 필드로 둔
+  것과 같은 계약이다(§2.3). 조건별 데이터셋을 허용하면 "같은 조건에서 비교했다"는
+  증거가 다시 사라진다 — 이 이슈가 존재하는 이유 자체가 무너진다.
+
+  **이 제약이 실제 유스케이스를 막지 않는다**: `#396`의 `views_per_day` 가설처럼
+  "피처 하나를 더하면 개선되는가"가 이 저장소의 전형적인 실험이고, 그 형태는 그대로
+  지원된다. 학습 구간 자체를 바꿔 비교하는 실험이 필요해지면 별도 계약이 필요하며,
+  그때는 "무엇을 동일 조건으로 볼 것인가"부터 다시 정의해야 한다.
 
 ## 1. 시드 정책 — 두 축을 분리한다 (이 spec의 핵심 결정)
 
@@ -211,11 +225,30 @@ TemporalPairedResult
 @dataclass(frozen=True)
 class TemporalCondition:
     name: str                                  # "baseline" | "challenger"
-    feature_service: str | None = None
-    extra_features: Sequence[str] | None = None
+    model_features: Sequence[str] | None = None  # train.main에 넘길 실험 피처 선택
     experiment: str | None = None
     source_sha: str | None = None              # 결과에 남길 조건 식별자
 ```
+
+**`extra_features`는 조건별 필드가 아니다**(§8.3에서 확인). 이 인자는
+`run_rolling_origin`에서 데이터셋 조립(`build_training_dataset.main`)과 모델 학습
+(`train.main`) **양쪽에** 흘러가는데, 조립에 들어가면 학습 CSV가 물리적으로 달라져
+`dataset_sha256`이 어긋나고 `_validate_fairness`가 비교를 거부한다.
+
+```text
+데이터셋 조립: 1회, extra_features = 두 조건 model_features의 **합집합**  (공유 축)
+조건별 차이  : train.main에 넘기는 model_features                          (조건 축)
+```
+
+`feature_service`도 같은 이유로 **공유 축**이다 — 조회 서비스가 다르면 조립 결과가
+달라진다. 합집합 피처를 모두 가진 서비스 하나를 상위에서 지정한다.
+
+**행 구성이 달라지지 않음을 코드로 확인했다**(Task 1, 2026-08-05):
+`require_extra_feature_columns`는 컬럼 존재만 검사하고 행을 거르지 않으며
+(`feast_retrieval.py:153`), 행을 실제로 드롭하는 `drop_user_dynamic_gap_rows`는
+`_USER_DYNAMIC_COLUMNS` **고정 6개**(prod 계약)만 본다(56-63행). `apply_cold_start_defaults`는
+null을 채울 뿐 드롭하지 않는다. 따라서 합집합 조립은 **컬럼만 늘리고 행은 그대로**이며,
+"같은 행 위에서 피처만 다르다"는 전제가 성립한다.
 
 **§3의 런타임 검증보다 한 단계 앞에서 막는 것이 핵심이다.** 공유 축을 상위 호출이 한 번만
 받으면 "같아야 하는 값을 다르게 넣는" 입력 자체가 만들어지지 않는다. §3의 검증은 그래도
