@@ -12,6 +12,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.pipeline import build_training_dataset  # noqa: E402
 
+_COVERAGE_STUB = build_training_dataset.SpineCoverage(
+    requested_days=("2026-08-01",),
+    usable_days=("2026-08-01",),
+    sparse_days=(),
+    missing_days=(),
+    zero_click_days=(),
+    total_rows=2,
+    total_clicks=1,
+)
+
 
 @pytest.fixture(autouse=True)
 def configured_project(monkeypatch) -> None:
@@ -387,6 +397,66 @@ def test_main_runs_assembly_when_env_check_passes(monkeypatch, tmp_path) -> None
         feature_service=None,
         extra_features=None,
     )
+
+
+def test_main_publishes_only_when_snapshot_root_given(tmp_path, monkeypatch) -> None:
+    """루트를 명시했을 때만 게시한다 — degradation_eval처럼 안 넘기는 호출은 게시 경로에 못 든다."""
+    # 이 테스트의 관심사는 게시 게이팅이지 환경 가드가 아니다 — 가드 자체는
+    # test_verify_assembly_environment_* 들이 이미 커버한다(위 패턴과 동일).
+    monkeypatch.setattr(build_training_dataset, "_verify_assembly_environment", lambda: None)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        build_training_dataset,
+        "_assemble_via_feast",
+        lambda *args, **kwargs: _COVERAGE_STUB,
+    )
+    monkeypatch.setattr(
+        build_training_dataset.training_snapshot_store,
+        "publish_snapshot",
+        lambda **kwargs: calls.append(kwargs) or "gs://snapshots/by-hash/abc/",
+    )
+
+    without = build_training_dataset.main(
+        output_path=str(tmp_path / "a.csv"),
+        events_start_date="2026-07-26",
+        events_end_date="2026-08-01",
+    )
+    assert without.snapshot_uri is None
+    assert calls == []
+
+    with_root = build_training_dataset.main(
+        output_path=str(tmp_path / "b.csv"),
+        events_start_date="2026-07-26",
+        events_end_date="2026-08-01",
+        snapshot_root="gs://snapshots/training",
+    )
+    assert with_root.snapshot_uri == "gs://snapshots/by-hash/abc/"
+    assert calls[0]["record_pointer"] is True
+
+
+def test_main_skips_pointer_for_experiment_assembly(tmp_path, monkeypatch) -> None:
+    """실험 조립은 루트가 켜져 있어도 prod 포인터를 건드리지 않는다."""
+    monkeypatch.setattr(build_training_dataset, "_verify_assembly_environment", lambda: None)
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        build_training_dataset,
+        "_assemble_via_feast",
+        lambda *args, **kwargs: _COVERAGE_STUB,
+    )
+    monkeypatch.setattr(
+        build_training_dataset.training_snapshot_store,
+        "publish_snapshot",
+        lambda **kwargs: calls.append(kwargs) or "gs://snapshots/by-hash/abc/",
+    )
+
+    build_training_dataset.main(
+        output_path=str(tmp_path / "exp.csv"),
+        events_start_date="2026-07-26",
+        events_end_date="2026-08-01",
+        snapshot_root="gs://snapshots/training",
+        extra_features=["views_per_day"],
+    )
+    assert calls[0]["record_pointer"] is False
 
 
 def test_experiment_assembly_requires_explicit_output_path() -> None:

@@ -442,7 +442,7 @@ def run_pipeline(
     typer.echo("\n[1/4] build-features 실행...")
     # 실험 피처는 학습·평가만이 아니라 **조립에도** 넘긴다(#454) — 조립이 보존하지 않으면
     # 학습의 --extra-features가 승격할 컬럼 자체가 CSV에 없어 실행이 성립하지 않는다.
-    coverage = build_training_dataset.main(
+    assembly = build_training_dataset.main(
         output_path=dataset_path,
         events_start_date=events_start_date,
         events_end_date=events_end_date,
@@ -475,7 +475,7 @@ def run_pipeline(
     # 볼 때 run 파라미터만으로 판별할 수 있게 한다(#464 리뷰).
     requested_min_days = _requested_min_coverage_days(min_coverage_days)
     data_source_params.update(
-        coverage.as_lineage_params(
+        assembly.coverage.as_lineage_params(
             min_days=(
                 build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
                 if requested_min_days is None

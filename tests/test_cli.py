@@ -62,6 +62,18 @@ def _fake_coverage(usable=2, missing=1):
     )
 
 
+def _fake_assembly_outcome(usable=2, missing=1):
+    """build_training_dataset.main 목(mock)의 반환값(#530) — AssemblyOutcome로 감싼다.
+
+    ``main``이 ``AssemblyOutcome``을 돌려주도록 바뀌었으므로(#530), run-pipeline이 읽는
+    ``assembly.coverage``가 실제로 존재하는 값이 되도록 여기서 감싼다. 이 테스트들은
+    게시(snapshot_uri)를 다루지 않으므로 기본값 ``None``이면 충분하다.
+    """
+    return cli.build_training_dataset.AssemblyOutcome(
+        coverage=_fake_coverage(usable=usable, missing=missing)
+    )
+
+
 def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     build_features_call = {}
     # build-features 성공 뒤 lineage가 GCS_REGISTRY_PATH를 필수로 읽는다(#359 C2, 무조건 기록).
@@ -69,7 +81,7 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     monkeypatch.setattr(
         cli.build_training_dataset,
         "main",
-        lambda **kw: (build_features_call.update(kw), _fake_coverage())[1],
+        lambda **kw: (build_features_call.update(kw), _fake_assembly_outcome())[1],
     )
     monkeypatch.setattr(cli.train, "main", lambda **kw: _pipeline_outcome())
     monkeypatch.setattr(cli.evaluate, "main", MagicMock())
@@ -190,7 +202,7 @@ def test_run_pipeline_forwards_coverage_override(monkeypatch):
     monkeypatch.setattr(
         cli.build_training_dataset,
         "main",
-        lambda **kw: (build_features_call.update(kw), _fake_coverage())[1],
+        lambda **kw: (build_features_call.update(kw), _fake_assembly_outcome())[1],
     )
     monkeypatch.setattr(
         cli.train, "main", lambda **kw: train_call.update(kw) or _pipeline_outcome()
@@ -227,7 +239,7 @@ def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
     train_call = {}
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
     monkeypatch.setattr(
-        cli.build_training_dataset, "main", MagicMock(return_value=_fake_coverage())
+        cli.build_training_dataset, "main", MagicMock(return_value=_fake_assembly_outcome())
     )
     monkeypatch.setattr(
         cli.train, "main", lambda **kw: train_call.update(kw) or _pipeline_outcome()
@@ -839,7 +851,7 @@ def test_run_pipeline_forwards_assembly_features_and_logs_actual_service(monkeyp
     monkeypatch.setattr(
         cli.build_training_dataset,
         "main",
-        lambda **kw: (build_features_call.update(kw), _fake_coverage())[1],
+        lambda **kw: (build_features_call.update(kw), _fake_assembly_outcome())[1],
     )
     monkeypatch.setattr(
         cli.train, "main", lambda **kw: train_call.update(kw) or _pipeline_outcome()
