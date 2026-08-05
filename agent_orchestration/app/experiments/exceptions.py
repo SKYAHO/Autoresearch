@@ -62,3 +62,11 @@ class PromotionRequiresDedicatedEndpointError(ValueError):
 
     def __init__(self) -> None:
         super().__init__("PROMOTED must be requested through the promotion endpoint.")
+
+
+class IssuePublicationLimitError(RuntimeError):
+    """일일 발행 상한을 넘었다."""
+
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        super().__init__(f"Daily issue publication limit {limit} was reached.")

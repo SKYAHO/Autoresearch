@@ -133,10 +133,11 @@ def test_orm_primary_keys_use_the_migration_server_uuid_default() -> None:
         assert str(id_column.server_default.arg) == "gen_random_uuid()"
 
 
-def test_orm_indexes_match_the_initial_migration() -> None:
-    """ORM의 index=True가 migration에 없는 중복 단일 인덱스를 만드는 회귀를 잡는다."""
+def test_orm_indexes_match_the_migrations() -> None:
+    """ORM의 인덱스가 0001, 0002 migration의 DDL과 일치하는지 고정한다."""
     assert {index.name for index in Experiment.__table__.indexes} == {
-        "ix_experiments_status"
+        "ix_experiments_status",
+        "ix_experiments_issue_number",
     }
     assert {index.name for index in ExperimentEvent.__table__.indexes} == {
         "ix_events_experiment_created"

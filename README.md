@@ -65,6 +65,20 @@ docs/                # 문서 — docs/README.md 인덱스 참조
 DAG·스케줄·Airflow 배포는 [`SKYAHO/Autoresearch-airflow`](https://github.com/SKYAHO/Autoresearch-airflow),
 GCP 인프라는 [`SKYAHO/Autoresearch-infra`](https://github.com/SKYAHO/Autoresearch-infra)가 소유합니다.
 
+### Agent Orchestration 이슈 발행 환경 변수 (#516)
+
+가설을 `[AR]` Auto Research 이슈로 발행하는 경로가 쓰는 필수 환경 변수입니다
+(전체 기본값·형식은 `.env.example`이 정본).
+
+| 변수 | 용도 |
+|---|---|
+| `ORCH_GITHUB_TOKEN` | 이슈 발행 전용 `issues: write` GitHub 토큰 |
+| `ORCH_GITHUB_REPOSITORY` | 발행 대상 저장소(`owner/repo`), 발행 결과 URL과 대조해 오발행을 막음 |
+| `ORCH_GH_TIMEOUT_SEC` | `gh` 서브프로세스 실행 상한(초) |
+| `ORCH_ISSUE_DAILY_LIMIT` | 일일 발행 상한, 초과 시 429 반환 |
+| `ORCH_EXPERIMENT_DATASET_SOURCE` | 서버가 Issue Form에 채우는 학습 데이터 출처 좌표. 기간은 발행 시점에 서버가 계산해 붙임(`dt BETWEEN P-30 AND P-1`, 어제까지 30일) |
+| `ORCH_EXPERIMENT_TRAINING_CONFIG_REF` | 서버가 Issue Form에 채우는 학습 설정 참조 |
+
 action log 데이터 레이크는 **일일 슬라이스 파티션**(`dt=D` = KST D일
 하루치, 파티션 간 서로소)으로 적재되며, 피처·학습 소비자는 `dt BETWEEN`
 프루닝으로 30일 히스토리를 조립합니다. 계약 상세:

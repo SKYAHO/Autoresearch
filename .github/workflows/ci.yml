@@ -459,6 +459,8 @@ jobs:
           '
           docker run --rm autoresearch-agent-orchestration-api:ci \
             python -c "import agent_orchestration.app.main"
+          docker run --rm autoresearch-agent-orchestration-api:ci gh --version \
+            | grep --fixed-strings "gh version 2.97.0"
           docker run --rm autoresearch-agent-orchestration-api:ci \
             python -c "import agent_orchestration.bootstrap_secrets; from google.cloud import secretmanager"
           docker run --rm autoresearch-agent-orchestration-api:ci \

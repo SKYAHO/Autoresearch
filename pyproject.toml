@@ -59,6 +59,10 @@ dev = [
     { include-group = "lint" },
     { include-group = "serving" },
     { include-group = "orchestration" },
+    # Streamlit workbench를 CI 테스트에 포함한다(#536). 폼 렌더링 버그는 순수 함수
+    # 테스트로 잡히지 않고 `streamlit.testing.v1.AppTest`가 스크립트를 실제로 실행해야
+    # 드러난다. feast와 달리 버전 충돌이 없어 dev에 함께 둘 수 있다.
+    { include-group = "orchestration-ui" },
 ]
 # 린트 전용 표면 (CI lint job 은 이 그룹만 설치).
 lint = [

@@ -13,6 +13,7 @@ import uuid
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
+from agent_orchestration.app.config import ServiceSettings, get_settings
 from agent_orchestration.app.database import get_db_session
 from agent_orchestration.app.experiments.models import ExperimentStatus, StepKind
 from agent_orchestration.app.experiments.schemas import (
@@ -30,6 +31,8 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentStepPageResponse,
     ExperimentStepResponse,
     ExperimentStepUpdate,
+    IssuePublicationRequest,
+    IssuePublicationResponse,
     PromotionRequest,
     StatusUpdateRequest,
 )
@@ -45,6 +48,7 @@ from agent_orchestration.app.experiments.service import (
     list_experiment_steps,
     list_experiments,
     promote_experiment,
+    publish_experiment_issue,
     update_experiment_status,
     update_experiment_step,
 )
@@ -53,6 +57,7 @@ from agent_orchestration.app.schemas import ErrorResponse
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
 SessionDependency = Annotated[Session, Depends(get_db_session)]
+SettingsDependency = Annotated[ServiceSettings, Depends(get_settings)]
 _UNAUTHORIZED_RESPONSE = {
     status.HTTP_401_UNAUTHORIZED: {
         "description": "Invalid orchestration API token.",
@@ -285,3 +290,43 @@ def post_experiment_promotion(
 ) -> ExperimentResponse:
     """운영 근거가 있는 PASSED 실험을 수동 승격한다."""
     return ExperimentResponse.model_validate(promote_experiment(session, experiment_id, request))
+
+
+@router.post(
+    "/{experiment_id}/issue",
+    response_model=IssuePublicationResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        **_UNAUTHORIZED_RESPONSE,
+        **_NOT_FOUND_RESPONSE,
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "description": "Daily issue publication limit was reached.",
+            "model": ErrorResponse,
+        },
+        status.HTTP_502_BAD_GATEWAY: {
+            "description": "Failed to author or publish the issue.",
+            "model": ErrorResponse,
+        },
+    },
+)
+async def post_experiment_issue(
+    experiment_id: uuid.UUID,
+    request: IssuePublicationRequest,
+    session: SessionDependency,
+    settings: SettingsDependency,
+) -> IssuePublicationResponse:
+    """가설을 `[AR]` 이슈로 발행하고 그 좌표를 반환한다."""
+    experiment = await publish_experiment_issue(
+        session,
+        settings,
+        experiment_id,
+        request,
+    )
+    return IssuePublicationResponse(
+        issue_number=experiment.issue_number,
+        issue_url=(
+            f"https://github.com/{settings.github_repository}"
+            f"/issues/{experiment.issue_number}"
+        ),
+        issue_branch=experiment.issue_branch,
+    )

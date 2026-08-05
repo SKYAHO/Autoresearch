@@ -3,8 +3,9 @@
 전체 파이프라인에서 FastAPI 호출자와 실험 service 사이의 입력·응답 형태를 검증한다.
 DB query, 상태 전이와 인증은 담당하지 않는다.
 
-실험 생성·조회, 일반 상태 event, polling log와 수동 승격에 필요한 엄격한 Pydantic v2
-모델을 제공한다.
+실험 생성·조회, 일반 상태 event, polling log, 수동 승격, `[AR]` 이슈 발행에 필요한
+엄격한 Pydantic v2 모델을 제공한다. 이슈 발행 요청이 싣는 사전등록 필드의 정의와
+검증 규칙은 `issue_authoring.IssueSubmission`이 소유한다.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from agent_orchestration.app.experiments.issue_authoring import IssueSubmission
 from agent_orchestration.app.experiments.models import (
     ExperimentStatus,
     StepKind,
@@ -81,6 +83,8 @@ class ExperimentResponse(BaseModel):
     status: ExperimentStatus
     metric_summary: dict | None
     agent_session_id: str | None
+    issue_number: int | None
+    issue_branch: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -239,6 +243,29 @@ class ExperimentMetadataResponse(BaseModel):
     """실험 metadata key-value 응답."""
 
     entries: dict[str, str]
+
+
+class IssuePublicationRequest(BaseModel):
+    """사전등록 필드를 `[AR]` 이슈로 발행하는 요청."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # 지표·guardrail을 호출자가 선언한다(#536). 형식 위반은 이슈가 열리기 전에 422로
+    # 끊긴다 — `IssueSubmission`이 파서와 같은 규칙을 검사한다.
+    fields: IssueSubmission
+    allowed_scope: tuple[
+        Literal["prod_model_contract", "feast_definition", "promotion"], ...
+    ] = ()
+
+
+class IssuePublicationResponse(BaseModel):
+    """발행 결과 좌표."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    issue_number: int
+    issue_url: str
+    issue_branch: str
 
 
 class PromotionRequest(BaseModel):
