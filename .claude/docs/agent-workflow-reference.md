@@ -47,7 +47,7 @@ Issue 자동 close → Project Done
 | `feature.yml` | `[FEAT]` | `feature` | 목적, 작업 범위, 영향 컴포넌트, 완료 조건 |
 | `bug.yml` | `[BUG]` | `bug` | 현상, 재현 방법, 기대 동작, 환경, 로그 |
 | `experiment.yml` | `[EXP]` | `experiment` | 가설, 데이터셋, 모델, 피처, 평가지표, Champion 대비 결과, 결론 |
-| `auto_research.yml` | `[AR]` | `auto-experiment` | 입력 필드 20개 중 18개를 `tools/auto_research_issue_branch.py`가 fail-closed로 파싱 (`보조 관측 지표`는 선택, `결과`는 에이전트가 사후 기입) |
+| `auto_research.yml` | `[AR]` | `auto-experiment` | 입력 필드 21개 중 18개를 `tools/auto_research_issue_branch.py`가 fail-closed로 파싱 (`선행 연구 참조`와 `보조 관측 지표`는 선택, `결과`는 에이전트가 사후 기입) |
 
 GitHub는 `form 선택 → label 자동 적용` 방식으로 동작합니다. Project의
 `Add item`으로 제목만 추가하면 form을 우회하므로, 새 작업은 Issues

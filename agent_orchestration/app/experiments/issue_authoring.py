@@ -1,12 +1,13 @@
-"""가설을 Auto Research Issue Form 본문으로 옮기는 순수 함수 계층.
+"""사전등록 필드를 Auto Research Issue Form 본문으로 옮기는 순수 함수 계층.
 
 [파이프라인]
-자율 실험 흐름의 첫 구간에서 자연어 가설을 `[AR]` 이슈 본문 문자열로 바꾸는 부분을
-담당한다. LLM 호출, GitHub 발행, DB 저장은 각각 llm·github_issues·service의 책임이다.
+자율 실험 흐름의 첫 구간에서 호출자가 제출한 사전등록 필드를 `[AR]` 이슈 본문
+문자열로 바꾸는 부분을 담당한다. GitHub 발행과 DB 저장은 각각 github_issues·service의
+책임이다.
 
 [기능]
-LLM에 보낼 프롬프트를 조립하고, LLM이 낸 JSON을 검증된 필드로 파싱하며, 서버 소유
-실행 설정과 결합해 heading 20개짜리 본문을 만든다. 재시도 복구용 experiment-id marker도
+호출자가 제출하는 필드(`IssueSubmission`)를 파서와 같은 규칙으로 검증하고, 서버 소유
+실행 설정과 결합해 heading 21개짜리 본문을 만든다. 재시도 복구용 experiment-id marker도
 여기서 붙인다.
 
 [비책임]
@@ -14,6 +15,10 @@ LLM에 보낼 프롬프트를 조립하고, LLM이 낸 JSON을 검증된 필드�
 `src/pipeline/experiment_evaluation.py`의 판정 정책은 이 모듈이 소유하지 않는다. 두 곳은
 API 이미지에 없어 import할 수 없으므로 값을 복제하며, 동일성은
 `tests/test_issue_authoring.py`가 CI에서 고정한다.
+
+지표·guardrail 값을 LLM이 창작하던 경로는 #536에서 제거했다. 예측 모델링 사전등록
+표준(arXiv 2311.18807)에서 성공 기준을 실험 전에 연구자가 선언하는 것이 제도의
+핵심이므로, 에이전트가 임계값을 정하면 그 성질이 사라진다.
 """
 
 from __future__ import annotations
@@ -21,11 +26,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
-import json
 import re
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 
 # `src/pipeline/experiment_evaluation.py`의 POLICY_SEEDS와 같아야 한다. 어긋나면
@@ -96,8 +100,14 @@ SCOPE_LABELS: dict[str, str] = {
 _MARKER_PREFIX = "<!-- experiment-id:"
 
 
-class LlmIssueFields(BaseModel):
-    """LLM이 가설에서 유도해 반환하는 값. heading은 포함하지 않는다."""
+class IssueSubmission(BaseModel):
+    """호출자가 제출하는 사전등록 필드. heading은 포함하지 않는다.
+
+    예측 모델링 사전등록 표준(arXiv 2311.18807)의 Phase A 중 연구자가 선언해야 하는
+    항목에 대응한다 — A.1 research question(`hypothesis`), A.3 independent
+    variable(`change`), A.7 metrics(주 지표 3필드와 guardrail 3필드). A.4/A.5/A.8과
+    Phase B의 학습 설정은 실험 간 비교가 성립하도록 서버가 고정하므로 여기에 없다.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -111,13 +121,17 @@ class LlmIssueFields(BaseModel):
     guardrail_metric_direction: str
     maximum_guardrail_regression: str
     secondary_metrics: str = Field(default="", max_length=2000)
+    # 표준이 요구하지만 Issue Form에 없던 항목이다. 선택 섹션이므로 `criteria_id`·
+    # `reproducibility_id` 계산에 들어가지 않아 기존 실험의 봉인값을 바꾸지 않는다.
+    related_work: str = Field(default="", max_length=2000)
 
     def model_post_init(self, _context: object) -> None:
         """파서가 거부할 값을 조립 전에 끊는다.
 
         여기서 막지 못한 값은 이슈가 **발행된 뒤** 워크플로의 파서에서 실패한다.
         그때는 이미 GitHub에 이슈가 열려 있고 브랜치만 생기지 않는다. 그래서 파서가
-        검사하는 것과 같은 규칙을 이 지점에서 먼저 적용한다.
+        검사하는 것과 같은 규칙을 이 지점에서 먼저 적용한다. 이 모델은 요청 본문이므로
+        위반은 FastAPI가 422로 돌려주며, 이슈는 아직 열리지 않은 상태다.
         """
         if self.primary_metric_direction not in _METRIC_DIRECTIONS:
             raise ValueError("primary_metric_direction is invalid")
@@ -143,11 +157,12 @@ class LlmIssueFields(BaseModel):
                 self.maximum_guardrail_regression, "maximum_guardrail_regression"
             )
         # 값 안에 `### `로 시작하는 줄이 있으면 heading이 하나 더 생겨 본문 구조가
-        # 깨진다. LLM이 마크다운 소제목을 쓰는 것은 충분히 있을 수 있다.
+        # 깨진다. 사람이 마크다운 소제목을 쓰는 것은 충분히 있을 수 있다.
         for name, value in (
             ("hypothesis", self.hypothesis),
             ("change", self.change),
             ("secondary_metrics", self.secondary_metrics),
+            ("related_work", self.related_work),
         ):
             if _HEADING_LINE_PATTERN.search(value):
                 raise ValueError(f"{name} must not contain a '### ' heading line")
@@ -182,92 +197,19 @@ def marker_for(experiment_id: uuid.UUID) -> str:
     return f"{_MARKER_PREFIX} {experiment_id} -->"
 
 
-def build_issue_title(fields: LlmIssueFields) -> str:
+def build_issue_title(fields: IssueSubmission) -> str:
     """Issue Form 관례를 따라 `[AR] ` prefix를 붙인다."""
     return f"[AR] {fields.title.strip()}"
 
 
-def parse_llm_fields(text: str) -> LlmIssueFields:
-    """LLM 응답 텍스트에서 JSON 객체를 뽑아 검증한다."""
-    stripped = text.strip()
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start == -1 or end <= start:
-        raise ValueError("LLM response does not contain a JSON object")
-    try:
-        payload = json.loads(stripped[start : end + 1])
-    except json.JSONDecodeError as error:
-        raise ValueError("LLM response is not valid JSON") from error
-    try:
-        return LlmIssueFields.model_validate(payload)
-    except ValidationError as error:
-        # `pydantic.ValidationError`는 `ValueError`의 하위 클래스이지만, FastAPI가
-        # 요청 검증에 이미 그 이름을 쓰고 있어 호출자를 혼동시키지 않도록 여기서
-        # 명시적으로 `ValueError`로 감싼다. main.py의 전역 handler가 502로 변환한다.
-        raise ValueError("LLM response failed field validation") from error
-
-
-def build_prompt(hypothesis: str) -> str:
-    """LLM이 담당 필드만 JSON으로 내도록 지시하는 프롬프트를 만든다."""
-    directions = " 또는 ".join(f"`{value}`" for value in _METRIC_DIRECTIONS)
-    comparison_options = "\n".join(
-        f"  - {value}" for value in (COMPARISON, SNAPSHOT_REUSE)
-    )
-    return f"""당신은 CTR 모델 실험 설계를 돕습니다. 아래 가설을 읽고 **JSON 객체 하나만**
-출력하십시오. 설명·머리말·코드펜스를 붙이지 마십시오.
-
-## 가설
-
-{hypothesis}
-
-## 출력할 JSON 키
-
-- `title`: 60자 이내 실험 제목. **ASCII 영소문자와 숫자를 반드시 포함**하십시오 —
-  브랜치 이름이 이 제목에서 만들어지며, ASCII 조각이 없으면 해시로 대체되어 사람이
-  식별할 수 없습니다.
-- `hypothesis`: 무엇이 왜 개선되는지 한두 문장.
-- `change`: 바꿀 피처나 모델을 코드로 옮길 수 있을 만큼 구체적으로.
-- `primary_metric_name`: `^[A-Za-z][A-Za-z0-9._-]{{0,63}}$`. 이 프로젝트의 주 지표는
-  `roc_auc`입니다.
-- `primary_metric_direction`: {directions}
-- `minimum_primary_delta`: 0 이상 십진수 문자열. 예 `"0.002"`.
-- `guardrail_metric_name`, `guardrail_metric_direction`,
-  `maximum_guardrail_regression`: guardrail을 쓰지 않으면 각각 `"{_NONE_VALUE}"`,
-  `"{_NOT_APPLICABLE}"`, `"{_NONE_VALUE}"`로 **세 개를 함께** 채우십시오. 쓰면 세 개를
-  모두 실제 값으로 채우십시오. 섞으면 거부됩니다. guardrail을 쓸 때
-  `guardrail_metric_name`은 주 지표와 같은 규칙(`^[A-Za-z][A-Za-z0-9._-]{{0,63}}$`)을
-  따르고, `maximum_guardrail_regression`은 0 이상 십진수 문자열입니다.
-- `secondary_metrics`: 보조 관측 지표. 없으면 빈 문자열.
-
-어떤 값에도 `### `로 시작하는 줄을 넣지 마십시오. 이슈 본문의 heading 구조가 깨집니다.
-
-## 참고 — 서버가 채우는 값 (당신은 출력하지 않습니다)
-
-{comparison_options}
-
-## 예시 출력
-
-{{"title": "views per day ratio feature",
-  "hypothesis": "비율 피처가 ROC-AUC를 높인다.",
-  "change": "- 추가 피처: views_per_day = views / (days + 1)",
-  "primary_metric_name": "roc_auc",
-  "primary_metric_direction": "higher_is_better",
-  "minimum_primary_delta": "0.002",
-  "guardrail_metric_name": "{_NONE_VALUE}",
-  "guardrail_metric_direction": "{_NOT_APPLICABLE}",
-  "maximum_guardrail_regression": "{_NONE_VALUE}",
-  "secondary_metrics": "pr_auc"}}
-"""
-
-
 def build_issue_body(
     experiment_id: uuid.UUID,
-    fields: LlmIssueFields,
+    fields: IssueSubmission,
     defaults: ExperimentDefaults,
     allowed_scope: Sequence[str],
     window: tuple[date, date],
 ) -> str:
-    """LLM 값과 서버 소유 값을 heading과 결합해 Issue Form 본문을 만든다."""
+    """제출 값과 서버 소유 값을 heading과 결합해 Issue Form 본문을 만든다."""
     unknown = set(allowed_scope) - set(SCOPE_LABELS)
     if unknown:
         raise ValueError("unknown allowed scope: " + ", ".join(sorted(unknown)))
@@ -304,8 +246,8 @@ def build_issue_body(
         ("스냅샷 재사용", SNAPSHOT_REUSE),
         ("허용 범위", scope_lines),
     ]
-    # `보조 관측 지표`는 선택이며, 비우면 GitHub이 `_No response_`를 넣는 것과 달리
-    # 여기서는 heading 자체를 생략한다(파서는 두 경우 모두 통과한다).
+    # 선택 섹션은 비우면 GitHub이 `_No response_`를 넣는 것과 달리 heading 자체를
+    # 생략한다(파서는 두 경우 모두 통과한다).
     if fields.secondary_metrics.strip():
         insert_at = next(
             index for index, (name, _) in enumerate(sections) if name == "비교 대상"
@@ -313,6 +255,13 @@ def build_issue_body(
         sections.insert(
             insert_at, ("보조 관측 지표", fields.secondary_metrics.strip())
         )
+    if fields.related_work.strip():
+        insert_at = next(
+            index
+            for index, (name, _) in enumerate(sections)
+            if name == "변경할 피처 · 모델"
+        )
+        sections.insert(insert_at, ("선행 연구 참조", fields.related_work.strip()))
 
     rendered = "\n\n".join(f"### {name}\n{value}" for name, value in sections)
     return f"{marker_for(experiment_id)}\n\n{rendered}\n"
