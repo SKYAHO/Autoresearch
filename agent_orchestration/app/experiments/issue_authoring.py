@@ -59,6 +59,10 @@ _NONE_VALUE = "없음"
 _METRIC_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
 # 값 안의 `### ` 줄은 heading을 하나 더 만들어 본문 구조를 깬다.
 _HEADING_LINE_PATTERN = re.compile(r"^### ", re.MULTILINE)
+# 제목에 ASCII 영소문자·숫자가 하나도 없으면 `_branch_slug()`가 브랜치 이름을
+# `issue-<sha256[:12]>`로 대체한다. 그 이름은 발행과 함께 DB에 굳어 되돌릴 수 없으므로
+# 사람이 식별할 수 없는 브랜치가 영구히 남는다. 발행 전에 끊는다.
+_TITLE_ASCII_PATTERN = re.compile(r"[a-z0-9]")
 # 파서의 `_finite_decimal`/`_validate_decimal_bounds`가 쓰는 경계와 같아야 한다.
 # 여기가 더 느슨하면 극단값이 조립을 통과해 이슈가 발행된 뒤에야 실패한다.
 MAX_DECIMAL_TEXT_LENGTH = 128
@@ -133,6 +137,11 @@ class IssueSubmission(BaseModel):
         검사하는 것과 같은 규칙을 이 지점에서 먼저 적용한다. 이 모델은 요청 본문이므로
         위반은 FastAPI가 422로 돌려주며, 이슈는 아직 열리지 않은 상태다.
         """
+        if not _TITLE_ASCII_PATTERN.search(self.title.lower()):
+            raise ValueError(
+                "title must contain at least one ASCII letter or digit "
+                "so the experiment branch name stays identifiable"
+            )
         if self.primary_metric_direction not in _METRIC_DIRECTIONS:
             raise ValueError("primary_metric_direction is invalid")
         if self.guardrail_metric_direction not in (

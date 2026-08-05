@@ -30,6 +30,10 @@ import unicodedata
 
 _HEADING_NAMES = {
     "연구 가설": "hypothesis",
+    # `_parse_sections()`의 "unknown Issue Form heading" fail-closed를 피하기 위한
+    # 매핑이며, 값을 계약으로 전달하지 않는다 — `IssueInput`에도 Actions output에도
+    # 없다. 실험 실행기는 이슈 본문을 통째로 읽는다. 값이 필요해지면 `IssueInput`에
+    # 추가해야 하고, 그때도 선택 섹션이므로 봉인 식별자에는 넣지 않는다.
     "선행 연구 참조": "related_work",
     "변경할 피처 · 모델": "change",
     "주 지표 이름": "primary_metric_name",

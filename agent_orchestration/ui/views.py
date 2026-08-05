@@ -87,16 +87,21 @@ def render_submission_form(api_error: str | None) -> Submission | None:
             )
             minimum_primary_delta = metric_right.text_input("최소 개선폭", value="0.002")
 
-            use_guardrail = st.checkbox("Guardrail 지표를 선언합니다")
+            # 체크박스로 아래 칸의 `disabled`를 제어하지 않는다. `st.form` 안의 위젯은
+            # 상호작용해도 rerun을 일으키지 않으므로, 체크박스를 켜도 이번 렌더의
+            # `disabled`는 직전 값(최초 True)인 채로 남아 사용자가 값을 넣지 못한다.
+            # 그대로 제출되면 guardrail 없이 발행되고, 본문이 커밋된 뒤에는 그 실험에
+            # guardrail을 붙일 수 없다. 이름 칸이 채워졌는지로만 선언을 판정한다.
+            st.caption("Guardrail을 쓰지 않으려면 아래 두 칸을 비워 두십시오.")
             guardrail_left, guardrail_mid, guardrail_right = st.columns([2, 2, 1])
             guardrail_metric_name = guardrail_left.text_input(
-                "Guardrail 지표 이름", value="", disabled=not use_guardrail
+                "Guardrail 지표 이름 (선택)", value=""
             )
             guardrail_direction_label = guardrail_mid.selectbox(
-                "Guardrail 방향", list(METRIC_DIRECTIONS), disabled=not use_guardrail
+                "Guardrail 방향", list(METRIC_DIRECTIONS)
             )
             maximum_guardrail_regression = guardrail_right.text_input(
-                "최대 악화폭", value="", disabled=not use_guardrail
+                "최대 악화폭", value=""
             )
             secondary_metrics = st.text_input(
                 "보조 관측 지표 (선택)", placeholder="예: pr_auc"
@@ -123,7 +128,7 @@ def render_submission_form(api_error: str | None) -> Submission | None:
 
     if not submitted:
         return None
-    declared = use_guardrail and guardrail_metric_name.strip() != ""
+    declared = guardrail_metric_name.strip() != ""
     return Submission(
         title=title.strip(),
         hypothesis=hypothesis.strip(),

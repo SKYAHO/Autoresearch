@@ -117,7 +117,15 @@ class Submission:
             "주 지표 이름": self.primary_metric_name,
             "최소 개선폭": self.minimum_primary_delta,
         }
-        return [name for name, value in required.items() if not value]
+        missing = [name for name, value in required.items() if not value.strip()]
+        # guardrail은 세 값이 함께 선언돼야 한다. 이름만 채우고 제출하면 서버가 422로
+        # 거부하므로, 왕복하지 않고 여기서 잡는다.
+        if self.guardrail_metric_name not in ("", NONE_VALUE) and (
+            not self.maximum_guardrail_regression.strip()
+            or self.maximum_guardrail_regression == NONE_VALUE
+        ):
+            missing.append("최대 악화폭 (Guardrail 지표를 선언했습니다)")
+        return missing
 
     def to_fields(self) -> dict[str, str]:
         """API `fields`에 실을 값으로 변환한다."""

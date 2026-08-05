@@ -107,10 +107,31 @@ def test_to_fields_covers_every_server_field() -> None:
 def test_missing_required_reports_blank_fields(
     blank: dict[str, Any], expected: str
 ) -> None:
-    """빈 칸은 서버 왕복 없이 화면에서 알려준다."""
-    submission = _submission(**{key: value.strip() for key, value in blank.items()})
+    """빈 칸은 서버 왕복 없이 화면에서 알려준다.
+
+    값을 `strip()`하지 않고 그대로 넣는다 — 공백만 입력한 경우도 미입력으로 잡혀야
+    한다는 것이 여기서 고정하려는 성질이다.
+    """
+    submission = _submission(**blank)
 
     assert expected in submission.missing_required()
+
+
+def test_partially_declared_guardrail_is_caught_before_the_server() -> None:
+    """이름만 채우고 악화폭을 비우면 서버가 422로 거부한다 — 왕복 전에 잡는다."""
+    submission = _submission(
+        guardrail_metric_name="logloss",
+        guardrail_metric_direction="lower_is_better",
+        maximum_guardrail_regression="",
+    )
+
+    assert any("최대 악화폭" in name for name in submission.missing_required())
+
+
+def test_title_without_ascii_is_rejected_by_the_server_contract() -> None:
+    """ASCII가 없는 제목은 브랜치 이름이 해시로 굳어 되돌릴 수 없다."""
+    with pytest.raises(ValueError):
+        IssueSubmission.model_validate(_submission(title="비율 피처 실험").to_fields())
 
 
 def test_optional_fields_are_not_required() -> None:

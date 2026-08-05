@@ -70,20 +70,19 @@ Issue Form 18필드는 이 표준을 이미 거의 1:1로 구현하고 있어 �
 
 ## 결정 1 — 발행 주체는 Agent Orchestration API Pod다
 
-추론과 쓰기를 서로 다른 경계에 둔다.
-
 ```
-[UI/호출자] ──POST──▶ [API Pod] ──프롬프트──▶ [Runner Pod] ──▶ codex exec
-                          │                                   (본문 값 JSON)
-                          ├─ 서버가 heading과 결합해 본문 조립
-                          ├─ Experiment.issue_body 저장 (commit)   ← 발행 전
-                          ├─ gh issue create + auto-experiment label
-                          └─ Experiment.issue_number / issue_branch 기록
+[UI/호출자] ──POST fields──▶ [API Pod]
+                                 ├─ 요청 필드 검증 (위반 시 422, 이슈 없음)
+                                 ├─ 서버가 heading·정책값과 결합해 본문 조립
+                                 ├─ Experiment.issue_body 저장 (commit)   ← 발행 전
+                                 ├─ gh issue create + auto-experiment label
+                                 └─ Experiment.issue_number / issue_branch 기록
 ```
 
-**Codex는 계속 read-only·ephemeral이며 텍스트만 제안한다.** 파일을 쓰거나 GitHub을
-부르는 주체는 신뢰된 저장소 코드다. #492가 정한 "추론 경계와 쓰기 경계의 분리"를
-그대로 따른다.
+> 원안은 여기서 Runner Pod의 Codex를 불러 본문 값을 받았다. #536에서 그 구간을
+> 제거했으므로 **이 경로는 Runner Pod를 호출하지 않는다.** Runner는 `/chat`이 계속
+> 쓰며, 이 spec이 지키려던 "추론 경계와 쓰기 경계의 분리"(#492)는 추론이 사라져
+> 자동으로 성립한다.
 
 ### 기각한 대안
 
@@ -107,17 +106,19 @@ Pod에 도달할 수 없어 본문을 만들 수 없고, Codex OAuth를 Actions�
 않는다. 수명도 다르다 — 발행은 추론 1회와 CLI 호출 1~2회로 끝나 HTTP 요청 수명에
 들어가며, #492가 문제 삼은 "수 시간 수명"은 실험 실행기의 사정이다.
 
-## 결정 2 — 필드 소유권을 셋으로 나눈다
+## 결정 2 — 필드 소유권을 둘로 나눈다
 
 Issue Form 필수 18개를 다음과 같이 나눈다.
 
 | 주체 | 개수 | 필드 |
 | --- | --- | --- |
-| **LLM** | 8 | 연구 가설, 변경할 피처 · 모델, 주 지표 이름, 주 지표 방향, 최소 주 지표 개선폭, Guardrail 지표 이름/방향/최대 악화폭 |
-| **사용자** | 1 | 허용 범위 |
+| **호출자** | 9 | 연구 가설, 변경할 피처 · 모델, 주 지표 이름, 주 지표 방향, 최소 주 지표 개선폭, Guardrail 지표 이름/방향/최대 악화폭, 허용 범위 |
 | **서버** | 9 | 비교 대상, 데이터셋 스냅샷, 랜덤 시드 목록, Split 시드, Test 비율, Validation 비율, 학습 설정 참조, 대상 데이터 · 기간, 스냅샷 재사용 |
 
-선택 섹션 `보조 관측 지표`는 LLM이 채우거나 heading을 생략한다.
+> 원안은 위 9개 중 8개를 LLM이 창작하게 했다. #536에서 전부 호출자 소유로 옮겼다 —
+> §개정 참조.
+
+선택 섹션 `보조 관측 지표`와 `선행 연구 참조`는 호출자가 채우거나 heading을 생략한다.
 `결과 (에이전트가 채웁니다)`는 실험 종료 후이므로 #494 소유다.
 
 **`허용 범위`를 사용자가 갖는 이유는 안전이다.** 이 체크박스는 "prod 모델 계약
@@ -172,29 +173,30 @@ Issue Form 기본값은 `42, 43, 44`(`.github/ISSUE_TEMPLATE/auto_research.yml:1
 값으로 받도록 판정 엔진을 고쳐야 한다. 그 두 파일은 #493 소유이므로 이 spec에서 하지
 않고 **#493에 요구로 남긴다.** 이후 서버의 시드 생성 함수만 교체하면 된다.
 
-## 결정 4 — LLM은 heading을 타이핑하지 않는다
+## 결정 4 — 호출자는 heading을 타이핑하지 않는다
 
-LLM은 자기 담당 8필드를 **JSON으로만** 반환하고, 서버가 heading과 결합해 최종 본문을
+호출자는 자기 담당 필드를 **값으로만** 보내고, 서버가 heading과 결합해 최종 본문을
 조립한다.
 
 ```
-LLM 출력   {"hypothesis": "...", "primary_metric_name": "roc_auc", ...}
+요청       {"fields": {"hypothesis": "...", "primary_metric_name": "roc_auc", ...}}
               ↓
 서버 조립   <!-- experiment-id: <uuid> -->
             ### 연구 가설
             ...
 ```
 
-heading 20개 문자열, U+00B7 가운뎃점, 정확 문자열 옵션, 체크박스 label을 LLM이 만들 일이
-없어진다. **fail-closed 거부 사유의 대부분이 구조적으로 사라진다.**
+heading 21개 문자열, U+00B7 가운뎃점, 정확 문자열 옵션, 체크박스 label을 호출자가 만들
+일이 없어진다. **fail-closed 거부 사유의 대부분이 구조적으로 사라진다.**
 
-프롬프트 고정분은 약 2,500자다(지시문 + LLM 담당 8필드 규칙 + 축약 예시). `/chat`의
-8192자 상한은 그 endpoint의 입력 정책일 뿐 Runner의 `GenerateRequest.prompt`에는 제약이
-없으므로, 서버가 조립하는 프롬프트는 이 상한을 지나지 않는다.
+> 원안에서는 이 결정이 "LLM이 heading을 만들다 틀리는 것"을 막기 위한 것이었고, 약
+> 2,500자짜리 프롬프트 고정분을 근거로 들었다. #536에서 LLM을 제거해 그 근거는 사라졌지만
+> **결정 자체는 그대로 유효하다** — 값과 구조를 분리하는 이유는 호출자가 사람이든
+> 에이전트든 같다.
 
 **작성 가이드 파일은 지우거나 줄이지 않는다.** `docs/guides/auto-research-issue-authoring.md`
 (#490/PR #501)는 사람과 터미널 에이전트를 위한 문서이며 `gh issue create` 절차와 복구
-절차가 그 소비자에게는 여전히 참이다. 프롬프트는 그 파일을 넣지 않고 별도로 조립한다.
+절차가 그 소비자에게는 여전히 참이다.
 
 ## 결정 5 — 발행 수단은 `gh` CLI다
 
@@ -219,7 +221,7 @@ heading 20개 문자열, U+00B7 가운뎃점, 정확 문자열 옵션, 체크박
 gh 2.97.0 확인). 여기서 이슈 번호를 뽑되 **저장소 경로까지 검증**해, 예상과 다른
 저장소 URL이면 실패로 처리한다.
 
-**LLM은 이 명령을 실행할 수 없다.** `_codex_environment()`가 넘기는 것은 `CODEX_HOME`,
+**`/chat`의 Codex는 이 명령을 실행할 수 없다.** `_codex_environment()`가 넘기는 것은 `CODEX_HOME`,
 `HOME`, `TMPDIR`, `XDG_CACHE_HOME`, `XDG_STATE_HOME`, `PATH`뿐이라 `gh`가 PATH에 있어도
 인증이 없고, `--sandbox read-only`이며 작업 디렉터리에 저장소가 없다.
 
@@ -242,38 +244,58 @@ gh 2.97.0 확인). 여기서 이슈 번호를 뽑되 **저장소 경로까지 �
 POST /experiments/{experiment_id}/issue
 ```
 
-`POST /experiments`와 분리한다. 후자는 순수 DB 쓰기이고 즉시 응답하는 반면, 발행은 LLM
-호출을 포함해 수십 초가 걸리고 실패 지점이 다르다. 호출자는 두 번 호출한다.
+`POST /experiments`와 분리한다. 후자는 순수 DB 쓰기이고 즉시 응답하는 반면, 발행은
+`gh` 서브프로세스라는 외부 부작용을 갖고 실패 지점이 다르다. 호출자는 두 번 호출한다.
 
-요청은 `allowed_scope`(`prod_model_contract` / `feast_definition` / `promotion` 중
-0개 이상)와 `regenerate`(기본 `false`)를 받는다. 응답은 `issue_number`, `issue_url`,
-`issue_branch`다.
+요청은 다음 둘을 받는다. 응답은 `issue_number`, `issue_url`, `issue_branch`다.
 
-### 본문 생성과 발행을 분리한다
+| 키 | 타입 | 필수 |
+| --- | --- | --- |
+| `fields` | `IssueSubmission`(§개정) | 필수 |
+| `allowed_scope` | `prod_model_contract` / `feast_definition` / `promotion` 중 0개 이상 | 선택, 기본 `[]` |
+
+`fields`가 없으면 발행할 값이 없으므로 422다 — 서버가 대신 만들지 않는다.
+
+`IssueSubmission`의 필드는 `title`, `hypothesis`, `change`, `primary_metric_name`,
+`primary_metric_direction`, `minimum_primary_delta`, `guardrail_metric_name`,
+`guardrail_metric_direction`, `maximum_guardrail_regression`과 선택
+`secondary_metrics`·`related_work`다. 정본은
+`agent_orchestration/app/experiments/issue_authoring.py`이며 `extra="forbid"`라
+서버 소유 값(시드·split 등)을 요청으로 덮어쓸 수 없다.
+
+### 본문 조립과 발행을 분리한다
 
 한 요청 안에서 처리하되 **본문을 DB에 먼저 커밋한 뒤 발행한다.**
 
 ```
 ① issue_body가 이미 있나?
-     없음 → LLM 호출 → 조립 → Experiment.issue_body 저장 (commit)
-     있음 → 그대로 사용 (LLM 재호출 없음)
+     없음 → 요청 fields + 서버 소유 값으로 조립 → Experiment.issue_body 저장 (commit)
+     있음 → 그대로 사용
 ② issue_number가 이미 있나?
      있음 → 기존 값 반환
      없음 → 저장된 본문으로 gh issue create → issue_number / issue_branch 기록
 ```
 
-**본문을 저장하지 않으면 재시도가 다른 실험을 만든다.** LLM은 비결정적이므로 `gh`
-실패 후 재호출하면 지표 임계나 guardrail 설정이 달라질 수 있고, 파서가 그 값들로
-계산하는 `criteria_id`·`reproducibility_id`도 함께 달라진다. 같은 가설을 재시도했을
-뿐인데 실험 정의가 바뀌며, 호출자는 그 사실을 알 방법이 없다.
+**본문을 저장하지 않으면 재시도가 다른 본문을 발행한다.** 조립은 순수 함수지만 입력이
+전부 결정론적이지는 않다 — `대상 데이터 · 기간`을 `training_window()`가 **발행 시점의
+KST 날짜**로 계산하므로, `gh` 실패 후 자정을 넘겨 재호출하면 학습 구간이 하루 밀린 본문이
+나간다. 저장해 두면 재시도가 **같은 본문으로** 발행되어 결정론적이고, 발행에 실패했을 때
+"무엇을 발행하려 했는지"가 DB에 남는다.
 
-저장하면 재시도가 **같은 본문으로** 발행되어 결정론적이고, 추론 비용도 아낀다. 발행에
-실패했을 때 "무엇을 발행하려 했는지"가 DB에 남아 원인을 볼 수 있다는 부수 효과도 있다.
+**①에서 저장된 본문이 우선이다.** 발행 실패 후 다른 값으로 재호출해도 저장된 본문이
+나간다 — 본문이 커밋된 시점에 실험 정의가 봉인된 것으로 본다. 이것이 뚫리면
+`criteria_id`가 호출자의 재시도만으로 조용히 바뀐다. 정의를 바꾸려면 새 실험을 만든다.
 
-**`regenerate`가 필요한 이유.** 본문이 저장되면 파서를 통과하지 못하는 본문도 고착되어
-재시도가 같은 실패를 반복한다. `regenerate: true`면 저장된 `issue_body`를 버리고 다시
-만든다. 단 **`issue_number`가 이미 있으면 `regenerate`를 무시한다** — 이미 발행된
-이슈의 본문을 바꾸는 것은 이 endpoint의 책임이 아니다.
+**고착된 본문의 복구.** `regenerate` 플래그는 #536에서 삭제했다. 저장된 본문이 파서를
+통과하지 못해 브랜치가 생기지 않는 상황은 이제 다음 순서로 좁혀진다.
+
+1. 대부분 발생하지 않는다 — 호출자 필드는 `IssueSubmission`이 파서와 같은 규칙으로
+   검사해 **이슈가 열리기 전에** 422로 끊는다.
+2. 남는 위험은 서버 소유 값이다(`ExperimentDefaults`, `training_window()`). 이쪽이
+   파서를 깨면 설정 오류이므로 실험 하나가 아니라 **모든 발행**이 깨진다. 복구는
+   설정을 고치는 것이고, 개별 실험의 본문 재생성으로 해결할 문제가 아니다.
+3. 그럼에도 개별 실험이 고착되면 **새 실험을 만들어 다시 제출한다.** 고착된 실험은
+   `CREATED`로 남으며 이슈가 없으므로 폐루프에 들어가지 않는다.
 
 ### 멱등성 3중 방어
 
@@ -314,14 +336,14 @@ POST /experiments/{experiment_id}/issue
   된다.
 - `ExperimentCreate` 쪽을 좁히는 것은 이 spec의 범위 밖인 기존 계약 변경이다.
 
-프롬프트 길이 예측 가능성은 이 상한이 아니라 §결정 4(서버가 프롬프트를 조립하고 Runner에
-길이 제약이 없음)로 이미 확보된다.
+> #536 이후 발행 endpoint는 가설을 요청의 `fields.hypothesis`(≤2000자)로 받는다.
+> `ExperimentCreate.hypothesis`의 8192자 상한은 실험 행을 만드는 쪽에 그대로 남는다.
 
 ## 구성 요소
 
 ```
 agent_orchestration/app/experiments/
-├── issue_authoring.py 신규 · 순수 함수. 프롬프트 조립, LLM JSON + 서버 값 → 본문 문자열
+├── issue_authoring.py 신규 · 순수 함수. 요청 필드 검증 + 서버 값 → 본문 문자열
 ├── github_issues.py   신규 · gh CLI 경계. 서브프로세스·환경 화이트리스트·timeout·오류 분류
 ├── service.py         기존 · 생성→저장→발행 2단계 오케스트레이션, 멱등성·상한 검사
 ├── router.py          기존 · endpoint 추가
@@ -330,10 +352,10 @@ agent_orchestration/app/experiments/
 migrations/versions/0003_experiment_issue_lineage.py   신규
 ```
 
-`issue_authoring.py`를 순수 함수로 유지하는 것이 중요하다 — **본문 조립을 LLM·GitHub 없이
+`issue_authoring.py`를 순수 함수로 유지하는 것이 중요하다 — **본문 조립을 GitHub 없이
 단독으로 테스트**할 수 있어야 §테스트의 파서 대조가 성립한다.
 
-`github_issues.py`는 `llm.py`가 LLM 바깥 경계를 맡는 것과 같은 위치다. 테스트에서
+`github_issues.py`는 `llm.py`가 `/chat`의 LLM 바깥 경계를 맡는 것과 같은 위치다. 테스트에서
 GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때도 이 모듈만 이동한다.
 
 ### 스키마
@@ -352,7 +374,7 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
   여기에 의존한다. 길이 제약을 두지 않는다 — `Text`이고, 조립된 본문은 fixture 기준
   약 1,300자다.
 - **`issue_title`을 `issue_body`와 별도로 저장한다.** 저장하지 않으면 재발행 시 본문에서
-  제목을 복원해야 하는데, 그 복원 규칙(예: `### 연구 가설` 다음 줄 요약)이 LLM이 낸
+  제목을 복원해야 하는데, 그 복원 규칙(예: `### 연구 가설` 다음 줄 요약)이 호출자가 준
   실제 `title`과 달라 재발행마다 제목·브랜치 이름이 흔들린다. 상한을 GitHub 이슈 제목
   상한(256자)과 같게 둔다 — `LlmIssueFields.title`은 120자, `hypothesis`(fallback)는
   8192자까지 허용해 그보다 넉넉한 값이 저장으로 흘러들 수 있기 때문이다.
@@ -378,16 +400,14 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
 
 | 실패 | 처리 | 재호출 시 |
 | --- | --- | --- |
-| LLM 호출 실패·timeout | 502. `Experiment`는 `CREATED` 유지 | 본문을 다시 생성 |
-| LLM 응답이 JSON이 아님 | 1회 재시도 후 실패 (LLM 호출은 부작용이 없어 재시도가 안전하다) | 본문을 다시 생성 |
-| LLM이 낸 값이 형식 위반 | 조립 단계에서 거부, 실패 | 본문을 다시 생성 |
-| `issue_body` 저장 실패 | 실패 | 본문을 다시 생성 |
+| 호출자 필드가 형식 위반 | **422. 이슈도 `issue_body`도 만들어지지 않는다** | 값을 고쳐 다시 호출 |
+| `issue_body` 저장 실패 | 실패 | 같은 값으로 다시 조립 |
 | `gh` 실패 | 사유를 분류해 알리되 **요청 안에서 재시도하지 않는다** | **저장된 같은 본문으로 발행** |
 | `gh` timeout | 프로세스 그룹 회수 후 실패 (`codex.py` 패턴) | **저장된 같은 본문으로 발행** |
 | 발행 성공 후 DB 쓰기 실패 | 실패 | marker 조회로 기존 이슈를 찾아 복구 |
-| 저장된 본문이 파서를 통과하지 못함 | 워크플로가 fail-closed, 브랜치 없음 | `regenerate: true`로 다시 생성 |
+| 저장된 본문이 파서를 통과하지 못함 | 워크플로가 fail-closed, 브랜치 없음 | §결정 7의 복구 순서 (새 실험으로 재제출) |
 
-`issue_body` 커밋을 경계로 **앞쪽 실패는 재생성, 뒤쪽 실패는 재발행**으로 갈린다.
+`issue_body` 커밋을 경계로 **앞쪽 실패는 재조립, 뒤쪽 실패는 재발행**으로 갈린다.
 
 상태 기계는 건드리지 않는다. 발행 여부는 `issue_number`의 `NULL` 여부로 표현하며,
 `CREATED → RUNNING` 전이는 실험 실행기(#492)의 몫이다.
@@ -409,25 +429,31 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
 
 ## 테스트
 
-- **서버가 조립한 본문이 실제 `parse_issue_input`을 통과한다.** LLM 담당 8필드를
+- **서버가 조립한 본문이 실제 `parse_issue_input`을 통과한다.** 호출자 담당 필드를
   guardrail 유무·지표 방향 등으로 바꿔가며 검증한다. 결정 6의 위험을 CI가 대신 막는다.
-- **프롬프트 규칙과 파서 상수가 어긋나면 실패한다.** `_COMPARISONS`, `_SNAPSHOT_REUSE`,
-  `_SCOPE_LABELS`, `_METRIC_DIRECTIONS`, `_HEADING_NAMES` 대조.
+- **`IssueSubmission`과 파서 상수가 어긋나면 실패한다.** `_COMPARISONS`,
+  `_SNAPSHOT_REUSE`, `_SCOPE_LABELS`, `_METRIC_DIRECTIONS`, `_HEADING_NAMES` 대조.
 - **서버가 쓰는 시드가 `POLICY_SEEDS`와 같다.**
 - **본문 marker가 파서와 봉인 식별자에 영향을 주지 않는다.**
-- **`gh` 실패 후 재호출이 LLM을 다시 부르지 않고 저장된 본문으로 발행한다.** LLM 스텁의
-  호출 횟수와 두 번의 발행 본문이 같은지로 고정한다 — §결정 7의 재시도 결정성이
-  이 테스트에 달려 있다.
-- **`regenerate: true`가 본문을 다시 만들고, `issue_number`가 있으면 무시된다.**
+- **`선행 연구 참조`의 유무가 `criteria_id`·`reproducibility_id`를 바꾸지 않는다.**
+- **형식 위반이 이슈 발행 전에 422로 끊긴다.** 지표 방향·소수 형식·guardrail 동반
+  선언·`### ` 삽입·ASCII 없는 제목을 각각 확인한다.
+- **`gh` 실패 후 재호출이 저장된 본문으로 발행한다.** 두 번의 발행 본문·제목이 같은지와,
+  다른 값으로 재제출해도 저장된 본문이 나가는지로 고정한다.
 - `gh` 경계를 스텁으로 대체해 멱등성 3중 방어·상한·실패 분류를 검증한다.
+- **Streamlit 폼은 `streamlit.testing.v1.AppTest`로 스크립트를 실제 실행해 검증한다**
+  (`tests/test_ui_submission_app.py`). 순수 함수 테스트로는 위젯 렌더링 버그를 잡지
+  못한다 — #536에서 `st.form` 안 `disabled` 게이팅 때문에 사용자가 guardrail을 입력할
+  수 없는 채로 발행되는 버그가 실제로 났다. 이를 위해 `orchestration-ui` 그룹을 `dev`에
+  포함해 CI가 streamlit을 설치한다.
 - Alembic `upgrade()`/`downgrade()` 대칭.
 
 ## 완료 조건
 
-- 로컬에서 가설을 보내면 실제 `[AR]` 이슈가 열리고, 워크플로가 `dev` tip을 봉인해
-  `exp/<번호>-<slug>` 브랜치를 만들고 marker 코멘트를 남기는 것을 **1회 실증**한다.
+- 로컬에서 사전등록 필드를 보내면 실제 `[AR]` 이슈가 열리고, 워크플로가 `dev` tip을
+  봉인해 `exp/<번호>-<slug>` 브랜치를 만들고 marker 코멘트를 남기는 것을 **1회 실증**한다.
 - 같은 실험에 발행을 두 번 요청해도 이슈가 하나만 생긴다.
-- 발행에 실패한 뒤 재호출하면 LLM을 다시 부르지 않고 저장된 본문으로 발행한다.
+- 발행에 실패한 뒤 재호출하면 저장된 본문 그대로 발행한다.
 - 발행된 본문의 `랜덤 시드 목록`이 `42..71`이다.
 - `uv run python -m pytest`와
   `uv run --no-sync ruff check agent_orchestration autoresearch tests tools` 통과.
