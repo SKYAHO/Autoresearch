@@ -468,6 +468,13 @@ class RollingOriginResult(_ResultModel):
     cutoff_date: str
     window_days: int
     horizon_days: int
+    # cutoff 학습의 MLflow run id와 시드(#514 §2.4·§3.1). 두 조건을 비교하려면 "어느
+    # 실행이었나"가 결과에 남아야 한다 — `verify_training_comparison`은 run id 두 개를
+    # 받고(`training_comparison.py:508`), 시드 동일성 검증은 결과에 시드가 있어야 한다.
+    # **기본값 `None`은 필수다**: `#510`/`#520`이 이미 만든 결과 JSON을 읽는 경로가
+    # 깨지면 안 된다(`degradation_curve_plot.py`, `#472` 소비 경로).
+    training_run_id: str | None = None
+    seed: int | None = None
     # cutoff 학습의 랜덤 val 지표. **판정에는 쓰지 않는다**(#485 §4.3이 선행 spec §2.4를
     # 부분 supersede) — 참고용·과거 실행과의 비교용으로 유지한다(하위호환).
     baseline_val_roc_auc: float
@@ -953,6 +960,8 @@ def run_rolling_origin(
         cutoff_date=cutoff_date,
         window_days=window_days,
         horizon_days=horizon_days,
+        training_run_id=outcome.run_id,
+        seed=seed,
         baseline_val_roc_auc=baseline,
         forward_baseline_roc_auc=forward_baseline,
         forward_baseline_source=forward_baseline_source,

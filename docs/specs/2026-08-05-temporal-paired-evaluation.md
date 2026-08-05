@@ -363,11 +363,64 @@ temporal signal      = confidence high, direction=not_applicable  ← §6이 채
 도메인에 닿는다. **spec 리뷰 단계에서 확인받은 뒤 이 spec을 Accepted로 올린다.** 구두
 확인은 근거로 적지 않고 이슈 코멘트 링크를 남긴다(`#485` spec §7.1에서 확립한 관례).
 
-### 8.3 `verify_training_comparison` 적용 가능성 — 구현 전 확인
+### 8.3 `verify_training_comparison` 적용 가능성 — **확인 완료(2026-08-05, Task 1)**
 
-§2.4의 미해결 항목. 등록되지 않은 측정 run(`defer_registration=True`)에 이 함수를 쓸 수
-있는지 코드로 확인한 뒤, 불가하면 `training_snapshot_manifest` 대조로 §3을 구성한다.
-**어느 쪽이든 §3의 검증 항목 자체는 바뀌지 않는다** — 재료를 어디서 얻느냐만 달라진다.
+**결론: 등록 여부는 문제가 아니었다. 진짜 제약은 `dataset_sha256` 동일성 요구다.**
+
+#### (1) `defer_registration=True`는 이 함수를 막지 않는다
+
+`_load_verified_run`이 요구하는 것은 run에 붙은 **artifact 3개**뿐이다
+(`training_comparison.py:54-56`):
+
+```text
+reproducibility/snapshot/training_dataset.csv
+reproducibility/snapshot/snapshot_manifest.json
+reproducibility/split/split_manifest.json
+```
+
+이 셋을 남기는 `_log_reproducibility_artifacts` 호출은 `train.py:620`의
+**`if snapshot_manifest is not None:`** 안에 있다 — `defer_registration` 분기와 무관하다.
+그리고 rolling-origin의 cutoff 데이터셋은 snapshot manifest를 갖는다(실측 결과 JSON에
+`training_snapshot_manifest`가 채워져 있다). **따라서 artifact는 남는다.**
+
+#### (2) 진짜 제약 — `_validate_fairness`가 두 조건의 데이터셋 동일을 요구한다
+
+`_validate_fairness`(`training_comparison.py:282-306`)는 다음을 **모두 같아야 한다**고
+본다: `dataset_sha256`, 세 split의 `row_count`·`membership_sha256`,
+`split_seed`/`model_seed`/`sampler_seed`.
+
+그런데 `run_rolling_origin`은 `extra_features`를 **두 곳에** 넘긴다:
+
+- `build_training_dataset.main(..., extra_features=...)` (820행) — **물리 CSV가 달라진다**
+- `train.main(..., extra_features=...)` (835행) — 모델 피처 컬럼 선택
+
+즉 "challenger = baseline + 실험 피처"로 두 조건을 잡으면 **학습 CSV가 물리적으로 달라져
+`dataset_sha256`이 어긋나고, `verify_training_comparison`이 그 비교를 거부한다.**
+
+#### (3) 해소 방향 — 데이터셋은 한 번만 만든다 (**§4.2 설계 변경 필요**)
+
+`paired_experiment`가 `dataset_fingerprint`를 **최상위 단일 필드**로 둔 것이 바로 이
+계약이다(§2.3) — 두 조건은 **같은 데이터셋**을 쓰고 **코드/피처 선택만** 다르다.
+시간축도 같은 형태를 따른다:
+
+```text
+데이터셋 조립: 1회, extra_features는 두 조건의 **합집합**  (공유 축)
+조건별 차이  : train.main에 넘기는 모델 피처 선택          (조건 축)
+```
+
+이렇게 하면 `dataset_sha256`·split이 동일해져 `_validate_fairness`를 통과하고,
+비교 자체도 강해진다 — **같은 행·같은 분할 위에서 피처 집합만 다른** 대조가 된다.
+
+**따라서 §4.2의 `TemporalCondition`에서 `extra_features`를 그대로 조건별 필드로 두면
+안 된다.** 조립용(공유)과 모델 피처 선택용(조건별)으로 역할을 나눠야 한다. 이 변경은
+설계 결정이므로 리뷰 승인 후 §4.2에 반영한다.
+
+#### (4) 남은 확인 (Task 2에서)
+
+- `_verify_promotion_evidence`가 receipt 없는 run에서 `None`을 돌려주는지
+  (docstring은 "양쪽 run에 receipt가 없으면 필요 없다"고 적었으나 코드 미확인).
+- `_publish_verified_comparison`이 challenger run에 artifact를 **되쓴다** — 측정 run에
+  부수효과를 남기는 것이 허용되는지.
 
 ### 8.4 `#472`에 넘기는 항목 (이 spec 범위 밖)
 
