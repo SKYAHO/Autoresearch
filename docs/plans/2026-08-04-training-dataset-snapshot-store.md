@@ -1723,8 +1723,19 @@ TRAINING_SNAPSHOT_ROOT=
 - [ ] **Step 2: 공개 batch 계약에 인자를 추가한다**
 
 `docs/specs/2026-07-13-public-batch-execution-contract.md`의 `build-features`,
-`train-model`, `run-pipeline` 인자 표에 `--snapshot-root`(build-features, run-pipeline)와
-`--dataset-uri`(train-model, run-pipeline)를 더하고, 상호배타 규칙을 한 줄 남긴다.
+`train-model`, `run-pipeline` 인자 표를 갱신한다. 구현 결과 기준으로 추가된 인자는
+다음과 같다(Task 6·8에서 확정):
+
+| 인자 | 대상 명령 |
+| --- | --- |
+| `--snapshot-root` | `build-features`, `run-pipeline` |
+| `--dataset-uri` | `train-model`, `run-pipeline` |
+| `--min-coverage-days` | `train-model` (신규 — `run-pipeline`·`build-features`는 기존에 이미 있었다) |
+
+상호배타 규칙도 함께 적는다. **옵션 이름이 명령마다 다르다** —
+`train-model`은 `--dataset-uri` ↔ `--data-path`, `run-pipeline`은
+`--dataset-uri` ↔ `--dataset-path`/`--events-start-date`/`--events-end-date`.
+`train-model --min-coverage-days`는 `--dataset-uri`를 함께 준 실행에만 영향을 준다.
 
 - [ ] **Step 3: 학습 데이터셋 가이드에 스냅샷 절을 추가한다**
 
