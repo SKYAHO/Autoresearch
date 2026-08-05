@@ -52,7 +52,21 @@ def _join(prefix: str, *parts: str) -> str:
 
 
 def _is_precondition_failure(error: BaseException) -> bool:
-    """write-once 전제조건 위반(이미 존재)인지 판정한다."""
+    """write-once 전제조건 위반(이미 존재)인지 판정한다.
+
+    google-cloud-storage가 있는 환경에서는 정확한 예외 타입으로 판정한다. 타입만
+    보면 client를 주입한 테스트의 가짜 예외를 받지 못하고, code만 보면 우연히
+    code=412를 갖는 무관한 예외까지 "이미 게시됨"으로 삼켜 아무것도 쓰이지 않은
+    실행을 성공으로 오인한다. 그래서 둘 다 본다 — 실제 GCS 오류는 타입으로 가리고,
+    그 밖의 객체만 code로 판정한다.
+    """
+    try:
+        from google.api_core.exceptions import GoogleAPICallError, PreconditionFailed
+    except ImportError:
+        pass
+    else:
+        if isinstance(error, GoogleAPICallError):
+            return isinstance(error, PreconditionFailed)
     return getattr(error, "code", None) == _PRECONDITION_FAILED
 
 
@@ -128,6 +142,11 @@ def publish_snapshot(
                     uri=uri,
                 )
             return uri
+        except (SnapshotStoreError, NotImplementedError):
+            # 재시도는 일시적 I/O 장애를 위한 것이다. 프로그래밍 오류를 재시도하면
+            # 같은 실패를 max_attempts번 반복하며 백오프만 소모하고, 원래 예외가
+            # SnapshotStoreError로 덮여 원인이 가려진다.
+            raise
         except Exception as error:  # noqa: BLE001 - 재시도 후 확정 실패로 감싼다
             last_error = error
             if attempt < max_attempts:
@@ -140,5 +159,12 @@ def publish_snapshot(
     ) from last_error
 
 
-def _update_pointer(bucket, *, prefix, manifest, dataset_sha256, uri) -> None:
+def _update_pointer(
+    bucket: object,
+    *,
+    prefix: str,
+    manifest: TrainingSnapshotManifest,
+    dataset_sha256: str,
+    uri: str,
+) -> None:
     raise NotImplementedError("Task 4에서 구현한다")

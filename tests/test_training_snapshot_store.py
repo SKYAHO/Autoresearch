@@ -25,10 +25,14 @@ class _FakeBlob:
         self.name = name
         self.generation: int | None = None
 
-    def upload_from_filename(self, filename, *, if_generation_match=None, **_):
+    def upload_from_filename(
+        self, filename: str, *, if_generation_match: int | None = None, **_: object
+    ) -> None:
         self._write(Path(filename).read_bytes(), if_generation_match)
 
-    def upload_from_string(self, data, *, if_generation_match=None, **_):
+    def upload_from_string(
+        self, data: bytes | str, *, if_generation_match: int | None = None, **_: object
+    ) -> None:
         payload = data.encode("utf-8") if isinstance(data, str) else data
         self._write(payload, if_generation_match)
 
@@ -163,3 +167,30 @@ def test_publish_raises_after_exhausting_retries(tmp_path, monkeypatch) -> None:
             max_attempts=3,
         )
     assert str(csv_path) in str(error.value)
+
+
+@pytest.mark.parametrize(
+    ("root", "expected_prefix"),
+    [
+        ("gs://snapshots", ""),
+        ("gs://snapshots/training", "training"),
+        ("gs://snapshots/training/", "training"),
+    ],
+)
+def test_publish_normalizes_root_prefix(tmp_path, root, expected_prefix) -> None:
+    """루트에 prefix가 없거나 끝에 슬래시가 있어도 object 이름이 어긋나지 않는다."""
+    csv_path = _write_dataset(tmp_path)
+    client = _FakeClient()
+
+    store.publish_snapshot(
+        dataset_path=csv_path,
+        snapshot_root=root,
+        record_pointer=False,
+        client=client,
+    )
+
+    from src.pipeline.training_provenance import sha256_file
+
+    sha = sha256_file(csv_path)
+    head = f"{expected_prefix}/" if expected_prefix else ""
+    assert f"{head}by-hash/{sha}/training_dataset.csv" in client.buckets["snapshots"].objects
