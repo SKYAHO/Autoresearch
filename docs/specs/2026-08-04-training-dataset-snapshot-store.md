@@ -1,6 +1,6 @@
 # 학습 데이터셋 스냅샷 GCS 게시·재사용 계약
 
-> 상태: 설계 확정 · 구현 대기
+> 상태: 구현 완료 · 운영 중
 > 관련: #188/#189(한 Pod 내 즉시 소비로 회피), #299(Feast PIT 전환, 별개 축),
 > #454(실험 조립 판별·피처 보존), #464(spine 커버리지 가드), #423(snapshot provenance)
 
@@ -216,8 +216,8 @@ def is_experiment_assembly(
 `train-model`과 `run-pipeline`이 `--dataset-uri gs://<root>/by-hash/<sha>/`를
 1급 입력으로 받는다.
 
-- **상호배타**: `train-model`은 `--dataset-uri` ↔ `--data-path`(`cli.py:249`),
-  `run-pipeline`은 `--dataset-uri` ↔ `--dataset-path`(`cli.py:349`)다. 옵션 이름이
+- **상호배타**: `train-model`은 `--dataset-uri` ↔ `--data-path`(`cli.py:274`),
+  `run-pipeline`은 `--dataset-uri` ↔ `--dataset-path`(`cli.py:410`)다. 옵션 이름이
   두 명령에서 다르므로 구현 시 혼동하지 않는다. `run-pipeline`에서는
   `--dataset-uri` ↔ `--events-start-date`/`--events-end-date`도 배타다 — 스냅샷이
   구간을 이미 확정했는데 다른 구간을 받으면 둘 중 무엇이 진짜인지 코드가 답할 수
