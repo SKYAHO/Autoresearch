@@ -74,6 +74,28 @@ def _fake_assembly_outcome(usable=2, missing=1):
     )
 
 
+def test_snapshot_root_falls_back_to_environment(monkeypatch) -> None:
+    """--snapshot-root 미지정 시 TRAINING_SNAPSHOT_ROOT를 쓴다(#530)."""
+    monkeypatch.setenv("TRAINING_SNAPSHOT_ROOT", "gs://snapshots/training")
+    assert cli._snapshot_root_kwargs(None) == {
+        "snapshot_root": "gs://snapshots/training"
+    }
+
+
+def test_snapshot_root_option_wins_over_environment(monkeypatch) -> None:
+    """--snapshot-root를 지정하면 환경변수보다 우선한다(#530)."""
+    monkeypatch.setenv("TRAINING_SNAPSHOT_ROOT", "gs://from-env/training")
+    assert cli._snapshot_root_kwargs("gs://explicit/training") == {
+        "snapshot_root": "gs://explicit/training"
+    }
+
+
+def test_snapshot_root_absent_yields_no_kwarg(monkeypatch) -> None:
+    """미설정이면 키 자체를 만들지 않아 main()의 기본값을 덮지 않는다."""
+    monkeypatch.delenv("TRAINING_SNAPSHOT_ROOT", raising=False)
+    assert cli._snapshot_root_kwargs(None) == {}
+
+
 def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     build_features_call = {}
     # build-features 성공 뒤 lineage가 GCS_REGISTRY_PATH를 필수로 읽는다(#359 C2, 무조건 기록).

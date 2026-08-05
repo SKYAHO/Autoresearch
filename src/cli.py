@@ -110,6 +110,16 @@ def build_features(
             "prod 데이터셋과 달라지므로 prod와 같은 출력 경로를 재사용하지 마십시오."
         ),
     ),
+    snapshot_root: Optional[str] = typer.Option(
+        None,
+        "--snapshot-root",
+        help=(
+            "조립한 데이터셋을 게시할 gs://bucket/prefix (미지정 시 "
+            "TRAINING_SNAPSHOT_ROOT, 둘 다 없으면 게시하지 않습니다). "
+            "prod 재학습 경로에만 지정하십시오 — 실험·dev 파이프라인이 켜면 "
+            "by-date 포인터가 경합합니다(#530)."
+        ),
+    ),
 ) -> None:
     """training_dataset.csv 생성 (offline feature store PIT 조회, #359 C2로 feast-only)."""
     build_training_dataset.main(
@@ -121,6 +131,7 @@ def build_features(
             feature_service=feature_service,
             extra_features=_parse_extra_features(extra_features),
         ),
+        **_snapshot_root_kwargs(snapshot_root),
     )
 
 
@@ -177,6 +188,20 @@ def _assembly_feature_kwargs(
     if extra_features:
         kwargs["extra_features"] = extra_features
     return kwargs
+
+
+def _snapshot_root_kwargs(snapshot_root: object) -> dict:
+    """스냅샷 게시 루트를 옵션 → 환경변수 순으로 해석한다(#530).
+
+    환경변수를 `build_training_dataset.main()`이 아니라 여기서만 읽는 것이 계약이다 —
+    `degradation_eval`의 horizon 평가 루프는 `main()`을 평가일 수만큼 부르므로,
+    `main()`이 환경변수를 직접 읽으면 그 루프가 by-date 포인터를 평가일마다 덮어쓴다.
+    루트를 명시적으로 넘기지 않는 호출은 게시 경로에 들어갈 방법이 없어야 한다.
+    """
+    resolved = _optional_cli_string(snapshot_root) or os.environ.get(
+        "TRAINING_SNAPSHOT_ROOT"
+    )
+    return {} if not resolved else {"snapshot_root": resolved}
 
 
 def _promotion_evidence_kwargs(
@@ -419,6 +444,16 @@ def run_pipeline(
         "--promotion-evidence-root",
         help="plan/held-out metric receipt를 검증·기록할 gs://bucket/prefix root",
     ),
+    snapshot_root: Optional[str] = typer.Option(
+        None,
+        "--snapshot-root",
+        help=(
+            "조립한 데이터셋을 게시할 gs://bucket/prefix (미지정 시 "
+            "TRAINING_SNAPSHOT_ROOT, 둘 다 없으면 게시하지 않습니다). "
+            "prod 재학습 경로에만 지정하십시오 — 실험·dev 파이프라인이 켜면 "
+            "by-date 포인터가 경합합니다(#530)."
+        ),
+    ),
 ) -> None:
     """전체 파이프라인 실행: build-features -> train-model -> evaluate-model -> 등록.
 
@@ -450,6 +485,7 @@ def run_pipeline(
         **_assembly_feature_kwargs(
             feature_service=feature_service, extra_features=experiment_features
         ),
+        **_snapshot_root_kwargs(snapshot_root),
     )
 
     # 어떤 기간·소스로 학습했는지 MLflow run에 lineage로 남긴다(#359). C2로 조립 경로는
