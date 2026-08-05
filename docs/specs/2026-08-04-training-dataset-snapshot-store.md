@@ -70,6 +70,32 @@ gs://<root>/by-date/dt=<events_end_date>/<feature_service>.json
 주소가 곧 내용 해시이므로 **내용이 같음이 보장된다 — no-op으로 흡수한다.**
 덮어쓰는 경로를 코드에 두지 않는다.
 
+**이 보장은 `training_dataset.csv`에만 성립한다.** `snapshot_manifest.json`은
+CSV와 같은 `by-hash/<sha>/` 밑에 올라가지만, 그 안의 `created_at`·
+`registry_generation`·`registry_sha256`·`code_archive_sha`는 CSV 바이트가
+정하는 값이 아니다 — 같은 CSV를 다른 Feast registry generation으로 재조립해도
+바이트가 같으면 같은 주소에 떨어지고, 그 주소의 manifest는 412로 no-op 흡수돼
+**최초 게시자의 것으로 영구히 고정**된다. 결과:
+
+- 특정 `by-hash/<sha>/`의 manifest는 그 주소에 **최초로 게시한 실행의 것**이다.
+  이후 같은 CSV 바이트를 다른 registry generation으로 재조립·재게시해도 그
+  사실은 이 주소에 반영되지 않는다.
+- by-date 포인터의 `registry_generation`은 게시 시점 **로컬** manifest에서
+  온다. `_update_pointer`가 sha 불변이면 조기 반환하므로, 단순 재게시는
+  포인터와 by-hash manifest가 어긋나지 않는다 — 하지만 sha가 오갔다가 되돌아오는
+  경우(A → B → A)는 다르다. 포인터는 세 번째 실행(A 재게시)의 generation을
+  담지만, `by-hash/A/`의 manifest는 **최초** 게시(첫 번째 A) 시점의 generation
+  그대로다.
+- 그래서 `--dataset-uri` 재사용 학습은 **최초 게시자의** `feast_registry_generation`을
+  MLflow run에 기록한다 — 그 CSV 주소를 실제로 최초 게시한 실행의 값이다.
+
+이 한계는 **받아들인다("first publisher wins")**. CSV 바이트 자체는 영향받지
+않으므로 이것은 데이터 무결성 문제가 아니라 **provenance 정밀도**의 한계다 —
+"이 CSV로 무엇을 학습했나"는 항상 정확하지만 "이 CSV를 만든 registry
+generation이 정확히 몇 번째 게시 시도의 것이었나"는 최초 게시자로 고정된다.
+더 깊은 해법(manifest를 자기 자신의 해시로 주소화해 CSV와 별개로 write-once
+시키는 것)은 #537에서 추적한다.
+
 ### 3.3 by-date 포인터
 
 ```json
