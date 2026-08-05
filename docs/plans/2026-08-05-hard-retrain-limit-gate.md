@@ -50,7 +50,7 @@ spec §9의 6단계를 구현한다. **Task 1~3은 순수 함수 변경이고, T
 | `autoresearch/experiments/promotion_gate.py` | Task 1~3 — 인자·판정·사유·정책 버전 |
 | `tests/test_experiment_promotion_gate.py` | Task 1~3 |
 | `.github/workflows/auto-research-promotion.yml` | Task 4~5 |
-| 스킬 문서 | Task 6 |
+| `docs/guides/retraining-policy.md`(신규) | Task 6 |
 
 **건드리지 않는 파일**: `src/pipeline/degradation_eval.py`,
 `src/pipeline/experiment_evaluation.py`, `src/pipeline/promotion_evidence.py`,
@@ -147,7 +147,7 @@ JSON 조달 경로)뿐이다.
 - [ ] workflow는 이미 `GATE_REASON`을 PR 생성 단계에 넘기고 있다(199-205행) — 그 값으로
       분기한다.
 
-## Task 6 — 스킬 문서에 하드 리밋 정책 명시
+## Task 6 — 운영 정책 문서에 하드 리밋 정책 명시 → `docs/guides/retraining-policy.md`
 
 - [ ] `#472` 완료 조건: "하드 리밋 값이 문서(스킬)와 코드(게이트 로직) 양쪽에 동일하게
       반영됩니다."

@@ -315,7 +315,12 @@ margin=2 → limit_days=5
 3. `GateDecision.policy_version`
 4. workflow 배선 — §8.2 확정 후
 5. Draft PR 본문에 승격 사유 표시(§4.3)
-6. 스킬 문서에 하드 리밋 정책 명시(`#472` 작업 범위)
+6. 운영 정책 문서에 하드 리밋 정책 명시(`#472` 작업 범위)
+   → **`docs/guides/retraining-policy.md`**로 착지. `#472` 본문은 "스킬 문서"를
+   지목했으나 이 저장소에 그런 문서가 없다(`.claude/`에는 `docs/`만 있고
+   `.claude/skills/`도, 그 이름의 파일도 없다). 저장소 밖 문서를 가리킨 표현으로
+   보이며, 운영 계약은 `docs/guides/`에 두는 것이 이 저장소 관례다
+   (`training-experiment-provenance.md`가 같은 성격).
 
 1~3은 순수 함수 변경이라 테스트만으로 검증된다. 4~6은 CI·문서 영역이며 §8.1 확인이
 선행돼야 한다.
