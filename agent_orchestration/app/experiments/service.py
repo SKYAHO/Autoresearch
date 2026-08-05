@@ -2,8 +2,9 @@
 
 전체 파이프라인에서 검증된 API 입력을 SQLAlchemy transaction으로 실험·event·log·metadata에
 반영하는 구간과, 호출자가 제출한 사전등록 필드를 `[AR]` 이슈로 발행하는 조립→저장→발행
-절차를 담당한다. HTTP 인증·상태 코드 변환, 실제 학습 실행, 본문 조립(issue_authoring)과
-`gh` 호출(github_issues) 자체는 담당하지 않는다.
+절차를 담당한다. 발행 전에 baseline-reader App으로 `dev` SHA를 읽어 본문·제목과 함께
+봉인한다. HTTP 인증·상태 코드 변환, 실제 학습/Job 실행, 본문 조립(issue_authoring)과
+GitHub 인증·REST/`gh` 전송 자체는 담당하지 않는다.
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from agent_orchestration.app.experiments.exceptions import (
     StepAlreadyFinalizedError,
 )
 from agent_orchestration.app.experiments.github_issues import (
+    GitHubIssueError,
     create_issue,
     find_issue_by_marker,
 )
@@ -71,6 +73,12 @@ from agent_orchestration.app.experiments.schemas import (
     StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.transition_service import validate_transition
+from agent_orchestration.github_app import (
+    GitHubAppCredentials,
+    GitHubAppError,
+    create_installation_token,
+)
+from agent_orchestration.github_refs import GitHubRefError, GitHubRefs
 
 # 학습 기간은 KST 날짜 경계로 계산한다. UTC로 계산하면 한국 시각 오전 9시 이전에
 # 발행된 실험이 하루 앞선 구간을 보게 된다.
@@ -654,6 +662,42 @@ def promote_experiment(
 TRIGGER_LABEL = "auto-experiment"
 
 
+async def resolve_dev_sha(settings: object) -> str:
+    """baseline-reader App으로 현재 `heads/dev` SHA를 한 번 읽는다.
+
+    App/REST 경계의 상세 오류는 모두 이미 정제되어 있지만, 기존 이슈 발행 HTTP handler가
+    안정적으로 502로 변환할 수 있도록 발행 도메인의 안전한 사유로 다시 감싼다.
+    """
+    app_id = getattr(settings, "baseline_github_app_id", None)
+    installation_id = getattr(settings, "baseline_github_app_installation_id", None)
+    private_key_path = getattr(settings, "baseline_github_app_private_key_path", None)
+    repository = getattr(settings, "github_repository", None)
+    if (
+        not isinstance(app_id, int)
+        or app_id < 1
+        or not isinstance(installation_id, int)
+        or installation_id < 1
+        or private_key_path is None
+        or not isinstance(repository, str)
+    ):
+        raise GitHubIssueError("baseline_credentials_missing")
+    try:
+        token = await create_installation_token(
+            GitHubAppCredentials(app_id, installation_id, private_key_path),
+            permissions={"contents": "read"},
+        )
+        sha = await GitHubRefs().get_sha(
+            repository,
+            "heads/dev",
+            token.value,
+        )
+    except (GitHubAppError, GitHubRefError) as error:
+        raise GitHubIssueError("baseline_resolution_failed") from error
+    if sha is None:
+        raise GitHubIssueError("baseline_ref_not_found")
+    return sha
+
+
 def _branch_slug(title: str) -> str:
     """`_branch_name_for`가 쓰는 slug 계산. 이슈 번호와 무관해 발행 전에 미리 검증할 수 있다.
 
@@ -713,8 +757,11 @@ async def publish_experiment_issue(
     if (published_today or 0) >= settings.issue_daily_limit:
         raise IssuePublicationLimitError(settings.issue_daily_limit)
 
-    # ① 본문을 만들고 발행 전에 커밋한다. 이 커밋이 재시도 결정성의 근거다.
-    if experiment.issue_body is None:
+    # ① 본문·제목·기준 SHA를 만들고 발행 전에 같은 transaction으로 커밋한다. 이
+    # 커밋이 재시도 결정성의 근거다. 기준 SHA가 이미 있으면 최신 dev를 다시 읽지 않는다.
+    stores_issue_definition = experiment.issue_body is None
+    stores_baseline = experiment.base_dev_sha is None
+    if stores_issue_definition:
         body = build_issue_body(
             experiment.id,
             request.fields,
@@ -723,6 +770,14 @@ async def publish_experiment_issue(
             window=training_window(datetime.now(_KST).date()),
         )
         title = build_issue_title(request.fields)
+    else:
+        body = experiment.issue_body
+        title = experiment.issue_title
+
+    base_dev_sha = (
+        await resolve_dev_sha(settings) if stores_baseline else experiment.base_dev_sha
+    )
+    if stores_issue_definition or stores_baseline:
         # 이 시점에는 위 조회들이 autobegin으로 이미 transaction을 열어 두었으므로
         # `with session.begin():`을 다시 쓰면 "이미 시작된 transaction" 오류가 난다.
         # commit()으로 그 transaction을 끝맺는다 — 다음 statement가 필요하면 새
@@ -730,16 +785,16 @@ async def publish_experiment_issue(
         # 후에도 방금 대입한 속성값을 그대로 읽을 수 있어 refresh가 필요하지 않다 —
         # refresh는 새 SELECT를 던져 또 다른 autobegin을 열어 두므로 오히려 다음
         # 호출자의 `session.begin()`과 충돌한다.
-        experiment.issue_body = body
-        # title도 같은 commit에 저장한다 — 저장하지 않으면 재발행 시 본문에서 제목을
-        # 복원해야 하고, 그 복원 규칙(첫 문장 요약)이 호출자가 준 실제 title과 달라
-        # 재발행마다 제목·브랜치 이름이 흔들린다.
-        experiment.issue_title = title
-        experiment.issue_branch = None
+        if stores_issue_definition:
+            experiment.issue_body = body
+            # title도 같은 commit에 저장한다 — 저장하지 않으면 재발행 시 본문에서 제목을
+            # 복원해야 하고, 그 복원 규칙(첫 문장 요약)이 호출자가 준 실제 title과 달라
+            # 재발행마다 제목·브랜치 이름이 흔들린다.
+            experiment.issue_title = title
+            experiment.issue_branch = None
+        if stores_baseline:
+            experiment.base_dev_sha = base_dev_sha
         session.commit()
-    else:
-        body = experiment.issue_body
-        title = experiment.issue_title
 
     # ② 발행. 브랜치 이름의 slug는 이슈 번호와 무관하므로 발행 전에 미리 검증한다 —
     # 여기서 실패하면 아직 이슈가 열리지 않았으므로 "이슈는 열렸지만 DB에 기록되지

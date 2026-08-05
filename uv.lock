@@ -392,6 +392,7 @@ dev = [
     { name = "plotly" },
     { name = "prometheus-client" },
     { name = "psycopg", extra = ["binary"], marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-orchestration') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-orchestration') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "ruff" },
@@ -419,6 +420,7 @@ orchestration = [
     { name = "httpx" },
     { name = "openai" },
     { name = "psycopg", extra = ["binary"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
@@ -477,6 +479,7 @@ dev = [
     { name = "plotly", specifier = ">=5.24,<7" },
     { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13,<3" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "ruff", specifier = "==0.15.18" },
@@ -502,6 +505,7 @@ orchestration = [
     { name = "httpx", specifier = ">=0.28,<0.29" },
     { name = "openai", specifier = ">=1.66,<3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13,<3" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]
@@ -3752,6 +3756,11 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/3b/81/58d0ac84e1ef3a3843791d6954d94c0b33d526c75eeb1efbce9d0a4c4077/pyjwt-2.13.0.tar.gz", hash = "sha256:41571c89ca91598c79e8ef18a2d07367d4810fbbd6f637794879baf1b7703423", size = 107515, upload-time = "2026-05-21T19:54:36.618Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a3/5e/ecf12fdb62546d64385c158514e9b2b671f7832108ef2ecd2020ce0af2d1/pyjwt-2.13.0-py3-none-any.whl", hash = "sha256:66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728", size = 31274, upload-time = "2026-05-21T19:54:35.362Z" },
+]
+
+[package.optional-dependencies]
+crypto = [
+    { name = "cryptography" },
 ]
 
 [[package]]

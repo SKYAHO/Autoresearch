@@ -97,6 +97,7 @@ orchestration = [
     "fastapi>=0.115,<0.129",
     "uvicorn[standard]>=0.32,<0.35",
     "httpx>=0.28,<0.29",
+    "PyJWT[crypto]>=2.13,<3",
     "psycopg[binary]>=3.2,<4",
     "sqlalchemy>=2.0,<3",
     "openai>=1.66,<3",

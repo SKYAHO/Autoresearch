@@ -85,6 +85,8 @@ class ExperimentResponse(BaseModel):
     agent_session_id: str | None
     issue_number: int | None
     issue_branch: str | None
+    base_dev_sha: str | None
+    executor_job_name: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -266,6 +268,7 @@ class IssuePublicationResponse(BaseModel):
     issue_number: int
     issue_url: str
     issue_branch: str
+    base_dev_sha: str
 
 
 class PromotionRequest(BaseModel):

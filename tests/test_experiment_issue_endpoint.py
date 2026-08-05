@@ -85,6 +85,15 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)
     monkeypatch.setattr(main_module, "create_database_engine", lambda *_args: engine)
 
+    async def fake_resolve_dev_sha(_settings: object) -> str:
+        return "a" * 40
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        fake_resolve_dev_sha,
+        raising=False,
+    )
+
     async def fake_find_issue_by_marker(_settings: object, *, marker: str) -> None:
         return None
 
@@ -147,6 +156,8 @@ def test_publication_returns_the_issue_coordinates(
     body = response.json()
     assert body["issue_number"] > 0
     assert body["issue_branch"].startswith("exp/")
+    assert body["base_dev_sha"] == "a" * 40
+    assert "executor_job_created_at" not in body
 
 
 def test_publication_labels_the_issue_for_the_branch_workflow(
