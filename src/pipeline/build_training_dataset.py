@@ -32,6 +32,12 @@ BigQuery 없이 단위 테스트 가능한 순수 함수이며, 검증은 비싼
 model input의 이름·순서·categorical 분류는 ``src/features/model_contract.py``가, staged PIT 조회는
 ``src/features/feast_retrieval.py``가 소유한다(이 모듈은 재정의하지 않는다).
 
+``main()``은 조립이 끝나 CSV·sidecar가 로컬에 durable하게 쓰인 뒤, ``snapshot_root``가
+주어진 경우에만 ``training_snapshot_store.publish_snapshot``으로 GCS에 게시한다(#530) —
+환경변수는 읽지 않고 인자로만 받는다. 이는 ``degradation_eval``처럼 평가일마다 ``main()``을
+반복 호출하는 경로가 그때마다 by-date 포인터를 덮어써 prod 포인터를 훼손하지 못하게 하려는
+구조적 제약이다.
+
 [비책임] 학습 조립(feast)이 쓰지 않지만 인접 소비자와 공유하느라 이 모듈에 남은 헬퍼:
 ``derive_wide_events``(long→wide attribution)·``load_events_from_bigquery``는 일일추천
 (``daily_recommendations``)이, ``load_personas``(+ ``to_personas_frame`` import)는 정책 시뮬레이션
@@ -70,6 +76,7 @@ from src.pipeline.training_provenance import (  # noqa: E402
     snapshot_manifest_path,
     write_manifest_atomic,
 )
+from src.pipeline import training_snapshot_store  # noqa: E402
 
 # spine 커버리지 가드(#464). 요청 기간에 데이터 없는 날이 섞여도 조용히 성공하던 것을 막는다 —
 # champion v12가 사실상 2일치로 학습돼 재현 불가능한 val_roc_auc=0.80으로 굳고, 이후 정상
@@ -269,6 +276,18 @@ class SpineCoverage:
         }
 
 
+@dataclass(frozen=True)
+class AssemblyOutcome:
+    """조립 결과 — 실측 커버리지와 게시된 스냅샷 주소(#530).
+
+    ``train.py``의 ``TrainingOutcome``과 같은 패턴이다. ``snapshot_uri``는 게시하지
+    않은 실행에서 ``None``이며, 호출부는 이 값을 MLflow lineage에 남긴다.
+    """
+
+    coverage: SpineCoverage
+    snapshot_uri: str | None = None
+
+
 def summarize_spine_coverage(
     spine: pd.DataFrame,
     start_date: str,
@@ -440,6 +459,26 @@ def resolve_extra_feature_columns(
     return requested
 
 
+def is_experiment_assembly(
+    *,
+    feature_service: str | None,
+    extra_features: Sequence[str] | None,
+) -> bool:
+    """이 조립이 prod 기본 조건에서 벗어난 실험 조립인지 판정한다(#530).
+
+    #454가 이 판정을 도입했지만 ``require_explicit_experiment_output`` 안에 갇혀
+    있어 다른 곳에서 쓸 수 없었다. 게시 게이팅(#530)이 같은 판정을 필요로 하므로
+    predicate로 분리한다 — 조건식이 두 벌이면 ``DEFAULT_SERVICE`` 판별 기준이 바뀔 때
+    한쪽만 고치는 실수가 난다.
+    """
+    from src.features.feast_retrieval import DEFAULT_SERVICE
+
+    experiment_service = (
+        feature_service is not None and feature_service != DEFAULT_SERVICE
+    )
+    return experiment_service or bool(extra_features)
+
+
 def require_explicit_experiment_output(
     *,
     feature_service: str | None,
@@ -451,12 +490,9 @@ def require_explicit_experiment_output(
     선택하므로 여분 컬럼을 조용히 무시한다 — champion 후보가 실험 데이터로 학습됐다는
     사실이 지표에도, 컬럼 수에도 드러나지 않는다. 그래서 경로를 명시하게 요구한다.
     """
-    from src.features.feast_retrieval import DEFAULT_SERVICE
-
-    experiment_service = (
-        feature_service is not None and feature_service != DEFAULT_SERVICE
-    )
-    if not experiment_service and not extra_features:
+    if not is_experiment_assembly(
+        feature_service=feature_service, extra_features=extra_features
+    ):
         return
     raise FeatureContractError(
         "실험 조립(--feature-service 또는 --extra-features)은 출력 경로를 명시해야 "
@@ -718,6 +754,7 @@ def _assemble_via_feast(
                 feature_service=service,
                 registry=registry,
                 code_archive_sha=os.environ.get("CODE_ARCHIVE_SHA"),
+                spine_usable_days=len(coverage.usable_days),
             )
             os.replace(staged_csv, output)
             staged_csv = None
@@ -866,7 +903,8 @@ def main(
     *,
     feature_service: str | None = None,
     extra_features: Sequence[str] | None = None,
-) -> SpineCoverage:
+    snapshot_root: str | None = None,
+) -> AssemblyOutcome:
     """training_dataset.csv를 offline feature store(Feast PIT) 조회로 생성한다(#359 C2, feast-only).
 
     #359 C2에서 DuckDB 재계산 경로를 제거하고 feast를 유일 경로로 만들었다. spine
@@ -876,14 +914,21 @@ def main(
     Args:
         feature_service: 조회할 FeatureService 이름(기본 ``ctr_training_v1``, #454).
         extra_features: 학습 CSV에 함께 보존할 실험 피처 이름(#454).
+        snapshot_root: 게시 대상 GCS 루트(``gs://bucket[/prefix]``, #530). ``None``이면
+            게시하지 않고 로컬 CSV만 남긴다 — 환경변수는 읽지 않고 이 인자로만 받는다.
+            ``degradation_eval``처럼 평가일마다 이 함수를 반복 호출하는 호출부가 루트를
+            넘기지 않는 한 게시 경로에 들어설 수 없게 하려는 구조적 제약이다(단일 평가가
+            by-date 포인터를 반복 덮어써 prod 포인터를 훼손하는 사고를 막는다).
 
     실험 조립(기본이 아닌 FeatureService 또는 실험 피처)은 ``output_path``를 명시해야
     한다. 기본 경로는 prod 학습 데이터셋이라, 실험 조립이 그 자리를 덮어쓰면 이후 prod
     학습이 실험 서비스로 조회된 데이터를 쓰면서도 컬럼 수만 맞아 조용히 성공한다.
 
     Returns:
-        실측 spine 커버리지(#464). ``build-features``는 쓰지 않지만 ``run-pipeline``이
-        MLflow lineage에 남긴다.
+        ``AssemblyOutcome`` — 실측 spine 커버리지(#464)와 게시된 스냅샷 주소(#530).
+        ``snapshot_root``를 넘기지 않은 실행은 ``snapshot_uri=None``이다.
+        ``build-features``는 쓰지 않지만 ``run-pipeline``이 커버리지를 MLflow
+        lineage에 남긴다.
 
     Raises:
         FeatureContractError: 실험 조립인데 ``output_path``를 지정하지 않으면.
@@ -900,7 +945,7 @@ def main(
             feature_service=feature_service, extra_features=extra_features
         )
         output_path = os.path.join(get_data_dir(), "processed", "training_dataset.csv")
-    return _assemble_via_feast(
+    coverage = _assemble_via_feast(
         output_path,
         events_start_date,
         events_end_date,
@@ -908,3 +953,20 @@ def main(
         feature_service=feature_service,
         extra_features=extra_features,
     )
+    if snapshot_root is None:
+        # 게시 여부를 알리는 안내는 여기서 찍지 않는다 — 호출자(cli.py)가 이미
+        # snapshot_root 지정 여부를 알고, degradation_eval처럼 이 함수를 평가일마다
+        # 반복 호출하는 호출부도 있어 여기서 찍으면 호출 수만큼 중복된다(#530 PR 리뷰).
+        return AssemblyOutcome(coverage=coverage, snapshot_uri=None)
+
+    # 실험 조립은 by-hash에만 올리고 by-date 포인터는 건드리지 않는다(#530 §6.3) —
+    # 누가 실험 스크립트에 루트를 켜도 prod 포인터가 오염되지 않게 한다.
+    snapshot_uri = training_snapshot_store.publish_snapshot(
+        dataset_path=Path(output_path),
+        snapshot_root=snapshot_root,
+        record_pointer=not is_experiment_assembly(
+            feature_service=feature_service, extra_features=extra_features
+        ),
+    )
+    print(f"[게시] {snapshot_uri}")
+    return AssemblyOutcome(coverage=coverage, snapshot_uri=snapshot_uri)

@@ -603,3 +603,117 @@ SELECT
 - serving에서는 미리 계산된 `user_category_similarity`를 조회해 `topic_similarity`를 사용한다.
 
 ---
+
+## 💠 스냅샷 게시와 재사용
+
+> [!NOTE]
+> #530 이전에는 `training_dataset.csv`가 실행이 끝난 로컬 디스크에만 남아,
+> "학습 데이터셋이 지금 어디에 있는가"라는 질문에 코드를 읽지 않고 답할 방법이
+> 없었다. 이 절이 그 답이다.
+
+### 저장 위치
+
+`build-features`(`build_training_dataset.main`)는 조립이 끝나면
+`training_dataset.csv`와 그 sidecar `training_dataset.csv.snapshot.json`
+(`TrainingSnapshotManifest` — `dataset_sha256`·`schema_sha256`·`row_count`·
+`events_start_date`/`events_end_date`·`feature_service`·`registry_uri`/
+`registry_generation`/`registry_sha256`·`spine_usable_days` 포함)을 로컬에
+durable하게 쓴다. 이 시점부터 같은 데이터가 최대 세 곳에 존재할 수 있다.
+
+1. **로컬 경로** — `--output-path`(기본 `data/processed/training_dataset.csv`)와
+   그 옆의 `.snapshot.json` sidecar.
+2. **MLflow artifact** — `train-model`/`run-pipeline`이 학습을 마치면, 검증에
+   실제로 쓰인 학습 입력을 해당 run의 `reproducibility/snapshot/` 아래
+   canonical 이름(`training_dataset.csv`, `snapshot_manifest.json`)으로
+   그대로 기록한다(`src/pipeline/train.py::_log_reproducibility_artifacts`).
+   run_id를 아는 경우 MLflow UI/API의 Artifacts에서 바로 내려받을 수 있다.
+3. **게시된 GCS 스냅샷** — `--snapshot-root`(또는 환경변수
+   `TRAINING_SNAPSHOT_ROOT`)를 주면 content-addressed 주소
+   `gs://<root>/by-hash/<dataset_sha256>/training_dataset.csv`와 같은 prefix의
+   `snapshot_manifest.json`으로 write-once 게시한다
+   (`src/pipeline/training_snapshot_store.py::publish_snapshot`). 주소가 CSV
+   내용의 SHA-256이므로 같은 내용을 다시 게시해도 새 객체가 생기지 않고
+   (`if_generation_match=0`이 이미 존재함을 뜻하는 412를 no-op으로 흡수한다),
+   한 번 게시된 객체는 이후 절대 변경되지 않는다.
+
+`--snapshot-root`도 `TRAINING_SNAPSHOT_ROOT`도 주지 않으면(대부분의 실험·dev
+실행) 게시 없이 로컬 경로만 남는다 — `build_training_dataset.main`은
+`snapshot_root` 인자를 받지 않는 한 게시 경로에 들어서지 않는다.
+
+> [!WARNING]
+> `TRAINING_SNAPSHOT_ROOT`/`--snapshot-root`는 **prod 재학습 경로에만**
+> 설정한다. 실험·dev 파이프라인이 이 값을 켜면 아래 by-date 포인터가 서로
+> 경합해 prod 포인터를 오염시킬 수 있다(#530). 환경변수는 `src/cli.py`에서만
+> 해석하고 `build_training_dataset.main` 내부에서는 읽지 않는다 —
+> `src/pipeline/degradation_eval.py`의 평가일 순회가 `main()`을 평가일 수만큼
+> 반복 호출하므로, `main()`이 환경변수를 직접 읽으면 그 반복이 by-date
+> 포인터를 평가일마다 덮어쓰게 된다. 실제로 `degradation_eval.py`는
+> `snapshot_root`를 넘기지 않는다.
+
+### 날짜·FeatureService로 찾기 (by-date 포인터)
+
+기본 조건(FeatureService `ctr_training_v1`, `--extra-features` 미지정)으로
+게시하면 by-hash 객체와 별도로 아래 위치의 포인터도 함께 갱신된다.
+
+```text
+gs://<root>/by-date/dt=<events_end_date>/<feature_service>.json
+```
+
+- `dt`는 게시 시각이 아니라 그 스냅샷의 **`events_end_date`**(학습 구간
+  종료일)다.
+- 내용은 `TrainingSnapshotPointer` — 현재 `dataset_sha256`·`uri`·
+  `events_start_date`/`events_end_date`·`feature_service`·
+  `registry_generation`·`published_at`과, 최근 최대 `MAX_POINTER_HISTORY`
+  (10)건까지의 이전 스냅샷 이력 `previous`를 담는다.
+- 조회 예:
+
+```bash
+gsutil cat gs://<bucket>/training-datasets/by-date/dt=2026-08-01/ctr_training_v1.json
+```
+
+- 같은 좌표(`events_end_date`, `feature_service`)에 새 스냅샷이 게시되면
+  포인터는 **최신으로 이동**한다. 과거 학습이 참조한 `uri`는 by-hash 불변
+  주소이므로, 포인터가 이동해도 그 학습의 재현성은 깨지지 않는다 — 재현은
+  항상 sha 주소로 하기 때문에 포인터를 움직여도 안전하다.
+- **실험 조립**(`--feature-service`가 기본이 아니거나 `--extra-features`를
+  지정한 조립)**은 by-hash에만 올라가고 이 포인터는 갱신하지 않는다** —
+  실험이 prod 포인터를 오염시키지 못하게 하는 명시적 설계다
+  (`training_snapshot_store.publish_snapshot`의 `record_pointer=False`,
+  판정은 `build_training_dataset.py::is_experiment_assembly`).
+
+### `--dataset-uri`로 재사용하기
+
+포인터에서 얻은 `uri`(또는 직접 아는 `gs://<root>/by-hash/<sha>/`)를
+`train-model`이나 `run-pipeline`에 넘기면 조립을 다시 돌리지 않고 그 스냅샷을
+학습 입력으로 쓴다.
+
+```bash
+python -m src.cli train-model --dataset-uri gs://<bucket>/training-datasets/by-hash/<sha>/
+```
+
+- `train-model --dataset-uri`는 `--data-path`와 함께 줄 수 없다(스냅샷이 이미
+  학습 입력을 확정했다).
+- `run-pipeline --dataset-uri`는 `--dataset-path`·`--events-start-date`·
+  `--events-end-date`와 함께 줄 수 없다(같은 이유로 build-features 단계
+  자체를 생략한다).
+- `--min-coverage-days`는 이 재사용 경로에만 의미가 있다 — `--dataset-uri`
+  없이 `train-model`을 실행하면 값을 줘도 아무 영향이 없다.
+
+재사용 실행은 학습을 시작하기 전에 다음을 재검증하며, 하나라도 어긋나면
+학습을 시작하지 않는다.
+
+1. **주소-내용 일치** — URI의 `by-hash/<sha>/` 경로가 내려받은 CSV 옆
+   sidecar의 `dataset_sha256`과 같은지
+   (`training_snapshot_store.download_snapshot`).
+2. **byte/schema/row_count 일치** — 내려받은 CSV의 SHA-256·컬럼 schema
+   hash·행 수가 sidecar manifest와 같은지(`load_training_snapshot_manifest`).
+3. **커버리지 게이트** — `--min-coverage-days`(미지정 시 조립 경로와 같은
+   기본값)를 만족하는 `spine_usable_days`가 manifest에 있는지
+   (`require_snapshot_coverage`). 이 필드가 없는 옛 스냅샷은 게이트가 켜진
+   채로는 재사용할 수 없다 — `--min-coverage-days 0`으로 명시적으로 우회해야
+   한다.
+
+다운로드한 CSV는 임시 디렉터리에 두며, 학습이 끝나든 예외로 중단되든 반드시
+정리한다.
+
+---
