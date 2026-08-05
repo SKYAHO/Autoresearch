@@ -1441,6 +1441,12 @@ def require_snapshot_coverage(*, spine_usable_days: int | None, min_days: int) -
 `main()` 끝의 정리에서 `snapshot_download_dir`가 있으면 `cleanup()`을 부른다
 (`try/finally`로 감싸 학습이 실패해도 임시 디렉터리가 남지 않게 한다).
 
+> **구현이 택한 형태** (커밋 `5168bd2`): 인라인 `try/finally` 대신 `main()`을 **얇은
+> 래퍼**로 두고, 기존 본문을 `_train_from_resolved_dataset()`로 옮겼다. `main()`은
+> `dataset_uri` 해석·다운로드·정리만 맡고 21개 인자를 전부 keyword로 전달한다.
+> 공개 시그니처는 그대로이며(positional 호출 가능성 포함), 정리가 예외 경로에서도
+> 반드시 도는 것이 구조로 보장된다. 인라인 삽입보다 나은 형태라 그대로 채택했다.
+
 - [ ] **Step 4: 통과를 확인한다**
 
 Run: `$env:PYTHONUTF8="1"; uv run --no-sync python -m pytest tests/test_training_snapshot_store.py tests/test_pipeline_train.py -q`
