@@ -7,11 +7,16 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from src.pipeline.training_provenance import (
+    MAX_POINTER_HISTORY,
     RegistryProvenance,
+    SnapshotPointerEntry,
     TrainingComparisonManifest,
     TrainingSeeds,
+    TrainingSnapshotManifest,
+    TrainingSnapshotPointer,
     TrainingSplitManifest,
     build_snapshot_manifest,
     build_split_manifest,
@@ -241,3 +246,45 @@ def test_existing_split_manifest_json_without_plan_receipt_still_parses(tmp_path
     parsed = TrainingSplitManifest.model_validate_json(legacy_json)
 
     assert parsed.experiment_plan_receipt is None
+
+
+def test_snapshot_manifest_reads_v1_json_without_spine_usable_days() -> None:
+    """기존 v1 JSON은 이 필드가 없으므로 None으로 읽어야 한다(#530)."""
+    payload = {
+        "manifest_version": "training_snapshot_manifest_v1",
+        "dataset_sha256": "a" * 64,
+        "schema_sha256": "b" * 64,
+        "row_count": 10,
+        "columns": [{"name": "clicked", "dtype": "int64"}],
+        "created_at": "2026-08-04T00:00:00Z",
+        "events_start_date": "2026-07-26",
+        "events_end_date": "2026-08-01",
+        "feature_service": "ctr_training_v1",
+        "registry_uri": "gs://bucket/registry.db",
+        "registry_generation": "17",
+        "registry_sha256": "c" * 64,
+    }
+    manifest = TrainingSnapshotManifest.model_validate(payload)
+    assert manifest.spine_usable_days is None
+
+
+def test_snapshot_pointer_caps_history_at_ten() -> None:
+    """previous는 최근 10개까지만 보존해야 한다(#530)."""
+    entries = [
+        SnapshotPointerEntry(
+            dataset_sha256=f"{index:064d}",
+            published_at=datetime(2026, 8, 4, tzinfo=timezone.utc),
+        )
+        for index in range(MAX_POINTER_HISTORY + 2)
+    ]
+    with pytest.raises(ValidationError):
+        TrainingSnapshotPointer(
+            dataset_sha256="d" * 64,
+            uri="gs://bucket/by-hash/" + "d" * 64 + "/",
+            events_start_date=date(2026, 7, 26),
+            events_end_date=date(2026, 8, 1),
+            feature_service="ctr_training_v1",
+            registry_generation="17",
+            published_at=datetime(2026, 8, 4, tzinfo=timezone.utc),
+            previous=entries,
+        )

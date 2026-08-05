@@ -62,6 +62,46 @@ def _fake_coverage(usable=2, missing=1):
     )
 
 
+def _fake_assembly_outcome(usable=2, missing=1):
+    """build_training_dataset.main 목(mock)의 반환값(#530) — AssemblyOutcome로 감싼다.
+
+    ``main``이 ``AssemblyOutcome``을 돌려주도록 바뀌었으므로(#530), run-pipeline이 읽는
+    ``assembly.coverage``가 실제로 존재하는 값이 되도록 여기서 감싼다. 이 테스트들은
+    게시(snapshot_uri)를 다루지 않으므로 기본값 ``None``이면 충분하다.
+    """
+    return cli.build_training_dataset.AssemblyOutcome(
+        coverage=_fake_coverage(usable=usable, missing=missing)
+    )
+
+
+# train.main 목(mock)의 최소 반환값(#530) — dataset_uri 재사용 경로 테스트는 등록
+# 여부를 다루지 않으므로 pending_registration 기본값(None)이면 충분하다. 등록
+# 시퀀스를 검증하는 테스트는 이 상수 대신 `_pipeline_outcome()`을 쓴다.
+_OUTCOME_STUB = train_module.TrainingOutcome(sampling_rate=1.0, run_id="run-stub")
+
+
+def test_snapshot_root_falls_back_to_environment(monkeypatch) -> None:
+    """--snapshot-root 미지정 시 TRAINING_SNAPSHOT_ROOT를 쓴다(#530)."""
+    monkeypatch.setenv("TRAINING_SNAPSHOT_ROOT", "gs://snapshots/training")
+    assert cli._snapshot_root_kwargs(None) == {
+        "snapshot_root": "gs://snapshots/training"
+    }
+
+
+def test_snapshot_root_option_wins_over_environment(monkeypatch) -> None:
+    """--snapshot-root를 지정하면 환경변수보다 우선한다(#530)."""
+    monkeypatch.setenv("TRAINING_SNAPSHOT_ROOT", "gs://from-env/training")
+    assert cli._snapshot_root_kwargs("gs://explicit/training") == {
+        "snapshot_root": "gs://explicit/training"
+    }
+
+
+def test_snapshot_root_absent_yields_no_kwarg(monkeypatch) -> None:
+    """미설정이면 키 자체를 만들지 않아 main()의 기본값을 덮지 않는다."""
+    monkeypatch.delenv("TRAINING_SNAPSHOT_ROOT", raising=False)
+    assert cli._snapshot_root_kwargs(None) == {}
+
+
 def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     build_features_call = {}
     # build-features 성공 뒤 lineage가 GCS_REGISTRY_PATH를 필수로 읽는다(#359 C2, 무조건 기록).
@@ -69,7 +109,7 @@ def test_run_pipeline_forwards_dates_to_build_features(monkeypatch):
     monkeypatch.setattr(
         cli.build_training_dataset,
         "main",
-        lambda **kw: (build_features_call.update(kw), _fake_coverage())[1],
+        lambda **kw: (build_features_call.update(kw), _fake_assembly_outcome())[1],
     )
     monkeypatch.setattr(cli.train, "main", lambda **kw: _pipeline_outcome())
     monkeypatch.setattr(cli.evaluate, "main", MagicMock())
@@ -190,7 +230,7 @@ def test_run_pipeline_forwards_coverage_override(monkeypatch):
     monkeypatch.setattr(
         cli.build_training_dataset,
         "main",
-        lambda **kw: (build_features_call.update(kw), _fake_coverage())[1],
+        lambda **kw: (build_features_call.update(kw), _fake_assembly_outcome())[1],
     )
     monkeypatch.setattr(
         cli.train, "main", lambda **kw: train_call.update(kw) or _pipeline_outcome()
@@ -227,7 +267,7 @@ def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
     train_call = {}
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
     monkeypatch.setattr(
-        cli.build_training_dataset, "main", MagicMock(return_value=_fake_coverage())
+        cli.build_training_dataset, "main", MagicMock(return_value=_fake_assembly_outcome())
     )
     monkeypatch.setattr(
         cli.train, "main", lambda **kw: train_call.update(kw) or _pipeline_outcome()
@@ -270,6 +310,313 @@ def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
         ),
         "spine_coverage_guard": "on",
     }
+
+
+def test_run_pipeline_rejects_dataset_uri_with_events_window(monkeypatch) -> None:
+    """스냅샷이 구간을 확정했는데 다른 구간을 받으면 무엇이 진짜인지 답할 수 없다."""
+    with pytest.raises(typer.BadParameter, match="dataset-uri"):
+        cli.run_pipeline(
+            dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+            dataset_path=None,
+            events_start_date="2026-07-26",
+            events_end_date="2026-08-01",
+            config_path=None,
+            model_output=None,
+            test_set_output=None,
+            feature_columns_output=None,
+            categorical_columns_output=None,
+            test_size=None,
+            val_size=None,
+            random_state=None,
+            extra_features=None,
+            experiment=None,
+        )
+
+
+def test_run_pipeline_rejects_dataset_uri_with_feature_service(monkeypatch) -> None:
+    """재사용 경로는 조립 분기를 건너뛰어 --feature-service가 전달될 곳이 없다.
+
+    거부하지 않으면 오퍼레이터가 --feature-service를 지정해도 조용히 무시되고,
+    MLflow에는 다운로드한 manifest의 feature_service가 대신 남는다(#530 PR 리뷰).
+    """
+    with pytest.raises(typer.BadParameter, match="feature-service"):
+        cli.run_pipeline(
+            dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+            dataset_path=None,
+            events_start_date=None,
+            events_end_date=None,
+            config_path=None,
+            model_output=None,
+            test_set_output=None,
+            feature_columns_output=None,
+            categorical_columns_output=None,
+            test_size=None,
+            val_size=None,
+            random_state=None,
+            extra_features=None,
+            experiment=None,
+            feature_service="ctr_training_exp_v2",
+        )
+
+
+def test_run_pipeline_rejects_dataset_uri_with_snapshot_root(monkeypatch) -> None:
+    """재사용 경로는 조립 분기를 건너뛰어 --snapshot-root가 전달될 곳이 없다.
+
+    거부하지 않으면 오퍼레이터가 재사용 스냅샷을 이 루트에도 게시하려는 것으로
+    오인할 수 있지만, 실제로는 아무 게시도 일어나지 않는다(#530 PR 리뷰).
+    """
+    with pytest.raises(typer.BadParameter, match="snapshot-root"):
+        cli.run_pipeline(
+            dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+            dataset_path=None,
+            events_start_date=None,
+            events_end_date=None,
+            config_path=None,
+            model_output=None,
+            test_set_output=None,
+            feature_columns_output=None,
+            categorical_columns_output=None,
+            test_size=None,
+            val_size=None,
+            random_state=None,
+            extra_features=None,
+            experiment=None,
+            snapshot_root="gs://snapshots/training",
+        )
+
+
+def test_run_pipeline_skips_assembly_and_logs_snapshot_uri(monkeypatch) -> None:
+    """--dataset-uri면 조립을 건너뛰고 lineage를 manifest에서 채운다."""
+    assembled: list[dict] = []
+    monkeypatch.setattr(
+        cli.build_training_dataset,
+        "main",
+        lambda **kwargs: assembled.append(kwargs),
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli.train, "main", lambda **kwargs: captured.update(kwargs) or _OUTCOME_STUB
+    )
+    monkeypatch.setattr(cli.evaluate, "main", lambda **kwargs: None)
+
+    uri = "gs://snapshots/training/by-hash/" + "a" * 64 + "/"
+    cli.run_pipeline(
+        dataset_uri=uri,
+        dataset_path=None,
+        events_start_date=None,
+        events_end_date=None,
+        config_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        extra_features=None,
+        experiment=None,
+    )
+
+    assert assembled == []
+    assert captured["dataset_uri"] == uri
+    # 재사용 경로도 조립 경로와 같은 커버리지 하한을 적용해야 한다 — 넘기지
+    # 않으면 재사용 경로만 게이트가 꺼진 채(min_coverage_days 기본값 0으로) 돈다.
+    assert captured["min_coverage_days"] == cli.build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
+    assert captured["extra_params"] == {
+        "assembly_source": "snapshot_reuse",
+        "training_snapshot_uri": uri,
+    }
+
+
+def test_run_pipeline_records_snapshot_uri_when_published(monkeypatch) -> None:
+    """게시된 실행은 training_snapshot_uri를 MLflow 파라미터에 남긴다."""
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(
+        cli.build_training_dataset,
+        "main",
+        lambda **kwargs: cli.build_training_dataset.AssemblyOutcome(
+            coverage=_fake_coverage(), snapshot_uri="gs://snapshots/by-hash/abc/"
+        ),
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli.train, "main", lambda **kwargs: captured.update(kwargs) or _OUTCOME_STUB
+    )
+    monkeypatch.setattr(cli.evaluate, "main", lambda **kwargs: None)
+
+    cli.run_pipeline(
+        dataset_path=None,
+        events_start_date="2026-07-26",
+        events_end_date="2026-08-01",
+        config_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        extra_features=None,
+        experiment=None,
+    )
+
+    assert captured["extra_params"]["training_snapshot_uri"] == (
+        "gs://snapshots/by-hash/abc/"
+    )
+
+
+def test_run_pipeline_omits_snapshot_uri_when_not_published(monkeypatch) -> None:
+    """미게시 실행은 파라미터를 빈 문자열로 넣지 않고 아예 생략한다."""
+    monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
+    monkeypatch.setattr(
+        cli.build_training_dataset,
+        "main",
+        lambda **kwargs: cli.build_training_dataset.AssemblyOutcome(
+            coverage=_fake_coverage(), snapshot_uri=None
+        ),
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        cli.train, "main", lambda **kwargs: captured.update(kwargs) or _OUTCOME_STUB
+    )
+    monkeypatch.setattr(cli.evaluate, "main", lambda **kwargs: None)
+
+    cli.run_pipeline(
+        dataset_path=None,
+        events_start_date="2026-07-26",
+        events_end_date="2026-08-01",
+        config_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        extra_features=None,
+        experiment=None,
+    )
+
+    assert "training_snapshot_uri" not in captured["extra_params"]
+
+
+def test_train_model_forwards_dataset_uri(monkeypatch) -> None:
+    """--dataset-uri는 train.main에 그대로 전달돼야 재사용 다운로드가 일어난다(#530)."""
+    train_call: dict = {}
+    monkeypatch.setattr(cli.train, "main", lambda **kwargs: train_call.update(kwargs))
+
+    uri = "gs://snapshots/training/by-hash/" + "b" * 64 + "/"
+    cli.train_model(
+        config_path=None,
+        data_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=None,
+        model_seed=None,
+        sampler_seed=None,
+        extra_features=None,
+        experiment=None,
+        experiment_plan_receipt=None,
+        promotion_evidence_root=None,
+        dataset_uri=uri,
+    )
+
+    assert train_call["dataset_uri"] == uri
+
+
+def test_train_model_rejects_dataset_uri_with_data_path(monkeypatch) -> None:
+    """스냅샷과 로컬 경로가 동시에 주어지면 어느 쪽이 학습 입력인지 결정할 수 없다."""
+    with pytest.raises(typer.BadParameter, match="data-path"):
+        cli.train_model(
+            config_path=None,
+            data_path="training_dataset.csv",
+            model_output=None,
+            test_set_output=None,
+            feature_columns_output=None,
+            categorical_columns_output=None,
+            test_size=None,
+            val_size=None,
+            random_state=None,
+            split_seed=None,
+            model_seed=None,
+            sampler_seed=None,
+            extra_features=None,
+            experiment=None,
+            experiment_plan_receipt=None,
+            promotion_evidence_root=None,
+            dataset_uri="gs://snapshots/training/by-hash/" + "c" * 64 + "/",
+        )
+
+
+def test_train_model_forwards_min_coverage_days_default(monkeypatch) -> None:
+    """--dataset-uri 재사용 경로도 조립 경로와 같은 커버리지 하한을 적용해야 한다(#530).
+
+    --min-coverage-days를 지정하지 않았는데 train.main의 기본값(0, 게이트 꺼짐)이
+    그대로 전달되면, 같은 스냅샷을 train-model로 재사용할 때와 run-pipeline으로
+    재사용할 때 하한이 다르게 적용된다.
+    """
+    train_call: dict = {}
+    monkeypatch.setattr(cli.train, "main", lambda **kwargs: train_call.update(kwargs))
+
+    cli.train_model(
+        config_path=None,
+        data_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=None,
+        model_seed=None,
+        sampler_seed=None,
+        extra_features=None,
+        experiment=None,
+        experiment_plan_receipt=None,
+        promotion_evidence_root=None,
+        dataset_uri="gs://snapshots/training/by-hash/" + "d" * 64 + "/",
+        min_coverage_days=None,
+    )
+
+    assert (
+        train_call["min_coverage_days"]
+        == cli.build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
+    )
+
+
+def test_train_model_forwards_min_coverage_days_explicit_zero(monkeypatch) -> None:
+    """0(명시적 우회)은 미지정과 구분해 그대로 전달해야 한다(#464와 같은 패턴)."""
+    train_call: dict = {}
+    monkeypatch.setattr(cli.train, "main", lambda **kwargs: train_call.update(kwargs))
+
+    cli.train_model(
+        config_path=None,
+        data_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=None,
+        model_seed=None,
+        sampler_seed=None,
+        extra_features=None,
+        experiment=None,
+        experiment_plan_receipt=None,
+        promotion_evidence_root=None,
+        dataset_uri="gs://snapshots/training/by-hash/" + "e" * 64 + "/",
+        min_coverage_days=0,
+    )
+
+    assert train_call["min_coverage_days"] == 0
 
 
 def _pipeline_outcome():
@@ -839,7 +1186,7 @@ def test_run_pipeline_forwards_assembly_features_and_logs_actual_service(monkeyp
     monkeypatch.setattr(
         cli.build_training_dataset,
         "main",
-        lambda **kw: (build_features_call.update(kw), _fake_coverage())[1],
+        lambda **kw: (build_features_call.update(kw), _fake_assembly_outcome())[1],
     )
     monkeypatch.setattr(
         cli.train, "main", lambda **kw: train_call.update(kw) or _pipeline_outcome()

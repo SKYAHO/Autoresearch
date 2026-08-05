@@ -15,7 +15,9 @@
 single/shard/merge, action-log 품질 검사, offline feature build, Feast apply,
 Feast materialize, 일일 추천 결과 적재와 MLflow 모델 승격 결과 인계를 다룬다.
 그 밖의 학습·평가와 FastAPI serving command는 각 기능이 운영화될 때 별도
-revision으로 추가한다.
+revision으로 추가한다. 학습 데이터셋 스냅샷 게시·재사용 CLI 인자
+(`--snapshot-root`, `--dataset-uri`, `--min-coverage-days`)의 정본은
+`docs/specs/2026-08-04-training-dataset-snapshot-store.md`다.
 
 ## 계약 버전
 

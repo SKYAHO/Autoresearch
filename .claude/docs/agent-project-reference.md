@@ -74,6 +74,15 @@ docs/
 - **참고:** `src/` → `autoresearch/` 패키지 통합이 논의 중입니다
   (`docs/specs/2026-07-15-repo-restructure.md` 결정 3, 팀 합의 대기).
   통합 전까지 신규 학습·서빙 코드는 기존 `src/` 배치를 따릅니다.
+- **학습 데이터셋 스냅샷(#530):** `src/pipeline/training_snapshot_store.py`가
+  content-addressed GCS 게시(`gs://<root>/by-hash/<sha>/`)·by-date 포인터
+  갱신·다운로드를 소유하고, `src/pipeline/training_provenance.py`가
+  `TrainingSnapshotManifest`/`TrainingSnapshotPointer` 스키마를 소유합니다.
+  게시는 opt-in 환경변수 `TRAINING_SNAPSHOT_ROOT`(CLI `--snapshot-root`)로만
+  켜지며 **prod 재학습 경로에만** 설정해야 합니다 — 실험·dev 파이프라인이
+  켜면 by-date 포인터가 경합합니다. 정본은
+  `docs/specs/2026-08-04-training-dataset-snapshot-store.md`,
+  사용자 안내는 `docs/guides/training-dataset.md`입니다.
 
 ### `agent_orchestration/`
 - **책임:** 실험형 오케스트레이션 API와 비공개 Codex Runner. `/chat`의
@@ -115,6 +124,12 @@ docs/
   계산하지 않습니다. 실행 좌표는 `autoresearch/experiments/context.py`가,
   결과 계약은 `src/pipeline/paired_experiment.py`가 소유하며 정본은
   `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`입니다.
+- 학습 데이터셋 스냅샷 재사용(#530)의 CLI 인자 이름(`--snapshot-root`,
+  `--dataset-uri`, `--min-coverage-days`)은 `Autoresearch-airflow#236` 배선이
+  참조하도록 확정됐습니다. `build-features`/`train-model`/`run-pipeline`
+  자체는 아직 `공개 batch 실행 계약`의 v1 명령 목록에 없으며, 인자 상세와
+  상호배타 규칙의 정본은 `docs/specs/2026-08-04-training-dataset-snapshot-store.md`
+  입니다.
 
 ### `tests/`
 - **책임:** 모듈별 단위 테스트. `tests/test_<module>.py` 플랫 구조를
