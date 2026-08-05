@@ -115,9 +115,9 @@ docs/
 - 학습 데이터셋 스냅샷 재사용(#530)의 CLI 인자 이름(`--snapshot-root`,
   `--dataset-uri`, `--min-coverage-days`)은 `Autoresearch-airflow#236` 배선이
   참조하도록 확정됐습니다. `build-features`/`train-model`/`run-pipeline`
-  자체는 아직 `공개 batch 실행 계약`의 v1 명령 목록에 없으며, 인자 상세는 그
-  문서와 `docs/specs/2026-08-04-training-dataset-snapshot-store.md`가
-  정본입니다.
+  자체는 아직 `공개 batch 실행 계약`의 v1 명령 목록에 없으며, 인자 상세와
+  상호배타 규칙의 정본은 `docs/specs/2026-08-04-training-dataset-snapshot-store.md`
+  입니다.
 
 ### `tests/`
 - **책임:** 모듈별 단위 테스트. `tests/test_<module>.py` 플랫 구조를

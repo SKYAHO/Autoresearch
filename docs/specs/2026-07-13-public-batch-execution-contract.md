@@ -15,7 +15,9 @@
 single/shard/merge, action-log 품질 검사, offline feature build, Feast apply,
 Feast materialize, 일일 추천 결과 적재와 MLflow 모델 승격 결과 인계를 다룬다.
 그 밖의 학습·평가와 FastAPI serving command는 각 기능이 운영화될 때 별도
-revision으로 추가한다.
+revision으로 추가한다. 학습 데이터셋 스냅샷 게시·재사용 CLI 인자
+(`--snapshot-root`, `--dataset-uri`, `--min-coverage-days`)의 정본은
+`docs/specs/2026-08-04-training-dataset-snapshot-store.md`다.
 
 ## 계약 버전
 
@@ -603,32 +605,6 @@ python -m src.cli compare-paired-experiment \
 - 원본 예외, traceback, credential, signed URL은 결과와 stdout에 넣지 않는다.
 - 필드·검증 규칙의 정본은
   `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`다.
-
-## 학습 데이터셋 스냅샷 게시·재사용 CLI 인자 (#530)
-
-`build-features`, `train-model`, `run-pipeline`(`python -m src.cli ...`) 자체는
-아직 이 계약의 "공개 명령" 목록에 없다 — 그 밖의 학습·평가 command는 위 "목적"
-절이 명시한 대로 별도 revision에서 다룬다. 다만 `Autoresearch-airflow#236`의
-배선이 다음 인자 이름 확정을 기다리고 있으므로, 확정된 이름과 상호배타 규칙을
-여기 남긴다. **옵션 이름은 명령마다 다르다.**
-
-| 인자 | 대상 명령 | 설명 |
-| --- | --- | --- |
-| `--snapshot-root` | `build-features`, `run-pipeline` | 조립한 데이터셋을 게시할 `gs://bucket/prefix`. 미지정 시 `TRAINING_SNAPSHOT_ROOT` 환경변수, 둘 다 없으면 게시하지 않는다. |
-| `--dataset-uri` | `train-model`, `run-pipeline` | 게시된 스냅샷 `gs://<root>/by-hash/<sha>/`을 재조립 없이 학습 입력으로 쓴다. 내려받은 뒤 sha·schema·row_count를 재검증하며, 불일치하면 학습 전에 중단한다. |
-| `--min-coverage-days` | `build-features`, `train-model`, `run-pipeline` | `build-features`/`run-pipeline`에서는 조립 커버리지 가드(#464)다. `train-model`에서는 `--dataset-uri`와 함께 준 실행에만 적용되는, 재사용 스냅샷의 최소 spine 사용 가능 일수 게이트다(#530) — `--dataset-uri` 없이 `train-model`을 실행하면 이 값은 아무 영향이 없다. |
-
-### 상호배타
-
-- `train-model --dataset-uri`는 `--data-path`와 함께 쓸 수 없다 — 스냅샷이 학습
-  입력을 이미 확정했다.
-- `run-pipeline --dataset-uri`는 `--dataset-path`·`--events-start-date`·
-  `--events-end-date`와 함께 쓸 수 없다 — 스냅샷이 학습 구간과 입력을 이미
-  확정했다.
-
-레이아웃·write-once 의미론·by-date 포인터·재검증 절차의 정본은
-`docs/specs/2026-08-04-training-dataset-snapshot-store.md`이며, 사용자 관점
-안내는 `docs/guides/training-dataset.md`의 "스냅샷 게시와 재사용" 절이다.
 
 ## Airflow 호출 계약
 

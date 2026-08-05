@@ -240,6 +240,25 @@ def is_experiment_assembly(
 `events_end_date`, `feature_service`, `feast_registry_path`)를 **manifest에서**
 채운다. 재조립을 하지 않아 조립 반환값이 없지만 sidecar가 그 값을 전부 갖고 있다.
 
+### 7.3 CLI 인자 선언·상호배타 요약 (`Autoresearch-airflow#236` 참조 대상)
+
+세 명령이 선언하는 스냅샷 인자와 그 상호배타 규칙을 한곳에 모은다 — 옵션
+이름이 명령마다 다르므로 배선하는 쪽이 실수하기 쉬운 지점이다.
+
+| 인자 | 선언 명령 |
+| --- | --- |
+| `--snapshot-root` | `build-features`(`cli.py:115`), `run-pipeline`(`cli.py:485`) |
+| `--dataset-uri` | `train-model`(`cli.py:324`), `run-pipeline`(`cli.py:495`) |
+| `--min-coverage-days` | `build-features`(`cli.py:87`), `train-model`(`cli.py:332`), `run-pipeline`(`cli.py:419`) |
+
+- `train-model --dataset-uri`는 `--data-path`와 함께 쓸 수 없다(`cli.py:354`).
+- `run-pipeline --dataset-uri`는 `--dataset-path`·`--events-start-date`·
+  `--events-end-date`와 함께 쓸 수 없다(`cli.py:523-533`).
+- `train-model --min-coverage-days`는 `--dataset-uri`를 함께 준 실행에만
+  영향을 준다(§7.1의 커버리지 게이트) — `--dataset-uri` 없이 `train-model`을
+  실행하면 이 값은 아무 영향이 없다.
+- `Autoresearch-airflow#236`의 배선은 이 세 인자 이름을 그대로 참조한다.
+
 ## 8. 운영 계약 (코드가 강제하지 못하는 부분)
 
 **`--snapshot-root`/`TRAINING_SNAPSHOT_ROOT`는 prod 재학습 경로에만 세팅한다.
