@@ -58,15 +58,38 @@ def run_tick(
         settings.job_namespace,
         BRANCH_BOOTSTRAP_LABEL_SELECTOR,
     )
-    claims = claim_experiments(
-        session,
-        active_jobs=active_jobs,
-        max_concurrency=settings.max_concurrent_experiments,
+    available_slots = max(
+        0,
+        settings.max_concurrent_experiments - active_jobs,
     )
-    for claim in claims:
-        ensure_branch_job(kubernetes, claim, settings)
-        record_job_created(session, claim, created_at=clock())
-    return claims
+    confirmed_claims: list[ClaimedExperiment] = []
+    first_pass = True
+    while first_pass or available_slots > 0:
+        first_pass = False
+        claims = claim_experiments(
+            session,
+            active_jobs=(
+                settings.max_concurrent_experiments - available_slots
+            ),
+            max_concurrency=settings.max_concurrent_experiments,
+        )
+        if not claims:
+            break
+        for claim in claims:
+            if kubernetes.get(
+                settings.job_namespace,
+                claim.job_name,
+            ) is not None:
+                record_job_created(session, claim, created_at=clock())
+                confirmed_claims.append(claim)
+                continue
+            if available_slots == 0:
+                continue
+            ensure_branch_job(kubernetes, claim, settings, job_absent=True)
+            available_slots -= 1
+            record_job_created(session, claim, created_at=clock())
+            confirmed_claims.append(claim)
+    return confirmed_claims
 
 
 def main() -> int:

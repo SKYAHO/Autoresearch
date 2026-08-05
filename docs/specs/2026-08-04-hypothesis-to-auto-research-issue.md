@@ -1,8 +1,8 @@
 # 가설 수신부터 `[AR]` 이슈 발행까지 (#516)
 
-- **상태**: Accepted (#536에서 부분 개정)
-- **날짜**: 2026-08-04 (개정 2026-08-05)
-- **이슈**: #516, #536
+- **상태**: Accepted (#536, #546에서 부분 개정)
+- **날짜**: 2026-08-04 (개정 2026-08-06)
+- **이슈**: #516, #536, #546
 - **선행 계약**: `.github/ISSUE_TEMPLATE/auto_research.yml`(필드 정본),
   `tools/auto_research_issue_branch.py`(파싱 정본),
   `src/pipeline/experiment_evaluation.py`(`POLICY_SEEDS` 정본),
@@ -10,9 +10,10 @@
 
 ## 목적
 
-`auto-experiment` label 하나로 exp 브랜치가 생기는 데까지는 자동화됐다(#507). 그러나
-**그 이슈를 만드는 주체가 저장소에 없다.** `[AR]` 이슈는 저장소 역사상 0건이고,
-승격 워크플로 2종의 실행 이력도 0건이다.
+#507 당시에는 `auto-experiment` label로 GitHub Actions가 exp 브랜치를 만들었다. #546
+Phase 1부터는 API가 저장한 브랜치 좌표를 launcher가 전달하고 executor Pod가 브랜치를
+만드는 계약으로 이전됐다. 이 문서가 처음 다룬 빈 구간은 **그 이슈를 만드는 주체가
+저장소에 없었다는 점**이다. 당시 `[AR]` 이슈와 승격 워크플로 실행 이력은 0건이었다.
 
 `agent_orchestration`에는 이미 가설을 받는 계약이 있다 — `POST /experiments`의
 `ExperimentCreate.hypothesis`(1~8192자). 그러나 `create_experiment()`는 `Experiment`

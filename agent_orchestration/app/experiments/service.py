@@ -742,12 +742,13 @@ def _branch_slug(title: str) -> str:
 
 
 def _branch_name_for(issue_number: int, title: str) -> str:
-    """워크플로가 만들 브랜치 이름을 응답에 미리 싣는다.
+    """executor가 만들 브랜치 이름을 응답에 미리 싣는다.
 
     `tools/auto_research_issue_branch.py`의 `branch_name_for()`와 같은 규칙이다. 그
     모듈은 API 이미지에 없어 import할 수 없으므로 규칙을 복제한다 — 이 값은 표시용이며
-    실제 브랜치는 워크플로가 만든다. 동일성은 `tests/test_experiment_issue_publication.py`의
-    `test_branch_name_matches_the_workflow_rule`이 고정한다.
+    실제 브랜치는 launcher가 좌표를 전달한 executor Pod가 만든다. 동일성은
+    `tests/test_experiment_issue_publication.py`의
+    `test_branch_name_matches_the_canonical_rule`이 고정한다.
     """
     return f"exp/{issue_number}-{_branch_slug(title)}"
 

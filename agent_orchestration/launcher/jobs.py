@@ -240,9 +240,14 @@ def ensure_branch_job(
     jobs: JobClient,
     claim: ClaimedExperiment,
     settings: LauncherSettings,
+    *,
+    job_absent: bool = False,
 ) -> None:
     """동일 이름 Job 존재를 확인하거나 생성하고 409는 GET 확인 뒤만 성공시킨다."""
-    if jobs.get(settings.job_namespace, claim.job_name) is not None:
+    if not job_absent and jobs.get(
+        settings.job_namespace,
+        claim.job_name,
+    ) is not None:
         return
     try:
         jobs.create(

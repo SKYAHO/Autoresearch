@@ -587,6 +587,81 @@ def test_tick_marks_existing_unconfirmed_job_without_creating_it(
     assert experiment.executor_job_created_at == UTC_NOW
 
 
+def test_tick_confirms_existing_recovery_when_active_limit_is_full(
+    session: Session,
+) -> None:
+    job_name = f"ar-branch-{EXPERIMENT_ID.hex}"
+    experiment = _experiment(
+        session,
+        status=ExperimentStatus.RUNNING,
+        job_name=job_name,
+    )
+    kubernetes = FakeJobs(existing_names={job_name}, active_jobs=1)
+
+    run_tick(
+        session,
+        kubernetes,
+        _settings(max_concurrent_experiments=1),
+        clock=lambda: UTC_NOW,
+    )
+
+    assert kubernetes.create_attempts == []
+    assert experiment.executor_job_created_at == UTC_NOW
+
+
+def test_tick_uses_remaining_slot_after_confirming_existing_recovery(
+    session: Session,
+) -> None:
+    recovery_job_name = f"ar-branch-{EXPERIMENT_ID.hex}"
+    recovery = _experiment(
+        session,
+        status=ExperimentStatus.RUNNING,
+        job_name=recovery_job_name,
+    )
+    waiting = _experiment(
+        session,
+        experiment_id=uuid.UUID("22345678-1234-5678-1234-567812345678"),
+        issue_number=547,
+        issue_branch="exp/547-example",
+    )
+    kubernetes = FakeJobs(existing_names={recovery_job_name}, active_jobs=1)
+
+    claims = run_tick(
+        session,
+        kubernetes,
+        _settings(max_concurrent_experiments=2),
+        clock=lambda: UTC_NOW,
+    )
+
+    assert [claim.experiment_id for claim in claims] == [recovery.id, waiting.id]
+    assert kubernetes.created_names == {f"ar-branch-{waiting.id.hex}"}
+    assert recovery.executor_job_created_at == UTC_NOW
+    assert waiting.executor_job_created_at == UTC_NOW
+
+
+def test_tick_does_not_create_missing_recovery_when_active_limit_is_full(
+    session: Session,
+) -> None:
+    job_name = f"ar-branch-{EXPERIMENT_ID.hex}"
+    experiment = _experiment(
+        session,
+        status=ExperimentStatus.RUNNING,
+        job_name=job_name,
+    )
+    kubernetes = FakeJobs(existing_names=set(), active_jobs=1)
+
+    claims = run_tick(
+        session,
+        kubernetes,
+        _settings(max_concurrent_experiments=1),
+        clock=lambda: UTC_NOW,
+    )
+
+    assert claims == []
+    assert kubernetes.create_attempts == []
+    assert experiment.executor_job_created_at is None
+
+
 def test_tick_does_not_recreate_ttl_deleted_confirmed_job(
     session: Session,
 ) -> None:

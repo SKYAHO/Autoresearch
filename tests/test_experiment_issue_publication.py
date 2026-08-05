@@ -414,15 +414,15 @@ def test_marker_lookup_failure_does_not_publish(
         "접두어 없는 한글 제목",
     ],
 )
-def test_branch_name_matches_the_workflow_rule(title: str) -> None:
-    """표시용 브랜치 이름이 워크플로가 만들 이름과 같아야 한다."""
+def test_branch_name_matches_the_canonical_rule(title: str) -> None:
+    """표시용 브랜치 이름이 정본 helper가 계산한 이름과 같아야 한다."""
     from agent_orchestration.app.experiments.service import _branch_name_for
     from tools.auto_research_issue_branch import branch_name_for
 
     assert _branch_name_for(520, title) == branch_name_for(520, title)
 
 
-def test_branch_name_matches_the_workflow_rule_for_an_empty_title() -> None:
+def test_branch_name_matches_the_canonical_rule_for_an_empty_title() -> None:
     """prefix를 떼고 남은 것이 공백뿐이면 양쪽 모두 거부해야 한다."""
     from agent_orchestration.app.experiments.service import _branch_name_for
     from tools.auto_research_issue_branch import branch_name_for

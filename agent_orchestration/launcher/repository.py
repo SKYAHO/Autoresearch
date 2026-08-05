@@ -109,9 +109,10 @@ def claim_experiments(
 ) -> list[ClaimedExperiment]:
     """미확인 선점을 먼저 반환하고 남은 전역 슬롯만큼 새 행을 선점한다.
 
-    PostgreSQL advisory lock을 얻지 못하면 정상적으로 빈 목록을 반환한다. 미확인 선점도
-    현재 tick의 생성 상한에 포함하고, 초과 행은 생성 확인 시각을 바꾸지 않은 채 다음
-    tick에 남긴다. 반환한 미확인 선점은 새 슬롯 계산에서도 차감한다.
+    PostgreSQL advisory lock을 얻지 못하면 정상적으로 빈 목록을 반환한다. 미확인 선점은
+    active 상한과 무관하게 먼저 반환하되 한 tick의 상한 개수까지만 조회한다. Kubernetes에
+    Job이 없는 미확인 선점은 caller가 남은 슬롯 안에서만 생성한다. 반환한 미확인 선점은
+    새 슬롯 계산에서 보수적으로 차감한다.
     """
     if active_jobs < 0:
         raise ValueError("active_jobs must be non-negative")
@@ -123,16 +124,13 @@ def claim_experiments(
             return []
 
         available_slots = max(0, max_concurrency - active_jobs)
-        if available_slots == 0:
-            return []
-
         recoverable_rows = list(
             session.scalars(
-                RECOVERABLE_CLAIM_STATEMENT.limit(available_slots)
+                RECOVERABLE_CLAIM_STATEMENT.limit(max_concurrency)
             ).all()
         )
         recoverable_claims = [_claimed_experiment(row) for row in recoverable_rows]
-        available_slots -= len(recoverable_claims)
+        available_slots = max(0, available_slots - len(recoverable_claims))
         if available_slots == 0:
             return recoverable_claims
 
