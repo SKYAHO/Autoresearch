@@ -113,6 +113,44 @@ class TrainingSnapshotManifest(_ImmutableModel):
     registry_generation: str = Field(min_length=1)
     registry_sha256: str = Field(pattern=SHA256_PATTERN)
     code_archive_sha: str | None = None
+    # 기존 v1 snapshot manifest JSON은 이 필드가 없으므로 None으로 읽는다. 재사용
+    # 학습(--dataset-uri)은 None이면 커버리지 게이트(#464)를 검증할 수 없어 거부한다.
+    # 스키마를 필수로 만들지 않는 이유는 TrainingSplitManifest.experiment_plan_receipt와
+    # 같다 — 이 필드와 무관한 기존 소비자가 스키마 변경에 얽히지 않게 한다.
+    spine_usable_days: NonNegativeInt | None = None
+
+
+MAX_POINTER_HISTORY = 10
+
+
+class SnapshotPointerEntry(_ImmutableModel):
+    """by-date 포인터가 이전에 가리켰던 스냅샷 한 건."""
+
+    dataset_sha256: str = Field(pattern=SHA256_PATTERN)
+    published_at: datetime
+
+
+class TrainingSnapshotPointer(_ImmutableModel):
+    """(events_end_date, feature_service) 좌표의 최신 스냅샷 포인터.
+
+    by-hash object는 불변이고 재현은 항상 sha 주소로 하므로, 이 포인터가 최신으로
+    이동해도 과거 학습은 깨지지 않는다. ``previous``를 캡 없이 두면 매 갱신이 전체를
+    읽고 쓰는 비용이 계속 커지므로 최근 ``MAX_POINTER_HISTORY``개만 보존한다.
+    """
+
+    pointer_version: Literal["training_snapshot_pointer_v1"] = (
+        "training_snapshot_pointer_v1"
+    )
+    dataset_sha256: str = Field(pattern=SHA256_PATTERN)
+    uri: str = Field(min_length=1)
+    events_start_date: date
+    events_end_date: date
+    feature_service: str = Field(min_length=1)
+    registry_generation: str = Field(min_length=1)
+    published_at: datetime
+    previous: list[SnapshotPointerEntry] = Field(
+        default_factory=list, max_length=MAX_POINTER_HISTORY
+    )
 
 
 class SplitMembership(_ImmutableModel):
@@ -243,6 +281,7 @@ def build_snapshot_manifest(
     feature_service: str,
     registry: RegistryProvenance,
     code_archive_sha: str | None,
+    spine_usable_days: int | None = None,
     created_at: datetime | None = None,
 ) -> TrainingSnapshotManifest:
     """현재 CSV byte/schema를 읽어 snapshot manifest를 만든다."""
@@ -263,6 +302,7 @@ def build_snapshot_manifest(
         registry_generation=registry.generation,
         registry_sha256=registry.sha256,
         code_archive_sha=code_archive_sha,
+        spine_usable_days=spine_usable_days,
     )
 
 

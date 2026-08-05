@@ -735,6 +735,7 @@ def _assemble_via_feast(
                 feature_service=service,
                 registry=registry,
                 code_archive_sha=os.environ.get("CODE_ARCHIVE_SHA"),
+                spine_usable_days=len(coverage.usable_days),
             )
             os.replace(staged_csv, output)
             staged_csv = None
