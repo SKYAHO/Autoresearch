@@ -608,6 +608,15 @@ def _train_from_resolved_dataset(
             "feature_service": snapshot_manifest.feature_service,
             "feast_registry_path": snapshot_manifest.registry_uri,
             "feast_registry_generation": snapshot_manifest.registry_generation,
+            # 게이트 우회 여부는 spine_usable_days만으로는 복원할 수 없다 — #464가
+            # 막던 바로 그 비대칭이 재사용 경로에도 그대로 있으면 안 된다. 조립 경로의
+            # SpineCoverage.as_lineage_params와 같은 인코딩(문자열, on/off)을 그대로 쓴다.
+            "spine_coverage_min_days_applied": str(min_coverage_days),
+            "spine_coverage_guard": "off" if min_coverage_days <= 0 else "on",
+            # train-model 단독 실행도 어떤 스냅샷으로 학습했는지 run 파라미터만 보고
+            # 알 수 있어야 한다 — run-pipeline만 이 값을 남기면 두 소비 경로의
+            # provenance가 어긋난다(#530).
+            "training_snapshot_uri": dataset_uri,
         }
         if snapshot_manifest.spine_usable_days is not None:
             reuse_params["spine_usable_days"] = str(snapshot_manifest.spine_usable_days)

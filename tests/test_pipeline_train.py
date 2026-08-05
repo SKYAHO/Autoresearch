@@ -1351,6 +1351,49 @@ def test_main_downloads_snapshot_and_cleans_up_temp_dir(tmp_path, monkeypatch) -
     assert run_params["events_start_date"] == "2026-07-01"
     assert run_params["events_end_date"] == "2026-07-30"
     assert run_params["spine_usable_days"] == "10"
+    # 게이트가 켜진 채(min_coverage_days=3) 돌았다는 사실 자체가 lineage에 남아야
+    # #464가 막던 비대칭(우회 여부를 run만 보고 알 수 없는 상태)이 재사용 경로에
+    # 재현되지 않는다(#530 최종 리뷰 fix 1).
+    assert run_params["spine_coverage_min_days_applied"] == "3"
+    assert run_params["spine_coverage_guard"] == "on"
+    # train-model 단독 실행도 어떤 스냅샷을 학습에 썼는지 run 파라미터만 보고
+    # 식별할 수 있어야 한다(#530 최종 리뷰 fix 2).
+    assert run_params["training_snapshot_uri"] == (
+        "gs://snapshots/training/by-hash/" + "a" * 64 + "/"
+    )
+
+
+def test_main_dataset_uri_records_coverage_guard_bypass(tmp_path, monkeypatch) -> None:
+    """min_coverage_days=0으로 게이트를 우회했다는 사실도 run 파라미터에 남아야 한다(#530).
+
+    우회하지 않으면 이 값이 없는 채로 spine_usable_days만 남아, 운영자가 게이트를
+    껐는지 아니면 애초에 검증할 근거가 없었는지 run만 보고 구별할 수 없다.
+    """
+    config_path, data_path, tracking_uri = _prepared_dataset(tmp_path, monkeypatch)
+    _write_snapshot_manifest_with_coverage(data_path, spine_usable_days=2)
+    monkeypatch.setattr(
+        train.training_snapshot_store,
+        "download_snapshot",
+        _fake_download_into(data_path),
+    )
+
+    outcome = train.main(
+        config_path=str(config_path),
+        dataset_uri="gs://snapshots/training/by-hash/" + "b" * 64 + "/",
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "features.json"),
+        categorical_columns_output=str(tmp_path / "categories.json"),
+        require_snapshot=True,
+        defer_registration=True,
+        min_coverage_days=0,
+    )
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    run_params = client.get_run(outcome.run_id).data.params
+    assert run_params["spine_usable_days"] == "2"
+    assert run_params["spine_coverage_min_days_applied"] == "0"
+    assert run_params["spine_coverage_guard"] == "off"
 
 
 def test_main_dataset_uri_gate_blocks_before_model_fit(tmp_path, monkeypatch) -> None:

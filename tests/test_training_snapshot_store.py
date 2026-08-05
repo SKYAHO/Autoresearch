@@ -10,20 +10,39 @@ import json
 from pathlib import Path
 
 import pytest
+from google.api_core.exceptions import Forbidden, GoogleAPICallError, PreconditionFailed
 
 from src.pipeline import training_snapshot_store as store
 
 
-class _PreconditionFailed(Exception):
-    """google.api_core.exceptions.PreconditionFailed와 같은 code 속성을 갖는다."""
+class _PreconditionFailed(PreconditionFailed):
+    """실제 ``PreconditionFailed``를 그대로 상속한다(#530 최종 리뷰 fix 4).
+
+    이전에는 ``code`` 속성만 흉내 낸 bare ``Exception``이라 production의
+    ``isinstance(error, GoogleAPICallError)`` 분기를 전혀 태우지 못하고 매번 code
+    fallback으로만 판정됐다. 실제 타입을 상속해야 이 픽스처들이 production이 실제로
+    타는 typed 분기를 검증한다.
+    """
+
+
+class _Forbidden(Forbidden):
+    """실제 ``Forbidden``을 그대로 상속한다 — 위와 같은 이유(#530 최종 리뷰 fix 4)."""
+
+
+class _AmbiguousPreconditionCode(GoogleAPICallError):
+    """``PreconditionFailed``와 같은 ``code=412``지만 실제로는 다른 GoogleAPICallError 타입이다.
+
+    타입 판정 없이 code만 봤다면 이 예외도 "이미 게시됨"으로 삼켜졌을 것이다 —
+    두 차례 리뷰가 막으려 한 바로 그 회귀를 재현하는 픽스처다.
+    """
 
     code = 412
 
 
-class _Forbidden(Exception):
-    """google.api_core.exceptions.Forbidden과 같은 code 속성을 갖는다."""
+class _AmbiguousNotFoundCode(GoogleAPICallError):
+    """``NotFound``와 같은 ``code=404``지만 실제로는 다른 GoogleAPICallError 타입이다."""
 
-    code = 403
+    code = 404
 
 
 class _FakeBlob:
@@ -319,7 +338,13 @@ def test_experiment_assembly_does_not_touch_pointer(tmp_path) -> None:
 
 
 def test_pointer_read_failure_is_not_treated_as_first_publish(tmp_path) -> None:
-    """포인터 조회가 권한 오류 등으로 실패하면 최초 게시로 오인하지 않고 전파해야 한다."""
+    """포인터 조회가 권한 오류 등으로 실패하면 최초 게시로 오인하지 않고 전파해야 한다.
+
+    ``_Forbidden``이 실제 ``Forbidden``을 상속하므로(#530 최종 리뷰 fix 4), 이 테스트는
+    ``_is_not_found``의 ``isinstance(error, GoogleAPICallError)`` typed 분기를 태운다 —
+    code fallback(``getattr(error, "code", None) == 404``)이 아니라 타입으로 "NotFound가
+    아니다"가 판정된다.
+    """
 
     class _ForbiddenBlob(_FakeBlob):
         def reload(self) -> None:
@@ -396,3 +421,195 @@ def test_download_rejects_sha_mismatch_between_uri_and_manifest(tmp_path) -> Non
             destination_dir=destination,
             client=client,
         )
+
+
+# --- typed 예외 판정 회귀 고정(#530 최종 리뷰 fix 4) ---
+
+
+def test_precondition_fallback_accepts_duck_typed_code() -> None:
+    """GoogleAPICallError가 아닌 순수 duck-type 예외는 code fallback으로 판정돼야 한다.
+
+    google-api-core는 hard dependency지만, client 주입 관행상 완전히 무관한 객체가
+    ``code`` 속성만 우연히 들고 오는 경우를 위해 fallback 분기를 남겨 뒀다 — 이 분기가
+    죽지 않았는지 직접 확인한다.
+    """
+
+    class _DuckTypedPreconditionFailed(Exception):
+        code = 412
+
+    assert store._is_precondition_failure(_DuckTypedPreconditionFailed("dup"))
+
+
+def test_not_found_fallback_accepts_duck_typed_code() -> None:
+    """위와 같은 이유로 ``_is_not_found``의 code fallback 분기도 확인한다."""
+
+    class _DuckTypedNotFound(Exception):
+        code = 404
+
+    assert store._is_not_found(_DuckTypedNotFound("missing"))
+
+
+def test_precondition_type_check_rejects_lookalike_code_on_publish(
+    tmp_path, monkeypatch
+) -> None:
+    """code만 412인 무관한 GoogleAPICallError는 write-once no-op으로 삼켜지면 안 된다.
+
+    ``_is_precondition_failure``의 ``isinstance(error, GoogleAPICallError)`` →
+    ``isinstance(error, PreconditionFailed)`` typed 분기를 태운다. code만 봤다면 이
+    케이스도 "이미 게시됨"으로 흡수돼 ``publish_snapshot``이 조용히 URI를 돌려줬을
+    것이다 — 실제로는 재시도를 소진하고 실패해야 한다.
+    """
+    csv_path = _write_dataset(tmp_path)
+
+    class _RaisingBlob(_FakeBlob):
+        def upload_from_filename(
+            self, filename: str, *, if_generation_match: int | None = None, **_: object
+        ) -> None:
+            raise _AmbiguousPreconditionCode("ambiguous 412")
+
+    class _RaisingBucket(_FakeBucket):
+        def blob(self, name: str, **_) -> _FakeBlob:
+            return _RaisingBlob(self, name)
+
+    class _RaisingClient(_FakeClient):
+        def bucket(self, name: str) -> _FakeBucket:
+            return self.buckets.setdefault(name, _RaisingBucket())
+
+    monkeypatch.setattr(store.time, "sleep", lambda _seconds: None)
+    with pytest.raises(store.SnapshotStoreError) as error:
+        store.publish_snapshot(
+            dataset_path=csv_path,
+            snapshot_root="gs://snapshots/training",
+            record_pointer=False,
+            client=_RaisingClient(),
+            max_attempts=1,
+        )
+    # 삼켜진 게 아니라 재시도 소진 실패로 전파됐다는 사실을 원인 체인으로도 고정한다.
+    assert isinstance(error.value.__cause__, _AmbiguousPreconditionCode)
+
+
+def test_download_propagates_lookalike_not_found_code(tmp_path) -> None:
+    """code만 404인 무관한 GoogleAPICallError는 "스냅샷 없음"으로 감싸이면 안 된다.
+
+    ``_is_not_found``의 typed 분기를 태운다. code만 봤다면 이 케이스도
+    ``SnapshotStoreError``로 감싸져 원인(예: 실제로는 권한·네트워크 오류)이 가려졌을
+    것이다 — 실제로는 원래 예외가 그대로 전파돼야 한다.
+    """
+    csv_path = _write_dataset(tmp_path)
+
+    class _RaisingBlob(_FakeBlob):
+        def download_to_filename(self, filename) -> None:
+            raise _AmbiguousNotFoundCode("ambiguous 404")
+
+    class _RaisingBucket(_FakeBucket):
+        def blob(self, name: str, **_) -> _FakeBlob:
+            return _RaisingBlob(self, name)
+
+    class _RaisingClient(_FakeClient):
+        def bucket(self, name: str) -> _FakeBucket:
+            return self.buckets.setdefault(name, _RaisingBucket())
+
+    client = _RaisingClient()
+    uri = store.publish_snapshot(
+        dataset_path=csv_path,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=False,
+        client=client,
+    )
+
+    destination = tmp_path / "download"
+    destination.mkdir()
+    with pytest.raises(_AmbiguousNotFoundCode):
+        store.download_snapshot(
+            dataset_uri=uri, destination_dir=destination, client=client
+        )
+
+
+# --- by-date 포인터 경합(#530 §3.3, 최종 리뷰 fix 5) ---
+
+
+def test_pointer_contention_retry_reads_and_prepends_competitor(
+    tmp_path, monkeypatch
+) -> None:
+    """경쟁 게시자가 먼저 쓴 포인터를 나중에 완주하는 쪽이 지우지 않고 previous에 보존해야 한다.
+
+    시나리오: A가 포인터를 읽을 때는 아직 아무것도 없었다고 믿지만(stale view), 그 사이
+    실제로는 경쟁자 B가 이미 게시를 끝내 놓았다. A의 첫 쓰기 시도는
+    ``if_generation_match=0``인데 실제 generation이 이미 바뀌어 있어 충돌(412)한다 —
+    ``_update_pointer``가 이 충돌을 흡수하지 않으므로 ``publish_snapshot``의 재시도가
+    다시 읽고, 이번엔 B의 실제 상태를 보고 그 항목을 ``previous`` 맨 앞에 얹은 채 쓴다.
+
+    확인할 계약은 "먼저 읽은 쪽이 이긴다"가 아니라 "나중에 완주하는 쪽이 이기되, 상대의
+    발행 사실은 previous에 남는다"이다 — 회귀가 이 라운드에서 ``previous``를 빈 채로
+    덮어쓰면(경쟁자를 조용히 지우면) 이 테스트가 잡아낸다.
+    """
+    from src.pipeline.training_provenance import sha256_file
+
+    monkeypatch.setattr(store.time, "sleep", lambda _seconds: None)
+
+    class _RacyPointerBlob(_FakeBlob):
+        def reload(self) -> None:
+            self._bucket.pointer_reload_calls += 1
+            if self._bucket.pointer_reload_calls <= 2:
+                # 처음 두 번(경쟁자 B의 최초 read, A의 첫 시도 read)은 "아직 없음"으로
+                # 강제한다. B의 read는 실제로도 없으므로 자연스러운 결과와 같지만, A의
+                # read는 실제로는 B가 이미 써 둔 뒤라 진짜 상태와 다른 stale view를
+                # 재현한다 — 그래야 A의 쓰기가 실제 generation과 충돌한다.
+                raise FileNotFoundError(self.name)
+            super().reload()
+
+    class _RacyPointerBucket(_FakeBucket):
+        def __init__(self) -> None:
+            super().__init__()
+            self.pointer_reload_calls = 0
+
+        def blob(self, name: str, **_) -> _FakeBlob:
+            if name.startswith("training/by-date/"):
+                return _RacyPointerBlob(self, name)
+            return _FakeBlob(self, name)
+
+    class _RacyPointerClient(_FakeClient):
+        def bucket(self, name: str) -> _FakeBucket:
+            return self.buckets.setdefault(name, _RacyPointerBucket())
+
+    client = _RacyPointerClient()
+
+    competitor_dir = tmp_path / "competitor"
+    competitor_dir.mkdir()
+    competitor_csv = _write_dataset(competitor_dir)
+    competitor_csv.write_text("clicked\n1\n1\n1\n1\n", encoding="utf-8")
+    _republish_sidecar(competitor_csv)
+    store.publish_snapshot(
+        dataset_path=competitor_csv,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=True,
+        client=client,
+    )
+    competitor_sha = sha256_file(competitor_csv)
+
+    own_dir = tmp_path / "own"
+    own_dir.mkdir()
+    own_csv = _write_dataset(own_dir)
+    own_csv.write_text("clicked\n0\n0\n1\n", encoding="utf-8")
+    _republish_sidecar(own_csv)
+    uri = store.publish_snapshot(
+        dataset_path=own_csv,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=True,
+        client=client,
+        max_attempts=3,
+    )
+    own_sha = sha256_file(own_csv)
+
+    assert uri == f"gs://snapshots/training/by-hash/{own_sha}/"
+    payload = json.loads(
+        client.buckets["snapshots"]
+        .objects["training/by-date/dt=2026-08-01/ctr_training_v1.json"][0]
+        .decode("utf-8")
+    )
+    # 나중에 완주한 A(own)가 최신을 가리킨다 — "먼저 읽은 쪽이 이긴다"가 아니다.
+    assert payload["dataset_sha256"] == own_sha
+    # 그러나 경쟁자 B는 조용히 지워지지 않고 previous에 보존된다.
+    assert [entry["dataset_sha256"] for entry in payload["previous"]] == [
+        competitor_sha
+    ]
