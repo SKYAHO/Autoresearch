@@ -26,6 +26,10 @@
 - 커밋 메시지: `<type>: <설명>` — type은 `feat`/`fix`/`refactor`/`docs`/`chore`/`test`.
   제목 50자 이내, 현재형 동사로 끝맺는다.
 - 시크릿·생성된 데이터 파일·`.env`를 커밋하지 않는다.
+- **각 task는 커밋 전에 `uv run --no-sync ruff check agent_orchestration autoresearch tests tools`를
+  통과해야 한다.** `.github/workflows/lint.yml`이 PR마다 이 명령을 돌리고 `Ruff`는 필수
+  status check다. ruff 설정 파일이 없는 것은 검사가 꺼진 것이 아니라 **기본 규칙이 적용된다는
+  뜻**이다(예: 미사용 import는 F401로 잡힌다). `# noqa`로 덮지 않는다.
 - **cross-task 스텁 판별**: 어떤 task 안에 `NotImplementedError`나 미완성으로 보이는
   코드가 있으면, 다음 task가 그것을 채우기로 계획에 적혀 있는지 먼저 확인한다. 그렇다면
   결함이 아니라 정보성 확인 사항으로 분류한다. 이 계획에서 해당하는 것은 Task 3의
@@ -218,7 +222,7 @@ def test_snapshot_pointer_caps_history_at_ten() -> None:
             dataset_sha256=f"{index:064d}",
             published_at=datetime(2026, 8, 4, tzinfo=timezone.utc),
         )
-        for index in range(12)
+        for index in range(MAX_POINTER_HISTORY + 2)
     ]
     with pytest.raises(ValidationError):
         TrainingSnapshotPointer(
