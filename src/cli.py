@@ -327,8 +327,23 @@ def train_model(
             "내려받은 뒤 sha·schema·row_count를 재검증하며, 불일치하면 학습 전에 중단합니다."
         ),
     ),
+    min_coverage_days: Optional[int] = typer.Option(
+        None,
+        "--min-coverage-days",
+        help=(
+            "재사용 스냅샷(--dataset-uri)이 만족해야 할 최소 spine 사용 가능 일수(#530). "
+            "미지정이면 조립 경로와 같은 기본값을 적용하며, 0으로 명시하면 우회합니다. "
+            "--dataset-uri 없이 학습할 때는 아무 영향이 없습니다."
+        ),
+    ),
 ) -> None:
-    """LightGBM 모델 훈련 (train/val/test 3-way split, test는 완전 held-out)."""
+    """LightGBM 모델 훈련 (train/val/test 3-way split, test는 완전 held-out).
+
+    `--dataset-uri`를 주면 게시된 스냅샷(#530)을 재조립 없이 학습 입력으로 쓴다 —
+    `--data-path`와는 함께 지정할 수 없다(스냅샷이 학습 입력을 이미 확정했다).
+    `--min-coverage-days`는 이 재사용 경로에만 적용되는 커버리지 게이트로,
+    `run-pipeline --dataset-uri`와 같은 기본값(미지정 시 모듈 기본값, 0이면 우회)을 쓴다.
+    """
     promotion_evidence_kwargs = _promotion_evidence_kwargs(
         experiment_plan_receipt=experiment_plan_receipt,
         promotion_evidence_root=promotion_evidence_root,
@@ -339,6 +354,7 @@ def train_model(
             "--dataset-uri는 --data-path와 함께 쓸 수 없습니다 — "
             "스냅샷이 학습 입력을 이미 확정했습니다"
         )
+    requested_min_coverage_days = _requested_min_coverage_days(min_coverage_days)
     train.main(
         config_path=config_path,
         data_path=data_path,
@@ -355,6 +371,11 @@ def train_model(
         extra_features=_parse_extra_features(extra_features),
         experiment=experiment,
         dataset_uri=resolved_dataset_uri,
+        min_coverage_days=(
+            build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
+            if requested_min_coverage_days is None
+            else requested_min_coverage_days
+        ),
         **promotion_evidence_kwargs,
     )
 
@@ -515,6 +536,10 @@ def run_pipeline(
     typer.echo("전체 파이프라인 실행")
     typer.echo("=" * 70)
 
+    # 조립 경로(lineage 기록)와 재사용 경로(train.main 게이트)가 같은 값을 보도록
+    # 한 번만 계산해 두 곳에서 재사용한다 — 이름을 두 개로 나누면 나중에 한쪽만
+    # 고치는 사고가 생긴다.
+    requested_min_coverage_days = _requested_min_coverage_days(min_coverage_days)
     snapshot_uri: Optional[str] = resolved_dataset_uri
     if resolved_dataset_uri is None:
         typer.echo("\n[1/4] build-features 실행...")
@@ -558,13 +583,12 @@ def run_pipeline(
         # 요청 구간만 남기면 v12 사고의 비대칭("요청 7일 ≠ 실제 2일")이 그대로 남는다.
         # 실측 커버리지와 적용된 기준(우회 여부 포함)을 함께 남겨, 나중에 champion 후보를
         # 볼 때 run 파라미터만으로 판별할 수 있게 한다(#464 리뷰).
-        requested_min_days = _requested_min_coverage_days(min_coverage_days)
         data_source_params.update(
             coverage.as_lineage_params(
                 min_days=(
                     build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
-                    if requested_min_days is None
-                    else requested_min_days
+                    if requested_min_coverage_days is None
+                    else requested_min_coverage_days
                 )
             )
         )
@@ -584,7 +608,6 @@ def run_pipeline(
     # evaluate가 오프라인 지표(LogLoss/calibration)를 원분포 기준으로 재도록 넘긴다.
     # defer_registration=True: registered model 버전 생성만 평가 뒤로 미룬다(#421).
     # run 로깅(파라미터·메트릭·아티팩트)은 학습 시점에 그대로 남는다.
-    requested_min_coverage_days = _requested_min_coverage_days(min_coverage_days)
     outcome = train.main(
         config_path=config_path,
         data_path=dataset_path,

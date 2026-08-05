@@ -501,6 +501,72 @@ def test_train_model_rejects_dataset_uri_with_data_path(monkeypatch) -> None:
         )
 
 
+def test_train_model_forwards_min_coverage_days_default(monkeypatch) -> None:
+    """--dataset-uri 재사용 경로도 조립 경로와 같은 커버리지 하한을 적용해야 한다(#530).
+
+    --min-coverage-days를 지정하지 않았는데 train.main의 기본값(0, 게이트 꺼짐)이
+    그대로 전달되면, 같은 스냅샷을 train-model로 재사용할 때와 run-pipeline으로
+    재사용할 때 하한이 다르게 적용된다.
+    """
+    train_call: dict = {}
+    monkeypatch.setattr(cli.train, "main", lambda **kwargs: train_call.update(kwargs))
+
+    cli.train_model(
+        config_path=None,
+        data_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=None,
+        model_seed=None,
+        sampler_seed=None,
+        extra_features=None,
+        experiment=None,
+        experiment_plan_receipt=None,
+        promotion_evidence_root=None,
+        dataset_uri="gs://snapshots/training/by-hash/" + "d" * 64 + "/",
+        min_coverage_days=None,
+    )
+
+    assert (
+        train_call["min_coverage_days"]
+        == cli.build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
+    )
+
+
+def test_train_model_forwards_min_coverage_days_explicit_zero(monkeypatch) -> None:
+    """0(명시적 우회)은 미지정과 구분해 그대로 전달해야 한다(#464와 같은 패턴)."""
+    train_call: dict = {}
+    monkeypatch.setattr(cli.train, "main", lambda **kwargs: train_call.update(kwargs))
+
+    cli.train_model(
+        config_path=None,
+        data_path=None,
+        model_output=None,
+        test_set_output=None,
+        feature_columns_output=None,
+        categorical_columns_output=None,
+        test_size=None,
+        val_size=None,
+        random_state=None,
+        split_seed=None,
+        model_seed=None,
+        sampler_seed=None,
+        extra_features=None,
+        experiment=None,
+        experiment_plan_receipt=None,
+        promotion_evidence_root=None,
+        dataset_uri="gs://snapshots/training/by-hash/" + "e" * 64 + "/",
+        min_coverage_days=0,
+    )
+
+    assert train_call["min_coverage_days"] == 0
+
+
 def _pipeline_outcome():
     """run-pipeline이 train.main에서 받는 반환값(#421)."""
     return cli.train.TrainingOutcome(
