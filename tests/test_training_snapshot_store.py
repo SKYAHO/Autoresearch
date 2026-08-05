@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -106,6 +107,29 @@ def _write_dataset(tmp_path: Path) -> Path:
     return csv_path
 
 
+def _republish_sidecar(csv_path: Path) -> None:
+    """CSV를 수정한 뒤 sha가 맞는 sidecar를 다시 쓴다."""
+    from src.pipeline.training_provenance import (
+        build_snapshot_manifest,
+        RegistryProvenance,
+        snapshot_manifest_path,
+        write_manifest_atomic,
+    )
+
+    manifest = build_snapshot_manifest(
+        dataset_path=csv_path,
+        events_start_date="2026-07-26",
+        events_end_date="2026-08-01",
+        feature_service="ctr_training_v1",
+        registry=RegistryProvenance(
+            uri="gs://bucket/registry.db", generation="17", sha256="c" * 64
+        ),
+        code_archive_sha=None,
+        spine_usable_days=7,
+    )
+    write_manifest_atomic(manifest, snapshot_manifest_path(csv_path))
+
+
 def test_publish_writes_csv_and_manifest_under_content_address(tmp_path) -> None:
     """by-hash/<sha>/ 밑에 CSV와 manifest가 올라가야 한다."""
     csv_path = _write_dataset(tmp_path)
@@ -194,3 +218,81 @@ def test_publish_normalizes_root_prefix(tmp_path, root, expected_prefix) -> None
     sha = sha256_file(csv_path)
     head = f"{expected_prefix}/" if expected_prefix else ""
     assert f"{head}by-hash/{sha}/training_dataset.csv" in client.buckets["snapshots"].objects
+
+
+def test_pointer_records_latest_and_keeps_previous(tmp_path) -> None:
+    """재조립으로 sha가 바뀌면 포인터가 최신을 가리키고 이전 sha를 previous에 남긴다."""
+    client = _FakeClient()
+    first = _write_dataset(tmp_path)
+    store.publish_snapshot(
+        dataset_path=first,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=True,
+        client=client,
+    )
+
+    second_dir = tmp_path / "second"
+    second_dir.mkdir()
+    second = _write_dataset(second_dir)
+    second.write_text("clicked\n1\n1\n1\n", encoding="utf-8")
+    _republish_sidecar(second)
+    store.publish_snapshot(
+        dataset_path=second,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=True,
+        client=client,
+    )
+
+    from src.pipeline.training_provenance import sha256_file
+
+    payload = json.loads(
+        client.buckets["snapshots"]
+        .objects["training/by-date/dt=2026-08-01/ctr_training_v1.json"][0]
+        .decode("utf-8")
+    )
+    assert payload["dataset_sha256"] == sha256_file(second)
+    assert [entry["dataset_sha256"] for entry in payload["previous"]] == [
+        sha256_file(first)
+    ]
+
+
+def test_pointer_history_is_capped(tmp_path) -> None:
+    """previous는 MAX_POINTER_HISTORY개를 넘지 않는다."""
+    from src.pipeline.training_provenance import MAX_POINTER_HISTORY
+
+    client = _FakeClient()
+    for index in range(MAX_POINTER_HISTORY + 3):
+        run_dir = tmp_path / f"run{index}"
+        run_dir.mkdir()
+        csv_path = _write_dataset(run_dir)
+        csv_path.write_text("clicked\n" + "1\n" * (index + 1), encoding="utf-8")
+        _republish_sidecar(csv_path)
+        store.publish_snapshot(
+            dataset_path=csv_path,
+            snapshot_root="gs://snapshots/training",
+            record_pointer=True,
+            client=client,
+        )
+
+    payload = json.loads(
+        client.buckets["snapshots"]
+        .objects["training/by-date/dt=2026-08-01/ctr_training_v1.json"][0]
+        .decode("utf-8")
+    )
+    assert len(payload["previous"]) == MAX_POINTER_HISTORY
+
+
+def test_experiment_assembly_does_not_touch_pointer(tmp_path) -> None:
+    """record_pointer=False면 by-date 객체가 아예 생기지 않는다."""
+    csv_path = _write_dataset(tmp_path)
+    client = _FakeClient()
+    store.publish_snapshot(
+        dataset_path=csv_path,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=False,
+        client=client,
+    )
+    assert not any(
+        name.startswith("training/by-date/")
+        for name in client.buckets["snapshots"].objects
+    )

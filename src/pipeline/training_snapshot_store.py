@@ -21,7 +21,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from src.pipeline.training_provenance import (
+    MAX_POINTER_HISTORY,
+    SnapshotPointerEntry,
     TrainingSnapshotManifest,
+    TrainingSnapshotPointer,
     load_training_snapshot_manifest,
     sha256_file,
     snapshot_manifest_path,
@@ -159,6 +162,15 @@ def publish_snapshot(
     ) from last_error
 
 
+def _pointer_object_name(prefix: str, manifest: TrainingSnapshotManifest) -> str:
+    return _join(
+        prefix,
+        "by-date",
+        f"dt={manifest.events_end_date.isoformat()}",
+        f"{manifest.feature_service}.json",
+    )
+
+
 def _update_pointer(
     bucket: object,
     *,
@@ -167,4 +179,53 @@ def _update_pointer(
     dataset_sha256: str,
     uri: str,
 ) -> None:
-    raise NotImplementedError("Task 4에서 구현한다")
+    """by-date 포인터를 최신 스냅샷으로 갱신한다.
+
+    read-modify-write에 generation 전제조건을 걸어, 같은 좌표에 동시에 쓰는 실행이
+    서로의 갱신을 덮어쓰지 않게 한다. 경합하면 호출부의 재시도가 다시 읽고 시도한다.
+    """
+    name = _pointer_object_name(prefix, manifest)
+    blob = bucket.blob(name)
+
+    current: TrainingSnapshotPointer | None = None
+    generation: int | None = None
+    try:
+        blob.reload()
+        generation = blob.generation
+        current = TrainingSnapshotPointer.model_validate_json(
+            blob.download_as_bytes().decode("utf-8")
+        )
+    except Exception as error:  # noqa: BLE001 - 최초 게시는 객체가 없는 게 정상이다
+        if _is_precondition_failure(error):
+            raise
+        current = None
+        generation = None
+
+    if current is not None and current.dataset_sha256 == dataset_sha256:
+        return
+
+    history: list[SnapshotPointerEntry] = []
+    if current is not None:
+        history = [
+            SnapshotPointerEntry(
+                dataset_sha256=current.dataset_sha256,
+                published_at=current.published_at,
+            ),
+            *current.previous,
+        ][:MAX_POINTER_HISTORY]
+
+    pointer = TrainingSnapshotPointer(
+        dataset_sha256=dataset_sha256,
+        uri=uri,
+        events_start_date=manifest.events_start_date,
+        events_end_date=manifest.events_end_date,
+        feature_service=manifest.feature_service,
+        registry_generation=manifest.registry_generation,
+        published_at=manifest.created_at,
+        previous=history,
+    )
+    bucket.blob(name).upload_from_string(
+        pointer.model_dump_json(indent=2),
+        content_type="application/json",
+        if_generation_match=0 if generation is None else generation,
+    )
