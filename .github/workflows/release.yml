@@ -929,6 +929,105 @@ jobs:
             echo "- Runner digest_ref: \`$DIGEST_REF\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  promote-infra-gke-digests:
+    name: Open GKE digest promotion Draft PR
+    needs:
+      - publish-application-image
+      - publish-serving-image
+      - publish-agent-orchestration-api-image
+      - publish-agent-orchestration-ui-image
+      - publish-agent-orchestration-runner-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Create installation token for the infra repository
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: Autoresearch-infra
+
+      - name: Checkout infra deployment repository
+        uses: actions/checkout@v6
+        with:
+          repository: SKYAHO/Autoresearch-infra
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+          path: infra-repo
+
+      - name: Update immutable GKE image digests
+        env:
+          SERVING_DIGEST: ${{ needs.publish-serving-image.outputs.digest_ref }}
+          API_DIGEST: ${{ needs.publish-agent-orchestration-api-image.outputs.digest_ref }}
+          UI_DIGEST: ${{ needs.publish-agent-orchestration-ui-image.outputs.digest_ref }}
+          RUNNER_DIGEST: ${{ needs.publish-agent-orchestration-runner-image.outputs.digest_ref }}
+        shell: bash
+        run: |
+          python infra-repo/scripts/promote_gke_image_digests.py \
+            --repo-root infra-repo \
+            --serving-digest "$SERVING_DIGEST" \
+            --api-digest "$API_DIGEST" \
+            --ui-digest "$UI_DIGEST" \
+            --runner-digest "$RUNNER_DIGEST"
+
+      - name: Resolve promotion branch
+        id: promotion-branch
+        env:
+          SOURCE_SHA: ${{ needs.publish-application-image.outputs.source_sha }}
+        shell: bash
+        run: echo "short_sha=${SOURCE_SHA:0:12}" >> "$GITHUB_OUTPUT"
+
+      - name: Create infra digest promotion Draft PR
+        id: promotion-pr
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          path: infra-repo
+          add-paths: |
+            deploy/serving/deployment.yaml
+            deploy/agent-orchestration/api-deployment.yaml
+            deploy/agent-orchestration/api-migration-job.yaml
+            deploy/agent-orchestration/runner-deployment.yaml
+            deploy/agent-orchestration/ui-deployment.yaml
+          base: main
+          branch: automation/gke-images-${{ steps.promotion-branch.outputs.short_sha }}
+          delete-branch: true
+          draft: true
+          commit-message: "chore: GKE 이미지 digest 승격"
+          title: "chore: GKE 이미지 digest 승격 (${{ steps.promotion-branch.outputs.short_sha }})"
+          body: |
+            Autoresearch release가 검증한 immutable GKE image를 배포 후보로 승격합니다.
+
+            - Source SHA: `${{ needs.publish-application-image.outputs.source_sha }}`
+            - Serving digest: `${{ needs.publish-serving-image.outputs.digest_ref }}`
+            - Agent API digest: `${{ needs.publish-agent-orchestration-api-image.outputs.digest_ref }}`
+            - Agent UI digest: `${{ needs.publish-agent-orchestration-ui-image.outputs.digest_ref }}`
+            - Agent Runner digest: `${{ needs.publish-agent-orchestration-runner-image.outputs.digest_ref }}`
+            - Release workflow: `${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+
+            이 자동화는 Draft PR만 생성합니다. 사람의 merge 뒤에도 Agent Orchestration은
+            target revision 갱신, 승인된 admin apply, ArgoCD manual sync가 별도로 필요합니다.
+
+      - name: Write promotion summary
+        env:
+          PULL_REQUEST_URL: ${{ steps.promotion-pr.outputs.pull-request-url }}
+        shell: bash
+        run: |
+          {
+            echo "## GKE digest promotion"
+            echo
+            if [[ -n "$PULL_REQUEST_URL" ]]; then
+              echo "- Draft pull request: $PULL_REQUEST_URL"
+            else
+              echo "- Pull request: no change (the digest is already current)"
+            fi
+            echo "- No merge, Terraform apply, target revision update, or ArgoCD sync was performed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   promote-airflow-digest:
     name: Open Airflow digest promotion PR
     needs: publish-application-image
