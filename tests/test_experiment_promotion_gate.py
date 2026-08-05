@@ -836,3 +836,91 @@ def test_draft_pr_does_not_claim_metric_gate_pass_for_hard_limit() -> None:
     script = _draft_pr_script()
 
     assert "강제 교체 대상으로 판정한 dev 후보 SHA" in script
+
+
+# ---------------------------------------------------------------------------
+# 주 지표 하한이 없다 — 현재 동작을 고정한다 (PR #540 리뷰 1, spec §4.4)
+#
+# 기존 하드 리밋 테스트는 전부 `primary_candidate == primary_baseline`(delta=0)이라
+# **악화(delta < 0)가 어느 쪽으로 판정되는지 고정하는 테스트가 없었다.**
+# 아래 두 건은 "지금 이렇게 동작한다"를 못박는 것이지 "이게 옳다"는 주장이 아니다 —
+# 하한을 넣기로 결정하면 이 테스트가 빨간불이 되어 의도적 변경임을 드러낸다.
+# ---------------------------------------------------------------------------
+
+
+def test_severe_primary_regression_still_passes_on_hard_limit_today() -> None:
+    """guardrail이 예산 안이면 주 지표가 대폭 악화돼도 통과한다(현재 동작)."""
+    criteria = parse_criteria(_guardrail_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.400,  # baseline 0.778 대비 -0.378
+        primary_baseline=0.778,
+        guardrail_candidate=0.3005,
+        guardrail_baseline=0.300,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+def test_no_guardrail_declared_means_no_floor_at_all_today() -> None:
+    """guardrail을 `없음`으로 선언한 가설에는 **어떤 하한도 없다**(현재 동작).
+
+    `_guardrail_failure`가 `criteria.guardrail_name is None`에서 즉시 `None`을
+    돌려주므로, 하드 리밋이 켜지면 주 지표가 얼마나 나빠졌든 통과한다. spec §4.4가
+    "정책을 켜기 전에 반드시 해결"로 지정한 조합이다.
+    """
+    criteria = parse_criteria(_issue_body())  # guardrail 없음
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.100,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+# ---------------------------------------------------------------------------
+# 리뷰 2·3 — policy_version 방출, 정책 상수 검증
+# ---------------------------------------------------------------------------
+
+
+def test_gate_step_emits_policy_version_to_github_output() -> None:
+    """`policy_version`은 **결과에 남아야** 존재 이유가 성립한다(spec §5).
+
+    GateDecision 안에만 있고 밖으로 안 나가면, 정책이 v2로 올라간 뒤 이미 머지된
+    승격 PR을 보고 "이건 v1인가 v2인가"를 되짚을 방법이 없다.
+    """
+    steps = _promotion_workflow()["jobs"]["create-promotion-pr"]["steps"]
+    gate = next(step for step in steps if step.get("id") == "gate")
+
+    assert "policy_version={decision.policy_version}" in gate["run"]
+
+
+def test_draft_pr_body_records_gate_policy_version() -> None:
+    script = _draft_pr_script()
+
+    assert "GATE_POLICY_VERSION" in script
+
+
+def test_gate_step_validates_the_policy_constant_itself() -> None:
+    """정책 상수는 lineage step의 입력 검증을 거치지 않는다 — 여기서 막아야 한다.
+
+    `"30일"` 같은 오타 하나로 gate step이 죽으면 **모든 실험**이 `gate_step_failed`로
+    떨어진다. 정책을 켜는 날 처음 겪는 실패라 원인 추적도 어렵다.
+    """
+    steps = _promotion_workflow()["jobs"]["create-promotion-pr"]["steps"]
+    gate = next(step for step in steps if step.get("id") == "gate")
+
+    assert "_optional_days" in gate["run"]
+    assert "must be a non-negative integer or empty" in gate["run"]
+    # 두 값 모두 같은 검증을 거친다.
+    assert '_optional_days("HARD_RETRAIN_LIMIT_DAYS")' in gate["run"]
+    assert '_optional_days("DAYS_SINCE_LAST_PROMOTION")' in gate["run"]

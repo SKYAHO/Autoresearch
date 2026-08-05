@@ -54,7 +54,8 @@ jobs:
       #
       # **갱신 주체·시점**: 열화 측정을 소유한 사람이, 다중 origin 관측이 새로 쌓일
       # 때마다 재산출해 이 값을 갱신한다. 절차는
-      # `docs/specs/2026-08-05-hard-retrain-limit-gate.md` §8.3과 스킬 문서를 따른다.
+      # `docs/specs/2026-08-05-hard-retrain-limit-gate.md` §8.3과
+      # `docs/guides/retraining-policy.md`("누가, 언제 갱신하는가")를 따른다.
       HARD_RETRAIN_LIMIT_DAYS: ""
       IMAGE_DIGEST: ${{ inputs.image_digest || github.event.client_payload.image_digest }}
       ARTIFACT_URI: ${{ inputs.artifact_uri || github.event.client_payload.artifact_uri }}
@@ -210,6 +211,24 @@ jobs:
           import os
           from autoresearch.experiments.promotion_gate import evaluate, parse_criteria
 
+          def _optional_days(name: str) -> int | None:
+              """비어 있으면 None, 값이 있으면 **음이 아닌 정수**로만 받는다.
+
+              `HARD_RETRAIN_LIMIT_DAYS`는 정책을 켜는 스위치인데 lineage step의 입력
+              검증을 거치지 않는다(그건 호출자 payload만 본다). 여기서 막지 않으면
+              `"30일"` 같은 오타 하나로 이 step이 ValueError로 죽고 **모든 실험**이
+              `gate_step_failed`로 떨어진다. 정책을 켜는 날 처음 겪게 되는 실패라
+              원인을 찾기도 어렵다.
+              """
+              raw = (os.environ.get(name) or "").strip()
+              if not raw:
+                  return None
+              if not raw.isdigit():
+                  raise SystemExit(
+                      f"{name} must be a non-negative integer or empty, got {raw!r}"
+                  )
+              return int(raw)
+
           criteria = parse_criteria(open(os.environ["ISSUE_BODY_PATH"], encoding="utf-8").read())
           decision = evaluate(
               criteria,
@@ -224,11 +243,18 @@ jobs:
               # (#472 spec §3.2) — `derive_hard_retrain_limit`은 hold를 참조하지 않아
               # 오염된 곡선에서도 숫자 모양이 정상인 값을 내고, 게이트는 숫자만 받으므로
               # 스스로 구분할 수 없다.
-              hard_retrain_limit_days=int(os.environ["HARD_RETRAIN_LIMIT_DAYS"]) if os.environ.get("HARD_RETRAIN_LIMIT_DAYS") else None,
-              days_since_last_promotion=int(os.environ["DAYS_SINCE_LAST_PROMOTION"]) if os.environ.get("DAYS_SINCE_LAST_PROMOTION") else None,
+              hard_retrain_limit_days=_optional_days("HARD_RETRAIN_LIMIT_DAYS"),
+              days_since_last_promotion=_optional_days("DAYS_SINCE_LAST_PROMOTION"),
           )
+          # `policy_version`을 함께 방출한다(#472 §5). 이 필드의 존재 이유가 "어떤 정책으로
+          # 판정했는지가 **결과에 남아야** 승격 이력을 나중에 해석할 수 있다"인데, 여기서
+          # 내보내지 않으면 GateDecision 안에만 있다가 사라져 목적을 달성하지 못한다.
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"passed={'true' if decision.passed else 'false'}\nreason={decision.reason}\n")
+              output.write(
+                  f"passed={'true' if decision.passed else 'false'}\n"
+                  f"reason={decision.reason}\n"
+                  f"policy_version={decision.policy_version}\n"
+              )
           PY
 
       - name: Create immutable promotion branch and Draft PR
@@ -236,6 +262,7 @@ jobs:
         uses: actions/github-script@v8
         env:
           GATE_REASON: ${{ steps.gate.outputs.reason }}
+          GATE_POLICY_VERSION: ${{ steps.gate.outputs.policy_version }}
         with:
           script: |
             const issueNumber = Number(process.env.ISSUE_NUMBER);
@@ -301,6 +328,7 @@ jobs:
                   `artifact_uri: \`${process.env.ARTIFACT_URI || '미제공'}\``,
                   `log_uri: \`${process.env.LOG_URI || '미제공'}\``,
                   `사유: \`${process.env.GATE_REASON}\``,
+                  `게이트 정책: \`${process.env.GATE_POLICY_VERSION || '미기록'}\``,
                 ].join('\n'),
               });
             }

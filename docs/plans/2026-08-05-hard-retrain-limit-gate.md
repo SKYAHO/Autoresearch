@@ -10,7 +10,7 @@ spec §9의 6단계를 구현한다. **Task 1~3은 순수 함수 변경이고, T
 | 범위 | 상태 |
 | --- | --- |
 | Task 1 — `evaluate()`에 하드 리밋 조건과 사유 코드 (§3.1·§4.1~§4.3) | 착수 가능 |
-| Task 2 — guardrail 우회 금지 (§4.4) | Task 1 이후 |
+| Task 2 — guardrail 우회 금지 (§4.5) | Task 1 이후 |
 | Task 3 — `GateDecision.policy_version` (§5) | Task 1 이후 |
 | Task 4 — workflow 배선 (§8.2) | §6 확정(안 A) — §8.2만 남음 |
 | Task 5 — Draft PR 본문에 승격 사유 표시 (§4.3) | Task 4 이후 |
@@ -97,7 +97,7 @@ baseline 대비 증감으로 판정한다**: `failed`가 늘지 않았는지, `p
 
 검증: `uv run python -m pytest tests/test_experiment_promotion_gate.py -v`
 
-## Task 2 — guardrail은 하드 리밋으로 우회되지 않는다 (spec §4.4)
+## Task 2 — guardrail은 하드 리밋으로 우회되지 않는다 (spec §4.5)
 
 - [ ] guardrail 위반이면 하드 리밋 도달 여부와 **무관하게** `passed=False`.
 - [ ] 순서를 명시한다: 지표 통과 판정 → guardrail 검사 → 하드 리밋 판정.
