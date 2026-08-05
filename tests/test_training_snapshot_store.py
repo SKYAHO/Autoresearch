@@ -20,6 +20,12 @@ class _PreconditionFailed(Exception):
     code = 412
 
 
+class _Forbidden(Exception):
+    """google.api_core.exceptions.Forbidden과 같은 code 속성을 갖는다."""
+
+    code = 403
+
+
 class _FakeBlob:
     def __init__(self, bucket: "_FakeBucket", name: str) -> None:
         self._bucket = bucket
@@ -257,10 +263,11 @@ def test_pointer_records_latest_and_keeps_previous(tmp_path) -> None:
 
 
 def test_pointer_history_is_capped(tmp_path) -> None:
-    """previous는 MAX_POINTER_HISTORY개를 넘지 않는다."""
-    from src.pipeline.training_provenance import MAX_POINTER_HISTORY
+    """previous는 MAX_POINTER_HISTORY개를 넘지 않고, 최신순으로 잘려야 한다."""
+    from src.pipeline.training_provenance import MAX_POINTER_HISTORY, sha256_file
 
     client = _FakeClient()
+    csv_paths: list[Path] = []
     for index in range(MAX_POINTER_HISTORY + 3):
         run_dir = tmp_path / f"run{index}"
         run_dir.mkdir()
@@ -273,6 +280,7 @@ def test_pointer_history_is_capped(tmp_path) -> None:
             record_pointer=True,
             client=client,
         )
+        csv_paths.append(csv_path)
 
     payload = json.loads(
         client.buckets["snapshots"]
@@ -280,6 +288,12 @@ def test_pointer_history_is_capped(tmp_path) -> None:
         .decode("utf-8")
     )
     assert len(payload["previous"]) == MAX_POINTER_HISTORY
+    # 마지막으로 밀려난 현재 항목이 index 0이고, 가장 오래된 두 건(run0, run1)은
+    # 캡에 밀려 빠져야 한다 — 개수만 보면 순서가 뒤집혀도 통과하므로 값까지 본다.
+    superseded = list(reversed(csv_paths[-(MAX_POINTER_HISTORY + 1) : -1]))
+    assert [entry["dataset_sha256"] for entry in payload["previous"]] == [
+        sha256_file(path) for path in superseded
+    ]
 
 
 def test_experiment_assembly_does_not_touch_pointer(tmp_path) -> None:
@@ -292,6 +306,41 @@ def test_experiment_assembly_does_not_touch_pointer(tmp_path) -> None:
         record_pointer=False,
         client=client,
     )
+    assert not any(
+        name.startswith("training/by-date/")
+        for name in client.buckets["snapshots"].objects
+    )
+
+
+def test_pointer_read_failure_is_not_treated_as_first_publish(tmp_path) -> None:
+    """포인터 조회가 권한 오류 등으로 실패하면 최초 게시로 오인하지 않고 전파해야 한다."""
+
+    class _ForbiddenBlob(_FakeBlob):
+        def reload(self) -> None:
+            raise _Forbidden("permission denied")
+
+    class _ForbiddenBucket(_FakeBucket):
+        def blob(self, name: str, **_) -> _FakeBlob:
+            if name.startswith("training/by-date/"):
+                return _ForbiddenBlob(self, name)
+            return _FakeBlob(self, name)
+
+    class _ForbiddenClient(_FakeClient):
+        def bucket(self, name: str) -> _FakeBucket:
+            return self.buckets.setdefault(name, _ForbiddenBucket())
+
+    csv_path = _write_dataset(tmp_path)
+    client = _ForbiddenClient()
+
+    with pytest.raises(store.SnapshotStoreError):
+        store.publish_snapshot(
+            dataset_path=csv_path,
+            snapshot_root="gs://snapshots/training",
+            record_pointer=True,
+            client=client,
+            max_attempts=1,
+        )
+
     assert not any(
         name.startswith("training/by-date/")
         for name in client.buckets["snapshots"].objects

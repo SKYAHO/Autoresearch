@@ -17,6 +17,7 @@ write-once가 412를 no-op으로 흡수하므로 CSV만 올라간 상태에서 �
 from __future__ import annotations
 
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -33,6 +34,7 @@ from src.pipeline.training_provenance import (
 CSV_OBJECT_NAME = "training_dataset.csv"
 MANIFEST_OBJECT_NAME = "snapshot_manifest.json"
 _PRECONDITION_FAILED = 412
+_NOT_FOUND = 404
 _RETRY_BASE_SECONDS = 1.0
 
 
@@ -71,6 +73,23 @@ def _is_precondition_failure(error: BaseException) -> bool:
         if isinstance(error, GoogleAPICallError):
             return isinstance(error, PreconditionFailed)
     return getattr(error, "code", None) == _PRECONDITION_FAILED
+
+
+def _is_not_found(error: BaseException) -> bool:
+    """조회 대상 object가 아직 없다는 뜻인지 판정한다.
+
+    ``_is_precondition_failure``와 같은 이유로 타입을 먼저 본다. 최초 게시(포인터
+    부재)와 권한·네트워크 오류를 구별하지 못하면, 읽기 실패를 "아직 없음"으로 오인해
+    IAM 설정 누락 같은 실제 문제가 조용히 묻힌다.
+    """
+    try:
+        from google.api_core.exceptions import GoogleAPICallError, NotFound
+    except ImportError:
+        pass
+    else:
+        if isinstance(error, GoogleAPICallError):
+            return isinstance(error, NotFound)
+    return isinstance(error, FileNotFoundError) or getattr(error, "code", None) == _NOT_FOUND
 
 
 def _resolve_client(client: object | None) -> object:
@@ -195,8 +214,8 @@ def _update_pointer(
         current = TrainingSnapshotPointer.model_validate_json(
             blob.download_as_bytes().decode("utf-8")
         )
-    except Exception as error:  # noqa: BLE001 - 최초 게시는 객체가 없는 게 정상이다
-        if _is_precondition_failure(error):
+    except Exception as error:  # noqa: BLE001 - 포인터 부재만 최초 게시로 삼는다
+        if not _is_not_found(error):
             raise
         current = None
         generation = None
@@ -221,10 +240,10 @@ def _update_pointer(
         events_end_date=manifest.events_end_date,
         feature_service=manifest.feature_service,
         registry_generation=manifest.registry_generation,
-        published_at=manifest.created_at,
+        published_at=datetime.now(timezone.utc),
         previous=history,
     )
-    bucket.blob(name).upload_from_string(
+    blob.upload_from_string(
         pointer.model_dump_json(indent=2),
         content_type="application/json",
         if_generation_match=0 if generation is None else generation,
