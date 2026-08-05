@@ -957,8 +957,13 @@ Refs #530"
 ## Task 5: 조립이 게시하고 `AssemblyOutcome`을 반환
 
 **Files:**
-- Modify: `src/pipeline/build_training_dataset.py:861-911` (`main`)
-- Test: `tests/test_build_training_dataset.py`
+- Modify: `src/pipeline/build_training_dataset.py:861-911` (`main`), `src/cli.py`
+- Test: `tests/test_build_training_dataset.py`, `tests/test_cli.py`
+
+> `tests/test_cli.py`도 대상이다 — `run_pipeline` lineage 테스트 4곳의 fake가 bare
+> `SpineCoverage`를 돌려주고 있어, `main()`이 `AssemblyOutcome`을 돌려주는 순간
+> `AttributeError: 'SpineCoverage' object has no attribute 'coverage'`로 깨진다.
+> 래퍼 하나로 최소 적응한다(단언은 그대로 둔다).
 
 **Interfaces:**
 - Consumes: `publish_snapshot` (Task 3), `is_experiment_assembly` (Task 1)
