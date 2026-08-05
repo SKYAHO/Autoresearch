@@ -593,7 +593,18 @@ def _train_from_resolved_dataset(
             f"verified training snapshot이 필요하지만 sidecar가 없습니다: {snapshot_path}"
         )
 
-    if dataset_uri is not None and snapshot_manifest is not None:
+    if dataset_uri is not None:
+        # fail-closed: 오늘은 download_snapshot이 sidecar 부재 시 반드시 raise하므로
+        # (load_training_snapshot_manifest 호출) snapshot_manifest가 None일 수
+        # 없지만, 그 불변식은 이 함수가 아니라 download_snapshot 쪽에 있다.
+        # require_snapshot도 train-model 기본값이 False라 여기서 강제되지 않는다.
+        # 그 함수가 나중에 리팩터링되면 커버리지 게이트가 조용히 꺼질 수 있으므로,
+        # manifest 자체를 여기서 다시 검증해 한 단계 아래에서도 fail-closed로 막는다.
+        if snapshot_manifest is None:
+            raise ProvenanceValidationError(
+                "재사용 스냅샷의 sidecar를 읽을 수 없어 커버리지 게이트를 검증할 수 "
+                f"없습니다: {snapshot_path}. 스냅샷을 다시 내려받거나 재조립하십시오."
+            )
         require_snapshot_coverage(
             spine_usable_days=snapshot_manifest.spine_usable_days,
             min_days=min_coverage_days,

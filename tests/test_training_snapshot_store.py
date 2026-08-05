@@ -491,9 +491,12 @@ def test_precondition_type_check_rejects_lookalike_code_on_publish(
 def test_download_propagates_lookalike_not_found_code(tmp_path) -> None:
     """code만 404인 무관한 GoogleAPICallError는 "스냅샷 없음"으로 감싸이면 안 된다.
 
-    ``_is_not_found``의 typed 분기를 태운다. code만 봤다면 이 케이스도
-    ``SnapshotStoreError``로 감싸져 원인(예: 실제로는 권한·네트워크 오류)이 가려졌을
-    것이다 — 실제로는 원래 예외가 그대로 전파돼야 한다.
+    ``_is_not_found``의 typed 분기를 태운다 — code만 봤다면 실제로는 권한·네트워크
+    오류인 이 케이스도 "스냅샷을 찾을 수 없습니다"로 오인됐을 것이다. 다만 fix 4(#530
+    PR 리뷰)로 ``download_snapshot``에 재시도가 생기면서, not-found가 아닌 예외는 이제
+    (publish와 같은 정책으로) 재시도를 소진한 뒤 ``SnapshotStoreError``로 감싸 전파된다
+    — 원인 예외는 ``__cause__``로 보존되므로 typed 판정이 죽지 않았는지는 여전히
+    확인할 수 있다.
     """
     csv_path = _write_dataset(tmp_path)
 
@@ -519,10 +522,11 @@ def test_download_propagates_lookalike_not_found_code(tmp_path) -> None:
 
     destination = tmp_path / "download"
     destination.mkdir()
-    with pytest.raises(_AmbiguousNotFoundCode):
+    with pytest.raises(store.SnapshotStoreError) as error:
         store.download_snapshot(
-            dataset_uri=uri, destination_dir=destination, client=client
+            dataset_uri=uri, destination_dir=destination, client=client, max_attempts=1
         )
+    assert isinstance(error.value.__cause__, _AmbiguousNotFoundCode)
 
 
 # --- by-date 포인터 경합(#530 §3.3, 최종 리뷰 fix 5) ---
@@ -613,3 +617,127 @@ def test_pointer_contention_retry_reads_and_prepends_competitor(
     assert [entry["dataset_sha256"] for entry in payload["previous"]] == [
         competitor_sha
     ]
+
+
+# --- 포인터 파싱 실패는 재시도 대상이 아니다(#530 PR 리뷰 fix 3) ---
+
+
+def test_pointer_parse_failure_raises_without_retry(tmp_path, monkeypatch) -> None:
+    """저장된 포인터가 파싱 불가면 재시도를 소모하지 않고 즉시 실패해야 한다.
+
+    ``ValidationError``는 결정적 오류라 재시도해도 같은 결과가 나온다 — 감싸지 않으면
+    ``publish_snapshot``의 넓은 ``except Exception``이 이를 일시적 I/O 장애로 오인해
+    1s+2s 백오프를 허비한다. ``time.sleep``이 호출되면 실패하도록 만들어 재시도가
+    전혀 일어나지 않았음을 확인하고, 메시지에 포인터 객체의 전체 gs:// 경로가
+    들어있는지도 본다 — by-hash URI(내용은 멀쩡함)가 아니라 실제로 손상된 그 객체를
+    가리켜야 한다.
+    """
+
+    def _no_sleep_allowed(_seconds: float) -> None:
+        raise AssertionError(
+            "결정적 파싱 실패는 재시도하면 안 되므로 sleep이 호출되지 않아야 한다"
+        )
+
+    monkeypatch.setattr(store.time, "sleep", _no_sleep_allowed)
+
+    csv_path = _write_dataset(tmp_path)
+    client = _FakeClient()
+    bucket = client.bucket("snapshots")
+    pointer_name = "training/by-date/dt=2026-08-01/ctr_training_v1.json"
+    # 스키마가 거부할 손상된 포인터를 직접 심어 둔다 — 필수 필드가 전부 빠진 객체.
+    bucket.objects[pointer_name] = (b"{}", 1)
+
+    with pytest.raises(store.SnapshotStoreError) as error:
+        store.publish_snapshot(
+            dataset_path=csv_path,
+            snapshot_root="gs://snapshots/training",
+            record_pointer=True,
+            client=client,
+            max_attempts=3,
+        )
+    assert f"gs://snapshots/{pointer_name}" in str(error.value)
+
+
+# --- download_snapshot 재시도(#530 PR 리뷰 fix 4) ---
+
+
+def test_download_retries_transient_error_then_succeeds(tmp_path, monkeypatch) -> None:
+    """일시적 GCS 오류는 재시도 끝에 성공해야 한다 — publish와 같은 정책이다.
+
+    처음 두 시도는 실패하고 세 번째 시도에서 성공한다는 사실 자체가 재시도 루프가
+    실제로 도는지 확인한다.
+    """
+    csv_path = _write_dataset(tmp_path)
+    client = _FakeClient()
+    uri = store.publish_snapshot(
+        dataset_path=csv_path,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=False,
+        client=client,
+    )
+    real_bucket = client.buckets["snapshots"]
+    call_count = {"csv": 0}
+
+    class _FlakyCsvBlob(_FakeBlob):
+        def download_to_filename(self, filename) -> None:
+            call_count["csv"] += 1
+            if call_count["csv"] <= 2:
+                raise RuntimeError("transient GCS failure")
+            super().download_to_filename(filename)
+
+    class _FlakyBucket:
+        def blob(self, name: str, **_):
+            if name.endswith(store.CSV_OBJECT_NAME):
+                return _FlakyCsvBlob(real_bucket, name)
+            return real_bucket.blob(name)
+
+    class _FlakyClient:
+        def bucket(self, name: str):
+            return _FlakyBucket()
+
+    monkeypatch.setattr(store.time, "sleep", lambda _seconds: None)
+    destination = tmp_path / "download"
+    destination.mkdir()
+    local = store.download_snapshot(
+        dataset_uri=uri,
+        destination_dir=destination,
+        client=_FlakyClient(),
+        max_attempts=3,
+    )
+
+    assert local.name == "training_dataset.csv"
+    assert call_count["csv"] == 3
+
+
+def test_download_raises_after_exhausting_retries(tmp_path, monkeypatch) -> None:
+    """일시 장애가 계속되면 재시도를 소진하고 하나의 예외 타입(SnapshotStoreError)으로 실패한다.
+
+    호출자가 raw google 예외 대신 이 모듈 하나의 오류 타입만 처리하면 되게 하는 게
+    목적이다 — 원래 예외는 원인 체인에 남는다.
+    """
+    csv_path = _write_dataset(tmp_path)
+    client = _FakeClient()
+    uri = store.publish_snapshot(
+        dataset_path=csv_path,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=False,
+        client=client,
+    )
+
+    class _AlwaysFailingClient:
+        def bucket(self, name: str):
+            raise RuntimeError("transient GCS failure")
+
+    monkeypatch.setattr(store.time, "sleep", lambda _seconds: None)
+    destination = tmp_path / "download"
+    destination.mkdir()
+
+    with pytest.raises(store.SnapshotStoreError) as error:
+        store.download_snapshot(
+            dataset_uri=uri,
+            destination_dir=destination,
+            client=_AlwaysFailingClient(),
+            max_attempts=3,
+        )
+    assert uri in str(error.value)
+    assert isinstance(error.value.__cause__, RuntimeError)

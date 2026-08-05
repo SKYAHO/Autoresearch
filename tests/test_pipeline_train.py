@@ -1422,4 +1422,48 @@ def test_main_dataset_uri_gate_blocks_before_model_fit(tmp_path, monkeypatch) ->
         )
 
     fit.assert_not_called()
+
+
+def test_main_dataset_uri_fails_closed_when_manifest_unreadable(
+    tmp_path, monkeypatch
+) -> None:
+    """dataset_uri가 있는데 sidecar를 못 읽으면 커버리지 게이트를 조용히 건너뛰지 않는다(#530 PR 리뷰).
+
+    오늘은 ``download_snapshot``이 sidecar 부재 시 반드시 예외를 내므로 이 상황이
+    실제로 나지 않는다 — 그 불변식은 ``download_snapshot``에 있지 ``train.py``에
+    있지 않다. ``require_snapshot``도 ``train-model`` 기본값이 ``False``라 여기서
+    강제되지 않는다. 이 테스트는 그 불변식이 나중에 깨지는 상황(다운로드는 CSV만
+    내려받고 sidecar를 빠뜨리는 리팩터링)을 직접 재현해, ``train.py`` 자체가
+    ``snapshot_manifest is None``을 fail-closed로 거부하는지 확인한다 — 그러지
+    않으면 커버리지 게이트가 아무 경고 없이 꺼진다.
+    """
+    config_path, data_path, _ = _prepared_dataset(tmp_path, monkeypatch)
+    fit = MagicMock()
+    monkeypatch.setattr(train.LGBMModel, "fit", fit)
+
+    def fake_download_without_sidecar(
+        *, dataset_uri: str, destination_dir: Path, client: object | None = None
+    ) -> Path:
+        target = destination_dir / "training_dataset.csv"
+        target.write_bytes(Path(data_path).read_bytes())
+        return target  # sidecar를 일부러 만들지 않는다 — 불변식이 깨진 상황 재현.
+
+    monkeypatch.setattr(
+        train.training_snapshot_store, "download_snapshot", fake_download_without_sidecar
+    )
+
+    with pytest.raises(ProvenanceValidationError, match="sidecar"):
+        train.main(
+            config_path=str(config_path),
+            dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+            model_output=str(tmp_path / "model.joblib"),
+            test_set_output=str(tmp_path / "test_set.csv"),
+            feature_columns_output=str(tmp_path / "features.json"),
+            categorical_columns_output=str(tmp_path / "categories.json"),
+            require_snapshot=False,
+            defer_registration=True,
+            min_coverage_days=0,
+        )
+
+    fit.assert_not_called()
     assert not (tmp_path / "model.joblib").exists()
