@@ -7,7 +7,8 @@ initContainer가 짧은 수명의 GitHub App installation token을 memory volume
 
 [기능]
 App private key로 contents:write token을 한 번 발급하고, 같은 volume의 0400 임시
-파일을 `os.replace`하여 main container가 읽을 token 파일로 원자 교체한다.
+파일을 `os.replace`하여 main container가 읽을 token 파일로 원자 교체한다. 실패 시
+자격 증명을 제외한 예외 종류·정제 사유·HTTP 상태를 기록한다.
 
 [비책임]
 private key의 Secret mount와 memory volume 구성(Autoresearch-infra), token 재발급,
@@ -102,8 +103,13 @@ async def _run(token_factory: TokenFactory) -> int:
             permissions=_CONTENTS_WRITE_PERMISSION,
             token_factory=token_factory,
         )
-    except (ExecutorConfigError, GitHubAppError, TokenMinterError):
-        _LOGGER.error("installation token mint failed")
+    except (ExecutorConfigError, GitHubAppError, TokenMinterError) as error:
+        _LOGGER.error(
+            "installation token mint failed error_type=%s reason=%s status_code=%s",
+            type(error).__name__,
+            getattr(error, "reason", str(error)),
+            getattr(error, "status_code", None),
+        )
         return 1
     _LOGGER.info("installation token file ready")
     return 0

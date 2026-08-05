@@ -32,6 +32,7 @@ from agent_orchestration.executor.token_minter import (
 )
 from agent_orchestration.github_app import (
     GitHubAppCredentials,
+    GitHubAppError,
     InstallationToken,
 )
 from agent_orchestration.github_refs import GitHubRefError
@@ -367,6 +368,35 @@ def test_executor_main_returns_one_without_exposing_token_on_github_failure(
     assert exit_code == 1
     assert len(refs.get_sha_calls) == 1
     assert "secret-token" not in caplog.text
+    assert "reason=get_failed" in caplog.text
+    assert "status_code=401" in caplog.text
+
+
+def test_token_minter_logs_sanitized_github_app_failure_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    key_path = tmp_path / "private-key.pem"
+    key_path.write_text("test-only-private-key", encoding="utf-8")
+    output = tmp_path / "github-token" / "token"
+    output.parent.mkdir()
+    monkeypatch.setenv("ORCH_GITHUB_APP_ID", "123")
+    monkeypatch.setenv("ORCH_GITHUB_APP_INSTALLATION_ID", "456")
+    monkeypatch.setenv("ORCH_GITHUB_APP_PRIVATE_KEY_FILE", str(key_path))
+    monkeypatch.setenv("ORCH_GITHUB_TOKEN_FILE", str(output))
+
+    async def failing_token_factory(*_args, **_kwargs) -> InstallationToken:
+        raise GitHubAppError("token_request_failed", status_code=403)
+
+    caplog.set_level(logging.ERROR)
+
+    exit_code = token_minter_main(token_factory=failing_token_factory)
+
+    assert exit_code == 1
+    assert "reason=token_request_failed" in caplog.text
+    assert "status_code=403" in caplog.text
+    assert "test-only-private-key" not in caplog.text
 
 
 def test_token_minter_main_reads_app_coordinates_and_writes_token(

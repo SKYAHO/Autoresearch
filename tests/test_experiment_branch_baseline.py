@@ -142,6 +142,38 @@ def test_publish_retry_reuses_frozen_sha_after_dev_moves(
     assert resolver.await_count == 1
 
 
+def test_baseline_lookup_releases_read_transaction_before_github(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """GitHub 대기 중에는 앞선 read transaction이 connection을 점유하지 않아야 한다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
+
+    async def resolve_without_open_transaction(_settings: object) -> str:
+        assert db_session.in_transaction() is False
+        return "a" * 40
+
+    async def create_issue(_settings, *, title, body, labels):
+        return IssueRef(
+            number=546,
+            url="https://github.com/SKYAHO/Autoresearch/issues/546",
+        )
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        resolve_without_open_transaction,
+    )
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.create_issue",
+        create_issue,
+    )
+
+    result = asyncio.run(
+        publish_experiment_issue(db_session, _Settings(), experiment.id, _request())
+    )
+
+    assert result.base_dev_sha == "a" * 40
+
+
 def test_competing_baseline_freeze_reuses_atomic_cas_winner(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -218,6 +250,67 @@ def test_competing_baseline_freeze_reuses_atomic_cas_winner(
     assert "experiments.base_dev_sha IS NULL" in conditional_update_sql[0]
     assert result.base_dev_sha == winner_sha
     assert resolver.await_count == 1
+
+
+def test_legacy_definition_write_reuses_atomic_cas_winner(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """기준 SHA만 있는 legacy 행에서도 최초 본문·제목만 저장해야 한다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
+    experiment.base_dev_sha = "a" * 40
+    db_session.commit()
+    winner_body = "winner issue body"
+    winner_title = "[AR] winner issue title"
+
+    async def create_issue_with_winner_definition(
+        _settings: object,
+        *,
+        title: str,
+        body: str,
+        labels: tuple[str, ...],
+    ) -> IssueRef:
+        assert title == winner_title
+        assert body == winner_body
+        return IssueRef(
+            number=548,
+            url="https://github.com/SKYAHO/Autoresearch/issues/548",
+        )
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.create_issue",
+        create_issue_with_winner_definition,
+    )
+
+    conditional_update_sql: list[str] = []
+    with Session(db_session.bind, expire_on_commit=False) as competing_session:
+        original_execute = competing_session.execute
+
+        def execute_with_lost_definition_cas(statement, *args, **kwargs):
+            if isinstance(statement, Update) and statement.table.name == "experiments":
+                compiled = str(statement.compile(dialect=postgresql.dialect()))
+                if "experiments.issue_body IS NULL" in compiled:
+                    conditional_update_sql.append(compiled)
+                    competing_session.connection().execute(
+                        update(Experiment)
+                        .where(Experiment.id == experiment.id)
+                        .values(issue_body=winner_body, issue_title=winner_title)
+                    )
+                    return SimpleNamespace(rowcount=0)
+            return original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(competing_session, "execute", execute_with_lost_definition_cas)
+        result = asyncio.run(
+            publish_experiment_issue(
+                competing_session,
+                _Settings(),
+                experiment.id,
+                _request(),
+            )
+        )
+
+    assert len(conditional_update_sql) == 1
+    assert result.issue_body == winner_body
+    assert result.issue_title == winner_title
 
 
 def test_response_contract_exposes_safe_branch_coordinates_only() -> None:

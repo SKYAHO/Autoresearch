@@ -84,6 +84,17 @@ launcher는 Experiment를 `CREATED`에서 `RUNNING`으로 선점할 때 결정�
 Phase 1은 Job 완료·실패를 새 DB status로 회수하지 않으므로 branch 생성 성공 뒤에도
 Experiment는 `RUNNING`에 남는다. 상태 reconciler는 후속 Phase의 별도 계약이다.
 
+Phase 1에서 `CREATED → RUNNING` 전이의 운영 소유자는 launcher다. 기존 범용 status/event
+API는 호환성을 위해 이 전이를 아직 표현할 수 있지만, launcher보다 먼저 호출하면 Job 이름
+없는 `RUNNING` 행이 되어 두 claim query에서 제외된다. 배포된 UI·자동화는 이 전이를 직접
+호출하지 않으며, 외부 실행 주체에 범용 상태 쓰기를 개방하기 전 launcher 전용 전이 강제
+또는 정체 행 회수 계약을 후속 Phase에서 정해야 한다.
+
+Job 생성 확인 뒤 executor가 실패하면 Phase 1에는 자동 재시도나 DB status reconciler가
+없다. executor와 token-minter는 시크릿을 제외한 예외 종류·정제 사유·HTTP 상태를 Pod
+로그에 남기지만, 기본 TTL 30초 뒤 Job/Pod와 함께 사라진다. 영속 실패 이력과 재시도 정책은
+상태 reconciler와 함께 후속 Phase에서 정의한다.
+
 ## GitHub App Installation Token 계약
 
 GitHub 자격 증명은 개인 PAT가 아니라 GitHub App installation token을 사용한다. 기준 SHA

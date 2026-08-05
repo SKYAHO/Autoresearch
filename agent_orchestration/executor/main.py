@@ -7,7 +7,8 @@ launcher가 실험·이슈·branch·기준 SHA를 봉인해 Pod를 기동하고 
 
 [기능]
 봉인 좌표와 token 파일을 읽어 기존 ref가 같은 SHA인지 확인하고, 없을 때만 생성한다.
-생성 422 경합은 한 번 재조회하여 같은 SHA인 경우에만 멱등 성공으로 처리한다.
+생성 422 경합은 한 번 재조회하여 같은 SHA인 경우에만 멱등 성공으로 처리하고, 실패 시
+자격 증명을 제외한 예외 종류·정제 사유·HTTP 상태와 봉인 좌표를 기록한다.
 
 [비책임]
 GitHub App private key 읽기와 token 발급(`token_minter.py`), ref update/reset/force-push,
@@ -126,13 +127,25 @@ async def _run(refs: RefClient) -> int:
         ExecutorConfigError,
         ExecutorTokenError,
         GitHubRefError,
-    ):
+    ) as error:
+        reason = getattr(error, "reason", str(error))
+        status_code = getattr(error, "status_code", None)
         if coordinates is None:
-            _LOGGER.error("executor branch bootstrap failed")
+            _LOGGER.error(
+                "executor branch bootstrap failed error_type=%s reason=%s "
+                "status_code=%s",
+                type(error).__name__,
+                reason,
+                status_code,
+            )
         else:
             _LOGGER.error(
-                "executor branch bootstrap failed "
+                "executor branch bootstrap failed error_type=%s reason=%s "
+                "status_code=%s "
                 "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
+                type(error).__name__,
+                reason,
+                status_code,
                 coordinates.experiment_id,
                 coordinates.issue_number,
                 coordinates.issue_branch,

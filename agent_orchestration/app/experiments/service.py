@@ -805,15 +805,18 @@ async def publish_experiment_issue(
         body = experiment.issue_body
         title = experiment.issue_title
 
-    candidate_base_dev_sha = (
-        await resolve_dev_sha(settings) if stores_baseline else experiment.base_dev_sha
-    )
     if stores_baseline:
-        # 이 시점에는 위 조회들이 autobegin으로 이미 transaction을 열어 두었으므로
-        # `with session.begin():`을 다시 쓰면 "이미 시작된 transaction" 오류가 난다.
-        # Core UPDATE의 WHERE 절에서 NULL 여부를 다시 검사해야 PostgreSQL이 대기 후
-        # 최신 row에 조건을 재평가한다. ORM 속성 대입은 stale NULL을 근거로 무조건
-        # UPDATE해 먼저 봉인한 SHA를 덮을 수 있다.
+        # 앞선 존재·상한 조회가 연 read transaction을 닫아 GitHub HTTP 대기 중 pool
+        # connection을 점유하지 않는다. 아래 CAS가 NULL 조건을 다시 검사하므로 이 경계가
+        # 기준 SHA의 최초 writer 불변식을 약화하지 않는다.
+        session.commit()
+        candidate_base_dev_sha = await resolve_dev_sha(settings)
+    else:
+        candidate_base_dev_sha = experiment.base_dev_sha
+    if stores_baseline:
+        # Core UPDATE가 새 transaction을 autobegin한다. WHERE 절에서 NULL 여부를 다시
+        # 검사해야 PostgreSQL이 경쟁 writer 대기 후 최신 row에 조건을 재평가한다. ORM
+        # 속성 대입은 stale NULL을 근거로 무조건 UPDATE해 먼저 봉인한 SHA를 덮을 수 있다.
         values: dict[str, object] = {"base_dev_sha": candidate_base_dev_sha}
         if stores_issue_definition:
             values.update(
@@ -849,10 +852,29 @@ async def publish_experiment_issue(
         body = experiment.issue_body
         title = experiment.issue_title
     elif stores_issue_definition:
-        experiment.issue_body = body
-        experiment.issue_title = title
-        experiment.issue_branch = None
+        # 기준 SHA만 이미 봉인된 legacy 행도 최초 본문·제목만 이긴다. ORM 대입은 동시
+        # 요청의 마지막 commit이 먼저 저장된 정의를 덮을 수 있으므로 NULL-only CAS를 쓴다.
+        session.execute(
+            update(Experiment)
+            .where(
+                Experiment.id == experiment.id,
+                Experiment.issue_body.is_(None),
+            )
+            .values(
+                issue_body=body,
+                issue_title=title,
+                issue_branch=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
         session.commit()
+        session.refresh(experiment)
+        session.commit()
+        body = experiment.issue_body
+        title = experiment.issue_title
+
+    if not isinstance(body, str) or not isinstance(title, str):
+        raise GitHubIssueError("issue_definition_freeze_failed")
 
     # ② 발행. 브랜치 이름의 slug는 이슈 번호와 무관하므로 발행 전에 미리 검증한다 —
     # 여기서 실패하면 아직 이슈가 열리지 않았으므로 "이슈는 열렸지만 DB에 기록되지
