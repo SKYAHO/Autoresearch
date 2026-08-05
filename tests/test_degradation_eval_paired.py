@@ -98,3 +98,53 @@ def test_new_fields_survive_json_round_trip():
 
     assert restored.training_run_id == "a" * 32
     assert restored.seed == 42
+
+
+# ---------------------------------------------------------------------------
+# 측정 run 표식 (#514 Task 2, spec §8.3(4))
+#
+# `verify_training_comparison`이 challenger run에 comparison manifest를 되쓰므로
+# (`training_comparison.py:487-492`), 그것만 보면 승격 절차를 밟은 run처럼 읽힌다.
+# `defer_registration`은 run 어디에도 기록되지 않아 구분할 방법이 없었다.
+# ---------------------------------------------------------------------------
+
+
+def test_rolling_origin_marks_training_run_as_measurement_only(monkeypatch):
+    """`run_rolling_origin`의 cutoff 학습이 측정용 표식을 run에 남긴다."""
+    from src.pipeline import degradation_eval
+
+    captured: dict = {}
+
+    def _fake_main(**kwargs):
+        captured.update(kwargs)
+        raise _StopAfterTraining
+
+    monkeypatch.setattr(degradation_eval.build_training_dataset, "main", lambda **_: None)
+    monkeypatch.setattr(
+        degradation_eval, "load_training_snapshot_manifest", lambda _: _manifest()
+    )
+    monkeypatch.setattr(degradation_eval.train, "main", _fake_main)
+
+    try:
+        degradation_eval.run_rolling_origin(
+            "2026-07-20",
+            window_days=3,
+            horizon_days=2,
+            run_root=Path("__unused__"),
+            min_rows_per_day=1,
+            min_auc_drop=0.01,
+            seed=42,
+            overwrite=True,
+        )
+    except _StopAfterTraining:
+        pass
+
+    params = captured.get("extra_params") or {}
+    assert params.get("measurement_only") == "true"
+    # `defer_registration`은 train.main의 분기에만 쓰여 run에 남지 않았다 — 여기서 남긴다.
+    assert params.get("defer_registration") == "true"
+    assert captured.get("defer_registration") is True
+
+
+class _StopAfterTraining(RuntimeError):
+    """학습 호출 인자만 보고 멈춘다 — 평가일 조립(BigQuery)까지 가지 않는다."""

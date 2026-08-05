@@ -448,12 +448,32 @@ reproducibility/split/split_manifest.json
 안 된다.** 조립용(공유)과 모델 피처 선택용(조건별)으로 역할을 나눠야 한다. 이 변경은
 설계 결정이므로 리뷰 승인 후 §4.2에 반영한다.
 
-#### (4) 남은 확인 (Task 2에서)
+#### (4) 확인 완료 — `verify_training_comparison`을 쓴다 (Task 2, 2026-08-05)
 
-- `_verify_promotion_evidence`가 receipt 없는 run에서 `None`을 돌려주는지
-  (docstring은 "양쪽 run에 receipt가 없으면 필요 없다"고 적었으나 코드 미확인).
-- `_publish_verified_comparison`이 challenger run에 artifact를 **되쓴다** — 측정 run에
-  부수효과를 남기는 것이 허용되는지.
+**receipt 없는 run은 통과한다.** `_verify_promotion_evidence`는 baseline/challenger의
+plan·metric receipt **네 개가 모두 `None`일 때만** `None`을 돌려주고, 하나라도 있으면
+`partial promotion evidence`로 거부한다(`training_comparison.py:382-395`).
+rolling-origin은 네 개 모두 없다 — receipt 발행은 `promotion_evidence_enabled`
+(= `experiment_plan_receipt_path is not None`, `train.py:436`) 안에서만 일어나는데
+`degradation_eval`은 plan receipt를 넘기지 않는다(참조 0건). **evidence store도 필요
+없다.**
+
+**부수효과는 받아들인다.** `_publish_verified_comparison`이 challenger run에
+comparison manifest를 artifact로 남긴다(`training_comparison.py:487-492`).
+대안(=`training_snapshot_manifest` 대조만으로 §3 구성)은 부수효과가 0이지만
+**split membership 동일성 검증을 잃는다** — manifest에는 split 정보가 없다. 그런데 그
+검증이야말로 "두 조건이 정말 같은 데이터로 비교됐는가"를 증명하는 장치의 존재 이유이므로
+(이 계열 장치 전체가 "시드 10개 중 7개는 이겼는데 3개에서 차이가 커서 평균만 높았던"
+문제에서 출발했다), 그것을 포기하면서 부수효과를 피하는 것은 손해가 크다.
+
+`#485` spec §1의 "측정·리포트 산출물이지 승격 후보가 아니다"는 **모델 레지스트리 등록**
+경계이고, artifact 하나가 붙는 것은 등록도 alias 전환도 아니다.
+
+**대신 run에 측정용 표식을 남긴다.** `defer_registration`은 지금까지 run 어디에도
+기록되지 않아(`train.py:929` 분기에만 쓰임) comparison artifact만 보면 승격 절차를 밟은
+run처럼 읽혔다. `run_rolling_origin`이 `train.main`의 기존 `extra_params` 통로로
+`measurement_only`/`defer_registration`/`measurement_kind`를 남긴다 — **공유 코드
+(`train.py`·`training_comparison.py`)는 고치지 않는다.**
 
 ### 8.4 `#472`에 넘기는 항목 (이 spec 범위 밖)
 

@@ -841,6 +841,16 @@ def run_rolling_origin(
         random_state=seed,
         extra_features=extra_features,
         experiment=experiment,
+        # 이 run이 **측정용**임을 run 자체에 남긴다(#514). `verify_training_comparison`이
+        # 두 조건을 비교하면서 challenger run에 comparison manifest를 artifact로 되쓰는데
+        # (`training_comparison.py:487-492`), 그것만 보면 승격 절차를 밟은 run처럼 읽힌다.
+        # `defer_registration`은 지금까지 run 어디에도 기록되지 않아(분기에만 쓰임) 나중에
+        # 이 run을 연 사람이 구분할 방법이 없었다.
+        extra_params={
+            "measurement_only": "true",
+            "defer_registration": "true",
+            "measurement_kind": "rolling_origin_degradation",
+        },
         # 측정·리포트 산출물이지 승격 후보가 아니다(spec §1 provenance 절과 같은 이유) —
         # 등록 없이 지표만 받는다(window_holdout_eval.py와 같은 관례).
         defer_registration=True,
