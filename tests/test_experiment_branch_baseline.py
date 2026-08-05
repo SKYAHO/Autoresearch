@@ -174,6 +174,35 @@ def test_baseline_lookup_releases_read_transaction_before_github(
     assert result.base_dev_sha == "a" * 40
 
 
+def test_publication_retry_releases_read_transaction_before_marker_lookup(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """봉인 완료 재시도도 marker 조회 중 DB connection을 점유하지 않아야 한다."""
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
+    experiment.base_dev_sha = "a" * 40
+    experiment.issue_body = "stored issue body"
+    experiment.issue_title = "[AR] stored issue title"
+    db_session.commit()
+
+    async def find_without_open_transaction(_settings: object, *, marker: str) -> IssueRef:
+        assert db_session.in_transaction() is False
+        return IssueRef(
+            number=546,
+            url="https://github.com/SKYAHO/Autoresearch/issues/546",
+        )
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.find_issue_by_marker",
+        find_without_open_transaction,
+    )
+
+    result = asyncio.run(
+        publish_experiment_issue(db_session, _Settings(), experiment.id, _request())
+    )
+
+    assert result.issue_number == 546
+
+
 def test_competing_baseline_freeze_reuses_atomic_cas_winner(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

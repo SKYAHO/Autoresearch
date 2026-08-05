@@ -887,6 +887,9 @@ async def publish_experiment_issue(
     # 없는 것과 같아져 중복 이슈를 만들 수 있다. 그래서 예외를 그대로 올려 요청을
     # 실패시킨다 — 호출자는 사유(예: `authentication_failed`)를 보고 무엇을 고칠지
     # 안다. 중복 이슈를 만드는 것보다 사람이 보는 편이 낫다.
+    # 이미 기준선·본문이 봉인된 재시도도 앞선 존재·상한 조회로 read transaction이
+    # 열려 있으므로, marker 조회와 create_issue의 외부 대기 전에 공통으로 닫는다.
+    session.commit()
     existing = await find_issue_by_marker(settings, marker=marker_for(experiment.id))
     reference = existing or await create_issue(
         settings, title=title, body=body, labels=(TRIGGER_LABEL,)
