@@ -84,6 +84,7 @@
 - [Plan — Agent Orchestration 실험 워크벤치 v0](archive/plans/2026-08-01-agent-orchestration-experiment-workbench-v0.md) (구현 완료)
 - [Spec — 실험 Step 추적 v0](specs/2026-08-04-experiment-step-tracking-v0.md) — 에이전트 진행 상황 실시간 관찰 계약 (#518 구현 완료, 계약은 유효)
 - [Spec — 실험 Job 기준 커밋 고정 계약](specs/2026-08-05-experiment-job-baseline-freeze.md) — 대기열·동시 실행 중에도 `base_dev_sha`를 고정하고 executor Pod가 그 SHA에서만 exp branch를 생성하는 Phase 1 계약 (#546)
+- [Plan — 실험 브랜치 Bootstrap Kubernetes Job Phase 1](plans/2026-08-05-experiment-branch-bootstrap-k8s-job-phase1.md) — GitHub App installation token, launcher 선점·동시 상한, executor ref 생성과 infra 적용 순서 (#546)
 - [Plan — 실험 Step 추적 v0](archive/plans/2026-08-04-experiment-step-tracking-v0.md) (구현 완료·아카이브)
 - [Spec — Agent Orchestration `/chat` API 계약](specs/2026-08-01-agent-orchestration-chat-api-contract.md) — 내부 호출 서비스의 요청·응답·오류·저장 의미 정본
 - [Spec — 가설 수신부터 `[AR]` 이슈 발행까지](specs/2026-08-04-hypothesis-to-auto-research-issue.md) — 필드 소유권 3분할, 시드 고정, `gh` 발행 경계, 멱등성 (#516)
@@ -141,6 +142,8 @@
   내부 호출 서비스의 요청·응답·오류·저장 의미 정본
 - [실험 Job 기준 커밋 고정 계약](specs/2026-08-05-experiment-job-baseline-freeze.md) —
   Job 대기열과 동시 실행 중 기준 SHA·비교 집합 기준선을 고정하는 #546 Phase 1 계약
+- [실험 브랜치 Bootstrap Kubernetes Job Phase 1 구현 계획](plans/2026-08-05-experiment-branch-bootstrap-k8s-job-phase1.md) —
+  기준 SHA 봉인, GitHub App token, launcher·executor·infra companion 변경의 fail-first 구현 순서
 - [가설 수신부터 `[AR]` 이슈 발행까지](specs/2026-08-04-hypothesis-to-auto-research-issue.md) —
   Issue Form 18필드의 LLM/사용자/서버 소유권 분할, `POLICY_SEEDS` 고정, `gh` 발행 경계와 멱등성 3중 방어
 

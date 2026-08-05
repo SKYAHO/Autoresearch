@@ -25,10 +25,11 @@ Pod가 시작할 때마다 최신 ref를 읽어 브랜치를 만들면, 동시 �
 ## 기준선 수명주기
 
 ```text
-Experiment 수락
-  → dev ref를 한 번 읽어 base_dev_sha 확정
-  → Experiment 행에 issue_number, issue_branch, base_dev_sha 저장
-  → launcher가 세 좌표를 executor Job에 전달
+Experiment 이슈 발행 요청 수락
+  → read-only GitHub App installation token으로 dev ref를 한 번 읽음
+  → issue_body, issue_title, base_dev_sha를 발행 전에 먼저 저장
+  → 이슈 발행 후 issue_number, issue_branch 저장
+  → launcher가 experiment_id, issue_number, issue_branch, base_dev_sha를 executor Job에 전달
   → Pod가 저장된 base_dev_sha에서만 exp branch 생성
 ```
 
@@ -43,6 +44,10 @@ Experiment 수락
 4. 재시도에서 branch가 이미 있으면 Phase 1은 tip이 정확히 `base_dev_sha`와 같은 경우만
    멱등 성공으로 인정한다. 다른 tip은 사람이 만든 변경 또는 이전 실행의 부작용일 수
    있으므로 새 ref를 만들거나 덮어쓰지 않고 실패한다.
+
+`base_dev_sha`는 이슈 발행보다 먼저 commit한다. 이슈는 열렸지만 API 응답이나 DB 후속
+쓰기가 실패한 경우에도 재호출이 최신 `dev`를 다시 읽어 기준선을 바꾸면 안 되기 때문이다.
+이미 저장된 `base_dev_sha`가 있으면 재발행은 그 값을 그대로 사용한다.
 
 현재 `Experiment`에는 `base_dev_sha` 컬럼이 없으므로, 구현 시 migration과 API 응답·Job
 입력 계약을 함께 추가해야 한다. 기존 `issue_branch`는 이슈 발행 직후 계산해 저장한
@@ -69,10 +74,61 @@ Actions workflow는 더 이상 ref를 생성하지 않는다. 그렇지 않으�
 branch를 동시에 만들 수 있다.
 
 Pod가 GitHub에 branch를 만들려면 GitHub Contents write 권한이 필요하다. 이 권한은
-launcher의 Kubernetes Job 생성 권한과 분리한다. GitHub 자격 증명 자체의 ref 범위 제한이
-충분한지, ruleset 또는 별도 push broker가 필요한지는 배포 계약에서 명시적으로 확정한다.
-branch 생성 이후의 Codex 실행, 코드 변경, 검증, candidate SHA 생성·push는 이 Phase 1의
-범위가 아니다.
+launcher의 Kubernetes Job 생성 권한과 분리한다. branch 생성 이후의 Codex 실행, 코드
+변경, 검증, candidate SHA 생성·push는 이 Phase 1의 범위가 아니다.
+
+launcher는 Experiment를 `CREATED`에서 `RUNNING`으로 선점할 때 결정론적 Job 이름을 먼저
+저장하고, Kubernetes에서 그 Job이 존재함을 확인한 시각을 별도 기록한다. 선점과 Job 생성
+사이에서 launcher가 종료되면 다음 tick은 생성 확인 시각이 없는 행만 같은 이름과 봉인된
+좌표로 재개한다. 생성 확인 시각이 있는 행은 TTL로 Job이 삭제되어도 다시 만들지 않는다.
+Phase 1은 Job 완료·실패를 새 DB status로 회수하지 않으므로 branch 생성 성공 뒤에도
+Experiment는 `RUNNING`에 남는다. 상태 reconciler는 후속 Phase의 별도 계약이다.
+
+## GitHub App Installation Token 계약
+
+GitHub 자격 증명은 개인 PAT가 아니라 GitHub App installation token을 사용한다. 기준 SHA
+조회와 branch 생성은 권한 수명이 다르므로 App도 분리한다.
+
+| App 역할 | 설치 범위 | 최대 repository permission | private key 보유 주체 | 사용 시점 |
+| --- | --- | --- | --- | --- |
+| baseline reader | `SKYAHO/Autoresearch` 한 저장소 | Contents read | Agent Orchestration API Pod | 이슈 발행 전 `heads/dev` 1회 조회 |
+| branch writer | `SKYAHO/Autoresearch` 한 저장소 | Contents write | executor의 token-minter initContainer | executor Pod 시작 직후 ref 조회·생성 |
+
+baseline reader의 App은 read-only라 API가 손상되어도 ref를 만들거나 수정할 수 없다. API는
+installation token을 발급해 `heads/dev`를 읽고, 검증한 40자리 SHA를 이슈 발행보다 먼저
+DB에 저장한다. 기존 `issues: write` 전용 `ORCH_GITHUB_TOKEN`은 이슈 발행에만 유지하며
+Contents 권한으로 넓히지 않는다.
+
+branch writer의 private key는 executor 애플리케이션 컨테이너에 전달하지 않는다.
+
+```text
+executor Pod 시작
+  → token-minter initContainer만 GitHub App private key를 read-only mount
+  → installation token 발급
+  → medium: Memory emptyDir에 mode 0400 파일로 저장
+  → initContainer 종료
+  → executor는 token 파일만 읽어 GitHub Git refs REST API 호출
+  → Pod 종료와 함께 token 파일 삭제, token은 최대 1시간 뒤 만료
+```
+
+토큰은 환경 변수, command argument, Git remote URL, `.git/config`, stdout/stderr에 넣지
+않는다. Phase 1은 checkout이나 push를 하지 않고 Git refs REST API만 사용한다. 기존 ref가
+없으면 `POST /repos/{owner}/{repo}/git/refs`로 생성하고, 이미 있으면 tip 조회 결과가
+`base_dev_sha`와 정확히 같은 경우만 멱등 성공으로 인정한다. 401 또는 토큰 만료는 새
+토큰을 같은 Pod에서 반복 발급하지 않고 Job 실패로 처리하며, 새 Job 시도가 새 토큰을
+발급한다.
+
+GitHub installation token은 저장소 단위 Contents 권한이며 `exp/*` ref만 쓰도록 제한할 수
+없다. 따라서 `main`·`dev` ruleset은 계속 마지막 방어선이다. Phase 1의 executor 이미지는
+검증된 branch bootstrap 코드만 포함하고 Codex 또는 사용자 코드를 실행하지 않는다.
+Codex workspace-write가 들어오는 후속 단계는 branch writer private key와 token을 같은
+Pod에 두지 않는다. 그 단계에 들어가기 전에 token broker 또는 동등한 별도 쓰기 경계를
+설계·승인해야 한다.
+
+현재 dev GKE는 Calico NetworkPolicy를 사용하므로 GKE Dataplane V2 전용
+`FQDNNetworkPolicy`를 바로 적용할 수 없다. Phase 1에서는 branch bootstrap label을 가진
+신뢰된 Pod에만 TCP 443 공용 egress를 허용하고 RFC1918·Service·link-local 대역을
+제외한다. 이 예외를 Codex 실행 Pod에 그대로 승계하지 않는다.
 
 기존 GitHub Actions bot marker는 branch 생성과 함께 만들어졌다. Phase 1에서 marker를
 새로 쓰는 구현은 범위 밖이다. executor가 실제 코드를 실행하는 다음 단계 전에, marker의
@@ -81,10 +137,11 @@ branch 생성 이후의 Codex 실행, 코드 변경, 검증, candidate SHA 생�
 
 ## 소유 경계
 
-- `Autoresearch`: 기준 SHA를 Experiment에 저장하는 API·migration, launcher와 executor
-  이미지, Job 입력 검증, branch 생성의 멱등성 검증을 소유한다.
+- `Autoresearch`: 기준 SHA를 Experiment에 저장하는 API·migration, GitHub App token
+  발급·Git refs 클라이언트, launcher와 executor 이미지, Job 입력 검증, branch 생성의
+  멱등성 검증을 소유한다.
 - `Autoresearch-infra`: CronJob, ServiceAccount, RBAC, GitHub 자격 증명 보관·주입,
-  NetworkPolicy와 ResourceQuota를 소유한다.
+  initContainer·memory volume·NetworkPolicy와 ResourceQuota를 소유한다.
 - `Autoresearch-airflow`: 이 Phase 1에서 관여하지 않는다. candidate SHA가 만들어진 뒤의
   학습·평가 소비 계약은 후속 단계에서 정의한다.
 
@@ -92,11 +149,15 @@ branch 생성 이후의 Codex 실행, 코드 변경, 검증, candidate SHA 생�
 
 - Experiment 수락 뒤 `dev`가 전진해도, 나중에 실행한 Pod의 새 branch 부모는 저장된
   `base_dev_sha`와 정확히 같다.
-- 같은 비교 집합의 100개 Experiment는 동시 실행 상한이 5여도 모두 같은
-  `base_dev_sha`를 Job 입력으로 받는다.
+- 후속 비교 집합 등록 계약으로 동일 SHA가 저장된 100개 Experiment는 동시 실행 상한이
+  5여도 모두 저장된 같은 `base_dev_sha`를 Job 입력으로 받는다. Phase 1에서는 이 성질을
+  launcher 입력 테스트로만 검증한다.
 - `base_dev_sha`가 없거나 형식 오류·조회 불가이면 Git ref를 만들지 않는다.
 - 동일한 Job 재시도는 같은 SHA의 기존 ref만 성공으로 인정하며, 다른 ref tip을
   덮어쓰지 않는다.
+- executor 애플리케이션 컨테이너에는 GitHub App private key가 mount되지 않고, token은
+  메모리 volume의 파일로만 전달된다.
+- token, private key, 전체 인증 header가 로그·환경 변수·Git remote에 남지 않는다.
 - `auto-experiment` label만으로 GitHub Actions가 exp branch를 만들지 않는다.
 
 ## 비범위
