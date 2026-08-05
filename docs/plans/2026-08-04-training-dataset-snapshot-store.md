@@ -26,6 +26,10 @@
 - 커밋 메시지: `<type>: <설명>` — type은 `feat`/`fix`/`refactor`/`docs`/`chore`/`test`.
   제목 50자 이내, 현재형 동사로 끝맺는다.
 - 시크릿·생성된 데이터 파일·`.env`를 커밋하지 않는다.
+- **cross-task 스텁 판별**: 어떤 task 안에 `NotImplementedError`나 미완성으로 보이는
+  코드가 있으면, 다음 task가 그것을 채우기로 계획에 적혀 있는지 먼저 확인한다. 그렇다면
+  결함이 아니라 정보성 확인 사항으로 분류한다. 이 계획에서 해당하는 것은 Task 3의
+  `_update_pointer` 하나뿐이다(Task 4가 채운다).
 
 ### 로컬 검증 명령 (이 계획 전체에서 사용)
 
@@ -158,7 +162,7 @@ Expected: PASS. 기존 `require_explicit_experiment_output` 테스트가 그대�
 
 ```bash
 git add src/pipeline/build_training_dataset.py tests/test_build_training_dataset.py
-git commit -m "refactor: 실험 조립 판정을 is_experiment_assembly predicate로 분리
+git commit -m "refactor: 실험 조립 판정을 predicate로 분리한다
 
 게시 게이팅(#530)이 같은 판정을 필요로 하는데 조건식이
 require_explicit_experiment_output 안에 갇혀 있었다. 동작은 바뀌지 않는다.
@@ -324,7 +328,7 @@ Expected: PASS
 
 ```bash
 git add src/pipeline/training_provenance.py src/pipeline/build_training_dataset.py tests/test_training_provenance.py
-git commit -m "feat: snapshot manifest에 실측 커버리지와 by-date 포인터 계약 추가
+git commit -m "feat: snapshot manifest에 커버리지와 포인터 계약 추가
 
 Refs #530"
 ```
@@ -669,7 +673,14 @@ def publish_snapshot(
     ) from last_error
 ```
 
-`_update_pointer`는 Task 4에서 구현한다. 지금은 파일 하단에 아래 스텁을 둔다:
+`_update_pointer`는 Task 4에서 구현한다. 지금은 파일 하단에 아래 스텁을 둔다.
+
+> **이 스텁은 의도된 것이며 결함이 아니다.** Task 3의 테스트는 전부
+> `record_pointer=False`로만 호출하므로 이 스텁은 Task 3 안에서 실행 경로를 한 번도
+> 타지 않는다. 그리고 Task 4 Step 2가 기대하는 실패가 정확히
+> `NotImplementedError: Task 4에서 구현한다`이다 — 이 스텁이 Task 4의 TDD RED 지점
+> 자체다. 없애면 Task 4의 RED 단계가 성립하지 않는다. 리뷰는 이 항목을
+> Important/Minor가 아니라 정보성 확인 사항으로 분류한다.
 
 ```python
 def _update_pointer(bucket, *, prefix, manifest, dataset_sha256, uri) -> None:
@@ -685,7 +696,7 @@ Expected: PASS (3 tests)
 
 ```bash
 git add src/pipeline/training_snapshot_store.py tests/test_training_snapshot_store.py
-git commit -m "feat: content-addressed 학습 스냅샷 write-once 게시 스토어 추가
+git commit -m "feat: content-addressed 스냅샷 게시 스토어를 추가한다
 
 Refs #530"
 ```
@@ -1163,7 +1174,7 @@ Expected: baseline과 같은 1 failed만 남는다.
 
 ```bash
 git add src/cli.py tests/test_cli.py
-git commit -m "feat: build-features/run-pipeline에 --snapshot-root를 추가한다
+git commit -m "feat: 조립 CLI에 --snapshot-root 옵션을 추가한다
 
 Refs #530"
 ```
