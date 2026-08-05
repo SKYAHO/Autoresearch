@@ -275,7 +275,7 @@ def test_snapshot_pointer_caps_history_at_ten() -> None:
             dataset_sha256=f"{index:064d}",
             published_at=datetime(2026, 8, 4, tzinfo=timezone.utc),
         )
-        for index in range(12)
+        for index in range(MAX_POINTER_HISTORY + 2)
     ]
     with pytest.raises(ValidationError):
         TrainingSnapshotPointer(
