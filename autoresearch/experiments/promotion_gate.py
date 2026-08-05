@@ -41,10 +41,22 @@ class PromotionCriteria:
     maximum_guardrail_regression: float | None
 
 
+# 게이트 판정 정책의 버전(#472 §5). 하드 리밋 값은 열화 재측정으로 바뀔 수 있어
+# **같은 코드가 다른 날 다른 판정**을 낼 수 있으므로, 어떤 정책으로 판정했는지가 결과에
+# 남아야 승격 이력을 해석할 수 있다.
+#
+# `promotion_evidence.PROMOTION_POLICY_VERSION`("promotion-policy-v1")과는 **다른 축**이다
+# — 그쪽은 시드·신뢰구간을 다루는 통계 판정 정책이고, 이쪽은 Issue Form 기준과 하드
+# 리밋을 다루는 게이트 정책이다. 이름이 비슷해 같은 것으로 오독되기 쉽다.
+GATE_POLICY_VERSION = "gate-policy-v1"
+
+
 @dataclass(frozen=True)
 class GateDecision:
     passed: bool
     reason: str
+    # 기본값을 둬서 기존 위치 인자 생성(`GateDecision(False, "reason")`)을 깨지 않는다.
+    policy_version: str = GATE_POLICY_VERSION
 
 
 def _field(body: str, label: str) -> str:

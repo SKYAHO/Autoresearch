@@ -659,3 +659,63 @@ def test_metric_failure_without_hard_limit_keeps_existing_reason() -> None:
 
     assert decision.passed is False
     assert decision.reason == "primary_metric_below_delta"
+
+
+# ---------------------------------------------------------------------------
+# 게이트 정책 버전 (#472 Task 3, spec §5)
+#
+# 하드 리밋 값은 열화 재측정으로 바뀔 수 있다 — 같은 코드가 다른 날 다른 판정을 낼 수
+# 있으므로, **어떤 정책으로 판정했는지**가 결과에 남아야 승격 이력을 해석할 수 있다.
+# ---------------------------------------------------------------------------
+
+
+def test_every_decision_carries_gate_policy_version() -> None:
+    """통과·거부 모든 경로가 정책 버전을 싣는다 — 한 경로만 빠져도 이력이 끊긴다."""
+    plain = parse_criteria(_issue_body())
+    guarded = parse_criteria(_guardrail_body())
+
+    decisions = [
+        # 지표 통과
+        evaluate(plain, primary_candidate=0.781, primary_baseline=0.778),
+        # 지표 미달 + 기한 미도달
+        evaluate(plain, primary_candidate=0.778, primary_baseline=0.778),
+        # 지표 미달 + 기한 도달
+        evaluate(
+            plain,
+            primary_candidate=0.778,
+            primary_baseline=0.778,
+            hard_retrain_limit_days=5,
+            days_since_last_promotion=9,
+        ),
+        # guardrail 값 누락
+        evaluate(
+            guarded,
+            primary_candidate=0.781,
+            primary_baseline=0.778,
+        ),
+        # guardrail 악화
+        evaluate(
+            guarded,
+            primary_candidate=0.781,
+            primary_baseline=0.778,
+            guardrail_candidate=0.310,
+            guardrail_baseline=0.300,
+        ),
+    ]
+
+    assert {decision.policy_version for decision in decisions} == {"gate-policy-v1"}
+
+
+def test_gate_policy_version_is_distinct_from_promotion_policy_version() -> None:
+    """`promotion-policy-v1`(통계 판정 정책)과 **다른 축**이다(spec §5).
+
+    이름이 비슷해 같은 것으로 오독되면, 한쪽을 올리면서 다른 쪽도 올려야 한다고
+    착각하게 된다.
+    """
+    from src.pipeline.promotion_evidence import PROMOTION_POLICY_VERSION
+
+    decision = evaluate(
+        parse_criteria(_issue_body()), primary_candidate=0.781, primary_baseline=0.778
+    )
+
+    assert decision.policy_version != PROMOTION_POLICY_VERSION
