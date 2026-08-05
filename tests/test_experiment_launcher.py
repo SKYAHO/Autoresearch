@@ -662,6 +662,45 @@ def test_tick_does_not_create_missing_recovery_when_active_limit_is_full(
     assert experiment.executor_job_created_at is None
 
 
+def test_tick_confirms_existing_recovery_behind_missing_one_at_full_limit(
+    session: Session,
+) -> None:
+    missing = _experiment(
+        session,
+        experiment_id=uuid.UUID(int=1),
+        status=ExperimentStatus.RUNNING,
+        issue_number=546,
+        issue_branch="exp/546-missing",
+        job_name="ar-branch-missing",
+    )
+    existing = _experiment(
+        session,
+        experiment_id=uuid.UUID(int=2),
+        status=ExperimentStatus.RUNNING,
+        issue_number=547,
+        issue_branch="exp/547-existing",
+        job_name="ar-branch-existing",
+    )
+    missing.updated_at = datetime(2026, 8, 5, 1, 0, tzinfo=UTC)
+    existing.updated_at = datetime(2026, 8, 5, 2, 0, tzinfo=UTC)
+    session.commit()
+    kubernetes = FakeJobs(
+        existing_names={"ar-branch-existing"},
+        active_jobs=1,
+    )
+
+    run_tick(
+        session,
+        kubernetes,
+        _settings(max_concurrent_experiments=1),
+        clock=lambda: UTC_NOW,
+    )
+
+    assert kubernetes.get_calls == [missing.executor_job_name, existing.executor_job_name]
+    assert missing.executor_job_created_at is None
+    assert existing.executor_job_created_at == UTC_NOW
+
+
 def test_tick_does_not_recreate_ttl_deleted_confirmed_job(
     session: Session,
 ) -> None:
