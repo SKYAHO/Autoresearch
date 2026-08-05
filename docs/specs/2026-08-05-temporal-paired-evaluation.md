@@ -238,6 +238,13 @@ TemporalDelta
   `direction_vs_offline_metric`은 `not_applicable`이 된다 — 적은 표본으로 방향을 만들지
   않는다(§3.2와 같은 결).
 
+**알려진 한계**: `recent_delta`의 표본은 `recent_window_days`(기본 3)개뿐이라 노이즈에
+취약하다. 세 후보 중에서는 목적에 가장 맞지만, 하루치 변동이 부호를 뒤집을 수 있다.
+**지금 풀지 않는다** — 실제로 노이즈가 판정을 뒤집는 사례가 실측되면 그때
+`recent_window_days`를 늘리거나 신뢰구간을 더하는 후속 이슈로 대응한다. 관측 없이 미리
+보정하면 이 spec의 범위가 커지고, 보정값 자체가 또 근거 없는 상수가 된다
+(`min_auc_drop`을 실측 없이 정하지 않은 것과 같은 이유 — `#485` spec §7.3).
+
 ### 6.1 `evaluation_id` 해시 결정에 영향이 있다
 
 `#485` spec §5.3은 `temporal_signal`을 `evaluation_id` 해시 payload에서 제외하면서
