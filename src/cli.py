@@ -319,12 +319,26 @@ def train_model(
         "--promotion-evidence-root",
         help="plan/held-out metric receipt를 검증·기록할 gs://bucket/prefix root",
     ),
+    dataset_uri: Optional[str] = typer.Option(
+        None,
+        "--dataset-uri",
+        help=(
+            "게시된 스냅샷 gs://<root>/by-hash/<sha>/ 를 재조립 없이 학습 입력으로 씁니다(#530). "
+            "내려받은 뒤 sha·schema·row_count를 재검증하며, 불일치하면 학습 전에 중단합니다."
+        ),
+    ),
 ) -> None:
     """LightGBM 모델 훈련 (train/val/test 3-way split, test는 완전 held-out)."""
     promotion_evidence_kwargs = _promotion_evidence_kwargs(
         experiment_plan_receipt=experiment_plan_receipt,
         promotion_evidence_root=promotion_evidence_root,
     )
+    resolved_dataset_uri = _optional_cli_string(dataset_uri)
+    if resolved_dataset_uri is not None and _optional_cli_string(data_path) is not None:
+        raise typer.BadParameter(
+            "--dataset-uri는 --data-path와 함께 쓸 수 없습니다 — "
+            "스냅샷이 학습 입력을 이미 확정했습니다"
+        )
     train.main(
         config_path=config_path,
         data_path=data_path,
@@ -340,6 +354,7 @@ def train_model(
         sampler_seed=sampler_seed,
         extra_features=_parse_extra_features(extra_features),
         experiment=experiment,
+        dataset_uri=resolved_dataset_uri,
         **promotion_evidence_kwargs,
     )
 
@@ -454,6 +469,14 @@ def run_pipeline(
             "by-date 포인터가 경합합니다(#530)."
         ),
     ),
+    dataset_uri: Optional[str] = typer.Option(
+        None,
+        "--dataset-uri",
+        help=(
+            "게시된 스냅샷 gs://<root>/by-hash/<sha>/ 를 재조립 없이 학습 입력으로 씁니다(#530). "
+            "내려받은 뒤 sha·schema·row_count를 재검증하며, 불일치하면 학습 전에 중단합니다."
+        ),
+    ),
 ) -> None:
     """전체 파이프라인 실행: build-features -> train-model -> evaluate-model -> 등록.
 
@@ -464,67 +487,104 @@ def run_pipeline(
     실제로 쓴 이름이 MLflow lineage에 남는다.
     `--split-seed`, `--model-seed`, `--sampler-seed`는 verified comparison용으로
     분리해 전달하며, snapshot sidecar가 없거나 검증에 실패하면 학습을 시작하지 않는다.
+    `--dataset-uri`를 주면 build-features를 완전히 생략하고 게시된 스냅샷을
+    재사용한다(#530) — `--dataset-path`·`--events-start-date`·`--events-end-date`와는
+    함께 쓸 수 없다(스냅샷이 그 값들을 이미 확정했다).
     """
     experiment_features = _parse_extra_features(extra_features)
     promotion_evidence_kwargs = _promotion_evidence_kwargs(
         experiment_plan_receipt=experiment_plan_receipt,
         promotion_evidence_root=promotion_evidence_root,
     )
+
+    resolved_dataset_uri = _optional_cli_string(dataset_uri)
+    if resolved_dataset_uri is not None:
+        conflicting = {
+            "--dataset-path": _optional_cli_string(dataset_path),
+            "--events-start-date": _optional_cli_string(events_start_date),
+            "--events-end-date": _optional_cli_string(events_end_date),
+        }
+        named = [name for name, value in conflicting.items() if value is not None]
+        if named:
+            raise typer.BadParameter(
+                f"--dataset-uri는 {', '.join(named)}와 함께 쓸 수 없습니다 — "
+                "스냅샷이 학습 구간과 입력을 이미 확정했습니다"
+            )
+
     typer.echo("=" * 70)
     typer.echo("전체 파이프라인 실행")
     typer.echo("=" * 70)
 
-    typer.echo("\n[1/4] build-features 실행...")
-    # 실험 피처는 학습·평가만이 아니라 **조립에도** 넘긴다(#454) — 조립이 보존하지 않으면
-    # 학습의 --extra-features가 승격할 컬럼 자체가 CSV에 없어 실행이 성립하지 않는다.
-    assembly = build_training_dataset.main(
-        output_path=dataset_path,
-        events_start_date=events_start_date,
-        events_end_date=events_end_date,
-        **_coverage_kwargs(min_coverage_days),
-        **_assembly_feature_kwargs(
-            feature_service=feature_service, extra_features=experiment_features
-        ),
-        **_snapshot_root_kwargs(snapshot_root),
-    )
+    snapshot_uri: Optional[str] = resolved_dataset_uri
+    if resolved_dataset_uri is None:
+        typer.echo("\n[1/4] build-features 실행...")
+        # 실험 피처는 학습·평가만이 아니라 **조립에도** 넘긴다(#454) — 조립이 보존하지 않으면
+        # 학습의 --extra-features가 승격할 컬럼 자체가 CSV에 없어 실행이 성립하지 않는다.
+        assembly = build_training_dataset.main(
+            output_path=dataset_path,
+            events_start_date=events_start_date,
+            events_end_date=events_end_date,
+            **_coverage_kwargs(min_coverage_days),
+            **_assembly_feature_kwargs(
+                feature_service=feature_service, extra_features=experiment_features
+            ),
+            **_snapshot_root_kwargs(snapshot_root),
+        )
+        coverage = assembly.coverage
+        snapshot_uri = assembly.snapshot_uri
+    else:
+        typer.echo(f"\n[1/4] build-features 생략 — 스냅샷 재사용: {resolved_dataset_uri}")
+        coverage = None
 
     # 어떤 기간·소스로 학습했는지 MLflow run에 lineage로 남긴다(#359). C2로 조립 경로는
     # feast(offline store PIT)가 유일하므로 FeatureService·registry·기간을 기록한다.
     from src.features.feast_retrieval import DEFAULT_SERVICE
 
-    # run-pipeline은 C2로 feast-only다. 위 build-features(_assemble_via_feast)가
-    # events 기간을 필수로 검증하고 GCS_REGISTRY_PATH를 필수로 읽으므로(미설정이면
-    # 여기 도달 전에 멈춤), 이 시점엔 셋 다 항상 존재한다. 따라서 조립이 필수로 읽는
-    # 값을 lineage는 "있으면 기록"으로 두던 비대칭을 없애고 무조건 기록해, registry나
-    # 기간이 빠진 재현 불가 run이 남지 않게 한다(#359 C2 리뷰).
-    # FeatureService는 하드코딩하지 않고 조립이 실제로 쓴 이름을 남긴다(#454) —
-    # 실험 서비스로 조회한 run이 prod 서비스로 조회된 것처럼 기록되면 비교가 성립하지 않는다.
-    data_source_params = {
-        "assembly_source": "feast",
-        "feature_service": _optional_cli_string(feature_service) or DEFAULT_SERVICE,
-        "events_start_date": events_start_date,
-        "events_end_date": events_end_date,
-        "feast_registry_path": os.environ["GCS_REGISTRY_PATH"],
-    }
-    # 요청 구간만 남기면 v12 사고의 비대칭("요청 7일 ≠ 실제 2일")이 그대로 남는다.
-    # 실측 커버리지와 적용된 기준(우회 여부 포함)을 함께 남겨, 나중에 champion 후보를
-    # 볼 때 run 파라미터만으로 판별할 수 있게 한다(#464 리뷰).
-    requested_min_days = _requested_min_coverage_days(min_coverage_days)
-    data_source_params.update(
-        assembly.coverage.as_lineage_params(
-            min_days=(
-                build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
-                if requested_min_days is None
-                else requested_min_days
+    if resolved_dataset_uri is None:
+        # run-pipeline은 C2로 feast-only다. 위 build-features(_assemble_via_feast)가
+        # events 기간을 필수로 검증하고 GCS_REGISTRY_PATH를 필수로 읽으므로(미설정이면
+        # 여기 도달 전에 멈춤), 이 시점엔 셋 다 항상 존재한다. 따라서 조립이 필수로 읽는
+        # 값을 lineage는 "있으면 기록"으로 두던 비대칭을 없애고 무조건 기록해, registry나
+        # 기간이 빠진 재현 불가 run이 남지 않게 한다(#359 C2 리뷰).
+        # FeatureService는 하드코딩하지 않고 조립이 실제로 쓴 이름을 남긴다(#454) —
+        # 실험 서비스로 조회한 run이 prod 서비스로 조회된 것처럼 기록되면 비교가 성립하지 않는다.
+        data_source_params = {
+            "assembly_source": "feast",
+            "feature_service": _optional_cli_string(feature_service) or DEFAULT_SERVICE,
+            "events_start_date": events_start_date,
+            "events_end_date": events_end_date,
+            "feast_registry_path": os.environ["GCS_REGISTRY_PATH"],
+        }
+        # 요청 구간만 남기면 v12 사고의 비대칭("요청 7일 ≠ 실제 2일")이 그대로 남는다.
+        # 실측 커버리지와 적용된 기준(우회 여부 포함)을 함께 남겨, 나중에 champion 후보를
+        # 볼 때 run 파라미터만으로 판별할 수 있게 한다(#464 리뷰).
+        requested_min_days = _requested_min_coverage_days(min_coverage_days)
+        data_source_params.update(
+            coverage.as_lineage_params(
+                min_days=(
+                    build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
+                    if requested_min_days is None
+                    else requested_min_days
+                )
             )
         )
-    )
+    else:
+        # 재조립을 하지 않아 조립 반환값이 없다 — 나머지 lineage(events_*,
+        # feature_service, registry, spine_usable_days)는 train.main이 다운로드한
+        # manifest에서 직접 채운다(#530) — manifest를 실제로 읽는 주체가 그 함수뿐이다.
+        data_source_params = {"assembly_source": "snapshot_reuse"}
+
+    # 게시하지 않은 실행에는 이 키를 아예 넣지 않는다 — 빈 문자열로 남기면
+    # "게시했는데 URI가 비었다"와 구별되지 않는다(#530 §10-7).
+    if snapshot_uri is not None:
+        data_source_params["training_snapshot_uri"] = snapshot_uri
 
     typer.echo("\n[2/4] train-model 실행...")
     # train.main은 실현 sampling_rate(#300)를 담은 TrainingOutcome을 반환한다 —
     # evaluate가 오프라인 지표(LogLoss/calibration)를 원분포 기준으로 재도록 넘긴다.
     # defer_registration=True: registered model 버전 생성만 평가 뒤로 미룬다(#421).
     # run 로깅(파라미터·메트릭·아티팩트)은 학습 시점에 그대로 남는다.
+    requested_min_coverage_days = _requested_min_coverage_days(min_coverage_days)
     outcome = train.main(
         config_path=config_path,
         data_path=dataset_path,
@@ -543,6 +603,12 @@ def run_pipeline(
         extra_features=experiment_features,
         experiment=experiment,
         require_snapshot=True,
+        dataset_uri=resolved_dataset_uri,
+        min_coverage_days=(
+            build_training_dataset.DEFAULT_MIN_COVERAGE_DAYS
+            if requested_min_coverage_days is None
+            else requested_min_coverage_days
+        ),
         **promotion_evidence_kwargs,
     )
 
