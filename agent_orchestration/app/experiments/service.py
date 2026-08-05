@@ -3,8 +3,8 @@
 전체 파이프라인에서 검증된 API 입력을 SQLAlchemy transaction으로 실험·event·log·metadata에
 반영하는 구간과, 호출자가 제출한 사전등록 필드를 `[AR]` 이슈로 발행하는 조립→저장→발행
 절차를 담당한다. 발행 전에 baseline-reader App으로 `dev` SHA를 읽어 본문·제목과 함께
-봉인한다. HTTP 인증·상태 코드 변환, 실제 학습/Job 실행, 본문 조립(issue_authoring)과
-GitHub 인증·REST/`gh` 전송 자체는 담당하지 않는다.
+조건부 UPDATE로 최초 값만 봉인한다. HTTP 인증·상태 코드 변환, 실제 학습/Job 실행,
+본문 조립(issue_authoring)과 GitHub 인증·REST/`gh` 전송 자체는 담당하지 않는다.
 """
 
 from __future__ import annotations
@@ -759,6 +759,9 @@ async def publish_experiment_issue(
 
     # ① 본문·제목·기준 SHA를 만들고 발행 전에 같은 transaction으로 커밋한다. 이
     # 커밋이 재시도 결정성의 근거다. 기준 SHA가 이미 있으면 최신 dev를 다시 읽지 않는다.
+    # NULL을 본 요청이 여러 개여도 조건부 UPDATE 한 개만 성공하므로 최초 SHA는 이후
+    # 요청에 덮이지 않는다. 외부 ref 조회는 UPDATE 전에 끝내 row lock을 잡은 채 GitHub를
+    # 기다리지 않는다.
     stores_issue_definition = experiment.issue_body is None
     stores_baseline = experiment.base_dev_sha is None
     if stores_issue_definition:
@@ -774,26 +777,53 @@ async def publish_experiment_issue(
         body = experiment.issue_body
         title = experiment.issue_title
 
-    base_dev_sha = (
+    candidate_base_dev_sha = (
         await resolve_dev_sha(settings) if stores_baseline else experiment.base_dev_sha
     )
-    if stores_issue_definition or stores_baseline:
+    if stores_baseline:
         # 이 시점에는 위 조회들이 autobegin으로 이미 transaction을 열어 두었으므로
         # `with session.begin():`을 다시 쓰면 "이미 시작된 transaction" 오류가 난다.
-        # commit()으로 그 transaction을 끝맺는다 — 다음 statement가 필요하면 새
-        # transaction을 autobegin한다. `expire_on_commit=False`(database.py)라 커밋
-        # 후에도 방금 대입한 속성값을 그대로 읽을 수 있어 refresh가 필요하지 않다 —
-        # refresh는 새 SELECT를 던져 또 다른 autobegin을 열어 두므로 오히려 다음
-        # 호출자의 `session.begin()`과 충돌한다.
+        # Core UPDATE의 WHERE 절에서 NULL 여부를 다시 검사해야 PostgreSQL이 대기 후
+        # 최신 row에 조건을 재평가한다. ORM 속성 대입은 stale NULL을 근거로 무조건
+        # UPDATE해 먼저 봉인한 SHA를 덮을 수 있다.
+        values: dict[str, object] = {"base_dev_sha": candidate_base_dev_sha}
         if stores_issue_definition:
-            experiment.issue_body = body
-            # title도 같은 commit에 저장한다 — 저장하지 않으면 재발행 시 본문에서 제목을
-            # 복원해야 하고, 그 복원 규칙(첫 문장 요약)이 호출자가 준 실제 title과 달라
-            # 재발행마다 제목·브랜치 이름이 흔들린다.
-            experiment.issue_title = title
-            experiment.issue_branch = None
-        if stores_baseline:
-            experiment.base_dev_sha = base_dev_sha
+            values.update(
+                issue_body=body,
+                # title도 같은 commit에 저장한다 — 저장하지 않으면 재발행 시 본문에서
+                # 제목을 복원해야 하고, 그 복원 규칙(첫 문장 요약)이 호출자가 준 실제
+                # title과 달라 재발행마다 제목·브랜치 이름이 흔들린다.
+                issue_title=title,
+                issue_branch=None,
+            )
+        result = session.execute(
+            update(Experiment)
+            .where(
+                Experiment.id == experiment.id,
+                Experiment.base_dev_sha.is_(None),
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        session.commit()
+
+        # synchronize_session=False와 expire_on_commit=False이므로 identity map은 여전히
+        # CAS 전 값을 가진다. 패배(rowcount=0) 요청은 반드시 DB 승자 값을 다시 읽어야
+        # 하며, 승자도 같은 refresh 경로를 써 반환 객체가 실제 저장값과 일치하게 한다.
+        session.refresh(experiment)
+        session.commit()
+        if result.rowcount == 0:
+            base_dev_sha = experiment.base_dev_sha
+        else:
+            base_dev_sha = candidate_base_dev_sha
+        if base_dev_sha is None:
+            raise GitHubIssueError("baseline_freeze_failed")
+        body = experiment.issue_body
+        title = experiment.issue_title
+    elif stores_issue_definition:
+        experiment.issue_body = body
+        experiment.issue_title = title
+        experiment.issue_branch = None
         session.commit()
 
     # ② 발행. 브랜치 이름의 slug는 이슈 번호와 무관하므로 발행 전에 미리 검증한다 —

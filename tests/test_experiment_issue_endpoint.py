@@ -20,6 +20,7 @@ from agent_orchestration.app.database import Base
 from agent_orchestration.app.experiments.exceptions import IssuePublicationLimitError
 from agent_orchestration.app.experiments.github_issues import IssueRef
 from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
+from agent_orchestration.app.experiments.models import Experiment
 
 API_TOKEN = "test-orchestration-token"
 
@@ -158,6 +159,56 @@ def test_publication_returns_the_issue_coordinates(
     assert body["issue_branch"].startswith("exp/")
     assert body["base_dev_sha"] == "a" * 40
     assert "executor_job_created_at" not in body
+
+
+def test_republishing_legacy_issue_returns_null_baseline_without_github(
+    client: TestClient,
+    authorized_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """migration 전 발행 행은 GitHub 재호출 없이 nullable SHA로 복구해야 한다."""
+    created = client.post(
+        "/experiments", json={"hypothesis": "legacy"}, headers=authorized_headers
+    ).json()
+    factory = client.app.state.experiment_session_factory
+    with factory() as session:
+        experiment = session.get(Experiment, uuid.UUID(created["id"]))
+        assert experiment is not None
+        experiment.issue_number = 545
+        experiment.issue_branch = "exp/545-legacy"
+        session.commit()
+
+    async def unexpected_github_call(
+        *_args: object, **_kwargs: object
+    ) -> None:
+        raise AssertionError("기존 발행 행은 GitHub를 호출하면 안 된다")
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        unexpected_github_call,
+    )
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.find_issue_by_marker",
+        unexpected_github_call,
+    )
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.create_issue",
+        unexpected_github_call,
+    )
+
+    response = client.post(
+        f"/experiments/{created['id']}/issue",
+        json=_payload(),
+        headers=authorized_headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "issue_number": 545,
+        "issue_url": "https://github.com/SKYAHO/Autoresearch/issues/545",
+        "issue_branch": "exp/545-legacy",
+        "base_dev_sha": None,
+    }
 
 
 def test_publication_labels_the_issue_for_the_branch_workflow(

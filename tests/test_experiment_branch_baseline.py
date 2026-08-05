@@ -10,12 +10,15 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import uuid
 
 import pytest
-from sqlalchemy import Engine, create_engine, event
+from sqlalchemy import Engine, create_engine, event, update
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.sql.dml import Update
 
 from agent_orchestration.app.database import Base
 from agent_orchestration.app.experiments.github_issues import GitHubIssueError, IssueRef
@@ -136,6 +139,84 @@ def test_publish_retry_reuses_frozen_sha_after_dev_moves(
     )
 
     assert result.base_dev_sha == "a" * 40
+    assert resolver.await_count == 1
+
+
+def test_competing_baseline_freeze_reuses_atomic_cas_winner(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """CAS 경쟁에서 진 발행은 DB 승자의 SHA를 읽어 재사용해야 한다.
+
+    SQLite의 동시 transaction 동작을 검증하지 않는다. 실제 service가 발행한 Core
+    UPDATE를 PostgreSQL dialect로 기록하고, DB가 `rowcount=0`을 반환하는 순간을
+    주입해 조건과 패배 분기를 함께 검증한다.
+    """
+    winner_sha = "a" * 40
+    losing_sha = "b" * 40
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
+    experiment.issue_body = "stored issue body"
+    experiment.issue_title = "[AR] stored issue title"
+    db_session.commit()
+
+    resolver = AsyncMock(return_value=losing_sha)
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        resolver,
+        raising=False,
+    )
+
+    async def create_issue_after_winner_is_visible(
+        _settings: object,
+        *,
+        title: str,
+        body: str,
+        labels: tuple[str, ...],
+    ) -> IssueRef:
+        with Session(db_session.bind) as observer:
+            stored = observer.get(Experiment, experiment.id)
+            assert stored is not None
+            assert stored.base_dev_sha == winner_sha
+        return IssueRef(
+            number=547,
+            url="https://github.com/SKYAHO/Autoresearch/issues/547",
+        )
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.create_issue",
+        create_issue_after_winner_is_visible,
+    )
+
+    conditional_update_sql: list[str] = []
+    with Session(db_session.bind, expire_on_commit=False) as competing_session:
+        original_execute = competing_session.execute
+
+        def execute_with_lost_cas(statement, *args, **kwargs):
+            if isinstance(statement, Update) and statement.table.name == "experiments":
+                conditional_update_sql.append(
+                    str(statement.compile(dialect=postgresql.dialect()))
+                )
+                competing_session.connection().execute(
+                    update(Experiment)
+                    .where(Experiment.id == experiment.id)
+                    .values(base_dev_sha=winner_sha)
+                )
+                return SimpleNamespace(rowcount=0)
+            return original_execute(statement, *args, **kwargs)
+
+        monkeypatch.setattr(competing_session, "execute", execute_with_lost_cas)
+        result = asyncio.run(
+            publish_experiment_issue(
+                competing_session,
+                _Settings(),
+                experiment.id,
+                _request(),
+            )
+        )
+
+    assert len(conditional_update_sql) == 1
+    assert "experiments.id =" in conditional_update_sql[0]
+    assert "experiments.base_dev_sha IS NULL" in conditional_update_sql[0]
+    assert result.base_dev_sha == winner_sha
     assert resolver.await_count == 1
 
 

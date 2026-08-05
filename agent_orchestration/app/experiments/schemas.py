@@ -261,14 +261,14 @@ class IssuePublicationRequest(BaseModel):
 
 
 class IssuePublicationResponse(BaseModel):
-    """발행 결과 좌표."""
+    """발행 결과 좌표와 migration 이후 존재할 수 있는 기준 SHA."""
 
     model_config = ConfigDict(extra="forbid")
 
     issue_number: int
     issue_url: str
     issue_branch: str
-    base_dev_sha: str
+    base_dev_sha: str | None
 
 
 class PromotionRequest(BaseModel):
