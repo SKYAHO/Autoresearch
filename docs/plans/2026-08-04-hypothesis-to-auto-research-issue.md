@@ -3,8 +3,9 @@
 > **에이전트 작업자에게:** 이 계획은 task 단위로 구현합니다. 각 step은 체크박스
 > (`- [ ]`)로 추적합니다.
 
-**목표:** 사용자가 가설을 보내면 서버가 LLM으로 Issue Form 본문을 만들어 DB에 저장하고,
-`gh`로 `[AR]` 이슈를 발행해 `auto-experiment` label로 exp 브랜치 생성을 트리거한다.
+**목표:** 사용자가 가설을 보내면 서버가 Issue Form 본문과 `dev` 기준 SHA를 DB에 저장하고,
+`gh`로 `[AR]` 이슈를 `auto-experiment` 분류 label과 함께 발행한다. exp 브랜치는 별도
+launcher가 만든 executor Pod가 저장된 SHA에서 생성한다.
 
 **아키텍처:** 추론 경계(Codex Runner)는 본문 값을 JSON으로만 제안하고, 신뢰된 서버
 코드가 heading과 결합해 본문을 조립한다. 본문을 DB에 커밋한 뒤 발행하므로 재시도가
@@ -2447,8 +2448,9 @@ git commit -m "chore: API 이미지에 gh CLI 버전 고정 설치"
 
 - [ ] **Step 4: 로컬에서 전 구간을 1회 실증한다**
 
-이 계획의 완료 조건입니다. `.env`에 Task 3의 변수 6개를 채우고 진행합니다.
-`ORCH_GITHUB_TOKEN`은 로컬 개인 `gh` 토큰(`gh auth token`)을 씁니다.
+이 계획의 API 구간 완료 조건입니다. `.env`에 이슈 발행 변수와 Contents read 전용
+baseline GitHub App 좌표를 채우고 진행합니다. `ORCH_GITHUB_TOKEN`은 로컬 개인 `gh`
+토큰(`gh auth token`)을 쓰고, baseline App private key는 로컬 파일 경로로만 전달합니다.
 
 ```bash
 docker compose -f agent_orchestration/docker-compose.yml up -d --wait
@@ -2468,17 +2470,17 @@ curl -sS -X POST "localhost:8000/experiments/$EXPERIMENT_ID/issue" \
 
 ```bash
 gh issue list --label auto-experiment --limit 5
-gh run list --workflow auto-research-issue-branch.yml --limit 3
 git ls-remote --heads origin 'refs/heads/exp/*'
 ```
 
 확인할 것:
 
 1. `[AR]` 이슈가 열렸고 `auto-experiment` label이 붙어 있다
-2. `auto-research-issue-branch.yml` run이 **success**다
-3. `exp/<번호>-<slug>` 브랜치가 생겼다
-4. 이슈에 marker 코멘트(`<!-- auto-research-issue-branch:v1 -->`)가 하나 있고
-   `base_dev_sha`가 `dev` tip과 같다
+2. API 응답과 DB의 `base_dev_sha`가 이슈 발행 전 읽은 `dev` tip과 같다
+3. infra가 launcher/executor digest를 배포한 뒤 executor Pod가
+   `exp/<번호>-<slug>` 브랜치를 저장된 `base_dev_sha`에서 만든다
+4. Phase 1 executor는 기존 GitHub Actions bot marker를 쓰지 않으므로 새 branch는
+   promotion 입력이 아니다. marker 재설계가 실제 실험 실행 전 후속 gate다
 5. 본문의 `랜덤 시드 목록`이 `42, 43, ..., 71`이다
 
 - [ ] **Step 6: 멱등성을 실증한다**
@@ -2495,9 +2497,9 @@ Expected: 같은 `issue_number`가 반환되고 **이슈가 하나만** 있습�
 
 - [ ] **Step 7: 검수 발행물을 정리한다**
 
-이슈는 **close하되 exp 브랜치는 남깁니다.** 브랜치만 지우면 fail-closed되고, marker까지
-지우면 다른 기준선으로 조용히 재생성되어 원래 `base_dev_sha`를 인용한 곳과 아무 실패
-없이 어긋납니다.
+이슈는 **close하되 exp 브랜치는 남깁니다.** launcher가 Job 존재 확인 시각을 기록한
+뒤에는 삭제된 branch를 자동 복구하지 않습니다. Phase 1 branch에는 기존 GitHub Actions
+bot marker가 없으며 promotion 입력으로 사용하지 않습니다.
 
 ```bash
 gh issue close <발행된 번호> --comment "#516 검수 발행. exp 브랜치는 계약대로 남깁니다."
@@ -2505,8 +2507,9 @@ gh issue close <발행된 번호> --comment "#516 검수 발행. exp 브랜치�
 
 - [ ] **Step 8: 실증 결과를 이슈에 기록하고 PR을 만든다**
 
-이슈 번호, 워크플로 run URL, 브랜치 이름, marker의 `base_dev_sha`를 #516에 코멘트로
-남깁니다. 그다음 PR을 만듭니다.
+이슈 번호, API 응답·DB의 `base_dev_sha`, infra 배포 뒤 executor Job과 브랜치 이름을
+#516에 코멘트로 남깁니다. marker 재설계 전에는 promotion 실증을 하지 않습니다. 그다음
+PR을 만듭니다.
 
 ```bash
 gh pr create --base main --title "feat: 가설을 받아 [AR] 이슈를 발행하는 경로 추가" \

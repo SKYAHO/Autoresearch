@@ -3,11 +3,20 @@
 import ast
 from pathlib import Path
 
+import pytest
+import yaml
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 API_DOCKERFILE = REPOSITORY_ROOT / "deploy" / "agent_orchestration" / "api.Dockerfile"
 RUNNER_DOCKERFILE = (
     REPOSITORY_ROOT / "deploy" / "agent_orchestration" / "runner.Dockerfile"
+)
+LAUNCHER_DOCKERFILE = (
+    REPOSITORY_ROOT / "deploy" / "agent_orchestration" / "launcher.Dockerfile"
+)
+EXECUTOR_DOCKERFILE = (
+    REPOSITORY_ROOT / "deploy" / "agent_orchestration" / "executor.Dockerfile"
 )
 DOCKERIGNORE = REPOSITORY_ROOT / ".dockerignore"
 RELEASE_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "release.yml"
@@ -123,3 +132,132 @@ def test_release_workflow_publishes_api_and_runner_digests() -> None:
     for dockerfile in (api_dockerfile, runner_dockerfile):
         assert "ARG VCS_REF=unknown" in dockerfile
         assert 'org.opencontainers.image.revision="${VCS_REF}"' in dockerfile
+
+
+@pytest.mark.parametrize(
+    ("dockerfile_path", "runtime_package", "command_module"),
+    (
+        (
+            LAUNCHER_DOCKERFILE,
+            "COPY agent_orchestration/launcher ./agent_orchestration/launcher",
+            "agent_orchestration.launcher.main",
+        ),
+        (
+            EXECUTOR_DOCKERFILE,
+            "COPY agent_orchestration/executor ./agent_orchestration/executor",
+            "agent_orchestration.executor.main",
+        ),
+    ),
+)
+def test_branch_job_images_are_locked_non_root_runtime_images(
+    dockerfile_path: Path,
+    runtime_package: str,
+    command_module: str,
+) -> None:
+    """Branch Job 이미지는 고정 의존성·비루트 실행과 역할별 command를 제공한다."""
+    assert dockerfile_path.is_file()
+    dockerfile = dockerfile_path.read_text(encoding="utf-8")
+
+    assert "FROM ghcr.io/astral-sh/uv:0.11.26 AS lock-export" in dockerfile
+    assert '"--only-group", "orchestration"' in dockerfile
+    assert "addgroup --gid 10001 appuser" in dockerfile
+    assert "adduser --uid 10001 --gid 10001" in dockerfile
+    assert "USER appuser" in dockerfile
+    assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile
+    assert runtime_package in dockerfile
+    assert f'CMD ["python", "-m", "{command_module}"]' in dockerfile
+    assert "ARG VCS_REF=unknown" in dockerfile
+    assert 'org.opencontainers.image.revision="${VCS_REF}"' in dockerfile
+    assert "@openai/codex" not in dockerfile
+    assert "node:" not in dockerfile
+
+
+def _load_release_workflow() -> dict[str, object]:
+    parsed = yaml.load(
+        RELEASE_WORKFLOW.read_text(encoding="utf-8"),
+        Loader=yaml.BaseLoader,
+    )
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+@pytest.mark.parametrize(
+    ("job_name", "dockerfile", "image_name", "import_modules"),
+    (
+        (
+            "publish-agent-orchestration-launcher-image",
+            "deploy/agent_orchestration/launcher.Dockerfile",
+            "autoresearch-agent-orchestration-launcher",
+            ("agent_orchestration.launcher.main",),
+        ),
+        (
+            "publish-agent-orchestration-executor-image",
+            "deploy/agent_orchestration/executor.Dockerfile",
+            "autoresearch-agent-orchestration-executor",
+            (
+                "agent_orchestration.executor.main",
+                "agent_orchestration.executor.token_minter",
+            ),
+        ),
+    ),
+)
+def test_release_workflow_publishes_branch_job_runtime_digests(
+    job_name: str,
+    dockerfile: str,
+    image_name: str,
+    import_modules: tuple[str, ...],
+) -> None:
+    """Release의 역할별 job이 독립 image를 push하고 digest·module을 검증한다."""
+    workflow = _load_release_workflow()
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    assert job_name in jobs
+
+    job = jobs[job_name]
+    assert isinstance(job, dict)
+    assert job["needs"] == "publish-application-image"
+    assert job["permissions"] == {"contents": "read", "id-token": "write"}
+    assert job["outputs"] == {
+        "digest_ref": "${{ steps.verify.outputs.digest_ref }}",
+        "source_sha": "${{ steps.source.outputs.sha }}",
+    }
+
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    checkout = next(step for step in steps if step.get("uses") == "actions/checkout@v6")
+    assert checkout["with"]["ref"] == (
+        "${{ needs.publish-application-image.outputs.source_sha }}"
+    )
+
+    image_step = next(step for step in steps if step.get("id") == "image")
+    image_script = image_step["run"]
+    assert isinstance(image_script, str)
+    assert f"/{image_name}" in image_script
+    assert 'sha_ref="${image_uri}:sha-${SOURCE_SHA}"' in image_script
+
+    build_step = next(
+        step for step in steps if step.get("uses") == "docker/build-push-action@v6"
+    )
+    assert build_step["with"] == {
+        "context": ".",
+        "file": dockerfile,
+        "push": "true",
+        "build-args": "VCS_REF=${{ steps.source.outputs.sha }}\n",
+        "tags": "${{ steps.image.outputs.tags }}",
+    }
+
+    verify_step = next(step for step in steps if step.get("id") == "verify")
+    assert verify_step["env"] == {
+        "DIGEST": "${{ steps.build.outputs.digest }}",
+        "IMAGE_URI": "${{ steps.image.outputs.uri }}",
+        "SOURCE_SHA": "${{ steps.source.outputs.sha }}",
+    }
+    verify_script = verify_step["run"]
+    assert isinstance(verify_script, str)
+    assert "^sha256:[0-9a-f]{64}$" in verify_script
+    assert 'digest_ref="${IMAGE_URI}@${DIGEST}"' in verify_script
+    assert "org.opencontainers.image.revision" in verify_script
+    assert "image_user" in verify_script
+    assert 'echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"' in verify_script
+    for module in import_modules:
+        assert module in verify_script

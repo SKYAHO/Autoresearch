@@ -83,7 +83,7 @@ fingerprint 등 나머지 필드도 함께 실린다. `runs`만 payload 크기 �
 
 `guardrail_candidate`/`guardrail_baseline`은 **입력에서 사라진다.** 판정 엔진이
 guardrail을 계산하지 않아 결과 계약에 실리지 않으므로, 게이트가 요구하면 영원히
-통과할 수 없다. guardrail을 선언한 실험은 브랜치 생성 시점에 자동 승격 대상이
+통과할 수 없다. guardrail을 선언한 실험은 이슈 발행 시점에 자동 승격 대상이
 아님을 고지받는다.
 
 ### metric 필드 표기 (#495)
