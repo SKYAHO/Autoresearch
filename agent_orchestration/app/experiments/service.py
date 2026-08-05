@@ -1,14 +1,13 @@
 """Agent Orchestration 실험 생성·조회·상태 쓰기와 이슈 발행 유스케이스를 제공한다.
 
 전체 파이프라인에서 검증된 API 입력을 SQLAlchemy transaction으로 실험·event·log·metadata에
-반영하는 구간과, 가설을 `[AR]` 이슈로 발행하는 생성→저장→발행 2단계 절차를 담당한다.
-HTTP 인증·상태 코드 변환, 실제 학습 실행, 본문 조립(issue_authoring)과 `gh` 호출
-(github_issues) 자체는 담당하지 않는다.
+반영하는 구간과, 호출자가 제출한 사전등록 필드를 `[AR]` 이슈로 발행하는 조립→저장→발행
+절차를 담당한다. HTTP 인증·상태 코드 변환, 실제 학습 실행, 본문 조립(issue_authoring)과
+`gh` 호출(github_issues) 자체는 담당하지 않는다.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import hashlib
@@ -34,12 +33,9 @@ from agent_orchestration.app.experiments.github_issues import (
     find_issue_by_marker,
 )
 from agent_orchestration.app.experiments.issue_authoring import (
-    LlmIssueFields,
     build_issue_body,
     build_issue_title,
-    build_prompt,
     marker_for,
-    parse_llm_fields,
     training_window,
 )
 from agent_orchestration.app.experiments.models import (
@@ -685,44 +681,23 @@ def _branch_name_for(issue_number: int, title: str) -> str:
     return f"exp/{issue_number}-{_branch_slug(title)}"
 
 
-async def _generate_fields_with_retry(
-    generate: Callable[[str], Awaitable[str]], hypothesis: str
-) -> LlmIssueFields:
-    """LLM 응답이 JSON도 형식도 아니면 1회만 재시도한다.
-
-    LLM 호출은 부작용이 없어 재시도가 안전하다(spec 실패 처리 표 "LLM 응답이 JSON이
-    아님 → 1회 재시도 후 실패"). 두 번째도 실패하면 `parse_llm_fields`의 `ValueError`를
-    그대로 올린다.
-    """
-    prompt = build_prompt(hypothesis)
-    response = await generate(prompt)
-    try:
-        return parse_llm_fields(response)
-    except ValueError:
-        response = await generate(prompt)
-        return parse_llm_fields(response)
-
-
 async def publish_experiment_issue(
     session: Session,
     settings: object,
     experiment_id: uuid.UUID,
     request: IssuePublicationRequest,
-    *,
-    generate: Callable[[str], Awaitable[str]],
 ) -> Experiment:
-    """가설을 `[AR]` 이슈로 발행하고 lineage를 기록한다.
+    """사전등록 필드를 `[AR]` 이슈로 발행하고 lineage를 기록한다.
 
-    LLM은 비결정적이라, 발행 실패 후 재호출이 LLM을 다시 부르면 실험 정의(criteria_id·
-    reproducibility_id의 근거가 되는 지표·guardrail 값)가 바뀔 수 있다. 그래서 본문을
-    ①에서 발행 전에 커밋해 이 커밋을 경계로 앞쪽 실패는 재생성, 뒤쪽 실패는 재발행으로
-    가른다.
+    본문은 ①에서 발행 **전에** 커밋한다. `대상 데이터 · 기간`이 발행 시점 KST 날짜로
+    계산되므로, 저장하지 않으면 `gh` 실패 후 날짜가 바뀐 재발행이 다른 본문을 쓴다.
+    저장해 두면 재발행이 같은 본문을 쓴다.
     """
     experiment = find_experiment(session, experiment_id)
     if experiment is None:
         raise ExperimentNotFoundError(experiment_id)
 
-    # 멱등성 1차 — 이미 발행됐으면 아무것도 하지 않는다. regenerate보다 우선한다.
+    # 멱등성 1차 — 이미 발행됐으면 아무것도 하지 않는다.
     if experiment.issue_number is not None:
         return experiment
 
@@ -739,16 +714,15 @@ async def publish_experiment_issue(
         raise IssuePublicationLimitError(settings.issue_daily_limit)
 
     # ① 본문을 만들고 발행 전에 커밋한다. 이 커밋이 재시도 결정성의 근거다.
-    if experiment.issue_body is None or request.regenerate:
-        fields = await _generate_fields_with_retry(generate, experiment.hypothesis)
+    if experiment.issue_body is None:
         body = build_issue_body(
             experiment.id,
-            fields,
+            request.fields,
             settings.experiment_defaults,
             allowed_scope=request.allowed_scope,
             window=training_window(datetime.now(_KST).date()),
         )
-        title = build_issue_title(fields)
+        title = build_issue_title(request.fields)
         # 이 시점에는 위 조회들이 autobegin으로 이미 transaction을 열어 두었으므로
         # `with session.begin():`을 다시 쓰면 "이미 시작된 transaction" 오류가 난다.
         # commit()으로 그 transaction을 끝맺는다 — 다음 statement가 필요하면 새
@@ -758,7 +732,7 @@ async def publish_experiment_issue(
         # 호출자의 `session.begin()`과 충돌한다.
         experiment.issue_body = body
         # title도 같은 commit에 저장한다 — 저장하지 않으면 재발행 시 본문에서 제목을
-        # 복원해야 하고, 그 복원 규칙(첫 문장 요약)이 LLM이 낸 실제 title과 달라
+        # 복원해야 하고, 그 복원 규칙(첫 문장 요약)이 호출자가 준 실제 title과 달라
         # 재발행마다 제목·브랜치 이름이 흔들린다.
         experiment.issue_title = title
         experiment.issue_branch = None

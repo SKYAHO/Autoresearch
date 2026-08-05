@@ -7,7 +7,6 @@ HTTP·OpenAPI 경계를 담당한다. 인증 구현, SQLAlchemy transaction 세�
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Annotated
 import uuid
 
@@ -53,7 +52,6 @@ from agent_orchestration.app.experiments.service import (
     update_experiment_status,
     update_experiment_step,
 )
-from agent_orchestration.app.llm import generate_response
 from agent_orchestration.app.schemas import ErrorResponse
 
 
@@ -72,16 +70,6 @@ _NOT_FOUND_RESPONSE = {
 _CONFLICT_RESPONSE = {
     status.HTTP_409_CONFLICT: {"description": "Experiment state or idempotency conflict.", "model": ErrorResponse}
 }
-
-
-async def _generate_text(settings: ServiceSettings, prompt: str) -> str:
-    """LLM 백엔드 결과에서 텍스트만 꺼낸다.
-
-    service는 LLM 계약을 모르고 `str -> str` awaitable만 받는다. 이 경계 덕분에
-    테스트가 LLM 호출 횟수를 셀 수 있다.
-    """
-    completion = await generate_response(settings, prompt)
-    return completion.text
 
 
 @router.post(
@@ -333,7 +321,6 @@ async def post_experiment_issue(
         settings,
         experiment_id,
         request,
-        generate=partial(_generate_text, settings),
     )
     return IssuePublicationResponse(
         issue_number=experiment.issue_number,

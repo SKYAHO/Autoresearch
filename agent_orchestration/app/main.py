@@ -231,11 +231,11 @@ def create_app() -> FastAPI:
     async def handle_issue_body_assembly_error(
         _request: Request, error: ValueError
     ) -> JSONResponse:
-        """이슈 본문 조립 단계의 실패(LLM 출력 드리프트 포함)를 502로 변환한다.
+        """이슈 본문 조립 단계의 실패를 502로 변환한다.
 
-        `parse_llm_fields`/`build_issue_body`/`_branch_slug`가 내는 `ValueError`가
-        여기로 온다 — LLM이 계약과 다른 값을 냈다는 뜻이며, 서버 결함(500)과 구분해야
-        호출자가 "재생성해야 한다"를 알 수 있다.
+        `build_issue_body`/`_branch_slug`가 내는 `ValueError`가 여기로 온다. 호출자가
+        제출한 필드의 형식 위반은 여기 오지 않는다 — `IssueSubmission`이 요청 검증에서
+        422로 먼저 끊으며, 그 시점에는 이슈가 아직 열리지 않았다(#536).
 
         `IdempotencyConflictError`/`PromotionRequiresDedicatedEndpointError`도
         `ValueError`의 하위 클래스이지만, 위와 같은 이유로 이 handler와 충돌하지

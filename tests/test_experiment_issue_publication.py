@@ -1,6 +1,6 @@
-"""가설이 `[AR]` 이슈가 되는 2단계 절차와 멱등성을 고정한다.
+"""사전등록 필드가 `[AR]` 이슈가 되는 절차와 멱등성을 고정한다.
 
-전체 파이프라인에서 본문 생성·저장과 발행 사이의 순서·재시도 의미만 검증한다. 본문
+전체 파이프라인에서 본문 조립·저장과 발행 사이의 순서·재시도 의미만 검증한다. 본문
 형식은 test_issue_authoring, gh 호출은 test_github_issues가 담당한다.
 """
 
@@ -10,7 +10,6 @@ import asyncio
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-import json
 from pathlib import Path
 import sys
 import uuid
@@ -39,21 +38,25 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-LLM_RESPONSE = json.dumps(
-    {
-        "title": "views per day ratio feature",
-        "hypothesis": "비율 피처가 ROC-AUC를 높인다.",
-        "change": "- 추가 피처: views_per_day = views / (days + 1)",
-        "primary_metric_name": "roc_auc",
-        "primary_metric_direction": "higher_is_better",
-        "minimum_primary_delta": "0.002",
-        "guardrail_metric_name": "없음",
-        "guardrail_metric_direction": "not_applicable",
-        "maximum_guardrail_regression": "없음",
-        "secondary_metrics": "pr_auc",
-    },
-    ensure_ascii=False,
-)
+SUBMISSION = {
+    "title": "views per day ratio feature",
+    "hypothesis": "비율 피처가 ROC-AUC를 높인다.",
+    "change": "- 추가 피처: views_per_day = views / (days + 1)",
+    "primary_metric_name": "roc_auc",
+    "primary_metric_direction": "higher_is_better",
+    "minimum_primary_delta": "0.002",
+    "guardrail_metric_name": "없음",
+    "guardrail_metric_direction": "not_applicable",
+    "maximum_guardrail_regression": "없음",
+    "secondary_metrics": "pr_auc",
+}
+
+
+def _request(**overrides: object) -> IssuePublicationRequest:
+    """호출자가 제출하는 사전등록 필드를 실은 발행 요청을 만든다."""
+    fields = dict(SUBMISSION)
+    fields.update(overrides)
+    return IssuePublicationRequest.model_validate({"fields": fields})
 
 
 @dataclass(frozen=True)
@@ -86,15 +89,6 @@ def db_session() -> Iterator[Session]:
     engine.dispose()
 
 
-class _Recorder:
-    def __init__(self) -> None:
-        self.prompts: list[str] = []
-
-    async def generate(self, prompt: str) -> str:
-        self.prompts.append(prompt)
-        return LLM_RESPONSE
-
-
 @pytest.fixture(autouse=True)
 def _no_marker_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     """marker 조회가 실제 GitHub으로 나가지 않게 한다.
@@ -115,7 +109,6 @@ def test_publication_stores_body_before_creating_the_issue(
 ) -> None:
     """본문이 발행 전에 커밋되어야 재시도가 결정론적이다."""
     experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
-    recorder = _Recorder()
     seen: list[str] = []
 
     async def fake_create_issue(_settings, *, title, body, labels):
@@ -131,8 +124,7 @@ def test_publication_stores_body_before_creating_the_issue(
             db_session,
             _Settings(),
             experiment.id,
-            IssuePublicationRequest(),
-            generate=recorder.generate,
+            _request(),
         )
     )
 
@@ -141,71 +133,27 @@ def test_publication_stores_body_before_creating_the_issue(
     assert result.issue_branch.startswith("exp/520-")
 
 
-def test_non_json_response_is_retried_once_then_succeeds(
+def test_submission_field_violation_is_rejected_before_publication(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """LLM 호출은 부작용이 없어 재시도가 안전하다 — 첫 응답이 산문이어도 1회 재시도로 복구한다."""
-    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
-    responses = iter(["이것은 산문입니다.", LLM_RESPONSE])
-    calls: list[str] = []
-
-    async def generate(prompt: str) -> str:
-        calls.append(prompt)
-        return next(responses)
-
-    async def fake_create_issue(_settings, *, title, body, labels):
-        return IssueRef(number=523, url="https://github.com/SKYAHO/Autoresearch/issues/523")
-
-    monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
-    )
-
-    result = asyncio.run(
-        publish_experiment_issue(
-            db_session, _Settings(), experiment.id,
-            IssuePublicationRequest(), generate=generate,
-        )
-    )
-
-    assert result.issue_number == 523
-    assert len(calls) == 2, "1회만 재시도해야 한다"
-
-
-def test_non_json_response_fails_after_one_retry(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """두 번 다 산문이면 재시도를 소진하고 실패해야 한다 — 무한 재시도는 안 된다."""
-    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
-    calls: list[str] = []
-
-    async def generate(prompt: str) -> str:
-        calls.append(prompt)
-        return "이것은 산문입니다."
+    """형식 위반은 요청 검증에서 끊긴다 — 이슈가 열린 뒤 워크플로에서 실패하면 안 된다."""
 
     async def unexpected_create_issue(_settings, *, title, body, labels):
-        raise AssertionError("본문 조립이 실패했으면 발행을 시도하면 안 된다")
+        raise AssertionError("요청 검증에서 끊겼어야 한다")
 
     monkeypatch.setattr(
         "agent_orchestration.app.experiments.service.create_issue", unexpected_create_issue
     )
 
     with pytest.raises(ValueError):
-        asyncio.run(
-            publish_experiment_issue(
-                db_session, _Settings(), experiment.id,
-                IssuePublicationRequest(), generate=generate,
-            )
-        )
-
-    assert len(calls) == 2, "1회 재시도 후에는 더 부르지 않아야 한다"
+        _request(primary_metric_direction="maximize")
 
 
 def test_retry_after_publish_failure_reuses_the_stored_body(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """LLM은 비결정적이라 재생성하면 실험 정의가 바뀐다. 재호출은 같은 본문·제목을 써야 한다."""
+    """`대상 데이터 · 기간`이 발행 시점 날짜로 계산되므로 재발행은 저장된 본문을 써야 한다."""
     experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
-    recorder = _Recorder()
     attempts: list[str] = []
     titles: list[str] = []
 
@@ -221,7 +169,7 @@ def test_retry_after_publish_failure_reuses_the_stored_body(
         asyncio.run(
             publish_experiment_issue(
                 db_session, _Settings(), experiment.id,
-                IssuePublicationRequest(), generate=recorder.generate,
+                _request(),
             )
         )
 
@@ -236,11 +184,10 @@ def test_retry_after_publish_failure_reuses_the_stored_body(
     asyncio.run(
         publish_experiment_issue(
             db_session, _Settings(), experiment.id,
-            IssuePublicationRequest(), generate=recorder.generate,
+            _request(),
         )
     )
 
-    assert len(recorder.prompts) == 1, "LLM을 다시 부르면 안 된다"
     assert attempts[0] == attempts[1], "같은 본문으로 재발행해야 한다"
     assert titles[0] == titles[1], "같은 제목으로 재발행해야 한다 — 본문에서 복원하면 갈릴 수 있다"
 
@@ -250,7 +197,6 @@ def test_second_call_after_success_does_not_publish_again(
 ) -> None:
     """멱등성 1차 방어 — issue_number가 있으면 발행하지 않는다."""
     experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
-    recorder = _Recorder()
     calls = 0
 
     async def fake_create_issue(_settings, *, title, body, labels):
@@ -265,19 +211,23 @@ def test_second_call_after_success_does_not_publish_again(
         asyncio.run(
             publish_experiment_issue(
                 db_session, _Settings(), experiment.id,
-                IssuePublicationRequest(), generate=recorder.generate,
+                _request(),
             )
         )
 
     assert calls == 1
 
 
-def test_regenerate_replaces_the_body_before_publication(
+def test_stored_body_wins_over_a_changed_resubmission(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """저장된 본문이 파서를 통과하지 못하면 고착되므로 풀 수단이 필요하다."""
+    """발행 실패 후 다른 값으로 재호출해도 저장된 본문이 발행된다.
+
+    본문이 커밋된 뒤에는 실험 정의가 봉인된 것으로 본다. 이것이 뚫리면 `criteria_id`가
+    호출자의 재시도만으로 조용히 바뀐다. 정의를 바꾸려면 새 실험을 만들어야 한다.
+    """
     experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
-    recorder = _Recorder()
+    published: list[str] = []
 
     async def failing_create_issue(_settings, *, title, body, labels):
         raise GitHubIssueError("network_error")
@@ -289,11 +239,13 @@ def test_regenerate_replaces_the_body_before_publication(
         asyncio.run(
             publish_experiment_issue(
                 db_session, _Settings(), experiment.id,
-                IssuePublicationRequest(), generate=recorder.generate,
+                _request(),
             )
         )
+    stored = experiment.issue_body
 
     async def succeeding_create_issue(_settings, *, title, body, labels):
+        published.append(body)
         return IssueRef(number=522, url="https://github.com/SKYAHO/Autoresearch/issues/522")
 
     monkeypatch.setattr(
@@ -302,47 +254,18 @@ def test_regenerate_replaces_the_body_before_publication(
     asyncio.run(
         publish_experiment_issue(
             db_session, _Settings(), experiment.id,
-            IssuePublicationRequest(regenerate=True), generate=recorder.generate,
+            _request(minimum_primary_delta="0.999"),
         )
     )
 
-    assert len(recorder.prompts) == 2
-
-
-def test_regenerate_is_ignored_after_publication(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """발행된 이슈의 본문을 바꾸는 것은 이 endpoint의 책임이 아니다."""
-    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
-    recorder = _Recorder()
-
-    async def fake_create_issue(_settings, *, title, body, labels):
-        return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
-
-    monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
-    )
-    asyncio.run(
-        publish_experiment_issue(
-            db_session, _Settings(), experiment.id,
-            IssuePublicationRequest(), generate=recorder.generate,
-        )
-    )
-    asyncio.run(
-        publish_experiment_issue(
-            db_session, _Settings(), experiment.id,
-            IssuePublicationRequest(regenerate=True), generate=recorder.generate,
-        )
-    )
-
-    assert len(recorder.prompts) == 1
+    assert published[0] == stored
+    assert "0.999" not in published[0]
 
 
 def test_daily_limit_blocks_publication(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """호출 주체가 생겼으므로 폭주 방지를 여기에 둔다(#490 결정)."""
-    recorder = _Recorder()
 
     async def fake_create_issue(_settings, *, title, body, labels):
         return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
@@ -354,7 +277,7 @@ def test_daily_limit_blocks_publication(
     asyncio.run(
         publish_experiment_issue(
             db_session, _Settings(issue_daily_limit=1), first.id,
-            IssuePublicationRequest(), generate=recorder.generate,
+            _request(),
         )
     )
 
@@ -363,7 +286,7 @@ def test_daily_limit_blocks_publication(
         asyncio.run(
             publish_experiment_issue(
                 db_session, _Settings(issue_daily_limit=1), second.id,
-                IssuePublicationRequest(), generate=recorder.generate,
+                _request(),
             )
         )
 
@@ -376,7 +299,6 @@ def test_daily_limit_ignores_unrelated_updated_at_bumps(
     `issue_published_at`이 아니라 `updated_at`으로 상한을 세면, 며칠 전 발행된
     실험이 오늘 상태 전이만 겪어도 "오늘 발행"으로 잡혀 정당한 새 발행을 막는다.
     """
-    recorder = _Recorder()
 
     async def fake_create_issue(_settings, *, title, body, labels):
         return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
@@ -388,7 +310,7 @@ def test_daily_limit_ignores_unrelated_updated_at_bumps(
     asyncio.run(
         publish_experiment_issue(
             db_session, _Settings(issue_daily_limit=1), old.id,
-            IssuePublicationRequest(), generate=recorder.generate,
+            _request(),
         )
     )
 
@@ -403,7 +325,7 @@ def test_daily_limit_ignores_unrelated_updated_at_bumps(
     result = asyncio.run(
         publish_experiment_issue(
             db_session, _Settings(issue_daily_limit=1), new.id,
-            IssuePublicationRequest(), generate=recorder.generate,
+            _request(),
         )
     )
 
@@ -415,7 +337,6 @@ def test_marker_lookup_recovers_a_lost_publication(
 ) -> None:
     """gh는 성공했는데 응답이 소실된 경우 중복 이슈를 만들면 안 된다."""
     experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
-    recorder = _Recorder()
 
     async def fake_find(_settings, *, marker):
         return IssueRef(number=530, url="https://github.com/SKYAHO/Autoresearch/issues/530")
@@ -433,7 +354,7 @@ def test_marker_lookup_recovers_a_lost_publication(
     result = asyncio.run(
         publish_experiment_issue(
             db_session, _Settings(), experiment.id,
-            IssuePublicationRequest(), generate=recorder.generate,
+            _request(),
         )
     )
 
@@ -448,7 +369,6 @@ def test_marker_lookup_failure_does_not_publish(
     모르는 상태로 발행하면 멱등성 3중 방어의 3번째 층이 사라진다.
     """
     experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
-    recorder = _Recorder()
 
     async def failing_find(_settings, *, marker):
         raise GitHubIssueError("authentication_failed")
@@ -467,7 +387,7 @@ def test_marker_lookup_failure_does_not_publish(
         asyncio.run(
             publish_experiment_issue(
                 db_session, _Settings(), experiment.id,
-                IssuePublicationRequest(), generate=recorder.generate,
+                _request(),
             )
         )
 

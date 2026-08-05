@@ -30,6 +30,18 @@ body:
       required: true
 
   - type: textarea
+    id: related_work
+    attributes:
+      label: 선행 연구 참조
+      description: |
+        가설의 근거가 되는 논문·블로그·기존 실험 링크. 선택 항목이며, 비워도 파서가
+        거부하지 않습니다. 에이전트가 구현 방식을 좁히는 데 씁니다.
+      placeholder: |
+        예) https://arxiv.org/abs/1706.09516 (CatBoost, ordered target statistics)
+    validations:
+      required: false
+
+  - type: textarea
     id: change
     attributes:
       label: 변경할 피처 · 모델

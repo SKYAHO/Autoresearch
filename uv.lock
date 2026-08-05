@@ -396,6 +396,7 @@ dev = [
     { name = "python-dotenv" },
     { name = "ruff" },
     { name = "sqlalchemy" },
+    { name = "streamlit" },
     { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-orchestration') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 feast = [
@@ -480,6 +481,7 @@ dev = [
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "ruff", specifier = "==0.15.18" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
+    { name = "streamlit", specifier = ">=1.37,<2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]
 feast = [
@@ -1035,6 +1037,7 @@ dependencies = [
     { name = "prometheus-client" },
     { name = "protobuf" },
     { name = "psutil" },
+    { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pygments" },
     { name = "pyjwt" },
