@@ -20,6 +20,7 @@ from datetime import datetime
 from agent_orchestration.ui.models import (
     Event,
     Experiment,
+    IssuePublication,
     Log,
     POLLING_STATUSES,
     Step,
@@ -48,6 +49,8 @@ class WorkbenchState:
     list_error: str | None = None
     detail_error: str | None = None
     last_updated_at: datetime | None = None
+    # 방금 발행한 이슈 좌표. 다음 제출 때 지워 이전 결과가 남지 않게 한다.
+    last_publication: IssuePublication | None = None
 
 
 def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:

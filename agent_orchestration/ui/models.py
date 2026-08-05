@@ -6,10 +6,15 @@ Experiment API와 Streamlit 화면 사이의 읽기 경계에서 JSON 응답을 
 
 [기능]
 Experiment, Event, Log 불변 모델과 ISO timestamp 변환, 상태별 사용자 문구와 색상을
-제공한다.
+제공한다. 사전등록 제출 폼이 API에 보내는 값(지표 방향, 허용 범위 키)과 그 한국어
+표시 문구도 여기서 정의한다.
 
 [비책임]
 API 인증, cursor polling, UI 컴포넌트 렌더링, Agent 상태 기록.
+
+UI 이미지는 `issue_authoring.py`를 포함하지 않으므로(`deploy/agent_orchestration/
+ui.Dockerfile`) 옵션 값을 import하지 않고 여기에 둔다. 값은 표시 문구가 아니라 **HTTP
+계약**이며, 서버 상수와의 동일성은 `tests/test_ui_submission_form.py`가 고정한다.
 """
 
 from __future__ import annotations
@@ -63,6 +68,90 @@ _STATUS_COLORS = {
     "ERROR": "#7F1D1D",
     "PROMOTED": "#0F766E",
 }
+
+
+# 사전등록 제출 폼이 API에 보내는 값. 왼쪽이 화면 문구, 오른쪽이 계약 값이다.
+METRIC_DIRECTIONS = {
+    "높을수록 좋음": "higher_is_better",
+    "낮을수록 좋음": "lower_is_better",
+}
+NOT_APPLICABLE = "not_applicable"
+NONE_VALUE = "없음"
+SCOPE_CHOICES = {
+    "prod_model_contract": "prod 모델 계약(src/features/model_contract.py) 수정 허용",
+    "feast_definition": "Feast 정의(feature_repo/) 수정 허용",
+    "promotion": "champion 승격까지 검토",
+}
+
+
+@dataclass(frozen=True)
+class Submission:
+    """제출 폼이 모은 사전등록 값.
+
+    `allowed_scope`만 API 요청의 최상위로 가고 나머지는 `fields`로 들어간다 — 서버의
+    `IssuePublicationRequest`가 그 형태를 요구한다.
+    """
+
+    title: str
+    hypothesis: str
+    related_work: str
+    change: str
+    primary_metric_name: str
+    primary_metric_direction: str
+    minimum_primary_delta: str
+    guardrail_metric_name: str
+    guardrail_metric_direction: str
+    maximum_guardrail_regression: str
+    secondary_metrics: str
+    allowed_scope: tuple[str, ...]
+
+    def missing_required(self) -> list[str]:
+        """비어 있으면 안 되는 항목의 화면 이름을 반환한다.
+
+        형식 검증은 서버가 하지만, 빈 칸은 왕복 없이 화면에서 바로 알려준다.
+        """
+        required = {
+            "실험 제목": self.title,
+            "연구 가설": self.hypothesis,
+            "변경할 피처 · 모델": self.change,
+            "주 지표 이름": self.primary_metric_name,
+            "최소 개선폭": self.minimum_primary_delta,
+        }
+        return [name for name, value in required.items() if not value]
+
+    def to_fields(self) -> dict[str, str]:
+        """API `fields`에 실을 값으로 변환한다."""
+        return {
+            "title": self.title,
+            "hypothesis": self.hypothesis,
+            "change": self.change,
+            "primary_metric_name": self.primary_metric_name,
+            "primary_metric_direction": self.primary_metric_direction,
+            "minimum_primary_delta": self.minimum_primary_delta,
+            "guardrail_metric_name": self.guardrail_metric_name,
+            "guardrail_metric_direction": self.guardrail_metric_direction,
+            "maximum_guardrail_regression": self.maximum_guardrail_regression,
+            "secondary_metrics": self.secondary_metrics,
+            "related_work": self.related_work,
+        }
+
+
+@dataclass(frozen=True)
+class IssuePublication:
+    """발행된 `[AR]` 이슈의 좌표."""
+
+    issue_number: int
+    issue_url: str
+    issue_branch: str
+
+    @classmethod
+    def from_json(cls, payload: dict[str, Any]) -> "IssuePublication":
+        number = payload.get("issue_number")
+        url = payload.get("issue_url")
+        branch = payload.get("issue_branch")
+        if not isinstance(number, int) or not isinstance(url, str) or not isinstance(branch, str):
+            raise ValueError("Experiment API returned an invalid issue publication response.")
+        return cls(issue_number=number, issue_url=url, issue_branch=branch)
 
 
 def _timestamp(value: object) -> datetime:

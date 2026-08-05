@@ -5,23 +5,31 @@ Streamlit workbench가 FastAPI Experiment API에 접근하는 경계다. API 토
 서버 측 HTTP header에만 넣으며, browser session으로 전달하지 않는다.
 
 [기능]
-Experiment 생성·조회, Event/Log cursor 조회, metadata 조회와 API 오류의 안전한 분류를
-제공한다.
+Experiment 생성·조회, 사전등록 필드의 `[AR]` 이슈 발행 요청, Event/Log cursor 조회,
+metadata 조회와 API 오류의 안전한 분류를 제공한다.
 
 [비책임]
-Streamlit 화면 렌더링, session state, Agent 실행, 상태·Event·Log 쓰기, GitHub 이슈 발행.
+Streamlit 화면 렌더링, session state, Agent 실행, 상태·Event·Log 쓰기. 이슈 본문 조립과
+`gh` 호출은 API 서버가 한다 — 이 모듈은 발행을 **요청**할 뿐이다.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from typing import Any, Callable, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from agent_orchestration.ui.models import Event, Experiment, Log, Step
+from agent_orchestration.ui.models import (
+    Event,
+    Experiment,
+    IssuePublication,
+    Log,
+    Step,
+)
 
 
 ParsedModel = TypeVar("ParsedModel")
@@ -90,6 +98,24 @@ class ExperimentClient:
             {"hypothesis": stripped, "metadata": {}},
         )
         return self._parse_model(payload, Experiment.from_json)
+
+    def publish_issue(
+        self,
+        experiment_id: str,
+        fields: dict[str, str],
+        allowed_scope: Sequence[str],
+    ) -> IssuePublication:
+        """사전등록 필드를 `[AR]` 이슈로 발행하고 그 좌표를 받는다.
+
+        서버가 지표 방향·소수 형식·guardrail 동반 선언을 검증하므로 여기서 다시 검사하지
+        않는다. 위반은 422로 돌아오며 그 시점에 이슈는 아직 열리지 않았다.
+        """
+        payload = self._request_json(
+            "POST",
+            f"/experiments/{experiment_id}/issue",
+            {"fields": fields, "allowed_scope": list(allowed_scope)},
+        )
+        return self._parse_model(payload, IssuePublication.from_json)
 
     def list_experiments(self, *, limit: int = 50) -> list[Experiment]:
         """최근 Experiment 목록을 반환한다."""

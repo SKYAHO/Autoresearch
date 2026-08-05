@@ -1,15 +1,16 @@
 """Streamlit Experiment Workbench의 화면 컴포넌트를 렌더링한다.
 
 [파이프라인]
-사용자가 가설을 제출하고 Experiment API가 기록한 상태·Event·Log를 관찰하는 UI 구간을
-담당한다. API 호출과 polling state 전이는 app/client 모듈이 담당한다.
+사용자가 실험을 사전등록하고 Experiment API가 기록한 상태·Event·Log를 관찰하는 UI
+구간을 담당한다. API 호출과 polling state 전이는 app/client 모듈이 담당한다.
 
 [기능]
-단일 화면 상단의 가설 작성 패널, 실험 선택 목록, 빈 관찰 패널, 상태 타임라인,
-결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 렌더링한다.
+단일 화면 상단의 사전등록 제출 폼과 발행 결과 표시, 실험 선택 목록, 빈 관찰 패널,
+상태 타임라인, 결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 렌더링한다.
 
 [비책임]
-HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, GitHub 이슈 생성.
+HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조립과 GitHub 이슈 생성
+(모두 API 서버의 책임이다).
 """
 
 from __future__ import annotations
@@ -21,9 +22,15 @@ from collections.abc import Sequence
 import streamlit as st
 
 from agent_orchestration.ui.models import (
+    METRIC_DIRECTIONS,
+    NONE_VALUE,
+    NOT_APPLICABLE,
+    SCOPE_CHOICES,
     Event,
     Experiment,
+    IssuePublication,
     Step,
+    Submission,
     status_label,
     step_kind_label,
     step_status_color,
@@ -33,25 +40,119 @@ from agent_orchestration.ui.styles import status_badge
 from agent_orchestration.ui.time import format_time
 
 
-def render_hypothesis_composer(api_error: str | None) -> str | None:
-    """단일 화면 상단의 가설 작성 패널을 렌더링하고 제출 가설을 반환한다."""
-    st.markdown('<p class="workbench-kicker">AUTORESEARCH / NEW HYPOTHESIS</p>', unsafe_allow_html=True)
+def render_submission_form(api_error: str | None) -> Submission | None:
+    """사전등록 제출 폼을 렌더링하고 제출 값을 반환한다.
+
+    필드 구성은 예측 모델링 사전등록 표준(arXiv 2311.18807)의 Phase A 중 연구자가
+    선언해야 하는 항목이다. 데이터·split·시드는 실험 간 비교가 성립하도록 서버가
+    고정하므로 입력받지 않고 아래에 읽기 전용으로 보여준다.
+    """
+    st.markdown('<p class="workbench-kicker">AUTORESEARCH / NEW EXPERIMENT</p>', unsafe_allow_html=True)
     with st.container(border=True):
-        st.markdown("### 새 가설을 작성합니다")
-        st.caption("가설 하나는 하나의 실험으로 저장됩니다. 실행기가 연결되면 진행 과정이 아래에 표시됩니다.")
+        st.markdown("### 실험을 사전등록합니다")
+        st.caption(
+            "제출하면 `[AR]` 이슈가 열리고 `auto-experiment` label이 붙습니다. "
+            "성공 기준은 결과를 보기 전에 정해야 하므로 지표와 임계값을 직접 선언합니다."
+        )
         if api_error:
             st.error(api_error)
-        with st.form("hypothesis-form", clear_on_submit=True):
-            hypothesis = st.text_area(
-                "가설",
-                placeholder="예: 썸네일의 색상 대비를 높이면 CTR이 개선될 것이다.",
-                height=110,
-                label_visibility="collapsed",
+        with st.form("submission-form", clear_on_submit=False):
+            title = st.text_input(
+                "실험 제목",
+                placeholder="예: views per day ratio feature",
+                help="이슈 제목과 실험 브랜치 이름이 여기서 만들어집니다. 영소문자와 숫자를 포함해 주세요.",
             )
-            submitted = st.form_submit_button("가설 등록", type="primary")
-    if submitted:
-        return hypothesis
-    return None
+            hypothesis = st.text_area(
+                "연구 가설",
+                placeholder="예: 비율 피처가 baseline 대비 test ROC-AUC를 개선한다.",
+                height=90,
+                help="무엇이 왜 개선될 것이라 보는지. 근거까지 적으면 실행기가 검증 방법을 좁힐 수 있습니다.",
+            )
+            related_work = st.text_area(
+                "선행 연구 참조 (선택)",
+                placeholder="예: https://arxiv.org/abs/1706.09516",
+                height=68,
+            )
+            change = st.text_area(
+                "변경할 피처 · 모델",
+                value="- 추가/변경할 피처 (계산식):\n- 변경할 하이퍼파라미터 (없으면 \"없음\"):\n- baseline과 동일하게 유지할 것:",
+                height=110,
+            )
+
+            st.markdown("**성공 기준**")
+            metric_left, metric_mid, metric_right = st.columns([2, 2, 1])
+            primary_metric_name = metric_left.text_input("주 지표 이름", value="roc_auc")
+            primary_direction_label = metric_mid.selectbox(
+                "주 지표 방향", list(METRIC_DIRECTIONS)
+            )
+            minimum_primary_delta = metric_right.text_input("최소 개선폭", value="0.002")
+
+            use_guardrail = st.checkbox("Guardrail 지표를 선언합니다")
+            guardrail_left, guardrail_mid, guardrail_right = st.columns([2, 2, 1])
+            guardrail_metric_name = guardrail_left.text_input(
+                "Guardrail 지표 이름", value="", disabled=not use_guardrail
+            )
+            guardrail_direction_label = guardrail_mid.selectbox(
+                "Guardrail 방향", list(METRIC_DIRECTIONS), disabled=not use_guardrail
+            )
+            maximum_guardrail_regression = guardrail_right.text_input(
+                "최대 악화폭", value="", disabled=not use_guardrail
+            )
+            secondary_metrics = st.text_input(
+                "보조 관측 지표 (선택)", placeholder="예: pr_auc"
+            )
+
+            st.markdown("**허용 범위**")
+            st.caption("실행기가 수정해도 되는 범위입니다. 에이전트가 스스로 넓힐 수 없습니다.")
+            allowed_scope = [
+                key for key, label in SCOPE_CHOICES.items() if st.checkbox(label, key=f"scope-{key}")
+            ]
+
+            with st.expander("서버가 고정하는 값"):
+                st.caption(
+                    "실험 간 비교가 성립하려면 데이터와 분할이 같아야 하므로 입력받지 않습니다."
+                )
+                st.markdown(
+                    "- 랜덤 시드: `42..71` (30개)\n"
+                    "- 비교 대상: 동일 조건 baseline 재학습\n"
+                    "- Split 시드 · Test/Validation 비율 · 데이터셋 스냅샷 · 학습 설정 참조\n"
+                    "- 대상 기간: 발행 시점 기준 최근 30일 (KST)"
+                )
+
+            submitted = st.form_submit_button("사전등록하고 이슈 발행", type="primary")
+
+    if not submitted:
+        return None
+    declared = use_guardrail and guardrail_metric_name.strip() != ""
+    return Submission(
+        title=title.strip(),
+        hypothesis=hypothesis.strip(),
+        related_work=related_work.strip(),
+        change=change.strip(),
+        primary_metric_name=primary_metric_name.strip(),
+        primary_metric_direction=METRIC_DIRECTIONS[primary_direction_label],
+        minimum_primary_delta=minimum_primary_delta.strip(),
+        guardrail_metric_name=(
+            guardrail_metric_name.strip() if declared else NONE_VALUE
+        ),
+        guardrail_metric_direction=(
+            METRIC_DIRECTIONS[guardrail_direction_label] if declared else NOT_APPLICABLE
+        ),
+        maximum_guardrail_regression=(
+            maximum_guardrail_regression.strip() if declared else NONE_VALUE
+        ),
+        secondary_metrics=secondary_metrics.strip(),
+        allowed_scope=tuple(allowed_scope),
+    )
+
+
+def render_publication_result(publication: IssuePublication) -> None:
+    """발행된 이슈 좌표를 보여준다."""
+    st.success(
+        f"이슈 #{publication.issue_number}가 열렸습니다 · 실험 브랜치 "
+        f"`{publication.issue_branch}`"
+    )
+    st.markdown(f"[GitHub에서 열기]({publication.issue_url})")
 
 
 def render_empty_workbench() -> None:

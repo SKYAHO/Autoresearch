@@ -5,12 +5,13 @@
 인터페이스다. FastAPI는 영속화와 상태 전이를, 후속 실행기는 Event·Log 기록을 담당한다.
 
 [기능]
-가설 기반 v0 Experiment 생성, 최근 실험 선택, 상세·Event·Log의 5초 cursor polling,
-API 오류의 영역별 사용자 표시와 삭제·만료 cursor 복구를 제공한다.
+사전등록 폼 제출로 Experiment 생성과 `[AR]` 이슈 발행을 잇달아 요청하고, 최근 실험
+선택, 상세·Event·Log의 5초 cursor polling, API 오류의 영역별 사용자 표시와 삭제·만료
+cursor 복구를 제공한다.
 
 [비책임]
-GitHub Auto Research 이슈 발행, 실제 실험 실행, 상태·Event·Log·승격 쓰기, API 인증
-정책 변경.
+이슈 본문 조립·`gh` 호출·label 부여(모두 API 서버), 실제 실험 실행, 상태·Event·Log·
+승격 쓰기, API 인증 정책 변경.
 """
 
 from __future__ import annotations
@@ -38,11 +39,13 @@ from agent_orchestration.ui.state import (
     should_poll,
 )
 from agent_orchestration.ui.styles import workbench_css
+from agent_orchestration.ui.models import Submission
 from agent_orchestration.ui.views import (
     render_empty_workbench,
     render_experiment_list,
     render_experiment_refresh_button,
-    render_hypothesis_composer,
+    render_publication_result,
+    render_submission_form,
     render_workbench,
 )
 
@@ -154,16 +157,36 @@ def refresh_selected_experiment(client: ExperimentClient, state: WorkbenchState)
     return False
 
 
-def create_from_hypothesis(client: ExperimentClient, state: WorkbenchState, hypothesis: str) -> None:
-    """가설 제출 후 생성 Experiment를 선택하고 workbench로 전환한다."""
+def submit_experiment(
+    client: ExperimentClient, state: WorkbenchState, submission: Submission
+) -> bool:
+    """Experiment를 만들고 곧바로 `[AR]` 이슈를 발행한다.
+
+    두 번 호출하는 이유는 서버 계약이 그렇기 때문이다 — 생성은 순수 DB 쓰기이고 발행은
+    외부 부작용이다. 발행이 실패해도 만들어진 Experiment는 남으며, 같은 값으로 다시
+    제출하면 서버가 저장된 본문으로 재발행한다.
+    """
     try:
-        experiment = client.create_experiment(hypothesis)
+        experiment = client.create_experiment(submission.hypothesis)
     except ExperimentApiError as error:
         record_detail_error(state, str(error))
-        return
+        return False
     state.experiments.insert(0, experiment)
     select_experiment(state, experiment.id)
+
+    try:
+        state.last_publication = client.publish_issue(
+            experiment.id, submission.to_fields(), submission.allowed_scope
+        )
+    except ExperimentApiError as error:
+        record_detail_error(
+            state, f"실험은 생성됐지만 이슈 발행에 실패했습니다: {error}"
+        )
+        refresh_selected_experiment(client, state)
+        return False
+
     refresh_selected_experiment(client, state)
+    return True
 
 
 def main() -> None:
@@ -184,13 +207,19 @@ def main() -> None:
     if configuration_error:
         render_configuration_notice()
 
-    submitted_hypothesis = render_hypothesis_composer(state.detail_error)
-    if submitted_hypothesis is not None:
+    submission = render_submission_form(state.detail_error)
+    if submission is not None:
+        missing = submission.missing_required()
         if client is None:
             st.error("Experiment API 연결을 먼저 복구해 주세요.")
+        elif missing:
+            st.error("다음 항목을 채워 주세요: " + ", ".join(missing))
         else:
-            create_from_hypothesis(client, state, submitted_hypothesis)
+            state.last_publication = None
+            submit_experiment(client, state, submission)
             st.rerun()
+    if state.last_publication is not None:
+        render_publication_result(state.last_publication)
 
     if render_experiment_refresh_button():
         if client is None:
