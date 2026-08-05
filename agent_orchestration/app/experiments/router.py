@@ -7,12 +7,14 @@ HTTP·OpenAPI 경계를 담당한다. 인증 구현, SQLAlchemy transaction 세�
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Annotated
 import uuid
 
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
+from agent_orchestration.app.config import ServiceSettings, get_settings
 from agent_orchestration.app.database import get_db_session
 from agent_orchestration.app.experiments.models import ExperimentStatus, StepKind
 from agent_orchestration.app.experiments.schemas import (
@@ -30,6 +32,8 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentStepPageResponse,
     ExperimentStepResponse,
     ExperimentStepUpdate,
+    IssuePublicationRequest,
+    IssuePublicationResponse,
     PromotionRequest,
     StatusUpdateRequest,
 )
@@ -45,14 +49,17 @@ from agent_orchestration.app.experiments.service import (
     list_experiment_steps,
     list_experiments,
     promote_experiment,
+    publish_experiment_issue,
     update_experiment_status,
     update_experiment_step,
 )
+from agent_orchestration.app.llm import generate_response
 from agent_orchestration.app.schemas import ErrorResponse
 
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
 SessionDependency = Annotated[Session, Depends(get_db_session)]
+SettingsDependency = Annotated[ServiceSettings, Depends(get_settings)]
 _UNAUTHORIZED_RESPONSE = {
     status.HTTP_401_UNAUTHORIZED: {
         "description": "Invalid orchestration API token.",
@@ -65,6 +72,16 @@ _NOT_FOUND_RESPONSE = {
 _CONFLICT_RESPONSE = {
     status.HTTP_409_CONFLICT: {"description": "Experiment state or idempotency conflict.", "model": ErrorResponse}
 }
+
+
+async def _generate_text(settings: ServiceSettings, prompt: str) -> str:
+    """LLM 백엔드 결과에서 텍스트만 꺼낸다.
+
+    service는 LLM 계약을 모르고 `str -> str` awaitable만 받는다. 이 경계 덕분에
+    테스트가 LLM 호출 횟수를 셀 수 있다.
+    """
+    completion = await generate_response(settings, prompt)
+    return completion.text
 
 
 @router.post(
@@ -285,3 +302,44 @@ def post_experiment_promotion(
 ) -> ExperimentResponse:
     """운영 근거가 있는 PASSED 실험을 수동 승격한다."""
     return ExperimentResponse.model_validate(promote_experiment(session, experiment_id, request))
+
+
+@router.post(
+    "/{experiment_id}/issue",
+    response_model=IssuePublicationResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        **_UNAUTHORIZED_RESPONSE,
+        **_NOT_FOUND_RESPONSE,
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "description": "Daily issue publication limit was reached.",
+            "model": ErrorResponse,
+        },
+        status.HTTP_502_BAD_GATEWAY: {
+            "description": "Failed to author or publish the issue.",
+            "model": ErrorResponse,
+        },
+    },
+)
+async def post_experiment_issue(
+    experiment_id: uuid.UUID,
+    request: IssuePublicationRequest,
+    session: SessionDependency,
+    settings: SettingsDependency,
+) -> IssuePublicationResponse:
+    """가설을 `[AR]` 이슈로 발행하고 그 좌표를 반환한다."""
+    experiment = await publish_experiment_issue(
+        session,
+        settings,
+        experiment_id,
+        request,
+        generate=partial(_generate_text, settings),
+    )
+    return IssuePublicationResponse(
+        issue_number=experiment.issue_number,
+        issue_url=(
+            f"https://github.com/{settings.github_repository}"
+            f"/issues/{experiment.issue_number}"
+        ),
+        issue_branch=experiment.issue_branch,
+    )

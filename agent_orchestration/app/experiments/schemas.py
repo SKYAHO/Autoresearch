@@ -81,6 +81,8 @@ class ExperimentResponse(BaseModel):
     status: ExperimentStatus
     metric_summary: dict | None
     agent_session_id: str | None
+    issue_number: int | None
+    issue_branch: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -239,6 +241,29 @@ class ExperimentMetadataResponse(BaseModel):
     """실험 metadata key-value 응답."""
 
     entries: dict[str, str]
+
+
+class IssuePublicationRequest(BaseModel):
+    """가설을 `[AR]` 이슈로 발행하는 요청."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    allowed_scope: tuple[
+        Literal["prod_model_contract", "feast_definition", "promotion"], ...
+    ] = ()
+    # 저장된 본문이 파서를 통과하지 못해 고착됐을 때만 쓴다. issue_number가 이미 있으면
+    # 무시된다 — 발행된 이슈의 본문을 바꾸는 것은 이 endpoint의 책임이 아니다.
+    regenerate: bool = False
+
+
+class IssuePublicationResponse(BaseModel):
+    """발행 결과 좌표."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    issue_number: int
+    issue_url: str
+    issue_branch: str
 
 
 class PromotionRequest(BaseModel):
