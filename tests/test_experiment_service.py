@@ -857,3 +857,74 @@ def test_experiment_response_exposes_issue_lineage_without_body(
     assert response.issue_number == 520
     assert response.issue_branch == "exp/520-ratio-feature"
     assert not hasattr(response, "issue_body")
+
+
+def test_status_update_wrapper_commits_transition_for_a_new_session(
+    sqlite_engine: Engine,
+) -> None:
+    """기존 wrapper가 상태와 event를 commit하지 않게 되는 refactor 회귀를 잡는다."""
+    factory = sessionmaker(bind=sqlite_engine, expire_on_commit=False)
+    with factory() as session:
+        experiment = create_experiment(
+            session,
+            ExperimentCreate(hypothesis="wrapper transaction ownership"),
+        )
+        experiment_id = experiment.id
+        update_experiment_status(
+            session,
+            experiment_id,
+            StatusUpdateRequest(status=ExperimentStatus.RUNNING),
+        )
+
+    with factory() as verification_session:
+        persisted = verification_session.get(Experiment, experiment_id)
+        assert persisted is not None
+        assert persisted.status == ExperimentStatus.RUNNING.value
+        event_row = verification_session.scalar(
+            select(ExperimentEvent).where(
+                ExperimentEvent.experiment_id == experiment_id,
+                ExperimentEvent.to_status == ExperimentStatus.RUNNING.value,
+            )
+        )
+        assert event_row is not None
+        assert event_row.from_status == ExperimentStatus.CREATED.value
+
+
+def test_transaction_primitive_rolls_back_with_its_caller(
+    db_session: Session,
+) -> None:
+    """caller rollback 뒤 상태나 event가 남는 transaction 경계 회귀를 잡는다."""
+    from agent_orchestration.app.experiments.service import (
+        transition_experiment_in_transaction,
+    )
+
+    experiment = create_experiment(
+        db_session,
+        ExperimentCreate(hypothesis="caller managed transaction"),
+    )
+    experiment_id = experiment.id
+
+    with pytest.raises(RuntimeError, match="controlled caller rollback"):
+        with db_session.begin():
+            transition_experiment_in_transaction(
+                db_session,
+                experiment_id,
+                requested=ExperimentStatus.RUNNING,
+                reason="executor job claimed",
+                metric_snapshot=None,
+                idempotency_key=f"launcher-claim:{experiment_id}",
+                check_idempotency=True,
+            )
+            raise RuntimeError("controlled caller rollback")
+
+    persisted = db_session.get(Experiment, experiment_id)
+    assert persisted is not None
+    assert persisted.status == ExperimentStatus.CREATED.value
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(ExperimentEvent)
+        .where(
+            ExperimentEvent.experiment_id == experiment_id,
+            ExperimentEvent.to_status == ExperimentStatus.RUNNING.value,
+        )
+    ) == 0

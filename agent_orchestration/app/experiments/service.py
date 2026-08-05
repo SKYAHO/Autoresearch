@@ -2,9 +2,11 @@
 
 전체 파이프라인에서 검증된 API 입력을 SQLAlchemy transaction으로 실험·event·log·metadata에
 반영하는 구간과, 호출자가 제출한 사전등록 필드를 `[AR]` 이슈로 발행하는 조립→저장→발행
-절차를 담당한다. 발행 전에 baseline-reader App으로 `dev` SHA를 읽어 본문·제목과 함께
-조건부 UPDATE로 최초 값만 봉인한다. HTTP 인증·상태 코드 변환, 실제 학습/Job 실행,
-본문 조립(issue_authoring)과 GitHub 인증·REST/`gh` 전송 자체는 담당하지 않는다.
+절차를 담당한다. API wrapper가 transaction을 소유하는 기존 경계와 launcher가 이미 연
+transaction에 상태·event 쓰기를 합치는 primitive를 함께 제공한다. 발행 전에
+baseline-reader App으로 `dev` SHA를 읽어 본문·제목과 함께 조건부 UPDATE로 최초 값만
+봉인한다. HTTP 인증·상태 코드 변환, 실제 학습/Job 실행, 본문 조립(issue_authoring)과
+GitHub 인증·REST/`gh` 전송 자체는 담당하지 않는다.
 """
 
 from __future__ import annotations
@@ -225,6 +227,63 @@ def _require_general_transition(requested: ExperimentStatus) -> None:
         raise PromotionRequiresDedicatedEndpointError
 
 
+def transition_experiment_in_transaction(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    requested: ExperimentStatus,
+    reason: str | None,
+    metric_snapshot: dict | None,
+    idempotency_key: str,
+    check_idempotency: bool,
+) -> tuple[Experiment, ExperimentEvent]:
+    """호출자가 연 transaction 안에서 상태와 event를 원자적으로 갱신한다.
+
+    이 함수는 commit이나 rollback을 수행하지 않는다. API service wrapper와 launcher처럼
+    추가 쓰기를 같은 원자 단위로 묶어야 하는 호출자가 transaction 수명을 소유한다.
+    """
+    _require_general_transition(requested)
+    request_fingerprint = _request_fingerprint(
+        {
+            "to_status": requested.value,
+            "reason": reason,
+            "metric_snapshot": metric_snapshot,
+        }
+    )
+    experiment = find_experiment(session, experiment_id, for_update=True)
+    if experiment is None:
+        raise ExperimentNotFoundError(experiment_id)
+
+    if check_idempotency:
+        existing_event = find_event_by_idempotency_key(
+            session,
+            experiment_id,
+            idempotency_key,
+        )
+        if existing_event is not None:
+            if existing_event.request_fingerprint != request_fingerprint:
+                raise IdempotencyConflictError(idempotency_key)
+            return experiment, existing_event
+
+    current = ExperimentStatus(experiment.status)
+    validate_transition(current, requested)
+    experiment.status = requested.value
+    if metric_snapshot is not None:
+        experiment.metric_summary = metric_snapshot
+    event_row = ExperimentEvent(
+        experiment_id=experiment.id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
+        from_status=current.value,
+        to_status=requested.value,
+        reason=reason,
+        metric_snapshot=metric_snapshot,
+    )
+    session.add(event_row)
+    session.flush()
+    return experiment, event_row
+
+
 def _transition_experiment(
     session: Session,
     experiment_id: uuid.UUID,
@@ -233,44 +292,19 @@ def _transition_experiment(
     reason: str | None,
     metric_snapshot: dict | None,
     idempotency_key: str,
-    request_fingerprint: str,
     check_idempotency: bool,
 ) -> tuple[Experiment, ExperimentEvent]:
-    """row lock 안에서 상태와 event를 한 transaction으로 갱신한다."""
-    _require_general_transition(requested)
+    """기존 service 호출을 위해 transaction을 열고 공용 전이 primitive를 호출한다."""
     with session.begin():
-        experiment = find_experiment(session, experiment_id, for_update=True)
-        if experiment is None:
-            raise ExperimentNotFoundError(experiment_id)
-
-        if check_idempotency:
-            existing_event = find_event_by_idempotency_key(
-                session,
-                experiment_id,
-                idempotency_key,
-            )
-            if existing_event is not None:
-                if existing_event.request_fingerprint != request_fingerprint:
-                    raise IdempotencyConflictError(idempotency_key)
-                return experiment, existing_event
-
-        current = ExperimentStatus(experiment.status)
-        validate_transition(current, requested)
-        experiment.status = requested.value
-        if metric_snapshot is not None:
-            experiment.metric_summary = metric_snapshot
-        event_row = ExperimentEvent(
-            experiment_id=experiment.id,
-            idempotency_key=idempotency_key,
-            request_fingerprint=request_fingerprint,
-            from_status=current.value,
-            to_status=requested.value,
+        return transition_experiment_in_transaction(
+            session,
+            experiment_id,
+            requested=requested,
             reason=reason,
             metric_snapshot=metric_snapshot,
+            idempotency_key=idempotency_key,
+            check_idempotency=check_idempotency,
         )
-        session.add(event_row)
-        session.flush()
-    return experiment, event_row
 
 
 def update_experiment_status(
@@ -280,11 +314,6 @@ def update_experiment_status(
 ) -> Experiment:
     """클라이언트 멱등성을 제공하지 않는 일반 상태 변경을 수행한다."""
     requested = ExperimentStatus(request.status)
-    payload = {
-        "to_status": requested.value,
-        "reason": request.reason,
-        "metric_snapshot": request.metric_snapshot,
-    }
     experiment, _event = _transition_experiment(
         session,
         experiment_id,
@@ -292,7 +321,6 @@ def update_experiment_status(
         reason=request.reason,
         metric_snapshot=request.metric_snapshot,
         idempotency_key=f"status-update:{uuid.uuid4()}",
-        request_fingerprint=_request_fingerprint(payload),
         check_idempotency=False,
     )
     return experiment
@@ -319,7 +347,6 @@ def create_experiment_event(
             reason=request.reason,
             metric_snapshot=request.metric_snapshot,
             idempotency_key=request.idempotency_key,
-            request_fingerprint=fingerprint,
             check_idempotency=True,
         )
         return event_row
