@@ -6,7 +6,7 @@ launcher가 봉인 좌표를 Pod 환경 변수로 전달한 뒤, token 발급과
 
 [기능]
 실험·이슈·branch·기준 SHA·repository·token 파일 좌표와 token-minter 전용 GitHub App
-좌표를 읽고 형식 및 필수 파일을 fail-closed로 검증한다.
+좌표를 읽고 형식·상호 일치 및 필수 파일을 fail-closed로 검증한다.
 
 [비책임]
 installation token 발급(`token_minter.py`), Git ref 멱등 판단(`main.py`), 환경 변수와
@@ -27,7 +27,7 @@ from agent_orchestration.github_app import GitHubAppCredentials
 
 _POSITIVE_INTEGER_PATTERN = re.compile(r"^[1-9][0-9]*$")
 _ISSUE_BRANCH_PATTERN = re.compile(
-    r"^exp/[0-9]+-[a-z0-9]+(?:-[a-z0-9]+)*$"
+    r"^exp/(?P<issue_number>[0-9]+)-[a-z0-9]+(?:-[a-z0-9]+)*$"
 )
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -87,7 +87,11 @@ class BranchBootstrapInput:
 
         issue_number = _positive_integer("ORCH_ISSUE_NUMBER")
         issue_branch = _required_environment("ORCH_ISSUE_BRANCH")
-        if _ISSUE_BRANCH_PATTERN.fullmatch(issue_branch) is None:
+        issue_branch_match = _ISSUE_BRANCH_PATTERN.fullmatch(issue_branch)
+        if (
+            issue_branch_match is None
+            or int(issue_branch_match.group("issue_number")) != issue_number
+        ):
             raise ExecutorConfigError("invalid ORCH_ISSUE_BRANCH")
 
         base_dev_sha = _required_environment("ORCH_BASE_DEV_SHA")

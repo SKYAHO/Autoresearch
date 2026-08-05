@@ -138,6 +138,16 @@ def test_executor_rejects_missing_base_sha(
         BranchBootstrapInput.from_environment()
 
 
+def test_executor_rejects_issue_number_mismatched_with_branch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _set_valid_executor_environment(monkeypatch, tmp_path / "token")
+    monkeypatch.setenv("ORCH_ISSUE_BRANCH", "exp/999-other")
+
+    with pytest.raises(ExecutorConfigError, match="ORCH_ISSUE_BRANCH"):
+        BranchBootstrapInput.from_environment()
+
+
 @pytest.mark.parametrize(
     ("environment_name", "invalid_value"),
     [
