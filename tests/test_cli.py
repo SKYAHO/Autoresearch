@@ -333,6 +333,58 @@ def test_run_pipeline_rejects_dataset_uri_with_events_window(monkeypatch) -> Non
         )
 
 
+def test_run_pipeline_rejects_dataset_uri_with_feature_service(monkeypatch) -> None:
+    """재사용 경로는 조립 분기를 건너뛰어 --feature-service가 전달될 곳이 없다.
+
+    거부하지 않으면 오퍼레이터가 --feature-service를 지정해도 조용히 무시되고,
+    MLflow에는 다운로드한 manifest의 feature_service가 대신 남는다(#530 PR 리뷰).
+    """
+    with pytest.raises(typer.BadParameter, match="feature-service"):
+        cli.run_pipeline(
+            dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+            dataset_path=None,
+            events_start_date=None,
+            events_end_date=None,
+            config_path=None,
+            model_output=None,
+            test_set_output=None,
+            feature_columns_output=None,
+            categorical_columns_output=None,
+            test_size=None,
+            val_size=None,
+            random_state=None,
+            extra_features=None,
+            experiment=None,
+            feature_service="ctr_training_exp_v2",
+        )
+
+
+def test_run_pipeline_rejects_dataset_uri_with_snapshot_root(monkeypatch) -> None:
+    """재사용 경로는 조립 분기를 건너뛰어 --snapshot-root가 전달될 곳이 없다.
+
+    거부하지 않으면 오퍼레이터가 재사용 스냅샷을 이 루트에도 게시하려는 것으로
+    오인할 수 있지만, 실제로는 아무 게시도 일어나지 않는다(#530 PR 리뷰).
+    """
+    with pytest.raises(typer.BadParameter, match="snapshot-root"):
+        cli.run_pipeline(
+            dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+            dataset_path=None,
+            events_start_date=None,
+            events_end_date=None,
+            config_path=None,
+            model_output=None,
+            test_set_output=None,
+            feature_columns_output=None,
+            categorical_columns_output=None,
+            test_size=None,
+            val_size=None,
+            random_state=None,
+            extra_features=None,
+            experiment=None,
+            snapshot_root="gs://snapshots/training",
+        )
+
+
 def test_run_pipeline_skips_assembly_and_logs_snapshot_uri(monkeypatch) -> None:
     """--dataset-uri면 조립을 건너뛰고 lineage를 manifest에서 채운다."""
     assembled: list[dict] = []

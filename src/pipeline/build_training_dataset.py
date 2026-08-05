@@ -954,7 +954,9 @@ def main(
         extra_features=extra_features,
     )
     if snapshot_root is None:
-        print("[게시 없음] snapshot root 미지정 — 로컬에만 저장")
+        # 게시 여부를 알리는 안내는 여기서 찍지 않는다 — 호출자(cli.py)가 이미
+        # snapshot_root 지정 여부를 알고, degradation_eval처럼 이 함수를 평가일마다
+        # 반복 호출하는 호출부도 있어 여기서 찍으면 호출 수만큼 중복된다(#530 PR 리뷰).
         return AssemblyOutcome(coverage=coverage, snapshot_uri=None)
 
     # 실험 조립은 by-hash에만 올리고 by-date 포인터는 건드리지 않는다(#530 §6.3) —

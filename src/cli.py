@@ -122,6 +122,13 @@ def build_features(
     ),
 ) -> None:
     """training_dataset.csv 생성 (offline feature store PIT 조회, #359 C2로 feast-only)."""
+    snapshot_root_kwargs = _snapshot_root_kwargs(snapshot_root)
+    if not snapshot_root_kwargs:
+        # 게시 게이팅은 main()이 하지만, "이번 실행은 게시하지 않는다"는 사실은
+        # 호출자(CLI)가 이미 알고 있다 — main()이 매 호출마다 이 안내를 찍으면
+        # degradation_eval처럼 반복 호출하는 경로에서 같은 줄이 호출 수만큼
+        # 중복된다(#530 PR 리뷰). 그래서 여기서 한 번만 남긴다.
+        typer.echo("[게시 없음] snapshot root 미지정 — 로컬에만 저장")
     build_training_dataset.main(
         output_path=output_path,
         events_start_date=events_start_date,
@@ -131,7 +138,7 @@ def build_features(
             feature_service=feature_service,
             extra_features=_parse_extra_features(extra_features),
         ),
-        **_snapshot_root_kwargs(snapshot_root),
+        **snapshot_root_kwargs,
     )
 
 
@@ -510,7 +517,10 @@ def run_pipeline(
     분리해 전달하며, snapshot sidecar가 없거나 검증에 실패하면 학습을 시작하지 않는다.
     `--dataset-uri`를 주면 build-features를 완전히 생략하고 게시된 스냅샷을
     재사용한다(#530) — `--dataset-path`·`--events-start-date`·`--events-end-date`와는
-    함께 쓸 수 없다(스냅샷이 그 값들을 이미 확정했다).
+    함께 쓸 수 없다(스냅샷이 그 값들을 이미 확정했다). `--feature-service`·
+    `--snapshot-root`도 함께 쓸 수 없다 — 재사용 경로는 조립 분기를 건너뛰어 두
+    옵션이 전달될 곳이 없고, 조용히 무시되면 오퍼레이터가 지정한 값이 아무 효과가
+    없다는 사실을 알 방법이 없다.
     """
     experiment_features = _parse_extra_features(extra_features)
     promotion_evidence_kwargs = _promotion_evidence_kwargs(
@@ -524,6 +534,12 @@ def run_pipeline(
             "--dataset-path": _optional_cli_string(dataset_path),
             "--events-start-date": _optional_cli_string(events_start_date),
             "--events-end-date": _optional_cli_string(events_end_date),
+            # 재사용 경로는 _assembly_feature_kwargs·_snapshot_root_kwargs를 부르는
+            # 조립 분기 자체를 건너뛰므로, 이 둘을 줘도 아무 데도 전달되지 않고
+            # 조용히 무시된다 — MLflow에 남는 feature_service는 다운로드한
+            # manifest의 것이고, 게시도 일어나지 않는다. 반드시 거부한다(#530 PR 리뷰).
+            "--feature-service": _optional_cli_string(feature_service),
+            "--snapshot-root": _optional_cli_string(snapshot_root),
         }
         named = [name for name, value in conflicting.items() if value is not None]
         if named:
@@ -543,6 +559,11 @@ def run_pipeline(
     snapshot_uri: Optional[str] = resolved_dataset_uri
     if resolved_dataset_uri is None:
         typer.echo("\n[1/4] build-features 실행...")
+        snapshot_root_kwargs = _snapshot_root_kwargs(snapshot_root)
+        if not snapshot_root_kwargs:
+            # main()이 매 호출마다 이 안내를 찍으면 반복 호출 호출부(degradation_eval)에서
+            # 중복되므로 호출자인 여기서 한 번만 남긴다(#530 PR 리뷰).
+            typer.echo("[게시 없음] snapshot root 미지정 — 로컬에만 저장")
         # 실험 피처는 학습·평가만이 아니라 **조립에도** 넘긴다(#454) — 조립이 보존하지 않으면
         # 학습의 --extra-features가 승격할 컬럼 자체가 CSV에 없어 실행이 성립하지 않는다.
         assembly = build_training_dataset.main(
@@ -553,7 +574,7 @@ def run_pipeline(
             **_assembly_feature_kwargs(
                 feature_service=feature_service, extra_features=experiment_features
             ),
-            **_snapshot_root_kwargs(snapshot_root),
+            **snapshot_root_kwargs,
         )
         coverage = assembly.coverage
         snapshot_uri = assembly.snapshot_uri
