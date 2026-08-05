@@ -412,3 +412,26 @@ def test_prod_assembly_keeps_default_output_path() -> None:
     build_training_dataset.require_explicit_experiment_output(
         feature_service="ctr_training_v1", extra_features=[]
     )
+
+
+@pytest.mark.parametrize(
+    ("feature_service", "extra_features", "expected"),
+    [
+        (None, None, False),
+        ("ctr_training_v1", None, False),
+        ("ctr_training_v1", [], False),
+        ("ctr_experiment_v2", None, True),
+        (None, ["views_per_day"], True),
+        ("ctr_training_v1", ["views_per_day"], True),
+    ],
+)
+def test_is_experiment_assembly_matches_guard_condition(
+    feature_service, extra_features, expected
+) -> None:
+    """predicate가 require_explicit_experiment_output의 판정과 일치해야 한다(#530)."""
+    assert (
+        build_training_dataset.is_experiment_assembly(
+            feature_service=feature_service, extra_features=extra_features
+        )
+        is expected
+    )

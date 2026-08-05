@@ -440,6 +440,26 @@ def resolve_extra_feature_columns(
     return requested
 
 
+def is_experiment_assembly(
+    *,
+    feature_service: str | None,
+    extra_features: Sequence[str] | None,
+) -> bool:
+    """이 조립이 prod 기본 조건에서 벗어난 실험 조립인지 판정한다(#530).
+
+    #454가 이 판정을 도입했지만 ``require_explicit_experiment_output`` 안에 갇혀
+    있어 다른 곳에서 쓸 수 없었다. 게시 게이팅(#530)이 같은 판정을 필요로 하므로
+    predicate로 분리한다 — 조건식이 두 벌이면 ``DEFAULT_SERVICE`` 판별 기준이 바뀔 때
+    한쪽만 고치는 실수가 난다.
+    """
+    from src.features.feast_retrieval import DEFAULT_SERVICE
+
+    experiment_service = (
+        feature_service is not None and feature_service != DEFAULT_SERVICE
+    )
+    return experiment_service or bool(extra_features)
+
+
 def require_explicit_experiment_output(
     *,
     feature_service: str | None,
@@ -451,12 +471,9 @@ def require_explicit_experiment_output(
     선택하므로 여분 컬럼을 조용히 무시한다 — champion 후보가 실험 데이터로 학습됐다는
     사실이 지표에도, 컬럼 수에도 드러나지 않는다. 그래서 경로를 명시하게 요구한다.
     """
-    from src.features.feast_retrieval import DEFAULT_SERVICE
-
-    experiment_service = (
-        feature_service is not None and feature_service != DEFAULT_SERVICE
-    )
-    if not experiment_service and not extra_features:
+    if not is_experiment_assembly(
+        feature_service=feature_service, extra_features=extra_features
+    ):
         return
     raise FeatureContractError(
         "실험 조립(--feature-service 또는 --extra-features)은 출력 경로를 명시해야 "
