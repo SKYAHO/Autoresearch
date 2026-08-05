@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-05T03:41:47Z",
+  "generated_at": "2026-08-05T04:05:28Z",
   "reports": [
+    {
+      "number": 538,
+      "title": "feat: 이슈 발행에서 LLM을 제거하고 사전등록 필드를 직접 받는다",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-05T04:05:16Z",
+      "summary_ko": [
+        "자율 실험([AR]) 이슈 발행 과정에서 LLM 호출을 제거하고 호출자가 사전등록 필드를 직접 제출하도록 개편하였습니다.",
+        "Streamlit 관리 UI를 자유 서술형 입력창에서 성공 기준과 변경 사항을 직접 선언하는 사전등록 양식으로 교체하였습니다.",
+        "예측 모델링 사전등록 표준(arXiv 2311.18807)을 준수하도록 '선행 연구 참조' 필드를 추가하고 스펙을 업데이트했습니다."
+      ],
+      "report_url": "pr/538/"
+    },
     {
       "number": 527,
       "title": "feat: temporal signal을 #425 다중 신호 판정 스키마에 연결 (#485 Task 4)",
