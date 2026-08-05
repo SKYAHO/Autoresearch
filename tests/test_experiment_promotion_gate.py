@@ -719,3 +719,65 @@ def test_gate_policy_version_is_distinct_from_promotion_policy_version() -> None
     )
 
     assert decision.policy_version != PROMOTION_POLICY_VERSION
+
+
+# ---------------------------------------------------------------------------
+# workflow 배선 (#472 Task 4, spec §8.2)
+#
+# 게이트는 순수 함수라 값 조달은 전부 호출부 책임이다. 이 workflow는 MLflow에
+# 접근하지 않고 모든 값을 입력으로 받으므로, 경과일도 입력이고 리밋만 정책 상수다.
+# ---------------------------------------------------------------------------
+
+
+def _promotion_workflow() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_workflow_accepts_days_since_last_promotion_as_optional_input() -> None:
+    inputs = _promotion_workflow()[True]["workflow_dispatch"]["inputs"]
+
+    assert "days_since_last_promotion" in inputs
+    assert inputs["days_since_last_promotion"]["required"] is False
+
+
+def test_workflow_reads_elapsed_days_from_dispatch_payload_too() -> None:
+    """`repository_dispatch`로 오는 producer도 같은 값을 실을 수 있어야 한다."""
+    env = _promotion_workflow()["jobs"]["create-promotion-pr"]["env"]
+
+    assert "client_payload.days_since_last_promotion" in env["DAYS_SINCE_LAST_PROMOTION"]
+
+
+def test_hard_retrain_limit_days_defaults_to_unset() -> None:
+    """값이 확정되기 전에는 비워 둔다(spec §8.3).
+
+    `#485` 실측은 단일 origin 관측 하나뿐이고 `safety_margin_days`가 미확정이라
+    리밋도 잠정이다. 숫자를 박으면 **근거 없는 상수가 승격을 만들어낸다** — 비어
+    있으면 게이트가 하드 리밋 조건을 평가하지 않아 기존 동작과 동일하다.
+    """
+    env = _promotion_workflow()["jobs"]["create-promotion-pr"]["env"]
+
+    assert env["HARD_RETRAIN_LIMIT_DAYS"] == ""
+
+
+def test_gate_step_passes_hard_limit_arguments() -> None:
+    steps = _promotion_workflow()["jobs"]["create-promotion-pr"]["steps"]
+    gate = next(step for step in steps if step.get("id") == "gate")
+
+    assert "hard_retrain_limit_days=" in gate["run"]
+    assert "days_since_last_promotion=" in gate["run"]
+    # 빈 값이면 None을 넘겨야 한다 — 관측되지 않은 것을 값으로 바꾸지 않는다.
+    assert "else None" in gate["run"]
+
+
+def test_workflow_validates_elapsed_days_as_non_negative_integer() -> None:
+    """gate step이 `int()`로 파싱하므로 형식 검증이 그 앞에 있어야 한다.
+
+    없으면 잘못된 입력에서 gate step이 죽고 사유가 이슈에 남지 않는다(#495 D-1과
+    같은 이유).
+    """
+    steps = _promotion_workflow()["jobs"]["create-promotion-pr"]["steps"]
+    lineage = next(step for step in steps if step.get("id") == "lineage")
+    script = lineage["with"]["script"]
+
+    assert "days_since_last_promotion must be a non-negative integer" in script
+    assert "input_invalid" in script

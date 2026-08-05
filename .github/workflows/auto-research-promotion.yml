@@ -14,6 +14,12 @@ on:
       primary_baseline: {required: true, type: string}
       guardrail_candidate: {required: false, type: string}
       guardrail_baseline: {required: false, type: string}
+      # 마지막 승격 이후 경과일(#472). 이 workflow는 MLflow에 접근하지 않고 모든 값을
+      # 호출자에게서 받으므로(다른 지표와 같은 계약), 경과일도 호출자가 구해 넘긴다.
+      # 현재 산출 근거는 champion alias가 가리키는 **버전의 creation_timestamp**이며
+      # alias 부여 시각이 아니다 — 근사치다(spec §6). 버전 생성은 alias 부여보다
+      # 이르거나 같아 경과일이 실제보다 크게 나오고, 하드 리밋이 더 일찍 발동한다.
+      days_since_last_promotion: {required: false, type: string}
       image_digest: {required: false, type: string}
       artifact_uri: {required: false, type: string}
       log_uri: {required: false, type: string}
@@ -37,6 +43,19 @@ jobs:
       PRIMARY_BASELINE: ${{ inputs.primary_baseline || github.event.client_payload.primary_baseline }}
       GUARDRAIL_CANDIDATE: ${{ inputs.guardrail_candidate || github.event.client_payload.guardrail_candidate }}
       GUARDRAIL_BASELINE: ${{ inputs.guardrail_baseline || github.event.client_payload.guardrail_baseline }}
+      DAYS_SINCE_LAST_PROMOTION: ${{ inputs.days_since_last_promotion || github.event.client_payload.days_since_last_promotion }}
+      # 하드 리밋 정책값(#472 §8.2). "성능과 무관하게 이 일수가 지나면 교체한다".
+      #
+      # **비어 있으면 하드 리밋 조건을 평가하지 않는다** — 지금은 값이 확정되지 않았다.
+      # `#485` 실측(2026-08-04)은 단일 origin 관측 하나뿐이고(degradation_point
+      # elapsed_days=7), `safety_margin_days`가 미확정이라 리밋도 잠정이다
+      # (`#485` spec §7.3, `#472` spec §8.3). 확정 전에 숫자를 박으면 근거 없는 상수가
+      # 승격을 만들어낸다.
+      #
+      # **갱신 주체·시점**: 열화 측정을 소유한 사람이, 다중 origin 관측이 새로 쌓일
+      # 때마다 재산출해 이 값을 갱신한다. 절차는
+      # `docs/specs/2026-08-05-hard-retrain-limit-gate.md` §8.3과 스킬 문서를 따른다.
+      HARD_RETRAIN_LIMIT_DAYS: ""
       IMAGE_DIGEST: ${{ inputs.image_digest || github.event.client_payload.image_digest }}
       ARTIFACT_URI: ${{ inputs.artifact_uri || github.event.client_payload.artifact_uri }}
       LOG_URI: ${{ inputs.log_uri || github.event.client_payload.log_uri }}
@@ -78,6 +97,7 @@ jobs:
             const primaryBaseline = process.env.PRIMARY_BASELINE || '';
             const guardrailCandidate = process.env.GUARDRAIL_CANDIDATE || '';
             const guardrailBaseline = process.env.GUARDRAIL_BASELINE || '';
+            const daysSinceLastPromotion = process.env.DAYS_SINCE_LAST_PROMOTION || '';
             // 거부 사유를 세 갈래로 구분한다(#495 D-3).
             //   input_invalid       — 입력 형식이 계약을 벗어남
             //   comparison_rejected — 비교는 성립했으나 통과하지 못한 정상 결과
@@ -126,6 +146,15 @@ jobs:
                 if (value !== '' && !isFiniteDecimal(value)) {
                   throw new RejectionError('input_invalid', `${name} must be a finite decimal, got "${value}"`);
                 }
+              }
+              // 경과일은 소수가 아니라 **음이 아닌 정수**다(#472). gate step이
+              // `int()`로 파싱하므로 여기서 막지 않으면 그 단계에서 죽고 사유가
+              // 이슈에 남지 않는다 — 위 지표 검증과 같은 이유다(#495 D-1).
+              if (daysSinceLastPromotion !== '' && !/^(?:0|[1-9][0-9]*)$/.test(daysSinceLastPromotion)) {
+                throw new RejectionError(
+                  'input_invalid',
+                  `days_since_last_promotion must be a non-negative integer, got "${daysSinceLastPromotion}"`,
+                );
               }
               // paired 비교(#454) 결과를 보낸 producer는 outcome을 함께 싣는다.
               // 통과가 아닌 결과로 승격 브랜치·PR을 만들지 않는다. outcome이 없는
@@ -188,6 +217,15 @@ jobs:
               primary_baseline=float(os.environ["PRIMARY_BASELINE"]),
               guardrail_candidate=float(os.environ["GUARDRAIL_CANDIDATE"]) if os.environ.get("GUARDRAIL_CANDIDATE") else None,
               guardrail_baseline=float(os.environ["GUARDRAIL_BASELINE"]) if os.environ.get("GUARDRAIL_BASELINE") else None,
+              # 값이 없으면 None을 넘겨 하드 리밋 조건을 평가하지 않게 한다(#472 §4.2).
+              # 관측되지 않은 것을 "기한이 지났다"로도 "안 지났다"로도 바꾸지 않는다.
+              #
+              # 호출자는 temporal hold가 걸린 측정에서는 경과일을 넘기지 않아야 한다
+              # (#472 spec §3.2) — `derive_hard_retrain_limit`은 hold를 참조하지 않아
+              # 오염된 곡선에서도 숫자 모양이 정상인 값을 내고, 게이트는 숫자만 받으므로
+              # 스스로 구분할 수 없다.
+              hard_retrain_limit_days=int(os.environ["HARD_RETRAIN_LIMIT_DAYS"]) if os.environ.get("HARD_RETRAIN_LIMIT_DAYS") else None,
+              days_since_last_promotion=int(os.environ["DAYS_SINCE_LAST_PROMOTION"]) if os.environ.get("DAYS_SINCE_LAST_PROMOTION") else None,
           )
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"passed={'true' if decision.passed else 'false'}\nreason={decision.reason}\n")
