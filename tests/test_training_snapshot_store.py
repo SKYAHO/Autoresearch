@@ -488,20 +488,28 @@ def test_precondition_type_check_rejects_lookalike_code_on_publish(
     assert isinstance(error.value.__cause__, _AmbiguousPreconditionCode)
 
 
-def test_download_propagates_lookalike_not_found_code(tmp_path) -> None:
+def test_download_propagates_lookalike_not_found_code(tmp_path, monkeypatch) -> None:
     """code만 404인 무관한 GoogleAPICallError는 "스냅샷 없음"으로 감싸이면 안 된다.
 
-    ``_is_not_found``의 typed 분기를 태운다 — code만 봤다면 실제로는 권한·네트워크
-    오류인 이 케이스도 "스냅샷을 찾을 수 없습니다"로 오인됐을 것이다. 다만 fix 4(#530
-    PR 리뷰)로 ``download_snapshot``에 재시도가 생기면서, not-found가 아닌 예외는 이제
-    (publish와 같은 정책으로) 재시도를 소진한 뒤 ``SnapshotStoreError``로 감싸 전파된다
-    — 원인 예외는 ``__cause__``로 보존되므로 typed 판정이 죽지 않았는지는 여전히
-    확인할 수 있다.
+    ``_is_not_found``의 typed 분기를 태운다 — code만 봤다면 이 케이스(실제로는
+    권한·네트워크 오류일 수 있는 예외)가 즉시 not-found로 오인돼 재시도 없이
+    끝난다. 타입으로 정확히 판정하면 not-found가 **아니므로** publish와 같은
+    정책으로 재시도를 전부 소진한 뒤에야 ``SnapshotStoreError``로 감싸 전파돼야
+    한다.
+
+    이전 버전은 ``max_attempts=1``에 ``__cause__``만 확인했는데, 그 조합으로는
+    "재시도가 실제로 돌았는가"를 전혀 관찰하지 못한다 — ``_is_not_found``를
+    ``return True``로 바꾸는 변이(mutation)를 넣어도 여전히 같은
+    ``SnapshotStoreError(...) from error``가 나와 테스트가 죽지 않는 구멍이
+    있었다(#530 PR 재리뷰). 그래서 여기서는 시도 횟수와 ``sleep`` 호출 횟수를
+    직접 세어 "타입 오판정 시 재시도 없이 1회 만에 끝난다"는 변화를 고정한다.
     """
     csv_path = _write_dataset(tmp_path)
+    attempts = {"count": 0}
 
     class _RaisingBlob(_FakeBlob):
         def download_to_filename(self, filename) -> None:
+            attempts["count"] += 1
             raise _AmbiguousNotFoundCode("ambiguous 404")
 
     class _RaisingBucket(_FakeBucket):
@@ -520,13 +528,56 @@ def test_download_propagates_lookalike_not_found_code(tmp_path) -> None:
         client=client,
     )
 
+    sleep_calls: list[float] = []
+    monkeypatch.setattr(store.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+
     destination = tmp_path / "download"
     destination.mkdir()
     with pytest.raises(store.SnapshotStoreError) as error:
         store.download_snapshot(
-            dataset_uri=uri, destination_dir=destination, client=client, max_attempts=1
+            dataset_uri=uri, destination_dir=destination, client=client, max_attempts=3
         )
     assert isinstance(error.value.__cause__, _AmbiguousNotFoundCode)
+    # not-found로 오판정되면 첫 시도에서 즉시 끝나 시도 1회·sleep 0회가 된다 —
+    # 타입 판정이 살아있어야만 3회 모두 시도되고 그 사이 2번 백오프가 있다.
+    assert attempts["count"] == 3
+    assert len(sleep_calls) == 2
+
+
+def test_download_does_not_retry_genuine_not_found(tmp_path, monkeypatch) -> None:
+    """진짜 NotFound(대응 객체가 실제로 없음)는 재시도하지 않고 즉시 실패해야 한다.
+
+    404는 결정적이다 — 재시도해도 없는 객체가 갑자기 생기지 않는다. 재시도하면
+    호출자가 이미 확정된 실패를 기다리며 백오프만 허비한다. ``time.sleep``이
+    호출되면 실패하도록 만들어 재시도가 전혀 없었음을 확인한다.
+    """
+
+    def _no_sleep_allowed(_seconds: float) -> None:
+        raise AssertionError(
+            "진짜 not-found는 재시도하면 안 되므로 sleep이 호출되면 안 된다"
+        )
+
+    monkeypatch.setattr(store.time, "sleep", _no_sleep_allowed)
+
+    csv_path = _write_dataset(tmp_path)
+    client = _FakeClient()
+    store.publish_snapshot(
+        dataset_path=csv_path,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=False,
+        client=client,
+    )
+    destination = tmp_path / "download"
+    destination.mkdir()
+
+    with pytest.raises(store.SnapshotStoreError) as error:
+        store.download_snapshot(
+            dataset_uri="gs://snapshots/training/by-hash/" + "f" * 64 + "/",
+            destination_dir=destination,
+            client=client,
+            max_attempts=3,
+        )
+    assert "찾을 수 없습니다" in str(error.value)
 
 
 # --- by-date 포인터 경합(#530 §3.3, 최종 리뷰 fix 5) ---
