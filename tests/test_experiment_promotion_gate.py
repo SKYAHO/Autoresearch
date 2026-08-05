@@ -437,3 +437,490 @@ def test_promotion_workflow_rejects_non_passed_paired_outcome() -> None:
     assert "outcome: {required: false, type: string}" in workflow
     assert "OUTCOME: ${{ inputs.outcome || github.event.client_payload.outcome }}" in workflow
     assert "if (outcome && outcome !== 'comparison_passed')" in workflow
+
+
+# ---------------------------------------------------------------------------
+# 하드 리밋 승격 조건 (#472 Task 1, spec §3.1·§4.1~§4.3)
+#
+# "성능과 무관하게 일정 기간이 지나면 교체한다"를 게이트에 배선한다. 게이트는
+# `degradation_eval`을 import하지 않고 **원시값(일수)만** 받는다(spec §2) —
+# 그 모듈이 lightgbm을 끌고 오고, `autoresearch/`는 `src/`를 import하지 않는다.
+# ---------------------------------------------------------------------------
+
+
+def test_existing_call_without_hard_limit_args_still_works() -> None:
+    """하위호환 가드 — 현재 workflow(182-193행)는 이 인자들을 넘기지 않는다.
+
+    기본값이 없으면 배선 전에 기존 승격 경로가 즉시 깨진다.
+    """
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(criteria, primary_candidate=0.781, primary_baseline=0.778)
+
+    assert decision.passed is True
+    assert decision.reason == "criteria_met"
+
+
+def test_metric_pass_reports_criteria_met_even_when_limit_reached() -> None:
+    """지표로 통과했으면 기한 도달 여부와 무관하게 `criteria_met`이다(spec §4.1).
+
+    이걸 뒤집어 `hard_retrain_limit_reached`로 기록하면, 나중에 승격 이력을 읽는
+    사람이 "이 모델은 기한 때문에 올라갔다"로 읽어 **모델 품질을 과소평가**한다.
+    """
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.781,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "criteria_met"
+
+
+def test_metric_below_delta_passes_when_hard_limit_reached() -> None:
+    """#472의 핵심 — 지표는 미달인데 기한이 지나면 승격 후보가 된다."""
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+def test_metric_below_delta_still_fails_when_limit_not_reached() -> None:
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=4,
+    )
+
+    assert decision.passed is False
+    assert decision.reason == "primary_metric_below_delta"
+
+
+def test_elapsed_equal_to_limit_counts_as_reached() -> None:
+    """경계는 `>=`다 — "N일이 지나면"의 N일째가 도달이다."""
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=5,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+def test_zero_limit_is_always_reached() -> None:
+    """`limit_days=0`은 "이미 재학습 시점을 지났다"는 뜻이다.
+
+    `#485` spec §4.2의 표에 없던 조합이다 — `safety_margin_days`가
+    `degradation_point.elapsed_days`와 같으면 뺄셈이 음수가 아니라 정확히 0이라
+    clamp 분기를 타지 않아 `reason=None`으로 나온다(spec §7). 게이트는 숫자만
+    받으므로 두 경로의 판정이 같아야 한다.
+    """
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=0,
+        days_since_last_promotion=0,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+@pytest.mark.parametrize(
+    ("limit_days", "elapsed"),
+    [(None, 9), (5, None), (None, None)],
+)
+def test_missing_hard_limit_inputs_are_not_treated_as_reached(limit_days, elapsed) -> None:
+    """관측되지 않은 것을 "기한이 지났다"로도 "안 지났다"로도 바꾸지 않는다.
+
+    `#485` spec §4.1과 같은 결. 특히 `hard_retrain_limit_days=None`은 hold가 걸려
+    호출부가 값을 넘기지 않은 경우(spec §3.2)이므로, 그것으로 승격을 **늘리면**
+    근거 없는 곡선이 승격을 만들어낸다.
+    """
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=limit_days,
+        days_since_last_promotion=elapsed,
+    )
+
+    assert decision.passed is False
+    assert decision.reason == "primary_metric_below_delta"
+
+
+# ---------------------------------------------------------------------------
+# guardrail은 하드 리밋으로 우회되지 않는다 (#472 Task 2, spec §4.4)
+#
+# 하드 리밋의 취지는 "성능이 정체돼도 교체한다"이지 "망가진 모델도 올린다"가 아니다.
+# guardrail은 안 망가졌다는 최소 보증이므로 그것까지 우회하면 게이트가 무력해진다.
+# ---------------------------------------------------------------------------
+
+
+def _guardrail_body() -> str:
+    return _issue_body(
+        **{
+            "Guardrail 지표 이름": "log_loss",
+            "Guardrail 지표 방향": "lower_is_better",
+            "최대 Guardrail 악화폭": "0.001",
+        }
+    )
+
+
+def test_hard_limit_does_not_bypass_guardrail_regression() -> None:
+    criteria = parse_criteria(_guardrail_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        guardrail_candidate=0.310,  # baseline 대비 0.01 악화 — 허용치 0.001 초과
+        guardrail_baseline=0.300,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is False
+    assert decision.reason == "guardrail_regressed"
+
+
+def test_hard_limit_does_not_bypass_missing_guardrail_values() -> None:
+    criteria = parse_criteria(_guardrail_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is False
+    assert decision.reason == "guardrail_metric_missing"
+
+
+def test_hard_limit_passes_when_guardrail_is_within_budget() -> None:
+    criteria = parse_criteria(_guardrail_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        guardrail_candidate=0.3005,  # 0.0005 악화 — 허용치 0.001 이내
+        guardrail_baseline=0.300,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+def test_metric_failure_without_hard_limit_keeps_existing_reason() -> None:
+    """기존 동작 보존 — 하드 리밋이 성립하지 않으면 guardrail을 보지 않는다.
+
+    현재 구현은 지표 미달이면 즉시 `primary_metric_below_delta`로 끝낸다. 하드 리밋
+    경로를 더하면서 이 단축을 깨면, guardrail 값이 없는 기존 실행의 사유가
+    `guardrail_metric_missing`으로 바뀌어 승격 이력의 의미가 달라진다.
+    """
+    criteria = parse_criteria(_guardrail_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+    )
+
+    assert decision.passed is False
+    assert decision.reason == "primary_metric_below_delta"
+
+
+# ---------------------------------------------------------------------------
+# 게이트 정책 버전 (#472 Task 3, spec §5)
+#
+# 하드 리밋 값은 열화 재측정으로 바뀔 수 있다 — 같은 코드가 다른 날 다른 판정을 낼 수
+# 있으므로, **어떤 정책으로 판정했는지**가 결과에 남아야 승격 이력을 해석할 수 있다.
+# ---------------------------------------------------------------------------
+
+
+def test_every_decision_carries_gate_policy_version() -> None:
+    """통과·거부 모든 경로가 정책 버전을 싣는다 — 한 경로만 빠져도 이력이 끊긴다."""
+    plain = parse_criteria(_issue_body())
+    guarded = parse_criteria(_guardrail_body())
+
+    decisions = [
+        # 지표 통과
+        evaluate(plain, primary_candidate=0.781, primary_baseline=0.778),
+        # 지표 미달 + 기한 미도달
+        evaluate(plain, primary_candidate=0.778, primary_baseline=0.778),
+        # 지표 미달 + 기한 도달
+        evaluate(
+            plain,
+            primary_candidate=0.778,
+            primary_baseline=0.778,
+            hard_retrain_limit_days=5,
+            days_since_last_promotion=9,
+        ),
+        # guardrail 값 누락
+        evaluate(
+            guarded,
+            primary_candidate=0.781,
+            primary_baseline=0.778,
+        ),
+        # guardrail 악화
+        evaluate(
+            guarded,
+            primary_candidate=0.781,
+            primary_baseline=0.778,
+            guardrail_candidate=0.310,
+            guardrail_baseline=0.300,
+        ),
+    ]
+
+    assert {decision.policy_version for decision in decisions} == {"gate-policy-v1"}
+
+
+def test_gate_policy_version_is_distinct_from_promotion_policy_version() -> None:
+    """`promotion-policy-v1`(통계 판정 정책)과 **다른 축**이다(spec §5).
+
+    이름이 비슷해 같은 것으로 오독되면, 한쪽을 올리면서 다른 쪽도 올려야 한다고
+    착각하게 된다.
+    """
+    from src.pipeline.promotion_evidence import PROMOTION_POLICY_VERSION
+
+    decision = evaluate(
+        parse_criteria(_issue_body()), primary_candidate=0.781, primary_baseline=0.778
+    )
+
+    assert decision.policy_version != PROMOTION_POLICY_VERSION
+
+
+# ---------------------------------------------------------------------------
+# workflow 배선 (#472 Task 4, spec §8.2)
+#
+# 게이트는 순수 함수라 값 조달은 전부 호출부 책임이다. 이 workflow는 MLflow에
+# 접근하지 않고 모든 값을 입력으로 받으므로, 경과일도 입력이고 리밋만 정책 상수다.
+# ---------------------------------------------------------------------------
+
+
+def _promotion_workflow() -> dict:
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_workflow_accepts_days_since_last_promotion_as_optional_input() -> None:
+    inputs = _promotion_workflow()[True]["workflow_dispatch"]["inputs"]
+
+    assert "days_since_last_promotion" in inputs
+    assert inputs["days_since_last_promotion"]["required"] is False
+
+
+def test_workflow_reads_elapsed_days_from_dispatch_payload_too() -> None:
+    """`repository_dispatch`로 오는 producer도 같은 값을 실을 수 있어야 한다."""
+    env = _promotion_workflow()["jobs"]["create-promotion-pr"]["env"]
+
+    assert "client_payload.days_since_last_promotion" in env["DAYS_SINCE_LAST_PROMOTION"]
+
+
+def test_hard_retrain_limit_days_defaults_to_unset() -> None:
+    """값이 확정되기 전에는 비워 둔다(spec §8.3).
+
+    `#485` 실측은 단일 origin 관측 하나뿐이고 `safety_margin_days`가 미확정이라
+    리밋도 잠정이다. 숫자를 박으면 **근거 없는 상수가 승격을 만들어낸다** — 비어
+    있으면 게이트가 하드 리밋 조건을 평가하지 않아 기존 동작과 동일하다.
+    """
+    env = _promotion_workflow()["jobs"]["create-promotion-pr"]["env"]
+
+    assert env["HARD_RETRAIN_LIMIT_DAYS"] == ""
+
+
+def test_gate_step_passes_hard_limit_arguments() -> None:
+    steps = _promotion_workflow()["jobs"]["create-promotion-pr"]["steps"]
+    gate = next(step for step in steps if step.get("id") == "gate")
+
+    assert "hard_retrain_limit_days=" in gate["run"]
+    assert "days_since_last_promotion=" in gate["run"]
+    # 빈 값이면 None을 넘겨야 한다 — 관측되지 않은 것을 값으로 바꾸지 않는다.
+    assert "else None" in gate["run"]
+
+
+def test_workflow_validates_elapsed_days_as_non_negative_integer() -> None:
+    """gate step이 `int()`로 파싱하므로 형식 검증이 그 앞에 있어야 한다.
+
+    없으면 잘못된 입력에서 gate step이 죽고 사유가 이슈에 남지 않는다(#495 D-1과
+    같은 이유).
+    """
+    steps = _promotion_workflow()["jobs"]["create-promotion-pr"]["steps"]
+    lineage = next(step for step in steps if step.get("id") == "lineage")
+    script = lineage["with"]["script"]
+
+    assert "days_since_last_promotion must be a non-negative integer" in script
+    assert "input_invalid" in script
+
+
+# ---------------------------------------------------------------------------
+# Draft PR 본문에 승격 사유 표시 (#472 Task 5, spec §4.3·§6.1)
+#
+# 하드 리밋으로 올라온 후보는 **지표 기준을 통과하지 못했다.** 제목·본문이 그 사실을
+# 드러내지 않으면 리뷰어가 "metric 통과 후보"를 믿고 지표가 개선된 줄로 읽는다.
+# ---------------------------------------------------------------------------
+
+
+def _draft_pr_script() -> str:
+    steps = _promotion_workflow()["jobs"]["create-promotion-pr"]["steps"]
+    step = next(
+        s for s in steps if "Create immutable promotion branch" in (s.get("name") or "")
+    )
+    return step["with"]["script"]
+
+
+def test_draft_pr_title_distinguishes_hard_limit_promotion() -> None:
+    script = _draft_pr_script()
+
+    assert "하드 리밋 강제 교체 후보" in script
+    # 기존 제목도 남아 있어야 한다 — 지표 통과 경로는 그대로다.
+    assert "metric 통과 후보" in script
+
+
+def test_draft_pr_body_warns_that_metric_did_not_pass() -> None:
+    script = _draft_pr_script()
+
+    assert "지표 기준을 통과하지 못했습니다" in script
+
+
+def test_draft_pr_body_records_elapsed_days_is_an_approximation() -> None:
+    """spec §6.1 — 근사는 값을 구하는 쪽의 성질이라 여기에 남긴다.
+
+    `policy_version`에 넣지 않는 이유는 게이트가 값의 출처를 모르기 때문이다.
+    """
+    script = _draft_pr_script()
+
+    assert "creation_timestamp" in script
+    assert "근사치" in script
+
+
+def test_draft_pr_branches_on_gate_reason_not_on_passed_flag() -> None:
+    """`passed`는 두 승격 경로에서 모두 true다 — 사유로 갈라야 구분된다."""
+    script = _draft_pr_script()
+
+    assert "GATE_REASON === 'hard_retrain_limit_reached'" in script
+
+
+def test_draft_pr_does_not_claim_metric_gate_pass_for_hard_limit() -> None:
+    """"통과한 dev 후보 SHA"는 하드 리밋 경로에서 사실이 아니다."""
+    script = _draft_pr_script()
+
+    assert "강제 교체 대상으로 판정한 dev 후보 SHA" in script
+
+
+# ---------------------------------------------------------------------------
+# 주 지표 하한이 없다 — 현재 동작을 고정한다 (PR #540 리뷰 1, spec §4.4)
+#
+# 기존 하드 리밋 테스트는 전부 `primary_candidate == primary_baseline`(delta=0)이라
+# **악화(delta < 0)가 어느 쪽으로 판정되는지 고정하는 테스트가 없었다.**
+# 아래 두 건은 "지금 이렇게 동작한다"를 못박는 것이지 "이게 옳다"는 주장이 아니다 —
+# 하한을 넣기로 결정하면 이 테스트가 빨간불이 되어 의도적 변경임을 드러낸다.
+# ---------------------------------------------------------------------------
+
+
+def test_severe_primary_regression_still_passes_on_hard_limit_today() -> None:
+    """guardrail이 예산 안이면 주 지표가 대폭 악화돼도 통과한다(현재 동작)."""
+    criteria = parse_criteria(_guardrail_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.400,  # baseline 0.778 대비 -0.378
+        primary_baseline=0.778,
+        guardrail_candidate=0.3005,
+        guardrail_baseline=0.300,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+def test_no_guardrail_declared_means_no_floor_at_all_today() -> None:
+    """guardrail을 `없음`으로 선언한 가설에는 **어떤 하한도 없다**(현재 동작).
+
+    `_guardrail_failure`가 `criteria.guardrail_name is None`에서 즉시 `None`을
+    돌려주므로, 하드 리밋이 켜지면 주 지표가 얼마나 나빠졌든 통과한다. spec §4.4가
+    "정책을 켜기 전에 반드시 해결"로 지정한 조합이다.
+    """
+    criteria = parse_criteria(_issue_body())  # guardrail 없음
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.100,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+# ---------------------------------------------------------------------------
+# 리뷰 2·3 — policy_version 방출, 정책 상수 검증
+# ---------------------------------------------------------------------------
+
+
+def test_gate_step_emits_policy_version_to_github_output() -> None:
+    """`policy_version`은 **결과에 남아야** 존재 이유가 성립한다(spec §5).
+
+    GateDecision 안에만 있고 밖으로 안 나가면, 정책이 v2로 올라간 뒤 이미 머지된
+    승격 PR을 보고 "이건 v1인가 v2인가"를 되짚을 방법이 없다.
+    """
+    steps = _promotion_workflow()["jobs"]["create-promotion-pr"]["steps"]
+    gate = next(step for step in steps if step.get("id") == "gate")
+
+    assert "policy_version={decision.policy_version}" in gate["run"]
+
+
+def test_draft_pr_body_records_gate_policy_version() -> None:
+    script = _draft_pr_script()
+
+    assert "GATE_POLICY_VERSION" in script
+
+
+def test_gate_step_validates_the_policy_constant_itself() -> None:
+    """정책 상수는 lineage step의 입력 검증을 거치지 않는다 — 여기서 막아야 한다.
+
+    `"30일"` 같은 오타 하나로 gate step이 죽으면 **모든 실험**이 `gate_step_failed`로
+    떨어진다. 정책을 켜는 날 처음 겪는 실패라 원인 추적도 어렵다.
+    """
+    steps = _promotion_workflow()["jobs"]["create-promotion-pr"]["steps"]
+    gate = next(step for step in steps if step.get("id") == "gate")
+
+    assert "_optional_days" in gate["run"]
+    assert "must be a non-negative integer or empty" in gate["run"]
+    # 두 값 모두 같은 검증을 거친다.
+    assert '_optional_days("HARD_RETRAIN_LIMIT_DAYS")' in gate["run"]
+    assert '_optional_days("DAYS_SINCE_LAST_PROMOTION")' in gate["run"]
