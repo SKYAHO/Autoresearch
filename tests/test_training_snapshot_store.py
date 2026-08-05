@@ -55,7 +55,13 @@ class _FakeBlob:
         self.generation = self._bucket.generation
 
     def download_as_bytes(self) -> bytes:
-        return self._bucket.objects[self.name][0]
+        entry = self._bucket.objects.get(self.name)
+        if entry is None:
+            # 실제 google-cloud-storage가 없는 object에 FileNotFoundError를
+            # 던지는 것과 같은 계약이다 — download_snapshot의 not-found 처리를
+            # 재현하려면 KeyError가 아니라 이 예외가 나야 한다.
+            raise FileNotFoundError(self.name)
+        return entry[0]
 
     def download_to_filename(self, filename) -> None:
         Path(filename).write_bytes(self.download_as_bytes())
@@ -345,3 +351,48 @@ def test_pointer_read_failure_is_not_treated_as_first_publish(tmp_path) -> None:
         name.startswith("training/by-date/")
         for name in client.buckets["snapshots"].objects
     )
+
+
+def test_download_restores_sidecar_naming(tmp_path) -> None:
+    """sidecar를 load_training_snapshot_manifest가 기대하는 이름으로 내려받아야 한다."""
+    csv_path = _write_dataset(tmp_path)
+    client = _FakeClient()
+    uri = store.publish_snapshot(
+        dataset_path=csv_path,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=False,
+        client=client,
+    )
+
+    destination = tmp_path / "download"
+    destination.mkdir()
+    local = store.download_snapshot(
+        dataset_uri=uri, destination_dir=destination, client=client
+    )
+
+    from src.pipeline.training_provenance import load_training_snapshot_manifest
+
+    assert local.name == "training_dataset.csv"
+    assert (destination / "training_dataset.csv.snapshot.json").is_file()
+    assert load_training_snapshot_manifest(local).spine_usable_days == 7
+
+
+def test_download_rejects_sha_mismatch_between_uri_and_manifest(tmp_path) -> None:
+    """URI의 sha와 manifest.dataset_sha256이 다르면 거부한다."""
+    csv_path = _write_dataset(tmp_path)
+    client = _FakeClient()
+    store.publish_snapshot(
+        dataset_path=csv_path,
+        snapshot_root="gs://snapshots/training",
+        record_pointer=False,
+        client=client,
+    )
+    destination = tmp_path / "download"
+    destination.mkdir()
+
+    with pytest.raises(store.SnapshotStoreError):
+        store.download_snapshot(
+            dataset_uri="gs://snapshots/training/by-hash/" + "f" * 64 + "/",
+            destination_dir=destination,
+            client=client,
+        )

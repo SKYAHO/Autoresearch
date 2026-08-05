@@ -115,6 +115,7 @@ from src.pipeline.training_provenance import (  # noqa: E402
     split_manifest_path,
     write_manifest_atomic,
 )
+from src.pipeline import training_snapshot_store  # noqa: E402
 
 LABEL_COLUMN = "clicked"
 
@@ -349,6 +350,37 @@ def collect_categorical_categories(
     return categories_by_column
 
 
+def require_snapshot_coverage(*, spine_usable_days: int | None, min_days: int) -> None:
+    """재사용 스냅샷이 커버리지 하한을 만족하는지 검증한다(#530).
+
+    ``require_spine_coverage``(#464)와 같은 술어를 manifest 값으로 재현한다. 재조립을
+    하지 않는 경로라 실측 coverage 객체가 없으므로 sidecar가 실은 값을 쓴다.
+    ``None``은 이 필드가 없던 시절 manifest라는 뜻이며, 게이트가 켜져 있으면 검증할
+    근거가 없으므로 조용히 통과시키지 않는다.
+
+    Args:
+        spine_usable_days: manifest에 기록된 spine 사용 가능 일수(없으면 ``None``).
+        min_days: 요구하는 최소 일수. ``0`` 이하면 게이트를 명시적으로 우회한다.
+
+    Raises:
+        ProvenanceValidationError: 게이트가 켜져 있는데 근거(``spine_usable_days``)가
+            없거나, 기록된 일수가 최소치에 못 미치면.
+    """
+    if min_days <= 0:
+        return
+    if spine_usable_days is None:
+        raise ProvenanceValidationError(
+            "스냅샷에 spine 커버리지 기록이 없어 커버리지 게이트를 검증할 수 없습니다 "
+            f"(최소 {min_days}일 필요). 데이터셋을 다시 조립하거나 "
+            "min_coverage_days=0으로 명시적으로 우회하십시오."
+        )
+    if spine_usable_days < min_days:
+        raise ProvenanceValidationError(
+            f"스냅샷의 사용 가능한 날이 {spine_usable_days}일로 최소 {min_days}일에 "
+            "미달합니다. 기간을 넓혀 재조립하거나 min_coverage_days=0으로 우회하십시오."
+        )
+
+
 def _log_reproducibility_artifacts(
     *,
     dataset_path: Path,
@@ -421,17 +453,101 @@ def main(
     experiment_plan_receipt_path: str | None = None,
     promotion_evidence_root: str | None = None,
     promotion_evidence_store: PromotionEvidenceStore | None = None,
+    dataset_uri: str | None = None,
+    min_coverage_days: int = 0,
 ) -> TrainingOutcome:
     """LightGBM 모델을 학습하고 MLflow에 기록한다.
+
+    ``dataset_uri``를 주면 조립을 다시 돌리지 않고 게시된 스냅샷(#530)을 내려받아
+    바로 학습 입력으로 쓴다 — ``data_path``와는 함께 지정할 수 없다. 다운로드한
+    CSV는 임시 디렉터리에 두며, 학습이 끝나든 예외로 중단되든 반드시 정리한다.
 
     Args:
         defer_registration: True면 registered model 버전을 만들지 않고
             `TrainingOutcome.pending_registration`으로 넘긴다(#421). run 로깅
             (파라미터·메트릭·아티팩트)은 그대로 수행한다. run-pipeline이 평가
             통과 뒤에 등록하도록 이 경로를 쓴다.
+        dataset_uri: 게시된 학습 스냅샷의 by-hash URI(#530). 주어지면 재조립 없이
+            해당 스냅샷을 내려받아 학습한다.
+        min_coverage_days: 재사용 스냅샷이 만족해야 할 최소 spine 사용 가능
+            일수(#530). ``0`` 이하면 게이트를 명시적으로 우회한다.
 
     Returns:
         학습 결과(TrainingOutcome).
+    """
+    snapshot_download_dir: TemporaryDirectory | None = None
+    if dataset_uri is not None:
+        if data_path is not None:
+            raise ValueError(
+                "dataset_uri와 data_path는 함께 지정할 수 없습니다 — "
+                "어느 쪽이 학습 입력인지 결정할 수 없습니다"
+            )
+        snapshot_download_dir = TemporaryDirectory(prefix="training_snapshot_")
+        data_path = str(
+            training_snapshot_store.download_snapshot(
+                dataset_uri=dataset_uri,
+                destination_dir=Path(snapshot_download_dir.name),
+            )
+        )
+    try:
+        return _train_from_resolved_dataset(
+            config_path=config_path,
+            data_path=data_path,
+            model_output=model_output,
+            test_set_output=test_set_output,
+            feature_columns_output=feature_columns_output,
+            categorical_columns_output=categorical_columns_output,
+            test_size=test_size,
+            val_size=val_size,
+            random_state=random_state,
+            split_seed=split_seed,
+            model_seed=model_seed,
+            sampler_seed=sampler_seed,
+            extra_params=extra_params,
+            defer_registration=defer_registration,
+            extra_features=extra_features,
+            experiment=experiment,
+            require_snapshot=require_snapshot,
+            experiment_plan_receipt_path=experiment_plan_receipt_path,
+            promotion_evidence_root=promotion_evidence_root,
+            promotion_evidence_store=promotion_evidence_store,
+            dataset_uri=dataset_uri,
+            min_coverage_days=min_coverage_days,
+        )
+    finally:
+        if snapshot_download_dir is not None:
+            snapshot_download_dir.cleanup()
+
+
+def _train_from_resolved_dataset(
+    *,
+    config_path: str = None,
+    data_path: str = None,
+    model_output: str = None,
+    test_set_output: str = None,
+    feature_columns_output: str = None,
+    categorical_columns_output: str = None,
+    test_size: float = None,
+    val_size: float = None,
+    random_state: int = None,
+    split_seed: int = None,
+    model_seed: int = None,
+    sampler_seed: int = None,
+    extra_params: dict = None,
+    defer_registration: bool = False,
+    extra_features: Optional[Sequence[str]] = None,
+    experiment: Optional[str] = None,
+    require_snapshot: bool = False,
+    experiment_plan_receipt_path: str | None = None,
+    promotion_evidence_root: str | None = None,
+    promotion_evidence_store: PromotionEvidenceStore | None = None,
+    dataset_uri: str | None = None,
+    min_coverage_days: int = 0,
+) -> TrainingOutcome:
+    """``main()``의 실제 학습 본문 — ``data_path``가 이미 확정된 뒤 호출된다.
+
+    ``dataset_uri``는 다운로드 자체가 아니라(그건 ``main()``이 끝냈다) 재사용
+    스냅샷 커버리지 게이트·lineage 파라미터 병합 여부를 가르는 표지로만 쓰인다.
     """
     promotion_evidence_enabled = experiment_plan_receipt_path is not None
     if promotion_evidence_enabled != (promotion_evidence_root is not None):
@@ -476,6 +592,26 @@ def main(
         raise ProvenanceValidationError(
             f"verified training snapshot이 필요하지만 sidecar가 없습니다: {snapshot_path}"
         )
+
+    if dataset_uri is not None and snapshot_manifest is not None:
+        require_snapshot_coverage(
+            spine_usable_days=snapshot_manifest.spine_usable_days,
+            min_days=min_coverage_days,
+        )
+        # 재조립을 하지 않은 실행도 "어떤 조건으로 만든 데이터인가"를 run 파라미터만
+        # 보고 판별할 수 있어야 한다(#530 §7.2). 조립 반환값이 없는 대신 sidecar가
+        # 같은 값을 전부 싣고 있으므로 거기서 채운다. 호출부(cli)가 아니라 여기서
+        # 채우는 이유는, manifest를 실제로 읽는 주체가 이 함수뿐이기 때문이다.
+        reuse_params = {
+            "events_start_date": snapshot_manifest.events_start_date.isoformat(),
+            "events_end_date": snapshot_manifest.events_end_date.isoformat(),
+            "feature_service": snapshot_manifest.feature_service,
+            "feast_registry_path": snapshot_manifest.registry_uri,
+            "feast_registry_generation": snapshot_manifest.registry_generation,
+        }
+        if snapshot_manifest.spine_usable_days is not None:
+            reuse_params["spine_usable_days"] = str(snapshot_manifest.spine_usable_days)
+        extra_params = {**(extra_params or {}), **reuse_params}
 
     explicit_seed_values = (split_seed, model_seed, sampler_seed)
     effective_seeds = resolve_training_seeds(

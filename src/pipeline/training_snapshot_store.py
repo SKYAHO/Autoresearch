@@ -181,6 +181,63 @@ def publish_snapshot(
     ) from last_error
 
 
+def download_snapshot(
+    *,
+    dataset_uri: str,
+    destination_dir: Path,
+    client: object | None = None,
+) -> Path:
+    """by-hash 스냅샷을 내려받아 로컬 CSV 경로를 돌려준다.
+
+    sidecar는 ``snapshot_manifest_path()``가 기대하는 ``<csv>.snapshot.json`` 이름으로
+    복원한다 — 그래야 기존 ``load_training_snapshot_manifest()``가 그대로 재사용되고
+    byte/schema/row_count 재검증이 따라온다. 별도의 검증 경로를 새로 만들지 않는다.
+
+    Raises:
+        SnapshotStoreError: URI 형식이 틀렸거나, 주소에 대응하는 객체가 없거나,
+            URI의 sha와 manifest의 ``dataset_sha256``이 다르면. 마지막 검사가 없으면
+            content-addressing은 강제되지 않는 이름 규칙에 불과해진다.
+    """
+    parsed = urlparse(dataset_uri)
+    if parsed.scheme != "gs" or not parsed.netloc:
+        raise SnapshotStoreError(
+            f"dataset URI는 gs://bucket/... 형식이어야 합니다: {dataset_uri}"
+        )
+    object_prefix = parsed.path.strip("/")
+    segments = object_prefix.split("/")
+    if len(segments) < 2 or segments[-2] != "by-hash":
+        raise SnapshotStoreError(
+            f"dataset URI는 by-hash/<sha>/ 로 끝나야 합니다: {dataset_uri}"
+        )
+    expected_sha = segments[-1]
+
+    resolved = _resolve_client(client)
+    bucket = resolved.bucket(parsed.netloc)
+    csv_path = destination_dir / CSV_OBJECT_NAME
+    sidecar = snapshot_manifest_path(csv_path)
+    try:
+        bucket.blob(f"{object_prefix}/{CSV_OBJECT_NAME}").download_to_filename(
+            str(csv_path)
+        )
+        bucket.blob(f"{object_prefix}/{MANIFEST_OBJECT_NAME}").download_to_filename(
+            str(sidecar)
+        )
+    except Exception as error:  # noqa: BLE001 - not-found만 골라 안내 메시지로 바꾼다
+        if _is_not_found(error):
+            raise SnapshotStoreError(
+                f"스냅샷을 찾을 수 없습니다: {dataset_uri}"
+            ) from error
+        raise
+
+    manifest = load_training_snapshot_manifest(csv_path)
+    if manifest.dataset_sha256 != expected_sha:
+        raise SnapshotStoreError(
+            "스냅샷 주소와 manifest의 dataset_sha256이 다릅니다 — "
+            f"주소={expected_sha}, manifest={manifest.dataset_sha256}"
+        )
+    return csv_path
+
+
 def _pointer_object_name(prefix: str, manifest: TrainingSnapshotManifest) -> str:
     return _join(
         prefix,

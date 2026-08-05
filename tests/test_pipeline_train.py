@@ -1245,3 +1245,138 @@ def test_main_preserves_passthrough_columns_in_held_out_test_set(
     # 그러나 모델 입력 아티팩트에는 들어가지 않는다 — 이 둘이 함께 성립해야 한다.
     feature_columns = json.loads((tmp_path / "feature_columns.json").read_text())
     assert "user_id" not in feature_columns
+
+
+# --- 스냅샷 다운로드 재사용 학습(#530) ---
+
+
+def test_train_rejects_snapshot_without_coverage_when_gate_on(tmp_path, monkeypatch) -> None:
+    """spine_usable_days가 없는 스냅샷은 커버리지 게이트를 검증할 수 없어 거부한다(#530)."""
+    with pytest.raises(ProvenanceValidationError, match="커버리지"):
+        train.require_snapshot_coverage(spine_usable_days=None, min_days=3)
+
+
+def test_train_rejects_snapshot_below_coverage_floor() -> None:
+    with pytest.raises(ProvenanceValidationError, match="2일"):
+        train.require_snapshot_coverage(spine_usable_days=2, min_days=3)
+
+
+def test_train_accepts_snapshot_when_gate_off() -> None:
+    """min_days<=0은 명시적 우회구다 — None이어도 통과시킨다."""
+    train.require_snapshot_coverage(spine_usable_days=None, min_days=0)
+
+
+def _write_snapshot_manifest_with_coverage(
+    data_path: Path, *, spine_usable_days: int | None
+) -> None:
+    """주어진 spine_usable_days로 sidecar를 새로 쓴다(coverage 게이트 테스트용)."""
+    manifest = build_snapshot_manifest(
+        dataset_path=data_path,
+        events_start_date="2026-07-01",
+        events_end_date="2026-07-30",
+        feature_service="ctr_training_v1",
+        registry=RegistryProvenance(
+            uri="gs://bucket/registry.db", generation="7", sha256="a" * 64
+        ),
+        code_archive_sha=None,
+        spine_usable_days=spine_usable_days,
+    )
+    write_manifest_atomic(manifest, snapshot_manifest_path(data_path))
+
+
+def _fake_download_into(data_path: Path):
+    """training_snapshot_store.download_snapshot을 대신하는 fake(#530).
+
+    실제 GCS 대신, 이미 로컬에 있는 CSV+sidecar를 destination_dir로 복사해
+    ``CSV_OBJECT_NAME`` 이름 규칙을 재현한다 — train.main()이 다운로드 결과를
+    그대로 학습 입력으로 쓰는지만 검증하면 되므로 네트워크는 필요 없다.
+    """
+
+    def fake(*, dataset_uri: str, destination_dir: Path, client: object | None = None) -> Path:
+        target = destination_dir / "training_dataset.csv"
+        target.write_bytes(Path(data_path).read_bytes())
+        sidecar_dst = snapshot_manifest_path(target)
+        sidecar_dst.write_bytes(snapshot_manifest_path(Path(data_path)).read_bytes())
+        return target
+
+    return fake
+
+
+def test_main_rejects_dataset_uri_and_data_path_together(tmp_path, monkeypatch) -> None:
+    """dataset_uri와 data_path는 어느 쪽이 학습 입력인지 정할 수 없어 함께 줄 수 없다(#530)."""
+    config_path, data_path, _ = _prepared_dataset(tmp_path, monkeypatch)
+
+    with pytest.raises(ValueError, match="dataset_uri"):
+        train.main(
+            config_path=str(config_path),
+            data_path=str(data_path),
+            dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+        )
+
+
+def test_main_downloads_snapshot_and_cleans_up_temp_dir(tmp_path, monkeypatch) -> None:
+    """dataset_uri를 주면 다운로드한 CSV로 학습하고, 끝나면 임시 디렉터리를 정리한다(#530)."""
+    config_path, data_path, tracking_uri = _prepared_dataset(tmp_path, monkeypatch)
+    _write_snapshot_manifest_with_coverage(data_path, spine_usable_days=10)
+
+    captured_dirs: list[Path] = []
+    fake_download = _fake_download_into(data_path)
+
+    def wrapped(*, dataset_uri: str, destination_dir: Path, client: object | None = None) -> Path:
+        captured_dirs.append(destination_dir)
+        return fake_download(
+            dataset_uri=dataset_uri, destination_dir=destination_dir, client=client
+        )
+
+    monkeypatch.setattr(train.training_snapshot_store, "download_snapshot", wrapped)
+
+    outcome = train.main(
+        config_path=str(config_path),
+        dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "features.json"),
+        categorical_columns_output=str(tmp_path / "categories.json"),
+        require_snapshot=True,
+        defer_registration=True,
+        min_coverage_days=3,
+    )
+
+    assert len(captured_dirs) == 1
+    # main()이 끝나면 다운로드용 임시 디렉터리는 정리돼 있어야 한다.
+    assert not captured_dirs[0].exists()
+
+    client = MlflowClient(tracking_uri=tracking_uri)
+    run_params = client.get_run(outcome.run_id).data.params
+    assert run_params["events_start_date"] == "2026-07-01"
+    assert run_params["events_end_date"] == "2026-07-30"
+    assert run_params["spine_usable_days"] == "10"
+
+
+def test_main_dataset_uri_gate_blocks_before_model_fit(tmp_path, monkeypatch) -> None:
+    """재사용 스냅샷이 커버리지 하한에 못 미치면 모델 fit 전에 막는다(#530)."""
+    config_path, data_path, _ = _prepared_dataset(tmp_path, monkeypatch)
+    _write_snapshot_manifest_with_coverage(data_path, spine_usable_days=1)
+    fit = MagicMock()
+    monkeypatch.setattr(train.LGBMModel, "fit", fit)
+    monkeypatch.setattr(
+        train.training_snapshot_store,
+        "download_snapshot",
+        _fake_download_into(data_path),
+    )
+
+    with pytest.raises(ProvenanceValidationError, match="미달"):
+        train.main(
+            config_path=str(config_path),
+            dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+            model_output=str(tmp_path / "model.joblib"),
+            test_set_output=str(tmp_path / "test_set.csv"),
+            feature_columns_output=str(tmp_path / "features.json"),
+            categorical_columns_output=str(tmp_path / "categories.json"),
+            require_snapshot=True,
+            defer_registration=True,
+            min_coverage_days=3,
+        )
+
+    fit.assert_not_called()
+    assert not (tmp_path / "model.joblib").exists()
