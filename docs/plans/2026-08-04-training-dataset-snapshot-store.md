@@ -687,9 +687,31 @@ def publish_snapshot(
 > Important/Minor가 아니라 정보성 확인 사항으로 분류한다.
 
 ```python
-def _update_pointer(bucket, *, prefix, manifest, dataset_sha256, uri) -> None:
+def _update_pointer(
+    bucket: object,
+    *,
+    prefix: str,
+    manifest: TrainingSnapshotManifest,
+    dataset_sha256: str,
+    uri: str,
+) -> None:
     raise NotImplementedError("Task 4에서 구현한다")
 ```
+
+스텁이라도 파라미터 타입 힌트를 붙인다 — 전역 제약이고, `TrainingSnapshotManifest`
+import를 실제로 쓰게 만들어 준다. 시그니처는 Task 4가 채울 것과 동일하다.
+
+> **구현 중 발견해 보강한 두 가지** (커밋 `c8bcc4f`):
+> 1. `_is_precondition_failure`는 `google.api_core.exceptions`를 import할 수 있으면
+>    타입으로 판정한다. `code == 412` 하나만 보면 우연히 그 값을 가진 무관한 예외까지
+>    "이미 게시됨"으로 삼켜, **아무것도 쓰이지 않은 실행을 성공으로 오인**한다. 진짜
+>    `GoogleAPICallError`인데 `PreconditionFailed`가 아니면 False를 돌려주고, duck-type
+>    검사는 주입된 테스트 fake용 폴백으로만 남긴다.
+> 2. 재시도 루프의 첫 except 절은 `except (SnapshotStoreError, NotImplementedError): raise`다.
+>    재시도는 일시적 I/O 장애를 위한 것인데, 이것이 없으면 프로그래밍 오류가
+>    `max_attempts`번 반복되며 백오프만 소모하고 원래 예외가 `SnapshotStoreError`로
+>    덮여 원인이 가려진다. **Task 4의 RED 지점이 바로 이 `NotImplementedError`라
+>    이 절이 없으면 Task 4 Step 2가 엉뚱한 예외를 보게 된다.**
 
 - [ ] **Step 4: 통과를 확인한다**
 
