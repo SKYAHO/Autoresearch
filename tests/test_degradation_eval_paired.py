@@ -148,3 +148,139 @@ def test_rolling_origin_marks_training_run_as_measurement_only(monkeypatch):
 
 class _StopAfterTraining(RuntimeError):
     """학습 호출 인자만 보고 멈춘다 — 평가일 조립(BigQuery)까지 가지 않는다."""
+
+
+# ---------------------------------------------------------------------------
+# 조건 동일성 검증 (#514 Task 2, spec §3)
+#
+# 항목마다 **독립적으로** 실패해야 한다 — 한 항목만 검사하고 나머지를 통과시키는
+# 구현을 잡기 위해서다. "다르다"만 남기면 원인 추적이 끊기므로 어긋난 항목을
+# 이름으로 남긴다(#485 spec §4.2 "조용히 뭉개지 않는다"와 같은 결).
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+from src.pipeline.degradation_eval import (  # noqa: E402
+    ConditionMismatchField,
+    EvaluationStatus,
+    PerDayResult,
+    TemporalHoldReason,
+    compare_conditions,
+)
+
+
+def _day(elapsed: int) -> PerDayResult:
+    return PerDayResult(
+        date=f"2026-07-{20 + elapsed:02d}",
+        elapsed_days=elapsed,
+        status=EvaluationStatus.VALID,
+        roc_auc=0.70 - 0.01 * elapsed,
+    )
+
+
+def _condition() -> RollingOriginResult:
+    """두 조건의 공통 기준. 여기서 한 항목씩만 어긋뜨려 독립 실패를 확인한다."""
+    return RollingOriginResult(
+        cutoff_date="2026-07-20",
+        window_days=15,
+        horizon_days=3,
+        training_run_id="a" * 32,
+        seed=42,
+        baseline_val_roc_auc=0.72,
+        forward_baseline_roc_auc=0.70,
+        forward_baseline_source=0,
+        min_auc_drop=0.00933,
+        per_day=[_day(0), _day(1), _day(2)],
+        degradation_point=DegradationPoint(elapsed_days=2, date="2026-07-22"),
+        training_snapshot_manifest=_manifest(),
+    )
+
+
+def _with_manifest(result: RollingOriginResult, **updates) -> RollingOriginResult:
+    manifest = result.training_snapshot_manifest.model_copy(update=updates)
+    return result.model_copy(update={"training_snapshot_manifest": manifest})
+
+
+def test_identical_conditions_match():
+    match = compare_conditions(_condition(), _condition())
+
+    assert match.matched is True
+    assert match.mismatched_fields == ()
+
+
+@pytest.mark.parametrize(
+    ("updates", "expected"),
+    [
+        ({"cutoff_date": "2026-07-21"}, ConditionMismatchField.CUTOFF_DATE),
+        ({"window_days": 10}, ConditionMismatchField.WINDOW_DAYS),
+        ({"horizon_days": 5}, ConditionMismatchField.HORIZON_DAYS),
+        ({"seed": 43}, ConditionMismatchField.SEED),
+        ({"per_day": [_day(0), _day(1)]}, ConditionMismatchField.EVALUATION_DATES),
+    ],
+)
+def test_each_top_level_field_mismatch_is_detected_independently(updates, expected):
+    challenger = _condition().model_copy(update=updates)
+
+    match = compare_conditions(_condition(), challenger)
+
+    assert match.matched is False
+    assert match.mismatched_fields == (expected,)
+
+
+@pytest.mark.parametrize(
+    ("updates", "expected"),
+    [
+        ({"dataset_sha256": "9" * 64}, ConditionMismatchField.DATASET_SHA256),
+        ({"schema_sha256": "9" * 64}, ConditionMismatchField.SCHEMA_SHA256),
+        ({"registry_generation": "999"}, ConditionMismatchField.REGISTRY_GENERATION),
+        ({"registry_sha256": "9" * 64}, ConditionMismatchField.REGISTRY_SHA256),
+        ({"feature_service": "other_service"}, ConditionMismatchField.FEATURE_SERVICE),
+    ],
+)
+def test_each_snapshot_field_mismatch_is_detected_independently(updates, expected):
+    challenger = _with_manifest(_condition(), **updates)
+
+    match = compare_conditions(_condition(), challenger)
+
+    assert match.matched is False
+    assert match.mismatched_fields == (expected,)
+
+
+def test_multiple_mismatches_are_all_reported():
+    """하나만 찾고 멈추면 두 번째 실행에서야 나머지가 드러난다."""
+    challenger = _condition().model_copy(update={"window_days": 10, "seed": 43})
+
+    match = compare_conditions(_condition(), challenger)
+
+    assert set(match.mismatched_fields) == {
+        ConditionMismatchField.WINDOW_DAYS,
+        ConditionMismatchField.SEED,
+    }
+
+
+def test_evaluation_dates_compare_as_set_not_order():
+    """순서는 `_ordered_by_elapsed`가 정규화하므로 집합으로 본다."""
+    challenger = _condition().model_copy(update={"per_day": [_day(2), _day(0), _day(1)]})
+
+    match = compare_conditions(_condition(), challenger)
+
+    assert match.matched is True
+
+
+def test_condition_mismatch_has_its_own_hold_reason():
+    """spec §3.2 — 불일치는 통계 추정 없이 hold로 끝낸다."""
+    assert TemporalHoldReason.CONDITION_MISMATCH.value == "condition_mismatch"
+
+
+def test_seed_none_on_legacy_result_is_a_mismatch_not_a_pass():
+    """`#510`/`#520` 결과는 seed가 None이다 — "같다"로 통과시키면 안 된다.
+
+    두 조건 모두 None이어도 "동일 시드를 썼다"는 증거가 아니다. 관측되지 않은 것을
+    "안전"으로 바꾸지 않는다(#485 spec §4.1과 같은 결).
+    """
+    legacy = _condition().model_copy(update={"seed": None})
+
+    match = compare_conditions(legacy, legacy)
+
+    assert match.matched is False
+    assert ConditionMismatchField.SEED in match.mismatched_fields
