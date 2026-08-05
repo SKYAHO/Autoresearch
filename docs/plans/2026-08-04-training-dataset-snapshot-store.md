@@ -919,12 +919,24 @@ def _update_pointer(
         published_at=manifest.created_at,
         previous=history,
     )
-    bucket.blob(name).upload_from_string(
+    blob.upload_from_string(
         pointer.model_dump_json(indent=2),
         content_type="application/json",
         if_generation_match=0 if generation is None else generation,
     )
 ```
+
+> **구현 중 발견해 보강한 두 가지** (커밋 `0828dc7`):
+> 1. 위 `except`는 **부재만** 최초 게시로 삼아야 한다. `except Exception`으로 전부
+>    삼키면 403(읽기 권한 없음)·503·저장된 포인터의 `ValidationError`까지 "포인터 없음"이
+>    되어, IAM 바인딩 누락 같은 실제 문제가 조용히 묻힌다. `_is_precondition_failure`와
+>    같은 모양의 `_is_not_found` predicate를 만들어 그 외에는 re-raise한다. 같은 파일의
+>    `_upload_once`가 이미 모르는 오류를 re-raise하는데 여기만 반대였다.
+> 2. `published_at`은 `manifest.created_at`이 아니라 `datetime.now(timezone.utc)`다.
+>    이름은 게시 시각인데 조립 시각을 담으면, 재시도로 조립·게시 사이가 벌어질 때
+>    `previous` 이력이 시간을 거슬러 올라간다(A: T1 조립·T5 게시, B: T2 조립·T3 게시 →
+>    A가 B를 밀어낼 때 새 `published_at`이 밀려난 것보다 이르다). manifest의
+>    `created_at`은 `dataset_sha256`으로 여전히 찾아갈 수 있어 잃는 정보가 없다.
 
 - [ ] **Step 4: 통과를 확인한다**
 
