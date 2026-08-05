@@ -3,8 +3,8 @@
 [파이프라인] CronJob container가 시작된 뒤 DB 선점과 executor Job 조립 전에 외부 설정을
 검증된 불변 값으로 바꾸는 구간을 담당한다.
 
-[기능] DB·namespace·executor image/identity·GitHub App 좌표·동시 실행 상한과 Job 수명
-설정을 환경 변수에서 읽고, executor image가 digest로 고정됐는지 검증한다.
+[기능] DB·namespace·executor image/identity/node pool·GitHub App 좌표·동시 실행 상한과
+Job 수명 설정을 환경 변수에서 읽고, executor image와 scheduling 좌표를 검증한다.
 
 [비책임] 설정의 Kubernetes 주입과 Secret 값 관리(Autoresearch-infra), DB 연결·Job API
 호출은 담당하지 않는다.
@@ -18,6 +18,7 @@ import re
 
 
 _DIGEST_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
+_NODE_POOL_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 _POSITIVE_INTEGER_PATTERN = re.compile(r"^[1-9][0-9]*$")
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
@@ -50,6 +51,7 @@ class LauncherSettings:
     job_namespace: str
     executor_image: str
     executor_service_account: str
+    executor_node_pool: str
     github_app_secret_name: str
     github_app_id: int
     github_app_installation_id: int
@@ -71,6 +73,8 @@ class LauncherSettings:
                 raise LauncherConfigError(f"invalid {name}")
         if _DIGEST_IMAGE_PATTERN.fullmatch(self.executor_image) is None:
             raise LauncherConfigError("invalid executor_image")
+        if _NODE_POOL_PATTERN.fullmatch(self.executor_node_pool) is None:
+            raise LauncherConfigError("invalid executor_node_pool")
         if _REPOSITORY_PATTERN.fullmatch(self.github_repository) is None:
             raise LauncherConfigError("invalid github_repository")
         positive_integers = {
@@ -94,6 +98,7 @@ class LauncherSettings:
             executor_service_account=_required_environment(
                 "ORCH_EXECUTOR_SERVICE_ACCOUNT"
             ),
+            executor_node_pool=_required_environment("ORCH_EXECUTOR_NODE_POOL"),
             github_app_secret_name=_required_environment(
                 "ORCH_GITHUB_APP_SECRET_NAME"
             ),

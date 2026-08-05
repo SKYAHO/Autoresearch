@@ -31,7 +31,7 @@ from agent_orchestration.app.experiments.models import (
     ExperimentStatus,
 )
 from agent_orchestration.launcher import repository as launcher_repository
-from agent_orchestration.launcher.config import LauncherSettings
+from agent_orchestration.launcher.config import LauncherConfigError, LauncherSettings
 from agent_orchestration.launcher.jobs import (
     KubernetesJobs,
     build_branch_job,
@@ -85,17 +85,23 @@ def sqlite_advisory_lock(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _settings(*, executor_image: str = EXECUTOR_IMAGE) -> LauncherSettings:
+def _settings(
+    *,
+    executor_image: str = EXECUTOR_IMAGE,
+    executor_node_pool: str = "batch-od",
+    max_concurrent_experiments: int = 5,
+) -> LauncherSettings:
     return LauncherSettings(
         database_url="postgresql://launcher:password@db/orchestration",
         job_namespace="agent-orchestration",
         executor_image=executor_image,
         executor_service_account="experiment-branch-executor",
+        executor_node_pool=executor_node_pool,
         github_app_secret_name="autoresearch-experiment-branch-writer-app",
         github_app_id=123,
         github_app_installation_id=456,
         github_repository="SKYAHO/Autoresearch",
-        max_concurrent_experiments=5,
+        max_concurrent_experiments=max_concurrent_experiments,
     )
 
 
@@ -193,6 +199,7 @@ def test_launcher_settings_reads_required_environment(
         "ORCH_JOB_NAMESPACE": "agent-orchestration",
         "ORCH_EXECUTOR_IMAGE": EXECUTOR_IMAGE,
         "ORCH_EXECUTOR_SERVICE_ACCOUNT": "experiment-branch-executor",
+        "ORCH_EXECUTOR_NODE_POOL": "batch-od",
         "ORCH_GITHUB_APP_SECRET_NAME": "branch-writer-app",
         "ORCH_GITHUB_APP_ID": "123",
         "ORCH_GITHUB_APP_INSTALLATION_ID": "456",
@@ -205,8 +212,42 @@ def test_launcher_settings_reads_required_environment(
     settings = LauncherSettings.from_environment()
 
     assert settings.max_concurrent_experiments == 2
+    assert settings.executor_node_pool == "batch-od"
     assert settings.active_deadline_sec == 300
     assert settings.ttl_after_finished_sec == 30
+
+
+def test_launcher_settings_requires_explicit_executor_node_pool_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "ORCH_DATABASE_URL": "postgresql://launcher:password@db/orchestration",
+        "ORCH_JOB_NAMESPACE": "agent-orchestration",
+        "ORCH_EXECUTOR_IMAGE": EXECUTOR_IMAGE,
+        "ORCH_EXECUTOR_SERVICE_ACCOUNT": "experiment-branch-executor",
+        "ORCH_GITHUB_APP_SECRET_NAME": "branch-writer-app",
+        "ORCH_GITHUB_APP_ID": "123",
+        "ORCH_GITHUB_APP_INSTALLATION_ID": "456",
+        "ORCH_GITHUB_REPOSITORY": "SKYAHO/Autoresearch",
+        "ORCH_MAX_CONCURRENT_EXPERIMENTS": "2",
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("ORCH_EXECUTOR_NODE_POOL", raising=False)
+
+    with pytest.raises(
+        LauncherConfigError,
+        match="missing ORCH_EXECUTOR_NODE_POOL",
+    ):
+        LauncherSettings.from_environment()
+
+
+@pytest.mark.parametrize("node_pool", ["", "batch od", "Batch-od", "batch_od"])
+def test_launcher_settings_rejects_invalid_executor_node_pool(
+    node_pool: str,
+) -> None:
+    with pytest.raises(LauncherConfigError, match="executor_node_pool"):
+        _settings(executor_node_pool=node_pool)
 
 
 def test_postgresql_claim_statements_keep_lock_and_skip_locked_contract() -> None:
@@ -357,6 +398,39 @@ def test_unconfirmed_recovery_reservation_consumes_remaining_slot(
     assert waiting.executor_job_name is None
 
 
+def test_tick_limits_recoverable_jobs_to_safe_capacity(session: Session) -> None:
+    recoveries: list[Experiment] = []
+    for index in range(3):
+        experiment_id = uuid.UUID(int=index + 1)
+        issue_number = 546 + index
+        recoveries.append(
+            _experiment(
+                session,
+                experiment_id=experiment_id,
+                status=ExperimentStatus.RUNNING,
+                issue_number=issue_number,
+                issue_branch=f"exp/{issue_number}-example",
+                job_name=f"ar-branch-{experiment_id.hex}",
+            )
+        )
+    kubernetes = FakeJobs(active_jobs=0)
+
+    run_tick(
+        session,
+        kubernetes,
+        _settings(max_concurrent_experiments=2),
+        clock=lambda: UTC_NOW,
+    )
+
+    assert kubernetes.created_names == {
+        recoveries[0].executor_job_name,
+        recoveries[1].executor_job_name,
+    }
+    assert recoveries[0].executor_job_created_at == UTC_NOW
+    assert recoveries[1].executor_job_created_at == UTC_NOW
+    assert recoveries[2].executor_job_created_at is None
+
+
 def test_tick_skips_incomplete_unconfirmed_recovery(session: Session) -> None:
     _experiment(
         session,
@@ -431,9 +505,9 @@ def test_job_passes_only_frozen_coordinates_and_token_file() -> None:
         (item.key, item.path)
         for item in volumes["github-app-private-key"].secret.items
     ] == [("private-key.pem", "private-key.pem")]
-    # executor image의 non-root appuser가 읽을 수 있도록 API server의 Secret 기본 mode를
-    # 사용한다. read-only 경계는 initContainer 전용 volumeMount가 소유한다.
-    assert volumes["github-app-private-key"].secret.default_mode is None
+    # root 소유 Secret 파일은 Pod fsGroup 10001에만 읽기를 허용하고, 같은 UID로 실행되는
+    # initContainer가 만든 0400 token은 app container가 동일 소유자로 읽는다.
+    assert volumes["github-app-private-key"].secret.default_mode == 0o440
     assert volumes["github-token"].empty_dir.medium == "Memory"
     assert volumes["github-token"].empty_dir.size_limit == "1Mi"
     assert {
@@ -447,6 +521,34 @@ def test_job_passes_only_frozen_coordinates_and_token_file() -> None:
         (mount.name, mount.mount_path, mount.read_only)
         for mount in branch_bootstrap.volume_mounts
     } == {("github-token", "/var/run/github-token", True)}
+
+
+def test_job_targets_configured_experiment_node_pool_contract() -> None:
+    pod = build_branch_job(_claim(), _settings()).spec.template.spec
+
+    assert pod.node_selector == {
+        "cloud.google.com/gke-nodepool": "batch-od",
+    }
+    assert [
+        (item.key, item.operator, item.value, item.effect)
+        for item in pod.tolerations
+    ] == [("workload", "Equal", "batch-od", "NoSchedule")]
+
+
+def test_job_security_context_meets_restricted_namespace_contract() -> None:
+    pod = build_branch_job(_claim(), _settings()).spec.template.spec
+
+    assert pod.security_context.run_as_non_root is True
+    assert pod.security_context.run_as_user == 10001
+    assert pod.security_context.run_as_group == 10001
+    assert pod.security_context.fs_group == 10001
+    assert pod.security_context.seccomp_profile.type == "RuntimeDefault"
+
+    for container in [*pod.init_containers, *pod.containers]:
+        security_context = container.security_context
+        assert security_context.allow_privilege_escalation is False
+        assert security_context.capabilities.drop == ["ALL"]
+        assert security_context.read_only_root_filesystem is True
 
 
 def test_tick_recovers_claim_when_job_creation_was_not_confirmed(

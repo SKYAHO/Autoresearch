@@ -17,6 +17,7 @@ from typing import Protocol
 
 from kubernetes.client import (
     BatchV1Api,
+    V1Capabilities,
     V1Container,
     V1EmptyDirVolumeSource,
     V1EnvVar,
@@ -24,9 +25,13 @@ from kubernetes.client import (
     V1JobSpec,
     V1KeyToPath,
     V1ObjectMeta,
+    V1PodSecurityContext,
     V1PodSpec,
     V1PodTemplateSpec,
+    V1SeccompProfile,
     V1SecretVolumeSource,
+    V1SecurityContext,
+    V1Toleration,
     V1Volume,
     V1VolumeMount,
 )
@@ -43,6 +48,7 @@ _PRIVATE_KEY_DIRECTORY = "/var/run/secrets/github-app"
 _PRIVATE_KEY_FILE = f"{_PRIVATE_KEY_DIRECTORY}/private-key.pem"
 _TOKEN_DIRECTORY = "/var/run/github-token"
 _TOKEN_FILE = f"{_TOKEN_DIRECTORY}/token"
+_EXECUTOR_USER_ID = 10001
 
 
 class JobClient(Protocol):
@@ -58,6 +64,15 @@ class JobClient(Protocol):
 def _env(name: str, value: str) -> V1EnvVar:
     """literal non-secret 환경 변수 한 개를 만든다."""
     return V1EnvVar(name=name, value=value)
+
+
+def _restricted_container_security_context() -> V1SecurityContext:
+    """restricted namespace에서 executor container가 사용할 최소 권한을 만든다."""
+    return V1SecurityContext(
+        allow_privilege_escalation=False,
+        capabilities=V1Capabilities(drop=["ALL"]),
+        read_only_root_filesystem=True,
+    )
 
 
 def build_branch_job(
@@ -85,6 +100,7 @@ def build_branch_job(
             _env("ORCH_GITHUB_APP_PRIVATE_KEY_FILE", _PRIVATE_KEY_FILE),
             _env("ORCH_GITHUB_TOKEN_FILE", _TOKEN_FILE),
         ],
+        security_context=_restricted_container_security_context(),
         volume_mounts=[
             V1VolumeMount(
                 name="github-app-private-key",
@@ -110,6 +126,7 @@ def build_branch_job(
             _env("ORCH_GITHUB_REPOSITORY", settings.github_repository),
             _env("ORCH_GITHUB_TOKEN_FILE", _TOKEN_FILE),
         ],
+        security_context=_restricted_container_security_context(),
         volume_mounts=[
             V1VolumeMount(
                 name="github-token",
@@ -121,6 +138,24 @@ def build_branch_job(
     pod_spec = V1PodSpec(
         automount_service_account_token=False,
         service_account_name=settings.executor_service_account,
+        node_selector={
+            "cloud.google.com/gke-nodepool": settings.executor_node_pool,
+        },
+        tolerations=[
+            V1Toleration(
+                key="workload",
+                operator="Equal",
+                value=settings.executor_node_pool,
+                effect="NoSchedule",
+            )
+        ],
+        security_context=V1PodSecurityContext(
+            run_as_non_root=True,
+            run_as_user=_EXECUTOR_USER_ID,
+            run_as_group=_EXECUTOR_USER_ID,
+            fs_group=_EXECUTOR_USER_ID,
+            seccomp_profile=V1SeccompProfile(type="RuntimeDefault"),
+        ),
         restart_policy="Never",
         init_containers=[token_minter],
         containers=[branch_bootstrap],
@@ -130,6 +165,7 @@ def build_branch_job(
                 secret=V1SecretVolumeSource(
                     secret_name=settings.github_app_secret_name,
                     items=[V1KeyToPath(key="private-key.pem", path="private-key.pem")],
+                    default_mode=0o440,
                 ),
             ),
             V1Volume(
