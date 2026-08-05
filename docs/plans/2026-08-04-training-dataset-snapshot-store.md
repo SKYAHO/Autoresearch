@@ -29,6 +29,10 @@
 
 ### 로컬 검증 명령 (이 계획 전체에서 사용)
 
+> **모든 pytest 호출 앞에 `$env:PYTHONUTF8 = "1"`을 붙인다.** PowerShell 셸 상태는
+> 호출 간에 유지되지 않으므로 **매 명령마다** 다시 설정해야 한다. 빠뜨리면 이 작업과
+> 무관한 cp949 인코딩 실패(#531)가 섞여 들어와 "회귀인가 선재 실패인가" 판단이 흐려진다.
+
 ```powershell
 $env:PYTHONUTF8 = "1"
 uv run --no-sync python -m pytest tests/test_training_snapshot_store.py tests/test_build_training_dataset.py tests/test_build_training_dataset_feast_path.py tests/test_pipeline_train.py tests/test_cli.py tests/test_training_provenance.py tests/test_degradation_eval_hold.py tests/test_degradation_eval_detection.py -q
@@ -100,7 +104,7 @@ def test_is_experiment_assembly_matches_guard_condition(
 
 - [ ] **Step 2: 실패를 확인한다**
 
-Run: `uv run --no-sync python -m pytest tests/test_build_training_dataset.py -k is_experiment_assembly -q`
+Run: `$env:PYTHONUTF8="1"; uv run --no-sync python -m pytest tests/test_build_training_dataset.py -k is_experiment_assembly -q`
 Expected: FAIL — `AttributeError: module 'src.pipeline.build_training_dataset' has no attribute 'is_experiment_assembly'`
 
 - [ ] **Step 3: predicate를 추출하고 가드가 그것을 쓰게 한다**
@@ -147,7 +151,7 @@ def is_experiment_assembly(
 
 - [ ] **Step 4: 통과와 무회귀를 확인한다**
 
-Run: `uv run --no-sync python -m pytest tests/test_build_training_dataset.py tests/test_build_training_dataset_feast_path.py -q`
+Run: `$env:PYTHONUTF8="1"; uv run --no-sync python -m pytest tests/test_build_training_dataset.py tests/test_build_training_dataset_feast_path.py -q`
 Expected: PASS. 기존 `require_explicit_experiment_output` 테스트가 그대로 통과해야 한다 — 하나라도 깨지면 추출이 동작을 바꾼 것이다.
 
 - [ ] **Step 5: 커밋**
@@ -230,7 +234,7 @@ import 절에 `SnapshotPointerEntry`, `TrainingSnapshotPointer`, `MAX_POINTER_HI
 
 - [ ] **Step 2: 실패를 확인한다**
 
-Run: `uv run --no-sync python -m pytest tests/test_training_provenance.py -k "spine_usable_days or pointer" -q`
+Run: `$env:PYTHONUTF8="1"; uv run --no-sync python -m pytest tests/test_training_provenance.py -k "spine_usable_days or pointer" -q`
 Expected: FAIL — `ImportError: cannot import name 'TrainingSnapshotPointer'`
 
 - [ ] **Step 3: 모델을 추가한다**
