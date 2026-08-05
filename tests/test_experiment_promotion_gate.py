@@ -437,3 +437,225 @@ def test_promotion_workflow_rejects_non_passed_paired_outcome() -> None:
     assert "outcome: {required: false, type: string}" in workflow
     assert "OUTCOME: ${{ inputs.outcome || github.event.client_payload.outcome }}" in workflow
     assert "if (outcome && outcome !== 'comparison_passed')" in workflow
+
+
+# ---------------------------------------------------------------------------
+# 하드 리밋 승격 조건 (#472 Task 1, spec §3.1·§4.1~§4.3)
+#
+# "성능과 무관하게 일정 기간이 지나면 교체한다"를 게이트에 배선한다. 게이트는
+# `degradation_eval`을 import하지 않고 **원시값(일수)만** 받는다(spec §2) —
+# 그 모듈이 lightgbm을 끌고 오고, `autoresearch/`는 `src/`를 import하지 않는다.
+# ---------------------------------------------------------------------------
+
+
+def test_existing_call_without_hard_limit_args_still_works() -> None:
+    """하위호환 가드 — 현재 workflow(182-193행)는 이 인자들을 넘기지 않는다.
+
+    기본값이 없으면 배선 전에 기존 승격 경로가 즉시 깨진다.
+    """
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(criteria, primary_candidate=0.781, primary_baseline=0.778)
+
+    assert decision.passed is True
+    assert decision.reason == "criteria_met"
+
+
+def test_metric_pass_reports_criteria_met_even_when_limit_reached() -> None:
+    """지표로 통과했으면 기한 도달 여부와 무관하게 `criteria_met`이다(spec §4.1).
+
+    이걸 뒤집어 `hard_retrain_limit_reached`로 기록하면, 나중에 승격 이력을 읽는
+    사람이 "이 모델은 기한 때문에 올라갔다"로 읽어 **모델 품질을 과소평가**한다.
+    """
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.781,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "criteria_met"
+
+
+def test_metric_below_delta_passes_when_hard_limit_reached() -> None:
+    """#472의 핵심 — 지표는 미달인데 기한이 지나면 승격 후보가 된다."""
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+def test_metric_below_delta_still_fails_when_limit_not_reached() -> None:
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=4,
+    )
+
+    assert decision.passed is False
+    assert decision.reason == "primary_metric_below_delta"
+
+
+def test_elapsed_equal_to_limit_counts_as_reached() -> None:
+    """경계는 `>=`다 — "N일이 지나면"의 N일째가 도달이다."""
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=5,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+def test_zero_limit_is_always_reached() -> None:
+    """`limit_days=0`은 "이미 재학습 시점을 지났다"는 뜻이다.
+
+    `#485` spec §4.2의 표에 없던 조합이다 — `safety_margin_days`가
+    `degradation_point.elapsed_days`와 같으면 뺄셈이 음수가 아니라 정확히 0이라
+    clamp 분기를 타지 않아 `reason=None`으로 나온다(spec §7). 게이트는 숫자만
+    받으므로 두 경로의 판정이 같아야 한다.
+    """
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=0,
+        days_since_last_promotion=0,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+@pytest.mark.parametrize(
+    ("limit_days", "elapsed"),
+    [(None, 9), (5, None), (None, None)],
+)
+def test_missing_hard_limit_inputs_are_not_treated_as_reached(limit_days, elapsed) -> None:
+    """관측되지 않은 것을 "기한이 지났다"로도 "안 지났다"로도 바꾸지 않는다.
+
+    `#485` spec §4.1과 같은 결. 특히 `hard_retrain_limit_days=None`은 hold가 걸려
+    호출부가 값을 넘기지 않은 경우(spec §3.2)이므로, 그것으로 승격을 **늘리면**
+    근거 없는 곡선이 승격을 만들어낸다.
+    """
+    criteria = parse_criteria(_issue_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=limit_days,
+        days_since_last_promotion=elapsed,
+    )
+
+    assert decision.passed is False
+    assert decision.reason == "primary_metric_below_delta"
+
+
+# ---------------------------------------------------------------------------
+# guardrail은 하드 리밋으로 우회되지 않는다 (#472 Task 2, spec §4.4)
+#
+# 하드 리밋의 취지는 "성능이 정체돼도 교체한다"이지 "망가진 모델도 올린다"가 아니다.
+# guardrail은 안 망가졌다는 최소 보증이므로 그것까지 우회하면 게이트가 무력해진다.
+# ---------------------------------------------------------------------------
+
+
+def _guardrail_body() -> str:
+    return _issue_body(
+        **{
+            "Guardrail 지표 이름": "log_loss",
+            "Guardrail 지표 방향": "lower_is_better",
+            "최대 Guardrail 악화폭": "0.001",
+        }
+    )
+
+
+def test_hard_limit_does_not_bypass_guardrail_regression() -> None:
+    criteria = parse_criteria(_guardrail_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        guardrail_candidate=0.310,  # baseline 대비 0.01 악화 — 허용치 0.001 초과
+        guardrail_baseline=0.300,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is False
+    assert decision.reason == "guardrail_regressed"
+
+
+def test_hard_limit_does_not_bypass_missing_guardrail_values() -> None:
+    criteria = parse_criteria(_guardrail_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is False
+    assert decision.reason == "guardrail_metric_missing"
+
+
+def test_hard_limit_passes_when_guardrail_is_within_budget() -> None:
+    criteria = parse_criteria(_guardrail_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+        guardrail_candidate=0.3005,  # 0.0005 악화 — 허용치 0.001 이내
+        guardrail_baseline=0.300,
+        hard_retrain_limit_days=5,
+        days_since_last_promotion=9,
+    )
+
+    assert decision.passed is True
+    assert decision.reason == "hard_retrain_limit_reached"
+
+
+def test_metric_failure_without_hard_limit_keeps_existing_reason() -> None:
+    """기존 동작 보존 — 하드 리밋이 성립하지 않으면 guardrail을 보지 않는다.
+
+    현재 구현은 지표 미달이면 즉시 `primary_metric_below_delta`로 끝낸다. 하드 리밋
+    경로를 더하면서 이 단축을 깨면, guardrail 값이 없는 기존 실행의 사유가
+    `guardrail_metric_missing`으로 바뀌어 승격 이력의 의미가 달라진다.
+    """
+    criteria = parse_criteria(_guardrail_body())
+
+    decision = evaluate(
+        criteria,
+        primary_candidate=0.778,
+        primary_baseline=0.778,
+    )
+
+    assert decision.passed is False
+    assert decision.reason == "primary_metric_below_delta"
