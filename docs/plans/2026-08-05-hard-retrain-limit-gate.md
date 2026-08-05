@@ -5,15 +5,14 @@
 
 ## 이 plan의 범위
 
-spec §9의 6단계를 구현한다. **Task 1~3은 순수 함수 변경이라 §6 미해결과 무관하게
-선행 가능하고, Task 4~6은 그 답에 따라 갈린다.**
+spec §9의 6단계를 구현한다. **Task 1~3은 순수 함수 변경이고, Task 4~6은 호출부·문서다.**
 
 | 범위 | 상태 |
 | --- | --- |
 | Task 1 — `evaluate()`에 하드 리밋 조건과 사유 코드 (§3.1·§4.1~§4.3) | 착수 가능 |
 | Task 2 — guardrail 우회 금지 (§4.4) | Task 1 이후 |
 | Task 3 — `GateDecision.policy_version` (§5) | Task 1 이후 |
-| Task 4 — workflow 배선 (§8.2) | **§6 답 대기** |
+| Task 4 — workflow 배선 (§8.2) | §6 확정(안 A) — §8.2만 남음 |
 | Task 5 — Draft PR 본문에 승격 사유 표시 (§4.3) | Task 4 이후 |
 | Task 6 — 스킬 문서에 하드 리밋 정책 명시 | Task 4 이후 |
 
@@ -29,13 +28,12 @@ spec §9의 6단계를 구현한다. **Task 1~3은 순수 함수 변경이라 §
 
 | 항목 | 언제 | 막는 것 |
 | --- | --- | --- |
-| spec §6 안 A(버전 `creation_timestamp` 근사) vs 안 B(alias 부여 시각 기록) | Task 4 착수 전 | Task 4~6 |
-| §6 성립 조건 — champion alias 부여가 버전 생성과 동시였는지 | 위와 함께 | 안 A 채택 가능 여부 |
 | §8.2 — 측정 결과 JSON을 CI가 어떻게 얻는지 | Task 4 착수 전 | Task 4 |
 | §8.3 — `safety_margin_days` 확정 | 이 plan 범위 밖 | 실운영 값(코드는 안 막힘) |
 
-**`#461` 소유자 승인은 기록됐다**(`pull/461#issuecomment-5186975872`). 다만 그 코멘트는
-"승인 완료"만 담고 있어 §6 선택은 여전히 열려 있다(spec §8.1).
+**`#461` 소유자 승인은 기록됐다**(`pull/461#issuecomment-5186975872`). spec §6은 그
+코멘트가 아니라 **§6에 적힌 사유**를 근거로 안 A를 확정했다 — 안 A의 오차를 키우는 운영
+관행이 쌓일 시간 자체가 없었다는 것. 안 B는 spec §8.4로 백로그화했다.
 
 ## 범위 제외 (다루지 않는 것과 사유)
 
@@ -51,12 +49,13 @@ spec §9의 6단계를 구현한다. **Task 1~3은 순수 함수 변경이라 §
 | --- | --- |
 | `autoresearch/experiments/promotion_gate.py` | Task 1~3 — 인자·판정·사유·정책 버전 |
 | `tests/test_experiment_promotion_gate.py` | Task 1~3 |
-| `.github/workflows/auto-research-promotion.yml` | Task 4~5 (§6 확정 후) |
-| 스킬 문서 | Task 6 (§6 확정 후) |
+| `.github/workflows/auto-research-promotion.yml` | Task 4~5 |
+| 스킬 문서 | Task 6 |
 
 **건드리지 않는 파일**: `src/pipeline/degradation_eval.py`,
-`src/pipeline/experiment_evaluation.py`, `src/tracking/registry.py`(안 B로 확정되기
-전까지), `src/pipeline/promotion_evidence.py`.
+`src/pipeline/experiment_evaluation.py`, `src/pipeline/promotion_evidence.py`,
+그리고 **`src/tracking/registry.py`** — 안 A는 그 모듈을 **읽기만** 하므로 수정하지
+않는다(안 B로 전환할 때만 손댄다, spec §8.4).
 
 ## 회귀 판정 기준 (baseline)
 
@@ -124,12 +123,16 @@ baseline 대비 증감으로 판정한다**: `failed`가 늘지 않았는지, `p
 
 **RED**: 모든 판정 경로가 `policy_version`을 싣는지, 기존 2-인자 생성이 깨지지 않는지.
 
-## Task 4 — workflow 배선 (spec §8.2) ⛔ §6 답 대기
+## Task 4 — workflow 배선 (spec §8.2)
 
-**착수 전 확정 필요**: 안 A(버전 `creation_timestamp` 근사) / 안 B(alias 부여 시각 기록).
+§6은 **안 A(버전 `creation_timestamp` 근사)로 확정**됐다. 남은 미해결은 §8.2(측정 결과
+JSON 조달 경로)뿐이다.
 
-- [ ] `days_since_last_promotion` 산출 경로 구현. 안 B면 `src/tracking/registry.py`를
-      건드리므로 **소유자 확인이 한 번 더 필요하다.**
+- [ ] `days_since_last_promotion` 산출 — champion alias가 가리키는 버전의
+      `creation_timestamp`(`src/tracking/registry.py:90`)에서 계산한다. **읽기만 하므로
+      그 파일을 수정하지 않는다.**
+- [ ] **근사라는 사실을 호출부에 남긴다**(spec §6.1). `policy_version`에는 넣지 않는다 —
+      게이트는 값이 어떻게 구해졌는지 모르므로 알 수 없는 것을 단언하게 된다.
 - [ ] `hard_retrain_limit_days` 조달 경로. 후보: 측정 결과 JSON(아티팩트/GCS) vs
       **정책 상수 고정 + 실측으로 주기 갱신**. 1차 형태는 후자가 현실적일 수 있다 —
       그 판단 근거를 문서에 남긴다.
