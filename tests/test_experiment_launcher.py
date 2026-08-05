@@ -21,6 +21,7 @@ import uuid
 
 import pytest
 from sqlalchemy import Engine, create_engine, event, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -373,6 +374,25 @@ def test_claim_rolls_back_job_name_and_status_when_event_flush_fails(
         .select_from(ExperimentEvent)
         .where(ExperimentEvent.experiment_id == experiment.id)
     ) == 0
+
+
+def test_claim_fails_closed_when_created_row_has_existing_claim_event(
+    session: Session,
+) -> None:
+    """불일치한 기존 claim event를 멱등 성공으로 보아 부분 선점하지 않는다."""
+    experiment = _experiment(session)
+    claim_experiments(session, active_jobs=0, max_concurrency=5)
+    experiment.status = ExperimentStatus.CREATED.value
+    experiment.executor_job_name = None
+    session.commit()
+
+    with pytest.raises(IntegrityError):
+        claim_experiments(session, active_jobs=0, max_concurrency=5)
+    session.rollback()
+
+    session.refresh(experiment)
+    assert experiment.status == ExperimentStatus.CREATED.value
+    assert experiment.executor_job_name is None
 
 
 def test_unconfirmed_recovery_reservation_consumes_remaining_slot(

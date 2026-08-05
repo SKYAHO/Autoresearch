@@ -138,8 +138,6 @@ def claim_experiments(
         created_claims: list[ClaimedExperiment] = []
         for experiment in created_rows:
             job_name = _job_name(experiment.id)
-            experiment.executor_job_name = job_name
-            experiment.executor_job_created_at = None
             transition_experiment_in_transaction(
                 session,
                 experiment.id,
@@ -147,8 +145,13 @@ def claim_experiments(
                 reason=f"executor job claimed: {job_name}",
                 metric_snapshot=None,
                 idempotency_key=f"launcher-claim:{experiment.id}",
-                check_idempotency=True,
+                # CREATED + executor_job_name IS NULL은 최초 선점만 허용한다. 같은
+                # claim event가 이미 있으면 불일치 상태이므로 멱등 성공으로 넘기지 않고
+                # unique 제약으로 transaction 전체를 fail-closed 한다.
+                check_idempotency=False,
             )
+            experiment.executor_job_name = job_name
+            experiment.executor_job_created_at = None
             created_claims.append(_claimed_experiment(experiment))
 
         return [*recoverable_claims, *created_claims]
