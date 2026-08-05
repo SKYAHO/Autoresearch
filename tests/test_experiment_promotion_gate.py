@@ -781,3 +781,58 @@ def test_workflow_validates_elapsed_days_as_non_negative_integer() -> None:
 
     assert "days_since_last_promotion must be a non-negative integer" in script
     assert "input_invalid" in script
+
+
+# ---------------------------------------------------------------------------
+# Draft PR 본문에 승격 사유 표시 (#472 Task 5, spec §4.3·§6.1)
+#
+# 하드 리밋으로 올라온 후보는 **지표 기준을 통과하지 못했다.** 제목·본문이 그 사실을
+# 드러내지 않으면 리뷰어가 "metric 통과 후보"를 믿고 지표가 개선된 줄로 읽는다.
+# ---------------------------------------------------------------------------
+
+
+def _draft_pr_script() -> str:
+    steps = _promotion_workflow()["jobs"]["create-promotion-pr"]["steps"]
+    step = next(
+        s for s in steps if "Create immutable promotion branch" in (s.get("name") or "")
+    )
+    return step["with"]["script"]
+
+
+def test_draft_pr_title_distinguishes_hard_limit_promotion() -> None:
+    script = _draft_pr_script()
+
+    assert "하드 리밋 강제 교체 후보" in script
+    # 기존 제목도 남아 있어야 한다 — 지표 통과 경로는 그대로다.
+    assert "metric 통과 후보" in script
+
+
+def test_draft_pr_body_warns_that_metric_did_not_pass() -> None:
+    script = _draft_pr_script()
+
+    assert "지표 기준을 통과하지 못했습니다" in script
+
+
+def test_draft_pr_body_records_elapsed_days_is_an_approximation() -> None:
+    """spec §6.1 — 근사는 값을 구하는 쪽의 성질이라 여기에 남긴다.
+
+    `policy_version`에 넣지 않는 이유는 게이트가 값의 출처를 모르기 때문이다.
+    """
+    script = _draft_pr_script()
+
+    assert "creation_timestamp" in script
+    assert "근사치" in script
+
+
+def test_draft_pr_branches_on_gate_reason_not_on_passed_flag() -> None:
+    """`passed`는 두 승격 경로에서 모두 true다 — 사유로 갈라야 구분된다."""
+    script = _draft_pr_script()
+
+    assert "GATE_REASON === 'hard_retrain_limit_reached'" in script
+
+
+def test_draft_pr_does_not_claim_metric_gate_pass_for_hard_limit() -> None:
+    """"통과한 dev 후보 SHA"는 하드 리밋 경로에서 사실이 아니다."""
+    script = _draft_pr_script()
+
+    assert "강제 교체 대상으로 판정한 dev 후보 SHA" in script

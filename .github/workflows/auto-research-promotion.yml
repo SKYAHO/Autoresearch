@@ -266,14 +266,34 @@ jobs:
             const { data: prs } = await github.rest.pulls.list({
               owner: context.repo.owner, repo: context.repo.repo, state: 'open', base: 'main', head: `${context.repo.owner}:${branchName}`,
             });
+            // 하드 리밋으로 올라온 후보는 **지표 기준을 통과하지 못했다**(#472 §4.3).
+            // 제목·본문이 그 사실을 드러내지 않으면 리뷰어가 "metric 통과 후보"라는
+            // 말을 믿고 지표가 개선된 줄로 읽는다.
+            const hardLimitPromotion = process.env.GATE_REASON === 'hard_retrain_limit_reached';
             if (prs.length === 0) {
               await github.rest.pulls.create({
                 owner: context.repo.owner, repo: context.repo.repo, base: 'main', head: branchName,
-                title: `exp: #${issueNumber} ${experimentId} metric 통과 후보`, draft: true,
+                title: hardLimitPromotion
+                  ? `exp: #${issueNumber} ${experimentId} 하드 리밋 강제 교체 후보`
+                  : `exp: #${issueNumber} ${experimentId} metric 통과 후보`,
+                draft: true,
                 body: [
                   `Closes #${issueNumber}`,
                   '',
-                  `구조화 metric gate를 통과한 dev 후보 SHA: \`${candidateSha}\``,
+                  ...(hardLimitPromotion ? [
+                    '> [!WARNING]',
+                    '> **지표 기준을 통과하지 못했습니다.** 마지막 승격 이후 하드 리밋',
+                    '> 일수가 지나 강제 교체 후보로 올라왔습니다 — "성능이 정체돼도',
+                    '> 교체한다"는 정책입니다(`#472`).',
+                    '>',
+                    '> 경과일은 champion 버전의 `creation_timestamp` 기준 **근사치**입니다.',
+                    '> alias를 실제로 부여한 시각이 아니라 버전이 만들어진 시각이라,',
+                    '> 실제 경과일보다 **크게** 나와 리밋이 더 일찍 발동할 수 있습니다.',
+                    '',
+                  ] : []),
+                  hardLimitPromotion
+                    ? `승격 게이트가 강제 교체 대상으로 판정한 dev 후보 SHA: \`${candidateSha}\``
+                    : `구조화 metric gate를 통과한 dev 후보 SHA: \`${candidateSha}\``,
                   `experiment_id: \`${experimentId}\``,
                   `run_id: \`${runId}\``,
                   `registry_uri: \`${registryUri}\``,
