@@ -1314,6 +1314,51 @@ def test_main_rejects_dataset_uri_and_data_path_together(tmp_path, monkeypatch) 
         )
 
 
+def test_main_requires_explicit_min_coverage_days_with_dataset_uri(
+    tmp_path, monkeypatch
+) -> None:
+    """재사용 학습은 min_coverage_days를 명시해야 한다 — 기본값으로 게이트가 꺼지면 안 된다(#537)."""
+    config_path, _, _ = _prepared_dataset(tmp_path, monkeypatch)
+    called: list[str] = []
+    monkeypatch.setattr(
+        train.training_snapshot_store,
+        "download_snapshot",
+        lambda **kwargs: called.append("downloaded"),
+    )
+
+    with pytest.raises(ValueError, match="min_coverage_days"):
+        train.main(
+            config_path=str(config_path),
+            dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+        )
+
+    # 다운로드 이전에 막아야 한다 — 게이트를 검증할 수 없는 실행에 GCS 왕복을 쓰지 않는다.
+    assert called == []
+
+
+def test_main_allows_explicit_zero_min_coverage_days(tmp_path, monkeypatch) -> None:
+    """0은 명시적 우회구다 — 필수화가 우회 자체를 막아서는 안 된다(#537)."""
+    config_path, data_path, _ = _prepared_dataset(tmp_path, monkeypatch)
+    _write_snapshot_manifest_with_coverage(data_path, spine_usable_days=1)
+    monkeypatch.setattr(
+        train.training_snapshot_store, "download_snapshot", _fake_download_into(data_path)
+    )
+
+    # 출력 경로를 tmp_path로 명시한다 — config 기본값이 상대경로라 생략하면
+    # 저장소 워킹트리에 ignored/ 산출물이 남는다.
+    outcome = train.main(
+        config_path=str(config_path),
+        dataset_uri="gs://snapshots/training/by-hash/" + "a" * 64 + "/",
+        min_coverage_days=0,
+        model_output=str(tmp_path / "model.joblib"),
+        test_set_output=str(tmp_path / "test_set.csv"),
+        feature_columns_output=str(tmp_path / "feature_columns.json"),
+        categorical_columns_output=str(tmp_path / "categorical_columns.json"),
+    )
+
+    assert outcome is not None
+
+
 def test_main_downloads_snapshot_and_cleans_up_temp_dir(tmp_path, monkeypatch) -> None:
     """dataset_uri를 주면 다운로드한 CSV로 학습하고, 끝나면 임시 디렉터리를 정리한다(#530)."""
     config_path, data_path, tracking_uri = _prepared_dataset(tmp_path, monkeypatch)
