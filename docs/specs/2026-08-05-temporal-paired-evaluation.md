@@ -189,7 +189,74 @@ TemporalPairedResult
 
 `baseline`/`challenger`는 **그대로 담는다** — 요약해 넣으면 나중에 원본을 다시 못 만든다.
 
-### 4.2 hold 합산 규칙
+### 4.2 호출 계약 — 조건별 축만 객체로 묶는다
+
+`run_rolling_origin`의 인자는 현재 18개다. 두 조건을 지원한다고 이것을 **두 벌로
+늘리지 않는다** — 18개 중 대부분은 두 조건이 **반드시 같아야 하는** 값이고, 두 벌로
+두면 다르게 넣는 것이 문법적으로 가능해진다.
+
+| 축 | 인자 | 두 조건 관계 |
+| --- | --- | --- |
+| 시간 정의 | `cutoff_date`, `window_days`, `horizon_days` | **같아야 함** |
+| 데이터 가용성 기준 | `min_rows_per_day`, `min_coverage_days`, `recent_window_days` | **같아야 함** |
+| 판정 기준 | `min_auc_drop` | **같아야 함** |
+| 시드 | `seed` | **같아야 함**(§1.1) |
+| 데이터 소스 | `bigquery_*` | **같아야 함** |
+| 실행 제어 | `run_root`, `overwrite`, `best_effort` | §4.3 |
+| **조건별** | `feature_service`, `extra_features`, `experiment` | **다를 수 있음** |
+
+따라서 **조건별 축만** 객체로 묶는다.
+
+```python
+@dataclass(frozen=True)
+class TemporalCondition:
+    name: str                                  # "baseline" | "challenger"
+    feature_service: str | None = None
+    extra_features: Sequence[str] | None = None
+    experiment: str | None = None
+    source_sha: str | None = None              # 결과에 남길 조건 식별자
+```
+
+**§3의 런타임 검증보다 한 단계 앞에서 막는 것이 핵심이다.** 공유 축을 상위 호출이 한 번만
+받으면 "같아야 하는 값을 다르게 넣는" 입력 자체가 만들어지지 않는다. §3의 검증은 그래도
+남긴다 — 결과 두 개를 **밖에서 받아** 묶는 경로(이미 실행된 측정 2건을 사후 비교)가
+있고, 그 경로에는 이 방어가 적용되지 않기 때문이다.
+
+`paired_experiment.py`의 `ConditionLineage`가 코드 버전 축에서 같은 형태를 쓰므로 새
+패턴이 아니다(`#514` 본문의 "코드 버전 축에서 푼 문제를 시간축에서 다시 푼다"와 같은 결).
+
+`name`은 결과의 어느 슬롯에 들어갈지를 정하는 값이 아니라 **결과에 기록되는 식별자**다.
+슬롯은 §4.1의 `baseline`/`challenger` 필드가 이미 이름을 갖는다.
+
+### 4.3 실행 산출물 격리 — `run_root`를 공유하면 첫 조건이 삭제된다
+
+**코드 확인(`degradation_eval.py:676-701`)**: `_prepare_run_root`는 `run_root` 아래에
+`training/`과 `evaluation/<date>/`만 만든다 — **조건 차원이 없다.** 그리고 이미 채워진
+`run_root`에 대해:
+
+- `overwrite=False`면 `RunRootExistsError`로 막는다.
+- `overwrite=True`면 **`shutil.rmtree(run_root)`로 통째로 지우고 다시 만든다.**
+
+따라서 같은 `run_root`로 두 조건을 연달아 실행하면, 두 번째 조건이 **첫 조건의 학습·평가
+산출물을 전부 삭제**한다. 두 조건 실행은 반드시 다음 중 하나를 따른다.
+
+```text
+채택: run_root/<condition.name>/{training,evaluation/<date>}/
+```
+
+- 상위 함수가 조건 이름으로 하위 디렉터리를 나눠 `run_rolling_origin`에 넘긴다.
+- `_prepare_run_root`의 fail-closed 성질(이미 채워진 경로를 덮어쓰지 않음)이 조건별로
+  그대로 작동한다 — **함수를 고치지 않는다.**
+- `overwrite`는 상위에서 받아 두 조건에 같은 값으로 전달한다. 한쪽만 덮어쓰면 두
+  산출물의 실행 시점이 어긋난다.
+
+> **문서 드리프트 정정**: `degradation_eval.py` 모듈 docstring(22행)은 "산출물을
+> `run_root` 아래 **조건**·평가일별로 격리해 이전 실행을 덮어쓰지 않는다"고 적었으나,
+> 실제 레이아웃에 조건 층은 없다. 이 spec의 구현에서 조건 층이 실제로 생기므로,
+> **그때 docstring이 사실이 된다.** 구현 커밋에서 이 문장을 확인만 하고 넘기지 말고,
+> 조건 층이 상위 함수 소관임을 명시하도록 갱신한다.
+
+### 4.4 hold 합산 규칙
 
 두 조건 각각에 `evaluate_temporal_hold`를 적용하고, **하나라도 hold면 전체가 hold**다.
 사유는 조건 이름과 함께 남긴다. 한쪽 곡선이 오염됐는데 다른 쪽이 멀쩡하다고 해서 비교가

@@ -103,12 +103,28 @@ run에 적용할 수 있는지에 따라 검증 재료가 달라진다. Task 1�
       `condition_mismatch`. **하나라도 hold면 전체 hold**이며, 사유에 **어느 조건인지**를
       함께 남긴다.
 - [ ] `hold_reason`이 있으면 `delta`는 `None`이다(spec §3.2 fail-closed).
+- [ ] **호출 계약(spec §4.2)**: `TemporalCondition`(frozen dataclass)으로 조건별 축
+      (`feature_service`/`extra_features`/`experiment`/`source_sha`)만 묶고, 공유 축 18개
+      중 나머지는 상위 함수가 **한 번만** 받는다. 같아야 하는 값을 다르게 넣는 입력이
+      만들어지지 않게 하는 것이 목적이다.
+- [ ] **`run_root` 조건별 격리(spec §4.3) — 빠뜨리면 데이터가 지워진다.**
+      `_prepare_run_root`(`degradation_eval.py:676-701`)는 `run_root` 아래에
+      `training/`·`evaluation/<date>/`만 만들고 **조건 차원이 없으며**, `overwrite=True`면
+      `shutil.rmtree(run_root)`로 통째로 지운다. 같은 `run_root`로 두 조건을 연달아
+      돌리면 두 번째가 첫 조건 산출물을 전부 삭제한다.
+      상위 함수가 `run_root/<condition.name>/`으로 나눠 넘긴다 — **`_prepare_run_root`
+      자체는 고치지 않는다.** 그 함수의 fail-closed 성질이 조건별로 그대로 작동한다.
+- [ ] `degradation_eval.py` 모듈 docstring 22행을 갱신한다. "산출물을 `run_root` 아래
+      **조건**·평가일별로 격리"라고 적혀 있으나 조건 층은 실제로 없었다. 이 Task로
+      생기므로, 조건 층이 **상위 함수 소관**임을 명시하도록 고친다(문서 드리프트 정정).
 - [ ] CLI 노출 여부를 판단한다. `measure-degradation`은 단일 조건 진입점이므로 별도
       명령이 필요한지, 아니면 이 단계에서는 라이브러리 함수로 두고 Task 6에서 스크립트로
       부를지 결정하고 사유를 남긴다.
 
 **RED**: 한쪽만 hold인 쌍이 전체 hold가 되는지, 그때 `delta`가 `None`인지, 사유에 조건
-이름이 들어가는지.
+이름이 들어가는지. **그리고 두 조건 실행 후 양쪽 산출물이 모두 남아 있는지** — 이
+테스트가 없으면 `run_root` 공유 실수가 조용히 통과한다(첫 조건 결과는 메모리에 있으니
+반환값만 보면 정상으로 보인다).
 
 ## Task 4 — `TemporalDelta` 산출 (spec §5·§6)
 
