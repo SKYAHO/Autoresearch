@@ -10,7 +10,7 @@ ref 조회의 404만 부재로 반환하고, 조회·생성 성공 응답의 com
 
 [비책임]
 installation token 발급(`github_app.py`), 기존 ref와 기준 SHA의 멱등성 판단(executor),
-Git checkout·push와 GitHub Actions branch workflow.
+Git checkout·push, launcher의 Kubernetes Job 생성, promotion marker 작성·신뢰 계약.
 """
 
 from __future__ import annotations

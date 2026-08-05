@@ -211,13 +211,13 @@ def test_republishing_legacy_issue_returns_null_baseline_without_github(
     }
 
 
-def test_publication_labels_the_issue_for_the_branch_workflow(
+def test_publication_labels_the_issue_for_classification_and_promotion(
     client: TestClient, authorized_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`auto-experiment` label이 빠지면 브랜치 생성 job이 흔적 없이 skip된다.
+    """`auto-experiment` label을 `[AR]` 분류와 promotion guard에 전달한다.
 
     `gh issue create`가 Issue Form을 우회하므로 label 자동 적용을 받지 못한다.
-    CONTRIBUTING.md의 "Form을 우회해 API로 발행하면 직접 부여해야 한다"가 근거다.
+    Issue Form·API 발행 경로·promotion guard가 같은 label을 사용해야 한다.
     """
     seen: list[tuple[str, ...]] = []
 
