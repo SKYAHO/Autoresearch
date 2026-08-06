@@ -53,6 +53,21 @@ def _step_run(job_id: str, name_fragment: str) -> str:
     raise AssertionError(f"{job_id}에 '{name_fragment}' 스텝이 없습니다")
 
 
+def _diff_target_paths(diff: str) -> list[str]:
+    """`git diff --quiet ... -- <paths>` 스텝에서 `--` 뒤 경로 토큰만 뽑아낸다.
+
+    쉘 라인 연속(`\\` + 줄바꿈)을 먼저 이어붙여 하나의 논리 라인으로 만든 뒤,
+    `git diff`가 있는 라인에서 pathspec 구분자인 독립 토큰 `--` 이후만 취한다.
+    """
+    joined = diff.replace("\\\n", " ")
+    for line in joined.splitlines():
+        tokens = line.split()
+        if "git" in tokens and "diff" in tokens and "--" in tokens:
+            separator_index = tokens.index("--")
+            return tokens[separator_index + 1 :]
+    raise AssertionError("git diff 스텝에서 '--' 뒤의 경로 목록을 찾지 못했습니다")
+
+
 def test_run_name_matches_the_python_lookup_key() -> None:
     assert _workflow()["run-name"] == (
         RUN_NAME_PREFIX + "${{ inputs.candidate_sha }}"
@@ -104,8 +119,7 @@ def test_diff_compares_exactly_the_baked_paths() -> None:
     diff = _step_run(DECIDE_JOB_NAME, "rebuilt")
 
     assert "git diff --quiet" in diff
-    for path in DIFF_PATHS:
-        assert path in diff
+    assert set(_diff_target_paths(diff)) == set(DIFF_PATHS)
 
 
 def test_diff_treats_unexpected_exit_status_as_failure() -> None:
