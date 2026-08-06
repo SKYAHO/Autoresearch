@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-06T10:52:31Z",
+  "generated_at": "2026-08-06T11:44:16Z",
   "reports": [
+    {
+      "number": 564,
+      "title": "feat: 실험 executor Phase 2를 구현한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-06T11:44:02Z",
+      "summary_ko": [
+        "실험 에이전트가 격리된 환경에서 코드 수정, 검증, 단일 커밋 푸시 및 후보 보고를 수행하는 Phase 2 경로를 구현합니다.",
+        "런처를 8-컨테이너 쿠버네티스 Job 구조로 확장하고 최소 권한 토큰 분리 및 최종 실패 회수를 자동화합니다.",
+        "CI/릴리스 파이프라인에 불변 Executor 이미지 빌드 및 읽기 전용 런타임 스모크 테스트를 추가합니다."
+      ],
+      "report_url": "pr/564/"
+    },
     {
       "number": 556,
       "title": "feat: feast-apply-runner-probe caller workflow 추가",
