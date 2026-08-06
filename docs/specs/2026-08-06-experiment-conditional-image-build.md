@@ -304,6 +304,21 @@ class CandidateRuntime:
   LightGBM 전용인 한 모델은 바뀌지 않는다.
 - #557 (실험 executor Phase 2)
 
+### 알려진 한계 (의도적으로 감수한다)
+
+- **provenance guard는 "그 브랜치에서 도달 가능한 커밋"까지 통과시킨다.**
+  `git branch -r --contains $candidate_sha`는 `candidate_sha`가 exp 브랜치의 *조상*이기만
+  해도 통과하므로, exp 브랜치를 딴 시점의 dev 커밋(사실상 `base_dev_sha`)도 통과할 수
+  있다. "무관한 임의 ref 차단"이라는 목적은 달성하지만 "이것이 codex가 만든 candidate
+  끝점 커밋인가"까지는 보장하지 않는다. 이 워크플로우를 호출하는 주체가 신뢰된 내부
+  컴포넌트뿐이므로 현재 스코프에서는 감수한다. 예상 밖의 SHA로 이미지가 구워지는
+  증상이 나오면 이 지점을 먼저 의심한다.
+- **dispatch 전 조회와 dispatch 사이에 TOCTOU 경합이 있다.**
+  §5.3의 멱등성은 순차 호출을 전제한다. launcher tick이 겹치지 않는 CronJob 구조라
+  현재 위험은 낮지만, 여러 실험이 이 인터페이스를 병렬 호출하게 되면 같은
+  `candidate_sha`로 두 번 dispatch될 수 있다. §7 테스트는 "기존 run이 있으면 dispatch하지
+  않는다"만 고정하며 이 경합 자체는 검증하지 않는다.
+
 ## 7. 검증
 
 | 대상 | 방법 |
