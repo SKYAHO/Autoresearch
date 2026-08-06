@@ -1,21 +1,22 @@
 """실험 launcher의 PostgreSQL 선점·생성 확인 저장 경계.
 
 [파이프라인] 이슈 좌표와 기준 SHA가 봉인된 `CREATED` Experiment를 executor Job 생성
-직전에 `RUNNING`으로 선점하고, Kubernetes에서 Job 존재를 확인한 뒤 내부 시각을 기록하는
-구간을 담당한다.
+직전에 `RUNNING`으로 선점하고, Kubernetes에서 Job 존재를 확인한 뒤 내부 시각을 기록하거나
+최종 실패를 `ERROR`로 회수하는 구간을 담당한다.
 
-[기능] advisory transaction lock, 미확인 선점 복구 조회, 전역 상한을 적용한
-`FOR UPDATE SKIP LOCKED` 선점과 결정론적 이름·상태 event의 단일 transaction 저장을
-제공한다.
+[기능] advisory transaction lock, 미확인 선점 복구 조회, issue body SHA-256 봉인, 전역
+상한을 적용한 `FOR UPDATE SKIP LOCKED` 선점과 결정론적 이름·상태 event의 단일 transaction
+저장 및 Phase 2 최종 실패 회수를 제공한다.
 
-[비책임] Kubernetes active Job 계산·manifest 생성·API 호출(`launcher.jobs`/`main`)과
-Job 완료·실패에 따른 Experiment 상태 회수는 담당하지 않는다.
+[비책임] Kubernetes active/terminal Job 계산·manifest 생성·API 호출(`launcher.jobs`/`main`)과
+candidate commit·API 보고(`executor`)는 담당하지 않는다.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 import uuid
 
 from sqlalchemy import Select, func, select
@@ -33,6 +34,7 @@ _COMPLETE_COORDINATES = (
     Experiment.issue_number.is_not(None),
     Experiment.issue_branch.is_not(None),
     Experiment.base_dev_sha.is_not(None),
+    Experiment.issue_body.is_not(None),
 )
 
 RECOVERABLE_CLAIM_STATEMENT: Select[tuple[Experiment]] = (
@@ -41,6 +43,7 @@ RECOVERABLE_CLAIM_STATEMENT: Select[tuple[Experiment]] = (
         Experiment.status == ExperimentStatus.RUNNING.value,
         Experiment.executor_job_name.is_not(None),
         Experiment.executor_job_created_at.is_(None),
+        Experiment.executor_job_name.like("ar-exec-%"),
         *_COMPLETE_COORDINATES,
     )
     .order_by(Experiment.updated_at.asc(), Experiment.id.asc())
@@ -66,6 +69,7 @@ class ClaimedExperiment:
     issue_number: int
     issue_branch: str
     base_dev_sha: str
+    issue_body_sha256: str
     job_name: str
 
 
@@ -84,6 +88,7 @@ def _claimed_experiment(experiment: Experiment) -> ClaimedExperiment:
         experiment.issue_number is None
         or experiment.issue_branch is None
         or experiment.base_dev_sha is None
+        or experiment.issue_body is None
         or experiment.executor_job_name is None
     ):
         raise ClaimStateError(f"incomplete claim: {experiment.id}")
@@ -92,13 +97,14 @@ def _claimed_experiment(experiment: Experiment) -> ClaimedExperiment:
         issue_number=experiment.issue_number,
         issue_branch=experiment.issue_branch,
         base_dev_sha=experiment.base_dev_sha,
+        issue_body_sha256=sha256(experiment.issue_body.encode("utf-8")).hexdigest(),
         job_name=experiment.executor_job_name,
     )
 
 
 def _job_name(experiment_id: uuid.UUID) -> str:
     """Experiment UUID에서 DNS label 길이 안의 결정론적 Job 이름을 만든다."""
-    return f"ar-branch-{experiment_id.hex}"
+    return f"ar-exec-{experiment_id.hex}"
 
 
 def claim_experiments(
@@ -131,9 +137,7 @@ def claim_experiments(
             return recoverable_claims
 
         created_rows = list(
-            session.scalars(
-                CREATED_CLAIM_STATEMENT.limit(available_slots)
-            ).all()
+            session.scalars(CREATED_CLAIM_STATEMENT.limit(available_slots)).all()
         )
         created_claims: list[ClaimedExperiment] = []
         for experiment in created_rows:
@@ -180,3 +184,34 @@ def record_job_created(
             raise ClaimStateError(f"claim state changed: {claim.experiment_id}")
         if experiment.executor_job_created_at is None:
             experiment.executor_job_created_at = created_at.astimezone(UTC)
+
+
+def reconcile_failed_jobs(
+    session: Session, failed_job_names: set[str]
+) -> list[uuid.UUID]:
+    """최종 Failed Phase 2 Job만 RUNNING에서 ERROR로 한 번 회수한다."""
+    if not failed_job_names:
+        return []
+    with session.begin():
+        rows = list(
+            session.scalars(
+                select(Experiment)
+                .where(
+                    Experiment.status == ExperimentStatus.RUNNING.value,
+                    Experiment.executor_job_name.in_(failed_job_names),
+                    Experiment.executor_job_name.like("ar-exec-%"),
+                )
+                .with_for_update()
+            ).all()
+        )
+        for experiment in rows:
+            transition_experiment_in_transaction(
+                session,
+                experiment.id,
+                requested=ExperimentStatus.ERROR,
+                reason=f"executor job failed: {experiment.executor_job_name}",
+                metric_snapshot=None,
+                idempotency_key=f"executor-job-failed:{experiment.id}",
+                check_idempotency=False,
+            )
+        return [experiment.id for experiment in rows]

@@ -9,7 +9,7 @@ launcher가 봉인 좌표를 Pod 환경 변수로 전달한 뒤, token 발급과
 좌표를 읽고 형식·상호 일치 및 필수 파일을 fail-closed로 검증한다.
 
 [비책임]
-installation token 발급(`token_minter.py`), Git ref 멱등 판단(`main.py`), 환경 변수와
+installation token 발급(`token_minter.py`), Git ref 멱등 판단(`branch_creator.py`), 환경 변수와
 Secret/volume을 Pod에 주입하는 Kubernetes 구성(Autoresearch-infra)은 담당하지 않는다.
 """
 
@@ -66,7 +66,7 @@ def _regular_file(name: str) -> Path:
 
 
 @dataclass(frozen=True)
-class BranchBootstrapInput:
+class BranchCreatorInput:
     """launcher가 executor에 전달한 봉인 branch 생성 좌표."""
 
     experiment_id: uuid.UUID
@@ -77,7 +77,7 @@ class BranchBootstrapInput:
     token_file: Path
 
     @classmethod
-    def from_environment(cls) -> BranchBootstrapInput:
+    def from_environment(cls) -> BranchCreatorInput:
         """Pod 환경에서 봉인 좌표를 읽고 모든 입력을 검증한다."""
         experiment_id_value = _required_environment("ORCH_EXPERIMENT_ID")
         try:

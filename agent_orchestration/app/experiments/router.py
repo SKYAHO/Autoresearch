@@ -1,8 +1,9 @@
 """Agent Orchestration 실험 워크벤치의 FastAPI HTTP 경계를 제공한다.
 
-전체 파이프라인에서 Streamlit 워크벤치와 Agent가 Experiment service를 호출하는
-HTTP·OpenAPI 경계를 담당한다. 인증 구현, SQLAlchemy transaction 세부사항과 상태 전이
-판단은 각각 app 조립부와 service 계층의 책임이다.
+전체 파이프라인에서 Streamlit 워크벤치·Agent가 Experiment service를 호출하는
+HTTP·OpenAPI 경계를 담당한다. executor의 원격 검증 candidate 보고는
+`executor_router.py`의 별도 내부 경로가 소유한다. 인증 구현, SQLAlchemy transaction
+세부사항과 상태 전이 판단은 각각 app 조립부와 service 계층의 책임이다.
 """
 
 from __future__ import annotations
