@@ -85,22 +85,37 @@ dev가 이 경로를 부르는 자동 경로는 **아직 없다.**
 
 **나머지 6개 항목은 `#470`에 남긴다.** 이 spec으로 이슈를 닫지 않는다.
 
-## 3. 무엇을 "환경"으로 판단하는가 — **미확정**
+## 3. 무엇을 "환경"으로 판단하는가 — **확정: 기존 계약을 재사용한다**
 
-`#470` 본문은 `AUTORESEARCH_ENV=prod|dev`를 지목했고 Feast에 그 개념이 일부 있다. 다만
-승격 경로에는 없으므로 **새로 들이는 것**이다.
+**새로 만들지 않는다.** 저장소에 이미 정본이 있다 —
+`feature_repo/env.py::resolve_environment`(`#399`).
 
-이 spec은 **판단 규칙의 모양만 고정**하고 변수 이름·해석 방식은 구현 단계에서 확정한다
-(§7.1). 어느 쪽이든 아래 §4의 계약은 바뀌지 않는다.
+```python
+ENVIRONMENT_ENV_VAR = "AUTORESEARCH_ENV"   # 값: "prod" | "dev"
 
-```text
-resolve_environment() -> "prod" | "dev" | None      # None = 미지정
+def resolve_environment(environment=None) -> str:
+    """미설정·공백은 안전하게 prod로 간주한다.
+    허용되지 않는 값은 즉시 실패시켜 오타로 인한 조용한 오분류를 막는다."""
 ```
 
-**미지정(`None`)은 prod로 간주하지 않는다.** "모르는 것을 prod로 단정"하면 dev 실행이
-미지정 상태로 들어왔을 때 그대로 통과한다. 대신 **미지정이면 차단 조건을 평가하지
-않는다**(§4.2) — `#472` §4.2의 "관측되지 않은 것을 값으로 바꾸지 않는다"와 같은 결이며,
-`#470` 본문의 "미지정 시 기존 production 경로를 유지"와도 맞는다.
+- **미설정·공백 → `"prod"`** (`None`이 아니다)
+- **`"prod"`/`"dev"` 외의 값 → `ValueError`**
+
+**재사용이 가능하다는 근거**: 이 모듈은 stdlib(`os`, `collections.abc`)만 import하므로
+feast 의존을 끌고 오지 않는다. 그리고 `autoresearch/jobs/feast_materialize.py:27`이 이미
+`from feature_repo.env import ENV_DEV, resolve_environment`로 쓰고 있다 — **패키지 경계를
+넘어 이 모듈만 가져다 쓰는 것이 이 저장소의 기존 관례다.**
+
+> **초안 정정**: 이 spec의 첫 초안은 `resolve_environment()`가 `None`을 돌려주는 새
+> 계약을 가정하고 "미지정을 prod로 단정하지 않는다"고 적었다. **저장소 전체를 grep하지
+> 않고 `src/tracking/`·`src/pipeline/`만 확인한 범위 오류였다.** 기존 계약은 정반대로
+> 미설정을 `prod`로 해석하며, 그 사유(환경 셀렉터가 없던 기존 배포가 실수로 dev로
+> 떨어지지 않게)도 docstring에 있다. **기존 계약을 따른다** — CLAUDE.md의 "새 추상화보다
+> 기존 저장소 패턴을 우선한다".
+
+**결과적으로 의도한 동작은 같다.** 미설정이면 `"prod"`가 되고, §4.1의 차단 조건
+(`환경 == dev`)이 거짓이 되어 **차단이 평가되지 않는다.** 현재 모든 승격 실행이
+미설정이므로 착지 후 동작이 동일하다(§4.3).
 
 ## 4. 차단 규칙
 
@@ -116,14 +131,32 @@ resolve_environment() -> "prod" | "dev" | None      # None = 미지정
 production 기본값과 같은지, tracking URI가 production을 가리키는지다. **좌표 체계를 새로
 만들지 않으므로 "prod가 아닌 것"을 정의하기보다 "prod인 것"을 인식하는 방향으로 좁힌다.**
 
-### 4.2 미지정은 평가하지 않는다
+### 4.2 미설정과 "해석 실패"는 다른 상태다
+
+세 갈래로 갈린다. **가운데 줄이 이 절의 핵심이다.**
+
+| `AUTORESEARCH_ENV` | `resolve_environment()` | 이 게이트의 동작 |
+| --- | --- | --- |
+| 미설정·공백 | `"prod"` | 차단 조건 거짓 → **기존 경로 유지** |
+| `"dev"` | `"dev"` | §4.1 평가 |
+| **`"Dev"`·`"development"`·오타** | **`ValueError`** | **승격을 진행하지 않는다** |
+
+**"환경을 읽었는데 해석할 수 없다"는 "환경을 안 읽었다"와 다른 상태다.** 후자만
+통과시킨다. 오타를 미설정과 같이 취급해 조용히 넘기면, dev로 띄우려던 실행이
+`AUTORESEARCH_ENV=Dev` 하나 때문에 prod로 해석되어 그대로 champion을 바꾼다 — 이 spec이
+막으려는 사고가 오타 하나로 재현된다.
+
+**`ValueError`를 그대로 흘려보내지 않는다.** `promote.main`은 실패를 구조화된 결과로
+돌려주는 계약이므로(`PromotionExecutionError` + `reason_code`), 다른 실패와 같은 모양으로
+바꾼다 — `promote.py:125-129`가 tracking URI 미설정에 대해 이미 하는 방식이다.
 
 ```text
-환경이 None  →  차단 조건을 평가하지 않는다 (기존 경로 유지)
+ValueError(AUTORESEARCH_ENV 해석 실패)
+  → PromotionExecutionError(reason_code=<§4.5의 해석 실패 사유>)
 ```
 
-관측되지 않은 것을 "dev다" 또는 "prod다"로 바꾸지 않는다. 지금 모든 실행이 미지정이므로
-**이 규칙 덕분에 착지 직후 동작이 완전히 동일하다**(§4.3).
+이렇게 하지 않으면 raw `ValueError`가 CLI 밖으로 나가 일일 DAG가 사유 없이 죽는다 —
+`#495 D-1`("gate step이 죽고 사유가 이슈에 남지 않는다")과 같은 실패 모드다.
 
 ### 4.3 하위호환 — 착지해도 아무것도 바뀌지 않는다
 
@@ -149,6 +182,26 @@ DAG)는 그대로 동작한다.**
 | `outcome` | `reason_code` | 의미 |
 | --- | --- | --- |
 | `REJECTED` | **`production_target_from_dev`**(가칭) | dev 실행이 production 좌표를 대상으로 삼았다 |
+| `ERROR` | **`environment_unresolvable`**(가칭) | `AUTORESEARCH_ENV` 값을 해석할 수 없다(§4.2) |
+
+두 사유의 `outcome`이 다른 이유: 앞은 **판정 결과**(자격 없음)이고 뒤는 **실행 실패**
+(입력이 계약을 벗어남)다. `promote.py`가 `PromotionExecutionError`를 `ERROR`로 사상하는
+기존 구조와 맞춘다.
+
+### 4.6 기존 차단과 동시에 성립하면 — 우선순위
+
+실험 네임스페이스 차단(`promote.py:109`)과 이 게이트가 같은 실행에서 함께 성립할 수
+있다(dev 실행이 실험 모델 이름으로 prod alias를 노리는 경우).
+
+```text
+① 환경 해석 실패        → ERROR / environment_unresolvable
+② 실험 네임스페이스      → NO_CANDIDATE / experiment_model     (기존)
+③ dev → prod 좌표       → REJECTED / production_target_from_dev
+```
+
+**①이 먼저다** — 환경을 해석 못 하면 ②③ 어느 판정도 신뢰할 수 없다. **②가 ③보다
+먼저인 이유**: 실험 모델은 "애초에 승격 후보가 아니다"라는 더 근본적인 사실이고, 기존
+동작을 바꾸지 않는 방향이다(그 분기가 이미 109행에 있다). 이 순서를 테스트로 고정한다.
 
 **`NO_CANDIDATE`가 아니라 `REJECTED`인 이유**: 실험 모델 차단(`EXPERIMENT_MODEL`)은
 "애초에 승격 가능한 후보가 없다"는 상태라 `NO_CANDIDATE`를 쓴다(`promote.py:110-112`
@@ -175,30 +228,60 @@ DAG)는 그대로 동작한다.**
 - **Airflow DAG 수정** — 인접 저장소 소유(`Autoresearch-airflow`).
 - **serving 경로** — 이 spec은 registry alias 이동만 다룬다.
 
-## 7. 미해결 — 구현 전 확정
+## 7. 미해결
 
-### 7.1 환경 판단 방식
+### 7.1 환경 판단 방식 — **해소됨(2026-08-06)**
 
-`AUTORESEARCH_ENV` 환경변수를 쓸지, 다른 신호를 쓸지. **이슈 오너 확인이 필요하다** —
-`#470` 본문이 그 변수를 지목했으나 승격 경로에 없던 개념이라 새로 들이는 결정이다.
-확인 결과를 이 절에 기록한 뒤 구현한다.
+기존 `feature_repo/env.py::resolve_environment`를 재사용한다(§3). 저장소 전체 grep으로
+확인했고, 새로 물어볼 것이 없다.
 
-### 7.2 "production 좌표"의 판정 기준
+### 7.2 새 사유 코드의 소비자 영향 — **구현 전 필수 확인**
+
+`PromotionReasonCode`를 읽는 곳(일일 DAG 알람, `promotion_result` 소비자, Airflow)이
+**모르는 값을 만났을 때 어떻게 되는지** 확인한다. 열거형 파싱이 strict면 새 사유가
+소비자를 죽인다.
+
+**이 항목의 우선순위를 낮게 잡으면 안 된다.** fail-closed 게이트를 추가하면서 그
+부산물이 알람을 조용히 죽이면 본말전도다 — 게이트가 승격을 막았는데 그 사실이 아무에게도
+전달되지 않는 상태가 된다. 구현 전에 확인하고 결과를 이 절에 기록한다.
+
+확인 대상: `ModelPromotionResult`를 역직렬화하는 모든 경로. 인접 저장소
+(`Autoresearch-airflow`)가 이 계약을 소비한다면 그쪽도 포함한다 — 저장소 밖이면
+**요청 내용만 정리해 보고한다.**
+
+### 7.3 "production 좌표"의 판정 기준 — 구현 중 확정
 
 `model_name`/`champion_alias`가 기본값과 같은지로 볼지, tracking URI까지 볼지.
-§4.1의 규칙 모양은 이 선택과 무관하게 유지된다.
+§4.1의 규칙 모양은 이 선택과 무관하게 유지되므로 조사로 답할 수 있다.
 
-### 7.3 새 사유 코드의 소비자 영향
+### 7.4 승격 게이트 쪽 기존 환경 신호 — 확인 요청 대상
 
-`PromotionReasonCode`를 읽는 곳(일일 DAG 알람, `promotion_result` 소비자)이 모르는 값을
-만났을 때 어떻게 되는지 확인한다. 열거형 파싱이 strict면 하위호환이 깨질 수 있다.
+`#450`/`#461`(승격 게이트 파이프라인, hyochangsung)이 **PR 타깃 브랜치(main vs dev)**를
+1차 방어선으로 삼는 구조다. 이 spec의 게이트는 **모델 레지스트리 alias 계층**이라 중복은
+아니지만, 그쪽에 이미 "지금 실행이 dev인지 prod인지"를 알려주는 신호가 있다면 §4.1이
+그것을 소비하는 편이 낫다.
 
-## 8. 구현 순서 (plan에서 상세화)
+**직접 확인하지 않는다** — 다른 사람 담당 영역이므로 무엇을 물어야 하는지만 정리해
+보고한다(세션 규칙).
 
-1. 환경 해석 함수 (§3, §7.1 확정 후)
-2. production 좌표 판정 (§4.1, §7.2 확정 후)
-3. `promote.py`에 차단 분기 + 새 사유 코드 (§4.4·§4.5)
-4. 계약 테스트 — **dev 차단 전후로 production `ctr-model@champion`이 변경되지 않음**
+## 8. 이 작업의 우선순위 — 착수 승인 시 함께 확인
+
+§1.4대로 **지금 이 위험은 잠재적이다.** 8일 스프린트 맥락에서 이 작업이 다른 미해결
+항목(인프라 쿼터, `FEAST_ENV=dev` 누락 등)보다 먼저 갈 이유를 이 spec은 제시하지 않는다.
+**순서는 이슈 오너 판단이며, plan 승인 시 함께 확인한다.**
+
+이 spec이 제시할 수 있는 근거는 하나뿐이다: **차단은 dev 승격 경로가 생기기 전에 있어야
+값이 있다**(§1.4). 그 경로가 언제 생기는지가 우선순위를 정한다.
+
+## 9. 구현 순서 (plan에서 상세화)
+
+1. **§7.2 확인 먼저** — 새 사유 코드를 소비자가 감당하는지. 이게 아니면 게이트가
+   알람을 죽인다.
+2. `feature_repo.env.resolve_environment` 재사용 + `ValueError` → 구조화된 실패로 변환
+   (§3·§4.2)
+3. production 좌표 판정 (§4.1, §7.3은 조사로 확정)
+4. `promote.py`에 차단 분기 + 새 사유 코드 2종, 우선순위 고정 (§4.4·§4.5·§4.6)
+5. 계약 테스트 — **dev 차단 전후로 production `ctr-model@champion`이 변경되지 않음**
    (`#470` 완료 조건 중 이 spec 범위에 해당하는 것)
 
 1~3은 `src/tracking/` 안에서 끝나며 `src/pipeline/`·`autoresearch/`를 건드리지 않는다.
