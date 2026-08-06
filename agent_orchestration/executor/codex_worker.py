@@ -19,8 +19,10 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from hashlib import sha256
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 from tempfile import TemporaryDirectory
@@ -126,6 +128,85 @@ def _validate_run(run: CodexRunInput) -> None:
         raise CodexWorkerError("timeout_invalid")
 
 
+def _git_directory(repository: Path) -> Path:
+    """일반 clone의 `.git` directory만 worker의 immutable metadata 경계로 인정한다."""
+    git_directory = repository / ".git"
+    if not git_directory.is_dir() or git_directory.is_symlink():
+        raise CodexWorkerError("git_directory_invalid")
+    return git_directory.resolve()
+
+
+def _mountinfo_lines() -> tuple[str, ...]:
+    """현재 Linux mount namespace의 mountinfo를 안전하게 읽는다."""
+    try:
+        return tuple(Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines())
+    except OSError as error:
+        raise CodexWorkerError("mountinfo_unavailable") from error
+
+
+def _unescape_mount_path(value: str) -> str:
+    """mountinfo의 octal escape를 POSIX 경로 문자열로 되돌린다."""
+    return re.sub(
+        r"\\([0-7]{3})",
+        lambda match: chr(int(match.group(1), 8)),
+        value,
+    )
+
+
+def _git_directory_is_read_only(git_directory: Path) -> bool:
+    """`.git` 자체가 현재 namespace의 별도 read-only mount일 때만 참을 반환한다."""
+    if os.name != "posix":
+        return False
+    expected = str(git_directory.resolve())
+    for line in _mountinfo_lines():
+        left, separator, _right = line.partition(" - ")
+        if not separator:
+            continue
+        fields = left.split()
+        if len(fields) < 6:
+            continue
+        mount_path = _unescape_mount_path(fields[4])
+        mount_options = set(fields[5].split(","))
+        if mount_path == expected:
+            return "ro" in mount_options
+    return False
+
+
+def _git_metadata_digest(git_directory: Path) -> str:
+    """HEAD·refs·config·hooks를 포함한 Git metadata tree의 내용 digest를 계산한다."""
+    digest = sha256()
+    try:
+        for directory, directories, filenames in os.walk(git_directory, followlinks=False):
+            current = Path(directory)
+            directories.sort()
+            filenames.sort()
+            for name in [*directories, *filenames]:
+                path = current / name
+                relative = path.relative_to(git_directory).as_posix()
+                status = path.lstat()
+                if path.is_symlink() or not (path.is_dir() or path.is_file()):
+                    raise CodexWorkerError("git_metadata_invalid")
+                digest.update(relative.encode("utf-8"))
+                digest.update(b"\0")
+                digest.update(oct(status.st_mode).encode("ascii"))
+                digest.update(b"\0")
+                if path.is_file():
+                    with path.open("rb") as handle:
+                        while chunk := handle.read(8192):
+                            digest.update(chunk)
+    except OSError as error:
+        raise CodexWorkerError("git_metadata_unavailable") from error
+    return digest.hexdigest()
+
+
+def _capture_protected_git_metadata(repository: Path) -> tuple[Path, str]:
+    """Codex 시작 전 `.git`이 kernel read-only mount이며 봉인 상태인지 확인한다."""
+    git_directory = _git_directory(repository)
+    if not _git_directory_is_read_only(git_directory):
+        raise CodexWorkerError("git_metadata_unprotected")
+    return git_directory, _git_metadata_digest(git_directory)
+
+
 def _send_process_group_signal(process: subprocess.Popen[bytes], signal_number: int) -> None:
     """새 세션의 Codex와 child process에 같은 종료 신호를 보낸다."""
     if os.name == "posix" and process.pid is not None:
@@ -184,6 +265,7 @@ def run_codex(run: CodexRunInput) -> CodexRunResult:
     """Codex를 workspace-write sandbox로 실행하고 원문 출력 없이 종료 결과를 반환한다."""
     _validate_run(run)
     prompt = build_codex_prompt(run)
+    git_directory, sealed_git_metadata = _capture_protected_git_metadata(run.repository)
     argv = (
         "codex",
         "exec",
@@ -226,14 +308,20 @@ def run_codex(run: CodexRunInput) -> CodexRunResult:
             reader.start()
         try:
             exit_code = process.wait(timeout=run.timeout_seconds)
-        except subprocess.TimeoutExpired as error:
+            if _process_group_is_alive(process):
+                _terminate_process_group(process)
+                raise CodexWorkerError("codex_child_process_leaked")
+        except subprocess.TimeoutExpired:
             _terminate_process_group(process)
-            raise CodexWorkerError("codex_timeout") from error
+            raise CodexWorkerError("codex_timeout") from None
         except BaseException:
             _terminate_process_group(process)
             raise
         finally:
             _join_pipe_readers(readers, pipes)
+
+    if _git_metadata_digest(git_directory) != sealed_git_metadata:
+        raise CodexWorkerError("git_metadata_changed")
 
     duration_ms = int((time.monotonic() - started_at) * 1000)
     return CodexRunResult(exit_code=exit_code, duration_ms=duration_ms)

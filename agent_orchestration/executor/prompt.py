@@ -15,6 +15,7 @@ GitHub 이슈·ref 검증과 clone(`workspace.py`), Codex 프로세스 실행(`c
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 
@@ -46,6 +47,29 @@ _VERIFICATION_COMMANDS = (
     "uv run --no-sync ruff check agent_orchestration autoresearch tests tools",
     "uv run --no-sync python -m pytest",
 )
+_UNSAFE_ISSUE_BODY_PATTERN = re.compile(
+    r"(?im)(?:"
+    r"\b(?:token|secret|password|api[ _-]?key)\b|"
+    r"\b[A-Z][A-Z0-9_]*_TOKEN\b|"
+    r"\bORCH_[A-Z0-9_]+\b|"
+    r"(?:https?|file)://|"
+    r"/(?:var/(?:run|secrets)|secrets)(?:/|\b)|"
+    r"(?:ignore|disregard)\s+(?:all\s+)?(?:previous|above)\s+"
+    r"(?:instructions?|rules?|constraints?)|"
+    r"(?:system|developer|assistant)\s*(?:message|prompt|instructions?)|"
+    r"^---\s*$"
+    r")"
+)
+
+
+class CodexPromptError(ValueError):
+    """검증된 이슈 본문이 Codex prompt 경계를 침범할 수 있다."""
+
+
+def _validate_issue_body_for_prompt(issue_body: str) -> None:
+    """민감 경로나 지시 경계 탈출 형태의 이슈 본문을 값 노출 없이 거부한다."""
+    if _UNSAFE_ISSUE_BODY_PATTERN.search(issue_body) is not None:
+        raise CodexPromptError("issue_body_unsafe")
 
 
 def build_codex_prompt(run: CodexRunInput) -> str:
@@ -57,6 +81,7 @@ def build_codex_prompt(run: CodexRunInput) -> str:
     Returns:
         Codex CLI의 마지막 argv로 전달할 비대화식 지시문.
     """
+    _validate_issue_body_for_prompt(run.issue_body)
     allowed_paths = list(_BASE_ALLOWED_PATHS)
     allowed_paths.extend(
         path
