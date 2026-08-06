@@ -193,10 +193,12 @@ def test_executor_job_has_sealed_eight_container_capability_boundaries() -> None
             "repository/.git",
             True,
         ) in mounts[name]
-    assert any(volume == "codex-home" for volume, *_rest in mounts["codex-worker"])
-    assert not any(
-        volume == "codex-home" for volume, *_rest in mounts["candidate-verifier"]
-    )
+    assert ("codex-home", "/var/lib/codex", None, True) in mounts["codex-worker"]
+    assert {
+        name
+        for name, container_mounts in mounts.items()
+        if any(volume == "codex-home" for volume, *_rest in container_mounts)
+    } == {"codex-worker"}
     assert any(
         volume == "executor-api-token"
         for volume, *_rest in mounts["candidate-finalizer"]

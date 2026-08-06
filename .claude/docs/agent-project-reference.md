@@ -132,7 +132,10 @@ docs/
   - 8-container 순서: branch-token-minter → branch-creator → clone-token-minter →
     workspace-preparer → codex-worker → candidate-verifier → push-token-minter →
     candidate-finalizer. branch/clone/push token-minter만 GitHub App private key를,
-    codex-worker만 `CODEX_HOME`을, candidate-finalizer만 executor API token을 mount한다.
+    codex-worker만 read-only auth source `CODEX_HOME`을, candidate-finalizer만 executor API
+    token을 mount한다. codex-worker는 source의 regular `auth.json`만 mode 0400으로 `/tmp`
+    아래 mode 0700 per-run writable scratch `CODEX_HOME`에 복사하고, config·plugin 등 다른
+    source 파일은 복사하지 않은 채 `codex exec --ephemeral`을 실행한다.
   - executor 봉인 좌표: launcher가 `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`,
     `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA`, `ORCH_ISSUE_BODY_SHA256`를 DB에서 복사해
     Pod에 주입한다. workspace-preparer가 marker·body hash·branch를 검증한다.

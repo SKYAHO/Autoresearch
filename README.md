@@ -112,17 +112,20 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 | token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch/clone/push token-minter에만 보이는 private key mount 경로 |
 | token-minter/각 consumer | `ORCH_GITHUB_TOKEN_FILE` | purpose별 memory volume의 mode 0400 installation token 파일 경로 (`/var/run/{branch,clone,push}-token/token`) |
 | candidate-finalizer | `ORCH_EXECUTOR_API_URL`, `ORCH_EXECUTOR_API_TOKEN_FILE` | internal Candidate API URL과 `ORCH_EXECUTOR_API_TOKEN` Secret을 mount한 `/var/run/executor-api-token/token` 경로 |
-| codex-worker | `ORCH_CODEX_HOME`, `ORCH_CODEX_TIMEOUT_SEC` | executor 전용 Codex auth volume과 실행 상한 |
+| codex-worker | `ORCH_CODEX_HOME`, `ORCH_CODEX_TIMEOUT_SEC` | read-only Codex auth source와 실행 상한 |
 
 동일 executor digest는 아래 8개 container가 순서대로 사용합니다. GitHub App private key는
-1·3·7의 token-minter에만, Codex `CODEX_HOME`은 5에만, `ORCH_EXECUTOR_API_TOKEN`은
+1·3·7의 token-minter에만, Codex auth source `CODEX_HOME`은 5에만, `ORCH_EXECUTOR_API_TOKEN`은
 8에만 mount합니다. 5·6에는 GitHub/API credential volume을 mount하지 않습니다.
 
 1. `branch-token-minter`: private key → branch token memory volume
 2. `branch-creator`: branch token → 봉인 `base_dev_sha`의 exp ref 관찰/생성
 3. `clone-token-minter`: private key → clone token memory volume
 4. `workspace-preparer`: clone token + `ORCH_ISSUE_BODY_SHA256` → issue 검증·workspace/state
-5. `codex-worker`: workspace + read-only `.git` + state + executor 전용 `CODEX_HOME` → working tree 수정
+5. `codex-worker`: workspace + read-only `.git` + state + read-only auth source `CODEX_HOME` →
+   `/tmp` 아래 mode 0700 per-run writable scratch `CODEX_HOME`에 regular `auth.json`만 mode 0400으로
+   복사 → `codex exec --ephemeral`으로 working tree 수정. config·plugin 등 다른 source 파일은
+   복사하지 않음
 6. `candidate-verifier`: workspace + read-only `.git` + state → 고정 Ruff/pytest 검증 결과
 7. `push-token-minter`: private key → push token memory volume
 8. `candidate-finalizer`: workspace + push token + verifier 결과 + API token → candidate commit/push, `candidate_sha` 저장, `RUNNING → EVALUATING`
@@ -138,7 +141,8 @@ Infra companion PR에는 다음을 확인 항목으로 옮깁니다. 실제 Secr
 NetworkPolicy 이름·값은 `Autoresearch-infra` 소유이므로 이 저장소에서 단정하지 않습니다.
 
 - GitHub App private key를 branch/clone/push token-minter에만 mount
-- Codex auth `CODEX_HOME`을 codex-worker에만 mount
+- Codex auth `CODEX_HOME`을 codex-worker에만 read-only source로 mount하고, writable
+  `executor-tmp`의 `/tmp`를 per-run scratch에 제공
 - `ORCH_EXECUTOR_API_TOKEN`을 candidate-finalizer에만 mount
 - workspace/token `emptyDir` size limit과 GitHub·OpenAI·internal API 최소 egress
 - immutable launcher/executor/API digest, non-root/seccomp/capability drop/

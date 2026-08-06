@@ -8,6 +8,7 @@ timeout process group 회수와 출력 비노출을 관찰한다.
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 import os
 from pathlib import Path
 import sys
@@ -80,6 +81,9 @@ def _run_input(tmp_path: Path, *, allowed_scope: tuple[str, ...] = ()) -> CodexR
     )
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
+    auth_source = codex_home / "auth.json"
+    auth_source.write_text("test-codex-auth\n", encoding="utf-8")
+    auth_source.chmod(0o400)
     return CodexRunInput(
         repository=repository,
         issue_body=_replace_section(_issue_body(), "허용 범위", _scope_body(allowed_scope)),
@@ -225,6 +229,7 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
     bin_dir.mkdir()
     argv_path = tmp_path / "argv.json"
     environment_path = tmp_path / "environment.json"
+    scratch_snapshot_path = tmp_path / "scratch.json"
     _write_codex_executable(
         bin_dir / "codex",
         "\n".join(
@@ -235,6 +240,10 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
                 "import sys",
                 f"Path({str(argv_path)!r}).write_text(json.dumps(sys.argv[1:]), encoding='utf-8')",
                 f"Path({str(environment_path)!r}).write_text(json.dumps(dict(os.environ)), encoding='utf-8')",
+                "runtime_home = Path(os.environ['CODEX_HOME'])",
+                "runtime_auth = runtime_home / 'auth.json'",
+                "(runtime_home / 'app-server-state').write_text('writable', encoding='utf-8')",
+                f"Path({str(scratch_snapshot_path)!r}).write_text(json.dumps({{'home': str(runtime_home), 'home_mode': runtime_home.stat().st_mode & 0o777, 'auth_mode': runtime_auth.stat().st_mode & 0o777, 'config_present': (runtime_home / 'config.toml').exists(), 'writable': (runtime_home / 'app-server-state').is_file()}}), encoding='utf-8')",
                 f"print({_SENTINEL!r})",
                 f"print({_SENTINEL!r}, file=sys.stderr)",
             ]
@@ -246,6 +255,9 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
     monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/secrets/gcp.json")
     run = _run_input(tmp_path, allowed_scope=("prod_model_contract",))
+    source_auth = run.codex_home / "auth.json"
+    source_digest = sha256(source_auth.read_bytes()).hexdigest()
+    (run.codex_home / "config.toml").write_text("untrusted = true\n", encoding="utf-8")
 
     result = run_codex(run)
 
@@ -254,6 +266,7 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
     assert result.duration_ms >= 0
     assert json.loads(argv_path.read_text(encoding="utf-8")) == [
         "exec",
+        "--ephemeral",
         "--sandbox",
         "workspace-write",
         "-C",
@@ -272,7 +285,9 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
         "LC_ALL",
         "UV_PROJECT_ENVIRONMENT",
     }
-    assert environment["CODEX_HOME"] == str(run.codex_home)
+    scratch = Path(environment["CODEX_HOME"])
+    assert scratch != run.codex_home
+    assert not scratch.exists()
     assert environment["PATH"] == str(bin_dir)
     assert environment["UV_PROJECT_ENVIRONMENT"] == "/opt/autoresearch-venv"
     assert "GITHUB_TOKEN" not in environment
@@ -283,6 +298,53 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
         for key in environment
     )
     assert _SENTINEL not in caplog.text
+    assert sha256(source_auth.read_bytes()).hexdigest() == source_digest
+    assert (run.codex_home / "config.toml").is_file()
+    scratch_snapshot = json.loads(scratch_snapshot_path.read_text(encoding="utf-8"))
+    assert scratch_snapshot == {
+        "home": str(scratch),
+        "home_mode": 0o700,
+        "auth_mode": 0o400,
+        "config_present": False,
+        "writable": True,
+    }
+
+
+@pytest.mark.parametrize("source_kind", ("missing", "symlink", "directory", "unreadable"))
+def test_run_codex_rejects_invalid_auth_source_before_starting_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    protected_git_mount: None,
+    source_kind: str,
+) -> None:
+    """auth source가 regular/readable file이 아니면 Codex를 실행하지 않는다."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    started_path = tmp_path / "codex-started"
+    _write_codex_executable(
+        bin_dir / "codex",
+        f"from pathlib import Path\nPath({str(started_path)!r}).write_text('started', encoding='utf-8')",
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+    run = _run_input(tmp_path)
+    source_auth = run.codex_home / "auth.json"
+    if source_kind == "missing":
+        source_auth.unlink()
+    elif source_kind == "symlink":
+        target = tmp_path / "external-auth.json"
+        target.write_text("external-auth\n", encoding="utf-8")
+        source_auth.unlink()
+        source_auth.symlink_to(target)
+    elif source_kind == "directory":
+        source_auth.unlink()
+        source_auth.mkdir()
+    else:
+        source_auth.chmod(0o000)
+
+    with pytest.raises(CodexWorkerError, match="codex_auth_invalid"):
+        run_codex(run)
+
+    assert not started_path.exists()
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process group is POSIX-specific")
@@ -298,12 +360,14 @@ def test_timeout_terminates_the_codex_process_group_and_child(
         "\n".join(
             [
                 "import signal",
+                "import os",
                 "import subprocess",
                 "import sys",
                 "import time",
                 "from pathlib import Path",
                 "child = subprocess.Popen([sys.executable, '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)'])",
                 f"Path({str(child_pid_path)!r}).write_text(str(child.pid), encoding='utf-8')",
+                f"Path({str(tmp_path / 'timeout-codex-home')!r}).write_text(os.environ['CODEX_HOME'], encoding='utf-8')",
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN)",
                 "while True:",
                 "    time.sleep(0.1)",
@@ -321,6 +385,8 @@ def test_timeout_terminates_the_codex_process_group_and_child(
         run_codex(run)
 
     assert caught.value.__cause__ is None
+    runtime_home = Path((tmp_path / "timeout-codex-home").read_text(encoding="utf-8"))
+    assert not runtime_home.exists()
 
     child_pid = int(child_pid_path.read_text(encoding="utf-8"))
     deadline = time.monotonic() + 2

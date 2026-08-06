@@ -5,9 +5,10 @@ workspace-preparer가 봉인 이슈와 exp branch checkout을 검증한 뒤, can
 실제 diff를 검사하기 전 Codex가 workspace 파일만 수정하는 구간을 담당한다.
 
 [기능]
-명시적 환경 allowlist와 전용 process group으로 noninteractive Codex를 실행하고, timeout·
-취소 시 child process까지 회수한다. 원격 tip이 base와 다르면 기존 candidate 채택 경로로
-넘기기 위해 Codex 실행을 생략한다.
+read-only auth source의 regular `auth.json`만 per-run writable scratch `CODEX_HOME`으로
+복사한 뒤 `codex exec --ephemeral`을 실행한다. 명시적 환경 allowlist와 전용 process
+group으로 noninteractive Codex를 실행하고, timeout·취소 시 child process까지 회수한다.
+원격 tip이 base와 다르면 기존 candidate 채택 경로로 넘기기 위해 Codex 실행을 생략한다.
 
 [비책임]
 이슈·ref·workspace 검증(`workspace.py`), candidate 범위와 테스트 승인(Stage 4), Git
@@ -24,6 +25,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 import subprocess
 from tempfile import TemporaryDirectory
 import threading
@@ -37,6 +39,7 @@ from agent_orchestration.executor.state import ExecutorWorkspaceState
 _TERMINATION_GRACE_SECONDS = 5.0
 _PIPE_RING_BUFFER_BYTES = 64 * 1024
 _FIXED_UV_PROJECT_ENVIRONMENT = "/opt/autoresearch-venv"
+_CODEX_AUTH_FILENAME = "auth.json"
 
 
 class CodexWorkerError(RuntimeError):
@@ -84,6 +87,32 @@ class _RingBuffer:
         while self._size > self._capacity:
             removed = self._chunks.popleft()
             self._size -= len(removed)
+
+
+def _prepare_runtime_codex_home(source_home: Path, temporary_root: Path) -> Path:
+    """source의 regular auth.json만 실행별 writable CODEX_HOME으로 복사한다."""
+    source_auth = source_home / _CODEX_AUTH_FILENAME
+    try:
+        source_status = source_auth.lstat()
+        if not stat.S_ISREG(source_status.st_mode):
+            raise CodexWorkerError("codex_auth_invalid")
+
+        runtime_home = temporary_root / "codex-home"
+        runtime_home.mkdir(mode=0o700)
+        runtime_home.chmod(0o700)
+        runtime_auth = runtime_home / _CODEX_AUTH_FILENAME
+        descriptor = os.open(
+            runtime_auth,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o400,
+        )
+        with source_auth.open("rb") as source, os.fdopen(descriptor, "wb") as destination:
+            os.fchmod(destination.fileno(), 0o400)
+            while chunk := source.read(8192):
+                destination.write(chunk)
+    except OSError as error:
+        raise CodexWorkerError("codex_auth_invalid") from error
+    return runtime_home
 
 
 def _drain_pipe(pipe: BinaryIO, buffer: _RingBuffer) -> None:
@@ -269,6 +298,7 @@ def run_codex(run: CodexRunInput) -> CodexRunResult:
     argv = (
         "codex",
         "exec",
+        "--ephemeral",
         "--sandbox",
         "workspace-write",
         "-C",
@@ -277,7 +307,9 @@ def run_codex(run: CodexRunInput) -> CodexRunResult:
     )
     started_at = time.monotonic()
     with TemporaryDirectory(prefix="executor-codex-") as temporary_directory:
-        environment = _temporary_environment(run.codex_home, Path(temporary_directory))
+        temporary_root = Path(temporary_directory)
+        runtime_codex_home = _prepare_runtime_codex_home(run.codex_home, temporary_root)
+        environment = _temporary_environment(runtime_codex_home, temporary_root)
         try:
             process = subprocess.Popen(
                 argv,
