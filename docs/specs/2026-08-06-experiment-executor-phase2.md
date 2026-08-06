@@ -81,8 +81,10 @@ executor가 유효한 변경만 candidate commit으로 만들어 같은 브랜�
 ## 단일 Job 실행 구조
 
 하나의 Pod에서 initContainer를 순서대로 실행하고 마지막 main container가 candidate를
-확정한다. 모든 단계는 같은 `emptyDir` workspace를 공유하지만 자격증명 volume은 필요한
-container에만 mount한다.
+확정한다. 실행 단계는 같은 `emptyDir` workspace를 공유한다. workspace-preparer는 별도
+executor-state `emptyDir`에 검증된 이슈·scope·base·remote tip을 canonical JSON으로
+기록하고, 이후 단계는 이를 read-only로 mount한다. 자격증명 volume은 필요한 container에만
+mount한다.
 
 ```text
 1. branch-token-minter
@@ -92,7 +94,7 @@ container에만 mount한다.
 2. branch-creator
    branch token mount
    → base_dev_sha에서 exp branch 생성
-   → 이미 같은 SHA면 멱등 성공, 다른 SHA면 충돌
+   → 이미 존재하면 변경하지 않고 원격 tip을 후속 검증으로 전달
 
 3. clone-token-minter
    GitHub App private key mount
@@ -102,7 +104,7 @@ container에만 mount한다.
    clone token + workspace mount
    → 이슈·marker·본문 hash 검증
    → exp branch clone·checkout
-   → HEAD == base_dev_sha 검증
+   → HEAD == 원격 tip 검증, base 또는 기존 candidate 경로 분기
 
 5. codex-worker
    workspace + executor 전용 CODEX_HOME mount
@@ -162,8 +164,9 @@ Codex prompt는 검증된 본문, 허용·금지 경로, 필수 검증 명령, �
 - workspace는 Pod별 `emptyDir`이며 Job 종료와 함께 삭제한다.
 - clone은 clean URL과 일회성 `GIT_ASKPASS`를 사용한다. token을 URL,
   `.git/config`, credential helper에 저장하지 않는다.
-- checkout 결과는 정확히 `issue_branch`이고 최초 `HEAD`와 원격 tip은 모두
-  `base_dev_sha`여야 한다.
+- checkout 결과는 정확히 `issue_branch`의 원격 tip이어야 한다. 원격 tip이
+  `base_dev_sha`일 때만 Codex를 실행한다. 다른 SHA면 ref를 변경하지 않고 Codex를 건너뛴
+  뒤 기존 candidate 채택 조건을 verifier와 finalizer가 검사한다.
 - Codex 실행 전후 `.git`은 read-only로 유지하고 executor가 remote URL,
   `core.hooksPath`, credential helper와 ref를 다시 확인한다.
 - commit과 push는 candidate-finalizer만 수행한다. hook은 비활성화하고
@@ -175,7 +178,8 @@ Codex prompt는 검증된 본문, 허용·금지 경로, 필수 검증 명령, �
 - 비대화식 `codex exec --sandbox workspace-write`를 사용한다.
 - `-C`는 준비된 repository root로 고정하고 git repository 검사를 생략하지 않는다.
 - subprocess 환경은 명시적 allowlist로 새로 구성한다.
-- 허용 환경은 `CODEX_HOME`, 임시 HOME/XDG/TMP, PATH와 locale로 제한한다.
+- 허용 환경은 `CODEX_HOME`, 임시 HOME/XDG/TMP, PATH, locale과 executor image가 고정한
+  `UV_PROJECT_ENVIRONMENT=/opt/autoresearch-venv`로 제한한다.
 - GitHub App, executor API, Kubernetes, GCP 자격증명과 상위 process의 전체 환경은
   전달하지 않는다.
 - Codex stdout/stderr 원문은 영속 로그로 저장하지 않는다. 종료 코드, 정제 사유,
@@ -279,7 +283,7 @@ TTL 삭제 전에 확인해 Experiment를 오류 (`ERROR`)로 전이하고 정�
 | 실패 구간 | 대표 사유 | 원격 변경 | 최종 상태 |
 | --- | --- | --- | --- |
 | 입력·이슈 검증 | marker/body hash/좌표 불일치 | 없음 | 오류 (`ERROR`) |
-| clone·checkout | ref 부재, HEAD 불일치 | 없음 | 오류 (`ERROR`) |
+| clone·checkout | 생성 후 ref 부재, HEAD와 원격 tip 불일치 | 없음 | 오류 (`ERROR`) |
 | Codex | timeout, 비정상 종료, 변경 없음 | 없음 | 오류 (`ERROR`) |
 | verifier | 범위 위반, 테스트·Ruff 실패 | 없음 | 오류 (`ERROR`) |
 | push | 원격 tip 경합, 인증·GitHub 실패 | 없음 또는 복구 가능한 candidate | 재시도 후 오류 (`ERROR`) |
@@ -293,6 +297,8 @@ body, Codex 원문 stderr는 남기지 않는다.
 Phase 2 executor image는 Python orchestration runtime, Git CLI, uv와 dev/test 의존성,
 Node.js와 Codex CLI, prepare/verify/finalize entrypoint를 고정 버전으로 포함한다.
 repository 소스는 image에 포함하지 않고 runtime에 봉인 branch를 clone한다.
+dev/test 의존성은 `/opt/autoresearch-venv`에 미리 설치하고 candidate 실행 중 sync·install을
+허용하지 않는다.
 
 Infra는 다음을 container별로 강제한다.
 
