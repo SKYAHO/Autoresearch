@@ -20,6 +20,7 @@ EXECUTOR_DOCKERFILE = (
 )
 DOCKERIGNORE = REPOSITORY_ROOT / ".dockerignore"
 RELEASE_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "release.yml"
+CI_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
 API_LLM_MODULE = REPOSITORY_ROOT / "agent_orchestration" / "app" / "llm.py"
 
 
@@ -209,6 +210,58 @@ def test_executor_release_verification_runs_phase2_toolchain_and_entrypoints() -
         "agent_orchestration.executor.phase2",
     ):
         assert module in executor_job
+
+
+def _load_ci_workflow() -> dict[str, object]:
+    parsed = yaml.load(CI_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def test_pr_ci_builds_and_smokes_the_executor_image_contract() -> None:
+    """PR CI가 release 전에 executor runtime·sealed parser를 실제로 검증한다.
+
+    이 테스트가 잡는 변경: agent orchestration 경로의 PR에서 executor Dockerfile이
+    build되지 않거나 runtime clone의 tools mount가 image 봉인 parser를 가리는 회귀.
+    """
+    workflow = _load_ci_workflow()
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
+    job = jobs["docker-build-agent-orchestration"]
+    assert isinstance(job, dict)
+    assert job["needs"] == "changes"
+    assert job["if"] == "needs.changes.outputs.agent_orchestration == 'true'"
+
+    steps = job["steps"]
+    assert isinstance(steps, list)
+    build_step = next(step for step in steps if step["name"].startswith("Build Agent"))
+    smoke_step = next(step for step in steps if step["name"].startswith("Run Agent"))
+    build_script = build_step["run"]
+    smoke_script = smoke_step["run"]
+    assert isinstance(build_script, str)
+    assert isinstance(smoke_script, str)
+
+    assert "deploy/agent_orchestration/executor.Dockerfile" in build_script
+    assert "autoresearch-agent-orchestration-executor:ci" in build_script
+    assert "--read-only" in smoke_script
+    assert 'test "$(id -u)" = "10001"' in smoke_script
+    assert 'test "$(id -g)" = "10001"' in smoke_script
+    assert 'test "$UV_PROJECT_ENVIRONMENT" = "/opt/autoresearch-venv"' in smoke_script
+    for command in ("git --version", "uv --version", "node --version", "codex --version"):
+        assert command in smoke_script
+    for module in (
+        "agent_orchestration.executor.main",
+        "agent_orchestration.executor.token_minter",
+        "agent_orchestration.executor.workspace",
+        "agent_orchestration.executor.codex_worker",
+        "agent_orchestration.executor.verifier",
+        "agent_orchestration.executor.finalizer",
+        "agent_orchestration.executor.phase2",
+    ):
+        assert module in smoke_script
+    assert "/tmp/executor-runtime-clone/tools" in smoke_script
+    assert "/workspace/repository/tools:ro" in smoke_script
+    assert 'tools.__file__ == \\"/app/tools/__init__.py\\"' in smoke_script
 
 
 def _load_release_workflow() -> dict[str, object]:
