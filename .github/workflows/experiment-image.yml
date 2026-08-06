@@ -197,12 +197,19 @@ jobs:
           IMAGE_TAG: ${{ steps.image.outputs.tag }}
         shell: bash
         run: |
-          if gcloud artifacts docker images describe "$IMAGE_TAG" --quiet >/dev/null 2>&1
-          then
+          set +e
+          describe_output="$(gcloud artifacts docker images describe "$IMAGE_TAG" --quiet 2>&1)"
+          describe_status=$?
+          set -e
+
+          if [[ "$describe_status" -eq 0 ]]; then
             echo "::notice::$IMAGE_TAG already exists; reusing it without rebuilding"
             echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
+          elif grep -qiE 'not found|NOT_FOUND' <<< "$describe_output"; then
             echo "exists=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Could not determine whether $IMAGE_TAG exists (gcloud exited $describe_status)"
+            exit 1
           fi
 
       - name: Set up Docker Buildx

@@ -186,6 +186,32 @@ def test_existing_tag_is_never_overwritten() -> None:
             assert step["if"] == "steps.existing.outputs.exists == 'false'"
 
 
+def test_existing_tag_check_fails_closed_on_indeterminate_gcloud_error() -> None:
+    """`gcloud describe`가 만료된 WIF 자격증명·권한 거부·일시적 네트워크 오류처럼
+
+    '태그 없음'과 무관한 이유로 실패하면 exists=false로 넘어가지 않고 스텝
+    자체를 실패시켜야 한다 (fail-closed). 예전의 단순 if/else 2분기(모든
+    비정상 종료를 exists=false로 뭉갬)로 되돌리면 이 테스트가 깨진다.
+    """
+    guard = _step_run(BUILD_JOB_NAME, "Refuse to overwrite")
+
+    assert "elif" in guard
+    assert "not found" in guard.lower()
+    assert "::error::" in guard
+    assert "exit 1" in guard
+
+    not_found_index = guard.lower().index("not found")
+    exists_false_index = guard.index("exists=false")
+    error_index = guard.index("::error::")
+    exit_index = guard.rindex("exit 1")
+
+    # exists=false는 'not found' 매칭 분기 안에서만 설정되고, 판별 불가 분기는
+    # exists 출력을 남기지 않은 채 ::error:: 뒤에 exit 1로 실패해야 한다.
+    assert not_found_index < exists_false_index
+    assert error_index < exit_index
+    assert exit_index > exists_false_index
+
+
 def test_build_job_pushes_with_the_gar_pusher_identity() -> None:
     auth = next(
         step
