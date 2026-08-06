@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 
@@ -59,12 +60,19 @@ def _step_script(step_name: str) -> str:
     raise AssertionError(f"step not found: {step_name}")
 
 
+def _triggers() -> dict:
+    # YAML 1.1 은 따옴표 없는 `on:` 을 boolean True 로 읽는다.
+    return yaml.safe_load(_workflow_text())[True]
+
+
 def _dispatch_environment_options() -> set[str]:
     """수동 dispatch 가 고를 수 있는 환경 이름 집합."""
-    workflow = yaml.safe_load(_workflow_text())
-    # YAML 1.1 은 따옴표 없는 `on:` 을 boolean True 로 읽는다.
-    triggers = workflow[True]
-    return set(triggers["workflow_dispatch"]["inputs"]["environment"]["options"])
+    return set(_triggers()["workflow_dispatch"]["inputs"]["environment"]["options"])
+
+
+def _push_branches() -> list[str]:
+    """push 트리거가 받는 브랜치 목록."""
+    return list(_triggers()["push"]["branches"])
 
 
 def _extract_derivation_snippet(workflow: str) -> str:
@@ -115,14 +123,20 @@ def test_workflow_routes_each_push_branch_to_its_own_environment() -> None:
 
 
 def test_environment_expression_only_yields_known_environment_names() -> None:
-    # 표현식이 만들어낼 수 있는 값은 수동 dispatch 입력(prod|dev)과 아래 리터럴뿐이다.
+    # 표현식이 내놓을 수 있는 값은 수동 dispatch 입력과 ref 분기의 두 리터럴뿐이다.
     # 브랜치 이름이 그대로 새어 나가면 GitHub Environment 도, env.py 의
-    # resolve_environment 도 함께 깨진다.
-    dispatch_options = _dispatch_environment_options()
-    literals = set(re.findall(r"'([^']*)'", ENVIRONMENT_EXPRESSION))
-    produced = (literals - {"workflow_dispatch", "main"}) | dispatch_options
+    # resolve_environment 도 함께 깨진다. 리터럴을 통째로 긁어 제외 목록을 빼는
+    # 대신, ref 분기만 정확히 짚어 읽는다 — 비교 피연산자가 늘어도 오탐이 없다.
+    ref_branch, matched_environment, fallback_environment = re.search(
+        r"github\.ref_name == '([^']+)' && '([^']+)' \|\| '([^']+)'",
+        ENVIRONMENT_EXPRESSION,
+    ).groups()
+    push_branches = _push_branches()
 
-    assert produced == {ENV_PROD, ENV_DEV}
+    # 삼항 하나로 갈라지므로 push 브랜치가 정확히 둘일 때만 전수 대응이 성립한다.
+    assert set(push_branches) == {ref_branch, ENV_DEV}
+    assert {matched_environment, fallback_environment} == {ENV_PROD, ENV_DEV}
+    assert _dispatch_environment_options() == {ENV_PROD, ENV_DEV}
 
 
 def test_job_environment_and_autoresearch_env_stay_in_sync() -> None:
@@ -173,8 +187,12 @@ def _run_archive_wait(
         pytest.skip("bash unavailable")
 
     gcloud_stub = bin_dir / "gcloud"
+    # gcloud 메시지에는 작은따옴표가 흔하다. Python repr 로 bash 에 심으면 그 순간
+    # 문법이 깨지므로 shlex 로 인용한다.
     gcloud_stub.write_text(
-        f'#!/usr/bin/env bash\nprintf "%s\\n" {gcloud_stderr!r} >&2\nexit {gcloud_exit_code}\n',
+        "#!/usr/bin/env bash\n"
+        f"printf '%s\\n' {shlex.quote(gcloud_stderr)} >&2\n"
+        f"exit {gcloud_exit_code}\n",
         encoding="utf-8",
     )
     gcloud_stub.chmod(0o755)
@@ -210,6 +228,29 @@ def test_archive_wait_fails_fast_when_the_lookup_is_not_a_missing_object(
     assert "code archive not found after 10m" not in completed.stdout
 
 
+def test_archive_wait_fails_fast_when_the_service_account_does_not_exist(
+    tmp_path: Path,
+) -> None:
+    # Given: 삭제된 SA 를 가장할 때 gcloud 가 실제로 내는 메시지. `Not found` 가
+    # 들어 있어 소박한 문자열 매칭은 이를 "객체 없음"으로 오분류한다 — #548 이
+    # 없애려던 10분 오인 보고가 그대로 되풀이되는 경로다.
+    impersonation_failure = (
+        "ERROR: (gcloud.storage.objects.describe) NOT_FOUND: Failed to impersonate "
+        "[gone@autoresearch-503903.iam.gserviceaccount.com]. Make sure the account "
+        'that\'s trying to impersonate it has the "roles/iam.serviceAccountTokenCreator" '
+        "role. Not found; Gaia id not found for email "
+        "gone@autoresearch-503903.iam.gserviceaccount.com."
+    )
+
+    # When: 대기 루프가 그 gcloud 로 실행된다.
+    completed = _run_archive_wait(impersonation_failure, 1, tmp_path)
+
+    # Then: 재시도 경로로 새지 않고 즉시 원문과 함께 끝나야 한다.
+    assert completed.returncode == 1
+    assert "code archive lookup failed" in completed.stdout
+    assert "code archive not found after 10m" not in completed.stdout
+
+
 def test_archive_wait_keeps_retrying_while_the_object_is_merely_absent(
     tmp_path: Path,
 ) -> None:
@@ -232,3 +273,106 @@ def test_archive_wait_succeeds_once_the_object_is_present(tmp_path: Path) -> Non
     # Then: 첫 조회에서 통과한다.
     assert completed.returncode == 0
     assert "code archive ready" in completed.stdout
+
+
+def _run_validate_configuration(
+    environment: str, wif_provider_id: str
+) -> subprocess.CompletedProcess[str]:
+    """설정 검증 스텝을 실행한다. 이름 검사 외 변수는 모두 채워 둔다."""
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash unavailable")
+
+    step_env = {
+        name: "filled"
+        for name in (
+            "GCP_PROJECT_ID",
+            "GCP_REGION",
+            "GAR_REPOSITORY",
+            "FEAST_IMAGE_TAG",
+            "GKE_CLUSTER_NAME",
+            "GKE_LOCATION",
+            "BQ_DATASET",
+            "GCS_REGISTRY_PATH",
+            "GCS_STAGING_LOCATION",
+            "REDIS_HOST",
+            "REDIS_PORT",
+            "REDIS_CA_SECRET_ID",
+            "CODE_ARTIFACTS_BUCKET",
+        )
+    }
+    step_env["WIF_PROVIDER_ID"] = wif_provider_id
+    step_env["AUTORESEARCH_ENV"] = environment
+    step_env["PATH"] = os.environ.get("PATH", "")
+
+    return subprocess.run(
+        [bash, "-e", "-o", "pipefail", "-c", _step_script("Validate required configuration")],
+        env=step_env,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize("environment", [ENV_PROD, ENV_DEV])
+def test_validate_configuration_accepts_the_matching_wif_provider(
+    environment: str,
+) -> None:
+    completed = _run_validate_configuration(
+        environment, f"projects/1/…/providers/github-feast-{environment}"
+    )
+
+    assert completed.returncode == 0
+
+
+def test_validate_configuration_rejects_the_repository_level_fallback_provider() -> None:
+    # #548 에서 실제로 온 값. 비어 있지 않으므로 존재 검사만으로는 통과해 버린다.
+    completed = _run_validate_configuration(
+        ENV_PROD, "projects/1/locations/global/workloadIdentityPools/p/providers/github"
+    )
+
+    assert completed.returncode == 1
+    assert "does not match the prod environment" in completed.stdout
+
+
+def test_credentials_are_verified_before_the_archive_wait() -> None:
+    # 자격 확인을 대기 루프 뒤에 두면 #548 의 오인 보고가 10분 뒤에야 드러난다.
+    step_names = [step.get("name") for step in _apply_job()["steps"]]
+
+    assert step_names.index(
+        "Verify the environment credentials before waiting"
+    ) < step_names.index(_ARCHIVE_WAIT_STEP)
+
+
+def test_credential_check_never_prints_the_access_token(tmp_path: Path) -> None:
+    # 토큰이 로그로 새면 이 스텝 자체가 사고가 된다.
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash unavailable")
+    token = "ya29.SECRET-ACCESS-TOKEN"
+    gcloud_stub = tmp_path / "gcloud"
+    gcloud_stub.write_text(
+        f"#!/usr/bin/env bash\nprintf '%s\\n' {shlex.quote(token)}\nexit 0\n",
+        encoding="utf-8",
+    )
+    gcloud_stub.chmod(0o755)
+
+    completed = subprocess.run(
+        [
+            bash,
+            "-e",
+            "-o",
+            "pipefail",
+            "-c",
+            _step_script("Verify the environment credentials before waiting"),
+        ],
+        env={
+            "AUTORESEARCH_ENV": ENV_PROD,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+        },
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0
+    assert token not in completed.stdout
+    assert token not in completed.stderr

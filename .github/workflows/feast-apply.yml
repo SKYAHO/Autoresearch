@@ -106,19 +106,45 @@ jobs:
           REDIS_PORT: ${{ vars.REDIS_PORT }}
           REDIS_CA_SECRET_ID: ${{ vars.REDIS_CA_SECRET_ID }}
           CODE_ARTIFACTS_BUCKET: ${{ secrets.CODE_ARTIFACTS_BUCKET }}
+          WIF_PROVIDER_ID: ${{ vars.WIF_PROVIDER_ID }}
         shell: bash
         run: |
           for variable_name in \
             GCP_PROJECT_ID GCP_REGION GAR_REPOSITORY FEAST_IMAGE_TAG \
             GKE_CLUSTER_NAME GKE_LOCATION BQ_DATASET GCS_REGISTRY_PATH \
             GCS_STAGING_LOCATION REDIS_HOST REDIS_PORT REDIS_CA_SECRET_ID \
-            CODE_ARTIFACTS_BUCKET
+            CODE_ARTIFACTS_BUCKET WIF_PROVIDER_ID
           do
             if [[ -z "${!variable_name}" ]]; then
               echo "::error::$variable_name is not configured"
               exit 1
             fi
           done
+          # #548: 좌표가 비어 있는 것보다 **환경과 어긋난 것**이 위험하다. 잡이 엉뚱한
+          # Environment 로 뜨면 값이 채워진 채로 저장소 수준 폴백(providers/github)이
+          # 오고, 인증 스텝은 통과한 뒤 한참 뒤에야 실패한다. WIF provider 이름은
+          # infra#424 가 환경별로 고정했으므로(github-feast-prod|dev) 여기서 대조한다.
+          expected_provider_suffix="/providers/github-feast-${AUTORESEARCH_ENV}"
+          if [[ "$WIF_PROVIDER_ID" != *"$expected_provider_suffix" ]]; then
+            echo "::error::WIF_PROVIDER_ID does not match the ${AUTORESEARCH_ENV} environment (expected it to end with ${expected_provider_suffix})"
+            echo "::error::the job most likely started in a GitHub Environment that has no feast-apply coordinates"
+            exit 1
+          fi
+
+      - name: Verify the environment credentials before waiting
+        # #548 의 실패는 "아카이브가 없다"가 아니라 "가장에 실패했다"였는데, 대기
+        # 루프의 메시지 매칭만으로는 이를 안전하게 가려낼 수 없다 — 삭제된 SA 를
+        # 가장하면 gcloud 가 `Not found; Gaia id not found for email ...` 을 내서
+        # 객체 없음과 문자열이 겹친다. 자격 확인은 루프 밖에서 한 번, 구조적으로
+        # 끝낸다. 토큰은 절대 로그로 흘리지 않는다.
+        shell: bash
+        run: |
+          if ! auth_error="$(gcloud auth print-access-token 2>&1 >/dev/null)"; then
+            echo "$auth_error"
+            echo "::error::failed to obtain credentials for this environment — check WIF_PROVIDER_ID and FEAST_APPLY_SA of the ${AUTORESEARCH_ENV} GitHub Environment"
+            exit 1
+          fi
+          echo "credentials ready for the ${AUTORESEARCH_ENV} environment"
 
       - name: Wait for the code archive of this commit
         # code-archive.yml과 이 워크플로우는 둘 다 main push에 트리거되고
@@ -133,15 +159,17 @@ jobs:
         run: |
           archive_uri="gs://${CODE_ARTIFACTS_BUCKET}/code/${CODE_ARCHIVE_SHA}.tar.gz"
           for _ in $(seq 1 60); do
-            # stderr 를 버리면 403(가장·권한 실패)과 404(아직 업로드 전)가 같아 보인다.
-            # #548 에서 실제로 잘못된 Environment 로 뜬 잡이 인증 실패를 10분간
-            # "아카이브가 없다"로 오인 보고했다. 객체 없음이 아닌 실패는 즉시,
-            # gcloud 가 낸 원문과 함께 끝낸다.
+            # stderr 를 버리면 권한 실패와 "아직 업로드 전"이 같아 보인다. #548 에서
+            # 실제로 잘못된 Environment 로 뜬 잡이 인증 실패를 10분간 "아카이브가
+            # 없다"로 오인 보고했다. 재시도는 gcloud 가 객체 미존재에만 쓰는
+            # `<uri> not found: 404.` 형태에 한정한다 — `Not found; Gaia id not found`
+            # (삭제된 SA 가장) 같은 자격 오류가 여기로 새면 같은 오인이 되풀이된다.
+            # 자격 자체는 위 스텝이 이미 확인했고, 이 매칭은 그 위의 방어선이다.
             if lookup_error="$(gcloud storage objects describe "$archive_uri" 2>&1 >/dev/null)"; then
               echo "code archive ready: $archive_uri"
               exit 0
             fi
-            if ! grep -qiE 'not found|404|does not exist' <<<"$lookup_error"; then
+            if ! grep -qiE 'not found: 404' <<<"$lookup_error"; then
               echo "$lookup_error"
               echo "::error::code archive lookup failed for a reason other than a missing object — see the gcloud error above"
               exit 1
