@@ -53,12 +53,23 @@ jobs:
           ref: ${{ inputs.candidate_sha }}
           fetch-depth: 0
 
-      - name: Fetch dev and exp remote-tracking refs
+      - name: Fetch dev, exp and main remote-tracking refs
         shell: bash
         run: |
           git fetch --no-tags origin \
             '+refs/heads/dev:refs/remotes/origin/dev' \
-            '+refs/heads/exp/*:refs/remotes/origin/exp/*'
+            '+refs/heads/exp/*:refs/remotes/origin/exp/*' \
+            '+refs/heads/main:refs/remotes/origin/main'
+
+      # candidate 트리는 신뢰되지 않는다. 러너에 자격증명이 올라오기 전에 prod 격리를
+      # 담당하는 파일만 main 판으로 되돌린다. `Dockerfile.feast`는 이 기능의 대상이므로
+      # 일부러 candidate 판을 유지한다.
+      - name: Pin trusted files from main
+        shell: bash
+        run: |
+          rm -rf .github/actions
+          git checkout origin/main -- \
+            scripts/upload_code_archive.sh .github/actions .dockerignore
 
       - name: Verify experiment provenance
         env:
@@ -136,6 +147,18 @@ jobs:
         with:
           ref: ${{ inputs.candidate_sha }}
           fetch-depth: 1
+
+      # decide job과 같은 이유의 고정이다. 여기서는 `.dockerignore`가 특히 중요한데,
+      # `gha-creds-*.json`을 빌드 컨텍스트에서 제외하는 유일한 장치이기 때문이다.
+      # 얕은 클론이라 main을 받아오는 fetch가 이 job에도 따로 필요하다.
+      - name: Pin trusted files from main
+        shell: bash
+        run: |
+          git fetch --no-tags --depth=1 origin \
+            '+refs/heads/main:refs/remotes/origin/main'
+          rm -rf .github/actions
+          git checkout origin/main -- \
+            scripts/upload_code_archive.sh .github/actions .dockerignore
 
       - name: Validate build configuration
         env:

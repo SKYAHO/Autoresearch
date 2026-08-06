@@ -12,8 +12,10 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 from agent_orchestration.experiment_build.service import (
@@ -46,11 +48,24 @@ def _steps(job_id: str) -> list[dict]:
     return _workflow()["jobs"][job_id]["steps"]
 
 
-def _step_run(job_id: str, name_fragment: str) -> str:
-    for step in _steps(job_id):
+def _step_index(job_id: str, name_fragment: str) -> int:
+    """이름에 조각이 들어간 첫 스텝의 위치를 돌려준다."""
+    for index, step in enumerate(_steps(job_id)):
         if name_fragment in step.get("name", ""):
-            return step["run"]
+            return index
     raise AssertionError(f"{job_id}에 '{name_fragment}' 스텝이 없습니다")
+
+
+def _uses_index(job_id: str, uses_prefix: str) -> int:
+    """`uses:`가 접두사로 시작하는 첫 스텝의 위치를 돌려준다."""
+    for index, step in enumerate(_steps(job_id)):
+        if step.get("uses", "").startswith(uses_prefix):
+            return index
+    raise AssertionError(f"{job_id}에 '{uses_prefix}' 스텝이 없습니다")
+
+
+def _step_run(job_id: str, name_fragment: str) -> str:
+    return _steps(job_id)[_step_index(job_id, name_fragment)]["run"]
 
 
 def _diff_target_paths(diff: str) -> list[str]:
@@ -105,6 +120,43 @@ def test_dev_and_exp_refs_are_fetched_explicitly() -> None:
 
     assert "+refs/heads/dev:refs/remotes/origin/dev" in fetch
     assert "+refs/heads/exp/*:refs/remotes/origin/exp/*" in fetch
+    assert "+refs/heads/main:refs/remotes/origin/main" in fetch
+
+
+@pytest.mark.parametrize("job_id", [DECIDE_JOB_NAME, BUILD_JOB_NAME])
+def test_trusted_files_are_pinned_from_main_in_every_job(job_id: str) -> None:
+    """candidate가 쓴 prod 격리 장치가 러너에서 실행되지 않도록 main 판으로 되돌린다."""
+    pin = _step_run(job_id, "Pin trusted files from main")
+
+    assert "git checkout origin/main --" in pin
+    for path in ("scripts/upload_code_archive.sh", ".github/actions", ".dockerignore"):
+        assert path in pin
+    # 이 기능 자체가 candidate의 `Dockerfile.feast` 변경을 굽는 것이므로 고정 대상이 아니다.
+    assert "Dockerfile.feast" not in pin
+
+
+@pytest.mark.parametrize("job_id", [DECIDE_JOB_NAME, BUILD_JOB_NAME])
+def test_trusted_pin_runs_before_any_credential_reaches_the_runner(job_id: str) -> None:
+    """고정이 실패하면 WIF 자격증명이 러너에 올라오기 전에 job이 끝나야 한다."""
+    pin_index = _step_index(job_id, "Pin trusted files from main")
+    checkout_index = _uses_index(job_id, "actions/checkout")
+    auth_index = _uses_index(job_id, "google-github-actions/auth")
+    local_action_index = _uses_index(job_id, "./.github/actions/")
+
+    assert checkout_index < pin_index
+    assert pin_index < auth_index
+    assert pin_index < local_action_index
+
+
+def test_build_job_fetches_main_before_pinning_from_its_shallow_clone() -> None:
+    """빌드 job의 checkout은 `fetch-depth: 1`이라 main ref를 이 job이 직접 받아야 한다."""
+    checkout = _steps(BUILD_JOB_NAME)[_uses_index(BUILD_JOB_NAME, "actions/checkout")]
+    pin = _step_run(BUILD_JOB_NAME, "Pin trusted files from main")
+
+    assert checkout["with"]["fetch-depth"] == 1
+    assert "git fetch" in pin
+    assert "+refs/heads/main:refs/remotes/origin/main" in pin
+    assert pin.index("git fetch") < pin.index("git checkout origin/main")
 
 
 def test_provenance_guard_checks_dev_ancestry_and_exp_reachability() -> None:
@@ -170,8 +222,9 @@ def test_experiment_tag_never_collides_with_the_prod_namespace() -> None:
     text = _workflow_text()
 
     assert "exp-${CANDIDATE_SHA}" in text
-    assert "sha-${SOURCE_SHA}" not in text
-    assert "sha-${CANDIDATE_SHA}" not in text
+    # prod 릴리스 네임스페이스는 `sha-<sha>`다. 이 워크플로우에는 그 접두사로 태그를
+    # 조립하는 표현이 어떤 형태로도 나타나면 안 된다.
+    assert re.search(r":sha-", text) is None
 
 
 def test_existing_tag_is_never_overwritten() -> None:
