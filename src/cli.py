@@ -529,9 +529,14 @@ def run_pipeline(
     )
 
     resolved_dataset_uri = _optional_cli_string(dataset_uri)
+    # 충돌 검사만 정규화하고 하위 호출에는 raw 값을 넘기던 비대칭을 없앤다(#537).
+    # CLI 경유로는 둘 다 None이라 지금은 차이가 없지만, 이 함수를 직접 부르며
+    # dataset_path를 생략하면 Typer의 OptionInfo 객체가 그대로 build-features와
+    # train.main까지 흘러가 "경로가 아닌 값"으로 뒤늦게 터진다.
+    resolved_dataset_path = _optional_cli_string(dataset_path)
     if resolved_dataset_uri is not None:
         conflicting = {
-            "--dataset-path": _optional_cli_string(dataset_path),
+            "--dataset-path": resolved_dataset_path,
             "--events-start-date": _optional_cli_string(events_start_date),
             "--events-end-date": _optional_cli_string(events_end_date),
             # 재사용 경로는 _assembly_feature_kwargs·_snapshot_root_kwargs를 부르는
@@ -567,7 +572,7 @@ def run_pipeline(
         # 실험 피처는 학습·평가만이 아니라 **조립에도** 넘긴다(#454) — 조립이 보존하지 않으면
         # 학습의 --extra-features가 승격할 컬럼 자체가 CSV에 없어 실행이 성립하지 않는다.
         assembly = build_training_dataset.main(
-            output_path=dataset_path,
+            output_path=resolved_dataset_path,
             events_start_date=events_start_date,
             events_end_date=events_end_date,
             **_coverage_kwargs(min_coverage_days),
@@ -580,7 +585,6 @@ def run_pipeline(
         snapshot_uri = assembly.snapshot_uri
     else:
         typer.echo(f"\n[1/4] build-features 생략 — 스냅샷 재사용: {resolved_dataset_uri}")
-        coverage = None
 
     # 어떤 기간·소스로 학습했는지 MLflow run에 lineage로 남긴다(#359). C2로 조립 경로는
     # feast(offline store PIT)가 유일하므로 FeatureService·registry·기간을 기록한다.
@@ -631,7 +635,7 @@ def run_pipeline(
     # run 로깅(파라미터·메트릭·아티팩트)은 학습 시점에 그대로 남는다.
     outcome = train.main(
         config_path=config_path,
-        data_path=dataset_path,
+        data_path=resolved_dataset_path,
         model_output=model_output,
         test_set_output=test_set_output,
         feature_columns_output=feature_columns_output,

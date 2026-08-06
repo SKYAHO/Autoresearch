@@ -493,6 +493,9 @@ def test_prod_assembly_keeps_default_output_path() -> None:
         ("ctr_experiment_v2", None, True),
         (None, ["views_per_day"], True),
         ("ctr_training_v1", ["views_per_day"], True),
+        # 두 disjunct가 동시에 참인 경계도 고정한다(#537) — 개별 True 케이스만으로는
+        # or가 and로 바뀌는 변형을 잡지만, 동시 지정이 정상 동작하는지는 덮지 못한다.
+        ("ctr_experiment_v2", ["views_per_day"], True),
     ],
 )
 def test_is_experiment_assembly_matches_guard_condition(

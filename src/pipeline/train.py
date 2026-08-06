@@ -454,7 +454,7 @@ def main(
     promotion_evidence_root: str | None = None,
     promotion_evidence_store: PromotionEvidenceStore | None = None,
     dataset_uri: str | None = None,
-    min_coverage_days: int = 0,
+    min_coverage_days: int | None = None,
 ) -> TrainingOutcome:
     """LightGBM 모델을 학습하고 MLflow에 기록한다.
 
@@ -471,6 +471,9 @@ def main(
             해당 스냅샷을 내려받아 학습한다.
         min_coverage_days: 재사용 스냅샷이 만족해야 할 최소 spine 사용 가능
             일수(#530). ``0`` 이하면 게이트를 명시적으로 우회한다.
+            ``dataset_uri``를 줄 때는 **필수**이며, ``None``이면 거부한다(#537) —
+            기본값으로 게이트가 조용히 꺼지는 경로를 남기지 않기 위해서다.
+            ``dataset_uri`` 없이 학습할 때는 쓰이지 않는다.
 
     Returns:
         학습 결과(TrainingOutcome).
@@ -481,6 +484,16 @@ def main(
             raise ValueError(
                 "dataset_uri와 data_path는 함께 지정할 수 없습니다 — "
                 "어느 쪽이 학습 입력인지 결정할 수 없습니다"
+            )
+        # 기본값을 두면 인자를 빠뜨린 호출에서 커버리지 게이트가 **조용히** 꺼진다(#537).
+        # 지금은 두 CLI 호출부가 모두 명시적으로 넘겨 도달하지 않지만, 그 근거는
+        # "설계가 안전해서"가 아니라 "아무도 그 조합을 쓰지 않아서"였다. 우회는
+        # 0을 명시하는 것으로만 가능하게 해, 우회 여부가 항상 호출부에 드러나게 한다.
+        if min_coverage_days is None:
+            raise ValueError(
+                "dataset_uri로 재사용 학습할 때는 min_coverage_days를 명시해야 합니다 — "
+                "기본값으로 커버리지 게이트가 조용히 꺼지지 않게 하기 위해서입니다. "
+                "의도적으로 우회하려면 0을 명시하십시오."
             )
         snapshot_download_dir = TemporaryDirectory(prefix="training_snapshot_")
         data_path = str(
@@ -542,7 +555,7 @@ def _train_from_resolved_dataset(
     promotion_evidence_root: str | None = None,
     promotion_evidence_store: PromotionEvidenceStore | None = None,
     dataset_uri: str | None = None,
-    min_coverage_days: int = 0,
+    min_coverage_days: int | None = None,
 ) -> TrainingOutcome:
     """``main()``의 실제 학습 본문 — ``data_path``가 이미 확정된 뒤 호출된다.
 
