@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-06T12:28:58Z",
+  "generated_at": "2026-08-06T14:50:28Z",
   "reports": [
+    {
+      "number": 566,
+      "title": "fix: Executor Codex 인증을 Secret으로 전환한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-06T14:50:05Z",
+      "summary_ko": [
+        "실험 실행 작업(Executor Pod)의 인증 정보 전달 방식을 기존 PVC(단일 노드 구속)에서 Kubernetes Secret으로 전환하였습니다.",
+        "설정 파라미터를 Secret 이름 기반으로 변경하고, auth.json 파일만 0440 읽기 전용 권한으로 마운트하도록 작업 명세를 수정하였습니다.",
+        "전체 8개 실행 컨테이너 중 코드 작성 컨테이너(codex-worker)에만 인증 정보를 최소 권한으로 격리 마운트하는 계약을 유지하였습니다."
+      ],
+      "report_url": "pr/566/"
+    },
     {
       "number": 564,
       "title": "feat: 실험 executor Phase 2를 구현한다",
