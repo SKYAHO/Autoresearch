@@ -97,7 +97,7 @@ Git CLI, GitHub App installation token, Codex CLI, uv, pytest, Ruff, Kubernetes 
 
 ---
 
-## Stage 1: Candidate 저장 계약과 Executor 전용 API
+## Task 1 / Stage 1: Candidate 저장 계약과 Executor 전용 API
 
 **산출물:** 원격에서 확인된 SHA를 DB에 한 번만 기록하고 실행 중 (`RUNNING`)에서 평가 중
 (`EVALUATING`)으로 원자 전이하는 인증된 내부 API.
@@ -232,7 +232,7 @@ Endpoint는 `POST /internal/executor/experiments/{experiment_id}/candidate`, 인
 
 ---
 
-## Stage 2: Branch 생성과 검증된 Workspace 준비
+## Task 2 / Stage 2: Branch 생성과 검증된 Workspace 준비
 
 **산출물:** 봉인된 SHA에서 branch를 생성하고, GitHub 이슈와 DB body hash를 대조한 뒤
 token 흔적 없이 정확한 branch를 clone한 workspace.
@@ -393,7 +393,7 @@ async def prepare_workspace(
 
 ---
 
-## Stage 3: 격리된 Codex 코드 수정 실행
+## Task 3 / Stage 3: 격리된 Codex 코드 수정 실행
 
 **산출물:** 검증된 이슈만 입력받고 workspace 파일만 수정할 수 있는 noninteractive Codex
 worker.
@@ -467,7 +467,7 @@ def run_codex(run: CodexRunInput) -> CodexRunResult: ...
 
 ---
 
-## Stage 4: Candidate 변경 범위와 고정 검증
+## Task 4 / Stage 4: Candidate 변경 범위와 고정 검증
 
 **산출물:** Codex 응답이 아니라 실제 Git diff와 봉인된 명령으로 candidate를 승인·거부하는
 credential-free verifier.
@@ -538,7 +538,7 @@ def verify_candidate(
 
 ---
 
-## Stage 5: Commit·Push·Candidate 보고와 재시도
+## Task 5 / Stage 5: Commit·Push·Candidate 보고와 재시도
 
 **산출물:** 유효한 working tree를 정확히 한 commit으로 만들고 원격 tip과 DB candidate를
 같은 SHA로 수렴시키는 finalizer.
@@ -634,7 +634,7 @@ def finalize_candidate(config: FinalizeInput) -> str: ...
 
 ---
 
-## Stage 6: 8-container Job 조립과 실패 회수
+## Task 6 / Stage 6: 8-container Job 조립과 실패 회수
 
 **산출물:** 앞 Stage를 정확한 권한·순서로 실행하고 한 번의 Pod 재시도 후 최종 실패를
 오류 (`ERROR`)로 회수하는 launcher.
@@ -749,7 +749,7 @@ branch-token-minter
 
 ---
 
-## Stage 7: Executor image·문서·Infra handoff·운영 검증
+## Task 7 / Stage 7: Executor image·문서·Infra handoff·운영 검증
 
 **산출물:** immutable image와 명시적인 Infra 입력 계약, 전체 CI 증거, 새 Experiment smoke
 체크리스트.
