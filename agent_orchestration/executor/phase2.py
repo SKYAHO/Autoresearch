@@ -87,30 +87,6 @@ def _state() -> ExecutorWorkspaceState:
     return read_state(_STATE_PATH, workspace=workspace)
 
 
-def run_candidate_workflow(
-    state: ExecutorWorkspaceState,
-    *,
-    codex_runner: Callable[[ExecutorWorkspaceState], object],
-    verifier_runner: Callable[
-        [Path, str, str | None, CandidatePolicy], VerificationResult
-    ],
-    finalizer_runner: Callable[[VerificationResult], str],
-) -> str:
-    """base tip은 Codex 뒤 검증하고 기존 tip은 Codex 없이 같은 finalizer로 수렴한다."""
-    candidate_sha: str | None = None
-    if state.remote_tip == state.base_dev_sha:
-        codex_runner(state)
-    else:
-        candidate_sha = state.remote_tip
-    verification = verifier_runner(
-        state.repository,
-        state.base_dev_sha,
-        candidate_sha,
-        CandidatePolicy(allowed_scope=state.allowed_scope),
-    )
-    return finalizer_runner(verification)
-
-
 def workspace_preparer_main() -> int:
     """clone token과 launcher 좌표로 Stage 2 workspace-preparer를 실행한다."""
     experiment_id, issue_number, issue_branch, base_dev_sha, repository = _coordinates()
@@ -191,6 +167,7 @@ def candidate_finalizer_main() -> int:
             issue_number=issue_number,
             issue_branch=issue_branch,
             base_dev_sha=base_dev_sha,
+            expected_remote_tip=state.remote_tip,
             repository=state.repository,
             github_repository=repository,
             push_token_file=Path(_required("ORCH_GITHUB_TOKEN_FILE")),

@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
+import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -33,9 +35,11 @@ from agent_orchestration.launcher.repository import (
     claim_experiments,
     reconcile_failed_jobs,
 )
-from agent_orchestration.executor.phase2 import run_candidate_workflow
-from agent_orchestration.executor.state import ExecutorWorkspaceState
+from agent_orchestration.executor import phase2
+from agent_orchestration.executor.codex_worker import CodexRunResult
+from agent_orchestration.executor.state import ExecutorWorkspaceState, write_state
 from agent_orchestration.executor.verifier import VerificationResult
+from agent_orchestration.executor.workspace import PreparedWorkspace
 
 
 _EXPERIMENT_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
@@ -202,6 +206,15 @@ def test_executor_job_has_sealed_eight_container_capability_boundaries() -> None
     )
     finalizer_environment = {item.name: item.value for item in pod.containers[0].env}
     assert finalizer_environment["ORCH_EXECUTOR_WORKSPACE"] == "/workspace"
+    for name in (
+        "workspace-preparer",
+        "codex-worker",
+        "candidate-verifier",
+        "candidate-finalizer",
+    ):
+        assert ("executor-tmp", "/tmp", None, False) in mounts[name]
+    volumes = {volume.name: volume for volume in pod.volumes}
+    assert volumes["executor-tmp"].empty_dir.medium == "Memory"
 
 
 def test_terminal_failed_executor_job_moves_running_experiment_to_error_once(
@@ -323,69 +336,154 @@ def test_kubernetes_jobs_lists_only_terminal_failed_phase2_jobs() -> None:
     ) == {"ar-exec-failed"}
 
 
-def test_workflow_runs_codex_for_base_tip_then_verifies_and_finalizes(
-    tmp_path: object,
+def _set_phase2_environment(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    """실제 Phase 2 entrypoint가 읽는 Pod env를 fake volume 좌표로 설정한다."""
+    values = {
+        "ORCH_EXPERIMENT_ID": str(_EXPERIMENT_ID),
+        "ORCH_ISSUE_NUMBER": "557",
+        "ORCH_ISSUE_BRANCH": "exp/557-phase2",
+        "ORCH_BASE_DEV_SHA": "a" * 40,
+        "ORCH_ISSUE_BODY_SHA256": sha256(_BODY.encode("utf-8")).hexdigest(),
+        "ORCH_GITHUB_REPOSITORY": "SKYAHO/Autoresearch",
+        "ORCH_GITHUB_TOKEN_FILE": str(root / "clone-token"),
+        "ORCH_EXECUTOR_WORKSPACE": str(root / "workspace"),
+        "ORCH_CODEX_HOME": str(root / "codex-home"),
+        "ORCH_CODEX_TIMEOUT_SEC": "120",
+        "ORCH_EXECUTOR_API_URL": "http://executor-api",
+        "ORCH_EXECUTOR_API_TOKEN_FILE": str(root / "api-token"),
+    }
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+    (root / "clone-token").write_text("clone", encoding="utf-8")
+    (root / "api-token").write_text("api", encoding="utf-8")
+    (root / "codex-home").mkdir()
+
+
+def test_base_tip_entrypoints_pass_sealed_state_to_verifier_and_finalizer(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """기준선 branch는 Codex가 변경을 만든 뒤 그 tree만 verifier/finalizer로 전달한다."""
+    """manifest env에서 시작한 base-tip 실행은 Codex 뒤 handoff와 예상 tip을 보존한다."""
+    _set_phase2_environment(monkeypatch, tmp_path)
+    workspace = tmp_path / "workspace"
+    repository = workspace / "repository"
+    repository.mkdir(parents=True)
+    state_path = tmp_path / "state" / "state.json"
+    verification_path = tmp_path / "verification" / "result.json"
+    monkeypatch.setattr(phase2, "_STATE_PATH", state_path)
+    monkeypatch.setattr(phase2, "_VERIFICATION_PATH", verification_path)
     state = ExecutorWorkspaceState(
         schema_version=1,
-        repository=tmp_path,
-        issue_body="sealed issue",
-        allowed_scope=(),
+        repository=repository,
+        issue_body=_BODY,
+        allowed_scope=("promotion",),
         base_dev_sha="a" * 40,
         remote_tip="a" * 40,
     )
-    calls: list[object] = []
+    prepared_inputs: list[object] = []
+
+    async def fake_prepare_workspace(
+        config: object, issues: object
+    ) -> PreparedWorkspace:
+        prepared_inputs.append((config, issues))
+        write_state(state_path, state, workspace=workspace)
+        return PreparedWorkspace(
+            repository=repository,
+            issue_body=_BODY,
+            allowed_scope=("promotion",),
+            remote_tip="a" * 40,
+        )
+
+    codex_states: list[ExecutorWorkspaceState] = []
     verification = VerificationResult(
         ("autoresearch/change.py",), "fingerprint", "b" * 40
     )
-
-    result = run_candidate_workflow(
-        state,
-        codex_runner=lambda received: calls.append(("codex", received.remote_tip)),
-        verifier_runner=lambda repository, base_sha, candidate_sha, policy: (
-            calls.append(
-                ("verify", repository, base_sha, candidate_sha, policy.allowed_scope)
-            )
+    verification_inputs: list[tuple[Path, str, str | None, object]] = []
+    finalized: list[tuple[object, VerificationResult]] = []
+    monkeypatch.setattr(phase2, "prepare_workspace", fake_prepare_workspace)
+    monkeypatch.setattr(
+        phase2,
+        "run_codex_for_workspace",
+        lambda received, **_kwargs: (
+            codex_states.append(received) or CodexRunResult(exit_code=0, duration_ms=1)
+        ),
+    )
+    monkeypatch.setattr(
+        phase2,
+        "verify_candidate",
+        lambda repository, base_sha, candidate_sha, policy: (
+            verification_inputs.append((repository, base_sha, candidate_sha, policy))
             or verification
         ),
-        finalizer_runner=lambda received: (
-            calls.append(("finalize", received)) or "c" * 40
-        ),
+    )
+    monkeypatch.setattr(
+        phase2,
+        "finalize_candidate",
+        lambda config, received: finalized.append((config, received)) or "c" * 40,
     )
 
-    assert result == "c" * 40
-    assert calls[0] == ("codex", "a" * 40)
-    assert calls[1][:4] == ("verify", tmp_path, "a" * 40, None)
-    assert calls[2] == ("finalize", verification)
+    assert phase2.workspace_preparer_main() == 0
+    assert phase2.codex_worker_main() == 0
+    assert phase2.candidate_verifier_main() == 0
+    monkeypatch.setenv("ORCH_GITHUB_TOKEN_FILE", str(tmp_path / "push-token"))
+    (tmp_path / "push-token").write_text("push", encoding="utf-8")
+    assert phase2.candidate_finalizer_main() == 0
+
+    assert len(prepared_inputs) == 1
+    assert codex_states == [state]
+    assert verification_inputs[0][:3] == (repository, "a" * 40, None)
+    assert verification_inputs[0][3].allowed_scope == ("promotion",)
+    config, received = finalized[0]
+    assert config.expected_remote_tip == "a" * 40
+    assert received == verification
 
 
-def test_workflow_skips_codex_for_existing_candidate_and_verifies_remote_tip(
-    tmp_path: object,
+def test_existing_candidate_entrypoints_skip_codex_and_preserve_remote_tip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
-    """첫 Pod의 push 뒤 API만 실패하면 재시도 Pod는 Codex를 다시 실행하지 않는다."""
+    """첫 Pod API 실패 뒤 재시도는 Codex 없이 state의 기존 candidate SHA만 채택한다."""
+    _set_phase2_environment(monkeypatch, tmp_path)
+    workspace = tmp_path / "workspace"
+    repository = workspace / "repository"
+    repository.mkdir(parents=True)
+    state_path = tmp_path / "state" / "state.json"
+    verification_path = tmp_path / "verification" / "result.json"
+    monkeypatch.setattr(phase2, "_STATE_PATH", state_path)
+    monkeypatch.setattr(phase2, "_VERIFICATION_PATH", verification_path)
+    existing_sha = "b" * 40
     state = ExecutorWorkspaceState(
         schema_version=1,
-        repository=tmp_path,
-        issue_body="sealed issue",
-        allowed_scope=("promotion",),
+        repository=repository,
+        issue_body=_BODY,
+        allowed_scope=(),
         base_dev_sha="a" * 40,
-        remote_tip="b" * 40,
+        remote_tip=existing_sha,
     )
-    calls: list[object] = []
+    write_state(state_path, state, workspace=workspace)
     verification = VerificationResult(
         ("autoresearch/change.py",), "fingerprint", "c" * 40
     )
-
-    run_candidate_workflow(
-        state,
-        codex_runner=lambda _received: calls.append("codex"),
-        verifier_runner=lambda _repository, _base_sha, candidate_sha, _policy: (
-            calls.append(("verify", candidate_sha)) or verification
-        ),
-        finalizer_runner=lambda received: (
-            calls.append(("finalize", received)) or "b" * 40
+    verification_candidates: list[str | None] = []
+    finalized: list[object] = []
+    monkeypatch.setattr(
+        phase2,
+        "verify_candidate",
+        lambda _repository, _base_sha, candidate_sha, _policy: (
+            verification_candidates.append(candidate_sha) or verification
         ),
     )
+    monkeypatch.setattr(
+        phase2,
+        "finalize_candidate",
+        lambda config, _verification: finalized.append(config) or existing_sha,
+    )
 
-    assert calls == [("verify", "b" * 40), ("finalize", verification)]
+    assert phase2.codex_worker_main() == 0
+    assert phase2.candidate_verifier_main() == 0
+    monkeypatch.setenv("ORCH_GITHUB_TOKEN_FILE", str(tmp_path / "push-token"))
+    (tmp_path / "push-token").write_text("push", encoding="utf-8")
+    assert phase2.candidate_finalizer_main() == 0
+
+    assert verification_candidates == [existing_sha]
+    assert finalized[0].expected_remote_tip == existing_sha

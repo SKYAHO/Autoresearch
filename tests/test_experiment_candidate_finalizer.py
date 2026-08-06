@@ -54,7 +54,9 @@ def _bare_git(repository: Path, *arguments: str) -> str:
 def _repository(tmp_path: Path) -> tuple[Path, Path, str]:
     """base commit과 exp remote ref를 가진 실제 local/bare Git 쌍을 만든다."""
     remote = tmp_path / "remote.git"
-    subprocess.run(("git", "init", "--bare", str(remote)), check=True, capture_output=True)
+    subprocess.run(
+        ("git", "init", "--bare", str(remote)), check=True, capture_output=True
+    )
     repository = tmp_path / "workspace"
     repository.mkdir()
     _git(repository, "init")
@@ -62,7 +64,9 @@ def _repository(tmp_path: Path) -> tuple[Path, Path, str]:
     _git(repository, "config", "user.email", "finalizer-test@example.invalid")
     _git(repository, "config", "core.hooksPath", "/dev/null")
     (repository / "autoresearch").mkdir()
-    (repository / "autoresearch" / "candidate.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repository / "autoresearch" / "candidate.py").write_text(
+        "VALUE = 1\n", encoding="utf-8"
+    )
     _git(repository, "add", "autoresearch/candidate.py")
     _git(repository, "commit", "-m", "base")
     base_sha = _git(repository, "rev-parse", "HEAD")
@@ -74,7 +78,9 @@ def _repository(tmp_path: Path) -> tuple[Path, Path, str]:
 
 def _commit_executor_candidate(repository: Path) -> str:
     """고정 identity/message를 가진 기준선 직계 candidate commit 하나를 만든다."""
-    (repository / "autoresearch" / "candidate.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repository / "autoresearch" / "candidate.py").write_text(
+        "VALUE = 2\n", encoding="utf-8"
+    )
     _git(repository, "add", "--all")
     _git(
         repository,
@@ -92,7 +98,9 @@ def _commit_executor_candidate(repository: Path) -> str:
 def _commit_executor_candidate_with_body(repository: Path, body: str) -> str:
     """고정 subject 뒤의 body까지 제어한 commit으로 message parser 경계를 시험한다."""
     parent = _git(repository, "rev-parse", "HEAD")
-    (repository / "autoresearch" / "candidate.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repository / "autoresearch" / "candidate.py").write_text(
+        "VALUE = 2\n", encoding="utf-8"
+    )
     _git(repository, "add", "--all")
     tree = _git(repository, "write-tree")
     environment = {
@@ -181,7 +189,9 @@ def _candidate_api_server(api: _FakeApi) -> Iterator[str]:
                     body=body,
                 )
             )
-            response = __import__("json").dumps(fake.response_factory(payload)).encode("utf-8")
+            response = (
+                __import__("json").dumps(fake.response_factory(payload)).encode("utf-8")
+            )
             self.send_response(fake.status_code)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(response)))
@@ -206,6 +216,7 @@ def _candidate_api_server(api: _FakeApi) -> Iterator[str]:
 @contextmanager
 def _unauthorized_git_remote() -> Iterator[str]:
     """credential helper 호출을 유도하는 401 Git smart-HTTP remote를 제공한다."""
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler contract
             self.send_response(401)
@@ -232,8 +243,7 @@ def _malicious_helper(repository: Path, sentinel: Path) -> None:
     """helper가 token 환경을 상속하면 sentinel에만 기록하는 local config를 만든다."""
     script = repository.parent / "credential-helper"
     script.write_text(
-        "#!/bin/sh\n"
-        f"printf '%s' \"$GITHUB_TOKEN\" > {sentinel}\n",
+        f"#!/bin/sh\nprintf '%s' \"$GITHUB_TOKEN\" > {sentinel}\n",
         encoding="utf-8",
     )
     script.chmod(0o700)
@@ -245,6 +255,8 @@ def _finalize_input(
     base_sha: str,
     api_url: str,
     tmp_path: Path,
+    *,
+    expected_remote_tip: str | None = None,
 ) -> finalizer.FinalizeInput:
     """테스트 remote/API token 파일을 포함한 finalizer 입력을 만든다."""
     push_token = tmp_path / "push-token"
@@ -256,6 +268,7 @@ def _finalize_input(
         issue_number=_ISSUE_NUMBER,
         issue_branch=_ISSUE_BRANCH,
         base_dev_sha=base_sha,
+        expected_remote_tip=expected_remote_tip or base_sha,
         repository=repository,
         github_repository="SKYAHO/Autoresearch",
         push_token_file=push_token,
@@ -283,7 +296,9 @@ def test_classify_candidate_state_accepts_only_base_or_fixed_executor_commit(
     if kind == "executor":
         remote_tip = _commit_executor_candidate(repository)
     elif kind == "untrusted":
-        (repository / "autoresearch" / "candidate.py").write_text("VALUE = 9\n", encoding="utf-8")
+        (repository / "autoresearch" / "candidate.py").write_text(
+            "VALUE = 9\n", encoding="utf-8"
+        )
         _git(repository, "add", "--all")
         _git(repository, "commit", "-m", "not an executor candidate")
         remote_tip = _git(repository, "rev-parse", "HEAD")
@@ -297,12 +312,15 @@ def test_classify_candidate_state_accepts_only_base_or_fixed_executor_commit(
                 remote_tip=remote_tip,
             )
     else:
-        assert finalizer.classify_candidate_state(
-            repository,
-            base_dev_sha=base_sha,
-            issue_number=_ISSUE_NUMBER,
-            remote_tip=remote_tip,
-        ) is expected
+        assert (
+            finalizer.classify_candidate_state(
+                repository,
+                base_dev_sha=base_sha,
+                issue_number=_ISSUE_NUMBER,
+                remote_tip=remote_tip,
+            )
+            is expected
+        )
 
 
 def test_classify_candidate_state_rejects_fixed_empty_commit(
@@ -323,7 +341,9 @@ def test_classify_candidate_state_rejects_fixed_empty_commit(
     )
     empty_candidate = _git(repository, "rev-parse", "HEAD")
 
-    with pytest.raises(finalizer.CandidateFinalizationError, match="remote_tip_conflict"):
+    with pytest.raises(
+        finalizer.CandidateFinalizationError, match="remote_tip_conflict"
+    ):
         finalizer.classify_candidate_state(
             repository,
             base_dev_sha=base_sha,
@@ -339,7 +359,9 @@ def test_classify_candidate_state_rejects_whitespace_only_message_body(
     repository, _remote, base_sha = _repository(tmp_path)
     candidate_sha = _commit_executor_candidate_with_body(repository, " \n")
 
-    with pytest.raises(finalizer.CandidateFinalizationError, match="remote_tip_conflict"):
+    with pytest.raises(
+        finalizer.CandidateFinalizationError, match="remote_tip_conflict"
+    ):
         finalizer.classify_candidate_state(
             repository,
             base_dev_sha=base_sha,
@@ -358,12 +380,19 @@ def test_finalizer_rejects_local_credential_helper_before_token_bearing_git(
     _malicious_helper(repository, sentinel)
     verification = VerificationResult((), "unused", "0" * 40)
     fake_api = _FakeApi()
-    with _unauthorized_git_remote() as remote_url, _candidate_api_server(fake_api) as api_url:
+    with (
+        _unauthorized_git_remote() as remote_url,
+        _candidate_api_server(fake_api) as api_url,
+    ):
         _git(repository, "remote", "set-url", "origin", remote_url)
         config = _finalize_input(repository, base_sha, api_url, tmp_path)
-        monkeypatch.setattr(finalizer, "_clean_remote_url", lambda _repository: remote_url)
+        monkeypatch.setattr(
+            finalizer, "_clean_remote_url", lambda _repository: remote_url
+        )
 
-        with pytest.raises(finalizer.CandidateFinalizationError, match="credential_helper_present") as error:
+        with pytest.raises(
+            finalizer.CandidateFinalizationError, match="credential_helper_present"
+        ) as error:
             finalizer.finalize_candidate(config, verification)
 
     assert not sentinel.exists()
@@ -386,13 +415,20 @@ def test_token_bearing_git_disables_helper_injected_after_common_guard(
         original_guard(*args, **kwargs)
         _malicious_helper(repository, sentinel)
 
-    with _unauthorized_git_remote() as remote_url, _candidate_api_server(fake_api) as api_url:
+    with (
+        _unauthorized_git_remote() as remote_url,
+        _candidate_api_server(fake_api) as api_url,
+    ):
         _git(repository, "remote", "set-url", "origin", remote_url)
         config = _finalize_input(repository, base_sha, api_url, tmp_path)
-        monkeypatch.setattr(finalizer, "_clean_remote_url", lambda _repository: remote_url)
+        monkeypatch.setattr(
+            finalizer, "_clean_remote_url", lambda _repository: remote_url
+        )
         monkeypatch.setattr(finalizer, "_preflight_repository", inject_helper)
 
-        with pytest.raises(finalizer.CandidateFinalizationError, match="git_failed") as error:
+        with pytest.raises(
+            finalizer.CandidateFinalizationError, match="git_failed"
+        ) as error:
             finalizer.finalize_candidate(config, verification)
 
     assert not sentinel.exists()
@@ -406,23 +442,33 @@ def test_finalize_new_candidate_commits_once_pushes_and_reports_same_sha(
 ) -> None:
     """NEW 경로가 검증 tree와 다른 commit/API SHA를 만들면 평가 계보가 갈린다."""
     repository, remote, base_sha = _repository(tmp_path)
-    (repository / "autoresearch" / "candidate.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repository / "autoresearch" / "candidate.py").write_text(
+        "VALUE = 2\n", encoding="utf-8"
+    )
     verification = _verification_for_worktree(repository, base_sha, monkeypatch)
     fake_api = _FakeApi()
     with _candidate_api_server(fake_api) as api_url:
         config = _finalize_input(repository, base_sha, api_url, tmp_path)
-        monkeypatch.setattr(finalizer, "_clean_remote_url", lambda _repository: remote.as_uri())
+        monkeypatch.setattr(
+            finalizer, "_clean_remote_url", lambda _repository: remote.as_uri()
+        )
 
         candidate_sha = finalizer.finalize_candidate(config, verification)
 
-    assert _bare_git(remote, "rev-parse", f"refs/heads/{_ISSUE_BRANCH}") == candidate_sha
+    assert (
+        _bare_git(remote, "rev-parse", f"refs/heads/{_ISSUE_BRANCH}") == candidate_sha
+    )
     assert _git(repository, "rev-parse", "HEAD") == candidate_sha
     assert _git(repository, "rev-parse", f"{candidate_sha}^") == base_sha
-    assert _git(repository, "show", "-s", "--format=%an <%ae>|%cn <%ce>|%s|%b", candidate_sha) == (
+    assert _git(
+        repository, "show", "-s", "--format=%an <%ae>|%cn <%ce>|%s|%b", candidate_sha
+    ) == (
         f"{_EXECUTOR_NAME} <{_EXECUTOR_EMAIL}>|{_EXECUTOR_NAME} <{_EXECUTOR_EMAIL}>|"
         f"exp: issue #{_ISSUE_NUMBER} candidate|"
     )
-    assert _git(repository, "rev-list", "--count", f"{base_sha}..{candidate_sha}") == "1"
+    assert (
+        _git(repository, "rev-list", "--count", f"{base_sha}..{candidate_sha}") == "1"
+    )
     assert len(fake_api.requests) == 1
     assert __import__("json").loads(fake_api.requests[0].body) == {
         "idempotency_key": "executor-candidate:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -446,9 +492,13 @@ def test_finalize_new_candidate_rejects_worktree_changed_after_stage_four(
     fake_api = _FakeApi()
     with _candidate_api_server(fake_api) as api_url:
         config = _finalize_input(repository, base_sha, api_url, tmp_path)
-        monkeypatch.setattr(finalizer, "_clean_remote_url", lambda _repository: remote.as_uri())
+        monkeypatch.setattr(
+            finalizer, "_clean_remote_url", lambda _repository: remote.as_uri()
+        )
 
-        with pytest.raises(finalizer.CandidateFinalizationError, match="content_fingerprint_mismatch"):
+        with pytest.raises(
+            finalizer.CandidateFinalizationError, match="content_fingerprint_mismatch"
+        ):
             finalizer.finalize_candidate(config, verification)
 
     assert _bare_git(remote, "rev-parse", f"refs/heads/{_ISSUE_BRANCH}") == base_sha
@@ -461,12 +511,18 @@ def test_finalize_rejects_push_race_without_replacing_remote_ref(
 ) -> None:
     """push 직전 다른 candidate가 도착하면 force update 없이 실패해야 한다."""
     repository, remote, base_sha = _repository(tmp_path)
-    (repository / "autoresearch" / "candidate.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repository / "autoresearch" / "candidate.py").write_text(
+        "VALUE = 2\n", encoding="utf-8"
+    )
     verification = _verification_for_worktree(repository, base_sha, monkeypatch)
     racer = tmp_path / "racer"
-    subprocess.run(("git", "clone", remote.as_uri(), str(racer)), check=True, capture_output=True)
+    subprocess.run(
+        ("git", "clone", remote.as_uri(), str(racer)), check=True, capture_output=True
+    )
     _git(racer, "switch", _ISSUE_BRANCH)
-    (racer / "autoresearch" / "candidate.py").write_text("VALUE = 88\n", encoding="utf-8")
+    (racer / "autoresearch" / "candidate.py").write_text(
+        "VALUE = 88\n", encoding="utf-8"
+    )
     _git(racer, "add", "--all")
     _git(racer, "commit", "-m", "racing candidate")
     racer_sha = _git(racer, "rev-parse", "HEAD")
@@ -479,7 +535,9 @@ def test_finalize_rejects_push_race_without_replacing_remote_ref(
 
     with _candidate_api_server(fake_api) as api_url:
         config = _finalize_input(repository, base_sha, api_url, tmp_path)
-        monkeypatch.setattr(finalizer, "_clean_remote_url", lambda _repository: remote.as_uri())
+        monkeypatch.setattr(
+            finalizer, "_clean_remote_url", lambda _repository: remote.as_uri()
+        )
         monkeypatch.setattr(finalizer, "_push_candidate", race_then_push)
 
         with pytest.raises(finalizer.CandidateFinalizationError, match="push_failed"):
@@ -495,12 +553,18 @@ def test_finalize_rechecks_remote_before_commit_without_local_or_api_side_effect
 ) -> None:
     """staging 뒤 remote tip이 바뀌면 local commit을 만들기 전에 중단해야 한다."""
     repository, remote, base_sha = _repository(tmp_path)
-    (repository / "autoresearch" / "candidate.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repository / "autoresearch" / "candidate.py").write_text(
+        "VALUE = 2\n", encoding="utf-8"
+    )
     verification = _verification_for_worktree(repository, base_sha, monkeypatch)
     racer = tmp_path / "racer"
-    subprocess.run(("git", "clone", remote.as_uri(), str(racer)), check=True, capture_output=True)
+    subprocess.run(
+        ("git", "clone", remote.as_uri(), str(racer)), check=True, capture_output=True
+    )
     _git(racer, "switch", _ISSUE_BRANCH)
-    (racer / "autoresearch" / "candidate.py").write_text("VALUE = 88\n", encoding="utf-8")
+    (racer / "autoresearch" / "candidate.py").write_text(
+        "VALUE = 88\n", encoding="utf-8"
+    )
     _git(racer, "add", "--all")
     _git(racer, "commit", "-m", "racing candidate")
     racer_sha = _git(racer, "rev-parse", "HEAD")
@@ -513,10 +577,16 @@ def test_finalize_rechecks_remote_before_commit_without_local_or_api_side_effect
     fake_api = _FakeApi()
     with _candidate_api_server(fake_api) as api_url:
         config = _finalize_input(repository, base_sha, api_url, tmp_path)
-        monkeypatch.setattr(finalizer, "_clean_remote_url", lambda _repository: remote.as_uri())
-        monkeypatch.setattr(finalizer, "_assert_remote_base_before_commit", race_then_recheck)
+        monkeypatch.setattr(
+            finalizer, "_clean_remote_url", lambda _repository: remote.as_uri()
+        )
+        monkeypatch.setattr(
+            finalizer, "_assert_remote_base_before_commit", race_then_recheck
+        )
 
-        with pytest.raises(finalizer.CandidateFinalizationError, match="remote_tip_changed"):
+        with pytest.raises(
+            finalizer.CandidateFinalizationError, match="remote_tip_changed"
+        ):
             finalizer.finalize_candidate(config, verification)
 
     assert _git(repository, "rev-parse", "HEAD") == base_sha
@@ -530,7 +600,9 @@ def test_finalize_commits_verified_tree_when_index_changes_after_tree_check(
 ) -> None:
     """tree 검증 직후 index를 바꿔도 commit/push/API SHA가 검증 tree를 벗어나면 안 된다."""
     repository, remote, base_sha = _repository(tmp_path)
-    (repository / "autoresearch" / "candidate.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repository / "autoresearch" / "candidate.py").write_text(
+        "VALUE = 2\n", encoding="utf-8"
+    )
     verification = _verification_for_worktree(repository, base_sha, monkeypatch)
     original_recheck = finalizer._assert_remote_base_before_commit
 
@@ -541,13 +613,22 @@ def test_finalize_commits_verified_tree_when_index_changes_after_tree_check(
     fake_api = _FakeApi()
     with _candidate_api_server(fake_api) as api_url:
         config = _finalize_input(repository, base_sha, api_url, tmp_path)
-        monkeypatch.setattr(finalizer, "_clean_remote_url", lambda _repository: remote.as_uri())
-        monkeypatch.setattr(finalizer, "_assert_remote_base_before_commit", mutate_index_then_recheck)
+        monkeypatch.setattr(
+            finalizer, "_clean_remote_url", lambda _repository: remote.as_uri()
+        )
+        monkeypatch.setattr(
+            finalizer, "_assert_remote_base_before_commit", mutate_index_then_recheck
+        )
 
         candidate_sha = finalizer.finalize_candidate(config, verification)
 
-    assert _git(repository, "rev-parse", f"{candidate_sha}^{{tree}}") == verification.verified_tree_oid
-    assert _bare_git(remote, "rev-parse", f"refs/heads/{_ISSUE_BRANCH}") == candidate_sha
+    assert (
+        _git(repository, "rev-parse", f"{candidate_sha}^{{tree}}")
+        == verification.verified_tree_oid
+    )
+    assert (
+        _bare_git(remote, "rev-parse", f"refs/heads/{_ISSUE_BRANCH}") == candidate_sha
+    )
     assert len(fake_api.requests) == 1
 
 
@@ -559,18 +640,91 @@ def test_finalize_adopts_matching_remote_candidate_without_a_new_commit(
     repository, remote, base_sha = _repository(tmp_path)
     candidate_sha = _commit_executor_candidate(repository)
     _git(repository, "push", "origin", f"HEAD:refs/heads/{_ISSUE_BRANCH}")
-    verification = _verification_for_commit(repository, base_sha, candidate_sha, monkeypatch)
+    verification = _verification_for_commit(
+        repository, base_sha, candidate_sha, monkeypatch
+    )
     fake_api = _FakeApi()
     with _candidate_api_server(fake_api) as api_url:
-        config = _finalize_input(repository, base_sha, api_url, tmp_path)
-        monkeypatch.setattr(finalizer, "_clean_remote_url", lambda _repository: remote.as_uri())
+        config = _finalize_input(
+            repository,
+            base_sha,
+            api_url,
+            tmp_path,
+            expected_remote_tip=candidate_sha,
+        )
+        monkeypatch.setattr(
+            finalizer, "_clean_remote_url", lambda _repository: remote.as_uri()
+        )
 
         adopted_sha = finalizer.finalize_candidate(config, verification)
 
     assert adopted_sha == candidate_sha
     assert _git(repository, "rev-parse", "HEAD") == candidate_sha
-    assert _git(repository, "rev-list", "--count", f"{base_sha}..{candidate_sha}") == "1"
+    assert (
+        _git(repository, "rev-list", "--count", f"{base_sha}..{candidate_sha}") == "1"
+    )
     assert len(fake_api.requests) == 1
+
+
+def test_finalize_rejects_same_tree_executor_commit_when_remote_tip_changed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """verifier가 본 SHA와 다른 commit은 tree가 같아도 API에 보고하면 안 된다."""
+    repository, remote, base_sha = _repository(tmp_path)
+    expected_sha = _commit_executor_candidate(repository)
+    tree = _git(repository, "rev-parse", f"{expected_sha}^{{tree}}")
+    result = subprocess.run(
+        (
+            "git",
+            "-C",
+            str(repository),
+            "commit-tree",
+            tree,
+            "-p",
+            base_sha,
+            "-m",
+            f"exp: issue #{_ISSUE_NUMBER} candidate",
+        ),
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": _EXECUTOR_NAME,
+            "GIT_AUTHOR_EMAIL": _EXECUTOR_EMAIL,
+            "GIT_COMMITTER_NAME": _EXECUTOR_NAME,
+            "GIT_COMMITTER_EMAIL": _EXECUTOR_EMAIL,
+            "GIT_AUTHOR_DATE": "2026-08-06T00:00:01+00:00",
+            "GIT_COMMITTER_DATE": "2026-08-06T00:00:01+00:00",
+        },
+    )
+    changed_sha = result.stdout.strip()
+    assert changed_sha != expected_sha
+    _git(repository, "push", "origin", f"{changed_sha}:refs/heads/{_ISSUE_BRANCH}")
+    verification = _verification_for_commit(
+        repository, base_sha, expected_sha, monkeypatch
+    )
+    fake_api = _FakeApi()
+
+    with _candidate_api_server(fake_api) as api_url:
+        config = _finalize_input(
+            repository,
+            base_sha,
+            api_url,
+            tmp_path,
+            expected_remote_tip=expected_sha,
+        )
+        monkeypatch.setattr(
+            finalizer, "_clean_remote_url", lambda _repository: remote.as_uri()
+        )
+
+        with pytest.raises(
+            finalizer.CandidateFinalizationError, match="remote_tip_changed"
+        ):
+            finalizer.finalize_candidate(config, verification)
+
+    assert not fake_api.requests
 
 
 def test_finalize_retries_api_failure_by_adopting_same_pushed_candidate(
@@ -579,20 +733,37 @@ def test_finalize_retries_api_failure_by_adopting_same_pushed_candidate(
 ) -> None:
     """NEW push 뒤 API만 실패해도 재시도는 새 commit 없이 기존 SHA를 보고해야 한다."""
     repository, remote, base_sha = _repository(tmp_path)
-    (repository / "autoresearch" / "candidate.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (repository / "autoresearch" / "candidate.py").write_text(
+        "VALUE = 2\n", encoding="utf-8"
+    )
     verification = _verification_for_worktree(repository, base_sha, monkeypatch)
-    fake_api = _FakeApi(status_code=500, response_factory=lambda _payload: {"detail": "failed"})
+    fake_api = _FakeApi(
+        status_code=500, response_factory=lambda _payload: {"detail": "failed"}
+    )
     with _candidate_api_server(fake_api) as api_url:
         config = _finalize_input(repository, base_sha, api_url, tmp_path)
-        monkeypatch.setattr(finalizer, "_clean_remote_url", lambda _repository: remote.as_uri())
+        monkeypatch.setattr(
+            finalizer, "_clean_remote_url", lambda _repository: remote.as_uri()
+        )
 
-        with pytest.raises(finalizer.CandidateFinalizationError, match="candidate_api_failed"):
+        with pytest.raises(
+            finalizer.CandidateFinalizationError, match="candidate_api_failed"
+        ):
             finalizer.finalize_candidate(config, verification)
         pushed_sha = _bare_git(remote, "rev-parse", f"refs/heads/{_ISSUE_BRANCH}")
         fake_api.status_code = 200
-        fake_api.response_factory = lambda payload: {"candidate_sha": payload["candidate_sha"]}
+        fake_api.response_factory = lambda payload: {
+            "candidate_sha": payload["candidate_sha"]
+        }
 
-        retried_sha = finalizer.finalize_candidate(config, verification)
+        retry_config = _finalize_input(
+            repository,
+            base_sha,
+            api_url,
+            tmp_path,
+            expected_remote_tip=pushed_sha,
+        )
+        retried_sha = finalizer.finalize_candidate(retry_config, verification)
 
     assert retried_sha == pushed_sha
     assert _git(repository, "rev-list", "--count", f"{base_sha}..{pushed_sha}") == "1"
@@ -629,7 +800,10 @@ def test_candidate_api_sends_exact_contract_with_fixed_timeout(
     assert observed_timeouts == [api_client.CANDIDATE_API_TIMEOUT_SECONDS]
     assert len(fake_api.requests) == 1
     request = fake_api.requests[0]
-    assert request.path == "/internal/executor/experiments/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/candidate"
+    assert (
+        request.path
+        == "/internal/executor/experiments/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/candidate"
+    )
     assert request.headers["X-Orch-Executor-Token"] == "api-token-must-not-leak"
     assert request.headers["Content-Type"] == "application/json"
     assert __import__("json").loads(request.body) == {
@@ -644,8 +818,16 @@ def test_candidate_api_sends_exact_contract_with_fixed_timeout(
 @pytest.mark.parametrize(
     "status_code,response,reason",
     [
-        (409, {"detail": "api-token-must-not-leak server-body"}, "candidate_api_conflict"),
-        (500, {"detail": "api-token-must-not-leak server-body"}, "candidate_api_failed"),
+        (
+            409,
+            {"detail": "api-token-must-not-leak server-body"},
+            "candidate_api_conflict",
+        ),
+        (
+            500,
+            {"detail": "api-token-must-not-leak server-body"},
+            "candidate_api_failed",
+        ),
         (200, {"candidate_sha": "c" * 40}, "candidate_api_sha_mismatch"),
     ],
 )
@@ -658,7 +840,9 @@ def test_candidate_api_rejects_conflict_or_bad_response_without_leaking_body(
     """409·server body·다른 응답 SHA를 신뢰하면 candidate 수렴을 증명할 수 없다."""
     token_file = tmp_path / "api-token"
     token_file.write_text("api-token-must-not-leak\n", encoding="utf-8")
-    fake_api = _FakeApi(status_code=status_code, response_factory=lambda _payload: response)
+    fake_api = _FakeApi(
+        status_code=status_code, response_factory=lambda _payload: response
+    )
 
     with _candidate_api_server(fake_api) as api_url:
         with pytest.raises(api_client.CandidateApiError, match=reason) as error:

@@ -54,6 +54,7 @@ _WORKSPACE_DIRECTORY = "/workspace"
 _STATE_DIRECTORY = "/var/run/executor-state"
 _CODEX_HOME_DIRECTORY = "/var/lib/codex"
 _API_TOKEN_DIRECTORY = "/var/run/executor-api-token"
+_TEMP_DIRECTORY = "/tmp"
 
 
 class JobClient(Protocol):
@@ -153,6 +154,9 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
     state_read_only = V1VolumeMount(
         name="executor-state", mount_path=_STATE_DIRECTORY, read_only=True
     )
+    temporary_mount = V1VolumeMount(
+        name="executor-tmp", mount_path=_TEMP_DIRECTORY, read_only=False
+    )
     branch_token = "/var/run/branch-token"
     clone_token = "/var/run/clone-token"
     push_token = "/var/run/push-token"
@@ -177,6 +181,7 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
             V1VolumeMount(
                 name="executor-state", mount_path=_STATE_DIRECTORY, read_only=False
             ),
+            temporary_mount,
         ],
         settings,
     )
@@ -192,6 +197,7 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
             workspace_mount,
             git_read_only,
             state_read_only,
+            temporary_mount,
             V1VolumeMount(
                 name="codex-home", mount_path=_CODEX_HOME_DIRECTORY, read_only=True
             ),
@@ -206,6 +212,7 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
             workspace_mount,
             git_read_only,
             state_read_only,
+            temporary_mount,
             V1VolumeMount(
                 name="verification-result",
                 mount_path="/var/run/verification-result",
@@ -227,6 +234,7 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
         [
             workspace_mount,
             state_read_only,
+            temporary_mount,
             V1VolumeMount(name="push-token", mount_path=push_token, read_only=True),
             V1VolumeMount(
                 name="verification-result",
@@ -320,6 +328,10 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
             V1Volume(
                 name="verification-result",
                 empty_dir=V1EmptyDirVolumeSource(medium="Memory", size_limit="1Mi"),
+            ),
+            V1Volume(
+                name="executor-tmp",
+                empty_dir=V1EmptyDirVolumeSource(medium="Memory", size_limit="1Gi"),
             ),
             V1Volume(
                 name="codex-home",

@@ -56,6 +56,7 @@ class FinalizeInput:
     issue_number: int
     issue_branch: str
     base_dev_sha: str
+    expected_remote_tip: str
     repository: Path
     github_repository: str
     push_token_file: Path
@@ -157,6 +158,7 @@ def _validate_repository(config: FinalizeInput) -> None:
     ):
         raise CandidateFinalizationError("finalize_input_invalid")
     _validate_sha(config.base_dev_sha, "base_sha_invalid")
+    _validate_sha(config.expected_remote_tip, "expected_remote_tip_invalid")
     if not config.github_repository or "/" not in config.github_repository:
         raise CandidateFinalizationError("finalize_input_invalid")
 
@@ -197,7 +199,7 @@ def _push_environment(token_file: Path) -> Iterator[dict[str, str]]:
         askpass = temporary_root / "git-askpass"
         askpass.write_text(
             "#!/bin/sh\n"
-            "case \"$1\" in\n"
+            'case "$1" in\n'
             "  *Username*) printf '%s\\n' 'x-access-token' ;;\n"
             "  *) printf '%s\\n' \"$GITHUB_TOKEN\" ;;\n"
             "esac\n",
@@ -308,8 +310,8 @@ def classify_candidate_state(
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
     }
-    parent, author_name, author_email, committer_name, committer_email, message = _candidate_metadata(
-        repository, remote_tip, environment=environment
+    parent, author_name, author_email, committer_name, committer_email, message = (
+        _candidate_metadata(repository, remote_tip, environment=environment)
     )
     has_changes = _git_has_changes(
         repository,
@@ -349,9 +351,14 @@ def _remote_tip(
     return fields[0]
 
 
-def _assert_local_head_base(config: FinalizeInput, *, environment: dict[str, str]) -> None:
+def _assert_local_head_base(
+    config: FinalizeInput, *, environment: dict[str, str]
+) -> None:
     """NEW가 base checkout에서만 local ref를 변경하게 한다."""
-    if _run_git(config.repository, "rev-parse", "HEAD", environment=environment) != config.base_dev_sha:
+    if (
+        _run_git(config.repository, "rev-parse", "HEAD", environment=environment)
+        != config.base_dev_sha
+    ):
         raise CandidateFinalizationError("head_changed")
 
 
@@ -443,7 +450,10 @@ def _commit_verified_tree(
         )
     except CandidateFinalizationError as error:
         raise CandidateFinalizationError("local_ref_update_failed") from error
-    if _run_git(config.repository, "rev-parse", "HEAD", environment=environment) != candidate_sha:
+    if (
+        _run_git(config.repository, "rev-parse", "HEAD", environment=environment)
+        != candidate_sha
+    ):
         raise CandidateFinalizationError("local_ref_update_failed")
     return candidate_sha
 
@@ -466,7 +476,10 @@ def _commit_new_candidate(
         raise CandidateFinalizationError("content_fingerprint_mismatch")
     _assert_local_head_base(config, environment=environment)
     _run_git(config.repository, "add", "--all", environment=environment)
-    if verifier.write_staged_tree_oid(config.repository) != verification.verified_tree_oid:
+    if (
+        verifier.write_staged_tree_oid(config.repository)
+        != verification.verified_tree_oid
+    ):
         raise CandidateFinalizationError("verified_tree_mismatch")
     _assert_remote_base_before_commit(config, remote_url, environment=environment)
     candidate_sha = _commit_verified_tree(
@@ -474,8 +487,15 @@ def _commit_new_candidate(
         verification.verified_tree_oid,
         environment=environment,
     )
-    _push_candidate(config.repository, remote_url, config.issue_branch, environment=environment)
-    if _remote_tip(config.repository, remote_url, config.issue_branch, environment=environment) != candidate_sha:
+    _push_candidate(
+        config.repository, remote_url, config.issue_branch, environment=environment
+    )
+    if (
+        _remote_tip(
+            config.repository, remote_url, config.issue_branch, environment=environment
+        )
+        != candidate_sha
+    ):
         raise CandidateFinalizationError("remote_sha_mismatch")
     return candidate_sha
 
@@ -489,6 +509,8 @@ def finalize_candidate(config: FinalizeInput, verification: VerificationResult) 
         remote_tip = _remote_tip(
             config.repository, remote_url, config.issue_branch, environment=environment
         )
+        if remote_tip != config.expected_remote_tip:
+            raise CandidateFinalizationError("remote_tip_changed")
         state = classify_candidate_state(
             config.repository,
             base_dev_sha=config.base_dev_sha,

@@ -6,13 +6,14 @@ initContainer가 짧은 수명의 GitHub App installation token을 memory volume
 구간을 담당한다.
 
 [기능]
-App private key로 contents:write token을 한 번 발급하고, 같은 volume의 0400 임시
-파일을 `os.replace`하여 main container가 읽을 token 파일로 원자 교체한다. 실패 시
-자격 증명을 제외한 예외 종류·정제 사유·HTTP 상태를 기록한다.
+branch/push의 `contents: write`, clone의 `contents: read`·`issues: read` 목적별
+installation token을 한 번 발급하고, 같은 volume의 0400 임시 파일을 `os.replace`하여
+후속 container가 읽을 token 파일로 원자 교체한다. 실패 시 자격 증명을 제외한 예외
+종류·정제 사유·HTTP 상태를 기록한다.
 
 [비책임]
-private key의 Secret mount와 memory volume 구성(Autoresearch-infra), token 재발급,
-Git ref 조회·생성(`main.py`)은 담당하지 않는다.
+private key의 Secret mount와 purpose별 volume 배치(`launcher.jobs`/Autoresearch-infra),
+token 재발급, Git ref 조회·생성(`main.py`)은 담당하지 않는다.
 """
 
 from __future__ import annotations
