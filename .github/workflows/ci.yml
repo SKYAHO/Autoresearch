@@ -433,7 +433,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Build Agent Orchestration API, Runner, and UI images
+      - name: Build Agent Orchestration API, Runner, UI, and Executor images
         run: |
           docker build \
             -f deploy/agent_orchestration/api.Dockerfile \
@@ -446,6 +446,10 @@ jobs:
           docker build \
             -f deploy/agent_orchestration/ui.Dockerfile \
             --tag autoresearch-agent-orchestration-ui:ci \
+            .
+          docker build \
+            -f deploy/agent_orchestration/executor.Dockerfile \
+            --tag autoresearch-agent-orchestration-executor:ci \
             .
 
       - name: Run Agent Orchestration image smoke checks
@@ -474,6 +478,21 @@ jobs:
             python -c "import agent_orchestration.runner.app"
           docker run --rm autoresearch-agent-orchestration-runner:ci \
             python -c "import importlib.util; assert importlib.util.find_spec('lightgbm') is None"
+          mkdir -p /tmp/executor-runtime-clone/tools
+          printf 'raise RuntimeError("runtime clone tools must not be imported")\n' \
+            > /tmp/executor-runtime-clone/tools/__init__.py
+          docker run --rm --read-only \
+            -v /tmp/executor-runtime-clone/tools:/workspace/repository/tools:ro \
+            autoresearch-agent-orchestration-executor:ci sh -ec '
+              test "$(id -u)" = "10001"
+              test "$(id -g)" = "10001"
+              test "$UV_PROJECT_ENVIRONMENT" = "/opt/autoresearch-venv"
+              git --version
+              uv --version
+              node --version
+              codex --version
+              python -c "import tools; assert tools.__file__ == \"/app/tools/__init__.py\"; import agent_orchestration.executor.main, agent_orchestration.executor.token_minter, agent_orchestration.executor.workspace, agent_orchestration.executor.codex_worker, agent_orchestration.executor.verifier, agent_orchestration.executor.finalizer, agent_orchestration.executor.phase2"
+            '
           docker run --rm autoresearch-agent-orchestration-ui:ci id -u | grep --fixed-strings 10001
           container_name="agent-orchestration-ui-ci"
           docker run --detach --name "$container_name" --publish 127.0.0.1::8501 \

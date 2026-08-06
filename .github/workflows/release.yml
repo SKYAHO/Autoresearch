@@ -1247,8 +1247,13 @@ jobs:
             exit 1
           fi
 
-          docker run --rm --read-only "$digest_ref" python -c \
-            "import agent_orchestration.executor.main, agent_orchestration.executor.token_minter"
+          docker run --rm --read-only "$digest_ref" sh -ec '
+            git --version
+            uv --version
+            node --version
+            codex --version
+            python -c "import agent_orchestration.executor.main, agent_orchestration.executor.token_minter, agent_orchestration.executor.workspace, agent_orchestration.executor.codex_worker, agent_orchestration.executor.verifier, agent_orchestration.executor.finalizer, agent_orchestration.executor.phase2"
+          '
 
           echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
 

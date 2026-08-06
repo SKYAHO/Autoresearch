@@ -1,14 +1,14 @@
 """CronJob launcher의 단일 tick 실행 경계.
 
-[파이프라인] 이슈 좌표와 기준 SHA가 봉인된 Experiment를 DB에서 선점한 뒤 executor가 exp
-branch를 만들도록 Kubernetes Job을 제출하고, Job 존재 확인 시각을 DB에 기록하는 구간을
-담당한다.
+[파이프라인] 이슈 좌표와 기준 SHA가 봉인된 Experiment를 DB에서 선점한 뒤 8-container
+executor Job을 제출하고, 최종 Pod 실패를 ERROR로 회수하는 구간을 담당한다.
 
-[기능] label 기반 active Job 수집, 미완료 생성 복구·신규 선점, GET/create/409 확인과
-UTC 생성 확인 기록을 한 번 실행한다. 처리하지 않은 예외는 CronJob 실패로 전파한다.
+[기능] Phase 2 label 기반 terminal/active Job 수집, 미완료 생성 복구·신규 선점,
+GET/create/409 확인과 UTC 생성 확인 기록을 한 번 실행한다. 처리하지 않은 예외는
+CronJob 실패로 전파한다.
 
-[비책임] 주기·concurrencyPolicy와 RBAC/Secret 배포(Autoresearch-infra), Job 완료 상태
-회수, executor의 GitHub ref 생성은 담당하지 않는다.
+[비책임] 주기·concurrencyPolicy와 RBAC/Secret 배포(Autoresearch-infra), Complete Job의
+성공 추론, executor의 GitHub ref 생성은 담당하지 않는다.
 """
 
 from __future__ import annotations
@@ -26,15 +26,16 @@ from agent_orchestration.app.database import (
 )
 from agent_orchestration.launcher.config import LauncherSettings
 from agent_orchestration.launcher.jobs import (
-    BRANCH_BOOTSTRAP_LABEL_SELECTOR,
+    EXPERIMENT_EXECUTOR_LABEL_SELECTOR,
     JobClient,
     KubernetesJobs,
-    ensure_branch_job,
+    ensure_executor_job,
 )
 from agent_orchestration.launcher.repository import (
     ClaimedExperiment,
     claim_experiments,
     record_job_created,
+    reconcile_failed_jobs,
 )
 
 
@@ -54,9 +55,18 @@ def run_tick(
     clock: Callable[[], datetime] = _utc_now,
 ) -> list[ClaimedExperiment]:
     """전역 상한 안에서 복구·선점한 Job을 확인하고 생성 시각을 기록한다."""
+    list_terminal = getattr(kubernetes, "list_terminal", None)
+    if callable(list_terminal):
+        reconcile_failed_jobs(
+            session,
+            list_terminal(
+                settings.job_namespace,
+                EXPERIMENT_EXECUTOR_LABEL_SELECTOR,
+            ),
+        )
     active_jobs = kubernetes.count_active(
         settings.job_namespace,
-        BRANCH_BOOTSTRAP_LABEL_SELECTOR,
+        EXPERIMENT_EXECUTOR_LABEL_SELECTOR,
     )
     available_slots = max(
         0,
@@ -68,24 +78,25 @@ def run_tick(
         first_pass = False
         claims = claim_experiments(
             session,
-            active_jobs=(
-                settings.max_concurrent_experiments - available_slots
-            ),
+            active_jobs=(settings.max_concurrent_experiments - available_slots),
             max_concurrency=settings.max_concurrent_experiments,
         )
         if not claims:
             break
         for claim in claims:
-            if kubernetes.get(
-                settings.job_namespace,
-                claim.job_name,
-            ) is not None:
+            if (
+                kubernetes.get(
+                    settings.job_namespace,
+                    claim.job_name,
+                )
+                is not None
+            ):
                 record_job_created(session, claim, created_at=clock())
                 confirmed_claims.append(claim)
                 continue
             if available_slots == 0:
                 continue
-            ensure_branch_job(kubernetes, claim, settings, job_absent=True)
+            ensure_executor_job(kubernetes, claim, settings, job_absent=True)
             available_slots -= 1
             record_job_created(session, claim, created_at=clock())
             confirmed_claims.append(claim)

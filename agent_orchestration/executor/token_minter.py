@@ -6,19 +6,21 @@ initContainer가 짧은 수명의 GitHub App installation token을 memory volume
 구간을 담당한다.
 
 [기능]
-App private key로 contents:write token을 한 번 발급하고, 같은 volume의 0400 임시
-파일을 `os.replace`하여 main container가 읽을 token 파일로 원자 교체한다. 실패 시
-자격 증명을 제외한 예외 종류·정제 사유·HTTP 상태를 기록한다.
+branch/push의 `contents: write`, clone의 `contents: read`·`issues: read` 목적별
+installation token을 한 번 발급하고, 같은 volume의 0400 임시 파일을 `os.replace`하여
+후속 container가 읽을 token 파일로 원자 교체한다. 실패 시 자격 증명을 제외한 예외
+종류·정제 사유·HTTP 상태를 기록한다.
 
 [비책임]
-private key의 Secret mount와 memory volume 구성(Autoresearch-infra), token 재발급,
-Git ref 조회·생성(`main.py`)은 담당하지 않는다.
+private key의 Secret mount와 purpose별 volume 배치(`launcher.jobs`/Autoresearch-infra),
+token 재발급, Git ref 조회·생성(`main.py`)은 담당하지 않는다.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from enum import Enum
 import logging
 import os
 from pathlib import Path
@@ -35,7 +37,21 @@ from agent_orchestration.github_app import (
 
 
 _LOGGER = logging.getLogger(__name__)
-_CONTENTS_WRITE_PERMISSION = {"contents": "write"}
+
+
+class TokenPurpose(str, Enum):
+    """Phase 2 container가 요구하는 installation token 권한 목적이다."""
+
+    BRANCH = "branch"
+    CLONE = "clone"
+    PUSH = "push"
+
+
+TOKEN_PERMISSIONS: dict[str, dict[str, str]] = {
+    "branch": {"contents": "write"},
+    "clone": {"contents": "read", "issues": "read"},
+    "push": {"contents": "write"},
+}
 
 
 class TokenMinterError(RuntimeError):
@@ -97,13 +113,14 @@ async def _run(token_factory: TokenFactory) -> int:
     """환경 좌표로 token 파일을 만들고 initContainer exit code를 반환한다."""
     try:
         config = TokenMinterInput.from_environment()
+        purpose = TokenPurpose(os.environ.get("ORCH_GITHUB_TOKEN_PURPOSE", "branch"))
         await write_installation_token(
             credentials=config.credentials,
             output=config.output,
-            permissions=_CONTENTS_WRITE_PERMISSION,
+            permissions=TOKEN_PERMISSIONS[purpose.value],
             token_factory=token_factory,
         )
-    except (ExecutorConfigError, GitHubAppError, TokenMinterError) as error:
+    except (ExecutorConfigError, GitHubAppError, TokenMinterError, ValueError) as error:
         _LOGGER.error(
             "installation token mint failed error_type=%s reason=%s status_code=%s",
             type(error).__name__,

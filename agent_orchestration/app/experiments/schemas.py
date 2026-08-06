@@ -15,7 +15,7 @@ import json
 from typing import Annotated, Literal
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agent_orchestration.app.experiments.issue_authoring import IssueSubmission
 from agent_orchestration.app.experiments.models import (
@@ -28,6 +28,7 @@ from agent_orchestration.app.experiments.models import (
 MetadataKey = Annotated[str, Field(min_length=1, max_length=64)]
 MetadataValue = Annotated[str, Field(max_length=8192)]
 MAX_STEP_TARGET_BYTES = 4096
+GitSha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 
 
 def validate_step_target_size(value: dict | None) -> dict | None:
@@ -73,6 +74,25 @@ class ExperimentCreate(BaseModel):
         return stripped
 
 
+class CandidateReportRequest(BaseModel):
+    """Executor가 원격 검증한 candidate SHA와 봉인된 좌표를 보고한다."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    issue_number: int = Field(ge=1)
+    issue_branch: str = Field(min_length=1, max_length=255)
+    base_dev_sha: GitSha
+    candidate_sha: GitSha
+
+    @model_validator(mode="after")
+    def issue_branch_must_match_issue_number(self) -> CandidateReportRequest:
+        """branch 이름에 든 이슈 번호와 별도 좌표가 갈리면 요청 단계에서 막는다."""
+        if not self.issue_branch.startswith(f"exp/{self.issue_number}-"):
+            raise ValueError("issue_branch must start with 'exp/{issue_number}-'.")
+        return self
+
+
 class ExperimentResponse(BaseModel):
     """최신 상태를 포함한 실험 응답."""
 
@@ -86,6 +106,7 @@ class ExperimentResponse(BaseModel):
     issue_number: int | None
     issue_branch: str | None
     base_dev_sha: str | None
+    candidate_sha: str | None
     executor_job_name: str | None
     created_at: datetime
     updated_at: datetime

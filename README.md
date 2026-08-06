@@ -63,7 +63,7 @@ docs/                # 문서 — docs/README.md 인덱스 참조
 | `deploy/agent_orchestration/runner.Dockerfile` | API 전용 Codex Runner (GKE 내부, OAuth PVC 분리) |
 | `deploy/agent_orchestration/ui.Dockerfile` | Streamlit Experiment Workbench (GKE 내부, API 토큰 서버 환경 주입) |
 | `deploy/agent_orchestration/launcher.Dockerfile` | 봉인 좌표를 선점해 branch-bootstrap Kubernetes Job을 생성하는 1회 launcher runtime (CronJob용) |
-| `deploy/agent_orchestration/executor.Dockerfile` | GitHub App token-minter와 봉인 SHA 기반 exp branch bootstrap을 함께 제공하는 executor runtime |
+| `deploy/agent_orchestration/executor.Dockerfile` | Phase 2 GitHub App token-minter, 봉인 issue/workspace, Codex, verifier, candidate finalizer를 같은 digest로 실행하는 executor runtime |
 
 `release.yml`은 launcher와 executor를 각각
 `autoresearch-agent-orchestration-launcher`,
@@ -90,10 +90,12 @@ GCP 인프라는 [`SKYAHO/Autoresearch-infra`](https://github.com/SKYAHO/Autores
 | `ORCH_EXPERIMENT_DATASET_SOURCE` | 서버가 Issue Form에 채우는 학습 데이터 출처 좌표. 기간은 발행 시점에 서버가 계산해 붙임(`dt BETWEEN P-30 AND P-1`, 어제까지 30일) |
 | `ORCH_EXPERIMENT_TRAINING_CONFIG_REF` | 서버가 Issue Form에 채우는 학습 설정 참조 |
 
-### Agent Orchestration 실험 branch Job 환경 변수 (#546)
+### Agent Orchestration 실험 executor Job handoff (#557)
 
-launcher 설정은 배포 시 주입하고, executor 좌표는 launcher가 봉인된 DB 값과 고정
-volume 경로에서 조립합니다. 값·기본값의 단일 출처는 `.env.example`입니다.
+release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시하고, Infra는
+그 digest만 배포 입력으로 사용합니다. launcher는 DB에서 `CREATED` Experiment를 선점해
+`RUNNING`으로 전이한 뒤, 아래 정확한 값과 volume 경로를 executor Job에 전달합니다.
+값·기본값의 단일 출처는 `.env.example`입니다.
 
 | 역할 | 변수 | 용도 |
 |---|---|---|
@@ -105,9 +107,48 @@ volume 경로에서 조립합니다. 값·기본값의 단일 출처는 `.env.ex
 | launcher | `ORCH_GITHUB_APP_SECRET_NAME` | token-minter에만 mount할 branch-writer App Secret 이름 |
 | launcher/token-minter | `ORCH_GITHUB_APP_ID`, `ORCH_GITHUB_APP_INSTALLATION_ID` | Contents write 전용 branch-writer App 공개 좌표 |
 | launcher | `ORCH_MAX_CONCURRENT_EXPERIMENTS` | namespace의 branch-bootstrap Job 동시 실행 상한 |
+| launcher | `ORCH_CODEX_HOME_SECRET_NAME` | Infra가 생성·이름을 소유하는 executor 전용 Codex 인증 Secret 이름 (`auth.json` key 제공, launcher가 volume `defaultMode=0440` 지정) |
 | executor | `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`, `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA` | launcher가 DB에서 복사해 전달하는 불변 branch 좌표 |
-| token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | initContainer에만 보이는 private key mount 경로 |
-| token-minter/executor | `ORCH_GITHUB_TOKEN_FILE` | memory volume의 mode 0400 installation token 파일 경로 |
+| workspace-preparer | `ORCH_ISSUE_BODY_SHA256` | DB에 봉인한 Issue body의 SHA-256으로 원격 body와 대조하는 값 |
+| token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch/clone/push token-minter에만 보이는 private key mount 경로 |
+| token-minter/각 consumer | `ORCH_GITHUB_TOKEN_FILE` | purpose별 memory volume의 mode 0400 installation token 파일 경로 (`/var/run/{branch,clone,push}-token/token`) |
+| candidate-finalizer | `ORCH_EXECUTOR_API_URL`, `ORCH_EXECUTOR_API_TOKEN_FILE` | internal Candidate API URL과 `ORCH_EXECUTOR_API_TOKEN` Secret을 mount한 `/var/run/executor-api-token/token` 경로 |
+| codex-worker | `ORCH_CODEX_HOME`, `ORCH_CODEX_TIMEOUT_SEC` | read-only Codex auth source와 실행 상한 |
+
+동일 executor digest는 아래 8개 container가 순서대로 사용합니다. GitHub App private key는
+1·3·7의 token-minter에만, executor 전용 Codex 인증 Secret의 `CODEX_HOME`은 5에만, `ORCH_EXECUTOR_API_TOKEN`은
+8에만 mount합니다. 5·6에는 GitHub/API credential volume을 mount하지 않습니다.
+
+1. `branch-token-minter`: private key → branch token memory volume
+2. `branch-creator`: branch token → 봉인 `base_dev_sha`의 exp ref 관찰/생성
+3. `clone-token-minter`: private key → clone token memory volume
+4. `workspace-preparer`: clone token + `ORCH_ISSUE_BODY_SHA256` → issue 검증·workspace/state
+5. `codex-worker`: workspace + read-only `.git` + state + read-only auth source `CODEX_HOME` →
+   `/tmp` 아래 mode 0700 per-run writable scratch `CODEX_HOME`에 regular `auth.json`만 mode 0400으로
+   복사 → `codex exec --ephemeral`으로 working tree 수정. config·plugin 등 다른 source 파일은
+   복사하지 않음
+6. `candidate-verifier`: workspace + read-only `.git` + state → 고정 Ruff/pytest 검증 결과
+7. `push-token-minter`: private key → push token memory volume
+8. `candidate-finalizer`: workspace + push token + verifier 결과 + API token → candidate commit/push, `candidate_sha` 저장, `RUNNING → EVALUATING`
+
+executor image에는 Git CLI, uv, `/opt/autoresearch-venv`의 lock 기반 기본+`dev`
+의존성(Feast 제외), Node.js, `@openai/codex@0.146.0`과 `UV_PROJECT_ENVIRONMENT`가
+고정됩니다. issue parser `tools/__init__.py`와 `tools/auto_research_issue_branch.py`도
+image에 봉인하므로 runtime clone의 동명 파일을 실행 입력으로 사용하지 않습니다. repository
+소스 전체, `.env`, `auth.json`, Codex 인증은 image에 포함하지 않으며 Codex 인증은 runtime
+mount로만 제공합니다.
+
+Infra companion PR에는 다음을 확인 항목으로 옮깁니다. 실제 Secret/PVC/resource/
+NetworkPolicy 이름·값은 `Autoresearch-infra` 소유이므로 이 저장소에서 단정하지 않습니다.
+
+- GitHub App private key를 branch/clone/push token-minter에만 mount
+- executor 전용 Codex 인증 Secret의 `auth.json` key를 launcher가 mode 0440의 read-only
+  `subPath` 파일로 codex-worker에만 mount하고, writable `executor-tmp`의 `/tmp`를 per-run
+  scratch에 제공
+- `ORCH_EXECUTOR_API_TOKEN`을 candidate-finalizer에만 mount
+- workspace/token `emptyDir` size limit과 GitHub·OpenAI·internal API 최소 egress
+- immutable launcher/executor/API digest, non-root/seccomp/capability drop/
+  `automountServiceAccountToken=false`
 
 `auto-experiment`는 `[AR]` 이슈의 분류와 promotion guard에 남지만 branch 생성
 트리거가 아닙니다. Phase 1 executor는 기존 GitHub Actions bot marker를 새로 쓰지
