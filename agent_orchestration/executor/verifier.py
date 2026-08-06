@@ -7,6 +7,8 @@ finalizer가 candidate commit·push를 수행하기 전 변경 범위와 고정 
 [기능]
 working tree 또는 재시도 candidate commit의 실제 Git diff를 경로·mode·크기 정책으로
 검사하고, 자격증명이 없는 allowlist 환경에서 diff check·Ruff·pytest를 순서대로 실행한다.
+working tree는 descriptor 기반 snapshot에서 검사하며 Stage 5가 재확인할 콘텐츠 지문과
+staged tree 객체 ID를 함께 반환한다.
 
 [비책임]
 이슈/ref/workspace 준비(`workspace.py`), Codex 코드 수정(`codex_worker.py`), candidate의
@@ -17,11 +19,11 @@ commit·push·API 보고(Stage 5), Pod credential·volume 정책(Autoresearch-in
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 from hashlib import sha256
 import os
 from pathlib import Path
 import re
-import shutil
 import stat
 import subprocess
 from tempfile import TemporaryDirectory
@@ -71,9 +73,11 @@ class CandidatePolicy:
 
 @dataclass(frozen=True)
 class VerificationResult:
-    """범위와 고정 명령을 모두 통과한 candidate의 변경 경로다."""
+    """범위·고정 명령·finalizer handoff를 모두 통과한 candidate 결과다."""
 
     changed_paths: tuple[str, ...]
+    content_fingerprint: str
+    verified_tree_oid: str
 
 
 @dataclass(frozen=True)
@@ -236,20 +240,23 @@ def _name_status_changes(
     candidate_sha: str | None,
     *,
     environment: dict[str, str],
+    staged_only: bool = False,
 ) -> list[_ChangedPath]:
     """Git diff와 untracked 목록을 합쳐 policy가 검사할 모든 경로를 수집한다."""
     revisions = (base_sha,) if candidate_sha is None else (base_sha, candidate_sha)
-    raw_diffs = [_run_git(
-        repository,
-        "diff",
-        "--name-status",
-        "-z",
-        "-M",
-        "-C",
-        "--find-copies-harder",
-        *revisions,
-        environment=environment,
-    )]
+    raw_diffs: list[bytes] = []
+    if not staged_only:
+        raw_diffs.append(_run_git(
+            repository,
+            "diff",
+            "--name-status",
+            "-z",
+            "-M",
+            "-C",
+            "--find-copies-harder",
+            *revisions,
+            environment=environment,
+        ))
     if candidate_sha is None:
         raw_diffs.append(_run_git(
             repository,
@@ -294,7 +301,7 @@ def _name_status_changes(
                     )
                 )
 
-    if candidate_sha is None:
+    if candidate_sha is None and not staged_only:
         # status는 요구되는 working-tree 진단이고, ls-files는 directory로 축약되지 않은
         # untracked file 목록을 준다.
         _run_git(repository, "status", "--porcelain=v1", "-z", environment=environment)
@@ -415,7 +422,7 @@ def _validate_path_files(
             policy_paths.append(path)
             if not _path_is_allowed(path, policy):
                 raise CandidateVerificationError("forbidden_path")
-            if path == change.current and Path(path).suffix.lower() in _GENERATED_DATA_SUFFIXES:
+            if Path(path).suffix.lower() in _GENERATED_DATA_SUFFIXES:
                 raise CandidateVerificationError("generated_data")
         if candidate_sha is None and change.previous is None and change.current is not None:
             if change.current not in (index_entries or {}):
@@ -556,11 +563,41 @@ def _materialize_candidate(
     return checkout
 
 
+def _read_regular_file_no_follow(path: Path) -> tuple[int, bytes]:
+    """O_NOFOLLOW descriptor에서 regular file의 mode·bytes를 함께 읽는다."""
+    flags = os.O_RDONLY
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except FileNotFoundError as error:
+        raise CandidateVerificationError("file_missing") from error
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            raise CandidateVerificationError("symlink") from error
+        raise CandidateVerificationError("file_unreadable") from error
+    try:
+        file_status = os.fstat(descriptor)
+        if not stat.S_ISREG(file_status.st_mode):
+            raise CandidateVerificationError("file_type_invalid")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 8192):
+            chunks.append(chunk)
+        return stat.S_IMODE(file_status.st_mode), b"".join(chunks)
+    except OSError as error:
+        raise CandidateVerificationError("file_unreadable") from error
+    finally:
+        os.close(descriptor)
+
+
 def _working_tree_fingerprint(
-    repository: Path, changes: list[_ChangedPath]
+    repository: Path, base_sha: str, changes: list[_ChangedPath]
 ) -> str:
     """Stage 5가 commit할 원본 candidate tree의 경로·mode·bytes digest를 계산한다."""
     digest = sha256()
+    digest.update(b"autoresearch-executor-candidate-v1\0")
+    digest.update(base_sha.encode("ascii"))
+    digest.update(b"\0")
     for change in sorted(changes, key=lambda item: (item.kind, item.previous or "", item.current or "")):
         digest.update(change.kind.encode("ascii"))
         digest.update(b"\0")
@@ -575,24 +612,18 @@ def _working_tree_fingerprint(
         digest.update(path.encode("utf-8"))
         digest.update(b"\0")
         try:
-            file_status = target.lstat()
-        except FileNotFoundError:
+            mode, content = _read_regular_file_no_follow(target)
+        except CandidateVerificationError as error:
+            if str(error) != "file_missing":
+                raise
             digest.update(b"missing\0")
             continue
-        except OSError as error:
-            raise CandidateVerificationError("file_unreadable") from error
-        if not stat.S_ISREG(file_status.st_mode):
-            raise CandidateVerificationError("file_type_invalid")
-        digest.update(oct(stat.S_IMODE(file_status.st_mode)).encode("ascii"))
+        digest.update(b"regular\0")
+        digest.update(oct(mode).encode("ascii"))
         digest.update(b"\0")
-        digest.update(str(file_status.st_size).encode("ascii"))
+        digest.update(str(len(content)).encode("ascii"))
         digest.update(b"\0")
-        try:
-            with target.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(8192), b""):
-                    digest.update(chunk)
-        except OSError as error:
-            raise CandidateVerificationError("file_unreadable") from error
+        digest.update(content)
     return digest.hexdigest()
 
 
@@ -630,15 +661,28 @@ def _materialize_working_tree(
                 continue
             source = repository / change.current
             target = snapshot / change.current
-            source_status = source.lstat()
-            if not stat.S_ISREG(source_status.st_mode):
-                raise CandidateVerificationError("file_type_invalid")
+            mode, content = _read_regular_file_no_follow(source)
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, target)
-            target.chmod(stat.S_IMODE(source_status.st_mode))
+            target.write_bytes(content)
+            target.chmod(mode)
     except (OSError, subprocess.CalledProcessError) as error:
         raise CandidateVerificationError("working_tree_snapshot_invalid") from error
     return snapshot
+
+
+def _stage_snapshot_and_write_tree(
+    repository: Path, *, environment: dict[str, str]
+) -> str:
+    """격리 snapshot에 finalizer와 같은 index를 만들고 tree 객체 ID를 반환한다."""
+    _run_git(repository, "add", "--all", environment=environment)
+    tree_oid = _run_git(repository, "write-tree", environment=environment).strip()
+    try:
+        value = tree_oid.decode("ascii", errors="strict")
+    except UnicodeDecodeError as error:
+        raise CandidateVerificationError("tree_oid_invalid") from error
+    if _SHA_PATTERN.fullmatch(value) is None:
+        raise CandidateVerificationError("tree_oid_invalid")
+    return value
 
 
 def _assert_original_working_tree_unchanged(
@@ -654,7 +698,7 @@ def _assert_original_working_tree_unchanged(
         repository, base_sha, None, environment=environment
     )
     if current_changes != expected_changes or (
-        _working_tree_fingerprint(repository, current_changes) != expected_fingerprint
+        _working_tree_fingerprint(repository, base_sha, current_changes) != expected_fingerprint
     ):
         raise CandidateVerificationError("working_tree_changed")
 
@@ -670,7 +714,13 @@ def verify_candidate(
     with TemporaryDirectory(prefix="executor-verifier-") as temporary_directory:
         temporary_root = Path(temporary_directory)
         environment = _verification_environment(temporary_root)
-        _run_git(repository, "rev-parse", "--verify", f"{base_sha}^{{commit}}", environment=environment)
+        _run_git(
+            repository,
+            "rev-parse",
+            "--verify",
+            f"{base_sha}^{{commit}}",
+            environment=environment,
+        )
         if candidate_sha is not None:
             _run_git(
                 repository,
@@ -679,53 +729,48 @@ def verify_candidate(
                 f"{candidate_sha}^{{commit}}",
                 environment=environment,
             )
-        changes = _name_status_changes(
-            repository, base_sha, candidate_sha, environment=environment
-        )
-        base_entries = _tree_entries(repository, base_sha, environment=environment)
-        candidate_entries = _tree_entries(
-            repository, candidate_sha or base_sha, environment=environment
-        )
-        index_entries = (
-            _index_entries(repository, environment=environment)
-            if candidate_sha is None
-            else None
-        )
-        _validate_path_files(
-            repository,
-            changes,
-            base_sha,
-            base_entries,
-            candidate_entries,
-            index_entries,
-            candidate_sha,
-            policy,
-            environment=environment,
-        )
         if candidate_sha is None:
-            original_fingerprint = _working_tree_fingerprint(repository, changes)
+            original_changes = _name_status_changes(
+                repository, base_sha, None, environment=environment
+            )
+            _validate_path_files(
+                repository,
+                original_changes,
+                base_sha,
+                _tree_entries(repository, base_sha, environment=environment),
+                _tree_entries(repository, base_sha, environment=environment),
+                _index_entries(repository, environment=environment),
+                None,
+                policy,
+                environment=environment,
+            )
+            original_fingerprint = _working_tree_fingerprint(
+                repository, base_sha, original_changes
+            )
             verification_repository = _materialize_working_tree(
                 repository,
                 base_sha,
-                changes,
+                original_changes,
                 temporary_root,
                 environment=environment,
             )
             _assert_original_working_tree_unchanged(
                 repository,
-                changes,
+                original_changes,
                 original_fingerprint,
                 base_sha,
                 environment=environment,
             )
-            snapshot_changes = _name_status_changes(
-                verification_repository, base_sha, None, environment=environment
+            verified_tree_oid = _stage_snapshot_and_write_tree(
+                verification_repository, environment=environment
             )
-            if snapshot_changes != changes or (
-                _working_tree_fingerprint(verification_repository, snapshot_changes)
-                != original_fingerprint
-            ):
-                raise CandidateVerificationError("working_tree_snapshot_invalid")
+            snapshot_changes = _name_status_changes(
+                verification_repository,
+                base_sha,
+                None,
+                environment=environment,
+                staged_only=True,
+            )
             changed_paths = _validate_path_files(
                 verification_repository,
                 snapshot_changes,
@@ -741,6 +786,16 @@ def verify_candidate(
                 policy,
                 environment=environment,
             )
+            content_fingerprint = _working_tree_fingerprint(
+                verification_repository, base_sha, snapshot_changes
+            )
+            _assert_original_working_tree_unchanged(
+                repository,
+                original_changes,
+                original_fingerprint,
+                base_sha,
+                environment=environment,
+            )
         else:
             verification_repository = _materialize_candidate(
                 repository,
@@ -748,16 +803,37 @@ def verify_candidate(
                 temporary_root,
                 environment=environment,
             )
+            changes = _name_status_changes(
+                verification_repository,
+                base_sha,
+                candidate_sha,
+                environment=environment,
+            )
             changed_paths = _validate_path_files(
-                repository,
+                verification_repository,
                 changes,
                 base_sha,
-                base_entries,
-                candidate_entries,
+                _tree_entries(verification_repository, base_sha, environment=environment),
+                _tree_entries(
+                    verification_repository, candidate_sha, environment=environment
+                ),
                 None,
                 candidate_sha,
                 policy,
                 environment=environment,
+            )
+            verified_tree_oid = _run_git(
+                verification_repository,
+                "rev-parse",
+                f"{candidate_sha}^{{tree}}",
+                environment=environment,
+            ).decode("ascii").strip()
+            if _stage_snapshot_and_write_tree(
+                verification_repository, environment=environment
+            ) != verified_tree_oid:
+                raise CandidateVerificationError("candidate_tree_mismatch")
+            content_fingerprint = _working_tree_fingerprint(
+                verification_repository, base_sha, changes
             )
         _run_sealed_commands(
             verification_repository,
@@ -768,9 +844,13 @@ def verify_candidate(
         if candidate_sha is None:
             _assert_original_working_tree_unchanged(
                 repository,
-                changes,
+                original_changes,
                 original_fingerprint,
                 base_sha,
                 environment=environment,
             )
-    return VerificationResult(changed_paths=changed_paths)
+    return VerificationResult(
+        changed_paths=changed_paths,
+        content_fingerprint=content_fingerprint,
+        verified_tree_oid=verified_tree_oid,
+    )

@@ -485,6 +485,8 @@ class CandidatePolicy:
 @dataclass(frozen=True)
 class VerificationResult:
     changed_paths: tuple[str, ...]
+    content_fingerprint: str
+    verified_tree_oid: str
 
 def verify_candidate(
     repository: Path,
@@ -496,6 +498,16 @@ def verify_candidate(
 
 `candidate_sha=None`은 Codex가 만든 working tree diff, SHA가 있으면 복구 대상인
 `base_sha..candidate_sha` committed diff를 검증한다.
+
+반환값은 다음 handoff 계약을 가진다.
+
+- 변경 경로 (`changed_paths`): 정책을 통과한 정렬된 경로 목록이다.
+- 콘텐츠 지문 (`content_fingerprint`): domain separator, `base_sha`, 정렬된 change
+  kind·이전 경로·현재 경로, 각 경로의 missing/regular 상태·mode·size·bytes를 canonical
+  SHA-256으로 계산한 64자리 lowercase 값이다.
+- 검증 tree 객체 ID (`verified_tree_oid`): verifier snapshot에 finalizer와 동일하게
+  `git add --all` 후 `git write-tree`를 실행해 얻은 tree OID다. committed candidate는
+  검증한 commit tree와 같아야 한다.
 
 - [ ] **4.1 정책 실패 테스트 작성**
 
@@ -569,7 +581,10 @@ def classify_candidate_state(
     issue_number: int,
     remote_tip: str,
 ) -> CandidateState: ...
-def finalize_candidate(config: FinalizeInput) -> str: ...
+def finalize_candidate(
+    config: FinalizeInput,
+    verification: VerificationResult,
+) -> str: ...
 ```
 
 - [ ] **5.1 상태표 실패 테스트 작성**
@@ -591,6 +606,10 @@ def finalize_candidate(config: FinalizeInput) -> str: ...
   임시 bare repository를 사용해 parent, 정확히 한 commit, 고정 identity,
   `exp: issue #<number> candidate`, branch refspec, fast-forward만 허용되는지 검증한다.
   push 직전 tip 변경을 주입하면 원격 ref가 바뀌지 않아야 한다.
+  `NEW` (신규 candidate)에서는 commit 직전에 원본 working tree의 콘텐츠 지문
+  (`content_fingerprint`)과 `git add --all` 뒤 tree 객체 ID (`verified_tree_oid`)를
+  재계산해 Stage 4 반환값과 둘 다 같을 때만 commit한다. `ADOPTABLE` (기존 candidate
+  채택 가능)에서는 검증 commit의 tree 객체 ID가 `verified_tree_oid`와 같은지 확인한다.
 
 - [ ] **5.3 API client 실패 테스트 작성**
 

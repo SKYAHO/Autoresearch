@@ -231,6 +231,21 @@ candidate-verifier는 credential 없이 다음을 고정 순서로 실행한다.
 수정한 스크립트를 검증 명령의 정본으로 사용하지 않는다. repository 코드는 GitHub·API·
 Codex credential이 없는 verifier에서만 실행한다.
 
+verifier가 승인한 candidate는 Stage 5에 다음 handoff 값을 함께 전달한다.
+
+- 콘텐츠 지문 (`content_fingerprint`): domain separator와 `base_sha`, 정렬된 change
+  kind·이전 경로·현재 경로, 각 경로의 missing/regular 상태·mode·size·bytes를 canonical
+  SHA-256으로 계산한 64자리 lowercase 값이다.
+- 검증 tree 객체 ID (`verified_tree_oid`): verifier snapshot에 최종 commit과 같은
+  `git add --all`을 적용한 뒤 `git write-tree`로 얻은 tree OID다.
+
+working tree는 verifier가 만든 snapshot에서 정책과 고정 명령을 실행하며, 원본 candidate의
+지문이 snapshot과 verifier 반환 시점에 모두 일치해야 승인한다. Stage 5는 commit 직전에
+원본 candidate의 콘텐츠 지문 (`content_fingerprint`)과 staged tree 객체 ID
+(`verified_tree_oid`)를 다시 계산한다. 둘 중 하나라도 Stage 4 handoff와 다르면 commit하지
+않고 candidate 전체를 거부한다. committed candidate의 `verified_tree_oid`는 검증한 commit의
+tree OID와 정확히 일치해야 한다.
+
 성공한 변경은 정확히 한 commit으로 만든다.
 
 - parent: `base_dev_sha`

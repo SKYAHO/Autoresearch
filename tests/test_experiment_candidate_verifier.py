@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 
@@ -273,6 +274,104 @@ def test_generated_data_file_is_rejected_even_under_an_allowed_path(
         _verify(repository, base_sha)
 
 
+@pytest.mark.parametrize("operation", ("rename", "delete"))
+def test_generated_data_rename_away_or_delete_is_rejected(
+    tmp_path: Path, operation: str
+) -> None:
+    """previous 경로를 빼면 생성 데이터의 rename-away·delete가 allowlist를 우회한다."""
+    repository, _initial_base = _repository(tmp_path)
+    generated = repository / "tools" / "generated.csv"
+    generated.parent.mkdir(exist_ok=True)
+    generated.write_text("generated,data\n", encoding="utf-8")
+    _git(repository, "add", "tools/generated.csv")
+    _git(repository, "commit", "-m", "generated fixture")
+    base_sha = _git(repository, "rev-parse", "HEAD")
+    if operation == "rename":
+        _git(repository, "mv", "tools/generated.csv", "tools/generated.txt")
+    else:
+        _git(repository, "rm", "tools/generated.csv")
+
+    with pytest.raises(CandidateVerificationError, match="generated_data"):
+        _verify(repository, base_sha)
+
+
+def test_committed_candidate_generated_data_delete_is_rejected(tmp_path: Path) -> None:
+    """재시도 commit에서도 생성 데이터 삭제를 허용하면 동일한 정책을 우회한다."""
+    repository, _initial_base = _repository(tmp_path)
+    generated = repository / "tools" / "generated.parquet"
+    generated.parent.mkdir(exist_ok=True)
+    generated.write_bytes(b"PAR1fixture")
+    _git(repository, "add", "tools/generated.parquet")
+    _git(repository, "commit", "-m", "generated fixture")
+    base_sha = _git(repository, "rev-parse", "HEAD")
+    _git(repository, "rm", "tools/generated.parquet")
+    _git(repository, "commit", "-m", "candidate removes generated data")
+    candidate_sha = _git(repository, "rev-parse", "HEAD")
+
+    with pytest.raises(CandidateVerificationError, match="generated_data"):
+        verify_candidate(
+            repository=repository,
+            base_sha=base_sha,
+            candidate_sha=candidate_sha,
+            policy=CandidatePolicy(),
+        )
+
+
+def test_verification_result_binds_deterministic_fingerprint_and_staged_tree(
+    tmp_path: Path,
+) -> None:
+    """handoff 값이 없거나 비결정적이면 Stage 5가 verifier 결과를 재확인할 수 없다."""
+    repository, base_sha = _repository(tmp_path)
+    (repository / "autoresearch" / "candidate.py").write_text("BASE = 2\n", encoding="utf-8")
+
+    first = verify_candidate(repository, base_sha, None, CandidatePolicy())
+    second = verify_candidate(repository, base_sha, None, CandidatePolicy())
+
+    assert first.content_fingerprint == second.content_fingerprint
+    assert len(first.content_fingerprint) == 64
+    assert first.content_fingerprint == first.content_fingerprint.lower()
+    assert len(first.verified_tree_oid) == 40
+    assert first.verified_tree_oid == second.verified_tree_oid
+
+
+@pytest.mark.parametrize("mutation", ("bytes", "mode", "path"))
+def test_handoff_values_change_when_candidate_tree_changes(
+    tmp_path: Path, mutation: str
+) -> None:
+    """bytes·mode·path 중 하나가 달라도 Stage 5가 같은 verifier 결과로 commit하면 안 된다."""
+    repository, base_sha = _repository(tmp_path)
+    target = repository / "autoresearch" / "candidate.py"
+    target.write_text("BASE = 2\n", encoding="utf-8")
+    before = verify_candidate(repository, base_sha, None, CandidatePolicy())
+
+    if mutation == "bytes":
+        target.write_text("BASE = 3\n", encoding="utf-8")
+    elif mutation == "mode":
+        target.chmod(0o755)
+    else:
+        renamed = repository / "autoresearch" / "renamed.py"
+        target.rename(renamed)
+
+    after = verify_candidate(repository, base_sha, None, CandidatePolicy())
+
+    assert after.content_fingerprint != before.content_fingerprint
+    assert after.verified_tree_oid != before.verified_tree_oid
+
+
+def test_committed_candidate_handoff_tree_is_its_commit_tree(tmp_path: Path) -> None:
+    """재시도 candidate가 다른 tree OID를 반환하면 Stage 5 채택이 잘못된 commit을 신뢰한다."""
+    repository, base_sha = _repository(tmp_path)
+    target = repository / "autoresearch" / "candidate.py"
+    target.write_text("BASE = 2\n", encoding="utf-8")
+    _git(repository, "add", "autoresearch/candidate.py")
+    _git(repository, "commit", "-m", "candidate")
+    candidate_sha = _git(repository, "rev-parse", "HEAD")
+
+    result = verify_candidate(repository, base_sha, candidate_sha, CandidatePolicy())
+
+    assert result.verified_tree_oid == _git(repository, "rev-parse", f"{candidate_sha}^{{tree}}")
+
+
 def test_normal_token_technical_context_is_not_treated_as_a_credential(tmp_path: Path) -> None:
     """token이라는 일반 기술 용어만으로 source 변경을 거부하면 허용 scope가 과도해진다."""
     repository, base_sha = _repository(tmp_path)
@@ -303,6 +402,31 @@ def test_working_tree_mutation_after_snapshot_is_rejected(
         _verify(repository, base_sha)
 
 
+def test_snapshot_descriptor_race_to_symlink_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """snapshot copy가 path를 다시 열면 lstat 뒤 symlink 교체로 verifier 밖 파일을 읽는다."""
+    repository, base_sha = _repository(tmp_path)
+    target = repository / "autoresearch" / "candidate.py"
+    target.write_text("BASE = 2\n", encoding="utf-8")
+    original_fstat = verifier.os.fstat
+    replaced = False
+
+    def replace_after_open(file_descriptor: int) -> os.stat_result:
+        nonlocal replaced
+        result = original_fstat(file_descriptor)
+        if not replaced:
+            replaced = True
+            target.unlink()
+            target.symlink_to("/etc/passwd")
+        return result
+
+    monkeypatch.setattr(verifier.os, "fstat", replace_after_open)
+
+    with pytest.raises(CandidateVerificationError):
+        _verify(repository, base_sha)
+
+
 def test_copy_detection_checks_forbidden_source_and_allowed_destination(tmp_path: Path) -> None:
     """copy source를 검사하지 않으면 docs의 금지 내용을 tools로 복사해 우회할 수 있다."""
     repository, base_sha = _repository(tmp_path)
@@ -319,6 +443,33 @@ def test_copy_detection_checks_forbidden_source_and_allowed_destination(tmp_path
 
     with pytest.raises(CandidateVerificationError, match="forbidden_path"):
         _verify(repository, copy_base)
+
+
+def test_untracked_copy_detection_checks_forbidden_source(tmp_path: Path) -> None:
+    """untracked copy도 finalizer의 git add --all 뒤 source와 함께 검사해야 한다."""
+    repository, _initial_base = _repository(tmp_path)
+    source = repository / "docs" / "forbidden_source.py"
+    source.parent.mkdir()
+    source.write_text("VALUE = 'stable fixture'\n", encoding="utf-8")
+    _git(repository, "add", "docs/forbidden_source.py")
+    _git(repository, "commit", "-m", "copy source fixture")
+    copy_base = _git(repository, "rev-parse", "HEAD")
+    destination = repository / "tools" / "copied.py"
+    destination.parent.mkdir()
+    destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+
+    with pytest.raises(CandidateVerificationError, match="forbidden_path"):
+        _verify(repository, copy_base)
+
+
+def test_pure_untracked_file_is_not_misclassified_as_a_copy(tmp_path: Path) -> None:
+    """copy detection이 순수 신규 파일을 source가 있는 변경처럼 불안정하게 거부하면 안 된다."""
+    repository, base_sha = _repository(tmp_path)
+    target = repository / "tools" / "new.py"
+    target.parent.mkdir(exist_ok=True)
+    target.write_text("VALUE = 'new fixture'\n", encoding="utf-8")
+
+    assert _verify(repository, base_sha) == ("tools/new.py",)
 
 
 def test_rename_checks_the_previous_and_new_paths(tmp_path: Path) -> None:
