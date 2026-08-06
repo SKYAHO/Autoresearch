@@ -6,11 +6,12 @@ Streamlit workbench가 FastAPI Experiment API에 접근하는 경계다. API 토
 
 [기능]
 Experiment 생성·조회, 사전등록 필드의 `[AR]` 이슈 발행 요청, Event/Log cursor 조회,
-metadata 조회와 API 오류의 안전한 분류를 제공한다.
+metadata 조회, 실험 상태 전이와 실행 Log 기록, API 오류의 안전한 분류를 제공한다.
 
 [비책임]
-Streamlit 화면 렌더링, session state, Agent 실행, 상태·Event·Log 쓰기. 이슈 본문 조립과
-`gh` 호출은 API 서버가 한다 — 이 모듈은 발행을 **요청**할 뿐이다.
+Streamlit 화면 렌더링, session state, Agent 실행, Step 쓰기. 어떤 상태로 전이할지와
+무엇을 기록할지는 호출자가 정한다 — 이 모듈은 전송만 한다. 이슈 본문 조립과 `gh`
+호출은 API 서버가 한다 — 이 모듈은 발행을 **요청**할 뿐이다.
 """
 
 from __future__ import annotations
@@ -219,6 +220,54 @@ class ExperimentClient:
         if not isinstance(entries, dict):
             raise ApiUnavailableError("Experiment API returned invalid metadata.")
         return {str(key): str(value) for key, value in entries.items()}
+
+    def patch_status(
+        self,
+        experiment_id: str,
+        status: str,
+        *,
+        reason: str | None = None,
+        metric_snapshot: dict[str, Any] | None = None,
+    ) -> Experiment:
+        """실험 상태를 전이한다.
+
+        서버가 이 전이의 event를 함께 기록하므로(`service.py:280-289`) 호출자가 event를
+        따로 만들지 않는다. `metric_snapshot`을 실으면 `Experiment.metric_summary`를
+        통째로 덮어쓰므로, None이면 키 자체를 보내지 않는다.
+        """
+        payload: dict[str, object] = {"status": status}
+        if reason is not None:
+            payload["reason"] = reason
+        if metric_snapshot is not None:
+            payload["metric_snapshot"] = metric_snapshot
+        return self._parse_model(
+            self._request_json(
+                "PATCH", f"/experiments/{experiment_id}/status", payload
+            ),
+            Experiment.from_json,
+        )
+
+    def post_log(
+        self,
+        experiment_id: str,
+        *,
+        idempotency_key: str,
+        content: str,
+        log_type: str = "stdout",
+    ) -> Log:
+        """실행 Log를 멱등하게 기록한다."""
+        return self._parse_model(
+            self._request_json(
+                "POST",
+                f"/experiments/{experiment_id}/logs",
+                {
+                    "idempotency_key": idempotency_key,
+                    "log_type": log_type,
+                    "content": content,
+                },
+            ),
+            Log.from_json,
+        )
 
     def _cursor_path(self, base_path: str, after_id: str | None) -> str:
         if after_id is None:
