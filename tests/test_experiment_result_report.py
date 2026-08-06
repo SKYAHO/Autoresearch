@@ -14,6 +14,9 @@ import pytest
 from src.pipeline.paired_experiment import PairedExperimentRequest
 from src.pipeline.experiment_result_report import (
     MAX_IDEMPOTENCY_KEY_LENGTH,
+    MAX_LOG_CONTENT_LENGTH,
+    MAX_REASON_LENGTH,
+    REPORT_IMMUTABLE_STATUSES,
     STATUS_CREATED,
     STATUS_ERROR,
     STATUS_EVALUATING,
@@ -29,12 +32,12 @@ from src.pipeline.experiment_result_report import (
     plan_transitions,
     target_status,
 )
-from tests.test_cli import _paired_request_payload, _paired_result
+from tests.paired_experiment_fixtures import paired_request_payload, paired_result
 
 
 def _result(outcome: str):
-    request = PairedExperimentRequest.model_validate(_paired_request_payload((42, 43, 44)))
-    return _paired_result(request, outcome=outcome)
+    request = PairedExperimentRequest.model_validate(paired_request_payload((42, 43, 44)))
+    return paired_result(request, outcome=outcome)
 
 
 @pytest.mark.parametrize(
@@ -177,9 +180,9 @@ def test_naive_idempotency_key_would_exceed_limit() -> None:
             {"evaluation_id": None, "evidence_id": "paired-seed-evidence-" + "b" * 64},
             115,
         ),
-        ({"evaluation_id": None, "evidence_id": None}, 91),
+        ({"evaluation_id": None, "evidence_id": None}, 115),
     ],
-    ids=["evaluation_id", "evidence_id", "candidate_sha_fallback"],
+    ids=["evaluation_id", "evidence_id", "content_hash_fallback"],
 )
 def test_log_idempotency_key_stays_within_limit(
     update: dict[str, object], expected_length: int
@@ -204,3 +207,82 @@ def test_log_content_is_a_pointer_within_limit() -> None:
     assert len(content) <= 8192
     assert "gs://bucket/run.log" in content
     assert "outcome=comparison_passed" in content
+
+
+def test_plan_transitions_skips_evaluating_for_error_target() -> None:
+    """서버가 `RUNNING → ERROR`를 직접 허용하므로 EVALUATING을 끼우지 않는다.
+
+    판정에 도달하지 못한 실행에 "평가 중" event를 남기면 워크벤치 타임라인이 사실과
+    어긋난다. `comparison_failed`를 ERROR로 보내기로 한 판단과도 어긋난다.
+    """
+    assert plan_transitions(STATUS_RUNNING, STATUS_ERROR) == (STATUS_ERROR,)
+    # 다른 터미널은 그대로 EVALUATING을 거친다.
+    assert plan_transitions(STATUS_RUNNING, STATUS_FAILED) == (
+        STATUS_EVALUATING,
+        STATUS_FAILED,
+    )
+
+
+def test_idempotency_key_differs_when_validation_failure_reason_differs() -> None:
+    """식별자가 없는 검증 실패는 내용으로 key를 만든다.
+
+    `candidate_sha`로만 만들면 같은 후보의 서로 다른 실패가 같은 key를 갖고, 서버가
+    `IdempotencyConflictError`(409)로 두 번째 사유를 버린다.
+    """
+    base = _result("comparison_failed").model_copy(
+        update={"evaluation_id": None, "evidence_id": None}
+    )
+    first = base.model_copy(
+        update={"decision_reason": "missing_paired_run",
+                "reason_codes": ("missing_paired_run",)}
+    )
+    second = base.model_copy(
+        update={"decision_reason": "dataset_lineage_mismatch",
+                "reason_codes": ("dataset_lineage_mismatch",)}
+    )
+
+    key_first = build_log_idempotency_key("0" * 36, first)
+    key_second = build_log_idempotency_key("0" * 36, second)
+
+    assert key_first != key_second
+    # 같은 내용은 여전히 같은 key여야 재실행이 중복을 만들지 않는다.
+    assert key_first == build_log_idempotency_key("0" * 36, first)
+
+
+def test_report_immutable_statuses_derive_from_server_set() -> None:
+    """서버 터미널 집합과의 관계를 코드가 아니라 테스트가 고정한다.
+
+    런타임에 서버 모듈을 import하면 SQLAlchemy가 딸려와 학습 이미지가 깨진다. 그래서
+    상수는 이 모듈에서 재선언하되, 서버와의 차이를 여기서 명시적으로 못 박는다.
+    """
+    from agent_orchestration.app.experiments.models import (
+        TERMINAL_STATUSES as SERVER_TERMINAL_STATUSES,
+    )
+
+    server = {status.value for status in SERVER_TERMINAL_STATUSES}
+
+    assert server == {"FAILED", "ERROR", "PROMOTED"}
+    # 서버는 PASSED에서 PROMOTED를 허용하지만, 이 명령은 결론을 뒤집지 않는다.
+    assert REPORT_IMMUTABLE_STATUSES == server | {STATUS_PASSED}
+
+
+def test_length_limits_match_server_schema() -> None:
+    """상한 상수가 서버 스키마와 어긋나면 런타임 422 대신 여기서 깨지게 한다."""
+    from agent_orchestration.app.experiments.schemas import (
+        ExperimentLogCreate,
+        StatusUpdateRequest,
+    )
+
+    def _max_length(model, field: str) -> int:
+        (constraint,) = [
+            meta.max_length
+            for meta in model.model_fields[field].metadata
+            if getattr(meta, "max_length", None) is not None
+        ]
+        return constraint
+
+    assert MAX_REASON_LENGTH == _max_length(StatusUpdateRequest, "reason")
+    assert MAX_LOG_CONTENT_LENGTH == _max_length(ExperimentLogCreate, "content")
+    assert MAX_IDEMPOTENCY_KEY_LENGTH == _max_length(
+        ExperimentLogCreate, "idempotency_key"
+    )

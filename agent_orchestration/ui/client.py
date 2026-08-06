@@ -63,6 +63,14 @@ class ApiValidationError(ExperimentApiError):
     """API 요청 검증 실패."""
 
 
+class ApiStateConflictError(ExperimentApiError):
+    """실험 상태 전이 또는 멱등성 충돌(409).
+
+    `ApiUnavailableError`와 달리 **재시도해도 풀리지 않는다** — 서버가 이미 다른
+    상태이거나 같은 key에 다른 내용이 기록되어 있다. 둘을 같은 예외로 묶으면 호출자가
+    무한 재시도할 수 있어 분리한다."""
+
+
 class ApiUnavailableError(ExperimentApiError):
     """네트워크 또는 API 서버 오류."""
 
@@ -310,6 +318,12 @@ class ExperimentClient:
             raise ApiNotFoundError("선택한 실험을 찾을 수 없습니다.") from error
         if error.code == 422:
             raise ApiValidationError("Experiment API 요청 형식이 올바르지 않습니다.") from error
+        if error.code == 409:
+            # 상태 전이 충돌과 멱등성 충돌이 여기로 온다(`app/main.py:162-174`). 재시도로
+            # 풀리지 않으므로 "일시적 오류"로 뭉뚱그리지 않는다.
+            raise ApiStateConflictError(
+                "실험이 이미 다른 상태이거나 같은 key에 다른 내용이 기록되어 있습니다."
+            ) from error
         raise ApiUnavailableError("Experiment API가 일시적으로 응답하지 않습니다.") from error
 
     @staticmethod

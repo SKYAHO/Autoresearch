@@ -15,6 +15,8 @@ HTTP 전송(`agent_orchestration.ui.client`), 명령 배선과 종료 코드(`sr
 
 from __future__ import annotations
 
+import hashlib
+
 from src.pipeline.paired_experiment import PairedExperimentResult
 
 STATUS_CREATED = "CREATED"
@@ -25,7 +27,11 @@ STATUS_FAILED = "FAILED"
 STATUS_ERROR = "ERROR"
 STATUS_PROMOTED = "PROMOTED"
 
-TERMINAL_STATUSES = frozenset(
+# 서버의 `TERMINAL_STATUSES`와 **다른 집합**이므로 이름을 달리한다. 서버는
+# `{FAILED, ERROR, PROMOTED}`이고 `PASSED → PROMOTED`를 허용하지만, 이 명령 관점에서는
+# `PASSED`도 이미 내려진 결론이라 덮어쓰지 않는다. 승격은 이 계약의 범위가 아니다.
+# 서버 집합과의 관계는 테스트가 고정한다(`test_experiment_result_report.py`).
+REPORT_IMMUTABLE_STATUSES = frozenset(
     {STATUS_PASSED, STATUS_FAILED, STATUS_ERROR, STATUS_PROMOTED}
 )
 
@@ -116,7 +122,7 @@ def plan_transitions(current_status: str, target: str) -> tuple[str, ...]:
     """
     if current_status == target:
         return ()
-    if current_status in TERMINAL_STATUSES:
+    if current_status in REPORT_IMMUTABLE_STATUSES:
         raise TerminalStatusConflictError(
             "이미 종료된 실험의 결론을 덮어쓰지 않습니다."
         )
@@ -128,7 +134,10 @@ def plan_transitions(current_status: str, target: str) -> tuple[str, ...]:
         raise ResultReportError("알 수 없는 실험 상태입니다.")
 
     path: list[str] = []
-    if current_status == STATUS_RUNNING:
+    # 서버는 `RUNNING → ERROR`를 직접 허용한다(`models.py:79-81`). 판정에 도달하지 못한
+    # 실행에 `EVALUATING` event를 남기면 워크벤치가 "평가 중"이었다고 표시해 타임라인이
+    # 사실과 어긋나고, 왕복이 한 번 늘어 실패 지점만 늘어난다.
+    if current_status == STATUS_RUNNING and target != STATUS_ERROR:
         path.append(STATUS_EVALUATING)
     path.append(target)
     return tuple(path)
@@ -142,9 +151,24 @@ def build_log_idempotency_key(
     `_stable_id`의 접두사(`experiment-evaluation-` 등)는 고유성에 기여하지 않는
     장식인데, 그대로 이어붙이면 137자가 되어 128자 상한을 넘긴다. 마지막 `-` 뒤
     sha256 부분만 쓴다.
+
+    두 식별자가 모두 없는 경로는 **판정 엔진을 부르지도 못한 검증 실패**뿐이다
+    (`paired_experiment.py:389-390`). 이때 `candidate_sha`로 떨어뜨리면 내용과 무관한
+    고정값이라, 같은 후보에서 사유가 다른 검증 실패가 두 번 나면 key가 겹친다. 서버는
+    같은 key에 다른 fingerprint가 오면 `IdempotencyConflictError`(409)를 내므로
+    두 번째 사유가 기록되지 않고 명령도 실패한다. 그래서 이 경로만 결과 내용으로
+    discriminator를 만든다 — 같은 내용이면 같은 key, 다른 사유면 다른 key다.
     """
-    raw = result.evaluation_id or result.evidence_id or result.candidate_sha
-    key = f"{experiment_id}:paired-result:{raw.rsplit('-', 1)[-1]}"
+    stable = result.evaluation_id or result.evidence_id
+    if stable is not None:
+        discriminator = stable.rsplit("-", 1)[-1]
+    else:
+        discriminator = hashlib.sha256(
+            "\x1f".join(
+                (result.candidate_sha, result.decision_reason, *result.reason_codes)
+            ).encode("utf-8")
+        ).hexdigest()
+    key = f"{experiment_id}:paired-result:{discriminator}"
     if len(key) > MAX_IDEMPOTENCY_KEY_LENGTH:
         raise ResultReportError("idempotency key가 서버 상한을 넘었습니다.")
     return key

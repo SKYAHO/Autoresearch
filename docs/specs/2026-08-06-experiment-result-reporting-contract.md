@@ -63,6 +63,15 @@ uv run python -m src.cli report-experiment-result \
 | 1 | API 호출 실패, 허용되지 않는 전이, 덮어쓰기 거부 |
 | 2 | 인자 오류, 결과 JSON 계약 위반 |
 
+`--experiment-id`는 API를 부르기 전에 UUID 형식을 검증한다. 서버 라우트가
+`experiment_id: uuid.UUID`이므로(`router.py:110`) 검증하지 않으면 오타가 422 → 코드 1로
+나가 API 실패와 구분되지 않고, 호출자가 재시도 여부를 코드로 판단할 수 없다. 이 검증은
+`PairedExperimentResult.experiment_id`(UUID 형식이 아니다)와 뒤바꿔 넣은 사고도 잡는다.
+
+코드 1로 끝나는 거부 두 가지는 운영 대응이 다르므로 **진단 문구로 구분한다**:
+`LauncherOwnedExperimentError`(launcher 선점을 기다리면 풀린다)와
+`TerminalStatusConflictError`(기다려도 풀리지 않는다 — 대상을 잘못 짚었는지 확인).
+
 에러 출력에 예외 원문을 싣지 않는다. payload에 URI·식별자가 섞여 있고 클라이언트가
 토큰을 보유하므로, 기존 CLI와 같이 예외 **타입과 고정 진단**만 출력한다.
 
@@ -81,7 +90,8 @@ uv run python -m src.cli report-experiment-result \
 | 현재 상태 | 밟는 경로 |
 | --- | --- |
 | `CREATED` | **전이하지 않고 종료 코드 1** — launcher가 선점할 대기 행이다 |
-| `RUNNING` | `EVALUATING` → 터미널 |
+| `RUNNING`, 목표가 `ERROR` | `ERROR` — 서버가 `RUNNING → ERROR`를 직접 허용한다 |
+| `RUNNING`, 그 외 | `EVALUATING` → 터미널 |
 | `EVALUATING` | 터미널 |
 | 목표 터미널과 동일 | 전이 없이 성공 종료 |
 | 다른 터미널 / `PROMOTED` | **전이하지 않고 종료 코드 1** |
@@ -217,6 +227,42 @@ sha256 hex는 64자이므로 최대 115자, `candidate_sha` fallback은 91자로
 이 모듈은 현재 "Streamlit이 쓰는 클라이언트"로 문서화되어 있고 `[비책임]`에 "상태·
 Event·Log 쓰기"가 명시되어 있다. 같은 커밋에서 그 항목을 삭제하고 책임 범위를
 갱신한다 — 코드가 문서를 벗어난 채로 두지 않는다.
+
+## 실행 표면 — 어느 이미지에서 도는가
+
+`agent_orchestration.ui.client`는 `ui.models` → `app.experiments.models`를 거쳐
+SQLAlchemy·FastAPI를 요구한다. 이 둘은 `[project].dependencies`가 아니라
+`orchestration` 그룹에만 있고, 그 그룹은 `dev`에 `include-group`으로 물려 있다.
+
+현재 이미지들의 표면은 이렇다.
+
+| 이미지 | `src/` | `agent_orchestration/ui` | `orchestration` 의존성 |
+| --- | --- | --- | --- |
+| `Dockerfile.train` | 런타임 code archive로 전체 레포 | 있음(archive) | **없음** (`uv sync --locked --no-dev`) |
+| `Dockerfile.app` | COPY | **없음** | **없음** |
+| `deploy/agent_orchestration/api.Dockerfile` | **없음** | **없음** (`app`만 COPY) | 있음 |
+
+**따라서 이 명령을 실행할 수 있는 이미지는 현재 없다.** 지금은 `uv sync`로 dev 표면이
+갖춰진 환경에서 수동 실행하는 것만 지원한다.
+
+이미지를 새로 배선하지 않는 이유는 **호출자가 아직 없기 때문**이다. 자동 호출자는
+Airflow DAG인데 그것이 이 계약의 범위 밖이다. 표면을 먼저 만들면 어느 이미지가
+맞는지 모르는 채로 의존성만 늘린다.
+
+호출자를 추가하는 작업이 함께 해결해야 할 것은 다음 세 가지다.
+
+1. 그 이미지가 `src/`와 `agent_orchestration/ui`를 **모두** 담을 것
+2. `orchestration` 그룹(또는 그 부분집합)을 설치할 것
+3. 또는 `ui/models.py`가 `ExperimentStatus`·`TERMINAL_STATUSES` 두 심볼 때문에 ORM
+   모듈을 끌어오는 구조를 끊어, client가 SQLAlchemy 없이 동작하게 할 것
+
+3번이 가장 근본적이지만 `agent_orchestration/ui` 소유 경계 밖이라 이 계약에서 손대지
+않는다.
+
+**이 제약은 다른 서브커맨드에 영향을 주지 않는다.** client를 지연 import하므로
+`train-model`·`evaluate-model`·`compare-paired-experiment` 등은 orchestration 의존성
+없이 그대로 동작한다. 이 성질은 테스트가 고정한다
+(`test_cli_import_does_not_require_sqlalchemy`).
 
 ## 구현 시 함정
 

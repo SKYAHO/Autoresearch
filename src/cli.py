@@ -32,6 +32,7 @@ import math
 import os
 import sys
 import traceback
+import uuid
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -909,6 +910,19 @@ def report_experiment_result(
 
     exit code: 반영 성공 0, API·전이 실패 1, 인자·결과 계약 오류 2.
     """
+    try:
+        # 서버 라우트가 `experiment_id: uuid.UUID`이므로(`router.py:110`) 오타는 422 →
+        # 종료 코드 1로 나가 API 실패와 구분되지 않는다. 인자 오류는 인자 오류로
+        # 끊는다 — #454 `experiment_id`(UUID가 아니다)와 뒤바꾼 사고도 여기서 걸린다.
+        uuid.UUID(experiment_id)
+    except ValueError as error:
+        typer.echo(
+            f"[결과 반영 실패] {type(error).__name__}: "
+            "--experiment-id가 UUID 형식이 아닙니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from error
+
     try:
         payload = json.loads(Path(result).read_text(encoding="utf-8"))
         parsed = paired_experiment.PairedExperimentResult.model_validate(payload)

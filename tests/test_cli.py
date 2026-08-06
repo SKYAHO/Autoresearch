@@ -20,18 +20,20 @@ from src import cli  # noqa: E402
 from src.pipeline.experiment_evaluation import POLICY_SEEDS  # noqa: E402
 from src.pipeline.paired_experiment import (  # noqa: E402
     PairedExperimentRequest,
-    PairedExperimentResult,
 )
 from agent_orchestration.ui.client import (  # noqa: E402
     ApiConfigurationError,
     ApiUnavailableError,
     ExperimentApiError,
 )
+from tests.paired_experiment_fixtures import (  # noqa: E402
+    paired_request_payload as _paired_request_payload,
+    paired_result as _paired_result,
+)
 from src.pipeline.promotion_evidence import (  # noqa: E402
     ExperimentPlanReceipt,
     GcsObjectReceipt,
     PromotionEvidenceValidationError,
-    create_experiment_plan,
 )
 from src.pipeline import train as train_module  # noqa: E402
 from src.tracking.promotion_result import (  # noqa: E402
@@ -1548,102 +1550,6 @@ def test_create_experiment_plan_cli_preserves_published_receipt_when_local_write
     assert store.plan.plan_id in result.output
 
 
-def _paired_result(request, *, outcome: str) -> PairedExperimentResult:
-    """CLI 배선만 보는 테스트용 결과 double(판정 자체는 paired_experiment 테스트가 본다)."""
-    return PairedExperimentResult(
-        outcome=outcome,
-        decision_reason=(
-            "criteria_met" if outcome == "comparison_passed" else "missing_paired_run"
-        ),
-        reason_codes=() if outcome == "comparison_passed" else ("missing_paired_run",),
-        issue_number=request.issue_number,
-        issue_branch=request.issue_branch,
-        experiment_id=request.experiment_id,
-        base_dev_sha=request.base_dev_sha,
-        candidate_sha=request.candidate_sha,
-        baseline=request.baseline,
-        candidate=request.candidate,
-        feature_service=request.feature_service,
-        extra_features=request.extra_features,
-        dataset_snapshot_uri=request.dataset_snapshot_uri,
-        dataset_fingerprint=request.dataset_fingerprint,
-        split_hash=request.split_hash,
-        training_config_fingerprint=request.training_config_fingerprint,
-        registry_root=request.registry_root,
-        plan_id=request.plan_receipt.plan.plan_id,
-        seeds=tuple(run.seed for run in request.runs),
-        runs=(),
-        model_uri=(
-            request.candidate.model_uri if outcome == "comparison_passed" else None
-        ),
-        evaluated_at=datetime(2026, 8, 3, tzinfo=timezone.utc),
-    )
-
-
-def _paired_request_payload(seeds: tuple[int, ...]) -> dict[str, object]:
-    """compare-paired-experiment CLI가 읽을 최소 유효 요청을 만든다."""
-    plan = create_experiment_plan(
-        hypothesis_id="issue-449",
-        control_id="a" * 40,
-        candidate_ids=("b" * 40,),
-        created_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
-    )
-    plan_receipt = ExperimentPlanReceipt(
-        plan=plan,
-        object=GcsObjectReceipt(
-            uri=f"gs://evidence/promotion-evidence/plans/{plan.plan_id}.json",
-            generation="1",
-            metageneration="1",
-            time_created=datetime(2026, 8, 1, tzinfo=timezone.utc),
-            sha256="a" * 64,
-        ),
-    )
-
-    def _condition(condition: str, source_sha: str) -> dict[str, object]:
-        return {
-            "source_sha": source_sha,
-            "image_digest": "sha256:" + "c" * 64,
-            "code_archive_sha": source_sha,
-            "code_archive_uri": f"gs://code/code/{source_sha}.tar.gz",
-            "registry_uri": (
-                f"gs://registry/experiments/449/primary/{condition}/{source_sha}/registry.db"
-            ),
-            "feature_schema_fingerprint": "d" * 64,
-        }
-
-    candidate = _condition("candidate", "b" * 40)
-    candidate["model_uri"] = "models:/ctr-model/12"
-    return {
-        "contract_version": "paired-offline-experiment-v1",
-        "issue_number": 449,
-        "issue_branch": "exp/449-example",
-        "experiment_id": "primary",
-        "base_dev_sha": "a" * 40,
-        "candidate_sha": "b" * 40,
-        "feature_service": "ctr_training_v1",
-        "extra_features": [],
-        "registry_root": "gs://registry",
-        "dataset_snapshot_uri": "gs://artifacts/snapshots/manifest.json",
-        "dataset_fingerprint": "1" * 64,
-        "split_hash": "2" * 64,
-        "training_config_fingerprint": "3" * 64,
-        "plan_receipt": plan_receipt.model_dump(mode="json"),
-        "baseline": _condition("baseline", "a" * 40),
-        "candidate": candidate,
-        "runs": [
-            {
-                "seed": seed,
-                "run_id": f"seed-{seed}",
-                "baseline_mlflow_run_id": f"baseline-{seed}",
-                "candidate_mlflow_run_id": f"candidate-{seed}",
-                "artifact_uri": f"gs://artifacts/449/primary/candidate/{'b' * 40}/seed-{seed}/",
-                "log_uri": f"gs://artifacts/449/primary/candidate/{'b' * 40}/seed-{seed}/log.txt",
-            }
-            for seed in seeds
-        ],
-    }
-
-
 def _write_paired_request(tmp_path: Path, seeds: tuple[int, ...]) -> Path:
     request_path = tmp_path / "request.json"
     request_path.write_text(
@@ -1972,6 +1878,9 @@ def _write_paired_result(tmp_path: Path, outcome: str) -> Path:
     return path
 
 
+_EXPERIMENT_UUID = "11111111-1111-1111-1111-111111111111"
+
+
 def _run_report(result_path: Path):
     return CliRunner().invoke(
         cli.app,
@@ -1980,7 +1889,7 @@ def _run_report(result_path: Path):
             "--result",
             str(result_path),
             "--experiment-id",
-            "0" * 36,
+            _EXPERIMENT_UUID,
         ],
     )
 
@@ -2148,3 +2057,29 @@ def test_cli_import_does_not_require_sqlalchemy() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_report_result_rejects_non_uuid_experiment_id(tmp_path, monkeypatch) -> None:
+    """UUID 오타는 인자 오류(2)다 — API 실패(1)와 섞이면 호출자가 재시도를 판단 못 한다.
+
+    #454의 `experiment_id`는 UUID 형식이 아니므로, 두 좌표를 뒤바꿔 넣은 사고도
+    네트워크를 쓰기 전에 여기서 걸린다.
+    """
+    stub = _StubExperimentClient("RUNNING")
+    _install_stub_client(monkeypatch, stub)
+    result_path = _write_paired_result(tmp_path, "comparison_passed")
+
+    outcome = CliRunner().invoke(
+        cli.app,
+        [
+            "report-experiment-result",
+            "--result",
+            str(result_path),
+            "--experiment-id",
+            "primary",
+        ],
+    )
+
+    assert outcome.exit_code == 2
+    assert stub.calls == []
+    assert "UUID 형식이 아닙니다" in unstyle(outcome.output)

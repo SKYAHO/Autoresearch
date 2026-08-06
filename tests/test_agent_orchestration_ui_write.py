@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from urllib.error import HTTPError
 
 import pytest
 
 from agent_orchestration.ui import client as client_module
-from agent_orchestration.ui.client import ExperimentClient
+from agent_orchestration.ui.client import ApiStateConflictError, ExperimentClient
 
 _EXPERIMENT_PAYLOAD: dict[str, Any] = {
     "id": "11111111-1111-1111-1111-111111111111",
@@ -138,3 +139,20 @@ def test_post_log_sends_idempotency_key(monkeypatch: pytest.MonkeyPatch) -> None
         "content": "outcome=comparison_passed",
     }
     assert log.content == "outcome=comparison_passed"
+
+
+def test_conflict_is_not_reported_as_transient(monkeypatch: pytest.MonkeyPatch) -> None:
+    """409는 재시도해도 풀리지 않으므로 `ApiUnavailableError`로 뭉뚱그리지 않는다.
+
+    상태 전이 충돌과 멱등성 충돌이 모두 409로 온다(`app/main.py:162-174`). 이를
+    "일시적으로 응답하지 않습니다"로 알리면 호출자가 무한 재시도할 수 있다.
+    """
+
+    def _conflict(request: Any, timeout: float) -> _FakeResponse:
+        raise HTTPError(request.full_url, 409, "Conflict", {}, None)
+
+    monkeypatch.setattr(client_module, "urlopen", _conflict)
+    client = ExperimentClient("http://api", "token-1234567890")
+
+    with pytest.raises(ApiStateConflictError):
+        client.patch_status("exp-1", "PASSED")
