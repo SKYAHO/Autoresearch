@@ -30,8 +30,10 @@ from agent_orchestration.experiment_build.service import (
     run_display_title,
 )
 from agent_orchestration.experiment_build.workflows import (
+    GitHubWorkflowRuns,
     WorkflowRun,
     WorkflowRunClient,
+    WorkflowRunError,
 )
 
 
@@ -42,9 +44,11 @@ __all__ = [
     "ExperimentBuildConfigError",
     "ExperimentBuildError",
     "ExperimentBuildSettings",
+    "GitHubWorkflowRuns",
     "ImageBuildState",
     "WorkflowRun",
     "WorkflowRunClient",
+    "WorkflowRunError",
     "resolve_candidate_runtime",
     "run_display_title",
 ]

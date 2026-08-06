@@ -13,12 +13,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from dataclasses import dataclass, field
 
 import httpx
 import pytest
 
+import agent_orchestration.experiment_build as experiment_build
 from agent_orchestration.experiment_build.config import (
     ExperimentBuildConfigError,
     ExperimentBuildSettings,
@@ -36,6 +38,7 @@ from agent_orchestration.experiment_build.service import (
 from agent_orchestration.experiment_build.workflows import (
     GitHubWorkflowRuns,
     WorkflowRun,
+    WorkflowRunClient,
     WorkflowRunError,
 )
 
@@ -100,6 +103,26 @@ def test_pending_runtime_without_references_is_valid() -> None:
 def test_settings_reject_invalid_values(field_name: str, invalid_value: str) -> None:
     with pytest.raises(ExperimentBuildConfigError, match=field_name):
         _settings(**{field_name: invalid_value})
+
+
+@pytest.mark.parametrize(
+    "tag_form",
+    [
+        f"{FEAST_IMAGE_URI}:sha-deadbeef",
+        f"{FEAST_IMAGE_URI}:latest",
+        FEAST_IMAGE_URI,
+        f"{FEAST_IMAGE_URI}@sha256:{'e' * 63}",
+        f"{FEAST_IMAGE_URI}@sha256:{'E' * 64}",
+    ],
+)
+def test_dev_feast_image_must_be_digest_pinned(tag_form: str) -> None:
+    """dev 이미지는 저장소 관례대로 digest 고정이다.
+
+    태그는 가변이다 — release가 재실행되면 같은 `sha-<sha>` 태그가 다른 이미지에
+    다시 붙는다. 태그 예외는 실험 이미지(`exp-<sha>`)에만 적용된다(spec §3.3).
+    """
+    with pytest.raises(ExperimentBuildConfigError, match="dev_feast_image"):
+        _settings(dev_feast_image=tag_form)
 
 
 def test_settings_read_environment(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -523,6 +546,58 @@ def test_job_conclusion_raises_on_non_200_jobs_response() -> None:
                 token="token",
             )
         )
+
+
+def _protocol_methods(protocol: type) -> dict[str, object]:
+    """프로토콜이 요구하는 공개 메서드만 뽑는다."""
+    return {
+        name: member
+        for name, member in vars(protocol).items()
+        if not name.startswith("_") and inspect.isfunction(member)
+    }
+
+
+def test_protocol_pins_exactly_the_three_operations() -> None:
+    assert set(_protocol_methods(WorkflowRunClient)) == {
+        "find_run",
+        "dispatch",
+        "job_conclusion",
+    }
+
+
+def test_github_workflow_runs_conforms_to_the_client_protocol() -> None:
+    """REST 구현이 `WorkflowRunClient` 계약과 실제로 맞는지 시그니처로 대조한다.
+
+    이 저장소에는 타입 검사기가 없어 어노테이션만으로는 아무것도 강제되지 않는다.
+    메서드 이름을 바꾸거나 키워드 전용 인자를 위치 인자로 바꾸면 테스트는 통과한 채
+    첫 실제 호출에서 터지므로, 파라미터 이름과 종류를 여기서 고정한다.
+    """
+    for name, protocol_method in _protocol_methods(WorkflowRunClient).items():
+        implementation = getattr(GitHubWorkflowRuns, name, None)
+        assert implementation is not None, f"GitHubWorkflowRuns에 {name}이(가) 없습니다"
+        assert inspect.iscoroutinefunction(implementation), f"{name}은(는) async여야 합니다"
+
+        def _parameters(function: object) -> list[tuple[str, inspect._ParameterKind]]:
+            return [
+                (parameter.name, parameter.kind)
+                for parameter in inspect.signature(function).parameters.values()
+                if parameter.name != "self"
+            ]
+
+        assert _parameters(implementation) == _parameters(protocol_method), (
+            f"{name}의 파라미터가 WorkflowRunClient와 어긋납니다"
+        )
+
+
+def test_package_exports_what_a_caller_needs() -> None:
+    """호출자는 이 패키지만 import해 클라이언트를 만들고 전송 오류를 잡을 수 있어야 한다."""
+    for name in ("GitHubWorkflowRuns", "WorkflowRunClient", "WorkflowRunError"):
+        assert name in experiment_build.__all__
+        assert hasattr(experiment_build, name)
+
+    assert experiment_build.__all__ == sorted(experiment_build.__all__)
+    assert experiment_build.GitHubWorkflowRuns is GitHubWorkflowRuns
+    assert experiment_build.WorkflowRunError is WorkflowRunError
 
 
 def test_job_conclusion_raises_when_jobs_is_not_a_list() -> None:

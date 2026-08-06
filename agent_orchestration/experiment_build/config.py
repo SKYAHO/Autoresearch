@@ -17,6 +17,9 @@ import os
 import re
 
 
+# `launcher/config.py`의 `_DIGEST_IMAGE_PATTERN`과 같은 계약이지만, 두 패키지의 설정
+# 경계를 서로 묶지 않기 위해 import하지 않고 여기에 따로 둔다.
+_DIGEST_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _WORKFLOW_FILE_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+\.ya?ml$")
 
@@ -57,6 +60,10 @@ class ExperimentBuildSettings:
         for name, value in required_strings.items():
             if not value.strip():
                 raise ExperimentBuildConfigError(f"invalid {name}")
+        # `dev_feast_image`는 이미 발행된 dev 이미지이므로 저장소 관례대로 digest로
+        # 고정한다. 태그 예외는 실험 이미지(`exp-<sha>`)에만 적용된다(spec §3.3).
+        if _DIGEST_IMAGE_PATTERN.fullmatch(self.dev_feast_image) is None:
+            raise ExperimentBuildConfigError("invalid dev_feast_image")
 
     @classmethod
     def from_environment(cls) -> ExperimentBuildSettings:
