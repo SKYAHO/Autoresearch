@@ -23,12 +23,28 @@ from agent_orchestration.experiment_build.contracts import (
     ExperimentBuildError,
     ImageBuildState,
 )
+from agent_orchestration.experiment_build.service import (
+    BUILD_JOB_NAME,
+    DECIDE_JOB_NAME,
+    resolve_candidate_runtime,
+    run_display_title,
+)
+from agent_orchestration.experiment_build.workflows import (
+    WorkflowRun,
+    WorkflowRunClient,
+)
 
 
 __all__ = [
+    "BUILD_JOB_NAME",
     "CandidateRuntime",
+    "DECIDE_JOB_NAME",
     "ExperimentBuildConfigError",
     "ExperimentBuildError",
     "ExperimentBuildSettings",
     "ImageBuildState",
+    "WorkflowRun",
+    "WorkflowRunClient",
+    "resolve_candidate_runtime",
+    "run_display_title",
 ]
