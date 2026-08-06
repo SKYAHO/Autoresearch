@@ -188,20 +188,36 @@ DAG)는 그대로 동작한다.**
 (입력이 계약을 벗어남)다. `promote.py`가 `PromotionExecutionError`를 `ERROR`로 사상하는
 기존 구조와 맞춘다.
 
-### 4.6 기존 차단과 동시에 성립하면 — 우선순위
+### 4.6 방어선 순서 — **넷 다 고정한다**
 
-실험 네임스페이스 차단(`promote.py:109`)과 이 게이트가 같은 실행에서 함께 성립할 수
-있다(dev 실행이 실험 모델 이름으로 prod alias를 노리는 경우).
+이 spec이 둘을 더하면 `promote.main` 앞부분에 차단이 **넷**이 된다. 여러 조건이 한
+실행에서 동시에 성립할 수 있으므로(예: dev 실행이 실험 모델 이름으로 prod alias를
+노리면서 URI도 비어 있는 경우) 순서를 spec에 고정한다 — 나중에 테스트가 깨졌을 때
+"어느 사유가 나와야 맞는가"를 다시 추론하지 않기 위해서다.
 
-```text
-① 환경 해석 실패        → ERROR / environment_unresolvable
-② 실험 네임스페이스      → NO_CANDIDATE / experiment_model     (기존)
-③ dev → prod 좌표       → REJECTED / production_target_from_dev
-```
+| 순서 | 차단 | 결과 | 위치 |
+| --- | --- | --- | --- |
+| ① | 환경 해석 실패 | `ERROR` / `environment_unresolvable` | **신규** (109행 앞) |
+| ② | 실험 네임스페이스 | `NO_CANDIDATE` / `experiment_model` | 기존 `promote.py:109` |
+| ③ | dev → production 좌표 | `REJECTED` / `production_target_from_dev` | **신규** |
+| ④ | tracking URI 미설정 | `ERROR` / `registry_access_failed` | 기존 `promote.py:125` |
 
-**①이 먼저다** — 환경을 해석 못 하면 ②③ 어느 판정도 신뢰할 수 없다. **②가 ③보다
-먼저인 이유**: 실험 모델은 "애초에 승격 후보가 아니다"라는 더 근본적인 사실이고, 기존
-동작을 바꾸지 않는 방향이다(그 분기가 이미 109행에 있다). 이 순서를 테스트로 고정한다.
+**①이 맨 앞인 이유**: 환경을 해석하지 못하면 ②③④ 어느 판정도 신뢰할 수 없다.
+환경변수를 읽는 것뿐이라 I/O도 없다.
+
+**②가 ③보다 먼저인 이유**: 실험 모델은 "애초에 승격 후보가 아니다"라는 더 근본적인
+사실이다. 그리고 그 분기가 이미 109행에 있으므로 **기존 동작을 바꾸지 않는 방향**이다.
+
+**③이 ④보다 먼저인 이유**: "이 실행이 이 대상에 올릴 자격이 있는가"는 registry에
+접근하기 **전에** 답할 수 있는 질문이다. `#470` 본문의 "MLflow mutation 전에 차단"을
+가장 이른 지점에서 지킨다.
+
+> **③의 위치는 §7.3에 종속된다.** "production 좌표"를 `model_name`/`champion_alias`로
+> 판정하면 위 순서 그대로다. 그런데 **tracking URI까지 봐야 한다고 결론 나면 ③은 ④
+> 뒤로 가야 한다** — URI가 확정되기 전에는 판정할 수 없기 때문이다. §7.3을 정할 때
+> 이 표도 함께 갱신한다.
+
+이 순서를 테스트로 고정한다(§9의 4번).
 
 **`NO_CANDIDATE`가 아니라 `REJECTED`인 이유**: 실험 모델 차단(`EXPERIMENT_MODEL`)은
 "애초에 승격 가능한 후보가 없다"는 상태라 `NO_CANDIDATE`를 쓴다(`promote.py:110-112`
@@ -245,7 +261,16 @@ DAG)는 그대로 동작한다.**
 부산물이 알람을 조용히 죽이면 본말전도다 — 게이트가 승격을 막았는데 그 사실이 아무에게도
 전달되지 않는 상태가 된다. 구현 전에 확인하고 결과를 이 절에 기록한다.
 
-확인 대상: `ModelPromotionResult`를 역직렬화하는 모든 경로. 인접 저장소
+**신규 사유가 둘이므로 둘 다 확인한다** — `REJECTED`/`production_target_from_dev`와
+`ERROR`/`environment_unresolvable`.
+
+**`ERROR` 쪽이 더 중요하다.** `REJECTED`가 안 읽히면 "막았는데 조용하다"이지만,
+`ERROR`가 안 읽히면 **"막았는데 왜 막혔는지 아무도 못 읽는다"**가 된다. 후자는 이 spec
+전체의 목적과 정면으로 어긋난다 — 오타 하나로 승격이 멈췄는데 운영자가 원인을 모르면,
+`AUTORESEARCH_ENV`를 고치는 대신 게이트를 꺼버리는 쪽으로 가게 된다.
+
+확인 대상: `ModelPromotionResult`를 역직렬화하는 모든 경로 — `promotion_result` 소비자,
+일일 DAG 알람, `outcome`/`reason_code`로 분기하는 곳 전부. 인접 저장소
 (`Autoresearch-airflow`)가 이 계약을 소비한다면 그쪽도 포함한다 — 저장소 밖이면
 **요청 내용만 정리해 보고한다.**
 
