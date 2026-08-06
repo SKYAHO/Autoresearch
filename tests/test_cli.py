@@ -4,6 +4,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from click import unstyle
@@ -16,7 +17,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src import cli  # noqa: E402
 from src.pipeline.experiment_evaluation import POLICY_SEEDS  # noqa: E402
-from src.pipeline.paired_experiment import PairedExperimentResult  # noqa: E402
+from src.pipeline.paired_experiment import (  # noqa: E402
+    PairedExperimentRequest,
+    PairedExperimentResult,
+)
+from agent_orchestration.ui.client import (  # noqa: E402
+    ApiConfigurationError,
+    ApiUnavailableError,
+)
 from src.pipeline.promotion_evidence import (  # noqa: E402
     ExperimentPlanReceipt,
     GcsObjectReceipt,
@@ -1910,3 +1918,175 @@ def test_measure_degradation_help_exposes_required_options() -> None:
     assert "--horizon-days" in help_output
     assert "--min-auc-drop" in help_output
     assert "--best-effort" in help_output
+
+
+class _StubExperimentClient:
+    """CLI 배선만 보는 client double — HTTP 형태는 ui client 테스트가 본다."""
+
+    def __init__(self, status: str, *, fail_on: str | None = None) -> None:
+        self.status = status
+        self.fail_on = fail_on
+        self.calls: list[tuple[str, str, object]] = []
+
+    def get_experiment(self, experiment_id: str):
+        return SimpleNamespace(status=self.status)
+
+    def patch_status(self, experiment_id, status, *, reason=None, metric_snapshot=None):
+        self.calls.append((status, reason or "", metric_snapshot))
+        if status == self.fail_on:
+            raise ApiUnavailableError("전이에 실패했습니다.")
+        self.status = status
+        return SimpleNamespace(status=status)
+
+    def post_log(self, experiment_id, *, idempotency_key, content, log_type="stdout"):
+        self.calls.append(("LOG", idempotency_key, None))
+        return None
+
+    @property
+    def patched(self) -> list[str]:
+        return [call[0] for call in self.calls if call[0] != "LOG"]
+
+
+def _install_stub_client(monkeypatch, stub) -> None:
+    monkeypatch.setattr(
+        cli, "ExperimentClient", SimpleNamespace(from_environment=lambda: stub)
+    )
+
+
+def _write_paired_result(tmp_path: Path, outcome: str) -> Path:
+    request = PairedExperimentRequest.model_validate(
+        _paired_request_payload((42, 43, 44))
+    )
+    path = tmp_path / "result.json"
+    path.write_text(
+        _paired_result(request, outcome=outcome).model_dump_json(), encoding="utf-8"
+    )
+    return path
+
+
+def _run_report(result_path: Path):
+    return CliRunner().invoke(
+        cli.app,
+        [
+            "report-experiment-result",
+            "--result",
+            str(result_path),
+            "--experiment-id",
+            "0" * 36,
+        ],
+    )
+
+
+def test_report_result_walks_remaining_transitions(tmp_path, monkeypatch) -> None:
+    """CREATED에서 시작하면 RUNNING→EVALUATING→PASSED를 밟고 지표는 마지막에만 싣는다."""
+    stub = _StubExperimentClient("CREATED")
+    _install_stub_client(monkeypatch, stub)
+
+    outcome = _run_report(_write_paired_result(tmp_path, "comparison_passed"))
+
+    assert outcome.exit_code == 0
+    assert stub.patched == ["RUNNING", "EVALUATING", "PASSED"]
+    snapshots = [call[2] for call in stub.calls if call[0] != "LOG"]
+    assert snapshots[0] is None
+    assert snapshots[1] is None
+    assert snapshots[2] is not None
+    # 자가 claim 표식은 CREATED→RUNNING 한 번뿐이다.
+    assert stub.calls[0][1].startswith("manual-self-claim:")
+    assert not stub.calls[1][1].startswith("manual-self-claim:")
+
+
+def test_report_result_resumes_from_running(tmp_path, monkeypatch) -> None:
+    """이미 RUNNING이면 자가 claim 없이 남은 전이만 밟는다."""
+    stub = _StubExperimentClient("RUNNING")
+    _install_stub_client(monkeypatch, stub)
+
+    outcome = _run_report(_write_paired_result(tmp_path, "comparison_rejected"))
+
+    assert outcome.exit_code == 0
+    assert stub.patched == ["EVALUATING", "FAILED"]
+    assert not any(call[1].startswith("manual-self-claim:") for call in stub.calls)
+
+
+def test_report_result_demotes_to_error_on_failure(tmp_path, monkeypatch) -> None:
+    """중간 실패는 RUNNING/EVALUATING에 주차하지 않고 ERROR로 내린다."""
+    stub = _StubExperimentClient("CREATED", fail_on="PASSED")
+    _install_stub_client(monkeypatch, stub)
+
+    outcome = _run_report(_write_paired_result(tmp_path, "comparison_passed"))
+
+    assert outcome.exit_code == 1
+    assert stub.patched == ["RUNNING", "EVALUATING", "PASSED", "ERROR"]
+    assert stub.status == "ERROR"
+
+
+def test_report_result_refuses_terminal_without_touching_experiment(
+    tmp_path, monkeypatch
+) -> None:
+    """이미 다른 터미널이면 전이를 하나도 밟지 않고 거부한다 — ERROR 강등도 없다.
+
+    거부가 전이 계획 단계에서 일어나므로 호출자의 `reached`는 None으로 남고,
+    `_demote_to_error`가 실험을 건드리지 않아야 한다.
+    """
+    stub = _StubExperimentClient("FAILED")
+    _install_stub_client(monkeypatch, stub)
+
+    outcome = _run_report(_write_paired_result(tmp_path, "comparison_passed"))
+
+    assert outcome.exit_code == 1
+    assert stub.calls == []
+    assert stub.status == "FAILED"
+
+
+def test_report_result_rejects_invalid_result_json(tmp_path, monkeypatch) -> None:
+    """계약 위반 JSON은 API를 부르기 전에 종료 코드 2로 거부한다."""
+    stub = _StubExperimentClient("CREATED")
+    _install_stub_client(monkeypatch, stub)
+    path = tmp_path / "bad.json"
+    path.write_text('{"outcome": "comparison_passed"}', encoding="utf-8")
+
+    outcome = _run_report(path)
+
+    assert outcome.exit_code == 2
+    assert stub.calls == []
+    assert "[결과 반영 실패] ValidationError" in unstyle(outcome.output)
+
+
+def test_report_result_maps_configuration_error_to_exit_2(tmp_path, monkeypatch) -> None:
+    """토큰 미설정은 client 생성자가 이미 막는다 — CLI는 그 예외를 종료 코드로 옮긴다."""
+
+    def _raise() -> None:
+        raise ApiConfigurationError("ORCH_UI_API_TOKEN을 설정해 주세요.")
+
+    monkeypatch.setattr(
+        cli, "ExperimentClient", SimpleNamespace(from_environment=_raise)
+    )
+
+    outcome = _run_report(_write_paired_result(tmp_path, "comparison_passed"))
+
+    assert outcome.exit_code == 2
+    assert "[결과 반영 실패] ApiConfigurationError" in unstyle(outcome.output)
+
+
+def test_report_result_is_safe_to_rerun(tmp_path, monkeypatch) -> None:
+    """같은 명령을 두 번 돌려도 전이가 중복되지 않고 로그 key가 동일하다.
+
+    PATCH는 서버 멱등성이 없으므로(`service.py:286-288`) 재실행이 event를 늘리면
+    안 된다. 두 번째 실행은 이미 목표 터미널이라 전이를 하나도 밟지 않는다.
+    """
+    stub = _StubExperimentClient("CREATED")
+    _install_stub_client(monkeypatch, stub)
+    result_path = _write_paired_result(tmp_path, "comparison_passed")
+
+    first = _run_report(result_path)
+    first_calls = list(stub.calls)
+    stub.calls.clear()
+    second = _run_report(result_path)
+
+    assert first.exit_code == 0
+    assert second.exit_code == 0
+    # 두 번째 실행은 상태를 전혀 건드리지 않는다.
+    assert stub.patched == []
+    # 로그는 다시 보내지만 key가 같아 서버가 중복을 막는다.
+    first_log_key = [call[1] for call in first_calls if call[0] == "LOG"]
+    second_log_key = [call[1] for call in stub.calls if call[0] == "LOG"]
+    assert first_log_key == second_log_key

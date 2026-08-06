@@ -51,6 +51,22 @@ from src.pipeline import (  # noqa: E402
     train,
     training_comparison,
 )
+from agent_orchestration.ui.client import (  # noqa: E402
+    ExperimentApiError,
+    ExperimentClient,
+)
+from src.pipeline.experiment_result_report import (  # noqa: E402
+    STATUS_ERROR,
+    STATUS_EVALUATING,
+    STATUS_RUNNING,
+    ResultReportError,
+    build_log_content,
+    build_log_idempotency_key,
+    build_metric_snapshot,
+    build_reason,
+    plan_transitions,
+    target_status,
+)
 from src.pipeline.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
 from src.pipeline.promotion_evidence import (  # noqa: E402
     PromotionEvidenceStore,
@@ -817,6 +833,108 @@ def compare_paired_experiment(
     typer.echo(result.model_dump_json())
     if result.outcome == paired_experiment.OUTCOME_FAILED:
         raise typer.Exit(code=1)
+
+
+def _demote_to_error(
+    client: ExperimentClient, experiment_id: str, reached: Optional[str]
+) -> None:
+    """주차된 RUNNING/EVALUATING을 남기지 않도록 터미널로 내린다.
+
+    전이를 하나도 밟지 못했으면(`reached is None`) 실험을 건드리지 않는다 — 이미
+    종료된 실험을 덮어쓰지 않으려고 거부한 경우가 여기에 해당한다.
+    """
+    if reached not in (STATUS_RUNNING, STATUS_EVALUATING):
+        return
+    try:
+        client.patch_status(
+            experiment_id, STATUS_ERROR, reason="결과 반영 중 실패로 ERROR 강등"
+        )
+    except ExperimentApiError:
+        # 강등 실패가 원래 오류를 가리지 않게 한다. 재실행하면 남은 전이부터 재개된다.
+        typer.echo(
+            "[결과 반영 실패] ERROR 강등에도 실패했습니다 — 실험이 RUNNING에 남았을 "
+            "수 있습니다. 같은 명령을 재실행하면 재개됩니다.",
+            err=True,
+        )
+
+
+@app.command("report-experiment-result")
+def report_experiment_result(
+    result: Path = typer.Option(
+        ..., "--result", help="compare-paired-experiment가 게시한 결과 JSON 경로"
+    ),
+    experiment_id: str = typer.Option(
+        ..., "--experiment-id", help="Experiment API의 실험 UUID"
+    ),
+    log_uri: Optional[str] = typer.Option(
+        None, "--log-uri", help="포인터 로그에 함께 남길 실행 로그 위치"
+    ),
+) -> None:
+    """paired 판정 결과를 Experiment API에 반영한다(#550).
+
+    판정도 실행도 하지 않는다. 현재 상태를 먼저 읽어 남은 전이만 밟으며, 중간에
+    실패하면 `RUNNING`에 주차하지 않고 `ERROR`로 내린다.
+
+    exit code: 반영 성공 0, API·전이 실패 1, 인자·결과 계약 오류 2.
+    """
+    try:
+        payload = json.loads(Path(result).read_text(encoding="utf-8"))
+        parsed = paired_experiment.PairedExperimentResult.model_validate(payload)
+    except (OSError, json.JSONDecodeError, ValidationError) as error:
+        # 결과 payload에는 URI·식별자가 섞여 있으므로 오류 종류만 남긴다.
+        typer.echo(
+            f"[결과 반영 실패] {type(error).__name__}: "
+            "paired-offline-experiment-result-v1 결과를 읽지 못했습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from error
+
+    try:
+        # 빈 토큰·base_url 검사는 client 생성자가 이미 한다. 여기서 다시 만들지 않고
+        # 그 예외를 종료 코드로 옮기기만 한다.
+        client = ExperimentClient.from_environment()
+    except ExperimentApiError as error:
+        typer.echo(
+            f"[결과 반영 실패] {type(error).__name__}: "
+            "Experiment API 연결 설정이 올바르지 않습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from error
+
+    reached: Optional[str] = None
+    try:
+        target = target_status(parsed)
+        current = client.get_experiment(experiment_id).status
+        transitions = plan_transitions(current, target)
+        reason = build_reason(parsed)
+        for status in transitions:
+            is_terminal = status == target
+            client.patch_status(
+                experiment_id,
+                status,
+                reason=(
+                    f"manual-self-claim: {reason}"
+                    if status == STATUS_RUNNING
+                    else reason
+                ),
+                metric_snapshot=build_metric_snapshot(parsed) if is_terminal else None,
+            )
+            reached = status
+        client.post_log(
+            experiment_id,
+            idempotency_key=build_log_idempotency_key(experiment_id, parsed),
+            content=build_log_content(parsed, log_uri=log_uri),
+        )
+    except (ExperimentApiError, ResultReportError) as error:
+        _demote_to_error(client, experiment_id, reached)
+        typer.echo(
+            f"[결과 반영 실패] {type(error).__name__}: "
+            "판정 결과를 Experiment API에 반영하지 못했습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"{experiment_id} -> {target}")
 
 
 @app.command()
