@@ -85,38 +85,50 @@ executor가 유효한 변경만 candidate commit으로 만들어 같은 브랜�
 container에만 mount한다.
 
 ```text
-1. clone-token-minter
+1. branch-token-minter
+   GitHub App private key mount
+   → Contents: Write token 발급
+
+2. branch-creator
+   branch token mount
+   → base_dev_sha에서 exp branch 생성
+   → 이미 같은 SHA면 멱등 성공, 다른 SHA면 충돌
+
+3. clone-token-minter
    GitHub App private key mount
    → Issues: Read + Contents: Read token 발급
 
-2. workspace-preparer
+4. workspace-preparer
    clone token + workspace mount
    → 이슈·marker·본문 hash 검증
    → exp branch clone·checkout
    → HEAD == base_dev_sha 검증
 
-3. codex-worker
+5. codex-worker
    workspace + executor 전용 CODEX_HOME mount
    GitHub/API token volume 미마운트
    → 이슈 해석, 코드 수정, 선택 테스트, 실패 보완
 
-4. candidate-verifier
+6. candidate-verifier
    workspace만 mount
    GitHub/API/Codex credential 미마운트
    → 범위 검사, diff, 전체 pytest, Ruff
 
-5. push-token-minter
+7. push-token-minter
    GitHub App private key mount
    → Contents: Write token을 새로 발급
 
-6. candidate-finalizer (main)
+8. candidate-finalizer (main)
    workspace + push token + executor API token mount
    → commit·push·원격 tip 재조회
    → candidate_sha 저장 및 평가 중 (EVALUATING) 전이
 ```
 
-clone token과 push token을 분리하면 Codex 실행 시간이 길어져도 push 시점에 새 token을
-사용할 수 있고 Codex·verifier가 GitHub token volume을 볼 수 없다. private key는 두
+`branch-creator`는 기존 Phase 1의 실험 브랜치 생성 역할을 이름 그대로 표현한 단계다.
+Phase 2가 별도 Job을 만들지 않고 기존 Job을 확장하므로 새 Experiment에서도 이 단계를
+유지해야 한다. branch·clone·push token을 분리하면 각 executor 단계가 필요한 최소 권한만
+사용하고, Codex 실행 시간이 길어져도 push 시점에 새 token을 사용할 수 있다.
+Codex·verifier는 어떤 GitHub token volume도 볼 수 없으며 private key는 세
 token-minter에만 read-only mount한다.
 
 ## 입력과 이슈 본문 검증
@@ -284,7 +296,7 @@ repository 소스는 image에 포함하지 않고 runtime에 봉인 branch를 cl
 
 Infra는 다음을 container별로 강제한다.
 
-- token-minter만 GitHub App private key mount
+- branch/clone/push token-minter만 GitHub App private key mount
 - codex-worker만 executor 전용 CODEX_HOME mount
 - candidate-finalizer만 executor API token mount
 - codex-worker와 verifier에는 GitHub/API token volume 미마운트
