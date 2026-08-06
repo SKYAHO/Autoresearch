@@ -873,7 +873,10 @@ def report_experiment_result(
     """paired 판정 결과를 Experiment API에 반영한다(#550).
 
     판정도 실행도 하지 않는다. 현재 상태를 먼저 읽어 남은 전이만 밟으며, 중간에
-    실패하면 `RUNNING`에 주차하지 않고 `ERROR`로 내린다.
+    실패하면 중간 상태에 주차하지 않고 `ERROR`로 내린다.
+
+    `CREATED` 실험은 다루지 않는다 — launcher가 선점할 대기 행이므로 종료 코드 1로
+    거부한다(#547).
 
     exit code: 반영 성공 0, API·전이 실패 1, 인자·결과 계약 오류 2.
     """
@@ -912,11 +915,7 @@ def report_experiment_result(
             client.patch_status(
                 experiment_id,
                 status,
-                reason=(
-                    f"manual-self-claim: {reason}"
-                    if status == STATUS_RUNNING
-                    else reason
-                ),
+                reason=reason,
                 metric_snapshot=build_metric_snapshot(parsed) if is_terminal else None,
             )
             reached = status

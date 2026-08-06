@@ -862,6 +862,12 @@ git commit -m "feat: paired 판정 결과를 Experiment API에 반영하는 CLI 
 
 **Type consistency**: `patch_status`/`post_log`/`plan_transitions`/`build_*` 시그니처가 Task 1~4에서 동일하다. 상태 문자열은 Task 1의 상수를 Task 2·4가 그대로 쓴다.
 
-## 알려진 후속 (이 계획의 범위 밖)
+## 알려진 후속 — 실행 중 조건이 충족되어 반영 완료
 
-`#546` 머지 시 `CREATED` 자가 claim을 **제거가 아니라 강등**해야 한다 — `plan_transitions`의 `STATUS_CREATED` 분기를 `ResultReportError`로 바꾸는 한 줄 변경이다. spec의 `알려진 한계` 절이 근거다.
+`#546` 머지 시 `CREATED` 자가 claim을 **제거가 아니라 강등**해야 한다고 적어두었다.
+Task 4 실행 중 `#547`이 main에 병합된 것을 확인해 **같은 브랜치에서 별도 커밋으로
+반영했다**. `plan_transitions`의 `STATUS_CREATED` 분기가 `ResultReportError`를 던지고,
+CLI의 `manual-self-claim:` 접두사는 도달 불가가 되어 제거했다.
+
+따라서 위 Task 1~4 본문의 `CREATED` 관련 서술(전이 표 첫 행, 자가 claim 표식)은 **작성
+시점 기준**이며, 최종 계약은 spec의 `상태 전이 계약`과 `알려진 한계` 절을 따른다.

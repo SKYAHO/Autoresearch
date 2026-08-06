@@ -123,7 +123,6 @@ def test_reason_is_truncated_with_marker() -> None:
 @pytest.mark.parametrize(
     ("current", "expected"),
     [
-        (STATUS_CREATED, (STATUS_RUNNING, STATUS_EVALUATING, STATUS_PASSED)),
         (STATUS_RUNNING, (STATUS_EVALUATING, STATUS_PASSED)),
         (STATUS_EVALUATING, (STATUS_PASSED,)),
         (STATUS_PASSED, ()),
@@ -134,6 +133,17 @@ def test_plan_transitions_resumes_from_current_status(
 ) -> None:
     """현재 상태부터 남은 전이만 밟는다 — PATCH가 멱등이 아니라 재호출이 event를 늘린다."""
     assert plan_transitions(current, STATUS_PASSED) == expected
+
+
+def test_plan_transitions_refuses_created_to_avoid_launcher_race() -> None:
+    """CREATED는 launcher가 선점할 대기 행이므로 직접 전이하지 않는다.
+
+    #547 병합 전에는 자가 claim이 무해했으나, 이제 `CREATED` + `executor_job_name
+    IS NULL`은 `CREATED_CLAIM_STATEMENT`가 집어갈 행이다. 여기서 RUNNING으로 올리면
+    launcher와 경합하고, 올라간 행은 두 claim 쿼리 어디에도 걸리지 않는 고아가 된다.
+    """
+    with pytest.raises(ResultReportError):
+        plan_transitions(STATUS_CREATED, STATUS_PASSED)
 
 
 @pytest.mark.parametrize("current", [STATUS_FAILED, STATUS_ERROR, STATUS_PROMOTED])

@@ -93,19 +93,26 @@ def plan_transitions(current_status: str, target: str) -> tuple[str, ...]:
 
     `PATCH /status`는 멱등이 아니므로(`service.py:286-288`) 이미 지난 전이를 다시
     호출하면 event가 중복된다. 그래서 남은 전이만 계획한다.
+
+    `CREATED`는 거부한다. #547이 병합되면서 `CREATED` + `executor_job_name IS NULL`은
+    launcher의 `CREATED_CLAIM_STATEMENT`(`launcher/repository.py:49`)가 선점할 대기
+    행이 되었다. 여기서 RUNNING으로 올리면 같은 행을 두고 launcher와 경합하고,
+    올라간 행은 `executor_job_name`이 없어 launcher의 두 claim 쿼리 어디에도 걸리지
+    않는 고아가 된다.
     """
     if current_status == target:
         return ()
     if current_status in TERMINAL_STATUSES:
         raise ResultReportError("이미 종료된 실험의 결론을 덮어쓰지 않습니다.")
-    if current_status not in (STATUS_CREATED, STATUS_RUNNING, STATUS_EVALUATING):
+    if current_status == STATUS_CREATED:
+        raise ResultReportError(
+            "CREATED 실험은 launcher가 RUNNING으로 선점합니다 — 직접 전이하지 않습니다."
+        )
+    if current_status not in (STATUS_RUNNING, STATUS_EVALUATING):
         raise ResultReportError("알 수 없는 실험 상태입니다.")
 
     path: list[str] = []
-    if current_status == STATUS_CREATED:
-        # launcher를 대신한 자가 claim이다. 호출자가 reason에 표식을 붙인다.
-        path.append(STATUS_RUNNING)
-    if current_status in (STATUS_CREATED, STATUS_RUNNING):
+    if current_status == STATUS_RUNNING:
         path.append(STATUS_EVALUATING)
     path.append(target)
     return tuple(path)

@@ -1978,44 +1978,55 @@ def _run_report(result_path: Path):
 
 
 def test_report_result_walks_remaining_transitions(tmp_path, monkeypatch) -> None:
-    """CREATED에서 시작하면 RUNNING→EVALUATING→PASSED를 밟고 지표는 마지막에만 싣는다."""
-    stub = _StubExperimentClient("CREATED")
+    """RUNNING에서 시작하면 EVALUATING→PASSED를 밟고 지표는 마지막에만 싣는다."""
+    stub = _StubExperimentClient("RUNNING")
     _install_stub_client(monkeypatch, stub)
 
     outcome = _run_report(_write_paired_result(tmp_path, "comparison_passed"))
 
     assert outcome.exit_code == 0
-    assert stub.patched == ["RUNNING", "EVALUATING", "PASSED"]
+    assert stub.patched == ["EVALUATING", "PASSED"]
     snapshots = [call[2] for call in stub.calls if call[0] != "LOG"]
     assert snapshots[0] is None
-    assert snapshots[1] is None
-    assert snapshots[2] is not None
-    # 자가 claim 표식은 CREATED→RUNNING 한 번뿐이다.
-    assert stub.calls[0][1].startswith("manual-self-claim:")
-    assert not stub.calls[1][1].startswith("manual-self-claim:")
+    assert snapshots[1] is not None
 
 
-def test_report_result_resumes_from_running(tmp_path, monkeypatch) -> None:
-    """이미 RUNNING이면 자가 claim 없이 남은 전이만 밟는다."""
-    stub = _StubExperimentClient("RUNNING")
+def test_report_result_resumes_from_evaluating(tmp_path, monkeypatch) -> None:
+    """이미 EVALUATING이면 터미널 전이 하나만 남는다."""
+    stub = _StubExperimentClient("EVALUATING")
     _install_stub_client(monkeypatch, stub)
 
     outcome = _run_report(_write_paired_result(tmp_path, "comparison_rejected"))
 
     assert outcome.exit_code == 0
-    assert stub.patched == ["EVALUATING", "FAILED"]
-    assert not any(call[1].startswith("manual-self-claim:") for call in stub.calls)
+    assert stub.patched == ["FAILED"]
 
 
-def test_report_result_demotes_to_error_on_failure(tmp_path, monkeypatch) -> None:
-    """중간 실패는 RUNNING/EVALUATING에 주차하지 않고 ERROR로 내린다."""
-    stub = _StubExperimentClient("CREATED", fail_on="PASSED")
+def test_report_result_refuses_created_experiment(tmp_path, monkeypatch) -> None:
+    """CREATED는 launcher가 선점할 행이므로 건드리지 않고 거부한다(#547).
+
+    자가 claim은 #547 병합 전까지만 안전했다. 지금 RUNNING으로 올리면 launcher의
+    `CREATED_CLAIM_STATEMENT`와 같은 행을 두고 경합한다.
+    """
+    stub = _StubExperimentClient("CREATED")
     _install_stub_client(monkeypatch, stub)
 
     outcome = _run_report(_write_paired_result(tmp_path, "comparison_passed"))
 
     assert outcome.exit_code == 1
-    assert stub.patched == ["RUNNING", "EVALUATING", "PASSED", "ERROR"]
+    assert stub.calls == []
+    assert stub.status == "CREATED"
+
+
+def test_report_result_demotes_to_error_on_failure(tmp_path, monkeypatch) -> None:
+    """중간 실패는 EVALUATING에 주차하지 않고 ERROR로 내린다."""
+    stub = _StubExperimentClient("RUNNING", fail_on="PASSED")
+    _install_stub_client(monkeypatch, stub)
+
+    outcome = _run_report(_write_paired_result(tmp_path, "comparison_passed"))
+
+    assert outcome.exit_code == 1
+    assert stub.patched == ["EVALUATING", "PASSED", "ERROR"]
     assert stub.status == "ERROR"
 
 
@@ -2073,7 +2084,7 @@ def test_report_result_is_safe_to_rerun(tmp_path, monkeypatch) -> None:
     PATCH는 서버 멱등성이 없으므로(`service.py:286-288`) 재실행이 event를 늘리면
     안 된다. 두 번째 실행은 이미 목표 터미널이라 전이를 하나도 밟지 않는다.
     """
-    stub = _StubExperimentClient("CREATED")
+    stub = _StubExperimentClient("RUNNING")
     _install_stub_client(monkeypatch, stub)
     result_path = _write_paired_result(tmp_path, "comparison_passed")
 

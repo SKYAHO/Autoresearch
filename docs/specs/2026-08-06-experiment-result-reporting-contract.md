@@ -80,7 +80,7 @@ uv run python -m src.cli report-experiment-result \
 
 | 현재 상태 | 밟는 경로 |
 | --- | --- |
-| `CREATED` | `RUNNING` → `EVALUATING` → 터미널 |
+| `CREATED` | **전이하지 않고 종료 코드 1** — launcher가 선점할 대기 행이다 |
 | `RUNNING` | `EVALUATING` → 터미널 |
 | `EVALUATING` | 터미널 |
 | 목표 터미널과 동일 | 전이 없이 성공 종료 |
@@ -88,6 +88,8 @@ uv run python -m src.cli report-experiment-result \
 
 마지막 행이 핵심이다. 이미 결론이 난 실험을 다른 결론으로 덮어쓰는 것은 조용한 데이터
 손상이므로, 재시도 편의보다 우선해 막는다.
+
+첫 행은 `#547` 병합에 따라 뒤집힌 결정이다. 근거는 아래 `알려진 한계`에 있다.
 
 ### 주차된 RUNNING을 만들지 않는다
 
@@ -99,15 +101,15 @@ uv run python -m src.cli report-experiment-result \
 재개된다. "고아를 구조적으로 제거한다"가 아니라 "고아가 자동 회복된다"가 이 설계의
 정확한 성질이다.
 
-### 자가 claim은 감사 가능해야 한다
-
-`CREATED→RUNNING` 전이의 운영 소유자는 원래 launcher다. 이 명령이 그 전이를 대신할
-때는 PATCH의 `reason`에 고정 접두사 `manual-self-claim:`을 붙인다.
+### 전이 사유는 event로 남는다
 
 `PATCH /status`가 내부적으로 event 행을 만들므로(`service.py:280-289`) 별도
-`POST /events` 호출 없이 타임라인에 남는다. 이벤트만 훑어도 "launcher를 거치지 않은
-실행이 있었다"를 식별할 수 있어야 한다 — 조용한 실패가 안 되는 것과 같은 이유로
-**조용한 성공도 안 된다**.
+`POST /events` 호출 없이 판정 사유가 타임라인에 남는다. 이 계약은 event를 따로
+만들지 않는다.
+
+초안 단계에서는 `CREATED→RUNNING` 자가 claim을 허용하고 `manual-self-claim:` 접두사로
+감사 가능하게 두려 했다. `#547` 병합으로 그 전이 자체를 하지 않게 되어 접두사도
+사라졌다 — 아래 `알려진 한계` 참고.
 
 ## 결과 → 상태 매핑
 
@@ -241,12 +243,17 @@ fail-closed다.**
 
 ## 알려진 한계
 
-### feat/546 머지 시 자가 claim은 (A)로 강등한다
+### 자가 claim은 (A)로 강등했다 — `#547` 병합으로 조건 충족
 
-`executor_job_name` 컬럼은 현재 `origin/main`에 없다. `feat/546`의
-`0004_experiment_branch_bootstrap` migration이 신설한다. 그래서 자가 claim으로 만든
-`RUNNING` 행이 launcher의 claim 쿼리에서 배제되는 문제는 **지금 존재하는 위험이 아니라
-feat/546 머지 시점에 소급 발생하는 위험**이다.
+이 절은 원래 "머지되면 강등한다"는 **예정**이었다. 계획 작성 몇 시간 뒤
+`e81d7f7 feat: 실험 브랜치 Bootstrap Kubernetes Job Phase 1 (#547)`이 main에 병합되어
+조건이 충족되었고, **구현에 반영했다**. 아래는 그 근거이며 이제 과거형이 아니라 현행
+계약이다.
+
+`0004_experiment_branch_bootstrap` migration이 `executor_job_name`을 신설했고
+`agent_orchestration/launcher/repository.py`가 함께 들어왔다. 같은 날
+`Autoresearch-infra`에도 launcher CronJob Terraform이 착지 중이라, 코드 레벨 가능성이
+아니라 **운영 경합이 임박한 상태**다.
 
 | launcher 쿼리 | 조건 |
 | --- | --- |
@@ -258,12 +265,19 @@ feat/546 머지 시점에 소급 발생하는 위험**이다.
 영향받지 않는다.** 이 계약이 "주차된 RUNNING을 만들지 않는다"를 불변식으로 두는 이유가
 이것이다.
 
-feat/546이 머지되면 `CREATED` + `executor_job_name IS NULL`은 **launcher가 정당하게
-집을 대기 행**이 된다. 그 시점부터 자가 claim은 편의가 아니라 launcher와의 실제
-경합이므로, **`CREATED`를 만나면 전이 없이 종료 코드 1로 실패하도록 강등한다.** 경로를
-삭제하는 것이 아니라 허용 범위를 좁히는 것이다.
+`CREATED` + `executor_job_name IS NULL`은 이제 **launcher가 정당하게 집을 대기 행**이다.
+따라서 이 명령은 **`CREATED`를 만나면 전이 없이 종료 코드 1로 거부한다.** 경로를
+삭제한 것이 아니라 허용 범위를 `RUNNING`/`EVALUATING`으로 좁힌 것이다.
 
-이 전환은 feat/546 머지와 함께 수행해야 하며, 놓치면 조용히 위험해진다.
+### 이 강등의 대가 — 수동 실행 경로가 좁아졌다
+
+`(C)` 스코프를 고른 이유 중 하나가 "launcher 없이도 오늘 수동으로 검증 가능"이었는데,
+그 편의는 사라졌다. 이제 실험을 `RUNNING`까지 올리는 주체는 launcher뿐이다.
+
+이것은 손실이 아니라 **성격 변화**다. launcher가 매 분 `CREATED`를 선점하는 지금,
+사람이 손으로 `CREATED→RUNNING`을 만드는 것은 "없어서 아쉬운 편의"가 아니라 "있으면
+위험한 경합"이다. 수동 검증이 필요하면 launcher가 올려준 `RUNNING` 실험을 대상으로
+한다.
 
 ### experiment_id 좌표가 둘이다
 
