@@ -53,9 +53,6 @@ from src.pipeline import (  # noqa: E402
     training_comparison,
 )
 from src.pipeline.experiment_result_report import (  # noqa: E402
-    STATUS_ERROR,
-    STATUS_EVALUATING,
-    STATUS_RUNNING,
     LauncherOwnedExperimentError,
     ResultReportError,
     TerminalStatusConflictError,
@@ -865,27 +862,19 @@ _REPORT_FAILURE_DIAGNOSTICS = {
 }
 
 
-def _demote_to_error(
-    client: object, experiment_id: str, reached: Optional[str]
-) -> None:
-    """주차된 RUNNING/EVALUATING을 남기지 않도록 터미널로 내린다.
+def _report_stop_point(reached: Optional[str]) -> None:
+    """실패 시 실험이 어느 상태로 남았는지와 재개 방법을 알린다.
 
-    전이를 하나도 밟지 못했으면(`reached is None`) 실험을 건드리지 않는다 — 이미
-    종료된 실험을 덮어쓰지 않으려고 거부한 경우가 여기에 해당한다.
+    중간 상태를 터미널로 내리지 않으므로(아래 근거) 재실행이 남은 전이부터 이어간다.
+    전이를 하나도 밟지 못했으면 실험은 손대지 않은 그대로다.
     """
-    if reached not in (STATUS_RUNNING, STATUS_EVALUATING):
+    if reached is None:
         return
-    try:
-        client.patch_status(
-            experiment_id, STATUS_ERROR, reason="결과 반영 중 실패로 ERROR 강등"
-        )
-    except _experiment_client_module().ExperimentApiError:
-        # 강등 실패가 원래 오류를 가리지 않게 한다. 재실행하면 남은 전이부터 재개된다.
-        typer.echo(
-            "[결과 반영 실패] ERROR 강등에도 실패했습니다 — 실험이 RUNNING에 남았을 "
-            "수 있습니다. 같은 명령을 재실행하면 재개됩니다.",
-            err=True,
-        )
+    typer.echo(
+        f"[결과 반영 실패] 실험은 {reached} 상태로 남았습니다 — 원인을 고친 뒤 같은 "
+        "명령을 재실행하면 남은 전이부터 재개합니다.",
+        err=True,
+    )
 
 
 @app.command("report-experiment-result")
@@ -903,7 +892,7 @@ def report_experiment_result(
     """paired 판정 결과를 Experiment API에 반영한다(#550).
 
     판정도 실행도 하지 않는다. 현재 상태를 먼저 읽어 남은 전이만 밟으며, 중간에
-    실패하면 중간 상태에 주차하지 않고 `ERROR`로 내린다.
+    실패하면 실험을 **그 상태 그대로 두고** 끝낸다 — 재실행이 남은 전이부터 재개한다.
 
     `CREATED` 실험은 다루지 않는다 — launcher가 선점할 대기 행이므로 종료 코드 1로
     거부한다(#547).
@@ -969,12 +958,12 @@ def report_experiment_result(
             content=build_log_content(parsed, log_uri=log_uri),
         )
     except (client_module.ExperimentApiError, ResultReportError) as error:
-        _demote_to_error(client, experiment_id, reached)
         typer.echo(
             f"[결과 반영 실패] {type(error).__name__}: "
             f"{_REPORT_FAILURE_DIAGNOSTICS.get(type(error), _DEFAULT_REPORT_FAILURE)}",
             err=True,
         )
+        _report_stop_point(reached)
         raise typer.Exit(code=1) from error
 
     typer.echo(f"{experiment_id} -> {target}")

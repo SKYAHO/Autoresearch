@@ -101,15 +101,37 @@ uv run python -m src.cli report-experiment-result \
 
 첫 행은 `#547` 병합에 따라 뒤집힌 결정이다. 근거는 아래 `알려진 한계`에 있다.
 
-### 주차된 RUNNING을 만들지 않는다
+### 실패해도 중간 상태를 그대로 둔다 — 강등하지 않는다
 
-중간 전이 후 예외가 발생하면 `ERROR`로 내려 터미널을 보장한다. `RUNNING→ERROR`와
-`EVALUATING→ERROR`는 모두 허용 전이다(`models.py:77-93`).
+중간 전이 후 예외가 발생하면 실험을 **손대지 않고** 끝낸다. 어느 상태에서 멈췄는지를
+stderr에 알리고, 재실행이 남은 전이부터 이어간다.
 
-프로세스가 `ERROR` 강등조차 못 하고 죽으면 `RUNNING`에 남는다. 이 계약은 그 창을
-없애지 못하며, **같은 명령의 재실행으로 회복**시킨다 — 위 표의 `RUNNING` 행에서
-재개된다. "고아를 구조적으로 제거한다"가 아니라 "고아가 자동 회복된다"가 이 설계의
-정확한 성질이다.
+초안에서는 반대로 `ERROR`로 강등해 터미널을 보장하려 했다. 그 근거는 "주차된 `RUNNING`이
+launcher의 claim 쿼리에서 고아가 된다"였는데, **두 전제가 모두 무너졌다.**
+
+첫째, `#547` 이후 이 명령이 만나는 `RUNNING`은 launcher가 만든 행이므로
+`executor_job_name`이 채워져 있다. `CREATED` 자가 claim을 제거한 이상
+(`알려진 한계` 참고) 이 명령이 `executor_job_name` 없는 `RUNNING`을 만들 경로가 없다.
+
+둘째, launcher는 `executor_job_created_at`이 찍힌 행을 **두 claim 쿼리 어디에서도 보지
+않는다**(`launcher/repository.py`의 `RECOVERABLE_CLAIM_STATEMENT`가
+`executor_job_created_at IS NULL`을 요구한다). launcher 모듈 docstring도 "Job 완료·실패에
+따른 Experiment 상태 회수는 담당하지 않는다"고 명시한다. 즉 이 행은 강등을 하든 안 하든
+launcher와 무관하다.
+
+반면 강등의 대가는 컸다. `ERROR`는 터미널이므로
+
+- 재실행이 `TerminalStatusConflictError`로 막힌다 — 일시적 네트워크 오류 한 번이 실험을
+  영구 실패로 만든다
+- `metric_summary`와 포인터 로그가 **영영 기록되지 않는다**. 둘 다 터미널 전이 이후
+  단계라 도달하지 못한다
+- 재실행 시 진단이 "대상을 잘못 짚었는지 확인하라"로 나가 원인을 오도한다
+
+"대시보드에서 결과를 본다"는 이 계약의 목적이 가장 흔한 실패 모드에서 깨지는 셈이라,
+중간 상태로 남기고 재개하는 쪽을 택한다.
+
+남는 비용은 실행이 영구히 중단되면 실험이 `EVALUATING`에 머문다는 것이다. 이는
+`ERROR`와 달리 **회복 가능한** 상태이며, 재실행 한 번으로 정상 종료한다.
 
 ### 전이 사유는 event로 남는다
 
@@ -307,9 +329,13 @@ fail-closed다.**
 | `RECOVERABLE_CLAIM_STATEMENT` | `status==RUNNING` AND `executor_job_name IS NOT NULL` AND `executor_job_created_at IS NULL` |
 
 자가 claim으로 만든 `RUNNING` 행은 `executor_job_name`이 `NULL`이라 두 쿼리 어디에도
-걸리지 않는다. 다만 launcher는 `CREATED`와 `RUNNING`만 보므로, **터미널에 도달한 행은
-영향받지 않는다.** 이 계약이 "주차된 RUNNING을 만들지 않는다"를 불변식으로 두는 이유가
-이것이다.
+걸리지 않는다 — 이것이 자가 claim을 없앤 이유다.
+
+반대로 **launcher가 만든 `RUNNING` 행은 안전하다.** `executor_job_name`이 채워져 있고,
+Job 생성이 확인되면 `executor_job_created_at`까지 찍혀 `RECOVERABLE_CLAIM_STATEMENT`의
+`executor_job_created_at IS NULL` 조건에서도 빠진다. launcher 모듈 docstring이 "Job
+완료·실패에 따른 Experiment 상태 회수는 담당하지 않는다"고 명시하는 것과 같은 이야기다.
+이 계약이 중간 상태를 강등 없이 남겨도 되는 근거가 여기 있다(`상태 전이 계약` 참고).
 
 `CREATED` + `executor_job_name IS NULL`은 이제 **launcher가 정당하게 집을 대기 행**이다.
 따라서 이 명령은 **`CREATED`를 만나면 전이 없이 종료 코드 1로 거부한다.** 경로를
@@ -341,7 +367,8 @@ spec의 범위 밖이며, 그때까지는 호출자 책임이다.
 ## 완료 조건
 
 - `report-experiment-result`가 상태 전이 표의 모든 행을 계약대로 처리한다
-- 중간 실패 시 `ERROR`로 강등되어 `RUNNING`에 주차된 행이 남지 않는다
+- 중간 실패는 실험을 그 상태 그대로 두고, 재실행이 남은 전이부터 재개해 지표와 포인터
+  로그까지 기록한다
 - 같은 명령을 재실행해도 event·log가 중복 생성되지 않는다
 - 이미 다른 터미널 상태인 실험을 덮어쓰지 않고 종료 코드 1로 거부한다
 - `reason` 8192자 초과 시 잘림 표시와 함께 잘린다

@@ -1939,16 +1939,46 @@ def test_report_result_refuses_created_experiment(tmp_path, monkeypatch) -> None
     assert "선점된 뒤 다시 실행" in output
 
 
-def test_report_result_demotes_to_error_on_failure(tmp_path, monkeypatch) -> None:
-    """중간 실패는 EVALUATING에 주차하지 않고 ERROR로 내린다."""
+def test_report_result_leaves_intermediate_state_for_resume(tmp_path, monkeypatch) -> None:
+    """중간 실패는 실험을 그 상태 그대로 둔다 — ERROR로 내리지 않는다.
+
+    ERROR는 터미널이라 강등하면 재실행이 막히고, 지표와 포인터 로그는 그 이후 단계라
+    영영 기록되지 않는다. launcher는 `executor_job_created_at`이 찍힌 행을 두 claim
+    쿼리 어디에서도 보지 않으므로(`launcher/repository.py`), 중간 상태로 남겨도
+    경합하지 않는다.
+    """
     stub = _StubExperimentClient("RUNNING", fail_on="PASSED")
     _install_stub_client(monkeypatch, stub)
 
     outcome = _run_report(_write_paired_result(tmp_path, "comparison_passed"))
 
     assert outcome.exit_code == 1
-    assert stub.patched == ["EVALUATING", "PASSED", "ERROR"]
-    assert stub.status == "ERROR"
+    assert stub.patched == ["EVALUATING", "PASSED"]
+    assert stub.status == "EVALUATING"
+    assert "EVALUATING 상태로 남았습니다" in unstyle(outcome.output)
+
+
+def test_report_result_resumes_after_transient_failure(tmp_path, monkeypatch) -> None:
+    """일시적 실패 뒤 재실행이 남은 전이를 마치고 지표·로그까지 기록한다.
+
+    강등을 두면 이 재개가 불가능하다 — 이 테스트가 그 결정의 값을 고정한다.
+    """
+    stub = _StubExperimentClient("RUNNING", fail_on="PASSED")
+    _install_stub_client(monkeypatch, stub)
+    result_path = _write_paired_result(tmp_path, "comparison_passed")
+
+    first = _run_report(result_path)
+    stub.fail_on = None
+    stub.calls.clear()
+    second = _run_report(result_path)
+
+    assert first.exit_code == 1
+    assert second.exit_code == 0
+    assert stub.patched == ["PASSED"]
+    assert stub.status == "PASSED"
+    # 지표와 포인터 로그가 결국 기록된다.
+    assert [call[2] for call in stub.calls if call[0] == "PASSED"][0] is not None
+    assert any(call[0] == "LOG" for call in stub.calls)
 
 
 def test_report_result_refuses_terminal_without_touching_experiment(
