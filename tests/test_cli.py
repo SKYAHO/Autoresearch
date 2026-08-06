@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,6 +25,7 @@ from src.pipeline.paired_experiment import (  # noqa: E402
 from agent_orchestration.ui.client import (  # noqa: E402
     ApiConfigurationError,
     ApiUnavailableError,
+    ExperimentApiError,
 )
 from src.pipeline.promotion_evidence import (  # noqa: E402
     ExperimentPlanReceipt,
@@ -1948,8 +1950,14 @@ class _StubExperimentClient:
 
 
 def _install_stub_client(monkeypatch, stub) -> None:
+    """지연 import되는 client 모듈 전체를 double로 바꾼다."""
     monkeypatch.setattr(
-        cli, "ExperimentClient", SimpleNamespace(from_environment=lambda: stub)
+        cli,
+        "_experiment_client_module",
+        lambda: SimpleNamespace(
+            ExperimentClient=SimpleNamespace(from_environment=lambda: stub),
+            ExperimentApiError=ExperimentApiError,
+        ),
     )
 
 
@@ -2077,7 +2085,12 @@ def test_report_result_maps_configuration_error_to_exit_2(tmp_path, monkeypatch)
         raise ApiConfigurationError("ORCH_UI_API_TOKEN을 설정해 주세요.")
 
     monkeypatch.setattr(
-        cli, "ExperimentClient", SimpleNamespace(from_environment=_raise)
+        cli,
+        "_experiment_client_module",
+        lambda: SimpleNamespace(
+            ExperimentClient=SimpleNamespace(from_environment=_raise),
+            ExperimentApiError=ExperimentApiError,
+        ),
     )
 
     outcome = _run_report(_write_paired_result(tmp_path, "comparison_passed"))
@@ -2109,3 +2122,29 @@ def test_report_result_is_safe_to_rerun(tmp_path, monkeypatch) -> None:
     first_log_key = [call[1] for call in first_calls if call[0] == "LOG"]
     second_log_key = [call[1] for call in stub.calls if call[0] == "LOG"]
     assert first_log_key == second_log_key
+
+
+def test_cli_import_does_not_require_sqlalchemy() -> None:
+    """`src.cli` import가 SQLAlchemy를 끌어오지 않아야 한다.
+
+    학습 이미지는 `uv sync --locked --no-dev`로 빌드되어 SQLAlchemy가 없다.
+    `agent_orchestration.ui.client`를 top-level import하면 그 모듈이 `ui.models` →
+    `app.experiments.models` → sqlalchemy로 이어져, 그 이미지에서 `train-model --help`
+    조차 뜨지 않는다(CI `Docker build (train)` smoke check가 이걸 잡았다).
+
+    별도 프로세스에서 확인한다 — 같은 프로세스는 다른 테스트가 이미 import해 둔다.
+    """
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import src.cli, sys; "
+            "assert 'sqlalchemy' not in sys.modules, "
+            "'src.cli가 SQLAlchemy를 전이 의존으로 끌어온다'",
+        ],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr

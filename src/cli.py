@@ -51,10 +51,6 @@ from src.pipeline import (  # noqa: E402
     train,
     training_comparison,
 )
-from agent_orchestration.ui.client import (  # noqa: E402
-    ExperimentApiError,
-    ExperimentClient,
-)
 from src.pipeline.experiment_result_report import (  # noqa: E402
     STATUS_ERROR,
     STATUS_EVALUATING,
@@ -837,6 +833,21 @@ def compare_paired_experiment(
         raise typer.Exit(code=1)
 
 
+def _experiment_client_module():
+    """Experiment API client 모듈을 **지연** import한다.
+
+    `agent_orchestration.ui.client`는 `ui.models`를 거쳐
+    `agent_orchestration.app.experiments.models`를 끌어오고, 그 모듈이 SQLAlchemy를
+    요구한다. 학습 이미지는 `uv sync --locked --no-dev`로 빌드되어 SQLAlchemy가 없으므로
+    top-level import면 `src.cli` 전체가 뜨지 않는다 — `train-model --help`조차 죽는다.
+
+    이 명령을 실제로 실행할 때만 필요한 의존이므로 여기서만 가져온다.
+    """
+    from agent_orchestration.ui import client
+
+    return client
+
+
 _DEFAULT_REPORT_FAILURE = "판정 결과를 Experiment API에 반영하지 못했습니다."
 
 # 종료 코드 1이 나오는 경우들은 운영 대응이 서로 다르다. 실패 로그만 보고 무엇을 해야
@@ -854,7 +865,7 @@ _REPORT_FAILURE_DIAGNOSTICS = {
 
 
 def _demote_to_error(
-    client: ExperimentClient, experiment_id: str, reached: Optional[str]
+    client: object, experiment_id: str, reached: Optional[str]
 ) -> None:
     """주차된 RUNNING/EVALUATING을 남기지 않도록 터미널로 내린다.
 
@@ -867,7 +878,7 @@ def _demote_to_error(
         client.patch_status(
             experiment_id, STATUS_ERROR, reason="결과 반영 중 실패로 ERROR 강등"
         )
-    except ExperimentApiError:
+    except _experiment_client_module().ExperimentApiError:
         # 강등 실패가 원래 오류를 가리지 않게 한다. 재실행하면 남은 전이부터 재개된다.
         typer.echo(
             "[결과 반영 실패] ERROR 강등에도 실패했습니다 — 실험이 RUNNING에 남았을 "
@@ -910,11 +921,12 @@ def report_experiment_result(
         )
         raise typer.Exit(code=2) from error
 
+    client_module = _experiment_client_module()
     try:
         # 빈 토큰·base_url 검사는 client 생성자가 이미 한다. 여기서 다시 만들지 않고
         # 그 예외를 종료 코드로 옮기기만 한다.
-        client = ExperimentClient.from_environment()
-    except ExperimentApiError as error:
+        client = client_module.ExperimentClient.from_environment()
+    except client_module.ExperimentApiError as error:
         typer.echo(
             f"[결과 반영 실패] {type(error).__name__}: "
             "Experiment API 연결 설정이 올바르지 않습니다.",
@@ -942,7 +954,7 @@ def report_experiment_result(
             idempotency_key=build_log_idempotency_key(experiment_id, parsed),
             content=build_log_content(parsed, log_uri=log_uri),
         )
-    except (ExperimentApiError, ResultReportError) as error:
+    except (client_module.ExperimentApiError, ResultReportError) as error:
         _demote_to_error(client, experiment_id, reached)
         typer.echo(
             f"[결과 반영 실패] {type(error).__name__}: "
