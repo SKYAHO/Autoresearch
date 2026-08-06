@@ -1,6 +1,6 @@
 # 실험 executor Phase 2 — 이슈 기반 코드 수정과 candidate commit
 
-> 상태: 설계 승인 후 구현 전
+> 상태: Phase 2 구현 완료, #565 Codex 인증 Secret 전환 구현 완료
 > 관련 이슈: #557
 > 선행 계약: #546, `2026-08-05-experiment-job-baseline-freeze.md`
 
@@ -107,7 +107,7 @@ mount한다.
    → HEAD == 원격 tip 검증, base 또는 기존 candidate 경로 분기
 
 5. codex-worker
-   workspace + executor 전용 CODEX_HOME mount
+   workspace + executor 전용 CODEX_HOME Secret mount
    GitHub/API token volume 미마운트
    → 이슈 해석, 코드 수정, 선택 테스트, 실패 보완
 
@@ -318,7 +318,7 @@ dev/test 의존성은 `/opt/autoresearch-venv`에 미리 설치하고 candidate 
 Infra는 다음을 container별로 강제한다.
 
 - branch/clone/push token-minter만 GitHub App private key mount
-- codex-worker만 executor 전용 CODEX_HOME mount
+- codex-worker만 executor 전용 CODEX_HOME Kubernetes Secret mount
 - candidate-finalizer만 executor API token mount
 - codex-worker와 verifier에는 GitHub/API token volume 미마운트
 - `automountServiceAccountToken=false`
@@ -327,8 +327,38 @@ Infra는 다음을 container별로 강제한다.
 - GitHub·OpenAI·내부 Experiment API에 필요한 최소 egress
 
 Codex 인증 저장소는 기존 Runner의 writable 세션 상태와 공유하지 않는 executor 전용
-경계로 둔다. 실제 Secret·PVC 이름과 resource 수치는 Infra spec/runbook이 소유하고
-애플리케이션 테스트는 mount 대상과 container 이름 계약을 고정한다.
+Kubernetes Secret 경계로 둔다. 실제 Secret 이름과 resource 수치는 Infra spec/runbook이
+소유하고 애플리케이션 테스트는 mount 대상과 container 이름 계약을 고정한다.
+
+### Codex 인증 동시 mount 계약 (#565)
+
+executor의 Codex 인증 원본은 PVC가 아니라 Kubernetes Secret이다. `standard-rwo` PVC는
+한 노드에만 attach할 수 있어 동시 실행된 Experiment Pod가 서로 다른 `batch-od` 노드에
+배치될 때 다른 Pod의 시작을 막을 수 있다. 작은 read-only `auth.json`은 여러 Pod가 각자
+동시에 mount할 수 있는 Secret이 이 실행 계약에 맞는다.
+
+- launcher 설정은 `ORCH_CODEX_HOME_SECRET_NAME`으로 Secret 이름을 받는다.
+- Secret은 `auth.json` key 하나를 제공한다. launcher가 Secret volume의 `defaultMode`를
+  `0440`으로 지정한다.
+- `codex-worker`만 `auth.json` key를 `/var/lib/codex/auth.json`에 read-only `subPath`로
+  mount한다. Kubernetes Secret volume의 symlink가 worker의 regular-file 검사를 우회하지
+  않도록 파일 단위 mount를 사용하며, 나머지 일곱 컨테이너에는 volumeMount 자체를 만들지
+  않는다.
+- `codex-worker`는 원본 `auth.json`을 `/tmp` 아래 mode `0700`의 per-run writable
+  `CODEX_HOME`으로 복사하고 복사본을 mode `0400`으로 제한한다. 실행 중 인증 상태 변경은
+  Pod와 함께 폐기되며 Secret 원본을 갱신하지 않는다.
+- Secret이 없거나 `auth.json` key가 없으면 kubelet이 volume mount를 완료하지 못해 Pod는
+  `Pending`에 머문다. Job은 `activeDeadlineSeconds`(기본 300초) 뒤 `Failed`가 되고,
+  launcher는 다음 tick에서 terminal Job을 회수해 Experiment를 `ERROR`로 전환한다. 운영자는
+  Pod event의 `FailedMount`와 Job의 `DeadlineExceeded`를 원인 판단 근거로 사용한다.
+- `subPath` mount는 실행 중 Secret 갱신을 전파하지 않으므로 Secret 교체는 새 Experiment
+  Pod부터 적용한다. 실행 중인 Pod에 인증 교체를 강제하지 않는다.
+- 롤아웃은 experiment namespace에 Secret과 `auth.json` key를 먼저 생성한 뒤 새 launcher
+  설정과 이미지를 배포한다. 롤백은 이전 launcher 이미지와
+  `ORCH_CODEX_HOME_PVC_NAME` 설정을 함께 복원하며, 진행 중 Job이 끝난 뒤 전환해 서로 다른
+  인증 계약의 Job이 섞이지 않게 한다.
+- 기존 Runner의 `agent-orchestration-codex-home` PVC는 Runner 전용으로 유지하며 executor가
+  참조하지 않는다.
 
 ## 검증 전략
 
@@ -368,7 +398,7 @@ Codex 인증 저장소는 기존 Runner의 writable 세션 상태와 공유하�
 1. Autoresearch spec·plan 승인
 2. migration/API/executor/launcher 구현과 CI
 3. immutable executor·launcher·API image 게시
-4. Autoresearch-infra companion 이슈·PR에서 admission, Secret/PVC, NetworkPolicy 반영
+4. Autoresearch-infra companion 이슈·PR에서 admission, Secret, NetworkPolicy 반영
 5. 별도 승인 후 Infra apply
 6. 새 Experiment 운영 smoke
 7. Phase 2 성공 증거 확인 후 후속 평가 파이프라인 연결

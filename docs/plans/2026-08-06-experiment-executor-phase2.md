@@ -672,10 +672,12 @@ branch-token-minter
 ```
 
 `LauncherSettings`에는 `executor_api_url`, `executor_api_token_secret_name`,
-`codex_home_pvc_name`, `workspace_size_limit`, `codex_timeout_sec`를 추가한다. 각각
+`codex_home_secret_name`, `workspace_size_limit`, `codex_timeout_sec`를 추가한다. 각각
 `ORCH_EXECUTOR_API_URL`, `ORCH_EXECUTOR_API_TOKEN_SECRET_NAME`,
-`ORCH_CODEX_HOME_PVC_NAME`, `ORCH_EXECUTOR_WORKSPACE_SIZE_LIMIT`,
-`ORCH_CODEX_TIMEOUT_SEC`에서 읽으며 실제 값과 리소스 생성은 Autoresearch-infra가 소유한다.
+`ORCH_CODEX_HOME_SECRET_NAME`, `ORCH_EXECUTOR_WORKSPACE_SIZE_LIMIT`,
+`ORCH_CODEX_TIMEOUT_SEC`에서 읽는다. executor 전용 Codex 인증 Secret은 `auth.json` key 하나를
+제공하고 launcher가 이를 `defaultMode=0440`의 read-only `subPath` 파일로 mount한다. 실제
+Secret 이름과 리소스 생성은 Autoresearch-infra가 소유한다.
 
 - [ ] **6.1 claim 입력 실패 테스트 작성**
 

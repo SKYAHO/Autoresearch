@@ -128,14 +128,18 @@ docs/
     `ORCH_EXECUTOR_IMAGE`, `ORCH_EXECUTOR_SERVICE_ACCOUNT`,
     `ORCH_EXECUTOR_NODE_POOL`, `ORCH_GITHUB_APP_SECRET_NAME`,
     `ORCH_GITHUB_APP_ID`, `ORCH_GITHUB_APP_INSTALLATION_ID`,
-    `ORCH_GITHUB_REPOSITORY`, `ORCH_MAX_CONCURRENT_EXPERIMENTS`.
+    `ORCH_GITHUB_REPOSITORY`, `ORCH_MAX_CONCURRENT_EXPERIMENTS`,
+    `ORCH_CODEX_HOME_SECRET_NAME`. 마지막 값은 Infra가 생성·이름을 소유하는 executor 전용
+    Codex 인증 Secret을 가리킨다.
   - 8-container 순서: branch-token-minter → branch-creator → clone-token-minter →
     workspace-preparer → codex-worker → candidate-verifier → push-token-minter →
     candidate-finalizer. branch/clone/push token-minter만 GitHub App private key를,
-    codex-worker만 read-only auth source `CODEX_HOME`을, candidate-finalizer만 executor API
-    token을 mount한다. codex-worker는 source의 regular `auth.json`만 mode 0400으로 `/tmp`
-    아래 mode 0700 per-run writable scratch `CODEX_HOME`에 복사하고, config·plugin 등 다른
-    source 파일은 복사하지 않은 채 `codex exec --ephemeral`을 실행한다.
+    codex-worker만 executor 전용 Codex 인증 Secret의 read-only `CODEX_HOME`을,
+    candidate-finalizer만 executor API token을 mount한다. Secret은 `auth.json` key 하나를
+    제공하고 launcher는 이를 `defaultMode=0440`의 read-only `subPath` 파일로 mount한다.
+    codex-worker는 source의 regular `auth.json`만 mode 0400으로 `/tmp` 아래 mode 0700 per-run
+    writable scratch `CODEX_HOME`에 복사하고, config·plugin 등 다른 source 파일은 복사하지
+    않은 채 `codex exec --ephemeral`을 실행한다.
   - executor 봉인 좌표: launcher가 `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`,
     `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA`, `ORCH_ISSUE_BODY_SHA256`를 DB에서 복사해
     Pod에 주입한다. workspace-preparer가 marker·body hash·branch를 검증한다.
