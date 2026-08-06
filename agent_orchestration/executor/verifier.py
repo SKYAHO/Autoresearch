@@ -1,0 +1,568 @@
+"""Executor candidate의 실제 Git 변경과 봉인 검증 명령을 승인한다.
+
+[파이프라인]
+workspace-preparer가 봉인 checkout을 만들고 Codex worker가 workspace 파일만 수정한 뒤,
+finalizer가 candidate commit·push를 수행하기 전 변경 범위와 고정 검증을 판정하는 구간이다.
+
+[기능]
+working tree 또는 재시도 candidate commit의 실제 Git diff를 경로·mode·크기 정책으로
+검사하고, 자격증명이 없는 allowlist 환경에서 diff check·Ruff·pytest를 순서대로 실행한다.
+
+[비책임]
+이슈/ref/workspace 준비(`workspace.py`), Codex 코드 수정(`codex_worker.py`), candidate의
+commit·push·API 보고(Stage 5), Pod credential·volume 정책(Autoresearch-infra)은 담당하지
+않는다.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+from tempfile import TemporaryDirectory
+from typing import Final
+
+
+_SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
+_LFS_POINTER_PREFIX: Final = b"version https://git-lfs.github.com/spec/v1\n"
+_FIXED_UV_PROJECT_ENVIRONMENT: Final = "/opt/autoresearch-venv"
+_BASE_ALLOWED_PREFIXES: Final = ("autoresearch/", "tests/", "tools/")
+_ALWAYS_FORBIDDEN_PREFIXES: Final = (
+    ".git/",
+    ".github/",
+    ".claude/",
+    "docs/",
+    "deploy/",
+    "proxy/",
+    "agent_orchestration/",
+)
+_ALLOWED_SCOPE_VALUES: Final = frozenset(
+    {"prod_model_contract", "feast_definition", "promotion"}
+)
+_SYMLINK_MODE: Final = 0o120000
+_SUBMODULE_MODE: Final = 0o160000
+
+
+class CandidateVerificationError(RuntimeError):
+    """Candidate 전체를 거부하는 정제된 verifier 실패 사유다."""
+
+
+@dataclass(frozen=True)
+class CandidatePolicy:
+    """봉인된 executor image가 소유하는 candidate 변경 상한과 조건부 scope다."""
+
+    allowed_scope: tuple[str, ...] = ()
+    max_changed_paths: int = 50
+    max_text_diff_bytes: int = 1024 * 1024
+    max_regular_file_bytes: int = 10 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    """범위와 고정 명령을 모두 통과한 candidate의 변경 경로다."""
+
+    changed_paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _TreeEntry:
+    """정책 검사에 필요한 Git tree의 file mode와 blob object다."""
+
+    mode: int
+    object_id: str
+
+
+@dataclass(frozen=True)
+class _ChangedPath:
+    """diff status가 보고한 현재·이전 경로 한 쌍이다."""
+
+    current: str | None
+    previous: str | None = None
+
+
+def _verification_environment(temporary_root: Path) -> dict[str, str]:
+    """Git·Ruff·pytest에 부모 credential을 상속하지 않는 실행 환경을 만든다."""
+    home = temporary_root / "home"
+    config_home = temporary_root / "config"
+    cache_home = temporary_root / "cache"
+    tmpdir = temporary_root / "tmp"
+    for directory in (home, config_home, cache_home, tmpdir):
+        directory.mkdir()
+    return {
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(config_home),
+        "XDG_CACHE_HOME": str(cache_home),
+        "TMPDIR": str(tmpdir),
+        "PATH": os.environ.get("PATH", ""),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "UV_PROJECT_ENVIRONMENT": _FIXED_UV_PROJECT_ENVIRONMENT,
+    }
+
+
+def _run_git(
+    repository: Path,
+    *arguments: str,
+    environment: dict[str, str],
+) -> bytes:
+    """안전한 allowlist 환경에서 read-only Git 명령의 stdout만 반환한다."""
+    try:
+        return subprocess.run(
+            ("git", "-C", str(repository), *arguments),
+            check=True,
+            capture_output=True,
+            env=environment,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise CandidateVerificationError("git_invalid") from error
+
+
+def _run_fixed_command(
+    command: tuple[str, ...], *, cwd: Path, environment: dict[str, str]
+) -> int:
+    """봉인된 verifier 명령 하나를 출력 비노출 상태로 실행한다."""
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            env=environment,
+            capture_output=True,
+            check=False,
+        ).returncode
+    except OSError as error:
+        raise CandidateVerificationError("verification_command_unavailable") from error
+
+
+def _decode_path(value: bytes) -> str:
+    """Git의 NUL 구분 경로를 정책상 검증 가능한 UTF-8 경로로 바꾼다."""
+    try:
+        path = value.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise CandidateVerificationError("path_encoding") from error
+    if not path or path.startswith("/") or "\\" in path:
+        raise CandidateVerificationError("path_invalid")
+    parts = Path(path).parts
+    if any(part in {"", ".", ".."} for part in parts):
+        raise CandidateVerificationError("path_invalid")
+    return path
+
+
+def _validate_input(
+    repository: Path, base_sha: str, candidate_sha: str | None, policy: CandidatePolicy
+) -> None:
+    """filesystem·SHA·정책 값을 command 실행 전 fail-closed로 검증한다."""
+    if not repository.is_absolute() or not repository.is_dir() or repository.is_symlink():
+        raise CandidateVerificationError("repository_invalid")
+    if _SHA_PATTERN.fullmatch(base_sha) is None:
+        raise CandidateVerificationError("base_sha_invalid")
+    if candidate_sha is not None and _SHA_PATTERN.fullmatch(candidate_sha) is None:
+        raise CandidateVerificationError("candidate_sha_invalid")
+    if (
+        len(set(policy.allowed_scope)) != len(policy.allowed_scope)
+        or any(scope not in _ALLOWED_SCOPE_VALUES for scope in policy.allowed_scope)
+    ):
+        raise CandidateVerificationError("allowed_scope_invalid")
+    if (
+        type(policy.max_changed_paths) is not int
+        or type(policy.max_text_diff_bytes) is not int
+        or type(policy.max_regular_file_bytes) is not int
+        or policy.max_changed_paths < 1
+        or policy.max_text_diff_bytes < 0
+        or policy.max_regular_file_bytes < 1
+    ):
+        raise CandidateVerificationError("policy_invalid")
+
+
+def _tree_entries(
+    repository: Path, revision: str, *, environment: dict[str, str]
+) -> dict[str, _TreeEntry]:
+    """revision 전체 tree를 읽어 삭제·rename도 file mode로 판단할 수 있게 한다."""
+    raw = _run_git(repository, "ls-tree", "-r", "-z", revision, environment=environment)
+    entries: dict[str, _TreeEntry] = {}
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3:
+            raise CandidateVerificationError("git_invalid")
+        try:
+            mode = int(fields[0], 8)
+            object_id = fields[2].decode("ascii", errors="strict")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise CandidateVerificationError("git_invalid") from error
+        entries[_decode_path(raw_path)] = _TreeEntry(mode=mode, object_id=object_id)
+    return entries
+
+
+def _index_entries(
+    repository: Path, *, environment: dict[str, str]
+) -> dict[str, _TreeEntry]:
+    """working tree의 staged gitlink·symlink도 놓치지 않도록 index mode를 읽는다."""
+    raw = _run_git(repository, "ls-files", "-s", "-z", environment=environment)
+    entries: dict[str, _TreeEntry] = {}
+    for record in raw.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3:
+            raise CandidateVerificationError("git_invalid")
+        try:
+            mode = int(fields[0], 8)
+            object_id = fields[1].decode("ascii", errors="strict")
+        except (UnicodeDecodeError, ValueError) as error:
+            raise CandidateVerificationError("git_invalid") from error
+        entries[_decode_path(raw_path)] = _TreeEntry(mode=mode, object_id=object_id)
+    return entries
+
+
+def _name_status_changes(
+    repository: Path,
+    base_sha: str,
+    candidate_sha: str | None,
+    *,
+    environment: dict[str, str],
+) -> list[_ChangedPath]:
+    """Git diff와 untracked 목록을 합쳐 policy가 검사할 모든 경로를 수집한다."""
+    revisions = (base_sha,) if candidate_sha is None else (base_sha, candidate_sha)
+    raw_diffs = [_run_git(
+        repository,
+        "diff",
+        "--name-status",
+        "-z",
+        "-M",
+        *revisions,
+        environment=environment,
+    )]
+    if candidate_sha is None:
+        raw_diffs.append(_run_git(
+            repository,
+            "diff",
+            "--cached",
+            "--name-status",
+            "-z",
+            "-M",
+            base_sha,
+            environment=environment,
+        ))
+    changes: list[_ChangedPath] = []
+    for raw in raw_diffs:
+        fields = [field for field in raw.split(b"\0") if field]
+        index = 0
+        while index < len(fields):
+            status = fields[index].decode("ascii", errors="strict")
+            index += 1
+            if not status or status[0] not in {"A", "C", "D", "M", "R", "T"}:
+                raise CandidateVerificationError("git_invalid")
+            if status[0] in {"R", "C"}:
+                if index + 1 >= len(fields):
+                    raise CandidateVerificationError("git_invalid")
+                current = _decode_path(fields[index])
+                previous = _decode_path(fields[index + 1])
+                index += 2
+                changes.append(_ChangedPath(current=current, previous=previous))
+            else:
+                if index >= len(fields):
+                    raise CandidateVerificationError("git_invalid")
+                path = _decode_path(fields[index])
+                index += 1
+                changes.append(_ChangedPath(current=None if status[0] == "D" else path, previous=path if status[0] == "D" else None))
+
+    if candidate_sha is None:
+        # status는 요구되는 working-tree 진단이고, ls-files는 directory로 축약되지 않은
+        # untracked file 목록을 준다.
+        _run_git(repository, "status", "--porcelain=v1", "-z", environment=environment)
+        untracked = _run_git(
+            repository,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            environment=environment,
+        )
+        tracked_paths = {change.current for change in changes if change.current is not None}
+        for raw_path in untracked.split(b"\0"):
+            if raw_path:
+                path = _decode_path(raw_path)
+                if path not in tracked_paths:
+                    changes.append(_ChangedPath(current=path))
+    return changes
+
+
+def _path_is_allowed(path: str, policy: CandidatePolicy) -> bool:
+    """기본 allowlist와 Issue Form의 조건부 scope를 path 하나에 적용한다."""
+    if path in {".env", "pyproject.toml", "uv.lock"} or path.startswith(".env."):
+        return False
+    if path.startswith(_ALWAYS_FORBIDDEN_PREFIXES):
+        return False
+    if path == "src/features/model_contract.py":
+        return "prod_model_contract" in policy.allowed_scope
+    if path.startswith("src/"):
+        return True
+    if path.startswith(_BASE_ALLOWED_PREFIXES):
+        return True
+    return path.startswith("feature_repo/") and "feast_definition" in policy.allowed_scope
+
+
+def _read_blob(
+    repository: Path, object_id: str, *, environment: dict[str, str]
+) -> bytes:
+    """tree가 가리키는 blob만 읽어 LFS pointer를 확인한다."""
+    return _run_git(repository, "cat-file", "blob", object_id, environment=environment)
+
+
+def _text_diff_size(
+    repository: Path,
+    base_sha: str,
+    candidate_sha: str | None,
+    untracked_paths: tuple[str, ...],
+    *,
+    environment: dict[str, str],
+) -> int:
+    """patch의 실제 추가·삭제 text bytes와 untracked text bytes를 계산한다."""
+    revisions = (base_sha,) if candidate_sha is None else (base_sha, candidate_sha)
+    patch = _run_git(
+        repository,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--unified=0",
+        *revisions,
+        environment=environment,
+    )
+    total = 0
+    for line in patch.splitlines(keepends=True):
+        if line.startswith((b"+++", b"---")):
+            continue
+        if line.startswith((b"+", b"-")):
+            total += len(line) - 1
+    if candidate_sha is None:
+        for path in untracked_paths:
+            candidate_path = repository / path
+            try:
+                content = candidate_path.read_bytes()
+            except OSError as error:
+                raise CandidateVerificationError("file_unreadable") from error
+            if b"\0" not in content:
+                total += len(content)
+    return total
+
+
+def _validate_path_files(
+    repository: Path,
+    changes: list[_ChangedPath],
+    base_sha: str,
+    base_entries: dict[str, _TreeEntry],
+    candidate_entries: dict[str, _TreeEntry],
+    index_entries: dict[str, _TreeEntry] | None,
+    candidate_sha: str | None,
+    policy: CandidatePolicy,
+    *,
+    environment: dict[str, str],
+) -> tuple[str, ...]:
+    """경로·mode·LFS·파일 크기를 candidate 전체에 대해 fail-closed로 검사한다."""
+    policy_paths: list[str] = []
+    untracked_paths: list[str] = []
+    for change in changes:
+        for path in (change.previous, change.current):
+            if path is None:
+                continue
+            policy_paths.append(path)
+            if not _path_is_allowed(path, policy):
+                raise CandidateVerificationError("forbidden_path")
+        if candidate_sha is None and change.previous is None and change.current is not None:
+            if change.current not in (index_entries or {}):
+                untracked_paths.append(change.current)
+
+    unique_paths = tuple(sorted(set(policy_paths)))
+    if not unique_paths:
+        raise CandidateVerificationError("no_changes")
+    if len(unique_paths) > policy.max_changed_paths:
+        raise CandidateVerificationError("too_many_paths")
+
+    for path in unique_paths:
+        entries = [base_entries.get(path), candidate_entries.get(path)]
+        if index_entries is not None:
+            entries.append(index_entries.get(path))
+        if any(entry is not None and entry.mode == _SYMLINK_MODE for entry in entries):
+            raise CandidateVerificationError("symlink")
+        if any(entry is not None and entry.mode == _SUBMODULE_MODE for entry in entries):
+            raise CandidateVerificationError("submodule")
+
+        if candidate_sha is None:
+            current = repository / path
+            try:
+                file_status = current.lstat()
+            except FileNotFoundError:
+                file_status = None
+            except OSError as error:
+                raise CandidateVerificationError("file_unreadable") from error
+            if file_status is not None:
+                if stat.S_ISLNK(file_status.st_mode):
+                    raise CandidateVerificationError("symlink")
+                if not stat.S_ISREG(file_status.st_mode):
+                    raise CandidateVerificationError("file_type_invalid")
+                if file_status.st_size > policy.max_regular_file_bytes:
+                    raise CandidateVerificationError("file_too_large")
+                try:
+                    content = current.read_bytes()
+                except OSError as error:
+                    raise CandidateVerificationError("file_unreadable") from error
+                if content.startswith(_LFS_POINTER_PREFIX):
+                    raise CandidateVerificationError("lfs_pointer")
+            base_entry = base_entries.get(path)
+            if base_entry is not None and _read_blob(
+                repository, base_entry.object_id, environment=environment
+            ).startswith(_LFS_POINTER_PREFIX):
+                raise CandidateVerificationError("lfs_pointer")
+        else:
+            for entry in entries[:2]:
+                if entry is None:
+                    continue
+                content = _read_blob(repository, entry.object_id, environment=environment)
+                if content.startswith(_LFS_POINTER_PREFIX):
+                    raise CandidateVerificationError("lfs_pointer")
+                if entry is candidate_entries.get(path):
+                    size = len(content)
+                    if size > policy.max_regular_file_bytes:
+                        raise CandidateVerificationError("file_too_large")
+
+    text_diff_bytes = _text_diff_size(
+        repository,
+        base_sha,
+        candidate_sha,
+        tuple(untracked_paths),
+        environment=environment,
+    )
+    if text_diff_bytes > policy.max_text_diff_bytes:
+        raise CandidateVerificationError("text_diff_too_large")
+    return unique_paths
+
+
+def _run_sealed_commands(
+    repository: Path,
+    base_sha: str,
+    candidate_sha: str | None,
+    *,
+    environment: dict[str, str],
+) -> None:
+    """diff check, Ruff, pytest를 고정 순서로 실행하고 첫 실패에서 중단한다."""
+    revisions = (base_sha,) if candidate_sha is None else (base_sha, candidate_sha)
+    commands = (
+        (("git", "diff", "--check", *revisions), "diff_check_failed"),
+        (
+            (
+                "uv",
+                "run",
+                "--no-sync",
+                "ruff",
+                "check",
+                "agent_orchestration",
+                "autoresearch",
+                "tests",
+                "tools",
+            ),
+            "ruff_failed",
+        ),
+        (("uv", "run", "--no-sync", "python", "-m", "pytest"), "pytest_failed"),
+    )
+    for command, error_code in commands:
+        if _run_fixed_command(command, cwd=repository, environment=environment) != 0:
+            raise CandidateVerificationError(error_code)
+
+
+def _materialize_candidate(
+    repository: Path,
+    candidate_sha: str,
+    temporary_root: Path,
+    *,
+    environment: dict[str, str],
+) -> Path:
+    """재시도 candidate를 dirty source worktree와 분리한 임시 clone으로 검증한다."""
+    checkout = temporary_root / "candidate-checkout"
+    try:
+        subprocess.run(
+            (
+                "git",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "clone",
+                "--shared",
+                "--no-checkout",
+                str(repository),
+                str(checkout),
+            ),
+            check=True,
+            capture_output=True,
+            env=environment,
+        )
+        _run_git(checkout, "checkout", "--detach", candidate_sha, environment=environment)
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise CandidateVerificationError("candidate_checkout_invalid") from error
+    return checkout
+
+
+def verify_candidate(
+    repository: Path,
+    base_sha: str,
+    candidate_sha: str | None,
+    policy: CandidatePolicy,
+) -> VerificationResult:
+    """실제 Git candidate를 정책과 봉인 명령으로 검사해 finalizer 입력을 반환한다."""
+    _validate_input(repository, base_sha, candidate_sha, policy)
+    with TemporaryDirectory(prefix="executor-verifier-") as temporary_directory:
+        temporary_root = Path(temporary_directory)
+        environment = _verification_environment(temporary_root)
+        _run_git(repository, "rev-parse", "--verify", f"{base_sha}^{{commit}}", environment=environment)
+        if candidate_sha is not None:
+            _run_git(
+                repository,
+                "rev-parse",
+                "--verify",
+                f"{candidate_sha}^{{commit}}",
+                environment=environment,
+            )
+        changes = _name_status_changes(
+            repository, base_sha, candidate_sha, environment=environment
+        )
+        base_entries = _tree_entries(repository, base_sha, environment=environment)
+        candidate_entries = _tree_entries(
+            repository, candidate_sha or base_sha, environment=environment
+        )
+        index_entries = (
+            _index_entries(repository, environment=environment)
+            if candidate_sha is None
+            else None
+        )
+        changed_paths = _validate_path_files(
+            repository,
+            changes,
+            base_sha,
+            base_entries,
+            candidate_entries,
+            index_entries,
+            candidate_sha,
+            policy,
+            environment=environment,
+        )
+        verification_repository = (
+            repository
+            if candidate_sha is None
+            else _materialize_candidate(
+                repository,
+                candidate_sha,
+                temporary_root,
+                environment=environment,
+            )
+        )
+        _run_sealed_commands(
+            verification_repository,
+            base_sha,
+            candidate_sha,
+            environment=environment,
+        )
+    return VerificationResult(changed_paths=changed_paths)
