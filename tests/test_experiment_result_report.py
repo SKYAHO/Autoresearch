@@ -13,11 +13,20 @@ import pytest
 
 from src.pipeline.paired_experiment import PairedExperimentRequest
 from src.pipeline.experiment_result_report import (
+    MAX_IDEMPOTENCY_KEY_LENGTH,
+    STATUS_CREATED,
     STATUS_ERROR,
+    STATUS_EVALUATING,
     STATUS_FAILED,
     STATUS_PASSED,
+    STATUS_PROMOTED,
+    STATUS_RUNNING,
+    ResultReportError,
+    build_log_content,
+    build_log_idempotency_key,
     build_metric_snapshot,
     build_reason,
+    plan_transitions,
     target_status,
 )
 from tests.test_cli import _paired_request_payload, _paired_result
@@ -109,3 +118,79 @@ def test_reason_is_truncated_with_marker() -> None:
 
     assert len(reason) == 8192
     assert reason.endswith("…(truncated)")
+
+
+@pytest.mark.parametrize(
+    ("current", "expected"),
+    [
+        (STATUS_CREATED, (STATUS_RUNNING, STATUS_EVALUATING, STATUS_PASSED)),
+        (STATUS_RUNNING, (STATUS_EVALUATING, STATUS_PASSED)),
+        (STATUS_EVALUATING, (STATUS_PASSED,)),
+        (STATUS_PASSED, ()),
+    ],
+)
+def test_plan_transitions_resumes_from_current_status(
+    current: str, expected: tuple[str, ...]
+) -> None:
+    """현재 상태부터 남은 전이만 밟는다 — PATCH가 멱등이 아니라 재호출이 event를 늘린다."""
+    assert plan_transitions(current, STATUS_PASSED) == expected
+
+
+@pytest.mark.parametrize("current", [STATUS_FAILED, STATUS_ERROR, STATUS_PROMOTED])
+def test_plan_transitions_refuses_to_overwrite_other_terminal(current: str) -> None:
+    """이미 결론이 난 실험을 다른 결론으로 덮어쓰지 않는다.
+
+    전이를 하나도 밟기 전에 거부하므로, 호출자 쪽 `reached`는 None으로 남는다 —
+    ERROR 강등이 일어나지 않아야 한다는 뜻이다(그 경로는 CLI 테스트가 본다).
+    """
+    with pytest.raises(ResultReportError):
+        plan_transitions(current, STATUS_PASSED)
+
+
+def test_naive_idempotency_key_would_exceed_limit() -> None:
+    """접두사를 그대로 이어붙이면 137자가 되어 서버가 거부한다.
+
+    이 테스트는 구현이 아니라 **문제 자체**를 고정한다. 누군가 트리밍을 되돌리면
+    아래 상한 테스트가 깨지고, 왜 트리밍이 필요했는지는 이 숫자가 설명한다.
+    """
+    naive = f"{'0' * 36}:paired-result:{'experiment-evaluation-' + 'a' * 64}"
+
+    assert len(naive) == 137
+    assert len(naive) > MAX_IDEMPOTENCY_KEY_LENGTH
+
+
+@pytest.mark.parametrize(
+    ("update", "expected_length"),
+    [
+        ({"evaluation_id": "experiment-evaluation-" + "a" * 64}, 115),
+        (
+            {"evaluation_id": None, "evidence_id": "paired-seed-evidence-" + "b" * 64},
+            115,
+        ),
+        ({"evaluation_id": None, "evidence_id": None}, 91),
+    ],
+    ids=["evaluation_id", "evidence_id", "candidate_sha_fallback"],
+)
+def test_log_idempotency_key_stays_within_limit(
+    update: dict[str, object], expected_length: int
+) -> None:
+    """상한 근처 실제 길이로 친다 — 짧은 예시로 통과시키면 의미가 없다."""
+    result = _result("comparison_passed").model_copy(update=update)
+
+    key = build_log_idempotency_key("0" * 36, result)
+
+    assert len(key) == expected_length
+    assert len(key) <= MAX_IDEMPOTENCY_KEY_LENGTH
+    assert "experiment-evaluation" not in key
+    assert "paired-seed-evidence" not in key
+
+
+def test_log_content_is_a_pointer_within_limit() -> None:
+    """원본 JSON이 아니라 GCS 위치를 가리키는 요약만 남긴다."""
+    content = build_log_content(
+        _result("comparison_passed"), log_uri="gs://bucket/run.log"
+    )
+
+    assert len(content) <= 8192
+    assert "gs://bucket/run.log" in content
+    assert "outcome=comparison_passed" in content

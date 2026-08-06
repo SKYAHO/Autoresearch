@@ -86,3 +86,58 @@ def build_reason(result: PairedExperimentResult) -> str:
     return _truncate(
         f"{result.decision_reason} [reason_codes: {codes}]", MAX_REASON_LENGTH
     )
+
+
+def plan_transitions(current_status: str, target: str) -> tuple[str, ...]:
+    """현재 상태에서 목표 터미널까지 밟아야 할 전이를 순서대로 반환한다.
+
+    `PATCH /status`는 멱등이 아니므로(`service.py:286-288`) 이미 지난 전이를 다시
+    호출하면 event가 중복된다. 그래서 남은 전이만 계획한다.
+    """
+    if current_status == target:
+        return ()
+    if current_status in TERMINAL_STATUSES:
+        raise ResultReportError("이미 종료된 실험의 결론을 덮어쓰지 않습니다.")
+    if current_status not in (STATUS_CREATED, STATUS_RUNNING, STATUS_EVALUATING):
+        raise ResultReportError("알 수 없는 실험 상태입니다.")
+
+    path: list[str] = []
+    if current_status == STATUS_CREATED:
+        # launcher를 대신한 자가 claim이다. 호출자가 reason에 표식을 붙인다.
+        path.append(STATUS_RUNNING)
+    if current_status in (STATUS_CREATED, STATUS_RUNNING):
+        path.append(STATUS_EVALUATING)
+    path.append(target)
+    return tuple(path)
+
+
+def build_log_idempotency_key(
+    experiment_id: str, result: PairedExperimentResult
+) -> str:
+    """재실행해도 로그가 중복되지 않도록 결정론적 key를 만든다.
+
+    `_stable_id`의 접두사(`experiment-evaluation-` 등)는 고유성에 기여하지 않는
+    장식인데, 그대로 이어붙이면 137자가 되어 128자 상한을 넘긴다. 마지막 `-` 뒤
+    sha256 부분만 쓴다.
+    """
+    raw = result.evaluation_id or result.evidence_id or result.candidate_sha
+    key = f"{experiment_id}:paired-result:{raw.rsplit('-', 1)[-1]}"
+    if len(key) > MAX_IDEMPOTENCY_KEY_LENGTH:
+        raise ResultReportError("idempotency key가 서버 상한을 넘었습니다.")
+    return key
+
+
+def build_log_content(result: PairedExperimentResult, *, log_uri: str | None) -> str:
+    """원본 JSON 대신 산출물 위치를 가리키는 포인터 로그를 만든다."""
+    lines = [
+        f"outcome={result.outcome}",
+        f"decision_reason={result.decision_reason}",
+        f"model_uri={result.model_uri or '-'}",
+    ]
+    if log_uri is not None:
+        lines.append(f"run_log_uri={log_uri}")
+    for run in result.runs:
+        lines.append(
+            f"seed={run.seed} artifact_uri={run.artifact_uri} log_uri={run.log_uri}"
+        )
+    return _truncate("\n".join(lines), MAX_LOG_CONTENT_LENGTH)
