@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-06T01:54:44Z",
+  "generated_at": "2026-08-06T01:58:32Z",
   "reports": [
+    {
+      "number": 545,
+      "title": "fix: 스냅샷 스토어 잔여 보완 — 커버리지 게이트 fail-closed (#537)",
+      "author": "waieiches",
+      "merged_at": "2026-08-06T01:58:21Z",
+      "summary_ko": [
+        "학습 데이터셋 스냅샷 재사용 시 커버리지 게이트가 기본값에 의해 무음 비활성화되는 문제를 막기 위해 fail-closed 방식으로 전환했습니다.",
+        "train.main 호출 시 dataset_uri를 전달할 경우 min_coverage_days 인자의 명시적 전달을 의무화했습니다.",
+        "CLI 실행부의 인자 정규화 비대칭 및 사장된 코드를 정돈하고 관련 테스트 케이스를 보완했습니다."
+      ],
+      "report_url": "pr/545/"
+    },
     {
       "number": 549,
       "title": "fix: feast-apply를 브랜치가 아닌 prod/dev 환경으로 라우팅",
