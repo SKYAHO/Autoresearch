@@ -193,14 +193,6 @@ async def _checkout(
                 environment=environment,
             )
             await _run_git(
-                ("-C", str(repository), "checkout", "--detach", f"origin/{config.issue_branch}"),
-                environment=environment,
-            )
-            await _run_git(
-                ("-C", str(repository), "switch", "-c", config.issue_branch),
-                environment=environment,
-            )
-            await _run_git(
                 ("-C", str(repository), "config", "core.hooksPath", "/dev/null"),
                 environment=environment,
             )
@@ -223,6 +215,14 @@ async def _checkout(
             )
             if hooks_path != "/dev/null":
                 raise WorkspacePreparationError("hooks_path_invalid")
+            await _run_git(
+                ("-C", str(repository), "checkout", "--detach", f"origin/{config.issue_branch}"),
+                environment=environment,
+            )
+            await _run_git(
+                ("-C", str(repository), "switch", "-c", config.issue_branch),
+                environment=environment,
+            )
             head = _sha(
                 await _run_git(
                     ("-C", str(repository), "rev-parse", "HEAD"), environment=environment

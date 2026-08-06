@@ -183,6 +183,36 @@ def test_prepared_workspace_uses_clean_remote_writes_0400_state_and_removes_askp
     assert all(not path.exists() for path in askpass_files)
     assert all(_TOKEN not in " ".join(command) for command in commands)
     assert ("git", "-C", str(prepared.repository), "config", "--get", "credential.helper") in commands
+    clone = commands.index(
+        (
+            "git",
+            "clone",
+            "--no-checkout",
+            "--origin",
+            "origin",
+            "https://github.com/SKYAHO/Autoresearch.git",
+            str(prepared.repository),
+        )
+    )
+    hooks_set = commands.index(
+        ("git", "-C", str(prepared.repository), "config", "core.hooksPath", "/dev/null")
+    )
+    remote = commands.index(
+        ("git", "-C", str(prepared.repository), "config", "--get", "remote.origin.url")
+    )
+    helper = commands.index(
+        ("git", "-C", str(prepared.repository), "config", "--get", "credential.helper")
+    )
+    hooks = commands.index(
+        ("git", "-C", str(prepared.repository), "config", "--get", "core.hooksPath")
+    )
+    checkout = commands.index(
+        ("git", "-C", str(prepared.repository), "checkout", "--detach", f"origin/{_ISSUE_BRANCH}")
+    )
+    switch = commands.index(
+        ("git", "-C", str(prepared.repository), "switch", "-c", _ISSUE_BRANCH)
+    )
+    assert clone < hooks_set < remote < helper < hooks < checkout < switch
 
 
 def test_existing_remote_candidate_is_prepared_for_later_adoption_without_running_codex(
@@ -234,6 +264,34 @@ def test_state_read_rejects_repository_outside_the_fixed_workspace(tmp_path: Pat
     state_path.chmod(0o400)
 
     with pytest.raises(ExecutorWorkspaceStateError, match="repository"):
+        read_state(state_path, workspace=workspace)
+
+
+@pytest.mark.parametrize("invalid_version", [True, None, "1", 1.0, 2])
+def test_state_read_rejects_non_integer_schema_version(
+    tmp_path: Path, invalid_version: object
+) -> None:
+    """JSON true는 Python에서 1과 같으므로 명시적인 타입 검증이 필요하다."""
+    workspace = tmp_path / "workspace"
+    repository = workspace / "repository"
+    repository.mkdir(parents=True)
+    state_path = tmp_path / "state" / "state.json"
+    state = ExecutorWorkspaceState(
+        schema_version=1,
+        repository=repository,
+        issue_body="body",
+        allowed_scope=(),
+        base_dev_sha=_BASE_SHA,
+        remote_tip=_BASE_SHA,
+    )
+    write_state(state_path, state, workspace=workspace)
+    state_path.chmod(0o600)
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["schema_version"] = invalid_version
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
+    state_path.chmod(0o400)
+
+    with pytest.raises(ExecutorWorkspaceStateError, match="schema_version"):
         read_state(state_path, workspace=workspace)
 
 

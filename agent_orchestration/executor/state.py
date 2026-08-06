@@ -48,7 +48,7 @@ class ExecutorWorkspaceState:
 
 def _validated_state(state: ExecutorWorkspaceState, *, workspace: Path) -> ExecutorWorkspaceState:
     """state의 타입·경로·식별자 계약을 읽기와 쓰기 모두에서 검증한다."""
-    if state.schema_version != 1:
+    if type(state.schema_version) is not int or state.schema_version != 1:
         raise ExecutorWorkspaceStateError("schema_version")
     workspace_path = workspace.resolve()
     if not workspace_path.is_absolute():
