@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-06T01:58:32Z",
+  "generated_at": "2026-08-06T03:14:04Z",
   "reports": [
+    {
+      "number": 547,
+      "title": "feat: 실험 브랜치 Bootstrap Kubernetes Job Phase 1",
+      "author": "bbungjun",
+      "merged_at": "2026-08-06T03:13:50Z",
+      "summary_ko": [
+        "실험 브랜치 생성 책임을 기존 GitHub Actions 워크플로에서 Kubernetes Job(launcher/executor) 체계로 이관하였습니다.",
+        "가설 이슈 발행 직전에 기준 브랜치(dev)의 커밋 SHA를 DB에 원자적으로 봉인하도록 개선하였습니다.",
+        "baseline-reader 및 branch-writer GitHub App 권한을 분리하고 단기 토큰 기반의 안전한 Git ref 생성 체계를 구축하였습니다."
+      ],
+      "report_url": "pr/547/"
+    },
     {
       "number": 545,
       "title": "fix: 스냅샷 스토어 잔여 보완 — 커버리지 게이트 fail-closed (#537)",
