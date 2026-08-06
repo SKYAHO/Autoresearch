@@ -99,6 +99,27 @@ def test_current_working_tree_verification_reuses_stage_four_fingerprint_contrac
     assert fingerprint == approved.content_fingerprint
 
 
+def test_new_file_handoff_reuses_stage_four_fingerprint_contract(
+    tmp_path: Path,
+) -> None:
+    """신규 파일의 unstaged `?`와 staged `A` 차이가 같은 tree의 handoff를 깨면 안 된다."""
+    repository, base_sha = _repository(tmp_path)
+    (repository / "autoresearch" / "new_candidate.py").write_text(
+        "VALUE = 2\n", encoding="utf-8"
+    )
+
+    approved = verify_candidate(
+        repository=repository,
+        base_sha=base_sha,
+        candidate_sha=None,
+        policy=CandidatePolicy(),
+    )
+    changed_paths, fingerprint = current_working_tree_verification(repository, base_sha)
+
+    assert changed_paths == approved.changed_paths
+    assert fingerprint == approved.content_fingerprint
+
+
 def test_allowed_working_tree_change_is_approved_and_reports_path(
     tmp_path: Path,
 ) -> None:
@@ -278,6 +299,25 @@ def test_sensitive_content_in_an_allowed_source_file_is_rejected(
 
     with pytest.raises(CandidateVerificationError, match="content_forbidden"):
         _verify(repository, base_sha)
+
+
+def test_preexisting_sensitive_content_does_not_reject_an_unrelated_change(
+    tmp_path: Path,
+) -> None:
+    """baseline에 이미 있던 민감 패턴 때문에 무관한 candidate 변경을 거부하면 안 된다."""
+    repository, _initial_base = _repository(tmp_path)
+    target = repository / "autoresearch" / "candidate.py"
+    target.write_text(
+        'API_TOKEN = "test-orchestration-token"\nBASE = 1\n', encoding="utf-8"
+    )
+    _git(repository, "add", "autoresearch/candidate.py")
+    _git(repository, "commit", "-m", "sensitive baseline fixture")
+    base_sha = _git(repository, "rev-parse", "HEAD")
+    target.write_text(
+        'API_TOKEN = "test-orchestration-token"\nBASE = 2\n', encoding="utf-8"
+    )
+
+    assert _verify(repository, base_sha) == ("autoresearch/candidate.py",)
 
 
 @pytest.mark.parametrize("suffix", (".csv", ".pkl", ".parquet"))

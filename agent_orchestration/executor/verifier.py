@@ -6,7 +6,8 @@ finalizer가 candidate commit·push를 수행하기 전 변경 범위와 고정 
 
 [기능]
 working tree 또는 재시도 candidate commit의 실제 Git diff를 경로·mode·크기 정책으로
-검사하고, 자격증명이 없는 allowlist 환경에서 diff check·Ruff·pytest를 순서대로 실행한다.
+검사하고 candidate가 새로 도입한 credential·로컬 경로를 거부하며, 자격증명이 없는
+allowlist 환경에서 diff check·Ruff·pytest를 순서대로 실행한다.
 working tree는 descriptor 기반 snapshot에서 검사하며 Stage 5가 재확인할 콘텐츠 지문과
 staged tree 객체 ID를 함께 반환한다.
 
@@ -18,6 +19,7 @@ commit·push·API 보고(Stage 5), Pod credential·volume 정책(Autoresearch-in
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 import errno
 from hashlib import sha256
@@ -348,11 +350,30 @@ def _content_is_forbidden(content: bytes) -> bool:
     )
 
 
-def _validate_file_content(path: str, content: bytes) -> None:
-    """생성 데이터와 sensitive content를 path·bytes 계약으로 fail-closed 처리한다."""
+def _introduced_content(base_content: bytes | None, candidate_content: bytes) -> bytes:
+    """baseline에 없던 candidate line만 원래 순서대로 반환한다."""
+    if base_content is None:
+        return candidate_content
+    remaining_base_lines = Counter(base_content.splitlines(keepends=True))
+    introduced_lines: list[bytes] = []
+    for line in candidate_content.splitlines(keepends=True):
+        if remaining_base_lines[line] > 0:
+            remaining_base_lines[line] -= 1
+        else:
+            introduced_lines.append(line)
+    return b"".join(introduced_lines)
+
+
+def _validate_file_content(
+    path: str,
+    content: bytes,
+    *,
+    base_content: bytes | None,
+) -> None:
+    """생성 데이터와 새 sensitive content를 path·bytes 계약으로 fail-closed 처리한다."""
     if Path(path).suffix.lower() in _GENERATED_DATA_SUFFIXES:
         raise CandidateVerificationError("generated_data")
-    if _content_is_forbidden(content):
+    if _content_is_forbidden(_introduced_content(base_content, content)):
         raise CandidateVerificationError("content_forbidden")
 
 
@@ -445,6 +466,14 @@ def _validate_path_files(
 
         if candidate_sha is None:
             current = repository / path
+            base_entry = base_entries.get(path)
+            base_content = None
+            if base_entry is not None:
+                base_content = _read_blob(
+                    repository, base_entry.object_id, environment=environment
+                )
+                if base_content.startswith(_LFS_POINTER_PREFIX):
+                    raise CandidateVerificationError("lfs_pointer")
             try:
                 file_status = current.lstat()
             except FileNotFoundError:
@@ -464,27 +493,31 @@ def _validate_path_files(
                     raise CandidateVerificationError("file_unreadable") from error
                 if content.startswith(_LFS_POINTER_PREFIX):
                     raise CandidateVerificationError("lfs_pointer")
-                _validate_file_content(path, content)
-            base_entry = base_entries.get(path)
+                _validate_file_content(
+                    path,
+                    content,
+                    base_content=base_content,
+                )
+        else:
+            base_entry, candidate_entry = entries[:2]
+            base_content = None
             if base_entry is not None:
                 base_content = _read_blob(
                     repository, base_entry.object_id, environment=environment
                 )
                 if base_content.startswith(_LFS_POINTER_PREFIX):
                     raise CandidateVerificationError("lfs_pointer")
-        else:
-            base_entry, candidate_entry = entries[:2]
-            if base_entry is not None and _read_blob(
-                repository, base_entry.object_id, environment=environment
-            ).startswith(_LFS_POINTER_PREFIX):
-                raise CandidateVerificationError("lfs_pointer")
             if candidate_entry is not None:
                 content = _read_blob(
                     repository, candidate_entry.object_id, environment=environment
                 )
                 if content.startswith(_LFS_POINTER_PREFIX):
                     raise CandidateVerificationError("lfs_pointer")
-                _validate_file_content(path, content)
+                _validate_file_content(
+                    path,
+                    content,
+                    base_content=base_content,
+                )
                 if len(content) > policy.max_regular_file_bytes:
                     raise CandidateVerificationError("file_too_large")
 
@@ -700,12 +733,30 @@ def current_working_tree_verification(
     """
     _validate_input(repository, base_sha, None, CandidatePolicy())
     with TemporaryDirectory(prefix="executor-verifier-handoff-") as temporary_directory:
-        environment = _verification_environment(Path(temporary_directory))
-        changes = _name_status_changes(repository, base_sha, None, environment=environment)
+        temporary_root = Path(temporary_directory)
+        environment = _verification_environment(temporary_root)
+        working_tree_changes = _name_status_changes(
+            repository, base_sha, None, environment=environment
+        )
+        snapshot = _materialize_working_tree(
+            repository,
+            base_sha,
+            working_tree_changes,
+            temporary_root,
+            environment=environment,
+        )
+        _stage_snapshot_and_write_tree(snapshot, environment=environment)
+        changes = _name_status_changes(
+            snapshot,
+            base_sha,
+            None,
+            environment=environment,
+            staged_only=True,
+        )
         changed_paths = tuple(
             sorted({path for change in changes for path in (change.previous, change.current) if path})
         )
-        return changed_paths, _working_tree_fingerprint(repository, base_sha, changes)
+        return changed_paths, _working_tree_fingerprint(snapshot, base_sha, changes)
 
 
 def write_staged_tree_oid(repository: Path) -> str:
