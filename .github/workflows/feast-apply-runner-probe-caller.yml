@@ -1,0 +1,39 @@
+name: Feast Apply Runner Probe (caller)
+
+# SKYAHO/Autoresearch-infra#541 5단계 검증. feast-apply-{dev,prod} 셀프
+# 호스티드 러너 스케일셋은 이 저장소(app repo)에 repo 스코프로 등록돼 있어,
+# 인프라 저장소의 재사용 워크플로우(feast-apply-runner-probe.yml)를
+# workflow_dispatch로 그쪽에서 직접 실행하면 매칭되는 러너가 없어 job이
+# 큐에서 무한 대기한다. 이 caller가 workflow_call로 호출해야 실행 컨텍스트가
+# 이 저장소가 되어 스케일셋이 job을 받는다.
+#
+# feast apply 자체는 실행하지 않는다 — GCS 접근과 Redis PSC 도달성만
+# 비파괴적으로 확인한다. feast-apply.yml을 GKE Job에서 셀프 호스티드 러너
+# 직접 실행으로 전환하기 전 선행 검증용이며, 전환 완료 후 제거를 검토한다
+# (#555).
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "확인할 environment"
+        type: choice
+        options:
+          - dev
+          - prod
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    uses: SKYAHO/Autoresearch-infra/.github/workflows/feast-apply-runner-probe.yml@main
+    with:
+      environment: ${{ inputs.environment }}
+      # prod만 Redis Cluster PSC 도달성을 확인한다(negative control로 dev도
+      # 같은 값을 넘겨 실패가 기대값임을 증명할 수도 있지만, 이 caller는
+      # feast-apply.yml이 실제로 쓰는 REDIS_HOST를 그대로 넘겨 dev 러너가
+      # 실수로 prod Redis에 닿는지도 함께 검증한다).
+      redis_discovery_host: ${{ vars.REDIS_HOST }}
+      redis_port: ${{ vars.REDIS_PORT }}
