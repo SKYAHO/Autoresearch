@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-06T01:32:20Z",
+  "generated_at": "2026-08-06T01:54:44Z",
   "reports": [
+    {
+      "number": 549,
+      "title": "fix: feast-apply를 브랜치가 아닌 prod/dev 환경으로 라우팅",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-06T01:54:32Z",
+      "summary_ko": [
+        "Feast 적용 워크플로우가 존재하지 않는 main 환경 대신 prod/dev 환경으로 실행되도록 라우팅 식을 수정하였습니다.",
+        "코드 아카이브 조회 대기 루프에서 권한 오류 등 404 외 에러 발생 시 즉시 원인 메시지를 출력하고 종료되도록 개선하였습니다.",
+        "환경명 매핑 수식의 동일성 및 대기 루프의 예외 처리 동작을 검증하는 회귀 테스트 4종을 추가하였습니다."
+      ],
+      "report_url": "pr/549/"
+    },
     {
       "number": 540,
       "title": "feat: 하드 리밋 승격 게이트 배선 (#472)",
