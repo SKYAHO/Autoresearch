@@ -41,6 +41,7 @@ src/                 # CTR 학습·서빙 파이프라인
 └── utils/                # 모델 저장/로드 유틸리티
 proxy/               # Cloud Run dumb forwarder (YouTube API IP밴 대응)
 deploy/              # 배포 산출물 (mlflow/ Tracking Server, serving/ 추론 이미지,
+                     #             agent_orchestration/ 역할별 runtime 이미지,
                      #             feast/ feast apply GKE Job 매니페스트)
 feature_repo/        # Feast 피처 스토어 정의 (BigQuery offline / Redis online)
 examples/            # CTR 파이프라인 예제 스캐폴드
@@ -61,6 +62,13 @@ docs/                # 문서 — docs/README.md 인덱스 참조
 | `deploy/agent_orchestration/api.Dockerfile` | Agent Orchestration FastAPI·PostgreSQL 저장 API (GKE 내부) |
 | `deploy/agent_orchestration/runner.Dockerfile` | API 전용 Codex Runner (GKE 내부, OAuth PVC 분리) |
 | `deploy/agent_orchestration/ui.Dockerfile` | Streamlit Experiment Workbench (GKE 내부, API 토큰 서버 환경 주입) |
+| `deploy/agent_orchestration/launcher.Dockerfile` | 봉인 좌표를 선점해 branch-bootstrap Kubernetes Job을 생성하는 1회 launcher runtime (CronJob용) |
+| `deploy/agent_orchestration/executor.Dockerfile` | GitHub App token-minter와 봉인 SHA 기반 exp branch bootstrap을 함께 제공하는 executor runtime |
+
+`release.yml`은 launcher와 executor를 각각
+`autoresearch-agent-orchestration-launcher`,
+`autoresearch-agent-orchestration-executor`로 build/push합니다. 배포 인프라는 tag가
+아니라 release가 검증한 `@sha256:<64자리 digest>`를 소비합니다.
 
 DAG·스케줄·Airflow 배포는 [`SKYAHO/Autoresearch-airflow`](https://github.com/SKYAHO/Autoresearch-airflow),
 GCP 인프라는 [`SKYAHO/Autoresearch-infra`](https://github.com/SKYAHO/Autoresearch-infra)가 소유합니다.
@@ -74,10 +82,37 @@ GCP 인프라는 [`SKYAHO/Autoresearch-infra`](https://github.com/SKYAHO/Autores
 |---|---|
 | `ORCH_GITHUB_TOKEN` | 이슈 발행 전용 `issues: write` GitHub 토큰 |
 | `ORCH_GITHUB_REPOSITORY` | 발행 대상 저장소(`owner/repo`), 발행 결과 URL과 대조해 오발행을 막음 |
+| `ORCH_BASELINE_GITHUB_APP_ID` | 이슈 발행 전에 `heads/dev`를 읽는 Contents read 전용 GitHub App ID |
+| `ORCH_BASELINE_GITHUB_APP_INSTALLATION_ID` | baseline reader App installation ID |
+| `ORCH_BASELINE_GITHUB_APP_PRIVATE_KEY_PATH` | API Pod에 read-only mount한 baseline reader private key 파일 경로 |
 | `ORCH_GH_TIMEOUT_SEC` | `gh` 서브프로세스 실행 상한(초) |
 | `ORCH_ISSUE_DAILY_LIMIT` | 일일 발행 상한, 초과 시 429 반환 |
 | `ORCH_EXPERIMENT_DATASET_SOURCE` | 서버가 Issue Form에 채우는 학습 데이터 출처 좌표. 기간은 발행 시점에 서버가 계산해 붙임(`dt BETWEEN P-30 AND P-1`, 어제까지 30일) |
 | `ORCH_EXPERIMENT_TRAINING_CONFIG_REF` | 서버가 Issue Form에 채우는 학습 설정 참조 |
+
+### Agent Orchestration 실험 branch Job 환경 변수 (#546)
+
+launcher 설정은 배포 시 주입하고, executor 좌표는 launcher가 봉인된 DB 값과 고정
+volume 경로에서 조립합니다. 값·기본값의 단일 출처는 `.env.example`입니다.
+
+| 역할 | 변수 | 용도 |
+|---|---|---|
+| launcher | `ORCH_DATABASE_URL` | Experiment 선점·생성 확인을 기록할 PostgreSQL 연결 |
+| launcher | `ORCH_JOB_NAMESPACE` | branch-bootstrap Job 생성 namespace |
+| launcher | `ORCH_EXECUTOR_IMAGE` | release가 게시한 executor `@sha256:` digest reference |
+| launcher | `ORCH_EXECUTOR_SERVICE_ACCOUNT` | Kubernetes API 권한이 없는 executor KSA |
+| launcher | `ORCH_EXECUTOR_NODE_POOL` | executor Job의 nodeSelector·toleration 좌표 |
+| launcher | `ORCH_GITHUB_APP_SECRET_NAME` | token-minter에만 mount할 branch-writer App Secret 이름 |
+| launcher/token-minter | `ORCH_GITHUB_APP_ID`, `ORCH_GITHUB_APP_INSTALLATION_ID` | Contents write 전용 branch-writer App 공개 좌표 |
+| launcher | `ORCH_MAX_CONCURRENT_EXPERIMENTS` | namespace의 branch-bootstrap Job 동시 실행 상한 |
+| executor | `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`, `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA` | launcher가 DB에서 복사해 전달하는 불변 branch 좌표 |
+| token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | initContainer에만 보이는 private key mount 경로 |
+| token-minter/executor | `ORCH_GITHUB_TOKEN_FILE` | memory volume의 mode 0400 installation token 파일 경로 |
+
+`auto-experiment`는 `[AR]` 이슈의 분류와 promotion guard에 남지만 branch 생성
+트리거가 아닙니다. Phase 1 executor는 기존 GitHub Actions bot marker를 새로 쓰지
+않으므로, 새 marker 없는 exp branch는 promotion workflow 입력이 아닙니다. marker
+신뢰 계약 재설계는 실제 실험 실행 전 후속 gate입니다.
 
 action log 데이터 레이크는 **일일 슬라이스 파티션**(`dt=D` = KST D일
 하루치, 파티션 간 서로소)으로 적재되며, 피처·학습 소비자는 `dt BETWEEN`

@@ -229,7 +229,7 @@ model_uri, evaluated_at
 - `seeds`와 `runs`는 seed 오름차순으로 고정한다.
 - `comparison_passed`가 아닌 결과는 promote ref·PR을 만들지 않는다.
 - guardrail 지표는 이 결과가 **싣지 않는다**. 판정 엔진이 guardrail을 다루지 않기
-  때문이다. guardrail을 선언한 실험은 브랜치 생성 시점에 "자동 승격 대상이 아님"을
+  때문이다. guardrail을 선언한 실험은 이슈 발행 시점에 "자동 승격 대상이 아님"을
   고지받고, dev 병합 선택기가 그 후보를 적격에서 제외한다(#493 D4). guardrail paired
   판정 구현은 별도 이슈다(아래 "알려진 계약 간극").
 
@@ -409,7 +409,7 @@ candidate로 제출됐지만 그 candidate가 오프라인 격자 탐색의 산�
 
 - ~~Issue Form의 `랜덤 시드 목록` 기본값 3개 vs 정책 seed 30개~~ → **#493에서
   해소한다.** 폼 기본값을 정책 seed 42..71(30개)로 정렬하고, 정책과 다른 시드
-  집합을 선언한 이슈는 브랜치 생성 시점에 거부한다. 실행이 끝난 뒤
+  집합은 이슈 발행 전에 거부한다. 실행이 끝난 뒤
   `comparison_failed`로 알게 되는 비용을 없앤다.
 - 판정 엔진은 **하나의 판정 호출**에 대해 단일 candidate만 자동 승격 대상으로
   인정한다(`multiple_candidates_require_independent_holdout`). 완료 이벤트의 후보
@@ -417,7 +417,7 @@ candidate로 제출됐지만 그 candidate가 오프라인 격자 탐색의 산�
   선택기는 그중에서 고르기만 한다.
 - guardrail 지표를 선언한 실험은 이 경로로 자동 승격될 수 없다. 판정 엔진이
   guardrail을 계산하지 않으므로 결과 payload에도 싣지 않는다. **#493 이후로는 이
-  사실을 브랜치 생성 시점에 이슈 코멘트로 고지하고, dev 병합 선택기가 해당 후보를
+  사실을 이슈 발행 시점에 코멘트로 고지하고, dev 병합 선택기가 해당 후보를
   적격에서 제외한다** — 조용한 무시도, 조용한 통과도 없다. guardrail paired 판정
   구현은 별도 `feature` 이슈다.
 - 판정 대상 지표는 정책이 소유하는 allowlist다. `roc_auc`는 판정 엔진뿐 아니라

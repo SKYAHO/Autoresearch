@@ -73,8 +73,10 @@ eligible  ⟺  confidence_interval_lower > 0  AND  normalized_delta_mean >= decl
   (`primary_delta_below_declared_minimum`)를 추가한다.
 
 **전달 경로와 검증 지점 (리뷰 반영).** marker에는 `criteria_id`가 sha256
-**다이제스트**로만 실린다(`auto-research-issue-branch.yml`의 marker 정규식은 두 해시와
-`base_dev_sha`만 담는다). 임계의 **수치**는 어디에도 없으므로 전달 경로를 못박는다.
+**다이제스트**로만 실렸다(legacy GitHub Actions bot marker는 두 해시와
+`base_dev_sha`만 담았다). Phase 1 executor가 만드는 marker 없는 branch는 promotion
+입력이 아니므로, 아래 전달 경로를 적용하기 전에 Pod 생성 주체에 맞춘 marker 작성·신뢰
+계약을 별도 승인해야 한다. 임계의 **수치**는 어디에도 없으므로 전달 경로를 못박는다.
 
 1. 판정 엔진을 호출하는 주체(#492 실험 실행기)는 **이슈 본문을 `parse_issue_input()`에
    넣어** `IssueInput.minimum_primary_delta`를 얻는다. D9가 남기는 단 하나의 Issue Form
@@ -123,8 +125,8 @@ sha256도 그대로이고, 기존 `roc_auc` receipt는 새 스키마에서도 �
   `log_loss`. 세 값 모두 `src/pipeline/evaluate.py:142-145`가 이미 계산한다.
 - **방향은 정책이 소유하고 사용자가 뒤집을 수 없다.** `log_loss`를
   `higher_is_better`로 선언하는 것은 의미가 없다. Issue Form의 `주 지표 방향`
-  필드는 사용자의 의도 선언으로 남기되, 정책이 정한 방향과 다르면 **브랜치 생성
-  시점에** fail-closed로 거부한다. 실행이 끝난 뒤 알게 되는 비용을 없앤다.
+  필드는 사용자의 의도 선언으로 남기되, 정책이 정한 방향과 다르면 **이슈 발행
+  전에** fail-closed로 거부한다. 실행이 끝난 뒤 알게 되는 비용을 없앤다.
 - `value` 범위는 지표별로 검증한다. `roc_auc`/`pr_auc`는 `[0, 1]`,
   `log_loss`는 `[0, ∞)`이며 유한해야 한다. 현재의 `Field(ge=0, le=1)` 단일 제약을
   지표별 validator로 바꾼다.
@@ -190,8 +192,8 @@ v1에서 발행한 plan_id: experiment-plan-19e297ab32f639850eb45833...
 이 작업에서 guardrail paired 판정을 구현하지 않는다. 대신 **조용한 무시를 만들지
 않는다.**
 
-- 브랜치 생성 시점(`.github/workflows/auto-research-issue-branch.yml`)에 guardrail을
-  선언한 이슈에는 "이 실험은 자동 승격 대상이 아니다"를 코멘트로 고지한다.
+- 이슈 발행 시점(`agent_orchestration.app.experiments`)에 guardrail을 선언한 이슈에는
+  "이 실험은 자동 승격 대상이 아니다"를 코멘트로 고지한다.
 - 경로 A는 guardrail을 선언한 실험의 후보를 **적격에서 제외**한다
   (`guardrail_declared_unsupported`). 승격이 조용히 일어나지 않고, 사용자가 선언한
   guardrail이 조용히 무시되지도 않는다.
@@ -255,7 +257,7 @@ repository_dispatch payload 한도를 넘긴다. 따라서 이벤트 투영을 *
 
 - `랜덤 시드 목록` 기본값 `"42, 43, 44"`(3개)를 정책 시드 42..71(30개)로 정렬한다.
   현재 값은 판정에 아무 영향을 주지 않으면서 `reproducibility_id`만 오염시킨다.
-- 정책 시드와 다른 시드 집합을 선언한 이슈는 **브랜치 생성 시점에** 거부한다.
+- 정책 시드와 다른 시드 집합은 **이슈 발행 전에** 거부한다.
 - 마이그레이션은 "진행 중 이슈 0건인 시점에 배포" 방식을 택한다(위 "착수 시점의
   사실" 참조). marker 버전 인상은 하지 않는다 — 분리할 구 계약 자체가 없다.
 - Issue Form을 바꾸는 PR은 같은 PR에서 `_HEADING_NAMES`와
@@ -306,7 +308,7 @@ Issue Form heading 문자열이 이 패키지에 남지 않게 한다.
 | 5 | 경로 A 강등 (D8, D9) + `schema_version`→`contract_version` 교체 | 4 | `tools/auto_research_issue_branch.py` | 시나리오 1 회귀 테스트 |
 | 6 | 경로 B 강등 (D9) | 4 | `promotion_gate.py`, `tests/test_experiment_promotion_gate.py` | 시나리오 5 회귀 테스트 |
 | 7 | 이벤트 통합 (D5) | 5, 6 | 워크플로 2건 | 두 워크플로 소비 필드 집합 동일성 테스트 |
-| 8 | Issue Form 정렬 + 분기 시점 검증·고지 (D4, D7) | 3, 5 | Issue Form, fixture, `auto-research-issue-branch.yml` | 폼 ↔ `_HEADING_NAMES` ↔ fixture drift 테스트 |
+| 8 | Issue Form 정렬 + 발행 시점 검증·고지 (D4, D7) | 3, 5 | Issue Form, fixture, Agent Orchestration 이슈 발행 경계 | 폼 ↔ `_HEADING_NAMES` ↔ fixture drift 테스트 |
 
 2~8은 각각 별도 PR로 낸다. 하나의 PR에 증거 계약 변경과 워크플로 변경을 함께 담지
 않는다.
@@ -341,9 +343,9 @@ Issue Form heading 문자열이 이 패키지에 남지 않게 한다.
 - [ ] `Literal["promotion-policy-v1"]` 네 곳이 v1·v2를 모두 받아들이도록 갱신되었다
 - [ ] `MINIMIZE` 지표의 delta 정규화가 `eligible` 조건을 방향 무관하게 유지한다
 - [ ] Issue Form 기본값 그대로 발행한 이슈가 자동 승격 경로를 끝까지 통과하거나,
-      통과할 수 없다면 브랜치 생성 시점에 이슈 코멘트로 고지된다
-- [ ] 배포 직전 `gh issue list --label auto-research --state open`으로 marker를 가진
-      진행 중 이슈가 여전히 0건임을 확인하고 결과를 PR 본문에 남긴다
+      통과할 수 없다면 이슈 발행 시점에 코멘트로 고지된다
+- [ ] Phase 1 executor가 만든 marker 없는 branch를 promotion에 넣기 전에 marker
+      작성 주체·서명·`base_dev_sha` 검증 계약을 별도 승인한다
 
 ## 범위 밖
 

@@ -44,6 +44,9 @@ _SETTINGS_ENV_VARS = (
     "ORCH_INTERACTIONS_TABLE",
     "ORCH_GITHUB_TOKEN",
     "ORCH_GITHUB_REPOSITORY",
+    "ORCH_BASELINE_GITHUB_APP_ID",
+    "ORCH_BASELINE_GITHUB_APP_INSTALLATION_ID",
+    "ORCH_BASELINE_GITHUB_APP_PRIVATE_KEY_PATH",
     "ORCH_GH_TIMEOUT_SEC",
     "ORCH_ISSUE_DAILY_LIMIT",
     "ORCH_EXPERIMENT_DATASET_SOURCE",
@@ -71,6 +74,11 @@ def _set_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch:pw@localhost:5432/orch")
     monkeypatch.setenv("ORCH_GITHUB_TOKEN", "x" * 40)
     monkeypatch.setenv("ORCH_GITHUB_REPOSITORY", "SKYAHO/Autoresearch")
+    monkeypatch.setenv("ORCH_BASELINE_GITHUB_APP_ID", "123")
+    monkeypatch.setenv("ORCH_BASELINE_GITHUB_APP_INSTALLATION_ID", "456")
+    monkeypatch.setenv(
+        "ORCH_BASELINE_GITHUB_APP_PRIVATE_KEY_PATH", "/var/run/test/baseline-app.pem"
+    )
     monkeypatch.setenv(
         "ORCH_EXPERIMENT_DATASET_SOURCE", "feast://feast_offline_store/ctr_training_v1"
     )
@@ -1215,6 +1223,11 @@ def test_issue_publication_settings_are_loaded(monkeypatch: pytest.MonkeyPatch) 
     settings = load_settings()
 
     assert settings.github_repository == "SKYAHO/Autoresearch"
+    assert settings.baseline_github_app_id == 123
+    assert settings.baseline_github_app_installation_id == 456
+    assert settings.baseline_github_app_private_key_path == Path(
+        "/var/run/test/baseline-app.pem"
+    )
     assert settings.gh_timeout_sec == 30
     assert settings.issue_daily_limit == 20
     assert (

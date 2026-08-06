@@ -20,6 +20,7 @@ from agent_orchestration.app.database import Base
 from agent_orchestration.app.experiments.exceptions import IssuePublicationLimitError
 from agent_orchestration.app.experiments.github_issues import IssueRef
 from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
+from agent_orchestration.app.experiments.models import Experiment
 
 API_TOKEN = "test-orchestration-token"
 
@@ -85,6 +86,15 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)
     monkeypatch.setattr(main_module, "create_database_engine", lambda *_args: engine)
 
+    async def fake_resolve_dev_sha(_settings: object) -> str:
+        return "a" * 40
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        fake_resolve_dev_sha,
+        raising=False,
+    )
+
     async def fake_find_issue_by_marker(_settings: object, *, marker: str) -> None:
         return None
 
@@ -147,15 +157,67 @@ def test_publication_returns_the_issue_coordinates(
     body = response.json()
     assert body["issue_number"] > 0
     assert body["issue_branch"].startswith("exp/")
+    assert body["base_dev_sha"] == "a" * 40
+    assert "executor_job_created_at" not in body
 
 
-def test_publication_labels_the_issue_for_the_branch_workflow(
+def test_republishing_legacy_issue_returns_null_baseline_without_github(
+    client: TestClient,
+    authorized_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """migration 전 발행 행은 GitHub 재호출 없이 nullable SHA로 복구해야 한다."""
+    created = client.post(
+        "/experiments", json={"hypothesis": "legacy"}, headers=authorized_headers
+    ).json()
+    factory = client.app.state.experiment_session_factory
+    with factory() as session:
+        experiment = session.get(Experiment, uuid.UUID(created["id"]))
+        assert experiment is not None
+        experiment.issue_number = 545
+        experiment.issue_branch = "exp/545-legacy"
+        session.commit()
+
+    async def unexpected_github_call(
+        *_args: object, **_kwargs: object
+    ) -> None:
+        raise AssertionError("기존 발행 행은 GitHub를 호출하면 안 된다")
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        unexpected_github_call,
+    )
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.find_issue_by_marker",
+        unexpected_github_call,
+    )
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.create_issue",
+        unexpected_github_call,
+    )
+
+    response = client.post(
+        f"/experiments/{created['id']}/issue",
+        json=_payload(),
+        headers=authorized_headers,
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "issue_number": 545,
+        "issue_url": "https://github.com/SKYAHO/Autoresearch/issues/545",
+        "issue_branch": "exp/545-legacy",
+        "base_dev_sha": None,
+    }
+
+
+def test_publication_labels_the_issue_for_classification_and_promotion(
     client: TestClient, authorized_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`auto-experiment` label이 빠지면 브랜치 생성 job이 흔적 없이 skip된다.
+    """`auto-experiment` label을 `[AR]` 분류와 promotion guard에 전달한다.
 
     `gh issue create`가 Issue Form을 우회하므로 label 자동 적용을 받지 못한다.
-    CONTRIBUTING.md의 "Form을 우회해 API로 발행하면 직접 부여해야 한다"가 근거다.
+    Issue Form·API 발행 경로·promotion guard가 같은 label을 사용해야 한다.
     """
     seen: list[tuple[str, ...]] = []
 

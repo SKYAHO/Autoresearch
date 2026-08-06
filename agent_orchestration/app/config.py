@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
 import re
 from urllib.parse import urlparse
 
@@ -54,6 +55,18 @@ def _positive_env_int(name: str, default: int) -> int:
     return value
 
 
+def _required_positive_env_int(name: str) -> int:
+    """필수 양의 정수 환경 변수를 읽는다."""
+    raw_value = _require_env(name, os.getenv(name))
+    try:
+        value = int(raw_value)
+    except ValueError as error:
+        raise ValueError(f"Environment variable '{name}' must be an integer.") from error
+    if value < 1:
+        raise ValueError(f"Environment variable '{name}' must be greater than zero.")
+    return value
+
+
 @dataclass(frozen=True)
 class ServiceSettings:
     """서비스 실행에 필요한 설정 값."""
@@ -70,6 +83,9 @@ class ServiceSettings:
     gh_timeout_sec: int
     issue_daily_limit: int
     experiment_defaults: ExperimentDefaults
+    baseline_github_app_id: int | None = None
+    baseline_github_app_installation_id: int | None = None
+    baseline_github_app_private_key_path: Path | None = None
     llm_backend: str = "codex_cli"
     codex_cli_path: str = "codex"
     codex_home: str = ""
@@ -147,6 +163,16 @@ def load_settings() -> ServiceSettings:
     # `gh issue create`의 결과 URL을 이 값과 대조해 다른 저장소에 열린 이슈를 거부한다.
     if not re.fullmatch(r"[A-Za-z0-9._-]+/[A-Za-z0-9._-]+", github_repository):
         raise ValueError("ORCH_GITHUB_REPOSITORY must be 'owner/repo'.")
+    baseline_github_app_id = _required_positive_env_int("ORCH_BASELINE_GITHUB_APP_ID")
+    baseline_github_app_installation_id = _required_positive_env_int(
+        "ORCH_BASELINE_GITHUB_APP_INSTALLATION_ID"
+    )
+    baseline_github_app_private_key_path = Path(
+        _require_env(
+            "ORCH_BASELINE_GITHUB_APP_PRIVATE_KEY_PATH",
+            os.getenv("ORCH_BASELINE_GITHUB_APP_PRIVATE_KEY_PATH"),
+        )
+    )
     gh_timeout_sec = _positive_env_int("ORCH_GH_TIMEOUT_SEC", 30)
     issue_daily_limit = _positive_env_int("ORCH_ISSUE_DAILY_LIMIT", 20)
     experiment_defaults = ExperimentDefaults(
@@ -172,6 +198,9 @@ def load_settings() -> ServiceSettings:
         gh_timeout_sec=gh_timeout_sec,
         issue_daily_limit=issue_daily_limit,
         experiment_defaults=experiment_defaults,
+        baseline_github_app_id=baseline_github_app_id,
+        baseline_github_app_installation_id=baseline_github_app_installation_id,
+        baseline_github_app_private_key_path=baseline_github_app_private_key_path,
         llm_backend=llm_backend,
         codex_cli_path=codex_cli_path,
         codex_home=codex_home,

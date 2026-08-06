@@ -1,8 +1,8 @@
 # 가설 수신부터 `[AR]` 이슈 발행까지 (#516)
 
-- **상태**: Accepted (#536에서 부분 개정)
-- **날짜**: 2026-08-04 (개정 2026-08-05)
-- **이슈**: #516, #536
+- **상태**: Accepted (#536, #546에서 부분 개정)
+- **날짜**: 2026-08-04 (개정 2026-08-06)
+- **이슈**: #516, #536, #546
 - **선행 계약**: `.github/ISSUE_TEMPLATE/auto_research.yml`(필드 정본),
   `tools/auto_research_issue_branch.py`(파싱 정본),
   `src/pipeline/experiment_evaluation.py`(`POLICY_SEEDS` 정본),
@@ -10,9 +10,10 @@
 
 ## 목적
 
-`auto-experiment` label 하나로 exp 브랜치가 생기는 데까지는 자동화됐다(#507). 그러나
-**그 이슈를 만드는 주체가 저장소에 없다.** `[AR]` 이슈는 저장소 역사상 0건이고,
-승격 워크플로 2종의 실행 이력도 0건이다.
+#507 당시에는 `auto-experiment` label로 GitHub Actions가 exp 브랜치를 만들었다. #546
+Phase 1부터는 API가 저장한 브랜치 좌표를 launcher가 전달하고 executor Pod가 브랜치를
+만드는 계약으로 이전됐다. 이 문서가 처음 다룬 빈 구간은 **그 이슈를 만드는 주체가
+저장소에 없었다는 점**이다. 당시 `[AR]` 이슈와 승격 워크플로 실행 이력은 0건이었다.
 
 `agent_orchestration`에는 이미 가설을 받는 계약이 있다 — `POST /experiments`의
 `ExperimentCreate.hypothesis`(1~8192자). 그러나 `create_experiment()`는 `Experiment`
@@ -99,8 +100,10 @@ Pod에 도달할 수 없어 본문을 만들 수 없고, Codex OAuth를 Actions�
 
 `docs/specs/2026-07-30-codex-oauth-runner-isolation.md`의 속성 2는 **runner**에 소스
 저장소·자격 증명을 두지 않는 것이다. 이 설계는 **Runner Pod에 아무것도 추가하지
-않는다.** API Pod가 갖는 것은 `issues: write` 하나이며, 이 자격으로는 코드를 쓸 수 없다.
-브랜치를 만드는 것은 GitHub Actions가 자기 `GITHUB_TOKEN`으로 하는 별개의 일이다.
+않는다.** API Pod는 이슈 발행용 `issues: write` 자격과 `heads/dev` 기준 SHA 조회용
+Contents read 전용 GitHub App만 가지며, 어느 자격으로도 코드를 쓸 수 없다. branch-writer
+App private key는 executor의 token-minter initContainer에만 mount되고, executor 본
+container는 짧은 수명의 token 파일로 DB에 봉인된 SHA의 ref만 생성한다.
 
 #492가 API Pod에 두지 말라고 한 것은 **저장소 checkout·push 권한**이며 여기에 해당하지
 않는다. 수명도 다르다 — 발행은 추론 1회와 CLI 호출 1~2회로 끝나 HTTP 요청 수명에
@@ -231,9 +234,10 @@ gh 2.97.0 확인). 여기서 이슈 번호를 뽑되 **저장소 경로까지 �
 이미지에 들어 있지 않고(`api.Dockerfile`은 `agent_orchestration/`만 복사한다), 넣으면
 서비스 코드가 스크립트 계층에 의존하게 된다.
 
-잘못된 본문은 실제 이슈로 열리고, 워크플로의 검증 step이 브랜치 생성 step보다 먼저
-실행되므로 **브랜치는 생기지 않고 실패한 run만 남는다.** 복구는 본문 수정 후 label
-재부여다.
+서비스 검증과 parser 계약이 드리프트해 잘못된 본문이 실제 이슈로 열리면 Phase 1
+executor의 branch 생성은 본문을 다시 파싱하지 않는다. 따라서 branch가 이미 생길 수
+있지만 후속 promotion parser가 입력을 fail-closed로 거부한다. 복구는 기존 branch를
+재사용하지 않고 §결정 7의 멱등 경계를 따라 새 실험으로 재제출한다.
 
 **대신 테스트가 조립 결과를 실제 파서로 검증한다.** 런타임은 `tools/`를 import하지
 않지만 CI는 저장소 전체를 본다. 이 방식으로 런타임 의존성을 늘리지 않고 검증만 얻는다.
@@ -405,7 +409,7 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
 | `gh` 실패 | 사유를 분류해 알리되 **요청 안에서 재시도하지 않는다** | **저장된 같은 본문으로 발행** |
 | `gh` timeout | 프로세스 그룹 회수 후 실패 (`codex.py` 패턴) | **저장된 같은 본문으로 발행** |
 | 발행 성공 후 DB 쓰기 실패 | 실패 | marker 조회로 기존 이슈를 찾아 복구 |
-| 저장된 본문이 파서를 통과하지 못함 | 워크플로가 fail-closed, 브랜치 없음 | §결정 7의 복구 순서 (새 실험으로 재제출) |
+| 저장된 본문이 후속 파서를 통과하지 못함 | promotion 입력을 fail-closed로 거부. 이미 생성된 Phase 1 branch는 자동 삭제하지 않음 | §결정 7의 복구 순서 (새 실험으로 재제출) |
 
 `issue_body` 커밋을 경계로 **앞쪽 실패는 재조립, 뒤쪽 실패는 재발행**으로 갈린다.
 
@@ -418,6 +422,9 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
 | --- | --- |
 | `ORCH_GITHUB_TOKEN` | `gh`에 `GH_TOKEN`으로 전달. `issues: write` 전용 |
 | `ORCH_GITHUB_REPOSITORY` | `owner/repo`. 발행 대상 고정과 URL 검증 |
+| `ORCH_BASELINE_GITHUB_APP_ID` | 이슈 발행 전에 `heads/dev`를 읽는 Contents read App ID |
+| `ORCH_BASELINE_GITHUB_APP_INSTALLATION_ID` | baseline reader App installation ID |
+| `ORCH_BASELINE_GITHUB_APP_PRIVATE_KEY_PATH` | API Pod에 read-only mount한 baseline reader private key 경로 |
 | `ORCH_GH_TIMEOUT_SEC` | `gh` 서브프로세스 상한 |
 | `ORCH_ISSUE_DAILY_LIMIT` | 일일 발행 상한 |
 | `ORCH_EXPERIMENT_DATASET_SOURCE` | `데이터셋 스냅샷` heading에 쓰는 서버 소유 데이터 출처 좌표 |
@@ -450,23 +457,28 @@ GitHub 호출만 갈아 끼울 수 있고, 나중에 별도 worker로 옮길 때
 
 ## 완료 조건
 
-- 로컬에서 사전등록 필드를 보내면 실제 `[AR]` 이슈가 열리고, 워크플로가 `dev` tip을
-  봉인해 `exp/<번호>-<slug>` 브랜치를 만들고 marker 코멘트를 남기는 것을 **1회 실증**한다.
+- 로컬에서 사전등록 필드를 보내면 실제 `[AR]` 이슈가 열리고, API가 이슈 발행 전에
+  `dev` tip을 `Experiment.base_dev_sha`로 봉인하는 것을 **1회 실증**한다. infra가
+  launcher/executor digest를 배포한 뒤에는 executor Pod가 저장된 SHA에서
+  `exp/<번호>-<slug>` 브랜치를 만드는 것을 별도로 실증한다.
 - 같은 실험에 발행을 두 번 요청해도 이슈가 하나만 생긴다.
 - 발행에 실패한 뒤 재호출하면 저장된 본문 그대로 발행한다.
 - 발행된 본문의 `랜덤 시드 목록`이 `42..71`이다.
 - `uv run python -m pytest`와
   `uv run --no-sync ruff check agent_orchestration autoresearch tests tools` 통과.
 
-검수 발행물은 **close하되 exp 브랜치는 남긴다.** 브랜치만 지우면 fail-closed되고,
-marker까지 지우면 다른 기준선으로 조용히 재생성되어 원래 `base_dev_sha`를 인용한 곳과
-아무 실패 없이 어긋난다.
+검수 발행물은 **close하되 exp 브랜치는 남긴다.** Phase 1 launcher는 Job 생성 확인 뒤
+삭제된 branch를 자동 복구하지 않는다. executor는 기존 GitHub Actions bot marker를 새로
+쓰지 않으므로 marker 없는 Phase 1 branch는 promotion workflow 입력이 아니며, marker
+작성·신뢰 계약 재설계가 실제 실험 실행 전 후속 gate다. 이 marker는 이 문서 앞부분의
+이슈 본문 멱등성 marker(`<!-- experiment-id:... -->`)와 별개다.
 
 ## 이 저장소 밖 의존성
 
 | 항목 | 소유 | 없으면 |
 | --- | --- | --- |
-| `agent_orchestration` Deployment·Service·Ingress | `Autoresearch-infra` | 이미지는 `release.yml:404`가 GAR에 푸시하지만 클러스터에서 실행되지 않아 브라우저로 도달할 수 없다 |
+| `agent_orchestration` Deployment·Service·Ingress | `Autoresearch-infra` | API 이미지는 release가 GAR에 푸시하지만 클러스터에서 실행되지 않아 브라우저로 도달할 수 없다 |
+| launcher CronJob·executor Job identity/RBAC/Secret mount | `Autoresearch-infra` | 저장된 `base_dev_sha`가 있어도 executor Pod가 시작되지 않아 exp branch가 생성되지 않는다 |
 | `issues: write` 자격 발급·보관 | `Autoresearch-infra` | 배포 환경에서 발행 불가 (로컬은 개인 `gh` 인증으로 가능) |
 | Alembic 마이그레이션 실행 | `Autoresearch-infra` | 새 컬럼이 반영되지 않는다. `api.Dockerfile` 주석이 이 책임 경계를 명시한다 |
 | Streamlit UI | #484 | 사람이 화면에서 입력할 수 없다 (curl·스크립트는 가능) |

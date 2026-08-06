@@ -11,7 +11,6 @@ import yaml
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FORM_PATH = PROJECT_ROOT / ".github/ISSUE_TEMPLATE/auto_research.yml"
-BRANCH_WORKFLOW = PROJECT_ROOT / ".github/workflows/auto-research-issue-branch.yml"
 PROMOTION_WORKFLOW = PROJECT_ROOT / ".github/workflows/auto-research-dev-promotion.yml"
 RENDERED_FORM_FIXTURE = PROJECT_ROOT / "tests/fixtures/auto_research_issue_form_rendered.md"
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -127,13 +126,6 @@ def form_fields() -> dict[str, dict[str, object]]:
     return fields
 
 
-def load_branch_workflow() -> dict[object, object]:
-    """이슈별 불변 branch workflow를 실제 YAML parser로 읽습니다."""
-    parsed = yaml.safe_load(BRANCH_WORKFLOW.read_text(encoding="utf-8"))
-    assert isinstance(parsed, dict)
-    return parsed
-
-
 def workflow_trigger(workflow: dict[object, object]) -> dict[str, object]:
     """YAML 1.1 parser의 ``on`` boolean 호환성을 포함해 trigger를 반환합니다."""
     trigger = workflow.get("on", workflow.get(True))
@@ -183,185 +175,6 @@ def test_form_uses_machine_readable_metric_and_reproducibility_fields() -> None:
     ]
     assert fields["guardrail_metric_name"]["attributes"]["value"] == "없음"
     assert fields["maximum_guardrail_regression"]["attributes"]["value"] == "없음"
-
-
-def test_issue_branch_workflow_has_minimum_permissions_and_exact_issue_trigger() -> None:
-    workflow = load_branch_workflow()
-
-    assert workflow["permissions"] == {"contents": "write", "issues": "write"}
-    assert workflow_trigger(workflow) == {"issues": {"types": ["opened", "labeled"]}}
-
-
-def test_issue_branch_workflow_uses_validator_and_never_updates_a_ref() -> None:
-    workflow = load_branch_workflow()
-    workflow_text = BRANCH_WORKFLOW.read_text(encoding="utf-8")
-    job = workflow["jobs"]["create-or-verify-issue-branch"]
-    assert isinstance(job, dict)
-    job_if = job["if"]
-    assert isinstance(job_if, str)
-    assert "auto-experiment" in job_if
-    assert job["concurrency"] == {
-        "group": "auto-research-issue-branch-${{ github.event.issue.number }}",
-        "cancel-in-progress": False,
-    }
-
-    steps = job["steps"]
-    assert isinstance(steps, list)
-    checkout_step = next(step for step in steps if step["name"] == "Checkout trusted validator")
-    assert checkout_step["with"] == {
-        "ref": "${{ github.workflow_sha }}",
-        "fetch-depth": 1,
-        "persist-credentials": False,
-    }
-    validate_step = next(step for step in steps if step.get("id") == "validate")
-    validate_run = validate_step["run"]
-    assert isinstance(validate_run, str)
-    assert "tools/auto_research_issue_branch.py" in validate_run
-    assert "--issue-number \"$ISSUE_NUMBER\"" in validate_run
-    assert "--issue-title \"$ISSUE_TITLE\"" in validate_run
-
-    branch_step = next(step for step in steps if step.get("id") == "branch")
-    branch_with = branch_step["with"]
-    assert isinstance(branch_with, dict)
-    branch_script = branch_with["script"]
-    assert isinstance(branch_script, str)
-    assert "auto-research-issue-branch:v1" in branch_script
-    assert "createRef" in branch_script
-    assert "compareCommits" in branch_script
-    assert "github-actions[bot]" in branch_script
-    assert "base_dev_sha" in branch_script
-    assert "ref: 'heads/dev'" in branch_script
-    assert "main" not in branch_script
-    assert "updateRef" not in branch_script
-    assert "force:" not in branch_script
-    assert "기준선은 항상 dev" in workflow_text
-
-
-def test_issue_branch_workflow_enforces_immutable_ref_api_data_flow_and_order() -> None:
-    workflow = load_branch_workflow()
-    job = workflow["jobs"]["create-or-verify-issue-branch"]
-    assert isinstance(job, dict)
-    steps = job["steps"]
-    assert isinstance(steps, list)
-    branch_step = next(step for step in steps if step.get("id") == "branch")
-    branch_script = branch_step["with"]["script"]
-    assert isinstance(branch_script, str)
-
-    marker_path = re.search(
-        r"if \(markerComments\.length === 1\) \{(?P<recorded>.*?)\n\s*\} else \{"
-        r"(?P<missing>.*?)\n\s*\}\n\n\s*core\.setOutput",
-        branch_script,
-        flags=re.DOTALL,
-    )
-    assert marker_path is not None
-    recorded_path = marker_path.group("recorded")
-    missing_marker_path = marker_path.group("missing")
-
-    assert "markerComments[0].user.login !== 'github-actions[bot]'" in recorded_path
-    assert "recorded.sourceIssue !== issueNumber" in recorded_path
-    assert "recorded.issueBranch !== issueBranch" in recorded_path
-    assert "recorded.criteriaId !== criteriaId" in recorded_path
-    assert "recorded.reproducibilityId !== reproducibilityId" in recorded_path
-    assert "base: recorded.baseDevSha" in recorded_path
-    assert "head: branchTipSha" in recorded_path
-    assert "['ahead', 'identical'].includes(comparison.data.status)" in recorded_path
-    assert "github.rest.git.createRef" not in recorded_path
-
-    dev_ref = re.search(
-        r"const devRef = await github\.rest\.git\.getRef\(\{.*?"
-        r"ref: 'heads/dev',.*?\}\);",
-        missing_marker_path,
-        flags=re.DOTALL,
-    )
-    create_ref = re.search(
-        r"await github\.rest\.git\.createRef\(\{.*?"
-        r"ref: `refs/heads/\$\{issueBranch\}`,.*?"
-        r"sha: baseDevSha,.*?\}\);",
-        missing_marker_path,
-        flags=re.DOTALL,
-    )
-    assert dev_ref is not None
-    assert create_ref is not None
-    assert dev_ref.start() < create_ref.start()
-    assert branch_script.count("github.rest.git.createRef") == 1
-
-    compare_calls = re.findall(
-        r"github\.rest\.repos\.compareCommits\(\{(?P<arguments>.*?)\}\);",
-        branch_script,
-        flags=re.DOTALL,
-    )
-    assert len(compare_calls) == 1
-    assert [line.strip() for line in compare_calls[0].splitlines() if line.strip()] == [
-        "owner,",
-        "repo,",
-        "base: recorded.baseDevSha,",
-        "head: branchTipSha,",
-    ]
-    assert "devRef" not in compare_calls[0]
-    assert not re.search(r"ref:\s*[^,\n]*main", branch_script)
-    assert "github.rest.repos.merge" not in branch_script
-    assert "github.rest.git.updateRef" not in branch_script
-    assert not re.search(r"\bforce\s*:", branch_script)
-
-
-def test_issue_branch_workflow_carries_one_dev_baseline_to_ref_and_marker() -> None:
-    workflow = load_branch_workflow()
-    job = workflow["jobs"]["create-or-verify-issue-branch"]
-    assert isinstance(job, dict)
-    steps = job["steps"]
-    assert isinstance(steps, list)
-    branch_step = next(step for step in steps if step.get("id") == "branch")
-    branch_script = branch_step["with"]["script"]
-    assert isinstance(branch_script, str)
-
-    marker_path = re.search(
-        r"if \(markerComments\.length === 1\) \{(?P<recorded>.*?)\n\s*\} else \{"
-        r"(?P<missing>.*?)\n\s*\}\n\n\s*core\.setOutput",
-        branch_script,
-        flags=re.DOTALL,
-    )
-    assert marker_path is not None
-    recorded_path = marker_path.group("recorded")
-    missing_marker_path = marker_path.group("missing")
-
-    assert branch_script.count("ref: 'heads/dev'") == 1
-    dev_ref = re.search(
-        r"const devRef = await github\.rest\.git\.getRef\(\{.*?"
-        r"ref: 'heads/dev',.*?\}\);",
-        missing_marker_path,
-        flags=re.DOTALL,
-    )
-    baseline_assignment = re.search(
-        r"baseDevSha = devRef\.data\.object\.sha;",
-        missing_marker_path,
-    )
-    create_ref = re.search(
-        r"await github\.rest\.git\.createRef\(\{.*?"
-        r"ref: `refs/heads/\$\{issueBranch\}`,.*?"
-        r"sha: baseDevSha,.*?\}\);",
-        missing_marker_path,
-        flags=re.DOTALL,
-    )
-    create_comment = re.search(
-        r"await github\.rest\.issues\.createComment\(\{.*?"
-        r"body: markerBody\(baseDevSha\),.*?\}\);",
-        missing_marker_path,
-        flags=re.DOTALL,
-    )
-    assert dev_ref is not None
-    assert baseline_assignment is not None
-    assert create_ref is not None
-    assert create_comment is not None
-    assert dev_ref.start() < baseline_assignment.start() < create_ref.start() < create_comment.start()
-    assert "function markerBody(baseDevSha)" in branch_script
-    assert "`- base_dev_sha: \\`${baseDevSha}\\``" in branch_script
-
-    assert "github.rest.git.createRef" not in recorded_path
-    assert "markerComments[0].user.login !== 'github-actions[bot]'" in recorded_path
-    assert "recorded.criteriaId !== criteriaId" in recorded_path
-    assert "base: recorded.baseDevSha" in recorded_path
-    assert "head: branchTipSha" in recorded_path
-    assert "['ahead', 'identical'].includes(comparison.data.status)" in recorded_path
 
 
 def test_parse_issue_input_reads_body_rendered_from_actual_form() -> None:

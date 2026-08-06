@@ -388,10 +388,12 @@ dev = [
     { name = "google-cloud-bigquery" },
     { name = "google-cloud-secret-manager" },
     { name = "httpx" },
+    { name = "kubernetes" },
     { name = "openai" },
     { name = "plotly" },
     { name = "prometheus-client" },
     { name = "psycopg", extra = ["binary"], marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-orchestration') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-12-autoresearch-dev' or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-orchestration') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "pytest" },
     { name = "python-dotenv" },
     { name = "ruff" },
@@ -417,8 +419,10 @@ orchestration = [
     { name = "fastapi", version = "0.128.8", source = { registry = "https://pypi.org/simple" } },
     { name = "google-cloud-secret-manager" },
     { name = "httpx" },
+    { name = "kubernetes" },
     { name = "openai" },
     { name = "psycopg", extra = ["binary"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
+    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
@@ -473,10 +477,12 @@ dev = [
     { name = "google-cloud-bigquery", specifier = ">=3.20" },
     { name = "google-cloud-secret-manager", specifier = ">=2.20,<3" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
+    { name = "kubernetes", specifier = ">=36,<37" },
     { name = "openai", specifier = ">=1.66,<3" },
     { name = "plotly", specifier = ">=5.24,<7" },
     { name = "prometheus-client", specifier = ">=0.20,<1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13,<3" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "ruff", specifier = "==0.15.18" },
@@ -500,8 +506,10 @@ orchestration = [
     { name = "fastapi", specifier = ">=0.115,<0.129" },
     { name = "google-cloud-secret-manager", specifier = ">=2.20,<3" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
+    { name = "kubernetes", specifier = ">=36,<37" },
     { name = "openai", specifier = ">=1.66,<3" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2,<4" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.13,<3" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]
@@ -968,6 +976,15 @@ wheels = [
 ]
 
 [[package]]
+name = "durationpy"
+version = "0.10"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/a4/e44218c2b394e31a6dd0d6b095c4e1f32d0be54c2a4b250032d717647bab/durationpy-0.10.tar.gz", hash = "sha256:1fa6893409a6e739c9c72334fc65cca1f355dbdd93405d30f726deb5bde42fba", size = 3335, upload-time = "2025-05-17T13:52:37.26Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b0/0d/9feae160378a3553fa9a339b0e9c1a048e147a4127210e286ef18b730f03/durationpy-0.10-py3-none-any.whl", hash = "sha256:3b41e1b601234296b4fb368338fdcd3e13e0b4fb5b67345948f4f2bf9868b286", size = 3922, upload-time = "2025-05-17T13:52:36.463Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.128.8"
 source = { registry = "https://pypi.org/simple" }
@@ -1037,7 +1054,6 @@ dependencies = [
     { name = "prometheus-client" },
     { name = "protobuf" },
     { name = "psutil" },
-    { name = "pyarrow" },
     { name = "pydantic" },
     { name = "pygments" },
     { name = "pyjwt" },
@@ -2137,6 +2153,27 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/19/74/a633ee74eb36c44aa6d1095e7cc5569bebf04342ee146178e2d36600708b/jsonschema_specifications-2025.9.1.tar.gz", hash = "sha256:b540987f239e745613c7a9176f3edb72b832a4ac465cf02712288397832b5e8d", size = 32855, upload-time = "2025-09-08T01:34:59.186Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/41/45/1a4ed80516f02155c51f51e8cedb3c1902296743db0bbc66608a0db2814f/jsonschema_specifications-2025.9.1-py3-none-any.whl", hash = "sha256:98802fee3a11ee76ecaca44429fda8a41bff98b00a0f2838151b113f210cc6fe", size = 18437, upload-time = "2025-09-08T01:34:57.871Z" },
+]
+
+[[package]]
+name = "kubernetes"
+version = "36.0.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "certifi" },
+    { name = "durationpy" },
+    { name = "python-dateutil" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "requests-oauthlib" },
+    { name = "six" },
+    { name = "urllib3" },
+    { name = "websocket-client" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ca/57/b07b96353f902aa1bdbe00e878e3a12a137977d03a962479785576aa8ec9/kubernetes-36.0.3.tar.gz", hash = "sha256:36993ed25ce59b789c9341473a228fcf268504a2fec7c2b2b1531d73072e5ce7", size = 2337528, upload-time = "2026-07-13T20:38:12.128Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5b/30/a96d47df739689ac0001ade0afefc16e3b477fc2fb426b568515fdc8afce/kubernetes-36.0.3-py2.py3-none-any.whl", hash = "sha256:8fde9241c4b298e6374a069dcf728359b4e72c2fb29489a975ba4e1c047cf10f", size = 4618066, upload-time = "2026-07-13T20:38:10.172Z" },
 ]
 
 [[package]]
@@ -3754,6 +3791,11 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a3/5e/ecf12fdb62546d64385c158514e9b2b671f7832108ef2ecd2020ce0af2d1/pyjwt-2.13.0-py3-none-any.whl", hash = "sha256:66adcc2aff09b3f1bbd95fc1e1577df8ac8723c978552fd43304c8a290ac5728", size = 31274, upload-time = "2026-05-21T19:54:35.362Z" },
 ]
 
+[package.optional-dependencies]
+crypto = [
+    { name = "cryptography" },
+]
+
 [[package]]
 name = "pyparsing"
 version = "3.3.2"
@@ -4858,6 +4900,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/27/0b/a54103cfd732bb703c7a749222011a0483ef3705948dae3b203158601119/watchfiles-1.2.0-pp311-pypy311_pp73-macosx_11_0_arm64.whl", hash = "sha256:094b9b70103d4e963499bdea001ee3c2697b144cd9ae6218a62c0f89ec9e31db", size = 396629, upload-time = "2026-05-18T04:32:03.268Z" },
     { url = "https://files.pythonhosted.org/packages/5e/2c/73f31a3b893886206c3f54d73e8ad8dee58cdb2f69ad2622e0a8a9e07f4e/watchfiles-1.2.0-pp311-pypy311_pp73-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b0ef001f8c25ad0fa9529f914c1600647ecd0f542d11c19b7894768c67b6acb7", size = 457318, upload-time = "2026-05-18T04:31:01.932Z" },
     { url = "https://files.pythonhosted.org/packages/e9/f9/45d021e4a5cc7b9dd567f7cbb06d3b75f751a690063fb6cc7ec60f4e46b7/watchfiles-1.2.0-pp311-pypy311_pp73-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a88fc94e647bc4eec523f1caa540258eb71d14278b9daf72fa1e2658a98df0f0", size = 457771, upload-time = "2026-05-18T04:30:56.331Z" },
+]
+
+[[package]]
+name = "websocket-client"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/2c/41/aa4bf9664e4cda14c3b39865b12251e8e7d239f4cd0e3cc1b6c2ccde25c1/websocket_client-1.9.0.tar.gz", hash = "sha256:9e813624b6eb619999a97dc7958469217c3176312b3a16a4bd1bc7e08a46ec98", size = 70576, upload-time = "2025-10-07T21:16:36.495Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/34/db/b10e48aa8fff7407e67470363eac595018441cf32d5e1001567a7aeba5d2/websocket_client-1.9.0-py3-none-any.whl", hash = "sha256:af248a825037ef591efbf6ed20cc5faa03d3b47b9e5a2230a529eeee1c1fc3ef", size = 82616, upload-time = "2025-10-07T21:16:34.951Z" },
 ]
 
 [[package]]

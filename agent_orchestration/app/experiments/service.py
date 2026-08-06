@@ -2,8 +2,11 @@
 
 전체 파이프라인에서 검증된 API 입력을 SQLAlchemy transaction으로 실험·event·log·metadata에
 반영하는 구간과, 호출자가 제출한 사전등록 필드를 `[AR]` 이슈로 발행하는 조립→저장→발행
-절차를 담당한다. HTTP 인증·상태 코드 변환, 실제 학습 실행, 본문 조립(issue_authoring)과
-`gh` 호출(github_issues) 자체는 담당하지 않는다.
+절차를 담당한다. API wrapper가 transaction을 소유하는 기존 경계와 launcher가 이미 연
+transaction에 상태·event 쓰기를 합치는 primitive를 함께 제공한다. 발행 전에
+baseline-reader App으로 `dev` SHA를 읽어 본문·제목과 함께 조건부 UPDATE로 최초 값만
+봉인한다. HTTP 인증·상태 코드 변환, 실제 학습/Job 실행, 본문 조립(issue_authoring)과
+GitHub 인증·REST/`gh` 전송 자체는 담당하지 않는다.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ from agent_orchestration.app.experiments.exceptions import (
     StepAlreadyFinalizedError,
 )
 from agent_orchestration.app.experiments.github_issues import (
+    GitHubIssueError,
     create_issue,
     find_issue_by_marker,
 )
@@ -71,6 +75,12 @@ from agent_orchestration.app.experiments.schemas import (
     StatusUpdateRequest,
 )
 from agent_orchestration.app.experiments.transition_service import validate_transition
+from agent_orchestration.github_app import (
+    GitHubAppCredentials,
+    GitHubAppError,
+    create_installation_token,
+)
+from agent_orchestration.github_refs import GitHubRefError, GitHubRefs
 
 # 학습 기간은 KST 날짜 경계로 계산한다. UTC로 계산하면 한국 시각 오전 9시 이전에
 # 발행된 실험이 하루 앞선 구간을 보게 된다.
@@ -217,6 +227,63 @@ def _require_general_transition(requested: ExperimentStatus) -> None:
         raise PromotionRequiresDedicatedEndpointError
 
 
+def transition_experiment_in_transaction(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    requested: ExperimentStatus,
+    reason: str | None,
+    metric_snapshot: dict | None,
+    idempotency_key: str,
+    check_idempotency: bool,
+) -> tuple[Experiment, ExperimentEvent]:
+    """호출자가 연 transaction 안에서 상태와 event를 원자적으로 갱신한다.
+
+    이 함수는 commit이나 rollback을 수행하지 않는다. API service wrapper와 launcher처럼
+    추가 쓰기를 같은 원자 단위로 묶어야 하는 호출자가 transaction 수명을 소유한다.
+    """
+    _require_general_transition(requested)
+    request_fingerprint = _request_fingerprint(
+        {
+            "to_status": requested.value,
+            "reason": reason,
+            "metric_snapshot": metric_snapshot,
+        }
+    )
+    experiment = find_experiment(session, experiment_id, for_update=True)
+    if experiment is None:
+        raise ExperimentNotFoundError(experiment_id)
+
+    if check_idempotency:
+        existing_event = find_event_by_idempotency_key(
+            session,
+            experiment_id,
+            idempotency_key,
+        )
+        if existing_event is not None:
+            if existing_event.request_fingerprint != request_fingerprint:
+                raise IdempotencyConflictError(idempotency_key)
+            return experiment, existing_event
+
+    current = ExperimentStatus(experiment.status)
+    validate_transition(current, requested)
+    experiment.status = requested.value
+    if metric_snapshot is not None:
+        experiment.metric_summary = metric_snapshot
+    event_row = ExperimentEvent(
+        experiment_id=experiment.id,
+        idempotency_key=idempotency_key,
+        request_fingerprint=request_fingerprint,
+        from_status=current.value,
+        to_status=requested.value,
+        reason=reason,
+        metric_snapshot=metric_snapshot,
+    )
+    session.add(event_row)
+    session.flush()
+    return experiment, event_row
+
+
 def _transition_experiment(
     session: Session,
     experiment_id: uuid.UUID,
@@ -225,44 +292,19 @@ def _transition_experiment(
     reason: str | None,
     metric_snapshot: dict | None,
     idempotency_key: str,
-    request_fingerprint: str,
     check_idempotency: bool,
 ) -> tuple[Experiment, ExperimentEvent]:
-    """row lock 안에서 상태와 event를 한 transaction으로 갱신한다."""
-    _require_general_transition(requested)
+    """기존 service 호출을 위해 transaction을 열고 공용 전이 primitive를 호출한다."""
     with session.begin():
-        experiment = find_experiment(session, experiment_id, for_update=True)
-        if experiment is None:
-            raise ExperimentNotFoundError(experiment_id)
-
-        if check_idempotency:
-            existing_event = find_event_by_idempotency_key(
-                session,
-                experiment_id,
-                idempotency_key,
-            )
-            if existing_event is not None:
-                if existing_event.request_fingerprint != request_fingerprint:
-                    raise IdempotencyConflictError(idempotency_key)
-                return experiment, existing_event
-
-        current = ExperimentStatus(experiment.status)
-        validate_transition(current, requested)
-        experiment.status = requested.value
-        if metric_snapshot is not None:
-            experiment.metric_summary = metric_snapshot
-        event_row = ExperimentEvent(
-            experiment_id=experiment.id,
-            idempotency_key=idempotency_key,
-            request_fingerprint=request_fingerprint,
-            from_status=current.value,
-            to_status=requested.value,
+        return transition_experiment_in_transaction(
+            session,
+            experiment_id,
+            requested=requested,
             reason=reason,
             metric_snapshot=metric_snapshot,
+            idempotency_key=idempotency_key,
+            check_idempotency=check_idempotency,
         )
-        session.add(event_row)
-        session.flush()
-    return experiment, event_row
 
 
 def update_experiment_status(
@@ -272,11 +314,6 @@ def update_experiment_status(
 ) -> Experiment:
     """클라이언트 멱등성을 제공하지 않는 일반 상태 변경을 수행한다."""
     requested = ExperimentStatus(request.status)
-    payload = {
-        "to_status": requested.value,
-        "reason": request.reason,
-        "metric_snapshot": request.metric_snapshot,
-    }
     experiment, _event = _transition_experiment(
         session,
         experiment_id,
@@ -284,7 +321,6 @@ def update_experiment_status(
         reason=request.reason,
         metric_snapshot=request.metric_snapshot,
         idempotency_key=f"status-update:{uuid.uuid4()}",
-        request_fingerprint=_request_fingerprint(payload),
         check_idempotency=False,
     )
     return experiment
@@ -311,7 +347,6 @@ def create_experiment_event(
             reason=request.reason,
             metric_snapshot=request.metric_snapshot,
             idempotency_key=request.idempotency_key,
-            request_fingerprint=fingerprint,
             check_idempotency=True,
         )
         return event_row
@@ -654,6 +689,42 @@ def promote_experiment(
 TRIGGER_LABEL = "auto-experiment"
 
 
+async def resolve_dev_sha(settings: object) -> str:
+    """baseline-reader App으로 현재 `heads/dev` SHA를 한 번 읽는다.
+
+    App/REST 경계의 상세 오류는 모두 이미 정제되어 있지만, 기존 이슈 발행 HTTP handler가
+    안정적으로 502로 변환할 수 있도록 발행 도메인의 안전한 사유로 다시 감싼다.
+    """
+    app_id = getattr(settings, "baseline_github_app_id", None)
+    installation_id = getattr(settings, "baseline_github_app_installation_id", None)
+    private_key_path = getattr(settings, "baseline_github_app_private_key_path", None)
+    repository = getattr(settings, "github_repository", None)
+    if (
+        not isinstance(app_id, int)
+        or app_id < 1
+        or not isinstance(installation_id, int)
+        or installation_id < 1
+        or private_key_path is None
+        or not isinstance(repository, str)
+    ):
+        raise GitHubIssueError("baseline_credentials_missing")
+    try:
+        token = await create_installation_token(
+            GitHubAppCredentials(app_id, installation_id, private_key_path),
+            permissions={"contents": "read"},
+        )
+        sha = await GitHubRefs().get_sha(
+            repository,
+            "heads/dev",
+            token.value,
+        )
+    except (GitHubAppError, GitHubRefError) as error:
+        raise GitHubIssueError("baseline_resolution_failed") from error
+    if sha is None:
+        raise GitHubIssueError("baseline_ref_not_found")
+    return sha
+
+
 def _branch_slug(title: str) -> str:
     """`_branch_name_for`가 쓰는 slug 계산. 이슈 번호와 무관해 발행 전에 미리 검증할 수 있다.
 
@@ -671,12 +742,13 @@ def _branch_slug(title: str) -> str:
 
 
 def _branch_name_for(issue_number: int, title: str) -> str:
-    """워크플로가 만들 브랜치 이름을 응답에 미리 싣는다.
+    """executor가 만들 브랜치 이름을 응답에 미리 싣는다.
 
     `tools/auto_research_issue_branch.py`의 `branch_name_for()`와 같은 규칙이다. 그
     모듈은 API 이미지에 없어 import할 수 없으므로 규칙을 복제한다 — 이 값은 표시용이며
-    실제 브랜치는 워크플로가 만든다. 동일성은 `tests/test_experiment_issue_publication.py`의
-    `test_branch_name_matches_the_workflow_rule`이 고정한다.
+    실제 브랜치는 launcher가 좌표를 전달한 executor Pod가 만든다. 동일성은
+    `tests/test_experiment_issue_publication.py`의
+    `test_branch_name_matches_the_canonical_rule`이 고정한다.
     """
     return f"exp/{issue_number}-{_branch_slug(title)}"
 
@@ -713,8 +785,14 @@ async def publish_experiment_issue(
     if (published_today or 0) >= settings.issue_daily_limit:
         raise IssuePublicationLimitError(settings.issue_daily_limit)
 
-    # ① 본문을 만들고 발행 전에 커밋한다. 이 커밋이 재시도 결정성의 근거다.
-    if experiment.issue_body is None:
+    # ① 본문·제목·기준 SHA를 만들고 발행 전에 같은 transaction으로 커밋한다. 이
+    # 커밋이 재시도 결정성의 근거다. 기준 SHA가 이미 있으면 최신 dev를 다시 읽지 않는다.
+    # NULL을 본 요청이 여러 개여도 조건부 UPDATE 한 개만 성공하므로 최초 SHA는 이후
+    # 요청에 덮이지 않는다. 외부 ref 조회는 UPDATE 전에 끝내 row lock을 잡은 채 GitHub를
+    # 기다리지 않는다.
+    stores_issue_definition = experiment.issue_body is None
+    stores_baseline = experiment.base_dev_sha is None
+    if stores_issue_definition:
         body = build_issue_body(
             experiment.id,
             request.fields,
@@ -723,23 +801,80 @@ async def publish_experiment_issue(
             window=training_window(datetime.now(_KST).date()),
         )
         title = build_issue_title(request.fields)
-        # 이 시점에는 위 조회들이 autobegin으로 이미 transaction을 열어 두었으므로
-        # `with session.begin():`을 다시 쓰면 "이미 시작된 transaction" 오류가 난다.
-        # commit()으로 그 transaction을 끝맺는다 — 다음 statement가 필요하면 새
-        # transaction을 autobegin한다. `expire_on_commit=False`(database.py)라 커밋
-        # 후에도 방금 대입한 속성값을 그대로 읽을 수 있어 refresh가 필요하지 않다 —
-        # refresh는 새 SELECT를 던져 또 다른 autobegin을 열어 두므로 오히려 다음
-        # 호출자의 `session.begin()`과 충돌한다.
-        experiment.issue_body = body
-        # title도 같은 commit에 저장한다 — 저장하지 않으면 재발행 시 본문에서 제목을
-        # 복원해야 하고, 그 복원 규칙(첫 문장 요약)이 호출자가 준 실제 title과 달라
-        # 재발행마다 제목·브랜치 이름이 흔들린다.
-        experiment.issue_title = title
-        experiment.issue_branch = None
-        session.commit()
     else:
         body = experiment.issue_body
         title = experiment.issue_title
+
+    if stores_baseline:
+        # 앞선 존재·상한 조회가 연 read transaction을 닫아 GitHub HTTP 대기 중 pool
+        # connection을 점유하지 않는다. 아래 CAS가 NULL 조건을 다시 검사하므로 이 경계가
+        # 기준 SHA의 최초 writer 불변식을 약화하지 않는다.
+        session.commit()
+        candidate_base_dev_sha = await resolve_dev_sha(settings)
+    else:
+        candidate_base_dev_sha = experiment.base_dev_sha
+    if stores_baseline:
+        # Core UPDATE가 새 transaction을 autobegin한다. WHERE 절에서 NULL 여부를 다시
+        # 검사해야 PostgreSQL이 경쟁 writer 대기 후 최신 row에 조건을 재평가한다. ORM
+        # 속성 대입은 stale NULL을 근거로 무조건 UPDATE해 먼저 봉인한 SHA를 덮을 수 있다.
+        values: dict[str, object] = {"base_dev_sha": candidate_base_dev_sha}
+        if stores_issue_definition:
+            values.update(
+                issue_body=body,
+                # title도 같은 commit에 저장한다 — 저장하지 않으면 재발행 시 본문에서
+                # 제목을 복원해야 하고, 그 복원 규칙(첫 문장 요약)이 호출자가 준 실제
+                # title과 달라 재발행마다 제목·브랜치 이름이 흔들린다.
+                issue_title=title,
+                issue_branch=None,
+            )
+        result = session.execute(
+            update(Experiment)
+            .where(
+                Experiment.id == experiment.id,
+                Experiment.base_dev_sha.is_(None),
+            )
+            .values(**values)
+            .execution_options(synchronize_session=False)
+        )
+        session.commit()
+
+        # synchronize_session=False와 expire_on_commit=False이므로 identity map은 여전히
+        # CAS 전 값을 가진다. 패배(rowcount=0) 요청은 반드시 DB 승자 값을 다시 읽어야
+        # 하며, 승자도 같은 refresh 경로를 써 반환 객체가 실제 저장값과 일치하게 한다.
+        session.refresh(experiment)
+        session.commit()
+        if result.rowcount == 0:
+            base_dev_sha = experiment.base_dev_sha
+        else:
+            base_dev_sha = candidate_base_dev_sha
+        if base_dev_sha is None:
+            raise GitHubIssueError("baseline_freeze_failed")
+        body = experiment.issue_body
+        title = experiment.issue_title
+    elif stores_issue_definition:
+        # 기준 SHA만 이미 봉인된 legacy 행도 최초 본문·제목만 이긴다. ORM 대입은 동시
+        # 요청의 마지막 commit이 먼저 저장된 정의를 덮을 수 있으므로 NULL-only CAS를 쓴다.
+        session.execute(
+            update(Experiment)
+            .where(
+                Experiment.id == experiment.id,
+                Experiment.issue_body.is_(None),
+            )
+            .values(
+                issue_body=body,
+                issue_title=title,
+                issue_branch=None,
+            )
+            .execution_options(synchronize_session=False)
+        )
+        session.commit()
+        session.refresh(experiment)
+        session.commit()
+        body = experiment.issue_body
+        title = experiment.issue_title
+
+    if not isinstance(body, str) or not isinstance(title, str):
+        raise GitHubIssueError("issue_definition_freeze_failed")
 
     # ② 발행. 브랜치 이름의 slug는 이슈 번호와 무관하므로 발행 전에 미리 검증한다 —
     # 여기서 실패하면 아직 이슈가 열리지 않았으므로 "이슈는 열렸지만 DB에 기록되지
@@ -752,6 +887,9 @@ async def publish_experiment_issue(
     # 없는 것과 같아져 중복 이슈를 만들 수 있다. 그래서 예외를 그대로 올려 요청을
     # 실패시킨다 — 호출자는 사유(예: `authentication_failed`)를 보고 무엇을 고칠지
     # 안다. 중복 이슈를 만드는 것보다 사람이 보는 편이 낫다.
+    # 이미 기준선·본문이 봉인된 재시도도 앞선 존재·상한 조회로 read transaction이
+    # 열려 있으므로, marker 조회와 create_issue의 외부 대기 전에 공통으로 닫는다.
+    session.commit()
     existing = await find_issue_by_marker(settings, marker=marker_for(experiment.id))
     reference = existing or await create_issue(
         settings, title=title, body=body, labels=(TRIGGER_LABEL,)

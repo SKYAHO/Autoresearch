@@ -91,14 +91,22 @@ def db_session() -> Iterator[Session]:
 
 @pytest.fixture(autouse=True)
 def _no_marker_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
-    """marker 조회가 실제 GitHub으로 나가지 않게 한다.
+    """기준 ref와 marker 조회가 실제 GitHub으로 나가지 않게 한다.
 
-    이 조회를 검증하는 테스트는 각자 다시 monkeypatch한다.
+    각 경계를 검증하는 테스트는 필요한 대역을 다시 monkeypatch한다.
     """
+
+    async def _dev_sha(_settings: object) -> str:
+        return "a" * 40
 
     async def _absent(_settings: object, *, marker: str) -> None:
         return None
 
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        _dev_sha,
+        raising=False,
+    )
     monkeypatch.setattr(
         "agent_orchestration.app.experiments.service.find_issue_by_marker", _absent
     )
@@ -131,6 +139,7 @@ def test_publication_stores_body_before_creating_the_issue(
     assert result.issue_number == 520
     assert result.issue_body == seen[0]
     assert result.issue_branch.startswith("exp/520-")
+    assert result.base_dev_sha == "a" * 40
 
 
 def test_submission_field_violation_is_rejected_before_publication(
@@ -405,15 +414,15 @@ def test_marker_lookup_failure_does_not_publish(
         "접두어 없는 한글 제목",
     ],
 )
-def test_branch_name_matches_the_workflow_rule(title: str) -> None:
-    """표시용 브랜치 이름이 워크플로가 만들 이름과 같아야 한다."""
+def test_branch_name_matches_the_canonical_rule(title: str) -> None:
+    """표시용 브랜치 이름이 정본 helper가 계산한 이름과 같아야 한다."""
     from agent_orchestration.app.experiments.service import _branch_name_for
     from tools.auto_research_issue_branch import branch_name_for
 
     assert _branch_name_for(520, title) == branch_name_for(520, title)
 
 
-def test_branch_name_matches_the_workflow_rule_for_an_empty_title() -> None:
+def test_branch_name_matches_the_canonical_rule_for_an_empty_title() -> None:
     """prefix를 떼고 남은 것이 공백뿐이면 양쪽 모두 거부해야 한다."""
     from agent_orchestration.app.experiments.service import _branch_name_for
     from tools.auto_research_issue_branch import branch_name_for

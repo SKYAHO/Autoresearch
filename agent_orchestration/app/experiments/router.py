@@ -329,4 +329,5 @@ async def post_experiment_issue(
             f"/issues/{experiment.issue_number}"
         ),
         issue_branch=experiment.issue_branch,
+        base_dev_sha=experiment.base_dev_sha,
     )

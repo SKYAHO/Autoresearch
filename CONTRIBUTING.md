@@ -19,7 +19,7 @@ AutoResearch 프로젝트에 기여해 주셔서 감사합니다.
 
 2. **브랜치 생성**: 브랜치는 **해당 이슈에서 생성**합니다. 이슈 우측 `Development > Create a branch`를 사용하면 브랜치가 이슈에 자동 연결되고, `main` 기준으로 분기됩니다. 브랜치 네이밍 규칙은 아래를 따릅니다.
 
-   > **예외 — Auto Research 실험 브랜치**: `[AR]` 이슈의 `exp/<이슈번호>-<slug>` 브랜치는 사람이 만들지 않습니다. `.github/workflows/auto-research-issue-branch.yml`이 `main`이 아니라 **`dev` tip에서 자동 분기**하고 그 SHA를 `base_dev_sha`로 봉인합니다. 자세한 내용은 [브랜치 보호 규칙](#브랜치-보호-규칙)을 참조하세요.
+   > **예외 — Auto Research 실험 브랜치**: `[AR]` 이슈의 `exp/<이슈번호>-<slug>` 브랜치는 사람이 만들지 않습니다. API가 이슈 발행 전에 **`dev` tip을 DB의 `base_dev_sha`로 봉인**하고, launcher가 만든 executor Pod가 나중에 그 SHA에서만 브랜치를 생성합니다. 자세한 내용은 [브랜치 보호 규칙](#브랜치-보호-규칙)을 참조하세요.
 
 3. **작업 및 커밋**: 커밋 컨벤션에 따라 커밋 메시지를 작성합니다.
 
@@ -43,7 +43,9 @@ AutoResearch 프로젝트에 기여해 주셔서 감사합니다.
 | `experiment.yml` | `[EXP]` | `experiment` | 모델, 데이터, 지표, 방법론 실험 |
 | `auto_research.yml` | `[AR]` | `auto-experiment` | 에이전트가 읽고 직접 수행할 실험 가설 |
 
-`[AR]` 이슈는 `auto-experiment` label **하나만으로** `.github/workflows/auto-research-issue-branch.yml`이 동작합니다. Form을 우회해 API로 발행하면 label이 자동 적용되지 않으므로 직접 부여해야 합니다.
+`[AR]` 이슈의 `auto-experiment` label은 Auto Research 분류와 promotion guard에
+사용합니다. **label 자체는 브랜치를 만들지 않습니다.** Form을 우회해 API로
+발행하면 label이 자동 적용되지 않으므로 직접 부여해야 합니다.
 
 **문서 전용 이슈** (`[DOCS]`): Issue Form이 없습니다(`[CHORE]`, `[PERF]` 등 관례로 쓰이는 다른 prefix도 마찬가지입니다). 문서·판단 기록만 산출물인 작업은 `gh issue create --title "[DOCS] ..." --label documentation`으로 만듭니다. Form이 없으므로 제목 prefix와 label을 직접 지정해야 합니다.
 
@@ -80,7 +82,7 @@ git switch feat/42-add-feature-store-schema
 - 영어 소문자, 숫자, 하이픈(`-`)만 사용합니다.
 - 이슈 번호를 반드시 포함합니다.
 - 한 브랜치에는 하나의 주요 목적만 담습니다.
-- `exp/`는 사람이 만드는 실험 브랜치와 Auto Research가 자동 생성하는 실험 브랜치가 **같은 형식을 공유**합니다. 자동 생성 브랜치는 `dev` tip에서 분기되어 marker 코멘트로 봉인되므로 **삭제하거나 force-push하지 마십시오** — ruleset이 막아 주지 않고, 지우면 그 이슈가 fail-closed로 멈추거나 **다른 기준선으로 조용히 재생성**됩니다. [브랜치 보호 규칙](#브랜치-보호-규칙) 참조.
+- `exp/`는 사람이 만드는 실험 브랜치와 Auto Research executor가 생성하는 실험 브랜치가 **같은 형식을 공유**합니다. 자동 생성 브랜치는 DB에 봉인된 `base_dev_sha`에서 만들어지므로 **삭제하거나 force-push하지 마십시오** — ruleset이 막아 주지 않으며 삭제하면 launcher가 자동 복구하지 않고, 다른 tip으로 바꾸면 executor 재시도와 승격 계보 검증이 fail-closed됩니다. [브랜치 보호 규칙](#브랜치-보호-규칙) 참조.
 
 ---
 
@@ -182,13 +184,16 @@ Project의 `Add item`으로 제목만 추가하면 Issue Form을 우회하게 �
 
 Issue Form과 자동화를 단순하게 유지하기 위해 `feature`, `bug`, `experiment`를 우선 사용합니다. 보조 label: `documentation`, `good first issue`, `help wanted`, `question`. `enhancement`는 `feature`와 겹치면 `feature`를 우선합니다.
 
-**자동화 트리거 label — 임의로 제거하지 마십시오.**
+**Auto Research 분류 label — 임의로 제거하지 마십시오.**
 
 | label | 역할 |
 |---|---|
-| `auto-experiment` | 이 label **하나만으로** `.github/workflows/auto-research-issue-branch.yml`의 브랜치 생성 job이 실행됩니다 |
+| `auto-experiment` | `[AR]` 이슈 분류와 `auto-research-promotion.yml`의 입력 guard |
 
-이 label이 떨어지면 job의 `if:` 조건이 미충족되어 **skip**됩니다. skip은 실패가 아니므로 체크도 알림도 남지 않고, `[AR]` 이슈에서 브랜치 생성이 **아무 흔적 없이 그냥 일어나지 않습니다.** 분류 목적의 label 정리 중에 건드리지 마십시오. `.github/workflows/auto-research-promotion.yml`도 같은 label을 요구하므로, 떨어지면 승격 단계가 실패합니다. 이 조건은 `tests/test_branch_protection_contract.py`와 `tests/test_auto_experiment_trigger_label.py`가 계약으로 고정합니다.
+이 label은 Issue Form과 API 발행 경로가 붙이며, executor Pod의 branch 생성 트리거는
+아닙니다. `.github/workflows/auto-research-promotion.yml`은 같은 label을 요구하므로
+분류 목적의 label 정리 중에 제거하면 승격 단계가 실패합니다. 이 일치 조건은
+`tests/test_auto_experiment_trigger_label.py`가 계약으로 고정합니다.
 
 `auto-research`는 트리거가 **아닙니다.** Auto Research 주제를 가리키는 분류 label이며, `[AR]` 이슈에는 붙지 않습니다.
 
@@ -241,18 +246,20 @@ gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
 
 > **`dev`가 오염되면 되감기가 아니라 revert-forward만 가능합니다.** 우회가 불가능하므로, 잘못된 candidate가 `dev`에 병합됐을 때 force-push로 되돌릴 수 없습니다. revert 커밋으로 전진 복구해야 합니다. 다행히 이 방식은 진행 중인 실험을 깨지 않습니다 — 기존 `base_dev_sha`가 여전히 `dev`의 조상으로 남아 lineage 검증이 그대로 통과합니다.
 
-`dev`는 단순한 통합 브랜치가 아니라 **Auto Research 모든 실험의 기준선**입니다. `.github/workflows/auto-research-issue-branch.yml:190-208`이 `heads/dev`의 tip SHA를 읽어 `base_dev_sha`로 고정하고, 그 SHA에서 `exp/<이슈번호>-<slug>` 브랜치를 만든 뒤 marker 코멘트(`<!-- auto-research-issue-branch:v1 -->`)에 봉인합니다. 이후 모든 계보 검증이 이 SHA를 기준점으로 삼으므로, `dev`가 force-push되거나 삭제되어 그 커밋이 사라지면 다음이 깨집니다.
+`dev`는 단순한 통합 브랜치가 아니라 **Auto Research 모든 실험의 기준선**입니다.
+Agent Orchestration API의 Contents read 전용 GitHub App이 이슈 발행 전에
+`heads/dev` tip을 한 번 읽어 `Experiment.base_dev_sha`에 저장합니다. launcher와
+executor는 Job 시작 시 최신 `dev`나 `main`을 다시 읽지 않고, executor는 저장된 SHA에
+`exp/<이슈번호>-<slug>` ref를 생성합니다. 이후 계보 검증도 이 SHA를 기준점으로
+삼으므로 `dev`가 force-push되거나 삭제되어 커밋이 사라지면 다음이 깨집니다.
 
 | 깨지는 것 | 근거 | 시점 |
 |---|---|---|
-| 신규 이슈의 exp 브랜치 생성 | `auto-research-issue-branch.yml:190-196`이 `heads/dev`를 읽어 `base_dev_sha`를 정합니다 | 즉시 |
+| 신규 이슈의 기준 SHA 봉인 | Agent Orchestration API가 `heads/dev`를 읽어 `base_dev_sha`를 DB에 먼저 저장합니다 | 이슈 발행 시 |
+| exp 브랜치 생성 | executor Pod가 DB에서 전달받은 `base_dev_sha`에 ref를 만듭니다 | Job 실행 시 |
 | dev 병합 | `auto-research-dev-promotion.yml:367-372`가 `base: 'dev'`로 머지합니다 | 즉시 |
 | main Draft PR의 lineage 검사 | `auto-research-promotion.yml:158-163`이 `head: 'dev'`로 비교합니다 | 즉시 |
 | 진행 중 이슈의 후보 검증 | `auto-research-dev-promotion.yml:224-242`가 `base_dev_sha`를 base로 `compareCommits`를 호출합니다 | 후보 제출 시 |
-
-> **흔한 오해**: marker가 이미 있는 재검증 경로는 `heads/dev`를 **한 번도 읽지 않습니다.** 그 파일에서 `heads/dev` 조회는 **정확히 한 곳**뿐이며, marker가 없을 때만 실행되는 분기에 있습니다. 또 `recorded issue branch ref is missing`은 `dev`가 아니라 **exp 브랜치**가 사라졌을 때의 방어입니다 — 조회 대상이 `heads/${recorded.issueBranch}`입니다.
->
-> 이 개수 단언은 위치가 아니라 **개수**에 대한 것이라 문서만으로는 지킬 수 없습니다. `tests/test_branch_protection_contract.py`가 CI에서 고정합니다 — `heads/dev` 조회가 하나라도 늘면 테스트가 실패합니다.
 
 #### `dev`에서 PR 필수·required status check를 의도적으로 제외한 이유
 
@@ -265,14 +272,24 @@ gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
 
 ### `exp/*`, `promote/*` — ruleset 없음 (2026-08-03 판단)
 
-두 네임스페이스에는 ruleset을 적용하지 않습니다. 워크플로의 fail-closed 검사만 있으며, **생성 시점 방어일 뿐 생성 이후의 force-push·삭제는 막지 못합니다.**
+두 네임스페이스에는 ruleset을 적용하지 않습니다. executor와 승격 workflow의
+fail-closed 검사만 있으며, **생성 이후의 force-push·삭제 자체는 막지 못합니다.**
 
-- `exp/*` 생성 시: `auto-research-issue-branch.yml:186-188`이 marker 없이 존재하는 exp 브랜치를 `issue branch ref exists without a trusted marker comment`로 거부합니다.
-- `exp/*` 삭제 후: **브랜치만 지우면** marker가 남아 있어 `recorded issue branch ref is missing`으로 fail-closed됩니다. **marker 코멘트까지 함께 지우면** 워크플로가 marker 없는 분기로 들어가 `dev`의 **현재 HEAD**로 브랜치를 다시 만들고 marker를 새로 씁니다. 즉 영구 차단은 아니지만, 이쪽이 더 위험합니다 — 재설정된 `base_dev_sha`는 원래 값과 다른데 아무 데서도 실패하지 않아, 이미 원래 값을 인용해 둔 곳(paired 비교, 결과 코멘트)과 **조용히 어긋납니다.**
-- `exp/*` force-push: `:163-171`과 `auto-research-dev-promotion.yml:224-242`가 후보를 거부합니다. 안전하게 실패하지만 작업 결과는 소실됩니다.
+- `exp/*` 생성 시: executor는 ref가 없을 때만 DB에 봉인된 `base_dev_sha`로
+  생성합니다. 같은 SHA의 기존 ref만 멱등 성공이고 다른 tip은 update·reset·force 없이
+  `branch_ref_conflict`로 실패합니다.
+- `exp/*` 삭제 후: launcher가 Kubernetes Job 존재 확인 시각을 저장한 뒤에는 TTL로 Job이
+  사라져도 자동 재생성하지 않습니다. branch를 지우면 Phase 1이 자동 복구하지 않으며
+  후속 승격 입력도 잃습니다.
+- `exp/*` force-push: executor 재시도는 다른 tip을 거부하고,
+  `auto-research-dev-promotion.yml`의 후보 계보 검사도 거부합니다. 안전하게 실패하지만
+  작업 결과는 소실됩니다.
+- **marker 경계:** Phase 1 executor는 기존 GitHub Actions bot marker를 새로 쓰지
+  않습니다. 따라서 새 marker 없는 branch는 현재 promotion workflow의 입력이 아니며,
+  marker 작성 주체·서명·`base_dev_sha` 검증 재설계가 실제 실험 실행 전 다음 gate입니다.
 - `promote/*`: `auto-research-promotion.yml:215-227`이 이미 존재하는 promote 브랜치를 **다른 SHA로 재사용**하는 것만 거부합니다.
 
-**`exp/*`에 보호를 걸지 않은 이유**: `exp/`는 자동화 전용 네임스페이스가 아닙니다. 위 [브랜치 네이밍 규칙](#브랜치-네이밍-규칙)이 `exp/`를 사람이 쓰는 브랜치 type으로 규정하고 있고, 사람이 만든 `exp/116-openrouter-provider-ab`와 `exp/396-views-per-day`가 실제로 원격에 존재합니다. 사람 브랜치와 자동화 브랜치가 `exp/<이슈번호>-<설명>`이라는 **같은 형식**을 쓰므로 ruleset의 ref 패턴으로 구분할 수 없고, `non_fast_forward`를 걸면 사람의 rebase·force-push가, `deletion`을 걸면 작업 후 브랜치 정리가 함께 막힙니다. 보호를 걸려면 **자동화 전용 네임스페이스 분리가 선행**되어야 하며, 이는 브랜치명 생성 규칙과 이미 봉인된 marker 계약을 바꾸는 동작 변경이라 별도 이슈에서 다룹니다.
+**`exp/*`에 보호를 걸지 않은 이유**: `exp/`는 자동화 전용 네임스페이스가 아닙니다. 위 [브랜치 네이밍 규칙](#브랜치-네이밍-규칙)이 `exp/`를 사람이 쓰는 브랜치 type으로 규정하고 있고, 사람이 만든 `exp/116-openrouter-provider-ab`와 `exp/396-views-per-day`가 실제로 원격에 존재합니다. 사람 브랜치와 자동화 브랜치가 `exp/<이슈번호>-<설명>`이라는 **같은 형식**을 쓰므로 ruleset의 ref 패턴으로 구분할 수 없고, `non_fast_forward`를 걸면 사람의 rebase·force-push가, `deletion`을 걸면 작업 후 브랜치 정리가 함께 막힙니다. 보호를 걸려면 **자동화 전용 네임스페이스 분리가 선행**되어야 하며, 이는 브랜치명 생성 규칙과 marker 신뢰 계약을 바꾸는 동작 변경이라 별도 이슈에서 다룹니다.
 
 ---
 

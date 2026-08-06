@@ -26,6 +26,11 @@ Step은 실험 생명주기 상태(`ExperimentStatus`)와 독립적인 **작업 
 파싱하지 않고 그대로 재사용하기 위한 값이며, `issue_published_at`은 일일 발행 상한 질의
 전용이다. 둘 다 `ExperimentResponse`에 노출되지 않는다. 계약 정본은
 `docs/specs/2026-08-04-hypothesis-to-auto-research-issue.md`다.
+
+`base_dev_sha`는 이슈 발행 전에 `dev` tip을 한 번 읽어 본문·제목과 같은 commit에 봉인한
+기준선이다. `executor_job_name`/`executor_job_created_at`은 후속 launcher가 결정론적 Job
+생성을 재개하고 실제 생성 확인 여부를 구분하는 내부 lineage다. 이 모듈은 launcher의
+선점·Job 생성 또는 executor의 Git ref 생성은 담당하지 않는다.
 """
 
 from __future__ import annotations
@@ -157,6 +162,12 @@ class Experiment(Base):
     # 일일 발행 상한 질의 전용. `updated_at`은 `onupdate=func.now()`라 발행과 무관한
     # UPDATE에도 갱신되어 며칠 전 발행분을 "오늘 발행"으로 잘못 센다.
     issue_published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    base_dev_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    executor_job_name: Mapped[str | None] = mapped_column(String(63), nullable=True)
+    # launcher가 동일 이름의 Job 존재를 확인한 뒤에만 채우는 내부 복구 표식이다.
+    executor_job_created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
