@@ -5,7 +5,7 @@
 
 [기능] DB·namespace·executor image/identity/node pool·GitHub App 좌표·candidate API·Codex
 Secret·workspace·동시 실행 상한과 Job 수명 설정을 환경 변수에서 읽고, executor image와
-scheduling 좌표를 검증한다.
+scheduling 좌표 및 Codex 실행 상한과 Job 전체 상한의 순서를 검증한다.
 
 [비책임] 설정의 Kubernetes 주입과 Secret 값 관리(Autoresearch-infra), DB 연결·Job API
 호출은 담당하지 않는다.
@@ -63,7 +63,7 @@ class LauncherSettings:
     codex_home_secret_name: str
     workspace_size_limit: str
     codex_timeout_sec: int
-    active_deadline_sec: int = 300
+    active_deadline_sec: int
     ttl_after_finished_sec: int = 30
 
     def __post_init__(self) -> None:
@@ -98,10 +98,14 @@ class LauncherSettings:
         for name, value in positive_integers.items():
             if value <= 0:
                 raise LauncherConfigError(f"invalid {name}")
+        if self.codex_timeout_sec >= self.active_deadline_sec:
+            raise LauncherConfigError(
+                "codex_timeout_sec must be less than active_deadline_sec"
+            )
 
     @classmethod
     def from_environment(cls) -> LauncherSettings:
-        """CronJob 환경에서 필수 설정을 읽고 기본 Job 수명을 적용한다."""
+        """CronJob 환경에서 필수 설정과 Job 수명을 읽는다."""
         return cls(
             database_url=_required_environment("ORCH_DATABASE_URL"),
             job_namespace=_required_environment("ORCH_JOB_NAMESPACE"),
@@ -130,4 +134,7 @@ class LauncherSettings:
                 "ORCH_EXECUTOR_WORKSPACE_SIZE_LIMIT"
             ),
             codex_timeout_sec=_positive_integer_environment("ORCH_CODEX_TIMEOUT_SEC"),
+            active_deadline_sec=_positive_integer_environment(
+                "ORCH_ACTIVE_DEADLINE_SEC"
+            ),
         )
