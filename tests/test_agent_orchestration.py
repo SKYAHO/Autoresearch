@@ -230,6 +230,20 @@ def test_load_settings_rejects_executor_token_shared_with_other_api_boundary(
         load_settings()
 
 
+def test_load_settings_rejects_executor_token_shared_with_configured_runner_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex CLI 모드여도 설정된 Runner 토큰과 executor 토큰을 재사용하지 않는다."""
+    shared_token = "test-shared-token-must-be-at-least-32-characters"
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("LLM_BACKEND", "codex_cli")
+    monkeypatch.setenv("ORCH_RUNNER_TOKEN", shared_token)
+    monkeypatch.setenv("ORCH_EXECUTOR_API_TOKEN", shared_token)
+
+    with pytest.raises(ValueError, match="ORCH_EXECUTOR_API_TOKEN and ORCH_RUNNER_TOKEN"):
+        load_settings()
+
+
 @pytest.mark.parametrize("runner_url", ("", "runner:8080", "/v1/generate"))
 def test_load_settings_codex_runner_requires_absolute_url(
     monkeypatch: pytest.MonkeyPatch,

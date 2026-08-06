@@ -346,7 +346,10 @@ def record_candidate(
         "candidate_sha": request.candidate_sha,
     }
     fingerprint = _request_fingerprint(payload)
-    event_key = f"executor-candidate:{experiment_id}"
+    expected_event_key = f"executor-candidate:{experiment_id}"
+    if request.idempotency_key != expected_event_key:
+        raise CandidateConflictError()
+    event_key = request.idempotency_key
     with session.begin():
         experiment = find_experiment(session, experiment_id, for_update=True)
         if experiment is None:

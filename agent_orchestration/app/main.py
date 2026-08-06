@@ -44,10 +44,8 @@ from agent_orchestration.app.experiments.exceptions import (
     StepAlreadyFinalizedError,
 )
 from agent_orchestration.app.experiments.github_issues import GitHubIssueError
-from agent_orchestration.app.experiments.router import (
-    executor_router,
-    router as experiment_router,
-)
+from agent_orchestration.app.experiments.executor_router import router as executor_router
+from agent_orchestration.app.experiments.router import router as experiment_router
 from agent_orchestration.app.experiments.transition_service import InvalidTransitionError
 from agent_orchestration.app.llm import LLMBackendError, generate_response
 from agent_orchestration.contracts import LLMBackendOverloadedError

@@ -1,9 +1,9 @@
 """Agent Orchestration 실험 워크벤치의 FastAPI HTTP 경계를 제공한다.
 
-전체 파이프라인에서 Streamlit 워크벤치·Agent와 executor가 Experiment service를 호출하는
-HTTP·OpenAPI 경계를 담당한다. 일반 호출은 `/experiments`, executor의 원격 검증 candidate
-보고는 별도 내부 경로로 분리한다. 인증 구현, SQLAlchemy transaction 세부사항과 상태 전이
-판단은 각각 app 조립부와 service 계층의 책임이다.
+전체 파이프라인에서 Streamlit 워크벤치·Agent가 Experiment service를 호출하는
+HTTP·OpenAPI 경계를 담당한다. executor의 원격 검증 candidate 보고는
+`executor_router.py`의 별도 내부 경로가 소유한다. 인증 구현, SQLAlchemy transaction
+세부사항과 상태 전이 판단은 각각 app 조립부와 service 계층의 책임이다.
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from agent_orchestration.app.config import ServiceSettings, get_settings
 from agent_orchestration.app.database import get_db_session
 from agent_orchestration.app.experiments.models import ExperimentStatus, StepKind
 from agent_orchestration.app.experiments.schemas import (
-    CandidateReportRequest,
     ExperimentCreate,
     ExperimentEventCreate,
     ExperimentEventPageResponse,
@@ -51,7 +50,6 @@ from agent_orchestration.app.experiments.service import (
     list_experiments,
     promote_experiment,
     publish_experiment_issue,
-    record_candidate,
     update_experiment_status,
     update_experiment_step,
 )
@@ -59,18 +57,11 @@ from agent_orchestration.app.schemas import ErrorResponse
 
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
-executor_router = APIRouter(prefix="/internal/executor/experiments", tags=["executor"])
 SessionDependency = Annotated[Session, Depends(get_db_session)]
 SettingsDependency = Annotated[ServiceSettings, Depends(get_settings)]
 _UNAUTHORIZED_RESPONSE = {
     status.HTTP_401_UNAUTHORIZED: {
         "description": "Invalid orchestration API token.",
-        "model": ErrorResponse,
-    }
-}
-_EXECUTOR_UNAUTHORIZED_RESPONSE = {
-    status.HTTP_401_UNAUTHORIZED: {
-        "description": "Invalid orchestration executor API token.",
         "model": ErrorResponse,
     }
 }
@@ -80,24 +71,6 @@ _NOT_FOUND_RESPONSE = {
 _CONFLICT_RESPONSE = {
     status.HTTP_409_CONFLICT: {"description": "Experiment state or idempotency conflict.", "model": ErrorResponse}
 }
-
-
-@executor_router.post(
-    "/{experiment_id}/candidate",
-    response_model=ExperimentResponse,
-    responses={
-        **_EXECUTOR_UNAUTHORIZED_RESPONSE,
-        **_NOT_FOUND_RESPONSE,
-        **_CONFLICT_RESPONSE,
-    },
-)
-def post_executor_candidate(
-    experiment_id: uuid.UUID,
-    request: CandidateReportRequest,
-    session: SessionDependency,
-) -> ExperimentResponse:
-    """executor가 검증한 candidate SHA를 저장하고 평가 상태로 전이한다."""
-    return ExperimentResponse.model_validate(record_candidate(session, experiment_id, request))
 
 
 @router.post(

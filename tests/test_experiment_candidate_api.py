@@ -81,10 +81,10 @@ def _running_experiment(session: Session) -> Experiment:
     return experiment
 
 
-def _request(**overrides: object) -> CandidateReportRequest:
+def _request(experiment_id: uuid.UUID, **overrides: object) -> CandidateReportRequest:
     """유효한 candidate 보고 요청에 필요한 한 필드만 바꿔 만든다."""
     values: dict[str, object] = {
-        "idempotency_key": "executor-report-0001",
+        "idempotency_key": f"executor-candidate:{experiment_id}",
         "issue_number": ISSUE_NUMBER,
         "issue_branch": ISSUE_BRANCH,
         "base_dev_sha": BASE_DEV_SHA,
@@ -98,7 +98,7 @@ def test_service_records_candidate_and_evaluating_event_atomically(db_session: S
     """RUNNING 행은 candidate SHA·EVALUATING event를 같은 commit으로 남긴다."""
     experiment = _running_experiment(db_session)
 
-    updated = record_candidate(db_session, experiment.id, _request())
+    updated = record_candidate(db_session, experiment.id, _request(experiment.id))
 
     assert updated.candidate_sha == CANDIDATE_SHA
     assert updated.status == ExperimentStatus.EVALUATING.value
@@ -117,8 +117,8 @@ def test_service_same_candidate_fingerprint_is_idempotent_without_new_event(
 ) -> None:
     """재시도는 이미 EVALUATING이어도 기존 candidate 보고를 성공으로 돌려준다."""
     experiment = _running_experiment(db_session)
-    first = record_candidate(db_session, experiment.id, _request())
-    retried = record_candidate(db_session, experiment.id, _request())
+    first = record_candidate(db_session, experiment.id, _request(experiment.id))
+    retried = record_candidate(db_session, experiment.id, _request(experiment.id))
 
     assert retried.id == first.id
     assert db_session.scalar(
@@ -136,10 +136,14 @@ def test_service_same_candidate_event_key_with_different_payload_conflicts(
 ) -> None:
     """고정 candidate event key로 다른 SHA를 덮어쓰려는 재시도를 거부한다."""
     experiment = _running_experiment(db_session)
-    record_candidate(db_session, experiment.id, _request())
+    record_candidate(db_session, experiment.id, _request(experiment.id))
 
     with pytest.raises(IdempotencyConflictError):
-        record_candidate(db_session, experiment.id, _request(candidate_sha="c" * 40))
+        record_candidate(
+            db_session,
+            experiment.id,
+            _request(experiment.id, candidate_sha="c" * 40),
+        )
 
 
 def test_service_rejects_different_existing_candidate_sha(db_session: Session) -> None:
@@ -149,7 +153,7 @@ def test_service_rejects_different_existing_candidate_sha(db_session: Session) -
     db_session.commit()
 
     with pytest.raises(CandidateConflictError):
-        record_candidate(db_session, experiment.id, _request())
+        record_candidate(db_session, experiment.id, _request(experiment.id))
 
 
 @pytest.mark.parametrize(
@@ -167,7 +171,7 @@ def test_service_rejects_candidate_coordinates_that_do_not_match_experiment(
 ) -> None:
     """발행 때 봉인한 이슈·branch·baseline 좌표와 다른 보고를 거부한다."""
     experiment = _running_experiment(db_session)
-    request_values = _request().model_dump()
+    request_values = _request(experiment.id).model_dump()
     request_values[field] = value
     request = CandidateReportRequest.model_construct(**request_values)
 
@@ -191,7 +195,7 @@ def test_service_rolls_back_candidate_and_status_when_event_flush_fails(
             raise RuntimeError("controlled candidate event failure")
 
     with pytest.raises(RuntimeError, match="controlled candidate event failure"):
-        record_candidate(db_session, experiment.id, _request())
+        record_candidate(db_session, experiment.id, _request(experiment.id))
 
     assert not db_session.in_transaction()
     persisted = db_session.get(Experiment, experiment.id)
@@ -256,10 +260,10 @@ def _create_running_experiment_for_http(client: TestClient) -> Experiment:
         return persisted
 
 
-def _http_payload(**overrides: object) -> dict[str, object]:
+def _http_payload(experiment_id: uuid.UUID, **overrides: object) -> dict[str, object]:
     """executor HTTP 요청의 기본 payload를 반환한다."""
     payload: dict[str, object] = {
-        "idempotency_key": "executor-report-0001",
+        "idempotency_key": f"executor-candidate:{experiment_id}",
         "issue_number": ISSUE_NUMBER,
         "issue_branch": ISSUE_BRANCH,
         "base_dev_sha": BASE_DEV_SHA,
@@ -276,18 +280,22 @@ def test_executor_candidate_endpoint_requires_dedicated_token(
     experiment = _create_running_experiment_for_http(executor_client)
     path = f"/internal/executor/experiments/{experiment.id}/candidate"
 
-    missing = executor_client.post(path, json=_http_payload())
+    missing = executor_client.post(path, json=_http_payload(experiment.id))
     general_token = executor_client.post(
         path,
         headers={"X-Orch-Token": API_TOKEN},
-        json=_http_payload(),
+        json=_http_payload(experiment.id),
     )
     invalid_token = executor_client.post(
         path,
         headers={"X-Orch-Executor-Token": "wrong"},
-        json=_http_payload(),
+        json=_http_payload(experiment.id),
     )
-    response = executor_client.post(path, headers=EXECUTOR_HEADERS, json=_http_payload())
+    response = executor_client.post(
+        path,
+        headers=EXECUTOR_HEADERS,
+        json=_http_payload(experiment.id),
+    )
 
     assert missing.status_code == 401
     assert general_token.status_code == 401
@@ -306,29 +314,31 @@ def test_executor_candidate_endpoint_maps_sealed_coordinate_conflict_to_409(
     response = executor_client.post(
         f"/internal/executor/experiments/{experiment.id}/candidate",
         headers=EXECUTOR_HEADERS,
-        json=_http_payload(issue_branch="exp/557-other-branch"),
+        json=_http_payload(experiment.id, issue_branch="exp/557-other-branch"),
     )
 
     assert response.status_code == 409
 
 
 @pytest.mark.parametrize(
-    "payload",
+    "field,value",
     [
-        _http_payload(candidate_sha="B" * 40),
-        _http_payload(candidate_sha="b" * 39),
-        _http_payload(candidate_sha="b" * 41),
-        _http_payload(issue_number=558),
-        _http_payload(extra_field=True),
+        ("candidate_sha", "B" * 40),
+        ("candidate_sha", "b" * 39),
+        ("candidate_sha", "b" * 41),
+        ("issue_number", 558),
+        ("extra_field", True),
     ],
 )
 def test_executor_candidate_endpoint_rejects_invalid_requests_with_422(
     executor_client: TestClient,
-    payload: dict[str, object],
+    field: str,
+    value: object,
 ) -> None:
     """SHA 형식·branch 이슈 번호·extra field를 service 전에 요청 검증으로 막는다."""
     experiment = _create_running_experiment_for_http(executor_client)
 
+    payload = _http_payload(experiment.id, **{field: value})
     response = executor_client.post(
         f"/internal/executor/experiments/{experiment.id}/candidate",
         headers=EXECUTOR_HEADERS,
@@ -336,3 +346,37 @@ def test_executor_candidate_endpoint_rejects_invalid_requests_with_422(
     )
 
     assert response.status_code == 422
+
+
+def test_service_rejects_candidate_report_with_noncanonical_idempotency_key(
+    db_session: Session,
+) -> None:
+    """요청 key가 experiment별 고정 candidate event key와 다르면 저장하지 않는다."""
+    experiment = _running_experiment(db_session)
+
+    with pytest.raises(CandidateConflictError):
+        record_candidate(
+            db_session,
+            experiment.id,
+            _request(experiment.id, idempotency_key="executor-report-0001"),
+        )
+
+    persisted = db_session.get(Experiment, experiment.id)
+    assert persisted is not None
+    assert persisted.status == ExperimentStatus.RUNNING.value
+    assert persisted.candidate_sha is None
+
+
+def test_executor_candidate_endpoint_rejects_noncanonical_idempotency_key_with_409(
+    executor_client: TestClient,
+) -> None:
+    """HTTP도 executor-candidate 실험별 고정 key 이외의 보고를 충돌로 돌려준다."""
+    experiment = _create_running_experiment_for_http(executor_client)
+
+    response = executor_client.post(
+        f"/internal/executor/experiments/{experiment.id}/candidate",
+        headers=EXECUTOR_HEADERS,
+        json=_http_payload(experiment.id, idempotency_key="executor-report-0001"),
+    )
+
+    assert response.status_code == 409

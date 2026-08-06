@@ -147,7 +147,7 @@ def load_settings() -> ServiceSettings:
         raise ValueError("ORCH_EXECUTOR_API_TOKEN and ORCH_API_TOKEN must differ.")
     if llm_backend == "codex_runner" and codex_runner_token == api_token:
         raise ValueError("ORCH_API_TOKEN and ORCH_RUNNER_TOKEN must differ.")
-    if llm_backend == "codex_runner" and codex_runner_token == executor_api_token:
+    if codex_runner_token is not None and codex_runner_token == executor_api_token:
         raise ValueError("ORCH_EXECUTOR_API_TOKEN and ORCH_RUNNER_TOKEN must differ.")
     database_connect_timeout_sec = _positive_env_int("ORCH_DB_CONNECT_TIMEOUT_SEC", 10)
 
