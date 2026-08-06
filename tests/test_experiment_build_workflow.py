@@ -143,3 +143,80 @@ def test_decide_job_publishes_the_dependency_decision() -> None:
     assert outputs["dependencies_changed"] == (
         "${{ steps.diff.outputs.dependencies_changed }}"
     )
+
+
+def test_build_job_runs_only_when_dependencies_changed() -> None:
+    job = _workflow()["jobs"][BUILD_JOB_NAME]
+
+    assert job["needs"] == DECIDE_JOB_NAME
+    assert job["if"] == (
+        f"needs.{DECIDE_JOB_NAME}.outputs.dependencies_changed == 'true'"
+    )
+
+
+def test_build_job_uses_the_feast_dockerfile() -> None:
+    build = next(
+        step
+        for step in _steps(BUILD_JOB_NAME)
+        if step.get("uses", "").startswith("docker/build-push-action")
+    )
+
+    assert build["with"]["file"] == "Dockerfile.feast"
+    assert build["with"]["push"] is True
+    assert "VCS_REF=${{ inputs.candidate_sha }}" in build["with"]["build-args"]
+
+
+def test_experiment_tag_never_collides_with_the_prod_namespace() -> None:
+    text = _workflow_text()
+
+    assert "exp-${CANDIDATE_SHA}" in text
+    assert "sha-${SOURCE_SHA}" not in text
+    assert "sha-${CANDIDATE_SHA}" not in text
+
+
+def test_existing_tag_is_never_overwritten() -> None:
+    guard = _step_run(BUILD_JOB_NAME, "Refuse to overwrite")
+
+    assert "gcloud artifacts docker images describe" in guard
+    assert "exists=true" in guard
+    assert "exists=false" in guard
+
+    for step in _steps(BUILD_JOB_NAME):
+        if step.get("uses", "").startswith("docker/build-push-action"):
+            assert step["if"] == "steps.existing.outputs.exists == 'false'"
+
+
+def test_build_job_pushes_with_the_gar_pusher_identity() -> None:
+    auth = next(
+        step
+        for step in _steps(BUILD_JOB_NAME)
+        if step.get("uses", "").startswith("google-github-actions/auth")
+    )
+
+    assert auth["with"]["service_account"] == "${{ secrets.GAR_PUSHER_SA }}"
+
+
+def test_no_promotion_job_can_leak_the_experiment_image_to_prod() -> None:
+    text = _workflow_text()
+
+    assert "promote" not in text
+    assert "Autoresearch-airflow" not in text
+    assert "values.yaml" not in text
+
+
+def test_image_verification_matches_the_release_feast_contract() -> None:
+    verify = _step_run(BUILD_JOB_NAME, "Verify experiment image")
+
+    assert "sha256:[0-9a-f]{64}" in verify
+    assert "org.opencontainers.image.revision" in verify
+    assert "must run as a non-root user" in verify
+    for module in (
+        "feast",
+        "pyarrow",
+        "lightgbm",
+        "onnxmltools",
+        "onnxruntime",
+        "joblib",
+        "mlflow",
+    ):
+        assert module in verify

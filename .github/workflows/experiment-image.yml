@@ -120,3 +120,154 @@ jobs:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         shell: bash
         run: scripts/upload_code_archive.sh "$CANDIDATE_SHA"
+
+  build-experiment-feast-image:
+    name: build-experiment-feast-image
+    needs: decide
+    if: needs.decide.outputs.dependencies_changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout candidate source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 1
+
+      - name: Validate build configuration
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+          WIF_PROVIDER_ID: ${{ vars.WIF_PROVIDER_ID }}
+          GAR_PUSHER_SA: ${{ secrets.GAR_PUSHER_SA }}
+        shell: bash
+        run: |
+          for variable_name in \
+            GCP_PROJECT_ID GCP_REGION GAR_REPOSITORY \
+            WIF_PROVIDER_ID GAR_PUSHER_SA
+          do
+            if [[ -z "${!variable_name}" ]]; then
+              echo "::error::$variable_name is not configured"
+              exit 1
+            fi
+          done
+
+      - name: dev 환경 좌표 확인
+        uses: ./.github/actions/resolve-dev-environment
+        with:
+          configured_project_id: ${{ vars.GCP_PROJECT_ID }}
+          configured_region: ${{ vars.GCP_REGION }}
+
+      - name: Authenticate to GCP with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER_ID }}
+          service_account: ${{ secrets.GAR_PUSHER_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GAR
+        env:
+          GCP_REGION: ${{ vars.GCP_REGION }}
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Resolve experiment image reference
+        id: image
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: bash
+        run: |
+          image_uri="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/autoresearch-feast"
+          {
+            echo "uri=$image_uri"
+            echo "tag=${image_uri}:exp-${CANDIDATE_SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Refuse to overwrite an existing experiment tag
+        id: existing
+        env:
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+        shell: bash
+        run: |
+          if gcloud artifacts docker images describe "$IMAGE_TAG" --quiet >/dev/null 2>&1
+          then
+            echo "::notice::$IMAGE_TAG already exists; reusing it without rebuilding"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        if: steps.existing.outputs.exists == 'false'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push experiment feast image
+        id: build
+        if: steps.existing.outputs.exists == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.feast
+          push: true
+          build-args: |
+            VCS_REF=${{ inputs.candidate_sha }}
+          tags: ${{ steps.image.outputs.tag }}
+
+      - name: Verify experiment image
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: bash
+        run: |
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Build did not return a valid registry digest"
+            exit 1
+          fi
+
+          digest_ref="${IMAGE_URI}@${DIGEST}"
+          docker pull "$digest_ref"
+
+          image_revision="$(docker image inspect "$digest_ref" \
+            --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          if [[ "$image_revision" != "$CANDIDATE_SHA" ]]; then
+            echo "::error::OCI revision does not match candidate_sha"
+            exit 1
+          fi
+
+          image_user="$(docker image inspect "$digest_ref" --format '{{ .Config.User }}')"
+          if [[ -z "$image_user" || "$image_user" == "0" || "$image_user" == "root" ]]; then
+            echo "::error::Experiment feast image must run as a non-root user"
+            exit 1
+          fi
+
+          # release.yml의 feast verify와 같은 계약이다. 코드는 이미지에 없고 ENTRYPOINT가
+          # GCS 부트스트랩이므로 엔트리포인트를 우회해 baked venv만 검증한다.
+          docker run --rm --entrypoint python "$digest_ref" \
+            -c "import feast, pyarrow, lightgbm, onnxmltools, onnxruntime, joblib, mlflow"
+
+      - name: Write experiment image summary
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+          REUSED: ${{ steps.existing.outputs.exists }}
+        shell: bash
+        run: |
+          {
+            echo "## Experiment feast image"
+            echo
+            echo "- Candidate SHA: \`$CANDIDATE_SHA\`"
+            echo "- Experiment tag: \`$IMAGE_TAG\`"
+            echo "- Reused existing tag: \`$REUSED\`"
+            echo
+            echo "Experiment images never enter the prod namespace (\`sha-*\`)."
+          } >> "$GITHUB_STEP_SUMMARY"
