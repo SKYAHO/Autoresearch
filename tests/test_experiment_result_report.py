@@ -39,6 +39,30 @@ def test_outcome_maps_to_experiment_status(outcome: str, expected: str) -> None:
     assert target_status(_result(outcome)) == expected
 
 
+@pytest.mark.parametrize(
+    ("origin", "reason_codes"),
+    [
+        # HOLD 판정 — EvaluationReasonCode 출신
+        ("hold", ("primary_roc_auc_inconclusive",)),
+        # 판정 엔진을 부르지도 못한 검증 실패 — PairedExperimentReason 출신
+        ("validation_failure", ("missing_paired_run",)),
+    ],
+)
+def test_comparison_failed_maps_to_error_regardless_of_origin(
+    origin: str, reason_codes: tuple[str, ...]
+) -> None:
+    """comparison_failed의 두 원인 모두 ERROR로 간다.
+
+    두 원인은 reason_code 문자열만으로 기계적으로 갈라낼 수 없다(`seed_policy_mismatch`가
+    두 Enum 모두에 존재). 리포터가 다시 갈라내려는 변경이 들어오면 이 테스트가 깨진다.
+    """
+    result = _result("comparison_failed").model_copy(update={"reason_codes": reason_codes})
+
+    assert target_status(result) == STATUS_ERROR
+    # 구분 정보는 잃지 않고 스냅샷에 원본 그대로 실린다.
+    assert build_metric_snapshot(result)["reason_codes"] == list(reason_codes)
+
+
 def test_metric_snapshot_uses_contract_field_names() -> None:
     """#454 계약의 필드명을 그대로 옮긴다 — 이름을 새로 지으면 계약 변경이 조용히 통과한다."""
     snapshot = build_metric_snapshot(_result("comparison_passed"))
