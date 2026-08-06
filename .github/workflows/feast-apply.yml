@@ -1,10 +1,13 @@
 name: feast-apply
 
-# #346 이후 apply는 GHA 러너가 아니라 VPC 안의 GKE Job에서 실행된다. 러너는
-# VPC 밖이라 private Redis(PSC)에 닿지 못해 `full_scan_for_deletion: true`가
-# 요구하는 online store 삭제 스캔을 수행할 수 없기 때문이다. 이 워크플로우는
-# Job을 만들고 결과를 판정하는 역할만 한다. main은 prod, dev는 dev registry를
+# #561(구 #346) — apply는 셀프 호스티드 러너(feast-apply-dev/feast-apply-prod,
+# infra#541/#557/#558)에서 직접 실행된다. 이 러너는 VPC 안에서 돌아 private
+# Redis(PSC)에 닿으므로 `full_scan_for_deletion: true`가 요구하는 online store
+# 삭제 스캔을 러너 위에서 바로 수행할 수 있다. main은 prod, dev는 dev registry를
 # 반영하며, 소유 경계("registry apply는 GHA, materialize는 Airflow")는 그대로다.
+# GKE Job으로 apply를 우회하던 옛 경로(deploy/feast/apply-job.yaml,
+# Dockerfile.feast)는 롤백 여유로 저장소에 남아 있으나 이 워크플로우는 더 이상
+# 그 경로를 쓰지 않는다.
 
 on:
   push:
@@ -16,7 +19,6 @@ on:
       - feature_repo/redis_iam.py
       - feature_repo/bootstrap.py
       - feature_repo/env.py
-      - deploy/feast/apply-job.yaml
       - scripts/fetch_redis_ca.py
       # apply 후 검증 스크립트. 이게 빠져 있으면 게이트만 고친 커밋이 다음 정의 변경
       # 전까지 한 번도 실행되지 않는다.
@@ -46,22 +48,23 @@ jobs:
     name: Apply Feast feature definitions to registry
     # 브랜치 이름이 아니라 **환경 이름**을 고른다(#548). GitHub Environment 이름은
     # infra#424가 정한 prod/dev이고, main이라는 Environment는 비어 있다. 여기에
-    # github.ref_name을 그대로 넣으면 잡이 빈 Environment로 떠서 WIF provider·SA·
-    # namespace가 전부 저장소 수준 폴백으로 떨어지고, OIDC의 environment 클레임도
-    # main이 되어 attribute.environment/prod principalSet에 걸리지 않는다. 인증
-    # 스텝은 자격 파일만 쓰고 통과하므로 이 실패는 첫 gcloud 호출에서야 드러난다.
+    # github.ref_name을 그대로 넣으면 잡이 빈 Environment로 떠서 WIF provider·SA가
+    # 저장소 수준 폴백으로 떨어지고, OIDC의 environment 클레임도 main이 되어
+    # attribute.environment/prod principalSet에 걸리지 않는다. 인증 스텝은 자격
+    # 파일만 쓰고 통과하므로 이 실패는 첫 gcloud 호출에서야 드러난다.
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.ref_name == 'main' && 'prod' || 'dev') }}
-    runs-on: ubuntu-latest
+    # runs-on은 env 컨텍스트를 읽지 못해(잡 시작 전에 평가) 같은 식을 여기 한 번 더
+    # 적는다. 스케일셋 이름은 인프라 저장소
+    # deploy/actions-runner-scale-set-feast-{dev,prod}/values.yaml의
+    # runnerScaleSetName과 정확히 일치해야 한다(#561). ARC는 runs-on에 스케일셋
+    # 이름을 그대로 쓴다 — 배열 문법이 아니다.
+    runs-on: feast-apply-${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.ref_name == 'main' && 'prod' || 'dev') }}
     timeout-minutes: 40
     permissions:
       contents: read
       id-token: write
 
     env:
-      # infra#346이 확정한 전용 namespace/KSA 계약값. Job을 만들 수 있는 주체가
-      # feast-apply GSA로만 실행할 수 있도록 namespace를 분리했다.
-      FEAST_APPLY_NAMESPACE: ${{ vars.FEAST_APPLY_NAMESPACE || 'feast-apply' }}
-      FEAST_APPLY_SERVICE_ACCOUNT: ${{ vars.FEAST_APPLY_SERVICE_ACCOUNT || 'feast-apply' }}
       # prod/dev 환경 분리(#399). push는 main→prod/dev→dev로 고정하고 수동
       # dispatch만 입력값을 선택한다. `environment:` 키는 env 컨텍스트를 읽지 못해
       # 같은 식을 두 번 쓸 수밖에 없으므로, 두 값이 어긋나지 않도록
@@ -77,8 +80,6 @@ jobs:
         with:
           configured_project_id: ${{ vars.GCP_PROJECT_ID }}
           configured_region: ${{ vars.GCP_REGION }}
-          configured_cluster: ${{ vars.GKE_CLUSTER_NAME }}
-          configured_location: ${{ vars.GKE_LOCATION }}
 
       - name: Authenticate to GCP with Workload Identity Federation
         uses: google-github-actions/auth@v2
@@ -90,30 +91,22 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
 
       - name: Validate required configuration
-        # Redis 관련 값은 러너가 직접 쓰지 않고 Job env로 주입되지만, 누락되면
-        # Pod 안에서야 실패하므로 여기서 먼저 막는다.
         env:
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
           GCP_REGION: ${{ vars.GCP_REGION }}
-          GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
-          FEAST_IMAGE_TAG: ${{ vars.FEAST_IMAGE_TAG }}
-          GKE_CLUSTER_NAME: ${{ vars.GKE_CLUSTER_NAME }}
-          GKE_LOCATION: ${{ vars.GKE_LOCATION }}
           BQ_DATASET: ${{ vars.BQ_DATASET }}
           GCS_REGISTRY_PATH: ${{ vars.GCS_REGISTRY_PATH }}
           GCS_STAGING_LOCATION: ${{ vars.GCS_STAGING_LOCATION }}
           REDIS_HOST: ${{ vars.REDIS_HOST }}
           REDIS_PORT: ${{ vars.REDIS_PORT }}
           REDIS_CA_SECRET_ID: ${{ vars.REDIS_CA_SECRET_ID }}
-          CODE_ARTIFACTS_BUCKET: ${{ secrets.CODE_ARTIFACTS_BUCKET }}
           WIF_PROVIDER_ID: ${{ vars.WIF_PROVIDER_ID }}
         shell: bash
         run: |
           for variable_name in \
-            GCP_PROJECT_ID GCP_REGION GAR_REPOSITORY FEAST_IMAGE_TAG \
-            GKE_CLUSTER_NAME GKE_LOCATION BQ_DATASET GCS_REGISTRY_PATH \
+            GCP_PROJECT_ID GCP_REGION BQ_DATASET GCS_REGISTRY_PATH \
             GCS_STAGING_LOCATION REDIS_HOST REDIS_PORT REDIS_CA_SECRET_ID \
-            CODE_ARTIFACTS_BUCKET WIF_PROVIDER_ID
+            WIF_PROVIDER_ID
           do
             if [[ -z "${!variable_name}" ]]; then
               echo "::error::$variable_name is not configured"
@@ -131,12 +124,10 @@ jobs:
             exit 1
           fi
 
-      - name: Verify the environment credentials before waiting
-        # #548 의 실패는 "아카이브가 없다"가 아니라 "가장에 실패했다"였는데, 대기
-        # 루프의 메시지 매칭만으로는 이를 안전하게 가려낼 수 없다 — 삭제된 SA 를
-        # 가장하면 gcloud 가 `Not found; Gaia id not found for email ...` 을 내서
-        # 객체 없음과 문자열이 겹친다. 자격 확인은 루프 밖에서 한 번, 구조적으로
-        # 끝낸다. 토큰은 절대 로그로 흘리지 않는다.
+      - name: Verify the environment credentials
+        # #548 의 실패는 "apply 결과가 없다"가 아니라 "가장에 실패했다"였다. 자격
+        # 확인은 apply 를 실제로 돌리기 전에 구조적으로 끝낸다. 토큰은 절대
+        # 로그로 흘리지 않는다.
         shell: bash
         run: |
           if ! auth_error="$(gcloud auth print-access-token 2>&1 >/dev/null)"; then
@@ -145,40 +136,6 @@ jobs:
             exit 1
           fi
           echo "credentials ready for the ${AUTORESEARCH_ENV} environment"
-
-      - name: Wait for the code archive of this commit
-        # code-archive.yml과 이 워크플로우는 둘 다 main push에 트리거되고
-        # concurrency 그룹이 분리돼 병렬로 돈다. 아카이브 업로드를 기다리지
-        # 않으면 Job이 NotFound로 죽거나(SHA 고정), code/latest.txt를 통해
-        # 직전 커밋의 정의로 apply하고도 registry generation이 바뀌어 침묵
-        # 실패 가드를 통과해 버린다.
-        env:
-          CODE_ARTIFACTS_BUCKET: ${{ secrets.CODE_ARTIFACTS_BUCKET }}
-          CODE_ARCHIVE_SHA: ${{ github.sha }}
-        shell: bash
-        run: |
-          archive_uri="gs://${CODE_ARTIFACTS_BUCKET}/code/${CODE_ARCHIVE_SHA}.tar.gz"
-          for _ in $(seq 1 60); do
-            # stderr 를 버리면 권한 실패와 "아직 업로드 전"이 같아 보인다. #548 에서
-            # 실제로 잘못된 Environment 로 뜬 잡이 인증 실패를 10분간 "아카이브가
-            # 없다"로 오인 보고했다. 재시도는 gcloud 가 객체 미존재에만 쓰는
-            # `<uri> not found: 404.` 형태에 한정한다 — `Not found; Gaia id not found`
-            # (삭제된 SA 가장) 같은 자격 오류가 여기로 새면 같은 오인이 되풀이된다.
-            # 자격 자체는 위 스텝이 이미 확인했고, 이 매칭은 그 위의 방어선이다.
-            if lookup_error="$(gcloud storage objects describe "$archive_uri" 2>&1 >/dev/null)"; then
-              echo "code archive ready: $archive_uri"
-              exit 0
-            fi
-            if ! grep -qiE 'not found: 404' <<<"$lookup_error"; then
-              echo "$lookup_error"
-              echo "::error::code archive lookup failed for a reason other than a missing object — see the gcloud error above"
-              exit 1
-            fi
-            sleep 10
-          done
-          echo "::error::code archive not found after 10m: $archive_uri"
-          echo "::error::run the 'Code archive upload' workflow for this commit first"
-          exit 1
 
       - name: Record registry generation before apply
         id: before
@@ -190,148 +147,63 @@ jobs:
             --format='value(generation)' 2>/dev/null || true)"
           echo "generation=$generation" >> "$GITHUB_OUTPUT"
 
-      - name: Get GKE credentials
-        # 컨트롤 플레인은 공개 DNS 엔드포인트 + IAM으로 검증되므로 VPC 밖에서도
-        # Job 생성이 가능하다. VPC 안이어야 하는 것은 Redis 데이터 경로뿐이다.
-        uses: google-github-actions/get-gke-credentials@v2
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
         with:
-          cluster_name: ${{ vars.GKE_CLUSTER_NAME }}
-          location: ${{ vars.GKE_LOCATION }}
-          use_dns_based_endpoint: true
+          version: "0.11.26"
+          python-version: "3.12"
+          enable-cache: true
 
-      - name: Render Job manifest
-        id: manifest
+      - name: Install feast dependency group
+        # feast 그룹은 dev 그룹과 충돌하므로 --no-dev 로 격리 설치한다(ci.yml과 동일).
+        # 아래 apply 스텝과 뒤쪽 registry 검증 스텝이 이 설치를 함께 재사용한다.
+        run: uv sync --frozen --no-dev --group feast
+
+      - name: Fetch Redis CA and run feast apply
+        # deploy/feast/apply-job.yaml이 GKE Job 컨테이너 안에서 하던 일(CA 조달 →
+        # feature_repo로 이동 → feast apply)을 러너 위에서 그대로 실행한다. 환경
+        # 변수 이름은 feature_store.yaml의 ${VAR} 치환이 그대로 읽도록 옛 Job의
+        # env 이름과 완전히 동일하게 맞춘다(#561).
         env:
-          FEAST_IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/autoresearch-feast:${{ vars.FEAST_IMAGE_TAG }}
-          CODE_ARCHIVE_SHA: ${{ github.sha }}
+          # feature_store.yaml의 online_store.type이
+          # feature_repo.redis_iam.IAMRedisOnlineStore라 체크아웃 루트가 import
+          # 경로에 있어야 한다.
+          PYTHONPATH: ${{ github.workspace }}
           GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          # feast GCS registry의 storage.Client()가 프로젝트를 추론하도록 명시.
+          GOOGLE_CLOUD_PROJECT: ${{ vars.GCP_PROJECT_ID }}
           BQ_DATASET: ${{ vars.BQ_DATASET }}
           GCS_REGISTRY_PATH: ${{ vars.GCS_REGISTRY_PATH }}
           GCS_STAGING_LOCATION: ${{ vars.GCS_STAGING_LOCATION }}
           REDIS_HOST: ${{ vars.REDIS_HOST }}
           REDIS_PORT: ${{ vars.REDIS_PORT }}
           REDIS_CA_SECRET_ID: ${{ vars.REDIS_CA_SECRET_ID }}
-          CODE_ARTIFACTS_BUCKET: ${{ secrets.CODE_ARTIFACTS_BUCKET }}
-          # AUTORESEARCH_ENV 는 잡 수준 env 가 준다(#548). FEAST_ONLINE_FULL_SCAN_FOR_DELETION 은
-          # feature_repo/env.py 의 파생 규칙과 동일하게 계산한다(prod=true, dev=false).
-          # dev=false 면 apply 가 Redis 에 접속하지 않아 dev registry apply 가 prod Redis 를
-          # 건드리지 않는다.
+          # 위 fetch_redis_ca.py가 쓰는 경로와 같아야 한다.
+          REDIS_TLS_CA_PATH: /tmp/redis-ca.pem
         shell: bash
         run: |
-          # Job 이름은 63자 제한이 있어 커밋 SHA 앞 12자만 쓴다.
-          FEAST_APPLY_JOB_NAME="feast-apply-${CODE_ARCHIVE_SHA:0:12}"
-          export FEAST_APPLY_JOB_NAME
-          # env.py 의 파생 규칙을 그대로 재현한다(prod=true, dev=false).
+          # prod/dev 환경 분리(#399). bare `feast apply`는 bootstrap.py를 거치지
+          # 않으므로 feature_store.yaml의 ${FEAST_ONLINE_FULL_SCAN_FOR_DELETION}
+          # 치환을 위해 이 스텝이 값을 직접 주입한다. feature_repo/env.py 의 파생
+          # 규칙(prod=true, dev=false)을 그대로 재현한다. dev=false 면 apply 가
+          # Redis 에 접속하지 않아 dev registry apply 가 prod Redis 를 건드리지
+          # 않는다.
           if [[ "$AUTORESEARCH_ENV" == "dev" ]]; then
             FEAST_ONLINE_FULL_SCAN_FOR_DELETION="false"
           else
             FEAST_ONLINE_FULL_SCAN_FOR_DELETION="true"
           fi
           export FEAST_ONLINE_FULL_SCAN_FOR_DELETION
-          envsubst '
-            ${FEAST_APPLY_JOB_NAME} ${FEAST_APPLY_NAMESPACE}
-            ${FEAST_APPLY_SERVICE_ACCOUNT} ${FEAST_IMAGE}
-            ${CODE_ARTIFACTS_BUCKET} ${CODE_ARCHIVE_SHA} ${GCP_PROJECT_ID}
-            ${BQ_DATASET} ${GCS_REGISTRY_PATH} ${GCS_STAGING_LOCATION}
-            ${REDIS_HOST} ${REDIS_PORT} ${REDIS_CA_SECRET_ID}
-            ${AUTORESEARCH_ENV} ${FEAST_ONLINE_FULL_SCAN_FOR_DELETION}
-          ' < deploy/feast/apply-job.yaml > job.yaml
-          if grep -n '\${' job.yaml; then
-            echo "::error::unresolved placeholder in the rendered Job manifest"
-            exit 1
-          fi
-          echo "job_name=$FEAST_APPLY_JOB_NAME" >> "$GITHUB_OUTPUT"
-          cat job.yaml
-
-      - name: Recreate Job
-        # Job spec은 대부분 immutable이라 kubectl apply로 갱신할 수 없다.
-        # infra#346의 RBAC도 delete/create 전제로 부여돼 있다.
-        env:
-          JOB_NAME: ${{ steps.manifest.outputs.job_name }}
-        shell: bash
-        run: |
-          kubectl delete job "$JOB_NAME" -n "$FEAST_APPLY_NAMESPACE" \
-            --ignore-not-found --wait=true --timeout=120s
-          kubectl create -f job.yaml
-
-      - name: Wait for Job result
-        id: wait
-        # kubectl wait --for=condition=complete는 실패 시 조건이 서지 않아
-        # 타임아웃까지 대기하고 원인을 "timeout"으로 오인시킨다. complete와
-        # failed 양쪽을 함께 본다.
-        env:
-          JOB_NAME: ${{ steps.manifest.outputs.job_name }}
-        shell: bash
-        run: |
-          # Job의 activeDeadlineSeconds(1500)보다 길게 잡아, 멈춘 Job이 GHA
-          # 타임아웃이 아니라 Job Failed 조건으로 판정되게 한다.
-          deadline=$((SECONDS + 1620))
-          result="timeout"
-          while (( SECONDS < deadline )); do
-            complete="$(kubectl get job "$JOB_NAME" -n "$FEAST_APPLY_NAMESPACE" \
-              -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' || true)"
-            failed="$(kubectl get job "$JOB_NAME" -n "$FEAST_APPLY_NAMESPACE" \
-              -o jsonpath='{.status.conditions[?(@.type=="Failed")].status}' || true)"
-            if [[ "$complete" == "True" ]]; then
-              result="complete"
-              break
-            fi
-            if [[ "$failed" == "True" ]]; then
-              result="failed"
-              break
-            fi
-            sleep 10
-          done
-          echo "result=$result" >> "$GITHUB_OUTPUT"
-          echo "job result: $result"
-
-      - name: Collect Job logs
-        if: always()
-        # 이미지 풀·스케줄 실패로 로그가 비는 경우가 있으므로 실패를 허용한다.
-        env:
-          JOB_NAME: ${{ steps.manifest.outputs.job_name }}
-        shell: bash
-        run: |
-          kubectl logs "job/$JOB_NAME" -n "$FEAST_APPLY_NAMESPACE" \
-            --all-containers --tail=-1 | tee apply.log || true
-          touch apply.log
-
-      - name: Describe Job on failure
-        if: always() && steps.wait.outputs.result != 'complete'
-        env:
-          JOB_NAME: ${{ steps.manifest.outputs.job_name }}
-        shell: bash
-        run: |
-          kubectl describe "job/$JOB_NAME" -n "$FEAST_APPLY_NAMESPACE" || true
-          kubectl describe pods -n "$FEAST_APPLY_NAMESPACE" \
-            -l "job-name=$JOB_NAME" || true
-
-      - name: Guard against Job failure
-        env:
-          RESULT: ${{ steps.wait.outputs.result }}
-        shell: bash
-        run: |
-          if [[ "$RESULT" != "complete" ]]; then
-            echo "::error::feast apply Job did not complete (result=$RESULT)"
-            exit 1
-          fi
-
-      - name: Guard against wrong code version (bootstrap marker)
-        # Pod 실행 모드에서는 부트스트랩·Workload Identity 실패가 exit 2로
-        # 드러나 위 Job 결과 가드가 잡는다. 여기서 남는 위험은 "성공했지만
-        # 다른 커밋의 정의를 apply한" 경우이므로, 실행된 코드 버전을 단언한다.
-        env:
-          CODE_ARCHIVE_SHA: ${{ github.sha }}
-        shell: bash
-        run: |
-          if ! grep -qF "[gcs-bootstrap] code: ${CODE_ARCHIVE_SHA}" apply.log; then
-            echo "::error::Job did not run the code archive of ${CODE_ARCHIVE_SHA}"
-            exit 1
-          fi
+          # feast 공식 CLI에는 TLS CA 조달 훅이 없어 apply 직전에 내려받는다.
+          python scripts/fetch_redis_ca.py "$REDIS_TLS_CA_PATH"
+          cd feature_repo
+          # --log-level debug가 없으면 기본값 warning이라 삭제 건수 로그
+          # (feast redis.py의 logger.debug)가 남지 않아 삭제 경로를 검증할 수 없다.
+          uv run --no-sync feast --log-level debug apply 2>&1 | tee ../apply.log
 
       - name: Guard against silent apply failure (log pattern)
         # feast 0.64 CLI는 FeastProviderLoginError를 삼키고 exit 0으로 끝난다.
-        # Job이 성공으로 끝나도 이 패턴이 있으면 apply가 실제로는 실패한 것이다.
+        # 위 스텝이 성공으로 끝나도 이 패턴이 있으면 apply가 실제로는 실패한 것이다.
         shell: bash
         run: |
           if grep -E 'application-default login|GCP error:' apply.log; then
@@ -357,17 +229,6 @@ jobs:
       # 그대로여서 학습이 계속 깨진 사례가 실제로 있었다. feast의 변경 감지가
       # (udf_string, 바이트코드)만 보기 때문에 헬퍼의 소속 모듈 변경을 놓친 것이라,
       # 정의 파일 쪽 가드로는 못 막고 **결과물을 읽어봐야만** 드러난다.
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.26"
-          python-version: "3.12"
-          enable-cache: true
-
-      - name: Install feast group for registry verification
-        # feast 그룹은 dev 그룹과 충돌하므로 --no-dev 로 격리 설치한다(ci.yml과 동일).
-        run: uv sync --frozen --no-dev --group feast
-
       - name: Verify the applied registry loads in the consumer import path
         env:
           GCS_REGISTRY_PATH: ${{ vars.GCS_REGISTRY_PATH }}

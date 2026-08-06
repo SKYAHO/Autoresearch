@@ -42,6 +42,18 @@ runs:
         sparse-checkout: |
           config/environments/dev/environment.yaml
           scripts/environment_catalog.rb
+    - name: ruby 사용 가능 여부 확인
+      # 다음 스텝이 environment_catalog.rb를 ruby로 직접 실행한다. hosted
+      # runner(ubuntu-latest)에는 ruby가 기본 포함이지만, ARC 셀프 호스티드
+      # 러너(feast-apply-*, #561)의 기본 이미지(ghcr.io/actions/actions-runner)는
+      # 최소 구성이라 보장되지 않는다 — 없을 때만 설치해 hosted runner에서는
+      # 아무 일도 하지 않는다.
+      shell: bash
+      run: |
+        if ! command -v ruby >/dev/null 2>&1; then
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ruby
+        fi
     - name: dev 환경 좌표 대조
       id: resolve
       shell: bash

@@ -67,8 +67,8 @@ def download_redis_ca_bundle(
 
     ``ensure_redis_ca_bundle``은 임시 파일 경로를 호출 프로세스의 env에만
     심으므로, CA 조달과 ``feast`` 실행이 서로 다른 프로세스로 나뉘는 경우
-    (GKE Job에서 CA를 먼저 받고 feast CLI를 실행하는 경로)에는 쓸 수 없다.
-    이 함수는 호출자가 지정한 고정 경로에 써서 후속 프로세스가
+    (``feast-apply.yml``이 CA를 먼저 받고 feast CLI를 실행하는 경로, #561)에는
+    쓸 수 없다. 이 함수는 호출자가 지정한 고정 경로에 써서 후속 프로세스가
     ``REDIS_TLS_CA_PATH``로 같은 파일을 가리킬 수 있게 한다.
     """
     env = os.environ if environment is None else environment
