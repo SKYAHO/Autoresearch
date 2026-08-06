@@ -519,6 +519,8 @@ def test_finalize_rejects_push_race_without_replacing_remote_ref(
     subprocess.run(
         ("git", "clone", remote.as_uri(), str(racer)), check=True, capture_output=True
     )
+    _git(racer, "config", "user.name", "Finalizer race test")
+    _git(racer, "config", "user.email", "finalizer-race@example.invalid")
     _git(racer, "switch", _ISSUE_BRANCH)
     (racer / "autoresearch" / "candidate.py").write_text(
         "VALUE = 88\n", encoding="utf-8"
@@ -561,6 +563,8 @@ def test_finalize_rechecks_remote_before_commit_without_local_or_api_side_effect
     subprocess.run(
         ("git", "clone", remote.as_uri(), str(racer)), check=True, capture_output=True
     )
+    _git(racer, "config", "user.name", "Finalizer race test")
+    _git(racer, "config", "user.email", "finalizer-race@example.invalid")
     _git(racer, "switch", _ISSUE_BRANCH)
     (racer / "autoresearch" / "candidate.py").write_text(
         "VALUE = 88\n", encoding="utf-8"
