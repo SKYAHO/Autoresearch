@@ -214,25 +214,31 @@ jobs:
             echo "tag=${image_uri}:exp-${CANDIDATE_SHA}"
           } >> "$GITHUB_OUTPUT"
 
+      # 태그 유무는 gcloud 오류 문구가 아니라 종료 코드와 출력 유무로만 판별한다.
+      # 문구는 gcloud 판마다 다르고, 매칭이 어긋나면 모든 신규 candidate의 첫 빌드가
+      # 실패한다. list는 태그가 없어도 0으로 끝나므로 세 상태가 깔끔하게 갈린다.
       - name: Refuse to overwrite an existing experiment tag
         id: existing
         env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
           IMAGE_TAG: ${{ steps.image.outputs.tag }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         shell: bash
         run: |
           set +e
-          describe_output="$(gcloud artifacts docker images describe "$IMAGE_TAG" --quiet 2>&1)"
-          describe_status=$?
+          matches="$(gcloud artifacts docker images list "$IMAGE_URI" \
+            --include-tags --filter="tags:exp-${CANDIDATE_SHA}" --format='value(version)')"
+          list_status=$?
           set -e
 
-          if [[ "$describe_status" -eq 0 ]]; then
+          if [[ "$list_status" -ne 0 ]]; then
+            echo "::error::Could not determine whether $IMAGE_TAG exists (gcloud exited $list_status)"
+            exit 1
+          elif [[ -n "$matches" ]]; then
             echo "::notice::$IMAGE_TAG already exists; reusing it without rebuilding"
             echo "exists=true" >> "$GITHUB_OUTPUT"
-          elif grep -qiE 'not found|NOT_FOUND' <<< "$describe_output"; then
-            echo "exists=false" >> "$GITHUB_OUTPUT"
           else
-            echo "::error::Could not determine whether $IMAGE_TAG exists (gcloud exited $describe_status)"
-            exit 1
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Set up Docker Buildx

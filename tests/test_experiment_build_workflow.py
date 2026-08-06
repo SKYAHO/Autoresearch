@@ -230,7 +230,9 @@ def test_experiment_tag_never_collides_with_the_prod_namespace() -> None:
 def test_existing_tag_is_never_overwritten() -> None:
     guard = _step_run(BUILD_JOB_NAME, "Refuse to overwrite")
 
-    assert "gcloud artifacts docker images describe" in guard
+    assert "gcloud artifacts docker images list" in guard
+    assert "--include-tags" in guard
+    assert "tags:exp-${CANDIDATE_SHA}" in guard
     assert "exists=true" in guard
     assert "exists=false" in guard
 
@@ -239,30 +241,57 @@ def test_existing_tag_is_never_overwritten() -> None:
             assert step["if"] == "steps.existing.outputs.exists == 'false'"
 
 
-def test_existing_tag_check_fails_closed_on_indeterminate_gcloud_error() -> None:
-    """`gcloud describe`가 만료된 WIF 자격증명·권한 거부·일시적 네트워크 오류처럼
+def test_existing_tag_check_is_decided_by_exit_code_not_by_gcloud_prose() -> None:
+    """태그 유무 판별이 gcloud 오류 문구 매칭에 기대면 안 된다.
 
-    '태그 없음'과 무관한 이유로 실패하면 exists=false로 넘어가지 않고 스텝
-    자체를 실패시켜야 한다 (fail-closed). 예전의 단순 if/else 2분기(모든
-    비정상 종료를 exists=false로 뭉갬)로 되돌리면 이 테스트가 깨진다.
+    `describe`의 실패 문구는 gcloud 판마다 다르고(`Image not found`, `NOT_FOUND`,
+    `Failed to describe image` …), 매칭이 어긋나면 신규 candidate의 첫 빌드가 전부
+    실패한다. 종료 코드와 출력 유무만으로 판별하도록 고정한다.
+    """
+    guard = _step_run(BUILD_JOB_NAME, "Refuse to overwrite")
+
+    assert "gcloud artifacts docker images describe" not in guard
+    assert "not found" not in guard.lower()
+    assert "grep" not in guard
+
+    # 종료 코드를 읽으려면 errexit를 잠시 꺼야 한다.
+    assert "set +e" in guard
+    assert "set -e" in guard
+    assert "list_status=$?" in guard
+
+
+def test_existing_tag_check_fails_closed_on_indeterminate_gcloud_error() -> None:
+    """gcloud 자체가 실패하면(만료된 WIF 자격증명·권한 거부·네트워크 오류) exists를
+
+    쓰지 않고 스텝을 실패시켜야 한다 (fail-closed). 판별 불가를 exists=false로
+    흘리는 2분기 fail-open 형태로 되돌리면 이 테스트가 깨진다.
     """
     guard = _step_run(BUILD_JOB_NAME, "Refuse to overwrite")
 
     assert "elif" in guard
-    assert "not found" in guard.lower()
     assert "::error::" in guard
     assert "exit 1" in guard
 
-    not_found_index = guard.lower().index("not found")
-    exists_false_index = guard.index("exists=false")
-    error_index = guard.index("::error::")
-    exit_index = guard.rindex("exit 1")
+    # 세 갈래여야 한다: 판별 불가(exit 1) / 태그 있음 / 태그 없음.
+    assert guard.count("exists=true") == 1
+    assert guard.count("exists=false") == 1
 
-    # exists=false는 'not found' 매칭 분기 안에서만 설정되고, 판별 불가 분기는
-    # exists 출력을 남기지 않은 채 ::error:: 뒤에 exit 1로 실패해야 한다.
-    assert not_found_index < exists_false_index
-    assert error_index < exit_index
-    assert exit_index > exists_false_index
+    status_index = guard.index('"$list_status" -ne 0')
+    error_index = guard.index("::error::")
+    exit_index = guard.index("exit 1")
+    exists_true_index = guard.index("exists=true")
+    exists_false_index = guard.index("exists=false")
+
+    # 판별 불가 분기가 맨 앞에서 exists 출력 없이 실패하고, 나머지 두 분기만
+    # exists를 남긴다.
+    assert status_index < error_index < exit_index
+    assert exit_index < exists_true_index < exists_false_index
+
+
+def test_existing_tag_check_keeps_the_reuse_notice() -> None:
+    guard = _step_run(BUILD_JOB_NAME, "Refuse to overwrite")
+
+    assert "::notice::$IMAGE_TAG already exists; reusing it without rebuilding" in guard
 
 
 def test_build_job_pushes_with_the_gar_pusher_identity() -> None:
