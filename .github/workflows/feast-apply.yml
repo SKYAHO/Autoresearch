@@ -195,7 +195,9 @@ jobs:
           fi
           export FEAST_ONLINE_FULL_SCAN_FOR_DELETION
           # feast 공식 CLI에는 TLS CA 조달 훅이 없어 apply 직전에 내려받는다.
-          python scripts/fetch_redis_ca.py "$REDIS_TLS_CA_PATH"
+          # google-cloud-secret-manager 는 uv 프로젝트 의존성이라 러너의 system
+          # python 에는 없다 — bare python 이면 ModuleNotFoundError.
+          uv run --no-sync python scripts/fetch_redis_ca.py "$REDIS_TLS_CA_PATH"
           cd feature_repo
           # --log-level debug가 없으면 기본값 warning이라 삭제 건수 로그
           # (feast redis.py의 logger.debug)가 남지 않아 삭제 경로를 검증할 수 없다.

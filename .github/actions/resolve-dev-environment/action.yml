@@ -41,21 +41,16 @@ runs:
         persist-credentials: false
         sparse-checkout: |
           config/environments/dev/environment.yaml
-          scripts/environment_catalog.rb
-    - name: ruby 사용 가능 여부 확인
-      # 다음 스텝이 environment_catalog.rb를 ruby로 직접 실행한다. hosted
-      # runner(ubuntu-latest)에는 ruby가 기본 포함이지만, ARC 셀프 호스티드
-      # 러너(feast-apply-*, #561)의 기본 이미지(ghcr.io/actions/actions-runner)는
-      # 최소 구성이라 보장되지 않는다 — 없을 때만 설치해 hosted runner에서는
-      # 아무 일도 하지 않는다.
-      shell: bash
-      run: |
-        if ! command -v ruby >/dev/null 2>&1; then
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ruby
-        fi
     - name: dev 환경 좌표 대조
       id: resolve
+      # environment_catalog.rb(ruby)는 여기서 쓰지 않는다. ARC 셀프 호스티드
+      # 러너(feast-apply-*, #561) 기본 이미지(ghcr.io/actions/actions-runner)에는
+      # ruby가 없고, apt 미러(ports.ubuntu.com:80)는 이 러너의 egress
+      # NetworkPolicy가 막는다(허용은 GCP 메타데이터 서버 80과 공인 IP 443뿐,
+      # 인프라 저장소 terraform/admin/actions-runner-k8s/main.tf 확인) — 즉
+      # apt-get install ruby는 매 apply마다 조용히 멈춘다. 이 스텝이 읽는 필드는
+      # gcp.project_id/region/zone, gke.cluster_name 4개뿐이고 카탈로그는
+      # 2단계 중첩 flat YAML이라, awk로 직접 뽑아 ruby 의존 자체를 없앤다.
       shell: bash
       env:
         CONFIGURED_PROJECT_ID: ${{ inputs.configured_project_id }}
@@ -65,8 +60,20 @@ runs:
       run: |
         set -euo pipefail
         catalog='.environment-catalog/config/environments/dev/environment.yaml'
-        resolver='.environment-catalog/scripts/environment_catalog.rb'
-        resolve() { ruby "$resolver" --catalog "$catalog" --field "$1"; }
+        resolve() {
+          local section="${1%%.*}" key="${1#*.}"
+          awk -v section="$section" -v key="$key" '
+            $0 == section":" { in_section=1; next }
+            in_section && /^[^ ]/ { in_section=0 }
+            in_section && $1 == key":" {
+              sub("^[ \t]*" key ":[ \t]*", "");
+              print;
+              found=1;
+              exit
+            }
+            END { if (!found) exit 1 }
+          ' "$catalog"
+        }
         project_id="$(resolve gcp.project_id)"
         region="$(resolve gcp.region)"
         zone="$(resolve gcp.zone)"

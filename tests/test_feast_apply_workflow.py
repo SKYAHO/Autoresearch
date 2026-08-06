@@ -35,9 +35,10 @@ CODE_ARCHIVE_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "code-archiv
 _DERIVATION_START = 'if [[ "$AUTORESEARCH_ENV" == "dev" ]]'
 _APPLY_STEP = "Fetch Redis CA and run feast apply"
 
-# `environment:` 키는 env 컨텍스트를 읽지 못해 같은 식을 잡 수준 env 에도 한 번 더
-# 적어야 한다. 두 사본이 어긋나면 Job 매니페스트의 AUTORESEARCH_ENV 와 실제 잡이
-# 뜬 Environment 가 달라지므로, 문자열 동일성을 계약으로 고정한다.
+# `environment:` 키는 env 컨텍스트를 읽지 못해 같은 식을 잡 수준 env 와 runs-on
+# 에도 각각 한 번 더 적어야 한다(세 사본). 어긋나면 Job 매니페스트의
+# AUTORESEARCH_ENV 나 실제로 뜬 러너 스케일셋이 Environment 와 달라지므로, 문자열
+# 동일성을 계약으로 고정한다.
 ENVIRONMENT_EXPRESSION = (
     "${{ github.event_name == 'workflow_dispatch' && inputs.environment "
     "|| (github.ref_name == 'main' && 'prod' || 'dev') }}"
@@ -146,6 +147,13 @@ def test_job_environment_and_autoresearch_env_stay_in_sync() -> None:
 
     assert job["environment"] == ENVIRONMENT_EXPRESSION
     assert job["env"]["AUTORESEARCH_ENV"] == ENVIRONMENT_EXPRESSION
+
+
+def test_runs_on_targets_the_scale_set_of_the_same_environment() -> None:
+    # `runs-on` 은 env 컨텍스트를 읽지 못해 같은 식의 세 번째 사본이다. 여기만
+    # 어긋나면 prod Environment 로 뜬 잡이 dev 스케일셋에서 돌거나, 매칭되는
+    # 러너가 없어 큐에서 무한 대기한다.
+    assert _apply_job()["runs-on"] == f"feast-apply-{ENVIRONMENT_EXPRESSION}"
 
 
 def test_code_archive_uploads_dev_commit_for_dev_feast_apply() -> None:

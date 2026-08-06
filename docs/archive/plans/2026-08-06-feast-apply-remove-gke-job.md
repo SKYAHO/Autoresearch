@@ -1,18 +1,18 @@
 # `feast-apply.yml` GKE Job 제거 — 구현 계획 (#561)
 
-정본 계약: `docs/specs/2026-08-06-feast-apply-remove-gke-job.md`
+정본 계약: `docs/archive/specs/2026-08-06-feast-apply-remove-gke-job.md`
 
 ## 범위 상태
 
 | Task | 상태 |
 | --- | --- |
-| T1. `runs-on` + 환경 표현식 전환 | 미착수 |
-| T2. GCS 부트스트랩 의존 스텝 제거 | 미착수 |
-| T3. feast 설치 스텝 재배치 | 미착수 |
-| T4. 직접 실행 스텝 추가(CA 조달 + apply) | 미착수 |
-| T5. 3개 침묵 실패 가드 재배선 | 미착수 |
-| T6. 문서 갱신 (`docs/TERRAFORM_DEV.md` 등) | 미착수 |
-| T7. dev/prod 각 1회 실행 검증 | 미착수(구현 PR에서 수행, 이 plan PR 범위 아님) |
+| T1. `runs-on` + 환경 표현식 전환 | 완료 |
+| T2. GCS 부트스트랩 의존 스텝 제거 | 완료 |
+| T3. feast 설치 스텝 재배치 | 완료 |
+| T4. 직접 실행 스텝 추가(CA 조달 + apply) | 완료 |
+| T5. 3개 침묵 실패 가드 재배선 | 완료 |
+| T6. 문서 갱신 (`docs/guides/feast-gcp-setup.md` 등) | 완료 |
+| T7. dev/prod 각 1회 실행 검증 | 미착수 — merge 후 첫 실행에서 확인 |
 
 ## 미해결 — 착수 전/중 확정
 
@@ -197,15 +197,15 @@ ruby 없음) T1 착수 전에 별도 이슈로 (a) 러너 이미지에 ruby 추�
 ## 전체 검증
 
 ```bash
-cd /Users/buzz/Desktop/Autoresearch
 git diff --check
 # actionlint가 로컬에 있으면
 actionlint .github/workflows/feast-apply.yml
 ```
 
-이 plan-doc PR 자체는 `.github/workflows/feast-apply.yml`을 아직 수정하지
-않으므로(문서만 추가) 위 명령은 **구현 PR** 단계에서 실행한다. plan-doc
-PR에서는 신규 마크다운 2개 파일의 `git diff --check`만으로 충분하다.
+**#561 구현·검증까지 이 PR(#562)에서 완료했다** — 애초 "구현은 별도 PR"이라던
+계획을 사용자 지시로 뒤집어 같은 PR에서 진행했다. 위 검증(actionlint,
+`pytest tests/test_feast_apply_workflow.py`, ruff, `git diff --check`)은
+모두 이 PR 범위에서 실행·통과했다.
 
 구현 PR 완료 조건(정본 계약과 동일, 재기재):
 - dev push 또는 `workflow_dispatch`로 1회 성공.
