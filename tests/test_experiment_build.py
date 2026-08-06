@@ -13,8 +13,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 
+import httpx
 import pytest
 
 from agent_orchestration.experiment_build.config import (
@@ -31,7 +33,11 @@ from agent_orchestration.experiment_build.service import (
     resolve_candidate_runtime,
     run_display_title,
 )
-from agent_orchestration.experiment_build.workflows import WorkflowRun
+from agent_orchestration.experiment_build.workflows import (
+    GitHubWorkflowRuns,
+    WorkflowRun,
+    WorkflowRunError,
+)
 
 
 CANDIDATE_SHA = "c" * 40
@@ -262,3 +268,158 @@ def test_invalid_sha_is_rejected_before_any_call(candidate: str, base: str) -> N
 
     assert workflows.find_calls == []
     assert workflows.dispatch_calls == []
+
+
+def _run_payload(display_title: str, run_id: int, created_at: str) -> dict:
+    """workflow runs 목록 응답의 run 한 건을 만든다."""
+    return {
+        "id": run_id,
+        "display_title": display_title,
+        "status": "completed",
+        "conclusion": "success",
+        "created_at": created_at,
+    }
+
+
+def test_find_run_matches_display_title_and_prefers_the_newest() -> None:
+    title = run_display_title(CANDIDATE_SHA)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "workflow_runs": [
+                    _run_payload("experiment-image " + "a" * 40, 1, "2026-08-06T00:00:00Z"),
+                    _run_payload(title, 2, "2026-08-06T01:00:00Z"),
+                    _run_payload(title, 3, "2026-08-06T03:00:00Z"),
+                ]
+            },
+        )
+
+    client = GitHubWorkflowRuns(transport=httpx.MockTransport(handler))
+
+    result = asyncio.run(
+        client.find_run(
+            repository="SKYAHO/Autoresearch",
+            workflow_file="experiment-image.yml",
+            display_title=title,
+            token="token",
+        )
+    )
+
+    assert result == WorkflowRun(run_id=3, status="completed", conclusion="success")
+    assert requests[0].url.path == (
+        "/repos/SKYAHO/Autoresearch/actions/workflows/experiment-image.yml/runs"
+    )
+    assert requests[0].url.params["event"] == "workflow_dispatch"
+    assert requests[0].headers["Authorization"] == "Bearer token"
+
+
+def test_find_run_returns_none_when_no_title_matches() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"workflow_runs": []})
+
+    client = GitHubWorkflowRuns(transport=httpx.MockTransport(handler))
+
+    result = asyncio.run(
+        client.find_run(
+            repository="SKYAHO/Autoresearch",
+            workflow_file="experiment-image.yml",
+            display_title=run_display_title(CANDIDATE_SHA),
+            token="token",
+        )
+    )
+
+    assert result is None
+
+
+def test_dispatch_posts_inputs_and_ref() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(204)
+
+    client = GitHubWorkflowRuns(transport=httpx.MockTransport(handler))
+
+    asyncio.run(
+        client.dispatch(
+            repository="SKYAHO/Autoresearch",
+            workflow_file="experiment-image.yml",
+            ref="main",
+            inputs={"base_dev_sha": BASE_DEV_SHA, "candidate_sha": CANDIDATE_SHA},
+            token="token",
+        )
+    )
+
+    assert captured[0].url.path == (
+        "/repos/SKYAHO/Autoresearch/actions/workflows/experiment-image.yml/dispatches"
+    )
+    assert json.loads(captured[0].content) == {
+        "ref": "main",
+        "inputs": {"base_dev_sha": BASE_DEV_SHA, "candidate_sha": CANDIDATE_SHA},
+    }
+
+
+def test_dispatch_raises_on_unexpected_status() -> None:
+    client = GitHubWorkflowRuns(
+        transport=httpx.MockTransport(lambda request: httpx.Response(422))
+    )
+
+    with pytest.raises(WorkflowRunError, match="dispatch_failed"):
+        asyncio.run(
+            client.dispatch(
+                repository="SKYAHO/Autoresearch",
+                workflow_file="experiment-image.yml",
+                ref="main",
+                inputs={"candidate_sha": CANDIDATE_SHA},
+                token="token",
+            )
+        )
+
+
+def test_job_conclusion_reads_the_named_job() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "jobs": [
+                    {"name": "decide", "conclusion": "success"},
+                    {"name": BUILD_JOB_NAME, "conclusion": "skipped"},
+                ]
+            },
+        )
+
+    client = GitHubWorkflowRuns(transport=httpx.MockTransport(handler))
+
+    result = asyncio.run(
+        client.job_conclusion(
+            repository="SKYAHO/Autoresearch",
+            run_id=7,
+            job_name=BUILD_JOB_NAME,
+            token="token",
+        )
+    )
+
+    assert result == "skipped"
+
+
+def test_job_conclusion_returns_none_for_a_missing_job() -> None:
+    client = GitHubWorkflowRuns(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"jobs": []})
+        )
+    )
+
+    result = asyncio.run(
+        client.job_conclusion(
+            repository="SKYAHO/Autoresearch",
+            run_id=7,
+            job_name=BUILD_JOB_NAME,
+            token="token",
+        )
+    )
+
+    assert result is None
