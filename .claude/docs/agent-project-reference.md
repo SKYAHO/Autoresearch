@@ -128,6 +128,17 @@ docs/
   - `auto-experiment`는 이슈 분류와 promotion guard일 뿐 branch 생성 트리거가
     아니다. Phase 1 executor는 기존 GitHub Actions bot marker를 쓰지 않으므로 새
     marker 없는 branch는 promotion 입력이 아니며, marker 재설계가 다음 단계 gate다.
+- **실험 candidate 이미지 조건부 빌드 환경 변수(#560):** `experiment_build`가 ②candidate
+  파드의 이미지·코드 참조를 정할 때 읽는 값. 전체 기본값·형식은 `.env.example`이 정본이다.
+  - `ORCH_EXPERIMENT_FEAST_IMAGE_URI`: 실험 전용 feast 이미지를 올릴 GAR 저장소
+    경로(태그 없는 경로까지). 실험 태그는 `exp-<candidate_sha>`이며 prod 릴리스
+    네임스페이스 `sha-<sha>`와 절대 섞이지 않는다.
+  - digest-only `ORCH_DEV_FEAST_IMAGE`: 의존성 diff가 없을 때 그대로 재사용할 dev
+    feast 이미지. `ORCH_EXECUTOR_IMAGE`와 같이 `@sha256:<64자리>` 형식만 허용한다.
+    `sha-<sha>` 태그는 release 재실행 때 다시 push되므로 가변이라 쓸 수 없다.
+  - 이미지 빌드 자체는 `.github/workflows/experiment-image.yml`이 하고, 이 패키지는
+    dispatch와 run·job conclusion 조회만 담당한다. 설계는
+    `docs/specs/2026-08-06-experiment-conditional-image-build.md`가 정본이다.
 
 ### 외부 오케스트레이션 경계
 - DAG와 Airflow 배포는 `Autoresearch-airflow`에만 둡니다.

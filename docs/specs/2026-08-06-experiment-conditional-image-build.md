@@ -100,6 +100,14 @@ Python 쪽은 트리거와 결과 조회만 담당해 얇게 유지한다.
 - **전환 경로:** 나중에 GAR 읽기 권한이 생기면 `image_ref` 생성부만 digest로 바꾸면
   되고 **호출자 계약(`CandidateRuntime`)은 바뀌지 않는다.**
 
+**이 예외는 실험 이미지에만 적용된다.** `dev_feast_image`는 이 워크플로우가 굽는 것이
+아니라 `release.yml`이 이미 발행해 둔 dev 이미지이므로 digest를 호출자가 그대로 알 수
+있다. 따라서 `ExperimentBuildSettings`는 `launcher/config.py`의 `_DIGEST_IMAGE_PATTERN`과
+같은 형식(`<uri>@sha256:<64자리>`)을 `dev_feast_image`에 강제한다. `sha-<sha>` 태그는
+`release.yml`이 재실행 때 같은 이름으로 다시 push하므로 가변이며 쓸 수 없다. 두 패키지의
+설정 경계를 묶지 않기 위해 패턴은 import하지 않고 `experiment_build/config.py`에 따로
+정의한다. **diff가 없는 경로가 다수 경로이므로 이 고정이 실제로 대부분의 실행에 적용된다.**
+
 ### 3.4 대상 이미지는 feast 하나
 
 ②candidate 파드는 `run-pipeline`(= `build-features` + `train-model`) 경로로 돈다.
@@ -143,20 +151,57 @@ GET /repos/{repo}/actions/workflows/experiment-image.yml/runs?event=workflow_dis
 
 1. 입력 정규식 검증 — 어긋나면 즉시 실패
 2. `candidate_sha` checkout (`fetch-depth: 0`)
-3. **`origin/dev`와 `origin/exp/*`를 명시적으로 fetch한다**
+3. **`origin/dev`·`origin/exp/*`·`origin/main`을 명시적으로 fetch한다**
 
    ```bash
    git fetch --no-tags origin \
      '+refs/heads/dev:refs/remotes/origin/dev' \
-     '+refs/heads/exp/*:refs/remotes/origin/exp/*'
+     '+refs/heads/exp/*:refs/remotes/origin/exp/*' \
+     '+refs/heads/main:refs/remotes/origin/main'
    ```
 
    `actions/checkout`에 `fetch-depth: 0`을 주면 히스토리는 전부 받아오지만 **다른
-   브랜치의 remote-tracking ref까지 만들어주지는 않는다.** 이 fetch가 없으면 4의 guard가
+   브랜치의 remote-tracking ref까지 만들어주지는 않는다.** 이 fetch가 없으면 5의 guard가
    `origin/dev` unknown revision으로 터지거나 `git branch -r`이 빈 목록을 반환해 조용히
    어긋난다. `actionlint`로는 잡히지 않는 종류의 실수이므로 실측으로 확인한다(§7).
+   `origin/main`은 4가 쓴다.
 
-4. **provenance guard** — 제거하는 `merge-base --is-ancestor origin/main`의 대체물
+4. **신뢰 파일을 main 판으로 고정한다 (두 job 모두)**
+
+   ```bash
+   rm -rf .github/actions
+   git checkout origin/main -- \
+     scripts/upload_code_archive.sh .github/actions .dockerignore
+   ```
+
+   워크플로우 파일 자체는 `main`에서 dispatch되므로 신뢰되지만, **러너가 실행하는 것은
+   candidate checkout의 파일들이다.** 그 상태로 WIF 자격증명을 러너에 올리면
+   candidate가 쓴 코드가 자격증명을 쥔 채로 돈다. 구체적으로 `upload_code_archive.sh`는
+   `--update-latest`를 스스로 붙여 prod `code/latest.txt`를 실험 SHA로 덮을 수 있고,
+   `./.github/actions/*` composite action은 `gcloud auth configure-docker`가 적용된
+   러너에서 임의 명령을 실행할 수 있으며, `.dockerignore`는 `auth@v2`가
+   `GITHUB_WORKSPACE`에 쓰는 `gha-creds-*.json`을 `context: .` 빌드에서 제외하는 유일한
+   장치다(이 파일에서 그 줄을 지우고 `Dockerfile.feast`에 `COPY`를 더하면 GAR pusher
+   자격증명이 push된 레이어로 새어 나가는데, `Dockerfile.feast` 변경이 바로 빌드 job을
+   트리거하는 조건이다). §4.2 5의 provenance guard는 이를 막지 못한다 — guard가 증명하는
+   것은 `origin/exp/*`에서 도달 가능하다는 사실뿐이고, 코드 에이전트가 push하는 곳이
+   바로 그 브랜치이기 때문이다.
+
+   따라서 두 job 모두 **candidate checkout 직후, `google-github-actions/auth`와
+   `./.github/actions/*` 사용 이전에** 이 고정을 수행한다. 고정이 실패하면 러너에 어떤
+   자격증명도 올라오기 전에 job이 끝난다. `.github/actions`는 candidate가 파일을
+   *추가*하는 경우까지 지우기 위해 복원 전에 통째로 삭제한다.
+
+   - **`Dockerfile.feast`는 고정하지 않는다.** candidate가 이 파일을 바꿔 시스템
+     라이브러리를 추가하는 것이 이 기능의 목적이다(§3.1).
+   - **업로드되는 아카이브는 여전히 candidate의 것이다.** `upload_code_archive.sh`는
+     `git archive --format=tar.gz -o … "${sha}"`로 **커밋 객체의 트리**를 압축하므로,
+     작업 트리 파일을 되돌려도 아카이브 내용은 바뀌지 않는다.
+   - 빌드 job의 checkout은 `fetch-depth: 1`이라 `origin/main`을 이 job이 직접
+     `git fetch --no-tags --depth=1`로 받아야 한다. 얕은 클론에서도
+     `git checkout origin/main -- <paths>`는 그대로 동작한다(실측 확인).
+
+5. **provenance guard** — 제거하는 `merge-base --is-ancestor origin/main`의 대체물
 
    - `git merge-base --is-ancestor $base_dev_sha origin/dev`
      — baseline 기준은 항상 dev 코드라는 계약을 지킨다
@@ -166,7 +211,7 @@ GET /repos/{repo}/actions/workflows/experiment-image.yml/runs?event=workflow_dis
 
    둘 중 하나라도 어긋나면 실패한다. 임의의 ref로 실험 이미지를 굽는 경로를 막는다.
 
-5. 의존성 diff 판단
+6. 의존성 diff 판단
 
    ```bash
    git diff --quiet "$base_dev_sha" "$candidate_sha" -- \
@@ -179,7 +224,7 @@ GET /repos/{repo}/actions/workflows/experiment-image.yml/runs?event=workflow_dis
    | 1 | `dependencies_changed=true` |
    | 그 외 | **실패 (fail-closed)** — 판단 불능을 "안 바뀜"으로 흘리지 않는다 |
 
-6. WIF 인증 후 코드 아카이브 업로드
+7. WIF 인증 후 코드 아카이브 업로드
 
    ```bash
    CODE_ARTIFACTS_BUCKET=<bucket> scripts/upload_code_archive.sh "$candidate_sha"
@@ -195,8 +240,29 @@ GET /repos/{repo}/actions/workflows/experiment-image.yml/runs?event=workflow_dis
 
 - `needs: decide`
 - `if: needs.decide.outputs.dependencies_changed == 'true'`
+- **신뢰 파일 고정** — §4.2 4와 같다. checkout 직후, 어떤 인증 스텝보다 먼저 수행한다.
 - **태그 선점 확인** — `<uri>:exp-<candidate_sha>`가 이미 있으면 빌드를 건너뛰고 성공
   종료한다. 덮어쓰기를 하지 않는 것이 §3.3 불변성의 근거다.
+
+  판별은 **gcloud 오류 문구가 아니라 종료 코드와 출력 유무로만** 한다.
+
+  ```bash
+  matches="$(gcloud artifacts docker images list "$IMAGE_URI" \
+    --include-tags --filter="tags:exp-${CANDIDATE_SHA}" --format='value(version)')"
+  ```
+
+  | 결과 | 해석 |
+  |---|---|
+  | exit 0 + 출력 없음 | 태그 없음 → `exists=false` (빌드한다) |
+  | exit 0 + 출력 있음 | 태그 있음 → `exists=true` (건너뛴다) |
+  | exit ≠ 0 | **판별 불가 → 실패 (fail-closed)** |
+
+  `describe`의 실패 메시지를 `grep`으로 매칭하지 않는 이유: 그 문구는 gcloud 판마다
+  다르고(`Image not found`, `NOT_FOUND`, `Failed to describe image` …), 매칭이 어긋나면
+  판별 불가로 흘러 **모든 신규 candidate의 첫 빌드가 실패한다.** `list`는 태그가 없어도
+  0으로 끝나므로 세 상태가 문구 없이 갈린다. GitHub Actions의 `shell: bash`는
+  `-eo pipefail`로 실행되고 `var="$(cmd)"` 단독 대입도 errexit 대상이므로, `$?`를 읽으려면
+  `set +e`/`set -e` 구간이 여전히 필요하다.
 - 빌드: `file: Dockerfile.feast`, `tags: <uri>:exp-<candidate_sha>`,
   `build-args: VCS_REF=<candidate_sha>`
 - verify: `release.yml`의 `publish-feast-image` job과 동일한 검사
@@ -226,8 +292,9 @@ jobs:
 |---|---|
 | 태그 네임스페이스 분리 | 실험은 `exp-<sha>`, prod 릴리스는 `sha-<sha>` — 절대 섞이지 않는다 |
 | 승격 job 부재 | `promote-airflow-digest-*` 계열 job을 **아예 포함하지 않는다.** 실험 이미지가 prod Airflow `values.yaml`로 새는 경로를 물리적으로 차단한다 |
-| `latest.txt` 미갱신 | §4.2 6 |
-| provenance guard | §4.2 4 |
+| `latest.txt` 미갱신 | §4.2 7 |
+| provenance guard | §4.2 5 |
+| **신뢰 파일 main 고정** | `scripts/upload_code_archive.sh`·`.github/actions`·`.dockerignore`를 두 job 모두에서 `origin/main` 판으로 되돌린다. candidate가 쓴 코드가 WIF 자격증명을 쥔 러너에서 도는 경로를 끊는다 — §4.2 4 |
 
 `release.yml`은 수정하지 않는다.
 
@@ -330,16 +397,49 @@ class CandidateRuntime:
 | **fetch ref 존재** | 실제 두 SHA로 워크플로우를 한 번 돌려 `origin/dev`·`origin/exp/*`가 러너에 실재하는지 확인한다 — `actionlint`로 잡히지 않는다 |
 | diff 판정 | 실제 두 SHA로 `git diff --quiet` 실측 (변경 있음/없음 양쪽) |
 | 태그 덮어쓰기 거부 | 같은 `candidate_sha`로 워크플로우를 두 번 돌려 두 번째가 빌드를 건너뛰는지 확인 |
+| 신뢰 파일 고정 | 두 job 모두에 고정 스텝이 있고 `auth`·`./.github/actions/*`보다 앞선다는 것을 스텝 인덱스로 고정 (`tests/test_experiment_build_workflow.py`) |
+| 태그 존재 판별 | 종료 코드 기반 3분기 형태를 고정 — 문구 매칭·2분기 fail-open으로 되돌리면 깨진다 |
+| 프로토콜 적합성 | `GitHubWorkflowRuns`의 세 메서드 시그니처를 `WorkflowRunClient`와 `inspect.signature`로 대조 (이 저장소에는 타입 검사기가 없다) |
 | 회귀 | `uv run python -m pytest` — baseline 68 failed / 2135 passed / 23 skipped 대비 증감으로 판단 |
+
+### 7.1 첫 실행 전제 조건 (아직 충족 여부가 확인되지 않았다)
+
+**위 표에서 러너에서만 확인 가능한 항목(fetch ref 존재, diff 판정, 태그 덮어쓰기 거부)은
+아직 하나도 수행되지 않았다.** `actionlint`는 개발 환경 PATH에 없었고 이 워크플로우는
+한 번도 실행된 적이 없다. 정적 검증(`yaml.safe_load` 재파싱, 모든 `run` 블록의 `bash -n`,
+`git diff --check`, pytest)만 통과한 상태다. 다음 세션이 이 인터페이스에 의존하기 전에
+실제 `exp/*` 쌍으로 `main`에서 한 번 돌려 확인해야 한다.
+
+첫 dispatch 전에 반드시 확인할 것.
+
+1. **워크플로우 파일이 기본 브랜치에 있어야 한다.**
+   `POST /actions/workflows/{file}/dispatches`는 기본 브랜치의 워크플로우 정의를 찾고,
+   클라이언트 기본값 `workflow_ref: "main"`도 `main`에서 해석된다. 이 브랜치에만 있는
+   동안에는 dispatch가 404로 실패한다.
+2. **WIF pool의 `attribute_condition`이 이 워크플로우 파일을 허용하는지 확인해야 한다.**
+   `docs/guides/release-pipeline.md`(인프라 리포 표, `terraform/bootstrap/main.tf` 행)에
+   WIF pool이 `attribute_condition`(list 멤버십)을 갖는다고 기록돼 있다. 그 목록이 *새*
+   워크플로우 파일을 받아들이는지는 이 저장소만 봐서는 알 수 없다 — 조건은
+   `SKYAHO/Autoresearch-infra` 소유다. **첫 dispatch 전에 인프라 소유자에게 확인해야
+   하며, 확인 없이 돌리면 두 job의 `google-github-actions/auth@v2`가 모두 실패한다.**
+3. `GAR_REPOSITORY`에 `autoresearch-feast` 패키지가 이미 있어야 한다. §4.2의 태그 선점
+   확인은 패키지 자체가 없으면 `list`가 non-zero로 끝나 fail-closed로 막는다. `release.yml`이
+   같은 좌표로 이 이미지를 발행해 왔으므로 통상 충족되지만, 새 GAR 저장소를 쓰기 시작하면
+   첫 실행이 여기서 막힌다.
 
 ## 8. 문서 갱신
 
 `ExperimentBuildSettings`가 읽는 새 환경변수는 `.env.example`에 추가한다
 (환경 변수의 단일 출처).
 
-새 최상위 디렉토리·`Dockerfile.*`·공개 batch CLI를 도입하지 않으므로 `README.md`와
-`.claude/docs/agent-project-reference.md`는 갱신 대상이 아니다.
+새 최상위 디렉토리·`Dockerfile.*`·공개 batch CLI를 도입하지 않으므로 `README.md`는
+갱신 대상이 아니다. 반면 `.claude/docs/agent-project-reference.md`는 **갱신 대상이다.**
+이 파일은 `agent_orchestration/` 절에 기능별 `ORCH_*` 환경 변수 레지스트리를 유지한다
+(#516 블록, #546 블록 — 후자는 digest-only `ORCH_EXECUTOR_IMAGE`를 명시한다). 새 설정
+둘(`ORCH_EXPERIMENT_FEAST_IMAGE_URI`, digest-only `ORCH_DEV_FEAST_IMAGE`)도 같은 관례로
+그 절에 추가한다. 기본값·형식의 정본은 `.env.example`이라는 표기도 함께 따른다.
 
-측정 스크립트는 `scripts/bench/measure_experiment_image_build.sh`로 남긴다 —
-Before 수치(§7의 회귀 baseline과 별개)는 `experiments/2026-08-06_experiment-conditional-image-build/`에
-기록돼 있다.
+측정 스크립트는 `scripts/bench/measure_experiment_image_build.sh`로 남긴다. Before 수치는
+저장소에 커밋하지 않는다 — 관례상 유지자 체크아웃의 추적되지 않는 작업 공간
+`experiments/<날짜>_<슬러그>/`에 기록하며, **이 저장소에서 조회할 수 있는 산출물이
+아니다** (§7의 회귀 baseline과도 별개다).
