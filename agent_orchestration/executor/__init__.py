@@ -5,10 +5,10 @@
 전 exp branch를 준비하는 구간을 담당한다.
 
 [기능]
-launcher 입력 검증, GitHub App installation token의 파일 전달, 봉인 SHA 기반 ref 생성
-기능을 모듈별로 제공한다.
+launcher 입력 검증, GitHub App installation token의 파일 전달, 봉인 SHA 기반 ref 생성,
+이슈·checkout 검증과 container 간 workspace state 전달 기능을 모듈별로 제공한다.
 
 [비책임]
 Pod/volume 배포와 App private key mount(Autoresearch-infra), Job 생성과 상태 전이
-(#546 launcher), Git checkout·실험 코드 실행은 담당하지 않는다.
+(#546 launcher), Codex의 코드 수정·candidate 검증·commit·push는 담당하지 않는다.
 """

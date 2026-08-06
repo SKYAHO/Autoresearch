@@ -1,0 +1,266 @@
+"""Executor의 이슈 검증·무자격증명 workspace 준비 계약을 검증한다.
+
+전체 파이프라인에서 branch creator 뒤와 Codex worker 앞의 경계다. 실제 GitHub 네트워크와
+Codex 실행은 대체하되, 봉인 검증 전 clone 차단, clean remote, state 파일 권한과 재검증은
+관찰 가능한 결과로 고정한다.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from hashlib import sha256
+import json
+from pathlib import Path
+import stat
+import uuid
+
+import httpx
+import pytest
+
+from agent_orchestration.executor.github_issues import GitHubIssueSnapshot, GitHubIssues
+from agent_orchestration.executor.state import (
+    ExecutorWorkspaceState,
+    ExecutorWorkspaceStateError,
+    read_state,
+    write_state,
+)
+from agent_orchestration.executor.workspace import (
+    WorkspacePreparationError,
+    WorkspacePrepareInput,
+    prepare_workspace,
+)
+
+
+_EXPERIMENT_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
+_ISSUE_NUMBER = 546
+_ISSUE_TITLE = "[AR] executor bootstrap"
+_ISSUE_BRANCH = "exp/546-executor-bootstrap"
+_BASE_SHA = "a" * 40
+_TOKEN = "clone-token-must-not-leak"
+
+
+def _issue_body() -> str:
+    fixture = (
+        Path(__file__).parent / "fixtures" / "auto_research_issue_form_rendered.md"
+    ).read_text(encoding="utf-8")
+    return f"<!-- experiment-id: {_EXPERIMENT_ID} -->\n\n{fixture}"
+
+
+def _input(tmp_path: Path, body: str | None = None) -> WorkspacePrepareInput:
+    token_file = tmp_path / "clone-token"
+    token_file.write_text(f"{_TOKEN}\n", encoding="utf-8")
+    return WorkspacePrepareInput(
+        experiment_id=_EXPERIMENT_ID,
+        issue_number=_ISSUE_NUMBER,
+        issue_branch=_ISSUE_BRANCH,
+        base_dev_sha=_BASE_SHA,
+        issue_body_sha256=sha256((body or _issue_body()).encode("utf-8")).hexdigest(),
+        github_repository="SKYAHO/Autoresearch",
+        token_file=token_file,
+        workspace=tmp_path / "workspace",
+    )
+
+
+@dataclass
+class _Issues:
+    snapshot: GitHubIssueSnapshot
+
+    async def get(
+        self, repository: str, issue_number: int, token: str
+    ) -> GitHubIssueSnapshot:
+        assert repository == "SKYAHO/Autoresearch"
+        assert issue_number == _ISSUE_NUMBER
+        assert token == _TOKEN
+        return self.snapshot
+
+
+class _Process:
+    def __init__(self, stdout: bytes, returncode: int = 0) -> None:
+        self._stdout = stdout
+        self.returncode = returncode
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return self._stdout, b""
+
+
+def _patch_git(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    workspace: Path,
+    remote_tip: str = _BASE_SHA,
+) -> tuple[list[tuple[str, ...]], list[Path]]:
+    commands: list[tuple[str, ...]] = []
+    askpass_files: list[Path] = []
+
+    async def fake_exec(*command: str, **kwargs: object) -> _Process:
+        commands.append(command)
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        assert _TOKEN not in " ".join(command)
+        askpass_path = Path(str(environment["GIT_ASKPASS"]))
+        assert _TOKEN not in askpass_path.read_text(encoding="utf-8")
+        askpass_files.append(askpass_path)
+        if command[1:3] == ("clone", "--no-checkout"):
+            (workspace / "repository").mkdir(parents=True)
+            return _Process(b"")
+        if command[-2:] == ("rev-parse", "HEAD"):
+            return _Process(remote_tip.encode())
+        if command[-2:] == ("rev-parse", f"origin/{_ISSUE_BRANCH}"):
+            return _Process(remote_tip.encode())
+        if command[-2:] == ("config", "--get"):
+            return _Process(b"", returncode=1)
+        if command[-3:] == ("config", "--get", "remote.origin.url"):
+            return _Process(b"https://github.com/SKYAHO/Autoresearch.git\n")
+        if command[-3:] == ("config", "--get", "core.hooksPath"):
+            return _Process(b"/dev/null\n")
+        return _Process(b"")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    return commands, askpass_files
+
+
+@pytest.mark.parametrize(
+    ("body", "issue_branch", "body_hash"),
+    [
+        (_issue_body().replace(str(_EXPERIMENT_ID), str(uuid.uuid4())), _ISSUE_BRANCH, None),
+        (_issue_body(), _ISSUE_BRANCH, "b" * 64),
+        (_issue_body(), "exp/546-different", None),
+    ],
+    ids=("marker", "body-hash", "branch"),
+)
+def test_unsealed_issue_data_blocks_clone_before_any_git_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    body: str,
+    issue_branch: str,
+    body_hash: str | None,
+) -> None:
+    """marker/hash/branch 중 하나라도 다르면 clone이 시작되면 안 된다."""
+    config = _input(tmp_path)
+    config = WorkspacePrepareInput(
+        **{
+            **config.__dict__,
+            "issue_branch": issue_branch,
+            "issue_body_sha256": body_hash or config.issue_body_sha256,
+        }
+    )
+    calls, _ = _patch_git(monkeypatch, workspace=config.workspace)
+
+    with pytest.raises(WorkspacePreparationError):
+        asyncio.run(
+            prepare_workspace(
+                config,
+                _Issues(GitHubIssueSnapshot(title=_ISSUE_TITLE, body=body)),
+            )
+        )
+
+    assert calls == []
+    assert not (config.workspace / "repository").exists()
+
+
+def test_prepared_workspace_uses_clean_remote_writes_0400_state_and_removes_askpass(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """token URL/helper를 남기면 이후 Codex 경계까지 자격증명이 전파될 수 있다."""
+    config = _input(tmp_path)
+    state_path = tmp_path / "executor-state" / "state.json"
+    monkeypatch.setattr("agent_orchestration.executor.workspace.STATE_PATH", state_path)
+    commands, askpass_files = _patch_git(monkeypatch, workspace=config.workspace)
+
+    prepared = asyncio.run(
+        prepare_workspace(
+            config,
+            _Issues(GitHubIssueSnapshot(title=_ISSUE_TITLE, body=_issue_body())),
+        )
+    )
+
+    assert prepared.repository == config.workspace / "repository"
+    assert prepared.remote_tip == _BASE_SHA
+    assert prepared.allowed_scope == ()
+    assert stat.S_IMODE(state_path.stat().st_mode) == 0o400
+    assert read_state(state_path, workspace=config.workspace).remote_tip == _BASE_SHA
+    assert all(not path.exists() for path in askpass_files)
+    assert all(_TOKEN not in " ".join(command) for command in commands)
+    assert ("git", "-C", str(prepared.repository), "config", "--get", "credential.helper") in commands
+
+
+def test_existing_remote_candidate_is_prepared_for_later_adoption_without_running_codex(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """base가 아닌 tip은 충돌이 아니라 Stage 5가 재검증할 채택 후보여야 한다."""
+    config = _input(tmp_path)
+    state_path = tmp_path / "executor-state" / "state.json"
+    monkeypatch.setattr("agent_orchestration.executor.workspace.STATE_PATH", state_path)
+    remote_tip = "b" * 40
+    _patch_git(monkeypatch, workspace=config.workspace, remote_tip=remote_tip)
+
+    prepared = asyncio.run(
+        prepare_workspace(
+            config,
+            _Issues(GitHubIssueSnapshot(title=_ISSUE_TITLE, body=_issue_body())),
+        )
+    )
+
+    assert prepared.remote_tip == remote_tip
+    assert read_state(state_path, workspace=config.workspace).remote_tip == remote_tip
+
+
+def test_state_read_rejects_repository_outside_the_fixed_workspace(tmp_path: Path) -> None:
+    """state를 바꿔 Codex가 임의 경로를 열게 만들면 안 된다."""
+    workspace = tmp_path / "workspace"
+    repository = workspace / "repository"
+    repository.mkdir(parents=True)
+    state_path = tmp_path / "state" / "state.json"
+    state = ExecutorWorkspaceState(
+        schema_version=1,
+        repository=repository,
+        issue_body="body",
+        allowed_scope=("prod_model_contract",),
+        base_dev_sha=_BASE_SHA,
+        remote_tip=_BASE_SHA,
+    )
+    write_state(state_path, state, workspace=workspace)
+    state_path.chmod(0o600)
+    state_path.write_text(
+        json.dumps(
+            {
+                **json.loads(state_path.read_text(encoding="utf-8")),
+                "repository": str(tmp_path / "outside"),
+            }
+        ),
+        encoding="utf-8",
+    )
+    state_path.chmod(0o400)
+
+    with pytest.raises(ExecutorWorkspaceStateError, match="repository"):
+        read_state(state_path, workspace=workspace)
+
+
+class _RecordingTransport(httpx.AsyncBaseTransport):
+    def __init__(self, response: httpx.Response) -> None:
+        self.response = response
+        self.request: httpx.Request | None = None
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        self.request = request
+        return self.response
+
+
+def test_github_issue_adapter_reads_only_the_sealed_issue() -> None:
+    """목록·검색 API를 쓰면 본문 검증의 대상 이슈가 흔들릴 수 있다."""
+    transport = _RecordingTransport(
+        httpx.Response(200, json={"title": _ISSUE_TITLE, "body": _issue_body()})
+    )
+
+    snapshot = asyncio.run(
+        GitHubIssues(transport=transport).get(
+            "SKYAHO/Autoresearch", _ISSUE_NUMBER, _TOKEN
+        )
+    )
+
+    assert snapshot.title == _ISSUE_TITLE
+    assert transport.request is not None
+    assert transport.request.method == "GET"
+    assert transport.request.url.path == "/repos/SKYAHO/Autoresearch/issues/546"
+    assert _TOKEN not in str(transport.request.url)
