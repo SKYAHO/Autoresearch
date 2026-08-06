@@ -423,3 +423,121 @@ def test_job_conclusion_returns_none_for_a_missing_job() -> None:
     )
 
     assert result is None
+
+
+def test_find_run_raises_on_non_200_list_response() -> None:
+    client = GitHubWorkflowRuns(
+        transport=httpx.MockTransport(lambda request: httpx.Response(500))
+    )
+
+    with pytest.raises(WorkflowRunError, match="list_failed"):
+        asyncio.run(
+            client.find_run(
+                repository="SKYAHO/Autoresearch",
+                workflow_file="experiment-image.yml",
+                display_title=run_display_title(CANDIDATE_SHA),
+                token="token",
+            )
+        )
+
+
+def test_find_run_raises_on_missing_workflow_runs_key() -> None:
+    client = GitHubWorkflowRuns(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={})
+        )
+    )
+
+    with pytest.raises(WorkflowRunError, match="invalid_response"):
+        asyncio.run(
+            client.find_run(
+                repository="SKYAHO/Autoresearch",
+                workflow_file="experiment-image.yml",
+                display_title=run_display_title(CANDIDATE_SHA),
+                token="token",
+            )
+        )
+
+
+def test_find_run_raises_when_workflow_runs_is_not_a_list() -> None:
+    client = GitHubWorkflowRuns(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"workflow_runs": "not-a-list"})
+        )
+    )
+
+    with pytest.raises(WorkflowRunError, match="invalid_response"):
+        asyncio.run(
+            client.find_run(
+                repository="SKYAHO/Autoresearch",
+                workflow_file="experiment-image.yml",
+                display_title=run_display_title(CANDIDATE_SHA),
+                token="token",
+            )
+        )
+
+
+def test_find_run_raises_on_mistyped_id_field() -> None:
+    title = run_display_title(CANDIDATE_SHA)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "workflow_runs": [
+                    {
+                        "id": "not-an-int",
+                        "display_title": title,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "created_at": "2026-08-06T00:00:00Z",
+                    }
+                ]
+            },
+        )
+
+    client = GitHubWorkflowRuns(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(WorkflowRunError, match="invalid_response"):
+        asyncio.run(
+            client.find_run(
+                repository="SKYAHO/Autoresearch",
+                workflow_file="experiment-image.yml",
+                display_title=title,
+                token="token",
+            )
+        )
+
+
+def test_job_conclusion_raises_on_non_200_jobs_response() -> None:
+    client = GitHubWorkflowRuns(
+        transport=httpx.MockTransport(lambda request: httpx.Response(403))
+    )
+
+    with pytest.raises(WorkflowRunError, match="jobs_failed"):
+        asyncio.run(
+            client.job_conclusion(
+                repository="SKYAHO/Autoresearch",
+                run_id=7,
+                job_name=BUILD_JOB_NAME,
+                token="token",
+            )
+        )
+
+
+def test_job_conclusion_raises_when_jobs_is_not_a_list() -> None:
+    client = GitHubWorkflowRuns(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"jobs": {}})
+        )
+    )
+
+    with pytest.raises(WorkflowRunError, match="invalid_response"):
+        asyncio.run(
+            client.job_conclusion(
+                repository="SKYAHO/Autoresearch",
+                run_id=7,
+                job_name=BUILD_JOB_NAME,
+                token="token",
+            )
+        )
