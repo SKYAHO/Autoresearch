@@ -17,6 +17,7 @@ from agent_orchestration.executor import verifier
 from agent_orchestration.executor.verifier import (
     CandidatePolicy,
     CandidateVerificationError,
+    current_working_tree_verification,
     verify_candidate,
 )
 
@@ -77,6 +78,25 @@ def _verify(repository: Path, base_sha: str, **policy: object) -> tuple[str, ...
         policy=CandidatePolicy(**policy),
     )
     return result.changed_paths
+
+
+def test_current_working_tree_verification_reuses_stage_four_fingerprint_contract(
+    tmp_path: Path,
+) -> None:
+    """finalizer가 다른 digest 규칙을 쓰면 Stage 4 승인 tree를 다시 증명할 수 없다."""
+    repository, base_sha = _repository(tmp_path)
+    (repository / "autoresearch" / "candidate.py").write_text("BASE = 2\n", encoding="utf-8")
+
+    approved = verify_candidate(
+        repository=repository,
+        base_sha=base_sha,
+        candidate_sha=None,
+        policy=CandidatePolicy(),
+    )
+    changed_paths, fingerprint = current_working_tree_verification(repository, base_sha)
+
+    assert changed_paths == approved.changed_paths
+    assert fingerprint == approved.content_fingerprint
 
 
 def test_allowed_working_tree_change_is_approved_and_reports_path(

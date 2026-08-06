@@ -675,6 +675,11 @@ def _stage_snapshot_and_write_tree(
 ) -> str:
     """격리 snapshot에 finalizer와 같은 index를 만들고 tree 객체 ID를 반환한다."""
     _run_git(repository, "add", "--all", environment=environment)
+    return _write_staged_tree_oid(repository, environment=environment)
+
+
+def _write_staged_tree_oid(repository: Path, *, environment: dict[str, str]) -> str:
+    """이미 stage된 index의 tree 객체 ID를 검증 가능한 SHA 형식으로 읽는다."""
     tree_oid = _run_git(repository, "write-tree", environment=environment).strip()
     try:
         value = tree_oid.decode("ascii", errors="strict")
@@ -683,6 +688,38 @@ def _stage_snapshot_and_write_tree(
     if _SHA_PATTERN.fullmatch(value) is None:
         raise CandidateVerificationError("tree_oid_invalid")
     return value
+
+
+def current_working_tree_verification(
+    repository: Path, base_sha: str
+) -> tuple[tuple[str, ...], str]:
+    """Stage 5가 Stage 4의 working-tree handoff를 같은 규칙으로 재계산한다.
+
+    공개 finalizer는 이 helper가 반환한 경로 집합과 콘텐츠 지문을 `VerificationResult`와
+    비교해 검증 뒤 변경된 working tree를 commit하지 않는다.
+    """
+    _validate_input(repository, base_sha, None, CandidatePolicy())
+    with TemporaryDirectory(prefix="executor-verifier-handoff-") as temporary_directory:
+        environment = _verification_environment(Path(temporary_directory))
+        changes = _name_status_changes(repository, base_sha, None, environment=environment)
+        changed_paths = tuple(
+            sorted({path for change in changes for path in (change.previous, change.current) if path})
+        )
+        return changed_paths, _working_tree_fingerprint(repository, base_sha, changes)
+
+
+def write_staged_tree_oid(repository: Path) -> str:
+    """현재 Git index의 tree OID를 Stage 4와 동일한 SHA 검증으로 반환한다.
+
+    `git add --all`의 실행 책임은 finalizer에 남겨, 해당 명령에만 hooks 차단 설정을
+    적용할 수 있게 한다.
+    """
+    _validate_input(repository, "0" * 40, None, CandidatePolicy())
+    with TemporaryDirectory(prefix="executor-verifier-tree-") as temporary_directory:
+        return _write_staged_tree_oid(
+            repository,
+            environment=_verification_environment(Path(temporary_directory)),
+        )
 
 
 def _assert_original_working_tree_unchanged(
