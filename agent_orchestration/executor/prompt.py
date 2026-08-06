@@ -19,6 +19,7 @@ import json
 import re
 from typing import TYPE_CHECKING
 
+from agent_orchestration.executor.safety import contains_credential_value
 from tools.auto_research_issue_branch import IssueInput, parse_issue_input
 
 if TYPE_CHECKING:
@@ -49,16 +50,6 @@ _VERIFICATION_COMMANDS = (
     "uv run --no-sync ruff check agent_orchestration autoresearch tests tools",
     "uv run --no-sync python -m pytest",
 )
-_CREDENTIAL_PATTERNS = (
-    re.compile(r"\bghp_[A-Za-z0-9]{36}\b"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
-    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
-    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
-    re.compile(r"-----BEGIN(?: [A-Z]+)? PRIVATE KEY-----"),
-    re.compile(r"(?i)\"private_key\"\s*:"),
-    re.compile(r"\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|API_KEY)\s*="),
-)
 _INTERNAL_ENDPOINT_PATTERN = re.compile(
     r"(?i)(?:file://|https?://(?:"
     r"localhost|127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|"
@@ -84,12 +75,13 @@ class CodexPromptError(ValueError):
 def _validate_issue_body_for_prompt(issue_body: str) -> None:
     """실제 credential·내부 endpoint·명시적 지시 경계 탈출만 값 없이 거부한다."""
     patterns = (
-        *_CREDENTIAL_PATTERNS,
         _INTERNAL_ENDPOINT_PATTERN,
         _SECRET_MOUNT_PATTERN,
         _BOUNDARY_ESCAPE_PATTERN,
     )
-    if any(pattern.search(issue_body) is not None for pattern in patterns):
+    if contains_credential_value(issue_body) or any(
+        pattern.search(issue_body) is not None for pattern in patterns
+    ):
         raise CodexPromptError("issue_body_unsafe")
 
 

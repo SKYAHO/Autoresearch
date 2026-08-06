@@ -17,13 +17,17 @@ commit·push·API 보고(Stage 5), Pod credential·volume 정책(Autoresearch-in
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 from tempfile import TemporaryDirectory
 from typing import Final
+
+from agent_orchestration.executor.safety import contains_credential_value
 
 
 _SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
@@ -44,6 +48,11 @@ _ALLOWED_SCOPE_VALUES: Final = frozenset(
 )
 _SYMLINK_MODE: Final = 0o120000
 _SUBMODULE_MODE: Final = 0o160000
+_GENERATED_DATA_SUFFIXES: Final = frozenset({".csv", ".pkl", ".parquet"})
+_LOCAL_ABSOLUTE_PATH_PATTERNS: Final = (
+    re.compile(r"(?<![A-Za-z0-9_])/(?:home|root|tmp|var|opt|mnt|workspace|Users)/[^\s'\"`]+"),
+    re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]:\\+(?:Users|home|tmp|workspace)\\+[^\s'\"`]+"),
+)
 
 
 class CandidateVerificationError(RuntimeError):
@@ -81,6 +90,7 @@ class _ChangedPath:
 
     current: str | None
     previous: str | None = None
+    kind: str = "M"
 
 
 def _verification_environment(temporary_root: Path) -> dict[str, str]:
@@ -235,6 +245,8 @@ def _name_status_changes(
         "--name-status",
         "-z",
         "-M",
+        "-C",
+        "--find-copies-harder",
         *revisions,
         environment=environment,
     )]
@@ -246,6 +258,8 @@ def _name_status_changes(
             "--name-status",
             "-z",
             "-M",
+            "-C",
+            "--find-copies-harder",
             base_sha,
             environment=environment,
         ))
@@ -261,16 +275,24 @@ def _name_status_changes(
             if status[0] in {"R", "C"}:
                 if index + 1 >= len(fields):
                     raise CandidateVerificationError("git_invalid")
-                current = _decode_path(fields[index])
-                previous = _decode_path(fields[index + 1])
+                previous = _decode_path(fields[index])
+                current = _decode_path(fields[index + 1])
                 index += 2
-                changes.append(_ChangedPath(current=current, previous=previous))
+                changes.append(
+                    _ChangedPath(current=current, previous=previous, kind=status[0])
+                )
             else:
                 if index >= len(fields):
                     raise CandidateVerificationError("git_invalid")
                 path = _decode_path(fields[index])
                 index += 1
-                changes.append(_ChangedPath(current=None if status[0] == "D" else path, previous=path if status[0] == "D" else None))
+                changes.append(
+                    _ChangedPath(
+                        current=None if status[0] == "D" else path,
+                        previous=path if status[0] == "D" else None,
+                        kind=status[0],
+                    )
+                )
 
     if candidate_sha is None:
         # status는 요구되는 working-tree 진단이고, ls-files는 directory로 축약되지 않은
@@ -289,7 +311,7 @@ def _name_status_changes(
             if raw_path:
                 path = _decode_path(raw_path)
                 if path not in tracked_paths:
-                    changes.append(_ChangedPath(current=path))
+                    changes.append(_ChangedPath(current=path, kind="?"))
     return changes
 
 
@@ -306,6 +328,25 @@ def _path_is_allowed(path: str, policy: CandidatePolicy) -> bool:
     if path.startswith(_BASE_ALLOWED_PREFIXES):
         return True
     return path.startswith("feature_repo/") and "feast_definition" in policy.allowed_scope
+
+
+def _content_is_forbidden(content: bytes) -> bool:
+    """텍스트 파일의 실제 credential 형식과 로컬 절대 경로만 값 없이 감지한다."""
+    try:
+        text = content.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return False
+    return contains_credential_value(text) or any(
+        pattern.search(text) is not None for pattern in _LOCAL_ABSOLUTE_PATH_PATTERNS
+    )
+
+
+def _validate_file_content(path: str, content: bytes) -> None:
+    """생성 데이터와 sensitive content를 path·bytes 계약으로 fail-closed 처리한다."""
+    if Path(path).suffix.lower() in _GENERATED_DATA_SUFFIXES:
+        raise CandidateVerificationError("generated_data")
+    if _content_is_forbidden(content):
+        raise CandidateVerificationError("content_forbidden")
 
 
 def _read_blob(
@@ -374,6 +415,8 @@ def _validate_path_files(
             policy_paths.append(path)
             if not _path_is_allowed(path, policy):
                 raise CandidateVerificationError("forbidden_path")
+            if path == change.current and Path(path).suffix.lower() in _GENERATED_DATA_SUFFIXES:
+                raise CandidateVerificationError("generated_data")
         if candidate_sha is None and change.previous is None and change.current is not None:
             if change.current not in (index_entries or {}):
                 untracked_paths.append(change.current)
@@ -414,22 +457,29 @@ def _validate_path_files(
                     raise CandidateVerificationError("file_unreadable") from error
                 if content.startswith(_LFS_POINTER_PREFIX):
                     raise CandidateVerificationError("lfs_pointer")
+                _validate_file_content(path, content)
             base_entry = base_entries.get(path)
+            if base_entry is not None:
+                base_content = _read_blob(
+                    repository, base_entry.object_id, environment=environment
+                )
+                if base_content.startswith(_LFS_POINTER_PREFIX):
+                    raise CandidateVerificationError("lfs_pointer")
+        else:
+            base_entry, candidate_entry = entries[:2]
             if base_entry is not None and _read_blob(
                 repository, base_entry.object_id, environment=environment
             ).startswith(_LFS_POINTER_PREFIX):
                 raise CandidateVerificationError("lfs_pointer")
-        else:
-            for entry in entries[:2]:
-                if entry is None:
-                    continue
-                content = _read_blob(repository, entry.object_id, environment=environment)
+            if candidate_entry is not None:
+                content = _read_blob(
+                    repository, candidate_entry.object_id, environment=environment
+                )
                 if content.startswith(_LFS_POINTER_PREFIX):
                     raise CandidateVerificationError("lfs_pointer")
-                if entry is candidate_entries.get(path):
-                    size = len(content)
-                    if size > policy.max_regular_file_bytes:
-                        raise CandidateVerificationError("file_too_large")
+                _validate_file_content(path, content)
+                if len(content) > policy.max_regular_file_bytes:
+                    raise CandidateVerificationError("file_too_large")
 
     text_diff_bytes = _text_diff_size(
         repository,
@@ -506,6 +556,109 @@ def _materialize_candidate(
     return checkout
 
 
+def _working_tree_fingerprint(
+    repository: Path, changes: list[_ChangedPath]
+) -> str:
+    """Stage 5가 commit할 원본 candidate tree의 경로·mode·bytes digest를 계산한다."""
+    digest = sha256()
+    for change in sorted(changes, key=lambda item: (item.kind, item.previous or "", item.current or "")):
+        digest.update(change.kind.encode("ascii"))
+        digest.update(b"\0")
+        for path in (change.previous, change.current):
+            digest.update((path or "").encode("utf-8"))
+            digest.update(b"\0")
+    paths = sorted(
+        {path for change in changes for path in (change.previous, change.current) if path}
+    )
+    for path in paths:
+        target = repository / path
+        digest.update(path.encode("utf-8"))
+        digest.update(b"\0")
+        try:
+            file_status = target.lstat()
+        except FileNotFoundError:
+            digest.update(b"missing\0")
+            continue
+        except OSError as error:
+            raise CandidateVerificationError("file_unreadable") from error
+        if not stat.S_ISREG(file_status.st_mode):
+            raise CandidateVerificationError("file_type_invalid")
+        digest.update(oct(stat.S_IMODE(file_status.st_mode)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(str(file_status.st_size).encode("ascii"))
+        digest.update(b"\0")
+        try:
+            with target.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(8192), b""):
+                    digest.update(chunk)
+        except OSError as error:
+            raise CandidateVerificationError("file_unreadable") from error
+    return digest.hexdigest()
+
+
+def _materialize_working_tree(
+    repository: Path,
+    base_sha: str,
+    changes: list[_ChangedPath],
+    temporary_root: Path,
+    *,
+    environment: dict[str, str],
+) -> Path:
+    """원본 working tree를 건드리지 않고 finalizer와 같은 candidate tree snapshot을 만든다."""
+    snapshot = temporary_root / "working-tree-snapshot"
+    try:
+        subprocess.run(
+            (
+                "git",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "clone",
+                "--shared",
+                "--no-checkout",
+                str(repository),
+                str(snapshot),
+            ),
+            check=True,
+            capture_output=True,
+            env=environment,
+        )
+        _run_git(snapshot, "checkout", "--detach", base_sha, environment=environment)
+        for change in changes:
+            if change.previous is not None and change.kind in {"D", "R"}:
+                (snapshot / change.previous).unlink(missing_ok=True)
+            if change.current is None:
+                continue
+            source = repository / change.current
+            target = snapshot / change.current
+            source_status = source.lstat()
+            if not stat.S_ISREG(source_status.st_mode):
+                raise CandidateVerificationError("file_type_invalid")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+            target.chmod(stat.S_IMODE(source_status.st_mode))
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise CandidateVerificationError("working_tree_snapshot_invalid") from error
+    return snapshot
+
+
+def _assert_original_working_tree_unchanged(
+    repository: Path,
+    expected_changes: list[_ChangedPath],
+    expected_fingerprint: str,
+    base_sha: str,
+    *,
+    environment: dict[str, str],
+) -> None:
+    """snapshot과 verifier 반환 시점 모두 original candidate tree가 같음을 증명한다."""
+    current_changes = _name_status_changes(
+        repository, base_sha, None, environment=environment
+    )
+    if current_changes != expected_changes or (
+        _working_tree_fingerprint(repository, current_changes) != expected_fingerprint
+    ):
+        raise CandidateVerificationError("working_tree_changed")
+
+
 def verify_candidate(
     repository: Path,
     base_sha: str,
@@ -538,7 +691,7 @@ def verify_candidate(
             if candidate_sha is None
             else None
         )
-        changed_paths = _validate_path_files(
+        _validate_path_files(
             repository,
             changes,
             base_sha,
@@ -549,20 +702,75 @@ def verify_candidate(
             policy,
             environment=environment,
         )
-        verification_repository = (
-            repository
-            if candidate_sha is None
-            else _materialize_candidate(
+        if candidate_sha is None:
+            original_fingerprint = _working_tree_fingerprint(repository, changes)
+            verification_repository = _materialize_working_tree(
+                repository,
+                base_sha,
+                changes,
+                temporary_root,
+                environment=environment,
+            )
+            _assert_original_working_tree_unchanged(
+                repository,
+                changes,
+                original_fingerprint,
+                base_sha,
+                environment=environment,
+            )
+            snapshot_changes = _name_status_changes(
+                verification_repository, base_sha, None, environment=environment
+            )
+            if snapshot_changes != changes or (
+                _working_tree_fingerprint(verification_repository, snapshot_changes)
+                != original_fingerprint
+            ):
+                raise CandidateVerificationError("working_tree_snapshot_invalid")
+            changed_paths = _validate_path_files(
+                verification_repository,
+                snapshot_changes,
+                base_sha,
+                _tree_entries(
+                    verification_repository, base_sha, environment=environment
+                ),
+                _tree_entries(
+                    verification_repository, base_sha, environment=environment
+                ),
+                _index_entries(verification_repository, environment=environment),
+                None,
+                policy,
+                environment=environment,
+            )
+        else:
+            verification_repository = _materialize_candidate(
                 repository,
                 candidate_sha,
                 temporary_root,
                 environment=environment,
             )
-        )
+            changed_paths = _validate_path_files(
+                repository,
+                changes,
+                base_sha,
+                base_entries,
+                candidate_entries,
+                None,
+                candidate_sha,
+                policy,
+                environment=environment,
+            )
         _run_sealed_commands(
             verification_repository,
             base_sha,
             candidate_sha,
             environment=environment,
         )
+        if candidate_sha is None:
+            _assert_original_working_tree_unchanged(
+                repository,
+                changes,
+                original_fingerprint,
+                base_sha,
+                environment=environment,
+            )
     return VerificationResult(changed_paths=changed_paths)

@@ -237,6 +237,90 @@ def test_lfs_pointer_is_rejected(tmp_path: Path) -> None:
         _verify(repository, base_sha)
 
 
+@pytest.mark.parametrize(
+    "content",
+    (
+        "TOKEN = 'ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'\n",
+        "-----BEGIN PRIVATE KEY-----\nprivate-key-material\n-----END PRIVATE KEY-----\n",
+        "GITHUB_TOKEN = 'real-assigned-credential-value'\n",
+        "SOURCE = '/home/alice/training_dataset.csv'\n",
+        r"SOURCE = 'C:\\Users\\alice\\training_dataset.csv'" + "\n",
+    ),
+    ids=("github-pat", "pem", "credential-assignment", "linux-path", "windows-path"),
+)
+def test_sensitive_content_in_an_allowed_source_file_is_rejected(
+    tmp_path: Path, content: str
+) -> None:
+    """허용 경로만 확인하면 token·private key·로컬 데이터 경로가 candidate에 들어간다."""
+    repository, base_sha = _repository(tmp_path)
+    (repository / "autoresearch" / "candidate.py").write_text(content, encoding="utf-8")
+
+    with pytest.raises(CandidateVerificationError, match="content_forbidden"):
+        _verify(repository, base_sha)
+
+
+@pytest.mark.parametrize("suffix", (".csv", ".pkl", ".parquet"))
+def test_generated_data_file_is_rejected_even_under_an_allowed_path(
+    tmp_path: Path, suffix: str
+) -> None:
+    """생성 데이터 확장자를 허용하면 repository 규정의 대용량 산출물 금지가 우회된다."""
+    repository, base_sha = _repository(tmp_path)
+    target = repository / "tools" / f"generated{suffix}"
+    target.parent.mkdir(exist_ok=True)
+    target.write_bytes(b"fixture-data")
+
+    with pytest.raises(CandidateVerificationError, match="generated_data"):
+        _verify(repository, base_sha)
+
+
+def test_normal_token_technical_context_is_not_treated_as_a_credential(tmp_path: Path) -> None:
+    """token이라는 일반 기술 용어만으로 source 변경을 거부하면 허용 scope가 과도해진다."""
+    repository, base_sha = _repository(tmp_path)
+    (repository / "autoresearch" / "candidate.py").write_text(
+        "def refresh_token(token: str) -> str:\n    return token\n", encoding="utf-8"
+    )
+
+    assert _verify(repository, base_sha) == ("autoresearch/candidate.py",)
+
+
+def test_working_tree_mutation_after_snapshot_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """snapshot 이후 원본을 바꾸면 Stage 5가 verifier가 보지 못한 tree를 commit할 수 있다."""
+    repository, base_sha = _repository(tmp_path)
+    target = repository / "autoresearch" / "candidate.py"
+    target.write_text("BASE = 2\n", encoding="utf-8")
+    original = verifier._materialize_working_tree
+
+    def mutate_after_snapshot(*args: object, **kwargs: object) -> Path:
+        snapshot = original(*args, **kwargs)
+        target.write_text("BASE = 3\n", encoding="utf-8")
+        return snapshot
+
+    monkeypatch.setattr(verifier, "_materialize_working_tree", mutate_after_snapshot)
+
+    with pytest.raises(CandidateVerificationError, match="working_tree_changed"):
+        _verify(repository, base_sha)
+
+
+def test_copy_detection_checks_forbidden_source_and_allowed_destination(tmp_path: Path) -> None:
+    """copy source를 검사하지 않으면 docs의 금지 내용을 tools로 복사해 우회할 수 있다."""
+    repository, base_sha = _repository(tmp_path)
+    source = repository / "docs" / "forbidden_source.py"
+    source.parent.mkdir()
+    source.write_text("VALUE = 'stable fixture'\n", encoding="utf-8")
+    _git(repository, "add", "docs/forbidden_source.py")
+    _git(repository, "commit", "-m", "copy source fixture")
+    copy_base = _git(repository, "rev-parse", "HEAD")
+    destination = repository / "tools" / "copied.py"
+    destination.parent.mkdir()
+    destination.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    _git(repository, "add", "tools/copied.py")
+
+    with pytest.raises(CandidateVerificationError, match="forbidden_path"):
+        _verify(repository, copy_base)
+
+
 def test_rename_checks_the_previous_and_new_paths(tmp_path: Path) -> None:
     """rename의 이전 경로를 검사하지 않으면 금지 파일을 허용 위치로 숨길 수 있다."""
     repository, base_sha = _repository(tmp_path)
@@ -305,7 +389,7 @@ def test_fixed_commands_use_credential_free_environment_and_stop_at_first_failur
         ("git", "diff", "--check", base_sha),
         ("uv", "run", "--no-sync", "ruff", "check", "agent_orchestration", "autoresearch", "tests", "tools"),
     ]
-    assert all(cwd == repository for _command, cwd, _environment in calls)
+    assert all(cwd != repository for _command, cwd, _environment in calls)
     environment = calls[0][2]
     assert environment["UV_PROJECT_ENVIRONMENT"] == "/opt/autoresearch-venv"
     assert "GITHUB_TOKEN" not in environment
