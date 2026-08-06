@@ -84,6 +84,7 @@ def _run_git(
     *arguments: str,
     environment: dict[str, str],
     allow_failure: bool = False,
+    strip_output: bool = True,
 ) -> str:
     """hooks를 차단한 argv Git 명령의 stdout만 반환하고 stderr는 노출하지 않는다."""
     try:
@@ -92,6 +93,8 @@ def _run_git(
                 "git",
                 "-c",
                 "core.hooksPath=/dev/null",
+                "-c",
+                "credential.helper=",
                 "-C",
                 str(repository),
                 *arguments,
@@ -105,7 +108,7 @@ def _run_git(
         raise CandidateFinalizationError("git_unavailable") from error
     if result.returncode != 0 and not allow_failure:
         raise CandidateFinalizationError("git_failed")
-    return result.stdout.strip()
+    return result.stdout.strip() if strip_output else result.stdout
 
 
 def _git_has_changes(
@@ -122,6 +125,8 @@ def _git_has_changes(
                 "git",
                 "-c",
                 "core.hooksPath=/dev/null",
+                "-c",
+                "credential.helper=",
                 "-C",
                 str(repository),
                 "diff-tree",
@@ -170,6 +175,20 @@ def _read_push_token(path: Path) -> str:
 
 
 @contextmanager
+def _preflight_environment() -> Iterator[dict[str, str]]:
+    """write token 없이 local Git config만 검사하는 격리 환경을 제공한다."""
+    with TemporaryDirectory(prefix="executor-finalizer-preflight-") as directory:
+        yield {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": directory,
+            "XDG_CONFIG_HOME": directory,
+            "PATH": os.environ.get("PATH", ""),
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+        }
+
+
+@contextmanager
 def _push_environment(token_file: Path) -> Iterator[dict[str, str]]:
     """file token을 일회성 GIT_ASKPASS script로만 Git subprocess에 전달한다."""
     token = _read_push_token(token_file)
@@ -204,20 +223,67 @@ def _push_environment(token_file: Path) -> Iterator[dict[str, str]]:
 
 def _candidate_metadata(
     repository: Path, candidate_sha: str, *, environment: dict[str, str]
-) -> tuple[str, str, str, str, str, str, str]:
+) -> tuple[str, str, str, str, str, str]:
     """candidate commit의 parent·author·committer·message를 token 없이 읽는다."""
     raw = _run_git(
         repository,
         "show",
         "-s",
-        "--format=%P%x00%an%x00%ae%x00%cn%x00%ce%x00%s%x00%b",
+        "--format=%P%x00%an%x00%ae%x00%cn%x00%ce",
         candidate_sha,
         environment=environment,
     )
     fields = raw.split("\0")
-    if len(fields) != 7:
+    if len(fields) != 5:
         raise CandidateFinalizationError("remote_tip_conflict")
-    return tuple(fields)  # type: ignore[return-value]
+    commit_data = _run_git(
+        repository,
+        "cat-file",
+        "commit",
+        candidate_sha,
+        environment=environment,
+        strip_output=False,
+    )
+    _headers, separator, message = commit_data.partition("\n\n")
+    if not separator:
+        raise CandidateFinalizationError("remote_tip_conflict")
+    return (*fields, message)
+
+
+def _preflight_repository(config: FinalizeInput, remote_url: str) -> None:
+    """token-bearing Git 전에 origin·hooks·credential helper를 공통으로 fail-close 한다."""
+    with _preflight_environment() as environment:
+        remote = _run_git(
+            config.repository,
+            "config",
+            "--local",
+            "--get",
+            "remote.origin.url",
+            environment=environment,
+        )
+        if remote != remote_url:
+            raise CandidateFinalizationError("remote_url_invalid")
+        helper = _run_git(
+            config.repository,
+            "config",
+            "--local",
+            "--get-all",
+            "credential.helper",
+            environment=environment,
+            allow_failure=True,
+        )
+        if helper:
+            raise CandidateFinalizationError("credential_helper_present")
+        hooks_path = _run_git(
+            config.repository,
+            "config",
+            "--local",
+            "--get",
+            "core.hooksPath",
+            environment=environment,
+        )
+        if hooks_path != "/dev/null":
+            raise CandidateFinalizationError("hooks_path_invalid")
 
 
 def classify_candidate_state(
@@ -242,7 +308,7 @@ def classify_candidate_state(
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
     }
-    parent, author_name, author_email, committer_name, committer_email, subject, body = _candidate_metadata(
+    parent, author_name, author_email, committer_name, committer_email, message = _candidate_metadata(
         repository, remote_tip, environment=environment
     )
     has_changes = _git_has_changes(
@@ -257,8 +323,7 @@ def classify_candidate_state(
         or author_email != _EXECUTOR_EMAIL
         or committer_name != _EXECUTOR_NAME
         or committer_email != _EXECUTOR_EMAIL
-        or subject != _commit_message(issue_number)
-        or body
+        or message != f"{_commit_message(issue_number)}\n"
         or not has_changes
     ):
         raise CandidateFinalizationError("remote_tip_conflict")
@@ -284,28 +349,26 @@ def _remote_tip(
     return fields[0]
 
 
-def _precommit_guards(
-    config: FinalizeInput, remote_url: str, *, environment: dict[str, str]
-) -> None:
-    """commit 직전에 HEAD·remote URL·credential helper가 봉인 조건과 같은지 재확인한다."""
+def _assert_local_head_base(config: FinalizeInput, *, environment: dict[str, str]) -> None:
+    """NEW가 base checkout에서만 local ref를 변경하게 한다."""
     if _run_git(config.repository, "rev-parse", "HEAD", environment=environment) != config.base_dev_sha:
         raise CandidateFinalizationError("head_changed")
+
+
+def _assert_remote_base_before_commit(
+    config: FinalizeInput, remote_url: str, *, environment: dict[str, str]
+) -> None:
+    """NEW commit 직전에 exp ref가 여전히 봉인 base인지를 재조회한다."""
     if (
-        _run_git(config.repository, "config", "--get", "remote.origin.url", environment=environment)
-        != remote_url
+        _remote_tip(
+            config.repository,
+            remote_url,
+            config.issue_branch,
+            environment=environment,
+        )
+        != config.base_dev_sha
     ):
-        raise CandidateFinalizationError("remote_url_invalid")
-    helper = _run_git(
-        config.repository,
-        "config",
-        "--local",
-        "--get-all",
-        "credential.helper",
-        environment=environment,
-        allow_failure=True,
-    )
-    if helper:
-        raise CandidateFinalizationError("credential_helper_present")
+        raise CandidateFinalizationError("remote_tip_changed")
 
 
 def _push_candidate(
@@ -318,6 +381,8 @@ def _push_candidate(
                 "git",
                 "-c",
                 "core.hooksPath=/dev/null",
+                "-c",
+                "credential.helper=",
                 "-C",
                 str(repository),
                 "push",
@@ -333,6 +398,54 @@ def _push_candidate(
         raise CandidateFinalizationError("push_failed") from error
     if result.returncode != 0:
         raise CandidateFinalizationError("push_failed")
+
+
+def _commit_verified_tree(
+    config: FinalizeInput,
+    verified_tree_oid: str,
+    *,
+    environment: dict[str, str],
+) -> str:
+    """mutable index가 아닌 검증 tree OID로 한 candidate commit과 local CAS ref를 만든다."""
+    candidate_sha = _run_git(
+        config.repository,
+        "-c",
+        f"user.name={_EXECUTOR_NAME}",
+        "-c",
+        f"user.email={_EXECUTOR_EMAIL}",
+        "commit-tree",
+        verified_tree_oid,
+        "-p",
+        config.base_dev_sha,
+        "-m",
+        _commit_message(config.issue_number),
+        environment=environment,
+    )
+    _validate_sha(candidate_sha, "candidate_sha_invalid")
+    if (
+        _run_git(
+            config.repository,
+            "rev-parse",
+            f"{candidate_sha}^{{tree}}",
+            environment=environment,
+        )
+        != verified_tree_oid
+    ):
+        raise CandidateFinalizationError("committed_tree_mismatch")
+    try:
+        _run_git(
+            config.repository,
+            "update-ref",
+            f"refs/heads/{config.issue_branch}",
+            candidate_sha,
+            config.base_dev_sha,
+            environment=environment,
+        )
+    except CandidateFinalizationError as error:
+        raise CandidateFinalizationError("local_ref_update_failed") from error
+    if _run_git(config.repository, "rev-parse", "HEAD", environment=environment) != candidate_sha:
+        raise CandidateFinalizationError("local_ref_update_failed")
+    return candidate_sha
 
 
 def _commit_new_candidate(
@@ -351,23 +464,16 @@ def _commit_new_candidate(
         or content_fingerprint != verification.content_fingerprint
     ):
         raise CandidateFinalizationError("content_fingerprint_mismatch")
-    _precommit_guards(config, remote_url, environment=environment)
+    _assert_local_head_base(config, environment=environment)
     _run_git(config.repository, "add", "--all", environment=environment)
     if verifier.write_staged_tree_oid(config.repository) != verification.verified_tree_oid:
         raise CandidateFinalizationError("verified_tree_mismatch")
-    _run_git(
-        config.repository,
-        "-c",
-        f"user.name={_EXECUTOR_NAME}",
-        "-c",
-        f"user.email={_EXECUTOR_EMAIL}",
-        "commit",
-        "-m",
-        _commit_message(config.issue_number),
+    _assert_remote_base_before_commit(config, remote_url, environment=environment)
+    candidate_sha = _commit_verified_tree(
+        config,
+        verification.verified_tree_oid,
         environment=environment,
     )
-    candidate_sha = _run_git(config.repository, "rev-parse", "HEAD", environment=environment)
-    _validate_sha(candidate_sha, "candidate_sha_invalid")
     _push_candidate(config.repository, remote_url, config.issue_branch, environment=environment)
     if _remote_tip(config.repository, remote_url, config.issue_branch, environment=environment) != candidate_sha:
         raise CandidateFinalizationError("remote_sha_mismatch")
@@ -378,6 +484,7 @@ def finalize_candidate(config: FinalizeInput, verification: VerificationResult) 
     """원격 exp ref와 Candidate API를 동일 SHA로 수렴시키고 그 SHA를 반환한다."""
     _validate_repository(config)
     remote_url = _clean_remote_url(config.github_repository)
+    _preflight_repository(config, remote_url)
     with _push_environment(config.push_token_file) as environment:
         remote_tip = _remote_tip(
             config.repository, remote_url, config.issue_branch, environment=environment
