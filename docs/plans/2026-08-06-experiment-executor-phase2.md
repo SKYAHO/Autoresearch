@@ -676,7 +676,8 @@ branch-token-minter
 `ORCH_EXECUTOR_API_URL`, `ORCH_EXECUTOR_API_TOKEN_SECRET_NAME`,
 `ORCH_CODEX_HOME_SECRET_NAME`, `ORCH_EXECUTOR_WORKSPACE_SIZE_LIMIT`,
 `ORCH_CODEX_TIMEOUT_SEC`에서 읽는다. executor 전용 Codex 인증 Secret은 `auth.json` key 하나를
-mode 0440으로 제공하며, 실제 Secret 이름과 리소스 생성은 Autoresearch-infra가 소유한다.
+제공하고 launcher가 이를 `defaultMode=0440`의 read-only `subPath` 파일로 mount한다. 실제
+Secret 이름과 리소스 생성은 Autoresearch-infra가 소유한다.
 
 - [ ] **6.1 claim 입력 실패 테스트 작성**
 

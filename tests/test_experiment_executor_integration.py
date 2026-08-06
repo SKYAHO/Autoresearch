@@ -193,7 +193,12 @@ def test_executor_job_has_sealed_eight_container_capability_boundaries() -> None
             "repository/.git",
             True,
         ) in mounts[name]
-    assert ("codex-home", "/var/lib/codex", None, True) in mounts["codex-worker"]
+    assert (
+        "codex-home",
+        "/var/lib/codex/auth.json",
+        "auth.json",
+        True,
+    ) in mounts["codex-worker"]
     assert {
         name
         for name, container_mounts in mounts.items()
@@ -206,11 +211,6 @@ def test_executor_job_has_sealed_eight_container_capability_boundaries() -> None
     assert [(item.key, item.path) for item in codex_volume.secret.items] == [
         ("auth.json", "auth.json")
     ]
-    assert {
-        container.name
-        for container in [*pod.init_containers, *pod.containers]
-        if any(mount.name == "codex-home" for mount in container.volume_mounts)
-    } == {"codex-worker"}
     assert any(
         volume == "executor-api-token"
         for volume, *_rest in mounts["candidate-finalizer"]

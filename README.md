@@ -107,7 +107,7 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 | launcher | `ORCH_GITHUB_APP_SECRET_NAME` | token-minter에만 mount할 branch-writer App Secret 이름 |
 | launcher/token-minter | `ORCH_GITHUB_APP_ID`, `ORCH_GITHUB_APP_INSTALLATION_ID` | Contents write 전용 branch-writer App 공개 좌표 |
 | launcher | `ORCH_MAX_CONCURRENT_EXPERIMENTS` | namespace의 branch-bootstrap Job 동시 실행 상한 |
-| launcher | `ORCH_CODEX_HOME_SECRET_NAME` | Infra가 생성·이름을 소유하는 executor 전용 Codex 인증 Secret 이름 (`auth.json` key만 mode 0440으로 제공) |
+| launcher | `ORCH_CODEX_HOME_SECRET_NAME` | Infra가 생성·이름을 소유하는 executor 전용 Codex 인증 Secret 이름 (`auth.json` key 제공, launcher가 volume `defaultMode=0440` 지정) |
 | executor | `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`, `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA` | launcher가 DB에서 복사해 전달하는 불변 branch 좌표 |
 | workspace-preparer | `ORCH_ISSUE_BODY_SHA256` | DB에 봉인한 Issue body의 SHA-256으로 원격 body와 대조하는 값 |
 | token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch/clone/push token-minter에만 보이는 private key mount 경로 |
@@ -142,8 +142,8 @@ Infra companion PR에는 다음을 확인 항목으로 옮깁니다. 실제 Secr
 NetworkPolicy 이름·값은 `Autoresearch-infra` 소유이므로 이 저장소에서 단정하지 않습니다.
 
 - GitHub App private key를 branch/clone/push token-minter에만 mount
-- executor 전용 Codex 인증 Secret의 `auth.json` key를 mode 0440으로 codex-worker에만
-  read-only `CODEX_HOME` source로 mount하고, writable `executor-tmp`의 `/tmp`를 per-run
+- executor 전용 Codex 인증 Secret의 `auth.json` key를 launcher가 mode 0440의 read-only
+  `subPath` 파일로 codex-worker에만 mount하고, writable `executor-tmp`의 `/tmp`를 per-run
   scratch에 제공
 - `ORCH_EXECUTOR_API_TOKEN`을 candidate-finalizer에만 mount
 - workspace/token `emptyDir` size limit과 GitHub·OpenAI·internal API 최소 egress

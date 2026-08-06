@@ -6,7 +6,7 @@
 
 **Goal:** Experiment Executor의 Codex 인증 원본을 RWO PVC에서 Kubernetes Secret으로 바꿔 서로 다른 노드의 여러 Experiment Pod가 동시에 시작될 수 있게 한다.
 
-**Architecture:** launcher는 `ORCH_CODEX_HOME_SECRET_NAME`을 필수 설정으로 읽고, Phase 2 Job의 `codex-home` volume을 `auth.json` key 하나만 제공하는 Secret volume으로 만든다. `codex-worker`만 이 volume을 `/var/lib/codex`에 read-only mount하며 기존 per-run scratch 복사 동작은 유지한다.
+**Architecture:** launcher는 `ORCH_CODEX_HOME_SECRET_NAME`을 필수 설정으로 읽고, Phase 2 Job의 `codex-home` volume을 `auth.json` key 하나만 제공하는 Secret volume으로 만든다. `codex-worker`만 이 key를 `/var/lib/codex/auth.json`에 read-only `subPath`로 mount하며 기존 per-run scratch 복사 동작은 유지한다.
 
 **Tech Stack:** Python 3.12, Kubernetes Python client, pytest, Ruff.
 
@@ -15,7 +15,7 @@
 - 구현 정본은 `docs/specs/2026-08-06-experiment-executor-phase2.md`의 “Codex 인증 동시 mount 계약 (#565)”이다.
 - 설정 이름은 `ORCH_CODEX_HOME_SECRET_NAME`, dataclass 필드는 `codex_home_secret_name`으로 고정한다.
 - Secret key와 mount 파일 이름은 모두 `auth.json`, Secret volume `defaultMode`는 `0440`이다.
-- `codex-worker`만 `codex-home` volume을 `/var/lib/codex`에 read-only mount한다.
+- `codex-worker`만 `codex-home` volume의 `auth.json`을 `/var/lib/codex/auth.json`에 read-only `subPath`로 mount한다.
 - 기존 Runner의 `agent-orchestration-codex-home` PVC와 Runner 문서는 변경하지 않는다.
 - Secret 값이나 실제 `auth.json`은 테스트 fixture, 문서, Git diff에 포함하지 않는다.
 - 코드 변경은 실패 테스트 작성 → 예상 실패 확인 → 최소 구현 → 관련 테스트 통과 → 전체 검증 순서로 수행한다.

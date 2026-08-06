@@ -198,7 +198,10 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
             state_read_only,
             temporary_mount,
             V1VolumeMount(
-                name="codex-home", mount_path=_CODEX_HOME_DIRECTORY, read_only=True
+                name="codex-home",
+                mount_path=f"{_CODEX_HOME_DIRECTORY}/auth.json",
+                sub_path="auth.json",
+                read_only=True,
             ),
         ],
         settings,
