@@ -91,8 +91,8 @@ def _settings(
     executor_image: str = EXECUTOR_IMAGE,
     executor_node_pool: str = "batch-od",
     max_concurrent_experiments: int = 5,
-    codex_timeout_sec: int = 1800,
-    active_deadline_sec: int = 3600,
+    codex_timeout_sec: int = 1200,
+    active_deadline_sec: int = 2400,
 ) -> LauncherSettings:
     return LauncherSettings(
         database_url="postgresql://launcher:password@db/orchestration",
@@ -505,7 +505,7 @@ def test_job_passes_only_frozen_coordinates_and_token_file() -> None:
     }
     assert job.spec.template.metadata.labels == job.metadata.labels
     assert job.spec.backoff_limit == 0
-    assert job.spec.active_deadline_seconds == 3600
+    assert job.spec.active_deadline_seconds == 2400
     assert job.spec.ttl_seconds_after_finished == 30
     assert pod.automount_service_account_token is False
     assert pod.service_account_name == settings.executor_service_account
