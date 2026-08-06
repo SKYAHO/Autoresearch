@@ -44,7 +44,13 @@ concurrency:
 jobs:
   feast-apply:
     name: Apply Feast feature definitions to registry
-    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.ref_name }}
+    # 브랜치 이름이 아니라 **환경 이름**을 고른다(#548). GitHub Environment 이름은
+    # infra#424가 정한 prod/dev이고, main이라는 Environment는 비어 있다. 여기에
+    # github.ref_name을 그대로 넣으면 잡이 빈 Environment로 떠서 WIF provider·SA·
+    # namespace가 전부 저장소 수준 폴백으로 떨어지고, OIDC의 environment 클레임도
+    # main이 되어 attribute.environment/prod principalSet에 걸리지 않는다. 인증
+    # 스텝은 자격 파일만 쓰고 통과하므로 이 실패는 첫 gcloud 호출에서야 드러난다.
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.ref_name == 'main' && 'prod' || 'dev') }}
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
@@ -56,6 +62,11 @@ jobs:
       # feast-apply GSA로만 실행할 수 있도록 namespace를 분리했다.
       FEAST_APPLY_NAMESPACE: ${{ vars.FEAST_APPLY_NAMESPACE || 'feast-apply' }}
       FEAST_APPLY_SERVICE_ACCOUNT: ${{ vars.FEAST_APPLY_SERVICE_ACCOUNT || 'feast-apply' }}
+      # prod/dev 환경 분리(#399). push는 main→prod/dev→dev로 고정하고 수동
+      # dispatch만 입력값을 선택한다. `environment:` 키는 env 컨텍스트를 읽지 못해
+      # 같은 식을 두 번 쓸 수밖에 없으므로, 두 값이 어긋나지 않도록
+      # tests/test_feast_apply_workflow.py가 동일 문자열임을 고정한다.
+      AUTORESEARCH_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.ref_name == 'main' && 'prod' || 'dev') }}
 
     steps:
       - name: Checkout repository
@@ -122,9 +133,18 @@ jobs:
         run: |
           archive_uri="gs://${CODE_ARTIFACTS_BUCKET}/code/${CODE_ARCHIVE_SHA}.tar.gz"
           for _ in $(seq 1 60); do
-            if gcloud storage objects describe "$archive_uri" >/dev/null 2>&1; then
+            # stderr 를 버리면 403(가장·권한 실패)과 404(아직 업로드 전)가 같아 보인다.
+            # #548 에서 실제로 잘못된 Environment 로 뜬 잡이 인증 실패를 10분간
+            # "아카이브가 없다"로 오인 보고했다. 객체 없음이 아닌 실패는 즉시,
+            # gcloud 가 낸 원문과 함께 끝낸다.
+            if lookup_error="$(gcloud storage objects describe "$archive_uri" 2>&1 >/dev/null)"; then
               echo "code archive ready: $archive_uri"
               exit 0
+            fi
+            if ! grep -qiE 'not found|404|does not exist' <<<"$lookup_error"; then
+              echo "$lookup_error"
+              echo "::error::code archive lookup failed for a reason other than a missing object — see the gcloud error above"
+              exit 1
             fi
             sleep 10
           done
@@ -164,11 +184,10 @@ jobs:
           REDIS_PORT: ${{ vars.REDIS_PORT }}
           REDIS_CA_SECRET_ID: ${{ vars.REDIS_CA_SECRET_ID }}
           CODE_ARTIFACTS_BUCKET: ${{ secrets.CODE_ARTIFACTS_BUCKET }}
-          # prod/dev 환경 분리(#399). push는 main→prod/dev→dev로 고정하고 수동
-          # dispatch만 입력값을 선택한다. FEAST_ONLINE_FULL_SCAN_FOR_DELETION 은 feature_repo/env.py 의
-          # 파생 규칙과 동일하게 계산한다(prod=true, dev=false). dev=false 면 apply 가
-          # Redis 에 접속하지 않아 dev registry apply 가 prod Redis 를 건드리지 않는다.
-          AUTORESEARCH_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || github.ref_name }}
+          # AUTORESEARCH_ENV 는 잡 수준 env 가 준다(#548). FEAST_ONLINE_FULL_SCAN_FOR_DELETION 은
+          # feature_repo/env.py 의 파생 규칙과 동일하게 계산한다(prod=true, dev=false).
+          # dev=false 면 apply 가 Redis 에 접속하지 않아 dev registry apply 가 prod Redis 를
+          # 건드리지 않는다.
         shell: bash
         run: |
           # Job 이름은 63자 제한이 있어 커밋 SHA 앞 12자만 쓴다.
