@@ -1,0 +1,122 @@
+name: Experiment candidate image
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_dev_sha:
+        description: Full 40-character base dev commit SHA
+        required: true
+        type: string
+      candidate_sha:
+        description: Full 40-character candidate commit SHA
+        required: true
+        type: string
+
+run-name: experiment-image ${{ inputs.candidate_sha }}
+
+permissions:
+  contents: read
+
+# 같은 candidate에 대한 중복 dispatch를 직렬화한다. 취소하지 않는 이유는 앞선 run이
+# 코드 아카이브 업로드를 이미 끝냈을 수 있기 때문이다.
+concurrency:
+  group: experiment-image-${{ inputs.candidate_sha }}
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    name: decide
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      dependencies_changed: ${{ steps.diff.outputs.dependencies_changed }}
+
+    steps:
+      - name: Validate input SHAs
+        env:
+          BASE_DEV_SHA: ${{ inputs.base_dev_sha }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: bash
+        run: |
+          for variable_name in BASE_DEV_SHA CANDIDATE_SHA; do
+            if [[ ! "${!variable_name}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::$variable_name must be a 40-character lowercase SHA"
+              exit 1
+            fi
+          done
+
+      - name: Checkout candidate source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          fetch-depth: 0
+
+      - name: Fetch dev and exp remote-tracking refs
+        shell: bash
+        run: |
+          git fetch --no-tags origin \
+            '+refs/heads/dev:refs/remotes/origin/dev' \
+            '+refs/heads/exp/*:refs/remotes/origin/exp/*'
+
+      - name: Verify experiment provenance
+        env:
+          BASE_DEV_SHA: ${{ inputs.base_dev_sha }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: bash
+        run: |
+          if ! git merge-base --is-ancestor "$BASE_DEV_SHA" origin/dev; then
+            echo "::error::base_dev_sha must be an ancestor of origin/dev"
+            exit 1
+          fi
+          if ! git branch -r --contains "$CANDIDATE_SHA" \
+            | grep -qE '^[[:space:]]*origin/exp/'; then
+            echo "::error::candidate_sha must be reachable from an origin/exp/* branch"
+            exit 1
+          fi
+
+      - name: Decide whether the image must be rebuilt
+        id: diff
+        env:
+          BASE_DEV_SHA: ${{ inputs.base_dev_sha }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: bash
+        run: |
+          set +e
+          git diff --quiet "$BASE_DEV_SHA" "$CANDIDATE_SHA" -- \
+            pyproject.toml uv.lock Dockerfile.feast scripts/gcs_code_bootstrap.sh
+          diff_status=$?
+          set -e
+          case "$diff_status" in
+            0) changed=false ;;
+            1) changed=true ;;
+            *)
+              echo "::error::git diff failed with status $diff_status"
+              exit 1
+              ;;
+          esac
+          echo "dependencies_changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "::notice::dependencies_changed=$changed"
+
+      - name: dev 환경 좌표 확인
+        uses: ./.github/actions/resolve-dev-environment
+        with:
+          configured_project_id: ${{ vars.GCP_PROJECT_ID }}
+          configured_region: ${{ vars.GCP_REGION }}
+
+      - name: Authenticate to GCP with Workload Identity Federation
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER_ID }}
+          service_account: ${{ secrets.GCS_CODE_UPLOADER_SA }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Upload candidate code archive
+        env:
+          CODE_ARTIFACTS_BUCKET: ${{ secrets.CODE_ARTIFACTS_BUCKET }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        shell: bash
+        run: scripts/upload_code_archive.sh "$CANDIDATE_SHA"
