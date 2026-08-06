@@ -426,6 +426,14 @@ class CandidateRuntime:
    확인은 패키지 자체가 없으면 `list`가 non-zero로 끝나 fail-closed로 막는다. `release.yml`이
    같은 좌표로 이 이미지를 발행해 왔으므로 통상 충족되지만, 새 GAR 저장소를 쓰기 시작하면
    첫 실행이 여기서 막힌다.
+4. **태그 선점 확인의 stdout 가정을 첫 실행에서 눈으로 확인한다.** 이 검사는 두 가지를
+   가정하는데 안전 방향이 서로 다르다. *종료 코드* 가정이 틀리면 fail-closed(빌드가 막힘)
+   지만, *stdout* 가정이 틀리면 **fail-open**이다 — 어떤 gcloud 버전이 `Listed 0 items.`
+   류의 상태 줄을 stderr가 아니라 stdout으로 보내면 `matches`가 비어 있지 않게 되어 없는
+   태그를 "있다"로 판정하고, 빌드를 건너뛴 채 존재하지 않는 `exp-<sha>` 참조를 파드에
+   넘긴다. gcloud는 상태·로그를 stderr로, `--format` 출력만 stdout으로 보내므로 통상
+   문제되지 않지만, 이 방향만은 정적으로 확정할 수 없다. 태그가 없는 candidate로 첫
+   실행을 돌려 `exists=false`가 실제로 나오는지 확인한다.
 
 ## 8. 문서 갱신
 
