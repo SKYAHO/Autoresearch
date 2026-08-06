@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from src.pipeline.paired_experiment import PairedExperimentRequest
@@ -81,6 +83,20 @@ def test_metric_snapshot_uses_contract_field_names() -> None:
     }
     assert snapshot["seeds"] == [42, 43, 44]
     assert isinstance(snapshot["evaluated_at"], str)
+
+
+def test_metric_snapshot_is_json_serializable() -> None:
+    """client가 payload를 `json.dumps`로 보내므로(client.py:236) raw datetime이면 죽는다.
+
+    `evaluated_at`은 `PairedExperimentResult`에서 `datetime`이고 표준 encoder는 이를
+    직렬화하지 못한다. isoformat 변환이 빠지면 `PATCH /status`가 매번 TypeError로
+    실패하므로, 실패 모드 자체를 여기서 친다.
+    """
+    snapshot = build_metric_snapshot(_result("comparison_passed"))
+
+    encoded = json.dumps(snapshot)
+
+    assert json.loads(encoded)["evaluated_at"] == "2026-08-03T00:00:00+00:00"
 
 
 def test_reason_is_truncated_with_marker() -> None:
