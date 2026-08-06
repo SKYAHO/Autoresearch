@@ -14,7 +14,7 @@ CA를 조달하는 구간을 담당한다.
 `.github/workflows/feast-apply.yml`이 소유한다.
 
 사용법:
-  python scripts/fetch_redis_ca.py /tmp/redis-ca.pem
+  uv run --no-sync python scripts/fetch_redis_ca.py /tmp/redis-ca.pem
 
 필요 환경 변수: ``REDIS_CA_SECRET_ID``, ``GCP_PROJECT_ID``
 """
