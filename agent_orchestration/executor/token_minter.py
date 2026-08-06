@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
+from enum import Enum
 import logging
 import os
 from pathlib import Path
@@ -35,7 +36,21 @@ from agent_orchestration.github_app import (
 
 
 _LOGGER = logging.getLogger(__name__)
-_CONTENTS_WRITE_PERMISSION = {"contents": "write"}
+
+
+class TokenPurpose(str, Enum):
+    """Phase 2 container가 요구하는 installation token 권한 목적이다."""
+
+    BRANCH = "branch"
+    CLONE = "clone"
+    PUSH = "push"
+
+
+TOKEN_PERMISSIONS: dict[str, dict[str, str]] = {
+    "branch": {"contents": "write"},
+    "clone": {"contents": "read", "issues": "read"},
+    "push": {"contents": "write"},
+}
 
 
 class TokenMinterError(RuntimeError):
@@ -97,13 +112,14 @@ async def _run(token_factory: TokenFactory) -> int:
     """환경 좌표로 token 파일을 만들고 initContainer exit code를 반환한다."""
     try:
         config = TokenMinterInput.from_environment()
+        purpose = TokenPurpose(os.environ.get("ORCH_GITHUB_TOKEN_PURPOSE", "branch"))
         await write_installation_token(
             credentials=config.credentials,
             output=config.output,
-            permissions=_CONTENTS_WRITE_PERMISSION,
+            permissions=TOKEN_PERMISSIONS[purpose.value],
             token_factory=token_factory,
         )
-    except (ExecutorConfigError, GitHubAppError, TokenMinterError) as error:
+    except (ExecutorConfigError, GitHubAppError, TokenMinterError, ValueError) as error:
         _LOGGER.error(
             "installation token mint failed error_type=%s reason=%s status_code=%s",
             type(error).__name__,
