@@ -29,7 +29,6 @@ from kubernetes.client import (
     V1PodSecurityContext,
     V1PodSpec,
     V1PodTemplateSpec,
-    V1PersistentVolumeClaimVolumeSource,
     V1SeccompProfile,
     V1SecretVolumeSource,
     V1SecurityContext,
@@ -335,8 +334,10 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
             ),
             V1Volume(
                 name="codex-home",
-                persistent_volume_claim=V1PersistentVolumeClaimVolumeSource(
-                    claim_name=settings.codex_home_pvc_name, read_only=True
+                secret=V1SecretVolumeSource(
+                    secret_name=settings.codex_home_secret_name,
+                    items=[V1KeyToPath(key="auth.json", path="auth.json")],
+                    default_mode=0o440,
                 ),
             ),
             V1Volume(

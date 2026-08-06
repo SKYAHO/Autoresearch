@@ -1,6 +1,6 @@
 # 실험 executor Phase 2 — 이슈 기반 코드 수정과 candidate commit
 
-> 상태: Phase 2 구현 완료, #565 Codex 인증 Secret 전환 구현 전
+> 상태: Phase 2 구현 완료, #565 Codex 인증 Secret 전환 구현 완료
 > 관련 이슈: #557
 > 선행 계약: #546, `2026-08-05-experiment-job-baseline-freeze.md`
 

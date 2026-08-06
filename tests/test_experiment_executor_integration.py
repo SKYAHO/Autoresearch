@@ -62,7 +62,7 @@ def _settings() -> LauncherSettings:
         max_concurrent_experiments=2,
         executor_api_url="http://agent-orchestration-api",
         executor_api_token_secret_name="executor-api-token",
-        codex_home_pvc_name="codex-home",
+        codex_home_secret_name="codex-auth",
         workspace_size_limit="8Gi",
         codex_timeout_sec=120,
     )
@@ -198,6 +198,18 @@ def test_executor_job_has_sealed_eight_container_capability_boundaries() -> None
         name
         for name, container_mounts in mounts.items()
         if any(volume == "codex-home" for volume, *_rest in container_mounts)
+    } == {"codex-worker"}
+    codex_volume = next(volume for volume in pod.volumes if volume.name == "codex-home")
+    assert codex_volume.persistent_volume_claim is None
+    assert codex_volume.secret.secret_name == "codex-auth"
+    assert codex_volume.secret.default_mode == 0o440
+    assert [(item.key, item.path) for item in codex_volume.secret.items] == [
+        ("auth.json", "auth.json")
+    ]
+    assert {
+        container.name
+        for container in [*pod.init_containers, *pod.containers]
+        if any(mount.name == "codex-home" for mount in container.volume_mounts)
     } == {"codex-worker"}
     assert any(
         volume == "executor-api-token"

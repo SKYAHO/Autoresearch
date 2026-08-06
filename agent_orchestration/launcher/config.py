@@ -4,7 +4,7 @@
 검증된 불변 값으로 바꾸는 구간을 담당한다.
 
 [기능] DB·namespace·executor image/identity/node pool·GitHub App 좌표·candidate API·Codex
-PVC·workspace·동시 실행 상한과 Job 수명 설정을 환경 변수에서 읽고, executor image와
+Secret·workspace·동시 실행 상한과 Job 수명 설정을 환경 변수에서 읽고, executor image와
 scheduling 좌표를 검증한다.
 
 [비책임] 설정의 Kubernetes 주입과 Secret 값 관리(Autoresearch-infra), DB 연결·Job API
@@ -60,7 +60,7 @@ class LauncherSettings:
     max_concurrent_experiments: int
     executor_api_url: str
     executor_api_token_secret_name: str
-    codex_home_pvc_name: str
+    codex_home_secret_name: str
     workspace_size_limit: str
     codex_timeout_sec: int
     active_deadline_sec: int = 300
@@ -75,7 +75,7 @@ class LauncherSettings:
             "github_app_secret_name": self.github_app_secret_name,
             "executor_api_url": self.executor_api_url,
             "executor_api_token_secret_name": self.executor_api_token_secret_name,
-            "codex_home_pvc_name": self.codex_home_pvc_name,
+            "codex_home_secret_name": self.codex_home_secret_name,
             "workspace_size_limit": self.workspace_size_limit,
         }
         for name, value in required_strings.items():
@@ -123,7 +123,9 @@ class LauncherSettings:
             executor_api_token_secret_name=_required_environment(
                 "ORCH_EXECUTOR_API_TOKEN_SECRET_NAME"
             ),
-            codex_home_pvc_name=_required_environment("ORCH_CODEX_HOME_PVC_NAME"),
+            codex_home_secret_name=_required_environment(
+                "ORCH_CODEX_HOME_SECRET_NAME"
+            ),
             workspace_size_limit=_required_environment(
                 "ORCH_EXECUTOR_WORKSPACE_SIZE_LIMIT"
             ),

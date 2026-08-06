@@ -105,7 +105,7 @@ def _settings(
         max_concurrent_experiments=max_concurrent_experiments,
         executor_api_url="http://agent-orchestration-api",
         executor_api_token_secret_name="executor-api-token",
-        codex_home_pvc_name="codex-home",
+        codex_home_secret_name="codex-auth",
         workspace_size_limit="8Gi",
         codex_timeout_sec=120,
     )
@@ -216,7 +216,7 @@ def test_launcher_settings_reads_required_environment(
         "ORCH_MAX_CONCURRENT_EXPERIMENTS": "2",
         "ORCH_EXECUTOR_API_URL": "http://agent-orchestration-api",
         "ORCH_EXECUTOR_API_TOKEN_SECRET_NAME": "executor-api-token",
-        "ORCH_CODEX_HOME_PVC_NAME": "codex-home",
+        "ORCH_CODEX_HOME_SECRET_NAME": "codex-auth",
         "ORCH_EXECUTOR_WORKSPACE_SIZE_LIMIT": "8Gi",
         "ORCH_CODEX_TIMEOUT_SEC": "120",
     }
@@ -227,6 +227,7 @@ def test_launcher_settings_reads_required_environment(
 
     assert settings.max_concurrent_experiments == 2
     assert settings.executor_node_pool == "batch-od"
+    assert settings.codex_home_secret_name == "codex-auth"
     assert settings.active_deadline_sec == 300
     assert settings.ttl_after_finished_sec == 30
 

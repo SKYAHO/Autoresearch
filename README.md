@@ -107,6 +107,7 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 | launcher | `ORCH_GITHUB_APP_SECRET_NAME` | token-minter에만 mount할 branch-writer App Secret 이름 |
 | launcher/token-minter | `ORCH_GITHUB_APP_ID`, `ORCH_GITHUB_APP_INSTALLATION_ID` | Contents write 전용 branch-writer App 공개 좌표 |
 | launcher | `ORCH_MAX_CONCURRENT_EXPERIMENTS` | namespace의 branch-bootstrap Job 동시 실행 상한 |
+| launcher | `ORCH_CODEX_HOME_SECRET_NAME` | Infra가 생성·이름을 소유하는 executor 전용 Codex 인증 Secret 이름 (`auth.json` key만 mode 0440으로 제공) |
 | executor | `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`, `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA` | launcher가 DB에서 복사해 전달하는 불변 branch 좌표 |
 | workspace-preparer | `ORCH_ISSUE_BODY_SHA256` | DB에 봉인한 Issue body의 SHA-256으로 원격 body와 대조하는 값 |
 | token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch/clone/push token-minter에만 보이는 private key mount 경로 |
@@ -115,7 +116,7 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 | codex-worker | `ORCH_CODEX_HOME`, `ORCH_CODEX_TIMEOUT_SEC` | read-only Codex auth source와 실행 상한 |
 
 동일 executor digest는 아래 8개 container가 순서대로 사용합니다. GitHub App private key는
-1·3·7의 token-minter에만, Codex auth source `CODEX_HOME`은 5에만, `ORCH_EXECUTOR_API_TOKEN`은
+1·3·7의 token-minter에만, executor 전용 Codex 인증 Secret의 `CODEX_HOME`은 5에만, `ORCH_EXECUTOR_API_TOKEN`은
 8에만 mount합니다. 5·6에는 GitHub/API credential volume을 mount하지 않습니다.
 
 1. `branch-token-minter`: private key → branch token memory volume
@@ -141,8 +142,9 @@ Infra companion PR에는 다음을 확인 항목으로 옮깁니다. 실제 Secr
 NetworkPolicy 이름·값은 `Autoresearch-infra` 소유이므로 이 저장소에서 단정하지 않습니다.
 
 - GitHub App private key를 branch/clone/push token-minter에만 mount
-- Codex auth `CODEX_HOME`을 codex-worker에만 read-only source로 mount하고, writable
-  `executor-tmp`의 `/tmp`를 per-run scratch에 제공
+- executor 전용 Codex 인증 Secret의 `auth.json` key를 mode 0440으로 codex-worker에만
+  read-only `CODEX_HOME` source로 mount하고, writable `executor-tmp`의 `/tmp`를 per-run
+  scratch에 제공
 - `ORCH_EXECUTOR_API_TOKEN`을 candidate-finalizer에만 mount
 - workspace/token `emptyDir` size limit과 GitHub·OpenAI·internal API 최소 egress
 - immutable launcher/executor/API digest, non-root/seccomp/capability drop/
