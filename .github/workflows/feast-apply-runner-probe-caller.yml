@@ -11,6 +11,27 @@ name: Feast Apply Runner Probe (caller)
 # 비파괴적으로 확인한다. feast-apply.yml을 GKE Job에서 셀프 호스티드 러너
 # 직접 실행으로 전환하기 전 선행 검증용이며, 전환 완료 후 제거를 검토한다
 # (#555).
+#
+# 인프라 저장소 참조가 성립하는 전제(#556 리뷰 이해도 확인): 두 저장소
+# 모두 public(2026-08-06 `gh api repos/SKYAHO/<repo> -q '.visibility'`로
+# 확인) 이라 cross-repo 재사용 워크플로우 호출에 별도 조직 설정이 필요
+# 없다. private로 전환하면 인프라 저장소 쪽에서 이 저장소를 명시
+# 허용해야 한다.
+#
+# 러너 매칭 실패 시 관측(#556 리뷰): `probe` job은 `uses:`로 호출하므로
+# 이 파일에서 `timeout-minutes`를 지정할 수 없다 — 큐 대기 시간은 GitHub
+# Actions의 self-hosted 러너 큐 정책(대기만 24시간 초과 시 자동 취소)을
+# 따른다. 정상이면 스케일셋 리스너가 수 초~수십 초 안에 job을 집어가므로,
+# Actions 실행 화면에서 `probe` job이 2~3분 넘게 "Queued"로 남아 있으면
+# 정상 지연이 아니라 러너 매칭 실패(스케일셋 다운, GitHub App 설치 범위
+# 누락 등)로 보고 수동 취소 후 원인을 조사한다.
+#
+# `@main` 고정 이유(#556 리뷰): 인프라 저장소
+# `feast-apply-runner-probe.yml` 자체 헤더 주석이 caller를 `@main`으로
+# 호출하도록 명시하고 있어 그 컨벤션을 따른다 — 재현성은 태그 고정이
+# 아니라, 검증 결과를 이슈에 기록할 때 그 시점 인프라 저장소
+# `main`의 커밋 SHA(`git rev-parse origin/main`)를 함께 남기는 방식으로
+# 확보한다.
 
 on:
   workflow_dispatch:
@@ -23,6 +44,12 @@ on:
           - prod
         required: true
 
+# contents: read는 checkout이 필요 없는 이 워크플로우에는 실질적으로
+# 미사용이다 — GCS/Redis 접근은 GITHUB_TOKEN이 아니라 러너 Pod의 KSA→GSA
+# Workload Identity(GKE metadata server)로 이뤄지므로(#556 리뷰 이해도
+# 확인), 이 permissions 블록을 넓혀도 GCS 접근 권한에는 영향이 없다.
+# `feast-apply-runner-probe.yml`은 `secrets.*`를 전혀 참조하지 않아
+# `secrets: inherit`도 불필요하다.
 permissions:
   contents: read
 
@@ -31,9 +58,17 @@ jobs:
     uses: SKYAHO/Autoresearch-infra/.github/workflows/feast-apply-runner-probe.yml@main
     with:
       environment: ${{ inputs.environment }}
-      # prod만 Redis Cluster PSC 도달성을 확인한다(negative control로 dev도
-      # 같은 값을 넘겨 실패가 기대값임을 증명할 수도 있지만, 이 caller는
-      # feast-apply.yml이 실제로 쓰는 REDIS_HOST를 그대로 넘겨 dev 러너가
-      # 실수로 prod Redis에 닿는지도 함께 검증한다).
+      # vars 스코프(#556 리뷰 이해도 확인): 이 job은 `uses:`만 있고
+      # `environment:` 키가 없으므로, `vars.*`는 environment-scope가 아니라
+      # 항상 저장소/조직 수준 값으로만 해석된다 — `inputs.environment`가
+      # dev/prod 어느 쪽이어도 이 두 표현식의 평가 결과는 같다(2026-08-06
+      # `gh variable list --env dev`/`--env prod` 확인 결과 REDIS_HOST/PORT는
+      # environment-scope 값이 아예 없고 저장소 수준 값만 존재). 그래서
+      # dev를 선택해도 prod와 동일한 Redis 호스트가 전달되며, 이는 실수가
+      # 아니라 negative control 의도다 — dev 러너가 이 값으로도 도달에
+      # 실패해야 NetworkPolicy 라벨 스코프가 실제로 분리됐음이 증명된다.
+      # 저장소 수준 값이 지워지면 빈 문자열이 전달되는데, 호출되는
+      # 워크플로우는 빈 값을 "성공"이 아니라 "건너뜀"으로 표시한다
+      # (`feast-apply-runner-probe.yml`의 `-z "${REDIS_HOST:-}"` 분기).
       redis_discovery_host: ${{ vars.REDIS_HOST }}
       redis_port: ${{ vars.REDIS_PORT }}
