@@ -49,6 +49,20 @@ class ResultReportError(RuntimeError):
     """판정 결과를 Experiment API 상태로 옮길 수 없는 상태."""
 
 
+class LauncherOwnedExperimentError(ResultReportError):
+    """launcher가 선점할 `CREATED` 실험이라 이 명령이 다룰 수 없다.
+
+    운영 대응이 `TerminalStatusConflictError`와 다르다 — 이쪽은 기다리면 풀린다.
+    """
+
+
+class TerminalStatusConflictError(ResultReportError):
+    """이미 결론이 난 실험이라 다른 결론으로 덮어쓸 수 없다.
+
+    기다려도 풀리지 않는다 — 대상 실험을 잘못 짚었는지 확인해야 한다.
+    """
+
+
 def target_status(result: PairedExperimentResult) -> str:
     """판정 결과가 도달해야 할 터미널 상태를 반환한다."""
     try:
@@ -103,9 +117,11 @@ def plan_transitions(current_status: str, target: str) -> tuple[str, ...]:
     if current_status == target:
         return ()
     if current_status in TERMINAL_STATUSES:
-        raise ResultReportError("이미 종료된 실험의 결론을 덮어쓰지 않습니다.")
+        raise TerminalStatusConflictError(
+            "이미 종료된 실험의 결론을 덮어쓰지 않습니다."
+        )
     if current_status == STATUS_CREATED:
-        raise ResultReportError(
+        raise LauncherOwnedExperimentError(
             "CREATED 실험은 launcher가 RUNNING으로 선점합니다 — 직접 전이하지 않습니다."
         )
     if current_status not in (STATUS_RUNNING, STATUS_EVALUATING):

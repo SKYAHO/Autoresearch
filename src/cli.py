@@ -59,7 +59,9 @@ from src.pipeline.experiment_result_report import (  # noqa: E402
     STATUS_ERROR,
     STATUS_EVALUATING,
     STATUS_RUNNING,
+    LauncherOwnedExperimentError,
     ResultReportError,
+    TerminalStatusConflictError,
     build_log_content,
     build_log_idempotency_key,
     build_metric_snapshot,
@@ -835,6 +837,22 @@ def compare_paired_experiment(
         raise typer.Exit(code=1)
 
 
+_DEFAULT_REPORT_FAILURE = "판정 결과를 Experiment API에 반영하지 못했습니다."
+
+# 종료 코드 1이 나오는 경우들은 운영 대응이 서로 다르다. 실패 로그만 보고 무엇을 해야
+# 하는지 알 수 있도록 사유별 고정 진단을 붙인다(payload는 싣지 않는다).
+_REPORT_FAILURE_DIAGNOSTICS = {
+    LauncherOwnedExperimentError: (
+        "CREATED 실험은 launcher가 RUNNING으로 선점합니다 — 선점된 뒤 다시 실행해 "
+        "주세요."
+    ),
+    TerminalStatusConflictError: (
+        "이미 결론이 난 실험이라 덮어쓰지 않았습니다 — --experiment-id가 맞는지 "
+        "확인해 주세요."
+    ),
+}
+
+
 def _demote_to_error(
     client: ExperimentClient, experiment_id: str, reached: Optional[str]
 ) -> None:
@@ -928,7 +946,7 @@ def report_experiment_result(
         _demote_to_error(client, experiment_id, reached)
         typer.echo(
             f"[결과 반영 실패] {type(error).__name__}: "
-            "판정 결과를 Experiment API에 반영하지 못했습니다.",
+            f"{_REPORT_FAILURE_DIAGNOSTICS.get(type(error), _DEFAULT_REPORT_FAILURE)}",
             err=True,
         )
         raise typer.Exit(code=1) from error

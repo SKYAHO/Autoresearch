@@ -2016,6 +2016,10 @@ def test_report_result_refuses_created_experiment(tmp_path, monkeypatch) -> None
     assert outcome.exit_code == 1
     assert stub.calls == []
     assert stub.status == "CREATED"
+    # 운영 대응이 다른 실패이므로 진단이 구분돼야 한다 — 이쪽은 기다리면 풀린다.
+    output = unstyle(outcome.output)
+    assert "LauncherOwnedExperimentError" in output
+    assert "선점된 뒤 다시 실행" in output
 
 
 def test_report_result_demotes_to_error_on_failure(tmp_path, monkeypatch) -> None:
@@ -2046,6 +2050,10 @@ def test_report_result_refuses_terminal_without_touching_experiment(
     assert outcome.exit_code == 1
     assert stub.calls == []
     assert stub.status == "FAILED"
+    # CREATED 거부와 같은 종료 코드지만 대응이 다르다 — 기다려도 풀리지 않는다.
+    output = unstyle(outcome.output)
+    assert "TerminalStatusConflictError" in output
+    assert "--experiment-id가 맞는지" in output
 
 
 def test_report_result_rejects_invalid_result_json(tmp_path, monkeypatch) -> None:
