@@ -1,5 +1,7 @@
 # Executor Codex Auth Secret Implementation Plan
 
+> 상태: 구현 완료
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Experiment Executor의 Codex 인증 원본을 RWO PVC에서 Kubernetes Secret으로 바꿔 서로 다른 노드의 여러 Experiment Pod가 동시에 시작될 수 있게 한다.
@@ -36,7 +38,7 @@
 - Consumes: Infra가 experiment namespace에 생성하는 Codex 인증 Secret 이름.
 - Produces: `LauncherSettings.codex_home_secret_name: str`, 환경 변수 `ORCH_CODEX_HOME_SECRET_NAME`, `V1SecretVolumeSource(secret_name=..., items=[auth.json], default_mode=0o440)`.
 
-- [ ] **Step 1: Secret 기반 설정과 manifest의 실패 테스트 작성**
+- [x] **Step 1: Secret 기반 설정과 manifest의 실패 테스트 작성**
 
   `tests/test_experiment_launcher.py`의 `_settings()`와 환경 변수 fixture를 `codex_home_secret_name="codex-auth"`, `ORCH_CODEX_HOME_SECRET_NAME=codex-auth`로 바꾼다. 환경 로딩 결과가 `settings.codex_home_secret_name == "codex-auth"`인지 단언한다.
 
@@ -57,7 +59,7 @@
   } == {"codex-worker"}
   ```
 
-- [ ] **Step 2: RED 확인**
+- [x] **Step 2: RED 확인**
 
   실행:
 
@@ -69,7 +71,7 @@
 
   기대: `LauncherSettings`가 `codex_home_secret_name`을 받지 못하거나 manifest의 `codex-home`이 여전히 PVC라서 실패한다.
 
-- [ ] **Step 3: 최소 구현**
+- [x] **Step 3: 최소 구현**
 
   `agent_orchestration/launcher/config.py`에서 모듈 docstring의 `PVC`를 `Secret`으로 바꾸고 다음 이름을 일관되게 교체한다.
 
@@ -94,7 +96,7 @@
 
   기존 `codex-worker`의 read-only mount와 다른 컨테이너의 mount 부재는 변경하지 않는다.
 
-- [ ] **Step 4: GREEN 및 회귀 테스트 확인**
+- [x] **Step 4: GREEN 및 회귀 테스트 확인**
 
   실행:
 
@@ -107,11 +109,11 @@
 
   기대: 전체 통과.
 
-- [ ] **Step 5: 환경·운영 문서 계약 갱신**
+- [x] **Step 5: 환경·운영 문서 계약 갱신**
 
   `.env.example`은 `ORCH_CODEX_HOME_PVC_NAME`을 `ORCH_CODEX_HOME_SECRET_NAME`으로 바꾸고 값은 비워 둔다. README, project reference와 기존 Phase 2 plan은 executor 인증 원본이 전용 Secret이며 실제 이름은 Infra가 소유한다고 명시한다. Runner OAuth PVC 설명은 유지한다.
 
-- [ ] **Step 6: 전체 검증**
+- [x] **Step 6: 전체 검증**
 
   실행:
 
@@ -123,7 +125,7 @@
 
   기대: pytest, Ruff, diff check 모두 통과하고 Git diff에 Secret 값·`auth.json` 파일·무관한 변경이 없다.
 
-- [ ] **Step 7: 커밋**
+- [x] **Step 7: 커밋**
 
   ```bash
   git add agent_orchestration/launcher/config.py \
