@@ -134,29 +134,9 @@ def test_release_workflow_publishes_api_and_runner_digests() -> None:
         assert 'org.opencontainers.image.revision="${VCS_REF}"' in dockerfile
 
 
-@pytest.mark.parametrize(
-    ("dockerfile_path", "runtime_package", "command_module"),
-    (
-        (
-            LAUNCHER_DOCKERFILE,
-            "COPY agent_orchestration/launcher ./agent_orchestration/launcher",
-            "agent_orchestration.launcher.main",
-        ),
-        (
-            EXECUTOR_DOCKERFILE,
-            "COPY agent_orchestration/executor ./agent_orchestration/executor",
-            "agent_orchestration.executor.main",
-        ),
-    ),
-)
-def test_branch_job_images_are_locked_non_root_runtime_images(
-    dockerfile_path: Path,
-    runtime_package: str,
-    command_module: str,
-) -> None:
-    """Branch Job 이미지는 고정 의존성·비루트 실행과 역할별 command를 제공한다."""
-    assert dockerfile_path.is_file()
-    dockerfile = dockerfile_path.read_text(encoding="utf-8")
+def test_launcher_image_is_a_locked_non_root_runtime_image() -> None:
+    """Launcher는 Phase 1의 최소 runtime과 역할별 command를 유지한다."""
+    dockerfile = LAUNCHER_DOCKERFILE.read_text(encoding="utf-8")
 
     assert "FROM ghcr.io/astral-sh/uv:0.11.26 AS lock-export" in dockerfile
     assert '"--only-group", "orchestration"' in dockerfile
@@ -164,12 +144,71 @@ def test_branch_job_images_are_locked_non_root_runtime_images(
     assert "adduser --uid 10001 --gid 10001" in dockerfile
     assert "USER appuser" in dockerfile
     assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile
-    assert runtime_package in dockerfile
-    assert f'CMD ["python", "-m", "{command_module}"]' in dockerfile
+    assert "COPY agent_orchestration/launcher ./agent_orchestration/launcher" in dockerfile
+    assert 'CMD ["python", "-m", "agent_orchestration.launcher.main"]' in dockerfile
     assert "ARG VCS_REF=unknown" in dockerfile
     assert 'org.opencontainers.image.revision="${VCS_REF}"' in dockerfile
     assert "@openai/codex" not in dockerfile
     assert "node:" not in dockerfile
+
+
+def test_executor_image_seals_the_phase2_runtime_contract() -> None:
+    """Executor는 clone source와 독립된 Git·uv·Codex 검증 runtime을 제공한다.
+
+    이 테스트가 잡는 변경: executor가 dev 검증 도구, Codex 또는 image-봉인 issue
+    parser 없이 빌드되어 Stage 6의 어느 container라도 실행하지 못하는 회귀.
+    """
+    dockerfile = EXECUTOR_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "FROM ghcr.io/astral-sh/uv:0.11.26 AS lock-export" in dockerfile
+    assert '"--group", "dev"' in dockerfile
+    assert '"--no-group", "feast"' in dockerfile
+    assert "FROM node:22.16.0-slim AS codex-cli" in dockerfile
+    assert "@openai/codex@0.146.0" in dockerfile
+    assert "apt-get install --yes --no-install-recommends git" in dockerfile
+    assert "COPY --from=lock-export /uv /usr/local/bin/uv" in dockerfile
+    assert "UV_PROJECT_ENVIRONMENT=/opt/autoresearch-venv" in dockerfile
+    assert "PATH=/opt/autoresearch-venv/bin:${PATH}" in dockerfile
+    assert "uv venv /opt/autoresearch-venv" in dockerfile
+    assert "uv pip install --python /opt/autoresearch-venv/bin/python" in dockerfile
+    assert "COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node" in dockerfile
+    assert "COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules" in dockerfile
+    assert "COPY tools/__init__.py ./tools/" in dockerfile
+    assert "COPY tools/auto_research_issue_branch.py ./tools/" in dockerfile
+    assert "COPY agent_orchestration/executor ./agent_orchestration/executor" in dockerfile
+    assert "COPY . ." not in dockerfile
+    assert "COPY autoresearch" not in dockerfile
+    assert "COPY src" not in dockerfile
+    assert ".env" not in dockerfile
+    assert "auth.json" not in dockerfile
+    assert "addgroup --gid 10001 appuser" in dockerfile
+    assert "adduser --uid 10001 --gid 10001" in dockerfile
+    assert "USER appuser" in dockerfile
+
+
+def test_executor_release_verification_runs_phase2_toolchain_and_entrypoints() -> None:
+    """Release가 immutable executor digest에서 실제 Stage 6 runtime을 점검한다.
+
+    이 테스트가 잡는 변경: digest는 발행하지만 Git·uv·Node·Codex 또는 Stage 6
+    module import를 검증하지 않아 배포 후에만 executor 실패가 드러나는 회귀.
+    """
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    start = workflow.index("  publish-agent-orchestration-executor-image:")
+    end = workflow.index("  promote-airflow-digest:", start)
+    executor_job = workflow[start:end]
+
+    for command in ("git --version", "uv --version", "node --version", "codex --version"):
+        assert command in executor_job
+    for module in (
+        "agent_orchestration.executor.main",
+        "agent_orchestration.executor.token_minter",
+        "agent_orchestration.executor.workspace",
+        "agent_orchestration.executor.codex_worker",
+        "agent_orchestration.executor.verifier",
+        "agent_orchestration.executor.finalizer",
+        "agent_orchestration.executor.phase2",
+    ):
+        assert module in executor_job
 
 
 def _load_release_workflow() -> dict[str, object]:

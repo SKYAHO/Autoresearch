@@ -773,7 +773,7 @@ branch-token-minter
 **산출물:** immutable image와 명시적인 Infra 입력 계약, 전체 CI 증거, 새 Experiment smoke
 체크리스트.
 
-- [ ] **7.1 image 계약 실패 테스트 작성**
+- [x] **7.1 image 계약 실패 테스트 작성**
 
   `tests/test_agent_orchestration_container.py`에서 executor image에 다음이 있는지 검사한다.
 
@@ -787,18 +787,18 @@ branch-token-minter
     동명 파일보다 이 image copy를 issue parser로 사용.
   - UID/GID 10001, repository 소스·`.env`·`auth.json` 미포함.
 
-- [ ] **7.2 image 테스트 실패 확인**
+- [x] **7.2 image 테스트 실패 확인**
 
   ```bash
   uv run python -m pytest tests/test_agent_orchestration_container.py -v
   ```
 
-- [ ] **7.3 Dockerfile와 release workflow 구현**
+- [x] **7.3 Dockerfile와 release workflow 구현**
 
   lock export는 project 기본 의존성과 `dev` group을 포함하고 feast group은 제외한다.
   Codex 인증은 build context에서 COPY하지 않고 runtime `CODEX_HOME` mount만 사용한다.
 
-- [ ] **7.4 README·정본 문서 갱신**
+- [x] **7.4 README·정본 문서 갱신**
 
   `README.md`와 `.claude/docs/agent-project-reference.md`에 producer → exact handoff value →
   consumer → validation → permissions 순서로 다음을 기록한다.
@@ -810,10 +810,11 @@ branch-token-minter
   - Infra가 소유하는 실제 Secret/PVC/resource/NetworkPolicy 이름과 값은 이 저장소에서
     단정하지 않는다.
 
-- [ ] **7.5 Infra companion handoff 작성**
+- [x] **7.5 Infra companion handoff 작성**
 
-  Autoresearch PR 본문에 companion 범위를 체크리스트로 남긴다. 실제 Infra 이슈·브랜치·PR
-  생성은 Autoresearch 코드 PR 승인 후 별도 작업으로 수행한다.
+  Autoresearch PR 본문에 아래 companion 범위를 그대로 옮긴다. 실제 Infra 이슈·브랜치·PR
+  생성은 Autoresearch 코드 PR 승인 후 별도 작업으로 수행한다. 이 목록은 실제 Infra
+  이름·값을 선언하지 않는 PR 본문용 draft다.
 
   ```text
   - GitHub App private key: branch/clone/push token-minter만 mount
@@ -825,7 +826,7 @@ branch-token-minter
   - non-root/seccomp/capability drop/automountServiceAccountToken=false
   ```
 
-- [ ] **7.6 좁은 검증 실행**
+- [x] **7.6 좁은 검증 실행**
 
   ```bash
   uv run python -m pytest \
@@ -840,7 +841,7 @@ branch-token-minter
     tests/test_experiment_executor_integration.py -v
   ```
 
-- [ ] **7.7 전체 검증 실행**
+- [x] **7.7 전체 검증 실행**
 
   ```bash
   uv run python -m pytest -v
@@ -864,7 +865,7 @@ branch-token-minter
   Codex/verifier mount·환경·로그의 GitHub/API credential == 없음
   ```
 
-- [ ] **7.9 Stage 7 커밋**
+- [x] **7.9 Stage 7 커밋**
 
   ```bash
   git add deploy/agent_orchestration/executor.Dockerfile \
