@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from agent_orchestration.app.experiments.exceptions import (
+    CandidateConflictError,
     ExperimentNotFoundError,
     ExperimentStepNotFoundError,
     IdempotencyConflictError,
@@ -65,6 +66,7 @@ from agent_orchestration.app.experiments.repository import (
     find_step_by_idempotency_key,
 )
 from agent_orchestration.app.experiments.schemas import (
+    CandidateReportRequest,
     ExperimentCreate,
     ExperimentEventCreate,
     ExperimentLogCreate,
@@ -323,6 +325,61 @@ def update_experiment_status(
         idempotency_key=f"status-update:{uuid.uuid4()}",
         check_idempotency=False,
     )
+    return experiment
+
+
+def record_candidate(
+    session: Session,
+    experiment_id: uuid.UUID,
+    request: CandidateReportRequest,
+) -> Experiment:
+    """검증된 candidate SHA를 한 번 기록하고 EVALUATING으로 원자 전이한다.
+
+    executor가 제출한 이슈·branch·baseline 좌표가 발행 시 봉인한 Experiment와 같은지
+    확인한다. 같은 candidate 보고의 재시도는 기존 event를 먼저 조회해, 이미
+    EVALUATING 상태여도 성공으로 반환한다.
+    """
+    payload = {
+        "issue_number": request.issue_number,
+        "issue_branch": request.issue_branch,
+        "base_dev_sha": request.base_dev_sha,
+        "candidate_sha": request.candidate_sha,
+    }
+    fingerprint = _request_fingerprint(payload)
+    event_key = f"executor-candidate:{experiment_id}"
+    with session.begin():
+        experiment = find_experiment(session, experiment_id, for_update=True)
+        if experiment is None:
+            raise ExperimentNotFoundError(experiment_id)
+
+        existing_event = find_event_by_idempotency_key(session, experiment_id, event_key)
+        if existing_event is not None:
+            if existing_event.request_fingerprint != fingerprint:
+                raise IdempotencyConflictError(event_key)
+            return experiment
+
+        if (
+            experiment.candidate_sha not in (None, request.candidate_sha)
+            or experiment.issue_number != request.issue_number
+            or experiment.issue_branch != request.issue_branch
+            or experiment.base_dev_sha != request.base_dev_sha
+        ):
+            raise CandidateConflictError()
+
+        current = ExperimentStatus(experiment.status)
+        validate_transition(current, ExperimentStatus.EVALUATING)
+        experiment.candidate_sha = request.candidate_sha
+        experiment.status = ExperimentStatus.EVALUATING.value
+        session.add(
+            ExperimentEvent(
+                experiment_id=experiment.id,
+                idempotency_key=event_key,
+                request_fingerprint=fingerprint,
+                from_status=current.value,
+                to_status=ExperimentStatus.EVALUATING.value,
+            )
+        )
+        session.flush()
     return experiment
 
 

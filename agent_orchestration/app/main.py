@@ -5,8 +5,8 @@
 결과를 PostgreSQL에 보존해 다음 단계의 실험 분석 단계로 넘긴다.
 
 [기능]
-환경 설정과 DB 스키마를 준비하고 `/healthcheck`, `/chat`, 실험 워크벤치 endpoint를
-노출한다.
+환경 설정과 DB 스키마를 준비하고 `/healthcheck`, `/chat`, 실험 워크벤치 endpoint와
+executor 전용 candidate 보고 endpoint를 노출한다.
 `/chat`은 외부 연결 종료 시 진행 중인 LLM task를 취소하고, 선택된 LLM 백엔드의 응답
 및 지연 지표, 토큰 사용량을 영속화 후 반환한다.
 
@@ -34,6 +34,7 @@ from agent_orchestration.app.database import (
 )
 from agent_orchestration.app.db import ensure_schema, save_interaction
 from agent_orchestration.app.experiments.exceptions import (
+    CandidateConflictError,
     ExperimentNotFoundError,
     ExperimentStepNotFoundError,
     IdempotencyConflictError,
@@ -43,7 +44,10 @@ from agent_orchestration.app.experiments.exceptions import (
     StepAlreadyFinalizedError,
 )
 from agent_orchestration.app.experiments.github_issues import GitHubIssueError
-from agent_orchestration.app.experiments.router import router as experiment_router
+from agent_orchestration.app.experiments.router import (
+    executor_router,
+    router as experiment_router,
+)
 from agent_orchestration.app.experiments.transition_service import InvalidTransitionError
 from agent_orchestration.app.llm import LLMBackendError, generate_response
 from agent_orchestration.contracts import LLMBackendOverloadedError
@@ -149,6 +153,28 @@ def create_app() -> FastAPI:
                 detail="Invalid orchestration API token.",
             )
 
+    def _require_executor_token(
+        x_orch_executor_token: Annotated[
+            str | None,
+            Header(
+                alias="X-Orch-Executor-Token",
+                description="executor 전용 오케스트레이션 API 토큰",
+            ),
+        ] = None,
+    ) -> None:
+        """executor 전용 내부 API의 별도 토큰을 검증한다."""
+        runtime_settings = _require_runtime()
+        expected_token = runtime_settings.executor_api_token
+        if (
+            not x_orch_executor_token
+            or not expected_token
+            or not _api_tokens_match(x_orch_executor_token, expected_token)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid orchestration executor API token.",
+            )
+
     @app.exception_handler(ExperimentNotFoundError)
     @app.exception_handler(ExperimentStepNotFoundError)
     @app.exception_handler(InvalidCursorError)
@@ -160,12 +186,14 @@ def create_app() -> FastAPI:
         return JSONResponse(status_code=status.HTTP_404_NOT_FOUND, content={"detail": str(error)})
 
     @app.exception_handler(InvalidTransitionError)
+    @app.exception_handler(CandidateConflictError)
     @app.exception_handler(IdempotencyConflictError)
     @app.exception_handler(PromotionRequiresDedicatedEndpointError)
     @app.exception_handler(StepAlreadyFinalizedError)
     def handle_experiment_conflict(
         _request: Request,
         error: InvalidTransitionError
+        | CandidateConflictError
         | IdempotencyConflictError
         | PromotionRequiresDedicatedEndpointError
         | StepAlreadyFinalizedError,
@@ -351,6 +379,10 @@ def create_app() -> FastAPI:
         experiment_router,
         dependencies=[Depends(_require_orchestration_token)],
     )
+    app.include_router(
+        executor_router,
+        dependencies=[Depends(_require_executor_token)],
+    )
 
     default_openapi = app.openapi
 
@@ -362,7 +394,10 @@ def create_app() -> FastAPI:
                 if not isinstance(operation, dict):
                     continue
                 for parameter in operation.get("parameters", []):
-                    if parameter["name"] == "X-Orch-Token" and parameter["in"] == "header":
+                    if parameter["name"] in {
+                        "X-Orch-Token",
+                        "X-Orch-Executor-Token",
+                    } and parameter["in"] == "header":
                         parameter["required"] = True
                         parameter["schema"] = {"type": "string"}
         return schema

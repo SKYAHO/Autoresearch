@@ -38,6 +38,7 @@ _SETTINGS_ENV_VARS = (
     "OPENAI_MODEL",
     "OPENAI_TIMEOUT_SEC",
     "ORCH_API_TOKEN",
+    "ORCH_EXECUTOR_API_TOKEN",
     "ORCH_RUNNER_TOKEN",
     "ORCH_DATABASE_URL",
     "ORCH_DB_CONNECT_TIMEOUT_SEC",
@@ -61,6 +62,9 @@ def clear_agent_orchestration_environment(monkeypatch: pytest.MonkeyPatch) -> No
     for name in _SETTINGS_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ORCH_API_TOKEN", _TEST_API_TOKEN)
+    monkeypatch.setenv(
+        "ORCH_EXECUTOR_API_TOKEN", "test-executor-token-must-be-at-least-32-characters"
+    )
     monkeypatch.setenv("CODEX_HOME", "/tmp/test-codex-home")
 
 
@@ -190,6 +194,37 @@ def test_load_settings_codex_runner_rejects_shared_api_and_runner_tokens(
     monkeypatch.setenv("ORCH_API_TOKEN", shared_token)
     monkeypatch.setenv("ORCH_RUNNER_TOKEN", shared_token)
     monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://orch@localhost:5432/orch")
+
+    with pytest.raises(ValueError, match="must differ"):
+        load_settings()
+
+
+def test_load_settings_requires_dedicated_executor_api_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """executor 내부 API는 일반 API와 별도의 필수 토큰 없이는 기동하지 않는다."""
+    _set_required_env(monkeypatch)
+    monkeypatch.delenv("ORCH_EXECUTOR_API_TOKEN")
+
+    with pytest.raises(ValueError, match="ORCH_EXECUTOR_API_TOKEN"):
+        load_settings()
+
+
+@pytest.mark.parametrize("shared_with", ("ORCH_API_TOKEN", "ORCH_RUNNER_TOKEN"))
+def test_load_settings_rejects_executor_token_shared_with_other_api_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    shared_with: str,
+) -> None:
+    """일반 API·Runner·executor 인증 경계를 같은 토큰으로 합치지 않는다."""
+    shared_token = "test-shared-token-must-be-at-least-32-characters"
+    _set_required_env(monkeypatch)
+    monkeypatch.setenv("ORCH_EXECUTOR_API_TOKEN", shared_token)
+    if shared_with == "ORCH_API_TOKEN":
+        monkeypatch.setenv("ORCH_API_TOKEN", shared_token)
+    else:
+        monkeypatch.setenv("LLM_BACKEND", "codex_runner")
+        monkeypatch.setenv("CODEX_RUNNER_URL", "http://runner:8080")
+        monkeypatch.setenv("ORCH_RUNNER_TOKEN", shared_token)
 
     with pytest.raises(ValueError, match="must differ"):
         load_settings()
