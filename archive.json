@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-06T06:00:09Z",
+  "generated_at": "2026-08-06T06:17:47Z",
   "reports": [
+    {
+      "number": 556,
+      "title": "feat: feast-apply-runner-probe caller workflow 추가",
+      "author": "hyeongyu-data",
+      "merged_at": "2026-08-06T06:17:31Z",
+      "summary_ko": [
+        "셀프 호스티드 러너 스케일셋의 네트워크 도달성을 검증하기 위한 수동 실행 워크플로우를 추가하였습니다.",
+        "인프라 저장소의 재사용 워크플로우를 호출하여 GCS 접근 및 Redis PSC 도달성을 비파괴적으로 테스트합니다.",
+        "앱 저장소 실행 컨텍스트를 부여하여 무한 대기 현상 없이 셀프 호스티드 러너가 정상 작동하는지 확인합니다."
+      ],
+      "report_url": "pr/556/"
+    },
     {
       "number": 547,
       "title": "feat: 실험 브랜치 Bootstrap Kubernetes Job Phase 1",
