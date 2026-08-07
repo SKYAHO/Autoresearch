@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T08:25:10Z",
+  "generated_at": "2026-08-07T08:31:13Z",
   "reports": [
+    {
+      "number": 587,
+      "title": "fix: Phase 2 Codex에 구현을 명시한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-07T08:30:54Z",
+      "summary_ko": [
+        "자율 실험 에이전트(Phase 2 Codex)의 프롬프트에 기술 요구사항을 실제 코드로 즉시 구현하라는 지시를 명시했습니다.",
+        "요구 기능이 이미 구현된 경우 단순 설명 종료 대신 회귀 테스트를 추가하거나 강화하도록 작동 규칙을 보완했습니다.",
+        "프롬프트 변경 사항을 검증하는 단단한 단위 테스트를 추가하여 워커 계약 준수를 고정했습니다."
+      ],
+      "report_url": "pr/587/"
+    },
     {
       "number": 579,
       "title": "feat: 단일 파드에서 baseline·candidate 학습을 순서대로 실행한다 (#574)",
