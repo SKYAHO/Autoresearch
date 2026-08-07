@@ -59,6 +59,13 @@ _REQUIRED_SECTIONS = frozenset(_HEADING_NAMES) - {
     "선행 연구 참조",
     "보조 관측 지표",
     "결과 (에이전트가 채웁니다)",
+    # 아래는 #570에서 선택으로 내렸다. Streamlit 경로가 가설을 마크다운 한 덩어리로
+    # 받으면서 이 heading들이 본문에 없을 수 있다. GitHub Issue Form 경로는 여전히
+    # 값을 채워 보내므로, 있으면 그대로 파싱하고 없으면 미선언으로 읽는다.
+    "변경할 피처 · 모델",
+    "주 지표 이름",
+    "주 지표 방향",
+    "최소 주 지표 개선폭",
 }
 _COMPARISONS = frozenset(
     {
@@ -110,10 +117,12 @@ class IssueInput:
     issue_number: int
     issue_branch: str
     hypothesis: str
+    # 주 지표 3필드와 `change`는 미선언일 수 있습니다(#570). 주 지표가 없는 실험은
+    # `criteria_id`가 값 없는 상태로 봉인되어 승격 판정을 받지 못합니다.
     change: str
-    primary_metric_name: str
-    primary_metric_direction: str
-    minimum_primary_delta: Decimal
+    primary_metric_name: str | None
+    primary_metric_direction: str | None
+    minimum_primary_delta: Decimal | None
     guardrail_metric_name: str | None
     guardrail_metric_direction: str
     maximum_guardrail_regression: Decimal | None
@@ -424,6 +433,12 @@ def _result_set_id(
 
 def _is_qualified_candidate(candidate: CompletionCandidate, criteria: IssueInput) -> bool:
     """주 지표 최소 개선과 optional guardrail 최대 악화를 모두 판정합니다."""
+    # 주 지표를 선언하지 않은 실험은 통과 기준 자체가 없으므로 어떤 후보도 승격하지
+    # 않습니다(#570). 여기서 끊지 않으면 아래 비교가 `None`과 만나 TypeError로
+    # 죽고, 그 실패는 판정 결과가 아니라 워크플로 오류로 보입니다.
+    if criteria.minimum_primary_delta is None:
+        return False
+
     with localcontext() as decimal_context:
         decimal_context.prec = _SELECTION_DECIMAL_PRECISION
         primary_delta = (
@@ -473,18 +488,13 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
     _validate_required_sections(sections)
 
     hypothesis = _required_content(sections, "연구 가설")
-    change = _required_content(sections, "변경할 피처 · 모델")
-    primary_metric_name = _metric_name(
-        _required_content(sections, "주 지표 이름"),
-        "primary_metric_name",
-    )
-    primary_metric_direction = _metric_direction(
-        _required_content(sections, "주 지표 방향"),
-        "primary_metric_direction",
-    )
-    minimum_primary_delta = _non_negative_decimal(
-        _required_content(sections, "최소 주 지표 개선폭"),
-        "minimum_primary_delta",
+    change = sections.get("변경할 피처 · 모델", "").strip()
+    primary_metric_name, primary_metric_direction, minimum_primary_delta = (
+        _parse_primary_metric(
+            sections.get("주 지표 이름", "").strip(),
+            sections.get("주 지표 방향", "").strip(),
+            sections.get("최소 주 지표 개선폭", "").strip(),
+        )
     )
     guardrail_metric_name, guardrail_metric_direction, maximum_guardrail_regression = (
         _parse_guardrail(
@@ -524,11 +534,18 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
     issue_branch = branch_name_for(issue_number, issue_title)
     secondary_metrics = sections.get("보조 관측 지표", "").strip()
 
+    # 미선언 주 지표는 `_NONE_VALUE`로 봉인합니다 — guardrail이 쓰는 표현과 같습니다.
+    # `None`을 그대로 넣지 않는 이유는 JSON `null`과 문자열 `"없음"`이 서로 다른 해시를
+    # 내는데, 두 표현이 섞이면 같은 미선언 상태가 다른 `criteria_id`를 갖기 때문입니다.
     criteria_id = _identifier(
         {
-            "primary_metric_name": primary_metric_name,
-            "primary_metric_direction": primary_metric_direction,
-            "minimum_primary_delta": _decimal_text(minimum_primary_delta),
+            "primary_metric_name": primary_metric_name or _NONE_VALUE,
+            "primary_metric_direction": primary_metric_direction or _NOT_APPLICABLE,
+            "minimum_primary_delta": (
+                _decimal_text(minimum_primary_delta)
+                if minimum_primary_delta is not None
+                else _NONE_VALUE
+            ),
             "guardrail_metric_name": guardrail_metric_name or _NONE_VALUE,
             "guardrail_metric_direction": guardrail_metric_direction,
             "maximum_guardrail_regression": (
@@ -632,6 +649,29 @@ def _non_negative_decimal(value: str, field_name: str) -> Decimal:
     if decimal < 0:
         raise ValueError(f"{field_name} must be non-negative")
     return decimal
+
+
+def _parse_primary_metric(
+    name: str,
+    direction: str,
+    minimum_delta: str,
+) -> tuple[str | None, str | None, Decimal | None]:
+    """주 지표 미선언 또는 완전한 metric 계약만 반환합니다.
+
+    세 heading이 모두 없으면 미선언입니다(#570). 일부만 있으면 부분 선언을 어느
+    쪽으로도 읽을 수 없으므로 fail-closed로 끊습니다 — Guardrail이 sentinel 세 값을
+    함께 요구하는 것과 같은 이유입니다.
+    """
+    provided = (name != "", direction != "", minimum_delta != "")
+    if not any(provided):
+        return None, None, None
+    if not all(provided):
+        raise ValueError("primary metric sections must be declared together")
+
+    metric_name = _metric_name(name, "primary_metric_name")
+    metric_direction = _metric_direction(direction, "primary_metric_direction")
+    delta = _non_negative_decimal(minimum_delta, "minimum_primary_delta")
+    return metric_name, metric_direction, delta
 
 
 def _parse_guardrail(

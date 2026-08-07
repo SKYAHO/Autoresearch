@@ -4,9 +4,9 @@
 Streamlit 위젯 렌더링은 담당하지 않는다 — `agent_orchestration.ui.views`는 streamlit
 의존성이 필요해 여기서 import하지 않는다.
 
-UI 이미지는 `issue_authoring.py`를 포함하지 않아 옵션 값을 import하지 못하고 복제한다.
-그 복제본이 서버와 어긋나면 사용자가 채운 값이 422로 돌아오므로, 동일성을 여기서
-고정한다.
+UI 이미지는 `issue_authoring.py`를 포함하지 않아 서버 모델을 import하지 못하고 보낼
+값을 직접 조립한다. 그 조립 결과가 서버와 어긋나면 사용자가 채운 값이 422로 돌아오므로,
+`to_fields()`가 서버 검증을 통과한다는 것을 여기서 고정한다.
 """
 
 from __future__ import annotations
@@ -15,34 +15,15 @@ from typing import Any
 
 import pytest
 
-from agent_orchestration.app.experiments.issue_authoring import (
-    SCOPE_LABELS,
-    IssueSubmission,
-)
+from agent_orchestration.app.experiments.issue_authoring import IssueSubmission
 from agent_orchestration.ui.client import ExperimentClient
-from agent_orchestration.ui.models import (
-    METRIC_DIRECTIONS,
-    NONE_VALUE,
-    NOT_APPLICABLE,
-    SCOPE_CHOICES,
-    IssuePublication,
-    Submission,
-)
+from agent_orchestration.ui.models import IssuePublication, Submission
 
 
 def _submission(**overrides: Any) -> Submission:
     payload: dict[str, Any] = {
         "title": "views per day ratio feature",
-        "hypothesis": "비율 피처가 ROC-AUC를 높인다.",
-        "related_work": "",
-        "change": "- 추가 피처: views_per_day = views / (days + 1)",
-        "primary_metric_name": "roc_auc",
-        "primary_metric_direction": "higher_is_better",
-        "minimum_primary_delta": "0.002",
-        "guardrail_metric_name": NONE_VALUE,
-        "guardrail_metric_direction": NOT_APPLICABLE,
-        "maximum_guardrail_regression": NONE_VALUE,
-        "secondary_metrics": "",
+        "hypothesis": "# 주제\n\n비율 피처가 ROC-AUC를 높인다.",
         "allowed_scope": (),
     }
     payload.update(overrides)
@@ -54,54 +35,55 @@ def test_form_values_are_accepted_by_the_server_contract() -> None:
     IssueSubmission.model_validate(_submission().to_fields())
 
 
-def test_declared_guardrail_round_trips() -> None:
-    """guardrail 세 값을 함께 채운 제출도 서버 검증을 통과한다."""
-    fields = _submission(
-        guardrail_metric_name="logloss",
-        guardrail_metric_direction="lower_is_better",
-        maximum_guardrail_regression="0.001",
-    ).to_fields()
+def test_submission_without_metrics_is_accepted(
+) -> None:
+    """지표를 하나도 보내지 않아도 발행 요청이 만들어져야 한다(#570).
 
-    IssueSubmission.model_validate(fields)
+    이 성질이 깨지면 마크다운 자유 서술만 채운 사용자가 발행 자체를 못 한다.
+    """
+    fields = _submission().to_fields()
+
+    assert "primary_metric_name" not in fields
+    submission = IssueSubmission.model_validate(fields)
+    assert submission.primary_metric_name == ""
+    assert submission.change == ""
 
 
-def test_metric_direction_options_match_the_server() -> None:
-    """화면 문구는 UI 소유지만 전송 값은 서버 계약이다."""
-    for value in METRIC_DIRECTIONS.values():
+def test_to_fields_only_sends_keys_the_server_knows() -> None:
+    """서버가 모르는 키를 보내면 `extra="forbid"`가 422로 거부한다."""
+    assert set(_submission().to_fields()) <= set(IssueSubmission.model_fields)
+
+
+def test_markdown_hypothesis_round_trips_unchanged() -> None:
+    """마크다운 본문이 전송 과정에서 손상되면 이슈에 다른 글이 실린다."""
+    body = "# 주제\n\n- `7d_click` 추가\n\n## 검증\n\n1. 재학습\n2. 비교"
+
+    submission = IssueSubmission.model_validate(_submission(hypothesis=body).to_fields())
+
+    assert submission.hypothesis == body
+
+
+def test_h3_heading_in_hypothesis_is_rejected_before_publication() -> None:
+    """`### `는 이슈 본문의 필드 구분자라 값 안에 들어가면 본문 구조가 깨진다."""
+    with pytest.raises(ValueError):
         IssueSubmission.model_validate(
-            _submission(primary_metric_direction=value).to_fields()
+            _submission(hypothesis="### 배경\n\n내용").to_fields()
         )
 
 
-def test_unset_guardrail_sentinels_match_the_server() -> None:
-    """미선언 guardrail의 sentinel이 어긋나면 서버가 동반 선언 위반으로 거부한다."""
+@pytest.mark.parametrize("level", ["#", "##", "####", "#####"])
+def test_other_heading_levels_are_allowed(level: str) -> None:
+    """구분자와 충돌하지 않는 heading까지 막으면 마크다운을 쓸 수 없다."""
     IssueSubmission.model_validate(
-        _submission(
-            guardrail_metric_name=NONE_VALUE,
-            guardrail_metric_direction=NOT_APPLICABLE,
-            maximum_guardrail_regression=NONE_VALUE,
-        ).to_fields()
+        _submission(hypothesis=f"{level} 배경\n\n내용").to_fields()
     )
-
-
-def test_scope_keys_match_the_server_labels() -> None:
-    """허용 범위 키가 어긋나면 체크한 범위가 이슈 본문에 반영되지 않는다."""
-    assert set(SCOPE_CHOICES) == set(SCOPE_LABELS)
-
-
-def test_to_fields_covers_every_server_field() -> None:
-    """서버가 요구하는 필드를 폼이 하나라도 빠뜨리면 422다."""
-    assert set(_submission().to_fields()) == set(IssueSubmission.model_fields)
 
 
 @pytest.mark.parametrize(
     "blank,expected",
     [
         ({"title": ""}, "실험 제목"),
-        ({"hypothesis": "  "}, "연구 가설"),
-        ({"change": ""}, "변경할 피처 · 모델"),
-        ({"primary_metric_name": ""}, "주 지표 이름"),
-        ({"minimum_primary_delta": ""}, "최소 개선폭"),
+        ({"hypothesis": "  "}, "가설"),
     ],
 )
 def test_missing_required_reports_blank_fields(
@@ -117,26 +99,15 @@ def test_missing_required_reports_blank_fields(
     assert expected in submission.missing_required()
 
 
-def test_partially_declared_guardrail_is_caught_before_the_server() -> None:
-    """이름만 채우고 악화폭을 비우면 서버가 422로 거부한다 — 왕복 전에 잡는다."""
-    submission = _submission(
-        guardrail_metric_name="logloss",
-        guardrail_metric_direction="lower_is_better",
-        maximum_guardrail_regression="",
-    )
-
-    assert any("최대 악화폭" in name for name in submission.missing_required())
+def test_filled_submission_reports_nothing_missing() -> None:
+    """제목과 가설만 채우면 더 요구하지 않는다."""
+    assert _submission().missing_required() == []
 
 
 def test_title_without_ascii_is_rejected_by_the_server_contract() -> None:
     """ASCII가 없는 제목은 브랜치 이름이 해시로 굳어 되돌릴 수 없다."""
     with pytest.raises(ValueError):
         IssueSubmission.model_validate(_submission(title="비율 피처 실험").to_fields())
-
-
-def test_optional_fields_are_not_required() -> None:
-    """선행 연구 참조와 보조 관측 지표는 비워도 제출된다."""
-    assert _submission(related_work="", secondary_metrics="").missing_required() == []
 
 
 def test_publish_issue_sends_fields_and_scope_separately(
@@ -168,7 +139,7 @@ def test_publish_issue_sends_fields_and_scope_separately(
     assert seen["method"] == "POST"
     assert seen["path"].endswith("/issue")
     assert seen["payload"]["allowed_scope"] == ["promotion"]
-    assert seen["payload"]["fields"]["primary_metric_name"] == "roc_auc"
+    assert seen["payload"]["fields"]["title"] == "views per day ratio feature"
     assert result.issue_number == 533
 
 

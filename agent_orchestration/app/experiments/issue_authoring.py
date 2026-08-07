@@ -7,8 +7,9 @@
 
 [기능]
 호출자가 제출하는 필드(`IssueSubmission`)를 파서와 같은 규칙으로 검증하고, 서버 소유
-실행 설정과 결합해 heading 21개짜리 본문을 만든다. 재시도 복구용 experiment-id marker도
-여기서 붙인다.
+실행 설정과 결합해 Issue Form heading 본문을 만든다. 선언되지 않은 선택 항목은 heading
+자체를 생략하므로 heading 수는 14개에서 21개 사이다. 재시도 복구용 experiment-id
+marker도 여기서 붙인다.
 
 [비책임]
 `tools/auto_research_issue_branch.py`의 파싱 계약과
@@ -111,19 +112,28 @@ class IssueSubmission(BaseModel):
     항목에 대응한다 — A.1 research question(`hypothesis`), A.3 independent
     variable(`change`), A.7 metrics(주 지표 3필드와 guardrail 3필드). A.4/A.5/A.8과
     Phase B의 학습 설정은 실험 간 비교가 성립하도록 서버가 고정하므로 여기에 없다.
+
+    `title`과 `hypothesis`만 필수다(#570). 표준이 요구하는 A.3·A.7을 빈 채로 발행하면
+    그 실험은 사전등록의 성질을 갖지 못하고 판정 대상에서 빠진다 — 지표를 어디서
+    받을지가 정해지기 전까지의 과도기 상태이며, 정해지면 다시 필수가 된다.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1, max_length=120)
-    hypothesis: str = Field(min_length=1, max_length=2000)
-    change: str = Field(min_length=1, max_length=2000)
-    primary_metric_name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
-    primary_metric_direction: str
-    minimum_primary_delta: str
-    guardrail_metric_name: str
-    guardrail_metric_direction: str
-    maximum_guardrail_regression: str
+    hypothesis: str = Field(min_length=1, max_length=8000)
+    # 사전등록 표준의 A.3(independent variable)은 `hypothesis` 자유 서술 안에 함께
+    # 적는다. 별도 칸을 강제하면 그 틀 밖의 내용을 넣을 방법이 없다(#570).
+    change: str = Field(default="", max_length=2000)
+    # 주 지표는 비워 발행할 수 있다. 비면 `criteria_id`가 값 없는 상태로 봉인되고 그
+    # 실험은 판정 대상이 아니다 — 값의 출처를 정하는 것은 #570의 후속 과제다.
+    primary_metric_name: str = Field(default="", max_length=64)
+    primary_metric_direction: str = ""
+    minimum_primary_delta: str = ""
+    # Guardrail은 새 기본값을 만들지 않고 계약에 이미 있는 미선언 표현을 쓴다.
+    guardrail_metric_name: str = _NONE_VALUE
+    guardrail_metric_direction: str = _NOT_APPLICABLE
+    maximum_guardrail_regression: str = _NONE_VALUE
     secondary_metrics: str = Field(default="", max_length=2000)
     # 표준이 요구하지만 Issue Form에 없던 항목이다. 선택 섹션이므로 `criteria_id`·
     # `reproducibility_id` 계산에 들어가지 않아 기존 실험의 봉인값을 바꾸지 않는다.
@@ -142,8 +152,18 @@ class IssueSubmission(BaseModel):
                 "title must contain at least one ASCII letter or digit "
                 "so the experiment branch name stays identifiable"
             )
-        if self.primary_metric_direction not in _METRIC_DIRECTIONS:
-            raise ValueError("primary_metric_direction is invalid")
+        # 주 지표는 세 값이 함께 선언되거나 함께 비어야 한다. 하나만 채우면 파서가
+        # 부분 선언을 어느 쪽으로도 읽을 수 없다.
+        primary_declared = self.primary_metric_name != ""
+        if primary_declared != (self.primary_metric_direction != ""):
+            raise ValueError("primary metric fields must be declared together")
+        if primary_declared != (self.minimum_primary_delta != ""):
+            raise ValueError("primary metric fields must be declared together")
+        if primary_declared:
+            if not _METRIC_NAME_PATTERN.fullmatch(self.primary_metric_name):
+                raise ValueError("primary_metric_name is invalid")
+            if self.primary_metric_direction not in _METRIC_DIRECTIONS:
+                raise ValueError("primary_metric_direction is invalid")
         if self.guardrail_metric_direction not in (
             *_METRIC_DIRECTIONS,
             _NOT_APPLICABLE,
@@ -158,9 +178,10 @@ class IssueSubmission(BaseModel):
         # 걸 수 없는 이유는 미선언 시 `없음`이 들어오기 때문이다.
         if declared and not _METRIC_NAME_PATTERN.fullmatch(self.guardrail_metric_name):
             raise ValueError("guardrail_metric_name is invalid")
-        _require_non_negative_decimal(
-            self.minimum_primary_delta, "minimum_primary_delta"
-        )
+        if primary_declared:
+            _require_non_negative_decimal(
+                self.minimum_primary_delta, "minimum_primary_delta"
+            )
         if declared:
             _require_non_negative_decimal(
                 self.maximum_guardrail_regression, "maximum_guardrail_regression"
@@ -237,10 +258,6 @@ def build_issue_body(
     )
     sections: list[tuple[str, str]] = [
         ("연구 가설", fields.hypothesis),
-        ("변경할 피처 · 모델", fields.change),
-        ("주 지표 이름", fields.primary_metric_name),
-        ("주 지표 방향", fields.primary_metric_direction),
-        ("최소 주 지표 개선폭", fields.minimum_primary_delta),
         ("Guardrail 지표 이름", fields.guardrail_metric_name),
         ("Guardrail 지표 방향", fields.guardrail_metric_direction),
         ("최대 Guardrail 악화폭", fields.maximum_guardrail_regression),
@@ -255,8 +272,27 @@ def build_issue_body(
         ("스냅샷 재사용", SNAPSHOT_REUSE),
         ("허용 범위", scope_lines),
     ]
+    # 주 지표를 선언했으면 세 heading을 Guardrail 앞에 되돌려 놓는다. 선언하지
+    # 않았으면 heading 자체가 없고, 파서는 그 부재를 미선언으로 읽는다.
+    if fields.primary_metric_name:
+        insert_at = next(
+            index
+            for index, (name, _) in enumerate(sections)
+            if name == "Guardrail 지표 이름"
+        )
+        sections[insert_at:insert_at] = [
+            ("주 지표 이름", fields.primary_metric_name),
+            ("주 지표 방향", fields.primary_metric_direction),
+            ("최소 주 지표 개선폭", fields.minimum_primary_delta),
+        ]
+
     # 선택 섹션은 비우면 GitHub이 `_No response_`를 넣는 것과 달리 heading 자체를
     # 생략한다(파서는 두 경우 모두 통과한다).
+    if fields.change.strip():
+        insert_at = next(
+            index for index, (name, _) in enumerate(sections) if name == "연구 가설"
+        )
+        sections.insert(insert_at + 1, ("변경할 피처 · 모델", fields.change.strip()))
     if fields.secondary_metrics.strip():
         insert_at = next(
             index for index, (name, _) in enumerate(sections) if name == "비교 대상"
@@ -265,12 +301,12 @@ def build_issue_body(
             insert_at, ("보조 관측 지표", fields.secondary_metrics.strip())
         )
     if fields.related_work.strip():
+        # `변경할 피처 · 모델`을 기준으로 삼지 않는다 — 그 섹션은 이제 생략될 수 있어
+        # `next()`가 StopIteration으로 터진다. 항상 있는 `연구 가설` 뒤에 붙인다.
         insert_at = next(
-            index
-            for index, (name, _) in enumerate(sections)
-            if name == "변경할 피처 · 모델"
+            index for index, (name, _) in enumerate(sections) if name == "연구 가설"
         )
-        sections.insert(insert_at, ("선행 연구 참조", fields.related_work.strip()))
+        sections.insert(insert_at + 1, ("선행 연구 참조", fields.related_work.strip()))
 
     rendered = "\n\n".join(f"### {name}\n{value}" for name, value in sections)
     return f"{marker_for(experiment_id)}\n\n{rendered}\n"

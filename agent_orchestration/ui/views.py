@@ -22,10 +22,6 @@ from collections.abc import Sequence
 import streamlit as st
 
 from agent_orchestration.ui.models import (
-    METRIC_DIRECTIONS,
-    NONE_VALUE,
-    NOT_APPLICABLE,
-    SCOPE_CHOICES,
     Event,
     Experiment,
     IssuePublication,
@@ -40,115 +36,117 @@ from agent_orchestration.ui.styles import status_badge
 from agent_orchestration.ui.time import format_time
 
 
+HYPOTHESIS_KEY = "submission-hypothesis"
+
+_HYPOTHESIS_PLACEHOLDER = "마크다운 형식으로 가설을 작성해 주세요"
+
+
+def _render_hypothesis_editor() -> str:
+    """마크다운 편집창과 미리보기를 나란히 렌더링하고 현재 본문을 반환한다.
+
+    `st.form` **밖**에서 호출해야 한다. 폼 안의 위젯은 상호작용해도 rerun을 일으키지
+    않으므로, 안에 두면 미리보기가 제출 전까지 첫 렌더 상태에 멈춘다. 밖에 두면
+    편집창이 포커스를 잃거나 Ctrl+Enter를 받을 때 rerun이 돌아 미리보기가 따라온다.
+    """
+    editor_column, preview_column = st.columns(2, gap="medium")
+    with editor_column:
+        st.caption("편집")
+        hypothesis = st.text_area(
+            "가설",
+            key=HYPOTHESIS_KEY,
+            placeholder=_HYPOTHESIS_PLACEHOLDER,
+            height=340,
+            label_visibility="collapsed",
+        )
+    with preview_column:
+        st.caption("미리보기")
+        with st.container(border=True, height=340):
+            if hypothesis.strip():
+                # 사용자가 쓴 마크다운이다. `unsafe_allow_html`을 켜지 않으므로 본문에
+                # 든 HTML은 렌더링되지 않고 글자로 표시된다.
+                st.markdown(hypothesis)
+            else:
+                st.caption("여기에 미리보기가 나옵니다.")
+    return hypothesis
+
+
+def _render_agent_instructions() -> None:
+    """실험별 에이전트 지침을 올리고 고르는 화면을 렌더링한다.
+
+    화면만 제공한다(#570). 올린 파일을 실행기 작업 폴더에 놓는 배선은 아직 없으므로,
+    여기서 모은 값은 어디로도 전송되지 않는다.
+    """
+    st.markdown("**에이전트 지침 (선택)**")
+    preset_column, share_column = st.columns([3, 2], gap="medium")
+    preset_column.selectbox(
+        "저장된 지침에서 고르기",
+        (
+            "선택 안 함 — 파일만 올립니다",
+            "내 지침 · lgbm 실험 공통",
+            "내 지침 · 피처 조립 주의사항",
+            "공개 · 트리 모델 튜닝 가이드 (12명 사용 중)",
+        ),
+    )
+    share_column.toggle("다른 리서처에게 공개")
+    st.file_uploader(
+        "AGENTS.md · CLAUDE.md",
+        type=["md"],
+        accept_multiple_files=True,
+        label_visibility="collapsed",
+    )
+
+
 def render_submission_form(api_error: str | None) -> Submission | None:
     """사전등록 제출 폼을 렌더링하고 제출 값을 반환한다.
 
-    필드 구성은 예측 모델링 사전등록 표준(arXiv 2311.18807)의 Phase A 중 연구자가
-    선언해야 하는 항목이다. 데이터·split·시드는 실험 간 비교가 성립하도록 서버가
-    고정하므로 입력받지 않고 아래에 읽기 전용으로 보여준다.
+    입력은 제목과 마크다운 가설 두 가지다(#570). 예측 모델링 사전등록 표준
+    (arXiv 2311.18807)의 Phase A 항목은 가설 본문 안에 자유롭게 적는다. 데이터·split·
+    시드는 실험 간 비교가 성립하도록 서버가 고정하므로 아래에 읽기 전용으로 보여준다.
     """
     st.markdown('<p class="workbench-kicker">AUTORESEARCH / NEW EXPERIMENT</p>', unsafe_allow_html=True)
     with st.container(border=True):
         st.markdown("### 실험을 사전등록합니다")
         st.caption(
             "제출하면 `[AR]` 이슈가 열리고 `auto-experiment` label이 붙습니다. "
-            "성공 기준은 결과를 보기 전에 정해야 하므로 지표와 임계값을 직접 선언합니다."
+            "제목만 따로 받고, 나머지는 모두 가설 본문에 자유롭게 적습니다."
         )
         if api_error:
             st.error(api_error)
-        with st.form("submission-form", clear_on_submit=False):
-            title = st.text_input(
-                "실험 제목",
-                placeholder="예: views per day ratio feature",
-                help="이슈 제목과 실험 브랜치 이름이 여기서 만들어집니다. 영소문자와 숫자를 포함해 주세요.",
+
+        title = st.text_input(
+            "실험 제목",
+            key="submission-title",
+            placeholder="예: views per day ratio feature",
+            help="이슈 제목과 실험 브랜치 이름이 여기서 만들어집니다. 영소문자와 숫자를 포함해 주세요.",
+        )
+
+        st.markdown("**가설**")
+        st.caption(
+            "배경 · 근거 · 바꿀 피처 · 참고 링크를 원하는 구조로 적으세요. "
+            "미리보기는 편집창 밖을 클릭하거나 Ctrl+Enter를 누를 때 갱신됩니다."
+        )
+        hypothesis = _render_hypothesis_editor()
+
+        _render_agent_instructions()
+
+        with st.expander("서버가 고정하는 값"):
+            st.caption(
+                "실험 간 비교가 성립하려면 데이터와 분할이 같아야 하므로 입력받지 않습니다."
             )
-            hypothesis = st.text_area(
-                "연구 가설",
-                placeholder="예: 비율 피처가 baseline 대비 test ROC-AUC를 개선한다.",
-                height=90,
-                help="무엇이 왜 개선될 것이라 보는지. 근거까지 적으면 실행기가 검증 방법을 좁힐 수 있습니다.",
-            )
-            related_work = st.text_area(
-                "선행 연구 참조 (선택)",
-                placeholder="예: https://arxiv.org/abs/1706.09516",
-                height=68,
-            )
-            change = st.text_area(
-                "변경할 피처 · 모델",
-                value="- 추가/변경할 피처 (계산식):\n- 변경할 하이퍼파라미터 (없으면 \"없음\"):\n- baseline과 동일하게 유지할 것:",
-                height=110,
+            st.markdown(
+                "- 랜덤 시드: `42..71` (30개)\n"
+                "- 비교 대상: 동일 조건 baseline 재학습\n"
+                "- Split 시드 · Test/Validation 비율 · 데이터셋 스냅샷 · 학습 설정 참조\n"
+                "- 대상 기간: 발행 시점 기준 최근 30일 (KST)"
             )
 
-            st.markdown("**성공 기준**")
-            metric_left, metric_mid, metric_right = st.columns([2, 2, 1])
-            primary_metric_name = metric_left.text_input("주 지표 이름", value="roc_auc")
-            primary_direction_label = metric_mid.selectbox(
-                "주 지표 방향", list(METRIC_DIRECTIONS)
-            )
-            minimum_primary_delta = metric_right.text_input("최소 개선폭", value="0.002")
-
-            # 체크박스로 아래 칸의 `disabled`를 제어하지 않는다. `st.form` 안의 위젯은
-            # 상호작용해도 rerun을 일으키지 않으므로, 체크박스를 켜도 이번 렌더의
-            # `disabled`는 직전 값(최초 True)인 채로 남아 사용자가 값을 넣지 못한다.
-            # 그대로 제출되면 guardrail 없이 발행되고, 본문이 커밋된 뒤에는 그 실험에
-            # guardrail을 붙일 수 없다. 이름 칸이 채워졌는지로만 선언을 판정한다.
-            st.caption("Guardrail을 쓰지 않으려면 아래 두 칸을 비워 두십시오.")
-            guardrail_left, guardrail_mid, guardrail_right = st.columns([2, 2, 1])
-            guardrail_metric_name = guardrail_left.text_input(
-                "Guardrail 지표 이름 (선택)", value=""
-            )
-            guardrail_direction_label = guardrail_mid.selectbox(
-                "Guardrail 방향", list(METRIC_DIRECTIONS)
-            )
-            maximum_guardrail_regression = guardrail_right.text_input(
-                "최대 악화폭", value=""
-            )
-            secondary_metrics = st.text_input(
-                "보조 관측 지표 (선택)", placeholder="예: pr_auc"
-            )
-
-            st.markdown("**허용 범위**")
-            st.caption("실행기가 수정해도 되는 범위입니다. 에이전트가 스스로 넓힐 수 없습니다.")
-            allowed_scope = [
-                key for key, label in SCOPE_CHOICES.items() if st.checkbox(label, key=f"scope-{key}")
-            ]
-
-            with st.expander("서버가 고정하는 값"):
-                st.caption(
-                    "실험 간 비교가 성립하려면 데이터와 분할이 같아야 하므로 입력받지 않습니다."
-                )
-                st.markdown(
-                    "- 랜덤 시드: `42..71` (30개)\n"
-                    "- 비교 대상: 동일 조건 baseline 재학습\n"
-                    "- Split 시드 · Test/Validation 비율 · 데이터셋 스냅샷 · 학습 설정 참조\n"
-                    "- 대상 기간: 발행 시점 기준 최근 30일 (KST)"
-                )
-
-            submitted = st.form_submit_button("사전등록하고 이슈 발행", type="primary")
+        # 폼을 쓰지 않는다. 마크다운 편집기가 폼 밖에 있어야 미리보기가 갱신되는데,
+        # 제출 버튼만 폼에 남기면 제목·가설이 서로 다른 rerun에서 읽혀 값이 어긋난다.
+        submitted = st.button("사전등록하고 이슈 발행", type="primary")
 
     if not submitted:
         return None
-    declared = guardrail_metric_name.strip() != ""
-    return Submission(
-        title=title.strip(),
-        hypothesis=hypothesis.strip(),
-        related_work=related_work.strip(),
-        change=change.strip(),
-        primary_metric_name=primary_metric_name.strip(),
-        primary_metric_direction=METRIC_DIRECTIONS[primary_direction_label],
-        minimum_primary_delta=minimum_primary_delta.strip(),
-        guardrail_metric_name=(
-            guardrail_metric_name.strip() if declared else NONE_VALUE
-        ),
-        guardrail_metric_direction=(
-            METRIC_DIRECTIONS[guardrail_direction_label] if declared else NOT_APPLICABLE
-        ),
-        maximum_guardrail_regression=(
-            maximum_guardrail_regression.strip() if declared else NONE_VALUE
-        ),
-        secondary_metrics=secondary_metrics.strip(),
-        allowed_scope=tuple(allowed_scope),
-    )
+    return Submission(title=title.strip(), hypothesis=hypothesis.strip())
 
 
 def render_publication_result(publication: IssuePublication) -> None:
