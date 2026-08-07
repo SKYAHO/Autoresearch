@@ -111,7 +111,6 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 | launcher | `ORCH_ACTIVE_DEADLINE_SEC` | 8-container Job 전체 실행 상한 (`3600`초) |
 | launcher | `ORCH_TTL_AFTER_FINISHED_SEC` | 완료 Job 보존 시간(기본 `30`초, 장애 smoke에서만 일시 조정) |
 | executor | `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`, `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA` | launcher가 DB에서 복사해 전달하는 불변 branch 좌표 |
-| workspace-preparer | `ORCH_ISSUE_BODY_SHA256` | DB에 봉인한 Issue body의 SHA-256으로 원격 body와 대조하는 값 |
 | token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch/clone/push token-minter에만 보이는 private key mount 경로 |
 | token-minter/각 consumer | `ORCH_GITHUB_TOKEN_FILE` | purpose별 memory volume의 mode 0400 installation token 파일 경로 (`/var/run/{branch,clone,push}-token/token`) |
 | candidate-finalizer | `ORCH_EXECUTOR_API_URL`, `ORCH_EXECUTOR_API_TOKEN_FILE` | internal Candidate API URL과 `ORCH_EXECUTOR_API_TOKEN` Secret을 mount한 `/var/run/executor-api-token/token` 경로 |
@@ -124,7 +123,7 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 1. `branch-token-minter`: private key → branch token memory volume
 2. `branch-creator`: branch token → 봉인 `base_dev_sha`의 exp ref 관찰/생성
 3. `clone-token-minter`: private key → clone token memory volume
-4. `workspace-preparer`: clone token + `ORCH_ISSUE_BODY_SHA256` → issue 검증·workspace/state
+4. `workspace-preparer`: clone token + issue 번호·branch·기준 SHA → raw issue 조회·workspace/state
 5. `codex-worker`: workspace + read-only `.git` + state + read-only auth source `CODEX_HOME` →
    `/tmp` 아래 mode 0700 per-run writable scratch `CODEX_HOME`에 regular `auth.json`만 mode 0400으로
    복사 → `codex exec --ephemeral`으로 working tree 수정. config·plugin 등 다른 source 파일은
@@ -135,10 +134,9 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 
 executor image에는 Git CLI, uv, `/opt/autoresearch-venv`의 lock 기반 기본+`dev`
 의존성(Feast 제외), Node.js, `@openai/codex@0.146.0`과 `UV_PROJECT_ENVIRONMENT`가
-고정됩니다. issue parser `tools/__init__.py`와 `tools/auto_research_issue_branch.py`도
-image에 봉인하므로 runtime clone의 동명 파일을 실행 입력으로 사용하지 않습니다. repository
-소스 전체, `.env`, `auth.json`, Codex 인증은 image에 포함하지 않으며 Codex 인증은 runtime
-mount로만 제공합니다.
+고정됩니다. workspace-preparer는 runtime clone의 Issue Form parser를 실행하지 않고 GitHub의
+현재 이슈 본문을 raw 입력으로 전달합니다. repository 소스 전체, `.env`, `auth.json`, Codex
+인증은 image에 포함하지 않으며 Codex 인증은 runtime mount로만 제공합니다.
 
 Infra companion PR에는 다음을 확인 항목으로 옮깁니다. 실제 Secret/PVC/resource/
 NetworkPolicy 이름·값은 `Autoresearch-infra` 소유이므로 이 저장소에서 단정하지 않습니다.

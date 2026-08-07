@@ -1,16 +1,16 @@
 """Executor의 read-only GitHub issue 조회 경계.
 
 [파이프라인]
-봉인 branch가 준비된 뒤 workspace-preparer가 DB에 봉인한 이슈 본문을 원격 GitHub 원문과
-대조하기 전에, 해당 단일 이슈를 읽는 구간을 담당한다.
+branch가 준비된 뒤 workspace-preparer가 Codex 입력으로 전달할 raw 이슈 본문을 해당
+GitHub 이슈에서 읽는 구간을 담당한다.
 
 [기능]
 installation token으로 특정 repository/issue 번호의 제목과 body만 GET하고, HTTP·응답
 형식 실패를 응답 본문과 token을 포함하지 않는 typed error로 정제한다.
 
 [비책임]
-이슈 발행(`app/experiments/github_issues.py`), Issue Form 파싱(`tools/auto_research_issue_branch.py`),
-branch 생성과 Git checkout은 담당하지 않는다.
+이슈 발행(`app/experiments/github_issues.py`), 본문 의미 해석, branch 생성과 Git checkout은
+담당하지 않는다.
 """
 
 from __future__ import annotations

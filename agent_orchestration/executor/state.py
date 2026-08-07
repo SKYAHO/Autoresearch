@@ -1,8 +1,8 @@
 """Executor container 사이의 검증된 workspace state 파일 경계.
 
 [파이프라인]
-workspace-preparer가 이슈·원격 ref를 검증한 뒤 Codex worker, verifier, finalizer가 같은
-봉인 결과를 읽기 전의 전달 구간을 담당한다.
+workspace-preparer가 raw 이슈 본문과 검증된 checkout을 준비한 뒤 Codex worker, verifier,
+finalizer가 같은 state를 읽기 전의 전달 구간을 담당한다.
 
 [기능]
 정규 JSON state를 0400으로 기록하고 매 read마다 schema·SHA·허용 scope·workspace 아래의

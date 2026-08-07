@@ -4,9 +4,9 @@
 직전에 `RUNNING`으로 선점하고, Kubernetes에서 Job 존재를 확인한 뒤 내부 시각을 기록하거나
 최종 실패를 `ERROR`로 회수하는 구간을 담당한다.
 
-[기능] advisory transaction lock, 미확인 선점 복구 조회, issue body SHA-256 봉인, 전역
-상한을 적용한 `FOR UPDATE SKIP LOCKED` 선점과 결정론적 이름·상태 event의 단일 transaction
-저장 및 Phase 2 최종 실패 회수를 제공한다.
+[기능] advisory transaction lock, 미확인 선점 복구 조회, 전역 상한을 적용한
+`FOR UPDATE SKIP LOCKED` 선점과 결정론적 이름·상태 event의 단일 transaction 저장 및
+Phase 2 최종 실패 회수를 제공한다.
 
 [비책임] Kubernetes active/terminal Job 계산·manifest 생성·API 호출(`launcher.jobs`/`main`)과
 candidate commit·API 보고(`executor`)는 담당하지 않는다.
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from hashlib import sha256
 import uuid
 
 from sqlalchemy import Select, func, select
@@ -34,7 +33,6 @@ _COMPLETE_COORDINATES = (
     Experiment.issue_number.is_not(None),
     Experiment.issue_branch.is_not(None),
     Experiment.base_dev_sha.is_not(None),
-    Experiment.issue_body.is_not(None),
 )
 
 RECOVERABLE_CLAIM_STATEMENT: Select[tuple[Experiment]] = (
@@ -69,7 +67,6 @@ class ClaimedExperiment:
     issue_number: int
     issue_branch: str
     base_dev_sha: str
-    issue_body_sha256: str
     job_name: str
 
 
@@ -88,7 +85,6 @@ def _claimed_experiment(experiment: Experiment) -> ClaimedExperiment:
         experiment.issue_number is None
         or experiment.issue_branch is None
         or experiment.base_dev_sha is None
-        or experiment.issue_body is None
         or experiment.executor_job_name is None
     ):
         raise ClaimStateError(f"incomplete claim: {experiment.id}")
@@ -97,7 +93,6 @@ def _claimed_experiment(experiment: Experiment) -> ClaimedExperiment:
         issue_number=experiment.issue_number,
         issue_branch=experiment.issue_branch,
         base_dev_sha=experiment.base_dev_sha,
-        issue_body_sha256=sha256(experiment.issue_body.encode("utf-8")).hexdigest(),
         job_name=experiment.executor_job_name,
     )
 

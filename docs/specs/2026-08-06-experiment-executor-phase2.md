@@ -1,7 +1,7 @@
 # 실험 executor Phase 2 — 이슈 기반 코드 수정과 candidate commit
 
-> 상태: Phase 2 구현 완료, #565 Codex 인증 Secret 전환 구현 완료
-> 관련 이슈: #557, #582
+> 상태: Phase 2 구현 완료, #565 Codex 인증 Secret 전환 구현 완료, #592 입력 경계 단순화 승인
+> 관련 이슈: #557, #582, #592
 > 선행 계약: #546, `2026-08-05-experiment-job-baseline-freeze.md`
 
 ## 목적
@@ -22,7 +22,7 @@ executor가 유효한 변경만 candidate commit으로 만들어 같은 브랜�
 
 ### 포함
 
-- 봉인 좌표와 이슈 본문 검증
+- DB가 지정한 실행 좌표와 GitHub 이슈 원문 전달
 - 기존 exp 브랜치 clone·checkout
 - Codex workspace-write 실행과 코드 수정
 - executor의 변경 범위·전체 테스트 재검증
@@ -57,8 +57,8 @@ executor가 유효한 변경만 candidate commit으로 만들어 같은 브랜�
 
 ### Executor 코드
 
-- DB에서 복사된 봉인 좌표를 검증한다.
-- GitHub 이슈·ref를 조회하고 workspace를 clone·checkout한다.
+- DB에서 복사된 실행 좌표를 사용한다.
+- GitHub 이슈 원문과 ref를 조회하고 workspace를 clone·checkout한다.
 - Codex와 고정 verifier를 순서대로 실행한다.
 - diff와 검증 산출물을 독립적으로 검사한다.
 - commit·push하고 원격 tip을 확인한다.
@@ -66,7 +66,7 @@ executor가 유효한 변경만 candidate commit으로 만들어 같은 브랜�
 
 ### Codex
 
-- 검증된 이슈 본문을 해석한다.
+- GitHub 이슈 원문을 해석한다.
 - 변경 위치와 구현 방법을 판단한다.
 - workspace 파일을 수정한다.
 - 관련 테스트를 선택·실행하고 실패를 분석해 보완한다.
@@ -82,7 +82,7 @@ executor가 유효한 변경만 candidate commit으로 만들어 같은 브랜�
 
 하나의 Pod에서 initContainer를 순서대로 실행하고 마지막 main container가 candidate를
 확정한다. 실행 단계는 같은 `emptyDir` workspace를 공유한다. workspace-preparer는 별도
-executor-state `emptyDir`에 검증된 이슈·scope·base·remote tip을 canonical JSON으로
+executor-state `emptyDir`에 GitHub 이슈 본문·고정 scope·base·remote tip을 canonical JSON으로
 기록하고, 이후 단계는 이를 read-only로 mount한다. 자격증명 volume은 필요한 container에만
 mount한다.
 
@@ -102,9 +102,9 @@ mount한다.
 
 4. workspace-preparer
    clone token + workspace mount
-   → 이슈·marker·본문 hash 검증
+   → GitHub 이슈 본문 조회(내용 파싱 없음)
    → exp branch clone·checkout
-   → HEAD == 원격 tip 검증, base 또는 기존 candidate 경로 분기
+   → HEAD == 원격 tip 확인, base 또는 기존 candidate 경로 분기
 
 5. codex-worker
    workspace + executor 전용 CODEX_HOME Secret mount
@@ -133,31 +133,33 @@ Phase 2가 별도 Job을 만들지 않고 기존 Job을 확장하므로 새 Expe
 Codex·verifier는 어떤 GitHub token volume도 볼 수 없으며 private key는 세
 token-minter에만 read-only mount한다.
 
-## 입력과 이슈 본문 검증
+## 입력과 이슈 원문 전달 (#592)
 
-launcher는 기존 봉인 좌표와 함께 다음 값을 literal env로 전달한다.
+launcher는 DB에 저장된 다음 실행 좌표를 literal env로 전달한다.
 
 - `ORCH_EXPERIMENT_ID`
 - `ORCH_ISSUE_NUMBER`
 - `ORCH_ISSUE_BRANCH`
 - `ORCH_BASE_DEV_SHA`
-- `ORCH_ISSUE_BODY_SHA256`
 - `ORCH_GITHUB_REPOSITORY`
 
-`ORCH_ISSUE_BODY_SHA256`은 launcher가 DB에 선저장된 `Experiment.issue_body`의 UTF-8
-bytes를 SHA-256으로 계산한 값이다. workspace-preparer는 GitHub 이슈 본문을 읽어
-다음을 모두 검증한다.
+workspace-preparer는 `ORCH_ISSUE_NUMBER`의 GitHub 이슈 본문을 그대로 읽고,
+`ORCH_ISSUE_BRANCH`를 clone·checkout한다. 이 단계는 Issue Form heading, 지표,
+Guardrail, 데이터셋, 시드, 허용 범위, marker, 본문 hash를 파싱하거나 검증하지 않는다.
+Issue template은 사용자 입력 UI이고 executor 실행 계약이 아니다.
 
-1. 이슈가 설정된 repository와 `issue_number`에 존재한다.
-2. `<!-- experiment-id: ... -->` marker가 `ORCH_EXPERIMENT_ID`와 같다.
-3. 이슈 본문 SHA-256이 `ORCH_ISSUE_BODY_SHA256`과 같다.
-4. branch 이름의 이슈 번호가 `ORCH_ISSUE_NUMBER`와 같다.
+실행 전 필요한 조건은 다음뿐이다.
 
-발행 뒤 GitHub 본문이 수정됐다면 지시가 바뀐 것으로 보고 Codex를 실행하지 않는다.
-수정된 가설은 기존 Experiment를 덮어쓰지 않고 새 Experiment로 다시 발행한다.
+1. 설정된 repository에서 `issue_number`를 읽을 수 있다.
+2. `issue_branch`를 clone·checkout할 수 있다.
+3. checkout HEAD가 조회한 원격 branch tip과 같다.
 
-Codex prompt는 검증된 본문, 허용·금지 경로, 필수 검증 명령, 봉인 좌표의 사람이 읽는
-표현만 포함한다. token, Secret 경로, 내부 API token은 포함하지 않는다.
+Codex prompt는 이슈 본문 원문, executor가 고정한 허용·금지 경로와 필수 검증
+명령을 포함한다. 이슈 원문은 작업 요구사항일 뿐 실행 경계나 권한을 바꾸지 않는다.
+실행 지시의 정본은 발행 시 DB에 저장한 사본이 아니라 **실행 시점의 GitHub 현재
+본문**이다. executor는 본문 hash, credential 문자열, 내부 endpoint를 의미 검사하지
+않으므로 사용자는 이슈에 Secret을 붙여 넣지 않아야 한다. candidate에 기록된 credential은
+기존 verifier가 계속 거부한다.
 
 ## Workspace와 Git 계약
 
@@ -193,12 +195,8 @@ Codex prompt는 검증된 본문, 허용·금지 경로, 필수 검증 명령, �
 - `src/**` (`src/features/model_contract.py` 제외)
 - `autoresearch/**`, `tests/**`, `tools/**`
 
-Issue Form 선택에 따라 다음을 추가한다.
-
-- `prod_model_contract` → `src/features/model_contract.py`
-- `feast_definition` → `feature_repo/**`
-
-`promotion`은 후속 승격 검토 의사이며 Phase 2 수정 범위를 넓히지 않는다.
+MVP에서는 Issue Form 내용으로 수정 범위를 확장하지 않는다. 추가 범위가 필요하면
+Issue heading이 아니라 executor 코드와 verifier 계약을 별도 변경한다.
 의존성 추가·변경(`pyproject.toml`, `uv.lock`)은 verifier image의 봉인된 실행 환경과
 일치시킬 수 없으므로 Phase 2 candidate 범위에서 제외한다.
 
@@ -297,7 +295,7 @@ TTL 삭제 전에 확인해 Experiment를 오류 (`ERROR`)로 전이하고 정�
 
 | 실패 구간 | 대표 사유 | 원격 변경 | 최종 상태 |
 | --- | --- | --- | --- |
-| 입력·이슈 검증 | marker/body hash/좌표 불일치 | 없음 | 오류 (`ERROR`) |
+| 이슈 조회 | GitHub 이슈 조회 실패 | 없음 | 오류 (`ERROR`) |
 | clone·checkout | 생성 후 ref 부재, HEAD와 원격 tip 불일치 | 없음 | 오류 (`ERROR`) |
 | Codex | timeout, 비정상 종료, 변경 없음 | 없음 | 오류 (`ERROR`) |
 | verifier | 범위 위반, 테스트·Ruff 실패 | 없음 | 오류 (`ERROR`) |
@@ -406,7 +404,8 @@ Ruff·전체 pytest, commit·push, Candidate API 보고를 포함한 8-container
 
 ### 단위·계약 테스트
 
-- 이슈 marker/body hash/봉인 좌표 검증
+- Issue Form 형태와 무관한 GitHub 이슈 원문 전달
+- 지정 branch clone·checkout과 원격 tip 확인
 - 허용·금지 경로와 symlink/submodule 거부
 - Codex 환경 allowlist와 credential 부재
 - verifier 명령·결과 파싱

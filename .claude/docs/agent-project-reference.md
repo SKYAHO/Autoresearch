@@ -119,8 +119,8 @@ docs/
 - **실험 executor Job 환경 변수(#557):** release는 launcher/executor/API를 독립
   image로 게시하고 Infra는 tag가 아닌 검증된 digest를 소비한다. producer인 launcher는
   DB의 `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`, `ORCH_ISSUE_BRANCH`,
-  `ORCH_BASE_DEV_SHA`, `ORCH_ISSUE_BODY_SHA256`를 exact handoff value로 Pod consumer에
-  전달한다. candidate-finalizer는 `ORCH_EXECUTOR_API_TOKEN` Secret의 file mount
+  `ORCH_BASE_DEV_SHA`를 exact handoff value로 Pod consumer에 전달한다.
+  candidate-finalizer는 `ORCH_EXECUTOR_API_TOKEN` Secret의 file mount
   `/var/run/executor-api-token/token`을 `ORCH_EXECUTOR_API_TOKEN_FILE`로 받고,
   candidate 저장과 `RUNNING → EVALUATING`를 Candidate API에서 검증한다. 전체 기본값·경로는
   `.env.example`이 정본이다.
@@ -170,8 +170,9 @@ docs/
       기존 Phase 2 경로만 돈다. 스냅샷을 읽으려면 `experiment-job` GSA에 스냅샷 root read
       권한이 필요한데 현재 `objectCreator`만 있으므로, **그 IAM이 붙기 전까지 비워 둔다.**
   - executor 봉인 좌표: launcher가 `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`,
-    `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA`, `ORCH_ISSUE_BODY_SHA256`를 DB에서 복사해
-    Pod에 주입한다. workspace-preparer가 marker·body hash·branch를 검증한다.
+    `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA`를 DB에서 복사해 Pod에 주입한다.
+    workspace-preparer는 GitHub의 현재 이슈 본문을 raw 입력으로 읽고 해당 branch를
+    checkout한 뒤 HEAD와 원격 tip의 일치만 검증한다.
   - token 파일 좌표: token-minter에만 `ORCH_GITHUB_APP_PRIVATE_KEY_FILE`을
     주입하고, 각 minter와 단일 consumer는 memory volume의 purpose별
     `ORCH_GITHUB_TOKEN_FILE`(`/var/run/{branch,clone,push}-token/token`)만 공유한다.

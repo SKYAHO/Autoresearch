@@ -169,7 +169,6 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
         _env("ORCH_ISSUE_NUMBER", str(claim.issue_number)),
         _env("ORCH_ISSUE_BRANCH", claim.issue_branch),
         _env("ORCH_BASE_DEV_SHA", claim.base_dev_sha),
-        _env("ORCH_ISSUE_BODY_SHA256", claim.issue_body_sha256),
         _env("ORCH_GITHUB_REPOSITORY", settings.github_repository),
     ]
     workspace_mount = V1VolumeMount(

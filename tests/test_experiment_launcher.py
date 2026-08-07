@@ -148,7 +148,6 @@ def _claim() -> ClaimedExperiment:
         issue_number=546,
         issue_branch="exp/546-example",
         base_dev_sha="a" * 40,
-        issue_body_sha256="b" * 64,
         job_name=f"ar-branch-{EXPERIMENT_ID.hex}",
     )
 

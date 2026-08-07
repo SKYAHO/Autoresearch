@@ -170,7 +170,6 @@ def workspace_preparer_main() -> int:
         issue_number=issue_number,
         issue_branch=issue_branch,
         base_dev_sha=base_dev_sha,
-        issue_body_sha256=_required("ORCH_ISSUE_BODY_SHA256"),
         github_repository=repository,
         token_file=Path(_required("ORCH_GITHUB_TOKEN_FILE")),
         workspace=Path(_required("ORCH_EXECUTOR_WORKSPACE")),

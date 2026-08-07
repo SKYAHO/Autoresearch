@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from hashlib import sha256
 import logging
 from pathlib import Path
 import subprocess
@@ -251,7 +250,6 @@ def _claim() -> ClaimedExperiment:
         issue_number=557,
         issue_branch="exp/557-phase2",
         base_dev_sha="a" * 40,
-        issue_body_sha256=sha256(_BODY.encode("utf-8")).hexdigest(),
         job_name=f"ar-exec-{_EXPERIMENT_ID.hex}",
     )
 
@@ -269,10 +267,10 @@ def _session() -> tuple[Session, object]:
     return sessionmaker(bind=engine, expire_on_commit=False)(), engine
 
 
-def test_claim_hashes_issue_body_and_never_claims_missing_body(
+def test_claim_does_not_require_a_stored_issue_body(
     monkeypatch: object,
 ) -> None:
-    """본문 없이 Job을 만들면 원격 issue 검증 입력을 봉인할 수 없다."""
+    """실행 입력은 GitHub에서 읽으므로 DB 본문 부재가 선점을 막으면 안 된다."""
     session, engine = _session()
     try:
         monkeypatch.setattr(
@@ -287,23 +285,15 @@ def test_claim_hashes_issue_body_and_never_claims_missing_body(
             issue_branch="exp/558-missing-body",
             base_dev_sha="a" * 40,
         )
-        sealed = Experiment(
-            id=_EXPERIMENT_ID,
-            hypothesis="sealed body",
-            status=ExperimentStatus.CREATED.value,
-            issue_body=_BODY,
-            issue_number=557,
-            issue_branch="exp/557-phase2",
-            base_dev_sha="a" * 40,
-        )
-        session.add_all((missing_body, sealed))
+        session.add(missing_body)
         session.commit()
 
         claims = claim_experiments(session, active_jobs=0, max_concurrency=2)
 
-        assert claims == [_claim()]
-        assert missing_body.status == ExperimentStatus.CREATED.value
-        assert missing_body.executor_job_name is None
+        assert len(claims) == 1
+        assert claims[0].experiment_id == missing_body.id
+        assert missing_body.status == ExperimentStatus.RUNNING.value
+        assert missing_body.executor_job_name == f"ar-exec-{missing_body.id.hex}"
     finally:
         session.close()
         Base.metadata.drop_all(engine)
@@ -398,6 +388,15 @@ def test_executor_job_has_sealed_eight_container_capability_boundaries() -> None
     )
     finalizer_environment = {item.name: item.value for item in pod.containers[0].env}
     assert finalizer_environment["ORCH_EXECUTOR_WORKSPACE"] == "/workspace"
+    preparer_environment = {
+        item.name: item.value
+        for item in next(
+            container
+            for container in pod.init_containers
+            if container.name == "workspace-preparer"
+        ).env
+    }
+    assert "ORCH_ISSUE_BODY_SHA256" not in preparer_environment
     for name in (
         "workspace-preparer",
         "codex-worker",
@@ -535,7 +534,6 @@ def _set_phase2_environment(monkeypatch: pytest.MonkeyPatch, root: Path) -> None
         "ORCH_ISSUE_NUMBER": "557",
         "ORCH_ISSUE_BRANCH": "exp/557-phase2",
         "ORCH_BASE_DEV_SHA": "a" * 40,
-        "ORCH_ISSUE_BODY_SHA256": sha256(_BODY.encode("utf-8")).hexdigest(),
         "ORCH_GITHUB_REPOSITORY": "SKYAHO/Autoresearch",
         "ORCH_GITHUB_TOKEN_FILE": str(root / "clone-token"),
         "ORCH_EXECUTOR_WORKSPACE": str(root / "workspace"),
