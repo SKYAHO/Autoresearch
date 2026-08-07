@@ -1,12 +1,13 @@
 # Codex External Sandbox Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> 관련 이슈: #598
+> 정본: `docs/specs/2026-08-06-experiment-executor-phase2.md`
 
 **Goal:** 외부에서 격리된 executor Pod 안의 Codex가 저장소의 `.agents -> .claude` 심볼릭 링크 때문에 내부 sandbox 초기화에 실패하지 않도록 한다.
 
-**Architecture:** Kubernetes Pod의 비루트 실행, read-only root filesystem, `.git` read-only mount, 제한된 egress와 candidate verifier를 실행 경계로 유지한다. Codex CLI에는 외부 격리 환경 전용 `--dangerously-bypass-approvals-and-sandbox`를 전달하고 중복되는 내부 `workspace-write` sandbox를 제거한다.
+**Architecture:** Kubernetes Pod의 비루트 실행, read-only root filesystem, `.git`과 executor state의 read-only mount, 제한된 egress와 candidate verifier를 실행 경계로 유지한다. Codex CLI에는 `--sandbox danger-full-access`를 전달해 중복되는 내부 `workspace-write` sandbox만 제거하고 approval 정책은 우회하지 않는다.
 
-**Tech Stack:** Python 3.12, pytest, Codex CLI 0.147.0, Kubernetes executor Job
+**Tech Stack:** Python 3.12, pytest, Codex CLI 0.146.0, Kubernetes executor Job
 
 ## Global Constraints
 
@@ -26,7 +27,7 @@
 
 **Interfaces:**
 - Consumes: `run_codex(run: CodexRunInput) -> CodexRunResult`
-- Produces: `codex exec --ephemeral --dangerously-bypass-approvals-and-sandbox -C <repository> <prompt>` argv 계약
+- Produces: `codex exec --ephemeral --sandbox danger-full-access -C <repository> <prompt>` argv 계약
 
 - [x] **Step 1: 고정 argv 테스트를 실패하도록 갱신한다**
 
@@ -36,7 +37,8 @@
 assert json.loads(argv_path.read_text(encoding="utf-8")) == [
     "exec",
     "--ephemeral",
-    "--dangerously-bypass-approvals-and-sandbox",
+    "--sandbox",
+    "danger-full-access",
     "-C",
     str(run.repository),
     prompt,
@@ -51,7 +53,7 @@ Expected: 실제 argv에 `--sandbox`, `workspace-write`가 남아 있어 asserti
 
 - [x] **Step 3: 최소 구현과 책임 문서를 갱신한다**
 
-`run_codex` argv에서 `--sandbox`, `workspace-write`를 제거하고 `--dangerously-bypass-approvals-and-sandbox`를 추가한다. 모듈 docstring과 함수 docstring은 내부 sandbox 대신 외부 Pod 경계를 사용한다는 책임을 명시한다. Phase 2 spec에는 외부 경계 목록과 내부 sandbox를 사용하지 않는 이유를 기록한다.
+`run_codex` argv의 `workspace-write`를 `danger-full-access`로 바꾼다. `.git`과 executor state가 실제 read-only mount인지 실행 직전에 검증하고, executor image가 Codex CLI 0.146.0의 해당 옵션 지원을 빌드 시 확인한다. 모듈 docstring과 함수 docstring은 내부 sandbox 대신 외부 Pod 경계를 사용한다는 책임을 명시한다. Phase 2 spec에는 외부 경계 목록과 내부 sandbox를 사용하지 않는 이유를 기록한다.
 
 - [x] **Step 4: GREEN과 관련 회귀 검증을 확인한다**
 
@@ -69,6 +71,6 @@ Expected: 모든 명령 exit 0.
 - [x] **Step 5: 변경을 커밋한다**
 
 ```bash
-git add agent_orchestration/executor/codex_worker.py tests/test_experiment_codex_worker.py docs/specs/2026-08-06-experiment-executor-phase2.md docs/superpowers/plans/2026-08-07-codex-external-sandbox.md
+git add agent_orchestration/executor/codex_worker.py deploy/agent_orchestration/executor.Dockerfile tests/test_experiment_codex_worker.py tests/test_agent_orchestration_container.py docs/specs/2026-08-06-experiment-executor-phase2.md docs/plans/2026-08-06-experiment-executor-phase2.md docs/archive/plans/2026-08-07-codex-external-sandbox.md
 git commit -m "fix: Codex 내부 sandbox 충돌을 제거한다"
 ```

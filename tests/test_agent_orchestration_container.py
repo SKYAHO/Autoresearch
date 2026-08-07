@@ -166,6 +166,7 @@ def test_executor_image_seals_the_phase2_runtime_contract() -> None:
     assert '"--no-group", "feast"' in dockerfile
     assert "FROM node:22.16.0-slim AS codex-cli" in dockerfile
     assert "@openai/codex@0.146.0" in dockerfile
+    assert 'codex exec --help | grep --fixed-strings -- "danger-full-access"' in dockerfile
     assert "apt-get install --yes --no-install-recommends git" in dockerfile
     assert "COPY --from=lock-export /uv /usr/local/bin/uv" in dockerfile
     assert "UV_PROJECT_ENVIRONMENT=/opt/autoresearch-venv" in dockerfile

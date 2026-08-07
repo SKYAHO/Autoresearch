@@ -428,7 +428,7 @@ def run_codex(run: CodexRunInput) -> CodexRunResult: ...
 
   fake `codex` executable로 다음을 검증한다.
 
-  - argv가 `codex exec --sandbox workspace-write -C <repository> <prompt>`.
+  - argv가 `codex exec --ephemeral --sandbox danger-full-access -C <repository> <prompt>`.
   - 환경은 `CODEX_HOME`, 임시 `HOME/XDG_CONFIG_HOME/XDG_CACHE_HOME/TMPDIR`, `PATH`,
     locale, 고정 `UV_PROJECT_ENVIRONMENT`만 존재.
   - `GITHUB_TOKEN`, `ORCH_*TOKEN*`, `KUBERNETES_SERVICE_HOST`, `GOOGLE_*` 부재.

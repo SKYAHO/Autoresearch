@@ -6,10 +6,11 @@ workspace-preparer가 봉인 이슈와 exp branch checkout을 검증한 뒤, can
 
 [기능]
 read-only auth source의 regular `auth.json`만 per-run writable scratch `CODEX_HOME`으로
-복사한 뒤 외부 격리된 Pod 전용 모드로 `codex exec --ephemeral`을 실행한다. 명시적 환경
-allowlist와 전용 process group으로 noninteractive Codex를 실행하고, timeout·취소 시 child
-process까지 회수한다. 원격 tip이 base와 다르면 기존 candidate 채택 경로로 넘기기 위해
-Codex 실행을 생략한다.
+복사한 뒤 외부 격리된 Pod에서 `codex exec --ephemeral --sandbox danger-full-access`를
+실행한다. `.git`과 후속 단계가 신뢰하는 executor state의 read-only mount를 실행 직전에
+검증하고, 명시적 환경 allowlist와 전용 process group으로 noninteractive Codex를 실행한다.
+timeout·취소 시 child process까지 회수한다. 원격 tip이 base와 다르면 기존 candidate 채택
+경로로 넘기기 위해 Codex 실행을 생략한다.
 
 [비책임]
 이슈·ref·workspace 검증(`workspace.py`), candidate 범위와 테스트 승인(Stage 4), Git
@@ -41,6 +42,7 @@ _TERMINATION_GRACE_SECONDS = 5.0
 _PIPE_RING_BUFFER_BYTES = 64 * 1024
 _FIXED_UV_PROJECT_ENVIRONMENT = "/opt/autoresearch-venv"
 _CODEX_AUTH_FILENAME = "auth.json"
+_EXECUTOR_STATE_DIRECTORY = Path("/var/run/executor-state")
 
 
 class CodexWorkerError(RuntimeError):
@@ -183,11 +185,11 @@ def _unescape_mount_path(value: str) -> str:
     )
 
 
-def _git_directory_is_read_only(git_directory: Path) -> bool:
-    """`.git` 자체가 현재 namespace의 별도 read-only mount일 때만 참을 반환한다."""
+def _mount_is_read_only(path: Path) -> bool:
+    """경로 자체가 현재 namespace의 별도 read-only mount일 때만 참을 반환한다."""
     if os.name != "posix":
         return False
-    expected = str(git_directory.resolve())
+    expected = str(path.resolve())
     for line in _mountinfo_lines():
         left, separator, _right = line.partition(" - ")
         if not separator:
@@ -200,6 +202,16 @@ def _git_directory_is_read_only(git_directory: Path) -> bool:
         if mount_path == expected:
             return "ro" in mount_options
     return False
+
+
+def _git_directory_is_read_only(git_directory: Path) -> bool:
+    """`.git` 자체가 현재 namespace의 별도 read-only mount일 때만 참을 반환한다."""
+    return _mount_is_read_only(git_directory)
+
+
+def _executor_state_is_read_only() -> bool:
+    """후속 executor 단계가 신뢰하는 state directory의 read-only 경계를 확인한다."""
+    return _mount_is_read_only(_EXECUTOR_STATE_DIRECTORY)
 
 
 def _git_metadata_digest(git_directory: Path) -> str:
@@ -296,11 +308,14 @@ def run_codex(run: CodexRunInput) -> CodexRunResult:
     _validate_run(run)
     prompt = build_codex_prompt(run)
     git_directory, sealed_git_metadata = _capture_protected_git_metadata(run.repository)
+    if not _executor_state_is_read_only():
+        raise CodexWorkerError("state_mount_unprotected")
     argv = (
         "codex",
         "exec",
         "--ephemeral",
-        "--dangerously-bypass-approvals-and-sandbox",
+        "--sandbox",
+        "danger-full-access",
         "-C",
         str(run.repository),
         prompt,
