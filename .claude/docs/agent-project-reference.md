@@ -144,6 +144,31 @@ docs/
     codex-worker는 source의 regular `auth.json`만 mode 0400으로 `/tmp` 아래 mode 0700 per-run
     writable scratch `CODEX_HOME`에 복사하고, config·plugin 등 다른 source 파일은 복사하지
     않은 채 `codex exec --ephemeral`을 실행한다.
+  - **단일 파드 학습(#574, 데모 스코프):** 20차 회의 지침으로 파이프라인을 파드 4개에서
+    **파드 1개**로 바꿨다. 컨테이너를 새로 만들지 않고 위 8-container 중 두 곳에 학습을
+    얹는다 — **baseline은 `workspace-preparer` 끝**(Codex 실행 전, dev 코드·dev 의존성),
+    **candidate는 `candidate-finalizer` 끝**(push 후, candidate 코드·candidate 의존성).
+    컨테이너 개수가 8 그대로라 어드미션 계약은 바뀌지 않는다.
+    - **순서가 계약이다.** 뒤집히면 baseline이 candidate의 의존성 버전으로 학습돼 두
+      조건의 차이가 "코드 변경"만이 아니게 되고 paired 대조의 전제가 깨진다. 재시도로
+      순서가 어긋나는 경로까지 막기 위해 executor-state volume의
+      `baseline_training_complete` marker로 강제하며, marker가 없으면 candidate 학습은
+      **시작 자체를 거부**한다(`executor/training.py`).
+    - seed 목록은 상수를 복제하지 않고 **workspace 코드에게 직접 묻는다**
+      (`from src.pipeline.experiment_evaluation import POLICY_SEEDS`). executor 이미지에
+      `src/`가 없어 import가 불가능하고, 복제하면 `issue_authoring.py`에 이어 세 번째
+      사본이 된다. 조건별로 다른 값이 나오는 것이 정상이다 — candidate가 seed 정책을
+      바꾸는 실험이면 candidate 학습은 바뀐 값으로 돌아야 한다.
+    - `uv sync`는 `pyproject.toml`·`uv.lock`이 `base_dev_sha` 이후 바뀐 경우에만 돈다.
+    - **학습 코드는 이미지가 아니라 workspace의 clone에서 온다. 이미지에 `src/`를 굽지
+      말 것** — Codex가 수정한 candidate 코드가 아니라 빌드 시점의 낡은 코드로 학습하게
+      되어 candidate 실험 자체가 무의미해진다.
+    - **조립(`build-features`)은 이 Pod에서 하지 않는다.** feast group이 executor
+      이미지에 없고 `pyproject.toml`이 feast와 dev를 `conflicts`로 선언해 재빌드로도 넣을
+      수 없다. 조립은 파드 밖에서 돌려 스냅샷으로 게시하고 경로만 주입한다.
+    - `ORCH_TRAINING_DATASET_PATH`가 **on/off 스위치**다. 비어 있으면 학습을 건너뛰고
+      기존 Phase 2 경로만 돈다. 스냅샷을 읽으려면 `experiment-job` GSA에 스냅샷 root read
+      권한이 필요한데 현재 `objectCreator`만 있으므로, **그 IAM이 붙기 전까지 비워 둔다.**
   - executor 봉인 좌표: launcher가 `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`,
     `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA`, `ORCH_ISSUE_BODY_SHA256`를 DB에서 복사해
     Pod에 주입한다. workspace-preparer가 marker·body hash·branch를 검증한다.

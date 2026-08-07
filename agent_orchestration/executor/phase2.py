@@ -33,6 +33,15 @@ from agent_orchestration.executor.codex_worker import (
 from agent_orchestration.executor.finalizer import FinalizeInput, finalize_candidate
 from agent_orchestration.executor.github_issues import GitHubIssues
 from agent_orchestration.executor.state import ExecutorWorkspaceState, read_state
+from agent_orchestration.executor.training import (
+    TrainingError,
+    TrainingInput,
+    TrainingStage,
+    dependencies_changed,
+    feature_definitions_changed,
+    run_training,
+    sync_dependencies,
+)
 from agent_orchestration.executor.verifier import (
     CandidatePolicy,
     VerificationResult,
@@ -54,6 +63,11 @@ _SAFE_ENVIRONMENT_REASON_PATTERN = re.compile(
 _ISSUE_NUMBER_PATTERN = re.compile(r"^[1-9][0-9]*$")
 _ISSUE_BRANCH_PATTERN = re.compile(r"^exp/[1-9][0-9]*-[a-z0-9][a-z0-9-]*$")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+# launcher가 executor-state volume을 마운트하는 고정 경로다
+# (`launcher/jobs.py`의 `_STATE_DIRECTORY`). 환경 변수로 받지 않는 이유는 verification
+# 경로와 같다 — Pod 안의 마운트 지점은 manifest가 정하는 고정값이고, 주입 가능한 값으로
+# 두면 계약이 두 곳으로 갈린다.
+_STATE_DIRECTORY = Path("/var/run/executor-state")
 
 
 class Phase2ExecutorError(RuntimeError):
@@ -162,7 +176,54 @@ def workspace_preparer_main() -> int:
         workspace=Path(_required("ORCH_EXECUTOR_WORKSPACE")),
     )
     asyncio.run(prepare_workspace(config, GitHubIssues()))
+    # clone은 workspace 루트가 아니라 그 아래 `repository/`에 놓인다
+    # (`workspace.py`의 `repository = workspace / "repository"`).
+    _run_training_if_enabled(TrainingStage.BASELINE, config.workspace / "repository")
     return 0
+
+
+def _run_training_if_enabled(stage: TrainingStage, workspace: Path) -> None:
+    """데이터셋이 지정된 경우에만 해당 조건의 학습을 실행한다.
+
+    `ORCH_TRAINING_DATASET_PATH` 미설정이면 조용히 건너뛴다. 학습 입력은 미리 게시된
+    데이터셋 스냅샷인데, 그 스냅샷을 Pod가 읽으려면 `experiment-job` GSA에 스냅샷 root
+    read 권한이 필요하다(현재 `objectCreator`만 보유). 권한이 붙기 전까지는 Phase 2의
+    기존 경로(clone → Codex → verify → push)가 그대로 동작해야 하므로 opt-in으로 둔다.
+
+    조립을 Pod 안에서 하지 않는 이유는 feast group이 executor 이미지에 없고
+    `pyproject.toml`이 feast와 dev를 conflicts로 선언해 재빌드로도 넣을 수 없기 때문이다.
+    """
+    dataset = os.environ.get("ORCH_TRAINING_DATASET_PATH", "").strip()
+    if not dataset:
+        return
+    if stage is TrainingStage.CANDIDATE:
+        base_ref = _required("ORCH_BASE_DEV_SHA")
+        # 지원 범위를 벗어난 가설이면 학습을 시작하지 않는다. 그냥 진행하면 새 피처가
+        # 없는 스냅샷으로 학습돼 candidate가 baseline과 같은 결과를 내고, 그것이 실패로
+        # 보이지 않아 아무도 알아채지 못한다.
+        changed = feature_definitions_changed(workspace, base_ref=base_ref)
+        if changed:
+            # 어떤 경로가 걸렸는지는 로그로 남기고, 예외 사유는 접미사 없는 고정 코드로
+            # 둔다. `_safe_failure_reason`이 `^[a-z][a-z0-9_]*$`에 맞는 값만 남기고
+            # 나머지는 `redacted`로 지우므로(#583), 경로를 붙이면 사유가 통째로 사라진다.
+            _LOGGER.error(
+                "training rejected stage=candidate reason=feature_change_unsupported paths=%s",
+                ",".join(changed),
+            )
+            raise TrainingError("feature_change_unsupported")
+        if dependencies_changed(workspace, base_ref=base_ref):
+            sync_dependencies(
+                workspace, timeout_seconds=_positive_int("ORCH_UV_SYNC_TIMEOUT_SEC")
+            )
+    run_training(
+        TrainingInput(
+            stage=stage,
+            workspace=workspace,
+            dataset_path=Path(dataset),
+            state_directory=_STATE_DIRECTORY,
+            timeout_seconds=_positive_int("ORCH_TRAINING_TIMEOUT_SEC"),
+        )
+    )
 
 
 def codex_worker_main() -> int:
@@ -237,6 +298,7 @@ def candidate_finalizer_main() -> int:
         ),
         _read_verification(),
     )
+    _run_training_if_enabled(TrainingStage.CANDIDATE, state.repository)
     return 0
 
 
