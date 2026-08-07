@@ -22,6 +22,7 @@ from agent_orchestration.executor.training import (  # noqa: E402
     TrainingInput,
     TrainingStage,
     dependencies_changed,
+    feature_definitions_changed,
     resolve_policy_seeds,
     run_training,
 )
@@ -177,3 +178,38 @@ def test_missing_dataset_is_rejected_before_spawning(
             state_directory=state_directory,
             timeout_seconds=600,
         )
+
+
+def test_feature_definition_change_is_detected(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path
+) -> None:
+    """피처 정의가 바뀌면 바뀐 경로를 돌려준다.
+
+    스냅샷은 baseline 코드 기준으로 얼려져 있어 새 피처가 CSV에 없다. 그런데 학습은
+    에러 없이 통과하고 candidate가 baseline과 같은 데이터로 학습된다 — 실패로 보이지
+    않으면서 아무것도 검증하지 않은 상태가 된다. 그래서 감지가 필요하다.
+    """
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
+        calls.append(argv)
+        return "feature_repo/feature_definitions.py\n"
+
+    monkeypatch.setattr(training_module, "_run", _fake_run)
+
+    changed = feature_definitions_changed(workspace, base_ref="abc123")
+
+    assert changed == ("feature_repo/feature_definitions.py",)
+    assert calls[0][:4] == ["git", "diff", "--name-only", "abc123"]
+    assert "feature_repo/feature_definitions.py" in calls[0]
+
+
+def test_unchanged_feature_definitions_return_empty(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path
+) -> None:
+    """피처 불변 가설은 빈 tuple로 통과시킨다."""
+    monkeypatch.setattr(
+        training_module, "_run", lambda argv, *, cwd, timeout_seconds: "\n"
+    )
+
+    assert feature_definitions_changed(workspace, base_ref="abc123") == ()

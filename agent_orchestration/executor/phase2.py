@@ -34,9 +34,11 @@ from agent_orchestration.executor.finalizer import FinalizeInput, finalize_candi
 from agent_orchestration.executor.github_issues import GitHubIssues
 from agent_orchestration.executor.state import ExecutorWorkspaceState, read_state
 from agent_orchestration.executor.training import (
+    TrainingError,
     TrainingInput,
     TrainingStage,
     dependencies_changed,
+    feature_definitions_changed,
     run_training,
     sync_dependencies,
 )
@@ -194,10 +196,18 @@ def _run_training_if_enabled(stage: TrainingStage, workspace: Path) -> None:
     dataset = os.environ.get("ORCH_TRAINING_DATASET_PATH", "").strip()
     if not dataset:
         return
-    if stage is TrainingStage.CANDIDATE and dependencies_changed(
-        workspace, base_ref=_required("ORCH_BASE_DEV_SHA")
-    ):
-        sync_dependencies(workspace, timeout_seconds=_positive_int("ORCH_UV_SYNC_TIMEOUT_SEC"))
+    if stage is TrainingStage.CANDIDATE:
+        base_ref = _required("ORCH_BASE_DEV_SHA")
+        # 지원 범위를 벗어난 가설이면 학습을 시작하지 않는다. 그냥 진행하면 새 피처가
+        # 없는 스냅샷으로 학습돼 candidate가 baseline과 같은 결과를 내고, 그것이 실패로
+        # 보이지 않아 아무도 알아채지 못한다.
+        changed = feature_definitions_changed(workspace, base_ref=base_ref)
+        if changed:
+            raise TrainingError(f"feature_change_unsupported:{','.join(changed)}")
+        if dependencies_changed(workspace, base_ref=base_ref):
+            sync_dependencies(
+                workspace, timeout_seconds=_positive_int("ORCH_UV_SYNC_TIMEOUT_SEC")
+            )
     run_training(
         TrainingInput(
             stage=stage,

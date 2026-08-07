@@ -27,6 +27,28 @@ from typing import Final
 
 
 _DEPENDENCY_PATHS: Final = ("pyproject.toml", "uv.lock")
+
+# 데모 스코프에서 지원하지 않는 변경을 감지하는 경로 목록이다.
+#
+# 학습 입력은 **baseline 코드 기준으로 미리 조립해 얼려 둔** 스냅샷이다. candidate가
+# 피처 정의를 바꾸면 그 피처는 스냅샷 CSV에 **존재하지 않는데, 학습은 에러 없이
+# 통과한다** — 없는 컬럼이 그냥 안 쓰일 뿐이다. 결과적으로 candidate가 baseline과
+# 사실상 같은 데이터로 학습되고, **실패로 보이지 않으면서 아무것도 검증하지 않은**
+# 상태가 된다. 이 저장소가 지키는 "조용한 실패 금지" 원칙에 정면으로 어긋나므로
+# 감지해서 거부한다.
+#
+# 근본 해결은 candidate 코드로 조립을 다시 하는 것인데, feast group이 executor
+# 이미지에 없고 `pyproject.toml`이 feast와 dev를 conflicts로 선언해 재빌드로도 넣을 수
+# 없다. 별도 컨테이너가 필요해 컨테이너 계약 변경까지 번지므로 데모 이후 과제로 둔다.
+#
+# ⚠️ **경로 목록은 잠정값이다.** 무엇을 "피처 정의"로 볼지는 feature store 소유자
+# 확인이 필요하다(`feature_repo`·`model_contract`는 소유자 확인 없이 손대지 않는다는
+# 작업 원칙이 있다). 여기서는 읽기만 하고 수정하지 않지만, 범위가 좁으면 조용한 실패가
+# 새고 넓으면 무관한 변경까지 막으므로 확정 전까지는 **넓은 쪽**으로 둔다.
+_FEATURE_DEFINITION_PATHS: Final = (
+    "feature_repo/feature_definitions.py",
+    "feature_repo/feature_store.yaml",
+)
 _SEED_PROBE: Final = (
     "from src.pipeline.experiment_evaluation import POLICY_SEEDS;"
     "print(','.join(str(seed) for seed in POLICY_SEEDS))"
@@ -115,18 +137,48 @@ def resolve_policy_seeds(workspace: Path, *, timeout_seconds: int = 60) -> tuple
     return seeds
 
 
+def _changed_paths(
+    workspace: Path, *, base_ref: str, paths: tuple[str, ...], timeout_seconds: int
+) -> tuple[str, ...]:
+    """`base_ref` 이후 주어진 경로 중 실제로 바뀐 것을 돌려준다."""
+    changed = _run(
+        ["git", "diff", "--name-only", base_ref, "--", *paths],
+        cwd=workspace,
+        timeout_seconds=timeout_seconds,
+    )
+    return tuple(line.strip() for line in changed.splitlines() if line.strip())
+
+
+def feature_definitions_changed(
+    workspace: Path, *, base_ref: str, timeout_seconds: int = 60
+) -> tuple[str, ...]:
+    """candidate가 피처 정의를 바꿨는지 확인하고 바뀐 경로를 돌려준다.
+
+    빈 tuple이면 지원 범위 안(피처 불변 가설)이다. 상세한 이유는
+    `_FEATURE_DEFINITION_PATHS` 주석 참조.
+    """
+    return _changed_paths(
+        workspace,
+        base_ref=base_ref,
+        paths=_FEATURE_DEFINITION_PATHS,
+        timeout_seconds=timeout_seconds,
+    )
+
+
 def dependencies_changed(workspace: Path, *, base_ref: str, timeout_seconds: int = 60) -> bool:
     """`base_ref` 이후 의존성 선언이 바뀌었는지 확인한다.
 
     바뀌지 않았으면 `uv sync`를 건너뛴다. 데모 규모에서 대부분의 candidate는
     하이퍼파라미터만 바꾸므로, 매번 동기화하면 deadline 예산만 축낸다.
     """
-    changed = _run(
-        ["git", "diff", "--name-only", base_ref, "--", *_DEPENDENCY_PATHS],
-        cwd=workspace,
-        timeout_seconds=timeout_seconds,
+    return bool(
+        _changed_paths(
+            workspace,
+            base_ref=base_ref,
+            paths=_DEPENDENCY_PATHS,
+            timeout_seconds=timeout_seconds,
+        )
     )
-    return bool(changed.strip())
 
 
 def sync_dependencies(workspace: Path, *, timeout_seconds: int) -> None:
