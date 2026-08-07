@@ -4,7 +4,8 @@
 사전에 선언된 가설·대조군·시드 정책을 검증하고 승격 가능 여부를 계산하는 구간을
 담당한다.
 
-[기능] held-out test ROC-AUC의 30개 짝지은 시드 증거를 검증하고, 양측 95% t
+[기능] held-out test ROC-AUC의 짝지은 시드 증거(`POLICY_SEEDS`, 데모 스코프에서 3개)를
+검증하고, 양측 95% t
 신뢰구간으로 `eligible`, `hold`, `reject` 판정과 이식 가능한 증거 레코드를 만든다.
 시간축 신호(#485 §5)를 `confidence`/`robustness_note`/`direction_vs_offline_metric`으로
 요약해 판정 산출물에 병기한다(`summarize_temporal_signal`) — 이 신호는 `verdict`를
@@ -50,7 +51,19 @@ from src.pipeline.training_provenance import TrainingComparisonManifest
 
 POLICY_VERSION = PROMOTION_POLICY_VERSION
 PRIMARY_METRIC = "roc_auc"
-POLICY_SEEDS = tuple(range(42, 72))
+# 데모 스코프 축소 (#574). 원래 값은 `tuple(range(42, 72))`(30개)였다.
+#
+# 20차 회의 지침이 "모델 성능을 검증하는 것이 아니라 상태 전환·로그 기록·결과 report
+# 생성 등 전체 한 바퀴가 동작하는 것을 보여주는 설정"으로 seed 반복을 2~3회로 줄일 것을
+# 명시했고, 실측으로도 30개는 실행이 불가능하다 — 학습 1회가 67.8초라 30 seed × 2조건
+# = 4,068초로 Job의 `activeDeadlineSeconds` 상한 3600초를 학습만으로 넘긴다
+# (`experiments/2026-08-07_demo-window-assembly-memory/notes.md`).
+#
+# `sweep-seeds` CLI 기본값(`42,43,44`)과 같은 집합이라 두 경로가 어긋나지 않는다.
+#
+# 주의: `POLICY_VERSION`은 올리지 않는다. 데모 기간 한정 축소이며 판정 로직·임계값은
+# 그대로이므로, 정식 운영으로 돌아갈 때 이 상수만 되돌린다.
+POLICY_SEEDS = tuple(range(42, 45))
 CONFIDENCE_LEVEL = 0.95
 
 

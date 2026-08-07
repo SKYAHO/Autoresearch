@@ -135,7 +135,7 @@ def render_submission_form(api_error: str | None) -> Submission | None:
                 "실험 간 비교가 성립하려면 데이터와 분할이 같아야 하므로 입력받지 않습니다."
             )
             st.markdown(
-                "- 랜덤 시드: `42..71` (30개)\n"
+                "- 랜덤 시드: `42..44` (3개, 데모 스코프)\n"
                 "- 비교 대상: 동일 조건 baseline 재학습\n"
                 "- Split 시드 · Test/Validation 비율 · 데이터셋 스냅샷 · 학습 설정 참조\n"
                 "- 대상 기간: 발행 시점 기준 최근 30일 (KST)"
