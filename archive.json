@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T02:54:04Z",
+  "generated_at": "2026-08-07T03:32:59Z",
   "reports": [
+    {
+      "number": 568,
+      "title": "fix: Executor Job 실행 상한을 설정 가능하게 한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-07T03:32:32Z",
+      "summary_ko": [
+        "Executor Job 전체 실행 상한을 기존 300초 고정값에서 ORCH_ACTIVE_DEADLINE_SEC 환경 변수로 설정할 수 있도록 변경했습니다.",
+        "Codex 실행 상한이 Job 전체 실행 상한 이상으로 설정되는 경우 런처 기동 단계에서 검증 오동작을 예방하도록 검증 로직을 추가했습니다.",
+        "MVP 운영 기본값을 Job 전체 3600초 및 Codex 1800초로 고정하고 관련 계약 테스트와 명세 문서를 업데이트했습니다."
+      ],
+      "report_url": "pr/568/"
+    },
     {
       "number": 572,
       "title": "feat: Streamlit 가설 등록과 상세 화면 분리",
