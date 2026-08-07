@@ -50,7 +50,7 @@ class IssueClient(Protocol):
 
 @dataclass(frozen=True)
 class WorkspacePrepareInput:
-    """DB·launcher가 봉인해 workspace-preparer에 전달한 좌표."""
+    """DB·launcher가 workspace-preparer에 전달한 실행 좌표."""
 
     experiment_id: uuid.UUID
     issue_number: int
@@ -63,7 +63,7 @@ class WorkspacePrepareInput:
 
 @dataclass(frozen=True)
 class PreparedWorkspace:
-    """검증된 checkout과 Stage 3/5가 사용할 봉인 이슈 계약."""
+    """검증된 checkout과 Stage 3/5가 사용할 raw 이슈 입력."""
 
     repository: Path
     issue_body: str
