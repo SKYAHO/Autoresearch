@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T08:11:05Z",
+  "generated_at": "2026-08-07T08:16:13Z",
   "reports": [
+    {
+      "number": 579,
+      "title": "feat: 단일 파드에서 baseline·candidate 학습을 순서대로 실행한다 (#574)",
+      "author": "waieiches",
+      "merged_at": "2026-08-07T08:15:57Z",
+      "summary_ko": [
+        "단일 파드 환경에서 baseline 및 candidate 모델 학습을 순차적으로 수행하는 오케스트레이션 로직을 구현하였습니다.",
+        "state marker 기반 실행 순서 강제 및 workspace 기준 seed 해석, 조건부 의존성 동기화를 추가하였습니다.",
+        "Pod 컨테이너 메모리 요청량(1.5GiB) 및 상한(2GiB)을 명시하여 학습 시 OOM 발생을 방지하였습니다."
+      ],
+      "report_url": "pr/579/"
+    },
     {
       "number": 578,
       "title": "feat: 승격 정책 시드를 데모 스코프 3개로 축소한다 (#574)",
