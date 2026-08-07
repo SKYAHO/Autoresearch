@@ -103,6 +103,19 @@ def test_phase2_main_logs_invalid_stage_without_echoing_argument(
     assert "secret-token" not in caplog.text
 
 
+def test_phase2_logs_a_branch_named_only_by_the_issue_number(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """#589 이후의 브랜치가 `unknown`으로 지워지면 장애 시점에 식별자가 사라진다."""
+    monkeypatch.setenv("ORCH_ISSUE_BRANCH", "exp/582")
+
+    with caplog.at_level(logging.ERROR, logger=phase2.__name__):
+        assert phase2.main(["not-a-stage"]) == 1
+
+    assert "branch=exp/582" in caplog.text
+
+
 def test_phase2_main_logs_sanitized_domain_failure(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

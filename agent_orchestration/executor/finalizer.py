@@ -29,6 +29,7 @@ from typing import Iterator
 import uuid
 
 from agent_orchestration.executor import api_client, verifier
+from agent_orchestration.executor.config import issue_branch_matches
 from agent_orchestration.executor.verifier import VerificationResult
 
 
@@ -154,7 +155,7 @@ def _validate_repository(config: FinalizeInput) -> None:
         or not config.repository.is_dir()
         or config.repository.is_symlink()
         or config.issue_number < 1
-        or not config.issue_branch.startswith(f"exp/{config.issue_number}-")
+        or not issue_branch_matches(config.issue_branch, config.issue_number)
     ):
         raise CandidateFinalizationError("finalize_input_invalid")
     _validate_sha(config.base_dev_sha, "base_sha_invalid")

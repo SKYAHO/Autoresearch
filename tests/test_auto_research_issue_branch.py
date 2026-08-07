@@ -184,7 +184,7 @@ def test_parse_issue_input_reads_body_rendered_from_actual_form() -> None:
         RENDERED_FORM_FIXTURE.read_text(encoding="utf-8"),
     )
 
-    assert issue_input.issue_branch == "exp/449-ctr-ratio"
+    assert issue_input.issue_branch == "exp/449"
     assert issue_input.primary_metric_name == "roc_auc"
     assert issue_input.primary_metric_direction == "higher_is_better"
     assert issue_input.minimum_primary_delta == Decimal("0.002")
@@ -282,7 +282,7 @@ def test_parse_issue_input_reads_a_body_without_primary_metric_sections() -> Non
     assert issue_input.primary_metric_name is None
     assert issue_input.primary_metric_direction is None
     assert issue_input.minimum_primary_delta is None
-    assert issue_input.issue_branch == "exp/449-metric"
+    assert issue_input.issue_branch == "exp/449"
     # 봉인 자체는 계속 만들어져야 합니다 — 없으면 Actions output이 비어 후속 job이
     # 빈 문자열을 식별자로 들고 갑니다.
     assert len(issue_input.criteria_id) == 64
@@ -571,7 +571,7 @@ def test_parse_issue_input_reads_a_body_without_execution_settings() -> None:
         ),
     )
 
-    assert issue_input.issue_branch == "exp/449-metric"
+    assert issue_input.issue_branch == "exp/449"
     assert issue_input.comparison is None
     assert issue_input.dataset_snapshot is None
     assert issue_input.random_seeds == ()
@@ -662,11 +662,13 @@ def test_identifiers_ignore_fields_outside_fixed_structured_contracts() -> None:
 
 
 def test_branch_name_is_single_issue_coordinate() -> None:
-    assert branch_name_for(449, "[AR] CTR ratio") == "exp/449-ctr-ratio"
+    assert branch_name_for(449) == "exp/449"
 
 
-def test_branch_name_uses_deterministic_ascii_fallback_for_korean_title() -> None:
-    assert branch_name_for(449, "[AR] 비율 피처 실험") == "exp/449-issue-09a97f67112d"
+def test_branch_name_rejects_a_non_positive_issue_number() -> None:
+    """이슈 번호가 유일한 좌표이므로 그것이 무효면 브랜치 이름도 만들 수 없다."""
+    with pytest.raises(ValueError):
+        branch_name_for(0)
 
 
 @pytest.mark.parametrize(
@@ -711,7 +713,7 @@ def test_cli_writes_only_issue_contract_outputs(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert output_path.read_text(encoding="utf-8").splitlines() == [
-        "issue_branch=exp/449-ctr-ratio",
+        "issue_branch=exp/449",
         "criteria_id=" + issue_input.criteria_id,
         "reproducibility_id=" + issue_input.reproducibility_id,
     ]

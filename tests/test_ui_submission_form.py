@@ -48,6 +48,26 @@ def test_submission_without_metrics_is_accepted(
     assert submission.change == ""
 
 
+@pytest.mark.parametrize("title", ["   ", "\t\n"])
+def test_a_blank_title_is_rejected_by_the_server_contract(title: str) -> None:
+    """공백뿐인 제목이 통과하면 `[AR]`만 붙은 이슈가 GitHub에 실제로 열린다.
+
+    `min_length=1`은 공백을 세므로 이 성질을 대신하지 못한다.
+    """
+    with pytest.raises(ValueError):
+        IssueSubmission.model_validate(_submission(title=title).to_fields())
+
+
+@pytest.mark.parametrize("title", ["비율 피처 실험", "조회수 비율 피처"])
+def test_a_title_without_ascii_passes_the_server_contract(title: str) -> None:
+    """제목이 브랜치 이름의 입력이 아니므로 ASCII가 없어도 통과해야 한다(#589).
+
+    이 성질이 깨지면 한글로만 제목을 적은 사용자가 Experiment만 만들어 두고 발행에서
+    422를 받는다 — 화면에서 재시도해도 같은 값으로 계속 실패하는 상태다.
+    """
+    IssueSubmission.model_validate(_submission(title=title).to_fields())
+
+
 def test_to_fields_only_sends_keys_the_server_knows() -> None:
     """서버가 모르는 키를 보내면 `extra="forbid"`가 422로 거부한다."""
     assert set(_submission().to_fields()) <= set(IssueSubmission.model_fields)
@@ -101,12 +121,6 @@ def test_missing_required_reports_blank_fields(
 def test_filled_submission_reports_nothing_missing() -> None:
     """제목과 가설만 채우면 더 요구하지 않는다."""
     assert _submission().missing_required() == []
-
-
-def test_title_without_ascii_is_rejected_by_the_server_contract() -> None:
-    """ASCII가 없는 제목은 브랜치 이름이 해시로 굳어 되돌릴 수 없다."""
-    with pytest.raises(ValueError):
-        IssueSubmission.model_validate(_submission(title="비율 피처 실험").to_fields())
 
 
 def test_publish_issue_sends_only_the_fields_envelope(

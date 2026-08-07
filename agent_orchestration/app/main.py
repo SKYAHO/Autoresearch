@@ -259,7 +259,7 @@ def create_app() -> FastAPI:
     ) -> JSONResponse:
         """이슈 본문 조립 단계의 실패를 502로 변환한다.
 
-        `build_issue_body`/`_branch_slug`가 내는 `ValueError`가 여기로 온다. 호출자가
+        `build_issue_body`가 내는 `ValueError`가 여기로 온다. 호출자가
         제출한 필드의 형식 위반은 여기 오지 않는다 — `IssueSubmission`이 요청 검증에서
         422로 먼저 끊으며, 그 시점에는 이슈가 아직 열리지 않았다(#536).
 

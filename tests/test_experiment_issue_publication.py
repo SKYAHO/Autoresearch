@@ -131,7 +131,7 @@ def test_publication_stores_body_before_creating_the_issue(
 
     assert result.issue_number == 520
     assert result.issue_body == seen[0]
-    assert result.issue_branch.startswith("exp/520-")
+    assert result.issue_branch == "exp/520"
     assert result.base_dev_sha == "a" * 40
 
 
@@ -397,30 +397,40 @@ def test_marker_lookup_failure_does_not_publish(
     assert experiment.issue_number is None
 
 
-@pytest.mark.parametrize(
-    "title",
-    [
-        "[AR] views per day ratio feature",
-        "[AR] 비율 피처 실험",
-        "no prefix ascii title",
-        "[AR]    공백만    ",
-        "접두어 없는 한글 제목",
-    ],
-)
-def test_branch_name_matches_the_canonical_rule(title: str) -> None:
+def test_branch_name_matches_the_canonical_rule() -> None:
     """표시용 브랜치 이름이 정본 helper가 계산한 이름과 같아야 한다."""
     from agent_orchestration.app.experiments.service import _branch_name_for
     from tools.auto_research_issue_branch import branch_name_for
 
-    assert _branch_name_for(520, title) == branch_name_for(520, title)
+    assert _branch_name_for(520) == branch_name_for(520)
 
 
-def test_branch_name_matches_the_canonical_rule_for_an_empty_title() -> None:
-    """prefix를 떼고 남은 것이 공백뿐이면 양쪽 모두 거부해야 한다."""
-    from agent_orchestration.app.experiments.service import _branch_name_for
-    from tools.auto_research_issue_branch import branch_name_for
+def test_a_title_without_ascii_publishes(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """제목이 브랜치 이름의 입력이 아니므로 ASCII가 없어도 발행돼야 한다(#589).
 
-    with pytest.raises(ValueError):
-        _branch_name_for(520, "[AR]    ")
-    with pytest.raises(ValueError):
-        branch_name_for(520, "[AR]    ")
+    이 성질이 깨지면 한글로만 제목을 적은 사용자는 Experiment만 만들어 두고 발행에서
+    422를 받는다 — 그 상태는 화면에서 재시도해도 같은 값으로 계속 실패한다.
+    """
+    experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
+    published_titles: list[str] = []
+
+    async def fake_create_issue(_settings, *, title, body, labels):
+        published_titles.append(title)
+        return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
+
+    monkeypatch.setattr(
+        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
+    )
+
+    result = asyncio.run(
+        publish_experiment_issue(
+            db_session, _Settings(), experiment.id, _request(title="비율 피처 실험")
+        )
+    )
+
+    assert published_titles == ["[AR] 비율 피처 실험"]
+
+    assert result.issue_number == 520
+    assert result.issue_branch == "exp/520"
