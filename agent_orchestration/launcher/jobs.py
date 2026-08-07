@@ -29,6 +29,7 @@ from kubernetes.client import (
     V1PodSecurityContext,
     V1PodSpec,
     V1PodTemplateSpec,
+    V1ResourceRequirements,
     V1SeccompProfile,
     V1SecretVolumeSource,
     V1SecurityContext,
@@ -98,6 +99,7 @@ def _token_minter(
             _env("ORCH_GITHUB_TOKEN_PURPOSE", purpose),
             _env("ORCH_GITHUB_TOKEN_FILE", f"{token_directory}/token"),
         ],
+        resources=_container_resources(),
         security_context=_restricted_container_security_context(),
         volume_mounts=[
             V1VolumeMount(
@@ -109,6 +111,34 @@ def _token_minter(
                 name=token_volume, mount_path=token_directory, read_only=False
             ),
         ],
+    )
+
+
+def _container_resources() -> V1ResourceRequirements:
+    """모든 Phase 2 container가 공유하는 자원 요청·상한이다.
+
+    역할 분담은 `SKYAHO/Autoresearch-infra#562`와 합의한 대로다 — 인프라는 namespace
+    LimitRange·Quota로 **상한(그릇 크기)**을 정하고, 여기서는 Job이 실제로 얼마를
+    **요청**할지를 명시한다.
+
+    명시하지 않으면 `autoresearch-experiments`의 LimitRange 기본값이 적용되는데 그
+    default limit이 **1Gi**라, 학습 단계(#574)가 OOM으로 죽는다.
+
+    request를 1.5Gi로 잡는 근거는 실측이다
+    (`experiments/2026-08-07_demo-window-assembly-memory/notes.md`).
+
+    - 데이터셋 조립 피크 **1.13 GiB**, 학습 피크 **1.22 GiB** — **둘 다 1Gi를 넘는다**
+    - limit 2Gi 안이라 OOM으로 죽지는 않지만, request를 넘겨 쓰면 QoS가 Burstable이라
+      노드 메모리 압박 시 eviction 대상이 된다. 1.5Gi면 두 단계 모두 요청 안에 들어온다
+    - 동시 실행 상한이 2이므로 requests 합계는 3Gi로 namespace quota 4Gi 안이다
+
+    initContainer 7개에 같은 값을 줘도 8배로 계산되지 않는다. Pod 실효값은
+    `max(앱 container 합계, 각 initContainer의 최댓값)`이고 initContainer는 순차
+    실행이므로(sidecar 없음), 실효값은 request 500m/1.5Gi · limit 1 CPU/2Gi다.
+    """
+    return V1ResourceRequirements(
+        requests={"cpu": "500m", "memory": "1536Mi"},
+        limits={"cpu": "1", "memory": "2Gi"},
     )
 
 
@@ -125,6 +155,7 @@ def _container(
         image=settings.executor_image,
         command=command,
         env=env,
+        resources=_container_resources(),
         security_context=_restricted_container_security_context(),
         volume_mounts=mounts,
     )
