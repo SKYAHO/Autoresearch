@@ -201,7 +201,8 @@ def test_feature_definition_change_is_detected(
 
     assert changed == ("feature_repo/feature_definitions.py",)
     assert calls[0][:4] == ["git", "diff", "--name-only", "abc123"]
-    assert "feature_repo/feature_definitions.py" in calls[0]
+    assert "feature_repo" in calls[0]
+    assert "src/pipeline/build_training_dataset.py" in calls[0]
 
 
 def test_unchanged_feature_definitions_return_empty(

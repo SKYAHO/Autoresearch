@@ -41,13 +41,20 @@ _DEPENDENCY_PATHS: Final = ("pyproject.toml", "uv.lock")
 # 이미지에 없고 `pyproject.toml`이 feast와 dev를 conflicts로 선언해 재빌드로도 넣을 수
 # 없다. 별도 컨테이너가 필요해 컨테이너 계약 변경까지 번지므로 데모 이후 과제로 둔다.
 #
-# ⚠️ **경로 목록은 잠정값이다.** 무엇을 "피처 정의"로 볼지는 feature store 소유자
-# 확인이 필요하다(`feature_repo`·`model_contract`는 소유자 확인 없이 손대지 않는다는
-# 작업 원칙이 있다). 여기서는 읽기만 하고 수정하지 않지만, 범위가 좁으면 조용한 실패가
-# 새고 넓으면 무관한 변경까지 막으므로 확정 전까지는 **넓은 쪽**으로 둔다.
+# ⚠️ **경로 목록은 잠정값이다.** 무엇을 "피처를 바꾸는 변경"으로 볼지는 feature store
+# 소유자 확인이 필요하다(`feature_repo`·`model_contract`는 소유자 확인 없이 손대지
+# 않는다는 작업 원칙이 있다). 여기서는 읽기만 하고 수정하지 않는다.
+#
+# 확정 전까지는 **넓은 쪽**으로 둔다. 좁으면 조용한 실패가 새고 넓으면 무관한 변경까지
+# 막는데, **전자가 훨씬 위험하다** — 넓어서 막히면 명확한 사유와 함께 즉시 드러나지만,
+# 좁아서 새면 아무 신호 없이 잘못된 결론이 나온다.
+#
+# 그래서 정의 파일만이 아니라 **피처를 계산하는 로직**까지 포함한다. 정의는 그대로 두고
+# 계산만 바꾸는 변경도 스냅샷 컬럼을 낡게 만들기 때문이다. `feature_repo`는 파일 단위가
+# 아니라 디렉터리 전체를 본다.
 _FEATURE_DEFINITION_PATHS: Final = (
-    "feature_repo/feature_definitions.py",
-    "feature_repo/feature_store.yaml",
+    "feature_repo",
+    "src/pipeline/build_training_dataset.py",
 )
 _SEED_PROBE: Final = (
     "from src.pipeline.experiment_evaluation import POLICY_SEEDS;"
@@ -152,10 +159,16 @@ def _changed_paths(
 def feature_definitions_changed(
     workspace: Path, *, base_ref: str, timeout_seconds: int = 60
 ) -> tuple[str, ...]:
-    """candidate가 피처 정의를 바꿨는지 확인하고 바뀐 경로를 돌려준다.
+    """candidate가 피처를 바꿨는지 확인하고 바뀐 경로를 돌려준다.
 
-    빈 tuple이면 지원 범위 안(피처 불변 가설)이다. 상세한 이유는
-    `_FEATURE_DEFINITION_PATHS` 주석 참조.
+    **데모 스코프 제약을 코드로 강제하는 지점이다.** 학습 스냅샷이 baseline 코드 시점에
+    파드 밖에서 미리 조립·고정되므로, 피처가 바뀌는 가설은 이 스냅샷으로 검증할 수 없다.
+    그냥 진행하면 새 피처가 없는 데이터로 학습돼 candidate가 baseline과 같은 결과를 내고,
+    **실패로 보이지 않으면서 아무것도 검증하지 않은** 상태가 된다.
+
+    빈 tuple이면 지원 범위 안(피처 불변 가설)이다. 경로 목록은 feature store 소유자 확인
+    전까지 잠정값이며 넓은 쪽으로 유지한다 — 좁으면 조용한 실패가 샌다.
+    상세는 `_FEATURE_DEFINITION_PATHS` 주석 참조.
     """
     return _changed_paths(
         workspace,
