@@ -178,36 +178,45 @@ def submit_experiment(
     """Experiment를 만들고 곧바로 `[AR]` 이슈를 발행한다.
 
     두 번 호출하는 이유는 서버 계약이 그렇기 때문이다 — 생성은 순수 DB 쓰기이고 발행은
-    외부 부작용이다.
-
-    **발행이 실패하면 이슈 없는 Experiment가 남는다.** 이 함수는 매번
-    `create_experiment()`부터 부르므로 폼에서 다시 제출하면 **새 Experiment**가 생기고,
-    앞서 실패한 실험은 `CREATED`인 채로 목록에 남는다. 그 실험을 재발행하는 경로는
-    아직 UI에 없다 — `POST /experiments/{id}/issue`를 직접 부르면 서버가 저장된 본문
-    그대로 재발행한다.
+    외부 부작용이다. 발행 실패 시 생성된 Experiment와 원 제출을 보존하며, 같은 폼을
+    재제출하면 생성 없이 기존 Experiment의 발행만 재시도한다.
     """
-    try:
-        experiment = client.create_experiment(submission.hypothesis)
-    except ExperimentApiError as error:
-        record_detail_error(state, str(error))
-        return False
-    state.experiments.insert(0, experiment)
-    show_experiment(state, experiment.id)
-
-    try:
-        state.last_publication = client.publish_issue(
-            experiment.id, submission.to_fields(), submission.allowed_scope
-        )
-    except ExperimentApiError as error:
-        # 갱신을 **먼저** 한다. `refresh_selected_experiment()`는 정상 종료 경로에서
-        # `detail_error`를 지우므로(아래), 순서를 뒤집으면 방금 기록한 발행 실패
-        # 메시지가 조회 성공과 함께 사라져 사용자가 아무 피드백도 받지 못한다.
-        refresh_selected_experiment(client, state)
+    experiment_id = state.pending_publication_experiment_id
+    if experiment_id is None:
+        try:
+            experiment = client.create_experiment(submission.hypothesis)
+        except ExperimentApiError as error:
+            record_detail_error(state, str(error))
+            return False
+        state.experiments.insert(0, experiment)
+        experiment_id = experiment.id
+        state.pending_publication_experiment_id = experiment_id
+        state.pending_publication_submission = submission
+    elif state.pending_publication_submission != submission:
         record_detail_error(
-            state, f"실험은 생성됐지만 이슈 발행에 실패했습니다: {error}"
+            state,
+            "이전에 생성된 실험의 이슈 발행이 완료되지 않았습니다. "
+            "입력값을 원래대로 되돌린 뒤 다시 제출해 주세요.",
         )
         return False
 
+    try:
+        publication = client.publish_issue(
+            experiment_id, submission.to_fields(), submission.allowed_scope
+        )
+    except ExperimentApiError as error:
+        show_create_view(state)
+        record_detail_error(
+            state,
+            f"실험은 생성됐지만 이슈 발행에 실패했습니다. "
+            f"같은 입력으로 다시 제출하면 발행만 재시도합니다: {error}",
+        )
+        return False
+
+    state.pending_publication_experiment_id = None
+    state.pending_publication_submission = None
+    show_experiment(state, experiment_id)
+    state.last_publication = publication
     refresh_selected_experiment(client, state)
     return True
 

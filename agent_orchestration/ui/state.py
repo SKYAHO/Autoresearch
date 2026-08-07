@@ -6,7 +6,7 @@ Streamlit widget 렌더링은 담당하지 않는다.
 
 [기능]
 Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 목록·상세
-오류 분리 보존, 화면 모드 전이를 제공한다.
+오류 분리 보존, 화면 모드 전이와 이슈 발행 재시도 상태를 제공한다.
 
 [비책임]
 HTTP 요청, API 인증, 상태 전이 기록, Agent 실행, GitHub 이슈 처리.
@@ -25,6 +25,7 @@ from agent_orchestration.ui.models import (
     Log,
     POLLING_STATUSES,
     Step,
+    Submission,
     TERMINAL_STATUSES,
 )
 
@@ -58,8 +59,11 @@ class WorkbenchState:
     list_error: str | None = None
     detail_error: str | None = None
     last_updated_at: datetime | None = None
-    # 방금 발행한 이슈 좌표. 다음 제출 때 지워 이전 결과가 남지 않게 한다.
+    # 방금 발행한 이슈 좌표. 선택 변경이나 다음 제출 때 지워 이전 결과가 남지 않게 한다.
     last_publication: IssuePublication | None = None
+    # 생성 성공·발행 실패 사이의 부분 성공을 보존해 재제출 시 Experiment 중복 생성을 막는다.
+    pending_publication_experiment_id: str | None = None
+    pending_publication_submission: Submission | None = None
 
 
 def show_create_view(state: WorkbenchState) -> None:
@@ -90,6 +94,7 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.terminal_status_observed = None
     state.terminal_refresh_complete = False
     state.detail_error = None
+    state.last_publication = None
 
 
 def append_event_page(
