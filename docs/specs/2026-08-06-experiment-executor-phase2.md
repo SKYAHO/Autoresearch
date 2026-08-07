@@ -348,7 +348,7 @@ executor의 Codex 인증 원본은 PVC가 아니라 Kubernetes Secret이다. `st
   `CODEX_HOME`으로 복사하고 복사본을 mode `0400`으로 제한한다. 실행 중 인증 상태 변경은
   Pod와 함께 폐기되며 Secret 원본을 갱신하지 않는다.
 - Secret이 없거나 `auth.json` key가 없으면 kubelet이 volume mount를 완료하지 못해 Pod는
-  `Pending`에 머문다. Job은 `activeDeadlineSeconds`(기본 300초) 뒤 `Failed`가 되고,
+  `Pending`에 머문다. Job은 `activeDeadlineSeconds` 뒤 `Failed`가 되고,
   launcher는 다음 tick에서 terminal Job을 회수해 Experiment를 `ERROR`로 전환한다. 운영자는
   Pod event의 `FailedMount`와 Job의 `DeadlineExceeded`를 원인 판단 근거로 사용한다.
 - `subPath` mount는 실행 중 Secret 갱신을 전파하지 않으므로 Secret 교체는 새 Experiment
@@ -359,6 +359,21 @@ executor의 Codex 인증 원본은 PVC가 아니라 Kubernetes Secret이다. `st
   인증 계약의 Job이 섞이지 않게 한다.
 - 기존 Runner의 `agent-orchestration-codex-home` PVC는 Runner 전용으로 유지하며 executor가
   참조하지 않는다.
+
+### Executor 실행 시간 예산 (#567)
+
+`activeDeadlineSeconds`는 Codex 한 단계가 아니라 token 발급, branch 생성, clone, Codex,
+Ruff·전체 pytest, commit·push, Candidate API 보고를 포함한 8-container Job 전체에 적용된다.
+기존 300초 고정값은 Codex 상한 120초와 전체 pytest 약 138초만 합쳐도 258초여서 다른 여섯
+단계에 42초밖에 남기지 못하므로 운영 smoke의 완주 상한으로 사용할 수 없다.
+
+- launcher는 `ORCH_ACTIVE_DEADLINE_SEC`와 `ORCH_CODEX_TIMEOUT_SEC`를 모두 필수 양의 정수로
+  읽고 Codex 상한이 Job 전체 상한 이상이면 기동 전에 fail-closed한다.
+- MVP 운영값은 admission 허용 상한 안에서 Job 전체 `3600`초, Codex `1800`초로 고정한다.
+  남은 1800초는 token 발급·branch·clone·verifier·finalizer와 변동 여유 시간이다.
+- launcher가 만드는 Phase 1 branch Job과 Phase 2 executor Job은 동일한
+  `ORCH_ACTIVE_DEADLINE_SEC` 값을 사용한다. 현재 운영 launcher는 Phase 2 Job을 생성한다.
+- 실제 단계별 소요 시간은 smoke에서 관측하며, 추정값을 성공 지표로 기록하지 않는다.
 
 ## 검증 전략
 
