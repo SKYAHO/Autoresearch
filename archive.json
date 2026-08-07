@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T09:31:41Z",
+  "generated_at": "2026-08-07T09:33:22Z",
   "reports": [
+    {
+      "number": 591,
+      "title": "fix: 실험 브랜치 이름을 이슈 번호만으로 결정",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-07T09:33:03Z",
+      "summary_ko": [
+        "자동 연구 실험 브랜치 명명 규칙을 제목 기반 식별자(slug)를 뺀 `exp/<이슈번호>` 형식으로 단순화하였습니다.",
+        "한글로만 작성된 실험 제목 입력 시 ASCII 문자가 없어 이슈 발행이 422 에러로 실패하던 문제를 해결하였습니다.",
+        "이전에 발행된 구 형식 브랜치(`exp/<이슈번호>-<slug>`)와의 검증 호환성을 유지하여 진행 중인 실험 실패를 방지하였습니다."
+      ],
+      "report_url": "pr/591/"
+    },
     {
       "number": 593,
       "title": "fix: dev feast-apply의 불필요한 Redis CA 조달 403 수정",
