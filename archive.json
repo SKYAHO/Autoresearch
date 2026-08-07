@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T17:56:29Z",
+  "generated_at": "2026-08-07T17:57:20Z",
   "reports": [
+    {
+      "number": 610,
+      "title": "fix: executor 이미지에 libgomp1 설치 추가",
+      "author": "bbungjun",
+      "merged_at": "2026-08-07T17:57:04Z",
+      "summary_ko": [
+        "자동 연구 실행용 컨테이너 이미지(executor)에 LightGBM 실행을 위한 OpenMP 라이브러리(libgomp1) 패키지를 추가 설치하였습니다.",
+        "컨테이너 계약 검증 테스트에 libgomp1 설치 여부를 확인하는 단정문을 반영하였습니다.",
+        "자동 연구 파이프라인의 모델 학습 단계 진입 시 발생하던 런타임 라이브러리 부재 오류를 해결하였습니다."
+      ],
+      "report_url": "pr/610/"
+    },
     {
       "number": 606,
       "title": "feat: executor가 게시된 스냅샷을 받아 학습하도록 배선",
