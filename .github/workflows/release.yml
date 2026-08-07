@@ -765,6 +765,8 @@ jobs:
     needs:
       - publish-agent-orchestration-api-image
       - publish-agent-orchestration-ui-image
+      - publish-agent-orchestration-launcher-image
+      - publish-agent-orchestration-runner-image
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -795,12 +797,18 @@ jobs:
         env:
           API_DIGEST_REF: ${{ needs.publish-agent-orchestration-api-image.outputs.digest_ref }}
           API_SOURCE_SHA: ${{ needs.publish-agent-orchestration-api-image.outputs.source_sha }}
+          LAUNCHER_DIGEST_REF: ${{ needs.publish-agent-orchestration-launcher-image.outputs.digest_ref }}
+          LAUNCHER_SOURCE_SHA: ${{ needs.publish-agent-orchestration-launcher-image.outputs.source_sha }}
+          RUNNER_DIGEST_REF: ${{ needs.publish-agent-orchestration-runner-image.outputs.digest_ref }}
+          RUNNER_SOURCE_SHA: ${{ needs.publish-agent-orchestration-runner-image.outputs.source_sha }}
           UI_DIGEST_REF: ${{ needs.publish-agent-orchestration-ui-image.outputs.digest_ref }}
           UI_SOURCE_SHA: ${{ needs.publish-agent-orchestration-ui-image.outputs.source_sha }}
         shell: bash
         run: |
-          if [[ "$API_SOURCE_SHA" != "$UI_SOURCE_SHA" ]]; then
-            echo "::error::API와 UI image의 source SHA가 일치하지 않습니다."
+          if [[ "$API_SOURCE_SHA" != "$UI_SOURCE_SHA" ]] \
+            || [[ "$API_SOURCE_SHA" != "$LAUNCHER_SOURCE_SHA" ]] \
+            || [[ "$API_SOURCE_SHA" != "$RUNNER_SOURCE_SHA" ]]; then
+            echo "::error::Agent Orchestration image의 source SHA가 일치하지 않습니다."
             exit 1
           fi
           ruby infra-repo/scripts/promote-agent-orchestration-digests.rb
@@ -862,6 +870,8 @@ jobs:
       - name: Write promotion summary
         env:
           API_DIGEST_REF: ${{ needs.publish-agent-orchestration-api-image.outputs.digest_ref }}
+          LAUNCHER_DIGEST_REF: ${{ needs.publish-agent-orchestration-launcher-image.outputs.digest_ref }}
+          RUNNER_DIGEST_REF: ${{ needs.publish-agent-orchestration-runner-image.outputs.digest_ref }}
           SOURCE_SHA: ${{ needs.publish-agent-orchestration-api-image.outputs.source_sha }}
           UI_DIGEST_REF: ${{ needs.publish-agent-orchestration-ui-image.outputs.digest_ref }}
           UPDATED: ${{ steps.changed.outputs.updated }}
@@ -872,6 +882,8 @@ jobs:
             echo
             echo "- Source SHA: \`$SOURCE_SHA\`"
             echo "- API digest: \`$API_DIGEST_REF\`"
+            echo "- Launcher digest: \`$LAUNCHER_DIGEST_REF\`"
+            echo "- Runner digest: \`$RUNNER_DIGEST_REF\`"
             echo "- UI digest: \`$UI_DIGEST_REF\`"
             if [[ "$UPDATED" == "true" ]]; then
               echo "- Result: infra main digest 참조를 자동 갱신했습니다."
