@@ -33,6 +33,13 @@ from agent_orchestration.executor.codex_worker import (
 from agent_orchestration.executor.finalizer import FinalizeInput, finalize_candidate
 from agent_orchestration.executor.github_issues import GitHubIssues
 from agent_orchestration.executor.state import ExecutorWorkspaceState, read_state
+from agent_orchestration.executor.training import (
+    TrainingInput,
+    TrainingStage,
+    dependencies_changed,
+    run_training,
+    sync_dependencies,
+)
 from agent_orchestration.executor.verifier import (
     CandidatePolicy,
     VerificationResult,
@@ -162,7 +169,39 @@ def workspace_preparer_main() -> int:
         workspace=Path(_required("ORCH_EXECUTOR_WORKSPACE")),
     )
     asyncio.run(prepare_workspace(config, GitHubIssues()))
+    # clone은 workspace 루트가 아니라 그 아래 `repository/`에 놓인다
+    # (`workspace.py`의 `repository = workspace / "repository"`).
+    _run_training_if_enabled(TrainingStage.BASELINE, config.workspace / "repository")
     return 0
+
+
+def _run_training_if_enabled(stage: TrainingStage, workspace: Path) -> None:
+    """데이터셋이 지정된 경우에만 해당 조건의 학습을 실행한다.
+
+    `ORCH_TRAINING_DATASET_PATH` 미설정이면 조용히 건너뛴다. 학습 입력은 미리 게시된
+    데이터셋 스냅샷인데, 그 스냅샷을 Pod가 읽으려면 `experiment-job` GSA에 스냅샷 root
+    read 권한이 필요하다(현재 `objectCreator`만 보유). 권한이 붙기 전까지는 Phase 2의
+    기존 경로(clone → Codex → verify → push)가 그대로 동작해야 하므로 opt-in으로 둔다.
+
+    조립을 Pod 안에서 하지 않는 이유는 feast group이 executor 이미지에 없고
+    `pyproject.toml`이 feast와 dev를 conflicts로 선언해 재빌드로도 넣을 수 없기 때문이다.
+    """
+    dataset = os.environ.get("ORCH_TRAINING_DATASET_PATH", "").strip()
+    if not dataset:
+        return
+    if stage is TrainingStage.CANDIDATE and dependencies_changed(
+        workspace, base_ref=_required("ORCH_BASE_DEV_SHA")
+    ):
+        sync_dependencies(workspace, timeout_seconds=_positive_int("ORCH_UV_SYNC_TIMEOUT_SEC"))
+    run_training(
+        TrainingInput(
+            stage=stage,
+            workspace=workspace,
+            dataset_path=Path(dataset),
+            state_directory=Path(_required("ORCH_EXECUTOR_STATE_DIR")),
+            timeout_seconds=_positive_int("ORCH_TRAINING_TIMEOUT_SEC"),
+        )
+    )
 
 
 def codex_worker_main() -> int:
@@ -237,6 +276,7 @@ def candidate_finalizer_main() -> int:
         ),
         _read_verification(),
     )
+    _run_training_if_enabled(TrainingStage.CANDIDATE, state.repository)
     return 0
 
 
