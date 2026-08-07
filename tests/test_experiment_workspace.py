@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from hashlib import sha256
 import json
 from pathlib import Path
 import stat
@@ -26,7 +25,6 @@ from agent_orchestration.executor.state import (
     write_state,
 )
 from agent_orchestration.executor.workspace import (
-    WorkspacePreparationError,
     WorkspacePrepareInput,
     prepare_workspace,
 )
@@ -47,7 +45,7 @@ def _issue_body() -> str:
     return f"<!-- experiment-id: {_EXPERIMENT_ID} -->\n\n{fixture}"
 
 
-def _input(tmp_path: Path, body: str | None = None) -> WorkspacePrepareInput:
+def _input(tmp_path: Path) -> WorkspacePrepareInput:
     token_file = tmp_path / "clone-token"
     token_file.write_text(f"{_TOKEN}\n", encoding="utf-8")
     return WorkspacePrepareInput(
@@ -55,7 +53,6 @@ def _input(tmp_path: Path, body: str | None = None) -> WorkspacePrepareInput:
         issue_number=_ISSUE_NUMBER,
         issue_branch=_ISSUE_BRANCH,
         base_dev_sha=_BASE_SHA,
-        issue_body_sha256=sha256((body or _issue_body()).encode("utf-8")).hexdigest(),
         github_repository="SKYAHO/Autoresearch",
         token_file=token_file,
         workspace=tmp_path / "workspace",
@@ -120,45 +117,6 @@ def _patch_git(
     return commands, askpass_files
 
 
-@pytest.mark.parametrize(
-    ("body", "issue_branch", "body_hash"),
-    [
-        (_issue_body().replace(str(_EXPERIMENT_ID), str(uuid.uuid4())), _ISSUE_BRANCH, None),
-        (_issue_body(), _ISSUE_BRANCH, "b" * 64),
-        (_issue_body(), "exp/546-different", None),
-    ],
-    ids=("marker", "body-hash", "branch"),
-)
-def test_unsealed_issue_data_blocks_clone_before_any_git_subprocess(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    body: str,
-    issue_branch: str,
-    body_hash: str | None,
-) -> None:
-    """marker/hash/branch 중 하나라도 다르면 clone이 시작되면 안 된다."""
-    config = _input(tmp_path)
-    config = WorkspacePrepareInput(
-        **{
-            **config.__dict__,
-            "issue_branch": issue_branch,
-            "issue_body_sha256": body_hash or config.issue_body_sha256,
-        }
-    )
-    calls, _ = _patch_git(monkeypatch, workspace=config.workspace)
-
-    with pytest.raises(WorkspacePreparationError):
-        asyncio.run(
-            prepare_workspace(
-                config,
-                _Issues(GitHubIssueSnapshot(title=_ISSUE_TITLE, body=body)),
-            )
-        )
-
-    assert calls == []
-    assert not (config.workspace / "repository").exists()
-
-
 def test_prepared_workspace_uses_clean_remote_writes_0400_state_and_removes_askpass(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -213,6 +171,29 @@ def test_prepared_workspace_uses_clean_remote_writes_0400_state_and_removes_askp
         ("git", "-C", str(prepared.repository), "switch", "-c", _ISSUE_BRANCH)
     )
     assert clone < hooks_set < remote < helper < hooks < checkout < switch
+
+
+def test_free_form_issue_body_is_forwarded_without_semantic_validation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Issue template이 바뀌어도 본문 의미 검증 때문에 clone을 막으면 안 된다."""
+    body = "NaN 또는 Infinity ctr_score를 거부하도록 코드를 수정한다."
+    config = _input(tmp_path)
+    state_path = tmp_path / "executor-state" / "state.json"
+    monkeypatch.setattr("agent_orchestration.executor.workspace.STATE_PATH", state_path)
+    commands, _ = _patch_git(monkeypatch, workspace=config.workspace)
+
+    prepared = asyncio.run(
+        prepare_workspace(
+            config,
+            _Issues(GitHubIssueSnapshot(title="자유 형식 이슈", body=body)),
+        )
+    )
+
+    assert prepared.issue_body == body
+    assert prepared.allowed_scope == ()
+    assert any(command[1:3] == ("clone", "--no-checkout") for command in commands)
+    assert read_state(state_path, workspace=config.workspace).issue_body == body
 
 
 def test_existing_remote_candidate_is_prepared_for_later_adoption_without_running_codex(

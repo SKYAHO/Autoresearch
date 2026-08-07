@@ -9,7 +9,6 @@ LimitRange 기본값(limit 1Gi)이 적용돼 학습 단계가 OOM으로 죽으�
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from hashlib import sha256
 from pathlib import Path
 import sys
 import uuid
@@ -54,13 +53,11 @@ def _settings() -> LauncherSettings:
 
 
 def _claim() -> ClaimedExperiment:
-    body = "<!-- experiment-id: 12345678-1234-5678-1234-567812345678 -->\nbody"
     return ClaimedExperiment(
         experiment_id=_EXPERIMENT_ID,
         issue_number=574,
         issue_branch="exp/574-demo",
         base_dev_sha="a" * 40,
-        issue_body_sha256=sha256(body.encode("utf-8")).hexdigest(),
         job_name=f"ar-exec-{_EXPERIMENT_ID.hex}",
     )
 

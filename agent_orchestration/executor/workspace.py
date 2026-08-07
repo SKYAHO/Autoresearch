@@ -1,12 +1,12 @@
-"""Executor의 봉인 이슈 검증과 credential-free workspace 준비 경계.
+"""Executor의 raw 이슈 전달과 credential-free workspace 준비 경계.
 
 [파이프라인]
-branch-creator가 원격 exp ref를 보장한 뒤, Codex가 수정하기 전에 GitHub 이슈 원문과 DB
-봉인값을 대조하고 정확한 branch checkout을 workspace emptyDir에 준비하는 구간이다.
+branch-creator가 원격 exp ref를 보장한 뒤, Codex가 수정하기 전에 GitHub 이슈 원문과
+정확한 branch checkout을 workspace emptyDir에 준비하는 구간이다.
 
 [기능]
-marker·UTF-8 body hash·파싱 branch를 clone 전에 fail-closed로 검증하고, 일회성 GIT_ASKPASS
-와 clean remote URL로 checkout한다. 성공 결과는 별도 state volume에 0400 state로 전달한다.
+Issue Form 내용을 해석하지 않고 일회성 GIT_ASKPASS와 clean remote URL로 checkout한다.
+성공 결과는 별도 state volume에 0400 state로 전달한다.
 
 [비책임]
 branch 생성(`branch_creator.py`), Codex 실행(Stage 3), candidate diff 검증·commit·push
@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from hashlib import sha256
 import os
 from pathlib import Path
 import stat
@@ -27,7 +26,6 @@ import uuid
 
 from agent_orchestration.executor.github_issues import GitHubIssueSnapshot
 from agent_orchestration.executor.state import ExecutorWorkspaceState, write_state
-from tools.auto_research_issue_branch import parse_issue_input
 
 
 _SHA_LENGTH = 40
@@ -58,7 +56,6 @@ class WorkspacePrepareInput:
     issue_number: int
     issue_branch: str
     base_dev_sha: str
-    issue_body_sha256: str
     github_repository: str
     token_file: Path
     workspace: Path
@@ -86,23 +83,6 @@ def _read_token(path: Path) -> str:
     if not token:
         raise WorkspacePreparationError("token_file_empty")
     return token
-
-
-def _validate_issue(config: WorkspacePrepareInput, snapshot: GitHubIssueSnapshot) -> tuple[str, ...]:
-    """원격 이슈가 DB 봉인값과 정확히 같은 실행 입력인지 clone 전에 확인한다."""
-    marker = f"<!-- experiment-id: {config.experiment_id} -->"
-    if marker not in snapshot.body:
-        raise WorkspacePreparationError("issue_marker_mismatch")
-    body_hash = sha256(snapshot.body.encode("utf-8")).hexdigest()
-    if body_hash != config.issue_body_sha256:
-        raise WorkspacePreparationError("issue_body_hash_mismatch")
-    try:
-        parsed = parse_issue_input(config.issue_number, snapshot.title, snapshot.body)
-    except ValueError as error:
-        raise WorkspacePreparationError("issue_parse_failed") from error
-    if parsed.issue_branch != config.issue_branch:
-        raise WorkspacePreparationError("issue_branch_mismatch")
-    return parsed.allowed_scope
 
 
 def _clean_remote_url(repository: str) -> str:
@@ -247,15 +227,14 @@ async def prepare_workspace(
     config: WorkspacePrepareInput,
     issues: IssueClient,
 ) -> PreparedWorkspace:
-    """봉인 이슈를 검증하고 안전한 checkout/state를 준비한다."""
+    """raw 이슈 본문과 안전한 checkout/state를 준비한다."""
     token = _read_token(config.token_file)
     snapshot = await issues.get(config.github_repository, config.issue_number, token)
-    allowed_scope = _validate_issue(config, snapshot)
     repository, remote_tip = await _checkout(config, token=token)
     prepared = PreparedWorkspace(
         repository=repository,
         issue_body=snapshot.body,
-        allowed_scope=allowed_scope,
+        allowed_scope=(),
         remote_tip=remote_tip,
     )
     write_state(
@@ -264,7 +243,7 @@ async def prepare_workspace(
             schema_version=1,
             repository=repository,
             issue_body=snapshot.body,
-            allowed_scope=allowed_scope,
+            allowed_scope=(),
             base_dev_sha=config.base_dev_sha,
             remote_tip=remote_tip,
         ),
