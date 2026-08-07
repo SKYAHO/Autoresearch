@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T16:35:43Z",
+  "generated_at": "2026-08-07T16:38:13Z",
   "reports": [
+    {
+      "number": 606,
+      "title": "feat: executor가 게시된 스냅샷을 받아 학습하도록 배선",
+      "author": "bbungjun",
+      "merged_at": "2026-08-07T16:37:52Z",
+      "summary_ko": [
+        "실험 실행기(executor)가 게시된 데이터셋 스냅샷을 파드로 받아 실제로 모델을 학습하도록 연결하였습니다.",
+        "baseline 및 candidate 조건이 동일한 데이터셋 스냅샷 파일(SHA-256 검증 완료)을 공유하여 학습하도록 보장했습니다.",
+        "학습 관련 환경 변수를 파드 생성 단계에서 올바르게 검증하고 학습 전용 컨테이너에만 선택적으로 주입하도록 구성하였습니다."
+      ],
+      "report_url": "pr/606/"
+    },
     {
       "number": 604,
       "title": "fix: 학습 산출물을 clone 밖에 쓰도록 수정",
