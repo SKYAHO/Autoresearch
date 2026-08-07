@@ -55,11 +55,10 @@ _HEADING_NAMES = {
     "허용 범위": "allowed_scope",
     "결과 (에이전트가 채웁니다)": "result",
 }
-_REQUIRED_SECTIONS = frozenset(_HEADING_NAMES) - {
-    "선행 연구 참조",
-    "보조 관측 지표",
-    "결과 (에이전트가 채웁니다)",
-}
+# #570에서 `연구 가설`만 남기고 전부 선택으로 내렸다. Streamlit 경로는 가설을 마크다운
+# 한 덩어리로 받고 실행 설정을 본문에 복사하지 않는다. GitHub Issue Form 경로는 여전히
+# 모든 칸을 채워 보내므로, 있으면 그대로 파싱하고 없으면 미선언으로 읽는다.
+_REQUIRED_SECTIONS = frozenset({"연구 가설"})
 _COMPARISONS = frozenset(
     {
         "동일 조건 baseline 재학습 (권장)",
@@ -110,23 +109,27 @@ class IssueInput:
     issue_number: int
     issue_branch: str
     hypothesis: str
+    # 주 지표 3필드와 `change`는 미선언일 수 있습니다(#570). 주 지표가 없는 실험은
+    # `criteria_id`가 값 없는 상태로 봉인되어 승격 판정을 받지 못합니다.
     change: str
-    primary_metric_name: str
-    primary_metric_direction: str
-    minimum_primary_delta: Decimal
+    primary_metric_name: str | None
+    primary_metric_direction: str | None
+    minimum_primary_delta: Decimal | None
     guardrail_metric_name: str | None
     guardrail_metric_direction: str
     maximum_guardrail_regression: Decimal | None
     secondary_metrics: str
-    comparison: str
-    dataset_snapshot: str
+    # 실행 설정은 #570에서 본문에서 빠졌습니다. Issue Form 경로로 들어온 이슈는 값을
+    # 갖고, Streamlit 경로로 발행된 이슈는 미선언입니다.
+    comparison: str | None
+    dataset_snapshot: str | None
     random_seeds: tuple[int, ...]
-    split_seed: int
-    test_size: float
-    validation_size: float
-    training_config_ref: str
-    dataset: str
-    snapshot_reuse: str
+    split_seed: int | None
+    test_size: float | None
+    validation_size: float | None
+    training_config_ref: str | None
+    dataset: str | None
+    snapshot_reuse: str | None
     allowed_scope: tuple[str, ...]
     criteria_id: str
     reproducibility_id: str
@@ -424,6 +427,12 @@ def _result_set_id(
 
 def _is_qualified_candidate(candidate: CompletionCandidate, criteria: IssueInput) -> bool:
     """주 지표 최소 개선과 optional guardrail 최대 악화를 모두 판정합니다."""
+    # 주 지표를 선언하지 않은 실험은 통과 기준 자체가 없으므로 어떤 후보도 승격하지
+    # 않습니다(#570). 여기서 끊지 않으면 아래 비교가 `None`과 만나 TypeError로
+    # 죽고, 그 실패는 판정 결과가 아니라 워크플로 오류로 보입니다.
+    if criteria.minimum_primary_delta is None:
+        return False
+
     with localcontext() as decimal_context:
         decimal_context.prec = _SELECTION_DECIMAL_PRECISION
         primary_delta = (
@@ -473,62 +482,73 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
     _validate_required_sections(sections)
 
     hypothesis = _required_content(sections, "연구 가설")
-    change = _required_content(sections, "변경할 피처 · 모델")
-    primary_metric_name = _metric_name(
-        _required_content(sections, "주 지표 이름"),
-        "primary_metric_name",
-    )
-    primary_metric_direction = _metric_direction(
-        _required_content(sections, "주 지표 방향"),
-        "primary_metric_direction",
-    )
-    minimum_primary_delta = _non_negative_decimal(
-        _required_content(sections, "최소 주 지표 개선폭"),
-        "minimum_primary_delta",
+    change = sections.get("변경할 피처 · 모델", "").strip()
+    primary_metric_name, primary_metric_direction, minimum_primary_delta = (
+        _parse_primary_metric(
+            sections.get("주 지표 이름", "").strip(),
+            sections.get("주 지표 방향", "").strip(),
+            sections.get("최소 주 지표 개선폭", "").strip(),
+        )
     )
     guardrail_metric_name, guardrail_metric_direction, maximum_guardrail_regression = (
         _parse_guardrail(
-            _required_content(sections, "Guardrail 지표 이름"),
-            _required_content(sections, "Guardrail 지표 방향"),
-            _required_content(sections, "최대 Guardrail 악화폭"),
+            sections.get("Guardrail 지표 이름", _NONE_VALUE).strip() or _NONE_VALUE,
+            sections.get("Guardrail 지표 방향", _NOT_APPLICABLE).strip() or _NOT_APPLICABLE,
+            sections.get("최대 Guardrail 악화폭", _NONE_VALUE).strip() or _NONE_VALUE,
         )
     )
-    comparison = _required_content(sections, "비교 대상")
-    dataset_snapshot = _text_reference(
-        _required_content(sections, "데이터셋 스냅샷"),
-        "dataset_snapshot",
+    # 아래는 전부 선택입니다(#570). 있으면 Issue Form 경로가 채운 값이므로 예전과 같은
+    # 규칙으로 검증하고, 없으면 미선언으로 둡니다. 값을 지어내지 않습니다 — 지어내면
+    # 실행기가 이슈에 적히지 않은 설정으로 도는 것이 되고, 그것이 정확히 이슈 본문을
+    # 신뢰 경계로 삼는 설계가 막으려던 상황입니다.
+    comparison = _optional(sections, "비교 대상")
+    dataset_snapshot = _optional_reference(sections, "데이터셋 스냅샷")
+    random_seeds = (
+        _parse_random_seeds(sections["랜덤 시드 목록"].strip())
+        if sections.get("랜덤 시드 목록", "").strip()
+        else ()
     )
-    random_seeds = _parse_random_seeds(_required_content(sections, "랜덤 시드 목록"))
-    split_seed = _non_negative_integer(
-        _required_content(sections, "Split 시드"),
-        "split_seed",
+    split_seed = (
+        _non_negative_integer(sections["Split 시드"].strip(), "split_seed")
+        if sections.get("Split 시드", "").strip()
+        else None
     )
-    test_size, validation_size = _parse_split_sizes(
-        _required_content(sections, "Test 비율"),
-        _required_content(sections, "Validation 비율"),
+    test_size, validation_size = _parse_optional_split_sizes(
+        sections.get("Test 비율", "").strip(),
+        sections.get("Validation 비율", "").strip(),
     )
-    training_config_ref = _text_reference(
-        _required_content(sections, "학습 설정 참조"),
-        "training_config_ref",
-    )
-    dataset = _required_content(sections, "대상 데이터 · 기간")
-    snapshot_reuse = _required_content(sections, "스냅샷 재사용")
-    allowed_scope_text = _required_content(sections, "허용 범위")
+    training_config_ref = _optional_reference(sections, "학습 설정 참조")
+    dataset = _optional(sections, "대상 데이터 · 기간")
+    snapshot_reuse = _optional(sections, "스냅샷 재사용")
 
-    if comparison not in _COMPARISONS:
+    if comparison is not None and comparison not in _COMPARISONS:
         raise ValueError("comparison must be an Issue Form option")
-    if snapshot_reuse not in _SNAPSHOT_REUSE:
+    if snapshot_reuse is not None and snapshot_reuse not in _SNAPSHOT_REUSE:
         raise ValueError("snapshot_reuse must be an Issue Form option")
 
-    allowed_scope = _parse_allowed_scope(allowed_scope_text)
+    # 허용 범위가 없으면 아무 scope도 열지 않습니다. 실행기는 기본 허용 경로만 갖게
+    # 되어 `model_contract.py`와 `feature_repo/`를 건드릴 수 없습니다 — 부재가 권한을
+    # 넓히는 방향으로 해석되지 않아야 합니다.
+    allowed_scope = (
+        _parse_allowed_scope(sections["허용 범위"].strip())
+        if sections.get("허용 범위", "").strip()
+        else ()
+    )
     issue_branch = branch_name_for(issue_number, issue_title)
     secondary_metrics = sections.get("보조 관측 지표", "").strip()
 
+    # 미선언 주 지표는 `_NONE_VALUE`로 봉인합니다 — guardrail이 쓰는 표현과 같습니다.
+    # `None`을 그대로 넣지 않는 이유는 JSON `null`과 문자열 `"없음"`이 서로 다른 해시를
+    # 내는데, 두 표현이 섞이면 같은 미선언 상태가 다른 `criteria_id`를 갖기 때문입니다.
     criteria_id = _identifier(
         {
-            "primary_metric_name": primary_metric_name,
-            "primary_metric_direction": primary_metric_direction,
-            "minimum_primary_delta": _decimal_text(minimum_primary_delta),
+            "primary_metric_name": primary_metric_name or _NONE_VALUE,
+            "primary_metric_direction": primary_metric_direction or _NOT_APPLICABLE,
+            "minimum_primary_delta": (
+                _decimal_text(minimum_primary_delta)
+                if minimum_primary_delta is not None
+                else _NONE_VALUE
+            ),
             "guardrail_metric_name": guardrail_metric_name or _NONE_VALUE,
             "guardrail_metric_direction": guardrail_metric_direction,
             "maximum_guardrail_regression": (
@@ -538,14 +558,19 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
             ),
         }
     )
+    # 미선언은 `_NONE_VALUE`로 봉인합니다 — 실행 설정이 본문에 없는 이슈끼리는 같은
+    # `reproducibility_id`를 갖습니다. 그 값이 재현 조건을 구분하지 못한다는 뜻이며,
+    # 실행 설정이 코드로 내려간 이상 구분은 `base_dev_sha`가 합니다.
     reproducibility_id = _identifier(
         {
-            "dataset_snapshot": dataset_snapshot,
+            "dataset_snapshot": dataset_snapshot or _NONE_VALUE,
             "random_seeds": random_seeds,
             "split_seed": split_seed,
-            "test_size": _decimal_text(test_size),
-            "validation_size": _decimal_text(validation_size),
-            "training_config_ref": training_config_ref,
+            "test_size": _decimal_text(test_size) if test_size is not None else _NONE_VALUE,
+            "validation_size": (
+                _decimal_text(validation_size) if validation_size is not None else _NONE_VALUE
+            ),
+            "training_config_ref": training_config_ref or _NONE_VALUE,
         }
     )
     return IssueInput(
@@ -568,8 +593,12 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
         dataset_snapshot=dataset_snapshot,
         random_seeds=random_seeds,
         split_seed=split_seed,
-        test_size=_finite_float(test_size, "test_size"),
-        validation_size=_finite_float(validation_size, "validation_size"),
+        test_size=_finite_float(test_size, "test_size") if test_size is not None else None,
+        validation_size=(
+            _finite_float(validation_size, "validation_size")
+            if validation_size is not None
+            else None
+        ),
         training_config_ref=training_config_ref,
         dataset=dataset,
         snapshot_reuse=snapshot_reuse,
@@ -632,6 +661,58 @@ def _non_negative_decimal(value: str, field_name: str) -> Decimal:
     if decimal < 0:
         raise ValueError(f"{field_name} must be non-negative")
     return decimal
+
+
+def _optional(sections: dict[str, str], heading: str) -> str | None:
+    """선택 section의 비어 있지 않은 본문 또는 미선언을 반환합니다."""
+    content = sections.get(heading, "").strip()
+    return content or None
+
+
+def _optional_reference(sections: dict[str, str], heading: str) -> str | None:
+    """선택 section을 참조 문자열 규칙으로 검증하거나 미선언을 반환합니다."""
+    content = _optional(sections, heading)
+    if content is None:
+        return None
+    return _text_reference(content, _HEADING_NAMES[heading])
+
+
+def _parse_optional_split_sizes(
+    test_size: str, validation_size: str
+) -> tuple[float | None, float | None]:
+    """두 비율이 함께 있거나 함께 없는 경우만 받습니다.
+
+    하나만 있으면 나머지를 지어내야 하는데, 그 값은 이슈에 적혀 있지 않으므로 실행기가
+    본문과 다른 분할로 돌게 됩니다.
+    """
+    if not test_size and not validation_size:
+        return None, None
+    if not test_size or not validation_size:
+        raise ValueError("test_size and validation_size must be declared together")
+    return _parse_split_sizes(test_size, validation_size)
+
+
+def _parse_primary_metric(
+    name: str,
+    direction: str,
+    minimum_delta: str,
+) -> tuple[str | None, str | None, Decimal | None]:
+    """주 지표 미선언 또는 완전한 metric 계약만 반환합니다.
+
+    세 heading이 모두 없으면 미선언입니다(#570). 일부만 있으면 부분 선언을 어느
+    쪽으로도 읽을 수 없으므로 fail-closed로 끊습니다 — Guardrail이 sentinel 세 값을
+    함께 요구하는 것과 같은 이유입니다.
+    """
+    provided = (name != "", direction != "", minimum_delta != "")
+    if not any(provided):
+        return None, None, None
+    if not all(provided):
+        raise ValueError("primary metric sections must be declared together")
+
+    metric_name = _metric_name(name, "primary_metric_name")
+    metric_direction = _metric_direction(direction, "primary_metric_direction")
+    delta = _non_negative_decimal(minimum_delta, "minimum_primary_delta")
+    return metric_name, metric_direction, delta
 
 
 def _parse_guardrail(

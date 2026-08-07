@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Sequence
 from typing import Any, Callable, TypeVar
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -112,7 +111,6 @@ class ExperimentClient:
         self,
         experiment_id: str,
         fields: dict[str, str],
-        allowed_scope: Sequence[str],
     ) -> IssuePublication:
         """사전등록 필드를 `[AR]` 이슈로 발행하고 그 좌표를 받는다.
 
@@ -122,7 +120,7 @@ class ExperimentClient:
         payload = self._request_json(
             "POST",
             f"/experiments/{experiment_id}/issue",
-            {"fields": fields, "allowed_scope": list(allowed_scope)},
+            {"fields": fields},
         )
         return self._parse_model(payload, IssuePublication.from_json)
 

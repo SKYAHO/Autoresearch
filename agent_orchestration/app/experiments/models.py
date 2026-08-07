@@ -28,7 +28,8 @@ Step은 실험 생명주기 상태(`ExperimentStatus`)와 독립적인 **작업 
 `docs/specs/2026-08-04-hypothesis-to-auto-research-issue.md`다.
 
 `base_dev_sha`는 이슈 발행 전에 `dev` tip을 한 번 읽어 본문·제목과 같은 commit에 봉인한
-기준선이다. `executor_job_name`/`executor_job_created_at`은 후속 launcher가 결정론적 Job
+기준선이다. `candidate_sha`는 executor가 원격 Git에서 검증한 후보를 한 번 기록하는
+lineage이며, `executor_job_name`/`executor_job_created_at`은 후속 launcher가 결정론적 Job
 생성을 재개하고 실제 생성 확인 여부를 구분하는 내부 lineage다. 이 모듈은 launcher의
 선점·Job 생성 또는 executor의 Git ref 생성은 담당하지 않는다.
 """
@@ -165,6 +166,7 @@ class Experiment(Base):
         DateTime(timezone=True), nullable=True
     )
     base_dev_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    candidate_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     executor_job_name: Mapped[str | None] = mapped_column(String(63), nullable=True)
     # launcher가 동일 이름의 Job 존재를 확인한 뒤에만 채우는 내부 복구 표식이다.
     executor_job_created_at: Mapped[datetime | None] = mapped_column(
@@ -207,6 +209,10 @@ class Experiment(Base):
 
     __table_args__ = (
         CheckConstraint(_STATUS_CHECK_SQL, name="ck_experiment_status_valid"),
+        CheckConstraint(
+            "candidate_sha IS NULL OR candidate_sha ~ '^[0-9a-f]{40}$'",
+            name="ck_experiment_candidate_sha_format",
+        ).ddl_if(dialect="postgresql"),
         Index("ix_experiments_status", "status"),
         Index("ix_experiments_issue_number", "issue_number"),
     )

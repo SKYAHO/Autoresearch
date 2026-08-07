@@ -19,7 +19,6 @@ from sqlalchemy.pool import StaticPool
 from agent_orchestration.app import main as main_module
 from agent_orchestration.app.config import ServiceSettings
 from agent_orchestration.app.database import Base, get_db_session
-from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 
 
 API_TOKEN = "test-orchestration-token"
@@ -52,10 +51,6 @@ def experiment_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
     monkeypatch.setattr(main_module, "load_settings", lambda: settings)
     monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)

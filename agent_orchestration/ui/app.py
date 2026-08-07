@@ -5,9 +5,10 @@
 인터페이스다. FastAPI는 영속화와 상태 전이를, 후속 실행기는 Event·Log 기록을 담당한다.
 
 [기능]
-사전등록 폼 제출로 Experiment 생성과 `[AR]` 이슈 발행을 잇달아 요청하고, 최근 실험
-선택, 상세·Event·Log의 5초 cursor polling, API 오류의 영역별 사용자 표시와 삭제·만료
-cursor 복구를 제공한다.
+사전등록 화면과 Experiment 상세 화면을 sidebar 탐색으로 분리하고, 사전등록 폼 제출로
+Experiment 생성과 `[AR]` 이슈 발행을 잇달아 요청하며, 부분 실패한 발행을 저장 입력으로
+재시도하거나 취소한다. 최근 실험 선택, 상세·Event·Log의 5초 cursor polling, API 오류의
+영역별 사용자 표시와 삭제·만료 cursor 복구를 제공한다.
 
 [비책임]
 이슈 본문 조립·`gh` 호출·label 부여(모두 API 서버), 실제 실험 실행, 상태·Event·Log·
@@ -27,23 +28,29 @@ from agent_orchestration.ui.client import (
     ExperimentClient,
 )
 from agent_orchestration.ui.state import (
+    WorkbenchView,
     WorkbenchState,
     append_event_page,
     append_log_page,
     clear_activity_cache,
+    discard_pending_publication,
     merge_steps,
     record_detail_error,
     record_list_error,
     record_terminal_refresh,
     select_experiment,
+    show_create_view,
+    show_experiment,
     should_poll,
 )
 from agent_orchestration.ui.styles import workbench_css
 from agent_orchestration.ui.models import Submission
 from agent_orchestration.ui.views import (
     render_empty_workbench,
+    render_add_hypothesis_button,
     render_experiment_list,
     render_experiment_refresh_button,
+    render_pending_publication_actions,
     render_publication_result,
     render_submission_form,
     render_workbench,
@@ -51,6 +58,7 @@ from agent_orchestration.ui.views import (
 
 
 STATE_KEY = "experiment_workbench_state"
+EXPERIMENT_SELECTION_EVENT_KEY = "experiment_selection_event"
 
 
 @st.cache_resource
@@ -64,6 +72,16 @@ def get_state() -> WorkbenchState:
     if STATE_KEY not in st.session_state:
         st.session_state[STATE_KEY] = WorkbenchState()
     return st.session_state[STATE_KEY]
+
+
+def record_experiment_selection() -> None:
+    """sidebar radio의 명시적 Experiment 선택 이벤트를 다음 rerun까지 보존한다."""
+    st.session_state[EXPERIMENT_SELECTION_EVENT_KEY] = True
+
+
+def should_open_experiment_detail(selected_id: str | None, *, selection_changed: bool) -> bool:
+    """현재 radio 값이 아니라 사용자 선택 이벤트가 있을 때만 상세 화면을 연다."""
+    return selected_id is not None and selection_changed
 
 
 def render_configuration_notice() -> None:
@@ -163,42 +181,60 @@ def submit_experiment(
     """Experiment를 만들고 곧바로 `[AR]` 이슈를 발행한다.
 
     두 번 호출하는 이유는 서버 계약이 그렇기 때문이다 — 생성은 순수 DB 쓰기이고 발행은
-    외부 부작용이다.
-
-    **발행이 실패하면 이슈 없는 Experiment가 남는다.** 이 함수는 매번
-    `create_experiment()`부터 부르므로 폼에서 다시 제출하면 **새 Experiment**가 생기고,
-    앞서 실패한 실험은 `CREATED`인 채로 목록에 남는다. 그 실험을 재발행하는 경로는
-    아직 UI에 없다 — `POST /experiments/{id}/issue`를 직접 부르면 서버가 저장된 본문
-    그대로 재발행한다.
+    외부 부작용이다. 발행 실패 시 생성된 Experiment와 원 제출을 보존한다.
     """
-    try:
-        experiment = client.create_experiment(submission.hypothesis)
-    except ExperimentApiError as error:
-        record_detail_error(state, str(error))
-        return False
-    state.experiments.insert(0, experiment)
-    select_experiment(state, experiment.id)
-
-    try:
-        state.last_publication = client.publish_issue(
-            experiment.id, submission.to_fields(), submission.allowed_scope
-        )
-    except ExperimentApiError as error:
-        # 갱신을 **먼저** 한다. `refresh_selected_experiment()`는 정상 종료 경로에서
-        # `detail_error`를 지우므로(아래), 순서를 뒤집으면 방금 기록한 발행 실패
-        # 메시지가 조회 성공과 함께 사라져 사용자가 아무 피드백도 받지 못한다.
-        refresh_selected_experiment(client, state)
+    experiment_id = state.pending_publication_experiment_id
+    if experiment_id is None:
+        try:
+            experiment = client.create_experiment(submission.hypothesis)
+        except ExperimentApiError as error:
+            record_detail_error(state, str(error))
+            return False
+        state.experiments.insert(0, experiment)
+        experiment_id = experiment.id
+        state.pending_publication_experiment_id = experiment_id
+        state.pending_publication_submission = submission
+    elif state.pending_publication_submission != submission:
         record_detail_error(
-            state, f"실험은 생성됐지만 이슈 발행에 실패했습니다: {error}"
+            state,
+            "이전에 생성된 실험의 이슈 발행이 완료되지 않았습니다. "
+            "입력값을 원래대로 되돌린 뒤 다시 제출해 주세요.",
         )
         return False
 
+    return publish_pending_issue(client, state)
+
+
+def publish_pending_issue(client: ExperimentClient, state: WorkbenchState) -> bool:
+    """저장된 submission으로 기존 Experiment의 이슈 발행만 수행한다."""
+    experiment_id = state.pending_publication_experiment_id
+    submission = state.pending_publication_submission
+    if experiment_id is None or submission is None:
+        record_detail_error(state, "재시도할 이슈 발행 정보가 없습니다.")
+        return False
+
+    try:
+        publication = client.publish_issue(
+            experiment_id, submission.to_fields()
+        )
+    except ExperimentApiError as error:
+        show_create_view(state)
+        record_detail_error(
+            state,
+            f"실험은 생성됐지만 이슈 발행에 실패했습니다. "
+            f"저장된 입력으로 이슈 발행을 다시 시도할 수 있습니다: {error}",
+        )
+        return False
+
+    discard_pending_publication(state)
+    show_experiment(state, experiment_id)
+    state.last_publication = publication
     refresh_selected_experiment(client, state)
     return True
 
 
 def main() -> None:
-    """Streamlit 페이지를 조립하고 active Experiment를 polling한다."""
+    """Streamlit 페이지를 조립하고 현재 상세 화면만 polling한다."""
     st.set_page_config(page_title="Autoresearch Experiment Console", layout="wide")
     st.markdown(workbench_css(), unsafe_allow_html=True)
     state = get_state()
@@ -215,34 +251,67 @@ def main() -> None:
     if configuration_error:
         render_configuration_notice()
 
-    submission = render_submission_form(state.detail_error)
-    if submission is not None:
-        missing = submission.missing_required()
-        if client is None:
-            st.error("Experiment API 연결을 먼저 복구해 주세요.")
-        elif missing:
-            st.error("다음 항목을 채워 주세요: " + ", ".join(missing))
-        else:
-            state.last_publication = None
-            submit_experiment(client, state, submission)
-            st.rerun()
-    if state.last_publication is not None:
-        render_publication_result(state.last_publication)
-
+    if render_add_hypothesis_button():
+        show_create_view(state)
+        st.rerun()
     if render_experiment_refresh_button():
         if client is None:
             record_list_error(state, "Experiment API 연결을 먼저 복구해 주세요.")
         else:
             try_refresh_experiment_list(client, state)
-    selected_id = render_experiment_list(state.experiments, state.selected_id)
-    if selected_id != state.selected_id:
-        select_experiment(state, selected_id)
+    selected_id = render_experiment_list(
+        state.experiments,
+        state.selected_id if state.view is WorkbenchView.DETAIL else None,
+        on_change=record_experiment_selection,
+    )
+    selection_changed = st.session_state.pop(EXPERIMENT_SELECTION_EVENT_KEY, False)
+    if should_open_experiment_detail(selected_id, selection_changed=selection_changed):
+        show_experiment(state, selected_id)
         st.rerun()
     if state.list_error:
         st.warning(state.list_error)
+
+    if state.view is WorkbenchView.CREATE:
+        if (
+            state.pending_publication_experiment_id is not None
+            and state.pending_publication_submission is not None
+        ):
+            retry_publication, discard_publication = (
+                render_pending_publication_actions()
+            )
+            if retry_publication:
+                if client is None:
+                    record_detail_error(
+                        state, "Experiment API 연결을 먼저 복구해 주세요."
+                    )
+                else:
+                    publish_pending_issue(client, state)
+                st.rerun()
+            if discard_publication:
+                discard_pending_publication(state)
+                st.rerun()
+        submission = render_submission_form(state.detail_error)
+        if submission is not None:
+            problems = submission.blocking_problems()
+            if client is None:
+                st.error("Experiment API 연결을 먼저 복구해 주세요.")
+            elif problems:
+                # 첫 요청 전에 끊는다. 발행 실패는 재시도 화면으로 복구할 수 있지만,
+                # `### `처럼 고치기 전에는 반드시 실패하는 값이면 Experiment를 만드는
+                # 요청 자체가 헛일이고 사용자는 두 단계 뒤에야 원인을 본다.
+                for problem in problems:
+                    st.error(problem)
+            else:
+                state.last_publication = None
+                submit_experiment(client, state, submission)
+                st.rerun()
+        return
+
     if state.selected_id is None:
         render_empty_workbench()
         return
+    if state.last_publication is not None:
+        render_publication_result(state.last_publication)
 
     @st.fragment(run_every="5s")
     def live_workbench() -> None:

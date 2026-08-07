@@ -148,14 +148,17 @@ def test_orm_indexes_match_the_migrations() -> None:
     assert ExperimentMetadata.__table__.indexes == set()
 
 
-def test_orm_constraints_match_the_initial_migration() -> None:
-    """상태 check와 두 멱등성·metadata unique 제약이 ORM에서 누락되는 회귀를 잡는다."""
+def test_orm_constraints_match_the_migrations() -> None:
+    """상태·candidate SHA check와 멱등성·metadata unique 제약을 고정한다."""
     experiment_checks = {
         constraint.name
         for constraint in Experiment.__table__.constraints
         if isinstance(constraint, CheckConstraint)
     }
-    assert experiment_checks == {"ck_experiment_status_valid"}
+    assert experiment_checks == {
+        "ck_experiment_status_valid",
+        "ck_experiment_candidate_sha_format",
+    }
 
     for model, constraint_name in (
         (ExperimentEvent, "uq_experiment_events_idempotency"),

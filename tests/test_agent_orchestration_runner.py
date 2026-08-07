@@ -12,7 +12,6 @@ import httpx
 import pytest
 
 from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 from agent_orchestration.app.llm import LLMBackendError, generate_response
 from agent_orchestration.app.schemas import ChatRequest
 from agent_orchestration import codex as codex_module
@@ -39,10 +38,6 @@ def make_settings(**overrides: Any) -> ServiceSettings:
         "github_repository": "SKYAHO/Autoresearch",
         "gh_timeout_sec": 30,
         "issue_daily_limit": 20,
-        "experiment_defaults": ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     }
     values.update(overrides)
     return ServiceSettings(**values)

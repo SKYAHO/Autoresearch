@@ -17,15 +17,12 @@ import uuid
 
 import pytest
 
-from agent_orchestration.executor.config import (
-    BranchBootstrapInput,
-    ExecutorConfigError,
+from agent_orchestration.executor.branch_creator import (
+    BranchCreatorInput,
+    ensure_issue_branch,
 )
-from agent_orchestration.executor.main import (
-    BranchConflictError,
-    bootstrap_branch,
-    main as executor_main,
-)
+from agent_orchestration.executor.config import ExecutorConfigError
+from agent_orchestration.executor.main import main as executor_main
 from agent_orchestration.executor.token_minter import (
     main as token_minter_main,
     write_installation_token,
@@ -56,8 +53,8 @@ def _set_valid_executor_environment(
     monkeypatch.setenv("ORCH_GITHUB_TOKEN_FILE", str(token_file))
 
 
-def _valid_input(base_sha: str = _BASE_SHA) -> BranchBootstrapInput:
-    return BranchBootstrapInput(
+def _valid_input(base_sha: str = _BASE_SHA) -> BranchCreatorInput:
+    return BranchCreatorInput(
         experiment_id=uuid.UUID(_EXPERIMENT_ID),
         issue_number=546,
         issue_branch=_ISSUE_BRANCH,
@@ -136,7 +133,7 @@ def test_executor_rejects_missing_base_sha(
     monkeypatch.delenv("ORCH_BASE_DEV_SHA")
 
     with pytest.raises(ExecutorConfigError, match="ORCH_BASE_DEV_SHA"):
-        BranchBootstrapInput.from_environment()
+        BranchCreatorInput.from_environment()
 
 
 def test_executor_rejects_issue_number_mismatched_with_branch(
@@ -146,7 +143,7 @@ def test_executor_rejects_issue_number_mismatched_with_branch(
     monkeypatch.setenv("ORCH_ISSUE_BRANCH", "exp/999-other")
 
     with pytest.raises(ExecutorConfigError, match="ORCH_ISSUE_BRANCH"):
-        BranchBootstrapInput.from_environment()
+        BranchCreatorInput.from_environment()
 
 
 @pytest.mark.parametrize(
@@ -169,7 +166,7 @@ def test_executor_rejects_invalid_sealed_coordinates(
     monkeypatch.setenv(environment_name, invalid_value)
 
     with pytest.raises(ExecutorConfigError, match=environment_name):
-        BranchBootstrapInput.from_environment()
+        BranchCreatorInput.from_environment()
 
 
 def test_executor_rejects_non_regular_token_file(
@@ -181,7 +178,7 @@ def test_executor_rejects_non_regular_token_file(
     monkeypatch.setenv("ORCH_GITHUB_TOKEN_FILE", str(token_directory))
 
     with pytest.raises(ExecutorConfigError, match="ORCH_GITHUB_TOKEN_FILE"):
-        BranchBootstrapInput.from_environment()
+        BranchCreatorInput.from_environment()
 
 
 def test_executor_parses_all_sealed_coordinates(
@@ -190,9 +187,9 @@ def test_executor_parses_all_sealed_coordinates(
     token_file = tmp_path / "token"
     _set_valid_executor_environment(monkeypatch, token_file)
 
-    result = BranchBootstrapInput.from_environment()
+    result = BranchCreatorInput.from_environment()
 
-    assert result == BranchBootstrapInput(
+    assert result == BranchCreatorInput(
         experiment_id=uuid.UUID(_EXPERIMENT_ID),
         issue_number=546,
         issue_branch=_ISSUE_BRANCH,
@@ -202,30 +199,33 @@ def test_executor_parses_all_sealed_coordinates(
     )
 
 
-def test_existing_ref_at_same_sha_is_success() -> None:
+def test_existing_ref_at_same_sha_is_returned_without_mutation() -> None:
     refs = FakeRefs(existing_sha=_BASE_SHA)
 
-    result = asyncio.run(bootstrap_branch(_valid_input(), refs, "token"))
+    result = asyncio.run(ensure_issue_branch(_valid_input(), refs, "token"))
 
     assert result.created is False
+    assert result.remote_tip == _BASE_SHA
     assert refs.create_calls == []
 
 
-def test_existing_ref_at_different_sha_never_updates() -> None:
+def test_existing_ref_at_different_sha_is_returned_without_mutation() -> None:
     refs = FakeRefs(existing_sha="b" * 40)
 
-    with pytest.raises(BranchConflictError):
-        asyncio.run(bootstrap_branch(_valid_input(), refs, "token"))
+    result = asyncio.run(ensure_issue_branch(_valid_input(), refs, "token"))
 
+    assert result.created is False
+    assert result.remote_tip == "b" * 40
     assert refs.create_calls == []
 
 
 def test_missing_ref_is_created_at_the_frozen_sha() -> None:
     refs = FakeRefs()
 
-    result = asyncio.run(bootstrap_branch(_valid_input(), refs, "token"))
+    result = asyncio.run(ensure_issue_branch(_valid_input(), refs, "token"))
 
     assert result.created is True
+    assert result.remote_tip == _BASE_SHA
     assert refs.get_sha_calls == [
         ("SKYAHO/Autoresearch", f"heads/{_ISSUE_BRANCH}", "token")
     ]
@@ -245,22 +245,24 @@ def test_create_422_race_is_success_only_after_same_sha_recheck() -> None:
         race_sha=_BASE_SHA,
     )
 
-    result = asyncio.run(bootstrap_branch(_valid_input(), refs, "token"))
+    result = asyncio.run(ensure_issue_branch(_valid_input(), refs, "token"))
 
     assert result.created is False
+    assert result.remote_tip == _BASE_SHA
     assert len(refs.get_sha_calls) == 2
     assert len(refs.create_calls) == 1
 
 
-def test_create_422_race_at_different_sha_fails_closed() -> None:
+def test_create_422_race_at_different_sha_returns_the_unchanged_remote_tip() -> None:
     refs = FakeRefs(
         create_error=GitHubRefError("create_failed", status_code=422),
         race_sha="b" * 40,
     )
 
-    with pytest.raises(BranchConflictError):
-        asyncio.run(bootstrap_branch(_valid_input(), refs, "token"))
+    result = asyncio.run(ensure_issue_branch(_valid_input(), refs, "token"))
 
+    assert result.created is False
+    assert result.remote_tip == "b" * 40
     assert len(refs.get_sha_calls) == 2
     assert len(refs.create_calls) == 1
 
@@ -272,7 +274,7 @@ def test_create_422_without_a_ref_preserves_the_github_error() -> None:
     )
 
     with pytest.raises(GitHubRefError) as captured:
-        asyncio.run(bootstrap_branch(_valid_input(), refs, "token"))
+        asyncio.run(ensure_issue_branch(_valid_input(), refs, "token"))
 
     assert captured.value.status_code == 422
     assert len(refs.get_sha_calls) == 2
@@ -282,7 +284,7 @@ def test_unauthorized_ref_lookup_is_not_retried() -> None:
     refs = FakeRefs(get_error=GitHubRefError("get_failed", status_code=401))
 
     with pytest.raises(GitHubRefError) as captured:
-        asyncio.run(bootstrap_branch(_valid_input(), refs, "token"))
+        asyncio.run(ensure_issue_branch(_valid_input(), refs, "token"))
 
     assert captured.value.status_code == 401
     assert len(refs.get_sha_calls) == 1

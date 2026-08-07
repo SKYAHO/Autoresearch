@@ -1,7 +1,8 @@
 """Streamlit 제출 폼 스크립트를 실제로 실행해 렌더링 계약을 고정한다.
 
-전체 파이프라인 중 사용자가 브라우저에서 보는 폼이 실제로 무엇을 그리고 무엇을 서버로
-보내는지 검증한다. 서버의 발행 절차는 test_experiment_issue_publication이 담당한다.
+전체 파이프라인 중 사용자가 브라우저에서 보는 폼과 화면 전환이 실제로 무엇을 그리고
+무엇을 서버로 보내는지 검증한다. 서버 내부 발행 절차는
+test_experiment_issue_publication이 담당한다.
 
 `tests/test_ui_submission_form.py`는 순수 함수만 보므로 위젯 렌더링 버그를 잡지 못한다.
 #536에서 실제로 그런 버그가 났다 — `st.form` 안에서 체크박스로 다른 위젯의 `disabled`를
@@ -30,29 +31,72 @@ class _StubHandler(BaseHTTPRequestHandler):
     """Experiment API의 최소 스텁. 받은 요청 본문을 클래스 변수에 모은다."""
 
     captured: list[tuple[str, dict]] = []
+    get_paths: list[str] = []
+    experiments: list[dict] = []
+    missing_experiment_ids: set[str] = set()
+    publication_failures = 0
 
     def log_message(self, *_args: object) -> None:
         """테스트 출력에 HTTP 로그를 남기지 않는다."""
 
     def do_GET(self) -> None:  # noqa: N802
-        self._respond({"items": [], "limit": 50, "offset": 0, "total": 0})
+        type(self).get_paths.append(self.path)
+        route = self.path.split("?", 1)[0]
+        if route == "/experiments":
+            self._respond(
+                {
+                    "items": type(self).experiments,
+                    "limit": 50,
+                    "offset": 0,
+                    "total": len(type(self).experiments),
+                }
+            )
+            return
+
+        parts = route.split("/")
+        experiment_id = parts[2]
+        if experiment_id in type(self).missing_experiment_ids:
+            type(self).experiments = [
+                item
+                for item in type(self).experiments
+                if item["id"] != experiment_id
+            ]
+            self._respond({"detail": "not found"}, status=404)
+            return
+        if len(parts) == 3:
+            experiment = next(
+                (
+                    item
+                    for item in type(self).experiments
+                    if item["id"] == experiment_id
+                ),
+                None,
+            )
+            if experiment is None:
+                self._respond({"detail": "not found"}, status=404)
+            else:
+                self._respond(experiment)
+            return
+        if parts[3] == "metadata":
+            self._respond({"entries": {}})
+            return
+        self._respond({"items": [], "next_cursor": None})
 
     def do_POST(self) -> None:  # noqa: N802
         length = int(self.headers.get("Content-Length", "0"))
         body = json.loads(self.rfile.read(length).decode()) if length else {}
         type(self).captured.append((self.path, body))
         if self.path == "/experiments":
-            self._respond(
-                {
-                    "id": "3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d",
-                    "hypothesis": body.get("hypothesis", ""),
-                    "status": "CREATED",
-                    "created_at": "2026-08-05T00:00:00+00:00",
-                    "updated_at": "2026-08-05T00:00:00+00:00",
-                    "issue_number": None,
-                    "issue_branch": None,
-                }
+            experiment = _experiment_payload(
+                "3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d",
+                body.get("hypothesis", ""),
             )
+            type(self).experiments.insert(0, experiment)
+            self._respond(experiment, status=201)
+            return
+        if type(self).publication_failures:
+            type(self).publication_failures -= 1
+            self._respond({"detail": "temporary failure"}, status=503)
             return
         self._respond(
             {
@@ -62,13 +106,25 @@ class _StubHandler(BaseHTTPRequestHandler):
             }
         )
 
-    def _respond(self, payload: dict) -> None:
+    def _respond(self, payload: dict, *, status: int = 200) -> None:
         encoded = json.dumps(payload).encode("utf-8")
-        self.send_response(201)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
+
+
+def _experiment_payload(experiment_id: str, hypothesis: str) -> dict:
+    return {
+        "id": experiment_id,
+        "hypothesis": hypothesis,
+        "status": "CREATED",
+        "created_at": "2026-08-05T00:00:00+00:00",
+        "updated_at": "2026-08-05T00:00:00+00:00",
+        "issue_number": None,
+        "issue_branch": None,
+    }
 
 
 @pytest.fixture
@@ -80,6 +136,10 @@ def stub_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, dict]]
     """
     st.cache_resource.clear()
     _StubHandler.captured = []
+    _StubHandler.get_paths = []
+    _StubHandler.experiments = []
+    _StubHandler.missing_experiment_ids = set()
+    _StubHandler.publication_failures = 0
     server = HTTPServer(("127.0.0.1", 0), _StubHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -100,12 +160,12 @@ def _rendered_app() -> AppTest:
     return app
 
 
+_MARKDOWN_HYPOTHESIS = "# 주제\n\n비율 피처가 baseline 대비 test ROC-AUC를 개선한다."
+
+
 def _fill_required(app: AppTest) -> None:
     app.text_input[0].set_value("views per day ratio feature")
-    app.text_area[0].set_value("비율 피처가 baseline 대비 test ROC-AUC를 개선한다.")
-    app.text_area[2].set_value("- 추가 피처: views_per_day = views / (days + 1)")
-    app.text_input[1].set_value("roc_auc")
-    app.text_input[2].set_value("0.002")
+    app.text_area[0].set_value(_MARKDOWN_HYPOTHESIS)
 
 
 def test_form_renders_without_exception(stub_api: list[tuple[str, dict]]) -> None:
@@ -117,7 +177,73 @@ def test_form_renders_without_exception(stub_api: list[tuple[str, dict]]) -> Non
         widget.label for widget in app.text_area
     ]
     assert "실험 제목" in labels
-    assert "연구 가설" in labels
+    assert "가설" in labels
+
+
+def test_form_asks_for_nothing_but_a_title_and_a_hypothesis(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """입력칸이 늘어나면 마크다운 자유 서술로 합친 의미가 사라진다(#570)."""
+    app = _rendered_app()
+
+    assert len(app.text_input) == 1
+    assert len(app.text_area) == 1
+
+
+def test_hypothesis_editor_is_outside_a_form(stub_api: list[tuple[str, dict]]) -> None:
+    """`st.form` 안에 두면 미리보기가 제출 전까지 첫 렌더 상태에 멈춘다.
+
+    form 안 위젯은 상호작용해도 rerun을 일으키지 않으므로, 편집창이 폼 안에 있으면
+    사용자가 무엇을 쓰든 미리보기가 따라오지 않는다. 제출 버튼이 일반 `st.button`이면
+    폼이 없다는 뜻이다 — 폼이면 `form_submit_button`으로만 제출할 수 있다.
+    """
+    app = _rendered_app()
+
+    assert len(app.button) >= 1
+    assert app.button[0].label == "사전등록하고 이슈 발행"
+
+
+def test_preview_follows_the_hypothesis(stub_api: list[tuple[str, dict]]) -> None:
+    """편집한 마크다운이 미리보기에 반영돼야 한다."""
+    app = _rendered_app()
+    app.text_area[0].set_value("# 미리보기 제목").run()
+
+    assert any("# 미리보기 제목" == element.value for element in app.markdown)
+
+
+def test_empty_list_stays_on_create_without_activity_polling(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """빈 목록의 CREATE rerun은 상세·activity endpoint를 호출하지 않는다."""
+    app = _rendered_app()
+
+    app.run()
+    app.sidebar.button[1].click().run()
+
+    assert not app.exception
+    assert app.text_input[0].label == "실험 제목"
+    assert _StubHandler.get_paths
+    assert all(path.startswith("/experiments?") for path in _StubHandler.get_paths)
+
+
+def test_same_experiment_can_be_reselected_after_returning_to_create(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """radio callback은 연속 rerun 뒤 동일 항목도 다시 DETAIL로 연다."""
+    experiment_id = "exp-one"
+    _StubHandler.experiments = [_experiment_payload(experiment_id, "첫 번째 가설")]
+    app = _rendered_app()
+
+    app.sidebar.radio[0].set_value(experiment_id).run()
+    assert any(title.value == "첫 번째 가설" for title in app.title)
+
+    app.sidebar.button[0].click().run()
+    assert app.text_input[0].label == "실험 제목"
+
+    app.sidebar.radio[0].set_value(experiment_id).run()
+
+    assert not app.exception
+    assert any(title.value == "첫 번째 가설" for title in app.title)
 
 
 def test_no_form_widget_is_disabled(stub_api: list[tuple[str, dict]]) -> None:
@@ -151,55 +277,25 @@ def test_submitting_sends_the_server_contract(stub_api: list[tuple[str, dict]]) 
         "/experiments/3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d/issue",
     ]
     fields = stub_api[1][1]["fields"]
-    assert fields["primary_metric_name"] == "roc_auc"
-    assert fields["primary_metric_direction"] == "higher_is_better"
-    assert "allowed_scope" in stub_api[1][1]
+    assert fields["title"] == "views per day ratio feature"
+    assert fields["hypothesis"] == _MARKDOWN_HYPOTHESIS
+    # `allowed_scope`는 #570에서 사라졌다. 서버가 `extra="forbid"`라 보내면 422다.
+    assert set(stub_api[1][1]) == {"fields"}
 
 
-def test_declared_guardrail_reaches_the_server(stub_api: list[tuple[str, dict]]) -> None:
-    """guardrail 이름을 채우면 세 값이 함께 전송돼야 한다.
+def test_submission_carries_no_metric_fields(stub_api: list[tuple[str, dict]]) -> None:
+    """지표를 화면에서 없앴으므로 UI는 그 값을 만들지 않는다(#570).
 
-    #536에서 이 경로가 조용히 깨졌다. 성공 기준을 사용자가 선언하게 만드는 것이 이
-    변경의 목적인데, guardrail이 말없이 `없음`으로 떨어지면 그 목적이 무너진다.
+    서버가 기본값을 소유한다. UI가 지어낸 값을 보내면 두 곳이 같은 값을 각자
+    선언하게 되어 어긋날 수 있다.
     """
     app = _rendered_app()
     _fill_required(app)
-    app.text_input[3].set_value("logloss")
-    app.selectbox[1].set_value("낮을수록 좋음")
-    app.text_input[4].set_value("0.001")
     app.button[0].click().run()
 
     fields = stub_api[1][1]["fields"]
 
-    assert fields["guardrail_metric_name"] == "logloss"
-    assert fields["guardrail_metric_direction"] == "lower_is_better"
-    assert fields["maximum_guardrail_regression"] == "0.001"
-
-
-def test_unset_guardrail_sends_the_sentinels(stub_api: list[tuple[str, dict]]) -> None:
-    """guardrail 칸을 비우면 서버가 요구하는 미선언 sentinel로 나가야 한다."""
-    app = _rendered_app()
-    _fill_required(app)
-    app.button[0].click().run()
-
-    fields = stub_api[1][1]["fields"]
-
-    assert fields["guardrail_metric_name"] == "없음"
-    assert fields["guardrail_metric_direction"] == "not_applicable"
-    assert fields["maximum_guardrail_regression"] == "없음"
-
-
-def test_partial_guardrail_is_blocked_before_any_request(
-    stub_api: list[tuple[str, dict]],
-) -> None:
-    """이름만 채우고 악화폭을 비우면 요청을 보내지 않고 화면에서 막는다."""
-    app = _rendered_app()
-    _fill_required(app)
-    app.text_input[3].set_value("logloss")
-    app.button[0].click().run()
-
-    assert stub_api == []
-    assert any("최대 악화폭" in element.value for element in app.error)
+    assert set(fields) == {"title", "hypothesis"}
 
 
 def test_blank_required_field_is_blocked_before_any_request(
@@ -222,3 +318,134 @@ def test_publication_result_is_shown(stub_api: list[tuple[str, dict]]) -> None:
     app.button[0].click().run()
 
     assert any("537" in element.value for element in app.success)
+
+
+def test_pending_publication_retries_saved_submission_without_duplicate(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """부분 실패는 원 폼을 재제출하지 않고 저장된 submission으로 재시도한다."""
+    _StubHandler.publication_failures = 1
+    app = _rendered_app()
+    _fill_required(app)
+
+    app.button[0].click().run()
+
+    assert app.text_input[0].label == "실험 제목"
+    assert any("이슈 발행에 실패" in element.value for element in app.error)
+    retry_buttons = [
+        button for button in app.button if button.label == "이슈 발행 다시 시도"
+    ]
+    assert len(retry_buttons) == 1
+
+    retry_buttons[0].click().run()
+
+    paths = [path for path, _ in stub_api]
+    assert paths.count("/experiments") == 1
+    assert paths.count(
+        "/experiments/3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d/issue"
+    ) == 2
+    assert any("537" in element.value for element in app.success)
+    assert any(
+        title.value == _MARKDOWN_HYPOTHESIS
+        for title in app.title
+    )
+
+
+def test_pending_publication_retry_failure_keeps_create_and_pending(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """재시도도 실패하면 CREATE와 pending 동작 버튼을 그대로 유지한다."""
+    _StubHandler.publication_failures = 2
+    app = _rendered_app()
+    _fill_required(app)
+    app.button[0].click().run()
+
+    next(
+        button for button in app.button if button.label == "이슈 발행 다시 시도"
+    ).click().run()
+
+    paths = [path for path, _ in stub_api]
+    assert paths.count("/experiments") == 1
+    assert paths.count(
+        "/experiments/3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d/issue"
+    ) == 2
+    assert app.text_input[0].label == "실험 제목"
+    assert any("이슈 발행에 실패" in element.value for element in app.error)
+    labels = [button.label for button in app.button]
+    assert "이슈 발행 다시 시도" in labels
+    assert "실패한 등록 취소하고 새 가설 작성" in labels
+
+
+def test_discard_pending_publication_unlocks_new_submission(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """취소는 생성된 Experiment를 남기고 다른 가설의 새 등록을 허용한다."""
+    _StubHandler.publication_failures = 1
+    app = _rendered_app()
+    _fill_required(app)
+    app.button[0].click().run()
+
+    next(
+        button
+        for button in app.button
+        if button.label == "실패한 등록 취소하고 새 가설 작성"
+    ).click().run()
+
+    assert _StubHandler.experiments
+    assert _StubHandler.experiments[0]["hypothesis"] == _MARKDOWN_HYPOTHESIS
+    assert "이슈 발행 다시 시도" not in [button.label for button in app.button]
+    _fill_required(app)
+    app.text_area[0].set_value("새 가설은 pending 등록과 다른 입력이다.")
+    next(
+        button for button in app.button if button.label == "사전등록하고 이슈 발행"
+    ).click().run()
+
+    paths = [path for path, _ in stub_api]
+    assert paths.count("/experiments") == 2
+    assert any("537" in element.value for element in app.success)
+
+
+def test_pending_actions_are_hidden_without_pending_publication(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """pending이 없는 CREATE에는 재시도·취소 버튼을 표시하지 않는다."""
+    app = _rendered_app()
+
+    labels = [button.label for button in app.button]
+    assert "이슈 발행 다시 시도" not in labels
+    assert "실패한 등록 취소하고 새 가설 작성" not in labels
+
+
+def test_refresh_exposes_new_experiment_and_hides_other_publication_result(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """목록 갱신 후 B를 선택하면 A의 발행 결과가 B 상세에 남지 않는다."""
+    app = _rendered_app()
+    _fill_required(app)
+    app.button[0].click().run()
+    assert any("537" in element.value for element in app.success)
+
+    second_id = "exp-two"
+    _StubHandler.experiments.append(_experiment_payload(second_id, "두 번째 가설"))
+    app.sidebar.button[1].click().run()
+    app.sidebar.radio[0].set_value(second_id).run()
+
+    assert not app.exception
+    assert any(title.value == "두 번째 가설" for title in app.title)
+    assert not app.success
+
+
+def test_deleted_selected_experiment_is_removed_on_detail_refresh(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """선택 직후 404가 나면 목록·선택을 비우고 빈 DETAIL 안내를 표시한다."""
+    experiment_id = "exp-deleted"
+    _StubHandler.experiments = [_experiment_payload(experiment_id, "삭제된 가설")]
+    app = _rendered_app()
+    _StubHandler.missing_experiment_ids.add(experiment_id)
+
+    app.sidebar.radio[0].set_value(experiment_id).run()
+
+    assert not app.exception
+    assert any("항목을 선택" in element.value for element in app.info)
+    assert not app.sidebar.radio

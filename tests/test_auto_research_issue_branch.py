@@ -224,13 +224,16 @@ def test_parse_issue_input_reads_configured_guardrail() -> None:
     assert issue_input.maximum_guardrail_regression == Decimal("0.01")
 
 
-@pytest.mark.parametrize("metric_name", ["", "1auc", "한글", "a b", "a/b", "a" * 65])
+# 빈 값은 여기서 빠져 있다. 세 heading이 **모두** 비면 미선언이고(#570), 하나만 비는
+# 부분 선언은 아래 `test_parse_issue_input_rejects_partially_declared_primary_metric`가
+# 따로 고정한다.
+@pytest.mark.parametrize("metric_name", ["1auc", "한글", "a b", "a/b", "a" * 65])
 def test_parse_issue_input_rejects_invalid_primary_metric_name(metric_name: str) -> None:
     with pytest.raises(ValueError, match="primary_metric_name"):
         parse_issue_input(449, "[AR] metric", structured_body(primary_metric_name=metric_name))
 
 
-@pytest.mark.parametrize("direction", ["not_applicable", "maximize", ""])
+@pytest.mark.parametrize("direction", ["not_applicable", "maximize"])
 def test_parse_issue_input_rejects_invalid_primary_metric_direction(direction: str) -> None:
     with pytest.raises(ValueError, match="primary_metric_direction"):
         parse_issue_input(449, "[AR] metric", structured_body(primary_metric_direction=direction))
@@ -248,6 +251,85 @@ def test_parse_issue_input_accepts_zero_primary_delta() -> None:
         .minimum_primary_delta
         == Decimal("0")
     )
+
+
+def body_without(*headings: str, **overrides: str) -> str:
+    """지정한 heading 구간을 통째로 지운 본문을 만듭니다.
+
+    Streamlit 경로는 선언하지 않은 항목의 heading 자체를 생략하므로(#570), 그 본문을
+    문자열 조작이 아니라 실제 발행 결과와 같은 모양으로 재현합니다.
+    """
+    body = structured_body(**overrides)
+    for heading in headings:
+        body = re.sub(
+            rf"### {re.escape(heading)}\n.*?(?=### )",
+            "",
+            body,
+            flags=re.DOTALL,
+        )
+    return body
+
+
+_PRIMARY_METRIC_HEADINGS = ("주 지표 이름", "주 지표 방향", "최소 주 지표 개선폭")
+
+
+def test_parse_issue_input_reads_a_body_without_primary_metric_sections() -> None:
+    """주 지표 heading이 없으면 미선언으로 읽고 발행 경로를 막지 않습니다(#570)."""
+    issue_input = parse_issue_input(
+        449, "[AR] metric", body_without(*_PRIMARY_METRIC_HEADINGS)
+    )
+
+    assert issue_input.primary_metric_name is None
+    assert issue_input.primary_metric_direction is None
+    assert issue_input.minimum_primary_delta is None
+    assert issue_input.issue_branch == "exp/449-metric"
+    # 봉인 자체는 계속 만들어져야 합니다 — 없으면 Actions output이 비어 후속 job이
+    # 빈 문자열을 식별자로 들고 갑니다.
+    assert len(issue_input.criteria_id) == 64
+    assert len(issue_input.reproducibility_id) == 64
+
+
+def test_parse_issue_input_seals_every_undeclared_primary_metric_alike() -> None:
+    """미선언 표현이 두 가지면 같은 상태가 다른 `criteria_id`를 갖습니다."""
+    first = parse_issue_input(449, "[AR] metric", body_without(*_PRIMARY_METRIC_HEADINGS))
+    second = parse_issue_input(450, "[AR] other", body_without(*_PRIMARY_METRIC_HEADINGS))
+
+    assert first.criteria_id == second.criteria_id
+
+
+@pytest.mark.parametrize("omitted", _PRIMARY_METRIC_HEADINGS)
+def test_parse_issue_input_rejects_partially_declared_primary_metric(omitted: str) -> None:
+    """하나만 빠진 본문은 선언인지 미선언인지 읽을 수 없으므로 fail-closed입니다."""
+    with pytest.raises(ValueError, match="primary metric sections must be declared together"):
+        parse_issue_input(449, "[AR] metric", body_without(omitted))
+
+
+def test_parse_issue_input_reads_a_body_without_a_change_section() -> None:
+    """변경 내용은 가설 본문 안에 적으므로 별도 heading이 없을 수 있습니다(#570)."""
+    issue_input = parse_issue_input(449, "[AR] metric", body_without("변경할 피처 · 모델"))
+
+    assert issue_input.change == ""
+
+
+def test_undeclared_primary_metric_never_qualifies_a_candidate() -> None:
+    """통과 기준이 없는 실험은 어떤 후보도 승격시키지 않습니다(#570).
+
+    여기서 끊지 않으면 `Decimal < None` 비교가 TypeError로 죽어, 판정 결과가 아니라
+    워크플로 오류로 보입니다.
+    """
+    criteria = parse_issue_input(
+        449, "[AR] metric", body_without(*_PRIMARY_METRIC_HEADINGS)
+    )
+
+    selection = select_best_candidate(
+        criteria,
+        "exp-449-20260801",
+        "d" * 40,
+        [completion_candidate("a" * 40, "0.99", criteria=criteria)],
+    )
+
+    assert selection.selection_reason == "no_qualified_candidate"
+    assert selection.candidate_sha is None
 
 
 def test_parse_issue_input_rejects_primary_delta_that_exceeds_decimal_input_bound() -> None:
@@ -302,19 +384,20 @@ def test_parse_issue_input_rejects_guardrail_regression_that_exceeds_decimal_inp
 
 
 @pytest.mark.parametrize("field_name", ["dataset_snapshot", "training_config_ref"])
-@pytest.mark.parametrize("value", ["", " ", "x" * 257])
+# 빈 값과 공백만 있는 값은 미선언이라 거부 대상이 아니다(#570). 길이 상한만 남는다.
+@pytest.mark.parametrize("value", ["x" * 257])
 def test_parse_issue_input_rejects_invalid_text_reference(field_name: str, value: str) -> None:
     with pytest.raises(ValueError, match=field_name):
         parse_issue_input(449, "[AR] metric", structured_body(**{field_name: value}))
 
 
-@pytest.mark.parametrize("random_seeds", ["", "42, 42", "42, -1", "42, 1.5", "42,"])
+@pytest.mark.parametrize("random_seeds", ["42, 42", "42, -1", "42, 1.5", "42,"])
 def test_parse_issue_input_rejects_invalid_random_seeds(random_seeds: str) -> None:
     with pytest.raises(ValueError, match="random_seeds"):
         parse_issue_input(449, "[AR] metric", structured_body(random_seeds=random_seeds))
 
 
-@pytest.mark.parametrize("split_seed", ["", "-1", "1.5", "seed"])
+@pytest.mark.parametrize("split_seed", ["-1", "1.5", "seed"])
 def test_parse_issue_input_rejects_invalid_split_seed(split_seed: str) -> None:
     with pytest.raises(ValueError, match="split_seed"):
         parse_issue_input(449, "[AR] metric", structured_body(split_seed=split_seed))
@@ -453,11 +536,61 @@ def test_parse_issue_input_rejects_legacy_unstructured_headings() -> None:
         parse_issue_input(449, "[AR] metric", legacy_body)
 
 
-def test_parse_issue_input_rejects_missing_structured_heading() -> None:
-    body = structured_body().replace("### Split 시드\n20260731\n\n", "")
+def test_parse_issue_input_rejects_a_body_without_the_hypothesis() -> None:
+    """`연구 가설`은 유일하게 남은 필수 heading입니다(#570)."""
+    body = body_without("연구 가설")
 
-    with pytest.raises(ValueError, match="split_seed"):
+    with pytest.raises(ValueError, match="hypothesis"):
         parse_issue_input(449, "[AR] metric", body)
+
+
+def test_parse_issue_input_reads_a_body_without_execution_settings() -> None:
+    """Streamlit 경로가 발행한 본문은 실행 설정 heading을 갖지 않습니다(#570)."""
+    issue_input = parse_issue_input(
+        449,
+        "[AR] metric",
+        body_without(
+            "변경할 피처 · 모델",
+            "주 지표 이름",
+            "주 지표 방향",
+            "최소 주 지표 개선폭",
+            "Guardrail 지표 이름",
+            "Guardrail 지표 방향",
+            "최대 Guardrail 악화폭",
+            "보조 관측 지표",
+            "비교 대상",
+            "데이터셋 스냅샷",
+            "랜덤 시드 목록",
+            "Split 시드",
+            "Test 비율",
+            "Validation 비율",
+            "학습 설정 참조",
+            "대상 데이터 · 기간",
+            "스냅샷 재사용",
+            "허용 범위",
+        ),
+    )
+
+    assert issue_input.issue_branch == "exp/449-metric"
+    assert issue_input.comparison is None
+    assert issue_input.dataset_snapshot is None
+    assert issue_input.random_seeds == ()
+    assert issue_input.split_seed is None
+    assert issue_input.test_size is None
+    assert issue_input.validation_size is None
+    assert issue_input.training_config_ref is None
+    assert issue_input.snapshot_reuse is None
+    # 부재가 권한을 넓히는 방향으로 읽히면 실행기가 잠긴 경로를 건드릴 수 있습니다.
+    assert issue_input.allowed_scope == ()
+    assert len(issue_input.criteria_id) == 64
+    assert len(issue_input.reproducibility_id) == 64
+
+
+@pytest.mark.parametrize("omitted", ["Test 비율", "Validation 비율"])
+def test_parse_issue_input_rejects_partially_declared_split_sizes(omitted: str) -> None:
+    """하나만 있으면 나머지를 지어내야 하는데 그 값은 이슈에 적혀 있지 않습니다."""
+    with pytest.raises(ValueError, match="declared together"):
+        parse_issue_input(449, "[AR] metric", body_without(omitted))
 
 
 def test_parse_issue_input_rejects_duplicate_structured_heading() -> None:

@@ -90,8 +90,12 @@ docs/
 - **배포 경계:** `deploy/agent_orchestration/api.Dockerfile`은 DB·API만,
   `runner.Dockerfile`은 Codex CLI·OAuth PVC만, `ui.Dockerfile`은 Streamlit UI와
   Experiment API 표시 모델만 소유한다. `launcher.Dockerfile`은 DB 선점과 Kubernetes
-  Job 생성만, `executor.Dockerfile`은 GitHub App token-minter와 봉인 SHA 기반 branch
-  bootstrap만 소유하며 둘 다 Codex를 포함하지 않는다. KSA/GSA·PVC·Secret
+  Job 생성만 소유한다. `executor.Dockerfile`은 Phase 2의 GitHub App token-minter,
+  봉인 issue/workspace, Codex, verifier, candidate finalizer를 동일 digest에서 command
+  override로 제공하며 Git·uv·`/opt/autoresearch-venv` dev/test 의존성·Node.js·고정
+  `@openai/codex@0.146.0`를 포함한다. 이미지에는 repository source 전체, `.env`,
+  `auth.json`, Codex 인증을 넣지 않고 issue parser `tools/`만 image copy로 봉인한다.
+  KSA/GSA·PVC·Secret
   mount·RBAC·NetworkPolicy는 `SKYAHO/Autoresearch-infra` 소유이다.
 - **비책임:** 사용자 OAuth, 세션/사용자 히스토리, 정책 라우팅은 후속 단계다.
 - **패턴:** `src/`와 패키지 경계를 분리해 새로운 배포 단위를 별도로 둔다.
@@ -112,19 +116,69 @@ docs/
     AND P-1`, 어제까지 30일) 여기에 날짜를 넣지 않음.
   - `ORCH_EXPERIMENT_TRAINING_CONFIG_REF`: 서버가 Issue Form에 채우는 학습
     설정 참조.
-- **실험 branch Job 환경 변수(#546):** release는 launcher/executor를 독립
-  image로 게시하고 infra는 tag가 아닌 검증된 digest를 소비한다. 전체 기본값·경로는
+- **실험 executor Job 환경 변수(#557):** release는 launcher/executor/API를 독립
+  image로 게시하고 Infra는 tag가 아닌 검증된 digest를 소비한다. producer인 launcher는
+  DB의 `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`, `ORCH_ISSUE_BRANCH`,
+  `ORCH_BASE_DEV_SHA`, `ORCH_ISSUE_BODY_SHA256`를 exact handoff value로 Pod consumer에
+  전달한다. candidate-finalizer는 `ORCH_EXECUTOR_API_TOKEN` Secret의 file mount
+  `/var/run/executor-api-token/token`을 `ORCH_EXECUTOR_API_TOKEN_FILE`로 받고,
+  candidate 저장과 `RUNNING → EVALUATING`를 Candidate API에서 검증한다. 전체 기본값·경로는
   `.env.example`이 정본이다.
   - launcher 설정: `ORCH_DATABASE_URL`, `ORCH_JOB_NAMESPACE`, digest-only
     `ORCH_EXECUTOR_IMAGE`, `ORCH_EXECUTOR_SERVICE_ACCOUNT`,
     `ORCH_EXECUTOR_NODE_POOL`, `ORCH_GITHUB_APP_SECRET_NAME`,
     `ORCH_GITHUB_APP_ID`, `ORCH_GITHUB_APP_INSTALLATION_ID`,
-    `ORCH_GITHUB_REPOSITORY`, `ORCH_MAX_CONCURRENT_EXPERIMENTS`.
+    `ORCH_GITHUB_REPOSITORY`, `ORCH_MAX_CONCURRENT_EXPERIMENTS`,
+    `ORCH_CODEX_HOME_SECRET_NAME`, `ORCH_ACTIVE_DEADLINE_SEC`,
+    `ORCH_CODEX_TIMEOUT_SEC`, 선택 `ORCH_TTL_AFTER_FINISHED_SEC`. Codex Secret 이름은
+    Infra가 생성·소유하며, 완료 Job TTL은 기본 30초이고 장애 smoke에서만 일시 조정한다.
+    Job 전체 상한은
+    3600초, 그 안의 Codex 실행 상한은 1800초다. launcher는 Codex 상한이 Job 상한 이상이면
+    기동 전에 거부한다.
+  - 8-container 순서: branch-token-minter → branch-creator → clone-token-minter →
+    workspace-preparer → codex-worker → candidate-verifier → push-token-minter →
+    candidate-finalizer. branch/clone/push token-minter만 GitHub App private key를,
+    codex-worker만 executor 전용 Codex 인증 Secret의 read-only `CODEX_HOME`을,
+    candidate-finalizer만 executor API token을 mount한다. Secret은 `auth.json` key 하나를
+    제공하고 launcher는 이를 `defaultMode=0440`의 read-only `subPath` 파일로 mount한다.
+    codex-worker는 source의 regular `auth.json`만 mode 0400으로 `/tmp` 아래 mode 0700 per-run
+    writable scratch `CODEX_HOME`에 복사하고, config·plugin 등 다른 source 파일은 복사하지
+    않은 채 `codex exec --ephemeral`을 실행한다.
+  - **단일 파드 학습(#574, 데모 스코프):** 20차 회의 지침으로 파이프라인을 파드 4개에서
+    **파드 1개**로 바꿨다. 컨테이너를 새로 만들지 않고 위 8-container 중 두 곳에 학습을
+    얹는다 — **baseline은 `workspace-preparer` 끝**(Codex 실행 전, dev 코드·dev 의존성),
+    **candidate는 `candidate-finalizer` 끝**(push 후, candidate 코드·candidate 의존성).
+    컨테이너 개수가 8 그대로라 어드미션 계약은 바뀌지 않는다.
+    - **순서가 계약이다.** 뒤집히면 baseline이 candidate의 의존성 버전으로 학습돼 두
+      조건의 차이가 "코드 변경"만이 아니게 되고 paired 대조의 전제가 깨진다. 재시도로
+      순서가 어긋나는 경로까지 막기 위해 executor-state volume의
+      `baseline_training_complete` marker로 강제하며, marker가 없으면 candidate 학습은
+      **시작 자체를 거부**한다(`executor/training.py`).
+    - seed 목록은 상수를 복제하지 않고 **workspace 코드에게 직접 묻는다**
+      (`from src.pipeline.experiment_evaluation import POLICY_SEEDS`). executor 이미지에
+      `src/`가 없어 import가 불가능하고, 복제하면 `issue_authoring.py`에 이어 세 번째
+      사본이 된다. 조건별로 다른 값이 나오는 것이 정상이다 — candidate가 seed 정책을
+      바꾸는 실험이면 candidate 학습은 바뀐 값으로 돌아야 한다.
+    - `uv sync`는 `pyproject.toml`·`uv.lock`이 `base_dev_sha` 이후 바뀐 경우에만 돈다.
+    - **학습 코드는 이미지가 아니라 workspace의 clone에서 온다. 이미지에 `src/`를 굽지
+      말 것** — Codex가 수정한 candidate 코드가 아니라 빌드 시점의 낡은 코드로 학습하게
+      되어 candidate 실험 자체가 무의미해진다.
+    - **조립(`build-features`)은 이 Pod에서 하지 않는다.** feast group이 executor
+      이미지에 없고 `pyproject.toml`이 feast와 dev를 `conflicts`로 선언해 재빌드로도 넣을
+      수 없다. 조립은 파드 밖에서 돌려 스냅샷으로 게시하고 경로만 주입한다.
+    - `ORCH_TRAINING_DATASET_PATH`가 **on/off 스위치**다. 비어 있으면 학습을 건너뛰고
+      기존 Phase 2 경로만 돈다. 스냅샷을 읽으려면 `experiment-job` GSA에 스냅샷 root read
+      권한이 필요한데 현재 `objectCreator`만 있으므로, **그 IAM이 붙기 전까지 비워 둔다.**
   - executor 봉인 좌표: launcher가 `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`,
-    `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA`를 DB에서 복사해 Pod에 주입한다.
+    `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA`, `ORCH_ISSUE_BODY_SHA256`를 DB에서 복사해
+    Pod에 주입한다. workspace-preparer가 marker·body hash·branch를 검증한다.
   - token 파일 좌표: token-minter에만 `ORCH_GITHUB_APP_PRIVATE_KEY_FILE`을
-    주입하고, token-minter와 executor는 memory volume의
-    `ORCH_GITHUB_TOKEN_FILE`만 공유한다.
+    주입하고, 각 minter와 단일 consumer는 memory volume의 purpose별
+    `ORCH_GITHUB_TOKEN_FILE`(`/var/run/{branch,clone,push}-token/token`)만 공유한다.
+  - Codex worker·verifier에는 GitHub/API token을 mount하지 않는다. 모든 container는
+    non-root UID/GID 10001, seccomp, capability drop, `automountServiceAccountToken=false`,
+    workspace/token volume size limit을 준수해야 하며, 실제 Secret/PVC/resource/
+    NetworkPolicy 이름과 값은 Infra가 정한다.
   - `auto-experiment`는 이슈 분류와 promotion guard일 뿐 branch 생성 트리거가
     아니다. Phase 1 executor는 기존 GitHub Actions bot marker를 쓰지 않으므로 새
     marker 없는 branch는 promotion 입력이 아니며, marker 재설계가 다음 단계 gate다.

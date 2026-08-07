@@ -49,7 +49,7 @@ from agent_orchestration.launcher.repository import (
 EXPERIMENT_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 UTC_NOW = datetime(2026, 8, 5, 3, 0, tzinfo=UTC)
 EXECUTOR_IMAGE = "asia-northeast3-docker.pkg.dev/example/executor@sha256:" + "b" * 64
-LABEL_SELECTOR = "app.kubernetes.io/component=branch-bootstrap"
+LABEL_SELECTOR = "app.kubernetes.io/component=experiment-executor"
 
 
 @pytest.fixture
@@ -91,6 +91,8 @@ def _settings(
     executor_image: str = EXECUTOR_IMAGE,
     executor_node_pool: str = "batch-od",
     max_concurrent_experiments: int = 5,
+    codex_timeout_sec: int = 1200,
+    active_deadline_sec: int = 2400,
 ) -> LauncherSettings:
     return LauncherSettings(
         database_url="postgresql://launcher:password@db/orchestration",
@@ -103,6 +105,12 @@ def _settings(
         github_app_installation_id=456,
         github_repository="SKYAHO/Autoresearch",
         max_concurrent_experiments=max_concurrent_experiments,
+        executor_api_url="http://agent-orchestration-api",
+        executor_api_token_secret_name="executor-api-token",
+        codex_home_secret_name="codex-auth",
+        workspace_size_limit="8Gi",
+        codex_timeout_sec=codex_timeout_sec,
+        active_deadline_sec=active_deadline_sec,
     )
 
 
@@ -114,6 +122,7 @@ def _experiment(
     issue_number: int | None = 546,
     issue_branch: str | None = "exp/546-example",
     base_sha: str | None = "a" * 40,
+    issue_body: str | None = "sealed body",
     job_name: str | None = None,
     job_created_at: datetime | None = None,
 ) -> Experiment:
@@ -124,6 +133,7 @@ def _experiment(
         issue_number=issue_number,
         issue_branch=issue_branch,
         base_dev_sha=base_sha,
+        issue_body=issue_body,
         executor_job_name=job_name,
         executor_job_created_at=job_created_at,
     )
@@ -138,6 +148,7 @@ def _claim() -> ClaimedExperiment:
         issue_number=546,
         issue_branch="exp/546-example",
         base_dev_sha="a" * 40,
+        issue_body_sha256="b" * 64,
         job_name=f"ar-branch-{EXPERIMENT_ID.hex}",
     )
 
@@ -192,9 +203,8 @@ def test_launcher_settings_requires_digest_pinned_executor_image() -> None:
         _settings(executor_image="example/executor:latest")
 
 
-def test_launcher_settings_reads_required_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _set_launcher_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """launcher 필수 환경을 유효한 운영 형태로 설정한다."""
     values = {
         "ORCH_DATABASE_URL": "postgresql://launcher:password@db/orchestration",
         "ORCH_JOB_NAMESPACE": "agent-orchestration",
@@ -206,16 +216,62 @@ def test_launcher_settings_reads_required_environment(
         "ORCH_GITHUB_APP_INSTALLATION_ID": "456",
         "ORCH_GITHUB_REPOSITORY": "SKYAHO/Autoresearch",
         "ORCH_MAX_CONCURRENT_EXPERIMENTS": "2",
+        "ORCH_EXECUTOR_API_URL": "http://agent-orchestration-api",
+        "ORCH_EXECUTOR_API_TOKEN_SECRET_NAME": "executor-api-token",
+        "ORCH_CODEX_HOME_SECRET_NAME": "codex-auth",
+        "ORCH_EXECUTOR_WORKSPACE_SIZE_LIMIT": "8Gi",
+        "ORCH_CODEX_TIMEOUT_SEC": "1800",
+        "ORCH_ACTIVE_DEADLINE_SEC": "3600",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
+
+
+def test_launcher_settings_reads_required_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_launcher_environment(monkeypatch)
 
     settings = LauncherSettings.from_environment()
 
     assert settings.max_concurrent_experiments == 2
     assert settings.executor_node_pool == "batch-od"
-    assert settings.active_deadline_sec == 300
+    assert settings.codex_home_secret_name == "codex-auth"
+    assert settings.codex_timeout_sec == 1800
+    assert settings.active_deadline_sec == 3600
     assert settings.ttl_after_finished_sec == 30
+
+
+def test_launcher_settings_reads_optional_job_ttl_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_launcher_environment(monkeypatch)
+    monkeypatch.setenv("ORCH_TTL_AFTER_FINISHED_SEC", "3600")
+
+    settings = LauncherSettings.from_environment()
+
+    assert settings.ttl_after_finished_sec == 3600
+
+
+@pytest.mark.parametrize("ttl", ["0", "-1", "1.5", "invalid"])
+def test_launcher_settings_rejects_invalid_optional_job_ttl_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    ttl: str,
+) -> None:
+    _set_launcher_environment(monkeypatch)
+    monkeypatch.setenv("ORCH_TTL_AFTER_FINISHED_SEC", ttl)
+
+    with pytest.raises(
+        LauncherConfigError,
+        match="invalid ORCH_TTL_AFTER_FINISHED_SEC",
+    ):
+        LauncherSettings.from_environment()
+
+
+def test_launcher_settings_rejects_codex_timeout_at_or_above_job_deadline() -> None:
+    """Codex가 Job 전체 상한을 독점하면 verifier·finalizer가 실행될 수 없다."""
+    with pytest.raises(LauncherConfigError, match="codex_timeout_sec"):
+        _settings(codex_timeout_sec=3600, active_deadline_sec=3600)
 
 
 def test_launcher_settings_requires_explicit_executor_node_pool_environment(
@@ -328,7 +384,7 @@ def test_claim_reserves_only_available_slots_and_records_stable_event(
 
     assert len(claims) == 1
     claim = claims[0]
-    assert claim.job_name == f"ar-branch-{claim.experiment_id.hex}"
+    assert claim.job_name == f"ar-exec-{claim.experiment_id.hex}"
     persisted = session.get(Experiment, claim.experiment_id)
     assert persisted is not None
     assert persisted.status == ExperimentStatus.RUNNING.value
@@ -343,7 +399,7 @@ def test_claim_reserves_only_available_slots_and_records_stable_event(
     assert event_row is not None
     assert event_row.idempotency_key == f"launcher-claim:{claim.experiment_id}"
     assert event_row.request_fingerprint == (
-        "85cadf75c062e9988de043542c6e467b5cd2ee6db418fd5f83745ea862c22ac9"
+        "4126210b797b1a47bb99f3454a1bded18de0255feeb4eef549cc4e71f66f4c24"
     )
     assert event_row.reason == f"executor job claimed: {claim.job_name}"
 
@@ -369,11 +425,14 @@ def test_claim_rolls_back_job_name_and_status_when_event_flush_fails(
     assert persisted is not None
     assert persisted.status == ExperimentStatus.CREATED.value
     assert persisted.executor_job_name is None
-    assert session.scalar(
-        select(func.count())
-        .select_from(ExperimentEvent)
-        .where(ExperimentEvent.experiment_id == experiment.id)
-    ) == 0
+    assert (
+        session.scalar(
+            select(func.count())
+            .select_from(ExperimentEvent)
+            .where(ExperimentEvent.experiment_id == experiment.id)
+        )
+        == 0
+    )
 
 
 def test_claim_fails_closed_when_created_row_has_existing_claim_event(
@@ -401,7 +460,7 @@ def test_unconfirmed_recovery_reservation_consumes_remaining_slot(
     recovery = _experiment(
         session,
         status=ExperimentStatus.RUNNING,
-        job_name=f"ar-branch-{EXPERIMENT_ID.hex}",
+        job_name=f"ar-exec-{EXPERIMENT_ID.hex}",
     )
     waiting = _experiment(
         session,
@@ -430,7 +489,7 @@ def test_tick_limits_recoverable_jobs_to_safe_capacity(session: Session) -> None
                 status=ExperimentStatus.RUNNING,
                 issue_number=issue_number,
                 issue_branch=f"exp/{issue_number}-example",
-                job_name=f"ar-branch-{experiment_id.hex}",
+                job_name=f"ar-exec-{experiment_id.hex}",
             )
         )
     kubernetes = FakeJobs(active_jobs=0)
@@ -456,7 +515,7 @@ def test_tick_skips_incomplete_unconfirmed_recovery(session: Session) -> None:
         session,
         status=ExperimentStatus.RUNNING,
         base_sha=None,
-        job_name=f"ar-branch-{EXPERIMENT_ID.hex}",
+        job_name=f"ar-exec-{EXPERIMENT_ID.hex}",
     )
     kubernetes = FakeJobs()
 
@@ -477,7 +536,7 @@ def test_job_passes_only_frozen_coordinates_and_token_file() -> None:
     }
     assert job.spec.template.metadata.labels == job.metadata.labels
     assert job.spec.backoff_limit == 0
-    assert job.spec.active_deadline_seconds == 300
+    assert job.spec.active_deadline_seconds == 2400
     assert job.spec.ttl_seconds_after_finished == 30
     assert pod.automount_service_account_token is False
     assert pod.service_account_name == settings.executor_service_account
@@ -522,8 +581,7 @@ def test_job_passes_only_frozen_coordinates_and_token_file() -> None:
         settings.github_app_secret_name
     )
     assert [
-        (item.key, item.path)
-        for item in volumes["github-app-private-key"].secret.items
+        (item.key, item.path) for item in volumes["github-app-private-key"].secret.items
     ] == [("private-key.pem", "private-key.pem")]
     # root 소유 Secret 파일은 Pod fsGroup 10001에만 읽기를 허용하고, 같은 UID로 실행되는
     # initContainer가 만든 0400 token은 app container가 동일 소유자로 읽는다.
@@ -550,8 +608,7 @@ def test_job_targets_configured_experiment_node_pool_contract() -> None:
         "cloud.google.com/gke-nodepool": "batch-od",
     }
     assert [
-        (item.key, item.operator, item.value, item.effect)
-        for item in pod.tolerations
+        (item.key, item.operator, item.value, item.effect) for item in pod.tolerations
     ] == [("workload", "Equal", "batch-od", "NoSchedule")]
 
 
@@ -574,7 +631,7 @@ def test_job_security_context_meets_restricted_namespace_contract() -> None:
 def test_tick_recovers_claim_when_job_creation_was_not_confirmed(
     session: Session,
 ) -> None:
-    job_name = f"ar-branch-{EXPERIMENT_ID.hex}"
+    job_name = f"ar-exec-{EXPERIMENT_ID.hex}"
     experiment = _experiment(
         session,
         status=ExperimentStatus.RUNNING,
@@ -593,7 +650,7 @@ def test_tick_recovers_claim_when_job_creation_was_not_confirmed(
 def test_tick_marks_existing_unconfirmed_job_without_creating_it(
     session: Session,
 ) -> None:
-    job_name = f"ar-branch-{EXPERIMENT_ID.hex}"
+    job_name = f"ar-exec-{EXPERIMENT_ID.hex}"
     experiment = _experiment(
         session,
         status=ExperimentStatus.RUNNING,
@@ -610,7 +667,7 @@ def test_tick_marks_existing_unconfirmed_job_without_creating_it(
 def test_tick_confirms_existing_recovery_when_active_limit_is_full(
     session: Session,
 ) -> None:
-    job_name = f"ar-branch-{EXPERIMENT_ID.hex}"
+    job_name = f"ar-exec-{EXPERIMENT_ID.hex}"
     experiment = _experiment(
         session,
         status=ExperimentStatus.RUNNING,
@@ -632,7 +689,7 @@ def test_tick_confirms_existing_recovery_when_active_limit_is_full(
 def test_tick_uses_remaining_slot_after_confirming_existing_recovery(
     session: Session,
 ) -> None:
-    recovery_job_name = f"ar-branch-{EXPERIMENT_ID.hex}"
+    recovery_job_name = f"ar-exec-{EXPERIMENT_ID.hex}"
     recovery = _experiment(
         session,
         status=ExperimentStatus.RUNNING,
@@ -654,7 +711,7 @@ def test_tick_uses_remaining_slot_after_confirming_existing_recovery(
     )
 
     assert [claim.experiment_id for claim in claims] == [recovery.id, waiting.id]
-    assert kubernetes.created_names == {f"ar-branch-{waiting.id.hex}"}
+    assert kubernetes.created_names == {f"ar-exec-{waiting.id.hex}"}
     assert recovery.executor_job_created_at == UTC_NOW
     assert waiting.executor_job_created_at == UTC_NOW
 
@@ -662,7 +719,7 @@ def test_tick_uses_remaining_slot_after_confirming_existing_recovery(
 def test_tick_does_not_create_missing_recovery_when_active_limit_is_full(
     session: Session,
 ) -> None:
-    job_name = f"ar-branch-{EXPERIMENT_ID.hex}"
+    job_name = f"ar-exec-{EXPERIMENT_ID.hex}"
     experiment = _experiment(
         session,
         status=ExperimentStatus.RUNNING,
@@ -691,7 +748,7 @@ def test_tick_confirms_existing_recovery_behind_missing_one_at_full_limit(
         status=ExperimentStatus.RUNNING,
         issue_number=546,
         issue_branch="exp/546-missing",
-        job_name="ar-branch-missing",
+        job_name="ar-exec-missing",
     )
     existing = _experiment(
         session,
@@ -699,13 +756,13 @@ def test_tick_confirms_existing_recovery_behind_missing_one_at_full_limit(
         status=ExperimentStatus.RUNNING,
         issue_number=547,
         issue_branch="exp/547-existing",
-        job_name="ar-branch-existing",
+        job_name="ar-exec-existing",
     )
     missing.updated_at = datetime(2026, 8, 5, 1, 0, tzinfo=UTC)
     existing.updated_at = datetime(2026, 8, 5, 2, 0, tzinfo=UTC)
     session.commit()
     kubernetes = FakeJobs(
-        existing_names={"ar-branch-existing"},
+        existing_names={"ar-exec-existing"},
         active_jobs=1,
     )
 
@@ -716,7 +773,10 @@ def test_tick_confirms_existing_recovery_behind_missing_one_at_full_limit(
         clock=lambda: UTC_NOW,
     )
 
-    assert kubernetes.get_calls == [missing.executor_job_name, existing.executor_job_name]
+    assert kubernetes.get_calls == [
+        missing.executor_job_name,
+        existing.executor_job_name,
+    ]
     assert missing.executor_job_created_at is None
     assert existing.executor_job_created_at == UTC_NOW
 
@@ -727,7 +787,7 @@ def test_tick_does_not_recreate_ttl_deleted_confirmed_job(
     _experiment(
         session,
         status=ExperimentStatus.RUNNING,
-        job_name=f"ar-branch-{EXPERIMENT_ID.hex}",
+        job_name=f"ar-exec-{EXPERIMENT_ID.hex}",
         job_created_at=UTC_NOW,
     )
     kubernetes = FakeJobs(existing_names=set())
@@ -746,7 +806,7 @@ def test_tick_accepts_create_409_only_after_same_name_get_confirms(
     experiment = _experiment(
         session,
         status=ExperimentStatus.RUNNING,
-        job_name=f"ar-branch-{EXPERIMENT_ID.hex}",
+        job_name=f"ar-exec-{EXPERIMENT_ID.hex}",
     )
     kubernetes = FakeJobs(
         create_error=ApiException(status=409, reason="AlreadyExists"),
@@ -767,7 +827,7 @@ def test_tick_reraises_create_409_when_get_cannot_confirm(
     experiment = _experiment(
         session,
         status=ExperimentStatus.RUNNING,
-        job_name=f"ar-branch-{EXPERIMENT_ID.hex}",
+        job_name=f"ar-exec-{EXPERIMENT_ID.hex}",
     )
     kubernetes = FakeJobs(
         create_error=ApiException(status=409, reason="AlreadyExists"),

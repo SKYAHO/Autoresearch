@@ -57,6 +57,13 @@ class IdempotencyConflictError(ValueError):
         )
 
 
+class CandidateConflictError(ValueError):
+    """Executor candidate 보고가 봉인된 실험 lineage와 충돌했다."""
+
+    def __init__(self) -> None:
+        super().__init__("Candidate report conflicts with the sealed experiment lineage.")
+
+
 class PromotionRequiresDedicatedEndpointError(ValueError):
     """일반 상태 API가 PROMOTED 전이를 요청했다."""
 

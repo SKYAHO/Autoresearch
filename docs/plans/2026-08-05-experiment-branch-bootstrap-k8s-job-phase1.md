@@ -454,12 +454,13 @@ class LauncherSettings:
     github_app_installation_id: int
     github_repository: str
     max_concurrent_experiments: int
-    active_deadline_sec: int = 300
+    active_deadline_sec: int
     ttl_after_finished_sec: int = 30
 ```
 
 `executor_image`는 `@sha256:<64 hex>`만 허용한다. orchestration group에
-`"kubernetes>=36,<37"`을 추가하고 `uv lock`을 실행한다.
+`"kubernetes>=36,<37"`을 추가하고 `uv lock`을 실행한다. Phase 2 이후 Job 수명은
+필수 환경 변수 `ORCH_ACTIVE_DEADLINE_SEC`에서 읽으며 MVP 운영값은 3600초다.
 
 - [ ] **Step 5: 최소 선점을 구현한다**
 
@@ -669,7 +670,8 @@ spec:
 
 CronJob은 launcher KSA, DB bootstrap memory volume, launcher digest,
 `ORCH_MAX_CONCURRENT_EXPERIMENTS=2`를 사용한다. executor Job은 `backoffLimit=0`,
-`activeDeadlineSeconds=300`, `ttlSecondsAfterFinished=30`을 사용한다.
+`ORCH_ACTIVE_DEADLINE_SEC`에서 읽은 `activeDeadlineSeconds`와
+`ttlSecondsAfterFinished=30`을 사용한다. Phase 2 이후 MVP 운영값은 3600초다.
 
 - [ ] **Step 6: infra 검증을 실행한다**
 

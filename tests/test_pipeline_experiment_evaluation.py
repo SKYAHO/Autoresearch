@@ -39,7 +39,11 @@ from src.pipeline.training_comparison import ComparisonValidationError
 
 
 PLAN_TIME = datetime(2026, 8, 1, tzinfo=timezone.utc)
-POLICY_SEEDS = tuple(range(42, 72))
+# 프로덕션 상수를 import하지 않고 기대값을 여기에 고정한다. import하면 아래
+# `required_seeds == POLICY_SEEDS` 단언이 자기 자신과 비교하는 공허한 검사가 된다.
+# 프로덕션이 바뀌면 이 테스트가 실패해야 하고, 그 실패가 "의도한 변경인가"를 묻는다.
+# 데모 스코프 축소(#574)로 30개에서 3개로 줄였다.
+POLICY_SEEDS = tuple(range(42, 45))
 _SHA_A = "a" * 64
 _SHA_B = "b" * 64
 _SHA_C = "c" * 64
@@ -548,7 +552,7 @@ def test_v1_holds_without_statistics_when_canonical_revalidation_rejects_transpo
 
 def test_v1_records_the_actual_t_critical_for_zero_standard_error() -> None:
     store, receipt = _published_plan_store()
-    evidence = _evidence(receipt, store=store, deltas=(0.010,) * 30)
+    evidence = _evidence(receipt, store=store, deltas=(0.010,) * len(POLICY_SEEDS))
 
     evaluation = evaluate_experiment(
         evidence, promotion_evidence_store=store, evaluated_at=PLAN_TIME
@@ -556,7 +560,10 @@ def test_v1_records_the_actual_t_critical_for_zero_standard_error() -> None:
 
     assert evaluation.verdict is EvaluationVerdict.ELIGIBLE
     assert evaluation.standard_error == 0
-    assert evaluation.t_critical == pytest.approx(2.045)
+    # t 임계값은 자유도(seed 수 - 1)에 의존한다. 데모 스코프의 seed 3개면 자유도 2라
+    # 양측 95% 임계값이 4.303이다(30개였을 때는 자유도 29, 2.045).
+    # 프로덕션은 `t_critical_95(len(paired_deltas) - 1)`로 계산하므로 이 값만 따라온다.
+    assert evaluation.t_critical == pytest.approx(4.303, abs=1e-3)
 
 
 def test_decision_record_is_deterministic_and_excludes_registry_coordinates() -> None:
