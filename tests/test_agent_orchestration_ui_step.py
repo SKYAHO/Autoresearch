@@ -12,7 +12,15 @@ from typing import Any
 
 import pytest
 
-from agent_orchestration.ui.models import Step, step_kind_label, step_status_color
+from agent_orchestration.ui import state as state_module
+from agent_orchestration.ui.models import (
+    Experiment,
+    Step,
+    Submission,
+    step_kind_label,
+    step_status_color,
+)
+from agent_orchestration.ui.app import should_open_experiment_detail
 from agent_orchestration.ui.client import (
     STEP_PAGE_BUDGET,
     STEP_PAGE_SIZE,
@@ -20,10 +28,89 @@ from agent_orchestration.ui.client import (
 )
 from agent_orchestration.ui.state import (
     WorkbenchState,
+    WorkbenchView,
     clear_activity_cache,
     merge_steps,
     select_experiment,
+    show_create_view,
+    show_experiment,
 )
+
+
+def test_workbench_starts_on_create_view() -> None:
+    assert WorkbenchState().view is WorkbenchView.CREATE
+
+
+def test_show_create_view_preserves_selection_and_activity() -> None:
+    state = WorkbenchState(selected_id="one")
+    state.event_cursor = "event-1"
+
+    show_create_view(state)
+
+    assert state.view is WorkbenchView.CREATE
+    assert state.selected_id == "one"
+    assert state.event_cursor == "event-1"
+
+
+def test_show_experiment_selects_experiment_and_opens_detail() -> None:
+    state = WorkbenchState()
+
+    show_experiment(state, "two")
+
+    assert state.view is WorkbenchView.DETAIL
+    assert state.selected_id == "two"
+
+
+def test_retained_sidebar_selection_does_not_exit_create_view() -> None:
+    """가설 추가 뒤 유지된 radio 값은 상세 화면 전환 의도가 아니다."""
+    state = WorkbenchState(selected_id="one")
+    show_create_view(state)
+
+    assert should_open_experiment_detail("one", selection_changed=False) is False
+    assert state.view is WorkbenchView.CREATE
+    assert state.selected_id == "one"
+
+
+def test_discard_pending_publication_preserves_created_experiment() -> None:
+    """취소는 발행 대기만 풀고 이미 생성된 Experiment는 목록에 남긴다."""
+    experiment = Experiment.from_json(
+        {
+            "id": "exp-pending",
+            "hypothesis": "보존할 가설",
+            "status": "CREATED",
+            "created_at": "2026-08-05T00:00:00+00:00",
+            "updated_at": "2026-08-05T00:00:00+00:00",
+            "issue_number": None,
+            "issue_branch": None,
+        }
+    )
+    submission = Submission(
+        title="pending experiment",
+        hypothesis="보존할 가설",
+        related_work="",
+        change="- 피처 변경",
+        primary_metric_name="roc_auc",
+        primary_metric_direction="higher_is_better",
+        minimum_primary_delta="0.002",
+        guardrail_metric_name="없음",
+        guardrail_metric_direction="not_applicable",
+        maximum_guardrail_regression="없음",
+        secondary_metrics="",
+        allowed_scope=(),
+    )
+    state = WorkbenchState(
+        experiments=[experiment],
+        pending_publication_experiment_id=experiment.id,
+        pending_publication_submission=submission,
+        detail_error="이슈 발행에 실패했습니다.",
+    )
+
+    state_module.discard_pending_publication(state)
+
+    assert state.pending_publication_experiment_id is None
+    assert state.pending_publication_submission is None
+    assert state.detail_error is None
+    assert state.experiments == [experiment]
 
 
 def _payload(**overrides: Any) -> dict[str, Any]:

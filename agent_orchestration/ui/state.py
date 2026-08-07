@@ -6,7 +6,7 @@ Streamlit widget 렌더링은 담당하지 않는다.
 
 [기능]
 Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 목록·상세
-오류 분리 보존을 제공한다.
+오류 분리 보존, 화면 모드 전이와 이슈 발행 재시도·취소 상태 전이를 제공한다.
 
 [비책임]
 HTTP 요청, API 인증, 상태 전이 기록, Agent 실행, GitHub 이슈 처리.
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 
 from agent_orchestration.ui.models import (
     Event,
@@ -24,14 +25,23 @@ from agent_orchestration.ui.models import (
     Log,
     POLLING_STATUSES,
     Step,
+    Submission,
     TERMINAL_STATUSES,
 )
+
+
+class WorkbenchView(StrEnum):
+    """Workbench가 표시할 화면 모드."""
+
+    CREATE = "CREATE"
+    DETAIL = "DETAIL"
 
 
 @dataclass
 class WorkbenchState:
     """선택 Experiment와 incremental polling 상태."""
 
+    view: WorkbenchView = WorkbenchView.CREATE
     experiments: list[Experiment] = field(default_factory=list)
     selected_id: str | None = None
     experiment: Experiment | None = None
@@ -49,8 +59,29 @@ class WorkbenchState:
     list_error: str | None = None
     detail_error: str | None = None
     last_updated_at: datetime | None = None
-    # 방금 발행한 이슈 좌표. 다음 제출 때 지워 이전 결과가 남지 않게 한다.
+    # 방금 발행한 이슈 좌표. 선택 변경이나 다음 제출 때 지워 이전 결과가 남지 않게 한다.
     last_publication: IssuePublication | None = None
+    # 생성 성공·발행 실패 사이의 부분 성공을 보존해 재제출 시 Experiment 중복 생성을 막는다.
+    pending_publication_experiment_id: str | None = None
+    pending_publication_submission: Submission | None = None
+
+
+def show_create_view(state: WorkbenchState) -> None:
+    """Workbench를 Experiment 생성 화면으로 전환한다."""
+    state.view = WorkbenchView.CREATE
+
+
+def discard_pending_publication(state: WorkbenchState) -> None:
+    """실패한 이슈 발행 대기와 관련 오류만 정리한다."""
+    state.pending_publication_experiment_id = None
+    state.pending_publication_submission = None
+    state.detail_error = None
+
+
+def show_experiment(state: WorkbenchState, experiment_id: str) -> None:
+    """Experiment를 선택하고 상세 화면으로 전환한다."""
+    select_experiment(state, experiment_id)
+    state.view = WorkbenchView.DETAIL
 
 
 def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
@@ -70,6 +101,7 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.terminal_status_observed = None
     state.terminal_refresh_complete = False
     state.detail_error = None
+    state.last_publication = None
 
 
 def append_event_page(
