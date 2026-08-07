@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T08:31:13Z",
+  "generated_at": "2026-08-07T08:59:26Z",
   "reports": [
+    {
+      "number": 553,
+      "title": "feat: paired 실험 판정 결과를 Experiment API에 반영 (#550)",
+      "author": "waieiches",
+      "merged_at": "2026-08-07T08:59:13Z",
+      "summary_ko": [
+        "paired 판정 결과를 Experiment API에 반영하는 report-experiment-result CLI를 신설하였습니다.",
+        "상태 전이, 지표 스냅샷 전송, 실패 시 ERROR 강등 및 재실행 멱등성 보장 로직을 구현하였습니다.",
+        "128자 키 상한 준수 및 launcher 선점 조건과의 경합 방지를 위한 검증 규칙을 적용하였습니다."
+      ],
+      "report_url": "pr/553/"
+    },
     {
       "number": 587,
       "title": "fix: Phase 2 Codex에 구현을 명시한다",
