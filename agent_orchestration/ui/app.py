@@ -55,6 +55,7 @@ from agent_orchestration.ui.views import (
 
 
 STATE_KEY = "experiment_workbench_state"
+EXPERIMENT_SELECTION_EVENT_KEY = "experiment_selection_event"
 
 
 @st.cache_resource
@@ -68,6 +69,16 @@ def get_state() -> WorkbenchState:
     if STATE_KEY not in st.session_state:
         st.session_state[STATE_KEY] = WorkbenchState()
     return st.session_state[STATE_KEY]
+
+
+def record_experiment_selection() -> None:
+    """sidebar radio의 명시적 Experiment 선택 이벤트를 다음 rerun까지 보존한다."""
+    st.session_state[EXPERIMENT_SELECTION_EVENT_KEY] = True
+
+
+def should_open_experiment_detail(selected_id: str | None, *, selection_changed: bool) -> bool:
+    """현재 radio 값이 아니라 사용자 선택 이벤트가 있을 때만 상세 화면을 연다."""
+    return selected_id is not None and selection_changed
 
 
 def render_configuration_notice() -> None:
@@ -227,10 +238,13 @@ def main() -> None:
             record_list_error(state, "Experiment API 연결을 먼저 복구해 주세요.")
         else:
             try_refresh_experiment_list(client, state)
-    selected_id = render_experiment_list(state.experiments, state.selected_id)
-    if selected_id is not None and (
-        selected_id != state.selected_id or state.view is not WorkbenchView.DETAIL
-    ):
+    selected_id = render_experiment_list(
+        state.experiments,
+        state.selected_id if state.view is WorkbenchView.DETAIL else None,
+        on_change=record_experiment_selection,
+    )
+    selection_changed = st.session_state.pop(EXPERIMENT_SELECTION_EVENT_KEY, False)
+    if should_open_experiment_detail(selected_id, selection_changed=selection_changed):
         show_experiment(state, selected_id)
         st.rerun()
     if state.list_error:

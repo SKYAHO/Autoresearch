@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import html
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import streamlit as st
 
@@ -186,8 +186,10 @@ def render_experiment_refresh_button() -> bool:
 def render_experiment_list(
     experiments: Sequence[Experiment],
     selected_id: str | None,
+    *,
+    on_change: Callable[[], None] | None = None,
 ) -> str | None:
-    """sidebar Experiment 목록을 렌더링하고 새 선택 ID를 반환한다."""
+    """sidebar Experiment 목록을 렌더링하고 현재 선택 ID를 반환한다."""
     st.sidebar.markdown("### 실험 기록")
     st.sidebar.caption("가설 하나는 하나의 Auto Research 이슈로 이어집니다.")
     if not experiments:
@@ -205,6 +207,7 @@ def render_experiment_list(
         index=default_index,
         format_func=lambda experiment_id: labels[experiment_id],
         label_visibility="collapsed",
+        on_change=on_change,
     )
 
 

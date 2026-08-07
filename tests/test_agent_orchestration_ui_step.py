@@ -13,6 +13,7 @@ from typing import Any
 import pytest
 
 from agent_orchestration.ui.models import Step, step_kind_label, step_status_color
+from agent_orchestration.ui.app import should_open_experiment_detail
 from agent_orchestration.ui.client import (
     STEP_PAGE_BUDGET,
     STEP_PAGE_SIZE,
@@ -51,6 +52,16 @@ def test_show_experiment_selects_experiment_and_opens_detail() -> None:
 
     assert state.view is WorkbenchView.DETAIL
     assert state.selected_id == "two"
+
+
+def test_retained_sidebar_selection_does_not_exit_create_view() -> None:
+    """가설 추가 뒤 유지된 radio 값은 상세 화면 전환 의도가 아니다."""
+    state = WorkbenchState(selected_id="one")
+    show_create_view(state)
+
+    assert should_open_experiment_detail("one", selection_changed=False) is False
+    assert state.view is WorkbenchView.CREATE
+    assert state.selected_id == "one"
 
 
 def _payload(**overrides: Any) -> dict[str, Any]:
