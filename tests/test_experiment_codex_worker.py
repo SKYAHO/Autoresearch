@@ -112,22 +112,10 @@ def protected_git_mount(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_prompt_contains_raw_issue_and_fixed_worker_boundaries() -> None:
     """prompt에는 raw 이슈와 executor가 고정한 수정·검증 경계가 들어간다."""
-    allowed_scope = (
-        "prod_model_contract",
-        "feast_definition",
-        "promotion",
-    )
-    scope_body = "\n".join(
-        (
-            "- [x] prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다",
-            "- [x] Feast 정의(`feature_repo/`) 수정을 허용한다",
-            "- [x] 실험 결과를 champion으로 승격하는 것까지 검토한다",
-        )
-    )
     run = CodexRunInput(
         repository=Path("/workspace/repository"),
-        issue_body=_replace_section(_issue_body(), "허용 범위", scope_body),
-        allowed_scope=allowed_scope,
+        issue_body=_issue_body(),
+        allowed_scope=(),
         codex_home=Path("/var/lib/codex"),
         timeout_seconds=60,
     )
@@ -137,16 +125,20 @@ def test_prompt_contains_raw_issue_and_fixed_worker_boundaries() -> None:
     assert run.issue_body in prompt
     assert "<!-- experiment-id" in prompt
     assert "src/**" in prompt
-    assert "src/features/model_contract.py" in prompt
     assert "autoresearch/**" in prompt
     assert "tests/**" in prompt
     assert "tools/**" in prompt
-    assert "feature_repo/**" in prompt
+    assert "- src/features/model_contract.py\n" not in prompt
+    assert "- feature_repo/**\n" not in prompt
     assert "uv run --no-sync ruff check agent_orchestration autoresearch tests tools" in prompt
     assert "uv run --no-sync python -m pytest" in prompt
     assert "agent_orchestration/**" in prompt
     assert ".github/**" in prompt
     assert "Validated Issue Form data" not in prompt
+    template = prompt.replace(run.issue_body, "")
+    assert "https://" not in template
+    assert "/var/run" not in template
+    assert "ORCH_" not in template
 
 
 def test_prompt_requires_a_non_empty_implementation_candidate() -> None:

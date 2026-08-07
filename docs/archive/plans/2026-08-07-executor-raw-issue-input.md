@@ -1,6 +1,7 @@
 # Executor Raw Issue Input Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> 관련 이슈: #592
+> 정본: `docs/specs/2026-08-06-experiment-executor-phase2.md`
 
 **Goal:** Issue Form 구조와 무관하게 GitHub 이슈 본문을 Codex에 전달하고, DB가 지정한 실험 브랜치를 clone하여 기존 verifier와 finalizer로 commit·push한다.
 

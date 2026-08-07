@@ -156,7 +156,10 @@ Issue template은 사용자 입력 UI이고 executor 실행 계약이 아니다.
 
 Codex prompt는 이슈 본문 원문, executor가 고정한 허용·금지 경로와 필수 검증
 명령을 포함한다. 이슈 원문은 작업 요구사항일 뿐 실행 경계나 권한을 바꾸지 않는다.
-token, Secret 경로, 내부 API token은 포함하지 않는다.
+실행 지시의 정본은 발행 시 DB에 저장한 사본이 아니라 **실행 시점의 GitHub 현재
+본문**이다. executor는 본문 hash, credential 문자열, 내부 endpoint를 의미 검사하지
+않으므로 사용자는 이슈에 Secret을 붙여 넣지 않아야 한다. candidate에 기록된 credential은
+기존 verifier가 계속 거부한다.
 
 ## Workspace와 Git 계약
 
