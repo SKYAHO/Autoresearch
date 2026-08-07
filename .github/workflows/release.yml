@@ -760,6 +760,127 @@ jobs:
             echo "- UI digest_ref: \`$DIGEST_REF\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  promote-agent-orchestration-digests:
+    name: Promote Agent Orchestration digests to infra main
+    needs:
+      - publish-agent-orchestration-api-image
+      - publish-agent-orchestration-ui-image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    concurrency:
+      group: agent-orchestration-infra-digest-promotion
+      cancel-in-progress: false
+
+    steps:
+      - name: Create installation token for the infra repository
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: Autoresearch-infra
+
+      - name: Checkout infra main
+        uses: actions/checkout@v6
+        with:
+          repository: SKYAHO/Autoresearch-infra
+          ref: main
+          token: ${{ steps.app-token.outputs.token }}
+          path: infra-repo
+          fetch-depth: 1
+
+      - name: Update only approved immutable digest references
+        env:
+          API_DIGEST_REF: ${{ needs.publish-agent-orchestration-api-image.outputs.digest_ref }}
+          API_SOURCE_SHA: ${{ needs.publish-agent-orchestration-api-image.outputs.source_sha }}
+          UI_DIGEST_REF: ${{ needs.publish-agent-orchestration-ui-image.outputs.digest_ref }}
+          UI_SOURCE_SHA: ${{ needs.publish-agent-orchestration-ui-image.outputs.source_sha }}
+        shell: bash
+        run: |
+          if [[ "$API_SOURCE_SHA" != "$UI_SOURCE_SHA" ]]; then
+            echo "::error::API와 UI image의 source SHA가 일치하지 않습니다."
+            exit 1
+          fi
+          ruby infra-repo/scripts/promote-agent-orchestration-digests.rb
+
+      - name: Verify promotion change scope
+        id: changed
+        shell: bash
+        run: |
+          cd infra-repo
+          if git diff --quiet; then
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          allowed_paths=(
+            deploy/agent-orchestration/api-deployment.yaml
+            deploy/agent-orchestration/api-migration-job.yaml
+            deploy/agent-orchestration/launcher-cronjob.yaml
+            deploy/agent-orchestration/runner-deployment.yaml
+            deploy/agent-orchestration/deployment-verification-job.yaml
+            deploy/agent-orchestration/ui-deployment.yaml
+          )
+          mapfile -t changed_paths < <(git diff --name-only)
+          for changed_path in "${changed_paths[@]}"; do
+            allowed=false
+            for allowed_path in "${allowed_paths[@]}"; do
+              if [[ "$changed_path" == "$allowed_path" ]]; then
+                allowed=true
+                break
+              fi
+            done
+            if [[ "$allowed" != "true" ]]; then
+              echo "::error::허용되지 않은 파일 변경을 감지했습니다: $changed_path"
+              exit 1
+            fi
+          done
+          git diff --check
+          echo "updated=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push promoted digests
+        if: steps.changed.outputs.updated == 'true'
+        env:
+          SOURCE_SHA: ${{ needs.publish-agent-orchestration-api-image.outputs.source_sha }}
+        shell: bash
+        run: |
+          cd infra-repo
+          base_sha="$(git rev-parse HEAD)"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if [[ "$base_sha" != "$(git rev-parse origin/main)" ]]; then
+            echo "::error::infra main이 checkout 이후 변경되었습니다. 다음 release 실행에서 재시도합니다."
+            exit 1
+          fi
+          git config user.name "autoresearch-release-bot[bot]"
+          git config user.email "autoresearch-release-bot[bot]@users.noreply.github.com"
+          git add deploy/agent-orchestration
+          git commit -m "chore: Agent Orchestration digest 자동 승격 (${SOURCE_SHA:0:12})"
+          git push origin HEAD:main
+
+      - name: Write promotion summary
+        env:
+          API_DIGEST_REF: ${{ needs.publish-agent-orchestration-api-image.outputs.digest_ref }}
+          SOURCE_SHA: ${{ needs.publish-agent-orchestration-api-image.outputs.source_sha }}
+          UI_DIGEST_REF: ${{ needs.publish-agent-orchestration-ui-image.outputs.digest_ref }}
+          UPDATED: ${{ steps.changed.outputs.updated }}
+        shell: bash
+        run: |
+          {
+            echo "## Agent Orchestration infra digest promotion"
+            echo
+            echo "- Source SHA: \`$SOURCE_SHA\`"
+            echo "- API digest: \`$API_DIGEST_REF\`"
+            echo "- UI digest: \`$UI_DIGEST_REF\`"
+            if [[ "$UPDATED" == "true" ]]; then
+              echo "- Result: infra main digest 참조를 자동 갱신했습니다."
+            else
+              echo "- Result: 이미 같은 digest여서 변경하지 않았습니다."
+            fi
+            echo "- Release workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   publish-agent-orchestration-runner-image:
     name: Build, push, and verify agent orchestration Runner image
     needs: publish-application-image
