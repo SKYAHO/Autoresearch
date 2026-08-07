@@ -24,7 +24,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import hashlib
 from pathlib import Path
+import re
 import subprocess
 from typing import Final
 
@@ -64,6 +66,18 @@ _SEED_PROBE: Final = (
     "print(','.join(str(seed) for seed in POLICY_SEEDS))"
 )
 _BASELINE_MARKER: Final = "baseline_training_complete"
+
+# 스냅샷 다운로드도 workspace 코드에게 맡긴다 — `src/`가 이미지에 없어 import할 수
+# 없고, `by-hash` 레이아웃과 sidecar 복원 규칙을 복제하면 사본이 늘어난다.
+# 인자는 `python -c <code> <uri> <dir>` 형태로 argv에 실어 넘긴다(shell 해석 없음).
+_DOWNLOAD_PROBE: Final = (
+    "import sys;"
+    "from pathlib import Path;"
+    "from src.pipeline.training_snapshot_store import download_snapshot;"
+    "print(download_snapshot(dataset_uri=sys.argv[1], destination_dir=Path(sys.argv[2])))"
+)
+_DATASET_CSV_NAME: Final = "training_dataset.csv"
+_SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 
 
 class TrainingError(RuntimeError):
@@ -133,6 +147,73 @@ def _run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
         # container stdout/stderr로 흘러 Pod 로그에 남는다.
         raise TrainingError("training_command_failed")
     return completed.stdout
+
+
+def expected_dataset_sha256(dataset_uri: str) -> str:
+    """`by-hash/<sha256>/` URI에 박힌 기대 해시를 꺼낸다.
+
+    스냅샷 주소가 곧 CSV 내용의 SHA-256이므로(#530), URI 자체가 무결성 기준이다.
+    """
+    segments = [segment for segment in dataset_uri.rstrip("/").split("/") if segment]
+    if len(segments) < 2 or segments[-2] != "by-hash":
+        raise TrainingError("dataset_uri_invalid")
+    digest = segments[-1]
+    if not _SHA256_PATTERN.fullmatch(digest):
+        raise TrainingError("dataset_uri_invalid")
+    return digest
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def ensure_dataset(
+    *,
+    dataset_uri: str,
+    destination_dir: Path,
+    workspace: Path,
+    timeout_seconds: int,
+) -> Path:
+    """게시된 스냅샷을 1회 내려받아 검증된 로컬 CSV 경로를 돌려준다.
+
+    **검증이 이 함수의 존재 이유다.** 다운로드 자체는 workspace 코드(`src/`)가 하는데
+    그 경로는 Codex의 허용 범위(`src/**`)라 candidate가 바꿀 수 있다. 학습은 조건별로
+    다른 코드로 도는 것이 목적이지만(#574), **데이터 조달은 두 조건이 같아야 한다** —
+    baseline과 candidate가 다른 데이터로 학습하면 ROC-AUC 차이가 코드 변경 때문인지
+    데이터 차이 때문인지 구분할 수 없어 paired 대조가 무효가 된다.
+
+    그래서 받은 바이트의 SHA-256을 URI에 박힌 값과 대조한다. 원인이 코드 수정이든
+    네트워크 오류든 잘못된 URI든, **결과가 다르면 잡힌다** — 원인을 열거할 필요가 없다.
+    이 검증만 executor 이미지에 봉인되므로 candidate가 우회할 수 없다.
+
+    이미 같은 해시의 파일이 있으면 다시 받지 않는다. baseline·candidate 두 단계와 Job
+    재시도가 같은 파일을 공유하게 하려는 것이다(85MB 재다운로드 회피).
+    """
+    expected = expected_dataset_sha256(dataset_uri)
+    dataset_path = destination_dir / _DATASET_CSV_NAME
+    if dataset_path.is_file() and _sha256_file(dataset_path) == expected:
+        return dataset_path
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    raw = _run(
+        ["python", "-c", _DOWNLOAD_PROBE, dataset_uri, str(destination_dir)],
+        cwd=workspace,
+        timeout_seconds=timeout_seconds,
+    ).strip()
+    if not raw:
+        raise TrainingError("dataset_download_empty")
+
+    downloaded = Path(raw)
+    if not downloaded.is_file():
+        raise TrainingError("dataset_download_missing")
+    if _sha256_file(downloaded) != expected:
+        # 경로·해시는 사유에 싣지 않는다 — `_safe_failure_reason`이 고정 코드만 남긴다.
+        raise TrainingError("dataset_hash_mismatch")
+    return downloaded
 
 
 def resolve_policy_seeds(workspace: Path, *, timeout_seconds: int = 60) -> tuple[int, ...]:

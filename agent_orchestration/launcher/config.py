@@ -22,6 +22,10 @@ _DIGEST_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _NODE_POOL_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 _POSITIVE_INTEGER_PATTERN = re.compile(r"^[1-9][0-9]*$")
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+# content-addressed 스냅샷 prefix. 마지막 segment가 CSV 내용의 SHA-256이다(#530).
+_TRAINING_DATASET_URI_PATTERN = re.compile(
+    r"^gs://[a-z0-9][a-z0-9._-]*/(?:[^\s/]+/)*by-hash/[0-9a-f]{64}/?$"
+)
 
 
 class LauncherConfigError(ValueError):
@@ -75,6 +79,12 @@ class LauncherSettings:
     codex_timeout_sec: int
     active_deadline_sec: int
     ttl_after_finished_sec: int = 30
+    # 학습은 opt-in이다(#605). URI가 비어 있으면 executor가 clone → Codex → verify →
+    # push 경로만 돌고 학습 단계를 건너뛴다.
+    training_dataset_uri: str = ""
+    training_timeout_sec: int = 1800
+    training_download_timeout_sec: int = 600
+    uv_sync_timeout_sec: int = 900
 
     def __post_init__(self) -> None:
         """빈 좌표·가변 image·비양수 상한을 fail-closed로 거부한다."""
@@ -104,6 +114,9 @@ class LauncherSettings:
             "active_deadline_sec": self.active_deadline_sec,
             "ttl_after_finished_sec": self.ttl_after_finished_sec,
             "codex_timeout_sec": self.codex_timeout_sec,
+            "training_timeout_sec": self.training_timeout_sec,
+            "training_download_timeout_sec": self.training_download_timeout_sec,
+            "uv_sync_timeout_sec": self.uv_sync_timeout_sec,
         }
         for name, value in positive_integers.items():
             if value <= 0:
@@ -112,6 +125,13 @@ class LauncherSettings:
             raise LauncherConfigError(
                 "codex_timeout_sec must be less than active_deadline_sec"
             )
+        # 형식 오류를 Pod까지 끌고 가지 않는다 — 8개 container를 띄운 뒤 학습 직전에
+        # 실패하면 원인이 로그 깊숙이 묻힌다. by-hash 주소는 CSV 내용의 SHA-256이며
+        # executor가 받은 바이트를 이 값과 대조한다(#530, #605).
+        if self.training_dataset_uri and (
+            _TRAINING_DATASET_URI_PATTERN.fullmatch(self.training_dataset_uri) is None
+        ):
+            raise LauncherConfigError("invalid training_dataset_uri")
 
     @classmethod
     def from_environment(cls) -> LauncherSettings:
@@ -150,5 +170,18 @@ class LauncherSettings:
             ttl_after_finished_sec=_optional_positive_integer_environment(
                 "ORCH_TTL_AFTER_FINISHED_SEC",
                 default=30,
+            ),
+            training_dataset_uri=os.environ.get("ORCH_TRAINING_DATASET_URI", "").strip(),
+            training_timeout_sec=_optional_positive_integer_environment(
+                "ORCH_TRAINING_TIMEOUT_SEC",
+                default=1800,
+            ),
+            training_download_timeout_sec=_optional_positive_integer_environment(
+                "ORCH_TRAINING_DOWNLOAD_TIMEOUT_SEC",
+                default=600,
+            ),
+            uv_sync_timeout_sec=_optional_positive_integer_environment(
+                "ORCH_UV_SYNC_TIMEOUT_SEC",
+                default=900,
             ),
         )

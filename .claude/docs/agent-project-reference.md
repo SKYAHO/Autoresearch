@@ -165,10 +165,15 @@ docs/
       되어 candidate 실험 자체가 무의미해진다.
     - **조립(`build-features`)은 이 Pod에서 하지 않는다.** feast group이 executor
       이미지에 없고 `pyproject.toml`이 feast와 dev를 `conflicts`로 선언해 재빌드로도 넣을
-      수 없다. 조립은 파드 밖에서 돌려 스냅샷으로 게시하고 경로만 주입한다.
-    - `ORCH_TRAINING_DATASET_PATH`가 **on/off 스위치**다. 비어 있으면 학습을 건너뛰고
-      기존 Phase 2 경로만 돈다. 스냅샷을 읽으려면 `experiment-job` GSA에 스냅샷 root read
-      권한이 필요한데 현재 `objectCreator`만 있으므로, **그 IAM이 붙기 전까지 비워 둔다.**
+      수 없다. 조립은 파드 밖에서 돌려 스냅샷으로 게시하고 URI만 주입한다.
+    - `ORCH_TRAINING_DATASET_URI`가 **on/off 스위치**다. 비어 있으면 학습을 건너뛰고
+      기존 Phase 2 경로만 돈다. 값은 `by-hash/<sha256>/` prefix이며, 스냅샷을 읽으려면
+      `experiment-job` GSA에 `roles/storage.objectViewer`가 필요하다.
+    - **다운로드는 workspace 코드가, 검증은 executor 이미지가 한다(#605).** 받은 CSV의
+      SHA-256을 URI에 박힌 값과 대조한다. 다운로드 경로(`src/**`)는 Codex의 허용
+      범위라 candidate가 바꿀 수 있는데, 학습과 달리 **데이터 조달은 두 조건이 같아야**
+      paired 대조가 성립한다. 검증만 이미지에 봉인해 우회를 막는다. 받아둔 파일은
+      candidate 단계와 Job 재시도가 재사용한다.
   - executor 봉인 좌표: launcher가 `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`,
     `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA`를 DB에서 복사해 Pod에 주입한다.
     workspace-preparer는 GitHub의 현재 이슈 본문을 raw 입력으로 읽고 해당 branch를

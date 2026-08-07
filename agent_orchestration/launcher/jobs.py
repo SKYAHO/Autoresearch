@@ -142,6 +142,27 @@ def _container_resources() -> V1ResourceRequirements:
     )
 
 
+def _training_environment(settings: LauncherSettings) -> list[V1EnvVar]:
+    """학습을 수행하는 container에만 붙는 opt-in 환경이다(#605).
+
+    `ORCH_TRAINING_DATASET_URI`가 비어 있으면 아무것도 붙이지 않는다 — executor는 이
+    변수의 부재를 "학습을 켜지 않은 배포"로 읽고 기존 경로만 돈다. 타임아웃까지 함께
+    붙이는 이유는 executor가 셋 다 필수로 읽기 때문이다(URI만 주면 학습 직전에
+    `missing ORCH_TRAINING_TIMEOUT_SEC`로 죽는다).
+    """
+    if not settings.training_dataset_uri:
+        return []
+    return [
+        _env("ORCH_TRAINING_DATASET_URI", settings.training_dataset_uri),
+        _env("ORCH_TRAINING_TIMEOUT_SEC", str(settings.training_timeout_sec)),
+        _env(
+            "ORCH_TRAINING_DOWNLOAD_TIMEOUT_SEC",
+            str(settings.training_download_timeout_sec),
+        ),
+        _env("ORCH_UV_SYNC_TIMEOUT_SEC", str(settings.uv_sync_timeout_sec)),
+    ]
+
+
 def _container(
     name: str,
     command: list[str],
@@ -203,6 +224,8 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
             *coordinates,
             _env("ORCH_GITHUB_TOKEN_FILE", f"{clone_token}/token"),
             _env("ORCH_EXECUTOR_WORKSPACE", _WORKSPACE_DIRECTORY),
+            # baseline 학습이 Codex 실행 **전**에 이 container에서 돈다.
+            *_training_environment(settings),
         ],
         [
             V1VolumeMount(name="clone-token", mount_path=clone_token, read_only=True),
@@ -262,6 +285,8 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
             _env("ORCH_EXECUTOR_WORKSPACE", _WORKSPACE_DIRECTORY),
             _env("ORCH_EXECUTOR_API_URL", settings.executor_api_url),
             _env("ORCH_EXECUTOR_API_TOKEN_FILE", f"{_API_TOKEN_DIRECTORY}/token"),
+            # candidate 학습이 push **후**에 이 container에서 돈다.
+            *_training_environment(settings),
         ],
         [
             workspace_mount,
