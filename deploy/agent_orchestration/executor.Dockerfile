@@ -10,7 +10,8 @@ RUN ["/uv", "export", "--frozen", "--group", "dev", "--no-group", "feast", "--no
 FROM node:22.16.0-slim AS codex-cli
 
 RUN npm install --global @openai/codex@0.146.0 \
-    && codex --version
+    && codex --version \
+    && codex exec --help | grep --fixed-strings -- "danger-full-access"
 
 FROM python:3.12-slim
 

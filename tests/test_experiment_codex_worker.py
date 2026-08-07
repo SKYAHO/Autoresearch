@@ -106,8 +106,9 @@ def _write_codex_executable(path: Path, body: str) -> None:
 
 @pytest.fixture
 def protected_git_mount(monkeypatch: pytest.MonkeyPatch) -> None:
-    """unit test filesystem 대신 executor Pod의 read-only `.git` mount를 모델링한다."""
+    """unit test filesystem 대신 executor Pod의 read-only mount 경계를 모델링한다."""
     monkeypatch.setattr(codex_worker, "_git_directory_is_read_only", lambda _path: True)
+    monkeypatch.setattr(codex_worker, "_executor_state_is_read_only", lambda: True)
 
 
 def test_prompt_contains_raw_issue_and_fixed_worker_boundaries() -> None:
@@ -265,7 +266,7 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
         "exec",
         "--ephemeral",
         "--sandbox",
-        "workspace-write",
+        "danger-full-access",
         "-C",
         str(run.repository),
         prompt,
@@ -404,6 +405,22 @@ def test_run_codex_refuses_to_start_without_a_read_only_git_mount(
     run = _run_input(tmp_path)
 
     with pytest.raises(CodexWorkerError, match="git_metadata_unprotected"):
+        run_codex(run)
+
+
+def test_run_codex_refuses_to_start_without_a_read_only_executor_state_mount(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """후속 verifier가 신뢰하는 state mount가 rw이면 Codex를 시작하지 않는다."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    executable = bin_dir / "codex"
+    _write_codex_executable(executable, "raise SystemExit('must not run')")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(codex_worker, "_git_directory_is_read_only", lambda _path: True)
+    run = _run_input(tmp_path)
+
+    with pytest.raises(CodexWorkerError, match="state_mount_unprotected"):
         run_codex(run)
 
 

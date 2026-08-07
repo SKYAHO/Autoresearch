@@ -24,7 +24,7 @@ executor가 유효한 변경만 candidate commit으로 만들어 같은 브랜�
 
 - DB가 지정한 실행 좌표와 GitHub 이슈 원문 전달
 - 기존 exp 브랜치 clone·checkout
-- Codex workspace-write 실행과 코드 수정
+- Codex 외부 Pod sandbox 실행과 코드 수정
 - executor의 변경 범위·전체 테스트 재검증
 - 결정론적 commit metadata와 exp 브랜치 push
 - 원격 branch tip 확인, `candidate_sha` 저장, 평가 중 (`EVALUATING`) 전이
@@ -177,7 +177,17 @@ Codex prompt는 이슈 본문 원문, executor가 고정한 허용·금지 경�
 
 ## Codex 실행 계약
 
-- 비대화식 `codex exec --sandbox workspace-write`를 사용한다.
+- 비대화식 `codex exec --sandbox danger-full-access`를 사용한다. Codex의
+  `workspace-write` sandbox는 checkout의 `.agents -> .claude` 심볼릭 링크를 writable 경계
+  횡단으로 판정해 저장소 명령을 시작 전에 거부하므로 사용하지 않는다. approval 정책까지
+  우회하는 `--dangerously-bypass-approvals-and-sandbox`는 사용하지 않는다.
+- 이 옵션은 권한 없는 호스트 실행을 뜻하지 않는다. Codex는 비루트·read-only root
+  filesystem Pod, 전용 `emptyDir` workspace, read-only `.git` mount, 제한된 egress 안에서
+  실행된다. worker는 `.git`과 `/var/run/executor-state`가 실제 read-only mount인지 실행
+  직전에 확인하고, 아니면 각각 `git_metadata_unprotected`, `state_mount_unprotected`로
+  실패한다. candidate verifier는 허용 경로와 검증 명령을 통과한 diff만 finalizer에 넘긴다.
+- executor image는 고정 Codex CLI 0.146.0의 `codex exec --help`에서
+  `danger-full-access` 지원을 빌드 시 확인한다.
 - `-C`는 준비된 repository root로 고정하고 git repository 검사를 생략하지 않는다.
 - subprocess 환경은 명시적 allowlist로 새로 구성한다.
 - 허용 환경은 `CODEX_HOME`, 임시 HOME/XDG/TMP, PATH, locale과 executor image가 고정한
