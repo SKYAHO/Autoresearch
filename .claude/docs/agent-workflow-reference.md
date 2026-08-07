@@ -101,10 +101,11 @@ gh issue create \
 - 한 브랜치에는 하나의 주요 목적만 담습니다.
 
 **예외 — Auto Research 실험 브랜치:** `[AR]` 이슈의
-`exp/<이슈번호>-<slug>` 브랜치는 사람이 만들지 않습니다.
+`exp/<이슈번호>` 브랜치는 사람이 만들지 않습니다.
 Agent Orchestration API가 이슈 발행 전에 **`dev` tip을 DB의
 `base_dev_sha`로 봉인**하고, launcher가 만든 executor Pod가 나중에 그 SHA에서만
-브랜치를 생성합니다. `exp/`는 사람과 자동화가 **같은 형식을 공유**하므로 자동 생성된
+브랜치를 생성합니다. `exp/`는 사람과 자동화가 **같은 prefix를 공유**하며, 자동 생성 브랜치는 이슈
+번호만으로 이름이 정해져 설명 slug가 붙지 않습니다(`exp/589`). 자동 생성된
 exp 브랜치를 삭제하거나 force-push하지 않습니다 — ruleset이 막아 주지 않으며,
 삭제하면 launcher가 자동 복구하지 않고 다른 tip으로 바꾸면 executor 재시도와 승격
 계보 검증이 fail-closed됩니다. 아래 [Branch protection](#branch-protection) 참조.
@@ -288,7 +289,7 @@ candidate가 병합됐을 때 force-push로 되돌릴 수 없고 revert 커밋�
 Agent Orchestration API의 Contents read 전용 GitHub App이 이슈 발행 전에
 `heads/dev` tip을 한 번 읽어 `Experiment.base_dev_sha`에 저장합니다. launcher와
 executor는 Job 시작 시 최신 `dev`나 `main`을 다시 읽지 않고, executor는 저장된 SHA에
-`exp/<이슈번호>-<slug>` ref를 생성합니다. 이후 계보 검증도 이 SHA를 기준점으로
+`exp/<이슈번호>` ref를 생성합니다. 이후 계보 검증도 이 SHA를 기준점으로
 삼으므로 `dev`가 force-push·삭제되어 커밋이 사라지면 다음이 깨집니다.
 
 | 깨지는 것 | 근거 | 시점 |

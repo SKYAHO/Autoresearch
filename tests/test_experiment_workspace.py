@@ -125,9 +125,12 @@ def _patch_git(
     [
         (_issue_body().replace(str(_EXPERIMENT_ID), str(uuid.uuid4())), _ISSUE_BRANCH, None),
         (_issue_body(), _ISSUE_BRANCH, "b" * 64),
-        (_issue_body(), "exp/546-different", None),
+        (_issue_body(), "exp/999-different-issue", None),
+        # 브랜치 이름에 쓸 수 없는 문자다. 정확 일치 대조가 사라진 뒤에도 문자 집합
+        # 제약은 남아야 이 값이 `origin/{branch}`·`switch -c {branch}`로 흘러가지 않는다.
+        (_issue_body(), "exp/546-Bad Chars", None),
     ],
-    ids=("marker", "body-hash", "branch"),
+    ids=("marker", "body-hash", "branch-of-another-issue", "branch-charset"),
 )
 def test_unsealed_issue_data_blocks_clone_before_any_git_subprocess(
     monkeypatch: pytest.MonkeyPatch,

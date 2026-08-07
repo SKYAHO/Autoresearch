@@ -182,19 +182,16 @@ class CandidateSelection:
     candidate_id: str | None
 
 
-def branch_name_for(issue_number: int, issue_title: str) -> str:
-    """이슈 번호와 제목에서 이슈 하나에만 대응하는 Git branch 이름을 만듭니다."""
+def branch_name_for(issue_number: int) -> str:
+    """이슈 번호에서 이슈 하나에만 대응하는 Git branch 이름을 만듭니다.
+
+    제목은 쓰지 않습니다. 이슈 번호만으로 이미 유일하고, 제목을 slug로 섞으면 브랜치
+    이름이 ASCII를 요구하게 되어 한글 제목이 발행 단계에서 거부됩니다(#589).
+    """
     if issue_number <= 0:
         raise ValueError("issue_number must be positive")
 
-    title_without_prefix = re.sub(r"^\s*\[AR\]\s*", "", issue_title, flags=re.IGNORECASE)
-    slug = re.sub(r"[^a-z0-9]+", "-", title_without_prefix.lower()).strip("-")
-    if not slug:
-        if not title_without_prefix.strip():
-            raise ValueError("issue_title must not be empty")
-        title_digest = hashlib.sha256(title_without_prefix.encode("utf-8")).hexdigest()[:12]
-        slug = f"issue-{title_digest}"
-    return f"exp/{issue_number}-{slug}"
+    return f"exp/{issue_number}"
 
 
 def is_descendant(compare_status: str) -> bool:
@@ -534,7 +531,7 @@ def parse_issue_input(issue_number: int, issue_title: str, issue_body: str) -> I
         if sections.get("허용 범위", "").strip()
         else ()
     )
-    issue_branch = branch_name_for(issue_number, issue_title)
+    issue_branch = branch_name_for(issue_number)
     secondary_metrics = sections.get("보조 관측 지표", "").strip()
 
     # 미선언 주 지표는 `_NONE_VALUE`로 봉인합니다 — guardrail이 쓰는 표현과 같습니다.

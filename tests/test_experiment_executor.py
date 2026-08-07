@@ -146,6 +146,32 @@ def test_executor_rejects_issue_number_mismatched_with_branch(
         BranchCreatorInput.from_environment()
 
 
+def test_executor_accepts_a_branch_named_only_by_the_issue_number(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#589 이후 API가 봉인하는 형식이다. 여기서 막히면 새 실험이 실행되지 못한다."""
+    _set_valid_executor_environment(monkeypatch, tmp_path / "token")
+    monkeypatch.setenv("ORCH_ISSUE_BRANCH", "exp/546")
+
+    assert BranchCreatorInput.from_environment().issue_branch == "exp/546"
+
+
+def test_executor_still_accepts_a_slug_suffixed_branch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#589 이전에 발행된 실험은 DB에 slug가 붙은 이름을 들고 있다.
+
+    launcher는 그 값을 그대로 넘기므로, 여기서 막으면 진행 중인 실험이 실행 단계에서
+    fail-closed된다.
+    """
+    _set_valid_executor_environment(monkeypatch, tmp_path / "token")
+    monkeypatch.setenv("ORCH_ISSUE_BRANCH", "exp/546-executor-bootstrap")
+
+    assert (
+        BranchCreatorInput.from_environment().issue_branch == "exp/546-executor-bootstrap"
+    )
+
+
 @pytest.mark.parametrize(
     ("environment_name", "invalid_value"),
     [

@@ -30,6 +30,7 @@ from agent_orchestration.executor.codex_worker import (
     CodexRunResult,
     run_codex_for_workspace,
 )
+from agent_orchestration.executor.config import ISSUE_BRANCH_PATTERN
 from agent_orchestration.executor.finalizer import FinalizeInput, finalize_candidate
 from agent_orchestration.executor.github_issues import GitHubIssues
 from agent_orchestration.executor.state import ExecutorWorkspaceState, read_state
@@ -61,7 +62,6 @@ _SAFE_ENVIRONMENT_REASON_PATTERN = re.compile(
     r"^(?:missing|invalid) ORCH_[A-Z0-9_]+$"
 )
 _ISSUE_NUMBER_PATTERN = re.compile(r"^[1-9][0-9]*$")
-_ISSUE_BRANCH_PATTERN = re.compile(r"^exp/[1-9][0-9]*-[a-z0-9][a-z0-9-]*$")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 # launcher가 executor-state volume을 마운트하는 고정 경로다
 # (`launcher/jobs.py`의 `_STATE_DIRECTORY`). 환경 변수로 받지 않는 이유는 verification
@@ -110,7 +110,7 @@ def _safe_log_coordinates() -> tuple[str, str, str, str]:
     issue_branch = os.environ.get("ORCH_ISSUE_BRANCH", "")
     safe_issue_branch = (
         issue_branch
-        if _ISSUE_BRANCH_PATTERN.fullmatch(issue_branch) is not None
+        if ISSUE_BRANCH_PATTERN.fullmatch(issue_branch) is not None
         else "unknown"
     )
     base_sha = os.environ.get("ORCH_BASE_DEV_SHA", "")

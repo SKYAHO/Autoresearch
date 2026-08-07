@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
 from pathlib import Path
@@ -275,6 +275,43 @@ def _finalize_input(
         api_url=api_url,
         api_token_file=api_token,
     )
+
+
+@pytest.mark.parametrize(
+    "issue_branch",
+    [
+        # #589 이후 API가 봉인하는 형식이다.
+        f"exp/{_ISSUE_NUMBER}",
+        # #589 이전에 발행된 실험이 DB에 들고 있는 형식이다.
+        f"exp/{_ISSUE_NUMBER}-candidate-finalizer",
+    ],
+)
+def test_finalizer_accepts_both_sealed_branch_forms(
+    tmp_path: Path, issue_branch: str
+) -> None:
+    """여기서 막히면 실험이 verify까지 끝낸 뒤 push 직전에 fail-closed된다.
+
+    발행 단계의 실패를 없앤 것이 실행 단계의 실패로 자리만 옮기면 안 된다.
+    """
+    config = _finalize_input(tmp_path, "a" * 40, "http://127.0.0.1:1", tmp_path)
+    config = replace(config, issue_branch=issue_branch)
+
+    finalizer._validate_repository(config)
+
+
+@pytest.mark.parametrize(
+    "issue_branch",
+    [f"exp/{_ISSUE_NUMBER + 1}", f"exp/{_ISSUE_NUMBER}_invalid", "main"],
+)
+def test_finalizer_rejects_a_branch_outside_the_sealed_issue(
+    tmp_path: Path, issue_branch: str
+) -> None:
+    """다른 이슈 번호나 브랜치 이름에 못 쓰는 문자는 계속 막는다."""
+    config = _finalize_input(tmp_path, "a" * 40, "http://127.0.0.1:1", tmp_path)
+    config = replace(config, issue_branch=issue_branch)
+
+    with pytest.raises(finalizer.CandidateFinalizationError, match="finalize_input_invalid"):
+        finalizer._validate_repository(config)
 
 
 @pytest.mark.parametrize(
