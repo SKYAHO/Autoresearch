@@ -147,3 +147,27 @@ def test_issue_publication_rejects_a_malformed_response() -> None:
     """응답 형태가 깨지면 화면에 잘못된 링크를 그리지 않고 실패한다."""
     with pytest.raises(ValueError):
         IssuePublication.from_json({"issue_number": "533"})
+
+
+def test_h3_hypothesis_is_blocked_before_the_first_request() -> None:
+    """`### `는 발행 단계에서 422가 되고, 그때는 이미 Experiment가 만들어져 있다.
+
+    UI에는 그 실험을 재발행하는 경로가 없으므로 고아 레코드가 남는다. 마크다운을
+    자유롭게 쓰게 한 이상 흔한 입력이라 첫 요청 전에 끊어야 한다.
+    """
+    problems = _submission(hypothesis="# 주제\n\n### 배경\n\n내용").blocking_problems()
+
+    assert any("###" in problem for problem in problems)
+
+
+@pytest.mark.parametrize("level", ["#", "##", "####"])
+def test_other_heading_levels_are_not_blocked(level: str) -> None:
+    """구분자와 겹치지 않는 heading까지 막으면 마크다운을 쓸 수 없다."""
+    assert _submission(hypothesis=f"{level} 배경\n\n내용").blocking_problems() == []
+
+
+def test_blank_fields_are_reported_as_sentences() -> None:
+    """화면에 그대로 나가는 문장이므로 항목 이름만 나열하지 않는다."""
+    problems = _submission(title="").blocking_problems()
+
+    assert problems == ["실험 제목을(를) 채워 주세요."]

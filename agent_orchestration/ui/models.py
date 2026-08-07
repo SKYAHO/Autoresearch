@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import re
 from typing import Any
 
 from agent_orchestration.app.experiments.models import (
@@ -74,6 +75,10 @@ _STATUS_COLORS = {
 # 그 값을 보내지 않으므로 여기에 복제해 둘 이유도 없어졌다 — 서버의 `IssueSubmission`이
 # 기본값을 소유한다. 화면에 다시 노출할 때 서버 상수와 함께 되살린다.
 
+# `issue_authoring._HEADING_LINE_PATTERN`과 같은 규칙이다. 서버가 거부할 값을 첫 요청
+# 전에 알려주기 위한 복제이며, 판정 자체는 여전히 서버가 소유한다.
+_H3_LINE_PATTERN = re.compile(r"^### ", re.MULTILINE)
+
 
 @dataclass(frozen=True)
 class Submission:
@@ -101,6 +106,24 @@ class Submission:
             "가설": self.hypothesis,
         }
         return [name for name, value in required.items() if not value.strip()]
+
+    def blocking_problems(self) -> list[str]:
+        """제출을 막아야 하는 이유를 사람이 읽는 문장으로 반환한다.
+
+        `### `를 여기서 잡는 이유는 실패 시점 때문이다. 제출은 Experiment 생성과 이슈
+        발행 두 번의 요청이고, 이 값은 **생성이 끝난 뒤** 발행에서 422가 된다. 그러면
+        이슈 없는 Experiment가 `CREATED`로 남고 UI에는 그 실험을 재발행할 경로가 없다.
+        마크다운을 자유롭게 쓰게 한 이상 `### `는 드문 입력이 아니므로, 첫 요청을
+        보내기 전에 끊는다.
+        """
+        problems = [f"{name}을(를) 채워 주세요." for name in self.missing_required()]
+        if _H3_LINE_PATTERN.search(self.hypothesis):
+            problems.append(
+                "가설 본문에 `### `로 시작하는 줄이 있습니다. 이슈 본문에서 항목을 "
+                "나누는 표시와 겹쳐 발행할 수 없습니다. `#`, `##`, `####`는 그대로 "
+                "쓸 수 있습니다."
+            )
+        return problems
 
     def to_fields(self) -> dict[str, str]:
         """API `fields`에 실을 값으로 변환한다."""

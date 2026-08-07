@@ -217,11 +217,14 @@ def main() -> None:
 
     submission = render_submission_form(state.detail_error)
     if submission is not None:
-        missing = submission.missing_required()
+        problems = submission.blocking_problems()
         if client is None:
             st.error("Experiment API 연결을 먼저 복구해 주세요.")
-        elif missing:
-            st.error("다음 항목을 채워 주세요: " + ", ".join(missing))
+        elif problems:
+            # 첫 요청 전에 끊는다. `create_experiment()`가 먼저 성공하고 발행이
+            # 실패하면 이슈 없는 Experiment가 남고, 그것을 재발행할 경로가 UI에 없다.
+            for problem in problems:
+                st.error(problem)
         else:
             state.last_publication = None
             submit_experiment(client, state, submission)
