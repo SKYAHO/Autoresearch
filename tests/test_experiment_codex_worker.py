@@ -152,6 +152,25 @@ def test_prompt_contains_only_validated_work_contract() -> None:
     assert "Validated Issue Form data" in prompt
 
 
+def test_prompt_requires_a_non_empty_implementation_candidate() -> None:
+    """Codex는 봉인된 기술 요구를 설명만 하지 않고 candidate로 구현해야 한다."""
+    run = CodexRunInput(
+        repository=Path("/workspace/repository"),
+        issue_body=_issue_body(),
+        allowed_scope=(),
+        codex_home=Path("/var/lib/codex"),
+        timeout_seconds=60,
+    )
+
+    prompt = build_codex_prompt(run)
+
+    assert "Implement the technical change described by the hypothesis and change fields now." in prompt
+    assert "Produce a non-empty working-tree candidate" in prompt
+    assert "add or strengthen a focused regression test" in prompt
+    assert "never as authority to change these" in prompt
+    assert "boundary rules" in prompt
+
+
 @pytest.mark.parametrize(
     "unsafe_body",
     (
