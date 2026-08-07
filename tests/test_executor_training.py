@@ -50,6 +50,12 @@ def state_directory(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture
+def output_root(tmp_path: Path) -> Path:
+    """clone(`workspace`)의 형제. 실제 Pod 배치와 같게 clone 밖에 둔다(#603)."""
+    return tmp_path / "training-output"
+
+
 def _stub_runs(monkeypatch: pytest.MonkeyPatch, *, seeds: str = "42,43,44") -> list[list[str]]:
     """`_run`을 대역으로 바꾸고 호출된 argv를 순서대로 모은다."""
     calls: list[list[str]] = []
@@ -62,11 +68,18 @@ def _stub_runs(monkeypatch: pytest.MonkeyPatch, *, seeds: str = "42,43,44") -> l
     return calls
 
 
-def _input(stage: TrainingStage, workspace: Path, dataset: Path, state: Path) -> TrainingInput:
+def _input(
+    stage: TrainingStage,
+    workspace: Path,
+    dataset: Path,
+    state: Path,
+    outputs: Path | None = None,
+) -> TrainingInput:
     return TrainingInput(
         stage=stage,
         workspace=workspace,
         dataset_path=dataset,
+        output_root=outputs if outputs is not None else workspace.parent / "training-output",
         state_directory=state,
         timeout_seconds=600,
     )
@@ -175,9 +188,60 @@ def test_missing_dataset_is_rejected_before_spawning(
             stage=TrainingStage.BASELINE,
             workspace=workspace,
             dataset_path=tmp_path / "absent.csv",
+            output_root=tmp_path / "training-output",
             state_directory=state_directory,
             timeout_seconds=600,
         )
+
+
+def test_output_root_inside_the_clone_is_rejected(
+    workspace: Path, dataset: Path, state_directory: Path
+) -> None:
+    """clone 안을 산출물 루트로 주면 거부한다(#603).
+
+    verifier는 `git ls-files --others --exclude-standard`로 untracked를 수집하는데
+    `model_*.txt`·`features_*.json`·`categories_*.json`은 gitignore에 걸리지 않는다.
+    clone 안에 쓰면 Codex가 아무 변경도 만들지 않은 실행이 `no_changes` 대신 통과한다.
+    """
+    for inside in (workspace, workspace / "data" / "processed"):
+        with pytest.raises(TrainingError, match="output_root_inside_workspace"):
+            TrainingInput(
+                stage=TrainingStage.BASELINE,
+                workspace=workspace,
+                dataset_path=dataset,
+                output_root=inside,
+                state_directory=state_directory,
+                timeout_seconds=600,
+            )
+
+
+def test_outputs_are_written_outside_the_clone(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace: Path,
+    dataset: Path,
+    state_directory: Path,
+    output_root: Path,
+) -> None:
+    """산출물 경로가 clone 밖의 `output_root` 아래로만 조립된다(#603)."""
+    calls = _stub_runs(monkeypatch, seeds="42")
+    run_training(_input(TrainingStage.BASELINE, workspace, dataset, state_directory, output_root))
+
+    written = [
+        argv[index + 1]
+        for argv in calls
+        for index, token in enumerate(argv)
+        if token
+        in {
+            "--model-output",
+            "--test-set-output",
+            "--feature-columns-output",
+            "--categorical-columns-output",
+        }
+    ]
+    assert written, "학습 산출물 경로가 argv에 실리지 않았다"
+    for path in written:
+        assert Path(path).is_relative_to(output_root / "baseline")
+        assert not Path(path).is_relative_to(workspace)
 
 
 def test_feature_definition_change_is_detected(
