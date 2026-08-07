@@ -1,14 +1,15 @@
-"""feast-apply 워크플로우·Job 매니페스트의 prod/dev 배선 검증(#399, #548).
+"""feast-apply 워크플로우의 prod/dev 배선 검증(#399, #548, #561).
 
-bare ``feast`` CLI 는 ``feature_repo/bootstrap.py`` 를 거치지 않으므로, apply Job 은
+bare ``feast`` CLI 는 ``feature_repo/bootstrap.py`` 를 거치지 않으므로, apply 스텝은
 ``FEAST_ONLINE_FULL_SCAN_FOR_DELETION`` 을 워크플로우가 직접 주입받는다. 그 파생
 규칙(prod=true, dev=false)이 워크플로우 bash 에 **손으로 복제**돼 있어
 ``feature_repo/env.py`` 와 조용히 어긋날 수 있다. 여기서는 워크플로우의 실제
 bash 조각을 꺼내 실행해 env.py 와 같은 값을 내는지 대조한다.
 
-같은 이유로 #548 의 두 회귀도 여기서 고정한다 — 잡이 뜨는 GitHub Environment
-이름과, 코드 아카이브 대기 루프가 "객체 없음"과 "인증·권한 실패"를 구분하는지다.
-둘 다 러너에서만 드러나는 실패라 워크플로우 텍스트를 꺼내 실행해야만 잡힌다.
+같은 이유로 #548 의 회귀도 여기서 고정한다 — 잡이 뜨는 GitHub Environment 이름이
+워크플로우 텍스트를 꺼내 실행해야만 잡히는 실패라서다. #561 이후 apply는 GKE Job
+이 아니라 셀프 호스티드 러너에서 직접 실행되므로, 코드 아카이브 대기·Job 렌더 관련
+검증은 더 이상 존재하지 않는다.
 
 feast 의존이 없어 기본 pytest 그룹에서 실행된다.
 """
@@ -30,14 +31,14 @@ from feature_repo.env import ENV_DEV, ENV_PROD, online_full_scan_for_deletion
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 APPLY_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "feast-apply.yml"
 CODE_ARCHIVE_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "code-archive.yml"
-APPLY_JOB_MANIFEST = REPOSITORY_ROOT / "deploy" / "feast" / "apply-job.yaml"
 
 _DERIVATION_START = 'if [[ "$AUTORESEARCH_ENV" == "dev" ]]'
-_ARCHIVE_WAIT_STEP = "Wait for the code archive of this commit"
+_APPLY_STEP = "Fetch Redis CA and run feast apply"
 
-# `environment:` 키는 env 컨텍스트를 읽지 못해 같은 식을 잡 수준 env 에도 한 번 더
-# 적어야 한다. 두 사본이 어긋나면 Job 매니페스트의 AUTORESEARCH_ENV 와 실제 잡이
-# 뜬 Environment 가 달라지므로, 문자열 동일성을 계약으로 고정한다.
+# `environment:` 키는 env 컨텍스트를 읽지 못해 같은 식을 잡 수준 env 와 runs-on
+# 에도 각각 한 번 더 적어야 한다(세 사본). 어긋나면 Job 매니페스트의
+# AUTORESEARCH_ENV 나 실제로 뜬 러너 스케일셋이 Environment 와 달라지므로, 문자열
+# 동일성을 계약으로 고정한다.
 ENVIRONMENT_EXPRESSION = (
     "${{ github.event_name == 'workflow_dispatch' && inputs.environment "
     "|| (github.ref_name == 'main' && 'prod' || 'dev') }}"
@@ -148,22 +149,20 @@ def test_job_environment_and_autoresearch_env_stay_in_sync() -> None:
     assert job["env"]["AUTORESEARCH_ENV"] == ENVIRONMENT_EXPRESSION
 
 
+def test_runs_on_targets_the_scale_set_of_the_same_environment() -> None:
+    # `runs-on` 은 env 컨텍스트를 읽지 못해 같은 식의 세 번째 사본이다. 여기만
+    # 어긋나면 prod Environment 로 뜬 잡이 dev 스케일셋에서 돌거나, 매칭되는
+    # 러너가 없어 큐에서 무한 대기한다.
+    assert _apply_job()["runs-on"] == f"feast-apply-{ENVIRONMENT_EXPRESSION}"
+
+
 def test_code_archive_uploads_dev_commit_for_dev_feast_apply() -> None:
-    # Feast apply는 현재 SHA의 immutable archive를 기다리므로 dev push도 archive를 만든다.
+    # feast-apply는 더 이상 이 아카이브를 기다리지 않지만(#561), GKE Job 롤백
+    # 경로(deploy/feast/apply-job.yaml, Dockerfile.feast)는 여전히 이 아카이브를
+    # 소비하므로 dev push도 계속 archive를 만들어야 한다.
     archive_workflow = CODE_ARCHIVE_WORKFLOW.read_text(encoding="utf-8")
 
     assert "branches: [main, dev]" in archive_workflow
-
-
-def test_workflow_renders_environment_into_job_manifest() -> None:
-    workflow = _workflow_text()
-
-    # envsubst allowlist 에서 빠지면 치환되지 않은 채 Job 이 뜬다.
-    assert "${AUTORESEARCH_ENV} ${FEAST_ONLINE_FULL_SCAN_FOR_DELETION}" in workflow
-
-    manifest = APPLY_JOB_MANIFEST.read_text(encoding="utf-8")
-    assert "- name: AUTORESEARCH_ENV" in manifest
-    assert "- name: FEAST_ONLINE_FULL_SCAN_FOR_DELETION" in manifest
 
 
 def test_workflow_selects_environment_scoped_coordinates() -> None:
@@ -173,106 +172,6 @@ def test_workflow_selects_environment_scoped_coordinates() -> None:
 
     assert f"    environment: {ENVIRONMENT_EXPRESSION}" in workflow
     assert "Guard against dev dispatch before dev coordinates are wired" not in workflow
-
-
-def _run_archive_wait(
-    gcloud_stderr: str, gcloud_exit_code: int, bin_dir: Path
-) -> subprocess.CompletedProcess[str]:
-    """대기 루프 bash 를 가짜 gcloud 로 실행한다.
-
-    ``sleep`` 도 함께 가로채, 재시도 경로가 테스트를 10 분간 붙잡지 않게 한다.
-    """
-    bash = shutil.which("bash")
-    if bash is None:
-        pytest.skip("bash unavailable")
-
-    gcloud_stub = bin_dir / "gcloud"
-    # gcloud 메시지에는 작은따옴표가 흔하다. Python repr 로 bash 에 심으면 그 순간
-    # 문법이 깨지므로 shlex 로 인용한다.
-    gcloud_stub.write_text(
-        "#!/usr/bin/env bash\n"
-        f"printf '%s\\n' {shlex.quote(gcloud_stderr)} >&2\n"
-        f"exit {gcloud_exit_code}\n",
-        encoding="utf-8",
-    )
-    gcloud_stub.chmod(0o755)
-    sleep_stub = bin_dir / "sleep"
-    sleep_stub.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    sleep_stub.chmod(0o755)
-
-    return subprocess.run(
-        [bash, "-e", "-o", "pipefail", "-c", _step_script(_ARCHIVE_WAIT_STEP)],
-        env={
-            "CODE_ARTIFACTS_BUCKET": "bucket",
-            "CODE_ARCHIVE_SHA": "0" * 40,
-            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-        },
-        capture_output=True,
-        text=True,
-    )
-
-
-def test_archive_wait_fails_fast_when_the_lookup_is_not_a_missing_object(
-    tmp_path: Path,
-) -> None:
-    # Given: 권한·가장 실패(#548 의 실제 실패 모드).
-    denied = "ERROR: (gcloud.storage.objects.describe) HTTPError 403: Access denied."
-
-    # When: 대기 루프가 그 gcloud 로 실행된다.
-    completed = _run_archive_wait(denied, 1, tmp_path)
-
-    # Then: 10 분을 기다리지 않고, gcloud 원문과 함께 즉시 실패해야 한다.
-    assert completed.returncode == 1
-    assert denied in completed.stdout
-    assert "code archive lookup failed" in completed.stdout
-    assert "code archive not found after 10m" not in completed.stdout
-
-
-def test_archive_wait_fails_fast_when_the_service_account_does_not_exist(
-    tmp_path: Path,
-) -> None:
-    # Given: 삭제된 SA 를 가장할 때 gcloud 가 실제로 내는 메시지. `Not found` 가
-    # 들어 있어 소박한 문자열 매칭은 이를 "객체 없음"으로 오분류한다 — #548 이
-    # 없애려던 10분 오인 보고가 그대로 되풀이되는 경로다.
-    impersonation_failure = (
-        "ERROR: (gcloud.storage.objects.describe) NOT_FOUND: Failed to impersonate "
-        "[gone@autoresearch-503903.iam.gserviceaccount.com]. Make sure the account "
-        'that\'s trying to impersonate it has the "roles/iam.serviceAccountTokenCreator" '
-        "role. Not found; Gaia id not found for email "
-        "gone@autoresearch-503903.iam.gserviceaccount.com."
-    )
-
-    # When: 대기 루프가 그 gcloud 로 실행된다.
-    completed = _run_archive_wait(impersonation_failure, 1, tmp_path)
-
-    # Then: 재시도 경로로 새지 않고 즉시 원문과 함께 끝나야 한다.
-    assert completed.returncode == 1
-    assert "code archive lookup failed" in completed.stdout
-    assert "code archive not found after 10m" not in completed.stdout
-
-
-def test_archive_wait_keeps_retrying_while_the_object_is_merely_absent(
-    tmp_path: Path,
-) -> None:
-    # Given: 아직 업로드 전(code-archive.yml 과 병렬 실행되므로 정상 경로다).
-    absent = "ERROR: (gcloud.storage.objects.describe) gs://bucket/code/x.tar.gz not found: 404."
-
-    # When: 대기 루프가 끝까지 재시도한다.
-    completed = _run_archive_wait(absent, 1, tmp_path)
-
-    # Then: fail-fast 로 새지 않고 기존 타임아웃 안내로 끝나야 한다.
-    assert completed.returncode == 1
-    assert "code archive not found after 10m" in completed.stdout
-    assert "code archive lookup failed" not in completed.stdout
-
-
-def test_archive_wait_succeeds_once_the_object_is_present(tmp_path: Path) -> None:
-    # Given: 아카이브가 올라온 상태.
-    completed = _run_archive_wait("", 0, tmp_path)
-
-    # Then: 첫 조회에서 통과한다.
-    assert completed.returncode == 0
-    assert "code archive ready" in completed.stdout
 
 
 def _run_validate_configuration(
@@ -288,17 +187,12 @@ def _run_validate_configuration(
         for name in (
             "GCP_PROJECT_ID",
             "GCP_REGION",
-            "GAR_REPOSITORY",
-            "FEAST_IMAGE_TAG",
-            "GKE_CLUSTER_NAME",
-            "GKE_LOCATION",
             "BQ_DATASET",
             "GCS_REGISTRY_PATH",
             "GCS_STAGING_LOCATION",
             "REDIS_HOST",
             "REDIS_PORT",
             "REDIS_CA_SECRET_ID",
-            "CODE_ARTIFACTS_BUCKET",
         )
     }
     step_env["WIF_PROVIDER_ID"] = wif_provider_id
@@ -334,13 +228,13 @@ def test_validate_configuration_rejects_the_repository_level_fallback_provider()
     assert "does not match the prod environment" in completed.stdout
 
 
-def test_credentials_are_verified_before_the_archive_wait() -> None:
-    # 자격 확인을 대기 루프 뒤에 두면 #548 의 오인 보고가 10분 뒤에야 드러난다.
+def test_credentials_are_verified_before_the_apply_step() -> None:
+    # 자격 확인을 apply 뒤에 두면 #548 류의 오인 보고가 apply 가 끝난 뒤에야 드러난다.
     step_names = [step.get("name") for step in _apply_job()["steps"]]
 
     assert step_names.index(
-        "Verify the environment credentials before waiting"
-    ) < step_names.index(_ARCHIVE_WAIT_STEP)
+        "Verify the environment credentials"
+    ) < step_names.index(_APPLY_STEP)
 
 
 def test_credential_check_never_prints_the_access_token(tmp_path: Path) -> None:
@@ -363,7 +257,7 @@ def test_credential_check_never_prints_the_access_token(tmp_path: Path) -> None:
             "-o",
             "pipefail",
             "-c",
-            _step_script("Verify the environment credentials before waiting"),
+            _step_script("Verify the environment credentials"),
         ],
         env={
             "AUTORESEARCH_ENV": ENV_PROD,

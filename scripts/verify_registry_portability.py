@@ -39,7 +39,7 @@ ODFV의 그 판정은 ``PandasTransformation.__eq__`` = (``udf_string``, ``co_co
 루트에서 돌리는 것이 소비자 환경과 같다. 아카이브를 좁히는 변경이 생기면 이 전제가 깨진다.
 
 [비책임] ODFV/FeatureView 정의는 ``feature_repo``가, apply 실행·삭제 스캔은
-``deploy/feast/apply-job.yaml``과 ``.github/workflows/feast-apply.yml``이 소유한다.
+``.github/workflows/feast-apply.yml``이 소유한다(#561).
 
 사용법 (repo 루트에서 실행 — 소비자 파드의 cwd=/app에 대응):
   uv run --no-sync python scripts/verify_registry_portability.py registry.db

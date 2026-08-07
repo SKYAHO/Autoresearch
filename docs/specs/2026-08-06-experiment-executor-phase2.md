@@ -1,7 +1,7 @@
 # 실험 executor Phase 2 — 이슈 기반 코드 수정과 candidate commit
 
 > 상태: Phase 2 구현 완료, #565 Codex 인증 Secret 전환 구현 완료
-> 관련 이슈: #557
+> 관련 이슈: #557, #582
 > 선행 계약: #546, `2026-08-05-experiment-job-baseline-freeze.md`
 
 ## 목적
@@ -307,6 +307,33 @@ TTL 삭제 전에 확인해 Experiment를 오류 (`ERROR`)로 전이하고 정�
 로그에는 실험·이슈·branch·SHA와 정제 사유만 남긴다. token, 환경 덤프, GitHub 응답
 body, Codex 원문 stderr는 남기지 않는다.
 
+### Container 실패 관측 계약 (#582)
+
+Kubernetes initContainer는 non-zero 종료 코드만으로는 애플리케이션 실패 원인을 설명하지
+못한다. 각 Phase 2 entrypoint는 실행한 stage의 시작과 종료 코드를 남기고, 예외로 종료할
+때는 `stage`, 예외 class 이름, 정제된 `reason`을 ERROR 로그로 남긴다.
+
+- executor 도메인 예외의 고정 사유 문자열만 `reason`으로 기록한다.
+- 알려지지 않은 stage 인자는 원문을 되풀이하지 않고 `invalid_stage_argument`로 기록한다.
+- stage가 예외 없이 non-zero를 반환하면 ERROR `nonzero_exit`와 종료 코드를 기록하고
+  정상 종료 로그를 남기지 않는다.
+- `OSError`, 외부 라이브러리 예외, 임의 `RuntimeError`·`ValueError`의 원문은 token,
+  filesystem 경로 또는 외부 응답을 포함할 수 있으므로 기록하지 않고 `redacted`로
+  정규화한다.
+- entrypoint 경계의 모든 일반 예외(`Exception`)를 같은 정제 로그와 종료 코드 1로
+  수렴시켜 traceback 원문이 container stderr에 노출되지 않게 한다.
+- experiment·issue·branch·base SHA는 각각 UUID·양의 정수·실험 branch·40자리 SHA
+  형식을 통과한 값만 기록하고, 형식이 다르면 원문 대신 `unknown`을 기록한다.
+- 환경 전체, Secret 값·mount 경로, GitHub 응답 body, Codex stdout/stderr는 기록하지
+  않는다.
+- module entrypoint는 INFO logging을 초기화해 Cloud Logging의 container log만으로
+  시작·종료·실패 stage를 식별할 수 있어야 한다.
+
+완료 Job 보존 시간은 launcher 선택 환경 변수 `ORCH_TTL_AFTER_FINISHED_SEC`로 받으며,
+미설정 기본값은 기존과 같은 30초다. 장애 smoke 동안만 Infra에서 3600초를 주입할 수
+있고, 한 번의 end-to-end 성공 증거를 수집한 뒤 30초로 회수한다. 이 설정은 Pod 권한이나
+egress를 넓히지 않는다.
+
 ## 이미지와 Infra 계약
 
 Phase 2 executor image는 Python orchestration runtime, Git CLI, uv와 dev/test 의존성,
@@ -348,7 +375,7 @@ executor의 Codex 인증 원본은 PVC가 아니라 Kubernetes Secret이다. `st
   `CODEX_HOME`으로 복사하고 복사본을 mode `0400`으로 제한한다. 실행 중 인증 상태 변경은
   Pod와 함께 폐기되며 Secret 원본을 갱신하지 않는다.
 - Secret이 없거나 `auth.json` key가 없으면 kubelet이 volume mount를 완료하지 못해 Pod는
-  `Pending`에 머문다. Job은 `activeDeadlineSeconds`(기본 300초) 뒤 `Failed`가 되고,
+  `Pending`에 머문다. Job은 `activeDeadlineSeconds` 뒤 `Failed`가 되고,
   launcher는 다음 tick에서 terminal Job을 회수해 Experiment를 `ERROR`로 전환한다. 운영자는
   Pod event의 `FailedMount`와 Job의 `DeadlineExceeded`를 원인 판단 근거로 사용한다.
 - `subPath` mount는 실행 중 Secret 갱신을 전파하지 않으므로 Secret 교체는 새 Experiment
@@ -359,6 +386,21 @@ executor의 Codex 인증 원본은 PVC가 아니라 Kubernetes Secret이다. `st
   인증 계약의 Job이 섞이지 않게 한다.
 - 기존 Runner의 `agent-orchestration-codex-home` PVC는 Runner 전용으로 유지하며 executor가
   참조하지 않는다.
+
+### Executor 실행 시간 예산 (#567)
+
+`activeDeadlineSeconds`는 Codex 한 단계가 아니라 token 발급, branch 생성, clone, Codex,
+Ruff·전체 pytest, commit·push, Candidate API 보고를 포함한 8-container Job 전체에 적용된다.
+기존 300초 고정값은 Codex 상한 120초와 전체 pytest 약 138초만 합쳐도 258초여서 다른 여섯
+단계에 42초밖에 남기지 못하므로 운영 smoke의 완주 상한으로 사용할 수 없다.
+
+- launcher는 `ORCH_ACTIVE_DEADLINE_SEC`와 `ORCH_CODEX_TIMEOUT_SEC`를 모두 필수 양의 정수로
+  읽고 Codex 상한이 Job 전체 상한 이상이면 기동 전에 fail-closed한다.
+- MVP 운영값은 admission 허용 상한 안에서 Job 전체 `3600`초, Codex `1800`초로 고정한다.
+  남은 1800초는 token 발급·branch·clone·verifier·finalizer와 변동 여유 시간이다.
+- launcher가 만드는 Phase 1 branch Job과 Phase 2 executor Job은 동일한
+  `ORCH_ACTIVE_DEADLINE_SEC` 값을 사용한다. 현재 운영 launcher는 Phase 2 Job을 생성한다.
+- 실제 단계별 소요 시간은 smoke에서 관측하며, 추정값을 성공 지표로 기록하지 않는다.
 
 ## 검증 전략
 

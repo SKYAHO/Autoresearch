@@ -338,30 +338,30 @@ feast apply
 > `${FEAST_ONLINE_FULL_SCAN_FOR_DELETION} is not a valid boolean` 류의 오류가
 > 나면 위 `source .env`를 건너뛴 것입니다.
 
-> **운영 경로 (GHA → GKE Job, 정본)**: `feature_repo/` 정의·설정,
-> `deploy/feast/apply-job.yaml`, `scripts/fetch_redis_ca.py`,
+> **운영 경로 (GHA 셀프 호스티드 러너, 정본, #561)**: `feature_repo/`
+> 정의·설정, `scripts/fetch_redis_ca.py`, `scripts/verify_registry_portability.py`,
 > `pyproject.toml`, `uv.lock`, `.github/workflows/feast-apply.yml` 중 하나가
-> `main`에 merge되면 `.github/workflows/feast-apply.yml` 워크플로우가 feast
-> 공식 CLI(`feast apply`)를 **GKE Job으로 실행**해 GCS registry를 자동
-> 갱신합니다. `workflow_dispatch`로 수동 실행도 가능합니다.
+> `main`/`dev`에 merge되면 `.github/workflows/feast-apply.yml` 워크플로우가
+> ARC 셀프 호스티드 러너(`feast-apply-prod`/`feast-apply-dev`) 위에서 feast
+> 공식 CLI(`feast apply`)를 **직접 실행**해 GCS registry를 자동 갱신합니다.
+> `workflow_dispatch`로 수동 실행도 가능합니다.
 >
-> 실행 위치를 VPC 안으로 옮긴 이유는 `full_scan_for_deletion: true`(아래 절)
-> 때문입니다. GHA 러너는 VPC 밖이라 private Redis(PSC)에 닿지 못하지만, GKE
-> 컨트롤 플레인은 공개 DNS 엔드포인트 + IAM으로 접근할 수 있으므로 러너는
-> Job을 만들고 결과만 판정합니다(#346). 트리거 의미와 "registry apply는 GHA
-> 소유, materialize는 Airflow 소유"라는 경계는 그대로입니다.
+> 러너 자체가 VPC 안에서 돌기 때문에(인프라 저장소 #541/#557/#558) private
+> Redis(PSC)에 직접 닿습니다. `full_scan_for_deletion: true`(아래 절)가 요구하는
+> 스캔도 이 러너 위에서 그대로 수행됩니다. 2026-08 이전에는 GHA hosted 러너가
+> VPC 밖이라 GKE Job으로 실행을 우회했으나(#346), 러너가 VPC 안으로 옮겨지며
+> 그 우회가 불필요해졌습니다. 트리거 의미와 "registry apply는 GHA 소유,
+> materialize는 Airflow 소유"라는 경계는 그대로입니다.
 >
 > feast 0.64의 apply 커맨드는 인증 실패(`FeastProviderLoginError`)를 삼키고
-> exit 0으로 끝나는 결함이 있어, 워크플로우는 Job 종료 코드 외에 세 가지
-> 가드를 함께 둡니다 — 부트스트랩 로그의 코드 SHA 일치 확인, apply 로그의
-> 실패 패턴 grep, apply 전후 registry generation 비교.
+> exit 0으로 끝나는 결함이 있어, 워크플로우는 스텝 종료 코드 외에 두 가지
+> 가드를 함께 둡니다 — apply 로그의 실패 패턴 grep, apply 전후 registry
+> generation 비교.
 >
-> Job은 `command`가 아니라 **`args`만** 지정합니다. `Dockerfile.feast`는
-> 코드를 이미지에 넣지 않고 ENTRYPOINT(`scripts/gcs_code_bootstrap.sh`)가
-> 파드 시작 시 GCS 코드 아카이브를 `/app`에 푸는 구조라, `command`를 주면
-> `feature_repo/`가 없는 컨테이너에서 apply가 돌게 됩니다. 실행할 커밋은
-> `CODE_ARCHIVE_SHA`로 고정하며, 워크플로우는 해당 아카이브가 업로드될
-> 때까지 대기한 뒤 Job을 만듭니다(`code-archive.yml`과 병렬 실행되므로).
+> `actions/checkout`이 저장소를 러너에 직접 체크아웃하므로 GCS 코드 아카이브
+> 부트스트랩(옛 `Dockerfile.feast` ENTRYPOINT)은 더 이상 필요 없습니다. GKE
+> Job 경로(`deploy/feast/apply-job.yaml`, `Dockerfile.feast`)는 롤백 여유로
+> 저장소에 남아 있지만 이 워크플로우는 더 이상 그 경로를 쓰지 않습니다.
 >
 > **DAG 소비용 경로 (폐기 완료)**: registry apply를 DAG에서 소비하기 위한 공개
 > batch 명령 `python -m autoresearch.jobs.feast_apply` 래퍼가 존재했던
@@ -386,11 +386,11 @@ Feast 0.64의 Redis 키는 **엔티티 단위**(join_key 이름 + 엔티티 값 
 - 삭제된 FV가 그 키의 유일한 FV → 키 자체를 `delete`
 - 다른 살아있는 FV와 키를 공유 → 그 FV의 해시 필드만 `hdel`
 
-이 스캔은 Redis 접속을 요구합니다. GHA 러너는 private Redis(PSC)에 닿지
-못하므로 apply는 VPC 안의 GKE Job에서 실행합니다
-(`deploy/feast/apply-job.yaml`, #346).
+이 스캔은 Redis 접속을 요구합니다. `feast-apply.yml`이 도는 셀프 호스티드
+러너는 VPC 안에서 돌아 private Redis(PSC)에 직접 닿으므로 apply를 러너 위에서
+바로 실행합니다(#561).
 
-삭제 건수는 feast의 `logger.debug`로만 남기 때문에 Job은
+삭제 건수는 feast의 `logger.debug`로만 남기 때문에 apply 스텝은
 `feast --log-level debug apply`로 실행합니다(기본값은 `warning`). 삭제 경로를
 실증할 때는 로그에서 `Deleted N rows for feature view ...`를 확인합니다. 삭제
 대상이 없는 apply는 Redis 클라이언트를 만들지도 않으므로, "apply 1회 성공"은
