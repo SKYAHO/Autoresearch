@@ -6,7 +6,7 @@ Streamlit widget 렌더링은 담당하지 않는다.
 
 [기능]
 Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 목록·상세
-오류 분리 보존을 제공한다.
+오류 분리 보존, 화면 모드 전이를 제공한다.
 
 [비책임]
 HTTP 요청, API 인증, 상태 전이 기록, Agent 실행, GitHub 이슈 처리.
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from enum import StrEnum
 
 from agent_orchestration.ui.models import (
     Event,
@@ -28,10 +29,18 @@ from agent_orchestration.ui.models import (
 )
 
 
+class WorkbenchView(StrEnum):
+    """Workbench가 표시할 화면 모드."""
+
+    CREATE = "CREATE"
+    DETAIL = "DETAIL"
+
+
 @dataclass
 class WorkbenchState:
     """선택 Experiment와 incremental polling 상태."""
 
+    view: WorkbenchView = WorkbenchView.CREATE
     experiments: list[Experiment] = field(default_factory=list)
     selected_id: str | None = None
     experiment: Experiment | None = None
@@ -51,6 +60,17 @@ class WorkbenchState:
     last_updated_at: datetime | None = None
     # 방금 발행한 이슈 좌표. 다음 제출 때 지워 이전 결과가 남지 않게 한다.
     last_publication: IssuePublication | None = None
+
+
+def show_create_view(state: WorkbenchState) -> None:
+    """Workbench를 Experiment 생성 화면으로 전환한다."""
+    state.view = WorkbenchView.CREATE
+
+
+def show_experiment(state: WorkbenchState, experiment_id: str) -> None:
+    """Experiment를 선택하고 상세 화면으로 전환한다."""
+    select_experiment(state, experiment_id)
+    state.view = WorkbenchView.DETAIL
 
 
 def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:

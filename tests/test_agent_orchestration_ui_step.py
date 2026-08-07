@@ -20,10 +20,37 @@ from agent_orchestration.ui.client import (
 )
 from agent_orchestration.ui.state import (
     WorkbenchState,
+    WorkbenchView,
     clear_activity_cache,
     merge_steps,
     select_experiment,
+    show_create_view,
+    show_experiment,
 )
+
+
+def test_workbench_starts_on_create_view() -> None:
+    assert WorkbenchState().view is WorkbenchView.CREATE
+
+
+def test_show_create_view_preserves_selection_and_activity() -> None:
+    state = WorkbenchState(selected_id="one")
+    state.event_cursor = "event-1"
+
+    show_create_view(state)
+
+    assert state.view is WorkbenchView.CREATE
+    assert state.selected_id == "one"
+    assert state.event_cursor == "event-1"
+
+
+def test_show_experiment_selects_experiment_and_opens_detail() -> None:
+    state = WorkbenchState()
+
+    show_experiment(state, "two")
+
+    assert state.view is WorkbenchView.DETAIL
+    assert state.selected_id == "two"
 
 
 def _payload(**overrides: Any) -> dict[str, Any]:
