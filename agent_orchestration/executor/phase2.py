@@ -203,7 +203,14 @@ def _run_training_if_enabled(stage: TrainingStage, workspace: Path) -> None:
         # 보이지 않아 아무도 알아채지 못한다.
         changed = feature_definitions_changed(workspace, base_ref=base_ref)
         if changed:
-            raise TrainingError(f"feature_change_unsupported:{','.join(changed)}")
+            # 어떤 경로가 걸렸는지는 로그로 남기고, 예외 사유는 접미사 없는 고정 코드로
+            # 둔다. `_safe_failure_reason`이 `^[a-z][a-z0-9_]*$`에 맞는 값만 남기고
+            # 나머지는 `redacted`로 지우므로(#583), 경로를 붙이면 사유가 통째로 사라진다.
+            _LOGGER.error(
+                "training rejected stage=candidate reason=feature_change_unsupported paths=%s",
+                ",".join(changed),
+            )
+            raise TrainingError("feature_change_unsupported")
         if dependencies_changed(workspace, base_ref=base_ref):
             sync_dependencies(
                 workspace, timeout_seconds=_positive_int("ORCH_UV_SYNC_TIMEOUT_SEC")

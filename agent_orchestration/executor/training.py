@@ -114,7 +114,11 @@ def _run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
     except OSError as error:
         raise TrainingError("training_spawn_failed") from error
     if completed.returncode != 0:
-        raise TrainingError(f"training_command_failed:{argv[-1]}")
+        # 사유는 접미사 없는 고정 코드로 둔다. `phase2._safe_failure_reason`이
+        # `^[a-z][a-z0-9_]*$`에 맞는 값만 로그에 남기고 나머지는 `redacted`로 지우므로
+        # (#583), 인자·경로를 붙이면 오히려 사유가 통째로 사라진다. 실패한 명령의 상세는
+        # container stdout/stderr로 흘러 Pod 로그에 남는다.
+        raise TrainingError("training_command_failed")
     return completed.stdout
 
 
