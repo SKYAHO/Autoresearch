@@ -818,11 +818,6 @@ jobs:
         shell: bash
         run: |
           cd infra-repo
-          if git diff --quiet; then
-            echo "updated=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           allowed_paths=(
             deploy/agent-orchestration/api-deployment.yaml
             deploy/agent-orchestration/api-migration-job.yaml
@@ -831,7 +826,27 @@ jobs:
             deploy/agent-orchestration/deployment-verification-job.yaml
             deploy/agent-orchestration/ui-deployment.yaml
           )
-          mapfile -t changed_paths < <(git diff --name-only)
+          git add -- "${allowed_paths[@]}"
+          mapfile -t changed_paths < <(git diff --cached --name-only)
+          mapfile -t status_lines < <(git status --porcelain)
+          for status_line in "${status_lines[@]}"; do
+            changed_path="${status_line:3}"
+            allowed=false
+            for allowed_path in "${allowed_paths[@]}"; do
+              if [[ "$changed_path" == "$allowed_path" ]]; then
+                allowed=true
+                break
+              fi
+            done
+            if [[ "$allowed" != "true" ]]; then
+              echo "::error::허용되지 않은 파일 변경을 감지했습니다: $changed_path"
+              exit 1
+            fi
+          done
+          if [[ "${#changed_paths[@]}" -eq 0 ]]; then
+            echo "updated=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           for changed_path in "${changed_paths[@]}"; do
             allowed=false
             for allowed_path in "${allowed_paths[@]}"; do
@@ -845,7 +860,7 @@ jobs:
               exit 1
             fi
           done
-          git diff --check
+          git diff --cached --check
           echo "updated=true" >> "$GITHUB_OUTPUT"
 
       - name: Commit and push promoted digests
@@ -863,7 +878,6 @@ jobs:
           fi
           git config user.name "autoresearch-release-bot[bot]"
           git config user.email "autoresearch-release-bot[bot]@users.noreply.github.com"
-          git add deploy/agent-orchestration
           git commit -m "chore: Agent Orchestration digest 자동 승격 (${SOURCE_SHA:0:12})"
           git push origin HEAD:main
 
