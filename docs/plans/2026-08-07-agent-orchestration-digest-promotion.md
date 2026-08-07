@@ -11,5 +11,6 @@
 
 - [x] `actionlint .github/workflows/release.yml`
 - [x] `git diff --check`
+- [x] release workflow의 main ancestor fetch 계약 테스트를 promotion Job 추가 수에 맞게 갱신한다.
 - [ ] infra PR #587 merge 뒤 release의 workflow_dispatch로 검증된 source SHA 한 건을
   실행하여 App 설치 범위·Ruleset bypass·ArgoCD/PostSync 경로를 확인한다.
