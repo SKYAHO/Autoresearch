@@ -32,6 +32,7 @@ import math
 import os
 import sys
 import traceback
+import uuid
 from contextlib import ExitStack
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -50,6 +51,17 @@ from src.pipeline import (  # noqa: E402
     paired_experiment,
     train,
     training_comparison,
+)
+from src.pipeline.experiment_result_report import (  # noqa: E402
+    LauncherOwnedExperimentError,
+    ResultReportError,
+    TerminalStatusConflictError,
+    build_log_content,
+    build_log_idempotency_key,
+    build_metric_snapshot,
+    build_reason,
+    plan_transitions,
+    target_status,
 )
 from src.pipeline.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
 from src.pipeline.promotion_evidence import (  # noqa: E402
@@ -817,6 +829,144 @@ def compare_paired_experiment(
     typer.echo(result.model_dump_json())
     if result.outcome == paired_experiment.OUTCOME_FAILED:
         raise typer.Exit(code=1)
+
+
+def _experiment_client_module():
+    """Experiment API client 모듈을 **지연** import한다.
+
+    `agent_orchestration.ui.client`는 `ui.models`를 거쳐
+    `agent_orchestration.app.experiments.models`를 끌어오고, 그 모듈이 SQLAlchemy를
+    요구한다. 학습 이미지는 `uv sync --locked --no-dev`로 빌드되어 SQLAlchemy가 없으므로
+    top-level import면 `src.cli` 전체가 뜨지 않는다 — `train-model --help`조차 죽는다.
+
+    이 명령을 실제로 실행할 때만 필요한 의존이므로 여기서만 가져온다.
+    """
+    from agent_orchestration.ui import client
+
+    return client
+
+
+_DEFAULT_REPORT_FAILURE = "판정 결과를 Experiment API에 반영하지 못했습니다."
+
+# 종료 코드 1이 나오는 경우들은 운영 대응이 서로 다르다. 실패 로그만 보고 무엇을 해야
+# 하는지 알 수 있도록 사유별 고정 진단을 붙인다(payload는 싣지 않는다).
+_REPORT_FAILURE_DIAGNOSTICS = {
+    LauncherOwnedExperimentError: (
+        "CREATED 실험은 launcher가 RUNNING으로 선점합니다 — 선점된 뒤 다시 실행해 "
+        "주세요."
+    ),
+    TerminalStatusConflictError: (
+        "이미 결론이 난 실험이라 덮어쓰지 않았습니다 — --experiment-id가 맞는지 "
+        "확인해 주세요."
+    ),
+}
+
+
+def _report_stop_point(reached: Optional[str]) -> None:
+    """실패 시 실험이 어느 상태로 남았는지와 재개 방법을 알린다.
+
+    중간 상태를 터미널로 내리지 않으므로(아래 근거) 재실행이 남은 전이부터 이어간다.
+    전이를 하나도 밟지 못했으면 실험은 손대지 않은 그대로다.
+    """
+    if reached is None:
+        return
+    typer.echo(
+        f"[결과 반영 실패] 실험은 {reached} 상태로 남았습니다 — 원인을 고친 뒤 같은 "
+        "명령을 재실행하면 남은 전이부터 재개합니다.",
+        err=True,
+    )
+
+
+@app.command("report-experiment-result")
+def report_experiment_result(
+    result: Path = typer.Option(
+        ..., "--result", help="compare-paired-experiment가 게시한 결과 JSON 경로"
+    ),
+    experiment_id: str = typer.Option(
+        ..., "--experiment-id", help="Experiment API의 실험 UUID"
+    ),
+    log_uri: Optional[str] = typer.Option(
+        None, "--log-uri", help="포인터 로그에 함께 남길 실행 로그 위치"
+    ),
+) -> None:
+    """paired 판정 결과를 Experiment API에 반영한다(#550).
+
+    판정도 실행도 하지 않는다. 현재 상태를 먼저 읽어 남은 전이만 밟으며, 중간에
+    실패하면 실험을 **그 상태 그대로 두고** 끝낸다 — 재실행이 남은 전이부터 재개한다.
+
+    `CREATED` 실험은 다루지 않는다 — launcher가 선점할 대기 행이므로 종료 코드 1로
+    거부한다(#547).
+
+    exit code: 반영 성공 0, API·전이 실패 1, 인자·결과 계약 오류 2.
+    """
+    try:
+        # 서버 라우트가 `experiment_id: uuid.UUID`이므로(`router.py:110`) 오타는 422 →
+        # 종료 코드 1로 나가 API 실패와 구분되지 않는다. 인자 오류는 인자 오류로
+        # 끊는다 — #454 `experiment_id`(UUID가 아니다)와 뒤바꾼 사고도 여기서 걸린다.
+        uuid.UUID(experiment_id)
+    except ValueError as error:
+        typer.echo(
+            f"[결과 반영 실패] {type(error).__name__}: "
+            "--experiment-id가 UUID 형식이 아닙니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from error
+
+    try:
+        payload = json.loads(Path(result).read_text(encoding="utf-8"))
+        parsed = paired_experiment.PairedExperimentResult.model_validate(payload)
+    except (OSError, json.JSONDecodeError, ValidationError) as error:
+        # 결과 payload에는 URI·식별자가 섞여 있으므로 오류 종류만 남긴다.
+        typer.echo(
+            f"[결과 반영 실패] {type(error).__name__}: "
+            "paired-offline-experiment-result-v1 결과를 읽지 못했습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from error
+
+    client_module = _experiment_client_module()
+    try:
+        # 빈 토큰·base_url 검사는 client 생성자가 이미 한다. 여기서 다시 만들지 않고
+        # 그 예외를 종료 코드로 옮기기만 한다.
+        client = client_module.ExperimentClient.from_environment()
+    except client_module.ExperimentApiError as error:
+        typer.echo(
+            f"[결과 반영 실패] {type(error).__name__}: "
+            "Experiment API 연결 설정이 올바르지 않습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from error
+
+    reached: Optional[str] = None
+    try:
+        target = target_status(parsed)
+        current = client.get_experiment(experiment_id).status
+        transitions = plan_transitions(current, target)
+        reason = build_reason(parsed)
+        for status in transitions:
+            is_terminal = status == target
+            client.patch_status(
+                experiment_id,
+                status,
+                reason=reason,
+                metric_snapshot=build_metric_snapshot(parsed) if is_terminal else None,
+            )
+            reached = status
+        client.post_log(
+            experiment_id,
+            idempotency_key=build_log_idempotency_key(experiment_id, parsed),
+            content=build_log_content(parsed, log_uri=log_uri),
+        )
+    except (client_module.ExperimentApiError, ResultReportError) as error:
+        typer.echo(
+            f"[결과 반영 실패] {type(error).__name__}: "
+            f"{_REPORT_FAILURE_DIAGNOSTICS.get(type(error), _DEFAULT_REPORT_FAILURE)}",
+            err=True,
+        )
+        _report_stop_point(reached)
+        raise typer.Exit(code=1) from error
+
+    typer.echo(f"{experiment_id} -> {target}")
 
 
 @app.command()
