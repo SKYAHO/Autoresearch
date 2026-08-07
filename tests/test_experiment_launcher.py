@@ -203,9 +203,8 @@ def test_launcher_settings_requires_digest_pinned_executor_image() -> None:
         _settings(executor_image="example/executor:latest")
 
 
-def test_launcher_settings_reads_required_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def _set_launcher_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """launcher 필수 환경을 유효한 운영 형태로 설정한다."""
     values = {
         "ORCH_DATABASE_URL": "postgresql://launcher:password@db/orchestration",
         "ORCH_JOB_NAMESPACE": "agent-orchestration",
@@ -227,6 +226,12 @@ def test_launcher_settings_reads_required_environment(
     for name, value in values.items():
         monkeypatch.setenv(name, value)
 
+
+def test_launcher_settings_reads_required_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_launcher_environment(monkeypatch)
+
     settings = LauncherSettings.from_environment()
 
     assert settings.max_concurrent_experiments == 2
@@ -235,6 +240,32 @@ def test_launcher_settings_reads_required_environment(
     assert settings.codex_timeout_sec == 1800
     assert settings.active_deadline_sec == 3600
     assert settings.ttl_after_finished_sec == 30
+
+
+def test_launcher_settings_reads_optional_job_ttl_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_launcher_environment(monkeypatch)
+    monkeypatch.setenv("ORCH_TTL_AFTER_FINISHED_SEC", "3600")
+
+    settings = LauncherSettings.from_environment()
+
+    assert settings.ttl_after_finished_sec == 3600
+
+
+@pytest.mark.parametrize("ttl", ["0", "-1", "1.5", "invalid"])
+def test_launcher_settings_rejects_invalid_optional_job_ttl_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    ttl: str,
+) -> None:
+    _set_launcher_environment(monkeypatch)
+    monkeypatch.setenv("ORCH_TTL_AFTER_FINISHED_SEC", ttl)
+
+    with pytest.raises(
+        LauncherConfigError,
+        match="invalid ORCH_TTL_AFTER_FINISHED_SEC",
+    ):
+        LauncherSettings.from_environment()
 
 
 def test_launcher_settings_rejects_codex_timeout_at_or_above_job_deadline() -> None:

@@ -6,7 +6,7 @@
 
 [기능] 각 container의 환경 입력을 기존 Stage 2~5 공개 인터페이스로 변환하고,
 base tip의 Codex 실행 또는 기존 candidate 채택 검증을 선택해 VerificationResult를
-finalizer에 전달한다.
+finalizer에 전달한다. stage 시작·종료와 정제된 실패 사유를 container 로그로 남긴다.
 
 [비책임] Job·Secret·PVC manifest(`launcher.jobs`), GitHub App token 발급
 (`token_minter.py`), candidate API의 DB 상태 전이(`app/experiments/service.py`)는
@@ -19,8 +19,10 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import asdict
 import json
+import logging
 import os
 from pathlib import Path
+import re
 import sys
 import uuid
 
@@ -44,10 +46,69 @@ from agent_orchestration.executor.workspace import (
 
 _STATE_PATH = Path("/var/run/executor-state/state.json")
 _VERIFICATION_PATH = Path("/var/run/verification-result/result.json")
+_LOGGER = logging.getLogger(__name__)
+_SAFE_REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+_SAFE_ENVIRONMENT_REASON_PATTERN = re.compile(
+    r"^(?:missing|invalid) ORCH_[A-Z0-9_]+$"
+)
+_ISSUE_NUMBER_PATTERN = re.compile(r"^[1-9][0-9]*$")
+_ISSUE_BRANCH_PATTERN = re.compile(r"^exp/[1-9][0-9]*-[a-z0-9][a-z0-9-]*$")
+_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 class Phase2ExecutorError(RuntimeError):
     """container 경계 입력 또는 handoff가 계약에 맞지 않는다."""
+
+
+def _safe_failure_reason(error: Exception) -> str:
+    """executor 도메인 예외의 제한된 고정 사유 코드만 기록한다."""
+    error_type = type(error)
+    is_executor_domain_error = isinstance(error, Phase2ExecutorError) or (
+        error_type.__module__.startswith("agent_orchestration.executor")
+        and error_type.__name__.endswith("Error")
+    )
+    if is_executor_domain_error:
+        reason = getattr(error, "reason", None)
+        if reason is None and len(error.args) == 1:
+            reason = error.args[0]
+        if isinstance(reason, str) and (
+            _SAFE_REASON_PATTERN.fullmatch(reason) is not None
+            or _SAFE_ENVIRONMENT_REASON_PATTERN.fullmatch(reason) is not None
+        ):
+            return reason
+    return "redacted"
+
+
+def _safe_log_coordinates() -> tuple[str, str, str, str]:
+    """봉인 좌표 형식에 맞는 환경 값만 로그 필드로 반환한다."""
+    experiment_id = os.environ.get("ORCH_EXPERIMENT_ID", "")
+    try:
+        safe_experiment_id = str(uuid.UUID(experiment_id))
+    except ValueError:
+        safe_experiment_id = "unknown"
+
+    issue_number = os.environ.get("ORCH_ISSUE_NUMBER", "")
+    safe_issue_number = (
+        issue_number
+        if _ISSUE_NUMBER_PATTERN.fullmatch(issue_number) is not None
+        else "unknown"
+    )
+    issue_branch = os.environ.get("ORCH_ISSUE_BRANCH", "")
+    safe_issue_branch = (
+        issue_branch
+        if _ISSUE_BRANCH_PATTERN.fullmatch(issue_branch) is not None
+        else "unknown"
+    )
+    base_sha = os.environ.get("ORCH_BASE_DEV_SHA", "")
+    safe_base_sha = (
+        base_sha if _SHA_PATTERN.fullmatch(base_sha) is not None else "unknown"
+    )
+    return (
+        safe_experiment_id,
+        safe_issue_number,
+        safe_issue_branch,
+        safe_base_sha,
+    )
 
 
 def _required(name: str) -> str:
@@ -188,13 +249,53 @@ def main(argv: list[str] | None = None) -> int:
         "candidate-verifier": candidate_verifier_main,
         "candidate-finalizer": candidate_finalizer_main,
     }
+    coordinates = _safe_log_coordinates()
     if len(selected) != 1 or selected[0] not in commands:
+        _LOGGER.error(
+            "phase2 stage selection failed reason=invalid_stage_argument "
+            "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
+            *coordinates,
+        )
         return 1
+    stage = selected[0]
+    _LOGGER.info(
+        "phase2 stage started stage=%s "
+        "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
+        stage,
+        *coordinates,
+    )
     try:
-        return commands[selected[0]]()
-    except (Phase2ExecutorError, OSError, RuntimeError, ValueError):
+        exit_code = commands[stage]()
+    except Exception as error:
+        _LOGGER.error(
+            "phase2 stage failed stage=%s error_type=%s reason=%s "
+            "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
+            stage,
+            type(error).__name__,
+            _safe_failure_reason(error),
+            *coordinates,
+        )
         return 1
+    if exit_code != 0:
+        _LOGGER.error(
+            "phase2 stage failed stage=%s error_type=StageExitCode "
+            "reason=nonzero_exit exit_code=%d "
+            "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
+            stage,
+            exit_code,
+            *coordinates,
+        )
+        return exit_code
+    _LOGGER.info(
+        "phase2 stage finished stage=%s exit_code=%d "
+        "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
+        stage,
+        exit_code,
+        *coordinates,
+    )
+    return exit_code
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     raise SystemExit(main())

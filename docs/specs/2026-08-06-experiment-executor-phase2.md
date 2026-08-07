@@ -1,7 +1,7 @@
 # 실험 executor Phase 2 — 이슈 기반 코드 수정과 candidate commit
 
 > 상태: Phase 2 구현 완료, #565 Codex 인증 Secret 전환 구현 완료
-> 관련 이슈: #557
+> 관련 이슈: #557, #582
 > 선행 계약: #546, `2026-08-05-experiment-job-baseline-freeze.md`
 
 ## 목적
@@ -306,6 +306,33 @@ TTL 삭제 전에 확인해 Experiment를 오류 (`ERROR`)로 전이하고 정�
 
 로그에는 실험·이슈·branch·SHA와 정제 사유만 남긴다. token, 환경 덤프, GitHub 응답
 body, Codex 원문 stderr는 남기지 않는다.
+
+### Container 실패 관측 계약 (#582)
+
+Kubernetes initContainer는 non-zero 종료 코드만으로는 애플리케이션 실패 원인을 설명하지
+못한다. 각 Phase 2 entrypoint는 실행한 stage의 시작과 종료 코드를 남기고, 예외로 종료할
+때는 `stage`, 예외 class 이름, 정제된 `reason`을 ERROR 로그로 남긴다.
+
+- executor 도메인 예외의 고정 사유 문자열만 `reason`으로 기록한다.
+- 알려지지 않은 stage 인자는 원문을 되풀이하지 않고 `invalid_stage_argument`로 기록한다.
+- stage가 예외 없이 non-zero를 반환하면 ERROR `nonzero_exit`와 종료 코드를 기록하고
+  정상 종료 로그를 남기지 않는다.
+- `OSError`, 외부 라이브러리 예외, 임의 `RuntimeError`·`ValueError`의 원문은 token,
+  filesystem 경로 또는 외부 응답을 포함할 수 있으므로 기록하지 않고 `redacted`로
+  정규화한다.
+- entrypoint 경계의 모든 일반 예외(`Exception`)를 같은 정제 로그와 종료 코드 1로
+  수렴시켜 traceback 원문이 container stderr에 노출되지 않게 한다.
+- experiment·issue·branch·base SHA는 각각 UUID·양의 정수·실험 branch·40자리 SHA
+  형식을 통과한 값만 기록하고, 형식이 다르면 원문 대신 `unknown`을 기록한다.
+- 환경 전체, Secret 값·mount 경로, GitHub 응답 body, Codex stdout/stderr는 기록하지
+  않는다.
+- module entrypoint는 INFO logging을 초기화해 Cloud Logging의 container log만으로
+  시작·종료·실패 stage를 식별할 수 있어야 한다.
+
+완료 Job 보존 시간은 launcher 선택 환경 변수 `ORCH_TTL_AFTER_FINISHED_SEC`로 받으며,
+미설정 기본값은 기존과 같은 30초다. 장애 smoke 동안만 Infra에서 3600초를 주입할 수
+있고, 한 번의 end-to-end 성공 증거를 수집한 뒤 30초로 회수한다. 이 설정은 Pod 권한이나
+egress를 넓히지 않는다.
 
 ## 이미지와 Infra 계약
 

@@ -9,7 +9,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from hashlib import sha256
+import logging
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 import uuid
 
@@ -44,6 +47,166 @@ from agent_orchestration.executor.workspace import PreparedWorkspace
 
 _EXPERIMENT_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 _BODY = "<!-- experiment-id: 12345678-1234-5678-1234-567812345678 -->\nbody"
+
+
+class UnsafeExecutorError(RuntimeError):
+    """향후 executor 도메인 예외가 비정제 문자열을 담는 경우를 재현한다."""
+
+
+UnsafeExecutorError.__module__ = "agent_orchestration.executor.future"
+
+
+def test_phase2_main_logs_stage_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(phase2, "workspace_preparer_main", lambda: 0)
+
+    with caplog.at_level(logging.INFO, logger=phase2.__name__):
+        exit_code = phase2.main(["workspace-preparer"])
+
+    assert exit_code == 0
+    assert "phase2 stage started stage=workspace-preparer" in caplog.text
+    assert "phase2 stage finished stage=workspace-preparer exit_code=0" in caplog.text
+
+
+def test_phase2_main_logs_nonzero_stage_exit_as_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(phase2, "codex_worker_main", lambda: 17)
+
+    with caplog.at_level(logging.INFO, logger=phase2.__name__):
+        exit_code = phase2.main(["codex-worker"])
+
+    assert exit_code == 17
+    assert (
+        "phase2 stage failed stage=codex-worker error_type=StageExitCode "
+        "reason=nonzero_exit exit_code=17"
+    ) in caplog.text
+    assert "phase2 stage finished stage=codex-worker" not in caplog.text
+
+
+def test_phase2_main_logs_invalid_stage_without_echoing_argument(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sensitive_argument = "invalid-stage-secret-token"
+    monkeypatch.setenv("ORCH_ISSUE_BRANCH", "exp/582-safe\nsecret-token")
+
+    with caplog.at_level(logging.ERROR, logger=phase2.__name__):
+        exit_code = phase2.main([sensitive_argument])
+
+    assert exit_code == 1
+    assert "phase2 stage selection failed reason=invalid_stage_argument" in caplog.text
+    assert sensitive_argument not in caplog.text
+    assert "branch=unknown" in caplog.text
+    assert "secret-token" not in caplog.text
+
+
+def test_phase2_main_logs_sanitized_domain_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("ORCH_EXPERIMENT_ID", str(_EXPERIMENT_ID))
+    monkeypatch.setenv("ORCH_ISSUE_NUMBER", "582")
+    monkeypatch.setenv("ORCH_ISSUE_BRANCH", "exp/582-phase2-failure-logging")
+    monkeypatch.setenv("ORCH_BASE_DEV_SHA", "a" * 40)
+
+    def fail() -> int:
+        raise phase2.Phase2ExecutorError("issue_marker_mismatch")
+
+    monkeypatch.setattr(phase2, "workspace_preparer_main", fail)
+
+    with caplog.at_level(logging.ERROR, logger=phase2.__name__):
+        exit_code = phase2.main(["workspace-preparer"])
+
+    assert exit_code == 1
+    assert (
+        "phase2 stage failed stage=workspace-preparer "
+        "error_type=Phase2ExecutorError reason=issue_marker_mismatch"
+    ) in caplog.text
+    assert f"experiment_id={_EXPERIMENT_ID}" in caplog.text
+    assert "issue_number=582" in caplog.text
+    assert "branch=exp/582-phase2-failure-logging" in caplog.text
+    assert f"base_sha={'a' * 40}" in caplog.text
+
+
+def test_phase2_module_execution_preserves_phase2_failure_reason(
+) -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_orchestration.executor.phase2",
+            "workspace-preparer",
+        ],
+        check=False,
+        capture_output=True,
+        env={},
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert (
+        "phase2 stage failed stage=workspace-preparer "
+        "error_type=Phase2ExecutorError reason=missing ORCH_EXPERIMENT_ID"
+    ) in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("/var/run/secrets/private-token"),
+        RuntimeError("response body contains secret-token"),
+        ValueError("invalid value secret-token"),
+        KeyError("secret-token"),
+    ],
+)
+def test_phase2_main_redacts_external_failure_details(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: Exception,
+) -> None:
+    def fail() -> int:
+        raise failure
+
+    monkeypatch.setattr(phase2, "workspace_preparer_main", fail)
+
+    with caplog.at_level(logging.ERROR, logger=phase2.__name__):
+        exit_code = phase2.main(["workspace-preparer"])
+
+    assert exit_code == 1
+    assert f"error_type={type(failure).__name__} reason=redacted" in caplog.text
+    assert "private-token" not in caplog.text
+    assert "secret-token" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "unsafe_reason",
+    [
+        "/var/run/secrets/private-token",
+        "response body contains secret-token",
+        "safe_code\nsecret-token",
+    ],
+)
+def test_phase2_main_redacts_unsafe_executor_domain_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    unsafe_reason: str,
+) -> None:
+    def fail() -> int:
+        raise UnsafeExecutorError(unsafe_reason)
+
+    monkeypatch.setattr(phase2, "workspace_preparer_main", fail)
+
+    with caplog.at_level(logging.ERROR, logger=phase2.__name__):
+        exit_code = phase2.main(["workspace-preparer"])
+
+    assert exit_code == 1
+    assert "error_type=UnsafeExecutorError reason=redacted" in caplog.text
+    assert "private-token" not in caplog.text
+    assert "secret-token" not in caplog.text
 
 
 def _settings() -> LauncherSettings:
