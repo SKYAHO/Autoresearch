@@ -88,9 +88,11 @@ def test_phase2_main_logs_nonzero_stage_exit_as_failure(
 
 
 def test_phase2_main_logs_invalid_stage_without_echoing_argument(
+    monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     sensitive_argument = "invalid-stage-secret-token"
+    monkeypatch.setenv("ORCH_ISSUE_BRANCH", "exp/582-safe\nsecret-token")
 
     with caplog.at_level(logging.ERROR, logger=phase2.__name__):
         exit_code = phase2.main([sensitive_argument])
@@ -98,12 +100,19 @@ def test_phase2_main_logs_invalid_stage_without_echoing_argument(
     assert exit_code == 1
     assert "phase2 stage selection failed reason=invalid_stage_argument" in caplog.text
     assert sensitive_argument not in caplog.text
+    assert "branch=unknown" in caplog.text
+    assert "secret-token" not in caplog.text
 
 
 def test_phase2_main_logs_sanitized_domain_failure(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    monkeypatch.setenv("ORCH_EXPERIMENT_ID", str(_EXPERIMENT_ID))
+    monkeypatch.setenv("ORCH_ISSUE_NUMBER", "582")
+    monkeypatch.setenv("ORCH_ISSUE_BRANCH", "exp/582-phase2-failure-logging")
+    monkeypatch.setenv("ORCH_BASE_DEV_SHA", "a" * 40)
+
     def fail() -> int:
         raise phase2.Phase2ExecutorError("issue_marker_mismatch")
 
@@ -117,6 +126,10 @@ def test_phase2_main_logs_sanitized_domain_failure(
         "phase2 stage failed stage=workspace-preparer "
         "error_type=Phase2ExecutorError reason=issue_marker_mismatch"
     ) in caplog.text
+    assert f"experiment_id={_EXPERIMENT_ID}" in caplog.text
+    assert "issue_number=582" in caplog.text
+    assert "branch=exp/582-phase2-failure-logging" in caplog.text
+    assert f"base_sha={'a' * 40}" in caplog.text
 
 
 def test_phase2_module_execution_preserves_phase2_failure_reason(
@@ -147,6 +160,7 @@ def test_phase2_module_execution_preserves_phase2_failure_reason(
         OSError("/var/run/secrets/private-token"),
         RuntimeError("response body contains secret-token"),
         ValueError("invalid value secret-token"),
+        KeyError("secret-token"),
     ],
 )
 def test_phase2_main_redacts_external_failure_details(

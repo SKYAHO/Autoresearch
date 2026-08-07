@@ -320,6 +320,10 @@ Kubernetes initContainer는 non-zero 종료 코드만으로는 애플리케이�
 - `OSError`, 외부 라이브러리 예외, 임의 `RuntimeError`·`ValueError`의 원문은 token,
   filesystem 경로 또는 외부 응답을 포함할 수 있으므로 기록하지 않고 `redacted`로
   정규화한다.
+- entrypoint 경계의 모든 일반 예외(`Exception`)를 같은 정제 로그와 종료 코드 1로
+  수렴시켜 traceback 원문이 container stderr에 노출되지 않게 한다.
+- experiment·issue·branch·base SHA는 각각 UUID·양의 정수·실험 branch·40자리 SHA
+  형식을 통과한 값만 기록하고, 형식이 다르면 원문 대신 `unknown`을 기록한다.
 - 환경 전체, Secret 값·mount 경로, GitHub 응답 body, Codex stdout/stderr는 기록하지
   않는다.
 - module entrypoint는 INFO logging을 초기화해 Cloud Logging의 container log만으로

@@ -51,6 +51,9 @@ _SAFE_REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
 _SAFE_ENVIRONMENT_REASON_PATTERN = re.compile(
     r"^(?:missing|invalid) ORCH_[A-Z0-9_]+$"
 )
+_ISSUE_NUMBER_PATTERN = re.compile(r"^[1-9][0-9]*$")
+_ISSUE_BRANCH_PATTERN = re.compile(r"^exp/[1-9][0-9]*-[a-z0-9][a-z0-9-]*$")
+_SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 
 
 class Phase2ExecutorError(RuntimeError):
@@ -74,6 +77,38 @@ def _safe_failure_reason(error: Exception) -> str:
         ):
             return reason
     return "redacted"
+
+
+def _safe_log_coordinates() -> tuple[str, str, str, str]:
+    """봉인 좌표 형식에 맞는 환경 값만 로그 필드로 반환한다."""
+    experiment_id = os.environ.get("ORCH_EXPERIMENT_ID", "")
+    try:
+        safe_experiment_id = str(uuid.UUID(experiment_id))
+    except ValueError:
+        safe_experiment_id = "unknown"
+
+    issue_number = os.environ.get("ORCH_ISSUE_NUMBER", "")
+    safe_issue_number = (
+        issue_number
+        if _ISSUE_NUMBER_PATTERN.fullmatch(issue_number) is not None
+        else "unknown"
+    )
+    issue_branch = os.environ.get("ORCH_ISSUE_BRANCH", "")
+    safe_issue_branch = (
+        issue_branch
+        if _ISSUE_BRANCH_PATTERN.fullmatch(issue_branch) is not None
+        else "unknown"
+    )
+    base_sha = os.environ.get("ORCH_BASE_DEV_SHA", "")
+    safe_base_sha = (
+        base_sha if _SHA_PATTERN.fullmatch(base_sha) is not None else "unknown"
+    )
+    return (
+        safe_experiment_id,
+        safe_issue_number,
+        safe_issue_branch,
+        safe_base_sha,
+    )
 
 
 def _required(name: str) -> str:
@@ -214,32 +249,50 @@ def main(argv: list[str] | None = None) -> int:
         "candidate-verifier": candidate_verifier_main,
         "candidate-finalizer": candidate_finalizer_main,
     }
+    coordinates = _safe_log_coordinates()
     if len(selected) != 1 or selected[0] not in commands:
         _LOGGER.error(
-            "phase2 stage selection failed reason=invalid_stage_argument"
+            "phase2 stage selection failed reason=invalid_stage_argument "
+            "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
+            *coordinates,
         )
         return 1
     stage = selected[0]
-    _LOGGER.info("phase2 stage started stage=%s", stage)
+    _LOGGER.info(
+        "phase2 stage started stage=%s "
+        "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
+        stage,
+        *coordinates,
+    )
     try:
         exit_code = commands[stage]()
-    except (Phase2ExecutorError, OSError, RuntimeError, ValueError) as error:
+    except Exception as error:
         _LOGGER.error(
-            "phase2 stage failed stage=%s error_type=%s reason=%s",
+            "phase2 stage failed stage=%s error_type=%s reason=%s "
+            "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
             stage,
             type(error).__name__,
             _safe_failure_reason(error),
+            *coordinates,
         )
         return 1
     if exit_code != 0:
         _LOGGER.error(
             "phase2 stage failed stage=%s error_type=StageExitCode "
-            "reason=nonzero_exit exit_code=%d",
+            "reason=nonzero_exit exit_code=%d "
+            "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
             stage,
             exit_code,
+            *coordinates,
         )
         return exit_code
-    _LOGGER.info("phase2 stage finished stage=%s exit_code=%d", stage, exit_code)
+    _LOGGER.info(
+        "phase2 stage finished stage=%s exit_code=%d "
+        "experiment_id=%s issue_number=%s branch=%s base_sha=%s",
+        stage,
+        exit_code,
+        *coordinates,
+    )
     return exit_code
 
 
