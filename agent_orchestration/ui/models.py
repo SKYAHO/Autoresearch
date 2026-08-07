@@ -6,21 +6,22 @@ Experiment API와 Streamlit 화면 사이의 읽기 경계에서 JSON 응답을 
 
 [기능]
 Experiment, Event, Log 불변 모델과 ISO timestamp 변환, 상태별 사용자 문구와 색상을
-제공한다. 사전등록 제출 폼이 API에 보내는 값(지표 방향, 허용 범위 키)과 그 한국어
-표시 문구도 여기서 정의한다.
+제공한다. 사전등록 제출 폼이 API에 보내는 값(`Submission`)도 여기서 정의한다.
 
 [비책임]
 API 인증, cursor polling, UI 컴포넌트 렌더링, Agent 상태 기록.
 
 UI 이미지는 `issue_authoring.py`를 포함하지 않으므로(`deploy/agent_orchestration/
-ui.Dockerfile`) 옵션 값을 import하지 않고 여기에 둔다. 값은 표시 문구가 아니라 **HTTP
-계약**이며, 서버 상수와의 동일성은 `tests/test_ui_submission_form.py`가 고정한다.
+ui.Dockerfile`) 서버 모델을 import하지 않고 보낼 값을 여기서 조립한다. `to_fields()`가
+내는 것은 표시 문구가 아니라 **HTTP 계약**이며, 서버가 받아들이는지는
+`tests/test_ui_submission_form.py`가 고정한다.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import re
 from typing import Any
 
 from agent_orchestration.app.experiments.models import (
@@ -70,40 +71,28 @@ _STATUS_COLORS = {
 }
 
 
-# 사전등록 제출 폼이 API에 보내는 값. 왼쪽이 화면 문구, 오른쪽이 계약 값이다.
-METRIC_DIRECTIONS = {
-    "높을수록 좋음": "higher_is_better",
-    "낮을수록 좋음": "lower_is_better",
-}
-NOT_APPLICABLE = "not_applicable"
-NONE_VALUE = "없음"
-SCOPE_CHOICES = {
-    "prod_model_contract": "prod 모델 계약(src/features/model_contract.py) 수정 허용",
-    "feast_definition": "Feast 정의(feature_repo/) 수정 허용",
-    "promotion": "champion 승격까지 검토",
-}
+# 지표 방향·guardrail sentinel·허용 범위 선택지는 #570에서 화면에서 사라졌다. UI가
+# 그 값을 보내지 않으므로 여기에 복제해 둘 이유도 없어졌다 — 서버의 `IssueSubmission`이
+# 기본값을 소유한다. 화면에 다시 노출할 때 서버 상수와 함께 되살린다.
+
+# `issue_authoring._HEADING_LINE_PATTERN`과 같은 규칙이다. 서버가 거부할 값을 첫 요청
+# 전에 알려주기 위한 복제이며, 판정 자체는 여전히 서버가 소유한다.
+_H3_LINE_PATTERN = re.compile(r"^### ", re.MULTILINE)
 
 
 @dataclass(frozen=True)
 class Submission:
     """제출 폼이 모은 사전등록 값.
 
-    `allowed_scope`만 API 요청의 최상위로 가고 나머지는 `fields`로 들어간다 — 서버의
-    `IssuePublicationRequest`가 그 형태를 요구한다.
+    값은 `fields`로 들어간다 — 서버의 `IssuePublicationRequest`가 그 형태를 요구한다.
+
+    #570에서 지표·변경 내용·허용 범위 입력칸을 없애고 `hypothesis` 마크다운 한
+    덩어리로 합쳤다. 서버가 선택으로 받는 값은 여기서 보내지 않는다 —
+    `IssueSubmission`이 `extra="forbid"`라 보내지 않은 값은 기본값이 된다.
     """
 
     title: str
     hypothesis: str
-    related_work: str
-    change: str
-    primary_metric_name: str
-    primary_metric_direction: str
-    minimum_primary_delta: str
-    guardrail_metric_name: str
-    guardrail_metric_direction: str
-    maximum_guardrail_regression: str
-    secondary_metrics: str
-    allowed_scope: tuple[str, ...]
 
     def missing_required(self) -> list[str]:
         """비어 있으면 안 되는 항목의 화면 이름을 반환한다.
@@ -112,35 +101,33 @@ class Submission:
         """
         required = {
             "실험 제목": self.title,
-            "연구 가설": self.hypothesis,
-            "변경할 피처 · 모델": self.change,
-            "주 지표 이름": self.primary_metric_name,
-            "최소 개선폭": self.minimum_primary_delta,
+            "가설": self.hypothesis,
         }
-        missing = [name for name, value in required.items() if not value.strip()]
-        # guardrail은 세 값이 함께 선언돼야 한다. 이름만 채우고 제출하면 서버가 422로
-        # 거부하므로, 왕복하지 않고 여기서 잡는다.
-        if self.guardrail_metric_name not in ("", NONE_VALUE) and (
-            not self.maximum_guardrail_regression.strip()
-            or self.maximum_guardrail_regression == NONE_VALUE
-        ):
-            missing.append("최대 악화폭 (Guardrail 지표를 선언했습니다)")
-        return missing
+        return [name for name, value in required.items() if not value.strip()]
+
+    def blocking_problems(self) -> list[str]:
+        """제출을 막아야 하는 이유를 사람이 읽는 문장으로 반환한다.
+
+        `### `를 여기서 잡는 이유는 실패 시점 때문이다. 제출은 Experiment 생성과 이슈
+        발행 두 번의 요청이고, 이 값은 **생성이 끝난 뒤** 발행에서 422가 된다. #572가
+        재시도 화면을 추가해 그 상태에서 빠져나올 수는 있지만, 본문을 고치기 전에는
+        재시도해도 같은 422다. 마크다운을 자유롭게 쓰게 한 이상 `### `는 드문 입력이
+        아니므로, 실패가 확실한 값은 첫 요청을 보내기 전에 끊는다.
+        """
+        problems = [f"{name}을(를) 채워 주세요." for name in self.missing_required()]
+        if _H3_LINE_PATTERN.search(self.hypothesis):
+            problems.append(
+                "가설 본문에 `### `로 시작하는 줄이 있습니다. 이슈 본문에서 항목을 "
+                "나누는 표시와 겹쳐 발행할 수 없습니다. `#`, `##`, `####`는 그대로 "
+                "쓸 수 있습니다."
+            )
+        return problems
 
     def to_fields(self) -> dict[str, str]:
         """API `fields`에 실을 값으로 변환한다."""
         return {
             "title": self.title,
             "hypothesis": self.hypothesis,
-            "change": self.change,
-            "primary_metric_name": self.primary_metric_name,
-            "primary_metric_direction": self.primary_metric_direction,
-            "minimum_primary_delta": self.minimum_primary_delta,
-            "guardrail_metric_name": self.guardrail_metric_name,
-            "guardrail_metric_direction": self.guardrail_metric_direction,
-            "maximum_guardrail_regression": self.maximum_guardrail_regression,
-            "secondary_metrics": self.secondary_metrics,
-            "related_work": self.related_work,
         }
 
 

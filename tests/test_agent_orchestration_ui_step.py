@@ -86,17 +86,7 @@ def test_discard_pending_publication_preserves_created_experiment() -> None:
     )
     submission = Submission(
         title="pending experiment",
-        hypothesis="보존할 가설",
-        related_work="",
-        change="- 피처 변경",
-        primary_metric_name="roc_auc",
-        primary_metric_direction="higher_is_better",
-        minimum_primary_delta="0.002",
-        guardrail_metric_name="없음",
-        guardrail_metric_direction="not_applicable",
-        maximum_guardrail_regression="없음",
-        secondary_metrics="",
-        allowed_scope=(),
+        hypothesis="# 주제\n\n보존할 가설",
     )
     state = WorkbenchState(
         experiments=[experiment],

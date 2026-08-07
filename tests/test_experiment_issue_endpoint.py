@@ -19,7 +19,6 @@ from agent_orchestration.app.config import ServiceSettings
 from agent_orchestration.app.database import Base
 from agent_orchestration.app.experiments.exceptions import IssuePublicationLimitError
 from agent_orchestration.app.experiments.github_issues import IssueRef
-from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 from agent_orchestration.app.experiments.models import Experiment
 
 API_TOKEN = "test-orchestration-token"
@@ -77,10 +76,6 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=5,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/lgbm-v1.yaml@abc1234",
-        ),
     )
     monkeypatch.setattr(main_module, "load_settings", lambda: settings)
     monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)
@@ -149,7 +144,7 @@ def test_publication_returns_the_issue_coordinates(
 
     response = client.post(
         f"/experiments/{created['id']}/issue",
-        json={**_payload(), "allowed_scope": ["prod_model_contract"]},
+        json=_payload(),
         headers=authorized_headers,
     )
 

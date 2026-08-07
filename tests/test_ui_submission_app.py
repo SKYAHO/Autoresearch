@@ -160,12 +160,12 @@ def _rendered_app() -> AppTest:
     return app
 
 
+_MARKDOWN_HYPOTHESIS = "# 주제\n\n비율 피처가 baseline 대비 test ROC-AUC를 개선한다."
+
+
 def _fill_required(app: AppTest) -> None:
     app.text_input[0].set_value("views per day ratio feature")
-    app.text_area[0].set_value("비율 피처가 baseline 대비 test ROC-AUC를 개선한다.")
-    app.text_area[2].set_value("- 추가 피처: views_per_day = views / (days + 1)")
-    app.text_input[1].set_value("roc_auc")
-    app.text_input[2].set_value("0.002")
+    app.text_area[0].set_value(_MARKDOWN_HYPOTHESIS)
 
 
 def test_form_renders_without_exception(stub_api: list[tuple[str, dict]]) -> None:
@@ -177,7 +177,38 @@ def test_form_renders_without_exception(stub_api: list[tuple[str, dict]]) -> Non
         widget.label for widget in app.text_area
     ]
     assert "실험 제목" in labels
-    assert "연구 가설" in labels
+    assert "가설" in labels
+
+
+def test_form_asks_for_nothing_but_a_title_and_a_hypothesis(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """입력칸이 늘어나면 마크다운 자유 서술로 합친 의미가 사라진다(#570)."""
+    app = _rendered_app()
+
+    assert len(app.text_input) == 1
+    assert len(app.text_area) == 1
+
+
+def test_hypothesis_editor_is_outside_a_form(stub_api: list[tuple[str, dict]]) -> None:
+    """`st.form` 안에 두면 미리보기가 제출 전까지 첫 렌더 상태에 멈춘다.
+
+    form 안 위젯은 상호작용해도 rerun을 일으키지 않으므로, 편집창이 폼 안에 있으면
+    사용자가 무엇을 쓰든 미리보기가 따라오지 않는다. 제출 버튼이 일반 `st.button`이면
+    폼이 없다는 뜻이다 — 폼이면 `form_submit_button`으로만 제출할 수 있다.
+    """
+    app = _rendered_app()
+
+    assert len(app.button) >= 1
+    assert app.button[0].label == "사전등록하고 이슈 발행"
+
+
+def test_preview_follows_the_hypothesis(stub_api: list[tuple[str, dict]]) -> None:
+    """편집한 마크다운이 미리보기에 반영돼야 한다."""
+    app = _rendered_app()
+    app.text_area[0].set_value("# 미리보기 제목").run()
+
+    assert any("# 미리보기 제목" == element.value for element in app.markdown)
 
 
 def test_empty_list_stays_on_create_without_activity_polling(
@@ -246,55 +277,25 @@ def test_submitting_sends_the_server_contract(stub_api: list[tuple[str, dict]]) 
         "/experiments/3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d/issue",
     ]
     fields = stub_api[1][1]["fields"]
-    assert fields["primary_metric_name"] == "roc_auc"
-    assert fields["primary_metric_direction"] == "higher_is_better"
-    assert "allowed_scope" in stub_api[1][1]
+    assert fields["title"] == "views per day ratio feature"
+    assert fields["hypothesis"] == _MARKDOWN_HYPOTHESIS
+    # `allowed_scope`는 #570에서 사라졌다. 서버가 `extra="forbid"`라 보내면 422다.
+    assert set(stub_api[1][1]) == {"fields"}
 
 
-def test_declared_guardrail_reaches_the_server(stub_api: list[tuple[str, dict]]) -> None:
-    """guardrail 이름을 채우면 세 값이 함께 전송돼야 한다.
+def test_submission_carries_no_metric_fields(stub_api: list[tuple[str, dict]]) -> None:
+    """지표를 화면에서 없앴으므로 UI는 그 값을 만들지 않는다(#570).
 
-    #536에서 이 경로가 조용히 깨졌다. 성공 기준을 사용자가 선언하게 만드는 것이 이
-    변경의 목적인데, guardrail이 말없이 `없음`으로 떨어지면 그 목적이 무너진다.
+    서버가 기본값을 소유한다. UI가 지어낸 값을 보내면 두 곳이 같은 값을 각자
+    선언하게 되어 어긋날 수 있다.
     """
     app = _rendered_app()
     _fill_required(app)
-    app.text_input[3].set_value("logloss")
-    app.selectbox[1].set_value("낮을수록 좋음")
-    app.text_input[4].set_value("0.001")
     app.button[0].click().run()
 
     fields = stub_api[1][1]["fields"]
 
-    assert fields["guardrail_metric_name"] == "logloss"
-    assert fields["guardrail_metric_direction"] == "lower_is_better"
-    assert fields["maximum_guardrail_regression"] == "0.001"
-
-
-def test_unset_guardrail_sends_the_sentinels(stub_api: list[tuple[str, dict]]) -> None:
-    """guardrail 칸을 비우면 서버가 요구하는 미선언 sentinel로 나가야 한다."""
-    app = _rendered_app()
-    _fill_required(app)
-    app.button[0].click().run()
-
-    fields = stub_api[1][1]["fields"]
-
-    assert fields["guardrail_metric_name"] == "없음"
-    assert fields["guardrail_metric_direction"] == "not_applicable"
-    assert fields["maximum_guardrail_regression"] == "없음"
-
-
-def test_partial_guardrail_is_blocked_before_any_request(
-    stub_api: list[tuple[str, dict]],
-) -> None:
-    """이름만 채우고 악화폭을 비우면 요청을 보내지 않고 화면에서 막는다."""
-    app = _rendered_app()
-    _fill_required(app)
-    app.text_input[3].set_value("logloss")
-    app.button[0].click().run()
-
-    assert stub_api == []
-    assert any("최대 악화폭" in element.value for element in app.error)
+    assert set(fields) == {"title", "hypothesis"}
 
 
 def test_blank_required_field_is_blocked_before_any_request(
@@ -345,7 +346,7 @@ def test_pending_publication_retries_saved_submission_without_duplicate(
     ) == 2
     assert any("537" in element.value for element in app.success)
     assert any(
-        title.value == "비율 피처가 baseline 대비 test ROC-AUC를 개선한다."
+        title.value == _MARKDOWN_HYPOTHESIS
         for title in app.title
     )
 
@@ -391,7 +392,7 @@ def test_discard_pending_publication_unlocks_new_submission(
     ).click().run()
 
     assert _StubHandler.experiments
-    assert _StubHandler.experiments[0]["hypothesis"].startswith("비율 피처가")
+    assert _StubHandler.experiments[0]["hypothesis"] == _MARKDOWN_HYPOTHESIS
     assert "이슈 발행 다시 시도" not in [button.label for button in app.button]
     _fill_required(app)
     app.text_area[0].set_value("새 가설은 pending 등록과 다른 입력이다.")

@@ -6,15 +6,17 @@
 책임이다.
 
 [기능]
-호출자가 제출하는 필드(`IssueSubmission`)를 파서와 같은 규칙으로 검증하고, 서버 소유
-실행 설정과 결합해 heading 21개짜리 본문을 만든다. 재시도 복구용 experiment-id marker도
-여기서 붙인다.
+호출자가 제출하는 필드(`IssueSubmission`)를 파서와 같은 규칙으로 검증하고 Issue Form
+heading 본문을 만든다. 선언된 항목만 내보내므로 heading은 `연구 가설` 하나부터 여덟
+개까지다. 재시도 복구용 experiment-id marker도 여기서 붙인다.
 
 [비책임]
 `tools/auto_research_issue_branch.py`의 파싱 계약과
-`src/pipeline/experiment_evaluation.py`의 판정 정책은 이 모듈이 소유하지 않는다. 두 곳은
-API 이미지에 없어 import할 수 없으므로 값을 복제하며, 동일성은
-`tests/test_issue_authoring.py`가 CI에서 고정한다.
+`src/pipeline/experiment_evaluation.py`의 판정 정책은 이 모듈이 소유하지 않는다.
+
+실행 설정과 허용 범위는 #570에서 본문에서 뺐다. 매 이슈 같은 값을 텍스트로 복사하던
+것이라, 사본이 코드와 어긋날 위험만 남고 얻는 것이 없었다. 시드처럼 강제가 필요한
+값은 이미 `src/pipeline/paired_experiment.py`가 실행 결과를 검사한다.
 
 지표·guardrail 값을 LLM이 창작하던 경로는 #536에서 제거했다. 예측 모델링 사전등록
 표준(arXiv 2311.18807)에서 성공 기준을 실험 전에 연구자가 선언하는 것이 제도의
@@ -23,8 +25,8 @@ API 이미지에 없어 import할 수 없으므로 값을 복제하며, 동일�
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from datetime import date, timedelta
+
+
 from decimal import Decimal, InvalidOperation
 import re
 import uuid
@@ -32,26 +34,10 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# `src/pipeline/experiment_evaluation.py`의 POLICY_SEEDS와 같아야 한다. 어긋나면
-# paired_experiment가 MISSING_PAIRED_RUN으로 끊어 모든 실험이 comparison_failed가 된다.
-POLICY_SEEDS: tuple[int, ...] = tuple(range(42, 72))
-
-# 정책 상수 — 환경이 아니라 실험 방법론이 정한다.
-COMPARISON = "동일 조건 baseline 재학습 (권장)"
-# 자동 발행 경로는 사람이 데이터 이상을 판단할 수 없으므로 스냅샷 재사용을 막는다.
-SNAPSHOT_REUSE = "불허 (정규 조립 경로 실패 시 중단)"
-# 실험 간 동일 분할을 강제해 서로 다른 실험의 지표를 비교 가능하게 한다.
-SPLIT_SEED = 20260801
-TEST_SIZE = "0.2"
-VALIDATION_SIZE = "0.2"
-
-# `docs/specs/2026-07-24-action-log-slice-semantics.md`의 소비 계약 `dt BETWEEN P-30
-# AND P-1`을 따른다. 이 값을 바꾸면 발행되는 실험의 학습 구간이 달라진다.
-TRAINING_WINDOW_DAYS = 30
-# `src/pipeline/config.yaml`의 `data.path`와 같은 값이다. 사람이 읽는 설명에만 쓰이고
-# `reproducibility_id` 해시에는 들어가지 않는다.
-DATASET_PATH = "data/processed/training_dataset.csv"
-
+# 실행 설정(시드·split·비율·비교 대상·스냅샷 재사용·데이터셋·학습 설정 참조)은 #570에서
+# 본문에서 뺐다. 매 이슈 같은 값을 텍스트로 복사하던 것이고, 실제 강제는 코드가 한다 —
+# 예를 들어 시드는 `src/pipeline/paired_experiment.py`가 실행 결과를 검사한다. 사본이
+# 코드와 어긋날 수 있는 위험만 남고 얻는 것이 없었다.
 _METRIC_DIRECTIONS = ("higher_is_better", "lower_is_better")
 _NOT_APPLICABLE = "not_applicable"
 _NONE_VALUE = "없음"
@@ -92,15 +78,6 @@ def _require_non_negative_decimal(value: str, field_name: str) -> None:
     if parsed < 0:
         raise ValueError(f"{field_name} must be non-negative")
 
-# `tools/auto_research_issue_branch.py`의 `_SCOPE_LABELS`와 문자 그대로 같아야 한다.
-SCOPE_LABELS: dict[str, str] = {
-    "prod_model_contract": (
-        "prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다"
-    ),
-    "feast_definition": "Feast 정의(`feature_repo/`) 수정을 허용한다",
-    "promotion": "실험 결과를 champion으로 승격하는 것까지 검토한다",
-}
-
 _MARKER_PREFIX = "<!-- experiment-id:"
 
 
@@ -111,19 +88,28 @@ class IssueSubmission(BaseModel):
     항목에 대응한다 — A.1 research question(`hypothesis`), A.3 independent
     variable(`change`), A.7 metrics(주 지표 3필드와 guardrail 3필드). A.4/A.5/A.8과
     Phase B의 학습 설정은 실험 간 비교가 성립하도록 서버가 고정하므로 여기에 없다.
+
+    `title`과 `hypothesis`만 필수다(#570). 표준이 요구하는 A.3·A.7을 빈 채로 발행하면
+    그 실험은 사전등록의 성질을 갖지 못하고 판정 대상에서 빠진다 — 지표를 어디서
+    받을지가 정해지기 전까지의 과도기 상태이며, 정해지면 다시 필수가 된다.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     title: str = Field(min_length=1, max_length=120)
-    hypothesis: str = Field(min_length=1, max_length=2000)
-    change: str = Field(min_length=1, max_length=2000)
-    primary_metric_name: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9._-]{0,63}$")
-    primary_metric_direction: str
-    minimum_primary_delta: str
-    guardrail_metric_name: str
-    guardrail_metric_direction: str
-    maximum_guardrail_regression: str
+    hypothesis: str = Field(min_length=1, max_length=8000)
+    # 사전등록 표준의 A.3(independent variable)은 `hypothesis` 자유 서술 안에 함께
+    # 적는다. 별도 칸을 강제하면 그 틀 밖의 내용을 넣을 방법이 없다(#570).
+    change: str = Field(default="", max_length=2000)
+    # 주 지표는 비워 발행할 수 있다. 비면 `criteria_id`가 값 없는 상태로 봉인되고 그
+    # 실험은 판정 대상이 아니다 — 값의 출처를 정하는 것은 #570의 후속 과제다.
+    primary_metric_name: str = Field(default="", max_length=64)
+    primary_metric_direction: str = ""
+    minimum_primary_delta: str = ""
+    # Guardrail은 새 기본값을 만들지 않고 계약에 이미 있는 미선언 표현을 쓴다.
+    guardrail_metric_name: str = _NONE_VALUE
+    guardrail_metric_direction: str = _NOT_APPLICABLE
+    maximum_guardrail_regression: str = _NONE_VALUE
     secondary_metrics: str = Field(default="", max_length=2000)
     # 표준이 요구하지만 Issue Form에 없던 항목이다. 선택 섹션이므로 `criteria_id`·
     # `reproducibility_id` 계산에 들어가지 않아 기존 실험의 봉인값을 바꾸지 않는다.
@@ -142,8 +128,18 @@ class IssueSubmission(BaseModel):
                 "title must contain at least one ASCII letter or digit "
                 "so the experiment branch name stays identifiable"
             )
-        if self.primary_metric_direction not in _METRIC_DIRECTIONS:
-            raise ValueError("primary_metric_direction is invalid")
+        # 주 지표는 세 값이 함께 선언되거나 함께 비어야 한다. 하나만 채우면 파서가
+        # 부분 선언을 어느 쪽으로도 읽을 수 없다.
+        primary_declared = self.primary_metric_name != ""
+        if primary_declared != (self.primary_metric_direction != ""):
+            raise ValueError("primary metric fields must be declared together")
+        if primary_declared != (self.minimum_primary_delta != ""):
+            raise ValueError("primary metric fields must be declared together")
+        if primary_declared:
+            if not _METRIC_NAME_PATTERN.fullmatch(self.primary_metric_name):
+                raise ValueError("primary_metric_name is invalid")
+            if self.primary_metric_direction not in _METRIC_DIRECTIONS:
+                raise ValueError("primary_metric_direction is invalid")
         if self.guardrail_metric_direction not in (
             *_METRIC_DIRECTIONS,
             _NOT_APPLICABLE,
@@ -158,9 +154,10 @@ class IssueSubmission(BaseModel):
         # 걸 수 없는 이유는 미선언 시 `없음`이 들어오기 때문이다.
         if declared and not _METRIC_NAME_PATTERN.fullmatch(self.guardrail_metric_name):
             raise ValueError("guardrail_metric_name is invalid")
-        _require_non_negative_decimal(
-            self.minimum_primary_delta, "minimum_primary_delta"
-        )
+        if primary_declared:
+            _require_non_negative_decimal(
+                self.minimum_primary_delta, "minimum_primary_delta"
+            )
         if declared:
             _require_non_negative_decimal(
                 self.maximum_guardrail_regression, "maximum_guardrail_regression"
@@ -177,30 +174,6 @@ class IssueSubmission(BaseModel):
                 raise ValueError(f"{name} must not contain a '### ' heading line")
 
 
-class ExperimentDefaults(BaseModel):
-    """환경마다 달라지는 서버 소유 값.
-
-    기간은 여기 두지 않는다 — 고정 문자열로 두면 첫날부터 낡는다.
-    `training_window()`가 발행 시점에 계산한다.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    dataset_source: str = Field(min_length=1, max_length=200)
-    training_config_ref: str = Field(min_length=1, max_length=256)
-
-
-def training_window(today: date) -> tuple[date, date]:
-    """학습 대상 기간을 KST 기준으로 계산한다.
-
-    오늘 파티션은 아직 채워지는 중이므로 어제까지 본다. 시계를 직접 읽지 않고 인자로
-    받는다 — 그래야 테스트가 실행 날짜에 흔들리지 않는다.
-    """
-    end = today - timedelta(days=1)
-    start = end - timedelta(days=TRAINING_WINDOW_DAYS - 1)
-    return start, end
-
-
 def marker_for(experiment_id: uuid.UUID) -> str:
     """재시도 시 GitHub에서 기존 이슈를 찾기 위한 HTML 주석 marker."""
     return f"{_MARKER_PREFIX} {experiment_id} -->"
@@ -214,63 +187,42 @@ def build_issue_title(fields: IssueSubmission) -> str:
 def build_issue_body(
     experiment_id: uuid.UUID,
     fields: IssueSubmission,
-    defaults: ExperimentDefaults,
-    allowed_scope: Sequence[str],
-    window: tuple[date, date],
 ) -> str:
-    """제출 값과 서버 소유 값을 heading과 결합해 Issue Form 본문을 만든다."""
-    unknown = set(allowed_scope) - set(SCOPE_LABELS)
-    if unknown:
-        raise ValueError("unknown allowed scope: " + ", ".join(sorted(unknown)))
+    """제출 값을 Issue Form heading 본문으로 만든다.
 
-    checked = set(allowed_scope)
-    scope_lines = "\n".join(
-        f"- [{'x' if key in checked else ' '}] {label}"
-        for key, label in SCOPE_LABELS.items()
-    )
-    seeds = ", ".join(str(seed) for seed in POLICY_SEEDS)
-    window_start, window_end = window
-    dataset_snapshot = f"{defaults.dataset_source}@{window_start}..{window_end}"
-    dataset_window = (
-        f"- 데이터셋 / 경로: {DATASET_PATH}\n"
-        f"- 기간 (KST YYYY-MM-DD ~ YYYY-MM-DD): {window_start} ~ {window_end}"
-    )
-    sections: list[tuple[str, str]] = [
-        ("연구 가설", fields.hypothesis),
-        ("변경할 피처 · 모델", fields.change),
-        ("주 지표 이름", fields.primary_metric_name),
-        ("주 지표 방향", fields.primary_metric_direction),
-        ("최소 주 지표 개선폭", fields.minimum_primary_delta),
-        ("Guardrail 지표 이름", fields.guardrail_metric_name),
-        ("Guardrail 지표 방향", fields.guardrail_metric_direction),
-        ("최대 Guardrail 악화폭", fields.maximum_guardrail_regression),
-        ("비교 대상", COMPARISON),
-        ("데이터셋 스냅샷", dataset_snapshot),
-        ("랜덤 시드 목록", seeds),
-        ("Split 시드", str(SPLIT_SEED)),
-        ("Test 비율", TEST_SIZE),
-        ("Validation 비율", VALIDATION_SIZE),
-        ("학습 설정 참조", defaults.training_config_ref),
-        ("대상 데이터 · 기간", dataset_window),
-        ("스냅샷 재사용", SNAPSHOT_REUSE),
-        ("허용 범위", scope_lines),
-    ]
-    # 선택 섹션은 비우면 GitHub이 `_No response_`를 넣는 것과 달리 heading 자체를
-    # 생략한다(파서는 두 경우 모두 통과한다).
-    if fields.secondary_metrics.strip():
-        insert_at = next(
-            index for index, (name, _) in enumerate(sections) if name == "비교 대상"
+    선언된 항목만 내보낸다. `연구 가설`을 뺀 나머지는 전부 선택이며, 값이 없으면
+    heading 자체를 생략한다 — GitHub이 빈 칸에 `_No response_`를 넣는 것과 다르지만
+    파서는 두 경우 모두 미선언으로 읽는다.
+
+    실행 설정(시드·split·비율·비교 대상·스냅샷 재사용·데이터셋·학습 설정 참조)과 허용
+    범위는 #570에서 뺐다. 매 이슈 같은 값을 텍스트로 복사하던 것이고, 실제 강제는
+    코드가 한다.
+    """
+    sections: list[tuple[str, str]] = [("연구 가설", fields.hypothesis)]
+
+    def append(name: str, value: str) -> None:
+        if value.strip():
+            sections.append((name, value.strip()))
+
+    append("선행 연구 참조", fields.related_work)
+    append("변경할 피처 · 모델", fields.change)
+    if fields.primary_metric_name:
+        sections.extend(
+            (
+                ("주 지표 이름", fields.primary_metric_name),
+                ("주 지표 방향", fields.primary_metric_direction),
+                ("최소 주 지표 개선폭", fields.minimum_primary_delta),
+            )
         )
-        sections.insert(
-            insert_at, ("보조 관측 지표", fields.secondary_metrics.strip())
+    if fields.guardrail_metric_name != _NONE_VALUE:
+        sections.extend(
+            (
+                ("Guardrail 지표 이름", fields.guardrail_metric_name),
+                ("Guardrail 지표 방향", fields.guardrail_metric_direction),
+                ("최대 Guardrail 악화폭", fields.maximum_guardrail_regression),
+            )
         )
-    if fields.related_work.strip():
-        insert_at = next(
-            index
-            for index, (name, _) in enumerate(sections)
-            if name == "변경할 피처 · 모델"
-        )
-        sections.insert(insert_at, ("선행 연구 참조", fields.related_work.strip()))
+    append("보조 관측 지표", fields.secondary_metrics)
 
     rendered = "\n\n".join(f"### {name}\n{value}" for name, value in sections)
     return f"{marker_for(experiment_id)}\n\n{rendered}\n"

@@ -1,15 +1,15 @@
-"""서버가 조립한 Issue Form 본문이 실제 파서를 통과하는지 고정한다.
+"""사전등록 필드가 파서를 통과하는 이슈 본문이 되는지 고정한다.
 
-전체 파이프라인에서 사전등록 필드가 `[AR]` 이슈 본문으로 변환되는 구간만 검증한다.
-GitHub 발행은 이 모듈의 범위가 아니다 — 조립은 순수 함수라 발행 없이 검증할 수 있다.
+전체 파이프라인 중 호출자가 제출한 값이 `[AR]` 이슈 본문 문자열이 되는 구간을 검증한다.
+GitHub 발행과 DB 기록은 각각 github_issues·service의 책임이라 여기서 보지 않는다.
 
-런타임은 `tools/`와 `src/`를 import하지 않지만(API 이미지에 없음), 테스트는 저장소
-전체를 보므로 파서·정책 상수와의 동일성을 여기서 고정한다.
+조립과 파싱은 서로 다른 이미지에 있어 런타임에 import할 수 없다. 그래서 규칙을 복제하며,
+그 복제본이 어긋나면 이슈가 **발행된 뒤** 워크플로에서 실패한다 — 그때는 이미 GitHub에
+이슈가 열려 있고 브랜치만 생기지 않는다. 드리프트를 여기서 잡는다.
 """
 
 from __future__ import annotations
 
-from datetime import date
 from pathlib import Path
 import sys
 import uuid
@@ -21,21 +21,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agent_orchestration.app.experiments.issue_authoring import (  # noqa: E402
-    COMPARISON,
     MAX_DECIMAL_DIGITS,
     MAX_DECIMAL_EXPONENT,
     MAX_DECIMAL_TEXT_LENGTH,
-    POLICY_SEEDS,
-    SNAPSHOT_REUSE,
-    ExperimentDefaults,
     IssueSubmission,
     build_issue_body,
     build_issue_title,
     marker_for,
-    training_window,
-)
-from src.pipeline.experiment_evaluation import (  # noqa: E402
-    POLICY_SEEDS as ENGINE_POLICY_SEEDS,
 )
 from tools.auto_research_issue_branch import (  # noqa: E402
     MAX_DECIMAL_DIGITS as PARSER_MAX_DECIMAL_DIGITS,
@@ -47,101 +39,109 @@ from tools.auto_research_issue_branch import (  # noqa: E402
     MAX_DECIMAL_TEXT_LENGTH as PARSER_MAX_DECIMAL_TEXT_LENGTH,
 )
 from tools.auto_research_issue_branch import (  # noqa: E402
-    _COMPARISONS,
-    _HEADING_NAMES,
     _METRIC_DIRECTIONS,
-    _SCOPE_LABELS,
-    _SNAPSHOT_REUSE,
     parse_issue_input,
 )
 
 EXPERIMENT_ID = uuid.UUID("3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d")
-DEFAULTS = ExperimentDefaults(
-    dataset_source="feast://feast_offline_store/ctr_training_v1",
-    training_config_ref="src/pipeline/config.yaml@abc1234",
-)
-# 대부분의 테스트는 조립 결과가 파서를 통과하는지만 보므로 고정된 기간을 쓴다.
-# `date.today()`를 부르면 실행 날짜에 따라 값이 흔들린다.
-WINDOW = (date(2026, 7, 1), date(2026, 7, 31))
+
+_MARKDOWN = "# 주제\n\n비율 피처가 ROC-AUC를 높인다.\n\n## 근거\n\n- `views_per_day`"
 
 
 def _fields(**overrides: object) -> IssueSubmission:
+    """UI가 실제로 보내는 최소 payload. 나머지는 서버 기본값이 채운다."""
     payload: dict[str, object] = {
         "title": "views per day ratio feature",
-        "hypothesis": "비율 피처가 ROC-AUC를 높인다.",
-        "change": "- 추가 피처: views_per_day = views / (days + 1)",
-        "primary_metric_name": "roc_auc",
-        "primary_metric_direction": "higher_is_better",
-        "minimum_primary_delta": "0.002",
-        "guardrail_metric_name": "없음",
-        "guardrail_metric_direction": "not_applicable",
-        "maximum_guardrail_regression": "없음",
-        "secondary_metrics": "pr_auc",
+        "hypothesis": _MARKDOWN,
     }
     payload.update(overrides)
     return IssueSubmission.model_validate(payload)
 
 
+def _body(**overrides: object) -> str:
+    return build_issue_body(EXPERIMENT_ID, _fields(**overrides))
+
+
+# ── 조립 결과가 파서를 통과하는가 ──────────────────────────────
+
+
 def test_assembled_body_passes_the_real_parser() -> None:
     """조립 결과가 워크플로가 쓰는 파서를 그대로 통과해야 한다."""
-    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=(), window=WINDOW)
+    parsed = parse_issue_input(1, build_issue_title(_fields()), _body())
 
-    parsed = parse_issue_input(1, build_issue_title(_fields()), body)
-
-    assert parsed.primary_metric_name == "roc_auc"
+    assert parsed.hypothesis == _MARKDOWN
+    assert parsed.primary_metric_name is None
     assert parsed.guardrail_metric_name is None
 
 
-def test_assembled_body_uses_the_policy_seed_set() -> None:
-    """시드가 어긋나면 모든 실험이 comparison_failed로 끝난다(#493 시나리오 2)."""
-    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=(), window=WINDOW)
+def test_minimal_body_carries_only_the_hypothesis() -> None:
+    """실행 설정을 본문에 복사하지 않는다(#570).
 
-    parsed = parse_issue_input(1, "[AR] seed", body)
-
-    assert parsed.random_seeds == POLICY_SEEDS
-
-
-def test_local_policy_seeds_match_the_judgement_engine() -> None:
-    """런타임 import가 불가능해 복제한 값의 드리프트를 잡는다."""
-    assert POLICY_SEEDS == ENGINE_POLICY_SEEDS
-
-
-def test_local_decimal_bounds_match_the_parser() -> None:
-    """조립 전 검증이 파서보다 느슨해지는 드리프트를 잡는다.
-
-    한 축이라도 느슨하면 그 축의 극단값이 이슈 발행 후에야 거부된다.
+    매 이슈 같은 값을 텍스트로 옮기던 것이고, 강제는 코드가 한다. 사본이 코드와
+    어긋날 위험만 남았기에 뺐다.
     """
-    assert MAX_DECIMAL_TEXT_LENGTH == PARSER_MAX_DECIMAL_TEXT_LENGTH
-    assert MAX_DECIMAL_DIGITS == PARSER_MAX_DECIMAL_DIGITS
-    assert MAX_DECIMAL_EXPONENT == PARSER_MAX_DECIMAL_EXPONENT
+    body = _body()
+
+    assert body.count("### ") == 1
+    assert "### 연구 가설" in body
+    for gone in (
+        "랜덤 시드 목록",
+        "Split 시드",
+        "Test 비율",
+        "Validation 비율",
+        "비교 대상",
+        "스냅샷 재사용",
+        "데이터셋 스냅샷",
+        "학습 설정 참조",
+        "대상 데이터 · 기간",
+        "허용 범위",
+        "Guardrail 지표 이름",
+    ):
+        assert gone not in body
 
 
-@pytest.mark.parametrize(
-    "value",
-    [
-        "0." + "1" * 200,      # 길이 초과
-        "0." + "1" * 70,       # 자릿수 초과
-        "1e2000",              # 지수 초과
-    ],
-)
-def test_submission_rejects_out_of_bound_decimals(value: str) -> None:
-    """파서의 경계를 넘는 임계값도 조립 전에 끊는다."""
-    with pytest.raises(ValueError):
-        _fields(minimum_primary_delta=value)
+def test_undeclared_scope_never_widens_executor_permissions() -> None:
+    """허용 범위가 없으면 아무 scope도 열리지 않아야 한다.
+
+    부재가 권한을 넓히는 방향으로 읽히면 실행기가 `model_contract.py`와
+    `feature_repo/`를 건드릴 수 있게 된다.
+    """
+    parsed = parse_issue_input(1, "[AR] scope", _body())
+
+    assert parsed.allowed_scope == ()
 
 
-def test_guardrail_fields_round_trip_when_declared() -> None:
+def test_markdown_hypothesis_survives_assembly() -> None:
+    """가설이 본문에서 손상되면 이슈에 다른 글이 실린다."""
+    parsed = parse_issue_input(1, "[AR] markdown", _body())
+
+    assert parsed.hypothesis.splitlines()[0] == "# 주제"
+    assert "## 근거" in parsed.hypothesis
+
+
+# ── 선택 항목은 선언했을 때만 나간다 ──────────────────────────
+
+
+def test_declared_primary_metric_round_trips() -> None:
+    """지표를 선언하면 세 heading이 살아나고 파서가 읽어야 한다."""
+    body = _body(
+        primary_metric_name="roc_auc",
+        primary_metric_direction="higher_is_better",
+        minimum_primary_delta="0.002",
+    )
+
+    parsed = parse_issue_input(1, "[AR] metric", body)
+
+    assert parsed.primary_metric_name == "roc_auc"
+    assert str(parsed.minimum_primary_delta) == "0.002"
+
+
+def test_declared_guardrail_round_trips() -> None:
     """guardrail 세 필드가 함께 채워지는 경로도 파서를 통과한다."""
-    body = build_issue_body(
-        EXPERIMENT_ID,
-        _fields(
-            guardrail_metric_name="logloss",
-            guardrail_metric_direction="lower_is_better",
-            maximum_guardrail_regression="0.001",
-        ),
-        DEFAULTS,
-        allowed_scope=(),
-        window=WINDOW,
+    body = _body(
+        guardrail_metric_name="logloss",
+        guardrail_metric_direction="lower_is_better",
+        maximum_guardrail_regression="0.001",
     )
 
     parsed = parse_issue_input(1, "[AR] guardrail", body)
@@ -149,25 +149,28 @@ def test_guardrail_fields_round_trip_when_declared() -> None:
     assert parsed.guardrail_metric_name == "logloss"
 
 
-def test_allowed_scope_checkboxes_are_rendered_and_parsed() -> None:
-    """체크한 범위만 allowed_scope로 나와야 한다."""
-    body = build_issue_body(
-        EXPERIMENT_ID,
-        _fields(),
-        DEFAULTS,
-        allowed_scope=("prod_model_contract", "promotion"),
-        window=WINDOW,
+def test_related_work_is_rendered_and_parsed_when_given() -> None:
+    """선행 연구 링크를 주면 본문에 실리고 파서를 통과한다."""
+    body = _body(related_work="https://arxiv.org/abs/2311.18807")
+
+    assert "### 선행 연구 참조" in body
+    parse_issue_input(1, "[AR] related work", body)
+
+
+def test_optional_sections_do_not_change_sealed_identifiers() -> None:
+    """선택 섹션이 봉인을 바꾸면 채웠다는 이유만으로 비교가 끊긴다."""
+    bare = parse_issue_input(1, "[AR] opt", _body())
+    linked = parse_issue_input(
+        1, "[AR] opt", _body(related_work="https://arxiv.org/abs/2311.18807")
     )
 
-    parsed = parse_issue_input(1, "[AR] scope", body)
-
-    assert set(parsed.allowed_scope) == {"prod_model_contract", "promotion"}
+    assert linked.criteria_id == bare.criteria_id
+    assert linked.reproducibility_id == bare.reproducibility_id
 
 
 def test_marker_does_not_change_sealed_identifiers() -> None:
     """marker는 재시도 복구용이며 실험 정의를 바꾸면 안 된다."""
-    fields = _fields()
-    with_marker = build_issue_body(EXPERIMENT_ID, fields, DEFAULTS, allowed_scope=(), window=WINDOW)
+    with_marker = _body()
     without_marker = with_marker.replace(marker_for(EXPERIMENT_ID) + "\n\n", "")
 
     sealed = parse_issue_input(1, "[AR] marker", with_marker)
@@ -182,11 +185,52 @@ def test_title_gets_the_ar_prefix() -> None:
     assert build_issue_title(_fields()).startswith("[AR] ")
 
 
-def test_submission_rejects_a_malformed_guardrail_metric_name() -> None:
-    """선언된 guardrail 이름도 파서의 정규식을 받는다.
+# ── 복제한 규칙이 파서와 어긋나지 않는가 ──────────────────────
 
-    여기서 막지 못하면 이슈가 발행된 뒤에야 워크플로에서 실패한다.
+
+def test_local_decimal_bounds_match_the_parser() -> None:
+    """조립 전 검증이 파서보다 느슨해지는 드리프트를 잡는다.
+
+    한 축이라도 느슨하면 그 축의 극단값이 이슈 발행 후에야 거부된다.
     """
+    assert MAX_DECIMAL_TEXT_LENGTH == PARSER_MAX_DECIMAL_TEXT_LENGTH
+    assert MAX_DECIMAL_DIGITS == PARSER_MAX_DECIMAL_DIGITS
+    assert MAX_DECIMAL_EXPONENT == PARSER_MAX_DECIMAL_EXPONENT
+
+
+def test_metric_directions_match_the_parser() -> None:
+    """`IssueSubmission`이 받는 방향 값이 파서의 집합과 같아야 한다."""
+    for direction in _METRIC_DIRECTIONS:
+        _fields(
+            primary_metric_name="roc_auc",
+            primary_metric_direction=direction,
+            minimum_primary_delta="0.002",
+        )
+
+
+# ── 발행 전에 끊어야 하는 값 ──────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "0." + "1" * 200,      # 길이 초과
+        "0." + "1" * 70,       # 자릿수 초과
+        "1e2000",              # 지수 초과
+    ],
+)
+def test_submission_rejects_out_of_bound_decimals(value: str) -> None:
+    """파서의 경계를 넘는 임계값도 조립 전에 끊는다."""
+    with pytest.raises(ValueError):
+        _fields(
+            primary_metric_name="roc_auc",
+            primary_metric_direction="higher_is_better",
+            minimum_primary_delta=value,
+        )
+
+
+def test_submission_rejects_a_malformed_guardrail_metric_name() -> None:
+    """선언된 guardrail 이름도 파서의 정규식을 받는다."""
     with pytest.raises(ValueError):
         _fields(
             guardrail_metric_name="log loss",
@@ -195,23 +239,40 @@ def test_submission_rejects_a_malformed_guardrail_metric_name() -> None:
         )
 
 
+def test_submission_rejects_invalid_metric_direction() -> None:
+    """파서가 거부할 방향 값을 조립 전에 거부한다."""
+    with pytest.raises(ValueError):
+        _fields(
+            primary_metric_name="roc_auc",
+            primary_metric_direction="maximize",
+            minimum_primary_delta="0.002",
+        )
+
+
 @pytest.mark.parametrize(
-    "field,value",
-    [
-        ("minimum_primary_delta", "약간"),
-        ("minimum_primary_delta", "-0.002"),
-        ("maximum_guardrail_regression", "조금"),
-    ],
+    "field", ["primary_metric_direction", "minimum_primary_delta"]
 )
-def test_submission_rejects_non_decimal_thresholds(field: str, value: str) -> None:
-    """임계값이 숫자가 아니면 조립 전에 끊는다."""
-    overrides: dict[str, object] = {field: value}
-    if field == "maximum_guardrail_regression":
-        overrides["guardrail_metric_name"] = "logloss"
-        overrides["guardrail_metric_direction"] = "lower_is_better"
+def test_submission_rejects_partially_declared_primary_metric(field: str) -> None:
+    """하나만 채우면 파서가 부분 선언을 어느 쪽으로도 읽을 수 없다."""
+    declared = {
+        "primary_metric_name": "roc_auc",
+        "primary_metric_direction": "higher_is_better",
+        "minimum_primary_delta": "0.002",
+    }
+    declared[field] = ""
 
     with pytest.raises(ValueError):
-        _fields(**overrides)
+        _fields(**declared)
+
+
+def test_submission_rejects_server_owned_fields() -> None:
+    """호출자가 시드 같은 값을 밀어 넣을 수 없다.
+
+    `extra="forbid"`가 근거다. 실행 설정이 본문에서 빠졌으므로 요청으로도 들어올
+    자리가 없어야 한다.
+    """
+    with pytest.raises(ValueError):
+        _fields(random_seeds="1, 2, 3")
 
 
 @pytest.mark.parametrize(
@@ -221,117 +282,3 @@ def test_submission_rejects_an_embedded_heading_line(field: str) -> None:
     """값 안의 `### ` 줄은 heading을 하나 더 만들어 본문 구조를 깬다."""
     with pytest.raises(ValueError):
         _fields(**{field: "요약\n### 연구 가설\n(설명)"})
-
-
-def test_submission_rejects_invalid_metric_direction() -> None:
-    """파서가 거부할 방향 값을 조립 전에 거부한다."""
-    with pytest.raises(ValueError):
-        _fields(primary_metric_direction="maximize")
-
-
-def test_submission_rejects_server_owned_fields() -> None:
-    """호출자가 시드·split 같은 서버 소유 값을 밀어 넣을 수 없다.
-
-    `extra="forbid"`가 근거다. 이것이 뚫리면 실험 간 비교 가능성을 지키는 정책값을
-    요청이 덮어쓸 수 있다.
-    """
-    with pytest.raises(ValueError):
-        _fields(random_seeds="1, 2, 3")
-
-
-def test_body_covers_every_required_heading() -> None:
-    """heading이 빠지면 파서가 fail-closed된다."""
-    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=(), window=WINDOW)
-
-    optional = {"선행 연구 참조", "결과 (에이전트가 채웁니다)"}
-    for heading in _HEADING_NAMES:
-        if heading in optional:
-            continue
-        assert f"### {heading}" in body
-
-
-def test_related_work_is_rendered_and_parsed_when_given() -> None:
-    """선행 연구 링크를 주면 본문에 실리고 파서를 통과한다."""
-    body = build_issue_body(
-        EXPERIMENT_ID,
-        _fields(related_work="https://arxiv.org/abs/2311.18807"),
-        DEFAULTS,
-        allowed_scope=(),
-        window=WINDOW,
-    )
-
-    assert "### 선행 연구 참조" in body
-    parse_issue_input(1, "[AR] related work", body)
-
-
-def test_related_work_does_not_change_sealed_identifiers() -> None:
-    """선택 섹션이므로 봉인 식별자를 바꾸면 안 된다.
-
-    바꾸면 이 필드를 채웠다는 이유만으로 같은 실험 정의가 다른 `criteria_id`·
-    `reproducibility_id`를 갖게 되어, 이미 발행된 실험과 비교할 수 없다.
-    """
-    without = build_issue_body(
-        EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=(), window=WINDOW
-    )
-    with_link = build_issue_body(
-        EXPERIMENT_ID,
-        _fields(related_work="https://arxiv.org/abs/2311.18807"),
-        DEFAULTS,
-        allowed_scope=(),
-        window=WINDOW,
-    )
-
-    bare = parse_issue_input(1, "[AR] related work", without)
-    linked = parse_issue_input(1, "[AR] related work", with_link)
-
-    assert linked.criteria_id == bare.criteria_id
-    assert linked.reproducibility_id == bare.reproducibility_id
-
-
-def test_server_owned_options_are_the_parser_options() -> None:
-    """서버가 고른 정확 문자열이 파서 옵션 집합 안에 있어야 한다.
-
-    어긋나면 발행된 이슈가 `comparison must be an Issue Form option`으로 거부된다.
-    """
-    assert COMPARISON in _COMPARISONS
-    assert SNAPSHOT_REUSE in _SNAPSHOT_REUSE
-
-
-def test_metric_directions_match_the_parser() -> None:
-    """`IssueSubmission`이 받는 방향 값이 파서의 집합과 같아야 한다."""
-    for direction in _METRIC_DIRECTIONS:
-        _fields(primary_metric_direction=direction)
-
-
-def test_scope_labels_match_the_parser() -> None:
-    """체크박스 label 문자열이 어긋나면 allowed_scope 파싱이 실패한다."""
-    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, allowed_scope=(), window=WINDOW)
-
-    for label in _SCOPE_LABELS:
-        assert f"- [ ] {label}" in body or f"- [x] {label}" in body
-
-
-def test_training_window_follows_the_slice_consumption_contract() -> None:
-    """`dt BETWEEN P-30 AND P-1` — 어제까지 30일.
-
-    오늘 파티션은 아직 채워지는 중이라 포함하지 않는다.
-    """
-    start, end = training_window(date(2026, 8, 4))
-
-    assert end == date(2026, 8, 3)
-    assert start == date(2026, 7, 5)
-    assert (end - start).days + 1 == 30
-
-
-def test_body_renders_the_computed_window_in_both_fields() -> None:
-    """`데이터셋 스냅샷`과 `대상 데이터 · 기간`이 같은 기간을 말해야 한다.
-
-    둘이 어긋나면 사람이 읽는 값과 봉인되는 값이 달라진다.
-    """
-    window = training_window(date(2026, 8, 4))
-    body = build_issue_body(EXPERIMENT_ID, _fields(), DEFAULTS, (), window)
-
-    parsed = parse_issue_input(1, "[AR] window", body)
-
-    assert parsed.dataset_snapshot.endswith("@2026-07-05..2026-08-03")
-    assert "2026-07-05 ~ 2026-08-03" in parsed.dataset

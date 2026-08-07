@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import uuid
@@ -22,7 +22,6 @@ from sqlalchemy.sql.dml import Update
 
 from agent_orchestration.app.database import Base
 from agent_orchestration.app.experiments.github_issues import GitHubIssueError, IssueRef
-from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 from agent_orchestration.app.experiments.models import Experiment
 from agent_orchestration.app.experiments.schemas import (
     ExperimentCreate,
@@ -61,12 +60,6 @@ class _Settings:
     github_repository: str = "SKYAHO/Autoresearch"
     gh_timeout_sec: int = 5
     issue_daily_limit: int = 20
-    experiment_defaults: ExperimentDefaults = field(
-        default_factory=lambda: ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/lgbm-v1.yaml@abc1234",
-        )
-    )
 
 
 @pytest.fixture

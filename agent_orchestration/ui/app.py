@@ -215,7 +215,7 @@ def publish_pending_issue(client: ExperimentClient, state: WorkbenchState) -> bo
 
     try:
         publication = client.publish_issue(
-            experiment_id, submission.to_fields(), submission.allowed_scope
+            experiment_id, submission.to_fields()
         )
     except ExperimentApiError as error:
         show_create_view(state)
@@ -292,11 +292,15 @@ def main() -> None:
                 st.rerun()
         submission = render_submission_form(state.detail_error)
         if submission is not None:
-            missing = submission.missing_required()
+            problems = submission.blocking_problems()
             if client is None:
                 st.error("Experiment API 연결을 먼저 복구해 주세요.")
-            elif missing:
-                st.error("다음 항목을 채워 주세요: " + ", ".join(missing))
+            elif problems:
+                # 첫 요청 전에 끊는다. 발행 실패는 재시도 화면으로 복구할 수 있지만,
+                # `### `처럼 고치기 전에는 반드시 실패하는 값이면 Experiment를 만드는
+                # 요청 자체가 헛일이고 사용자는 두 단계 뒤에야 원인을 본다.
+                for problem in problems:
+                    st.error(problem)
             else:
                 state.last_publication = None
                 submit_experiment(client, state, submission)
