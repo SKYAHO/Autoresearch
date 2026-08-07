@@ -6,7 +6,8 @@
 
 [기능] 각 container의 환경 입력을 기존 Stage 2~5 공개 인터페이스로 변환하고,
 base tip의 Codex 실행 또는 기존 candidate 채택 검증을 선택해 VerificationResult를
-finalizer에 전달한다. stage 시작·종료와 정제된 실패 사유를 container 로그로 남긴다.
+finalizer에 전달한다. stage 시작·종료와 정제된 실패 사유를 container 로그로 남기고,
+codex-worker에 한해 Codex 원문 출력 tail도 함께 남긴다(#612).
 
 [비책임] Job·Secret·PVC manifest(`launcher.jobs`), GitHub App token 발급
 (`token_minter.py`), candidate API의 DB 상태 전이(`app/experiments/service.py`)는
@@ -28,6 +29,7 @@ import uuid
 
 from agent_orchestration.executor.codex_worker import (
     CodexRunResult,
+    CodexWorkerError,
     run_codex_for_workspace,
 )
 from agent_orchestration.executor.config import ISSUE_BRANCH_PATTERN
@@ -245,13 +247,43 @@ def _run_training_if_enabled(stage: TrainingStage, workspace: Path) -> None:
     )
 
 
+def _log_codex_output(stdout: str, stderr: str) -> None:
+    """Codex 원문 출력 tail을 stage 로그로 남긴다.
+
+    이 모듈은 원칙적으로 정제된 사유 코드만 로그로 내보내지만(`_safe_failure_reason`),
+    Codex 출력만은 원문 그대로 남긴다(#612). Codex는 sandbox 실패나 작업 거절을 exit 0으로
+    보고하므로 종료 코드만으로는 성공과 구분되지 않는다. 성공·실패를 가리지 않고 남기는
+    이유도 같다 — 진단이 필요한 실패가 바로 그 "겉보기 성공" 쪽이다.
+
+    비어 있어도 한 줄을 남겨 "출력이 없었다"와 "로깅이 깨졌다"를 구분한다.
+    """
+    for stream, text in (("stdout", stdout), ("stderr", stderr)):
+        if text:
+            _LOGGER.info(
+                "codex output stage=codex-worker stream=%s bytes=%d\n%s",
+                stream,
+                len(text.encode("utf-8")),
+                text,
+            )
+        else:
+            _LOGGER.info(
+                "codex output stage=codex-worker stream=%s bytes=0", stream
+            )
+
+
 def codex_worker_main() -> int:
     """read-only state와 CODEX_HOME으로 base tip Codex 실행을 수행한다."""
-    result: CodexRunResult = run_codex_for_workspace(
-        _state(),
-        codex_home=Path(_required("ORCH_CODEX_HOME")),
-        timeout_seconds=_positive_int("ORCH_CODEX_TIMEOUT_SEC"),
-    )
+    try:
+        result: CodexRunResult = run_codex_for_workspace(
+            _state(),
+            codex_home=Path(_required("ORCH_CODEX_HOME")),
+            timeout_seconds=_positive_int("ORCH_CODEX_TIMEOUT_SEC"),
+        )
+    except CodexWorkerError as error:
+        # timeout·child leak처럼 결과가 없는 경로가 오히려 원문이 가장 필요한 곳이다.
+        _log_codex_output(error.stdout, error.stderr)
+        raise
+    _log_codex_output(result.stdout, result.stderr)
     return result.exit_code
 
 

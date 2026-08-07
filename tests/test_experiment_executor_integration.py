@@ -38,7 +38,7 @@ from agent_orchestration.launcher.repository import (
     reconcile_failed_jobs,
 )
 from agent_orchestration.executor import phase2
-from agent_orchestration.executor.codex_worker import CodexRunResult
+from agent_orchestration.executor.codex_worker import CodexRunResult, CodexWorkerError
 from agent_orchestration.executor.state import ExecutorWorkspaceState, write_state
 from agent_orchestration.executor.verifier import VerificationResult
 from agent_orchestration.executor.workspace import PreparedWorkspace
@@ -626,6 +626,78 @@ def test_base_tip_entrypoints_pass_sealed_state_to_verifier_and_finalizer(
     config, received = finalized[0]
     assert config.expected_remote_tip == "a" * 40
     assert received == verification
+
+
+def _base_tip_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """codex-worker가 실제로 Codex를 실행하는 base tip state를 만든다."""
+    _set_phase2_environment(monkeypatch, tmp_path)
+    workspace = tmp_path / "workspace"
+    repository = workspace / "repository"
+    repository.mkdir(parents=True)
+    state_path = tmp_path / "state" / "state.json"
+    monkeypatch.setattr(phase2, "_STATE_PATH", state_path)
+    write_state(
+        state_path,
+        ExecutorWorkspaceState(
+            schema_version=1,
+            repository=repository,
+            issue_body=_BODY,
+            allowed_scope=(),
+            base_dev_sha="a" * 40,
+            remote_tip="a" * 40,
+        ),
+        workspace=workspace,
+    )
+
+
+def test_codex_worker_logs_codex_output_even_when_it_exits_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """Codex는 sandbox 실패도 exit 0으로 보고하므로 종료 코드만으로는 구분되지 않는다(#612)."""
+    _base_tip_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        phase2,
+        "run_codex_for_workspace",
+        lambda *_args, **_kwargs: CodexRunResult(
+            exit_code=0,
+            duration_ms=1,
+            stdout="the workspace sandbox failed to initialize",
+            stderr="",
+        ),
+    )
+
+    with caplog.at_level(logging.INFO):
+        assert phase2.codex_worker_main() == 0
+
+    assert "the workspace sandbox failed to initialize" in caplog.text
+    assert "codex output stage=codex-worker stream=stdout" in caplog.text
+    # 비어 있어도 한 줄을 남겨 "출력 없음"과 "로깅 깨짐"을 구분한다.
+    assert "codex output stage=codex-worker stream=stderr bytes=0" in caplog.text
+
+
+def test_codex_worker_logs_output_before_propagating_a_worker_error(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """timeout처럼 결과가 없는 경로에서도 원문이 남고 사유 코드는 정제된 채로 유지된다."""
+    _base_tip_state(monkeypatch, tmp_path)
+    error = CodexWorkerError("codex_timeout")
+    error.stdout = "partial codex transcript"
+
+    def fail(*_args: object, **_kwargs: object) -> CodexRunResult:
+        raise error
+
+    monkeypatch.setattr(phase2, "run_codex_for_workspace", fail)
+
+    with caplog.at_level(logging.INFO):
+        assert phase2.main(["codex-worker"]) == 1
+
+    assert "partial codex transcript" in caplog.text
+    assert "reason=codex_timeout" in caplog.text
+    assert "reason=redacted" not in caplog.text
 
 
 def test_existing_candidate_entrypoints_skip_codex_and_preserve_remote_tip(
