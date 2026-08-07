@@ -129,8 +129,10 @@ docs/
     `ORCH_EXECUTOR_NODE_POOL`, `ORCH_GITHUB_APP_SECRET_NAME`,
     `ORCH_GITHUB_APP_ID`, `ORCH_GITHUB_APP_INSTALLATION_ID`,
     `ORCH_GITHUB_REPOSITORY`, `ORCH_MAX_CONCURRENT_EXPERIMENTS`,
-    `ORCH_CODEX_HOME_SECRET_NAME`. 마지막 값은 Infra가 생성·이름을 소유하는 executor 전용
-    Codex 인증 Secret을 가리킨다.
+    `ORCH_CODEX_HOME_SECRET_NAME`, `ORCH_ACTIVE_DEADLINE_SEC`,
+    `ORCH_CODEX_TIMEOUT_SEC`. Codex Secret 이름은 Infra가 생성·소유하며, Job 전체 상한은
+    3600초, 그 안의 Codex 실행 상한은 1800초다. launcher는 Codex 상한이 Job 상한 이상이면
+    기동 전에 거부한다.
   - 8-container 순서: branch-token-minter → branch-creator → clone-token-minter →
     workspace-preparer → codex-worker → candidate-verifier → push-token-minter →
     candidate-finalizer. branch/clone/push token-minter만 GitHub App private key를,

@@ -672,12 +672,14 @@ branch-token-minter
 ```
 
 `LauncherSettings`에는 `executor_api_url`, `executor_api_token_secret_name`,
-`codex_home_secret_name`, `workspace_size_limit`, `codex_timeout_sec`를 추가한다. 각각
+`codex_home_secret_name`, `workspace_size_limit`, `codex_timeout_sec`,
+`active_deadline_sec`를 추가한다. 각각
 `ORCH_EXECUTOR_API_URL`, `ORCH_EXECUTOR_API_TOKEN_SECRET_NAME`,
 `ORCH_CODEX_HOME_SECRET_NAME`, `ORCH_EXECUTOR_WORKSPACE_SIZE_LIMIT`,
-`ORCH_CODEX_TIMEOUT_SEC`에서 읽는다. executor 전용 Codex 인증 Secret은 `auth.json` key 하나를
-제공하고 launcher가 이를 `defaultMode=0440`의 read-only `subPath` 파일로 mount한다. 실제
-Secret 이름과 리소스 생성은 Autoresearch-infra가 소유한다.
+`ORCH_CODEX_TIMEOUT_SEC`, `ORCH_ACTIVE_DEADLINE_SEC`에서 읽는다. Codex 상한은 Job 전체
+상한보다 작아야 하며 MVP 운영값은 각각 1800초와 3600초다. executor 전용 Codex 인증
+Secret은 `auth.json` key 하나를 제공하고 launcher가 이를 `defaultMode=0440`의 read-only
+`subPath` 파일로 mount한다. 실제 Secret 이름과 리소스 생성은 Autoresearch-infra가 소유한다.
 
 - [ ] **6.1 claim 입력 실패 테스트 작성**
 
@@ -701,6 +703,7 @@ Secret 이름과 리소스 생성은 Autoresearch-infra가 소유한다.
   - Executor API token은 finalizer만 mount.
   - `automount_service_account_token=False`, non-root, seccomp, capability drop.
   - `backoff_limit=1`; 첫 Pod의 push 후 API 실패를 두 번째 Pod가 채택 가능.
+  - `active_deadline_seconds=3600`; Codex 1800초와 verifier·finalizer 시간을 함께 수용.
   - Job 이름은 `ar-exec-<experiment UUID hex>`, label selector는
     `app.kubernetes.io/component=experiment-executor`로 Phase 1 Job과 구분.
 

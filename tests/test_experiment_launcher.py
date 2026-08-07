@@ -91,6 +91,8 @@ def _settings(
     executor_image: str = EXECUTOR_IMAGE,
     executor_node_pool: str = "batch-od",
     max_concurrent_experiments: int = 5,
+    codex_timeout_sec: int = 1200,
+    active_deadline_sec: int = 2400,
 ) -> LauncherSettings:
     return LauncherSettings(
         database_url="postgresql://launcher:password@db/orchestration",
@@ -107,7 +109,8 @@ def _settings(
         executor_api_token_secret_name="executor-api-token",
         codex_home_secret_name="codex-auth",
         workspace_size_limit="8Gi",
-        codex_timeout_sec=120,
+        codex_timeout_sec=codex_timeout_sec,
+        active_deadline_sec=active_deadline_sec,
     )
 
 
@@ -218,7 +221,8 @@ def test_launcher_settings_reads_required_environment(
         "ORCH_EXECUTOR_API_TOKEN_SECRET_NAME": "executor-api-token",
         "ORCH_CODEX_HOME_SECRET_NAME": "codex-auth",
         "ORCH_EXECUTOR_WORKSPACE_SIZE_LIMIT": "8Gi",
-        "ORCH_CODEX_TIMEOUT_SEC": "120",
+        "ORCH_CODEX_TIMEOUT_SEC": "1800",
+        "ORCH_ACTIVE_DEADLINE_SEC": "3600",
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -228,8 +232,15 @@ def test_launcher_settings_reads_required_environment(
     assert settings.max_concurrent_experiments == 2
     assert settings.executor_node_pool == "batch-od"
     assert settings.codex_home_secret_name == "codex-auth"
-    assert settings.active_deadline_sec == 300
+    assert settings.codex_timeout_sec == 1800
+    assert settings.active_deadline_sec == 3600
     assert settings.ttl_after_finished_sec == 30
+
+
+def test_launcher_settings_rejects_codex_timeout_at_or_above_job_deadline() -> None:
+    """Codex가 Job 전체 상한을 독점하면 verifier·finalizer가 실행될 수 없다."""
+    with pytest.raises(LauncherConfigError, match="codex_timeout_sec"):
+        _settings(codex_timeout_sec=3600, active_deadline_sec=3600)
 
 
 def test_launcher_settings_requires_explicit_executor_node_pool_environment(
@@ -494,7 +505,7 @@ def test_job_passes_only_frozen_coordinates_and_token_file() -> None:
     }
     assert job.spec.template.metadata.labels == job.metadata.labels
     assert job.spec.backoff_limit == 0
-    assert job.spec.active_deadline_seconds == 300
+    assert job.spec.active_deadline_seconds == 2400
     assert job.spec.ttl_seconds_after_finished == 30
     assert pod.automount_service_account_token is False
     assert pod.service_account_name == settings.executor_service_account

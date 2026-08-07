@@ -108,12 +108,13 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 | launcher/token-minter | `ORCH_GITHUB_APP_ID`, `ORCH_GITHUB_APP_INSTALLATION_ID` | Contents write 전용 branch-writer App 공개 좌표 |
 | launcher | `ORCH_MAX_CONCURRENT_EXPERIMENTS` | namespace의 branch-bootstrap Job 동시 실행 상한 |
 | launcher | `ORCH_CODEX_HOME_SECRET_NAME` | Infra가 생성·이름을 소유하는 executor 전용 Codex 인증 Secret 이름 (`auth.json` key 제공, launcher가 volume `defaultMode=0440` 지정) |
+| launcher | `ORCH_ACTIVE_DEADLINE_SEC` | 8-container Job 전체 실행 상한 (`3600`초) |
 | executor | `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`, `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA` | launcher가 DB에서 복사해 전달하는 불변 branch 좌표 |
 | workspace-preparer | `ORCH_ISSUE_BODY_SHA256` | DB에 봉인한 Issue body의 SHA-256으로 원격 body와 대조하는 값 |
 | token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch/clone/push token-minter에만 보이는 private key mount 경로 |
 | token-minter/각 consumer | `ORCH_GITHUB_TOKEN_FILE` | purpose별 memory volume의 mode 0400 installation token 파일 경로 (`/var/run/{branch,clone,push}-token/token`) |
 | candidate-finalizer | `ORCH_EXECUTOR_API_URL`, `ORCH_EXECUTOR_API_TOKEN_FILE` | internal Candidate API URL과 `ORCH_EXECUTOR_API_TOKEN` Secret을 mount한 `/var/run/executor-api-token/token` 경로 |
-| codex-worker | `ORCH_CODEX_HOME`, `ORCH_CODEX_TIMEOUT_SEC` | read-only Codex auth source와 실행 상한 |
+| codex-worker | `ORCH_CODEX_HOME`, `ORCH_CODEX_TIMEOUT_SEC` | read-only Codex auth source와 Job 전체 상한보다 작은 Codex 실행 상한 (`1800`초) |
 
 동일 executor digest는 아래 8개 container가 순서대로 사용합니다. GitHub App private key는
 1·3·7의 token-minter에만, executor 전용 Codex 인증 Secret의 `CODEX_HOME`은 5에만, `ORCH_EXECUTOR_API_TOKEN`은

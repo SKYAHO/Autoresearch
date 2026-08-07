@@ -64,7 +64,8 @@ def _settings() -> LauncherSettings:
         executor_api_token_secret_name="executor-api-token",
         codex_home_secret_name="codex-auth",
         workspace_size_limit="8Gi",
-        codex_timeout_sec=120,
+        codex_timeout_sec=900,
+        active_deadline_sec=2700,
     )
 
 
@@ -142,6 +143,7 @@ def test_executor_job_has_sealed_eight_container_capability_boundaries() -> None
     assert job.metadata.name == f"ar-exec-{_EXPERIMENT_ID.hex}"
     assert job.metadata.labels == {"app.kubernetes.io/component": "experiment-executor"}
     assert job.spec.backoff_limit == 1
+    assert job.spec.active_deadline_seconds == 2700
     assert [container.name for container in pod.init_containers] == [
         "branch-token-minter",
         "branch-creator",
