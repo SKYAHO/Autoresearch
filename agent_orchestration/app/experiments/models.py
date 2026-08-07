@@ -22,8 +22,8 @@ Step은 실험 생명주기 상태(`ExperimentStatus`)와 독립적인 **작업 
 `0003_experiment_issue_lineage` revision이 nullable로 추가한 발행 lineage다. `issue_body`와
 `issue_title`은 발행 **전**에 같은 commit으로 채워지고,
 `issue_number`/`issue_branch`/`issue_published_at`은 발행 성공 후에 채워진다.
-`issue_title`은 재발행 시 제목·브랜치 이름이 최초 발행과 갈리지 않도록 본문에서 다시
-파싱하지 않고 그대로 재사용하기 위한 값이며, `issue_published_at`은 일일 발행 상한 질의
+`issue_title`은 재발행 시 제목이 최초 발행과 갈리지 않도록 본문에서 다시 파싱하지
+않고 그대로 재사용하기 위한 값이며, `issue_published_at`은 일일 발행 상한 질의
 전용이다. 둘 다 `ExperimentResponse`에 노출되지 않는다. 계약 정본은
 `docs/specs/2026-08-04-hypothesis-to-auto-research-issue.md`다.
 
@@ -155,7 +155,8 @@ class Experiment(Base):
     # 해 criteria_id/reproducibility_id가 흔들리지 않도록 한다(#516).
     issue_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     # issue_body와 같은 commit에 저장되는 제목. 재발행 시 본문에서 다시 복원하지 않고
-    # 그대로 재사용해, 최초 발행과 재발행의 제목·브랜치 이름이 갈리지 않게 한다(#516).
+    # 그대로 재사용해, 최초 발행과 재발행의 제목이 갈리지 않게 한다(#516). 브랜치
+    # 이름은 이슈 번호에서만 나오므로 제목에 걸려 있지 않다(#589).
     # GitHub 이슈 제목 상한(256자)과 같게 둔다.
     issue_title: Mapped[str | None] = mapped_column(String(256), nullable=True)
     issue_number: Mapped[int | None] = mapped_column(Integer, nullable=True)

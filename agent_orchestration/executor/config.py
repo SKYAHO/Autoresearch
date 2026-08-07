@@ -26,13 +26,28 @@ from agent_orchestration.github_app import GitHubAppCredentials
 
 
 _POSITIVE_INTEGER_PATTERN = re.compile(r"^[1-9][0-9]*$")
+# 실험 브랜치 이름 형식의 **정본**이다. executor 안에서 이 계약을 보는 곳(`finalizer`의
+# 입력 검증, `phase2`의 로그 좌표 정제)은 사본을 두지 않고 이것을 가져다 쓴다 — 형식이
+# 바뀔 때 한 곳만 고치면 되게 하려는 것이다.
+#
 # API가 봉인하는 이름은 `exp/<이슈번호>`다(#589). slug 접미사는 그 변경 이전에 발행된
 # 실험이 DB에 들고 있는 형식이며, launcher가 그 값을 그대로 넘기므로 계속 받는다.
-_ISSUE_BRANCH_PATTERN = re.compile(
-    r"^exp/(?P<issue_number>[0-9]+)(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?$"
+ISSUE_BRANCH_PATTERN = re.compile(
+    r"^exp/(?P<issue_number>[1-9][0-9]*)(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?$"
 )
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def issue_branch_matches(issue_branch: str, issue_number: int) -> bool:
+    """봉인된 브랜치 이름이 그 이슈 번호에 속하는지 판정한다.
+
+    브랜치 이름은 이슈 번호에서만 나오므로(#589) 번호를 넘어 대조할 것이 남아 있지
+    않다. 구 형식의 slug는 발행 시점 제목에서 나온 임의 문자열이라 여기서 재계산할 수
+    없다.
+    """
+    match = ISSUE_BRANCH_PATTERN.fullmatch(issue_branch)
+    return match is not None and int(match.group("issue_number")) == issue_number
 
 
 class ExecutorConfigError(ValueError):
@@ -89,11 +104,7 @@ class BranchCreatorInput:
 
         issue_number = _positive_integer("ORCH_ISSUE_NUMBER")
         issue_branch = _required_environment("ORCH_ISSUE_BRANCH")
-        issue_branch_match = _ISSUE_BRANCH_PATTERN.fullmatch(issue_branch)
-        if (
-            issue_branch_match is None
-            or int(issue_branch_match.group("issue_number")) != issue_number
-        ):
+        if not issue_branch_matches(issue_branch, issue_number):
             raise ExecutorConfigError("invalid ORCH_ISSUE_BRANCH")
 
         base_dev_sha = _required_environment("ORCH_BASE_DEV_SHA")

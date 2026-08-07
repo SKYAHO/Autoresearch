@@ -405,12 +405,8 @@ def test_branch_name_matches_the_canonical_rule() -> None:
     assert _branch_name_for(520) == branch_name_for(520)
 
 
-@pytest.mark.parametrize(
-    "title",
-    ["비율 피처 실험", "조회수 비율 피처", "가설 검증"],
-)
 def test_a_title_without_ascii_publishes(
-    db_session: Session, monkeypatch: pytest.MonkeyPatch, title: str
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """제목이 브랜치 이름의 입력이 아니므로 ASCII가 없어도 발행돼야 한다(#589).
 
@@ -418,8 +414,10 @@ def test_a_title_without_ascii_publishes(
     422를 받는다 — 그 상태는 화면에서 재시도해도 같은 값으로 계속 실패한다.
     """
     experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
+    published_titles: list[str] = []
 
     async def fake_create_issue(_settings, *, title, body, labels):
+        published_titles.append(title)
         return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
 
     monkeypatch.setattr(
@@ -428,9 +426,11 @@ def test_a_title_without_ascii_publishes(
 
     result = asyncio.run(
         publish_experiment_issue(
-            db_session, _Settings(), experiment.id, _request(title=title)
+            db_session, _Settings(), experiment.id, _request(title="비율 피처 실험")
         )
     )
+
+    assert published_titles == ["[AR] 비율 피처 실험"]
 
     assert result.issue_number == 520
     assert result.issue_branch == "exp/520"

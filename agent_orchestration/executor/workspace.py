@@ -25,6 +25,7 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Protocol
 import uuid
 
+from agent_orchestration.executor.config import issue_branch_matches
 from agent_orchestration.executor.github_issues import GitHubIssueSnapshot
 from agent_orchestration.executor.state import ExecutorWorkspaceState, write_state
 from tools.auto_research_issue_branch import parse_issue_input
@@ -100,13 +101,11 @@ def _validate_issue(config: WorkspacePrepareInput, snapshot: GitHubIssueSnapshot
         parsed = parse_issue_input(config.issue_number, snapshot.title, snapshot.body)
     except ValueError as error:
         raise WorkspacePreparationError("issue_parse_failed") from error
-    # 브랜치 이름은 이슈 번호에서만 나온다(#589). 봉인값이 `exp/<이슈번호>`이거나, 그
-    # 변경 이전에 발행돼 slug가 붙은 이름이면 같은 이슈의 좌표다. slug는 임의 문자열이라
-    # 번호를 넘어 대조할 것이 남아 있지 않으므로, 여기서 보는 것은 이슈 번호 일치다.
-    canonical = parsed.issue_branch
-    if config.issue_branch != canonical and not config.issue_branch.startswith(
-        f"{canonical}-"
-    ):
+    # 브랜치 이름은 이슈 번호에서만 나온다(#589). 이 값은 아래에서 `origin/{branch}`와
+    # `switch -c {branch}`로 흘러가므로, 이슈 번호 일치와 함께 형식 정본의 문자 집합
+    # 제약을 여기서 다시 건다 — 이 경로는 `BranchCreatorInput`을 거치지 않고
+    # `ORCH_ISSUE_BRANCH`를 그대로 읽는다.
+    if not issue_branch_matches(config.issue_branch, config.issue_number):
         raise WorkspacePreparationError("issue_branch_mismatch")
     return parsed.allowed_scope
 

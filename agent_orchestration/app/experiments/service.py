@@ -860,7 +860,8 @@ async def publish_experiment_issue(
                 issue_body=body,
                 # title도 같은 commit에 저장한다 — 저장하지 않으면 재발행 시 본문에서
                 # 제목을 복원해야 하고, 그 복원 규칙(첫 문장 요약)이 호출자가 준 실제
-                # title과 달라 재발행마다 제목·브랜치 이름이 흔들린다.
+                # title과 달라 재발행마다 제목이 흔들린다. 브랜치 이름은 이슈 번호에서만
+                # 나오므로 제목에 걸려 있지 않다(#589).
                 issue_title=title,
                 issue_branch=None,
             )

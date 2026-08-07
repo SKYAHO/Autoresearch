@@ -119,6 +119,11 @@ class IssueSubmission(BaseModel):
         검사하는 것과 같은 규칙을 이 지점에서 먼저 적용한다. 이 모델은 요청 본문이므로
         위반은 FastAPI가 422로 돌려주며, 이슈는 아직 열리지 않은 상태다.
         """
+        # `min_length=1`은 공백도 한 글자로 세므로 이 검사를 대신하지 못한다. 공백뿐인
+        # 제목은 `build_issue_title()`을 지나면 `[AR]`만 남아, 무엇에 대한 실험인지
+        # 알 수 없는 이슈가 GitHub에 실제로 열린다.
+        if not self.title.strip():
+            raise ValueError("title must not be blank")
         # 주 지표는 세 값이 함께 선언되거나 함께 비어야 한다. 하나만 채우면 파서가
         # 부분 선언을 어느 쪽으로도 읽을 수 없다.
         primary_declared = self.primary_metric_name != ""

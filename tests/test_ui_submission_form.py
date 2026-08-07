@@ -48,6 +48,16 @@ def test_submission_without_metrics_is_accepted(
     assert submission.change == ""
 
 
+@pytest.mark.parametrize("title", ["   ", "\t\n"])
+def test_a_blank_title_is_rejected_by_the_server_contract(title: str) -> None:
+    """공백뿐인 제목이 통과하면 `[AR]`만 붙은 이슈가 GitHub에 실제로 열린다.
+
+    `min_length=1`은 공백을 세므로 이 성질을 대신하지 못한다.
+    """
+    with pytest.raises(ValueError):
+        IssueSubmission.model_validate(_submission(title=title).to_fields())
+
+
 @pytest.mark.parametrize("title", ["비율 피처 실험", "조회수 비율 피처"])
 def test_a_title_without_ascii_passes_the_server_contract(title: str) -> None:
     """제목이 브랜치 이름의 입력이 아니므로 ASCII가 없어도 통과해야 한다(#589).
