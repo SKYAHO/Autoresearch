@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T02:44:06Z",
+  "generated_at": "2026-08-07T02:45:47Z",
   "reports": [
+    {
+      "number": 572,
+      "title": "feat: Streamlit 가설 등록과 상세 화면 분리",
+      "author": "Noah-JuYong",
+      "merged_at": "2026-08-07T02:45:28Z",
+      "summary_ko": [
+        "Streamlit 실험 워크벤치의 가설 등록 화면과 선택된 가설의 상세 관찰 화면을 탐색 구조로 분리하였습니다.",
+        "실험 생성 후 이슈 발행이 실패했을 때 기존 실험 재사용을 통한 재시도 및 취소 경로를 새로 제공합니다.",
+        "실시간 데이터 조회(Polling)를 상세 관찰 화면으로 제한하여 불필요한 백엔드 API 요청을 방지하였습니다."
+      ],
+      "report_url": "pr/572/"
+    },
     {
       "number": 566,
       "title": "fix: Executor Codex 인증을 Secret으로 전환한다",
