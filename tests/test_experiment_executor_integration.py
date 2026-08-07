@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from hashlib import sha256
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 import uuid
@@ -44,6 +45,66 @@ from agent_orchestration.executor.workspace import PreparedWorkspace
 
 _EXPERIMENT_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 _BODY = "<!-- experiment-id: 12345678-1234-5678-1234-567812345678 -->\nbody"
+
+
+def test_phase2_main_logs_stage_lifecycle(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(phase2, "workspace_preparer_main", lambda: 0)
+
+    with caplog.at_level(logging.INFO, logger=phase2.__name__):
+        exit_code = phase2.main(["workspace-preparer"])
+
+    assert exit_code == 0
+    assert "phase2 stage started stage=workspace-preparer" in caplog.text
+    assert "phase2 stage finished stage=workspace-preparer exit_code=0" in caplog.text
+
+
+def test_phase2_main_logs_sanitized_domain_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def fail() -> int:
+        raise phase2.Phase2ExecutorError("issue_marker_mismatch")
+
+    monkeypatch.setattr(phase2, "workspace_preparer_main", fail)
+
+    with caplog.at_level(logging.ERROR, logger=phase2.__name__):
+        exit_code = phase2.main(["workspace-preparer"])
+
+    assert exit_code == 1
+    assert (
+        "phase2 stage failed stage=workspace-preparer "
+        "error_type=Phase2ExecutorError reason=issue_marker_mismatch"
+    ) in caplog.text
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        OSError("/var/run/secrets/private-token"),
+        RuntimeError("response body contains secret-token"),
+        ValueError("invalid value secret-token"),
+    ],
+)
+def test_phase2_main_redacts_external_failure_details(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: Exception,
+) -> None:
+    def fail() -> int:
+        raise failure
+
+    monkeypatch.setattr(phase2, "workspace_preparer_main", fail)
+
+    with caplog.at_level(logging.ERROR, logger=phase2.__name__):
+        exit_code = phase2.main(["workspace-preparer"])
+
+    assert exit_code == 1
+    assert f"error_type={type(failure).__name__} reason=redacted" in caplog.text
+    assert "private-token" not in caplog.text
+    assert "secret-token" not in caplog.text
 
 
 def _settings() -> LauncherSettings:

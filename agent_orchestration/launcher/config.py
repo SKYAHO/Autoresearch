@@ -44,6 +44,16 @@ def _positive_integer_environment(name: str) -> int:
     return int(value)
 
 
+def _optional_positive_integer_environment(name: str, *, default: int) -> int:
+    """선택 환경 변수의 양의 십진 정수 또는 미설정 기본값을 반환한다."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    if _POSITIVE_INTEGER_PATTERN.fullmatch(value) is None:
+        raise LauncherConfigError(f"invalid {name}")
+    return int(value)
+
+
 @dataclass(frozen=True)
 class LauncherSettings:
     """한 launcher tick과 생성할 executor Job의 불변 설정."""
@@ -136,5 +146,9 @@ class LauncherSettings:
             codex_timeout_sec=_positive_integer_environment("ORCH_CODEX_TIMEOUT_SEC"),
             active_deadline_sec=_positive_integer_environment(
                 "ORCH_ACTIVE_DEADLINE_SEC"
+            ),
+            ttl_after_finished_sec=_optional_positive_integer_environment(
+                "ORCH_TTL_AFTER_FINISHED_SEC",
+                default=30,
             ),
         )

@@ -6,7 +6,7 @@
 
 [기능] 각 container의 환경 입력을 기존 Stage 2~5 공개 인터페이스로 변환하고,
 base tip의 Codex 실행 또는 기존 candidate 채택 검증을 선택해 VerificationResult를
-finalizer에 전달한다.
+finalizer에 전달한다. stage 시작·종료와 정제된 실패 사유를 container 로그로 남긴다.
 
 [비책임] Job·Secret·PVC manifest(`launcher.jobs`), GitHub App token 발급
 (`token_minter.py`), candidate API의 DB 상태 전이(`app/experiments/service.py`)는
@@ -19,6 +19,7 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import asdict
 import json
+import logging
 import os
 from pathlib import Path
 import sys
@@ -44,10 +45,26 @@ from agent_orchestration.executor.workspace import (
 
 _STATE_PATH = Path("/var/run/executor-state/state.json")
 _VERIFICATION_PATH = Path("/var/run/verification-result/result.json")
+_LOGGER = logging.getLogger(__name__)
 
 
 class Phase2ExecutorError(RuntimeError):
     """container 경계 입력 또는 handoff가 계약에 맞지 않는다."""
+
+
+def _safe_failure_reason(error: Exception) -> str:
+    """executor가 정제해 만든 도메인 예외만 원문 사유로 기록한다."""
+    error_type = type(error)
+    if (
+        error_type.__module__.startswith("agent_orchestration.executor")
+        and error_type.__name__.endswith("Error")
+    ):
+        reason = getattr(error, "reason", None)
+        if isinstance(reason, str):
+            return reason
+        if len(error.args) == 1 and isinstance(error.args[0], str):
+            return error.args[0]
+    return "redacted"
 
 
 def _required(name: str) -> str:
@@ -190,11 +207,22 @@ def main(argv: list[str] | None = None) -> int:
     }
     if len(selected) != 1 or selected[0] not in commands:
         return 1
+    stage = selected[0]
+    _LOGGER.info("phase2 stage started stage=%s", stage)
     try:
-        return commands[selected[0]]()
-    except (Phase2ExecutorError, OSError, RuntimeError, ValueError):
+        exit_code = commands[stage]()
+    except (Phase2ExecutorError, OSError, RuntimeError, ValueError) as error:
+        _LOGGER.error(
+            "phase2 stage failed stage=%s error_type=%s reason=%s",
+            stage,
+            type(error).__name__,
+            _safe_failure_reason(error),
+        )
         return 1
+    _LOGGER.info("phase2 stage finished stage=%s exit_code=%d", stage, exit_code)
+    return exit_code
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     raise SystemExit(main())
