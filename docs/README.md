@@ -87,6 +87,7 @@
 - [Spec — 실험 executor Phase 2](specs/2026-08-06-experiment-executor-phase2.md) — 봉인 exp 브랜치의 Codex 코드 수정과 executor 소유 candidate commit·push 계약 (#557)
 - [Plan — 실험 executor Phase 2](plans/2026-08-06-experiment-executor-phase2.md) — Candidate API부터 branch-creator·Codex·verifier·commit/push·8-container Job·배포 검증까지 7단계 구현 순서 (#557, Stage review 종료 전 archive 보류)
 - [Plan — Executor raw 이슈 입력](archive/plans/2026-08-07-executor-raw-issue-input.md) (#592 구현 완료·아카이브)
+- [Plan — Codex 외부 sandbox 실행](archive/plans/2026-08-07-codex-external-sandbox.md) (#598 구현 완료·아카이브)
 - [Plan — 실험 브랜치 Bootstrap Kubernetes Job Phase 1](plans/2026-08-05-experiment-branch-bootstrap-k8s-job-phase1.md) — GitHub App installation token, launcher 선점·동시 상한, launcher/executor digest 게시, executor ref 생성과 infra 적용 순서 (#546)
 - [Plan — 실험 Step 추적 v0](archive/plans/2026-08-04-experiment-step-tracking-v0.md) (구현 완료·아카이브)
 - [Spec — Agent Orchestration `/chat` API 계약](specs/2026-08-01-agent-orchestration-chat-api-contract.md) — 내부 호출 서비스의 요청·응답·오류·저장 의미 정본

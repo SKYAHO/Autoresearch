@@ -264,8 +264,7 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
     assert json.loads(argv_path.read_text(encoding="utf-8")) == [
         "exec",
         "--ephemeral",
-        "--sandbox",
-        "workspace-write",
+        "--dangerously-bypass-approvals-and-sandbox",
         "-C",
         str(run.repository),
         prompt,

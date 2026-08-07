@@ -177,7 +177,12 @@ Codex prompt는 이슈 본문 원문, executor가 고정한 허용·금지 경�
 
 ## Codex 실행 계약
 
-- 비대화식 `codex exec --sandbox workspace-write`를 사용한다.
+- 비대화식 `codex exec --dangerously-bypass-approvals-and-sandbox`를 사용한다. Codex의
+  내부 sandbox는 checkout의 `.agents -> .claude` 심볼릭 링크를 writable 경계 횡단으로
+  판정해 저장소 명령을 시작 전에 거부하므로 사용하지 않는다.
+- 이 옵션은 권한 없는 호스트 실행을 뜻하지 않는다. Codex는 비루트·read-only root
+  filesystem Pod, 전용 `emptyDir` workspace, read-only `.git` mount, 제한된 egress 안에서
+  실행되고, candidate verifier가 허용 경로와 검증 명령을 통과한 diff만 finalizer에 넘긴다.
 - `-C`는 준비된 repository root로 고정하고 git repository 검사를 생략하지 않는다.
 - subprocess 환경은 명시적 allowlist로 새로 구성한다.
 - 허용 환경은 `CODEX_HOME`, 임시 HOME/XDG/TMP, PATH, locale과 executor image가 고정한

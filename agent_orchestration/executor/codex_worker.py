@@ -6,9 +6,10 @@ workspace-preparer가 봉인 이슈와 exp branch checkout을 검증한 뒤, can
 
 [기능]
 read-only auth source의 regular `auth.json`만 per-run writable scratch `CODEX_HOME`으로
-복사한 뒤 `codex exec --ephemeral`을 실행한다. 명시적 환경 allowlist와 전용 process
-group으로 noninteractive Codex를 실행하고, timeout·취소 시 child process까지 회수한다.
-원격 tip이 base와 다르면 기존 candidate 채택 경로로 넘기기 위해 Codex 실행을 생략한다.
+복사한 뒤 외부 격리된 Pod 전용 모드로 `codex exec --ephemeral`을 실행한다. 명시적 환경
+allowlist와 전용 process group으로 noninteractive Codex를 실행하고, timeout·취소 시 child
+process까지 회수한다. 원격 tip이 base와 다르면 기존 candidate 채택 경로로 넘기기 위해
+Codex 실행을 생략한다.
 
 [비책임]
 이슈·ref·workspace 검증(`workspace.py`), candidate 범위와 테스트 승인(Stage 4), Git
@@ -291,7 +292,7 @@ def _join_pipe_readers(
 
 
 def run_codex(run: CodexRunInput) -> CodexRunResult:
-    """Codex를 workspace-write sandbox로 실행하고 원문 출력 없이 종료 결과를 반환한다."""
+    """외부 격리된 Pod에서 Codex를 실행하고 원문 출력 없이 종료 결과를 반환한다."""
     _validate_run(run)
     prompt = build_codex_prompt(run)
     git_directory, sealed_git_metadata = _capture_protected_git_metadata(run.repository)
@@ -299,8 +300,7 @@ def run_codex(run: CodexRunInput) -> CodexRunResult:
         "codex",
         "exec",
         "--ephemeral",
-        "--sandbox",
-        "workspace-write",
+        "--dangerously-bypass-approvals-and-sandbox",
         "-C",
         str(run.repository),
         prompt,
