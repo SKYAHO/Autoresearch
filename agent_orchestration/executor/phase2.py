@@ -68,6 +68,9 @@ _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 # 경로와 같다 — Pod 안의 마운트 지점은 manifest가 정하는 고정값이고, 주입 가능한 값으로
 # 두면 계약이 두 곳으로 갈린다.
 _STATE_DIRECTORY = Path("/var/run/executor-state")
+# 학습 산출물 루트. clone(`<workspace>/repository`)의 형제로 두어 verifier의 git 수집
+# 범위 밖에 놓는다(#603).
+_TRAINING_OUTPUT_DIRNAME = "training-output"
 
 
 class Phase2ExecutorError(RuntimeError):
@@ -219,6 +222,9 @@ def _run_training_if_enabled(stage: TrainingStage, workspace: Path) -> None:
             stage=stage,
             workspace=workspace,
             dataset_path=Path(dataset),
+            # clone(`workspace`)의 형제 디렉터리다 — 같은 volume이라 두 조건이 공유하고,
+            # clone 밖이라 verifier가 Codex의 변경으로 수집하지 않는다(#603).
+            output_root=Path(_required("ORCH_EXECUTOR_WORKSPACE")) / _TRAINING_OUTPUT_DIRNAME,
             state_directory=_STATE_DIRECTORY,
             timeout_seconds=_positive_int("ORCH_TRAINING_TIMEOUT_SEC"),
         )

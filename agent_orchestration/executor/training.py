@@ -15,6 +15,9 @@ commit·push와 candidate 보고(`finalizer.py`·`api_client.py`), 스냅샷 GCS
 [중요] 학습 코드는 이미지가 아니라 **workspace의 clone**에서 온다. 이미지에 `src/`를
 구우면 Codex가 수정한 candidate 코드가 아니라 빌드 시점의 낡은 코드로 학습하게 되어
 candidate 실험 자체가 무의미해진다 (#574).
+
+[중요] 산출물은 clone **밖**에 쓴다(`output_root`, #603). clone 안에 쓰면 verifier가
+그것을 Codex의 변경으로 수집해, 아무 변경도 없는 실행이 통과한다.
 """
 
 from __future__ import annotations
@@ -81,6 +84,7 @@ class TrainingInput:
     stage: TrainingStage
     workspace: Path
     dataset_path: Path
+    output_root: Path
     state_directory: Path
     timeout_seconds: int
 
@@ -92,6 +96,15 @@ class TrainingInput:
             raise TrainingError("dataset_missing")
         if not isinstance(self.timeout_seconds, int) or self.timeout_seconds <= 0:
             raise TrainingError("timeout_invalid")
+        # 산출물이 clone 안에 떨어지면 verifier가 그것을 Codex의 변경으로 수집한다
+        # (`git ls-files --others --exclude-standard`). model_*.txt·features_*.json·
+        # categories_*.json은 gitignore에 걸리지 않아 그대로 노출되고, 그러면 Codex가
+        # 아무 변경도 만들지 않은 실행이 `no_changes` 대신 통과한다 — 탐지되지 않는
+        # 거짓 성공이라 실패보다 나쁘다. 경로 규칙을 주석이 아니라 계약으로 고정한다.
+        workspace = self.workspace.resolve()
+        output_root = self.output_root.resolve()
+        if output_root == workspace or workspace in output_root.parents:
+            raise TrainingError("output_root_inside_workspace")
 
 
 def _run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
@@ -223,7 +236,7 @@ def run_training(config: TrainingInput) -> tuple[int, ...]:
         raise TrainingError("baseline_training_missing")
 
     seeds = resolve_policy_seeds(config.workspace)
-    outputs = config.workspace / "data" / "processed" / config.stage.value
+    outputs = config.output_root / config.stage.value
     outputs.mkdir(parents=True, exist_ok=True)
 
     for seed in seeds:
