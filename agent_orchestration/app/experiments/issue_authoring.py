@@ -6,16 +6,17 @@
 책임이다.
 
 [기능]
-호출자가 제출하는 필드(`IssueSubmission`)를 파서와 같은 규칙으로 검증하고, 서버 소유
-실행 설정과 결합해 Issue Form heading 본문을 만든다. 선언되지 않은 선택 항목은 heading
-자체를 생략하므로 heading 수는 14개에서 21개 사이다. 재시도 복구용 experiment-id
-marker도 여기서 붙인다.
+호출자가 제출하는 필드(`IssueSubmission`)를 파서와 같은 규칙으로 검증하고 Issue Form
+heading 본문을 만든다. 선언된 항목만 내보내므로 heading은 `연구 가설` 하나부터 여덟
+개까지다. 재시도 복구용 experiment-id marker도 여기서 붙인다.
 
 [비책임]
 `tools/auto_research_issue_branch.py`의 파싱 계약과
-`src/pipeline/experiment_evaluation.py`의 판정 정책은 이 모듈이 소유하지 않는다. 두 곳은
-API 이미지에 없어 import할 수 없으므로 값을 복제하며, 동일성은
-`tests/test_issue_authoring.py`가 CI에서 고정한다.
+`src/pipeline/experiment_evaluation.py`의 판정 정책은 이 모듈이 소유하지 않는다.
+
+실행 설정과 허용 범위는 #570에서 본문에서 뺐다. 매 이슈 같은 값을 텍스트로 복사하던
+것이라, 사본이 코드와 어긋날 위험만 남고 얻는 것이 없었다. 시드처럼 강제가 필요한
+값은 이미 `src/pipeline/paired_experiment.py`가 실행 결과를 검사한다.
 
 지표·guardrail 값을 LLM이 창작하던 경로는 #536에서 제거했다. 예측 모델링 사전등록
 표준(arXiv 2311.18807)에서 성공 기준을 실험 전에 연구자가 선언하는 것이 제도의
@@ -24,8 +25,8 @@ API 이미지에 없어 import할 수 없으므로 값을 복제하며, 동일�
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from datetime import date, timedelta
+
+
 from decimal import Decimal, InvalidOperation
 import re
 import uuid
@@ -33,26 +34,10 @@ import uuid
 from pydantic import BaseModel, ConfigDict, Field
 
 
-# `src/pipeline/experiment_evaluation.py`의 POLICY_SEEDS와 같아야 한다. 어긋나면
-# paired_experiment가 MISSING_PAIRED_RUN으로 끊어 모든 실험이 comparison_failed가 된다.
-POLICY_SEEDS: tuple[int, ...] = tuple(range(42, 72))
-
-# 정책 상수 — 환경이 아니라 실험 방법론이 정한다.
-COMPARISON = "동일 조건 baseline 재학습 (권장)"
-# 자동 발행 경로는 사람이 데이터 이상을 판단할 수 없으므로 스냅샷 재사용을 막는다.
-SNAPSHOT_REUSE = "불허 (정규 조립 경로 실패 시 중단)"
-# 실험 간 동일 분할을 강제해 서로 다른 실험의 지표를 비교 가능하게 한다.
-SPLIT_SEED = 20260801
-TEST_SIZE = "0.2"
-VALIDATION_SIZE = "0.2"
-
-# `docs/specs/2026-07-24-action-log-slice-semantics.md`의 소비 계약 `dt BETWEEN P-30
-# AND P-1`을 따른다. 이 값을 바꾸면 발행되는 실험의 학습 구간이 달라진다.
-TRAINING_WINDOW_DAYS = 30
-# `src/pipeline/config.yaml`의 `data.path`와 같은 값이다. 사람이 읽는 설명에만 쓰이고
-# `reproducibility_id` 해시에는 들어가지 않는다.
-DATASET_PATH = "data/processed/training_dataset.csv"
-
+# 실행 설정(시드·split·비율·비교 대상·스냅샷 재사용·데이터셋·학습 설정 참조)은 #570에서
+# 본문에서 뺐다. 매 이슈 같은 값을 텍스트로 복사하던 것이고, 실제 강제는 코드가 한다 —
+# 예를 들어 시드는 `src/pipeline/paired_experiment.py`가 실행 결과를 검사한다. 사본이
+# 코드와 어긋날 수 있는 위험만 남고 얻는 것이 없었다.
 _METRIC_DIRECTIONS = ("higher_is_better", "lower_is_better")
 _NOT_APPLICABLE = "not_applicable"
 _NONE_VALUE = "없음"
@@ -92,15 +77,6 @@ def _require_non_negative_decimal(value: str, field_name: str) -> None:
         raise ValueError(f"{field_name} exceeds the decimal exponent limit")
     if parsed < 0:
         raise ValueError(f"{field_name} must be non-negative")
-
-# `tools/auto_research_issue_branch.py`의 `_SCOPE_LABELS`와 문자 그대로 같아야 한다.
-SCOPE_LABELS: dict[str, str] = {
-    "prod_model_contract": (
-        "prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다"
-    ),
-    "feast_definition": "Feast 정의(`feature_repo/`) 수정을 허용한다",
-    "promotion": "실험 결과를 champion으로 승격하는 것까지 검토한다",
-}
 
 _MARKER_PREFIX = "<!-- experiment-id:"
 
@@ -198,30 +174,6 @@ class IssueSubmission(BaseModel):
                 raise ValueError(f"{name} must not contain a '### ' heading line")
 
 
-class ExperimentDefaults(BaseModel):
-    """환경마다 달라지는 서버 소유 값.
-
-    기간은 여기 두지 않는다 — 고정 문자열로 두면 첫날부터 낡는다.
-    `training_window()`가 발행 시점에 계산한다.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    dataset_source: str = Field(min_length=1, max_length=200)
-    training_config_ref: str = Field(min_length=1, max_length=256)
-
-
-def training_window(today: date) -> tuple[date, date]:
-    """학습 대상 기간을 KST 기준으로 계산한다.
-
-    오늘 파티션은 아직 채워지는 중이므로 어제까지 본다. 시계를 직접 읽지 않고 인자로
-    받는다 — 그래야 테스트가 실행 날짜에 흔들리지 않는다.
-    """
-    end = today - timedelta(days=1)
-    start = end - timedelta(days=TRAINING_WINDOW_DAYS - 1)
-    return start, end
-
-
 def marker_for(experiment_id: uuid.UUID) -> str:
     """재시도 시 GitHub에서 기존 이슈를 찾기 위한 HTML 주석 marker."""
     return f"{_MARKER_PREFIX} {experiment_id} -->"
@@ -235,78 +187,42 @@ def build_issue_title(fields: IssueSubmission) -> str:
 def build_issue_body(
     experiment_id: uuid.UUID,
     fields: IssueSubmission,
-    defaults: ExperimentDefaults,
-    allowed_scope: Sequence[str],
-    window: tuple[date, date],
 ) -> str:
-    """제출 값과 서버 소유 값을 heading과 결합해 Issue Form 본문을 만든다."""
-    unknown = set(allowed_scope) - set(SCOPE_LABELS)
-    if unknown:
-        raise ValueError("unknown allowed scope: " + ", ".join(sorted(unknown)))
+    """제출 값을 Issue Form heading 본문으로 만든다.
 
-    checked = set(allowed_scope)
-    scope_lines = "\n".join(
-        f"- [{'x' if key in checked else ' '}] {label}"
-        for key, label in SCOPE_LABELS.items()
-    )
-    seeds = ", ".join(str(seed) for seed in POLICY_SEEDS)
-    window_start, window_end = window
-    dataset_snapshot = f"{defaults.dataset_source}@{window_start}..{window_end}"
-    dataset_window = (
-        f"- 데이터셋 / 경로: {DATASET_PATH}\n"
-        f"- 기간 (KST YYYY-MM-DD ~ YYYY-MM-DD): {window_start} ~ {window_end}"
-    )
-    sections: list[tuple[str, str]] = [
-        ("연구 가설", fields.hypothesis),
-        ("Guardrail 지표 이름", fields.guardrail_metric_name),
-        ("Guardrail 지표 방향", fields.guardrail_metric_direction),
-        ("최대 Guardrail 악화폭", fields.maximum_guardrail_regression),
-        ("비교 대상", COMPARISON),
-        ("데이터셋 스냅샷", dataset_snapshot),
-        ("랜덤 시드 목록", seeds),
-        ("Split 시드", str(SPLIT_SEED)),
-        ("Test 비율", TEST_SIZE),
-        ("Validation 비율", VALIDATION_SIZE),
-        ("학습 설정 참조", defaults.training_config_ref),
-        ("대상 데이터 · 기간", dataset_window),
-        ("스냅샷 재사용", SNAPSHOT_REUSE),
-        ("허용 범위", scope_lines),
-    ]
-    # 주 지표를 선언했으면 세 heading을 Guardrail 앞에 되돌려 놓는다. 선언하지
-    # 않았으면 heading 자체가 없고, 파서는 그 부재를 미선언으로 읽는다.
+    선언된 항목만 내보낸다. `연구 가설`을 뺀 나머지는 전부 선택이며, 값이 없으면
+    heading 자체를 생략한다 — GitHub이 빈 칸에 `_No response_`를 넣는 것과 다르지만
+    파서는 두 경우 모두 미선언으로 읽는다.
+
+    실행 설정(시드·split·비율·비교 대상·스냅샷 재사용·데이터셋·학습 설정 참조)과 허용
+    범위는 #570에서 뺐다. 매 이슈 같은 값을 텍스트로 복사하던 것이고, 실제 강제는
+    코드가 한다.
+    """
+    sections: list[tuple[str, str]] = [("연구 가설", fields.hypothesis)]
+
+    def append(name: str, value: str) -> None:
+        if value.strip():
+            sections.append((name, value.strip()))
+
+    append("선행 연구 참조", fields.related_work)
+    append("변경할 피처 · 모델", fields.change)
     if fields.primary_metric_name:
-        insert_at = next(
-            index
-            for index, (name, _) in enumerate(sections)
-            if name == "Guardrail 지표 이름"
+        sections.extend(
+            (
+                ("주 지표 이름", fields.primary_metric_name),
+                ("주 지표 방향", fields.primary_metric_direction),
+                ("최소 주 지표 개선폭", fields.minimum_primary_delta),
+            )
         )
-        sections[insert_at:insert_at] = [
-            ("주 지표 이름", fields.primary_metric_name),
-            ("주 지표 방향", fields.primary_metric_direction),
-            ("최소 주 지표 개선폭", fields.minimum_primary_delta),
-        ]
-
-    # 선택 섹션은 비우면 GitHub이 `_No response_`를 넣는 것과 달리 heading 자체를
-    # 생략한다(파서는 두 경우 모두 통과한다).
-    if fields.change.strip():
-        insert_at = next(
-            index for index, (name, _) in enumerate(sections) if name == "연구 가설"
+    if fields.guardrail_metric_name != _NONE_VALUE:
+        sections.extend(
+            (
+                ("Guardrail 지표 이름", fields.guardrail_metric_name),
+                ("Guardrail 지표 방향", fields.guardrail_metric_direction),
+                ("최대 Guardrail 악화폭", fields.maximum_guardrail_regression),
+            )
         )
-        sections.insert(insert_at + 1, ("변경할 피처 · 모델", fields.change.strip()))
-    if fields.secondary_metrics.strip():
-        insert_at = next(
-            index for index, (name, _) in enumerate(sections) if name == "비교 대상"
-        )
-        sections.insert(
-            insert_at, ("보조 관측 지표", fields.secondary_metrics.strip())
-        )
-    if fields.related_work.strip():
-        # `변경할 피처 · 모델`을 기준으로 삼지 않는다 — 그 섹션은 이제 생략될 수 있어
-        # `next()`가 StopIteration으로 터진다. 항상 있는 `연구 가설` 뒤에 붙인다.
-        insert_at = next(
-            index for index, (name, _) in enumerate(sections) if name == "연구 가설"
-        )
-        sections.insert(insert_at + 1, ("선행 연구 참조", fields.related_work.strip()))
+    append("보조 관측 지표", fields.secondary_metrics)
 
     rendered = "\n\n".join(f"### {name}\n{value}" for name, value in sections)
     return f"{marker_for(experiment_id)}\n\n{rendered}\n"

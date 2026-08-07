@@ -181,7 +181,7 @@ def submit_experiment(
 
     try:
         state.last_publication = client.publish_issue(
-            experiment.id, submission.to_fields(), submission.allowed_scope
+            experiment.id, submission.to_fields()
         )
     except ExperimentApiError as error:
         # 갱신을 **먼저** 한다. `refresh_selected_experiment()`는 정상 종료 경로에서

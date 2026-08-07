@@ -32,7 +32,6 @@ from agent_orchestration.app.experiments.schemas import (
     CandidateReportRequest,
     ExperimentCreate,
 )
-from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 from agent_orchestration.app.experiments.service import create_experiment, record_candidate
 
 
@@ -231,10 +230,6 @@ def executor_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
     monkeypatch.setattr(main_module, "load_settings", lambda: settings)
     monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)

@@ -184,7 +184,8 @@ def test_submitting_sends_the_server_contract(stub_api: list[tuple[str, dict]]) 
     fields = stub_api[1][1]["fields"]
     assert fields["title"] == "views per day ratio feature"
     assert fields["hypothesis"] == _MARKDOWN_HYPOTHESIS
-    assert "allowed_scope" in stub_api[1][1]
+    # `allowed_scope`는 #570에서 사라졌다. 서버가 `extra="forbid"`라 보내면 422다.
+    assert set(stub_api[1][1]) == {"fields"}
 
 
 def test_submission_carries_no_metric_fields(stub_api: list[tuple[str, dict]]) -> None:

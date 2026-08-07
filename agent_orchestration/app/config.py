@@ -9,7 +9,7 @@
 PostgreSQL 연결 정보 등 FastAPI 런타임의 공통 설정 값을 단일 진입점으로 정규화한다.
 Runner 백엔드에서는 외부 API 인증·API-to-Runner 내부 인증·executor 보고 API 인증이 같은
 토큰을 재사용하지 않도록 기동 전에 거부한다. 이슈 발행 경로가 쓰는 GitHub 자격·발행 대상 저장소·서버
-소유 실험 기본값(`ExperimentDefaults`)도 여기서 검증해 `ServiceSettings`에 담는다.
+실험 실행 설정은 #570에서 이슈 본문에서 빠져 더 이상 여기서 읽지 않는다.
 `get_settings`는 `app.state.settings`에서 요청 단위로 이 값을 꺼내는 FastAPI
 의존성이다 — 라우터가 `create_app()`의 클로저에 접근할 수 없어 필요하다.
 
@@ -27,7 +27,6 @@ from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request, status
 
-from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 
 
 def _require_env(name: str, value: str | None) -> str:
@@ -82,7 +81,6 @@ class ServiceSettings:
     github_repository: str
     gh_timeout_sec: int
     issue_daily_limit: int
-    experiment_defaults: ExperimentDefaults
     executor_api_token: str | None = None
     baseline_github_app_id: int | None = None
     baseline_github_app_installation_id: int | None = None
@@ -185,16 +183,6 @@ def load_settings() -> ServiceSettings:
     )
     gh_timeout_sec = _positive_env_int("ORCH_GH_TIMEOUT_SEC", 30)
     issue_daily_limit = _positive_env_int("ORCH_ISSUE_DAILY_LIMIT", 20)
-    experiment_defaults = ExperimentDefaults(
-        dataset_source=_require_env(
-            "ORCH_EXPERIMENT_DATASET_SOURCE",
-            os.getenv("ORCH_EXPERIMENT_DATASET_SOURCE"),
-        ),
-        training_config_ref=_require_env(
-            "ORCH_EXPERIMENT_TRAINING_CONFIG_REF",
-            os.getenv("ORCH_EXPERIMENT_TRAINING_CONFIG_REF"),
-        ),
-    )
     return ServiceSettings(
         openai_api_key=openai_api_key,
         openai_model=openai_model,
@@ -207,7 +195,6 @@ def load_settings() -> ServiceSettings:
         github_repository=github_repository,
         gh_timeout_sec=gh_timeout_sec,
         issue_daily_limit=issue_daily_limit,
-        experiment_defaults=experiment_defaults,
         executor_api_token=executor_api_token,
         baseline_github_app_id=baseline_github_app_id,
         baseline_github_app_installation_id=baseline_github_app_installation_id,

@@ -84,8 +84,7 @@ _H3_LINE_PATTERN = re.compile(r"^### ", re.MULTILINE)
 class Submission:
     """제출 폼이 모은 사전등록 값.
 
-    `allowed_scope`만 API 요청의 최상위로 가고 나머지는 `fields`로 들어간다 — 서버의
-    `IssuePublicationRequest`가 그 형태를 요구한다.
+    값은 `fields`로 들어간다 — 서버의 `IssuePublicationRequest`가 그 형태를 요구한다.
 
     #570에서 지표·변경 내용·허용 범위 입력칸을 없애고 `hypothesis` 마크다운 한
     덩어리로 합쳤다. 서버가 선택으로 받는 값은 여기서 보내지 않는다 —
@@ -94,7 +93,6 @@ class Submission:
 
     title: str
     hypothesis: str
-    allowed_scope: tuple[str, ...] = ()
 
     def missing_required(self) -> list[str]:
         """비어 있으면 안 되는 항목의 화면 이름을 반환한다.

@@ -17,7 +17,6 @@ import hashlib
 import json
 import re
 import uuid
-from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -41,7 +40,6 @@ from agent_orchestration.app.experiments.issue_authoring import (
     build_issue_body,
     build_issue_title,
     marker_for,
-    training_window,
 )
 from agent_orchestration.app.experiments.models import (
     Experiment,
@@ -86,7 +84,6 @@ from agent_orchestration.github_refs import GitHubRefError, GitHubRefs
 
 # 학습 기간은 KST 날짜 경계로 계산한다. UTC로 계산하면 한국 시각 오전 9시 이전에
 # 발행된 실험이 하루 앞선 구간을 보게 된다.
-_KST = ZoneInfo("Asia/Seoul")
 
 
 @dataclass(frozen=True)
@@ -853,13 +850,7 @@ async def publish_experiment_issue(
     stores_issue_definition = experiment.issue_body is None
     stores_baseline = experiment.base_dev_sha is None
     if stores_issue_definition:
-        body = build_issue_body(
-            experiment.id,
-            request.fields,
-            settings.experiment_defaults,
-            allowed_scope=request.allowed_scope,
-            window=training_window(datetime.now(_KST).date()),
-        )
+        body = build_issue_body(experiment.id, request.fields)
         title = build_issue_title(request.fields)
     else:
         body = experiment.issue_body

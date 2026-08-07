@@ -275,10 +275,11 @@ class IssuePublicationRequest(BaseModel):
 
     # 지표·guardrail을 호출자가 선언한다(#536). 형식 위반은 이슈가 열리기 전에 422로
     # 끊긴다 — `IssueSubmission`이 파서와 같은 규칙을 검사한다.
+    #
+    # `allowed_scope`는 #570에서 없앴다. 허용 범위 heading이 본문에서 빠져 값을 실을
+    # 곳이 없고, 받아만 두고 버리면 호출자는 권한을 준 줄 안다. 화면에 범위를 다시
+    # 노출할 때 본문 heading과 함께 되살린다.
     fields: IssueSubmission
-    allowed_scope: tuple[
-        Literal["prod_model_contract", "feast_definition", "promotion"], ...
-    ] = ()
 
 
 class IssuePublicationResponse(BaseModel):

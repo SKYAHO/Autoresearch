@@ -24,7 +24,6 @@ def _submission(**overrides: Any) -> Submission:
     payload: dict[str, Any] = {
         "title": "views per day ratio feature",
         "hypothesis": "# 주제\n\n비율 피처가 ROC-AUC를 높인다.",
-        "allowed_scope": (),
     }
     payload.update(overrides)
     return Submission(**payload)
@@ -110,10 +109,10 @@ def test_title_without_ascii_is_rejected_by_the_server_contract() -> None:
         IssueSubmission.model_validate(_submission(title="비율 피처 실험").to_fields())
 
 
-def test_publish_issue_sends_fields_and_scope_separately(
+def test_publish_issue_sends_only_the_fields_envelope(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """서버는 `fields`와 `allowed_scope`를 다른 층에서 받는다."""
+    """`allowed_scope`는 #570에서 사라졌다 — 보내면 `extra="forbid"`가 422로 끊는다."""
     client = ExperimentClient("http://127.0.0.1:8000", "t" * 32)
     seen: dict[str, Any] = {}
 
@@ -128,17 +127,15 @@ def test_publish_issue_sends_fields_and_scope_separately(
         }
 
     monkeypatch.setattr(client, "_request_json", fake_request)
-    submission = _submission(allowed_scope=("promotion",))
 
     result = client.publish_issue(
         "3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d",
-        submission.to_fields(),
-        submission.allowed_scope,
+        _submission().to_fields(),
     )
 
     assert seen["method"] == "POST"
     assert seen["path"].endswith("/issue")
-    assert seen["payload"]["allowed_scope"] == ["promotion"]
+    assert set(seen["payload"]) == {"fields"}
     assert seen["payload"]["fields"]["title"] == "views per day ratio feature"
     assert result.issue_number == 533
 

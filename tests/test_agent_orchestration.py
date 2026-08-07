@@ -16,7 +16,6 @@ from fastapi.testclient import TestClient
 import pytest
 
 from agent_orchestration.app.config import ServiceSettings, load_settings
-from agent_orchestration.app.experiments.issue_authoring import ExperimentDefaults
 from agent_orchestration.app import db as db_module
 from agent_orchestration.app import llm as llm_module
 from agent_orchestration.app import main as main_module
@@ -473,10 +472,6 @@ def test_generate_response_uses_read_only_ephemeral_codex_cli(
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
@@ -532,10 +527,6 @@ def test_generate_codex_cli_passes_configured_model(monkeypatch: pytest.MonkeyPa
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
@@ -590,10 +581,6 @@ def test_generate_codex_cli_rejects_invalid_process_output(
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
 
@@ -636,10 +623,6 @@ def test_generate_codex_cli_terminates_process_group_after_timeout(
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(codex_module, "_terminate_process_group", fake_terminate_process_group)
@@ -700,10 +683,6 @@ def test_generate_codex_cli_omits_stderr_from_timeout_logs(
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(codex_module, "_terminate_process_group", lambda _process: None)
@@ -755,10 +734,6 @@ def test_generate_codex_cli_terminates_process_group_when_request_is_cancelled(
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
     monkeypatch.setattr(codex_module.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(codex_module, "_terminate_process_group", fake_terminate_process_group)
@@ -911,10 +886,6 @@ def test_main_chat_succeeds_after_mocked_dependencies(monkeypatch: pytest.Monkey
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
 
     async def fake_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
@@ -967,10 +938,6 @@ def test_main_chat_rejects_missing_api_token(monkeypatch: pytest.MonkeyPatch) ->
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
 
     async def unexpected_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
@@ -1001,10 +968,6 @@ def test_main_chat_rejects_unknown_request_fields(monkeypatch: pytest.MonkeyPatc
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
 
     async def fake_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
@@ -1077,10 +1040,6 @@ def test_generate_response_uses_responses_api_for_openai_backend(
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
     received_request: dict[str, object] = {}
 
@@ -1133,10 +1092,6 @@ def test_generate_openai_response_rejects_incomplete_result(
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
 
     class FakeResponses:
@@ -1193,10 +1148,6 @@ def test_main_chat_returns_bad_gateway_when_codex_cli_fails(
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
 
     async def failing_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
@@ -1235,10 +1186,6 @@ def test_main_chat_returns_service_unavailable_when_runner_is_overloaded(
         github_repository="SKYAHO/Autoresearch",
         gh_timeout_sec=30,
         issue_daily_limit=20,
-        experiment_defaults=ExperimentDefaults(
-            dataset_source="feast://feast_offline_store/ctr_training_v1",
-            training_config_ref="configs/train/x.yaml@abc",
-        ),
     )
 
     async def overloaded_generate_response(*_args: object, **_kwargs: object) -> LLMResult:
@@ -1279,10 +1226,6 @@ def test_issue_publication_settings_are_loaded(monkeypatch: pytest.MonkeyPatch) 
     )
     assert settings.gh_timeout_sec == 30
     assert settings.issue_daily_limit == 20
-    assert (
-        settings.experiment_defaults.dataset_source
-        == "feast://feast_offline_store/ctr_training_v1"
-    )
 
 
 def test_github_repository_must_be_owner_slash_repo(
