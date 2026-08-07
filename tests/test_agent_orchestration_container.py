@@ -166,7 +166,9 @@ def test_executor_image_seals_the_phase2_runtime_contract() -> None:
     assert '"--no-group", "feast"' in dockerfile
     assert "FROM node:22.16.0-slim AS codex-cli" in dockerfile
     assert "@openai/codex@0.146.0" in dockerfile
-    assert "apt-get install --yes --no-install-recommends git" in dockerfile
+    # libgomp1은 lightgbm이 runtime에 dlopen하는 OpenMP다. python:3.12-slim에
+    # 없으므로 빠지면 Phase 2 학습이 import 시점에 OSError로 죽는다.
+    assert "apt-get install --yes --no-install-recommends git libgomp1" in dockerfile
     assert "COPY --from=lock-export /uv /usr/local/bin/uv" in dockerfile
     assert "UV_PROJECT_ENVIRONMENT=/opt/autoresearch-venv" in dockerfile
     assert "PATH=/opt/autoresearch-venv/bin:${PATH}" in dockerfile

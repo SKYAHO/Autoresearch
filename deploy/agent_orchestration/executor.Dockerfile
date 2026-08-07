@@ -21,8 +21,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# lightgbm이 런타임에 libgomp(OpenMP)를 dlopen한다. python:3.12-slim에는
+# 기본으로 포함되어 있지 않다. Phase 2 학습을 이 image에서 실행하므로
+# Dockerfile.app과 같은 처리가 필요하다.
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends git \
+    && apt-get install --yes --no-install-recommends git libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --gid 10001 appuser \
     && adduser --uid 10001 --gid 10001 --disabled-password --gecos "" --no-create-home appuser
