@@ -197,7 +197,13 @@ jobs:
           # feast 공식 CLI에는 TLS CA 조달 훅이 없어 apply 직전에 내려받는다.
           # google-cloud-secret-manager 는 uv 프로젝트 의존성이라 러너의 system
           # python 에는 없다 — bare python 이면 ModuleNotFoundError.
-          uv run --no-sync python scripts/fetch_redis_ca.py "$REDIS_TLS_CA_PATH"
+          # dev는 FEAST_ONLINE_FULL_SCAN_FOR_DELETION=false라 Redis에 접속하지
+          # 않으므로 CA도 필요 없다. feast_apply_dev GSA는 redis_server_ca
+          # 시크릿 접근권이 없는 게 의도된 보안 경계(infra #424)라 무조건
+          # 조달하면 403이 난다(#575).
+          if [[ "$AUTORESEARCH_ENV" != "dev" ]]; then
+            uv run --no-sync python scripts/fetch_redis_ca.py "$REDIS_TLS_CA_PATH"
+          fi
           cd feature_repo
           # --log-level debug가 없으면 기본값 warning이라 삭제 건수 로그
           # (feast redis.py의 logger.debug)가 남지 않아 삭제 경로를 검증할 수 없다.
