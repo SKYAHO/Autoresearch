@@ -6,14 +6,17 @@ workspace-preparer가 봉인 이슈와 exp branch checkout을 검증한 뒤, can
 
 [기능]
 read-only auth source의 regular `auth.json`만 per-run writable scratch `CODEX_HOME`으로
-복사한 뒤 `codex exec --ephemeral`을 실행한다. 명시적 환경 allowlist와 전용 process
-group으로 noninteractive Codex를 실행하고, timeout·취소 시 child process까지 회수한다.
-원격 tip이 base와 다르면 기존 candidate 채택 경로로 넘기기 위해 Codex 실행을 생략한다.
+복사한 뒤 고정 모델·추론 강도로 `codex exec --ephemeral`을 실행한다. 명시적 환경
+allowlist와 전용 process group으로 noninteractive Codex를 실행하고, timeout·취소 시
+child process까지 회수한다. 성공·실패 어느 경로에서든 진단용 출력 tail을 호출자에게
+돌려준다. 원격 tip이 base와 다르면 기존 candidate 채택 경로로 넘기기 위해 Codex 실행을
+생략한다.
 
 [비책임]
 이슈·ref·workspace 검증(`workspace.py`), candidate 범위와 테스트 승인(Stage 4), Git
 commit·push와 candidate API 보고(Stage 5), Pod Secret·volume 정책(Autoresearch-infra)은
-담당하지 않는다.
+담당하지 않는다. 돌려준 출력을 **로그로 내보내는 것도 담당하지 않는다** — stage 경계인
+`phase2.codex_worker_main`이 한다.
 """
 
 from __future__ import annotations
@@ -40,10 +43,34 @@ _TERMINATION_GRACE_SECONDS = 5.0
 _PIPE_RING_BUFFER_BYTES = 64 * 1024
 _FIXED_UV_PROJECT_ENVIRONMENT = "/opt/autoresearch-venv"
 _CODEX_AUTH_FILENAME = "auth.json"
+# 실험 간 비교 가능성을 위해 모델과 추론 강도를 argv로 고정한다(#612). Codex CLI는
+# `--model`에 임의 문자열을 받아 런타임에서야 실패하므로, 슬러그를 바꿀 때는
+# `codex doctor` 또는 실제 Job 로그로 수용 여부를 확인해야 한다.
+_CODEX_MODEL = "gpt-5.6-luna"
+_CODEX_REASONING_EFFORT = "max"
+# executor Pod는 PodSecurity restricted라 capability가 전부 드롭되어 있고,
+# `workspace-write`가 쓰는 bubblewrap이 비특권 user namespace를 만들지 못한다. bwrap은
+# 필터가 아니라 프로세스를 감싸는 껍데기라 뜨지 못하면 파일 읽기·쓰기가 함께 막히고,
+# Codex는 그것을 "변경 없음"으로 보고하며 exit 0으로 끝난다(#612).
+#
+# 경계가 사라지는 것은 아니다. 루트 FS 읽기 전용, `.git` 커널 read-only 마운트와 전후
+# 다이제스트 대조, verifier의 사후 경로 검사, credential 미마운트, NetworkPolicy가
+# 그대로 남는다. 이 container에서 쓰기 가능한 곳은 `/workspace`(단 `.git` 제외)와
+# `/tmp` 두 곳뿐이며, 그것이 Codex가 수정해야 하는 대상과 정확히 일치한다.
+_CODEX_SANDBOX_MODE = "danger-full-access"
 
 
 class CodexWorkerError(RuntimeError):
-    """Codex worker가 정제된 실행 실패 사유를 반환한다."""
+    """Codex worker가 정제된 실행 실패 사유를 반환한다.
+
+    실패 경로에서도 진단이 되도록 Codex 출력 tail을 함께 싣는다(#612). timeout처럼 결과가
+    없는 경로가 오히려 원문이 가장 필요한 곳이다. 사유 코드는 `args`에 하나만 유지해야
+    `phase2._safe_failure_reason`이 `redacted`로 바꾸지 않고 그대로 통과시킨다 — 출력은
+    반드시 attribute로만 붙인다.
+    """
+
+    stdout: str = ""
+    stderr: str = ""
 
 
 @dataclass(frozen=True)
@@ -59,14 +86,24 @@ class CodexRunInput:
 
 @dataclass(frozen=True)
 class CodexRunResult:
-    """원문 출력 없이 Codex 종료 결과만 전달한다."""
+    """Codex 종료 결과와 진단용 출력 tail을 전달한다.
+
+    `stdout`·`stderr`는 각각 `_PIPE_RING_BUFFER_BYTES` 상한의 **최근 구간**이며 전체
+    출력이 아니다. 이 저장소는 외부 문자열을 로그로 내보내지 않는 것을 원칙으로 하지만
+    (`phase2._safe_failure_reason`), codex-worker는 여기서 예외를 둔다 — Codex가 실패를
+    exit 0으로 보고하는 구조라 종료 코드만으로는 진단이 불가능하다(#612). 이 container에는
+    token이 마운트되지 않고 환경 allowlist에도 secret이 없어 노출 범위는 저장소 소스에
+    한정된다.
+    """
 
     exit_code: int
     duration_ms: int
+    stdout: str = ""
+    stderr: str = ""
 
 
 class _RingBuffer:
-    """pipe 원문을 영속화하지 않고 제한된 크기로만 소비한다."""
+    """pipe 원문을 제한된 크기의 최근 구간으로만 보관한다."""
 
     def __init__(self, capacity: int) -> None:
         self._capacity = capacity
@@ -87,6 +124,13 @@ class _RingBuffer:
         while self._size > self._capacity:
             removed = self._chunks.popleft()
             self._size -= len(removed)
+
+    def decode(self) -> str:
+        """보관 중인 bytes를 로그에 실을 수 있는 문자열로 만든다.
+
+        용량 초과로 앞을 잘라내면 multi-byte 문자 경계가 깨질 수 있어 대체 문자로 복구한다.
+        """
+        return b"".join(self._chunks).decode("utf-8", errors="replace")
 
 
 def _prepare_runtime_codex_home(source_home: Path, temporary_root: Path) -> Path:
@@ -113,6 +157,15 @@ def _prepare_runtime_codex_home(source_home: Path, temporary_root: Path) -> Path
     except OSError as error:
         raise CodexWorkerError("codex_auth_invalid") from error
     return runtime_home
+
+
+def _with_output(
+    error: CodexWorkerError, stdout: _RingBuffer, stderr: _RingBuffer
+) -> CodexWorkerError:
+    """실패 사유는 그대로 두고 진단용 출력 tail만 예외에 붙인다."""
+    error.stdout = stdout.decode()
+    error.stderr = stderr.decode()
+    return error
 
 
 def _drain_pipe(pipe: BinaryIO, buffer: _RingBuffer) -> None:
@@ -291,7 +344,7 @@ def _join_pipe_readers(
 
 
 def run_codex(run: CodexRunInput) -> CodexRunResult:
-    """Codex를 workspace-write sandbox로 실행하고 원문 출력 없이 종료 결과를 반환한다."""
+    """Codex를 고정 모델로 실행하고 종료 결과와 출력 tail을 반환한다."""
     _validate_run(run)
     prompt = build_codex_prompt(run)
     git_directory, sealed_git_metadata = _capture_protected_git_metadata(run.repository)
@@ -299,8 +352,12 @@ def run_codex(run: CodexRunInput) -> CodexRunResult:
         "codex",
         "exec",
         "--ephemeral",
+        "--model",
+        _CODEX_MODEL,
+        "-c",
+        f'model_reasoning_effort="{_CODEX_REASONING_EFFORT}"',
         "--sandbox",
-        "workspace-write",
+        _CODEX_SANDBOX_MODE,
         "-C",
         str(run.repository),
         prompt,
@@ -338,25 +395,38 @@ def run_codex(run: CodexRunInput) -> CodexRunResult:
         )
         for reader in readers:
             reader.start()
+        # 안쪽 try가 reader를 join한 **뒤에** 바깥 try가 buffer를 읽어야 in-flight 출력까지
+        # 들어온다. 순서가 뒤집히면 timeout 경로에서 마지막 구간을 잃는다.
         try:
-            exit_code = process.wait(timeout=run.timeout_seconds)
-            if _process_group_is_alive(process):
+            try:
+                exit_code = process.wait(timeout=run.timeout_seconds)
+                if _process_group_is_alive(process):
+                    _terminate_process_group(process)
+                    raise CodexWorkerError("codex_child_process_leaked")
+            except subprocess.TimeoutExpired:
                 _terminate_process_group(process)
-                raise CodexWorkerError("codex_child_process_leaked")
-        except subprocess.TimeoutExpired:
-            _terminate_process_group(process)
-            raise CodexWorkerError("codex_timeout") from None
-        except BaseException:
-            _terminate_process_group(process)
+                raise CodexWorkerError("codex_timeout") from None
+            except BaseException:
+                _terminate_process_group(process)
+                raise
+            finally:
+                _join_pipe_readers(readers, pipes)
+        except CodexWorkerError as error:
+            _with_output(error, stdout_buffer, stderr_buffer)
             raise
-        finally:
-            _join_pipe_readers(readers, pipes)
 
     if _git_metadata_digest(git_directory) != sealed_git_metadata:
-        raise CodexWorkerError("git_metadata_changed")
+        raise _with_output(
+            CodexWorkerError("git_metadata_changed"), stdout_buffer, stderr_buffer
+        )
 
     duration_ms = int((time.monotonic() - started_at) * 1000)
-    return CodexRunResult(exit_code=exit_code, duration_ms=duration_ms)
+    return CodexRunResult(
+        exit_code=exit_code,
+        duration_ms=duration_ms,
+        stdout=stdout_buffer.decode(),
+        stderr=stderr_buffer.decode(),
+    )
 
 
 def run_codex_for_workspace(

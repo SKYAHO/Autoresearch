@@ -2,7 +2,7 @@
 
 전체 파이프라인에서 workspace-preparer가 봉인된 checkout을 만든 뒤 Codex가 파일을
 수정하는 구간이다. 실제 Codex 인증·추론은 실행하지 않고, 임시 executable로 argv, 환경,
-timeout process group 회수와 출력 비노출을 관찰한다.
+timeout process group 회수와 출력 tail 반환을 관찰한다.
 """
 
 from __future__ import annotations
@@ -29,7 +29,9 @@ from agent_orchestration.executor.state import ExecutorWorkspaceState
 
 
 _BASE_SHA = "a" * 40
-_SENTINEL = "codex-output-must-not-be-logged"
+# run_codex는 출력을 반환만 하고 로그로 내보내지 않는다. 로깅은 stage 경계인
+# `phase2.codex_worker_main`이 담당한다(#612).
+_SENTINEL = "codex-output-marker"
 
 
 def _issue_body() -> str:
@@ -264,8 +266,12 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
     assert json.loads(argv_path.read_text(encoding="utf-8")) == [
         "exec",
         "--ephemeral",
+        "--model",
+        "gpt-5.6-luna",
+        "-c",
+        'model_reasoning_effort="max"',
         "--sandbox",
-        "workspace-write",
+        "danger-full-access",
         "-C",
         str(run.repository),
         prompt,
@@ -295,6 +301,8 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
         for key in environment
     )
     assert _SENTINEL not in caplog.text
+    assert result.stdout.strip() == _SENTINEL
+    assert result.stderr.strip() == _SENTINEL
     assert sha256(source_auth.read_bytes()).hexdigest() == source_digest
     assert (run.codex_home / "config.toml").is_file()
     scratch_snapshot = json.loads(scratch_snapshot_path.read_text(encoding="utf-8"))
@@ -390,6 +398,51 @@ def test_timeout_terminates_the_codex_process_group_and_child(
     while Path(f"/proc/{child_pid}").exists() and time.monotonic() < deadline:
         time.sleep(0.02)
     assert not Path(f"/proc/{child_pid}").exists()
+
+
+def test_run_codex_timeout_still_carries_the_codex_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, protected_git_mount: None
+) -> None:
+    """결과가 없는 실패 경로가 오히려 원문이 가장 필요한 곳이다(#612)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(
+            [
+                "import sys",
+                "import time",
+                f"print({_SENTINEL!r}, flush=True)",
+                f"print({_SENTINEL!r}, file=sys.stderr, flush=True)",
+                "time.sleep(60)",
+            ]
+        ),
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+    monkeypatch.setattr(
+        "agent_orchestration.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
+    )
+    run = _run_input(tmp_path)
+    run = CodexRunInput(**{**run.__dict__, "timeout_seconds": 1})
+
+    with pytest.raises(CodexWorkerError, match="codex_timeout") as caught:
+        run_codex(run)
+
+    assert caught.value.stdout.strip() == _SENTINEL
+    assert caught.value.stderr.strip() == _SENTINEL
+    # 사유 코드는 `args` 하나로 남아야 `phase2._safe_failure_reason`이 통과시킨다.
+    assert caught.value.args == ("codex_timeout",)
+
+
+def test_ring_buffer_keeps_the_tail_and_survives_a_split_character() -> None:
+    """용량 초과로 앞을 잘라도 로그에 실을 수 있는 문자열이 나와야 한다."""
+    buffer = codex_worker._RingBuffer(8)
+    buffer.append("가나다라".encode("utf-8"))
+
+    decoded = buffer.decode()
+
+    assert decoded.endswith("다라")
+    assert "�" in decoded
 
 
 def test_run_codex_refuses_to_start_without_a_read_only_git_mount(

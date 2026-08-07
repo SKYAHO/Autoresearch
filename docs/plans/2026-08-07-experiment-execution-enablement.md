@@ -117,8 +117,17 @@ Stage 1이 성공해도 실패해도, **왜 그런지 보이게** 하는 것이 
 
 ### 2-2. 관측성
 
-- [ ] codex-worker 최소 진단 출력: exit code, 소요 시간, 변경 파일 수, stdout 말미 요약.
-      원문 전체는 남기지 않는다(`codex_worker.py:294`의 경계 유지)
+- [x] codex-worker 진단 출력 — **Stage 1에서 앞당겨 수행함 (#612).** 여기에 원래 적혀
+      있던 "stdout 말미 **요약**, 원문 전체는 남기지 않는다"는 방침을 **뒤집었다.**
+      요약을 만들려면 Codex 산문을 문자열 매칭해야 하는데, 그 규칙을 정할 근거가 될
+      실제 출력을 이 시점까지 단 한 건도 본 적이 없었다. 대신 64 KiB 상한의 **원문
+      tail을 그대로** 남긴다. codex-worker에는 token이 마운트되지 않고 환경 allowlist에도
+      secret이 없어 노출 범위가 저장소 소스에 한정된다는 것이 근거다
+- [ ] 위 로그를 Experiment API의 logs 경로로 올려 Streamlit UI에서 보이게 한다.
+      지금은 codex-worker에 API credential이 없어 컨테이너 로그에만 남는다
+- [ ] 실패 원인 분류(`agent_declined` / `already_implemented` / `no_model_call`) —
+      #612에서 **의도적으로 미룸.** 범주는 위 원문 로그를 실제로 관측한 뒤 정한다.
+      credential이 생기기 전에는 분류값이 갈 곳도 컨테이너 로그뿐이다
 - [ ] Step API 기록 배선 — `FEATURE_ASSEMBLY`/`TRAIN`/`EVALUATE`/`OTHER`.
       계약(#518)은 이미 있고 사용처가 없다. 통합 후에는 같은 프로세스가 직접 보고한다
 - [ ] 실험 컨텍스트(`experiment_id`/`issue_number`/`branch`)가 전 스테이지 로그에
