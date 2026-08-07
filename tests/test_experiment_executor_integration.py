@@ -47,6 +47,13 @@ _EXPERIMENT_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 _BODY = "<!-- experiment-id: 12345678-1234-5678-1234-567812345678 -->\nbody"
 
 
+class UnsafeExecutorError(RuntimeError):
+    """향후 executor 도메인 예외가 비정제 문자열을 담는 경우를 재현한다."""
+
+
+UnsafeExecutorError.__module__ = "agent_orchestration.executor.future"
+
+
 def test_phase2_main_logs_stage_lifecycle(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -103,6 +110,33 @@ def test_phase2_main_redacts_external_failure_details(
 
     assert exit_code == 1
     assert f"error_type={type(failure).__name__} reason=redacted" in caplog.text
+    assert "private-token" not in caplog.text
+    assert "secret-token" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "unsafe_reason",
+    [
+        "/var/run/secrets/private-token",
+        "response body contains secret-token",
+        "safe_code\nsecret-token",
+    ],
+)
+def test_phase2_main_redacts_unsafe_executor_domain_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    unsafe_reason: str,
+) -> None:
+    def fail() -> int:
+        raise UnsafeExecutorError(unsafe_reason)
+
+    monkeypatch.setattr(phase2, "workspace_preparer_main", fail)
+
+    with caplog.at_level(logging.ERROR, logger=phase2.__name__):
+        exit_code = phase2.main(["workspace-preparer"])
+
+    assert exit_code == 1
+    assert "error_type=UnsafeExecutorError reason=redacted" in caplog.text
     assert "private-token" not in caplog.text
     assert "secret-token" not in caplog.text
 

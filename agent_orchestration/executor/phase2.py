@@ -22,6 +22,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import sys
 import uuid
 
@@ -46,6 +47,10 @@ from agent_orchestration.executor.workspace import (
 _STATE_PATH = Path("/var/run/executor-state/state.json")
 _VERIFICATION_PATH = Path("/var/run/verification-result/result.json")
 _LOGGER = logging.getLogger(__name__)
+_SAFE_REASON_PATTERN = re.compile(r"^[a-z][a-z0-9_]*$")
+_SAFE_ENVIRONMENT_REASON_PATTERN = re.compile(
+    r"^(?:missing|invalid) ORCH_[A-Z0-9_]+$"
+)
 
 
 class Phase2ExecutorError(RuntimeError):
@@ -53,17 +58,20 @@ class Phase2ExecutorError(RuntimeError):
 
 
 def _safe_failure_reason(error: Exception) -> str:
-    """executor가 정제해 만든 도메인 예외만 원문 사유로 기록한다."""
+    """executor 도메인 예외의 제한된 고정 사유 코드만 기록한다."""
     error_type = type(error)
     if (
         error_type.__module__.startswith("agent_orchestration.executor")
         and error_type.__name__.endswith("Error")
     ):
         reason = getattr(error, "reason", None)
-        if isinstance(reason, str):
+        if reason is None and len(error.args) == 1:
+            reason = error.args[0]
+        if isinstance(reason, str) and (
+            _SAFE_REASON_PATTERN.fullmatch(reason) is not None
+            or _SAFE_ENVIRONMENT_REASON_PATTERN.fullmatch(reason) is not None
+        ):
             return reason
-        if len(error.args) == 1 and isinstance(error.args[0], str):
-            return error.args[0]
     return "redacted"
 
 
