@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-07T07:46:32Z",
+  "generated_at": "2026-08-07T07:57:09Z",
   "reports": [
+    {
+      "number": 573,
+      "title": "feat: 사전등록 폼을 마크다운 자유 서술로 바꾸고 이슈 본문을 줄인다",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-07T07:56:55Z",
+      "summary_ko": [
+        "실험 사전등록 폼을 고정 필드 입력 방식에서 마크다운 자유 서술 방식으로 개편하였습니다.",
+        "이슈 본문에서 반복되던 서버 상수 실행 설정 heading 14개를 제거하고 파서를 유연하게 수정하였습니다.",
+        "Streamlit UI에 마크다운 미리보기 기능과 발행 전 구분자 오류 검증 로직을 추가하였습니다."
+      ],
+      "report_url": "pr/573/"
+    },
     {
       "number": 583,
       "title": "fix: Phase 2 executor 실패 사유를 기록한다",
