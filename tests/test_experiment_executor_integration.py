@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from hashlib import sha256
 import logging
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 import uuid
 
@@ -68,6 +70,36 @@ def test_phase2_main_logs_stage_lifecycle(
     assert "phase2 stage finished stage=workspace-preparer exit_code=0" in caplog.text
 
 
+def test_phase2_main_logs_nonzero_stage_exit_as_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setattr(phase2, "codex_worker_main", lambda: 17)
+
+    with caplog.at_level(logging.INFO, logger=phase2.__name__):
+        exit_code = phase2.main(["codex-worker"])
+
+    assert exit_code == 17
+    assert (
+        "phase2 stage failed stage=codex-worker error_type=StageExitCode "
+        "reason=nonzero_exit exit_code=17"
+    ) in caplog.text
+    assert "phase2 stage finished stage=codex-worker" not in caplog.text
+
+
+def test_phase2_main_logs_invalid_stage_without_echoing_argument(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sensitive_argument = "invalid-stage-secret-token"
+
+    with caplog.at_level(logging.ERROR, logger=phase2.__name__):
+        exit_code = phase2.main([sensitive_argument])
+
+    assert exit_code == 1
+    assert "phase2 stage selection failed reason=invalid_stage_argument" in caplog.text
+    assert sensitive_argument not in caplog.text
+
+
 def test_phase2_main_logs_sanitized_domain_failure(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -85,6 +117,28 @@ def test_phase2_main_logs_sanitized_domain_failure(
         "phase2 stage failed stage=workspace-preparer "
         "error_type=Phase2ExecutorError reason=issue_marker_mismatch"
     ) in caplog.text
+
+
+def test_phase2_module_execution_preserves_phase2_failure_reason(
+) -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agent_orchestration.executor.phase2",
+            "workspace-preparer",
+        ],
+        check=False,
+        capture_output=True,
+        env={},
+        text=True,
+    )
+
+    assert completed.returncode == 1
+    assert (
+        "phase2 stage failed stage=workspace-preparer "
+        "error_type=Phase2ExecutorError reason=missing ORCH_EXPERIMENT_ID"
+    ) in completed.stderr
 
 
 @pytest.mark.parametrize(

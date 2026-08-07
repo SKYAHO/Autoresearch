@@ -314,6 +314,9 @@ Kubernetes initContainer는 non-zero 종료 코드만으로는 애플리케이�
 때는 `stage`, 예외 class 이름, 정제된 `reason`을 ERROR 로그로 남긴다.
 
 - executor 도메인 예외의 고정 사유 문자열만 `reason`으로 기록한다.
+- 알려지지 않은 stage 인자는 원문을 되풀이하지 않고 `invalid_stage_argument`로 기록한다.
+- stage가 예외 없이 non-zero를 반환하면 ERROR `nonzero_exit`와 종료 코드를 기록하고
+  정상 종료 로그를 남기지 않는다.
 - `OSError`, 외부 라이브러리 예외, 임의 `RuntimeError`·`ValueError`의 원문은 token,
   filesystem 경로 또는 외부 응답을 포함할 수 있으므로 기록하지 않고 `redacted`로
   정규화한다.

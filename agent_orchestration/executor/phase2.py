@@ -60,10 +60,11 @@ class Phase2ExecutorError(RuntimeError):
 def _safe_failure_reason(error: Exception) -> str:
     """executor 도메인 예외의 제한된 고정 사유 코드만 기록한다."""
     error_type = type(error)
-    if (
+    is_executor_domain_error = isinstance(error, Phase2ExecutorError) or (
         error_type.__module__.startswith("agent_orchestration.executor")
         and error_type.__name__.endswith("Error")
-    ):
+    )
+    if is_executor_domain_error:
         reason = getattr(error, "reason", None)
         if reason is None and len(error.args) == 1:
             reason = error.args[0]
@@ -214,6 +215,9 @@ def main(argv: list[str] | None = None) -> int:
         "candidate-finalizer": candidate_finalizer_main,
     }
     if len(selected) != 1 or selected[0] not in commands:
+        _LOGGER.error(
+            "phase2 stage selection failed reason=invalid_stage_argument"
+        )
         return 1
     stage = selected[0]
     _LOGGER.info("phase2 stage started stage=%s", stage)
@@ -227,6 +231,14 @@ def main(argv: list[str] | None = None) -> int:
             _safe_failure_reason(error),
         )
         return 1
+    if exit_code != 0:
+        _LOGGER.error(
+            "phase2 stage failed stage=%s error_type=StageExitCode "
+            "reason=nonzero_exit exit_code=%d",
+            stage,
+            exit_code,
+        )
+        return exit_code
     _LOGGER.info("phase2 stage finished stage=%s exit_code=%d", stage, exit_code)
     return exit_code
 
