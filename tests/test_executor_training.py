@@ -22,6 +22,8 @@ from agent_orchestration.executor.training import (  # noqa: E402
     TrainingInput,
     TrainingStage,
     dependencies_changed,
+    ensure_dataset,
+    expected_dataset_sha256,
     feature_definitions_changed,
     resolve_policy_seeds,
     run_training,
@@ -242,6 +244,96 @@ def test_outputs_are_written_outside_the_clone(
     for path in written:
         assert Path(path).is_relative_to(output_root / "baseline")
         assert not Path(path).is_relative_to(workspace)
+
+
+_DIGEST = "d3d273e66324042cd8e547068c194231cf1812d53cb68236edba56b067055293"
+_ROOT = "gs://bucket/training-snapshots"
+
+
+def _uri_for(payload: bytes) -> str:
+    import hashlib
+
+    return f"{_ROOT}/by-hash/{hashlib.sha256(payload).hexdigest()}/"
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        f"{_ROOT}/{_DIGEST}/",  # by-hash 구간 없음
+        f"{_ROOT}/by-hash/{_DIGEST[:-1]}/",  # 63자
+        f"{_ROOT}/by-hash/NOTAHASH/",
+        "",
+    ],
+)
+def test_malformed_dataset_uri_is_rejected(uri: str) -> None:
+    """by-hash 주소가 아니면 다운로드를 시도하기 전에 거부한다(#605)."""
+    with pytest.raises(TrainingError, match="dataset_uri_invalid"):
+        expected_dataset_sha256(uri)
+
+
+def test_expected_sha256_is_read_from_the_uri() -> None:
+    assert expected_dataset_sha256(f"{_ROOT}/by-hash/{_DIGEST}/") == _DIGEST
+    assert expected_dataset_sha256(f"{_ROOT}/by-hash/{_DIGEST}") == _DIGEST
+
+
+def test_downloaded_dataset_with_a_mismatched_hash_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path, tmp_path: Path
+) -> None:
+    """받은 바이트가 주소와 다르면 실패한다 — 원인을 열거하지 않고 결과로 잡는다(#605).
+
+    candidate가 `src/`의 다운로드 코드를 바꿔 다른 데이터를 받아오면 paired 대조가
+    무효가 되는데, 이 검증만 executor 이미지에 있어 우회할 수 없다.
+    """
+    destination = tmp_path / "training-dataset"
+
+    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
+        target = destination / "training_dataset.csv"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"tampered")
+        return str(target)
+
+    monkeypatch.setattr(training_module, "_run", _fake_run)
+    with pytest.raises(TrainingError, match="dataset_hash_mismatch"):
+        ensure_dataset(
+            dataset_uri=_uri_for(b"original"),
+            destination_dir=destination,
+            workspace=workspace,
+            timeout_seconds=600,
+        )
+
+
+def test_matching_dataset_is_accepted_and_reused_without_redownloading(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path, tmp_path: Path
+) -> None:
+    """해시가 맞으면 통과하고, 두 번째 호출은 다시 받지 않는다(#605).
+
+    baseline·candidate 두 단계와 Job 재시도가 같은 파일을 공유하게 하려는 것이다.
+    """
+    destination = tmp_path / "training-dataset"
+    payload = b"original"
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
+        calls.append(argv)
+        target = destination / "training_dataset.csv"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+        return str(target)
+
+    monkeypatch.setattr(training_module, "_run", _fake_run)
+    uri = _uri_for(payload)
+    first = ensure_dataset(
+        dataset_uri=uri, destination_dir=destination, workspace=workspace, timeout_seconds=600
+    )
+    second = ensure_dataset(
+        dataset_uri=uri, destination_dir=destination, workspace=workspace, timeout_seconds=600
+    )
+
+    assert first.read_bytes() == payload
+    assert second == destination / "training_dataset.csv"
+    assert len(calls) == 1, "이미 받아둔 파일이 있는데 다시 내려받았다"
+    assert calls[0][:2] == ["python", "-c"]
+    assert calls[0][3] == uri, "URI는 코드 문자열이 아니라 argv로 넘겨야 한다"
 
 
 def test_feature_definition_change_is_detected(

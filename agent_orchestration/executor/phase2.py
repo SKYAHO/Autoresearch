@@ -39,6 +39,7 @@ from agent_orchestration.executor.training import (
     TrainingInput,
     TrainingStage,
     dependencies_changed,
+    ensure_dataset,
     feature_definitions_changed,
     run_training,
     sync_dependencies,
@@ -71,6 +72,9 @@ _STATE_DIRECTORY = Path("/var/run/executor-state")
 # 학습 산출물 루트. clone(`<workspace>/repository`)의 형제로 두어 verifier의 git 수집
 # 범위 밖에 놓는다(#603).
 _TRAINING_OUTPUT_DIRNAME = "training-output"
+# 내려받은 스냅샷 CSV의 위치. 같은 이유로 clone 밖이며, baseline·candidate 두 단계가
+# 이 한 파일을 공유한다(#605).
+_TRAINING_DATASET_DIRNAME = "training-dataset"
 
 
 class Phase2ExecutorError(RuntimeError):
@@ -185,18 +189,21 @@ def workspace_preparer_main() -> int:
 
 
 def _run_training_if_enabled(stage: TrainingStage, workspace: Path) -> None:
-    """데이터셋이 지정된 경우에만 해당 조건의 학습을 실행한다.
+    """데이터셋 URI가 지정된 경우에만 해당 조건의 학습을 실행한다.
 
-    `ORCH_TRAINING_DATASET_PATH` 미설정이면 조용히 건너뛴다. 학습 입력은 미리 게시된
-    데이터셋 스냅샷인데, 그 스냅샷을 Pod가 읽으려면 `experiment-job` GSA에 스냅샷 root
-    read 권한이 필요하다(현재 `objectCreator`만 보유). 권한이 붙기 전까지는 Phase 2의
+    `ORCH_TRAINING_DATASET_URI` 미설정이면 조용히 건너뛴다 — 학습을 켜지 않은 배포에서
     기존 경로(clone → Codex → verify → push)가 그대로 동작해야 하므로 opt-in으로 둔다.
 
     조립을 Pod 안에서 하지 않는 이유는 feast group이 executor 이미지에 없고
     `pyproject.toml`이 feast와 dev를 conflicts로 선언해 재빌드로도 넣을 수 없기 때문이다.
+    그래서 조립은 밖에서 끝내고 Pod은 게시된 스냅파일을 내려받아 읽기만 한다.
+
+    두 조건이 **같은 파일**을 쓰는 것이 paired 대조의 전제다. `ensure_dataset`이 이미
+    받아둔 파일을 재사용하고 해시를 대조하므로, 조건별 재다운로드도 조건별 데이터
+    차이도 생기지 않는다(#605).
     """
-    dataset = os.environ.get("ORCH_TRAINING_DATASET_PATH", "").strip()
-    if not dataset:
+    dataset_uri = os.environ.get("ORCH_TRAINING_DATASET_URI", "").strip()
+    if not dataset_uri:
         return
     if stage is TrainingStage.CANDIDATE:
         base_ref = _required("ORCH_BASE_DEV_SHA")
@@ -217,14 +224,21 @@ def _run_training_if_enabled(stage: TrainingStage, workspace: Path) -> None:
             sync_dependencies(
                 workspace, timeout_seconds=_positive_int("ORCH_UV_SYNC_TIMEOUT_SEC")
             )
+    # clone(`workspace`)의 형제 디렉터리들이다 — 같은 volume이라 두 조건이 공유하고,
+    # clone 밖이라 verifier가 Codex의 변경으로 수집하지 않는다(#603).
+    workspace_root = Path(_required("ORCH_EXECUTOR_WORKSPACE"))
+    dataset_path = ensure_dataset(
+        dataset_uri=dataset_uri,
+        destination_dir=workspace_root / _TRAINING_DATASET_DIRNAME,
+        workspace=workspace,
+        timeout_seconds=_positive_int("ORCH_TRAINING_DOWNLOAD_TIMEOUT_SEC"),
+    )
     run_training(
         TrainingInput(
             stage=stage,
             workspace=workspace,
-            dataset_path=Path(dataset),
-            # clone(`workspace`)의 형제 디렉터리다 — 같은 volume이라 두 조건이 공유하고,
-            # clone 밖이라 verifier가 Codex의 변경으로 수집하지 않는다(#603).
-            output_root=Path(_required("ORCH_EXECUTOR_WORKSPACE")) / _TRAINING_OUTPUT_DIRNAME,
+            dataset_path=dataset_path,
+            output_root=workspace_root / _TRAINING_OUTPUT_DIRNAME,
             state_directory=_STATE_DIRECTORY,
             timeout_seconds=_positive_int("ORCH_TRAINING_TIMEOUT_SEC"),
         )
