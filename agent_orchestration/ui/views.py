@@ -6,8 +6,8 @@
 
 [기능]
 sidebar 탐색으로 분리된 사전등록 화면과 상세 화면의 컴포넌트를 렌더링한다. 사전등록
-제출 폼과 발행 결과 표시, 실험 선택 목록, 빈 관찰 패널, 상태 타임라인, 결과·Event·원본
-Log 탭, KST 시각이 포함된 요약 패널을 제공한다.
+제출 폼, 실패한 이슈 발행의 재시도·취소 동작과 발행 결과 표시, 실험 선택 목록, 빈 관찰
+패널, 상태 타임라인, 결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 제공한다.
 
 [비책임]
 HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조립과 GitHub 이슈 생성
@@ -150,6 +150,26 @@ def render_submission_form(api_error: str | None) -> Submission | None:
         secondary_metrics=secondary_metrics.strip(),
         allowed_scope=tuple(allowed_scope),
     )
+
+
+def render_pending_publication_actions() -> tuple[bool, bool]:
+    """실패한 이슈 발행을 저장 입력으로 재시도하거나 폐기하는 동작을 렌더링한다."""
+    with st.container(border=True):
+        st.warning(
+            "Experiment는 생성됐지만 이슈 발행이 완료되지 않았습니다. "
+            "저장된 입력으로 다시 시도하거나 이 등록을 취소할 수 있습니다."
+        )
+        retry_column, discard_column = st.columns(2)
+        retry = retry_column.button(
+            "이슈 발행 다시 시도",
+            type="primary",
+            use_container_width=True,
+        )
+        discard = discard_column.button(
+            "실패한 등록 취소하고 새 가설 작성",
+            use_container_width=True,
+        )
+    return retry, discard
 
 
 def render_publication_result(publication: IssuePublication) -> None:

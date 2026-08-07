@@ -6,8 +6,9 @@
 
 [기능]
 사전등록 화면과 Experiment 상세 화면을 sidebar 탐색으로 분리하고, 사전등록 폼 제출로
-Experiment 생성과 `[AR]` 이슈 발행을 잇달아 요청한다. 최근 실험 선택, 상세·Event·Log의
-5초 cursor polling, API 오류의 영역별 사용자 표시와 삭제·만료 cursor 복구를 제공한다.
+Experiment 생성과 `[AR]` 이슈 발행을 잇달아 요청하며, 부분 실패한 발행을 저장 입력으로
+재시도하거나 취소한다. 최근 실험 선택, 상세·Event·Log의 5초 cursor polling, API 오류의
+영역별 사용자 표시와 삭제·만료 cursor 복구를 제공한다.
 
 [비책임]
 이슈 본문 조립·`gh` 호출·label 부여(모두 API 서버), 실제 실험 실행, 상태·Event·Log·
@@ -32,6 +33,7 @@ from agent_orchestration.ui.state import (
     append_event_page,
     append_log_page,
     clear_activity_cache,
+    discard_pending_publication,
     merge_steps,
     record_detail_error,
     record_list_error,
@@ -48,6 +50,7 @@ from agent_orchestration.ui.views import (
     render_add_hypothesis_button,
     render_experiment_list,
     render_experiment_refresh_button,
+    render_pending_publication_actions,
     render_publication_result,
     render_submission_form,
     render_workbench,
@@ -178,8 +181,7 @@ def submit_experiment(
     """Experiment를 만들고 곧바로 `[AR]` 이슈를 발행한다.
 
     두 번 호출하는 이유는 서버 계약이 그렇기 때문이다 — 생성은 순수 DB 쓰기이고 발행은
-    외부 부작용이다. 발행 실패 시 생성된 Experiment와 원 제출을 보존하며, 같은 폼을
-    재제출하면 생성 없이 기존 Experiment의 발행만 재시도한다.
+    외부 부작용이다. 발행 실패 시 생성된 Experiment와 원 제출을 보존한다.
     """
     experiment_id = state.pending_publication_experiment_id
     if experiment_id is None:
@@ -200,6 +202,17 @@ def submit_experiment(
         )
         return False
 
+    return publish_pending_issue(client, state)
+
+
+def publish_pending_issue(client: ExperimentClient, state: WorkbenchState) -> bool:
+    """저장된 submission으로 기존 Experiment의 이슈 발행만 수행한다."""
+    experiment_id = state.pending_publication_experiment_id
+    submission = state.pending_publication_submission
+    if experiment_id is None or submission is None:
+        record_detail_error(state, "재시도할 이슈 발행 정보가 없습니다.")
+        return False
+
     try:
         publication = client.publish_issue(
             experiment_id, submission.to_fields(), submission.allowed_scope
@@ -209,12 +222,11 @@ def submit_experiment(
         record_detail_error(
             state,
             f"실험은 생성됐지만 이슈 발행에 실패했습니다. "
-            f"같은 입력으로 다시 제출하면 발행만 재시도합니다: {error}",
+            f"저장된 입력으로 이슈 발행을 다시 시도할 수 있습니다: {error}",
         )
         return False
 
-    state.pending_publication_experiment_id = None
-    state.pending_publication_submission = None
+    discard_pending_publication(state)
     show_experiment(state, experiment_id)
     state.last_publication = publication
     refresh_selected_experiment(client, state)
@@ -260,6 +272,24 @@ def main() -> None:
         st.warning(state.list_error)
 
     if state.view is WorkbenchView.CREATE:
+        if (
+            state.pending_publication_experiment_id is not None
+            and state.pending_publication_submission is not None
+        ):
+            retry_publication, discard_publication = (
+                render_pending_publication_actions()
+            )
+            if retry_publication:
+                if client is None:
+                    record_detail_error(
+                        state, "Experiment API 연결을 먼저 복구해 주세요."
+                    )
+                else:
+                    publish_pending_issue(client, state)
+                st.rerun()
+            if discard_publication:
+                discard_pending_publication(state)
+                st.rerun()
         submission = render_submission_form(state.detail_error)
         if submission is not None:
             missing = submission.missing_required()

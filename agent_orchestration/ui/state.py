@@ -6,7 +6,7 @@ Streamlit widget 렌더링은 담당하지 않는다.
 
 [기능]
 Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 목록·상세
-오류 분리 보존, 화면 모드 전이와 이슈 발행 재시도 상태를 제공한다.
+오류 분리 보존, 화면 모드 전이와 이슈 발행 재시도·취소 상태 전이를 제공한다.
 
 [비책임]
 HTTP 요청, API 인증, 상태 전이 기록, Agent 실행, GitHub 이슈 처리.
@@ -69,6 +69,13 @@ class WorkbenchState:
 def show_create_view(state: WorkbenchState) -> None:
     """Workbench를 Experiment 생성 화면으로 전환한다."""
     state.view = WorkbenchView.CREATE
+
+
+def discard_pending_publication(state: WorkbenchState) -> None:
+    """실패한 이슈 발행 대기와 관련 오류만 정리한다."""
+    state.pending_publication_experiment_id = None
+    state.pending_publication_submission = None
+    state.detail_error = None
 
 
 def show_experiment(state: WorkbenchState, experiment_id: str) -> None:

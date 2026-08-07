@@ -319,10 +319,10 @@ def test_publication_result_is_shown(stub_api: list[tuple[str, dict]]) -> None:
     assert any("537" in element.value for element in app.success)
 
 
-def test_publication_failure_stays_on_create_and_retries_without_duplicate(
+def test_pending_publication_retries_saved_submission_without_duplicate(
     stub_api: list[tuple[str, dict]],
 ) -> None:
-    """부분 실패 재제출은 생성된 Experiment에만 이슈 발행을 재시도한다."""
+    """부분 실패는 원 폼을 재제출하지 않고 저장된 submission으로 재시도한다."""
     _StubHandler.publication_failures = 1
     app = _rendered_app()
     _fill_required(app)
@@ -331,8 +331,12 @@ def test_publication_failure_stays_on_create_and_retries_without_duplicate(
 
     assert app.text_input[0].label == "실험 제목"
     assert any("이슈 발행에 실패" in element.value for element in app.error)
+    retry_buttons = [
+        button for button in app.button if button.label == "이슈 발행 다시 시도"
+    ]
+    assert len(retry_buttons) == 1
 
-    app.button[0].click().run()
+    retry_buttons[0].click().run()
 
     paths = [path for path, _ in stub_api]
     assert paths.count("/experiments") == 1
@@ -340,6 +344,75 @@ def test_publication_failure_stays_on_create_and_retries_without_duplicate(
         "/experiments/3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d/issue"
     ) == 2
     assert any("537" in element.value for element in app.success)
+    assert any(
+        title.value == "비율 피처가 baseline 대비 test ROC-AUC를 개선한다."
+        for title in app.title
+    )
+
+
+def test_pending_publication_retry_failure_keeps_create_and_pending(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """재시도도 실패하면 CREATE와 pending 동작 버튼을 그대로 유지한다."""
+    _StubHandler.publication_failures = 2
+    app = _rendered_app()
+    _fill_required(app)
+    app.button[0].click().run()
+
+    next(
+        button for button in app.button if button.label == "이슈 발행 다시 시도"
+    ).click().run()
+
+    paths = [path for path, _ in stub_api]
+    assert paths.count("/experiments") == 1
+    assert paths.count(
+        "/experiments/3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d/issue"
+    ) == 2
+    assert app.text_input[0].label == "실험 제목"
+    assert any("이슈 발행에 실패" in element.value for element in app.error)
+    labels = [button.label for button in app.button]
+    assert "이슈 발행 다시 시도" in labels
+    assert "실패한 등록 취소하고 새 가설 작성" in labels
+
+
+def test_discard_pending_publication_unlocks_new_submission(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """취소는 생성된 Experiment를 남기고 다른 가설의 새 등록을 허용한다."""
+    _StubHandler.publication_failures = 1
+    app = _rendered_app()
+    _fill_required(app)
+    app.button[0].click().run()
+
+    next(
+        button
+        for button in app.button
+        if button.label == "실패한 등록 취소하고 새 가설 작성"
+    ).click().run()
+
+    assert _StubHandler.experiments
+    assert _StubHandler.experiments[0]["hypothesis"].startswith("비율 피처가")
+    assert "이슈 발행 다시 시도" not in [button.label for button in app.button]
+    _fill_required(app)
+    app.text_area[0].set_value("새 가설은 pending 등록과 다른 입력이다.")
+    next(
+        button for button in app.button if button.label == "사전등록하고 이슈 발행"
+    ).click().run()
+
+    paths = [path for path, _ in stub_api]
+    assert paths.count("/experiments") == 2
+    assert any("537" in element.value for element in app.success)
+
+
+def test_pending_actions_are_hidden_without_pending_publication(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """pending이 없는 CREATE에는 재시도·취소 버튼을 표시하지 않는다."""
+    app = _rendered_app()
+
+    labels = [button.label for button in app.button]
+    assert "이슈 발행 다시 시도" not in labels
+    assert "실패한 등록 취소하고 새 가설 작성" not in labels
 
 
 def test_refresh_exposes_new_experiment_and_hides_other_publication_result(
