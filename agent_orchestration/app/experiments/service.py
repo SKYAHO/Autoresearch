@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
-import re
 import uuid
 
 from sqlalchemy import func, select, update
@@ -782,23 +781,7 @@ async def resolve_dev_sha(settings: object) -> str:
     return sha
 
 
-def _branch_slug(title: str) -> str:
-    """`_branch_name_for`가 쓰는 slug 계산. 이슈 번호와 무관해 발행 전에 미리 검증할 수 있다.
-
-    정본(`tools/auto_research_issue_branch.py`의 `branch_name_for()`)은 prefix를 떼고
-    남은 것이 공백뿐이면 거부한다. 이 가드가 없으면 그럴듯한 브랜치 이름을 만들어 내며
-    정본과 갈린다.
-    """
-    stripped = re.sub(r"^\s*\[AR\]\s*", "", title, flags=re.IGNORECASE)
-    if not stripped.strip():
-        raise ValueError("issue title must not be empty after the prefix")
-    slug = re.sub(r"[^a-z0-9]+", "-", stripped.lower()).strip("-")
-    if not slug:
-        slug = "issue-" + hashlib.sha256(stripped.encode("utf-8")).hexdigest()[:12]
-    return slug
-
-
-def _branch_name_for(issue_number: int, title: str) -> str:
+def _branch_name_for(issue_number: int) -> str:
     """executor가 만들 브랜치 이름을 응답에 미리 싣는다.
 
     `tools/auto_research_issue_branch.py`의 `branch_name_for()`와 같은 규칙이다. 그
@@ -806,8 +789,11 @@ def _branch_name_for(issue_number: int, title: str) -> str:
     실제 브랜치는 launcher가 좌표를 전달한 executor Pod가 만든다. 동일성은
     `tests/test_experiment_issue_publication.py`의
     `test_branch_name_matches_the_canonical_rule`이 고정한다.
+
+    제목은 쓰지 않는다(#589). 이슈 번호만으로 이미 유일하고, 제목 slug를 섞으면 브랜치
+    이름 때문에 제목이 ASCII를 포함해야 해서 한글 제목이 발행에서 거부된다.
     """
-    return f"exp/{issue_number}-{_branch_slug(title)}"
+    return f"exp/{issue_number}"
 
 
 async def publish_experiment_issue(
@@ -927,11 +913,7 @@ async def publish_experiment_issue(
     if not isinstance(body, str) or not isinstance(title, str):
         raise GitHubIssueError("issue_definition_freeze_failed")
 
-    # ② 발행. 브랜치 이름의 slug는 이슈 번호와 무관하므로 발행 전에 미리 검증한다 —
-    # 여기서 실패하면 아직 이슈가 열리지 않았으므로 "이슈는 열렸지만 DB에 기록되지
-    # 않는" 상태가 생기지 않는다.
-    slug = _branch_slug(title)
-
+    # ② 발행.
     # gh 성공 후 응답이 소실된 경우를 위해 marker를 먼저 조회한다 — 멱등성
     # 3중 방어의 3번째 층이다. 이 조회가 실패하면 "발행되지 않았다"가 아니라
     # "발행됐는지 알 수 없다"이므로, 예외를 삼키고 create_issue로 넘어가면 이 층이
@@ -947,7 +929,7 @@ async def publish_experiment_issue(
     )
 
     experiment.issue_number = reference.number
-    experiment.issue_branch = f"exp/{reference.number}-{slug}"
+    experiment.issue_branch = _branch_name_for(reference.number)
     experiment.issue_published_at = datetime.now(UTC)
     session.commit()
     return experiment

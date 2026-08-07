@@ -100,7 +100,13 @@ def _validate_issue(config: WorkspacePrepareInput, snapshot: GitHubIssueSnapshot
         parsed = parse_issue_input(config.issue_number, snapshot.title, snapshot.body)
     except ValueError as error:
         raise WorkspacePreparationError("issue_parse_failed") from error
-    if parsed.issue_branch != config.issue_branch:
+    # 브랜치 이름은 이슈 번호에서만 나온다(#589). 봉인값이 `exp/<이슈번호>`이거나, 그
+    # 변경 이전에 발행돼 slug가 붙은 이름이면 같은 이슈의 좌표다. slug는 임의 문자열이라
+    # 번호를 넘어 대조할 것이 남아 있지 않으므로, 여기서 보는 것은 이슈 번호 일치다.
+    canonical = parsed.issue_branch
+    if config.issue_branch != canonical and not config.issue_branch.startswith(
+        f"{canonical}-"
+    ):
         raise WorkspacePreparationError("issue_branch_mismatch")
     return parsed.allowed_scope
 

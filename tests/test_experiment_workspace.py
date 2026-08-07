@@ -125,9 +125,9 @@ def _patch_git(
     [
         (_issue_body().replace(str(_EXPERIMENT_ID), str(uuid.uuid4())), _ISSUE_BRANCH, None),
         (_issue_body(), _ISSUE_BRANCH, "b" * 64),
-        (_issue_body(), "exp/546-different", None),
+        (_issue_body(), "exp/999-different-issue", None),
     ],
-    ids=("marker", "body-hash", "branch"),
+    ids=("marker", "body-hash", "branch-of-another-issue"),
 )
 def test_unsealed_issue_data_blocks_clone_before_any_git_subprocess(
     monkeypatch: pytest.MonkeyPatch,

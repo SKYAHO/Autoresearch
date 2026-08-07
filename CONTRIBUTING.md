@@ -19,7 +19,7 @@ AutoResearch 프로젝트에 기여해 주셔서 감사합니다.
 
 2. **브랜치 생성**: 브랜치는 **해당 이슈에서 생성**합니다. 이슈 우측 `Development > Create a branch`를 사용하면 브랜치가 이슈에 자동 연결되고, `main` 기준으로 분기됩니다. 브랜치 네이밍 규칙은 아래를 따릅니다.
 
-   > **예외 — Auto Research 실험 브랜치**: `[AR]` 이슈의 `exp/<이슈번호>-<slug>` 브랜치는 사람이 만들지 않습니다. API가 이슈 발행 전에 **`dev` tip을 DB의 `base_dev_sha`로 봉인**하고, launcher가 만든 executor Pod가 나중에 그 SHA에서만 브랜치를 생성합니다. 자세한 내용은 [브랜치 보호 규칙](#브랜치-보호-규칙)을 참조하세요.
+   > **예외 — Auto Research 실험 브랜치**: `[AR]` 이슈의 `exp/<이슈번호>` 브랜치는 사람이 만들지 않습니다. API가 이슈 발행 전에 **`dev` tip을 DB의 `base_dev_sha`로 봉인**하고, launcher가 만든 executor Pod가 나중에 그 SHA에서만 브랜치를 생성합니다. 자세한 내용은 [브랜치 보호 규칙](#브랜치-보호-규칙)을 참조하세요.
 
 3. **작업 및 커밋**: 커밋 컨벤션에 따라 커밋 메시지를 작성합니다.
 
@@ -82,7 +82,7 @@ git switch feat/42-add-feature-store-schema
 - 영어 소문자, 숫자, 하이픈(`-`)만 사용합니다.
 - 이슈 번호를 반드시 포함합니다.
 - 한 브랜치에는 하나의 주요 목적만 담습니다.
-- `exp/`는 사람이 만드는 실험 브랜치와 Auto Research executor가 생성하는 실험 브랜치가 **같은 형식을 공유**합니다. 자동 생성 브랜치는 DB에 봉인된 `base_dev_sha`에서 만들어지므로 **삭제하거나 force-push하지 마십시오** — ruleset이 막아 주지 않으며 삭제하면 launcher가 자동 복구하지 않고, 다른 tip으로 바꾸면 executor 재시도와 승격 계보 검증이 fail-closed됩니다. [브랜치 보호 규칙](#브랜치-보호-규칙) 참조.
+- `exp/`는 사람이 만드는 실험 브랜치와 Auto Research executor가 생성하는 실험 브랜치가 **같은 prefix를 공유**합니다. 자동 생성 브랜치는 이슈 번호만으로 이름이 정해져 설명 slug가 붙지 않습니다(`exp/589`). 자동 생성 브랜치는 DB에 봉인된 `base_dev_sha`에서 만들어지므로 **삭제하거나 force-push하지 마십시오** — ruleset이 막아 주지 않으며 삭제하면 launcher가 자동 복구하지 않고, 다른 tip으로 바꾸면 executor 재시도와 승격 계보 검증이 fail-closed됩니다. [브랜치 보호 규칙](#브랜치-보호-규칙) 참조.
 
 ---
 
@@ -250,7 +250,7 @@ gh api repos/SKYAHO/Autoresearch/rulesets/20261204   # dev-protection
 Agent Orchestration API의 Contents read 전용 GitHub App이 이슈 발행 전에
 `heads/dev` tip을 한 번 읽어 `Experiment.base_dev_sha`에 저장합니다. launcher와
 executor는 Job 시작 시 최신 `dev`나 `main`을 다시 읽지 않고, executor는 저장된 SHA에
-`exp/<이슈번호>-<slug>` ref를 생성합니다. 이후 계보 검증도 이 SHA를 기준점으로
+`exp/<이슈번호>` ref를 생성합니다. 이후 계보 검증도 이 SHA를 기준점으로
 삼으므로 `dev`가 force-push되거나 삭제되어 커밋이 사라지면 다음이 깨집니다.
 
 | 깨지는 것 | 근거 | 시점 |

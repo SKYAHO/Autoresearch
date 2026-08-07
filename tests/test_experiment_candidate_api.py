@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import Engine, create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -78,6 +79,45 @@ def _running_experiment(session: Session) -> Experiment:
     experiment.status = ExperimentStatus.RUNNING.value
     session.commit()
     return experiment
+
+
+@pytest.mark.parametrize(
+    "issue_branch",
+    [
+        # #589 이후 API가 봉인하는 형식이다.
+        f"exp/{ISSUE_NUMBER}",
+        # #589 이전에 발행된 실험이 DB에 들고 있는 형식이다. 여기서 막으면 진행 중인
+        # 실험의 candidate 보고가 fail-closed된다.
+        f"exp/{ISSUE_NUMBER}-candidate-contract",
+    ],
+)
+def test_candidate_report_accepts_both_sealed_branch_forms(issue_branch: str) -> None:
+    """브랜치 이름의 이슈 번호가 좌표와 맞으면 slug 유무는 따지지 않는다."""
+    request = CandidateReportRequest.model_validate(
+        {
+            "idempotency_key": "executor-candidate:1",
+            "issue_number": ISSUE_NUMBER,
+            "issue_branch": issue_branch,
+            "base_dev_sha": BASE_DEV_SHA,
+            "candidate_sha": CANDIDATE_SHA,
+        }
+    )
+
+    assert request.issue_branch == issue_branch
+
+
+def test_candidate_report_rejects_a_branch_of_another_issue() -> None:
+    """브랜치 이름과 좌표가 갈리면 요청 단계에서 막는다."""
+    with pytest.raises(ValidationError):
+        CandidateReportRequest.model_validate(
+            {
+                "idempotency_key": "executor-candidate:1",
+                "issue_number": ISSUE_NUMBER,
+                "issue_branch": f"exp/{ISSUE_NUMBER + 1}",
+                "base_dev_sha": BASE_DEV_SHA,
+                "candidate_sha": CANDIDATE_SHA,
+            }
+        )
 
 
 def _request(experiment_id: uuid.UUID, **overrides: object) -> CandidateReportRequest:

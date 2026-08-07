@@ -87,9 +87,15 @@ class CandidateReportRequest(BaseModel):
 
     @model_validator(mode="after")
     def issue_branch_must_match_issue_number(self) -> CandidateReportRequest:
-        """branch 이름에 든 이슈 번호와 별도 좌표가 갈리면 요청 단계에서 막는다."""
-        if not self.issue_branch.startswith(f"exp/{self.issue_number}-"):
-            raise ValueError("issue_branch must start with 'exp/{issue_number}-'.")
+        """branch 이름에 든 이슈 번호와 별도 좌표가 갈리면 요청 단계에서 막는다.
+
+        API가 봉인하는 이름은 `exp/<이슈번호>`다(#589). slug 접미사는 그 변경 이전에
+        발행된 실험이 DB에 들고 있는 형식이므로 함께 받는다 — 여기서 막으면 진행 중인
+        실험의 candidate 보고가 fail-closed된다.
+        """
+        prefix = f"exp/{self.issue_number}"
+        if self.issue_branch != prefix and not self.issue_branch.startswith(f"{prefix}-"):
+            raise ValueError("issue_branch must be 'exp/{issue_number}' or start with it.")
         return self
 
 

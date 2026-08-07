@@ -117,8 +117,8 @@ def render_submission_form(api_error: str | None) -> Submission | None:
         title = st.text_input(
             "실험 제목",
             key="submission-title",
-            placeholder="예: views per day ratio feature",
-            help="이슈 제목과 실험 브랜치 이름이 여기서 만들어집니다. 영소문자와 숫자를 포함해 주세요.",
+            placeholder="예: 조회수 비율 피처 실험",
+            help="이슈 제목이 여기서 만들어집니다. 실험 브랜치 이름은 이슈 번호로 정해집니다.",
         )
 
         st.markdown("**가설**")

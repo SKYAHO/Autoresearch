@@ -26,8 +26,10 @@ from agent_orchestration.github_app import GitHubAppCredentials
 
 
 _POSITIVE_INTEGER_PATTERN = re.compile(r"^[1-9][0-9]*$")
+# API가 봉인하는 이름은 `exp/<이슈번호>`다(#589). slug 접미사는 그 변경 이전에 발행된
+# 실험이 DB에 들고 있는 형식이며, launcher가 그 값을 그대로 넘기므로 계속 받는다.
 _ISSUE_BRANCH_PATTERN = re.compile(
-    r"^exp/(?P<issue_number>[0-9]+)-[a-z0-9]+(?:-[a-z0-9]+)*$"
+    r"^exp/(?P<issue_number>[0-9]+)(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?$"
 )
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
