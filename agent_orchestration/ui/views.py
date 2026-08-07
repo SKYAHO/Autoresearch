@@ -5,8 +5,9 @@
 구간을 담당한다. API 호출과 polling state 전이는 app/client 모듈이 담당한다.
 
 [기능]
-단일 화면 상단의 사전등록 제출 폼과 발행 결과 표시, 실험 선택 목록, 빈 관찰 패널,
-상태 타임라인, 결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 렌더링한다.
+sidebar 탐색으로 분리된 사전등록 화면과 상세 화면의 컴포넌트를 렌더링한다. 사전등록
+제출 폼, 실패한 이슈 발행의 재시도·취소 동작과 발행 결과 표시, 실험 선택 목록, 빈 관찰
+패널, 상태 타임라인, 결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 제공한다.
 
 [비책임]
 HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조립과 GitHub 이슈 생성
@@ -17,7 +18,7 @@ from __future__ import annotations
 
 import html
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import streamlit as st
 
@@ -151,6 +152,26 @@ def render_submission_form(api_error: str | None) -> Submission | None:
     )
 
 
+def render_pending_publication_actions() -> tuple[bool, bool]:
+    """실패한 이슈 발행을 저장 입력으로 재시도하거나 폐기하는 동작을 렌더링한다."""
+    with st.container(border=True):
+        st.warning(
+            "Experiment는 생성됐지만 이슈 발행이 완료되지 않았습니다. "
+            "저장된 입력으로 다시 시도하거나 이 등록을 취소할 수 있습니다."
+        )
+        retry_column, discard_column = st.columns(2)
+        retry = retry_column.button(
+            "이슈 발행 다시 시도",
+            type="primary",
+            use_container_width=True,
+        )
+        discard = discard_column.button(
+            "실패한 등록 취소하고 새 가설 작성",
+            use_container_width=True,
+        )
+    return retry, discard
+
+
 def render_publication_result(publication: IssuePublication) -> None:
     """발행된 이슈 좌표를 보여준다."""
     st.success(
@@ -161,11 +182,20 @@ def render_publication_result(publication: IssuePublication) -> None:
 
 
 def render_empty_workbench() -> None:
-    """선택된 Experiment가 없을 때 단일 화면의 빈 관찰 패널을 렌더링한다."""
+    """선택된 Experiment가 없을 때 빈 관찰 패널을 렌더링한다."""
     with st.container(border=True):
         st.markdown("### 실험 관찰 영역")
-        st.info("상단에서 가설을 등록하거나 좌측 실험 기록에서 항목을 선택해 주세요.")
+        st.info("좌측 실험 기록에서 항목을 선택해 주세요.")
         st.caption("실행기가 연결되면 상태, 이벤트, 원본 로그, 평가 결과가 이곳에 실시간으로 표시됩니다.")
+
+
+def render_add_hypothesis_button() -> bool:
+    """sidebar 최상단의 가설 추가 화면 전환 버튼을 렌더링한다."""
+    return st.sidebar.button(
+        "+ 가설 추가하기",
+        type="primary",
+        use_container_width=True,
+    )
 
 
 def render_experiment_refresh_button() -> bool:
@@ -176,8 +206,10 @@ def render_experiment_refresh_button() -> bool:
 def render_experiment_list(
     experiments: Sequence[Experiment],
     selected_id: str | None,
+    *,
+    on_change: Callable[[], None] | None = None,
 ) -> str | None:
-    """sidebar Experiment 목록을 렌더링하고 새 선택 ID를 반환한다."""
+    """sidebar Experiment 목록을 렌더링하고 현재 선택 ID를 반환한다."""
     st.sidebar.markdown("### 실험 기록")
     st.sidebar.caption("가설 하나는 하나의 Auto Research 이슈로 이어집니다.")
     if not experiments:
@@ -195,6 +227,7 @@ def render_experiment_list(
         index=default_index,
         format_func=lambda experiment_id: labels[experiment_id],
         label_visibility="collapsed",
+        on_change=on_change,
     )
 
 
