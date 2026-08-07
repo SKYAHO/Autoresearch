@@ -61,6 +61,11 @@ _SAFE_ENVIRONMENT_REASON_PATTERN = re.compile(
 _ISSUE_NUMBER_PATTERN = re.compile(r"^[1-9][0-9]*$")
 _ISSUE_BRANCH_PATTERN = re.compile(r"^exp/[1-9][0-9]*-[a-z0-9][a-z0-9-]*$")
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")
+# launcher가 executor-state volume을 마운트하는 고정 경로다
+# (`launcher/jobs.py`의 `_STATE_DIRECTORY`). 환경 변수로 받지 않는 이유는 verification
+# 경로와 같다 — Pod 안의 마운트 지점은 manifest가 정하는 고정값이고, 주입 가능한 값으로
+# 두면 계약이 두 곳으로 갈린다.
+_STATE_DIRECTORY = Path("/var/run/executor-state")
 
 
 class Phase2ExecutorError(RuntimeError):
@@ -198,7 +203,7 @@ def _run_training_if_enabled(stage: TrainingStage, workspace: Path) -> None:
             stage=stage,
             workspace=workspace,
             dataset_path=Path(dataset),
-            state_directory=Path(_required("ORCH_EXECUTOR_STATE_DIR")),
+            state_directory=_STATE_DIRECTORY,
             timeout_seconds=_positive_int("ORCH_TRAINING_TIMEOUT_SEC"),
         )
     )
