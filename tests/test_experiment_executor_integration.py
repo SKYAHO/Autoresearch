@@ -700,6 +700,58 @@ def test_codex_worker_logs_output_before_propagating_a_worker_error(
     assert "reason=redacted" not in caplog.text
 
 
+def test_candidate_verifier_reports_failing_pytest_without_rejecting(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """pytest가 차단하지 않게 된 뒤에는 이 로그가 유일한 관측 수단이다(#615)."""
+    _base_tip_state(monkeypatch, tmp_path)
+    verification_path = tmp_path / "verification" / "result.json"
+    monkeypatch.setattr(phase2, "_VERIFICATION_PATH", verification_path)
+    monkeypatch.setattr(
+        phase2,
+        "verify_candidate",
+        lambda *_args, **_kwargs: VerificationResult(
+            ("autoresearch/change.py",),
+            "fingerprint",
+            "b" * 40,
+            1,
+            "FAILED tests/test_unrelated.py::test_environment_dependent",
+        ),
+    )
+
+    with caplog.at_level(logging.INFO):
+        assert phase2.candidate_verifier_main() == 0
+
+    assert "pytest observation stage=candidate-verifier blocking=false exit_code=1" in caplog.text
+    assert "test_environment_dependent" in caplog.text
+    # handoff에도 그대로 실려 기본값으로 되돌아가지 않는다.
+    assert phase2._read_verification().pytest_exit_code == 1
+
+
+def test_candidate_verifier_logs_a_line_even_when_pytest_passes(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    """통과와 미실행이 로그에서 같아 보이면 관측을 켠 의미가 없다."""
+    _base_tip_state(monkeypatch, tmp_path)
+    monkeypatch.setattr(phase2, "_VERIFICATION_PATH", tmp_path / "verification" / "result.json")
+    monkeypatch.setattr(
+        phase2,
+        "verify_candidate",
+        lambda *_args, **_kwargs: VerificationResult(
+            ("autoresearch/change.py",), "fingerprint", "b" * 40
+        ),
+    )
+
+    with caplog.at_level(logging.INFO):
+        assert phase2.candidate_verifier_main() == 0
+
+    assert "pytest observation stage=candidate-verifier blocking=false exit_code=0" in caplog.text
+
+
 def test_existing_candidate_entrypoints_skip_codex_and_preserve_remote_tip(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -127,7 +127,7 @@ def _verification_for_worktree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> VerificationResult:
     """Stage 5 fixture에 필요한 Stage 4 handoff를 실제 verifier로 만든다."""
-    monkeypatch.setattr(verifier, "_run_fixed_command", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(verifier, "_run_fixed_command", lambda *_args, **_kwargs: (0, ""))
     return verifier.verify_candidate(
         repository=repository,
         base_sha=base_sha,
@@ -143,7 +143,7 @@ def _verification_for_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> VerificationResult:
     """재시도 candidate의 Stage 4 handoff를 실제 verifier로 만든다."""
-    monkeypatch.setattr(verifier, "_run_fixed_command", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(verifier, "_run_fixed_command", lambda *_args, **_kwargs: (0, ""))
     return verifier.verify_candidate(
         repository=repository,
         base_sha=base_sha,

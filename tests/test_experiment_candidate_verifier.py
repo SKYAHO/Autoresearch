@@ -23,6 +23,9 @@ from agent_orchestration.executor.verifier import (
 
 
 _BASE_SHA = "a" * 40
+# autouse fixture가 `_run_fixed_command`를 대체하므로, 실물 동작을 검사하려면 import
+# 시점의 원본을 붙잡아 두어야 한다.
+_REAL_RUN_FIXED_COMMAND = verifier._run_fixed_command
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -61,9 +64,9 @@ def successful_fixed_commands(monkeypatch: pytest.MonkeyPatch) -> list[tuple[tup
         *,
         cwd: Path,
         environment: dict[str, str],
-    ) -> int:
+    ) -> tuple[int, str]:
         calls.append((command, cwd, environment))
-        return 0
+        return 0, ""
 
     monkeypatch.setattr(verifier, "_run_fixed_command", fake_command)
     return calls
@@ -583,9 +586,9 @@ def test_fixed_commands_use_credential_free_environment_and_stop_at_first_failur
         *,
         cwd: Path,
         environment: dict[str, str],
-    ) -> int:
+    ) -> tuple[int, str]:
         calls.append((command, cwd, environment))
-        return 1 if "ruff" in command else 0
+        return (1, "ruff output") if "ruff" in command else (0, "")
 
     monkeypatch.setenv("GITHUB_TOKEN", "must-not-pass")
     monkeypatch.setenv("ORCH_EXECUTOR_API_TOKEN", "must-not-pass")
@@ -607,3 +610,95 @@ def test_fixed_commands_use_credential_free_environment_and_stop_at_first_failur
     assert "ORCH_EXECUTOR_API_TOKEN" not in environment
     assert "KUBERNETES_SERVICE_HOST" not in environment
     assert "GOOGLE_APPLICATION_CREDENTIALS" not in environment
+
+
+def test_failing_pytest_does_not_reject_the_candidate_and_is_reported(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """무관한 테스트 실패로 candidate를 거부하면 실험이 아무 기록도 남기지 못한다(#615)."""
+    repository, base_sha = _repository(tmp_path)
+    (repository / "autoresearch" / "candidate.py").write_text("BASE = 2\n", encoding="utf-8")
+    commands: list[tuple[str, ...]] = []
+
+    def pytest_fails(
+        command: tuple[str, ...],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+    ) -> tuple[int, str]:
+        commands.append(command)
+        if "pytest" in command:
+            return 1, "FAILED tests/test_unrelated.py::test_environment_dependent\n"
+        return 0, ""
+
+    monkeypatch.setattr(verifier, "_run_fixed_command", pytest_fails)
+
+    result = verify_candidate(
+        repository=repository,
+        base_sha=base_sha,
+        candidate_sha=None,
+        policy=CandidatePolicy(),
+    )
+
+    # 거부되지 않는다 — candidate는 그대로 finalizer로 넘어간다.
+    assert result.changed_paths == ("autoresearch/candidate.py",)
+    # 그러나 관측치는 반드시 남는다. 차단을 푸는 대신 기록도 없으면 완화가 아니라 삭제다.
+    assert result.pytest_exit_code == 1
+    assert "test_environment_dependent" in result.pytest_output
+    # pytest는 차단 명령이 모두 통과한 **뒤에** 돈다.
+    assert commands[-1] == ("uv", "run", "--no-sync", "python", "-m", "pytest")
+
+
+def test_blocking_commands_still_reject_before_pytest_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """pytest를 비차단으로 바꾼 것이 diff check·Ruff까지 느슨하게 만들면 안 된다."""
+    repository, base_sha = _repository(tmp_path)
+    (repository / "autoresearch" / "candidate.py").write_text("BASE = 2\n", encoding="utf-8")
+    commands: list[tuple[str, ...]] = []
+
+    def diff_check_fails(
+        command: tuple[str, ...],
+        *,
+        cwd: Path,
+        environment: dict[str, str],
+    ) -> tuple[int, str]:
+        commands.append(command)
+        return (1, "whitespace error") if "diff" in command else (0, "")
+
+    monkeypatch.setattr(verifier, "_run_fixed_command", diff_check_fails)
+
+    with pytest.raises(CandidateVerificationError, match="diff_check_failed"):
+        verify_candidate(
+            repository=repository,
+            base_sha=base_sha,
+            candidate_sha=None,
+            policy=CandidatePolicy(),
+        )
+
+    # 8분짜리 pytest는 차단 명령이 실패하면 아예 돌지 않는다.
+    assert not any("pytest" in command for command in commands)
+
+
+def test_pytest_output_is_capped_to_the_tail(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """실패한 pytest의 traceback은 수 MB까지 커진다 — handoff와 로그가 그만큼 커지면 안 된다."""
+    repository, base_sha = _repository(tmp_path)
+    (repository / "autoresearch" / "candidate.py").write_text("BASE = 2\n", encoding="utf-8")
+    huge = b"x" * (verifier._PYTEST_OUTPUT_TAIL_BYTES * 2) + b"LAST_LINE\n"
+
+    def fake_run(command, *, cwd, env, capture_output, check):  # noqa: ANN001, ANN202
+        return subprocess.CompletedProcess(command, 1, stdout=huge, stderr=b"")
+
+    monkeypatch.setattr(verifier.subprocess, "run", fake_run)
+
+    exit_code, output = _REAL_RUN_FIXED_COMMAND(
+        ("uv", "run", "--no-sync", "python", "-m", "pytest"),
+        cwd=repository,
+        environment={},
+    )
+
+    assert exit_code == 1
+    assert len(output.encode("utf-8")) <= verifier._PYTEST_OUTPUT_TAIL_BYTES
+    assert output.endswith("LAST_LINE\n")

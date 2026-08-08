@@ -147,6 +147,19 @@ Stage 1이 성공해도 실패해도, **왜 그런지 보이게** 하는 것이 
       패턴을 참고
 - [ ] 결과 JSON 스키마 정의 (탐색 격자, 우승 조합, 조건별 지표, seed 목록)
 - [ ] `verifier.py` 정책 확장 — 하네스 경로 허용, `no_changes` 판정 기준 재정의
+- [x] **pytest를 수락 기준에서 뺐다 — Stage 1에서 앞당겨 수행함 (#615).** spec §A가
+      검증 기준을 `ruff/pytest + 변경 있음` → `하네스가 실행됐고 결과가 계약을 지켰는가`로
+      바꾸기로 한 것의 첫 걸음이다. pytest는 계속 실행하되 **거부 사유로 쓰지 않고
+      `VerificationResult`에 관측치로 싣는다.** 근거는 실험 #614 — candidate와 무관한
+      환경 의존 테스트 2건 때문에 `config.yaml` 한 줄 변경이 거부됐고, 그 결과 학습·측정에
+      도달하지 못해 **아무 기록도 남지 않았다.** `git diff --check`·Ruff와 경로·자격증명
+      정책은 차단을 유지한다
+- [ ] verifier를 **baseline-candidate paired 비교**로 재설계 — 지표는 paired인데 테스트만
+      절대 기준인 불일치를 해소한다. 함께 풀 것: pytest 중복 실행(Codex 8분 + verifier
+      8분), 에이전트가 `tests/**`를 고쳐 자기 심판을 무력화할 수 있는 구멍
+- [ ] `dev` 승격 직전 테스트 관문 복원 — `auto-research-dev-promotion.yml`이 `repos.merge`로
+      PR 없이 dev를 갱신하고 그 커밋에는 CI check가 생성되지 않아, #615 이후 dev 진입 전
+      테스트 관문이 없다. MVP 범위에서 dev 승격을 뺄지와 함께 결정한다
 - [ ] Codex 프롬프트(`prompt.py`)의 허용/금지 경로와 지시문 갱신
 - [ ] 이슈 폼 `allowed_scope`와 실제 실행 가능 범위 정합. 현재 *"Feast 정의 수정 허용"*
       체크박스가 있으나 1단계에서는 학습이 거부한다
