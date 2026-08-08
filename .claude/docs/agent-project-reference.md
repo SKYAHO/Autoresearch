@@ -169,6 +169,13 @@ docs/
     - `ORCH_TRAINING_DATASET_URI`가 **on/off 스위치**다. 비어 있으면 학습을 건너뛰고
       기존 Phase 2 경로만 돈다. 값은 `by-hash/<sha256>/` prefix이며, 스냅샷을 읽으려면
       `experiment-job` GSA에 `roles/storage.objectViewer`가 필요하다.
+    - **MLflow 좌표는 이름이 갈린다(#624).** launcher가 받는 이름은
+      `ORCH_MLFLOW_TRACKING_URI`이지만 executor container에 내보내는 이름은 접두사 없는
+      `MLFLOW_TRACKING_URI`다 — `src/pipeline/train.py`가 표준 이름으로 읽기 때문이며,
+      접두사를 붙여 내보내면 값이 전달돼도 학습은 Pod 로컬 file store에 기록한다.
+      비어 있으면 아무것도 붙지 않는다(`ORCH_TRAINING_DATASET_URI`와 같은 opt-in 규약).
+      이 좌표가 없으면 run이 Pod과 함께 사라져 `training_comparison.py`가
+      `runs:/<run_id>/reproducibility/split/...`로 내려받을 artifact를 잃는다.
     - **다운로드는 workspace 코드가, 검증은 executor 이미지가 한다(#605).** 받은 CSV의
       SHA-256을 URI에 박힌 값과 대조한다. 다운로드 경로(`src/**`)는 Codex의 허용
       범위라 candidate가 바꿀 수 있는데, 학습과 달리 **데이터 조달은 두 조건이 같아야**

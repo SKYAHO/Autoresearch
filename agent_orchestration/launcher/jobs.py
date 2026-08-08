@@ -152,7 +152,16 @@ def _training_environment(settings: LauncherSettings) -> list[V1EnvVar]:
     """
     if not settings.training_dataset_uri:
         return []
+    tracking = (
+        # 내보내는 이름에 `ORCH_` 접두사를 붙이지 않는다. `src/pipeline/train.py`가
+        # `os.getenv("MLFLOW_TRACKING_URI")`로 읽으므로, 접두사를 붙이면 값이 전달돼도
+        # 학습은 그대로 Pod 로컬 file store에 기록한다.
+        [_env("MLFLOW_TRACKING_URI", settings.mlflow_tracking_uri)]
+        if settings.mlflow_tracking_uri
+        else []
+    )
     return [
+        *tracking,
         _env("ORCH_TRAINING_DATASET_URI", settings.training_dataset_uri),
         _env("ORCH_TRAINING_TIMEOUT_SEC", str(settings.training_timeout_sec)),
         _env(
