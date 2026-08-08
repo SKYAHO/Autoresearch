@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-08T02:47:08Z",
+  "generated_at": "2026-08-08T05:26:27Z",
   "reports": [
+    {
+      "number": 596,
+      "title": "feat: Agent Orchestration digest 자동 승격 연결",
+      "author": "hyeongyu-data",
+      "merged_at": "2026-08-08T05:26:12Z",
+      "summary_ko": [
+        "검증을 통과한 Agent Orchestration API 및 UI 이미지 해시를 인프라 저장소 main 브랜치에 자동 승격하는 워크플로우를 연동하였습니다.",
+        "GitHub App 토큰 권한과 지정된 6개 매니페스트 변경 허용 목록 검증을 통해 부적절한 변경을 차단하는 fail-closed 방식을 적용하였습니다.",
+        "릴리스 파이프라인 가이드, 계약 명세서(spec), 이행 계획 문서(plan)를 신규 승격 체계와 책임 경계에 맞추어 함께 업데이트하였습니다."
+      ],
+      "report_url": "pr/596/"
+    },
     {
       "number": 617,
       "title": "fix: verifier의 pytest를 차단이 아닌 관측치로 바꾼다",
