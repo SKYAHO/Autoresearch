@@ -49,15 +49,16 @@ executor가 `train-model`을 부르는 것과 **같은 패턴**으로 부른다.
 
 ### 1-2. executor의 측정 단계
 
-- [ ] `agent_orchestration/executor/training.py`의 `_run` 패턴을 따라
-      `evaluate-model`을 **6회**(2조건 × 3seed) 호출하고 결과 JSON을 수집
-- [ ] `metrics.json` 조립
-      - seed별 baseline·candidate의 ROC-AUC · LogLoss · Brier
-      - 참고 통계: `compare_to_baseline` · `summarize_metric` · `t_critical_95`.
+- [x] `agent_orchestration/executor/measurement.py` — `training.py`의 `_run` 패턴을
+      따라 `evaluate-model`을 **6회**(2조건 × 3seed) 호출하고 결과 JSON을 수집
+- [x] `metrics.json` 조립 (`experiment-metrics-v1`)
+      - seed별 baseline·candidate의 전체 held-out 지표
+      - paired delta: ROC-AUC · LogLoss · Brier의 seed별 차이 + 평균 + 표준오차.
         **판정하지 않는다 — 수치만 낸다**
-      - `split_hash`(두 조건의 테스트셋 동일성) · `dataset_fingerprint`
-      - 실험 좌표: `experiment_id` · `issue_number` · `base_dev_sha` ·
-        `candidate_sha` · `image_digest` · seed 목록
+      - `split_matches`(두 조건의 테스트셋 SHA-256 대조) · `dataset_fingerprint`
+      - 실험 좌표는 호출부가 주입한다
+- [x] 신뢰구간은 executor에서 만들지 않는다 — t 임계값 표가
+      `src/pipeline/seed_sweep.py`에 있고 복제하면 두 벌이 갈라진다
 
 ### 1-3. GCS 게시
 
