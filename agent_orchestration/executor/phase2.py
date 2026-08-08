@@ -304,16 +304,46 @@ def _read_verification() -> VerificationResult:
         changed_paths = raw["changed_paths"]
         fingerprint = raw["content_fingerprint"]
         tree = raw["verified_tree_oid"]
-    except (OSError, ValueError, KeyError, TypeError) as error:
+        # pytest 관측치는 없어도 handoff가 성립한다 — 차단 사유가 아니기 때문이다(#615).
+        # 그래도 그대로 실어 나른다. 기본값으로 되돌리면 "pytest가 통과했다"는 거짓이 된다.
+        pytest_exit_code = raw.get("pytest_exit_code", 0)
+        pytest_output = raw.get("pytest_output", "")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         raise Phase2ExecutorError("verification_result_invalid") from error
     if (
         not isinstance(changed_paths, list)
         or not all(isinstance(path, str) for path in changed_paths)
         or not isinstance(fingerprint, str)
         or not isinstance(tree, str)
+        or not isinstance(pytest_exit_code, int)
+        or isinstance(pytest_exit_code, bool)
+        or not isinstance(pytest_output, str)
     ):
         raise Phase2ExecutorError("verification_result_invalid")
-    return VerificationResult(tuple(changed_paths), fingerprint, tree)
+    return VerificationResult(
+        tuple(changed_paths), fingerprint, tree, pytest_exit_code, pytest_output
+    )
+
+
+def _log_pytest_observation(result: VerificationResult) -> None:
+    """비차단 pytest의 결과를 stage 로그로 남긴다.
+
+    pytest는 candidate를 거부하지 않으므로(#615) 이 로그가 유일한 관측 수단이다. 실패
+    여부와 무관하게 한 줄을 남겨 "통과했다"와 "실행되지 않았다"를 구분한다. 실패했을
+    때만 출력 tail을 붙인다 — 통과한 pytest의 출력은 진단 가치가 없고 64 KiB를 차지한다.
+    """
+    if result.pytest_exit_code == 0:
+        _LOGGER.info(
+            "pytest observation stage=candidate-verifier blocking=false exit_code=0"
+        )
+        return
+    _LOGGER.warning(
+        "pytest observation stage=candidate-verifier blocking=false exit_code=%d "
+        "bytes=%d\n%s",
+        result.pytest_exit_code,
+        len(result.pytest_output.encode("utf-8")),
+        result.pytest_output,
+    )
 
 
 def candidate_verifier_main() -> int:
@@ -326,6 +356,7 @@ def candidate_verifier_main() -> int:
         candidate_sha,
         CandidatePolicy(allowed_scope=state.allowed_scope),
     )
+    _log_pytest_observation(result)
     _write_verification(result)
     return 0
 

@@ -7,7 +7,9 @@ finalizer가 candidate commit·push를 수행하기 전 변경 범위와 고정 
 [기능]
 working tree 또는 재시도 candidate commit의 실제 Git diff를 경로·mode·크기 정책으로
 검사하고 candidate가 새로 도입한 credential·로컬 경로를 거부하며, 자격증명이 없는
-allowlist 환경에서 diff check·Ruff·pytest를 순서대로 실행한다.
+allowlist 환경에서 diff check·Ruff·pytest를 순서대로 실행한다. **차단하는 것은 경로·크기
+정책과 diff check·Ruff까지이고, pytest는 실행하되 거부 사유로 쓰지 않고 관측치로
+반환한다**(#615).
 working tree는 descriptor 기반 snapshot에서 검사하며 Stage 5가 재확인할 콘텐츠 지문과
 staged tree 객체 ID를 함께 반환한다.
 
@@ -38,6 +40,9 @@ _SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
 _LFS_POINTER_PREFIX: Final = b"version https://git-lfs.github.com/spec/v1\n"
 _FIXED_UV_PROJECT_ENVIRONMENT: Final = "/opt/autoresearch-venv"
 _BASE_ALLOWED_PREFIXES: Final = ("autoresearch/", "tests/", "tools/")
+# 비차단 pytest의 출력 tail 상한. 실패한 pytest의 traceback은 수 MB까지 커질 수 있고,
+# 이 값은 finalizer handoff JSON과 stage 로그에 그대로 실린다(#615).
+_PYTEST_OUTPUT_TAIL_BYTES: Final = 64 * 1024
 _ALWAYS_FORBIDDEN_PREFIXES: Final = (
     ".git/",
     ".github/",
@@ -75,11 +80,22 @@ class CandidatePolicy:
 
 @dataclass(frozen=True)
 class VerificationResult:
-    """범위·고정 명령·finalizer handoff를 모두 통과한 candidate 결과다."""
+    """범위·차단 명령·finalizer handoff를 통과한 candidate 결과와 pytest 관측치다.
+
+    `pytest_exit_code`·`pytest_output`은 **거부 사유가 아니라 기록**이다(#615). pytest는
+    candidate와 무관한 실패로도 떨어지는데(환경 의존 테스트, baseline에서 이미 깨진 테스트),
+    그것으로 candidate를 거부하면 실험이 학습·측정에 도달하지 못해 **아무 기록도 남지
+    않는다.** 대신 결과를 그대로 실어 나른다 — 차단을 푸는 대신 관측을 남기지 않으면
+    완화가 아니라 삭제가 된다.
+
+    `pytest_output`은 `_PYTEST_OUTPUT_TAIL_BYTES` 상한의 최근 구간이며 전체가 아니다.
+    """
 
     changed_paths: tuple[str, ...]
     content_fingerprint: str
     verified_tree_oid: str
+    pytest_exit_code: int = 0
+    pytest_output: str = ""
 
 
 @dataclass(frozen=True)
@@ -138,18 +154,26 @@ def _run_git(
 
 def _run_fixed_command(
     command: tuple[str, ...], *, cwd: Path, environment: dict[str, str]
-) -> int:
-    """봉인된 verifier 명령 하나를 출력 비노출 상태로 실행한다."""
+) -> tuple[int, str]:
+    """봉인된 verifier 명령 하나를 실행하고 종료 코드와 출력 tail을 함께 반환한다.
+
+    차단 명령에서는 호출자가 출력을 버리지만, 비차단인 pytest는 이 출력이 유일한
+    관측 수단이다(#615). 상한을 두는 이유는 실패한 pytest의 traceback이 수 MB까지
+    커질 수 있어서다.
+    """
     try:
-        return subprocess.run(
+        completed = subprocess.run(
             command,
             cwd=cwd,
             env=environment,
             capture_output=True,
             check=False,
-        ).returncode
+        )
     except OSError as error:
         raise CandidateVerificationError("verification_command_unavailable") from error
+    merged = completed.stdout + completed.stderr
+    tail = merged[-_PYTEST_OUTPUT_TAIL_BYTES:]
+    return completed.returncode, tail.decode("utf-8", errors="replace")
 
 
 def _decode_path(value: bytes) -> str:
@@ -539,10 +563,14 @@ def _run_sealed_commands(
     candidate_sha: str | None,
     *,
     environment: dict[str, str],
-) -> None:
-    """diff check, Ruff, pytest를 고정 순서로 실행하고 첫 실패에서 중단한다."""
+) -> tuple[int, str]:
+    """diff check와 Ruff로 candidate를 차단하고, pytest는 관측치로만 돌려준다.
+
+    pytest가 차단하지 않는 이유는 `VerificationResult` docstring에 있다(#615). 순서는
+    유지한다 — 차단 명령이 먼저 실패하면 8분짜리 pytest를 돌릴 이유가 없다.
+    """
     revisions = (base_sha,) if candidate_sha is None else (base_sha, candidate_sha)
-    commands = (
+    blocking_commands = (
         (("git", "diff", "--check", *revisions), "diff_check_failed"),
         (
             (
@@ -558,11 +586,16 @@ def _run_sealed_commands(
             ),
             "ruff_failed",
         ),
-        (("uv", "run", "--no-sync", "python", "-m", "pytest"), "pytest_failed"),
     )
-    for command, error_code in commands:
-        if _run_fixed_command(command, cwd=repository, environment=environment) != 0:
+    for command, error_code in blocking_commands:
+        exit_code, _ = _run_fixed_command(command, cwd=repository, environment=environment)
+        if exit_code != 0:
             raise CandidateVerificationError(error_code)
+    return _run_fixed_command(
+        ("uv", "run", "--no-sync", "python", "-m", "pytest"),
+        cwd=repository,
+        environment=environment,
+    )
 
 
 def _materialize_candidate(
@@ -923,7 +956,7 @@ def verify_candidate(
             content_fingerprint = _working_tree_fingerprint(
                 verification_repository, base_sha, changes
             )
-        _run_sealed_commands(
+        pytest_exit_code, pytest_output = _run_sealed_commands(
             verification_repository,
             base_sha,
             candidate_sha,
@@ -941,4 +974,6 @@ def verify_candidate(
         changed_paths=changed_paths,
         content_fingerprint=content_fingerprint,
         verified_tree_oid=verified_tree_oid,
+        pytest_exit_code=pytest_exit_code,
+        pytest_output=pytest_output,
     )
