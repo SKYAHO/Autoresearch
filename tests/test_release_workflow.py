@@ -42,7 +42,7 @@ def test_release_workflow_requires_main_ancestor_for_source_sha():
         workflow_text.count(
             "git fetch --no-tags origin main:refs/remotes/origin/main"
         )
-        == 3
+        == 4
     )
     assert workflow_text.count('git merge-base --is-ancestor "$source_sha" origin/main') == 3
 
