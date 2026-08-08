@@ -207,6 +207,15 @@ docs/
   계산하지 않습니다. 실행 좌표는 `autoresearch/experiments/context.py`가,
   결과 계약은 `src/pipeline/paired_experiment.py`가 소유하며 정본은
   `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`입니다.
+- 판정 결과의 사람용 Markdown 리포트(#620)는
+  `src/pipeline/experiment_report_markdown.py`가 렌더링하고
+  `python -m src.cli render-experiment-report`가 배선합니다. 판정도 실행도
+  하지 않으며 네트워크를 쓰지 않습니다 — **가설 본문 조달은 호출부 책임**이고
+  이 명령은 `--hypothesis`로 받기만 합니다. 계획 Stage 5(`docs/plans/
+  2026-08-07-experiment-execution-enablement.md`)가 요구하는 9개 항목 중
+  탐색 공간·우승 조합(Stage 3)과 기여 분해·보조 지표(Stage 4)는 아직 결과
+  계약에 없어 **"미측정"으로 문서에 명시**합니다. 조용히 생략하면 승격
+  판단자가 "없음"과 "0"을 구분할 수 없습니다.
 - 학습 데이터셋 스냅샷 재사용(#530)의 CLI 인자 이름(`--snapshot-root`,
   `--dataset-uri`, `--min-coverage-days`)은 `Autoresearch-airflow#236` 배선이
   참조하도록 확정됐습니다. `build-features`/`train-model`/`run-pipeline`
