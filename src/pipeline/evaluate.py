@@ -10,7 +10,8 @@ held-out 지표도 여기 정의를 공유해, standalone 평가와 학습이 �
 비교를 산출한다(예측 1회 재사용). 데이터셋에 평가 전용 패스스루 컬럼이 있으면 유저
 단위 `grouped_roc_auc`를 **전역 지표와 병기**해 리랭킹 품질을 함께 보고한다(#505).
 downsampling 보정은 순위를 바꾸지 않으므로 ROC-AUC/PR-AUC 계열에는 적용하지
-않는다(#300).
+않는다(#300). `metrics_output`을 주면 같은 지표를 `held-out-metrics-v1` JSON으로도
+남긴다 — stdout 파싱 없이 기계가 읽을 경로다.
 
 [비책임] 학습·분할은 `src/pipeline/train.py`, 데이터셋 조립과 패스스루 컬럼 보존은
 `src/pipeline/build_training_dataset.py`, 공정 baseline·challenger 비교는
@@ -20,8 +21,10 @@ downsampling 보정은 순위를 바꾸지 않으므로 ROC-AUC/PR-AUC 계열에
 승격 판정은 이 모듈이 정하지 않는다(#493).
 """
 
+import json
 import os
 import sys
+import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final, Optional
@@ -190,6 +193,87 @@ def evaluate_held_out_metrics(
     }
 
 
+HELD_OUT_METRICS_CONTRACT_VERSION: Final[str] = "held-out-metrics-v1"
+
+
+def write_held_out_metrics(
+    path: str,
+    *,
+    roc_auc: float,
+    pr_auc: float,
+    logloss: float,
+    brier: float,
+    predicted_mean: float,
+    actual_positive_rate: float,
+    row_count: int,
+    positive_count: int,
+    sampling_rate: float,
+    grouped: Optional["GroupedRocAuc"] = None,
+) -> dict[str, object]:
+    """`main()`이 계산한 held-out 지표를 기계가 읽을 JSON으로 원자 게시한다.
+
+    stdout에는 사람이 읽을 형식만 남으므로, 호출자가 지표를 쓰려면 출력을 파싱해야
+    한다. 형식이 바뀌면 조용히 깨지는 경로라 파일로 따로 낸다 — executor가 조건·seed별
+    실행 결과를 모을 때 쓴다.
+
+    같은 디렉터리의 임시 파일에 쓰고 `os.replace`로 옮긴다. 중간에 죽어도 **부분만 쓰인
+    파일이 남지 않는다** — 읽는 쪽이 "파일이 있으면 완결됐다"를 가정할 수 있어야 한다.
+
+    `grouped`는 데이터셋에 패스스루 컬럼이 없으면 `None`이다. 그 경우 `grouped_roc_auc`
+    키 자체를 생략하지 않고 `null`로 남긴다 — 키가 사라지면 "계산 안 함"과 "0"을
+    읽는 쪽에서 구분하기 어렵다.
+
+    Args:
+        path: 기록할 JSON 경로. 상대 경로면 호출자의 cwd 기준이다.
+        roc_auc·pr_auc: 순위 기반 지표(downsampling 보정에 불변).
+        logloss·brier: 보정된 확률로 잰 지표.
+        predicted_mean·actual_positive_rate: calibration 요약.
+        row_count·positive_count: 이 지표가 몇 행에서 나왔는지의 근거.
+        sampling_rate: 학습에 쓴 negative downsampling 실현 비율.
+        grouped: 유저 단위 ROC-AUC와 커버리지(#505).
+
+    Returns:
+        기록한 payload. 호출자가 다시 읽지 않고 쓸 수 있게 돌려준다.
+    """
+    payload: dict[str, object] = {
+        "contract_version": HELD_OUT_METRICS_CONTRACT_VERSION,
+        "roc_auc": float(roc_auc),
+        "pr_auc": float(pr_auc),
+        "log_loss": float(logloss),
+        "brier": float(brier),
+        "predicted_mean": float(predicted_mean),
+        "actual_positive_rate": float(actual_positive_rate),
+        "row_count": int(row_count),
+        "positive_count": int(positive_count),
+        "sampling_rate": float(sampling_rate),
+        "grouped_roc_auc": (
+            None
+            if grouped is None
+            else {
+                "value": grouped.value,
+                "total_groups": grouped.total_groups,
+                "scored_groups": grouped.scored_groups,
+                "skipped_groups": grouped.skipped_groups,
+                "null_key_rows": grouped.null_key_rows,
+            }
+        ),
+    }
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    descriptor, temporary_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+        os.replace(temporary_path, path)
+    except BaseException:
+        # 실패 경로에서 임시 파일을 남기면 다음 실행이 디렉터리를 오해한다.
+        if os.path.exists(temporary_path):
+            os.unlink(temporary_path)
+        raise
+    return payload
+
+
 def get_project_root():
     """프로젝트 루트 경로 반환."""
     current = os.path.dirname(os.path.abspath(__file__))
@@ -213,6 +297,7 @@ def main(
     feature_columns_path: str = None,
     sampling_rate: float = 1.0,
     extra_features: Optional[Sequence[str]] = None,
+    metrics_output: str = None,
 ):
     # extra_features: 학습이 prod 계약 뒤에 덧붙인 실험 피처(#405). 지정하면 계약
     # 검증이 "prod 접두부 정확 일치 + 나머지가 선언한 실험 피처"로 바뀐다. 미지정
@@ -291,6 +376,7 @@ def main(
     # 과거 실험과의 비교 가능성을 끊으므로 이 작업의 범위가 아니다(#493이 소유).
     # 패스스루 컬럼이 없는 과거 스냅샷은 조용히 건너뛴다 — 조립은 fail-closed지만
     # 평가까지 막으면 재현 평가 경로가 끊긴다.
+    grouped = None
     if GROUP_KEY_COLUMN in dataset.columns:
         grouped = grouped_roc_auc(y, y_pred_proba, dataset[GROUP_KEY_COLUMN])
         coverage = (
@@ -320,6 +406,25 @@ def main(
         f"  [OK] calibration: 예측 평균={float(y_pred_proba.mean()):.4f} "
         f"vs 실제 양성률={float(y.mean()):.4f}"
     )
+
+    if metrics_output is not None:
+        # baseline 비교(Step 5)보다 **앞에서** 쓴다. baseline 모델은 없을 수도 있고
+        # 로드가 실패해도 무시되는 진단 항목이라, 그 뒤에 두면 부수적인 실패가
+        # held-out 지표 기록까지 날린다.
+        write_held_out_metrics(
+            metrics_output,
+            roc_auc=roc_auc,
+            pr_auc=pr_auc,
+            logloss=logloss,
+            brier=brier,
+            predicted_mean=float(y_pred_proba.mean()),
+            actual_positive_rate=float(y.mean()),
+            row_count=int(len(y)),
+            positive_count=int(y.sum()),
+            sampling_rate=sampling_rate,
+            grouped=grouped,
+        )
+        print(f"  [OK] 지표 JSON 기록: {metrics_output}")
 
     print("\n[Step 5] Baseline (LogisticRegression) 비교...")
     baseline_path = os.path.join(project_root, "models", "baseline.pkl")
