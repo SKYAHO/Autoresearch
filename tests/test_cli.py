@@ -2113,3 +2113,70 @@ def test_report_result_rejects_non_uuid_experiment_id(tmp_path, monkeypatch) -> 
     assert outcome.exit_code == 2
     assert stub.calls == []
     assert "UUID 형식이 아닙니다" in unstyle(outcome.output)
+
+
+def test_render_experiment_report_writes_markdown_and_exits_zero(tmp_path) -> None:
+    """판정 결과 JSON 하나를 사람이 읽는 Markdown 문서로 옮긴다(#620)."""
+    result_path = _write_paired_result(tmp_path, "comparison_passed")
+    output = tmp_path / "nested" / "report.md"
+
+    outcome = CliRunner().invoke(
+        cli.app,
+        [
+            "render-experiment-report",
+            "--result",
+            str(result_path),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert outcome.exit_code == 0
+    document = output.read_text(encoding="utf-8")
+    assert "comparison_passed" in document
+    assert "미측정 — Stage 3" in document
+
+
+def test_render_experiment_report_rejects_invalid_result_with_exit_two(tmp_path) -> None:
+    """계약을 못 읽은 것은 인자 오류(2)다 — 쓰기 실패(1)와 섞이면 재시도 판단을 못 한다."""
+    result_path = tmp_path / "result.json"
+    result_path.write_text('{"outcome": "nope"}', encoding="utf-8")
+    output = tmp_path / "report.md"
+
+    outcome = CliRunner().invoke(
+        cli.app,
+        [
+            "render-experiment-report",
+            "--result",
+            str(result_path),
+            "--output",
+            str(output),
+        ],
+    )
+
+    assert outcome.exit_code == 2
+    assert not output.exists()
+    assert "결과를 읽지 못했습니다" in unstyle(outcome.output)
+
+
+def test_render_experiment_report_passes_hypothesis_into_the_document(tmp_path) -> None:
+    result_path = _write_paired_result(tmp_path, "comparison_passed")
+    output = tmp_path / "report.md"
+
+    outcome = CliRunner().invoke(
+        cli.app,
+        [
+            "render-experiment-report",
+            "--result",
+            str(result_path),
+            "--output",
+            str(output),
+            "--hypothesis",
+            "num_leaves를 64로 올리면 ROC-AUC가 오른다",
+        ],
+    )
+
+    assert outcome.exit_code == 0
+    assert "num_leaves를 64로 올리면 ROC-AUC가 오른다" in output.read_text(
+        encoding="utf-8"
+    )
