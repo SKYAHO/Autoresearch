@@ -46,10 +46,19 @@ registry를 두는 모델을 전제한다. Phase 2 executor는 그중 아무것�
   규칙, 기여 분해 규칙이 필요하고, 새 실패 모드마다 규칙이 하나씩 붙는다.
 - **충족 비용이 값보다 크다.** 위 §배경 ②의 항목 전부가 이 게이트 때문에 필요했다.
 
-**제거되는 것:** `plan_receipt`(write-once GCS 영수증), 조건별 Feast
-`registry.db`, 코드 GCS 아카이브, MLflow Registry 모델 등록, MLflow tracking
-서버 배선, UUID/슬러그 식별자 정합, `paired-offline-experiment-v1` 충족.
+**더 이상 필요 없어지는 것:** `plan_receipt`(write-once GCS 영수증), 조건별 Feast
+`registry.db`, 코드 GCS 아카이브, MLflow Registry 모델 등록, UUID/슬러그 식별자 정합,
+`paired-offline-experiment-v1` 충족.
 → **`2026-08-07` plan의 Stage 6이 통째로 불필요해진다.**
+
+**MLflow tracking 배선(#624/#626)은 그대로 둔다.** 판정이 `runs:/<run_id>/...`
+artifact에 의존하지 않게 되었을 뿐, 학습 run 기록 자체는 값이 있다. **판정 경로에서
+load-bearing이 아니게 되는 것이지 제거 대상이 아니다.**
+
+**대체되는 것:** `2026-08-07` plan Stage 5의 코드 렌더러(#620,
+`src/pipeline/experiment_report_markdown.py`)는 `PairedExperimentResult`를 입력으로
+받는다. 이 계약에서는 `report.md`를 **에이전트가 쓰므로**(§결정 2) 그 입력이 생기지
+않는다.
 
 **유지되는 것:** 통계 **함수**(`compare_to_baseline`, `summarize_metric`,
 `t_critical_95`)는 계속 쓴다. 판정 관문이 아니라 `report.md`에 실을 **참고 수치**로
