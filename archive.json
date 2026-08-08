@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-08T02:45:40Z",
+  "generated_at": "2026-08-08T02:47:08Z",
   "reports": [
+    {
+      "number": 617,
+      "title": "fix: verifier의 pytest를 차단이 아닌 관측치로 바꾼다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-08T02:46:56Z",
+      "summary_ko": [
+        "후보 검증기(candidate-verifier)에서 pytest 실패를 차단 사유가 아닌 관측 기록으로 전환하였습니다.",
+        "실행 차단 조건은 diff check 및 Ruff 검사로 한정하고, pytest 결과는 exit code와 출력 로그 형태로 보존합니다.",
+        "실험 후보의 자격 증명 및 경로 접근 정책 등 핵심 안전 경계 검사는 기존과 동일하게 유지합니다."
+      ],
+      "report_url": "pr/617/"
+    },
     {
       "number": 613,
       "title": "fix: Codex sandbox 모드 변경과 원문 출력 로깅 추가",
