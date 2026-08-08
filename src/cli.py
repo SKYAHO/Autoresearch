@@ -52,6 +52,9 @@ from src.pipeline import (  # noqa: E402
     train,
     training_comparison,
 )
+from src.pipeline.experiment_report_markdown import (  # noqa: E402
+    render_experiment_report,
+)
 from src.pipeline.experiment_result_report import (  # noqa: E402
     LauncherOwnedExperimentError,
     ResultReportError,
@@ -967,6 +970,53 @@ def report_experiment_result(
         raise typer.Exit(code=1) from error
 
     typer.echo(f"{experiment_id} -> {target}")
+
+
+@app.command("render-experiment-report")
+def render_experiment_report_command(
+    result: Path = typer.Option(
+        ..., "--result", help="compare-paired-experiment가 게시한 결과 JSON 경로"
+    ),
+    output: Path = typer.Option(..., "--output", help="Markdown 리포트를 쓸 경로"),
+    hypothesis: Optional[str] = typer.Option(
+        None,
+        "--hypothesis",
+        help="리포트 머리에 실을 가설 본문. 결과 계약에 없으므로 호출부가 전달한다",
+    ),
+) -> None:
+    """paired 판정 결과를 사람이 읽는 Markdown 리포트로 렌더링한다(#620).
+
+    판정도 실행도 하지 않는다 — 이미 내려진 판정을 표현만 한다. 네트워크를 쓰지
+    않으므로 가설 본문은 조달하지 않고 인자로 받는다.
+
+    exit code: 성공 0, 출력 쓰기 실패 1, 인자·결과 계약 오류 2.
+    """
+    try:
+        payload = json.loads(Path(result).read_text(encoding="utf-8"))
+        parsed = paired_experiment.PairedExperimentResult.model_validate(payload)
+    except (OSError, json.JSONDecodeError, ValidationError) as error:
+        # 결과 payload에는 URI·식별자가 섞여 있으므로 CLI에는 오류 종류만 남긴다.
+        typer.echo(
+            f"[리포트 렌더링 실패] {type(error).__name__}: "
+            "paired-offline-experiment-result-v1 결과를 읽지 못했습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=2) from error
+
+    document = render_experiment_report(parsed, hypothesis=hypothesis)
+    try:
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(document, encoding="utf-8")
+    except OSError as error:
+        typer.echo(
+            f"[리포트 렌더링 실패] {type(error).__name__}: "
+            "Markdown 리포트를 쓰지 못했습니다.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from error
+
+    typer.echo(str(output_path))
 
 
 @app.command()
