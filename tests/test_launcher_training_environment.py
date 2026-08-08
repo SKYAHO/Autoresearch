@@ -38,8 +38,12 @@ _TRAINING_KEYS = frozenset(
 )
 
 
-def _settings(*, dataset_uri: str = "") -> LauncherSettings:
+_MLFLOW_URI = "http://mlflow.mlflow.svc.cluster.local:5000"
+
+
+def _settings(*, dataset_uri: str = "", mlflow_tracking_uri: str = "") -> LauncherSettings:
     return LauncherSettings(
+        mlflow_tracking_uri=mlflow_tracking_uri,
         database_url="postgresql://launcher:password@db/orchestration",
         job_namespace="agent-orchestration",
         executor_image=(
@@ -104,6 +108,48 @@ def test_training_environment_is_limited_to_the_two_training_containers() -> Non
         else:
             present = _TRAINING_KEYS & set(environment)
             assert not present, f"{name}에 학습 환경이 붙었다: {sorted(present)}"
+
+
+def test_mlflow_tracking_uri_is_exported_without_the_orch_prefix() -> None:
+    """`train.py`가 `os.getenv("MLFLOW_TRACKING_URI")`로 읽는다 — 접두사를 붙이면 무효다.
+
+    launcher가 **받는** 이름은 `ORCH_MLFLOW_TRACKING_URI`이고 executor에 **내보내는**
+    이름은 `MLFLOW_TRACKING_URI`다. 두 이름이 다르다.
+    """
+    containers = _containers(
+        _settings(dataset_uri=_DATASET_URI, mlflow_tracking_uri=_MLFLOW_URI)
+    )
+    for name in ("workspace-preparer", "candidate-finalizer"):
+        environment = _environment(containers[name])
+        assert environment["MLFLOW_TRACKING_URI"] == _MLFLOW_URI
+        assert "ORCH_MLFLOW_TRACKING_URI" not in environment
+
+
+def test_mlflow_tracking_uri_never_leaks_outside_the_two_training_containers() -> None:
+    """학습 stage 밖으로 새면 안 된다 — 특히 codex-worker.
+
+    Codex는 이슈 본문을 입력으로 저장소 코드를 고치는 LLM 실행이고, 그 container에는
+    token volume이 붙지 않는다(credential 없는 stage). 이 PR과 짝을 이루는 infra 변경이
+    executor egress에 MLflow(5000)를 여는데 같은 Pod의 container가 그 egress를
+    공유하므로, 주소까지 주면 공용 tracking 서버가 LLM 실행의 사정거리에 들어온다.
+
+    `_TRAINING_KEYS`에 합칠 수 없다 — 그 4개는 dataset URI만 있으면 **항상** 방출되지만
+    이 값은 tracking URI가 **따로** 주어졌을 때만 방출되므로, 합치면
+    `test_training_environment_is_limited_to_the_two_training_containers`의 부분집합
+    단언이 깨진다.
+    """
+    containers = _containers(
+        _settings(dataset_uri=_DATASET_URI, mlflow_tracking_uri=_MLFLOW_URI)
+    )
+    allowed = {"workspace-preparer", "candidate-finalizer"}
+    for name, container in containers.items():
+        if name in allowed:
+            continue
+        assert "MLFLOW_TRACKING_URI" not in _environment(container), (
+            f"{name}에 tracking 좌표가 샜다"
+        )
+    # 회귀가 났을 때 어느 container인지 바로 보이도록 명시적으로 한 번 더 짚는다.
+    assert "MLFLOW_TRACKING_URI" not in _environment(containers["codex-worker"])
 
 
 def test_codex_worker_never_receives_the_dataset_coordinate() -> None:
