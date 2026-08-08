@@ -33,6 +33,16 @@ _UNMEASURED_ITEMS: Final = (
 )
 
 
+def _number(value: float) -> str:
+    """지표를 지수 표기 없이 적는다. `:g`는 작은 delta를 `1e-05`로 바꿔 읽기 어렵다."""
+    return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def _signed(value: float) -> str:
+    """개선·악화를 부호로 즉시 읽게 한다."""
+    return f"{value:+.6f}".rstrip("0").rstrip(".")
+
+
 def _metric_lines(result: PairedExperimentResult) -> list[str]:
     """판정 지표를 렌더링하되, 없으면 빈 값이 아니라 사유를 남긴다.
 
@@ -41,12 +51,63 @@ def _metric_lines(result: PairedExperimentResult) -> list[str]:
     """
     if result.metric_name is None:
         return ["판정 지표 없음 — 판정 엔진에 도달하지 못했습니다."]
-    return []
+
+    lines = [f"- 주 지표: `{result.metric_name}`"]
+    if result.primary_baseline is not None:
+        lines.append(f"- baseline: {_number(result.primary_baseline)}")
+    if result.primary_candidate is not None:
+        lines.append(f"- candidate: {_number(result.primary_candidate)}")
+    if result.paired_delta_mean is not None:
+        lines.append(f"- paired 평균 차이: {_signed(result.paired_delta_mean)}")
+    lower = result.confidence_interval_lower
+    upper = result.confidence_interval_upper
+    if lower is not None and upper is not None:
+        lines.append(f"- 신뢰구간: [{_number(lower)}, {_number(upper)}]")
+    return lines
 
 
-def render_experiment_report(result: PairedExperimentResult) -> str:
-    """판정 결과 하나를 Markdown 문서로 만든다."""
+def _seed_lines(result: PairedExperimentResult) -> list[str]:
+    """seed 수와 분할 해시를 남긴다.
+
+    seed 수가 보이지 않으면 기각 판정을 **"개선이 없었다"와 "검정력이 없었다"로 구분할
+    수 없다.** 현행 3 seed는 자유도 2·t_critical≈4.30이라 신뢰구간이 극단적으로 넓어
+    실제 개선도 기각으로 떨어진다(계획 Stage 1-4).
+    """
+    return [
+        f"- seed: {len(result.seeds)}개 ({', '.join(str(s) for s in result.seeds)})",
+        f"- split hash: `{result.split_hash}`",
+    ]
+
+
+def _provenance_lines(result: PairedExperimentResult) -> list[str]:
+    """결론을 나중에 감사·재현할 좌표를 남긴다.
+
+    2026-08-03 로컬 실증이 무효가 된 직접 원인이 **입력 CSV의 출처·기간·생성 명령
+    기록이 없다**는 것이었다(spec §근거 ⑤). `dataset_fingerprint`는 content hash라
+    "그때 그 데이터"를 바이트 단위로 특정한다.
+    """
+    return [
+        f"- 학습 스냅샷: `{result.dataset_snapshot_uri}`",
+        f"- 데이터 지문: `{result.dataset_fingerprint}`",
+        f"- 학습 설정 지문: `{result.training_config_fingerprint}`",
+        f"- baseline 코드: `{result.base_dev_sha}`",
+        f"- candidate 코드: `{result.candidate_sha}`",
+    ]
+
+
+def render_experiment_report(
+    result: PairedExperimentResult, *, hypothesis: str | None = None
+) -> str:
+    """판정 결과 하나를 Markdown 문서로 만든다.
+
+    `hypothesis`는 `paired-offline-experiment-result-v1`에 없는 값이라 호출부가 조달해
+    넘긴다. 이 모듈은 네트워크를 타지 않으므로 Experiment API에서 읽어오지 않는다.
+    """
     lines = [
+        "## 가설",
+        "",
+        hypothesis if hypothesis else "가설 없음 — 호출부가 전달하지 않았습니다.",
+        "",
         "## 판정",
         "",
         f"- 결과: `{result.outcome}`",
@@ -55,6 +116,14 @@ def render_experiment_report(result: PairedExperimentResult) -> str:
         "## 지표",
         "",
         *_metric_lines(result),
+        "",
+        "## seed·분할",
+        "",
+        *_seed_lines(result),
+        "",
+        "## provenance",
+        "",
+        *_provenance_lines(result),
         "",
         "## 미측정 항목",
         "",
