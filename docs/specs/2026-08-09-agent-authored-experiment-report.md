@@ -367,9 +367,48 @@ codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]
 거기도 함께 바꾸어야 적용된다. config가 `codex_timeout_sec < active_deadline_sec`를
 검증한다.
 
+## 실측으로 확정된 제약 (2026-08-09, Stage 1 완주 후)
+
+**5. 학습은 seed로 완전히 결정적이다.** 같은 `base_dev_sha`로 두 건(#634·#635)을
+돌려 두 조건 × 3seed × 3지표 **18개 값이 소수점 아홉 자리까지 일치**했고
+`test_set_sha256`도 6개 전부 같았다. Pod·노드·시각이 달라도 분할까지 재현된다.
+→ paired delta를 코드 변경의 효과로 읽을 수 있고, **baseline 캐싱의 전제가 성립한다.**
+
+**6. `train-model`은 학습과 서빙 ONNX 패키징을 한 덩어리로 수행한다.** 그래서
+**트리 크기를 키우는 하이퍼파라미터 변경은 학습이 성공해도 실패할 수 있다.** #633에서
+`num_leaves` 31→63이 학습·검증·모델 저장(Step 1~8)을 모두 통과한 뒤
+`convert_lgbm_to_onnx`의 트리 파서 재귀에서 `RecursionError: maximum recursion depth
+exceeded`로 죽었다. 로컬 재현으로 base(31) 성공·candidate(63) 실패를 확인했다.
+
+이것은 **실험 공간에 숨은 제약**이다. 에이전트는 알 방법이 없고, 트리 크기 조정은
+가장 자연스러운 첫 실험 아이디어 중 하나다. 두 갈래로 처리할 수 있다.
+
+| 안 | 내용 |
+|---|---|
+| 분리 | ONNX 패키징 실패를 학습 실패와 분리한다. 실험의 목적은 지표 측정이고 ONNX는 서빙 산출물이다 — 패키징 실패로 측정을 통째로 잃는 것은 손해다 |
+| 명시 | 분리하지 않는다면 **Stage 3 하네스 지침(AGENTS.md)에 제약을 적는다** |
+
+**7. Codex 자격증명은 구조적으로 일회성이다.** `codex_worker._prepare_runtime_codex_home`이
+`auth.json` 복사본을 `0400`으로 만들어 Codex가 갱신 토큰을 되쓰지 못하고, 쓰더라도
+`TemporaryDirectory`라 사라진다. ChatGPT OAuth는 **refresh token을 쓸 때마다 교체**하므로
+access token이 만료되는 순간 저장된 refresh token이 한 번 쓰이고 영구히 죽는다
+(#632에서 `refresh_token_reused`로 관측). 구독제라 API key 전환은 불가능하다.
+
+→ 복사본 모드를 `0600`으로 바꾸고 **갱신본을 Secret에 되쓴다.** 되쓰기는 같은
+컨테이너에서 하고, Codex의 자격증명 접근 금지는 **하네스 지침이 담당한다** — 위
+"verifier의 정책 강제를 하네스로 대체한다"와 같은 논리다(사용자 판단, 2026-08-09).
+RBAC는 해당 Secret 하나에 `patch`만 준다. 착수 전에 모드를 풀었을 때 Codex가 실제로
+`auth.json`을 갱신해 쓰는지부터 관측한다.
+
+**8. 실패 원인이 로그에 남지 않는다** —
+[#636](https://github.com/SKYAHO/Autoresearch/issues/636). `training._run`·
+`measurement._run`이 subprocess 출력을 잡아둔 뒤 버려, 사유 코드만 남고 본문이 사라진다.
+6·7 모두 이 때문에 진단 비용을 치렀다(#633은 로컬 재현 20분).
+
 ## 검증
 
-- 실험 1건이 `metrics.json`과 `report.md`를 GCS에 남긴 채 완주한다 — **현재 0건**
-- `metric_summary`가 `null`이 아니다 — **현재 전 실험 `null`**
-- 같은 `base_dev_sha`로 2건을 돌려 baseline seed별 값이 일치하는지 관측한다
-- `uv run python -m pytest`, `uv run --no-sync ruff check agent_orchestration autoresearch tests tools`
+- [x] 실험 1건이 `metrics.json`을 GCS에 남긴 채 완주한다 — **#634 (33분 33초)**
+- [x] `metric_summary`가 `null`이 아니다 — 전문↔요약 9항목 일치
+- [x] 같은 `base_dev_sha`로 2건을 돌려 baseline seed별 값이 일치하는지 관측한다 — 일치
+- [x] `uv run python -m pytest`(2516 passed), `uv run --no-sync ruff check ...`
+- [ ] `report.md`가 GCS에 남는다 — Stage 3 범위
