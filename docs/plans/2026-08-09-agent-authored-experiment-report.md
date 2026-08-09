@@ -86,12 +86,66 @@ executor가 `train-model`을 부르는 것과 **같은 패턴**으로 부른다.
 
 ### 검증
 
-- [ ] 실험 1건이 `metrics.json`을 GCS에 남긴 채 완주 — **현재 0건**
-- [ ] `metric_summary`가 `null`이 아니다 — **현재 전 실험 `null`**
-- [ ] **같은 `base_dev_sha`로 2건을 돌려 baseline seed별 값이 일치하는지 관측한다.**
-      일치하면 baseline 캐싱이 정당화되고, 어긋나면 `+0.003` 수준 개선의 신뢰성부터
-      다시 봐야 한다 — 캐싱보다 중요한 발견이다
-- [ ] `uv run python -m pytest`, `uv run --no-sync ruff check agent_orchestration autoresearch tests tools`
+- [x] 실험 1건이 `metrics.json`을 GCS에 남긴 채 완주 — **#634, 33분 33초**
+- [x] `metric_summary`가 `null`이 아니다 — 전문↔요약 대조 9항목 일치
+- [x] **같은 `base_dev_sha`로 2건을 돌려 baseline seed별 값이 일치하는지 관측한다.**
+      → 아래 "재현성 실측" 참조. **일치했다**
+- [x] `uv run python -m pytest`(2516 passed), `uv run --no-sync ruff check ...`
+
+### 재현성 실측 (2026-08-09, #634·#635)
+
+같은 `base_dev_sha`(`8242d3b`)·같은 가설로 두 건을 돌렸다.
+
+**두 조건 × 3seed × 3지표 18개 값이 소수점 아홉 자리까지 일치**했다.
+`test_set_sha256`도 6개 전부 동일하고, paired delta와 표준오차까지 같다.
+
+```
+roc_auc  baseline 0.627265 → candidate 0.635811   delta +0.008546  se 0.002131
+         seed별 delta  +0.012027 / +0.004678 / +0.008933  (3seed 모두 개선)
+log_loss 0.362953 → 0.396962   +0.034009   ← 악화
+brier    0.116992 → 0.129235   +0.012243   ← 악화
+```
+
+**확정된 것 셋**
+
+1. `+0.008546`은 실행 잡음이 아니다. 두 실행이 같은 값을 냈으므로 코드 변경의 효과다
+2. 학습은 seed로 완전히 결정적이다. Pod·노드·시각이 달라도 분할까지 동일하다
+3. **`baseline` 학습 캐싱의 전제가 충족됐다** — 같은 `base_dev_sha`면 baseline은 항상
+   같다. 실험당 약 5분(4분 48초·5분 21초 실측)을 아낄 수 있다
+
+**관측된 사실 하나 더:** 순위 지표는 올랐는데 캘리브레이션 지표 둘이 뚜렷하게 나빠졌다.
+요약에 주 지표 하나만 실었다면 "+0.0085 개선"만 보이고 이 손상은 보이지 않았을 것이다
+— 세 지표를 모두 싣는 판단이 첫 실험에서 값을 했다. 가설의 성패 판정은 Stage 3의
+`report.md`가 할 몫이고, `PASSED`는 "완주하고 결과가 나왔다"는 뜻이다.
+
+### Stage 1 실행에서 드러난 제약 (Stage 1 밖의 원인)
+
+실험 3건 중 2건이 Stage 1과 무관한 곳에서 막혔다. 후속 작업으로 분리한다.
+
+- **stderr 관측 부재 → [#636](https://github.com/SKYAHO/Autoresearch/issues/636).**
+  `training._run`·`measurement._run`이 `capture_output=True`로 출력을 잡아둔 뒤
+  버려서, 실패 사유 코드만 남고 본문이 사라진다. 주석은 "Pod 로그로 흐른다"고 적혀
+  있으나 사실이 아니다. #633 진단에 로컬 재현 20분이 필요했다. **후속 넷 중 첫
+  번째여야 한다** — 나머지 셋이 모두 "다음 실패의 원인을 알 수 있는가"에 기댄다
+- **ONNX 재귀 제약.** `train-model`은 학습과 서빙 ONNX 패키징을 한 덩어리로 한다.
+  #633에서 `num_leaves` 31→63 변경이 학습·검증·모델 저장을 다 통과하고
+  `convert_lgbm_to_onnx`의 트리 파서 재귀에서 `RecursionError`로 죽었다. 로컬 재현으로
+  base(31)는 성공, candidate(63)만 실패함을 확인했다.
+  → 학습 실패와 서빙 패키징 실패를 분리하는 쪽을 권한다. 실험의 목적은 지표를 재는
+  것이고 ONNX는 서빙 산출물이다. 패키징 실패로 측정을 통째로 잃는 것은 손해다.
+  분리하지 않는다면 **Stage 3 하네스 지침에 제약을 명시**해야 한다 — 지금은 에이전트가
+  알 방법이 없고, 트리 크기 조정은 가장 자연스러운 첫 실험 아이디어 중 하나다
+- **Codex 자격증명이 구조적으로 일회성이다.** #632가 `codex-worker`에서 32초 만에
+  죽었다. `_prepare_runtime_codex_home`이 `auth.json` 복사본을 `0400`으로 만들어 갱신본을
+  쓸 수 없고, 설령 쓰더라도 `TemporaryDirectory`라 사라진다. ChatGPT OAuth는 refresh
+  token을 쓸 때마다 교체하므로 **access token 만료 시 한 번 쓰이고 영구히 죽는다.**
+  Secret은 08-07 발급 후 무갱신이었고 08-08의 #619는 통과, 08-09의 #632는 실패로 앞뒤가
+  맞는다. 구독제라 API key 전환은 불가.
+  → 복사본 모드를 `0600`으로 바꾸고 **갱신본을 Secret에 되쓴다.** 사용자 판단으로
+  되쓰기는 같은 컨테이너에서 하고, Codex의 자격증명 접근 금지는 하네스 지침이 담당한다
+  (verifier의 정책 강제를 하네스로 대체한 결정과 같은 논리). RBAC는 해당 Secret 하나에
+  `patch`만 준다. 착수 전에 **모드를 풀면 Codex가 실제로 `auth.json`을 갱신해 쓰는지**
+  부터 관측한다
 
 ## Stage 2 — 컨테이너 8 → 4
 
@@ -212,7 +266,9 @@ executor가 `train-model`을 부르는 것과 **같은 패턴**으로 부른다.
 ## MVP 범위 밖
 
 - Claude 리뷰어의 **거부권** — 판정이 숫자와 일관되게 움직이는지 실적이 쌓인 뒤
-- **baseline 학습 캐싱** — Stage 1 검증에서 재현성이 확인된 뒤
+- **baseline 학습 캐싱** — ~~Stage 1 검증에서 재현성이 확인된 뒤~~ **전제 충족(2026-08-09).**
+  18개 값이 완전히 일치했으므로 같은 `base_dev_sha`의 baseline은 재사용할 수 있다.
+  실험당 약 5분. 착수 시점만 정하면 된다
 - `tests/**` 쓰기 권한 회수 / 하네스 격리 디렉터리로의 산출물 전환
 - 피처 변경 실험 해금 (`feature_change_unsupported`)
 - `CREATED → ERROR` 전이
