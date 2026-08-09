@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-09T11:30:40Z",
+  "generated_at": "2026-08-09T11:42:24Z",
   "reports": [
+    {
+      "number": 640,
+      "title": "feat: 에이전트가 실험 결과로 report.md를 쓴다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-09T11:42:08Z",
+      "summary_ko": [
+        "실험 채점 후 Codex 에이전트가 실험 결과 수치와 코드 변경 내역을 바탕으로 report.md 분석 리포트를 자동 작성하는 기능을 구현하였습니다.",
+        "코드 수정 실행 시 저장소 기여 가이드(AGENTS.md)를 실험 전용 지침으로 임시 교체하고 작업 완료 후 반드시 원본으로 복원하도록 보장하였습니다.",
+        "리포트 생성 과정에서 오류가 발생하더라도 측정된 수치 지표 게시 및 API 보고가 차단되지 않도록 예외 처리 및 로깅을 강화하였습니다."
+      ],
+      "report_url": "pr/640/"
+    },
     {
       "number": 631,
       "title": "feat: executor digest를 infra 자동 승격에 포함한다",
