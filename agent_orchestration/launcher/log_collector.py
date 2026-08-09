@@ -258,21 +258,31 @@ def collect_once(
     for job_name in jobs.list_active_job_names(namespace):
         experiment_id = experiment_id_from_job_name(job_name)
         if experiment_id is None:
-            # label로 걸러도 형식이 다른 Job이 섞일 수 있다.
+            # label로 걸러도 형식이 다른 Job이 섞일 수 있다. 형식 오류는 정상 skip이라
+            # 아래 job_collection_failed와 성격이 다르다.
             continue
-        pod = select_pod(reader.list_pods(namespace, job_name))
-        if pod is None:
-            continue
-        containers, terminated = container_states(pod)
-        problems.extend(
-            collect_container_logs(
-                reader,
-                sink_for(experiment_id),
-                namespace=namespace,
-                job_name=job_name,
-                pod_name=pod.metadata.name,
-                containers=containers,
-                terminated=terminated,
+        try:
+            pod = select_pod(reader.list_pods(namespace, job_name))
+            if pod is None:
+                continue
+            containers, terminated = container_states(pod)
+            problems.extend(
+                collect_container_logs(
+                    reader,
+                    sink_for(experiment_id),
+                    namespace=namespace,
+                    job_name=job_name,
+                    pod_name=pod.metadata.name,
+                    containers=containers,
+                    terminated=terminated,
+                )
             )
-        )
+        except Exception:
+            # Job 단위로 격리한다. 여기서 새어 나가면 이 Job 하나가 아니라 뒤의 Job
+            # 전부가 그 tick에서 날아가고, A가 계속 실패하면 B·C·D는 영영 안 걷힌다.
+            _LOGGER.warning(
+                "job collection failed reason=job_collection_failed job=%s", job_name
+            )
+            problems.append("job_collection_failed")
+            continue
     return problems

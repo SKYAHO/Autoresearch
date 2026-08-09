@@ -399,3 +399,46 @@ def test_collect_once_skips_job_names_that_are_not_experiments() -> None:
 
     assert problems == []
     assert sink.written == []
+
+
+class _ExplodingReader:
+    """첫 Job에서만 분류 안 된 예외를 던지는 reader."""
+
+    def __init__(self, bad_job_pod_name: str, good_pod) -> None:
+        self._bad = bad_job_pod_name
+        self._good = good_pod
+
+    def list_pods(self, namespace: str, job_name: str) -> list:
+        if job_name == self._bad:
+            raise RuntimeError("transient API failure")
+        return [self._good]
+
+    def read_log(self, namespace: str, pod_name: str, container: str) -> str:
+        return "x" * CHUNK_SIZE
+
+
+def test_collect_once_isolates_a_failing_job_from_the_rest() -> None:
+    """한 Job이 죽어도 뒤의 Job은 계속 걷는다.
+
+    Job 단위로 격리하지 않으면 A가 계속 실패하는 동안 그 뒤의 B·C·D가 영영 수집되지
+    않는다 — tick 하나가 아니라 그 Job 이후 전부를 잃는다.
+    """
+    good_pod = _PodWithStatus(
+        "ar-exec-bbb-x7k2",
+        datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+        ([_status("codex-worker", terminated=False)], None),
+    )
+    bad = "ar-exec-" + "a" * 32
+    good = "ar-exec-" + "b" * 32
+    sink = _FakeSink()
+
+    problems = collect_once(
+        _FakeJobs([bad, good]),
+        _ExplodingReader(bad, good_pod),
+        lambda _experiment_id: sink,
+        namespace="ns",
+    )
+
+    assert problems == ["job_collection_failed"]
+    # 뒤 Job은 정상 수집된다.
+    assert [row[1] for row in sink.written] == ["codex-worker"]
