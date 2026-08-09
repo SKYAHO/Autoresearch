@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-09T05:34:30Z",
+  "generated_at": "2026-08-09T06:11:23Z",
   "reports": [
+    {
+      "number": 631,
+      "title": "feat: executor digest를 infra 자동 승격에 포함한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-09T06:11:12Z",
+      "summary_ko": [
+        "릴리스 자동 승격 파이프라인 대상에 실제 실험 실행용 executor 이미지 digest를 추가했습니다.",
+        "오케스트레이션 이미지 5종이 모두 동일한 커밋(SHA)에서 빌드되었는지 자동 검증하도록 개선했습니다.",
+        "승격 파이프라인에 대한 회귀 방지 테스트를 신규 작성하고 저장소 간 병합 순서를 문서화했습니다."
+      ],
+      "report_url": "pr/631/"
+    },
     {
       "number": 629,
       "title": "feat: 실험 지표를 측정해 게시하고 API에 보고한다",
