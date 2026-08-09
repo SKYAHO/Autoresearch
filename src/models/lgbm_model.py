@@ -30,7 +30,7 @@ class LGBMModel(CTRModel):
         scale_pos_weight: float,
         n_estimators: int = 200,
         learning_rate: float = 0.05,
-        num_leaves: int = 31,
+        num_leaves: int = 63,
         random_state: int = 42,
     ):
         """
@@ -131,7 +131,7 @@ class LGBMModel(CTRModel):
             scale_pos_weight=params.get("scale_pos_weight", 1),
             n_estimators=params.get("n_estimators", 200),
             learning_rate=params.get("learning_rate", 0.05),
-            num_leaves=params.get("num_leaves", 31),
+            num_leaves=params.get("num_leaves", 63),
             random_state=params.get("random_state", 42),
         )
         instance.model = booster
