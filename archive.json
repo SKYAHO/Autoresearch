@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-09T04:45:02Z",
+  "generated_at": "2026-08-09T04:56:15Z",
   "reports": [
+    {
+      "number": 629,
+      "title": "feat: 실험 지표를 측정해 게시하고 API에 보고한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-09T04:56:04Z",
+      "summary_ko": [
+        "실험 완료 후 평가 지표가 소실되는 문제를 해결하기 위해 채점, GCS 게시 및 API 보고 체계를 신설하였습니다.",
+        "평가 지표를 JSON으로 원자적 기록하고 조건 및 시드별 지표 비교 결과를 GCS 버킷에 write-once 방식으로 저장합니다.",
+        "지표 요약을 내부 API로 전송하여 실험 상태를 EVALUATING에서 PASSED로 원자적으로 전이하도록 배선하였습니다."
+      ],
+      "report_url": "pr/629/"
+    },
     {
       "number": 626,
       "title": "feat: launcher가 executor Job에 MLflow tracking 좌표를 전달한다 (#624)",
