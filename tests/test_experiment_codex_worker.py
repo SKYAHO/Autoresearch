@@ -735,3 +735,109 @@ def test_harness_restore_never_writes_through_a_symlink(
     assert victim.read_text(encoding="utf-8") == "SCORE = 1\n"
     assert not harness_path.is_symlink()
     assert harness_path.read_text(encoding="utf-8") == original
+
+
+def test_report_style_execution_skips_the_git_repo_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """clone 밖 작업 디렉터리는 git repository가 아니라 Codex가 시작을 거부한다(#642).
+
+    실험 #641이 여기서 죽었다 — `Not inside a trusted directory and
+    --skip-git-repo-check was not specified`로 exit 1이 나고 `report.md`가 남지 않았다.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    argv_path = tmp_path / "argv.json"
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(
+            [
+                "import json",
+                "from pathlib import Path",
+                "import sys",
+                f"Path({str(argv_path)!r}).write_text("
+                "json.dumps(sys.argv[1:]), encoding='utf-8')",
+            ]
+        ),
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+    run = _run_input(tmp_path)
+    working_directory = tmp_path / "workspace" / "result"
+    working_directory.mkdir()
+
+    codex_worker.run_codex_execution(
+        codex_worker.CodexExecution(
+            working_directory=working_directory,
+            prompt="write the report",
+            codex_home=run.codex_home,
+            timeout_seconds=3,
+            skip_git_repo_check=True,
+        )
+    )
+
+    argv = json.loads(argv_path.read_text(encoding="utf-8"))
+    assert "--skip-git-repo-check" in argv
+    # 플래그는 `exec` 바로 뒤 옵션 구간에 있어야 하고 지시문 앞이어야 한다.
+    assert argv.index("--skip-git-repo-check") < argv.index("-C")
+
+
+def test_code_modification_run_keeps_the_git_repo_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, protected_git_mount: None
+) -> None:
+    """Codex #1은 clone 안에서 도는 것이 계약이라 검사를 걷어내지 않는다."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    argv_path = tmp_path / "argv.json"
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(
+            [
+                "import json",
+                "from pathlib import Path",
+                "import sys",
+                f"Path({str(argv_path)!r}).write_text("
+                "json.dumps(sys.argv[1:]), encoding='utf-8')",
+            ]
+        ),
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    run_codex(_run_input(tmp_path))
+
+    assert "--skip-git-repo-check" not in json.loads(
+        argv_path.read_text(encoding="utf-8")
+    )
+
+
+def test_codex_does_not_read_the_inherited_stdin(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, protected_git_mount: None
+) -> None:
+    """stdin이 열린 채로 남는 환경에서 Codex가 timeout까지 매달리면 안 된다.
+
+    실제 실행에서 `Reading additional input from stdin...`이 관측됐다(#642). 지시문은
+    argv로만 준다.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    observed = tmp_path / "stdin.json"
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(
+            [
+                "import json, os, stat",
+                "from pathlib import Path",
+                "mode = os.fstat(0).st_mode",
+                f"Path({str(observed)!r}).write_text(json.dumps({{",
+                "    'is_char_device': stat.S_ISCHR(mode),",
+                "    'read': __import__('sys').stdin.read(),",
+                "}), encoding='utf-8')",
+            ]
+        ),
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    run_codex(_run_input(tmp_path))
+
+    seen = json.loads(observed.read_text(encoding="utf-8"))
+    assert seen["read"] == ""
+    assert seen["is_char_device"]

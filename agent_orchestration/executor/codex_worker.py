@@ -109,6 +109,11 @@ class CodexExecution:
     prompt: str
     codex_home: Path
     timeout_seconds: int
+    # Codex CLI는 git repository가 아닌 디렉터리에서 `--skip-git-repo-check` 없이
+    # 실행되면 `Not inside a trusted directory`로 거부한다(#642 실측). 코드 수정
+    # 실행은 clone 안에서 도는 것이 계약이라 검사를 그대로 두고, 리포트 작성처럼
+    # **clone 밖에서 도는 것이 계약인** 실행만 이 값을 켠다.
+    skip_git_repo_check: bool = False
 
 
 @dataclass(frozen=True)
@@ -470,6 +475,7 @@ def _execute_codex(execution: CodexExecution) -> CodexRunResult:
         "codex",
         "exec",
         "--ephemeral",
+        *(("--skip-git-repo-check",) if execution.skip_git_repo_check else ()),
         "--model",
         _CODEX_MODEL,
         "-c",
@@ -492,6 +498,10 @@ def _execute_codex(execution: CodexExecution) -> CodexRunResult:
                 argv,
                 cwd=execution.working_directory,
                 env=environment,
+                # Codex는 상속된 stdin을 "추가 입력"으로 읽는다(`Reading additional
+                # input from stdin...`). container에서는 즉시 EOF지만, stdin이 열린
+                # 채로 남는 환경에서는 timeout까지 매달린다. 지시문은 argv로만 준다.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=False,
