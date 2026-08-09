@@ -24,6 +24,8 @@ from agent_orchestration.launcher.log_collector import (  # noqa: E402
     CHUNK_SIZE,
     complete_chunks,
     KubernetesPodLogs,
+    collect_once,
+    container_states,
     experiment_id_from_job_name,
     LogSink,
     PodLogReader,
@@ -174,6 +176,7 @@ def test_collect_skips_silently_when_the_container_has_not_started() -> None:
 
     problems = collect_container_logs(
         reader, sink, namespace="ns", job_name="ar-exec-abc",
+        pod_name="ar-exec-abc-x7k2",
         containers=["codex-worker"], terminated=set(),
     )
 
@@ -193,6 +196,7 @@ def test_collect_skips_silently_when_the_pod_vanished_between_list_and_read() ->
 
     problems = collect_container_logs(
         reader, sink, namespace="ns", job_name="ar-exec-abc",
+        pod_name="ar-exec-abc-x7k2",
         containers=["codex-worker"], terminated=set(),
     )
 
@@ -212,6 +216,7 @@ def test_collect_reports_unexpected_api_errors_without_stopping() -> None:
 
     problems = collect_container_logs(
         reader, sink, namespace="ns", job_name="ar-exec-abc",
+        pod_name="ar-exec-abc-x7k2",
         containers=["codex-worker", "candidate-verifier"], terminated=set(),
     )
 
@@ -228,6 +233,7 @@ def test_collect_reports_sink_failure_without_stopping() -> None:
 
     problems = collect_container_logs(
         reader, sink, namespace="ns", job_name="ar-exec-abc",
+        pod_name="ar-exec-abc-x7k2",
         containers=["codex-worker"], terminated=set(),
     )
 
@@ -241,6 +247,7 @@ def test_collect_writes_complete_chunks_with_pod_scoped_keys() -> None:
 
     collect_container_logs(
         reader, sink, namespace="ns", job_name="ar-exec-abc",
+        pod_name="ar-exec-abc-x7k2",
         containers=["codex-worker"], terminated=set(),
     )
 
@@ -250,13 +257,15 @@ def test_collect_writes_complete_chunks_with_pod_scoped_keys() -> None:
     ]
 
 
-def test_collect_does_nothing_when_no_pod_exists() -> None:
-    reader = _FakeReader(pods=[])
+def test_collect_once_skips_a_job_whose_pod_is_not_scheduled_yet() -> None:
+    """Job 생성 직후 Pod이 아직 없는 것은 정상이다 — tick이 조용히 넘어간다."""
     sink = _FakeSink()
 
-    problems = collect_container_logs(
-        reader, sink, namespace="ns", job_name="ar-exec-abc",
-        containers=["codex-worker"], terminated=set(),
+    problems = collect_once(
+        _FakeJobs(["ar-exec-6ec09890a4a84c699760c01349351505"]),
+        _FakeReader(pods=[]),
+        lambda _experiment_id: sink,
+        namespace="ns",
     )
 
     assert sink.written == []
@@ -323,3 +332,70 @@ def test_experiment_id_from_job_name_rejects_foreign_names() -> None:
     assert experiment_id_from_job_name("ar-branch-6ec09890a4a84c699760c01349351505") is None
     assert experiment_id_from_job_name("ar-exec-notahex") is None
     assert experiment_id_from_job_name("ar-exec-") is None
+
+
+class _PodWithStatus:
+    """`initContainerStatuses`·`containerStatuses`를 갖는 Pod double."""
+
+    def __init__(self, name: str, created: datetime, statuses) -> None:
+        self.metadata = type("Meta", (), {"name": name, "creation_timestamp": created})()
+        init, main = statuses
+        self.status = type(
+            "Status", (), {"init_container_statuses": init, "container_statuses": main}
+        )()
+
+
+def _status(name: str, *, terminated: bool):
+    state = type("State", (), {"terminated": object() if terminated else None})()
+    return type("CS", (), {"name": name, "state": state})()
+
+
+def test_container_states_reads_names_and_termination_from_the_pod() -> None:
+    """컨테이너 이름을 하드코딩하지 않는다 — 통합으로 구성이 바뀌어도 따라간다."""
+    pod = _PodWithStatus(
+        "ar-exec-abc-x7k2",
+        datetime(2026, 8, 9, 12, 0, tzinfo=UTC),
+        (
+            [_status("workspace-preparer", terminated=True),
+             _status("codex-worker", terminated=False)],
+            [_status("candidate-finalizer", terminated=False)],
+        ),
+    )
+
+    names, terminated = container_states(pod)
+
+    assert names == ["workspace-preparer", "codex-worker", "candidate-finalizer"]
+    assert terminated == {"workspace-preparer"}
+
+
+def test_container_states_tolerates_a_pod_without_statuses_yet() -> None:
+    """스케줄 직후에는 상태 배열이 None이다 — 오류가 아니라 빈 결과다."""
+    pod = _PodWithStatus(
+        "ar-exec-abc-x7k2", datetime(2026, 8, 9, 12, 0, tzinfo=UTC), (None, None)
+    )
+
+    assert container_states(pod) == ([], set())
+
+
+class _FakeJobs:
+    def __init__(self, names: list[str]) -> None:
+        self._names = names
+
+    def list_active_job_names(self, namespace: str) -> list[str]:
+        return self._names
+
+
+def test_collect_once_skips_job_names_that_are_not_experiments() -> None:
+    """label로 걸러도 형식이 다른 Job이 섞일 수 있다 — 조용히 건너뛴다."""
+    reader = _FakeReader(pods=[])
+    sink = _FakeSink()
+
+    problems = collect_once(
+        _FakeJobs(["ar-branch-6ec09890a4a84c699760c01349351505"]),
+        reader,
+        lambda _experiment_id: sink,
+        namespace="ns",
+    )
+
+    assert problems == []
+    assert sink.written == []

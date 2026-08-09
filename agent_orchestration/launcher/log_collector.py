@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import Callable
 from typing import Final, Protocol
 
 from kubernetes.client.exceptions import ApiException
@@ -115,6 +116,7 @@ def collect_container_logs(
     *,
     namespace: str,
     job_name: str,
+    pod_name: str,
     containers: list[str],
     terminated: set[str],
 ) -> list[str]:
@@ -126,11 +128,6 @@ def collect_container_logs(
     돌려주는 사유 코드는 `executor/phase2.py`의 `_safe_failure_reason` 관례를 따라
     접미사 없는 고정 코드다. 경로·응답 본문은 싣지 않는다.
     """
-    pod = select_pod(reader.list_pods(namespace, job_name))
-    if pod is None:
-        return []
-
-    pod_name = pod.metadata.name
     problems: list[str] = []
     for container in containers:
         try:
@@ -218,3 +215,64 @@ def experiment_id_from_job_name(job_name: str) -> uuid.UUID | None:
         return uuid.UUID(hex=job_name[len(_JOB_NAME_PREFIX) :])
     except ValueError:
         return None
+
+
+class ActiveJobs(Protocol):
+    """수집 대상 Job 이름을 주는 연산."""
+
+    def list_active_job_names(self, namespace: str) -> list[str]: ...
+
+
+def container_states(pod) -> tuple[list[str], set[str]]:
+    """Pod 상태에서 컨테이너 이름 순서와 종료된 것들을 뽑는다.
+
+    이름을 코드에 하드코딩하지 않는다 — 컨테이너 통합으로 구성이 바뀌어도 그대로
+    따라간다. init container가 먼저 순서대로 돌고 app container가 뒤에 오므로 그 순서를
+    유지한다.
+
+    스케줄 직후에는 상태 배열이 아직 `None`이다. 오류가 아니라 빈 결과로 다룬다.
+    """
+    names: list[str] = []
+    terminated: set[str] = set()
+    for group in (pod.status.init_container_statuses, pod.status.container_statuses):
+        for status in group or []:
+            names.append(status.name)
+            if getattr(status.state, "terminated", None) is not None:
+                terminated.add(status.name)
+    return names, terminated
+
+
+def collect_once(
+    jobs: ActiveJobs,
+    reader: PodLogReader,
+    sink_for: "Callable[[uuid.UUID], LogSink]",
+    *,
+    namespace: str,
+) -> list[str]:
+    """한 주기 분량을 수집하고 사유 코드를 모아 돌려준다.
+
+    Job 목록은 Kubernetes에서 얻는다 — DB의 `RUNNING`으로 거르면 `EVALUATING` 전환 뒤에도
+    같은 Job이 계속 도는 구간을 놓친다(정본 계약 참조).
+    """
+    problems: list[str] = []
+    for job_name in jobs.list_active_job_names(namespace):
+        experiment_id = experiment_id_from_job_name(job_name)
+        if experiment_id is None:
+            # label로 걸러도 형식이 다른 Job이 섞일 수 있다.
+            continue
+        pod = select_pod(reader.list_pods(namespace, job_name))
+        if pod is None:
+            continue
+        containers, terminated = container_states(pod)
+        problems.extend(
+            collect_container_logs(
+                reader,
+                sink_for(experiment_id),
+                namespace=namespace,
+                job_name=job_name,
+                pod_name=pod.metadata.name,
+                containers=containers,
+                terminated=terminated,
+            )
+        )
+    return problems
