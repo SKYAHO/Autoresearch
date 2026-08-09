@@ -41,9 +41,15 @@ _TRAINING_KEYS = frozenset(
 _MLFLOW_URI = "http://mlflow.mlflow.svc.cluster.local:5000"
 
 
-def _settings(*, dataset_uri: str = "", mlflow_tracking_uri: str = "") -> LauncherSettings:
+def _settings(
+    *,
+    dataset_uri: str = "",
+    mlflow_tracking_uri: str = "",
+    experiment_results_root: str = "",
+) -> LauncherSettings:
     return LauncherSettings(
         mlflow_tracking_uri=mlflow_tracking_uri,
+        experiment_results_root=experiment_results_root,
         database_url="postgresql://launcher:password@db/orchestration",
         job_namespace="agent-orchestration",
         executor_image=(
@@ -171,3 +177,51 @@ def test_malformed_dataset_uri_is_rejected_at_the_launcher(uri: str) -> None:
     """형식 오류를 Pod까지 끌고 가지 않는다 — 8 container를 띄운 뒤 죽으면 원인이 묻힌다."""
     with pytest.raises(LauncherConfigError, match="invalid training_dataset_uri"):
         _settings(dataset_uri=uri)
+
+
+_RESULTS_ROOT = "gs://autoresearch-503903-autoresearch-dev-experiment-results"
+
+
+def test_results_root_reaches_only_the_publishing_container() -> None:
+    """게시 좌표는 채점·게시가 도는 container에만 붙는다 — 최소 노출 원칙.
+
+    특히 Codex container에는 가면 안 된다. 게시 경로를 아는 것만으로 위험하지는
+    않지만, 노출 목록이 넓어지는 것을 기본값으로 두면 다음 좌표도 따라 넓어진다.
+    """
+    containers = _containers(
+        _settings(dataset_uri=_DATASET_URI, experiment_results_root=_RESULTS_ROOT)
+    )
+
+    assert (
+        _environment(containers["candidate-finalizer"])["ORCH_EXPERIMENT_RESULTS_ROOT"]
+        == _RESULTS_ROOT
+    )
+    for name, container in containers.items():
+        if name == "candidate-finalizer":
+            continue
+        assert "ORCH_EXPERIMENT_RESULTS_ROOT" not in _environment(container), (
+            f"{name}에 게시 좌표가 샜다"
+        )
+
+
+def test_results_root_is_absent_when_not_configured() -> None:
+    """설정하지 않으면 아무것도 붙지 않는다 — executor가 "게시하지 않는 배포"로 읽는다."""
+    containers = _containers(_settings(dataset_uri=_DATASET_URI))
+
+    assert "ORCH_EXPERIMENT_RESULTS_ROOT" not in _environment(
+        containers["candidate-finalizer"]
+    )
+
+
+@pytest.mark.parametrize(
+    "root",
+    ["s3://bucket", "bucket/prefix", "gs://", "gs:///prefix", "http://bucket"],
+)
+def test_malformed_results_root_is_rejected_at_the_launcher(root: str) -> None:
+    """형식 오류를 Pod까지 끌고 가지 않는다.
+
+    게시는 실험의 **마지막** 단계라, 여기서 막지 않으면 30분을 다 쓴 뒤에 실패하고
+    그 실행의 산출물은 이미 사라진 뒤다.
+    """
+    with pytest.raises(LauncherConfigError, match="invalid experiment_results_root"):
+        _settings(experiment_results_root=root)

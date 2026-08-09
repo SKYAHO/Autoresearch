@@ -176,6 +176,13 @@ docs/
       비어 있으면 아무것도 붙지 않는다(`ORCH_TRAINING_DATASET_URI`와 같은 opt-in 규약).
       이 좌표가 없으면 run이 Pod과 함께 사라져 `training_comparison.py`가
       `runs:/<run_id>/reproducibility/split/...`로 내려받을 artifact를 잃는다.
+    - **산출물 게시 루트는 `ORCH_EXPERIMENT_RESULTS_ROOT`다.** `gs://bucket[/prefix]`
+      형식이며 비어 있으면 게시하지 않는다(같은 opt-in 규약). executor는 그 아래
+      `experiments/<이슈번호>/<experiment_id>/`로 쓴다. **Pod의 `/workspace`는
+      emptyDir이라 TTL 후 사라지므로, 비워 두면 측정한 것이 아무것도 남지 않는다.**
+      대상 버킷의 `experiment-job` GSA 권한은 `objectCreator`+`objectViewer`이며
+      `objectCreator`는 **기존 객체 교체를 허용하지 않는다** — 게시된 결과는 같은
+      Pod에서 도는 에이전트도 덮어쓸 수 없다.
     - **다운로드는 workspace 코드가, 검증은 executor 이미지가 한다(#605).** 받은 CSV의
       SHA-256을 URI에 박힌 값과 대조한다. 다운로드 경로(`src/**`)는 Codex의 허용
       범위라 candidate가 바꿀 수 있는데, 학습과 달리 **데이터 조달은 두 조건이 같아야**

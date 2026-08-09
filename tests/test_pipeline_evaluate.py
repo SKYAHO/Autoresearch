@@ -366,3 +366,109 @@ def test_grouped_roc_auc_reports_null_group_keys() -> None:
     assert result.skipped_groups == 0
     # 그러나 사라지지도 않는다 — 버려진 행 수가 드러나야 한다.
     assert result.null_key_rows == 2
+
+
+def _held_out_metrics_kwargs(**overrides) -> dict:
+    """`write_held_out_metrics`의 필수 인자를 채운 기본 묶음."""
+    kwargs = {
+        "roc_auc": 0.7834,
+        "pr_auc": 0.1122,
+        "logloss": 0.0875,
+        "brier": 0.0132,
+        "predicted_mean": 0.0147,
+        "actual_positive_rate": 0.0147,
+        "row_count": 98894,
+        "positive_count": 1455,
+        "sampling_rate": 1.0,
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_write_held_out_metrics_records_stdout_equivalent_values(tmp_path) -> None:
+    """stdout에 찍는 지표와 같은 값을 기계가 읽을 JSON으로 남긴다.
+
+    executor가 조건·seed별로 이 파일을 모아 비교하므로, 출력 형식이 바뀌어도 깨지지
+    않는 경로가 필요하다.
+    """
+    import json
+
+    destination = tmp_path / "nested" / "metrics.json"
+
+    returned = evaluate.write_held_out_metrics(
+        str(destination), **_held_out_metrics_kwargs()
+    )
+
+    written = json.loads(destination.read_text(encoding="utf-8"))
+    # 돌려준 payload와 파일 내용이 갈라지면 호출자가 둘 중 무엇을 믿을지 알 수 없다.
+    assert written == returned
+    assert written["contract_version"] == evaluate.HELD_OUT_METRICS_CONTRACT_VERSION
+    assert written["roc_auc"] == pytest.approx(0.7834)
+    assert written["log_loss"] == pytest.approx(0.0875)
+    assert written["brier"] == pytest.approx(0.0132)
+    assert written["row_count"] == 98894
+
+
+def test_write_held_out_metrics_keeps_grouped_key_when_not_computed(tmp_path) -> None:
+    """패스스루 컬럼이 없어 유저 단위 지표를 못 낸 경우에도 키를 남긴다.
+
+    키를 생략하면 읽는 쪽이 "계산하지 않았다"와 "0이었다"를 구분할 수 없다 —
+    ``GroupedRocAuc``가 약속하는 커버리지 정직성이 파일 경계에서 깨진다.
+    """
+    import json
+
+    destination = tmp_path / "metrics.json"
+
+    evaluate.write_held_out_metrics(str(destination), **_held_out_metrics_kwargs())
+
+    written = json.loads(destination.read_text(encoding="utf-8"))
+    assert "grouped_roc_auc" in written
+    assert written["grouped_roc_auc"] is None
+
+
+def test_write_held_out_metrics_carries_grouped_coverage(tmp_path) -> None:
+    """유저 단위 지표는 값만이 아니라 커버리지 근거까지 함께 실린다(#505)."""
+    import json
+
+    destination = tmp_path / "metrics.json"
+    grouped = evaluate.GroupedRocAuc(
+        value=0.81,
+        total_groups=120,
+        scored_groups=95,
+        skipped_groups=25,
+        null_key_rows=7,
+    )
+
+    evaluate.write_held_out_metrics(
+        str(destination), **_held_out_metrics_kwargs(grouped=grouped)
+    )
+
+    written = json.loads(destination.read_text(encoding="utf-8"))["grouped_roc_auc"]
+    assert written["value"] == pytest.approx(0.81)
+    assert written["scored_groups"] == 95
+    assert written["skipped_groups"] == 25
+    assert written["null_key_rows"] == 7
+
+
+def test_write_held_out_metrics_leaves_no_partial_file_on_failure(
+    tmp_path, monkeypatch
+) -> None:
+    """쓰는 도중 실패하면 부분 파일도 임시 파일도 남기지 않는다.
+
+    읽는 쪽이 "파일이 있으면 완결됐다"를 가정할 수 있어야 한다. 반쯤 쓰인 JSON이
+    남으면 다음 단계가 파싱 오류로 죽거나, 더 나쁘게는 잘린 값을 지표로 읽는다.
+    """
+    destination = tmp_path / "metrics.json"
+
+    def _explode(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(evaluate.json, "dump", _explode)
+
+    with pytest.raises(RuntimeError):
+        evaluate.write_held_out_metrics(
+            str(destination), **_held_out_metrics_kwargs()
+        )
+
+    assert not destination.exists()
+    assert list(tmp_path.iterdir()) == []

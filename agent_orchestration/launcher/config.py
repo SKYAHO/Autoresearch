@@ -26,6 +26,9 @@ _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _TRAINING_DATASET_URI_PATTERN = re.compile(
     r"^gs://[a-z0-9][a-z0-9._-]*/(?:[^\s/]+/)*by-hash/[0-9a-f]{64}/?$"
 )
+# 실험 산출물 게시 루트. 스냅샷과 달리 내용 주소가 아니라 실험 주소이므로 bucket과
+# 선택적 prefix까지만 형식을 고정하고, 실험별 경로는 executor가 좌표로 만든다.
+_RESULTS_ROOT_PATTERN = re.compile(r"^gs://[a-z0-9][a-z0-9._-]{1,221}(/[^\s]*)?$")
 
 
 class LauncherConfigError(ValueError):
@@ -89,6 +92,9 @@ class LauncherSettings:
     # 아무것도 붙지 않고 학습은 Pod 로컬 file store로 떨어진다 — run이 Pod과 함께
     # 사라져 paired 비교가 artifact를 내려받을 대상을 잃는다.
     mlflow_tracking_uri: str = ""
+    # 실험 산출물을 남길 GCS 루트다. 비어 있으면 게시하지 않는다 — Pod의 workspace는
+    # emptyDir이라 TTL 후 사라지므로, 비워 두면 측정한 것이 아무것도 남지 않는다.
+    experiment_results_root: str = ""
 
     def __post_init__(self) -> None:
         """빈 좌표·가변 image·비양수 상한을 fail-closed로 거부한다."""
@@ -136,6 +142,12 @@ class LauncherSettings:
             _TRAINING_DATASET_URI_PATTERN.fullmatch(self.training_dataset_uri) is None
         ):
             raise LauncherConfigError("invalid training_dataset_uri")
+        # 같은 이유로 게시 루트도 여기서 막는다. 형식이 틀리면 실험이 30분을 다 쓴 뒤
+        # 마지막 단계에서 실패하고, 그 실행의 산출물은 이미 사라진 뒤다.
+        if self.experiment_results_root and (
+            _RESULTS_ROOT_PATTERN.fullmatch(self.experiment_results_root) is None
+        ):
+            raise LauncherConfigError("invalid experiment_results_root")
 
     @classmethod
     def from_environment(cls) -> LauncherSettings:
@@ -176,6 +188,9 @@ class LauncherSettings:
                 default=30,
             ),
             training_dataset_uri=os.environ.get("ORCH_TRAINING_DATASET_URI", "").strip(),
+            experiment_results_root=os.environ.get(
+                "ORCH_EXPERIMENT_RESULTS_ROOT", ""
+            ).strip(),
             training_timeout_sec=_optional_positive_integer_environment(
                 "ORCH_TRAINING_TIMEOUT_SEC",
                 default=1800,

@@ -184,7 +184,16 @@ def record_job_created(
 def reconcile_failed_jobs(
     session: Session, failed_job_names: set[str]
 ) -> list[uuid.UUID]:
-    """최종 Failed Phase 2 Job만 RUNNING에서 ERROR로 한 번 회수한다."""
+    """최종 Failed Phase 2 Job을 미완 상태에서 ERROR로 한 번 회수한다.
+
+    `EVALUATING`까지 회수하는 이유는 executor가 candidate를 보고한 **뒤에도** 할 일이
+    남아 있기 때문이다 — candidate 학습·채점·게시·결과 보고가 그 뒤에 온다. 거기서
+    죽으면 Job은 Failed인데 실험은 `EVALUATING`에 영원히 남아, 워크벤치가 끝나지 않는
+    "평가 중"을 표시한다.
+
+    `PASSED`는 회수하지 않는다. 결과 보고까지 끝난 실험은 그 뒤 컨테이너가 죽어도
+    결과가 남아 있으므로 실행 실패로 되돌리면 사실과 어긋난다.
+    """
     if not failed_job_names:
         return []
     with session.begin():
@@ -192,7 +201,12 @@ def reconcile_failed_jobs(
             session.scalars(
                 select(Experiment)
                 .where(
-                    Experiment.status == ExperimentStatus.RUNNING.value,
+                    Experiment.status.in_(
+                        (
+                            ExperimentStatus.RUNNING.value,
+                            ExperimentStatus.EVALUATING.value,
+                        )
+                    ),
                     Experiment.executor_job_name.in_(failed_job_names),
                     Experiment.executor_job_name.like("ar-exec-%"),
                 )

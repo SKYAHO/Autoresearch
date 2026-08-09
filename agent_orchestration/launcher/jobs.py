@@ -172,6 +172,18 @@ def _training_environment(settings: LauncherSettings) -> list[V1EnvVar]:
     ]
 
 
+def _results_environment(settings: LauncherSettings) -> list[V1EnvVar]:
+    """산출물을 게시하는 container에만 붙는 opt-in 환경이다.
+
+    비어 있으면 아무것도 붙이지 않는다 — executor는 이 변수의 부재를 "게시하지 않는
+    배포"로 읽는다. 다만 그 경우 `/workspace`가 emptyDir이라 **측정한 것이 Pod TTL과
+    함께 사라진다.** 학습을 켠 배포라면 함께 채우는 것이 정상이다.
+    """
+    if not settings.experiment_results_root:
+        return []
+    return [_env("ORCH_EXPERIMENT_RESULTS_ROOT", settings.experiment_results_root)]
+
+
 def _container(
     name: str,
     command: list[str],
@@ -296,6 +308,8 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
             _env("ORCH_EXECUTOR_API_TOKEN_FILE", f"{_API_TOKEN_DIRECTORY}/token"),
             # candidate 학습이 push **후**에 이 container에서 돈다.
             *_training_environment(settings),
+            # 채점과 게시도 여기서 돈다 — 두 조건의 산출물이 모두 갖춰지는 첫 시점이다.
+            *_results_environment(settings),
         ],
         [
             workspace_mount,

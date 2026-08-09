@@ -899,3 +899,79 @@ def test_candidate_api_rejects_conflict_or_bad_response_without_leaking_body(
 
     assert "api-token-must-not-leak" not in str(error.value)
     assert "server-body" not in str(error.value)
+
+
+def test_result_api_sends_exact_contract_with_fixed_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """결과 보고도 같은 token header와 실험별 고정 멱등 key를 쓴다."""
+    token_file = tmp_path / "api-token"
+    token_file.write_text("api-token-must-not-leak\n", encoding="utf-8")
+    snapshot = {"contract_version": "experiment-metric-snapshot-v1", "seeds": [11]}
+    fake_api = _FakeApi(response_factory=lambda _payload: {"status": "PASSED"})
+    observed_timeouts: list[float] = []
+    original_urlopen = api_client.urlopen
+
+    def recording_urlopen(request: object, *, timeout: float) -> object:
+        observed_timeouts.append(timeout)
+        return original_urlopen(request, timeout=timeout)
+
+    with _candidate_api_server(fake_api) as api_url:
+        monkeypatch.setattr(api_client, "urlopen", recording_urlopen)
+        api_client.report_result(
+            api_url=api_url,
+            token_file=token_file,
+            experiment_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            candidate_sha="b" * 40,
+            metric_snapshot=snapshot,
+        )
+
+    assert observed_timeouts == [api_client.CANDIDATE_API_TIMEOUT_SECONDS]
+    request = fake_api.requests[0]
+    assert (
+        request.path
+        == "/internal/executor/experiments/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa/result"
+    )
+    assert request.headers["X-Orch-Executor-Token"] == "api-token-must-not-leak"
+    assert __import__("json").loads(request.body) == {
+        "idempotency_key": "executor-result:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        "candidate_sha": "b" * 40,
+        "metric_snapshot": snapshot,
+    }
+
+
+@pytest.mark.parametrize(
+    "status_code,response,reason",
+    [
+        (409, {"detail": "api-token-must-not-leak server-body"}, "result_api_conflict"),
+        (500, {"detail": "api-token-must-not-leak server-body"}, "result_api_failed"),
+        # 200이어도 상태가 옮겨가지 않았으면 보고된 것이 아니다.
+        (200, {"status": "EVALUATING"}, "result_api_status_unexpected"),
+    ],
+)
+def test_result_api_rejects_conflict_or_unexpected_status_without_leaking_body(
+    tmp_path: Path,
+    status_code: int,
+    response: dict[str, str],
+    reason: str,
+) -> None:
+    """상태가 완주로 옮겨간 응답만 보고 성공으로 취급한다."""
+    token_file = tmp_path / "api-token"
+    token_file.write_text("api-token-must-not-leak\n", encoding="utf-8")
+    fake_api = _FakeApi(
+        status_code=status_code, response_factory=lambda _payload: response
+    )
+
+    with _candidate_api_server(fake_api) as api_url:
+        with pytest.raises(api_client.CandidateApiError, match=reason) as error:
+            api_client.report_result(
+                api_url=api_url,
+                token_file=token_file,
+                experiment_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                candidate_sha="b" * 40,
+                metric_snapshot={"seeds": [11]},
+            )
+
+    assert "api-token-must-not-leak" not in str(error.value)
+    assert "server-body" not in str(error.value)

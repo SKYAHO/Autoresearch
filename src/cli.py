@@ -413,6 +413,15 @@ def evaluate_model(
             "재평가할 때 학습과 **같은 목록**을 주십시오(#405). 다르면 계약 검증이 막습니다."
         ),
     ),
+    metrics_output: Optional[str] = typer.Option(
+        None,
+        "--metrics-output",
+        help=(
+            "held-out 지표를 기록할 JSON 경로. 지정하면 stdout과 **같은 값**을 "
+            "`held-out-metrics-v1` 형식으로 남깁니다 — 호출자가 출력을 파싱하지 "
+            "않게 하는 용도입니다."
+        ),
+    ),
 ) -> None:
     """저장된 모델을 held-out test set으로 평가."""
     evaluate.main(
@@ -421,6 +430,7 @@ def evaluate_model(
         model_path=model_path,
         feature_columns_path=feature_columns_path,
         extra_features=_parse_extra_features(extra_features),
+        metrics_output=metrics_output,
     )
 
 

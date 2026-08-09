@@ -64,6 +64,7 @@ from agent_orchestration.app.experiments.repository import (
 )
 from agent_orchestration.app.experiments.schemas import (
     CandidateReportRequest,
+    ExecutorResultReportRequest,
     ExperimentCreate,
     ExperimentEventCreate,
     ExperimentLogCreate,
@@ -379,6 +380,51 @@ def record_candidate(
             )
         )
         session.flush()
+    return experiment
+
+
+# 상태만으로는 "무엇이 끝났는지"를 알 수 없어 타임라인에 남기는 고정 문구다. 호출자가
+# 문자열을 실어 보내지 않는 이유는 event `reason`이 워크벤치에 그대로 표시되기 때문이다 —
+# executor는 지표를 보고하지, 화면에 쓸 문장을 정하지 않는다.
+EXECUTOR_RESULT_REASON = "executor completed the experiment and reported metrics"
+
+
+def record_experiment_result(
+    session: Session,
+    experiment_id: uuid.UUID,
+    request: ExecutorResultReportRequest,
+) -> Experiment:
+    """완주한 실험의 지표를 저장하고 EVALUATING에서 PASSED로 원자 전이한다.
+
+    `PASSED`는 **실험이 완주하고 결과가 나왔다**는 뜻이다(계약 결정 6). 가설의 성패는
+    상태가 아니라 `report.md`가 서술하므로 이 endpoint는 도달할 상태를 인자로 받지
+    않는다.
+
+    이미 저장된 `candidate_sha`와 대조해 다른 실행의 결과를 받지 않는다. 같은 보고의
+    재시도는 event 조회로 흡수되지만, **같은 실험에 다른 지표를 보내면 409**다 —
+    한 실험의 결과는 하나이고, 덮어쓰기를 허용하면 어느 숫자가 실제 실행의 것인지
+    말할 수 없게 된다.
+    """
+    expected_event_key = f"executor-result:{experiment_id}"
+    if request.idempotency_key != expected_event_key:
+        raise CandidateConflictError()
+    with session.begin():
+        experiment = find_experiment(session, experiment_id, for_update=True)
+        if experiment is None:
+            raise ExperimentNotFoundError(experiment_id)
+        # candidate 보고가 선행하므로 `candidate_sha`는 이미 있어야 한다. 비어 있으면
+        # 순서가 어긋난 것이고, 다르면 다른 실행의 산출물이다.
+        if experiment.candidate_sha != request.candidate_sha:
+            raise CandidateConflictError()
+        transition_experiment_in_transaction(
+            session,
+            experiment_id,
+            requested=ExperimentStatus.PASSED,
+            reason=EXECUTOR_RESULT_REASON,
+            metric_snapshot=request.metric_snapshot,
+            idempotency_key=expected_event_key,
+            check_idempotency=True,
+        )
     return experiment
 
 

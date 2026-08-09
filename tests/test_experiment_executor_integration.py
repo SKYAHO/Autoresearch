@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
+import json
 import logging
 from pathlib import Path
 import subprocess
@@ -25,6 +27,7 @@ from agent_orchestration.app.experiments.models import (
     ExperimentEvent,
     ExperimentStatus,
 )
+from agent_orchestration.executor.results_store import PublishedObject
 from agent_orchestration.launcher.config import LauncherSettings
 from agent_orchestration.launcher.jobs import (
     EXPERIMENT_EXECUTOR_LABEL_SELECTOR,
@@ -457,6 +460,56 @@ def test_terminal_failed_executor_job_moves_running_experiment_to_error_once(
         engine.dispose()
 
 
+def test_terminal_failed_executor_job_recovers_an_evaluating_experiment(
+    monkeypatch: object,
+) -> None:
+    """candidate 보고 뒤에 죽은 실험도 회수한다.
+
+    candidate 학습·채점·게시·결과 보고가 candidate 보고 **뒤에** 온다. 거기서 죽으면
+    Job은 Failed인데 실험은 EVALUATING에 남아 끝나지 않는 "평가 중"이 된다.
+    """
+    session, engine = _session()
+    try:
+        stuck = Experiment(
+            id=_EXPERIMENT_ID,
+            hypothesis="died after candidate report",
+            status=ExperimentStatus.EVALUATING.value,
+            issue_body=_BODY,
+            issue_number=557,
+            issue_branch="exp/557-phase2",
+            base_dev_sha="a" * 40,
+            candidate_sha="c" * 40,
+            executor_job_name=f"ar-exec-{_EXPERIMENT_ID.hex}",
+            executor_job_created_at=datetime(2026, 8, 6, tzinfo=UTC),
+        )
+        completed = Experiment(
+            id=uuid.UUID(int=3),
+            hypothesis="reported results before the pod died",
+            status=ExperimentStatus.PASSED.value,
+            issue_body=_BODY,
+            issue_number=558,
+            issue_branch="exp/558-phase2",
+            base_dev_sha="a" * 40,
+            candidate_sha="d" * 40,
+            executor_job_name=f"ar-exec-{uuid.UUID(int=3).hex}",
+        )
+        session.add_all((stuck, completed))
+        session.commit()
+
+        recovered = reconcile_failed_jobs(
+            session, {stuck.executor_job_name, completed.executor_job_name}
+        )
+
+        assert recovered == [stuck.id]
+        assert stuck.status == ExperimentStatus.ERROR.value
+        # 결과가 이미 남은 실험을 실행 실패로 되돌리면 사실과 어긋난다.
+        assert completed.status == ExperimentStatus.PASSED.value
+    finally:
+        session.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_launcher_reconciles_only_failed_phase2_jobs_before_claiming(
     monkeypatch: object,
 ) -> None:
@@ -801,3 +854,233 @@ def test_existing_candidate_entrypoints_skip_codex_and_preserve_remote_tip(
 
     assert verification_candidates == [existing_sha]
     assert finalized[0].expected_remote_tip == existing_sha
+
+
+def _finalizer_ready(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """finalizer가 도달 가능한 최소 state와 push token을 갖춘 workspace를 만든다."""
+    _set_phase2_environment(monkeypatch, tmp_path)
+    workspace = tmp_path / "workspace"
+    repository = workspace / "repository"
+    repository.mkdir(parents=True)
+    state_path = tmp_path / "state" / "state.json"
+    monkeypatch.setattr(phase2, "_STATE_PATH", state_path)
+    write_state(
+        state_path,
+        ExecutorWorkspaceState(
+            schema_version=1,
+            repository=repository,
+            issue_body=_BODY,
+            allowed_scope=(),
+            base_dev_sha="a" * 40,
+            remote_tip="a" * 40,
+        ),
+        workspace=workspace,
+    )
+    verification_path = tmp_path / "verification" / "result.json"
+    monkeypatch.setattr(phase2, "_VERIFICATION_PATH", verification_path)
+    verification_path.parent.mkdir(parents=True)
+    verification_path.write_text(
+        json.dumps(
+            asdict(VerificationResult(("autoresearch/x.py",), "fingerprint", "b" * 40))
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        phase2, "finalize_candidate", lambda config, received: "c" * 40
+    )
+    monkeypatch.setenv("ORCH_GITHUB_TOKEN_FILE", str(tmp_path / "push-token"))
+    (tmp_path / "push-token").write_text("push", encoding="utf-8")
+    return repository
+
+
+def _metrics_payload(seeds: tuple[int, ...] = (42, 43)) -> dict[str, object]:
+    """`build_experiment_metrics`가 만드는 payload의 최소 실물 형태다.
+
+    요약 조립을 대역으로 바꾸지 않기 위해 실제 형태를 쓴다 — 배선 테스트가 요약의
+    형태 변화까지 잡아야 한다.
+    """
+
+    def _condition(offset: float) -> dict[str, dict[str, object]]:
+        return {
+            str(seed): {
+                "roc_auc": 0.78 + offset,
+                "log_loss": 0.087,
+                "brier": 0.013,
+            }
+            for seed in seeds
+        }
+
+    return {
+        "contract_version": "experiment-metrics-v1",
+        "coordinates": {},
+        "dataset_fingerprint": "d" * 64,
+        "seeds": list(seeds),
+        "conditions": {"baseline": _condition(0.0), "candidate": _condition(0.01)},
+        "paired": {
+            name: {
+                "per_seed": {seed: 0.01 for seed in seeds},
+                "mean": 0.01,
+                "standard_error": 0.001,
+            }
+            for name in ("roc_auc", "log_loss", "brier")
+        },
+        "split_matches": {str(seed): True for seed in seeds},
+    }
+
+
+def _capture_result_reports(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """API 보고를 실제로 보내지 않고 인자만 관찰한다."""
+    reported: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        phase2, "report_result", lambda **kwargs: reported.append(kwargs)
+    )
+    return reported
+
+
+def test_finalizer_skips_measurement_when_training_is_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """학습을 켜지 않은 배포에서는 채점도 게시도 시도하지 않는다.
+
+    seed가 없으면 채점할 산출물이 없다. 여기서 빈 결과를 만들어 게시하면 "측정했다"로
+    오인된다.
+    """
+    _finalizer_ready(monkeypatch, tmp_path)
+    calls: list[object] = []
+    monkeypatch.setattr(
+        phase2, "build_experiment_metrics", lambda *a, **k: calls.append(a) or {}
+    )
+    reported = _capture_result_reports(monkeypatch)
+
+    assert phase2.candidate_finalizer_main() == 0
+    assert calls == []
+    # 채점하지 않았으면 보고할 숫자도 없다. 빈 보고는 "측정했다"로 오인된다.
+    assert reported == []
+
+
+def test_finalizer_publishes_metrics_with_sealed_coordinates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """채점 결과를 실험 좌표와 함께 게시한다.
+
+    `metrics.json` 하나만 보고 어느 실험의 무엇인지 알 수 있어야 한다 — 좌표가 없으면
+    Pod 밖으로 나간 순간 출처를 잃는다.
+    """
+    repository = _finalizer_ready(monkeypatch, tmp_path)
+    monkeypatch.setenv("ORCH_TRAINING_DATASET_URI", f"gs://b/by-hash/{'d' * 64}/")
+    monkeypatch.setenv("ORCH_TRAINING_TIMEOUT_SEC", "600")
+    monkeypatch.setenv("ORCH_EXPERIMENT_RESULTS_ROOT", "gs://results")
+    (tmp_path / "workspace" / "training-output").mkdir()
+    monkeypatch.setattr(
+        phase2, "_run_training_if_enabled", lambda stage, workspace: (42, 43)
+    )
+
+    captured: dict[str, object] = {}
+
+    def _fake_build(config, *, coordinates, dataset_fingerprint):
+        captured["coordinates"] = coordinates
+        captured["seeds"] = config.seeds
+        captured["workspace"] = config.workspace
+        return _metrics_payload()
+
+    published: list[tuple[str, dict[str, object]]] = []
+
+    def _fake_publish(root, files, *, issue_number, experiment_id):
+        published.append((root, dict(files)))
+        return {
+            name: PublishedObject(uri=f"{root}/{name}", created=True) for name in files
+        }
+
+    monkeypatch.setattr(phase2, "build_experiment_metrics", _fake_build)
+    monkeypatch.setattr(phase2, "publish_results", _fake_publish)
+    _capture_result_reports(monkeypatch)
+
+    assert phase2.candidate_finalizer_main() == 0
+
+    assert captured["seeds"] == (42, 43)
+    assert captured["workspace"] == repository
+    coordinates = captured["coordinates"]
+    assert coordinates["issue_number"] == 557
+    assert coordinates["base_dev_sha"] == "a" * 40
+    # push가 만든 SHA가 그대로 실려야 한다 — 실험 결과와 코드가 이어지는 유일한 고리다.
+    assert coordinates["candidate_sha"] == "c" * 40
+    root, files = published[0]
+    assert root == "gs://results"
+    assert "metrics.json" in files
+
+
+def test_finalizer_warns_instead_of_publishing_when_root_is_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """게시 루트가 없으면 채점만 하고 그 사실을 남긴다.
+
+    조용히 건너뛰면 나중에 "왜 결과가 없나"에 답할 수 없다 — 채점 실패와 게시 미설정은
+    다른 사건이다.
+    """
+    _finalizer_ready(monkeypatch, tmp_path)
+    monkeypatch.setenv("ORCH_TRAINING_DATASET_URI", f"gs://b/by-hash/{'d' * 64}/")
+    monkeypatch.setenv("ORCH_TRAINING_TIMEOUT_SEC", "600")
+    monkeypatch.delenv("ORCH_EXPERIMENT_RESULTS_ROOT", raising=False)
+    (tmp_path / "workspace" / "training-output").mkdir()
+    monkeypatch.setattr(
+        phase2, "_run_training_if_enabled", lambda stage, workspace: (42,)
+    )
+    monkeypatch.setattr(
+        phase2, "build_experiment_metrics", lambda *a, **k: _metrics_payload()
+    )
+    published: list[object] = []
+    monkeypatch.setattr(
+        phase2, "publish_results", lambda *a, **k: published.append(a) or {}
+    )
+    reported = _capture_result_reports(monkeypatch)
+
+    with caplog.at_level(logging.WARNING):
+        assert phase2.candidate_finalizer_main() == 0
+
+    assert published == []
+    assert "results_root_unset" in caplog.text
+    # 게시 미설정이 API 보고까지 막으면 워크벤치가 다시 빈다 — 채점했으면 보고한다.
+    assert len(reported) == 1
+    assert reported[0]["metric_snapshot"]["results_uri"] is None
+
+
+def test_finalizer_reports_the_published_snapshot_to_the_experiment_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """채점한 숫자가 실험 행까지 도달한다.
+
+    GCS에만 남기면 워크벤치는 계속 `metric_summary=null`을 본다 — 실험 #619가
+    완주하고도 아무것도 안 남은 것으로 보였던 이유다.
+    """
+    _finalizer_ready(monkeypatch, tmp_path)
+    monkeypatch.setenv("ORCH_TRAINING_DATASET_URI", f"gs://b/by-hash/{'d' * 64}/")
+    monkeypatch.setenv("ORCH_TRAINING_TIMEOUT_SEC", "600")
+    monkeypatch.setenv("ORCH_EXPERIMENT_RESULTS_ROOT", "gs://results")
+    (tmp_path / "workspace" / "training-output").mkdir()
+    monkeypatch.setattr(
+        phase2, "_run_training_if_enabled", lambda stage, workspace: (42, 43)
+    )
+    monkeypatch.setattr(
+        phase2, "build_experiment_metrics", lambda *a, **k: _metrics_payload()
+    )
+    monkeypatch.setattr(
+        phase2,
+        "publish_results",
+        lambda root, files, **kwargs: {
+            name: PublishedObject(uri=f"{root}/619/{name}", created=True)
+            for name in files
+        },
+    )
+    reported = _capture_result_reports(monkeypatch)
+
+    assert phase2.candidate_finalizer_main() == 0
+
+    assert len(reported) == 1
+    call = reported[0]
+    # push가 만든 SHA로 보고해야 서버가 다른 실행의 결과를 걸러낼 수 있다.
+    assert call["candidate_sha"] == "c" * 40
+    snapshot = call["metric_snapshot"]
+    assert snapshot["contract_version"] == "experiment-metric-snapshot-v1"
+    assert snapshot["split_matches"] is True
+    # 전문의 위치가 요약에 실려야 워크벤치에서 seed별 숫자로 내려갈 수 있다.
+    assert snapshot["results_uri"] == "gs://results/619/metrics.json"

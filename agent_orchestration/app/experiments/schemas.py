@@ -28,6 +28,10 @@ from agent_orchestration.app.experiments.models import (
 MetadataKey = Annotated[str, Field(min_length=1, max_length=64)]
 MetadataValue = Annotated[str, Field(max_length=8192)]
 MAX_STEP_TARGET_BYTES = 4096
+# `metric_snapshot`은 전문이 아니라 요약이다. 전문(`metrics.json`)은 GCS에 있고 이 값은
+# 워크벤치가 매 polling마다 읽어 화면에 편다. 상한이 없으면 seed·조건이 늘어날 때
+# 조용히 커져 목록 화면까지 느려진다.
+MAX_METRIC_SNAPSHOT_BYTES = 16384
 GitSha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 
 
@@ -97,6 +101,38 @@ class CandidateReportRequest(BaseModel):
         if self.issue_branch != prefix and not self.issue_branch.startswith(f"{prefix}-"):
             raise ValueError("issue_branch must be 'exp/{issue_number}' or start with it.")
         return self
+
+
+class ExecutorResultReportRequest(BaseModel):
+    """Executor가 봉인된 채점 코드로 만든 실험 지표를 완주 보고와 함께 제출한다.
+
+    **상태를 인자로 받지 않는다.** 이 endpoint의 의미는 "실험이 완주했고 결과가 나왔다"
+    하나로 고정돼 있어, 호출자가 도달할 상태를 고를 수 없다. 실행이 실패한 경우는
+    executor가 보고하지 못하므로(프로세스가 죽는다) launcher의 Job 회수가 `ERROR`로
+    처리한다 — 죽는 쪽이 자기 죽음을 보고하는 경로를 신뢰하지 않는다.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    idempotency_key: str = Field(min_length=1, max_length=128)
+    # 이미 candidate 보고로 저장된 SHA와 대조한다. 어긋나면 다른 실행의 결과이거나
+    # 좌표가 뒤섞인 것이므로 받지 않는다.
+    candidate_sha: GitSha
+    metric_snapshot: dict
+
+    @field_validator("metric_snapshot")
+    @classmethod
+    def metric_snapshot_must_be_bounded(cls, value: dict) -> dict:
+        """빈 요약과 무한정 큰 요약을 모두 거부한다."""
+        if not value:
+            raise ValueError("metric_snapshot must not be empty")
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        if len(encoded) > MAX_METRIC_SNAPSHOT_BYTES:
+            raise ValueError(
+                f"metric_snapshot must be at most {MAX_METRIC_SNAPSHOT_BYTES} bytes "
+                "when serialized"
+            )
+        return value
 
 
 class ExperimentResponse(BaseModel):
