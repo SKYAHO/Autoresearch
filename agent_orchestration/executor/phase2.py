@@ -6,8 +6,10 @@
 
 [기능] 각 container의 환경 입력을 기존 Stage 2~5 공개 인터페이스로 변환하고,
 base tip의 Codex 실행 또는 기존 candidate 채택 검증을 선택해 VerificationResult를
-finalizer에 전달한다. stage 시작·종료와 정제된 실패 사유를 container 로그로 남기고,
-codex-worker에 한해 Codex 원문 출력 tail도 함께 남긴다(#612).
+finalizer에 전달한다. candidate 학습이 끝나면 두 조건을 채점해 지표를 GCS에 게시하고
+그 요약을 Experiment API에 보고해 실험을 완주로 확정한다. stage 시작·종료와 정제된
+실패 사유를 container 로그로 남기고, codex-worker에 한해 Codex 원문 출력 tail도 함께
+남긴다(#612).
 
 [비책임] Job·Secret·PVC manifest(`launcher.jobs`), GitHub App token 발급
 (`token_minter.py`), candidate API의 DB 상태 전이(`app/experiments/service.py`)는
@@ -35,9 +37,11 @@ from agent_orchestration.executor.codex_worker import (
 from agent_orchestration.executor.config import ISSUE_BRANCH_PATTERN
 from agent_orchestration.executor.finalizer import FinalizeInput, finalize_candidate
 from agent_orchestration.executor.github_issues import GitHubIssues
+from agent_orchestration.executor.api_client import report_result
 from agent_orchestration.executor.measurement import (
     MeasurementInput,
     build_experiment_metrics,
+    build_metric_snapshot,
     write_experiment_metrics,
 )
 from agent_orchestration.executor.results_store import (
@@ -385,7 +389,7 @@ def _measure_and_publish_if_enabled(
     issue_number: int,
     base_dev_sha: str,
     candidate_sha: str,
-) -> None:
+) -> dict[str, object] | None:
     """두 조건의 산출물을 채점하고 그 결과를 Pod 밖으로 내보낸다.
 
     `/workspace`는 emptyDir이라 Pod TTL 후 통째로 사라진다. 여기서 내보내지 않으면
@@ -397,9 +401,12 @@ def _measure_and_publish_if_enabled(
 
     채점 timeout은 학습 상한을 그대로 쓴다. 평가는 그 모델을 만든 학습보다 반드시
     싸므로 별도 손잡이를 만들면 아무도 조정하지 않는 설정만 늘어난다.
+
+    Returns:
+        API에 보고할 지표 요약. 채점하지 않았으면 `None`이다.
     """
     if not seeds:
-        return
+        return None
     dataset_uri = os.environ.get("ORCH_TRAINING_DATASET_URI", "").strip()
     workspace_root = Path(_required("ORCH_EXECUTOR_WORKSPACE"))
     payload = build_experiment_metrics(
@@ -423,14 +430,15 @@ def _measure_and_publish_if_enabled(
     results_root = os.environ.get("ORCH_EXPERIMENT_RESULTS_ROOT", "").strip()
     if not results_root:
         # 게시하지 않는 배포다. 지표는 만들었지만 Pod과 함께 사라진다는 것을 남긴다 —
-        # 나중에 "왜 결과가 없나"를 로그 한 줄로 답할 수 있어야 한다.
+        # 나중에 "왜 결과가 없나"를 로그 한 줄로 답할 수 있어야 한다. 그래도 요약은
+        # 돌려준다: 게시 미설정 때문에 API 보고까지 막으면 워크벤치가 다시 빈다.
         _LOGGER.warning(
             "experiment metrics were not published reason=results_root_unset "
             "experiment_id=%s issue_number=%s",
             experiment_id,
             issue_number,
         )
-        return
+        return build_metric_snapshot(payload, results_uri=None)
     published = publish_results(
         results_root,
         collect_publishable_files(
@@ -454,6 +462,7 @@ def _measure_and_publish_if_enabled(
         len(published),
         published[_METRICS_FILENAME].uri,
     )
+    return build_metric_snapshot(payload, results_uri=published[_METRICS_FILENAME].uri)
 
 
 def candidate_finalizer_main() -> int:
@@ -476,7 +485,7 @@ def candidate_finalizer_main() -> int:
         _read_verification(),
     )
     seeds = _run_training_if_enabled(TrainingStage.CANDIDATE, state.repository)
-    _measure_and_publish_if_enabled(
+    snapshot = _measure_and_publish_if_enabled(
         state.repository,
         seeds=seeds,
         experiment_id=experiment_id,
@@ -484,6 +493,18 @@ def candidate_finalizer_main() -> int:
         base_dev_sha=base_dev_sha,
         candidate_sha=candidate_sha,
     )
+    if snapshot is not None:
+        # 채점했으면 반드시 보고한다. 여기서 실패하면 stage가 실패해 Job이 Failed로
+        # 끝나고 launcher가 실험을 ERROR로 회수한다 — GCS에는 결과가 있는데 실험은
+        # 완주로 표시되지 않는 상태가 되지만, **없는 결과를 완주로 표시하는 것보다
+        # 낫다.** 조용히 넘어가면 `metric_summary=null`이 다시 나온다.
+        report_result(
+            api_url=_required("ORCH_EXECUTOR_API_URL"),
+            token_file=Path(_required("ORCH_EXECUTOR_API_TOKEN_FILE")),
+            experiment_id=experiment_id,
+            candidate_sha=candidate_sha,
+            metric_snapshot=snapshot,
+        )
     return 0
 
 

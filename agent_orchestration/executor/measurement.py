@@ -7,7 +7,9 @@
 
 [기능] 조건별 seed 목록을 받아 held-out 지표를 수집하고, 같은 seed끼리 짝지은
 delta와 그 평균·표준오차를 함께 싣는다. 두 조건이 같은 데이터·같은 테스트셋을 썼는지
-확인할 수 있도록 테스트셋 지문도 남긴다.
+확인할 수 있도록 테스트셋 지문도 남긴다. 그 전문에서 워크벤치에 실을 요약
+(`experiment-metric-snapshot-v1`)을 뽑는 것도 이 모듈이 한다 — 요약이 전문과 다른
+정의를 쓰지 않으려면 같은 곳에서 나와야 한다.
 
 [비책임] 지표의 정의와 계산은 `src/pipeline/evaluate.py`가 소유한다 — 이 모듈은
 호출과 조립만 한다. 학습은 `training.py`, GCS 게시와 API 보고는 finalizer,
@@ -27,12 +29,19 @@ import json
 from pathlib import Path
 import statistics
 import subprocess
-from typing import Final
+from typing import Final, cast
 
 from agent_orchestration.executor.training import TrainingStage
 
 
 CONTRACT_VERSION: Final = "experiment-metrics-v1"
+
+# 워크벤치에 싣는 요약의 계약이다. 전문(`experiment-metrics-v1`)과 버전을 따로 두는 이유는
+# 요약이 화면 사정으로 바뀌어도 GCS에 남는 전문의 형태는 그대로여야 하기 때문이다.
+SNAPSHOT_CONTRACT_VERSION: Final = "experiment-metric-snapshot-v1"
+
+# 워크벤치가 "이 실험이 무엇을 올렸나"를 한 줄로 답할 때 쓰는 지표.
+PRIMARY_METRIC_NAME: Final = "roc_auc"
 
 # `evaluate-model`이 조건·seed마다 남기는 파일 이름. workspace 밖 산출물 루트에 둔다.
 _METRICS_FILENAME: Final = "metrics_{seed}.json"
@@ -241,6 +250,60 @@ def build_experiment_metrics(
             == candidate[seed]["test_set_sha256"]
             for seed in config.seeds
         },
+    }
+
+
+def build_metric_snapshot(
+    metrics: dict[str, object], *, results_uri: str | None
+) -> dict[str, object]:
+    """전문에서 워크벤치가 한눈에 볼 요약을 뽑는다.
+
+    전문을 그대로 실험 행에 싣지 않는 이유는 그것이 1초 polling으로 반복 조회되는
+    값이기 때문이다. 조건 2 × seed 3의 전체 지표를 매번 실어 나르면 seed를 늘리는
+    순간 목록 화면까지 느려진다. **전문은 GCS에 있고 이것은 그 입구다** —
+    `results_uri`를 함께 싣는 이유가 그것이다.
+
+    조건별 지표는 세 지표 모두의 seed 평균을 싣는다. 주 지표 하나만 실으면
+    "주 지표는 올랐는데 캘리브레이션이 망가진" 변경을 요약만 보고는 알 수 없다.
+
+    `split_matches`는 seed별 참·거짓을 전부 싣지 않고 **전부 참인지**만 싣는다.
+    하나라도 거짓이면 그 비교는 애초에 성립하지 않으므로, 요약 단계에서 필요한 것은
+    "이 숫자를 믿어도 되는가"라는 한 비트다. 어느 seed였는지는 전문이 답한다.
+
+    Args:
+        metrics: `build_experiment_metrics`가 만든 `experiment-metrics-v1` payload.
+        results_uri: 전문을 게시한 위치. 게시하지 않는 배포에서는 `None`이다.
+
+    Returns:
+        `experiment-metric-snapshot-v1` payload.
+    """
+    conditions = cast(dict[str, dict[str, dict[str, object]]], metrics["conditions"])
+    paired = cast(dict[str, dict[str, object]], metrics["paired"])
+    split_matches = cast(dict[str, bool], metrics["split_matches"])
+    return {
+        "contract_version": SNAPSHOT_CONTRACT_VERSION,
+        "primary_metric": PRIMARY_METRIC_NAME,
+        "seeds": list(cast(list[int], metrics["seeds"])),
+        "conditions": {
+            stage: {
+                name: statistics.fmean(
+                    float(cast(float, per_seed[name]))
+                    for per_seed in conditions[stage].values()
+                )
+                for name in PAIRED_METRIC_NAMES
+            }
+            for stage in (TrainingStage.BASELINE.value, TrainingStage.CANDIDATE.value)
+        },
+        "paired": {
+            name: {
+                "mean": paired[name]["mean"],
+                "standard_error": paired[name]["standard_error"],
+            }
+            for name in PAIRED_METRIC_NAMES
+        },
+        "split_matches": all(split_matches.values()),
+        "dataset_fingerprint": metrics["dataset_fingerprint"],
+        "results_uri": results_uri,
     }
 
 

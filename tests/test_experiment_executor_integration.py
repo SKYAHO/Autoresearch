@@ -843,6 +843,50 @@ def _finalizer_ready(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return repository
 
 
+def _metrics_payload(seeds: tuple[int, ...] = (42, 43)) -> dict[str, object]:
+    """`build_experiment_metrics`가 만드는 payload의 최소 실물 형태다.
+
+    요약 조립을 대역으로 바꾸지 않기 위해 실제 형태를 쓴다 — 배선 테스트가 요약의
+    형태 변화까지 잡아야 한다.
+    """
+
+    def _condition(offset: float) -> dict[str, dict[str, object]]:
+        return {
+            str(seed): {
+                "roc_auc": 0.78 + offset,
+                "log_loss": 0.087,
+                "brier": 0.013,
+            }
+            for seed in seeds
+        }
+
+    return {
+        "contract_version": "experiment-metrics-v1",
+        "coordinates": {},
+        "dataset_fingerprint": "d" * 64,
+        "seeds": list(seeds),
+        "conditions": {"baseline": _condition(0.0), "candidate": _condition(0.01)},
+        "paired": {
+            name: {
+                "per_seed": {seed: 0.01 for seed in seeds},
+                "mean": 0.01,
+                "standard_error": 0.001,
+            }
+            for name in ("roc_auc", "log_loss", "brier")
+        },
+        "split_matches": {str(seed): True for seed in seeds},
+    }
+
+
+def _capture_result_reports(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
+    """API 보고를 실제로 보내지 않고 인자만 관찰한다."""
+    reported: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        phase2, "report_result", lambda **kwargs: reported.append(kwargs)
+    )
+    return reported
+
+
 def test_finalizer_skips_measurement_when_training_is_off(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -856,9 +900,12 @@ def test_finalizer_skips_measurement_when_training_is_off(
     monkeypatch.setattr(
         phase2, "build_experiment_metrics", lambda *a, **k: calls.append(a) or {}
     )
+    reported = _capture_result_reports(monkeypatch)
 
     assert phase2.candidate_finalizer_main() == 0
     assert calls == []
+    # 채점하지 않았으면 보고할 숫자도 없다. 빈 보고는 "측정했다"로 오인된다.
+    assert reported == []
 
 
 def test_finalizer_publishes_metrics_with_sealed_coordinates(
@@ -884,7 +931,7 @@ def test_finalizer_publishes_metrics_with_sealed_coordinates(
         captured["coordinates"] = coordinates
         captured["seeds"] = config.seeds
         captured["workspace"] = config.workspace
-        return {"contract_version": "experiment-metrics-v1"}
+        return _metrics_payload()
 
     published: list[tuple[str, dict[str, object]]] = []
 
@@ -896,6 +943,7 @@ def test_finalizer_publishes_metrics_with_sealed_coordinates(
 
     monkeypatch.setattr(phase2, "build_experiment_metrics", _fake_build)
     monkeypatch.setattr(phase2, "publish_results", _fake_publish)
+    _capture_result_reports(monkeypatch)
 
     assert phase2.candidate_finalizer_main() == 0
 
@@ -928,15 +976,61 @@ def test_finalizer_warns_instead_of_publishing_when_root_is_unset(
         phase2, "_run_training_if_enabled", lambda stage, workspace: (42,)
     )
     monkeypatch.setattr(
-        phase2, "build_experiment_metrics", lambda *a, **k: {"a": 1}
+        phase2, "build_experiment_metrics", lambda *a, **k: _metrics_payload()
     )
     published: list[object] = []
     monkeypatch.setattr(
         phase2, "publish_results", lambda *a, **k: published.append(a) or {}
     )
+    reported = _capture_result_reports(monkeypatch)
 
     with caplog.at_level(logging.WARNING):
         assert phase2.candidate_finalizer_main() == 0
 
     assert published == []
     assert "results_root_unset" in caplog.text
+    # 게시 미설정이 API 보고까지 막으면 워크벤치가 다시 빈다 — 채점했으면 보고한다.
+    assert len(reported) == 1
+    assert reported[0]["metric_snapshot"]["results_uri"] is None
+
+
+def test_finalizer_reports_the_published_snapshot_to_the_experiment_api(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """채점한 숫자가 실험 행까지 도달한다.
+
+    GCS에만 남기면 워크벤치는 계속 `metric_summary=null`을 본다 — 실험 #619가
+    완주하고도 아무것도 안 남은 것으로 보였던 이유다.
+    """
+    _finalizer_ready(monkeypatch, tmp_path)
+    monkeypatch.setenv("ORCH_TRAINING_DATASET_URI", f"gs://b/by-hash/{'d' * 64}/")
+    monkeypatch.setenv("ORCH_TRAINING_TIMEOUT_SEC", "600")
+    monkeypatch.setenv("ORCH_EXPERIMENT_RESULTS_ROOT", "gs://results")
+    (tmp_path / "workspace" / "training-output").mkdir()
+    monkeypatch.setattr(
+        phase2, "_run_training_if_enabled", lambda stage, workspace: (42, 43)
+    )
+    monkeypatch.setattr(
+        phase2, "build_experiment_metrics", lambda *a, **k: _metrics_payload()
+    )
+    monkeypatch.setattr(
+        phase2,
+        "publish_results",
+        lambda root, files, **kwargs: {
+            name: PublishedObject(uri=f"{root}/619/{name}", created=True)
+            for name in files
+        },
+    )
+    reported = _capture_result_reports(monkeypatch)
+
+    assert phase2.candidate_finalizer_main() == 0
+
+    assert len(reported) == 1
+    call = reported[0]
+    # push가 만든 SHA로 보고해야 서버가 다른 실행의 결과를 걸러낼 수 있다.
+    assert call["candidate_sha"] == "c" * 40
+    snapshot = call["metric_snapshot"]
+    assert snapshot["contract_version"] == "experiment-metric-snapshot-v1"
+    assert snapshot["split_matches"] is True
+    # 전문의 위치가 요약에 실려야 워크벤치에서 seed별 숫자로 내려갈 수 있다.
+    assert snapshot["results_uri"] == "gs://results/619/metrics.json"

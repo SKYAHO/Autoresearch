@@ -22,6 +22,7 @@ from agent_orchestration.executor.measurement import (  # noqa: E402
     MeasurementError,
     MeasurementInput,
     build_experiment_metrics,
+    build_metric_snapshot,
     evaluate_condition,
     write_experiment_metrics,
 )
@@ -288,3 +289,87 @@ def test_measurement_input_rejects_empty_seeds(
             seeds=(),
             timeout_seconds=60,
         )
+
+
+def _built_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace: Path,
+    output_root: Path,
+    *,
+    candidate_test_set: str = "clicked\n1\n",
+) -> dict[str, object]:
+    """요약 계약을 검증하기 위한 실제 `experiment-metrics-v1` payload를 만든다."""
+    _write_training_artifacts(output_root, TrainingStage.BASELINE)
+    _write_training_artifacts(
+        output_root, TrainingStage.CANDIDATE, test_set_body=candidate_test_set
+    )
+    _stub_evaluation(monkeypatch, _DEFAULT_VALUES)
+    return build_experiment_metrics(
+        MeasurementInput(
+            workspace=workspace,
+            output_root=output_root,
+            seeds=SEEDS,
+            timeout_seconds=60,
+        ),
+        coordinates={"experiment_id": "abc", "issue_number": 619},
+        dataset_fingerprint="d" * 64,
+    )
+
+
+def test_metric_snapshot_carries_both_conditions_for_every_paired_metric(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path, output_root: Path
+) -> None:
+    """주 지표 하나만 실으면 "주 지표만 오른 손상"이 요약에서 보이지 않는다."""
+    metrics = _built_metrics(monkeypatch, workspace, output_root)
+
+    snapshot = build_metric_snapshot(metrics, results_uri="gs://results/metrics.json")
+
+    assert snapshot["contract_version"] == "experiment-metric-snapshot-v1"
+    assert snapshot["primary_metric"] == "roc_auc"
+    assert snapshot["seeds"] == list(SEEDS)
+    baseline = snapshot["conditions"][TrainingStage.BASELINE.value]
+    candidate = snapshot["conditions"][TrainingStage.CANDIDATE.value]
+    assert set(baseline) == {"roc_auc", "log_loss", "brier"}
+    # 대역이 candidate에만 +0.01을 더한다 — seed 평균으로 실린다.
+    assert baseline["roc_auc"] == pytest.approx((0.78 + 0.77) / 2)
+    assert candidate["roc_auc"] == pytest.approx((0.79 + 0.78) / 2)
+    assert snapshot["paired"]["roc_auc"]["mean"] == pytest.approx(0.01)
+    assert snapshot["paired"]["roc_auc"]["standard_error"] is not None
+    assert snapshot["dataset_fingerprint"] == "d" * 64
+    assert snapshot["results_uri"] == "gs://results/metrics.json"
+
+
+def test_metric_snapshot_reduces_split_matches_to_one_bit(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path, output_root: Path
+) -> None:
+    """seed 하나라도 분할이 다르면 그 비교는 성립하지 않는다 — 요약은 거짓이 된다."""
+    matched = _built_metrics(monkeypatch, workspace, output_root)
+
+    assert build_metric_snapshot(matched, results_uri=None)["split_matches"] is True
+
+
+def test_metric_snapshot_is_false_when_any_seed_split_differs(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path, output_root: Path
+) -> None:
+    """분할이 갈린 실험을 요약만 보고 믿지 않도록 한 비트로 드러낸다."""
+    mismatched = _built_metrics(
+        monkeypatch, workspace, output_root, candidate_test_set="clicked\n0\n"
+    )
+
+    snapshot = build_metric_snapshot(mismatched, results_uri=None)
+
+    assert snapshot["split_matches"] is False
+    # 게시하지 않는 배포에서도 요약 자체는 만들어진다.
+    assert snapshot["results_uri"] is None
+
+
+def test_metric_snapshot_stays_far_below_the_api_size_limit(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path, output_root: Path
+) -> None:
+    """요약은 전문의 입구다 — 전문을 그대로 실으면 API가 거부한다."""
+    metrics = _built_metrics(monkeypatch, workspace, output_root)
+
+    snapshot = build_metric_snapshot(metrics, results_uri="gs://results/metrics.json")
+
+    encoded = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+    assert len(encoded.encode("utf-8")) < 2048
