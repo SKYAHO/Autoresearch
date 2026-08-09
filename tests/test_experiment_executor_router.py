@@ -18,8 +18,7 @@ def test_executor_candidate_route_is_owned_by_dedicated_router_module() -> None:
     experiment_module = importlib.import_module("agent_orchestration.app.experiments.router")
 
     assert executor_module.router.prefix == "/internal/executor/experiments"
-    assert any(
-        route.path == "/internal/executor/experiments/{experiment_id}/candidate"
-        for route in executor_module.router.routes
-    )
+    paths = {route.path for route in executor_module.router.routes}
+    assert "/internal/executor/experiments/{experiment_id}/candidate" in paths
+    assert "/internal/executor/experiments/{experiment_id}/result" in paths
     assert not hasattr(experiment_module, "executor_router")

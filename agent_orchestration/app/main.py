@@ -6,7 +6,7 @@
 
 [기능]
 환경 설정과 DB 스키마를 준비하고 `/healthcheck`, `/chat`, 실험 워크벤치 endpoint와
-executor 전용 candidate 보고 endpoint를 노출한다.
+executor 전용 candidate·결과 보고 endpoint를 노출한다.
 `/chat`은 외부 연결 종료 시 진행 중인 LLM task를 취소하고, 선택된 LLM 백엔드의 응답
 및 지연 지표, 토큰 사용량을 영속화 후 반환한다.
 

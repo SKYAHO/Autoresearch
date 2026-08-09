@@ -1,8 +1,8 @@
-"""Executor candidate 보고 service의 저장·전이 계약을 검증한다.
+"""Executor candidate·결과 보고 service의 저장·전이 계약을 검증한다.
 
 전체 파이프라인에서 원격 Git 검증이 끝난 executor가 candidate SHA를 실험 lineage에 한 번
-저장하고 평가로 넘기는 service 경계를 검증한다. HTTP 인증과 실제 PostgreSQL migration은
-이 모듈의 범위가 아니다.
+저장하고 평가로 넘기는 구간과, 채점이 끝난 뒤 지표를 보고해 완주를 확정하는 구간의
+service 경계를 검증한다. HTTP 인증과 실제 PostgreSQL migration은 이 모듈의 범위가 아니다.
 """
 
 from __future__ import annotations
@@ -30,10 +30,16 @@ from agent_orchestration.app.experiments.models import (
     ExperimentStatus,
 )
 from agent_orchestration.app.experiments.schemas import (
+    MAX_METRIC_SNAPSHOT_BYTES,
     CandidateReportRequest,
+    ExecutorResultReportRequest,
     ExperimentCreate,
 )
-from agent_orchestration.app.experiments.service import create_experiment, record_candidate
+from agent_orchestration.app.experiments.service import (
+    create_experiment,
+    record_candidate,
+    record_experiment_result,
+)
 
 
 ISSUE_NUMBER = 557
@@ -415,3 +421,249 @@ def test_executor_candidate_endpoint_rejects_noncanonical_idempotency_key_with_4
     )
 
     assert response.status_code == 409
+
+
+METRIC_SNAPSHOT: dict[str, object] = {
+    "contract_version": "experiment-metric-snapshot-v1",
+    "primary_metric": "roc_auc",
+    "baseline_mean": 0.7412,
+    "candidate_mean": 0.7439,
+    "paired_delta_mean": 0.0027,
+    "seeds": [11, 12, 13],
+    "split_matches": True,
+}
+
+
+def _evaluating_experiment(session: Session) -> Experiment:
+    """candidate 보고까지 끝나 결과 보고만 남은 EVALUATING Experiment를 만든다."""
+    experiment = _running_experiment(session)
+    record_candidate(session, experiment.id, _request(experiment.id))
+    return experiment
+
+
+def _result_request(
+    experiment_id: uuid.UUID, **overrides: object
+) -> ExecutorResultReportRequest:
+    """유효한 결과 보고 요청에 필요한 한 필드만 바꿔 만든다."""
+    values: dict[str, object] = {
+        "idempotency_key": f"executor-result:{experiment_id}",
+        "candidate_sha": CANDIDATE_SHA,
+        "metric_snapshot": METRIC_SNAPSHOT,
+    }
+    values.update(overrides)
+    return ExecutorResultReportRequest.model_validate(values)
+
+
+def test_service_records_result_metrics_and_passed_event_atomically(
+    db_session: Session,
+) -> None:
+    """EVALUATING 행은 지표와 PASSED event를 같은 commit으로 남긴다."""
+    experiment = _evaluating_experiment(db_session)
+
+    updated = record_experiment_result(db_session, experiment.id, _result_request(experiment.id))
+
+    assert updated.status == ExperimentStatus.PASSED.value
+    assert updated.metric_summary == METRIC_SNAPSHOT
+    passed_events = db_session.scalars(
+        select(ExperimentEvent).where(
+            ExperimentEvent.experiment_id == experiment.id,
+            ExperimentEvent.to_status == ExperimentStatus.PASSED.value,
+        )
+    ).all()
+    assert len(passed_events) == 1
+    assert passed_events[0].idempotency_key == f"executor-result:{experiment.id}"
+    # 지표는 실험 행뿐 아니라 event에도 남아야 한다 — 나중에 어느 시점의 숫자였는지
+    # 타임라인에서 되짚을 수 있어야 한다.
+    assert passed_events[0].metric_snapshot == METRIC_SNAPSHOT
+
+
+def test_service_same_result_report_is_idempotent_without_new_event(
+    db_session: Session,
+) -> None:
+    """같은 지표 재시도는 이미 PASSED여도 성공으로 돌려주고 event를 늘리지 않는다."""
+    experiment = _evaluating_experiment(db_session)
+    record_experiment_result(db_session, experiment.id, _result_request(experiment.id))
+
+    record_experiment_result(db_session, experiment.id, _result_request(experiment.id))
+
+    assert db_session.scalar(
+        select(func.count())
+        .select_from(ExperimentEvent)
+        .where(
+            ExperimentEvent.experiment_id == experiment.id,
+            ExperimentEvent.to_status == ExperimentStatus.PASSED.value,
+        )
+    ) == 1
+
+
+def test_service_rejects_a_second_result_with_different_metrics(
+    db_session: Session,
+) -> None:
+    """한 실험의 결과는 하나다 — 다른 숫자로 덮어쓰려는 보고를 거부한다."""
+    experiment = _evaluating_experiment(db_session)
+    record_experiment_result(db_session, experiment.id, _result_request(experiment.id))
+
+    with pytest.raises(IdempotencyConflictError):
+        record_experiment_result(
+            db_session,
+            experiment.id,
+            _result_request(
+                experiment.id,
+                metric_snapshot={**METRIC_SNAPSHOT, "paired_delta_mean": 0.9},
+            ),
+        )
+
+
+def test_service_rejects_result_for_a_different_candidate_sha(db_session: Session) -> None:
+    """다른 실행의 산출물을 이 실험의 결과로 받지 않는다."""
+    experiment = _evaluating_experiment(db_session)
+
+    with pytest.raises(CandidateConflictError):
+        record_experiment_result(
+            db_session,
+            experiment.id,
+            _result_request(experiment.id, candidate_sha="c" * 40),
+        )
+
+
+def test_service_rejects_result_before_candidate_report(db_session: Session) -> None:
+    """candidate 보고 없이 결과부터 오면 순서가 어긋난 것이라 받지 않는다."""
+    experiment = _running_experiment(db_session)
+
+    with pytest.raises(CandidateConflictError):
+        record_experiment_result(db_session, experiment.id, _result_request(experiment.id))
+
+    persisted = db_session.get(Experiment, experiment.id)
+    assert persisted is not None
+    assert persisted.status == ExperimentStatus.RUNNING.value
+    assert persisted.metric_summary is None
+
+
+def test_service_rejects_result_report_with_noncanonical_idempotency_key(
+    db_session: Session,
+) -> None:
+    """요청 key가 experiment별 고정 result event key와 다르면 저장하지 않는다."""
+    experiment = _evaluating_experiment(db_session)
+
+    with pytest.raises(CandidateConflictError):
+        record_experiment_result(
+            db_session,
+            experiment.id,
+            _result_request(experiment.id, idempotency_key="executor-result-0001"),
+        )
+
+    persisted = db_session.get(Experiment, experiment.id)
+    assert persisted is not None
+    assert persisted.status == ExperimentStatus.EVALUATING.value
+
+
+def test_result_request_rejects_empty_metric_snapshot() -> None:
+    """빈 요약을 받으면 "측정했다"로 오인된다."""
+    with pytest.raises(ValidationError):
+        _result_request(uuid.uuid4(), metric_snapshot={})
+
+
+def test_result_request_rejects_metric_snapshot_over_the_size_limit() -> None:
+    """전문은 GCS에 있다 — 요약이 상한을 넘으면 요청 단계에서 막는다."""
+    oversized = {"note": "x" * (MAX_METRIC_SNAPSHOT_BYTES + 1)}
+
+    with pytest.raises(ValidationError):
+        _result_request(uuid.uuid4(), metric_snapshot=oversized)
+
+
+def _create_evaluating_experiment_for_http(client: TestClient) -> Experiment:
+    """HTTP 결과 보고 전 필요한 candidate 보고까지 마친 행을 준비한다."""
+    factory = client.app.state.experiment_session_factory
+    with factory() as session:
+        experiment = _evaluating_experiment(session)
+        experiment_id = experiment.id
+    with factory() as session:
+        persisted = session.get(Experiment, experiment_id)
+        assert persisted is not None
+        session.expunge(persisted)
+        return persisted
+
+
+def _http_result_payload(experiment_id: uuid.UUID, **overrides: object) -> dict[str, object]:
+    """executor 결과 보고 HTTP 요청의 기본 payload를 반환한다."""
+    payload: dict[str, object] = {
+        "idempotency_key": f"executor-result:{experiment_id}",
+        "candidate_sha": CANDIDATE_SHA,
+        "metric_snapshot": METRIC_SNAPSHOT,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_executor_result_endpoint_requires_dedicated_token(
+    executor_client: TestClient,
+) -> None:
+    """정확한 executor 토큰만 지표 저장과 완주 전이를 허용한다."""
+    experiment = _create_evaluating_experiment_for_http(executor_client)
+    path = f"/internal/executor/experiments/{experiment.id}/result"
+
+    missing = executor_client.post(path, json=_http_result_payload(experiment.id))
+    general_token = executor_client.post(
+        path,
+        headers={"X-Orch-Token": API_TOKEN},
+        json=_http_result_payload(experiment.id),
+    )
+    invalid_token = executor_client.post(
+        path,
+        headers={"X-Orch-Executor-Token": "wrong"},
+        json=_http_result_payload(experiment.id),
+    )
+    response = executor_client.post(
+        path,
+        headers=EXECUTOR_HEADERS,
+        json=_http_result_payload(experiment.id),
+    )
+
+    assert missing.status_code == 401
+    assert general_token.status_code == 401
+    assert invalid_token.status_code == 401
+    assert response.status_code == 200
+    assert response.json()["status"] == "PASSED"
+    assert response.json()["metric_summary"] == METRIC_SNAPSHOT
+
+
+def test_executor_result_endpoint_maps_out_of_order_report_to_409(
+    executor_client: TestClient,
+) -> None:
+    """candidate 보고 전에 도착한 결과 보고는 409다."""
+    experiment = _create_running_experiment_for_http(executor_client)
+
+    response = executor_client.post(
+        f"/internal/executor/experiments/{experiment.id}/result",
+        headers=EXECUTOR_HEADERS,
+        json=_http_result_payload(experiment.id),
+    )
+
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("candidate_sha", "B" * 40),
+        ("candidate_sha", "b" * 39),
+        ("metric_snapshot", {}),
+        ("metric_snapshot", []),
+        ("extra_field", True),
+    ],
+)
+def test_executor_result_endpoint_rejects_invalid_requests_with_422(
+    executor_client: TestClient,
+    field: str,
+    value: object,
+) -> None:
+    """SHA 형식·빈 요약·extra field를 service 전에 요청 검증으로 막는다."""
+    experiment = _create_evaluating_experiment_for_http(executor_client)
+
+    response = executor_client.post(
+        f"/internal/executor/experiments/{experiment.id}/result",
+        headers=EXECUTOR_HEADERS,
+        json=_http_result_payload(experiment.id, **{field: value}),
+    )
+
+    assert response.status_code == 422
