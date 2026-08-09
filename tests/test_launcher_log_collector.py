@@ -23,6 +23,8 @@ if str(PROJECT_ROOT) not in sys.path:
 from agent_orchestration.launcher.log_collector import (  # noqa: E402
     CHUNK_SIZE,
     complete_chunks,
+    KubernetesPodLogs,
+    experiment_id_from_job_name,
     LogSink,
     PodLogReader,
     collect_container_logs,
@@ -259,3 +261,65 @@ def test_collect_does_nothing_when_no_pod_exists() -> None:
 
     assert sink.written == []
     assert problems == []
+
+
+class _RecordingCoreV1:
+    """호출 인자를 기록만 하는 `CoreV1Api` 더블."""
+
+    def __init__(self) -> None:
+        self.list_calls: list[dict] = []
+        self.log_calls: list[dict] = []
+
+    def list_namespaced_pod(self, **kwargs):
+        self.list_calls.append(kwargs)
+        return type("Resp", (), {"items": []})()
+
+    def read_namespaced_pod_log(self, **kwargs) -> str:
+        self.log_calls.append(kwargs)
+        return "output"
+
+
+def test_pod_logs_adapter_filters_by_the_job_name_label() -> None:
+    """`job-name=` 문자열이 한 글자만 틀려도 조용히 빈 목록이 온다 — 인자를 고정한다."""
+    api = _RecordingCoreV1()
+
+    KubernetesPodLogs(api).list_pods("autoresearch-experiments", "ar-exec-abc")
+
+    assert api.list_calls == [
+        {
+            "namespace": "autoresearch-experiments",
+            "label_selector": "job-name=ar-exec-abc",
+        }
+    ]
+
+
+def test_pod_logs_adapter_passes_the_container_name() -> None:
+    """`container=`를 빠뜨리면 첫 컨테이너 로그가 조용히 반환돼 단계가 뒤섞인다."""
+    api = _RecordingCoreV1()
+
+    text = KubernetesPodLogs(api).read_log("ns", "ar-exec-abc-x7k2", "codex-worker")
+
+    assert text == "output"
+    assert api.log_calls == [
+        {
+            "name": "ar-exec-abc-x7k2",
+            "namespace": "ns",
+            "container": "codex-worker",
+        }
+    ]
+
+
+def test_experiment_id_from_job_name_inverts_the_launcher_rule() -> None:
+    """`repository._job_name`이 만든 이름의 역함수다 — 두 규칙이 갈리면 수집이 멈춘다."""
+    import uuid as _uuid
+
+    experiment_id = _uuid.UUID("6ec09890-a4a8-4c69-9760-c01349351505")
+
+    assert experiment_id_from_job_name(f"ar-exec-{experiment_id.hex}") == experiment_id
+
+
+def test_experiment_id_from_job_name_rejects_foreign_names() -> None:
+    """label로 걸러도 다른 Job이 섞일 수 있다 — 형식이 어긋나면 조용히 건너뛴다."""
+    assert experiment_id_from_job_name("ar-branch-6ec09890a4a84c699760c01349351505") is None
+    assert experiment_id_from_job_name("ar-exec-notahex") is None
+    assert experiment_id_from_job_name("ar-exec-") is None

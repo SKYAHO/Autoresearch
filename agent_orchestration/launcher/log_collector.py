@@ -17,6 +17,7 @@ RoleBinding·Deployment(`SKYAHO/Autoresearch-infra`)는 담당하지 않는다.
 from __future__ import annotations
 
 import logging
+import uuid
 from typing import Final, Protocol
 
 from kubernetes.client.exceptions import ApiException
@@ -29,6 +30,9 @@ _LOGGER = logging.getLogger(__name__)
 # `list_namespaced_pod` 직후 Pod이 사라지는 레이스도 여기로 떨어진다. 둘 다 skip이라
 # 지금은 한 갈래로 다루되, 나중에 구분이 필요해질 수 있어 사유를 분리해 둔다.
 _ABSENT_STATUSES: Final = frozenset({400, 404})
+
+# `repository._job_name`이 만드는 접두사다. 두 곳이 갈리면 수집이 조용히 멈춘다.
+_JOB_NAME_PREFIX: Final = "ar-exec-"
 
 
 # `ExperimentLogCreate.content`가 max_length=8192(문자 기준)이므로 여유를 두고 자른다.
@@ -163,3 +167,54 @@ def collect_container_logs(
                 problems.append("log_write_failed")
                 break
     return problems
+
+
+class KubernetesPodLogs:
+    """`CoreV1Api`로 Pod 목록·컨테이너 로그를 읽는 어댑터.
+
+    변환 로직이 없는 얇은 층이지만, **호출 인자는 테스트로 고정한다** —
+    `job-name=` 문자열이 한 글자만 틀려도 빈 목록이 조용히 돌아오고,
+    `container=`를 빠뜨리면 첫 컨테이너 로그가 반환돼 단계가 뒤섞인다.
+    둘 다 예외가 아니라 잘못된 성공으로 나타나는 종류다.
+    """
+
+    def __init__(self, api) -> None:
+        self._api = api
+
+    def list_pods(self, namespace: str, job_name: str) -> list:
+        """Job이 만든 Pod을 찾는다. `job-name`은 Kubernetes가 자동으로 붙이는 label이다."""
+        response = self._api.list_namespaced_pod(
+            namespace=namespace,
+            label_selector=f"job-name={job_name}",
+        )
+        return list(response.items)
+
+    def read_log(self, namespace: str, pod_name: str, container: str) -> str:
+        """한 컨테이너의 로그 전체를 읽는다.
+
+        `since_seconds`류 증분 조회를 쓰지 않는다 — 같은 창을 다시 읽으면 로그가 자라
+        내용이 달라져 멱등키가 충돌한다. 대신 전체를 읽고 고정 경계로 자른다
+        (`complete_chunks`).
+        """
+        return self._api.read_namespaced_pod_log(
+            name=pod_name,
+            namespace=namespace,
+            container=container,
+        )
+
+
+def experiment_id_from_job_name(job_name: str) -> uuid.UUID | None:
+    """Job 이름에서 Experiment UUID를 복원한다.
+
+    `repository._job_name`의 역함수다 — 그쪽이 `ar-exec-{uuid.hex}`를 만든다.
+    두 규칙이 갈리면 수집이 조용히 멈추므로 테스트로 함께 고정한다.
+
+    label로 걸러도 형식이 다른 Job이 섞일 수 있어(예: Phase 1의 `ar-branch-`),
+    맞지 않으면 오류가 아니라 `None`으로 돌려 건너뛰게 한다.
+    """
+    if not job_name.startswith(_JOB_NAME_PREFIX):
+        return None
+    try:
+        return uuid.UUID(hex=job_name[len(_JOB_NAME_PREFIX) :])
+    except ValueError:
+        return None

@@ -14,6 +14,32 @@ Streamlit 워크벤치의 "원본 로그" 탭을 채우기 위해, executor Pod�
 - executor 코드 변경 — 한 줄도 건드리지 않는다
 - 컨테이너 통합(`2026-08-09-agent-authored-experiment-report.md` §결정 3) 대응 —
   통합 후 컨테이너 이름이 바뀌면 수집 대상 목록만 따라가면 된다
+- **워크벤치의 로그 표시 상한** — `ui/views.py`가 최근 30개만 그린다. 8000자 청크
+  기준 240KB를 넘으면 앞부분이 화면에서 밀린다. 전체 개수는 함께 표기되므로 데이터
+  유실이 아니라 UX 문제이며, 필요해지면 후속 이슈로 다룬다
+
+## 읽기 경로는 이미 있다
+
+새로 만들 것은 **적재 한 구간뿐**이다.
+
+```
+executor Pod 컨테이너 로그
+  ↓  ← 이 문서가 다루는 수집기 (없던 유일한 조각)
+experiment_logs
+  ↓  ← 이미 있음: ui/client.py get_logs → state.logs
+워크벤치 "원본 로그" 탭
+  ↓  ← 이미 있음: ui/views.py logs_tab
+```
+
+지금 화면의 *"아직 기록된 원본 로그가 없습니다"*는 정상 동작하는 빈 상태다 — 파이프가
+UI까지 연결돼 있고 DB에 행이 0개일 뿐이다. **수집기가 행을 넣기 시작하면 UI 변경 없이
+보인다.**
+
+워크벤치는 `POLLING_STATUSES`(RUNNING·EVALUATING)인 동안 **5초 cursor polling**을 한다
+(`ui/app.py`). 수집 주기를 5~10초로 두면 체감 지연은 최악 15초다.
+
+`POLLING_STATUSES`가 `EVALUATING`까지 포함한다는 점은 아래 "K8s에서 얻는다" 결정과
+같은 방향이다 — UI도 상태 전이 후 한동안을 활성으로 취급한다.
 
 ## 왜 이 방식인가
 
@@ -50,6 +76,24 @@ Streamlit 워크벤치의 "원본 로그" 탭을 채우기 위해, executor Pod�
 2. Pod 목록      label_selector = "job-name=<job_name>"        (K8s가 자동 부여)
 3. experiment_id  Job 이름 ar-exec-<32 hex>에서 복원
 ```
+
+### 1번은 K8s에서 얻는다 — DB가 아니다
+
+`BatchV1Api.list_namespaced_job`으로 매 주기 조회한다. launcher와 같은
+`EXPERIMENT_EXECUTOR_LABEL_SELECTOR` 상수를 재사용해 두 곳이 갈리지 않게 한다.
+
+DB에서 `RUNNING` experiment의 `executor_job_name`을 읽는 방식을 쓰지 않는 이유:
+
+- **수집 대상은 "로그가 존재하는 Pod"이지 "DB가 RUNNING이라고 믿는 실험"이 아니다.**
+  상태 전이가 늦거나 어긋나도 로그는 Pod에 남는다. 실제로 `finalizer`가
+  `candidate_sha`를 보고해 `EVALUATING`이 된 뒤에도 같은 Job이 candidate 학습·측정을
+  계속한다(2026-08-09 `6ec09890` 관측) — DB 상태로 거르면 그 구간을 통째로 놓친다
+- **`LogSink`가 쓰기 전용으로 남는다.** DB 조회를 넣으면 어댑터 하나가 읽기·쓰기를
+  겸하게 되고 프로토콜 경계가 넓어진다
+
+종료된 Job도 TTL(3600초) 동안 목록에 남는데 이는 **필요한 성질**이다 — 완료 직후
+마지막 부분 청크를 flush하려면 종료 여부를 알아야 하고, 그 판정을 Job·Pod 상태에서
+얻는다.
 
 `job-name`은 Job이 만든 Pod에 Kubernetes가 자동으로 붙이는 label이다.
 
