@@ -62,21 +62,27 @@ executor가 `train-model`을 부르는 것과 **같은 패턴**으로 부른다.
 
 ### 1-3. GCS 게시
 
-- [ ] 버킷 `gs://autoresearch-503903-autoresearch-dev-experiment-results`.
+- [x] 버킷 `gs://autoresearch-503903-autoresearch-dev-experiment-results`.
       `exp-job` GSA가 `objectCreator`(**교체 불가**)+`objectViewer`만 가짐 — 확인됨
-- [ ] 경로 규칙 확정: `experiments/{issue_number}/{experiment_id}/...`
-- [ ] `metrics.json` · 모델 · 테스트셋 · 검증 결과 게시
-- [ ] launcher가 버킷 URI를 env로 주입 (신규 env → `README.md`·
-      `.claude/docs/agent-project-reference.md` 동반 갱신 대상)
+- [x] 경로 규칙 확정: `experiments/{issue_number}/{experiment_id}/...`
+- [x] `metrics.json` · 모델 · 테스트셋 · 검증 결과 게시 — `results_store.py`,
+      `if_generation_match=0`으로 write-once
+- [x] launcher가 버킷 URI를 env로 주입 — `ORCH_EXPERIMENT_RESULTS_ROOT`를
+      게시가 일어나는 `candidate-finalizer`에만 준다. `README.md`·
+      `agent-project-reference.md` 동반 갱신 완료
 
 ### 1-4. 배선
 
-- [ ] `phase2.py`에 측정 단계 추가. **현행 8-container 구조 그대로** 붙인다
+- [x] `phase2.py`에 측정 단계 추가. **현행 8-container 구조 그대로** 붙인다
       (candidate 학습이 있는 `candidate-finalizer` 뒤)
 - [ ] `evaluate-model`이 이미지의 어느 python·라이브러리로 도는지 확인한다.
       `train-model`과 같아야 학습·평가가 어긋나지 않는다 (`uv sync`는 workspace를
-      대상으로 하고 `_run`은 PATH의 python을 쓴다 — 지금 같은 환경인지 미확인)
-- [ ] Experiment API `metric_snapshot`에 지표 반영
+      대상으로 하고 `_run`은 PATH의 python을 쓴다 — 지금 같은 환경인지 미확인).
+      **이미지 정의가 `Autoresearch-infra` 소유라 실물 확인이 필요하다**
+- [x] Experiment API `metric_snapshot`에 지표 반영 —
+      `POST /internal/executor/experiments/{id}/result`.
+      요약 계약은 `experiment-metric-snapshot-v1`이고 전문(`metrics.json`)은 GCS에
+      남긴 뒤 `results_uri`로 잇는다. 같은 실험에 다른 숫자를 두 번 쓰지 못한다
 
 ### 검증
 
@@ -190,10 +196,18 @@ executor가 `train-model`을 부르는 것과 **같은 패턴**으로 부른다.
 
 ## 상태 전이 (Stage 1에서 함께)
 
-- [ ] `PASSED` = 실험이 완주하고 결과가 나왔다 / `FAILED` = 실행 실패로 결과 없음
-- [ ] 가설의 성패는 `report.md`가 서술. 지표는 `metric_snapshot`으로 워크벤치 노출
-- [ ] 이 경로 전용 결과 계약 정의 — `PairedExperimentResult`의
-      `ConditionLineage` 등 격리 실행 모델 필드를 그럴듯하게 채우지 않는다
+- [x] `PASSED` = 실험이 완주하고 결과가 나왔다. **결과 보고 endpoint가 상태를 인자로
+      받지 않아** 호출자가 도달할 상태를 고를 수 없다
+- [x] 가설의 성패는 `report.md`가 서술. 지표는 `metric_snapshot`으로 워크벤치 노출
+- [x] 이 경로 전용 결과 계약 정의 — `ExecutorResultReportRequest` /
+      `experiment-metric-snapshot-v1`. `PairedExperimentResult`를 쓰지 않으므로
+      `ConditionLineage` 등 격리 실행 모델 필드를 채울 일이 없다
+- [x] **실행 실패는 `FAILED`가 아니라 `ERROR`다.** executor가 죽으면 스스로 보고할 수
+      없으므로 launcher의 Job 회수가 처리한다. 죽는 쪽이 자기 죽음을 보고하는 경로를
+      신뢰하지 않는다. `reconcile_failed_jobs`가 `RUNNING`뿐 아니라 `EVALUATING`도
+      회수한다 — candidate 보고 **뒤에** 학습·채점·게시·보고가 오기 때문이다.
+      결과 보고까지 끝난 `PASSED`는 회수하지 않는다
+- [ ] `FAILED`는 이 경로에서 쓰이지 않는다. 상태 자체를 없앨지는 Stage 3 이후 결정
 
 ## MVP 범위 밖
 
