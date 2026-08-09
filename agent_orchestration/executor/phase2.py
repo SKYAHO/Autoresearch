@@ -6,10 +6,11 @@
 
 [기능] 각 container의 환경 입력을 기존 Stage 2~5 공개 인터페이스로 변환하고,
 base tip의 Codex 실행 또는 기존 candidate 채택 검증을 선택해 VerificationResult를
-finalizer에 전달한다. candidate 학습이 끝나면 두 조건을 채점해 지표를 GCS에 게시하고
-그 요약을 Experiment API에 보고해 실험을 완주로 확정한다. stage 시작·종료와 정제된
-실패 사유를 container 로그로 남기고, codex-worker에 한해 Codex 원문 출력 tail도 함께
-남긴다(#612).
+finalizer에 전달한다. candidate 학습이 끝나면 두 조건을 채점하고, 그 결과와 candidate
+diff를 Codex에 다시 넘겨 `report.md`를 받은 뒤, 지표와 리포트를 함께 GCS에 게시하고
+요약을 Experiment API에 보고해 실험을 완주로 확정한다. stage 시작·종료와 정제된
+실패 사유를 container 로그로 남기고, Codex를 실행하는 두 stage에 한해 원문 출력 tail도
+함께 남긴다(#612).
 
 [비책임] Job·Secret·PVC manifest(`launcher.jobs`), GitHub App token 발급
 (`token_minter.py`), candidate API의 DB 상태 전이(`app/experiments/service.py`)는
@@ -44,6 +45,7 @@ from agent_orchestration.executor.measurement import (
     build_metric_snapshot,
     write_experiment_metrics,
 )
+from agent_orchestration.executor.report import ReportInput, write_experiment_report
 from agent_orchestration.executor.results_store import (
     collect_publishable_files,
     publish_results,
@@ -267,7 +269,7 @@ def _run_training_if_enabled(
     )
 
 
-def _log_codex_output(stdout: str, stderr: str) -> None:
+def _log_codex_output(stdout: str, stderr: str, *, stage: str = "codex-worker") -> None:
     """Codex 원문 출력 tail을 stage 로그로 남긴다.
 
     이 모듈은 원칙적으로 정제된 사유 코드만 로그로 내보내지만(`_safe_failure_reason`),
@@ -280,14 +282,15 @@ def _log_codex_output(stdout: str, stderr: str) -> None:
     for stream, text in (("stdout", stdout), ("stderr", stderr)):
         if text:
             _LOGGER.info(
-                "codex output stage=codex-worker stream=%s bytes=%d\n%s",
+                "codex output stage=%s stream=%s bytes=%d\n%s",
+                stage,
                 stream,
                 len(text.encode("utf-8")),
                 text,
             )
         else:
             _LOGGER.info(
-                "codex output stage=codex-worker stream=%s bytes=0", stream
+                "codex output stage=%s stream=%s bytes=0", stage, stream
             )
 
 
@@ -381,16 +384,93 @@ def candidate_verifier_main() -> int:
     return 0
 
 
+def _write_report_if_enabled(
+    workspace: Path,
+    *,
+    metrics_path: Path,
+    issue_body: str,
+    base_dev_sha: str,
+    candidate_sha: str,
+) -> Path | None:
+    """실험을 수행한 에이전트에게 자기 결과를 서술하게 하고 그 파일을 돌려준다.
+
+    **어떤 실패도 위로 올리지 않는다.** 리포트가 없다고 게시와 API 보고까지 잃으면
+    측정한 숫자마저 사라진다 — 리포트는 실험의 최종 산출물이지만 숫자보다 뒤에 오고,
+    둘 중 하나만 남길 수 있다면 숫자다. 그래서 실패는 로그로만 남긴다.
+
+    `ORCH_CODEX_HOME`이 없으면 리포트를 켜지 않은 배포다. 조용히 건너뛰지 않고 한 줄을
+    남겨 "설정하지 않았다"와 "Codex가 실패했다"를 구분한다.
+
+    Returns:
+        게시할 `report.md` 경로. 쓰지 못했으면 `None`이다.
+    """
+    codex_home = os.environ.get("ORCH_CODEX_HOME", "").strip()
+    if not codex_home:
+        _LOGGER.warning(
+            "experiment report was not written reason=codex_home_unset"
+        )
+        return None
+    try:
+        result = write_experiment_report(
+            ReportInput(
+                repository=workspace,
+                metrics_path=metrics_path,
+                issue_body=issue_body,
+                base_dev_sha=base_dev_sha,
+                candidate_sha=candidate_sha,
+                codex_home=Path(codex_home),
+                timeout_seconds=_positive_int("ORCH_CODEX_TIMEOUT_SEC"),
+            )
+        )
+    except CodexWorkerError as error:
+        # timeout처럼 결과가 없는 경로가 오히려 원문이 가장 필요한 곳이다(#612).
+        _log_codex_output(error.stdout, error.stderr, stage="experiment-report")
+        _LOGGER.error(
+            "experiment report failed reason=%s", _safe_failure_reason(error)
+        )
+        return None
+    except Exception as error:  # noqa: BLE001 - 리포트 실패가 지표 게시를 막으면 안 된다
+        _LOGGER.error(
+            "experiment report failed error_type=%s reason=%s",
+            type(error).__name__,
+            _safe_failure_reason(error),
+        )
+        return None
+    _log_codex_output(
+        result.codex.stdout, result.codex.stderr, stage="experiment-report"
+    )
+    if result.path is None:
+        _LOGGER.error(
+            "experiment report failed reason=report_missing exit_code=%d",
+            result.codex.exit_code,
+        )
+        return None
+    if result.missing_sections:
+        # 절이 빠져도 게시한다. 형식이 어긋난 리포트가 리포트 없음보다 낫고, 무엇이
+        # 빠졌는지는 이 한 줄로 남는다. 절 이름은 이 저장소가 정한 고정 목록이라
+        # 외부 문자열이 아니다.
+        _LOGGER.warning(
+            "experiment report is missing sections count=%d sections=%s",
+            len(result.missing_sections),
+            ",".join(result.missing_sections),
+        )
+    _LOGGER.info(
+        "experiment report written sections_missing=%d", len(result.missing_sections)
+    )
+    return result.path
+
+
 def _measure_and_publish_if_enabled(
     workspace: Path,
     *,
     seeds: tuple[int, ...],
     experiment_id: uuid.UUID,
     issue_number: int,
+    issue_body: str,
     base_dev_sha: str,
     candidate_sha: str,
 ) -> dict[str, object] | None:
-    """두 조건의 산출물을 채점하고 그 결과를 Pod 밖으로 내보낸다.
+    """두 조건의 산출물을 채점하고 리포트까지 받아 Pod 밖으로 내보낸다.
 
     `/workspace`는 emptyDir이라 Pod TTL 후 통째로 사라진다. 여기서 내보내지 않으면
     **측정한 것이 아무것도 남지 않는다** — 실험 #619가 완주하고도 `metric_summary`가
@@ -439,10 +519,22 @@ def _measure_and_publish_if_enabled(
             issue_number,
         )
         return build_metric_snapshot(payload, results_uri=None)
+    # 리포트는 게시 **앞에** 온다 — `metrics.json`과 한 번에 올려야 두 파일이 서로를
+    # 가리키는 한 벌로 남는다. 게시하지 않는 배포에서 Codex를 태우지 않으려고 위
+    # `results_root` 확인 뒤에 둔다 — 쓴 리포트가 Pod과 함께 사라질 자리다.
+    # 실패해도 아래 게시와 API 보고는 그대로 일어난다.
+    report_path = _write_report_if_enabled(
+        workspace,
+        metrics_path=metrics_path,
+        issue_body=issue_body,
+        base_dev_sha=base_dev_sha,
+        candidate_sha=candidate_sha,
+    )
     published = publish_results(
         results_root,
         collect_publishable_files(
             metrics_path=metrics_path,
+            report_path=report_path,
             training_output_root=workspace_root / _TRAINING_OUTPUT_DIRNAME,
         ),
         issue_number=issue_number,
@@ -490,6 +582,7 @@ def candidate_finalizer_main() -> int:
         seeds=seeds,
         experiment_id=experiment_id,
         issue_number=issue_number,
+        issue_body=state.issue_body,
         base_dev_sha=base_dev_sha,
         candidate_sha=candidate_sha,
     )

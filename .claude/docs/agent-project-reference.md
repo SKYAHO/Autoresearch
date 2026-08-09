@@ -138,12 +138,27 @@ docs/
   - 8-container 순서: branch-token-minter → branch-creator → clone-token-minter →
     workspace-preparer → codex-worker → candidate-verifier → push-token-minter →
     candidate-finalizer. branch/clone/push token-minter만 GitHub App private key를,
-    codex-worker만 executor 전용 Codex 인증 Secret의 read-only `CODEX_HOME`을,
-    candidate-finalizer만 executor API token을 mount한다. Secret은 `auth.json` key 하나를
-    제공하고 launcher는 이를 `defaultMode=0440`의 read-only `subPath` 파일로 mount한다.
-    codex-worker는 source의 regular `auth.json`만 mode 0400으로 `/tmp` 아래 mode 0700 per-run
-    writable scratch `CODEX_HOME`에 복사하고, config·plugin 등 다른 source 파일은 복사하지
-    않은 채 `codex exec --ephemeral`을 실행한다.
+    codex-worker와 candidate-finalizer만 executor 전용 Codex 인증 Secret의 read-only
+    `CODEX_HOME`을, candidate-finalizer만 executor API token을 mount한다. Secret은
+    `auth.json` key 하나를 제공하고 launcher는 이를 `defaultMode=0440`의 read-only
+    `subPath` 파일로 mount한다. 두 container 모두 source의 regular `auth.json`만 mode
+    0400으로 `/tmp` 아래 mode 0700 per-run writable scratch `CODEX_HOME`에 복사하고,
+    config·plugin 등 다른 source 파일은 복사하지 않은 채 `codex exec --ephemeral`을
+    실행한다.
+    - **Codex는 두 번 돈다(#639).** codex-worker가 이슈를 읽고 코드를 고치고,
+      candidate-finalizer가 채점이 끝난 뒤 `metrics.json`과 candidate diff를 읽어
+      `report.md`를 쓴다. 리포트는 git 커밋 대상이 아니라 GCS 게시 산출물이라 push 뒤에
+      와도 되고(계약 결정 5), 그래서 컨테이너 재구성 없이 finalizer 안에 들어간다.
+      세션 유지(`codex exec resume`)는 MVP 범위 밖이다 — 두 번째 호출은 채점 결과와
+      diff를 입력으로 받는다.
+    - codex-worker는 Codex 실행 **직전에** clone 루트 `AGENTS.md`를 executor 전용 하네스
+      지침으로 교체하고 `finally`로 **반드시 원본을 복원한다.** verifier가
+      `git status`·`ls-files --others`로 변경을 수집하므로 복원하지 않으면 하네스 파일이
+      candidate 변경으로 잡혀 commit·push된다. 지침 본문은 `executor/prompt.py`가
+      소유하며 ONNX 재귀 제약(#633) 같은 실험 공간의 숨은 제약도 여기서 알린다.
+    - candidate-finalizer는 push token·API token과 Codex 인증을 함께 들고 있다. 코드로
+      막지 않고 하네스 지침이 담당한다는 결정이며(spec 결정 3과 같은 논리), 컨테이너를
+      갈라 없애는 것은 8 → 4/5 재구성의 몫이다.
   - **단일 파드 학습(#574, 데모 스코프):** 20차 회의 지침으로 파이프라인을 파드 4개에서
     **파드 1개**로 바꿨다. 컨테이너를 새로 만들지 않고 위 8-container 중 두 곳에 학습을
     얹는다 — **baseline은 `workspace-preparer` 끝**(Codex 실행 전, dev 코드·dev 의존성),
