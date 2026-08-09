@@ -23,6 +23,9 @@ if str(PROJECT_ROOT) not in sys.path:
 from agent_orchestration.launcher.log_collector import (  # noqa: E402
     CHUNK_SIZE,
     complete_chunks,
+    LogSink,
+    PodLogReader,
+    collect_container_logs,
     log_idempotency_key,
     select_pod,
 )
@@ -114,3 +117,145 @@ def test_log_idempotency_key_stays_within_the_schema_limit() -> None:
 
     assert len(key) <= 128
     assert len(key) < 80, f"여유가 급격히 줄었다: {len(key)}자"
+
+
+class _FakeReader:
+    """`PodLogReader` 프로토콜의 테스트 더블."""
+
+    def __init__(self, *, pods=None, logs=None, raises=None) -> None:
+        self._pods = pods if pods is not None else []
+        self._logs = logs or {}
+        self._raises = raises or {}
+
+    def list_pods(self, namespace: str, job_name: str) -> list:
+        return self._pods
+
+    def read_log(self, namespace: str, pod_name: str, container: str) -> str:
+        if container in self._raises:
+            raise self._raises[container]
+        return self._logs.get(container, "")
+
+
+class _FakeSink:
+    """적재된 청크를 기록만 하는 `LogSink` 더블."""
+
+    def __init__(self, *, raises=None) -> None:
+        self.written: list[tuple[str, str, str]] = []
+        self._raises = raises
+
+    def write(self, *, idempotency_key: str, log_type: str, content: str) -> None:
+        if self._raises is not None:
+            raise self._raises
+        self.written.append((idempotency_key, log_type, content))
+
+
+def test_fakes_satisfy_the_collector_protocols() -> None:
+    """더블이 프로토콜을 실제로 만족하는지 고정한다 — 시그니처가 갈리면 여기서 걸린다."""
+    reader: PodLogReader = _FakeReader()
+    sink: LogSink = _FakeSink()
+
+    assert reader.list_pods("ns", "job") == []
+    sink.write(idempotency_key="k", log_type="t", content="c")
+
+
+def _api_exception(status: int) -> Exception:
+    from kubernetes.client.exceptions import ApiException
+
+    return ApiException(status=status)
+
+
+def test_collect_skips_silently_when_the_container_has_not_started() -> None:
+    """8-container 순차 실행이라 뒤 컨테이너가 아직 없는 것은 정상이다."""
+    pod = _Pod("ar-exec-abc-x7k2", datetime(2026, 8, 9, 12, 0, tzinfo=UTC))
+    reader = _FakeReader(pods=[pod], raises={"codex-worker": _api_exception(400)})
+    sink = _FakeSink()
+
+    problems = collect_container_logs(
+        reader, sink, namespace="ns", job_name="ar-exec-abc",
+        containers=["codex-worker"], terminated=set(),
+    )
+
+    assert sink.written == []
+    assert problems == []
+
+
+def test_collect_skips_silently_when_the_pod_vanished_between_list_and_read() -> None:
+    """TTL 회수·재시도 교체로 list 직후 Pod이 사라질 수 있다 — 404도 정상 skip이다.
+
+    지금은 "컨테이너 미시작 404"와 같은 갈래로 처리하지만, 나중에 둘을 구분해야 할
+    때 회귀 없이 갈리도록 레이스 자체를 케이스로 고정한다.
+    """
+    pod = _Pod("ar-exec-abc-x7k2", datetime(2026, 8, 9, 12, 0, tzinfo=UTC))
+    reader = _FakeReader(pods=[pod], raises={"codex-worker": _api_exception(404)})
+    sink = _FakeSink()
+
+    problems = collect_container_logs(
+        reader, sink, namespace="ns", job_name="ar-exec-abc",
+        containers=["codex-worker"], terminated=set(),
+    )
+
+    assert sink.written == []
+    assert problems == []
+
+
+def test_collect_reports_unexpected_api_errors_without_stopping() -> None:
+    """그 외 API 오류는 조용히 넘기지 않는다 — 고정 사유 코드로 남긴다."""
+    pod = _Pod("ar-exec-abc-x7k2", datetime(2026, 8, 9, 12, 0, tzinfo=UTC))
+    reader = _FakeReader(
+        pods=[pod],
+        logs={"candidate-verifier": "x" * CHUNK_SIZE},
+        raises={"codex-worker": _api_exception(500)},
+    )
+    sink = _FakeSink()
+
+    problems = collect_container_logs(
+        reader, sink, namespace="ns", job_name="ar-exec-abc",
+        containers=["codex-worker", "candidate-verifier"], terminated=set(),
+    )
+
+    assert problems == ["pod_log_read_failed"]
+    # 한 컨테이너가 실패해도 나머지는 계속 수집한다.
+    assert [row[1] for row in sink.written] == ["candidate-verifier"]
+
+
+def test_collect_reports_sink_failure_without_stopping() -> None:
+    """DB 적재 실패도 사유를 남기고 넘어간다 — 관측 때문에 실험을 막지 않는다."""
+    pod = _Pod("ar-exec-abc-x7k2", datetime(2026, 8, 9, 12, 0, tzinfo=UTC))
+    reader = _FakeReader(pods=[pod], logs={"codex-worker": "x" * CHUNK_SIZE})
+    sink = _FakeSink(raises=RuntimeError("db down"))
+
+    problems = collect_container_logs(
+        reader, sink, namespace="ns", job_name="ar-exec-abc",
+        containers=["codex-worker"], terminated=set(),
+    )
+
+    assert problems == ["log_write_failed"]
+
+
+def test_collect_writes_complete_chunks_with_pod_scoped_keys() -> None:
+    pod = _Pod("ar-exec-abc-x7k2", datetime(2026, 8, 9, 12, 0, tzinfo=UTC))
+    reader = _FakeReader(pods=[pod], logs={"codex-worker": "x" * (CHUNK_SIZE * 2)})
+    sink = _FakeSink()
+
+    collect_container_logs(
+        reader, sink, namespace="ns", job_name="ar-exec-abc",
+        containers=["codex-worker"], terminated=set(),
+    )
+
+    assert [row[0] for row in sink.written] == [
+        "ar-exec-abc-x7k2:codex-worker:0",
+        "ar-exec-abc-x7k2:codex-worker:1",
+    ]
+
+
+def test_collect_does_nothing_when_no_pod_exists() -> None:
+    reader = _FakeReader(pods=[])
+    sink = _FakeSink()
+
+    problems = collect_container_logs(
+        reader, sink, namespace="ns", job_name="ar-exec-abc",
+        containers=["codex-worker"], terminated=set(),
+    )
+
+    assert sink.written == []
+    assert problems == []

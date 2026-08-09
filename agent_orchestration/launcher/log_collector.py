@@ -16,7 +16,19 @@ RoleBinding·Deployment(`SKYAHO/Autoresearch-infra`)는 담당하지 않는다.
 
 from __future__ import annotations
 
+import logging
 from typing import Final, Protocol
+
+from kubernetes.client.exceptions import ApiException
+
+
+_LOGGER = logging.getLogger(__name__)
+
+# 컨테이너가 아직 뜨지 않았거나 Pod이 이미 회수된 상태를 뜻하는 응답이다. 8-container
+# 순차 실행이라 뒤 컨테이너가 없는 것은 **정상**이고, TTL 회수·재시도 교체로
+# `list_namespaced_pod` 직후 Pod이 사라지는 레이스도 여기로 떨어진다. 둘 다 skip이라
+# 지금은 한 갈래로 다루되, 나중에 구분이 필요해질 수 있어 사유를 분리해 둔다.
+_ABSENT_STATUSES: Final = frozenset({400, 404})
 
 
 # `ExperimentLogCreate.content`가 max_length=8192(문자 기준)이므로 여유를 두고 자른다.
@@ -74,3 +86,80 @@ def select_pod(pods: list[_Pod]) -> _Pod | None:
         return None
     # API 반환 순서를 신뢰하지 않는다 — 재시도 Pod이 먼저 올지 나중에 올지는 보장이 없다.
     return max(pods, key=lambda pod: pod.metadata.creation_timestamp)
+
+
+class PodLogReader(Protocol):
+    """수집기가 쓰는 Kubernetes 읽기 연산.
+
+    `JobClient`(Job 생성)와 분리한다 — 책임이 다르고, 섞으면 테스트 더블부터 꼬인다.
+    """
+
+    def list_pods(self, namespace: str, job_name: str) -> list: ...
+
+    def read_log(self, namespace: str, pod_name: str, container: str) -> str: ...
+
+
+class LogSink(Protocol):
+    """적재 대상. 구현은 `create_experiment_log`를 부르는 얇은 어댑터다."""
+
+    def write(self, *, idempotency_key: str, log_type: str, content: str) -> None: ...
+
+
+def collect_container_logs(
+    reader: PodLogReader,
+    sink: LogSink,
+    *,
+    namespace: str,
+    job_name: str,
+    containers: list[str],
+    terminated: set[str],
+) -> list[str]:
+    """한 Job의 컨테이너 로그를 읽어 완성된 청크만 적재하고 사유 코드를 돌려준다.
+
+    **fail-open이다.** 한 컨테이너가 실패해도 나머지를 계속 수집하고, 수집 실패가
+    실험 실행을 막지 않는다 — 관측 때문에 파이프라인이 멈추는 것이 더 나쁘다.
+
+    돌려주는 사유 코드는 `executor/phase2.py`의 `_safe_failure_reason` 관례를 따라
+    접미사 없는 고정 코드다. 경로·응답 본문은 싣지 않는다.
+    """
+    pod = select_pod(reader.list_pods(namespace, job_name))
+    if pod is None:
+        return []
+
+    pod_name = pod.metadata.name
+    problems: list[str] = []
+    for container in containers:
+        try:
+            text = reader.read_log(namespace, pod_name, container)
+        except ApiException as error:
+            if error.status in _ABSENT_STATUSES:
+                # 정상 상황이다 — 다음 주기에 다시 본다.
+                continue
+            _LOGGER.warning(
+                "pod log read failed reason=pod_log_read_failed "
+                "job=%s container=%s status=%s",
+                job_name,
+                container,
+                error.status,
+            )
+            problems.append("pod_log_read_failed")
+            continue
+
+        for seq, chunk in enumerate(
+            complete_chunks(text, terminated=container in terminated)
+        ):
+            try:
+                sink.write(
+                    idempotency_key=log_idempotency_key(pod_name, container, seq),
+                    log_type=container,
+                    content=chunk,
+                )
+            except Exception:
+                _LOGGER.warning(
+                    "log write failed reason=log_write_failed job=%s container=%s",
+                    job_name,
+                    container,
+                )
+                problems.append("log_write_failed")
+                break
+    return problems
