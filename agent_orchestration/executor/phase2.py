@@ -6,10 +6,11 @@
 
 [기능] 각 container의 환경 입력을 기존 Stage 2~5 공개 인터페이스로 변환하고,
 base tip의 Codex 실행 또는 기존 candidate 채택 검증을 선택해 VerificationResult를
-finalizer에 전달한다. candidate 학습이 끝나면 두 조건을 채점해 지표를 GCS에 게시하고
-그 요약을 Experiment API에 보고해 실험을 완주로 확정한다. stage 시작·종료와 정제된
-실패 사유를 container 로그로 남기고, codex-worker에 한해 Codex 원문 출력 tail도 함께
-남긴다(#612).
+finalizer에 전달한다. candidate 학습이 끝나면 두 조건을 채점하고, 그 결과와 candidate
+diff를 Codex에 다시 넘겨 `report.md`를 받은 뒤, 지표와 리포트를 함께 GCS에 게시하고
+요약을 Experiment API에 보고해 실험을 완주로 확정한다. stage 시작·종료와 정제된
+실패 사유를 container 로그로 남기고, Codex를 실행하는 두 stage에 한해 원문 출력 tail도
+함께 남긴다(#612).
 
 [비책임] Job·Secret·PVC manifest(`launcher.jobs`), GitHub App token 발급
 (`token_minter.py`), candidate API의 DB 상태 전이(`app/experiments/service.py`)는
@@ -43,6 +44,11 @@ from agent_orchestration.executor.measurement import (
     build_experiment_metrics,
     build_metric_snapshot,
     write_experiment_metrics,
+)
+from agent_orchestration.executor.report import (
+    REPORT_FILENAME,
+    ReportInput,
+    write_experiment_report,
 )
 from agent_orchestration.executor.results_store import (
     collect_publishable_files,
@@ -267,7 +273,7 @@ def _run_training_if_enabled(
     )
 
 
-def _log_codex_output(stdout: str, stderr: str) -> None:
+def _log_codex_output(stdout: str, stderr: str, *, stage: str = "codex-worker") -> None:
     """Codex 원문 출력 tail을 stage 로그로 남긴다.
 
     이 모듈은 원칙적으로 정제된 사유 코드만 로그로 내보내지만(`_safe_failure_reason`),
@@ -280,14 +286,15 @@ def _log_codex_output(stdout: str, stderr: str) -> None:
     for stream, text in (("stdout", stdout), ("stderr", stderr)):
         if text:
             _LOGGER.info(
-                "codex output stage=codex-worker stream=%s bytes=%d\n%s",
+                "codex output stage=%s stream=%s bytes=%d\n%s",
+                stage,
                 stream,
                 len(text.encode("utf-8")),
                 text,
             )
         else:
             _LOGGER.info(
-                "codex output stage=codex-worker stream=%s bytes=0", stream
+                "codex output stage=%s stream=%s bytes=0", stage, stream
             )
 
 
@@ -381,16 +388,128 @@ def candidate_verifier_main() -> int:
     return 0
 
 
+def _write_report_if_enabled(
+    workspace: Path,
+    *,
+    metrics_path: Path,
+    issue_body: str,
+    base_dev_sha: str,
+    candidate_sha: str,
+) -> Path | None:
+    """실험을 수행한 에이전트에게 자기 결과를 서술하게 하고 그 파일을 돌려준다.
+
+    **어떤 실패도 위로 올리지 않는다.** 리포트가 없다고 게시와 API 보고까지 잃으면
+    측정한 숫자마저 사라진다 — 리포트는 실험의 최종 산출물이지만 숫자보다 뒤에 오고,
+    둘 중 하나만 남길 수 있다면 숫자다. 그래서 실패는 로그로만 남긴다.
+
+    `ORCH_CODEX_HOME`이 없으면 리포트를 켜지 않은 배포다. 조용히 건너뛰지 않고 한 줄을
+    남겨 "설정하지 않았다"와 "Codex가 실패했다"를 구분한다.
+
+    Returns:
+        게시할 `report.md` 경로. 쓰지 못했으면 `None`이다.
+    """
+    codex_home = os.environ.get("ORCH_CODEX_HOME", "").strip()
+    if not codex_home:
+        _LOGGER.warning(
+            "experiment report was not written reason=codex_home_unset"
+        )
+        return None
+    try:
+        result = write_experiment_report(
+            ReportInput(
+                repository=workspace,
+                metrics_path=metrics_path,
+                issue_body=issue_body,
+                base_dev_sha=base_dev_sha,
+                candidate_sha=candidate_sha,
+                codex_home=Path(codex_home),
+                timeout_seconds=_positive_int("ORCH_CODEX_TIMEOUT_SEC"),
+            )
+        )
+    except CodexWorkerError as error:
+        # timeout처럼 결과가 없는 경로가 오히려 원문이 가장 필요한 곳이다(#612).
+        _log_codex_output(error.stdout, error.stderr, stage="experiment-report")
+        _LOGGER.error(
+            "experiment report failed reason=%s", _safe_failure_reason(error)
+        )
+        return None
+    except Exception as error:  # noqa: BLE001 - 리포트 실패가 지표 게시를 막으면 안 된다
+        _LOGGER.error(
+            "experiment report failed error_type=%s reason=%s",
+            type(error).__name__,
+            _safe_failure_reason(error),
+        )
+        return None
+    _log_codex_output(
+        result.codex.stdout, result.codex.stderr, stage="experiment-report"
+    )
+    if result.path is None:
+        # `report_not_a_regular_file`은 Codex가 symlink를 남겼다는 뜻이다. 게시하면
+        # 링크 대상이 그대로 올라가므로 버렸다 — 사유가 로그에 남아야 구분된다.
+        _LOGGER.error(
+            "experiment report failed reason=%s exit_code=%d",
+            result.reason or "report_missing",
+            result.codex.exit_code,
+        )
+        return None
+    if result.missing_sections:
+        # 절이 빠져도 게시한다. 형식이 어긋난 리포트가 리포트 없음보다 낫고, 무엇이
+        # 빠졌는지는 이 한 줄로 남는다. 절 이름은 이 저장소가 정한 고정 목록이라
+        # 외부 문자열이 아니다.
+        _LOGGER.warning(
+            "experiment report is missing sections count=%d sections=%s",
+            len(result.missing_sections),
+            ",".join(result.missing_sections),
+        )
+    _LOGGER.info(
+        "experiment report written sections_missing=%d", len(result.missing_sections)
+    )
+    return result.path
+
+
+def _publish_report(
+    results_root: str,
+    report_path: Path,
+    *,
+    experiment_id: uuid.UUID,
+    issue_number: int,
+) -> None:
+    """리포트를 지표와 같은 실험 경로에 올린다.
+
+    지표 게시와 **분리한 이유**는 순서 때문이다. 숫자를 먼저 확정하고, 리포트는 그 뒤에
+    쓰이고 그 뒤에 올라간다. 여기서 실패해도 위로 올리지 않는다 — 이 시점에는 지표가
+    이미 게시됐고, 남은 API 보고까지 막으면 워크벤치가 다시 빈다.
+    """
+    try:
+        published = publish_results(
+            results_root,
+            {REPORT_FILENAME: report_path},
+            issue_number=issue_number,
+            experiment_id=str(experiment_id),
+        )
+    except Exception as error:  # noqa: BLE001 - 리포트 게시 실패가 API 보고를 막으면 안 된다
+        _LOGGER.error(
+            "experiment report was not published error_type=%s reason=%s",
+            type(error).__name__,
+            _safe_failure_reason(error),
+        )
+        return
+    _LOGGER.info(
+        "experiment report published uri=%s", published[REPORT_FILENAME].uri
+    )
+
+
 def _measure_and_publish_if_enabled(
     workspace: Path,
     *,
     seeds: tuple[int, ...],
     experiment_id: uuid.UUID,
     issue_number: int,
+    issue_body: str,
     base_dev_sha: str,
     candidate_sha: str,
 ) -> dict[str, object] | None:
-    """두 조건의 산출물을 채점하고 그 결과를 Pod 밖으로 내보낸다.
+    """두 조건의 산출물을 채점하고 리포트까지 받아 Pod 밖으로 내보낸다.
 
     `/workspace`는 emptyDir이라 Pod TTL 후 통째로 사라진다. 여기서 내보내지 않으면
     **측정한 것이 아무것도 남지 않는다** — 실험 #619가 완주하고도 `metric_summary`가
@@ -439,6 +558,16 @@ def _measure_and_publish_if_enabled(
             issue_number,
         )
         return build_metric_snapshot(payload, results_uri=None)
+    # **측정 산출물을 먼저 확정한다.** 리포트를 기다렸다가 함께 올리면 Codex 실행
+    # 시간(최대 `ORCH_CODEX_TIMEOUT_SEC`)만큼 숫자를 잃을 수 있는 창이 열린다 —
+    # 그 사이 `activeDeadlineSeconds`나 OOM으로 container가 죽으면 push와
+    # `RUNNING → EVALUATING`은 이미 끝난 뒤라 실험은 ERROR로 회수되고 측정한 숫자는
+    # 어디에도 남지 않는다. 예외 경로만이 아니라 **container가 죽는 경로에서도**
+    # "리포트 실패로 숫자를 잃지 않는다"가 성립해야 한다.
+    #
+    # 부수 효과 하나가 더 있다. 게시된 사본은 버킷 IAM이 `objectCreator`(교체 불가)라
+    # write-once이므로, 뒤이어 도는 Codex가 로컬 `metrics.json`을 고치더라도 게시된
+    # 숫자는 그대로다.
     published = publish_results(
         results_root,
         collect_publishable_files(
@@ -462,6 +591,20 @@ def _measure_and_publish_if_enabled(
         len(published),
         published[_METRICS_FILENAME].uri,
     )
+    report_path = _write_report_if_enabled(
+        workspace,
+        metrics_path=metrics_path,
+        issue_body=issue_body,
+        base_dev_sha=base_dev_sha,
+        candidate_sha=candidate_sha,
+    )
+    if report_path is not None:
+        _publish_report(
+            results_root,
+            report_path,
+            experiment_id=experiment_id,
+            issue_number=issue_number,
+        )
     return build_metric_snapshot(payload, results_uri=published[_METRICS_FILENAME].uri)
 
 
@@ -490,6 +633,7 @@ def candidate_finalizer_main() -> int:
         seeds=seeds,
         experiment_id=experiment_id,
         issue_number=issue_number,
+        issue_body=state.issue_body,
         base_dev_sha=base_dev_sha,
         candidate_sha=candidate_sha,
     )

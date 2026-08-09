@@ -42,6 +42,7 @@ from agent_orchestration.launcher.repository import (
 )
 from agent_orchestration.executor import phase2
 from agent_orchestration.executor.codex_worker import CodexRunResult, CodexWorkerError
+from agent_orchestration.executor.report import ReportResult
 from agent_orchestration.executor.state import ExecutorWorkspaceState, write_state
 from agent_orchestration.executor.verifier import VerificationResult
 from agent_orchestration.executor.workspace import PreparedWorkspace
@@ -364,17 +365,20 @@ def test_executor_job_has_sealed_eight_container_capability_boundaries() -> None
             "repository/.git",
             True,
         ) in mounts[name]
-    assert (
-        "codex-home",
-        "/var/lib/codex/auth.json",
-        "auth.json",
-        True,
-    ) in mounts["codex-worker"]
+    # Codex는 두 번 돈다 — codex-worker가 코드를 고치고, candidate-finalizer가 채점
+    # 결과로 `report.md`를 쓴다(#639). 인증 mount는 그 두 곳뿐이어야 한다.
+    for name in ("codex-worker", "candidate-finalizer"):
+        assert (
+            "codex-home",
+            "/var/lib/codex/auth.json",
+            "auth.json",
+            True,
+        ) in mounts[name]
     assert {
         name
         for name, container_mounts in mounts.items()
         if any(volume == "codex-home" for volume, *_rest in container_mounts)
-    } == {"codex-worker"}
+    } == {"codex-worker", "candidate-finalizer"}
     codex_volume = next(volume for volume in pod.volumes if volume.name == "codex-home")
     assert codex_volume.persistent_volume_claim is None
     assert codex_volume.secret.secret_name == "codex-auth"
@@ -1032,6 +1036,12 @@ def test_finalizer_warns_instead_of_publishing_when_root_is_unset(
     monkeypatch.setattr(
         phase2, "publish_results", lambda *a, **k: published.append(a) or {}
     )
+    # 게시하지 않는 배포에서 쓴 리포트는 Pod과 함께 사라진다 — Codex를 태울 자리가 아니다.
+    monkeypatch.setattr(
+        phase2,
+        "write_experiment_report",
+        lambda _config: pytest.fail("게시하지 않는 배포에서 Codex를 실행해서는 안 된다"),
+    )
     reported = _capture_result_reports(monkeypatch)
 
     with caplog.at_level(logging.WARNING):
@@ -1084,3 +1094,125 @@ def test_finalizer_reports_the_published_snapshot_to_the_experiment_api(
     assert snapshot["split_matches"] is True
     # 전문의 위치가 요약에 실려야 워크벤치에서 seed별 숫자로 내려갈 수 있다.
     assert snapshot["results_uri"] == "gs://results/619/metrics.json"
+
+
+def _measuring_finalizer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """채점까지 도달한 finalizer와 게시 루트를 갖춘 workspace를 만든다."""
+    repository = _finalizer_ready(monkeypatch, tmp_path)
+    monkeypatch.setenv("ORCH_TRAINING_DATASET_URI", f"gs://b/by-hash/{'d' * 64}/")
+    monkeypatch.setenv("ORCH_TRAINING_TIMEOUT_SEC", "600")
+    monkeypatch.setenv("ORCH_EXPERIMENT_RESULTS_ROOT", "gs://results")
+    (tmp_path / "workspace" / "training-output").mkdir()
+    monkeypatch.setattr(
+        phase2, "_run_training_if_enabled", lambda stage, workspace: (42, 43)
+    )
+    monkeypatch.setattr(
+        phase2, "build_experiment_metrics", lambda *a, **k: _metrics_payload()
+    )
+    return repository
+
+
+def _capture_published(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[dict[str, Path]]:
+    """게시를 실제로 보내지 않고 올라간 파일 목록만 관찰한다."""
+    published: list[dict[str, Path]] = []
+
+    def _fake_publish(root, files, **_kwargs):
+        published.append(dict(files))
+        return {
+            name: PublishedObject(uri=f"{root}/{name}", created=True) for name in files
+        }
+
+    monkeypatch.setattr(phase2, "publish_results", _fake_publish)
+    return published
+
+
+def test_finalizer_publishes_the_numbers_first_and_the_report_after(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """리포트는 실험의 최종 산출물이지만 **숫자보다 뒤에 온다.**
+
+    한 번에 올리면 Codex 실행 시간만큼 숫자를 잃을 수 있는 창이 열린다 — 그 사이
+    container가 죽으면 push와 `RUNNING → EVALUATING`은 이미 끝난 뒤라 실험은 ERROR로
+    회수되고 측정한 숫자는 어디에도 남지 않는다.
+    """
+    repository = _measuring_finalizer(monkeypatch, tmp_path)
+    published = _capture_published(monkeypatch)
+    _capture_result_reports(monkeypatch)
+    observed: list[object] = []
+
+    def _fake_report(config):
+        # 이 시점에는 숫자가 이미 게시돼 있어야 한다.
+        assert published and "metrics.json" in published[0]
+        observed.append(config)
+        report_path = config.metrics_path.parent / "report.md"
+        report_path.write_text("## 가설\n\n서술\n", encoding="utf-8")
+        return ReportResult(
+            path=report_path,
+            missing_sections=(),
+            codex=CodexRunResult(exit_code=0, duration_ms=1),
+        )
+
+    monkeypatch.setattr(phase2, "write_experiment_report", _fake_report)
+
+    assert phase2.candidate_finalizer_main() == 0
+
+    assert len(observed) == 1
+    # 리포트는 가설·코드 변경·숫자 셋을 모두 보고 써야 한다.
+    assert observed[0].repository == repository
+    assert observed[0].issue_body == _BODY
+    assert observed[0].base_dev_sha == "a" * 40
+    assert observed[0].candidate_sha == "c" * 40
+    assert observed[0].metrics_path.name == "metrics.json"
+    assert len(published) == 2
+    assert "report.md" not in published[0]
+    assert set(published[1]) == {"report.md"}
+
+
+def test_report_failure_does_not_take_the_measured_numbers_down_with_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """리포트가 없다고 숫자까지 잃으면 손해다 — 게시와 API 보고는 그대로 일어난다."""
+    _measuring_finalizer(monkeypatch, tmp_path)
+    published = _capture_published(monkeypatch)
+    reported = _capture_result_reports(monkeypatch)
+    failure = CodexWorkerError("codex_timeout")
+    failure.stderr = "report-diagnostic-tail"
+
+    def _fail(_config):
+        raise failure
+
+    monkeypatch.setattr(phase2, "write_experiment_report", _fail)
+
+    with caplog.at_level(logging.INFO):
+        assert phase2.candidate_finalizer_main() == 0
+
+    assert "metrics.json" in published[0]
+    assert not any("report.md" in files for files in published)
+    assert len(reported) == 1
+    assert reported[0]["metric_snapshot"]["results_uri"] == "gs://results/metrics.json"
+    # 실패 사유와 Codex 원문 tail이 둘 다 남아야 다음 실행 전에 원인을 안다(#612).
+    assert "experiment report failed reason=codex_timeout" in caplog.text
+    assert "report-diagnostic-tail" in caplog.text
+
+
+def test_report_is_skipped_with_a_reason_when_codex_home_is_unset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """리포트를 켜지 않은 배포와 Codex가 실패한 배포는 구분돼야 한다."""
+    _measuring_finalizer(monkeypatch, tmp_path)
+    monkeypatch.delenv("ORCH_CODEX_HOME", raising=False)
+    published = _capture_published(monkeypatch)
+    _capture_result_reports(monkeypatch)
+    monkeypatch.setattr(
+        phase2,
+        "write_experiment_report",
+        lambda _config: pytest.fail("Codex를 실행해서는 안 된다"),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        assert phase2.candidate_finalizer_main() == 0
+
+    assert "report.md" not in published[0]
+    assert "codex_home_unset" in caplog.text

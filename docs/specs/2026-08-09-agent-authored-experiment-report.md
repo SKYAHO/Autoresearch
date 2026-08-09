@@ -186,8 +186,16 @@ paired t-test를 가장 깨끗하게 통과한다.
 먼저 죽어 그 뒤 행동을 보지 못했기 때문이다.
 
 ②가 clone 직후 Codex 실행 **전에** `AGENTS.md`를 executor 전용 지침으로 교체한다.
-그 시점의 워크스페이스가 검증 baseline이므로 verifier가 Codex의 변경으로 오인하지
-않는다.
+
+> **정정 (2026-08-09, #639).** "그 시점의 워크스페이스가 검증 baseline이므로 verifier가
+> Codex의 변경으로 오인하지 않는다"는 **사실이 아니다.** verifier의 baseline은 그 시점의
+> 워크스페이스가 아니라 봉인 커밋(`base_dev_sha`)이다 — `git status --porcelain`과
+> `ls-files --others`로 변경을 수집하므로(`verifier._collect_changes`), 교체된
+> `AGENTS.md`는 수정 파일로 잡혀 그대로 commit·push된다.
+>
+> → **교체는 Codex 실행 직전, 복원은 `finally`로 한다**
+> (`codex_worker._harness_instructions`). 복원 실패는 하네스 파일을 저장소에 남기는 것과
+> 같은 결과이므로 fail-closed로 끊는다.
 
 **`AGENTS.md`는 저장소 루트라 현행 경로 정책에서 이미 허용 prefix에 없다** —
 `src/` · `autoresearch/` · `tests/` · `tools/` · (조건부) `feature_repo/` 밖이므로
@@ -404,6 +412,54 @@ RBAC는 해당 Secret 하나에 `patch`만 준다. 착수 전에 모드를 풀�
 [#636](https://github.com/SKYAHO/Autoresearch/issues/636). `training._run`·
 `measurement._run`이 subprocess 출력을 잡아둔 뒤 버려, 사유 코드만 남고 본문이 사라진다.
 6·7 모두 이 때문에 진단 비용을 치렀다(#633은 로컬 재현 20분).
+
+## MVP 구현에서 달라진 것 (2026-08-09, #639)
+
+리포트를 **컨테이너 재구성보다 먼저** 넣기로 하면서(계획 순서 변경) 결정 3~5의 일부가
+현행 8-container 구조에 맞게 달라졌다. 결정 자체를 뒤집은 것은 없고 착수 시점만 옮겼다.
+
+| 계약 | MVP 구현 | 이유 |
+|---|---|---|
+| Codex #2가 ② worker 안에서 `resume`으로 세션을 잇는다(결정 4) | `candidate-finalizer` 안에서 **새 호출**로 돈다. 입력은 `metrics.json` + candidate diff | `report.md`는 git 커밋 대상이 아니라 GCS 게시 산출물이라(결정 5) push 뒤에 와도 된다. 세션 유지는 토큰 절약 최적화이지 기능이 아니다 |
+| 산출물 경로 `/var/run/result/`(결정 5) | `<workspace>/result/` — clone 밖, `metrics.json`과 같은 자리 | 게시가 같은 container에서 일어나 volume 핸드오프가 필요 없다. Stage 1의 `metrics.json` 경로를 그대로 쓴다 |
+| ② worker에는 credential이 없다(결정 3) | Codex #2가 도는 `candidate-finalizer`에는 **push token·API token이 함께 있다** | 결정 3의 "미결" 블록이 이미 지적한 모순의 같은 얼굴이다. 코드로 막지 않고 하네스 지침이 담당한다 — 컨테이너를 갈라 없애는 것은 Stage 2의 몫이다 |
+| `report.md` 형식 검사 실패 시 되돌려 재시도(결정 4) | 빠진 절을 **로그로만** 남기고 리포트는 게시한다 | 형식이 어긋난 리포트가 리포트 없음보다 낫다. 재시도는 Codex 한 번을 더 태우고, 절 이름 하나 때문에 그럴 값이 없다 |
+| 게시는 ④에서 **한 번에** 수행한다(결정 5) | **두 번에 나눈다** — 채점 직후 `metrics.json`·학습 산출물, Codex #2 뒤 `report.md` | 아래 참조 |
+
+**Codex #2 실패는 어떤 경로로도 위로 올리지 않는다.** 리포트가 없다고 `metrics.json`
+게시와 API 보고까지 잃으면 측정한 숫자마저 사라진다. 리포트는 최종 산출물이지만 숫자보다
+뒤에 오고, 둘 중 하나만 남길 수 있다면 숫자다.
+
+**그래서 게시도 숫자가 먼저다.** 예외를 잡는 것만으로는 부족하다 — Codex #2는 최대
+`ORCH_CODEX_TIMEOUT_SEC`(6000초) 동안 돌고, 그 사이 `activeDeadlineSeconds`나 OOM으로
+container가 죽으면 잡을 예외 자체가 없다. 그 시점에는 push와 `RUNNING → EVALUATING`이
+이미 끝났으므로 실험은 `reconcile_failed_jobs`가 ERROR로 회수하고, 측정한 숫자는
+emptyDir과 함께 사라진다. 채점 직후에 게시하면 이 창이 닫힌다.
+
+부수 효과로 **결정 4의 "`metrics.json` 무결성" 문제도 함께 닫힌다.** 게시된 사본은
+`objectCreator`(교체 불가)라 write-once이므로, 같은 디렉터리에서 도는 Codex #2가 로컬
+파일을 고치더라도 게시된 숫자와 API에 보고된 요약은 그대로다. 코드 레벨 봉인을 새로
+얹은 것이 아니라 **순서만 바꾼 결과**다.
+
+### 하네스 지침이 닿지 않는 곳 (2026-08-09 리뷰에서 드러남)
+
+"Codex의 자격 증명 접근 금지는 하네스 지침이 담당한다"는 서술은 **Codex #1에만**
+적용됐다. 하네스는 clone 루트 `AGENTS.md`로 심기는데 Codex #2는 clone 밖
+(`<workspace>/result/`)에서 돌아 그 파일을 한 줄도 보지 못한다. 그런데 자격 증명이
+실제로 마운트된 container는 Codex #2가 도는 `candidate-finalizer`다.
+
+두 가지로 메웠다.
+
+1. **리포트 지시문에 credential 규칙을 넣는다**(`build_report_prompt`) — 지침이 닿지
+   않는 호출에는 지시문이 지침을 대신한다.
+2. **산출물이 regular file인지 코드로 확인한다.** 이것만은 지시에 맡기지 않는다 —
+   `report.md`를 토큰 파일을 가리키는 symlink로 만들면 `read_text`·`is_file()`·
+   `upload_from_filename`이 모두 링크를 따라가 토큰이 그대로 GCS에 올라간다. 같은 이유로
+   하네스 파일 교체·복원도 링크를 지우고 `O_CREAT | O_EXCL`로만 쓴다 — 실행 전 검사만으로는
+   실행 도중 심긴 링크를 막지 못하고, 복원이 그 링크 대상을 덮어쓴다.
+
+경계 판단: **에이전트의 판단에 맡길 수 있는 것은 지시문으로, 파일 시스템이 조용히
+따라가 버리는 것은 코드로 막는다.**
 
 ## 검증
 

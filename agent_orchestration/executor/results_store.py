@@ -1,9 +1,9 @@
 """실험 산출물을 Pod 밖 GCS 실험별 경로에 남기는 경계.
 
-[파이프라인] `measurement.py`가 지표를 조립한 뒤부터, 사람과 리뷰 에이전트가 결과를
-읽기까지의 구간을 담당한다. Pod의 `/workspace`는 emptyDir이라 TTL 후 통째로 사라지므로,
-여기서 내보내지 않으면 **측정한 것이 아무것도 남지 않는다** — 실험 #619가 완주하고도
-`metric_summary=null`이었던 이유다.
+[파이프라인] `measurement.py`가 지표를 조립하고 `report.py`가 에이전트의 리포트를 받은
+뒤부터, 사람과 리뷰 에이전트가 결과를 읽기까지의 구간을 담당한다. Pod의 `/workspace`는
+emptyDir이라 TTL 후 통째로 사라지므로, 여기서 내보내지 않으면 **측정한 것도 서술한 것도
+아무것도 남지 않는다** — 실험 #619가 완주하고도 `metric_summary=null`이었던 이유다.
 
 [기능] `gs://<root>/experiments/<issue>/<experiment_id>/` 아래로 파일을 write-once
 업로드하고 게시된 좌표를 돌려준다.
@@ -150,11 +150,16 @@ def collect_publishable_files(
     metrics_path: Path,
     training_output_root: Path | None = None,
 ) -> dict[str, Path]:
-    """게시할 파일 목록을 이름 규칙과 함께 모은다.
+    """측정 산출물의 게시 목록을 이름 규칙과 함께 모은다.
 
     `metrics.json`은 판정 입력이라 **반드시** 싣는다. 학습 산출물은 재현·재측정을
     위해 함께 싣되, 없으면 조용히 건너뛴다 — 학습을 켜지 않은 배포에서도 지표 게시
     경로가 끊기지 않아야 한다.
+
+    `report.md`는 여기 없다. **측정 산출물이 먼저 확정되고 그 뒤에 에이전트가 리포트를
+    쓰기 때문이다** — 리포트를 기다렸다가 함께 올리면 Codex 실행 시간(최대
+    `ORCH_CODEX_TIMEOUT_SEC`)만큼 숫자를 잃을 수 있는 창이 열린다. 호출부가 이 게시가
+    끝난 뒤 리포트를 별도로 올린다(`phase2._publish_report`).
     """
     if not metrics_path.is_file():
         raise ResultsStoreError("metrics_missing")

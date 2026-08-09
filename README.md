@@ -116,11 +116,15 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 | token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch/clone/push token-minter에만 보이는 private key mount 경로 |
 | token-minter/각 consumer | `ORCH_GITHUB_TOKEN_FILE` | purpose별 memory volume의 mode 0400 installation token 파일 경로 (`/var/run/{branch,clone,push}-token/token`) |
 | candidate-finalizer | `ORCH_EXECUTOR_API_URL`, `ORCH_EXECUTOR_API_TOKEN_FILE` | internal Candidate API URL과 `ORCH_EXECUTOR_API_TOKEN` Secret을 mount한 `/var/run/executor-api-token/token` 경로 |
-| codex-worker | `ORCH_CODEX_HOME`, `ORCH_CODEX_TIMEOUT_SEC` | read-only Codex auth source와 Job 전체 상한보다 작은 Codex 실행 상한 (`1800`초) |
+| codex-worker/candidate-finalizer | `ORCH_CODEX_HOME`, `ORCH_CODEX_TIMEOUT_SEC` | read-only Codex auth source와 Job 전체 상한보다 작은 Codex 실행 상한 (`1800`초). Codex는 두 번 돕니다 — 코드 수정(5)과 `report.md` 작성(8) |
 
 동일 executor digest는 아래 8개 container가 순서대로 사용합니다. GitHub App private key는
-1·3·7의 token-minter에만, executor 전용 Codex 인증 Secret의 `CODEX_HOME`은 5에만, `ORCH_EXECUTOR_API_TOKEN`은
-8에만 mount합니다. 5·6에는 GitHub/API credential volume을 mount하지 않습니다.
+1·3·7의 token-minter에만, executor 전용 Codex 인증 Secret의 `CODEX_HOME`은 5·8에만,
+`ORCH_EXECUTOR_API_TOKEN`은 8에만 mount합니다. 5·6에는 GitHub/API credential volume을
+mount하지 않습니다. **8은 push token·API token과 Codex 인증을 함께 들고 있습니다** —
+`report.md`를 쓰는 Codex가 도는 곳이 결과가 나오는 곳이기 때문이며, Codex의 자격 증명
+접근 금지는 코드가 아니라 하네스 지침이 담당합니다. 컨테이너를 갈라 이 공존을 없애는
+것은 후속 재구성(8 → 4/5)의 몫입니다.
 
 1. `branch-token-minter`: private key → branch token memory volume
 2. `branch-creator`: branch token → 봉인 `base_dev_sha`의 exp ref 관찰/생성
@@ -128,11 +132,31 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 4. `workspace-preparer`: clone token + issue 번호·branch·기준 SHA → raw issue 조회·workspace/state
 5. `codex-worker`: workspace + read-only `.git` + state + read-only auth source `CODEX_HOME` →
    `/tmp` 아래 mode 0700 per-run writable scratch `CODEX_HOME`에 regular `auth.json`만 mode 0400으로
-   복사 → `codex exec --ephemeral`으로 working tree 수정. config·plugin 등 다른 source 파일은
-   복사하지 않음
+   복사 → clone 루트 `AGENTS.md`를 executor 전용 하네스 지침으로 교체 →
+   `codex exec --ephemeral`으로 working tree 수정 → **하네스 파일을 원본으로 복원**.
+   config·plugin 등 다른 source 파일은 복사하지 않음
 6. `candidate-verifier`: workspace + read-only `.git` + state → 고정 Ruff/pytest 검증 결과
 7. `push-token-minter`: private key → push token memory volume
-8. `candidate-finalizer`: workspace + push token + verifier 결과 + API token → candidate commit/push, `candidate_sha` 저장, `RUNNING → EVALUATING`
+8. `candidate-finalizer`: workspace + push token + verifier 결과 + API token + read-only auth
+   source `CODEX_HOME` → candidate commit/push, `candidate_sha` 저장, `RUNNING → EVALUATING`,
+   candidate 학습·채점 → **`metrics.json` GCS 게시** → `metrics.json`과 candidate diff로
+   Codex가 `report.md` 작성 → `report.md` 게시 → 지표 요약 보고
+
+하네스 지침 교체는 반드시 되돌립니다. verifier가 `git status`와 `ls-files --others`로 변경
+파일을 수집하므로, 교체한 채로 두면 하네스 파일이 candidate 변경으로 잡혀 commit·push
+됩니다. 저장소 원본 `AGENTS.md`는 사람과 로컬 에이전트를 위한 기여 가이드라 "이슈를 먼저
+발행"·"`docs/specs/`에 계획 작성"처럼 executor가 수행할 수 없는 절차를 요구하고, 그대로
+두면 Codex가 "규칙상 못 하겠다"며 아무것도 하지 않아 실제 실패와 구분되지 않습니다.
+
+**숫자는 리포트보다 먼저 게시합니다.** 한 번에 올리면 Codex 실행 시간(최대
+`ORCH_CODEX_TIMEOUT_SEC`)만큼 숫자를 잃을 수 있는 창이 열립니다 — 그 사이
+`activeDeadlineSeconds`나 OOM으로 container가 죽으면 push와 `RUNNING → EVALUATING`은 이미
+끝난 뒤라 실험은 ERROR로 회수되고 측정한 숫자는 어디에도 남지 않습니다. `report.md`
+작성이 실패해도 게시와 API 보고가 그대로 일어나는 것은 예외 경로만이 아니라 **container가
+죽는 경로에서도** 성립해야 합니다.
+
+버킷 IAM이 `objectCreator`(교체 불가)라 먼저 게시된 `metrics.json`은 뒤이어 도는 Codex가
+로컬 파일을 고치더라도 그대로 남습니다.
 
 executor image에는 Git CLI, uv, `/opt/autoresearch-venv`의 lock 기반 기본+`dev`
 의존성(Feast 제외), Node.js, `@openai/codex@0.146.0`과 `UV_PROJECT_ENVIRONMENT`가
@@ -145,8 +169,8 @@ NetworkPolicy 이름·값은 `Autoresearch-infra` 소유이므로 이 저장소�
 
 - GitHub App private key를 branch/clone/push token-minter에만 mount
 - executor 전용 Codex 인증 Secret의 `auth.json` key를 launcher가 mode 0440의 read-only
-  `subPath` 파일로 codex-worker에만 mount하고, writable `executor-tmp`의 `/tmp`를 per-run
-  scratch에 제공
+  `subPath` 파일로 codex-worker·candidate-finalizer에만 mount하고, writable `executor-tmp`의
+  `/tmp`를 per-run scratch에 제공
 - `ORCH_EXECUTOR_API_TOKEN`을 candidate-finalizer에만 mount
 - workspace/token `emptyDir` size limit과 GitHub·OpenAI·internal API 최소 egress
 - immutable launcher/executor/API digest, non-root/seccomp/capability drop/

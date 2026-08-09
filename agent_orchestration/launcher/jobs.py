@@ -6,6 +6,8 @@ Phase 2 candidate executor Pod를 기동해 exp branch·candidate 보고를 위�
 
 [기능] digest 고정 image로 기존 branch-bootstrap과 8-container executor Job을 조립하고,
 label 기반 active/terminal Job 계산·GET·create 및 409 후 동일 이름 재확인을 제공한다.
+Codex 인증 Secret은 코드 수정을 맡는 `codex-worker`와 리포트 작성을 맡는
+`candidate-finalizer` 두 곳에 read-only `subPath` 파일로만 mount한다.
 
 [비책임] Experiment 선점·생성 확인 시각·실패 회수(`launcher.repository`), Secret 값
 보관과 RBAC/admission/egress(Autoresearch-infra), GitHub token·ref 처리(`executor`)는
@@ -258,25 +260,29 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
         ],
         settings,
     )
+    codex_environment = [
+        _env("ORCH_CODEX_HOME", _CODEX_HOME_DIRECTORY),
+        _env("ORCH_CODEX_TIMEOUT_SEC", str(settings.codex_timeout_sec)),
+    ]
+    codex_auth_mount = V1VolumeMount(
+        name="codex-home",
+        mount_path=f"{_CODEX_HOME_DIRECTORY}/auth.json",
+        sub_path="auth.json",
+        read_only=True,
+    )
     codex_worker = _container(
         "codex-worker",
         ["python", "-m", "agent_orchestration.executor.phase2", "codex-worker"],
         [
             _env("ORCH_EXECUTOR_WORKSPACE", _WORKSPACE_DIRECTORY),
-            _env("ORCH_CODEX_HOME", _CODEX_HOME_DIRECTORY),
-            _env("ORCH_CODEX_TIMEOUT_SEC", str(settings.codex_timeout_sec)),
+            *codex_environment,
         ],
         [
             workspace_mount,
             git_read_only,
             state_read_only,
             temporary_mount,
-            V1VolumeMount(
-                name="codex-home",
-                mount_path=f"{_CODEX_HOME_DIRECTORY}/auth.json",
-                sub_path="auth.json",
-                read_only=True,
-            ),
+            codex_auth_mount,
         ],
         settings,
     )
@@ -310,11 +316,21 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
             *_training_environment(settings),
             # 채점과 게시도 여기서 돈다 — 두 조건의 산출물이 모두 갖춰지는 첫 시점이다.
             *_results_environment(settings),
+            # 리포트를 쓰는 Codex #2도 여기서 돈다. 채점 결과가 나오는 곳이 여기이고,
+            # `report.md`는 git 커밋 대상이 아니라 GCS 게시 산출물이라 push 뒤에 와도
+            # 된다(계약 결정 5).
+            *codex_environment,
         ],
         [
             workspace_mount,
             state_read_only,
             temporary_mount,
+            # **이 container에는 push token과 API token이 함께 mount돼 있다.** Codex #2가
+            # 도는 유일한 container가 그 둘을 들고 있다는 뜻이고, sandbox가
+            # `danger-full-access`라 코드로 막지 않는다 — Codex의 자격 증명 접근 금지는
+            # 하네스 지침이 담당한다(spec 결정 3과 같은 논리). 컨테이너를 갈라 없애는 것은
+            # Stage 2(8 → 4/5 재구성)의 몫이다.
+            codex_auth_mount,
             V1VolumeMount(name="push-token", mount_path=push_token, read_only=True),
             V1VolumeMount(
                 name="verification-result",

@@ -556,3 +556,182 @@ def test_existing_remote_tip_skips_codex_execution(tmp_path: Path) -> None:
     )
 
     assert result == CodexRunResult(exit_code=0, duration_ms=0)
+
+
+def _harness_observing_codex(bin_dir: Path, repository: Path, observed: Path) -> None:
+    """실행 시점의 `AGENTS.md`를 남기고 그 파일을 훼손하는 codex를 만든다."""
+    harness = repository / "AGENTS.md"
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(
+            [
+                "from pathlib import Path",
+                f"harness = Path({str(harness)!r})",
+                f"Path({str(observed)!r}).write_text("
+                "harness.read_text(encoding='utf-8'), encoding='utf-8')",
+                "harness.write_text('에이전트가 덮어썼다\\n', encoding='utf-8')",
+            ]
+        ),
+    )
+
+
+def test_codex_reads_the_executor_harness_and_the_repository_file_is_restored(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, protected_git_mount: None
+) -> None:
+    """실행 중에는 하네스 지침이 보이고, 끝나면 원본이 그대로 남아야 한다.
+
+    verifier는 `git status`와 `ls-files --others`로 변경을 수집하므로, 교체한 채로 두면
+    하네스 파일이 candidate 변경으로 잡혀 commit·push된다.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    run = _run_input(tmp_path, allowed_scope=("feast_definition",))
+    original = "# 저장소 기여 가이드\n\n이슈를 먼저 발행합니다.\n"
+    harness_path = run.repository / "AGENTS.md"
+    harness_path.write_text(original, encoding="utf-8")
+    harness_path.chmod(0o640)
+    observed = tmp_path / "observed-agents.md"
+    _harness_observing_codex(bin_dir, run.repository, observed)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert run_codex(run).exit_code == 0
+
+    seen = observed.read_text(encoding="utf-8")
+    assert "실험 하네스 지침" in seen
+    assert "이슈 발행, 브랜치 생성" in seen
+    assert "RecursionError" in seen
+    assert "`feature_repo/**`" in seen
+    assert harness_path.read_text(encoding="utf-8") == original
+    assert harness_path.stat().st_mode & 0o777 == 0o640
+
+
+def test_harness_file_is_restored_even_when_codex_times_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, protected_git_mount: None
+) -> None:
+    """실패 경로에서 되돌리지 않으면 그 워크스페이스가 그대로 push된다."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    run = _run_input(tmp_path)
+    original = "# 저장소 기여 가이드\n"
+    harness_path = run.repository / "AGENTS.md"
+    harness_path.write_text(original, encoding="utf-8")
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(["import time", "time.sleep(30)"]),
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    with pytest.raises(CodexWorkerError, match="codex_timeout"):
+        run_codex(run)
+
+    assert harness_path.read_text(encoding="utf-8") == original
+
+
+def test_harness_file_is_removed_when_the_checkout_had_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, protected_git_mount: None
+) -> None:
+    """원본이 없던 checkout에 하네스 파일을 새 untracked 변경으로 남기지 않는다."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    run = _run_input(tmp_path)
+    observed = tmp_path / "observed-agents.md"
+    _harness_observing_codex(bin_dir, run.repository, observed)
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert run_codex(run).exit_code == 0
+
+    assert "실험 하네스 지침" in observed.read_text(encoding="utf-8")
+    assert not (run.repository / "AGENTS.md").exists()
+
+
+def test_injected_prompt_runs_in_the_given_directory_without_git_sealing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """리포트 실행은 clone 밖에서 돌기 때문에 `.git` 봉인을 요구하지 않는다."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    argv_path = tmp_path / "argv.json"
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(
+            [
+                "import json",
+                "import os",
+                "from pathlib import Path",
+                "import sys",
+                f"Path({str(argv_path)!r}).write_text("
+                "json.dumps([sys.argv[1:], os.getcwd()]), encoding='utf-8')",
+            ]
+        ),
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+    run = _run_input(tmp_path)
+    working_directory = tmp_path / "workspace" / "result"
+    working_directory.mkdir()
+
+    result = codex_worker.run_codex_execution(
+        codex_worker.CodexExecution(
+            working_directory=working_directory,
+            prompt="write the report",
+            codex_home=run.codex_home,
+            timeout_seconds=3,
+        )
+    )
+
+    argv, cwd = json.loads(argv_path.read_text(encoding="utf-8"))
+    assert result.exit_code == 0
+    assert argv[-3:] == ["-C", str(working_directory), "write the report"]
+    assert Path(cwd).resolve() == working_directory.resolve()
+
+
+def test_injected_prompt_rejects_an_empty_instruction(tmp_path: Path) -> None:
+    """지시문이 비면 Codex는 아무 근거 없이 파일을 쓰게 된다."""
+    run = _run_input(tmp_path)
+
+    with pytest.raises(CodexWorkerError, match="prompt_invalid"):
+        codex_worker.run_codex_execution(
+            codex_worker.CodexExecution(
+                working_directory=run.repository,
+                prompt="",
+                codex_home=run.codex_home,
+                timeout_seconds=3,
+            )
+        )
+
+
+def test_harness_restore_never_writes_through_a_symlink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, protected_git_mount: None
+) -> None:
+    """실행 전 파일 종류 검사만으로는 부족하다 — 복원이 링크 대상을 덮어쓰면 안 된다.
+
+    Codex는 `danger-full-access`로 돌아 실행 도중 `AGENTS.md`를 다른 소스 파일을 가리키는
+    symlink로 바꿔 놓을 수 있다. 그 상태에서 원본을 그대로 write하면 candidate의 소스가
+    Markdown으로 덮여 그대로 commit·push된다.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    run = _run_input(tmp_path)
+    original = "# 저장소 기여 가이드\n"
+    harness_path = run.repository / "AGENTS.md"
+    harness_path.write_text(original, encoding="utf-8")
+    victim = run.repository / "src" / "pipeline" / "evaluate.py"
+    victim.parent.mkdir(parents=True)
+    victim.write_text("SCORE = 1\n", encoding="utf-8")
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(
+            [
+                "from pathlib import Path",
+                f"harness = Path({str(harness_path)!r})",
+                "harness.unlink()",
+                f"harness.symlink_to({str(victim)!r})",
+            ]
+        ),
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert run_codex(run).exit_code == 0
+
+    assert victim.read_text(encoding="utf-8") == "SCORE = 1\n"
+    assert not harness_path.is_symlink()
+    assert harness_path.read_text(encoding="utf-8") == original

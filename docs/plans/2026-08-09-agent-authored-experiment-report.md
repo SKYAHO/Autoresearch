@@ -5,13 +5,34 @@
 > `docs/plans/2026-08-07-experiment-execution-enablement.md`의 Stage 2~6을 대체한다.
 > Stage 0(선행 정리)·Stage 1(데이터·학습 활성화)은 완료·유효하다.
 
+## 실행 순서 (2026-08-09 변경)
+
+**Stage 1 → Stage 3 → Stage 2 → Stage 4로 진행한다.** 아래 문서의 절 번호는 그대로
+두되, 착수 순서만 바꾼다(#639).
+
+Stage 2(컨테이너 8 → 4)는 통합·중복 제거·재시도 정리이고 **MVP의 기능을 늘리지
+않는다.** Stage 2가 앞에 있던 유일한 근거는 "Codex 두 호출이 같은 컨테이너에 있어야
+한다"였는데, `report.md`는 git 커밋 대상이 아니라 GCS 게시 산출물이므로(계약 결정 5)
+Codex #2가 push 뒤 `candidate-finalizer` 안에 들어가면 된다. 컨테이너 재구성이 필요
+없다.
+
+```
+candidate-finalizer 안에서
+  push → candidate 학습 → 채점 → metrics.json
+       → Codex #2: metrics.json + candidate diff로 report.md 작성
+       → GCS 게시 (metrics.json + report.md)
+```
+
+`codex exec resume`으로 세션을 잇는 것도 함께 미룬다 — 토큰 절약 최적화이지 기능이
+아니고, Codex #2는 채점 결과와 diff만으로 무엇을 바꿨고 결과가 어땠는지 알 수 있다.
+
 ## 전역 제약
 
 - **각 Stage 완료 시 다음으로 넘어가기 전에 실험 1건을 끝까지 돌려 회귀를 확인한다.**
 - **한 Stage씩만 켠다.** 여러 층을 동시에 켜면 실패 원인이 겹쳐 규명이 불가능하다.
   2026-08-08에 네 겹이 겹쳐 있던 것을 하나씩 걷어내며 배운 원칙이다.
-- Stage 1이 끝나면 "숫자가 남는가", Stage 2가 끝나면 "통합해도 같은 숫자인가",
-  Stage 3이 끝나면 "에이전트가 리포트를 쓰는가"가 각각 독립적으로 증명되어야 한다.
+- Stage 1이 끝나면 "숫자가 남는가", Stage 3이 끝나면 "에이전트가 리포트를 쓰는가",
+  Stage 2가 끝나면 "통합해도 같은 숫자인가"가 각각 독립적으로 증명되어야 한다.
 
 ## Stage 0 — 선행 (다른 저장소·수동)
 
@@ -147,9 +168,10 @@ brier    0.116992 → 0.129235   +0.012243   ← 악화
   `patch`만 준다. 착수 전에 **모드를 풀면 Codex가 실제로 `auth.json`을 갱신해 쓰는지**
   부터 관측한다
 
-## Stage 2 — 컨테이너 8 → 4
+## Stage 2 — 컨테이너 8 → 4 (**Stage 3 뒤로 미룸**)
 
 **목표: 통합해도 같은 숫자가 나온다.** Stage 1이 있어야 이 회귀를 확인할 수 있다.
+착수는 Stage 3의 `report.md`가 실물로 확인된 뒤다 — 위 "실행 순서" 참조.
 
 - [ ] **착수 전 결정: prepare를 ②에 흡수할지 (4 vs 5 컨테이너).** spec 결정 3의
       credential 지도가 자기모순이다 — ②는 clone 토큰이 필요한데 같은 표가 ②에
@@ -186,18 +208,23 @@ brier    0.116992 → 0.129235   +0.012243   ← 악화
       **현재 전 실험 공백**
 - [ ] pytest·ruff
 
-## Stage 3 — AGENTS.md + Codex 2회 + `report.md`
+## Stage 3 — AGENTS.md + Codex 2회 + `report.md` (**Stage 2보다 먼저**)
 
-**목표: 에이전트가 자기 실험 결과로 리포트를 쓴다.**
+**목표: 에이전트가 자기 실험 결과로 리포트를 쓴다.** 컨테이너 재구성 없이 간다(#639).
 
 ### 3-1. AGENTS.md 교체 (현행 버그 수정)
 
-- [ ] executor 전용 하네스 지침 작성 — 실험 하네스가 무엇인지, 산출물이 무엇인지,
-      `report.md` 형식, **작업 범위(경로)**
-- [ ] ②가 clone 직후 **Codex 실행 전에** 교체. 그 시점 워크스페이스가 검증
-      baseline이므로 verifier가 Codex 변경으로 오인하지 않는다.
-      **`AGENTS.md`는 루트라 기존 경로 정책상 Codex가 못 고친다** — 별도 보호 불필요
-- [ ] `prompt.py`의 허용·금지 경로와 지시문을 이 파일로 이관
+- [x] executor 전용 하네스 지침 작성 — 실험 하네스가 무엇인지, 산출물이 무엇인지,
+      **작업 범위(경로)**, 저장소 기여 가이드가 적용되지 않는 것들.
+      `executor/prompt.py`의 `build_harness_instructions()`가 소유한다
+- [x] **ONNX 재귀 제약을 지침에 명시** — 트리 크기를 키우는 하이퍼파라미터는
+      `convert_lgbm_to_onnx`에서 `RecursionError`로 죽는다(#633 실측, spec 6번).
+      에이전트는 알 방법이 없고 트리 크기 조정은 가장 자연스러운 첫 실험 아이디어다
+- [x] `codex-worker`가 Codex 실행 **직전에** 교체하고 `finally`로 **원본 복원**.
+      verifier가 `git status`·`ls-files --others`로 변경을 수집하므로, 되돌리지 않으면
+      하네스 파일이 candidate 변경으로 잡혀 commit·push된다
+- [ ] `prompt.py`의 허용·금지 경로와 지시문을 이 파일로 **이관** — 지금은 두 곳이 같은
+      목록을 공유(`_allowed_paths`)할 뿐 프롬프트에서 걷어내지는 않았다
 - [ ] **verifier의 정책 강제를 걷어낸다** — 경로 allowlist(`_path_is_allowed`),
       credential 내용 검사(`_content_is_forbidden`), symlink·submodule 거부.
       **관측·핸드오프는 유지**: 변경 파일 목록 · `no_changes` 판정 · staged tree OID ·
@@ -210,26 +237,52 @@ brier    0.116992 → 0.129235   +0.012243   ← 악화
       (연동: `training.py`의 `dependencies_changed`·`sync_dependencies`는 현재
       이 거부 때문에 도달할 수 없는 경로다)
 
+> 위 세 항목은 **Stage 2와 함께** 처리한다. 셋 다 verifier·prompt 계약을 건드리므로
+> `report.md`를 실물로 확인하기 전에 겹칠 이유가 없다(전역 제약: 한 Stage씩만 켠다).
+
 ### 3-2. Codex 2회 호출
 
-- [ ] `--ephemeral` 제거
-- [ ] **두 호출이 같은 `CODEX_HOME`을 공유하도록 변경.** 현행은 호출마다
-      `TemporaryDirectory`를 만들어 세션이 이어지지 않는다
-- [ ] `codex exec resume --last`로 2회차 (0.146.0에 존재 — 확인됨)
-- [ ] `--output-schema <FILE>`로 최종 응답 형태 강제, `-o`로 파일 수신.
-      현행 stdout tail 64 KiB 스크래핑을 대체
-- [ ] `report.md` 형식 검사 → 실패 시 되돌려 재시도(최대 2회)
+- [x] `phase2.candidate_finalizer_main`이 채점 뒤 Codex #2를 호출한다.
+      출력은 `<workspace>/result/report.md` — clone 밖, `metrics.json`과 같은 자리
+- [x] `codex_worker`가 프롬프트를 주입받는 실행 경로(`run_codex_execution`)를 연다.
+      `.git` 봉인과 하네스 교체는 코드 수정 실행에만 붙는다 — 리포트는 clone 밖에서 돈다
+- [x] **Codex #2가 실패해도 게시와 API 보고는 그대로 일어난다.** 리포트가 없다고
+      숫자까지 잃으면 손해다
+- [x] `report.md` 절 구성 확인 → 빠진 절은 **로그로만** 남기고 리포트는 버리지 않는다.
+      형식이 어긋난 리포트가 리포트 없음보다 낫다
+- [ ] `--ephemeral` 제거 + 같은 `CODEX_HOME` 공유 + `codex exec resume --last`.
+      **MVP 범위 밖으로 미룸** — 토큰 절약 최적화이지 기능이 아니다
+- [ ] `--output-schema <FILE>`·`-o`로 최종 응답 수신. 리포트를 파일로 직접 쓰게 했으므로
+      MVP에서는 필요 없다. stdout tail 스크래핑 대체는 후속
 
 ### 3-3. `report.md` 내용 계약
 
-- [ ] 가설 / 무엇을 어떻게 바꿨는지 / before-after 주 지표 / 보조 지표 /
-      seed별 표 / 데이터·분할 provenance / 에이전트의 결론과 근거
+- [x] 가설 / 무엇을 어떻게 바꿨는지 / before-after 주 지표 / 보조 지표 /
+      seed별 표 / 데이터·분할 provenance / 에이전트의 결론과 근거.
+      절 목록의 정본은 `prompt.REPORT_SECTIONS`이고, 프롬프트의 지시와 산출물 확인이
+      같은 목록을 본다
+
+### 3-4. 배선
+
+- [x] launcher가 `candidate-finalizer`에 Codex 인증 Secret·`ORCH_CODEX_HOME`·
+      `ORCH_CODEX_TIMEOUT_SEC`을 준다. `ORCH_CODEX_HOME`이 없으면 리포트를 켜지 않은
+      배포로 읽고 사유를 남긴 뒤 건너뛴다
+- [x] 게시를 **두 번에 나눈다** — 채점 직후 `metrics.json`·학습 산출물,
+      Codex #2 뒤 `report.md`. 한 번에 올리면 Codex 실행 시간만큼 숫자를 잃을 수 있는
+      창이 열린다(container가 죽으면 잡을 예외가 없다)
+- [x] 산출물이 **regular file인지 코드로 확인**한다 — symlink는 게시가 링크 대상을
+      그대로 올린다. 하네스 파일 교체·복원도 링크를 지우고 `O_CREAT | O_EXCL`로만 쓴다
+- [x] 리포트 지시문에 credential 규칙을 넣는다 — 하네스는 clone 루트에 심기므로
+      clone 밖에서 도는 Codex #2에는 닿지 않는다
+- [ ] **NetworkPolicy 확인 불필요** — Codex #2는 같은 Pod 안이라 기존 egress 규칙을
+      그대로 쓴다. infra 변경 없음
 
 ### 검증
 
 - [ ] `report.md`가 GCS에 남고, 그 안의 숫자가 `metrics.json`과 일치
 - [ ] AGENTS.md 충돌로 인한 `no_changes`가 재발하지 않음
-- [ ] pytest·ruff
+- [ ] 하네스 교체가 candidate diff에 나타나지 않는다
+- [x] pytest·ruff
 
 ## Stage 4 — Claude 리뷰어 (Pod 밖)
 
