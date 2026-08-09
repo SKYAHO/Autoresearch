@@ -161,3 +161,56 @@ def test_repository_does_not_keep_legacy_airflow_runtime_surface():
 
     assert not list((REPOSITORY_ROOT / "dags").rglob("*.py"))
     assert all(not (REPOSITORY_ROOT / path).exists() for path in legacy_files)
+
+
+def test_release_workflow_promotes_every_orchestration_image_including_executor():
+    """executor를 빼면 실험을 실제로 실행하는 이미지만 옛 digest로 남는다.
+
+    launcher는 Job을 조립해 던지고 학습·Codex·검증·채점·API 보고는 executor가 한다.
+    자동 승격 로그를 보고 "배포됐다"고 판단하는데 실험은 옛 이미지로 도는 상태가
+    조용히 성립하는 것을 막는다.
+    """
+    workflow = _load_workflow()
+    job = workflow["jobs"]["promote-agent-orchestration-digests"]
+
+    assert set(job["needs"]) == {
+        "publish-agent-orchestration-api-image",
+        "publish-agent-orchestration-executor-image",
+        "publish-agent-orchestration-launcher-image",
+        "publish-agent-orchestration-runner-image",
+        "publish-agent-orchestration-ui-image",
+    }
+
+    promote_step = next(
+        step for step in job["steps"] if "promote-agent-orchestration-digests.rb" in step.get("run", "")
+    )
+    assert promote_step["env"]["EXECUTOR_DIGEST_REF"] == (
+        "${{ needs.publish-agent-orchestration-executor-image.outputs.digest_ref }}"
+    )
+    # 섞인 릴리스를 fail-closed로 막는 검사다. digest만 넘기고 SHA 비교에서 빼면
+    # 다른 커밋에서 나온 executor가 조용히 승격된다.
+    assert '"$API_SOURCE_SHA" != "$EXECUTOR_SOURCE_SHA"' in promote_step["run"]
+
+    checkout = next(
+        step for step in job["steps"] if step.get("uses") == "actions/checkout@v6"
+    )
+    assert checkout["with"]["repository"] == "SKYAHO/Autoresearch-infra"
+    assert checkout["with"]["ref"] == "main"
+
+
+def test_release_workflow_limits_orchestration_promotion_to_approved_manifests():
+    """executor digest는 launcher CronJob 안에 있다 — 허용 경로가 그대로여야 한다."""
+    workflow = _load_workflow()
+    job = workflow["jobs"]["promote-agent-orchestration-digests"]
+
+    scope_step = next(
+        step for step in job["steps"] if step.get("id") == "changed"
+    )
+    assert "deploy/agent-orchestration/launcher-cronjob.yaml" in scope_step["run"]
+
+    summary_step = next(
+        step for step in job["steps"] if "Executor digest" in step.get("run", "")
+    )
+    assert summary_step["env"]["EXECUTOR_DIGEST_REF"] == (
+        "${{ needs.publish-agent-orchestration-executor-image.outputs.digest_ref }}"
+    )

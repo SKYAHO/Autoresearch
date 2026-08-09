@@ -764,6 +764,7 @@ jobs:
     name: Promote Agent Orchestration digests to infra main
     needs:
       - publish-agent-orchestration-api-image
+      - publish-agent-orchestration-executor-image
       - publish-agent-orchestration-ui-image
       - publish-agent-orchestration-launcher-image
       - publish-agent-orchestration-runner-image
@@ -797,6 +798,8 @@ jobs:
         env:
           API_DIGEST_REF: ${{ needs.publish-agent-orchestration-api-image.outputs.digest_ref }}
           API_SOURCE_SHA: ${{ needs.publish-agent-orchestration-api-image.outputs.source_sha }}
+          EXECUTOR_DIGEST_REF: ${{ needs.publish-agent-orchestration-executor-image.outputs.digest_ref }}
+          EXECUTOR_SOURCE_SHA: ${{ needs.publish-agent-orchestration-executor-image.outputs.source_sha }}
           LAUNCHER_DIGEST_REF: ${{ needs.publish-agent-orchestration-launcher-image.outputs.digest_ref }}
           LAUNCHER_SOURCE_SHA: ${{ needs.publish-agent-orchestration-launcher-image.outputs.source_sha }}
           RUNNER_DIGEST_REF: ${{ needs.publish-agent-orchestration-runner-image.outputs.digest_ref }}
@@ -807,7 +810,8 @@ jobs:
         run: |
           if [[ "$API_SOURCE_SHA" != "$UI_SOURCE_SHA" ]] \
             || [[ "$API_SOURCE_SHA" != "$LAUNCHER_SOURCE_SHA" ]] \
-            || [[ "$API_SOURCE_SHA" != "$RUNNER_SOURCE_SHA" ]]; then
+            || [[ "$API_SOURCE_SHA" != "$RUNNER_SOURCE_SHA" ]] \
+            || [[ "$API_SOURCE_SHA" != "$EXECUTOR_SOURCE_SHA" ]]; then
             echo "::error::Agent Orchestration image의 source SHA가 일치하지 않습니다."
             exit 1
           fi
@@ -884,6 +888,7 @@ jobs:
       - name: Write promotion summary
         env:
           API_DIGEST_REF: ${{ needs.publish-agent-orchestration-api-image.outputs.digest_ref }}
+          EXECUTOR_DIGEST_REF: ${{ needs.publish-agent-orchestration-executor-image.outputs.digest_ref }}
           LAUNCHER_DIGEST_REF: ${{ needs.publish-agent-orchestration-launcher-image.outputs.digest_ref }}
           RUNNER_DIGEST_REF: ${{ needs.publish-agent-orchestration-runner-image.outputs.digest_ref }}
           SOURCE_SHA: ${{ needs.publish-agent-orchestration-api-image.outputs.source_sha }}
@@ -896,6 +901,7 @@ jobs:
             echo
             echo "- Source SHA: \`$SOURCE_SHA\`"
             echo "- API digest: \`$API_DIGEST_REF\`"
+            echo "- Executor digest: \`$EXECUTOR_DIGEST_REF\`"
             echo "- Launcher digest: \`$LAUNCHER_DIGEST_REF\`"
             echo "- Runner digest: \`$RUNNER_DIGEST_REF\`"
             echo "- UI digest: \`$UI_DIGEST_REF\`"
