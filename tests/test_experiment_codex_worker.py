@@ -697,3 +697,41 @@ def test_injected_prompt_rejects_an_empty_instruction(tmp_path: Path) -> None:
                 timeout_seconds=3,
             )
         )
+
+
+def test_harness_restore_never_writes_through_a_symlink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, protected_git_mount: None
+) -> None:
+    """실행 전 파일 종류 검사만으로는 부족하다 — 복원이 링크 대상을 덮어쓰면 안 된다.
+
+    Codex는 `danger-full-access`로 돌아 실행 도중 `AGENTS.md`를 다른 소스 파일을 가리키는
+    symlink로 바꿔 놓을 수 있다. 그 상태에서 원본을 그대로 write하면 candidate의 소스가
+    Markdown으로 덮여 그대로 commit·push된다.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    run = _run_input(tmp_path)
+    original = "# 저장소 기여 가이드\n"
+    harness_path = run.repository / "AGENTS.md"
+    harness_path.write_text(original, encoding="utf-8")
+    victim = run.repository / "src" / "pipeline" / "evaluate.py"
+    victim.parent.mkdir(parents=True)
+    victim.write_text("SCORE = 1\n", encoding="utf-8")
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(
+            [
+                "from pathlib import Path",
+                f"harness = Path({str(harness_path)!r})",
+                "harness.unlink()",
+                f"harness.symlink_to({str(victim)!r})",
+            ]
+        ),
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert run_codex(run).exit_code == 0
+
+    assert victim.read_text(encoding="utf-8") == "SCORE = 1\n"
+    assert not harness_path.is_symlink()
+    assert harness_path.read_text(encoding="utf-8") == original

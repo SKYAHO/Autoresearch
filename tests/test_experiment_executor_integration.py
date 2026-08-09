@@ -1128,16 +1128,23 @@ def _capture_published(
     return published
 
 
-def test_finalizer_publishes_the_agent_written_report_with_the_metrics(
+def test_finalizer_publishes_the_numbers_first_and_the_report_after(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """리포트는 실험의 최종 산출물이므로 숫자와 같은 자리에 남아야 한다."""
+    """리포트는 실험의 최종 산출물이지만 **숫자보다 뒤에 온다.**
+
+    한 번에 올리면 Codex 실행 시간만큼 숫자를 잃을 수 있는 창이 열린다 — 그 사이
+    container가 죽으면 push와 `RUNNING → EVALUATING`은 이미 끝난 뒤라 실험은 ERROR로
+    회수되고 측정한 숫자는 어디에도 남지 않는다.
+    """
     repository = _measuring_finalizer(monkeypatch, tmp_path)
     published = _capture_published(monkeypatch)
     _capture_result_reports(monkeypatch)
     observed: list[object] = []
 
     def _fake_report(config):
+        # 이 시점에는 숫자가 이미 게시돼 있어야 한다.
+        assert published and "metrics.json" in published[0]
         observed.append(config)
         report_path = config.metrics_path.parent / "report.md"
         report_path.write_text("## 가설\n\n서술\n", encoding="utf-8")
@@ -1158,7 +1165,9 @@ def test_finalizer_publishes_the_agent_written_report_with_the_metrics(
     assert observed[0].base_dev_sha == "a" * 40
     assert observed[0].candidate_sha == "c" * 40
     assert observed[0].metrics_path.name == "metrics.json"
-    assert set(published[0]) >= {"metrics.json", "report.md"}
+    assert len(published) == 2
+    assert "report.md" not in published[0]
+    assert set(published[1]) == {"report.md"}
 
 
 def test_report_failure_does_not_take_the_measured_numbers_down_with_it(
@@ -1180,7 +1189,7 @@ def test_report_failure_does_not_take_the_measured_numbers_down_with_it(
         assert phase2.candidate_finalizer_main() == 0
 
     assert "metrics.json" in published[0]
-    assert "report.md" not in published[0]
+    assert not any("report.md" in files for files in published)
     assert len(reported) == 1
     assert reported[0]["metric_snapshot"]["results_uri"] == "gs://results/metrics.json"
     # 실패 사유와 Codex 원문 tail이 둘 다 남아야 다음 실행 전에 원인을 안다(#612).

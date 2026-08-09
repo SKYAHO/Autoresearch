@@ -53,6 +53,8 @@ _TERMINATION_GRACE_SECONDS = 5.0
 _PIPE_RING_BUFFER_BYTES = 64 * 1024
 _FIXED_UV_PROJECT_ENVIRONMENT = "/opt/autoresearch-venv"
 _CODEX_AUTH_FILENAME = "auth.json"
+# clone에 `AGENTS.md`가 없던 경우 하네스 파일을 만들 mode. Codex가 읽기만 하면 된다.
+_HARNESS_DEFAULT_MODE = 0o644
 # 실험 간 비교 가능성을 위해 모델과 추론 강도를 argv로 고정한다(#612). Codex CLI는
 # `--model`에 임의 문자열을 받아 런타임에서야 실패하므로, 슬러그를 바꿀 때는
 # `codex doctor` 또는 실제 Job 로그로 수용 여부를 확인해야 한다.
@@ -115,10 +117,15 @@ class CodexRunResult:
 
     `stdout`·`stderr`는 각각 `_PIPE_RING_BUFFER_BYTES` 상한의 **최근 구간**이며 전체
     출력이 아니다. 이 저장소는 외부 문자열을 로그로 내보내지 않는 것을 원칙으로 하지만
-    (`phase2._safe_failure_reason`), codex-worker는 여기서 예외를 둔다 — Codex가 실패를
-    exit 0으로 보고하는 구조라 종료 코드만으로는 진단이 불가능하다(#612). 이 container에는
-    token이 마운트되지 않고 환경 allowlist에도 secret이 없어 노출 범위는 저장소 소스에
-    한정된다.
+    (`phase2._safe_failure_reason`), Codex 실행은 여기서 예외를 둔다 — Codex가 실패를
+    exit 0으로 보고하는 구조라 종료 코드만으로는 진단이 불가능하다(#612).
+
+    **노출 범위는 호출 지점에 따라 다르다.** codex-worker container에는 token이
+    마운트되지 않고 환경 allowlist에도 secret이 없어 저장소 소스에 한정된다. 반면
+    리포트 작성이 도는 candidate-finalizer에는 push token과 API token이 파일로
+    마운트돼 있어, Codex가 그것을 출력하면 이 tail에 실린다. 환경 변수로는 넘어가지
+    않지만(`_temporary_environment`) 파일은 읽을 수 있고, 막는 것은 코드가 아니라
+    지시문이다(`prompt.build_report_prompt`의 credential 규칙).
     """
 
     exit_code: int
@@ -250,6 +257,30 @@ def _validate_execution(execution: CodexExecution) -> None:
         raise CodexWorkerError("timeout_invalid")
 
 
+def _replace_regular_file(path: Path, content: bytes, mode: int) -> None:
+    """경로에 있던 것을 지우고 새 regular file로만 쓴다.
+
+    truncate 후 write가 아니라 unlink 후 `O_CREAT | O_EXCL`인 이유는 **symlink를 절대
+    따라가지 않기 위해서다.** Codex는 `danger-full-access`로 돌아 실행 중 이 경로를
+    다른 파일을 가리키는 symlink로 바꿔 놓을 수 있고, 그때 `write_bytes`는 링크 대상을
+    덮어쓴다. 링크 자체를 먼저 지우면 그 경로가 사라지고, `O_EXCL`은 그 사이에 다시
+    만들어진 경우까지 fail-closed로 끊는다.
+    """
+    path.unlink(missing_ok=True)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+    with os.fdopen(descriptor, "wb") as handle:
+        os.fchmod(handle.fileno(), mode)
+        handle.write(content)
+
+
+def _restore_regular_file(path: Path, original: bytes | None, mode: int) -> None:
+    """원본을 그대로 되돌리거나, 원본이 없었으면 경로를 비운다."""
+    if original is None:
+        path.unlink(missing_ok=True)
+        return
+    _replace_regular_file(path, original, mode)
+
+
 @contextmanager
 def _harness_instructions(repository: Path, content: str) -> Iterator[None]:
     """Codex 실행 동안만 clone의 `AGENTS.md`를 executor 전용 하네스 지침으로 바꾼다.
@@ -264,26 +295,34 @@ def _harness_instructions(repository: Path, content: str) -> Iterator[None]:
     변경으로 잡혀 commit·push된다. 복원 실패는 그 사고와 같은 결과이므로 실행이 성공했든
     아니든 fail-closed로 끊는다 — 진행 중이던 예외를 덮더라도 저장소에 하네스 파일을
     남기는 것보다 낫다.
+
+    교체·복원 모두 `_replace_regular_file`을 쓴다. 실행 **전** 파일 종류 검사만으로는
+    부족하기 때문이다 — Codex가 실행 도중 이 경로를 다른 파일을 가리키는 symlink로
+    바꾸면, 뒤이은 복원이 그 링크 대상을 원본 `AGENTS.md` 내용으로 덮어쓴다.
     """
     path = repository / HARNESS_FILENAME
-    if path.is_symlink() or (path.exists() and not path.is_file()):
-        raise CodexWorkerError("harness_path_invalid")
     try:
-        original = path.read_bytes() if path.is_file() else None
-        mode = stat.S_IMODE(path.lstat().st_mode) if original is not None else None
-        path.write_text(content, encoding="utf-8")
+        status: os.stat_result | None = path.lstat()
+    except FileNotFoundError:
+        status = None
     except OSError as error:
+        raise CodexWorkerError("harness_path_invalid") from error
+    if status is not None and not stat.S_ISREG(status.st_mode):
+        raise CodexWorkerError("harness_path_invalid")
+    original = None if status is None else path.read_bytes()
+    mode = _HARNESS_DEFAULT_MODE if status is None else stat.S_IMODE(status.st_mode)
+    try:
+        _replace_regular_file(path, content.encode("utf-8"), mode)
+    except OSError as error:
+        # 교체 도중 실패하면 원본이 이미 사라진 뒤일 수 있다. 되돌릴 수 있으면 되돌리고,
+        # 그것마저 실패하면 아래 `harness_install_failed`가 stage를 끊는다.
+        _restore_regular_file(path, original, mode)
         raise CodexWorkerError("harness_install_failed") from error
     try:
         yield
     finally:
         try:
-            if original is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.write_bytes(original)
-                if mode is not None:
-                    path.chmod(mode)
+            _restore_regular_file(path, original, mode)
         except OSError as error:
             raise CodexWorkerError("harness_restore_failed") from error
 

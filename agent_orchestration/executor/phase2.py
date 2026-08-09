@@ -45,7 +45,11 @@ from agent_orchestration.executor.measurement import (
     build_metric_snapshot,
     write_experiment_metrics,
 )
-from agent_orchestration.executor.report import ReportInput, write_experiment_report
+from agent_orchestration.executor.report import (
+    REPORT_FILENAME,
+    ReportInput,
+    write_experiment_report,
+)
 from agent_orchestration.executor.results_store import (
     collect_publishable_files,
     publish_results,
@@ -440,8 +444,11 @@ def _write_report_if_enabled(
         result.codex.stdout, result.codex.stderr, stage="experiment-report"
     )
     if result.path is None:
+        # `report_not_a_regular_file`은 Codex가 symlink를 남겼다는 뜻이다. 게시하면
+        # 링크 대상이 그대로 올라가므로 버렸다 — 사유가 로그에 남아야 구분된다.
         _LOGGER.error(
-            "experiment report failed reason=report_missing exit_code=%d",
+            "experiment report failed reason=%s exit_code=%d",
+            result.reason or "report_missing",
             result.codex.exit_code,
         )
         return None
@@ -458,6 +465,38 @@ def _write_report_if_enabled(
         "experiment report written sections_missing=%d", len(result.missing_sections)
     )
     return result.path
+
+
+def _publish_report(
+    results_root: str,
+    report_path: Path,
+    *,
+    experiment_id: uuid.UUID,
+    issue_number: int,
+) -> None:
+    """리포트를 지표와 같은 실험 경로에 올린다.
+
+    지표 게시와 **분리한 이유**는 순서 때문이다. 숫자를 먼저 확정하고, 리포트는 그 뒤에
+    쓰이고 그 뒤에 올라간다. 여기서 실패해도 위로 올리지 않는다 — 이 시점에는 지표가
+    이미 게시됐고, 남은 API 보고까지 막으면 워크벤치가 다시 빈다.
+    """
+    try:
+        published = publish_results(
+            results_root,
+            {REPORT_FILENAME: report_path},
+            issue_number=issue_number,
+            experiment_id=str(experiment_id),
+        )
+    except Exception as error:  # noqa: BLE001 - 리포트 게시 실패가 API 보고를 막으면 안 된다
+        _LOGGER.error(
+            "experiment report was not published error_type=%s reason=%s",
+            type(error).__name__,
+            _safe_failure_reason(error),
+        )
+        return
+    _LOGGER.info(
+        "experiment report published uri=%s", published[REPORT_FILENAME].uri
+    )
 
 
 def _measure_and_publish_if_enabled(
@@ -519,22 +558,20 @@ def _measure_and_publish_if_enabled(
             issue_number,
         )
         return build_metric_snapshot(payload, results_uri=None)
-    # 리포트는 게시 **앞에** 온다 — `metrics.json`과 한 번에 올려야 두 파일이 서로를
-    # 가리키는 한 벌로 남는다. 게시하지 않는 배포에서 Codex를 태우지 않으려고 위
-    # `results_root` 확인 뒤에 둔다 — 쓴 리포트가 Pod과 함께 사라질 자리다.
-    # 실패해도 아래 게시와 API 보고는 그대로 일어난다.
-    report_path = _write_report_if_enabled(
-        workspace,
-        metrics_path=metrics_path,
-        issue_body=issue_body,
-        base_dev_sha=base_dev_sha,
-        candidate_sha=candidate_sha,
-    )
+    # **측정 산출물을 먼저 확정한다.** 리포트를 기다렸다가 함께 올리면 Codex 실행
+    # 시간(최대 `ORCH_CODEX_TIMEOUT_SEC`)만큼 숫자를 잃을 수 있는 창이 열린다 —
+    # 그 사이 `activeDeadlineSeconds`나 OOM으로 container가 죽으면 push와
+    # `RUNNING → EVALUATING`은 이미 끝난 뒤라 실험은 ERROR로 회수되고 측정한 숫자는
+    # 어디에도 남지 않는다. 예외 경로만이 아니라 **container가 죽는 경로에서도**
+    # "리포트 실패로 숫자를 잃지 않는다"가 성립해야 한다.
+    #
+    # 부수 효과 하나가 더 있다. 게시된 사본은 버킷 IAM이 `objectCreator`(교체 불가)라
+    # write-once이므로, 뒤이어 도는 Codex가 로컬 `metrics.json`을 고치더라도 게시된
+    # 숫자는 그대로다.
     published = publish_results(
         results_root,
         collect_publishable_files(
             metrics_path=metrics_path,
-            report_path=report_path,
             training_output_root=workspace_root / _TRAINING_OUTPUT_DIRNAME,
         ),
         issue_number=issue_number,
@@ -554,6 +591,20 @@ def _measure_and_publish_if_enabled(
         len(published),
         published[_METRICS_FILENAME].uri,
     )
+    report_path = _write_report_if_enabled(
+        workspace,
+        metrics_path=metrics_path,
+        issue_body=issue_body,
+        base_dev_sha=base_dev_sha,
+        candidate_sha=candidate_sha,
+    )
+    if report_path is not None:
+        _publish_report(
+            results_root,
+            report_path,
+            experiment_id=experiment_id,
+            issue_number=issue_number,
+        )
     return build_metric_snapshot(payload, results_uri=published[_METRICS_FILENAME].uri)
 
 

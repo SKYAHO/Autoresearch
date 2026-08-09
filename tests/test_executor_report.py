@@ -307,3 +307,38 @@ def test_missing_report_sections_lists_only_what_the_contract_asked_for() -> Non
     """검사 대상과 프롬프트가 요구한 절이 같은 목록에서 나와야 한다."""
     assert missing_report_sections(_report_body()) == ()
     assert missing_report_sections("## 가설\n") == REPORT_SECTIONS[1:]
+
+
+def test_a_symlink_named_report_is_not_published(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`report.md`가 symlink면 게시가 링크 대상을 그대로 올린다.
+
+    Codex는 `danger-full-access`로 돌고 이 container에는 push token과 API token이
+    mount돼 있다. `read_text`도 `publish_results`의 `is_file()`도 `upload_from_filename`도
+    모두 symlink를 따라가므로, 게시 전에 regular file인지부터 확인해야 한다.
+    """
+    config, result_directory = _input(tmp_path)
+    secret = tmp_path / "push-token"
+    secret.write_text("ghs-installation-token\n", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(
+            [
+                "import os",
+                "from pathlib import Path",
+                f"(Path(os.getcwd()) / 'report.md').symlink_to({str(secret)!r})",
+            ]
+        ),
+    )
+    # git은 실제로 실행돼야 하므로 기존 PATH 앞에 fake codex만 끼운다.
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    result = write_experiment_report(config)
+
+    assert result.path is None
+    assert result.reason == "report_not_a_regular_file"
+    # 링크는 남겨 두더라도 게시 대상이 아니어야 한다는 것이 계약이다.
+    assert (result_directory / REPORT_FILENAME).is_symlink()

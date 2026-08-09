@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import stat
 import subprocess
 from typing import Final
 
@@ -71,14 +72,16 @@ class ReportInput:
 class ReportResult:
     """리포트 작성 실행의 결과와 그 산출물 관찰치다.
 
-    `path`가 `None`이면 Codex가 파일을 남기지 않은 것이다. 그것을 예외로 올리지 않는
-    이유는 호출부가 **어느 경우에도 지표 게시와 API 보고를 계속해야** 하기 때문이고,
-    그러려면 실패 여부와 함께 진단용 출력 tail도 함께 받아야 하기 때문이다.
+    `path`가 `None`이면 게시할 리포트가 없다는 뜻이고, `reason`이 왜인지를 답한다.
+    그것을 예외로 올리지 않는 이유는 호출부가 **어느 경우에도 지표 게시와 API 보고를
+    계속해야** 하기 때문이고, 그러려면 실패 여부와 함께 진단용 출력 tail도 함께 받아야
+    하기 때문이다.
     """
 
     path: Path | None
     missing_sections: tuple[str, ...]
     codex: CodexRunResult
+    reason: str | None = None
 
 
 def _run_git(repository: Path, *arguments: str) -> bytes:
@@ -130,8 +133,17 @@ def capture_candidate_diff(
 
 
 def missing_report_sections(text: str) -> tuple[str, ...]:
-    """리포트에서 계약이 요구한 절 중 빠진 것을 순서대로 돌려준다."""
-    return tuple(section for section in REPORT_SECTIONS if section not in text)
+    """리포트에서 계약이 요구한 절 중 빠진 것을 돌려준다.
+
+    heading은 **줄 단위로 정확히** 대조한다. 단순 substring으로 보면 코드 블록이나
+    인용 안의 `## 결론`이 통과하고, `## 주 지표`가 `## 주 지표 요약`에도 걸린다 —
+    관측치가 실제 문서 구조를 반영하지 못한다.
+
+    **순서는 보지 않는다.** 순서는 프롬프트가 지시하고 여기서는 빠진 절만 관측한다.
+    이 결과로 게시를 막지 않으므로(모듈 docstring `[중요]`) 더 좁힐 이유가 없다.
+    """
+    headings = {line.strip() for line in text.splitlines()}
+    return tuple(section for section in REPORT_SECTIONS if section not in headings)
 
 
 def write_experiment_report(config: ReportInput) -> ReportResult:
@@ -175,12 +187,39 @@ def write_experiment_report(config: ReportInput) -> ReportResult:
             timeout_seconds=config.timeout_seconds,
         )
     )
+    # **게시 전에 regular file인지부터 확인한다.** `read_text`도
+    # `results_store.publish_results`의 `is_file()`도 `upload_from_filename`도 모두
+    # symlink를 따라간다. Codex는 `danger-full-access`로 돌고 이 container에는 push
+    # token과 API token이 mount돼 있으므로, `report.md`를 그 파일을 가리키는 symlink로
+    # 만들면 토큰 내용이 그대로 GCS에 올라간다. 같은 검사를
+    # `codex_worker._prepare_runtime_codex_home`이 auth source에 이미 쓰고 있다.
+    try:
+        status = report_path.lstat()
+    except OSError:
+        return ReportResult(
+            path=None,
+            missing_sections=REPORT_SECTIONS,
+            codex=codex,
+            reason="report_missing",
+        )
+    if not stat.S_ISREG(status.st_mode):
+        return ReportResult(
+            path=None,
+            missing_sections=REPORT_SECTIONS,
+            codex=codex,
+            reason="report_not_a_regular_file",
+        )
     try:
         written = report_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         written = ""
     if not written.strip():
-        return ReportResult(path=None, missing_sections=REPORT_SECTIONS, codex=codex)
+        return ReportResult(
+            path=None,
+            missing_sections=REPORT_SECTIONS,
+            codex=codex,
+            reason="report_empty",
+        )
     return ReportResult(
         path=report_path,
         missing_sections=missing_report_sections(written),

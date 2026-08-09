@@ -267,7 +267,13 @@ brier    0.116992 → 0.129235   +0.012243   ← 악화
 - [x] launcher가 `candidate-finalizer`에 Codex 인증 Secret·`ORCH_CODEX_HOME`·
       `ORCH_CODEX_TIMEOUT_SEC`을 준다. `ORCH_CODEX_HOME`이 없으면 리포트를 켜지 않은
       배포로 읽고 사유를 남긴 뒤 건너뛴다
-- [x] `results_store.collect_publishable_files`가 `report.md`를 포함한다
+- [x] 게시를 **두 번에 나눈다** — 채점 직후 `metrics.json`·학습 산출물,
+      Codex #2 뒤 `report.md`. 한 번에 올리면 Codex 실행 시간만큼 숫자를 잃을 수 있는
+      창이 열린다(container가 죽으면 잡을 예외가 없다)
+- [x] 산출물이 **regular file인지 코드로 확인**한다 — symlink는 게시가 링크 대상을
+      그대로 올린다. 하네스 파일 교체·복원도 링크를 지우고 `O_CREAT | O_EXCL`로만 쓴다
+- [x] 리포트 지시문에 credential 규칙을 넣는다 — 하네스는 clone 루트에 심기므로
+      clone 밖에서 도는 Codex #2에는 닿지 않는다
 - [ ] **NetworkPolicy 확인 불필요** — Codex #2는 같은 Pod 안이라 기존 egress 규칙을
       그대로 쓴다. infra 변경 없음
 

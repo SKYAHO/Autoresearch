@@ -272,5 +272,10 @@ Rules:
   metric. Do not describe intent you cannot see in the diff.
 - Do not modify `{metrics_filename}` or `{diff_filename}`. Do not write anything outside the
   current working directory, run Git commands, or contact any service.
+- Do not read, copy, quote, or print any credential file — anything under `/var/run/`,
+  `/var/lib/codex`, or any token, key, or `auth.json` file. Never put credential material in
+  `{report_filename}` or in anything you print.
+- `{report_filename}` must be a regular file you write yourself. Do not create it as a symbolic
+  link, and do not link to anything from the working directory.
 - Produce exactly one new file: `{report_filename}`.
 """

@@ -139,8 +139,8 @@ mount하지 않습니다. **8은 push token·API token과 Codex 인증을 함께
 7. `push-token-minter`: private key → push token memory volume
 8. `candidate-finalizer`: workspace + push token + verifier 결과 + API token + read-only auth
    source `CODEX_HOME` → candidate commit/push, `candidate_sha` 저장, `RUNNING → EVALUATING`,
-   candidate 학습·채점 → `metrics.json`과 candidate diff로 Codex가 `report.md` 작성 →
-   GCS 게시 → 지표 요약 보고
+   candidate 학습·채점 → **`metrics.json` GCS 게시** → `metrics.json`과 candidate diff로
+   Codex가 `report.md` 작성 → `report.md` 게시 → 지표 요약 보고
 
 하네스 지침 교체는 반드시 되돌립니다. verifier가 `git status`와 `ls-files --others`로 변경
 파일을 수집하므로, 교체한 채로 두면 하네스 파일이 candidate 변경으로 잡혀 commit·push
@@ -148,8 +148,15 @@ mount하지 않습니다. **8은 push token·API token과 Codex 인증을 함께
 발행"·"`docs/specs/`에 계획 작성"처럼 executor가 수행할 수 없는 절차를 요구하고, 그대로
 두면 Codex가 "규칙상 못 하겠다"며 아무것도 하지 않아 실제 실패와 구분되지 않습니다.
 
-`report.md` 작성이 실패해도 `metrics.json` 게시와 API 보고는 그대로 일어납니다 — 리포트가
-없다고 측정한 숫자까지 잃는 것은 손해이기 때문입니다.
+**숫자는 리포트보다 먼저 게시합니다.** 한 번에 올리면 Codex 실행 시간(최대
+`ORCH_CODEX_TIMEOUT_SEC`)만큼 숫자를 잃을 수 있는 창이 열립니다 — 그 사이
+`activeDeadlineSeconds`나 OOM으로 container가 죽으면 push와 `RUNNING → EVALUATING`은 이미
+끝난 뒤라 실험은 ERROR로 회수되고 측정한 숫자는 어디에도 남지 않습니다. `report.md`
+작성이 실패해도 게시와 API 보고가 그대로 일어나는 것은 예외 경로만이 아니라 **container가
+죽는 경로에서도** 성립해야 합니다.
+
+버킷 IAM이 `objectCreator`(교체 불가)라 먼저 게시된 `metrics.json`은 뒤이어 도는 Codex가
+로컬 파일을 고치더라도 그대로 남습니다.
 
 executor image에는 Git CLI, uv, `/opt/autoresearch-venv`의 lock 기반 기본+`dev`
 의존성(Feast 제외), Node.js, `@openai/codex@0.146.0`과 `UV_PROJECT_ENVIRONMENT`가

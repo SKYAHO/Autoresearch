@@ -148,21 +148,22 @@ def publish_results(
 def collect_publishable_files(
     *,
     metrics_path: Path,
-    report_path: Path | None = None,
     training_output_root: Path | None = None,
 ) -> dict[str, Path]:
-    """게시할 파일 목록을 이름 규칙과 함께 모은다.
+    """측정 산출물의 게시 목록을 이름 규칙과 함께 모은다.
 
-    `metrics.json`은 판정 입력이라 **반드시** 싣는다. `report.md`는 실험의 최종
-    산출물이지만 없으면 건너뛴다 — 리포트 작성이 실패했다고 **숫자까지 잃는 것은
-    손해**이기 때문이다. 학습 산출물은 재현·재측정을 위해 함께 싣되, 없으면 조용히
-    건너뛴다 — 학습을 켜지 않은 배포에서도 지표 게시 경로가 끊기지 않아야 한다.
+    `metrics.json`은 판정 입력이라 **반드시** 싣는다. 학습 산출물은 재현·재측정을
+    위해 함께 싣되, 없으면 조용히 건너뛴다 — 학습을 켜지 않은 배포에서도 지표 게시
+    경로가 끊기지 않아야 한다.
+
+    `report.md`는 여기 없다. **측정 산출물이 먼저 확정되고 그 뒤에 에이전트가 리포트를
+    쓰기 때문이다** — 리포트를 기다렸다가 함께 올리면 Codex 실행 시간(최대
+    `ORCH_CODEX_TIMEOUT_SEC`)만큼 숫자를 잃을 수 있는 창이 열린다. 호출부가 이 게시가
+    끝난 뒤 리포트를 별도로 올린다(`phase2._publish_report`).
     """
     if not metrics_path.is_file():
         raise ResultsStoreError("metrics_missing")
     files: dict[str, Path] = {"metrics.json": metrics_path}
-    if report_path is not None and report_path.is_file():
-        files["report.md"] = report_path
     if training_output_root is None or not training_output_root.is_dir():
         return files
     for path in sorted(training_output_root.rglob("*")):
