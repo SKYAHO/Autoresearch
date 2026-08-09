@@ -12,7 +12,7 @@ PR merge부터 GKE 배포·Airflow 실행까지의 자동화 흐름을 설명합
 - 빌드된 batch·serving·Agent Orchestration API·Runner·Streamlit UI 이미지를 Google Artifact Registry(GAR)에 push하고 OCI 메타데이터·실행 계약 검증
 - batch 이미지 digest를 배포 리포 values에 자동 반영하는 승격 PR 생성
 - serving 이미지 digest를 인프라 리포가 GKE 배포에 소비할 수 있도록 job summary에 기록
-- Agent Orchestration API·UI digest를 검증 뒤 infra `main`의 허용된 manifest 참조에 자동 승격하고, ArgoCD automated sync와 PostSync 검증으로 배포 결과 확인
+- Agent Orchestration API·UI·launcher·runner·executor digest를 검증 뒤 infra `main`의 허용된 manifest 참조에 자동 승격하고, ArgoCD automated sync와 PostSync 검증으로 배포 결과 확인
 - 승격 PR merge 시 GKE에 안전하게 배포 (DAG 일시정지 → helm upgrade → 검증 → 자동 롤백)
 - 비용 민감한 batch workload는 Spot node pool로 격리
 
@@ -40,7 +40,7 @@ flowchart TD
         SVERIFY --> SSUMMARY[serving digest_ref<br/>job summary → infra 리포]
         RY --> ORCHAPI[agent orchestration API 빌드<br/>autoresearch-agent-orchestration-api]
         ORCHAPI --> ORCHAPIVERIFY[OCI revision / non-root /<br/>API import smoke]
-        ORCHAPIVERIFY --> ORCHPROMOTE[API·UI digest<br/>infra main 자동 승격]
+        ORCHAPIVERIFY --> ORCHPROMOTE[API·UI·launcher·runner·executor digest<br/>infra main 자동 승격]
         RY --> ORCHRUNNER[agent orchestration Runner 빌드<br/>autoresearch-agent-orchestration-runner]
         ORCHRUNNER --> ORCHRUNNERVERIFY[OCI revision / non-root /<br/>Codex 0.146.0·Runner import smoke]
         ORCHRUNNERVERIFY --> ORCHRUNNERSUMMARY[Runner digest_ref<br/>job summary → infra 리포]
@@ -151,15 +151,22 @@ workflow_dispatch(`source_sha` 입력)로 수동 실행도 가능합니다.
 초기 시크릿과 Runner PVC, API DB 연결의 실제 배포·runtime 검증은
 `SKYAHO/Autoresearch-infra`가 소유합니다.
 
-#### Agent Orchestration API·UI digest 자동 승격
+#### Agent Orchestration digest 자동 승격
 
-API와 UI publish job이 모두 OCI revision·non-root·runtime 계약을 통과하면
+API·UI·launcher·runner·executor publish job이 **모두** OCI revision·non-root·runtime
+계약을 통과하고 **같은 source SHA**에서 나왔을 때만
 `promote-agent-orchestration-digests` job이 실행됩니다. 이 job은 GitHub App
 token으로 infra `main`을 checkout하고, infra 저장소 소유 script를 실행합니다.
-script는 고정 GAR repository의 immutable digest만 받고 API 일곱 참조와 UI 한
-참조를 같은 digest로 바꿉니다. 이미 최신인 API 또는 UI manifest는 건드리지
-않으며, 그 밖의 파일 변경, 기존 API digest 불일치, 잘못된 digest 입력은 commit
+script는 고정 GAR repository의 immutable digest만 받고 image별 허용 참조(API 일곱,
+UI·launcher·runner·executor 각 하나)를 같은 digest로 바꿉니다. 이미 최신인 manifest는
+건드리지 않으며, 그 밖의 파일 변경, 기존 digest 불일치, 잘못된 digest 입력은 commit
 전에 실패합니다.
+
+**executor digest는 Deployment의 `image:`가 아니라 launcher CronJob의
+`ORCH_EXECUTOR_IMAGE` env입니다.** 승격 시점에 실행 중인 실험은 자기 Pod spec을
+유지하고, 그 뒤 launcher가 만드는 Job부터 새 이미지로 뜹니다. 실험을 실제로 실행하는
+코드가 이 이미지 안에 있으므로 승격 대상에서 빠지면 자동 승격 로그와 실제 실험
+런타임이 어긋납니다(#630).
 
 GitHub App은 infra 단일 저장소의 Contents read/write 권한만 가지며,
 `main-protection` Ruleset bypass actor에는 해당 App만 등록합니다. 사람과 일반
@@ -237,7 +244,7 @@ Spot VM 회수에 대비해 `retries >= 1` 유지.
 1. PR에 적절한 라벨 부여 (`feature`/`enhancement`/`bug`/`breaking`)
 2. PR을 main에 merge → Release Drafter가 draft release 갱신
 3. GitHub Releases에서 draft release 게시 (Publish release)
-4. release.yml이 자동 실행: batch·serving·Agent Orchestration API·Runner·UI 이미지 빌드 → GAR push → batch digest 승격 PR 생성과 검증된 API·UI digest의 infra main 자동 승격
+4. release.yml이 자동 실행: batch·serving·Agent Orchestration API·Runner·UI·launcher·executor 이미지 빌드 → GAR push → batch digest 승격 PR 생성과 검증된 Agent Orchestration digest의 infra main 자동 승격
 5. batch 승격 PR 리뷰 후 머지 → deploy-gke-dev.yml이 자동 실행: GKE 배포 + 검증
 6. infra serving 배포는 release summary의 serving `digest_ref`를 사용
 
@@ -276,7 +283,7 @@ gcloud artifacts docker images list \
 |------|------|
 | `.github/release-drafter.yml` | 라벨 → semver 매핑 규칙 |
 | `.github/workflows/release-drafter.yml` | push to main 트리거 |
-| `.github/workflows/release.yml` | release:published → batch·serving·Agent Orchestration API·Runner·UI 빌드/GAR push, batch PR 승격 및 Agent Orchestration infra main 자동 승격 |
+| `.github/workflows/release.yml` | release:published → batch·serving·Agent Orchestration API·Runner·UI·launcher·executor 빌드/GAR push, batch PR 승격 및 Agent Orchestration infra main 자동 승격 |
 | `Dockerfile.app` | multi-stage batch 이미지 (uv lock-export → python:3.12-slim, non-root) |
 | `deploy/serving/Dockerfile` | Feast 호환 serving 이미지 (FastAPI/Uvicorn, non-root) |
 | `deploy/agent_orchestration/api.Dockerfile` | API 전용 FastAPI 이미지 (non-root, OAuth·Codex CLI 미포함) |
