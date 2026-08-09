@@ -91,6 +91,11 @@ executor가 `train-model`을 부르는 것과 **같은 패턴**으로 부른다.
 
 **목표: 통합해도 같은 숫자가 나온다.** Stage 1이 있어야 이 회귀를 확인할 수 있다.
 
+- [ ] **착수 전 결정: prepare를 ②에 흡수할지 (4 vs 5 컨테이너).** spec 결정 3의
+      credential 지도가 자기모순이다 — ②는 clone 토큰이 필요한데 같은 표가 ②에
+      GitHub 자격증명이 없다고 적었고, verifier의 credential 검사 제거가 그 전제에
+      기대고 있다. 선택지와 근거는 spec 결정 3의 "미결" 블록 참조. **아래 항목들은
+      어느 쪽을 골라도 그대로 유효하다** — 흡수 여부와 별개다
 - [ ] `codex_worker._capture_protected_git_metadata`에서 **마운트 검사만** 제거.
       `_git_metadata_digest` 전후 대조는 유지 (예방 → 탐지)
 - [ ] `jobs.py` 재작성 — 4 컨테이너

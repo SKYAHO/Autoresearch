@@ -121,6 +121,34 @@ paired t-test를 가장 깨끗하게 통과한다.
 | push 토큰 · API 토큰 | ④ 에만 |
 | Codex 실행 컨테이너(②)의 GitHub·API 자격증명 | **없음** |
 
+> **미결 (2026-08-09) — 이 표의 두 줄이 서로 모순이다. Stage 2 착수 전에 정한다.**
+>
+> ②는 clone을 하므로 clone 토큰이 마운트돼야 하고, 같은 컨테이너에서 Codex가
+> `--sandbox danger-full-access`로 돈다. 즉 "Codex 실행 컨테이너에 GitHub 자격증명
+> 없음"이 4 컨테이너 구성에서는 성립하지 않는다.
+>
+> **이 모순은 아래 "verifier의 정책 강제를 하네스로 대체한다" 절의 근거를 무너뜨린다.**
+> 거기서 credential 내용 검사(`_content_is_forbidden`)를 걷어내는 이유가 "②엔 토큰이
+> 마운트되지 않아 복사할 대상이 존재하지 않는다"인데, ②에 clone 토큰이 있으면
+> 대상이 생긴다. 토큰이 들어온 컨테이너에서 토큰 유출 검사를 떼는 셈이 된다.
+>
+> 기록상 prepare를 ②에 합친 근거는 "`.git` 마운트 충돌이 사라져 **넣을 수 있다**"
+> 하나뿐이고(아래 5 → 4), clone 토큰이 Codex 쪽으로 넘어온다는 사실은 계산되지
+> 않았다. `.git` 마운트 검사 제거와 prepare 흡수는 별개 판단이다 — 전자만 해도
+> branch-creator·verifier 흡수라는 실익은 그대로 얻는다(8 → 5).
+>
+> 선택지: **(가) prepare를 살려 5 컨테이너** — 표의 두 줄이 모두 사실이 된다.
+> 비용은 컨테이너 기동 시간뿐이고 workspace 볼륨은 어차피 공유라 핸드오프 추가
+> 비용이 없다. **(나) 4 유지 + clone 직후 토큰 파일 unlink** — 소비 측 마운트가
+> `read_only=True`라 그것부터 풀어야 하고, 순서 의존이라 예방보다 약하다.
+> **(다) 4 유지 + 표와 verifier 절을 사실에 맞게 수정** — clone 토큰이 Codex에
+> 노출됨을 받아들이고 credential 검사는 남긴다.
+>
+> 참고: `workspace.py`는 토큰이 workspace로 새지 않도록 이미 설계돼 있다 —
+> `_clean_remote_url()`, 환경변수 + 일회성 `GIT_ASKPASS`, clone 후
+> `remote.origin.url`·`credential.helper` 대조. 그래서 (가)에서는 볼륨을 마운트하지
+> 않는 것만으로 격리가 성립한다.
+
 **push 토큰은 Codex가 끝난 뒤(③)에 발급된다.** 순서로 보장되던 성질을 유지한다.
 
 **단, GCS 접근은 다르다.** `exp-job` GSA는 Workload Identity로 **Pod 단위**에 붙으므로
