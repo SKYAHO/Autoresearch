@@ -460,6 +460,56 @@ def test_terminal_failed_executor_job_moves_running_experiment_to_error_once(
         engine.dispose()
 
 
+def test_terminal_failed_executor_job_recovers_an_evaluating_experiment(
+    monkeypatch: object,
+) -> None:
+    """candidate 보고 뒤에 죽은 실험도 회수한다.
+
+    candidate 학습·채점·게시·결과 보고가 candidate 보고 **뒤에** 온다. 거기서 죽으면
+    Job은 Failed인데 실험은 EVALUATING에 남아 끝나지 않는 "평가 중"이 된다.
+    """
+    session, engine = _session()
+    try:
+        stuck = Experiment(
+            id=_EXPERIMENT_ID,
+            hypothesis="died after candidate report",
+            status=ExperimentStatus.EVALUATING.value,
+            issue_body=_BODY,
+            issue_number=557,
+            issue_branch="exp/557-phase2",
+            base_dev_sha="a" * 40,
+            candidate_sha="c" * 40,
+            executor_job_name=f"ar-exec-{_EXPERIMENT_ID.hex}",
+            executor_job_created_at=datetime(2026, 8, 6, tzinfo=UTC),
+        )
+        completed = Experiment(
+            id=uuid.UUID(int=3),
+            hypothesis="reported results before the pod died",
+            status=ExperimentStatus.PASSED.value,
+            issue_body=_BODY,
+            issue_number=558,
+            issue_branch="exp/558-phase2",
+            base_dev_sha="a" * 40,
+            candidate_sha="d" * 40,
+            executor_job_name=f"ar-exec-{uuid.UUID(int=3).hex}",
+        )
+        session.add_all((stuck, completed))
+        session.commit()
+
+        recovered = reconcile_failed_jobs(
+            session, {stuck.executor_job_name, completed.executor_job_name}
+        )
+
+        assert recovered == [stuck.id]
+        assert stuck.status == ExperimentStatus.ERROR.value
+        # 결과가 이미 남은 실험을 실행 실패로 되돌리면 사실과 어긋난다.
+        assert completed.status == ExperimentStatus.PASSED.value
+    finally:
+        session.close()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_launcher_reconciles_only_failed_phase2_jobs_before_claiming(
     monkeypatch: object,
 ) -> None:
