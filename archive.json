@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-09T23:15:06Z",
+  "generated_at": "2026-08-09T23:20:33Z",
   "reports": [
+    {
+      "number": 643,
+      "title": "fix: 리포트 Codex가 clone 밖에서도 실행되게 한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-09T23:20:21Z",
+      "summary_ko": [
+        "실험 리포트 생성 프로세스(Codex #2)가 clone 외부 디렉터리에서 실행될 때 git 저장소 검사 실패로 중단되던 현수를 수정하였습니다.",
+        "리포트 생성 전용 실행 옵션에 --skip-git-repo-check 플래그를 추가하여 저장소 외부 디렉터리에서도 정상 실행되도록 조치하였습니다.",
+        "자식 프로세스의 표준 입력(stdin)을 DEVNULL로 고정하여 비동기 실행 환경에서 매달림(hang) 현상이 발생하는 위험을 방지하였습니다."
+      ],
+      "report_url": "pr/643/"
+    },
     {
       "number": 640,
       "title": "feat: 에이전트가 실험 결과로 report.md를 쓴다",
