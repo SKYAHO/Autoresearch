@@ -54,9 +54,25 @@ UI까지 연결돼 있고 DB에 행이 0개일 뿐이다. **수집기가 행을 
 
 **별도 Deployment의 상주 프로세스**다. CronJob은 최소 주기가 1분이라 5~10초를 낼 수 없다.
 
-- ServiceAccount·`ORCH_DATABASE_URL`은 **launcher와 재사용**한다
+- **전용 ServiceAccount를 쓴다** (아래 정정 참조). `ORCH_DATABASE_URL`은 Secret에서
+  읽으므로 SA와 무관하고 launcher와 같은 방식을 쓴다
 - launcher tick 안에 넣지 않는다 — 주기가 1분에 묶이고, 로그 수집 실패가 claim 경로에
   영향을 줄 여지가 생긴다
+
+> **[정정 — #559, 2026-08-10] ServiceAccount를 launcher와 공유하지 않는다.**
+>
+> 초안은 "SA·DB를 launcher와 재사용"이었으나 `experiment_jobs.tf`의 설계 의도와
+> 어긋난다. 그 파일은 `#539`에서 Job 생성 권한을 API KSA에서 launcher KSA로 옮기며
+> **"표면적이 좁은 쪽이 권한을 갖는다"**는 원칙을 세웠고, 같은 자리에서 `pods` read를
+> *"launcher 코드에 해당 호출이 없어 최소 권한으로 뺐다 — 필요해지면 그때 넓힌다"*고
+> 명시적으로 제외했다.
+>
+> launcher SA를 재사용하면 **"Job을 만들 수 있는 신원"과 "모든 Pod 로그를 읽을 수 있는
+> 신원"이 하나로 합쳐진다.** 수집기는 Job을 만들 필요가 없고, launcher는 Pod 로그를 읽지
+> 않는다 — 둘은 실행 주체·트리거·입출력이 다른 별도 프로세스다. 하나가 침해되면 나머지
+> 권한까지 노출된다.
+>
+> 비용은 SA 리소스 하나뿐이다.
 
 ## API를 거치지 않는다
 
@@ -238,10 +254,14 @@ tick마다 여는 이유는 세션을 오래 들고 있으면 트랜잭션·iden
 
 **이 저장소 범위 밖이며 착수 전 승인이 필요하다.**
 
-1. **RoleBinding** — `experiment-job-observer` Role(`autoresearch-experiments`,
-   `pods/log: get`·`pods: list,watch,get` 포함)을 수집기 ServiceAccount에 바인딩한다.
-   Role은 이미 존재하므로 RoleBinding만 추가한다
-2. **Deployment** — 상주 수집기. SA와 `ORCH_DATABASE_URL`은 launcher와 재사용한다
+1. **ServiceAccount** — 수집기 전용. launcher·API와 공유하지 않는다(위 정정 참조)
+2. **RoleBinding** — `experiment-job-observer` Role(`autoresearch-experiments`,
+   `pods/log: get`·`pods: list,watch,get`·`jobs: list,watch,get` 포함)을 그 SA에
+   바인딩한다. **Role은 이미 존재하므로 새로 만들지 않는다**
+3. **Deployment** — 상주 수집기. `ORCH_DATABASE_URL`은 launcher와 같은 Secret에서 읽는다
+
+`experiment-job-observer`는 수집기가 필요한 것을 정확히 담고 있다 — Job 목록(`jobs`),
+Pod 조회(`pods`), 로그 읽기(`pods/log`). **Job 생성 권한은 들어 있지 않다.**
 
 **NetworkPolicy 추가는 불필요하다.** launcher 정책에 kube-apiserver(443)로 나가는 경로가
 이미 열려 있고, Pod 로그 조회도 같은 경로다. DB 접근도 launcher와 같다.
