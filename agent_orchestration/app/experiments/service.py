@@ -525,9 +525,14 @@ def _store_report_markdown(
             )
         with Session(bind=session.get_bind()) as report_session:
             with report_session.begin():
-                experiment = find_experiment_report(
-                    report_session, experiment_id, for_update=True
-                )
+                # **행 락을 잡지 않는다.** `report_markdown`의 기록자는 이 함수 하나뿐이고
+                # write-once라, 락이 배제할 상대가 사실상 없다 — 같은 보고가 동시에 두 번
+                # 와도 둘이 쓰는 값은 같은 정규화 결과다. 반대로 `FOR UPDATE`는 promote나
+                # launcher의 상태 회수가 같은 행의 락을 들고 있으면 **무한히 기다린다**
+                # (`statement_timeout`·`lock_timeout` 미설정). 그 대기는 예외가 아니라
+                # blocking이라 아래 `except`가 잡지 못하고, 그동안 요청을 처리하는 anyio
+                # worker thread와 pool 커넥션을 붙잡는다. 얻는 것 없이 hang만 사는 거래다.
+                experiment = find_experiment_report(report_session, experiment_id)
                 if experiment is None:
                     return
                 if experiment.report_markdown is None:
