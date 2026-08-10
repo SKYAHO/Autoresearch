@@ -12,6 +12,7 @@ test_experiment_issue_publication이 담당한다.
 
 from __future__ import annotations
 
+import html
 import json
 import threading
 from collections.abc import Iterator
@@ -25,6 +26,22 @@ import streamlit as st  # noqa: E402
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 APP_PATH = "agent_orchestration/ui/app.py"
+
+
+def _shows_hypothesis(app: AppTest, hypothesis: str) -> bool:
+    """상세 화면이 선택한 실험의 가설 본문을 표시하는지 확인한다.
+
+    `st.title`이 아니라 `workbench-hypothesis` 마크다운으로 그린다 — 가설은 여러
+    문장짜리 본문이라 H1으로 그리면 관찰 보드를 화면 밖으로 밀어냈다(#657).
+    본문은 `html.escape`를 거쳐 들어가므로 같은 변환 뒤에 비교한다. escape를 함께
+    확인하는 것은 덤이 아니라 의도다 — 이 경로는 `unsafe_allow_html`을 켜므로
+    escape가 빠지면 사용자 입력이 그대로 HTML이 된다.
+    """
+    return any(
+        "workbench-hypothesis" in element.value
+        and html.escape(hypothesis) in element.value
+        for element in app.markdown
+    )
 
 
 class _StubHandler(BaseHTTPRequestHandler):
@@ -235,7 +252,7 @@ def test_same_experiment_can_be_reselected_after_returning_to_create(
     app = _rendered_app()
 
     app.sidebar.radio[0].set_value(experiment_id).run()
-    assert any(title.value == "첫 번째 가설" for title in app.title)
+    assert _shows_hypothesis(app, "첫 번째 가설")
 
     app.sidebar.button[0].click().run()
     assert app.text_input[0].label == "실험 제목"
@@ -243,7 +260,7 @@ def test_same_experiment_can_be_reselected_after_returning_to_create(
     app.sidebar.radio[0].set_value(experiment_id).run()
 
     assert not app.exception
-    assert any(title.value == "첫 번째 가설" for title in app.title)
+    assert _shows_hypothesis(app, "첫 번째 가설")
 
 
 def test_no_form_widget_is_disabled(stub_api: list[tuple[str, dict]]) -> None:
@@ -345,10 +362,7 @@ def test_pending_publication_retries_saved_submission_without_duplicate(
         "/experiments/3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d/issue"
     ) == 2
     assert any("537" in element.value for element in app.success)
-    assert any(
-        title.value == _MARKDOWN_HYPOTHESIS
-        for title in app.title
-    )
+    assert _shows_hypothesis(app, _MARKDOWN_HYPOTHESIS)
 
 
 def test_pending_publication_retry_failure_keeps_create_and_pending(
@@ -431,7 +445,7 @@ def test_refresh_exposes_new_experiment_and_hides_other_publication_result(
     app.sidebar.radio[0].set_value(second_id).run()
 
     assert not app.exception
-    assert any(title.value == "두 번째 가설" for title in app.title)
+    assert _shows_hypothesis(app, "두 번째 가설")
     assert not app.success
 
 

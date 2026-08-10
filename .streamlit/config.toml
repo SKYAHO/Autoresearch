@@ -1,0 +1,43 @@
+# Streamlit Experiment Workbench 테마.
+#
+# 색·모서리·테두리는 **여기가 정본**이다. `agent_orchestration/ui/styles.py`가 아니다.
+# 이전에는 styles.py가 `var(--background-color)` 같은 Streamlit 테마 변수를 참조했지만
+# Streamlit 1.60은 emotion CSS-in-JS로 계산된 값을 주입할 뿐 그런 전역 CSS 커스텀
+# 속성을 노출하지 않는다. 참조가 전부 빈 값이라 해당 선언이 통째로 무시됐다(#657).
+#
+# 이 파일이 이미지에 실리려면 `deploy/agent_orchestration/ui.Dockerfile`이 복사해야
+# 한다 — 그 Dockerfile은 경로를 열거해 복사하므로 저장소 루트에 두는 것만으로는
+# 컨테이너에 들어가지 않는다.
+
+[theme]
+# 연구 콘솔이 하루 종일 켜져 있다는 전제로, 순백 대신 따뜻한 종이색을 바탕에 둔다.
+backgroundColor = "#FBFAF7"
+secondaryBackgroundColor = "#F1EEE8"
+textColor = "#1B2A33"
+# 기본값 #FF4B4B는 경고색과 구별되지 않아 상태 배지의 의미를 흐린다. 상태 색
+# (models.py `_STATUS_COLORS`)과 겹치지 않는 짙은 청록을 강조색으로 쓴다.
+# 흰 글자 대비 6.4:1로 WCAG AA를 넘는다.
+primaryColor = "#146B5C"
+linkColor = "#0F5E6E"
+borderColor = "#DFD9CE"
+
+# 코드 블록은 로그·JSON이 길게 이어지므로 본문과 확실히 분리한다.
+codeBackgroundColor = "#132C3B"
+codeTextColor = "#ECF5F1"
+
+font = "sans-serif"
+headingFont = "serif"
+codeFont = "monospace"
+
+baseRadius = "0.5rem"
+buttonRadius = "0.4rem"
+showWidgetBorder = true
+showSidebarBorder = true
+
+[theme.sidebar]
+# 실험 목록은 본문보다 한 단 낮은 면으로 두어 관찰 영역과 탐색 영역을 가른다.
+backgroundColor = "#F1EEE8"
+secondaryBackgroundColor = "#E7E2D8"
+textColor = "#1B2A33"
+primaryColor = "#146B5C"
+borderColor = "#DAD3C6"

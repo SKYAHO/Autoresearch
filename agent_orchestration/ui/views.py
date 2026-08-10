@@ -10,6 +10,9 @@ sidebar 탐색으로 분리된 사전등록 화면과 상세 화면의 컴포넌
 패널, 상태 타임라인, 결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 제공한다.
 결과 탭의 지표 카드와 리포트 HTML 렌더도 이 모듈이 담당한다.
 
+지표를 그리는 곳은 **결과 탭 하나**다. 인스펙터의 "실행 요약"은 시드·테스트셋 일치
+여부 같은 실행 조건만 적는다(#657).
+
 [비책임]
 HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조립과 GitHub 이슈 생성
 (모두 API 서버의 책임이다).
@@ -18,7 +21,6 @@ HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조�
 from __future__ import annotations
 
 import html
-import json
 from collections.abc import Callable, Sequence
 
 import streamlit as st
@@ -43,6 +45,24 @@ from agent_orchestration.ui.time import format_time
 HYPOTHESIS_KEY = "submission-hypothesis"
 
 _HYPOTHESIS_PLACEHOLDER = "마크다운 형식으로 가설을 작성해 주세요"
+
+
+def _shorten(text: str, limit: int) -> str:
+    """줄바꿈을 접고 `limit`자로 줄인다. **단어 중간에서 자르지 않는다.**
+
+    이전 사이드바 라벨은 `hypothesis[:32]`라 "고정 traini", "0.05에서"처럼 낱말이
+    끊긴 채 끝났다(#657). 공백을 찾아 끊되, 한국어 문장은 공백 없이 길게 이어질 수
+    있으므로 앞쪽 절반보다 뒤에 있는 공백만 경계로 인정한다 — 그보다 앞이면 잘라낸
+    양이 너무 커서 무엇에 대한 실험인지 알 수 없게 된다.
+    """
+    collapsed = " ".join(text.split())
+    if len(collapsed) <= limit:
+        return collapsed
+    head = collapsed[:limit]
+    boundary = head.rfind(" ")
+    if boundary >= limit // 2:
+        head = head[:boundary]
+    return head.rstrip() + "…"
 
 
 def _render_hypothesis_editor() -> str:
@@ -218,7 +238,7 @@ def render_experiment_list(
         return None
     ids = [experiment.id for experiment in experiments]
     labels = {
-        experiment.id: f"{experiment.status} | {experiment.hypothesis[:32]}"
+        experiment.id: f"{experiment.status} · {_shorten(experiment.hypothesis, 34)}"
         for experiment in experiments
     }
     default_index = ids.index(selected_id) if selected_id in ids else None
@@ -242,7 +262,16 @@ def render_workbench(state: WorkbenchState) -> None:
     st.markdown('<p class="workbench-kicker">선택한 가설</p>', unsafe_allow_html=True)
     title_column, status_column = st.columns([4.0, 1.0], vertical_alignment="center")
     with title_column:
-        st.title(experiment.hypothesis)
+        # `st.title`이 아니다. 가설은 여러 문장짜리 본문이라 H1으로 그리면 세로
+        # 400px를 먹고 관찰 보드를 화면 밖으로 밀어냈다(#657).
+        #
+        # 여기는 `unsafe_allow_html`을 켜므로 **가설은 사용자 입력**임을 잊지 않는다.
+        # `st.title`이 해 주던 escape를 직접 해야 한다 — `_render_steps`가 step_type에
+        # 같은 처리를 하는 것과 같은 이유다.
+        st.markdown(
+            f'<p class="workbench-hypothesis">{html.escape(experiment.hypothesis)}</p>',
+            unsafe_allow_html=True,
+        )
     with status_column:
         st.markdown(status_badge(experiment.status), unsafe_allow_html=True)
         st.caption(f"마지막 갱신 {format_time(experiment.updated_at)}")
@@ -343,6 +372,20 @@ def _render_tabs(state: WorkbenchState) -> None:
                 st.code(log.content, language=None)
 
 
+# 인스펙터 "실행 요약"이 쓰는 화면 이름. 여기 없는 키는 원문 그대로 적는다.
+_RUN_FACT_LABELS: dict[str, str] = {
+    "primary_metric": "주요 지표",
+    "dataset_fingerprint": "데이터셋 지문",
+    "results_uri": "결과 원본",
+    "contract_version": "스냅샷 계약",
+}
+
+# `_render_metrics`가 앞에서 전용 문구로 이미 그린 키.
+_RUN_FACTS_RENDERED_ABOVE = frozenset({"seeds", "split_matches"})
+
+# 결과 탭의 지표 카드가 소유하는 키. 인스펙터에서 중복해 그리지 않는다.
+_METRICS_OWNED_BY_RESULTS_TAB = frozenset({"conditions", "paired"})
+
 # 결과 탭이 카드로 그리는 지표와 화면 이름. 낮을수록 좋은 지표는 delta 색을 뒤집는다.
 _METRIC_CARDS: tuple[tuple[str, str, bool], ...] = (
     ("roc_auc", "ROC-AUC", False),
@@ -441,12 +484,37 @@ def _render_report(state: WorkbenchState) -> None:
 
 
 def _render_metrics(metrics: dict[str, object] | None) -> None:
+    """인스펙터 "실행 요약"에 **실행 조건**을 적는다. 지표는 여기 없다.
+
+    지표와 delta는 결과 탭의 `_render_metric_cards`가 소유한다. 이 패널은 한때
+    `metric_summary` 전체를 `st.code(json.dumps(...))`로 덤프했는데, 그러면 같은 값이
+    한쪽은 카드로 한쪽은 날 JSON으로 두 번 나오고, 검은 블록이 패널을 채운 채 숫자가
+    가로로 잘렸다(#657). 그래서 `conditions`·`paired`는 여기서 그리지 않는다.
+
+    모르는 키는 버리지 않는다 — 스냅샷 계약이 넓어져도 화면에서 조용히 사라지지
+    않도록 스칼라는 그대로, 중첩 값은 항목 수로 적는다.
+    """
     if not metrics:
         st.caption("아직 평가 전입니다.")
         return
+
+    seeds = metrics.get("seeds")
+    if isinstance(seeds, list) and seeds:
+        st.caption(f"시드 {len(seeds)}개 · {', '.join(str(seed) for seed in seeds)}")
+
+    split_matches = metrics.get("split_matches")
+    if split_matches is False:
+        st.caption("테스트셋 불일치 — delta를 변경 효과로 읽을 수 없습니다.")
+    elif split_matches is True:
+        st.caption("두 조건의 테스트셋 동일")
+
     for key, value in metrics.items():
+        if key in _RUN_FACTS_RENDERED_ABOVE or key in _METRICS_OWNED_BY_RESULTS_TAB:
+            continue
+        label = _RUN_FACT_LABELS.get(key, key)
         if isinstance(value, (dict, list)):
-            st.markdown(f"**{key}**")
-            st.code(json.dumps(value, ensure_ascii=False, indent=2), language="json")
+            st.caption(f"{label}: 항목 {len(value)}개")
         else:
-            st.metric(key, str(value))
+            st.caption(f"{label}: {_shorten(str(value), 44)}")
+
+    st.caption("지표와 delta는 결과 탭에 있습니다.")

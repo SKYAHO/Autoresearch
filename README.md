@@ -48,6 +48,7 @@ examples/            # CTR 파이프라인 예제 스캐폴드
 scripts/             # 검증·일회성 스크립트
 tests/               # 모듈별 단위 테스트 (플랫 구조)
 docs/                # 문서 — docs/README.md 인덱스 참조
+.streamlit/          # Streamlit Experiment Workbench 테마 정본 (config.toml)
 ```
 
 ## 배포 이미지
