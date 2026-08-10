@@ -203,6 +203,14 @@ docs/
       범위라 candidate가 바꿀 수 있는데, 학습과 달리 **데이터 조달은 두 조건이 같아야**
       paired 대조가 성립한다. 검증만 이미지에 봉인해 우회를 막는다. 받아둔 파일은
       candidate 단계와 Job 재시도가 재사용한다.
+  - **로그 수집기는 executor 밖에 있다(#559).** 상주 Deployment가 `pods/log`로 executor
+    Pod의 컨테이너 로그를 읽어 `experiment_logs`에 적재한다. executor 컨테이너는 한 줄도
+    건드리지 않으므로 credential 경계가 유지된다 — `codex-worker`에 API 토큰을 주는 방식은
+    Codex가 `--sandbox danger-full-access`로 도는 컨테이너에 쓰기 자격증명을 놓는 것이라
+    기각했다. HTTP API가 아니라 `create_experiment_log`를 직접 부르므로 API 토큰·egress도
+    필요 없다(launcher 이미지가 `app` 패키지를 포함한다). 수집 대상은 K8s Job 목록에서
+    얻는다 — DB의 `RUNNING`으로 거르면 `EVALUATING` 전환 뒤에도 같은 Job이 계속 도는
+    구간을 놓친다. 정본: `docs/specs/2026-08-09-experiment-log-collector.md`
   - executor 봉인 좌표: launcher가 `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`,
     `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA`를 DB에서 복사해 Pod에 주입한다.
     workspace-preparer는 GitHub의 현재 이슈 본문을 raw 입력으로 읽고 해당 branch를
