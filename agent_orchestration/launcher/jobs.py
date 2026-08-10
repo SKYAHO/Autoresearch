@@ -140,21 +140,28 @@ def _container_resources() -> V1ResourceRequirements:
     명시하지 않으면 `autoresearch-experiments`의 LimitRange 기본값이 적용되는데 그
     default limit이 **1Gi**라, 학습 단계(#574)가 OOM으로 죽는다.
 
-    request를 1.5Gi로 잡는 근거는 실측이다
+    메모리 request의 근거는 실측이다
     (`experiments/2026-08-07_demo-window-assembly-memory/notes.md`).
 
     - 데이터셋 조립 피크 **1.13 GiB**, 학습 피크 **1.22 GiB** — **둘 다 1Gi를 넘는다**
-    - limit 2Gi 안이라 OOM으로 죽지는 않지만, request를 넘겨 쓰면 QoS가 Burstable이라
-      노드 메모리 압박 시 eviction 대상이 된다. 1.5Gi면 두 단계 모두 요청 안에 들어온다
-    - 동시 실행 상한이 2이므로 requests 합계는 3Gi로 namespace quota 4Gi 안이다
+    - request를 넘겨 쓰면 QoS가 Burstable이라 노드 메모리 압박 시 eviction 대상이 된다.
+      4Gi면 두 단계가 요청 안에 넉넉히 들어오고, limit 8Gi까지 여유가 남는다
+
+    CPU에는 대응하는 실측이 없다(#664). 4 vCPU는 동시 5건 데모의 대기 시간을 줄이기 위한
+    **판단값**이며, 실제 사용량을 관측해 재조정하는 것을 전제로 한다. 메모리처럼 "실측이
+    이만큼이라 이 값"이라고 말할 수 없다는 점을 여기 남겨 둔다.
+
+    수치는 infra의 LimitRange·Quota와 짝을 이룬다(`SKYAHO/Autoresearch-infra#624`) —
+    container max 4 vCPU/8Gi, 동시 5건 기준 quota requests 10 vCPU/20Gi ·
+    limits 20 vCPU/40Gi. **이 저장소를 먼저 올리면 admission이 Job 생성을 거부한다.**
 
     initContainer 7개에 같은 값을 줘도 8배로 계산되지 않는다. Pod 실효값은
     `max(앱 container 합계, 각 initContainer의 최댓값)`이고 initContainer는 순차
-    실행이므로(sidecar 없음), 실효값은 request 500m/1.5Gi · limit 1 CPU/2Gi다.
+    실행이므로(sidecar 없음), 실효값은 request 2 CPU/4Gi · limit 4 CPU/8Gi다.
     """
     return V1ResourceRequirements(
-        requests={"cpu": "500m", "memory": "1536Mi"},
-        limits={"cpu": "1", "memory": "2Gi"},
+        requests={"cpu": "2", "memory": "4Gi"},
+        limits={"cpu": "4", "memory": "8Gi"},
     )
 
 
