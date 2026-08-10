@@ -1,7 +1,13 @@
-"""하네스가 에이전트에게 알리는 자원 예산의 계약을 고정한다(#656).
+"""하네스가 에이전트에게 알리는 자원 예산의 계약을 고정한다(#656, #664).
 
 에이전트는 자기 코드가 자원을 얼마나 써도 되는지 알 방법이 없었고, 초과는 cgroup
-group-kill이라 로그 한 줄 없이 실험이 끝났다(#651). 이 파일이 지키는 것은 셋이다.
+group-kill이라 로그 한 줄 없이 실험이 끝났다(#651).
+
+축마다 실패 방식이 다르다 — 메모리는 죽고(group-kill), CPU는 죽지 않고 느려지며(CFS
+스로틀링), 시간은 상한에서 잘린다. 예산 절이 상한만 적고 그 결과를 빼면 에이전트는
+무엇을 피해야 하는지 알 수 없으므로, 값과 결과를 함께 고정한다.
+
+이 파일이 지키는 것은 셋이다.
 
 1. 알려진 예산은 하네스 지침에 **실제 값으로** 나타난다
 2. 값이 없으면 문단이 통째로 빠진다 — 추측한 숫자를 적지 않는다
@@ -31,7 +37,11 @@ from agent_orchestration.launcher import jobs  # noqa: E402
 from agent_orchestration.launcher.config import LauncherSettings  # noqa: E402
 from agent_orchestration.launcher.jobs import (  # noqa: E402
     _container_resources,
+    _cpu_limit_millicores,
+    _cpu_request_millicores,
     _memory_limit_bytes,
+    _memory_request_bytes,
+    _parse_cpu_millicores,
     _parse_memory_quantity,
     build_executor_job,
 )
@@ -41,6 +51,9 @@ from agent_orchestration.launcher.repository import ClaimedExperiment  # noqa: E
 _DIGEST = "d3d273e66324042cd8e547068c194231cf1812d53cb68236edba56b067055293"
 _DATASET_URI = f"gs://experiment-results/training-snapshots/by-hash/{_DIGEST}/"
 _MEMORY_ENV = "ORCH_CONTAINER_MEMORY_LIMIT_BYTES"
+_MEMORY_REQUEST_ENV = "ORCH_CONTAINER_MEMORY_REQUEST_BYTES"
+_CPU_ENV = "ORCH_CONTAINER_CPU_LIMIT_MILLICORES"
+_CPU_REQUEST_ENV = "ORCH_CONTAINER_CPU_REQUEST_MILLICORES"
 _TIMEOUT_ENV = "ORCH_BUDGET_TRAINING_TIMEOUT_SEC"
 
 
@@ -93,11 +106,71 @@ def _codex_worker(settings: LauncherSettings):
 def test_known_budget_appears_in_the_harness_instructions() -> None:
     """알려진 상한은 사람이 읽는 표기로 지침에 나타난다."""
     text = build_harness_instructions(
-        (), ResourceBudget(memory_limit_bytes=2 * 1024**3, training_timeout_seconds=1800)
+        (),
+        ResourceBudget(
+            memory_request_bytes=2 * 1024**3,
+            memory_limit_bytes=8 * 1024**3,
+            cpu_request_millicores=1000,
+            cpu_limit_millicores=4000,
+            training_timeout_seconds=1800,
+        ),
     )
-    assert "2.0 GiB" in text
+    assert "request 2.0 GiB" in text
+    assert "limit 8.0 GiB" in text
+    assert "request 1 vCPU" in text
+    assert "limit 4 vCPU" in text
+    assert "4 vCPU" in text
     assert "1,800초" in text
     assert "자원 예산" in text
+
+
+def test_cpu_budget_states_the_silent_failure_mode() -> None:
+    """CPU 초과는 죽지 않고 느려지기만 한다는 사실을 알려야 한다(#664).
+
+    메모리 초과는 group-kill이라 최소한 "죽었다"가 남지만, CPU 초과는 CFS 스로틀링이라
+    로그에 흔적이 없다. 게다가 container 안의 `os.cpu_count()`는 cgroup 상한이 아니라
+    노드 전체 vCPU를 반환하므로, 상한만 알리고 이 사실을 빼면 에이전트는 여전히 노드
+    기준으로 스레드를 잡는다 — 알림의 실효가 사라진다.
+    """
+    text = build_harness_instructions((), ResourceBudget(cpu_limit_millicores=4000))
+
+    assert "스로틀링" in text
+    assert "os.cpu_count()" in text
+
+
+def test_budget_distinguishes_reservation_limit_and_node_eviction() -> None:
+    text = build_harness_instructions(
+        (),
+        ResourceBudget(
+            memory_request_bytes=2 * 1024**3,
+            memory_limit_bytes=8 * 1024**3,
+            cpu_request_millicores=1000,
+            cpu_limit_millicores=4000,
+        ),
+    )
+
+    assert "보장량이 아닙니다" in text
+    assert "노드 메모리 압박" in text
+    assert "8.0 GiB 미만" in text
+    assert "tmpfs" in text
+
+
+def test_fractional_cpu_budget_is_not_rounded_away() -> None:
+    """분수 코어 상한이 정수로 부풀지 않는다.
+
+    밀리코어로 들고 있는 이유가 이것이다. Downward API를 divisor "1"로 읽으면 `500m`이
+    `1`로 올림돼, container별 차등(#652)을 도입하는 순간 실제의 두 배를 알리게 된다.
+    """
+    text = build_harness_instructions((), ResourceBudget(cpu_limit_millicores=500))
+
+    assert "0.5 vCPU" in text
+
+
+def test_sub_100_millicore_budget_is_not_rounded_up() -> None:
+    """100m 미만 상한도 표기 과정에서 실제보다 크게 알리지 않는다."""
+    text = build_harness_instructions((), ResourceBudget(cpu_limit_millicores=50))
+
+    assert "0.05 vCPU" in text
 
 
 def test_budget_section_is_omitted_when_nothing_is_known() -> None:
@@ -121,10 +194,51 @@ def test_partial_budget_reports_only_the_known_value() -> None:
     )
     assert "4.0 GiB" in memory_only
     assert "seed 하나당" not in memory_only
+    assert "vCPU" not in memory_only
 
     time_only = build_harness_instructions((), ResourceBudget(training_timeout_seconds=600))
     assert "600초" in time_only
     assert "container당" not in time_only
+
+    cpu_only = build_harness_instructions((), ResourceBudget(cpu_limit_millicores=4000))
+    assert "4 vCPU" in cpu_only
+    # 예산 절 말미의 #651 서술이 "10.3 GiB"를 언급하므로 단위가 아니라 상한 줄로 본다.
+    assert "메모리: container당" not in cpu_only
+    assert "seed 하나당" not in cpu_only
+
+
+def test_request_only_budget_reports_the_known_reservation() -> None:
+    """request만 전달돼도 빈 예산 절이나 값 누락이 생기지 않는다."""
+    memory_request_only = build_harness_instructions(
+        (), ResourceBudget(memory_request_bytes=2 * 1024**3)
+    )
+    assert "메모리: container당 request 2.0 GiB" in memory_request_only
+    assert "limit" not in memory_request_only.split("메모리: container당", 1)[1].split(
+        "\n", 1
+    )[0]
+
+    cpu_request_only = build_harness_instructions(
+        (), ResourceBudget(cpu_request_millicores=1000)
+    )
+    assert "CPU: container당 request 1 vCPU" in cpu_request_only
+    assert "limit" not in cpu_request_only.split("CPU: container당", 1)[1].split(
+        "\n", 1
+    )[0]
+
+
+def test_guaranteed_budget_does_not_claim_burstable_qos() -> None:
+    """request와 limit이 모두 같아지면 Burstable이라는 고정 문구가 남지 않는다."""
+    text = build_harness_instructions(
+        (),
+        ResourceBudget(
+            memory_request_bytes=2 * 1024**3,
+            memory_limit_bytes=2 * 1024**3,
+            cpu_request_millicores=1000,
+            cpu_limit_millicores=1000,
+        ),
+    )
+
+    assert "Burstable" not in text
 
 
 def test_budget_section_states_the_consequence_not_an_implementation_rule() -> None:
@@ -175,8 +289,14 @@ def test_memory_budget_value_comes_from_the_container_resources() -> None:
     """
     container = _codex_worker(_settings())
     variable = next(item for item in container.env if item.name == _MEMORY_ENV)
+    request_variable = next(
+        item for item in container.env if item.name == _MEMORY_REQUEST_ENV
+    )
+    requests = _container_resources().requests or {}
     limits = _container_resources().limits or {}
     assert variable.value == str(_memory_limit_bytes())
+    assert request_variable.value == str(_memory_request_bytes())
+    assert _memory_request_bytes() == _parse_memory_quantity(str(requests["memory"]))
     assert _memory_limit_bytes() == _parse_memory_quantity(str(limits["memory"]))
 
 
@@ -198,8 +318,57 @@ def test_memory_budget_follows_a_change_to_the_container_resources(
         ),
     )
     container = _codex_worker(_settings())
-    variable = next(item for item in container.env if item.name == _MEMORY_ENV)
-    assert variable.value == str(8 * 1024**3)
+    memory = next(item for item in container.env if item.name == _MEMORY_ENV)
+    memory_request = next(
+        item for item in container.env if item.name == _MEMORY_REQUEST_ENV
+    )
+    cpu = next(item for item in container.env if item.name == _CPU_ENV)
+    cpu_request = next(item for item in container.env if item.name == _CPU_REQUEST_ENV)
+    assert memory.value == str(8 * 1024**3)
+    assert memory_request.value == str(4 * 1024**3)
+    assert cpu.value == "4000"
+    assert cpu_request.value == "2000"
+
+
+def test_cpu_budget_value_comes_from_the_container_resources() -> None:
+    """CPU 예산도 `_container_resources()` 하나에서 나온다."""
+    container = _codex_worker(_settings())
+    variable = next(item for item in container.env if item.name == _CPU_ENV)
+    request_variable = next(item for item in container.env if item.name == _CPU_REQUEST_ENV)
+    requests = _container_resources().requests or {}
+    limits = _container_resources().limits or {}
+    assert variable.value == str(_cpu_limit_millicores())
+    assert request_variable.value == str(_cpu_request_millicores())
+    assert _cpu_request_millicores() == _parse_cpu_millicores(str(requests["cpu"]))
+    assert _cpu_limit_millicores() == _parse_cpu_millicores(str(limits["cpu"]))
+
+
+@pytest.mark.parametrize(
+    ("quantity", "expected"),
+    [
+        ("4", 4000),
+        ("2", 2000),
+        ("500m", 500),
+        ("1500m", 1500),
+        ("0.5", 500),
+        ("1.5", 1500),
+        ("1", 1000),
+    ],
+)
+def test_cpu_quantity_parsing(quantity: str, expected: int) -> None:
+    """분수 코어를 정수로 부풀리지 않는다.
+
+    코어 단위로 반올림하면 `500m` 상한이 `1`로 보고돼 에이전트가 실제의 두 배를 예산으로
+    믿는다. 지금 값은 정수라 차이가 없지만, container별 차등(#652)에서 분수 코어를 주는
+    순간 조용히 틀린 예산이 된다.
+    """
+    assert _parse_cpu_millicores(quantity) == expected
+
+
+def test_unparsable_cpu_quantity_fails_loudly() -> None:
+    """해석할 수 없는 CPU 표기는 조용히 0이 되지 않는다."""
+    with pytest.raises(ValueError):
+        _parse_cpu_millicores("4 cores")
 
 
 @pytest.mark.parametrize(

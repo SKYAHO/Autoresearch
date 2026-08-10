@@ -16,6 +16,7 @@ Codex 인증 Secret은 코드 수정을 맡는 `codex-worker`와 리포트 작�
 
 from __future__ import annotations
 
+from decimal import Decimal
 import re
 from typing import Protocol
 
@@ -140,21 +141,30 @@ def _container_resources() -> V1ResourceRequirements:
     명시하지 않으면 `autoresearch-experiments`의 LimitRange 기본값이 적용되는데 그
     default limit이 **1Gi**라, 학습 단계(#574)가 OOM으로 죽는다.
 
-    request를 1.5Gi로 잡는 근거는 실측이다
+    메모리 request의 근거는 실측이다
     (`experiments/2026-08-07_demo-window-assembly-memory/notes.md`).
 
     - 데이터셋 조립 피크 **1.13 GiB**, 학습 피크 **1.22 GiB** — **둘 다 1Gi를 넘는다**
-    - limit 2Gi 안이라 OOM으로 죽지는 않지만, request를 넘겨 쓰면 QoS가 Burstable이라
-      노드 메모리 압박 시 eviction 대상이 된다. 1.5Gi면 두 단계 모두 요청 안에 들어온다
-    - 동시 실행 상한이 2이므로 requests 합계는 3Gi로 namespace quota 4Gi 안이다
+    - request를 넘겨 쓰면 QoS가 Burstable이라 노드 메모리 압박 시 eviction 대상이 된다.
+      2Gi면 두 단계가 요청 안에 들어오고, limit 8Gi까지 개별 실험의 버스트 여유가 남는다
+
+    CPU에는 대응하는 실측이 없다(#664). request 1 vCPU는 동시 5건을 비용 절충형
+    e2-standard-8 한 노드에 배치하기 위한 예약값이고, limit 4 vCPU는 유휴 CPU가 있을 때
+    개별 실험이 버스트할 수 있는 상한이다. 실제 사용량과 throttling을 canary에서 관측해
+    재조정하는 것을 전제로 하며, 메모리처럼 "실측이 이만큼이라 이 값"이라고 말할 수 없다.
+
+    수치는 infra의 LimitRange·Quota와 짝을 이룬다(`SKYAHO/Autoresearch-infra#625`) —
+    container max 4 vCPU/8Gi, 동시 5건 기준 quota requests 5 vCPU/10Gi ·
+    limits 20 vCPU/40Gi. **#625의 dev/admin apply 전에 이 저장소를 병합·배포하면
+    admission이 executor를 전면 거부하므로 infra 적용이 병합 게이트다.**
 
     initContainer 7개에 같은 값을 줘도 8배로 계산되지 않는다. Pod 실효값은
     `max(앱 container 합계, 각 initContainer의 최댓값)`이고 initContainer는 순차
-    실행이므로(sidecar 없음), 실효값은 request 500m/1.5Gi · limit 1 CPU/2Gi다.
+    실행이므로(sidecar 없음), 실효값은 request 1 CPU/2Gi · limit 4 CPU/8Gi다.
     """
     return V1ResourceRequirements(
-        requests={"cpu": "500m", "memory": "1536Mi"},
-        limits={"cpu": "1", "memory": "2Gi"},
+        requests={"cpu": "1", "memory": "2Gi"},
+        limits={"cpu": "4", "memory": "8Gi"},
     )
 
 
@@ -172,6 +182,26 @@ def _parse_memory_quantity(quantity: str) -> int:
     return amount * _MEMORY_SUFFIX_MULTIPLIERS[suffix or ""]
 
 
+def _parse_cpu_millicores(quantity: str) -> int:
+    """Kubernetes CPU 수량 표기를 밀리코어 정수로 바꾼다.
+
+    `4` → `4000`, `500m` → `500`이다. 코어 단위로 반올림하지 않는 이유는 분수 코어를
+    정수로 부풀리면 조용히 틀린 예산을 알리기 때문이다(#664).
+
+    해석할 수 없는 표기는 `_parse_memory_quantity`와 같은 이유로 예외로 끊는다.
+    """
+    text = quantity.strip()
+    match = re.fullmatch(r"(\d+)m", text)
+    if match is not None:
+        return int(match.group(1))
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        millicores = Decimal(text) * 1000
+        if millicores != millicores.to_integral_value():
+            raise ValueError(f"1m보다 정밀한 cpu 수량 표기입니다: {quantity!r}")
+        return int(millicores)
+    raise ValueError(f"해석할 수 없는 cpu 수량 표기입니다: {quantity!r}")
+
+
 def _memory_limit_bytes() -> int:
     """실험 container에 적용되는 memory limit을 바이트 정수로 돌려준다.
 
@@ -180,6 +210,24 @@ def _memory_limit_bytes() -> int:
     """
     limits = _container_resources().limits or {}
     return _parse_memory_quantity(str(limits.get("memory", "")))
+
+
+def _memory_request_bytes() -> int:
+    """실험 container의 memory request를 바이트 정수로 돌려준다."""
+    requests = _container_resources().requests or {}
+    return _parse_memory_quantity(str(requests.get("memory", "")))
+
+
+def _cpu_limit_millicores() -> int:
+    """실험 container에 적용되는 cpu limit을 밀리코어 정수로 돌려준다."""
+    limits = _container_resources().limits or {}
+    return _parse_cpu_millicores(str(limits.get("cpu", "")))
+
+
+def _cpu_request_millicores() -> int:
+    """실험 container의 cpu request를 밀리코어 정수로 돌려준다."""
+    requests = _container_resources().requests or {}
+    return _parse_cpu_millicores(str(requests.get("cpu", "")))
 
 
 def _resource_budget_environment(settings: LauncherSettings) -> list[V1EnvVar]:
@@ -198,7 +246,19 @@ def _resource_budget_environment(settings: LauncherSettings) -> list[V1EnvVar]:
     금지**한다. 시크릿이 환경 변수로 새는 경로를 닫으려는 규칙이고, Codex가
     `danger-full-access`로 도는 container에서 환경 변수는 그대로 읽히므로 종류별 예외보다
     전면 금지가 안전한 기본값이다. #658이 이 정책을 확인하지 않고 배포해 launcher가 매
-    tick 422로 죽었다(#665).
+    tick 422로 죽었고(#665), 그래서 launcher가 정하는 값을 직접 계산해 넣는다.
+
+    CPU를 함께 알리는 이유는 메모리와 **실패 방식이 다르기 때문**이다(#664). 메모리 초과는
+    group-kill이라 최소한 "죽었다"는 사실이 남지만, CPU 초과는 아무것도 죽지 않고 cgroup
+    CFS 스로틀링으로 느려지기만 한다 — 로그에는 "학습이 오래 걸렸다"만 남는다. 게다가
+    container 안의 `os.cpu_count()`와 대부분의 수치 라이브러리 기본 스레드 수는 cgroup
+    상한이 아니라 **노드 전체 vCPU**를 본다. 노드가 커질수록 실제 상한과의 격차가 벌어지므로
+    (`batch-od`는 `e2-standard-8`), 자원을 올리는 변경과 같은 곳에서 고지해야 상향의
+    실효가 난다.
+
+    CPU는 **밀리코어**로 알린다. 코어 단위로 반올림하면 `500m`이 `1`이 되어, container별
+    차등(#652)에서 분수 코어를 주는 순간 조용히 틀린 예산을 알리게 된다. 단위를 환경 변수
+    이름에 박아 두는 것도 같은 이유다.
 
     리터럴로 바꿔도 잃는 것은 거의 없다. launcher가 그 값을 **정하는 주체**이고,
     LimitRange는 값을 덮어쓰는 장치가 아니라 초과를 거부하는 장치이므로 Pod에 실제로
@@ -213,9 +273,21 @@ def _resource_budget_environment(settings: LauncherSettings) -> list[V1EnvVar]:
     """
     budget = [
         _env(
+            "ORCH_CONTAINER_MEMORY_REQUEST_BYTES",
+            str(_memory_request_bytes()),
+        ),
+        _env(
             "ORCH_CONTAINER_MEMORY_LIMIT_BYTES",
             str(_memory_limit_bytes()),
-        )
+        ),
+        _env(
+            "ORCH_CONTAINER_CPU_REQUEST_MILLICORES",
+            str(_cpu_request_millicores()),
+        ),
+        _env(
+            "ORCH_CONTAINER_CPU_LIMIT_MILLICORES",
+            str(_cpu_limit_millicores()),
+        ),
     ]
     if settings.training_dataset_uri:
         budget.append(
