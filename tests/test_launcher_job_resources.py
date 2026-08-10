@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 import sys
 import uuid
@@ -188,14 +189,21 @@ def _millicores(value: str) -> int:
     if value.endswith("m"):
         return int(value[:-1])
     try:
-        return int(value) * 1000
-    except ValueError as error:
+        millicores = Decimal(value) * 1000
+        if millicores != millicores.to_integral_value():
+            raise ValueError
+        return int(millicores)
+    except (ArithmeticError, ValueError) as error:
         raise AssertionError(f"예상하지 못한 CPU 단위: {value}") from error
 
 
+def test_cpu_parser_accepts_decimal_cores() -> None:
+    assert _millicores("0.5") == 500
+
+
 def test_cpu_parser_reports_an_unexpected_unit() -> None:
-    with pytest.raises(AssertionError, match="예상하지 못한 CPU 단위: 0.5"):
-        _millicores("0.5")
+    with pytest.raises(AssertionError, match="예상하지 못한 CPU 단위: 0.0005"):
+        _millicores("0.0005")
 
 
 def test_job_deadline_is_carried_from_settings() -> None:

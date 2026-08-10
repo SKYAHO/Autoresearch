@@ -214,7 +214,13 @@ def _resource_budget() -> ResourceBudget:
     숫자의 고지본이다.
     """
     return ResourceBudget(
+        memory_request_bytes=_optional_positive_int(
+            "ORCH_CONTAINER_MEMORY_REQUEST_BYTES"
+        ),
         memory_limit_bytes=_optional_positive_int("ORCH_CONTAINER_MEMORY_LIMIT_BYTES"),
+        cpu_request_millicores=_optional_positive_int(
+            "ORCH_CONTAINER_CPU_REQUEST_MILLICORES"
+        ),
         cpu_limit_millicores=_optional_positive_int(
             "ORCH_CONTAINER_CPU_LIMIT_MILLICORES"
         ),

@@ -38,7 +38,9 @@ from agent_orchestration.launcher.config import LauncherSettings  # noqa: E402
 from agent_orchestration.launcher.jobs import (  # noqa: E402
     _container_resources,
     _cpu_limit_millicores,
+    _cpu_request_millicores,
     _memory_limit_bytes,
+    _memory_request_bytes,
     _parse_cpu_millicores,
     _parse_memory_quantity,
     build_executor_job,
@@ -49,7 +51,9 @@ from agent_orchestration.launcher.repository import ClaimedExperiment  # noqa: E
 _DIGEST = "d3d273e66324042cd8e547068c194231cf1812d53cb68236edba56b067055293"
 _DATASET_URI = f"gs://experiment-results/training-snapshots/by-hash/{_DIGEST}/"
 _MEMORY_ENV = "ORCH_CONTAINER_MEMORY_LIMIT_BYTES"
+_MEMORY_REQUEST_ENV = "ORCH_CONTAINER_MEMORY_REQUEST_BYTES"
 _CPU_ENV = "ORCH_CONTAINER_CPU_LIMIT_MILLICORES"
+_CPU_REQUEST_ENV = "ORCH_CONTAINER_CPU_REQUEST_MILLICORES"
 _TIMEOUT_ENV = "ORCH_BUDGET_TRAINING_TIMEOUT_SEC"
 
 
@@ -104,12 +108,17 @@ def test_known_budget_appears_in_the_harness_instructions() -> None:
     text = build_harness_instructions(
         (),
         ResourceBudget(
-            memory_limit_bytes=2 * 1024**3,
+            memory_request_bytes=2 * 1024**3,
+            memory_limit_bytes=8 * 1024**3,
+            cpu_request_millicores=1000,
             cpu_limit_millicores=4000,
             training_timeout_seconds=1800,
         ),
     )
-    assert "2.0 GiB" in text
+    assert "request 2.0 GiB" in text
+    assert "limit 8.0 GiB" in text
+    assert "request 1 vCPU" in text
+    assert "limit 4 vCPU" in text
     assert "4 vCPU" in text
     assert "1,800초" in text
     assert "자원 예산" in text
@@ -127,6 +136,23 @@ def test_cpu_budget_states_the_silent_failure_mode() -> None:
 
     assert "스로틀링" in text
     assert "os.cpu_count()" in text
+
+
+def test_budget_distinguishes_reservation_limit_and_node_eviction() -> None:
+    text = build_harness_instructions(
+        (),
+        ResourceBudget(
+            memory_request_bytes=2 * 1024**3,
+            memory_limit_bytes=8 * 1024**3,
+            cpu_request_millicores=1000,
+            cpu_limit_millicores=4000,
+        ),
+    )
+
+    assert "보장량이 아닙니다" in text
+    assert "노드 메모리 압박" in text
+    assert "8.0 GiB 미만" in text
+    assert "tmpfs" in text
 
 
 def test_fractional_cpu_budget_is_not_rounded_away() -> None:
@@ -229,8 +255,14 @@ def test_memory_budget_value_comes_from_the_container_resources() -> None:
     """
     container = _codex_worker(_settings())
     variable = next(item for item in container.env if item.name == _MEMORY_ENV)
+    request_variable = next(
+        item for item in container.env if item.name == _MEMORY_REQUEST_ENV
+    )
+    requests = _container_resources().requests or {}
     limits = _container_resources().limits or {}
     assert variable.value == str(_memory_limit_bytes())
+    assert request_variable.value == str(_memory_request_bytes())
+    assert _memory_request_bytes() == _parse_memory_quantity(str(requests["memory"]))
     assert _memory_limit_bytes() == _parse_memory_quantity(str(limits["memory"]))
 
 
@@ -253,23 +285,41 @@ def test_memory_budget_follows_a_change_to_the_container_resources(
     )
     container = _codex_worker(_settings())
     memory = next(item for item in container.env if item.name == _MEMORY_ENV)
+    memory_request = next(
+        item for item in container.env if item.name == _MEMORY_REQUEST_ENV
+    )
     cpu = next(item for item in container.env if item.name == _CPU_ENV)
+    cpu_request = next(item for item in container.env if item.name == _CPU_REQUEST_ENV)
     assert memory.value == str(8 * 1024**3)
+    assert memory_request.value == str(4 * 1024**3)
     assert cpu.value == "4000"
+    assert cpu_request.value == "2000"
 
 
 def test_cpu_budget_value_comes_from_the_container_resources() -> None:
     """CPU 예산도 `_container_resources()` 하나에서 나온다."""
     container = _codex_worker(_settings())
     variable = next(item for item in container.env if item.name == _CPU_ENV)
+    request_variable = next(item for item in container.env if item.name == _CPU_REQUEST_ENV)
+    requests = _container_resources().requests or {}
     limits = _container_resources().limits or {}
     assert variable.value == str(_cpu_limit_millicores())
+    assert request_variable.value == str(_cpu_request_millicores())
+    assert _cpu_request_millicores() == _parse_cpu_millicores(str(requests["cpu"]))
     assert _cpu_limit_millicores() == _parse_cpu_millicores(str(limits["cpu"]))
 
 
 @pytest.mark.parametrize(
     ("quantity", "expected"),
-    [("4", 4000), ("2", 2000), ("500m", 500), ("1500m", 1500), ("1", 1000)],
+    [
+        ("4", 4000),
+        ("2", 2000),
+        ("500m", 500),
+        ("1500m", 1500),
+        ("0.5", 500),
+        ("1.5", 1500),
+        ("1", 1000),
+    ],
 )
 def test_cpu_quantity_parsing(quantity: str, expected: int) -> None:
     """분수 코어를 정수로 부풀리지 않는다.

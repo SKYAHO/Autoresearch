@@ -46,7 +46,9 @@ class ResourceBudget:
     표기 변환은 렌더 시점에 한 번만 한다.
     """
 
+    memory_request_bytes: int | None = None
     memory_limit_bytes: int | None = None
+    cpu_request_millicores: int | None = None
     cpu_limit_millicores: int | None = None
     training_timeout_seconds: int | None = None
 
@@ -54,7 +56,9 @@ class ResourceBudget:
     def is_known(self) -> bool:
         """알릴 값이 하나라도 있는지."""
         return (
-            self.memory_limit_bytes is not None
+            self.memory_request_bytes is not None
+            or self.memory_limit_bytes is not None
+            or self.cpu_request_millicores is not None
             or self.cpu_limit_millicores is not None
             or self.training_timeout_seconds is not None
         )
@@ -183,20 +187,40 @@ def _budget_section(budget: ResourceBudget) -> str:
     if not budget.is_known:
         return ""
     limits = []
-    if budget.memory_limit_bytes is not None:
+    if (
+        budget.memory_request_bytes is not None
+        and budget.memory_limit_bytes is not None
+    ):
         limits.append(
-            f"- **메모리: container당 {_format_memory(budget.memory_limit_bytes)}.** "
-            "학습 프로세스가 이를 넘으면 커널이 container를 통째로 SIGKILL합니다"
-            "(cgroup group-kill). 파이썬 예외도 로그 한 줄도 남지 않고 실험은 지표 없이 "
-            "끝납니다."
+            f"- **메모리: container당 request {_format_memory(budget.memory_request_bytes)} · "
+            f"limit {_format_memory(budget.memory_limit_bytes)}.** limit을 넘으면 커널이 "
+            "container를 통째로 SIGKILL합니다(cgroup group-kill). 다만 이 Pod는 Burstable "
+            f"QoS라 노드 메모리 압박 시 limit {_format_memory(budget.memory_limit_bytes)} 미만"
+            "에서도 축출될 수 있습니다. 메모리 기반 `emptyDir`(tmpfs)에 쓴 데이터도 "
+            "container 메모리 사용량으로 계산됩니다."
         )
-    if budget.cpu_limit_millicores is not None:
+    elif budget.memory_limit_bytes is not None:
         limits.append(
-            f"- **CPU: container당 {_format_cpu(budget.cpu_limit_millicores)}.** 이를 넘겨 "
-            "스레드를 띄워도 프로세스는 죽지 않습니다 — cgroup CFS 스로틀링으로 느려지기만 "
-            "하고 로그에는 아무 흔적이 남지 않습니다. container 안의 `os.cpu_count()`와 "
-            "대부분의 수치 라이브러리 기본 스레드 수는 이 상한이 아니라 **노드 전체 vCPU**를 "
-            "봅니다."
+            f"- **메모리: container당 limit {_format_memory(budget.memory_limit_bytes)}.** "
+            "이를 넘으면 커널이 container를 통째로 SIGKILL합니다(cgroup group-kill)."
+        )
+    if (
+        budget.cpu_request_millicores is not None
+        and budget.cpu_limit_millicores is not None
+    ):
+        limits.append(
+            f"- **CPU: container당 request {_format_cpu(budget.cpu_request_millicores)} · "
+            f"limit {_format_cpu(budget.cpu_limit_millicores)}.** request는 스케줄링 예약과 "
+            "경합 시 가중치이며 지속 보장량이 아닙니다. 노드가 한가하면 limit까지 쓸 수 "
+            "있지만 경합하면 request 부근으로 느려질 수 있고, limit을 넘는 실행은 cgroup CFS "
+            "스로틀링됩니다. container 안의 `os.cpu_count()`와 대부분의 수치 라이브러리 "
+            "기본 스레드 수는 이 값들이 아니라 **노드 전체 vCPU**를 봅니다."
+        )
+    elif budget.cpu_limit_millicores is not None:
+        limits.append(
+            f"- **CPU: container당 limit {_format_cpu(budget.cpu_limit_millicores)}.** "
+            "limit을 넘는 실행은 cgroup CFS 스로틀링으로 느려집니다. container 안의 "
+            "`os.cpu_count()`는 이 상한이 아니라 노드 전체 vCPU를 볼 수 있습니다."
         )
     if budget.training_timeout_seconds is not None:
         limits.append(

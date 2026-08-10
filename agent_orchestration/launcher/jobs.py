@@ -16,6 +16,7 @@ Codex 인증 Secret은 코드 수정을 맡는 `codex-worker`와 리포트 작�
 
 from __future__ import annotations
 
+from decimal import Decimal
 import re
 from typing import Protocol
 
@@ -193,8 +194,11 @@ def _parse_cpu_millicores(quantity: str) -> int:
     match = re.fullmatch(r"(\d+)m", text)
     if match is not None:
         return int(match.group(1))
-    if re.fullmatch(r"\d+", text):
-        return int(text) * 1000
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        millicores = Decimal(text) * 1000
+        if millicores != millicores.to_integral_value():
+            raise ValueError(f"1m보다 정밀한 cpu 수량 표기입니다: {quantity!r}")
+        return int(millicores)
     raise ValueError(f"해석할 수 없는 cpu 수량 표기입니다: {quantity!r}")
 
 
@@ -208,10 +212,22 @@ def _memory_limit_bytes() -> int:
     return _parse_memory_quantity(str(limits.get("memory", "")))
 
 
+def _memory_request_bytes() -> int:
+    """실험 container의 memory request를 바이트 정수로 돌려준다."""
+    requests = _container_resources().requests or {}
+    return _parse_memory_quantity(str(requests.get("memory", "")))
+
+
 def _cpu_limit_millicores() -> int:
     """실험 container에 적용되는 cpu limit을 밀리코어 정수로 돌려준다."""
     limits = _container_resources().limits or {}
     return _parse_cpu_millicores(str(limits.get("cpu", "")))
+
+
+def _cpu_request_millicores() -> int:
+    """실험 container의 cpu request를 밀리코어 정수로 돌려준다."""
+    requests = _container_resources().requests or {}
+    return _parse_cpu_millicores(str(requests.get("cpu", "")))
 
 
 def _resource_budget_environment(settings: LauncherSettings) -> list[V1EnvVar]:
@@ -257,8 +273,16 @@ def _resource_budget_environment(settings: LauncherSettings) -> list[V1EnvVar]:
     """
     budget = [
         _env(
+            "ORCH_CONTAINER_MEMORY_REQUEST_BYTES",
+            str(_memory_request_bytes()),
+        ),
+        _env(
             "ORCH_CONTAINER_MEMORY_LIMIT_BYTES",
             str(_memory_limit_bytes()),
+        ),
+        _env(
+            "ORCH_CONTAINER_CPU_REQUEST_MILLICORES",
+            str(_cpu_request_millicores()),
         ),
         _env(
             "ORCH_CONTAINER_CPU_LIMIT_MILLICORES",
