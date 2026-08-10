@@ -15,6 +15,8 @@ from pathlib import Path
 import sys
 import uuid
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -23,8 +25,16 @@ from agent_orchestration.executor.prompt import (  # noqa: E402
     ResourceBudget,
     build_harness_instructions,
 )
+from kubernetes.client import V1ResourceRequirements  # noqa: E402
+
+from agent_orchestration.launcher import jobs  # noqa: E402
 from agent_orchestration.launcher.config import LauncherSettings  # noqa: E402
-from agent_orchestration.launcher.jobs import build_executor_job  # noqa: E402
+from agent_orchestration.launcher.jobs import (  # noqa: E402
+    _container_resources,
+    _memory_limit_bytes,
+    _parse_memory_quantity,
+    build_executor_job,
+)
 from agent_orchestration.launcher.repository import ClaimedExperiment  # noqa: E402
 
 
@@ -134,52 +144,90 @@ def test_budget_section_states_the_consequence_not_an_implementation_rule() -> N
 # --- Job spec 배선 -----------------------------------------------------------
 
 
-def test_memory_budget_is_read_from_the_job_spec_not_hardcoded() -> None:
-    """Downward API로 실제 `limits.memory`를 읽어야 드리프트가 없다.
+def test_experiment_job_never_uses_value_from() -> None:
+    """실험 Job의 어떤 container도 `valueFrom`을 쓰지 않는다.
 
-    숫자를 코드에 박으면 `_container_resources()`나 infra LimitRange가 바뀔 때 지침이
-    조용히 거짓이 되고, 그 거짓을 검증할 방법이 없다.
+    admission 정책 `autoresearch-experiment-job-contract`가 `valueFrom`을 **종류 불문하고**
+    금지한다(`c.env.all(e, !has(e.valueFrom))`). 시크릿이 환경 변수로 새는 경로를 닫으려는
+    규칙이며, Codex가 `danger-full-access`로 도는 container에서 환경 변수는 그대로 읽힌다.
+
+    #658이 Downward API(`resourceFieldRef`)로 예산을 넣었다가 배포 직후 launcher가 매 tick
+    422로 죽었다(#665). **이 저장소가 그 계약을 스스로 검사하지 않으면 같은 사고가
+    배포 시점에만 드러난다.**
     """
-    container = _codex_worker(_settings())
-    variable = next(item for item in container.env if item.name == _MEMORY_ENV)
-    assert variable.value is None, "리터럴 값이면 spec 변경을 따라가지 못한다"
-    selector = variable.value_from.resource_field_ref
-    assert selector.resource == "limits.memory"
-    assert selector.divisor == "1", "바이트로 받아야 표기 변환이 한 곳에 모인다"
-
-
-def test_memory_budget_reads_the_training_container_not_the_codex_container() -> None:
-    """읽는 대상은 학습이 실제로 도는 container여야 한다.
-
-    `container_name`을 생략하면 자기 자신(codex-worker)을 가리킨다. 지금은 8개 container가
-    같은 자원을 받아 두 값이 같지만, container별 차등을 도입하면(#652) 코드를 쓰는
-    container는 작게, 학습 container는 크게 주는 것이 자연스럽다. 그때 자기 값을 읽는
-    구현은 **조용히 틀린 예산**을 알리고, 에이전트는 검증할 수 있었던 가설을 스스로
-    축소한다.
-    """
-    container = _codex_worker(_settings())
-    variable = next(item for item in container.env if item.name == _MEMORY_ENV)
-    selector = variable.value_from.resource_field_ref
-    assert selector.container_name == "candidate-finalizer"
-
-
-def test_the_referenced_budget_container_exists_in_the_job() -> None:
-    """참조 이름이 실제 container와 일치해야 한다.
-
-    이름이 틀리면 **API 검증은 통과하고 Pod 시작 시점에** 죽는다 — 실험이 통째로 실패하는데
-    원인은 매니페스트 오타다. dev 클러스터 실물 Pod으로 initContainer가 app container의
-    상한을 읽을 수 있음을 확인했고(256Mi → 268435456), 여기서는 이름 일치만 고정한다.
-    """
-    job = build_executor_job(_claim(), _settings())
+    job = build_executor_job(_claim(), _settings(dataset_uri=_DATASET_URI))
     spec = job.spec.template.spec
-    names = {
-        container.name
-        for container in [*(spec.init_containers or []), *(spec.containers or [])]
-    }
-    worker = _codex_worker(_settings())
-    variable = next(item for item in worker.env if item.name == _MEMORY_ENV)
-    referenced = variable.value_from.resource_field_ref.container_name
-    assert referenced in names, f"참조한 container가 Job에 없다: {referenced}"
+    for container in [*(spec.init_containers or []), *(spec.containers or [])]:
+        assert not container.env_from, f"{container.name}에 envFrom이 있다"
+        for variable in container.env or []:
+            assert variable.value_from is None, (
+                f"{container.name}의 {variable.name}이 valueFrom을 쓴다 — "
+                "admission이 Job 생성을 거부한다"
+            )
+
+
+def test_memory_budget_value_comes_from_the_container_resources() -> None:
+    """예산 숫자의 출처는 `_container_resources()` 하나여야 한다.
+
+    값을 따로 적어두면 자원 정의가 바뀔 때 에이전트에게 알리는 예산만 옛 값으로 남고,
+    그 거짓을 검증할 방법이 없다. `jobs.py` docstring이 저장소에 없는 `notes.md`를 근거로
+    인용하고 있는 것과 같은 종류의 드리프트다(#652).
+    """
+    container = _codex_worker(_settings())
+    variable = next(item for item in container.env if item.name == _MEMORY_ENV)
+    limits = _container_resources().limits or {}
+    assert variable.value == str(_memory_limit_bytes())
+    assert _memory_limit_bytes() == _parse_memory_quantity(str(limits["memory"]))
+
+
+def test_memory_budget_follows_a_change_to_the_container_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """자원 정의를 바꾸면 알리는 예산도 따라 바뀐다.
+
+    현재 값과 같은 숫자를 박아 두면 위 테스트는 통과한다 — 그것이 정확히 이 기능이 막으려는
+    드리프트다. 그래서 정의를 **실제로 바꿔** 예산이 따라오는지 본다. 따라오지 않으면 값이
+    어딘가에 복제돼 있다는 뜻이다.
+    """
+    monkeypatch.setattr(
+        jobs,
+        "_container_resources",
+        lambda: V1ResourceRequirements(
+            requests={"cpu": "2", "memory": "4Gi"},
+            limits={"cpu": "4", "memory": "8Gi"},
+        ),
+    )
+    container = _codex_worker(_settings())
+    variable = next(item for item in container.env if item.name == _MEMORY_ENV)
+    assert variable.value == str(8 * 1024**3)
+
+
+@pytest.mark.parametrize(
+    ("quantity", "expected"),
+    [
+        ("2Gi", 2 * 1024**3),
+        ("8Gi", 8 * 1024**3),
+        ("2048Mi", 2048 * 1024**2),
+        ("2G", 2 * 1000**3),
+        ("1536Mi", 1536 * 1024**2),
+    ],
+)
+def test_memory_quantity_parsing(quantity: str, expected: int) -> None:
+    """수량 표기가 바뀌어도 바이트 변환이 깨지지 않는다.
+
+    binary(`Gi`)와 decimal(`G`)은 다른 배수다 — 같이 취급하면 예산이 7% 어긋난다.
+    """
+    assert _parse_memory_quantity(quantity) == expected
+
+
+def test_unparsable_memory_quantity_fails_loudly() -> None:
+    """해석할 수 없는 표기는 조용히 0이 되지 않고 예외로 끊긴다.
+
+    잘못된 숫자를 지침에 싣는 것이 값을 싣지 않는 것보다 나쁘다 — 에이전트가 그것을
+    믿고 구현한다.
+    """
+    with pytest.raises(ValueError):
+        _parse_memory_quantity("2 gigabytes")
 
 
 def test_time_budget_follows_the_training_opt_in() -> None:
