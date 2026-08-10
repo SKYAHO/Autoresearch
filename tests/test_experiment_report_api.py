@@ -175,11 +175,20 @@ def test_result_report_stores_the_report_body(db_session: Session) -> None:
 def test_report_write_failure_leaves_the_metric_commit_in_place(
     db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """리포트 적재가 터져도 지표 커밋은 남는다.
+    """리포트 적재가 터져도 지표 커밋은 남고, 반환된 객체도 살아 있다.
 
     PostgreSQL의 NUL 거부와 배포 순서 어긋남(`UndefinedColumn`)은 SQLite에서 재현되지
     않으므로 같은 자리에 예외를 주입해 성질만 고정한다 — 검증 대상은 실패의 종류가
     아니라 **지표가 살아남는가**다.
+
+    `_store_report_markdown`이 요청 `session`을 직접 쓰면, 그 안의 `with
+    session.begin()`이 예외로 rollback할 때 요청 세션에 로드된 모든 객체가
+    expire된다 — `record_experiment_result`가 반환한 `experiment`도 포함된다.
+    그러면 호출자(`executor_router.py`)가 `ExperimentResponse.model_validate`로
+    속성을 읽는 순간 새 SELECT가 나가고, 리포트 쓰기가 연결 끊김으로 실패했다면
+    그 SELECT도 같은 이유로 실패해 이미 커밋된 200 응답이 500으로 바뀐다. 그래서
+    반환값이 expired가 아님을 직접 단언한다 — 이전 버전의 이 테스트는 반환값을
+    검사하지 않아 이 귀결을 놓쳤다.
     """
     import agent_orchestration.app.experiments.service as service_module
 
@@ -189,11 +198,13 @@ def test_report_write_failure_leaves_the_metric_commit_in_place(
         raise RuntimeError("simulated database failure")
 
     monkeypatch.setattr(service_module, "find_experiment_report", explode)
-    record_experiment_result(
+    returned = record_experiment_result(
         db_session,
         experiment_id,
         _result_request(experiment_id, report_markdown="# 결론"),
     )
+
+    assert inspect(returned).expired is False
 
     db_session.expunge_all()
     stored = find_experiment_report(db_session, experiment_id)
