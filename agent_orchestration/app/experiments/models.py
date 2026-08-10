@@ -32,6 +32,10 @@ Step은 실험 생명주기 상태(`ExperimentStatus`)와 독립적인 **작업 
 lineage이며, `executor_job_name`/`executor_job_created_at`은 후속 launcher가 결정론적 Job
 생성을 재개하고 실제 생성 확인 여부를 구분하는 내부 lineage다. 이 모듈은 launcher의
 선점·Job 생성 또는 executor의 Git ref 생성은 담당하지 않는다.
+
+`report_markdown`은 `0006_experiment_report_markdown` revision이 nullable로 추가한 실험의
+최종 산출물 본문이며, 이 모듈에서 유일하게 `deferred=True`인 컬럼이다. 이유는 컬럼 옆
+주석에 있다. `ExperimentResponse`에 노출하지 않으며 전용 endpoint가 조회한다.
 """
 
 from __future__ import annotations
@@ -168,6 +172,15 @@ class Experiment(Base):
     )
     base_dev_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
     candidate_sha: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # 실험을 수행한 에이전트가 쓴 `report.md` 본문이다. **deferred**로 둔다 —
+    # `find_experiments`가 `select(Experiment)`로 전체 컬럼을 읽으므로(`repository.py`),
+    # 평범한 컬럼이면 목록 한 번이 최대 100행 × 64KB를 끌어온다. 응답 스키마에서
+    # 감추는 것과 질의가 읽지 않는 것은 다르다. 본문이 필요한 조회만 `undefer`로
+    # 명시한다(`find_experiment_report`). 계약 정본은
+    # `docs/specs/2026-08-10-experiment-report-html-workbench.md` 결정 1이다.
+    report_markdown: Mapped[str | None] = mapped_column(
+        Text, nullable=True, deferred=True
+    )
     executor_job_name: Mapped[str | None] = mapped_column(String(63), nullable=True)
     # launcher가 동일 이름의 Job 존재를 확인한 뒤에만 채우는 내부 복구 표식이다.
     executor_job_created_at: Mapped[datetime | None] = mapped_column(

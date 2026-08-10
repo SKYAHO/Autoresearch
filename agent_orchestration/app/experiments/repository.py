@@ -9,7 +9,7 @@ from __future__ import annotations
 import uuid
 
 from sqlalchemy import and_, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from agent_orchestration.app.experiments.exceptions import InvalidCursorError
 from agent_orchestration.app.experiments.models import (
@@ -30,6 +30,27 @@ def find_experiment(
 ) -> Experiment | None:
     """UUID로 실험을 조회하고 필요하면 row lock을 요청한다."""
     statement = select(Experiment).where(Experiment.id == experiment_id)
+    if for_update:
+        statement = statement.with_for_update()
+    return session.scalar(statement)
+
+
+def find_experiment_report(
+    session: Session,
+    experiment_id: uuid.UUID,
+    *,
+    for_update: bool = False,
+) -> Experiment | None:
+    """리포트 본문을 함께 로드해 실험을 조회한다.
+
+    `Experiment.report_markdown`은 deferred라 `find_experiment`로 읽으면 접근 시점에
+    별도 SELECT가 나간다. 본문이 목적인 조회는 그것을 한 번에 싣는다.
+    """
+    statement = (
+        select(Experiment)
+        .where(Experiment.id == experiment_id)
+        .options(undefer(Experiment.report_markdown))
+    )
     if for_update:
         statement = statement.with_for_update()
     return session.scalar(statement)
