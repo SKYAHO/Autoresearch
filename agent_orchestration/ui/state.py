@@ -66,11 +66,20 @@ class WorkbenchState:
     pending_publication_experiment_id: str | None = None
     pending_publication_submission: Submission | None = None
     # 조회한 리포트 본문. `None`은 "아직 안 받음"과 "받았는데 리포트가 없음" 두 가지로
-    # 겹치므로, 둘을 가르는 것은 `report_loaded_for`다.
+    # 겹치므로, 둘을 가르는 것은 `report_checked_for`다.
     report_markdown: str | None = None
     report_error: str | None = None
-    # 리포트를 실제로 조회해 본 실험 id. **성공했을 때만** 세운다 — 실패에도 세우면
-    # 일시적 오류 한 번에 그 세션 동안 리포트가 영구히 가려진다.
+    # **표식 두 개가 서로 다른 질문에 답한다.** 하나로 겹치면 한쪽이 반드시 틀어진다.
+    #
+    # `report_checked_for` — "이 실험을 한 번이라도 조회해 봤는가". 본문 유무와 무관하게
+    # 조회가 성공하면 세운다. **화면 문구를 고르는 데만** 쓴다. 이것이 없으면 리포트가
+    # 정말 없는 실험(이 변경 이전에 완주한 실험 전부)이 "불러오는 중"에 영구히 머문다.
+    #
+    # `report_loaded_for` — "캐시할 본문을 이미 받았는가". 본문이 있을 때만 세우며
+    # 재조회를 막는다. 본문이 없을 때 세우지 않는 이유는 `record_report`에 있다.
+    #
+    # 둘 다 실패에는 세우지 않는다 — 일시적 오류 한 번에 리포트가 영구히 가려진다.
+    report_checked_for: str | None = None
     report_loaded_for: str | None = None
 
 
@@ -112,6 +121,7 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.last_publication = None
     state.report_markdown = None
     state.report_error = None
+    state.report_checked_for = None
     state.report_loaded_for = None
 
 
@@ -231,9 +241,18 @@ def record_report(
     `PROMOTED`는 terminal이라 `record_terminal_refresh`가 폴링을 끝내므로 재시도가
     무한히 돌지 않는다. 트레이드오프: 리포트를 끄고 돌린 배포에서는 `PASSED` 실험이
     선택돼 있는 동안 5초마다 null 조회가 반복된다 — 응답이 작아 비용은 낮다.
+
+    `[재-정정 — #647, 2026-08-10]` 표식 하나로 "캐시할 값이 있는가"와 "조회를 해 봤는가"를
+    동시에 표현하려다 후자를 잃었다. 본문이 없을 때 아무 표식도 세우지 않으면, 리포트가
+    **정말 없는** 실험(이 변경 이전에 완주한 실험 전부)은 화면이 "불러오는 중"에서
+    내려오지 못한다 — `PROMOTED`는 terminal이라 폴링까지 멈춰 그 문구에 영구히 고착되고,
+    `PASSED`는 문구가 그대로인 채 5초마다 조회만 반복한다. 그래서 조회를 시도했다는
+    사실은 `report_checked_for`에 **본문 유무와 무관하게** 남기고(문구 선택 전용),
+    재조회를 막는 캐시만 `report_loaded_for`에 남긴다.
     """
     state.report_markdown = markdown_text
     state.report_error = None
+    state.report_checked_for = experiment_id
     if markdown_text is not None:
         state.report_loaded_for = experiment_id
 

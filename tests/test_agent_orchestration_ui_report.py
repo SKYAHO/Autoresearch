@@ -168,6 +168,23 @@ def test_document_opens_links_in_a_new_tab() -> None:
     assert document.index('<base target="_blank">') < document.index("<style>")
 
 
+def test_document_blocks_remote_resource_loads() -> None:
+    """평범한 markdown 이미지가 사용자 IP·Referer를 외부로 흘리지 않는다.
+
+    `![](http://attacker.example/pixel.png)`는 raw HTML이 아니라 escape 대상이 아니고
+    그대로 `<img>`가 된다. 클릭 없이 iframe이 열리는 순간 요청이 나가므로
+    `<base target>`이 막는 경로와 다르다. `data:image/*`는 markdown-it이 허용하는
+    유일한 이미지 경로라 남긴다.
+    """
+    document = build_report_document('<p><img src="http://attacker.example/p.png"></p>')
+
+    assert '<meta name="referrer" content="no-referrer">' in document
+    assert "img-src data:;" in document
+    assert "script-src 'none'" in document
+    # CSP·referrer 선언이 본문보다 앞에 있어야 그 본문의 로드에 적용된다.
+    assert document.index("Content-Security-Policy") < document.index("<body>")
+
+
 def test_report_document_composes_both_steps() -> None:
     """호출부가 두 단계를 따로 부르지 않아도 된다."""
     document = report_document("# 제목")
@@ -212,6 +229,20 @@ def test_record_report_does_not_mark_loaded_when_the_body_is_none() -> None:
     assert state.report_loaded_for is None
 
 
+def test_record_report_marks_checked_even_when_the_body_is_none() -> None:
+    """`[재-정정 — #647, 2026-08-10]` 조회했다는 사실은 본문이 없어도 남는다.
+
+    캐시 표식(`report_loaded_for`)만 두면 리포트가 **정말 없는** 실험은 아무 표식도
+    세워지지 않아 화면이 "불러오는 중"에서 내려오지 못한다. 조회 시도 자체는
+    `report_checked_for`에 남겨 문구가 "아직 리포트가 없습니다."로 정확해지게 한다.
+    """
+    state = WorkbenchState(selected_id="exp-1")
+    record_report(state, "exp-1", None)
+
+    assert state.report_checked_for == "exp-1"
+    assert state.report_loaded_for is None
+
+
 def test_record_report_error_does_not_mark_loaded() -> None:
     """실패에는 표식을 세우지 않는다 — 일시적 오류가 리포트를 영구히 가리면 안 된다."""
     state = WorkbenchState(selected_id="exp-1")
@@ -231,6 +262,7 @@ def test_selecting_another_experiment_clears_the_report() -> None:
 
     assert state.report_markdown is None
     assert state.report_error is None
+    assert state.report_checked_for is None
     assert state.report_loaded_for is None
 
 
@@ -459,3 +491,19 @@ def test_results_tab_survives_every_combination(
     )
 
     assert not app.exception
+
+
+def test_experiment_without_a_report_says_so_instead_of_loading_forever() -> None:
+    """`[재-정정 — #647, 2026-08-10]` 리포트가 없는 실험이 "불러오는 중"에 고착되지 않는다.
+
+    서버는 "리포트 없음"을 200 + null로 답하므로, 조회 시도를 캐시 표식으로만 기록하면
+    이 변경 이전에 완주한 실험 전부가 "리포트를 불러오는 중입니다."에서 내려오지
+    못한다. `assert not app.exception`만 보는 조합 테스트는 이 경로를 잡지 못해
+    문구 자체를 단언한다.
+    """
+    app = _rendered_workbench(metric_summary=None, report_body=None, report_status=200)
+
+    assert not app.exception
+    captions = [element.value for element in app.caption]
+    assert "아직 리포트가 없습니다." in captions
+    assert "리포트를 불러오는 중입니다." not in captions

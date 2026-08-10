@@ -92,12 +92,30 @@ def build_report_document(body_html: str) -> str:
     방법이 없으며, 워크벤치 전체를 다른 곳으로 이동시키는 피싱도 가능해진다.
     `<base target="_blank">`는 모든 링크를 새 tab으로 열어 이 경로를 막는다 —
     스크립트 실행은 아니므로 결정 5의 escape 방어와는 별개의 층이다.
+
+    **원격 리소스 자동 로드도 막는다.** `![](http://attacker.example/pixel.png)` 같은
+    평범한 markdown 이미지는 raw HTML이 아니라 escape 대상이 아니고, 그대로 `<img>`가
+    된다. iframe이 열리는 순간 워크벤치 사용자의 IP와 `Referer`가 그 호스트로 나간다 —
+    사용자가 클릭하지 않아도 일어나므로 `<base target>`이 막는 것과 다른 경로다. 같은
+    위협 모델(에이전트 입력에 외부 사용자의 이슈 본문이 들어간다)에 그대로 얹힌다.
+
+    - `referrer` `no-referrer`: 어떤 요청에도 워크벤치 URL을 실어 보내지 않는다.
+    - CSP `img-src data:`: 원격 이미지 자체를 막아 IP 노출까지 끊는다. 리포트는
+      실험을 서술한 산문이고 executor는 이미지를 붙이지 않으므로 잃는 것이 없다.
+      `data:image/*`는 markdown-it이 이미 허용하는 유일한 이미지 경로라 남긴다.
+    - CSP `script-src 'none'`: 우리 템플릿에 스크립트가 없다는 사실을 브라우저에도
+      선언해, `html=False` 하나에 걸려 있던 방어에 층을 하나 더 둔다.
+
+    `default-src`를 두지 않아 인라인 `<style>`은 그대로 적용된다.
     """
     return (
         "<!doctype html>\n"
         '<html lang="ko">\n'
         "<head>\n"
         '<meta charset="utf-8">\n'
+        '<meta name="referrer" content="no-referrer">\n'
+        '<meta http-equiv="Content-Security-Policy" '
+        "content=\"img-src data:; script-src 'none'\">\n"
         '<base target="_blank">\n'
         f"<style>{_STYLES}</style>\n"
         "</head>\n"

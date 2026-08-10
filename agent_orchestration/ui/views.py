@@ -428,7 +428,10 @@ def _render_report(state: WorkbenchState) -> None:
         return
     if state.experiment is None or state.experiment.status not in REPORT_STATUSES:
         return
-    if state.report_loaded_for != state.selected_id:
+    # 문구는 `report_checked_for`로 고른다. `report_loaded_for`로 고르면 리포트가 정말
+    # 없는 실험은 그 표식이 영영 세워지지 않아 "불러오는 중"에서 내려오지 못한다
+    # (`state.record_report`의 `[재-정정]` 참고).
+    if state.report_checked_for != state.selected_id:
         st.caption("리포트를 불러오는 중입니다.")
         return
     if not state.report_markdown:
