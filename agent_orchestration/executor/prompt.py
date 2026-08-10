@@ -163,8 +163,8 @@ def _format_memory(limit_bytes: int) -> str:
 
 
 def _format_cpu(limit_millicores: int) -> str:
-    """Downward API가 주는 밀리코어 정수를 코어 표기로 바꾼다."""
-    return f"{limit_millicores / 1000:.1f} vCPU"
+    """밀리코어 정수를 실제 상한을 부풀리지 않는 코어 표기로 바꾼다."""
+    return f"{limit_millicores / 1000:g} vCPU"
 
 
 def _format_duration(seconds: int) -> str:

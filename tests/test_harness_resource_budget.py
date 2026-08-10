@@ -110,7 +110,7 @@ def test_known_budget_appears_in_the_harness_instructions() -> None:
         ),
     )
     assert "2.0 GiB" in text
-    assert "4.0 vCPU" in text
+    assert "4 vCPU" in text
     assert "1,800초" in text
     assert "자원 예산" in text
 
@@ -138,6 +138,13 @@ def test_fractional_cpu_budget_is_not_rounded_away() -> None:
     text = build_harness_instructions((), ResourceBudget(cpu_limit_millicores=500))
 
     assert "0.5 vCPU" in text
+
+
+def test_sub_100_millicore_budget_is_not_rounded_up() -> None:
+    """100m 미만 상한도 표기 과정에서 실제보다 크게 알리지 않는다."""
+    text = build_harness_instructions((), ResourceBudget(cpu_limit_millicores=50))
+
+    assert "0.05 vCPU" in text
 
 
 def test_budget_section_is_omitted_when_nothing_is_known() -> None:
@@ -168,7 +175,7 @@ def test_partial_budget_reports_only_the_known_value() -> None:
     assert "container당" not in time_only
 
     cpu_only = build_harness_instructions((), ResourceBudget(cpu_limit_millicores=4000))
-    assert "4.0 vCPU" in cpu_only
+    assert "4 vCPU" in cpu_only
     # 예산 절 말미의 #651 서술이 "10.3 GiB"를 언급하므로 단위가 아니라 상한 줄로 본다.
     assert "메모리: container당" not in cpu_only
     assert "seed 하나당" not in cpu_only

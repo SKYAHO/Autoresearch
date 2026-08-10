@@ -14,10 +14,14 @@ LimitRange 기본값(limit 1Gi)이 적용돼 학습 단계가 OOM으로 죽으�
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 import sys
 import uuid
+
+from kubernetes.client import V1PodSpec
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -143,7 +147,9 @@ def test_concurrent_jobs_fit_the_namespace_quota() -> None:
     assert cpu * settings.max_concurrent_experiments <= _QUOTA_REQUESTS_CPU_MILLICORES
 
 
-def _effective_request(spec, resource: str, parse) -> int:
+def _effective_request(
+    spec: V1PodSpec, resource: str, parse: Callable[[str], int]
+) -> int:
     """Pod 실효 요청 = `max(앱 container 합계, 각 initContainer의 최댓값)`."""
     app_total = sum(parse(c.resources.requests[resource]) for c in spec.containers)
     init_max = max(parse(c.resources.requests[resource]) for c in spec.init_containers)
@@ -161,7 +167,15 @@ def _mebibytes(value: str) -> int:
 def _millicores(value: str) -> int:
     if value.endswith("m"):
         return int(value[:-1])
-    return int(value) * 1000
+    try:
+        return int(value) * 1000
+    except ValueError as error:
+        raise AssertionError(f"예상하지 못한 CPU 단위: {value}") from error
+
+
+def test_cpu_parser_reports_an_unexpected_unit() -> None:
+    with pytest.raises(AssertionError, match="예상하지 못한 CPU 단위: 0.5"):
+        _millicores("0.5")
 
 
 def test_job_deadline_is_carried_from_settings() -> None:
