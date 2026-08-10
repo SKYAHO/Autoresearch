@@ -145,22 +145,23 @@ def _container_resources() -> V1ResourceRequirements:
 
     - 데이터셋 조립 피크 **1.13 GiB**, 학습 피크 **1.22 GiB** — **둘 다 1Gi를 넘는다**
     - request를 넘겨 쓰면 QoS가 Burstable이라 노드 메모리 압박 시 eviction 대상이 된다.
-      4Gi면 두 단계가 요청 안에 넉넉히 들어오고, limit 8Gi까지 여유가 남는다
+      2Gi면 두 단계가 요청 안에 들어오고, limit 8Gi까지 개별 실험의 버스트 여유가 남는다
 
-    CPU에는 대응하는 실측이 없다(#664). 4 vCPU는 동시 5건 데모의 대기 시간을 줄이기 위한
-    **판단값**이며, 실제 사용량을 관측해 재조정하는 것을 전제로 한다. 메모리처럼 "실측이
-    이만큼이라 이 값"이라고 말할 수 없다는 점을 여기 남겨 둔다.
+    CPU에는 대응하는 실측이 없다(#664). request 1 vCPU는 동시 5건을 비용 절충형
+    e2-standard-8 한 노드에 배치하기 위한 예약값이고, limit 4 vCPU는 유휴 CPU가 있을 때
+    개별 실험이 버스트할 수 있는 상한이다. 실제 사용량과 throttling을 canary에서 관측해
+    재조정하는 것을 전제로 하며, 메모리처럼 "실측이 이만큼이라 이 값"이라고 말할 수 없다.
 
     수치는 infra의 LimitRange·Quota와 짝을 이룬다(`SKYAHO/Autoresearch-infra#624`) —
-    container max 4 vCPU/8Gi, 동시 5건 기준 quota requests 10 vCPU/20Gi ·
+    container max 4 vCPU/8Gi, 동시 5건 기준 quota requests 5 vCPU/10Gi ·
     limits 20 vCPU/40Gi. **이 저장소를 먼저 올리면 admission이 Job 생성을 거부한다.**
 
     initContainer 7개에 같은 값을 줘도 8배로 계산되지 않는다. Pod 실효값은
     `max(앱 container 합계, 각 initContainer의 최댓값)`이고 initContainer는 순차
-    실행이므로(sidecar 없음), 실효값은 request 2 CPU/4Gi · limit 4 CPU/8Gi다.
+    실행이므로(sidecar 없음), 실효값은 request 1 CPU/2Gi · limit 4 CPU/8Gi다.
     """
     return V1ResourceRequirements(
-        requests={"cpu": "2", "memory": "4Gi"},
+        requests={"cpu": "1", "memory": "2Gi"},
         limits={"cpu": "4", "memory": "8Gi"},
     )
 

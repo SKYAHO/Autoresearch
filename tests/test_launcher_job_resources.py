@@ -35,8 +35,8 @@ _NAMESPACE_CONTAINER_MAX_MEMORY = "8Gi"
 _NAMESPACE_CONTAINER_MAX_CPU = "4"
 
 # 동시 5건 기준 namespace ResourceQuota의 requests 항목이다(`Autoresearch-infra#624`).
-_QUOTA_REQUESTS_MEMORY_MIB = 20 * 1024
-_QUOTA_REQUESTS_CPU_MILLICORES = 10 * 1000
+_QUOTA_REQUESTS_MEMORY_MIB = 10 * 1024
+_QUOTA_REQUESTS_CPU_MILLICORES = 5 * 1000
 
 
 def _settings() -> LauncherSettings:
@@ -102,8 +102,8 @@ def test_requests_cover_the_measured_peaks() -> None:
     job = build_executor_job(_claim(), _settings())
 
     for container in _all_containers(job):
-        assert container.resources.requests["memory"] == "4Gi", container.name
-        assert container.resources.requests["cpu"] == "2", container.name
+        assert container.resources.requests["memory"] == "2Gi", container.name
+        assert container.resources.requests["cpu"] == "1", container.name
 
 
 def test_limits_stay_within_the_namespace_ceiling() -> None:
