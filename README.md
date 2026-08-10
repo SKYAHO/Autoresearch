@@ -111,6 +111,7 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 | launcher | `ORCH_ACTIVE_DEADLINE_SEC` | 8-container Job 전체 실행 상한 (`3600`초) |
 | launcher | `ORCH_TTL_AFTER_FINISHED_SEC` | 완료 Job 보존 시간(기본 `30`초, 장애 smoke에서만 일시 조정) |
 | launcher | `ORCH_MLFLOW_TRACKING_URI` | 학습이 MLflow run을 기록할 tracking server 좌표. executor에는 접두사 없는 `MLFLOW_TRACKING_URI`로 내보낸다 |
+| 로그 수집기 | `ORCH_LOG_COLLECT_INTERVAL_SEC` | Pod 로그 폴링 주기(기본 `5`초). 워크벤치 폴링 5초와 합쳐 최악 지연이 정해진다 |
 | launcher | `ORCH_EXPERIMENT_RESULTS_ROOT` | 실험 산출물을 남길 GCS 루트(`gs://bucket[/prefix]`). 비어 있으면 게시하지 않는다 — Pod의 workspace는 emptyDir이라 측정 결과가 사라진다 |
 | executor | `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`, `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA` | launcher가 DB에서 복사해 전달하는 불변 branch 좌표 |
 | token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch/clone/push token-minter에만 보이는 private key mount 경로 |
