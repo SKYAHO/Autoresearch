@@ -822,10 +822,16 @@ jobs:
         shell: bash
         run: |
           cd infra-repo
+          # infra의 `scripts/promote-agent-orchestration-digests.rb`가 고치도록 등록한
+          # 파일 집합과 **정확히 같아야 한다.** 그 스크립트의 TARGETS에 파일이 늘면
+          # 여기도 같이 늘려야 하며, 어긋나면 이 가드가 정상 승격을 거부해 Agent
+          # Orchestration 배포가 통째로 막힌다(#653).
           allowed_paths=(
             deploy/agent-orchestration/api-deployment.yaml
             deploy/agent-orchestration/api-migration-job.yaml
             deploy/agent-orchestration/launcher-cronjob.yaml
+            # API image와 launcher image가 둘 다 이 파일을 고친다(#616).
+            deploy/agent-orchestration/log-collector-deployment.yaml
             deploy/agent-orchestration/runner-deployment.yaml
             deploy/agent-orchestration/deployment-verification-job.yaml
             deploy/agent-orchestration/ui-deployment.yaml
