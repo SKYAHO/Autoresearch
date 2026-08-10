@@ -66,10 +66,17 @@ def test_block_raw_html_is_escaped() -> None:
 
 
 def test_javascript_links_are_neutralized() -> None:
-    """`javascript:` 링크가 앵커로 만들어지지 않는다."""
+    """`javascript:` 링크가 앵커로 만들어지지 않는다.
+
+    `javascript:` 링크가 거부되면 markdown-it은 원문 그대로(`<p>[누르지
+    마시오](javascript:alert(1))</p>`) escape해 출력한다. 이전 첫 단언
+    (`rendered.replace(...)` 후 검사)은 입력 문자열이 그대로 남아 있기만 하면
+    항등 함수여도 통과하는 assert-nothing이었다 — 실질 방어는 앵커가 아예 만들어지지
+    않는다는 것이므로 그것을 직접 본다.
+    """
     rendered = render_report_html("[누르지 마시오](javascript:alert(1))")
 
-    assert "javascript:" not in rendered.replace("javascript:alert(1)", "")
+    assert "<a" not in rendered
     assert "<a href=\"javascript:" not in rendered
 
 
@@ -110,6 +117,21 @@ def test_document_is_a_complete_html_page() -> None:
     assert 'lang="ko"' in document
 
 
+def test_document_opens_links_in_a_new_tab() -> None:
+    """M5: 링크 클릭이 620px iframe이나 워크벤치 전체를 이동시키지 않는다.
+
+    Streamlit iframe sandbox의 `allow-top-navigation-by-user-activation` 때문에,
+    `target` 지정 없이는 에이전트가 쓴 링크(외부 이슈 본문이 섞여 있다)를 클릭하면
+    iframe 전체가 외부 페이지로 바뀌어 돌아갈 방법이 없다. `<base target="_blank">`가
+    모든 링크를 새 tab으로 열어 이를 막는다.
+    """
+    document = build_report_document("<p>본문</p>")
+
+    assert '<base target="_blank">' in document
+    # head 안에, 어떤 스타일·본문보다 앞에 있어야 문서 전체 링크에 적용된다.
+    assert document.index('<base target="_blank">') < document.index("<style>")
+
+
 def test_report_document_composes_both_steps() -> None:
     """호출부가 두 단계를 따로 부르지 않아도 된다."""
     document = report_document("# 제목")
@@ -138,13 +160,20 @@ def test_record_report_marks_the_experiment_as_loaded() -> None:
     assert state.report_error is None
 
 
-def test_record_report_marks_loaded_even_when_there_is_no_report() -> None:
-    """리포트가 없다는 사실도 조회 결과다 — 다시 묻지 않는다."""
+def test_record_report_does_not_mark_loaded_when_the_body_is_none() -> None:
+    """`[정정 — #647, 2026-08-10]` 본문 `None`은 조회 완료로 캐시하지 않는다.
+
+    결정 2가 지표 커밋과 리포트 커밋을 별도 트랜잭션으로 나눈 결과, `PASSED`로 막
+    전이했지만 리포트 트랜잭션이 아직 커밋되지 않은 순간에도 200 + null이 온다. UI는
+    그것이 "진짜 리포트 없음"인지 "아직 두 번째 트랜잭션 전"인지 구별할 수 없으므로,
+    구별 불가능한 상태를 `report_loaded_for`로 영구 고착시키지 않는다 — 표식이 없으면
+    다음 5초 polling에서 자연히 재조회된다.
+    """
     state = WorkbenchState(selected_id="exp-1")
     record_report(state, "exp-1", None)
 
     assert state.report_markdown is None
-    assert state.report_loaded_for == "exp-1"
+    assert state.report_loaded_for is None
 
 
 def test_record_report_error_does_not_mark_loaded() -> None:

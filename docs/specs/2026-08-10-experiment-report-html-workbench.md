@@ -271,6 +271,21 @@ UI가 GCS를 읽는 경로도 새로 만들지 않는다.
 | `report_loaded_for == selected_id`, 본문 `None` | caption "아직 리포트가 없습니다" |
 | 본문 있음 | `st.iframe` |
 
+> `[정정 — #647, 2026-08-10]` 위 표의 둘째 행은 구현(`views.py`의 `_render_report`)과
+> 어긋난다. 구현은 `report_loaded_for != selected_id`일 때 아무것도 안 그리지 않고
+> caption "리포트를 불러오는 중입니다."를 낸다. **구현이 낫다** — 아무것도 안 그리면
+> polling 중인지 정지했는지 화면에서 구별할 수 없다. 표를 구현에 맞춘다.
+>
+> | 상태 | 화면 |
+> | --- | --- |
+> | `report_error is not None` | `st.warning` (fetch 실패) |
+> | `report_loaded_for != selected_id` | caption "리포트를 불러오는 중입니다." |
+> | `report_loaded_for == selected_id`, 본문 `None` | caption "아직 리포트가 없습니다" |
+> | 본문 있음 | `st.iframe` |
+>
+> 아래 "`report_loaded_for`는 성공했을 때만 세운다" 단락도 함께 바뀐다 — 이유는 이
+> 섹션 끝의 정정을 참고한다.
+
 `report_error`가 최우선이다. 실패했는데 "리포트가 없습니다"로 보이면 **없는 것과 못 받은
 것이 구별되지 않는다.**
 
@@ -296,6 +311,34 @@ UI가 GCS를 읽는 경로도 새로 만들지 않는다.
 (`TERMINAL_STATUSES`는 FAILED·ERROR·PROMOTED뿐) 다음 갱신에서 자연히 재시도되고 스스로
 낫는다. `PROMOTED`는 terminal이라 `record_terminal_refresh`가 폴링을 끝내므로 재시도가
 무한히 돌지 않는다 — 자기 치유와 상한이 이미 있는 구조에서 나온다.
+
+> `[정정 — #647, 2026-08-10]` 위 단락의 "성공"은 원래 "HTTP 조회가 에러 없이 끝남"만
+> 뜻했고, 본문이 `None`이어도 그것을 조회 결과로 보아 표식을 세웠다. 최종 리뷰(I3)가
+> 이것이 결정 2와 만나 고착을 만든다는 것을 지적해 뒤집는다.
+>
+> 결정 2는 지표 커밋과 리포트 커밋을 **별도 트랜잭션**으로 나눈다. 그 결과
+> `record_candidate`가 지표 트랜잭션을 커밋해 `status`가 이미 `PASSED`로 보이는데
+> `_store_report_markdown`의 두 번째 트랜잭션은 아직 커밋 전인 순간이 실재한다. 그
+> 틈에 5초 polling이 리포트 조회 endpoint를 때리면 실험은 있고 리포트는 아직
+> 없으므로 정상적으로 **200 + `null`**이 온다(결정 1의 계약대로). 이전 규칙대로
+> `report_loaded_for`를 세우면, UI는 이 null이 "진짜 리포트 없음"인지 "아직 두 번째
+> 트랜잭션 전"인지 구별할 방법이 없는 채로 **표식을 영구 고착**시킨다. 이후
+> `refresh_report`는 `report_loaded_for == selected_id`를 보고 매번 early-return하고,
+> 결과 탭은 리포트가 실제로 도착한 뒤에도 "아직 리포트가 없습니다."에 멈춘다.
+> `select_experiment`는 같은 id를 다시 선택하면 no-op이라, 사이드바에서 같은 실험을
+> 다시 눌러도 이 고착은 풀리지 않는다.
+>
+> **바뀐 규칙:** `record_report`는 본문이 `None`이 아닐 때만 `report_loaded_for`를
+> 세운다. `report_error`를 지우는 동작(조회 자체는 성공했으므로)은 그대로 둔다.
+> `PASSED`가 terminal이 아니라는 성질은 그대로 재활용된다 — 표식이 서지 않으면 다음
+> polling에서 자연히 재조회되어 리포트가 실제로 커밋되는 순간 스스로 낫는다.
+> `PROMOTED`는 여전히 terminal이라 `record_terminal_refresh`가 폴링을 끝낸다.
+>
+> **트레이드오프.** 리포트를 끄고 돌린 배포(executor가 `report_markdown`을 아예
+> 싣지 않는 경우)에서는 `PASSED`(또는 `PROMOTED` 진입 전 마지막 polling)인 실험이
+> 화면에 선택돼 있는 동안 표식이 영영 서지 않아 5초마다 null 조회가 반복된다. 응답이
+> 작아(`{experiment_id, report_markdown: null}`) 비용은 낮지만, 나중에 "왜 이 실험만
+> 계속 조회하지"라는 질문이 나올 수 있다 — 이 문단이 그 답이다.
 
 ### 잡는 위치
 
@@ -439,6 +482,10 @@ aaa9492 feat: 결과 탭에 지표 카드와 리포트 HTML을 그린다
    `rendered.replace("javascript:alert(1)", "")` 후 검사라 항등 함수여도 통과한다.
    실질 방어는 둘째 줄(`'<a href="javascript:' not in rendered`)이 검증한다. 계획
    원문의 결함이며, 코드는 고치지 않았다.
+
+   > `[정정 — #647, 2026-08-10]` 최종 리뷰(M4)가 이 assert-nothing을 지적해 고쳤다.
+   > 첫 단언을 `assert "<a" not in rendered`(앵커 자체가 만들어지지 않았음을 직접
+   > 확인)로 바꿨고, 둘째 줄은 그대로 남겼다. 더 이상 알려진 한계가 아니다.
 4. **알려진 한계.**
    `test_report_statuses_are_exactly_the_states_that_can_hold_a_report`는 상수
    리터럴(`{"PASSED", "PROMOTED"}`)을 되풀이하는 스냅샷 테스트라, 근거인

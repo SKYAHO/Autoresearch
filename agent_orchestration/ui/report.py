@@ -76,12 +76,22 @@ def build_report_document(body_html: str) -> str:
     """HTML 조각을 iframe srcdoc에 넣을 완결된 문서로 조립한다.
 
     **스크립트를 넣지 않는다.** 격리가 없는 곳에 실행 표면을 만들 이유가 없다.
+
+    **`<base target="_blank">`를 넣는다.** Streamlit이 iframe에 붙이는 sandbox
+    목록에는 `allow-top-navigation-by-user-activation`이 있다. 리포트 본문에는
+    에이전트가 쓴 링크가 들어가고 그 입력에는 외부 사용자가 작성한 GitHub 이슈
+    본문 원문이 섞여 있다(모듈 docstring). 사용자가 그 링크를 클릭하면 `target`
+    지정 없이는 고정 620px iframe 전체가 외부 페이지로 바뀌어 버리고 돌아갈
+    방법이 없으며, 워크벤치 전체를 다른 곳으로 이동시키는 피싱도 가능해진다.
+    `<base target="_blank">`는 모든 링크를 새 tab으로 열어 이 경로를 막는다 —
+    스크립트 실행은 아니므로 결정 5의 escape 방어와는 별개의 층이다.
     """
     return (
         "<!doctype html>\n"
         '<html lang="ko">\n'
         "<head>\n"
         '<meta charset="utf-8">\n'
+        '<base target="_blank">\n'
         f"<style>{_STYLES}</style>\n"
         "</head>\n"
         f"<body>\n{body_html}\n</body>\n"

@@ -214,14 +214,28 @@ def record_report(
     experiment_id: str,
     markdown_text: str | None,
 ) -> None:
-    """조회한 리포트 본문과 조회 완료 표식을 기록한다.
+    """조회한 리포트 본문을 기록하고, 본문이 있을 때만 조회 완료 표식을 세운다.
 
-    본문이 `None`이어도 표식을 세운다 — "리포트가 없다"는 것도 조회 결과이고, 매
-    갱신마다 다시 물을 이유가 없다.
+    `[정정 — #647, 2026-08-10]` 이전에는 본문이 `None`이어도 표식을 세웠다 — "리포트가
+    없다"도 조회 결과로 보고 매 갱신마다 다시 묻지 않으려는 의도였다(spec 결정 7 원문).
+    그런데 결정 2가 지표 커밋과 리포트 커밋을 별도 트랜잭션으로 나눈 결과, `PASSED`로
+    막 전이했지만 두 번째 트랜잭션이 아직 커밋되지 않아 `report_markdown`이 실제로는
+    `NULL`인 순간이 실재한다. 그 틈에 5초 polling이 조회하면 200 + null을 받는데, UI는
+    그것이 "진짜 리포트 없음"인지 "아직 두 번째 트랜잭션 전"인지 구별할 수 없다.
+    구별 불가능한 것을 표식으로 캐시하면 `refresh_report`가 영구히 early-return하고
+    결과 탭이 "아직 리포트가 없습니다."에 고착된다 — `select_experiment`는 같은 id면
+    no-op이라 사이드바에서 같은 실험을 다시 눌러도 풀리지 않는다.
+
+    그래서 본문이 있을 때만 표식을 세운다. `PASSED`는 `TERMINAL_STATUSES`에 없는
+    polling 상태이므로 표식이 없으면 다음 갱신에서 자연히 재조회되어 스스로 낫는다.
+    `PROMOTED`는 terminal이라 `record_terminal_refresh`가 폴링을 끝내므로 재시도가
+    무한히 돌지 않는다. 트레이드오프: 리포트를 끄고 돌린 배포에서는 `PASSED` 실험이
+    선택돼 있는 동안 5초마다 null 조회가 반복된다 — 응답이 작아 비용은 낮다.
     """
     state.report_markdown = markdown_text
     state.report_error = None
-    state.report_loaded_for = experiment_id
+    if markdown_text is not None:
+        state.report_loaded_for = experiment_id
 
 
 def record_report_error(state: WorkbenchState, message: str) -> None:
