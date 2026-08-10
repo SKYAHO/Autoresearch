@@ -24,6 +24,7 @@ from kubernetes.client import (
     V1Container,
     V1EmptyDirVolumeSource,
     V1EnvVar,
+    V1EnvVarSource,
     V1Job,
     V1JobSpec,
     V1KeyToPath,
@@ -31,6 +32,7 @@ from kubernetes.client import (
     V1PodSecurityContext,
     V1PodSpec,
     V1PodTemplateSpec,
+    V1ResourceFieldSelector,
     V1ResourceRequirements,
     V1SeccompProfile,
     V1SecretVolumeSource,
@@ -57,6 +59,10 @@ _STATE_DIRECTORY = "/var/run/executor-state"
 _CODEX_HOME_DIRECTORY = "/var/lib/codex"
 _API_TOKEN_DIRECTORY = "/var/run/executor-api-token"
 _TEMP_DIRECTORY = "/tmp"
+# candidate 학습이 도는 container다. 자원 예산 고지가 이 container의 상한을 읽으므로
+# (`_resource_budget_environment`) 이름을 상수로 묶어 둘이 어긋나지 않게 한다 — 이름이
+# 틀리면 API 검증은 통과하고 Pod 시작 시점에 죽는다.
+_TRAINING_BUDGET_CONTAINER = "candidate-finalizer"
 
 
 class JobClient(Protocol):
@@ -142,6 +148,59 @@ def _container_resources() -> V1ResourceRequirements:
         requests={"cpu": "500m", "memory": "1536Mi"},
         limits={"cpu": "1", "memory": "2Gi"},
     )
+
+
+def _resource_budget_environment(settings: LauncherSettings) -> list[V1EnvVar]:
+    """코드를 쓰는 container에게 **자기에게 걸린 실제 상한**을 알린다(#656).
+
+    에이전트는 자기 코드가 자원을 얼마나 써도 되는지 알 방법이 없었고, 초과는 cgroup
+    group-kill이라 로그 한 줄 없이 실험이 끝났다(#651, #652). 하네스 지침이 그 상한을
+    서술하려면 값이 container 안까지 들어와야 한다.
+
+    메모리를 Downward API로 읽는 이유는 **드리프트를 구조적으로 막기 위해서**다. 숫자를
+    지침 문자열에 박으면 `_container_resources()`나 infra LimitRange가 바뀔 때 지침이
+    조용히 거짓이 되는데, 그 거짓을 검증할 방법이 없다. `resourceFieldRef`는 실제 적용된
+    spec을 읽으므로 정의가 한 곳에만 남는다.
+
+    읽는 대상은 codex-worker 자신이 아니라 **학습이 실제로 도는 container**다. 예산을
+    넘겨 OOM으로 죽는 곳이 거기이므로 그 값이 에이전트에게 의미 있는 숫자다. 지금은 8개
+    container가 같은 자원을 받아 두 값이 같지만, container별 차등을 도입하면(#652) 자기
+    값을 읽는 구현은 조용히 틀린 예산을 알리게 된다 — 코드를 쓰는 container는 작게, 학습
+    container는 크게 주는 것이 차등의 자연스러운 방향이기 때문이다.
+
+    initContainer가 app container의 값을 읽는 것은 kubelet이 **Pod spec 선언**에서
+    해석하므로 실행 순서와 무관하다(대상 container가 아직 뜨지 않아도 된다). dev
+    클러스터에서 실물 Pod으로 확인했다.
+
+    학습 시간 상한은 학습이 켜진 배포에서만 의미가 있어 `_training_environment`와 같은
+    조건으로 붙인다. 다만 이름은 **일부러 다르다** — `ORCH_TRAINING_TIMEOUT_SEC`은 학습
+    container가 실제로 **집행하는** 값이고 학습 좌표와 함께 그 두 container에만 간다
+    (#605 계약, `test_launcher_training_environment.py`). 여기서 codex-worker에 주는 것은
+    같은 숫자의 **고지**이지 집행이 아니므로, 계약을 흐리지 않도록 예산 이름을 따로 쓴다.
+    두 값이 어긋나지 않는 것은 같은 `settings` 필드에서 나온다는 사실이 보장한다.
+    """
+    budget = [
+        V1EnvVar(
+            name="ORCH_CONTAINER_MEMORY_LIMIT_BYTES",
+            value_from=V1EnvVarSource(
+                # divisor "1" = 바이트. container_name을 생략하면 자기 자신을 가리키므로
+                # 학습 container를 명시한다 — 생략하면 코드를 쓰는 container의 값이 된다.
+                resource_field_ref=V1ResourceFieldSelector(
+                    container_name=_TRAINING_BUDGET_CONTAINER,
+                    resource="limits.memory",
+                    divisor="1",
+                )
+            ),
+        )
+    ]
+    if settings.training_dataset_uri:
+        budget.append(
+            _env(
+                "ORCH_BUDGET_TRAINING_TIMEOUT_SEC",
+                str(settings.training_timeout_sec),
+            )
+        )
+    return budget
 
 
 def _training_environment(settings: LauncherSettings) -> list[V1EnvVar]:
@@ -276,6 +335,7 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
         [
             _env("ORCH_EXECUTOR_WORKSPACE", _WORKSPACE_DIRECTORY),
             *codex_environment,
+            *_resource_budget_environment(settings),
         ],
         [
             workspace_mount,
@@ -304,7 +364,7 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
         settings,
     )
     candidate_finalizer = _container(
-        "candidate-finalizer",
+        _TRAINING_BUDGET_CONTAINER,
         ["python", "-m", "agent_orchestration.executor.phase2", "candidate-finalizer"],
         [
             *coordinates,
