@@ -236,7 +236,7 @@ def _resource_budget_environment(settings: LauncherSettings) -> list[V1EnvVar]:
     CFS 스로틀링으로 느려지기만 한다 — 로그에는 "학습이 오래 걸렸다"만 남는다. 게다가
     container 안의 `os.cpu_count()`와 대부분의 수치 라이브러리 기본 스레드 수는 cgroup
     상한이 아니라 **노드 전체 vCPU**를 본다. 노드가 커질수록 실제 상한과의 격차가 벌어지므로
-    (`batch-od`는 `e2-standard-16`), 자원을 올리는 변경과 같은 곳에서 고지해야 상향의
+    (`batch-od`는 `e2-standard-8`), 자원을 올리는 변경과 같은 곳에서 고지해야 상향의
     실효가 난다.
 
     CPU는 **밀리코어**로 알린다. 코어 단위로 반올림하면 `500m`이 `1`이 되어, container별

@@ -131,10 +131,10 @@ def test_concurrent_jobs_fit_the_namespace_quota() -> None:
     initContainer는 순차 실행이고 sidecar(`restartPolicy: Always`)가 없으므로 개수만큼
     곱해지지 않는다.
 
-    이 계산이 깨지면 상한째 Job의 **생성 자체가 403으로 거부된다**(Pending이 아니다).
-    launcher는 409만 흡수하므로 403은 tick 전체를 실패시키는데, 그 시점에는 이미 DB에
-    `RUNNING`으로 커밋된 뒤다 — 워크벤치에는 실행 중으로 보이지만 Job이 없는 실험이
-    남는다. CPU와 메모리 중 **하나만 넘겨도** 같은 일이 벌어지므로 둘 다 검사한다.
+    이 계산이 깨지면 Job controller의 Pod 생성이 quota admission에서 `FailedCreate`로
+    거부된다. launcher는 Job 객체 생성까지는 성공으로 기록하므로 active deadline까지
+    `RUNNING` Job에 Pod가 없는 상태가 길게 남을 수 있다. CPU와 메모리 중 **하나만
+    넘겨도** 같은 일이 벌어지므로 둘 다 검사한다.
     """
     settings = _settings()
     job = build_executor_job(_claim(), settings)
