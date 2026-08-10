@@ -127,8 +127,14 @@ class ExecutorResultReportRequest(BaseModel):
     candidate_sha: GitSha
     metric_snapshot: dict
     # 에이전트가 쓴 `report.md` 본문. 없이 보고해도 성립한다 — 리포트 실패가 지표
-    # 게시를 막지 않는다는 성질이 여기서 유지된다. 크기·내용 검증을 여기서 하지 않는
-    # 이유는 spec 결정 3에 있다: 이 필드로 요청을 거절하면 리포트가 지표를 죽인다.
+    # 게시를 막지 않는다는 성질이 여기서 유지된다.
+    #
+    # **크기·내용으로 이 요청을 죽이지 않는 것이 계약이다**(spec 결정 3). 그래서
+    # `field_validator`를 달지 않고, 정규화(NUL 제거·바이트 절단)는 service가 한다.
+    # `max_length`는 그 계약의 예외가 아니라 **망가진 client의 무한정 본문만 막는
+    # 성긴 방어**다 — executor는 65536 **바이트**로 먼저 자르므로 ASCII로 채워도
+    # 이 **문자** 상한의 1/4에 닿지 못한다. 설령 걸리더라도 `report_result`가 422를
+    # 받으면 리포트를 빼고 한 번 재시도하므로 지표와 완주 전이는 살아남는다.
     report_markdown: str | None = Field(default=None, max_length=MAX_REPORT_MARKDOWN_CHARS)
 
     @field_validator("metric_snapshot")
