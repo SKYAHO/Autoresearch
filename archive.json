@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-10T13:11:30Z",
+  "generated_at": "2026-08-10T13:17:52Z",
   "reports": [
+    {
+      "number": 663,
+      "title": "fix: 수집한 실험 로그를 repr이 아니라 UTF-8 원문으로 읽는다",
+      "author": "waieiches",
+      "merged_at": "2026-08-10T13:17:31Z",
+      "summary_ko": [
+        "Kubernetes Pod 로그 수집 시 발생하던 문자열 역직렬화 오류 및 한글 깨짐 현상을 수정하였습니다.",
+        "HTTP 응답 본문을 직접 바이트로 수신하여 UTF-8 원문으로 디코딩하도록 수집 로직을 변경하였습니다.",
+        "디코딩 불가 바이트에 대한 안전 처리와 함께 실제 SDK 동작을 모사한 단위 테스트를 보완하였습니다."
+      ],
+      "report_url": "pr/663/"
+    },
     {
       "number": 667,
       "title": "fix: 자원 예산 env를 리터럴로 넣어 admission을 통과시킨다",
