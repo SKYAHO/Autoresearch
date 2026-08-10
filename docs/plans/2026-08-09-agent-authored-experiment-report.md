@@ -36,9 +36,15 @@ candidate-finalizer 안에서
 
 ## Stage 0 — 선행 (다른 저장소·수동)
 
-- [ ] **`Autoresearch-infra` 매니페스트에 `ORCH_ACTIVE_DEADLINE_SEC=60000`,
-      `ORCH_CODEX_TIMEOUT_SEC=6000` 반영.** 이 저장소의 `.env.example`은 갱신됨.
-      실제 적용은 infra 쪽 launcher CronJob env를 바꿔야 한다
+- [x] **`Autoresearch-infra` 매니페스트에 `ORCH_ACTIVE_DEADLINE_SEC=60000`,
+      `ORCH_CODEX_TIMEOUT_SEC=6000` 반영.** 클러스터의 launcher CronJob env에서 두 값
+      확인됨(2026-08-09)
+- [x] **`autoresearch-experiment-job-contract` ValidatingAdmissionPolicy의 `codex-home`
+      허용 목록에 `candidate-finalizer` 추가.** Stage 3이 `codex-home`을
+      `candidate-finalizer`에도 mount하면서 필요해졌다. **이 저장소의 릴리스만으로는
+      반영되지 않는다** — 정책은 infra 소유이고 admission에서 막히면 Job이 422로
+      거부되며 `RUNNING`인 채 매 tick 재시도된다(#640 첫 배포에서 실물로 겪음).
+      계약을 바꾸는 PR은 **같은 PR에서 이 정책의 변경 필요 여부를 확인해야 한다**
 - [ ] **NetworkPolicy Git 정본 반영.** 2026-08-08에 클러스터에서 직접 고친
       `agent-orchestration-api-egress`의 executor ingress 규칙이 infra 저장소
       `deploy/agent-orchestration/network-policy.yaml`에 없으면 **Argo sync 때
@@ -279,10 +285,46 @@ brier    0.116992 → 0.129235   +0.012243   ← 악화
 
 ### 검증
 
-- [ ] `report.md`가 GCS에 남고, 그 안의 숫자가 `metrics.json`과 일치
-- [ ] AGENTS.md 충돌로 인한 `no_changes`가 재발하지 않음
-- [ ] 하네스 교체가 candidate diff에 나타나지 않는다
+- [x] `report.md`가 GCS에 남고, 그 안의 숫자가 `metrics.json`과 일치 — **#644**
+- [x] AGENTS.md 충돌로 인한 `no_changes`가 재발하지 않음 — #641·#644 모두 통과
+- [x] 하네스 교체가 candidate diff에 나타나지 않는다 — 커밋에 `AGENTS.md` 없음
 - [x] pytest·ruff
+
+### 실측 (2026-08-10, #641·#644)
+
+**Stage 3 완료.** 실험 `889b3e3c…`(이슈 #644)가 약 37분에 완주하며 리포트를 남겼다.
+
+| 확인 | 결과 |
+|---|---|
+| `report.md` 게시 | `gs://…/experiments/644/889b3e3c…/report.md` (5,416 B) |
+| 절 구성 | `sections_missing=0` — 계약이 요구한 7개 전부 |
+| 숫자 일치 | 리포트의 소수·정수 **50개 전부** `metrics.json`과 일치, 불일치 0 |
+| 지문·좌표 | SHA-256 4개, 좌표 4개, `dataset_fingerprint` 모두 일치 |
+| candidate 커밋 | `9c64643` — `lgbm_model.py`·`config.yaml` 두 개뿐 |
+| 상태 | `PASSED`, `metric_summary` 채워짐 |
+| 재현성 | 4회째 일치 (#634·#635·#641·#644) |
+
+**로그 순서가 설계대로 나왔다.** `experiment results published` → Codex #2 →
+`experiment report published`. 숫자가 먼저 확정된다.
+
+**두 번 걸렸고 두 번 다 순서 결정이 막아 줬다.**
+
+- **#641** — Codex CLI가 clone 밖 디렉터리에서 실행을 거부했다
+  (`Not inside a trusted directory and --skip-git-repo-check was not specified`).
+  리포트는 없었지만 `metrics.json`은 이미 게시된 뒤라 실험은 `PASSED`로 끝났다.
+  게시를 리포트 뒤에 뒀다면 31분을 쓰고 아무것도 남기지 못했을 것이다.
+  수정: [#642](https://github.com/SKYAHO/Autoresearch/issues/642) →
+  [#643](https://github.com/SKYAHO/Autoresearch/pull/643)
+- 단위 테스트가 이것을 못 잡은 이유는 **가짜 `codex` executable에 git repository
+  검사가 없기 때문**이다. 실물 CLI의 통합 속성이라 실험을 띄워야 드러난다.
+  같은 종류를 다시 놓치지 않도록 argv 계약을 양방향으로 고정했다(리포트 실행에는
+  플래그가 있고, 코드 수정 실행에는 없다)
+
+**배포 좌표:** executor `sha256:f9a73d1e…`(v0.12.1), launcher `sha256:f463fd30…`.
+`candidate-finalizer`가 `codex-home`을 mount하게 되면서
+`autoresearch-experiment-job-contract` ValidatingAdmissionPolicy도 함께 바꿔야 했다
+(`codex-home` 허용 목록에 `candidate-finalizer` 추가). **infra 소유이며 이 저장소의
+릴리스만으로는 반영되지 않는다** — #640 첫 배포에서 실험이 422로 막혀 드러났다.
 
 ## Stage 4 — Claude 리뷰어 (Pod 밖)
 
@@ -318,12 +360,33 @@ brier    0.116992 → 0.129235   +0.012243   ← 악화
 
 ## MVP 범위 밖
 
+**MVP는 #644로 닫혔다.** 아래는 그 뒤에 다룬다. 순서는 정하지 않았고, 착수 시점만
+남았다.
+
 - Claude 리뷰어의 **거부권** — 판정이 숫자와 일관되게 움직이는지 실적이 쌓인 뒤
-- **baseline 학습 캐싱** — ~~Stage 1 검증에서 재현성이 확인된 뒤~~ **전제 충족(2026-08-09).**
-  18개 값이 완전히 일치했으므로 같은 `base_dev_sha`의 baseline은 재사용할 수 있다.
-  실험당 약 5분. 착수 시점만 정하면 된다
+- **baseline 학습 캐싱** — ~~Stage 1 검증에서 재현성이 확인된 뒤~~ **전제 충족.**
+  #634·#635·#641·#644 네 건이 완전히 일치했으므로 같은 `base_dev_sha`의 baseline은
+  재사용할 수 있다. 실험당 약 5분
 - `tests/**` 쓰기 권한 회수 / 하네스 격리 디렉터리로의 산출물 전환
 - 피처 변경 실험 해금 (`feature_change_unsupported`)
 - `CREATED → ERROR` 전이
-- `POLICY_SEEDS` 상향 — `ORCH_ACTIVE_DEADLINE_SEC` 60000이면 여유가 생겼으나
-  Stage 1 실측 후 결정한다
+- `POLICY_SEEDS` 상향 — `ORCH_ACTIVE_DEADLINE_SEC` 60000이면 여유가 생겼다
+- **워크벤치에서 `report.md`를 읽는다.** UI는 지금 요약 지표와 `results_uri`까지만
+  싣는다. 실험의 최종 산출물이 리포트인데 사람이 그것을 보려면 `gsutil`을 써야 한다
+- **`test_verify_comparison_rechecks_receipts_and_records_verified_metrics`의
+  시간 의존 flake.** `metric receipt 시간이 run … 범위 밖입니다`로 드물게 실패한다
+  (2026-08-09 CI 1회). 영수증 시각은 마이크로초인데 MLflow run 시각은 밀리초로
+  잘리고, 실측 여유가 **약 5ms**뿐이라 부하 높은 러너에서 뒤집힌다. 테스트가
+  실제 시계에 기대는 것이 원인이므로 `next_metric_time_created` 훅으로 시각을
+  주입하는 쪽이 근본 수정이다. **`src/pipeline/` 소유라 이 계획의 범위 밖이다**
+
+### 이미 이슈가 있는 후속
+
+- **stderr 관측 부재** — [#636](https://github.com/SKYAHO/Autoresearch/issues/636).
+  `training._run`·`measurement._run`이 subprocess 출력을 버려 실패 사유 코드만 남는다.
+  후속 넷 중 **첫 번째여야 한다** — 나머지가 모두 "다음 실패의 원인을 알 수 있는가"에
+  기댄다
+- **ONNX 재귀 제약의 코드 분리** — 지금은 하네스 지침 한 줄로 막고 있다(Stage 3-1).
+  학습 실패와 서빙 패키징 실패를 분리하는 것이 근본 수정이다
+- **Codex 자격증명 되쓰기** — spec §7. access token 만료 시 refresh token이 한 번
+  쓰이고 영구히 죽는다

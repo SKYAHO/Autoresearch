@@ -185,6 +185,9 @@ def write_experiment_report(config: ReportInput) -> ReportResult:
             ),
             codex_home=config.codex_home,
             timeout_seconds=config.timeout_seconds,
+            # 이 작업 디렉터리는 clone 밖이라 git repository가 아니다. Codex CLI는
+            # 그런 곳에서 이 플래그 없이는 시작 자체를 거부한다(#642).
+            skip_git_repo_check=True,
         )
     )
     # **게시 전에 regular file인지부터 확인한다.** `read_text`도

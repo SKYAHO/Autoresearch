@@ -177,6 +177,13 @@ NetworkPolicy 이름·값은 `Autoresearch-infra` 소유이므로 이 저장소�
 - immutable launcher/executor/API digest, non-root/seccomp/capability drop/
   `automountServiceAccountToken=false`
 
+**Job의 container·volume·mount 구성을 바꾸는 PR은 같은 PR에서
+`autoresearch-experiment-job-contract` ValidatingAdmissionPolicy의 변경 필요 여부를
+확인합니다.** 이 정책이 위 계약을 admission 수준에서 강제하며 `Autoresearch-infra`
+소유라, 이 저장소의 릴리스만으로는 반영되지 않습니다. 어긋나면 Job 생성이 422로
+거부되고 실험은 `RUNNING`인 채 launcher tick마다 재시도됩니다 — 2026-08-09에
+`candidate-finalizer`의 `codex-home` mount를 추가하면서 실제로 겪었습니다.
+
 `auto-experiment`는 `[AR]` 이슈의 분류와 promotion guard에 남지만 branch 생성
 트리거가 아닙니다. Phase 1 executor는 기존 GitHub Actions bot marker를 새로 쓰지
 않으므로, 새 marker 없는 exp branch는 promotion workflow 입력이 아닙니다. marker
