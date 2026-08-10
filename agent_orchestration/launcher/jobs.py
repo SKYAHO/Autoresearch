@@ -16,6 +16,7 @@ Codex 인증 Secret은 코드 수정을 맡는 `codex-worker`와 리포트 작�
 
 from __future__ import annotations
 
+import re
 from typing import Protocol
 
 from kubernetes.client import (
@@ -24,7 +25,6 @@ from kubernetes.client import (
     V1Container,
     V1EmptyDirVolumeSource,
     V1EnvVar,
-    V1EnvVarSource,
     V1Job,
     V1JobSpec,
     V1KeyToPath,
@@ -32,7 +32,6 @@ from kubernetes.client import (
     V1PodSecurityContext,
     V1PodSpec,
     V1PodTemplateSpec,
-    V1ResourceFieldSelector,
     V1ResourceRequirements,
     V1SeccompProfile,
     V1SecretVolumeSource,
@@ -59,10 +58,19 @@ _STATE_DIRECTORY = "/var/run/executor-state"
 _CODEX_HOME_DIRECTORY = "/var/lib/codex"
 _API_TOKEN_DIRECTORY = "/var/run/executor-api-token"
 _TEMP_DIRECTORY = "/tmp"
-# candidate 학습이 도는 container다. 자원 예산 고지가 이 container의 상한을 읽으므로
-# (`_resource_budget_environment`) 이름을 상수로 묶어 둘이 어긋나지 않게 한다 — 이름이
-# 틀리면 API 검증은 통과하고 Pod 시작 시점에 죽는다.
-_TRAINING_BUDGET_CONTAINER = "candidate-finalizer"
+# Kubernetes 수량 접미사. binary(Ki/Mi/Gi/Ti)와 decimal(K/M/G/T)이 다른 배수다 —
+# `2G`와 `2Gi`는 약 7% 차이가 나므로 같이 취급하면 예산이 어긋난다.
+_MEMORY_SUFFIX_MULTIPLIERS = {
+    "": 1,
+    "K": 1000,
+    "M": 1000**2,
+    "G": 1000**3,
+    "T": 1000**4,
+    "Ki": 1024,
+    "Mi": 1024**2,
+    "Gi": 1024**3,
+    "Ti": 1024**4,
+}
 
 
 class JobClient(Protocol):
@@ -150,6 +158,30 @@ def _container_resources() -> V1ResourceRequirements:
     )
 
 
+def _parse_memory_quantity(quantity: str) -> int:
+    """Kubernetes memory 수량 표기를 바이트 정수로 바꾼다.
+
+    표기가 `2Gi`에서 `8Gi`나 `2048Mi`로 바뀌어도 깨지지 않아야 하므로 접미사를 해석한다.
+    해석할 수 없는 표기는 **조용히 0을 만들지 않고** 예외로 끊는다 — 잘못된 숫자를 지침에
+    싣는 것이 값을 싣지 않는 것보다 나쁘다. 에이전트가 그것을 믿고 구현한다.
+    """
+    match = re.fullmatch(r"(\d+)(Ki|Mi|Gi|Ti|K|M|G|T)?", quantity.strip())
+    if match is None:
+        raise ValueError(f"해석할 수 없는 memory 수량 표기입니다: {quantity!r}")
+    amount, suffix = int(match.group(1)), match.group(2)
+    return amount * _MEMORY_SUFFIX_MULTIPLIERS[suffix or ""]
+
+
+def _memory_limit_bytes() -> int:
+    """실험 container에 적용되는 memory limit을 바이트 정수로 돌려준다.
+
+    `_container_resources()`가 유일한 출처다. 값을 여기 복제하지 않는 이유는 자원 정의가
+    바뀔 때 에이전트에게 알리는 예산이 함께 따라가야 하기 때문이다(#656).
+    """
+    limits = _container_resources().limits or {}
+    return _parse_memory_quantity(str(limits.get("memory", "")))
+
+
 def _resource_budget_environment(settings: LauncherSettings) -> list[V1EnvVar]:
     """코드를 쓰는 container에게 **자기에게 걸린 실제 상한**을 알린다(#656).
 
@@ -157,20 +189,20 @@ def _resource_budget_environment(settings: LauncherSettings) -> list[V1EnvVar]:
     group-kill이라 로그 한 줄 없이 실험이 끝났다(#651, #652). 하네스 지침이 그 상한을
     서술하려면 값이 container 안까지 들어와야 한다.
 
-    메모리를 Downward API로 읽는 이유는 **드리프트를 구조적으로 막기 위해서**다. 숫자를
-    지침 문자열에 박으면 `_container_resources()`나 infra LimitRange가 바뀔 때 지침이
-    조용히 거짓이 되는데, 그 거짓을 검증할 방법이 없다. `resourceFieldRef`는 실제 적용된
-    spec을 읽으므로 정의가 한 곳에만 남는다.
+    숫자는 `_container_resources()`에서 읽어 **리터럴로** 넣는다. 지침 문자열에 값을
+    박으면 자원 정의가 바뀔 때 지침이 조용히 거짓이 되므로, 출처를 한 곳으로 유지하는
+    것이 목적이다.
 
-    읽는 대상은 codex-worker 자신이 아니라 **학습이 실제로 도는 container**다. 예산을
-    넘겨 OOM으로 죽는 곳이 거기이므로 그 값이 에이전트에게 의미 있는 숫자다. 지금은 8개
-    container가 같은 자원을 받아 두 값이 같지만, container별 차등을 도입하면(#652) 자기
-    값을 읽는 구현은 조용히 틀린 예산을 알리게 된다 — 코드를 쓰는 container는 작게, 학습
-    container는 크게 주는 것이 차등의 자연스러운 방향이기 때문이다.
+    Downward API(`resourceFieldRef`)를 쓰지 않는다. 그것이 더 직접적이지만 실험 Job의
+    `autoresearch-experiment-job-contract` admission 정책이 **`valueFrom`을 종류 불문하고
+    금지**한다. 시크릿이 환경 변수로 새는 경로를 닫으려는 규칙이고, Codex가
+    `danger-full-access`로 도는 container에서 환경 변수는 그대로 읽히므로 종류별 예외보다
+    전면 금지가 안전한 기본값이다. #658이 이 정책을 확인하지 않고 배포해 launcher가 매
+    tick 422로 죽었다(#665).
 
-    initContainer가 app container의 값을 읽는 것은 kubelet이 **Pod spec 선언**에서
-    해석하므로 실행 순서와 무관하다(대상 container가 아직 뜨지 않아도 된다). dev
-    클러스터에서 실물 Pod으로 확인했다.
+    리터럴로 바꿔도 잃는 것은 거의 없다. launcher가 그 값을 **정하는 주체**이고,
+    LimitRange는 값을 덮어쓰는 장치가 아니라 초과를 거부하는 장치이므로 Pod에 실제로
+    적용되는 limit은 `_container_resources()`가 정한 값 그 자체다.
 
     학습 시간 상한은 학습이 켜진 배포에서만 의미가 있어 `_training_environment`와 같은
     조건으로 붙인다. 다만 이름은 **일부러 다르다** — `ORCH_TRAINING_TIMEOUT_SEC`은 학습
@@ -180,17 +212,9 @@ def _resource_budget_environment(settings: LauncherSettings) -> list[V1EnvVar]:
     두 값이 어긋나지 않는 것은 같은 `settings` 필드에서 나온다는 사실이 보장한다.
     """
     budget = [
-        V1EnvVar(
-            name="ORCH_CONTAINER_MEMORY_LIMIT_BYTES",
-            value_from=V1EnvVarSource(
-                # divisor "1" = 바이트. container_name을 생략하면 자기 자신을 가리키므로
-                # 학습 container를 명시한다 — 생략하면 코드를 쓰는 container의 값이 된다.
-                resource_field_ref=V1ResourceFieldSelector(
-                    container_name=_TRAINING_BUDGET_CONTAINER,
-                    resource="limits.memory",
-                    divisor="1",
-                )
-            ),
+        _env(
+            "ORCH_CONTAINER_MEMORY_LIMIT_BYTES",
+            str(_memory_limit_bytes()),
         )
     ]
     if settings.training_dataset_uri:
@@ -364,7 +388,7 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
         settings,
     )
     candidate_finalizer = _container(
-        _TRAINING_BUDGET_CONTAINER,
+        "candidate-finalizer",
         ["python", "-m", "agent_orchestration.executor.phase2", "candidate-finalizer"],
         [
             *coordinates,
