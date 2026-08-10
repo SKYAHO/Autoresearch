@@ -38,6 +38,7 @@ from agent_orchestration.executor.codex_worker import (
 from agent_orchestration.executor.config import ISSUE_BRANCH_PATTERN
 from agent_orchestration.executor.finalizer import FinalizeInput, finalize_candidate
 from agent_orchestration.executor.github_issues import GitHubIssues
+from agent_orchestration.executor.prompt import ResourceBudget
 from agent_orchestration.executor.api_client import report_result
 from agent_orchestration.executor.measurement import (
     MeasurementInput,
@@ -187,6 +188,38 @@ def _positive_int(name: str) -> int:
     return int(value)
 
 
+def _optional_positive_int(name: str) -> int | None:
+    """양의 정수 환경 변수를 읽되, 없거나 해석할 수 없으면 `None`을 반환한다.
+
+    자원 예산은 **없어도 실행이 계속돼야 한다.** 예산 환경을 붙이지 않은 배포에서
+    필수로 읽으면 기존 경로가 통째로 죽는다. 값이 이상할 때 추측해서 쓰지 않고
+    `None`으로 떨어뜨리는 이유도 같다 — 틀린 예산을 알리는 것보다 침묵이 낫다.
+    """
+    value = os.environ.get(name)
+    if value is None or not value.strip().isdecimal():
+        return None
+    parsed = int(value.strip())
+    return parsed if parsed > 0 else None
+
+
+def _resource_budget() -> ResourceBudget:
+    """codex-worker에 주어진 실제 자원 상한을 환경에서 읽는다.
+
+    메모리는 launcher가 Downward API로 넣은 container 자신의 `limits.memory`이고,
+    시간은 학습 opt-in일 때만 붙는다(`jobs._resource_budget_environment`).
+
+    시간 변수 이름이 `ORCH_TRAINING_TIMEOUT_SEC`이 아닌 이유는 그것이 학습 container가
+    집행하는 값이고 학습 좌표와 함께 그쪽에만 가기 때문이다(#605). 여기서 읽는 것은 같은
+    숫자의 고지본이다.
+    """
+    return ResourceBudget(
+        memory_limit_bytes=_optional_positive_int("ORCH_CONTAINER_MEMORY_LIMIT_BYTES"),
+        training_timeout_seconds=_optional_positive_int(
+            "ORCH_BUDGET_TRAINING_TIMEOUT_SEC"
+        ),
+    )
+
+
 def _coordinates() -> tuple[uuid.UUID, int, str, str, str]:
     """launcher가 봉인한 experiment·issue·SHA·repository 좌표를 읽는다."""
     try:
@@ -318,6 +351,7 @@ def codex_worker_main() -> int:
             _state(),
             codex_home=Path(_required("ORCH_CODEX_HOME")),
             timeout_seconds=_positive_int("ORCH_CODEX_TIMEOUT_SEC"),
+            budget=_resource_budget(),
         )
     except CodexWorkerError as error:
         # timeout·child leak처럼 결과가 없는 경로가 오히려 원문이 가장 필요한 곳이다.

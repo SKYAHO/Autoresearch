@@ -23,10 +23,35 @@ GitHub 이슈·ref 검증과 clone(`workspace.py`), Codex 프로세스 실행과
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
     from agent_orchestration.executor.codex_worker import CodexRunInput
+
+
+@dataclass(frozen=True)
+class ResourceBudget:
+    """학습 container에 실제로 걸려 있는 자원 상한.
+
+    값을 프롬프트에 문자열로 박지 않고 Job spec에서 읽어 채운다. 박아 두면
+    `launcher.jobs._container_resources()`나 infra LimitRange가 바뀔 때 지침이 조용히
+    거짓이 되고, 에이전트는 틀린 예산을 믿고 구현한다.
+
+    두 값 모두 없을 수 있다 — 예산 환경을 붙이지 않은 배포에서는 예산 절을 통째로
+    생략한다. **모르는 값을 추측해서 적는 것보다 말하지 않는 편이 낫다.**
+    """
+
+    memory_limit_bytes: int | None = None
+    training_timeout_seconds: int | None = None
+
+    @property
+    def is_known(self) -> bool:
+        """알릴 값이 하나라도 있는지."""
+        return (
+            self.memory_limit_bytes is not None
+            or self.training_timeout_seconds is not None
+        )
 
 
 # clone 루트에서 Codex CLI가 자동으로 읽는 지침 파일. 저장소 원본을 실행 동안만 이
@@ -127,7 +152,60 @@ this run. Read it and follow it — the repository's own contribution guide does
 """
 
 
-def build_harness_instructions(allowed_scope: tuple[str, ...]) -> str:
+def _format_memory(limit_bytes: int) -> str:
+    """Downward API가 주는 바이트 정수를 사람이 읽는 표기로 바꾼다."""
+    return f"{limit_bytes / 1024**3:.1f} GiB"
+
+
+def _format_duration(seconds: int) -> str:
+    """초 단위 상한을 분 환산과 함께 표기한다."""
+    return f"{seconds:,}초 (약 {seconds // 60}분)"
+
+
+def _budget_section(budget: ResourceBudget) -> str:
+    """알려진 자원 상한을 「실험 공간의 알려진 제약」 항목 하나로 렌더한다.
+
+    구현 지시가 아니라 **환경 서술**이다. 어떤 표현·자료구조를 쓸지는 에이전트가 정하고,
+    여기서는 상한이 얼마이고 넘으면 무슨 일이 일어나는지만 알린다. 규칙을 늘리면 실험
+    탐색 공간이 좁아지므로, 금지 조항을 추가하는 방향으로 쓰지 않는다.
+    """
+    if not budget.is_known:
+        return ""
+    limits = []
+    if budget.memory_limit_bytes is not None:
+        limits.append(
+            f"- **메모리: container당 {_format_memory(budget.memory_limit_bytes)}.** "
+            "학습 프로세스가 이를 넘으면 커널이 container를 통째로 SIGKILL합니다"
+            "(cgroup group-kill). 파이썬 예외도 로그 한 줄도 남지 않고 실험은 지표 없이 "
+            "끝납니다."
+        )
+    if budget.training_timeout_seconds is not None:
+        limits.append(
+            f"- **학습 시간: seed 하나당 {_format_duration(budget.training_timeout_seconds)}.** "
+            "한 조건이 seed 3개를 순차로 학습하므로, seed 하나만 상한을 넘겨도 실험 전체가 "
+            "실패합니다."
+        )
+    body = "\n".join(limits)
+    return f"""
+## 실험 공간의 알려진 제약: 자원 예산
+
+{body}
+
+실험 #651이 여기서 죽었습니다. 범주형 피처를 dense `float64` one-hot으로 학습셋 전체에
+대해 한 번에 물질화해 **10.3 GiB**를 요구했습니다 — 그 데이터의 `occupation` 컬럼은
+자유 텍스트라 값이 2,157종이었고, 원본 81 MiB가 메모리에서 120배가 됐습니다. 학습 루프
+자체는 이미 미니배치였으므로, 인코딩을 배치 단위로 미뤘다면 같은 가설을 예산 안에서
+검증할 수 있었습니다.
+
+데이터 규모와 범주형 카디널리티는 학습 스냅샷마다 다릅니다. 메모리를 크게 쓰는 표현을
+고른다면 그 크기를 먼저 확인하십시오.
+"""
+
+
+def build_harness_instructions(
+    allowed_scope: tuple[str, ...],
+    budget: ResourceBudget | None = None,
+) -> str:
     """clone의 `AGENTS.md`를 대체할 executor 전용 하네스 지침 본문을 만든다.
 
     저장소 원본을 그대로 두면 Codex가 executor가 수행할 수 없는 절차(이슈 발행, 브랜치
@@ -137,11 +215,13 @@ def build_harness_instructions(allowed_scope: tuple[str, ...]) -> str:
 
     Args:
         allowed_scope: Issue Form이 승인한 조건부 수정 scope.
+        budget: Job spec에서 읽은 자원 상한. 생략하거나 값이 비면 예산 절이 빠진다.
 
     Returns:
         `AGENTS.md`로 저장할 Markdown 본문.
     """
     allowed = "\n".join(f"- `{path}`" for path in _allowed_paths(allowed_scope))
+    budget_section = _budget_section(budget or ResourceBudget())
     prohibited = "\n".join(f"- `{path}`" for path in _PROHIBITED_PATHS)
     commands = "\n".join(f"- `{command}`" for command in _VERIFICATION_COMMANDS)
     return f"""# 실험 하네스 지침 (executor 전용)
@@ -197,7 +277,7 @@ def build_harness_instructions(allowed_scope: tuple[str, ...]) -> str:
 
 {commands}
 
-## 실험 공간의 알려진 제약
+## 실험 공간의 알려진 제약: ONNX 변환
 
 **`train-model`은 학습과 서빙 ONNX 패키징을 한 덩어리로 수행합니다.** 그래서 트리 크기를
 키우는 하이퍼파라미터(`num_leaves`, `n_estimators`, `max_depth` 등)를 올리면 학습·검증·
@@ -207,7 +287,7 @@ def build_harness_instructions(allowed_scope: tuple[str, ...]) -> str:
 
 트리 크기를 키우는 방향의 변경은 **선택하지 마십시오.** 같은 가설을 검증할 다른 수단이
 있다면 그쪽을 쓰고, 없다면 트리 크기를 유지한 채 구현할 수 있는 범위로 좁히십시오.
-
+{budget_section}
 ## 무결성
 
 - 채점 경로(`src/pipeline/evaluate.py`)와 테스트 분할 코드를 실험 결과가 좋아 보이도록

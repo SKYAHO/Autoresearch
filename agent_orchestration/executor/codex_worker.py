@@ -43,6 +43,7 @@ from typing import BinaryIO, Iterator
 
 from agent_orchestration.executor.prompt import (
     HARNESS_FILENAME,
+    ResourceBudget,
     build_codex_prompt,
     build_harness_instructions,
 )
@@ -560,7 +561,9 @@ def run_codex_execution(execution: CodexExecution) -> CodexRunResult:
     return _execute_codex(execution)
 
 
-def run_codex(run: CodexRunInput) -> CodexRunResult:
+def run_codex(
+    run: CodexRunInput, *, budget: ResourceBudget | None = None
+) -> CodexRunResult:
     """봉인된 clone에서 Codex 코드 수정 실행 하나를 수행한다.
 
     `.git` 봉인을 실행 전후로 대조하고, 실행 동안만 clone의 `AGENTS.md`를 executor 전용
@@ -571,7 +574,7 @@ def run_codex(run: CodexRunInput) -> CodexRunResult:
     _validate_run(run)
     git_directory, sealed_git_metadata = _capture_protected_git_metadata(run.repository)
     with _harness_instructions(
-        run.repository, build_harness_instructions(run.allowed_scope)
+        run.repository, build_harness_instructions(run.allowed_scope, budget)
     ):
         result = _execute_codex(
             CodexExecution(
@@ -594,6 +597,7 @@ def run_codex_for_workspace(
     *,
     codex_home: Path,
     timeout_seconds: int,
+    budget: ResourceBudget | None = None,
 ) -> CodexRunResult:
     """state가 base checkout일 때만 Codex를 실행하고 기존 candidate 경로는 생략한다."""
     if state.remote_tip != state.base_dev_sha:
@@ -605,5 +609,6 @@ def run_codex_for_workspace(
             allowed_scope=state.allowed_scope,
             codex_home=codex_home,
             timeout_seconds=timeout_seconds,
-        )
+        ),
+        budget=budget,
     )
