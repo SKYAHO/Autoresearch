@@ -144,6 +144,20 @@ executor는 HTTP 페이로드를 묶고 API는 DB에 들어갈 값을 묶는다.
 
 `MAX_REPORT_MARKDOWN_BYTES = 65536`.
 
+### executor 배선 — 본문을 꺼낼 통로가 지금 없다
+
+`_measure_and_publish_if_enabled`는 내부에서 `report_path`를 만들어 **GCS 게시에만 쓰고
+버린다**(`agent_orchestration/executor/phase2.py:594-608`). 반환값은 snapshot 하나뿐이라,
+본문이 `report_result` 호출부(`phase2.py:645`)까지 닿는 경로가 없다.
+
+이 함수의 반환을 snapshot과 리포트 본문 두 값으로 넓힌다. 리포트가 없으면 본문은
+`None`이고, `api_client.report_result`는 `None`이면 payload에 키를 싣지 않는다
+(`ui/client.py`의 `patch_status`가 `metric_snapshot`에 쓰는 방식과 같다).
+
+본문을 읽는 것 자체가 실패해도(파일이 사라짐, 권한, 디코드) **위로 올리지 않고** `None`으로
+보고를 계속한다. `report_result` 호출부의 주석이 "채점했으면 반드시 보고한다"를 명시하고
+있고, 그 보고를 리포트 읽기 실패로 잃으면 `metric_summary=null`이 다시 나온다.
+
 ## 결정 4 — 변환은 UI에서 하고, HTML 껍데기는 우리가 소유한다
 
 executor와 GCS는 지금처럼 md만 다룬다.
@@ -263,9 +277,25 @@ UI가 GCS를 읽는 경로도 새로 만들지 않는다.
 ### 조회 시점
 
 `report_loaded_for != selected_id`이고 `status`가 `PASSED` 또는 `PROMOTED`일 때만 1회.
-`record_experiment_result`가 리포트의 유일한 기록자이고 그것이 `PASSED`로 전이시키므로,
-그 이전 상태에서는 반드시 없다. 리포트는 한 번 쓰이고 변하지 않으므로 5초 polling에
-태우지 않는다. **성공·실패 모두** `report_loaded_for`를 세워 재시도 루프를 만들지 않는다.
+리포트는 한 번 쓰이고 변하지 않으므로 5초 polling에 태우지 않는다.
+
+**이 두 상태가 리포트를 가진 실험의 전부다.** 전이 그래프가 그것을 보장한다.
+
+- `record_experiment_result`가 `report_markdown`의 유일한 기록자이고, 도달 상태로
+  `ExperimentStatus.PASSED`를 하드코딩한다(결정 1). 호출자가 상태를 고를 수 없다.
+- `ALLOWED_TRANSITIONS[PASSED] = frozenset({PROMOTED})` — PASSED에서 나가는 간선은
+  하나뿐이다. **`PASSED → FAILED`는 없다.**
+- `FAILED`는 `EVALUATING`에서만 도달하고, 그 경로에는 리포트를 싣는 호출이 없다.
+
+따라서 "완주했는데 판정이 갈려 리포트가 안 보이는" 실험은 생기지 않는다. 이 성질은
+전이 그래프에 의존하므로, 나중에 `PASSED → FAILED`나 리포트를 싣는 다른 전이가 생기면
+이 조건도 함께 넓혀야 한다.
+
+**`report_loaded_for`는 성공했을 때만 세운다.** 실패에도 세우면 일시적 503 한 번에
+그 세션 동안 리포트가 영구히 가려진다. `PASSED`는 terminal이 아니라 polling 상태이므로
+(`TERMINAL_STATUSES`는 FAILED·ERROR·PROMOTED뿐) 다음 갱신에서 자연히 재시도되고 스스로
+낫는다. `PROMOTED`는 terminal이라 `record_terminal_refresh`가 폴링을 끝내므로 재시도가
+무한히 돌지 않는다 — 자기 치유와 상한이 이미 있는 구조에서 나온다.
 
 ### 잡는 위치
 
@@ -338,5 +368,10 @@ UI가 GCS를 읽는 경로도 새로 만들지 않는다.
 - **조회 endpoint** — 실험 없음 404, 리포트 없음 200 + null, 인증 없음 401
 - **UI 배선** (`streamlit.testing.v1.AppTest`) — 다섯 조합에서 탭이 살아 있다:
   지표만 / 리포트만 / 둘 다 / 둘 다 없음 / **fetch 실패**
+- **UI 조회 시점** — `PASSED` 이전 상태에서는 조회하지 않는다, 성공 시 1회로 그친다,
+  **실패 후 다음 갱신에서 재시도한다**, 리포트 조회 실패가 `detail_error`를 세우거나
+  갱신을 중단시키지 않는다
+- **executor** — 리포트가 있으면 본문이 `report_result` payload에 실린다, 리포트가
+  없으면 키 자체가 없다, **본문 읽기가 실패해도 지표 보고는 나간다**
 - `uv run python -m pytest`
 - `uv run --no-sync ruff check agent_orchestration autoresearch tests tools`
