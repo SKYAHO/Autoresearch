@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-10T16:18:34Z",
+  "generated_at": "2026-08-10T16:37:41Z",
   "reports": [
+    {
+      "number": 669,
+      "title": "feat: 실험 자원 요청을 상향하고 CPU 예산을 에이전트에게 알린다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-10T16:37:21Z",
+      "summary_ko": [
+        "동시 5건 데모 수행을 위해 실험 작업의 자원 요정을 requests 2 CPU/4GiB, limits 4 CPU/8GiB로 상향하였습니다.",
+        "Downward API를 통해 CPU 예산을 학습 컨테이너 환경 변수로 주입하고, 에이전트에 CFS 스로틀링 주의 지침을 전달하도록 개선하였습니다.",
+        "동시 실행 상한 상향에 맞추어 테스트 상수 및 CPU/메모리 쿼터 검증 로직을 업데이트하고 인프라 선배포 제약을 명시하였습니다."
+      ],
+      "report_url": "pr/669/"
+    },
     {
       "number": 670,
       "title": "feat: 워크벤치 상세 화면의 제목·요약·진행 단계 가독성을 고친다",
