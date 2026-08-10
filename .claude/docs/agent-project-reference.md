@@ -131,9 +131,9 @@ docs/
     `ORCH_GITHUB_REPOSITORY`, `ORCH_MAX_CONCURRENT_EXPERIMENTS`,
     `ORCH_CODEX_HOME_SECRET_NAME`, `ORCH_ACTIVE_DEADLINE_SEC`,
     `ORCH_CODEX_TIMEOUT_SEC`, 선택 `ORCH_TTL_AFTER_FINISHED_SEC`. Codex Secret 이름은
-    Infra가 생성·소유하며, 완료 Job TTL은 기본 30초이고 장애 smoke에서만 일시 조정한다.
+    Infra가 생성·소유하며, 완료 Job TTL은 기본·최소 120초이고 장애 smoke에서만 상향한다.
     Job 전체 상한은
-    3600초, 그 안의 Codex 실행 상한은 1800초다. launcher는 Codex 상한이 Job 상한 이상이면
+    60000초, 그 안의 Codex 실행 상한은 6000초다. launcher는 Codex 상한이 Job 상한 이상이면
     기동 전에 거부한다.
   - 8-container 순서: branch-token-minter → branch-creator → clone-token-minter →
     workspace-preparer → codex-worker → candidate-verifier → push-token-minter →
