@@ -12,9 +12,13 @@ from collections.abc import Iterator
 import uuid
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import Engine, create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from agent_orchestration.app import main as main_module
+from agent_orchestration.app.config import ServiceSettings
 from agent_orchestration.app.database import Base
 from agent_orchestration.app.experiments.models import Experiment, ExperimentStatus
 from agent_orchestration.app.experiments.repository import find_experiment_report
@@ -30,6 +34,9 @@ from agent_orchestration.app.experiments.service import (
     record_candidate,
     record_experiment_result,
 )
+
+API_TOKEN = "a" * 32
+AUTH_HEADERS = {"X-Orch-Token": API_TOKEN}
 
 ISSUE_NUMBER = 647
 ISSUE_BRANCH = "exp/647"
@@ -231,3 +238,98 @@ def test_normalize_strips_nul_and_truncates_without_rejecting() -> None:
 def test_normalize_keeps_a_body_within_the_limit_untouched() -> None:
     """상한 안이면 그대로 둔다 — 문구가 붙지 않는다."""
     assert normalize_report_markdown("# 결론") == "# 결론"
+
+
+@pytest.fixture
+def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+    """일반 API 토큰 경계로 리포트 조회 endpoint를 SQLite에서 실행한다.
+
+    `db_session`이 만드는 engine과는 별도의 in-memory DB라 함께 쓰면 서로 다른
+    데이터베이스가 된다(`tests/test_experiment_candidate_api.py`의 `executor_client`와
+    같은 이유). 데이터 준비는 `client.app.state.experiment_session_factory`를 거친다.
+    """
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def register_uuid_function(dbapi_connection, _connection_record) -> None:
+        dbapi_connection.create_function("gen_random_uuid", 0, lambda: uuid.uuid4().hex)
+
+    Base.metadata.create_all(engine)
+    settings = ServiceSettings(
+        openai_api_key=None,
+        openai_model="gpt-5.3-codex-spark",
+        openai_max_tokens=1024,
+        openai_timeout_sec=60,
+        database_url="postgresql://orch:pw@localhost:5432/orch",
+        interactions_table="chat_interactions",
+        api_token=API_TOKEN,
+        github_token="x" * 40,
+        github_repository="SKYAHO/Autoresearch",
+        gh_timeout_sec=30,
+        issue_daily_limit=20,
+    )
+    monkeypatch.setattr(main_module, "load_settings", lambda: settings)
+    monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)
+    monkeypatch.setattr(main_module, "create_database_engine", lambda *_args: engine)
+
+    app = main_module.create_app()
+    with TestClient(app) as test_client:
+        yield test_client
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def _create_evaluating_experiment_for_http(client: TestClient) -> uuid.UUID:
+    """`client`의 session factory로 candidate까지 보고된 EVALUATING 실험을 만든다.
+
+    `db_session`을 함께 받지 않는다 — `client`가 물린 engine과 다른 DB라 보이지 않는다.
+    """
+    factory = client.app.state.experiment_session_factory
+    with factory() as session:
+        return _evaluating_experiment(session)
+
+
+def test_report_endpoint_returns_the_body(client: TestClient) -> None:
+    """리포트가 있으면 본문을 돌려준다."""
+    experiment_id = _create_evaluating_experiment_for_http(client)
+    factory = client.app.state.experiment_session_factory
+    with factory() as session:
+        record_experiment_result(
+            session, experiment_id, _result_request(experiment_id, report_markdown="# 결론")
+        )
+
+    response = client.get(f"/experiments/{experiment_id}/report", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["report_markdown"] == "# 결론"
+    assert response.json()["experiment_id"] == str(experiment_id)
+
+
+def test_report_endpoint_returns_null_when_there_is_no_report(client: TestClient) -> None:
+    """실험은 있고 리포트가 없으면 404가 아니라 200 + null이다.
+
+    404로 만들면 UI가 "실험이 사라졌다"와 "아직 리포트가 없다"를 구별할 수 없다.
+    후자는 오류가 아니라 정상 상태다.
+    """
+    experiment_id = _create_evaluating_experiment_for_http(client)
+
+    response = client.get(f"/experiments/{experiment_id}/report", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["report_markdown"] is None
+
+
+def test_report_endpoint_404s_for_a_missing_experiment(client: TestClient) -> None:
+    """없는 실험은 404다."""
+    response = client.get(f"/experiments/{uuid.uuid4()}/report", headers=AUTH_HEADERS)
+    assert response.status_code == 404
+
+
+def test_report_endpoint_requires_the_api_token(client: TestClient) -> None:
+    """토큰 없이 리포트를 읽을 수 없다."""
+    experiment_id = _create_evaluating_experiment_for_http(client)
+    assert client.get(f"/experiments/{experiment_id}/report").status_code == 401

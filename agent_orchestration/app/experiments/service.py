@@ -10,7 +10,8 @@ GitHub 인증·REST/`gh` 전송 자체는 담당하지 않는다.
 
 완주 보고가 실은 `report_markdown`은 정규화(`normalize_report_markdown`, 거절 아닌 절단)
 후 지표 커밋과 **다른 트랜잭션**(`_store_report_markdown`)에 적재한다. 리포트 쓰기 실패가
-이미 커밋된 지표를 되돌리면 안 되기 때문이다.
+이미 커밋된 지표를 되돌리면 안 되기 때문이다. 조회는 `get_experiment_report`가 담당하며,
+실험은 있지만 리포트가 아직 없는 경우를 오류가 아닌 `None`으로 구별해 돌려준다.
 """
 
 from __future__ import annotations
@@ -225,6 +226,22 @@ def get_experiment_metadata(
     """존재하는 실험의 metadata를 mapping으로 반환한다."""
     get_experiment(session, experiment_id)
     return find_experiment_metadata(session, experiment_id)
+
+
+def get_experiment_report(
+    session: Session,
+    experiment_id: uuid.UUID,
+) -> str | None:
+    """존재하는 실험의 리포트 본문을 반환한다.
+
+    실험이 없으면 `ExperimentNotFoundError`다. 실험은 있고 리포트가 없으면 `None`이며
+    그것은 오류가 아니다 — 완주 전 실험, 리포트를 끄고 돌린 배포, Codex가 실패한
+    실행이 모두 여기 해당한다.
+    """
+    experiment = find_experiment_report(session, experiment_id)
+    if experiment is None:
+        raise ExperimentNotFoundError(experiment_id)
+    return experiment.report_markdown
 
 
 def list_experiment_events(

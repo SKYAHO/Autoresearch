@@ -27,6 +27,7 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentLogResponse,
     ExperimentMetadataResponse,
     ExperimentPageResponse,
+    ExperimentReportResponse,
     ExperimentResponse,
     ExperimentStepCreate,
     ExperimentStepPageResponse,
@@ -44,6 +45,7 @@ from agent_orchestration.app.experiments.service import (
     create_experiment_step,
     get_experiment,
     get_experiment_metadata,
+    get_experiment_report,
     list_experiment_events,
     list_experiment_logs,
     list_experiment_steps,
@@ -277,6 +279,22 @@ def get_experiment_metadata_by_id(
 ) -> ExperimentMetadataResponse:
     """실험 metadata를 key-value mapping으로 반환한다."""
     return ExperimentMetadataResponse(entries=get_experiment_metadata(session, experiment_id))
+
+
+@router.get(
+    "/{experiment_id}/report",
+    response_model=ExperimentReportResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+)
+def get_experiment_report_by_id(
+    experiment_id: uuid.UUID,
+    session: SessionDependency,
+) -> ExperimentReportResponse:
+    """실험 리포트 본문을 조회한다. 리포트가 없으면 본문이 null이다."""
+    return ExperimentReportResponse(
+        experiment_id=experiment_id,
+        report_markdown=get_experiment_report(session, experiment_id),
+    )
 
 
 @router.post(

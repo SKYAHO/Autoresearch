@@ -165,6 +165,20 @@ class ExperimentResponse(BaseModel):
     updated_at: datetime
 
 
+class ExperimentReportResponse(BaseModel):
+    """실험 리포트 본문 응답.
+
+    `ExperimentResponse`와 분리한 이유는 그것이 5초 polling으로 반복 조회되고 목록
+    화면에도 실리기 때문이다. 수십 KB 본문을 거기 실으면 목록까지 느려진다.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    experiment_id: uuid.UUID
+    # 리포트가 아직 없으면 `None`이다. 실험이 없는 것과 구별되며, 그 경우는 404다.
+    report_markdown: str | None
+
+
 class StatusUpdateRequest(BaseModel):
     """PROMOTED를 제외한 일반 상태 변경 요청."""
 
