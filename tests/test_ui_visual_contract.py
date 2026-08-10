@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pathlib
 import tomllib
+from datetime import datetime, timezone
 
 import pytest
 
@@ -20,6 +21,7 @@ pytest.importorskip("streamlit", reason="orchestration-ui 그룹이 설치돼야
 from streamlit import config as streamlit_config  # noqa: E402
 
 from agent_orchestration.ui import views  # noqa: E402
+from agent_orchestration.ui.models import status_tone  # noqa: E402
 from agent_orchestration.ui.styles import workbench_css  # noqa: E402
 
 
@@ -204,6 +206,28 @@ def test_one_line_folds_whitespace_without_dropping_characters(
     assert views._one_line(text) == expected
 
 
+_STARTED_AT = datetime(2026, 8, 9, 9, 15, tzinfo=timezone.utc)  # KST 18:15
+
+
+def _label_lines(status: str, hypothesis: str) -> tuple[str, str]:
+    """목록 라벨을 (윗줄, 요약줄)로 가른다."""
+    head, _, summary = views._list_label(status, hypothesis, _STARTED_AT).partition("\n")
+    return head.strip(), summary
+
+
+def test_sidebar_label_leads_with_status_and_time() -> None:
+    """25개를 세로로 훑는 화면에서 눈이 먼저 찾는 것은 상태와 시각이다.
+
+    한 줄에 모두 이어 붙이면 상태가 문장에 묻혀 목록을 훑을 수 없다(#657).
+    위젯 라벨에는 HTML을 넣을 수 없어 Streamlit 마크다운 색 문법을 쓴다.
+    """
+    head, summary = _label_lines("PASSED", "가설 본문이다.")
+
+    assert head.startswith(":green[PASSED]")
+    assert "08-09 18:15" in head
+    assert summary == "가설 본문이다."
+
+
 def test_sidebar_label_ends_at_a_sentence_not_mid_phrase() -> None:
     """목록이 전부 `…`로 끝나면 어느 실험인지 고를 수 없다.
 
@@ -211,30 +235,36 @@ def test_sidebar_label_ends_at_a_sentence_not_mid_phrase() -> None:
     건드린 실험들이 모두 같은 접두사로 끝나 서로 구별되지 않았다. 반대로 자르지 않고
     전문을 넣으니 항목 하나가 스무 줄이 되어 목록으로 쓸 수 없었다(#657).
     """
-    label = views._list_label(
+    _, summary = _label_lines(
         "PASSED",
-        "LightGBM의 learning_rate를 0.05에서 0.03으로 낮추면 부스팅이 더 천천히 "
-        "진행돼 과적합이 줄고 test ROC-AUC가 개선된다. 변경 대상은 learning_rate "
-        "하나이며, 데이터·분할·피처는 바꾸지 않는다.",
+        "learning_rate를 0.05에서 0.03으로 낮추면 test ROC-AUC가 개선된다. "
+        "변경 대상은 learning_rate 하나이며, 데이터·분할·피처는 바꾸지 않는다.",
     )
 
-    assert label.startswith("PASSED · ")
-    assert label.endswith("개선된다.")
-    assert "…" not in label
+    assert summary.endswith("개선된다.")
+    assert "…" not in summary
     # 실험을 가르는 값이 남아야 목록에서 고를 수 있다.
-    assert "0.03" in label
+    assert "0.03" in summary
 
 
 def test_sidebar_label_keeps_a_decimal_point_from_ending_the_sentence() -> None:
-    """`0.05`의 소수점을 문장 끝으로 오인하면 라벨이 "LightGBM의 learning_rate를 0."이 된다."""
-    label = views._list_label("RUNNING", "learning_rate를 0.05에서 0.03으로 낮춘다.")
+    """`0.05`의 소수점을 문장 끝으로 오인하면 요약이 "learning_rate를 0."이 된다."""
+    _, summary = _label_lines("RUNNING", "learning_rate를 0.05에서 0.03으로 낮춘다.")
 
-    assert label == "RUNNING · learning_rate를 0.05에서 0.03으로 낮춘다."
+    assert summary == "learning_rate를 0.05에서 0.03으로 낮춘다."
 
 
 def test_sidebar_label_still_caps_a_runaway_first_sentence() -> None:
     """첫 문장이 통째로 한 문단인 가설도 있다 — 그때는 잘라야 한다."""
-    label = views._list_label("ERROR", "가" * 300 + ".")
+    _, summary = _label_lines("ERROR", "가" * 300 + ".")
 
-    assert len(label) < 140
-    assert label.endswith("…")
+    assert len(summary) < 90
+    assert summary.endswith("…")
+
+
+def test_every_status_has_a_markdown_tone() -> None:
+    """색 이름이 없으면 상태가 전부 회색으로 묻힌다."""
+    for status in ("CREATED", "RUNNING", "EVALUATING", "PASSED", "FAILED", "ERROR", "PROMOTED"):
+        assert status_tone(status) != "" and status_tone(status) is not None
+    # 표에 없는 값도 화면을 깨뜨리지 않는다.
+    assert status_tone("WHATEVER") == "gray"

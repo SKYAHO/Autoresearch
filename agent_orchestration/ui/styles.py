@@ -165,7 +165,25 @@ def workbench_css() -> str:
         padding-left: 0.1rem;
         padding-right: 0.1rem;
       }}
-      [data-testid="stSidebar"] .stRadio label {{ font-size: 0.82rem; line-height: 1.4; }}
+      /* 실험 목록. 25개를 세로로 훑는 화면이라 행 하나의 높이를 묶어 둔다 — 요약이
+         길어져도 목록 전체가 늘어나지 않게 세 줄에서 자른다(#657). */
+      [data-testid="stSidebar"] .stRadio label {{
+        align-items: flex-start;
+        border-top: 1px solid #E7E9E9;
+        font-size: 0.8rem;
+        line-height: 1.45;
+        padding: 0.5rem 0.1rem;
+      }}
+      [data-testid="stSidebar"] .stRadio label:first-of-type {{ border-top: none; }}
+      [data-testid="stSidebar"] .stRadio label p {{
+        display: -webkit-box;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 3;
+        overflow: hidden;
+      }}
+      /* 라디오 원은 첫 줄 높이에 맞춰 위로 붙인다. 기본값은 세로 가운데라 세 줄짜리
+         항목에서 두 번째 줄 옆에 떠 있었다. */
+      [data-testid="stSidebar"] .stRadio label > div:first-child {{ margin-top: 0.15rem; }}
 
       @media (max-width: 760px) {{
         /* 좁은 화면에서도 헤더 높이는 그대로다 — 여기서 줄이면 같은 자리가 잘린다. */

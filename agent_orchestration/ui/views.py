@@ -23,6 +23,7 @@ from __future__ import annotations
 import html
 import re
 from collections.abc import Callable, Sequence
+from datetime import datetime
 
 import streamlit as st
 
@@ -34,13 +35,14 @@ from agent_orchestration.ui.models import (
     Step,
     Submission,
     status_label,
+    status_tone,
     step_kind_label,
     step_status_color,
 )
 from agent_orchestration.ui.report import report_document
 from agent_orchestration.ui.state import WorkbenchState
 from agent_orchestration.ui.styles import fact_row, status_badge
-from agent_orchestration.ui.time import format_time
+from agent_orchestration.ui.time import format_short_time, format_time
 
 
 HYPOTHESIS_KEY = "submission-hypothesis"
@@ -63,21 +65,26 @@ def _one_line(text: str) -> str:
 # 문장 끝. `0.05`의 소수점은 뒤에 공백이 없으므로 걸리지 않는다.
 _SENTENCE_END = re.compile(r"\.(?=\s|$)")
 
-# 첫 문장이 이보다 길면 그때는 자른다. 자르지 않고 전문을 넣어 봤더니 항목 하나가
-# 스무 줄이 되어 목록으로 쓸 수 없었다(#657).
+# 요약 줄이 쓸 수 있는 글자 수. 첫 문장이 이보다 길면 그때는 자른다.
 #
-# 120자는 실측으로 잡았다. 지금 목록에 있는 가설의 첫 문장이 대개 100자 안팎이라
-# (예: "…test ROC-AUC가 baseline보다 개선된다."가 103자) 이 값이면 통째로 들어가
-# 마침표로 끝난다. 더 줄이면 그 문장들이 다시 `…`로 끝난다.
-_LIST_LABEL_MAX = 120
+# 자르지 않고 전문을 넣어 봤더니 항목 하나가 스무 줄이 되어 목록으로 쓸 수 없었고,
+# 34·50자로 짧게 자르니 같은 파라미터를 건드린 실험들이 모두 같은 접두사로 끝나
+# 구별되지 않았다(#657). 윗줄에 시각이 붙어 중복이 갈리므로 요약은 더 짧아도 된다.
+_LIST_LABEL_MAX = 72
 
 
-def _list_label(status: str, hypothesis: str) -> str:
-    """사이드바 목록 한 줄을 만든다.
+def _list_label(status: str, hypothesis: str, started_at: datetime) -> str:
+    """사이드바 목록 한 항목을 두 줄로 만든다.
 
-    글자 수로 자르면 어느 값을 잡든 목록 전체가 `…`로 끝났다. 가설은 첫 문장에
-    "무엇을 어떻게 바꾸면 무엇이 좋아진다"가 다 들어 있으므로 **문장 경계에서
-    끊는다** — 마침표로 끝나니 잘린 티가 나지 않고, 실험을 가르는 값도 남는다.
+    윗줄은 상태와 시각, 아랫줄은 가설 요약이다. 한 줄에 모두 이어 붙이면 상태가
+    문장에 묻혀 목록을 훑을 수 없다 — 25개를 세로로 훑는 화면에서 눈이 먼저 찾는
+    것은 상태와 시각이다.
+
+    위젯 라벨에는 HTML을 넣을 수 없어 Streamlit 마크다운 색 문법으로 상태를
+    물들인다. 줄바꿈은 마크다운 hard break(공백 두 개 + 개행)다.
+
+    요약은 문장 경계에서 끊는다. 마침표로 끝나니 잘린 티가 나지 않고, 실험을 가르는
+    값도 남는다.
     """
     text = _one_line(hypothesis)
     sentence_end = _SENTENCE_END.search(text)
@@ -89,7 +96,8 @@ def _list_label(status: str, hypothesis: str) -> str:
         if boundary >= _LIST_LABEL_MAX // 2:
             head = head[:boundary]
         text = head.rstrip() + "…"
-    return f"{status} · {text}"
+    tone = status_tone(status)
+    return f":{tone}[{status}]  ·  {format_short_time(started_at)}  \n{text}"
 
 
 def _render_hypothesis_editor() -> str:
@@ -265,7 +273,9 @@ def render_experiment_list(
         return None
     ids = [experiment.id for experiment in experiments]
     labels = {
-        experiment.id: _list_label(experiment.status, experiment.hypothesis)
+        experiment.id: _list_label(
+            experiment.status, experiment.hypothesis, experiment.created_at
+        )
         for experiment in experiments
     }
     default_index = ids.index(selected_id) if selected_id in ids else None

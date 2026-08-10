@@ -67,6 +67,19 @@ _STEP_STATUS_COLORS = {
     "FAILED": "#B42318",
 }
 
+# 사이드바 목록이 쓰는 Streamlit 마크다운 색 이름. 위젯 라벨에는 HTML을 넣을 수
+# 없어 `:green[...]` 문법으로만 색을 줄 수 있으므로 `_STATUS_COLORS`의 hex와 별도로
+# 둔다. 두 표는 같은 의미를 가리키므로 상태를 추가하면 함께 넓힌다.
+_STATUS_TONES = {
+    "CREATED": "gray",
+    "RUNNING": "blue",
+    "EVALUATING": "orange",
+    "PASSED": "green",
+    "FAILED": "red",
+    "ERROR": "red",
+    "PROMOTED": "violet",
+}
+
 _STATUS_COLORS = {
     "CREATED": "#6B7280",
     "RUNNING": "#2563EB",
@@ -318,3 +331,8 @@ def status_label(status: str) -> str:
 def status_color(status: str) -> str:
     """상태 코드를 배지 색상으로 반환한다."""
     return _STATUS_COLORS.get(status, "#334155")
+
+
+def status_tone(status: str) -> str:
+    """상태 코드를 Streamlit 마크다운 색 이름으로 반환한다."""
+    return _STATUS_TONES.get(status, "gray")

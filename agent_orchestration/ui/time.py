@@ -24,3 +24,12 @@ KST = ZoneInfo("Asia/Seoul")
 def format_time(value: datetime) -> str:
     """UTC API 시각을 KST 화면 문자열로 반환한다."""
     return value.astimezone(KST).strftime("%m-%d %H:%M KST")
+
+
+def format_short_time(value: datetime) -> str:
+    """목록 한 줄에 들어갈 짧은 KST 시각을 반환한다.
+
+    `KST` 접미사를 뗀다. 사이드바는 폭이 좁고 같은 화면의 모든 시각이 KST라
+    항목마다 세 글자씩 되풀이할 이유가 없다.
+    """
+    return value.astimezone(KST).strftime("%m-%d %H:%M")
