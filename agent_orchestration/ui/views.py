@@ -10,6 +10,11 @@ sidebar 탐색으로 분리된 사전등록 화면과 상세 화면의 컴포넌
 패널, 상태 타임라인, 결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 제공한다.
 결과 탭의 지표 카드와 리포트 HTML 렌더도 이 모듈이 담당한다.
 
+제목 줄은 가설 전문이 아니라 `summarize_hypothesis()`가 만든 축약이며, 전문은 제목
+아래 본문 블록에 그대로 나온다. 인스펙터의 「실행 요약」과 「진행 단계」는 결과 탭과
+같은 읽기 방식(지표 카드·상태 배지)을 쓴다 — 같은 숫자가 한 화면에서 두 형식으로
+보이지 않게 하기 위해서다(#666).
+
 [비책임]
 HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조립과 GitHub 이슈 생성
 (모두 API 서버의 책임이다).
@@ -18,7 +23,6 @@ HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조�
 from __future__ import annotations
 
 import html
-import json
 from collections.abc import Callable, Sequence
 
 import streamlit as st
@@ -242,10 +246,15 @@ def render_workbench(state: WorkbenchState) -> None:
     st.markdown('<p class="workbench-kicker">선택한 가설</p>', unsafe_allow_html=True)
     title_column, status_column = st.columns([4.0, 1.0], vertical_alignment="center")
     with title_column:
-        st.title(experiment.hypothesis)
+        # 가설 전문이 아니라 첫 문장 축약을 제목으로 쓴다. 전문은 바로 아래 본문
+        # 블록에 그대로 나온다 — 제목에 문단을 넣으면 화면 위쪽 절반이 텍스트
+        # 덩어리가 되어 지표와 진행 상황이 묻힌다(#666).
+        st.subheader(summarize_hypothesis(experiment.hypothesis))
     with status_column:
         st.markdown(status_badge(experiment.status), unsafe_allow_html=True)
         st.caption(f"마지막 갱신 {format_time(experiment.updated_at)}")
+    with st.container(border=True):
+        st.markdown(experiment.hypothesis)
 
     main_column, inspector_column = st.columns([2.2, 1.0], gap="large")
     with main_column:
@@ -255,7 +264,7 @@ def render_workbench(state: WorkbenchState) -> None:
     with inspector_column:
         with st.container(border=True):
             st.markdown("#### 실행 요약")
-            _render_metrics(experiment.metric_summary)
+            _render_summary(experiment.metric_summary)
         with st.container(border=True):
             st.markdown("#### 진행 단계")
             _render_timeline(state.events[-8:], experiment.status)
@@ -268,16 +277,53 @@ def render_workbench(state: WorkbenchState) -> None:
                 st.caption("등록된 메타데이터가 없습니다.")
 
 
+# 제목 줄에 허용할 최대 길이. 가설은 사전등록 서술이라 여러 문장짜리 문단이다(#666).
+_TITLE_MAX_CHARS = 60
+
+
+def summarize_hypothesis(hypothesis: str) -> str:
+    """가설에서 제목 줄로 쓸 한 조각을 뽑는다.
+
+    첫 문장만 쓴다 — 사전등록 서술은 대개 첫 문장이 "무엇을 바꾸는가"이고 나머지는
+    근거와 위험이다. 문장 경계는 마침표 **뒤에 공백이 오는 곳**으로 본다. 그냥
+    마침표로 자르면 `0.05`·`0.025` 같은 소수가 문장 끝으로 잘못 읽힌다.
+
+    가설 첫 줄이 마크다운 heading이면 **그 heading을 제목으로 쓴다.** 사용자가 직접
+    붙인 제목이므로 우리가 첫 문장을 잘라 만드는 것보다 낫다. 이때 `#`를 벗기지 않으면
+    `st.subheader`가 마크다운으로 다시 해석해 제목 안에 제목이 생긴다.
+
+    **원문을 고치지 않는다.** 여기서 만드는 것은 표시용 축약이고, 가설 전문은 제목
+    아래 본문 블록에 그대로 나온다.
+    """
+    lines = [line.strip() for line in hypothesis.splitlines() if line.strip()]
+    if not lines:
+        return "제목 없는 가설"
+    heading = lines[0].lstrip("#").strip() if lines[0].startswith("#") else ""
+    source = heading or " ".join(hypothesis.split())
+    sentence = source.split(". ")[0].rstrip(".")
+    if len(sentence) <= _TITLE_MAX_CHARS:
+        return sentence
+    return sentence[: _TITLE_MAX_CHARS - 1].rstrip() + "…"
+
+
 def _render_timeline(events: Sequence[Event], current_status: str) -> None:
+    """상태 전이를 색 배지로 그린다.
+
+    `status_color()`가 상태별 색을 이미 정의하고 있는데 제목 옆 배지 한 곳에만 쓰이고
+    있었다. 같은 색을 타임라인에도 써서 지금 어느 상태인지 한눈에 들어오게 한다(#666).
+    """
     if not events:
         st.caption(f"현재 상태: {status_label(current_status)}")
         return
     for event in events:
-        source = event.from_status or "START"
-        st.markdown(f"**{source} -> {event.to_status}**")
-        st.caption(format_time(event.created_at))
+        st.markdown(
+            f'<div class="timeline-row">{status_badge(event.to_status)}'
+            f'<span class="timeline-time">{html.escape(format_time(event.created_at))}</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
         if event.reason:
-            st.write(event.reason)
+            st.caption(event.reason)
 
 
 def _render_steps(steps: Sequence[Step], truncated: bool = False) -> None:
@@ -440,13 +486,39 @@ def _render_report(state: WorkbenchState) -> None:
     st.iframe(report_document(state.report_markdown), height=_REPORT_HEIGHT_PX)
 
 
-def _render_metrics(metrics: dict[str, object] | None) -> None:
+def _render_summary(metrics: dict[str, object] | None) -> None:
+    """좁은 인스펙터 폭에 맞춘 지표 요약을 그린다.
+
+    결과 탭의 카드와 **같은 숫자를 같은 방식으로** 읽는다. 이전에는 이 패널이
+    `metric_summary`를 순회하며 중첩 dict를 `st.code(json)`으로 찍어, 같은 값이 한
+    화면에서 카드와 JSON 두 형식으로 보였다 — 어느 쪽이 정본인지 알 수 없는 상태였다.
+
+    `[정정 — #666]` spec `2026-08-10-experiment-report-html-workbench.md` 결정 6은 이
+    패널을 건드리지 않기로 했었다. #647의 범위를 좁게 두려던 판단이었고 그 자체로는
+    옳았지만, 결과 탭만 카드로 바뀐 화면을 실제로 보니 그 결정이 만든 불일치가 더
+    컸다. 좁은 폭이라 가로 카드 대신 세로로 쌓는다.
+    """
     if not metrics:
         st.caption("아직 평가 전입니다.")
         return
-    for key, value in metrics.items():
-        if isinstance(value, (dict, list)):
-            st.markdown(f"**{key}**")
-            st.code(json.dumps(value, ensure_ascii=False, indent=2), language="json")
-        else:
-            st.metric(key, str(value))
+    conditions = metrics.get("conditions")
+    paired = metrics.get("paired")
+    if not isinstance(conditions, dict) or not isinstance(paired, dict):
+        st.caption("지표 요약 형식을 읽을 수 없습니다.")
+        return
+    if metrics.get("split_matches") is False:
+        st.warning("테스트셋이 달라 이 delta를 변경의 효과로 읽을 수 없습니다.")
+    candidate = conditions.get("candidate")
+    for name, label, lower_is_better in _METRIC_CARDS:
+        summary = paired.get(name)
+        mean = summary.get("mean") if isinstance(summary, dict) else None
+        value = candidate.get(name) if isinstance(candidate, dict) else None
+        st.metric(
+            label,
+            f"{float(value):.4f}" if isinstance(value, (int, float)) else "—",
+            delta=f"{float(mean):+.4f}" if isinstance(mean, (int, float)) else None,
+            delta_color="inverse" if lower_is_better else "normal",
+        )
+    seeds = metrics.get("seeds")
+    if isinstance(seeds, list) and seeds:
+        st.caption(f"seed {len(seeds)}개 · 짝지은 평균")

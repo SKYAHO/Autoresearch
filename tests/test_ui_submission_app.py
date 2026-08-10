@@ -24,8 +24,9 @@ pytest.importorskip("streamlit", reason="orchestration-ui 그룹이 설치돼야
 import streamlit as st  # noqa: E402
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
-APP_PATH = "agent_orchestration/ui/app.py"
+from agent_orchestration.ui.views import summarize_hypothesis  # noqa: E402
 
+APP_PATH = "agent_orchestration/ui/app.py"
 
 class _StubHandler(BaseHTTPRequestHandler):
     """Experiment API의 최소 스텁. 받은 요청 본문을 클래스 변수에 모은다."""
@@ -114,7 +115,6 @@ class _StubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
-
 def _experiment_payload(experiment_id: str, hypothesis: str) -> dict:
     return {
         "id": experiment_id,
@@ -125,7 +125,6 @@ def _experiment_payload(experiment_id: str, hypothesis: str) -> dict:
         "issue_number": None,
         "issue_branch": None,
     }
-
 
 @pytest.fixture
 def stub_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, dict]]]:
@@ -153,20 +152,16 @@ def stub_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, dict]]
         server.server_close()
         thread.join(timeout=5)
 
-
 def _rendered_app() -> AppTest:
     app = AppTest.from_file(APP_PATH, default_timeout=60)
     app.run()
     return app
 
-
 _MARKDOWN_HYPOTHESIS = "# 주제\n\n비율 피처가 baseline 대비 test ROC-AUC를 개선한다."
-
 
 def _fill_required(app: AppTest) -> None:
     app.text_input[0].set_value("views per day ratio feature")
     app.text_area[0].set_value(_MARKDOWN_HYPOTHESIS)
-
 
 def test_form_renders_without_exception(stub_api: list[tuple[str, dict]]) -> None:
     """스크립트가 예외 없이 폼을 그려야 한다."""
@@ -179,7 +174,6 @@ def test_form_renders_without_exception(stub_api: list[tuple[str, dict]]) -> Non
     assert "실험 제목" in labels
     assert "가설" in labels
 
-
 def test_form_asks_for_nothing_but_a_title_and_a_hypothesis(
     stub_api: list[tuple[str, dict]],
 ) -> None:
@@ -188,7 +182,6 @@ def test_form_asks_for_nothing_but_a_title_and_a_hypothesis(
 
     assert len(app.text_input) == 1
     assert len(app.text_area) == 1
-
 
 def test_hypothesis_editor_is_outside_a_form(stub_api: list[tuple[str, dict]]) -> None:
     """`st.form` 안에 두면 미리보기가 제출 전까지 첫 렌더 상태에 멈춘다.
@@ -202,14 +195,12 @@ def test_hypothesis_editor_is_outside_a_form(stub_api: list[tuple[str, dict]]) -
     assert len(app.button) >= 1
     assert app.button[0].label == "사전등록하고 이슈 발행"
 
-
 def test_preview_follows_the_hypothesis(stub_api: list[tuple[str, dict]]) -> None:
     """편집한 마크다운이 미리보기에 반영돼야 한다."""
     app = _rendered_app()
     app.text_area[0].set_value("# 미리보기 제목").run()
 
     assert any("# 미리보기 제목" == element.value for element in app.markdown)
-
 
 def test_empty_list_stays_on_create_without_activity_polling(
     stub_api: list[tuple[str, dict]],
@@ -225,7 +216,6 @@ def test_empty_list_stays_on_create_without_activity_polling(
     assert _StubHandler.get_paths
     assert all(path.startswith("/experiments?") for path in _StubHandler.get_paths)
 
-
 def test_same_experiment_can_be_reselected_after_returning_to_create(
     stub_api: list[tuple[str, dict]],
 ) -> None:
@@ -235,7 +225,7 @@ def test_same_experiment_can_be_reselected_after_returning_to_create(
     app = _rendered_app()
 
     app.sidebar.radio[0].set_value(experiment_id).run()
-    assert any(title.value == "첫 번째 가설" for title in app.title)
+    assert any(header.value == "첫 번째 가설" for header in app.subheader)
 
     app.sidebar.button[0].click().run()
     assert app.text_input[0].label == "실험 제목"
@@ -243,8 +233,7 @@ def test_same_experiment_can_be_reselected_after_returning_to_create(
     app.sidebar.radio[0].set_value(experiment_id).run()
 
     assert not app.exception
-    assert any(title.value == "첫 번째 가설" for title in app.title)
-
+    assert any(header.value == "첫 번째 가설" for header in app.subheader)
 
 def test_no_form_widget_is_disabled(stub_api: list[tuple[str, dict]]) -> None:
     """`st.form` 안의 위젯을 `disabled`로 게이팅하면 사용자가 입력할 수 없다.
@@ -262,7 +251,6 @@ def test_no_form_widget_is_disabled(stub_api: list[tuple[str, dict]]) -> None:
     ]
 
     assert disabled == []
-
 
 def test_submitting_sends_the_server_contract(stub_api: list[tuple[str, dict]]) -> None:
     """폼 제출이 생성과 발행을 차례로 부르고, 발행 요청이 서버 계약과 맞아야 한다."""
@@ -282,7 +270,6 @@ def test_submitting_sends_the_server_contract(stub_api: list[tuple[str, dict]]) 
     # `allowed_scope`는 #570에서 사라졌다. 서버가 `extra="forbid"`라 보내면 422다.
     assert set(stub_api[1][1]) == {"fields"}
 
-
 def test_submission_carries_no_metric_fields(stub_api: list[tuple[str, dict]]) -> None:
     """지표를 화면에서 없앴으므로 UI는 그 값을 만들지 않는다(#570).
 
@@ -297,7 +284,6 @@ def test_submission_carries_no_metric_fields(stub_api: list[tuple[str, dict]]) -
 
     assert set(fields) == {"title", "hypothesis"}
 
-
 def test_blank_required_field_is_blocked_before_any_request(
     stub_api: list[tuple[str, dict]],
 ) -> None:
@@ -310,7 +296,6 @@ def test_blank_required_field_is_blocked_before_any_request(
     assert stub_api == []
     assert any("실험 제목" in element.value for element in app.error)
 
-
 def test_publication_result_is_shown(stub_api: list[tuple[str, dict]]) -> None:
     """발행 결과의 이슈 번호와 브랜치가 화면에 나와야 한다."""
     app = _rendered_app()
@@ -318,7 +303,6 @@ def test_publication_result_is_shown(stub_api: list[tuple[str, dict]]) -> None:
     app.button[0].click().run()
 
     assert any("537" in element.value for element in app.success)
-
 
 def test_pending_publication_retries_saved_submission_without_duplicate(
     stub_api: list[tuple[str, dict]],
@@ -345,11 +329,10 @@ def test_pending_publication_retries_saved_submission_without_duplicate(
         "/experiments/3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d/issue"
     ) == 2
     assert any("537" in element.value for element in app.success)
-    assert any(
-        title.value == _MARKDOWN_HYPOTHESIS
-        for title in app.title
-    )
-
+    # 가설 첫 줄이 마크다운 heading이면 그것이 제목이 된다(#666). 전문은 제목 아래
+    # 본문 블록에 그대로 나온다.
+    assert any(header.value == "주제" for header in app.subheader)
+    assert any(element.value == _MARKDOWN_HYPOTHESIS for element in app.markdown)
 
 def test_pending_publication_retry_failure_keeps_create_and_pending(
     stub_api: list[tuple[str, dict]],
@@ -374,7 +357,6 @@ def test_pending_publication_retry_failure_keeps_create_and_pending(
     labels = [button.label for button in app.button]
     assert "이슈 발행 다시 시도" in labels
     assert "실패한 등록 취소하고 새 가설 작성" in labels
-
 
 def test_discard_pending_publication_unlocks_new_submission(
     stub_api: list[tuple[str, dict]],
@@ -404,7 +386,6 @@ def test_discard_pending_publication_unlocks_new_submission(
     assert paths.count("/experiments") == 2
     assert any("537" in element.value for element in app.success)
 
-
 def test_pending_actions_are_hidden_without_pending_publication(
     stub_api: list[tuple[str, dict]],
 ) -> None:
@@ -414,7 +395,6 @@ def test_pending_actions_are_hidden_without_pending_publication(
     labels = [button.label for button in app.button]
     assert "이슈 발행 다시 시도" not in labels
     assert "실패한 등록 취소하고 새 가설 작성" not in labels
-
 
 def test_refresh_exposes_new_experiment_and_hides_other_publication_result(
     stub_api: list[tuple[str, dict]],
@@ -431,9 +411,8 @@ def test_refresh_exposes_new_experiment_and_hides_other_publication_result(
     app.sidebar.radio[0].set_value(second_id).run()
 
     assert not app.exception
-    assert any(title.value == "두 번째 가설" for title in app.title)
+    assert any(header.value == "두 번째 가설" for header in app.subheader)
     assert not app.success
-
 
 def test_deleted_selected_experiment_is_removed_on_detail_refresh(
     stub_api: list[tuple[str, dict]],
@@ -449,3 +428,47 @@ def test_deleted_selected_experiment_is_removed_on_detail_refresh(
     assert not app.exception
     assert any("항목을 선택" in element.value for element in app.info)
     assert not app.sidebar.radio
+
+def test_long_hypothesis_is_summarized_for_the_title() -> None:
+    """가설 문단이 통째로 제목이 되지 않는다.
+
+    사전등록 가설은 여러 문장짜리 문단이라, 그대로 제목에 넣으면 화면 위쪽 절반이
+    텍스트 덩어리가 되어 지표와 진행 상황이 묻힌다(#666).
+    """
+
+    hypothesis = (
+        "LightGBM의 학습률이 0.05, 부스팅 라운드가 200인 현재 설정에서, 학습률을 "
+        "0.025로 낮추고 라운드를 400으로 늘린다. 두 값의 곱을 유지해 총 갱신량은 "
+        "비슷하게 두되 각 트리가 기여하는 보폭만 줄이는 변경이다."
+    )
+
+    title = summarize_hypothesis(hypothesis)
+
+    assert len(title) <= 60
+    assert "\n" not in title
+    assert title.startswith("LightGBM")
+    # 둘째 문장은 제목에 들어오지 않는다.
+    assert "보폭" not in title
+
+def test_decimals_do_not_cut_the_title_early() -> None:
+    """`0.05` 같은 소수를 문장 끝으로 읽으면 제목이 두 글자로 잘린다.
+
+    그래서 문장 경계를 마침표가 아니라 **마침표 뒤 공백**으로 본다.
+    """
+
+    title = summarize_hypothesis("학습률 0.05를 0.025로 낮춘다. 두 번째 문장이다.")
+
+    assert title == "학습률 0.05를 0.025로 낮춘다"
+
+def test_markdown_heading_is_used_as_the_title_without_its_hashes() -> None:
+    """사용자가 붙인 제목이 있으면 그것을 쓰되 `#`는 벗긴다.
+
+    벗기지 않으면 `st.subheader`가 마크다운으로 다시 해석해 제목 안에 제목이 생긴다.
+    """
+
+    assert summarize_hypothesis("## 비율 피처 실험\n\n본문입니다.") == "비율 피처 실험"
+
+def test_blank_hypothesis_still_renders_a_title() -> None:
+    """빈 가설에서도 제목 줄이 사라지지 않는다 — 레이아웃이 무너진다."""
+
+    assert summarize_hypothesis("   \n\n  ") == "제목 없는 가설"
