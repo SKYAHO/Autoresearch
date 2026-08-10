@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-10T13:00:54Z",
+  "generated_at": "2026-08-10T13:01:24Z",
   "reports": [
+    {
+      "number": 667,
+      "title": "fix: 자원 예산 env를 리터럴로 넣어 admission을 통과시킨다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-10T13:01:12Z",
+      "summary_ko": [
+        "실험 Job 생성 시 어드미션 정책에 의해 거부되던 valueFrom 기반 환경 변수를 리터럴 주입 방식으로 수정하였습니다.",
+        "쿠버네티스 메모리 수량 단위(Gi, Mi 등)를 정수로 정확히 해석하는 파싱 로직을 추가하였습니다.",
+        "Job 컨테이너가 valueFrom을 사용하지 않음을 사전에 검증하는 단위 테스트를 보강하였습니다."
+      ],
+      "report_url": "pr/667/"
+    },
     {
       "number": 658,
       "title": "feat: 하네스가 에이전트에게 자원 예산을 알린다",
