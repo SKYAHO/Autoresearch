@@ -105,7 +105,13 @@ orchestration = [
     "kubernetes>=36,<37",
 ]
 orchestration-ui = [
-    "streamlit>=1.37,<2",
+    # `st.iframe`이 1.60에 들어왔다. 리포트를 srcdoc iframe에 넣는 데 쓰며, 그 이전
+    # 버전에는 HTML 문자열을 받는 대체 API가 deprecated된 것뿐이다(#647).
+    "streamlit>=1.60,<2",
+    # 리포트 md를 HTML로 바꾼다. `html=False`가 raw HTML을 escape하는 것이 이 경로의
+    # **유일한 방어**다 — iframe은 격리 경계가 아니다
+    # (`docs/specs/2026-08-10-experiment-report-html-workbench.md` 결정 5).
+    "markdown-it-py>=4,<5",
 ]
 [tool.pytest.ini_options]
 # scripts/ 디렉토리는 실행 스크립트이므로 테스트 수집 경로에서 제외
