@@ -6,7 +6,9 @@ Stage 5 finalizer가 원격 Git ref를 확인한 뒤 candidate SHA를 Experiment
 
 [기능]
 전용 token 파일로 인증 header를 만들고, 고정 멱등 key와 봉인 좌표를 내부 endpoint에
-전송한 뒤 응답이 요청과 같은 SHA·기대한 상태인지 검증한다.
+전송한 뒤 응답이 요청과 같은 SHA·기대한 상태인지 검증한다. 결과 보고가 버전 스큐로
+422를 받으면 `report_markdown`을 빼고 한 번만 재시도해, 롤아웃 중인 구 API pod
+때문에 완주 보고 자체가 죽는 것을 막는다.
 
 [비책임]
 candidate의 Git commit·push(`finalizer.py`), 지표 계산과 요약 조립(`measurement.py`),
@@ -17,6 +19,7 @@ candidate row lock·상태 전이(`app/experiments/service.py`), Pod token Secre
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import stat
 from typing import Final
@@ -25,6 +28,8 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 import uuid
 
+
+_LOGGER = logging.getLogger(__name__)
 
 CANDIDATE_API_TIMEOUT_SECONDS: Final = 10.0
 
@@ -40,7 +45,15 @@ class CandidateApiError(RuntimeError):
     이름은 candidate 보고만 있던 시절의 것이다. 결과 보고도 같은 token·같은 내부
     경계를 쓰므로 예외를 나누지 않는다 — 사유 코드(`candidate_*`/`result_*`)가
     어느 보고였는지 구분한다.
+
+    `status_code`는 HTTP 응답이 있었던 실패(`HTTPError`)에서만 채워진다. 버전 스큐로
+    인한 422를 판별해 `report_result`가 `report_markdown` 없이 한 번 재시도하는 데만
+    쓴다 — token이나 응답 본문은 여전히 담지 않는다.
     """
+
+    def __init__(self, reason: str, *, status_code: int | None = None) -> None:
+        super().__init__(reason)
+        self.status_code = status_code
 
 
 def _read_token(path: Path) -> str:
@@ -91,7 +104,7 @@ def _post_json(
     except HTTPError as error:
         if error.code == 409:
             raise CandidateApiError(conflict) from error
-        raise CandidateApiError(failure) from error
+        raise CandidateApiError(failure, status_code=error.code) from error
     except (OSError, URLError) as error:
         raise CandidateApiError(failure) from error
     try:
@@ -150,21 +163,51 @@ def report_result(
 
     `report_markdown`이 `None`이면 key 자체를 싣지 않는다. 리포트 없이 보내는 것이
     정상 경로이고, API도 그렇게 받도록 돼 있다.
+
+    **버전 스큐 방어.** `ExecutorResultReportRequest`는 `extra="forbid"`다. 새
+    executor가 `report_markdown`을 실어 보냈는데 그 요청이 아직 그 필드를 모르는(또는
+    롤백된) 구 API pod에 닿으면 422가 난다. 그 422로 finalizer stage가 죽으면
+    지표는 GCS에 있는데 `metric_summary`는 null인 채로 실험이 `ERROR`로 회수된다 —
+    이 설계 전체가 막으려던 증상이다. 그래서 422를 받으면 `report_markdown` 없이
+    **정확히 한 번** 재시도한다. 두 번째도 422면(원인이 리포트 필드가 아니라
+    `metric_snapshot` 자체일 수도 있다) 그 오류를 그대로 올린다 — 원인을 구분하려
+    애쓰지 않는다.
     """
     token = _read_token(token_file)
-    payload: dict[str, object] = {
-        "idempotency_key": f"executor-result:{experiment_id}",
-        "candidate_sha": candidate_sha,
-        "metric_snapshot": metric_snapshot,
-    }
-    if report_markdown is not None:
-        payload["report_markdown"] = report_markdown
-    response_payload = _post_json(
-        _endpoint(api_url, experiment_id, "result"),
-        payload,
-        token,
-        failure="result_api_failed",
-        conflict="result_api_conflict",
-    )
+    endpoint = _endpoint(api_url, experiment_id, "result")
+
+    def _payload(*, include_report: bool) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "idempotency_key": f"executor-result:{experiment_id}",
+            "candidate_sha": candidate_sha,
+            "metric_snapshot": metric_snapshot,
+        }
+        if include_report and report_markdown is not None:
+            payload["report_markdown"] = report_markdown
+        return payload
+
+    try:
+        response_payload = _post_json(
+            endpoint,
+            _payload(include_report=True),
+            token,
+            failure="result_api_failed",
+            conflict="result_api_conflict",
+        )
+    except CandidateApiError as error:
+        if error.status_code != 422 or report_markdown is None:
+            raise
+        _LOGGER.warning(
+            "report_markdown dropped on 422 retry, possible version skew "
+            "experiment_id=%s",
+            experiment_id,
+        )
+        response_payload = _post_json(
+            endpoint,
+            _payload(include_report=False),
+            token,
+            failure="result_api_failed",
+            conflict="result_api_conflict",
+        )
     if response_payload.get("status") != _COMPLETED_STATUS:
         raise CandidateApiError("result_api_status_unexpected")
