@@ -88,6 +88,9 @@ class LauncherSettings:
     training_timeout_sec: int = 1800
     training_download_timeout_sec: int = 600
     uv_sync_timeout_sec: int = 900
+    # 로그 수집기의 폴링 주기다(#559). 워크벤치가 5초 cursor polling을 하므로 이보다
+    # 크게 두면 체감 지연이 그만큼 늘어난다 — 둘을 합쳐 최악 지연이 정해진다.
+    log_collect_interval_sec: int = 5
     # 학습이 MLflow run을 기록할 tracking server 좌표다(#624). 비어 있으면 executor에
     # 아무것도 붙지 않고 학습은 Pod 로컬 file store로 떨어진다 — run이 Pod과 함께
     # 사라져 paired 비교가 artifact를 내려받을 대상을 잃는다.
@@ -209,4 +212,8 @@ class LauncherSettings:
             mlflow_tracking_uri=os.environ.get(
                 "ORCH_MLFLOW_TRACKING_URI", ""
             ).strip(),
+            log_collect_interval_sec=_optional_positive_integer_environment(
+                "ORCH_LOG_COLLECT_INTERVAL_SEC",
+                default=5,
+            ),
         )

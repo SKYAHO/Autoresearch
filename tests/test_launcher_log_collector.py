@@ -24,6 +24,9 @@ from agent_orchestration.launcher.log_collector import (  # noqa: E402
     CHUNK_SIZE,
     complete_chunks,
     KubernetesPodLogs,
+    DatabaseLogSink,
+    run_forever,
+    KubernetesActiveJobs,
     collect_once,
     container_states,
     experiment_id_from_job_name,
@@ -442,3 +445,134 @@ def test_collect_once_isolates_a_failing_job_from_the_rest() -> None:
     assert problems == ["job_collection_failed"]
     # 뒤 Job은 정상 수집된다.
     assert [row[1] for row in sink.written] == ["codex-worker"]
+
+
+class _RecordingCreate:
+    """`create_experiment_log` 호출 인자를 기록하는 더블."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def __call__(self, session, experiment_id, request):
+        self.calls.append((session, experiment_id, request))
+
+
+def test_database_sink_builds_the_log_create_request() -> None:
+    """`ExperimentLogCreate` 조립이 틀리면 422로 조용히 실패한다 — 값을 고정한다."""
+    import uuid as _uuid
+
+    create = _RecordingCreate()
+    experiment_id = _uuid.UUID("6ec09890-a4a8-4c69-9760-c01349351505")
+    session = object()
+
+    DatabaseLogSink(session, experiment_id, create=create).write(
+        idempotency_key="ar-exec-abc-x7k2:codex-worker:0",
+        log_type="codex-worker",
+        content="hello",
+    )
+
+    assert len(create.calls) == 1
+    passed_session, passed_id, request = create.calls[0]
+    assert passed_session is session
+    assert passed_id == experiment_id
+    assert request.idempotency_key == "ar-exec-abc-x7k2:codex-worker:0"
+    assert request.log_type == "codex-worker"
+    assert request.content == "hello"
+
+
+class _RecordingBatchV1:
+    def __init__(self, names: list[str]) -> None:
+        self.calls: list[dict] = []
+        self._names = names
+
+    def list_namespaced_job(self, **kwargs):
+        self.calls.append(kwargs)
+        items = [
+            type("Job", (), {"metadata": type("M", (), {"name": name})()})()
+            for name in self._names
+        ]
+        return type("Resp", (), {"items": items})()
+
+
+def test_active_jobs_adapter_uses_the_executor_label() -> None:
+    """launcher와 같은 상수를 써야 두 곳이 갈리지 않는다."""
+    from agent_orchestration.launcher.jobs import EXPERIMENT_EXECUTOR_LABEL_SELECTOR
+
+    api = _RecordingBatchV1(["ar-exec-abc"])
+
+    names = KubernetesActiveJobs(api).list_active_job_names("ns")
+
+    assert names == ["ar-exec-abc"]
+    assert api.calls == [
+        {"namespace": "ns", "label_selector": EXPERIMENT_EXECUTOR_LABEL_SELECTOR}
+    ]
+
+
+def test_run_forever_stops_when_the_shutdown_flag_is_set() -> None:
+    """SIGTERM은 진행 중인 tick을 마친 뒤 빠져나가게 한다 — 쓰기 도중에 끊지 않는다."""
+    ticks: list[int] = []
+    stopping = {"value": False}
+
+    def tick() -> list[str]:
+        ticks.append(1)
+        if len(ticks) == 3:
+            stopping["value"] = True
+        return []
+
+    run_forever(tick, should_stop=lambda: stopping["value"], sleep=lambda _s: None,
+                interval_sec=5)
+
+    assert len(ticks) == 3
+
+
+def test_run_forever_survives_a_failing_tick() -> None:
+    """tick 하나가 죽어도 루프는 계속 돈다 — 죽으면 재시작 사이 로그가 빈다."""
+    ticks: list[int] = []
+    stopping = {"value": False}
+
+    def tick() -> list[str]:
+        ticks.append(1)
+        if len(ticks) == 1:
+            raise RuntimeError("db down")
+        if len(ticks) == 3:
+            stopping["value"] = True
+        return []
+
+    run_forever(tick, should_stop=lambda: stopping["value"], sleep=lambda _s: None,
+                interval_sec=5)
+
+    assert len(ticks) == 3
+
+
+def test_run_forever_sleeps_the_configured_interval_between_ticks() -> None:
+    slept: list[float] = []
+    ticks: list[int] = []
+    stopping = {"value": False}
+
+    def tick() -> list[str]:
+        ticks.append(1)
+        if len(ticks) == 2:
+            stopping["value"] = True
+        return []
+
+    run_forever(tick, should_stop=lambda: stopping["value"],
+                sleep=slept.append, interval_sec=7)
+
+    assert slept == [7]
+
+
+def test_run_forever_does_not_sleep_before_shutting_down() -> None:
+    """종료가 정해진 뒤 주기만큼 더 자면 Pod 종료가 그만큼 늦어진다."""
+    slept: list[float] = []
+
+    run_forever(lambda: [], should_stop=lambda: True,
+                sleep=slept.append, interval_sec=7)
+
+    assert slept == []
+
+
+def test_settings_expose_the_collector_interval_with_a_default() -> None:
+    """수집 주기는 설정값이다 — 워크벤치 폴링이 5초라 그보다 크게 두면 체감이 나빠진다."""
+    from tests.test_launcher_training_environment import _settings
+
+    assert _settings().log_collect_interval_sec == 5

@@ -17,11 +17,17 @@ RoleBinding·Deployment(`SKYAHO/Autoresearch-infra`)는 담당하지 않는다.
 from __future__ import annotations
 
 import logging
+import signal
+import time
 import uuid
 from collections.abc import Callable
 from typing import Final, Protocol
 
 from kubernetes.client.exceptions import ApiException
+
+from agent_orchestration.app.experiments.schemas import ExperimentLogCreate
+from agent_orchestration.app.experiments.service import create_experiment_log
+from agent_orchestration.launcher.jobs import EXPERIMENT_EXECUTOR_LABEL_SELECTOR
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -286,3 +292,155 @@ def collect_once(
             problems.append("job_collection_failed")
             continue
     return problems
+
+
+class KubernetesActiveJobs:
+    """`BatchV1Api`로 executor Job 이름을 얻는 어댑터.
+
+    launcher와 같은 `EXPERIMENT_EXECUTOR_LABEL_SELECTOR` 상수를 쓴다 — 두 곳이 갈리면
+    수집 대상이 조용히 어긋난다.
+
+    종료된 Job도 TTL 동안 목록에 남는데 이는 필요한 성질이다. 완료 직후 마지막 부분
+    청크를 flush하려면 종료 여부를 알아야 하고, 그 판정을 Pod 상태에서 얻는다.
+    """
+
+    def __init__(self, api) -> None:
+        self._api = api
+
+    def list_active_job_names(self, namespace: str) -> list[str]:
+        response = self._api.list_namespaced_job(
+            namespace=namespace,
+            label_selector=EXPERIMENT_EXECUTOR_LABEL_SELECTOR,
+        )
+        return [job.metadata.name for job in response.items]
+
+
+class DatabaseLogSink:
+    """`create_experiment_log`를 부르는 어댑터.
+
+    HTTP API를 거치지 않는다 — launcher 이미지가 `app` 패키지를 포함하고 이미 DB
+    세션을 쓰므로 서비스 함수를 직접 부른다. API 토큰·egress가 불필요해지는 이유다.
+
+    `create` 주입은 테스트용이다. `ExperimentLogCreate` 조립이 틀리면 실행 시점에
+    422로만 드러나므로 인자를 테스트로 고정한다.
+    """
+
+    def __init__(
+        self,
+        session,
+        experiment_id: uuid.UUID,
+        *,
+        create: "Callable[..., object] | None" = None,
+    ) -> None:
+        self._session = session
+        self._experiment_id = experiment_id
+        self._create = create
+
+    def write(self, *, idempotency_key: str, log_type: str, content: str) -> None:
+        create = self._create
+        request = ExperimentLogCreate(
+            idempotency_key=idempotency_key,
+            log_type=log_type,
+            content=content,
+        )
+        if create is None:
+            create = create_experiment_log
+        create(self._session, self._experiment_id, request)
+
+
+def run_forever(
+    tick: "Callable[[], list[str]]",
+    *,
+    should_stop: "Callable[[], bool]",
+    sleep: "Callable[[float], None]",
+    interval_sec: float,
+) -> None:
+    """수집 tick을 주기적으로 돌린다.
+
+    **어떤 예외로도 루프가 죽지 않는다.** 죽으면 Deployment가 재시작하지만 그 사이
+    로그가 비고, 관측이 끊긴 것을 알아챌 경로가 또 없다. tick 안의 Job 단위 격리
+    (`collect_once`)는 그 아래 층이고, 여기서는 Job 목록 조회 실패나 세션 생성 실패처럼
+    tick 전체를 무너뜨리는 것을 잡는다.
+
+    `should_stop`이 참이면 **진행 중인 tick을 마친 뒤** 빠져나간다 — 쓰기 도중에 끊지
+    않는다. 아직 완성되지 않은 꼬리를 억지로 flush하지는 않는다. 저장된 커서가 없어
+    재시작한 인스턴스가 같은 청크를 다시 계산하므로 내용은 잃지 않는다.
+    """
+    while True:
+        try:
+            problems = tick()
+        except Exception:
+            _LOGGER.warning("log collector tick failed reason=tick_failed")
+        else:
+            if problems:
+                _LOGGER.warning(
+                    "log collector tick completed with problems reasons=%s",
+                    ",".join(sorted(set(problems))),
+                )
+        if should_stop():
+            return
+        sleep(interval_sec)
+
+
+def main() -> int:
+    """상주 수집기 진입점.
+
+    engine은 프로세스당 1회 만들고 세션은 tick마다 연다 — `launcher/main.py`와 같은
+    방식이며, 차이는 이 프로세스가 상주한다는 것뿐이다. 세션을 오래 들고 있으면
+    트랜잭션·identity map이 누적되고 한 번 끊긴 커넥션이 프로세스 수명 내내 따라온다.
+    """
+    from kubernetes import client, config as kube_config
+
+    from agent_orchestration.app.database import (
+        create_database_engine,
+        create_session_factory,
+    )
+    from agent_orchestration.launcher.config import LauncherSettings
+
+    logging.basicConfig(level=logging.INFO)
+    settings = LauncherSettings.from_environment()
+    kube_config.load_incluster_config()
+
+    jobs = KubernetesActiveJobs(client.BatchV1Api())
+    reader = KubernetesPodLogs(client.CoreV1Api())
+    engine = create_database_engine(settings.database_url)
+    session_factory = create_session_factory(engine)
+
+    stopping = False
+
+    def _request_stop(_signum, _frame) -> None:
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
+
+    def tick() -> list[str]:
+        with session_factory() as session:
+            return collect_once(
+                jobs,
+                reader,
+                lambda experiment_id: DatabaseLogSink(session, experiment_id),
+                namespace=settings.job_namespace,
+            )
+
+    try:
+        _LOGGER.info(
+            "log collector started namespace=%s interval=%ss",
+            settings.job_namespace,
+            settings.log_collect_interval_sec,
+        )
+        run_forever(
+            tick,
+            should_stop=lambda: stopping,
+            sleep=time.sleep,
+            interval_sec=settings.log_collect_interval_sec,
+        )
+    finally:
+        engine.dispose()
+    _LOGGER.info("log collector stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
