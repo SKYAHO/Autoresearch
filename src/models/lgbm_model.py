@@ -31,6 +31,7 @@ class LGBMModel(CTRModel):
         n_estimators: int = 200,
         learning_rate: float = 0.05,
         num_leaves: int = 31,
+        min_child_samples: int = 20,
         random_state: int = 42,
     ):
         """
@@ -41,12 +42,14 @@ class LGBMModel(CTRModel):
             n_estimators: 트리 개수.
             learning_rate: 학습률.
             num_leaves: 트리당 최대 리프 개수.
+            min_child_samples: 리프에 필요한 최소 샘플 수.
             random_state: 시드.
         """
         self.scale_pos_weight = scale_pos_weight
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.num_leaves = num_leaves
+        self.min_child_samples = min_child_samples
         self.random_state = random_state
         self.model = None
 
@@ -71,6 +74,7 @@ class LGBMModel(CTRModel):
             n_estimators=self.n_estimators,
             learning_rate=self.learning_rate,
             num_leaves=self.num_leaves,
+            min_child_samples=self.min_child_samples,
             scale_pos_weight=self.scale_pos_weight,
             random_state=self.random_state,
             objective="binary",
@@ -132,6 +136,7 @@ class LGBMModel(CTRModel):
             n_estimators=params.get("n_estimators", 200),
             learning_rate=params.get("learning_rate", 0.05),
             num_leaves=params.get("num_leaves", 31),
+            min_child_samples=params.get("min_child_samples", 20),
             random_state=params.get("random_state", 42),
         )
         instance.model = booster
