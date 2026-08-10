@@ -21,12 +21,17 @@ import signal
 import time
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Final, Protocol
 
 from kubernetes.client.exceptions import ApiException
 
 from agent_orchestration.app.experiments.schemas import ExperimentLogCreate
 from agent_orchestration.app.experiments.service import create_experiment_log
+from agent_orchestration.launcher.config import (
+    _optional_positive_integer_environment,
+    _required_environment,
+)
 from agent_orchestration.launcher.jobs import EXPERIMENT_EXECUTOR_LABEL_SELECTOR
 
 
@@ -382,6 +387,35 @@ def run_forever(
         sleep(interval_sec)
 
 
+@dataclass(frozen=True)
+class LogCollectorSettings:
+    """수집기가 실제로 쓰는 설정만 담는다.
+
+    `LauncherSettings`를 재사용하지 않는다 — 그쪽은 Job 생성에 필요한 값 7개를 필수로
+    요구하고 `ORCH_EXECUTOR_IMAGE`는 digest 형식 검증까지 한다. 수집기는 Job을 만들지
+    않는데도 그 값을 줘야 하고, **executor 릴리스마다 수집기 매니페스트를 따라 고쳐야
+    한다.** 안 쓰는 값에 배포가 묶인다.
+
+    수집기가 실제로 쓰는 것은 셋뿐이다.
+    """
+
+    database_url: str
+    job_namespace: str
+    log_collect_interval_sec: int = 5
+
+    @classmethod
+    def from_environment(cls) -> "LogCollectorSettings":
+        """환경 변수에서 설정을 읽는다. 없으면 기동 시점에 막는다."""
+        return cls(
+            database_url=_required_environment("ORCH_DATABASE_URL"),
+            job_namespace=_required_environment("ORCH_JOB_NAMESPACE"),
+            log_collect_interval_sec=_optional_positive_integer_environment(
+                "ORCH_LOG_COLLECT_INTERVAL_SEC",
+                default=5,
+            ),
+        )
+
+
 def main() -> int:
     """상주 수집기 진입점.
 
@@ -395,10 +429,8 @@ def main() -> int:
         create_database_engine,
         create_session_factory,
     )
-    from agent_orchestration.launcher.config import LauncherSettings
-
     logging.basicConfig(level=logging.INFO)
-    settings = LauncherSettings.from_environment()
+    settings = LogCollectorSettings.from_environment()
     kube_config.load_incluster_config()
 
     jobs = KubernetesActiveJobs(client.BatchV1Api())

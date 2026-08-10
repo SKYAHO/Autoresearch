@@ -27,6 +27,7 @@ from agent_orchestration.launcher.log_collector import (  # noqa: E402
     DatabaseLogSink,
     run_forever,
     KubernetesActiveJobs,
+    LogCollectorSettings,
     collect_once,
     container_states,
     experiment_id_from_job_name,
@@ -571,8 +572,47 @@ def test_run_forever_does_not_sleep_before_shutting_down() -> None:
     assert slept == []
 
 
-def test_settings_expose_the_collector_interval_with_a_default() -> None:
-    """수집 주기는 설정값이다 — 워크벤치 폴링이 5초라 그보다 크게 두면 체감이 나빠진다."""
-    from tests.test_launcher_training_environment import _settings
+def test_collector_settings_require_only_what_the_collector_uses(monkeypatch) -> None:
+    """수집기는 Job을 만들지 않는다 — Job 생성 설정을 요구하면 안 된다.
 
-    assert _settings().log_collect_interval_sec == 5
+    `LauncherSettings`를 재사용하면 `ORCH_EXECUTOR_IMAGE`까지 필수가 되고, 그것은
+    digest 형식 검증을 통과해야 해서 **executor 릴리스마다 수집기 매니페스트를 따라
+    고쳐야 한다.** 안 쓰는 값에 배포가 묶인다.
+    """
+    for name in (
+        "ORCH_EXECUTOR_IMAGE",
+        "ORCH_EXECUTOR_NODE_POOL",
+        "ORCH_EXECUTOR_API_URL",
+        "ORCH_GITHUB_APP_SECRET_NAME",
+        "ORCH_GITHUB_REPOSITORY",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://u:p@db/orchestration")
+    monkeypatch.setenv("ORCH_JOB_NAMESPACE", "autoresearch-experiments")
+
+    settings = LogCollectorSettings.from_environment()
+
+    assert settings.database_url == "postgresql://u:p@db/orchestration"
+    assert settings.job_namespace == "autoresearch-experiments"
+    assert settings.log_collect_interval_sec == 5
+
+
+def test_collector_settings_read_the_interval_override(monkeypatch) -> None:
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://u:p@db/orchestration")
+    monkeypatch.setenv("ORCH_JOB_NAMESPACE", "ns")
+    monkeypatch.setenv("ORCH_LOG_COLLECT_INTERVAL_SEC", "10")
+
+    assert LogCollectorSettings.from_environment().log_collect_interval_sec == 10
+
+
+def test_collector_settings_reject_a_missing_database_url(monkeypatch) -> None:
+    """DB 없이 뜨면 매 tick 조용히 실패한다 — 기동 시점에 막는다."""
+    from agent_orchestration.launcher.config import LauncherConfigError
+
+    monkeypatch.delenv("ORCH_DATABASE_URL", raising=False)
+    monkeypatch.setenv("ORCH_JOB_NAMESPACE", "ns")
+
+    import pytest as _pytest
+
+    with _pytest.raises(LauncherConfigError):
+        LogCollectorSettings.from_environment()

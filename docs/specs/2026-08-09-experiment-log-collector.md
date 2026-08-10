@@ -74,6 +74,34 @@ UI까지 연결돼 있고 DB에 행이 0개일 뿐이다. **수집기가 행을 
 >
 > 비용은 SA 리소스 하나뿐이다.
 
+## 설정은 수집기 전용으로 둔다
+
+`LauncherSettings`를 재사용하지 않는다. 그쪽은 Job 생성에 필요한 값 **7개를 필수로**
+요구한다.
+
+```
+ORCH_DATABASE_URL · ORCH_JOB_NAMESPACE          ← 수집기가 쓴다
+ORCH_EXECUTOR_IMAGE · ORCH_EXECUTOR_NODE_POOL
+ORCH_EXECUTOR_API_URL · ORCH_GITHUB_APP_SECRET_NAME
+ORCH_GITHUB_REPOSITORY                          ← 수집기가 안 쓴다
+```
+
+특히 `ORCH_EXECUTOR_IMAGE`는 `__post_init__`이 digest 형식까지 검증하므로 **아무 값이나
+넣을 수 없고 진짜 digest를 줘야 한다.** 그러면 executor 릴리스마다 수집기 매니페스트를
+따라 고쳐야 하고, 안 그러면 낡은 값이 남아 나중에 보는 사람은 **수집기가 executor
+이미지를 쓰는 줄 안다.** 안 쓰는 값에 배포가 묶인다.
+
+`LogCollectorSettings`는 실제로 쓰는 셋만 담는다.
+
+```python
+database_url: str
+job_namespace: str
+log_collect_interval_sec: int = 5
+```
+
+덕분에 공유 설정(`LauncherSettings`)을 전혀 건드리지 않는다 — launcher 쪽 회귀 위험이
+없다.
+
 ## API를 거치지 않는다
 
 `launcher.Dockerfile`이 `agent_orchestration/app`을 통째로 포함하고 launcher가 이미
