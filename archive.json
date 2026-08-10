@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-10T11:05:04Z",
+  "generated_at": "2026-08-10T11:06:59Z",
   "reports": [
+    {
+      "number": 654,
+      "title": "fix: 승격 가드 허용 경로에 log-collector-deployment.yaml을 더한다",
+      "author": "waieiches",
+      "merged_at": "2026-08-10T11:06:46Z",
+      "summary_ko": [
+        "릴리스 워크플로우의 승격 가드 허용 경로 목록에 로그 수집기 배포 매니페스트 경로를 추가했습니다.",
+        "인프라 승격 스크립트 변경과 CI 가드 목록 불일치로 발생하던 배포 승격 차단 문제를 해결했습니다.",
+        "인프라 스크립트와 워크플로우 목록 간의 동기화 중요성을 명시하는 주석을 추가했습니다."
+      ],
+      "report_url": "pr/654/"
+    },
     {
       "number": 650,
       "title": "feat: 실험 리포트를 워크벤치에서 HTML 페이지로 렌더한다",
