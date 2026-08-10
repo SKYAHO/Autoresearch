@@ -265,17 +265,30 @@ class KubernetesPodLogs:
         return list(response.items)
 
     def read_log(self, namespace: str, pod_name: str, container: str) -> str:
-        """한 컨테이너의 로그 전체를 읽는다.
+        """한 컨테이너의 로그 전체를 UTF-8 원문으로 읽는다.
 
         `since_seconds`류 증분 조회를 쓰지 않는다 — 같은 창을 다시 읽으면 로그가 자라
         내용이 달라져 멱등키가 충돌한다. 대신 전체를 읽고 고정 경계로 자른다
         (`complete_chunks`).
+
+        **`_preload_content=False`로 받아 직접 디코드한다.** 기본값(`True`)으로 두면
+        client가 `str`로 역직렬화하는데, Pod 로그 응답은 JSON이 아니라 plain text라
+        `api_client.deserialize`의 `json.loads`가 `ValueError`로 떨어지고 bytes가 그대로
+        `__deserialize_primitive(data, str)`에 들어간다. 거기서 `str(bytes)`가 호출되므로
+        **디코드가 아니라 repr**이 나온다 — 반환 타입 힌트는 `str`이지만 내용은
+        `b'INFO:...\\n'`이고, 줄바꿈은 리터럴 `\\n`, 한글은 `\\xed\\x95\\x9c`로 깨진다(#661).
+
+        `errors="replace"`인 이유는 컨테이너가 UTF-8이 아닌 바이트를 찍을 수 있고, 그때
+        예외를 올리면 그 stage의 로그가 통째로 사라지기 때문이다 — 수집은 진단용이므로
+        일부가 깨져도 남기는 쪽이 낫다.
         """
-        return self._api.read_namespaced_pod_log(
+        response = self._api.read_namespaced_pod_log(
             name=pod_name,
             namespace=namespace,
             container=container,
+            _preload_content=False,
         )
+        return response.data.decode("utf-8", errors="replace")
 
 
 def experiment_id_from_job_name(job_name: str) -> uuid.UUID | None:
