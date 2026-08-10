@@ -8,6 +8,7 @@
 sidebar 탐색으로 분리된 사전등록 화면과 상세 화면의 컴포넌트를 렌더링한다. 사전등록
 제출 폼, 실패한 이슈 발행의 재시도·취소 동작과 발행 결과 표시, 실험 선택 목록, 빈 관찰
 패널, 상태 타임라인, 결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 제공한다.
+결과 탭의 지표 카드와 리포트 HTML 렌더도 이 모듈이 담당한다.
 
 [비책임]
 HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조립과 GitHub 이슈 생성
@@ -26,12 +27,14 @@ from agent_orchestration.ui.models import (
     Event,
     Experiment,
     IssuePublication,
+    REPORT_STATUSES,
     Step,
     Submission,
     status_label,
     step_kind_label,
     step_status_color,
 )
+from agent_orchestration.ui.report import report_document
 from agent_orchestration.ui.state import WorkbenchState
 from agent_orchestration.ui.styles import status_badge
 from agent_orchestration.ui.time import format_time
@@ -316,7 +319,7 @@ def _render_tabs(state: WorkbenchState) -> None:
     with progress_tab:
         _render_steps(state.steps, state.steps_truncated)
     with results_tab:
-        _render_metrics(state.experiment.metric_summary if state.experiment else None)
+        _render_results(state)
     with events_tab:
         if not state.events:
             st.caption("아직 기록된 이벤트가 없습니다.")
@@ -338,6 +341,100 @@ def _render_tabs(state: WorkbenchState) -> None:
             for log in state.logs[-30:]:
                 st.caption(f"{format_time(log.created_at)} · {log.log_type}")
                 st.code(log.content, language=None)
+
+
+# 결과 탭이 카드로 그리는 지표와 화면 이름. 낮을수록 좋은 지표는 delta 색을 뒤집는다.
+_METRIC_CARDS: tuple[tuple[str, str, bool], ...] = (
+    ("roc_auc", "ROC-AUC", False),
+    ("log_loss", "LogLoss", True),
+    ("brier", "Brier", True),
+)
+
+# 리포트 iframe의 고정 높이(px). 자동 리사이즈를 넣지 않는다 — 실패하면 리포트가 안
+# 보이는 실패 모드만 늘어난다. Streamlit이 srcdoc iframe의 스크롤을 항상 켜므로 긴
+# 리포트는 내부에서 스크롤된다.
+_REPORT_HEIGHT_PX = 620
+
+
+def _render_results(state: WorkbenchState) -> None:
+    """결과 탭에 경고·지표 카드·리포트 본문을 그린다.
+
+    **지표와 리포트의 결손은 독립이다** — 리포트가 없어도 카드는 나오고, 지표가 없어도
+    본문은 나온다. 지표를 iframe 밖 Streamlit 위젯으로 두는 이유가 그것이다.
+    """
+    metrics = state.experiment.metric_summary if state.experiment else None
+    _render_split_warning(metrics)
+    _render_metric_cards(metrics)
+    _render_report(state)
+
+
+def _render_split_warning(metrics: dict[str, object] | None) -> None:
+    """두 조건의 테스트셋이 갈렸으면 지표보다 **위**에 경고한다.
+
+    숫자는 멀쩡해 보이므로 경고가 지표 아래에 있으면 읽는 사람이 delta를 먼저 믿는다.
+    """
+    if not metrics or metrics.get("split_matches") is not False:
+        return
+    st.warning(
+        "두 조건의 테스트셋이 다릅니다 — 이 delta는 변경의 효과로 읽을 수 없습니다."
+    )
+
+
+def _render_metric_cards(metrics: dict[str, object] | None) -> None:
+    """조건별 평균과 짝지은 delta를 카드로 그린다.
+
+    숫자는 전부 `metric_summary`에서 온다 — **에이전트가 쓴 텍스트를 파싱하지 않는다.**
+    seed별 delta는 요약에 없고 전문(GCS)에만 있으므로 그리지 않는다.
+    """
+    if not metrics:
+        st.caption("아직 평가 전입니다.")
+        return
+    conditions = metrics.get("conditions")
+    paired = metrics.get("paired")
+    if not isinstance(conditions, dict) or not isinstance(paired, dict):
+        st.caption("지표 요약 형식을 읽을 수 없습니다.")
+        return
+    candidate = conditions.get("candidate")
+    baseline = conditions.get("baseline")
+    columns = st.columns(len(_METRIC_CARDS))
+    for column, (name, label, lower_is_better) in zip(columns, _METRIC_CARDS):
+        summary = paired.get(name)
+        mean = summary.get("mean") if isinstance(summary, dict) else None
+        error = summary.get("standard_error") if isinstance(summary, dict) else None
+        value = candidate.get(name) if isinstance(candidate, dict) else None
+        with column:
+            st.metric(
+                label,
+                f"{float(value):.4f}" if isinstance(value, (int, float)) else "—",
+                delta=f"{float(mean):+.4f}" if isinstance(mean, (int, float)) else None,
+                delta_color="inverse" if lower_is_better else "normal",
+            )
+            # seed가 하나면 표본 표준편차가 정의되지 않아 `None`이다. 0으로 보이면
+            # "변동이 없다"로 읽히므로 표기 자체를 생략한다.
+            if isinstance(error, (int, float)):
+                st.caption(f"표준오차 ±{float(error):.4f}")
+            if isinstance(baseline, dict) and isinstance(baseline.get(name), (int, float)):
+                st.caption(f"baseline {float(baseline[name]):.4f}")
+
+
+def _render_report(state: WorkbenchState) -> None:
+    """리포트 본문을 고정 높이 iframe에 그린다.
+
+    네 갈래를 구분한다. `report_error`가 최우선인 이유는, 실패했는데 "리포트가
+    없습니다"로 보이면 **없는 것과 못 받은 것이 구별되지 않기** 때문이다.
+    """
+    if state.report_error is not None:
+        st.warning(f"리포트를 불러오지 못했습니다 — {state.report_error}")
+        return
+    if state.experiment is None or state.experiment.status not in REPORT_STATUSES:
+        return
+    if state.report_loaded_for != state.selected_id:
+        st.caption("리포트를 불러오는 중입니다.")
+        return
+    if not state.report_markdown:
+        st.caption("아직 리포트가 없습니다.")
+        return
+    st.iframe(report_document(state.report_markdown), height=_REPORT_HEIGHT_PX)
 
 
 def _render_metrics(metrics: dict[str, object] | None) -> None:

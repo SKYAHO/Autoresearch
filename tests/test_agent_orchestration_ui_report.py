@@ -7,26 +7,45 @@
 **이 파일이 지키는 것은 escape 하나다.** iframe은 격리 경계가 아니므로
 (Streamlit sandbox가 `allow-same-origin`과 `allow-scripts`를 둘 다 포함한다),
 `html=False`가 뚫리면 방어가 남지 않는다.
+
+뒤쪽 절반은 조회 배선(`app.refresh_report`)과 결과 탭 렌더(`views._render_results`)를
+검증한다. `refresh_report`가 `report_error`만 건드리고 `detail_error`나 갱신 흐름을
+건드리지 않는지, 지표·리포트 다섯 조합에서 `AppTest`가 예외 없이 렌더되는지가 핵심이다.
 """
 
 from __future__ import annotations
 
+import json
+import os
+import threading
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import pytest
 
 pytest.importorskip("markdown_it", reason="orchestration-ui 그룹이 설치돼야 한다")
+pytest.importorskip("streamlit", reason="orchestration-ui 그룹이 설치돼야 한다")
 
+import streamlit as st  # noqa: E402
+from streamlit.testing.v1 import AppTest  # noqa: E402
+
+from agent_orchestration.ui.app import refresh_report  # noqa: E402
+from agent_orchestration.ui.client import ApiUnavailableError  # noqa: E402
 from agent_orchestration.ui.report import (  # noqa: E402
     build_report_document,
     render_report_html,
     report_document,
 )
-from agent_orchestration.ui.models import REPORT_STATUSES  # noqa: E402
+from agent_orchestration.ui.models import Experiment, REPORT_STATUSES  # noqa: E402
 from agent_orchestration.ui.state import (  # noqa: E402
     WorkbenchState,
     record_report,
     record_report_error,
     select_experiment,
 )
+
+
+APP_PATH = "agent_orchestration/ui/app.py"
 
 
 def test_inline_raw_html_is_escaped() -> None:
@@ -148,3 +167,230 @@ def test_selecting_another_experiment_clears_the_report() -> None:
     assert state.report_markdown is None
     assert state.report_error is None
     assert state.report_loaded_for is None
+
+
+class _StubClient:
+    """`fetch_report`만 답하는 최소 client."""
+
+    def __init__(self, result: object) -> None:
+        self.result = result
+        self.calls = 0
+
+    def fetch_report(self, experiment_id: str) -> str | None:
+        self.calls += 1
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def _state_with(status: str) -> WorkbenchState:
+    """선택 실험이 주어진 상태인 workbench state를 만든다."""
+    state = WorkbenchState(selected_id="exp-1")
+    state.experiment = Experiment(
+        id="exp-1",
+        hypothesis="가설",
+        status=status,
+        metric_summary=None,
+        agent_session_id=None,
+        created_at=datetime(2026, 8, 10, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 8, 10, tzinfo=timezone.utc),
+    )
+    return state
+
+
+def test_refresh_report_does_not_query_before_the_experiment_completes() -> None:
+    """PASSED 이전에는 리포트가 반드시 없으므로 묻지 않는다."""
+    client = _StubClient("# 결론")
+    state = _state_with("EVALUATING")
+
+    refresh_report(client, state)
+
+    assert client.calls == 0
+    assert state.report_loaded_for is None
+
+
+def test_refresh_report_fetches_once_and_stops() -> None:
+    """성공하면 한 번으로 그친다 — 5초 polling에 태우지 않는다."""
+    client = _StubClient("# 결론")
+    state = _state_with("PASSED")
+
+    refresh_report(client, state)
+    refresh_report(client, state)
+
+    assert client.calls == 1
+    assert state.report_markdown == "# 결론"
+
+
+def test_refresh_report_retries_after_a_failure() -> None:
+    """실패는 다음 갱신에서 다시 시도된다."""
+    client = _StubClient(ApiUnavailableError("일시적 오류"))
+    state = _state_with("PASSED")
+
+    refresh_report(client, state)
+    refresh_report(client, state)
+
+    assert client.calls == 2
+    assert state.report_error is not None
+
+
+def test_refresh_report_failure_does_not_touch_the_detail_error() -> None:
+    """리포트 실패가 워크벤치 전체를 오류 상태로 만들지 않는다."""
+    client = _StubClient(ApiUnavailableError("일시적 오류"))
+    state = _state_with("PASSED")
+
+    refresh_report(client, state)
+
+    assert state.detail_error is None
+
+
+# 결과 탭 다섯 조합이 실제로 참고하는 `measurement.build_metric_snapshot`의 산출 형태다
+# (`agent_orchestration/executor/measurement.py`). 값 자체는 임의지만 키 구조는 맞춘다.
+SNAPSHOT_FIXTURE: dict[str, object] = {
+    "contract_version": "experiment-metric-snapshot-v1",
+    "primary_metric": "roc_auc",
+    "seeds": [42, 43, 44],
+    "conditions": {
+        "baseline": {"roc_auc": 0.812, "log_loss": 0.421, "brier": 0.152},
+        "candidate": {"roc_auc": 0.831, "log_loss": 0.402, "brier": 0.147},
+    },
+    "paired": {
+        "roc_auc": {"mean": 0.019, "standard_error": 0.004},
+        "log_loss": {"mean": -0.019, "standard_error": 0.003},
+        "brier": {"mean": -0.005, "standard_error": 0.002},
+    },
+    "split_matches": True,
+    "dataset_fingerprint": "sha256:abcdef0123456789",
+    "results_uri": "gs://autoresearch-results/exp-report-combo/results.json",
+}
+
+
+class _ReportStubHandler(BaseHTTPRequestHandler):
+    """결과 탭 조합 테스트 전용 Experiment API 최소 스텁.
+
+    `tests/test_ui_submission_app.py`의 `_StubHandler` 라우팅을 그대로 따르고
+    `/experiments/{id}/report`만 더한다.
+    """
+
+    experiment: dict = {}
+    report_body: str | None = None
+    report_status: int = 200
+
+    def log_message(self, *_args: object) -> None:
+        """테스트 출력에 HTTP 로그를 남기지 않는다."""
+
+    def do_GET(self) -> None:  # noqa: N802
+        route = self.path.split("?", 1)[0]
+        if route == "/experiments":
+            self._respond(
+                {
+                    "items": [type(self).experiment],
+                    "limit": 50,
+                    "offset": 0,
+                    "total": 1,
+                }
+            )
+            return
+        parts = route.split("/")
+        if len(parts) == 3:
+            self._respond(type(self).experiment)
+            return
+        if parts[3] == "metadata":
+            self._respond({"entries": {}})
+            return
+        if parts[3] == "report":
+            if type(self).report_status != 200:
+                self._respond({"detail": "unavailable"}, status=type(self).report_status)
+                return
+            self._respond(
+                {
+                    "experiment_id": type(self).experiment.get("id"),
+                    "report_markdown": type(self).report_body,
+                }
+            )
+            return
+        self._respond({"items": [], "next_cursor": None})
+
+    def _respond(self, payload: dict, *, status: int = 200) -> None:
+        encoded = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+
+def _rendered_workbench(
+    *,
+    metric_summary: dict | None,
+    report_body: str | None,
+    report_status: int,
+) -> AppTest:
+    """지표·리포트 조합 하나로 결과 탭까지 그린 workbench `AppTest`를 반환한다.
+
+    실험 상태를 `PASSED`로 고정한다 — `refresh_report`는 `REPORT_STATUSES`가 아니면
+    조회 자체를 시도하지 않으므로, 그 이전 상태로 두면 리포트 실패 조합을 검증할 수
+    없다.
+    """
+    st.cache_resource.clear()
+    experiment_id = "exp-report-combo"
+    _ReportStubHandler.experiment = {
+        "id": experiment_id,
+        "hypothesis": "결과 탭 조합 검증",
+        "status": "PASSED",
+        "metric_summary": metric_summary,
+        "agent_session_id": None,
+        "created_at": "2026-08-05T00:00:00+00:00",
+        "updated_at": "2026-08-05T00:00:00+00:00",
+    }
+    _ReportStubHandler.report_body = report_body
+    _ReportStubHandler.report_status = report_status
+    server = HTTPServer(("127.0.0.1", 0), _ReportStubHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address[0], server.server_address[1]
+    previous_base_url = os.environ.get("ORCH_UI_API_BASE_URL")
+    previous_token = os.environ.get("ORCH_UI_API_TOKEN")
+    os.environ["ORCH_UI_API_BASE_URL"] = f"http://{host}:{port}"
+    os.environ["ORCH_UI_API_TOKEN"] = "t" * 32
+    try:
+        app = AppTest.from_file(APP_PATH, default_timeout=60)
+        app.run()
+        app.sidebar.radio[0].set_value(experiment_id).run()
+        return app
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        _restore_env("ORCH_UI_API_BASE_URL", previous_base_url)
+        _restore_env("ORCH_UI_API_TOKEN", previous_token)
+
+
+def _restore_env(name: str, previous: str | None) -> None:
+    """테스트가 건드린 환경 변수를 이전 값으로 되돌린다."""
+    if previous is None:
+        os.environ.pop(name, None)
+    else:
+        os.environ[name] = previous
+
+
+@pytest.mark.parametrize(
+    ("metric_summary", "report_body", "report_status"),
+    [
+        pytest.param(SNAPSHOT_FIXTURE, None, 200, id="지표만"),
+        pytest.param(None, "# 결론", 200, id="리포트만"),
+        pytest.param(SNAPSHOT_FIXTURE, "# 결론", 200, id="둘_다"),
+        pytest.param(None, None, 200, id="둘_다_없음"),
+        pytest.param(SNAPSHOT_FIXTURE, None, 503, id="fetch_실패"),
+    ],
+)
+def test_results_tab_survives_every_combination(
+    metric_summary: dict | None, report_body: str | None, report_status: int
+) -> None:
+    """다섯 조합 어디서도 결과 탭이 죽지 않는다."""
+    app = _rendered_workbench(
+        metric_summary=metric_summary,
+        report_body=report_body,
+        report_status=report_status,
+    )
+
+    assert not app.exception
