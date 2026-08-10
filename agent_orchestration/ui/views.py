@@ -276,18 +276,23 @@ def render_workbench(state: WorkbenchState) -> None:
         st.markdown(status_badge(experiment.status), unsafe_allow_html=True)
         st.caption(f"마지막 갱신 {format_time(experiment.updated_at)}")
 
-    main_column, inspector_column = st.columns([2.2, 1.0], gap="large")
-    with main_column:
-        with st.container(border=True):
-            st.markdown("#### 관찰 보드")
-            _render_tabs(state)
-    with inspector_column:
+    # 관찰 보드가 전체 폭을 쓰고 보조 패널 셋은 그 아래로 간다. 우측 인스펙터 열로
+    # 두면 원본 로그·작업 단계처럼 가로가 필요한 내용이 좁은 열에서 접히는데, 정작
+    # 그 옆의 보조 패널이 더 길어 화면 오른쪽만 계속 늘어났다.
+    with st.container(border=True):
+        st.markdown("#### 관찰 보드")
+        _render_tabs(state)
+
+    summary_column, timeline_column, metadata_column = st.columns(3, gap="large")
+    with summary_column:
         with st.container(border=True):
             st.markdown("#### 실행 요약")
             _render_metrics(experiment.metric_summary)
+    with timeline_column:
         with st.container(border=True):
             st.markdown("#### 진행 단계")
             _render_timeline(state.events[-8:], experiment.status)
+    with metadata_column:
         with st.container(border=True):
             st.markdown("#### 메타데이터")
             if state.metadata:
