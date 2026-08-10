@@ -26,10 +26,19 @@ borderColor = "#E4E6E7"
 codeBackgroundColor = "#12232B"
 codeTextColor = "#E8EFEC"
 
+# Noto Sans KR을 웹폰트로 싣는다. 가족 이름만 적으면 그 폰트가 깔린 PC에서만 적용돼
+# 사람마다 다른 화면을 보게 된다. 브라우저가 Google Fonts에서 직접 받으므로 서버·
+# 이미지에는 폰트를 넣지 않는다. 받지 못하면 폴백(styles.py의 `_BODY_FONT` 스택)으로
+# 내려간다.
+#
+# 값에 `, sans-serif` 같은 폴백을 덧붙이지 않는다. Streamlit이 `<이름>:<URL>` 형식을
+# 첫 콜론에서만 가르기 때문에 뒤에 붙인 폴백이 URL 질의문자열에 `%20sans-serif`로
+# 딸려 들어간다. 지금은 Google이 무시해 주지만 기대할 동작이 아니다.
+#
 # 제목까지 sans로 통일한다. 세리프는 가설 본문 한 곳에만 쓴다(styles.py) — 화면
 # 전체가 세리프면 제목마다 한글 폴백 자형이 섞여 통일감이 깨진다.
-font = "sans-serif"
-headingFont = "sans-serif"
+font = "Noto Sans KR:https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap"
+headingFont = "Noto Sans KR:https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap"
 codeFont = "monospace"
 
 # 0.5rem은 둥글어서 무르게 보인다. 계기판에는 각이 조금 더 선 편이 맞다.

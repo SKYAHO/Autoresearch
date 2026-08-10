@@ -46,6 +46,12 @@ HYPOTHESIS_KEY = "submission-hypothesis"
 
 _HYPOTHESIS_PLACEHOLDER = "마크다운 형식으로 가설을 작성해 주세요"
 
+# 사이드바 목록 한 줄이 쓸 수 있는 글자 수. 34자로 자르던 때에는 같은 파라미터를
+# 건드린 실험 여섯 개가 전부 `PASSED · LightGBM의 learning_rate를 0.05에서…`로 끝나
+# 서로 구별되지 않았다. 사이드바 폭(약 300px)에 0.82rem이면 두 줄에 50자 남짓이
+# 들어가므로, 실험을 가르는 값(0.05 → 0.03)이 잘리기 전까지 보이게 잡는다.
+_LIST_LABEL_LIMIT = 50
+
 
 def _shorten(text: str, limit: int) -> str:
     """줄바꿈을 접고 `limit`자로 줄인다. **단어 중간에서 자르지 않는다.**
@@ -238,7 +244,7 @@ def render_experiment_list(
         return None
     ids = [experiment.id for experiment in experiments]
     labels = {
-        experiment.id: f"{experiment.status} · {_shorten(experiment.hypothesis, 34)}"
+        experiment.id: f"{experiment.status} · {_shorten(experiment.hypothesis, _LIST_LABEL_LIMIT)}"
         for experiment in experiments
     }
     default_index = ids.index(selected_id) if selected_id in ids else None

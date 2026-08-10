@@ -28,8 +28,8 @@ from agent_orchestration.ui.models import status_color, status_label
 # 본문 서체. 테마의 `font = "sans-serif"`는 generic family라 한글 자형을 고르지
 # 못하므로 여기서 실제 가족 이름을 지정한다.
 _BODY_FONT = (
-    '"Inter", "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", '
-    '"Malgun Gothic", sans-serif'
+    '"Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", '
+    '"Pretendard", sans-serif'
 )
 # 세리프는 가설 본문 한 곳에만 쓴다. 화면에서 유일한 산문이라 활자를 달리해 구분한다.
 _PROSE_FONT = '"Iowan Old Style", Georgia, "Noto Serif KR", serif'
@@ -59,9 +59,12 @@ def workbench_css() -> str:
       }}
       .stApp h3 {{ font-size: 1.3rem; font-weight: 600; letter-spacing: -0.015em; }}
 
+      /* `.stApp p.<class>`로 특정성을 올린다. 클래스 하나짜리 선택자는 Streamlit이
+         `stMarkdownContainer`의 `p`에 거는 크기 규칙에 밀려 `font-size`만 조용히
+         무시됐다 — 색·굵기는 먹는데 크기만 안 먹어 알아채기 어렵다(#657). */
       /* 고정폭 서체를 쓰지 않는다. 한글이 mono 가족에 없어 폴백 자형으로 떨어지면
          자간만 벌어진 채 흐릿하게 보인다. */
-      .workbench-kicker {{
+      .stApp p.workbench-kicker {{
         color: #4B5563;
         font-family: {_BODY_FONT};
         font-size: 0.72rem;
@@ -94,7 +97,7 @@ def workbench_css() -> str:
       }}
       /* 가설은 제목이 아니라 본문이다. `st.title`로 그리면 여러 문장짜리 가설이
          H1 크기로 화면을 채워 관찰 보드를 접어버린다(#657). */
-      .workbench-hypothesis {{
+      .stApp p.workbench-hypothesis {{
         font-family: {_PROSE_FONT};
         font-size: 1.3rem;
         font-weight: 400;
@@ -162,7 +165,7 @@ def workbench_css() -> str:
 
       @media (max-width: 760px) {{
         .block-container {{ padding-top: 1.35rem; }}
-        .workbench-hypothesis {{ font-size: 1.1rem; }}
+        .stApp p.workbench-hypothesis {{ font-size: 1.1rem; }}
       }}
     </style>
     """

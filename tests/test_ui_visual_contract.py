@@ -68,6 +68,29 @@ def test_every_theme_key_is_one_streamlit_actually_reads() -> None:
     assert unknown == []
 
 
+@pytest.mark.parametrize("name", ["workbench-kicker", "workbench-hypothesis"])
+def test_paragraph_classes_keep_the_specificity_that_makes_font_size_apply(
+    name: str,
+) -> None:
+    """`<p>` 위의 클래스 하나짜리 선택자는 `font-size`만 조용히 진다.
+
+    Streamlit이 `stMarkdownContainer`의 `p`에 거는 크기 규칙에 밀려, 색과 굵기는
+    먹는데 크기만 무시된다. 가설 본문이 1.3rem 대신 16px로 그려지고 있었는데 화면만
+    봐서는 알아채기 어려웠다 — 브라우저에서 계산값을 읽고서야 드러났다(#657).
+
+    선택자를 `.workbench-hypothesis`로 되돌리는 순간 같은 증상이 돌아오므로
+    특정성 자체를 계약으로 고정한다.
+    """
+    css = workbench_css()
+
+    assert f".stApp p.{name}" in css
+    # 클래스만 단독으로 쓴 선언이 남아 있으면 그 선언이 진다.
+    for line in css.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f".{name}"):
+            pytest.fail(f"특정성이 부족한 선택자가 남아 있습니다: {stripped}")
+
+
 def test_theme_owns_the_colors_so_css_does_not_reintroduce_dead_variables() -> None:
     """CSS가 다시 Streamlit 테마 변수를 참조하면 그 선언은 또 죽는다."""
     css = workbench_css()
