@@ -521,17 +521,24 @@ def test_collect_once_skips_a_job_whose_pod_is_not_scheduled_yet() -> None:
 class _RecordingCoreV1:
     """호출 인자를 기록만 하는 `CoreV1Api` 더블."""
 
-    def __init__(self) -> None:
+    def __init__(self, log_body: bytes = b"output") -> None:
         self.list_calls: list[dict] = []
         self.log_calls: list[dict] = []
+        self.log_body = log_body
 
     def list_namespaced_pod(self, **kwargs):
         self.list_calls.append(kwargs)
         return type("Resp", (), {"items": []})()
 
-    def read_namespaced_pod_log(self, **kwargs) -> str:
+    def read_namespaced_pod_log(self, **kwargs):
+        """`_preload_content=False`일 때의 실제 반환을 흉내낸다.
+
+        kubernetes client는 이 옵션에서 역직렬화를 건너뛰고 `.data`가 bytes인 HTTP
+        응답 객체를 그대로 돌려준다. 문자열을 돌려주는 더블을 쓰면 #661의 회귀를
+        잡지 못한다 — 그 버그는 bytes를 `str()`에 넣어 생긴 것이었다.
+        """
         self.log_calls.append(kwargs)
-        return "output"
+        return type("Resp", (), {"data": self.log_body})()
 
 
 def test_pod_logs_adapter_filters_by_the_job_name_label() -> None:
@@ -560,8 +567,40 @@ def test_pod_logs_adapter_passes_the_container_name() -> None:
             "name": "ar-exec-abc-x7k2",
             "namespace": "ns",
             "container": "codex-worker",
+            "_preload_content": False,
         }
     ]
+
+
+def test_pod_logs_adapter_decodes_instead_of_stringifying_bytes() -> None:
+    """로그를 repr이 아니라 UTF-8 원문으로 읽는다.
+
+    `_preload_content` 기본값(`True`)으로 두면 client가 plain text 응답을 JSON으로
+    파싱하려다 실패하고, bytes를 그대로 `str()`에 넣어 **repr**을 만든다. 그러면
+    `b'` 접두사가 붙고 줄바꿈이 리터럴 `\\n`이 되며 한글이 `\\xed\\x95\\x9c`로 깨진다.
+    실측으로 실험 로그 4건이 전부 이 상태였다(#661).
+    """
+    api = _RecordingCoreV1(log_body="INFO:__main__:단계 시작\nINFO:__main__:완료\n".encode())
+
+    text = KubernetesPodLogs(api).read_log("ns", "ar-exec-abc-x7k2", "codex-worker")
+
+    assert text == "INFO:__main__:단계 시작\nINFO:__main__:완료\n"
+    assert not text.startswith("b'")
+    assert "\\n" not in text
+    assert "단계 시작" in text
+
+
+def test_pod_logs_adapter_keeps_undecodable_bytes_instead_of_raising() -> None:
+    """UTF-8이 아닌 바이트가 섞여도 그 stage의 로그를 통째로 잃지 않는다.
+
+    수집은 진단용이므로 일부가 깨져도 남기는 쪽이 낫다.
+    """
+    api = _RecordingCoreV1(log_body=b"ok \xff\xfe tail")
+
+    text = KubernetesPodLogs(api).read_log("ns", "pod", "container")
+
+    assert text.startswith("ok ")
+    assert text.endswith(" tail")
 
 
 def test_experiment_id_from_job_name_inverts_the_launcher_rule() -> None:
