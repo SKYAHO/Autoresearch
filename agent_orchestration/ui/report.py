@@ -32,7 +32,14 @@ from markdown_it import MarkdownIt
 # `html=False`가 인라인·블록 raw HTML을 모두 escape하고, 기본 `validateLink`가
 # `javascript:`·`vbscript:`·`file:`·`data:`(이미지 제외) 링크를 앵커로 만들지 않는다.
 # **이 설정을 바꾸지 않는다** — 모듈 docstring의 [중요]가 이유다.
-_RENDERER: Final = MarkdownIt("commonmark", {"html": False})
+#
+# `table`은 따로 켠다. commonmark 프리셋에 표 확장이 없어 그냥 두면 리포트의
+# baseline·candidate 비교표가 `| 지표 | delta |` 파이프 문자 그대로 한 문단에 찍힌다.
+# 리포트에서 표는 장식이 아니라 주 지표가 놓이는 자리다(`prompt.REPORT_SECTIONS`의
+# `## 주 지표`). `gfm-like` 프리셋은 쓰지 않는다 — linkify가 켜져 있어
+# `linkify-it-py` 없이는 렌더가 예외로 죽는다. 표 규칙은 raw HTML escape나
+# `validateLink`를 건드리지 않으므로 위의 방어는 그대로다.
+_RENDERER: Final = MarkdownIt("commonmark", {"html": False}).enable("table")
 
 # 리포트 문서의 고정 스타일. 우리가 소유하므로 여기를 고치면 과거 실험의 리포트도
 # 전부 같이 바뀐다 — 변환을 UI에 둔 이유가 그것이다(spec 결정 4).

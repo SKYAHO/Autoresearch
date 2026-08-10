@@ -92,6 +92,42 @@ def test_ordinary_links_survive() -> None:
     assert '<a href="https://example.com"' in render_report_html("[예](https://example.com)")
 
 
+def test_tables_render_as_tables() -> None:
+    """baseline·candidate 비교표가 표로 그려진다.
+
+    commonmark 프리셋에는 표 확장이 없어 켜 두지 않으면 `| 지표 | delta |`가 파이프
+    문자 그대로 한 문단에 찍힌다. 리포트에서 표는 주 지표가 놓이는 자리라
+    (`prompt.REPORT_SECTIONS`의 `## 주 지표`) 그 상태로는 기능이 성립하지 않는다.
+    """
+    rendered = render_report_html(
+        "| 지표 | baseline | candidate |\n"
+        "| --- | --- | --- |\n"
+        "| ROC-AUC | 0.7412 | 0.7489 |\n"
+    )
+
+    assert "<table>" in rendered
+    assert "<th>지표</th>" in rendered
+    assert "<td>0.7489</td>" in rendered
+    assert "| ---" not in rendered
+
+
+def test_table_cells_still_escape_raw_html() -> None:
+    """표를 켜도 escape 경계는 그대로다.
+
+    표 규칙은 raw HTML escape나 `validateLink`를 건드리지 않는다. 이 파일이 지키는
+    것은 escape 하나이므로, 렌더 규칙을 켤 때마다 그것이 유지되는지 함께 고정한다.
+    """
+    rendered = render_report_html(
+        "| 지표 | 비고 |\n"
+        "| --- | --- |\n"
+        "| ROC-AUC | <script>alert(1)</script> |\n"
+    )
+
+    assert "<table>" in rendered
+    assert "&lt;script&gt;" in rendered
+    assert "<script>alert" not in rendered
+
+
 def test_empty_report_renders_without_error() -> None:
     """빈 본문도 빈 문자열로 변환된다 — 호출부가 분기하지 않아도 된다."""
     assert render_report_html("") == ""

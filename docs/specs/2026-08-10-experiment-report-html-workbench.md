@@ -172,7 +172,18 @@ HTML을 그대로 렌더하면 현재 `views.py`가 지키고 있는 escape 경�
 `agent_orchestration/ui/report.py`를 신설한다. Streamlit을 import하지 않는 순수 함수
 모듈이다.
 
-- `render_report_html(markdown_text) -> str` — `MarkdownIt("commonmark", {"html": False})`
+- `render_report_html(markdown_text) -> str` —
+  `MarkdownIt("commonmark", {"html": False}).enable("table")`
+
+> `[정정 — #647, 2026-08-10]` 처음에는 `.enable("table")` 없이 `commonmark` 프리셋만
+> 적었다. 그 프리셋에는 표 확장이 없어, 리포트의 baseline·candidate 비교표가
+> `| 지표 | delta |` 파이프 문자 그대로 한 문단에 찍힌다. 리포트에서 표는 장식이
+> 아니라 **주 지표가 놓이는 자리**이므로(`prompt.REPORT_SECTIONS`의 `## 주 지표`)
+> 그대로 두면 이 이슈가 하려던 일이 화면에서 성립하지 않는다.
+>
+> `gfm-like` 프리셋은 쓰지 않는다 — linkify가 켜져 있어 `linkify-it-py` 없이는 렌더가
+> 예외로 죽고, 그 의존성을 새로 들일 이유가 없다. 표 규칙은 raw HTML escape나
+> `validateLink`를 건드리지 않으므로 결정 5의 방어는 그대로다.
 - `build_report_document(body_html) -> str` — 고정 CSS를 인라인한 `<!doctype html>` 조립
 
 **템플릿에 스크립트를 한 줄도 넣지 않는다.** 결정 5가 그 이유다.
