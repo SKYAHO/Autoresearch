@@ -117,7 +117,7 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 | token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch/clone/push token-minter에만 보이는 private key mount 경로 |
 | token-minter/각 consumer | `ORCH_GITHUB_TOKEN_FILE` | purpose별 memory volume의 mode 0400 installation token 파일 경로 (`/var/run/{branch,clone,push}-token/token`) |
 | candidate-finalizer | `ORCH_EXECUTOR_API_URL`, `ORCH_EXECUTOR_API_TOKEN_FILE` | internal Candidate API URL과 `ORCH_EXECUTOR_API_TOKEN` Secret을 mount한 `/var/run/executor-api-token/token` 경로 |
-| codex-worker/candidate-finalizer | `ORCH_CODEX_HOME`, `ORCH_CODEX_TIMEOUT_SEC` | read-only Codex auth source와 Job 전체 상한보다 작은 Codex 실행 상한 (`1800`초). Codex는 두 번 돕니다 — 코드 수정(5)과 `report.md` 작성(8) |
+| codex-worker/candidate-finalizer | `ORCH_CODEX_HOME`, `ORCH_CODEX_TIMEOUT_SEC` | read-only Codex auth source와 Job 전체 상한보다 작은 Codex 실행 상한 (`6000`초). Codex는 두 번 돕니다 — 코드 수정(5)과 `report.md` 작성(8) |
 
 동일 executor digest는 아래 8개 container가 순서대로 사용합니다. GitHub App private key는
 1·3·7의 token-minter에만, executor 전용 Codex 인증 Secret의 `CODEX_HOME`은 5·8에만,
