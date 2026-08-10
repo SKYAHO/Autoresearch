@@ -7,6 +7,10 @@ transaction에 상태·event 쓰기를 합치는 primitive를 함께 제공한�
 baseline-reader App으로 `dev` SHA를 읽어 본문·제목과 함께 조건부 UPDATE로 최초 값만
 봉인한다. HTTP 인증·상태 코드 변환, 실제 학습/Job 실행, 본문 조립(issue_authoring)과
 GitHub 인증·REST/`gh` 전송 자체는 담당하지 않는다.
+
+완주 보고가 실은 `report_markdown`은 정규화(`normalize_report_markdown`, 거절 아닌 절단)
+후 지표 커밋과 **다른 트랜잭션**(`_store_report_markdown`)에 적재한다. 리포트 쓰기 실패가
+이미 커밋된 지표를 되돌리면 안 되기 때문이다.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
+import logging
 import uuid
 
 from sqlalchemy import func, select, update
@@ -53,6 +58,7 @@ from agent_orchestration.app.experiments.models import (
 from agent_orchestration.app.experiments.repository import (
     find_experiment,
     find_experiment_events,
+    find_experiment_report,
     find_event_by_idempotency_key,
     find_experiment_logs,
     find_experiment_metadata,
@@ -71,6 +77,7 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentStepCreate,
     ExperimentStepUpdate,
     IssuePublicationRequest,
+    MAX_REPORT_MARKDOWN_BYTES,
     PromotionRequest,
     StatusUpdateRequest,
 )
@@ -81,6 +88,31 @@ from agent_orchestration.github_app import (
     create_installation_token,
 )
 from agent_orchestration.github_refs import GitHubRefError, GitHubRefs
+
+logger = logging.getLogger(__name__)
+
+# service가 상한을 넘겨 자를 때 본문 끝에 남기는 고정 문구다. executor의 문구와 문안을
+# 다르게 두어 **어느 계층이 잘랐는지**가 화면에서 구분되게 한다.
+_REPORT_TRUNCATION_NOTE = "\n\n[하네스] 리포트가 상한을 넘어 API에서 잘렸습니다.\n"
+
+
+def normalize_report_markdown(text: str) -> str:
+    """DB에 저장할 수 있는 형태로 리포트 본문을 정규화한다.
+
+    **거절하지 않는다.** 이 함수가 예외를 올리면 그 예외가 완주 보고를 죽이고, 그것은
+    "리포트는 지표에 종속된다"는 계약과 정반대다(spec 결정 3).
+
+    NUL을 지우는 이유는 PostgreSQL이 text 값에 `U+0000`을 저장하지 못하기 때문이다.
+    `report.md`는 `read_text(errors="replace")`로 읽히는데 그 옵션은 잘못된 UTF-8만
+    바꿀 뿐 정상 디코드되는 0x00은 그대로 통과시킨다.
+    """
+    cleaned = text.replace("\x00", "")
+    encoded = cleaned.encode("utf-8")
+    if len(encoded) <= MAX_REPORT_MARKDOWN_BYTES:
+        return cleaned
+    budget = MAX_REPORT_MARKDOWN_BYTES - len(_REPORT_TRUNCATION_NOTE.encode("utf-8"))
+    return encoded[:budget].decode("utf-8", errors="ignore") + _REPORT_TRUNCATION_NOTE
+
 
 # 학습 기간은 KST 날짜 경계로 계산한다. UTC로 계산하면 한국 시각 오전 9시 이전에
 # 발행된 실험이 하루 앞선 구간을 보게 된다.
@@ -404,6 +436,9 @@ def record_experiment_result(
     재시도는 event 조회로 흡수되지만, **같은 실험에 다른 지표를 보내면 409**다 —
     한 실험의 결과는 하나이고, 덮어쓰기를 허용하면 어느 숫자가 실제 실행의 것인지
     말할 수 없게 된다.
+
+    `report_markdown`은 **다른 트랜잭션**에 쓴다. 리포트 쓰기 실패가 지표 커밋을 되돌리면
+    안 되기 때문이며, 그 근거는 `_store_report_markdown`에 있다.
     """
     expected_event_key = f"executor-result:{experiment_id}"
     if request.idempotency_key != expected_event_key:
@@ -425,7 +460,56 @@ def record_experiment_result(
             idempotency_key=expected_event_key,
             check_idempotency=True,
         )
+    # 지표는 위에서 이미 커밋됐다. 리포트는 여기서부터 독립이다 — 이 아래에서 무엇이
+    # 터져도 완주 보고는 성립한다.
+    if request.report_markdown is not None:
+        _store_report_markdown(session, experiment_id, request.report_markdown)
     return experiment
+
+
+def _store_report_markdown(
+    session: Session, experiment_id: uuid.UUID, raw_markdown: str
+) -> None:
+    """리포트 본문을 지표 커밋과 **다른 트랜잭션**에 쓴다.
+
+    같은 트랜잭션에 두면 리포트 쓰기 실패가 지표까지 롤백시킨다. 그 실패는 가상이
+    아니다 — PostgreSQL의 NUL 거부와, migration `0006` 이전에 코드가 뜬 배포 순서
+    어긋남(deferred 컬럼이라 SELECT는 통과하고 UPDATE에서 터진다) 두 경로가 있다.
+
+    **어떤 예외도 위로 올리지 않는다.** 여기서 예외가 나가면 이미 커밋된 지표 보고가
+    200에서 500으로 바뀌고, executor는 그것을 실패로 읽어 Job이 ERROR로 회수된다.
+    `with session.begin()`의 `__exit__`가 이미 rollback하므로 명시적 rollback은 넣지
+    않는다(`_transition_experiment` 호출부의 주석과 같은 근거).
+
+    **write-once.** 이미 값이 있으면 덮어쓰지 않는다. 지표는 다르면 409지만 리포트는
+    그렇게 하지 않는다 — 재시도가 리포트 때문에 실패하면 지표 보고까지 잃는다. 대신
+    다른 본문이 왔다는 사실은 로그에 남긴다. 본문 자체는 싣지 않는다(최대 64KB의 LLM
+    산출물이다).
+    """
+    try:
+        normalized = normalize_report_markdown(raw_markdown)
+        if normalized != raw_markdown:
+            logger.warning(
+                "report_markdown normalized experiment_id=%s", experiment_id
+            )
+        with session.begin():
+            experiment = find_experiment_report(session, experiment_id, for_update=True)
+            if experiment is None:
+                return
+            if experiment.report_markdown is None:
+                experiment.report_markdown = normalized
+            elif experiment.report_markdown != normalized:
+                logger.warning(
+                    "report_markdown ignored: already set, mismatch on retry "
+                    "experiment_id=%s",
+                    experiment_id,
+                )
+    except Exception as error:  # noqa: BLE001 - 리포트 실패가 지표 커밋을 되돌리면 안 된다
+        logger.error(
+            "report_markdown write failed experiment_id=%s error_type=%s",
+            experiment_id,
+            type(error).__name__,
+        )
 
 
 def create_experiment_event(

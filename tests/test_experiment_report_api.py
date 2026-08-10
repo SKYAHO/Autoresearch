@@ -16,8 +16,26 @@ from sqlalchemy import Engine, create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.models import Experiment
+from agent_orchestration.app.experiments.models import Experiment, ExperimentStatus
 from agent_orchestration.app.experiments.repository import find_experiment_report
+from agent_orchestration.app.experiments.schemas import (
+    MAX_REPORT_MARKDOWN_BYTES,
+    CandidateReportRequest,
+    ExecutorResultReportRequest,
+    ExperimentCreate,
+)
+from agent_orchestration.app.experiments.service import (
+    create_experiment,
+    normalize_report_markdown,
+    record_candidate,
+    record_experiment_result,
+)
+
+ISSUE_NUMBER = 647
+ISSUE_BRANCH = "exp/647"
+BASE_DEV_SHA = "a" * 40
+CANDIDATE_SHA = "b" * 40
+SNAPSHOT = {"contract_version": "experiment-metric-snapshot-v1", "primary_metric": "roc_auc"}
 
 
 @pytest.fixture
@@ -81,3 +99,135 @@ def test_find_experiment_report_returns_none_for_a_missing_experiment(
 ) -> None:
     """없는 실험은 None이다 — 예외를 올리는 것은 service의 몫이다."""
     assert find_experiment_report(db_session, uuid.uuid4()) is None
+
+
+def _evaluating_experiment(session: Session) -> uuid.UUID:
+    """candidate까지 보고된 EVALUATING 실험 하나를 만든다.
+
+    `record_candidate`는 이미 봉인된 이슈 좌표(issue_number/issue_branch/base_dev_sha)와
+    RUNNING 상태를 전제한다(`tests/test_experiment_candidate_api.py`의
+    `_running_experiment`와 같은 전제). candidate 보고 전에 여기서 좌표를 봉인해 둔다.
+    """
+    experiment = create_experiment(session, ExperimentCreate(hypothesis="가설"))
+    experiment.issue_number = ISSUE_NUMBER
+    experiment.issue_branch = ISSUE_BRANCH
+    experiment.base_dev_sha = BASE_DEV_SHA
+    experiment.status = ExperimentStatus.RUNNING.value
+    session.commit()
+    record_candidate(
+        session,
+        experiment.id,
+        CandidateReportRequest(
+            idempotency_key=f"executor-candidate:{experiment.id}",
+            issue_number=ISSUE_NUMBER,
+            issue_branch=ISSUE_BRANCH,
+            base_dev_sha=BASE_DEV_SHA,
+            candidate_sha=CANDIDATE_SHA,
+        ),
+    )
+    return experiment.id
+
+
+def _result_request(experiment_id: uuid.UUID, **overrides: object) -> ExecutorResultReportRequest:
+    """완주 보고 요청을 만든다."""
+    values: dict[str, object] = {
+        "idempotency_key": f"executor-result:{experiment_id}",
+        "candidate_sha": CANDIDATE_SHA,
+        "metric_snapshot": SNAPSHOT,
+    }
+    values.update(overrides)
+    return ExecutorResultReportRequest.model_validate(values)
+
+
+def test_result_report_without_a_report_still_passes(db_session: Session) -> None:
+    """리포트 없는 기존 보고 경로가 그대로 성립한다 (회귀)."""
+    experiment_id = _evaluating_experiment(db_session)
+    record_experiment_result(db_session, experiment_id, _result_request(experiment_id))
+
+    stored = find_experiment_report(db_session, experiment_id)
+    assert stored is not None
+    assert stored.status == ExperimentStatus.PASSED.value
+    assert stored.report_markdown is None
+
+
+def test_result_report_stores_the_report_body(db_session: Session) -> None:
+    """리포트를 실으면 본문이 적재되고 지표 전이도 그대로 일어난다."""
+    experiment_id = _evaluating_experiment(db_session)
+    record_experiment_result(
+        db_session,
+        experiment_id,
+        _result_request(experiment_id, report_markdown="# 결론\n\n올랐다."),
+    )
+
+    stored = find_experiment_report(db_session, experiment_id)
+    assert stored is not None
+    assert stored.status == ExperimentStatus.PASSED.value
+    assert stored.report_markdown == "# 결론\n\n올랐다."
+
+
+def test_report_write_failure_leaves_the_metric_commit_in_place(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """리포트 적재가 터져도 지표 커밋은 남는다.
+
+    PostgreSQL의 NUL 거부와 배포 순서 어긋남(`UndefinedColumn`)은 SQLite에서 재현되지
+    않으므로 같은 자리에 예외를 주입해 성질만 고정한다 — 검증 대상은 실패의 종류가
+    아니라 **지표가 살아남는가**다.
+    """
+    import agent_orchestration.app.experiments.service as service_module
+
+    experiment_id = _evaluating_experiment(db_session)
+
+    def explode(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated database failure")
+
+    monkeypatch.setattr(service_module, "find_experiment_report", explode)
+    record_experiment_result(
+        db_session,
+        experiment_id,
+        _result_request(experiment_id, report_markdown="# 결론"),
+    )
+
+    db_session.expunge_all()
+    stored = find_experiment_report(db_session, experiment_id)
+    assert stored is not None
+    assert stored.status == ExperimentStatus.PASSED.value
+    assert stored.report_markdown is None
+
+
+def test_retry_with_a_different_report_keeps_the_first_and_warns(
+    db_session: Session, caplog: pytest.LogCaptureFixture
+) -> None:
+    """재시도가 다른 본문을 실어도 첫 보고가 정본이고, 조용히 버리지 않는다."""
+    experiment_id = _evaluating_experiment(db_session)
+    record_experiment_result(
+        db_session, experiment_id, _result_request(experiment_id, report_markdown="첫 번째")
+    )
+    with caplog.at_level("WARNING"):
+        record_experiment_result(
+            db_session,
+            experiment_id,
+            _result_request(experiment_id, report_markdown="두 번째"),
+        )
+
+    stored = find_experiment_report(db_session, experiment_id)
+    assert stored is not None
+    assert stored.report_markdown == "첫 번째"
+    assert "already set, mismatch on retry" in caplog.text
+    assert "두 번째" not in caplog.text
+
+
+def test_normalize_strips_nul_and_truncates_without_rejecting() -> None:
+    """정규화는 거절하지 않는다 — NUL을 지우고 상한을 넘으면 자른다."""
+    assert normalize_report_markdown("가\x00나") == "가나"
+
+    oversized = "가" * MAX_REPORT_MARKDOWN_BYTES
+    normalized = normalize_report_markdown(oversized)
+    assert len(normalized.encode("utf-8")) <= MAX_REPORT_MARKDOWN_BYTES
+    assert normalized.endswith("\n")
+    assert "잘렸습니다" in normalized
+
+
+def test_normalize_keeps_a_body_within_the_limit_untouched() -> None:
+    """상한 안이면 그대로 둔다 — 문구가 붙지 않는다."""
+    assert normalize_report_markdown("# 결론") == "# 결론"

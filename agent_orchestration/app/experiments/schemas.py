@@ -32,6 +32,13 @@ MAX_STEP_TARGET_BYTES = 4096
 # 워크벤치가 매 polling마다 읽어 화면에 편다. 상한이 없으면 seed·조건이 늘어날 때
 # 조용히 커져 목록 화면까지 느려진다.
 MAX_METRIC_SNAPSHOT_BYTES = 16384
+# 리포트 본문의 저장 상한(UTF-8 바이트). executor가 먼저 자르고
+# (`executor/report.py`) service가 한 번 더 자른다 — **둘 다 거절이 아니라 절단이다.**
+# 거절 경로를 남기면 리포트 내용이 지표 보고를 죽이는 결합이 되살아난다(spec 결정 3).
+MAX_REPORT_MARKDOWN_BYTES = 65536
+# 요청 본문 폭주만 막는 성긴 상한이다. **문자 수**라 위 바이트 상한과 단위가 다르며,
+# DB에 들어갈 크기를 정하는 것은 service의 절단이다.
+MAX_REPORT_MARKDOWN_CHARS = 262144
 GitSha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 
 
@@ -119,6 +126,10 @@ class ExecutorResultReportRequest(BaseModel):
     # 좌표가 뒤섞인 것이므로 받지 않는다.
     candidate_sha: GitSha
     metric_snapshot: dict
+    # 에이전트가 쓴 `report.md` 본문. 없이 보고해도 성립한다 — 리포트 실패가 지표
+    # 게시를 막지 않는다는 성질이 여기서 유지된다. 크기·내용 검증을 여기서 하지 않는
+    # 이유는 spec 결정 3에 있다: 이 필드로 요청을 거절하면 리포트가 지표를 죽인다.
+    report_markdown: str | None = Field(default=None, max_length=MAX_REPORT_MARKDOWN_CHARS)
 
     @field_validator("metric_snapshot")
     @classmethod
