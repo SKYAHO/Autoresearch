@@ -7,7 +7,8 @@
 서술된다.
 
 [기능] `git diff <base> <candidate>`를 파일로 받아 두고, 가설 원문·채점 결과·diff를
-읽으라는 지시로 Codex를 실행한 뒤, 나온 리포트의 존재와 절 구성을 확인한다.
+읽으라는 지시로 Codex를 실행한 뒤, 나온 리포트의 존재와 절 구성을 확인하고, 보고용
+본문을 상한 안에서 읽어 낸다.
 
 [비책임] 지표의 계산·조립(`evaluate.py`·`measurement.py`), Codex 프로세스 실행과 격리
 (`codex_worker.py`), 지시문 문안(`prompt.py`), GCS 게시(`results_store.py`), 실행 결과를
@@ -48,6 +49,18 @@ DIFF_FILENAME: Final = "candidate.diff"
 _DIFF_MAX_BYTES: Final = 1024 * 1024
 _DIFF_TRUNCATION_NOTE: Final = (
     "\n\n[하네스] diff가 상한을 넘어 여기서 잘렸습니다. 아래 내용은 변경의 일부입니다.\n"
+)
+
+# API에 보고할 리포트 본문의 상한(UTF-8 바이트). `app/experiments/schemas.py`의 같은
+# 이름 상수와 **반드시 같은 값**이어야 한다 — executor는 app 패키지를 import하지 않아
+# 상수를 공유할 수 없고, 두 값이 갈리면 API가 잘라야 할 것을 executor가 안 잘라 보낸다.
+# 일치는 `tests/test_experiment_report_api.py`가 고정한다.
+MAX_REPORT_MARKDOWN_BYTES: Final = 65536
+
+# 상한을 넘겨 잘랐을 때 본문 끝에 남기는 고정 문구. API 쪽 문구와 문안을 다르게 두어
+# 어느 계층이 잘랐는지가 화면에서 구분되게 한다.
+_REPORT_TRUNCATION_NOTE: Final = (
+    "\n\n[하네스] 리포트가 상한을 넘어 executor에서 잘렸습니다.\n"
 )
 
 
@@ -144,6 +157,41 @@ def missing_report_sections(text: str) -> tuple[str, ...]:
     """
     headings = {line.strip() for line in text.splitlines()}
     return tuple(section for section in REPORT_SECTIONS if section not in headings)
+
+
+def truncate_report_markdown(text: str) -> str:
+    """API로 보낼 리포트 본문을 상한 안으로 줄인다.
+
+    문구의 바이트를 예산에서 먼저 빼고 남은 만큼만 자른다. `errors="ignore"`로 디코드해
+    멀티바이트 문자가 상한에 걸쳐도 깨진 문자를 남기지 않는다 —
+    `capture_candidate_diff`가 같은 이유로 쓰는 방식이다.
+
+    Returns:
+        상한 안이면 원문 그대로, 넘으면 앞부분과 잘림 문구.
+    """
+    encoded = text.encode("utf-8")
+    if len(encoded) <= MAX_REPORT_MARKDOWN_BYTES:
+        return text
+    budget = MAX_REPORT_MARKDOWN_BYTES - len(_REPORT_TRUNCATION_NOTE.encode("utf-8"))
+    return encoded[:budget].decode("utf-8", errors="ignore") + _REPORT_TRUNCATION_NOTE
+
+
+def read_report_markdown(path: Path) -> str | None:
+    """게시한 리포트를 API 보고용 본문으로 읽는다.
+
+    **어떤 실패도 위로 올리지 않는다.** 여기서 예외가 나가면 그것이 완주 보고를 막고,
+    측정한 숫자마저 사라진다 — 리포트는 숫자보다 뒤에 온다는 이 모듈의 계약과 같다.
+
+    Returns:
+        보고할 본문. 파일이 없거나 읽지 못하거나 비어 있으면 `None`이다.
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+    return truncate_report_markdown(text)
 
 
 def write_experiment_report(config: ReportInput) -> ReportResult:

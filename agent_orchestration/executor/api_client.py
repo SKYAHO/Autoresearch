@@ -140,12 +140,16 @@ def report_result(
     experiment_id: uuid.UUID,
     candidate_sha: str,
     metric_snapshot: dict[str, object],
+    report_markdown: str | None = None,
 ) -> None:
     """채점이 끝난 실험 지표를 보고하고 응답이 완주 상태인지 확인한다.
 
     응답 상태를 확인하는 이유는 candidate 보고에서 SHA를 되받아 확인하는 이유와
     같다 — 200을 받았다는 것과 상태가 실제로 옮겨갔다는 것은 다르다. 여기서 넘어가면
     지표가 어디에도 없는데 실행만 성공으로 끝난다.
+
+    `report_markdown`이 `None`이면 key 자체를 싣지 않는다. 리포트 없이 보내는 것이
+    정상 경로이고, API도 그렇게 받도록 돼 있다.
     """
     token = _read_token(token_file)
     payload: dict[str, object] = {
@@ -153,6 +157,8 @@ def report_result(
         "candidate_sha": candidate_sha,
         "metric_snapshot": metric_snapshot,
     }
+    if report_markdown is not None:
+        payload["report_markdown"] = report_markdown
     response_payload = _post_json(
         _endpoint(api_url, experiment_id, "result"),
         payload,

@@ -333,3 +333,54 @@ def test_report_endpoint_requires_the_api_token(client: TestClient) -> None:
     """토큰 없이 리포트를 읽을 수 없다."""
     experiment_id = _create_evaluating_experiment_for_http(client)
     assert client.get(f"/experiments/{experiment_id}/report").status_code == 401
+
+
+def test_executor_and_api_share_the_same_report_size_limit() -> None:
+    """executor와 API의 상한이 갈리면 지표가 죽는다 — 두 값을 고정한다.
+
+    `executor`는 `app` 패키지를 import하지 않으므로 상수를 공유할 수 없다. 드리프트를
+    막는 것은 이 테스트뿐이다.
+    """
+    from agent_orchestration.executor.report import (
+        MAX_REPORT_MARKDOWN_BYTES as EXECUTOR_LIMIT,
+    )
+
+    assert EXECUTOR_LIMIT == MAX_REPORT_MARKDOWN_BYTES
+
+
+def test_truncate_keeps_a_body_within_the_limit_untouched() -> None:
+    """상한 안이면 그대로다."""
+    from agent_orchestration.executor.report import truncate_report_markdown
+
+    assert truncate_report_markdown("# 결론") == "# 결론"
+
+
+def test_truncate_cuts_on_a_character_boundary() -> None:
+    """멀티바이트 문자가 상한에 걸쳐도 깨진 문자를 남기지 않는다."""
+    from agent_orchestration.executor.report import (
+        MAX_REPORT_MARKDOWN_BYTES as LIMIT,
+        truncate_report_markdown,
+    )
+
+    truncated = truncate_report_markdown("가" * LIMIT)
+
+    assert len(truncated.encode("utf-8")) <= LIMIT
+    assert "�" not in truncated
+    assert truncated.endswith("\n")
+    assert "executor에서 잘렸습니다" in truncated
+
+
+def test_read_report_markdown_absorbs_a_missing_file(tmp_path) -> None:
+    """본문 읽기 실패는 None이다 — 지표 보고를 막지 않는다."""
+    from agent_orchestration.executor.report import read_report_markdown
+
+    assert read_report_markdown(tmp_path / "없음.md") is None
+
+
+def test_read_report_markdown_treats_a_blank_report_as_absent(tmp_path) -> None:
+    """공백뿐인 리포트는 없는 것으로 본다."""
+    from agent_orchestration.executor.report import read_report_markdown
+
+    path = tmp_path / "report.md"
+    path.write_text("   \n\n", encoding="utf-8")
+    assert read_report_markdown(path) is None
