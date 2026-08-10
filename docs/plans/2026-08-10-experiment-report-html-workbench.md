@@ -72,7 +72,7 @@
   - `Experiment.report_markdown: Mapped[str | None]` — deferred 컬럼
   - `find_experiment_report(session: Session, experiment_id: uuid.UUID, *, for_update: bool = False) -> Experiment | None`
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_experiment_report_api.py`를 새로 만든다. fixture는 `tests/test_experiment_candidate_api.py:53-` 의 `sqlite_engine` / `db_session`을 같은 형태로 복제한다 (그 파일이 이미 그렇게 자립해 있다).
 
@@ -162,12 +162,12 @@ def test_find_experiment_report_returns_none_for_a_missing_experiment(
     assert find_experiment_report(db_session, uuid.uuid4()) is None
 ```
 
-- [ ] **Step 2: 테스트가 실패하는지 확인한다**
+- [x] **Step 2: 테스트가 실패하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_experiment_report_api.py -v`
 Expected: FAIL — `ImportError: cannot import name 'find_experiment_report'`
 
-- [ ] **Step 3: 모델에 deferred 컬럼을 추가한다**
+- [x] **Step 3: 모델에 deferred 컬럼을 추가한다**
 
 `agent_orchestration/app/experiments/models.py`의 `candidate_sha` 줄 바로 아래에 넣는다.
 
@@ -191,7 +191,7 @@ Expected: FAIL — `ImportError: cannot import name 'find_experiment_report'`
 주석에 있다. `ExperimentResponse`에 노출하지 않으며 전용 endpoint가 조회한다.
 ```
 
-- [ ] **Step 4: repository에 undefer 조회를 추가한다**
+- [x] **Step 4: repository에 undefer 조회를 추가한다**
 
 `agent_orchestration/app/experiments/repository.py`의 import에 `undefer`를 더하고 `find_experiment` 아래에 넣는다.
 
@@ -221,7 +221,7 @@ def find_experiment_report(
     return session.scalar(statement)
 ```
 
-- [ ] **Step 5: migration을 작성한다**
+- [x] **Step 5: migration을 작성한다**
 
 `agent_orchestration/migrations/versions/0006_experiment_report_markdown.py`
 
@@ -263,17 +263,17 @@ def downgrade() -> None:
     op.drop_column("experiments", "report_markdown")
 ```
 
-- [ ] **Step 6: 테스트가 통과하는지 확인한다**
+- [x] **Step 6: 테스트가 통과하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_experiment_report_api.py -v`
 Expected: PASS (3 passed)
 
-- [ ] **Step 7: lint를 돌린다**
+- [x] **Step 7: lint를 돌린다**
 
 Run: `uv run --no-sync ruff check agent_orchestration tests`
 Expected: `All checks passed!`
 
-- [ ] **Step 8: 커밋한다**
+- [x] **Step 8: 커밋한다**
 
 ```bash
 git add agent_orchestration/app/experiments/models.py \
@@ -305,7 +305,7 @@ Refs #647"
   - `ExecutorResultReportRequest.report_markdown: str | None`
   - `service.normalize_report_markdown(text: str) -> str`
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_experiment_report_api.py`에 이어 붙인다. `create_experiment` / `record_candidate` / `record_experiment_result`와 `ISSUE_NUMBER` 등 상수는 `tests/test_experiment_candidate_api.py`와 같은 값을 쓴다.
 
@@ -453,12 +453,12 @@ def test_normalize_keeps_a_body_within_the_limit_untouched() -> None:
     assert normalize_report_markdown("# 결론") == "# 결론"
 ```
 
-- [ ] **Step 2: 테스트가 실패하는지 확인한다**
+- [x] **Step 2: 테스트가 실패하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_experiment_report_api.py -v`
 Expected: FAIL — `ImportError: cannot import name 'normalize_report_markdown'`
 
-- [ ] **Step 3: 스키마에 상수와 필드를 더한다**
+- [x] **Step 3: 스키마에 상수와 필드를 더한다**
 
 `agent_orchestration/app/experiments/schemas.py`의 `MAX_METRIC_SNAPSHOT_BYTES` 아래에 넣는다.
 
@@ -481,7 +481,7 @@ MAX_REPORT_MARKDOWN_CHARS = 262144
     report_markdown: str | None = Field(default=None, max_length=MAX_REPORT_MARKDOWN_CHARS)
 ```
 
-- [ ] **Step 4: service에 logger와 정규화를 더한다**
+- [x] **Step 4: service에 logger와 정규화를 더한다**
 
 `agent_orchestration/app/experiments/service.py` import에 `logging`을 더하고, 모듈 상수 근처에 넣는다.
 
@@ -513,7 +513,7 @@ def normalize_report_markdown(text: str) -> str:
 
 import에 `find_experiment_report`, `MAX_REPORT_MARKDOWN_BYTES`를 더한다.
 
-- [ ] **Step 5: 별도 트랜잭션 적재를 구현한다**
+- [x] **Step 5: 별도 트랜잭션 적재를 구현한다**
 
 `record_experiment_result` 아래에 넣는다.
 
@@ -580,17 +580,17 @@ def _store_report_markdown(
 안 되기 때문이며, 그 근거는 `_store_report_markdown`에 있다.
 ```
 
-- [ ] **Step 6: 테스트가 통과하는지 확인한다**
+- [x] **Step 6: 테스트가 통과하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_experiment_report_api.py -v`
 Expected: PASS (9 passed)
 
-- [ ] **Step 7: 기존 executor API 계약이 깨지지 않았는지 확인한다**
+- [x] **Step 7: 기존 executor API 계약이 깨지지 않았는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_experiment_candidate_api.py -v`
 Expected: PASS — 실패가 있으면 Task 시작 전 baseline과 대조한다.
 
-- [ ] **Step 8: 커밋한다**
+- [x] **Step 8: 커밋한다**
 
 ```bash
 git add agent_orchestration/app/experiments/schemas.py \
@@ -622,7 +622,7 @@ Refs #647"
   - `service.get_experiment_report(session, experiment_id) -> str | None`
   - `GET /experiments/{experiment_id}/report`
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_experiment_report_api.py`에 이어 붙인다. TestClient fixture는 `tests/test_experiment_candidate_api.py`의 `client` fixture와 같은 형태로 만든다 (`ServiceSettings`에 `orchestration_api_token=API_TOKEN`, app state에 session factory 주입).
 
@@ -669,12 +669,12 @@ def test_report_endpoint_requires_the_api_token(client: TestClient, db_session: 
     assert client.get(f"/experiments/{experiment_id}/report").status_code == 401
 ```
 
-- [ ] **Step 2: 테스트가 실패하는지 확인한다**
+- [x] **Step 2: 테스트가 실패하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_experiment_report_api.py -k report_endpoint -v`
 Expected: FAIL — 404 (라우트 없음)
 
-- [ ] **Step 3: 응답 스키마를 더한다**
+- [x] **Step 3: 응답 스키마를 더한다**
 
 `agent_orchestration/app/experiments/schemas.py`의 `ExperimentResponse` 아래에 넣는다.
 
@@ -693,7 +693,7 @@ class ExperimentReportResponse(BaseModel):
     report_markdown: str | None
 ```
 
-- [ ] **Step 4: service 조회를 더한다**
+- [x] **Step 4: service 조회를 더한다**
 
 `get_experiment_metadata` 아래에 넣는다.
 
@@ -714,7 +714,7 @@ def get_experiment_report(
     return experiment.report_markdown
 ```
 
-- [ ] **Step 5: 라우트를 더한다**
+- [x] **Step 5: 라우트를 더한다**
 
 `agent_orchestration/app/experiments/router.py`의 metadata 라우트 아래에 넣는다. import에 `ExperimentReportResponse`와 `get_experiment_report`를 더한다.
 
@@ -735,12 +735,12 @@ def get_experiment_report_by_id(
     )
 ```
 
-- [ ] **Step 6: 테스트가 통과하는지 확인한다**
+- [x] **Step 6: 테스트가 통과하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_experiment_report_api.py -v`
 Expected: PASS (13 passed)
 
-- [ ] **Step 7: 커밋한다**
+- [x] **Step 7: 커밋한다**
 
 ```bash
 git add agent_orchestration/app/experiments/schemas.py \
@@ -773,7 +773,7 @@ Refs #647"
   - `executor.report.read_report_markdown(path: Path) -> str | None`
   - `api_client.report_result(..., report_markdown: str | None = None) -> None`
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 `tests/test_experiment_report_api.py`에 상한 일치 테스트를 더한다.
 
@@ -832,12 +832,12 @@ def test_read_report_markdown_treats_a_blank_report_as_absent(tmp_path) -> None:
     assert read_report_markdown(path) is None
 ```
 
-- [ ] **Step 2: 테스트가 실패하는지 확인한다**
+- [x] **Step 2: 테스트가 실패하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_experiment_report_api.py -k "executor or truncate or read_report" -v`
 Expected: FAIL — `ImportError: cannot import name 'MAX_REPORT_MARKDOWN_BYTES'`
 
-- [ ] **Step 3: executor/report.py에 잘림과 읽기를 더한다**
+- [x] **Step 3: executor/report.py에 잘림과 읽기를 더한다**
 
 `DIFF_FILENAME` 상수 근처에 넣는다.
 
@@ -895,7 +895,7 @@ def read_report_markdown(path: Path) -> str | None:
 
 모듈 docstring `[기능]`에 "보고용 본문을 상한 안에서 읽어 낸다"를 덧붙인다.
 
-- [ ] **Step 4: api_client에 본문을 실는다**
+- [x] **Step 4: api_client에 본문을 실는다**
 
 `report_result`의 시그니처와 payload를 고친다.
 
@@ -937,7 +937,7 @@ def report_result(
         raise CandidateApiError("result_api_status_unexpected")
 ```
 
-- [ ] **Step 5: phase2가 본문을 꺼내 보내게 한다**
+- [x] **Step 5: phase2가 본문을 꺼내 보내게 한다**
 
 `_measure_and_publish_if_enabled`는 지금 `report_path`를 GCS 게시에만 쓰고 버린다. 반환을 넓힌다. 모듈 상단 근처에 dataclass를 더하고 import에 `read_report_markdown`을 추가한다.
 
@@ -1014,17 +1014,17 @@ class _ResultPayload:
 
 모듈 docstring `[기능]`의 "요약을 Experiment API에 보고해"를 "요약과 리포트 본문을 Experiment API에 보고해"로 고친다.
 
-- [ ] **Step 6: 테스트가 통과하는지 확인한다**
+- [x] **Step 6: 테스트가 통과하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_experiment_report_api.py -v`
 Expected: PASS (18 passed)
 
-- [ ] **Step 7: executor 기존 테스트가 깨지지 않았는지 확인한다**
+- [x] **Step 7: executor 기존 테스트가 깨지지 않았는지 확인한다**
 
 Run: `uv run python -m pytest tests/ -k "executor or phase2 or report" -v`
 Expected: PASS — 실패가 있으면 baseline과 대조한다.
 
-- [ ] **Step 8: 커밋한다**
+- [x] **Step 8: 커밋한다**
 
 ```bash
 git add agent_orchestration/executor/report.py \
@@ -1051,7 +1051,7 @@ Refs #647"
 - Consumes: 없음
 - Produces: `markdown-it-py`, `streamlit>=1.60,<2`가 `orchestration-ui` 그룹에 선언됨
 
-- [ ] **Step 1: 그룹을 고친다**
+- [x] **Step 1: 그룹을 고친다**
 
 `pyproject.toml`의 `orchestration-ui`를 교체한다.
 
@@ -1067,22 +1067,22 @@ orchestration-ui = [
 ]
 ```
 
-- [ ] **Step 2: lock을 갱신한다**
+- [x] **Step 2: lock을 갱신한다**
 
 Run: `uv lock`
 Expected: 두 패키지가 이미 lock에 있으므로(streamlit 1.60.0, markdown-it-py 4.2.0) 그룹 선언만 반영된다. 다른 패키지 버전이 움직이면 **멈추고 보고한다** — 이 이슈의 범위가 아니다.
 
-- [ ] **Step 3: diff를 확인한다**
+- [x] **Step 3: diff를 확인한다**
 
 Run: `git diff --stat uv.lock`
 Expected: 변경이 `orchestration-ui` 그룹 선언 주변으로 국한된다.
 
-- [ ] **Step 4: 설치가 성립하는지 확인한다**
+- [x] **Step 4: 설치가 성립하는지 확인한다**
 
 Run: `uv sync`
 Expected: 성공. 이어서 `uv run python -c "import markdown_it, streamlit; print(markdown_it.__version__, streamlit.__version__)"`가 `4.2.0 1.60.0`을 찍는다.
 
-- [ ] **Step 5: 커밋한다**
+- [x] **Step 5: 커밋한다**
 
 ```bash
 git add pyproject.toml uv.lock
@@ -1109,7 +1109,7 @@ Refs #647"
   - `build_report_document(body_html: str) -> str`
   - `report_document(markdown_text: str) -> str`
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 ```python
 """워크벤치 리포트의 md → HTML 변환과 결과 탭 렌더 계약을 검증한다.
@@ -1206,12 +1206,12 @@ def test_report_document_composes_both_steps() -> None:
     assert "<h1>제목</h1>" in document
 ```
 
-- [ ] **Step 2: 테스트가 실패하는지 확인한다**
+- [x] **Step 2: 테스트가 실패하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_agent_orchestration_ui_report.py -v`
 Expected: FAIL — `ModuleNotFoundError: agent_orchestration.ui.report`
 
-- [ ] **Step 3: 모듈을 만든다**
+- [x] **Step 3: 모듈을 만든다**
 
 ```python
 """실험 리포트 markdown을 워크벤치에 넣을 HTML 페이지로 바꾸는 순수 변환 경계.
@@ -1310,12 +1310,12 @@ def report_document(markdown_text: str) -> str:
     return build_report_document(render_report_html(markdown_text))
 ```
 
-- [ ] **Step 4: 테스트가 통과하는지 확인한다**
+- [x] **Step 4: 테스트가 통과하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_agent_orchestration_ui_report.py -v`
 Expected: PASS (9 passed)
 
-- [ ] **Step 5: 커밋한다**
+- [x] **Step 5: 커밋한다**
 
 ```bash
 git add agent_orchestration/ui/report.py tests/test_agent_orchestration_ui_report.py
@@ -1346,7 +1346,7 @@ Refs #647"
   - `state.record_report(state, experiment_id: str, markdown_text: str | None) -> None`
   - `state.record_report_error(state, message: str) -> None`
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 ```python
 from agent_orchestration.ui.models import REPORT_STATUSES  # noqa: E402
@@ -1409,12 +1409,12 @@ def test_selecting_another_experiment_clears_the_report() -> None:
     assert state.report_loaded_for is None
 ```
 
-- [ ] **Step 2: 테스트가 실패하는지 확인한다**
+- [x] **Step 2: 테스트가 실패하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_agent_orchestration_ui_report.py -k "report_statuses or record_report or selecting" -v`
 Expected: FAIL — `ImportError: cannot import name 'REPORT_STATUSES'`
 
-- [ ] **Step 3: models.py에 상태 집합을 더한다**
+- [x] **Step 3: models.py에 상태 집합을 더한다**
 
 `POLLING_STATUSES` 아래에 넣는다.
 
@@ -1428,7 +1428,7 @@ REPORT_STATUSES = frozenset(
 )
 ```
 
-- [ ] **Step 4: state.py에 필드와 recorder를 더한다**
+- [x] **Step 4: state.py에 필드와 recorder를 더한다**
 
 `WorkbenchState`에 필드 3개를 더한다.
 
@@ -1480,7 +1480,7 @@ def record_report_error(state: WorkbenchState, message: str) -> None:
 
 state.py 모듈 docstring `[기능]`에 "리포트 본문 캐시와 조회 오류의 분리 보존"을 덧붙인다.
 
-- [ ] **Step 5: client에 조회를 더한다**
+- [x] **Step 5: client에 조회를 더한다**
 
 `get_metadata` 아래에 넣는다.
 
@@ -1504,12 +1504,12 @@ state.py 모듈 docstring `[기능]`에 "리포트 본문 캐시와 조회 오�
 
 client.py 모듈 docstring `[기능]`에 "리포트 본문 조회"를 덧붙인다.
 
-- [ ] **Step 6: 테스트가 통과하는지 확인한다**
+- [x] **Step 6: 테스트가 통과하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_agent_orchestration_ui_report.py -v`
 Expected: PASS (14 passed)
 
-- [ ] **Step 7: 커밋한다**
+- [x] **Step 7: 커밋한다**
 
 ```bash
 git add agent_orchestration/ui/client.py \
@@ -1537,7 +1537,7 @@ Refs #647"
 - Consumes: `report_document` (Task 6), `fetch_report` / `record_report` / `record_report_error` / `REPORT_STATUSES` (Task 7)
 - Produces: `app.refresh_report(client: ExperimentClient, state: WorkbenchState) -> None`
 
-- [ ] **Step 1: 실패하는 테스트를 쓴다**
+- [x] **Step 1: 실패하는 테스트를 쓴다**
 
 ```python
 from agent_orchestration.ui.app import refresh_report  # noqa: E402
@@ -1645,12 +1645,12 @@ def test_results_tab_survives_every_combination(
     assert not app.exception
 ```
 
-- [ ] **Step 2: 테스트가 실패하는지 확인한다**
+- [x] **Step 2: 테스트가 실패하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_agent_orchestration_ui_report.py -k refresh_report -v`
 Expected: FAIL — `ImportError: cannot import name 'refresh_report'`
 
-- [ ] **Step 3: app.py에 조회 배선을 더한다**
+- [x] **Step 3: app.py에 조회 배선을 더한다**
 
 import에 `REPORT_STATUSES`, `record_report`, `record_report_error`를 더하고 `refresh_selected_experiment` 아래에 넣는다.
 
@@ -1690,7 +1690,7 @@ def refresh_report(client: ExperimentClient, state: WorkbenchState) -> None:
     return False
 ```
 
-- [ ] **Step 4: views.py 결과 탭을 교체한다**
+- [x] **Step 4: views.py 결과 탭을 교체한다**
 
 import에 `report_document`, `REPORT_STATUSES`를 더한다. `_render_tabs`의 결과 탭 줄을 바꾼다.
 
@@ -1798,12 +1798,12 @@ def _render_report(state: WorkbenchState) -> None:
 
 views.py 모듈 docstring `[기능]`에 "결과 탭의 지표 카드와 리포트 HTML 렌더"를 덧붙인다.
 
-- [ ] **Step 5: 테스트가 통과하는지 확인한다**
+- [x] **Step 5: 테스트가 통과하는지 확인한다**
 
 Run: `uv run python -m pytest tests/test_agent_orchestration_ui_report.py -v`
 Expected: PASS (23 passed)
 
-- [ ] **Step 6: 전체 테스트와 lint를 돌린다**
+- [x] **Step 6: 전체 테스트와 lint를 돌린다**
 
 Run: `uv run python -m pytest`
 Expected: Task 시작 전 baseline 대비 실패가 늘지 않았다. 늘었으면 멈추고 원인을 본다.
@@ -1811,7 +1811,7 @@ Expected: Task 시작 전 baseline 대비 실패가 늘지 않았다. 늘었으�
 Run: `uv run --no-sync ruff check agent_orchestration autoresearch tests tools`
 Expected: `All checks passed!`
 
-- [ ] **Step 7: 커밋한다**
+- [x] **Step 7: 커밋한다**
 
 ```bash
 git add agent_orchestration/ui/app.py \
@@ -1833,15 +1833,15 @@ Refs #647"
 - Modify: `docs/specs/2026-08-10-experiment-report-html-workbench.md` (상태 갱신)
 - Modify: `docs/plans/2026-08-10-experiment-report-html-workbench.md` (검증 결과)
 
-- [ ] **Step 1: spec 상태를 갱신한다**
+- [x] **Step 1: spec 상태를 갱신한다**
 
 머리말의 `상태: 초안`을 `상태: 구현 완료 (#647)`로 바꾸고, `## 검증` 절 아래에 실측 결과를 적는다 — 전체 테스트 수, baseline 대비 실패 증감, 실제로 확인한 화면.
 
-- [ ] **Step 2: 계획의 미완 항목을 확인한다**
+- [x] **Step 2: 계획의 미완 항목을 확인한다**
 
 이 문서의 모든 체크박스가 채워졌는지 본다. 남은 것이 있으면 그 이유를 spec 「범위 밖」에 적는다.
 
-- [ ] **Step 3: 커밋한다**
+- [x] **Step 3: 커밋한다**
 
 ```bash
 git add docs/specs/2026-08-10-experiment-report-html-workbench.md \

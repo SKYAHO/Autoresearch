@@ -1,6 +1,6 @@
 # 실험 리포트를 워크벤치에서 HTML 페이지로 렌더한다
 
-> 2026-08-10 | 상태: 초안 | #647
+> 2026-08-10 | 상태: 구현 완료 (#647) | #647
 >
 > `docs/specs/2026-08-09-agent-authored-experiment-report.md`가 정의한 산출물 계약
 > (`report.md`)을 **읽는 쪽**으로 잇는다. 그 계약의 결정은 그대로 유효하며 여기서
@@ -355,6 +355,10 @@ UI가 GCS를 읽는 경로도 새로 만들지 않는다.
   `report_markdown`은 이 변경 이후 완주한 실험부터 채워진다.
 - `_render_metrics`(inspector 패널) 개선
 - `results_uri`를 링크로 만드는 것
+- **이슈 #647에 정정 코멘트 올리기** — 저장소 관례(`[정정 — #647, 2026-08-10]`
+  태그)를 따르는 코멘트 문안은 준비돼 있으나, GitHub에 쓰는 바깥 동작이라 사용자
+  승인 없이는 올리지 않는다. 계획(`docs/plans/2026-08-10-experiment-report-html-workbench.md`)
+  Task 9 Step 4가 그래서 미체크로 남아 있다.
 
 ## 검증
 
@@ -375,3 +379,69 @@ UI가 GCS를 읽는 경로도 새로 만들지 않는다.
   없으면 키 자체가 없다, **본문 읽기가 실패해도 지표 보고는 나간다**
 - `uv run python -m pytest`
 - `uv run --no-sync ruff check agent_orchestration autoresearch tests tools`
+
+### 실측 결과 (2026-08-10)
+
+워크트리 루트(`C:\Users\travi\dev\Autoresearch-worktrees\feat-647-report-html`)에서
+`uv run python -m pytest`를 구현 전후로 각각 돌렸다.
+
+| | passed | failed | skipped |
+| --- | --- | --- | --- |
+| 구현 전 baseline | 2419 | 121 | 25 |
+| 구현 후 | 2460 | 121 | 25 |
+
+신규 테스트 41건 — `tests/test_experiment_report_api.py` 18건 +
+`tests/test_agent_orchestration_ui_report.py` 23건. 증가분(41)이 신규 테스트 수와
+정확히 일치하고 실패 건수는 121로 불변이라 **회귀가 없다.** 121건의 기존 실패는
+Windows 개발 환경 고유(cp949 인코딩, `WinError 2` subprocess, 셸 스크립트 계열)이며
+여러 Task에서 `git stash` 대조로 이 변경과 무관함을 확인했다.
+
+`uv run --no-sync ruff check agent_orchestration autoresearch tests tools` →
+`All checks passed!`.
+
+커밋(분기점 이후 코드 8개, 문서 1개 — Refs #647):
+
+```
+eb64bad feat: 실험에 리포트 본문 컬럼을 deferred로 추가한다
+2ce2446 feat: 완주 보고에 리포트 본문을 실어 별도 트랜잭션으로 적재한다
+1d28058 feat: 실험 리포트 조회 endpoint를 낸다
+eeb6886 feat: executor가 완주 보고에 리포트 본문을 싣는다
+c4e1cb6 chore: orchestration-ui에 markdown-it-py를 더하고 streamlit 하한을 올린다
+8cf8cdd feat: 리포트 md를 우리 템플릿의 HTML 페이지로 변환한다
+e30e3cf feat: 워크벤치가 리포트 본문을 실험당 한 번 받아 둔다
+aaa9492 feat: 결과 탭에 지표 카드와 리포트 HTML을 그린다
+```
+
+### 아직 확인하지 못한 것
+
+- **실제 화면을 띄워 본 적이 없다.** Streamlit 워크벤치를 실행해 리포트가 실제로
+  렌더되는 것을 눈으로 본 검증은 없다. `AppTest`로 다섯 조합(지표만 / 리포트만 /
+  둘 다 / 둘 다 없음 / fetch 실패)에서 예외가 없음을 확인한 것이 전부다.
+- **PostgreSQL에서 migration `0006`을 적용해 본 적이 없다.** 테스트는 SQLite
+  in-memory로 돈다. 결정 2가 근거로 드는 NUL 거부와 `UndefinedColumn`은 실측
+  재현이 아니라 주입한 예외로 성질만 검증했다.
+- **완주한 실제 실험으로 끝에서 끝까지 돌려 본 적이 없다.** `report_markdown`은 이
+  변경 이후 완주한 실험부터 채워지므로, 데모에서 보려면 실험을 새로 한 번 돌려야
+  한다.
+
+### 구현 중 드러난 계획의 결함
+
+1. 계획(Task 2)의 `_evaluating_experiment` 테스트 헬퍼는 `record_candidate`의
+   전제(봉인 좌표 + `RUNNING` 상태)를 빠뜨려 그대로는 실행 불가였다. 기존
+   `_running_experiment` 패턴으로 보정해 구현했다.
+2. 계획(Task 3)의 HTTP 테스트는 `client`와 `db_session` fixture를 함께 썼는데 둘은
+   서로 다른 in-memory DB라 그대로 두면 전부 404가 났을 것이다. 기존
+   `_create_evaluating_experiment_for_http` 패턴(client의 session factory 경유)으로
+   고쳐 구현했다.
+3. **알려진 한계.**
+   `tests/test_agent_orchestration_ui_report.py`의
+   `test_javascript_links_are_neutralized` 첫 단언은 assert-nothing이다 —
+   `rendered.replace("javascript:alert(1)", "")` 후 검사라 항등 함수여도 통과한다.
+   실질 방어는 둘째 줄(`'<a href="javascript:' not in rendered`)이 검증한다. 계획
+   원문의 결함이며, 코드는 고치지 않았다.
+4. **알려진 한계.**
+   `test_report_statuses_are_exactly_the_states_that_can_hold_a_report`는 상수
+   리터럴(`{"PASSED", "PROMOTED"}`)을 되풀이하는 스냅샷 테스트라, 근거인
+   `ALLOWED_TRANSITIONS`와 코드로 연결돼 있지 않다. 전이 그래프가 바뀌어도 이
+   테스트는 스스로 실패를 알리지 못한다. 계획 원문의 설계이며, 코드는 고치지
+   않았다.
