@@ -44,7 +44,11 @@ def workbench_css() -> str:
     return f"""
     <style>
       .stApp {{ font-family: {_BODY_FONT}; }}
-      .block-container {{ max-width: 1380px; padding-top: 2.2rem; padding-bottom: 3rem; }}
+      /* 상단 여백은 Streamlit 헤더(`stHeader`)를 피하려고 크게 잡는다. 그 헤더는
+         `position: absolute`에 높이 60px이라 본문 위를 덮는데, 배경색이 페이지와
+         같아 덮은 티가 안 나고 글자만 잘려 보인다. 2.2rem(35.2px)으로 줄였더니
+         kicker가 8.8px 잘렸다(#657). 60px보다 확실히 큰 값을 쓴다. */
+      .block-container {{ max-width: 1380px; padding-top: 5rem; padding-bottom: 3rem; }}
 
       /* 패널 제목. `#### `를 큰 세리프 제목이 아니라 작은 라벨로 그린다 — 카드
          네 개가 저마다 큰 제목을 이고 있으면 정작 내용이 부속처럼 보인다. */
@@ -164,7 +168,8 @@ def workbench_css() -> str:
       [data-testid="stSidebar"] .stRadio label {{ font-size: 0.82rem; line-height: 1.4; }}
 
       @media (max-width: 760px) {{
-        .block-container {{ padding-top: 1.35rem; }}
+        /* 좁은 화면에서도 헤더 높이는 그대로다 — 여기서 줄이면 같은 자리가 잘린다. */
+        .block-container {{ padding-top: 4.5rem; }}
         .stApp p.workbench-hypothesis {{ font-size: 1.1rem; }}
       }}
     </style>

@@ -91,6 +91,26 @@ def test_paragraph_classes_keep_the_specificity_that_makes_font_size_apply(
             pytest.fail(f"특정성이 부족한 선택자가 남아 있습니다: {stripped}")
 
 
+def test_top_padding_clears_the_streamlit_header() -> None:
+    """헤더가 본문을 덮으면 첫 줄만 잘린다 — 배경색이 같아 덮은 티도 안 난다.
+
+    `stHeader`는 `position: absolute`에 높이 60px다. 상단 여백을 2.2rem(35.2px)으로
+    줄였더니 kicker가 8.8px 덮였다(#657). 브라우저 좌표로 확인한 값이므로 여백이
+    60px 아래로 다시 내려가지 못하게 막는다.
+    """
+    root_font_px = 16
+    header_px = 60
+    values = [
+        float(line.split("padding-top:")[1].split("rem")[0])
+        for line in workbench_css().splitlines()
+        if "padding-top:" in line and "rem" in line
+    ]
+
+    assert values, "block-container의 상단 여백 선언을 찾지 못했습니다."
+    for value in values:
+        assert value * root_font_px > header_px, f"{value}rem은 헤더 60px를 덮습니다."
+
+
 def test_theme_owns_the_colors_so_css_does_not_reintroduce_dead_variables() -> None:
     """CSS가 다시 Streamlit 테마 변수를 참조하면 그 선언은 또 죽는다."""
     css = workbench_css()
