@@ -6,7 +6,8 @@ Streamlit widget 렌더링은 담당하지 않는다.
 
 [기능]
 Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 목록·상세
-오류 분리 보존, 화면 모드 전이와 이슈 발행 재시도·취소 상태 전이를 제공한다.
+오류 분리 보존, 화면 모드 전이와 이슈 발행 재시도·취소 상태 전이를 제공한다. 리포트 본문
+캐시와 조회 오류의 분리 보존도 포함한다.
 
 [비책임]
 HTTP 요청, API 인증, 상태 전이 기록, Agent 실행, GitHub 이슈 처리.
@@ -64,6 +65,13 @@ class WorkbenchState:
     # 생성 성공·발행 실패 사이의 부분 성공을 보존해 재제출 시 Experiment 중복 생성을 막는다.
     pending_publication_experiment_id: str | None = None
     pending_publication_submission: Submission | None = None
+    # 조회한 리포트 본문. `None`은 "아직 안 받음"과 "받았는데 리포트가 없음" 두 가지로
+    # 겹치므로, 둘을 가르는 것은 `report_loaded_for`다.
+    report_markdown: str | None = None
+    report_error: str | None = None
+    # 리포트를 실제로 조회해 본 실험 id. **성공했을 때만** 세운다 — 실패에도 세우면
+    # 일시적 오류 한 번에 그 세션 동안 리포트가 영구히 가려진다.
+    report_loaded_for: str | None = None
 
 
 def show_create_view(state: WorkbenchState) -> None:
@@ -102,6 +110,9 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.terminal_refresh_complete = False
     state.detail_error = None
     state.last_publication = None
+    state.report_markdown = None
+    state.report_error = None
+    state.report_loaded_for = None
 
 
 def append_event_page(
@@ -196,3 +207,28 @@ def record_list_error(state: WorkbenchState, message: str) -> None:
 def record_detail_error(state: WorkbenchState, message: str) -> None:
     """상세 workbench의 마지막 조회 오류를 기록한다."""
     state.detail_error = message
+
+
+def record_report(
+    state: WorkbenchState,
+    experiment_id: str,
+    markdown_text: str | None,
+) -> None:
+    """조회한 리포트 본문과 조회 완료 표식을 기록한다.
+
+    본문이 `None`이어도 표식을 세운다 — "리포트가 없다"는 것도 조회 결과이고, 매
+    갱신마다 다시 물을 이유가 없다.
+    """
+    state.report_markdown = markdown_text
+    state.report_error = None
+    state.report_loaded_for = experiment_id
+
+
+def record_report_error(state: WorkbenchState, message: str) -> None:
+    """리포트 조회 실패만 기록한다.
+
+    `report_loaded_for`를 **세우지 않아** 다음 갱신에서 다시 시도된다. `detail_error`를
+    건드리지 않는 이유는 리포트 실패가 워크벤치 전체를 오류 상태로 만들면 안 되기
+    때문이다(spec 결정 7).
+    """
+    state.report_error = message

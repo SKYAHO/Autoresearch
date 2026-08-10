@@ -34,6 +34,13 @@ TERMINAL_STATUSES = frozenset(status.value for status in API_TERMINAL_STATUSES)
 POLLING_STATUSES = frozenset(
     status.value for status in ExperimentStatus if status not in API_TERMINAL_STATUSES
 )
+# 리포트 본문을 가질 수 있는 상태다. `record_experiment_result`가 `report_markdown`의
+# 유일한 기록자이고 도달 상태로 `PASSED`를 하드코딩하며,
+# `ALLOWED_TRANSITIONS[PASSED] = {PROMOTED}`라 PASSED에서 FAILED로 가는 간선이 없다.
+# 그 두 사실이 이 집합의 근거이므로, 전이 그래프가 바뀌면 여기도 함께 넓힌다.
+REPORT_STATUSES = frozenset(
+    {ExperimentStatus.PASSED.value, ExperimentStatus.PROMOTED.value}
+)
 
 _STATUS_LABELS = {
     "CREATED": "실행 대기",

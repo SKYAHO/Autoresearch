@@ -20,6 +20,13 @@ from agent_orchestration.ui.report import (  # noqa: E402
     render_report_html,
     report_document,
 )
+from agent_orchestration.ui.models import REPORT_STATUSES  # noqa: E402
+from agent_orchestration.ui.state import (  # noqa: E402
+    WorkbenchState,
+    record_report,
+    record_report_error,
+    select_experiment,
+)
 
 
 def test_inline_raw_html_is_escaped() -> None:
@@ -90,3 +97,54 @@ def test_report_document_composes_both_steps() -> None:
 
     assert document.startswith("<!doctype html>")
     assert "<h1>제목</h1>" in document
+
+
+def test_report_statuses_are_exactly_the_states_that_can_hold_a_report() -> None:
+    """리포트를 가진 실험은 PASSED 아니면 PROMOTED다.
+
+    `record_experiment_result`가 유일한 기록자이고 PASSED를 하드코딩하며,
+    `ALLOWED_TRANSITIONS[PASSED] = {PROMOTED}`라 PASSED에서 FAILED로 가는 간선이 없다.
+    전이가 늘면 이 집합도 함께 넓혀야 한다.
+    """
+    assert REPORT_STATUSES == frozenset({"PASSED", "PROMOTED"})
+
+
+def test_record_report_marks_the_experiment_as_loaded() -> None:
+    """성공하면 본문과 함께 조회 완료 표식을 세운다."""
+    state = WorkbenchState(selected_id="exp-1")
+    record_report(state, "exp-1", "# 결론")
+
+    assert state.report_markdown == "# 결론"
+    assert state.report_loaded_for == "exp-1"
+    assert state.report_error is None
+
+
+def test_record_report_marks_loaded_even_when_there_is_no_report() -> None:
+    """리포트가 없다는 사실도 조회 결과다 — 다시 묻지 않는다."""
+    state = WorkbenchState(selected_id="exp-1")
+    record_report(state, "exp-1", None)
+
+    assert state.report_markdown is None
+    assert state.report_loaded_for == "exp-1"
+
+
+def test_record_report_error_does_not_mark_loaded() -> None:
+    """실패에는 표식을 세우지 않는다 — 일시적 오류가 리포트를 영구히 가리면 안 된다."""
+    state = WorkbenchState(selected_id="exp-1")
+    record_report_error(state, "일시적 오류")
+
+    assert state.report_error == "일시적 오류"
+    assert state.report_loaded_for is None
+
+
+def test_selecting_another_experiment_clears_the_report() -> None:
+    """실험을 바꾸면 이전 리포트가 남지 않는다."""
+    state = WorkbenchState(selected_id="exp-1")
+    record_report(state, "exp-1", "# 결론")
+    record_report_error(state, "오류")
+
+    select_experiment(state, "exp-2")
+
+    assert state.report_markdown is None
+    assert state.report_error is None
+    assert state.report_loaded_for is None
