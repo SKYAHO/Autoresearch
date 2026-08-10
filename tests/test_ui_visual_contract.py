@@ -169,19 +169,52 @@ def test_inspector_escapes_values_because_it_renders_raw_html(
 
 
 @pytest.mark.parametrize(
-    ("text", "limit", "expected"),
+    ("text", "expected"),
     [
-        pytest.param("짧은 가설", 34, "짧은 가설", id="한도_이내는_그대로"),
-        pytest.param(
-            "기존 21개 CTR 스칼라 피처와 동일한 고정 training 구성을 쓴다",
-            34,
-            "기존 21개 CTR 스칼라 피처와 동일한 고정…",
-            id="공백_경계에서_끊는다",
-        ),
-        pytest.param("가" * 50, 10, "가" * 10 + "…", id="공백이_없으면_그대로_자른다"),
-        pytest.param("첫 줄\n둘째 줄", 34, "첫 줄 둘째 줄", id="줄바꿈을_접는다"),
+        pytest.param("짧은 가설", "짧은 가설", id="그대로"),
+        pytest.param("첫 줄\n둘째 줄", "첫 줄 둘째 줄", id="줄바꿈을_접는다"),
+        pytest.param("공백   여러   칸", "공백 여러 칸", id="연속_공백을_접는다"),
+        pytest.param("가" * 200, "가" * 200, id="길어도_버리지_않는다"),
     ],
 )
-def test_shorten_never_cuts_a_word_in_half(text: str, limit: int, expected: str) -> None:
-    """사이드바 라벨이 "고정 traini"처럼 끝나던 절단을 막는다."""
-    assert views._shorten(text, limit) == expected
+def test_one_line_folds_whitespace_without_dropping_characters(
+    text: str, expected: str
+) -> None:
+    """접기만 하고 자르지는 않는다."""
+    assert views._one_line(text) == expected
+
+
+def test_sidebar_label_ends_at_a_sentence_not_mid_phrase() -> None:
+    """목록이 전부 `…`로 끝나면 어느 실험인지 고를 수 없다.
+
+    32자·34자·50자를 차례로 시도했지만 어느 값이든 결과는 같았다 — 같은 파라미터를
+    건드린 실험들이 모두 같은 접두사로 끝나 서로 구별되지 않았다. 반대로 자르지 않고
+    전문을 넣으니 항목 하나가 스무 줄이 되어 목록으로 쓸 수 없었다(#657).
+    """
+    label = views._list_label(
+        "PASSED",
+        "LightGBM의 learning_rate를 0.05에서 0.03으로 낮추면 부스팅이 더 천천히 "
+        "진행돼 과적합이 줄고 test ROC-AUC가 개선된다. 변경 대상은 learning_rate "
+        "하나이며, 데이터·분할·피처는 바꾸지 않는다.",
+    )
+
+    assert label.startswith("PASSED · ")
+    assert label.endswith("개선된다.")
+    assert "…" not in label
+    # 실험을 가르는 값이 남아야 목록에서 고를 수 있다.
+    assert "0.03" in label
+
+
+def test_sidebar_label_keeps_a_decimal_point_from_ending_the_sentence() -> None:
+    """`0.05`의 소수점을 문장 끝으로 오인하면 라벨이 "LightGBM의 learning_rate를 0."이 된다."""
+    label = views._list_label("RUNNING", "learning_rate를 0.05에서 0.03으로 낮춘다.")
+
+    assert label == "RUNNING · learning_rate를 0.05에서 0.03으로 낮춘다."
+
+
+def test_sidebar_label_still_caps_a_runaway_first_sentence() -> None:
+    """첫 문장이 통째로 한 문단인 가설도 있다 — 그때는 잘라야 한다."""
+    label = views._list_label("ERROR", "가" * 300 + ".")
+
+    assert len(label) < 140
+    assert label.endswith("…")

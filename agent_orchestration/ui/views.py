@@ -21,6 +21,7 @@ HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조�
 from __future__ import annotations
 
 import html
+import re
 from collections.abc import Callable, Sequence
 
 import streamlit as st
@@ -46,29 +47,49 @@ HYPOTHESIS_KEY = "submission-hypothesis"
 
 _HYPOTHESIS_PLACEHOLDER = "마크다운 형식으로 가설을 작성해 주세요"
 
-# 사이드바 목록 한 줄이 쓸 수 있는 글자 수. 34자로 자르던 때에는 같은 파라미터를
-# 건드린 실험 여섯 개가 전부 `PASSED · LightGBM의 learning_rate를 0.05에서…`로 끝나
-# 서로 구별되지 않았다. 사이드바 폭(약 300px)에 0.82rem이면 두 줄에 50자 남짓이
-# 들어가므로, 실험을 가르는 값(0.05 → 0.03)이 잘리기 전까지 보이게 잡는다.
-_LIST_LABEL_LIMIT = 50
 
 
-def _shorten(text: str, limit: int) -> str:
-    """줄바꿈을 접고 `limit`자로 줄인다. **단어 중간에서 자르지 않는다.**
+def _one_line(text: str) -> str:
+    """줄바꿈과 연속 공백을 한 칸으로 접는다. **글자는 버리지 않는다.**
 
-    이전 사이드바 라벨은 `hypothesis[:32]`라 "고정 traini", "0.05에서"처럼 낱말이
-    끊긴 채 끝났다(#657). 공백을 찾아 끊되, 한국어 문장은 공백 없이 길게 이어질 수
-    있으므로 앞쪽 절반보다 뒤에 있는 공백만 경계로 인정한다 — 그보다 앞이면 잘라낸
-    양이 너무 커서 무엇에 대한 실험인지 알 수 없게 된다.
+    한때 여기서 글자 수까지 잘랐다. 32자·34자·50자를 차례로 시도했지만 어느 값이든
+    결과는 같았다 — 목록 전체가 `…`로 끝나고, 같은 파라미터를 건드린 실험들이 서로
+    구별되지 않았다(#657). 잘라야 할 이유도 없었다. 사이드바 라벨도 인스펙터 값도
+    줄바꿈이 되는 자리라, 접기만 하면 폭에 맞춰 알아서 흐른다.
     """
-    collapsed = " ".join(text.split())
-    if len(collapsed) <= limit:
-        return collapsed
-    head = collapsed[:limit]
-    boundary = head.rfind(" ")
-    if boundary >= limit // 2:
-        head = head[:boundary]
-    return head.rstrip() + "…"
+    return " ".join(text.split())
+
+
+# 문장 끝. `0.05`의 소수점은 뒤에 공백이 없으므로 걸리지 않는다.
+_SENTENCE_END = re.compile(r"\.(?=\s|$)")
+
+# 첫 문장이 이보다 길면 그때는 자른다. 자르지 않고 전문을 넣어 봤더니 항목 하나가
+# 스무 줄이 되어 목록으로 쓸 수 없었다(#657).
+#
+# 120자는 실측으로 잡았다. 지금 목록에 있는 가설의 첫 문장이 대개 100자 안팎이라
+# (예: "…test ROC-AUC가 baseline보다 개선된다."가 103자) 이 값이면 통째로 들어가
+# 마침표로 끝난다. 더 줄이면 그 문장들이 다시 `…`로 끝난다.
+_LIST_LABEL_MAX = 120
+
+
+def _list_label(status: str, hypothesis: str) -> str:
+    """사이드바 목록 한 줄을 만든다.
+
+    글자 수로 자르면 어느 값을 잡든 목록 전체가 `…`로 끝났다. 가설은 첫 문장에
+    "무엇을 어떻게 바꾸면 무엇이 좋아진다"가 다 들어 있으므로 **문장 경계에서
+    끊는다** — 마침표로 끝나니 잘린 티가 나지 않고, 실험을 가르는 값도 남는다.
+    """
+    text = _one_line(hypothesis)
+    sentence_end = _SENTENCE_END.search(text)
+    if sentence_end:
+        text = text[: sentence_end.end()]
+    if len(text) > _LIST_LABEL_MAX:
+        head = text[:_LIST_LABEL_MAX]
+        boundary = head.rfind(" ")
+        if boundary >= _LIST_LABEL_MAX // 2:
+            head = head[:boundary]
+        text = head.rstrip() + "…"
+    return f"{status} · {text}"
 
 
 def _render_hypothesis_editor() -> str:
@@ -244,7 +265,7 @@ def render_experiment_list(
         return None
     ids = [experiment.id for experiment in experiments]
     labels = {
-        experiment.id: f"{experiment.status} · {_shorten(experiment.hypothesis, _LIST_LABEL_LIMIT)}"
+        experiment.id: _list_label(experiment.status, experiment.hypothesis)
         for experiment in experiments
     }
     default_index = ids.index(selected_id) if selected_id in ids else None
@@ -545,7 +566,7 @@ def _render_metrics(metrics: dict[str, object] | None) -> None:
             rows.append(
                 fact_row(
                     label,
-                    _shorten(str(value), 36),
+                    _one_line(str(value)),
                     code=key in _RUN_FACTS_AS_CODE,
                 )
             )
