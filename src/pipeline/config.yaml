@@ -5,8 +5,8 @@ data:
   random_state: 42
 
 model:
-  n_estimators: 200
-  learning_rate: 0.05
+  n_estimators: 400
+  learning_rate: 0.025
   num_leaves: 31
   scale_pos_weight: auto
   random_state: 42
