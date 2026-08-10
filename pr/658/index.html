@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PR 이해 리포트</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&family=Space+Grotesk:wght@500;700&display=swap">
+<style>
+  /* 고정 템플릿 — 에이전트는 이 파일을 수정하지 않고 report.json 데이터만 채웁니다.
+     저장소별 커스터마이즈는 스크립트 상단 REPO_LABEL/REPO_FULL/REPO_GITHUB_SLUG
+     3개 상수뿐입니다(archive-template.html의 브랜딩 예외와 동일한 패턴). */
+  :root {
+    --bg: #0c0e0f; --sf: #131617; --tx: #e9eceb; --tx2: #cfd6d4; --mu: #8b9391;
+    --bd: #22282a; --ac: #e0a85c; --acs: #2a2118; --acb: #3a2f20; --hv: #171b1d;
+    --st-none: #5c6563; --st-changed: #e0a85c; --st-new: #8fd3c0; --st-removed: #e59aa8;
+    --diff-add: rgba(143,211,192,.16); --diff-del: rgba(229,154,168,.16); --diff-hunk: rgba(224,168,92,.14);
+  }
+  :root[data-theme="light"] {
+    --bg: #f3f5f4; --sf: #ffffff; --tx: #121614; --tx2: #3b4340; --mu: #6d7671;
+    --bd: #e0e5e3; --ac: #96631a; --acs: #f6ecdc; --acb: #e6d5b8; --hv: #faf8f4;
+    --st-none: #98a09d; --st-changed: #96631a; --st-new: #1f7a5c; --st-removed: #a8455a;
+    --diff-add: rgba(31,122,93,.10); --diff-del: rgba(168,69,90,.10); --diff-hunk: rgba(150,99,26,.10);
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; } /* class-based display:flex/grid rules would otherwise override the hidden attribute */
+  body {
+    margin: 0; background: var(--bg); color: var(--tx);
+    font-family: "Noto Sans KR", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.6; word-break: keep-all;
+  }
+  a { color: var(--ac); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace; }
+
+  .top-bar {
+    position: sticky; top: 0; z-index: 5; display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 14px 24px; background: var(--bg); border-bottom: 1px solid var(--bd);
+  }
+  .top-left { display: flex; align-items: center; gap: 14px; white-space: nowrap; }
+  .top-left .back-link { font-size: 13px; color: var(--mu); }
+  .top-left .back-link:hover { color: var(--ac); }
+  .top-left .divider { width: 1px; height: 14px; background: var(--bd); }
+  .kicker { font-family: "Space Grotesk", sans-serif; font-size: 12px; font-weight: 700; letter-spacing: .18em; color: var(--ac); }
+  #theme-toggle {
+    border: 1px solid var(--bd); background: transparent; color: var(--mu); font: inherit;
+    font-size: 11px; font-weight: 600; letter-spacing: .08em; padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  }
+  #theme-toggle:hover { color: var(--ac); border-color: var(--ac); }
+
+  .page-wrap { max-width: 900px; margin: 0 auto; padding: 52px 24px 96px; }
+
+  .meta-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; font-size: 12px; color: var(--mu); }
+  .meta-row .pr-num { font-family: "Space Grotesk", sans-serif; font-size: 13px; font-weight: 700; color: var(--ac); }
+  .meta-row .head-sha { font-family: "Space Grotesk", sans-serif; }
+  h1 { margin: 0 0 40px; font-size: clamp(1.5rem, 3.4vw, 2.1rem); font-weight: 700; line-height: 1.4; letter-spacing: -.02em; text-wrap: balance; }
+
+  .section-head { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; flex-wrap: wrap; }
+  .section-head h2 { margin: 0; font-size: 17px; font-weight: 700; letter-spacing: -.01em; white-space: nowrap; }
+  .section-head .rule { flex: 1 1 auto; height: 1px; background: var(--bd); min-width: 24px; }
+  .section-head .hint { font-size: 12px; color: var(--mu); white-space: nowrap; }
+  .step-chip { padding: 4px 11px; border-radius: 999px; background: var(--acs); color: var(--ac); font-size: 12px; font-weight: 700; white-space: nowrap; }
+
+  section { margin-bottom: 56px; }
+
+  .summary-card { padding: 30px 32px; background: var(--sf); border: 1px solid var(--bd); border-radius: 14px; margin-bottom: 56px; }
+  .summary-card .summary-head { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+  .summary-card .summary-head h2 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: .12em; color: var(--mu); white-space: nowrap; }
+  .summary-list { display: flex; flex-direction: column; gap: 20px; }
+  .summary-item { display: grid; grid-template-columns: 24px 1fr; gap: 14px; align-items: baseline; }
+  .summary-item .n { font-family: "Space Grotesk", sans-serif; font-size: 13px; font-weight: 500; color: var(--ac); }
+  .summary-item p { margin: 0; font-size: 16px; font-weight: 300; line-height: 1.9; color: var(--tx2); text-wrap: balance; }
+
+  .pipeline-card { padding: 30px 30px 26px; background: var(--sf); border: 1px solid var(--bd); border-radius: 14px; overflow-x: auto; }
+  .pipeline-grid { display: flex; flex-direction: column; gap: 14px; min-width: 620px; }
+  .pipeline-row { display: grid; gap: 18px; align-items: center; grid-template-columns: 110px 1fr; }
+  .pipeline-row .lane-label { font-size: 12px; font-weight: 500; color: var(--mu); text-align: right; line-height: 1.5; }
+  .pipeline-row .lane-nodes { display: grid; gap: 10px; padding-left: 18px; border-left: 1px solid var(--bd); }
+  .node-slot { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  .node-cell {
+    padding: 13px 14px; border-radius: 9px; font: inherit; font-size: 13px; line-height: 1.5;
+    text-align: center; text-wrap: balance; min-height: 48px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--bd); background: transparent; color: var(--mu); font-weight: 400;
+  }
+  .node-cell.empty { border-color: transparent; visibility: hidden; }
+  .node-cell.on { font-weight: 600; cursor: default; }
+  .node-cell.clickable { cursor: pointer; }
+  .node-cell.is-selected { background: var(--acb); }
+  .node-cell.is-focus { box-shadow: inset 0 0 0 2px currentColor; }
+
+  .legend { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-top: 26px; padding-top: 20px; border-top: 1px solid var(--bd); }
+  .legend .lg-item { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--mu); white-space: nowrap; }
+  .legend .lg-item .sw { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; border: 1px solid var(--bd); }
+  .legend .lg-hint { font-size: 12px; color: var(--mu); }
+
+  .edge-list { display: flex; flex-direction: column; gap: 8px; margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--bd); }
+  .edge-list .edge-title { font-size: 11px; font-weight: 700; letter-spacing: .14em; color: var(--mu); }
+  .edge-list .edge-item { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--tx2); }
+  .edge-item .edge-arrow { color: var(--mu); }
+  .edge-item .edge-status { color: var(--ac); font-size: 11px; }
+  .edge-item.is-dashed { border-left: 2px dashed var(--bd); padding-left: 10px; }
+
+  .node-detail { margin-top: 16px; padding: 26px 30px 30px; background: var(--sf); border: 1px solid var(--bd); border-radius: 14px; }
+  .node-detail .nd-head { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+  .node-detail .nd-head .sw { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+  .node-detail .nd-head h3 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+  .node-detail .nd-head .status-label { font-size: 12px; color: var(--mu); }
+  .node-detail .asis-tobe { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 600px) { .node-detail .asis-tobe { grid-template-columns: 1fr; } }
+  .node-detail .box { padding: 20px 22px; background: var(--hv); border: 1px solid var(--bd); border-radius: 10px; }
+  .node-detail .box.tobe { border-color: var(--acb); }
+  .node-detail .box .tag { margin-bottom: 10px; font-family: "Space Grotesk", sans-serif; font-size: 11px; font-weight: 700; letter-spacing: .14em; color: var(--mu); }
+  .node-detail .box.tobe .tag { color: var(--ac); }
+  .node-detail .box p { margin: 0; font-size: 15px; font-weight: 300; line-height: 1.85; color: var(--tx2); text-wrap: balance; }
+  .node-detail .nd-paths { margin-top: 14px; font-size: 12px; color: var(--mu); }
+
+  .block-list { display: flex; flex-direction: column; gap: 12px; }
+  .block-row { display: grid; grid-template-columns: 120px 1fr; gap: 20px; padding: 22px 26px; background: var(--sf); border: 1px solid var(--bd); border-radius: 12px; }
+  @media (max-width: 600px) { .block-row { grid-template-columns: 1fr; } }
+  .block-row .label { font-size: 13px; font-weight: 700; color: var(--tx); line-height: 1.7; }
+  .block-row .content p { margin: 0 0 10px; font-size: 15px; font-weight: 300; line-height: 1.9; color: var(--tx2); text-wrap: balance; }
+  .block-row .content p:last-child { margin-bottom: 0; }
+  .block-row .content ul { margin: 0; padding-left: 20px; font-size: 15px; font-weight: 300; line-height: 1.85; color: var(--tx2); }
+  .block-row .content ul li { margin-bottom: 6px; }
+
+  .changes-toggle {
+    border: 1px solid var(--bd); background: var(--sf); color: var(--ac); font: inherit; font-size: 13.5px;
+    font-weight: 600; padding: 10px 18px; border-radius: 999px; cursor: pointer; margin-bottom: 16px;
+  }
+  .changes-toggle:hover { border-color: var(--ac); }
+  .change-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .imp-badge { font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 3px 9px; border-radius: 6px; }
+  .imp-badge.core     { background: color-mix(in srgb, var(--st-removed) 20%, transparent); color: var(--st-removed); }
+  .imp-badge.contract { background: color-mix(in srgb, var(--st-changed) 20%, transparent); color: var(--st-changed); }
+  .imp-badge.test     { background: color-mix(in srgb, var(--st-new) 20%, transparent); color: var(--st-new); }
+  .imp-badge.docs     { background: color-mix(in srgb, var(--st-none) 20%, transparent); color: var(--mu); }
+  .imp-badge.config   { background: transparent; color: var(--mu); border: 1px solid var(--bd); }
+  .change-head .symbol { font-weight: 600; font-family: ui-monospace, monospace; font-size: 13.5px; }
+  .change-head .file { color: var(--mu); font-size: 12px; font-family: ui-monospace, monospace; }
+  .risk-note { margin-top: 12px; padding: 10px 14px; background: var(--acb); border-radius: 8px; font-size: 13.5px; color: var(--tx2); }
+  .risk-note::before { content: "⚠ 리스크: "; font-weight: 700; color: var(--ac); }
+  details.diff-box { margin-top: 12px; }
+  details.diff-box summary { cursor: pointer; font-size: 13px; color: var(--ac); user-select: none; }
+  pre.diff {
+    margin: 10px 0 0; border: 1px solid var(--bd); border-radius: 8px; overflow-x: auto;
+    font-size: 12.5px; line-height: 1.55; padding: 0; background: var(--hv);
+  }
+  pre.diff .ln { display: block; padding: 0 12px; white-space: pre; }
+  pre.diff .ln.add { background: var(--diff-add); }
+  pre.diff .ln.del { background: var(--diff-del); }
+  pre.diff .ln.hunk { background: var(--diff-hunk); color: var(--mu); }
+
+  .qa-card { border-left: 3px solid var(--ac); background: var(--acs); border-radius: 0 10px 10px 0; padding: 18px 22px; font-size: 14.5px; color: var(--tx2); }
+
+  .page-footer {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--bd); font-size: 12px; color: var(--mu);
+  }
+  .page-footer .gh-link { font-size: 14px; font-weight: 500; }
+  .page-footer .regen-note { flex-basis: 100%; }
+</style>
+</head>
+<body>
+<div class="top-bar">
+  <div class="top-left">
+    <a href="../../" class="back-link">← 아카이브</a>
+    <span class="divider"></span>
+    <span class="kicker">PR REPORT</span>
+  </div>
+  <button type="button" id="theme-toggle">LIGHT</button>
+</div>
+
+<main class="page-wrap">
+  <div class="meta-row" id="meta-row"></div>
+  <h1 id="pr-title"></h1>
+
+  <section class="summary-card" id="summary-card">
+    <div class="summary-head"><h2>핵심 요약</h2></div>
+    <div class="summary-list" id="summary-list"></div>
+  </section>
+
+  <section id="pipeline-section">
+    <div class="section-head">
+      <span class="step-chip">1단계</span><h2>전체 파이프라인에서의 위치</h2>
+      <span class="rule"></span><span class="hint">as-is → to-be</span>
+    </div>
+    <div class="pipeline-card">
+      <div class="pipeline-grid" id="pipeline-grid"></div>
+      <div class="edge-list" id="edge-list" hidden></div>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="node-detail" id="node-detail" hidden></div>
+  </section>
+
+  <section id="easy-section">
+    <div class="section-head"><span class="step-chip">2단계</span><h2>쉬운 설명</h2><span class="rule"></span></div>
+    <div class="block-list" id="easy-list"></div>
+  </section>
+
+  <section id="changes-section">
+    <div class="section-head"><span class="step-chip">3단계</span><h2>코드 기준 설명</h2><span class="rule"></span></div>
+    <button type="button" id="changes-toggle" class="changes-toggle">코드 기준 상세 설명 펼치기</button>
+    <div class="block-list" id="changes-list" hidden></div>
+  </section>
+
+  <section id="qa-section">
+    <div class="section-head"><span class="step-chip">4단계</span><h2>이해도 확인</h2><span class="rule"></span></div>
+    <div class="qa-card" id="qa-card"></div>
+  </section>
+
+  <footer class="page-footer" id="page-footer"></footer>
+</main>
+
+<script id="report-data" type="application/json">{"schema_version": 2, "pr": {"number": 658, "title": "feat: 하네스가 에이전트에게 자원 예산을 알린다", "author": "bbungjun", "issue_refs": [656], "generated_at": "2026-08-10T11:57:40+00:00", "head_sha": "83f63aac5d985557bcf22a7b87a1a549401a8329"}, "summary_ko": ["에이전트가 코드를 작성할 때 주어진 자원 예산을 인식할 수 있도록 Downward API 기반 환경 변수 전달 구조를 구축하였습니다.", "Kubernetes Job 매니페스트에서 메모리 제한과 학습 타임아웃을 읽어 실행 하네스 지침(AGENTS.md)에 동적으로 주입합니다.", "구현 지시성 강제 규칙 대신 환경 서술 방식으로 정보를 제공하여 에이전트의 자율적 실험 탐색 공간을 보존하도록 설계하였습니다."], "plain_points_ko": ["자동화 에이전트가 실험 코드를 작성할 때 사용할 수 있는 메모리와 학습 시간 상한을 미리 알 수 있게 됩니다.", "지침 문서에 숫자를 직접 박지 않고 시스템 설정(Kubernetes Pod 정보)에서 실시간으로 가져와 전달합니다.", "구현 방식을 강제하는 대신 현재 실행 환경의 한계를 있는 그대로 알려 에이전트가 자원을 효율적으로 쓰도록 유도합니다.", "학습 집행용 환경 변수와 고지용 환경 변수를 분리하여 기존 컨테이너 권한 격리 계약을 안전하게 유지하였습니다."], "motivation_ko": "이전 실험(#651)에서 범주형 피처를 원-핫 인코딩으로 전체 전개하면서 메모리 상한(2.0 GiB)을 초과해 10.3 GiB를 요청하다 cgroup SIGKILL로 중단되었습니다. 미니배치 단위로 처리했다면 예산 내에서 검증할 수 있었으나, 에이전트에게 자원 예산 정보가 전달되지 않아 비효율적인 구현을 선택했습니다. 이에 하드코딩 없이 실제 자원 상한을 에이전트에게 고지하는 경로가 필요하게 되었습니다.", "expected_effects_ko": ["에이전트가 메모리 및 시간 상한을 사전에 파악하여 자원 초과로 인한 실패를 스스로 예방할 수 있습니다.", "Kubernetes Downward API를 활용해 실제 적용된 자원 상한을 동적으로 읽어오므로 매니페스트 변경 시 문서 불일치가 발생하지 않습니다.", "cgroup SIGKILL과 같이 로그 없이 종료되는 불투명한 실험 실패를 줄여 오케스트레이션 안정성을 높입니다."], "pipeline": {"nodes": [{"id": "collect", "label": "YouTube 수집", "lane": "batch", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/", "proxy/"]}, {"id": "virtual_users", "label": "가상 유저 생성", "lane": "batch", "order": 2, "status": "unchanged", "paths": ["autoresearch/virtual_users/"]}, {"id": "action_log", "label": "Action Log 생성·품질", "lane": "batch", "order": 3, "status": "unchanged", "paths": ["autoresearch/action_logs/"]}, {"id": "data_lake", "label": "Data Lake (GCS parquet)", "lane": "data", "order": 1, "status": "unchanged", "paths": ["autoresearch/youtube_collection/load.py", "autoresearch/action_logs/load.py"]}, {"id": "feature_store", "label": "Feature Store (BQ·Feast·Redis)", "lane": "data", "order": 2, "status": "unchanged", "paths": ["feature_repo/", "src/features/", "src/pipeline/build_feature_tables.py"]}, {"id": "training_dataset", "label": "학습 데이터셋 조립", "lane": "train", "order": 1, "status": "unchanged", "paths": ["src/pipeline/build_training_dataset.py"]}, {"id": "train_eval", "label": "모델 학습·평가 (LightGBM·MLflow)", "lane": "train", "order": 2, "status": "unchanged", "paths": ["src/models/", "src/pipeline/train.py", "src/pipeline/evaluate.py", "src/tracking/"]}, {"id": "registry", "label": "Model Registry (MLflow)", "lane": "train", "order": 3, "status": "unchanged", "paths": ["deploy/mlflow/"]}, {"id": "serving", "label": "리랭킹 서빙 API (FastAPI)", "lane": "serve", "order": 1, "status": "unchanged", "paths": ["src/serving/", "deploy/serving/"]}, {"id": "daily_reco", "label": "일일 추천·노출 조립", "lane": "serve", "order": 2, "status": "unchanged", "paths": ["src/pipeline/daily_recommendations.py", "src/pipeline/model_exposure_provider.py", "src/pipeline/policy_selector.py"]}, {"id": "simulation", "label": "가상 유저 클릭 시뮬레이션", "lane": "serve", "order": 3, "status": "unchanged", "paths": ["src/pipeline/simulate_policy_round.py", "src/pipeline/virtual_user_adapter.py"]}, {"id": "batch_cli", "label": "공개 Batch CLI (Airflow 계약)", "lane": "cross", "order": 1, "status": "unchanged", "paths": ["autoresearch/jobs/"]}, {"id": "ci_release", "label": "CI·이미지·릴리스", "lane": "cross", "order": 2, "status": "unchanged", "paths": [".github/workflows/", "Dockerfile.app", "Dockerfile.serving", "pyproject.toml"]}, {"id": "docs", "label": "문서·스펙", "lane": "cross", "order": 3, "status": "unchanged", "paths": ["docs/", ".claude/docs/", "CLAUDE.md", "README.md"]}, {"id": "ext_airflow", "label": "(외부) Airflow 오케스트레이션", "lane": "external", "order": 1, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-airflow"]}, {"id": "ext_infra", "label": "(외부) GCP 인프라", "lane": "external", "order": 2, "status": "unchanged", "paths": ["SKYAHO/Autoresearch-infra"]}, {"id": "custom:agent_orchestration", "label": "에이전트 오케스트레이션", "lane": "train", "order": 4, "status": "modified", "as_is_ko": "에이전트 하네스 지침에 실제 자원 예산 정보가 고지되지 않았습니다.", "to_be_ko": "Downward API와 환경 변수로 컨테이너 메모리 및 학습 시간 예산을 에이전트 지침에 동적으로 전달합니다.", "paths": ["agent_orchestration/"]}], "edges": [{"from": "collect", "to": "data_lake"}, {"from": "virtual_users", "to": "action_log"}, {"from": "action_log", "to": "data_lake"}, {"from": "data_lake", "to": "feature_store"}, {"from": "feature_store", "to": "training_dataset"}, {"from": "training_dataset", "to": "train_eval"}, {"from": "train_eval", "to": "registry"}, {"from": "registry", "to": "serving"}, {"from": "feature_store", "to": "serving", "style": "dashed"}, {"from": "serving", "to": "daily_reco"}, {"from": "daily_reco", "to": "simulation"}, {"from": "simulation", "to": "action_log", "style": "dashed"}, {"from": "batch_cli", "to": "ext_airflow", "style": "dashed"}, {"from": "ext_infra", "to": "ci_release", "style": "dashed"}], "focus": ["custom:agent_orchestration"]}, "changes": [{"rank": 1, "importance": "core", "module": "agent_orchestration/executor", "symbol": "build_harness_instructions", "file": "agent_orchestration/executor/prompt.py", "explanation_ko": "자원 예산(메모리 상한 및 학습 타임아웃) 정보를 다루는 ResourceBudget 데이터 클래스를 추가하고, 이를 바탕으로 AGENTS.md에 '실험 공간의 알려진 제약: 자원 예산' 단락을 동적으로 형성하는 로직을 구현하였습니다.", "risk_notes_ko": "예산 정보가 제공되지 않는 배포 환경에서는 해당 문단이 통째로 생략되며 추측값이 주입되지 않도록 설계되어 있습니다."}, {"rank": 2, "importance": "contract", "module": "agent_orchestration/launcher", "symbol": "_resource_budget_environment", "file": "agent_orchestration/launcher/jobs.py", "explanation_ko": "Kubernetes Downward API(resourceFieldRef)를 통해 학습이 도는 candidate-finalizer 컨테이너의 limits.memory를 읽는 ORCH_CONTAINER_MEMORY_LIMIT_BYTES 환경 변수와 고지용 타임아웃 환경 변수(ORCH_BUDGET_TRAINING_TIMEOUT_SEC)를 codex-worker 컨테이너 매니페스트에 추가하였습니다.", "risk_notes_ko": "참조 컨테이너명이 틀리면 Pod 생성 단계에서 오동작하므로 상수로 명시하고 검증 테스트를 배치했습니다."}, {"rank": 3, "importance": "core", "module": "agent_orchestration/executor", "symbol": "_resource_budget", "file": "agent_orchestration/executor/phase2.py", "explanation_ko": "환경 변수에서 메모리 바이트 및 학습 타임아웃 초 값을 읽어 ResourceBudget 객체로 변환하는 파싱 함수들을 구현하였습니다. 변수가 없거나 올바르지 않은 경우 파이프라인 중단 없이 None으로 반환합니다."}, {"rank": 4, "importance": "core", "module": "agent_orchestration/executor", "symbol": "run_codex", "file": "agent_orchestration/executor/codex_worker.py", "explanation_ko": "run_codex 및 run_codex_for_workspace 함수에 budget 매개변수를 추가하여 하네스 지침 생성 시 자원 예산 정보를 전달하도록 연결하였습니다."}, {"rank": 5, "importance": "test", "module": "tests", "symbol": "test_harness_resource_budget.py", "file": "tests/test_harness_resource_budget.py", "explanation_ko": "지침 생성 시 예산 표기 검증, Downward API 참조 일치 여부, 환경 변수 분리 계약 및 예산 미지정 시 문단 생략 동작 등을 검증하는 단위 테스트 9건을 새로 작성하였습니다."}], "qa_note_ko": "코드리뷰 봇이 diff 인라인에 남긴 '이해도 확인:' 질문에 답변한 뒤 스레드를 resolve해 주십시오. 본 PR에서는 Kubernetes Downward API를 활용한 자원 예산 고지 방식 및 집행/고지용 환경 변수 분리 계약에 대해 질문이 이루어집니다."}</script>
+<script>
+"use strict";
+(function () {
+  // ---- 저장소별 유일한 커스터마이즈 지점 (archive-template.html의 브랜딩 예외와 동일 패턴) ----
+  var REPO_LABEL = "Autoresearch";
+  var REPO_FULL = "Autoresearch";
+  var REPO_GITHUB_SLUG = "SKYAHO/Autoresearch";
+
+  var LANES = ["batch", "data", "train", "serve", "cross", "external"];
+  var LANE_LABELS = {
+    batch: "배치 수집·생성", data: "데이터 계층", train: "학습",
+    serve: "서빙·시뮬레이션", cross: "공통·계약", external: "외부 저장소",
+  };
+  var STATUS_LABELS = { unchanged: "변경 없음", modified: "수정", added: "신규", removed: "삭제" };
+  var STATUS_VARS = { unchanged: "--st-none", modified: "--st-changed", added: "--st-new", removed: "--st-removed" };
+
+  var raw = document.getElementById("report-data").textContent;
+  var r;
+  try {
+    r = JSON.parse(raw);
+  } catch (error) {
+    document.getElementById("pr-title").textContent = "리포트 데이터를 읽을 수 없습니다";
+    return;
+  }
+
+  // ---------- theme ----------
+  var themeToggle = document.getElementById("theme-toggle");
+  var dark = true;
+  try {
+    var stored = window.localStorage.getItem("archive-theme");
+    if (stored === "light" || stored === "dark") {
+      dark = stored === "dark";
+    } else if (typeof matchMedia !== "undefined") {
+      dark = matchMedia("(prefers-color-scheme: dark)").matches;
+    }
+  } catch (error) {
+    /* localStorage unavailable — keep default */
+  }
+  function applyTheme() {
+    document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+    themeToggle.textContent = dark ? "LIGHT" : "DARK";
+  }
+  themeToggle.addEventListener("click", function () {
+    dark = !dark;
+    try {
+      window.localStorage.setItem("archive-theme", dark ? "dark" : "light");
+    } catch (error) {
+      /* ignore */
+    }
+    applyTheme();
+  });
+  applyTheme();
+
+  // ---------- header ----------
+  document.title = "PR #" + r.pr.number + " 이해 리포트";
+  document.getElementById("pr-title").textContent = r.pr.title;
+  var metaRow = document.getElementById("meta-row");
+  var metaSpans = [
+    { cls: "pr-num", text: "#" + r.pr.number },
+    { cls: "", text: REPO_LABEL },
+    { cls: "", text: "@" + r.pr.author },
+    { cls: "", text: r.pr.generated_at },
+    { cls: "head-sha", text: "head " + r.pr.head_sha.slice(0, 8) },
+  ];
+  if (r.pr.issue_refs && r.pr.issue_refs.length) {
+    metaSpans.push({ cls: "", text: "이슈 " + r.pr.issue_refs.map(function (n) { return "#" + n; }).join(", ") });
+  }
+  metaSpans.forEach(function (part) {
+    var span = document.createElement("span");
+    if (part.cls) span.className = part.cls;
+    span.textContent = part.text;
+    metaRow.appendChild(span);
+  });
+
+  // ---------- summary ----------
+  var summaryList = document.getElementById("summary-list");
+  r.summary_ko.forEach(function (line, i) {
+    var item = document.createElement("div");
+    item.className = "summary-item";
+    var n = document.createElement("span");
+    n.className = "n";
+    n.textContent = String(i + 1).padStart(2, "0");
+    item.appendChild(n);
+    var p = document.createElement("p");
+    p.textContent = line;
+    item.appendChild(p);
+    summaryList.appendChild(item);
+  });
+
+  // ---------- pipeline grid ----------
+  var nodes = r.pipeline.nodes.slice();
+  var byId = {};
+  var maxOrder = 1;
+  nodes.forEach(function (n) {
+    byId[n.id] = n;
+    if (n.order > maxOrder) maxOrder = n.order;
+  });
+  var usedLanes = LANES.filter(function (lane) {
+    return nodes.some(function (n) { return n.lane === lane; });
+  });
+  var focusSet = {};
+  (r.pipeline.focus || []).forEach(function (id) { focusSet[id] = true; });
+
+  var grid = document.getElementById("pipeline-grid");
+  var nodeDetail = document.getElementById("node-detail");
+  var selectedId = null;
+
+  function statusColor(status) {
+    return "var(" + (STATUS_VARS[status] || "--st-none") + ")";
+  }
+
+  function showDetail(node, shouldScroll) {
+    selectedId = node.id;
+    nodeDetail.hidden = false;
+    nodeDetail.innerHTML = "";
+    var head = document.createElement("div");
+    head.className = "nd-head";
+    var sw = document.createElement("span");
+    sw.className = "sw";
+    sw.style.background = statusColor(node.status);
+    head.appendChild(sw);
+    var h3 = document.createElement("h3");
+    h3.textContent = node.label;
+    head.appendChild(h3);
+    var statusLabel = document.createElement("span");
+    statusLabel.className = "status-label";
+    statusLabel.textContent = STATUS_LABELS[node.status] || node.status;
+    head.appendChild(statusLabel);
+    nodeDetail.appendChild(head);
+
+    var grid2 = document.createElement("div");
+    grid2.className = "asis-tobe";
+    var asisBox = document.createElement("div");
+    asisBox.className = "box asis";
+    var asisTag = document.createElement("div");
+    asisTag.className = "tag";
+    asisTag.textContent = "AS-IS";
+    asisBox.appendChild(asisTag);
+    var asisP = document.createElement("p");
+    asisP.textContent = node.as_is_ko || "—";
+    asisBox.appendChild(asisP);
+    grid2.appendChild(asisBox);
+    var tobeBox = document.createElement("div");
+    tobeBox.className = "box tobe";
+    var tobeTag = document.createElement("div");
+    tobeTag.className = "tag";
+    tobeTag.textContent = "TO-BE";
+    tobeBox.appendChild(tobeTag);
+    var tobeP = document.createElement("p");
+    tobeP.textContent = node.to_be_ko || "—";
+    tobeBox.appendChild(tobeP);
+    grid2.appendChild(tobeBox);
+    nodeDetail.appendChild(grid2);
+
+    if (node.paths && node.paths.length) {
+      var pathsEl = document.createElement("div");
+      pathsEl.className = "nd-paths mono";
+      pathsEl.textContent = node.paths.join("  ·  ");
+      nodeDetail.appendChild(pathsEl);
+    }
+
+    document.querySelectorAll(".node-cell").forEach(function (cell) {
+      cell.classList.toggle("is-selected", cell.getAttribute("data-node-id") === node.id);
+    });
+    if (shouldScroll) {
+      nodeDetail.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }
+
+  usedLanes.forEach(function (lane) {
+    var row = document.createElement("div");
+    row.className = "pipeline-row";
+    var laneLabelEl = document.createElement("span");
+    laneLabelEl.className = "lane-label";
+    laneLabelEl.textContent = LANE_LABELS[lane] || lane;
+    row.appendChild(laneLabelEl);
+
+    var laneNodes = document.createElement("div");
+    laneNodes.className = "lane-nodes";
+    laneNodes.style.gridTemplateColumns = "repeat(" + maxOrder + ", 1fr)";
+    var byOrder = {};
+    nodes.forEach(function (n) {
+      if (n.lane !== lane) return;
+      if (!byOrder[n.order]) byOrder[n.order] = [];
+      byOrder[n.order].push(n);
+    });
+    for (var order = 1; order <= maxOrder; order++) {
+      var slotNodes = byOrder[order] || [];
+      if (!slotNodes.length) {
+        var empty = document.createElement("div");
+        empty.className = "node-cell empty";
+        laneNodes.appendChild(empty);
+        continue;
+      }
+      var slot = document.createElement("div");
+      slot.className = "node-slot";
+      slotNodes.forEach(function (n) {
+        var hasDetail = !!(n.as_is_ko || n.to_be_ko);
+        var isOn = n.status !== "unchanged";
+        var cell = document.createElement(hasDetail ? "button" : "div");
+        if (hasDetail) cell.type = "button";
+        cell.className = "node-cell" + (isOn ? " on" : "") + (hasDetail ? " clickable" : "") + (focusSet[n.id] ? " is-focus" : "");
+        cell.setAttribute("data-node-id", n.id);
+        cell.textContent = n.label;
+        if (isOn) cell.style.color = statusColor(n.status);
+        if (isOn) cell.style.borderColor = statusColor(n.status);
+        if (hasDetail) cell.addEventListener("click", function (node) {
+          return function () { showDetail(node, true); };
+        }(n));
+        slot.appendChild(cell);
+      });
+      laneNodes.appendChild(slot);
+    }
+    row.appendChild(laneNodes);
+    grid.appendChild(row);
+  });
+
+  // edges: preserve data-flow and feedback relationships from the report contract.
+  var edgeList = document.getElementById("edge-list");
+  var edges = (r.pipeline.edges || []).filter(function (edge) {
+    return byId[edge.from] && byId[edge.to];
+  });
+  if (edges.length) {
+    edgeList.hidden = false;
+    var edgeTitle = document.createElement("div");
+    edgeTitle.className = "edge-title";
+    edgeTitle.textContent = "파이프라인 연결";
+    edgeList.appendChild(edgeTitle);
+    edges.forEach(function (edge) {
+      var item = document.createElement("div");
+      item.className = "edge-item" + (edge.style === "dashed" ? " is-dashed" : "");
+      var from = document.createElement("span");
+      from.textContent = byId[edge.from].label;
+      item.appendChild(from);
+      var arrow = document.createElement("span");
+      arrow.className = "edge-arrow";
+      arrow.textContent = edge.style === "dashed" ? "⇢" : "→";
+      item.appendChild(arrow);
+      var to = document.createElement("span");
+      to.textContent = byId[edge.to].label;
+      item.appendChild(to);
+      if (edge.status && edge.status !== "unchanged") {
+        var status = document.createElement("span");
+        status.className = "edge-status";
+        status.textContent = "(" + (STATUS_LABELS[edge.status] || edge.status) + ")";
+        item.appendChild(status);
+      }
+      edgeList.appendChild(item);
+    });
+  }
+
+  // legend
+  var legend = document.getElementById("legend");
+  ["unchanged", "modified", "added", "removed"].forEach(function (status) {
+    var item = document.createElement("span");
+    item.className = "lg-item";
+    var sw = document.createElement("span");
+    sw.className = "sw";
+    sw.style.background = statusColor(status);
+    item.appendChild(sw);
+    item.appendChild(document.createTextNode(STATUS_LABELS[status]));
+    legend.appendChild(item);
+  });
+  var legendHint = document.createElement("span");
+  legendHint.className = "lg-hint";
+  legendHint.textContent = "색칠된 노드를 클릭하면 as-is/to-be 설명이 표시됩니다";
+  legend.appendChild(legendHint);
+
+  // 기본 선택: focus 노드 중 상세가 있는 첫 항목, 없으면 변경된 노드 중 첫 항목
+  var defaultNode =
+    (r.pipeline.focus || []).map(function (id) { return byId[id]; })
+      .filter(function (n) { return n && (n.as_is_ko || n.to_be_ko); })[0] ||
+    nodes.filter(function (n) { return n.status !== "unchanged" && (n.as_is_ko || n.to_be_ko); })[0];
+  if (defaultNode) showDetail(defaultNode, false);
+
+  // ---------- 2단계: 쉬운 설명 ----------
+  var easyList = document.getElementById("easy-list");
+
+  function addBlock(label, buildContent) {
+    var row = document.createElement("div");
+    row.className = "block-row";
+    var labelEl = document.createElement("span");
+    labelEl.className = "label";
+    labelEl.textContent = label;
+    row.appendChild(labelEl);
+    var content = document.createElement("div");
+    content.className = "content";
+    buildContent(content);
+    row.appendChild(content);
+    return row;
+  }
+
+  easyList.appendChild(addBlock("무슨 일이 있었나", function (content) {
+    var ul = document.createElement("ul");
+    r.plain_points_ko.forEach(function (text) {
+      var li = document.createElement("li");
+      li.textContent = text;
+      ul.appendChild(li);
+    });
+    content.appendChild(ul);
+  }));
+  easyList.appendChild(addBlock("왜 필요했나", function (content) {
+    var p = document.createElement("p");
+    p.textContent = r.motivation_ko;
+    content.appendChild(p);
+  }));
+  easyList.appendChild(addBlock("기대효과", function (content) {
+    var ul = document.createElement("ul");
+    r.expected_effects_ko.forEach(function (text) {
+      var li = document.createElement("li");
+      li.textContent = text;
+      ul.appendChild(li);
+    });
+    content.appendChild(ul);
+  }));
+
+  // ---------- 3단계: 코드 기준 설명 ----------
+  var changesToggle = document.getElementById("changes-toggle");
+  var changesList = document.getElementById("changes-list");
+  changesToggle.textContent = "코드 기준 상세 설명 펼치기 (" + r.changes.length + "건)";
+  changesToggle.addEventListener("click", function () {
+    var willShow = changesList.hidden;
+    changesList.hidden = !willShow;
+    changesToggle.textContent = (willShow ? "코드 기준 상세 설명 접기 (" : "코드 기준 상세 설명 펼치기 (") + r.changes.length + "건)";
+  });
+
+  r.changes.slice().sort(function (a, b) { return a.rank - b.rank; }).forEach(function (c) {
+    changesList.appendChild(addBlock(c.module, function (content) {
+      var head = document.createElement("div");
+      head.className = "change-head";
+      var badge = document.createElement("span");
+      badge.className = "imp-badge " + c.importance;
+      badge.textContent = c.importance;
+      head.appendChild(badge);
+      var symbol = document.createElement("span");
+      symbol.className = "symbol";
+      symbol.textContent = c.symbol;
+      head.appendChild(symbol);
+      var file = document.createElement("span");
+      file.className = "file mono";
+      file.textContent = c.file;
+      head.appendChild(file);
+      content.appendChild(head);
+
+      var expl = document.createElement("p");
+      expl.textContent = c.explanation_ko;
+      content.appendChild(expl);
+
+      if (c.risk_notes_ko) {
+        var risk = document.createElement("div");
+        risk.className = "risk-note";
+        risk.textContent = c.risk_notes_ko;
+        content.appendChild(risk);
+      }
+
+      if (c.diff_snippet) {
+        var details = document.createElement("details");
+        details.className = "diff-box";
+        var summary = document.createElement("summary");
+        summary.textContent = "diff 보기";
+        details.appendChild(summary);
+        var pre = document.createElement("pre");
+        pre.className = "diff";
+        c.diff_snippet.split("\n").forEach(function (line) {
+          var span = document.createElement("span");
+          var cls = "ln";
+          if (line.indexOf("@@") === 0) cls += " hunk";
+          else if (line.indexOf("+") === 0 && line.indexOf("+++") !== 0) cls += " add";
+          else if (line.indexOf("-") === 0 && line.indexOf("---") !== 0) cls += " del";
+          span.className = cls;
+          span.textContent = line.length ? line : " ";
+          pre.appendChild(span);
+        });
+        details.appendChild(pre);
+        content.appendChild(details);
+      }
+    }));
+  });
+
+  // ---------- 4단계: 이해도 확인 ----------
+  document.getElementById("qa-card").textContent = r.qa_note_ko;
+
+  // ---------- footer ----------
+  var footer = document.getElementById("page-footer");
+  var repoInfo = document.createElement("span");
+  repoInfo.textContent = REPO_FULL + " · PR #" + r.pr.number;
+  footer.appendChild(repoInfo);
+  var ghLink = document.createElement("a");
+  ghLink.className = "gh-link";
+  ghLink.href = "https://github.com/" + REPO_GITHUB_SLUG + "/pull/" + r.pr.number;
+  ghLink.textContent = "GitHub에서 PR 보기 →";
+  footer.appendChild(ghLink);
+  var regenNote = document.createElement("span");
+  regenNote.className = "regen-note";
+  regenNote.textContent = "이 리포트는 pr-report 워크플로우가 자동 생성했습니다. 최신 상태가 아니면 PR에 /claude-report 코멘트로 재생성할 수 있습니다.";
+  footer.appendChild(regenNote);
+})();
+</script>
+</body>
+</html>
