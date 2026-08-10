@@ -461,10 +461,63 @@ emptyDir과 함께 사라진다. 채점 직후에 게시하면 이 창이 닫힌
 경계 판단: **에이전트의 판단에 맡길 수 있는 것은 지시문으로, 파일 시스템이 조용히
 따라가 버리는 것은 코드로 막는다.**
 
+## 실측 — 에이전트가 쓴 첫 리포트 (2026-08-10, #644)
+
+실험 `889b3e3c-6f54-4e99-9573-82fb20ab851f`(이슈 #644)가 약 37분에 완주하며
+`report.md`를 남겼다. **이 계약이 정의한 폐루프가 실물로 닫혔다.**
+
+```
+experiment results published count=37  uri=…/experiments/644/889b3e3c…/metrics.json
+experiment report written sections_missing=0
+experiment report published uri=…/experiments/644/889b3e3c…/report.md
+phase2 stage finished stage=candidate-finalizer exit_code=0
+```
+
+**숫자가 지어지지 않았다.** 리포트에 등장하는 소수·정수 50개와 SHA-256 4개를 전부
+뽑아 `metrics.json`의 스칼라와 대조했고 **불일치가 0**이었다. 좌표 4개
+(`experiment_id`·`issue_number`·`base_dev_sha`·`candidate_sha`)와
+`dataset_fingerprint`도 일치한다.
+
+**리포트가 판정을 했다.** 통계 게이트를 승격 관문에서 뺀 결정(§결정 1)이 의도대로
+작동했다 — 에이전트는 주 지표 개선을 확인하면서 동시에 캘리브레이션 악화를 스스로
+짚고 승격을 조건부로 남겼다.
+
+> 주 지표에 대해서는 candidate가 모든 seed에서 baseline보다 높았고 … ROC-AUC 개선
+> 가설은 지지됩니다. **그러나 `log_loss`와 `brier`는 모든 seed에서 악화되어, 이번
+> 결과만으로 학습률 감소가 과적합을 전반적으로 줄였다고 단정할 수 없습니다.**
+
+**§결정 5의 `split_hash` 판단이 값을 했다.** 리포트는 "데이터·분할 provenance" 절에서
+`split_matches`가 3seed 모두 참임을 먼저 확인하고 "이 실험 안에서는 paired delta를
+변경 효과로 읽을 수 있다"고 적었다. 비교의 성립 여부를 서술의 전제로 삼은 것이다.
+
+**§결정 3의 하네스 교체가 candidate로 새지 않았다.** `exp/644` 커밋(`9c64643`)은
+`src/models/lgbm_model.py`·`src/pipeline/config.yaml` 두 파일뿐이다.
+
+### 실측으로 드러난 Codex CLI 제약 (9)
+
+**Codex CLI는 git repository가 아닌 디렉터리에서 실행을 거부한다** —
+`Not inside a trusted directory and --skip-git-repo-check was not specified`.
+실험 #641이 여기서 죽어 `metrics.json`만 남고 리포트가 없었다.
+
+이 계약은 리포트를 **clone 밖**에서 쓰게 한다(§결정 5 — `report.md`는 git 커밋
+대상이 아니라 게시 산출물). 그래서 리포트 실행에는 `--skip-git-repo-check`가
+필요하다. 코드 수정 실행은 clone 안에서 도는 것이 계약이므로 검사를 유지한다
+([#642](https://github.com/SKYAHO/Autoresearch/issues/642) →
+[#643](https://github.com/SKYAHO/Autoresearch/pull/643)).
+
+**#641은 이 계약의 다른 결정 하나를 증명하기도 했다.** 리포트가 실패했는데도
+`metrics.json` 게시와 API 보고가 그대로 일어나 실험은 `PASSED`로 끝났다 —
+게시를 리포트보다 **앞에** 두는 순서가 없었다면 31분을 쓰고 아무것도 남기지 못한 채
+`ERROR`로 회수됐을 것이다.
+
 ## 검증
 
 - [x] 실험 1건이 `metrics.json`을 GCS에 남긴 채 완주한다 — **#634 (33분 33초)**
 - [x] `metric_summary`가 `null`이 아니다 — 전문↔요약 9항목 일치
 - [x] 같은 `base_dev_sha`로 2건을 돌려 baseline seed별 값이 일치하는지 관측한다 — 일치
-- [x] `uv run python -m pytest`(2516 passed), `uv run --no-sync ruff check ...`
-- [ ] `report.md`가 GCS에 남는다 — Stage 3 범위
+- [x] `uv run python -m pytest`, `uv run --no-sync ruff check ...`
+- [x] **`report.md`가 GCS에 남는다 — #644, 절 7개 전부(`sections_missing=0`)**
+- [x] **리포트의 숫자가 `metrics.json`과 일치한다 — 50개 전부, 불일치 0**
+- [x] **재현성 4회 일치** — #634·#635·#641·#644 모두 `base_dev_sha=8242d3b`에서
+      `roc_auc +0.008546026855660749` · `log_loss +0.034009103889948954` ·
+      `brier +0.012243117858252295`
