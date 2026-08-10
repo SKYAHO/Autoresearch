@@ -205,7 +205,7 @@ def _optional_positive_int(name: str) -> int | None:
 def _resource_budget() -> ResourceBudget:
     """codex-worker에 주어진 실제 자원 상한을 환경에서 읽는다.
 
-    메모리는 launcher가 Downward API로 넣은 container 자신의 `limits.memory`이고,
+    메모리와 CPU는 launcher가 Downward API로 넣은 학습 container의 `limits.*`이고,
     시간은 학습 opt-in일 때만 붙는다(`jobs._resource_budget_environment`).
 
     시간 변수 이름이 `ORCH_TRAINING_TIMEOUT_SEC`이 아닌 이유는 그것이 학습 container가
@@ -214,6 +214,9 @@ def _resource_budget() -> ResourceBudget:
     """
     return ResourceBudget(
         memory_limit_bytes=_optional_positive_int("ORCH_CONTAINER_MEMORY_LIMIT_BYTES"),
+        cpu_limit_millicores=_optional_positive_int(
+            "ORCH_CONTAINER_CPU_LIMIT_MILLICORES"
+        ),
         training_timeout_seconds=_optional_positive_int(
             "ORCH_BUDGET_TRAINING_TIMEOUT_SEC"
         ),
