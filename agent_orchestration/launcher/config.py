@@ -21,6 +21,7 @@ import re
 _DIGEST_IMAGE_PATTERN = re.compile(r"^[^\s@]+@sha256:[0-9a-f]{64}$")
 _NODE_POOL_PATTERN = re.compile(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?$")
 _POSITIVE_INTEGER_PATTERN = re.compile(r"^[1-9][0-9]*$")
+_MIN_JOB_TTL_SECONDS = 120
 _REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 # content-addressed 스냅샷 prefix. 마지막 segment가 CSV 내용의 SHA-256이다(#530).
 _TRAINING_DATASET_URI_PATTERN = re.compile(
@@ -61,6 +62,16 @@ def _optional_positive_integer_environment(name: str, *, default: int) -> int:
     return int(value)
 
 
+def _job_ttl_environment() -> int:
+    """launcher 두 tick이 Failed Job을 관측할 수 있는 최소 보존 시간을 반환한다."""
+    value = _optional_positive_integer_environment(
+        "ORCH_TTL_AFTER_FINISHED_SEC", default=_MIN_JOB_TTL_SECONDS
+    )
+    if value < _MIN_JOB_TTL_SECONDS:
+        raise LauncherConfigError("invalid ORCH_TTL_AFTER_FINISHED_SEC")
+    return value
+
+
 @dataclass(frozen=True)
 class LauncherSettings:
     """한 launcher tick과 생성할 executor Job의 불변 설정."""
@@ -81,7 +92,7 @@ class LauncherSettings:
     workspace_size_limit: str
     codex_timeout_sec: int
     active_deadline_sec: int
-    ttl_after_finished_sec: int = 30
+    ttl_after_finished_sec: int = _MIN_JOB_TTL_SECONDS
     # 학습은 opt-in이다(#605). URI가 비어 있으면 executor가 clone → Codex → verify →
     # push 경로만 돌고 학습 단계를 건너뛴다.
     training_dataset_uri: str = ""
@@ -131,6 +142,10 @@ class LauncherSettings:
         for name, value in positive_integers.items():
             if value <= 0:
                 raise LauncherConfigError(f"invalid {name}")
+        if self.ttl_after_finished_sec < _MIN_JOB_TTL_SECONDS:
+            raise LauncherConfigError(
+                f"ttl_after_finished_sec must be at least {_MIN_JOB_TTL_SECONDS}"
+            )
         if self.codex_timeout_sec >= self.active_deadline_sec:
             raise LauncherConfigError(
                 "codex_timeout_sec must be less than active_deadline_sec"
@@ -183,10 +198,7 @@ class LauncherSettings:
             active_deadline_sec=_positive_integer_environment(
                 "ORCH_ACTIVE_DEADLINE_SEC"
             ),
-            ttl_after_finished_sec=_optional_positive_integer_environment(
-                "ORCH_TTL_AFTER_FINISHED_SEC",
-                default=30,
-            ),
+            ttl_after_finished_sec=_job_ttl_environment(),
             training_dataset_uri=os.environ.get("ORCH_TRAINING_DATASET_URI", "").strip(),
             experiment_results_root=os.environ.get(
                 "ORCH_EXPERIMENT_RESULTS_ROOT", ""

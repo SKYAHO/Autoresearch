@@ -152,9 +152,10 @@ def _container_resources() -> V1ResourceRequirements:
     개별 실험이 버스트할 수 있는 상한이다. 실제 사용량과 throttling을 canary에서 관측해
     재조정하는 것을 전제로 하며, 메모리처럼 "실측이 이만큼이라 이 값"이라고 말할 수 없다.
 
-    수치는 infra의 LimitRange·Quota와 짝을 이룬다(`SKYAHO/Autoresearch-infra#624`) —
+    수치는 infra의 LimitRange·Quota와 짝을 이룬다(`SKYAHO/Autoresearch-infra#625`) —
     container max 4 vCPU/8Gi, 동시 5건 기준 quota requests 5 vCPU/10Gi ·
-    limits 20 vCPU/40Gi. **이 저장소를 먼저 올리면 admission이 Job 생성을 거부한다.**
+    limits 20 vCPU/40Gi. **#625의 dev/admin apply 전에 이 저장소를 병합·배포하면
+    admission이 executor를 전면 거부하므로 infra 적용이 병합 게이트다.**
 
     initContainer 7개에 같은 값을 줘도 8배로 계산되지 않는다. Pod 실효값은
     `max(앱 container 합계, 각 initContainer의 최댓값)`이고 initContainer는 순차

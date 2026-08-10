@@ -41,8 +41,9 @@ class ResourceBudget:
     세 값 모두 없을 수 있다 — 예산 환경을 붙이지 않은 배포에서는 예산 절을 통째로
     생략한다. **모르는 값을 추측해서 적는 것보다 말하지 않는 편이 낫다.**
 
-    CPU를 밀리코어로 들고 있는 이유는 Downward API에서 반올림 없이 받기 위해서다
-    (`launcher.jobs._resource_budget_environment`). 표기 변환은 렌더 시점에 한 번만 한다.
+    CPU를 밀리코어로 들고 있는 이유는 launcher가 Job resource limit에서 파싱한 분수
+    코어를 반올림 없이 전달하기 위해서다(`launcher.jobs._resource_budget_environment`).
+    표기 변환은 렌더 시점에 한 번만 한다.
     """
 
     memory_limit_bytes: int | None = None
@@ -158,7 +159,7 @@ this run. Read it and follow it — the repository's own contribution guide does
 
 
 def _format_memory(limit_bytes: int) -> str:
-    """Downward API가 주는 바이트 정수를 사람이 읽는 표기로 바꾼다."""
+    """launcher가 전달한 바이트 정수를 사람이 읽는 표기로 바꾼다."""
     return f"{limit_bytes / 1024**3:.1f} GiB"
 
 

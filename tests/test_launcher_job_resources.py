@@ -8,7 +8,7 @@ LimitRange 기본값(limit 1Gi)이 적용돼 학습 단계가 OOM으로 죽으�
 **이 파일이 고정하지 못하는 것**: 아래 상수는 인프라의 실제 배포값을 읽지 않고 손으로
 베껴 둔 사본이다. 인프라가 LimitRange·Quota를 바꿔도 이 테스트는 그대로 통과하므로,
 "계약을 고정한다"는 말은 **이 저장소가 그 계약을 어기지 않는다**까지만 참이다. 인프라
-변경(`SKYAHO/Autoresearch-infra#624` 같은)이 있으면 여기를 같은 PR에서 손으로 맞춰야
+변경(`SKYAHO/Autoresearch-infra#625` 같은)이 있으면 여기를 같은 PR에서 손으로 맞춰야
 한다. 자동 검증이 필요해지면 배포된 매니페스트를 읽는 별도 경로가 있어야 한다.
 """
 
@@ -38,9 +38,11 @@ _EXPERIMENT_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 _NAMESPACE_CONTAINER_MAX_MEMORY = "8Gi"
 _NAMESPACE_CONTAINER_MAX_CPU = "4"
 
-# 동시 5건 기준 namespace ResourceQuota의 requests 항목이다(`Autoresearch-infra#624`).
+# 동시 5건 기준 namespace ResourceQuota 항목이다(`Autoresearch-infra#625`).
 _QUOTA_REQUESTS_MEMORY_MIB = 10 * 1024
 _QUOTA_REQUESTS_CPU_MILLICORES = 5 * 1000
+_QUOTA_LIMITS_MEMORY_MIB = 40 * 1024
+_QUOTA_LIMITS_CPU_MILLICORES = 20 * 1000
 
 
 def _settings() -> LauncherSettings:
@@ -146,6 +148,15 @@ def test_concurrent_jobs_fit_the_namespace_quota() -> None:
     cpu = _effective_request(spec, "cpu", _millicores)
     assert cpu * settings.max_concurrent_experiments <= _QUOTA_REQUESTS_CPU_MILLICORES
 
+    memory_limit = _effective_limit(spec, "memory", _mebibytes)
+    assert (
+        memory_limit * settings.max_concurrent_experiments
+        <= _QUOTA_LIMITS_MEMORY_MIB
+    )
+
+    cpu_limit = _effective_limit(spec, "cpu", _millicores)
+    assert cpu_limit * settings.max_concurrent_experiments <= _QUOTA_LIMITS_CPU_MILLICORES
+
 
 def _effective_request(
     spec: V1PodSpec, resource: str, parse: Callable[[str], int]
@@ -153,6 +164,15 @@ def _effective_request(
     """Pod 실효 요청 = `max(앱 container 합계, 각 initContainer의 최댓값)`."""
     app_total = sum(parse(c.resources.requests[resource]) for c in spec.containers)
     init_max = max(parse(c.resources.requests[resource]) for c in spec.init_containers)
+    return max(app_total, init_max)
+
+
+def _effective_limit(
+    spec: V1PodSpec, resource: str, parse: Callable[[str], int]
+) -> int:
+    """Pod 실효 limit = `max(앱 container 합계, 각 initContainer의 최댓값)`."""
+    app_total = sum(parse(c.resources.limits[resource]) for c in spec.containers)
+    init_max = max(parse(c.resources.limits[resource]) for c in spec.init_containers)
     return max(app_total, init_max)
 
 
