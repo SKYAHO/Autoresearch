@@ -26,6 +26,7 @@ from typing import Final, Protocol
 
 from kubernetes.client.exceptions import ApiException
 
+from agent_orchestration.app.experiments.exceptions import IdempotencyConflictError
 from agent_orchestration.app.experiments.schemas import ExperimentLogCreate
 from agent_orchestration.app.experiments.service import create_experiment_log
 from agent_orchestration.launcher.config import (
@@ -92,16 +93,22 @@ class _Pod(Protocol):
     metadata: object
 
 
-def select_pod(pods: list[_Pod]) -> _Pod | None:
-    """수집 대상 Pod 하나를 고른다.
+def ordered_pods(pods: list[_Pod]) -> list[_Pod]:
+    """수집 대상 Pod을 생성 순서대로 돌려준다.
 
     Job 생성 직후에는 Pod이 아직 없는 것이 **정상**이므로 빈 목록을 오류로 다루지
-    않는다. `backoffLimit=1` 재시도로 Pod이 둘이 될 수 있어 최신 하나만 고른다.
+    않는다.
+
+    `backoffLimit=1` 재시도로 Pod이 둘이 되면 **둘 다** 수집한다. 실패한 시도의 마지막
+    청크가 실패 원인이 찍히는 자리인데, 최신 Pod만 보면 화면에서 정확히 그 구간이
+    사라진다 — #559가 없애려던 상황이 그대로 남는다. 멱등키에 `pod_name`이 들어 있어
+    두 시도가 섞이지 않는다(`log_idempotency_key`).
+
+    비용은 Pod 수만큼의 API 호출인데 `backoffLimit=1`이라 상한이 2다.
     """
-    if not pods:
-        return None
     # API 반환 순서를 신뢰하지 않는다 — 재시도 Pod이 먼저 올지 나중에 올지는 보장이 없다.
-    return max(pods, key=lambda pod: pod.metadata.creation_timestamp)
+    # 오래된 것부터 적재해야 워크벤치의 시간순 읽기와 순서가 맞는다.
+    return sorted(pods, key=lambda pod: pod.metadata.creation_timestamp)
 
 
 class PodLogReader(Protocol):
@@ -121,6 +128,41 @@ class LogSink(Protocol):
     def write(self, *, idempotency_key: str, log_type: str, content: str) -> None: ...
 
 
+class SeqCursor:
+    """이미 적재한 청크를 다시 쓰지 않게 하는 프로세스 메모리 high-water mark.
+
+    **영속 커서가 아니다.** 매 tick 로그 전체를 다시 읽어 같은 경계로 자르는 설계는
+    그대로 두고, 그중 **쓰기만** 줄인다. `create_experiment_log`는 호출 1회가 곧
+    트랜잭션 1회 + SELECT 2회라, 5초 주기로 도는 동안 이미 적재된 청크까지 매번
+    다시 태우면 실험 1건이 수만 건을 만든다. 그중 첫 tick 이후는 전부 no-op이다.
+
+    정확성 전제는 그대로다 — 재시작하면 이 표가 비고, 그러면 지금까지처럼 전부 다시
+    계산해 같은 키·같은 내용으로 올린다. 적재분이 불변이므로 결과가 같다.
+    """
+
+    def __init__(self) -> None:
+        self._next: dict[tuple[str, str], int] = {}
+
+    def next_seq(self, pod_name: str, container: str) -> int:
+        """다음에 써야 할 `seq`. 처음 보는 조합이면 0이다."""
+        return self._next.get((pod_name, container), 0)
+
+    def mark_written(self, pod_name: str, container: str, seq: int) -> None:
+        """`seq`까지 처리했다고 기록한다. 되돌아가지 않는다."""
+        key = (pod_name, container)
+        if seq + 1 > self._next.get(key, 0):
+            self._next[key] = seq + 1
+
+    def retain(self, pod_names: set[str]) -> None:
+        """이번 tick에 보이지 않은 Pod의 항목을 버린다.
+
+        상주 프로세스라 Pod마다 항목이 쌓이면 그대로 누수다. 잘못 버려도 손실은 없다 —
+        다시 0부터 계산해 멱등 no-op이 될 뿐이다.
+        """
+        for key in [key for key in self._next if key[0] not in pod_names]:
+            del self._next[key]
+
+
 def collect_container_logs(
     reader: PodLogReader,
     sink: LogSink,
@@ -130,6 +172,7 @@ def collect_container_logs(
     pod_name: str,
     containers: list[str],
     terminated: set[str],
+    cursor: SeqCursor | None = None,
 ) -> list[str]:
     """한 Job의 컨테이너 로그를 읽어 완성된 청크만 적재하고 사유 코드를 돌려준다.
 
@@ -140,6 +183,7 @@ def collect_container_logs(
     접미사 없는 고정 코드다. 경로·응답 본문은 싣지 않는다.
     """
     problems: list[str] = []
+    cursor = cursor if cursor is not None else SeqCursor()
     for container in containers:
         try:
             text = reader.read_log(namespace, pod_name, container)
@@ -157,16 +201,39 @@ def collect_container_logs(
             problems.append("pod_log_read_failed")
             continue
 
+        start = cursor.next_seq(pod_name, container)
         for seq, chunk in enumerate(
             complete_chunks(text, terminated=container in terminated)
         ):
+            if seq < start:
+                continue
             try:
                 sink.write(
                     idempotency_key=log_idempotency_key(pod_name, container, seq),
                     log_type=container,
                     content=chunk,
                 )
+                cursor.mark_written(pod_name, container, seq)
+            except IdempotencyConflictError:
+                # 같은 키에 다른 내용 — 재시도해도 같은 결과다. 여기서 멈추면 그
+                # 컨테이너 로그가 Pod 수명 내내 이 지점에서 끊기므로 이 청크만 버린다.
+                # 일시 장애와 뭉치지 않는 이유는 대응이 다르기 때문이다 — 이쪽은
+                # 키 규칙이나 로그 회전 같은 설계 신호이지 기다려서 낫는 종류가 아니다.
+                _LOGGER.warning(
+                    "log write conflicted reason=log_write_conflict "
+                    "job=%s container=%s seq=%s",
+                    job_name,
+                    container,
+                    seq,
+                )
+                problems.append("log_write_conflict")
+                # 지나간 것으로 표시한다 — 다음 tick에 같은 충돌을 되풀이하지 않는다.
+                cursor.mark_written(pod_name, container, seq)
+                continue
             except Exception:
+                # 일시 장애로 본다. 건너뛰지 않고 멈춘다 — 저장된 커서가 없어 다음
+                # tick이 같은 청크를 다시 계산하므로 그대로 회복된다. 지나쳐 버리면
+                # 그 구간이 영영 비고 화면에는 로그가 이어진 것처럼 보인다.
                 _LOGGER.warning(
                     "log write failed reason=log_write_failed job=%s container=%s",
                     job_name,
@@ -259,6 +326,7 @@ def collect_once(
     sink_for: "Callable[[uuid.UUID], LogSink]",
     *,
     namespace: str,
+    cursor: SeqCursor | None = None,
 ) -> list[str]:
     """한 주기 분량을 수집하고 사유 코드를 모아 돌려준다.
 
@@ -266,6 +334,8 @@ def collect_once(
     같은 Job이 계속 도는 구간을 놓친다(정본 계약 참조).
     """
     problems: list[str] = []
+    cursor = cursor if cursor is not None else SeqCursor()
+    seen_pods: set[str] = set()
     for job_name in jobs.list_active_job_names(namespace):
         experiment_id = experiment_id_from_job_name(job_name)
         if experiment_id is None:
@@ -273,21 +343,22 @@ def collect_once(
             # 아래 job_collection_failed와 성격이 다르다.
             continue
         try:
-            pod = select_pod(reader.list_pods(namespace, job_name))
-            if pod is None:
-                continue
-            containers, terminated = container_states(pod)
-            problems.extend(
-                collect_container_logs(
-                    reader,
-                    sink_for(experiment_id),
-                    namespace=namespace,
-                    job_name=job_name,
-                    pod_name=pod.metadata.name,
-                    containers=containers,
-                    terminated=terminated,
+            sink = sink_for(experiment_id)
+            for pod in ordered_pods(reader.list_pods(namespace, job_name)):
+                containers, terminated = container_states(pod)
+                seen_pods.add(pod.metadata.name)
+                problems.extend(
+                    collect_container_logs(
+                        reader,
+                        sink,
+                        namespace=namespace,
+                        job_name=job_name,
+                        pod_name=pod.metadata.name,
+                        containers=containers,
+                        terminated=terminated,
+                        cursor=cursor,
+                    )
                 )
-            )
         except Exception:
             # Job 단위로 격리한다. 여기서 새어 나가면 이 Job 하나가 아니라 뒤의 Job
             # 전부가 그 tick에서 날아가고, A가 계속 실패하면 B·C·D는 영영 안 걷힌다.
@@ -296,6 +367,7 @@ def collect_once(
             )
             problems.append("job_collection_failed")
             continue
+    cursor.retain(seen_pods)
     return problems
 
 
@@ -447,6 +519,11 @@ def main() -> int:
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
 
+    # 커서는 프로세스 수명 동안 산다. 세션은 tick마다 새로 열지만 이건 DB 상태가
+    # 아니라 "이번 프로세스가 이미 쓴 것" 메모다 — 재시작하면 비고, 그러면 전부 다시
+    # 계산해 멱등 no-op이 된다.
+    cursor = SeqCursor()
+
     def tick() -> list[str]:
         with session_factory() as session:
             return collect_once(
@@ -454,6 +531,7 @@ def main() -> int:
                 reader,
                 lambda experiment_id: DatabaseLogSink(session, experiment_id),
                 namespace=settings.job_namespace,
+                cursor=cursor,
             )
 
     try:
