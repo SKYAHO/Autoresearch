@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import sys
 
@@ -62,7 +63,7 @@ def _stub_runs(monkeypatch: pytest.MonkeyPatch, *, seeds: str = "42,43,44") -> l
     """`_run`을 대역으로 바꾸고 호출된 argv를 순서대로 모은다."""
     calls: list[list[str]] = []
 
-    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
+    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int, stage: str) -> str:
         calls.append(argv)
         return seeds if argv[:2] == ["python", "-c"] else ""
 
@@ -160,7 +161,7 @@ def test_dependency_change_detection_uses_git_diff(
 ) -> None:
     calls: list[list[str]] = []
 
-    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
+    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int, stage: str) -> str:
         calls.append(argv)
         return "uv.lock\n"
 
@@ -176,7 +177,7 @@ def test_no_dependency_change_skips_sync(
     monkeypatch: pytest.MonkeyPatch, workspace: Path
 ) -> None:
     monkeypatch.setattr(
-        training_module, "_run", lambda argv, *, cwd, timeout_seconds: "\n"
+        training_module, "_run", lambda argv, *, cwd, timeout_seconds, stage: "\n"
     )
 
     assert dependencies_changed(workspace, base_ref="abc123") is False
@@ -286,7 +287,7 @@ def test_downloaded_dataset_with_a_mismatched_hash_is_rejected(
     """
     destination = tmp_path / "training-dataset"
 
-    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
+    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int, stage: str) -> str:
         target = destination / "training_dataset.csv"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"tampered")
@@ -313,7 +314,7 @@ def test_matching_dataset_is_accepted_and_reused_without_redownloading(
     payload = b"original"
     calls: list[list[str]] = []
 
-    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
+    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int, stage: str) -> str:
         calls.append(argv)
         target = destination / "training_dataset.csv"
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -347,7 +348,7 @@ def test_feature_definition_change_is_detected(
     """
     calls: list[list[str]] = []
 
-    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
+    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int, stage: str) -> str:
         calls.append(argv)
         return "feature_repo/feature_definitions.py\n"
 
@@ -366,7 +367,202 @@ def test_unchanged_feature_definitions_return_empty(
 ) -> None:
     """피처 불변 가설은 빈 tuple로 통과시킨다."""
     monkeypatch.setattr(
-        training_module, "_run", lambda argv, *, cwd, timeout_seconds: "\n"
+        training_module, "_run", lambda argv, *, cwd, timeout_seconds, stage: "\n"
     )
 
     assert feature_definitions_changed(workspace, base_ref="abc123") == ()
+
+
+def test_failed_command_logs_its_stderr(
+    workspace: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """실패한 명령의 stderr 본문이 로그에 남는다(#636).
+
+    실험 #633은 `training_command_failed` 한 줄만 남기고 죽었고, 진짜 원인인
+    `RecursionError`는 파이프 안에서 사라져 로컬 재현 20분을 요구했다.
+    """
+    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+        with pytest.raises(TrainingError, match="training_command_failed"):
+            training_module._run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; sys.stderr.write('RecursionError: marker\\n'); sys.exit(1)",
+                ],
+                cwd=workspace,
+                timeout_seconds=30,
+                stage="train_model",
+            )
+
+    assert "RecursionError: marker" in caplog.text
+
+
+def test_failed_command_log_names_the_call_site(
+    workspace: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """어느 호출이 죽었는지가 로그에 남는다(#636).
+
+    `_run`은 seed probe·데이터셋 다운로드·`git diff`·`uv sync`·학습 다섯 곳이 쓰는데
+    사유 코드는 전부 `training_command_failed` 하나로 뭉친다. 게다가 로그 수집기가
+    붙이는 `log_type`은 컨테이너 이름이라(#559) 다섯 단계가 한 값에 모인다 — 단계를
+    가르는 정보는 로그 줄 안에 우리가 직접 넣은 것뿐이다.
+    """
+    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+        with pytest.raises(TrainingError, match="training_command_failed"):
+            resolve_policy_seeds(workspace)
+
+    assert "stage=seed_probe" in caplog.text
+    assert "No module named 'src'" in caplog.text
+
+
+def test_training_log_label_names_the_condition_and_seed(
+    monkeypatch: pytest.MonkeyPatch, workspace: Path, dataset: Path, state_directory: Path
+) -> None:
+    """학습도 조건 2 × seed 3으로 여섯 번 돈다(#636).
+
+    `train_model` 하나로만 표시하면 여섯 실행이 한 라벨에 뭉쳐, 어느 조건의 어느 seed가
+    죽었는지 알 수 없다. 실험 #633은 candidate 학습이 죽은 경우였다.
+    """
+    stages: list[str] = []
+
+    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int, stage: str) -> str:
+        stages.append(stage)
+        return "42,43" if argv[:2] == ["python", "-c"] else ""
+
+    monkeypatch.setattr(training_module, "_run", _fake_run)
+
+    run_training(_input(TrainingStage.BASELINE, workspace, dataset, state_directory))
+
+    assert [stage for stage in stages if stage.startswith("train_model")] == [
+        "train_model:baseline:42",
+        "train_model:baseline:43",
+    ]
+
+
+def test_timed_out_command_logs_its_partial_output(
+    workspace: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """timeout으로 죽인 명령의 부분 출력도 로그에 남는다(#636).
+
+    POSIX의 `subprocess.run`은 이미 수집한 출력을 `TimeoutExpired`에 실어 던지므로
+    버릴 이유가 없다. 결과가 없는 경로가 오히려 원문이 가장 필요한 곳이다.
+
+    `text=True`를 줘도 **이 예외의 출력만은 bytes로 온다.** 그대로 찍으면 `b'…'`가 되어
+    읽을 수 없으므로 디코드해야 한다.
+    """
+    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+        with pytest.raises(TrainingError, match="training_timeout"):
+            training_module._run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys, time; sys.stderr.write('PARTIAL-MARKER\\n'); "
+                    "sys.stderr.flush(); time.sleep(30)",
+                ],
+                cwd=workspace,
+                timeout_seconds=1,
+                stage="train_model:baseline:42",
+            )
+
+    assert "PARTIAL-MARKER" in caplog.text
+    assert "stage=train_model:baseline:42" in caplog.text
+    assert "b'" not in caplog.text
+
+
+def test_logged_output_keeps_only_the_tail(
+    workspace: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """상한을 넘는 출력은 뒤만 남긴다(#636).
+
+    앞이 아니라 **뒤**를 남기는 이유는 오류가 출력의 끝에 오기 때문이다 — 트레이스백은
+    항상 마지막에 찍힌다. 상한이 없으면 학습 진행 로그가 실패 한 건에 수 MB씩 실린다.
+    """
+    script = (
+        "import sys; "
+        "sys.stderr.write('HEAD-MARKER\\n'); "
+        "sys.stderr.write('x' * 200000 + '\\n'); "
+        "sys.stderr.write('TAIL-MARKER\\n'); "
+        "sys.exit(1)"
+    )
+    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+        with pytest.raises(TrainingError, match="training_command_failed"):
+            training_module._run(
+                [sys.executable, "-c", script],
+                cwd=workspace,
+                timeout_seconds=30,
+                stage="train_model:baseline:42",
+            )
+
+    assert "TAIL-MARKER" in caplog.text
+    assert "HEAD-MARKER" not in caplog.text
+
+
+def test_raised_failure_survives_the_phase2_redaction_filter(workspace: Path) -> None:
+    """**실제로 던져진** 예외가 `phase2._safe_failure_reason`을 통과해야 한다(#636).
+
+    출력 본문을 사유 인자에 붙이면 `args`가 둘이 되어 필터가 통째로 `redacted`로
+    지운다 — 로그를 얻으려다 사유까지 잃는 회귀를 막는다. 본문은 별도 로그 줄이 담당한다.
+
+    예외를 여기서 만들어 넘기면 안 된다. 그러면 `_safe_failure_reason`의 성질만 확인할
+    뿐, `_run`이 무엇을 던지는지는 검증하지 못한다.
+    """
+    # phase2는 GitHub App·GCS 의존성을 끌어오므로 이 테스트 안에서만 import한다.
+    from agent_orchestration.executor import phase2
+
+    with pytest.raises(TrainingError) as raised:
+        training_module._run(
+            [sys.executable, "-c", "import sys; sys.stderr.write('detail\\n'); sys.exit(1)"],
+            cwd=workspace,
+            timeout_seconds=30,
+            stage="train_model:baseline:42",
+        )
+
+    assert phase2._safe_failure_reason(raised.value) == "training_command_failed"
+
+
+def test_failure_logs_both_streams_even_when_one_is_empty(
+    workspace: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """실패 시 stdout·stderr를 각각 남기고, 비어 있어도 한 줄을 남긴다(#636).
+
+    `src/pipeline/train.py`는 진행 상황을 `print()`로 내므로 `[Step 1]`~`[Step 8]`이
+    stdout에 있다. 실험 #633 진단의 절반이 "8단계는 다 통과했고 마지막 ONNX 패키징에서
+    죽었다"였고, 그 정보의 출처가 여기다.
+
+    비어 있어도 한 줄을 남기는 이유는 "출력이 없었다"와 "로깅이 깨졌다"를 구분하기
+    위해서다(#612 `_log_codex_output`과 같은 판단).
+    """
+    script = "import sys; sys.stdout.write('[Step 8] PROGRESS-MARKER\\n'); sys.exit(1)"
+    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+        with pytest.raises(TrainingError, match="training_command_failed"):
+            training_module._run(
+                [sys.executable, "-c", script],
+                cwd=workspace,
+                timeout_seconds=30,
+                stage="train_model:baseline:42",
+            )
+
+    assert "[Step 8] PROGRESS-MARKER" in caplog.text
+    assert "stream=stdout" in caplog.text
+    assert "stream=stderr bytes=0" in caplog.text
+
+
+def test_spawn_failure_logs_why_the_process_could_not_start(
+    workspace: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """프로세스가 아예 못 뜨면 그 사유가 로그에 남는다(#636).
+
+    출력이 없는 실패라 tail로는 잡히지 않는다. `training_spawn_failed` 하나로는 "명령이
+    이미지에 없다"와 "권한이 없다"를 구분할 수 없는데, 둘은 대응이 완전히 다르다.
+    """
+    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+        with pytest.raises(TrainingError, match="training_spawn_failed"):
+            training_module._run(
+                ["definitely-not-a-real-command-636"],
+                cwd=workspace,
+                timeout_seconds=30,
+                stage="uv_sync",
+            )
+
+    assert "stage=uv_sync" in caplog.text
+    assert "error_type=FileNotFoundError" in caplog.text

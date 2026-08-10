@@ -9,7 +9,8 @@
 delta와 그 평균·표준오차를 함께 싣는다. 두 조건이 같은 데이터·같은 테스트셋을 썼는지
 확인할 수 있도록 테스트셋 지문도 남긴다. 그 전문에서 워크벤치에 실을 요약
 (`experiment-metric-snapshot-v1`)을 뽑는 것도 이 모듈이 한다 — 요약이 전문과 다른
-정의를 쓰지 않으려면 같은 곳에서 나와야 한다.
+정의를 쓰지 않으려면 같은 곳에서 나와야 한다. 채점 subprocess가 실패하거나 timeout되면
+어느 조건의 어느 seed였는지와 출력 tail을 컨테이너 로그로 남긴다(#636).
 
 [비책임] 지표의 정의와 계산은 `src/pipeline/evaluate.py`가 소유한다 — 이 모듈은
 호출과 조립만 한다. 학습은 `training.py`, GCS 게시와 API 보고는 finalizer,
@@ -26,13 +27,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 from pathlib import Path
 import statistics
 import subprocess
 from typing import Final, cast
 
+from agent_orchestration.executor.command_output import log_command_streams
 from agent_orchestration.executor.training import TrainingStage
 
+
+_LOGGER = logging.getLogger(__name__)
 
 CONTRACT_VERSION: Final = "experiment-metrics-v1"
 
@@ -78,11 +83,14 @@ class MeasurementInput:
             raise MeasurementError("timeout_invalid")
 
 
-def _run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> None:
+def _run(argv: list[str], *, cwd: Path, timeout_seconds: int, stage: str) -> None:
     """workspace를 cwd로 채점 subprocess를 실행한다.
 
-    실패 시 stderr를 예외에 싣지 않는다 — 평가 로그에 데이터 경로가 섞여 들어올 수
-    있어 사유 코드만 남기고 본문은 Pod 로그로만 흘린다(`training._run`과 같은 원칙).
+    실패하면 출력 tail을 **사유와 분리된 로그 줄**로 남긴다(#636, `training._run`과 같은
+    원칙). 사유에 붙이면 `phase2._safe_failure_reason`이 통째로 `redacted`로 지운다.
+
+    `stage`는 호출 지점 이름이다. 채점은 조건 2 × seed 3으로 여섯 번 도는데 사유 코드는
+    하나뿐이라, 어느 조건의 어느 seed가 죽었는지는 이 인자로만 남는다.
     """
     try:
         completed = subprocess.run(  # noqa: S603 - argv는 이 모듈이 조립한 고정 목록이다
@@ -94,10 +102,42 @@ def _run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> None:
             check=False,
         )
     except subprocess.TimeoutExpired as error:
+        # POSIX의 `subprocess.run`은 이미 수집한 출력을 이 예외에 실어 던진다(#636).
+        _LOGGER.error(
+            "evaluation command timed out stage=%s timeout_sec=%d",
+            stage,
+            timeout_seconds,
+        )
+        log_command_streams(
+            _LOGGER,
+            event="evaluation output",
+            stage=stage,
+            stdout=error.stdout,
+            stderr=error.stderr,
+        )
         raise MeasurementError("evaluation_timeout") from error
     except OSError as error:
+        # 출력이 없는 실패라 tail로는 잡히지 않는다(#636, `training._run`과 같은 규칙).
+        _LOGGER.error(
+            "evaluation command could not start stage=%s error_type=%s reason=%s",
+            stage,
+            type(error).__name__,
+            error.strerror,
+        )
         raise MeasurementError("evaluation_spawn_failed") from error
     if completed.returncode != 0:
+        _LOGGER.error(
+            "evaluation command failed stage=%s exit_code=%d",
+            stage,
+            completed.returncode,
+        )
+        log_command_streams(
+            _LOGGER,
+            event="evaluation output",
+            stage=stage,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )
         # 사유는 접미사 없는 고정 코드로 둔다. `phase2._safe_failure_reason`이
         # `^[a-z][a-z0-9_]*$`에 맞는 값만 남기므로 인자를 붙이면 사유가 통째로 사라진다.
         raise MeasurementError("evaluation_command_failed")
@@ -161,6 +201,7 @@ def evaluate_condition(
             ],
             cwd=config.workspace,
             timeout_seconds=config.timeout_seconds,
+            stage=f"evaluate_model:{stage.value}:{seed}",
         )
         try:
             payload = json.loads(metrics_path.read_text(encoding="utf-8"))
