@@ -6,7 +6,8 @@ Streamlit workbench가 FastAPI Experiment API에 접근하는 경계다. API 토
 
 [기능]
 Experiment 생성·조회, 사전등록 필드의 `[AR]` 이슈 발행 요청, Event/Log cursor 조회,
-metadata 조회, 실험 상태 전이와 실행 Log 기록, API 오류의 안전한 분류를 제공한다.
+metadata 조회, 실험 상태 전이와 실행 Log 기록, API 오류의 안전한 분류, 리포트 본문
+조회를 제공한다.
 
 [비책임]
 Streamlit 화면 렌더링, session state, Agent 실행, Step 쓰기. 어떤 상태로 전이할지와
@@ -226,6 +227,22 @@ class ExperimentClient:
         if not isinstance(entries, dict):
             raise ApiUnavailableError("Experiment API returned invalid metadata.")
         return {str(key): str(value) for key, value in entries.items()}
+
+    def fetch_report(self, experiment_id: str) -> str | None:
+        """실험 리포트 본문을 조회한다.
+
+        `ExperimentResponse`가 아니라 전용 endpoint를 쓰는 이유는 본문이 수십 KB이고
+        상세 조회는 5초마다 반복되기 때문이다.
+
+        Returns:
+            리포트 본문. 실험은 있고 리포트가 없으면 `None`이다 — 서버가 404가 아니라
+            200 + null로 답하며, 404는 실험 자체가 없다는 뜻이라 예외로 올라간다.
+        """
+        payload = self._object(
+            self._request_json("GET", f"/experiments/{experiment_id}/report")
+        )
+        value = payload.get("report_markdown")
+        return None if value is None else str(value)
 
     def patch_status(
         self,

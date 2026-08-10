@@ -32,6 +32,13 @@ MAX_STEP_TARGET_BYTES = 4096
 # 워크벤치가 매 polling마다 읽어 화면에 편다. 상한이 없으면 seed·조건이 늘어날 때
 # 조용히 커져 목록 화면까지 느려진다.
 MAX_METRIC_SNAPSHOT_BYTES = 16384
+# 리포트 본문의 저장 상한(UTF-8 바이트). executor가 먼저 자르고
+# (`executor/report.py`) service가 한 번 더 자른다 — **둘 다 거절이 아니라 절단이다.**
+# 거절 경로를 남기면 리포트 내용이 지표 보고를 죽이는 결합이 되살아난다(spec 결정 3).
+MAX_REPORT_MARKDOWN_BYTES = 65536
+# 요청 본문 폭주만 막는 성긴 상한이다. **문자 수**라 위 바이트 상한과 단위가 다르며,
+# DB에 들어갈 크기를 정하는 것은 service의 절단이다.
+MAX_REPORT_MARKDOWN_CHARS = 262144
 GitSha = Annotated[str, Field(pattern=r"^[0-9a-f]{40}$")]
 
 
@@ -119,6 +126,16 @@ class ExecutorResultReportRequest(BaseModel):
     # 좌표가 뒤섞인 것이므로 받지 않는다.
     candidate_sha: GitSha
     metric_snapshot: dict
+    # 에이전트가 쓴 `report.md` 본문. 없이 보고해도 성립한다 — 리포트 실패가 지표
+    # 게시를 막지 않는다는 성질이 여기서 유지된다.
+    #
+    # **크기·내용으로 이 요청을 죽이지 않는 것이 계약이다**(spec 결정 3). 그래서
+    # `field_validator`를 달지 않고, 정규화(NUL 제거·바이트 절단)는 service가 한다.
+    # `max_length`는 그 계약의 예외가 아니라 **망가진 client의 무한정 본문만 막는
+    # 성긴 방어**다 — executor는 65536 **바이트**로 먼저 자르므로 ASCII로 채워도
+    # 이 **문자** 상한의 1/4에 닿지 못한다. 설령 걸리더라도 `report_result`가 422를
+    # 받으면 리포트를 빼고 한 번 재시도하므로 지표와 완주 전이는 살아남는다.
+    report_markdown: str | None = Field(default=None, max_length=MAX_REPORT_MARKDOWN_CHARS)
 
     @field_validator("metric_snapshot")
     @classmethod
@@ -152,6 +169,20 @@ class ExperimentResponse(BaseModel):
     executor_job_name: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class ExperimentReportResponse(BaseModel):
+    """실험 리포트 본문 응답.
+
+    `ExperimentResponse`와 분리한 이유는 그것이 5초 polling으로 반복 조회되고 목록
+    화면에도 실리기 때문이다. 수십 KB 본문을 거기 실으면 목록까지 느려진다.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    experiment_id: uuid.UUID
+    # 리포트가 아직 없으면 `None`이다. 실험이 없는 것과 구별되며, 그 경우는 404다.
+    report_markdown: str | None
 
 
 class StatusUpdateRequest(BaseModel):

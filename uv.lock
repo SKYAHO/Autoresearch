@@ -389,6 +389,7 @@ dev = [
     { name = "google-cloud-secret-manager" },
     { name = "httpx" },
     { name = "kubernetes" },
+    { name = "markdown-it-py" },
     { name = "openai" },
     { name = "plotly" },
     { name = "prometheus-client" },
@@ -427,6 +428,7 @@ orchestration = [
     { name = "uvicorn", extra = ["standard"], marker = "extra == 'group-12-autoresearch-orchestration' or (extra == 'group-12-autoresearch-dev' and extra == 'group-12-autoresearch-feast') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-proxy') or (extra == 'group-12-autoresearch-feast' and extra == 'group-12-autoresearch-serving')" },
 ]
 orchestration-ui = [
+    { name = "markdown-it-py" },
     { name = "streamlit" },
 ]
 proxy = [
@@ -478,6 +480,7 @@ dev = [
     { name = "google-cloud-secret-manager", specifier = ">=2.20,<3" },
     { name = "httpx", specifier = ">=0.28,<0.29" },
     { name = "kubernetes", specifier = ">=36,<37" },
+    { name = "markdown-it-py", specifier = ">=4,<5" },
     { name = "openai", specifier = ">=1.66,<3" },
     { name = "plotly", specifier = ">=5.24,<7" },
     { name = "prometheus-client", specifier = ">=0.20,<1" },
@@ -487,7 +490,7 @@ dev = [
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "ruff", specifier = "==0.15.18" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
-    { name = "streamlit", specifier = ">=1.37,<2" },
+    { name = "streamlit", specifier = ">=1.60,<2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]
 feast = [
@@ -513,7 +516,10 @@ orchestration = [
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32,<0.35" },
 ]
-orchestration-ui = [{ name = "streamlit", specifier = ">=1.37,<2" }]
+orchestration-ui = [
+    { name = "markdown-it-py", specifier = ">=4,<5" },
+    { name = "streamlit", specifier = ">=1.60,<2" },
+]
 proxy = [
     { name = "fastapi", specifier = ">=0.115,<0.129" },
     { name = "httpx", specifier = ">=0.28,<0.29" },

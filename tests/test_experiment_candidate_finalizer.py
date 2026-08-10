@@ -975,3 +975,116 @@ def test_result_api_rejects_conflict_or_unexpected_status_without_leaking_body(
 
     assert "api-token-must-not-leak" not in str(error.value)
     assert "server-body" not in str(error.value)
+
+
+@contextmanager
+def _version_skew_result_api(*, always_422: bool) -> Iterator[tuple[str, list[dict]]]:
+    """`report_markdown`이 실린 요청만 422로 거절하는(또는 항상 거절하는) 서버다.
+
+    구 API pod가 아직 `report_markdown`을 모르는 상황(`extra="forbid"`)을 재현한다.
+    """
+    seen_payloads: list[dict] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - stdlib handler contract
+            length = int(self.headers["Content-Length"])
+            body = self.rfile.read(length)
+            payload = __import__("json").loads(body.decode("utf-8"))
+            seen_payloads.append(payload)
+            if always_422 or "report_markdown" in payload:
+                response_body = {"detail": "unrecognized field: report_markdown"}
+                status = 422
+            else:
+                response_body = {"status": "PASSED"}
+                status = 200
+            response = __import__("json").dumps(response_body).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            """test output에 token을 남기지 않는다."""
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}", seen_payloads
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_result_api_retries_once_without_report_on_422_version_skew(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """구 API pod가 `report_markdown`을 몰라 422를 내면 그 필드 없이 한 번 재시도한다.
+
+    이 재시도가 없으면 새 executor가 새 필드를 실어 보낸 순간 완주 보고 전체가
+    실패해, 지표는 GCS에 있는데 `metric_summary`는 null인 채로 실험이 회수된다.
+    """
+    token_file = tmp_path / "api-token"
+    token_file.write_text("api-token-must-not-leak\n", encoding="utf-8")
+    experiment_id = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+    with _version_skew_result_api(always_422=False) as (api_url, seen_payloads):
+        with caplog.at_level("WARNING"):
+            api_client.report_result(
+                api_url=api_url,
+                token_file=token_file,
+                experiment_id=experiment_id,
+                candidate_sha="b" * 40,
+                metric_snapshot={"seeds": [11]},
+                report_markdown="# 결론",
+            )
+
+    assert len(seen_payloads) == 2
+    assert "report_markdown" in seen_payloads[0]
+    assert "report_markdown" not in seen_payloads[1]
+    assert any(
+        "report_markdown dropped on 422 retry" in record.message
+        and str(experiment_id) in record.message
+        for record in caplog.records
+    )
+
+
+def test_result_api_gives_up_after_a_second_422(tmp_path: Path) -> None:
+    """두 번째도 422면 그대로 올린다 — 재시도는 정확히 한 번뿐이고 원인을 구분하지 않는다."""
+    token_file = tmp_path / "api-token"
+    token_file.write_text("api-token-must-not-leak\n", encoding="utf-8")
+
+    with _version_skew_result_api(always_422=True) as (api_url, seen_payloads):
+        with pytest.raises(api_client.CandidateApiError, match="result_api_failed"):
+            api_client.report_result(
+                api_url=api_url,
+                token_file=token_file,
+                experiment_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                candidate_sha="b" * 40,
+                metric_snapshot={"seeds": [11]},
+                report_markdown="# 결론",
+            )
+
+    assert len(seen_payloads) == 2
+
+
+def test_result_api_does_not_retry_a_422_without_a_report(tmp_path: Path) -> None:
+    """리포트 없이 보낸 요청이 422면 재시도할 것이 없으므로 그대로 올린다."""
+    token_file = tmp_path / "api-token"
+    token_file.write_text("api-token-must-not-leak\n", encoding="utf-8")
+
+    with _version_skew_result_api(always_422=True) as (api_url, seen_payloads):
+        with pytest.raises(api_client.CandidateApiError, match="result_api_failed"):
+            api_client.report_result(
+                api_url=api_url,
+                token_file=token_file,
+                experiment_id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                candidate_sha="b" * 40,
+                metric_snapshot={"seeds": [11]},
+            )
+
+    assert len(seen_payloads) == 1

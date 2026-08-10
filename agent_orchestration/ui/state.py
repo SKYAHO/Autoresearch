@@ -6,7 +6,8 @@ Streamlit widget 렌더링은 담당하지 않는다.
 
 [기능]
 Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 목록·상세
-오류 분리 보존, 화면 모드 전이와 이슈 발행 재시도·취소 상태 전이를 제공한다.
+오류 분리 보존, 화면 모드 전이와 이슈 발행 재시도·취소 상태 전이를 제공한다. 리포트 본문
+캐시와 조회 오류의 분리 보존도 포함한다.
 
 [비책임]
 HTTP 요청, API 인증, 상태 전이 기록, Agent 실행, GitHub 이슈 처리.
@@ -64,6 +65,22 @@ class WorkbenchState:
     # 생성 성공·발행 실패 사이의 부분 성공을 보존해 재제출 시 Experiment 중복 생성을 막는다.
     pending_publication_experiment_id: str | None = None
     pending_publication_submission: Submission | None = None
+    # 조회한 리포트 본문. `None`은 "아직 안 받음"과 "받았는데 리포트가 없음" 두 가지로
+    # 겹치므로, 둘을 가르는 것은 `report_checked_for`다.
+    report_markdown: str | None = None
+    report_error: str | None = None
+    # **표식 두 개가 서로 다른 질문에 답한다.** 하나로 겹치면 한쪽이 반드시 틀어진다.
+    #
+    # `report_checked_for` — "이 실험을 한 번이라도 조회해 봤는가". 본문 유무와 무관하게
+    # 조회가 성공하면 세운다. **화면 문구를 고르는 데만** 쓴다. 이것이 없으면 리포트가
+    # 정말 없는 실험(이 변경 이전에 완주한 실험 전부)이 "불러오는 중"에 영구히 머문다.
+    #
+    # `report_loaded_for` — "캐시할 본문을 이미 받았는가". 본문이 있을 때만 세우며
+    # 재조회를 막는다. 본문이 없을 때 세우지 않는 이유는 `record_report`에 있다.
+    #
+    # 둘 다 실패에는 세우지 않는다 — 일시적 오류 한 번에 리포트가 영구히 가려진다.
+    report_checked_for: str | None = None
+    report_loaded_for: str | None = None
 
 
 def show_create_view(state: WorkbenchState) -> None:
@@ -102,6 +119,10 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.terminal_refresh_complete = False
     state.detail_error = None
     state.last_publication = None
+    state.report_markdown = None
+    state.report_error = None
+    state.report_checked_for = None
+    state.report_loaded_for = None
 
 
 def append_event_page(
@@ -196,3 +217,51 @@ def record_list_error(state: WorkbenchState, message: str) -> None:
 def record_detail_error(state: WorkbenchState, message: str) -> None:
     """상세 workbench의 마지막 조회 오류를 기록한다."""
     state.detail_error = message
+
+
+def record_report(
+    state: WorkbenchState,
+    experiment_id: str,
+    markdown_text: str | None,
+) -> None:
+    """조회한 리포트 본문을 기록하고, 본문이 있을 때만 조회 완료 표식을 세운다.
+
+    `[정정 — #647, 2026-08-10]` 이전에는 본문이 `None`이어도 표식을 세웠다 — "리포트가
+    없다"도 조회 결과로 보고 매 갱신마다 다시 묻지 않으려는 의도였다(spec 결정 7 원문).
+    그런데 결정 2가 지표 커밋과 리포트 커밋을 별도 트랜잭션으로 나눈 결과, `PASSED`로
+    막 전이했지만 두 번째 트랜잭션이 아직 커밋되지 않아 `report_markdown`이 실제로는
+    `NULL`인 순간이 실재한다. 그 틈에 5초 polling이 조회하면 200 + null을 받는데, UI는
+    그것이 "진짜 리포트 없음"인지 "아직 두 번째 트랜잭션 전"인지 구별할 수 없다.
+    구별 불가능한 것을 표식으로 캐시하면 `refresh_report`가 영구히 early-return하고
+    결과 탭이 "아직 리포트가 없습니다."에 고착된다 — `select_experiment`는 같은 id면
+    no-op이라 사이드바에서 같은 실험을 다시 눌러도 풀리지 않는다.
+
+    그래서 본문이 있을 때만 표식을 세운다. `PASSED`는 `TERMINAL_STATUSES`에 없는
+    polling 상태이므로 표식이 없으면 다음 갱신에서 자연히 재조회되어 스스로 낫는다.
+    `PROMOTED`는 terminal이라 `record_terminal_refresh`가 폴링을 끝내므로 재시도가
+    무한히 돌지 않는다. 트레이드오프: 리포트를 끄고 돌린 배포에서는 `PASSED` 실험이
+    선택돼 있는 동안 5초마다 null 조회가 반복된다 — 응답이 작아 비용은 낮다.
+
+    `[재-정정 — #647, 2026-08-10]` 표식 하나로 "캐시할 값이 있는가"와 "조회를 해 봤는가"를
+    동시에 표현하려다 후자를 잃었다. 본문이 없을 때 아무 표식도 세우지 않으면, 리포트가
+    **정말 없는** 실험(이 변경 이전에 완주한 실험 전부)은 화면이 "불러오는 중"에서
+    내려오지 못한다 — `PROMOTED`는 terminal이라 폴링까지 멈춰 그 문구에 영구히 고착되고,
+    `PASSED`는 문구가 그대로인 채 5초마다 조회만 반복한다. 그래서 조회를 시도했다는
+    사실은 `report_checked_for`에 **본문 유무와 무관하게** 남기고(문구 선택 전용),
+    재조회를 막는 캐시만 `report_loaded_for`에 남긴다.
+    """
+    state.report_markdown = markdown_text
+    state.report_error = None
+    state.report_checked_for = experiment_id
+    if markdown_text is not None:
+        state.report_loaded_for = experiment_id
+
+
+def record_report_error(state: WorkbenchState, message: str) -> None:
+    """리포트 조회 실패만 기록한다.
+
+    `report_loaded_for`를 **세우지 않아** 다음 갱신에서 다시 시도된다. `detail_error`를
+    건드리지 않는 이유는 리포트 실패가 워크벤치 전체를 오류 상태로 만들면 안 되기
+    때문이다(spec 결정 7).
+    """
+    state.report_error = message

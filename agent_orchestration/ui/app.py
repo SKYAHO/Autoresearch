@@ -8,7 +8,8 @@
 사전등록 화면과 Experiment 상세 화면을 sidebar 탐색으로 분리하고, 사전등록 폼 제출로
 Experiment 생성과 `[AR]` 이슈 발행을 잇달아 요청하며, 부분 실패한 발행을 저장 입력으로
 재시도하거나 취소한다. 최근 실험 선택, 상세·Event·Log의 5초 cursor polling, API 오류의
-영역별 사용자 표시와 삭제·만료 cursor 복구를 제공한다.
+영역별 사용자 표시와 삭제·만료 cursor 복구를 제공한다. 완주한 실험의 리포트 본문을
+`refresh_selected_experiment` 말미에서 한 번만 조회해 결과 탭에 넘긴다.
 
 [비책임]
 이슈 본문 조립·`gh` 호출·label 부여(모두 API 서버), 실제 실험 실행, 상태·Event·Log·
@@ -37,6 +38,8 @@ from agent_orchestration.ui.state import (
     merge_steps,
     record_detail_error,
     record_list_error,
+    record_report,
+    record_report_error,
     record_terminal_refresh,
     select_experiment,
     show_create_view,
@@ -44,7 +47,7 @@ from agent_orchestration.ui.state import (
     should_poll,
 )
 from agent_orchestration.ui.styles import workbench_css
-from agent_orchestration.ui.models import Submission
+from agent_orchestration.ui.models import REPORT_STATUSES, Submission
 from agent_orchestration.ui.views import (
     render_empty_workbench,
     render_add_hypothesis_button,
@@ -172,7 +175,33 @@ def refresh_selected_experiment(client: ExperimentClient, state: WorkbenchState)
     record_terminal_refresh(state)
     state.detail_error = None
     state.last_updated_at = datetime.now(timezone.utc)
+    # 맨 끝이다. 여기서 무엇이 나도 위의 갱신 결과와 반환값을 바꾸지 않는다.
+    refresh_report(client, state)
     return False
+
+
+def refresh_report(client: ExperimentClient, state: WorkbenchState) -> None:
+    """완주한 실험의 리포트 본문을 한 번만 받아 온다.
+
+    **실패를 `report_error`에만 담는다.** `detail_error`를 세우지 않고,
+    `remove_selected_experiment`를 부르지 않고, 갱신을 중단시키지 않는다 — metadata는
+    실패 시 갱신 전체를 접지만 리포트는 그러면 안 된다. 그러지 않으면 리포트 조회
+    하나가 5초마다 워크벤치 전체를 오류 상태로 만든다(spec 결정 7).
+
+    `ApiNotFoundError`도 여기서는 실험 제거로 올리지 않는다 — 실험이 정말 없다면 바로
+    앞의 `get_experiment`가 이미 그렇게 처리한 뒤다.
+    """
+    experiment = state.experiment
+    if experiment is None or state.selected_id is None:
+        return
+    if experiment.status not in REPORT_STATUSES:
+        return
+    if state.report_loaded_for == state.selected_id:
+        return
+    try:
+        record_report(state, state.selected_id, client.fetch_report(state.selected_id))
+    except ExperimentApiError as error:
+        record_report_error(state, str(error))
 
 
 def submit_experiment(
