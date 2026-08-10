@@ -78,6 +78,23 @@ def test_theme_owns_the_colors_so_css_does_not_reintroduce_dead_variables() -> N
     assert "var(--secondary-background-color)" not in css
 
 
+def _rendered_inspector(
+    monkeypatch: pytest.MonkeyPatch, metrics: dict[str, object]
+) -> tuple[str, list[str]]:
+    """`_render_metrics`가 그린 HTML과 금지된 위젯 호출 기록을 반환한다."""
+    markdown: list[str] = []
+    forbidden: list[str] = []
+    monkeypatch.setattr(views.st, "markdown", lambda text, **_: markdown.append(text))
+    monkeypatch.setattr(views.st, "code", lambda *_a, **_k: forbidden.append("code"))
+    monkeypatch.setattr(views.st, "json", lambda *_a, **_k: forbidden.append("json"))
+    monkeypatch.setattr(views.st, "metric", lambda *_a, **_k: forbidden.append("metric"))
+    monkeypatch.setattr(views.st, "caption", lambda *_a, **_k: None)
+
+    views._render_metrics(metrics)
+
+    return "".join(markdown), forbidden
+
+
 def test_run_summary_shows_conditions_and_never_dumps_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -86,46 +103,46 @@ def test_run_summary_shows_conditions_and_never_dumps_json(
     이 패널은 `metric_summary` 전체를 `st.code(json.dumps(...))`로 덤프했고, 결과 탭의
     카드와 **같은 값**이 두 번 나왔다.
     """
-    captions: list[str] = []
-    forbidden: list[str] = []
-    monkeypatch.setattr(views.st, "caption", lambda text, **_: captions.append(text))
-    monkeypatch.setattr(views.st, "code", lambda *_a, **_k: forbidden.append("code"))
-    monkeypatch.setattr(views.st, "json", lambda *_a, **_k: forbidden.append("json"))
-    monkeypatch.setattr(views.st, "metric", lambda *_a, **_k: forbidden.append("metric"))
-    monkeypatch.setattr(views.st, "markdown", lambda *_a, **_k: forbidden.append("markdown"))
-
-    views._render_metrics(_SNAPSHOT)
+    rendered, forbidden = _rendered_inspector(monkeypatch, _SNAPSHOT)
 
     assert forbidden == []
-    assert any("시드 3개" in caption for caption in captions)
-    assert any("42, 43, 44" in caption for caption in captions)
+    assert "42, 43, 44" in rendered
     # conditions·paired는 결과 탭이 그린다. 이름조차 여기 나오면 안 된다.
-    assert not any("conditions" in caption for caption in captions)
-    assert not any("paired" in caption for caption in captions)
+    assert "conditions" not in rendered
+    assert "paired" not in rendered
 
 
 def test_run_summary_keeps_unknown_keys_instead_of_dropping_them(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """스냅샷 계약이 넓어져도 새 값이 화면에서 조용히 사라지지 않는다."""
-    captions: list[str] = []
-    monkeypatch.setattr(views.st, "caption", lambda text, **_: captions.append(text))
+    rendered, _ = _rendered_inspector(
+        monkeypatch, {"seeds": [1], "brand_new_field": "42"}
+    )
 
-    views._render_metrics({"seeds": [1], "brand_new_field": "42"})
-
-    assert any("brand_new_field: 42" in caption for caption in captions)
+    assert "brand_new_field" in rendered
+    assert "42" in rendered
 
 
 def test_split_mismatch_is_stated_in_the_inspector(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """테스트셋이 갈렸다는 사실은 지표 옆 어디에서든 읽혀야 한다."""
-    captions: list[str] = []
-    monkeypatch.setattr(views.st, "caption", lambda text, **_: captions.append(text))
+    rendered, _ = _rendered_inspector(monkeypatch, {"split_matches": False})
 
-    views._render_metrics({"split_matches": False})
+    assert "불일치" in rendered
 
-    assert any("불일치" in caption for caption in captions)
+
+def test_inspector_escapes_values_because_it_renders_raw_html(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """스냅샷 값은 결국 에이전트가 쓴다. `unsafe_allow_html` 경로가 신뢰 경계다."""
+    rendered, _ = _rendered_inspector(
+        monkeypatch, {"results_uri": "<img src=x onerror=alert(1)>"}
+    )
+
+    assert "<img" not in rendered
+    assert "&lt;img" in rendered
 
 
 @pytest.mark.parametrize(

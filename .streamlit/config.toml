@@ -8,36 +8,39 @@
 # 이 파일이 이미지에 실리려면 `deploy/agent_orchestration/ui.Dockerfile`이 복사해야
 # 한다 — 그 Dockerfile은 경로를 열거해 복사하므로 저장소 루트에 두는 것만으로는
 # 컨테이너에 들어가지 않는다.
+#
+# 방향은 "계기판"이다. 채도를 낮추고 대비를 면이 아니라 활자로 만든다. 강조색은 링크와
+# 주요 버튼 하나에만 쓰고, 화면의 의미 있는 색은 상태 배지가 독점한다.
 
 [theme]
-# 연구 콘솔이 하루 종일 켜져 있다는 전제로, 순백 대신 따뜻한 종이색을 바탕에 둔다.
-backgroundColor = "#FBFAF7"
-secondaryBackgroundColor = "#F1EEE8"
-textColor = "#1B2A33"
-# 기본값 #FF4B4B는 경고색과 구별되지 않아 상태 배지의 의미를 흐린다. 상태 색
-# (models.py `_STATUS_COLORS`)과 겹치지 않는 짙은 청록을 강조색으로 쓴다.
-# 흰 글자 대비 6.4:1로 WCAG AA를 넘는다.
-primaryColor = "#146B5C"
-linkColor = "#0F5E6E"
-borderColor = "#DFD9CE"
+backgroundColor = "#FCFCFC"
+secondaryBackgroundColor = "#F4F5F5"
+textColor = "#15181B"
+# 원색에 가까운 강조색은 상태 배지와 경쟁한다. 거의 검정에 가까운 짙은 상록이라
+# 버튼·탭 밑줄이 튀지 않으면서도 클릭 가능한 곳임을 알린다.
+primaryColor = "#173F38"
+linkColor = "#1B6B5B"
+# 테두리는 존재를 알리는 정도까지만. 카드 네 개가 같은 굵기로 경쟁하면 위계가 죽는다.
+borderColor = "#E4E6E7"
 
-# 코드 블록은 로그·JSON이 길게 이어지므로 본문과 확실히 분리한다.
-codeBackgroundColor = "#132C3B"
-codeTextColor = "#ECF5F1"
+codeBackgroundColor = "#12232B"
+codeTextColor = "#E8EFEC"
 
+# 제목까지 sans로 통일한다. 세리프는 가설 본문 한 곳에만 쓴다(styles.py) — 화면
+# 전체가 세리프면 제목마다 한글 폴백 자형이 섞여 통일감이 깨진다.
 font = "sans-serif"
-headingFont = "serif"
+headingFont = "sans-serif"
 codeFont = "monospace"
 
-baseRadius = "0.5rem"
-buttonRadius = "0.4rem"
+# 0.5rem은 둥글어서 무르게 보인다. 계기판에는 각이 조금 더 선 편이 맞다.
+baseRadius = "0.375rem"
+buttonRadius = "0.375rem"
 showWidgetBorder = true
 showSidebarBorder = true
 
 [theme.sidebar]
-# 실험 목록은 본문보다 한 단 낮은 면으로 두어 관찰 영역과 탐색 영역을 가른다.
-backgroundColor = "#F1EEE8"
-secondaryBackgroundColor = "#E7E2D8"
-textColor = "#1B2A33"
-primaryColor = "#146B5C"
-borderColor = "#DAD3C6"
+backgroundColor = "#F7F8F8"
+secondaryBackgroundColor = "#EDEFEF"
+textColor = "#15181B"
+primaryColor = "#173F38"
+borderColor = "#E4E6E7"

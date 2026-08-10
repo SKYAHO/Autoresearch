@@ -38,7 +38,7 @@ from agent_orchestration.ui.models import (
 )
 from agent_orchestration.ui.report import report_document
 from agent_orchestration.ui.state import WorkbenchState
-from agent_orchestration.ui.styles import status_badge
+from agent_orchestration.ui.styles import fact_row, status_badge
 from agent_orchestration.ui.time import format_time
 
 
@@ -308,8 +308,16 @@ def _render_timeline(events: Sequence[Event], current_status: str) -> None:
         return
     for event in events:
         source = event.from_status or "START"
-        st.markdown(f"**{source} -> {event.to_status}**")
-        st.caption(format_time(event.created_at))
+        # 상태값은 서버가 닫아 둔 집합이지만 `unsafe_allow_html` 경로이므로 escape한다.
+        st.markdown(
+            '<div class="timeline-step">'
+            f'<span class="timeline-from">{html.escape(source)}</span>'
+            '<span class="timeline-arrow">&rarr;</span>'
+            f'<span class="timeline-to">{html.escape(event.to_status)}</span>'
+            f'<span class="timeline-time">{format_time(event.created_at)}</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
         if event.reason:
             st.write(event.reason)
 
@@ -387,6 +395,11 @@ _RUN_FACT_LABELS: dict[str, str] = {
 
 # `_render_metrics`가 앞에서 전용 문구로 이미 그린 키.
 _RUN_FACTS_RENDERED_ABOVE = frozenset({"seeds", "split_matches"})
+
+# 사람이 읽는 문장이 아니라 식별자인 값. 고정폭으로 그려야 자릿수가 흔들리지 않는다.
+_RUN_FACTS_AS_CODE = frozenset(
+    {"primary_metric", "dataset_fingerprint", "results_uri", "contract_version"}
+)
 
 # 결과 탭의 지표 카드가 소유하는 키. 인스펙터에서 중복해 그리지 않는다.
 _METRICS_OWNED_BY_RESULTS_TAB = frozenset({"conditions", "paired"})
@@ -503,23 +516,38 @@ def _render_metrics(metrics: dict[str, object] | None) -> None:
         st.caption("아직 평가 전입니다.")
         return
 
+    rows: list[str] = []
     seeds = metrics.get("seeds")
     if isinstance(seeds, list) and seeds:
-        st.caption(f"시드 {len(seeds)}개 · {', '.join(str(seed) for seed in seeds)}")
+        rows.append(
+            fact_row("시드", ", ".join(str(seed) for seed in seeds), code=True)
+        )
 
     split_matches = metrics.get("split_matches")
     if split_matches is False:
-        st.caption("테스트셋 불일치 — delta를 변경 효과로 읽을 수 없습니다.")
+        rows.append(fact_row("테스트셋", "불일치 — delta를 효과로 읽을 수 없음"))
     elif split_matches is True:
-        st.caption("두 조건의 테스트셋 동일")
+        rows.append(fact_row("테스트셋", "두 조건 동일"))
 
     for key, value in metrics.items():
         if key in _RUN_FACTS_RENDERED_ABOVE or key in _METRICS_OWNED_BY_RESULTS_TAB:
             continue
         label = _RUN_FACT_LABELS.get(key, key)
         if isinstance(value, (dict, list)):
-            st.caption(f"{label}: 항목 {len(value)}개")
+            rows.append(fact_row(label, f"항목 {len(value)}개"))
         else:
-            st.caption(f"{label}: {_shorten(str(value), 44)}")
+            rows.append(
+                fact_row(
+                    label,
+                    _shorten(str(value), 36),
+                    code=key in _RUN_FACTS_AS_CODE,
+                )
+            )
 
-    st.caption("지표와 delta는 결과 탭에 있습니다.")
+    # 한 번에 그린다. 행마다 `st.markdown`을 부르면 Streamlit이 사이에 블록 간격을
+    # 넣어 표로 읽히지 않는다.
+    st.markdown(
+        "".join(rows)
+        + '<p class="fact-note">지표와 delta는 결과 탭에 있습니다.</p>',
+        unsafe_allow_html=True,
+    )
