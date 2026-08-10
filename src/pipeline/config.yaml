@@ -5,11 +5,20 @@ data:
   random_state: 42
 
 model:
+  # executor candidate는 이 config로 MLP를 선택한다. model_type이 없는 기존
+  # config는 train.py에서 LightGBM으로 해석되어 champion 경로와 호환된다.
+  model_type: MLP
   n_estimators: 200
   learning_rate: 0.05
   num_leaves: 31
   scale_pos_weight: auto
   random_state: 42
+  mlp:
+    hidden_layer_sizes: [32, 16]
+    epochs: 200
+    learning_rate: 0.001
+    batch_size: 256
+    l2: 0.0001
   # negative downsampling 비율 = negative를 남긴 비율(0<w≤1). 1.0이면 off(#300).
   # 0.1 = negative의 10%만 남김. sampling_rate < 1.0이면 scale_pos_weight는
   # 자동으로 1로 강제되고(이중 보정 방지), 출력 확률은 He 2014 보정으로 원분포

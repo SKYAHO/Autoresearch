@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""LightGBM CTR 모델 학습 스크립트.
+"""LightGBM 또는 NumPy MLP CTR 모델 학습 스크립트.
 
 [파이프라인] 학습 데이터셋(training_dataset.csv) → 모델 학습 구간을 담당한다.
-train/val/test 3-way 분할, negative downsampling, LightGBM 학습, 아티팩트
+train/val/test 3-way 분할, negative downsampling, config가 선택한 모델 학습, 아티팩트
 저장(joblib·ONNX·feature/categorical 목록·calibration), MLflow run 로깅,
 registered model 버전 생성이 이 모듈의 책임이다.
 
@@ -58,6 +58,7 @@ import mlflow  # noqa: E402
 import mlflow.onnx  # noqa: E402
 
 from src.models.lgbm_model import LGBMModel  # noqa: E402
+from src.models.mlp_model import MLPModel  # noqa: E402
 from src.models.downsampling import downsample_negatives  # noqa: E402
 from src.models.calibration import (  # noqa: E402
     CALIBRATION_PARAM_FILENAME,
@@ -328,6 +329,26 @@ def load_config(config_path):
         return yaml.safe_load(f)
 
 
+def resolve_model_type(config: dict) -> str:
+    """학습 config의 모델 종류를 정규화한다.
+
+    ``model_type``가 없는 기존 config는 LightGBM으로 해석한다. 이 하위 호환
+    기본값을 두면 운영 config와 기존 테스트용 config가 새 challenger 설정을
+    알지 못해도 기존 모델을 계속 선택한다.
+    """
+    model_config = config.get("model", {})
+    raw_type = model_config.get("model_type", model_config.get("type", "LightGBM"))
+    normalized = str(raw_type).strip().lower()
+    if normalized in {"lightgbm", "lgbm"}:
+        return "LightGBM"
+    if normalized in {"mlp", "numpy_mlp"}:
+        return "MLP"
+    raise ValueError(
+        f"지원하지 않는 model_type입니다: {raw_type!r}. "
+        "'LightGBM' 또는 'MLP'를 사용하세요."
+    )
+
+
 def collect_categorical_categories(
     X_train: pd.DataFrame, X_val: pd.DataFrame, categorical_columns: list
 ) -> dict:
@@ -432,6 +453,65 @@ def _log_held_out_metric_receipt(receipt: HeldOutMetricReceipt) -> None:
         )
 
 
+def _log_lgbm_deployment_package(
+    *,
+    model: LGBMModel,
+    feature_columns_path: str,
+    categorical_columns_path: str,
+    feature_count: int,
+    sampling_rate: float,
+) -> None:
+    """LightGBM 전용 ONNX 배포 패키지를 검증하고 MLflow에 기록한다."""
+    # 이 패키지는 기존 LightGBM 서빙 계약이 소유한다. MLP는 ONNX 변환기가
+    # 지원하는 입력 모델이 아니므로 이 함수 자체를 호출하지 않는다.
+    with TemporaryDirectory(prefix="ctr-model-package-") as package_root_text:
+        package_root = Path(package_root_text)
+        onnx_dir = package_root / "model_onnx"
+        package_features_dir = package_root / "features"
+        package_features_dir.mkdir(parents=True)
+        package_feature_columns = package_features_dir / "feature_columns.json"
+        package_categorical_columns = package_features_dir / "categorical_columns.json"
+        shutil.copy2(feature_columns_path, package_feature_columns)
+        shutil.copy2(categorical_columns_path, package_categorical_columns)
+        onnx_model = convert_lgbm_to_onnx(model, n_features=feature_count)
+        mlflow.onnx.save_model(onnx_model, path=str(onnx_dir))
+
+        if not (0.0 < sampling_rate <= 1.0):
+            raise ValueError("realized sampling_rate는 (0, 1] 범위여야 합니다")
+        calibration_path: Path | None
+        if sampling_rate < 1.0:
+            calibration_path = package_root / CALIBRATION_PARAM_FILENAME
+            DownsamplingCalibrator(sampling_rate).save(calibration_path)
+        else:
+            calibration_path = None
+
+        manifest = ModelPackageManifest.build(
+            sampling_rate=sampling_rate,
+            model_onnx=onnx_dir,
+            feature_columns=package_feature_columns,
+            categorical_columns=package_categorical_columns,
+            calibration=calibration_path,
+        )
+        manifest_path = package_root / "manifest.json"
+        save_manifest(manifest, manifest_path)
+        loaded_manifest = load_manifest(manifest_path)
+        verify_model_package(
+            loaded_manifest,
+            model_onnx=onnx_dir,
+            feature_columns=package_feature_columns,
+            categorical_columns=package_categorical_columns,
+            calibration=calibration_path,
+        )
+
+        log_artifacts(str(onnx_dir), artifact_path="model_onnx")
+        log_artifact(local_path=str(package_feature_columns), artifact_path="features")
+        log_artifact(local_path=str(package_categorical_columns), artifact_path="features")
+        if calibration_path is not None:
+            log_artifact(local_path=str(calibration_path), artifact_path="calibration")
+        log_artifact(local_path=str(manifest_path), artifact_path="manifest")
+        print("  [OK] ONNX + manifest 배포 패키지 검증·로깅 완료")
+
+
 def main(
     config_path: str = None,
     data_path: str = None,
@@ -456,7 +536,7 @@ def main(
     dataset_uri: str | None = None,
     min_coverage_days: int | None = None,
 ) -> TrainingOutcome:
-    """LightGBM 모델을 학습하고 MLflow에 기록한다.
+    """config가 선택한 CTR 모델을 학습하고 MLflow에 기록한다.
 
     ``dataset_uri``를 주면 조립을 다시 돌리지 않고 게시된 스냅샷(#530)을 내려받아
     바로 학습 입력으로 쓴다 — ``data_path``와는 함께 지정할 수 없다. 다운로드한
@@ -591,6 +671,10 @@ def _train_from_resolved_dataset(
     elif not os.path.isabs(config_path):
         config_path = os.path.join(project_root, config_path)
     config = load_config(config_path)
+    model_config = config.get("model", {})
+    model_type = resolve_model_type(config)
+    is_mlp = model_type == "MLP"
+    mlp_config = model_config.get("mlp", {}) if is_mlp else {}
 
     if data_path is None:
         data_path = os.path.join(project_root, config["data"]["path"])
@@ -674,7 +758,7 @@ def _train_from_resolved_dataset(
     experiment_id = get_or_create_experiment(namespace.experiment_name)
 
     print("=" * 70)
-    print("LightGBM 모델 훈련")
+    print(f"{model_type} 모델 훈련")
     print("=" * 70)
     if namespace.is_experiment:
         print(f"  [실험] experiment={namespace.experiment_name}")
@@ -850,7 +934,7 @@ def _train_from_resolved_dataset(
         print(f"  [OK] {len(categorical_columns)} categorical columns 설정")
 
         print("\n[Step 5] scale_pos_weight 계산...")
-        configured_spw = config["model"]["scale_pos_weight"]
+        configured_spw = model_config.get("scale_pos_weight", "auto")
         # downsampling과 scale_pos_weight를 둘 다 걸면 이중 보정이라 He 보정 공식의
         # 전제가 깨진다(#300 결정 6). downsampling이 켜지면 scale_pos_weight는
         # 1로 대체(강제)한다. 단 누군가 config에 명시적 숫자값(≠1, "auto" 아님)을
@@ -863,7 +947,18 @@ def _train_from_resolved_dataset(
         # 통일한다. realized로 판단하면 negative가 0/극소라 realized==1.0으로
         # 떨어지는 경우 이 강제를 건너뛰고 auto 경로로 빠져 neg_count=0 →
         # scale_pos_weight=0/pos=0(무효값)이 되는 divergence가 생긴다.
-        if nominal_sampling_rate < 1.0:
+        if is_mlp:
+            # MLP는 config의 고정값을 쓰지 않고 weighted BCE의 양성 가중치를
+            # 현재 학습 split에서 직접 계산한다. downsampling이 켜져도 그 결과
+            # split의 neg/pos가 곧 BCE 가중치가 된다.
+            neg_count = int((y_train == 0).sum())
+            pos_count = int((y_train == 1).sum())
+            scale_pos_weight = compute_auto_scale_pos_weight(y_train)
+            print(
+                "  [OK] MLP weighted BCE: "
+                f"neg={neg_count}, pos={pos_count}, ratio={scale_pos_weight:.2f}"
+            )
+        elif nominal_sampling_rate < 1.0:
             explicit_numeric = configured_spw != "auto" and float(configured_spw) != 1
             if explicit_numeric:
                 raise ValueError(
@@ -884,22 +979,79 @@ def _train_from_resolved_dataset(
             scale_pos_weight = configured_spw
             print(f"  [OK] 고정값: {scale_pos_weight}")
 
-        params = {
-            "model_type": "LightGBM",
-            "n_estimators": config["model"]["n_estimators"],
-            "learning_rate": config["model"]["learning_rate"],
-            "num_leaves": config["model"]["num_leaves"],
-            "scale_pos_weight": scale_pos_weight,
-            "split_seed": effective_seeds.split_seed,
-            "model_seed": effective_seeds.model_seed,
-            "sampler_seed": effective_seeds.sampler_seed,
-            # downsampling 실현 비율(#300). 1.0이면 downsampling 미적용. 서빙 보정은
-            # 이 값을 쓰므로 실현값(nominal 아님)을 기록한다.
-            "sampling_rate": realized_sampling_rate,
-            "train_size": len(train_df),
-            "val_size": len(val_df),
-            "test_size": len(test_df),
-        }
+        if is_mlp:
+            mlp_hidden_layer_sizes = tuple(
+                mlp_config.get(
+                    "hidden_layer_sizes",
+                    model_config.get(
+                        "hidden_layer_sizes",
+                        model_config.get("mlp_hidden_layer_sizes", (32, 16)),
+                    ),
+                )
+            )
+            mlp_epochs = int(
+                mlp_config.get(
+                    "epochs",
+                    model_config.get("epochs", model_config.get("mlp_epochs", 200)),
+                )
+            )
+            mlp_learning_rate = float(
+                mlp_config.get(
+                    "learning_rate",
+                    model_config.get(
+                        "mlp_learning_rate",
+                        0.001 if "mlp" in model_config else model_config.get("learning_rate", 0.001),
+                    ),
+                )
+            )
+            mlp_batch_size = int(
+                mlp_config.get(
+                    "batch_size",
+                    model_config.get("batch_size", model_config.get("mlp_batch_size", 256)),
+                )
+            )
+            mlp_l2 = float(
+                mlp_config.get(
+                    "l2", model_config.get("l2", model_config.get("mlp_l2", 1e-4))
+                )
+            )
+            params = {
+                "model_type": model_type,
+                "hidden_layer_sizes": ",".join(
+                    str(size) for size in mlp_hidden_layer_sizes
+                ),
+                "epochs": mlp_epochs,
+                "learning_rate": mlp_learning_rate,
+                "batch_size": mlp_batch_size,
+                "l2": mlp_l2,
+                "scale_pos_weight": scale_pos_weight,
+                "split_seed": effective_seeds.split_seed,
+                "model_seed": effective_seeds.model_seed,
+                "sampler_seed": effective_seeds.sampler_seed,
+                # downsampling 실현 비율(#300). 1.0이면 downsampling 미적용. 서빙 보정은
+                # 이 값을 쓰므로 실현값(nominal 아님)을 기록한다.
+                "sampling_rate": realized_sampling_rate,
+                "train_size": len(train_df),
+                "val_size": len(val_df),
+                "test_size": len(test_df),
+            }
+        else:
+            params = {
+                "model_type": model_type,
+                "n_estimators": model_config["n_estimators"],
+                "learning_rate": model_config["learning_rate"],
+                "num_leaves": model_config["num_leaves"],
+                "scale_pos_weight": scale_pos_weight,
+                "split_seed": effective_seeds.split_seed,
+                "model_seed": effective_seeds.model_seed,
+                "sampler_seed": effective_seeds.sampler_seed,
+                # downsampling 실현 비율(#300). 1.0이면 downsampling 미적용. 서빙 보정은
+                # 이 값을 쓰므로 실현값(nominal 아님)을 기록한다.
+                "sampling_rate": realized_sampling_rate,
+                "train_size": len(train_df),
+                "val_size": len(val_df),
+                "test_size": len(test_df),
+            }
         if legacy_seed_path:
             params["random_state"] = random_state
         if extra_params:
@@ -917,14 +1069,25 @@ def _train_from_resolved_dataset(
                 params["experiment_features"] = ",".join(extra_features)
         log_parameters(params)
 
-        print("\n[Step 6] LightGBM 모델 훈련...")
-        model = LGBMModel(
-            scale_pos_weight=scale_pos_weight,
-            n_estimators=config["model"]["n_estimators"],
-            learning_rate=config["model"]["learning_rate"],
-            num_leaves=config["model"]["num_leaves"],
-            random_state=effective_seeds.model_seed,
-        )
+        print(f"\n[Step 6] {model_type} 모델 훈련...")
+        if is_mlp:
+            model = MLPModel(
+                scale_pos_weight=scale_pos_weight,
+                hidden_layer_sizes=mlp_hidden_layer_sizes,
+                epochs=mlp_epochs,
+                learning_rate=mlp_learning_rate,
+                batch_size=mlp_batch_size,
+                l2=mlp_l2,
+                random_state=effective_seeds.model_seed,
+            )
+        else:
+            model = LGBMModel(
+                scale_pos_weight=scale_pos_weight,
+                n_estimators=model_config["n_estimators"],
+                learning_rate=model_config["learning_rate"],
+                num_leaves=model_config["num_leaves"],
+                random_state=effective_seeds.model_seed,
+            )
         model.fit(X_train, y_train, categorical_features=categorical_columns)
         print("  [OK] 훈련 완료")
 
@@ -1020,61 +1183,26 @@ def _train_from_resolved_dataset(
             # 것은 후속 단계(#493 3단계)다.
             _log_held_out_metric_receipt(held_out_metric_receipt)
 
-        # [Step 8b] 배포 패키지는 프로세스 전용 staging에서 완성·자체 검증한 뒤 기록한다.
-        # 실패를 삼키지 않는다. 불완전한 run은 FAILED로 남지만 registered model version은
-        # 아래 단계까지 도달하지 않아 생성되지 않는다(#302).
-        with TemporaryDirectory(prefix="ctr-model-package-") as package_root_text:
-            package_root = Path(package_root_text)
-            onnx_dir = package_root / "model_onnx"
-            package_features_dir = package_root / "features"
-            package_features_dir.mkdir(parents=True)
-            package_feature_columns = package_features_dir / "feature_columns.json"
-            package_categorical_columns = package_features_dir / "categorical_columns.json"
-            shutil.copy2(feature_columns_path, package_feature_columns)
-            shutil.copy2(categorical_columns_path, package_categorical_columns)
-            onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
-            mlflow.onnx.save_model(onnx_model, path=str(onnx_dir))
-
-            if not (0.0 < realized_sampling_rate <= 1.0):
-                raise ValueError("realized sampling_rate는 (0, 1] 범위여야 합니다")
-            calibration_path: Path | None
-            if realized_sampling_rate < 1.0:
-                calibration_path = package_root / CALIBRATION_PARAM_FILENAME
-                DownsamplingCalibrator(realized_sampling_rate).save(calibration_path)
-            else:
-                calibration_path = None
-
-            manifest = ModelPackageManifest.build(
+        # [Step 8b] 기존 LightGBM만 ONNX 배포 패키지를 만든다. MLP challenger는
+        # 위에서 저장한 joblib 모델이 evaluate-model의 predict_proba 입력이며,
+        # LightGBM 전용 변환기를 호출하지 않는다.
+        if is_mlp:
+            print("  [OK] MLP joblib 모델 저장 완료 — ONNX 변환 생략")
+        else:
+            _log_lgbm_deployment_package(
+                model=model,
+                feature_columns_path=feature_columns_path,
+                categorical_columns_path=categorical_columns_path,
+                feature_count=len(feature_columns),
                 sampling_rate=realized_sampling_rate,
-                model_onnx=onnx_dir,
-                feature_columns=package_feature_columns,
-                categorical_columns=package_categorical_columns,
-                calibration=calibration_path,
             )
-            manifest_path = package_root / "manifest.json"
-            save_manifest(manifest, manifest_path)
-            loaded_manifest = load_manifest(manifest_path)
-            verify_model_package(
-                loaded_manifest,
-                model_onnx=onnx_dir,
-                feature_columns=package_feature_columns,
-                categorical_columns=package_categorical_columns,
-                calibration=calibration_path,
-            )
-
-            log_artifacts(str(onnx_dir), artifact_path="model_onnx")
-            log_artifact(local_path=str(package_feature_columns), artifact_path="features")
-            log_artifact(local_path=str(package_categorical_columns), artifact_path="features")
-            if calibration_path is not None:
-                log_artifact(local_path=str(calibration_path), artifact_path="calibration")
-            log_artifact(local_path=str(manifest_path), artifact_path="manifest")
-            print("  [OK] ONNX + manifest 배포 패키지 검증·로깅 완료")
 
         print("\n[Step 9] Model Registry 등록...")
         # 실험이면 prod와 다른 registry 이름으로 등록된다(#406). 승격 게이트는
         # prod 이름만 조회하므로 실험 버전이 champion 후보로 섞이지 않는다.
         model_name = namespace.registry_model_name
-        model_uri = f"runs:/{run.info.run_id}/model_onnx"
+        model_artifact_name = "model" if is_mlp else "model_onnx"
+        model_uri = f"runs:/{run.info.run_id}/{model_artifact_name}"
         # sampling_rate를 모델 버전 tag로도 기록한다(#300 결정 7). 서빙이 alias로
         # 모델 버전을 로드하는 순간 tag에서 직접 읽어(run→param 간접 조회 없이)
         # 로드 시 1회 캐싱한다. 승격 게이트(set_model_alias)도 이 tag를 본다.
