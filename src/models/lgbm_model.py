@@ -29,7 +29,7 @@ class LGBMModel(CTRModel):
         self,
         scale_pos_weight: float,
         n_estimators: int = 200,
-        learning_rate: float = 0.05,
+        learning_rate: float = 0.03,
         num_leaves: int = 31,
         random_state: int = 42,
     ):
@@ -130,7 +130,7 @@ class LGBMModel(CTRModel):
         instance = cls(
             scale_pos_weight=params.get("scale_pos_weight", 1),
             n_estimators=params.get("n_estimators", 200),
-            learning_rate=params.get("learning_rate", 0.05),
+            learning_rate=params.get("learning_rate", 0.03),
             num_leaves=params.get("num_leaves", 31),
             random_state=params.get("random_state", 42),
         )
