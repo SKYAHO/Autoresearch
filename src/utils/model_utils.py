@@ -2,9 +2,11 @@
 
 import json
 import os
+from collections.abc import Sequence
 from typing import Any
 
 import joblib
+import numpy as np
 
 
 def convert_lgbm_to_onnx(model, n_features: int) -> Any:
@@ -41,6 +43,213 @@ def convert_lgbm_to_onnx(model, n_features: int) -> Any:
         raise ValueError("모델이 학습되지 않았습니다.")
     initial_type = [("input", FloatTensorType([None, n_features]))]
     return convert_lightgbm(model.model, initial_types=initial_type, zipmap=False)
+
+
+def convert_mlp_to_onnx(
+    model,
+    feature_columns: Sequence[str],
+    categorical_categories: dict[str, Sequence[object]] | None = None,
+) -> Any:
+    """학습된 ``MLPModel``을 ONNX로 변환한다.
+
+    LightGBM 변환기(``convert_lgbm_to_onnx``)는 트리 전용이므로 MLP 경로에서
+    호출하지 않는다. 이 변환기는 MLP가 joblib 모델에서 수행하는 표준화·one-hot
+    전처리와 dense layer를 하나의 그래프로 직렬화한다. ONNX 입력은 기존 서빙
+    어댑터가 제공하는 동일한 raw feature matrix다 — categorical 값은 학습
+    vocabulary의 category code, vocabulary 밖 값은 ``-1``로 들어온다.
+
+    Args:
+        model: 학습된 ``src.models.mlp_model.MLPModel``.
+        feature_columns: 학습 피처의 원래 순서.
+        categorical_categories: 서빙 metadata가 사용하는 외부 category code 순서.
+            생략하면 MLP 내부 vocabulary 순서를 외부 code 순서로 사용한다.
+
+    Returns:
+        ``onnx.ModelProto``. 학습 패키지 staging에서 MLflow가 저장한다.
+    """
+    from onnx import TensorProto, checker, helper, numpy_helper
+
+    if getattr(model, "weights_", None) is None or getattr(model, "biases_", None) is None:
+        raise ValueError("모델이 학습되지 않았습니다.")
+    if getattr(model, "feature_columns_", None) != tuple(feature_columns):
+        raise ValueError("MLP 모델의 feature columns가 변환 입력과 다릅니다")
+
+    feature_columns = tuple(feature_columns)
+    categorical_features = tuple(getattr(model, "categorical_features_", ()))
+    vocabularies = getattr(model, "category_vocabularies_", {})
+    means = getattr(model, "numeric_means_", {})
+    standard_deviations = getattr(model, "numeric_stds_", {})
+    external_categories = categorical_categories or {
+        column: vocabulary for column, vocabulary in vocabularies.items()
+    }
+
+    nodes = []
+    initializers = []
+    transformed_blocks: list[str] = []
+    input_name = "input"
+    initializer_counter = 0
+
+    def add_initializer(value: np.ndarray, prefix: str) -> str:
+        nonlocal initializer_counter
+        name = f"{prefix}_{initializer_counter}"
+        initializer_counter += 1
+        initializers.append(numpy_helper.from_array(np.asarray(value), name=name))
+        return name
+
+    category_key = getattr(model, "_category_key", None)
+
+    def same_category(left: object, right: object) -> bool:
+        if category_key is not None:
+            return category_key(left) == category_key(right)
+        return type(left) is type(right) and left == right
+
+    for feature_index, column in enumerate(feature_columns):
+        raw_column = f"raw_{feature_index}"
+        nodes.append(
+            helper.make_node(
+                "Gather",
+                [
+                    input_name,
+                    add_initializer(
+                        np.asarray([feature_index], dtype=np.int64),
+                        f"feature_index_{feature_index}",
+                    ),
+                ],
+                [raw_column],
+                axis=1,
+            )
+        )
+        if column in categorical_features:
+            vocabulary = tuple(vocabularies[column])
+            external = tuple(external_categories.get(column, vocabulary))
+            known_indicators: list[str] = []
+            for category_index, category in enumerate(vocabulary):
+                external_index = next(
+                    (
+                        index
+                        for index, external_value in enumerate(external)
+                        if same_category(category, external_value)
+                    ),
+                    None,
+                )
+                indicator = f"category_{feature_index}_{category_index}"
+                if external_index is None:
+                    zero = add_initializer(
+                        np.asarray([0.0], dtype=np.float32), f"category_zero_{feature_index}"
+                    )
+                    nodes.append(helper.make_node("Mul", [raw_column, zero], [indicator]))
+                else:
+                    code = add_initializer(
+                        np.asarray([external_index], dtype=np.float32),
+                        f"category_code_{feature_index}_{category_index}",
+                    )
+                    equal = f"category_equal_{feature_index}_{category_index}"
+                    nodes.append(helper.make_node("Equal", [raw_column, code], [equal]))
+                    nodes.append(
+                        helper.make_node(
+                            "Cast", [equal], [indicator], to=TensorProto.FLOAT
+                        )
+                    )
+                known_indicators.append(indicator)
+
+            known_sum = f"category_known_sum_{feature_index}"
+            if not known_indicators:
+                zero = add_initializer(
+                    np.asarray([0.0], dtype=np.float32), f"category_zero_{feature_index}"
+                )
+                zero_indicator = f"category_zero_indicator_{feature_index}"
+                nodes.append(
+                    helper.make_node("Mul", [raw_column, zero], [zero_indicator])
+                )
+                known_indicators.append(zero_indicator)
+            axes = add_initializer(
+                np.asarray([1], dtype=np.int64), f"category_axes_{feature_index}"
+            )
+            known_matrix = f"category_known_matrix_{feature_index}"
+            nodes.append(
+                helper.make_node(
+                    "Concat", known_indicators, [known_matrix], axis=1
+                )
+            )
+            nodes.append(
+                helper.make_node(
+                    "ReduceSum", [known_matrix, axes], [known_sum], keepdims=1
+                )
+            )
+            one = add_initializer(
+                np.asarray([1.0], dtype=np.float32), f"category_one_{feature_index}"
+            )
+            unknown = f"category_unknown_{feature_index}"
+            nodes.append(helper.make_node("Sub", [one, known_sum], [unknown]))
+            block = f"categorical_block_{feature_index}"
+            nodes.append(
+                helper.make_node(
+                    "Concat", [*known_indicators, unknown], [block], axis=1
+                )
+            )
+        else:
+            mean = add_initializer(
+                np.asarray([means[column]], dtype=np.float32), f"numeric_mean_{feature_index}"
+            )
+            standard_deviation = add_initializer(
+                np.asarray([standard_deviations[column]], dtype=np.float32),
+                f"numeric_std_{feature_index}",
+            )
+            centred = f"numeric_centred_{feature_index}"
+            nodes.append(helper.make_node("Sub", [raw_column, mean], [centred]))
+            block = f"numeric_block_{feature_index}"
+            nodes.append(
+                helper.make_node("Div", [centred, standard_deviation], [block])
+            )
+        transformed_blocks.append(block)
+
+    transformed = "transformed_features"
+    nodes.append(helper.make_node("Concat", transformed_blocks, [transformed], axis=1))
+    activation = transformed
+    for layer, (weight, bias) in enumerate(
+        zip(model.weights_, model.biases_, strict=True)
+    ):
+        weight_name = add_initializer(
+            np.asarray(weight.T, dtype=np.float32), f"dense_weight_{layer}"
+        )
+        bias_name = add_initializer(
+            np.asarray(bias, dtype=np.float32), f"dense_bias_{layer}"
+        )
+        product = f"dense_product_{layer}"
+        affine = f"dense_affine_{layer}"
+        nodes.append(helper.make_node("MatMul", [activation, weight_name], [product]))
+        nodes.append(helper.make_node("Add", [product, bias_name], [affine]))
+        if layer < len(model.weights_) - 1:
+            activation = f"dense_relu_{layer}"
+            nodes.append(helper.make_node("Relu", [affine], [activation]))
+        else:
+            activation = f"dense_sigmoid_{layer}"
+            nodes.append(helper.make_node("Sigmoid", [affine], [activation]))
+
+    one = add_initializer(np.asarray([1.0], dtype=np.float32), "probability_one")
+    negative_probability = "negative_probability"
+    nodes.append(helper.make_node("Sub", [one, activation], [negative_probability]))
+    probabilities = "probabilities"
+    nodes.append(
+        helper.make_node(
+            "Concat", [negative_probability, activation], [probabilities], axis=1
+        )
+    )
+
+    graph = helper.make_graph(
+        nodes,
+        "ctr_mlp",
+        [helper.make_tensor_value_info(input_name, TensorProto.FLOAT, [None, len(feature_columns)])],
+        [helper.make_tensor_value_info(probabilities, TensorProto.FLOAT, [None, 2])],
+        initializer=initializers,
+    )
+    onnx_model = helper.make_model(
+        graph,
+        producer_name="autoresearch-ctr-mlp",
+        opset_imports=[helper.make_opsetid("", 13)],
+    )
+    checker.check_model(onnx_model)
+    return onnx_model
 
 
 def save_model(model, path: str) -> None:

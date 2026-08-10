@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""LightGBM CTR 모델 학습 스크립트.
+"""CTR 모델 학습 스크립트.
 
 [파이프라인] 학습 데이터셋(training_dataset.csv) → 모델 학습 구간을 담당한다.
-train/val/test 3-way 분할, negative downsampling, LightGBM 학습, 아티팩트
+train/val/test 3-way 분할, negative downsampling, 모델 학습, 아티팩트
 저장(joblib·ONNX·feature/categorical 목록·calibration), MLflow run 로깅,
 registered model 버전 생성이 이 모듈의 책임이다.
 
@@ -58,6 +58,7 @@ import mlflow  # noqa: E402
 import mlflow.onnx  # noqa: E402
 
 from src.models.lgbm_model import LGBMModel  # noqa: E402
+from src.models.mlp_model import MLPModel  # noqa: E402
 from src.models.downsampling import downsample_negatives  # noqa: E402
 from src.models.calibration import (  # noqa: E402
     CALIBRATION_PARAM_FILENAME,
@@ -70,6 +71,7 @@ from src.features.model_contract import (  # noqa: E402
 )
 from src.utils.model_utils import (  # noqa: E402
     convert_lgbm_to_onnx,
+    convert_mlp_to_onnx,
     save_categorical_columns,
     save_feature_columns,
 )
@@ -326,6 +328,33 @@ def load_config(config_path):
     """config.yaml 로드."""
     with open(config_path, "r") as f:
         return yaml.safe_load(f)
+
+
+def resolve_model_type(config: dict) -> str:
+    """설정에서 학습 모델 종류를 해석한다.
+
+    ``type``을 정식 키로 사용하되, 실험별 임시 config에서 흔히 쓰는
+    ``model_type``도 받아들인다. 키가 없으면 기존 LightGBM 동작을 유지한다.
+    """
+    model_config = config.get("model") or {}
+    raw_type = model_config.get(
+        "type",
+        model_config.get("model_type", config.get("model_type", "lightgbm")),
+    )
+    normalized = str(raw_type).strip().lower().replace("_", "-")
+    aliases = {
+        "lightgbm": "lightgbm",
+        "lgbm": "lightgbm",
+        "light-gbm": "lightgbm",
+        "mlp": "mlp",
+    }
+    try:
+        return aliases[normalized]
+    except KeyError:
+        raise ValueError(
+            f"지원하지 않는 model type입니다: {raw_type!r}. "
+            "사용 가능 값은 'lightgbm' 또는 'mlp'입니다."
+        ) from None
 
 
 def collect_categorical_categories(
@@ -674,7 +703,7 @@ def _train_from_resolved_dataset(
     experiment_id = get_or_create_experiment(namespace.experiment_name)
 
     print("=" * 70)
-    print("LightGBM 모델 훈련")
+    print("CTR 모델 훈련")
     print("=" * 70)
     if namespace.is_experiment:
         print(f"  [실험] experiment={namespace.experiment_name}")
@@ -849,57 +878,115 @@ def _train_from_resolved_dataset(
         )
         print(f"  [OK] {len(categorical_columns)} categorical columns 설정")
 
-        print("\n[Step 5] scale_pos_weight 계산...")
-        configured_spw = config["model"]["scale_pos_weight"]
-        # downsampling과 scale_pos_weight를 둘 다 걸면 이중 보정이라 He 보정 공식의
-        # 전제가 깨진다(#300 결정 6). downsampling이 켜지면 scale_pos_weight는
-        # 1로 대체(강제)한다. 단 누군가 config에 명시적 숫자값(≠1, "auto" 아님)을
-        # downsampling과 함께 세팅했다면 의도 충돌이므로 fail-closed로 막는다.
-        # 이 강제는 auto 계산 이전에 수행한다 — 순서가 뒤바뀌면 auto가 계산한 큰
-        # 값이 강제(=1)를 덮어써 이중 보정이 그대로 남는다.
-        # LightGBM엔 is_unbalance라는 또 다른 자동 밸런싱 옵션이 있으나 현재
-        # config/lgbm_model.py 어디에도 없다(비활성). 추가되면 여기 가드를 확장한다.
-        # "downsampling 모드" 판단은 Step 3b 활성화와 동일하게 nominal 기준으로
-        # 통일한다. realized로 판단하면 negative가 0/극소라 realized==1.0으로
-        # 떨어지는 경우 이 강제를 건너뛰고 auto 경로로 빠져 neg_count=0 →
-        # scale_pos_weight=0/pos=0(무효값)이 되는 divergence가 생긴다.
-        if nominal_sampling_rate < 1.0:
-            explicit_numeric = configured_spw != "auto" and float(configured_spw) != 1
-            if explicit_numeric:
-                raise ValueError(
-                    "downsampling(sampling_rate<1.0)과 scale_pos_weight="
-                    f"{configured_spw}를 함께 세팅했습니다 — 이중 보정입니다. "
-                    "downsampling이 scale_pos_weight를 대체하므로 둘 중 하나만 쓰세요"
-                    "(#300 결정 6)."
+        model_type = resolve_model_type(config)
+        model_config = config["model"]
+        print(f"\n[Step 5] {model_type} class weight 설정...")
+        params: dict[str, object]
+        if model_type == "lightgbm":
+            configured_spw = model_config.get("scale_pos_weight", "auto")
+            # downsampling과 scale_pos_weight를 둘 다 걸면 이중 보정이라 He 보정 공식의
+            # 전제가 깨진다(#300 결정 6). 이 정책은 기존 LightGBM 경로에만 적용한다.
+            if nominal_sampling_rate < 1.0:
+                explicit_numeric = (
+                    configured_spw != "auto" and float(configured_spw) != 1
                 )
-            scale_pos_weight = 1
-            print("  [OK] downsampling 활성 → scale_pos_weight=1 강제(이중 보정 방지)")
-        elif configured_spw == "auto":
-            # 0 나눗셈(양성 0건)은 compute_auto_scale_pos_weight가 fail-closed로 막는다(#421).
-            neg_count = int((y_train == 0).sum())
-            pos_count = int((y_train == 1).sum())
-            scale_pos_weight = compute_auto_scale_pos_weight(y_train)
-            print(f"  [OK] auto 계산: neg={neg_count}, pos={pos_count}, ratio={scale_pos_weight:.2f}")
-        else:
-            scale_pos_weight = configured_spw
-            print(f"  [OK] 고정값: {scale_pos_weight}")
+                if explicit_numeric:
+                    raise ValueError(
+                        "downsampling(sampling_rate<1.0)과 scale_pos_weight="
+                        f"{configured_spw}를 함께 세팅했습니다 — 이중 보정입니다. "
+                        "downsampling이 scale_pos_weight를 대체하므로 둘 중 하나만 쓰세요"
+                        "(#300 결정 6)."
+                    )
+                scale_pos_weight = 1
+                print("  [OK] downsampling 활성 → scale_pos_weight=1 강제(이중 보정 방지)")
+            elif configured_spw == "auto":
+                neg_count = int((y_train == 0).sum())
+                pos_count = int((y_train == 1).sum())
+                scale_pos_weight = compute_auto_scale_pos_weight(y_train)
+                print(
+                    f"  [OK] auto 계산: neg={neg_count}, pos={pos_count}, "
+                    f"ratio={scale_pos_weight:.2f}"
+                )
+            else:
+                scale_pos_weight = configured_spw
+                print(f"  [OK] 고정값: {scale_pos_weight}")
 
-        params = {
-            "model_type": "LightGBM",
-            "n_estimators": config["model"]["n_estimators"],
-            "learning_rate": config["model"]["learning_rate"],
-            "num_leaves": config["model"]["num_leaves"],
-            "scale_pos_weight": scale_pos_weight,
-            "split_seed": effective_seeds.split_seed,
-            "model_seed": effective_seeds.model_seed,
-            "sampler_seed": effective_seeds.sampler_seed,
-            # downsampling 실현 비율(#300). 1.0이면 downsampling 미적용. 서빙 보정은
-            # 이 값을 쓰므로 실현값(nominal 아님)을 기록한다.
-            "sampling_rate": realized_sampling_rate,
-            "train_size": len(train_df),
-            "val_size": len(val_df),
-            "test_size": len(test_df),
-        }
+            params = {
+                "model_type": "LightGBM",
+                "n_estimators": model_config["n_estimators"],
+                "learning_rate": model_config["learning_rate"],
+                "num_leaves": model_config["num_leaves"],
+                "scale_pos_weight": scale_pos_weight,
+            }
+            model = LGBMModel(
+                scale_pos_weight=scale_pos_weight,
+                n_estimators=model_config["n_estimators"],
+                learning_rate=model_config["learning_rate"],
+                num_leaves=model_config["num_leaves"],
+                random_state=effective_seeds.model_seed,
+            )
+        else:
+            positive_count = int((y_train == 1).sum())
+            negative_count = int((y_train == 0).sum())
+            if positive_count == 0 or negative_count == 0:
+                raise ValueError("MLP weighted BCE를 위해 양성·음성 라벨이 모두 필요합니다")
+            positive_weight = negative_count / positive_count
+            mlp_config = model_config.get("mlp") or {}
+            hidden_dims = mlp_config.get(
+                "hidden_dims",
+                mlp_config.get(
+                    "hidden_layers",
+                    model_config.get("hidden_dims", model_config.get("hidden_layers", (32, 16))),
+                ),
+            )
+            epochs = mlp_config.get("epochs", model_config.get("epochs", 200))
+            learning_rate = mlp_config.get(
+                "learning_rate",
+                model_config.get("mlp_learning_rate", model_config.get("learning_rate", 0.001)),
+            )
+            batch_size = mlp_config.get("batch_size", model_config.get("batch_size", 256))
+            l2 = mlp_config.get(
+                "l2",
+                mlp_config.get(
+                    "weight_decay",
+                    model_config.get("weight_decay", model_config.get("l2", 1e-4)),
+                ),
+            )
+            params = {
+                "model_type": "MLP",
+                "hidden_layers": ",".join(str(width) for width in hidden_dims),
+                "epochs": epochs,
+                "learning_rate": learning_rate,
+                "batch_size": batch_size,
+                "l2": l2,
+                "positive_weight": positive_weight,
+            }
+            print(
+                f"  [OK] weighted BCE: neg={negative_count}, pos={positive_count}, "
+                f"positive_weight={positive_weight:.4f}"
+            )
+            model = MLPModel(
+                hidden_dims=hidden_dims,
+                epochs=epochs,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                l2=l2,
+                random_state=effective_seeds.model_seed,
+            )
+
+        params.update(
+            {
+                "split_seed": effective_seeds.split_seed,
+                "model_seed": effective_seeds.model_seed,
+                "sampler_seed": effective_seeds.sampler_seed,
+                # downsampling 실현 비율(#300). 1.0이면 downsampling 미적용. 서빙 보정은
+                # 이 값을 쓰므로 실현값(nominal 아님)을 기록한다.
+                "sampling_rate": realized_sampling_rate,
+                "train_size": len(train_df),
+                "val_size": len(val_df),
+                "test_size": len(test_df),
+            }
+        )
         if legacy_seed_path:
             params["random_state"] = random_state
         if extra_params:
@@ -917,14 +1004,7 @@ def _train_from_resolved_dataset(
                 params["experiment_features"] = ",".join(extra_features)
         log_parameters(params)
 
-        print("\n[Step 6] LightGBM 모델 훈련...")
-        model = LGBMModel(
-            scale_pos_weight=scale_pos_weight,
-            n_estimators=config["model"]["n_estimators"],
-            learning_rate=config["model"]["learning_rate"],
-            num_leaves=config["model"]["num_leaves"],
-            random_state=effective_seeds.model_seed,
-        )
+        print(f"\n[Step 6] {model_type} 모델 훈련...")
         model.fit(X_train, y_train, categorical_features=categorical_columns)
         print("  [OK] 훈련 완료")
 
@@ -1032,7 +1112,17 @@ def _train_from_resolved_dataset(
             package_categorical_columns = package_features_dir / "categorical_columns.json"
             shutil.copy2(feature_columns_path, package_feature_columns)
             shutil.copy2(categorical_columns_path, package_categorical_columns)
-            onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
+            if model_type == "lightgbm":
+                # LightGBM 트리 parser는 MLP 후보에 적용하지 않는다. 각 모델이 자기
+                # 전처리·변환기를 소유하게 해 non-LightGBM challenger도 같은 패키지
+                # 계약으로 게시할 수 있다.
+                onnx_model = convert_lgbm_to_onnx(model, n_features=len(feature_columns))
+            else:
+                onnx_model = convert_mlp_to_onnx(
+                    model,
+                    feature_columns,
+                    categorical_categories=categories_by_column,
+                )
             mlflow.onnx.save_model(onnx_model, path=str(onnx_dir))
 
             if not (0.0 < realized_sampling_rate <= 1.0):
@@ -1079,6 +1169,7 @@ def _train_from_resolved_dataset(
         # 모델 버전을 로드하는 순간 tag에서 직접 읽어(run→param 간접 조회 없이)
         # 로드 시 1회 캐싱한다. 승격 게이트(set_model_alias)도 이 tag를 본다.
         registry_tags = {
+            "model_type": model_type,
             "val_roc_auc": f"{val_roc_auc:.4f}",
             "sampling_rate": f"{realized_sampling_rate}",
         }

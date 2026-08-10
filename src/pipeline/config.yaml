@@ -5,11 +5,20 @@ data:
   random_state: 42
 
 model:
+  # Candidate model selection. A config without this key keeps the historical
+  # LightGBM path, while the experiment snapshot uses the NumPy MLP below.
+  type: mlp
   n_estimators: 200
   learning_rate: 0.05
   num_leaves: 31
   scale_pos_weight: auto
   random_state: 42
+  mlp:
+    hidden_dims: [32, 16]
+    epochs: 200
+    learning_rate: 0.001
+    batch_size: 256
+    l2: 0.0001
   # negative downsampling 비율 = negative를 남긴 비율(0<w≤1). 1.0이면 off(#300).
   # 0.1 = negative의 10%만 남김. sampling_rate < 1.0이면 scale_pos_weight는
   # 자동으로 1로 강제되고(이중 보정 방지), 출력 확률은 He 2014 보정으로 원분포
