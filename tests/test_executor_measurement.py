@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 import sys
 
@@ -71,7 +72,7 @@ def _stub_evaluation(
     """
     calls: list[list[str]] = []
 
-    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> None:
+    def _fake_run(argv: list[str], *, cwd: Path, timeout_seconds: int, stage: str) -> None:
         calls.append(argv)
         destination = Path(argv[argv.index("--metrics-output") + 1])
         seed = int(destination.stem.rsplit("_", 1)[1])
@@ -373,3 +374,92 @@ def test_metric_snapshot_stays_far_below_the_api_size_limit(
 
     encoded = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
     assert len(encoded.encode("utf-8")) < 2048
+
+
+def test_failed_evaluation_logs_its_stderr_and_call_site(
+    workspace: Path, output_root: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """채점 실패의 본문과 어느 조건·seed였는지가 로그에 남는다(#636).
+
+    채점은 조건 2 × seed 3 = 6회 돈다. 호출 지점 표시가 없으면 여섯 경우가
+    `evaluation_command_failed` 하나로 뭉쳐, 어느 조건의 어느 seed가 죽었는지 알 수 없다.
+    """
+    _write_training_artifacts(output_root, TrainingStage.BASELINE)
+    config = MeasurementInput(
+        workspace=workspace,
+        output_root=output_root,
+        seeds=SEEDS,
+        timeout_seconds=60,
+    )
+
+    with caplog.at_level(
+        logging.ERROR, logger="agent_orchestration.executor.measurement"
+    ):
+        with pytest.raises(MeasurementError, match="evaluation_command_failed"):
+            evaluate_condition(config, TrainingStage.BASELINE)
+
+    assert "No module named 'src'" in caplog.text
+    assert f"stage=evaluate_model:baseline:{SEEDS[0]}" in caplog.text
+
+
+def test_timed_out_evaluation_logs_its_partial_output(
+    workspace: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """채점이 timeout으로 죽어도 부분 출력이 남는다(#636).
+
+    `text=True`를 줘도 `TimeoutExpired`가 싣는 출력은 bytes라 그대로 찍으면 읽을 수 없다.
+    """
+    with caplog.at_level(
+        logging.ERROR, logger="agent_orchestration.executor.measurement"
+    ):
+        with pytest.raises(MeasurementError, match="evaluation_timeout"):
+            measurement_module._run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys, time; sys.stderr.write('PARTIAL-MARKER\\n'); "
+                    "sys.stderr.flush(); time.sleep(30)",
+                ],
+                cwd=workspace,
+                timeout_seconds=1,
+                stage="evaluate_model:baseline:42",
+            )
+
+    assert "PARTIAL-MARKER" in caplog.text
+    assert "stage=evaluate_model:baseline:42" in caplog.text
+    assert "b'" not in caplog.text
+
+
+def test_raised_failure_survives_the_phase2_redaction_filter(workspace: Path) -> None:
+    """**실제로 던져진** 채점 예외가 `phase2._safe_failure_reason`을 통과해야 한다(#636)."""
+    # phase2는 GitHub App·GCS 의존성을 끌어오므로 이 테스트 안에서만 import한다.
+    from agent_orchestration.executor import phase2
+
+    with pytest.raises(MeasurementError) as raised:
+        measurement_module._run(
+            [sys.executable, "-c", "import sys; sys.stderr.write('detail\\n'); sys.exit(1)"],
+            cwd=workspace,
+            timeout_seconds=30,
+            stage="evaluate_model:baseline:42",
+        )
+
+    assert phase2._safe_failure_reason(raised.value) == "evaluation_command_failed"
+
+
+def test_spawn_failure_logs_why_the_process_could_not_start(
+    workspace: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """채점 프로세스가 아예 못 떠도 그 사유가 로그에 남는다(#636)."""
+    with caplog.at_level(
+        logging.ERROR, logger="agent_orchestration.executor.measurement"
+    ):
+        with pytest.raises(MeasurementError, match="evaluation_spawn_failed"):
+            measurement_module._run(
+                ["definitely-not-a-real-command-636"],
+                cwd=workspace,
+                timeout_seconds=30,
+                stage="evaluate_model:baseline:42",
+            )
+
+    assert "stage=evaluate_model:baseline:42" in caplog.text
+    assert "error_type=FileNotFoundError" in caplog.text

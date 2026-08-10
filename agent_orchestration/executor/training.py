@@ -7,6 +7,8 @@ commit·push를 마친 뒤까지 — 같은 Pod의 workspace를 공유하며 두
 
 [기능] workspace의 `src.cli` 를 subprocess로 호출해 seed별 학습을 반복하고, 의존성이
 바뀐 경우에만 `uv sync`를 수행하며, 두 조건의 실행 순서를 state marker로 강제한다.
+subprocess가 실패하거나 timeout되면 어느 호출이었는지와 출력 tail을 컨테이너 로그로
+남긴다(#636) — 그 로그는 수집기가 `experiment_logs`로 옮겨 워크벤치가 읽는다(#559).
 
 [비책임] 학습 알고리즘과 데이터셋 조립(`src/pipeline/`), Codex 실행(`codex_worker.py`),
 commit·push와 candidate 보고(`finalizer.py`·`api_client.py`), 스냅샷 GCS 게시
@@ -25,10 +27,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 import hashlib
+import logging
 from pathlib import Path
 import re
 import subprocess
 from typing import Final
+
+from agent_orchestration.executor.command_output import log_command_streams
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 _DEPENDENCY_PATHS: Final = ("pyproject.toml", "uv.lock")
@@ -121,11 +129,17 @@ class TrainingInput:
             raise TrainingError("output_root_inside_workspace")
 
 
-def _run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
+def _run(argv: list[str], *, cwd: Path, timeout_seconds: int, stage: str) -> str:
     """workspace를 cwd로 subprocess를 실행하고 stdout만 돌려준다.
 
-    실패 시 stderr를 예외에 싣지 않는다 — 학습 로그에 데이터 경로나 토큰이 섞여 들어올
-    수 있어, 사유 코드만 남기고 본문은 Pod 로그로만 흘린다.
+    실패하면 출력 tail을 **사유와 분리된 로그 줄**로 남긴다(#636). 사유에 붙이지 않는
+    이유는 `phase2._safe_failure_reason`이 `^[a-z][a-z0-9_]*$`만 통과시켜 본문을 붙이면
+    사유가 통째로 `redacted`가 되기 때문이다.
+
+    `stage`는 호출 지점 이름이다. 이 함수는 seed probe·데이터셋 다운로드·`git diff`·
+    `uv sync`·학습 다섯 곳이 쓰는데 사유 코드는 전부 같고, 로그 수집기가 붙이는
+    `log_type`도 컨테이너 이름이라(#559) 다섯 단계가 한 값에 뭉친다. 단계를 가르는
+    정보는 이 인자뿐이므로 기본값을 두지 않는다.
     """
     try:
         completed = subprocess.run(  # noqa: S603 - argv는 이 모듈이 조립한 고정 목록이다
@@ -137,14 +151,45 @@ def _run(argv: list[str], *, cwd: Path, timeout_seconds: int) -> str:
             check=False,
         )
     except subprocess.TimeoutExpired as error:
+        # POSIX의 `subprocess.run`은 이미 수집한 출력을 이 예외에 실어 던진다. 결과가
+        # 없는 경로가 오히려 원문이 가장 필요한 곳이라 버리지 않는다(#636).
+        _LOGGER.error(
+            "training command timed out stage=%s timeout_sec=%d", stage, timeout_seconds
+        )
+        log_command_streams(
+            _LOGGER,
+            event="training output",
+            stage=stage,
+            stdout=error.stdout,
+            stderr=error.stderr,
+        )
         raise TrainingError("training_timeout") from error
     except OSError as error:
+        # 출력이 없는 실패라 tail로는 잡히지 않는다. 사유 코드 하나로는 "명령이 이미지에
+        # 없다"와 "권한이 없다"를 구분할 수 없는데 대응이 서로 다르다(#636). `filename`은
+        # 싣지 않는다 — 경로를 로그에 남기지 않는 이 모듈의 규율을 따른다.
+        _LOGGER.error(
+            "training command could not start stage=%s error_type=%s reason=%s",
+            stage,
+            type(error).__name__,
+            error.strerror,
+        )
         raise TrainingError("training_spawn_failed") from error
     if completed.returncode != 0:
+        _LOGGER.error(
+            "training command failed stage=%s exit_code=%d", stage, completed.returncode
+        )
+        log_command_streams(
+            _LOGGER,
+            event="training output",
+            stage=stage,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )
         # 사유는 접미사 없는 고정 코드로 둔다. `phase2._safe_failure_reason`이
         # `^[a-z][a-z0-9_]*$`에 맞는 값만 로그에 남기고 나머지는 `redacted`로 지우므로
-        # (#583), 인자·경로를 붙이면 오히려 사유가 통째로 사라진다. 실패한 명령의 상세는
-        # container stdout/stderr로 흘러 Pod 로그에 남는다.
+        # (#583), 인자·경로를 붙이면 오히려 사유가 통째로 사라진다. 본문은 위의 별도
+        # 로그 줄이 담당한다.
         raise TrainingError("training_command_failed")
     return completed.stdout
 
@@ -203,6 +248,7 @@ def ensure_dataset(
         ["python", "-c", _DOWNLOAD_PROBE, dataset_uri, str(destination_dir)],
         cwd=workspace,
         timeout_seconds=timeout_seconds,
+        stage="dataset_download",
     ).strip()
     if not raw:
         raise TrainingError("dataset_download_empty")
@@ -230,6 +276,7 @@ def resolve_policy_seeds(workspace: Path, *, timeout_seconds: int = 60) -> tuple
         ["python", "-c", _SEED_PROBE],
         cwd=workspace,
         timeout_seconds=timeout_seconds,
+        stage="seed_probe",
     ).strip()
     if not raw:
         raise TrainingError("policy_seeds_empty")
@@ -250,6 +297,7 @@ def _changed_paths(
         ["git", "diff", "--name-only", base_ref, "--", *paths],
         cwd=workspace,
         timeout_seconds=timeout_seconds,
+        stage="git_diff",
     )
     return tuple(line.strip() for line in changed.splitlines() if line.strip())
 
@@ -298,7 +346,12 @@ def sync_dependencies(workspace: Path, *, timeout_seconds: int) -> None:
     `--frozen`을 쓰지 않는다 — candidate가 `pyproject.toml`만 고치고 lock을 갱신하지
     않았을 수 있고, 그 경우 lock을 다시 풀어주는 것이 실험 의도에 맞다.
     """
-    _run(["uv", "sync"], cwd=workspace, timeout_seconds=timeout_seconds)
+    _run(
+        ["uv", "sync"],
+        cwd=workspace,
+        timeout_seconds=timeout_seconds,
+        stage="uv_sync",
+    )
 
 
 def _marker_path(state_directory: Path) -> Path:
@@ -348,6 +401,7 @@ def run_training(config: TrainingInput) -> tuple[int, ...]:
             ],
             cwd=config.workspace,
             timeout_seconds=config.timeout_seconds,
+            stage=f"train_model:{config.stage.value}:{seed}",
         )
 
     if config.stage is TrainingStage.BASELINE:
