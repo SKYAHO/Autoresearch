@@ -207,6 +207,40 @@ def test_partial_budget_reports_only_the_known_value() -> None:
     assert "seed 하나당" not in cpu_only
 
 
+def test_request_only_budget_reports_the_known_reservation() -> None:
+    """request만 전달돼도 빈 예산 절이나 값 누락이 생기지 않는다."""
+    memory_request_only = build_harness_instructions(
+        (), ResourceBudget(memory_request_bytes=2 * 1024**3)
+    )
+    assert "메모리: container당 request 2.0 GiB" in memory_request_only
+    assert "limit" not in memory_request_only.split("메모리: container당", 1)[1].split(
+        "\n", 1
+    )[0]
+
+    cpu_request_only = build_harness_instructions(
+        (), ResourceBudget(cpu_request_millicores=1000)
+    )
+    assert "CPU: container당 request 1 vCPU" in cpu_request_only
+    assert "limit" not in cpu_request_only.split("CPU: container당", 1)[1].split(
+        "\n", 1
+    )[0]
+
+
+def test_guaranteed_budget_does_not_claim_burstable_qos() -> None:
+    """request와 limit이 모두 같아지면 Burstable이라는 고정 문구가 남지 않는다."""
+    text = build_harness_instructions(
+        (),
+        ResourceBudget(
+            memory_request_bytes=2 * 1024**3,
+            memory_limit_bytes=2 * 1024**3,
+            cpu_request_millicores=1000,
+            cpu_limit_millicores=1000,
+        ),
+    )
+
+    assert "Burstable" not in text
+
+
 def test_budget_section_states_the_consequence_not_an_implementation_rule() -> None:
     """구현 지시가 아니라 환경 서술이어야 한다.
 
