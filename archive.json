@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-10T11:58:47Z",
+  "generated_at": "2026-08-10T12:02:44Z",
   "reports": [
+    {
+      "number": 658,
+      "title": "feat: 하네스가 에이전트에게 자원 예산을 알린다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-10T12:02:31Z",
+      "summary_ko": [
+        "에이전트가 코드를 작성할 때 주어진 자원 예산을 인식할 수 있도록 Downward API 기반 환경 변수 전달 구조를 구축하였습니다.",
+        "Kubernetes Job 매니페스트에서 메모리 제한과 학습 타임아웃을 읽어 실행 하네스 지침(AGENTS.md)에 동적으로 주입합니다.",
+        "구현 지시성 강제 규칙 대신 환경 서술 방식으로 정보를 제공하여 에이전트의 자율적 실험 탐색 공간을 보존하도록 설계하였습니다."
+      ],
+      "report_url": "pr/658/"
+    },
     {
       "number": 654,
       "title": "fix: 승격 가드 허용 경로에 log-collector-deployment.yaml을 더한다",
