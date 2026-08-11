@@ -884,11 +884,20 @@ def _train_from_resolved_dataset(
             scale_pos_weight = configured_spw
             print(f"  [OK] 고정값: {scale_pos_weight}")
 
+        # feature/row sampling은 config에서 함께 조정한다. 구버전의 사용자 지정
+        # config도 계속 학습할 수 있도록 키가 없으면 LightGBM 기본값을 사용한다.
+        feature_fraction = config["model"].get("feature_fraction", 1.0)
+        bagging_fraction = config["model"].get("bagging_fraction", 1.0)
+        bagging_freq = config["model"].get("bagging_freq", 0)
+
         params = {
             "model_type": "LightGBM",
             "n_estimators": config["model"]["n_estimators"],
             "learning_rate": config["model"]["learning_rate"],
             "num_leaves": config["model"]["num_leaves"],
+            "feature_fraction": feature_fraction,
+            "bagging_fraction": bagging_fraction,
+            "bagging_freq": bagging_freq,
             "scale_pos_weight": scale_pos_weight,
             "split_seed": effective_seeds.split_seed,
             "model_seed": effective_seeds.model_seed,
@@ -924,6 +933,9 @@ def _train_from_resolved_dataset(
             learning_rate=config["model"]["learning_rate"],
             num_leaves=config["model"]["num_leaves"],
             random_state=effective_seeds.model_seed,
+            feature_fraction=feature_fraction,
+            bagging_fraction=bagging_fraction,
+            bagging_freq=bagging_freq,
         )
         model.fit(X_train, y_train, categorical_features=categorical_columns)
         print("  [OK] 훈련 완료")
