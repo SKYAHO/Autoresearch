@@ -20,8 +20,15 @@ Codex #2), App 권한 부여와 배포(`SKYAHO/Autoresearch-infra`)는 담당하
 from __future__ import annotations
 
 import enum
+import logging
+import uuid
 from dataclasses import dataclass
 from typing import Final, Protocol
+
+from agent_orchestration.github_pull_requests import GitHubPullRequestError
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 # 멱등 판정이 이 키에 걸려 있다. 바꾸면 이미 PR을 만든 실험을 다시 만든다.
@@ -139,3 +146,112 @@ def build_pull_request_body(experiment: _Experiment) -> str:
         "가설의 성패는 위 리포트가 서술하며, 머지 여부는 사람이 정합니다."
     )
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class PullRequestState:
+    """한 실험에 대해 이미 남아 있는 기록."""
+
+    number: int | None
+    skipped: bool
+
+
+class ExperimentStore(Protocol):
+    """완주한 실험을 읽고 처리 결과를 남기는 연산."""
+
+    def list_passed_experiments(self) -> list: ...
+
+    def pull_request_state(self, experiment_id: uuid.UUID) -> PullRequestState: ...
+
+    def record_number(self, experiment_id: uuid.UUID, number: int) -> None: ...
+
+    def record_skip(self, experiment_id: uuid.UUID, reason: str) -> None: ...
+
+
+class PullRequestOpener(Protocol):
+    """PR을 열고 찾는 연산. 구현은 `GitHubPullRequests`를 감싼 얇은 어댑터다."""
+
+    def create(self, *, head: str, base: str, title: str, body: str) -> int: ...
+
+    def find_open(self, *, head: str) -> int | None: ...
+
+
+def open_pull_requests_once(
+    store: ExperimentStore,
+    opener: PullRequestOpener,
+) -> list[str]:
+    """완주한 실험 한 바퀴를 돌며 PR을 열고 사유 코드를 모아 돌려준다.
+
+    **fail-open이다.** 한 실험이 실패해도 나머지를 계속 처리한다 — 실험 단위로
+    격리하지 않으면 A가 계속 실패하는 동안 그 뒤의 B·C가 영영 PR을 얻지 못한다.
+    """
+    problems: list[str] = []
+    for experiment in store.list_passed_experiments():
+        try:
+            state = store.pull_request_state(experiment.id)
+            if state.skipped:
+                # 영구 skip으로 굳힌 실험이다. 다시 판정하지 않는다.
+                continue
+            plan = pull_request_plan(experiment, recorded_number=state.number)
+            if plan.skip_reason is SkipReason.ALREADY_RECORDED:
+                # 이미 번호가 있다. 다시 기록할 것이 없다.
+                continue
+            if plan.skip_reason is not None:
+                if plan.skip_reason.permanent:
+                    store.record_skip(experiment.id, plan.skip_reason.value)
+                continue
+            number = _open(store, opener, experiment, plan.head or "", problems)
+            if number is None:
+                continue
+            store.record_number(experiment.id, number)
+        except Exception:
+            # 실험 단위로 격리한다. 여기서 새어 나가면 이 실험 하나가 아니라 뒤의
+            # 실험 전부가 그 주기에서 날아간다.
+            _LOGGER.warning(
+                "pull request open failed reason=experiment_promotion_failed "
+                "experiment=%s",
+                getattr(experiment, "id", None),
+            )
+            problems.append("experiment_promotion_failed")
+            continue
+    return problems
+
+
+def _open(
+    store: ExperimentStore,
+    opener: PullRequestOpener,
+    experiment: _Experiment,
+    head: str,
+    problems: list[str],
+) -> int | None:
+    """PR을 열고 번호를 돌려준다. 만들지 않기로 한 경우 `None`이다."""
+    try:
+        return opener.create(
+            head=head,
+            base=BASE_BRANCH,
+            title=build_pull_request_title(experiment),
+            body=build_pull_request_body(experiment),
+        )
+    except GitHubPullRequestError as error:
+        if error.reason == "pull_request_exists":
+            # 먼저 만들고 기록 전에 죽은 흔적이다. 중복을 만들지 않고 번호만 채운다.
+            found = opener.find_open(head=head)
+            if found is not None:
+                return found
+            # 열린 PR이 없는데 GitHub이 중복이라고 한다 — 닫힌 PR이 있는 경우다.
+            # 다시 열지 않는다(닫은 의도를 되돌리지 않는다, 정본 계약 §결정 3).
+            store.record_skip(experiment.id, SkipReason.ALREADY_RECORDED.value)
+            return None
+        if error.reason == "pull_request_no_commits":
+            # 올릴 변경이 없다. 조회해도 소용없고 다시 볼 필요도 없다.
+            store.record_skip(experiment.id, SkipReason.NO_CHANGES.value)
+            return None
+        # `pull_request_forbidden`(App 권한 부재)을 포함해 기록하지 않는다 —
+        # 기록하면 권한을 부여한 뒤에도 그 실험은 영영 PR을 얻지 못한다.
+        _LOGGER.warning(
+            "pull request create failed reason=%s experiment=%s",
+            error.reason,
+            experiment.id,
+        )
+        problems.append(error.reason)
+        return None
