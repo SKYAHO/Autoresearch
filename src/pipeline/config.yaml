@@ -8,6 +8,9 @@ model:
   n_estimators: 200
   learning_rate: 0.05
   num_leaves: 31
+  feature_fraction: 0.8
+  bagging_fraction: 0.8
+  bagging_freq: 1
   scale_pos_weight: auto
   random_state: 42
   # negative downsampling 비율 = negative를 남긴 비율(0<w≤1). 1.0이면 off(#300).

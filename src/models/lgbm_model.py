@@ -32,6 +32,9 @@ class LGBMModel(CTRModel):
         learning_rate: float = 0.05,
         num_leaves: int = 31,
         random_state: int = 42,
+        feature_fraction: float = 1.0,
+        bagging_fraction: float = 1.0,
+        bagging_freq: int = 0,
     ):
         """
         초기화.
@@ -42,12 +45,18 @@ class LGBMModel(CTRModel):
             learning_rate: 학습률.
             num_leaves: 트리당 최대 리프 개수.
             random_state: 시드.
+            feature_fraction: 각 트리에서 사용할 feature 비율.
+            bagging_fraction: 각 트리에서 사용할 row 비율.
+            bagging_freq: row bagging을 수행할 트리 주기. 0이면 비활성화.
         """
         self.scale_pos_weight = scale_pos_weight
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.num_leaves = num_leaves
         self.random_state = random_state
+        self.feature_fraction = feature_fraction
+        self.bagging_fraction = bagging_fraction
+        self.bagging_freq = bagging_freq
         self.model = None
 
     def fit(
@@ -73,6 +82,9 @@ class LGBMModel(CTRModel):
             num_leaves=self.num_leaves,
             scale_pos_weight=self.scale_pos_weight,
             random_state=self.random_state,
+            feature_fraction=self.feature_fraction,
+            bagging_fraction=self.bagging_fraction,
+            bagging_freq=self.bagging_freq,
             objective="binary",
             metric="auc",
             verbose=-1,
@@ -133,6 +145,11 @@ class LGBMModel(CTRModel):
             learning_rate=params.get("learning_rate", 0.05),
             num_leaves=params.get("num_leaves", 31),
             random_state=params.get("random_state", 42),
+            feature_fraction=params.get(
+                "feature_fraction", params.get("colsample_bytree", 1.0)
+            ),
+            bagging_fraction=params.get("bagging_fraction", params.get("subsample", 1.0)),
+            bagging_freq=params.get("bagging_freq", 0),
         )
         instance.model = booster
         return instance
