@@ -218,4 +218,27 @@ def test_hold_reasons_are_distinct_values():
         "temporal_horizon_incomplete",
         "temporal_ordering_violated",
         "temporal_evidence_missing",
+        # 두 조건 비교 전용(#514 §3.2). `evaluate_temporal_hold`는 단일 조건만 보므로
+        # 이 사유를 내지 않는다 — 상위 페어링 함수가 `compare_conditions` 결과로 낸다.
+        "condition_mismatch",
     }
+
+
+def test_evaluate_temporal_hold_never_returns_condition_mismatch():
+    """단일 조건 hold 함수가 두 조건 사유를 내면 소유 경계가 무너진다(#514 §3.2).
+
+    `condition_mismatch`는 결과 **두 개**를 봐야 나오는 판정이라, 하나만 받는 이 함수가
+    그것을 낼 수 있으면 계약이 잘못된 것이다. 열거형에 값이 생겼다고 이 함수가 쓰기
+    시작하는 회귀를 막는다.
+    """
+    cases = [
+        # 정상, 표본 부족, 구간 잘림, 순서 위반 — hold가 나오는 경로를 모두 훑는다.
+        _result(per_day=_valid_days(3), horizon_days=3),
+        _result(per_day=_valid_days(1), horizon_days=1),
+        _result(per_day=_valid_days(3), horizon_days=5),
+        _result(per_day=_valid_days(3), horizon_days=3, events_end_date=CUTOFF),
+        _result(per_day=[], horizon_days=0),
+    ]
+
+    for result in cases:
+        assert evaluate_temporal_hold(result) is not TemporalHoldReason.CONDITION_MISMATCH

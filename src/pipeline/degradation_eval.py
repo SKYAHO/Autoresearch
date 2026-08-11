@@ -468,6 +468,13 @@ class RollingOriginResult(_ResultModel):
     cutoff_date: str
     window_days: int
     horizon_days: int
+    # cutoff 학습의 MLflow run id와 시드(#514 §2.4·§3.1). 두 조건을 비교하려면 "어느
+    # 실행이었나"가 결과에 남아야 한다 — `verify_training_comparison`은 run id 두 개를
+    # 받고(`training_comparison.py:508`), 시드 동일성 검증은 결과에 시드가 있어야 한다.
+    # **기본값 `None`은 필수다**: `#510`/`#520`이 이미 만든 결과 JSON을 읽는 경로가
+    # 깨지면 안 된다(`degradation_curve_plot.py`, `#472` 소비 경로).
+    training_run_id: str | None = None
+    seed: int | None = None
     # cutoff 학습의 랜덤 val 지표. **판정에는 쓰지 않는다**(#485 §4.3이 선행 spec §2.4를
     # 부분 supersede) — 참고용·과거 실행과의 비교용으로 유지한다(하위호환).
     baseline_val_roc_auc: float
@@ -600,9 +607,102 @@ def derive_hard_retrain_limit(
 
 
 # ============================================================================
+# 조건 동일성 검증 (#514 §3) — 두 조건이 같은 전제에서 실행됐는지.
+#
+# 비교의 신뢰는 숫자가 아니라 "같은 조건이었다"는 증거에서 나온다. 그 증거가 없으면
+# delta는 우연과 구분되지 않는다. snapshot 해시만 보면 "다르다"만 알고 "왜 다른가"는
+# 모르므로, 시간축 고유 항목(cutoff/window/horizon/평가일)을 따로 비교한다.
+# ============================================================================
+
+
+class ConditionMismatchField(str, Enum):
+    """두 조건에서 어긋난 항목(#514 §3.1)."""
+
+    CUTOFF_DATE = "cutoff_date"
+    WINDOW_DAYS = "window_days"
+    HORIZON_DAYS = "horizon_days"
+    EVALUATION_DATES = "evaluation_dates"
+    DATASET_SHA256 = "dataset_sha256"
+    SCHEMA_SHA256 = "schema_sha256"
+    REGISTRY_GENERATION = "registry_generation"
+    REGISTRY_SHA256 = "registry_sha256"
+    FEATURE_SERVICE = "feature_service"
+    SEED = "seed"
+
+
+class ConditionMatch(_ResultModel):
+    """두 조건의 전제 동일성 판정(#514 §3).
+
+    ``matched=False``면 ``mismatched_fields``에 **어긋난 항목이 전부** 들어간다.
+    하나만 찾고 멈추면 고치고 다시 돌렸을 때 나머지가 그제서야 드러나, 비싼 두 조건
+    실행을 반복하게 된다.
+    """
+
+    matched: bool
+    mismatched_fields: tuple[ConditionMismatchField, ...] = ()
+
+
+def compare_conditions(
+    baseline: RollingOriginResult, challenger: RollingOriginResult
+) -> ConditionMatch:
+    """두 rolling-origin 결과가 같은 전제에서 나왔는지 판정한다(#514 §3.1).
+
+    **시드가 양쪽 다 ``None``이어도 일치로 보지 않는다.** ``#510``/``#520`` 결과에는
+    시드가 없는데, 그것은 "같은 시드를 썼다"는 증거가 아니라 **관측되지 않았다**는
+    뜻이다. 관측되지 않은 것을 "안전"으로 바꾸지 않는다(`#485` spec §4.1과 같은 결).
+
+    평가일은 **집합**으로 비교한다 — 순서는 ``_ordered_by_elapsed``가 정규화하므로
+    리스트 순서 차이는 조건 차이가 아니다.
+
+    이 함수는 hold를 내지 않는다. 판정만 돌려주고 `hold` 전환은 상위 페어링 함수가
+    한다(`#485` spec §4.2의 "측정과 정책을 섞지 않는다"와 같은 분업).
+    """
+    mismatched: list[ConditionMismatchField] = []
+
+    def _check(field: ConditionMismatchField, left: object, right: object) -> None:
+        if left != right:
+            mismatched.append(field)
+
+    _check(ConditionMismatchField.CUTOFF_DATE, baseline.cutoff_date, challenger.cutoff_date)
+    _check(ConditionMismatchField.WINDOW_DAYS, baseline.window_days, challenger.window_days)
+    _check(
+        ConditionMismatchField.HORIZON_DAYS, baseline.horizon_days, challenger.horizon_days
+    )
+    _check(
+        ConditionMismatchField.EVALUATION_DATES,
+        {day.date for day in baseline.per_day},
+        {day.date for day in challenger.per_day},
+    )
+
+    baseline_manifest = baseline.training_snapshot_manifest
+    challenger_manifest = challenger.training_snapshot_manifest
+    for field, attribute in (
+        (ConditionMismatchField.DATASET_SHA256, "dataset_sha256"),
+        (ConditionMismatchField.SCHEMA_SHA256, "schema_sha256"),
+        (ConditionMismatchField.REGISTRY_GENERATION, "registry_generation"),
+        (ConditionMismatchField.REGISTRY_SHA256, "registry_sha256"),
+        (ConditionMismatchField.FEATURE_SERVICE, "feature_service"),
+    ):
+        _check(
+            field,
+            getattr(baseline_manifest, attribute),
+            getattr(challenger_manifest, attribute),
+        )
+
+    # 시드는 값 비교 **전에** 관측 여부를 먼저 본다(위 docstring 참고).
+    if baseline.seed is None or challenger.seed is None:
+        mismatched.append(ConditionMismatchField.SEED)
+    else:
+        _check(ConditionMismatchField.SEED, baseline.seed, challenger.seed)
+
+    return ConditionMatch(matched=not mismatched, mismatched_fields=tuple(mismatched))
+
+
+# ============================================================================
 # fail-closed `hold` 종료 조건 (#485 §6) — 통계 추정 없이 멈춰야 하는 상태.
 # `condition_mismatch`(두 조건의 cutoff·window·horizon·snapshot·split·seed 불일치)는
-# 두 조건 비교가 전제라 `#514` 소관이며 여기서 다루지 않는다.
+# 두 조건 비교가 전제라 `#514` 소관이다 — `evaluate_temporal_hold`는 단일 조건만 보므로
+# 그 사유를 내지 않고, 상위 페어링 함수가 `compare_conditions` 결과로 전환한다.
 # ============================================================================
 
 
@@ -613,6 +713,9 @@ class TemporalHoldReason(str, Enum):
     TEMPORAL_ORDERING_VIOLATED = "temporal_ordering_violated"
     TEMPORAL_HORIZON_INCOMPLETE = "temporal_horizon_incomplete"
     TEMPORAL_INSUFFICIENT_VALID_POINTS = "temporal_insufficient_valid_points"
+    # 두 조건 비교 전용(#514 §3.2). 단일 조건 실행에서는 나올 수 없다 —
+    # `evaluate_temporal_hold`는 이 사유를 내지 않고, 상위 페어링 함수가 낸다.
+    CONDITION_MISMATCH = "condition_mismatch"
 
 
 def evaluate_temporal_hold(
@@ -834,6 +937,16 @@ def run_rolling_origin(
         random_state=seed,
         extra_features=extra_features,
         experiment=experiment,
+        # 이 run이 **측정용**임을 run 자체에 남긴다(#514). `verify_training_comparison`이
+        # 두 조건을 비교하면서 challenger run에 comparison manifest를 artifact로 되쓰는데
+        # (`training_comparison.py:487-492`), 그것만 보면 승격 절차를 밟은 run처럼 읽힌다.
+        # `defer_registration`은 지금까지 run 어디에도 기록되지 않아(분기에만 쓰임) 나중에
+        # 이 run을 연 사람이 구분할 방법이 없었다.
+        extra_params={
+            "measurement_only": "true",
+            "defer_registration": "true",
+            "measurement_kind": "rolling_origin_degradation",
+        },
         # 측정·리포트 산출물이지 승격 후보가 아니다(spec §1 provenance 절과 같은 이유) —
         # 등록 없이 지표만 받는다(window_holdout_eval.py와 같은 관례).
         defer_registration=True,
@@ -953,6 +1066,8 @@ def run_rolling_origin(
         cutoff_date=cutoff_date,
         window_days=window_days,
         horizon_days=horizon_days,
+        training_run_id=outcome.run_id,
+        seed=seed,
         baseline_val_roc_auc=baseline,
         forward_baseline_roc_auc=forward_baseline,
         forward_baseline_source=forward_baseline_source,
