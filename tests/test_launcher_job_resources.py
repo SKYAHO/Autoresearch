@@ -4,14 +4,25 @@
 **상한**을 정하고, launcher는 Job이 실제로 얼마를 **요청**할지 명시한다. 명시하지 않으면
 LimitRange 기본값(limit 1Gi)이 적용돼 학습 단계가 OOM으로 죽으므로, "모든 container에
 자원이 붙어 있다"를 테스트로 고정한다.
+
+**이 파일이 고정하지 못하는 것**: 아래 상수는 인프라의 실제 배포값을 읽지 않고 손으로
+베껴 둔 사본이다. 인프라가 LimitRange·Quota를 바꿔도 이 테스트는 그대로 통과하므로,
+"계약을 고정한다"는 말은 **이 저장소가 그 계약을 어기지 않는다**까지만 참이다. 인프라
+변경(`SKYAHO/Autoresearch-infra#625` 같은)이 있으면 여기를 같은 PR에서 손으로 맞춰야
+한다. 자동 검증이 필요해지면 배포된 매니페스트를 읽는 별도 경로가 있어야 한다.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 import sys
 import uuid
+
+from kubernetes.client import V1PodSpec
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -25,8 +36,14 @@ from agent_orchestration.launcher.repository import ClaimedExperiment  # noqa: E
 _EXPERIMENT_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
 
 # 인프라 LimitRange가 허용하는 컨테이너 상한이다. 이 값을 넘기면 admission이 거부한다.
-_NAMESPACE_CONTAINER_MAX_MEMORY = "2Gi"
-_NAMESPACE_CONTAINER_MAX_CPU = "1"
+_NAMESPACE_CONTAINER_MAX_MEMORY = "8Gi"
+_NAMESPACE_CONTAINER_MAX_CPU = "4"
+
+# 동시 5건 기준 namespace ResourceQuota 항목이다(`Autoresearch-infra#625`).
+_QUOTA_REQUESTS_MEMORY_MIB = 10 * 1024
+_QUOTA_REQUESTS_CPU_MILLICORES = 5 * 1000
+_QUOTA_LIMITS_MEMORY_MIB = 40 * 1024
+_QUOTA_LIMITS_CPU_MILLICORES = 20 * 1000
 
 
 def _settings() -> LauncherSettings:
@@ -42,7 +59,7 @@ def _settings() -> LauncherSettings:
         github_app_id=123,
         github_app_installation_id=456,
         github_repository="SKYAHO/Autoresearch",
-        max_concurrent_experiments=2,
+        max_concurrent_experiments=5,
         executor_api_url="http://agent-orchestration-api",
         executor_api_token_secret_name="executor-api-token",
         codex_home_secret_name="codex-auth",
@@ -92,7 +109,8 @@ def test_requests_cover_the_measured_peaks() -> None:
     job = build_executor_job(_claim(), _settings())
 
     for container in _all_containers(job):
-        assert container.resources.requests["memory"] == "1536Mi", container.name
+        assert container.resources.requests["memory"] == "2Gi", container.name
+        assert container.resources.requests["cpu"] == "1", container.name
 
 
 def test_limits_stay_within_the_namespace_ceiling() -> None:
@@ -114,20 +132,49 @@ def test_concurrent_jobs_fit_the_namespace_quota() -> None:
 
     Pod 실효 요청은 `max(앱 container 합계, 각 initContainer의 최댓값)`이다.
     initContainer는 순차 실행이고 sidecar(`restartPolicy: Always`)가 없으므로 개수만큼
-    곱해지지 않는다. 이 계산이 깨지면 두 번째 Job이 quota에 걸려 Pending으로 남는다.
+    곱해지지 않는다.
+
+    이 계산이 깨지면 Job controller의 Pod 생성이 quota admission에서 `FailedCreate`로
+    거부된다. launcher는 Job 객체 생성까지는 성공으로 기록하므로 active deadline까지
+    `RUNNING` Job에 Pod가 없는 상태가 길게 남을 수 있다. CPU와 메모리 중 **하나만
+    넘겨도** 같은 일이 벌어지므로 둘 다 검사한다.
     """
     settings = _settings()
     job = build_executor_job(_claim(), settings)
     spec = job.spec.template.spec
 
-    app_total = sum(_mebibytes(c.resources.requests["memory"]) for c in spec.containers)
-    init_max = max(
-        _mebibytes(c.resources.requests["memory"]) for c in spec.init_containers
-    )
-    effective = max(app_total, init_max)
+    memory = _effective_request(spec, "memory", _mebibytes)
+    assert memory * settings.max_concurrent_experiments <= _QUOTA_REQUESTS_MEMORY_MIB
 
-    quota_requests_memory_mib = 4 * 1024
-    assert effective * settings.max_concurrent_experiments <= quota_requests_memory_mib
+    cpu = _effective_request(spec, "cpu", _millicores)
+    assert cpu * settings.max_concurrent_experiments <= _QUOTA_REQUESTS_CPU_MILLICORES
+
+    memory_limit = _effective_limit(spec, "memory", _mebibytes)
+    assert (
+        memory_limit * settings.max_concurrent_experiments
+        <= _QUOTA_LIMITS_MEMORY_MIB
+    )
+
+    cpu_limit = _effective_limit(spec, "cpu", _millicores)
+    assert cpu_limit * settings.max_concurrent_experiments <= _QUOTA_LIMITS_CPU_MILLICORES
+
+
+def _effective_request(
+    spec: V1PodSpec, resource: str, parse: Callable[[str], int]
+) -> int:
+    """Pod 실효 요청 = `max(앱 container 합계, 각 initContainer의 최댓값)`."""
+    app_total = sum(parse(c.resources.requests[resource]) for c in spec.containers)
+    init_max = max(parse(c.resources.requests[resource]) for c in spec.init_containers)
+    return max(app_total, init_max)
+
+
+def _effective_limit(
+    spec: V1PodSpec, resource: str, parse: Callable[[str], int]
+) -> int:
+    """Pod 실효 limit = `max(앱 container 합계, 각 initContainer의 최댓값)`."""
+    app_total = sum(parse(c.resources.limits[resource]) for c in spec.containers)
+    init_max = max(parse(c.resources.limits[resource]) for c in spec.init_containers)
+    return max(app_total, init_max)
 
 
 def _mebibytes(value: str) -> int:
@@ -136,6 +183,27 @@ def _mebibytes(value: str) -> int:
     if value.endswith("Gi"):
         return int(value[:-2]) * 1024
     raise AssertionError(f"예상하지 못한 메모리 단위: {value}")
+
+
+def _millicores(value: str) -> int:
+    if value.endswith("m"):
+        return int(value[:-1])
+    try:
+        millicores = Decimal(value) * 1000
+        if millicores != millicores.to_integral_value():
+            raise ValueError
+        return int(millicores)
+    except (ArithmeticError, ValueError) as error:
+        raise AssertionError(f"예상하지 못한 CPU 단위: {value}") from error
+
+
+def test_cpu_parser_accepts_decimal_cores() -> None:
+    assert _millicores("0.5") == 500
+
+
+def test_cpu_parser_reports_an_unexpected_unit() -> None:
+    with pytest.raises(AssertionError, match="예상하지 못한 CPU 단위: 0.0005"):
+        _millicores("0.0005")
 
 
 def test_job_deadline_is_carried_from_settings() -> None:

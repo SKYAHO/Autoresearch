@@ -238,7 +238,7 @@ def test_launcher_settings_reads_required_environment(
     assert settings.codex_home_secret_name == "codex-auth"
     assert settings.codex_timeout_sec == 1800
     assert settings.active_deadline_sec == 3600
-    assert settings.ttl_after_finished_sec == 30
+    assert settings.ttl_after_finished_sec == 120
 
 
 def test_launcher_settings_reads_optional_job_ttl_environment(
@@ -252,7 +252,7 @@ def test_launcher_settings_reads_optional_job_ttl_environment(
     assert settings.ttl_after_finished_sec == 3600
 
 
-@pytest.mark.parametrize("ttl", ["0", "-1", "1.5", "invalid"])
+@pytest.mark.parametrize("ttl", ["0", "30", "119", "-1", "1.5", "invalid"])
 def test_launcher_settings_rejects_invalid_optional_job_ttl_environment(
     monkeypatch: pytest.MonkeyPatch,
     ttl: str,
@@ -536,7 +536,7 @@ def test_job_passes_only_frozen_coordinates_and_token_file() -> None:
     assert job.spec.template.metadata.labels == job.metadata.labels
     assert job.spec.backoff_limit == 0
     assert job.spec.active_deadline_seconds == 2400
-    assert job.spec.ttl_seconds_after_finished == 30
+    assert job.spec.ttl_seconds_after_finished == 120
     assert pod.automount_service_account_token is False
     assert pod.service_account_name == settings.executor_service_account
     assert pod.restart_policy == "Never"
