@@ -10,6 +10,9 @@ sidebar 탐색으로 분리된 사전등록 화면과 상세 화면의 컴포넌
 패널, 상태 타임라인, 결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 제공한다.
 결과 탭의 지표 카드와 리포트 HTML 렌더도 이 모듈이 담당한다.
 
+지표를 그리는 곳은 **결과 탭 하나**다. 인스펙터의 "실행 요약"은 시드·테스트셋 일치
+여부 같은 실행 조건만 적는다(#657).
+
 [비책임]
 HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조립과 GitHub 이슈 생성
 (모두 API 서버의 책임이다).
@@ -18,8 +21,9 @@ HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조�
 from __future__ import annotations
 
 import html
-import json
+import re
 from collections.abc import Callable, Sequence
+from datetime import datetime
 
 import streamlit as st
 
@@ -31,18 +35,69 @@ from agent_orchestration.ui.models import (
     Step,
     Submission,
     status_label,
+    status_tone,
     step_kind_label,
     step_status_color,
 )
 from agent_orchestration.ui.report import report_document
 from agent_orchestration.ui.state import WorkbenchState
-from agent_orchestration.ui.styles import status_badge
-from agent_orchestration.ui.time import format_time
+from agent_orchestration.ui.styles import fact_row, status_badge
+from agent_orchestration.ui.time import format_short_time, format_time
 
 
 HYPOTHESIS_KEY = "submission-hypothesis"
 
 _HYPOTHESIS_PLACEHOLDER = "마크다운 형식으로 가설을 작성해 주세요"
+
+
+
+def _one_line(text: str) -> str:
+    """줄바꿈과 연속 공백을 한 칸으로 접는다. **글자는 버리지 않는다.**
+
+    한때 여기서 글자 수까지 잘랐다. 32자·34자·50자를 차례로 시도했지만 어느 값이든
+    결과는 같았다 — 목록 전체가 `…`로 끝나고, 같은 파라미터를 건드린 실험들이 서로
+    구별되지 않았다(#657). 잘라야 할 이유도 없었다. 사이드바 라벨도 인스펙터 값도
+    줄바꿈이 되는 자리라, 접기만 하면 폭에 맞춰 알아서 흐른다.
+    """
+    return " ".join(text.split())
+
+
+# 문장 끝. `0.05`의 소수점은 뒤에 공백이 없으므로 걸리지 않는다.
+_SENTENCE_END = re.compile(r"\.(?=\s|$)")
+
+# 요약 줄이 쓸 수 있는 글자 수. 첫 문장이 이보다 길면 그때는 자른다.
+#
+# 자르지 않고 전문을 넣어 봤더니 항목 하나가 스무 줄이 되어 목록으로 쓸 수 없었고,
+# 34·50자로 짧게 자르니 같은 파라미터를 건드린 실험들이 모두 같은 접두사로 끝나
+# 구별되지 않았다(#657). 윗줄에 시각이 붙어 중복이 갈리므로 요약은 더 짧아도 된다.
+_LIST_LABEL_MAX = 72
+
+
+def _list_label(status: str, hypothesis: str, started_at: datetime) -> str:
+    """사이드바 목록 한 항목을 두 줄로 만든다.
+
+    윗줄은 상태와 시각, 아랫줄은 가설 요약이다. 한 줄에 모두 이어 붙이면 상태가
+    문장에 묻혀 목록을 훑을 수 없다 — 25개를 세로로 훑는 화면에서 눈이 먼저 찾는
+    것은 상태와 시각이다.
+
+    위젯 라벨에는 HTML을 넣을 수 없어 Streamlit 마크다운 색 문법으로 상태를
+    물들인다. 줄바꿈은 마크다운 hard break(공백 두 개 + 개행)다.
+
+    요약은 문장 경계에서 끊는다. 마침표로 끝나니 잘린 티가 나지 않고, 실험을 가르는
+    값도 남는다.
+    """
+    text = _one_line(hypothesis)
+    sentence_end = _SENTENCE_END.search(text)
+    if sentence_end:
+        text = text[: sentence_end.end()]
+    if len(text) > _LIST_LABEL_MAX:
+        head = text[:_LIST_LABEL_MAX]
+        boundary = head.rfind(" ")
+        if boundary >= _LIST_LABEL_MAX // 2:
+            head = head[:boundary]
+        text = head.rstrip() + "…"
+    tone = status_tone(status)
+    return f":{tone}[{status}]  ·  {format_short_time(started_at)}  \n{text}"
 
 
 def _render_hypothesis_editor() -> str:
@@ -218,7 +273,9 @@ def render_experiment_list(
         return None
     ids = [experiment.id for experiment in experiments]
     labels = {
-        experiment.id: f"{experiment.status} | {experiment.hypothesis[:32]}"
+        experiment.id: _list_label(
+            experiment.status, experiment.hypothesis, experiment.created_at
+        )
         for experiment in experiments
     }
     default_index = ids.index(selected_id) if selected_id in ids else None
@@ -242,23 +299,37 @@ def render_workbench(state: WorkbenchState) -> None:
     st.markdown('<p class="workbench-kicker">선택한 가설</p>', unsafe_allow_html=True)
     title_column, status_column = st.columns([4.0, 1.0], vertical_alignment="center")
     with title_column:
-        st.title(experiment.hypothesis)
+        # `st.title`이 아니다. 가설은 여러 문장짜리 본문이라 H1으로 그리면 세로
+        # 400px를 먹고 관찰 보드를 화면 밖으로 밀어냈다(#657).
+        #
+        # 여기는 `unsafe_allow_html`을 켜므로 **가설은 사용자 입력**임을 잊지 않는다.
+        # `st.title`이 해 주던 escape를 직접 해야 한다 — `_render_steps`가 step_type에
+        # 같은 처리를 하는 것과 같은 이유다.
+        st.markdown(
+            f'<p class="workbench-hypothesis">{html.escape(experiment.hypothesis)}</p>',
+            unsafe_allow_html=True,
+        )
     with status_column:
         st.markdown(status_badge(experiment.status), unsafe_allow_html=True)
         st.caption(f"마지막 갱신 {format_time(experiment.updated_at)}")
 
-    main_column, inspector_column = st.columns([2.2, 1.0], gap="large")
-    with main_column:
-        with st.container(border=True):
-            st.markdown("#### 관찰 보드")
-            _render_tabs(state)
-    with inspector_column:
+    # 관찰 보드가 전체 폭을 쓰고 보조 패널 셋은 그 아래로 간다. 우측 인스펙터 열로
+    # 두면 원본 로그·작업 단계처럼 가로가 필요한 내용이 좁은 열에서 접히는데, 정작
+    # 그 옆의 보조 패널이 더 길어 화면 오른쪽만 계속 늘어났다.
+    with st.container(border=True):
+        st.markdown("#### 관찰 보드")
+        _render_tabs(state)
+
+    summary_column, timeline_column, metadata_column = st.columns(3, gap="large")
+    with summary_column:
         with st.container(border=True):
             st.markdown("#### 실행 요약")
             _render_metrics(experiment.metric_summary)
+    with timeline_column:
         with st.container(border=True):
             st.markdown("#### 진행 단계")
             _render_timeline(state.events[-8:], experiment.status)
+    with metadata_column:
         with st.container(border=True):
             st.markdown("#### 메타데이터")
             if state.metadata:
@@ -274,8 +345,16 @@ def _render_timeline(events: Sequence[Event], current_status: str) -> None:
         return
     for event in events:
         source = event.from_status or "START"
-        st.markdown(f"**{source} -> {event.to_status}**")
-        st.caption(format_time(event.created_at))
+        # 상태값은 서버가 닫아 둔 집합이지만 `unsafe_allow_html` 경로이므로 escape한다.
+        st.markdown(
+            '<div class="timeline-step">'
+            f'<span class="timeline-from">{html.escape(source)}</span>'
+            '<span class="timeline-arrow">&rarr;</span>'
+            f'<span class="timeline-to">{html.escape(event.to_status)}</span>'
+            f'<span class="timeline-time">{format_time(event.created_at)}</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
         if event.reason:
             st.write(event.reason)
 
@@ -342,6 +421,25 @@ def _render_tabs(state: WorkbenchState) -> None:
                 st.caption(f"{format_time(log.created_at)} · {log.log_type}")
                 st.code(log.content, language=None)
 
+
+# 인스펙터 "실행 요약"이 쓰는 화면 이름. 여기 없는 키는 원문 그대로 적는다.
+_RUN_FACT_LABELS: dict[str, str] = {
+    "primary_metric": "주요 지표",
+    "dataset_fingerprint": "데이터셋 지문",
+    "results_uri": "결과 원본",
+    "contract_version": "스냅샷 계약",
+}
+
+# `_render_metrics`가 앞에서 전용 문구로 이미 그린 키.
+_RUN_FACTS_RENDERED_ABOVE = frozenset({"seeds", "split_matches"})
+
+# 사람이 읽는 문장이 아니라 식별자인 값. 고정폭으로 그려야 자릿수가 흔들리지 않는다.
+_RUN_FACTS_AS_CODE = frozenset(
+    {"primary_metric", "dataset_fingerprint", "results_uri", "contract_version"}
+)
+
+# 결과 탭의 지표 카드가 소유하는 키. 인스펙터에서 중복해 그리지 않는다.
+_METRICS_OWNED_BY_RESULTS_TAB = frozenset({"conditions", "paired"})
 
 # 결과 탭이 카드로 그리는 지표와 화면 이름. 낮을수록 좋은 지표는 delta 색을 뒤집는다.
 _METRIC_CARDS: tuple[tuple[str, str, bool], ...] = (
@@ -441,12 +539,52 @@ def _render_report(state: WorkbenchState) -> None:
 
 
 def _render_metrics(metrics: dict[str, object] | None) -> None:
+    """인스펙터 "실행 요약"에 **실행 조건**을 적는다. 지표는 여기 없다.
+
+    지표와 delta는 결과 탭의 `_render_metric_cards`가 소유한다. 이 패널은 한때
+    `metric_summary` 전체를 `st.code(json.dumps(...))`로 덤프했는데, 그러면 같은 값이
+    한쪽은 카드로 한쪽은 날 JSON으로 두 번 나오고, 검은 블록이 패널을 채운 채 숫자가
+    가로로 잘렸다(#657). 그래서 `conditions`·`paired`는 여기서 그리지 않는다.
+
+    모르는 키는 버리지 않는다 — 스냅샷 계약이 넓어져도 화면에서 조용히 사라지지
+    않도록 스칼라는 그대로, 중첩 값은 항목 수로 적는다.
+    """
     if not metrics:
         st.caption("아직 평가 전입니다.")
         return
+
+    rows: list[str] = []
+    seeds = metrics.get("seeds")
+    if isinstance(seeds, list) and seeds:
+        rows.append(
+            fact_row("시드", ", ".join(str(seed) for seed in seeds), code=True)
+        )
+
+    split_matches = metrics.get("split_matches")
+    if split_matches is False:
+        rows.append(fact_row("테스트셋", "불일치 — delta를 효과로 읽을 수 없음"))
+    elif split_matches is True:
+        rows.append(fact_row("테스트셋", "두 조건 동일"))
+
     for key, value in metrics.items():
+        if key in _RUN_FACTS_RENDERED_ABOVE or key in _METRICS_OWNED_BY_RESULTS_TAB:
+            continue
+        label = _RUN_FACT_LABELS.get(key, key)
         if isinstance(value, (dict, list)):
-            st.markdown(f"**{key}**")
-            st.code(json.dumps(value, ensure_ascii=False, indent=2), language="json")
+            rows.append(fact_row(label, f"항목 {len(value)}개"))
         else:
-            st.metric(key, str(value))
+            rows.append(
+                fact_row(
+                    label,
+                    _one_line(str(value)),
+                    code=key in _RUN_FACTS_AS_CODE,
+                )
+            )
+
+    # 한 번에 그린다. 행마다 `st.markdown`을 부르면 Streamlit이 사이에 블록 간격을
+    # 넣어 표로 읽히지 않는다.
+    st.markdown(
+        "".join(rows)
+        + '<p class="fact-note">지표와 delta는 결과 탭에 있습니다.</p>',
+        unsafe_allow_html=True,
+    )

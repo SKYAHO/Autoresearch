@@ -30,6 +30,10 @@ COPY agent_orchestration/app/database.py ./agent_orchestration/app/
 COPY agent_orchestration/app/experiments/__init__.py ./agent_orchestration/app/experiments/
 COPY agent_orchestration/app/experiments/models.py ./agent_orchestration/app/experiments/
 COPY agent_orchestration/ui ./agent_orchestration/ui
+# 테마 정본. WORKDIR이 /app이라 streamlit이 /app/.streamlit/config.toml을 읽는다.
+# 이 줄이 없으면 배포 이미지만 스톡 기본 테마로 돌아간다 — 로컬에서는 저장소 루트가
+# CWD라 같은 파일이 잡히므로 차이가 드러나지 않는다.
+COPY .streamlit ./.streamlit
 
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.revision="${VCS_REF}"

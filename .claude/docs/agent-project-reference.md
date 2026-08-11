@@ -99,6 +99,12 @@ docs/
   mount·RBAC·NetworkPolicy는 `SKYAHO/Autoresearch-infra` 소유이다.
 - **비책임:** 사용자 OAuth, 세션/사용자 히스토리, 정책 라우팅은 후속 단계다.
 - **패턴:** `src/`와 패키지 경계를 분리해 새로운 배포 단위를 별도로 둔다.
+- **Workbench 테마 정본(#657):** 색·모서리·테두리는 최상위 `.streamlit/config.toml`의
+  `[theme]`이 소유하고, `agent_orchestration/ui/styles.py`는 테마로 표현할 수 없는
+  타이포그래피·레이아웃 CSS만 남긴다. Streamlit 1.60은 `--background-color` 같은 전역
+  CSS 커스텀 속성을 노출하지 않으므로 CSS에서 `var(--*)`로 테마 값을 참조하면 그
+  선언은 오류 없이 통째로 무시된다. `.streamlit/`은 `ui.Dockerfile`이 명시적으로
+  `COPY`해야 이미지에 실린다 — 그 Dockerfile은 경로를 열거해 복사한다.
 - **이슈 발행 환경 변수(#516):** 가설을 `[AR]` 이슈로 발행하는 경로가 쓰는
   필수 환경 변수. 전체 기본값·형식은 `.env.example`이 정본.
   - `ORCH_GITHUB_TOKEN`: 이슈 발행 전용 `issues: write` GitHub 토큰.
