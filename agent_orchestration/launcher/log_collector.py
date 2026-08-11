@@ -50,6 +50,7 @@ from agent_orchestration.launcher.config import (
     _required_environment,
 )
 from agent_orchestration.launcher.jobs import EXPERIMENT_EXECUTOR_LABEL_SELECTOR
+from agent_orchestration.launcher.resident import run_forever
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -677,42 +678,6 @@ class DatabaseStepSink:
             step_id,
             ExperimentStepUpdate(status=status),
         )
-
-
-def run_forever(
-    tick: "Callable[[], list[str]]",
-    *,
-    should_stop: "Callable[[], bool]",
-    sleep: "Callable[[float], None]",
-    interval_sec: float,
-) -> None:
-    """수집 tick을 주기적으로 돌린다.
-
-    **어떤 예외로도 루프가 죽지 않는다.** 죽으면 Deployment가 재시작하지만 그 사이
-    로그가 비고, 관측이 끊긴 것을 알아챌 경로가 또 없다. tick 안의 Job 단위 격리
-    (`collect_once`)는 그 아래 층이고, 여기서는 Job 목록 조회 실패나 세션 생성 실패처럼
-    tick 전체를 무너뜨리는 것을 잡는다.
-
-    `should_stop`이 참이면 **진행 중인 tick을 마친 뒤** 빠져나간다 — 쓰기 도중에 끊지
-    않는다. 아직 완성되지 않은 꼬리를 억지로 flush하지는 않는다. 저장된 커서가 없어
-    재시작한 인스턴스가 같은 청크를 다시 계산하므로 내용은 잃지 않는다.
-    """
-    while True:
-        try:
-            problems = tick()
-        except Exception:
-            _LOGGER.warning("log collector tick failed reason=tick_failed")
-        else:
-            if problems:
-                _LOGGER.warning(
-                    "log collector tick completed with problems reasons=%s",
-                    ",".join(sorted(set(problems))),
-                )
-        if should_stop():
-            return
-        sleep(interval_sec)
-
-
 @dataclass(frozen=True)
 class LogCollectorSettings:
     """수집기가 실제로 쓰는 설정만 담는다.
@@ -802,6 +767,7 @@ def main() -> int:
             should_stop=lambda: stopping,
             sleep=time.sleep,
             interval_sec=settings.log_collect_interval_sec,
+            label="log collector",
         )
     finally:
         engine.dispose()

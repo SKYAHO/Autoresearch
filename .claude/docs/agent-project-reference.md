@@ -217,6 +217,16 @@ docs/
     필요 없다(launcher 이미지가 `app` 패키지를 포함한다). 수집 대상은 K8s Job 목록에서
     얻는다 — DB의 `RUNNING`으로 거르면 `EVALUATING` 전환 뒤에도 같은 Job이 계속 도는
     구간을 놓친다. 정본: `docs/specs/2026-08-09-experiment-log-collector.md`
+  - **PR 생성도 executor 밖에 있다(#689).** 상주 프로세스가 `PASSED` 실험을 훑어 `exp`
+    브랜치를 `dev`로 향하는 PR로 연다. 같은 이유다 — `candidate-finalizer`에는 이미 push
+    token과 API token이 있고 Codex가 그 안에서 도는데, 거기에 `Pull requests: write`까지
+    얹지 않는다. token은 그 권한 하나만 발급받아 이 프로세스가 코드를 push할 수 없다.
+    **지표로 거르지 않는다** — `PASSED`는 "가설이 맞았다"가 아니라 "완주했다"이고
+    (`2026-08-09-agent-authored-experiment-report.md` §결정 6), 여기서 결과로 걸러내면
+    승격 관문에서 제거한 통계 게이트를 되살리는 것이 된다. 머지와 `PROMOTED`는 사람이
+    한다. 관측 대상은 수집기와 반대로 **DB**다 — 찾는 것이 살아 있는 프로세스가 아니라
+    확정된 상태이고, Job은 TTL로 사라져 K8s에는 그 사실이 없다. 정본:
+    `docs/specs/2026-08-11-passed-experiment-pull-request.md`
   - executor 봉인 좌표: launcher가 `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`,
     `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA`를 DB에서 복사해 Pod에 주입한다.
     workspace-preparer는 GitHub의 현재 이슈 본문을 raw 입력으로 읽고 해당 branch를

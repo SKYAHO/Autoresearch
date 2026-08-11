@@ -37,12 +37,12 @@ from agent_orchestration.app.experiments.schemas import (  # noqa: E402
 from agent_orchestration.launcher.config import LauncherSettings  # noqa: E402
 from agent_orchestration.launcher.jobs import build_executor_job  # noqa: E402
 from agent_orchestration.launcher.repository import ClaimedExperiment  # noqa: E402
+from agent_orchestration.launcher.resident import run_forever  # noqa: E402
 from agent_orchestration.launcher.log_collector import (  # noqa: E402
     CHUNK_SIZE,
     complete_chunks,
     KubernetesPodLogs,
     DatabaseLogSink,
-    run_forever,
     KubernetesActiveJobs,
     LogCollectorSettings,
     collect_once,
@@ -819,7 +819,8 @@ def test_run_forever_stops_when_the_shutdown_flag_is_set() -> None:
         return []
 
     run_forever(tick, should_stop=lambda: stopping["value"], sleep=lambda _s: None,
-                interval_sec=5)
+                interval_sec=5,
+        label="log collector",)
 
     assert len(ticks) == 3
 
@@ -838,7 +839,8 @@ def test_run_forever_survives_a_failing_tick() -> None:
         return []
 
     run_forever(tick, should_stop=lambda: stopping["value"], sleep=lambda _s: None,
-                interval_sec=5)
+                interval_sec=5,
+        label="log collector",)
 
     assert len(ticks) == 3
 
@@ -855,7 +857,8 @@ def test_run_forever_sleeps_the_configured_interval_between_ticks() -> None:
         return []
 
     run_forever(tick, should_stop=lambda: stopping["value"],
-                sleep=slept.append, interval_sec=7)
+                sleep=slept.append, interval_sec=7,
+        label="log collector",)
 
     assert slept == [7]
 
@@ -865,7 +868,8 @@ def test_run_forever_does_not_sleep_before_shutting_down() -> None:
     slept: list[float] = []
 
     run_forever(lambda: [], should_stop=lambda: True,
-                sleep=slept.append, interval_sec=7)
+                sleep=slept.append, interval_sec=7,
+        label="log collector",)
 
     assert slept == []
 
