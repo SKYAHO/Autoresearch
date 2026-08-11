@@ -11,6 +11,7 @@ JSON 덤프는 예외 없이 그려지며, 낱말이 끊긴 라벨도 정상 렌
 from __future__ import annotations
 
 import pathlib
+import re
 import tomllib
 from datetime import datetime, timezone
 
@@ -268,3 +269,21 @@ def test_every_status_has_a_markdown_tone() -> None:
         assert status_tone(status) != "" and status_tone(status) is not None
     # 표에 없는 값도 화면을 깨뜨리지 않는다.
     assert status_tone("WHATEVER") == "gray"
+
+
+def test_every_class_views_writes_is_defined_in_the_stylesheet() -> None:
+    """CSS에 없는 클래스를 마크업에 쓰면 그 요소만 조용히 기본 스타일로 그려진다.
+
+    실제로 그랬다 — 보드 카드의 `board-meta`를 views에서 쓰면서 styles에 넣지 않아
+    경과 시간이 본문 크기로 그려져 배지 옆에서 접혔다(#671). `var(--*)` 사건,
+    `<p>` 특정성 사건과 같은 부류의 조용한 실패다.
+    """
+    source = pathlib.Path("agent_orchestration/ui/views.py").read_text(encoding="utf-8")
+    css = workbench_css()
+
+    used = set(re.findall(r'class="([a-z0-9 _-]+)"', source))
+    names = {name for group in used for name in group.split()}
+    # 상태 배지는 styles.status_badge가 만들어 넣으므로 views 소스에는 없다.
+    missing = sorted(name for name in names if f".{name}" not in css)
+
+    assert missing == []

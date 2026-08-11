@@ -27,6 +27,21 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 
 APP_PATH = "agent_orchestration/ui/app.py"
 
+# 기존 테스트가 이슈 발행 경로 좌표로 쓰는 값. 첫 생성은 항상 이 id를 돌려준다.
+CANONICAL_EXPERIMENT_ID = "3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d"
+
+
+def _sidebar_button(app: AppTest, label: str):
+    """sidebar 버튼을 라벨로 고른다.
+
+    인덱스로 고르면 sidebar에 버튼이 하나 추가될 때마다 무관한 테스트가 깨진다 —
+    실행 현황 보드 진입 버튼이 들어오면서 실제로 그랬다(#671).
+    """
+    for button in app.sidebar.button:
+        if button.label == label:
+            return button
+    raise AssertionError(f"sidebar에 '{label}' 버튼이 없습니다.")
+
 
 def _shows_hypothesis(app: AppTest, hypothesis: str) -> bool:
     """상세 화면이 선택한 실험의 가설 본문을 표시하는지 확인한다.
@@ -52,6 +67,9 @@ class _StubHandler(BaseHTTPRequestHandler):
     experiments: list[dict] = []
     missing_experiment_ids: set[str] = set()
     publication_failures = 0
+    created_count = 0
+    # 몇 번째 생성 요청을 실패시킬지(1-based). None이면 전부 성공.
+    fail_creation_at: int | None = None
 
     def log_message(self, *_args: object) -> None:
         """테스트 출력에 HTTP 로그를 남기지 않는다."""
@@ -104,8 +122,16 @@ class _StubHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length).decode()) if length else {}
         type(self).captured.append((self.path, body))
         if self.path == "/experiments":
+            if type(self).fail_creation_at == type(self).created_count + 1:
+                self._respond({"detail": "creation exploded"}, status=500)
+                return
+            # 묶음 제출은 생성을 여러 번 부른다. 매번 같은 id를 돌려주면 화면이
+            # 같은 실험을 여러 번 그리게 되어 실제와 다른 상태를 만든다.
+            # 첫 건은 기존 테스트가 좌표로 쓰는 값을 유지한다.
+            index = type(self).created_count
+            type(self).created_count += 1
             experiment = _experiment_payload(
-                "3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d",
+                CANONICAL_EXPERIMENT_ID if index == 0 else f"exp-batch-{index}",
                 body.get("hypothesis", ""),
             )
             type(self).experiments.insert(0, experiment)
@@ -157,6 +183,8 @@ def stub_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, dict]]
     _StubHandler.experiments = []
     _StubHandler.missing_experiment_ids = set()
     _StubHandler.publication_failures = 0
+    _StubHandler.created_count = 0
+    _StubHandler.fail_creation_at = None
     server = HTTPServer(("127.0.0.1", 0), _StubHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -235,7 +263,7 @@ def test_empty_list_stays_on_create_without_activity_polling(
     app = _rendered_app()
 
     app.run()
-    app.sidebar.button[1].click().run()
+    _sidebar_button(app, "실험 목록 새로고침").click().run()
 
     assert not app.exception
     assert app.text_input[0].label == "실험 제목"
@@ -254,7 +282,7 @@ def test_same_experiment_can_be_reselected_after_returning_to_create(
     app.sidebar.radio[0].set_value(experiment_id).run()
     assert _shows_hypothesis(app, "첫 번째 가설")
 
-    app.sidebar.button[0].click().run()
+    _sidebar_button(app, "+ 가설 추가하기").click().run()
     assert app.text_input[0].label == "실험 제목"
 
     app.sidebar.radio[0].set_value(experiment_id).run()
@@ -441,7 +469,7 @@ def test_refresh_exposes_new_experiment_and_hides_other_publication_result(
 
     second_id = "exp-two"
     _StubHandler.experiments.append(_experiment_payload(second_id, "두 번째 가설"))
-    app.sidebar.button[1].click().run()
+    _sidebar_button(app, "실험 목록 새로고침").click().run()
     app.sidebar.radio[0].set_value(second_id).run()
 
     assert not app.exception
@@ -463,3 +491,180 @@ def test_deleted_selected_experiment_is_removed_on_detail_refresh(
     assert not app.exception
     assert any("항목을 선택" in element.value for element in app.info)
     assert not app.sidebar.radio
+
+
+def test_board_view_renders_with_three_tabs(stub_api: list[tuple[str, dict]]) -> None:
+    """보드 진입 버튼이 실행 현황 화면을 연다.
+
+    보드는 `st.fragment` 안에서 그려지고 카드마다 버튼을 단다 — 스크립트를 실제로
+    돌려보지 않으면 fragment·버튼 key 문제를 잡을 수 없다.
+    """
+    _StubHandler.experiments = [
+        _experiment_payload("exp-running", "실행 중 가설"),
+        _experiment_payload("exp-waiting", "대기 가설"),
+    ]
+    _StubHandler.experiments[0]["status"] = "RUNNING"
+    app = _rendered_app()
+
+    _sidebar_button(app, "실행 현황 보기").click().run()
+
+    assert not app.exception
+    labels = [element.label for element in app.tabs]
+    assert any(label.startswith("실행 중") for label in labels)
+    assert any(label.startswith("대기") for label in labels)
+    assert any(label.startswith("완료") for label in labels)
+
+
+def test_board_card_opens_the_detail_view(stub_api: list[tuple[str, dict]]) -> None:
+    """카드의 상세 보기가 기존 상세 화면으로 넘어간다.
+
+    fragment 안에서 기본 `st.rerun()`을 쓰면 fragment만 다시 돌아 상태는 DETAIL인데
+    화면은 보드에 머문다. `scope="app"`이 필요한 이유다(#671 spec 결정 3).
+    """
+    _StubHandler.experiments = [_experiment_payload("exp-running", "실행 중 가설")]
+    _StubHandler.experiments[0]["status"] = "RUNNING"
+    app = _rendered_app()
+    _sidebar_button(app, "실행 현황 보기").click().run()
+
+    open_buttons = [b for b in app.button if b.label == "상세 보기"]
+    assert open_buttons, "보드 카드에 상세 보기 버튼이 없습니다."
+    open_buttons[0].click().run()
+
+    assert not app.exception
+    assert _shows_hypothesis(app, "실행 중 가설")
+
+
+def _fill_draft(app: AppTest, order: int, title: str, hypothesis: str) -> None:
+    """`order`번째 가설 탭의 제목·본문을 채운다."""
+    suffix = "" if order == 1 else f"-{order}"
+    app.text_input(key=f"submission-title{suffix}").set_value(title)
+    app.text_area(key=f"submission-hypothesis{suffix}").set_value(hypothesis)
+
+
+def test_batch_submission_creates_one_experiment_per_hypothesis(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """가설 3개를 한 번에 내면 실험 3개와 이슈 3개가 열린다.
+
+    동시 실행 상한만큼 한 번에 내야 "여러 가설이 동시에 검증된다"가 성립한다(#671).
+    """
+    app = _rendered_app()
+    app.slider(key="submission-count").set_value(3).run()
+    for order in range(1, 4):
+        _fill_draft(app, order, f"제목 {order}", f"가설 {order}입니다.")
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    created = [path for path, _ in stub_api if path == "/experiments"]
+    published = [path for path, _ in stub_api if path.endswith("/issue")]
+    assert len(created) == 3
+    assert len(published) == 3
+    # 본문이 서로 달라야 한다 — 탭마다 위젯 key가 갈리지 않으면 같은 값 3개가 간다.
+    hypotheses = [body["hypothesis"] for path, body in stub_api if path == "/experiments"]
+    assert sorted(hypotheses) == ["가설 1입니다.", "가설 2입니다.", "가설 3입니다."]
+
+
+def test_batch_submission_lands_on_the_board(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """여러 건을 냈으면 볼 곳은 상세가 아니라 보드다."""
+    app = _rendered_app()
+    app.slider(key="submission-count").set_value(2).run()
+    _fill_draft(app, 1, "제목 1", "가설 1입니다.")
+    _fill_draft(app, 2, "제목 2", "가설 2입니다.")
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    labels = [element.label for element in app.tabs]
+    assert any(label.startswith("실행 중") for label in labels)
+
+
+def test_partial_publication_failure_keeps_only_the_failed_items(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """한 건이 실패해도 나머지는 계속 발행하고, 실패한 것만 재시도 대상이 된다."""
+    _StubHandler.publication_failures = 1
+    app = _rendered_app()
+    app.slider(key="submission-count").set_value(2).run()
+    _fill_draft(app, 1, "제목 1", "가설 1입니다.")
+    _fill_draft(app, 2, "제목 2", "가설 2입니다.")
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    # 첫 건은 실패, 둘째 건은 성공 — 생성은 둘 다 됐다.
+    created = [path for path, _ in stub_api if path == "/experiments"]
+    assert len(created) == 2
+    assert any("1건은 생성됐지만" in element.value for element in app.warning)
+
+
+def test_new_submission_is_refused_while_publications_are_pending(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """남은 발행을 처리하기 전에 또 만들면 무엇이 어디까지 갔는지 설명할 수 없다."""
+    _StubHandler.publication_failures = 1
+    app = _rendered_app()
+    _fill_required(app)
+    app.button[0].click().run()
+    created_before = len([path for path, _ in stub_api if path == "/experiments"])
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    created_after = len([path for path, _ in stub_api if path == "/experiments"])
+    assert created_after == created_before
+
+
+def test_creation_failure_survives_the_jump_to_the_board(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """3개를 냈는데 3번째 생성이 끊기면 앞의 둘은 정상 발행되어 화면이 보드로 넘어간다.
+    그때 카드 수가 모자란 이유가 화면에 남아야 한다.
+
+    이 사유를 `detail_error`에 담으면 발행 성공 경로가 지운다 — 사용자는 아무 설명
+    없이 카드가 부족한 보드를 본다(#681 리뷰).
+    """
+    _StubHandler.fail_creation_at = 3
+    app = _rendered_app()
+    app.slider(key="submission-count").set_value(3).run()
+    for order in range(1, 4):
+        _fill_draft(app, order, f"제목 {order}", f"가설 {order}입니다.")
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    # 앞의 둘만 만들어지고 발행됐다.
+    created = [path for path, _ in stub_api if path == "/experiments"]
+    published = [path for path, _ in stub_api if path.endswith("/issue")]
+    assert len(created) == 3  # 3번째 요청은 500으로 끊겼다
+    assert len(published) == 2
+    # 보드로 넘어갔지만 이유가 남아 있다.
+    labels = [element.label for element in app.tabs]
+    assert any(label.startswith("실행 중") for label in labels)
+    warnings = [element.value for element in app.warning]
+    assert any("가설 3번에서 실험 생성이 실패" in message for message in warnings)
+    assert any("2건만 제출" in message for message in warnings)
+
+
+def test_first_creation_failure_reports_the_real_cause(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """첫 생성이 실패하면 `pending_publications`가 빈 채로 넘어간다.
+
+    거기서 발행 단계로 들어가면 "재시도할 이슈 발행 정보가 없습니다"가 실제 원인
+    (500·타임아웃)을 덮어 사용자가 원인을 볼 수 없다(#681 리뷰).
+    """
+    _StubHandler.fail_creation_at = 1
+    app = _rendered_app()
+    _fill_required(app)
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    messages = [element.value for element in app.error]
+    assert any("실험 생성이 실패" in message for message in messages)
+    assert not any("재시도할 이슈 발행 정보가 없습니다" in message for message in messages)
+    # 하나도 못 만들었으면 발행을 시도하지 않는다.
+    assert not [path for path, _ in stub_api if path.endswith("/issue")]

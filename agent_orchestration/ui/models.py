@@ -67,6 +67,39 @@ _STEP_STATUS_COLORS = {
     "FAILED": "#B42318",
 }
 
+# 보드가 쓰는 상태 분류. **`POLLING_STATUSES`를 재사용하지 않는다.**
+#
+# `POLLING_STATUSES`는 "종료가 아닌 것"이라 `PASSED`를 포함한다 — `PASSED`에서
+# `PROMOTED`로 가는 간선이 남아 있기 때문이다. 그 정의를 보드에 그대로 쓰면 판정을
+# 통과해 executor가 이미 끝난 실험이 "실행 중" 칸에 섞인다(#671).
+#
+# 보드가 묻는 것은 "지금 executor가 돌고 있나"이므로 따로 정의한다.
+BOARD_RUNNING_STATUSES = frozenset(
+    {ExperimentStatus.RUNNING.value, ExperimentStatus.EVALUATING.value}
+)
+BOARD_WAITING_STATUSES = frozenset({ExperimentStatus.CREATED.value})
+
+# executor Job의 init 컨테이너 순서. 이 순서가 곧 실험의 진행 단계다.
+#
+# 로그 수집기(#559)가 모든 로그에 `log_type = init 컨테이너 이름`을 붙이므로,
+# **가장 최근 로그의 `log_type`이 곧 현재 단계**다. 쿠버네티스에 붙지 않고
+# Experiment API만으로 `kubectl`의 `Init:N/7`과 같은 정보를 얻는 근거다(#671).
+#
+# Step으로는 이걸 알 수 없다 — 실행 중 실험을 조회하면 `steps`가 0건이다. Step은
+# 에이전트가 자발적으로 기록하는 값이라 codex-worker 이전 구간을 덮지 못한다.
+EXECUTOR_STAGES: tuple[tuple[str, str], ...] = (
+    ("branch-token-minter", "브랜치 토큰 발급"),
+    ("branch-creator", "브랜치 생성"),
+    ("clone-token-minter", "clone 토큰 발급"),
+    ("workspace-preparer", "작업공간 준비 · baseline 학습"),
+    ("codex-worker", "에이전트 구현"),
+    ("candidate-verifier", "후보 검증 · 테스트"),
+    ("push-token-minter", "push 토큰 발급"),
+)
+
+_EXECUTOR_STAGE_LABELS = dict(EXECUTOR_STAGES)
+_EXECUTOR_STAGE_INDEX = {name: index for index, (name, _) in enumerate(EXECUTOR_STAGES)}
+
 # 사이드바 목록이 쓰는 Streamlit 마크다운 색 이름. 위젯 라벨에는 HTML을 넣을 수
 # 없어 `:green[...]` 문법으로만 색을 줄 수 있으므로 `_STATUS_COLORS`의 hex와 별도로
 # 둔다. 두 표는 같은 의미를 가리키므로 상태를 추가하면 함께 넓힌다.
@@ -336,3 +369,17 @@ def status_color(status: str) -> str:
 def status_tone(status: str) -> str:
     """상태 코드를 Streamlit 마크다운 색 이름으로 반환한다."""
     return _STATUS_TONES.get(status, "gray")
+
+
+def stage_label(log_type: str) -> str | None:
+    """executor 단계 이름을 화면 문구로 반환한다. 단계가 아니면 `None`."""
+    return _EXECUTOR_STAGE_LABELS.get(log_type)
+
+
+def stage_index(log_type: str) -> int | None:
+    """executor 단계의 0-based 순서를 반환한다. 단계가 아니면 `None`.
+
+    `kubectl`의 `Init:N/7`은 "N개 완료"라 N번째(0-based)가 실행 중이라는 뜻이다.
+    즉 `Init:4/7` ↔ `codex-worker` ↔ 이 함수가 돌려주는 `4`.
+    """
+    return _EXECUTOR_STAGE_INDEX.get(log_type)

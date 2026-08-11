@@ -7,7 +7,8 @@ Streamlit widget 렌더링은 담당하지 않는다.
 [기능]
 Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 목록·상세
 오류 분리 보존, 화면 모드 전이와 이슈 발행 재시도·취소 상태 전이를 제공한다. 리포트 본문
-캐시와 조회 오류의 분리 보존도 포함한다.
+캐시와 조회 오류의 분리 보존도 포함한다. 병렬 실행 현황 보드가 실험별로 따로 들고 가는
+로그 cursor와 최신 단계도 여기서 관리한다(#671).
 
 [비책임]
 HTTP 요청, API 인증, 상태 전이 기록, Agent 실행, GitHub 이슈 처리.
@@ -36,6 +37,20 @@ class WorkbenchView(StrEnum):
 
     CREATE = "CREATE"
     DETAIL = "DETAIL"
+    BOARD = "BOARD"
+
+
+@dataclass(frozen=True)
+class PendingPublication:
+    """생성은 끝났지만 이슈 발행이 남은 실험 하나.
+
+    생성(순수 DB 쓰기)과 발행(외부 부작용)은 서버 계약상 두 번의 요청이라 그 사이에서
+    끊길 수 있다. 끊긴 지점을 항목 단위로 들고 있어야 재시도가 이미 만든 Experiment를
+    다시 만들지 않는다.
+    """
+
+    experiment_id: str
+    submission: Submission
 
 
 @dataclass
@@ -54,17 +69,31 @@ class WorkbenchState:
     metadata: dict[str, str] = field(default_factory=dict)
     event_cursor: str | None = None
     log_cursor: str | None = None
+    # 보드가 실험별로 따로 들고 가는 로그 cursor와 최신 단계.
+    #
+    # **`log_cursor`와 섞지 않는다.** `log_cursor`는 선택된 실험 하나의 것이고 상세
+    # 화면의 원본 로그 탭이 소유한다. 보드가 그 값을 밀면 상세 화면이 이미 읽은
+    # 로그를 다시 읽거나 아직 못 읽은 구간을 건너뛴다(spec 결정 4).
+    board_log_cursors: dict[str, str | None] = field(default_factory=dict)
+    board_stages: dict[str, str] = field(default_factory=dict)
     metadata_loaded_for: str | None = None
     terminal_status_observed: str | None = None
     terminal_refresh_complete: bool = False
     list_error: str | None = None
     detail_error: str | None = None
     last_updated_at: datetime | None = None
-    # 방금 발행한 이슈 좌표. 선택 변경이나 다음 제출 때 지워 이전 결과가 남지 않게 한다.
-    last_publication: IssuePublication | None = None
-    # 생성 성공·발행 실패 사이의 부분 성공을 보존해 재제출 시 Experiment 중복 생성을 막는다.
-    pending_publication_experiment_id: str | None = None
-    pending_publication_submission: Submission | None = None
+    # 방금 발행한 이슈 좌표들. 선택 변경이나 다음 제출 때 비워 이전 결과가 남지 않게
+    # 한다. 한 번에 여러 가설을 제출할 수 있으므로 목록이다(#671).
+    last_publications: list[IssuePublication] = field(default_factory=list)
+    # 생성 성공·발행 실패 사이의 부분 성공을 보존해 재제출 시 Experiment 중복 생성을
+    # 막는다. 묶음 제출에서는 일부만 실패할 수 있어 항목 단위로 남긴다.
+    pending_publications: list[PendingPublication] = field(default_factory=list)
+    # 제출 자체가 실패한 사유. **`detail_error`와 따로 둔다.**
+    #
+    # 다섯 개를 냈는데 세 번째 생성이 실패하면 앞의 둘은 정상 발행되어 화면이 보드로
+    # 넘어간다. 그 사유를 `detail_error`에 담으면 발행 성공 경로가 그것을 지워, 카드가
+    # 두 장뿐인 이유를 아무도 설명하지 못한다. 화면 전환을 넘어 살아남아야 한다.
+    submission_error: str | None = None
     # 조회한 리포트 본문. `None`은 "아직 안 받음"과 "받았는데 리포트가 없음" 두 가지로
     # 겹치므로, 둘을 가르는 것은 `report_checked_for`다.
     report_markdown: str | None = None
@@ -88,11 +117,49 @@ def show_create_view(state: WorkbenchState) -> None:
     state.view = WorkbenchView.CREATE
 
 
-def discard_pending_publication(state: WorkbenchState) -> None:
+def discard_pending_publications(state: WorkbenchState) -> None:
     """실패한 이슈 발행 대기와 관련 오류만 정리한다."""
-    state.pending_publication_experiment_id = None
-    state.pending_publication_submission = None
+    state.pending_publications.clear()
     state.detail_error = None
+    state.submission_error = None
+
+
+def record_submission_error(state: WorkbenchState, message: str) -> None:
+    """제출이 실패한 사유를 화면 전환 뒤에도 남도록 기록한다."""
+    state.submission_error = message
+
+
+def show_board(state: WorkbenchState) -> None:
+    """Workbench를 병렬 실행 현황 보드로 전환한다."""
+    state.view = WorkbenchView.BOARD
+
+
+def record_board_stage(
+    state: WorkbenchState,
+    experiment_id: str,
+    *,
+    cursor: str | None,
+    log_type: str | None,
+) -> None:
+    """보드가 읽은 로그 위치와 최신 단계를 함께 기록한다.
+
+    cursor는 로그를 읽었으면 항상 갱신하고, 단계는 **이번 페이지에서 단계를 찾았을
+    때만** 덮어쓴다. 새 로그가 단계에 속하지 않는 `log_type`(에이전트가 만든 임의
+    값)뿐이면 직전 단계를 유지해야 카드가 깜빡이지 않는다.
+    """
+    state.board_log_cursors[experiment_id] = cursor
+    if log_type is not None:
+        state.board_stages[experiment_id] = log_type
+
+
+def forget_board_entry(state: WorkbenchState, experiment_id: str) -> None:
+    """종료된 실험의 보드 cursor와 단계를 버린다.
+
+    안 버리면 두 dict가 실험 수만큼 무한히 자란다 — 세션이 길수록 커지고 다시 쓸
+    일도 없다.
+    """
+    state.board_log_cursors.pop(experiment_id, None)
+    state.board_stages.pop(experiment_id, None)
 
 
 def show_experiment(state: WorkbenchState, experiment_id: str) -> None:
@@ -118,7 +185,7 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.terminal_status_observed = None
     state.terminal_refresh_complete = False
     state.detail_error = None
-    state.last_publication = None
+    state.last_publications.clear()
     state.report_markdown = None
     state.report_error = None
     state.report_checked_for = None

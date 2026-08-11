@@ -13,6 +13,9 @@ sidebar 탐색으로 분리된 사전등록 화면과 상세 화면의 컴포넌
 지표를 그리는 곳은 **결과 탭 하나**다. 인스펙터의 "실행 요약"은 시드·테스트셋 일치
 여부 같은 실행 조건만 적는다(#657).
 
+병렬 실행 현황 보드도 이 모듈이 그린다 — 실행 중·대기·완료 탭과 실험별 진행 단계
+카드다. 단계는 최신 로그의 `log_type`에서 온다(#671).
+
 [비책임]
 HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조립과 GitHub 이슈 생성
 (모두 API 서버의 책임이다).
@@ -28,24 +31,35 @@ from datetime import datetime
 import streamlit as st
 
 from agent_orchestration.ui.models import (
+    BOARD_RUNNING_STATUSES,
+    BOARD_WAITING_STATUSES,
     Event,
+    EXECUTOR_STAGES,
     Experiment,
     IssuePublication,
     REPORT_STATUSES,
     Step,
     Submission,
+    stage_index,
+    stage_label,
+    status_color,
     status_label,
     status_tone,
     step_kind_label,
     step_status_color,
 )
 from agent_orchestration.ui.report import report_document
-from agent_orchestration.ui.state import WorkbenchState
+from agent_orchestration.ui.state import PendingPublication, WorkbenchState
 from agent_orchestration.ui.styles import fact_row, status_badge
 from agent_orchestration.ui.time import format_short_time, format_time
 
 
 HYPOTHESIS_KEY = "submission-hypothesis"
+
+# 한 번에 낼 수 있는 가설 수. 배포된 launcher의 동시 실행 상한과 같은 값이라 다섯 개를
+# 내면 전부 곧바로 돌기 시작한다. 상한이 바뀌어도 이 값은 "한 화면에서 쓸 만한 개수"라
+# 자동으로 따라가지 않는다.
+_MAX_SUBMISSION_COUNT = 5
 
 _HYPOTHESIS_PLACEHOLDER = "마크다운 형식으로 가설을 작성해 주세요"
 
@@ -100,7 +114,7 @@ def _list_label(status: str, hypothesis: str, started_at: datetime) -> str:
     return f":{tone}[{status}]  ·  {format_short_time(started_at)}  \n{text}"
 
 
-def _render_hypothesis_editor() -> str:
+def _render_hypothesis_editor(key: str) -> str:
     """마크다운 편집창과 미리보기를 나란히 렌더링하고 현재 본문을 반환한다.
 
     `st.form` **밖**에서 호출해야 한다. 폼 안의 위젯은 상호작용해도 rerun을 일으키지
@@ -112,7 +126,7 @@ def _render_hypothesis_editor() -> str:
         st.caption("편집")
         hypothesis = st.text_area(
             "가설",
-            key=HYPOTHESIS_KEY,
+            key=key,
             placeholder=_HYPOTHESIS_PLACEHOLDER,
             height=340,
             label_visibility="collapsed",
@@ -155,36 +169,44 @@ def _render_agent_instructions() -> None:
     )
 
 
-def render_submission_form(api_error: str | None) -> Submission | None:
-    """사전등록 제출 폼을 렌더링하고 제출 값을 반환한다.
+def render_submission_form(api_error: str | None) -> list[Submission] | None:
+    """사전등록 제출 폼을 렌더링하고 제출 값 목록을 반환한다.
 
     입력은 제목과 마크다운 가설 두 가지다(#570). 예측 모델링 사전등록 표준
     (arXiv 2311.18807)의 Phase A 항목은 가설 본문 안에 자유롭게 적는다. 데이터·split·
     시드는 실험 간 비교가 성립하도록 서버가 고정하므로 아래에 읽기 전용으로 보여준다.
+
+    가설을 여러 개 받는다(#671). 동시 실행 상한만큼 한 번에 내야 "여러 가설이 동시에
+    검증된다"는 장면이 성립하고, 그때마다 폼을 다시 채우는 것은 그 장면을 만들기 위한
+    수고일 뿐이다. 개수는 기본 1이라 한 개만 낼 때의 화면은 그대로다.
+
+    가설마다 탭을 쓴다. 세로로 쌓으면 다섯 개째 편집창이 화면 두 배 아래에 있다.
+    Streamlit은 탭 내용을 모두 렌더링하므로 안 보이는 탭의 입력도 함께 읽힌다.
     """
     st.markdown('<p class="workbench-kicker">AUTORESEARCH / NEW EXPERIMENT</p>', unsafe_allow_html=True)
     with st.container(border=True):
         st.markdown("### 실험을 사전등록합니다")
         st.caption(
-            "제출하면 `[AR]` 이슈가 열리고 `auto-experiment` label이 붙습니다. "
+            "제출하면 가설마다 `[AR]` 이슈가 열리고 `auto-experiment` label이 붙습니다. "
             "제목만 따로 받고, 나머지는 모두 가설 본문에 자유롭게 적습니다."
         )
         if api_error:
             st.error(api_error)
 
-        title = st.text_input(
-            "실험 제목",
-            key="submission-title",
-            placeholder="예: 조회수 비율 피처 실험",
-            help="이슈 제목이 여기서 만들어집니다. 실험 브랜치 이름은 이슈 번호로 정해집니다.",
+        count = st.slider(
+            "한 번에 제출할 가설 수",
+            min_value=1,
+            max_value=_MAX_SUBMISSION_COUNT,
+            value=1,
+            key="submission-count",
+            help="여러 개를 내면 슬롯이 있는 만큼 동시에 실행되고, 나머지는 대기합니다.",
         )
 
-        st.markdown("**가설**")
-        st.caption(
-            "배경 · 근거 · 바꿀 피처 · 참고 링크를 원하는 구조로 적으세요. "
-            "미리보기는 편집창 밖을 클릭하거나 Ctrl+Enter를 누를 때 갱신됩니다."
-        )
-        hypothesis = _render_hypothesis_editor()
+        drafts: list[Submission] = []
+        tabs = st.tabs([f"가설 {order}" for order in range(1, count + 1)])
+        for order, tab in enumerate(tabs, start=1):
+            with tab:
+                drafts.append(_render_submission_draft(order))
 
         _render_agent_instructions()
 
@@ -201,20 +223,57 @@ def render_submission_form(api_error: str | None) -> Submission | None:
 
         # 폼을 쓰지 않는다. 마크다운 편집기가 폼 밖에 있어야 미리보기가 갱신되는데,
         # 제출 버튼만 폼에 남기면 제목·가설이 서로 다른 rerun에서 읽혀 값이 어긋난다.
-        submitted = st.button("사전등록하고 이슈 발행", type="primary")
+        label = (
+            "사전등록하고 이슈 발행"
+            if count == 1
+            else f"가설 {count}개 사전등록하고 이슈 발행"
+        )
+        submitted = st.button(label, type="primary")
 
     if not submitted:
         return None
+    return drafts
+
+
+def _render_submission_draft(order: int) -> Submission:
+    """가설 하나의 제목·본문 입력을 렌더링한다.
+
+    위젯 key에 순서를 넣는다. 고정 key를 쓰면 탭이 늘어날 때 모든 탭이 같은 값을
+    공유해 다섯 개를 써도 같은 가설 다섯 개가 제출된다.
+
+    첫 번째만 예전 key를 그대로 쓴다 — 개수를 늘렸다 줄여도 쓰던 내용이 남는다.
+    """
+    suffix = "" if order == 1 else f"-{order}"
+    title = st.text_input(
+        "실험 제목",
+        key=f"submission-title{suffix}",
+        placeholder="예: 조회수 비율 피처 실험",
+        help="이슈 제목이 여기서 만들어집니다. 실험 브랜치 이름은 이슈 번호로 정해집니다.",
+    )
+    st.markdown("**가설**")
+    st.caption(
+        "배경 · 근거 · 바꿀 피처 · 참고 링크를 원하는 구조로 적으세요. "
+        "미리보기는 편집창 밖을 클릭하거나 Ctrl+Enter를 누를 때 갱신됩니다."
+    )
+    hypothesis = _render_hypothesis_editor(f"{HYPOTHESIS_KEY}{suffix}")
     return Submission(title=title.strip(), hypothesis=hypothesis.strip())
 
 
-def render_pending_publication_actions() -> tuple[bool, bool]:
-    """실패한 이슈 발행을 저장 입력으로 재시도하거나 폐기하는 동작을 렌더링한다."""
+def render_pending_publication_actions(
+    pending: Sequence[PendingPublication],
+) -> tuple[bool, bool]:
+    """실패한 이슈 발행을 저장 입력으로 재시도하거나 폐기하는 동작을 렌더링한다.
+
+    **어느 것이 남았는지 적는다.** 묶음 제출에서는 일부만 실패하므로, 건수만 알려주면
+    사용자가 무엇을 다시 내야 하는지 알 수 없다.
+    """
     with st.container(border=True):
         st.warning(
-            "Experiment는 생성됐지만 이슈 발행이 완료되지 않았습니다. "
+            f"Experiment {len(pending)}건은 생성됐지만 이슈 발행이 완료되지 않았습니다. "
             "저장된 입력으로 다시 시도하거나 이 등록을 취소할 수 있습니다."
         )
+        for item in pending:
+            st.caption(f"· {_one_line(item.submission.title) or '(제목 없음)'}")
         retry_column, discard_column = st.columns(2)
         retry = retry_column.button(
             "이슈 발행 다시 시도",
@@ -228,13 +287,23 @@ def render_pending_publication_actions() -> tuple[bool, bool]:
     return retry, discard
 
 
-def render_publication_result(publication: IssuePublication) -> None:
+def render_publication_result(publications: Sequence[IssuePublication]) -> None:
     """발행된 이슈 좌표를 보여준다."""
-    st.success(
-        f"이슈 #{publication.issue_number}가 열렸습니다 · 실험 브랜치 "
-        f"`{publication.issue_branch}`"
-    )
-    st.markdown(f"[GitHub에서 열기]({publication.issue_url})")
+    if len(publications) == 1:
+        publication = publications[0]
+        st.success(
+            f"이슈 #{publication.issue_number}가 열렸습니다 · 실험 브랜치 "
+            f"`{publication.issue_branch}`"
+        )
+        st.markdown(f"[GitHub에서 열기]({publication.issue_url})")
+        return
+    numbers = ", ".join(f"#{item.issue_number}" for item in publications)
+    st.success(f"이슈 {len(publications)}건이 열렸습니다 · {numbers}")
+    for publication in publications:
+        st.markdown(
+            f"[#{publication.issue_number} 열기]({publication.issue_url}) · "
+            f"`{publication.issue_branch}`"
+        )
 
 
 def render_empty_workbench() -> None:
@@ -252,6 +321,11 @@ def render_add_hypothesis_button() -> bool:
         type="primary",
         use_container_width=True,
     )
+
+
+def render_board_button() -> bool:
+    """sidebar의 병렬 실행 현황 보드 진입 버튼을 렌더링한다."""
+    return st.sidebar.button("실행 현황 보기", use_container_width=True)
 
 
 def render_experiment_refresh_button() -> bool:
@@ -588,3 +662,162 @@ def _render_metrics(metrics: dict[str, object] | None) -> None:
         + '<p class="fact-note">지표와 delta는 결과 탭에 있습니다.</p>',
         unsafe_allow_html=True,
     )
+
+
+# 보드 카드의 가설 요약 길이. 카드 폭이 좁아 목록 라벨보다 짧게 잡는다.
+_BOARD_SUMMARY_MAX = 62
+
+# 한 줄에 놓는 카드 수. 동시 실행 상한이 5라 5개가 한 줄에 들어가야 "동시에 돌고
+# 있다"가 한눈에 읽힌다.
+_BOARD_COLUMNS = 5
+
+# 완료 탭이 보여줄 최근 실험 수. 전부 그리면 세션이 길수록 보드가 무거워진다.
+_BOARD_DONE_LIMIT = 10
+
+
+def _board_summary(hypothesis: str) -> str:
+    """카드에 넣을 가설 요약. 문장 경계를 우선하고 넘치면 자른다."""
+    text = _one_line(hypothesis)
+    sentence_end = _SENTENCE_END.search(text)
+    if sentence_end:
+        text = text[: sentence_end.end()]
+    if len(text) <= _BOARD_SUMMARY_MAX:
+        return text
+    head = text[:_BOARD_SUMMARY_MAX]
+    boundary = head.rfind(" ")
+    if boundary >= _BOARD_SUMMARY_MAX // 2:
+        head = head[:boundary]
+    return head.rstrip() + "…"
+
+
+def _render_board_card(
+    experiment: Experiment, stage: str | None, *, show_stage: bool
+) -> bool:
+    """보드 카드 하나를 그리고 상세 보기 버튼이 눌렸는지 반환한다."""
+    with st.container(border=True):
+        color = status_color(experiment.status)
+        st.markdown(
+            f'<span class="status-badge" style="--badge:{color}">'
+            f"{status_label(experiment.status)}</span>"
+            # 경과 시간이 아니라 **제출 시각(KST)** 을 적는다. 경과는 `created_at`
+            # 기준이라 슬롯을 기다린 시간까지 포함하는데, 카드에 "얼마나 돌고 있나"로
+            # 읽히면 `kubectl`의 pod AGE와 체계적으로 어긋난다. 시작 시각을 담은
+            # 필드가 없으므로 있는 사실(제출 시각)만 적는다.
+            f'<span class="board-meta"> 제출 {format_short_time(experiment.created_at)}</span>',
+            unsafe_allow_html=True,
+        )
+        if show_stage:
+            _render_board_stage(stage)
+        st.caption(_board_summary(experiment.hypothesis))
+        # key를 인덱스가 아니라 실험 id로 만든다. 목록 순서는 상태가 바뀔 때마다
+        # 흔들리는데, 인덱스 key를 쓰면 Streamlit이 직전 클릭을 엉뚱한 카드에 붙인다.
+        return st.button(
+            "상세 보기", key=f"board-open-{experiment.id}", use_container_width=True
+        )
+
+
+def _render_board_stage(stage: str | None) -> None:
+    """카드의 진행 단계를 그린다.
+
+    단계를 모르는 경우가 둘이다 — 아직 로그가 없거나(`stage is None`), executor
+    단계가 아닌 `log_type`만 온 경우다. 후자를 7단계 어딘가로 우겨넣지 않는다.
+    """
+    index = stage_index(stage) if stage is not None else None
+    if index is None:
+        st.caption("단계 기록 대기 중")
+        st.progress(0.0)
+        return
+    st.markdown(f"**{stage_label(stage)}**")
+    st.caption(f"{stage} · 단계 {index + 1}/{len(EXECUTOR_STAGES)}")
+    st.progress((index + 1) / len(EXECUTOR_STAGES))
+
+
+def _render_board_grid(
+    experiments: Sequence[Experiment],
+    stages: dict[str, str],
+    *,
+    show_stage: bool,
+    empty_message: str,
+) -> str | None:
+    """카드 격자를 그리고 사용자가 연 실험 id를 반환한다."""
+    # 같은 id가 두 번 오면 버튼 key가 겹쳐 `StreamlitDuplicateElementKey`로 **페이지
+    # 전체**가 죽는다. 목록은 생성 직후 낙관적 insert와 다음 갱신의 전체 교체가
+    # 겹치는 자리라, 한 번의 rerun 안에서 중복이 스칠 수 있다. 카드 하나를 덜 그리는
+    # 편이 화면이 사라지는 것보다 낫다.
+    seen: set[str] = set()
+    unique = [
+        experiment
+        for experiment in experiments
+        if not (experiment.id in seen or seen.add(experiment.id))
+    ]
+    if not unique:
+        st.caption(empty_message)
+        return None
+    opened: str | None = None
+    for start in range(0, len(unique), _BOARD_COLUMNS):
+        row = unique[start : start + _BOARD_COLUMNS]
+        for column, experiment in zip(st.columns(_BOARD_COLUMNS), row):
+            with column:
+                if _render_board_card(
+                    experiment, stages.get(experiment.id), show_stage=show_stage
+                ):
+                    opened = experiment.id
+    return opened
+
+
+def render_board(state: WorkbenchState) -> str | None:
+    """병렬 실행 현황 보드를 그리고 사용자가 연 실험 id를 반환한다.
+
+    화면 전환은 하지 않는다 — `app.py`가 반환값을 받아 `show_experiment`를 부른다.
+    views는 상태를 바꾸지 않는다는 기존 경계를 지킨다.
+    """
+    st.markdown(
+        '<p class="workbench-kicker">실행 현황</p>', unsafe_allow_html=True
+    )
+    running = [e for e in state.experiments if e.status in BOARD_RUNNING_STATUSES]
+    waiting = [e for e in state.experiments if e.status in BOARD_WAITING_STATUSES]
+    done = [
+        e
+        for e in state.experiments
+        if e.status not in BOARD_RUNNING_STATUSES | BOARD_WAITING_STATUSES
+    ]
+
+    running_column, waiting_column, done_column = st.columns(3)
+    running_column.metric("동시 실행 중", len(running))
+    waiting_column.metric("슬롯 대기", len(waiting))
+    done_column.metric("완료", len(done))
+
+    running_tab, waiting_tab, done_tab = st.tabs(
+        [f"실행 중 {len(running)}", f"대기 {len(waiting)}", f"완료 {len(done)}"]
+    )
+    with running_tab:
+        opened = _render_board_grid(
+            running,
+            state.board_stages,
+            show_stage=True,
+            empty_message="지금 실행 중인 실험이 없습니다.",
+        )
+    with waiting_tab:
+        st.caption(
+            "동시 실행 상한이 차 있으면 여기서 기다리다가 슬롯이 나는 대로 시작합니다."
+        )
+        opened = (
+            _render_board_grid(
+                waiting,
+                state.board_stages,
+                show_stage=False,
+                empty_message="대기 중인 실험이 없습니다.",
+            )
+            or opened
+        )
+    with done_tab:
+        opened = (
+            _render_board_grid(
+                done[:_BOARD_DONE_LIMIT],
+                state.board_stages,
+                show_stage=False,
+                empty_message="완료된 실험이 없습니다.",
+            )
+            or opened
+        )
+    return opened

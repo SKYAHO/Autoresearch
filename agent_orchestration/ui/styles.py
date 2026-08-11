@@ -126,6 +126,15 @@ def workbench_css() -> str:
         white-space: nowrap;
       }}
 
+      /* 보드 카드에서 배지 옆에 붙는 경과 시간. 크기를 주지 않으면 본문 크기로
+         그려져 배지와 같은 줄에 들어가지 못하고 접힌다. */
+      .board-meta {{
+        color: {_MUTED};
+        font-size: 0.72rem;
+        margin-left: 0.35rem;
+        white-space: nowrap;
+      }}
+
       /* 인스펙터의 라벨/값 행. 캡션을 여러 줄 쌓으면 라벨과 값이 구분되지 않아
          디버그 출력처럼 보인다. 라벨 열을 고정해 값의 왼쪽 끝을 맞춘다. */
       .fact-row {{
