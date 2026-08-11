@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-11T13:14:34Z",
+  "generated_at": "2026-08-11T13:17:26Z",
   "reports": [
+    {
+      "number": 701,
+      "title": "fix: launcher 이미지에 github_pull_requests를 넣고 승격 허용 목록을 맞춘다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-11T13:17:11Z",
+      "summary_ko": [
+        "launcher 도커 이미지 빌드 시 모듈 누락으로 발생하던 PR 생성기 컨테이너 실행 오류를 수정합니다.",
+        "릴리스 워크플로우 승격 허용 목록에 PR 생성기 배포 매니페스트 경로를 추가하여 승격 가드 검증 오류를 예방합니다.",
+        "launcher 엔트리포인트가 참조하는 모든 모듈이 도커 파일의 복사 목록에 존재하는지 검사하는 회귀 테스트를 추가합니다."
+      ],
+      "report_url": "pr/701/"
+    },
     {
       "number": 692,
       "title": "feat: 완주한 실험의 exp 브랜치를 dev PR로 올린다 (#689)",
