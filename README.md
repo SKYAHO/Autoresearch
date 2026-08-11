@@ -114,7 +114,7 @@ release는 launcher/executor/API를 각각 `@sha256:<64자리 digest>`로 게시
 | launcher | `ORCH_MLFLOW_TRACKING_URI` | 학습이 MLflow run을 기록할 tracking server 좌표. executor에는 접두사 없는 `MLFLOW_TRACKING_URI`로 내보낸다 |
 | 로그 수집기 | `ORCH_LOG_COLLECT_INTERVAL_SEC` | Pod 로그 폴링 주기(기본 `5`초). 워크벤치 폴링 5초와 합쳐 최악 지연이 정해진다 |
 | PR 생성기 | `ORCH_PULL_REQUEST_INTERVAL_SEC` | 완주한 실험을 훑어 `exp` → `dev` PR을 여는 주기(기본 `60`초, #689) |
-| PR 생성기 | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch-writer App private key 경로(기본 `/var/run/github-app/key.pem`). 값은 mount하며 애플리케이션이 읽어 변수에 담지 않는다 |
+| PR 생성기 | `ORCH_PULL_REQUEST_APP_PRIVATE_KEY_FILE` | branch-writer App private key 경로(기본 `/var/run/github-app/key.pem`). 값은 mount하며 애플리케이션이 읽어 변수에 담지 않는다. token-minter의 `ORCH_GITHUB_APP_PRIVATE_KEY_FILE`과 **이름을 공유하지 않는다** — 같은 App의 key지만 두 워크로드가 서로 다른 경로에 mount한다 |
 | launcher | `ORCH_EXPERIMENT_RESULTS_ROOT` | 실험 산출물을 남길 GCS 루트(`gs://bucket[/prefix]`). 비어 있으면 게시하지 않는다 — Pod의 workspace는 emptyDir이라 측정 결과가 사라진다 |
 | executor | `ORCH_EXPERIMENT_ID`, `ORCH_ISSUE_NUMBER`, `ORCH_ISSUE_BRANCH`, `ORCH_BASE_DEV_SHA` | launcher가 DB에서 복사해 전달하는 불변 branch 좌표 |
 | token-minter | `ORCH_GITHUB_APP_PRIVATE_KEY_FILE` | branch/clone/push token-minter에만 보이는 private key mount 경로 |
