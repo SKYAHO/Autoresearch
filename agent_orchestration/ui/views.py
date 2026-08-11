@@ -47,6 +47,7 @@ from agent_orchestration.ui.models import (
     status_tone,
     step_kind_label,
     step_status_color,
+    step_status_label,
 )
 from agent_orchestration.ui.report import report_document
 from agent_orchestration.ui.state import PendingPublication, WorkbenchState
@@ -448,18 +449,33 @@ def _render_steps(steps: Sequence[Step], truncated: bool = False) -> None:
         st.caption(f"최근 30개 단계를 표시합니다. 전체 {len(steps)}개")
     for step in steps[-30:]:
         color = step_status_color(step.status)
+        # `OTHER`는 라벨을 그리지 않는다. 컨테이너 진행 단계(#688)가 전부 이 값이라 그대로
+        # 두면 모든 줄이 "기타"로 시작해, 정작 무엇인지 알려주는 step_type을 가린다. 의미
+        # 단계(`TRAIN` 등)가 들어오면 그때는 라벨이 붙는다.
+        kind = (
+            ""
+            if step.step_kind == "OTHER"
+            else f"{html.escape(step_kind_label(step.step_kind))} "
+        )
+        # status를 색뿐 아니라 글자로도 낸다. 작은 불릿에서 회색(`STARTED`)과
+        # 파랑(`PROGRESS`)은 구분이 어렵고, 색각 이상에서는 초록·빨강이 겹쳐 정보가 사라진다.
+        #
         # step_type은 에이전트가 정하는 자유 문자열이라 이 마크업에서 유일하게 신뢰 경계를
-        # 넘는다. step_kind는 서버 CHECK로 닫혀 있지만 라벨 폴백이 원문을 그대로 내보내므로
-        # 함께 escape한다. color는 닫힌 집합, format_time은 포맷된 timestamp라 안전하다.
+        # 넘는다. step_kind·status는 서버 CHECK로 닫혀 있지만 라벨 폴백이 원문을 그대로
+        # 내보내므로 함께 escape한다. color는 닫힌 집합, format_time은 포맷된 timestamp라
+        # 안전하다.
         st.markdown(
-            f"<span style='color:{color};font-weight:600'>&#9679; "
-            f"{html.escape(step_kind_label(step.step_kind))}</span> "
-            f"<span style='opacity:0.7'>{html.escape(step.step_type)}</span> "
+            f"<span style='color:{color};font-weight:600'>&#9679; {kind}"
+            f"{html.escape(step.step_type)}</span> "
+            f"<span style='color:{color};opacity:0.85'>"
+            f"{html.escape(step_status_label(step.status))}</span> "
             f"<span style='opacity:0.5'>· {format_time(step.updated_at)}</span>",
             unsafe_allow_html=True,
         )
-        # message가 없으면 display_line이 kind·type 라벨로 대신하므로 표시가 비지 않는다.
-        st.write(step.display_line)
+        # message가 있을 때만 아래 줄을 쓴다. 없을 때 kind·type으로 대신하던 폴백은 위
+        # 줄이 이미 그 둘을 담게 되면서 같은 내용을 두 번 그리는 일이 됐다.
+        if step.message:
+            st.write(step.message)
         if step.target:
             with st.expander("상세", expanded=False):
                 st.json(step.target)

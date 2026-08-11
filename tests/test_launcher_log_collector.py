@@ -1,13 +1,17 @@
-"""실험 로그 수집기의 Pod 조회·청크·멱등키·오류 분류 계약을 검증한다(#559).
+"""실험 관측 수집기의 Pod 조회·청크·멱등키·오류 분류·진행 상태 계약을 검증한다.
 
-[파이프라인] executor Pod가 도는 동안 그 컨테이너 로그를 읽어 `experiment_logs`에
-적재하는 구간을 담당한다. executor 코드는 건드리지 않고 밖에서 관측만 한다.
+[파이프라인] executor Pod가 도는 동안 그 컨테이너 로그와 진행 상태를 읽어
+`experiment_logs`·`experiment_steps`에 적재하는 구간을 담당한다. executor 코드는 건드리지
+않고 밖에서 관측만 한다.
 
 [기능] `job-name` label로 Pod을 찾고, append-only 로그를 고정 경계로 잘라 완성된
-청크만 적재하며, 컨테이너 미시작 같은 정상 상황과 실제 오류를 구분하는 것을 검증한다.
+청크만 적재하며, 컨테이너 미시작 같은 정상 상황과 실제 오류를 구분하는 것을 검증한다(#559).
+컨테이너 상태를 4갈래 Step으로 옮기고, 변화가 없으면 쓰지 않으며, 한쪽 수집 실패가 다른
+쪽을 막지 않는 것을 검증한다(#688).
 
-[비책임] Experiment 선점과 Job 생성(`test_experiment_launcher.py`), Step 기록(범위 밖),
-Kubernetes RBAC·NetworkPolicy(`SKYAHO/Autoresearch-infra`)는 다루지 않는다.
+[비책임] Experiment 선점과 Job 생성(`test_experiment_launcher.py`), 컨테이너 **안**의
+의미 단계(executor 몫, Stage 2 이후), Kubernetes RBAC·NetworkPolicy
+(`SKYAHO/Autoresearch-infra`)는 다루지 않는다.
 """
 
 from __future__ import annotations
@@ -21,6 +25,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import uuid  # noqa: E402
+
+import pytest  # noqa: E402
 
 from agent_orchestration.app.experiments.exceptions import (  # noqa: E402
     IdempotencyConflictError,
@@ -45,9 +51,20 @@ from agent_orchestration.launcher.log_collector import (  # noqa: E402
     LogSink,
     PodLogReader,
     collect_container_logs,
+    collect_container_steps,
+    container_step_states,
+    DatabaseStepSink,
     log_idempotency_key,
     ordered_pods,
     SeqCursor,
+    step_idempotency_key,
+)
+from agent_orchestration.app.experiments.exceptions import (  # noqa: E402
+    StepAlreadyFinalizedError,
+)
+from agent_orchestration.app.experiments.models import (  # noqa: E402
+    StepKind,
+    StepStatus,
 )
 
 
@@ -897,3 +914,240 @@ def test_collector_settings_reject_a_missing_database_url(monkeypatch) -> None:
 
     with _pytest.raises(LauncherConfigError):
         LogCollectorSettings.from_environment()
+
+
+# --- 컨테이너 진행 단계 수집 (#688) -------------------------------------------------
+#
+# 정본 계약: `docs/specs/2026-08-11-container-step-collection.md`
+
+
+def _phase_status(name: str, *, phase: str, exit_code: int = 0):
+    """`waiting`/`running`/`terminated` 중 하나만 채워진 containerStatus double."""
+    terminated = (
+        type("Terminated", (), {"exit_code": exit_code})()
+        if phase == "terminated"
+        else None
+    )
+    running = object() if phase == "running" else None
+    state = type("State", (), {"terminated": terminated, "running": running})()
+    return type("CS", (), {"name": name, "state": state})()
+
+
+def test_container_step_states_maps_every_phase_in_container_order() -> None:
+    """K8s가 말하는 현재 상태를 4갈래로 옮긴다 — init이 먼저, app container가 뒤다."""
+    pod = _PodWithStatus(
+        "ar-exec-abc-x7k2",
+        datetime(2026, 8, 11, 13, 31, tzinfo=UTC),
+        (
+            [
+                _phase_status("branch-creator", phase="terminated", exit_code=0),
+                _phase_status("codex-worker", phase="running"),
+                _phase_status("candidate-verifier", phase="waiting"),
+                _phase_status("push-token-minter", phase="terminated", exit_code=2),
+            ],
+            [_phase_status("candidate-finalizer", phase="waiting")],
+        ),
+    )
+
+    assert container_step_states(pod) == [
+        ("branch-creator", StepStatus.COMPLETED),
+        ("codex-worker", StepStatus.PROGRESS),
+        ("candidate-verifier", StepStatus.STARTED),
+        ("push-token-minter", StepStatus.FAILED),
+        ("candidate-finalizer", StepStatus.STARTED),
+    ]
+
+
+def test_container_step_states_tolerates_a_pod_without_statuses_yet() -> None:
+    """스케줄 직후에는 상태 배열이 None이다 — 오류가 아니라 빈 결과다."""
+    pod = _PodWithStatus(
+        "ar-exec-abc-x7k2", datetime(2026, 8, 11, 13, 31, tzinfo=UTC), (None, None)
+    )
+
+    assert container_step_states(pod) == []
+
+
+def test_step_idempotency_key_separates_the_retry_pod() -> None:
+    """`backoffLimit=1` 재시도 Pod의 같은 컨테이너가 앞 시도의 확정에 막히지 않는다."""
+    assert step_idempotency_key("ar-exec-abc-x7k2", "codex-worker") != (
+        step_idempotency_key("ar-exec-abc-m9p4", "codex-worker")
+    )
+    assert step_idempotency_key("ar-exec-abc-x7k2", "codex-worker") == (
+        "ar-exec-abc-x7k2:codex-worker"
+    )
+
+
+class _FakeStepSink:
+    """`StepSink` 더블. 쓰기 호출을 기록하고 지정한 컨테이너에서만 예외를 낸다."""
+
+    def __init__(self, raises: dict[str, Exception] | None = None) -> None:
+        self.written: list[tuple[str, str, StepStatus]] = []
+        self._raises = raises or {}
+
+    def write(self, *, idempotency_key: str, step_type: str, status) -> None:
+        if step_type in self._raises:
+            raise self._raises[step_type]
+        self.written.append((idempotency_key, step_type, status))
+
+
+def test_collect_container_steps_writes_one_row_per_container() -> None:
+    """컨테이너당 행 하나다 — 전이마다 늘리지 않는다."""
+    sink = _FakeStepSink()
+
+    problems = collect_container_steps(
+        sink,
+        job_name="ar-exec-abc",
+        pod_name="ar-exec-abc-x7k2",
+        states=[
+            ("branch-creator", StepStatus.COMPLETED),
+            ("codex-worker", StepStatus.PROGRESS),
+        ],
+    )
+
+    assert problems == []
+    assert sink.written == [
+        ("ar-exec-abc-x7k2:branch-creator", "branch-creator", StepStatus.COMPLETED),
+        ("ar-exec-abc-x7k2:codex-worker", "codex-worker", StepStatus.PROGRESS),
+    ]
+
+
+def test_collect_container_steps_keeps_going_after_a_finalized_conflict() -> None:
+    """fail-open이다 — 한 컨테이너가 막혀도 나머지를 계속 적재한다."""
+    sink = _FakeStepSink(
+        raises={"branch-creator": StepAlreadyFinalizedError(uuid.uuid4())}
+    )
+
+    problems = collect_container_steps(
+        sink,
+        job_name="ar-exec-abc",
+        pod_name="ar-exec-abc-x7k2",
+        states=[
+            ("branch-creator", StepStatus.PROGRESS),
+            ("codex-worker", StepStatus.PROGRESS),
+        ],
+    )
+
+    assert problems == ["step_finalized_conflict"]
+    assert [row[1] for row in sink.written] == ["codex-worker"]
+
+
+class _FakeStep:
+    def __init__(self, status: str) -> None:
+        self.id = uuid.uuid4()
+        self.status = status
+
+
+def test_database_step_sink_creates_the_row_when_absent() -> None:
+    """처음 보는 컨테이너는 `OTHER` 종류로 만든다 — 컨테이너는 ML 의미 축이 아니다."""
+    created: list = []
+    sink = DatabaseStepSink(
+        object(),
+        _EXECUTOR_EXPERIMENT_ID,
+        find=lambda *_args: None,
+        create=lambda _session, _experiment_id, request: created.append(request),
+        update=lambda *_args: pytest.fail("생성 경로에서 갱신하지 않는다"),
+    )
+
+    sink.write(
+        idempotency_key="pod:codex-worker",
+        step_type="codex-worker",
+        status=StepStatus.PROGRESS,
+    )
+
+    assert len(created) == 1
+    assert created[0].step_kind is StepKind.OTHER
+    assert created[0].step_type == "codex-worker"
+    assert created[0].status is StepStatus.PROGRESS
+
+
+def test_database_step_sink_writes_nothing_when_status_is_unchanged() -> None:
+    """상태가 그대로면 쓰지 않는다 — 396 tick × 컨테이너 8개의 증폭을 막는다."""
+    sink = DatabaseStepSink(
+        object(),
+        _EXECUTOR_EXPERIMENT_ID,
+        find=lambda *_args: _FakeStep("PROGRESS"),
+        create=lambda *_args: pytest.fail("이미 있는 행을 다시 만들지 않는다"),
+        update=lambda *_args: pytest.fail("변화가 없으면 갱신하지 않는다"),
+    )
+
+    sink.write(
+        idempotency_key="pod:codex-worker",
+        step_type="codex-worker",
+        status=StepStatus.PROGRESS,
+    )
+
+
+def test_database_step_sink_updates_the_row_when_status_moved() -> None:
+    """같은 키에 다른 status로 생성을 재시도하면 충돌한다 — 갱신으로 간다."""
+    updated: list = []
+    existing = _FakeStep("PROGRESS")
+    sink = DatabaseStepSink(
+        object(),
+        _EXECUTOR_EXPERIMENT_ID,
+        find=lambda *_args: existing,
+        create=lambda *_args: pytest.fail("이미 있는 행을 다시 만들지 않는다"),
+        update=lambda _session, _experiment_id, step_id, request: updated.append(
+            (step_id, request)
+        ),
+    )
+
+    sink.write(
+        idempotency_key="pod:codex-worker",
+        step_type="codex-worker",
+        status=StepStatus.COMPLETED,
+    )
+
+    assert len(updated) == 1
+    assert updated[0][0] == existing.id
+    assert updated[0][1].status is StepStatus.COMPLETED
+
+
+def test_collect_once_collects_steps_alongside_logs() -> None:
+    """같은 Pod 응답에서 로그와 진행 상태를 함께 걷는다 — 추가 API 호출이 없다."""
+    job_name = "ar-exec-6ec09890a4a84c699760c01349351505"
+    pod = _PodWithStatus(
+        f"{job_name}-x7k2",
+        datetime(2026, 8, 11, 13, 31, tzinfo=UTC),
+        ([_phase_status("codex-worker", phase="running")], None),
+    )
+    reader = _MultiPodReader([pod], {pod.metadata.name: "x" * CHUNK_SIZE})
+    step_sink = _FakeStepSink()
+
+    problems = collect_once(
+        _FakeJobs([job_name]),
+        reader,
+        lambda _experiment_id: _FakeSink(),
+        namespace="ns",
+        step_sink_for=lambda _experiment_id: step_sink,
+    )
+
+    assert problems == []
+    assert step_sink.written == [
+        (f"{job_name}-x7k2:codex-worker", "codex-worker", StepStatus.PROGRESS)
+    ]
+
+
+def test_collect_once_keeps_logs_when_step_collection_blows_up() -> None:
+    """관측 하나를 붙이려다 있던 관측을 잃지 않는다 — 두 수집은 서로를 막지 않는다."""
+    job_name = "ar-exec-6ec09890a4a84c699760c01349351505"
+    pod = _PodWithStatus(
+        f"{job_name}-x7k2",
+        datetime(2026, 8, 11, 13, 31, tzinfo=UTC),
+        ([_phase_status("codex-worker", phase="running")], None),
+    )
+    reader = _MultiPodReader([pod], {pod.metadata.name: "x" * CHUNK_SIZE})
+    log_sink = _FakeSink()
+
+    def _exploding_step_sink(_experiment_id):
+        raise RuntimeError("step sink is down")
+
+    problems = collect_once(
+        _FakeJobs([job_name]),
+        reader,
+        lambda _experiment_id: log_sink,
+        namespace="ns",
+        step_sink_for=_exploding_step_sink,
+    )
+
+    assert [row[0] for row in log_sink.written] == [f"{job_name}-x7k2:codex-worker:0"]
+    assert problems == ["step_collection_failed"]
