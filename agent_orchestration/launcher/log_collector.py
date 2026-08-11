@@ -627,8 +627,30 @@ class DatabaseStepSink:
     def write(
         self, *, idempotency_key: str, step_type: str, status: StepStatus
     ) -> None:
+        # **조회를 자체 트랜잭션으로 닫는다.** 맨 SELECT는 session의 implicit transaction을
+        # 열어둔 채 반환하고(`service.py:580` 주석과 같은 성질), 그 상태에서 아래
+        # `create_experiment_step`/`update_experiment_step`의 `with session.begin()`은
+        # `InvalidRequestError: A transaction is already begun`으로 죽는다.
+        #
+        # 그러면 Step이 한 줄도 안 남는 데서 끝나지 않는다 — 실패 후에도 트랜잭션이 열린 채
+        # 남아 **같은 tick 뒤이은 Job의 `create_experiment_log`까지** 같은 예외로 죽는다.
+        # 관측을 붙이려다 있던 관측을 잃는 경로가 여기서 열렸다(#691 리뷰).
+        #
+        # 닫는 방법은 `with session.begin()`이 아니라 `rollback()`이다. 전자는 **이미 열린**
+        # 트랜잭션이 있으면 그 자체로 같은 예외를 내므로, 세션이 깨끗하다는 가정을 새로
+        # 만든다. 후자는 열려 있으면 닫고 없으면 no-op이라 가정이 필요 없고,
+        # `create_experiment_log`가 복구 경로 SELECT 뒤에 쓰는 것과 같은 관용구다
+        # (`service.py:636-648`). 읽기만 했으므로 되돌릴 것도 없다.
+        #
+        # 조회와 쓰기가 두 트랜잭션으로 갈리는 경합은 남지만 새로 열리는 창은 아니다 —
+        # 그 사이 다른 writer가 끼어들면 `create_experiment_step`의 멱등 검사와
+        # `update_experiment_step`의 조건부 UPDATE가 각각 받아 사유 코드로 드러낸다.
         find = self._find if self._find is not None else find_step_by_idempotency_key
-        existing = find(self._session, self._experiment_id, idempotency_key)
+        found = find(self._session, self._experiment_id, idempotency_key)
+        # 값만 들고 나간다. `expire_on_commit=False`라 지금은 객체가 살아남지만, 그 설정에
+        # 기대면 세션 구성이 바뀔 때 조용히 깨진다.
+        existing = None if found is None else (found.id, found.status)
+        self._session.rollback()
         if existing is None:
             create = self._create if self._create is not None else create_experiment_step
             create(
@@ -645,13 +667,14 @@ class DatabaseStepSink:
                 ),
             )
             return
-        if existing.status == status.value:
+        step_id, stored_status = existing
+        if stored_status == status.value:
             return
         update = self._update if self._update is not None else update_experiment_step
         update(
             self._session,
             self._experiment_id,
-            existing.id,
+            step_id,
             ExperimentStepUpdate(status=status),
         )
 

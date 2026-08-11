@@ -1031,6 +1031,20 @@ def test_collect_container_steps_keeps_going_after_a_finalized_conflict() -> Non
     assert [row[1] for row in sink.written] == ["codex-worker"]
 
 
+class _FakeSession:
+    """조회 뒤 `rollback()`을 받는 최소 Session double.
+
+    조회가 연 implicit transaction을 닫는 것이 계약이므로(#691 리뷰) 그 호출을 받아야
+    한다. 실제 트랜잭션 동작은 아래 sqlite 테스트가 검증한다.
+    """
+
+    def __init__(self) -> None:
+        self.rollbacks = 0
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+
 class _FakeStep:
     def __init__(self, status: str) -> None:
         self.id = uuid.uuid4()
@@ -1041,7 +1055,7 @@ def test_database_step_sink_creates_the_row_when_absent() -> None:
     """처음 보는 컨테이너는 `OTHER` 종류로 만든다 — 컨테이너는 ML 의미 축이 아니다."""
     created: list = []
     sink = DatabaseStepSink(
-        object(),
+        _FakeSession(),
         _EXECUTOR_EXPERIMENT_ID,
         find=lambda *_args: None,
         create=lambda _session, _experiment_id, request: created.append(request),
@@ -1063,7 +1077,7 @@ def test_database_step_sink_creates_the_row_when_absent() -> None:
 def test_database_step_sink_writes_nothing_when_status_is_unchanged() -> None:
     """상태가 그대로면 쓰지 않는다 — 396 tick × 컨테이너 8개의 증폭을 막는다."""
     sink = DatabaseStepSink(
-        object(),
+        _FakeSession(),
         _EXECUTOR_EXPERIMENT_ID,
         find=lambda *_args: _FakeStep("PROGRESS"),
         create=lambda *_args: pytest.fail("이미 있는 행을 다시 만들지 않는다"),
@@ -1082,7 +1096,7 @@ def test_database_step_sink_updates_the_row_when_status_moved() -> None:
     updated: list = []
     existing = _FakeStep("PROGRESS")
     sink = DatabaseStepSink(
-        object(),
+        _FakeSession(),
         _EXECUTOR_EXPERIMENT_ID,
         find=lambda *_args: existing,
         create=lambda *_args: pytest.fail("이미 있는 행을 다시 만들지 않는다"),
@@ -1151,3 +1165,187 @@ def test_collect_once_keeps_logs_when_step_collection_blows_up() -> None:
 
     assert [row[0] for row in log_sink.written] == [f"{job_name}-x7k2:codex-worker:0"]
     assert problems == ["step_collection_failed"]
+
+
+# --- 실제 Session 통과 (#691 리뷰 2번) -----------------------------------------------
+#
+# 위 단위 테스트는 find/create/update를 전부 더블로 주입하므로 트랜잭션 경계가 검증되지
+# 않는다. 더블은 `session.begin()`을 부르지 않아, 실제로는 첫 쓰기부터
+# `InvalidRequestError: A transaction is already begun`으로 죽는 상태가 통과했다.
+# 어댑터를 진짜 서비스 함수와 만나게 하는 것은 아래 테스트뿐이다.
+
+
+@pytest.fixture
+def sqlite_session():
+    """PostgreSQL server UUID 함수를 재현하는 in-memory Session."""
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+
+    from agent_orchestration.app.experiments.models import Base
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+
+    @event.listens_for(engine, "connect")
+    def _register(dbapi_connection, _record) -> None:
+        dbapi_connection.create_function("gen_random_uuid", 0, lambda: uuid.uuid4().hex)
+        dbapi_connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(engine)
+    # 상주 수집기와 같은 구성이다 — `create_session_factory`가 이 둘을 준다.
+    factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    try:
+        with factory() as session:
+            yield session
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def _persisted_experiment(session):
+    from agent_orchestration.app.experiments.models import Experiment
+
+    experiment = Experiment(hypothesis="컨테이너 진행 상태를 화면에 낸다")
+    session.add(experiment)
+    session.commit()
+    return experiment
+
+
+def _stored_steps(session, experiment_id):
+    from sqlalchemy import select
+
+    from agent_orchestration.app.experiments.models import ExperimentStep
+
+    rows = list(
+        session.scalars(
+            select(ExperimentStep).where(
+                ExperimentStep.experiment_id == experiment_id
+            )
+        )
+    )
+    # 조회가 연 implicit transaction을 닫는다 — 열어 둔 채 다음 `write`로 넘어가면
+    # 프로덕션이 아니라 테스트가 만든 트랜잭션 때문에 실패한다.
+    session.rollback()
+    return rows
+
+
+def test_step_sink_walks_all_three_branches_on_a_real_session(sqlite_session) -> None:
+    """생성 → 무변화 → 갱신이 실제 Session에서 트랜잭션을 남기지 않고 끝난다.
+
+    더블이 아니라 진짜 `create_experiment_step`/`update_experiment_step`을 통과시킨다.
+    """
+    experiment = _persisted_experiment(sqlite_session)
+    sink = DatabaseStepSink(sqlite_session, experiment.id)
+    key = "ar-exec-abc-x7k2:codex-worker"
+
+    sink.write(idempotency_key=key, step_type="codex-worker", status=StepStatus.PROGRESS)
+    assert not sqlite_session.in_transaction(), "쓰기 후 트랜잭션이 열린 채 남았다"
+    steps = _stored_steps(sqlite_session, experiment.id)
+    assert [(s.step_type, s.status) for s in steps] == [("codex-worker", "PROGRESS")]
+    assert steps[0].step_kind == StepKind.OTHER.value
+
+    # 무변화 — 행이 늘지도, 트랜잭션이 남지도 않는다.
+    sink.write(idempotency_key=key, step_type="codex-worker", status=StepStatus.PROGRESS)
+    assert not sqlite_session.in_transaction()
+    assert len(_stored_steps(sqlite_session, experiment.id)) == 1
+
+    # 갱신 — 같은 행이 터미널로 간다. 생성으로 재시도하면 멱등 충돌이 났을 자리다.
+    sink.write(
+        idempotency_key=key, step_type="codex-worker", status=StepStatus.COMPLETED
+    )
+    assert not sqlite_session.in_transaction()
+    steps = _stored_steps(sqlite_session, experiment.id)
+    assert len(steps) == 1
+    assert steps[0].status == "COMPLETED"
+
+
+def test_step_sink_leaves_the_session_usable_for_log_writes(sqlite_session) -> None:
+    """한 tick은 같은 Session으로 로그와 Step을 잇달아 쓴다.
+
+    Step 쓰기가 트랜잭션을 열어둔 채 반환하면 **뒤이은 Job의 로그 적재**가 같은
+    `InvalidRequestError`로 죽고, Job 단위 격리가 그것을 삼켜 로그가 조용히 사라진다.
+    실험이 2건 이상 동시에 돌 때 두 번째부터 나타나던 경로다(#691 리뷰 1번).
+    """
+    experiment = _persisted_experiment(sqlite_session)
+    step_sink = DatabaseStepSink(sqlite_session, experiment.id)
+    log_sink = DatabaseLogSink(sqlite_session, experiment.id)
+
+    log_sink.write(idempotency_key="pod:codex-worker:0", log_type="codex-worker", content="before")
+    step_sink.write(
+        idempotency_key="pod:codex-worker",
+        step_type="codex-worker",
+        status=StepStatus.PROGRESS,
+    )
+    # Step 쓰기 뒤에도 로그가 계속 들어가야 한다.
+    log_sink.write(idempotency_key="pod:codex-worker:1", log_type="codex-worker", content="after")
+
+    from sqlalchemy import select
+
+    from agent_orchestration.app.experiments.models import ExperimentLog
+
+    logs = list(
+        sqlite_session.scalars(
+            select(ExperimentLog).where(ExperimentLog.experiment_id == experiment.id)
+        )
+    )
+    assert {log.content for log in logs} == {"before", "after"}
+    assert len(_stored_steps(sqlite_session, experiment.id)) == 1
+    assert not sqlite_session.in_transaction()
+
+
+def test_step_sink_rejects_an_unknown_experiment(sqlite_session) -> None:
+    """존재하지 않는 실험은 서비스 함수가 막는다 — 어댑터가 조용히 만들지 않는다."""
+    from agent_orchestration.app.experiments.exceptions import ExperimentNotFoundError
+
+    sink = DatabaseStepSink(sqlite_session, uuid.uuid4())
+
+    with pytest.raises(ExperimentNotFoundError):
+        sink.write(
+            idempotency_key="pod:codex-worker",
+            step_type="codex-worker",
+            status=StepStatus.PROGRESS,
+        )
+
+
+def test_collect_once_keeps_later_jobs_logging_when_a_step_write_raises() -> None:
+    """`sink.write`의 일반 예외가 그 tick의 **뒤이은 Job** 로그까지 막지 않는다.
+
+    조립 실패만 다루던 기존 테스트로는 이 경로가 비어 있었다(#691 리뷰 2번).
+    """
+    first_job = "ar-exec-6ec09890a4a84c699760c01349351505"
+    second_job = "ar-exec-7ec09890a4a84c699760c01349351506"
+    pods = {
+        first_job: _PodWithStatus(
+            f"{first_job}-x7k2",
+            datetime(2026, 8, 11, 13, 31, tzinfo=UTC),
+            ([_phase_status("codex-worker", phase="running")], None),
+        ),
+        second_job: _PodWithStatus(
+            f"{second_job}-m9p4",
+            datetime(2026, 8, 11, 13, 32, tzinfo=UTC),
+            ([_phase_status("codex-worker", phase="running")], None),
+        ),
+    }
+
+    class _PerJobReader:
+        def list_pods(self, _namespace: str, job_name: str):
+            return [pods[job_name]]
+
+        def read_log(self, _namespace: str, _pod_name: str, _container: str) -> str:
+            return "x" * CHUNK_SIZE
+
+    log_sink = _FakeSink()
+    exploding = _FakeStepSink(raises={"codex-worker": RuntimeError("db is down")})
+
+    problems = collect_once(
+        _FakeJobs([first_job, second_job]),
+        _PerJobReader(),
+        lambda _experiment_id: log_sink,
+        namespace="ns",
+        step_sink_for=lambda _experiment_id: exploding,
+    )
+
+    assert [row[0] for row in log_sink.written] == [
+        f"{first_job}-x7k2:codex-worker:0",
+        f"{second_job}-m9p4:codex-worker:0",
+    ], "두 Job 모두의 로그가 남아야 한다"
+    assert problems == ["step_collection_failed", "step_collection_failed"]
