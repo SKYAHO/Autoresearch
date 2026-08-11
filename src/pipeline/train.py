@@ -889,6 +889,9 @@ def _train_from_resolved_dataset(
             "n_estimators": config["model"]["n_estimators"],
             "learning_rate": config["model"]["learning_rate"],
             "num_leaves": config["model"]["num_leaves"],
+            "feature_fraction": config["model"].get("feature_fraction", 1.0),
+            "bagging_fraction": config["model"].get("bagging_fraction", 1.0),
+            "bagging_freq": config["model"].get("bagging_freq", 0),
             "scale_pos_weight": scale_pos_weight,
             "split_seed": effective_seeds.split_seed,
             "model_seed": effective_seeds.model_seed,
@@ -924,6 +927,9 @@ def _train_from_resolved_dataset(
             learning_rate=config["model"]["learning_rate"],
             num_leaves=config["model"]["num_leaves"],
             random_state=effective_seeds.model_seed,
+            feature_fraction=config["model"].get("feature_fraction", 1.0),
+            bagging_fraction=config["model"].get("bagging_fraction", 1.0),
+            bagging_freq=config["model"].get("bagging_freq", 0),
         )
         model.fit(X_train, y_train, categorical_features=categorical_columns)
         print("  [OK] 훈련 완료")
