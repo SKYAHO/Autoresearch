@@ -889,6 +889,8 @@ def _train_from_resolved_dataset(
             "n_estimators": config["model"]["n_estimators"],
             "learning_rate": config["model"]["learning_rate"],
             "num_leaves": config["model"]["num_leaves"],
+            "early_stopping_rounds": 30,
+            "eval_metric": "auc",
             "scale_pos_weight": scale_pos_weight,
             "split_seed": effective_seeds.split_seed,
             "model_seed": effective_seeds.model_seed,
@@ -925,8 +927,19 @@ def _train_from_resolved_dataset(
             num_leaves=config["model"]["num_leaves"],
             random_state=effective_seeds.model_seed,
         )
-        model.fit(X_train, y_train, categorical_features=categorical_columns)
-        print("  [OK] 훈련 완료")
+        model.fit(
+            X_train,
+            y_train,
+            categorical_features=categorical_columns,
+            eval_set=[(X_val, y_val)],
+            early_stopping_rounds=30,
+            eval_metric="auc",
+        )
+        best_iteration = model.best_iteration
+        if best_iteration is None:
+            best_iteration = config["model"]["n_estimators"]
+        log_parameters({"best_iteration": best_iteration})
+        print(f"  [OK] 훈련 완료 (best_iteration={best_iteration})")
 
         print("\n[Step 7] 검증...")
         y_val_pred_proba = model.predict_proba(X_val)[:, 1]

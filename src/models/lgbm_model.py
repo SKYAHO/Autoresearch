@@ -28,7 +28,7 @@ class LGBMModel(CTRModel):
     def __init__(
         self,
         scale_pos_weight: float,
-        n_estimators: int = 200,
+        n_estimators: int = 400,
         learning_rate: float = 0.05,
         num_leaves: int = 31,
         random_state: int = 42,
@@ -55,6 +55,9 @@ class LGBMModel(CTRModel):
         X_train: pd.DataFrame,
         y_train: pd.Series,
         categorical_features: list = None,
+        eval_set: list[tuple[pd.DataFrame, pd.Series]] | None = None,
+        early_stopping_rounds: int | None = None,
+        eval_metric: str | None = None,
     ) -> None:
         """
         모델 학습.
@@ -63,6 +66,9 @@ class LGBMModel(CTRModel):
             X_train: 훈련 feature.
             y_train: 훈련 label (0 또는 1).
             categorical_features: 카테고리 컬럼 이름 리스트.
+            eval_set: 조기 종료를 판단할 validation 데이터셋 목록.
+            early_stopping_rounds: validation metric이 개선되지 않아도 허용할 라운드 수.
+            eval_metric: validation에 사용할 평가 지표.
         """
         if categorical_features is None:
             categorical_features = []
@@ -78,11 +84,32 @@ class LGBMModel(CTRModel):
             verbose=-1,
         )
 
+        fit_kwargs: dict[str, object] = {
+            "categorical_feature": categorical_features,
+        }
+        if eval_set is not None:
+            fit_kwargs["eval_set"] = eval_set
+            fit_kwargs["eval_metric"] = eval_metric or "auc"
+            if early_stopping_rounds is not None:
+                fit_kwargs["callbacks"] = [
+                    lgb.early_stopping(
+                        stopping_rounds=early_stopping_rounds,
+                        verbose=False,
+                    )
+                ]
+
         self.model.fit(
             X_train,
             y_train,
-            categorical_feature=categorical_features,
+            **fit_kwargs,
         )
+
+    @property
+    def best_iteration(self) -> int | None:
+        """조기 종료 callback이 선택한 최적 라운드를 반환한다."""
+        if self.model is None:
+            raise ValueError("모델이 학습되지 않았습니다.")
+        return getattr(self.model, "best_iteration_", None)
 
     def predict_proba(self, X: pd.DataFrame) -> np.ndarray:
         """
@@ -129,7 +156,7 @@ class LGBMModel(CTRModel):
         params = booster.get_params()
         instance = cls(
             scale_pos_weight=params.get("scale_pos_weight", 1),
-            n_estimators=params.get("n_estimators", 200),
+            n_estimators=params.get("n_estimators", 400),
             learning_rate=params.get("learning_rate", 0.05),
             num_leaves=params.get("num_leaves", 31),
             random_state=params.get("random_state", 42),
