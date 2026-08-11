@@ -88,6 +88,12 @@ class WorkbenchState:
     # 생성 성공·발행 실패 사이의 부분 성공을 보존해 재제출 시 Experiment 중복 생성을
     # 막는다. 묶음 제출에서는 일부만 실패할 수 있어 항목 단위로 남긴다.
     pending_publications: list[PendingPublication] = field(default_factory=list)
+    # 제출 자체가 실패한 사유. **`detail_error`와 따로 둔다.**
+    #
+    # 다섯 개를 냈는데 세 번째 생성이 실패하면 앞의 둘은 정상 발행되어 화면이 보드로
+    # 넘어간다. 그 사유를 `detail_error`에 담으면 발행 성공 경로가 그것을 지워, 카드가
+    # 두 장뿐인 이유를 아무도 설명하지 못한다. 화면 전환을 넘어 살아남아야 한다.
+    submission_error: str | None = None
     # 조회한 리포트 본문. `None`은 "아직 안 받음"과 "받았는데 리포트가 없음" 두 가지로
     # 겹치므로, 둘을 가르는 것은 `report_checked_for`다.
     report_markdown: str | None = None
@@ -115,6 +121,12 @@ def discard_pending_publications(state: WorkbenchState) -> None:
     """실패한 이슈 발행 대기와 관련 오류만 정리한다."""
     state.pending_publications.clear()
     state.detail_error = None
+    state.submission_error = None
+
+
+def record_submission_error(state: WorkbenchState, message: str) -> None:
+    """제출이 실패한 사유를 화면 전환 뒤에도 남도록 기록한다."""
+    state.submission_error = message
 
 
 def show_board(state: WorkbenchState) -> None:

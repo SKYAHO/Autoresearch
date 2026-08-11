@@ -42,6 +42,7 @@ from agent_orchestration.ui.state import (
     record_board_stage,
     record_detail_error,
     record_list_error,
+    record_submission_error,
     record_report,
     record_report_error,
     record_terminal_refresh,
@@ -300,12 +301,18 @@ def submit_experiments(
         )
         return False
 
+    state.submission_error = None
     for order, submission in enumerate(submissions, start=1):
         try:
             experiment = client.create_experiment(submission.hypothesis)
         except ExperimentApiError as error:
-            record_detail_error(
-                state, f"{order}번째 가설의 실험 생성에 실패했습니다: {error}"
+            # `detail_error`가 아니라 `submission_error`에 담는다. 앞의 것들이 정상
+            # 발행되면 화면이 보드로 넘어가면서 `detail_error`를 지우는데, 그러면
+            # 카드 수가 모자란 이유를 아무도 설명하지 못한다.
+            record_submission_error(
+                state,
+                f"가설 {order}번에서 실험 생성이 실패해 {order - 1}건만 제출됐습니다: "
+                f"{error}",
             )
             # 뒤엣것을 계속 만들지 않는다. 앞이 실패한 채로 뒤를 만들면 사용자가
             # 무엇이 생성됐는지 알 수 없고, 이미 만든 것은 아래에서 발행을 시도한다.
@@ -315,7 +322,14 @@ def submit_experiments(
             PendingPublication(experiment_id=experiment.id, submission=submission)
         )
 
-    return publish_pending_issues(client, state)
+    if not state.pending_publications:
+        # 하나도 못 만들었으면 발행할 것도 없다. 여기서 끝내지 않으면
+        # `publish_pending_issues`가 "재시도할 이슈 발행 정보가 없습니다"로 실제
+        # 원인을 덮는다.
+        return False
+
+    published = publish_pending_issues(client, state)
+    return published and state.submission_error is None
 
 
 def publish_pending_issues(client: ExperimentClient, state: WorkbenchState) -> bool:
@@ -430,7 +444,10 @@ def main() -> None:
             if discard_publication:
                 discard_pending_publications(state)
                 st.rerun()
-        submissions = render_submission_form(state.detail_error)
+        # 제출 실패 사유가 있으면 그것을 먼저 보여준다 — 발행 실패보다 앞선 원인이다.
+        submissions = render_submission_form(
+            state.submission_error or state.detail_error
+        )
         if submissions is not None:
             # 첫 요청 전에 끊는다. 발행 실패는 재시도 화면으로 복구할 수 있지만,
             # `### `처럼 고치기 전에는 반드시 실패하는 값이면 Experiment를 만드는
@@ -459,6 +476,10 @@ def main() -> None:
                 refresh_board(client, state)
             if state.list_error:
                 st.warning(state.list_error)
+            # 생성이 중간에 끊겨 카드가 모자란 경우가 여기로 온다. 이 문구가 없으면
+            # 다섯 개를 냈는데 두 장만 있는 화면에 아무 설명이 없다.
+            if state.submission_error:
+                st.warning(state.submission_error)
             opened_id = render_board(state)
             if opened_id is not None:
                 show_experiment(state, opened_id)

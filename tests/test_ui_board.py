@@ -25,6 +25,7 @@ from agent_orchestration.ui.models import (  # noqa: E402
     stage_index,
     stage_label,
 )
+from agent_orchestration.ui.time import format_short_time  # noqa: E402
 from agent_orchestration.ui.state import (  # noqa: E402
     WorkbenchState,
     WorkbenchView,
@@ -32,7 +33,6 @@ from agent_orchestration.ui.state import (  # noqa: E402
     record_board_stage,
     show_board,
 )
-from agent_orchestration.ui.time import format_elapsed  # noqa: E402
 
 
 NOW = datetime(2026, 8, 11, 0, 0, tzinfo=timezone.utc)
@@ -131,20 +131,13 @@ def test_show_board_switches_the_view() -> None:
     assert state.view is WorkbenchView.BOARD
 
 
-@pytest.mark.parametrize(
-    ("minutes", "expected"),
-    [
-        pytest.param(0, "방금", id="1분_미만"),
-        pytest.param(9, "9분", id="분"),
-        pytest.param(60, "1시간", id="정각"),
-        pytest.param(131, "2시간 11분", id="시간과_분"),
-    ],
-)
-def test_elapsed_reads_as_how_long_it_has_been_running(
-    minutes: int, expected: str
-) -> None:
-    """카드는 "언제 시작했나"보다 "얼마나 돌고 있나"를 먼저 묻는 자리다."""
-    assert format_elapsed(NOW - timedelta(minutes=minutes), now=NOW) == expected
+def test_card_shows_the_submission_time_in_kst_not_an_elapsed_guess() -> None:
+    """경과 시간은 `created_at` 기준이라 슬롯 대기 시간까지 포함한다.
+
+    카드에서 "얼마나 돌고 있나"로 읽히면 팀이 보던 `kubectl` pod AGE와 체계적으로
+    어긋난다. 시작 시각을 담은 필드가 없으므로 있는 사실(제출 시각)만 적는다.
+    """
+    assert format_short_time(NOW) == "08-11 09:00"  # UTC 00:00 → KST 09:00
 
 
 def test_board_splits_running_waiting_and_done() -> None:

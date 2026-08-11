@@ -51,11 +51,7 @@ from agent_orchestration.ui.models import (
 from agent_orchestration.ui.report import report_document
 from agent_orchestration.ui.state import PendingPublication, WorkbenchState
 from agent_orchestration.ui.styles import fact_row, status_badge
-from agent_orchestration.ui.time import (
-    format_elapsed,
-    format_short_time,
-    format_time,
-)
+from agent_orchestration.ui.time import format_short_time, format_time
 
 
 HYPOTHESIS_KEY = "submission-hypothesis"
@@ -703,7 +699,11 @@ def _render_board_card(
         st.markdown(
             f'<span class="status-badge" style="--badge:{color}">'
             f"{status_label(experiment.status)}</span>"
-            f'<span class="board-meta"> {format_elapsed(experiment.created_at)}</span>',
+            # 경과 시간이 아니라 **제출 시각(KST)** 을 적는다. 경과는 `created_at`
+            # 기준이라 슬롯을 기다린 시간까지 포함하는데, 카드에 "얼마나 돌고 있나"로
+            # 읽히면 `kubectl`의 pod AGE와 체계적으로 어긋난다. 시작 시각을 담은
+            # 필드가 없으므로 있는 사실(제출 시각)만 적는다.
+            f'<span class="board-meta"> 제출 {format_short_time(experiment.created_at)}</span>',
             unsafe_allow_html=True,
         )
         if show_stage:

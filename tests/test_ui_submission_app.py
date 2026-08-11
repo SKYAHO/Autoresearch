@@ -68,6 +68,8 @@ class _StubHandler(BaseHTTPRequestHandler):
     missing_experiment_ids: set[str] = set()
     publication_failures = 0
     created_count = 0
+    # 몇 번째 생성 요청을 실패시킬지(1-based). None이면 전부 성공.
+    fail_creation_at: int | None = None
 
     def log_message(self, *_args: object) -> None:
         """테스트 출력에 HTTP 로그를 남기지 않는다."""
@@ -120,6 +122,9 @@ class _StubHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length).decode()) if length else {}
         type(self).captured.append((self.path, body))
         if self.path == "/experiments":
+            if type(self).fail_creation_at == type(self).created_count + 1:
+                self._respond({"detail": "creation exploded"}, status=500)
+                return
             # 묶음 제출은 생성을 여러 번 부른다. 매번 같은 id를 돌려주면 화면이
             # 같은 실험을 여러 번 그리게 되어 실제와 다른 상태를 만든다.
             # 첫 건은 기존 테스트가 좌표로 쓰는 값을 유지한다.
@@ -179,6 +184,7 @@ def stub_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[tuple[str, dict]]
     _StubHandler.missing_experiment_ids = set()
     _StubHandler.publication_failures = 0
     _StubHandler.created_count = 0
+    _StubHandler.fail_creation_at = None
     server = HTTPServer(("127.0.0.1", 0), _StubHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -609,3 +615,56 @@ def test_new_submission_is_refused_while_publications_are_pending(
     assert not app.exception
     created_after = len([path for path, _ in stub_api if path == "/experiments"])
     assert created_after == created_before
+
+
+def test_creation_failure_survives_the_jump_to_the_board(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """3개를 냈는데 3번째 생성이 끊기면 앞의 둘은 정상 발행되어 화면이 보드로 넘어간다.
+    그때 카드 수가 모자란 이유가 화면에 남아야 한다.
+
+    이 사유를 `detail_error`에 담으면 발행 성공 경로가 지운다 — 사용자는 아무 설명
+    없이 카드가 부족한 보드를 본다(#681 리뷰).
+    """
+    _StubHandler.fail_creation_at = 3
+    app = _rendered_app()
+    app.slider(key="submission-count").set_value(3).run()
+    for order in range(1, 4):
+        _fill_draft(app, order, f"제목 {order}", f"가설 {order}입니다.")
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    # 앞의 둘만 만들어지고 발행됐다.
+    created = [path for path, _ in stub_api if path == "/experiments"]
+    published = [path for path, _ in stub_api if path.endswith("/issue")]
+    assert len(created) == 3  # 3번째 요청은 500으로 끊겼다
+    assert len(published) == 2
+    # 보드로 넘어갔지만 이유가 남아 있다.
+    labels = [element.label for element in app.tabs]
+    assert any(label.startswith("실행 중") for label in labels)
+    warnings = [element.value for element in app.warning]
+    assert any("가설 3번에서 실험 생성이 실패" in message for message in warnings)
+    assert any("2건만 제출" in message for message in warnings)
+
+
+def test_first_creation_failure_reports_the_real_cause(
+    stub_api: list[tuple[str, dict]],
+) -> None:
+    """첫 생성이 실패하면 `pending_publications`가 빈 채로 넘어간다.
+
+    거기서 발행 단계로 들어가면 "재시도할 이슈 발행 정보가 없습니다"가 실제 원인
+    (500·타임아웃)을 덮어 사용자가 원인을 볼 수 없다(#681 리뷰).
+    """
+    _StubHandler.fail_creation_at = 1
+    app = _rendered_app()
+    _fill_required(app)
+
+    app.button[0].click().run()
+
+    assert not app.exception
+    messages = [element.value for element in app.error]
+    assert any("실험 생성이 실패" in message for message in messages)
+    assert not any("재시도할 이슈 발행 정보가 없습니다" in message for message in messages)
+    # 하나도 못 만들었으면 발행을 시도하지 않는다.
+    assert not [path for path, _ in stub_api if path.endswith("/issue")]
