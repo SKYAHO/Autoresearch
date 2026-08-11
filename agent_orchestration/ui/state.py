@@ -40,6 +40,19 @@ class WorkbenchView(StrEnum):
     BOARD = "BOARD"
 
 
+@dataclass(frozen=True)
+class PendingPublication:
+    """생성은 끝났지만 이슈 발행이 남은 실험 하나.
+
+    생성(순수 DB 쓰기)과 발행(외부 부작용)은 서버 계약상 두 번의 요청이라 그 사이에서
+    끊길 수 있다. 끊긴 지점을 항목 단위로 들고 있어야 재시도가 이미 만든 Experiment를
+    다시 만들지 않는다.
+    """
+
+    experiment_id: str
+    submission: Submission
+
+
 @dataclass
 class WorkbenchState:
     """선택 Experiment와 incremental polling 상태."""
@@ -69,11 +82,12 @@ class WorkbenchState:
     list_error: str | None = None
     detail_error: str | None = None
     last_updated_at: datetime | None = None
-    # 방금 발행한 이슈 좌표. 선택 변경이나 다음 제출 때 지워 이전 결과가 남지 않게 한다.
-    last_publication: IssuePublication | None = None
-    # 생성 성공·발행 실패 사이의 부분 성공을 보존해 재제출 시 Experiment 중복 생성을 막는다.
-    pending_publication_experiment_id: str | None = None
-    pending_publication_submission: Submission | None = None
+    # 방금 발행한 이슈 좌표들. 선택 변경이나 다음 제출 때 비워 이전 결과가 남지 않게
+    # 한다. 한 번에 여러 가설을 제출할 수 있으므로 목록이다(#671).
+    last_publications: list[IssuePublication] = field(default_factory=list)
+    # 생성 성공·발행 실패 사이의 부분 성공을 보존해 재제출 시 Experiment 중복 생성을
+    # 막는다. 묶음 제출에서는 일부만 실패할 수 있어 항목 단위로 남긴다.
+    pending_publications: list[PendingPublication] = field(default_factory=list)
     # 조회한 리포트 본문. `None`은 "아직 안 받음"과 "받았는데 리포트가 없음" 두 가지로
     # 겹치므로, 둘을 가르는 것은 `report_checked_for`다.
     report_markdown: str | None = None
@@ -97,10 +111,9 @@ def show_create_view(state: WorkbenchState) -> None:
     state.view = WorkbenchView.CREATE
 
 
-def discard_pending_publication(state: WorkbenchState) -> None:
+def discard_pending_publications(state: WorkbenchState) -> None:
     """실패한 이슈 발행 대기와 관련 오류만 정리한다."""
-    state.pending_publication_experiment_id = None
-    state.pending_publication_submission = None
+    state.pending_publications.clear()
     state.detail_error = None
 
 
@@ -160,7 +173,7 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.terminal_status_observed = None
     state.terminal_refresh_complete = False
     state.detail_error = None
-    state.last_publication = None
+    state.last_publications.clear()
     state.report_markdown = None
     state.report_error = None
     state.report_checked_for = None

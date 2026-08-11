@@ -18,6 +18,7 @@ Experiment 생성과 `[AR]` 이슈 발행을 잇달아 요청하며, 부분 실�
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 import streamlit as st
@@ -29,12 +30,13 @@ from agent_orchestration.ui.client import (
     ExperimentClient,
 )
 from agent_orchestration.ui.state import (
+    PendingPublication,
     WorkbenchView,
     WorkbenchState,
     append_event_page,
     append_log_page,
     clear_activity_cache,
-    discard_pending_publication,
+    discard_pending_publications,
     forget_board_entry,
     merge_steps,
     record_board_stage,
@@ -52,6 +54,7 @@ from agent_orchestration.ui.state import (
 from agent_orchestration.ui.styles import workbench_css
 from agent_orchestration.ui.models import (
     BOARD_RUNNING_STATUSES,
+    IssuePublication,
     REPORT_STATUSES,
     Submission,
     stage_index,
@@ -275,61 +278,98 @@ def refresh_report(client: ExperimentClient, state: WorkbenchState) -> None:
         record_report_error(state, str(error))
 
 
-def submit_experiment(
-    client: ExperimentClient, state: WorkbenchState, submission: Submission
+def submit_experiments(
+    client: ExperimentClient,
+    state: WorkbenchState,
+    submissions: Sequence[Submission],
 ) -> bool:
-    """Experiment를 만들고 곧바로 `[AR]` 이슈를 발행한다.
+    """가설 여러 개를 차례로 만들고 각각 `[AR]` 이슈를 발행한다.
 
-    두 번 호출하는 이유는 서버 계약이 그렇기 때문이다 — 생성은 순수 DB 쓰기이고 발행은
-    외부 부작용이다. 발행 실패 시 생성된 Experiment와 원 제출을 보존한다.
+    생성과 발행을 나눠 부르는 이유는 서버 계약이 그렇기 때문이다 — 생성은 순수 DB
+    쓰기이고 발행은 외부 부작용이다. 그 사이에서 끊기면 Experiment만 남으므로
+    `pending_publications`에 담아 재시도가 같은 것을 또 만들지 않게 한다.
+
+    **발행이 끝나지 않은 항목이 남아 있으면 새 제출을 받지 않는다.** 남은 것을 먼저
+    처리하지 않고 또 만들면, 화면이 "무엇이 어디까지 갔는지"를 설명할 수 없다.
     """
-    experiment_id = state.pending_publication_experiment_id
-    if experiment_id is None:
+    if state.pending_publications:
+        record_detail_error(
+            state,
+            "이슈 발행이 끝나지 않은 실험이 있습니다. 위에서 다시 시도하거나 "
+            "취소한 뒤 제출해 주세요.",
+        )
+        return False
+
+    for order, submission in enumerate(submissions, start=1):
         try:
             experiment = client.create_experiment(submission.hypothesis)
         except ExperimentApiError as error:
-            record_detail_error(state, str(error))
-            return False
+            record_detail_error(
+                state, f"{order}번째 가설의 실험 생성에 실패했습니다: {error}"
+            )
+            # 뒤엣것을 계속 만들지 않는다. 앞이 실패한 채로 뒤를 만들면 사용자가
+            # 무엇이 생성됐는지 알 수 없고, 이미 만든 것은 아래에서 발행을 시도한다.
+            break
         state.experiments.insert(0, experiment)
-        experiment_id = experiment.id
-        state.pending_publication_experiment_id = experiment_id
-        state.pending_publication_submission = submission
-    elif state.pending_publication_submission != submission:
-        record_detail_error(
-            state,
-            "이전에 생성된 실험의 이슈 발행이 완료되지 않았습니다. "
-            "입력값을 원래대로 되돌린 뒤 다시 제출해 주세요.",
+        state.pending_publications.append(
+            PendingPublication(experiment_id=experiment.id, submission=submission)
         )
-        return False
 
-    return publish_pending_issue(client, state)
+    return publish_pending_issues(client, state)
 
 
-def publish_pending_issue(client: ExperimentClient, state: WorkbenchState) -> bool:
-    """저장된 submission으로 기존 Experiment의 이슈 발행만 수행한다."""
-    experiment_id = state.pending_publication_experiment_id
-    submission = state.pending_publication_submission
-    if experiment_id is None or submission is None:
+def publish_pending_issues(client: ExperimentClient, state: WorkbenchState) -> bool:
+    """발행이 남은 항목을 모두 시도하고, 성공한 것만 목록에서 덜어낸다.
+
+    한 건이 실패해도 나머지를 계속 시도한다 — 다섯 개를 제출했는데 세 번째의 GitHub
+    호출이 흔들렸다고 네·다섯 번째까지 막을 이유가 없다. 실패한 것만 남아 재시도
+    대상이 된다.
+    """
+    if not state.pending_publications:
         record_detail_error(state, "재시도할 이슈 발행 정보가 없습니다.")
         return False
 
-    try:
-        publication = client.publish_issue(
-            experiment_id, submission.to_fields()
-        )
-    except ExperimentApiError as error:
+    published: list[IssuePublication] = []
+    # 발행 결과에는 experiment_id가 없다(이슈 좌표만 온다). 한 건만 냈을 때 그 실험의
+    # 상세로 넘어가려면 짝을 여기서 들고 있어야 한다.
+    published_experiment_ids: list[str] = []
+    remaining: list[PendingPublication] = []
+    last_error: str | None = None
+    for pending in state.pending_publications:
+        try:
+            publication = client.publish_issue(
+                pending.experiment_id, pending.submission.to_fields()
+            )
+        except ExperimentApiError as error:
+            last_error = str(error)
+            remaining.append(pending)
+            continue
+        published.append(publication)
+        published_experiment_ids.append(pending.experiment_id)
+
+    state.pending_publications = remaining
+
+    if remaining:
         show_create_view(state)
+        state.last_publications = published
         record_detail_error(
             state,
-            f"실험은 생성됐지만 이슈 발행에 실패했습니다. "
-            f"저장된 입력으로 이슈 발행을 다시 시도할 수 있습니다: {error}",
+            f"실험 {len(remaining)}건은 생성됐지만 이슈 발행에 실패했습니다. "
+            f"저장된 입력으로 다시 시도할 수 있습니다: {last_error}",
         )
         return False
 
-    discard_pending_publication(state)
-    show_experiment(state, experiment_id)
-    state.last_publication = publication
-    refresh_selected_experiment(client, state)
+    if len(published) == 1:
+        show_experiment(state, published_experiment_ids[0])
+        refresh_selected_experiment(client, state)
+    else:
+        # 여러 건을 한 번에 냈으면 볼 곳은 상세가 아니라 보드다 — 그것들이 동시에
+        # 도는 모습이 이 제출의 결과다.
+        show_board(state)
+    # **화면 전환 뒤에 넣는다.** `select_experiment`가 선택이 바뀔 때 이 목록을
+    # 비우므로, 먼저 대입하면 방금 연 이슈 좌표가 곧바로 지워진다.
+    state.last_publications = published
+    state.detail_error = None
     return True
 
 
@@ -375,12 +415,9 @@ def main() -> None:
         st.warning(state.list_error)
 
     if state.view is WorkbenchView.CREATE:
-        if (
-            state.pending_publication_experiment_id is not None
-            and state.pending_publication_submission is not None
-        ):
+        if state.pending_publications:
             retry_publication, discard_publication = (
-                render_pending_publication_actions()
+                render_pending_publication_actions(state.pending_publications)
             )
             if retry_publication:
                 if client is None:
@@ -388,25 +425,29 @@ def main() -> None:
                         state, "Experiment API 연결을 먼저 복구해 주세요."
                     )
                 else:
-                    publish_pending_issue(client, state)
+                    publish_pending_issues(client, state)
                 st.rerun()
             if discard_publication:
-                discard_pending_publication(state)
+                discard_pending_publications(state)
                 st.rerun()
-        submission = render_submission_form(state.detail_error)
-        if submission is not None:
-            problems = submission.blocking_problems()
+        submissions = render_submission_form(state.detail_error)
+        if submissions is not None:
+            # 첫 요청 전에 끊는다. 발행 실패는 재시도 화면으로 복구할 수 있지만,
+            # `### `처럼 고치기 전에는 반드시 실패하는 값이면 Experiment를 만드는
+            # 요청 자체가 헛일이고 사용자는 두 단계 뒤에야 원인을 본다.
+            problems = [
+                f"{order}번째 가설 — {problem}"
+                for order, submission in enumerate(submissions, start=1)
+                for problem in submission.blocking_problems()
+            ]
             if client is None:
                 st.error("Experiment API 연결을 먼저 복구해 주세요.")
             elif problems:
-                # 첫 요청 전에 끊는다. 발행 실패는 재시도 화면으로 복구할 수 있지만,
-                # `### `처럼 고치기 전에는 반드시 실패하는 값이면 Experiment를 만드는
-                # 요청 자체가 헛일이고 사용자는 두 단계 뒤에야 원인을 본다.
                 for problem in problems:
                     st.error(problem)
             else:
-                state.last_publication = None
-                submit_experiment(client, state, submission)
+                state.last_publications.clear()
+                submit_experiments(client, state, submissions)
                 st.rerun()
         return
 
@@ -431,8 +472,8 @@ def main() -> None:
     if state.selected_id is None:
         render_empty_workbench()
         return
-    if state.last_publication is not None:
-        render_publication_result(state.last_publication)
+    if state.last_publications:
+        render_publication_result(state.last_publications)
 
     @st.fragment(run_every="5s")
     def live_workbench() -> None:

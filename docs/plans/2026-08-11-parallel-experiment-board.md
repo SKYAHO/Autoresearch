@@ -78,8 +78,25 @@
 - [x] 모듈 docstring 갱신(`state.py`, `views.py`, `app.py`의 [기능]/[비책임])
 - [ ] 구현 완료 후 spec/plan을 `docs/archive/`로 이동 — `docs/README.md` 규칙
 
+## 8. 다중 가설 제출
+
+- [x] `render_submission_form`이 `list[Submission]`을 반환한다. 개수 슬라이더(1~5)와
+      가설별 탭, 순서를 넣은 위젯 key(spec 결정 5).
+- [x] `PendingPublication`과 `pending_publications` 목록으로 부분 실패를 항목 단위로
+      보존한다(spec 결정 6). `discard_pending_publications`로 일괄 폐기.
+- [x] `submit_experiments` / `publish_pending_issues` — 한 건이 실패해도 나머지를
+      계속 발행하고, 실패한 것만 남긴다.
+- [x] 발행이 남아 있으면 새 제출을 거부한다.
+- [x] 여러 건 성공 시 보드로, 한 건이면 상세로(spec 결정 7).
+- [x] 테스트: 3개 제출이 실험 3개·이슈 3개를 만들고 본문이 서로 다른지, 묶음 뒤
+      보드로 가는지, 부분 실패가 실패한 것만 남기는지, 대기 중 새 제출 거부.
+
+**구현 중 드러난 것:** 보드가 같은 실험 id를 두 번 그리면 버튼 key가 겹쳐
+`StreamlitDuplicateElementKey`로 **페이지 전체**가 죽는다. 목록은 생성 직후 낙관적
+insert와 다음 갱신의 전체 교체가 겹치는 자리라 한 번의 rerun 안에서 중복이 스칠 수
+있어, 격자에서 id 기준으로 한 번 걸러낸다.
+
 ## 범위 밖 — 후속
 
-- **다중 가설 제출**(이슈 #671의 나머지 절반). 보드가 먼저다.
 - 완료 탭의 지표 표시. 실제로 써 본 뒤 정한다(spec 미결).
 - 카드 전체 클릭. custom component가 필요해 지금은 버튼으로 간다(spec 결정 2).

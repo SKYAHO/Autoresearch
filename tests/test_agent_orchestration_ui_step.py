@@ -90,16 +90,19 @@ def test_discard_pending_publication_preserves_created_experiment() -> None:
     )
     state = WorkbenchState(
         experiments=[experiment],
-        pending_publication_experiment_id=experiment.id,
-        pending_publication_submission=submission,
+        pending_publications=[
+            state_module.PendingPublication(
+                experiment_id=experiment.id, submission=submission
+            )
+        ],
         detail_error="이슈 발행에 실패했습니다.",
     )
 
-    state_module.discard_pending_publication(state)
+    state_module.discard_pending_publications(state)
 
-    assert state.pending_publication_experiment_id is None
-    assert state.pending_publication_submission is None
+    assert state.pending_publications == []
     assert state.detail_error is None
+    # 폐기하는 것은 발행 대기이지 이미 만든 Experiment가 아니다.
     assert state.experiments == [experiment]
 
 

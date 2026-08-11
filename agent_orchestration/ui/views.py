@@ -49,7 +49,7 @@ from agent_orchestration.ui.models import (
     step_status_color,
 )
 from agent_orchestration.ui.report import report_document
-from agent_orchestration.ui.state import WorkbenchState
+from agent_orchestration.ui.state import PendingPublication, WorkbenchState
 from agent_orchestration.ui.styles import fact_row, status_badge
 from agent_orchestration.ui.time import (
     format_elapsed,
@@ -59,6 +59,11 @@ from agent_orchestration.ui.time import (
 
 
 HYPOTHESIS_KEY = "submission-hypothesis"
+
+# 한 번에 낼 수 있는 가설 수. 배포된 launcher의 동시 실행 상한과 같은 값이라 다섯 개를
+# 내면 전부 곧바로 돌기 시작한다. 상한이 바뀌어도 이 값은 "한 화면에서 쓸 만한 개수"라
+# 자동으로 따라가지 않는다.
+_MAX_SUBMISSION_COUNT = 5
 
 _HYPOTHESIS_PLACEHOLDER = "마크다운 형식으로 가설을 작성해 주세요"
 
@@ -113,7 +118,7 @@ def _list_label(status: str, hypothesis: str, started_at: datetime) -> str:
     return f":{tone}[{status}]  ·  {format_short_time(started_at)}  \n{text}"
 
 
-def _render_hypothesis_editor() -> str:
+def _render_hypothesis_editor(key: str) -> str:
     """마크다운 편집창과 미리보기를 나란히 렌더링하고 현재 본문을 반환한다.
 
     `st.form` **밖**에서 호출해야 한다. 폼 안의 위젯은 상호작용해도 rerun을 일으키지
@@ -125,7 +130,7 @@ def _render_hypothesis_editor() -> str:
         st.caption("편집")
         hypothesis = st.text_area(
             "가설",
-            key=HYPOTHESIS_KEY,
+            key=key,
             placeholder=_HYPOTHESIS_PLACEHOLDER,
             height=340,
             label_visibility="collapsed",
@@ -168,36 +173,44 @@ def _render_agent_instructions() -> None:
     )
 
 
-def render_submission_form(api_error: str | None) -> Submission | None:
-    """사전등록 제출 폼을 렌더링하고 제출 값을 반환한다.
+def render_submission_form(api_error: str | None) -> list[Submission] | None:
+    """사전등록 제출 폼을 렌더링하고 제출 값 목록을 반환한다.
 
     입력은 제목과 마크다운 가설 두 가지다(#570). 예측 모델링 사전등록 표준
     (arXiv 2311.18807)의 Phase A 항목은 가설 본문 안에 자유롭게 적는다. 데이터·split·
     시드는 실험 간 비교가 성립하도록 서버가 고정하므로 아래에 읽기 전용으로 보여준다.
+
+    가설을 여러 개 받는다(#671). 동시 실행 상한만큼 한 번에 내야 "여러 가설이 동시에
+    검증된다"는 장면이 성립하고, 그때마다 폼을 다시 채우는 것은 그 장면을 만들기 위한
+    수고일 뿐이다. 개수는 기본 1이라 한 개만 낼 때의 화면은 그대로다.
+
+    가설마다 탭을 쓴다. 세로로 쌓으면 다섯 개째 편집창이 화면 두 배 아래에 있다.
+    Streamlit은 탭 내용을 모두 렌더링하므로 안 보이는 탭의 입력도 함께 읽힌다.
     """
     st.markdown('<p class="workbench-kicker">AUTORESEARCH / NEW EXPERIMENT</p>', unsafe_allow_html=True)
     with st.container(border=True):
         st.markdown("### 실험을 사전등록합니다")
         st.caption(
-            "제출하면 `[AR]` 이슈가 열리고 `auto-experiment` label이 붙습니다. "
+            "제출하면 가설마다 `[AR]` 이슈가 열리고 `auto-experiment` label이 붙습니다. "
             "제목만 따로 받고, 나머지는 모두 가설 본문에 자유롭게 적습니다."
         )
         if api_error:
             st.error(api_error)
 
-        title = st.text_input(
-            "실험 제목",
-            key="submission-title",
-            placeholder="예: 조회수 비율 피처 실험",
-            help="이슈 제목이 여기서 만들어집니다. 실험 브랜치 이름은 이슈 번호로 정해집니다.",
+        count = st.slider(
+            "한 번에 제출할 가설 수",
+            min_value=1,
+            max_value=_MAX_SUBMISSION_COUNT,
+            value=1,
+            key="submission-count",
+            help="여러 개를 내면 슬롯이 있는 만큼 동시에 실행되고, 나머지는 대기합니다.",
         )
 
-        st.markdown("**가설**")
-        st.caption(
-            "배경 · 근거 · 바꿀 피처 · 참고 링크를 원하는 구조로 적으세요. "
-            "미리보기는 편집창 밖을 클릭하거나 Ctrl+Enter를 누를 때 갱신됩니다."
-        )
-        hypothesis = _render_hypothesis_editor()
+        drafts: list[Submission] = []
+        tabs = st.tabs([f"가설 {order}" for order in range(1, count + 1)])
+        for order, tab in enumerate(tabs, start=1):
+            with tab:
+                drafts.append(_render_submission_draft(order))
 
         _render_agent_instructions()
 
@@ -214,20 +227,57 @@ def render_submission_form(api_error: str | None) -> Submission | None:
 
         # 폼을 쓰지 않는다. 마크다운 편집기가 폼 밖에 있어야 미리보기가 갱신되는데,
         # 제출 버튼만 폼에 남기면 제목·가설이 서로 다른 rerun에서 읽혀 값이 어긋난다.
-        submitted = st.button("사전등록하고 이슈 발행", type="primary")
+        label = (
+            "사전등록하고 이슈 발행"
+            if count == 1
+            else f"가설 {count}개 사전등록하고 이슈 발행"
+        )
+        submitted = st.button(label, type="primary")
 
     if not submitted:
         return None
+    return drafts
+
+
+def _render_submission_draft(order: int) -> Submission:
+    """가설 하나의 제목·본문 입력을 렌더링한다.
+
+    위젯 key에 순서를 넣는다. 고정 key를 쓰면 탭이 늘어날 때 모든 탭이 같은 값을
+    공유해 다섯 개를 써도 같은 가설 다섯 개가 제출된다.
+
+    첫 번째만 예전 key를 그대로 쓴다 — 개수를 늘렸다 줄여도 쓰던 내용이 남는다.
+    """
+    suffix = "" if order == 1 else f"-{order}"
+    title = st.text_input(
+        "실험 제목",
+        key=f"submission-title{suffix}",
+        placeholder="예: 조회수 비율 피처 실험",
+        help="이슈 제목이 여기서 만들어집니다. 실험 브랜치 이름은 이슈 번호로 정해집니다.",
+    )
+    st.markdown("**가설**")
+    st.caption(
+        "배경 · 근거 · 바꿀 피처 · 참고 링크를 원하는 구조로 적으세요. "
+        "미리보기는 편집창 밖을 클릭하거나 Ctrl+Enter를 누를 때 갱신됩니다."
+    )
+    hypothesis = _render_hypothesis_editor(f"{HYPOTHESIS_KEY}{suffix}")
     return Submission(title=title.strip(), hypothesis=hypothesis.strip())
 
 
-def render_pending_publication_actions() -> tuple[bool, bool]:
-    """실패한 이슈 발행을 저장 입력으로 재시도하거나 폐기하는 동작을 렌더링한다."""
+def render_pending_publication_actions(
+    pending: Sequence[PendingPublication],
+) -> tuple[bool, bool]:
+    """실패한 이슈 발행을 저장 입력으로 재시도하거나 폐기하는 동작을 렌더링한다.
+
+    **어느 것이 남았는지 적는다.** 묶음 제출에서는 일부만 실패하므로, 건수만 알려주면
+    사용자가 무엇을 다시 내야 하는지 알 수 없다.
+    """
     with st.container(border=True):
         st.warning(
-            "Experiment는 생성됐지만 이슈 발행이 완료되지 않았습니다. "
+            f"Experiment {len(pending)}건은 생성됐지만 이슈 발행이 완료되지 않았습니다. "
             "저장된 입력으로 다시 시도하거나 이 등록을 취소할 수 있습니다."
         )
+        for item in pending:
+            st.caption(f"· {_one_line(item.submission.title) or '(제목 없음)'}")
         retry_column, discard_column = st.columns(2)
         retry = retry_column.button(
             "이슈 발행 다시 시도",
@@ -241,13 +291,23 @@ def render_pending_publication_actions() -> tuple[bool, bool]:
     return retry, discard
 
 
-def render_publication_result(publication: IssuePublication) -> None:
+def render_publication_result(publications: Sequence[IssuePublication]) -> None:
     """발행된 이슈 좌표를 보여준다."""
-    st.success(
-        f"이슈 #{publication.issue_number}가 열렸습니다 · 실험 브랜치 "
-        f"`{publication.issue_branch}`"
-    )
-    st.markdown(f"[GitHub에서 열기]({publication.issue_url})")
+    if len(publications) == 1:
+        publication = publications[0]
+        st.success(
+            f"이슈 #{publication.issue_number}가 열렸습니다 · 실험 브랜치 "
+            f"`{publication.issue_branch}`"
+        )
+        st.markdown(f"[GitHub에서 열기]({publication.issue_url})")
+        return
+    numbers = ", ".join(f"#{item.issue_number}" for item in publications)
+    st.success(f"이슈 {len(publications)}건이 열렸습니다 · {numbers}")
+    for publication in publications:
+        st.markdown(
+            f"[#{publication.issue_number} 열기]({publication.issue_url}) · "
+            f"`{publication.issue_branch}`"
+        )
 
 
 def render_empty_workbench() -> None:
@@ -680,12 +740,22 @@ def _render_board_grid(
     empty_message: str,
 ) -> str | None:
     """카드 격자를 그리고 사용자가 연 실험 id를 반환한다."""
-    if not experiments:
+    # 같은 id가 두 번 오면 버튼 key가 겹쳐 `StreamlitDuplicateElementKey`로 **페이지
+    # 전체**가 죽는다. 목록은 생성 직후 낙관적 insert와 다음 갱신의 전체 교체가
+    # 겹치는 자리라, 한 번의 rerun 안에서 중복이 스칠 수 있다. 카드 하나를 덜 그리는
+    # 편이 화면이 사라지는 것보다 낫다.
+    seen: set[str] = set()
+    unique = [
+        experiment
+        for experiment in experiments
+        if not (experiment.id in seen or seen.add(experiment.id))
+    ]
+    if not unique:
         st.caption(empty_message)
         return None
     opened: str | None = None
-    for start in range(0, len(experiments), _BOARD_COLUMNS):
-        row = experiments[start : start + _BOARD_COLUMNS]
+    for start in range(0, len(unique), _BOARD_COLUMNS):
+        row = unique[start : start + _BOARD_COLUMNS]
         for column, experiment in zip(st.columns(_BOARD_COLUMNS), row):
             with column:
                 if _render_board_card(
