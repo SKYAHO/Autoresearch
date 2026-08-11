@@ -67,6 +67,19 @@ _STEP_STATUS_COLORS = {
     "FAILED": "#B42318",
 }
 
+# 색만으로는 상태를 읽을 수 없다. `STARTED`(회색)와 `PROGRESS`(파랑)는 작은 불릿에서
+# 구분이 어렵고, 색각 이상에서는 `COMPLETED`(초록)와 `FAILED`(빨강)가 겹친다.
+#
+# `STARTED`를 "시작"이 아니라 "대기"로 적는다. 컨테이너 8개가 직렬 실행되므로 아직
+# 차례가 오지 않은 것까지 `STARTED`로 들어오는데(#688), "시작"이라고 쓰면 도는 중인
+# `PROGRESS`와 구분되지 않는다.
+_STEP_STATUS_LABELS = {
+    "STARTED": "대기",
+    "PROGRESS": "진행 중",
+    "COMPLETED": "완료",
+    "FAILED": "실패",
+}
+
 # 보드가 쓰는 상태 분류. **`POLLING_STATUSES`를 재사용하지 않는다.**
 #
 # `POLLING_STATUSES`는 "종료가 아닌 것"이라 `PASSED`를 포함한다 — `PASSED`에서
@@ -334,16 +347,6 @@ class Step:
             updated_at=_timestamp(payload["updated_at"]),
         )
 
-    @property
-    def display_line(self) -> str:
-        """한 줄 표시 문구.
-
-        `message`는 선택이고 PATCH 전체 교체로 `null`이 될 수 있으므로, 없으면
-        `step_kind`·`step_type` 라벨로 대신한다 — 표시가 비는 경우는 없다.
-        """
-        if self.message:
-            return self.message
-        return f"{step_kind_label(self.step_kind)} · {self.step_type}"
 
 
 def step_kind_label(step_kind: str) -> str:
@@ -354,6 +357,11 @@ def step_kind_label(step_kind: str) -> str:
 def step_status_color(step_status: str) -> str:
     """Step 진행 상태를 배지 색상으로 반환한다."""
     return _STEP_STATUS_COLORS.get(step_status, "#334155")
+
+
+def step_status_label(step_status: str) -> str:
+    """Step 진행 상태를 사람이 읽을 수 있는 한국어 문구로 반환한다."""
+    return _STEP_STATUS_LABELS.get(step_status, step_status)
 
 
 def status_label(status: str) -> str:

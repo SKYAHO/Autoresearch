@@ -19,6 +19,7 @@ from agent_orchestration.ui.models import (
     Submission,
     step_kind_label,
     step_status_color,
+    step_status_label,
 )
 from agent_orchestration.ui.app import should_open_experiment_detail
 from agent_orchestration.ui.client import (
@@ -147,23 +148,17 @@ def test_step_accepts_null_message_and_target() -> None:
     assert step.target is None
 
 
-def test_display_line_uses_message_when_present() -> None:
-    """message가 있으면 그대로 한 줄 표시에 쓴다."""
-    assert _step(message="파생 피처 2개 생성").display_line == "파생 피처 2개 생성"
+def test_step_status_label_covers_every_status() -> None:
+    """상태를 색이 아니라 글자로도 낸다 — 색만으로는 구분되지 않는 조합이 있다(#688)."""
+    assert step_status_label("STARTED") == "대기"
+    assert step_status_label("PROGRESS") == "진행 중"
+    assert step_status_label("COMPLETED") == "완료"
+    assert step_status_label("FAILED") == "실패"
 
 
-def test_display_line_falls_back_to_kind_and_type() -> None:
-    """message가 없으면 step_kind·step_type 라벨로 대신한다 — 표시가 비지 않는다."""
-    step = _step(message=None, step_kind="TRAIN", step_type="train_candidate")
-
-    assert step.display_line == "학습 · train_candidate"
-
-
-def test_display_line_falls_back_on_blank_message() -> None:
-    """빈 문자열도 없는 것으로 본다."""
-    step = _step(message="", step_kind="EVALUATE", step_type="evaluate_candidate")
-
-    assert step.display_line == "평가 · evaluate_candidate"
+def test_unknown_step_status_label_falls_back_to_raw_value() -> None:
+    """모르는 상태는 원문을 그대로 보여준다 — 서버 CHECK가 막지만 방어한다."""
+    assert step_status_label("SOMETHING_NEW") == "SOMETHING_NEW"
 
 
 def test_unknown_step_kind_label_falls_back_to_raw_value() -> None:

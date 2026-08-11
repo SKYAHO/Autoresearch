@@ -1,17 +1,20 @@
-"""executor Pod의 컨테이너 로그를 읽어 Experiment Log로 적재하는 경계(#559).
+"""executor Pod의 컨테이너 로그와 진행 상태를 Experiment 관측 행으로 적재하는 경계.
 
 [파이프라인] launcher가 executor Job을 만든 뒤부터 그 Job이 끝날 때까지 — 실행 중인
-Pod의 컨테이너 로그를 밖에서 읽어 워크벤치가 보는 `experiment_logs`에 옮기는 구간을
+Pod을 밖에서 읽어 워크벤치가 보는 `experiment_logs`와 `experiment_steps`에 옮기는 구간을
 담당한다. executor 컨테이너는 건드리지 않으므로 credential 경계가 유지된다.
 
 [기능] `job-name` label로 Pod을 고르고, append-only 로그를 고정 경계로 잘라 완성된
-청크만 돌려주며, 재시도로 Pod이 바뀌어도 섞이지 않는 멱등키를 만든다.
+청크만 돌려주며, 재시도로 Pod이 바뀌어도 섞이지 않는 멱등키를 만든다(#559). 같은 Pod
+응답에서 컨테이너별 현재 진행 상태를 계산해 컨테이너당 Step 행 하나로 유지한다(#688).
 
-[비책임] Kubernetes 호출 자체(`CoreV1Api` 어댑터), DB 적재
-(`app.experiments.service.create_experiment_log`), Step 기록(#559 범위 밖),
-RoleBinding·Deployment(`SKYAHO/Autoresearch-infra`)는 담당하지 않는다.
+[비책임] Kubernetes 호출 자체(`CoreV1Api` 어댑터), DB 적재·상태 전이 규칙
+(`app.experiments.service`), 컨테이너 **안**의 의미 단계(`TRAIN`·`EVALUATE` 등 — executor만
+알 수 있어 Stage 2 이후), RoleBinding·Deployment(`SKYAHO/Autoresearch-infra`)는 담당하지
+않는다.
 
-정본 계약: `docs/specs/2026-08-09-experiment-log-collector.md`
+정본 계약: `docs/specs/2026-08-09-experiment-log-collector.md`(로그),
+`docs/specs/2026-08-11-container-step-collection.md`(진행 단계)
 """
 
 from __future__ import annotations
@@ -26,9 +29,22 @@ from typing import Final, Protocol
 
 from kubernetes.client.exceptions import ApiException
 
-from agent_orchestration.app.experiments.exceptions import IdempotencyConflictError
-from agent_orchestration.app.experiments.schemas import ExperimentLogCreate
-from agent_orchestration.app.experiments.service import create_experiment_log
+from agent_orchestration.app.experiments.exceptions import (
+    IdempotencyConflictError,
+    StepAlreadyFinalizedError,
+)
+from agent_orchestration.app.experiments.models import StepKind, StepStatus
+from agent_orchestration.app.experiments.repository import find_step_by_idempotency_key
+from agent_orchestration.app.experiments.schemas import (
+    ExperimentLogCreate,
+    ExperimentStepCreate,
+    ExperimentStepUpdate,
+)
+from agent_orchestration.app.experiments.service import (
+    create_experiment_log,
+    create_experiment_step,
+    update_experiment_step,
+)
 from agent_orchestration.launcher.config import (
     _optional_positive_integer_environment,
     _required_environment,
@@ -126,6 +142,18 @@ class LogSink(Protocol):
     """적재 대상. 구현은 `create_experiment_log`를 부르는 얇은 어댑터다."""
 
     def write(self, *, idempotency_key: str, log_type: str, content: str) -> None: ...
+
+
+class StepSink(Protocol):
+    """Step 적재 대상. 구현은 create/update 서비스 함수를 부르는 얇은 어댑터다.
+
+    `LogSink`와 나눈다 — 로그는 append-only라 쓰기 하나면 되지만 Step은 같은 행을 갱신해
+    "지금 상태"를 유지하므로 조회·생성·갱신이 한 연산 안에서 갈린다.
+    """
+
+    def write(
+        self, *, idempotency_key: str, step_type: str, status: StepStatus
+    ) -> None: ...
 
 
 class SeqCursor:
@@ -333,6 +361,96 @@ def container_states(pod) -> tuple[list[str], set[str]]:
     return names, terminated
 
 
+def container_step_states(pod) -> list[tuple[str, StepStatus]]:
+    """Pod 상태에서 컨테이너별 **현재** 진행 상태를 뽑는다(#688).
+
+    `container_states`와 같은 배열을 읽지만 목적이 다르다 — 저쪽은 로그 청크의 종료 여부만
+    필요하고, 여기는 화면에 그릴 4갈래 상태가 필요하다.
+
+    **전이 이력이 아니라 현재 상태의 순수 함수다.** 수집기는 영속 상태를 두지 않으므로
+    (`SeqCursor` 참조) 재시작하면 이 계산을 처음부터 다시 한다. 누적이 없어야 재계산이
+    같은 답을 낸다.
+
+    아직 차례가 오지 않은 컨테이너(`waiting`)도 `STARTED`로 포함한다. 8개가 init
+    container로 직렬 실행되므로, 빼면 "앞으로 무엇이 남았는지"가 화면에서 사라진다.
+
+    스케줄 직후에는 상태 배열이 `None`이다. 오류가 아니라 빈 결과로 다룬다.
+    """
+    states: list[tuple[str, StepStatus]] = []
+    for group in (pod.status.init_container_statuses, pod.status.container_statuses):
+        for status in group or []:
+            terminated = getattr(status.state, "terminated", None)
+            if terminated is not None:
+                # exit_code가 없는 double·미완성 상태는 실패로 보지 않는다 — 종료했는데
+                # 코드를 모르는 상황을 FAILED로 칠하면 정상 완주가 빨갛게 보인다.
+                exit_code = getattr(terminated, "exit_code", 0)
+                resolved = StepStatus.COMPLETED if exit_code == 0 else StepStatus.FAILED
+            elif getattr(status.state, "running", None) is not None:
+                resolved = StepStatus.PROGRESS
+            else:
+                resolved = StepStatus.STARTED
+            states.append((status.name, resolved))
+    return states
+
+
+def step_idempotency_key(pod_name: str, container: str) -> str:
+    """컨테이너 하나의 Step 행을 가리키는 결정적 키를 만든다.
+
+    **`pod_name`을 포함한다.** `log_idempotency_key`와 같은 이유다 — `backoffLimit=1`
+    재시도로 Pod이 새로 뜨면 같은 컨테이너가 처음부터 다시 도는데, Job 이름만 쓰면 이전
+    실행에서 확정된 터미널 Step이 새 실행의 갱신을 영영 막는다.
+
+    로그 키와 달리 `seq`가 없다 — 컨테이너당 행이 하나이기 때문이다.
+    """
+    return f"{pod_name}:{container}"
+
+
+def collect_container_steps(
+    sink: "StepSink",
+    *,
+    job_name: str,
+    pod_name: str,
+    states: list[tuple[str, StepStatus]],
+) -> list[str]:
+    """컨테이너별 현재 상태를 Step으로 적재하고 사유 코드를 돌려준다(#688).
+
+    **fail-open이다.** `collect_container_logs`와 같은 규약을 따른다 — 한 컨테이너가
+    실패해도 나머지를 계속 적재하고, 적재 실패가 실험 실행을 막지 않는다.
+
+    catch-all을 쓰지 않는다. 여기서 잡는 둘은 "재시도해도 같은 결과"라 이 컨테이너만
+    버리면 되는 것들이고, 나머지는 `collect_once`의 Job 단위 격리로 올려보낸다.
+    """
+    problems: list[str] = []
+    for container, status in states:
+        try:
+            sink.write(
+                idempotency_key=step_idempotency_key(pod_name, container),
+                step_type=container,
+                status=status,
+            )
+        except IdempotencyConflictError:
+            # 같은 키에 다른 생성 payload — 키 규칙이 어긋났다는 설계 신호다.
+            _LOGGER.warning(
+                "step write conflicted reason=step_write_conflict "
+                "job=%s container=%s",
+                job_name,
+                container,
+            )
+            problems.append("step_write_conflict")
+        except StepAlreadyFinalizedError:
+            # 확정된 Step을 다른 값으로 덮으려 했다. 같은 터미널 값이면 API가 no-op으로
+            # 통과시키므로 여기까지 오지 않는다 — 오면 파생 규칙이 어긋난 것이다.
+            _LOGGER.warning(
+                "step already finalized reason=step_finalized_conflict "
+                "job=%s container=%s status=%s",
+                job_name,
+                container,
+                status.value,
+            )
+            problems.append("step_finalized_conflict")
+    return problems
+
+
 def collect_once(
     jobs: ActiveJobs,
     reader: PodLogReader,
@@ -340,11 +458,15 @@ def collect_once(
     *,
     namespace: str,
     cursor: SeqCursor | None = None,
+    step_sink_for: "Callable[[uuid.UUID], StepSink] | None" = None,
 ) -> list[str]:
     """한 주기 분량을 수집하고 사유 코드를 모아 돌려준다.
 
     Job 목록은 Kubernetes에서 얻는다 — DB의 `RUNNING`으로 거르면 `EVALUATING` 전환 뒤에도
     같은 Job이 계속 도는 구간을 놓친다(정본 계약 참조).
+
+    `step_sink_for`가 없으면 Step 수집을 건너뛴다 — 로그 경로만 검증하는 테스트를 위한
+    것이다. 상주 수집기(`main`)는 항상 넘긴다.
     """
     problems: list[str] = []
     cursor = cursor if cursor is not None else SeqCursor()
@@ -357,6 +479,19 @@ def collect_once(
             continue
         try:
             sink = sink_for(experiment_id)
+            # sink 조립까지 감싼다. 여기서 새어 나가면 아래 Job 단위 격리가 받아 **로그
+            # 수집까지** 그 tick에서 통째로 날아간다 — 관측 하나를 붙이려다 있던 관측을
+            # 잃는 것이 정확히 이 경로다.
+            step_sink = None
+            if step_sink_for is not None:
+                try:
+                    step_sink = step_sink_for(experiment_id)
+                except Exception:
+                    _LOGGER.warning(
+                        "step sink unavailable reason=step_collection_failed job=%s",
+                        job_name,
+                    )
+                    problems.append("step_collection_failed")
             for pod in ordered_pods(reader.list_pods(namespace, job_name)):
                 containers, terminated = container_states(pod)
                 seen_pods.add(pod.metadata.name)
@@ -372,6 +507,27 @@ def collect_once(
                         cursor=cursor,
                     )
                 )
+                if step_sink is None:
+                    continue
+                # 로그 수집과 서로를 막지 않는다. 한쪽 실패로 다른 쪽이 그 tick에서
+                # 통째로 날아가면 관측 하나를 붙이려다 있던 관측을 잃는다.
+                try:
+                    problems.extend(
+                        collect_container_steps(
+                            step_sink,
+                            job_name=job_name,
+                            pod_name=pod.metadata.name,
+                            states=container_step_states(pod),
+                        )
+                    )
+                except Exception:
+                    _LOGGER.warning(
+                        "step collection failed reason=step_collection_failed "
+                        "job=%s pod=%s",
+                        job_name,
+                        pod.metadata.name,
+                    )
+                    problems.append("step_collection_failed")
         except Exception:
             # Job 단위로 격리한다. 여기서 새어 나가면 이 Job 하나가 아니라 뒤의 Job
             # 전부가 그 tick에서 날아가고, A가 계속 실패하면 B·C·D는 영영 안 걷힌다.
@@ -436,6 +592,91 @@ class DatabaseLogSink:
         if create is None:
             create = create_experiment_log
         create(self._session, self._experiment_id, request)
+
+
+class DatabaseStepSink:
+    """컨테이너 Step을 조회 후 생성하거나 갱신하는 어댑터(#688).
+
+    `DatabaseLogSink`와 같이 HTTP API를 거치지 않고 서비스 함수를 직접 부른다.
+
+    **상태가 그대로면 쓰지 않는다.** 컨테이너 8개를 5초 주기로 33분 보면 tick이 396회인데
+    상태는 대부분 바뀌지 않는다. `create_experiment_step` 호출 1회가 트랜잭션 1회 + SELECT
+    2회라, 변화 없이도 매번 태우면 `SeqCursor`가 로그에서 막으려 한 증폭이 그대로 재현된다.
+
+    생성이 아니라 갱신으로 가는 이유는 멱등키가 컨테이너당 하나이기 때문이다 — 같은 키에
+    다른 status로 생성을 재시도하면 `IdempotencyConflictError`가 난다.
+
+    함수 주입은 테스트용이다. 요청 조립이 틀리면 실행 시점에 422로만 드러난다.
+    """
+
+    def __init__(
+        self,
+        session,
+        experiment_id: uuid.UUID,
+        *,
+        find: "Callable[..., object] | None" = None,
+        create: "Callable[..., object] | None" = None,
+        update: "Callable[..., object] | None" = None,
+    ) -> None:
+        self._session = session
+        self._experiment_id = experiment_id
+        self._find = find
+        self._create = create
+        self._update = update
+
+    def write(
+        self, *, idempotency_key: str, step_type: str, status: StepStatus
+    ) -> None:
+        # **조회를 자체 트랜잭션으로 닫는다.** 맨 SELECT는 session의 implicit transaction을
+        # 열어둔 채 반환하고(`service.py:580` 주석과 같은 성질), 그 상태에서 아래
+        # `create_experiment_step`/`update_experiment_step`의 `with session.begin()`은
+        # `InvalidRequestError: A transaction is already begun`으로 죽는다.
+        #
+        # 그러면 Step이 한 줄도 안 남는 데서 끝나지 않는다 — 실패 후에도 트랜잭션이 열린 채
+        # 남아 **같은 tick 뒤이은 Job의 `create_experiment_log`까지** 같은 예외로 죽는다.
+        # 관측을 붙이려다 있던 관측을 잃는 경로가 여기서 열렸다(#691 리뷰).
+        #
+        # 닫는 방법은 `with session.begin()`이 아니라 `rollback()`이다. 전자는 **이미 열린**
+        # 트랜잭션이 있으면 그 자체로 같은 예외를 내므로, 세션이 깨끗하다는 가정을 새로
+        # 만든다. 후자는 열려 있으면 닫고 없으면 no-op이라 가정이 필요 없고,
+        # `create_experiment_log`가 복구 경로 SELECT 뒤에 쓰는 것과 같은 관용구다
+        # (`service.py:636-648`). 읽기만 했으므로 되돌릴 것도 없다.
+        #
+        # 조회와 쓰기가 두 트랜잭션으로 갈리는 경합은 남지만 새로 열리는 창은 아니다 —
+        # 그 사이 다른 writer가 끼어들면 `create_experiment_step`의 멱등 검사와
+        # `update_experiment_step`의 조건부 UPDATE가 각각 받아 사유 코드로 드러낸다.
+        find = self._find if self._find is not None else find_step_by_idempotency_key
+        found = find(self._session, self._experiment_id, idempotency_key)
+        # 값만 들고 나간다. `expire_on_commit=False`라 지금은 객체가 살아남지만, 그 설정에
+        # 기대면 세션 구성이 바뀔 때 조용히 깨진다.
+        existing = None if found is None else (found.id, found.status)
+        self._session.rollback()
+        if existing is None:
+            create = self._create if self._create is not None else create_experiment_step
+            create(
+                self._session,
+                self._experiment_id,
+                ExperimentStepCreate(
+                    idempotency_key=idempotency_key,
+                    # 컨테이너는 `step_kind`의 ML 의미 축과 일치하지 않는다 —
+                    # `codex-worker` 하나가 피처 조립부터 학습까지 한다. 억지로 매핑하면
+                    # 나중에 진짜 의미 단계가 들어올 때 같은 이름이 두 뜻을 갖는다.
+                    step_kind=StepKind.OTHER,
+                    step_type=step_type,
+                    status=status,
+                ),
+            )
+            return
+        step_id, stored_status = existing
+        if stored_status == status.value:
+            return
+        update = self._update if self._update is not None else update_experiment_step
+        update(
+            self._session,
+            self._experiment_id,
+            step_id,
+            ExperimentStepUpdate(status=status),
+        )
 
 
 def run_forever(
@@ -545,6 +786,9 @@ def main() -> int:
                 lambda experiment_id: DatabaseLogSink(session, experiment_id),
                 namespace=settings.job_namespace,
                 cursor=cursor,
+                step_sink_for=lambda experiment_id: DatabaseStepSink(
+                    session, experiment_id
+                ),
             )
 
     try:
