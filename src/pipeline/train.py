@@ -884,11 +884,13 @@ def _train_from_resolved_dataset(
             scale_pos_weight = configured_spw
             print(f"  [OK] 고정값: {scale_pos_weight}")
 
+        min_child_samples = config["model"].get("min_child_samples", 20)
         params = {
             "model_type": "LightGBM",
             "n_estimators": config["model"]["n_estimators"],
             "learning_rate": config["model"]["learning_rate"],
             "num_leaves": config["model"]["num_leaves"],
+            "min_child_samples": min_child_samples,
             "scale_pos_weight": scale_pos_weight,
             "split_seed": effective_seeds.split_seed,
             "model_seed": effective_seeds.model_seed,
@@ -923,6 +925,7 @@ def _train_from_resolved_dataset(
             n_estimators=config["model"]["n_estimators"],
             learning_rate=config["model"]["learning_rate"],
             num_leaves=config["model"]["num_leaves"],
+            min_child_samples=min_child_samples,
             random_state=effective_seeds.model_seed,
         )
         model.fit(X_train, y_train, categorical_features=categorical_columns)
