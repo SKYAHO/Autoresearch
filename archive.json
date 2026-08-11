@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-11T07:15:23Z",
+  "generated_at": "2026-08-11T07:38:41Z",
   "reports": [
+    {
+      "number": 692,
+      "title": "feat: 완주한 실험의 exp 브랜치를 dev PR로 올린다 (#689)",
+      "author": "waieiches",
+      "merged_at": "2026-08-11T07:38:28Z",
+      "summary_ko": [
+        "실험이 완주(PASSED)되면 해당 실험 브랜치를 개발 브랜치(dev)로 향하는 Pull Request로 자동 생성하는 상주 프로세스를 도입하였습니다.",
+        "DB 메타데이터 기반 멱등성 관리를 적용하여 동일 실험에 대한 중복 PR 생성 및 불필요한 GitHub API 재호출을 방지하였습니다.",
+        "실험 수행 실행 환경과 PR 생성 프로세스의 권한을 분리하여 최소 권한 원칙에 따른 보안 격리를 강화하였습니다."
+      ],
+      "report_url": "pr/692/"
+    },
     {
       "number": 691,
       "title": "feat: 컨테이너 진행 상태를 수집해 진행 단계 탭을 채운다",
