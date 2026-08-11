@@ -48,17 +48,6 @@ def workbench_css() -> str:
       .stApp code * { background: #132c3b !important; color: #ecf5f1 !important; }
       [data-testid="stCaptionContainer"],
       [data-testid="stCaptionContainer"] p { color: var(--text-color) !important; }
-      .stApp [data-testid="stMarkdownContainer"] .timeline-row {
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-        margin: 0.15rem 0;
-      }
-      .stApp [data-testid="stMarkdownContainer"] .timeline-time {
-        color: var(--text-color);
-        opacity: 0.7;
-        font-size: 0.78rem;
-      }
       .workbench-kicker {
         color: var(--primary-color);
         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
