@@ -5,7 +5,7 @@
 인터페이스다. FastAPI는 영속화와 상태 전이를, 후속 실행기는 Event·Log 기록을 담당한다.
 
 [기능]
-사전등록 화면과 Experiment 상세 화면을 sidebar 탐색으로 분리하고, 사전등록 폼 제출로
+사전등록 화면, Experiment 상세 화면, 병렬 실행 현황 보드를 sidebar 탐색으로 분리하고, 사전등록 폼 제출로
 Experiment 생성과 `[AR]` 이슈 발행을 잇달아 요청하며, 부분 실패한 발행을 저장 입력으로
 재시도하거나 취소한다. 최근 실험 선택, 상세·Event·Log의 5초 cursor polling, API 오류의
 영역별 사용자 표시와 삭제·만료 cursor 복구를 제공한다. 완주한 실험의 리포트 본문을
@@ -35,20 +35,30 @@ from agent_orchestration.ui.state import (
     append_log_page,
     clear_activity_cache,
     discard_pending_publication,
+    forget_board_entry,
     merge_steps,
+    record_board_stage,
     record_detail_error,
     record_list_error,
     record_report,
     record_report_error,
     record_terminal_refresh,
     select_experiment,
+    show_board,
     show_create_view,
     show_experiment,
     should_poll,
 )
 from agent_orchestration.ui.styles import workbench_css
-from agent_orchestration.ui.models import REPORT_STATUSES, Submission
+from agent_orchestration.ui.models import (
+    BOARD_RUNNING_STATUSES,
+    REPORT_STATUSES,
+    Submission,
+    stage_index,
+)
 from agent_orchestration.ui.views import (
+    render_board,
+    render_board_button,
     render_empty_workbench,
     render_add_hypothesis_button,
     render_experiment_list,
@@ -180,6 +190,67 @@ def refresh_selected_experiment(client: ExperimentClient, state: WorkbenchState)
     return False
 
 
+def refresh_board(client: ExperimentClient, state: WorkbenchState) -> None:
+    """보드가 그릴 목록과 실험별 현재 단계를 갱신한다.
+
+    목록은 `list_experiments` **한 번**이다 — 카드 수에 비례해 늘지 않는다. 단계는
+    비종료 실험마다 로그를 읽되 cursor를 들고 가므로 첫 조회 이후에는 증분만 온다.
+
+    로그 본문은 보관하지 않는다. 실험별로 남기는 것은 최신 `log_type` 하나와
+    cursor뿐이다 — 상세 화면의 `state.logs`와는 별개 저장소다(spec 결정 4).
+    """
+    try:
+        state.experiments = client.list_experiments()
+        state.list_error = None
+    except ExperimentApiError as error:
+        record_list_error(state, str(error))
+        return
+
+    # 단계를 읽을 대상은 **지금 executor가 도는 실험**뿐이다. `POLLING_STATUSES`는
+    # `PASSED`를 포함하므로(승격 전이가 남아 있다) 여기 쓰면 이미 끝난 실험의 로그를
+    # 세션 내내 다시 읽는다.
+    running_ids = {
+        experiment.id
+        for experiment in state.experiments
+        if experiment.status in BOARD_RUNNING_STATUSES
+    }
+    for finished_id in set(state.board_log_cursors) - running_ids:
+        forget_board_entry(state, finished_id)
+
+    for experiment_id in running_ids:
+        refresh_board_stage(client, state, experiment_id)
+
+
+def refresh_board_stage(
+    client: ExperimentClient, state: WorkbenchState, experiment_id: str
+) -> None:
+    """한 실험의 로그를 증분으로 읽어 현재 단계를 갱신한다.
+
+    **실패해도 보드를 죽이지 않는다.** 카드 하나의 단계 표시가 비는 것과 보드 전체가
+    오류로 덮이는 것은 다르다 — 나머지 실험이 무엇을 하고 있는지는 여전히 보여야
+    한다(리포트 조회를 `report_error`로 격리한 것과 같은 이유).
+
+    cursor가 만료됐으면(`ApiNotFoundError`) 처음부터 다시 읽는다. 그 실험의 단계
+    표시가 잠깐 뒤로 갔다가 따라잡을 뿐, 다른 카드에는 영향이 없다.
+    """
+    cursor = state.board_log_cursors.get(experiment_id)
+    try:
+        logs, next_cursor = client.get_logs(experiment_id, cursor)
+    except ApiNotFoundError:
+        state.board_log_cursors.pop(experiment_id, None)
+        return
+    except ExperimentApiError:
+        return
+
+    latest_stage: str | None = None
+    for log in logs:
+        if stage_index(log.log_type) is not None:
+            latest_stage = log.log_type
+    record_board_stage(
+        state, experiment_id, cursor=next_cursor, log_type=latest_stage
+    )
+
+
 def refresh_report(client: ExperimentClient, state: WorkbenchState) -> None:
     """완주한 실험의 리포트 본문을 한 번만 받아 온다.
 
@@ -283,6 +354,9 @@ def main() -> None:
     if render_add_hypothesis_button():
         show_create_view(state)
         st.rerun()
+    if render_board_button():
+        show_board(state)
+        st.rerun()
     if render_experiment_refresh_button():
         if client is None:
             record_list_error(state, "Experiment API 연결을 먼저 복구해 주세요.")
@@ -334,6 +408,24 @@ def main() -> None:
                 state.last_publication = None
                 submit_experiment(client, state, submission)
                 st.rerun()
+        return
+
+    if state.view is WorkbenchView.BOARD:
+
+        @st.fragment(run_every="5s")
+        def live_board() -> None:
+            if client is not None:
+                refresh_board(client, state)
+            if state.list_error:
+                st.warning(state.list_error)
+            opened_id = render_board(state)
+            if opened_id is not None:
+                show_experiment(state, opened_id)
+                # fragment 안의 기본 `st.rerun()`은 **fragment만** 다시 돌린다.
+                # 그러면 상태는 DETAIL로 바뀌었는데 화면은 보드에 머문다.
+                st.rerun(scope="app")
+
+        live_board()
         return
 
     if state.selected_id is None:

@@ -13,6 +13,9 @@ sidebar 탐색으로 분리된 사전등록 화면과 상세 화면의 컴포넌
 지표를 그리는 곳은 **결과 탭 하나**다. 인스펙터의 "실행 요약"은 시드·테스트셋 일치
 여부 같은 실행 조건만 적는다(#657).
 
+병렬 실행 현황 보드도 이 모듈이 그린다 — 실행 중·대기·완료 탭과 실험별 진행 단계
+카드다. 단계는 최신 로그의 `log_type`에서 온다(#671).
+
 [비책임]
 HTTP 인증, API 오류 분류, 상태 기록, Agent 실행, 이슈 본문 조립과 GitHub 이슈 생성
 (모두 API 서버의 책임이다).
@@ -28,12 +31,18 @@ from datetime import datetime
 import streamlit as st
 
 from agent_orchestration.ui.models import (
+    BOARD_RUNNING_STATUSES,
+    BOARD_WAITING_STATUSES,
     Event,
+    EXECUTOR_STAGES,
     Experiment,
     IssuePublication,
     REPORT_STATUSES,
     Step,
     Submission,
+    stage_index,
+    stage_label,
+    status_color,
     status_label,
     status_tone,
     step_kind_label,
@@ -42,7 +51,11 @@ from agent_orchestration.ui.models import (
 from agent_orchestration.ui.report import report_document
 from agent_orchestration.ui.state import WorkbenchState
 from agent_orchestration.ui.styles import fact_row, status_badge
-from agent_orchestration.ui.time import format_short_time, format_time
+from agent_orchestration.ui.time import (
+    format_elapsed,
+    format_short_time,
+    format_time,
+)
 
 
 HYPOTHESIS_KEY = "submission-hypothesis"
@@ -252,6 +265,11 @@ def render_add_hypothesis_button() -> bool:
         type="primary",
         use_container_width=True,
     )
+
+
+def render_board_button() -> bool:
+    """sidebar의 병렬 실행 현황 보드 진입 버튼을 렌더링한다."""
+    return st.sidebar.button("실행 현황 보기", use_container_width=True)
 
 
 def render_experiment_refresh_button() -> bool:
@@ -588,3 +606,148 @@ def _render_metrics(metrics: dict[str, object] | None) -> None:
         + '<p class="fact-note">지표와 delta는 결과 탭에 있습니다.</p>',
         unsafe_allow_html=True,
     )
+
+
+# 보드 카드의 가설 요약 길이. 카드 폭이 좁아 목록 라벨보다 짧게 잡는다.
+_BOARD_SUMMARY_MAX = 62
+
+# 한 줄에 놓는 카드 수. 동시 실행 상한이 5라 5개가 한 줄에 들어가야 "동시에 돌고
+# 있다"가 한눈에 읽힌다.
+_BOARD_COLUMNS = 5
+
+# 완료 탭이 보여줄 최근 실험 수. 전부 그리면 세션이 길수록 보드가 무거워진다.
+_BOARD_DONE_LIMIT = 10
+
+
+def _board_summary(hypothesis: str) -> str:
+    """카드에 넣을 가설 요약. 문장 경계를 우선하고 넘치면 자른다."""
+    text = _one_line(hypothesis)
+    sentence_end = _SENTENCE_END.search(text)
+    if sentence_end:
+        text = text[: sentence_end.end()]
+    if len(text) <= _BOARD_SUMMARY_MAX:
+        return text
+    head = text[:_BOARD_SUMMARY_MAX]
+    boundary = head.rfind(" ")
+    if boundary >= _BOARD_SUMMARY_MAX // 2:
+        head = head[:boundary]
+    return head.rstrip() + "…"
+
+
+def _render_board_card(
+    experiment: Experiment, stage: str | None, *, show_stage: bool
+) -> bool:
+    """보드 카드 하나를 그리고 상세 보기 버튼이 눌렸는지 반환한다."""
+    with st.container(border=True):
+        color = status_color(experiment.status)
+        st.markdown(
+            f'<span class="status-badge" style="--badge:{color}">'
+            f"{status_label(experiment.status)}</span>"
+            f'<span class="board-meta"> {format_elapsed(experiment.created_at)}</span>',
+            unsafe_allow_html=True,
+        )
+        if show_stage:
+            _render_board_stage(stage)
+        st.caption(_board_summary(experiment.hypothesis))
+        # key를 인덱스가 아니라 실험 id로 만든다. 목록 순서는 상태가 바뀔 때마다
+        # 흔들리는데, 인덱스 key를 쓰면 Streamlit이 직전 클릭을 엉뚱한 카드에 붙인다.
+        return st.button(
+            "상세 보기", key=f"board-open-{experiment.id}", use_container_width=True
+        )
+
+
+def _render_board_stage(stage: str | None) -> None:
+    """카드의 진행 단계를 그린다.
+
+    단계를 모르는 경우가 둘이다 — 아직 로그가 없거나(`stage is None`), executor
+    단계가 아닌 `log_type`만 온 경우다. 후자를 7단계 어딘가로 우겨넣지 않는다.
+    """
+    index = stage_index(stage) if stage is not None else None
+    if index is None:
+        st.caption("단계 기록 대기 중")
+        st.progress(0.0)
+        return
+    st.markdown(f"**{stage_label(stage)}**")
+    st.caption(f"{stage} · 단계 {index + 1}/{len(EXECUTOR_STAGES)}")
+    st.progress((index + 1) / len(EXECUTOR_STAGES))
+
+
+def _render_board_grid(
+    experiments: Sequence[Experiment],
+    stages: dict[str, str],
+    *,
+    show_stage: bool,
+    empty_message: str,
+) -> str | None:
+    """카드 격자를 그리고 사용자가 연 실험 id를 반환한다."""
+    if not experiments:
+        st.caption(empty_message)
+        return None
+    opened: str | None = None
+    for start in range(0, len(experiments), _BOARD_COLUMNS):
+        row = experiments[start : start + _BOARD_COLUMNS]
+        for column, experiment in zip(st.columns(_BOARD_COLUMNS), row):
+            with column:
+                if _render_board_card(
+                    experiment, stages.get(experiment.id), show_stage=show_stage
+                ):
+                    opened = experiment.id
+    return opened
+
+
+def render_board(state: WorkbenchState) -> str | None:
+    """병렬 실행 현황 보드를 그리고 사용자가 연 실험 id를 반환한다.
+
+    화면 전환은 하지 않는다 — `app.py`가 반환값을 받아 `show_experiment`를 부른다.
+    views는 상태를 바꾸지 않는다는 기존 경계를 지킨다.
+    """
+    st.markdown(
+        '<p class="workbench-kicker">실행 현황</p>', unsafe_allow_html=True
+    )
+    running = [e for e in state.experiments if e.status in BOARD_RUNNING_STATUSES]
+    waiting = [e for e in state.experiments if e.status in BOARD_WAITING_STATUSES]
+    done = [
+        e
+        for e in state.experiments
+        if e.status not in BOARD_RUNNING_STATUSES | BOARD_WAITING_STATUSES
+    ]
+
+    running_column, waiting_column, done_column = st.columns(3)
+    running_column.metric("동시 실행 중", len(running))
+    waiting_column.metric("슬롯 대기", len(waiting))
+    done_column.metric("완료", len(done))
+
+    running_tab, waiting_tab, done_tab = st.tabs(
+        [f"실행 중 {len(running)}", f"대기 {len(waiting)}", f"완료 {len(done)}"]
+    )
+    with running_tab:
+        opened = _render_board_grid(
+            running,
+            state.board_stages,
+            show_stage=True,
+            empty_message="지금 실행 중인 실험이 없습니다.",
+        )
+    with waiting_tab:
+        st.caption(
+            "동시 실행 상한이 차 있으면 여기서 기다리다가 슬롯이 나는 대로 시작합니다."
+        )
+        opened = (
+            _render_board_grid(
+                waiting,
+                state.board_stages,
+                show_stage=False,
+                empty_message="대기 중인 실험이 없습니다.",
+            )
+            or opened
+        )
+    with done_tab:
+        opened = (
+            _render_board_grid(
+                done[:_BOARD_DONE_LIMIT],
+                state.board_stages,
+                show_stage=False,
+                empty_message="완료된 실험이 없습니다.",
+            )
+            or opened
+        )
+    return opened

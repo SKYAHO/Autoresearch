@@ -28,6 +28,18 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 APP_PATH = "agent_orchestration/ui/app.py"
 
 
+def _sidebar_button(app: AppTest, label: str):
+    """sidebar 버튼을 라벨로 고른다.
+
+    인덱스로 고르면 sidebar에 버튼이 하나 추가될 때마다 무관한 테스트가 깨진다 —
+    실행 현황 보드 진입 버튼이 들어오면서 실제로 그랬다(#671).
+    """
+    for button in app.sidebar.button:
+        if button.label == label:
+            return button
+    raise AssertionError(f"sidebar에 '{label}' 버튼이 없습니다.")
+
+
 def _shows_hypothesis(app: AppTest, hypothesis: str) -> bool:
     """상세 화면이 선택한 실험의 가설 본문을 표시하는지 확인한다.
 
@@ -235,7 +247,7 @@ def test_empty_list_stays_on_create_without_activity_polling(
     app = _rendered_app()
 
     app.run()
-    app.sidebar.button[1].click().run()
+    _sidebar_button(app, "실험 목록 새로고침").click().run()
 
     assert not app.exception
     assert app.text_input[0].label == "실험 제목"
@@ -254,7 +266,7 @@ def test_same_experiment_can_be_reselected_after_returning_to_create(
     app.sidebar.radio[0].set_value(experiment_id).run()
     assert _shows_hypothesis(app, "첫 번째 가설")
 
-    app.sidebar.button[0].click().run()
+    _sidebar_button(app, "+ 가설 추가하기").click().run()
     assert app.text_input[0].label == "실험 제목"
 
     app.sidebar.radio[0].set_value(experiment_id).run()
@@ -441,7 +453,7 @@ def test_refresh_exposes_new_experiment_and_hides_other_publication_result(
 
     second_id = "exp-two"
     _StubHandler.experiments.append(_experiment_payload(second_id, "두 번째 가설"))
-    app.sidebar.button[1].click().run()
+    _sidebar_button(app, "실험 목록 새로고침").click().run()
     app.sidebar.radio[0].set_value(second_id).run()
 
     assert not app.exception
@@ -463,3 +475,44 @@ def test_deleted_selected_experiment_is_removed_on_detail_refresh(
     assert not app.exception
     assert any("항목을 선택" in element.value for element in app.info)
     assert not app.sidebar.radio
+
+
+def test_board_view_renders_with_three_tabs(stub_api: list[tuple[str, dict]]) -> None:
+    """보드 진입 버튼이 실행 현황 화면을 연다.
+
+    보드는 `st.fragment` 안에서 그려지고 카드마다 버튼을 단다 — 스크립트를 실제로
+    돌려보지 않으면 fragment·버튼 key 문제를 잡을 수 없다.
+    """
+    _StubHandler.experiments = [
+        _experiment_payload("exp-running", "실행 중 가설"),
+        _experiment_payload("exp-waiting", "대기 가설"),
+    ]
+    _StubHandler.experiments[0]["status"] = "RUNNING"
+    app = _rendered_app()
+
+    _sidebar_button(app, "실행 현황 보기").click().run()
+
+    assert not app.exception
+    labels = [element.label for element in app.tabs]
+    assert any(label.startswith("실행 중") for label in labels)
+    assert any(label.startswith("대기") for label in labels)
+    assert any(label.startswith("완료") for label in labels)
+
+
+def test_board_card_opens_the_detail_view(stub_api: list[tuple[str, dict]]) -> None:
+    """카드의 상세 보기가 기존 상세 화면으로 넘어간다.
+
+    fragment 안에서 기본 `st.rerun()`을 쓰면 fragment만 다시 돌아 상태는 DETAIL인데
+    화면은 보드에 머문다. `scope="app"`이 필요한 이유다(#671 spec 결정 3).
+    """
+    _StubHandler.experiments = [_experiment_payload("exp-running", "실행 중 가설")]
+    _StubHandler.experiments[0]["status"] = "RUNNING"
+    app = _rendered_app()
+    _sidebar_button(app, "실행 현황 보기").click().run()
+
+    open_buttons = [b for b in app.button if b.label == "상세 보기"]
+    assert open_buttons, "보드 카드에 상세 보기 버튼이 없습니다."
+    open_buttons[0].click().run()
+
+    assert not app.exception
+    assert _shows_hypothesis(app, "실행 중 가설")

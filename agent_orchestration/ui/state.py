@@ -7,7 +7,8 @@ Streamlit widget 렌더링은 담당하지 않는다.
 [기능]
 Experiment 선택, cursor 기반 Event/Log 누적, terminal 상태의 추가 최종 갱신, 목록·상세
 오류 분리 보존, 화면 모드 전이와 이슈 발행 재시도·취소 상태 전이를 제공한다. 리포트 본문
-캐시와 조회 오류의 분리 보존도 포함한다.
+캐시와 조회 오류의 분리 보존도 포함한다. 병렬 실행 현황 보드가 실험별로 따로 들고 가는
+로그 cursor와 최신 단계도 여기서 관리한다(#671).
 
 [비책임]
 HTTP 요청, API 인증, 상태 전이 기록, Agent 실행, GitHub 이슈 처리.
@@ -36,6 +37,7 @@ class WorkbenchView(StrEnum):
 
     CREATE = "CREATE"
     DETAIL = "DETAIL"
+    BOARD = "BOARD"
 
 
 @dataclass
@@ -54,6 +56,13 @@ class WorkbenchState:
     metadata: dict[str, str] = field(default_factory=dict)
     event_cursor: str | None = None
     log_cursor: str | None = None
+    # 보드가 실험별로 따로 들고 가는 로그 cursor와 최신 단계.
+    #
+    # **`log_cursor`와 섞지 않는다.** `log_cursor`는 선택된 실험 하나의 것이고 상세
+    # 화면의 원본 로그 탭이 소유한다. 보드가 그 값을 밀면 상세 화면이 이미 읽은
+    # 로그를 다시 읽거나 아직 못 읽은 구간을 건너뛴다(spec 결정 4).
+    board_log_cursors: dict[str, str | None] = field(default_factory=dict)
+    board_stages: dict[str, str] = field(default_factory=dict)
     metadata_loaded_for: str | None = None
     terminal_status_observed: str | None = None
     terminal_refresh_complete: bool = False
@@ -93,6 +102,39 @@ def discard_pending_publication(state: WorkbenchState) -> None:
     state.pending_publication_experiment_id = None
     state.pending_publication_submission = None
     state.detail_error = None
+
+
+def show_board(state: WorkbenchState) -> None:
+    """Workbench를 병렬 실행 현황 보드로 전환한다."""
+    state.view = WorkbenchView.BOARD
+
+
+def record_board_stage(
+    state: WorkbenchState,
+    experiment_id: str,
+    *,
+    cursor: str | None,
+    log_type: str | None,
+) -> None:
+    """보드가 읽은 로그 위치와 최신 단계를 함께 기록한다.
+
+    cursor는 로그를 읽었으면 항상 갱신하고, 단계는 **이번 페이지에서 단계를 찾았을
+    때만** 덮어쓴다. 새 로그가 단계에 속하지 않는 `log_type`(에이전트가 만든 임의
+    값)뿐이면 직전 단계를 유지해야 카드가 깜빡이지 않는다.
+    """
+    state.board_log_cursors[experiment_id] = cursor
+    if log_type is not None:
+        state.board_stages[experiment_id] = log_type
+
+
+def forget_board_entry(state: WorkbenchState, experiment_id: str) -> None:
+    """종료된 실험의 보드 cursor와 단계를 버린다.
+
+    안 버리면 두 dict가 실험 수만큼 무한히 자란다 — 세션이 길수록 커지고 다시 쓸
+    일도 없다.
+    """
+    state.board_log_cursors.pop(experiment_id, None)
+    state.board_stages.pop(experiment_id, None)
 
 
 def show_experiment(state: WorkbenchState, experiment_id: str) -> None:
