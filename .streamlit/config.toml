@@ -23,8 +23,22 @@ linkColor = "#1B6B5B"
 # 테두리는 존재를 알리는 정도까지만. 카드 네 개가 같은 굵기로 경쟁하면 위계가 죽는다.
 borderColor = "#E4E6E7"
 
-codeBackgroundColor = "#12232B"
-codeTextColor = "#E8EFEC"
+# 코드 배경은 밝게 둔다. 두 옵션은 인라인 코드와 `st.code` 블록에 함께 걸리는데,
+# **글자색은 인라인에만 닿고 블록에는 닿지 않는다.** Streamlit 1.60의 `codeTextColor`는
+# "defaults to the resolved value of `greenTextColor`"로 정의된 인라인 코드 계열 색이고,
+# `st.code(..., language=None)`이 만드는 `<code class="language-plaintext">`는 하이라이팅
+# 토큰 클래스가 없어 본문 `textColor`를 상속한다. 그래서 배경만 어둡게 잡으면 원본 로그
+# 탭이 `#12232B` 바탕에 `#15181B` 글자가 되어 대비비 1.1:1로 읽히지 않았다(#687).
+#
+# 블록 글자색을 직접 지정할 방법이 테마에 없으므로 배경을 글자에 맞춘다. 블록은 본문
+# `textColor`를 상속해 `#15181B`/`#F4F5F5` 대비 16.3:1이 된다.
+#
+# 인라인은 `codeTextColor`가 실제로 걸리는 유일한 곳이라 밝은 배경에 맞춰 다시 지정한다.
+# 비워 두면 Streamlit 기본 초록으로 돌아가는데 이 배경에서 4.49:1이라 WCAG AA(4.5:1)에
+# 못 미친다. `linkColor`와 같은 짙은 상록은 5.8:1로 AA를 넘기고 화면의 강조색 계열도
+# 하나로 유지된다.
+codeBackgroundColor = "#F4F5F5"
+codeTextColor = "#1B6B5B"
 
 # Noto Sans KR을 웹폰트로 싣는다. 가족 이름만 적으면 그 폰트가 깔린 PC에서만 적용돼
 # 사람마다 다른 화면을 보게 된다. 브라우저가 Google Fonts에서 직접 받으므로 서버·
