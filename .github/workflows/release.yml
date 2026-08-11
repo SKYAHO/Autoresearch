@@ -835,6 +835,8 @@ jobs:
             deploy/agent-orchestration/runner-deployment.yaml
             deploy/agent-orchestration/deployment-verification-job.yaml
             deploy/agent-orchestration/ui-deployment.yaml
+            # log-collector와 같은 launcher image를 쓰는 PR 생성기다(#689/#700).
+            deploy/agent-orchestration/pull-request-opener-deployment.yaml
           )
           git add -- "${allowed_paths[@]}"
           mapfile -t changed_paths < <(git diff --cached --name-only)

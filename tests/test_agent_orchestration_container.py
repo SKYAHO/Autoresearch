@@ -355,3 +355,101 @@ def test_release_workflow_publishes_branch_job_runtime_digests(
     assert 'echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"' in verify_script
     for module in import_modules:
         assert module in verify_script
+
+
+LAUNCHER_ENTRYPOINTS = (
+    "agent_orchestration.launcher.main",
+    "agent_orchestration.launcher.log_collector",
+    "agent_orchestration.launcher.pull_request",
+)
+
+
+def _module_source(module: str) -> Path | None:
+    """모듈 이름을 저장소 안의 파일 경로로 바꾼다. 저장소 밖이면 `None`."""
+    relative = Path(module.replace(".", "/"))
+    for candidate in (
+        REPOSITORY_ROOT / relative.with_suffix(".py"),
+        REPOSITORY_ROOT / relative / "__init__.py",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _imported_repository_modules(source: Path) -> set[str]:
+    """한 파일이 import하는 `agent_orchestration.*` 모듈.
+
+    함수 안 import도 센다 — `PullRequestSettings.from_environment`처럼 지연 import한
+    모듈도 실행 시점에는 이미지 안에 있어야 한다. `ast.walk`가 중첩을 함께 훑는다.
+    """
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            # `from a.b import c`의 `c`는 모듈일 수도 이름일 수도 있다. 둘 다 후보로
+            # 넣고 파일이 있는 것만 남긴다.
+            modules.add(node.module)
+            modules.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return {
+        module
+        for module in modules
+        if module.startswith("agent_orchestration") and _module_source(module) is not None
+    }
+
+
+def _reachable_repository_modules(entrypoints: tuple[str, ...]) -> set[str]:
+    """entrypoint에서 전이적으로 도달하는 저장소 모듈 전체."""
+    reached: set[str] = set()
+    pending = list(entrypoints)
+    while pending:
+        module = pending.pop()
+        if module in reached:
+            continue
+        reached.add(module)
+        source = _module_source(module)
+        if source is not None:
+            pending.extend(_imported_repository_modules(source))
+    return reached
+
+
+def _copied_sources(dockerfile: str) -> set[str]:
+    """Dockerfile이 이미지로 복사하는 저장소 경로."""
+    copied: set[str] = set()
+    for line in dockerfile.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("COPY agent_orchestration/"):
+            continue
+        copied.add(stripped.split()[1])
+    return copied
+
+
+def test_launcher_image_copies_every_module_its_entrypoints_import() -> None:
+    """launcher image의 entrypoint 셋이 import하는 모듈이 모두 이미지에 있어야 한다.
+
+    이 목록은 경로를 **열거**해 복사하므로 `agent_orchestration/`에 파일을 두는 것만으로는
+    이미지에 들어가지 않는다. 그래서 빠뜨려도 빌드는 통과하고, 그 모듈을 import하는
+    entrypoint의 컨테이너만 기동 즉시 ModuleNotFoundError로 죽는다 — 릴리스가 배포된
+    뒤에야 드러난다. 같은 누락이 두 번 났다(`bootstrap_secrets.py`,
+    `github_pull_requests.py` #700).
+    """
+    copied = _copied_sources(LAUNCHER_DOCKERFILE.read_text(encoding="utf-8"))
+
+    def is_covered(module: str) -> bool:
+        relative = Path(module.replace(".", "/"))
+        candidates = {f"{relative}.py", f"{relative}/__init__.py"}
+        # 디렉토리 통째로 복사한 줄(`COPY agent_orchestration/launcher ...`)이 덮는다.
+        candidates.update(str(parent) for parent in relative.parents)
+        return bool(candidates & copied)
+
+    missing = sorted(
+        module
+        for module in _reachable_repository_modules(LAUNCHER_ENTRYPOINTS)
+        if not is_covered(module)
+    )
+
+    assert missing == [], (
+        "launcher.Dockerfile의 COPY 목록에 없는 모듈을 entrypoint가 import한다: "
+        f"{missing}"
+    )

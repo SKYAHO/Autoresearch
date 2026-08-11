@@ -27,6 +27,11 @@ COPY agent_orchestration/launcher ./agent_orchestration/launcher
 COPY agent_orchestration/app ./agent_orchestration/app
 COPY agent_orchestration/github_app.py ./agent_orchestration/
 COPY agent_orchestration/github_refs.py ./agent_orchestration/
+# PR 생성기(`launcher.pull_request`, #689)가 최상위에서 import한다. 이 줄이 없으면
+# 이미지는 정상 빌드되고 launcher·log_collector도 멀쩡히 돌지만, PR 생성기 컨테이너만
+# 기동 즉시 ModuleNotFoundError로 죽는다(#700). 최상위 모듈은 이 목록에 열거해야만
+# 들어오므로, `agent_orchestration/`에 파일을 추가하는 것만으로는 부족하다.
+COPY agent_orchestration/github_pull_requests.py ./agent_orchestration/
 
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.revision="${VCS_REF}"
