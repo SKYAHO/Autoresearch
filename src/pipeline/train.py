@@ -889,6 +889,7 @@ def _train_from_resolved_dataset(
             "n_estimators": config["model"]["n_estimators"],
             "learning_rate": config["model"]["learning_rate"],
             "num_leaves": config["model"]["num_leaves"],
+            "lambda_l2": config["model"].get("lambda_l2", 0.0),
             "scale_pos_weight": scale_pos_weight,
             "split_seed": effective_seeds.split_seed,
             "model_seed": effective_seeds.model_seed,
@@ -923,6 +924,7 @@ def _train_from_resolved_dataset(
             n_estimators=config["model"]["n_estimators"],
             learning_rate=config["model"]["learning_rate"],
             num_leaves=config["model"]["num_leaves"],
+            lambda_l2=config["model"].get("lambda_l2", 0.0),
             random_state=effective_seeds.model_seed,
         )
         model.fit(X_train, y_train, categorical_features=categorical_columns)
