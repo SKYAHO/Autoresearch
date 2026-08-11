@@ -142,3 +142,35 @@ def test_metadata_key_is_stable() -> None:
     """멱등 판정이 이 키에 걸려 있다. 바뀌면 이미 만든 PR을 다시 만든다."""
     assert PULL_REQUEST_METADATA_KEY == "pull_request_number"
     assert len(PULL_REQUEST_METADATA_KEY) <= 64
+
+
+def test_body_is_truncated_to_the_github_limit() -> None:
+    """GitHub PR body 상한은 65,536자인데 `report_markdown`은 262,144자까지 허용된다.
+
+    자르지 않으면 422가 나고, 그 문구는 exists/no_commits 어디에도 안 걸려 일반 실패로
+    떨어진다. 그건 기록하지 않는 쪽이라 그 실험이 매 주기 같은 422를 되풀이하며 **끝내
+    PR을 얻지 못한다.**
+    """
+    experiment = _Experiment(report_markdown="가" * 200_000)
+
+    body = build_pull_request_body(experiment)
+
+    assert len(body) <= 65_536
+
+
+def test_a_truncated_body_says_so_and_points_at_the_original() -> None:
+    """잘린 것을 알리지 않으면 리포트가 원래 그렇게 끝난 줄로 읽힌다."""
+    experiment = _Experiment(report_markdown="가" * 200_000)
+
+    body = build_pull_request_body(experiment)
+
+    assert "잘렸습니다" in body
+    assert "report.md" in body
+
+
+def test_a_short_body_is_left_alone() -> None:
+    experiment = _Experiment(report_markdown="## 결론\n\n짧다.")
+
+    body = build_pull_request_body(experiment)
+
+    assert "잘렸습니다" not in body

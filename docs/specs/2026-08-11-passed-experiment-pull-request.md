@@ -88,12 +88,21 @@ GitHub에 "열린 PR이 있는지" 물어보는 방식은 쓰지 않는다. 사�
 사유 코드는 `executor/phase2.py`의 `_safe_failure_reason` 관례를 따라 접미사 없는
 `^[a-z][a-z0-9_]*$` 고정 코드로 남긴다. 토큰·응답 본문은 싣지 않는다.
 
-| 상황 | 사유 코드 |
-|---|---|
-| App 토큰 발급 실패 | `pull_request_token_failed` |
-| PR 생성 API 실패 | `pull_request_create_failed` |
-| 기록 실패 | `pull_request_record_failed` |
-| 그 외 실험 단위 예외 | `experiment_promotion_failed` |
+| 상황 | 사유 코드 | 기록? |
+|---|---|---|
+| App 토큰 발급 실패(`GitHubAppError`) | `pull_request_token_failed` | 안 함 |
+| App 권한 부재(403) | `pull_request_forbidden` | 안 함 |
+| 본문 상한 초과(422) | `pull_request_body_too_long` | **함** |
+| 그 외 PR 생성 API 실패 | `pull_request_create_failed` | 안 함 |
+| 기록 실패 | `pull_request_record_failed` | 안 함 |
+| 그 외 실험 단위 예외 | `experiment_promotion_failed` | 안 함 |
+
+`GitHubAppError`는 REST 오류가 아니라 `GitHubPullRequestError`를 잡는 갈래를 통과한다.
+별도로 잡지 않으면 일반 예외로 떨어져 **"키 마운트 경로가 틀렸다"와 "DB가 끊겼다"가
+로그에서 구분되지 않는다.** 초기 롤아웃에서 가장 먼저 걸리는 경로라 사유를 가른다.
+
+일반 예외 갈래는 `exc_info`를 함께 남긴다. 사유 코드 한 줄만으로는 무엇이 터졌는지
+알 수 없다.
 
 **전체 정책은 fail-open이다.** 한 실험이 실패해도 나머지를 계속 처리하고, PR 생성
 실패가 실험 실행을 막지 않는다.
@@ -107,8 +116,34 @@ GitHub에 "열린 PR이 있는지" 물어보는 방식은 쓰지 않는다. 사�
 조직 App 설정이라 이 저장소만으로 끝나지 않는다. 코드가 준비돼도 이 권한 없이는
 PR 생성이 403으로 실패한다.
 
+## 영구 skip을 되돌리는 방법
+
+`pull_request_skipped` 키가 남으면 그 실험은 다시 판정되지 않는다. 되돌리려면 그
+metadata 행을 지운다.
+
+```sql
+DELETE FROM experiment_metadata
+ WHERE experiment_id = '<uuid>' AND key = 'pull_request_skipped';
+```
+
+사유 값이 서로 다른 상황을 가르므로, 지우기 전에 무엇이었는지 본다.
+
+| 값 | 뜻 | 지워도 되는가 |
+|---|---|---|
+| `no_changes` | 올릴 변경이 없었다 | 브랜치에 커밋이 생겼다면 예 |
+| `closed_by_human` | 사람이 PR을 닫았다 | **의도를 확인한 뒤에만** |
+| `body_too_long` | 본문을 잘라 보냈는데도 상한 초과 | 리포트를 줄인 뒤 |
+| `already_recorded` | 방어적 분기 | 예 |
+
+`pull_request_number`에 숫자가 아닌 값이 들어 있으면 없는 것으로 다룬다(사람이 손으로
+넣은 경우). skip 키는 값이 무엇이든 skip으로 다룬다 — 여기서 관대해지면 "굳혔다"는
+사실 자체가 흔들린다.
+
 ## 알려진 한계
 
+- **본문이 GitHub 상한(65,536자)에서 잘린다.** `report_markdown`은 262,144자까지
+  허용되므로 실제로 넘을 수 있다. 잘린 사실과 원본 위치(`report.md`)를 꼬리에 남기지만,
+  PR만 읽는 사람은 전문을 보려면 산출물로 가야 한다
 - **PR 본문이 `report_markdown` 하나에 의존한다.** 리포트가 비어 있으면 PR을 만들지
   않고 기다린다 — 본문 없는 PR보다 낫다
 - 리뷰어·라벨을 붙이지 않으므로 PR이 조용히 쌓일 수 있다. 알림 경로는 이 범위 밖이다

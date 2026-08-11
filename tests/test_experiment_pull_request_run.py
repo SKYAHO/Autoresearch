@@ -220,3 +220,79 @@ def test_one_failing_experiment_does_not_stop_the_rest() -> None:
 
     assert problems == ["experiment_promotion_failed"]
     assert store.recorded == [(good.id, 9)]
+
+
+class _AppErrorOpener(_FakeOpener):
+    """token 발급 단계에서 실패하는 opener — `GitHubAppError`는 REST 오류가 아니다."""
+
+    def create(self, *, head, base, title, body) -> int:
+        from agent_orchestration.github_app import GitHubAppError
+
+        raise GitHubAppError("private_key_unavailable")
+
+
+def test_token_failure_has_its_own_reason() -> None:
+    """정본 계약 §오류 분류의 `pull_request_token_failed`가 실제로 나와야 한다.
+
+    키 마운트 경로가 틀린 초기 롤아웃에서 가장 먼저 걸리는 경로다. 일반 예외로 뭉치면
+    "DB가 끊겼다"와 구분되지 않는다.
+    """
+    experiment = _Experiment()
+    store = _FakeStore([experiment])
+
+    problems = open_pull_requests_once(store, _AppErrorOpener())
+
+    assert problems == ["pull_request_token_failed"]
+    assert store.recorded == []
+    assert store.skipped == []
+
+
+class _RecordFailingStore(_FakeStore):
+    def record_number(self, experiment_id, number: int) -> None:
+        raise RuntimeError("db down")
+
+
+def test_record_failure_has_its_own_reason() -> None:
+    """PR은 만들어졌는데 기록만 실패한 상태다 — 일반 실패와 구분되어야 한다.
+
+    다음 주기에 `exists`로 회복되므로 중복은 생기지 않지만, 사유가 뭉개지면 그
+    회복이 도는 중인지 알 수 없다.
+    """
+    experiment = _Experiment()
+    store = _RecordFailingStore([experiment])
+
+    problems = open_pull_requests_once(store, _FakeOpener(number=7))
+
+    assert problems == ["pull_request_record_failed"]
+
+
+def test_body_too_long_is_recorded_so_it_stops_retrying() -> None:
+    """재시도해도 낫지 않는다 — 기록하지 않으면 매 주기 같은 422를 되풀이한다."""
+    experiment = _Experiment()
+    store = _FakeStore([experiment])
+    opener = _FakeOpener(
+        raises=GitHubPullRequestError("pull_request_body_too_long", status_code=422)
+    )
+
+    problems = open_pull_requests_once(store, opener)
+
+    assert problems == ["pull_request_body_too_long"]
+    assert store.skipped == [(experiment.id, "body_too_long")]
+
+
+def test_a_closed_pull_request_is_recorded_under_its_own_reason() -> None:
+    """"이미 존재하는데 열린 것이 없다" = 사람이 닫았다.
+
+    `already_recorded`로 뭉치면 운영자가 왜 굳었는지 알 수 없다.
+    """
+    experiment = _Experiment()
+    store = _FakeStore([experiment])
+    opener = _FakeOpener(
+        raises=GitHubPullRequestError("pull_request_exists", status_code=422),
+        found=None,
+    )
+
+    problems = open_pull_requests_once(store, opener)
+
+    assert problems == []
+    assert store.skipped == [(experiment.id, "closed_by_human")]

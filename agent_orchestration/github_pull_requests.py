@@ -28,6 +28,9 @@ _REQUEST_TIMEOUT_SEC = 30
 # 섞여 오므로 본문으로 가른다 — 상태 코드만으로는 구분할 수 없다.
 _ALREADY_EXISTS_MARKER = "already exists"
 _NO_COMMITS_MARKER = "no commits between"
+# 본문이 GitHub 상한(65,536자)을 넘었다. 재시도해도 낫지 않으므로 따로 가른다 —
+# 일반 실패로 두면 호출자가 기록하지 않는 쪽으로 흘러 영원히 되풀이한다.
+_BODY_TOO_LONG_MARKER = "body is too long"
 
 
 class GitHubPullRequestError(RuntimeError):
@@ -143,6 +146,10 @@ class GitHubPullRequests:
                 raise GitHubPullRequestError(
                     "pull_request_no_commits", status_code=response.status_code
                 )
+            if _BODY_TOO_LONG_MARKER in messages:
+                raise GitHubPullRequestError(
+                    "pull_request_body_too_long", status_code=response.status_code
+                )
             if _ALREADY_EXISTS_MARKER in messages:
                 raise GitHubPullRequestError(
                     "pull_request_exists", status_code=response.status_code
@@ -156,6 +163,7 @@ class GitHubPullRequests:
         repository: str,
         *,
         head: str,
+        base: str,
         token: str,
     ) -> int | None:
         """열려 있는 PR 번호를 찾는다. 없으면 `None`이다.
@@ -169,7 +177,9 @@ class GitHubPullRequests:
             "GET",
             f"/repos/{repository}/pulls",
             token,
-            params={"head": f"{owner}:{head}", "state": "open"},
+            # `base`까지 넣어 생성 요청과 같은 좌표를 본다. head만으로 거르면 같은
+            # 브랜치에서 다른 base로 열어 둔 PR의 번호를 이 실험의 기록으로 남긴다.
+            params={"head": f"{owner}:{head}", "base": base, "state": "open"},
         )
         if response.status_code != 200:
             raise GitHubPullRequestError(
@@ -181,6 +191,9 @@ class GitHubPullRequests:
             raise GitHubPullRequestError("invalid_response") from error
         if not isinstance(payload, list) or not payload:
             return None
+        if len(payload) > 1:
+            # 같은 좌표에 둘 이상이면 어느 것이 이 실험의 것인지 알 수 없다.
+            raise GitHubPullRequestError("invalid_response")
         first = payload[0]
         number = first.get("number") if isinstance(first, dict) else None
         if not isinstance(number, int) or isinstance(number, bool) or number <= 0:

@@ -25,6 +25,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Final, Protocol
 
+from agent_orchestration.github_app import GitHubAppError
 from agent_orchestration.github_pull_requests import (
     GitHubPullRequestError,
     GitHubPullRequests,
@@ -45,6 +46,15 @@ BASE_BRANCH: Final = "dev"
 _TITLE_LIMIT: Final = 256
 _TITLE_PREFIX: Final = "[AR] "
 
+# GitHub PR body 상한이다. `ExperimentLogCreate`가 아니라 GitHub 쪽 제약이며,
+# `report_markdown`은 262,144자까지 허용되므로(`schemas.MAX_REPORT_MARKDOWN_CHARS`)
+# 실제로 넘을 수 있다. 넘긴 채 보내면 422가 나고 그 사유는 재시도로 낫지 않는다.
+_BODY_LIMIT: Final = 65_536
+_TRUNCATION_NOTICE: Final = (
+    "\n\n> **리포트가 길어 본문이 잘렸습니다.** 전문은 실험 산출물의 "
+    "`report.md`에 있습니다."
+)
+
 
 class SkipReason(enum.Enum):
     """PR을 만들지 않고 넘어가는 **정상** 상황. 오류가 아니다."""
@@ -53,6 +63,11 @@ class SkipReason(enum.Enum):
     REPORT_MISSING = "report_missing"
     BRANCH_MISSING = "branch_missing"
     NO_CHANGES = "no_changes"
+    # 사람이 닫은 PR이 있어 다시 열지 않는다. `already_recorded`와 가른 이유는
+    # 운영자가 "왜 굳었는가"를 로그·DB만 보고 알 수 있어야 하기 때문이다.
+    CLOSED_BY_HUMAN = "closed_by_human"
+    # 본문을 잘라 보냈는데도 GitHub 상한을 넘었다. 재시도로 낫지 않는다.
+    BODY_TOO_LONG = "body_too_long"
 
     @property
     def permanent(self) -> bool:
@@ -63,7 +78,12 @@ class SkipReason(enum.Enum):
 
         리포트와 브랜치는 나중에 도착할 수 있으므로 굳히지 않는다.
         """
-        return self in {SkipReason.ALREADY_RECORDED, SkipReason.NO_CHANGES}
+        return self in {
+            SkipReason.ALREADY_RECORDED,
+            SkipReason.NO_CHANGES,
+            SkipReason.CLOSED_BY_HUMAN,
+            SkipReason.BODY_TOO_LONG,
+        }
 
 
 class _Experiment(Protocol):
@@ -139,7 +159,7 @@ def build_pull_request_body(experiment: _Experiment) -> str:
     정한다.
     """
     report = (experiment.report_markdown or "").strip()
-    lines = [report, "", "---", ""]
+    lines: list[str] = ["", "---", ""]
     if experiment.issue_number is not None:
         lines.append(f"실험 이슈: #{experiment.issue_number}")
     if experiment.candidate_sha:
@@ -148,7 +168,12 @@ def build_pull_request_body(experiment: _Experiment) -> str:
         "이 PR은 실험이 **완주**해 자동으로 열렸습니다. "
         "가설의 성패는 위 리포트가 서술하며, 머지 여부는 사람이 정합니다."
     )
-    return "\n".join(lines)
+    footer = "\n".join(lines)
+    # 꼬리(이슈 링크·안내)는 항상 남긴다 — 잘리는 것은 리포트 쪽이다.
+    room = _BODY_LIMIT - len(footer)
+    if len(report) <= room:
+        return report + footer
+    return report[: room - len(_TRUNCATION_NOTICE)] + _TRUNCATION_NOTICE + footer
 
 
 @dataclass(frozen=True)
@@ -206,14 +231,40 @@ def open_pull_requests_once(
             number = _open(store, opener, experiment, plan.head or "", problems)
             if number is None:
                 continue
-            store.record_number(experiment.id, number)
+            try:
+                store.record_number(experiment.id, number)
+            except Exception:
+                # PR은 만들어졌는데 기록만 실패했다. 다음 주기에 `exists`로 회복되므로
+                # 중복은 생기지 않지만, 사유가 뭉개지면 그 회복이 도는 중인지 모른다.
+                _LOGGER.warning(
+                    "pull request record failed reason=pull_request_record_failed "
+                    "experiment=%s number=%s",
+                    experiment.id,
+                    number,
+                    exc_info=True,
+                )
+                problems.append("pull_request_record_failed")
+                continue
+        except GitHubAppError as error:
+            # token 발급 실패는 REST 오류가 아니라 `_open`의 except를 통과한다.
+            # 키 마운트 경로가 틀린 초기 롤아웃에서 가장 먼저 걸리는 경로다.
+            _LOGGER.warning(
+                "pull request token failed reason=pull_request_token_failed "
+                "experiment=%s cause=%s",
+                getattr(experiment, "id", None),
+                error.reason,
+            )
+            problems.append("pull_request_token_failed")
+            continue
         except Exception:
             # 실험 단위로 격리한다. 여기서 새어 나가면 이 실험 하나가 아니라 뒤의
-            # 실험 전부가 그 주기에서 날아간다.
+            # 실험 전부가 그 주기에서 날아간다. 예외 타입을 함께 남긴다 — 없으면
+            # "키 마운트가 틀렸다"와 "DB가 끊겼다"를 로그만 보고 구분할 수 없다.
             _LOGGER.warning(
                 "pull request open failed reason=experiment_promotion_failed "
                 "experiment=%s",
                 getattr(experiment, "id", None),
+                exc_info=True,
             )
             problems.append("experiment_promotion_failed")
             continue
@@ -241,13 +292,23 @@ def _open(
             found = opener.find_open(head=head)
             if found is not None:
                 return found
-            # 열린 PR이 없는데 GitHub이 중복이라고 한다 — 닫힌 PR이 있는 경우다.
+            # 열린 PR이 없는데 GitHub이 중복이라고 한다 — 같은 head→base에 **닫힌**
+            # PR이 있다는 뜻이다(조회가 `base`까지 맞추므로 다른 base의 PR은 아니다).
             # 다시 열지 않는다(닫은 의도를 되돌리지 않는다, 정본 계약 §결정 3).
-            store.record_skip(experiment.id, SkipReason.ALREADY_RECORDED.value)
+            #
+            # `already_recorded`와 다른 사유로 남긴다 — 뭉치면 운영자가 왜 굳었는지
+            # 알 수 없다. 되돌리려면 이 metadata 행을 지운다(정본 계약 §운영).
+            store.record_skip(experiment.id, SkipReason.CLOSED_BY_HUMAN.value)
             return None
         if error.reason == "pull_request_no_commits":
             # 올릴 변경이 없다. 조회해도 소용없고 다시 볼 필요도 없다.
             store.record_skip(experiment.id, SkipReason.NO_CHANGES.value)
+            return None
+        if error.reason == "pull_request_body_too_long":
+            # 본문을 잘라 보내는데도 넘었다면 재시도해도 낫지 않는다. 기록하지 않으면
+            # 매 주기 같은 422를 되풀이한다.
+            store.record_skip(experiment.id, SkipReason.BODY_TOO_LONG.value)
+            problems.append(error.reason)
             return None
         # `pull_request_forbidden`(App 권한 부재)을 포함해 기록하지 않는다 —
         # 기록하면 권한을 부여한 뒤에도 그 실험은 영영 PR을 얻지 못한다.
@@ -364,9 +425,13 @@ class PullRequestSettings:
 
     database_url: str
     github_repository: str
-    github_app_secret_name: str
     github_app_id: int
     github_app_installation_id: int
+    # executor의 `ORCH_GITHUB_APP_PRIVATE_KEY_FILE`과 **이름을 공유하지 않는다.**
+    # 같은 App의 key지만 이 프로세스는 다른 namespace·다른 mountPath에 둔다. 이름을
+    # 겹치면 `.env.example`이 한 변수를 서로 다른 경로로 두 번 정의하게 되고,
+    # dotenv류 로더가 뒤엣값을 취해 조용히 어긋난다.
+    app_private_key_file: str = "/var/run/github-app/key.pem"
     pull_request_interval_sec: int = 60
 
     def __post_init__(self) -> None:
@@ -382,6 +447,8 @@ class PullRequestSettings:
     @classmethod
     def from_environment(cls) -> "PullRequestSettings":
         """환경 변수에서 설정을 읽는다. 없으면 기동 시점에 막는다."""
+        import os
+
         from agent_orchestration.launcher.config import (
             _optional_positive_integer_environment,
             _positive_integer_environment,
@@ -391,11 +458,15 @@ class PullRequestSettings:
         return cls(
             database_url=_required_environment("ORCH_DATABASE_URL"),
             github_repository=_required_environment("ORCH_GITHUB_REPOSITORY"),
-            github_app_secret_name=_required_environment("ORCH_GITHUB_APP_SECRET_NAME"),
             github_app_id=_positive_integer_environment("ORCH_GITHUB_APP_ID"),
             github_app_installation_id=_positive_integer_environment(
                 "ORCH_GITHUB_APP_INSTALLATION_ID"
             ),
+            app_private_key_file=os.environ.get(
+                "ORCH_PULL_REQUEST_APP_PRIVATE_KEY_FILE",
+                "/var/run/github-app/key.pem",
+            ).strip()
+            or "/var/run/github-app/key.pem",
             # 워크벤치 폴링과 달리 사람이 기다리는 지연이 아니다. 1분이면 충분하고
             # GitHub API 호출량도 그만큼 줄어든다.
             pull_request_interval_sec=_optional_positive_integer_environment(
@@ -461,7 +532,9 @@ class GitHubPullRequestOpener:
         import asyncio
 
         return asyncio.run(
-            self._client.find_open(self._repository, head=head, token=self._token())
+            self._client.find_open(
+                self._repository, head=head, base=BASE_BRANCH, token=self._token()
+            )
         )
 
 
@@ -472,7 +545,6 @@ def main() -> int:
     방식이다. private key는 Secret Manager가 아니라 mount된 파일에서 읽으며 값은
     로그에 남기지 않는다.
     """
-    import os
     import signal
     import time
     from pathlib import Path
@@ -482,7 +554,7 @@ def main() -> int:
         create_session_factory,
     )
     from agent_orchestration.github_app import GitHubAppCredentials
-    from agent_orchestration.launcher.log_collector import run_forever
+    from agent_orchestration.launcher.resident import run_forever
 
     logging.basicConfig(level=logging.INFO)
     settings = PullRequestSettings.from_environment()
@@ -491,11 +563,7 @@ def main() -> int:
     credentials = GitHubAppCredentials(
         app_id=settings.github_app_id,
         installation_id=settings.github_app_installation_id,
-        private_key_path=Path(
-            os.environ.get(
-                "ORCH_GITHUB_APP_PRIVATE_KEY_FILE", "/var/run/github-app/key.pem"
-            )
-        ),
+        private_key_path=Path(settings.app_private_key_file),
     )
     opener = GitHubPullRequestOpener(settings.github_repository, credentials)
     engine = create_database_engine(settings.database_url)
@@ -525,6 +593,7 @@ def main() -> int:
             should_stop=lambda: stopping,
             sleep=time.sleep,
             interval_sec=settings.pull_request_interval_sec,
+            label="pull request opener",
         )
     finally:
         engine.dispose()

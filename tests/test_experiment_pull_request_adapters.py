@@ -208,7 +208,7 @@ class _FakeClient:
         )
         return 5
 
-    async def find_open(self, repository, *, head, token) -> int | None:
+    async def find_open(self, repository, *, head, base, token) -> int | None:
         self.find_calls.append({"repository": repository, "head": head})
         return 6
 
@@ -268,3 +268,45 @@ def test_opener_find_open_reaches_the_same_repository() -> None:
 
     assert opener.find_open(head="exp/689-demo") == 6
     assert client.find_calls[0]["repository"] == "SKYAHO/Autoresearch"
+
+
+def _base_env(monkeypatch) -> None:
+    monkeypatch.setenv("ORCH_DATABASE_URL", "postgresql://u:p@h/d")
+    monkeypatch.setenv("ORCH_GITHUB_REPOSITORY", "SKYAHO/Autoresearch")
+    monkeypatch.setenv("ORCH_GITHUB_APP_ID", "4502568")
+    monkeypatch.setenv("ORCH_GITHUB_APP_INSTALLATION_ID", "151609037")
+
+
+def test_private_key_path_is_part_of_the_settings(monkeypatch) -> None:
+    """이 프로세스가 반드시 쓰는 값이다 — 설정 밖에 두면 기동 시 검증이 없다."""
+    _base_env(monkeypatch)
+    monkeypatch.delenv("ORCH_PULL_REQUEST_APP_PRIVATE_KEY_FILE", raising=False)
+
+    settings = PullRequestSettings.from_environment()
+
+    assert settings.app_private_key_file.endswith(".pem")
+
+
+def test_private_key_path_uses_its_own_variable(monkeypatch) -> None:
+    """executor의 `ORCH_GITHUB_APP_PRIVATE_KEY_FILE`과 이름을 공유하지 않는다.
+
+    같은 이름을 쓰면 `.env.example`이 한 변수를 서로 다른 경로로 두 번 정의하게 되고,
+    dotenv류 로더는 뒤엣값을 취해 조용히 어긋난다.
+    """
+    _base_env(monkeypatch)
+    monkeypatch.setenv("ORCH_GITHUB_APP_PRIVATE_KEY_FILE", "/executor/path.pem")
+    monkeypatch.setenv("ORCH_PULL_REQUEST_APP_PRIVATE_KEY_FILE", "/mine/key.pem")
+
+    settings = PullRequestSettings.from_environment()
+
+    assert settings.app_private_key_file == "/mine/key.pem"
+
+
+def test_settings_do_not_require_the_unused_secret_name(monkeypatch) -> None:
+    """이 모듈은 Secret 이름을 쓰지 않는다 — 요구하면 안 쓰는 값에 배포가 묶인다."""
+    _base_env(monkeypatch)
+    monkeypatch.delenv("ORCH_GITHUB_APP_SECRET_NAME", raising=False)
+
+    settings = PullRequestSettings.from_environment()
+
+    assert not hasattr(settings, "github_app_secret_name")

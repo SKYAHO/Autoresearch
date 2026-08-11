@@ -192,7 +192,9 @@ def test_find_open_returns_the_number_for_an_existing_branch() -> None:
     client = GitHubPullRequests(transport=transport)
 
     number = asyncio.run(
-        client.find_open("SKYAHO/Autoresearch", head="exp/689-demo", token="t")
+        client.find_open(
+            "SKYAHO/Autoresearch", head="exp/689-demo", base="dev", token="t"
+        )
     )
 
     assert number == 11
@@ -206,7 +208,9 @@ def test_find_open_returns_none_when_no_pull_request_is_open() -> None:
     client = GitHubPullRequests(transport=transport)
 
     number = asyncio.run(
-        client.find_open("SKYAHO/Autoresearch", head="exp/689-demo", token="t")
+        client.find_open(
+            "SKYAHO/Autoresearch", head="exp/689-demo", base="dev", token="t"
+        )
     )
 
     assert number is None
@@ -230,3 +234,69 @@ def test_malformed_response_is_rejected_rather_than_guessed() -> None:
         )
 
     assert caught.value.reason == "invalid_response"
+
+
+def test_find_open_filters_by_base_too() -> None:
+    """"이미 존재" 422는 head→base 쌍 판정이다.
+
+    head만으로 찾으면 같은 브랜치에서 `main`으로 따로 열어 둔 PR의 번호를 이 실험의
+    기록으로 남길 수 있다 — 예외가 아니라 잘못된 성공으로 나타난다.
+    """
+    transport = RecordingTransport(httpx.Response(200, json=[{"number": 11}]))
+    client = GitHubPullRequests(transport=transport)
+
+    asyncio.run(
+        client.find_open(
+            "SKYAHO/Autoresearch", head="exp/689-demo", base="dev", token="t"
+        )
+    )
+
+    params = transport.requests[0].url.params
+    assert params["head"] == "SKYAHO:exp/689-demo"
+    assert params["base"] == "dev"
+
+
+def test_find_open_refuses_to_guess_between_several_pull_requests() -> None:
+    """같은 좌표에 둘 이상이면 어느 것이 이 실험의 것인지 알 수 없다."""
+    transport = RecordingTransport(
+        httpx.Response(200, json=[{"number": 11}, {"number": 12}])
+    )
+    client = GitHubPullRequests(transport=transport)
+
+    with pytest.raises(GitHubPullRequestError) as caught:
+        asyncio.run(
+            client.find_open(
+                "SKYAHO/Autoresearch", head="h", base="dev", token="t"
+            )
+        )
+
+    assert caught.value.reason == "invalid_response"
+
+
+def test_too_long_body_has_its_own_reason() -> None:
+    """본문 상한 초과는 재시도해도 낫지 않는다 — 일반 실패와 뭉치면 영원히 되풀이한다."""
+    transport = RecordingTransport(
+        httpx.Response(
+            422,
+            json={
+                "errors": [
+                    {"message": "body is too long (maximum is 65536 characters)"}
+                ]
+            },
+        )
+    )
+    client = GitHubPullRequests(transport=transport)
+
+    with pytest.raises(GitHubPullRequestError) as caught:
+        asyncio.run(
+            client.create(
+                "SKYAHO/Autoresearch",
+                head="h",
+                base="dev",
+                title="t",
+                body="b",
+                token="t",
+            )
+        )
+
+    assert caught.value.reason == "pull_request_body_too_long"
