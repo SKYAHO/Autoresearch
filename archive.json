@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-11T00:27:29Z",
+  "generated_at": "2026-08-11T00:32:57Z",
   "reports": [
+    {
+      "number": 668,
+      "title": "feat: 워크벤치 시각 개선 — 죽은 테마 CSS 복구와 상세 화면 재구성",
+      "author": "bbungjun",
+      "merged_at": "2026-08-11T00:32:45Z",
+      "summary_ko": [
+        "Streamlit 1.60에서 작동하지 않던 전역 CSS 변수 참조를 수정하고 테마 정본을 .streamlit/config.toml로 옮겼습니다.",
+        "실험 상세 화면의 가설 본문 표시, 관찰 보드 레이아웃, 인스펙터 구조 및 사이드바 실험 목록 디자인을 재구성했습니다.",
+        "UI Dockerfile 설정 수정 및 시각 계약 회귀 테스트를 신설하여 배포 및 코드 수정 시 표현 품질을 안정화했습니다."
+      ],
+      "report_url": "pr/668/"
+    },
     {
       "number": 680,
       "title": "revert: 워크벤치 가독성 변경을 되돌린다 (#670)",
