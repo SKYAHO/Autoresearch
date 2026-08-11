@@ -25,7 +25,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Final, Protocol
 
-from agent_orchestration.github_pull_requests import GitHubPullRequestError
+from agent_orchestration.github_pull_requests import (
+    GitHubPullRequestError,
+    GitHubPullRequests,
+)
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -255,3 +258,279 @@ def _open(
         )
         problems.append(error.reason)
         return None
+
+
+# 이 프로세스가 받는 권한은 이것뿐이다. App이 가진 `Contents: write`까지 함께 받으면
+# 이 프로세스가 코드를 push할 수 있게 되고, executor 밖으로 뺀 이유가 무너진다.
+PULL_REQUEST_PERMISSIONS: Final = {"pull_requests": "write"}
+
+# skip은 번호와 다른 키에 남긴다. 같은 키에 섞으면 "번호 없음"과 "건너뜀"이
+# 구분되지 않는다.
+PULL_REQUEST_SKIP_METADATA_KEY: Final = "pull_request_skipped"
+
+
+class DatabaseExperimentStore:
+    """완주한 실험을 읽고 처리 결과를 `experiment_metadata`에 남기는 어댑터."""
+
+    def __init__(self, session) -> None:
+        self._session = session
+
+    def list_passed_experiments(self) -> list:
+        """`PASSED`만 걷는다.
+
+        완주하지 않은 실험까지 걷으면 리포트도 없는 브랜치로 PR을 열게 된다.
+        """
+        from agent_orchestration.app.experiments.models import (
+            Experiment,
+            ExperimentStatus,
+        )
+
+        return list(
+            self._session.query(Experiment)
+            .filter(Experiment.status == ExperimentStatus.PASSED.value)
+            .order_by(Experiment.created_at)
+            .all()
+        )
+
+    def _entries(self, experiment_id: uuid.UUID) -> dict[str, str]:
+        from agent_orchestration.app.experiments.models import ExperimentMetadata
+
+        rows = (
+            self._session.query(ExperimentMetadata)
+            .filter(ExperimentMetadata.experiment_id == experiment_id)
+            .filter(
+                ExperimentMetadata.key.in_(
+                    [PULL_REQUEST_METADATA_KEY, PULL_REQUEST_SKIP_METADATA_KEY]
+                )
+            )
+            .all()
+        )
+        return {row.key: row.value for row in rows}
+
+    def pull_request_state(self, experiment_id: uuid.UUID) -> PullRequestState:
+        """이미 남아 있는 기록을 읽는다."""
+        entries = self._entries(experiment_id)
+        raw = entries.get(PULL_REQUEST_METADATA_KEY)
+        number: int | None = None
+        if raw is not None:
+            try:
+                number = int(raw)
+            except ValueError:
+                # 사람이 손으로 넣은 값일 수 있다. tick을 죽이지 않고 없는 것으로 본다.
+                _LOGGER.warning(
+                    "ignoring non-numeric pull request record experiment=%s",
+                    experiment_id,
+                )
+        return PullRequestState(number, PULL_REQUEST_SKIP_METADATA_KEY in entries)
+
+    def _upsert(self, experiment_id: uuid.UUID, key: str, value: str) -> None:
+        """같은 키를 다시 써도 unique 제약에 걸리지 않게 한다.
+
+        재시도가 여기서 죽으면 그 실험이 매 주기 실패로 남는다.
+        """
+        from agent_orchestration.app.experiments.models import ExperimentMetadata
+
+        existing = (
+            self._session.query(ExperimentMetadata)
+            .filter(ExperimentMetadata.experiment_id == experiment_id)
+            .filter(ExperimentMetadata.key == key)
+            .one_or_none()
+        )
+        if existing is None:
+            self._session.add(
+                ExperimentMetadata(
+                    experiment_id=experiment_id, key=key, value=value
+                )
+            )
+        else:
+            existing.value = value
+        self._session.commit()
+
+    def record_number(self, experiment_id: uuid.UUID, number: int) -> None:
+        self._upsert(experiment_id, PULL_REQUEST_METADATA_KEY, str(number))
+
+    def record_skip(self, experiment_id: uuid.UUID, reason: str) -> None:
+        self._upsert(experiment_id, PULL_REQUEST_SKIP_METADATA_KEY, reason)
+
+
+@dataclass(frozen=True)
+class PullRequestSettings:
+    """이 프로세스가 실제로 쓰는 설정만 담는다.
+
+    `LauncherSettings`를 재사용하지 않는다 — 그쪽은 executor Job 생성용 값을 필수로
+    요구하고 `ORCH_EXECUTOR_IMAGE`는 digest 형식 검증까지 한다. PR을 여는 데 그 값이
+    필요 없는데도 executor 릴리스마다 이 매니페스트를 따라 고쳐야 한다(#559 선례).
+    """
+
+    database_url: str
+    github_repository: str
+    github_app_secret_name: str
+    github_app_id: int
+    github_app_installation_id: int
+    pull_request_interval_sec: int = 60
+
+    def __post_init__(self) -> None:
+        """형식 오류를 Pod까지 끌고 가지 않는다."""
+        from agent_orchestration.launcher.config import (
+            LauncherConfigError,
+            _REPOSITORY_PATTERN,
+        )
+
+        if _REPOSITORY_PATTERN.fullmatch(self.github_repository) is None:
+            raise LauncherConfigError("invalid github_repository")
+
+    @classmethod
+    def from_environment(cls) -> "PullRequestSettings":
+        """환경 변수에서 설정을 읽는다. 없으면 기동 시점에 막는다."""
+        from agent_orchestration.launcher.config import (
+            _optional_positive_integer_environment,
+            _positive_integer_environment,
+            _required_environment,
+        )
+
+        return cls(
+            database_url=_required_environment("ORCH_DATABASE_URL"),
+            github_repository=_required_environment("ORCH_GITHUB_REPOSITORY"),
+            github_app_secret_name=_required_environment("ORCH_GITHUB_APP_SECRET_NAME"),
+            github_app_id=_positive_integer_environment("ORCH_GITHUB_APP_ID"),
+            github_app_installation_id=_positive_integer_environment(
+                "ORCH_GITHUB_APP_INSTALLATION_ID"
+            ),
+            # 워크벤치 폴링과 달리 사람이 기다리는 지연이 아니다. 1분이면 충분하고
+            # GitHub API 호출량도 그만큼 줄어든다.
+            pull_request_interval_sec=_optional_positive_integer_environment(
+                "ORCH_PULL_REQUEST_INTERVAL_SEC",
+                default=60,
+            ),
+        )
+
+
+class GitHubPullRequestOpener:
+    """`GitHubPullRequests`(async)를 동기 호출로 감싸는 어댑터.
+
+    오케스트레이션을 동기로 두는 이유는 DB 세션과 같은 흐름에 두기 위해서다 —
+    `log_collector`와 같은 모양이라 두 상주 프로세스를 같은 방식으로 읽을 수 있다.
+
+    **token은 호출 때마다 새로 발급한다.** installation token은 수명이 짧고, 이
+    프로세스는 1분 주기라 캐시해서 얻는 것보다 만료 처리를 하지 않아 생기는 실패가
+    더 비싸다.
+    """
+
+    def __init__(
+        self,
+        repository: str,
+        credentials,
+        *,
+        client: GitHubPullRequests | None = None,
+        token_factory=None,
+    ) -> None:
+        from agent_orchestration.github_app import create_installation_token
+
+        self._repository = repository
+        self._credentials = credentials
+        self._client = client if client is not None else GitHubPullRequests()
+        self._token_factory = (
+            token_factory if token_factory is not None else create_installation_token
+        )
+
+    def _token(self) -> str:
+        import asyncio
+
+        token = asyncio.run(
+            self._token_factory(
+                self._credentials, permissions=PULL_REQUEST_PERMISSIONS
+            )
+        )
+        return token.value
+
+    def create(self, *, head: str, base: str, title: str, body: str) -> int:
+        import asyncio
+
+        return asyncio.run(
+            self._client.create(
+                self._repository,
+                head=head,
+                base=base,
+                title=title,
+                body=body,
+                token=self._token(),
+            )
+        )
+
+    def find_open(self, *, head: str) -> int | None:
+        import asyncio
+
+        return asyncio.run(
+            self._client.find_open(self._repository, head=head, token=self._token())
+        )
+
+
+def main() -> int:
+    """상주 PR 생성기 진입점.
+
+    engine은 프로세스당 1회 만들고 세션은 주기마다 연다 — `log_collector`와 같은
+    방식이다. private key는 Secret Manager가 아니라 mount된 파일에서 읽으며 값은
+    로그에 남기지 않는다.
+    """
+    import os
+    import signal
+    import time
+    from pathlib import Path
+
+    from agent_orchestration.app.database import (
+        create_database_engine,
+        create_session_factory,
+    )
+    from agent_orchestration.github_app import GitHubAppCredentials
+    from agent_orchestration.launcher.log_collector import run_forever
+
+    logging.basicConfig(level=logging.INFO)
+    settings = PullRequestSettings.from_environment()
+    # private key는 이 프로세스가 읽지 않는다 — 경로만 넘기고 서명은
+    # `github_app`이 한다. 값이 이 모듈의 변수나 로그에 실릴 자리를 만들지 않는다.
+    credentials = GitHubAppCredentials(
+        app_id=settings.github_app_id,
+        installation_id=settings.github_app_installation_id,
+        private_key_path=Path(
+            os.environ.get(
+                "ORCH_GITHUB_APP_PRIVATE_KEY_FILE", "/var/run/github-app/key.pem"
+            )
+        ),
+    )
+    opener = GitHubPullRequestOpener(settings.github_repository, credentials)
+    engine = create_database_engine(settings.database_url)
+    session_factory = create_session_factory(engine)
+
+    stopping = False
+
+    def _request_stop(_signum, _frame) -> None:
+        nonlocal stopping
+        stopping = True
+
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
+
+    def tick() -> list[str]:
+        with session_factory() as session:
+            return open_pull_requests_once(DatabaseExperimentStore(session), opener)
+
+    try:
+        _LOGGER.info(
+            "pull request opener started repository=%s interval=%ss",
+            settings.github_repository,
+            settings.pull_request_interval_sec,
+        )
+        run_forever(
+            tick,
+            should_stop=lambda: stopping,
+            sleep=time.sleep,
+            interval_sec=settings.pull_request_interval_sec,
+        )
+    finally:
+        engine.dispose()
+    _LOGGER.info("pull request opener stopped")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
