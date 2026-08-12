@@ -29,7 +29,7 @@ flowchart TD
 
     subgraph 코드 리포 release.yml
         RY --> WIF1[WIF 인증<br/>GAR_PUSHER_SA]
-        WIF1 --> BUILD[Dockerfile.app 빌드<br/>uv lock-export → python:3.12-slim]
+        WIF1 --> BUILD[Dockerfile.app 빌드<br/>의존성만 · 소스 미포함]
         BUILD --> PUSH1[GAR push<br/>autoresearch-batch:sha-XXX + v0.0.2]
         PUSH1 --> VERIFY[OCI revision / non-root /<br/>CLI contract batch-contract-v1 검증]
         VERIFY --> APP[GitHub App 토큰<br/>create-github-app-token]
@@ -106,10 +106,17 @@ job은 batch job이 검증한 동일한 `source_sha`를 checkout하므로 다섯
    바꿉니다.
 2. **이미지 빌드**: `Dockerfile.app` (multi-stage, uv lock-export → python:3.12-slim,
    non-root user). 빌드 인자로 `VCS_REF`(commit SHA) 전달.
+   **이미지는 애플리케이션 소스를 담지 않습니다**(#750) — `feast`·`train`
+   이미지와 같이 ENTRYPOINT 부트스트랩이 파드 시작 시 GCS 코드 아카이브를
+   `/app`에 풀고 커맨드를 실행합니다. 따라서 이미지 재빌드는 의존성·OS 변경
+   시에만 필요하고, 코드 변경은 `code-archive.yml`이 담당합니다. 계약 정본:
+   `docs/specs/2026-08-12-batch-image-source-decoupling.md`
 3. **GAR push**: `autoresearch-batch:sha-<short>` + release tag (예: `v0.0.2`) 두 개 태그로 push.
 4. **검증**: OCI revision 라벨, non-root 실행, CLI 계약(batch-contract-v1) 6개 모듈
    import 확인 (youtube_trending, youtube_backfill, action_log, action_log_quality,
-   feature_store_build, daily_recommendations).
+   feature_store_build, daily_recommendations). 이미지가 코드를 담지 않으므로
+   같은 `source_sha`의 `git archive`를 `CODE_ARCHIVE_LOCAL_PATH`로 주입해
+   실행하며, 아카이브 없이 실행하면 실패해야 한다는 음성 검증도 함께 수행합니다.
 5. **Digest 승격 PR**: GitHub App 토큰으로 배포 리포에 PR 자동 생성 (아래 참조).
 
 workflow_dispatch(`source_sha` 입력)로 수동 실행도 가능합니다.
@@ -284,7 +291,7 @@ gcloud artifacts docker images list \
 | `.github/release-drafter.yml` | 라벨 → semver 매핑 규칙 |
 | `.github/workflows/release-drafter.yml` | push to main 트리거 |
 | `.github/workflows/release.yml` | release:published → batch·serving·Agent Orchestration API·Runner·UI·launcher·executor 빌드/GAR push, batch PR 승격 및 Agent Orchestration infra main 자동 승격 |
-| `Dockerfile.app` | multi-stage batch 이미지 (uv lock-export → python:3.12-slim, non-root) |
+| `Dockerfile.app` | multi-stage batch 이미지 (uv lock-export → python:3.12-slim, non-root, 소스 미포함·GCS 부트스트랩) |
 | `deploy/serving/Dockerfile` | Feast 호환 serving 이미지 (FastAPI/Uvicorn, non-root) |
 | `deploy/agent_orchestration/api.Dockerfile` | API 전용 FastAPI 이미지 (non-root, OAuth·Codex CLI 미포함) |
 | `deploy/agent_orchestration/runner.Dockerfile` | Runner 전용 Codex CLI 이미지 (non-root, Codex 0.146.0 고정) |

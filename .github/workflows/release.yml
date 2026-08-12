@@ -189,7 +189,23 @@ jobs:
             exit 1
           fi
 
-          docker run --rm "$digest_ref"
+          # 이미지는 코드를 담지 않는다(#750). 계약 검증은 이 release가
+          # 발행하는 것과 같은 SHA의 코드 아카이브를 주입해 실행한다 —
+          # 운영에서는 부트스트랩이 GCS에서 받아오는 그 아카이브다.
+          git archive --format=tar.gz -o /tmp/code-archive.tar.gz "$SOURCE_SHA"
+          run_batch() {
+            docker run --rm \
+              -v /tmp/code-archive.tar.gz:/tmp/code-archive.tar.gz:ro \
+              -e CODE_ARCHIVE_LOCAL_PATH=/tmp/code-archive.tar.gz \
+              "$digest_ref" "$@"
+          }
+
+          if docker run --rm "$digest_ref" 2>/dev/null; then
+            echo "::error::부트스트랩이 코드 아카이브 없이 성공해서는 안 된다"
+            exit 1
+          fi
+
+          run_batch
           for module in \
             autoresearch.jobs.youtube_trending \
             autoresearch.jobs.youtube_backfill \
@@ -198,8 +214,8 @@ jobs:
             autoresearch.jobs.feature_store_build \
             src.pipeline.daily_recommendations
           do
-            docker run --rm "$digest_ref" python -m "$module" --help >/dev/null
-            version_json="$(docker run --rm "$digest_ref" python -m "$module" --version)"
+            run_batch python -m "$module" --help >/dev/null
+            version_json="$(run_batch python -m "$module" --version | tail -1)"
             cli_revision="$(jq -er '.application_revision' <<< "$version_json")"
             contract_version="$(jq -er '.contract_version' <<< "$version_json")"
             if [[ "$cli_revision" != "$SOURCE_SHA" ]]; then
