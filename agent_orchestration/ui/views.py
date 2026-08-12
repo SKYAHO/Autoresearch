@@ -8,7 +8,7 @@
 sidebar 탐색으로 분리된 사전등록 화면과 상세 화면의 컴포넌트를 렌더링한다. 사전등록
 제출 폼, 실패한 이슈 발행의 재시도·취소 동작과 발행 결과 표시, 실험 선택 목록, 빈 관찰
 패널, 상태 타임라인, 결과·Event·원본 Log 탭, KST 시각이 포함된 요약 패널을 제공한다.
-결과 탭의 지표 카드와 리포트 HTML 렌더도 이 모듈이 담당한다.
+결과 탭의 지표 카드와 리포트 HTML 렌더, 실행 비용 영역도 이 모듈이 담당한다.
 
 지표를 그리는 곳은 **결과 탭 하나**다. 인스펙터의 "실행 요약"은 시드·테스트셋 일치
 여부 같은 실행 조건만 적는다(#657).
@@ -545,7 +545,11 @@ _REPORT_HEIGHT_PX = 620
 
 
 def _render_results(state: WorkbenchState) -> None:
-    """결과 탭에 경고·지표 카드·리포트 본문을 그린다.
+    """결과 탭에 경고·지표 카드·리포트 본문·실행 비용을 그린다.
+
+    비용을 리포트 **아래**에 두는 이유는 그것이 가설 판정이 아니기 때문이다. 리포트가
+    답하는 질문("가설이 섰는가")과 비용이 답하는 질문("얼마가 들었는가")은 다르고,
+    읽는 순서도 그 순서다.
 
     **지표와 리포트의 결손은 독립이다** — 리포트가 없어도 카드는 나오고, 지표가 없어도
     본문은 나온다. 지표를 iframe 밖 Streamlit 위젯으로 두는 이유가 그것이다.
@@ -554,6 +558,7 @@ def _render_results(state: WorkbenchState) -> None:
     _render_split_warning(metrics)
     _render_metric_cards(metrics)
     _render_report(state)
+    _render_cost(state)
 
 
 def _render_split_warning(metrics: dict[str, object] | None) -> None:
@@ -626,6 +631,64 @@ def _render_report(state: WorkbenchState) -> None:
         st.caption("아직 리포트가 없습니다.")
         return
     st.iframe(report_document(state.report_markdown), height=_REPORT_HEIGHT_PX)
+
+
+def _render_cost(state: WorkbenchState) -> None:
+    """실행 비용을 리포트 아래 접이식 영역에 그린다.
+
+    `report.md`가 아니라 여기 두는 이유는 두 가지다. 리포트를 쓰는 에이전트는
+    `metrics.json`에 없는 숫자를 쓰지 못하도록 지시받고 있고, **리포트를 쓰는 그 실행의
+    토큰은 리포트를 다 쓴 뒤에야 확정**되므로 원리적으로 본문에 들어갈 수 없다.
+
+    분해가 없는 실험에 금액을 만들어 붙이지 않는다 — 정가로 매기면 실제보다 몇 배 큰
+    값이 사실처럼 보인다. 총량만 적고 왜 금액이 없는지 밝힌다.
+    """
+    if state.cost_error is not None:
+        st.warning(f"실행 비용을 불러오지 못했습니다 — {state.cost_error}")
+        return
+    if state.experiment is None or state.experiment.status not in REPORT_STATUSES:
+        return
+    cost = state.cost
+    if cost is None:
+        return
+    with st.expander("실행 비용", expanded=False):
+        columns = st.columns(3)
+        columns[0].metric(
+            "실행 시간",
+            "—"
+            if cost.wall_clock_seconds is None
+            else f"{cost.wall_clock_seconds / 60:,.1f}분",
+        )
+        columns[1].metric(
+            "컴퓨트",
+            "—" if cost.compute_usd is None else f"${cost.compute_usd:,.4f}",
+        )
+        columns[2].metric(
+            "토큰",
+            "—" if cost.token_usd is None else f"${cost.token_usd:,.4f}",
+        )
+        if not cost.breakdown_available:
+            st.caption(
+                f"Codex 토큰 총 {cost.total_tokens:,}개. 이 실험은 과금 구분이 남기 전에"
+                " 실행되어 금액을 환산하지 않았습니다."
+            )
+            return
+        st.table(
+            {
+                "stage": [stage.stage for stage in cost.stages],
+                "input": [f"{stage.input_tokens:,}" for stage in cost.stages],
+                "캐시 적중": [f"{stage.cached_input_tokens:,}" for stage in cost.stages],
+                "신규 input": [f"{stage.fresh_input_tokens:,}" for stage in cost.stages],
+                "output": [f"{stage.output_tokens:,}" for stage in cost.stages],
+            }
+        )
+        if cost.token_usd_without_cache and cost.token_usd is not None:
+            saved = cost.token_usd_without_cache - cost.token_usd
+            ratio = 1 - cost.token_usd / cost.token_usd_without_cache
+            st.caption(
+                f"프롬프트 캐싱으로 ${saved:,.4f}({ratio:.0%})를 덜었습니다."
+                " 구독 인증으로 실행 중이라 실제 지출은 없습니다."
+            )
 
 
 def _render_metrics(metrics: dict[str, object] | None) -> None:
