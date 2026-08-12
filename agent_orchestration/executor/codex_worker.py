@@ -7,7 +7,9 @@ workspace-preparer가 봉인 이슈와 exp branch checkout을 검증한 뒤 cand
 
 [기능]
 read-only auth source의 regular `auth.json`만 per-run writable scratch `CODEX_HOME`으로
-복사한 뒤 고정 모델·추론 강도로 `codex exec --ephemeral`을 실행한다. 명시적 환경
+복사한 뒤 고정 모델·추론 강도로 `codex exec --ephemeral --json`을 실행한다. 실행 중
+스트림에서 turn별 토큰 사용량을 누적해 input·cached·output 분해로 돌려준다(#742) —
+tail 링버퍼가 앞을 버리므로 파이프를 읽는 자리에서 함께 훑는다. 명시적 환경
 allowlist와 전용 process group으로 noninteractive Codex를 실행하고, timeout·취소 시
 child process까지 회수한다. 성공·실패 어느 경로에서든 진단용 출력 tail을 호출자에게
 돌려준다. 원격 tip이 base와 다르면 기존 candidate 채택 경로로 넘기기 위해 Codex 실행을
@@ -30,6 +32,7 @@ from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
+import json
 import os
 from pathlib import Path
 import re
@@ -84,6 +87,33 @@ class CodexWorkerError(RuntimeError):
 
     stdout: str = ""
     stderr: str = ""
+    usage: "CodexTokenUsage | None" = None
+
+
+@dataclass(frozen=True)
+class CodexTokenUsage:
+    """Codex 실행 한 번이 쓴 토큰을 과금 구분대로 나눠 담는다(#742).
+
+    `input_tokens`는 `cached_input_tokens`를 **포함한** 값이다 — Codex CLI가 그렇게
+    싣는다. 캐시 적중분과 신규 입력분은 단가가 다르므로, 종량제 환산을 하려면 이
+    포함 관계를 그대로 지켜야 한다. 빼는 일은 `fresh_input_tokens`가 한 번만 한다.
+    """
+
+    input_tokens: int = 0
+    cached_input_tokens: int = 0
+    output_tokens: int = 0
+    reasoning_output_tokens: int = 0
+    turns: int = 0
+
+    @property
+    def fresh_input_tokens(self) -> int:
+        """캐시에 걸리지 않아 정가로 과금되는 입력 토큰."""
+        return max(0, self.input_tokens - self.cached_input_tokens)
+
+    @property
+    def total_tokens(self) -> int:
+        """입력과 출력을 합한 총량. `reasoning`은 `output`에 포함된다."""
+        return self.input_tokens + self.output_tokens
 
 
 @dataclass(frozen=True)
@@ -138,6 +168,86 @@ class CodexRunResult:
     duration_ms: int
     stdout: str = ""
     stderr: str = ""
+    # `--json` 스트림에서 뽑은 토큰 사용량. 이벤트를 한 번도 보지 못했으면 `None`이다
+    # (구버전 CLI·조기 종료). "0 토큰"과 "모른다"는 다르므로 0으로 채우지 않는다.
+    usage: CodexTokenUsage | None = None
+
+
+class _UsageCollector:
+    """`codex exec --json` 스트림에서 turn별 사용량을 누적한다(#742).
+
+    tail이 아니라 **스트림**을 보는 이유는 `_RingBuffer`가 앞을 버리기 때문이다. 긴
+    실행에서는 사용량 이벤트가 tail 밖으로 밀려날 수 있고, 그러면 값이 통째로 사라진다.
+    파이프를 읽는 그 자리에서 한 번 훑으면 잘림과 무관해진다.
+
+    한 줄이 상한을 넘도록 개행이 오지 않으면 그 줄을 버린다. Codex가 싣는 이벤트는
+    한 줄이 짧고, 개행 없이 무한히 늘어나는 출력에 메모리를 내주지 않기 위함이다.
+    """
+
+    _MAX_PENDING_BYTES = 1024 * 1024
+    _USAGE_EVENT_TYPE = "turn.completed"
+
+    def __init__(self) -> None:
+        self._pending = bytearray()
+        self._input = 0
+        self._cached_input = 0
+        self._output = 0
+        self._reasoning = 0
+        self._turns = 0
+
+    def feed(self, data: bytes) -> None:
+        """파이프에서 읽은 청크를 줄 단위로 소비한다.
+
+        청크 경계는 줄 경계와 무관하므로 남은 조각을 다음 청크와 이어 붙인다.
+        """
+        if not data:
+            return
+        self._pending.extend(data)
+        while (index := self._pending.find(b"\n")) != -1:
+            line = bytes(self._pending[:index])
+            del self._pending[: index + 1]
+            self._consume(line)
+        if len(self._pending) > self._MAX_PENDING_BYTES:
+            self._pending.clear()
+
+    def _consume(self, line: bytes) -> None:
+        """JSONL 한 줄에서 사용량 이벤트만 골라 누적한다."""
+        stripped = line.strip()
+        if not stripped.startswith(b"{"):
+            return
+        try:
+            event = json.loads(stripped)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return
+        if not isinstance(event, dict) or event.get("type") != self._USAGE_EVENT_TYPE:
+            return
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            return
+        self._input += _non_negative_int(usage.get("input_tokens"))
+        self._cached_input += _non_negative_int(usage.get("cached_input_tokens"))
+        self._output += _non_negative_int(usage.get("output_tokens"))
+        self._reasoning += _non_negative_int(usage.get("reasoning_output_tokens"))
+        self._turns += 1
+
+    def result(self) -> CodexTokenUsage | None:
+        """사용량 이벤트를 한 번이라도 봤을 때만 누적값을 돌려준다."""
+        if self._turns == 0:
+            return None
+        return CodexTokenUsage(
+            input_tokens=self._input,
+            cached_input_tokens=self._cached_input,
+            output_tokens=self._output,
+            reasoning_output_tokens=self._reasoning,
+            turns=self._turns,
+        )
+
+
+def _non_negative_int(value: object) -> int:
+    """사용량 필드를 음수 없는 정수로 읽는다. 해석할 수 없으면 0이다."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return max(0, int(value))
 
 
 class _RingBuffer:
@@ -198,19 +308,31 @@ def _prepare_runtime_codex_home(source_home: Path, temporary_root: Path) -> Path
 
 
 def _with_output(
-    error: CodexWorkerError, stdout: _RingBuffer, stderr: _RingBuffer
+    error: CodexWorkerError,
+    stdout: _RingBuffer,
+    stderr: _RingBuffer,
+    usage: CodexTokenUsage | None = None,
 ) -> CodexWorkerError:
-    """실패 사유는 그대로 두고 진단용 출력 tail만 예외에 붙인다."""
+    """실패 사유는 그대로 두고 진단용 출력 tail과 사용량만 예외에 붙인다."""
     error.stdout = stdout.decode()
     error.stderr = stderr.decode()
+    error.usage = usage
     return error
 
 
-def _drain_pipe(pipe: BinaryIO, buffer: _RingBuffer) -> None:
-    """child pipe를 끝까지 소비해 큰 출력이 Codex를 block하지 않게 한다."""
+def _drain_pipe(
+    pipe: BinaryIO, buffer: _RingBuffer, collector: _UsageCollector | None = None
+) -> None:
+    """child pipe를 끝까지 소비해 큰 출력이 Codex를 block하지 않게 한다.
+
+    `collector`를 주면 같은 청크를 사용량 파서에도 흘린다. 파이프를 두 번 읽을 수 없어
+    보관과 파싱이 같은 자리에서 일어나야 한다.
+    """
     try:
         while chunk := pipe.read(8192):
             buffer.append(chunk)
+            if collector is not None:
+                collector.feed(chunk)
     finally:
         pipe.close()
 
@@ -476,6 +598,10 @@ def _execute_codex(execution: CodexExecution) -> CodexRunResult:
         "codex",
         "exec",
         "--ephemeral",
+        # 사람이 읽는 stdout은 총량 한 줄(`tokens used`)만 실어 input/cached/output
+        # 분해가 없다(#742). `--json`은 turn마다 `usage`를 싣는 대신 출력을 JSONL로
+        # 바꾸므로, 진단용으로 읽던 서술은 사용량 요약 로그가 대신한다(`phase2`).
+        "--json",
         *(("--skip-git-repo-check",) if execution.skip_git_repo_check else ()),
         "--model",
         _CODEX_MODEL,
@@ -515,10 +641,13 @@ def _execute_codex(execution: CodexExecution) -> CodexRunResult:
         assert process.stderr is not None
         stdout_buffer = _RingBuffer(_PIPE_RING_BUFFER_BYTES)
         stderr_buffer = _RingBuffer(_PIPE_RING_BUFFER_BYTES)
+        usage_collector = _UsageCollector()
         pipes = (process.stdout, process.stderr)
         readers = (
             threading.Thread(
-                target=_drain_pipe, args=(process.stdout, stdout_buffer), daemon=True
+                target=_drain_pipe,
+                args=(process.stdout, stdout_buffer, usage_collector),
+                daemon=True,
             ),
             threading.Thread(
                 target=_drain_pipe, args=(process.stderr, stderr_buffer), daemon=True
@@ -543,7 +672,7 @@ def _execute_codex(execution: CodexExecution) -> CodexRunResult:
             finally:
                 _join_pipe_readers(readers, pipes)
         except CodexWorkerError as error:
-            _with_output(error, stdout_buffer, stderr_buffer)
+            _with_output(error, stdout_buffer, stderr_buffer, usage_collector.result())
             raise
 
     duration_ms = int((time.monotonic() - started_at) * 1000)
@@ -552,6 +681,7 @@ def _execute_codex(execution: CodexExecution) -> CodexRunResult:
         duration_ms=duration_ms,
         stdout=stdout_buffer.decode(),
         stderr=stderr_buffer.decode(),
+        usage=usage_collector.result(),
     )
 
 
@@ -588,6 +718,7 @@ def run_codex(
         error = CodexWorkerError("git_metadata_changed")
         error.stdout = result.stdout
         error.stderr = result.stderr
+        error.usage = result.usage
         raise error
     return result
 
