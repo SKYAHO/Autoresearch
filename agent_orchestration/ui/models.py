@@ -265,6 +265,35 @@ class Experiment:
 
 
 @dataclass(frozen=True)
+class StageTokens:
+    """Codex를 실행한 stage 하나의 토큰 사용량."""
+
+    stage: str
+    input_tokens: int
+    cached_input_tokens: int
+    fresh_input_tokens: int
+    output_tokens: int
+    reasoning_output_tokens: int
+
+
+@dataclass(frozen=True)
+class ExperimentCost:
+    """실험 한 건의 실행 시간·토큰과 그 종량제 환산액.
+
+    `breakdown_available`이 거짓이면 `stages`가 비어 있고 `total_tokens`만 의미가 있다.
+    #742 이전에 완주한 실험이 여기 해당한다 — 총량 한 줄만 남아 캐시 적중분을 뗄 수 없다.
+    """
+
+    wall_clock_seconds: float | None
+    compute_usd: float | None
+    breakdown_available: bool
+    stages: tuple[StageTokens, ...]
+    total_tokens: int
+    token_usd: float | None
+    token_usd_without_cache: float | None
+
+
+@dataclass(frozen=True)
 class Event:
     """상태 전이 Event 화면 모델."""
 

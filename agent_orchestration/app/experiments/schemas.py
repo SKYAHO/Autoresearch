@@ -171,6 +171,39 @@ class ExperimentResponse(BaseModel):
     updated_at: datetime
 
 
+class StageTokensResponse(BaseModel):
+    """Codex를 실행한 stage 하나의 토큰 사용량."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    stage: str
+    input_tokens: int
+    cached_input_tokens: int
+    fresh_input_tokens: int
+    output_tokens: int
+    reasoning_output_tokens: int
+
+
+class ExperimentCostResponse(BaseModel):
+    """실험 한 건의 실행 비용 응답.
+
+    `breakdown_available`이 거짓이면 `stages`가 비어 있고 `total_tokens`만 의미가 있다.
+    분해 없이 정가로 매기면 실제보다 몇 배 큰 금액이 사실처럼 보이므로, 그 경우
+    `token_usd`는 `null`이다.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    experiment_id: uuid.UUID
+    wall_clock_seconds: float | None
+    compute_usd: float | None
+    breakdown_available: bool
+    stages: list[StageTokensResponse]
+    total_tokens: int
+    token_usd: float | None
+    token_usd_without_cache: float | None
+
+
 class ExperimentReportResponse(BaseModel):
     """실험 리포트 본문 응답.
 

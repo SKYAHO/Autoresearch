@@ -23,6 +23,7 @@ from enum import StrEnum
 from agent_orchestration.ui.models import (
     Event,
     Experiment,
+    ExperimentCost,
     IssuePublication,
     Log,
     POLLING_STATUSES,
@@ -110,6 +111,12 @@ class WorkbenchState:
     # 둘 다 실패에는 세우지 않는다 — 일시적 오류 한 번에 리포트가 영구히 가려진다.
     report_checked_for: str | None = None
     report_loaded_for: str | None = None
+    # 조회한 실행 비용. 리포트와 같은 이유로 상세 polling에 얹지 않고 따로 받는다.
+    # `cost_loaded_for`는 재조회를 막는 캐시다 — 비용은 완주한 실험에서만 조회하므로
+    # 리포트처럼 "값이 아직 없는 순간"을 구별할 필요가 없어 표식 하나면 충분하다.
+    cost: ExperimentCost | None = None
+    cost_error: str | None = None
+    cost_loaded_for: str | None = None
 
 
 def show_create_view(state: WorkbenchState) -> None:
@@ -190,6 +197,9 @@ def select_experiment(state: WorkbenchState, experiment_id: str | None) -> None:
     state.report_error = None
     state.report_checked_for = None
     state.report_loaded_for = None
+    state.cost = None
+    state.cost_error = None
+    state.cost_loaded_for = None
 
 
 def append_event_page(
@@ -322,6 +332,25 @@ def record_report(
     state.report_checked_for = experiment_id
     if markdown_text is not None:
         state.report_loaded_for = experiment_id
+
+
+def record_cost(
+    state: WorkbenchState, experiment_id: str, cost: ExperimentCost
+) -> None:
+    """조회한 실행 비용을 기록하고 재조회를 막는다."""
+    state.cost = cost
+    state.cost_error = None
+    state.cost_loaded_for = experiment_id
+
+
+def record_cost_error(state: WorkbenchState, message: str) -> None:
+    """비용 조회 실패만 기록한다.
+
+    `cost_loaded_for`를 세우지 않아 다음 갱신에서 다시 시도된다. 리포트와 같은 이유로
+    `detail_error`를 건드리지 않는다 — 비용 조회 하나가 워크벤치 전체를 오류 상태로
+    만들면 안 된다.
+    """
+    state.cost_error = message
 
 
 def record_report_error(state: WorkbenchState, message: str) -> None:

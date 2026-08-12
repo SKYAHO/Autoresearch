@@ -8,7 +8,7 @@
 사전등록 화면, Experiment 상세 화면, 병렬 실행 현황 보드를 sidebar 탐색으로 분리하고, 사전등록 폼 제출로
 Experiment 생성과 `[AR]` 이슈 발행을 잇달아 요청하며, 부분 실패한 발행을 저장 입력으로
 재시도하거나 취소한다. 최근 실험 선택, 상세·Event·Log의 5초 cursor polling, API 오류의
-영역별 사용자 표시와 삭제·만료 cursor 복구를 제공한다. 완주한 실험의 리포트 본문을
+영역별 사용자 표시와 삭제·만료 cursor 복구를 제공한다. 완주한 실험의 리포트 본문과 실행 비용을
 `refresh_selected_experiment` 말미에서 한 번만 조회해 결과 탭에 넘긴다.
 
 [비책임]
@@ -43,6 +43,8 @@ from agent_orchestration.ui.state import (
     record_detail_error,
     record_list_error,
     record_submission_error,
+    record_cost,
+    record_cost_error,
     record_report,
     record_report_error,
     record_terminal_refresh,
@@ -191,6 +193,7 @@ def refresh_selected_experiment(client: ExperimentClient, state: WorkbenchState)
     state.last_updated_at = datetime.now(timezone.utc)
     # 맨 끝이다. 여기서 무엇이 나도 위의 갱신 결과와 반환값을 바꾸지 않는다.
     refresh_report(client, state)
+    refresh_cost(client, state)
     return False
 
 
@@ -277,6 +280,25 @@ def refresh_report(client: ExperimentClient, state: WorkbenchState) -> None:
         record_report(state, state.selected_id, client.fetch_report(state.selected_id))
     except ExperimentApiError as error:
         record_report_error(state, str(error))
+
+
+def refresh_cost(client: ExperimentClient, state: WorkbenchState) -> None:
+    """완주한 실험의 실행 비용을 한 번만 받아 온다.
+
+    리포트와 같은 격리 규칙을 따른다 — 실패를 `cost_error`에만 담고 갱신을 중단시키지
+    않는다. 완주 전 실험을 부르지 않는 이유는 값이 아직 확정되지 않아서다.
+    """
+    experiment = state.experiment
+    if experiment is None or state.selected_id is None:
+        return
+    if experiment.status not in REPORT_STATUSES:
+        return
+    if state.cost_loaded_for == state.selected_id:
+        return
+    try:
+        record_cost(state, state.selected_id, client.fetch_cost(state.selected_id))
+    except ExperimentApiError as error:
+        record_cost_error(state, str(error))
 
 
 def submit_experiments(

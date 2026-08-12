@@ -58,10 +58,16 @@ from agent_orchestration.app.experiments.models import (
     StepKind,
     TERMINAL_STEP_STATUSES,
 )
+from agent_orchestration.app.experiments.cost import (
+    ExperimentCost,
+    build_experiment_cost,
+)
 from agent_orchestration.app.experiments.repository import (
     find_experiment,
     find_experiment_events,
     find_experiment_report,
+    find_last_event_time,
+    find_log_contents,
     find_event_by_idempotency_key,
     find_experiment_logs,
     find_experiment_metadata,
@@ -244,6 +250,31 @@ def get_experiment_report(
     if experiment is None:
         raise ExperimentNotFoundError(experiment_id)
     return experiment.report_markdown
+
+
+def get_experiment_cost(
+    session: Session,
+    experiment_id: uuid.UUID,
+) -> ExperimentCost:
+    """존재하는 실험의 실행 비용을 기존 기록에서 파생해 반환한다.
+
+    실험이 없으면 `ExperimentNotFoundError`다. 아직 Job이 뜨지 않았거나 사용량 기록이
+    없는 실험은 오류가 아니라 값이 비어 있는 결과다 — 완주 전 실험이 모두 여기 해당한다.
+    """
+    experiment = find_experiment(session, experiment_id)
+    if experiment is None:
+        raise ExperimentNotFoundError(experiment_id)
+    started_at = experiment.executor_job_created_at
+    finished_at = find_last_event_time(session, experiment_id)
+    wall_clock_seconds = (
+        (finished_at - started_at).total_seconds()
+        if started_at is not None and finished_at is not None
+        else None
+    )
+    return build_experiment_cost(
+        wall_clock_seconds=wall_clock_seconds,
+        log_contents=find_log_contents(session, experiment_id),
+    )
 
 
 def list_experiment_events(

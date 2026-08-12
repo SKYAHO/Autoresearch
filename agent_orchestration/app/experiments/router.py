@@ -27,8 +27,10 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentLogResponse,
     ExperimentMetadataResponse,
     ExperimentPageResponse,
+    ExperimentCostResponse,
     ExperimentReportResponse,
     ExperimentResponse,
+    StageTokensResponse,
     ExperimentStepCreate,
     ExperimentStepPageResponse,
     ExperimentStepResponse,
@@ -45,6 +47,7 @@ from agent_orchestration.app.experiments.service import (
     create_experiment_step,
     get_experiment,
     get_experiment_metadata,
+    get_experiment_cost,
     get_experiment_report,
     list_experiment_events,
     list_experiment_logs,
@@ -279,6 +282,39 @@ def get_experiment_metadata_by_id(
 ) -> ExperimentMetadataResponse:
     """실험 metadata를 key-value mapping으로 반환한다."""
     return ExperimentMetadataResponse(entries=get_experiment_metadata(session, experiment_id))
+
+
+@router.get(
+    "/{experiment_id}/usage",
+    response_model=ExperimentCostResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+)
+def get_experiment_usage_by_id(
+    experiment_id: uuid.UUID,
+    session: SessionDependency,
+) -> ExperimentCostResponse:
+    """실험의 실행 시간·토큰 사용량과 그 종량제 환산액을 조회한다."""
+    cost = get_experiment_cost(session, experiment_id)
+    return ExperimentCostResponse(
+        experiment_id=experiment_id,
+        wall_clock_seconds=cost.wall_clock_seconds,
+        compute_usd=cost.compute_usd,
+        breakdown_available=cost.breakdown_available,
+        stages=[
+            StageTokensResponse(
+                stage=stage.stage,
+                input_tokens=stage.input_tokens,
+                cached_input_tokens=stage.cached_input_tokens,
+                fresh_input_tokens=stage.fresh_input_tokens,
+                output_tokens=stage.output_tokens,
+                reasoning_output_tokens=stage.reasoning_output_tokens,
+            )
+            for stage in cost.stages
+        ],
+        total_tokens=cost.total_tokens,
+        token_usd=cost.token_usd,
+        token_usd_without_cache=cost.token_usd_without_cache,
+    )
 
 
 @router.get(

@@ -27,10 +27,21 @@ from urllib.request import Request, urlopen
 from agent_orchestration.ui.models import (
     Event,
     Experiment,
+    ExperimentCost,
     IssuePublication,
     Log,
+    StageTokens,
     Step,
 )
+
+
+def _optional_float(value: object) -> float | None:
+    """숫자면 float로, 아니면 `None`으로 읽는다.
+
+    서버는 아직 알 수 없는 값을 `null`로 답한다. 0으로 바꾸면 "안 들었다"로 읽히는데
+    사실은 "아직 모른다"이다.
+    """
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 ParsedModel = TypeVar("ParsedModel")
@@ -243,6 +254,46 @@ class ExperimentClient:
         )
         value = payload.get("report_markdown")
         return None if value is None else str(value)
+
+    def fetch_cost(self, experiment_id: str) -> ExperimentCost:
+        """실험의 실행 시간·토큰 사용량과 종량제 환산액을 조회한다.
+
+        상세 조회(`ExperimentResponse`)에 싣지 않는 이유는 리포트와 같다 — 서버가 로그를
+        훑어 만드는 값이라 5초 polling에 얹으면 매 갱신마다 그 비용을 낸다.
+        """
+        payload = self._object(
+            self._request_json("GET", f"/experiments/{experiment_id}/usage")
+        )
+        stages = payload.get("stages")
+        if not isinstance(stages, list):
+            raise ApiUnavailableError("Experiment API returned invalid usage stages.")
+        return ExperimentCost(
+            wall_clock_seconds=_optional_float(payload.get("wall_clock_seconds")),
+            compute_usd=_optional_float(payload.get("compute_usd")),
+            breakdown_available=bool(payload.get("breakdown_available")),
+            stages=tuple(
+                StageTokens(
+                    stage=str(self._object(entry).get("stage", "")),
+                    input_tokens=int(self._object(entry).get("input_tokens", 0)),
+                    cached_input_tokens=int(
+                        self._object(entry).get("cached_input_tokens", 0)
+                    ),
+                    fresh_input_tokens=int(
+                        self._object(entry).get("fresh_input_tokens", 0)
+                    ),
+                    output_tokens=int(self._object(entry).get("output_tokens", 0)),
+                    reasoning_output_tokens=int(
+                        self._object(entry).get("reasoning_output_tokens", 0)
+                    ),
+                )
+                for entry in stages
+            ),
+            total_tokens=int(payload.get("total_tokens") or 0),
+            token_usd=_optional_float(payload.get("token_usd")),
+            token_usd_without_cache=_optional_float(
+                payload.get("token_usd_without_cache")
+            ),
+        )
 
     def patch_status(
         self,

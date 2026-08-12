@@ -6,6 +6,7 @@ transaction commit, 상태 전이 판단과 HTTP 응답 생성은 담당하지 �
 
 from __future__ import annotations
 
+from datetime import datetime
 import uuid
 
 from sqlalchemy import and_, func, or_, select
@@ -259,4 +260,39 @@ def find_experiment_logs(
             .order_by(ExperimentLog.created_at.asc(), ExperimentLog.id.asc())
             .limit(limit)
         ).all()
+    )
+
+
+def find_log_contents(session: Session, experiment_id: uuid.UUID) -> list[str]:
+    """실험 하나의 로그 본문 전체를 적재 순서대로 이어 붙여 조회한다.
+
+    비용 집계는 cursor 페이지가 아니라 전체가 필요하다. 수집기가 8000자 청크로 쪼개
+    적재하므로(#559), 청크 경계에서 잘린 줄을 되살리려면 순서를 지켜 이어야 한다.
+    같은 `log_type`끼리만 잇는다 — 다른 컨테이너의 출력이 한 줄로 붙으면 안 된다.
+
+    DB 함수(`string_agg`)가 아니라 파이썬에서 잇는 이유는 이식성이다. 실험 하나의
+    로그는 수백 행 규모라 옮겨 붙이는 비용이 문제되지 않는다.
+    """
+    rows = session.execute(
+        select(ExperimentLog.log_type, ExperimentLog.content)
+        .where(ExperimentLog.experiment_id == experiment_id)
+        .order_by(ExperimentLog.created_at, ExperimentLog.id)
+    ).all()
+    joined: dict[str, list[str]] = {}
+    for log_type, content in rows:
+        if content:
+            joined.setdefault(log_type, []).append(content)
+    return ["".join(chunks) for chunks in joined.values()]
+
+
+def find_last_event_time(session: Session, experiment_id: uuid.UUID) -> datetime | None:
+    """실험의 마지막 event 시각을 조회한다.
+
+    실행 시간의 끝으로 `Experiment.updated_at`이 아니라 이 값을 쓰는 이유는
+    `updated_at`이 `onupdate=func.now()`라 실행과 무관한 UPDATE에도 움직이기 때문이다.
+    """
+    return session.scalar(
+        select(func.max(ExperimentEvent.created_at)).where(
+            ExperimentEvent.experiment_id == experiment_id
+        )
     )
