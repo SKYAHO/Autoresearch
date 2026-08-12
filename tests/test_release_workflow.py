@@ -1,3 +1,6 @@
+import io
+import subprocess
+import tarfile
 from pathlib import Path
 
 import yaml
@@ -124,9 +127,65 @@ def test_release_workflow_verifies_all_public_batch_commands():
     assert ".contract_version" in workflow_text
 
 
-def test_application_image_contains_daily_recommendations_command():
+def test_release_workflow_injects_the_code_archive_before_verifying_commands():
+    # #750: 이미지가 코드를 담지 않으므로, 계약 검증은 아카이브를 주입해
+    # 실행해야 한다. 주입 없이 검증하면 부트스트랩이 exit 2로 죽는다.
+    job = _load_workflow()["jobs"]["publish-application-image"]
+    verify_step = next(step for step in job["steps"] if step.get("id") == "verify")
+    script = verify_step["run"]
+
+    assert "git archive" in script
+    assert "CODE_ARCHIVE_LOCAL_PATH" in script
+
+
+def test_release_workflow_still_opens_the_batch_digest_promotion_pr():
+    # #750 결정 2: digest 정본은 Git(values.yaml)에 남긴다. 이 테스트가
+    # 깨지면 전환이 범위를 벗어난 것이다.
+    workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
+
+    assert "promote_batch_image.py" in workflow_text
+    assert "deploy/airflow/values.yaml" in workflow_text
+
+
+def test_application_image_does_not_bake_source_code():
+    # #750: 코드는 이미지가 아니라 GCS 아카이브로 배포한다. 소스를 구우면
+    # 코드 한 줄 변경이 이미지 재빌드·digest 승격을 다시 요구한다.
     dockerfile = APPLICATION_DOCKERFILE.read_text(encoding="utf-8")
-    assert "COPY src ./src" in dockerfile
+
+    assert "COPY autoresearch" not in dockerfile
+    assert "COPY src" not in dockerfile
+
+
+def test_application_image_bootstraps_code_from_the_gcs_archive():
+    # Dockerfile.feast·Dockerfile.train과 같은 부트스트랩 계약을 따른다.
+    dockerfile = APPLICATION_DOCKERFILE.read_text(encoding="utf-8")
+
+    assert (
+        "COPY scripts/gcs_code_bootstrap.sh /usr/local/bin/gcs_code_bootstrap.sh"
+        in dockerfile
+    )
+    assert 'ENTRYPOINT ["/usr/local/bin/gcs_code_bootstrap.sh"]' in dockerfile
+    # 부트스트랩이 아카이브를 /app에 푼 뒤 python -m이 그것을 찾아야 한다.
+    # feast·train은 WORKDIR에 의존하지만 배치 이미지는 명시한다(#750 spec).
+    assert "PYTHONPATH=/app" in dockerfile
+
+
+def test_code_archive_carries_both_batch_command_packages():
+    # batch-contract-v1 6개 중 다섯은 autoresearch.jobs.*이지만 하나는
+    # src.pipeline.daily_recommendations다. 이미지가 코드를 담지 않으므로
+    # 두 패키지가 모두 아카이브에 들어가야 계약이 성립한다.
+    archive = subprocess.run(
+        ["git", "archive", "--format=tar", "HEAD"],
+        cwd=REPOSITORY_ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout
+
+    with tarfile.open(fileobj=io.BytesIO(archive)) as archived:
+        names = set(archived.getnames())
+
+    assert "autoresearch/jobs/youtube_trending.py" in names
+    assert "src/pipeline/daily_recommendations.py" in names
 
 
 def test_application_image_installs_lightgbm_openmp_runtime():

@@ -43,6 +43,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.dockerignore'
               - 'Dockerfile.app'
+              - 'scripts/gcs_code_bootstrap.sh'
               - 'autoresearch/**'
               - 'src/**'
               - 'pyproject.toml'
@@ -234,29 +235,43 @@ jobs:
             --tag autoresearch:ci \
             .
 
-      - name: Run Docker image smoke check
+      - name: Verify the image ships no application source
+        # #750: 코드는 GCS 아카이브로 배포한다. 소스가 이미지에 남으면
+        # 부트스트랩이 푼 코드와 구워진 코드가 공존해 어느 쪽이 실행되는지
+        # 알 수 없게 된다.
         run: |
-          docker run --rm autoresearch:ci
-          docker run --rm autoresearch:ci \
-            python -m autoresearch.jobs.youtube_trending --help
-          docker run --rm autoresearch:ci \
-            python -m autoresearch.jobs.youtube_trending --version
-          docker run --rm autoresearch:ci \
-            python -m autoresearch.jobs.youtube_backfill --help
-          docker run --rm autoresearch:ci \
-            python -m autoresearch.jobs.youtube_backfill --version
-          docker run --rm autoresearch:ci \
-            python -m autoresearch.jobs.action_log --help
-          docker run --rm autoresearch:ci \
-            python -m autoresearch.jobs.action_log --version
-          docker run --rm autoresearch:ci \
-            python -m autoresearch.jobs.action_log_quality --help
-          docker run --rm autoresearch:ci \
-            python -m autoresearch.jobs.action_log_quality --version
-          docker run --rm autoresearch:ci \
-            python -m src.pipeline.daily_recommendations --help
-          docker run --rm autoresearch:ci \
-            python -m src.pipeline.daily_recommendations --version
+          if docker run --rm --entrypoint sh autoresearch:ci \
+            -c 'test -e /app/autoresearch || test -e /app/src'; then
+            echo "::error::애플리케이션 소스가 이미지에 포함되어 있다"
+            exit 1
+          fi
+
+      - name: Run Docker image smoke check
+        # 코드가 이미지에 없으므로 로컬 아카이브 주입 모드로 부트스트랩
+        # 압축 해제·실행 경로를 검증한다 (Dockerfile.train과 동일 패턴).
+        run: |
+          git archive --format=tar.gz -o /tmp/code-archive.tar.gz HEAD
+          run_batch() {
+            docker run --rm \
+              -v /tmp/code-archive.tar.gz:/tmp/code-archive.tar.gz:ro \
+              -e CODE_ARCHIVE_LOCAL_PATH=/tmp/code-archive.tar.gz \
+              autoresearch:ci "$@"
+          }
+          run_batch
+          for module in \
+            autoresearch.jobs.youtube_trending \
+            autoresearch.jobs.youtube_backfill \
+            autoresearch.jobs.action_log \
+            autoresearch.jobs.action_log_quality \
+            src.pipeline.daily_recommendations
+          do
+            run_batch python -m "$module" --help
+            run_batch python -m "$module" --version
+          done
+          if docker run --rm autoresearch:ci 2>/dev/null; then
+            echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
+            exit 1
+          fi
 
   docker-build-train:
     name: Docker build (train)

@@ -20,6 +20,7 @@ ARG VCS_REF=unknown
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     AUTORESEARCH_REVISION=${VCS_REF} \
+    PYTHONPATH=/app \
     PATH="/app/.venv/bin:$PATH"
 
 LABEL org.opencontainers.image.source="https://github.com/SKYAHO/Autoresearch" \
@@ -37,9 +38,18 @@ RUN adduser --disabled-password --gecos "" appuser
 
 COPY --from=builder /app/.venv /app/.venv
 
-COPY autoresearch ./autoresearch
-COPY src ./src
+# 코드는 이미지에 포함하지 않는다. ENTRYPOINT 부트스트랩이 파드 시작 시
+# GCS 코드 아카이브(#174 파이프라인)를 /app에 풀고 커맨드를 실행한다.
+# revision 라벨·AUTORESEARCH_REVISION은 이미지 빌드 시점 커밋을 뜻하며,
+# 실행 코드 버전은 부트스트랩 로그([gcs-bootstrap] code: ...)가 담당한다.
+COPY scripts/gcs_code_bootstrap.sh /usr/local/bin/gcs_code_bootstrap.sh
+# 이 스테이지가 /app에 COPY하는 것은 .venv 하나뿐이라(pyproject.toml·uv.lock은
+# builder의 bind mount로만 쓰인다) 아카이브가 덮어쓸 root 소유 파일이 없다.
+# 새 엔트리를 만들 디렉토리 쓰기 권한만 있으면 되므로 -R을 쓰지 않는다.
+RUN chown appuser:appuser /app
 
 USER appuser
+
+ENTRYPOINT ["/usr/local/bin/gcs_code_bootstrap.sh"]
 
 CMD ["python", "-c", "import autoresearch; print('autoresearch image ready')"]
