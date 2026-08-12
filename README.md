@@ -137,7 +137,10 @@ mount하지 않습니다. **8은 push token·API token과 Codex 인증을 함께
 5. `codex-worker`: workspace + read-only `.git` + state + read-only auth source `CODEX_HOME` →
    `/tmp` 아래 mode 0700 per-run writable scratch `CODEX_HOME`에 regular `auth.json`만 mode 0400으로
    복사 → clone 루트 `AGENTS.md`를 executor 전용 하네스 지침으로 교체 →
-   `codex exec --ephemeral`으로 working tree 수정 → **하네스 파일을 원본으로 복원**.
+   `codex exec --ephemeral --json`으로 working tree 수정 → **하네스 파일을 원본으로 복원**.
+   `--json`은 turn마다 토큰 사용량을 실어, 두 Codex stage가 input·cached·output 분해를
+   로그 한 줄로 남기게 한다(#742). 사람이 읽는 stdout은 총량 한 줄만 실어 캐시 적중분을
+   분리할 수 없었다.
    config·plugin 등 다른 source 파일은 복사하지 않음
 6. `candidate-verifier`: workspace + read-only `.git` + state → 고정 Ruff/pytest 검증 결과
 7. `push-token-minter`: private key → push token memory volume
