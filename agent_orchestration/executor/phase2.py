@@ -10,7 +10,9 @@ finalizer에 전달한다. candidate 학습이 끝나면 두 조건을 채점하
 diff를 Codex에 다시 넘겨 `report.md`를 받은 뒤, 지표와 리포트를 함께 GCS에 게시하고
 요약과 리포트 본문을 Experiment API에 보고해 실험을 완주로 확정한다. stage 시작·종료와
 정제된 실패 사유를 container 로그로 남기고, Codex를 실행하는 두 stage에 한해 원문 출력
-tail도 함께 남긴다(#612).
+tail도 함께 남긴다(#612). 그 두 stage는 토큰 사용량을 input·cached·output으로 나눈
+요약 한 줄도 남긴다(#742) — `--json` 이후 원문 tail은 JSONL이라 사람이 훑기 어렵고,
+원가 집계가 읽는 값이 그 한 줄이다.
 
 [비책임] Job·Secret·PVC manifest(`launcher.jobs`), GitHub App token 발급
 (`token_minter.py`), candidate API의 DB 상태 전이(`app/experiments/service.py`)는
@@ -32,6 +34,7 @@ import uuid
 
 from agent_orchestration.executor.codex_worker import (
     CodexRunResult,
+    CodexTokenUsage,
     CodexWorkerError,
     run_codex_for_workspace,
 )
@@ -354,6 +357,32 @@ def _log_codex_output(stdout: str, stderr: str, *, stage: str = "codex-worker") 
             )
 
 
+def _log_codex_usage(usage: CodexTokenUsage | None, *, stage: str) -> None:
+    """Codex 토큰 사용량을 사람이 읽고 기계가 파싱할 수 있는 한 줄로 남긴다(#742).
+
+    `--json` 이후 원문 tail은 JSONL이라 사람이 훑기 어렵다. 원가 집계가 필요로 하는
+    값은 이 한 줄이 전부이므로, 로그를 뒤지지 않아도 되게 고정 형식으로 따로 남긴다.
+
+    사용량을 모를 때도 한 줄을 남긴다 — "0 토큰"과 "이벤트를 못 봤다"를 구분해야
+    집계가 표본을 잘못 세지 않는다.
+    """
+    if usage is None:
+        _LOGGER.info("codex token usage stage=%s available=0", stage)
+        return
+    _LOGGER.info(
+        "codex token usage stage=%s available=1 turns=%d input=%d cached_input=%d "
+        "fresh_input=%d output=%d reasoning=%d total=%d",
+        stage,
+        usage.turns,
+        usage.input_tokens,
+        usage.cached_input_tokens,
+        usage.fresh_input_tokens,
+        usage.output_tokens,
+        usage.reasoning_output_tokens,
+        usage.total_tokens,
+    )
+
+
 def codex_worker_main() -> int:
     """read-only state와 CODEX_HOME으로 base tip Codex 실행을 수행한다."""
     try:
@@ -366,8 +395,10 @@ def codex_worker_main() -> int:
     except CodexWorkerError as error:
         # timeout·child leak처럼 결과가 없는 경로가 오히려 원문이 가장 필요한 곳이다.
         _log_codex_output(error.stdout, error.stderr)
+        _log_codex_usage(error.usage, stage="codex-worker")
         raise
     _log_codex_output(result.stdout, result.stderr)
+    _log_codex_usage(result.usage, stage="codex-worker")
     return result.exit_code
 
 
@@ -486,6 +517,7 @@ def _write_report_if_enabled(
     except CodexWorkerError as error:
         # timeout처럼 결과가 없는 경로가 오히려 원문이 가장 필요한 곳이다(#612).
         _log_codex_output(error.stdout, error.stderr, stage="experiment-report")
+        _log_codex_usage(error.usage, stage="experiment-report")
         _LOGGER.error(
             "experiment report failed reason=%s", _safe_failure_reason(error)
         )
@@ -500,6 +532,7 @@ def _write_report_if_enabled(
     _log_codex_output(
         result.codex.stdout, result.codex.stderr, stage="experiment-report"
     )
+    _log_codex_usage(result.codex.usage, stage="experiment-report")
     if result.path is None:
         # `report_not_a_regular_file`은 Codex가 symlink를 남겼다는 뜻이다. 게시하면
         # 링크 대상이 그대로 올라가므로 버렸다 — 사유가 로그에 남아야 구분된다.

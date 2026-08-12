@@ -266,6 +266,7 @@ def test_run_codex_uses_fixed_argv_and_allowlisted_environment(
     assert json.loads(argv_path.read_text(encoding="utf-8")) == [
         "exec",
         "--ephemeral",
+        "--json",
         "--model",
         "gpt-5.6-luna",
         "-c",
@@ -841,3 +842,113 @@ def test_codex_does_not_read_the_inherited_stdin(
     seen = json.loads(observed.read_text(encoding="utf-8"))
     assert seen["read"] == ""
     assert seen["is_char_device"]
+
+
+def test_json_stream_yields_the_billing_token_breakdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    protected_git_mount: None,
+) -> None:
+    """`--json` 스트림의 turn 사용량이 과금 구분대로 누적돼야 한다.
+
+    사람이 읽는 stdout은 총량 한 줄만 실어 캐시 적중분을 분리할 수 없다(#742).
+    turn이 여러 번이면 합산하고, `input`은 `cached_input`을 포함한 값이다.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    events = [
+        {"type": "thread.started", "thread_id": "t-1"},
+        {"type": "item.completed", "item": {"type": "agent_message", "text": "done"}},
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 20587,
+                "cached_input_tokens": 9984,
+                "output_tokens": 5,
+                "reasoning_output_tokens": 0,
+            },
+        },
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 1000,
+                "cached_input_tokens": 400,
+                "output_tokens": 20,
+                "reasoning_output_tokens": 7,
+            },
+        },
+    ]
+    _write_codex_executable(
+        bin_dir / "codex",
+        "\n".join(
+            ["import json"]
+            + [f"print(json.dumps({event!r}))" for event in events]
+        ),
+    )
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    result = run_codex(_run_input(tmp_path))
+
+    assert result.usage is not None
+    assert result.usage.turns == 2
+    assert result.usage.input_tokens == 21587
+    assert result.usage.cached_input_tokens == 10384
+    assert result.usage.fresh_input_tokens == 11203
+    assert result.usage.output_tokens == 25
+    assert result.usage.reasoning_output_tokens == 7
+    assert result.usage.total_tokens == 21612
+
+
+def test_usage_survives_chunk_boundaries_and_a_truncated_tail() -> None:
+    """청크가 줄 중간에서 끊겨도, tail이 잘려도 사용량은 남아야 한다.
+
+    링버퍼는 앞을 버리므로 tail 파싱이었다면 긴 실행에서 값이 통째로 사라진다.
+    스트림에서 훑기 때문에 잘림과 무관하다는 것이 이 테스트의 대상이다.
+    """
+    collector = codex_worker._UsageCollector()
+    payload = (
+        json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": 300,
+                    "cached_input_tokens": 120,
+                    "output_tokens": 40,
+                    "reasoning_output_tokens": 5,
+                },
+            }
+        )
+        + "\n"
+    ).encode("utf-8")
+    for index in range(0, len(payload), 7):
+        collector.feed(payload[index : index + 7])
+
+    usage = collector.result()
+
+    assert usage is not None
+    assert usage.turns == 1
+    assert usage.input_tokens == 300
+    assert usage.fresh_input_tokens == 180
+
+
+def test_usage_is_unknown_rather_than_zero_when_no_event_arrives() -> None:
+    """사용량 이벤트를 못 본 실행은 0이 아니라 `None`이어야 한다.
+
+    0으로 채우면 집계가 그 실험을 "토큰을 안 썼다"로 세어 평균을 끌어내린다.
+    """
+    collector = codex_worker._UsageCollector()
+    collector.feed(b'{"type": "turn.started"}\n')
+    collector.feed(b"not json at all\n")
+    collector.feed(b'{"type": "turn.completed"}\n')
+
+    assert collector.result() is None
+
+
+def test_usage_parser_drops_a_line_that_never_ends(tmp_path: Path) -> None:
+    """개행 없이 계속 늘어나는 출력에 메모리를 내주면 안 된다."""
+    collector = codex_worker._UsageCollector()
+
+    collector.feed(b"{" + b"a" * (2 * 1024 * 1024))
+
+    assert collector.result() is None
+    assert len(collector._pending) == 0
