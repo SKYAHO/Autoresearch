@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-12T04:59:01Z",
+  "generated_at": "2026-08-12T05:05:28Z",
   "reports": [
+    {
+      "number": 743,
+      "title": "feat: Codex 토큰 사용량을 input·cached·output으로 분해해 남긴다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-12T05:05:11Z",
+      "summary_ko": [
+        "Codex 실행 시 토큰 사용량을 input, cached_input, output, reasoning 단위로 세분화하여 수집하도록 개선했습니다.",
+        "로그 링버퍼 잘림으로 인한 토큰 유실을 방지하기 위해 파이프 스트림을 실시간 파싱하여 사용량을 집계합니다.",
+        "수집된 상세 토큰 정보와 GCP 노드 단가를 기반으로 실험별 실제 추정 비용을 산출하는 리포트 도구를 추가했습니다."
+      ],
+      "report_url": "pr/743/"
+    },
     {
       "number": 701,
       "title": "fix: launcher 이미지에 github_pull_requests를 넣고 승격 허용 목록을 맞춘다",
