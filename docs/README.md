@@ -105,6 +105,7 @@
 ### ☁️ 인프라 (Infrastructure)
 
 - [Spec — MLflow 배포 전략](specs/2026-07-14-mlflow-deployment-strategy.md)
+- [Spec — 배치 이미지 GCS 코드 부트스트랩 전환](specs/2026-08-12-batch-image-source-decoupling.md) — `Dockerfile.app` 소스 분리, 아카이브 규약·digest 정본·반영 시점 3개 결정
 - [가이드 — 데이터 웨어하우스 (BigQuery)](guides/data-warehouse.md)
 - `deploy/mlflow/`, `proxy/` (Cloud Run forwarder), `Dockerfile.app`
 
@@ -113,6 +114,7 @@
 - [ADR 0002 — 저장소 책임 경계](adr/0002-repository-responsibility-boundaries.md)
 - [Spec — 저장소 구조 재정리](specs/2026-07-15-repo-restructure.md)
 - [Spec — 머지된 PR 리포트 아카이브](specs/2026-07-26-pr-report-archive-design.md)
+- [발표 덱 — Autoresearch 0.0.3](reports/2026-08-11-autoresearch-0.0.3-deck.html) — 프로젝트 전체 소개 26장 (←/→ 이동, 브라우저에서 바로 열림)
 
 ## ADR
 
