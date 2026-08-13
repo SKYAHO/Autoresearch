@@ -55,7 +55,8 @@ jobs:
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.ref_name == 'main' && 'prod' || 'dev') }}
     # runs-on은 env 컨텍스트를 읽지 못해(잡 시작 전에 평가) 같은 식을 여기 한 번 더
     # 적는다. 스케일셋 이름은 인프라 저장소
-    # deployment/actions-runner-scale-set-feast-{dev,prod}/values.yaml의
+    # (아래는 인프라 저장소 트리 기준 경로다 — #754 재배치와 무관하다)
+    # deploy/actions-runner-scale-set-feast-{dev,prod}/values.yaml의
     # runnerScaleSetName과 정확히 일치해야 한다(#561). ARC는 runs-on에 스케일셋
     # 이름을 그대로 쓴다 — 배열 문법이 아니다.
     runs-on: feast-apply-${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.ref_name == 'main' && 'prod' || 'dev') }}

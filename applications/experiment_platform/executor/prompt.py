@@ -106,8 +106,9 @@ _PROHIBITED_PATHS = (
     ".github/**",
     ".claude/**",
     "docs/**",
-    "deployment/**",
     # 재배치 전/후 트리를 모두 덮는다 (#754).
+    "deployment/**",
+    "deploy/**",
     "applications/**",
     "proxy/**",
     "agent_orchestration/**",

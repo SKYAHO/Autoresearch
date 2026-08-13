@@ -103,7 +103,7 @@ def test_release_workflow_opens_an_airflow_digest_promotion_pr():
         step for step in steps if step.get("uses") == "peter-evans/create-pull-request@v8"
     )
     assert create_pr["with"]["base"] == "main"
-    assert create_pr["with"]["add-paths"] == "deployment/airflow/values.yaml"
+    assert create_pr["with"]["add-paths"] == "deploy/airflow/values.yaml"
     assert create_pr["with"]["branch"].startswith("automation/batch-")
 
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -145,7 +145,7 @@ def test_release_workflow_still_opens_the_batch_digest_promotion_pr():
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "promote_batch_image.py" in workflow_text
-    assert "deployment/airflow/values.yaml" in workflow_text
+    assert "deploy/airflow/values.yaml" in workflow_text
 
 
 def test_application_image_does_not_bake_source_code():
@@ -266,7 +266,7 @@ def test_release_workflow_limits_orchestration_promotion_to_approved_manifests()
     scope_step = next(
         step for step in job["steps"] if step.get("id") == "changed"
     )
-    assert "deployment/agent-orchestration/launcher-cronjob.yaml" in scope_step["run"]
+    assert "deploy/agent-orchestration/launcher-cronjob.yaml" in scope_step["run"]
 
     summary_step = next(
         step for step in job["steps"] if "Executor digest" in step.get("run", "")
@@ -303,12 +303,38 @@ def test_workflow_referenced_build_files_exist() -> None:
     `deploy/` → `deployment/` 이동처럼 경로가 바뀌면 이 참조들이 조용히 낡는다. Dockerfile
     경로가 틀리면 `docker build`가 실패하지만, 그 job이 paths 필터에 걸려 **돌지 않으면**
     아예 드러나지 않는다. 저장소 트리만 보고 미리 잡는다.
-    """
-    missing: list[str] = []
-    for workflow in sorted((REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml")):
-        text = workflow.read_text(encoding="utf-8")
-        for reference in re.findall(r"(?:-f |file: )(deployment/[\w./-]+)", text):
-            if not (REPOSITORY_ROOT / reference).is_file():
-                missing.append(f"{workflow.name}: {reference}")
 
+    디렉터리 접두사가 아니라 **이름에 `Dockerfile`이 든 것**으로 수집한다. `deployment/`로
+    시작하는 것만 보면 rebase 충돌 해결 중에 `-f Dockerfile.app`이나
+    `file: deploy/serving/Dockerfile`로 되돌아간 회귀를 놓친다 — 그것이 바로 이 가드가
+    막으려는 상황이다. (`-f`는 `gh`·`jq`도 쓰므로 인자를 전부 모으면 `report.json` 같은
+    빌드와 무관한 값이 섞인다.)
+
+    수집 결과가 0건인 경우도 실패로 다룬다. 워크플로가 빌드 인자 표기를 바꾸면 정규식이
+    아무것도 못 잡는데, 그것을 통과로 두면 가드가 조용히 무력해진다.
+    """
+    workflow_root = REPOSITORY_ROOT / ".github" / "workflows"
+    workflows = sorted(
+        path
+        for pattern in ("*.yml", "*.yaml")
+        for path in workflow_root.glob(pattern)
+    )
+
+    referenced: list[tuple[str, str]] = []
+    for workflow in workflows:
+        text = workflow.read_text(encoding="utf-8")
+        for reference in re.findall(r"(?:-f |file: )([\w][\w./-]*)", text):
+            if "Dockerfile" not in reference:
+                continue
+            # 인접 저장소 체크아웃 기준 경로는 이 저장소 트리에 없는 것이 정상이다.
+            if reference.startswith(("airflow-repo/", "infra-repo/")):
+                continue
+            referenced.append((workflow.name, reference))
+
+    assert referenced, "워크플로가 빌드 파일을 하나도 가리키지 않는다 — 인자 표기가 바뀌었는지 확인하라"
+    missing = [
+        f"{name}: {reference}"
+        for name, reference in referenced
+        if not (REPOSITORY_ROOT / reference).is_file()
+    ]
     assert missing == [], f"워크플로가 없는 빌드 파일을 가리킨다: {missing}"

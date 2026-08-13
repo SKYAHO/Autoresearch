@@ -40,8 +40,8 @@ src/                 # CTR 학습·서빙 파이프라인
 ├── tracking/             # MLflow tracking·registry 연동
 └── utils/                # 모델 저장/로드 유틸리티
 proxy/               # Cloud Run dumb forwarder (YouTube API IP밴 대응)
-deployment/              # 배포 산출물 (mlflow/ Tracking Server, serving/ 추론 이미지,
-                     #             agent_orchestration/ 역할별 runtime 이미지,
+deployment/          # 배포 산출물 (mlflow/ Tracking Server, serving/ 추론 이미지,
+                     #             experiment_platform/ 역할별 runtime 이미지,
                      #             feast/ feast apply GKE Job 매니페스트, 롤백용)
 feature_repo/        # Feast 피처 스토어 정의 (BigQuery offline / Redis online)
 examples/            # CTR 파이프라인 예제 스캐폴드

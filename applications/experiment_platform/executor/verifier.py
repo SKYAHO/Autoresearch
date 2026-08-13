@@ -61,7 +61,8 @@ _ALWAYS_FORBIDDEN_PREFIXES: Final = (
     ".github/",
     ".claude/",
     "docs/",
-    "deployment/",
+    "deployment/",  # 재배치 후
+    "deploy/",  # 봉인된 옛 트리
     "applications/",  # 재배치 후 — 서빙·에이전트·proxy 전부
     "proxy/",  # 봉인된 옛 트리
     "agent_orchestration/",  # 봉인된 옛 트리

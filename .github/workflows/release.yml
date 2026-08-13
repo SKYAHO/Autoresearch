@@ -842,17 +842,21 @@ jobs:
           # 파일 집합과 **정확히 같아야 한다.** 그 스크립트의 TARGETS에 파일이 늘면
           # 여기도 같이 늘려야 하며, 어긋나면 이 가드가 정상 승격을 거부해 Agent
           # Orchestration 배포가 통째로 막힌다(#653).
+          #
+          # 아래 경로는 **Autoresearch-infra 트리 기준**이다(하이픈 표기에 주의 —
+          # 이 저장소의 deployment/experiment_platform/ 과 다른 대상이다). #754 의
+          # deploy/ → deployment/ 이동은 이 저장소에만 적용되므로 여기는 그대로 둔다.
           allowed_paths=(
-            deployment/agent-orchestration/api-deployment.yaml
-            deployment/agent-orchestration/api-migration-job.yaml
-            deployment/agent-orchestration/launcher-cronjob.yaml
+            deploy/agent-orchestration/api-deployment.yaml
+            deploy/agent-orchestration/api-migration-job.yaml
+            deploy/agent-orchestration/launcher-cronjob.yaml
             # API image와 launcher image가 둘 다 이 파일을 고친다(#616).
-            deployment/agent-orchestration/log-collector-deployment.yaml
-            deployment/agent-orchestration/runner-deployment.yaml
-            deployment/agent-orchestration/deployment-verification-job.yaml
-            deployment/agent-orchestration/ui-deployment.yaml
+            deploy/agent-orchestration/log-collector-deployment.yaml
+            deploy/agent-orchestration/runner-deployment.yaml
+            deploy/agent-orchestration/deployment-verification-job.yaml
+            deploy/agent-orchestration/ui-deployment.yaml
             # log-collector와 같은 launcher image를 쓰는 PR 생성기다(#689/#700).
-            deployment/agent-orchestration/pull-request-opener-deployment.yaml
+            deploy/agent-orchestration/pull-request-opener-deployment.yaml
           )
           git add -- "${allowed_paths[@]}"
           mapfile -t changed_paths < <(git diff --cached --name-only)
@@ -1504,7 +1508,8 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: airflow-repo
-          add-paths: deployment/airflow/values.yaml
+          # Autoresearch-airflow 트리 기준 경로다 — 이 저장소의 #754 재배치와 무관하다.
+          add-paths: deploy/airflow/values.yaml
           base: main
           branch: automation/batch-${{ steps.promotion-branch.outputs.short_sha }}
           delete-branch: true
@@ -1991,7 +1996,8 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: airflow-repo
-          add-paths: deployment/airflow/values.yaml
+          # Autoresearch-airflow 트리 기준 경로다 — 이 저장소의 #754 재배치와 무관하다.
+          add-paths: deploy/airflow/values.yaml
           base: main
           branch: automation/training-${{ steps.promotion-branch.outputs.short_sha }}
           delete-branch: true
@@ -2076,7 +2082,8 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: airflow-repo
-          add-paths: deployment/airflow/values.yaml
+          # Autoresearch-airflow 트리 기준 경로다 — 이 저장소의 #754 재배치와 무관하다.
+          add-paths: deploy/airflow/values.yaml
           base: main
           branch: automation/feast-${{ steps.promotion-branch.outputs.short_sha }}
           delete-branch: true
