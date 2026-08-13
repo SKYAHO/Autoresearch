@@ -17,11 +17,11 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Final, Protocol, TypeAlias
 
-from src.features.feature_builder import (
+from autoresearch.feature_engineering.feature_builder import (
     compute_historical_category_match,
     compute_preferred_category_match,
 )
-from src.features.model_contract import (
+from autoresearch.feature_engineering.model_contract import (
     COLD_START_CATEGORICAL_DEFAULT,
     FeatureContractError,
     require_model_feature_columns,

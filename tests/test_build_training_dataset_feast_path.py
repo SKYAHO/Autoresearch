@@ -13,10 +13,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from src.features import feast_retrieval
-from src.features.model_contract import MODEL_FEATURE_COLUMNS, FeatureContractError
-from src.pipeline import build_training_dataset as btd
-from src.pipeline.training_provenance import (
+from autoresearch.feature_engineering import feast_retrieval
+from autoresearch.feature_engineering.model_contract import MODEL_FEATURE_COLUMNS, FeatureContractError
+from autoresearch.model_training import build_training_dataset as btd
+from autoresearch.model_training.training_provenance import (
     ProvenanceValidationError,
     RegistryProvenance,
     load_training_snapshot_manifest,

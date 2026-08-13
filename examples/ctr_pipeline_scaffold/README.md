@@ -90,13 +90,13 @@ python 03_build_features_and_training_dataset.py
 
 #### 모델 성능 검증 ✓
 
-Train/Val/Test 3-way split (test는 학습에 전혀 노출되지 않음, `src/pipeline/train.py`,
-`src/pipeline/evaluate.py` 참고):
+Train/Val/Test 3-way split (test는 학습에 전혀 노출되지 않음, `autoresearch/model_training/train.py`,
+`autoresearch/model_evaluation/evaluate.py` 참고):
 - Val ROC-AUC: 0.75, Test(held-out) ROC-AUC: 0.76 (baseline 0.61 상회, val/test 격차 없음
   → data leakage 없음 확인)
 - 클릭 라벨은 `topic_similarity`(spec 그대로: user_keyword_embeddings ↔
   category_description_embedding cosine 유사도, max-pool)에 비례하도록 생성됨 —
-  라벨 생성 로직과 학습 피처 로직이 동일한 함수(`src.features.feature_builder`)를 공유해야
+  라벨 생성 로직과 학습 피처 로직이 동일한 함수(`autoresearch.feature_engineering.feature_builder`)를 공유해야
   mock 데이터에서 모델이 유의미한 신호를 학습할 수 있다는 점이 핵심 (아래 Placeholder 2 참고).
 
 ---
@@ -120,14 +120,14 @@ def extract_topics_from_text(text: str, k_max=4):
 
 ### 2. Similarity 계산 (02_generate_event_log.py)
 
-**현재**: `src.features.feature_builder.compute_topic_similarity`를 그대로 재사용
+**현재**: `autoresearch.feature_engineering.feature_builder.compute_topic_similarity`를 그대로 재사용
 (user_keyword_embeddings ↔ category_description_embedding cosine 유사도, max-pool).
 클릭 라벨 생성 로직과 학습 피처 계산 로직이 반드시 같은 함수를 가리켜야 한다 — 예전에는
 라벨은 Jaccard, 피처는 embedding 기반으로 서로 다른 값을 썼다가 mock 데이터에서 두 신호가
 무상관이 되어 모델이 아무것도 학습하지 못하는 문제가 있었다 (이슈 #73).
 
 **남은 placeholder**: `compute_topic_similarity`가 사용하는 `embed_text`(해시 기반
-pseudo-embedding, `src/features/embeddings.py`)는 실제 semantic 정보를 담지 못한다.
+pseudo-embedding, `autoresearch/feature_engineering/embeddings.py`)는 실제 semantic 정보를 담지 못한다.
 실제 Sentence Transformer로 교체 시 라벨 생성 쪽 `base_rate`/`boost_coef` 튜닝
 (`02_generate_event_log.py`)도 새 임베딩 분포에 맞춰 재조정이 필요할 수 있다.
 

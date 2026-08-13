@@ -14,25 +14,25 @@ from pathlib import Path
 
 import pytest
 
-from src.pipeline import paired_experiment
-from src.pipeline.experiment_evaluation import (
+from autoresearch.model_evaluation import paired_experiment
+from autoresearch.model_evaluation.experiment_evaluation import (
     POLICY_SEEDS,
     EvaluationReasonCode,
     EvaluationVerdict,
     ExperimentEvaluation,
 )
-from src.pipeline.paired_experiment import (
+from autoresearch.model_evaluation.paired_experiment import (
     PairedExperimentReason,
     PairedExperimentRequest,
     evaluate_paired_experiment,
 )
-from src.pipeline.promotion_evidence import (
+from autoresearch.model_evaluation.promotion_evidence import (
     ExperimentPlanReceipt,
     GcsObjectReceipt,
     create_experiment_plan,
 )
-from src.pipeline.training_comparison import ComparisonValidationError
-from src.pipeline.training_provenance import TrainingComparisonManifest, TrainingSeeds
+from autoresearch.model_evaluation.training_comparison import ComparisonValidationError
+from autoresearch.model_training.training_provenance import TrainingComparisonManifest, TrainingSeeds
 
 
 BASE_SHA = "a" * 40

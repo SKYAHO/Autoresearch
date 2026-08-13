@@ -8,9 +8,9 @@ emptyDir이라 TTL 후 통째로 사라지므로, 여기서 내보내지 않으�
 [기능] `gs://<root>/experiments/<issue>/<experiment_id>/` 아래로 파일을 write-once
 업로드하고 게시된 좌표를 돌려준다.
 
-[비책임] 지표 계산(`src/pipeline/evaluate.py`)·조립(`measurement.py`), Experiment API
+[비책임] 지표 계산(`autoresearch/model_evaluation/evaluate.py`)·조립(`measurement.py`), Experiment API
 보고(`api_client.py`), 버킷 생성과 IAM(`Autoresearch-infra`)은 담당하지 않는다.
-학습 스냅샷의 `by-hash` 게시는 `src/pipeline/training_snapshot_store.py`가 소유한다 —
+학습 스냅샷의 `by-hash` 게시는 `autoresearch/model_training/training_snapshot_store.py`가 소유한다 —
 그쪽은 내용 주소이고 이쪽은 실험 주소라 레이아웃이 다르다.
 
 [중요] 대상 버킷의 `exp-job` GSA 권한은 `objectCreator`+`objectViewer`이며

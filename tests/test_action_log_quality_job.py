@@ -5,7 +5,7 @@ import pyarrow as pa
 import pytest
 
 import autoresearch.jobs.action_log_quality as quality_job
-from autoresearch.action_logs.pipeline import EVENT_LOG_PARQUET_SCHEMA
+from autoresearch.action_log_generation.pipeline import EVENT_LOG_PARQUET_SCHEMA
 
 
 _ARGS = [

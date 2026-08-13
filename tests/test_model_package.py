@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from src.tracking.model_package import (
+from autoresearch.model_registry.model_package import (
     ArtifactDigest,
     ModelPackageArtifacts,
     ModelPackageManifest,

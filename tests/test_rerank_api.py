@@ -5,8 +5,8 @@ import random
 import pytest
 import requests
 
-import src.pipeline.rerank_api as rerank_api
-from src.pipeline.rerank_api import (
+import autoresearch.recommendation.rerank_api as rerank_api
+from autoresearch.recommendation.rerank_api import (
     RerankApiError,
     RerankApiSettings,
     make_rerank_api_exposure_provider,

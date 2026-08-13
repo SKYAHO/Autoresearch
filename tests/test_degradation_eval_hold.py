@@ -13,7 +13,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pipeline.degradation_eval import (  # noqa: E402
+from autoresearch.model_evaluation.degradation_eval import (  # noqa: E402
     DegradationPoint,
     EvaluationStatus,
     PerDayResult,
@@ -21,7 +21,7 @@ from src.pipeline.degradation_eval import (  # noqa: E402
     TemporalHoldReason,
     evaluate_temporal_hold,
 )
-from src.pipeline.training_provenance import (  # noqa: E402
+from autoresearch.model_training.training_provenance import (  # noqa: E402
     DatasetColumn,
     TrainingSnapshotManifest,
 )

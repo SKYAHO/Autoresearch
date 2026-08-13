@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from src.pipeline.policy_selector import select_exposures
+from autoresearch.recommendation.policy_selector import select_exposures
 from src.serving.schemas import RerankedVideo
 
 

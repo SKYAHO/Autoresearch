@@ -17,7 +17,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pipeline.experiment_evaluation import (  # noqa: E402
+from autoresearch.model_evaluation.experiment_evaluation import (  # noqa: E402
     EvaluationConfidence,
     SignalDirection,
     TemporalSignal,

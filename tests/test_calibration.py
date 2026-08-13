@@ -10,8 +10,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.models.calibration import DownsamplingCalibrator
-from src.models.downsampling import apply_downsampling_calibration
+from autoresearch.model_training.calibration import DownsamplingCalibrator
+from autoresearch.model_training.downsampling import apply_downsampling_calibration
 from src.serving.schemas import CandidateVideo
 from src.serving.service import Reranker
 

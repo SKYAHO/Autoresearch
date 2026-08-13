@@ -8,9 +8,9 @@ import logging
 from collections import defaultdict
 from typing import Sequence
 
-from autoresearch.action_logs.calibration import recommend_click_threshold
-from autoresearch.action_logs.pipeline import read_action_log_draft_parquet
-from autoresearch.action_logs.schema import ImpressionDraft
+from autoresearch.action_log_generation.calibration import recommend_click_threshold
+from autoresearch.action_log_generation.pipeline import read_action_log_draft_parquet
+from autoresearch.action_log_generation.schema import ImpressionDraft
 
 logger = logging.getLogger(__name__)
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from autoresearch.experiments.promotion_gate import _LABELS, evaluate, parse_criteria
+from autoresearch.model_evaluation.experiments.promotion_gate import _LABELS, evaluate, parse_criteria
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -160,11 +160,11 @@ def _experiment_id_patterns() -> dict[str, str]:
             r"_EXPERIMENT_ID_PATTERN = re\.compile\(r\"(\^[^\"]+\$)\"\)",
         ),
         "paired_experiment": (
-            PROJECT_ROOT / "src/pipeline/paired_experiment.py",
+            PROJECT_ROOT / "autoresearch/model_evaluation/paired_experiment.py",
             r"_EXPERIMENT_ID_PATTERN = r\"(\^[^\"]+\$)\"",
         ),
         "experiment_context": (
-            PROJECT_ROOT / "autoresearch/experiments/context.py",
+            PROJECT_ROOT / "autoresearch/model_evaluation/experiments/context.py",
             r"_EXPERIMENT_ID = re\.compile\(r\"(\^[^\"]+\$)\"\)",
         ),
     }
@@ -712,7 +712,7 @@ def test_gate_policy_version_is_distinct_from_promotion_policy_version() -> None
     이름이 비슷해 같은 것으로 오독되면, 한쪽을 올리면서 다른 쪽도 올려야 한다고
     착각하게 된다.
     """
-    from src.pipeline.promotion_evidence import PROMOTION_POLICY_VERSION
+    from autoresearch.model_evaluation.promotion_evidence import PROMOTION_POLICY_VERSION
 
     decision = evaluate(
         parse_criteria(_issue_body()), primary_candidate=0.781, primary_baseline=0.778

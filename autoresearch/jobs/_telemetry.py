@@ -8,8 +8,8 @@ import sys
 
 
 ACTION_LOG_TELEMETRY_LOGGERS = (
-    "autoresearch.action_logs.pipeline",
-    "autoresearch.action_logs.llm_generator",
+    "autoresearch.action_log_generation.pipeline",
+    "autoresearch.action_log_generation.llm_generator",
 )
 _TELEMETRY_HANDLER_MARKER = "_autoresearch_action_log_stdout"
 _SENSITIVE_TELEMETRY_FIELDS = frozenset(

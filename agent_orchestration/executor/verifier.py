@@ -40,6 +40,15 @@ _SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
 _LFS_POINTER_PREFIX: Final = b"version https://git-lfs.github.com/spec/v1\n"
 _FIXED_UV_PROJECT_ENVIRONMENT: Final = "/opt/autoresearch-venv"
 _BASE_ALLOWED_PREFIXES: Final = ("autoresearch/", "tests/", "tools/")
+# prod 모델 계약 파일의 경로. #754 재배치로 위치가 바뀌었는데, 이 검증은 저장소 트리가
+# 아니라 **봉인된 base_dev_sha 워크스페이스**를 보므로 재배치 이전 실험은 여전히 옛
+# 경로를 가진다. 둘 다 잡아야 어느 트리에서도 게이트가 산다.
+_MODEL_CONTRACT_PATHS: Final = frozenset(
+    {
+        "src/features/model_contract.py",  # 봉인된 옛 트리
+        "autoresearch/feature_engineering/model_contract.py",  # 재배치 후
+    }
+)
 # 비차단 pytest의 출력 tail 상한. 실패한 pytest의 traceback은 수 MB까지 커질 수 있고,
 # 이 값은 finalizer handoff JSON과 stage 로그에 그대로 실린다(#615).
 _PYTEST_OUTPUT_TAIL_BYTES: Final = 64 * 1024
@@ -348,15 +357,29 @@ def _name_status_changes(
     return changes
 
 
-def _path_is_allowed(path: str, policy: CandidatePolicy) -> bool:
+def _is_legacy_tree(repository: Path) -> bool:
+    """워크스페이스가 #754 재배치 **이전**에 봉인된 트리인지 본다.
+
+    `autoresearch/cli.py`의 존재로 가른다 — 재배치가 만든 진입점이라 이전 트리에는 없고
+    이후 트리에는 반드시 있다. `autoresearch/` 디렉터리 자체는 이전에도 있었으므로 판별
+    기준이 될 수 없다. 옛 봉인 SHA 실험이 모두 끝나면 이 함수와 호출부를 제거한다.
+    """
+    return not (repository / "autoresearch" / "cli.py").is_file()
+
+
+def _path_is_allowed(path: str, policy: CandidatePolicy, *, legacy_tree: bool) -> bool:
     """기본 allowlist와 Issue Form의 조건부 scope를 path 하나에 적용한다."""
     if path in {".env", "pyproject.toml", "uv.lock"} or path.startswith(".env."):
         return False
     if path.startswith(_ALWAYS_FORBIDDEN_PREFIXES):
         return False
-    if path == "src/features/model_contract.py":
+    if path in _MODEL_CONTRACT_PATHS:
         return "prod_model_contract" in policy.allowed_scope
-    if path.startswith("src/"):
+    if legacy_tree and path.startswith("src/"):
+        # 전환 기간 허용. 봉인된 옛 base_dev_sha 트리에서 만들어진 실험은 워크스페이스에
+        # 여전히 src/ 를 가지므로, 여기서 막으면 진행 중 실험이 전부 forbidden_path 로
+        # 거부된다. **옛 트리에서만** 연다 — 재배치 이후 트리에서 src/ 아래 파일이 새로
+        # 생기는 것은 정상이 아니므로 그때는 막는 쪽이 맞다 (#754).
         return True
     if path.startswith(_BASE_ALLOWED_PREFIXES):
         return True
@@ -458,6 +481,7 @@ def _validate_path_files(
     environment: dict[str, str],
 ) -> tuple[str, ...]:
     """경로·mode·LFS·파일 크기를 candidate 전체에 대해 fail-closed로 검사한다."""
+    legacy_tree = _is_legacy_tree(repository)
     policy_paths: list[str] = []
     untracked_paths: list[str] = []
     for change in changes:
@@ -465,7 +489,7 @@ def _validate_path_files(
             if path is None:
                 continue
             policy_paths.append(path)
-            if not _path_is_allowed(path, policy):
+            if not _path_is_allowed(path, policy, legacy_tree=legacy_tree):
                 raise CandidateVerificationError("forbidden_path")
             if Path(path).suffix.lower() in _GENERATED_DATA_SUFFIXES:
                 raise CandidateVerificationError("generated_data")

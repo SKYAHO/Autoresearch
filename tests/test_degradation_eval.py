@@ -17,15 +17,15 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pipeline import degradation_eval  # noqa: E402
-from src.pipeline import train as train_module  # noqa: E402
-from src.pipeline.training_provenance import (  # noqa: E402
+from autoresearch.model_evaluation import degradation_eval  # noqa: E402
+from autoresearch.model_training import train as train_module  # noqa: E402
+from autoresearch.model_training.training_provenance import (  # noqa: E402
     RegistryProvenance,
     build_snapshot_manifest,
     snapshot_manifest_path,
     write_manifest_atomic,
 )
-from src.utils.model_utils import (  # noqa: E402
+from autoresearch.model_training.model_utils import (  # noqa: E402
     save_categorical_columns,
     save_feature_columns,
     save_model,

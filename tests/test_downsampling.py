@@ -1,4 +1,4 @@
-"""src/models/downsampling.py 순수 함수 단위 테스트 (#300).
+"""autoresearch/model_training/downsampling.py 순수 함수 단위 테스트 (#300).
 
 계약: docs/specs/2026-07-24-negative-downsampling-calibration.md
 """
@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.models.downsampling import (
+from autoresearch.model_training.downsampling import (
     apply_downsampling_calibration,
     downsample_negatives,
 )

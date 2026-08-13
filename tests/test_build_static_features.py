@@ -236,9 +236,9 @@ def test_embed_reuses_cache_and_only_calls_api_for_new_topics(monkeypatch, tmp_p
 
     import types
 
-    fake_module = types.ModuleType("src.features.embeddings")
+    fake_module = types.ModuleType("autoresearch.feature_engineering.embeddings")
     fake_module.embed_texts = _fake_embed_texts
-    monkeypatch.setitem(sys.modules, "src.features.embeddings", fake_module)
+    monkeypatch.setitem(sys.modules, "autoresearch.feature_engineering.embeddings", fake_module)
     monkeypatch.setattr(bsf, "EMBED_SLICE_PAUSE_SEC", 0)
 
     cache_path = tmp_path / "cache.jsonl"
@@ -264,9 +264,9 @@ def test_embed_slices_requests_to_respect_quota(monkeypatch, tmp_path):
 
     import types
 
-    fake_module = types.ModuleType("src.features.embeddings")
+    fake_module = types.ModuleType("autoresearch.feature_engineering.embeddings")
     fake_module.embed_texts = _fake_embed_texts
-    monkeypatch.setitem(sys.modules, "src.features.embeddings", fake_module)
+    monkeypatch.setitem(sys.modules, "autoresearch.feature_engineering.embeddings", fake_module)
     monkeypatch.setattr(bsf, "EMBED_SLICE_SIZE", 2)
     monkeypatch.setattr(bsf, "EMBED_SLICE_PAUSE_SEC", 0)
 
@@ -282,9 +282,9 @@ def test_embed_dry_run_does_not_call_api(monkeypatch):
 
     import types
 
-    fake_module = types.ModuleType("src.features.embeddings")
+    fake_module = types.ModuleType("autoresearch.feature_engineering.embeddings")
     fake_module.embed_texts = _boom
-    monkeypatch.setitem(sys.modules, "src.features.embeddings", fake_module)
+    monkeypatch.setitem(sys.modules, "autoresearch.feature_engineering.embeddings", fake_module)
 
     vectors = bsf._embed(["a"], "RETRIEVAL_QUERY", _settings(dry_run=True), None)
     assert vectors == [[0.0] * bsf.EMBEDDING_DIM]
@@ -298,9 +298,9 @@ def test_embedding_cache_is_append_only_json_lines(monkeypatch, tmp_path):
 
     import types
 
-    fake_module = types.ModuleType("src.features.embeddings")
+    fake_module = types.ModuleType("autoresearch.feature_engineering.embeddings")
     fake_module.embed_texts = _fake_embed_texts
-    monkeypatch.setitem(sys.modules, "src.features.embeddings", fake_module)
+    monkeypatch.setitem(sys.modules, "autoresearch.feature_engineering.embeddings", fake_module)
     monkeypatch.setattr(bsf, "EMBED_SLICE_SIZE", 2)
     monkeypatch.setattr(bsf, "EMBED_SLICE_PAUSE_SEC", 0)
 

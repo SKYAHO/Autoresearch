@@ -7,9 +7,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
-from src.features.model_contract import FeatureContractError, MODEL_FEATURE_COLUMNS
-from src.pipeline.simulate_policy_round import (
+from autoresearch.action_log_generation.llm_generator import RuleBasedActionLogGenerator
+from autoresearch.feature_engineering.model_contract import FeatureContractError, MODEL_FEATURE_COLUMNS
+from autoresearch.recommendation.simulate_policy_round import (
     _to_candidate_videos,
     build_pool_feature_frame,
     main,
@@ -261,7 +261,7 @@ def test_round_output_feeds_retraining_path(tmp_path, stub_reranker):
     """policy=model 필터 후 derive_wide_events가 라벨을 복원할 수 있어야 한다."""
     import pyarrow.parquet as pq
 
-    from src.pipeline.build_training_dataset import derive_wide_events
+    from autoresearch.model_training.build_training_dataset import derive_wide_events
 
     main(
         personas=_personas(),
@@ -311,7 +311,7 @@ def test_round_clicks_are_at_most_one_per_user(tmp_path, stub_reranker) -> None:
 
 
 def test_render_report_html_contains_policies_and_values():
-    from src.pipeline.report_html import render_report_html
+    from autoresearch.reporting.report_html import render_report_html
 
     report = {
         "policy_version": "run-x", "k": 10, "exploration_ratio": 0.1,
@@ -361,8 +361,8 @@ def test_round_dumps_drafts_and_meta(tmp_path, stub_reranker):
     """LLM 판정이 draft parquet + 사이드카 메타로 남아야 한다(캘리브레이션 입력)."""
     import json
 
-    from autoresearch.action_logs.pipeline import read_action_log_draft_parquet
-    from autoresearch.action_logs.schema import (
+    from autoresearch.action_log_generation.pipeline import read_action_log_draft_parquet
+    from autoresearch.action_log_generation.schema import (
         ACTION_LOG_SCHEMA_VERSION,
         PROMPT_VERSION,
     )
@@ -470,8 +470,8 @@ def _load_replay(round_dir, *, with_exposure_keys=False):
     """
     import json
 
-    from autoresearch.action_logs.pipeline import read_action_log_draft_parquet
-    from src.pipeline.simulate_policy_round import (
+    from autoresearch.action_log_generation.pipeline import read_action_log_draft_parquet
+    from autoresearch.recommendation.simulate_policy_round import (
         DRAFTS_FILENAME,
         DRAFTS_META_FILENAME,
         DraftReplay,
@@ -543,7 +543,7 @@ def test_replay_fails_when_a_users_slate_is_partially_covered(tmp_path, stub_rer
     _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
 
     replay = _load_replay(first_dir)
-    from src.pipeline.simulate_policy_round import DraftReplay
+    from autoresearch.recommendation.simulate_policy_round import DraftReplay
 
     target_user = replay.drafts[0].user_id
     user_drafts = [d for d in replay.drafts if d.user_id == target_user]
@@ -581,7 +581,7 @@ def test_replay_tolerates_a_user_with_no_drafts_at_all(tmp_path, stub_reranker):
     _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
 
     replay = _load_replay(first_dir)
-    from src.pipeline.simulate_policy_round import DraftReplay
+    from autoresearch.recommendation.simulate_policy_round import DraftReplay
 
     quarantined_user = replay.drafts[0].user_id
     remaining = [d for d in replay.drafts if d.user_id != quarantined_user]
@@ -607,7 +607,7 @@ def test_round_meta_records_exposure_keys(tmp_path, stub_reranker):
     """덤프 사이드카에 유저별 합집합 노출 키 집합이 기록되어야 한다(#274)."""
     import json
 
-    from src.pipeline.simulate_policy_round import DRAFTS_META_FILENAME
+    from autoresearch.recommendation.simulate_policy_round import DRAFTS_META_FILENAME
 
     report = _run_round(tmp_path, stub_reranker, generator=RuleBasedActionLogGenerator())
 
@@ -630,7 +630,7 @@ def test_replay_with_exposure_keys_tolerates_partial_user_drafts(tmp_path, stub_
     _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
 
     replay = _load_replay(first_dir, with_exposure_keys=True)
-    from src.pipeline.simulate_policy_round import DraftReplay
+    from autoresearch.recommendation.simulate_policy_round import DraftReplay
 
     target_user = replay.drafts[0].user_id
     user_drafts = [d for d in replay.drafts if d.user_id == target_user]
@@ -660,7 +660,7 @@ def test_replay_with_exposure_keys_fails_on_exposure_set_mismatch(tmp_path, stub
     _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
 
     replay = _load_replay(first_dir, with_exposure_keys=True)
-    from src.pipeline.simulate_policy_round import DraftReplay
+    from autoresearch.recommendation.simulate_policy_round import DraftReplay
 
     assert replay.exposure_keys is not None
     target_user = next(iter(replay.exposure_keys))
@@ -695,7 +695,7 @@ def test_replay_with_exposure_keys_fails_on_user_set_mismatch(tmp_path, stub_rer
     _run_round(first_dir, stub_reranker, generator=RuleBasedActionLogGenerator())
 
     replay = _load_replay(first_dir, with_exposure_keys=True)
-    from src.pipeline.simulate_policy_round import DraftReplay
+    from autoresearch.recommendation.simulate_policy_round import DraftReplay
 
     assert replay.exposure_keys is not None
     dropped_user = next(iter(replay.exposure_keys))
@@ -850,7 +850,7 @@ def test_main_requires_exactly_one_of_generator_or_replay(tmp_path, stub_reranke
 
 
 def test_resolve_exposure_args_uses_defaults_without_meta():
-    from src.pipeline.simulate_policy_round import resolve_exposure_args
+    from autoresearch.recommendation.simulate_policy_round import resolve_exposure_args
 
     resolved = resolve_exposure_args(
         explicit={"seed": None, "k": 6, "exploration_ratio": None, "as_of": None},
@@ -861,7 +861,7 @@ def test_resolve_exposure_args_uses_defaults_without_meta():
 
 
 def test_resolve_exposure_args_inherits_meta_when_unspecified():
-    from src.pipeline.simulate_policy_round import resolve_exposure_args
+    from autoresearch.recommendation.simulate_policy_round import resolve_exposure_args
 
     meta = {"seed": 7, "k": 6, "exploration_ratio": 0.0, "as_of": "2026-07-20 00:00:00"}
     resolved = resolve_exposure_args(
@@ -873,7 +873,7 @@ def test_resolve_exposure_args_inherits_meta_when_unspecified():
 
 
 def test_resolve_exposure_args_rejects_mismatch():
-    from src.pipeline.simulate_policy_round import resolve_exposure_args
+    from autoresearch.recommendation.simulate_policy_round import resolve_exposure_args
 
     meta = {"seed": 7, "k": 6, "exploration_ratio": 0.0, "as_of": "2026-07-20 00:00:00"}
     with pytest.raises(ValueError, match="seed"):
@@ -885,7 +885,7 @@ def test_resolve_exposure_args_rejects_mismatch():
 
 
 def test_read_drafts_meta_requires_sidecar(tmp_path):
-    from src.pipeline.simulate_policy_round import _read_drafts_meta
+    from autoresearch.recommendation.simulate_policy_round import _read_drafts_meta
 
     with pytest.raises(FileNotFoundError, match="llm_model"):
         _read_drafts_meta(tmp_path / "action_log_drafts_meta.json")
@@ -899,7 +899,7 @@ def test_cli_replay_runs_without_generator(tmp_path, stub_reranker, monkeypatch)
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    from src.pipeline import simulate_policy_round as module
+    from autoresearch.recommendation import simulate_policy_round as module
 
     # 입력 파일 준비
     personas_path = tmp_path / "personas.csv"
@@ -964,7 +964,7 @@ def test_cli_replay_runs_without_generator(tmp_path, stub_reranker, monkeypatch)
 def test_cli_replay_rejects_generator_flag(tmp_path, monkeypatch):
     import sys
 
-    from src.pipeline import simulate_policy_round as module
+    from autoresearch.recommendation import simulate_policy_round as module
 
     monkeypatch.setattr(
         sys,
@@ -1047,7 +1047,7 @@ def _fake_pool_frame(store, user_id, candidate_video_ids, as_of) -> pd.DataFrame
 def test_main_feast_source_routes_through_offline_pit(tmp_path, stub_reranker, monkeypatch):
     # assembly_source='feast'면 모델 피처를 offline PIT(build_pool_feature_frame_feast)로만
     # 만들고, raw 재계산(duckdb build_pool_feature_frame)은 절대 안 탄다(#359 A2).
-    from src.pipeline import simulate_policy_round as module
+    from autoresearch.recommendation import simulate_policy_round as module
 
     calls: list[tuple] = []
 
@@ -1091,7 +1091,7 @@ def test_main_verifies_credentials_when_assembly_source_is_duckdb(
 ):
     # duckdb 경로는 유저별 피처 조립에서 embed_texts를 실제로 호출하므로, 라운드
     # 시작 시 자격증명 사전점검이 1회 실행돼야 한다(#426).
-    from src.pipeline import simulate_policy_round as module
+    from autoresearch.recommendation import simulate_policy_round as module
 
     calls: list[str] = []
     monkeypatch.setattr(module, "verify_vertex_ai_credentials", lambda: calls.append("called"))
@@ -1111,7 +1111,7 @@ def test_main_credential_check_runs_before_simulation_stages(
     # "언젠가 호출됐다"가 아니라 "비싼 단계보다 먼저 호출됐다"를 고정한다(#426 최종리뷰).
     # 사전점검이 뒤로 밀리면 피처 조립(_boom)이 먼저 터져 마커 예외가 안 나오고,
     # 5단계를 지나 밀리면 산출물이 이미 쓰인 뒤라 두 번째 단언도 깨진다.
-    from src.pipeline import simulate_policy_round as module
+    from autoresearch.recommendation import simulate_policy_round as module
 
     def _raise_marker():
         raise _PreflightMarker("preflight")
@@ -1133,7 +1133,7 @@ def test_main_skips_credential_check_when_assembly_source_is_feast(
 ):
     # feast 경로는 build_pool_feature_frame_feast가 BigQuery 사전계산값을 읽어
     # embed_texts를 호출하지 않으므로 사전점검이 불필요하다 — 실행되면 안 된다(#426).
-    from src.pipeline import simulate_policy_round as module
+    from autoresearch.recommendation import simulate_policy_round as module
 
     def _fail_if_called():
         raise AssertionError("assembly_source='feast'인데 자격증명 사전점검이 호출됨")
@@ -1178,8 +1178,8 @@ def test_main_feast_requires_feature_store(stub_reranker):
 
 def test_cli_feast_requires_project_before_feast_import(monkeypatch):
     """프로젝트가 없으면 Feast import와 offline store 구성 전에 실패한다."""
-    from src.pipeline import build_training_dataset
-    from src.pipeline import simulate_policy_round as module
+    from autoresearch.model_training import build_training_dataset
+    from autoresearch.recommendation import simulate_policy_round as module
 
     monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://test-bucket/registry.pb")
@@ -1206,7 +1206,7 @@ def test_cli_feast_requires_project_before_feast_import(monkeypatch):
     original_import = builtins.__import__
 
     def _forbid_feast_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "src.features.feast_retrieval":
+        if name == "autoresearch.feature_engineering.feast_retrieval":
             raise AssertionError("프로젝트 확인 전에 Feast를 import하면 안 됩니다")
         return original_import(name, globals, locals, fromlist, level)
 

@@ -1,7 +1,7 @@
 """paired 판정 결과를 Experiment API payload로 바꾸는 계약을 검증한다.
 
 전체 파이프라인 중 `compare-paired-experiment`의 결과와 Experiment API 사이의 변환
-구간만 본다. HTTP 전송(`agent_orchestration.ui.client`)과 명령 배선(`src.cli`)은
+구간만 본다. HTTP 전송(`agent_orchestration.ui.client`)과 명령 배선(`autoresearch.cli`)은
 담당하지 않는다.
 """
 
@@ -11,8 +11,8 @@ import json
 
 import pytest
 
-from src.pipeline.paired_experiment import PairedExperimentRequest
-from src.pipeline.experiment_result_report import (
+from autoresearch.model_evaluation.paired_experiment import PairedExperimentRequest
+from autoresearch.reporting.experiment_result_report import (
     MAX_IDEMPOTENCY_KEY_LENGTH,
     MAX_LOG_CONTENT_LENGTH,
     MAX_REASON_LENGTH,

@@ -78,11 +78,11 @@ def main() -> int:
     os.environ.setdefault("BQ_DATASET", dataset)
 
     from feature_repo import feature_definitions as fd
-    from src.features.feast_retrieval import (
+    from autoresearch.feature_engineering.feast_retrieval import (
         build_offline_feature_store,
         retrieve_training_features,
     )
-    from src.pipeline.build_training_dataset import load_training_entity_spine
+    from autoresearch.model_training.build_training_dataset import load_training_entity_spine
 
     tmp = tempfile.mkdtemp(prefix="as_of_probe_")
     os.chdir(tmp)  # Windows file registry 드라이브레터 회피(validate와 동일)

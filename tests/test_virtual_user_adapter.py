@@ -5,8 +5,8 @@ import json
 import numpy as np
 import pandas as pd
 
-from src.pipeline.build_training_dataset import load_personas
-from src.pipeline.virtual_user_adapter import extract_words, to_personas_frame
+from autoresearch.model_training.build_training_dataset import load_personas
+from autoresearch.virtual_user_generation.adapter import extract_words, to_personas_frame
 
 
 def test_extract_words_handles_bq_arrow_nested_structure():

@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("feast")
 
-from src.pipeline import build_training_dataset  # noqa: E402
+from autoresearch.model_training import build_training_dataset  # noqa: E402
 
 _REQUIRED_ENV = {
     "GCS_REGISTRY_PATH": "gs://registry/registry.db",

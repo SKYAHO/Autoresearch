@@ -5,18 +5,18 @@ commit·push를 마친 뒤까지 — 같은 Pod의 workspace를 공유하며 두
 구간을 담당한다. baseline은 Codex 실행 **전**(dev 코드·dev 의존성), candidate는 push
 **후**(candidate 코드·candidate 의존성)에 돈다.
 
-[기능] workspace의 `src.cli` 를 subprocess로 호출해 seed별 학습을 반복하고, 의존성이
+[기능] workspace의 CLI 진입점을 subprocess로 호출해 seed별 학습을 반복하고, 의존성이
 바뀐 경우에만 `uv sync`를 수행하며, 두 조건의 실행 순서를 state marker로 강제한다.
 subprocess가 실패하거나 timeout되면 어느 호출이었는지와 출력 tail을 컨테이너 로그로
 남긴다(#636) — 그 로그는 수집기가 `experiment_logs`로 옮겨 워크벤치가 읽는다(#559).
 
-[비책임] 학습 알고리즘과 데이터셋 조립(`src/pipeline/`), Codex 실행(`codex_worker.py`),
-commit·push와 candidate 보고(`finalizer.py`·`api_client.py`), 스냅샷 GCS 게시
-(`src/pipeline/training_snapshot_store.py`)는 담당하지 않는다.
+[비책임] 학습 알고리즘과 데이터셋 조립(`autoresearch/model_training/`), Codex 실행
+(`codex_worker.py`), commit·push와 candidate 보고(`finalizer.py`·`api_client.py`), 스냅샷
+GCS 게시(`autoresearch/model_training/training_snapshot_store.py`)는 담당하지 않는다.
 
-[중요] 학습 코드는 이미지가 아니라 **workspace의 clone**에서 온다. 이미지에 `src/`를
-구우면 Codex가 수정한 candidate 코드가 아니라 빌드 시점의 낡은 코드로 학습하게 되어
-candidate 실험 자체가 무의미해진다 (#574).
+[중요] 학습 코드는 이미지가 아니라 **workspace의 clone**에서 온다. 이미지에 파이프라인
+코드를 구우면 Codex가 수정한 candidate 코드가 아니라 빌드 시점의 낡은 코드로 학습하게
+되어 candidate 실험 자체가 무의미해진다 (#574).
 
 [중요] 산출물은 clone **밖**에 쓴다(`output_root`, #603). clone 안에 쓰면 verifier가
 그것을 Codex의 변경으로 수집해, 아무 변경도 없는 실행이 통과한다.
@@ -65,25 +65,82 @@ _DEPENDENCY_PATHS: Final = ("pyproject.toml", "uv.lock")
 # 그래서 정의 파일만이 아니라 **피처를 계산하는 로직**까지 포함한다. 정의는 그대로 두고
 # 계산만 바꾸는 변경도 스냅샷 컬럼을 낡게 만들기 때문이다. `feature_repo`는 파일 단위가
 # 아니라 디렉터리 전체를 본다.
+# #754 재배치로 build_training_dataset 의 경로가 바뀌었다. 이 pathspec 은 저장소 트리가
+# 아니라 봉인된 base_dev_sha 워크스페이스에 적용되므로 재배치 이전 실험은 여전히 옛
+# 경로를 가진다. 매칭되지 않는 pathspec 은 git diff 가 조용히 무시하므로 둘 다 둔다 —
+# 위 "넓은 쪽으로 둔다" 원칙과 같은 판단이다.
 _FEATURE_DEFINITION_PATHS: Final = (
     "feature_repo",
     "src/pipeline/build_training_dataset.py",
-)
-_SEED_PROBE: Final = (
-    "from src.pipeline.experiment_evaluation import POLICY_SEEDS;"
-    "print(','.join(str(seed) for seed in POLICY_SEEDS))"
+    "autoresearch/model_training/build_training_dataset.py",
 )
 _BASELINE_MARKER: Final = "baseline_training_complete"
 
-# 스냅샷 다운로드도 workspace 코드에게 맡긴다 — `src/`가 이미지에 없어 import할 수
-# 없고, `by-hash` 레이아웃과 sidecar 복원 규칙을 복제하면 사본이 늘어난다.
-# 인자는 `python -c <code> <uri> <dir>` 형태로 argv에 실어 넘긴다(shell 해석 없음).
-_DOWNLOAD_PROBE: Final = (
-    "import sys;"
-    "from pathlib import Path;"
-    "from src.pipeline.training_snapshot_store import download_snapshot;"
-    "print(download_snapshot(dataset_uri=sys.argv[1], destination_dir=Path(sys.argv[2])))"
+
+@dataclass(frozen=True)
+class _WorkspaceLayout:
+    """workspace 트리가 어느 모듈 이름을 갖는지 나타낸다.
+
+    이 세 값은 executor 이미지가 아니라 **봉인된 `base_dev_sha` 워크스페이스**에서
+    실행된다(`_run(..., cwd=workspace)`). 이미지는 릴리스된 digest이고 워크스페이스는 그보다
+    앞선 SHA일 수 있으므로, 이미지 버전이 아니라 **그 트리의 모양**을 보고 골라야 한다.
+    """
+
+    cli_module: str
+    policy_seeds_module: str
+    snapshot_store_module: str
+
+
+# #754 재배치 이후 트리.
+_CURRENT_LAYOUT: Final = _WorkspaceLayout(
+    cli_module="autoresearch.cli",
+    policy_seeds_module="autoresearch.model_evaluation.experiment_evaluation",
+    snapshot_store_module="autoresearch.model_training.training_snapshot_store",
 )
+# 재배치 이전에 봉인된 트리. 진행 중 실험이 모두 끝나면 이 상수와 `workspace_layout`의
+# 분기를 함께 제거한다 (#754).
+_LEGACY_LAYOUT: Final = _WorkspaceLayout(
+    cli_module="src.cli",
+    policy_seeds_module="src.pipeline.experiment_evaluation",
+    snapshot_store_module="src.pipeline.training_snapshot_store",
+)
+
+
+def workspace_layout(workspace: Path) -> _WorkspaceLayout:
+    """봉인된 트리가 #754 재배치 이전인지 이후인지 보고 모듈 이름을 고른다.
+
+    `autoresearch/cli.py`의 존재로 가른다 — 재배치가 만든 진입점이라 이전 트리에는 없고,
+    이후 트리에는 반드시 있다. `autoresearch/` 디렉터리 자체는 재배치 이전에도 있었으므로
+    판별 기준이 될 수 없다.
+    """
+    if (workspace / "autoresearch" / "cli.py").is_file():
+        return _CURRENT_LAYOUT
+    return _LEGACY_LAYOUT
+
+
+def _seed_probe(layout: _WorkspaceLayout) -> str:
+    """workspace의 `POLICY_SEEDS`를 stdout으로 내는 한 줄 코드."""
+    return (
+        f"from {layout.policy_seeds_module} import POLICY_SEEDS;"
+        "print(','.join(str(seed) for seed in POLICY_SEEDS))"
+    )
+
+
+def _download_probe(layout: _WorkspaceLayout) -> str:
+    """스냅샷 다운로드도 workspace 코드에게 맡긴다.
+
+    파이프라인 코드가 이미지에 없어 import할 수 없고, `by-hash` 레이아웃과 sidecar 복원
+    규칙을 복제하면 사본이 늘어난다. 인자는 `python -c <code> <uri> <dir>` 형태로 argv에
+    실어 넘긴다(shell 해석 없음).
+    """
+    return (
+        "import sys;"
+        "from pathlib import Path;"
+        f"from {layout.snapshot_store_module} import download_snapshot;"
+        "print(download_snapshot(dataset_uri=sys.argv[1], destination_dir=Path(sys.argv[2])))"
+    )
+
+
 _DATASET_CSV_NAME: Final = "training_dataset.csv"
 _SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 
@@ -245,7 +302,7 @@ def ensure_dataset(
 
     destination_dir.mkdir(parents=True, exist_ok=True)
     raw = _run(
-        ["python", "-c", _DOWNLOAD_PROBE, dataset_uri, str(destination_dir)],
+        ["python", "-c", _download_probe(workspace_layout(workspace)), dataset_uri, str(destination_dir)],
         cwd=workspace,
         timeout_seconds=timeout_seconds,
         stage="dataset_download",
@@ -273,7 +330,7 @@ def resolve_policy_seeds(workspace: Path, *, timeout_seconds: int = 60) -> tuple
     실험이라면 candidate 학습은 바뀐 값으로 돌아야 한다.
     """
     raw = _run(
-        ["python", "-c", _SEED_PROBE],
+        ["python", "-c", _seed_probe(workspace_layout(workspace))],
         cwd=workspace,
         timeout_seconds=timeout_seconds,
         stage="seed_probe",
@@ -378,7 +435,7 @@ def run_training(config: TrainingInput) -> tuple[int, ...]:
             [
                 "python",
                 "-m",
-                "src.cli",
+                workspace_layout(config.workspace).cli_module,
                 "train-model",
                 "--data-path",
                 str(config.dataset_path),

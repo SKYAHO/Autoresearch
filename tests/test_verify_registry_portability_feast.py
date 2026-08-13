@@ -28,7 +28,7 @@ DEFINITIONS = FEATURE_REPO / "feature_definitions.py"
 APPLY_MODULE_NAME = "feature_definitions"
 # 이 저장소가 소유한 최상위 패키지. 역직렬화 직전에 sys.modules에서 비워, 이미 로드돼 있다는
 # 이유로 통과하는 대신 소비자 경로에서 실제로 import되는지를 보게 한다(형제 게이트와 동일).
-_PROJECT_TOP_LEVEL = frozenset({"src", "feature_repo"})
+_PROJECT_TOP_LEVEL = frozenset({"autoresearch", "feature_repo"})
 
 
 def _load_verifier() -> ModuleType:
@@ -76,7 +76,7 @@ from feast import Field
 from feast.on_demand_feature_view import on_demand_feature_view
 from feast.types import Int64
 
-from src.features.feature_builder import compute_category_matches
+from autoresearch.feature_engineering.feature_builder import compute_category_matches
 
 
 def local_matches(inputs):

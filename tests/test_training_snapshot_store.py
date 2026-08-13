@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from google.api_core.exceptions import Forbidden, GoogleAPICallError, PreconditionFailed
 
-from src.pipeline import training_snapshot_store as store
+from autoresearch.model_training import training_snapshot_store as store
 
 
 class _PreconditionFailed(PreconditionFailed):
@@ -114,7 +114,7 @@ class _FakeClient:
 
 def _write_dataset(tmp_path: Path) -> Path:
     """CSV와 대응 sidecar를 만든 뒤 CSV 경로를 돌려준다."""
-    from src.pipeline.training_provenance import (
+    from autoresearch.model_training.training_provenance import (
         build_snapshot_manifest,
         RegistryProvenance,
         snapshot_manifest_path,
@@ -140,7 +140,7 @@ def _write_dataset(tmp_path: Path) -> Path:
 
 def _republish_sidecar(csv_path: Path) -> None:
     """CSV를 수정한 뒤 sha가 맞는 sidecar를 다시 쓴다."""
-    from src.pipeline.training_provenance import (
+    from autoresearch.model_training.training_provenance import (
         build_snapshot_manifest,
         RegistryProvenance,
         snapshot_manifest_path,
@@ -173,7 +173,7 @@ def test_publish_writes_csv_and_manifest_under_content_address(tmp_path) -> None
         client=client,
     )
 
-    from src.pipeline.training_provenance import sha256_file
+    from autoresearch.model_training.training_provenance import sha256_file
 
     sha = sha256_file(csv_path)
     assert uri == f"gs://snapshots/training/by-hash/{sha}/"
@@ -244,7 +244,7 @@ def test_publish_normalizes_root_prefix(tmp_path, root, expected_prefix) -> None
         client=client,
     )
 
-    from src.pipeline.training_provenance import sha256_file
+    from autoresearch.model_training.training_provenance import sha256_file
 
     sha = sha256_file(csv_path)
     head = f"{expected_prefix}/" if expected_prefix else ""
@@ -274,7 +274,7 @@ def test_pointer_records_latest_and_keeps_previous(tmp_path) -> None:
         client=client,
     )
 
-    from src.pipeline.training_provenance import sha256_file
+    from autoresearch.model_training.training_provenance import sha256_file
 
     payload = json.loads(
         client.buckets["snapshots"]
@@ -289,7 +289,7 @@ def test_pointer_records_latest_and_keeps_previous(tmp_path) -> None:
 
 def test_pointer_history_is_capped(tmp_path) -> None:
     """previous는 MAX_POINTER_HISTORY개를 넘지 않고, 최신순으로 잘려야 한다."""
-    from src.pipeline.training_provenance import MAX_POINTER_HISTORY, sha256_file
+    from autoresearch.model_training.training_provenance import MAX_POINTER_HISTORY, sha256_file
 
     client = _FakeClient()
     csv_paths: list[Path] = []
@@ -395,7 +395,7 @@ def test_download_restores_sidecar_naming(tmp_path) -> None:
         dataset_uri=uri, destination_dir=destination, client=client
     )
 
-    from src.pipeline.training_provenance import load_training_snapshot_manifest
+    from autoresearch.model_training.training_provenance import load_training_snapshot_manifest
 
     assert local.name == "training_dataset.csv"
     assert (destination / "training_dataset.csv.snapshot.json").is_file()
@@ -598,7 +598,7 @@ def test_pointer_contention_retry_reads_and_prepends_competitor(
     발행 사실은 previous에 남는다"이다 — 회귀가 이 라운드에서 ``previous``를 빈 채로
     덮어쓰면(경쟁자를 조용히 지우면) 이 테스트가 잡아낸다.
     """
-    from src.pipeline.training_provenance import sha256_file
+    from autoresearch.model_training.training_provenance import sha256_file
 
     monkeypatch.setattr(store.time, "sleep", lambda _seconds: None)
 

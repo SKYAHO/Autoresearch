@@ -12,7 +12,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pipeline.degradation_eval import (  # noqa: E402
+from autoresearch.model_evaluation.degradation_eval import (  # noqa: E402
     DegradationPoint,
     EvaluationStatus,
     PerDayResult,
@@ -23,7 +23,7 @@ from src.pipeline.degradation_eval import (  # noqa: E402
     derive_hard_retrain_limit,
     detect_degradation_point,
 )
-from src.pipeline.training_provenance import (  # noqa: E402
+from autoresearch.model_training.training_provenance import (  # noqa: E402
     DatasetColumn,
     TrainingSnapshotManifest,
 )
@@ -317,7 +317,7 @@ def test_resolve_forward_baseline_skips_valid_day_without_score():
 
 
 def test_temporal_signal_inputs_extracts_primitives():
-    from src.pipeline.degradation_eval import temporal_signal_inputs
+    from autoresearch.model_evaluation.degradation_eval import temporal_signal_inputs
 
     days = [_scored(0, 0.80), _scored(1, 0.78), _scored(2, 0.70)]
     result = _result_with(DegradationPoint(elapsed_days=2, date="2026-07-22"))
@@ -336,7 +336,7 @@ def test_temporal_signal_inputs_extracts_primitives():
 
 
 def test_temporal_signal_inputs_counts_only_scorable_days():
-    from src.pipeline.degradation_eval import temporal_signal_inputs
+    from autoresearch.model_evaluation.degradation_eval import temporal_signal_inputs
 
     days = [_scored(0, 0.80), _scored(1, None), _scored(2, None, EvaluationStatus.MISSING_DATE)]
     result = _result_with(DegradationPoint(reason="no_degradation_detected"))

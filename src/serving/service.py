@@ -7,7 +7,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 import pandas as pd
 
-from src.models.calibration import DownsamplingCalibrator
+from autoresearch.model_training.calibration import DownsamplingCalibrator
 from src.serving.schemas import CandidateVideo, FeatureValue, RerankedVideo
 
 

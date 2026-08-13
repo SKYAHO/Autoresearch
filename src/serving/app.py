@@ -23,7 +23,7 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
-from src.features.model_contract import (
+from autoresearch.feature_engineering.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     FeatureContractError,
     MODEL_FEATURE_COLUMNS,

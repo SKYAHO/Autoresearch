@@ -16,9 +16,9 @@ from typer.testing import CliRunner
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src import cli  # noqa: E402
-from src.pipeline.experiment_evaluation import POLICY_SEEDS  # noqa: E402
-from src.pipeline.paired_experiment import (  # noqa: E402
+from autoresearch import cli  # noqa: E402
+from autoresearch.model_evaluation.experiment_evaluation import POLICY_SEEDS  # noqa: E402
+from autoresearch.model_evaluation.paired_experiment import (  # noqa: E402
     PairedExperimentRequest,
 )
 from agent_orchestration.ui.client import (  # noqa: E402
@@ -30,13 +30,13 @@ from tests.paired_experiment_fixtures import (  # noqa: E402
     paired_request_payload as _paired_request_payload,
     paired_result as _paired_result,
 )
-from src.pipeline.promotion_evidence import (  # noqa: E402
+from autoresearch.model_evaluation.promotion_evidence import (  # noqa: E402
     ExperimentPlanReceipt,
     GcsObjectReceipt,
     PromotionEvidenceValidationError,
 )
-from src.pipeline import train as train_module  # noqa: E402
-from src.tracking.promotion_result import (  # noqa: E402
+from autoresearch.model_training import train as train_module  # noqa: E402
+from autoresearch.model_registry.promotion_result import (  # noqa: E402
     ModelPromotionResult,
     PromotionExecutionError,
     PromotionOutcome,
@@ -274,7 +274,7 @@ def test_run_pipeline_forwards_coverage_override(monkeypatch):
 
 
 def test_run_pipeline_logs_feast_lineage_as_train_extra_params(monkeypatch):
-    from src.features.feast_retrieval import DEFAULT_SERVICE
+    from autoresearch.feature_engineering.feast_retrieval import DEFAULT_SERVICE
 
     train_call = {}
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://fake/registry.db")
@@ -1664,11 +1664,11 @@ def test_compare_paired_experiment_help_exposes_required_options() -> None:
 
 
 def _degradation_result(**overrides):
-    from src.pipeline.degradation_eval import (
+    from autoresearch.model_evaluation.degradation_eval import (
         DegradationPoint,
         RollingOriginResult,
     )
-    from src.pipeline.training_provenance import (
+    from autoresearch.model_training.training_provenance import (
         DatasetColumn,
         TrainingSnapshotManifest,
     )
@@ -1764,7 +1764,7 @@ def test_measure_degradation_forwards_best_effort_flag(monkeypatch, tmp_path):
 
 
 def test_measure_degradation_run_root_exists_error_exits_two(monkeypatch, tmp_path):
-    from src.pipeline.degradation_eval import RunRootExistsError
+    from autoresearch.model_evaluation.degradation_eval import RunRootExistsError
 
     def _raise(cutoff_date, **kwargs):
         raise RunRootExistsError("run_root가 이미 존재합니다")
@@ -2064,7 +2064,7 @@ def test_report_result_is_safe_to_rerun(tmp_path, monkeypatch) -> None:
 
 
 def test_cli_import_does_not_require_sqlalchemy() -> None:
-    """`src.cli` import가 SQLAlchemy를 끌어오지 않아야 한다.
+    """`autoresearch.cli` import가 SQLAlchemy를 끌어오지 않아야 한다.
 
     학습 이미지는 `uv sync --locked --no-dev`로 빌드되어 SQLAlchemy가 없다.
     `agent_orchestration.ui.client`를 top-level import하면 그 모듈이 `ui.models` →
@@ -2077,7 +2077,7 @@ def test_cli_import_does_not_require_sqlalchemy() -> None:
         [
             sys.executable,
             "-c",
-            "import src.cli, sys; "
+            "import autoresearch.cli, sys; "
             "assert 'sqlalchemy' not in sys.modules, "
             "'src.cli가 SQLAlchemy를 전이 의존으로 끌어온다'",
         ],

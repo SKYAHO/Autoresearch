@@ -1,7 +1,7 @@
 """Experiment API 쓰기 경로의 요청 형태를 검증한다.
 
 전체 파이프라인 중 HTTP 전송 계층만 본다 — 어떤 값을 보낼지 정하는 것은
-`src.pipeline.experiment_result_report`와 `src.cli`의 책임이다.
+`autoresearch.reporting.experiment_result_report`와 `autoresearch.cli`의 책임이다.
 """
 
 from __future__ import annotations

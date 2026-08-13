@@ -10,7 +10,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pipeline import build_training_dataset  # noqa: E402
+from autoresearch.model_training import build_training_dataset  # noqa: E402
 
 _COVERAGE_STUB = build_training_dataset.SpineCoverage(
     requested_days=("2026-08-01",),
@@ -288,7 +288,7 @@ def test_assemble_via_feast_requires_project_before_feast_import(monkeypatch, tm
     original_import = builtins.__import__
 
     def _forbid_feast_retrieval_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name == "src.features.feast_retrieval":
+        if name == "autoresearch.feature_engineering.feast_retrieval":
             raise AssertionError("프로젝트 확인 전에 Feast retrieval을 import하면 안 됩니다")
         return original_import(name, globals, locals, fromlist, level)
 

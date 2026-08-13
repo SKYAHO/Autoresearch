@@ -4,7 +4,7 @@
 [파이프라인] 학습/평가 구간의 **분석 보조** 도구다. 학습도 등록도 하지 않고, 이미 나온
 시드 스윕 요약(`--result-path` 산출물)만 읽어 판정 근거를 만든다.
 
-[기능] baseline 1개와 candidate N개를 받아 `src.pipeline.seed_sweep`의
+[기능] baseline 1개와 candidate N개를 받아 `autoresearch.model_evaluation.seed_sweep`의
 `summarize_metric`/`compare_to_baseline`으로 유의성 근거를 낸다 — 판정 로직을 여기서
 다시 구현하지 않고 정본을 그대로 쓴다.
 
@@ -26,7 +26,7 @@ import sys
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.pipeline.seed_sweep import compare_to_baseline, summarize_metric  # noqa: E402
+from autoresearch.model_evaluation.seed_sweep import compare_to_baseline, summarize_metric  # noqa: E402
 
 
 def _load(path: str) -> tuple[str, list[int], list[float]]:

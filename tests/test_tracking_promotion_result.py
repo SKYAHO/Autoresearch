@@ -6,8 +6,8 @@ import math
 import pytest
 from pydantic import ValidationError
 
-from src.tracking import promotion_result
-from src.tracking.promotion_result import (
+from autoresearch.model_registry import promotion_result
+from autoresearch.model_registry.promotion_result import (
     ModelPromotionResult,
     PromotionOutcome,
     PromotionReasonCode,

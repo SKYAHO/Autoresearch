@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.models.base import CTRModel
+from autoresearch.model_training.base import CTRModel
 
 
 def _tiny_dataset() -> tuple[pd.DataFrame, pd.Series]:
@@ -67,11 +67,11 @@ def test_lgbm_model_save_load_round_trip_matches_serving_contract(tmp_path) -> N
     import joblib
     import lightgbm as lgb
 
-    from src.models.lgbm_model import LGBMModel
+    from autoresearch.model_training.lgbm_model import LGBMModel
 
     X, y = _tiny_dataset()
     # LightGBM 4.x는 categorical_feature로 지정한 컬럼이 pandas "category" dtype이어야
-    # 한다(object dtype은 ValueError) — 프로덕션 경로(src/pipeline/train.py의
+    # 한다(object dtype은 ValueError) — 프로덕션 경로(autoresearch/model_training/train.py의
     # collect_categorical_categories)와 동일한 캐스팅을 테스트 픽스처에도 적용한다.
     X = X.assign(cat_feature=X["cat_feature"].astype("category"))
     model = LGBMModel(scale_pos_weight=1.0, n_estimators=5, num_leaves=3, random_state=42)
@@ -89,7 +89,7 @@ def test_lgbm_model_save_load_round_trip_matches_serving_contract(tmp_path) -> N
 
 
 def test_lgbm_model_load_classmethod_round_trip(tmp_path) -> None:
-    from src.models.lgbm_model import LGBMModel
+    from autoresearch.model_training.lgbm_model import LGBMModel
 
     X, y = _tiny_dataset()
     X = X.assign(cat_feature=X["cat_feature"].astype("category"))
@@ -108,7 +108,7 @@ def test_lgbm_model_load_classmethod_round_trip(tmp_path) -> None:
 
 
 def test_lgbm_model_save_before_fit_raises_value_error(tmp_path) -> None:
-    from src.models.lgbm_model import LGBMModel
+    from autoresearch.model_training.lgbm_model import LGBMModel
 
     model = LGBMModel(scale_pos_weight=1.0)
     with pytest.raises(ValueError):

@@ -13,7 +13,7 @@ feast_offline_feature_build DAG와 분리해, persona 재생성 시점에만 수
      - persona 관심 키워드를 Vertex AI(text-multilingual-embedding-002,
        RETRIEVAL_QUERY)로 임베딩한 (user_id, topic, vector) 행별 테이블.
   3. autoresearch_dev_analytics.category_embedding      (중간 산출물)
-     - src/features/category_reference.py의 15개 카테고리 설명문을
+     - autoresearch/feature_engineering/category_reference.py의 15개 카테고리 설명문을
        RETRIEVAL_DOCUMENT로 임베딩한 참조 테이블.
   4. feast_offline_store.user_category_similarity
      - 위 두 임베딩 테이블의 cosine 유사도. 전체 유저 × 15 카테고리 grid에
@@ -53,9 +53,9 @@ except ImportError:  # pragma: no cover - 실행 환경 안내
     print("python-dotenv 가 필요합니다: uv sync")
     sys.exit(1)
 
-# src.features.embeddings의 단일 출처 상수를 그대로 쓴다.
+# autoresearch.feature_engineering.embeddings의 단일 출처 상수를 그대로 쓴다.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.features.embeddings import EMBEDDING_DIM, EMBEDDING_MODEL  # noqa: E402
+from autoresearch.feature_engineering.embeddings import EMBEDDING_DIM, EMBEDDING_MODEL  # noqa: E402
 
 DEFAULT_FEATURE_DATASET = "feast_offline_store"
 DEFAULT_EMBEDDING_DATASET = "autoresearch_dev_analytics"
@@ -443,7 +443,7 @@ def _embed(
     from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
     from tenacity import RetryError
 
-    from src.features.embeddings import embed_texts
+    from autoresearch.feature_engineering.embeddings import embed_texts
 
     cache = _load_embedding_cache(cache_path)
     pending = [text for text in texts if text not in cache]
@@ -525,7 +525,7 @@ def build_user_topic_embedding(client, settings: Settings) -> None:
 def build_category_embedding(client, settings: Settings) -> None:
     from google.cloud import bigquery
 
-    from src.features.category_reference import CATEGORY_DESCRIPTIONS
+    from autoresearch.feature_engineering.category_reference import CATEGORY_DESCRIPTIONS
 
     print("[category_embedding] 15개 카테고리 설명문 임베딩")
     names = list(CATEGORY_DESCRIPTIONS.keys())

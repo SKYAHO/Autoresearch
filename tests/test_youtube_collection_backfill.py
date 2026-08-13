@@ -3,7 +3,7 @@ from datetime import UTC, date, datetime
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from autoresearch.youtube_collection.backfill import backfill_from_parquet
+from autoresearch.data_collection.backfill import backfill_from_parquet
 
 
 def _raw_row(video_id: str, trending_date: date, country: str) -> dict:

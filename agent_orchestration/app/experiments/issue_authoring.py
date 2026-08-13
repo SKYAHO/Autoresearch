@@ -12,11 +12,11 @@ heading 본문을 만든다. 선언된 항목만 내보내므로 heading은 `연
 
 [비책임]
 `tools/auto_research_issue_branch.py`의 파싱 계약과
-`src/pipeline/experiment_evaluation.py`의 판정 정책은 이 모듈이 소유하지 않는다.
+`autoresearch/model_evaluation/experiment_evaluation.py`의 판정 정책은 이 모듈이 소유하지 않는다.
 
 실행 설정과 허용 범위는 #570에서 본문에서 뺐다. 매 이슈 같은 값을 텍스트로 복사하던
 것이라, 사본이 코드와 어긋날 위험만 남고 얻는 것이 없었다. 시드처럼 강제가 필요한
-값은 이미 `src/pipeline/paired_experiment.py`가 실행 결과를 검사한다.
+값은 이미 `autoresearch/model_evaluation/paired_experiment.py`가 실행 결과를 검사한다.
 
 지표·guardrail 값을 LLM이 창작하던 경로는 #536에서 제거했다. 예측 모델링 사전등록
 표준(arXiv 2311.18807)에서 성공 기준을 실험 전에 연구자가 선언하는 것이 제도의
@@ -36,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 # 실행 설정(시드·split·비율·비교 대상·스냅샷 재사용·데이터셋·학습 설정 참조)은 #570에서
 # 본문에서 뺐다. 매 이슈 같은 값을 텍스트로 복사하던 것이고, 실제 강제는 코드가 한다 —
-# 예를 들어 시드는 `src/pipeline/paired_experiment.py`가 실행 결과를 검사한다. 사본이
+# 예를 들어 시드는 `autoresearch/model_evaluation/paired_experiment.py`가 실행 결과를 검사한다. 사본이
 # 코드와 어긋날 수 있는 위험만 남고 얻는 것이 없었다.
 _METRIC_DIRECTIONS = ("higher_is_better", "lower_is_better")
 _NOT_APPLICABLE = "not_applicable"

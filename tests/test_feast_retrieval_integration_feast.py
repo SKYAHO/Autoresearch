@@ -41,12 +41,12 @@ from feature_repo.feature_definitions import (
     video_entity,
     video_feature_view,
 )
-from src.features.feast_retrieval import (
+from autoresearch.feature_engineering.feast_retrieval import (
     build_pool_feature_frame_feast,
     retrieve_training_features,
 )
-from src.features.feature_builder import compute_category_matches
-from src.features.model_contract import MODEL_FEATURE_COLUMNS
+from autoresearch.feature_engineering.feature_builder import compute_category_matches
+from autoresearch.feature_engineering.model_contract import MODEL_FEATURE_COLUMNS
 
 _UTC = "UTC"
 _TS = pd.Timestamp("2026-07-01", tz=_UTC)

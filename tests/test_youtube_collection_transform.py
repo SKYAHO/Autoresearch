@@ -3,8 +3,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from autoresearch.youtube_collection.schema import TrendingVideo
-from autoresearch.youtube_collection.transform import (
+from autoresearch.data_collection.schema import TrendingVideo
+from autoresearch.data_collection.transform import (
     normalize_api_item,
     normalize_kaggle_row,
 )
@@ -308,7 +308,7 @@ def test_normalize_kaggle_row_raises_for_missing_required_datetime():
 
 
 def test_coerce_raises_on_unsupported_annotation():
-    from autoresearch.youtube_collection.transform import _coerce
+    from autoresearch.data_collection.transform import _coerce
 
     with pytest.raises(TypeError):
         _coerce("1.0", float)
@@ -318,7 +318,7 @@ def test_to_datetime_attaches_utc_to_naive_input():
     # Kaggle "2024.10.12" 는 naive 로 파싱되지만, 백필/일일 tz 일관을 위해 UTC-aware 로 통일.
     from datetime import timedelta
 
-    from autoresearch.youtube_collection.transform import _to_datetime
+    from autoresearch.data_collection.transform import _to_datetime
 
     result = _to_datetime("2024.10.12")
     assert result is not None

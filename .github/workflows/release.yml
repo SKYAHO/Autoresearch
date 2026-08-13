@@ -212,7 +212,7 @@ jobs:
             autoresearch.jobs.action_log \
             autoresearch.jobs.action_log_quality \
             autoresearch.jobs.feature_store_build \
-            src.pipeline.daily_recommendations
+            autoresearch.recommendation.daily_recommendations
           do
             run_batch python -m "$module" --help >/dev/null
             version_json="$(run_batch python -m "$module" --version | tail -1)"

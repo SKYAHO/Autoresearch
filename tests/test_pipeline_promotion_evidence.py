@@ -10,11 +10,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from src.pipeline.promotion_evidence import (
+from autoresearch.model_evaluation.promotion_evidence import (
     _canonical_json_bytes,
     _sha256,
 )
-from src.pipeline.promotion_evidence import (
+from autoresearch.model_evaluation.promotion_evidence import (
     SUPPORTED_HELD_OUT_METRIC_NAMES,
     HeldOutMetricEvidence,
     PromotionEvidenceStore,
