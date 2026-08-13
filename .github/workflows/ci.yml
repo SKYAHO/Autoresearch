@@ -134,17 +134,17 @@ jobs:
         run: >-
           uv run --no-sync python -m pytest
           tests/test_redis_iam.py
-          tests/test_feast_materialize.py
-          tests/test_serving_feast_reader.py
-          tests/test_serving_feast_reader_feast.py
+          tests/jobs/test_feast_materialize.py
+          tests/applications/reranking_api/test_serving_feast_reader.py
+          tests/applications/reranking_api/test_serving_feast_reader_feast.py
           tests/test_offline_retrieval_smoke_feast.py
-          tests/test_odfv_category_match_feast.py
+          tests/feature_engineering/test_odfv_category_match_feast.py
           tests/test_odfv_registry_portability_feast.py
-          tests/test_verify_registry_portability_feast.py
-          tests/test_feast_retrieval_integration_feast.py
-          tests/test_build_training_dataset_env_check_feast.py
-          tests/test_serving_api.py
-          tests/test_serving_deployment.py
+          tests/feature_engineering/test_verify_registry_portability_feast.py
+          tests/feature_engineering/test_feast_retrieval_integration_feast.py
+          tests/model_training/test_build_training_dataset_env_check_feast.py
+          tests/applications/reranking_api/test_serving_api.py
+          tests/applications/reranking_api/test_serving_deployment.py
           -v
 
   pytest-postgres:
@@ -186,7 +186,7 @@ jobs:
         run: uv run --no-sync alembic -c applications/experiment_platform/alembic.ini upgrade head
 
       - name: Run PostgreSQL concurrency contract tests
-        run: uv run --no-sync python -m pytest tests/test_experiment_postgres.py -v
+        run: uv run --no-sync python -m pytest tests/applications/experiment_platform/test_experiment_postgres.py -v
 
   uv-lock-check:
     name: uv lock & proxy export drift

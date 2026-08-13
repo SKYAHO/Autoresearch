@@ -14,8 +14,10 @@ placeholder와 아이디어는 같지만, 이제는 프로덕션 코드가 아�
 테스트는 이 위에 자체 monkeypatch를 다시 씌운다.
 
 Vertex AI SDK 호출 자체의 정확한 형태(task_type/output_dimensionality/청킹)를
-검증하는 테스트는 tests/test_embeddings.py에서 이 fixture 위에 자체 monkeypatch를
+검증하는 테스트는 tests/feature_engineering/test_embeddings.py에서 이 fixture 위에 자체 monkeypatch를
 추가로 씌운다(같은 monkeypatch 인스턴스에 다시 setitem하면 나중 설정이 이긴다).
+
+`load_dotenv`도 전역으로 막는다 — 상세는 `block_local_dotenv` 참조.
 """
 
 import hashlib
@@ -97,3 +99,34 @@ def mock_vertex_embeddings(monkeypatch):
 
     monkeypatch.setattr(embeddings_module, "_model", None)
     monkeypatch.setattr(category_reference_module, "_CATEGORY_EMBEDDINGS", {})
+
+
+@pytest.fixture(autouse=True)
+def block_local_dotenv(monkeypatch):
+    """테스트가 개발자의 로컬 `.env`를 프로세스 환경에 싣지 못하게 막는다.
+
+    `scripts/` 아래 10개 모듈이 `main()`에서 `load_dotenv()`를 부른다. 이것은 monkeypatch가
+    아니라 **프로세스 환경을 직접** 바꾸므로, 그런 `main()`을 호출하는 테스트 하나가
+    `.env`의 값을 세션 끝까지 남긴다. 그러면 **관계없는 다른 테스트**가 그 환경을 보고
+    다르게 동작한다.
+
+    실제로 그랬다 — #754에서 테스트 배치를 바꾸며 실행 순서가 달라지자
+    `tests/jobs/test_feast_materialize.py` 3건이 깨졌다. 원인은 그 파일이 아니라
+    `.env`의 `AUTORESEARCH_ENV=dev`를 실어 온 다른 모듈이었고, 증상은 "알 수 없는 이유로
+    세 건이 깨진다"는 형태였다.
+
+    CI에는 `.env`가 없어 이 결함이 드러나지 않는다. **로컬에서만 나고, 원인이 호출한
+    테스트가 아니라 뒤에 오는 테스트에서 보이는** 종류다. 그래서 모듈마다 개별
+    monkeypatch를 거는 대신 여기서 한 번 막는다 — 새로 추가되는 테스트도 자동으로
+    보호된다.
+
+    `.env` 로딩 자체를 검증하려는 테스트는 이 위에 자체 monkeypatch를 다시 씌운다.
+    """
+    import dotenv
+
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+    for module in list(sys.modules.values()):
+        if getattr(module, "__name__", "").startswith("scripts") and hasattr(
+            module, "load_dotenv"
+        ):
+            monkeypatch.setattr(module, "load_dotenv", lambda *args, **kwargs: False)
