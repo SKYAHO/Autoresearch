@@ -130,9 +130,48 @@ uv run python -m pytest tests/test_release_workflow.py -q
 
 ---
 
-### Task 1: `src/` → `autoresearch/` 이동
+### Task 1: `src/` → `autoresearch/` 이동 — 완료 (커밋 `a524cf0`·`a05b421`)
 
 가장 큰 Task다. 이동 커밋과 치환 커밋을 분리한다.
+
+**계획과 달랐던 것.** 아래 다섯 가지는 이 계획서가 예상하지 못했고, 전부 Task 1 시점에
+이미 깨지는 것이라 뒤 Task로 미룰 수 없었다.
+
+| 발견 | 왜 미룰 수 없나 |
+| --- | --- |
+| `train.py:315`·`evaluate.py:277`의 `get_project_root()`가 최상위 `src` 디렉터리 존재 여부를 **센티널**로 쓴다 | Task 2에서 `src/`가 사라지면 `RuntimeError("프로젝트 루트를 찾을 수 없습니다")`. 센티널을 `autoresearch`로 바꿨다 |
+| `ci.yml`의 `train` 이미지 paths 필터에 `autoresearch/**`가 없다 | 학습 코드가 옮겨간 순간부터 train 이미지 빌드가 **조용히 스킵**된다. 5-2절이 경고한 바로 그 실패 방식이다 |
+| `ci.yml`·`release.yml`의 실행 명령과 이슈 템플릿 `build-features` 안내 | Task 4로 미루면 그 사이 CI와 새 실험이 없는 모듈을 부른다 |
+| `feature_repo/feature_definitions.py:35`의 ODFV 헬퍼 import | 아래 별항 |
+| `scripts/verify_registry_portability.py:59`의 `ALLOWED_FIRST_PARTY`와 테스트 2개의 `_PROJECT_TOP_LEVEL` | 레지스트리 이식성 게이트가 `src/` 밑만 1st-party로 인정한다. 안 고치면 apply 후 검증이 새 경로를 외부 참조로 오판한다 |
+
+**Feast 레지스트리 — 이 계획서의 가장 큰 사각지대였다.**
+
+`feature_repo/feature_definitions.py`는 `feature_repo/` 이동 제외 대상이라 안전하다고
+넘겼으나, 그 파일이 `src.features.feature_builder`를 import한다. 배포된 레지스트리의
+ODFV UDF는 그 이름을 **dill by-reference**로 물고 있다.
+
+문제는 import 줄만 고쳐서는 레지스트리가 따라오지 않는다는 것이다. feast의 변경 감지는
+`PandasTransformation.__eq__ = (udf_string, 바이트코드)` 둘뿐이라 헬퍼의 소속 모듈만 바뀐
+변경을 못 본다 — `feast apply`가 "변경 없음"으로 판정해 옛 dill body를 그대로 둔다. 그
+상태로 `src/`가 사라지면 학습·서빙이 레지스트리를 읽는 순간 `ModuleNotFoundError`로
+죽는다. 이 함정은 **파일 자신이 216-225행 주석으로 문서화하고 있었다**(#409가 같은 것을
+겪었다).
+
+그래서 UDF 함수 본문 주석까지 고쳐 `udf_string`을 바꿨다 — #409가 쓴 것과 같은 수단이다.
+
+**남는 배포 순서 위험(별도 조치 필요).** apply 후 레지스트리는 새 이름을 참조하므로,
+재배치 **이전** 이미지로 도는 파드는 그때부터 레지스트리를 읽지 못한다. `feast apply`와
+이미지 롤아웃 순서를 맞춰야 한다. Task 6(인접 저장소) 시점에 함께 확인한다.
+
+**Step 15-1(`src/` 재생성 방지 가드)은 Task 2로 옮겼다.** Task 1 종료 시점에도
+`src/serving/`이 남아 있어 `[ -d src ]` 가드가 즉시 실패한다.
+
+**기준선.** `2833 tests collected`, `2814 passed / 2 failed / 25 skipped`. 실패 2건은
+`test_spawn_failure_logs_why_the_process_could_not_start`(measurement·training)로, WSL2에서
+없는 명령이 `FileNotFoundError` 대신 `PermissionError`를 내는 로컬 환경 특성이다 — CI는
+통과한다. Task 1 종료 시점 `2815 passed / 2 failed / 25 skipped`(계약 테스트 parametrize로
++1). Docker는 이 개발 환경에서 사용 불가라 이미지 빌드는 CI에 맡겼다.
 
 **Files:**
 - Move: `src/` 전체 50개 → `autoresearch/` 아래 (단 `src/serving/`은 Task 2에서 처리하므로 **여기서는 건드리지 않는다**)
@@ -156,7 +195,7 @@ autoresearch.data_collection.{backfill,client,fetch,load,schema,transform}
 autoresearch.action_log_generation.{calibration,candidate,daily,llm_generator,observability,pipeline,schema,video_source}
 ```
 
-- [ ] **Step 1: 기준선 기록**
+- [x] **Step 1: 기준선 기록**
 
 치환 후 비교할 값을 먼저 남긴다.
 
@@ -167,7 +206,7 @@ uv run python -m pytest -q 2>&1 | tail -3 | tee /tmp/baseline-result.txt
 
 기대: 전부 통과. 실패가 있으면 **여기서 멈춘다** — 재배치 전에 이미 깨진 것이므로 원인을 먼저 분리한다.
 
-- [ ] **Step 2: 새 패키지 디렉토리와 `__init__.py` 생성**
+- [x] **Step 2: 새 패키지 디렉토리와 `__init__.py` 생성**
 
 ```bash
 cd /home/yjlee/Autoresearch
@@ -180,7 +219,7 @@ mkdir -p autoresearch/model_evaluation/experiments
 
 `src/models/__init__.py`와 `src/utils/__init__.py`는 **둘 다 빈 파일**이므로 옮기지 않고 지운다(Step 3). 여기서 만든 빈 `__init__.py`가 그 자리를 대신한다. 반면 `src/tracking/__init__.py`는 14줄짜리 re-export가 있으므로 디렉토리째 옮겨 내용을 보존한다.
 
-- [ ] **Step 3: `git mv`로 파일 이동**
+- [x] **Step 3: `git mv`로 파일 이동**
 
 ```bash
 cd /home/yjlee/Autoresearch
@@ -241,7 +280,7 @@ git mv autoresearch/action_logs        autoresearch/action_log_generation
 ls src/     # serving  (그리고 __pycache__)
 ```
 
-- [ ] **Step 4: 이동만 커밋 (rename 감지 확보)**
+- [x] **Step 4: 이동만 커밋 (rename 감지 확보)**
 
 이 시점에는 테스트가 **깨져 있는 것이 정상**이다. 임포트가 아직 옛 경로를 가리킨다.
 
@@ -262,7 +301,7 @@ EOF
 )"
 ```
 
-- [ ] **Step 5: 갈라지는 임포트 1곳을 손으로 고친다**
+- [x] **Step 5: 갈라지는 임포트 1곳을 손으로 고친다**
 
 `autoresearch/cli.py:47`의 다중행 임포트는 6개 모듈이 2개 패키지로 갈라지므로 스크립트로 처리할 수 없다. 아래로 교체한다.
 
@@ -294,7 +333,7 @@ from autoresearch.model_evaluation import (  # noqa: E402
 )
 ```
 
-- [ ] **Step 6: 나머지 임포트를 스크립트로 치환**
+- [x] **Step 6: 나머지 임포트를 스크립트로 치환**
 
 아래를 스크래치패드에 저장해 실행한다. **커밋하지 않는 일회성 도구다.**
 
@@ -400,7 +439,7 @@ uv run python /tmp/rewrite_imports.py
 
 스크립트가 "수동 처리 필요"로 멈추면 그 줄을 손으로 고치고 다시 실행한다. Step 5를 먼저 했다면 멈추지 않아야 한다.
 
-- [ ] **Step 6-1: 실험 에이전트 executor의 슬래시 표기 경로를 고친다 (최우선)**
+- [x] **Step 6-1: 실험 에이전트 executor의 슬래시 표기 경로를 고친다 (최우선)**
 
 치환 스크립트는 점 표기만 다루므로 아래는 잡히지 않는다. **빠뜨리면 정책 게이트가 조용히 사라진다** — spec 6-3-1절.
 
@@ -506,7 +545,7 @@ scope **없이 거부되는** 음성 케이스가 있는지 확인하고, 없으
 uv run python -m pytest tests/test_experiment_candidate_verifier.py -v 2>&1 | tail -5
 ```
 
-- [ ] **Step 7: 잔여 참조 확인 — 점 표기와 슬래시 표기 둘 다**
+- [x] **Step 7: 잔여 참조 확인 — 점 표기와 슬래시 표기 둘 다**
 
 ```bash
 # 점 표기 (임포트)
@@ -519,7 +558,7 @@ grep -rn '"src/\|'"'"'src/\|src/pipeline\|src/features\|src/models\|src/tracking
 
 기대: `src/serving/` 관련 참조만 남는다 (Task 2에서 처리). 그 외 0건.
 
-- [ ] **Step 8: 하드코딩 config 경로 수정**
+- [x] **Step 8: 하드코딩 config 경로 수정**
 
 `autoresearch/model_training/train.py:590`, `autoresearch/model_evaluation/evaluate.py:311`:
 
@@ -547,7 +586,7 @@ grep -rn '"src"\|src/pipeline/config.yaml' --include=*.py autoresearch
 
 기대: 0건.
 
-- [ ] **Step 9: docstring 경로 참조 수정**
+- [x] **Step 9: docstring 경로 참조 수정**
 
 이동한 모듈의 최상단 docstring이 옛 경로를 서술한다. CLAUDE.md 규칙상 기능을 옮기는 같은 커밋에서 갱신한다.
 
@@ -559,7 +598,7 @@ grep -rn "src/pipeline\|src/features\|src/models\|src/tracking\|src/utils\|src\.
 
 CLAUDE.md 규칙상 모듈 docstring은 "전체 파이프라인 기준으로 어느 구간을 담당하는지"를 서술한다. `[비책임]` 절이 옛 경로로 인접 모듈을 가리키는 곳도 함께 고친다. 예: `autoresearch/loadtest/__init__.py`의 *"HTTP 리랭킹 요청은 src/serving/이 담당한다"* → Task 2에서 `applications/reranking_api/`로 갱신.
 
-- [ ] **Step 9-1: 순환 회피 지연 import에 주석을 남긴다**
+- [x] **Step 9-1: 순환 회피 지연 import에 주석을 남긴다**
 
 spec 7절의 남는 부채다. `autoresearch/jobs/action_log.py`의 함수 내부 지연 import 4곳(209, 233, 239, 265행)에 아래 취지의 주석을 각 블록 위에 붙인다.
 
@@ -570,7 +609,7 @@ spec 7절의 남는 부채다. `autoresearch/jobs/action_log.py`의 함수 내�
 
 주석만 추가하고 **import 위치를 바꾸지 않는다.**
 
-- [ ] **Step 10: `examples/` 갱신**
+- [x] **Step 10: `examples/` 갱신**
 
 ```bash
 grep -rn "src\." examples
@@ -581,7 +620,7 @@ grep -rn "src\." examples
 - `examples/ctr_pipeline_scaffold/sync_mock_data_to_pipeline.py:108` → `python -m autoresearch.cli build-features`
 - `examples/ctr_pipeline_scaffold/README.md:99,123` → `autoresearch.feature_engineering.feature_builder`
 
-- [ ] **Step 11: `Dockerfile.train` CMD 갱신**
+- [x] **Step 11: `Dockerfile.train` CMD 갱신**
 
 ```dockerfile
 # 기존 (54행)
@@ -590,7 +629,7 @@ CMD ["python", "-m", "src.cli", "--help"]
 CMD ["python", "-m", "autoresearch.cli", "--help"]
 ```
 
-- [ ] **Step 12: 테스트 실행**
+- [x] **Step 12: 테스트 실행**
 
 ```bash
 uv run python -m pytest -q 2>&1 | tail -5
@@ -598,13 +637,13 @@ uv run python -m pytest -q 2>&1 | tail -5
 
 기대: Step 1의 `/tmp/baseline-result.txt`와 **동일한 통과 수**. `src/serving/` 관련 테스트가 아직 옛 경로를 쓰므로 통과해야 한다 (Task 1에서 serving을 안 건드렸으므로).
 
-- [ ] **Step 13: lint**
+- [x] **Step 13: lint**
 
 ```bash
 uv run --no-sync ruff check autoresearch src tests tools scripts
 ```
 
-- [ ] **Step 14: CLI 동작 확인**
+- [x] **Step 14: CLI 동작 확인**
 
 ```bash
 uv run python -m autoresearch.cli --help
@@ -635,7 +674,7 @@ exp 브랜치가 봉인된 옛 SHA에서 갈라져 나오므로, 그 브랜치�
 [ -d src ] && echo "실패: src/ 가 아직 있다" || echo "통과"
 ```
 
-- [ ] **Step 15: 커밋**
+- [x] **Step 15: 커밋**
 
 ```bash
 git add -A
@@ -1275,11 +1314,35 @@ grep -rn "deploy/\|Dockerfile\.\|src/\*\*\|src\.cli\|src\.pipeline\|src\.serving
 
 `feature_repo` 관련 경로(`feast-apply.yml`의 path 필터, `ci.yml:391`의 `load_feature_store('/app/feature_repo')`)는 **건드리지 않는다.**
 
-- [ ] **Step 3: 이슈 템플릿 갱신**
+- [x] **Step 3: 이슈 템플릿의 `build-features` 안내** — Task 1에서 처리했다
 
-`.github/ISSUE_TEMPLATE/auto_research.yml:212`의 `python -m src.cli build-features` → `python -m autoresearch.cli build-features`.
+`.github/ISSUE_TEMPLATE/auto_research.yml:212`의 `python -m src.cli build-features` → `python -m autoresearch.cli build-features`. Task 4까지 미루면 그 사이 발행된 실험이 없는 모듈을 부른다.
 
 이 문구는 실험 에이전트가 읽는 가설 템플릿이다. 갱신 직후부터 새 실험이 새 경로를 쓴다.
+
+- [ ] **Step 3-1: scope 라벨 문자열은 별도 판단이 필요하다 (Task 1에서 손대지 않음)**
+
+같은 파일 254행의 라벨
+
+```
+- label: prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다
+```
+
+은 단순 안내문이 아니라 **정확 일치 계약**이다. `tools/auto_research_issue_branch.py:79`의
+`_SCOPE_LABELS`가 이 문자열을 키로 써서 `prod_model_contract` scope로 매핑한다.
+
+그래서 셋 중 하나만 고치면 조용히 깨진다.
+
+| 고치는 것 | 안 고치면 |
+| --- | --- |
+| 템플릿 라벨만 | 새 이슈의 체크박스가 매핑되지 않아 scope가 **조용히 사라진다** |
+| `_SCOPE_LABELS` 키만 | **이미 열려 있는** 실험 이슈의 라벨이 매핑되지 않는다 |
+| 둘 다 동시에 | 열린 이슈들이 옛 문자열을 본문에 봉인한 채로 남아 같은 증상 |
+
+따라서 `_SCOPE_LABELS`가 **두 문자열을 모두 받아야** 한다 — verifier의 `src/` 허용과 같은
+전환 기간 조치다. 옛 문자열을 언제 뺄지는 열린 실험 이슈가 모두 종료된 뒤로 미룬다.
+관련 테스트 3곳(`test_auto_research_issue_branch.py:46,650`,
+`test_experiment_codex_worker.py:61`)도 두 경우를 함께 검증하도록 고친다.
 
 - [ ] **Step 4: `pyproject.toml` 주석 갱신**
 
@@ -1507,8 +1570,8 @@ Task마다 별도 PR을 올린다. `main` 기준, `Closes #754`는 마지막 PR�
 
 | PR | Task | 성격 | 상태 |
 | --- | --- | --- | --- |
-| [#755](https://github.com/SKYAHO/Autoresearch/pull/755) | spec·plan + Task 0 | 설계 확정 + 잔재 정리 | 리뷰 반영 중 |
-| 2 | Task 1 | 최대 diff — 이동/치환 2커밋 + executor 슬래시 경로 | 대기 |
+| [#755](https://github.com/SKYAHO/Autoresearch/pull/755) | spec·plan + Task 0 | 설계 확정 + 잔재 정리 | 리뷰 반영 완료 |
+| 2 | Task 1 | 최대 diff — 이동/치환 2커밋 + executor 슬래시 경로 + feast 레지스트리 | 구현 완료 |
 | 3 | Task 2 | applications 층 + `lint.yml` + 테스트 8개 | 대기 |
 | 4 | Task 3 | 테스트 재배치 | 대기 |
 | 5 | Task 4 | 배포·CI paths 필터 | 대기 |
