@@ -330,17 +330,39 @@ if path.startswith(_BASE_ALLOWED_PREFIXES):                # ("autoresearch/", "
 저장소에 그 경로가 없어져도 테스트는 계속 통과합니다. **테스트가 초록인 채로
 게이트만 죽습니다.**
 
-따라서 단계 1에서 다음을 **같은 커밋에** 반영합니다.
+따라서 단계 1에서 게이트를 **두 경로 모두**에 걸도록 고칩니다.
 
 ```python
-if path == "autoresearch/feature_engineering/model_contract.py":
-    return "prod_model_contract" in policy.allowed_scope
-if path.startswith(_BASE_ALLOWED_PREFIXES):
-    return True
+_MODEL_CONTRACT_PATHS: Final = frozenset({
+    "src/features/model_contract.py",                       # 봉인된 옛 트리
+    "autoresearch/feature_engineering/model_contract.py",   # 재배치 후
+})
 ```
 
-`if path.startswith("src/"): return True`는 삭제하고, 테스트도 새 경로로 고쳐
-게이트가 살아 있음을 다시 고정합니다.
+### 6-3-3. executor 이미지와 봉인된 트리의 버전 어긋남
+
+`src/` 접두사 허용을 **바로 지우면 안 됩니다.**
+
+`_validate_path_files`(`verifier.py:464-470`)는 워크스페이스의 diff 경로를
+검사합니다. 그런데 워크스페이스는 DB에 봉인된 `base_dev_sha`에서 만든 `exp/*`
+브랜치이고, executor는 릴리스된 이미지 digest로 돕니다. **둘의 버전이 다를 수
+있습니다.**
+
+재배치 후 빌드된 executor 이미지가 재배치 **전** 봉인 SHA 실험을 검증하면:
+
+```
+워크스페이스 트리: src/pipeline/train.py 를 수정
+새 verifier:      src/ 접두사 허용 없음
+결과:             CandidateVerificationError("forbidden_path") → candidate 거부
+```
+
+9-1절에서 "실험 발행을 중단할 필요가 없다"고 결론지었는데, 그 실측은 **git
+머지 동작**만 다뤘고 이 verifier allowlist 차원을 보지 못했습니다. 다만 결론이
+뒤집히지는 않습니다 — 전환 기간 동안 `src/` 허용을 남기면 해소되기 때문입니다.
+
+**전환 기간 종료 조건:** 진행 중 실험이 모두 종료·머지되어 봉인 SHA가 전부
+재배치 이후가 되면, `src/` 허용 줄과 `_MODEL_CONTRACT_PATHS`의 옛 경로를
+제거합니다. 별도 이슈로 남깁니다.
 
 ### 6-3-2. 경로를 문자열로 단언하는 테스트
 

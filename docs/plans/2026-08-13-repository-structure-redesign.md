@@ -415,14 +415,41 @@ uv run python /tmp/rewrite_imports.py
     if path.startswith(_BASE_ALLOWED_PREFIXES):
         return True
 
-# 교체
-    if path == "autoresearch/feature_engineering/model_contract.py":
+# 교체 — 전환 기간 동안 두 경로를 모두 게이트한다
+    if path in _MODEL_CONTRACT_PATHS:
         return "prod_model_contract" in policy.allowed_scope
+    if path.startswith("src/"):
+        # 전환 기간 허용. 봉인된 옛 base_dev_sha 트리에서 만들어진 실험은
+        # 워크스페이스에 여전히 src/ 를 가진다. 아래 "전환 기간" 절 참조.
+        return True
     if path.startswith(_BASE_ALLOWED_PREFIXES):
         return True
 ```
 
-정확 매칭이 `_BASE_ALLOWED_PREFIXES`(`"autoresearch/"` 포함) 검사보다 **위에** 있어야 한다. 순서가 바뀌면 게이트가 무력해진다.
+```python
+_MODEL_CONTRACT_PATHS: Final = frozenset({
+    "src/features/model_contract.py",                          # 봉인된 옛 트리
+    "autoresearch/feature_engineering/model_contract.py",      # 재배치 후
+})
+```
+
+정확 매칭이 `src/`·`_BASE_ALLOWED_PREFIXES` 접두사 검사보다 **위에** 있어야 한다. 순서가 바뀌면 게이트가 무력해진다.
+
+**왜 `src/` 허용을 남기는가 — executor 이미지와 봉인된 트리의 버전 어긋남**
+
+`_validate_path_files`는 워크스페이스의 diff 경로를 `_path_is_allowed`에 넣는다(`verifier.py:464-470`). 그런데 워크스페이스는 DB에 봉인된 `base_dev_sha`에서 만든 `exp/*` 브랜치이고, executor 이미지는 릴리스된 digest다. **둘의 버전이 다를 수 있다.**
+
+재배치 후 빌드된 executor 이미지가 재배치 **전** 봉인 SHA 실험을 검증하면:
+
+```
+워크스페이스 트리: src/pipeline/train.py 를 수정
+새 verifier:      src/ 접두사 허용이 없음
+결과:             CandidateVerificationError("forbidden_path") → candidate 거부
+```
+
+`src/` 허용을 남기면 옛 트리 실험이 계속 통과하고, `_MODEL_CONTRACT_PATHS`가 두 경로를 모두 잡으므로 **어느 트리에서도 게이트가 살아 있다.**
+
+**전환 기간 종료 조건** — 봉인 SHA가 전부 재배치 이후인 실험만 남으면(즉 진행 중 실험이 모두 종료·머지된 뒤) `src/` 허용 줄과 `_MODEL_CONTRACT_PATHS`의 옛 경로를 제거한다. Task 1 Step 15-1의 `src/` 부활 방지 CI 가드는 저장소 트리를 보는 것이고 이쪽은 워크스페이스를 보는 것이라, 둘은 서로 다른 층이다. 정리 작업은 별도 이슈로 남긴다.
 
 **(b) 블로킹 ruff 인자 — `verifier.py:582`**
 
@@ -471,7 +498,9 @@ _FEATURE_DEFINITION_PATHS: Final = (
     )
 ```
 
-scope 없이 거부되는 음성 케이스가 있는지 확인하고, 없으면 추가한다 — 게이트의 존재 이유가 그쪽이다.
+**옛 경로 케이스를 지우지 말고 둘 다 남긴다.** 전환 기간 동안 봉인된 옛 트리 실험도 이 게이트를 통과해야 하므로, `src/features/model_contract.py`와 새 경로 양쪽에 대해 각각 검증한다. `pytest.mark.parametrize`로 묶는 것이 자연스럽다.
+
+scope **없이 거부되는** 음성 케이스가 있는지 확인하고, 없으면 두 경로 모두에 추가한다 — 게이트의 존재 이유가 그쪽이고, 이번 회귀가 조용했던 이유도 음성 케이스 부재다.
 
 ```bash
 uv run python -m pytest tests/test_experiment_candidate_verifier.py -v 2>&1 | tail -5
