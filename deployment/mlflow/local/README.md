@@ -122,7 +122,7 @@ GCS_KEY_FILE_HOST_PATH=./keys/service-account.json
 
 ### 2. GCS 서비스 계정 키 배치
 
-`deploy/mlflow/local/keys/service-account.json`에 서비스 계정 키를 저장합니다.
+`deployment/mlflow/local/keys/service-account.json`에 서비스 계정 키를 저장합니다.
 
 ```bash
 mkdir -p keys
@@ -131,7 +131,7 @@ mkdir -p keys
 
 ### 3. Compose 파일 검증 및 기동
 
-**반드시 `deploy/mlflow/local/` 디렉토리에서 실행하세요.** Override 파일의 상대 경로가 base compose 파일 기준으로 해석됩니다.
+**반드시 `deployment/mlflow/local/` 디렉토리에서 실행하세요.** Override 파일의 상대 경로가 base compose 파일 기준으로 해석됩니다.
 
 ```bash
 # 병합 결과 확인 (문법 검사)

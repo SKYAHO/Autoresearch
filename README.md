@@ -40,8 +40,8 @@ src/                 # CTR 학습·서빙 파이프라인
 ├── tracking/             # MLflow tracking·registry 연동
 └── utils/                # 모델 저장/로드 유틸리티
 proxy/               # Cloud Run dumb forwarder (YouTube API IP밴 대응)
-deploy/              # 배포 산출물 (mlflow/ Tracking Server, serving/ 추론 이미지,
-                     #             agent_orchestration/ 역할별 runtime 이미지,
+deployment/          # 배포 산출물 (mlflow/ Tracking Server, serving/ 추론 이미지,
+                     #             experiment_platform/ 역할별 runtime 이미지,
                      #             feast/ feast apply GKE Job 매니페스트, 롤백용)
 feature_repo/        # Feast 피처 스토어 정의 (BigQuery offline / Redis online)
 examples/            # CTR 파이프라인 예제 스캐폴드
@@ -55,16 +55,16 @@ docs/                # 문서 — docs/README.md 인덱스 참조
 
 | 이미지 | 용도 |
 |---|---|
-| `Dockerfile.app` | 공개 batch CLI 실행 (Airflow가 소비하는 canonical application image) |
-| `Dockerfile.train` | feast 불필요 학습 서브커맨드 — `promote-model`(alias 승격), `train-model`/`evaluate-model`/`sweep-seeds`(다중 시드 반복 학습·유의성 판정 근거, #407), `compare-paired-experiment`(baseline/candidate paired 비교·판정, #454), `measure-degradation`(단일 cutoff 기반 모델 열화 시점 측정, #471/#485). `train-model --dataset-uri`(게시된 학습 데이터셋 스냅샷 재사용, #530)는 GCS 다운로드만 필요해 이 이미지로 실행 가능하다. GCS code archive 부트스트랩, MLflow 연동 |
-| `Dockerfile.feast` | Feast apply/materialize + feast 필요 학습 조립 — `build-features`/`run-pipeline`이 offline PIT로 피처를 조립하므로(#359 C2) 이 이미지로 실행. `--snapshot-root`(또는 `TRAINING_SNAPSHOT_ROOT`)로 조립 결과를 GCS에 content-addressed 게시할 수 있다(#530, `docs/guides/training-dataset.md`) |
-| `deploy/serving/Dockerfile` | 리랭킹 서빙 API (GKE) |
-| `deploy/mlflow/Dockerfile` | MLflow Tracking Server |
-| `deploy/agent_orchestration/api.Dockerfile` | Agent Orchestration FastAPI·PostgreSQL 저장 API (GKE 내부) |
-| `deploy/agent_orchestration/runner.Dockerfile` | API 전용 Codex Runner (GKE 내부, OAuth PVC 분리) |
-| `deploy/agent_orchestration/ui.Dockerfile` | Streamlit Experiment Workbench (GKE 내부, API 토큰 서버 환경 주입) |
-| `deploy/agent_orchestration/launcher.Dockerfile` | 봉인 좌표를 선점해 branch-bootstrap Kubernetes Job을 생성하는 1회 launcher runtime (CronJob용) |
-| `deploy/agent_orchestration/executor.Dockerfile` | Phase 2 GitHub App token-minter, 봉인 issue/workspace, Codex, verifier, candidate finalizer를 같은 digest로 실행하는 executor runtime |
+| `deployment/Dockerfile.app` | 공개 batch CLI 실행 (Airflow가 소비하는 canonical application image) |
+| `deployment/Dockerfile.train` | feast 불필요 학습 서브커맨드 — `promote-model`(alias 승격), `train-model`/`evaluate-model`/`sweep-seeds`(다중 시드 반복 학습·유의성 판정 근거, #407), `compare-paired-experiment`(baseline/candidate paired 비교·판정, #454), `measure-degradation`(단일 cutoff 기반 모델 열화 시점 측정, #471/#485). `train-model --dataset-uri`(게시된 학습 데이터셋 스냅샷 재사용, #530)는 GCS 다운로드만 필요해 이 이미지로 실행 가능하다. GCS code archive 부트스트랩, MLflow 연동 |
+| `deployment/Dockerfile.feast` | Feast apply/materialize + feast 필요 학습 조립 — `build-features`/`run-pipeline`이 offline PIT로 피처를 조립하므로(#359 C2) 이 이미지로 실행. `--snapshot-root`(또는 `TRAINING_SNAPSHOT_ROOT`)로 조립 결과를 GCS에 content-addressed 게시할 수 있다(#530, `docs/guides/training-dataset.md`) |
+| `deployment/serving/Dockerfile` | 리랭킹 서빙 API (GKE) |
+| `deployment/mlflow/Dockerfile` | MLflow Tracking Server |
+| `deployment/experiment_platform/api.Dockerfile` | Agent Orchestration FastAPI·PostgreSQL 저장 API (GKE 내부) |
+| `deployment/experiment_platform/runner.Dockerfile` | API 전용 Codex Runner (GKE 내부, OAuth PVC 분리) |
+| `deployment/experiment_platform/workbench.Dockerfile` | Streamlit Experiment Workbench (GKE 내부, API 토큰 서버 환경 주입) |
+| `deployment/experiment_platform/launcher.Dockerfile` | 봉인 좌표를 선점해 branch-bootstrap Kubernetes Job을 생성하는 1회 launcher runtime (CronJob용) |
+| `deployment/experiment_platform/executor.Dockerfile` | Phase 2 GitHub App token-minter, 봉인 issue/workspace, Codex, verifier, candidate finalizer를 같은 digest로 실행하는 executor runtime |
 
 `release.yml`은 launcher와 executor를 각각
 `autoresearch-agent-orchestration-launcher`,

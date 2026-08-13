@@ -154,7 +154,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.app
+          file: deployment/Dockerfile.app
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -362,7 +362,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/serving/Dockerfile
+          file: deployment/serving/Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -534,7 +534,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/agent_orchestration/api.Dockerfile
+          file: deployment/experiment_platform/api.Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -704,7 +704,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/agent_orchestration/ui.Dockerfile
+          file: deployment/experiment_platform/workbench.Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -842,6 +842,10 @@ jobs:
           # 파일 집합과 **정확히 같아야 한다.** 그 스크립트의 TARGETS에 파일이 늘면
           # 여기도 같이 늘려야 하며, 어긋나면 이 가드가 정상 승격을 거부해 Agent
           # Orchestration 배포가 통째로 막힌다(#653).
+          #
+          # 아래 경로는 **Autoresearch-infra 트리 기준**이다(하이픈 표기에 주의 —
+          # 이 저장소의 deployment/experiment_platform/ 과 다른 대상이다). #754 의
+          # deploy/ → deployment/ 이동은 이 저장소에만 적용되므로 여기는 그대로 둔다.
           allowed_paths=(
             deploy/agent-orchestration/api-deployment.yaml
             deploy/agent-orchestration/api-migration-job.yaml
@@ -1044,7 +1048,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/agent_orchestration/runner.Dockerfile
+          file: deployment/experiment_platform/runner.Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -1217,7 +1221,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/agent_orchestration/launcher.Dockerfile
+          file: deployment/experiment_platform/launcher.Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -1389,7 +1393,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/agent_orchestration/executor.Dockerfile
+          file: deployment/experiment_platform/executor.Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -1504,6 +1508,7 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: airflow-repo
+          # Autoresearch-airflow 트리 기준 경로다 — 이 저장소의 #754 재배치와 무관하다.
           add-paths: deploy/airflow/values.yaml
           base: main
           branch: automation/batch-${{ steps.promotion-branch.outputs.short_sha }}
@@ -1672,7 +1677,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.train
+          file: deployment/Dockerfile.train
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -1870,7 +1875,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.feast
+          file: deployment/Dockerfile.feast
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -1991,6 +1996,7 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: airflow-repo
+          # Autoresearch-airflow 트리 기준 경로다 — 이 저장소의 #754 재배치와 무관하다.
           add-paths: deploy/airflow/values.yaml
           base: main
           branch: automation/training-${{ steps.promotion-branch.outputs.short_sha }}
@@ -2076,6 +2082,7 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: airflow-repo
+          # Autoresearch-airflow 트리 기준 경로다 — 이 저장소의 #754 재배치와 무관하다.
           add-paths: deploy/airflow/values.yaml
           base: main
           branch: automation/feast-${{ steps.promotion-branch.outputs.short_sha }}

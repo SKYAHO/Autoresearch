@@ -11,8 +11,9 @@ Experiment, Event, Log 불변 모델과 ISO timestamp 변환, 상태별 사용�
 [비책임]
 API 인증, cursor polling, UI 컴포넌트 렌더링, Agent 상태 기록.
 
-UI 이미지는 `issue_authoring.py`를 포함하지 않으므로(`deploy/agent_orchestration/
-ui.Dockerfile`) 서버 모델을 import하지 않고 보낼 값을 여기서 조립한다. `to_fields()`가
+UI 이미지는 `issue_authoring.py`를 포함하지 않으므로
+(`deployment/experiment_platform/workbench.Dockerfile`) 서버 모델을 import하지 않고 보낼
+값을 여기서 조립한다. `to_fields()`가
 내는 것은 표시 문구가 아니라 **HTTP 계약**이며, 서버가 받아들이는지는
 `tests/test_ui_submission_form.py`가 고정한다.
 """

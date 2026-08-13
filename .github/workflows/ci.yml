@@ -42,7 +42,7 @@ jobs:
             app:
               - '.github/workflows/ci.yml'
               - '.dockerignore'
-              - 'Dockerfile.app'
+              - 'deployment/Dockerfile.app'
               - 'scripts/gcs_code_bootstrap.sh'
               - 'autoresearch/**'
               - 'pyproject.toml'
@@ -50,7 +50,7 @@ jobs:
             train:
               - '.github/workflows/ci.yml'
               - '.dockerignore'
-              - 'Dockerfile.train'
+              - 'deployment/Dockerfile.train'
               - 'scripts/gcs_code_bootstrap.sh'
               - 'autoresearch/**'
               - 'pyproject.toml'
@@ -58,11 +58,11 @@ jobs:
             mlflow:
               - '.github/workflows/ci.yml'
               - '.dockerignore'
-              - 'deploy/mlflow/**'
+              - 'deployment/mlflow/**'
             feast:
               - '.github/workflows/ci.yml'
               - '.dockerignore'
-              - 'Dockerfile.feast'
+              - 'deployment/Dockerfile.feast'
               - 'scripts/gcs_code_bootstrap.sh'
               - 'autoresearch/**'
               - 'feature_repo/**'
@@ -71,7 +71,7 @@ jobs:
             serving:
               - '.github/workflows/ci.yml'
               - '.dockerignore'
-              - 'deploy/serving/**'
+              - 'deployment/serving/**'
               - 'applications/reranking_api/**'
               - 'autoresearch/**'
               - 'feature_repo/**'
@@ -81,7 +81,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.dockerignore'
               - 'applications/experiment_platform/**'
-              - 'deploy/agent_orchestration/**'
+              - 'deployment/experiment_platform/**'
               - 'pyproject.toml'
               - 'uv.lock'
 
@@ -204,9 +204,9 @@ jobs:
         run: uv lock --check
 
       - name: Verify MLflow runtime uv.lock matches pyproject.toml
-        # deploy/mlflow/runtime은 루트 프로젝트와 분리된 독립 manifest/lockfile이라
+        # deployment/mlflow/runtime은 루트 프로젝트와 분리된 독립 manifest/lockfile이라
         # 루트 uv lock --check로는 drift가 잡히지 않는다.
-        run: cd deploy/mlflow/runtime && uv lock --check
+        run: cd deployment/mlflow/runtime && uv lock --check
 
       - name: Verify exported youtube_api_proxy requirements.txt matches uv.lock
         # applications/youtube_api_proxy/requirements.txt(Cloud Run, 깨끗한 python-slim 베이스)는
@@ -229,7 +229,7 @@ jobs:
         run: |
           docker build \
             --build-arg VCS_REF="${{ github.sha }}" \
-            -f Dockerfile.app \
+            -f deployment/Dockerfile.app \
             --tag autoresearch:ci \
             .
 
@@ -246,7 +246,7 @@ jobs:
 
       - name: Run Docker image smoke check
         # 코드가 이미지에 없으므로 로컬 아카이브 주입 모드로 부트스트랩
-        # 압축 해제·실행 경로를 검증한다 (Dockerfile.train과 동일 패턴).
+        # 압축 해제·실행 경로를 검증한다 (deployment/Dockerfile.train과 동일 패턴).
         run: |
           git archive --format=tar.gz -o /tmp/code-archive.tar.gz HEAD
           run_batch() {
@@ -281,21 +281,21 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build training image
-        # CTR 학습 파이프라인을 담는 이미지. Dockerfile.app과 별도로 관리한다 —
+        # CTR 학습 파이프라인을 담는 이미지. deployment/Dockerfile.app과 별도로 관리한다 —
         # 배치 CLI(autoresearch/jobs/)와 학습 코드(autoresearch/model_training/)는
         # 책임이 다르다.
         run: |
           docker build \
             --build-arg VCS_REF="${{ github.sha }}" \
-            -f Dockerfile.train \
+            -f deployment/Dockerfile.train \
             --tag autoresearch-training:ci \
             .
 
       - name: Run training image smoke check
         # 코드가 이미지에 없으므로 로컬 아카이브 주입 모드로 부트스트랩
-        # 압축 해제·실행 경로를 검증한다 (Dockerfile.feast와 동일 패턴).
+        # 압축 해제·실행 경로를 검증한다 (deployment/Dockerfile.feast와 동일 패턴).
         # build-features/run-pipeline은 #359 C2에서 feast offline PIT로 조립하도록
-        # 바뀌어 Dockerfile.feast로 실행한다 — feast를 담지 않는 이 train 이미지에서는
+        # 바뀌어 deployment/Dockerfile.feast로 실행한다 — feast를 담지 않는 이 train 이미지에서는
         # 런타임에 feast import가 터지므로, 여기서 --help로 스모크하지 않는다(거짓 green
         # 방지). 이 이미지가 실제로 실행하는 feast 불필요 서브커맨드만 검증한다.
         run: |
@@ -325,12 +325,12 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build MLflow runtime image
-        # deploy/mlflow/runtime의 uv.lock 기반 최소 파생 이미지를 검증한다.
+        # deployment/mlflow/runtime의 uv.lock 기반 최소 파생 이미지를 검증한다.
         # Dockerfile 안의 psycopg2/boto3/google-cloud-storage import 스모크 체크가
         # 이 빌드를 통해서만 실행된다.
         run: |
           docker build \
-            -f deploy/mlflow/Dockerfile \
+            -f deployment/mlflow/Dockerfile \
             --tag mlflow-runtime:ci \
             .
 
@@ -348,7 +348,7 @@ jobs:
         run: |
           docker build \
             --build-arg VCS_REF="${{ github.sha }}" \
-            -f Dockerfile.feast \
+            -f deployment/Dockerfile.feast \
             --tag autoresearch-feast:ci \
             .
 
@@ -392,7 +392,7 @@ jobs:
       - name: Build serving Docker image
         run: |
           docker build \
-            -f deploy/serving/Dockerfile \
+            -f deployment/serving/Dockerfile \
             --tag autoresearch-serving:ci \
             .
 
@@ -450,19 +450,19 @@ jobs:
       - name: Build Agent Orchestration API, Runner, UI, and Executor images
         run: |
           docker build \
-            -f deploy/agent_orchestration/api.Dockerfile \
+            -f deployment/experiment_platform/api.Dockerfile \
             --tag autoresearch-agent-orchestration-api:ci \
             .
           docker build \
-            -f deploy/agent_orchestration/runner.Dockerfile \
+            -f deployment/experiment_platform/runner.Dockerfile \
             --tag autoresearch-agent-orchestration-runner:ci \
             .
           docker build \
-            -f deploy/agent_orchestration/ui.Dockerfile \
+            -f deployment/experiment_platform/workbench.Dockerfile \
             --tag autoresearch-agent-orchestration-ui:ci \
             .
           docker build \
-            -f deploy/agent_orchestration/executor.Dockerfile \
+            -f deployment/experiment_platform/executor.Dockerfile \
             --tag autoresearch-agent-orchestration-executor:ci \
             .
 

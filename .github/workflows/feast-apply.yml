@@ -5,8 +5,8 @@ name: feast-apply
 # Redis(PSC)에 닿으므로 `full_scan_for_deletion: true`가 요구하는 online store
 # 삭제 스캔을 러너 위에서 바로 수행할 수 있다. main은 prod, dev는 dev registry를
 # 반영하며, 소유 경계("registry apply는 GHA, materialize는 Airflow")는 그대로다.
-# GKE Job으로 apply를 우회하던 옛 경로(deploy/feast/apply-job.yaml,
-# Dockerfile.feast)는 롤백 여유로 저장소에 남아 있으나 이 워크플로우는 더 이상
+# GKE Job으로 apply를 우회하던 옛 경로(deployment/feast/apply-job.yaml,
+# deployment/Dockerfile.feast)는 롤백 여유로 저장소에 남아 있으나 이 워크플로우는 더 이상
 # 그 경로를 쓰지 않는다.
 
 on:
@@ -55,6 +55,7 @@ jobs:
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.ref_name == 'main' && 'prod' || 'dev') }}
     # runs-on은 env 컨텍스트를 읽지 못해(잡 시작 전에 평가) 같은 식을 여기 한 번 더
     # 적는다. 스케일셋 이름은 인프라 저장소
+    # (아래는 인프라 저장소 트리 기준 경로다 — #754 재배치와 무관하다)
     # deploy/actions-runner-scale-set-feast-{dev,prod}/values.yaml의
     # runnerScaleSetName과 정확히 일치해야 한다(#561). ARC는 runs-on에 스케일셋
     # 이름을 그대로 쓴다 — 배열 문법이 아니다.
@@ -160,7 +161,7 @@ jobs:
         run: uv sync --frozen --no-dev --group feast
 
       - name: Fetch Redis CA and run feast apply
-        # deploy/feast/apply-job.yaml이 GKE Job 컨테이너 안에서 하던 일(CA 조달 →
+        # deployment/feast/apply-job.yaml이 GKE Job 컨테이너 안에서 하던 일(CA 조달 →
         # feature_repo로 이동 → feast apply)을 러너 위에서 그대로 실행한다. 환경
         # 변수 이름은 feature_store.yaml의 ${VAR} 치환이 그대로 읽도록 옛 Job의
         # env 이름과 완전히 동일하게 맞춘다(#561).

@@ -1332,13 +1332,35 @@ EOF
 
 ---
 
-### Task 4: `deployment/` 이동과 CI 경로 갱신
+### Task 4: `deployment/` 이동과 CI 경로 갱신 — 완료 (커밋 `d655e58`·`231261d`)
+
+**계획서보다 넓게 했다 — 하위 디렉터리 이름까지.** `deploy/agent_orchestration/`은 그
+패키지가 #757로 사라졌으므로 `deployment/experiment_platform/`으로, `ui.Dockerfile`은 그것이
+만드는 `workbench` 패키지에 맞춰 `workbench.Dockerfile`로 바꿨다. 이름과 내용이 어긋난
+채로 두면 이번 재배치가 지우려던 드리프트가 그대로 남는다.
+
+**게시되는 이미지 이름(`autoresearch-agent-orchestration-*`)은 건드리지 않았다** — 인접
+저장소 `Autoresearch-infra`의 K8s 매니페스트와 동시에 바꿔야 하는 배포 계약이다. 별도
+과제로 남긴다.
+
+**계획서가 놓친 것 — `Path` 컴포넌트 표기.**
+
+`REPOSITORY_ROOT / "deploy" / "serving" / "Dockerfile"`처럼 경로를 **컴포넌트로 나눠
+인용**한 곳은 슬래시 치환 규칙(`deploy/` → `deployment/`)이 잡지 못한다. 테스트 3개
+파일에서 나왔고 전부 손으로 고쳤다. #757에서도 같은 부류를 한 번 놓쳤으므로, 다음
+작업자는 `"<이동대상>"` 형태를 따로 grep한다.
+
+**추가한 가드.** 워크플로가 `-f`/`file:`로 가리키는 빌드 파일이 실제로 있는지 검사한다.
+Dockerfile 경로가 틀리면 `docker build`가 실패하지만, 그 job이 paths 필터에 걸려 **돌지
+않으면** 아예 드러나지 않는다. 경로를 일부러 틀리게 만들어 잡히는 것을 확인했다.
+
+**검증.** `2821 passed / 2 failed(WSL2 환경) / 25 skipped`, 수집 2839.
 
 **Files:**
 - Move: `deploy/` → `deployment/`, `Dockerfile.{app,train,feast}` → `deployment/`
 - Modify: `.github/workflows/{ci,release,feast-apply,lint}.yml`, `.github/ISSUE_TEMPLATE/auto_research.yml`, `pyproject.toml`, `.dockerignore`
 
-- [ ] **Step 1: 이동**
+- [x] **Step 1: 이동**
 
 ```bash
 cd /home/yjlee/Autoresearch
@@ -1348,7 +1370,7 @@ git mv Dockerfile.train deployment/Dockerfile.train
 git mv Dockerfile.feast deployment/Dockerfile.feast
 ```
 
-- [ ] **Step 2: 워크플로우 경로 갱신**
+- [x] **Step 2: 워크플로우 경로 갱신**
 
 ```bash
 grep -rn "deploy/\|Dockerfile\.\|src/\*\*\|src\.cli\|src\.pipeline\|src\.serving\|agent_orchestration\|proxy/\|loadtest/" .github/workflows/
@@ -1376,7 +1398,7 @@ grep -rn "deploy/\|Dockerfile\.\|src/\*\*\|src\.cli\|src\.pipeline\|src\.serving
 
 이 문구는 실험 에이전트가 읽는 가설 템플릿이다. 갱신 직후부터 새 실험이 새 경로를 쓴다.
 
-- [ ] **Step 3-1: scope 라벨 문자열은 별도 판단이 필요하다 (Task 1에서 손대지 않음)**
+- [x] **Step 3-1: scope 라벨 문자열은 별도 판단이 필요하다 (Task 1에서 손대지 않음)**
 
 같은 파일 254행의 라벨
 
@@ -1400,7 +1422,7 @@ grep -rn "deploy/\|Dockerfile\.\|src/\*\*\|src\.cli\|src\.pipeline\|src\.serving
 관련 테스트 3곳(`test_auto_research_issue_branch.py:46,650`,
 `test_experiment_codex_worker.py:61`)도 두 경우를 함께 검증하도록 고친다.
 
-- [ ] **Step 4: `pyproject.toml` 주석 갱신**
+- [x] **Step 4: `pyproject.toml` 주석 갱신**
 
 121-123행:
 
@@ -1414,7 +1436,7 @@ grep -rn "deploy/\|Dockerfile\.\|src/\*\*\|src\.cli\|src\.pipeline\|src\.serving
 # (build-system + [project.scripts]) 전환은 여전히 별도 과제다.
 ```
 
-- [ ] **Step 5: `.dockerignore` 확인**
+- [x] **Step 5: `.dockerignore` 확인**
 
 ```bash
 cat .dockerignore
@@ -1422,7 +1444,7 @@ cat .dockerignore
 
 `src/`나 `deploy/`를 명시하면 갱신한다.
 
-- [ ] **Step 6: 로컬 이미지 빌드**
+- [x] **Step 6: 로컬 이미지 빌드**
 
 ```bash
 docker build -f deployment/Dockerfile.app   -t autoresearch:ci .
@@ -1431,14 +1453,14 @@ docker build -f deployment/Dockerfile.feast -t autoresearch-feast:ci .
 docker build -f deployment/serving/Dockerfile -t autoresearch-serving:ci .
 ```
 
-- [ ] **Step 7: 워크플로우 문법 검사**
+- [x] **Step 7: 워크플로우 문법 검사**
 
 ```bash
 git diff --check
 command -v actionlint >/dev/null && actionlint || echo "actionlint 없음 — 건너뜀"
 ```
 
-- [ ] **Step 8: 커밋**
+- [x] **Step 8: 커밋**
 
 ```bash
 git add -A
@@ -1628,9 +1650,9 @@ Task마다 별도 PR을 올린다. `main` 기준, `Closes #754`는 마지막 PR�
 | --- | --- | --- | --- |
 | [#755](https://github.com/SKYAHO/Autoresearch/pull/755) | spec·plan + Task 0 | 설계 확정 + 잔재 정리 | **머지** (main `247644e`) |
 | [#756](https://github.com/SKYAHO/Autoresearch/pull/756) | Task 1 | 최대 diff — 이동/치환 2커밋 + executor 슬래시 경로 + feast 레지스트리 | **머지** — 아래 사유로 #755 squash에 포함 |
-| [#757](https://github.com/SKYAHO/Autoresearch/pull/757) | Task 2 | applications 층 + `lint.yml` + ruff 대상·alembic·proxy export | main 위로 rebase, 리뷰 대기 |
-| 5 | Task 3 | 테스트 재배치 | 구현 완료 |
-| 5 | Task 4 | 배포·CI paths 필터 | 대기 |
+| [#757](https://github.com/SKYAHO/Autoresearch/pull/757) | Task 2 | applications 층 + `lint.yml` + ruff 대상·alembic·proxy export | **머지** |
+| [#758](https://github.com/SKYAHO/Autoresearch/pull/758) | Task 3 | 테스트 재배치 | **머지** |
+| 6 | Task 4 | 배포·CI paths 필터 + `deployment/experiment_platform/` 리네임 | 구현 완료 |
 | 6 | Task 5 | 문서 | 대기 |
 
 **머지 순서가 어긋나 Task 1이 #755의 squash에 삼켜졌다.** #756이 중간 브랜치

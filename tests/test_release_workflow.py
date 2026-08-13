@@ -11,7 +11,7 @@ WORKFLOW_PATH = (
     Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-APPLICATION_DOCKERFILE = REPOSITORY_ROOT / "Dockerfile.app"
+APPLICATION_DOCKERFILE = REPOSITORY_ROOT / "deployment/Dockerfile.app"
 
 
 def _load_workflow() -> dict:
@@ -32,7 +32,7 @@ def test_release_workflow_publishes_application_image_directly():
         step for step in steps if step.get("uses") == "docker/build-push-action@v6"
     )
     assert build_step["with"]["context"] == "."
-    assert build_step["with"]["file"] == "Dockerfile.app"
+    assert build_step["with"]["file"] == "deployment/Dockerfile.app"
     assert build_step["with"]["push"] == "true"
     assert "VCS_REF=${{ steps.source.outputs.sha }}" in build_step["with"][
         "build-args"
@@ -70,7 +70,7 @@ def test_release_workflow_publishes_serving_image_with_immutable_verification():
         step for step in steps if step.get("uses") == "docker/build-push-action@v6"
     )
     assert build_step["with"]["context"] == "."
-    assert build_step["with"]["file"] == "deploy/serving/Dockerfile"
+    assert build_step["with"]["file"] == "deployment/serving/Dockerfile"
     assert build_step["with"]["push"] == "true"
     assert "VCS_REF=${{ steps.source.outputs.sha }}" in build_step["with"][
         "build-args"
@@ -158,7 +158,7 @@ def test_application_image_does_not_bake_source_code():
 
 
 def test_application_image_bootstraps_code_from_the_gcs_archive():
-    # Dockerfile.feast·Dockerfile.train과 같은 부트스트랩 계약을 따른다.
+    # deployment/Dockerfile.feast·deployment/Dockerfile.train과 같은 부트스트랩 계약을 따른다.
     dockerfile = APPLICATION_DOCKERFILE.read_text(encoding="utf-8")
 
     assert (
@@ -295,3 +295,46 @@ def test_ci_enumerated_test_paths_exist() -> None:
     assert referenced, "ci.yml이 테스트 경로를 하나도 열거하지 않는다 — 패턴이 바뀌었는지 확인하라"
     missing = [path for path in referenced if not (REPOSITORY_ROOT / path).is_file()]
     assert not missing, f"ci.yml이 없는 테스트 경로를 가리킨다: {missing}"
+
+
+def test_workflow_referenced_build_files_exist() -> None:
+    """워크플로가 `-f`/`file:`로 가리키는 빌드 파일이 실제로 있어야 한다(#754).
+
+    `deploy/` → `deployment/` 이동처럼 경로가 바뀌면 이 참조들이 조용히 낡는다. Dockerfile
+    경로가 틀리면 `docker build`가 실패하지만, 그 job이 paths 필터에 걸려 **돌지 않으면**
+    아예 드러나지 않는다. 저장소 트리만 보고 미리 잡는다.
+
+    디렉터리 접두사가 아니라 **이름에 `Dockerfile`이 든 것**으로 수집한다. `deployment/`로
+    시작하는 것만 보면 rebase 충돌 해결 중에 `-f Dockerfile.app`이나
+    `file: deploy/serving/Dockerfile`로 되돌아간 회귀를 놓친다 — 그것이 바로 이 가드가
+    막으려는 상황이다. (`-f`는 `gh`·`jq`도 쓰므로 인자를 전부 모으면 `report.json` 같은
+    빌드와 무관한 값이 섞인다.)
+
+    수집 결과가 0건인 경우도 실패로 다룬다. 워크플로가 빌드 인자 표기를 바꾸면 정규식이
+    아무것도 못 잡는데, 그것을 통과로 두면 가드가 조용히 무력해진다.
+    """
+    workflow_root = REPOSITORY_ROOT / ".github" / "workflows"
+    workflows = sorted(
+        path
+        for pattern in ("*.yml", "*.yaml")
+        for path in workflow_root.glob(pattern)
+    )
+
+    referenced: list[tuple[str, str]] = []
+    for workflow in workflows:
+        text = workflow.read_text(encoding="utf-8")
+        for reference in re.findall(r"(?:-f |file: )([\w][\w./-]*)", text):
+            if "Dockerfile" not in reference:
+                continue
+            # 인접 저장소 체크아웃 기준 경로는 이 저장소 트리에 없는 것이 정상이다.
+            if reference.startswith(("airflow-repo/", "infra-repo/")):
+                continue
+            referenced.append((workflow.name, reference))
+
+    assert referenced, "워크플로가 빌드 파일을 하나도 가리키지 않는다 — 인자 표기가 바뀌었는지 확인하라"
+    missing = [
+        f"{name}: {reference}"
+        for name, reference in referenced
+        if not (REPOSITORY_ROOT / reference).is_file()
+    ]
+    assert missing == [], f"워크플로가 없는 빌드 파일을 가리킨다: {missing}"

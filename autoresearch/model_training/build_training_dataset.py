@@ -137,7 +137,7 @@ def feature_table_id(table: str) -> str:
 def get_data_dir():
     """프로젝트 루트의 data 디렉토리 경로 반환. 없으면 프로젝트 루트 아래에 생성한다.
 
-    GCS 코드 부트스트랩 이미지(Dockerfile.train)는 data/를 이미지에 포함하지
+    GCS 코드 부트스트랩 이미지(deployment/Dockerfile.train)는 data/를 이미지에 포함하지
     않으므로, 컨테이너 최초 실행 시에는 이 디렉토리가 아예 존재하지 않는다 —
     존재를 요구하는 대신 만들어서 돌려준다(출력 경로 등으로 바로 쓰기 위함).
     """
@@ -522,7 +522,7 @@ def _verify_assembly_environment() -> None:
 
     # GKE 등 컨테이너 환경은 Workload Identity(metadata server)로 인증하므로
     # 로컬 자격증명 파일이 없어도 정상이다(docs/guides/training-image.md,
-    # deploy/feast/apply-job.yaml 확인). KUBERNETES_SERVICE_HOST(모든 k8s pod에
+    # deployment/feast/apply-job.yaml 확인). KUBERNETES_SERVICE_HOST(모든 k8s pod에
     # 자동 존재)가 있으면 이 체크를 건너뛴다.
     if not os.environ.get("KUBERNETES_SERVICE_HOST"):
         # gcloud/google-auth 모두 CLOUDSDK_CONFIG로 config 디렉토리를 옮길 수 있다

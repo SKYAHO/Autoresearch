@@ -3,16 +3,16 @@
 `FastAPI + Codex CLI + PostgreSQL` 기반 Agent Orchestration API입니다. 기존 `/chat`은
 Codex 응답을 PostgreSQL에 저장하며, 실험 워크벤치 v0은 Agent와 Streamlit이 실험 상태,
 Event, Log, metadata를 조회·기록하는 별도 API를 제공합니다. Streamlit UI는
-`deploy/agent_orchestration/ui.Dockerfile`의 별도 내부 이미지로 발행되며 API 요청 토큰은
+`deployment/experiment_platform/workbench.Dockerfile`의 별도 내부 이미지로 발행되며 API 요청 토큰은
 Kubernetes Pod 환경에만 주입합니다. 로컬 개발의 기본 백엔드는
 `codex_cli`이며, GKE API는 비공개 `codex_runner` Service를 호출합니다. 기본 모드는
 OpenAI API 키나 API 크레딧을 사용하지 않습니다.
 
 ## GKE 이미지 경계
 
-- `deploy/agent_orchestration/api.Dockerfile`은 FastAPI·PostgreSQL 런타임과 API
+- `deployment/experiment_platform/api.Dockerfile`은 FastAPI·PostgreSQL 런타임과 API
   소스만 포함합니다. Codex CLI, Node 런타임, OAuth 상태는 포함하지 않습니다.
-- `deploy/agent_orchestration/runner.Dockerfile`만 `@openai/codex@0.146.0`과 Runner
+- `deployment/experiment_platform/runner.Dockerfile`만 `@openai/codex@0.146.0`과 Runner
   소스를 포함합니다. 기본 `CODEX_HOME`은 `/var/lib/codex`, 임시 경로는 `/tmp`이며,
   Kubernetes는 각각 Runner 전용 PVC와 scratch `emptyDir`를 마운트합니다.
 - 두 이미지는 UID/GID `10001`의 `appuser`로 실행합니다. OAuth 파일·`.env`·완성

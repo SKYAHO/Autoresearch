@@ -192,7 +192,7 @@ def test_k6_summary_includes_p99_for_exact_latency_reporting() -> None:
 
 def test_k6_job_has_no_identity_or_token_mount() -> None:
     """k6 Job은 전용 KSA만 쓰고 토큰·Secret·권한 상승을 허용하지 않는다."""
-    text = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
+    text = Path("deployment/loadtest/rerank-k6-job.yaml").read_text()
 
     assert "serviceAccountName: rerank-loadtest" in text
     assert "automountServiceAccountToken: false" in text
@@ -204,7 +204,7 @@ def test_k6_job_has_no_identity_or_token_mount() -> None:
 
 def test_k6_job_is_immutable_hardened_and_configmap_only() -> None:
     """k6 Job은 고정 digest와 one-shot 제한을 쓰며 두 ConfigMap만 mount한다."""
-    text = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
+    text = Path("deployment/loadtest/rerank-k6-job.yaml").read_text()
 
     assert "generateName: rerank-k6-" in text
     assert "namespace: loadtest" in text
@@ -318,7 +318,7 @@ def test_manual_workflow_preserves_runner_artifact_layout_for_reader() -> None:
 def test_workflow_validates_fixture_and_avoids_sourced_settings() -> None:
     """자유 입력은 allowlist를 통과하고 settings 값은 shell source되지 않는다."""
     workflow = Path(".github/workflows/rerank-loadtest.yml").read_text()
-    manifest = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
+    manifest = Path("deployment/loadtest/rerank-k6-job.yaml").read_text()
 
     assert "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$" in workflow
     assert "--from-literal=rerank.env" not in workflow
@@ -341,7 +341,7 @@ def test_workflow_validates_fixture_and_avoids_sourced_settings() -> None:
 def test_each_vu_binds_one_versioned_immutable_settings_configmap() -> None:
     """각 VU Job은 생성 시점의 고유 settings ConfigMap을 env와 volume에 함께 bind한다."""
     workflow = Path(".github/workflows/rerank-loadtest.yml").read_text()
-    manifest = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
+    manifest = Path("deployment/loadtest/rerank-k6-job.yaml").read_text()
 
     assert (
         'settings_config_map="rerank-loadtest-settings-'
@@ -394,7 +394,7 @@ def test_snapshot_reader_exports_partial_completed_jobs_after_runner_failure() -
 def test_settings_configmap_is_owned_by_ttl_job() -> None:
     """VU별 settings ConfigMap은 Job UID ownerReference로 TTL GC에 연결된다."""
     workflow = Path(".github/workflows/rerank-loadtest.yml").read_text()
-    manifest = Path("deploy/loadtest/rerank-k6-job.yaml").read_text()
+    manifest = Path("deployment/loadtest/rerank-k6-job.yaml").read_text()
 
     assert 'job_uid="$(kubectl get job "$job_name"' in workflow
     assert 'kubectl patch configmap "$settings_config_map"' in workflow
