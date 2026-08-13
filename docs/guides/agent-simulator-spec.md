@@ -132,7 +132,7 @@ PK는 `event_id`다. `(user_id, video_id)`는 **유니크하지 않은 FK**다 �
 
 > **주의**: 아래 `exposure_type`, `session_id`, `request_id`, `query`(검색어),
 > `event_type=search`는 모두 **Phase 2 도입 시점에 결정/추가**되는 보류 항목이며,
-> 현재 구현된 Phase 1 events 스키마(`autoresearch/action_logs/schema.py`)에는
+> 현재 구현된 Phase 1 events 스키마(`autoresearch/action_log_generation/schema.py`)에는
 > 존재하지 않는다. `rank`만 Phase 1 스키마에 이미 있으나 항상 `null`이다.
 
 추천 서버가 실행되면 Phase 1 방식을 중단하고, 에이전트가 **한 시간에 한 번씩 추천 API를 직접 호출**해 반환된 리스트에서 클릭을 시뮬레이션하여 저장한다.

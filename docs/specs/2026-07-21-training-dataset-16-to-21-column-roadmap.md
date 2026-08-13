@@ -16,7 +16,7 @@
 `#172`(events BigQuery 전환) 작업 중 `docs/guides/training-dataset.md` /
 `docs/guides/data-warehouse.md`가 설계한 목표 스키마(21 Model Input 컬럼,
 Feast `get_historical_features()` 경유)와 실제 구현
-(`src/pipeline/build_training_dataset.py`, `src/features/assembly.py`, 16
+(`autoresearch/model_training/build_training_dataset.py`, `autoresearch/feature_engineering/assembly.py`, 16
 컬럼)이 어긋나 있는 것이 확인되었다.
 
 코드 조사 결과, 목표 설계는 이미 상당히 구체화되어 있다.
@@ -29,7 +29,7 @@ Feast `get_historical_features()` 경유)와 실제 구현
   컬럼 단위로 완성되어 있다 (cold-start default, point-in-time 규칙 포함).
 - 원천 데이터: `data_lake_youtube_trending_kr`에 `channel_subscriber_count`,
   `channel_view_count`, `channel_video_count`가 이미 존재한다
-  (`autoresearch/youtube_collection/schema.py`).
+  (`autoresearch/data_collection/schema.py`).
 
 반면 실제로 비어 있는 부분은:
 
@@ -37,8 +37,8 @@ Feast `get_historical_features()` 경유)와 실제 구현
 - `get_historical_features()` 호출이 0건 — Feast는 온라인 서빙(Redis
   materialize)에만 쓰이고 오프라인 학습 데이터 조립에는 전혀 관여하지 않는다.
 - `preferred_category`는 키워드 15개 하드코딩 매핑(`derive_preferred_category`,
-  `src/features/assembly.py`)으로 대체되어 있다 — "TEMPORARY MOCK" 명시.
-- `topic_similarity` 계산용 임베딩(`src/features/embeddings.py`의
+  `autoresearch/feature_engineering/assembly.py`)으로 대체되어 있다 — "TEMPORARY MOCK" 명시.
+- `topic_similarity` 계산용 임베딩(`autoresearch/feature_engineering/embeddings.py`의
   `embed_text`)은 해시 시드 기반 pseudo-embedding이다 — "PLACEHOLDER" 명시.
 - `docs/guides/ctr-model-specification.md`의 "최종 Model Input Columns" 표만
   16컬럼 기준으로 남아 있어 다른 두 문서와 어긋난다.
@@ -64,7 +64,7 @@ Input Columns" 표(16컬럼)는 **현재 구현 스냅샷**이라는 것을 문�
 | **Phase 1** | 16→21컬럼 확장 — 기존 DuckDB 기반 파이프라인(`assembly.py`)에 `watch_time_band`, `recent_view_count_7d`, `total_event_count_7d`, `channel_subscriber_count`, `channel_view_count`, `channel_video_count` 6개 컬럼 추가. `training-dataset.md`가 이미 명시한 "MVP용 BigQuery Join Fallback" 패턴을 그대로 따름 — Feast 미경유, 신규 인프라 불필요 | 없음 (레포 내 완결) | 이번 세션에서 구현 |
 | **Phase 2** | `preferred_category`를 mock 키워드 매핑에서 실제 로직으로 전환 | User Feature Specification (persona 생성 단계에서 LLM이 카테고리 1~3개 직접 선택) — virtual_users 파이프라인 담당 영역, 별도 설계 필요 | 별도 이슈 (구현 보류) |
 | **Phase 3** | `topic_similarity` pseudo-embedding → 실제 Sentence Transformer 전환 | 신규 의존성(`sentence-transformers`) 추가, 모델 다운로드/캐싱 전략, CI 네트워크 접근 여부 결정 필요 | 별도 이슈 (구현 보류) |
-| **Phase 4a** | `user_static_feature`/`user_dynamic_feature`/`video_feature`/`training_entity` 4개 테이블을 순수 SQL 배치 job으로 실제 생성 (`src/pipeline/build_feature_tables.py`) | 대상 테이블은 Terraform이 스키마를 사전에 만들어둬야 함(`TRUNCATE TABLE`이 존재하지 않는 테이블에는 실패) | 구현 완료 (#207) |
+| **Phase 4a** | `user_static_feature`/`user_dynamic_feature`/`video_feature`/`training_entity` 4개 테이블을 순수 SQL 배치 job으로 실제 생성 (`autoresearch/model_training/build_feature_tables.py`) | 대상 테이블은 Terraform이 스키마를 사전에 만들어둬야 함(`TRUNCATE TABLE`이 존재하지 않는 테이블에는 실패) | 구현 완료 (#207) |
 | **Phase 4b** | `user_topic_embedding`/`category_embedding`/`user_category_similarity` 배치 생성 + `get_historical_features()` 경유로 학습 파이프라인 전환 | Phase 3(#206) 임베딩 클라이언트를 배치로 호출하는 아키텍처, Feast(`dev` 그룹과 의존성 충돌)를 어느 이미지/그룹에서 실행할지 결정 | 별도 이슈(#214), 구현 보류 |
 
 Phase 1을 먼저 진행하는 이유: `data-warehouse.md`가 이미 "(현재 16컬럼 파이프라인

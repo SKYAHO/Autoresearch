@@ -171,10 +171,12 @@ def test_application_image_bootstraps_code_from_the_gcs_archive():
     assert "PYTHONPATH=/app" in dockerfile
 
 
-def test_code_archive_carries_both_batch_command_packages():
-    # batch-contract-v1 6개 중 다섯은 autoresearch.jobs.*이지만 하나는
-    # src.pipeline.daily_recommendations다. 이미지가 코드를 담지 않으므로
-    # 두 패키지가 모두 아카이브에 들어가야 계약이 성립한다.
+def test_code_archive_carries_every_batch_command_package():
+    # batch-contract-v1 6개 중 다섯은 autoresearch.jobs.* 이고 하나는
+    # autoresearch.recommendation.daily_recommendations 다. #754 이전에는 후자가
+    # src.pipeline 이라 별개 최상위 패키지였고 그래서 "둘 다" 담는 것이 계약이었다.
+    # 지금은 한 패키지 안이지만 **서로 다른 단계**이므로, 아카이브가 jobs/ 만 담고
+    # 끝나지 않는지는 여전히 확인해야 한다. 이미지가 코드를 담지 않기 때문이다(#752).
     archive = subprocess.run(
         ["git", "archive", "--format=tar", "HEAD"],
         cwd=REPOSITORY_ROOT,

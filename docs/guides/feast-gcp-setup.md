@@ -556,7 +556,7 @@ GCS(registry·staging 버킷) `storage.objectAdmin`.
    **키 파일은 시크릿이므로 커밋 금지**입니다.
 
 정책 시뮬레이션 라운드는 시작 시점에 자격증명을 한 번 점검하므로(duckdb 조립
-경로 한정, `src/features/embeddings.py`의 `verify_vertex_ai_credentials`),
+경로 한정, `autoresearch/feature_engineering/embeddings.py`의 `verify_vertex_ai_credentials`),
 세션이 만료된 상태면 5단계를 다 돌린 뒤가 아니라 즉시 실패합니다.
 
 ---

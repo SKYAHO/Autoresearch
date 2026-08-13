@@ -14,9 +14,9 @@
 
 | 계층 | 슬레이트(유저별 후보 목록) 구조 | 근거 |
 | --- | --- | --- |
-| action log (원천) | **있음** | `autoresearch/action_logs/schema.py:48,51,110` — `event_type`, `rank`, `exposure_rank` |
-| `training_entity` (spine) | 부분적으로 있음 | `src/pipeline/build_training_dataset.py:199-200` — `(user_id, video_id, event_timestamp, clicked)` |
-| **최종 학습 CSV** | **없음** | `src/pipeline/build_training_dataset.py:690` |
+| action log (원천) | **있음** | `autoresearch/action_log_generation/schema.py:48,51,110` — `event_type`, `rank`, `exposure_rank` |
+| `training_entity` (spine) | 부분적으로 있음 | `autoresearch/model_training/build_training_dataset.py:199-200` — `(user_id, video_id, event_timestamp, clicked)` |
+| **최종 학습 CSV** | **없음** | `autoresearch/model_training/build_training_dataset.py:690` |
 
 핵심은 마지막 줄이다.
 
@@ -25,7 +25,7 @@ features[[*MODEL_FEATURE_COLUMNS, *experiment_columns, "clicked"]].to_csv(...)
 ```
 
 CSV를 쓰는 순간 `user_id`·`video_id`·`event_timestamp`가 **전부 잘려 나간다.** 남는
-것은 21피처 + `clicked` = 22개 물리 컬럼뿐이다. 그 위에서 `src/pipeline/evaluate.py:50`이
+것은 21피처 + `clicked` = 22개 물리 컬럼뿐이다. 그 위에서 `autoresearch/model_evaluation/evaluate.py:50`이
 전역 ROC-AUC를 계산한다.
 
 ```python
@@ -63,7 +63,7 @@ roc_auc_score(dataset["clicked"], model.predict_proba(features)[:, 1])
 **제외 (의도적):**
 
 - 주 지표 교체, 판정 엔진의 `PRIMARY_METRIC = "roc_auc"`
-  (`src/pipeline/experiment_evaluation.py:45`) 하드코딩 해제 → **#493**
+  (`autoresearch/model_evaluation/experiment_evaluation.py:45`) 하드코딩 해제 → **#493**
 - NDCG@k / Recall@k, `rank` 패스스루 → 이 문서의 실측 결과로 결정 (§후속 판단 분기)
 - 실험 실행기 → **#492**
 - `MODEL_FEATURE_COLUMNS` 21개의 이름·개수·순서 변경 → 하지 않는다
@@ -77,7 +77,7 @@ roc_auc_score(dataset["clicked"], model.predict_proba(features)[:, 1])
 
 ### D2. `extra_features` 경로를 재사용하지 않는다
 
-현재 여분 컬럼 통로는 `extra_features` 하나뿐인데, `src/features/model_contract.py:100`
+현재 여분 컬럼 통로는 `extra_features` 하나뿐인데, `autoresearch/feature_engineering/model_contract.py:100`
 `resolve_experiment_feature_columns()`가 그것을 **prod 계약 뒤에 붙여 모델 입력으로
 승격**시킨다(#405의 의도된 동작이다). `user_id`를 이 경로로 넣으면 그대로 모델 피처가
 되어 **유저 암기(memorization)**가 발생한다 — capability probe round_003에서 ablation으로
@@ -98,12 +98,12 @@ roc_auc_score(dataset["clicked"], model.predict_proba(features)[:, 1])
 
 ### 패스스루 컬럼
 
-- 정본: 패스스루 컬럼 이름 집합을 `src/features/model_contract.py`에 선언한다.
+- 정본: 패스스루 컬럼 이름 집합을 `autoresearch/feature_engineering/model_contract.py`에 선언한다.
   1차 범위는 `user_id` 하나다.
 - **불변식:** 패스스루 컬럼은 `feature_columns.json`에 **절대 포함되지 않는다.**
 - 가드: 패스스루 이름이 `extra_features`로 들어오면 `FeatureContractError`로 거부한다.
   거부 지점은 **계약 계층** `resolve_experiment_feature_columns()`
-  (`src/features/model_contract.py`)다. 조립의
+  (`autoresearch/feature_engineering/model_contract.py`)다. 조립의
   `resolve_extra_feature_columns()`가 이 함수를 호출하고 학습의 `--extra-features`도
   같은 계약을 거치므로, 계약 계층에 두면 **두 경로가 한 번에 막힌다**. (설계 시에는
   `clicked` 거부와 같은 자리인 조립 계층을 고려했으나, 패스스루 누출은 조립 고유의
@@ -121,7 +121,7 @@ roc_auc_score(dataset["clicked"], model.predict_proba(features)[:, 1])
 ### 학습 경로 보존
 
 `evaluate`는 `train-model`이 분리 저장한 held-out test set으로만 채점한다
-(`src/cli.py` run-pipeline 3/4 단계 주석). 따라서 패스스루 컬럼은 **split을 거쳐
+(`autoresearch/cli.py` run-pipeline 3/4 단계 주석). 따라서 패스스루 컬럼은 **split을 거쳐
 test set 저장까지 살아남아야 한다.**
 
 **구현 결과 `train.py`는 변경이 필요 없었다.** 분할이 행 단위 위치 인덱싱
@@ -148,7 +148,7 @@ test set 저장까지 살아남아야 한다.**
 컬럼이 하나 늘면 `build_snapshot_manifest()`가 기록하는 `dataset_sha256`과
 `schema_sha256`이 이 변경 **이전 스냅샷과 달라진다.**
 
-`src/pipeline/training_comparison.py`의 `_validate_fairness()`는 baseline과
+`autoresearch/model_evaluation/training_comparison.py`의 `_validate_fairness()`는 baseline과
 challenger의 `snapshot_sha256`·`snapshot_manifest_sha256` **동일성**을 요구한다.
 따라서 이 변경이 배포되는 시점에 **baseline만 이전 스냅샷으로 학습된 진행 중인 비교**가
 있다면 `verify-comparison`이 불일치로 실패한다.

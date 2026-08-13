@@ -242,12 +242,12 @@ backfill은 `youtube_backfill_kr` DAG가 실행합니다 (수동 트리거 전�
 
 | 파일 | 역할 |
 |------|------|
-| `autoresearch/youtube_collection/schema.py` | `TrendingVideo` 모델, 스키마 버전 |
-| `autoresearch/youtube_collection/client.py` | `ResilientYouTubeClient` (복원력 계층) |
-| `autoresearch/youtube_collection/fetch.py` | API 수집 로직 (callable 주입 패턴) |
-| `autoresearch/youtube_collection/transform.py` | 원본 → 정규 스키마 변환 |
-| `autoresearch/youtube_collection/load.py` | GCS parquet 파티션 적재 |
-| `autoresearch/youtube_collection/backfill.py` | Kaggle 과거 데이터 일괄 적재 |
+| `autoresearch/data_collection/schema.py` | `TrendingVideo` 모델, 스키마 버전 |
+| `autoresearch/data_collection/client.py` | `ResilientYouTubeClient` (복원력 계층) |
+| `autoresearch/data_collection/fetch.py` | API 수집 로직 (callable 주입 패턴) |
+| `autoresearch/data_collection/transform.py` | 원본 → 정규 스키마 변환 |
+| `autoresearch/data_collection/load.py` | GCS parquet 파티션 적재 |
+| `autoresearch/data_collection/backfill.py` | Kaggle 과거 데이터 일괄 적재 |
 | `autoresearch/jobs/youtube_trending.py` | 일일 수집 batch CLI |
 | `autoresearch/jobs/youtube_backfill.py` | backfill batch CLI |
 | `proxy/app.py` | Cloud Run dumb forwarder (IP밴 대응 egress seam) |

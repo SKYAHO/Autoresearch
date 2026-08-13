@@ -49,9 +49,9 @@ python -m autoresearch.jobs.action_log --mode merge [options]
 python -m autoresearch.jobs.action_log_quality [options]
 python -m autoresearch.jobs.feature_store_build [options]
 python -m autoresearch.jobs.feast_materialize [options]
-python -m src.pipeline.daily_recommendations [options]
-python -m src.cli promote-model [options]
-python -m src.cli compare-paired-experiment [options]
+python -m autoresearch.recommendation.daily_recommendations [options]
+python -m autoresearch.cli promote-model [options]
+python -m autoresearch.cli compare-paired-experiment [options]
 ```
 
 console script alias를 추가할 수 있지만 Airflow는 v1 동안 위 module 경로를
@@ -475,7 +475,7 @@ python -m autoresearch.jobs.action_log_quality \
 ## 일일 추천 결과 적재
 
 ```text
-python -m src.pipeline.daily_recommendations \
+python -m autoresearch.recommendation.daily_recommendations \
   [--candidate-dt YYYY-MM-DD] \
   [--events-dt YYYY-MM-DD] \
   [--max-users <positive-int>] \
@@ -532,7 +532,7 @@ Airflow가 모델 승격 판정을 문자열 로그 파싱 없이 소비할 때 
 호출을 사용한다.
 
 ```text
-python -m src.cli promote-model \
+python -m autoresearch.cli promote-model \
   --model-name ctr-model \
   --champion-alias champion \
   --result-contract model-promotion-result-v1 \
@@ -586,7 +586,7 @@ KubernetesPodOperator의 운반 경로이며 application의 영속 저장소가 
 조건별 학습 Job이 모두 끝난 뒤, Airflow는 다음 호출로 비교·판정 결과를 얻는다.
 
 ```text
-python -m src.cli compare-paired-experiment \
+python -m autoresearch.cli compare-paired-experiment \
   --request /airflow/xcom/paired-request.json \
   --promotion-evidence-root gs://<bucket>/<prefix> \
   --output /airflow/xcom/return.json

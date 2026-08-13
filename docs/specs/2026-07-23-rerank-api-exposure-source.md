@@ -31,7 +31,7 @@ action log 배치의 노출 결정을 **실제 Inference Server(FastAPI `/rerank
 
 ### 핵심 결정 — 조립은 재사용, 순위 출처만 교체
 
-`src/pipeline/model_exposure_provider.py`의 `build_model_exposures()`는 순위
+`autoresearch/recommendation/model_exposure_provider.py`의 `build_model_exposures()`는 순위
 목록(`RankedVideo`)을 받아 24개 노출(모델 17 · 트렌딩 5 · 랜덤 2, 부족분 규칙,
 `ExposureMetadata` 태그)을 조립한다. 이 로직과 태그 계약은 **한 글자도 바꾸지
 않는다.** 새 코드가 하는 일은 오직 "유저의 `RankedVideo` 목록을 HTTP로
@@ -43,7 +43,7 @@ BQ 소스   : user_recommendations dt 파티션 ──┐
 HTTP 소스 : POST /rerank 응답 (신규)  ───────┘        (기존 코드, 무변경)
 ```
 
-### 신규 모듈 — `src/pipeline/rerank_api.py`
+### 신규 모듈 — `autoresearch/recommendation/rerank_api.py`
 
 담당 구간: 후보 pool → `/rerank` 요청 → 응답을 순위로 변환. 노출 조립·클릭
 판정·저장은 담당하지 않는다(각각 `model_exposure_provider`, `action_logs` 소유).

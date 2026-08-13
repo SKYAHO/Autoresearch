@@ -56,7 +56,7 @@ AND dt BETWEEN DATE_SUB(DATE '{partition_date}', INTERVAL 30 DAY)
   발생하지 않음을 검증한다.
 - CLI 인터페이스(`--partition-date`)는 불변 — **Airflow DAG 저장소는 무변경**.
 
-### 2. `event_id` 전역 고유화 (`autoresearch/action_logs/`)
+### 2. `event_id` 전역 고유화 (`autoresearch/action_log_generation/`)
 
 - 생성 규칙을 `evt_{seq:08d}`(배치마다 0부터 재시작)에서 **파티션 네임스페이스
   포함 형식** `evt_{YYYYMMDD}_{seq:08d}`(YYYYMMDD = 이벤트 KST 날짜)로 바꾼다.

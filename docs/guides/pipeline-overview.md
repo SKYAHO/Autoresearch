@@ -77,7 +77,7 @@ action log의 노출 슬레이트는 세 소스를 섞어 만듭니다:
 요청은 유저 1명과 후보 영상 최대 200개(중복 금지, 비어 있지 않은 문자열
 ID)를 받습니다. 계약 정본은
 `docs/specs/2026-07-16-reranking-serving-api.md`와
-`src/serving/schemas.py`입니다:
+`applications/reranking_api/schemas.py`입니다:
 
 ```json
 {
@@ -101,7 +101,7 @@ ID)를 받습니다. 계약 정본은
 > 모델 입력에서는 제외합니다.
 
 모델이 페어별 CTR을 예측하고, 서버는 **요청 `video_ids` 순서를 보존한 채
-후보 전체**를 반환합니다 (top-K 절단 없음, `src/serving/app.py`):
+후보 전체**를 반환합니다 (top-K 절단 없음, `applications/reranking_api/app.py`):
 
 ```json
 {
@@ -114,7 +114,7 @@ ID)를 받습니다. 계약 정본은
 ```
 
 원본 그림의 "PostProcess (top K)"에 해당하는 **24개 슬레이트 선별은 서버가
-아니라 노출 조립 단계**(`src/pipeline/model_exposure_provider.py`,
+아니라 노출 조립 단계**(`autoresearch/recommendation/model_exposure_provider.py`,
 `candidates_per_user=24`, 모델 0.7 · 트렌딩 0.2 · 랜덤 0.1)에서 수행합니다.
 
 ### 가상 유저 클릭 판정 (폐루프의 귀환 구간)
@@ -135,8 +135,8 @@ Auto Research Agent가 두 구간을 자동화합니다:
 
 - **PostProcess(top-K) 위치:** 원본 그림은 추론 서버 안에 PostProcess
   (top K)를 그렸으나, 현행 구현의 `/rerank`는 요청 순서를 보존한 채 후보
-  전체를 반환하고(`src/serving/app.py`), 24개 슬레이트 선별은 노출 조립
-  (`src/pipeline/model_exposure_provider.py`)에서 수행합니다. 이 문서의
+  전체를 반환하고(`applications/reranking_api/app.py`), 24개 슬레이트 선별은 노출 조립
+  (`autoresearch/recommendation/model_exposure_provider.py`)에서 수행합니다. 이 문서의
   다이어그램은 현행 구현 기준으로 그렸습니다.
 - **Online Store 엔진:** 원본 그림은 Valkey Cluster로 표기하나, 실제
   인프라는 **Memorystore Redis Cluster**로 확인됐습니다(2026-07-24) —

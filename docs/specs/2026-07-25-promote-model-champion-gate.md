@@ -28,7 +28,7 @@
 > - 게이트 1(지표 비교)과 `CTR_SERVING_CALIBRATION_READY` 순서 가드는 그대로 유효.
 >
 > 나머지 서술은 역사적 설계 기록으로 남긴다. 정본은 `docs/guides/ctr-model-specification.md`의
-> Model Packaging 섹션(#390)과 `src/tracking/promote.py`다.
+> Model Packaging 섹션(#390)과 `autoresearch/model_registry/promote.py`다.
 
 ## 목표
 
@@ -44,7 +44,7 @@ Airflow는 이 CLI를 실행하는 것 외에 아무 판정 로직도 갖지 않
 ## Legacy CLI 계약 (구조화 opt-in 전 호출만 해당)
 
 ```text
-python -m src.cli promote-model \
+python -m autoresearch.cli promote-model \
   --model-name ctr-model \
   --champion-alias champion \
   --calibration-model-name ctr-calibration-model
@@ -56,7 +56,7 @@ python -m src.cli promote-model \
   없지만 사람이 수동 실행할 때 혼선을 막기 위해 일치시킨다.
 - `MLFLOW_TRACKING_URI`는 CLI 인자가 아니라 `train-model`/`run-pipeline`과 동일하게
   환경변수로 읽는다(`os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")`,
-  `src/tracking/client.set_tracking_uri`로 적용).
+  `autoresearch/model_registry/client.set_tracking_uri`로 적용).
 - **종료 코드:** `0` = 승격 완료 또는 평가할 신규 후보 없음(no-op). `0`이 아니면
   게이트 미달 또는 실행 중 에러 — Airflow는 둘 다 표준 실패 알림으로 처리하므로
   종료 코드 자체를 구분하지 않는다. 대신 stderr 메시지 접두어로 사람이 구분한다:
@@ -74,7 +74,7 @@ python -m src.cli promote-model \
      tag)으로 학습됐으면, 짝 calibration 모델(`ctr-calibration-model`)에 후보와
      같은 학습에서 나온 버전(`main_run_id` tag가 후보의 run_id와 일치)이 등록돼
      있어야 한다. 서빙 쪽 `_resolve_paired_calibration_run_id`
-     (`src/serving/model_loader.py`)가 alias resolve 시점에 하는 검증과 같은
+     (`applications/reranking_api/model_loader.py`)가 alias resolve 시점에 하는 검증과 같은
      불변식을 승격 **전에** 선제 확인한다. 조회 방향이 다르므로(저쪽은 "이미
      alias된 조합이 맞는가", 이쪽은 "alias 걸기 전에 짝이 존재하는가") 직접
      재사용하지 않고 경량 재구현한다.
@@ -92,8 +92,8 @@ python -m src.cli promote-model \
 
 ### 모듈 위치
 
-`src/tracking/promote.py` 신설. `registry.py`/`client.py`/`logger.py`와 같은
-tracking 도메인에 둔다. `src/cli.py`는 다른 서브커맨드와 동일하게 얇게
+`autoresearch/model_registry/promote.py` 신설. `registry.py`/`client.py`/`logger.py`와 같은
+tracking 도메인에 둔다. `autoresearch/cli.py`는 다른 서브커맨드와 동일하게 얇게
 `promote.main()`을 호출만 한다.
 
 ### 게이트 판정 흐름 (`promote.main`)
@@ -139,7 +139,7 @@ def main(model_name: str, champion_alias: str, calibration_model_name: str) -> s
 `GateRejectedError(RuntimeError)`: 게이트 미달 사유를 담는 전용 예외. 그 외
 예외(MLflow 연결 실패 등)는 그대로 전파해 "에러"로 구분한다.
 
-### CLI 어댑터 (`src/cli.py`)
+### CLI 어댑터 (`autoresearch/cli.py`)
 
 ```python
 @app.command()
@@ -208,7 +208,7 @@ typer는 함수명 `promote_model`을 커맨드 이름 `promote-model`로 자동
 
 ## 롤백
 
-`promote-model` 서브커맨드와 `src/tracking/promote.py` 삭제. 기존 `register_model`/
+`promote-model` 서브커맨드와 `autoresearch/model_registry/promote.py` 삭제. 기존 `register_model`/
 `set_model_alias`/`get_model_metrics_by_alias`는 변경하지 않으므로 다른 경로에
 영향 없음.
 

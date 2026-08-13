@@ -355,7 +355,7 @@ ROC-AUC를 병기만 한 것과 같은 결), 같은 통계·같은 판정이면 
 
 ### 7.1 `#493` 판정 엔진 단일화와의 충돌 — **해결됨(2026-08-04)**
 
-`#493`은 2026-08-04에 CLOSED(COMPLETED)됐지만, **`src/pipeline/experiment_evaluation.py`
+`#493`은 2026-08-04에 CLOSED(COMPLETED)됐지만, **`autoresearch/model_evaluation/experiment_evaluation.py`
 코드는 바뀌지 않았다**(마지막 변경은 `f8bf611`/#478). 머지된 것은 계획 문서뿐이다
 (`#500`, `docs/plans/2026-08-03-experiment-evaluation-unification.md`).
 

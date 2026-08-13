@@ -10,8 +10,8 @@
 
 1. **문서 분산** — 문서가 6곳에 흩어져 있었다: `docs/` 루트 평면 나열,
    과거 체계(`docs/superpowers/{specs,plans}`)와 현행 체계(`docs/{specs,plans}`)의
-   병렬 공존, 코드 디렉토리 내부 문서(`autoresearch/action_logs/docs/`,
-   `autoresearch/virtual_users/docs/`).
+   병렬 공존, 코드 디렉토리 내부 문서(`autoresearch/action_log_generation/docs/`,
+   `autoresearch/virtual_user_generation/docs/`).
 2. **소스 트리 이원화** — 수집·생성 계열은 `autoresearch/` 패키지, CTR 학습
    계열은 `src/` 디렉토리로 나뉘어 import 경로 규칙이 두 개가 되었고, 신규
    코드의 배치 기준이 모호해졌다.
@@ -47,6 +47,12 @@
 
 ## 결정 3 — `src/`를 `autoresearch/` 패키지로 통합 (팀 합의 후 실행)
 
+> **대체됨 (2026-08-13)** — 이 결정은
+> [`docs/specs/2026-08-13-repository-structure-redesign.md`](2026-08-13-repository-structure-redesign.md)로
+> 대체되었습니다(#754). 아래 목표 구조는 **채택되지 않았습니다** — `src/pipeline`을
+> `autoresearch/training/` 한 폴더로 합치는 안이었고, `applications/` 층과 서빙·proxy
+> 이동은 범위 밖이었습니다. 실제로는 파이프라인 단계 축으로 나눴습니다.
+
 ### 목표 구조
 
 ```
@@ -81,7 +87,7 @@ autoresearch/
 - Model Training / Feast Features 도메인 소유자(waieiches, hyochangsung)의
   합의가 선행되어야 한다.
 - 진행 중인 학습 파이프라인 브랜치가 머지된 직후 실행해 충돌을 최소화한다.
-- 상세 체크리스트: [`docs/plans/2026-07-15-src-package-merge.md`](../plans/2026-07-15-src-package-merge.md)
+- 상세 체크리스트: [`docs/plans/2026-07-15-src-package-merge.md`](../archive/plans/2026-07-15-src-package-merge.md)
 
 ## 범위 제외
 

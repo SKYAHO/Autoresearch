@@ -100,7 +100,7 @@ Terraform (`Autoresearch-infra`) 이 보장하고 스키마는 적재 스크립�
 | `CTR_TRAINING_BQ_RAW_DATASET` | `data_lake_raw` | raw 테이블 dataset |
 | `CTR_TRAINING_BQ_DATASET` | `feast_offline_store` | feature/서빙 테이블 dataset |
 
-구현은 `src/pipeline/build_training_dataset.py` 의 `raw_table_id()` 와
+구현은 `autoresearch/model_training/build_training_dataset.py` 의 `raw_table_id()` 와
 `feature_table_id()` 두 헬퍼로 단일화되어 있습니다. 새 BigQuery 조회를 추가할
 때 dataset 문자열을 직접 조립하지 말고 이 헬퍼를 사용합니다.
 
@@ -834,7 +834,7 @@ LEFT JOIN positive_impressions p
 
 > [!NOTE]
 > 아래 규칙은 `training_entity`/`user_dynamic_feature`(Feast 경유 목표 설계)의
-> 일부가 아니다. `src/pipeline/build_training_dataset.py`(issue #172)가 아직
+> 일부가 아니다. `autoresearch/model_training/build_training_dataset.py`(issue #172)가 아직
 > Feast 없이 동작하는 현재 16컬럼 파이프라인의 `online_features` 자기조인이
 > impression 행마다 `clicked`/`liked`/`watch_time_sec`을 직접 컬럼으로
 > 가지고 있다고 가정하기 때문에 필요한 **임시 어댑터 규칙**이다. Feast
@@ -856,7 +856,7 @@ click을 impression에 귀속시켜 파생한다. `liked`/`watch_time_sec`은 cl
 
 `followup_window_sec`는 `label_window_sec`처럼 impression↔click 사이의 지연이
 아니라 click→view→view→like처럼 **이미 귀속된 이벤트 사이의 지연**이라 별도
-이름을 쓴다. 구현: `src/pipeline/build_training_dataset.py`의
+이름을 쓴다. 구현: `autoresearch/model_training/build_training_dataset.py`의
 `derive_wide_events()`.
 
 ---

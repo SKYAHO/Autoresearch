@@ -9,7 +9,7 @@
 
 ## 배경
 
-현재 `python -m src.cli promote-model`은 정상적인 게이트 미달과 실행 오류를
+현재 `python -m autoresearch.cli promote-model`은 정상적인 게이트 미달과 실행 오류를
 모두 exit code 1로 반환한다. Airflow는 두 경우를 같은 task 실패로 처리하고,
 운영자는 로그의 `[게이트 미달]`과 `[에러]` 문자열을 읽어 원인을 구분한다.
 
@@ -71,7 +71,7 @@ no-op이며 모델 이벤트 알림 대상이 아니다.
 구조화 결과는 다음 두 선택 인자를 함께 지정할 때만 활성화한다.
 
 ```text
-python -m src.cli promote-model \
+python -m autoresearch.cli promote-model \
   --model-name ctr-model \
   --champion-alias champion \
   --result-contract model-promotion-result-v1 \
@@ -145,7 +145,7 @@ v1 `reason_code`는 다음 값으로 제한한다.
 
 ## 애플리케이션 구조
 
-`src/tracking/promote.py`는 판정 데이터를 보존하는 타입이 있는 결과 객체를
+`autoresearch/model_registry/promote.py`는 판정 데이터를 보존하는 타입이 있는 결과 객체를
 반환한다. 내부 흐름은 다음 순서를 지킨다.
 
 1. 후보와 champion 버전을 조회한다.

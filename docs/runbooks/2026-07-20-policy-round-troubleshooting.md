@@ -117,5 +117,5 @@
 
 | 항목 | 소유 | 출처 |
 | --- | --- | --- |
-| cold-start(빈 events) dtype 견고성 후속 이슈 발행 | #198 산출물 (`src/features/assembly.py`) | §1.2 |
+| cold-start(빈 events) dtype 견고성 후속 이슈 발행 | #198 산출물 (`autoresearch/feature_engineering/assembly.py`) | §1.2 |
 | 품질 잡 구 파티션 소급 스캔 방침 결정 (재생성 vs 검사 완화) | Airflow 운영 | §3.1 |

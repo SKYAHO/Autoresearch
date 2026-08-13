@@ -21,8 +21,8 @@ Postgres에 아무것도 쓰지 않는다. 반대로 Experiment API(`agent_orche
 
 ## 범위
 
-- `src/cli.py`에 `report-experiment-result` 서브커맨드 신설
-- `agent_orchestration/ui/client.py`의 `ExperimentClient`에 쓰기 메서드 2개 추가
+- `autoresearch/cli.py`에 `report-experiment-result` 서브커맨드 신설
+- `applications/experiment_platform/workbench/client.py`의 `ExperimentClient`에 쓰기 메서드 2개 추가
   (`patch_status`, `post_log`)
 - 위 모듈 docstring의 책임 범위 갱신
 
@@ -37,7 +37,7 @@ Postgres에 아무것도 쓰지 않는다. 반대로 Experiment API(`agent_orche
 ## CLI 계약
 
 ```
-uv run python -m src.cli report-experiment-result \
+uv run python -m autoresearch.cli report-experiment-result \
   --result <paired-result.json> \
   --experiment-id <uuid> \
   [--log-uri gs://...]
@@ -81,7 +81,7 @@ uv run python -m src.cli report-experiment-result \
 
 `PATCH /experiments/{id}/status`는 **멱등이 아니다**. `update_experiment_status`가
 `idempotency_key=f"status-update:{uuid.uuid4()}"`와 `check_idempotency=False`로
-전이하므로(`agent_orchestration/app/experiments/service.py:268-290`), 같은 전이를 두 번
+전이하므로(`applications/experiment_platform/api/experiments/service.py:268-290`), 같은 전이를 두 번
 호출하면 event 행이 두 개 쌓인다.
 
 따라서 이 명령은 "CREATED에서 시작한다"고 가정하지 않는다. 실행 시작 시
@@ -145,7 +145,7 @@ launcher와 무관하다.
 
 ## 결과 → 상태 매핑
 
-`PairedExperimentResult.outcome`은 3값이다(`src/pipeline/paired_experiment.py:178`).
+`PairedExperimentResult.outcome`은 3값이다(`autoresearch/model_evaluation/paired_experiment.py:178`).
 
 | outcome | 실험 상태 |
 | --- | --- |
@@ -262,7 +262,7 @@ SQLAlchemy·FastAPI를 요구한다. 이 둘은 `[project].dependencies`가 아�
 | --- | --- | --- | --- |
 | `Dockerfile.train` | 런타임 code archive로 전체 레포 | 있음(archive) | **없음** (`uv sync --locked --no-dev`) |
 | `Dockerfile.app` | COPY | **없음** | **없음** |
-| `deploy/agent_orchestration/api.Dockerfile` | **없음** | **없음** (`app`만 COPY) | 있음 |
+| `deployment/experiment_platform/api.Dockerfile` | **없음** | **없음** (`app`만 COPY) | 있음 |
 
 **따라서 이 명령을 실행할 수 있는 이미지는 현재 없다.** 지금은 `uv sync`로 dev 표면이
 갖춰진 환경에서 수동 실행하는 것만 지원한다.
@@ -319,7 +319,7 @@ fail-closed다.**
 계약이다.
 
 `0004_experiment_branch_bootstrap` migration이 `executor_job_name`을 신설했고
-`agent_orchestration/launcher/repository.py`가 함께 들어왔다. 같은 날
+`applications/experiment_platform/launcher/repository.py`가 함께 들어왔다. 같은 날
 `Autoresearch-infra`에도 launcher CronJob Terraform이 착지 중이라, 코드 레벨 가능성이
 아니라 **운영 경합이 임박한 상태**다.
 

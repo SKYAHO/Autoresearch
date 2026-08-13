@@ -160,8 +160,8 @@ PR merge와 이후 Helm 배포는 계속 `Autoresearch-airflow`의 보호 규칙
 
 | 결정 당시 파일 | 최종 상태 |
 | --- | --- |
-| `autoresearch/action_logs/` | 유지: 도메인 단일 원본 |
-| `autoresearch/youtube_collection/` | 유지: 수집 단일 원본 |
+| `autoresearch/action_log_generation/` | 유지: 도메인 단일 원본 |
+| `autoresearch/data_collection/` | 유지: 수집 단일 원본 |
 | `dags/youtube_action_log_daily.py` | 통합 DAG 전환·canary 뒤 제거 완료 |
 | `dags/youtube_trending_kr_daily.py` | 공개 CLI 기반 KPO 전환 뒤 제거 완료 |
 | `dags/youtube_backfill_kr.py` | public backfill CLI·KPO smoke 뒤 제거 완료 |

@@ -24,7 +24,7 @@
 
 ### Canonical model input contract
 
-모델 입력의 SSOT는 [`src/features/model_contract.py`](../../src/features/model_contract.py) 하나다. 아래 목록은 그 계약의 문서상 mirror이며, serving, training, simulation/daily scoring이 각자 feature 목록을 정의하거나 보정하지 않는다.
+모델 입력의 SSOT는 [`autoresearch/feature_engineering/model_contract.py`](../../autoresearch/feature_engineering/model_contract.py) 하나다. 아래 목록은 그 계약의 문서상 mirror이며, serving, training, simulation/daily scoring이 각자 feature 목록을 정의하거나 보정하지 않는다.
 
 canonical model input은 다음 정확히 21개이며, 나열된 순서도 계약이다.
 
@@ -153,7 +153,7 @@ historical_category_match
 
 ### 📊 Model Input Columns
 
-아래 컬럼만 모델 학습 입력으로 사용한다. 이 표는 `src/features/model_contract.py`의 canonical 21개 순서를 그대로 반영하며, 별도의 feature list를 정의하지 않는다.
+아래 컬럼만 모델 학습 입력으로 사용한다. 이 표는 `autoresearch/feature_engineering/model_contract.py`의 canonical 21개 순서를 그대로 반영하며, 별도의 feature list를 정의하지 않는다.
 
 | 컬럼 | 타입 |
 | --- | --- |
@@ -281,7 +281,7 @@ Feast historical retrieval이 아직 완성되지 않았을 때, MVP에서는 Bi
 
 최종 구조에서는 Feast `get_historical_features()`를 사용해 동일한 point-in-time join을 수행하는 것이 목표다.
 
-> **구현 현황(#214)**: 아래 `user_category_similarity_joined` CTE와 동일한 as-of 패턴이 `build_training_dataset.py`에 `topic_similarity_source="bigquery"`(CLI `--topic-similarity-source bigquery`)로 구현되어 있다 — `topic_similarity` 컬럼만 이 경로를 탄다. 나머지 `user_static_feature`/`user_dynamic_feature`/`video_feature` 조인은 여전히 in-process DuckDB 계산(`src/features/assembly.py`)이며, `get_historical_features()` 자체는 아직 경유하지 않는다.
+> **구현 현황(#214)**: 아래 `user_category_similarity_joined` CTE와 동일한 as-of 패턴이 `build_training_dataset.py`에 `topic_similarity_source="bigquery"`(CLI `--topic-similarity-source bigquery`)로 구현되어 있다 — `topic_similarity` 컬럼만 이 경로를 탄다. 나머지 `user_static_feature`/`user_dynamic_feature`/`video_feature` 조인은 여전히 in-process DuckDB 계산(`autoresearch/feature_engineering/assembly.py`)이며, `get_historical_features()` 자체는 아직 경유하지 않는다.
 
 ```sql
 CREATE OR REPLACE TABLE `{project}.{dataset}.training_dataset` AS
@@ -625,13 +625,13 @@ durable하게 쓴다. 이 시점부터 같은 데이터가 최대 세 곳에 존
 2. **MLflow artifact** — `train-model`/`run-pipeline`이 학습을 마치면, 검증에
    실제로 쓰인 학습 입력을 해당 run의 `reproducibility/snapshot/` 아래
    canonical 이름(`training_dataset.csv`, `snapshot_manifest.json`)으로
-   그대로 기록한다(`src/pipeline/train.py::_log_reproducibility_artifacts`).
+   그대로 기록한다(`autoresearch/model_training/train.py::_log_reproducibility_artifacts`).
    run_id를 아는 경우 MLflow UI/API의 Artifacts에서 바로 내려받을 수 있다.
 3. **게시된 GCS 스냅샷** — `--snapshot-root`(또는 환경변수
    `TRAINING_SNAPSHOT_ROOT`)를 주면 content-addressed 주소
    `gs://<root>/by-hash/<dataset_sha256>/training_dataset.csv`와 같은 prefix의
    `snapshot_manifest.json`으로 write-once 게시한다
-   (`src/pipeline/training_snapshot_store.py::publish_snapshot`). 주소가 CSV
+   (`autoresearch/model_training/training_snapshot_store.py::publish_snapshot`). 주소가 CSV
    내용의 SHA-256이므로 같은 내용을 다시 게시해도 새 객체가 생기지 않고
    (`if_generation_match=0`이 이미 존재함을 뜻하는 412를 no-op으로 흡수한다),
    한 번 게시된 객체는 이후 절대 변경되지 않는다.
@@ -643,9 +643,9 @@ durable하게 쓴다. 이 시점부터 같은 데이터가 최대 세 곳에 존
 > [!WARNING]
 > `TRAINING_SNAPSHOT_ROOT`/`--snapshot-root`는 **prod 재학습 경로에만**
 > 설정한다. 실험·dev 파이프라인이 이 값을 켜면 아래 by-date 포인터가 서로
-> 경합해 prod 포인터를 오염시킬 수 있다(#530). 환경변수는 `src/cli.py`에서만
+> 경합해 prod 포인터를 오염시킬 수 있다(#530). 환경변수는 `autoresearch/cli.py`에서만
 > 해석하고 `build_training_dataset.main` 내부에서는 읽지 않는다 —
-> `src/pipeline/degradation_eval.py`의 평가일 순회가 `main()`을 평가일 수만큼
+> `autoresearch/model_evaluation/degradation_eval.py`의 평가일 순회가 `main()`을 평가일 수만큼
 > 반복 호출하므로, `main()`이 환경변수를 직접 읽으면 그 반복이 by-date
 > 포인터를 평가일마다 덮어쓰게 된다. 실제로 `degradation_eval.py`는
 > `snapshot_root`를 넘기지 않는다.
@@ -688,7 +688,7 @@ gsutil cat gs://<bucket>/training-datasets/by-date/dt=2026-08-01/ctr_training_v1
 학습 입력으로 쓴다.
 
 ```bash
-python -m src.cli train-model --dataset-uri gs://<bucket>/training-datasets/by-hash/<sha>/
+python -m autoresearch.cli train-model --dataset-uri gs://<bucket>/training-datasets/by-hash/<sha>/
 ```
 
 - `train-model --dataset-uri`는 `--data-path`와 함께 줄 수 없다(스냅샷이 이미

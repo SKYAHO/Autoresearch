@@ -147,9 +147,9 @@ workflow_dispatch(`source_sha` 입력)로 수동 실행도 가능합니다.
    `sha-<full-sha>` 태그와 release tag를 GAR에 push합니다.
 2. push 결과 digest를 pull하여 `org.opencontainers.image.revision`과 source SHA,
    non-root 실행을 각각 검증합니다.
-3. API 이미지는 `agent_orchestration.app.main` import smoke를 실행하며, Runner
+3. API 이미지는 `applications.experiment_platform.api.main` import smoke를 실행하며, Runner
    이미지는 `codex --version`이 `codex-cli 0.146.0`인지와
-   `agent_orchestration.runner.app` import를 검증합니다.
+   `applications.experiment_platform.runner.app` import를 검증합니다.
 4. 검증된 `IMAGE_URI@sha256:<digest>`를 각 job summary의 API/Runner
    `digest_ref`로 기록합니다. 이는 인프라 리포의 API·Runner Deployment가
    사용할 수 있는 immutable handoff입니다.
@@ -293,8 +293,8 @@ gcloud artifacts docker images list \
 | `.github/workflows/release.yml` | release:published → batch·serving·Agent Orchestration API·Runner·UI·launcher·executor 빌드/GAR push, batch PR 승격 및 Agent Orchestration infra main 자동 승격 |
 | `Dockerfile.app` | multi-stage batch 이미지 (uv lock-export → python:3.12-slim, non-root, 소스 미포함·GCS 부트스트랩) |
 | `deploy/serving/Dockerfile` | Feast 호환 serving 이미지 (FastAPI/Uvicorn, non-root) |
-| `deploy/agent_orchestration/api.Dockerfile` | API 전용 FastAPI 이미지 (non-root, OAuth·Codex CLI 미포함) |
-| `deploy/agent_orchestration/runner.Dockerfile` | Runner 전용 Codex CLI 이미지 (non-root, Codex 0.146.0 고정) |
+| `deployment/experiment_platform/api.Dockerfile` | API 전용 FastAPI 이미지 (non-root, OAuth·Codex CLI 미포함) |
+| `deployment/experiment_platform/runner.Dockerfile` | Runner 전용 Codex CLI 이미지 (non-root, Codex 0.146.0 고정) |
 
 ### 배포 리포 (`SKYAHO/Autoresearch-airflow`)
 

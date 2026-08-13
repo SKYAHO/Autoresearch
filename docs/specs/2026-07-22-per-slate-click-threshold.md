@@ -53,7 +53,7 @@
 - `target_ctr`(기본 0.02)는 다음에 실처럼 꿰여 있다:
   `action_logs/schema.py`(요청/manifest 필드), `action_logs/daily.py`,
   `action_logs/pipeline.py`, `jobs/action_log.py`(CLI `--target-ctr`),
-  `src/pipeline/report_html.py`, `src/pipeline/simulate_policy_round.py`.
+  `autoresearch/reporting/report_html.py`, `autoresearch/recommendation/simulate_policy_round.py`.
 
 ## 변경 계약 (TO-BE)
 
@@ -75,7 +75,7 @@
 - **한 번 정하면 모델 이터레이션 전체에서 고정**한다. 그래야 CTR 변화가
   "모델 실력"만을 반영한다.
 - 단일 출처: 기존 `target_ctr`가 쓰던 슬롯을 그대로 승계한다 — 즉
-  `autoresearch/action_logs`가 클릭 계약의 소유자이므로 기본 상수와 스키마
+  `autoresearch/action_log_generation`가 클릭 계약의 소유자이므로 기본 상수와 스키마
   기본값을 여기에 두고, `simulate_policy_round`는 (이미 `normalize_clicks`를
   이 패키지에서 import하듯) 같은 출처를 가져와 쓴다. 두 곳에 숫자를 분산하지
   않는다.
@@ -104,12 +104,12 @@
 
 | 파일 | 변경 |
 | --- | --- |
-| `autoresearch/action_logs/pipeline.py` | 전역 선정 → 유저별 최고+커트라인 선정. `normalize_clicks`/`_clicked_indices` 계약 교체 |
-| `autoresearch/action_logs/schema.py` | 요청/manifest의 `target_ctr` → `click_threshold` |
-| `autoresearch/action_logs/daily.py` | `target_ctr` 스레딩 → `click_threshold` |
+| `autoresearch/action_log_generation/pipeline.py` | 전역 선정 → 유저별 최고+커트라인 선정. `normalize_clicks`/`_clicked_indices` 계약 교체 |
+| `autoresearch/action_log_generation/schema.py` | 요청/manifest의 `target_ctr` → `click_threshold` |
+| `autoresearch/action_log_generation/daily.py` | `target_ctr` 스레딩 → `click_threshold` |
 | `autoresearch/jobs/action_log.py` | CLI `--target-ctr` → `--click-threshold` |
-| `src/pipeline/simulate_policy_round.py` | `normalize_clicks(target_ctr)` → 유저별 커트라인 선정 |
-| `src/pipeline/report_html.py` | 리포트의 `target_ctr` 표기 → `click_threshold` |
+| `autoresearch/recommendation/simulate_policy_round.py` | `normalize_clicks(target_ctr)` → 유저별 커트라인 선정 |
+| `autoresearch/reporting/report_html.py` | 리포트의 `target_ctr` 표기 → `click_threshold` |
 
 `llm_generator.py`, `derive_would_like`, watch_time/like 파생, 노출 조립
 (`model_exposure_provider`)은 **변경하지 않는다.**

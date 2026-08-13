@@ -23,7 +23,7 @@ HTML로 변환해 iframe에 넣는다.
 `report.md`는 #640·#643으로 실제로 쓰이기 시작했고 GCS에 게시된다. 그런데 **워크벤치
 어디에도 보이지 않는다.**
 
-결과 탭(`agent_orchestration/ui/views.py:343` `_render_metrics`)은 `metric_summary`
+결과 탭(`applications/experiment_platform/workbench/views.py:343` `_render_metrics`)은 `metric_summary`
 dict를 순회하며 `st.metric` 또는 `st.code(json)`으로 찍는 것이 전부다. `results_uri`도
 문자열 하나로 찍힐 뿐 링크가 아니며, UI가 GCS를 읽는 경로는 없다.
 
@@ -48,7 +48,7 @@ GCS에만 쌓이고 화면에는 숫자 dump만 남는다. 데모에서 드러�
 
 **근거:** 응답 스키마에서 빼는 것만으로는 비용이 사라지지 않는다.
 `find_experiments`는 `select(Experiment)`로 **전체 컬럼**을 읽는다
-(`agent_orchestration/app/experiments/repository.py:48`). 목록 상한이 100행이므로 평범한
+(`applications/experiment_platform/api/experiments/repository.py:48`). 목록 상한이 100행이므로 평범한
 컬럼으로 두면 한 번의 목록 조회가 최대 100 × 64KB를 DB에서 끌어온다. 응답에서 감추는
 것과 읽지 않는 것은 다르다.
 
@@ -147,7 +147,7 @@ executor는 HTTP 페이로드를 묶고 API는 DB에 들어갈 값을 묶는다.
 ### executor 배선 — 본문을 꺼낼 통로가 지금 없다
 
 `_measure_and_publish_if_enabled`는 내부에서 `report_path`를 만들어 **GCS 게시에만 쓰고
-버린다**(`agent_orchestration/executor/phase2.py:594-608`). 반환값은 snapshot 하나뿐이라,
+버린다**(`applications/experiment_platform/executor/phase2.py:594-608`). 반환값은 snapshot 하나뿐이라,
 본문이 `report_result` 호출부(`phase2.py:645`)까지 닿는 경로가 없다.
 
 이 함수의 반환을 snapshot과 리포트 본문 두 값으로 넓힌다. 리포트가 없으면 본문은
@@ -169,7 +169,7 @@ executor와 GCS는 지금처럼 md만 다룬다.
 이슈 본문 원문이 들어간다(`executor/prompt.py:build_report_prompt`). 에이전트가 쓴
 HTML을 그대로 렌더하면 현재 `views.py`가 지키고 있는 escape 경계를 처음으로 넘게 된다.
 
-`agent_orchestration/ui/report.py`를 신설한다. Streamlit을 import하지 않는 순수 함수
+`applications/experiment_platform/workbench/report.py`를 신설한다. Streamlit을 import하지 않는 순수 함수
 모듈이다.
 
 - `render_report_html(markdown_text) -> str` —
@@ -282,7 +282,7 @@ Streamlit 네이티브로 두면 사용자 테마·반응형을 그대로 받고
 ### seed별 delta는 그리지 않는다
 
 `build_metric_snapshot`은 `paired[name] = {"mean", "standard_error"}`만 싣는다
-(`agent_orchestration/executor/measurement.py:297`). `per_seed` delta는 전문
+(`applications/experiment_platform/executor/measurement.py:297`). `per_seed` delta는 전문
 (`experiment-metrics-v1`)에만 있고 그것은 GCS에 있다.
 
 화면 사정으로 스냅샷 계약을 넓히지 않는다 — 요약이 화면 사정으로 바뀌어도 전문의

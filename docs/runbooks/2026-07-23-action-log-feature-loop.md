@@ -12,7 +12,7 @@ data/generated/round_a/event_log.parquet
 
 ## 불변 조건
 
-- `autoresearch/action_logs/` 스키마와 `daily.py`의 shard/merge 경로는 수정하지 않는다.
+- `autoresearch/action_log_generation/` 스키마와 `daily.py`의 shard/merge 경로는 수정하지 않는다.
 - action log의 `dt=D` 파티션은 KST D일 하루치 슬라이스다(#295 A안). 이벤트는
   실제 발생 당일 timestamp 그대로 `dt=이벤트 당일`에 업로드한다 — "D-1 이벤트
   → dt=D 트레일링" 관행과 30일 합성 확장 업로드는 폐지되었다. 소비자는
