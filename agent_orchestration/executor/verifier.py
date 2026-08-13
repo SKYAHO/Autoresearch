@@ -357,7 +357,17 @@ def _name_status_changes(
     return changes
 
 
-def _path_is_allowed(path: str, policy: CandidatePolicy) -> bool:
+def _is_legacy_tree(repository: Path) -> bool:
+    """워크스페이스가 #754 재배치 **이전**에 봉인된 트리인지 본다.
+
+    `autoresearch/cli.py`의 존재로 가른다 — 재배치가 만든 진입점이라 이전 트리에는 없고
+    이후 트리에는 반드시 있다. `autoresearch/` 디렉터리 자체는 이전에도 있었으므로 판별
+    기준이 될 수 없다. 옛 봉인 SHA 실험이 모두 끝나면 이 함수와 호출부를 제거한다.
+    """
+    return not (repository / "autoresearch" / "cli.py").is_file()
+
+
+def _path_is_allowed(path: str, policy: CandidatePolicy, *, legacy_tree: bool) -> bool:
     """기본 allowlist와 Issue Form의 조건부 scope를 path 하나에 적용한다."""
     if path in {".env", "pyproject.toml", "uv.lock"} or path.startswith(".env."):
         return False
@@ -365,11 +375,11 @@ def _path_is_allowed(path: str, policy: CandidatePolicy) -> bool:
         return False
     if path in _MODEL_CONTRACT_PATHS:
         return "prod_model_contract" in policy.allowed_scope
-    if path.startswith("src/"):
+    if legacy_tree and path.startswith("src/"):
         # 전환 기간 허용. 봉인된 옛 base_dev_sha 트리에서 만들어진 실험은 워크스페이스에
         # 여전히 src/ 를 가지므로, 여기서 막으면 진행 중 실험이 전부 forbidden_path 로
-        # 거부된다. 옛 봉인 SHA 실험이 모두 끝나면 이 줄과 _MODEL_CONTRACT_PATHS 의 옛
-        # 경로를 함께 제거한다 (#754).
+        # 거부된다. **옛 트리에서만** 연다 — 재배치 이후 트리에서 src/ 아래 파일이 새로
+        # 생기는 것은 정상이 아니므로 그때는 막는 쪽이 맞다 (#754).
         return True
     if path.startswith(_BASE_ALLOWED_PREFIXES):
         return True
@@ -471,6 +481,7 @@ def _validate_path_files(
     environment: dict[str, str],
 ) -> tuple[str, ...]:
     """경로·mode·LFS·파일 크기를 candidate 전체에 대해 fail-closed로 검사한다."""
+    legacy_tree = _is_legacy_tree(repository)
     policy_paths: list[str] = []
     untracked_paths: list[str] = []
     for change in changes:
@@ -478,7 +489,7 @@ def _validate_path_files(
             if path is None:
                 continue
             policy_paths.append(path)
-            if not _path_is_allowed(path, policy):
+            if not _path_is_allowed(path, policy, legacy_tree=legacy_tree):
                 raise CandidateVerificationError("forbidden_path")
             if Path(path).suffix.lower() in _GENERATED_DATA_SUFFIXES:
                 raise CandidateVerificationError("generated_data")

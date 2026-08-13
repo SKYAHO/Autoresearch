@@ -206,8 +206,9 @@ def _build_candidate_provider_factory(
         def rerank_factory(
             videos: list[dict],
         ) -> tuple[CandidateProvider, Mapping[tuple[str, str], ExposureMetadata]]:
-            # 순환 import 회피 — action_log_generation ↔ recommendation 은 폐루프 구조상
-            # 서로를 참조한다. 모듈 최상단으로 올리면 import 가 실패한다 (#754).
+            # 함수 안에 두는 이유는 순환이 아니라 **비용**이다. 이 배치 진입점은 인자 검증만
+            # 하고 끝나는 경로가 있는데, 이 모듈들은 최상단에서 google.cloud.bigquery 등
+            # 무거운 의존을 끌어온다. --exposure-source 가 고르는 경로에서만 필요하다.
             from autoresearch.recommendation.rerank_api import (
                 RerankApiSettings,
                 make_rerank_api_exposure_provider,
@@ -232,16 +233,18 @@ def _build_candidate_provider_factory(
         return None
 
     def factory(videos: list[dict]) -> tuple[CandidateProvider, Mapping[tuple[str, str], ExposureMetadata]]:
-        # 순환 import 회피 — action_log_generation ↔ model_training 은 폐루프 구조상
-        # 서로를 참조한다. 모듈 최상단으로 올리면 import 가 실패한다 (#754).
+        # 함수 안에 두는 이유는 순환이 아니라 **비용**이다. 이 배치 진입점은 인자 검증만
+        # 하고 끝나는 경로가 있는데, 이 모듈들은 최상단에서 google.cloud.bigquery 등
+        # 무거운 의존을 끌어온다. --exposure-source 가 고르는 경로에서만 필요하다.
         from autoresearch.model_training.build_training_dataset import require_bigquery_project
 
         project = require_bigquery_project()
 
         from google.cloud import bigquery
 
-        # 순환 import 회피 — action_log_generation ↔ recommendation 은 폐루프 구조상
-        # 서로를 참조한다. 모듈 최상단으로 올리면 import 가 실패한다 (#754).
+        # 함수 안에 두는 이유는 순환이 아니라 **비용**이다. 이 배치 진입점은 인자 검증만
+        # 하고 끝나는 경로가 있는데, 이 모듈들은 최상단에서 google.cloud.bigquery 등
+        # 무거운 의존을 끌어온다. --exposure-source 가 고르는 경로에서만 필요하다.
         from autoresearch.recommendation.model_exposure_provider import (
             load_user_rankings,
             make_model_exposure_provider,
@@ -268,8 +271,9 @@ def _validate_args(args: argparse.Namespace) -> None:
     if args.mode in {"single", "shard"}:
         args.exposure_source = args.exposure_source or "model"
         if args.exposure_source == "model":
-            # 순환 import 회피 — action_log_generation ↔ model_training 은 폐루프 구조상
-            # 서로를 참조한다. 모듈 최상단으로 올리면 import 가 실패한다 (#754).
+            # 함수 안에 두는 이유는 순환이 아니라 **비용**이다. 이 배치 진입점은 인자 검증만
+            # 하고 끝나는 경로가 있는데, 이 모듈들은 최상단에서 google.cloud.bigquery 등
+            # 무거운 의존을 끌어온다. --exposure-source 가 고르는 경로에서만 필요하다.
             from autoresearch.model_training.build_training_dataset import require_bigquery_project
 
             try:

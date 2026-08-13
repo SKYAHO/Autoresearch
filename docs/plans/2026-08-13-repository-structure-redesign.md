@@ -15,7 +15,7 @@
 ## Global Constraints
 
 - **동작 변경 금지.** 이 계획의 모든 작업은 이동·리네임·임포트 치환뿐이다. 함수 시그니처, 로직, 로그 문구, 파일 포맷을 바꾸지 않는다. 리팩터링 충동이 들면 별도 이슈로 분리한다.
-- **순환 의존 해소 금지.** `autoresearch/jobs/action_log.py`의 함수 내부 지연 import 4곳(`from src.pipeline.rerank_api`, `build_training_dataset` ×2, `model_exposure_provider`)은 경로만 갱신하고 **모듈 최상단으로 올리지 않는다.** 올리면 순환 import로 실패한다.
+- **지연 import 위치 유지.** `autoresearch/jobs/action_log.py`의 함수 내부 지연 import 4곳(`from src.pipeline.rerank_api`, `build_training_dataset` ×2, `model_exposure_provider`)은 경로만 갱신하고 **모듈 최상단으로 올리지 않는다.** 이 계획서는 처음에 "올리면 순환 import로 실패한다"고 적었으나 Task 1에서 실측한 결과 **틀렸다** — 넷을 모두 올려도 import와 테스트가 통과한다(spec 1절 정정 참조). 올리지 않는 실제 이유는 무거운 선택적 의존(`google.cloud.bigquery`, `requests`)을 인자 검증 경로에서 떼어 놓기 위해서이며, 어느 쪽이든 이번 재배치의 범위가 아니다.
 - **`feature_repo/` 이동 금지.** 최상위에 그대로 둔다. `feature_store.yaml`, `Dockerfile.feast`, `feast-apply.yml`의 `feature_repo` 경로를 건드리지 않는다.
 - **`sys.path` 블록 유지 — 단, 깊이 보존은 `src/*` 계열에만 해당한다.** `pyproject.toml`의 `[tool.uv] package = false`는 그대로다. `src/cli.py`(2→2), `src/pipeline/*`(3→3), `src/serving/*`(3→3), `src/features|models|tracking|utils/*`(3→3)는 깊이가 보존되므로 `PROJECT_ROOT = os.path.dirname(...)` 줄을 **수정하지 않는다.** 반면 아래 네 그룹은 깊이가 바뀌므로 **개별 확인이 필요하다.**
 
@@ -598,13 +598,14 @@ grep -rn "src/pipeline\|src/features\|src/models\|src/tracking\|src/utils\|src\.
 
 CLAUDE.md 규칙상 모듈 docstring은 "전체 파이프라인 기준으로 어느 구간을 담당하는지"를 서술한다. `[비책임]` 절이 옛 경로로 인접 모듈을 가리키는 곳도 함께 고친다. 예: `autoresearch/loadtest/__init__.py`의 *"HTTP 리랭킹 요청은 src/serving/이 담당한다"* → Task 2에서 `applications/reranking_api/`로 갱신.
 
-- [x] **Step 9-1: 순환 회피 지연 import에 주석을 남긴다**
+- [x] **Step 9-1: 지연 import에 사유 주석을 남긴다**
 
 spec 7절의 남는 부채다. `autoresearch/jobs/action_log.py`의 함수 내부 지연 import 4곳(209, 233, 239, 265행)에 아래 취지의 주석을 각 블록 위에 붙인다.
 
 ```python
-# 순환 import 회피 — action_log_generation ↔ recommendation 은 폐루프 구조상
-# 서로를 참조한다. 모듈 최상단으로 올리면 import 가 실패한다 (#754).
+# 함수 안에 두는 이유는 순환이 아니라 **비용**이다. 이 배치 진입점은 인자 검증만
+# 하고 끝나는 경로가 있는데, 이 모듈들은 최상단에서 google.cloud.bigquery 등
+# 무거운 의존을 끌어온다. --exposure-source 가 고르는 경로에서만 필요하다.
 ```
 
 주석만 추가하고 **import 위치를 바꾸지 않는다.**

@@ -34,6 +34,7 @@ import subprocess
 from typing import Final, cast
 
 from agent_orchestration.executor.command_output import log_command_streams
+from agent_orchestration.executor.training import workspace_layout
 from agent_orchestration.executor.training import TrainingStage
 
 
@@ -188,7 +189,9 @@ def evaluate_condition(
             [
                 "python",
                 "-m",
-                "autoresearch.cli",
+                # 봉인된 트리의 모양을 보고 고른다 — 이 명령은 executor 이미지가 아니라
+                # workspace(`cwd=config.workspace`)에서 돈다 (#754).
+                workspace_layout(config.workspace).cli_module,
                 "evaluate-model",
                 "--data-path",
                 str(test_set_path),

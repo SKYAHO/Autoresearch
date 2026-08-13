@@ -33,7 +33,13 @@ from agent_orchestration.executor.training import (  # noqa: E402
 
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
-    """clone된 저장소를 흉내 내는 빈 디렉터리."""
+    """clone된 저장소를 흉내 내는 빈 디렉터리.
+
+    #754 전환 기간 동안 이 fixture는 재배치 **이전** 트리를 나타낸다 — executor가
+    workspace 모양을 보고 모듈 이름을 고르므로(`workspace_layout`), 빈 디렉터리는 옛
+    레이아웃으로 해석된다. 두 레이아웃의 선택 자체는
+    `test_workspace_layout_follows_the_sealed_tree_not_the_image`가 검증한다.
+    """
     repository = tmp_path / "repository"
     repository.mkdir()
     return repository
@@ -412,7 +418,7 @@ def test_failed_command_log_names_the_call_site(
             resolve_policy_seeds(workspace)
 
     assert "stage=seed_probe" in caplog.text
-    assert "No module named 'autoresearch'" in caplog.text
+    assert "No module named 'src'" in caplog.text
 
 
 def test_training_log_label_names_the_condition_and_seed(
@@ -566,3 +572,40 @@ def test_spawn_failure_logs_why_the_process_could_not_start(
 
     assert "stage=uv_sync" in caplog.text
     assert "error_type=FileNotFoundError" in caplog.text
+
+
+def test_workspace_layout_follows_the_sealed_tree_not_the_image(tmp_path: Path) -> None:
+    """봉인된 트리가 재배치 이전이면 옛 모듈 이름을 써야 한다(#754).
+
+    이 세 값은 executor 이미지가 아니라 `cwd=workspace`에서 실행된다. 이미지는 릴리스된
+    digest이고 워크스페이스는 DB에 봉인된 `base_dev_sha`라 둘의 버전이 어긋날 수 있다.
+    새 이름만 쓰면 재배치 이전에 봉인된 실험이 `ModuleNotFoundError`로 전부 죽는다 —
+    학습이 시작조차 못 하므로 지표를 하나도 남기지 못한다.
+    """
+    legacy = tmp_path / "legacy"
+    (legacy / "src").mkdir(parents=True)
+    (legacy / "src" / "cli.py").write_text("", encoding="utf-8")
+    # 재배치 이전 트리에도 autoresearch/ 는 있었다 — 디렉터리 존재는 판별 기준이 못 된다.
+    (legacy / "autoresearch").mkdir()
+
+    current = tmp_path / "current"
+    (current / "autoresearch").mkdir(parents=True)
+    (current / "autoresearch" / "cli.py").write_text("", encoding="utf-8")
+
+    assert training_module.workspace_layout(legacy).cli_module == "src.cli"
+    assert training_module.workspace_layout(current).cli_module == "autoresearch.cli"
+
+    legacy_layout = training_module.workspace_layout(legacy)
+    assert "src.pipeline.experiment_evaluation" in training_module._seed_probe(legacy_layout)
+    assert "src.pipeline.training_snapshot_store" in training_module._download_probe(
+        legacy_layout
+    )
+
+    current_layout = training_module.workspace_layout(current)
+    assert "autoresearch.model_evaluation.experiment_evaluation" in training_module._seed_probe(
+        current_layout
+    )
+    assert (
+        "autoresearch.model_training.training_snapshot_store"
+        in training_module._download_probe(current_layout)
+    )

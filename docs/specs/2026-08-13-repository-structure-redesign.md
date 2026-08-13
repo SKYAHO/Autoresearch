@@ -78,10 +78,19 @@ feature_repo ──1──▶ src          ┘
 - `agent_orchestration`은 이미 독립 애플리케이션입니다. 자체
   `docker-compose.yml`, `alembic.ini` + `migrations/`, `README.md`, 배포 이미지
   5개(api/runner/ui/launcher/executor), 테스트 215개를 가집니다.
-- 반대로 `src`·`autoresearch`·`feature_repo`는 서로 순환 참조합니다.
-  `autoresearch/jobs/action_log.py`가 `src.pipeline.*`을 **함수 내부에서** 4번
-  지연 import 하는 것은 모듈 최상단에 두면 순환 import로 실패하기 때문입니다.
+- 반대로 `src`·`autoresearch`·`feature_repo`는 **패키지 수준에서 서로를 참조**합니다.
   즉 현재의 3분할은 설계가 아니라 사후 봉합입니다.
+
+  > **정정 (2026-08-13, Task 1 구현 중 실측)** — 처음에는
+  > `autoresearch/jobs/action_log.py`의 함수 내부 지연 import 4곳이 "최상단에 두면 순환
+  > import로 실패하기 때문"이라고 적었으나 **틀렸습니다.** 네 개를 모두 모듈 최상단으로
+  > 올려도 import와 관련 테스트 36개가 통과합니다. `action_log_generation`은 자기 패키지
+  > 밖의 `autoresearch.*`를 하나도 import하지 않고, `recommendation`·`model_training` 어느
+  > 쪽도 `jobs.action_log`를 참조하지 않습니다 — 실제 방향은
+  > `jobs.action_log → recommendation → action_log_generation` DAG입니다.
+  > 지연 import의 실제 이유는 **비용**입니다: `model_exposure_provider`가 최상단에서
+  > `google.cloud.bigquery`를, `rerank_api`가 `requests`를 끌어오는데, 둘 다
+  > `--exposure-source`가 고르는 경로에서만 필요합니다.
 
 따라서 실제 덩어리는 `폐루프 파이프라인(src + autoresearch + feature_repo)`과
 `실험 에이전트(agent_orchestration)` 2개이며, 현재 구조는 이 2덩어리를 3개
@@ -410,12 +419,13 @@ _MODEL_CONTRACT_PATHS: Final = frozenset({
 
 ## 7. 남는 부채 (이번 범위 밖, 기록만)
 
-- **`recommendation` ↔ `action_log_generation` 순환.** 폐루프 프로젝트에서 파이프라인
-  단계 축으로 자르면 마지막 단계가 첫 단계로 돌아오므로 순환은 필연입니다.
-  `jobs/action_log.py`의 지연 import 4곳에 "순환 회피 목적"임을 주석으로 남겨
-  다음 작업자가 모듈 최상단으로 올리지 않게 합니다. 근본 해소는 공유 계약
-  (action log 스키마, `CandidateProvider`/`ExposureMetadata` 프로토콜)을 별도
-  `contracts/` 패키지로 분리해야 가능합니다.
+- **`recommendation` → `action_log_generation` 방향 의존.** 폐루프 프로젝트에서
+  파이프라인 단계 축으로 자르면 마지막 단계가 첫 단계를 참조하게 됩니다. 다만 1절의
+  정정대로 이것이 **import 순환을 만들지는 않습니다** — 현재 그래프는 DAG입니다.
+  `jobs/action_log.py`의 지연 import 4곳은 순환 회피가 아니라 무거운 선택적 의존
+  (`google.cloud.bigquery`, `requests`)을 인자 검증 경로에서 떼어 놓기 위한 것이며,
+  주석도 그렇게 적습니다. 최상단으로 올리는 것 자체는 지금도 가능하므로, 올릴지 말지는
+  진입점 import 비용 문제로 별도 판단합니다.
 - **`feature_repo/` 이동.** feast registry 재생성과 ODFV UDF 계약(#409) 검증이
   필요하므로 별도 이슈로 분리합니다.
 - **설치형 패키지 전환.** `build-system` + `[project.scripts]` 도입은 별도 과제입니다.
