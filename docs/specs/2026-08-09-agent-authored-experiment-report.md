@@ -62,7 +62,7 @@ load-bearing이 아니게 되는 것이지 제거 대상이 아니다.**
 
 **유지되는 것:** 통계 **함수**(`compare_to_baseline`, `summarize_metric`,
 `t_critical_95`)는 계속 쓴다. 판정 관문이 아니라 `report.md`에 실을 **참고 수치**로
-계산한다. `src/pipeline/paired_experiment.py`의 계약 층만 이 경로에서 쓰지 않는다.
+계산한다. `autoresearch/model_evaluation/paired_experiment.py`의 계약 층만 이 경로에서 쓰지 않는다.
 
 ## 결정 2 — 계산과 판정을 분리한다
 
@@ -73,7 +73,7 @@ load-bearing이 아니게 되는 것이지 제거 대상이 아니다.**
 | **리뷰** | Claude (별도 에이전트) | `report.md`를 `metrics.json`·diff와 대조한다 |
 | **승격** | 사람 | `report.md`를 보고 결정한다 |
 
-**측정은 새 모듈이 아니라 기존 `src/pipeline/evaluate.py`를 쓴다.** 이미 ROC-AUC ·
+**측정은 새 모듈이 아니라 기존 `autoresearch/model_evaluation/evaluate.py`를 쓴다.** 이미 ROC-AUC ·
 LogLoss · Brier · PR-AUC · grouped ROC-AUC를 계산하며, executor가 `train-model`을
 호출하는 것과 같은 패턴으로 `evaluate-model`을 호출한다.
 
@@ -491,7 +491,7 @@ phase2 stage finished stage=candidate-finalizer exit_code=0
 변경 효과로 읽을 수 있다"고 적었다. 비교의 성립 여부를 서술의 전제로 삼은 것이다.
 
 **§결정 3의 하네스 교체가 candidate로 새지 않았다.** `exp/644` 커밋(`9c64643`)은
-`src/models/lgbm_model.py`·`src/pipeline/config.yaml` 두 파일뿐이다.
+`autoresearch/model_training/lgbm_model.py`·`autoresearch/model_training/config.yaml` 두 파일뿐이다.
 
 ### 실측으로 드러난 Codex CLI 제약 (9)
 

@@ -9,7 +9,7 @@
 
 ## 범위
 
-- `deploy/agent_orchestration/ui.Dockerfile`로 Streamlit UI 전용 이미지를 정의한다.
+- `deployment/experiment_platform/ui.Dockerfile`로 Streamlit UI 전용 이미지를 정의한다.
 - 기존 release workflow가 동일한 `main` source SHA에서 UI 이미지를 build·push·검증한다.
 - release summary가 인프라 저장소가 소비할 UI 이미지의 immutable digest를 남긴다.
 
@@ -29,7 +29,7 @@ Runner 소스는 포함하지 않는다.
 
 컨테이너는 UID/GID `10001`의 비루트 사용자로 실행한다. Streamlit은
 `0.0.0.0:8501`에서 headless 모드로 실행하며, `PYTHONPATH=/app`으로
-`agent_orchestration/ui/app.py`를 로드한다. telemetry와 source watcher는 비활성화한다.
+`applications/experiment_platform/workbench/app.py`를 로드한다. telemetry와 source watcher는 비활성화한다.
 `/_stcore/health`가 readiness·liveness 경로다. API base URL과 토큰은 이미지에 넣지
 않으며, Kubernetes Deployment가 런타임 환경 변수로 주입한다.
 

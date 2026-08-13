@@ -9,11 +9,11 @@
 
 실험 피처 1개를 넣는 유일한 방법이 **prod 모델 계약 수정**이다.
 
-- `src/pipeline/train.py` — `feature_columns = list(MODEL_FEATURE_COLUMNS)` 하드코딩
-- `src/pipeline/evaluate.py` — `require_model_feature_columns()`가 계약과 정확히
+- `autoresearch/model_training/train.py` — `feature_columns = list(MODEL_FEATURE_COLUMNS)` 하드코딩
+- `autoresearch/model_evaluation/evaluate.py` — `require_model_feature_columns()`가 계약과 정확히
   일치하지 않으면 `FeatureContractError`로 중단
 
-`MODEL_FEATURE_COLUMNS`(`src/features/model_contract.py`)는 학습·서빙·Feast가 공유하는
+`MODEL_FEATURE_COLUMNS`(`autoresearch/feature_engineering/model_contract.py`)는 학습·서빙·Feast가 공유하는
 정본이고 **순서까지 고정**돼 있다. ONNX 입력이 이름 없는 순서 배열이라 순서가 틀리면
 조용히 오예측한다. 설계 자체는 옳고, 없는 것은 **실험용 예외 통로**다.
 
@@ -28,7 +28,7 @@
 파생 피처 계산을 여기에 넣지 않는 이유는 셋이다.
 
 1. **이중 소스가 생긴다.** `views_per_day` 같은 값을 `train.py`에서 즉석 계산하면 서빙
-   시점에는 Feast online store에 그 피처가 없다. `src/features/feature_builder.py`가
+   시점에는 Feast online store에 그 피처가 없다. `autoresearch/feature_engineering/feature_builder.py`가
    명시한 원칙 — "세 소비자(학습·시뮬의 Feast ODFV, 서빙 online 후처리, DuckDB 재계산)가
    이 한 벌을 공유해 Training-Serving Skew를 막는다" — 과 정면으로 충돌한다.
 2. **책임 경계가 모듈 구조와 어긋난다.** 파생 피처 **계산 본체**는 `feature_builder.py`,
@@ -45,7 +45,7 @@
 
 ### 1. 계약 계층 — prod 계약은 불변
 
-`src/features/model_contract.py`에 두 함수를 추가한다. `MODEL_FEATURE_COLUMNS`와
+`autoresearch/feature_engineering/model_contract.py`에 두 함수를 추가한다. `MODEL_FEATURE_COLUMNS`와
 `CATEGORICAL_FEATURE_COLUMNS`는 **한 글자도 바뀌지 않는다.**
 
 ```
@@ -106,7 +106,7 @@ require_experiment_feature_columns(columns, *, extra) -> tuple[str, ...]
 
 `PromotionReasonCode`에 `EXPERIMENT_MODEL`을 추가한다.
 
-### 5. CLI — `src/cli.py`
+### 5. CLI — `autoresearch/cli.py`
 
 `train-model`과 `run-pipeline`에 `--extra-features` 옵션을 추가한다(쉼표 구분).
 미지정이 기본값이므로 공개 batch 계약(batch-contract-v1)은 바뀌지 않는다.
@@ -149,7 +149,7 @@ prod 계약(MODEL_FEATURE_COLUMNS)에도 없는 컬럼입니다.
 ### 이슈 템플릿과의 관계
 
 `.github/ISSUE_TEMPLATE/auto_research.yml`의 `허용 범위`에 "prod 모델 계약
-(`src/features/model_contract.py`) 수정을 허용한다" 체크박스가 있다.
+(`autoresearch/feature_engineering/model_contract.py`) 수정을 허용한다" 체크박스가 있다.
 
 - 체크가 **꺼져 있으면** → 이 오버라이드 경로를 쓴다(계약 무수정)
 - 체크가 **켜져 있으면** → 계약 직접 수정도 가능하지만, 테스트 43건이 깨지는 비용을

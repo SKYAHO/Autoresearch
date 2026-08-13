@@ -75,7 +75,7 @@ SELECT 본문은 `docs/guides/data-warehouse.md`의 SQL을 그대로 옮긴 것�
 
 원본인 `user_topic_embedding`과 `category_embedding` artifact 테이블을 BigQuery에
 적재하는 배치가 아직 없다. 현재 `topic_similarity`는 학습 파이프라인
-(`src/features/assembly.py`)이 Vertex AI 임베딩으로 in-memory 계산하며, offline
+(`autoresearch/feature_engineering/assembly.py`)이 Vertex AI 임베딩으로 in-memory 계산하며, offline
 store의 `user_category_similarity` 테이블은 더미 데이터
 (`scripts/generate_and_upload_dummy_data.py`) 상태다.
 

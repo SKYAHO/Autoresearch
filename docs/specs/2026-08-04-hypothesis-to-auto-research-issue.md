@@ -5,7 +5,7 @@
 - **이슈**: #516, #536, #546
 - **선행 계약**: `.github/ISSUE_TEMPLATE/auto_research.yml`(필드 정본),
   `tools/auto_research_issue_branch.py`(파싱 정본),
-  `src/pipeline/experiment_evaluation.py`(`POLICY_SEEDS` 정본),
+  `autoresearch/model_evaluation/experiment_evaluation.py`(`POLICY_SEEDS` 정본),
   `docs/specs/2026-07-30-codex-oauth-runner-isolation.md`(깨뜨리면 안 되는 보안 속성)
 
 ## 목적
@@ -125,7 +125,7 @@ Issue Form 필수 18개를 다음과 같이 나눈다.
 `결과 (에이전트가 채웁니다)`는 실험 종료 후이므로 #494 소유다.
 
 **`허용 범위`를 사용자가 갖는 이유는 안전이다.** 이 체크박스는 "prod 모델 계약
-(`src/features/model_contract.py`) 수정 허용", "Feast 정의 수정 허용", "champion 승격
+(`autoresearch/feature_engineering/model_contract.py`) 수정 허용", "Feast 정의 수정 허용", "champion 승격
 검토"를 정한다. 실행기가 수정할 수 있는 파일 범위의 정본이므로, **에이전트가 자기
 권한을 스스로 넓히게 두지 않는다.**
 
@@ -141,14 +141,14 @@ training_window()`가 요청이 들어온 시각을 KST 날짜로 변환해 `[�
 
 ## 결정 3 — 시드는 `42..71` 고정이다
 
-`랜덤 시드 목록`에 `src/pipeline/experiment_evaluation.py:46`의 `POLICY_SEEDS`를
+`랜덤 시드 목록`에 `autoresearch/model_evaluation/experiment_evaluation.py:46`의 `POLICY_SEEDS`를
 **참조해** 오름차순으로 쓴다.
 
 ```
 42, 43, 44, ... , 71
 ```
 
-`src/pipeline/paired_experiment.py:266-272`가 양방향 차집합으로 검사한다.
+`autoresearch/model_evaluation/paired_experiment.py:266-272`가 양방향 차집합으로 검사한다.
 
 ```python
 seeds = {run.seed for run in request.runs}
@@ -264,7 +264,7 @@ POST /experiments/{experiment_id}/issue
 `primary_metric_direction`, `minimum_primary_delta`, `guardrail_metric_name`,
 `guardrail_metric_direction`, `maximum_guardrail_regression`과 선택
 `secondary_metrics`·`related_work`다. 정본은
-`agent_orchestration/app/experiments/issue_authoring.py`이며 `extra="forbid"`라
+`applications/experiment_platform/api/experiments/issue_authoring.py`이며 `extra="forbid"`라
 서버 소유 값(시드·split 등)을 요청으로 덮어쓸 수 없다.
 
 ### 본문 조립과 발행을 분리한다
@@ -346,7 +346,7 @@ KST 날짜**로 계산하므로, `gh` 실패 후 자정을 넘겨 재호출하�
 ## 구성 요소
 
 ```
-agent_orchestration/app/experiments/
+applications/experiment_platform/api/experiments/
 ├── issue_authoring.py 신규 · 순수 함수. 요청 필드 검증 + 서버 값 → 본문 문자열
 ├── github_issues.py   신규 · gh CLI 경계. 서브프로세스·환경 화이트리스트·timeout·오류 분류
 ├── service.py         기존 · 생성→저장→발행 2단계 오케스트레이션, 멱등성·상한 검사

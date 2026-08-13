@@ -13,7 +13,7 @@
 **모델 예측 70% + 트렌딩 20% + 랜덤 10%**로 구성되고, 각 노출에는 어느 정책으로
 나갔는지 태그가 남아야 이후 온라인 매트릭 비교(AB)가 가능하다.
 
-현재 일일 action-log 생성(`autoresearch/action_logs/candidate.py`)의 70%
+현재 일일 action-log 생성(`autoresearch/action_log_generation/candidate.py`)의 70%
 슬라이스는 키워드 substring 겹침 휴리스틱이다. #216이 champion 모델의 유저별
 전체 순위를 `user_recommendations` 파티션 테이블로 매일 적재하므로, 이 순위를
 70% 슬라이스의 소스로 교체하면 폐루프의 전반부(모델 → 노출)가 연결된다.
@@ -24,7 +24,7 @@
    BQ 리더 구현
 2. 모델 순위 상위 + 트렌딩 + 랜덤으로 24개 노출을 조립하는
    `CandidateProvider` 호환 provider 구현 (기존 seam:
-   `autoresearch/action_logs/pipeline.py`의 `candidate_provider` 주입)
+   `autoresearch/action_log_generation/pipeline.py`의 `candidate_provider` 주입)
 3. 노출별 정책 태그(exposure_source)와 모델 계보(model_run_id)가 event log
    레코드에 남는 계약 정의
 
@@ -109,7 +109,7 @@ n_model    = n_total - n_popular - n_explore               # 나머지 → 17
 
 ### EventLog 스키마 확장 (additive)
 
-`autoresearch/action_logs/schema.py`의 `EventLog`에 optional 필드 1개를
+`autoresearch/action_log_generation/schema.py`의 `EventLog`에 optional 필드 1개를
 추가한다. 기존 historical 로그와 하위 호환(전부 None 허용).
 
 | 필드 | 타입 | 의미 |
@@ -145,10 +145,10 @@ provider가 유지하는 노출 메타데이터를 draft → EventLog 조립 시
 
 | 구성 요소 | 위치 | 이유 |
 | --- | --- | --- |
-| BQ 리더 `load_user_rankings(client, table_id, dt)` | `src/pipeline/` (신규 모듈) | BigQuery 의존은 src/pipeline 소관 — `autoresearch/action_logs/`는 순수 유지 |
+| BQ 리더 `load_user_rankings(client, table_id, dt)` | `autoresearch/recommendation/` (신규 모듈) | BigQuery 의존은 recommendation 단계 소관 — `autoresearch/action_log_generation/`는 순수 유지 |
 | 노출 조립 `build_model_exposures(...)` | 같은 신규 모듈 | 순수 함수 — BQ 없이 단위 테스트 |
 | provider 클로저 (조립 결과를 `CandidateProvider` 시그니처로) | 같은 신규 모듈 | 기존 seam `candidate_provider(virtual_user, user_rng)`에 그대로 주입 |
-| `EventLog.exposure_source` 필드 | `autoresearch/action_logs/schema.py` | 스키마 단일 출처 |
+| `EventLog.exposure_source` 필드 | `autoresearch/action_log_generation/schema.py` | 스키마 단일 출처 |
 
 리더는 파티션을 **1회** 조회해 `user_id → 순위 목록` 맵을 만든 뒤 유저별
 호출에서 재사용한다(유저 수 × 반복 조회 금지 — #216 리뷰의 반복 I/O 지적과

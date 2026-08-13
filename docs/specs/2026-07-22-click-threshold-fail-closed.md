@@ -29,12 +29,12 @@
 
 | 위치 | 현재 | 변경 |
 | --- | --- | --- |
-| `autoresearch/action_logs/schema.py:171` | `EventGenerationRequest.click_threshold: float = 0.55` | 기본값 제거(required) |
-| `autoresearch/action_logs/schema.py:126` | `ActionLogShardManifest.click_threshold: float = Field(default=0.55, ...)` | `Field(ge=0.0, le=1.0)` (default 제거, required) |
+| `autoresearch/action_log_generation/schema.py:171` | `EventGenerationRequest.click_threshold: float = 0.55` | 기본값 제거(required) |
+| `autoresearch/action_log_generation/schema.py:126` | `ActionLogShardManifest.click_threshold: float = Field(default=0.55, ...)` | `Field(ge=0.0, le=1.0)` (default 제거, required) |
 | `autoresearch/jobs/action_log.py:133` | CLI `--click-threshold ... default=0.55` | `required=True`, default 제거 |
-| `autoresearch/action_logs/daily.py:824,976` | `click_threshold: float = 0.55` | 기본값 제거(required kwarg) |
-| `src/pipeline/simulate_policy_round.py:138` | `click_threshold: float = 0.55` | 기본값 제거(required kwarg) |
-| `src/pipeline/simulate_policy_round.py:326` | CLI `--click-threshold ... default=0.55` | `required=True` |
+| `autoresearch/action_log_generation/daily.py:824,976` | `click_threshold: float = 0.55` | 기본값 제거(required kwarg) |
+| `autoresearch/recommendation/simulate_policy_round.py:138` | `click_threshold: float = 0.55` | 기본값 제거(required kwarg) |
+| `autoresearch/recommendation/simulate_policy_round.py:326` | CLI `--click-threshold ... default=0.55` | `required=True` |
 | `scripts/generate_action_logs_scale.py:49` | `--click-threshold ... default=0.55` | `required=True` |
 
 ### 계약

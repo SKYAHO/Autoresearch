@@ -7,7 +7,7 @@
 만든다. PR은 자동 병합하지 않는다.
 
 **이 게이트는 판정하지 않는다 (#493).** 판정은
-`src/pipeline/experiment_evaluation.py` 한 곳에서만 계산하며, 여기는 소비자다.
+`autoresearch/model_evaluation/experiment_evaluation.py` 한 곳에서만 계산하며, 여기는 소비자다.
 자세한 계약은 `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`
 §4 "판정 소재지 — 게이트는 판정하지 않는다"가 정본이다.
 
@@ -138,7 +138,7 @@ Issue Form을 수정하는 PR은 같은 PR에서 `_HEADING_NAMES`와 정본 fixt
 | `.github/workflows/auto-research-promotion.yml` | 1 |
 | `.github/workflows/auto-research-dev-promotion.yml` | 2 |
 | `tools/auto_research_issue_branch.py` | 1 |
-| `src/pipeline/paired_experiment.py` | 1 |
+| `autoresearch/model_evaluation/paired_experiment.py` | 1 |
 | `autoresearch/experiments/context.py` | 1 |
 
 이전에 dev 승격 워크플로와 선택기가 허용하던 `^[a-z0-9][a-z0-9._:-]{0,127}$`는

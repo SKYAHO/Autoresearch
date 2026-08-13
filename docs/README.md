@@ -30,12 +30,12 @@
 
 ### 👤 가상 유저 (Virtual Users)
 
-- (현재 전용 guide 없음 — `autoresearch/virtual_users/` 코드 및
+- (현재 전용 guide 없음 — `autoresearch/virtual_user_generation/` 코드 및
   `tests/virtual_user_generation/` 참조)
 
 ### 📝 Action Log
 
-- [가이드 — action_logs 모듈 사용법](guides/action-log.md)
+- [가이드 — action log 모듈 사용법](guides/action-log.md)
 - [가이드 — Agent Simulator 명세 (action log SSOT)](guides/agent-simulator-spec.md)
 
 ### 🎯 Feature Engineering
@@ -62,8 +62,9 @@
 - [Spec — 학습 데이터셋 스냅샷 GCS 게시·재사용 계약](specs/2026-08-04-training-dataset-snapshot-store.md) — content-addressed 스냅샷 레이아웃·write-once·by-date 포인터, `--dataset-uri` 재사용 학습 (#530)
 - [Plan — 학습 데이터셋 스냅샷 게시·재사용 구현](archive/plans/2026-08-04-training-dataset-snapshot-store.md) (#530 구현 완료·아카이브)
 - [Spec — 실험별 Feast Registry·offline 실행 격리](specs/2026-07-31-experiment-isolated-offline-run.md) (#454 실행 context)
-- [Plan — `src/` → `autoresearch/` 패키지 통합](plans/2026-07-15-src-package-merge.md) (팀 합의 대기)
-- `src/pipeline/`, `src/models/`, `src/features/` (CTR 학습·평가 코드)
+- [Spec — 저장소 구조 재배치](specs/2026-08-13-repository-structure-redesign.md) — 파이프라인 단계 축 재배치, 전환 기간 계약 (#754)
+- [Plan — 저장소 구조 재배치 구현](plans/2026-08-13-repository-structure-redesign.md) (#754)
+- `autoresearch/model_training/`, `autoresearch/model_evaluation/`, `autoresearch/feature_engineering/` (CTR 학습·평가 코드)
 
 ### 🚀 서빙 (Serving)
 
@@ -73,7 +74,7 @@
 - [Runbook — 리랭킹 서빙 부하측정 운영 절차](runbooks/rerank-loadtest.md)
 - [Plan — Reranking Serving API 구현](archive/plans/2026-07-16-reranking-serving-api.md) (완료·아카이브)
 - [시각화 — Serving Feature Build: 무엇이 바뀌었나](reports/2026-07-22-serving-feature-build-overview.html) — 비개발 팀원용 변경 흐름·운영 경계 안내
-- `src/serving/` (FastAPI 추론 서버), `deploy/serving/` (이미지 정의)
+- `applications/reranking_api/` (FastAPI 추론 서버), `deployment/serving/` (이미지 정의)
 
 ### 🤖 오케스트레이션 (Experiment API)
 
@@ -92,7 +93,7 @@
 - [Spec — Agent Orchestration `/chat` API 계약](specs/2026-08-01-agent-orchestration-chat-api-contract.md) — 내부 호출 서비스의 요청·응답·오류·저장 의미 정본
 - [Spec — 가설 수신부터 `[AR]` 이슈 발행까지](specs/2026-08-04-hypothesis-to-auto-research-issue.md) — 필드 소유권 3분할, 시드 고정, `gh` 발행 경계, 멱등성 (#516)
 - [Plan — 가설 수신부터 `[AR]` 이슈 발행까지 구현](plans/2026-08-04-hypothesis-to-auto-research-issue.md) (#516)
-- `agent_orchestration/` (FastAPI + Codex CLI/OpenAI + PostgreSQL 실험 API)
+- `applications/experiment_platform/` (FastAPI + Codex CLI/OpenAI + PostgreSQL 실험 API)
 - [Spec — Agent Orchestration GKE 내부 배포](specs/2026-07-30-agent-orchestration-gke-internal-deployment.md)
 - [Plan — Agent Orchestration GKE 내부 배포](plans/2026-07-30-agent-orchestration-gke-internal-deployment.md)
 
@@ -107,7 +108,7 @@
 - [Spec — MLflow 배포 전략](specs/2026-07-14-mlflow-deployment-strategy.md)
 - [Spec — 배치 이미지 GCS 코드 부트스트랩 전환](specs/2026-08-12-batch-image-source-decoupling.md) — `Dockerfile.app` 소스 분리, 아카이브 규약·digest 정본·반영 시점 3개 결정
 - [가이드 — 데이터 웨어하우스 (BigQuery)](guides/data-warehouse.md)
-- `deploy/mlflow/`, `proxy/` (Cloud Run forwarder), `Dockerfile.app`
+- `deployment/mlflow/`, `applications/youtube_api_proxy/` (Cloud Run forwarder), `deployment/Dockerfile.app`
 
 ### 📚 저장소 메타 (Repository Meta)
 
@@ -129,8 +130,10 @@
 - [MLflow 배포 전략](specs/2026-07-14-mlflow-deployment-strategy.md)
 - [GCS raw 데이터 BigQuery 적재](specs/2026-07-11-load-raw-to-bigquery.md)
 - [오프라인 feature build 배치](specs/2026-07-22-feature-store-build-batch.md)
-- [저장소 구조 재정리](specs/2026-07-15-repo-restructure.md) — 이 문서 구조의 근거,
-  `src/` 패키지 통합 목표 구조 포함
+- [저장소 구조 재정리](specs/2026-07-15-repo-restructure.md) — 이 문서 구조의 근거.
+  결정 3(`src/` 통합 목표 구조)은 #754로 대체됐습니다
+- [저장소 구조 재배치](specs/2026-08-13-repository-structure-redesign.md) — 파이프라인
+  단계 축 재배치의 근거·실측·전환 기간 계약 (#754)
 - [머지된 PR 리포트 아카이브](specs/2026-07-26-pr-report-archive-design.md) —
   GitHub Pages에 누적된 merge PR 리포트의 정적 검색 인덱스
 - [모델 승격 구조화 결과 계약](specs/2026-07-29-model-promotion-structured-outcome.md) —
@@ -165,7 +168,7 @@
 - [CTR 모델 명세](guides/ctr-model-specification.md)
 - [학습 실험 provenance 애플리케이션 설계](guides/training-experiment-provenance.md)
 - [Agent Simulator 명세 (action log SSOT)](guides/agent-simulator-spec.md)
-- [action_logs 모듈 사용법](guides/action-log.md)
+- [action log 모듈 사용법](guides/action-log.md)
 - [Release & 배포 파이프라인](guides/release-pipeline.md) — CI/CD·GAR push·digest 승격·GKE 배포 자동화
 - [CTR 학습 이미지](guides/training-image.md) — `Dockerfile.train`, MLflow tracking URI 연동
 - [YouTube 트렌딩 수집 파이프라인](guides/youtube-collection.md) — API 수집·정규화·GCS parquet 적재

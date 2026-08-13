@@ -154,7 +154,7 @@ None`이고 적용 `min_days > 0`이면 **모델 fit 전에 거부**한다. 조�
 이름을 일부러 일치시켰으므로(`spine_usable_days`) 타입만 다르다는 점을 구현 시
 혼동하지 않는다.
 
-## 5. 새 모듈 `src/pipeline/training_snapshot_store.py`
+## 5. 새 모듈 `autoresearch/model_training/training_snapshot_store.py`
 
 - **책임**: content-addressed 스냅샷의 GCS 게시·다운로드, 레이아웃과 write-once
   의미론.
@@ -307,15 +307,15 @@ dev 실험이 backfill을 짧게(≈7일) 쓰는 이유는 빠른 가설 검증�
 ## 9. 영향 컴포넌트
 
 **신규**
-- `src/pipeline/training_snapshot_store.py`
+- `autoresearch/model_training/training_snapshot_store.py`
 - `tests/test_training_snapshot_store.py`
 
 **수정**
-- `src/pipeline/training_provenance.py` — `spine_usable_days` optional 필드, 포인터 모델
-- `src/pipeline/build_training_dataset.py` — `is_experiment_assembly` 추출,
+- `autoresearch/model_training/training_provenance.py` — `spine_usable_days` optional 필드, 포인터 모델
+- `autoresearch/model_training/build_training_dataset.py` — `is_experiment_assembly` 추출,
   `main()` 게시·반환 타입(`AssemblyOutcome`)
-- `src/pipeline/train.py` — `--dataset-uri` 다운로드·검증
-- `src/cli.py` — `--snapshot-root`/`--dataset-uri` 인자, 환경변수 해석,
+- `autoresearch/model_training/train.py` — `--dataset-uri` 다운로드·검증
+- `autoresearch/cli.py` — `--snapshot-root`/`--dataset-uri` 인자, 환경변수 해석,
   `run-pipeline` 조립 스킵, **`data_source_params`에 `training_snapshot_uri` 추가**
   (`AssemblyOutcome`을 도입하는 이유 자체가 이 값을 lineage로 올리기 위해서다 —
   이 한 줄이 빠지면 반환 타입만 바뀌고 그 값을 아무도 쓰지 않는 배관이 된다)

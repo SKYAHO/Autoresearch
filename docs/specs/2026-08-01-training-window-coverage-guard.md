@@ -1,7 +1,7 @@
 # 학습 윈도우 spine 커버리지 가드 (2026-08-01)
 
 > 대상 이슈: #464 · 관련: #445(단일 클래스 nan 가드), #365(UserDynamic 결손), #295(파티션 계약)
-> 코드 정본: `src/pipeline/build_training_dataset.py`
+> 코드 정본: `autoresearch/model_training/build_training_dataset.py`
 > (`SpineCoverage` / `summarize_spine_coverage` / `require_spine_coverage`)
 
 이 문서는 가드의 **동작 계약**과 **기준값이 그 값인 이유**를 담는다. 상수를 조정하거나

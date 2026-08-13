@@ -9,10 +9,10 @@ CTR 학습 파이프라인이 소비하는 실 action log는 클릭이 극히 �
 불균형이 심하다. 현재 파이프라인은 불균형을 **`scale_pos_weight`(손실 가중치)
 + stratified split**으로만 다룬다.
 
-- `src/pipeline/config.yaml`: `model.scale_pos_weight: auto` (활성)
-- `src/pipeline/train.py:164-172`: `auto`이면 `y_train` 기준 `neg/pos`로 계산
-- `src/pipeline/train.py:191-199`: 그 값을 `LGBMModel(scale_pos_weight=...)`로 주입
-- `src/models/lgbm_model.py:13,29,57`: LightGBM에 전달
+- `autoresearch/model_training/config.yaml`: `model.scale_pos_weight: auto` (활성)
+- `autoresearch/model_training/train.py:164-172`: `auto`이면 `y_train` 기준 `neg/pos`로 계산
+- `autoresearch/model_training/train.py:191-199`: 그 값을 `LGBMModel(scale_pos_weight=...)`로 주입
+- `autoresearch/model_training/lgbm_model.py:13,29,57`: LightGBM에 전달
 
 negative downsampling과 이에 대응하는 calibration 단계는 없다. downsampling을
 도입하면 모델 출력 확률이 **다운샘플된 분포**를 반영하므로, 원래 분포로 되돌리는
@@ -71,7 +71,7 @@ p = 0.0909 / (0.0909 + 0.9091 / 0.1) = 0.0909 / 9.1819 ≈ 0.0099   ✓ (원분�
 
 ## 결정 3 — downsampling은 train split에만
 
-`src/pipeline/train.py`의 분할은 이미 `train_test_split(..., stratify=clicked)`
+`autoresearch/model_training/train.py`의 분할은 이미 `train_test_split(..., stratify=clicked)`
 로 train/val/test를 나눈다. downsampling은 **이 분할 이후 train 부분에만** 적용한다.
 
 - **val/test는 원분포를 그대로 유지**한다. 다운샘플된 분포에서 지표를 재면
@@ -85,7 +85,7 @@ p = 0.0909 / (0.0909 + 0.9091 / 0.1) = 0.0909 / 9.1819 ≈ 0.0099   ✓ (원분�
 
 ## 결정 4 — 보정은 evaluate + 서빙 양쪽
 
-- **학습(`evaluate.py`)**: `src/pipeline/evaluate.py:88`의
+- **학습(`evaluate.py`)**: `autoresearch/model_evaluation/evaluate.py:88`의
   `y_pred_proba = model.predict_proba(X)[:,1]` 직후에 보정을 적용해, LogLoss
   (line 94)와 calibration 지표를 **원분포 기준**으로 측정한다. (AUC/PR-AUC는
   아래 결정 5대로 보정 전/후 동일하므로 영향 없음 — 그래도 일관되게 보정된

@@ -32,7 +32,7 @@ propensity가 새로 뽑히고 목표 CTR이 재현되지 않는다. 게다가 �
 
 ## 현재 구조 (AS-IS)
 
-`src/pipeline/simulate_policy_round.py`:
+`autoresearch/recommendation/simulate_policy_round.py`:
 
 1. 유저별로 baseline·model 두 정책의 노출을 결정한다(리랭커는 결정적, 노출
    선택 RNG는 `seed`로 고정 → **재현 가능**).
@@ -259,7 +259,7 @@ CTR이 1클릭 단위보다 작으면 오버슛한 채 성공한다. `--max-user
 
 ```bash
 # ① LLM 판정 1회 — 유일한 유료 단계
-uv run --env-file .env python -m src.pipeline.simulate_policy_round \
+uv run --env-file .env python -m autoresearch.recommendation.simulate_policy_round \
   --personas data/generated/demo_subset/personas.csv \
   --virtual-users data/generated/demo_subset/virtual_users.parquet \
   --videos data/generated/demo_subset/videos.csv \
@@ -273,7 +273,7 @@ uv run python -m autoresearch.jobs.click_threshold_calibrate \
   --target-ctr 0.015
 
 # ③ 추천 커트라인으로 리플레이 — LLM 0콜
-uv run --env-file .env python -m src.pipeline.simulate_policy_round \
+uv run --env-file .env python -m autoresearch.recommendation.simulate_policy_round \
   --personas data/generated/demo_subset/personas.csv \
   --virtual-users data/generated/demo_subset/virtual_users.parquet \
   --videos data/generated/demo_subset/videos.csv \
@@ -328,7 +328,7 @@ uv run --env-file .env python -m src.pipeline.simulate_policy_round \
 
 ## 범위 밖
 
-- `autoresearch/action_logs/` 공유 스키마(`ACTION_LOG_DRAFT_PARQUET_SCHEMA`,
+- `autoresearch/action_log_generation/` 공유 스키마(`ACTION_LOG_DRAFT_PARQUET_SCHEMA`,
   event log 스키마) 변경
 - `daily.py`의 shard/merge 경로 변경
 - `select_clicks_per_slate`의 정책별 분리
@@ -399,7 +399,7 @@ CLI에 다시 주지 않고 사이드카 메타에서 상속되었다.
 `--max-users 100`과 `--max-users 25` 모두 **Vertex AI 임베딩 할당량**에 막혀
 실패했다(429 `Quota exceeded for aiplatform.googleapis.com/online_prediction_requests_per_base_model`,
 base model `textembedding-gecko`). 실패 지점은 `build_pool_feature_frame` →
-`compute_interaction_columns` → `embed_texts`(`src/features/embeddings.py`)로,
+`compute_interaction_columns` → `embed_texts`(`autoresearch/feature_engineering/embeddings.py`)로,
 **노출 피처 계산 단계이며 OpenRouter 호출 이전**이다. 따라서 실패한 두 시도에서
 LLM 비용은 발생하지 않았다.
 
@@ -412,7 +412,7 @@ LLM 비용은 발생하지 않았다.
 중 하나를 별도 이슈로 다뤄야 한다:
 
 - 프로세스 수준 임베딩 캐시 — 페르소나 간 중복 키워드가 많아 요청 수를 크게
-  줄일 수 있다 (`src/features/embeddings.py`는 다른 파이프라인도 공유하므로
+  줄일 수 있다 (`autoresearch/feature_engineering/embeddings.py`는 다른 파이프라인도 공유하므로
   영향 범위 검토 필요)
 - 유저 루프의 요율 제한 또는 재시도 백오프 상향
 - Vertex AI 할당량 증설 요청

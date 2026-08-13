@@ -48,7 +48,7 @@ Airflow (외부 Autoresearch-airflow):
     DAG/KPO → immutable image digest → 위 공개 module command
 
 가상 유저 (실험):
-    persona 원천 → autoresearch/virtual_users/pipeline.py
+    persona 원천 → autoresearch/virtual_user_generation/pipeline.py
     → GLM API (glm_generator.py) → 가상 유저 데이터셋
 ```
 
@@ -56,13 +56,14 @@ Airflow (외부 Autoresearch-airflow):
 
 **책임:** CTR(클릭률) 모델 정의, 학습 오케스트레이션, 평가 지표.
 
-**상태:** `src/`에 LightGBM 학습·평가 파이프라인과 피처 빌더가 구현되어
-있습니다.
+**상태:** `autoresearch/`의 단계 패키지에 LightGBM 학습·평가 파이프라인과 피처
+빌더가 구현되어 있습니다.
 
 **주요 파일:**
-- `src/models/lgbm_model.py` — LightGBM 모델 클래스
-- `src/pipeline/train.py`, `evaluate.py`, `build_training_dataset.py`
-- `src/pipeline/config.yaml` — 하이퍼파라미터·경로의 단일 출처
+- `autoresearch/model_training/lgbm_model.py` — LightGBM 모델 클래스
+- `autoresearch/model_training/train.py`, `build_training_dataset.py`
+- `autoresearch/model_evaluation/evaluate.py`
+- `autoresearch/model_training/config.yaml` — 하이퍼파라미터·경로의 단일 출처
 - `docs/guides/ctr-model-specification.md` — CTR 모델링 스펙 (전체 상세)
 
 **모델링 과업:**

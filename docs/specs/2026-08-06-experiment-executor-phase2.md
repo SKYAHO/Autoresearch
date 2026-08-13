@@ -192,7 +192,10 @@ Codex prompt는 이슈 본문 원문, executor가 고정한 허용·금지 경�
 
 기본 수정 가능 경로는 다음으로 제한한다.
 
-- `src/**` (`src/features/model_contract.py` 제외)
+- `autoresearch/**` (`autoresearch/feature_engineering/model_contract.py` 제외)
+- `src/**` — #754 재배치 **이전**에 봉인된 트리에만 존재한다. 옛 봉인 SHA 실험이
+  모두 끝나면 제거한다. 정본은 `executor/prompt.py`와 `executor/verifier.py`이며,
+  두 곳 모두 워크스페이스 트리를 보고 판단한다
 - `autoresearch/**`, `tests/**`, `tools/**`
 
 MVP에서는 Issue Form 내용으로 수정 범위를 확장하지 않는다. 추가 범위가 필요하면

@@ -2,7 +2,7 @@
 
 `VirtualUser`(가상 사용자)와 `TrendingVideo`(YouTube backfill) 두 입력을 근거로, CTR 학습셋의 **원천이 되는 event log(action log)** 를 LLM으로 생성하는 패키지다.
 
-- **위치**: `autoresearch/action_logs/`
+- **위치**: `autoresearch/action_log_generation/`
 - **범위**: Phase 1(`historical`) MVP. 추천 서버가 필요한 Phase 2(`online_simulated`)는 범위 밖.
 - **SSOT**: [`docs/guides/agent-simulator-spec.md`](../guides/agent-simulator-spec.md)
 - **설계 근거**: [`docs/archive/specs/2026-07-06-event-log-long-format-design.md`](../archive/specs/2026-07-06-event-log-long-format-design.md)
@@ -397,7 +397,7 @@ Variable이며, 그 값 옆 주석에 마지막 재캘리브레이션 근거를 
    `--click-threshold`로 명시한다. `--mode merge`는 `--click-threshold`를
    받지 않는다(반려) — merge는 각 shard manifest에 이미 기록된 값을 쓴다.
 
-**(부수) 합동 pool 클릭 의미론 (`src/pipeline/simulate_policy_round.py`)**
+**(부수) 합동 pool 클릭 의미론 (`autoresearch/recommendation/simulate_policy_round.py`)**
 정책 A/B 비교 시뮬레이션은 위 daily 운영 파이프라인과 별개로, 두 정책 노출의
 합집합에 `select_clicks_per_slate`를 1회만 적용한다 — 유저(슬레이트)별
 `click_propensity` 최고 1건이 합집합의 승자다. 승자 영상이 두 정책의 노출에

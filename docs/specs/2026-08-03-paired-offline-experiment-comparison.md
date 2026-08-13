@@ -22,10 +22,10 @@
 
 | 자산 | 위치 | 역할 |
 | --- | --- | --- |
-| write-once evidence | `src/pipeline/promotion_evidence.py` | plan/metric receipt의 create-only 게시와 generation 고정 재검증 |
-| 공정 비교 재검증 | `src/pipeline/training_comparison.py` | 두 MLflow run의 snapshot·split·seed 동일성 검증과 `TrainingComparisonManifest` 생성 |
-| paired 판정 엔진 | `src/pipeline/experiment_evaluation.py` | `eligible`/`hold`/`reject`와 reason code, 95% CI 판정 |
-| 통계 계층 | `src/pipeline/seed_sweep.py` | paired delta, `t_critical_95` |
+| write-once evidence | `autoresearch/model_evaluation/promotion_evidence.py` | plan/metric receipt의 create-only 게시와 generation 고정 재검증 |
+| 공정 비교 재검증 | `autoresearch/model_evaluation/training_comparison.py` | 두 MLflow run의 snapshot·split·seed 동일성 검증과 `TrainingComparisonManifest` 생성 |
+| paired 판정 엔진 | `autoresearch/model_evaluation/experiment_evaluation.py` | `eligible`/`hold`/`reject`와 reason code, 95% CI 판정 |
+| 통계 계층 | `autoresearch/model_evaluation/seed_sweep.py` | paired delta, `t_critical_95` |
 | 승격 게이트 | `.github/workflows/auto-research-promotion.yml` + `autoresearch/experiments/promotion_gate.py` | 이슈 기준 metric 판정과 Draft main PR |
 | 실행 context | `autoresearch/experiments/context.py` | 실험별 Registry·artifact 경로 결정 |
 
@@ -92,7 +92,7 @@ Airflow는 조건마다 **다른 이미지**로 학습 Job을 실행하므로, �
 공개 명령으로 제공한다.
 
 ```text
-python -m src.cli compare-paired-experiment \
+python -m autoresearch.cli compare-paired-experiment \
   --request request.json \
   --promotion-evidence-root gs://<bucket>/<prefix> \
   --output result.json
@@ -100,7 +100,7 @@ python -m src.cli compare-paired-experiment \
 
 ### 요청 계약 (`paired-offline-experiment-v1`)
 
-필드와 검증 규칙의 정본은 `src/pipeline/paired_experiment.py`의
+필드와 검증 규칙의 정본은 `autoresearch/model_evaluation/paired_experiment.py`의
 `PairedExperimentRequest`다(`extra="forbid"`이므로 아래 필드 이름과 정확히 같아야
 한다).
 
@@ -252,7 +252,7 @@ repository_dispatch 한도를 넘는다. seed별 run 좌표는 결과 artifact �
 
 ### 판정 소재지 — 게이트는 판정하지 않는다 (#493)
 
-**판정은 `src/pipeline/experiment_evaluation.py` 한 곳에서만 계산한다.** dev 병합
+**판정은 `autoresearch/model_evaluation/experiment_evaluation.py` 한 곳에서만 계산한다.** dev 병합
 후보 선택기(`tools/auto_research_issue_branch.py`)와 main Draft PR 게이트
 (`autoresearch/experiments/promotion_gate.py`)는 판정을 재수행하지 않는 **소비자**다.
 
@@ -422,8 +422,8 @@ candidate로 제출됐지만 그 candidate가 오프라인 격자 탐색의 산�
   구현은 별도 `feature` 이슈다.
 - 판정 대상 지표는 정책이 소유하는 allowlist다. `roc_auc`는 판정 엔진뿐 아니라
   write-once 증거 계약(`HeldOutMetricEvidence.metric_name`,
-  `src/pipeline/promotion_evidence.py:156`)에도 고정되어 있으므로, 지표를 늘리려면
-  증거 생산 경로(`src/pipeline/train.py`)까지 함께 바꿔야 한다. #493이 이를
+  `autoresearch/model_evaluation/promotion_evidence.py:156`)에도 고정되어 있으므로, 지표를 늘리려면
+  증거 생산 경로(`autoresearch/model_training/train.py`)까지 함께 바꿔야 한다. #493이 이를
   수행한다. 기존 receipt는 필드 직렬화가 바뀌지 않아 sha256이 유지되므로
   마이그레이션 없이 계속 유효하다.
 - `extra_features` 이름은 prod 계약 충돌·중복·라벨만 거부한다. 조회 결과에 존재하는

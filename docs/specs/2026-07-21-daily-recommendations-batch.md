@@ -27,13 +27,13 @@
    BigQuery에서 사소하다.
 2. **모델 지정 = `models:/ctr-model@champion` (registry alias)** — 모델 교체가
    env 수정·재배포 없이 "alias 이동"으로 끝난다. 이를 위해
-   `src/serving/model_loader.py`에 registry 소스를 확장한다(서빙 spec
+   `applications/reranking_api/model_loader.py`에 registry 소스를 확장한다(서빙 spec
    `2026-07-16-reranking-serving-api.md`에 명시된 후속 과제의 해소).
    실행 계보는 alias가 가리키는 run_id를 해석해 산출 행에 기록한다.
-3. **코드 위치 = `src/pipeline/`** — 이 배치는 `src.serving`(Reranker)과
+3. **코드 위치 = `autoresearch/recommendation/`** — 이 배치는 `applications.reranking_api`(Reranker)과
    `src.features`(조립)를 소비하므로, `autoresearch → src` import 금지 규칙상
    `autoresearch/jobs/` 편입이 불가능하다. `simulate_policy_round`와 같은
-   패턴으로 `src/pipeline/`에 두고 `python -m src.pipeline.daily_recommendations`
+   패턴으로 `autoresearch/recommendation/`에 두고 `python -m autoresearch.recommendation.daily_recommendations`
    실행 형태를 공개 배치 계약 문서에 등재한다.
 4. **action log 단일 파티션 소비** — 일일 배치 하나가 독립된 30일 synthetic
    히스토리를 재생성하므로 파티션 간 UNION은 event_id 충돌·타임스탬프 겹침으로
@@ -65,7 +65,7 @@
 
 ## 컴포넌트
 
-### 1. registry 소스 확장 — `src/serving/model_loader.py` (수정)
+### 1. registry 소스 확장 — `applications/reranking_api/model_loader.py` (수정)
 
 - `ModelSource`에 `REGISTRY = "registry"` 추가.
 - `RegistryModelSettings(tracking_uri, model_name, alias)` 신설. 환경변수:
@@ -80,7 +80,7 @@
   소스에서는 version이 None). 기존 `load_reranker`는 시그니처 불변.
 - 기존 `local`/`mlflow` 소스의 동작·시그니처는 변경하지 않는다(서빙 하위 호환).
 
-### 2. personas 어댑터 정식화 — `src/pipeline/virtual_user_adapter.py` (신규)
+### 2. personas 어댑터 정식화 — `autoresearch/virtual_user_generation/adapter.py` (신규)
 
 BQ 가상 유저 테이블을 학습·조립 계약 형태(`uuid, age, occupation,
 hobbies_and_interests_list(JSON), hobbies_and_interests(텍스트)`)의 DataFrame으로
@@ -93,7 +93,7 @@ hobbies_and_interests_list(JSON), hobbies_and_interests(텍스트)`)의 DataFram
 - 순수 함수(`to_personas_frame(vu_df) -> pd.DataFrame`)로 두어 BQ 없이 단위
   테스트한다.
 
-### 3. 배치 진입점 — `src/pipeline/daily_recommendations.py` (신규)
+### 3. 배치 진입점 — `autoresearch/recommendation/daily_recommendations.py` (신규)
 
 `main()` 흐름:
 
@@ -134,7 +134,7 @@ CLI 인자(공개 계약): `--candidate-dt`(기본: 후보 테이블 MAX(dt)),
 
 ### 5. 공개 배치 계약 등재 — `docs/specs/2026-07-13-public-batch-execution-contract.md` (수정)
 
-`python -m src.pipeline.daily_recommendations` 명령과 인자·환경변수를 등재한다.
+`python -m autoresearch.recommendation.daily_recommendations` 명령과 인자·환경변수를 등재한다.
 스케줄(빈도·재시도·타임아웃)은 `Autoresearch-airflow` 소유로 명시한다.
 공개 명령은 `Dockerfile.app` 이미지에서 실행 가능해야 하므로 이미지에 `src/`를
 포함한다. CLI는 batch-contract-v1(stdout 단일 `job_summary` JSON, exit 0/1/2,

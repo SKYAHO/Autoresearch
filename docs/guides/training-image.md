@@ -1,33 +1,33 @@
 # CTR 학습 이미지
 
-CTR 학습 파이프라인(`src/`)을 컨테이너에서 실행하기 위한 이미지 정의와 MLflow
+CTR 학습 파이프라인(`autoresearch/model_training/`·`model_evaluation/`)을 컨테이너에서 실행하기 위한 이미지 정의와 MLflow
 연동 방법을 설명합니다.
 
 ## 개요
 
-`Dockerfile.app`(배치 CLI, `autoresearch/`)과 `Dockerfile.train`(학습 파이프라인,
-`src/`)은 책임이 다른 별도 이미지입니다. 두 이미지 모두 루트 `pyproject.toml`
-+ `uv.lock`을 공유하지만, 각각 자신이 필요한 패키지만 담습니다(`Dockerfile.app`은
-`autoresearch/`만, `Dockerfile.train`은 `src/`만 COPY).
+`deployment/Dockerfile.app`(배치 CLI)과 `deployment/Dockerfile.train`(학습
+파이프라인)은 책임이 다른 별도 이미지입니다. 두 이미지 모두 루트 `pyproject.toml`
++ `uv.lock`을 공유하지만 담는 의존성 그룹이 다릅니다. #752 이후 두 이미지는 소스를
+COPY하지 않고 GCS code archive에서 부트스트랩합니다.
 
 > **#359 C2 이후 이미지 분리:** `build-features`/`run-pipeline`은 학습 피처를 Feast
 > offline store(`get_historical_features` PIT)로 조립하므로 feast 런타임이 담긴
-> `Dockerfile.feast`(feast 격리 그룹 포함) 이미지로 실행합니다. `Dockerfile.train`은
+> `deployment/Dockerfile.feast`(feast 격리 그룹 포함) 이미지로 실행합니다. `deployment/Dockerfile.train`은
 > feast를 담지 않으므로(`uv sync --no-dev`) feast 불필요 서브커맨드(`promote-model`
 > 및 `train-model`/`evaluate-model`)만 실행합니다.
 
 | 항목 | 값 |
 |---|---|
 | 베이스 이미지 | `python:3.12-slim` (multi-stage, uv 기반) |
-| 진입점 | `python -m src.cli <command>` (`Dockerfile.train`: `promote-model`/`train-model`/`evaluate-model` — feast 불필요. `build-features`/`run-pipeline`은 `Dockerfile.feast`) |
+| 진입점 | `python -m autoresearch.cli <command>` (`deployment/Dockerfile.train`: `promote-model`/`train-model`/`evaluate-model` — feast 불필요. `build-features`/`run-pipeline`은 `deployment/Dockerfile.feast`) |
 | 실행 유저 | non-root (`appuser`) |
-| CI 검증 | `.github/workflows/ci.yml`의 `docker-build-train` job (빌드 + `--help` 스모크 체크, `src/**` 등 관련 경로 변경 시에만 실행) |
+| CI 검증 | `.github/workflows/ci.yml`의 `docker-build-train` job (빌드 + `--help` 스모크 체크, `autoresearch/**` 등 관련 경로 변경 시에만 실행) |
 
 ## 로컬 빌드
 
 ```bash
-docker build -f Dockerfile.train --tag autoresearch-training:local .
-docker run --rm autoresearch-training:local python -m src.cli train-model --help
+docker build -f deployment/Dockerfile.train --tag autoresearch-training:local .
+docker run --rm autoresearch-training:local python -m autoresearch.cli train-model --help
 ```
 
 ## build-features 사전 점검 (fail-fast)
@@ -46,7 +46,7 @@ Workload Identity(metadata server)로 인증하기 때문입니다. 모든 k8s p
 
 ## MLflow 연동
 
-`src/pipeline/train.py`는 `MLFLOW_TRACKING_URI` 환경변수를 읽고, 없으면
+`autoresearch/model_training/train.py`는 `MLFLOW_TRACKING_URI` 환경변수를 읽고, 없으면
 `http://localhost:5000`(로컬 docker-compose MLflow 기준)로 fallback합니다.
 
 ```python
@@ -58,7 +58,7 @@ tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
 
 | 환경 | `MLFLOW_TRACKING_URI` |
 |---|---|
-| 로컬 (`deploy/mlflow/local` docker-compose) | `http://localhost:5000` (기본값, 별도 설정 불필요) |
+| 로컬 (`deployment/mlflow/local` docker-compose) | `http://localhost:5000` (기본값, 별도 설정 불필요) |
 | GKE in-cluster (Airflow KubernetesPodOperator) | `http://mlflow.mlflow:5000` (OAuth2-proxy 미경유, 내부 전용) |
 
 GKE 배포 세부사항(네임스페이스, NetworkPolicy, 접속 방법)은
@@ -68,7 +68,7 @@ MLflow 서버의 proxy 모드로 기록되므로, 학습 이미지에는 GCS 자
 
 ## 이미지 배포
 
-이 이미지는 `Dockerfile.app`/serving 이미지와 **같은 release-트리거 패턴**으로 배포됩니다(#185).
+이 이미지는 `deployment/Dockerfile.app`/serving 이미지와 **같은 release-트리거 패턴**으로 배포됩니다(#185).
 `release.yml`의 `publish-training-image` job이 GitHub Release 발행(또는 `workflow_dispatch` +
 `source_sha`) 시 GAR로 build+push+verify하고, `promote-airflow-digest-training` job이
 `Autoresearch-airflow`의 `deploy/airflow/values.yaml`에서 `AIRFLOW_VAR_AUTORESEARCH_TRAINING_IMAGE`
@@ -79,7 +79,7 @@ verify 스모크는 코드가 이미지에 없는(런타임 GCS bootstrap) 특�
 재빌드되지 않아 ONNX 변환이 조용히 joblib으로 폴백한 사고를 릴리스 시점에 잡기 위함입니다.
 
 `autoresearch-feast` 이미지도 같은 파이프라인(`publish-feast-image`/`promote-airflow-digest-feast`)에
-편입돼 있습니다. `deploy/mlflow/Dockerfile`(인프라 Cloud Build 소관 추정)·`proxy/Dockerfile`은 아직
+편입돼 있습니다. `deployment/mlflow/Dockerfile`(인프라 Cloud Build 소관 추정)·`applications/youtube_api_proxy/Dockerfile`은 아직
 이 자동화 범위 밖입니다.
 
 ## 관련 이슈

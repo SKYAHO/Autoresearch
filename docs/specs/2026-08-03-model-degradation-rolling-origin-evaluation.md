@@ -24,9 +24,9 @@
 
 | 구분 | 항목 | 출처 |
 | --- | --- | --- |
-| **재사용(이미 구현됨)** | rolling-origin 실행 하네스, 단일 cutoff 학습 → 하루 단위 순차 평가 | `#471`(`src/pipeline/degradation_eval.py`의 `run_rolling_origin`) |
+| **재사용(이미 구현됨)** | rolling-origin 실행 하네스, 단일 cutoff 학습 → 하루 단위 순차 평가 | `#471`(`autoresearch/model_evaluation/degradation_eval.py`의 `run_rolling_origin`) |
 | | Plotly 열화 곡선 시각화 | `#471`(`scripts/bench/degradation_curve_plot.py`) |
-| | CLI 진입점(`measure-degradation`) | `#471`(`src/cli.py`) |
+| | CLI 진입점(`measure-degradation`) | `#471`(`autoresearch/cli.py`) |
 | **신규(`#485`가 정의)** | hard retrain limit 산출 로직(성능과 무관하게 강제 재학습하는 시점) | `#485` 작업 범위 |
 | | baseline/challenger가 동일 as-of cutoff·feature snapshot·split 규칙·paired seed를 쓰는지 검증 | `#485` — `#478`의 30개 paired seed·write-once receipt 계약 재사용 |
 | | `#425` 판정 스키마(`confidence`/`robustness_note`/`direction_vs_*`)에 temporal signal 연결 | `#485` |
@@ -48,7 +48,7 @@ evaluation), 성능이 꺾이는 지점을 Plotly로 시각화해 재학습 주�
 
 - **baseline vs candidate 코드/피처 비교** — `paired_experiment.py`(#454)의 영역이다.
   이 spec은 조건 하나(고정된 코드 버전)를 시간 축으로만 이동한다.
-- **승격 여부 판정**(`eligible`/`reject`/`hold`) — `src/pipeline/experiment_evaluation.py`
+- **승격 여부 판정**(`eligible`/`reject`/`hold`) — `autoresearch/model_evaluation/experiment_evaluation.py`
   (`evaluate_experiment:365`, `decide_promotion:511`)의 영역이며, 이 파일은 현재
   **#493(담당: hyochangsung)이 판정 엔진 단일화 작업 중**이다. 이 spec은 이 모듈을
   호출하지도, 수정하지도 않는다(§8).
@@ -113,7 +113,7 @@ end_date`(`:177`)로 **양끝 포함(inclusive-inclusive)**이다. 이 spec은 h
 
 ### 2.2 신규 모듈
 
-새 모듈 `src/pipeline/degradation_eval.py`(가칭):
+새 모듈 `autoresearch/model_evaluation/degradation_eval.py`(가칭):
 
 - `run_rolling_origin(cutoff_date: str, window_days: int, horizon_days: int, ...) -> RollingOriginResult`
   1. §2.1 계약대로 `events_end_date = cutoff_date - 1일`로 `build_training_dataset.main`을
@@ -132,7 +132,7 @@ end_date`(`:177`)로 **양끝 포함(inclusive-inclusive)**이다. 이 spec은 h
   plan 단계에서 결정): x축 `elapsed_days`(달력 기준), y축 ROC-AUC. `missing_date`
   등 무효일은 결측으로 표시하고 선을 잇지 않는다. 기준선·열화 지점 마커를 포함한다.
 
-CLI: `src/cli.py`에 `measure-degradation` 명령 추가(가칭). `docs/specs/2026-07-13-public-batch-execution-contract.md:17-18`이 "그 밖의 학습·평가와 FastAPI serving command는 각 기능이 운영화될 때 별도 revision으로 추가한다"고 명시하므로, 이 명령을 그 계약에 즉시 등재할 필요는 없다. **판단 근거**: 이 명령은 Airflow DAG가 부르지 않는 **operator 수동 도구**다(`sweep-seeds`/`compare-paired-experiment`와 같은 성격) — 그래서 `public-batch-execution-contract.md`에는 등재하지 않되, `README.md`의 `Dockerfile.train` 서브커맨드 목록(PR #510 리뷰 지적)에는 다른 두 도구와 같은 이유로 등재한다.
+CLI: `autoresearch/cli.py`에 `measure-degradation` 명령 추가(가칭). `docs/specs/2026-07-13-public-batch-execution-contract.md:17-18`이 "그 밖의 학습·평가와 FastAPI serving command는 각 기능이 운영화될 때 별도 revision으로 추가한다"고 명시하므로, 이 명령을 그 계약에 즉시 등재할 필요는 없다. **판단 근거**: 이 명령은 Airflow DAG가 부르지 않는 **operator 수동 도구**다(`sweep-seeds`/`compare-paired-experiment`와 같은 성격) — 그래서 `public-batch-execution-contract.md`에는 등재하지 않되, `README.md`의 `Dockerfile.train` 서브커맨드 목록(PR #510 리뷰 지적)에는 다른 두 도구와 같은 이유로 등재한다.
 
 ### 2.3 평가일 상태와 결과 스키마
 
@@ -304,7 +304,7 @@ age를 뽑아내는 구체적 방법(`feast_retrieval.py` 쪽에 이미 노출�
 
 `evaluate.py:140-151`에 PR-AUC/LogLoss/Brier가 `main()` 내부 인라인으로 남아 있다(ROC-AUC만 `evaluate_held_out_roc_auc`로 분리됨, §1).
 
-**판단**: 이번 이슈 완료조건은 "ROC-AUC(또는 기존 지표)"를 요구하고, 열화 곡선의 y축은 ROC-AUC 단일 지표로 충분하다(`src/tracking/promote.py`의 승격 게이트도 `val_roc_auc` 단일 지표만 쓴다 — #390). PR-AUC 등을 rolling-origin에 포함할 필요가 이 이슈 범위에서 확인되지 않는다.
+**판단**: 이번 이슈 완료조건은 "ROC-AUC(또는 기존 지표)"를 요구하고, 열화 곡선의 y축은 ROC-AUC 단일 지표로 충분하다(`autoresearch/model_registry/promote.py`의 승격 게이트도 `val_roc_auc` 단일 지표만 쓴다 — #390). PR-AUC 등을 rolling-origin에 포함할 필요가 이 이슈 범위에서 확인되지 않는다.
 
 → **이번 spec은 ROC-AUC만 다루고, `evaluate_held_out_roc_auc`를 그대로 재사용한다. PR-AUC/LogLoss/Brier의 순수 함수 분리는 이 spec에 포함하지 않는다** — 필요해지면 별도 리팩터링 이슈로 분리한다(`CLAUDE.md` "구조 변경과 동작 변경은 분리" 원칙).
 
@@ -322,7 +322,7 @@ age를 뽑아내는 구체적 방법(`feast_retrieval.py` 쪽에 이미 노출�
 
 ## 8. #493과의 경계
 
-`src/pipeline/experiment_evaluation.py`(`evaluate_experiment:365`, `decide_promotion:511`)는 **#493(담당: hyochangsung)이 판정 엔진 단일화 작업 중인 파일**이다. 이 spec은:
+`autoresearch/model_evaluation/experiment_evaluation.py`(`evaluate_experiment:365`, `decide_promotion:511`)는 **#493(담당: hyochangsung)이 판정 엔진 단일화 작업 중인 파일**이다. 이 spec은:
 
 - 이 파일을 **수정하지 않는다**(함수 추가·시그니처 변경 모두 금지).
 - `paired_experiment.py`, `promotion_gate.py`도 **읽기만 한다** — 애초에 rolling-origin은 승격 판정이 아니므로 호출 대상도 아니다.

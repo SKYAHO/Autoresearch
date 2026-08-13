@@ -221,7 +221,7 @@ DAG에서 누락되지 않는다. 기존 세 DAG의 개별 설정도 같은 커�
        실행하여 batch-contract-v1 6개 모듈 `--help` 성공 확인
      - 환경 변수 없이 실행하면 **실패해야 한다**는 음성 검증
        (`부트스트랩이 env 없이 성공해서는 안 된다`)
-   - 이미지에 `autoresearch/`·`src/`가 포함되지 않았음을 확인하는 검증 추가
+   - 이미지에 파이프라인 패키지(`autoresearch/`)가 포함되지 않았음을 확인하는 검증 추가
 
 3. **`.github/workflows/release.yml`**
    - batch 이미지 계약 검증(현재 `docker run --rm "$digest_ref" python -m
@@ -277,8 +277,8 @@ DAG에서 누락되지 않는다. 기존 세 DAG의 개별 설정도 같은 커�
    CI·release에서만 source SHA와 일치한다(이미지 빌드 SHA와 주입 아카이브
    SHA가 같기 때문). 운영 Pod에서는 갈라진다 — 위 "`application_revision`의
    의미 변화" 참조. 6개 중 다섯은 `autoresearch.jobs.*`이지만 마지막 하나는
-   `src.pipeline.daily_recommendations`로 **네임스페이스가 다르다** — 두
-   패키지(`autoresearch/`, `src/`)가 모두 아카이브에 들어가야 계약이
+   `autoresearch.recommendation.daily_recommendations`로 **네임스페이스가 다르다** — 두
+   패키지(`autoresearch/`, #754 이전에는 `src/`도)가 아카이브에 들어가야 계약이
    성립한다.
 
    ```
@@ -287,7 +287,7 @@ DAG에서 누락되지 않는다. 기존 세 DAG의 개별 설정도 같은 커�
    autoresearch.jobs.action_log
    autoresearch.jobs.action_log_quality
    autoresearch.jobs.feature_store_build
-   src.pipeline.daily_recommendations
+   autoresearch.recommendation.daily_recommendations
    ```
 3. **음성 검증**: 아카이브 없이 실행하면 exit 2로 실패한다.
 4. **GAR digest**: push 후 digest를 pull해 2·3을 반복한다.

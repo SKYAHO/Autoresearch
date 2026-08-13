@@ -89,7 +89,7 @@ passed = (지표 기준 통과) OR (하드 리밋 도달)
 접근하지 않고 모든 값을 호출자에게서 받는다.
 
 현재 산출 근거는 **champion alias가 가리키는 버전의 `creation_timestamp`**이지
-**alias를 실제로 부여한 시각이 아니다.** `set_model_alias`(`src/tracking/registry.py`)가
+**alias를 실제로 부여한 시각이 아니다.** `set_model_alias`(`autoresearch/model_registry/registry.py`)가
 부여 시각을 남기지 않아 그것이 유일하게 얻을 수 있는 값이다.
 
 ```text
@@ -105,7 +105,7 @@ passed = (지표 기준 통과) OR (하드 리밋 도달)
 도달 상태**가 된다. 그러면 지표 조건이 사실상 무력해진다.
 
 그 상태가 관측되면 alias 부여 시각을 기록하는 쪽으로 전환한다 — 전환 설계는 spec
-§8.4에 있다. **`src/tracking/`을 건드리므로 소유자 확인이 선행돼야 한다.**
+§8.4에 있다. **`autoresearch/model_registry/`을 건드리므로 소유자 확인이 선행돼야 한다.**
 
 ## 관련 문서
 

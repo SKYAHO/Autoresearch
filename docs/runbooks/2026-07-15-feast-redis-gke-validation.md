@@ -71,7 +71,7 @@ YAML
 또는 간단히 (VCS_REF 기본값 unknown 허용 시):
 
 ```bash
-gcloud builds submit --tag "${IMAGE}" -f Dockerfile.feast .
+gcloud builds submit --tag "${IMAGE}" -f deployment/Dockerfile.feast .
 ```
 
 빌드 성공 시 이미지가 Artifact Registry에 push된다.

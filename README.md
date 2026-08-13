@@ -25,31 +25,40 @@ YouTube 수집 → 가상 유저 생성 → action log 생성 → CTR 학습 데
 
 ## 저장소 구조
 
+폴더는 **파이프라인 단계** 축으로 나눕니다(#754). 최상위 이름만 보고 그 안에 무엇이
+있는지 예상할 수 있어야 하고, 배포되는 서비스는 파이프라인 코드와 섞이지 않습니다.
+
 ```
-autoresearch/        # 런타임 패키지
-├── youtube_collection/   # YouTube 트렌딩 수집 (fetch/transform/load/backfill + 복원력 레이어)
-├── virtual_users/        # LLM 기반 가상 유저(페르소나) 생성
-├── action_logs/          # action log 생성·shard·merge·품질 계약
-└── jobs/                 # Airflow 비종속 공개 batch CLI
-agent_orchestration/  # 실험형 FastAPI 채팅 API + PostgreSQL 저장
-src/                 # CTR 학습·서빙 파이프라인
-├── features/             # 피처 엔지니어링·조립
-├── models/               # LightGBM 모델
-├── pipeline/             # 학습·평가·학습 데이터셋·일일 추천·정책 시뮬레이션
-├── serving/              # FastAPI 리랭킹 추론 서버
-├── tracking/             # MLflow tracking·registry 연동
-└── utils/                # 모델 저장/로드 유틸리티
-proxy/               # Cloud Run dumb forwarder (YouTube API IP밴 대응)
-deployment/          # 배포 산출물 (mlflow/ Tracking Server, serving/ 추론 이미지,
-                     #             experiment_platform/ 역할별 runtime 이미지,
-                     #             feast/ feast apply GKE Job 매니페스트, 롤백용)
+autoresearch/        # 폐루프 파이프라인 — 단계마다 한 패키지
+├── cli.py                # 학습·평가·승격 typer 진입점
+├── jobs/                 # Airflow 비종속 공개 batch CLI
+├── data_collection/      # YouTube 트렌딩 수집 (fetch/transform/load/backfill + 복원력 레이어)
+├── virtual_user_generation/  # LLM 기반 가상 유저(페르소나) 생성 + 파이프라인 어댑터
+├── action_log_generation/    # action log 생성·shard·merge·품질 계약
+├── feature_engineering/  # 피처 조립·임베딩·Feast 조회
+├── model_training/       # 모델 정의, 학습, 학습 데이터셋, provenance, 스냅샷
+├── model_evaluation/     # 평가, 열화 측정, paired 비교, seed sweep, 승격 근거
+├── recommendation/       # 일일 추천, 정책 라운드 시뮬, 노출 provider, 리랭킹 클라이언트
+├── model_registry/       # MLflow tracking·registry·승격
+└── reporting/            # HTML 리포트, 실험 결과 리포트 전송
+applications/        # 배포되는 서비스 — 파이프라인을 소비하지만 그 일부가 아니다
+├── reranking_api/        # FastAPI 리랭킹 추론 서버 + k6 부하 테스트
+├── experiment_platform/  # 실험 에이전트 (api/workbench/runner/launcher/executor/shared)
+└── youtube_api_proxy/    # Cloud Run dumb forwarder (YouTube API IP밴 대응)
+deployment/          # 배포 산출물 (Dockerfile.*, mlflow/ Tracking Server,
+                     #             serving/ 추론 이미지, experiment_platform/ 역할별
+                     #             runtime 이미지, feast/ apply GKE Job 매니페스트)
 feature_repo/        # Feast 피처 스토어 정의 (BigQuery offline / Redis online)
 examples/            # CTR 파이프라인 예제 스캐폴드
 scripts/             # 검증·일회성 스크립트
-tests/               # 모듈별 단위 테스트 (플랫 구조)
+tests/               # 소스 구조를 그대로 미러링 (tests/model_training/ …)
 docs/                # 문서 — docs/README.md 인덱스 참조
 .streamlit/          # Streamlit Experiment Workbench 테마 정본 (config.toml)
 ```
+
+`feature_repo/`는 Feast가 요구하는 규격이라 최상위에 그대로 둡니다. 파이프라인 단계
+축으로 자르면 마지막 단계가 첫 단계를 참조하게 되는데(`recommendation` →
+`action_log_generation`), 폐루프 구조상 자연스러운 방향이며 import 순환은 아닙니다.
 
 ## 배포 이미지
 
@@ -204,14 +213,15 @@ action log 데이터 레이크는 **일일 슬라이스 파티션**(`dt=D` = KST
 
 | 도메인 | 팀원 | 주요 경로 |
 |---|---|---|
-| Model Training | waieiches, hyochangsung | `src/models/`, `src/pipeline/`, `src/tracking/` |
-| Feast Features | waieiches, hyochangsung | `feature_repo/`, `src/features/` |
-| YouTube Collection & Release | Noah-JuYong | `autoresearch/youtube_collection/`, `proxy/`, `.github/workflows/` (release·배포 트리거) |
+| Model Training | waieiches, hyochangsung | `autoresearch/model_training/`, `autoresearch/model_evaluation/`, `autoresearch/model_registry/` |
+| Feast Features | waieiches, hyochangsung | `feature_repo/`, `autoresearch/feature_engineering/` |
+| YouTube Collection & Release | Noah-JuYong | `autoresearch/data_collection/`, `applications/youtube_api_proxy/`, `.github/workflows/` (release·배포 트리거) |
 | Airflow Orchestration | bbungjun | `Autoresearch-airflow` 저장소 |
 | GCP Infrastructure | hyeongyu-data | `Autoresearch-infra` 저장소 |
 
-> `src/serving/`(리랭킹 API)과 정책 라운드·일일 추천 폐루프의 도메인 소유는
-> 아직 미지정입니다 — 저장소 구조 논의(#149)에서 확정 예정.
+> `applications/reranking_api/`(리랭킹 API)와 `autoresearch/recommendation/`(정책 라운드·
+> 일일 추천 폐루프)의 도메인 소유는 아직 미지정입니다. #149에서 확정 예정이었으나 그
+> 논의는 #754로 대체됐고, #754도 구조만 정하고 소유는 정하지 않았습니다.
 
 ## 시작하기
 

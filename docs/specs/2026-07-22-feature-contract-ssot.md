@@ -25,12 +25,12 @@ CTR 모델이 사용하는 feature 이름, 순서, categorical 분류를 하나�
 
 | 계층 | 현재 계약 | 결과 |
 | --- | --- | --- |
-| `src/pipeline/build_training_dataset.py` | 21개 model input + `clicked` | 모델 입력 계약은 22컬럼. 실제 CSV는 뒤에 패스스루가 붙어 23컬럼(#505) |
+| `autoresearch/model_training/build_training_dataset.py` | 21개 model input + `clicked` | 모델 입력 계약은 22컬럼. 실제 CSV는 뒤에 패스스루가 붙어 23컬럼(#505) |
 | `feature_repo/feature_definitions.py` | 신규 6개를 포함한 FeatureView | online 조회 가능한 스키마는 준비됨 |
-| `src/pipeline/config.yaml` | model input 목록을 소유하지 않음 | 학습은 canonical contract를 직접 소비 |
-| `src/serving/online_features.py` | canonical contract 기반 read refs와 21개 builder output | serving은 별도 feature list를 정의하지 않음 |
-| `src/pipeline/simulate_policy_round.py` | canonical 21개 frame 조립 | 일일 추천도 같은 contract를 소비 |
-| `src/pipeline/evaluate.py`, `src/serving/model_loader.py` | canonical 입력과 artifact strict 검증 | 불일치 artifact는 실행 경계에서 거부 |
+| `autoresearch/model_training/config.yaml` | model input 목록을 소유하지 않음 | 학습은 canonical contract를 직접 소비 |
+| `applications/reranking_api/online_features.py` | canonical contract 기반 read refs와 21개 builder output | serving은 별도 feature list를 정의하지 않음 |
+| `autoresearch/recommendation/simulate_policy_round.py` | canonical 21개 frame 조립 | 일일 추천도 같은 contract를 소비 |
+| `autoresearch/model_evaluation/evaluate.py`, `applications/reranking_api/model_loader.py` | canonical 입력과 artifact strict 검증 | 불일치 artifact는 실행 경계에서 거부 |
 
 새 train artifact, evaluator, serving builder, simulation/daily, loader는 함께
 cutover해야 한다. 15개 artifact를 새 경로에서 계속 지원하거나 누락 컬럼을
@@ -61,7 +61,7 @@ batch 시작 경계에서 명시적으로 거부한다.
 
 ### 1. 공통 Python 계약이 SSOT다
 
-`src/features/model_contract.py`를 추가하고 다음 불변 값을 소유하게 한다.
+`autoresearch/feature_engineering/model_contract.py`를 추가하고 다음 불변 값을 소유하게 한다.
 
 ```python
 MODEL_FEATURE_COLUMNS: Final[tuple[str, ...]]
@@ -73,7 +73,7 @@ artifact의 `feature_columns.pkl`과 `categorical_columns.pkl`은 SSOT가 아니
 학습 결과를 재현하기 위한 스냅샷이다. artifact를 읽는 경계에서는 스냅샷이 공통
 계약과 순서까지 정확히 같은지 검증한다.
 
-`src/pipeline/config.yaml`의 feature 목록은 제거한다. 내부 production 학습
+`autoresearch/model_training/config.yaml`의 feature 목록은 제거한다. 내부 production 학습
 파이프라인이 하나의 고정 serving 계약을 사용하므로 같은 목록을 설정에 다시
 적어둘 이유가 없다. 모델 hyperparameter와 데이터 경로는 계속 YAML이 소유한다.
 
@@ -136,7 +136,7 @@ dataset의 물리적 컬럼 순서와 무관하게 학습 입력은
 model feature 목록과 Feast read refs는 같은 개념이 아니다.
 `preferred_category`처럼 모델에 직접 들어가지 않고 파생 feature 계산에만 쓰는
 조회 컬럼이 있기 때문이다. 따라서 Feast ref 목록은
-`src/serving/online_features.py`에 유지하되 공통 model contract를 만족해야 한다.
+`applications/reranking_api/online_features.py`에 유지하되 공통 model contract를 만족해야 한다.
 
 첫 번째 `(user_id, video_id)` batch read에 다음 신규 ref를 추가한다.
 
@@ -156,11 +156,11 @@ VideoFeatureView:channel_video_count
 
 ### 4. 학습, 평가와 batch scoring도 같은 계약을 사용한다
 
-`src/pipeline/train.py`와 `src/pipeline/evaluate.py`는 YAML에서 feature 목록을
+`autoresearch/model_training/train.py`와 `autoresearch/model_evaluation/evaluate.py`는 YAML에서 feature 목록을
 읽지 않고 공통 계약으로 학습·평가 입력을 선택한다. 학습 후 저장하는 두
 artifact도 공통 계약에서 생성한다.
 
-`src/pipeline/simulate_policy_round.py`의 pool frame에는 다음 값을 추가한다.
+`autoresearch/recommendation/simulate_policy_round.py`의 pool frame에는 다음 값을 추가한다.
 
 - user offline: `watch_time_band`
 - point-in-time user dynamic: `recent_view_count_7d`, `total_event_count_7d`
@@ -262,7 +262,7 @@ model reload 여부 확인은 production cutover의 필수 사전 조건이다.
 
 ## 완료 조건
 
-- feature 이름과 순서의 production SSOT가 `src/features/model_contract.py`
+- feature 이름과 순서의 production SSOT가 `autoresearch/feature_engineering/model_contract.py`
   하나로 제한된다.
 - 학습 artifact, Inference Server, 일일 추천/simulation이 동일한 21개 계약을
   사용한다.

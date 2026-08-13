@@ -44,12 +44,12 @@
 
 > **문서 정정**: `#514` plan의 "건드리지 않는 파일" 목록에 `promotion_gate.py`를
 > `src/pipeline/` 아래인 것처럼 적었으나 그 경로에는 파일이 없다. 실제 경로는
-> `autoresearch/experiments/promotion_gate.py`다. `#514`가 그 파일을 건드리지 않는다는
+> `autoresearch/model_evaluation/experiments/promotion_gate.py`다(#754 재배치 반영). `#514`가 그 파일을 건드리지 않는다는
 > 사실 자체는 그대로다.
 
 ## 2. 의존 방향 — 게이트는 `degradation_eval`을 import하지 않는다
 
-`derive_hard_retrain_limit`은 `src/pipeline/degradation_eval.py`에 있고, 그 모듈은
+`derive_hard_retrain_limit`은 `autoresearch/model_evaluation/degradation_eval.py`에 있고, 그 모듈은
 `train`(→ lightgbm)을 끌고 온다. 게이트가 그것을 import하면 **판정 경로에 ML 의존이
 들어온다** — `#485` §5.3에서 같은 이유로 원시값 전달을 택한 것과 동일한 문제다.
 
@@ -213,7 +213,7 @@ guardrail 위반 → 하드 리밋 도달 여부와 무관하게 passed=False
 `days_since_last_promotion`을 구하려면 "마지막으로 승격된 시각"이 필요한데,
 **그것을 직접 기록하는 곳이 없다.**
 
-- `set_model_alias(model_name, alias, version)`(`src/tracking/registry.py:121`)은
+- `set_model_alias(model_name, alias, version)`(`autoresearch/model_registry/registry.py:121`)은
   **언제 붙였는지 남기지 않는다.**
 - 사용 가능한 근사치는 champion alias가 가리키는 **버전의 `creation_timestamp`**
   (`registry.py:81,90`)뿐이다.
@@ -227,14 +227,14 @@ guardrail 위반 → 하드 리밋 도달 여부와 무관하게 passed=False
 
 - **안 A(채택)**: 버전 `creation_timestamp`를 쓴다. 추가 구현 없음. 위 오차를 감수한다.
 - **안 B(보류)**: alias 부여 시각을 기록하는 경로를 만든다. `set_model_alias` 호출부
-  또는 registry 태그에 남긴다. **다른 사람 영역(`src/tracking/`)을 건드린다.** → §8.4
+  또는 registry 태그에 남긴다. **다른 사람 영역(`autoresearch/model_registry/`)을 건드린다.** → §8.4
 
 **채택 사유**: 안 A의 오차는 "여러 버전을 미리 등록해두고 나중에 alias만 옮기는" 운영
 관행이 있을 때 커진다. 그런데 Auto Research 승격 루프는 이제 막 동작하기 시작했고
 (`#448` 최근 close, `#461` 게이트도 최근 착지), **그런 관행이 쌓일 시간 자체가 없었다.**
 따라서 발표 시점까지 creation과 alias 부여의 시차가 며칠씩 벌어질 구조가 아니다.
 
-안 B를 지금 하면 `src/tracking/registry.py`(다른 사람 영역)를 건드리는데, 그 비용을
+안 B를 지금 하면 `autoresearch/model_registry/registry.py`(다른 사람 영역)를 건드리는데, 그 비용을
 치를 만큼 지금 오차가 크지 않다.
 
 ### 6.1 근사라는 사실을 어디에 남기는가 — 게이트가 아니다
@@ -288,7 +288,7 @@ limit_days = 0,  reason = None
 1. `evaluate()`에 OR 조건과 신규 인자 2개를 더하는 방향이 맞는지.
 2. `GateDecision`에 `policy_version`을 더해도 되는지 — 호출부 workflow가 그 필드를
    읽지 않으므로 하위호환이지만, 계약 변경은 소유자 판단이다.
-3. §6의 안 A/안 B 중 어느 쪽인지 — 안 B는 `src/tracking/registry.py`를 건드린다.
+3. §6의 안 A/안 B 중 어느 쪽인지 — 안 B는 `autoresearch/model_registry/registry.py`를 건드린다.
 
 **확인 결과(2026-08-05)**: 승인이 기록됐다 —
 `pull/461#issuecomment-5186975872` ("`#472` 효창님 승인 완료").
@@ -310,7 +310,7 @@ limit_days = 0,  reason = None
 - 버전을 여러 개 미리 등록해두고 나중에 골라 alias를 옮기는 운영이 자리잡을 때
 - `hard_retrain_limit_reached`가 **거의 항상** 발동해 지표 조건이 사실상 무력해질 때
 
-전환 내용: `set_model_alias`(`src/tracking/registry.py:121`) 경로에서 alias 부여 시각을
+전환 내용: `set_model_alias`(`autoresearch/model_registry/registry.py:121`) 경로에서 alias 부여 시각을
 기록한다(registry 태그 또는 별도 레코드). **다른 사람 영역이므로 소유자 확인이
 선행돼야 한다.** 전환해도 게이트 코드는 바뀌지 않는다 — 값을 구하는 쪽만 바뀐다(§6.1).
 

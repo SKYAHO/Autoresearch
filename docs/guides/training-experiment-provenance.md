@@ -126,7 +126,7 @@ reproducibility artifact가 없으므로 verified comparison의 입력으로는 
 애플리케이션은 다음 CLI를 제공한다.
 
 ```text
-python -m src.cli verify-comparison \
+python -m autoresearch.cli verify-comparison \
   --baseline-run-id <run-id> \
   --challenger-run-id <run-id> \
   --output comparison.json \
@@ -192,19 +192,19 @@ write-once GCS에 고정한 계획과 학습 runtime이 만든 held-out metric o
 `gs://bucket/prefix`를 명시한다.
 
 ```bash
-python -m src.cli create-experiment-plan \
+python -m autoresearch.cli create-experiment-plan \
   --hypothesis-id issue-466-h1 \
   --control-id <baseline-control-id> \
   --candidate-id <challenger-candidate-id> \
   --promotion-evidence-root gs://<bucket>/<prefix> \
   --output data/processed/experiment-plan-receipt.json
 
-python -m src.cli train-model \
+python -m autoresearch.cli train-model \
   --experiment-plan-receipt data/processed/experiment-plan-receipt.json \
   --promotion-evidence-root gs://<bucket>/<prefix> \
   --split-seed 42 --model-seed 42 --sampler-seed 42
 
-python -m src.cli verify-comparison \
+python -m autoresearch.cli verify-comparison \
   --baseline-run-id <baseline-run-id> \
   --challenger-run-id <challenger-run-id> \
   --output data/processed/comparison-42.json \
@@ -301,7 +301,7 @@ receipt에서 canonical comparison을 다시 만들지 못하면 통계를 계�
 ### 6. paired offline 실험 실행과의 접합 (#454)
 
 위 판정 엔진은 라이브러리이고, 그것을 실제 실험 실행 결과에 적용하는 진입점은
-`compare-paired-experiment`(`src/pipeline/paired_experiment.py`)다. 이 명령은
+`compare-paired-experiment`(`autoresearch/model_evaluation/paired_experiment.py`)다. 이 명령은
 조건별(baseline/candidate) 학습이 끝난 뒤 seed별 두 MLflow run을 짝지어
 `verify-comparison`과 같은 재검증을 수행하고, 판정 결과를
 `comparison_passed`/`comparison_rejected`/`comparison_failed`로 사상한다.

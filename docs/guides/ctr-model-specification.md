@@ -215,8 +215,8 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 > [!NOTE]
 > 아래 "최종 Model Input Columns"는 Feast 경유(4개 BigQuery 중간 테이블 +
 > `get_historical_features()`) 목표 아키텍처 기준이다. model input의 SSOT는
-> `src/features/model_contract.py`이며, 이 가이드는 그 계약과 feature assembly를
-> 설명한다. 현재 구현(`src/pipeline/build_training_dataset.py`)은 Feast를 아직
+> `autoresearch/feature_engineering/model_contract.py`이며, 이 가이드는 그 계약과 feature assembly를
+> 설명한다. 현재 구현(`autoresearch/model_training/build_training_dataset.py`)은 Feast를 아직
 > 경유하지 않는 DuckDB fallback 경로지만, 21개 model input과 `clicked` label을
 > 포함한 총 22개 physical column을 생성한다.
 > (`docs/specs/2026-07-21-training-dataset-16-to-21-column-roadmap.md`,
@@ -270,14 +270,14 @@ User Feature 세부 생성 규칙은 본 문서의 담당 범위가 아니므로
 
 `clicked`는 `training_dataset.csv`의 22번째 physical column인 label이다. 즉
 최종 학습 산출물은 canonical 21개 input feature + `clicked` = 22컬럼이고,
-학습·평가 시 model input은 `src/features/model_contract.py`에서 선택한 21개만
+학습·평가 시 model input은 `autoresearch/feature_engineering/model_contract.py`에서 선택한 21개만
 사용한다.
 
 ### Feature contract and artifacts
 
 `train.py`와 `evaluate.py`, online `ServingFeatureBuilder`,
 `simulate_policy_round.py`/daily scoring, `model_loader.py`는 모두
-`src/features/model_contract.py`의 동일한 21개 tuple을 소비한다. 학습 산출물의
+`autoresearch/feature_engineering/model_contract.py`의 동일한 21개 tuple을 소비한다. 학습 산출물의
 `feature_columns.json`과 `categorical_columns.json`은 SSOT가 아니라 그 계약을
 재현하는 artifact snapshot이며(pickle→JSON 전환 #344), loader는
 feature 이름·순서와 categorical 5개
@@ -359,9 +359,9 @@ Training Dataset의 한 행은 `(user_id, video_id, clicked)` pointwise 구조�
 ### Calibration Definition
 
 - **수식**: He 2014 `p = q/(q + (1-q)/w)` (`q`=메인 모델 raw 출력, `p`=원분포 보정 확률).
-  `src/models/downsampling.py:apply_downsampling_calibration`(#300)을 재사용한다.
+  `autoresearch/model_training/downsampling.py:apply_downsampling_calibration`(#300)을 재사용한다.
 - **파라미터 `w`**: 학습 시 실제로 남긴 negative 비율(**realized `sampling_rate`**, nominal 아님).
-  `src/models/calibration.py:DownsamplingCalibrator`가 `w` 하나로 완전히 정의되며 JSON으로 직렬화한다.
+  `autoresearch/model_training/calibration.py:DownsamplingCalibrator`가 `w` 하나로 완전히 정의되며 JSON으로 직렬화한다.
 - **"상수지만 아티팩트"**: 내부 로직은 fit 없는 상수 변환이며, 메인 모델과 **같은 run의 아티팩트**로
   종속시켜 패키징한다(별도 등록 모델 아님, #390). 배포·롤백·버전 관리의 단일 기준은 메인 모델이다.
 - calibration 수식·규약·검증 지표(LogLoss/Brier/calibration curve, AUC 계열 불변)는 본 문서에서
@@ -374,19 +374,19 @@ Training Dataset의 한 행은 `(user_id, video_id, clicked)` pointwise 구조�
 - **run_id 종속**: 서빙이 메인을 alias로 로드하면 그 버전의 run_id를 얻고, **같은 run**의 calibration
   아티팩트를 함께 읽는다. calibration이 물리적으로 메인과 같은 학습에서 나왔음이 run_id로 보장되므로
   별도 짝 식별 tag(`main_run_id`)나 페어링 검증이 필요 없다.
-- **단일 승격 기준**: champion 전환 시 이동하는 alias는 메인 하나뿐이다(`src/tracking/promote.py`).
+- **단일 승격 기준**: champion 전환 시 이동하는 alias는 메인 하나뿐이다(`autoresearch/model_registry/promote.py`).
   두 alias를 비원자적으로 전환하며 생기던 **동기화(race)** — 새 메인 + 직전 calibration 조합 — 이
   구조적으로 발생하지 않는다.
 - **승격 게이트**: (1) downsampling 후보(`sampling_rate` tag `< 1.0`)는 같은 run에 calibration
   아티팩트가 있어야 승격된다(없으면 게이트2 거부). (2) 서빙 calibration 배선이 라이브임을 나타내는
   `CTR_SERVING_CALIBRATION_READY` 플래그(기본 False) 전까지 downsampling 모델의 champion 승격이
-  거부된다(`src/tracking/registry.py:set_model_alias`, #300 순서 가드). 이 플래그는 "서빙이 실제로
+  거부된다(`autoresearch/model_registry/registry.py:set_model_alias`, #300 순서 가드). 이 플래그는 "서빙이 실제로
   체이닝하도록 배포됨"을 나타내는 배포 결합 신호다.
 
 ### manifest 스키마
 
 manifest는 배포 단위의 아티팩트들이 **서로 맞는 조합인지 검증**하는 용도이며, feature 계약의
-SSOT가 아니다 — 계약 SSOT는 `src/features/model_contract.py`이고 manifest가 이를 대체하지 않는다
+SSOT가 아니다 — 계약 SSOT는 `autoresearch/feature_engineering/model_contract.py`이고 manifest가 이를 대체하지 않는다
 (`docs/specs/2026-07-22-feature-contract-ssot.md`, #251에서 "모델 아티팩트를 SSOT로 쓰는 방식"은
 기각됨). 담을 필드:
 
@@ -405,9 +405,9 @@ SSOT가 아니다 — 계약 SSOT는 `src/features/model_contract.py`이고 mani
 
 - **체이닝**: `main_model` 추론(raw `q`) → `calibration_model` 적용(`p`) → 최종 CTR. calibration은
   monotonic이라 재랭킹 순위는 불변이고 반환 점수만 원분포 확률로 이동한다
-  (`src/serving/service.py:Reranker`).
+  (`applications/reranking_api/service.py:Reranker`).
 - **로딩**: 서빙은 메인을 alias로 resolve해 run_id를 얻고, 같은 run의 calibration 아티팩트를
-  함께 조립한다(`src/serving/model_loader.py`). Registry 경로는 `ctr-model@champion` **하나만**
+  함께 조립한다(`applications/reranking_api/model_loader.py`). Registry 경로는 `ctr-model@champion` **하나만**
   resolve한다 — calibration은 별도 alias resolve가 없다. calibration `w`는 **로드 시 1회 읽어
   캐싱**하며 요청당 재조회하지 않는다(#300 서빙 캐싱 계약).
 - **calibration 사용 판단은 메인의 `sampling_rate` tag 기준**: 메인이 non-downsampling

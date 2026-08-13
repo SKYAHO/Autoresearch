@@ -35,48 +35,51 @@ docs/
 
 | 도메인 | 팀원 | 책임 | 주요 경로 |
 |---|---|---|---|
-| **Model Training** | waieiches, hyochangsung | 모델 구조, 학습 파이프라인, 평가 지표, MLflow 연동 | `src/models/`, `src/pipeline/`, `src/tracking/` |
-| **Feast Features** | waieiches, hyochangsung | 피처 정의, 피처 엔지니어링, 피처 스토어 연동 | `feature_repo/`, `src/features/` |
-| **YouTube Collection & Release** | Noah-JuYong | YouTube 수집 파이프라인·복원력 레이어·프록시, release/배포 자동화 워크플로우 | `autoresearch/youtube_collection/`, `proxy/`, `.github/workflows/` |
+| **Model Training** | waieiches, hyochangsung | 모델 구조, 학습 파이프라인, 평가 지표, MLflow 연동 | `autoresearch/model_training/`, `autoresearch/model_evaluation/`, `autoresearch/model_registry/` |
+| **Feast Features** | waieiches, hyochangsung | 피처 정의, 피처 엔지니어링, 피처 스토어 연동 | `feature_repo/`, `autoresearch/feature_engineering/` |
+| **YouTube Collection & Release** | Noah-JuYong | YouTube 수집 파이프라인·복원력 레이어·프록시, release/배포 자동화 워크플로우 | `autoresearch/data_collection/`, `applications/youtube_api_proxy/`, `.github/workflows/` |
 | **Airflow Orchestration** | bbungjun | DAG 정의, 스케줄링, 오케스트레이션 | `SKYAHO/Autoresearch-airflow` |
 | **GCP Infrastructure** | hyeongyu-data | 클라우드·Kubernetes 리소스, IAM, 시크릿 기반 | `SKYAHO/Autoresearch-infra` |
-| **Agent Orchestration** | (미지정) | FastAPI 채팅 저장 API, Codex CLI/OpenAI 호출, PostgreSQL 저장 | `agent_orchestration/` |
+| **Agent Orchestration** | (미지정) | FastAPI 채팅 저장 API, Codex CLI/OpenAI 호출, PostgreSQL 저장 | `applications/experiment_platform/` |
 
-> `src/serving/`(리랭킹 API)과 정책 라운드·일일 추천 폐루프의 도메인 소유는
-> 미지정입니다(#149 구조 논의에서 확정 예정). 해당 영역 변경은 팀 확인 후
-> 진행합니다.
+> `applications/reranking_api/`(리랭킹 API)와 `autoresearch/recommendation/`(정책 라운드·
+> 일일 추천 폐루프)의 도메인 소유는 미지정입니다. #149에서 확정 예정이었으나 그 논의는
+> #754로 대체됐고, #754도 구조만 정하고 소유는 정하지 않았습니다. 해당 영역 변경은 팀
+> 확인 후 진행합니다.
 
 ## Ownership Boundaries
 
-### `autoresearch/youtube_collection/`
+### `autoresearch/data_collection/`
 - **책임:** YouTube API 수집, 변환, GCS 적재, 백필. 복원력 레이어
   (`client.py`: 재시도/Key 롤링/IP밴 시그니처/프록시)를 포함합니다.
 - **패턴:** fetch → transform → load 단계를 파일로 분리합니다. 데이터
   계약은 `schema.py`의 pydantic 모델로 정의합니다.
 
-### `autoresearch/virtual_users/`
+### `autoresearch/virtual_user_generation/`
 - **책임:** 페르소나 원천 데이터 로드, LLM 기반 가상 유저 생성
 - **패턴:** 외부 API 호출과 오케스트레이션(`pipeline.py`)을 분리합니다.
 
-### `autoresearch/action_logs/`와 `autoresearch/jobs/`
+### `autoresearch/action_log_generation/`와 `autoresearch/jobs/`
 - **책임:** action log 도메인 로직과 Airflow 비종속 공개 batch 계약을
-  소유합니다. `autoresearch/action_logs/`는 BigQuery 비의존 순수 모듈로
-  유지합니다(BQ 리더는 `src/pipeline/`).
+  소유합니다. `autoresearch/action_log_generation/`은 BigQuery 비의존 순수 모듈로
+  유지합니다(BQ 리더는 `autoresearch/recommendation/`).
 - **경계:** `jobs/`는 입력을 검증하고 도메인 모듈을 호출하지만 schedule,
   retry, timeout, Pool과 KubernetesPodOperator 설정은 소유하지 않습니다.
 
-### `src/` (CTR 학습·서빙 파이프라인)
-- **책임:** 피처 조립(`features/`), 학습·평가·학습 데이터셋·일일 추천·정책
-  시뮬레이션(`pipeline/`), LightGBM 모델(`models/`), MLflow
-  tracking/registry(`tracking/`), FastAPI 리랭킹 추론 서버(`serving/`).
-- **경계:** `src/serving/`은 온라인 추론만 담당하며 배치 파이프라인을
-  import하지 않습니다. 피처 온라인 조회는 Feast(`feature_repo/`) 경유.
-- **참고:** `src/` → `autoresearch/` 패키지 통합이 논의 중입니다
-  (`docs/specs/2026-07-15-repo-restructure.md` 결정 3, 팀 합의 대기).
-  통합 전까지 신규 학습·서빙 코드는 기존 `src/` 배치를 따릅니다.
-- **학습 데이터셋 스냅샷(#530):** `src/pipeline/training_snapshot_store.py`가
+### `autoresearch/`의 학습·평가 단계 패키지
+- **책임:** 피처 조립(`feature_engineering/`), 모델 정의·학습·학습 데이터셋·
+  provenance·스냅샷(`model_training/`), 평가·열화 측정·paired 비교·승격 근거
+  (`model_evaluation/`), 일일 추천·정책 시뮬레이션·노출 provider
+  (`recommendation/`), MLflow tracking/registry(`model_registry/`),
+  리포트 생성·전송(`reporting/`).
+- **경계:** 온라인 추론은 `applications/reranking_api/`가 담당하며 배치
+  파이프라인을 import하지 않습니다. 피처 온라인 조회는 Feast(`feature_repo/`) 경유.
+- **배치 근거(#754):** 폴더는 파이프라인 **단계** 축으로 나눕니다. 새 학습·평가
+  코드는 그 단계 패키지에 둡니다 — 어느 단계인지 애매하면 `README.md`의 구조 절과
+  `docs/specs/2026-08-13-repository-structure-redesign.md`를 먼저 봅니다.
+- **학습 데이터셋 스냅샷(#530):** `autoresearch/model_training/training_snapshot_store.py`가
   content-addressed GCS 게시(`gs://<root>/by-hash/<sha>/`)·by-date 포인터
-  갱신·다운로드를 소유하고, `src/pipeline/training_provenance.py`가
+  갱신·다운로드를 소유하고, `autoresearch/model_training/training_provenance.py`가
   `TrainingSnapshotManifest`/`TrainingSnapshotPointer` 스키마를 소유합니다.
   게시는 opt-in 환경변수 `TRAINING_SNAPSHOT_ROOT`(CLI `--snapshot-root`)로만
   켜지며 **prod 재학습 경로에만** 설정해야 합니다 — 실험·dev 파이프라인이
@@ -84,11 +87,11 @@ docs/
   `docs/specs/2026-08-04-training-dataset-snapshot-store.md`,
   사용자 안내는 `docs/guides/training-dataset.md`입니다.
 
-### `agent_orchestration/`
+### `applications/experiment_platform/`
 - **책임:** 실험형 오케스트레이션 API와 비공개 Codex Runner. `/chat`의
   프롬프트 처리·PostgreSQL 영속화, API→Runner 내부 토큰 계약을 제공한다.
-- **배포 경계:** `deploy/agent_orchestration/api.Dockerfile`은 DB·API만,
-  `runner.Dockerfile`은 Codex CLI·OAuth PVC만, `ui.Dockerfile`은 Streamlit UI와
+- **배포 경계:** `deployment/experiment_platform/api.Dockerfile`은 DB·API만,
+  `runner.Dockerfile`은 Codex CLI·OAuth PVC만, `workbench.Dockerfile`은 Streamlit UI와
   Experiment API 표시 모델만 소유한다. `launcher.Dockerfile`은 DB 선점과 Kubernetes
   Job 생성만 소유한다. `executor.Dockerfile`은 Phase 2의 GitHub App token-minter,
   봉인 issue/workspace, Codex, verifier, candidate finalizer를 동일 digest에서 command
@@ -98,12 +101,13 @@ docs/
   KSA/GSA·PVC·Secret
   mount·RBAC·NetworkPolicy는 `SKYAHO/Autoresearch-infra` 소유이다.
 - **비책임:** 사용자 OAuth, 세션/사용자 히스토리, 정책 라우팅은 후속 단계다.
-- **패턴:** `src/`와 패키지 경계를 분리해 새로운 배포 단위를 별도로 둔다.
+- **패턴:** 파이프라인 코드(`autoresearch/`)와 패키지 경계를 분리해 배포 단위를
+  `applications/` 아래 별도로 둔다.
 - **Workbench 테마 정본(#657):** 색·모서리·테두리는 최상위 `.streamlit/config.toml`의
-  `[theme]`이 소유하고, `agent_orchestration/ui/styles.py`는 테마로 표현할 수 없는
+  `[theme]`이 소유하고, `applications/experiment_platform/workbench/styles.py`는 테마로 표현할 수 없는
   타이포그래피·레이아웃 CSS만 남긴다. Streamlit 1.60은 `--background-color` 같은 전역
   CSS 커스텀 속성을 노출하지 않으므로 CSS에서 `var(--*)`로 테마 값을 참조하면 그
-  선언은 오류 없이 통째로 무시된다. `.streamlit/`은 `ui.Dockerfile`이 명시적으로
+  선언은 오류 없이 통째로 무시된다. `.streamlit/`은 `workbench.Dockerfile`이 명시적으로
   `COPY`해야 이미지에 실린다 — 그 Dockerfile은 경로를 열거해 복사한다.
 - **이슈 발행 환경 변수(#516):** 가설을 `[AR]` 이슈로 발행하는 경로가 쓰는
   필수 환경 변수. 전체 기본값·형식은 `.env.example`이 정본.
@@ -176,12 +180,12 @@ docs/
       `baseline_training_complete` marker로 강제하며, marker가 없으면 candidate 학습은
       **시작 자체를 거부**한다(`executor/training.py`).
     - seed 목록은 상수를 복제하지 않고 **workspace 코드에게 직접 묻는다**
-      (`from src.pipeline.experiment_evaluation import POLICY_SEEDS`). executor 이미지에
-      `src/`가 없어 import가 불가능하고, 복제하면 `issue_authoring.py`에 이어 세 번째
+      (`from autoresearch.model_evaluation.experiment_evaluation import POLICY_SEEDS`). executor 이미지에
+      파이프라인 코드가 없어 import가 불가능하고, 복제하면 `issue_authoring.py`에 이어 세 번째
       사본이 된다. 조건별로 다른 값이 나오는 것이 정상이다 — candidate가 seed 정책을
       바꾸는 실험이면 candidate 학습은 바뀐 값으로 돌아야 한다.
     - `uv sync`는 `pyproject.toml`·`uv.lock`이 `base_dev_sha` 이후 바뀐 경우에만 돈다.
-    - **학습 코드는 이미지가 아니라 workspace의 clone에서 온다. 이미지에 `src/`를 굽지
+    - **학습 코드는 이미지가 아니라 workspace의 clone에서 온다. 이미지에 파이프라인 코드를 굽지
       말 것** — Codex가 수정한 candidate 코드가 아니라 빌드 시점의 낡은 코드로 학습하게
       되어 candidate 실험 자체가 무의미해진다.
     - **조립(`build-features`)은 이 Pod에서 하지 않는다.** feast group이 executor
@@ -192,7 +196,7 @@ docs/
       `experiment-job` GSA에 `roles/storage.objectViewer`가 필요하다.
     - **MLflow 좌표는 이름이 갈린다(#624).** launcher가 받는 이름은
       `ORCH_MLFLOW_TRACKING_URI`이지만 executor container에 내보내는 이름은 접두사 없는
-      `MLFLOW_TRACKING_URI`다 — `src/pipeline/train.py`가 표준 이름으로 읽기 때문이며,
+      `MLFLOW_TRACKING_URI`다 — `autoresearch/model_training/train.py`가 표준 이름으로 읽기 때문이며,
       접두사를 붙여 내보내면 값이 전달돼도 학습은 Pod 로컬 file store에 기록한다.
       비어 있으면 아무것도 붙지 않는다(`ORCH_TRAINING_DATASET_URI`와 같은 opt-in 규약).
       이 좌표가 없으면 run이 Pod과 함께 사라져 `training_comparison.py`가
@@ -205,7 +209,7 @@ docs/
       `objectCreator`는 **기존 객체 교체를 허용하지 않는다** — 게시된 결과는 같은
       Pod에서 도는 에이전트도 덮어쓸 수 없다.
     - **다운로드는 workspace 코드가, 검증은 executor 이미지가 한다(#605).** 받은 CSV의
-      SHA-256을 URI에 박힌 값과 대조한다. 다운로드 경로(`src/**`)는 Codex의 허용
+      SHA-256을 URI에 박힌 값과 대조한다. 다운로드 경로(`autoresearch/**`)는 Codex의 허용
       범위라 candidate가 바꿀 수 있는데, 학습과 달리 **데이터 조달은 두 조건이 같아야**
       paired 대조가 성립한다. 검증만 이미지에 봉인해 우회를 막는다. 받아둔 파일은
       candidate 단계와 Job 재시도가 재사용한다.
@@ -250,15 +254,15 @@ docs/
   `docs/specs/2026-07-13-public-batch-execution-contract.md`
 - 모델 승격 판정과 `model-promotion-result-v1` schema는 이 저장소가
   소유합니다. Airflow는 `--result-path` 파일을 XCom으로 운반하고 알림으로
-  렌더링하지만 `src.tracking` 내부 API를 import하거나 outcome을 다시
+  렌더링하지만 `autoresearch.model_registry` 내부 API를 import하거나 outcome을 다시
   판정하지 않습니다. 결과 정본:
   `docs/specs/2026-07-29-model-promotion-structured-outcome.md`
 - paired offline 실험(#454)의 비교·판정도 이 저장소가 소유합니다. Airflow는
   조건별(baseline|candidate) 학습 Job을 실행하고
-  `python -m src.cli compare-paired-experiment`의 결과 파일을 운반할 뿐,
+  `python -m autoresearch.cli compare-paired-experiment`의 결과 파일을 운반할 뿐,
   `comparison_passed`/`comparison_rejected`/`comparison_failed` 판정을 다시
   계산하지 않습니다. 실행 좌표는 `autoresearch/experiments/context.py`가,
-  결과 계약은 `src/pipeline/paired_experiment.py`가 소유하며 정본은
+  결과 계약은 `autoresearch/model_evaluation/paired_experiment.py`가 소유하며 정본은
   `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`입니다.
 - 학습 데이터셋 스냅샷 재사용(#530)의 CLI 인자 이름(`--snapshot-root`,
   `--dataset-uri`, `--min-coverage-days`)은 `Autoresearch-airflow#236` 배선이
@@ -268,8 +272,14 @@ docs/
   입니다.
 
 ### `tests/`
-- **책임:** 모듈별 단위 테스트. `tests/test_<module>.py` 플랫 구조를
-  따릅니다. 새 모듈에는 대응하는 테스트 파일을 만듭니다.
+- **책임:** 모듈별 단위 테스트. **소스 구조를 그대로 미러링**합니다(#754) —
+  `autoresearch/model_training/train.py`의 테스트는
+  `tests/model_training/test_train.py`입니다. 새 모듈에는 대응하는 테스트 파일을
+  같은 자리에 만듭니다.
+- 여러 패키지에 걸치거나 저장소 자체(워크플로·릴리스 계약)를 검사하는 테스트는
+  `tests/` 루트에 둡니다. 무리해서 나누지 않습니다.
+- 저장소 루트를 `Path(__file__).resolve().parents[N]`으로 찾을 때 `N`은 파일 깊이에
+  따라 다릅니다 — 옮길 때 함께 고쳐야 합니다(통합 과제 #760).
 - feast 계열 테스트는 dev 환경에서 `pytest.importorskip("feast")`로 skip되고
   CI `pytest (feast group)` job이 별도 실행합니다.
 
@@ -278,7 +288,7 @@ docs/
 - **언어:** Python 3.12 (`.python-version`), CI는 3.11/3.12 매트릭스
 - **의존성:** uv + `pyproject.toml`/`uv.lock`(단일 출처).
   `proxy/requirements.txt`는 `uv export` 전핀 산출물,
-  `deploy/mlflow/runtime`은 자체 lock — CI가 drift를 검사합니다.
+  `deployment/mlflow/runtime`은 자체 lock — CI가 drift를 검사합니다.
 - **주요 라이브러리:** pydantic v2, pyarrow, pandas, DuckDB, LightGBM,
   scikit-learn, typer, mlflow-skinny, google-cloud-bigquery/storage/aiplatform,
   openai(OpenRouter 호출)
@@ -291,8 +301,8 @@ docs/
   분리하고 online 서빙·materialize는 prod만 한다. dev apply는
   `full_scan_for_deletion=false`(`feature_repo/env.py`)로 Redis에 접속하지 않는다
   (#399, `docs/specs/2026-07-29-feature-store-prod-dev-environment.md`)
-- **모델·추적:** LightGBM + MLflow (Tracking Server는 `deploy/mlflow/`)
-- **서빙:** FastAPI (`src/serving/`), GKE 배포(`deploy/serving/`)
+- **모델·추적:** LightGBM + MLflow (Tracking Server는 `deployment/mlflow/`)
+- **서빙:** FastAPI (`applications/reranking_api/`), GKE 배포(`deployment/serving/`)
 - **오케스트레이션:** 외부 `Autoresearch-airflow`가 배포 이미지의 공개
   CLI를 KubernetesPodOperator로 실행
 

@@ -15,7 +15,7 @@ User/Video/Similarity 피처를 PIT join한다. 즉 **#299 PIT 전환의 조회 
 이 테이블이며, 이게 없으면 Phase 0 실측도 성립하지 않는다.
 
 현재 `training_entity`는 저장소 어디서도 빌드되지 않는다. 원본 SQL이 있던
-`src/pipeline/build_feature_tables.py`는 삭제됐고(#245 체크리스트 중 "삭제"만
+`autoresearch/model_training/build_feature_tables.py`는 삭제됐고(#245 체크리스트 중 "삭제"만
 반영됨), `autoresearch/jobs/feature_store_build.py`로의 이관(#246)은 머지되지
 못했다. 그 사이 `feature_store_build.py`는 #262(증분 DELETE+INSERT) / #295(당일
 슬라이스) 계약으로 재구조화됐으므로, 전량 재구축(`CREATE OR REPLACE`)이던 #246의

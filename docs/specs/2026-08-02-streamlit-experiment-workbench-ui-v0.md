@@ -130,12 +130,12 @@ Event와 Log는 API가 주는 `next_cursor`를 다음 `after_id`로 저장한다
 
 | 파일 | 책임 |
 | --- | --- |
-| `agent_orchestration/ui/app.py` | Streamlit 진입점, 화면 전환, fragment polling 조립 |
-| `agent_orchestration/ui/client.py` | HTTP 요청, 인증 헤더, API 오류의 UI 예외 변환 |
-| `agent_orchestration/ui/types.py` | API JSON을 화면 모델로 변환하는 불변 타입 |
-| `agent_orchestration/ui/state.py` | 선택 실험, cursor, 마지막 갱신, API 오류의 session state |
-| `agent_orchestration/ui/views.py` | 시작 화면, 목록, 타임라인, 탭, 요약 패널 렌더링 |
-| `agent_orchestration/ui/styles.py` | 상태 색상, 배지, 로그 형식 등 표현 규칙 |
+| `applications/experiment_platform/workbench/app.py` | Streamlit 진입점, 화면 전환, fragment polling 조립 |
+| `applications/experiment_platform/workbench/client.py` | HTTP 요청, 인증 헤더, API 오류의 UI 예외 변환 |
+| `applications/experiment_platform/workbench/types.py` | API JSON을 화면 모델로 변환하는 불변 타입 |
+| `applications/experiment_platform/workbench/state.py` | 선택 실험, cursor, 마지막 갱신, API 오류의 session state |
+| `applications/experiment_platform/workbench/views.py` | 시작 화면, 목록, 타임라인, 탭, 요약 패널 렌더링 |
+| `applications/experiment_platform/workbench/styles.py` | 상태 색상, 배지, 로그 형식 등 표현 규칙 |
 
 `client.py`만 HTTP 세부 구현을 알고, 화면 모듈은 `types.py`의 모델만 사용한다.
 

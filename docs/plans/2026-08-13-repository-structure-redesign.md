@@ -1488,14 +1488,44 @@ EOF
 
 ---
 
-### Task 5: 문서 갱신
+### Task 5: 문서 갱신 — 완료 (커밋 `feed427`)
+
+**범위를 셋으로 나눴다.** 문서 전체에서 옛 경로를 기계적으로 치환하면 역사적 기록까지
+바뀌므로, 무엇을 고칠지 기준을 먼저 세웠다.
+
+| 층 | 대상 | 처리 |
+| --- | --- | --- |
+| 정본 | `README.md`, `CLAUDE.md`/`AGENTS.md`, `.claude/docs/*`, `docs/README.md` | 구조 절·소유 표·폴더 책임을 다시 씀 |
+| 상시 갱신 | `docs/guides/`, `docs/runbooks/`, `docs/adr/` | 경로 전면 갱신 |
+| 살아있는 계약 | `docs/specs/` | 실행 가능한 참조와 계약 경로만 갱신 |
+| 역사 기록 | `docs/plans/`, `docs/archive/` | **손대지 않음** |
+
+`docs/plans/` 아래 완료된 구현 계획의 코드 스니펫은 그 시점의 기록이다. `docs/README.md`
+규칙상 `archive/`로 옮겨야 할 것들이라, 경로만 고치면 오히려 어중간해진다. 아카이브
+정리는 별도 과제로 남긴다.
+
+**치환 우선순위는 "복사해 실행하면 실패하는 것"이다.** `python -m src.cli`,
+`docker build -f Dockerfile.*`, import 문 순이다. 산문 속 경로 언급은 그 다음이다.
+
+**실패한 시도 하나를 기록한다.** `src/pipeline/` → 단일 문자열 치환 규칙을 넣었더니
+25개 spec 에 `autoresearch/ 단계 패키지에 config.yaml` 같은 문구가 생겼다. `src/pipeline`은
+네 패키지로 갈라졌으므로 **디렉터리 단위 대응이 없다.** 되돌리고 파일 단위 매핑
+(`src/pipeline/train.py` → `autoresearch/model_training/train.py` …)으로 다시 했다.
+Task 1의 임포트 치환에서 이미 겪은 것과 같은 함정인데 문서에서 반복했다.
+
+**추가한 검증.** 마크다운 상대 링크의 타깃이 실제로 존재하는지 전수 확인했다 —
+아카이브로 옮긴 plan 을 가리키던 링크 1건이 잡혔다.
+
+`tests/test_release_workflow.py`의 code archive 계약 테스트는 **주석이 사실과 달라져**
+함께 고쳤다. "두 패키지가 모두 아카이브에 들어가야 한다"는 근거가, 재배치로 한 패키지
+안의 두 단계가 되면서 성립하지 않는다. 단언 자체는 그대로다.
 
 **Files:**
 - Modify: `README.md`, `CLAUDE.md`, `AGENTS.md`, `.claude/docs/agent-project-reference.md`, `.claude/docs/architecture-overview.md`, `docs/README.md`, 살아있는 `docs/specs/`·`docs/guides/`
 - Modify: `docs/specs/2026-07-15-repo-restructure.md` (대체 표기)
 - Move or rewrite: `docs/plans/2026-07-15-src-package-merge.md`
 
-- [ ] **Step 1: 갱신 대상 목록 만들기**
+- [x] **Step 1: 갱신 대상 목록 만들기**
 
 ```bash
 grep -rln "src/\|src\.\|agent_orchestration\|^deploy/" \
@@ -1505,7 +1535,7 @@ grep -rln "src/\|src\.\|agent_orchestration\|^deploy/" \
 
 `docs/archive/`는 목록에 넣지 않는다.
 
-- [ ] **Step 2: `README.md` 저장소 구조 절 교체**
+- [x] **Step 2: `README.md` 저장소 구조 절 교체**
 
 26-52행의 구조 블록을 spec 4절의 최종 구조로 교체한다. 213행의 미해결 표기
 
@@ -1515,7 +1545,7 @@ grep -rln "src/\|src\.\|agent_orchestration\|^deploy/" \
 
 54-67행 배포 이미지 표의 `Dockerfile.*` 경로를 `deployment/` 기준으로 고친다.
 
-- [ ] **Step 3: `CLAUDE.md`·`AGENTS.md` 갱신**
+- [x] **Step 3: `CLAUDE.md`·`AGENTS.md` 갱신**
 
 두 파일은 내용이 동일하다(같은 크기·날짜). 한쪽을 고치고 복사한다.
 
@@ -1536,11 +1566,11 @@ cp CLAUDE.md AGENTS.md   # 갱신 후 동기화
 diff CLAUDE.md AGENTS.md && echo "동일"
 ```
 
-- [ ] **Step 4: `.claude/docs/` 갱신**
+- [x] **Step 4: `.claude/docs/` 갱신**
 
 `agent-project-reference.md`의 폴더 책임·소유 경계 표, `architecture-overview.md`의 경로를 새 구조로 고친다.
 
-- [ ] **Step 5: 선행 문서에 대체 표기 추가**
+- [x] **Step 5: 선행 문서에 대체 표기 추가**
 
 `docs/specs/2026-07-15-repo-restructure.md`의 "결정 3" 절 머리에 추가:
 
@@ -1556,11 +1586,11 @@ diff CLAUDE.md AGENTS.md && echo "동일"
 git mv docs/plans/2026-07-15-src-package-merge.md docs/archive/plans/
 ```
 
-- [ ] **Step 6: `docs/README.md` 인덱스 갱신**
+- [x] **Step 6: `docs/README.md` 인덱스 갱신**
 
 새 spec·plan을 인덱스에 추가하고, 아카이브로 옮긴 plan의 항목을 옮긴다.
 
-- [ ] **Step 7: 최종 전수 확인**
+- [x] **Step 7: 최종 전수 확인**
 
 ```bash
 grep -rn "from src\.\|import src\.\|python -m src\." --include=*.py --include=*.yml \
@@ -1570,7 +1600,7 @@ grep -rn "from src\.\|import src\.\|python -m src\." --include=*.py --include=*.
 
 기대: **0건.**
 
-- [ ] **Step 8: 전체 검증**
+- [x] **Step 8: 전체 검증**
 
 ```bash
 uv run python -m pytest -v 2>&1 | tail -5
@@ -1586,7 +1616,7 @@ uv sync --only-group feast
 uv sync   # dev 환경 복구
 ```
 
-- [ ] **Step 9: 커밋**
+- [x] **Step 9: 커밋**
 
 ```bash
 git add -A
@@ -1652,8 +1682,8 @@ Task마다 별도 PR을 올린다. `main` 기준, `Closes #754`는 마지막 PR�
 | [#756](https://github.com/SKYAHO/Autoresearch/pull/756) | Task 1 | 최대 diff — 이동/치환 2커밋 + executor 슬래시 경로 + feast 레지스트리 | **머지** — 아래 사유로 #755 squash에 포함 |
 | [#757](https://github.com/SKYAHO/Autoresearch/pull/757) | Task 2 | applications 층 + `lint.yml` + ruff 대상·alembic·proxy export | **머지** |
 | [#758](https://github.com/SKYAHO/Autoresearch/pull/758) | Task 3 | 테스트 재배치 | **머지** |
-| 6 | Task 4 | 배포·CI paths 필터 + `deployment/experiment_platform/` 리네임 | 구현 완료 |
-| 6 | Task 5 | 문서 | 대기 |
+| [#761](https://github.com/SKYAHO/Autoresearch/pull/761) | Task 4 | 배포·CI paths 필터 + `deployment/experiment_platform/` 리네임 | 리뷰 대기 |
+| 7 | Task 5 | 문서 | 구현 완료 |
 
 **머지 순서가 어긋나 Task 1이 #755의 squash에 삼켜졌다.** #756이 중간 브랜치
 `chore/754-repo-structure-redesign`으로 먼저 머지되고, 그 브랜치를 담은 #755가 main으로

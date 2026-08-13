@@ -70,7 +70,7 @@ parquet이 태그를 운반한다:
 
 ### 결정 2 — provider 구성은 jobs CLI, 주입은 factory seam
 
-`autoresearch/action_logs/`는 BQ 비의존 순수를 유지한다. BQ 접근이 필요한
+`autoresearch/action_log_generation/`는 BQ 비의존 순수를 유지한다. BQ 접근이 필요한
 provider 구성은 공개 CLI(`autoresearch/jobs/action_log.py`)가 담당하되,
 `src.pipeline.model_exposure_provider`를 **model 모드에서만 지연 import**
 한다(heuristic 모드는 src·BQ 무의존 유지). 의존 방향
@@ -118,7 +118,7 @@ provider를 기존 `candidate_provider` seam에, 태그 맵을 attach 단계에
 
 model 모드 테이블 해석은 daily 추천 배치와 동일 체계:
 `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.{table}` (상수는
-`src.pipeline.build_training_dataset`에서 지연 import — #216 리뷰의 기본값
+`autoresearch.model_training.build_training_dataset`에서 지연 import — #216 리뷰의 기본값
 중복 지적 재발 방지). rankings의 dt는 `--partition-date`와 동일해야 한다
 (dt 정합 — 노출·추천·트렌딩이 한 dt).
 

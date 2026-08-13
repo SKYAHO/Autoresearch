@@ -37,7 +37,7 @@ ENTRYPOINT로 재사용한다. 새 스크립트를 이미지별로 복제하지 
 - `COPY src ./src` 제거
 - `COPY scripts/gcs_code_bootstrap.sh /usr/local/bin/gcs_code_bootstrap.sh`
 - `ENTRYPOINT ["/usr/local/bin/gcs_code_bootstrap.sh"]`, 기존
-  `CMD ["python", "-m", "src.cli", "--help"]` 유지 (부트스트랩이 코드를
+  `CMD ["python", "-m", "autoresearch.cli", "--help"]` 유지 (부트스트랩이 코드를
   푼 뒤 이 CMD가 여전히 유효한 스모크로 동작)
 - `RUN chown appuser /app` — `Dockerfile.feast`는 `chown -R`을 쓰지만,
   `Dockerfile.train`의 최종 스테이지는 `pyproject.toml`/`uv.lock`을 `/app`에
@@ -76,7 +76,7 @@ Windows 로컬에서 `docker build -f Dockerfile.train`으로 빌드 후, 로컬
 - env 없이 실행 → `오류: CODE_ARTIFACTS_BUCKET 또는 CODE_ARCHIVE_LOCAL_PATH
   환경 변수가 필요합니다` (exit 2) — 부트스트랩 없이는 절대 성공하지 않음
 - `CODE_ARCHIVE_LOCAL_PATH`로 로컬 아카이브 주입 → `[gcs-bootstrap] code:
-  local:...` 로그 출력 후 `python -m src.cli`, `train-model --help`,
+  local:...` 로그 출력 후 `python -m autoresearch.cli`, `train-model --help`,
   `run-pipeline --help` 전부 정상 동작 확인(코드가 `/app`에 풀려있어야만
   가능한 경로)
 

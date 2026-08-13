@@ -23,7 +23,7 @@ Auto Research 에이전트가 "가설 이슈를 읽고 스스로 실험한다"�
 
 ## ① 정규 데이터 조립 경로를 에이전트가 실행할 수 없다 (#404)
 
-`python -m src.cli build-features`는 #359 C2 이후 `_assemble_via_feast` 단일 경로이며 실행에
+`python -m autoresearch.cli build-features`는 #359 C2 이후 `_assemble_via_feast` 단일 경로이며 실행에
 BigQuery `training_entity` spine 조회 권한, `GCS_REGISTRY_PATH`, `GCS_STAGING_LOCATION`,
 그리고 feast 패키지(dev 그룹과 의존성 충돌로 **격리 그룹**)가 모두 필요하다.
 
@@ -37,13 +37,13 @@ BigQuery `training_entity` spine 조회 권한, `GCS_REGISTRY_PATH`, `GCS_STAGIN
 
 ## ② 피처 1개 추가가 prod 모델 계약을 깬다 (#405)
 
-`MODEL_FEATURE_COLUMNS`(`src/features/model_contract.py`)는 학습·서빙·Feast가 공유하는 정본이고
+`MODEL_FEATURE_COLUMNS`(`autoresearch/feature_engineering/model_contract.py`)는 학습·서빙·Feast가 공유하는 정본이고
 **순서까지 고정**돼 있다(ONNX 입력이 이름 없는 텐서라 순서가 틀리면 조용히 오예측). 설계 자체는
 옳다. 문제는 **실험용 예외 통로가 없다**는 것이다.
 
-- `src/pipeline/train.py` — `feature_columns = list(MODEL_FEATURE_COLUMNS)` 하드코딩, 인자로
+- `autoresearch/model_training/train.py` — `feature_columns = list(MODEL_FEATURE_COLUMNS)` 하드코딩, 인자로
   바꿀 수 없다.
-- `src/pipeline/evaluate.py` — `require_model_feature_columns()`가 계약과 정확히 일치하지
+- `autoresearch/model_evaluation/evaluate.py` — `require_model_feature_columns()`가 계약과 정확히 일치하지
   않으면 예외로 중단한다.
 
 즉 실험 피처 1개를 넣는 유일한 방법이 **prod 계약 파일 수정**이다.
@@ -163,5 +163,5 @@ Node.js 설치와 긴 경로 허용이 필요하다.
 ## 부록 C — 로컬 Windows 인코딩
 
 `train.py` / `evaluate.py`의 `load_config`가 `open(path, "r")`로 열어 Windows 기본 코덱(cp949)이
-`src/pipeline/config.yaml`의 한국어 주석에서 `UnicodeDecodeError`를 낸다. 리눅스는 기본 UTF-8이라
+`autoresearch/model_training/config.yaml`의 한국어 주석에서 `UnicodeDecodeError`를 낸다. 리눅스는 기본 UTF-8이라
 재현되지 않는다 — 백로그가 아니라 환경 메모이며, 로컬 실행 시 `PYTHONUTF8=1`을 붙이면 된다.

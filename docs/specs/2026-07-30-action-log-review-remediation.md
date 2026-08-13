@@ -2,7 +2,7 @@
 
 **Status:** Approved in conversation on 2026-07-30
 **Scope:** Autoresearch PR #415 review remediation for issue #393
-**Owner path:** `autoresearch/action_logs/pipeline.py` single-mode execution
+**Owner path:** `autoresearch/action_log_generation/pipeline.py` single-mode execution
 
 ## Goal
 

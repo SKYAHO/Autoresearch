@@ -15,9 +15,9 @@
 
 ## 배경
 
-현재 파이프라인의 노출 선정은 `autoresearch/action_logs/candidate.py`의 키워드
+현재 파이프라인의 노출 선정은 `autoresearch/action_log_generation/candidate.py`의 키워드
 substring 휴리스틱이 수행하고, 모델 평가는 그 노출 분포 위의 ROC-AUC
-(`src/pipeline/evaluate.py`)뿐이다. 이는 "이미 노출된 후보 중 클릭 판별"만
+(`autoresearch/model_evaluation/evaluate.py`)뿐이다. 이는 "이미 노출된 후보 중 클릭 판별"만
 검증하며, 모델의 실제 임무인 "후보 pool에서 무엇을 노출할지 선택"은 검증된 적이
 없다. 모델이 새로 고르는 노출에는 기존 로그에 클릭 라벨이 없으므로, LLM 페르소나
 판정을 다시 거쳐 라벨을 생성해야 한다.
@@ -29,7 +29,7 @@ substring 휴리스틱이 수행하고, 모델 평가는 그 노출 분포 위�
 ## 핵심 설계 결정
 
 1. **배치 직접 로드 (serving HTTP 미경유)** — 배치 프로세스가
-   `src/serving/model_loader.load_reranker()`와 `src/serving/service.Reranker`를
+   `applications/reranking_api/model_loader.load_reranker()`와 `applications/reranking_api/service.Reranker`를
    라이브러리로 import해 점수를 계산한다. 서빙과 동일 코드 경로이므로 점수 불일치
    위험이 없고, 서버 수명 관리·네트워크 실패 모드를 배치에 들이지 않는다. HTTP
    경유 리허설은 비범위(후속 과제)로 남긴다.
@@ -62,7 +62,7 @@ substring 휴리스틱이 수행하고, 모델 평가는 그 노출 분포 위�
 ### 신규
 
 1. **피처 조립 공용 함수** — `(유저, 영상, 기준 시점) → 15개 피처 row`.
-   `src/pipeline/build_training_dataset.py`의 `derive_wide_events()`에서 해당
+   `autoresearch/model_training/build_training_dataset.py`의 `derive_wide_events()`에서 해당
    로직을 추출해 학습 데이터셋 빌더와 시뮬레이션 라운드가 같은 코드를 사용한다.
    별도 재구현은 그 자체가 학습-서빙 스큐이므로 금지한다. 추출은 구조 변경이므로
    동작 변경과 커밋을 분리한다.
@@ -71,7 +71,7 @@ substring 휴리스틱이 수행하고, 모델 평가는 그 노출 분포 위�
    후보 균등 랜덤 `k−exploitation`개(exploration). 각 노출에 `rank`(1-base,
    점수순), `ctr_score`, `is_exploration`을 태깅한다. seed 고정 시 결정론을
    보장한다. `k ≥ 후보 수`이면 전 후보 노출(exploration 슬롯 없음).
-3. **배치 진입점** — `src/pipeline/simulate_policy_round.py`. 흐름:
+3. **배치 진입점** — `autoresearch/recommendation/simulate_policy_round.py`. 흐름:
    virtual_users·영상 pool 로드 → 두 정책 노출 산출 → 유저별 합집합 → LLM 판정
    (기존 chunking·격리 기계 재사용) → 합동 정규화 → `_expand_events` → parquet
    저장 → 평가 리포트 출력. Reranker는 `load_reranker()`로 로드하며 local/mlflow
@@ -80,12 +80,12 @@ substring 휴리스틱이 수행하고, 모델 평가는 그 노출 분포 위�
 
 ### 수정
 
-4. **`autoresearch/action_logs/pipeline.py` — 후보 주입 seam** — 현재 내부에서
+4. **`autoresearch/action_log_generation/pipeline.py` — 후보 주입 seam** — 현재 내부에서
    `build_candidates()`를 호출하는 경로에, 미리 계산된 유저별 후보 목록을 주입
    받는 입구를 연다(callable 또는 후보 목록 인자). 의존 방향은 `src` →
    `autoresearch` 단방향을 유지하며(`autoresearch`는 `src`를 import하지 않는다),
    LLM 판정·chunking·격리·정규화 기계는 수정 없이 재사용한다.
-5. **`autoresearch/action_logs/schema.py` — EventLog additive 확장** — 기존
+5. **`autoresearch/action_log_generation/schema.py` — EventLog additive 확장** — 기존
    `source: Literal["historical", "online_simulated"]`의 `online_simulated` 값을
    이번에 처음 실사용한다. 신규 필드는 전부 optional(기본 `None`)로 기존
    historical 로그와 하위 호환을 유지한다.
