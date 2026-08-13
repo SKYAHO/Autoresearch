@@ -29,5 +29,20 @@ jobs:
         # ruff 버전은 pyproject.toml 의 lint 그룹이 단일 출처.
         run: uv sync --frozen --only-group lint
 
+      - name: 재배치로 사라진 최상위 디렉터리가 되살아나지 않았는지 확인
+        # exp 브랜치는 봉인된 옛 SHA에서 갈라져 나오므로, 그 브랜치가 src/ 아래 새 파일을
+        # 추가하면 merge가 디렉터리를 되살린다. 실제로 일어나긴 어렵지만 되살아나면
+        # 조용히 넘어가는 것이 더 나쁘다 (#754).
+        run: |
+          status=0
+          for stale in src proxy agent_orchestration; do
+            if [ -d "$stale" ]; then
+              echo "::error::$stale/ 가 다시 생겼습니다 — #754 재배치 이후 이 경로는 사용하지 않습니다"
+              git ls-files "$stale" | head -20
+              status=1
+            fi
+          done
+          exit "$status"
+
       - name: Run Ruff
-        run: uv run --no-sync ruff check agent_orchestration autoresearch tests tools
+        run: uv run --no-sync ruff check applications autoresearch tests tools

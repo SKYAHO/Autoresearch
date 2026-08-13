@@ -630,7 +630,7 @@ def test_registry_sampling_rate_tag_cannot_override_manifest(tmp_path, monkeypat
     # #302: mutable Registry tag가 변조돼도 서빙의 calibration 판단은 manifest만 사용한다.
     from mlflow.tracking import MlflowClient as _Client
 
-    from src.serving.model_loader import RegistryModelSettings, load_reranker_with_lineage
+    from applications.reranking_api.model_loader import RegistryModelSettings, load_reranker_with_lineage
 
     tracking_uri = (tmp_path / "mlruns").as_uri()
     monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)
@@ -658,9 +658,9 @@ def test_registry_sampling_rate_tag_cannot_override_manifest(tmp_path, monkeypat
 def test_main_logs_onnx_artifact_and_serving_loads_it(tmp_path, monkeypatch) -> None:
     # #302/#179: 학습이 model_onnx/ 아티팩트를 로깅하고, 서빙 로더가 그 run에서 ONNX로
     # (joblib 아님) Reranker를 로드하며 joblib 예측과 허용오차 내로 동일해야 한다.
-    from src.serving.model_loader import MlflowModelSettings, load_mlflow_model
-    from src.serving.onnx_model import OnnxProbabilityModel
-    from src.serving.schemas import CandidateVideo
+    from applications.reranking_api.model_loader import MlflowModelSettings, load_mlflow_model
+    from applications.reranking_api.onnx_model import OnnxProbabilityModel
+    from applications.reranking_api.schemas import CandidateVideo
 
     tracking_uri = (tmp_path / "mlruns").as_uri()
     monkeypatch.setenv("MLFLOW_TRACKING_URI", tracking_uri)

@@ -21,7 +21,7 @@ from autoresearch.model_evaluation.experiment_evaluation import POLICY_SEEDS  # 
 from autoresearch.model_evaluation.paired_experiment import (  # noqa: E402
     PairedExperimentRequest,
 )
-from agent_orchestration.ui.client import (  # noqa: E402
+from applications.experiment_platform.workbench.client import (  # noqa: E402
     ApiConfigurationError,
     ApiUnavailableError,
     ExperimentApiError,
@@ -2067,7 +2067,7 @@ def test_cli_import_does_not_require_sqlalchemy() -> None:
     """`autoresearch.cli` import가 SQLAlchemy를 끌어오지 않아야 한다.
 
     학습 이미지는 `uv sync --locked --no-dev`로 빌드되어 SQLAlchemy가 없다.
-    `agent_orchestration.ui.client`를 top-level import하면 그 모듈이 `ui.models` →
+    `applications.experiment_platform.workbench.client`를 top-level import하면 그 모듈이 `ui.models` →
     `app.experiments.models` → sqlalchemy로 이어져, 그 이미지에서 `train-model --help`
     조차 뜨지 않는다(CI `Docker build (train)` smoke check가 이걸 잡았다).
 

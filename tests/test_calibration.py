@@ -12,8 +12,8 @@ import pytest
 
 from autoresearch.model_training.calibration import DownsamplingCalibrator
 from autoresearch.model_training.downsampling import apply_downsampling_calibration
-from src.serving.schemas import CandidateVideo
-from src.serving.service import Reranker
+from applications.reranking_api.schemas import CandidateVideo
+from applications.reranking_api.service import Reranker
 
 
 # ── DownsamplingCalibrator ─────────────────────────────────────

@@ -43,12 +43,14 @@ COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
 COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
 
-COPY agent_orchestration/__init__.py ./agent_orchestration/
+COPY applications/__init__.py ./applications/
+COPY applications/experiment_platform/__init__.py ./applications/experiment_platform/
 # 같은 image digest를 Stage 6의 branch creator, token minter, workspace preparer,
 # Codex worker, verifier, finalizer가 command override로 공유한다.
-COPY agent_orchestration/executor ./agent_orchestration/executor
-COPY agent_orchestration/github_app.py ./agent_orchestration/
-COPY agent_orchestration/github_refs.py ./agent_orchestration/
+COPY applications/experiment_platform/executor ./applications/experiment_platform/executor
+COPY applications/experiment_platform/shared/__init__.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/shared/github_app.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/shared/github_refs.py ./applications/experiment_platform/shared/
 # workspace-preparer가 import하는 issue parser는 runtime clone이 아닌 image에 봉인한
 # copy다. WORKDIR=/app 이므로 Python은 이 copy를 먼저 해석한다.
 COPY tools/__init__.py ./tools/
@@ -59,4 +61,4 @@ LABEL org.opencontainers.image.revision="${VCS_REF}"
 
 USER appuser
 
-CMD ["python", "-m", "agent_orchestration.executor.main"]
+CMD ["python", "-m", "applications.experiment_platform.executor.main"]

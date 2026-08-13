@@ -22,13 +22,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_orchestration.app.database import Base  # noqa: E402
-from agent_orchestration.app.experiments.models import (  # noqa: E402
+from applications.experiment_platform.api.database import Base  # noqa: E402
+from applications.experiment_platform.api.experiments.models import (  # noqa: E402
     Experiment,
     ExperimentMetadata,
     ExperimentStatus,
 )
-from agent_orchestration.launcher.pull_request import (  # noqa: E402
+from applications.experiment_platform.launcher.pull_request import (  # noqa: E402
     PULL_REQUEST_METADATA_KEY,
     PULL_REQUEST_PERMISSIONS,
     PULL_REQUEST_SKIP_METADATA_KEY,
@@ -219,7 +219,7 @@ class _FakeToken:
 
 
 def _opener(client):
-    from agent_orchestration.launcher.pull_request import GitHubPullRequestOpener
+    from applications.experiment_platform.launcher.pull_request import GitHubPullRequestOpener
 
     seen: list[dict] = []
 

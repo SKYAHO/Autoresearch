@@ -17,10 +17,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_orchestration.github_pull_requests import (  # noqa: E402
+from applications.experiment_platform.shared.github_pull_requests import (  # noqa: E402
     GitHubPullRequestError,
 )
-from agent_orchestration.launcher.pull_request import (  # noqa: E402
+from applications.experiment_platform.launcher.pull_request import (  # noqa: E402
     PullRequestState,
     open_pull_requests_once,
 )
@@ -226,7 +226,7 @@ class _AppErrorOpener(_FakeOpener):
     """token 발급 단계에서 실패하는 opener — `GitHubAppError`는 REST 오류가 아니다."""
 
     def create(self, *, head, base, title, body) -> int:
-        from agent_orchestration.github_app import GitHubAppError
+        from applications.experiment_platform.shared.github_app import GitHubAppError
 
         raise GitHubAppError("private_key_unavailable")
 

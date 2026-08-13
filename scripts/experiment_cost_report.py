@@ -16,7 +16,7 @@ executor Job이 끝나 `experiments`·`experiment_events`·`experiment_logs`에 
 금액을 stage별로 환산한다. 현재 Codex는 구독 인증이라 이 금액 전부가 절약액이다.
 
 [비책임]
-실험 실행·상태 전이(`agent_orchestration`), 지표 계산(`autoresearch/model_evaluation/evaluate.py`),
+실험 실행·상태 전이(`applications.experiment_platform`), 지표 계산(`autoresearch/model_evaluation/evaluate.py`),
 노드풀·청구 계정 설정(`SKYAHO/Autoresearch-infra`)은 담당하지 않는다.
 
 사용 예:

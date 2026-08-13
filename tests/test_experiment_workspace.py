@@ -17,14 +17,14 @@ import uuid
 import httpx
 import pytest
 
-from agent_orchestration.executor.github_issues import GitHubIssueSnapshot, GitHubIssues
-from agent_orchestration.executor.state import (
+from applications.experiment_platform.executor.github_issues import GitHubIssueSnapshot, GitHubIssues
+from applications.experiment_platform.executor.state import (
     ExecutorWorkspaceState,
     ExecutorWorkspaceStateError,
     read_state,
     write_state,
 )
-from agent_orchestration.executor.workspace import (
+from applications.experiment_platform.executor.workspace import (
     WorkspacePrepareInput,
     prepare_workspace,
 )
@@ -123,7 +123,7 @@ def test_prepared_workspace_uses_clean_remote_writes_0400_state_and_removes_askp
     """token URL/helper를 남기면 이후 Codex 경계까지 자격증명이 전파될 수 있다."""
     config = _input(tmp_path)
     state_path = tmp_path / "executor-state" / "state.json"
-    monkeypatch.setattr("agent_orchestration.executor.workspace.STATE_PATH", state_path)
+    monkeypatch.setattr("applications.experiment_platform.executor.workspace.STATE_PATH", state_path)
     commands, askpass_files = _patch_git(monkeypatch, workspace=config.workspace)
 
     prepared = asyncio.run(
@@ -180,7 +180,7 @@ def test_free_form_issue_body_is_forwarded_without_semantic_validation(
     body = "NaN 또는 Infinity ctr_score를 거부하도록 코드를 수정한다."
     config = _input(tmp_path)
     state_path = tmp_path / "executor-state" / "state.json"
-    monkeypatch.setattr("agent_orchestration.executor.workspace.STATE_PATH", state_path)
+    monkeypatch.setattr("applications.experiment_platform.executor.workspace.STATE_PATH", state_path)
     commands, _ = _patch_git(monkeypatch, workspace=config.workspace)
 
     prepared = asyncio.run(
@@ -202,7 +202,7 @@ def test_existing_remote_candidate_is_prepared_for_later_adoption_without_runnin
     """base가 아닌 tip은 충돌이 아니라 Stage 5가 재검증할 채택 후보여야 한다."""
     config = _input(tmp_path)
     state_path = tmp_path / "executor-state" / "state.json"
-    monkeypatch.setattr("agent_orchestration.executor.workspace.STATE_PATH", state_path)
+    monkeypatch.setattr("applications.experiment_platform.executor.workspace.STATE_PATH", state_path)
     remote_tip = "b" * 40
     _patch_git(monkeypatch, workspace=config.workspace, remote_tip=remote_tip)
 

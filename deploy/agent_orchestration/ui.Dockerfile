@@ -22,14 +22,15 @@ COPY --from=lock-export /requirements.lock ./
 RUN python -m pip install --no-cache-dir --no-deps -r requirements.lock \
     && rm requirements.lock
 
-COPY agent_orchestration/__init__.py ./agent_orchestration/
+COPY applications/__init__.py ./applications/
+COPY applications/experiment_platform/__init__.py ./applications/experiment_platform/
 # UI의 canonical status model은 SQLAlchemy Base를 import한다. API server·LLM·DB bootstrap
 # source는 포함하지 않고 이 표시 모델 의존성만 복사한다.
-COPY agent_orchestration/app/__init__.py ./agent_orchestration/app/
-COPY agent_orchestration/app/database.py ./agent_orchestration/app/
-COPY agent_orchestration/app/experiments/__init__.py ./agent_orchestration/app/experiments/
-COPY agent_orchestration/app/experiments/models.py ./agent_orchestration/app/experiments/
-COPY agent_orchestration/ui ./agent_orchestration/ui
+COPY applications/experiment_platform/api/__init__.py ./applications/experiment_platform/api/
+COPY applications/experiment_platform/api/database.py ./applications/experiment_platform/api/
+COPY applications/experiment_platform/api/experiments/__init__.py ./applications/experiment_platform/api/experiments/
+COPY applications/experiment_platform/api/experiments/models.py ./applications/experiment_platform/api/experiments/
+COPY applications/experiment_platform/workbench ./applications/experiment_platform/workbench
 # 테마 정본. WORKDIR이 /app이라 streamlit이 /app/.streamlit/config.toml을 읽는다.
 # 이 줄이 없으면 배포 이미지만 스톡 기본 테마로 돌아간다 — 로컬에서는 저장소 루트가
 # CWD라 같은 파일이 잡히므로 차이가 드러나지 않는다.
@@ -42,4 +43,4 @@ USER appuser
 
 EXPOSE 8501
 
-CMD ["streamlit", "run", "agent_orchestration/ui/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false", "--server.fileWatcherType=none"]
+CMD ["streamlit", "run", "applications/experiment_platform/workbench/app.py", "--server.address=0.0.0.0", "--server.port=8501", "--server.headless=true", "--browser.gatherUsageStats=false", "--server.fileWatcherType=none"]

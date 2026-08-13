@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("streamlit", reason="orchestration-ui 그룹이 설치돼야 한다")
 
-from agent_orchestration.ui.models import (  # noqa: E402
+from applications.experiment_platform.workbench.models import (  # noqa: E402
     BOARD_RUNNING_STATUSES,
     BOARD_WAITING_STATUSES,
     EXECUTOR_STAGES,
@@ -25,8 +25,8 @@ from agent_orchestration.ui.models import (  # noqa: E402
     stage_index,
     stage_label,
 )
-from agent_orchestration.ui.time import format_short_time  # noqa: E402
-from agent_orchestration.ui.state import (  # noqa: E402
+from applications.experiment_platform.workbench.time import format_short_time  # noqa: E402
+from applications.experiment_platform.workbench.state import (  # noqa: E402
     WorkbenchState,
     WorkbenchView,
     forget_board_entry,

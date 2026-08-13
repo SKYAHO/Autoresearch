@@ -17,19 +17,19 @@ import pytest
 from sqlalchemy import Engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from agent_orchestration.app.experiments.exceptions import (
+from applications.experiment_platform.api.experiments.exceptions import (
     IdempotencyConflictError,
     StepAlreadyFinalizedError,
 )
-from agent_orchestration.app.database import create_database_engine
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.database import create_database_engine
+from applications.experiment_platform.api.experiments.models import (
     Experiment,
     ExperimentLog,
     ExperimentStep,
     StepKind,
     StepStatus,
 )
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api.experiments.schemas import (
     ExperimentCreate,
     ExperimentLogCreate,
     ExperimentLogResponse,
@@ -38,8 +38,8 @@ from agent_orchestration.app.experiments.schemas import (
     ExperimentStepUpdate,
     StatusUpdateRequest,
 )
-from agent_orchestration.app.experiments.models import ExperimentStatus
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.models import ExperimentStatus
+from applications.experiment_platform.api.experiments.service import (
     create_experiment,
     create_experiment_log,
     create_experiment_step,

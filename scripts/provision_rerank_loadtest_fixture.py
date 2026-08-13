@@ -8,7 +8,7 @@ source table의 loadtest 행만 준비한다.
 parameterized DELETE와 고정 INSERT를 실행한다.
 
 [비책임] Feast materialize, Redis online store 갱신은 Airflow와 feature_repo/가,
-HTTP 리랭킹은 src/serving/이 담당한다.
+HTTP 리랭킹은 applications/reranking_api/이 담당한다.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from google.cloud import bigquery
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from autoresearch.loadtest.rerank_fixture import (  # noqa: E402
+from applications.reranking_api.loadtest.rerank_fixture import (  # noqa: E402
     FIXTURE_VERSION,
     FixtureTable,
     build_fixture,

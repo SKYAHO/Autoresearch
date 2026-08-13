@@ -1,0 +1,388 @@
+"""Agent Orchestration 실험 워크벤치의 FastAPI HTTP 경계를 제공한다.
+
+전체 파이프라인에서 Streamlit 워크벤치·Agent가 Experiment service를 호출하는
+HTTP·OpenAPI 경계를 담당한다. executor의 원격 검증 candidate 보고는
+`executor_router.py`의 별도 내부 경로가 소유한다. 인증 구현, SQLAlchemy transaction
+세부사항과 상태 전이 판단은 각각 app 조립부와 service 계층의 책임이다.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated
+import uuid
+
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy.orm import Session
+
+from applications.experiment_platform.api.config import ServiceSettings, get_settings
+from applications.experiment_platform.api.database import get_db_session
+from applications.experiment_platform.api.experiments.models import ExperimentStatus, StepKind
+from applications.experiment_platform.api.experiments.schemas import (
+    ExperimentCreate,
+    ExperimentEventCreate,
+    ExperimentEventPageResponse,
+    ExperimentEventResponse,
+    ExperimentLogCreate,
+    ExperimentLogPageResponse,
+    ExperimentLogResponse,
+    ExperimentMetadataResponse,
+    ExperimentPageResponse,
+    ExperimentCostResponse,
+    ExperimentReportResponse,
+    ExperimentResponse,
+    StageTokensResponse,
+    ExperimentStepCreate,
+    ExperimentStepPageResponse,
+    ExperimentStepResponse,
+    ExperimentStepUpdate,
+    IssuePublicationRequest,
+    IssuePublicationResponse,
+    PromotionRequest,
+    StatusUpdateRequest,
+)
+from applications.experiment_platform.api.experiments.service import (
+    create_experiment,
+    create_experiment_event,
+    create_experiment_log,
+    create_experiment_step,
+    get_experiment,
+    get_experiment_metadata,
+    get_experiment_cost,
+    get_experiment_report,
+    list_experiment_events,
+    list_experiment_logs,
+    list_experiment_steps,
+    list_experiments,
+    promote_experiment,
+    publish_experiment_issue,
+    update_experiment_status,
+    update_experiment_step,
+)
+from applications.experiment_platform.api.schemas import ErrorResponse
+
+
+router = APIRouter(prefix="/experiments", tags=["experiments"])
+SessionDependency = Annotated[Session, Depends(get_db_session)]
+SettingsDependency = Annotated[ServiceSettings, Depends(get_settings)]
+_UNAUTHORIZED_RESPONSE = {
+    status.HTTP_401_UNAUTHORIZED: {
+        "description": "Invalid orchestration API token.",
+        "model": ErrorResponse,
+    }
+}
+_NOT_FOUND_RESPONSE = {
+    status.HTTP_404_NOT_FOUND: {"description": "Experiment was not found.", "model": ErrorResponse}
+}
+_CONFLICT_RESPONSE = {
+    status.HTTP_409_CONFLICT: {"description": "Experiment state or idempotency conflict.", "model": ErrorResponse}
+}
+
+
+@router.post(
+    "",
+    response_model=ExperimentResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses=_UNAUTHORIZED_RESPONSE,
+)
+def post_experiment(request: ExperimentCreate, session: SessionDependency) -> ExperimentResponse:
+    """새 실험과 최초 Event·metadata를 생성한다."""
+    return ExperimentResponse.model_validate(create_experiment(session, request))
+
+
+@router.get("", response_model=ExperimentPageResponse, responses=_UNAUTHORIZED_RESPONSE)
+def get_experiments(
+    session: SessionDependency,
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    status_filter: ExperimentStatus | None = Query(default=None, alias="status"),
+) -> ExperimentPageResponse:
+    """상태 필터와 offset pagination을 적용해 실험을 조회한다."""
+    page = list_experiments(session, limit=limit, offset=offset, status=status_filter)
+    return ExperimentPageResponse(
+        items=[ExperimentResponse.model_validate(item) for item in page.items],
+        total=page.total,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/{experiment_id}", response_model=ExperimentResponse, responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE})
+def get_experiment_by_id(experiment_id: uuid.UUID, session: SessionDependency) -> ExperimentResponse:
+    """실험의 최신 상태를 조회한다."""
+    return ExperimentResponse.model_validate(get_experiment(session, experiment_id))
+
+
+@router.patch(
+    "/{experiment_id}/status",
+    response_model=ExperimentResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE, **_CONFLICT_RESPONSE},
+)
+def patch_experiment_status(
+    experiment_id: uuid.UUID,
+    request: StatusUpdateRequest,
+    session: SessionDependency,
+) -> ExperimentResponse:
+    """PROMOTED를 제외한 일반 상태 전이를 수행한다."""
+    return ExperimentResponse.model_validate(update_experiment_status(session, experiment_id, request))
+
+
+@router.post(
+    "/{experiment_id}/events",
+    response_model=ExperimentEventResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE, **_CONFLICT_RESPONSE},
+)
+def post_experiment_event(
+    experiment_id: uuid.UUID,
+    request: ExperimentEventCreate,
+    session: SessionDependency,
+) -> ExperimentEventResponse:
+    """멱등 상태 Event를 추가한다.
+
+    같은 idempotency_key·같은 payload 재요청은 이 요청이 최초로 만든 event를 그대로
+    반환한다 — 응답의 to_status/from_status는 그 event가 기록된 시점의 스냅샷이며,
+    이후 다른 경로로 실험이 더 진행됐어도 갱신되지 않는다. 실험의 현재 상태는
+    `GET /experiments/{id}`로 별도 조회해야 한다.
+    """
+    return ExperimentEventResponse.model_validate(create_experiment_event(session, experiment_id, request))
+
+
+@router.get(
+    "/{experiment_id}/events",
+    response_model=ExperimentEventPageResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+)
+def get_experiment_events(
+    experiment_id: uuid.UUID,
+    session: SessionDependency,
+    limit: int = Query(default=100, ge=1, le=200),
+    after_id: uuid.UUID | None = Query(default=None),
+) -> ExperimentEventPageResponse:
+    """1초 polling에 쓸 새 Event page를 조회한다."""
+    page = list_experiment_events(session, experiment_id, limit=limit, after_id=after_id)
+    return ExperimentEventPageResponse(
+        items=[ExperimentEventResponse.model_validate(item) for item in page.items],
+        next_cursor=page.next_cursor,
+    )
+
+
+@router.post(
+    "/{experiment_id}/logs",
+    response_model=ExperimentLogResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE, **_CONFLICT_RESPONSE},
+)
+def post_experiment_log(
+    experiment_id: uuid.UUID,
+    request: ExperimentLogCreate,
+    session: SessionDependency,
+) -> ExperimentLogResponse:
+    """상태와 무관한 멱등 실행 Log를 추가한다."""
+    return ExperimentLogResponse.model_validate(create_experiment_log(session, experiment_id, request))
+
+
+@router.post(
+    "/{experiment_id}/steps",
+    response_model=ExperimentStepResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE, **_CONFLICT_RESPONSE},
+)
+def post_experiment_step(
+    experiment_id: uuid.UUID,
+    request: ExperimentStepCreate,
+    session: SessionDependency,
+) -> ExperimentStepResponse:
+    """실험 상태와 무관한 멱등 작업 단계를 추가한다."""
+    return ExperimentStepResponse.model_validate(
+        create_experiment_step(session, experiment_id, request)
+    )
+
+
+@router.get(
+    "/{experiment_id}/steps",
+    response_model=ExperimentStepPageResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+)
+def get_experiment_steps(
+    experiment_id: uuid.UUID,
+    session: SessionDependency,
+    limit: int = Query(default=100, ge=1, le=100),
+    after_id: uuid.UUID | None = Query(default=None),
+    step_kind: StepKind | None = Query(default=None),
+) -> ExperimentStepPageResponse:
+    """1초 polling에 쓸 새 Step page를 조회한다."""
+    page = list_experiment_steps(
+        session,
+        experiment_id,
+        limit=limit,
+        after_id=after_id,
+        step_kind=step_kind,
+    )
+    return ExperimentStepPageResponse(
+        items=[ExperimentStepResponse.model_validate(item) for item in page.items],
+        next_cursor=page.next_cursor,
+    )
+
+
+@router.patch(
+    "/{experiment_id}/steps/{step_id}",
+    response_model=ExperimentStepResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE, **_CONFLICT_RESPONSE},
+)
+def patch_experiment_step(
+    experiment_id: uuid.UUID,
+    step_id: uuid.UUID,
+    request: ExperimentStepUpdate,
+    session: SessionDependency,
+) -> ExperimentStepResponse:
+    """작업 단계를 전체 교체로 갱신한다.
+
+    부분 병합이 아니다 — 요청에 없는 선택적 필드는 `null`로 갱신된다. 터미널로 확정된
+    Step에는 같은 payload 재시도만 `200`으로 통과하고 다른 payload는 `409`다.
+    """
+    return ExperimentStepResponse.model_validate(
+        update_experiment_step(session, experiment_id, step_id, request)
+    )
+
+
+@router.get(
+    "/{experiment_id}/logs",
+    response_model=ExperimentLogPageResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+)
+def get_experiment_logs(
+    experiment_id: uuid.UUID,
+    session: SessionDependency,
+    limit: int = Query(default=100, ge=1, le=100),
+    after_id: uuid.UUID | None = Query(default=None),
+    log_type: str | None = Query(default=None, min_length=1, max_length=32),
+) -> ExperimentLogPageResponse:
+    """1초 polling에 쓸 새 Log page를 조회한다."""
+    page = list_experiment_logs(
+        session,
+        experiment_id,
+        limit=limit,
+        after_id=after_id,
+        log_type=log_type,
+    )
+    return ExperimentLogPageResponse(
+        items=[ExperimentLogResponse.model_validate(item) for item in page.items],
+        next_cursor=page.next_cursor,
+    )
+
+
+@router.get(
+    "/{experiment_id}/metadata",
+    response_model=ExperimentMetadataResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+)
+def get_experiment_metadata_by_id(
+    experiment_id: uuid.UUID,
+    session: SessionDependency,
+) -> ExperimentMetadataResponse:
+    """실험 metadata를 key-value mapping으로 반환한다."""
+    return ExperimentMetadataResponse(entries=get_experiment_metadata(session, experiment_id))
+
+
+@router.get(
+    "/{experiment_id}/usage",
+    response_model=ExperimentCostResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+)
+def get_experiment_usage_by_id(
+    experiment_id: uuid.UUID,
+    session: SessionDependency,
+) -> ExperimentCostResponse:
+    """실험의 실행 시간·토큰 사용량과 그 종량제 환산액을 조회한다."""
+    cost = get_experiment_cost(session, experiment_id)
+    return ExperimentCostResponse(
+        experiment_id=experiment_id,
+        wall_clock_seconds=cost.wall_clock_seconds,
+        compute_usd=cost.compute_usd,
+        breakdown_available=cost.breakdown_available,
+        stages=[
+            StageTokensResponse(
+                stage=stage.stage,
+                input_tokens=stage.input_tokens,
+                cached_input_tokens=stage.cached_input_tokens,
+                fresh_input_tokens=stage.fresh_input_tokens,
+                output_tokens=stage.output_tokens,
+                reasoning_output_tokens=stage.reasoning_output_tokens,
+            )
+            for stage in cost.stages
+        ],
+        total_tokens=cost.total_tokens,
+        token_usd=cost.token_usd,
+        token_usd_without_cache=cost.token_usd_without_cache,
+    )
+
+
+@router.get(
+    "/{experiment_id}/report",
+    response_model=ExperimentReportResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE},
+)
+def get_experiment_report_by_id(
+    experiment_id: uuid.UUID,
+    session: SessionDependency,
+) -> ExperimentReportResponse:
+    """실험 리포트 본문을 조회한다. 리포트가 없으면 본문이 null이다."""
+    return ExperimentReportResponse(
+        experiment_id=experiment_id,
+        report_markdown=get_experiment_report(session, experiment_id),
+    )
+
+
+@router.post(
+    "/{experiment_id}/promote",
+    response_model=ExperimentResponse,
+    responses={**_UNAUTHORIZED_RESPONSE, **_NOT_FOUND_RESPONSE, **_CONFLICT_RESPONSE},
+)
+def post_experiment_promotion(
+    experiment_id: uuid.UUID,
+    request: PromotionRequest,
+    session: SessionDependency,
+) -> ExperimentResponse:
+    """운영 근거가 있는 PASSED 실험을 수동 승격한다."""
+    return ExperimentResponse.model_validate(promote_experiment(session, experiment_id, request))
+
+
+@router.post(
+    "/{experiment_id}/issue",
+    response_model=IssuePublicationResponse,
+    status_code=status.HTTP_201_CREATED,
+    responses={
+        **_UNAUTHORIZED_RESPONSE,
+        **_NOT_FOUND_RESPONSE,
+        status.HTTP_429_TOO_MANY_REQUESTS: {
+            "description": "Daily issue publication limit was reached.",
+            "model": ErrorResponse,
+        },
+        status.HTTP_502_BAD_GATEWAY: {
+            "description": "Failed to author or publish the issue.",
+            "model": ErrorResponse,
+        },
+    },
+)
+async def post_experiment_issue(
+    experiment_id: uuid.UUID,
+    request: IssuePublicationRequest,
+    session: SessionDependency,
+    settings: SettingsDependency,
+) -> IssuePublicationResponse:
+    """가설을 `[AR]` 이슈로 발행하고 그 좌표를 반환한다."""
+    experiment = await publish_experiment_issue(
+        session,
+        settings,
+        experiment_id,
+        request,
+    )
+    return IssuePublicationResponse(
+        issue_number=experiment.issue_number,
+        issue_url=(
+            f"https://github.com/{settings.github_repository}"
+            f"/issues/{experiment.issue_number}"
+        ),
+        issue_branch=experiment.issue_branch,
+        base_dev_sha=experiment.base_dev_sha,
+    )

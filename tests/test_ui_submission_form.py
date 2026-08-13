@@ -1,7 +1,7 @@
 """Streamlit 사전등록 제출 폼이 서버 계약과 어긋나지 않는지 고정한다.
 
 전체 파이프라인 중 사용자가 채운 값이 Experiment API 요청으로 변환되는 구간을 검증한다.
-Streamlit 위젯 렌더링은 담당하지 않는다 — `agent_orchestration.ui.views`는 streamlit
+Streamlit 위젯 렌더링은 담당하지 않는다 — `applications.experiment_platform.workbench.views`는 streamlit
 의존성이 필요해 여기서 import하지 않는다.
 
 UI 이미지는 `issue_authoring.py`를 포함하지 않아 서버 모델을 import하지 못하고 보낼
@@ -15,9 +15,9 @@ from typing import Any
 
 import pytest
 
-from agent_orchestration.app.experiments.issue_authoring import IssueSubmission
-from agent_orchestration.ui.client import ExperimentClient
-from agent_orchestration.ui.models import IssuePublication, Submission
+from applications.experiment_platform.api.experiments.issue_authoring import IssueSubmission
+from applications.experiment_platform.workbench.client import ExperimentClient
+from applications.experiment_platform.workbench.models import IssuePublication, Submission
 
 
 def _submission(**overrides: Any) -> Submission:

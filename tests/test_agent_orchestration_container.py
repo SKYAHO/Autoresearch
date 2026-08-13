@@ -21,7 +21,7 @@ EXECUTOR_DOCKERFILE = (
 DOCKERIGNORE = REPOSITORY_ROOT / ".dockerignore"
 RELEASE_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "release.yml"
 CI_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
-API_LLM_MODULE = REPOSITORY_ROOT / "agent_orchestration" / "app" / "llm.py"
+API_LLM_MODULE = REPOSITORY_ROOT / "applications" / "experiment_platform" / "api" / "llm.py"
 
 
 def test_api_image_excludes_codex_and_runner_image_pins_codex() -> None:
@@ -88,18 +88,18 @@ def test_api_and_runner_images_copy_only_their_runtime_modules() -> None:
     api_dockerfile = API_DOCKERFILE.read_text(encoding="utf-8")
     runner_dockerfile = RUNNER_DOCKERFILE.read_text(encoding="utf-8")
 
-    assert "COPY agent_orchestration/app ./agent_orchestration/app" in api_dockerfile
-    assert "COPY agent_orchestration/contracts.py ./agent_orchestration/" in api_dockerfile
-    assert "COPY agent_orchestration/bootstrap_secrets.py ./agent_orchestration/" in api_dockerfile
-    assert "COPY agent_orchestration/entrypoint.sh ./agent_orchestration/" in api_dockerfile
-    assert "COPY agent_orchestration/runner" not in api_dockerfile
-    assert "COPY agent_orchestration/codex.py" not in api_dockerfile
+    assert "COPY applications/experiment_platform/api ./applications/experiment_platform/api" in api_dockerfile
+    assert "COPY applications/experiment_platform/shared/contracts.py ./applications/experiment_platform/shared/" in api_dockerfile
+    assert "COPY applications/experiment_platform/shared/bootstrap_secrets.py ./applications/experiment_platform/shared/" in api_dockerfile
+    assert "COPY applications/experiment_platform/entrypoint.sh ./applications/experiment_platform/" in api_dockerfile
+    assert "COPY applications/experiment_platform/runner" not in api_dockerfile
+    assert "COPY applications/experiment_platform/shared/codex.py" not in api_dockerfile
 
-    assert "COPY agent_orchestration/runner ./agent_orchestration/runner" in runner_dockerfile
-    assert "COPY agent_orchestration/codex.py ./agent_orchestration/" in runner_dockerfile
-    assert "COPY agent_orchestration/contracts.py ./agent_orchestration/" in runner_dockerfile
-    assert "COPY agent_orchestration/runner_entrypoint.sh ./agent_orchestration/" in runner_dockerfile
-    assert "COPY agent_orchestration/app" not in runner_dockerfile
+    assert "COPY applications/experiment_platform/runner ./applications/experiment_platform/runner" in runner_dockerfile
+    assert "COPY applications/experiment_platform/shared/codex.py ./applications/experiment_platform/shared/" in runner_dockerfile
+    assert "COPY applications/experiment_platform/shared/contracts.py ./applications/experiment_platform/shared/" in runner_dockerfile
+    assert "COPY applications/experiment_platform/runner_entrypoint.sh ./applications/experiment_platform/" in runner_dockerfile
+    assert "COPY applications/experiment_platform/api" not in runner_dockerfile
 
 
 def test_api_llm_module_defers_codex_execution_import() -> None:
@@ -111,7 +111,7 @@ def test_api_llm_module_defers_codex_execution_import() -> None:
         if isinstance(node, ast.ImportFrom) and node.module is not None
     }
 
-    assert "agent_orchestration.codex" not in top_level_imports
+    assert "applications.experiment_platform.shared.codex" not in top_level_imports
 
 
 def test_release_workflow_publishes_api_and_runner_digests() -> None:
@@ -145,8 +145,8 @@ def test_launcher_image_is_a_locked_non_root_runtime_image() -> None:
     assert "adduser --uid 10001 --gid 10001" in dockerfile
     assert "USER appuser" in dockerfile
     assert "PYTHONDONTWRITEBYTECODE=1" in dockerfile
-    assert "COPY agent_orchestration/launcher ./agent_orchestration/launcher" in dockerfile
-    assert 'CMD ["python", "-m", "agent_orchestration.launcher.main"]' in dockerfile
+    assert "COPY applications/experiment_platform/launcher ./applications/experiment_platform/launcher" in dockerfile
+    assert 'CMD ["python", "-m", "applications.experiment_platform.launcher.main"]' in dockerfile
     assert "ARG VCS_REF=unknown" in dockerfile
     assert 'org.opencontainers.image.revision="${VCS_REF}"' in dockerfile
     assert "@openai/codex" not in dockerfile
@@ -178,7 +178,7 @@ def test_executor_image_seals_the_phase2_runtime_contract() -> None:
     assert "COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules" in dockerfile
     assert "COPY tools/__init__.py ./tools/" in dockerfile
     assert "COPY tools/auto_research_issue_branch.py ./tools/" in dockerfile
-    assert "COPY agent_orchestration/executor ./agent_orchestration/executor" in dockerfile
+    assert "COPY applications/experiment_platform/executor ./applications/experiment_platform/executor" in dockerfile
     assert "COPY . ." not in dockerfile
     assert "COPY autoresearch" not in dockerfile
     assert "COPY src" not in dockerfile
@@ -203,13 +203,13 @@ def test_executor_release_verification_runs_phase2_toolchain_and_entrypoints() -
     for command in ("git --version", "uv --version", "node --version", "codex --version"):
         assert command in executor_job
     for module in (
-        "agent_orchestration.executor.main",
-        "agent_orchestration.executor.token_minter",
-        "agent_orchestration.executor.workspace",
-        "agent_orchestration.executor.codex_worker",
-        "agent_orchestration.executor.verifier",
-        "agent_orchestration.executor.finalizer",
-        "agent_orchestration.executor.phase2",
+        "applications.experiment_platform.executor.main",
+        "applications.experiment_platform.executor.token_minter",
+        "applications.experiment_platform.executor.workspace",
+        "applications.experiment_platform.executor.codex_worker",
+        "applications.experiment_platform.executor.verifier",
+        "applications.experiment_platform.executor.finalizer",
+        "applications.experiment_platform.executor.phase2",
     ):
         assert module in executor_job
 
@@ -232,7 +232,7 @@ def test_pr_ci_builds_and_smokes_the_executor_image_contract() -> None:
     job = jobs["docker-build-agent-orchestration"]
     assert isinstance(job, dict)
     assert job["needs"] == "changes"
-    assert job["if"] == "needs.changes.outputs.agent_orchestration == 'true'"
+    assert job["if"] == "needs.changes.outputs.experiment_platform == 'true'"
 
     steps = job["steps"]
     assert isinstance(steps, list)
@@ -252,13 +252,13 @@ def test_pr_ci_builds_and_smokes_the_executor_image_contract() -> None:
     for command in ("git --version", "uv --version", "node --version", "codex --version"):
         assert command in smoke_script
     for module in (
-        "agent_orchestration.executor.main",
-        "agent_orchestration.executor.token_minter",
-        "agent_orchestration.executor.workspace",
-        "agent_orchestration.executor.codex_worker",
-        "agent_orchestration.executor.verifier",
-        "agent_orchestration.executor.finalizer",
-        "agent_orchestration.executor.phase2",
+        "applications.experiment_platform.executor.main",
+        "applications.experiment_platform.executor.token_minter",
+        "applications.experiment_platform.executor.workspace",
+        "applications.experiment_platform.executor.codex_worker",
+        "applications.experiment_platform.executor.verifier",
+        "applications.experiment_platform.executor.finalizer",
+        "applications.experiment_platform.executor.phase2",
     ):
         assert module in smoke_script
     assert "/tmp/executor-runtime-clone/tools" in smoke_script
@@ -282,15 +282,15 @@ def _load_release_workflow() -> dict[str, object]:
             "publish-agent-orchestration-launcher-image",
             "deploy/agent_orchestration/launcher.Dockerfile",
             "autoresearch-agent-orchestration-launcher",
-            ("agent_orchestration.launcher.main",),
+            ("applications.experiment_platform.launcher.main",),
         ),
         (
             "publish-agent-orchestration-executor-image",
             "deploy/agent_orchestration/executor.Dockerfile",
             "autoresearch-agent-orchestration-executor",
             (
-                "agent_orchestration.executor.main",
-                "agent_orchestration.executor.token_minter",
+                "applications.experiment_platform.executor.main",
+                "applications.experiment_platform.executor.token_minter",
             ),
         ),
     ),
@@ -358,9 +358,9 @@ def test_release_workflow_publishes_branch_job_runtime_digests(
 
 
 LAUNCHER_ENTRYPOINTS = (
-    "agent_orchestration.launcher.main",
-    "agent_orchestration.launcher.log_collector",
-    "agent_orchestration.launcher.pull_request",
+    "applications.experiment_platform.launcher.main",
+    "applications.experiment_platform.launcher.log_collector",
+    "applications.experiment_platform.launcher.pull_request",
 )
 
 
@@ -377,7 +377,7 @@ def _module_source(module: str) -> Path | None:
 
 
 def _imported_repository_modules(source: Path) -> set[str]:
-    """한 파일이 import하는 `agent_orchestration.*` 모듈.
+    """한 파일이 import하는 `applications.experiment_platform.*` 모듈.
 
     함수 안 import도 센다 — `PullRequestSettings.from_environment`처럼 지연 import한
     모듈도 실행 시점에는 이미지 안에 있어야 한다. `ast.walk`가 중첩을 함께 훑는다.
@@ -395,7 +395,7 @@ def _imported_repository_modules(source: Path) -> set[str]:
     return {
         module
         for module in modules
-        if module.startswith("agent_orchestration") and _module_source(module) is not None
+        if module.startswith("applications.experiment_platform") and _module_source(module) is not None
     }
 
 
@@ -419,7 +419,9 @@ def _copied_sources(dockerfile: str) -> set[str]:
     copied: set[str] = set()
     for line in dockerfile.splitlines():
         stripped = line.strip()
-        if not stripped.startswith("COPY agent_orchestration/"):
+        # `applications/` 로 넓게 잡는다 — `COPY applications/__init__.py` 를 놓치면
+        # applications 패키지 자체가 수집되지 않아 가드가 헐거워진다 (#754).
+        if not stripped.startswith("COPY applications/"):
             continue
         copied.add(stripped.split()[1])
     return copied
@@ -428,7 +430,7 @@ def _copied_sources(dockerfile: str) -> set[str]:
 def test_launcher_image_copies_every_module_its_entrypoints_import() -> None:
     """launcher image의 entrypoint 셋이 import하는 모듈이 모두 이미지에 있어야 한다.
 
-    이 목록은 경로를 **열거**해 복사하므로 `agent_orchestration/`에 파일을 두는 것만으로는
+    이 목록은 경로를 **열거**해 복사하므로 `applications/experiment_platform/`에 파일을 두는 것만으로는
     이미지에 들어가지 않는다. 그래서 빠뜨려도 빌드는 통과하고, 그 모듈을 import하는
     entrypoint의 컨테이너만 기동 즉시 ModuleNotFoundError로 죽는다 — 릴리스가 배포된
     뒤에야 드러난다. 같은 누락이 두 번 났다(`bootstrap_secrets.py`,
@@ -439,7 +441,7 @@ def test_launcher_image_copies_every_module_its_entrypoints_import() -> None:
     def is_covered(module: str) -> bool:
         relative = Path(module.replace(".", "/"))
         candidates = {f"{relative}.py", f"{relative}/__init__.py"}
-        # 디렉토리 통째로 복사한 줄(`COPY agent_orchestration/launcher ...`)이 덮는다.
+        # 디렉토리 통째로 복사한 줄(`COPY applications/experiment_platform/launcher ...`)이 덮는다.
         candidates.update(str(parent) for parent in relative.parents)
         return bool(candidates & copied)
 

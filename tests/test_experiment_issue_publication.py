@@ -18,16 +18,16 @@ import pytest
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.exceptions import IssuePublicationLimitError
-from agent_orchestration.app.experiments.github_issues import GitHubIssueError, IssueRef
-from agent_orchestration.app.experiments.models import ExperimentStatus
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.exceptions import IssuePublicationLimitError
+from applications.experiment_platform.api.experiments.github_issues import GitHubIssueError, IssueRef
+from applications.experiment_platform.api.experiments.models import ExperimentStatus
+from applications.experiment_platform.api.experiments.schemas import (
     ExperimentCreate,
     IssuePublicationRequest,
     StatusUpdateRequest,
 )
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.service import (
     create_experiment,
     publish_experiment_issue,
     update_experiment_status,
@@ -96,12 +96,12 @@ def _no_marker_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
         return None
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        "applications.experiment_platform.api.experiments.service.resolve_dev_sha",
         _dev_sha,
         raising=False,
     )
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.find_issue_by_marker", _absent
+        "applications.experiment_platform.api.experiments.service.find_issue_by_marker", _absent
     )
 
 
@@ -117,7 +117,7 @@ def test_publication_stores_body_before_creating_the_issue(
         return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", fake_create_issue
     )
 
     result = asyncio.run(
@@ -144,7 +144,7 @@ def test_submission_field_violation_is_rejected_before_publication(
         raise AssertionError("요청 검증에서 끊겼어야 한다")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", unexpected_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", unexpected_create_issue
     )
 
     with pytest.raises(ValueError):
@@ -165,7 +165,7 @@ def test_retry_after_publish_failure_reuses_the_stored_body(
         raise GitHubIssueError("network_error")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", failing_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", failing_create_issue
     )
     with pytest.raises(GitHubIssueError):
         asyncio.run(
@@ -181,7 +181,7 @@ def test_retry_after_publish_failure_reuses_the_stored_body(
         return IssueRef(number=521, url="https://github.com/SKYAHO/Autoresearch/issues/521")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", succeeding_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", succeeding_create_issue
     )
     asyncio.run(
         publish_experiment_issue(
@@ -207,7 +207,7 @@ def test_second_call_after_success_does_not_publish_again(
         return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", fake_create_issue
     )
     for _ in range(2):
         asyncio.run(
@@ -235,7 +235,7 @@ def test_stored_body_wins_over_a_changed_resubmission(
         raise GitHubIssueError("network_error")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", failing_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", failing_create_issue
     )
     with pytest.raises(GitHubIssueError):
         asyncio.run(
@@ -251,7 +251,7 @@ def test_stored_body_wins_over_a_changed_resubmission(
         return IssueRef(number=522, url="https://github.com/SKYAHO/Autoresearch/issues/522")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", succeeding_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", succeeding_create_issue
     )
     asyncio.run(
         publish_experiment_issue(
@@ -273,7 +273,7 @@ def test_daily_limit_blocks_publication(
         return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", fake_create_issue
     )
     first = create_experiment(db_session, ExperimentCreate(hypothesis="one"))
     asyncio.run(
@@ -306,7 +306,7 @@ def test_daily_limit_ignores_unrelated_updated_at_bumps(
         return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", fake_create_issue
     )
     old = create_experiment(db_session, ExperimentCreate(hypothesis="old"))
     asyncio.run(
@@ -347,10 +347,10 @@ def test_marker_lookup_recovers_a_lost_publication(
         raise AssertionError("이미 발행된 이슈를 다시 만들면 안 된다")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.find_issue_by_marker", fake_find
+        "applications.experiment_platform.api.experiments.service.find_issue_by_marker", fake_find
     )
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", unexpected_create
+        "applications.experiment_platform.api.experiments.service.create_issue", unexpected_create
     )
 
     result = asyncio.run(
@@ -379,10 +379,10 @@ def test_marker_lookup_failure_does_not_publish(
         raise AssertionError("조회 실패 시 발행으로 넘어가면 안 된다")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.find_issue_by_marker", failing_find
+        "applications.experiment_platform.api.experiments.service.find_issue_by_marker", failing_find
     )
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", unexpected_create
+        "applications.experiment_platform.api.experiments.service.create_issue", unexpected_create
     )
 
     with pytest.raises(GitHubIssueError, match="authentication_failed"):
@@ -399,7 +399,7 @@ def test_marker_lookup_failure_does_not_publish(
 
 def test_branch_name_matches_the_canonical_rule() -> None:
     """표시용 브랜치 이름이 정본 helper가 계산한 이름과 같아야 한다."""
-    from agent_orchestration.app.experiments.service import _branch_name_for
+    from applications.experiment_platform.api.experiments.service import _branch_name_for
     from tools.auto_research_issue_branch import branch_name_for
 
     assert _branch_name_for(520) == branch_name_for(520)
@@ -421,7 +421,7 @@ def test_a_title_without_ascii_publishes(
         return IssueRef(number=520, url="https://github.com/SKYAHO/Autoresearch/issues/520")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", fake_create_issue
     )
 
     result = asyncio.run(

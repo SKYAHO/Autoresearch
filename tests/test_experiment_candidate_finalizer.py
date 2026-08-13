@@ -19,8 +19,8 @@ import uuid
 
 import pytest
 
-from agent_orchestration.executor import api_client, finalizer, verifier
-from agent_orchestration.executor.verifier import CandidatePolicy, VerificationResult
+from applications.experiment_platform.executor import api_client, finalizer, verifier
+from applications.experiment_platform.executor.verifier import CandidatePolicy, VerificationResult
 
 
 _ISSUE_NUMBER = 557

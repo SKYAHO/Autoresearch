@@ -11,8 +11,8 @@ from itertools import product
 
 import pytest
 
-from agent_orchestration.app.experiments.models import ExperimentStatus
-from agent_orchestration.app.experiments.transition_service import (
+from applications.experiment_platform.api.experiments.models import ExperimentStatus
+from applications.experiment_platform.api.experiments.transition_service import (
     InvalidTransitionError,
     validate_transition,
 )

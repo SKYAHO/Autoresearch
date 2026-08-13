@@ -37,12 +37,19 @@ def test_serving_runtime_installs_lightgbm_native_dependency() -> None:
     assert runtime_stage.index("libgomp1") < runtime_stage.index("USER appuser")
 
 
-def test_serving_image_copies_src_feature_repo_and_bootstrap_package() -> None:
+def test_serving_image_copies_app_feature_repo_and_bootstrap_package() -> None:
+    """서빙 앱 본체가 이미지에 없으면 컨테이너가 기동 즉시 죽는다.
+
+    `applications/__init__.py`를 따로 단언하는 이유는 그것이 없으면 디렉터리만 복사되고
+    패키지 import(`applications.reranking_api.app`)가 런타임에 실패하기 때문이다 — 빌드는
+    통과하므로 배포된 뒤에야 드러난다 (#754).
+    """
     dockerfile = SERVING_DOCKERFILE.read_text(encoding="utf-8")
 
     assert "COPY autoresearch ./autoresearch" in dockerfile
     assert "COPY feature_repo ./feature_repo" in dockerfile
-    assert "COPY src ./src" in dockerfile
+    assert "COPY applications/__init__.py ./applications/" in dockerfile
+    assert "COPY applications/reranking_api ./applications/reranking_api" in dockerfile
 
 
 def test_serving_image_embeds_source_revision_and_runs_non_root() -> None:
@@ -59,7 +66,7 @@ def test_ci_builds_serving_image_and_runs_import_smoke() -> None:
     assert "-f deploy/serving/Dockerfile" in workflow
     assert "--tag autoresearch-serving:ci" in workflow
     assert (
-        "import lightgbm, feast, fastapi, feature_repo.redis_iam, src.serving.app"
+        "import lightgbm, feast, fastapi, feature_repo.redis_iam, applications.reranking_api.app"
         in workflow
     )
     assert "tests/test_serving_feast_reader.py" in workflow

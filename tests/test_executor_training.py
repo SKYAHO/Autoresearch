@@ -17,8 +17,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_orchestration.executor import training as training_module  # noqa: E402
-from agent_orchestration.executor.training import (  # noqa: E402
+from applications.experiment_platform.executor import training as training_module  # noqa: E402
+from applications.experiment_platform.executor.training import (  # noqa: E402
     TrainingError,
     TrainingInput,
     TrainingStage,
@@ -387,7 +387,7 @@ def test_failed_command_logs_its_stderr(
     실험 #633은 `training_command_failed` 한 줄만 남기고 죽었고, 진짜 원인인
     `RecursionError`는 파이프 안에서 사라져 로컬 재현 20분을 요구했다.
     """
-    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+    with caplog.at_level(logging.ERROR, logger="applications.experiment_platform.executor.training"):
         with pytest.raises(TrainingError, match="training_command_failed"):
             training_module._run(
                 [
@@ -413,7 +413,7 @@ def test_failed_command_log_names_the_call_site(
     붙이는 `log_type`은 컨테이너 이름이라(#559) 다섯 단계가 한 값에 모인다 — 단계를
     가르는 정보는 로그 줄 안에 우리가 직접 넣은 것뿐이다.
     """
-    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+    with caplog.at_level(logging.ERROR, logger="applications.experiment_platform.executor.training"):
         with pytest.raises(TrainingError, match="training_command_failed"):
             resolve_policy_seeds(workspace)
 
@@ -456,7 +456,7 @@ def test_timed_out_command_logs_its_partial_output(
     `text=True`를 줘도 **이 예외의 출력만은 bytes로 온다.** 그대로 찍으면 `b'…'`가 되어
     읽을 수 없으므로 디코드해야 한다.
     """
-    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+    with caplog.at_level(logging.ERROR, logger="applications.experiment_platform.executor.training"):
         with pytest.raises(TrainingError, match="training_timeout"):
             training_module._run(
                 [
@@ -490,7 +490,7 @@ def test_logged_output_keeps_only_the_tail(
         "sys.stderr.write('TAIL-MARKER\\n'); "
         "sys.exit(1)"
     )
-    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+    with caplog.at_level(logging.ERROR, logger="applications.experiment_platform.executor.training"):
         with pytest.raises(TrainingError, match="training_command_failed"):
             training_module._run(
                 [sys.executable, "-c", script],
@@ -513,7 +513,7 @@ def test_raised_failure_survives_the_phase2_redaction_filter(workspace: Path) ->
     뿐, `_run`이 무엇을 던지는지는 검증하지 못한다.
     """
     # phase2는 GitHub App·GCS 의존성을 끌어오므로 이 테스트 안에서만 import한다.
-    from agent_orchestration.executor import phase2
+    from applications.experiment_platform.executor import phase2
 
     with pytest.raises(TrainingError) as raised:
         training_module._run(
@@ -539,7 +539,7 @@ def test_failure_logs_both_streams_even_when_one_is_empty(
     위해서다(#612 `_log_codex_output`과 같은 판단).
     """
     script = "import sys; sys.stdout.write('[Step 8] PROGRESS-MARKER\\n'); sys.exit(1)"
-    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+    with caplog.at_level(logging.ERROR, logger="applications.experiment_platform.executor.training"):
         with pytest.raises(TrainingError, match="training_command_failed"):
             training_module._run(
                 [sys.executable, "-c", script],
@@ -561,7 +561,7 @@ def test_spawn_failure_logs_why_the_process_could_not_start(
     출력이 없는 실패라 tail로는 잡히지 않는다. `training_spawn_failed` 하나로는 "명령이
     이미지에 없다"와 "권한이 없다"를 구분할 수 없는데, 둘은 대응이 완전히 다르다.
     """
-    with caplog.at_level(logging.ERROR, logger="agent_orchestration.executor.training"):
+    with caplog.at_level(logging.ERROR, logger="applications.experiment_platform.executor.training"):
         with pytest.raises(TrainingError, match="training_spawn_failed"):
             training_module._run(
                 ["definitely-not-a-real-command-636"],

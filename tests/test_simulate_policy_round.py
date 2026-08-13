@@ -14,7 +14,7 @@ from autoresearch.recommendation.simulate_policy_round import (
     build_pool_feature_frame,
     main,
 )
-from src.serving.service import Reranker
+from applications.reranking_api.service import Reranker
 
 
 class _CategoryLovingModel:

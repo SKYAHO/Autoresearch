@@ -25,20 +25,20 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session, sessionmaker
 
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.models import (
     Experiment,
     ExperimentEvent,
     ExperimentStatus,
 )
-from agent_orchestration.launcher import repository as launcher_repository
-from agent_orchestration.launcher.config import LauncherConfigError, LauncherSettings
-from agent_orchestration.launcher.jobs import (
+from applications.experiment_platform.launcher import repository as launcher_repository
+from applications.experiment_platform.launcher.config import LauncherConfigError, LauncherSettings
+from applications.experiment_platform.launcher.jobs import (
     KubernetesJobs,
     build_branch_job,
 )
-from agent_orchestration.launcher.main import run_tick
-from agent_orchestration.launcher.repository import (
+from applications.experiment_platform.launcher.main import run_tick
+from applications.experiment_platform.launcher.repository import (
     ADVISORY_LOCK_STATEMENT,
     CREATED_CLAIM_STATEMENT,
     ClaimedExperiment,
@@ -551,12 +551,12 @@ def test_job_passes_only_frozen_coordinates_and_token_file() -> None:
     assert token_minter.command == [
         "python",
         "-m",
-        "agent_orchestration.executor.token_minter",
+        "applications.experiment_platform.executor.token_minter",
     ]
     assert branch_bootstrap.command == [
         "python",
         "-m",
-        "agent_orchestration.executor.main",
+        "applications.experiment_platform.executor.main",
     ]
     assert _environment(token_minter) == {
         "ORCH_GITHUB_APP_ID": "123",

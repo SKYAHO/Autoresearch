@@ -21,10 +21,10 @@ from autoresearch.feature_engineering.model_contract import (
 )
 from autoresearch.model_training.calibration import DownsamplingCalibrator
 from autoresearch.model_training.lgbm_model import LGBMModel
-from src.serving.model_loader import LocalModelSettings, ModelArtifactError, load_local_model
-from src.serving.onnx_model import OnnxProbabilityModel, validate_onnx_session_contract
-from src.serving.schemas import CandidateVideo
-from src.serving.service import Reranker
+from applications.reranking_api.model_loader import LocalModelSettings, ModelArtifactError, load_local_model
+from applications.reranking_api.onnx_model import OnnxProbabilityModel, validate_onnx_session_contract
+from applications.reranking_api.schemas import CandidateVideo
+from applications.reranking_api.service import Reranker
 from autoresearch.model_registry.model_package import ModelPackageManifest, save_manifest
 from autoresearch.model_training.model_utils import (
     convert_lgbm_to_onnx,
@@ -287,7 +287,7 @@ def test_local_loader_normalizes_onnx_contract_error(tmp_path: Path, monkeypatch
     model, categories = _fit_contract_model()
     settings = _save_contract_artifacts(tmp_path, model, categories, with_onnx=True)
     monkeypatch.setattr(
-        "src.serving.model_loader._build_onnx_session_from_path",
+        "applications.reranking_api.model_loader._build_onnx_session_from_path",
         lambda path: _ContractSession(
             [_Metadata("wrong", "tensor(float)", [None, 21])],
             [_Metadata("probabilities", "tensor(float)", [None, 2])],

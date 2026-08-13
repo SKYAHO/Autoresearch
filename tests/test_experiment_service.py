@@ -19,21 +19,21 @@ from pydantic import ValidationError
 from sqlalchemy import Engine, create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.exceptions import ExperimentNotFoundError
-from agent_orchestration.app.experiments.exceptions import (
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.exceptions import ExperimentNotFoundError
+from applications.experiment_platform.api.experiments.exceptions import (
     IdempotencyConflictError,
     InvalidCursorError,
     PromotionRequiresDedicatedEndpointError,
 )
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.experiments.models import (
     Experiment,
     ExperimentEvent,
     ExperimentLog,
     ExperimentMetadata,
     ExperimentStatus,
 )
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api.experiments.schemas import (
     ExperimentCreate,
     ExperimentEventCreate,
     ExperimentLogCreate,
@@ -41,7 +41,7 @@ from agent_orchestration.app.experiments.schemas import (
     PromotionRequest,
     StatusUpdateRequest,
 )
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.service import (
     create_experiment_event,
     create_experiment,
     create_experiment_log,
@@ -53,7 +53,7 @@ from agent_orchestration.app.experiments.service import (
     promote_experiment,
     update_experiment_status,
 )
-from agent_orchestration.app.experiments.transition_service import InvalidTransitionError
+from applications.experiment_platform.api.experiments.transition_service import InvalidTransitionError
 
 
 @pytest.fixture
@@ -894,7 +894,7 @@ def test_transaction_primitive_rolls_back_with_its_caller(
     db_session: Session,
 ) -> None:
     """caller rollback 뒤 상태나 event가 남는 transaction 경계 회귀를 잡는다."""
-    from agent_orchestration.app.experiments.service import (
+    from applications.experiment_platform.api.experiments.service import (
         transition_experiment_in_transaction,
     )
 

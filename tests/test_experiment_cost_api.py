@@ -19,15 +19,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.pool import StaticPool
 
-from agent_orchestration.app import main as main_module
-from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.cost import (
+from applications.experiment_platform.api import main as main_module
+from applications.experiment_platform.api.config import ServiceSettings
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.cost import (
     COMPUTE_HOURLY_USD,
     build_experiment_cost,
     parse_stage_tokens,
 )
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.experiments.models import (
     Experiment,
     ExperimentEvent,
     ExperimentLog,

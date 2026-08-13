@@ -1,7 +1,7 @@
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from proxy.app import _upstream_get, app
+from applications.youtube_api_proxy.app import _upstream_get, app
 
 client = TestClient(app)
 
@@ -35,7 +35,7 @@ def test_forwards_youtube_request_to_upstream(monkeypatch):
         captured["headers"] = headers
         return _FakeResp(200, {"items": []})
 
-    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    monkeypatch.setattr("applications.youtube_api_proxy.app._upstream_get", fake_get)
     response = client.get(
         "/youtube/v3/videos",
         params={"part": "snippet", "id": "vid1"},
@@ -70,7 +70,7 @@ def test_rejects_key_query_param(monkeypatch):
     def fake_get(url, *, params=None, headers=None, timeout=None):
         raise AssertionError("upstream 이 호출되면 안 됨(key query param 차단 전)")
 
-    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    monkeypatch.setattr("applications.youtube_api_proxy.app._upstream_get", fake_get)
     response = client.get(
         "/youtube/v3/videos",
         params={"part": "snippet", "key": "SECRET"},
@@ -87,7 +87,7 @@ def test_rejects_key_query_param_case_variant(bad_param, monkeypatch):
     def fake_get(url, *, params=None, headers=None, timeout=None):
         raise AssertionError("upstream 이 호출되면 안 됨(key 대소문자 우회 차단 전)")
 
-    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    monkeypatch.setattr("applications.youtube_api_proxy.app._upstream_get", fake_get)
     response = client.get(
         "/youtube/v3/videos",
         params={"part": "snippet", bad_param: "SECRET"},
@@ -111,7 +111,7 @@ def test_forwards_multi_value_query_params(monkeypatch):
         captured["params"] = params
         return _FakeResp(200, {"items": []})
 
-    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    monkeypatch.setattr("applications.youtube_api_proxy.app._upstream_get", fake_get)
     response = client.get(
         "/youtube/v3/videos",
         params={"part": "snippet", "id": ["a", "b", "c"]},
@@ -136,7 +136,7 @@ def test_upstream_get_serializes_multi_value_query_params(monkeypatch):
     def mock_client(*, timeout):
         return original_client(transport=httpx.MockTransport(handler), timeout=timeout)
 
-    monkeypatch.setattr("proxy.app.httpx.Client", mock_client)
+    monkeypatch.setattr("applications.youtube_api_proxy.app.httpx.Client", mock_client)
     response = _upstream_get(
         "https://www.googleapis.com/youtube/v3/videos",
         params=[("part", "snippet"), ("id", "a"), ("id", "b"), ("id", "c")],
@@ -156,7 +156,7 @@ def test_rejects_multi_value_key_query_param(monkeypatch):
     def fake_get(url, *, params=None, headers=None, timeout=None):
         raise AssertionError("upstream 이 호출되면 안 됨(multi-value key= 차단 전)")
 
-    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    monkeypatch.setattr("applications.youtube_api_proxy.app._upstream_get", fake_get)
     response = client.get(
         "/youtube/v3/videos",
         params={"part": "snippet", "key": ["SECRET1", "SECRET2"]},
@@ -175,7 +175,7 @@ def test_rejects_encoded_path_escape(monkeypatch):
     def fake_get(url, *, params=None, headers=None, timeout=None):
         raise AssertionError(f"upstream 이 호출되면 안 됨(path escape 차단 전): {url}")
 
-    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    monkeypatch.setattr("applications.youtube_api_proxy.app._upstream_get", fake_get)
     response = client.get(
         "/youtube/v3/%2E%2E/maps/api/place/json",
         headers={"X-Goog-Api-Key": "k1"},
@@ -186,7 +186,7 @@ def test_rejects_encoded_path_escape(monkeypatch):
 def test_upstream_429_marks_unhealthy(monkeypatch):
     """upstream 429 반복 시 unhealthy 마킹 → /health 503."""
     monkeypatch.setattr(
-        "proxy.app._upstream_get",
+        "applications.youtube_api_proxy.app._upstream_get",
         lambda *a, **k: _FakeResp(429, {"error": {"errors": [{"reason": "quotaExceeded"}], "code": 429}}),
     )
     # 임계치(3회) 도달 전에는 정상 응답 전달
@@ -216,7 +216,7 @@ def test_upstream_success_resets_streak_but_keeps_unhealthy(monkeypatch):
     app.state.unhealthy = True
     app.state._unhealthy_streak = 3
     monkeypatch.setattr(
-        "proxy.app._upstream_get",
+        "applications.youtube_api_proxy.app._upstream_get",
         lambda *a, **k: _FakeResp(200, {"items": []}),
     )
     # when
@@ -245,7 +245,7 @@ def test_upstream_exception_increments_streak_and_returns_502(monkeypatch):
     def fake_get(url, *, params, headers, timeout):
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    monkeypatch.setattr("applications.youtube_api_proxy.app._upstream_get", fake_get)
     response = client.get("/youtube/v3/videos", headers={"X-Goog-Api-Key": "k1"})
     assert response.status_code == 502
     assert app.state._unhealthy_streak == 1
@@ -256,7 +256,7 @@ def test_upstream_exception_repeated_marks_unhealthy(monkeypatch):
     def fake_get(url, *, params, headers, timeout):
         raise httpx.ConnectError("connection refused")
 
-    monkeypatch.setattr("proxy.app._upstream_get", fake_get)
+    monkeypatch.setattr("applications.youtube_api_proxy.app._upstream_get", fake_get)
     for _ in range(3):
         r = client.get("/youtube/v3/videos", headers={"X-Goog-Api-Key": "k1"})
         assert r.status_code == 502

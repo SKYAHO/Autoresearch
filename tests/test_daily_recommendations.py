@@ -18,9 +18,9 @@ from autoresearch.recommendation.daily_recommendations import (
     to_recommendation_rows,
     write_partition,
 )
-from src.serving.model_loader import ResolvedModel
-from src.serving.schemas import RerankedVideo
-from src.serving.service import Reranker
+from applications.reranking_api.model_loader import ResolvedModel
+from applications.reranking_api.schemas import RerankedVideo
+from applications.reranking_api.service import Reranker
 
 _GENERATED_AT = datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
 

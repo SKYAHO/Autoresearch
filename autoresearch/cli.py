@@ -846,14 +846,14 @@ def compare_paired_experiment(
 def _experiment_client_module():
     """Experiment API client 모듈을 **지연** import한다.
 
-    `agent_orchestration.ui.client`는 `ui.models`를 거쳐
-    `agent_orchestration.app.experiments.models`를 끌어오고, 그 모듈이 SQLAlchemy를
+    `applications.experiment_platform.workbench.client`는 `ui.models`를 거쳐
+    `applications.experiment_platform.api.experiments.models`를 끌어오고, 그 모듈이 SQLAlchemy를
     요구한다. 학습 이미지는 `uv sync --locked --no-dev`로 빌드되어 SQLAlchemy가 없으므로
     top-level import면 `autoresearch.cli` 전체가 뜨지 않는다 — `train-model --help`조차 죽는다.
 
     이 명령을 실제로 실행할 때만 필요한 의존이므로 여기서만 가져온다.
     """
-    from agent_orchestration.ui import client
+    from applications.experiment_platform.workbench import client
 
     return client
 

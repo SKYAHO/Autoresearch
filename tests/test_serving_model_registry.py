@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import src.serving.model_loader as model_loader
-from src.serving.model_loader import (
+import applications.reranking_api.model_loader as model_loader
+from applications.reranking_api.model_loader import (
     ModelConfigurationError,
     RegistryModelSettings,
     ResolvedModel,
@@ -85,7 +85,7 @@ def test_lineage_for_mlflow_and_local_sources(monkeypatch, tmp_path):
     monkeypatch.setattr(model_loader, "load_mlflow_model", lambda s: sentinel)
     monkeypatch.setattr(model_loader, "load_local_model", lambda s: sentinel)
 
-    from src.serving.model_loader import LocalModelSettings, MlflowModelSettings
+    from applications.reranking_api.model_loader import LocalModelSettings, MlflowModelSettings
 
     mlflow_resolved = load_reranker_with_lineage(
         MlflowModelSettings(tracking_uri="http://mlflow:5000", run_id="run-z")

@@ -12,7 +12,7 @@ import pytest
 import yaml
 
 from scripts import provision_rerank_loadtest_fixture as provisioner
-from autoresearch.loadtest.rerank_fixture import (
+from applications.reranking_api.loadtest.rerank_fixture import (
     FIXTURE_USER_ID,
     FIXTURE_VIDEO_IDS,
     build_fixture,
@@ -160,7 +160,7 @@ def test_dml_accepts_bigquery_dataset_identifier_starting_with_number() -> None:
 
 def test_k6_script_has_warmup_and_measurement_contract() -> None:
     """k6는 warmup을 분리하고 측정 전용 오류율을 노출해야 한다."""
-    script = Path("loadtest/rerank.js").read_text()
+    script = Path("applications/reranking_api/loadtest/rerank.js").read_text()
 
     assert 'exec: "warmup"' in script
     assert 'exec: "measure"' in script
@@ -178,7 +178,7 @@ def test_k6_script_has_warmup_and_measurement_contract() -> None:
 
 def test_k6_summary_includes_p99_for_exact_latency_reporting() -> None:
     """k6 summary 설정은 측정 latency의 p99를 포함해야 한다."""
-    script = Path("loadtest/rerank.js").read_text()
+    script = Path("applications/reranking_api/loadtest/rerank.js").read_text()
 
     trend_stats_match = re.search(
         r"summaryTrendStats\s*:\s*(\[[^\]]*\])",

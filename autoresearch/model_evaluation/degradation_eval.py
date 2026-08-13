@@ -149,7 +149,7 @@ def video_feature_snapshot_query(
 
     학습 조립 경로(``retrieve_training_features``)와는 별개 쿼리이며, 모델 입력에는
     영향을 주지 않는다 — staleness 진단 전용이다. parameterized query로 만든다
-    (``autoresearch/loadtest/rerank_fixture.py``의 ``targeted_delete_sql`` 관례를 따름).
+    (``applications/reranking_api/loadtest/rerank_fixture.py``의 ``targeted_delete_sql`` 관례를 따름).
 
     ``as_of``는 ``"YYYY-MM-DD HH:MM:SS"`` 형식의 **KST 벽시계 시각**으로 해석한다
     (spine의 날짜 절단 규칙 ``DATE(event_timestamp, 'Asia/Seoul')``,
@@ -876,7 +876,7 @@ def run_rolling_origin(
             roc_auc: float | None = None
             if status == EvaluationStatus.VALID:
                 # 학습 시점 category→code 매핑을 그대로 재현해야 LightGBM이 같은
-                # 스플릿을 적용한다(src/serving/service.py:90-99와 같은 패턴). 이걸
+                # 스플릿을 적용한다(applications/reranking_api/service.py:90-99와 같은 패턴). 이걸
                 # 안 하면 evaluate_held_out_roc_auc 내부의 무조건 astype("category")가
                 # 그날 데이터에 실제 등장한 값만으로 카테고리를 다시 매겨, 카테고리
                 # 구성이 날마다 달라질 때(예: category_id) 모델이 학습 때와 다른

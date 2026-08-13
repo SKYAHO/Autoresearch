@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from agent_orchestration.app.experiments.github_issues import (
+from applications.experiment_platform.api.experiments.github_issues import (
     GitHubIssueError,
     IssueRef,
     create_issue,
@@ -183,7 +183,7 @@ def test_cancellation_reclaims_the_process(monkeypatch: pytest.MonkeyPatch) -> N
     process = _HangingProcess()
     _patch_subprocess(monkeypatch, process)
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.github_issues._terminate_process_group",
+        "applications.experiment_platform.api.experiments.github_issues._terminate_process_group",
         reclaimed.append,
     )
 

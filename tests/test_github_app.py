@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 import httpx
 import pytest
 
-from agent_orchestration.github_app import (
+from applications.experiment_platform.shared.github_app import (
     GitHubAppCredentials,
     GitHubAppError,
     create_installation_token,

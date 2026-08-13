@@ -15,9 +15,9 @@ import sys
 
 import pytest
 
-from agent_orchestration.executor.codex_worker import CodexWorkerError
-from agent_orchestration.executor.prompt import REPORT_SECTIONS, build_report_prompt
-from agent_orchestration.executor.report import (
+from applications.experiment_platform.executor.codex_worker import CodexWorkerError
+from applications.experiment_platform.executor.prompt import REPORT_SECTIONS, build_report_prompt
+from applications.experiment_platform.executor.report import (
     DIFF_FILENAME,
     REPORT_FILENAME,
     ReportError,

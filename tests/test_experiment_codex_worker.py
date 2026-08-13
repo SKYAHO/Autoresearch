@@ -16,16 +16,16 @@ import time
 
 import pytest
 
-from agent_orchestration.executor import codex_worker
-from agent_orchestration.executor.codex_worker import (
+from applications.experiment_platform.executor import codex_worker
+from applications.experiment_platform.executor.codex_worker import (
     CodexRunInput,
     CodexRunResult,
     CodexWorkerError,
     run_codex,
     run_codex_for_workspace,
 )
-from agent_orchestration.executor.prompt import build_codex_prompt
-from agent_orchestration.executor.state import ExecutorWorkspaceState
+from applications.experiment_platform.executor.prompt import build_codex_prompt
+from applications.experiment_platform.executor.state import ExecutorWorkspaceState
 
 
 _BASE_SHA = "a" * 40
@@ -132,9 +132,13 @@ def test_prompt_contains_raw_issue_and_fixed_worker_boundaries() -> None:
     assert "tools/**" in prompt
     assert "- src/features/model_contract.py\n" not in prompt
     assert "- feature_repo/**\n" not in prompt
+    # ruff 대상은 워크스페이스 트리를 보고 정해지며(#754), worker 가 **그대로 셸에 넣을 수
+    # 있는** 형태여야 한다. 플레이스홀더가 들어가면 `<`·`>` 가 리다이렉션으로 해석된다.
     assert "uv run --no-sync ruff check agent_orchestration autoresearch tests tools" in prompt
+    assert "<" not in prompt.split("Run these fixed verification commands")[1].split("\n\n")[0]
     assert "uv run --no-sync python -m pytest" in prompt
     assert "agent_orchestration/**" in prompt
+    assert "applications/**" in prompt
     assert ".github/**" in prompt
     assert "Validated Issue Form data" not in prompt
     template = prompt.replace(run.issue_body, "")
@@ -382,7 +386,7 @@ def test_timeout_terminates_the_codex_process_group_and_child(
     )
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setattr(
-        "agent_orchestration.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
+        "applications.experiment_platform.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
     )
     run = _run_input(tmp_path)
     run = CodexRunInput(**{**run.__dict__, "timeout_seconds": 1})
@@ -421,7 +425,7 @@ def test_run_codex_timeout_still_carries_the_codex_output(
     )
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setattr(
-        "agent_orchestration.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
+        "applications.experiment_platform.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
     )
     run = _run_input(tmp_path)
     run = CodexRunInput(**{**run.__dict__, "timeout_seconds": 1})
@@ -524,7 +528,7 @@ def test_parent_success_with_live_child_is_not_reported_as_codex_success(
     )
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setattr(
-        "agent_orchestration.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
+        "applications.experiment_platform.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
     )
     run = _run_input(tmp_path)
 
@@ -952,3 +956,26 @@ def test_usage_parser_drops_a_line_that_never_ends(tmp_path: Path) -> None:
 
     assert collector.result() is None
     assert len(collector._pending) == 0
+
+
+def test_prompt_verification_command_follows_the_workspace_tree(tmp_path: Path) -> None:
+    """검증 명령의 ruff 대상은 워크스페이스에 실제로 있는 디렉터리를 가리켜야 한다(#754).
+
+    ruff는 없는 경로를 인자로 받으면 exit 1이므로, 프롬프트가 트리에 없는 디렉터리를
+    지시하면 worker가 스스로 lint를 고쳐 올 수 없고 verifier의 `ruff_failed` 차단만 늘어난다.
+    """
+    workspace = tmp_path / "repository"
+    (workspace / "applications").mkdir(parents=True)
+
+    prompt = build_codex_prompt(
+        CodexRunInput(
+            repository=workspace,
+            issue_body=_issue_body(),
+            allowed_scope=(),
+            codex_home=Path("/var/lib/codex"),
+            timeout_seconds=60,
+        )
+    )
+
+    assert "uv run --no-sync ruff check applications autoresearch tests tools" in prompt
+    assert "ruff check agent_orchestration" not in prompt

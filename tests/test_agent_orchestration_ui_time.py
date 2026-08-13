@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from agent_orchestration.ui.time import format_time
+from applications.experiment_platform.workbench.time import format_time
 
 
 def test_format_time_converts_utc_to_kst() -> None:

@@ -2,7 +2,7 @@
 
 전체 파이프라인 중 Experiment API의 Step 응답이 Streamlit 화면 상태로 들어오는 구간을
 검증한다. HTTP 전송 자체와 Streamlit 위젯 렌더링은 담당하지 않는다 —
-`agent_orchestration.ui.views`는 streamlit 의존성이 필요해 여기서 import하지 않는다.
+`applications.experiment_platform.workbench.views`는 streamlit 의존성이 필요해 여기서 import하지 않는다.
 """
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from agent_orchestration.ui import state as state_module
-from agent_orchestration.ui.models import (
+from applications.experiment_platform.workbench import state as state_module
+from applications.experiment_platform.workbench.models import (
     Experiment,
     Step,
     Submission,
@@ -21,13 +21,13 @@ from agent_orchestration.ui.models import (
     step_status_color,
     step_status_label,
 )
-from agent_orchestration.ui.app import should_open_experiment_detail
-from agent_orchestration.ui.client import (
+from applications.experiment_platform.workbench.app import should_open_experiment_detail
+from applications.experiment_platform.workbench.client import (
     STEP_PAGE_BUDGET,
     STEP_PAGE_SIZE,
     ExperimentClient,
 )
-from agent_orchestration.ui.state import (
+from applications.experiment_platform.workbench.state import (
     WorkbenchState,
     WorkbenchView,
     clear_activity_cache,

@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_orchestration.app.experiments.issue_authoring import (  # noqa: E402
+from applications.experiment_platform.api.experiments.issue_authoring import (  # noqa: E402
     MAX_DECIMAL_DIGITS,
     MAX_DECIMAL_EXPONENT,
     MAX_DECIMAL_TEXT_LENGTH,

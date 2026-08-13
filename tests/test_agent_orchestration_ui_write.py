@@ -12,8 +12,8 @@ from urllib.error import HTTPError
 
 import pytest
 
-from agent_orchestration.ui import client as client_module
-from agent_orchestration.ui.client import ApiStateConflictError, ExperimentClient
+from applications.experiment_platform.workbench import client as client_module
+from applications.experiment_platform.workbench.client import ApiStateConflictError, ExperimentClient
 
 _EXPERIMENT_PAYLOAD: dict[str, Any] = {
     "id": "11111111-1111-1111-1111-111111111111",

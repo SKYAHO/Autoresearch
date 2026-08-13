@@ -21,9 +21,9 @@ pytest.importorskip("streamlit", reason="orchestration-ui 그룹이 설치돼야
 
 from streamlit import config as streamlit_config  # noqa: E402
 
-from agent_orchestration.ui import views  # noqa: E402
-from agent_orchestration.ui.models import status_tone  # noqa: E402
-from agent_orchestration.ui.styles import workbench_css  # noqa: E402
+from applications.experiment_platform.workbench import views  # noqa: E402
+from applications.experiment_platform.workbench.models import status_tone  # noqa: E402
+from applications.experiment_platform.workbench.styles import workbench_css  # noqa: E402
 
 
 THEME_CONFIG_PATH = pathlib.Path(".streamlit/config.toml")
@@ -278,7 +278,7 @@ def test_every_class_views_writes_is_defined_in_the_stylesheet() -> None:
     경과 시간이 본문 크기로 그려져 배지 옆에서 접혔다(#671). `var(--*)` 사건,
     `<p>` 특정성 사건과 같은 부류의 조용한 실패다.
     """
-    source = pathlib.Path("agent_orchestration/ui/views.py").read_text(encoding="utf-8")
+    source = pathlib.Path("applications/experiment_platform/workbench/views.py").read_text(encoding="utf-8")
     css = workbench_css()
 
     used = set(re.findall(r'class="([a-z0-9 _-]+)"', source))

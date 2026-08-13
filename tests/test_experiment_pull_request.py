@@ -20,7 +20,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_orchestration.launcher.pull_request import (  # noqa: E402
+from applications.experiment_platform.launcher.pull_request import (  # noqa: E402
     PULL_REQUEST_METADATA_KEY,
     SkipReason,
     build_pull_request_body,

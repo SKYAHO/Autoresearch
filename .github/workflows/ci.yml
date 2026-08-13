@@ -21,7 +21,7 @@ jobs:
       mlflow: ${{ github.event_name != 'pull_request' || steps.filter.outputs.mlflow }}
       feast: ${{ github.event_name != 'pull_request' || steps.filter.outputs.feast }}
       serving: ${{ github.event_name != 'pull_request' || steps.filter.outputs.serving }}
-      agent_orchestration: ${{ github.event_name != 'pull_request' || steps.filter.outputs.agent_orchestration }}
+      experiment_platform: ${{ github.event_name != 'pull_request' || steps.filter.outputs.experiment_platform }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
@@ -45,7 +45,6 @@ jobs:
               - 'Dockerfile.app'
               - 'scripts/gcs_code_bootstrap.sh'
               - 'autoresearch/**'
-              - 'src/**'
               - 'pyproject.toml'
               - 'uv.lock'
             train:
@@ -54,7 +53,6 @@ jobs:
               - 'Dockerfile.train'
               - 'scripts/gcs_code_bootstrap.sh'
               - 'autoresearch/**'
-              - 'src/**'
               - 'pyproject.toml'
               - 'uv.lock'
             mlflow:
@@ -67,7 +65,6 @@ jobs:
               - 'Dockerfile.feast'
               - 'scripts/gcs_code_bootstrap.sh'
               - 'autoresearch/**'
-              - 'src/**'
               - 'feature_repo/**'
               - 'pyproject.toml'
               - 'uv.lock'
@@ -75,15 +72,15 @@ jobs:
               - '.github/workflows/ci.yml'
               - '.dockerignore'
               - 'deploy/serving/**'
+              - 'applications/reranking_api/**'
               - 'autoresearch/**'
               - 'feature_repo/**'
-              - 'src/**'
               - 'pyproject.toml'
               - 'uv.lock'
-            agent_orchestration:
+            experiment_platform:
               - '.github/workflows/ci.yml'
               - '.dockerignore'
-              - 'agent_orchestration/**'
+              - 'applications/experiment_platform/**'
               - 'deploy/agent_orchestration/**'
               - 'pyproject.toml'
               - 'uv.lock'
@@ -186,7 +183,7 @@ jobs:
       - name: Apply Alembic migrations to the ephemeral PostgreSQL service
         env:
           ORCH_DATABASE_URL: ${{ env.ORCH_TEST_POSTGRES_URL }}
-        run: uv run --no-sync alembic -c agent_orchestration/alembic.ini upgrade head
+        run: uv run --no-sync alembic -c applications/experiment_platform/alembic.ini upgrade head
 
       - name: Run PostgreSQL concurrency contract tests
         run: uv run --no-sync python -m pytest tests/test_experiment_postgres.py -v
@@ -211,12 +208,12 @@ jobs:
         # 루트 uv lock --check로는 drift가 잡히지 않는다.
         run: cd deploy/mlflow/runtime && uv lock --check
 
-      - name: Verify exported proxy/requirements.txt matches uv.lock
-        # proxy/requirements.txt(Cloud Run, 깨끗한 python-slim 베이스)는
+      - name: Verify exported youtube_api_proxy requirements.txt matches uv.lock
+        # applications/youtube_api_proxy/requirements.txt(Cloud Run, 깨끗한 python-slim 베이스)는
         # uv.lock 에서 생성되는 전핀 산출물이다. 재생성 후 diff 로 drift 를 검사한다.
         run: |
-          uv export --frozen --only-group proxy --no-hashes -o proxy/requirements.txt
-          git diff --exit-code proxy/requirements.txt
+          uv export --frozen --only-group proxy --no-hashes -o applications/youtube_api_proxy/requirements.txt
+          git diff --exit-code applications/youtube_api_proxy/requirements.txt
 
   docker-build-app:
     name: Docker build (app)
@@ -284,8 +281,9 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build training image
-        # CTR 학습 파이프라인(src/)을 담는 이미지. Dockerfile.app과 별도로
-        # 관리한다 — 배치 CLI(autoresearch/)와 학습 코드(src/)는 책임이 다르다.
+        # CTR 학습 파이프라인을 담는 이미지. Dockerfile.app과 별도로 관리한다 —
+        # 배치 CLI(autoresearch/jobs/)와 학습 코드(autoresearch/model_training/)는
+        # 책임이 다르다.
         run: |
           docker build \
             --build-arg VCS_REF="${{ github.sha }}" \
@@ -402,7 +400,7 @@ jobs:
         run: |
           docker run --rm autoresearch-serving:ci python -m pip check
           docker run --rm autoresearch-serving:ci \
-            python -c "import lightgbm, feast, fastapi, feature_repo.redis_iam, src.serving.app"
+            python -c "import lightgbm, feast, fastapi, feature_repo.redis_iam, applications.reranking_api.app"
           docker run --rm autoresearch-serving:ci \
             python -c "from feature_repo.bootstrap import load_feature_store; load_feature_store('/app/feature_repo')"
 
@@ -443,7 +441,7 @@ jobs:
   docker-build-agent-orchestration:
     name: Docker build (agent orchestration)
     needs: changes
-    if: needs.changes.outputs.agent_orchestration == 'true'
+    if: needs.changes.outputs.experiment_platform == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -478,20 +476,20 @@ jobs:
             test ! -e /var/lib/codex/auth.json
           '
           docker run --rm autoresearch-agent-orchestration-api:ci \
-            python -c "import agent_orchestration.app.main"
+            python -c "import applications.experiment_platform.api.main"
           docker run --rm autoresearch-agent-orchestration-api:ci gh --version \
             | grep --fixed-strings "gh version 2.97.0"
           docker run --rm autoresearch-agent-orchestration-api:ci \
-            python -c "import agent_orchestration.bootstrap_secrets; from google.cloud import secretmanager"
+            python -c "import applications.experiment_platform.shared.bootstrap_secrets; from google.cloud import secretmanager"
           docker run --rm autoresearch-agent-orchestration-api:ci \
             python -c "import importlib.util; assert importlib.util.find_spec('lightgbm') is None"
           docker run --rm autoresearch-agent-orchestration-api:ci \
-            alembic -c agent_orchestration/alembic.ini upgrade head --sql >/dev/null
+            alembic -c applications/experiment_platform/alembic.ini upgrade head --sql >/dev/null
           docker run --rm autoresearch-agent-orchestration-runner:ci id -u | grep --fixed-strings 10001
           codex_version="$(docker run --rm autoresearch-agent-orchestration-runner:ci codex --version)"
           test "${codex_version}" = "codex-cli 0.146.0"
           docker run --rm autoresearch-agent-orchestration-runner:ci \
-            python -c "import agent_orchestration.runner.app"
+            python -c "import applications.experiment_platform.runner.app"
           docker run --rm autoresearch-agent-orchestration-runner:ci \
             python -c "import importlib.util; assert importlib.util.find_spec('lightgbm') is None"
           mkdir -p /tmp/executor-runtime-clone/tools
@@ -507,7 +505,7 @@ jobs:
               uv --version
               node --version
               codex --version
-              python -c "import tools; assert tools.__file__ == \"/app/tools/__init__.py\"; import agent_orchestration.executor.main, agent_orchestration.executor.token_minter, agent_orchestration.executor.workspace, agent_orchestration.executor.codex_worker, agent_orchestration.executor.verifier, agent_orchestration.executor.finalizer, agent_orchestration.executor.phase2"
+              python -c "import tools; assert tools.__file__ == \"/app/tools/__init__.py\"; import applications.experiment_platform.executor.main, applications.experiment_platform.executor.token_minter, applications.experiment_platform.executor.workspace, applications.experiment_platform.executor.codex_worker, applications.experiment_platform.executor.verifier, applications.experiment_platform.executor.finalizer, applications.experiment_platform.executor.phase2"
             '
           docker run --rm autoresearch-agent-orchestration-ui:ci id -u | grep --fixed-strings 10001
           container_name="agent-orchestration-ui-ci"

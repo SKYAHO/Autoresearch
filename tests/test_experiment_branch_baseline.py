@@ -20,16 +20,16 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.sql.dml import Update
 
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.github_issues import GitHubIssueError, IssueRef
-from agent_orchestration.app.experiments.models import Experiment
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.github_issues import GitHubIssueError, IssueRef
+from applications.experiment_platform.api.experiments.models import Experiment
+from applications.experiment_platform.api.experiments.schemas import (
     ExperimentCreate,
     ExperimentResponse,
     IssuePublicationRequest,
     IssuePublicationResponse,
 )
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.service import (
     create_experiment,
     publish_experiment_issue,
 )
@@ -85,7 +85,7 @@ def _no_marker_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
         return None
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.find_issue_by_marker", _absent
+        "applications.experiment_platform.api.experiments.service.find_issue_by_marker", _absent
     )
 
 
@@ -96,7 +96,7 @@ def test_publish_retry_reuses_frozen_sha_after_dev_moves(
     experiment = create_experiment(db_session, ExperimentCreate(hypothesis="ratio"))
     resolver = AsyncMock(side_effect=["a" * 40, "b" * 40])
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        "applications.experiment_platform.api.experiments.service.resolve_dev_sha",
         resolver,
         raising=False,
     )
@@ -109,7 +109,7 @@ def test_publish_retry_reuses_frozen_sha_after_dev_moves(
         raise GitHubIssueError("network_error")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", failing_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", failing_create_issue
     )
     with pytest.raises(GitHubIssueError, match="network_error"):
         asyncio.run(
@@ -125,7 +125,7 @@ def test_publish_retry_reuses_frozen_sha_after_dev_moves(
         )
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", succeeding_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", succeeding_create_issue
     )
     result = asyncio.run(
         publish_experiment_issue(db_session, _Settings(), experiment.id, _request())
@@ -152,11 +152,11 @@ def test_baseline_lookup_releases_read_transaction_before_github(
         )
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        "applications.experiment_platform.api.experiments.service.resolve_dev_sha",
         resolve_without_open_transaction,
     )
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue",
+        "applications.experiment_platform.api.experiments.service.create_issue",
         create_issue,
     )
 
@@ -185,7 +185,7 @@ def test_publication_retry_releases_read_transaction_before_marker_lookup(
         )
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.find_issue_by_marker",
+        "applications.experiment_platform.api.experiments.service.find_issue_by_marker",
         find_without_open_transaction,
     )
 
@@ -214,7 +214,7 @@ def test_competing_baseline_freeze_reuses_atomic_cas_winner(
 
     resolver = AsyncMock(return_value=losing_sha)
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        "applications.experiment_platform.api.experiments.service.resolve_dev_sha",
         resolver,
         raising=False,
     )
@@ -236,7 +236,7 @@ def test_competing_baseline_freeze_reuses_atomic_cas_winner(
         )
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue",
+        "applications.experiment_platform.api.experiments.service.create_issue",
         create_issue_after_winner_is_visible,
     )
 
@@ -299,7 +299,7 @@ def test_legacy_definition_write_reuses_atomic_cas_winner(
         )
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue",
+        "applications.experiment_platform.api.experiments.service.create_issue",
         create_issue_with_winner_definition,
     )
 
