@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-13T16:38:12Z",
+  "generated_at": "2026-08-13T16:39:37Z",
   "reports": [
+    {
+      "number": 761,
+      "title": "refactor: 배포 산출물을 deployment로 모은다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-13T16:39:14Z",
+      "summary_ko": [
+        "루트 디렉터리 및 deploy/ 디렉터리에 분산되어 있던 Dockerfile과 배포 매니페스트를 deployment/ 경로 하위로 통합 이관하였습니다.",
+        "GitHub Actions 워크플로의 paths 감지 필터, Docker 빌드 경로, 관련 파이썬 테스트의 경로 참조를 전수 갱신하였습니다.",
+        "워크플로가 가리키는 Dockerfile 등 빌드 파일의 실제 존재 여부를 검증하는 가드 테스트를 새로 추가하였습니다."
+      ],
+      "report_url": "pr/761/"
+    },
     {
       "number": 758,
       "title": "refactor: 테스트를 소스 구조와 같은 모양으로 옮긴다",
