@@ -40,7 +40,7 @@ _TOKEN = "clone-token-must-not-leak"
 
 def _issue_body() -> str:
     fixture = (
-        Path(__file__).parent / "fixtures" / "auto_research_issue_form_rendered.md"
+        Path(__file__).resolve().parents[2] / "fixtures" / "auto_research_issue_form_rendered.md"
     ).read_text(encoding="utf-8")
     return f"<!-- experiment-id: {_EXPERIMENT_ID} -->\n\n{fixture}"
 

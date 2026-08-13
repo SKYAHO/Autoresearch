@@ -4,7 +4,7 @@
 무엇을 서버로 보내는지 검증한다. 서버 내부 발행 절차는
 test_experiment_issue_publication이 담당한다.
 
-`tests/test_ui_submission_form.py`는 순수 함수만 보므로 위젯 렌더링 버그를 잡지 못한다.
+`tests/applications/experiment_platform/test_ui_submission_form.py`는 순수 함수만 보므로 위젯 렌더링 버그를 잡지 못한다.
 #536에서 실제로 그런 버그가 났다 — `st.form` 안에서 체크박스로 다른 위젯의 `disabled`를
 제어했는데, form 안 위젯은 상호작용해도 rerun을 일으키지 않아 사용자가 guardrail 값을
 입력할 수 없었고 그대로 guardrail 없이 발행됐다. 그 종류를 여기서 막는다.

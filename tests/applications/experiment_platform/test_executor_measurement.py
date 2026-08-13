@@ -1,7 +1,7 @@
 """조건별 학습 산출물을 채점해 실험 지표로 모으는 계약을 고정한다.
 
 실제 평가를 돌리지 않고 subprocess 경계만 대역으로 바꾼다 — 지표의 정의와 계산은
-`autoresearch/model_evaluation/evaluate.py`가 소유하고 `tests/test_pipeline_evaluate.py`가 검증한다.
+`autoresearch/model_evaluation/evaluate.py`가 소유하고 `tests/model_evaluation/test_evaluate.py`가 검증한다.
 여기서 지키는 것은 "무엇을 호출하고 무엇을 남기는가"다.
 """
 
@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 

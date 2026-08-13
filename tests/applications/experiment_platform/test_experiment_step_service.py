@@ -2,7 +2,7 @@
 
 전체 파이프라인 중 Agent Orchestration 실험 API가 작업 단계를 저장하는 구간의 스키마
 계약을 확인한다. 생성 멱등성과 PATCH 가드는 각각 Task 3·4에서 service 계층과 함께
-추가하며, PostgreSQL 동시성 계약은 tests/test_experiment_postgres.py가 담당한다.
+추가하며, PostgreSQL 동시성 계약은 tests/applications/experiment_platform/test_experiment_postgres.py가 담당한다.
 """
 
 from __future__ import annotations

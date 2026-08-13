@@ -1,7 +1,7 @@
 """워크벤치 실행 비용의 조회 배선과 결과 탭 렌더를 검증한다.
 
 전체 파이프라인에서 API가 돌려준 실행 비용이 결과 탭에 그려지기까지의 UI 구간을
-검증한다. 값의 파생·환산과 endpoint는 `tests/test_experiment_cost_api.py`가 담당한다.
+검증한다. 값의 파생·환산과 endpoint는 `tests/applications/experiment_platform/test_experiment_cost_api.py`가 담당한다.
 
 **이 파일이 지키는 것은 격리다.** 비용 조회 하나가 실패해도 워크벤치 갱신 전체가
 오류로 넘어가면 안 된다 — 리포트에서 같은 실수를 이미 겪었다(#647).

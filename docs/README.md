@@ -31,7 +31,7 @@
 ### 👤 가상 유저 (Virtual Users)
 
 - (현재 전용 guide 없음 — `autoresearch/virtual_users/` 코드 및
-  `tests/test_virtual_users_*.py` 참조)
+  `tests/virtual_user_generation/` 참조)
 
 ### 📝 Action Log
 

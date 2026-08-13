@@ -1,7 +1,7 @@
 """워크벤치 표현 계층의 계약을 고정한다.
 
 전체 파이프라인 중 사용자가 보는 화면의 **표현 규칙**만 검증한다. API 호출과 상태
-전이는 `tests/test_ui_submission_app.py`와 서버 쪽 테스트가 담당한다.
+전이는 `tests/applications/experiment_platform/test_ui_submission_app.py`와 서버 쪽 테스트가 담당한다.
 
 여기 있는 테스트가 잡는 실패는 모두 조용하다. 잘못된 테마 키는 오류 없이 무시되고,
 JSON 덤프는 예외 없이 그려지며, 낱말이 끊긴 라벨도 정상 렌더링이다 — 사람이 화면을
@@ -28,7 +28,7 @@ from applications.experiment_platform.workbench.styles import workbench_css  # n
 
 THEME_CONFIG_PATH = pathlib.Path(".streamlit/config.toml")
 
-# `tests/test_agent_orchestration_ui_report.py`의 SNAPSHOT_FIXTURE와 같은 계약이다.
+# `tests/applications/experiment_platform/test_agent_orchestration_ui_report.py`의 SNAPSHOT_FIXTURE와 같은 계약이다.
 _SNAPSHOT: dict[str, object] = {
     "contract_version": "experiment-metric-snapshot-v1",
     "primary_metric": "roc_auc",

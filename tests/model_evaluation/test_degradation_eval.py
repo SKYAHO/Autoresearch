@@ -1,7 +1,7 @@
 """run_rolling_origin 오케스트레이션 테스트 (#471, spec §2.2·§2.3).
 
 BigQuery/LightGBM을 직접 호출하지 않는다 — `build_training_dataset.main`/`train.main`/
-`evaluate_held_out_roc_auc`를 monkeypatch로 스텁하고(이 저장소가 `tests/test_cli.py`에서
+`evaluate_held_out_roc_auc`를 monkeypatch로 스텁하고(이 저장소가 `tests/cli/test_cli.py`에서
 이미 쓰는 관례), 오케스트레이션 로직(날짜 계산·경로 격리·상태 판정·best_effort·
 degradation_point 산출·categorical 정합성)만 검증한다.
 """
@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from autoresearch.model_evaluation import degradation_eval  # noqa: E402

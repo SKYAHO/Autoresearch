@@ -11,7 +11,7 @@ import yaml
 from autoresearch.model_evaluation.experiments.promotion_gate import _LABELS, evaluate, parse_criteria
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = PROJECT_ROOT / ".github/workflows/auto-research-promotion.yml"
 DEV_PROMOTION_WORKFLOW = PROJECT_ROOT / ".github/workflows/auto-research-dev-promotion.yml"
 ISSUE_FORM = PROJECT_ROOT / ".github/ISSUE_TEMPLATE/auto_research.yml"

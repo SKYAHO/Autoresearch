@@ -13,7 +13,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from autoresearch import cli  # noqa: E402
@@ -1047,7 +1047,7 @@ def test_promote_model_structured_unexpected_error_emits_safe_stack(
     streams = capsys.readouterr()
     assert "unexpected_error" in streams.err
     assert "RuntimeError" in streams.err
-    assert "tests/test_cli.py" in streams.err
+    assert "tests/cli/test_cli.py" in streams.err
     assert "in _raise" in streams.err
     assert "synthetic-private-value" not in streams.err
 

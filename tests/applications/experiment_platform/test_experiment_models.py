@@ -25,7 +25,7 @@ from applications.experiment_platform.api.experiments.models import (
 )
 
 
-_REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def test_database_engine_uses_psycopg_driver_for_plain_postgresql_url() -> None:

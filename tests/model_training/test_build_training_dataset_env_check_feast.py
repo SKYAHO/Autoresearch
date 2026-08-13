@@ -1,5 +1,5 @@
 """_verify_assembly_environment()의 GCP 자격증명 체크 — feast 설치가 필요한 부분만
-(#404). 환경변수/feast import 체크는 tests/test_build_training_dataset.py(dev
+(#404). 환경변수/feast import 체크는 tests/model_training/test_build_training_dataset.py(dev
 그룹)가 이미 커버한다.
 """
 

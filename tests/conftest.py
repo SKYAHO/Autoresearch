@@ -14,7 +14,7 @@ placeholder와 아이디어는 같지만, 이제는 프로덕션 코드가 아�
 테스트는 이 위에 자체 monkeypatch를 다시 씌운다.
 
 Vertex AI SDK 호출 자체의 정확한 형태(task_type/output_dimensionality/청킹)를
-검증하는 테스트는 tests/test_embeddings.py에서 이 fixture 위에 자체 monkeypatch를
+검증하는 테스트는 tests/feature_engineering/test_embeddings.py에서 이 fixture 위에 자체 monkeypatch를
 추가로 씌운다(같은 monkeypatch 인스턴스에 다시 setitem하면 나중 설정이 이긴다).
 """
 

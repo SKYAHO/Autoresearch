@@ -1,8 +1,8 @@
 """실험 Step endpoint의 HTTP·인증·OpenAPI 계약을 검증한다.
 
 전체 파이프라인에서 Agent 실행기가 작업 단계를 기록하는 HTTP 경계를 검증한다. 멱등성
-transaction 자체는 tests/test_experiment_step_service.py가, PostgreSQL 동시성은
-tests/test_experiment_postgres.py가 담당한다.
+transaction 자체는 tests/applications/experiment_platform/test_experiment_step_service.py가, PostgreSQL 동시성은
+tests/applications/experiment_platform/test_experiment_postgres.py가 담당한다.
 """
 
 from __future__ import annotations
@@ -320,7 +320,7 @@ def test_get_steps_returns_all_rows_without_cursor(experiment_client: TestClient
     단위이고, SQLAlchemy가 파싱한 datetime을 다시 바인딩하면 `.000000`이 붙어 저장 문자열과
     동등 비교가 성립하지 않는다. 그래서 keyset의 tie-breaker 분기가 SQLite에서는 절대
     매치되지 않는다. cursor 계약은 실제 timestamp를 쓰는
-    `tests/test_experiment_postgres.py`가 검증한다.
+    `tests/applications/experiment_platform/test_experiment_postgres.py`가 검증한다.
     """
     experiment_id = _create_experiment(experiment_client)
     step_ids = _create_steps(experiment_client, experiment_id, 3)

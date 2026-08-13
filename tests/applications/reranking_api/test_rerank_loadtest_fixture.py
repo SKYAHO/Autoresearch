@@ -407,6 +407,20 @@ def test_settings_configmap_is_owned_by_ttl_job() -> None:
     assert "ttlSecondsAfterFinished: 86400" in manifest
 
 
+@pytest.fixture(autouse=True)
+def _no_local_dotenv(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`provisioner.main()`이 개발자의 로컬 `.env`를 실제 `os.environ`에 싣지 못하게 막는다.
+
+    `main()`은 `load_dotenv()`를 부르는데, 이것은 monkeypatch가 아니라 **프로세스 환경을
+    직접** 바꾼다. `.env`에 `AUTORESEARCH_ENV=dev`가 있으면 그 값이 세션 끝까지 남아,
+    이후 실행되는 다른 테스트가 dev 환경으로 오인된다(#754에서 테스트 배치를 바꾸며 실행
+    순서가 달라지자 `tests/jobs/test_feast_materialize.py` 3건이 이 누수로 깨졌다).
+
+    CI에는 `.env`가 없어 드러나지 않는다 — 로컬에서만 나는 종류의 결함이다.
+    """
+    monkeypatch.setattr(provisioner, "load_dotenv", lambda *args, **kwargs: False)
+
+
 def test_provisioner_default_dry_run_executes_only_count_selects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

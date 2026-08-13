@@ -22,7 +22,7 @@ pytest.importorskip("feast")
 
 from feast.protos.feast.core.Registry_pb2 import Registry as RegistryProto  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 FEATURE_REPO = REPO_ROOT / "feature_repo"
 DEFINITIONS = FEATURE_REPO / "feature_definitions.py"
 APPLY_MODULE_NAME = "feature_definitions"

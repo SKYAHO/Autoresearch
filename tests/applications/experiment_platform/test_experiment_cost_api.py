@@ -2,7 +2,7 @@
 
 전체 파이프라인에서 executor가 남긴 로그와 시각 기록이 워크벤치가 읽는 실행 비용으로
 바뀌는 구간의 도메인·service·HTTP 경계를 검증한다. 화면 배치는
-`tests/test_agent_orchestration_ui_report.py`와 같은 UI 테스트가 담당한다.
+`tests/applications/experiment_platform/test_agent_orchestration_ui_report.py`와 같은 UI 테스트가 담당한다.
 
 **이 파일이 지키는 것은 "만들어 낸 숫자를 보이지 않는다"이다.** 과금 구분이 없는
 실험에 정가를 매기면 실제보다 몇 배 큰 금액이 화면에서 사실처럼 보인다.
@@ -60,7 +60,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     """일반 API 토큰 경계로 비용 조회 endpoint를 SQLite에서 실행한다.
 
     데이터 준비는 `client.app.state.experiment_session_factory`를 거친다 —
-    `tests/test_experiment_report_api.py`와 같은 이유로 별도 engine을 만들지 않는다.
+    `tests/applications/experiment_platform/test_experiment_report_api.py`와 같은 이유로 별도 engine을 만들지 않는다.
     """
     engine = create_engine(
         "sqlite+pysqlite:///:memory:",

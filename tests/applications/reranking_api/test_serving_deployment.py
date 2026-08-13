@@ -2,7 +2,7 @@ from pathlib import Path
 import tomllib
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 SERVING_DOCKERFILE = REPOSITORY_ROOT / "deploy" / "serving" / "Dockerfile"
 CI_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
 PYPROJECT = REPOSITORY_ROOT / "pyproject.toml"
@@ -69,10 +69,10 @@ def test_ci_builds_serving_image_and_runs_import_smoke() -> None:
         "import lightgbm, feast, fastapi, feature_repo.redis_iam, applications.reranking_api.app"
         in workflow
     )
-    assert "tests/test_serving_feast_reader.py" in workflow
-    assert "tests/test_serving_feast_reader_feast.py" in workflow
-    assert "tests/test_serving_api.py" in workflow
-    assert "tests/test_serving_deployment.py" in workflow
+    assert "tests/applications/reranking_api/test_serving_feast_reader.py" in workflow
+    assert "tests/applications/reranking_api/test_serving_feast_reader_feast.py" in workflow
+    assert "tests/applications/reranking_api/test_serving_api.py" in workflow
+    assert "tests/applications/reranking_api/test_serving_deployment.py" in workflow
 
 
 def test_ci_checks_serving_image_dependencies_and_feature_store_bootstrap() -> None:

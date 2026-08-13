@@ -8,7 +8,7 @@
 init/app container 사이의 시크릿·좌표 격리를 검증한다.
 
 [비책임] 실제 PostgreSQL 동시 실행, Kubernetes admission/RBAC/egress와 executor의 Git
-ref 생성은 각각 통합 환경·Autoresearch-infra·``tests/test_experiment_executor.py``의
+ref 생성은 각각 통합 환경·Autoresearch-infra·``tests/applications/experiment_platform/test_experiment_executor.py``의
 검증 범위다.
 """
 

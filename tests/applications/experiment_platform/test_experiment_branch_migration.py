@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import Column
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 REVISION_ROOT = PROJECT_ROOT / "applications" / "experiment_platform" / "migrations" / "versions"
 
 

@@ -2,7 +2,7 @@
 
 실제 feast/BigQuery 없이 glue만 검증한다: 인자 검증, spine→조회→CSV 컬럼 선택,
 누락 피처 가드, 실험 피처 보존 계약(#454). feast 조회 자체는
-tests/test_feast_retrieval_integration_feast.py가 실물(로컬 File store)로 검증한다.
+tests/feature_engineering/test_feast_retrieval_integration_feast.py가 실물(로컬 File store)로 검증한다.
 """
 
 from __future__ import annotations

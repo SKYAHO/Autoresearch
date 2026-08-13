@@ -1,7 +1,7 @@
 """워크벤치 리포트의 md → HTML 변환과 결과 탭 렌더 계약을 검증한다.
 
 전체 파이프라인에서 API가 돌려준 리포트 본문이 화면에 그려지기까지의 UI 구간을
-검증한다. 본문의 적재와 조회 endpoint는 `tests/test_experiment_report_api.py`가
+검증한다. 본문의 적재와 조회 endpoint는 `tests/applications/experiment_platform/test_experiment_report_api.py`가
 담당한다.
 
 **이 파일이 지키는 것은 escape 하나다.** iframe은 격리 경계가 아니므로
@@ -364,7 +364,7 @@ SNAPSHOT_FIXTURE: dict[str, object] = {
 class _ReportStubHandler(BaseHTTPRequestHandler):
     """결과 탭 조합 테스트 전용 Experiment API 최소 스텁.
 
-    `tests/test_ui_submission_app.py`의 `_StubHandler` 라우팅을 그대로 따르고
+    `tests/applications/experiment_platform/test_ui_submission_app.py`의 `_StubHandler` 라우팅을 그대로 따르고
     `/experiments/{id}/report`만 더한다.
     """
 

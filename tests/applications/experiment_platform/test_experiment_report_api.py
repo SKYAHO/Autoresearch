@@ -2,7 +2,7 @@
 
 전체 파이프라인에서 executor가 완주 보고에 실은 `report.md` 본문이 DB에 적재되고
 워크벤치가 그것을 별도 endpoint로 읽어 가는 구간의 service·HTTP 경계를 검증한다.
-markdown → HTML 변환과 화면 렌더링은 `tests/test_agent_orchestration_ui_report.py`가
+markdown → HTML 변환과 화면 렌더링은 `tests/applications/experiment_platform/test_agent_orchestration_ui_report.py`가
 담당한다.
 """
 
@@ -112,7 +112,7 @@ def _evaluating_experiment(session: Session) -> uuid.UUID:
     """candidate까지 보고된 EVALUATING 실험 하나를 만든다.
 
     `record_candidate`는 이미 봉인된 이슈 좌표(issue_number/issue_branch/base_dev_sha)와
-    RUNNING 상태를 전제한다(`tests/test_experiment_candidate_api.py`의
+    RUNNING 상태를 전제한다(`tests/applications/experiment_platform/test_experiment_candidate_api.py`의
     `_running_experiment`와 같은 전제). candidate 보고 전에 여기서 좌표를 봉인해 둔다.
     """
     experiment = create_experiment(session, ExperimentCreate(hypothesis="가설"))
@@ -256,7 +256,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     """일반 API 토큰 경계로 리포트 조회 endpoint를 SQLite에서 실행한다.
 
     `db_session`이 만드는 engine과는 별도의 in-memory DB라 함께 쓰면 서로 다른
-    데이터베이스가 된다(`tests/test_experiment_candidate_api.py`의 `executor_client`와
+    데이터베이스가 된다(`tests/applications/experiment_platform/test_experiment_candidate_api.py`의 `executor_client`와
     같은 이유). 데이터 준비는 `client.app.state.experiment_session_factory`를 거친다.
     """
     engine = create_engine(

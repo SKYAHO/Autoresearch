@@ -37,7 +37,7 @@ _SENTINEL = "codex-output-marker"
 def _issue_body() -> str:
     """실제 Auto Research Issue Form과 같은 검증 가능한 본문을 읽는다."""
     fixture = (
-        Path(__file__).parent / "fixtures" / "auto_research_issue_form_rendered.md"
+        Path(__file__).resolve().parents[2] / "fixtures" / "auto_research_issue_form_rendered.md"
     ).read_text(encoding="utf-8")
     return "<!-- experiment-id: 12345678-1234-5678-1234-567812345678 -->\n\n" + fixture
 

@@ -3,7 +3,7 @@
 MLflow·GCS 없이 경계만 대체한다: comparison 검증(`verify_training_comparison`)과
 판정 엔진(`evaluate_experiment`)을 monkeypatch로 바꾸고, 이 모듈이 소유한 요청
 검증·재검증 대조·fail-closed 규칙·outcome 사상·payload 구성을 본다. 통계 판정
-자체는 tests/test_pipeline_experiment_evaluation.py가 검증한다.
+자체는 tests/model_evaluation/test_experiment_evaluation.py가 검증한다.
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 
 실제 feast/BigQuery 없이 glue만 검증한다: spine 구성(유저 상수·영상당 1행·
 event_timestamp tz-aware UTC), 서빙 후처리(cold-start만, gap 드롭 금지), 결과 컬럼.
-staged 조회 자체는 tests/test_feast_retrieval_integration_feast.py가 실물(로컬 File
+staged 조회 자체는 tests/feature_engineering/test_feast_retrieval_integration_feast.py가 실물(로컬 File
 store)로 검증한다.
 """
 
