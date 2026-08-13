@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-13T13:44:46Z",
+  "generated_at": "2026-08-13T14:06:33Z",
   "reports": [
+    {
+      "number": 757,
+      "title": "refactor: 배포되는 서비스를 applications 층으로 분리한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-13T14:06:16Z",
+      "summary_ko": [
+        "최상위 디렉터리에 위치하던 서빙 API, 실험 플랫폼, YouTube API 프록시 코드를 applications/ 레이어로 통합 재배치하였습니다.",
+        "디렉터리 이동에 맞추어 Dockerfile, CI/CD 워크플로우, Alembic 설정, 임포트 경로 및 의존성 파일 경로를 일괄 갱신하였습니다.",
+        "봉인된 구버전 워크스페이스 검증을 위한 verifier 동적 ruff 대상 선택 및 최상위 디렉터리 재부활 방지 가드를 추가하였습니다."
+      ],
+      "report_url": "pr/757/"
+    },
     {
       "number": 755,
       "title": "docs: 저장소 구조 재배치 설계와 계획을 확정한다",
