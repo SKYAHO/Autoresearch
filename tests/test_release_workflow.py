@@ -1,4 +1,5 @@
 import io
+import re
 import subprocess
 import tarfile
 from pathlib import Path
@@ -273,3 +274,24 @@ def test_release_workflow_limits_orchestration_promotion_to_approved_manifests()
     assert summary_step["env"]["EXECUTOR_DIGEST_REF"] == (
         "${{ needs.publish-agent-orchestration-executor-image.outputs.digest_ref }}"
     )
+
+
+def test_ci_enumerated_test_paths_exist() -> None:
+    """`ci.yml`이 경로로 열거하는 테스트 파일이 실제로 있어야 한다(#754).
+
+    feast·postgres job은 전체 수집이 아니라 **파일 이름을 나열해** 실행한다. 경로가
+    저장소와 어긋나면 pytest가 usage error(exit 4)로 죽는데, 그 실패는 "테스트가 깨졌다"와
+    한눈에 구분되지 않고 job 로그를 열어야 드러난다. 게다가 그 job은 로컬 dev 환경에서
+    skip되므로 옮긴 사람이 알아채기 어렵다.
+
+    `test_serving_deployment.py`가 4개를 개별 assert하지만 나머지는 아무도 안 본다 —
+    여기서 열거된 전부를 검사한다.
+    """
+    workflow_text = (REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8"
+    )
+    referenced = sorted(set(re.findall(r"tests/[\w/]+\.py", workflow_text)))
+
+    assert referenced, "ci.yml이 테스트 경로를 하나도 열거하지 않는다 — 패턴이 바뀌었는지 확인하라"
+    missing = [path for path in referenced if not (REPOSITORY_ROOT / path).is_file()]
+    assert not missing, f"ci.yml이 없는 테스트 경로를 가리킨다: {missing}"
