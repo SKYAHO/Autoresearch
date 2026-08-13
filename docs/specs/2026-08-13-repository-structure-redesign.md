@@ -273,6 +273,10 @@ import src.serving.app                        → import applications.reranking_
 | `examples/ctr_pipeline_scaffold/` | `01_generate_mock_raw_data.py`(`src.features.category_reference`), `02_generate_event_log.py`(`src.features.feature_builder`), `sync_mock_data_to_pipeline.py:108`(`python -m src.cli build-features`), `README.md` 2곳 |
 | `.github/workflows/ci.yml` | 48, 56, 69, 79행의 `paths` 필터 `'src/**'` |
 | `pyproject.toml:121-123` | `[tool.uv]` 주석 "Phase 2 에서 src 레이아웃 전환 시 package 빌드로 변경 예정" — 이 재배치가 그 Phase 2가 아님을 명시하도록 갱신(설치형 전환은 여전히 별도 과제) |
+| `agent_orchestration/executor/` | **슬래시 표기 하드코딩 — 6-3-1절 참조.** `verifier.py`(357, 582행), `training.py`(70행), `prompt.py`(85, 91, 105, 362행) |
+| `.github/workflows/lint.yml:33` | `ruff check agent_orchestration autoresearch tests tools` — 단계 2에서 `agent_orchestration/`이 사라지므로 **같은 PR에서** 고쳐야 Lint가 통과한다 |
+| `.github/workflows/ci.yml:82-84` | `agent_orchestration` paths 필터(`agent_orchestration/**`, `deploy/agent_orchestration/**`) — 매칭되지 않으면 실패가 아니라 에이전트 이미지 5개 빌드가 **조용히 스킵**된다 |
+| `tests/` 8개 파일 | 경로를 문자열로 단언한다. 6-3-2절 참조 |
 | `SKYAHO/Autoresearch-airflow` | **별도 저장소** — 호출 경로 갱신 PR 필요 |
 
 ### 6-3. 하드코딩된 경로 문자열
@@ -287,6 +291,71 @@ import src.serving.app                        → import applications.reranking_
 
 전수 확인 명령: `grep -rn '"src"\|src/\|src\.' --include=*.py --include=*.yml
 --include=*.yaml --include=Dockerfile* . | grep -v '\.venv\|\.worktrees'`
+
+**점 표기만 확인하면 놓칩니다.** 임포트 치환은 `src.pipeline.train` 같은 점
+표기를 다루지만, 아래 값들은 **슬래시 표기 문자열**이라 임포트 문법이 아닙니다.
+확인 grep을 점 표기로만 좁히면 통째로 빠집니다.
+
+### 6-3-1. 실험 에이전트 executor의 하드코딩 경로 — 최우선
+
+| 위치 | 현재 값 | 갱신하지 않으면 |
+| --- | --- | --- |
+| `executor/verifier.py:357` | `if path == "src/features/model_contract.py"` | **게이트 소멸 (조용한 정책 회귀)** — 아래 상술 |
+| `executor/verifier.py:582` | 블로킹 ruff 인자 `"agent_orchestration"` | 경로 부재 → `CandidateVerificationError("ruff_failed")` → **모든 candidate 거부** |
+| `executor/training.py:70` | `_FEATURE_DEFINITION_PATHS = ("feature_repo", "src/pipeline/build_training_dataset.py")` | 매칭 없음 → 피처 정의 변경 감지가 조용히 멈춤 |
+| `executor/prompt.py:85, 91` | `"src/** (src/features/model_contract.py 제외)"`, scope 설명 | Codex에게 없는 경로를 계속 안내 |
+| `executor/prompt.py:105` | `"uv run --no-sync ruff check agent_orchestration autoresearch tests tools"` | 실패하는 명령을 안내 |
+| `executor/prompt.py:362` | 채점 경로 `src/pipeline/evaluate.py` | 부정행위 금지 안내가 없는 경로를 가리킴 |
+
+**`prod_model_contract` 게이트가 왜 조용히 사라지는가:**
+
+```python
+# verifier.py:_path_is_allowed
+if path == "src/features/model_contract.py":
+    return "prod_model_contract" in policy.allowed_scope   # ← scope 없으면 거부
+if path.startswith("src/"):
+    return True
+if path.startswith(_BASE_ALLOWED_PREFIXES):                # ("autoresearch/", "tests/", "tools/")
+    return True
+```
+
+단계 1이 이 파일을 `autoresearch/feature_engineering/model_contract.py`로 옮기면
+정확 매칭이 다시는 걸리지 않고, `autoresearch/` 접두사 검사가 무조건 `True`를
+돌려줍니다. 즉 **실험 에이전트가 프로덕션 모델 계약 파일을 scope 없이 편집할 수
+있게 됩니다.** 실패가 아니라 권한이 넓어지는 방향이라 CI가 잡지 못합니다.
+
+더 나쁜 것은, 이 계약을 고정하는
+`tests/test_experiment_candidate_verifier.py:151`가 tmp 저장소에
+`src/features/model_contract.py`를 **직접 만들어** 검증한다는 점입니다. 실제
+저장소에 그 경로가 없어져도 테스트는 계속 통과합니다. **테스트가 초록인 채로
+게이트만 죽습니다.**
+
+따라서 단계 1에서 다음을 **같은 커밋에** 반영합니다.
+
+```python
+if path == "autoresearch/feature_engineering/model_contract.py":
+    return "prod_model_contract" in policy.allowed_scope
+if path.startswith(_BASE_ALLOWED_PREFIXES):
+    return True
+```
+
+`if path.startswith("src/"): return True`는 삭제하고, 테스트도 새 경로로 고쳐
+게이트가 살아 있음을 다시 고정합니다.
+
+### 6-3-2. 경로를 문자열로 단언하는 테스트
+
+`tests/` 8개 파일이 경로 문자열을 계약으로 들고 있습니다:
+`test_agent_orchestration_container.py`, `test_serving_deployment.py`,
+`test_experiment_models.py`, `test_ui_submission_app.py`,
+`test_ui_visual_contract.py`, `test_experiment_branch_migration.py`,
+`test_experiment_issue_migration.py`, `test_experiment_candidate_verifier.py`.
+
+특히 `test_agent_orchestration_container.py:418-453`은 **entrypoint가 import하는
+모듈이 Dockerfile COPY 목록에 있는지 정적으로 검사하는 기존 가드**입니다
+(`_copied_sources`가 `COPY agent_orchestration/`로 시작하는 줄만 수집).
+`bootstrap_secrets.py`와 `github_pull_requests.py`(#700)에서 같은 누락이 두 번
+났기 때문에 만들어진 가드로, 단계 2의 COPY 허용 목록 누락을 `docker run`보다
+훨씬 싸게 잡아 줍니다. 반드시 새 접두사로 갱신합니다.
 
 ### 6-4. `sys.path` 조작 블록
 
@@ -364,7 +433,9 @@ feast 계열은 `uv sync --only-group feast` 환경에서 `.github/workflows/ci.
 
 | 리스크 | 완화 |
 | --- | --- |
-| 문자열 하드코딩 경로 누락 | 6-3에 전수 목록. 단계 1 완료 후 `grep -rn "src/" --include=*.py --include=*.yml --include=Dockerfile*`로 잔여 확인 |
+| **`prod_model_contract` 게이트가 조용히 사라짐** | 6-3-1 참조. 권한이 넓어지는 방향이라 CI가 못 잡고, 계약 테스트도 tmp 저장소에 옛 경로를 스스로 만들어 통과한다. 단계 1의 **같은 커밋**에서 `verifier.py`와 테스트를 함께 고친다 |
+| 문자열 하드코딩 경로 누락 | 6-3에 전수 목록. 점 표기만 보면 executor의 슬래시 표기를 놓친다. 단계 1 완료 후 `grep -rn "src/\|agent_orchestration" --include=*.py --include=*.yml --include=Dockerfile*`로 잔여 확인 |
+| 에이전트 이미지 빌드가 조용히 스킵됨 | `ci.yml`의 `agent_orchestration` paths 필터가 새 경로를 못 맞추면 실패가 아니라 job이 안 돈다. 단계 4에서 필터를 `applications/**`로 갱신 |
 | 인접 저장소 Airflow 호출 중단 | 단계 5를 이 저장소 배포 **이후**에 수행하거나, 배포 순서를 사전 합의 |
 | `tests/` 재배치 중 테스트 유실 | 단계 3에서 재배치 전후 `pytest --collect-only -q \| wc -l` 비교 |
 | 이슈 템플릿 경로 변경으로 진행 중 실험 실패 | 해당 없음 — 실험은 `base_dev_sha`로 봉인된 트리를 체크아웃하므로 이슈 본문의 명령과 트리가 항상 짝이 맞는다. 9-1 참조 |

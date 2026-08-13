@@ -17,7 +17,17 @@
 - **동작 변경 금지.** 이 계획의 모든 작업은 이동·리네임·임포트 치환뿐이다. 함수 시그니처, 로직, 로그 문구, 파일 포맷을 바꾸지 않는다. 리팩터링 충동이 들면 별도 이슈로 분리한다.
 - **순환 의존 해소 금지.** `autoresearch/jobs/action_log.py`의 함수 내부 지연 import 4곳(`from src.pipeline.rerank_api`, `build_training_dataset` ×2, `model_exposure_provider`)은 경로만 갱신하고 **모듈 최상단으로 올리지 않는다.** 올리면 순환 import로 실패한다.
 - **`feature_repo/` 이동 금지.** 최상위에 그대로 둔다. `feature_store.yaml`, `Dockerfile.feast`, `feast-apply.yml`의 `feature_repo` 경로를 건드리지 않는다.
-- **`sys.path` 블록 유지.** `pyproject.toml`의 `[tool.uv] package = false`는 그대로다. 이동 대상 파일은 전부 깊이가 보존되므로 `PROJECT_ROOT = os.path.dirname(...)` 줄은 **수정하지 않는다.**
+- **`sys.path` 블록 유지 — 단, 깊이 보존은 `src/*` 계열에만 해당한다.** `pyproject.toml`의 `[tool.uv] package = false`는 그대로다. `src/cli.py`(2→2), `src/pipeline/*`(3→3), `src/serving/*`(3→3), `src/features|models|tracking|utils/*`(3→3)는 깊이가 보존되므로 `PROJECT_ROOT = os.path.dirname(...)` 줄을 **수정하지 않는다.** 반면 아래 네 그룹은 깊이가 바뀌므로 **개별 확인이 필요하다.**
+
+  | 이동 | 깊이 |
+  | --- | --- |
+  | `autoresearch/experiments/*.py` → `autoresearch/model_evaluation/experiments/` | 3 → 4 |
+  | `autoresearch/loadtest/*.py` → `applications/reranking_api/loadtest/` | 3 → 4 |
+  | `agent_orchestration/<공유 6개>.py` → `applications/experiment_platform/shared/` | 2 → 4 |
+  | `proxy/*.py` → `applications/youtube_api_proxy/` | 2 → 3 |
+
+  각 Task에서 이동 직후 확인한다: `grep -rn "os.path.dirname\|Path(__file__)\|parents\[" <새 경로>`
+- **슬래시 표기 경로를 잊지 않는다.** 임포트 치환 스크립트는 점 표기(`src.pipeline.train`)만 다룬다. `"src/features/model_contract.py"`, `"agent_orchestration"` 같은 **문자열 리터럴**은 별도 단계에서 손으로 고친다(spec 6-3-1). 확인 grep도 점 표기로 좁히지 않는다.
 - **`docs/archive/` 갱신 금지.** `docs/README.md` 규칙상 아카이브 문서는 역사적 기록이다.
 - **파일 이동과 임포트 치환은 별도 커밋.** git rename 감지를 살려야 리뷰가 가능하다.
 - 커밋 메시지는 `<type>: 한국어 설명` + 본문 + `Refs #754` + `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
@@ -59,91 +69,64 @@
 
 ---
 
-### Task 0: 루트 청소
+### Task 0: 루트 청소 — 완료 (PR #755, 커밋 `1470c12`)
 
-착수 전제와 무관하게 먼저 수행할 수 있다. 다른 Task와 충돌하지 않는다.
+착수 전제와 무관하게 먼저 수행했다. 아래는 **실제로 반영된 내용**이다 — 계획 단계에서 예상했던 것보다 범위가 작았다.
 
 **Files:**
-- Modify: `.gitignore`
-- Delete: `after-submit.png`, `before-submit.png`, `hypotheses-filled.png` (미추적)
-- Decide: `agent.md`
+- Modified: `.gitignore` (+15)
+- Deleted (로컬 전용): `dags/` — 안에 stale `__pycache__` 4개뿐이라 추적 파일이 없었고, 따라서 PR diff에는 나타나지 않는다
 
-- [ ] **Step 1: 미추적 최상위 잔재 확인**
+- [x] **Step 1: 기존 `.gitignore`와 대조**
+
+계획을 처음 쓸 때 "미추적 = gitignore 누락"이라고 넘겨짚었으나 틀렸다. `artifacts/`, `asset/`, `mlruns/`, `output/`, `Nemotron-Personas-Korea/`, `.codex-tmp/`, `.omo/`는 **이미 있었다.** 실제로 빠진 것만 추가한다.
 
 ```bash
-git status --porcelain --untracked-files=all | grep '^??' | cut -d/ -f1 | sort -u
+for d in artifacts asset mlruns output Nemotron-Personas-Korea .codex-tmp .omo; do
+  printf "%-26s %s\n" "$d" "$(git check-ignore -q "$d" && echo IGNORED || echo not-ignored)"
+done
 ```
 
-기대: `dags/`, `data/`, `artifacts/`, `asset/`, `output/`, `mlruns/`, `Nemotron-Personas-Korea/`, `.codex-tmp/`, `.omo/`, `.gjc/`, `.playwright-mcp/`, `.superpowers/`, 루트 PNG 3개가 보인다.
-
-- [ ] **Step 2: `.gitignore`에 잔재 추가**
-
-`.gitignore` 끝에 아래 블록을 추가한다.
+- [x] **Step 2: 실제로 추가한 항목**
 
 ```gitignore
+# Airflow DAG는 인접 저장소 SKYAHO/Autoresearch-airflow 소유다.
+# 최상위 dags/ 는 #142 레거시 제거 후 되살아난 로컬 잔재이므로 추적하지 않는다 (#754)
+/dags/
 
-# 로컬 실행 산출물 — 저장소 구조를 읽을 때의 노이즈를 줄인다 (#754)
-/artifacts/
-/asset/
-/data/
-/mlruns/
-/output/
-/Nemotron-Personas-Korea/
-/.codex-tmp/
-/.omo/
-/.gjc/
-/.playwright-mcp/
-/.superpowers/
+# 에이전트 도구 세션 스크래치 (#754)
+.gjc/
+.playwright-mcp/
+.superpowers/
+
+# 워크벤치 확인용 스크린샷 등 최상위 이미지 (#754)
+/*.png
+
+# 워크스페이스 전용 로컬 메모 — 파일 스스로 "Git에 커밋하지 않는다"고 선언한다 (#754)
+/agent.md
 ```
 
-`dags/`는 이미 `.gitignore`에 있는지 확인하고 없으면 함께 추가한다.
+`/data/`는 **넣지 않았다.** 기존 `data/generated/`·`data/raw/*`보다 넓어 의도치 않게 감출 위험이 있고, `git status`가 이미 아무것도 보고하지 않는다.
+
+- [x] **Step 3: `agent.md`는 삭제하지 않고 ignore**
+
+파일 머리말이 *"이 파일은 이 워크스페이스에서만 쓰는 로컬 전용 메모다. Git에 커밋하지 않는다"*라고 스스로 선언한다. 의도된 로컬 파일이므로 삭제가 아니라 ignore가 맞다. 최상위 PNG 3개도 같은 이유로 지우지 않고 `/*.png`로 덮었다.
+
+- [x] **Step 4: `dags/` 삭제와 계약 확인**
 
 ```bash
-grep -n "dags" .gitignore || echo "/dags/" >> .gitignore
+find dags -type f    # __pycache__/*.pyc 4개뿐임을 확인한 뒤
+rm -rf dags
+uv run python -m pytest tests/test_release_workflow.py -q
 ```
 
-- [ ] **Step 3: 루트 PNG 삭제**
+`tests/test_release_workflow.py:221`이 `assert not list((REPOSITORY_ROOT / "dags").rglob("*.py"))`로 계약을 고정한다. 디렉토리가 없어도 `rglob`이 빈 결과를 내므로 통과한다 — 16 passed로 확인했다.
 
-세 파일 모두 미추적 스크린샷이다. 필요하면 `docs/reports/`로 옮기고, 아니면 지운다.
+- [x] **Step 5: 검증**
 
-```bash
-rm -f after-submit.png before-submit.png hypotheses-filled.png
-```
+`git status` 미추적이 12건 → 7건. 남은 7건은 전부 다른 브랜치(#753 baseline 캐싱)의 진행 중 작업이라 손대지 않았다.
 
-- [ ] **Step 4: `agent.md` 처리 결정**
-
-`agent.md`는 추적 파일이 아니다(`git ls-files agent.md`가 비어 있음). `AGENTS.md`·`CLAUDE.md`와 별개인 11KB 문서다. 내용을 열어 보고 `AGENTS.md`에 흡수됐으면 삭제, 아니면 `docs/guides/`로 옮긴다.
-
-```bash
-git ls-files agent.md   # 비어 있으면 미추적
-head -30 agent.md
-```
-
-- [ ] **Step 5: 검증**
-
-```bash
-git status --porcelain --untracked-files=all | grep '^??'
-```
-
-기대: `docs/` 아래 의도한 신규 문서 외에 최상위 잔재가 보이지 않는다.
-
-- [ ] **Step 6: 커밋**
-
-```bash
-git add .gitignore
-git commit -m "$(cat <<'EOF'
-chore: 최상위 로컬 잔재를 gitignore로 걷어낸다
-
-ls로 보이는 최상위 디렉토리 34개 중 추적되는 것은 14개뿐이라, 구조를
-읽으려는 눈에 노이즈가 절반 넘게 섞여 있었다. 로컬 실행 산출물을
-gitignore에 넣어 최상위가 저장소의 실제 구조를 보이게 한다.
-
-Refs #754
-
-Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
-EOF
-)"
-```
+- [x] **Step 6: 커밋** — `1470c12 chore: 최상위 로컬 잔재를 gitignore로 걷어낸다`
 
 ---
 
@@ -417,13 +400,95 @@ uv run python /tmp/rewrite_imports.py
 
 스크립트가 "수동 처리 필요"로 멈추면 그 줄을 손으로 고치고 다시 실행한다. Step 5를 먼저 했다면 멈추지 않아야 한다.
 
-- [ ] **Step 7: 잔여 `src.` 참조 확인**
+- [ ] **Step 6-1: 실험 에이전트 executor의 슬래시 표기 경로를 고친다 (최우선)**
 
-```bash
-grep -rn "from src\.\|import src\.\|from src import" --include=*.py . | grep -v '\.venv\|\.worktrees'
+치환 스크립트는 점 표기만 다루므로 아래는 잡히지 않는다. **빠뜨리면 정책 게이트가 조용히 사라진다** — spec 6-3-1절.
+
+**(a) `prod_model_contract` 게이트 — `agent_orchestration/executor/verifier.py:357`**
+
+```python
+# 기존
+    if path == "src/features/model_contract.py":
+        return "prod_model_contract" in policy.allowed_scope
+    if path.startswith("src/"):
+        return True
+    if path.startswith(_BASE_ALLOWED_PREFIXES):
+        return True
+
+# 교체
+    if path == "autoresearch/feature_engineering/model_contract.py":
+        return "prod_model_contract" in policy.allowed_scope
+    if path.startswith(_BASE_ALLOWED_PREFIXES):
+        return True
 ```
 
-기대: `src/serving/` 내부 참조만 남는다 (Task 2에서 처리). 그 외 0건.
+정확 매칭이 `_BASE_ALLOWED_PREFIXES`(`"autoresearch/"` 포함) 검사보다 **위에** 있어야 한다. 순서가 바뀌면 게이트가 무력해진다.
+
+**(b) 블로킹 ruff 인자 — `verifier.py:582`**
+
+```python
+# 기존: "ruff", "check", "agent_orchestration", "autoresearch", "tests", "tools",
+# 교체: "ruff", "check", "autoresearch", "tests", "tools",
+```
+
+Task 1 시점에는 `agent_orchestration/`이 아직 있으므로 인자를 지우면 그 디렉토리를 lint하지 않게 된다. **Task 2에서 `applications`를 추가**해 `"autoresearch", "applications", "tests", "tools"`로 만든다. Task 1에서는 그대로 두고 Task 2에서 한 번에 바꿔도 된다 — 어느 쪽이든 Task 2 종료 시점에 `applications`가 들어가 있어야 한다.
+
+**(c) 피처 정의 변경 감지 — `executor/training.py:70`**
+
+```python
+# 기존
+_FEATURE_DEFINITION_PATHS: Final = (
+    "feature_repo",
+    "src/pipeline/build_training_dataset.py",
+)
+# 교체
+_FEATURE_DEFINITION_PATHS: Final = (
+    "feature_repo",
+    "autoresearch/model_training/build_training_dataset.py",
+)
+```
+
+같은 파일 74행의 `_SEED_PROBE` 문자열 안 `from src.pipeline.experiment_evaluation import POLICY_SEEDS`는 점 표기라 스크립트가 처리한다. 처리됐는지 확인한다.
+
+**(d) Codex 안내문 — `executor/prompt.py`**
+
+| 행 | 기존 | 교체 |
+| --- | --- | --- |
+| 85 | `"src/** (src/features/model_contract.py 제외)"` | `"autoresearch/** (autoresearch/feature_engineering/model_contract.py 제외)"` |
+| 91 | `"prod_model_contract": "src/features/model_contract.py"` | `"prod_model_contract": "autoresearch/feature_engineering/model_contract.py"` |
+| 105 | `"uv run --no-sync ruff check agent_orchestration autoresearch tests tools"` | Task 2 종료 시점 기준으로 `applications`를 반영 |
+| 362 | 채점 경로 `src/pipeline/evaluate.py` | `autoresearch/model_evaluation/evaluate.py` |
+
+**(e) 게이트 계약 테스트를 새 경로로 고친다 — `tests/test_experiment_candidate_verifier.py:151-162`**
+
+이 테스트는 tmp 저장소에 경로를 **직접 만들어** 검증하므로, 고치지 않으면 실제 게이트가 죽어도 계속 통과한다.
+
+```python
+    target = repository / "autoresearch" / "feature_engineering" / "model_contract.py"
+    ...
+    assert _verify(repository, base_sha, allowed_scope=("prod_model_contract",)) == (
+        "autoresearch/feature_engineering/model_contract.py",
+    )
+```
+
+scope 없이 거부되는 음성 케이스가 있는지 확인하고, 없으면 추가한다 — 게이트의 존재 이유가 그쪽이다.
+
+```bash
+uv run python -m pytest tests/test_experiment_candidate_verifier.py -v 2>&1 | tail -5
+```
+
+- [ ] **Step 7: 잔여 참조 확인 — 점 표기와 슬래시 표기 둘 다**
+
+```bash
+# 점 표기 (임포트)
+grep -rn "from src\.\|import src\.\|from src import" --include=*.py . | grep -v '\.venv\|\.worktrees'
+# 슬래시 표기 (문자열 리터럴) — 이쪽을 빠뜨려서 executor 4파일을 놓쳤다
+grep -rn '"src/\|'"'"'src/\|src/pipeline\|src/features\|src/models\|src/tracking\|src/utils' \
+  --include=*.py --include=*.yml --include=*.yaml --include=Dockerfile* . \
+  | grep -v '\.venv\|\.worktrees\|docs/archive'
+```
+
+기대: `src/serving/` 관련 참조만 남는다 (Task 2에서 처리). 그 외 0건.
 
 - [ ] **Step 8: 하드코딩 config 경로 수정**
 
@@ -575,6 +640,9 @@ EOF
 - Create: `applications/__init__.py`, `applications/experiment_platform/shared/__init__.py`
 - Move: `src/serving/` → `applications/reranking_api/`, `agent_orchestration/` → `applications/experiment_platform/`, `proxy/` → `applications/youtube_api_proxy/`, `loadtest/` + `autoresearch/loadtest/` → `applications/reranking_api/loadtest/`
 - Modify: `deploy/serving/Dockerfile`, `deploy/agent_orchestration/*.Dockerfile`, `agent_orchestration/alembic.ini`, `docker-compose.yml`, 진입점 스크립트
+- Modify: **`.github/workflows/lint.yml:33`** — `ruff check agent_orchestration autoresearch tests tools` → `ruff check autoresearch applications tests tools`. **이 Task와 같은 PR에 넣어야 한다.** Task 4로 미루면 이 PR 자신이 Lint 실패로 머지 불가가 된다
+- Modify: **`applications/experiment_platform/executor/{verifier,prompt}.py`** — Task 1 Step 6-1에서 남겨둔 ruff 인자에 `applications`를 반영
+- Modify: **경로를 문자열로 단언하는 테스트 8개** — `test_agent_orchestration_container.py`, `test_serving_deployment.py`, `test_experiment_models.py`, `test_ui_submission_app.py`, `test_ui_visual_contract.py`, `test_experiment_branch_migration.py`, `test_experiment_issue_migration.py`, `test_experiment_candidate_verifier.py`. 갱신하지 않으면 Step 7의 "기준선과 동일한 통과 수" 기대가 성립하지 않는다
 
 - [ ] **Step 1: 디렉토리 생성과 이동**
 
@@ -733,7 +801,26 @@ CMD ["streamlit", "run", "applications/experiment_platform/workbench/app.py", \
 
 `ui.Dockerfile`은 `app/experiments/models.py`를 선별 COPY하므로 `api/experiments/models.py`로 바꾼다. `.streamlit` COPY는 그대로 둔다.
 
-빌드 후 각 이미지에서 import가 되는지 확인한다:
+**정적 가드를 먼저 고친다 — `docker run`보다 싸다.**
+
+`tests/test_agent_orchestration_container.py:418-453`이 이미 이 실패 모드를 잡는 가드다. entrypoint가 import하는 모듈이 Dockerfile COPY 목록에 있는지 정적으로 검사한다. `bootstrap_secrets.py`와 `github_pull_requests.py`(#700)에서 같은 누락이 두 번 났기 때문에 만들어졌다.
+
+`_copied_sources`가 `COPY agent_orchestration/`로 시작하는 줄만 수집하므로, 접두사를 바꾸지 않으면 **수집 결과가 빈 집합이 되어 가드가 무력해진다.**
+
+```python
+# 기존
+        if not stripped.startswith("COPY agent_orchestration/"):
+# 교체
+        if not stripped.startswith("COPY applications/"):
+```
+
+같은 파일에서 `LAUNCHER_DOCKERFILE` 등 경로 상수와 모듈명 매핑(`module.replace(".", "/")`)이 새 구조를 반영하는지 함께 확인한다.
+
+```bash
+uv run python -m pytest tests/test_agent_orchestration_container.py -v 2>&1 | tail -5
+```
+
+그 다음 빌드와 런타임 import로 재확인한다:
 
 ```bash
 docker build -f deploy/agent_orchestration/executor.Dockerfile -t ao-executor:ci .
@@ -1140,14 +1227,17 @@ git mv Dockerfile.feast deployment/Dockerfile.feast
 - [ ] **Step 2: 워크플로우 경로 갱신**
 
 ```bash
-grep -rn "deploy/\|Dockerfile\.\|src/\*\*\|src\.cli\|src\.pipeline\|src\.serving" .github/workflows/
+grep -rn "deploy/\|Dockerfile\.\|src/\*\*\|src\.cli\|src\.pipeline\|src\.serving\|agent_orchestration\|proxy/\|loadtest/" .github/workflows/
 ```
+
+`agent_orchestration`·`proxy`·`loadtest`를 패턴에 반드시 포함한다. 이들은 매칭에 실패해도 **에러가 아니라 job이 안 도는** 방식으로 조용히 망가진다.
 
 고칠 것:
 
 | 위치 | 변경 |
 | --- | --- |
 | `ci.yml:48,56,69,79` | `paths` 필터 `'src/**'` → `'autoresearch/**'`, `'applications/**'` |
+| `ci.yml:82-84` | `agent_orchestration` 필터의 `'agent_orchestration/**'` → `'applications/experiment_platform/**'`, `'deploy/agent_orchestration/**'` → `'deployment/agent_orchestration/**'`. **매칭 실패 시 이미지 5개 빌드가 조용히 스킵되고, Task 2의 COPY 허용 목록 안전망까지 함께 꺼진다** |
 | `ci.yml:266`, `release.yml:215` | `src.pipeline.daily_recommendations` → `autoresearch.recommendation.daily_recommendations` |
 | `ci.yml:311,312,313,378` | `python -m src.cli` → `python -m autoresearch.cli` |
 | `ci.yml:404`, `release.yml:401` | `import ... src.serving.app` → `applications.reranking_api.app` |
@@ -1386,13 +1476,15 @@ Task 4에서 이슈 템플릿을 갱신했으므로, 재개 후 첫 실험이 �
 
 Task마다 별도 PR을 올린다. `main` 기준, `Closes #754`는 마지막 PR에만 넣고 나머지는 `Refs #754`를 쓴다.
 
-| PR | Task | 성격 |
-| --- | --- | --- |
-| 1 | Task 0 | 잔재 정리 (독립, 먼저 머지 가능) |
-| 2 | Task 1 | 최대 diff — 이동/치환 2커밋 |
-| 3 | Task 2 | applications 층 |
-| 4 | Task 3 | 테스트 재배치 |
-| 5 | Task 4 | 배포·CI |
-| 6 | Task 5 | 문서 |
+| PR | Task | 성격 | 상태 |
+| --- | --- | --- | --- |
+| [#755](https://github.com/SKYAHO/Autoresearch/pull/755) | spec·plan + Task 0 | 설계 확정 + 잔재 정리 | 리뷰 반영 중 |
+| 2 | Task 1 | 최대 diff — 이동/치환 2커밋 + executor 슬래시 경로 | 대기 |
+| 3 | Task 2 | applications 층 + `lint.yml` + 테스트 8개 | 대기 |
+| 4 | Task 3 | 테스트 재배치 | 대기 |
+| 5 | Task 4 | 배포·CI paths 필터 | 대기 |
+| 6 | Task 5 | 문서 | 대기 |
 
-PR 2~5는 순서 의존이므로 앞 PR이 머지된 뒤 rebase해 올린다.
+PR 2~6은 순서 의존이므로 앞 PR이 머지된 뒤 rebase해 올린다.
+
+**PR 3에 반드시 함께 들어가야 하는 것** — `.github/workflows/lint.yml:33`의 ruff 대상. Task 2가 `agent_orchestration/`을 없애므로, 이 줄을 뒤 PR로 미루면 **PR 3 자신이 Lint 실패로 머지 불가**가 된다.
