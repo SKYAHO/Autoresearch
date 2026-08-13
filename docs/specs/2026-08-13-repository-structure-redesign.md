@@ -1,0 +1,417 @@
+# 저장소 구조 재설계 — 파이프라인 단계 축 재배치
+
+- 작성일: 2026-08-13
+- 상태: 설계 승인 완료, 구현 계획 작성 대기
+- 관련: `README.md:213`("`src/serving/`과 정책 라운드·일일 추천 폐루프의 도메인
+  소유는 아직 미지정 — 저장소 구조 논의(#149)에서 확정 예정")
+
+## 0. 선행 문서와의 관계
+
+이 문서는 #149가 남긴 두 문서를 **대체**합니다.
+
+| 선행 문서 | 처리 |
+| --- | --- |
+| `docs/specs/2026-07-15-repo-restructure.md` | 결정 1·2(문서 통합, 잔재 정리)는 구현 완료된 역사적 기록으로 유지. **결정 3(`src/` 통합)은 이 문서로 대체** — 해당 절에 대체 표기를 추가한다 |
+| `docs/plans/2026-07-15-src-package-merge.md` | 이 문서 기준으로 재작성하거나 `docs/archive/plans/`로 이동 |
+
+선행 설계와 달라진 점:
+
+| 항목 | 2026-07-15 설계 | 이 문서 |
+| --- | --- | --- |
+| `src/pipeline` | `autoresearch/training/` 한 폴더 | `model_training`·`model_evaluation`·`recommendation`·`reporting` 4분할 |
+| 폴더 명명 | 기존 이름 유지(`features`, `models`, `tracking`, `utils`) | 파이프라인 단계 축으로 개명 |
+| `proxy`·`agent_orchestration`·서빙 | 최상위 유지 (범위 제외) | `applications/` 층 신설 후 이동 |
+| 학습 CLI | `autoresearch/training/cli.py` | `autoresearch/cli.py` |
+
+선행 plan이 규정한 **실행 조건은 그대로 유효**합니다: Model Training / Feast
+Features 도메인 소유자(waieiches, hyochangsung)의 합의, 그리고 `src/`를 건드리는
+열린 PR·브랜치가 없는 시점 선택.
+
+## 1. 배경 — 왜 지금 구조에서 "어느 폴더에 뭐가 있는지" 예상이 안 되는가
+
+원인이 네 겹으로 쌓여 있습니다.
+
+### 1-1. 최상위 파이썬 패키지 3개가 서로 다른 명명 축을 씁니다
+
+| 폴더 | 이름의 축 | 실제 내용 |
+| --- | --- | --- |
+| `autoresearch/` | 제품명 (pyproject `name`) | 수집·가상유저·action log·공개 batch CLI |
+| `src/` | 관례어 (아무 정보 없음) | CTR 학습·서빙 파이프라인 |
+| `agent_orchestration/` | 기능명 | 실험 에이전트 서비스 |
+
+같은 층에 있는데 축이 달라 "어느 폴더를 열지"가 이름에서 나오지 않습니다.
+
+### 1-2. `src`가 파이썬 관례를 배신합니다
+
+파이썬에서 `src/`는 통상 import 경로에 나타나지 않는 소스 루트입니다. 그러나 이
+저장소에서는 `from src.pipeline.train import ...` 형태로 **패키지 이름 자체**로
+쓰입니다(`from src.` 93개 파일, `import src.` 8개 파일).
+
+게다가 `pyproject.toml`에 `build-system`도 `[tool.setuptools] packages`도 없습니다.
+즉 설치된 패키지가 아니라 **리포 루트가 `sys.path`에 얹혀서** 동작합니다.
+`src/`, `src/features/`, `src/pipeline/`에는 `__init__.py`조차 없는 암묵적
+namespace 패키지입니다(`__init__.py`가 있는 곳은 `models/`, `serving/`,
+`tracking/`, `utils/` 4개뿐).
+
+### 1-3. 눈에 보이는 최상위 디렉토리의 절반 이상이 git에 없습니다
+
+`ls`로 보이는 디렉토리는 34개인데 추적되는 것은 14개입니다. 미추적 잔재:
+`dags/`, `data/`, `artifacts/`, `asset/`, `output/`, `mlruns/`,
+`Nemotron-Personas-Korea/`, `.codex-tmp/`, `.omo/`, `.gjc/`, `.playwright-mcp/`.
+루트의 PNG 3개(`before-submit.png`, `after-submit.png`, `hypotheses-filled.png`)와
+`agent.md`(`CLAUDE.md`/`AGENTS.md`와 별개인 11KB)도 같은 성격의 노이즈입니다.
+
+### 1-4. 실제 경계는 3개가 아니라 2개입니다
+
+의존 그래프 실측 결과:
+
+```
+agent_orchestration  ──▶ (파이프라인 코드를 한 줄도 import 하지 않음)
+                     ◀── src/cli.py:854 1곳 (함수 내부 지연 import)
+
+src ──8──▶ autoresearch          ┐
+autoresearch ──4──▶ src          │  순환
+src ──1──▶ feature_repo          │
+feature_repo ──1──▶ src          ┘
+```
+
+- `agent_orchestration`은 이미 독립 애플리케이션입니다. 자체
+  `docker-compose.yml`, `alembic.ini` + `migrations/`, `README.md`, 배포 이미지
+  5개(api/runner/ui/launcher/executor), 테스트 215개를 가집니다.
+- 반대로 `src`·`autoresearch`·`feature_repo`는 서로 순환 참조합니다.
+  `autoresearch/jobs/action_log.py`가 `src.pipeline.*`을 **함수 내부에서** 4번
+  지연 import 하는 것은 모듈 최상단에 두면 순환 import로 실패하기 때문입니다.
+  즉 현재의 3분할은 설계가 아니라 사후 봉합입니다.
+
+따라서 실제 덩어리는 `폐루프 파이프라인(src + autoresearch + feature_repo)`과
+`실험 에이전트(agent_orchestration)` 2개이며, 현재 구조는 이 2덩어리를 3개
+폴더로 잘못 잘라놓은 상태입니다.
+
+## 2. 승인된 결정
+
+| 결정 항목 | 채택안 |
+| --- | --- |
+| 정리 범위 | 경계까지 재설계 |
+| 에이전트 배치 | 같은 저장소, `applications/` 아래 |
+| 폐루프 순환 의존 | **유지** — 이름·배치만 정리 (`contracts/` 신설 안 함) |
+| 서빙 위치 | `applications/reranking_api/` 로 통째 (`model_serving/` 신설 안 함) |
+| `feature_repo/` | 이번 범위에서 **제자리 유지** |
+| 학습 CLI | `src/cli.py` → `autoresearch/cli.py` |
+| 테스트 | 소스 구조 미러링 |
+
+## 3. 목표 / 비목표
+
+### 목표
+
+- 최상위에서 이름만 보고 "어느 폴더에 무엇이 있는지" 예상 가능하게 만든다.
+- `src`라는 무의미한 이름을 없앤다.
+- 파이프라인(라이브러리)과 애플리케이션(배포되는 서비스)을 층으로 분리한다.
+- 최상위 미추적 잔재를 정리해 구조를 읽을 때의 노이즈를 없앤다.
+
+### 비목표 (이번 범위 밖)
+
+- **동작 변경 없음.** 순수 이동·리네임·임포트 치환이다.
+- 순환 의존 해소 없음. `recommendation ↔ action_log_generation` 순환은 남는다.
+- `feature_repo/` 이동 없음.
+- 패키징 방식 변경 없음 (`build-system` 도입, 설치형 패키지 전환은 별도 과제).
+- 모듈 내부 로직·API 변경 없음.
+
+## 4. 최종 구조
+
+```
+autoresearch/                        # 폐루프 파이프라인 (단일 배포 패키지)
+├── cli.py                           # 학습·평가·승격 CLI (typer)
+├── logging_json.py                  # jobs + reranking_api 공용
+├── jobs/                            # 공개 batch CLI — Airflow 소비 계약
+├── data_collection/
+├── virtual_user_generation/
+├── action_log_generation/
+├── feature_engineering/
+├── model_training/
+├── model_evaluation/
+│   └── experiments/
+├── recommendation/
+├── model_registry/
+└── reporting/
+
+applications/                        # 배포되는 서비스
+├── experiment_platform/
+│   ├── shared/
+│   ├── api/
+│   ├── workbench/
+│   ├── runner/
+│   ├── launcher/
+│   ├── executor/
+│   ├── migrations/
+│   └── alembic.ini
+├── reranking_api/
+│   └── loadtest/
+└── youtube_api_proxy/
+
+feature_repo/                        # 제자리 유지 (feast 규약 디렉토리)
+deployment/                          # ← deploy/  (+ Dockerfile.* 3개)
+scripts/
+tests/                               # 소스 구조 미러링
+docs/
+```
+
+## 5. 파일 매핑
+
+모든 추적 파일에 자리가 있음을 검산했습니다: `src/` 50개 → 50개,
+`autoresearch/` 38개 → 38개, 누락 없음.
+
+`src/` 내역: `cli.py` 1, `features/` 6, `models/` 5, `pipeline/` 20(`.py` 19 +
+`config.yaml`), `serving/` 8, `tracking/` 8, `utils/` 2.
+`autoresearch/` 내역: `__init__.py` 1, `logging_json.py` 1, `action_logs/` 9,
+`experiments/` 3, `jobs/` 9, `loadtest/` 2, `virtual_users/` 6,
+`youtube_collection/` 7.
+
+### 5-1. `src/` → `autoresearch/`
+
+| 현재 | 이동 후 |
+| --- | --- |
+| `src/cli.py` | `autoresearch/cli.py` |
+| `src/features/` (6) | `autoresearch/feature_engineering/` |
+| `src/models/` (5) | `autoresearch/model_training/` |
+| `src/utils/model_utils.py`, `__init__.py` | `autoresearch/model_training/` |
+| `src/pipeline/train.py` | `autoresearch/model_training/` |
+| `src/pipeline/build_training_dataset.py` | `autoresearch/model_training/` |
+| `src/pipeline/training_provenance.py` | `autoresearch/model_training/` |
+| `src/pipeline/training_snapshot_store.py` | `autoresearch/model_training/` |
+| `src/pipeline/config.yaml` | `autoresearch/model_training/config.yaml` |
+| `src/pipeline/evaluate.py` | `autoresearch/model_evaluation/` |
+| `src/pipeline/degradation_eval.py` | `autoresearch/model_evaluation/` |
+| `src/pipeline/experiment_evaluation.py` | `autoresearch/model_evaluation/` |
+| `src/pipeline/training_comparison.py` | `autoresearch/model_evaluation/` |
+| `src/pipeline/paired_experiment.py` | `autoresearch/model_evaluation/` |
+| `src/pipeline/seed_sweep.py` | `autoresearch/model_evaluation/` |
+| `src/pipeline/promotion_evidence.py` | `autoresearch/model_evaluation/` |
+| `src/pipeline/daily_recommendations.py` | `autoresearch/recommendation/` |
+| `src/pipeline/simulate_policy_round.py` | `autoresearch/recommendation/` |
+| `src/pipeline/model_exposure_provider.py` | `autoresearch/recommendation/` |
+| `src/pipeline/policy_selector.py` | `autoresearch/recommendation/` |
+| `src/pipeline/rerank_api.py` | `autoresearch/recommendation/` |
+| `src/pipeline/virtual_user_adapter.py` | `autoresearch/virtual_user_generation/adapter.py` |
+| `src/pipeline/report_html.py` | `autoresearch/reporting/` |
+| `src/pipeline/experiment_result_report.py` | `autoresearch/reporting/` |
+| `src/tracking/` (8) | `autoresearch/model_registry/` |
+| `src/serving/` (8) | `applications/reranking_api/` |
+
+### 5-2. `autoresearch/` 내부 리네임
+
+| 현재 | 이동 후 |
+| --- | --- |
+| `autoresearch/youtube_collection/` (7) | `autoresearch/data_collection/` |
+| `autoresearch/virtual_users/` (6) | `autoresearch/virtual_user_generation/` |
+| `autoresearch/action_logs/` (9) | `autoresearch/action_log_generation/` |
+| `autoresearch/experiments/` (3) | `autoresearch/model_evaluation/experiments/` |
+| `autoresearch/loadtest/` (2) | `applications/reranking_api/loadtest/` |
+| `autoresearch/jobs/` (9) | 유지 |
+| `autoresearch/logging_json.py` | 유지 |
+
+### 5-3. 애플리케이션
+
+| 현재 | 이동 후 |
+| --- | --- |
+| `agent_orchestration/app/` | `applications/experiment_platform/api/` |
+| `agent_orchestration/ui/` | `applications/experiment_platform/workbench/` |
+| `agent_orchestration/runner/` | `applications/experiment_platform/runner/` |
+| `agent_orchestration/launcher/` | `applications/experiment_platform/launcher/` |
+| `agent_orchestration/executor/` | `applications/experiment_platform/executor/` |
+| `agent_orchestration/{codex,contracts,github_app,github_pull_requests,github_refs,bootstrap_secrets}.py` | `applications/experiment_platform/shared/` |
+| `agent_orchestration/migrations/`, `alembic.ini` | `applications/experiment_platform/` |
+| `agent_orchestration/{docker-compose.yml,entrypoint.sh,runner_entrypoint.sh,README.md}` | `applications/experiment_platform/` |
+| `proxy/` (4) | `applications/youtube_api_proxy/` |
+| `loadtest/` (k6 `rerank.js`, `README.md`) | `applications/reranking_api/loadtest/` |
+| `deploy/` (19) | `deployment/` |
+| `Dockerfile.app`, `Dockerfile.train`, `Dockerfile.feast` | `deployment/` |
+
+### 5-4. 배치 판단이 필요했던 파일
+
+이름만으로 정해지지 않아 **실제 임포트 관계를 근거로** 배치했습니다.
+
+| 파일 | 배치 | 근거 |
+| --- | --- | --- |
+| `virtual_user_adapter.py` | `virtual_user_generation/adapter.py` | 소비자가 `build_training_dataset`(학습)와 `daily_recommendations`(추천) 양쪽이라 어느 단계에도 안 속함. 가상 유저를 변환하는 어댑터이므로 생산자 쪽에 둔다 |
+| `utils/model_utils.py` | `model_training/model_utils.py` | 저장은 `train.py`·`lgbm_model.py`, 읽기는 `evaluate.py`·`degradation_eval.py`. 아티팩트 형식의 소유자가 학습이므로 학습에 두고 평가 → 학습 단방향으로 만든다 |
+| `rerank_api.py` | `recommendation/` | 서빙 API 호출 클라이언트이며 유일 소비자가 `jobs/action_log.py` |
+| `experiments/{context,promotion_gate}.py` | `model_evaluation/experiments/` | 소비자가 `paired_experiment.py`(평가) 하나뿐 |
+| `autoresearch/loadtest/` | `applications/reranking_api/loadtest/` | 최상위 `loadtest/`(k6)와 이름이 겹쳐 혼란을 유발하므로 리랭킹 API 아래로 합쳐 중복을 없앤다 |
+
+## 6. 계약 영향
+
+### 6-1. 유지되는 계약 (변경 없음)
+
+- `python -m autoresearch.jobs.*` — Airflow가 소비하는 공개 batch CLI.
+  `docs/specs/2026-07-13-public-batch-execution-contract.md` 그대로.
+- `feature_repo` 경로 전체 — `feature_store.yaml:31`의
+  `type: feature_repo.redis_iam.IAMRedisOnlineStore`, `ci.yml:391`의
+  `load_feature_store('/app/feature_repo')`, `Dockerfile.feast:48`,
+  `.github/workflows/feast-apply.yml`의 path 필터, ODFV UDF의 cwd 기준 bare
+  import 계약(#409).
+- 환경 변수(`.env.example`), PostgreSQL 스키마, alembic revision 이력.
+
+### 6-2. 변경되는 실행 계약
+
+```
+python -m src.cli <sub>                       → python -m autoresearch.cli <sub>
+python -m src.pipeline.daily_recommendations  → python -m autoresearch.recommendation.daily_recommendations
+uvicorn src.serving.app:app                   → uvicorn applications.reranking_api.app:app
+import src.serving.app                        → import applications.reranking_api.app
+```
+
+소비처 전수:
+
+| 위치 | 내용 |
+| --- | --- |
+| `Dockerfile.train:54` | `CMD ["python", "-m", "src.cli", "--help"]` |
+| `deploy/serving/Dockerfile:36` | `CMD ["uvicorn", "src.serving.app:app", ...]` |
+| `.github/workflows/ci.yml` | 266, 311, 312, 313, 378, 404행 (실행 경로) |
+| `.github/workflows/release.yml` | 215, 401행 |
+| `.github/ISSUE_TEMPLATE/auto_research.yml:212` | 에이전트가 읽는 가설 템플릿 본문 |
+| `scripts/` | `validate_feast_assembly.py`, `verify_registry_portability.py`, `bench/compare_seed_sweeps.py`, `bench/daily_as_of_probe.py`, `bench/window_holdout_eval.py`, `bench/degradation_curve_plot.py` |
+| `examples/ctr_pipeline_scaffold/` | `01_generate_mock_raw_data.py`(`src.features.category_reference`), `02_generate_event_log.py`(`src.features.feature_builder`), `sync_mock_data_to_pipeline.py:108`(`python -m src.cli build-features`), `README.md` 2곳 |
+| `.github/workflows/ci.yml` | 48, 56, 69, 79행의 `paths` 필터 `'src/**'` |
+| `pyproject.toml:121-123` | `[tool.uv]` 주석 "Phase 2 에서 src 레이아웃 전환 시 package 빌드로 변경 예정" — 이 재배치가 그 Phase 2가 아님을 명시하도록 갱신(설치형 전환은 여전히 별도 과제) |
+| `SKYAHO/Autoresearch-airflow` | **별도 저장소** — 호출 경로 갱신 PR 필요 |
+
+### 6-3. 하드코딩된 경로 문자열
+
+문자열로 조립되어 임포트 치환으로는 잡히지 않습니다. 수동 확인 필요:
+
+- `src/pipeline/train.py:590` — `os.path.join(project_root, "src", "pipeline", "config.yaml")`
+- `src/pipeline/evaluate.py:311` — 동일 패턴
+- `src/cli.py` 292, 404, 455, 1219행 — typer help 문자열 `"config.yaml 경로 (기본: src/pipeline/config.yaml)"`
+- `src/serving/model_loader.py:40` — 주석의 `src/pipeline/config.yaml` 참조
+- `src/features/feature_builder.py:9-15` — 모듈 docstring의 feast ODFV 계약 서술
+
+전수 확인 명령: `grep -rn '"src"\|src/\|src\.' --include=*.py --include=*.yml
+--include=*.yaml --include=Dockerfile* . | grep -v '\.venv\|\.worktrees'`
+
+### 6-4. `sys.path` 조작 블록
+
+`src/`가 설치형 패키지가 아니라 `sys.path` 의존이었기 때문에, 다음 파일들이
+상단에 `sys.path` 조작 블록(`# noqa: E402` 동반)을 가지고 있습니다:
+`src/cli.py`, `src/pipeline/{train,evaluate,build_training_dataset}.py`,
+`scripts/{verify_registry_portability,fetch_redis_ca,provision_rerank_loadtest_fixture,build_static_features}.py`,
+`scripts/bench/{daily_as_of_probe,window_holdout_eval}.py`.
+
+이동 후에도 `package = false`는 유지되므로 이 블록들은 **제거하지 않고 경로만
+갱신**합니다. 제거 가능 여부는 설치형 전환 과제에서 다룹니다.
+
+### 6-5. 문서 참조
+
+`docs/` 이하 82개 마크다운이 `src/` 경로를 언급합니다. 전부 고치지 않습니다:
+
+- **갱신 대상**: `README.md`(4곳), `.claude/docs/agent-project-reference.md`,
+  `.claude/docs/architecture-overview.md`, `docs/specs/`의 살아있는 계약 문서,
+  `docs/guides/`, `docs/README.md`.
+- **갱신 제외**: `docs/archive/` 이하 전부. `docs/README.md` 규칙상 아카이브
+  문서는 역사적 기록이므로 내용을 갱신하지 않습니다.
+
+### 6-6. 패키지 초기화
+
+`src/`, `src/features/`, `src/pipeline/`은 `__init__.py`가 없는 암묵적 namespace
+패키지입니다. `autoresearch/`는 정식 패키지이므로, 새로 만드는 하위 패키지
+(`feature_engineering`, `model_training`, `model_evaluation`, `recommendation`,
+`reporting`)마다 `__init__.py`를 추가합니다. `applications/`와
+`applications/experiment_platform/shared/`도 동일합니다.
+
+## 7. 남는 부채 (이번 범위 밖, 기록만)
+
+- **`recommendation` ↔ `action_log_generation` 순환.** 폐루프 프로젝트에서 파이프라인
+  단계 축으로 자르면 마지막 단계가 첫 단계로 돌아오므로 순환은 필연입니다.
+  `jobs/action_log.py`의 지연 import 4곳에 "순환 회피 목적"임을 주석으로 남겨
+  다음 작업자가 모듈 최상단으로 올리지 않게 합니다. 근본 해소는 공유 계약
+  (action log 스키마, `CandidateProvider`/`ExposureMetadata` 프로토콜)을 별도
+  `contracts/` 패키지로 분리해야 가능합니다.
+- **`feature_repo/` 이동.** feast registry 재생성과 ODFV UDF 계약(#409) 검증이
+  필요하므로 별도 이슈로 분리합니다.
+- **설치형 패키지 전환.** `build-system` + `[project.scripts]` 도입은 별도 과제입니다.
+
+## 8. 단계 분해와 검증
+
+동작 변경 0을 유지하기 위해 단계마다 전체 테스트 통과를 게이트로 둡니다.
+
+| 단계 | 내용 | 검증 |
+| --- | --- | --- |
+| 0 | 루트 청소 — 미추적 잔재를 `.gitignore`에 추가, 루트 PNG 3개·`agent.md` 정리 | `git status --porcelain` 결과가 비어 있음 |
+| 1 | `src/*` → `autoresearch/*` 이동, `__init__.py` 추가, 임포트 101곳 치환, 하드코딩 경로 6곳 + `sys.path` 블록 갱신, `examples/` 7곳, `Dockerfile.app:41` | `uv run python -m pytest`, `ruff check`, `docker build -f Dockerfile.app` |
+| 2 | `src/serving` → `applications/reranking_api`, `proxy`·`agent_orchestration` 이동, `shared/` 신설, `loadtest/` 통합 | `pytest`, `ruff`, `docker build` 3종 |
+| 3 | `tests/` 소스 구조 미러링 재배치 | `pytest` 수집 테스트 수가 이전과 동일 |
+| 4 | `deploy` → `deployment`, `Dockerfile.*` 이동, CI·release·이슈 템플릿 경로 갱신, `pyproject.toml` 주석 갱신 | CI 전체 통과 |
+| 5 | 문서 갱신 — `README.md`, `.claude/docs/*`, `docs/README.md`, 살아있는 spec/guide (아카이브 제외), 선행 문서 2건 대체 표기 | `git diff --check` |
+| 6 | `SKYAHO/Autoresearch-airflow` 호출 경로 갱신 | 별도 저장소 PR |
+
+1단계가 가장 큽니다(임포트 101곳). 여기서 초록을 확인하면 이후는 기계적입니다.
+
+각 단계는 별도 PR로 올립니다. 단계 1·2 안에서는 파일 이동(`git mv`) 커밋과
+임포트 치환 커밋을 분리해 git의 rename 감지를 살립니다.
+
+### 검증 명령
+
+```bash
+uv run python -m pytest -v
+uv run --no-sync ruff check autoresearch applications tests tools scripts
+docker build -f deployment/Dockerfile.app -t autoresearch:ci .
+git diff --check
+```
+
+feast 계열은 `uv sync --only-group feast` 환경에서 `.github/workflows/ci.yml`의
+`pytest (feast group)` job 테스트 목록을 실행합니다.
+
+## 9. 리스크
+
+| 리스크 | 완화 |
+| --- | --- |
+| 문자열 하드코딩 경로 누락 | 6-3에 전수 목록. 단계 1 완료 후 `grep -rn "src/" --include=*.py --include=*.yml --include=Dockerfile*`로 잔여 확인 |
+| 인접 저장소 Airflow 호출 중단 | 단계 5를 이 저장소 배포 **이후**에 수행하거나, 배포 순서를 사전 합의 |
+| `tests/` 재배치 중 테스트 유실 | 단계 3에서 재배치 전후 `pytest --collect-only -q \| wc -l` 비교 |
+| 이슈 템플릿 경로 변경으로 진행 중 실험 실패 | 실행 중인 실험이 없는 시점에 단계 4 수행 |
+| 단계 1의 diff가 커서 리뷰 불가 | 파일 이동(`git mv`)과 임포트 치환을 **별도 커밋**으로 분리해 rename 감지를 살림 |
+| **실험 에이전트가 `src/`를 계속 수정함** | 아래 별도 절 참조 — 이 재배치의 최대 제약 |
+| 팀원의 열린 브랜치가 `src/`를 건드려 rebase 충돌 | 선행 plan과 동일 — 실행 시점을 열린 PR 머지 직후로 고정. 착수 전 `gh pr list`로 확인 |
+| 도메인 소유자 합의 없이 착수 | 선행 plan의 실행 조건(waieiches, hyochangsung 승인)이 유효. 착수 전 확인 필요 |
+| 배치 이미지가 코드 경로를 굽고 있을 가능성 | 해당 없음 — #752 이후 `Dockerfile.app`은 소스를 COPY하지 않는다. `scripts/upload_code_archive.sh`가 **추적 파일 전체**를 `git archive`로 말아 `gcs_code_bootstrap.sh`가 `/app`에 풀고 `PYTHONPATH=/app`으로 실행하므로 경로에 무관하다. 두 스크립트 수정 불필요 |
+
+### 9-1. 실험 에이전트와의 충돌 (최대 제약)
+
+2026-08-13 기준 열린 PR 11건 중 **7건이 `src/`를 건드리며, 그중 6건이 실험
+에이전트가 자동 생성한 `[AR]` 실험 PR**입니다.
+
+| PR | 브랜치 | 건드리는 `src/` 파일 |
+| --- | --- | --- |
+| #739, #738, #737 | `exp/733`, `exp/734`, `exp/732` | `models/lgbm_model.py`, `pipeline/config.yaml`, `pipeline/train.py` |
+| #736, #735, #751 | `exp/731`, `exp/730`, `exp/749` | `pipeline/config.yaml` |
+| #535 | `docs/514-temporal-paired-evaluation-spec` | `pipeline/degradation_eval.py` |
+
+실험 PR이 건드리는 파일이 단계 1에서 이동하는 파일과 **정확히 겹칩니다**
+(`config.yaml`, `train.py`, `lgbm_model.py` → `model_training/`).
+
+문제는 일회성 충돌이 아닙니다. 구조적입니다:
+
+1. 실험 에이전트는 `.github/ISSUE_TEMPLATE/auto_research.yml:212`가 지시하는
+   `python -m src.cli build-features` 경로에 의존합니다.
+2. executor가 `dev` 기준으로 `exp/*` 브랜치를 만들어 `src/` 파일을 수정합니다.
+3. 따라서 실험 루프가 도는 동안에는 "`src/`를 건드리는 열린 PR이 없는 시점"이
+   구조적으로 생기지 않습니다.
+
+**완화책 — 착수 전 창(window) 확보가 필요합니다:**
+
+- 진행 중 실험이 모두 종료·머지·폐기된 상태를 만든다.
+- 새 실험 발행을 일시 중단한다 (에이전트 CronJob 정지 또는 가설 제출 보류).
+- 그 창 안에서 단계 1~4를 연속 수행하고, 단계 4에서 이슈 템플릿 경로를 갱신한
+  뒤 실험 발행을 재개한다.
+
+이 창을 확보하지 못하면 단계 1 착수 자체를 미루는 것이 맞습니다. 실험 브랜치는
+rebase가 아니라 재생성이 필요해지고, 진행 중이던 실험 결과의 baseline 비교
+가능성이 깨질 수 있습니다.
+
+## 10. 후속 문서
+
+- `README.md` 저장소 구조 절, 배포 이미지 표 갱신
+- `.claude/docs/agent-project-reference.md` 폴더 책임·소유 경계 갱신
+- `.claude/docs/architecture-overview.md` 경로 갱신
+- `CLAUDE.md` 저장소 경계 절의 경로 표기 갱신
+- `docs/specs/2026-07-15-repo-restructure.md` 결정 3에 대체 표기 추가
+- `docs/plans/2026-07-15-src-package-merge.md` 재작성 또는 아카이브 이동
