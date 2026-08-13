@@ -1595,12 +1595,23 @@ Task마다 별도 PR을 올린다. `main` 기준, `Closes #754`는 마지막 PR�
 
 | PR | Task | 성격 | 상태 |
 | --- | --- | --- | --- |
-| [#755](https://github.com/SKYAHO/Autoresearch/pull/755) | spec·plan + Task 0 | 설계 확정 + 잔재 정리 | 리뷰 반영 완료 |
-| [#756](https://github.com/SKYAHO/Autoresearch/pull/756) | Task 1 | 최대 diff — 이동/치환 2커밋 + executor 슬래시 경로 + feast 레지스트리 | 리뷰 반영 완료 |
-| 4 | Task 2 | applications 층 + `lint.yml` + ruff 대상·alembic·proxy export | 구현 완료 |
+| [#755](https://github.com/SKYAHO/Autoresearch/pull/755) | spec·plan + Task 0 | 설계 확정 + 잔재 정리 | **머지** (main `247644e`) |
+| [#756](https://github.com/SKYAHO/Autoresearch/pull/756) | Task 1 | 최대 diff — 이동/치환 2커밋 + executor 슬래시 경로 + feast 레지스트리 | **머지** — 아래 사유로 #755 squash에 포함 |
+| [#757](https://github.com/SKYAHO/Autoresearch/pull/757) | Task 2 | applications 층 + `lint.yml` + ruff 대상·alembic·proxy export | main 위로 rebase, 리뷰 대기 |
 | 4 | Task 3 | 테스트 재배치 | 대기 |
 | 5 | Task 4 | 배포·CI paths 필터 | 대기 |
 | 6 | Task 5 | 문서 | 대기 |
+
+**머지 순서가 어긋나 Task 1이 #755의 squash에 삼켜졌다.** #756이 중간 브랜치
+`chore/754-repo-structure-redesign`으로 먼저 머지되고, 그 브랜치를 담은 #755가 main으로
+squash 머지됐다. 그래서 main의 `247644e`는 제목이 `docs: ...`인데 **191개 파일,
++2948/-583**을 담는다. 트리 자체는 정확하다(main == Task 1 브랜치 tip, diff 없음).
+main 히스토리는 재작성하지 않았다 — 진행 중 exp 브랜치의 base와 다른 클론이 어긋난다.
+
+**여기서 얻은 규칙:** 스택 PR은 **아래에서 위로** 머지한다. 중간 브랜치를 base로 삼은
+PR을 먼저 머지하면 그 내용이 아래 PR의 squash에 흡수되어 커밋 제목이 내용을 잃는다.
+`Closes #754`가 #755에 들어 있던 것도 같은 종류의 사고였다 — 이슈가 Task 1 시점에
+자동 종료됐다(다시 열었다). **`Closes`는 마지막 PR에만 넣는다.**
 
 PR 2~6은 순서 의존이므로 앞 PR이 머지된 뒤 rebase해 올린다.
 
