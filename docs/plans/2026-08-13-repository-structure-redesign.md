@@ -1398,7 +1398,7 @@ grep -rn "deploy/\|Dockerfile\.\|src/\*\*\|src\.cli\|src\.pipeline\|src\.serving
 
 이 문구는 실험 에이전트가 읽는 가설 템플릿이다. 갱신 직후부터 새 실험이 새 경로를 쓴다.
 
-- [x] **Step 3-1: scope 라벨 문자열은 별도 판단이 필요하다 (Task 1에서 손대지 않음)**
+- [x] **Step 3-1: scope 라벨 문자열 — 전환 기간 동안 두 문자열을 모두 받는다**
 
 같은 파일 254행의 라벨
 
@@ -1409,18 +1409,31 @@ grep -rn "deploy/\|Dockerfile\.\|src/\*\*\|src\.cli\|src\.pipeline\|src\.serving
 은 단순 안내문이 아니라 **정확 일치 계약**이다. `tools/auto_research_issue_branch.py:79`의
 `_SCOPE_LABELS`가 이 문자열을 키로 써서 `prod_model_contract` scope로 매핑한다.
 
-그래서 셋 중 하나만 고치면 조용히 깨진다.
+> **정정 (2026-08-14, 구현 중 실측)** — 처음에는 "한쪽만 고치면 scope가 **조용히
+> 사라진다**"고 적었으나 **틀렸다.** `_parse_allowed_scope`는 알 수 없는 라벨을 만나면
+> `ValueError("allowed_scope contains an unknown guardrail")`로 **fail-closed** 거부한다.
+> 조용한 실패가 아니라 그 이슈가 통째로 반려된다.
+>
+> 증상은 다르지만 대응은 같다 — 오히려 더 급하다. 조용히 좁아지는 것이 아니라 **새 실험이
+> 하나도 발행되지 않기** 때문이다.
 
 | 고치는 것 | 안 고치면 |
 | --- | --- |
-| 템플릿 라벨만 | 새 이슈의 체크박스가 매핑되지 않아 scope가 **조용히 사라진다** |
-| `_SCOPE_LABELS` 키만 | **이미 열려 있는** 실험 이슈의 라벨이 매핑되지 않는다 |
-| 둘 다 동시에 | 열린 이슈들이 옛 문자열을 본문에 봉인한 채로 남아 같은 증상 |
+| 템플릿 라벨만 | 새 이슈의 라벨이 매핑에 없어 **모든 신규 실험이 반려**된다 |
+| `_SCOPE_LABELS` 키만 | 봉인된 진행 중 실험의 이슈 본문이 매핑되지 않아 같은 증상 |
+| 둘 다 동시에 | 봉인된 옛 본문이 남아 있는 동안 같은 증상 |
 
 따라서 `_SCOPE_LABELS`가 **두 문자열을 모두 받아야** 한다 — verifier의 `src/` 허용과 같은
-전환 기간 조치다. 옛 문자열을 언제 뺄지는 열린 실험 이슈가 모두 종료된 뒤로 미룬다.
-관련 테스트 3곳(`test_auto_research_issue_branch.py:46,650`,
-`test_experiment_codex_worker.py:61`)도 두 경우를 함께 검증하도록 고친다.
+전환 기간 조치다.
+
+**열린 이슈가 아니라 봉인된 본문이 기준이다.** 구현 시점에 열린 `[AR]` 이슈 7건 중 옛
+문자열을 본문에 가진 것은 0건이었지만, DB에 봉인된 진행 중 실험의 `issue_body`는 그와
+별개다. 제거 시점은 `experiments.base_dev_sha` 기준 미종료 실험 0건으로 판단한다.
+
+**추가한 가드.** Issue Form 의 checkbox 라벨이 전부 `_SCOPE_LABELS` 에 있는지 검사한다
+(`test_issue_form_labels_are_all_known_scopes`). 템플릿만 고치고 매핑을 빠뜨리면 그
+순간부터 신규 실험이 전부 반려되는데, 증상이 "이슈 발행은 되는데 실험이 시작되지
+않는다"라 원인을 찾기 어렵다. 템플릿을 일부러 어긋나게 만들어 잡히는 것을 확인했다.
 
 - [x] **Step 4: `pyproject.toml` 주석 갱신**
 
@@ -1639,11 +1652,36 @@ EOF
 
 ---
 
-### Task 6: 인접 저장소 갱신 (별도 저장소)
+### Task 6: 인접 저장소 갱신 — 부분 완료
+
+**`Autoresearch-airflow`는 끝났다** — `SKYAHO/Autoresearch-airflow#324`(이슈 #323).
+실측으로 확인한 범위였다.
+
+| 위치 | 처리 |
+| --- | --- |
+| `dags/ctr_training/dag.py`, `dags/ctr_model_promote/dag.py` | `module="src.cli"` → `"autoresearch.cli"` |
+| DAG parse 계약 테스트 3곳 | 함께 갱신 |
+| `Dockerfile.*` 표기 | `deployment/` 반영 |
+| `autoresearch.jobs.*` 6곳 | **변경 없음** — 공개 batch CLI 계약이라 재배치 대상이 아니었다 |
+| `values.yaml` digest | 미변경 — 승격 PR이 소유한다 |
+
+**순서 제약이 이 작업의 핵심이었다.** 배치 이미지는 소스를 담지 않고 GCS 코드
+아카이브에서 부트스트랩하며(#752) 아카이브는 릴리스 digest에 묶인다. 배포된 digest의
+아카이브에는 아직 `src/`가 있어 당장은 돌아가지만, **다음 릴리스의 digest 승격 PR이
+머지되는 순간** 두 DAG가 동시에 `ModuleNotFoundError`로 죽는다. 그래서 이 PR이 승격보다
+먼저 들어가야 했다.
+
+**남은 것 — feast apply와 이미지 롤아웃 순서.** Task 1이 ODFV 헬퍼의 import 경로를
+바꿨으므로, apply 후 레지스트리는 새 이름을 참조한다. 재배치 **이전** 이미지로 도는
+파드는 그때부터 레지스트리를 읽지 못한다. 두 저장소 어느 쪽 코드 변경도 아니고 릴리스
+순서를 정하는 쪽의 판단이다.
+
+**남은 것 — 게시 이미지 이름.** `autoresearch-agent-orchestration-*`는
+`Autoresearch-infra`의 K8s 매니페스트와 동시에 바꿔야 한다.
 
 이 저장소의 PR이 머지되고 이미지가 배포된 **이후** 수행한다.
 
-- [ ] **Step 1: `Autoresearch-airflow`에서 호출 경로 확인**
+- [x] **Step 1: `Autoresearch-airflow`에서 호출 경로 확인**
 
 ```bash
 gh api repos/SKYAHO/Autoresearch-airflow/contents --jq '.[].name'
@@ -1651,11 +1689,11 @@ gh api repos/SKYAHO/Autoresearch-airflow/contents --jq '.[].name'
 grep -rn "src\.cli\|src\.pipeline\|src\.serving\|python -m src" <airflow-repo-path>
 ```
 
-- [ ] **Step 2: 이슈 발행 후 브랜치에서 경로 갱신, PR 생성**
+- [x] **Step 2: 이슈 발행 후 브랜치에서 경로 갱신, PR 생성**
 
 `autoresearch.jobs.*` 호출은 변경 없음을 함께 확인한다.
 
-- [ ] **Step 3: 실험 발행 재개**
+- [x] **Step 3: 실험 발행 재개**
 
 Task 4에서 이슈 템플릿을 갱신했으므로, 재개 후 첫 실험이 완주하는지 확인한다.
 
