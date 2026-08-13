@@ -12,16 +12,16 @@ import pyarrow.parquet as pq
 import pytest
 from pyarrow.fs import FileInfo, FileType
 
-import autoresearch.action_logs.daily as daily_module
-import autoresearch.action_logs.pipeline as pipeline_module
-from autoresearch.action_logs.daily import (
+import autoresearch.action_log_generation.daily as daily_module
+import autoresearch.action_log_generation.pipeline as pipeline_module
+from autoresearch.action_log_generation.daily import (
     merge_daily_action_log_shards,
     run_daily_action_log,
     run_daily_action_log_shard,
 )
-from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
-from autoresearch.action_logs.pipeline import ActionLogGenerationError, ExposureMetadata
-from autoresearch.action_logs.schema import EventLog
+from autoresearch.action_log_generation.llm_generator import RuleBasedActionLogGenerator
+from autoresearch.action_log_generation.pipeline import ActionLogGenerationError, ExposureMetadata
+from autoresearch.action_log_generation.schema import EventLog
 
 
 class _SelectorFilesystem:
@@ -570,7 +570,7 @@ def test_manifest_requires_click_threshold_fail_closed() -> None:
 
     from pydantic import ValidationError
 
-    from autoresearch.action_logs.schema import ActionLogShardManifest
+    from autoresearch.action_log_generation.schema import ActionLogShardManifest
 
     complete = {
         "manifest_version": "action_log_shard_manifest_v1",
@@ -1258,7 +1258,7 @@ def _write_final_parquet(path: Path, schema: pa.Schema, partition_date: date) ->
 def test_validate_existing_final_tolerates_legacy_schema_without_exposure_source(
     tmp_path,
 ):
-    from autoresearch.action_logs.pipeline import EVENT_LOG_PARQUET_SCHEMA
+    from autoresearch.action_log_generation.pipeline import EVENT_LOG_PARQUET_SCHEMA
 
     partition_date = date(2026, 7, 1)
     legacy_schema = pa.schema(

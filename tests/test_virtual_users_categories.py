@@ -1,6 +1,6 @@
 import pytest
 
-from autoresearch.virtual_users.categories import (
+from autoresearch.virtual_user_generation.categories import (
     DEFAULT_KAGGLE_YOUTUBE_CATEGORIES,
     build_category_affinity,
     validate_categories,

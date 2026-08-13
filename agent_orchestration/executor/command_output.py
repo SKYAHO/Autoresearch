@@ -63,7 +63,7 @@ def log_command_streams(
 ) -> None:
     """실패한 명령의 두 스트림을 각각 한 줄씩 남긴다.
 
-    **stdout도 남기는 이유**는 진행 상황이 거기 있기 때문이다. `src/pipeline/train.py`는
+    **stdout도 남기는 이유**는 진행 상황이 거기 있기 때문이다. `autoresearch/model_training/train.py`는
     단계를 `print()`로 내므로 `[Step 1]`~`[Step 8]`이 stdout에 쌓인다. 실험 #633 진단의
     절반이 "8단계는 다 통과했고 마지막 ONNX 패키징에서 죽었다"였고, 그 출처가 여기다.
 

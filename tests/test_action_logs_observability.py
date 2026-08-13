@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 import pytest
 
-import autoresearch.action_logs.observability as observability
-from autoresearch.action_logs.observability import ActionLogTelemetryReporter
+import autoresearch.action_log_generation.observability as observability
+from autoresearch.action_log_generation.observability import ActionLogTelemetryReporter
 
 
 def _metrics(**overrides):

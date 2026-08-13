@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from src.pipeline import experiment_evaluation
-from src.pipeline.experiment_evaluation import (
+from autoresearch.model_evaluation import experiment_evaluation
+from autoresearch.model_evaluation.experiment_evaluation import (
     EvaluationConfidence,
     EvaluationReasonCode,
     EvaluationVerdict,
@@ -23,19 +23,19 @@ from src.pipeline.experiment_evaluation import (
     evaluate_experiment,
     promotion_policy_v1,
 )
-from src.pipeline.promotion_evidence import (
+from autoresearch.model_evaluation.promotion_evidence import (
     ExperimentPlanReceipt,
     GcsObjectReceipt,
     HeldOutMetricEvidence,
     HeldOutMetricReceipt,
     PromotionEvidenceValidationError,
 )
-from src.pipeline.training_provenance import (
+from autoresearch.model_training.training_provenance import (
     TrainingComparisonManifest,
     TrainingSeeds,
     VerifiedComparisonPromotionEvidence,
 )
-from src.pipeline.training_comparison import ComparisonValidationError
+from autoresearch.model_evaluation.training_comparison import ComparisonValidationError
 
 
 PLAN_TIME = datetime(2026, 8, 1, tzinfo=timezone.utc)

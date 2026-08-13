@@ -53,6 +53,7 @@ jobs:
               - '.dockerignore'
               - 'Dockerfile.train'
               - 'scripts/gcs_code_bootstrap.sh'
+              - 'autoresearch/**'
               - 'src/**'
               - 'pyproject.toml'
               - 'uv.lock'
@@ -263,7 +264,7 @@ jobs:
             autoresearch.jobs.youtube_backfill \
             autoresearch.jobs.action_log \
             autoresearch.jobs.action_log_quality \
-            src.pipeline.daily_recommendations
+            autoresearch.recommendation.daily_recommendations
           do
             run_batch python -m "$module" --help
             run_batch python -m "$module" --version
@@ -308,9 +309,9 @@ jobs:
               autoresearch-training:ci "$@"
           }
           run_training
-          run_training python -m src.cli train-model --help
-          run_training python -m src.cli evaluate-model --help
-          run_training python -m src.cli promote-model --help
+          run_training python -m autoresearch.cli train-model --help
+          run_training python -m autoresearch.cli evaluate-model --help
+          run_training python -m autoresearch.cli promote-model --help
           if docker run --rm autoresearch-training:ci 2>/dev/null; then
             echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
             exit 1
@@ -369,13 +370,13 @@ jobs:
           run_feast python -m autoresearch.jobs.feast_materialize --version
           # #359 C2로 학습 run-pipeline이 이 이미지로 옮겨왔으므로 여기서 스모크한다
           # (train 이미지는 위에서 더 이상 스모크하지 않는다). --help는 커맨드 본문을
-          # 실행하지 않지만 src.cli의 모듈 최상단 import(build_training_dataset/train/
+          # 실행하지 않지만 autoresearch.cli의 모듈 최상단 import(build_training_dataset/train/
           # evaluate -> lightgbm)를 전부 태우므로, #401(libgomp1)처럼 import 시점에
           # 드러나는 누락을 잡는다.
           # 한계: 함수 안에서 지연 import되는 것(convert_lgbm_to_onnx의 onnxmltools 등)은
           # 이 체인에 안 걸린다. 그 계열은 release.yml의 feast 이미지 verify가 명시적
           # import로 따로 지킨다.
-          run_feast python -m src.cli run-pipeline --help
+          run_feast python -m autoresearch.cli run-pipeline --help
           if docker run --rm autoresearch-feast:ci 2>/dev/null; then
             echo "::error::부트스트랩이 env 없이 성공해서는 안 된다"
             exit 1

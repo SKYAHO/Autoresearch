@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from pyarrow.fs import GcsFileSystem
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
-from autoresearch.youtube_collection.backfill import backfill_from_parquet
+from autoresearch.data_collection.backfill import backfill_from_parquet
 
 
 logger = logging.getLogger(__name__)

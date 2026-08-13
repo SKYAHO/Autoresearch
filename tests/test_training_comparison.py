@@ -11,19 +11,19 @@ import pandas as pd
 import pytest
 from mlflow.tracking import MlflowClient
 
-from src.pipeline.training_comparison import (
+from autoresearch.model_evaluation.training_comparison import (
     ComparisonValidationError,
     revalidate_training_comparison,
     verify_training_comparison,
 )
-from src.pipeline.promotion_evidence import (
+from autoresearch.model_evaluation.promotion_evidence import (
     ExperimentPlanReceipt,
     HeldOutMetricEvidence,
     HeldOutMetricReceipt,
     PromotionEvidenceStore,
     create_experiment_plan,
 )
-from src.pipeline.training_provenance import (
+from autoresearch.model_training.training_provenance import (
     RegistryProvenance,
     TrainingComparisonManifest,
     TrainingSeeds,

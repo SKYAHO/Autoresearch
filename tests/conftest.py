@@ -1,7 +1,7 @@
 """전역 pytest fixture.
 
 Vertex AI 임베딩 API를 기본적으로 mock한다 (#206). 실제 GCP 자격 증명·네트워크
-없이 테스트가 결정론적으로 동작하도록, src/features/embeddings.py가 lazy import
+없이 테스트가 결정론적으로 동작하도록, autoresearch/feature_engineering/embeddings.py가 lazy import
 하는 vertexai.language_models를 가짜 모듈로 치환한다. 가짜 모델은 텍스트를
 해시 시드로 삼은 재현 가능한 벡터를 반환한다 — 예전 pseudo-embedding
 placeholder와 아이디어는 같지만, 이제는 프로덕션 코드가 아니라 테스트 더블로만
@@ -92,8 +92,8 @@ def mock_vertex_embeddings(monkeypatch):
 
     # embeddings.py/category_reference.py는 프로세스 수명 동안 모델·임베딩을
     # 전역 캐시에 담아둔다 — 테스트 간 격리를 위해 매 테스트마다 초기화한다.
-    import src.features.category_reference as category_reference_module
-    import src.features.embeddings as embeddings_module
+    import autoresearch.feature_engineering.category_reference as category_reference_module
+    import autoresearch.feature_engineering.embeddings as embeddings_module
 
     monkeypatch.setattr(embeddings_module, "_model", None)
     monkeypatch.setattr(category_reference_module, "_CATEGORY_EMBEDDINGS", {})

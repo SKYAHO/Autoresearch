@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from autoresearch.youtube_collection.schema import (
+from autoresearch.data_collection.schema import (
     SCHEMA_VERSION,
     TARGET_COUNTRY,
     TrendingVideo,

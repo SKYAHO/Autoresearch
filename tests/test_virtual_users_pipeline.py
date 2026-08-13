@@ -4,13 +4,13 @@ import logging
 import pyarrow.parquet as pq
 import pytest
 
-from autoresearch.virtual_users.glm_generator import RuleBasedVirtualUserGenerator
-from autoresearch.virtual_users.persona_source import build_fixture_raw_persona_records
-from autoresearch.virtual_users.pipeline import (
+from autoresearch.virtual_user_generation.glm_generator import RuleBasedVirtualUserGenerator
+from autoresearch.virtual_user_generation.persona_source import build_fixture_raw_persona_records
+from autoresearch.virtual_user_generation.pipeline import (
     BatchGenerationError,
     generate_virtual_user_batch,
 )
-from autoresearch.virtual_users.schema import GenerationRequest
+from autoresearch.virtual_user_generation.schema import GenerationRequest
 
 
 class _OneBadGenerator(RuleBasedVirtualUserGenerator):
@@ -135,7 +135,7 @@ def test_generate_virtual_user_batch_writes_expected_100_user_parquet(tmp_path, 
         quarantine_output_path=str(quarantine_output_path),
     )
 
-    with caplog.at_level(logging.INFO, logger="autoresearch.virtual_users.pipeline"):
+    with caplog.at_level(logging.INFO, logger="autoresearch.virtual_user_generation.pipeline"):
         result = generate_virtual_user_batch(
             request=request,
             records=records,

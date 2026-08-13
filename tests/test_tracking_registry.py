@@ -8,7 +8,7 @@ from mlflow.exceptions import MlflowException
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.tracking import registry  # noqa: E402
+from autoresearch.model_registry import registry  # noqa: E402
 
 
 def test_register_model_calls_mlflow_register_model(monkeypatch):

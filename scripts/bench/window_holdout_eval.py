@@ -27,10 +27,10 @@ from sklearn.metrics import roc_auc_score
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.features.model_contract import CATEGORICAL_FEATURE_COLUMNS  # noqa: E402
-from src.pipeline import train  # noqa: E402
-from src.pipeline.seed_sweep import summarize_metric, validate_seeds  # noqa: E402
-from src.utils.model_utils import load_feature_columns, load_model  # noqa: E402
+from autoresearch.feature_engineering.model_contract import CATEGORICAL_FEATURE_COLUMNS  # noqa: E402
+from autoresearch.model_training import train  # noqa: E402
+from autoresearch.model_evaluation.seed_sweep import summarize_metric, validate_seeds  # noqa: E402
+from autoresearch.model_training.model_utils import load_feature_columns, load_model  # noqa: E402
 
 
 def score_holdout(model_path: str, feature_columns_path: str, holdout: pd.DataFrame) -> float:

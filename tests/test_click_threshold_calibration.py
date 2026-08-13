@@ -1,6 +1,6 @@
 import pytest
 
-from autoresearch.action_logs.calibration import recommend_click_threshold
+from autoresearch.action_log_generation.calibration import recommend_click_threshold
 
 
 def test_recommends_threshold_hitting_target_ctr() -> None:

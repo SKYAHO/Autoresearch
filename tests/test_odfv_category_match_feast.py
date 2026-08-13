@@ -39,8 +39,8 @@ from feature_repo.feature_definitions import (  # noqa: E402
     video_entity,
     video_feature_view,
 )
-from src.features.feature_builder import compute_category_matches  # noqa: E402
-from src.features.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
+from autoresearch.feature_engineering.feature_builder import compute_category_matches  # noqa: E402
+from autoresearch.feature_engineering.model_contract import MODEL_FEATURE_COLUMNS  # noqa: E402
 
 _UTC = "UTC"
 _TS = pd.Timestamp("2026-07-01", tz=_UTC)

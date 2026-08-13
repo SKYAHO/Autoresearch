@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from autoresearch.experiments.context import (
+from autoresearch.model_evaluation.experiments.context import (
     build_experiment_context,
     build_registry_key,
     parse_registry_key,

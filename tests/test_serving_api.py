@@ -15,7 +15,7 @@ from prometheus_client.parser import text_string_to_metric_families
 
 import src.serving.app as serving_app
 import src.serving.model_loader as model_loader_module
-from src.features.model_contract import (
+from autoresearch.feature_engineering.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     FeatureContractError,
     MODEL_FEATURE_COLUMNS,
@@ -37,7 +37,7 @@ from src.serving.online_features import (
 )
 from src.serving.schemas import CandidateVideo, FeatureValue, RerankedVideo
 from src.serving.service import PredictionError, RerankOutcome, Reranker
-from src.tracking.model_package import ModelPackageManifest, save_manifest
+from autoresearch.model_registry.model_package import ModelPackageManifest, save_manifest
 
 
 class _OnnxMetadata:

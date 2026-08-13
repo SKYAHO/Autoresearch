@@ -23,10 +23,10 @@ from collections import Counter
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from autoresearch.action_logs.llm_generator import OpenRouterActionLogGenerator
-from autoresearch.action_logs.pipeline import generate_action_log_batch
-from autoresearch.action_logs.schema import EventGenerationRequest
-from autoresearch.action_logs.video_source import load_video_records
+from autoresearch.action_log_generation.llm_generator import OpenRouterActionLogGenerator
+from autoresearch.action_log_generation.pipeline import generate_action_log_batch
+from autoresearch.action_log_generation.schema import EventGenerationRequest
+from autoresearch.action_log_generation.video_source import load_video_records
 
 
 def _user_index(user_id: str) -> int:

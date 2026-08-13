@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from src.pipeline.training_provenance import (
+from autoresearch.model_training.training_provenance import (
     MAX_POINTER_HISTORY,
     RegistryProvenance,
     SnapshotPointerEntry,
@@ -27,7 +27,7 @@ from src.pipeline.training_provenance import (
     snapshot_manifest_path,
     write_manifest_atomic,
 )
-from src.pipeline.training_provenance import ProvenanceValidationError
+from autoresearch.model_training.training_provenance import ProvenanceValidationError
 
 
 def _registry() -> RegistryProvenance:

@@ -13,7 +13,7 @@ import math
 
 import pytest
 
-from src.pipeline.seed_sweep import (
+from autoresearch.model_evaluation.seed_sweep import (
     _T_CRITICAL_95,
     MetricSummary,
     SeedSweepError,

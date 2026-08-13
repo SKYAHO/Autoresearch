@@ -15,18 +15,18 @@ import tempfile
 
 import pytest
 
-from src.features.model_contract import (
+from autoresearch.feature_engineering.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
 )
-from src.models.calibration import DownsamplingCalibrator
-from src.models.lgbm_model import LGBMModel
+from autoresearch.model_training.calibration import DownsamplingCalibrator
+from autoresearch.model_training.lgbm_model import LGBMModel
 from src.serving.model_loader import LocalModelSettings, ModelArtifactError, load_local_model
 from src.serving.onnx_model import OnnxProbabilityModel, validate_onnx_session_contract
 from src.serving.schemas import CandidateVideo
 from src.serving.service import Reranker
-from src.tracking.model_package import ModelPackageManifest, save_manifest
-from src.utils.model_utils import (
+from autoresearch.model_registry.model_package import ModelPackageManifest, save_manifest
+from autoresearch.model_training.model_utils import (
     convert_lgbm_to_onnx,
     save_categorical_columns,
     save_feature_columns,

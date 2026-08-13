@@ -8,7 +8,7 @@
 - 실제 스펙에서는 관심사/주제 추출을 "LLM 또는 Keyword 기반"으로 하고 구현 방식은 구현자 재량이다.
   여기서는 데모 목적으로 "Topic Vocabulary 키워드가 텍스트에 등장하는지" 여부로 단순 판정한다.
   (실제 구현 시 LLM 기반 추출로 교체 가능)
-- 클릭 확률은 실제 학습 피처인 topic_similarity(src.features.feature_builder,
+- 클릭 확률은 실제 학습 피처인 topic_similarity(autoresearch.feature_engineering.feature_builder,
   docs/guides/ctr-model-specification.md 기준 user_keyword_embeddings ↔ category_description_embedding
   cosine 유사도)를 그대로 재사용해 계산한다. 별도의 근사치(예: Jaccard)를 쓰면 라벨과
   학습 피처의 신호가 어긋나 mock 데이터에서 모델이 아무것도 학습하지 못하게 된다.
@@ -27,7 +27,7 @@ import pandas as pd
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.features.feature_builder import embed_keywords, compute_topic_similarity  # noqa: E402
+from autoresearch.feature_engineering.feature_builder import embed_keywords, compute_topic_similarity  # noqa: E402
 
 random.seed(42)
 
@@ -89,7 +89,7 @@ def main():
 
     video_category_map = dict(zip(videos["video_id"], videos["categoryId"]))
 
-    # 클릭 라벨은 실제 학습 피처(topic_similarity, src.features.feature_builder)와 동일한
+    # 클릭 라벨은 실제 학습 피처(topic_similarity, autoresearch.feature_engineering.feature_builder)와 동일한
     # 로직으로 생성한다: hobbies_and_interests_list -> user_keyword_embeddings -> category_id
     # 와의 cosine 유사도(max-pool). build_training_dataset.py의 topic_similarity 계산과
     # 신호가 어긋나면(예: 별개의 Jaccard 근사치를 쓰면) mock 데이터에서 모델이 학습할

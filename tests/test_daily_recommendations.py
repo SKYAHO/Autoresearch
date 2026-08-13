@@ -8,9 +8,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import src.pipeline.daily_recommendations as daily
-from src.features.model_contract import FeatureContractError, MODEL_FEATURE_COLUMNS
-from src.pipeline.daily_recommendations import (
+import autoresearch.recommendation.daily_recommendations as daily
+from autoresearch.feature_engineering.model_contract import FeatureContractError, MODEL_FEATURE_COLUMNS
+from autoresearch.recommendation.daily_recommendations import (
     RECOMMENDATIONS_SCHEMA,
     ensure_output_table,
     parse_iso8601_duration,
@@ -28,7 +28,7 @@ _GENERATED_AT = datetime(2026, 7, 21, 12, 0, 0, tzinfo=UTC)
 @pytest.fixture(autouse=True)
 def configured_project(monkeypatch: pytest.MonkeyPatch) -> None:
     """정상 일일 추천 경로에 명시 BigQuery 프로젝트를 제공한다."""
-    from src.pipeline import build_training_dataset as btd
+    from autoresearch.model_training import build_training_dataset as btd
 
     monkeypatch.setattr(btd, "BIGQUERY_PROJECT", "test-project")
 
@@ -150,7 +150,7 @@ def test_write_partition_is_idempotent_by_truncate_decorator():
 
 def test_run_batch_requires_project_before_bigquery_client(monkeypatch) -> None:
     """테이블 해석 순서와 무관하게 프로젝트 누락을 client 생성 전에 거부한다."""
-    from src.pipeline import build_training_dataset as btd
+    from autoresearch.model_training import build_training_dataset as btd
 
     monkeypatch.setattr(btd, "BIGQUERY_PROJECT", None)
     monkeypatch.setattr(daily, "raw_table_id", lambda table: f"raw.{table}")
@@ -167,7 +167,7 @@ def test_run_batch_requires_project_before_bigquery_client(monkeypatch) -> None:
 
 def test_run_batch_feast_uses_resolved_project_for_store(monkeypatch) -> None:
     """Feast store 생성에는 검증·정규화된 프로젝트만 전달한다."""
-    from src.features import feast_retrieval
+    from autoresearch.feature_engineering import feast_retrieval
 
     captured: dict[str, object] = {}
     monkeypatch.setenv("GCS_REGISTRY_PATH", "gs://test-bucket/registry.pb")
@@ -602,7 +602,7 @@ def test_quarantine_warning_names_user_and_exception_type(monkeypatch, caplog):
         return original(**kwargs)
 
     monkeypatch.setattr(daily, "build_pool_feature_frame", _fail_u2)
-    with caplog.at_level(logging.WARNING, logger="src.pipeline.daily_recommendations"):
+    with caplog.at_level(logging.WARNING, logger="autoresearch.recommendation.daily_recommendations"):
         run_batch(
             candidate_dt=date(2026, 7, 21),
             events_dt=date(2026, 7, 21),
@@ -699,7 +699,7 @@ class _QueryRecordingClient(_FakeClient):
 
 
 def test_run_batch_resolves_raw_tables_in_raw_dataset(monkeypatch):
-    import src.pipeline.build_training_dataset as btd
+    import autoresearch.model_training.build_training_dataset as btd
 
     monkeypatch.setattr(btd, "BIGQUERY_PROJECT", "proj")
     monkeypatch.setattr(btd, "BIGQUERY_RAW_DATASET", "data_lake_raw")
@@ -722,7 +722,7 @@ def test_run_batch_resolves_raw_tables_in_raw_dataset(monkeypatch):
 
 
 def test_run_batch_writes_output_table_in_feature_dataset(monkeypatch):
-    import src.pipeline.build_training_dataset as btd
+    import autoresearch.model_training.build_training_dataset as btd
 
     monkeypatch.setattr(btd, "BIGQUERY_PROJECT", "proj")
     monkeypatch.setattr(btd, "BIGQUERY_RAW_DATASET", "data_lake_raw")
@@ -746,7 +746,7 @@ def test_run_batch_writes_output_table_in_feature_dataset(monkeypatch):
 def test_virtual_users_table_stays_in_feature_dataset(monkeypatch):
     """CAVEAT(#232): asset_virtual_user_vu_1000 은 삭제 예정이지만 이번 범위에서는
     소스를 바꾸지 않는다 — feature dataset 해석을 유지한다는 계약을 고정한다."""
-    import src.pipeline.build_training_dataset as btd
+    import autoresearch.model_training.build_training_dataset as btd
 
     monkeypatch.setattr(btd, "BIGQUERY_PROJECT", "proj")
     monkeypatch.setattr(btd, "BIGQUERY_DATASET", "feast_offline_store")

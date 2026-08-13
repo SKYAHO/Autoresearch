@@ -148,18 +148,32 @@ def test_forbidden_path_rejects_the_whole_candidate(tmp_path: Path, path: str) -
         _verify(repository, base_sha)
 
 
-def test_model_contract_requires_its_explicit_scope(tmp_path: Path) -> None:
-    """특별 모델 계약 파일을 기본 src allowlist가 열면 의도치 않은 계약 변경을 허용한다."""
+@pytest.mark.parametrize(
+    "contract_path",
+    (
+        "src/features/model_contract.py",
+        "autoresearch/feature_engineering/model_contract.py",
+    ),
+)
+def test_model_contract_requires_its_explicit_scope(
+    tmp_path: Path, contract_path: str
+) -> None:
+    """기본 allowlist가 모델 계약 파일을 열면 의도치 않은 계약 변경을 허용한다.
+
+    두 경로를 모두 검증한다. #754 재배치로 계약 파일이 옮겨졌지만, 이 게이트는 봉인된
+    base_dev_sha 워크스페이스에 적용되므로 재배치 이전 실험은 여전히 옛 경로를 가진다.
+    한쪽만 검증하면 다른 쪽 게이트가 죽어도 이 테스트는 계속 통과한다.
+    """
     repository, base_sha = _repository(tmp_path)
-    target = repository / "src" / "features" / "model_contract.py"
-    target.parent.mkdir(parents=True)
+    target = repository / contract_path
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("CONTRACT = 2\n", encoding="utf-8")
 
     with pytest.raises(CandidateVerificationError, match="forbidden_path"):
         _verify(repository, base_sha)
 
     assert _verify(repository, base_sha, allowed_scope=("prod_model_contract",)) == (
-        "src/features/model_contract.py",
+        contract_path,
     )
 
 
@@ -702,3 +716,25 @@ def test_pytest_output_is_capped_to_the_tail(
     assert exit_code == 1
     assert len(output.encode("utf-8")) <= verifier._PYTEST_OUTPUT_TAIL_BYTES
     assert output.endswith("LAST_LINE\n")
+
+
+def test_src_allowance_applies_only_to_pre_rearrangement_trees(tmp_path: Path) -> None:
+    """`src/` 허용은 재배치 이전에 봉인된 트리에서만 열린다(#754).
+
+    이 검증은 저장소 트리가 아니라 봉인된 `base_dev_sha` 워크스페이스에 적용되므로,
+    진행 중 실험을 살리려면 옛 트리에서는 `src/`를 열어야 한다. 그러나 재배치 **이후**
+    트리에서 `src/` 아래 파일이 새로 생기는 것은 정상이 아니다 — 조건 없이 열어 두면
+    전환이 끝난 뒤에도 allowlist가 넓어진 채로 남는다.
+    """
+    repository, base_sha = _repository(tmp_path)
+    target = repository / "src" / "pipeline" / "train.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+
+    # 옛 트리(`autoresearch/cli.py` 없음)에서는 통과한다.
+    assert _verify(repository, base_sha) == ("src/pipeline/train.py",)
+
+    # 재배치가 만든 진입점이 생기면 같은 경로가 거부된다.
+    (repository / "autoresearch" / "cli.py").write_text("", encoding="utf-8")
+    with pytest.raises(CandidateVerificationError, match="forbidden_path"):
+        _verify(repository, base_sha)

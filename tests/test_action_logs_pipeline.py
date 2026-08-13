@@ -16,10 +16,10 @@ import pyarrow.parquet as pq
 import pytest
 from pydantic import ValidationError
 
-import autoresearch.action_logs.pipeline as pipeline_module
-from autoresearch.action_logs.candidate import build_candidates
-from autoresearch.action_logs.llm_generator import RuleBasedActionLogGenerator
-from autoresearch.action_logs.pipeline import (
+import autoresearch.action_log_generation.pipeline as pipeline_module
+from autoresearch.action_log_generation.candidate import build_candidates
+from autoresearch.action_log_generation.llm_generator import RuleBasedActionLogGenerator
+from autoresearch.action_log_generation.pipeline import (
     ACTION_LOG_DRAFT_PARQUET_SCHEMA,
     ActionLogGenerator,
     ActionLogGenerationError,
@@ -35,13 +35,13 @@ from autoresearch.action_logs.pipeline import (
     select_clicks_per_slate,
     write_action_log_draft_parquet,
 )
-from autoresearch.action_logs.schema import (
+from autoresearch.action_log_generation.schema import (
     EventGenerationRequest,
     EventLog,
     ImpressionDraft,
     QuarantineRecord,
 )
-from autoresearch.action_logs.video_source import (
+from autoresearch.action_log_generation.video_source import (
     _parse_tags,
     build_fixture_video_records,
     nominal_duration_sec,
@@ -158,7 +158,7 @@ def test_impression_headroom_covers_max_session_span():
     # window 불변식(모든 이벤트 <= history_end)이 _MAX_DURATION과 결합돼 있음을 명시적으로 잠근다.
     # _MAX_DURATION을 올리면 _MAX_SESSION_SPAN_SEC가 커지고 _MIN_IMPRESSION_HOURS도 따라
     # 커져야 하며, 그렇지 않으면 클릭 세션 후속 이벤트가 history_end를 넘을 수 있다.
-    from autoresearch.action_logs.pipeline import (
+    from autoresearch.action_log_generation.pipeline import (
         _MAX_SESSION_SPAN_SEC,
         _MIN_IMPRESSION_HOURS,
     )
@@ -1475,7 +1475,7 @@ def test_eventlog_watch_time_only_for_view():
 
 
 def test_batch_summary_ctr_from_impression_and_click_rows():
-    from autoresearch.action_logs.schema import EventLogBatch
+    from autoresearch.action_log_generation.schema import EventLogBatch
     now = datetime(2026, 7, 1, tzinfo=UTC)
 
     def _ev(et, wt=None):
@@ -2226,7 +2226,7 @@ def test_streaming_single_emits_operational_retention_telemetry(
         max_concurrency=2,
     )
 
-    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_log_generation.pipeline"):
         pipeline_module.generate_action_log_single(
             request,
             _fixture_users(1),
@@ -2412,7 +2412,7 @@ def test_streaming_single_isolates_nonfinal_telemetry_failures(
     )
     request = _request(tmp_path, candidates_per_user=1, max_concurrency=1)
 
-    with caplog.at_level(logging.WARNING, logger="autoresearch.action_logs.pipeline"):
+    with caplog.at_level(logging.WARNING, logger="autoresearch.action_log_generation.pipeline"):
         result = pipeline_module.generate_action_log_single(
             request,
             _fixture_users(1),
@@ -2686,7 +2686,7 @@ def test_streaming_single_waits_for_known_total_before_worker_detail_context(
 ) -> None:
     """unknown total의 active window에서는 detailed-only worker event를 남기지 않는다."""
 
-    from autoresearch.action_logs.observability import emit_action_log_event
+    from autoresearch.action_log_generation.observability import emit_action_log_event
 
     monkeypatch.setenv("ACTION_LOG_TELEMETRY_DETAIL_MAX_WORK", "2")
     videos = build_fixture_video_records(1)
@@ -2730,7 +2730,7 @@ def test_streaming_single_waits_for_known_total_before_worker_detail_context(
         "_generate_action_log_work",
         _capture_context,
     )
-    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_log_generation.pipeline"):
         pipeline_module.generate_action_log_single(
             _request(
                 tmp_path,
@@ -3156,7 +3156,7 @@ def test_progress_snapshot_is_emitted_after_completed_batch_is_drained(
     monkeypatch.setattr(pipeline_module, "wait", _wait_for_current_batch)
     snapshots = []
 
-    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_log_generation.pipeline"):
         result = generate_action_log_drafts(
             _request(
                 tmp_path,
@@ -3228,7 +3228,7 @@ def test_micro_work_structured_log_separates_pipeline_timings(tmp_path, caplog):
     def _progress(snapshot):
         return 3.25
 
-    with caplog.at_level(logging.INFO, logger="autoresearch.action_logs.pipeline"):
+    with caplog.at_level(logging.INFO, logger="autoresearch.action_log_generation.pipeline"):
         result = generate_action_log_drafts(
             _request(
                 tmp_path,
@@ -3303,7 +3303,7 @@ def test_load_video_records_accepts_youtube_collection_schema(tmp_path):
     )
     pq.write_table(table, path)
 
-    from autoresearch.action_logs.video_source import load_video_records
+    from autoresearch.action_log_generation.video_source import load_video_records
 
     records = load_video_records(path)
 
@@ -3341,12 +3341,12 @@ def test_candidate_provider_overrides_default_selection(tmp_path):
 
 
 def test_expand_events_tags_exposure_metadata_and_prefix():
-    from autoresearch.action_logs.pipeline import (
+    from autoresearch.action_log_generation.pipeline import (
         ExposureMetadata,
         _expand_events,
         select_clicks_per_slate,
     )
-    from autoresearch.action_logs.schema import SOURCE_ONLINE_SIMULATED, ImpressionDraft
+    from autoresearch.action_log_generation.schema import SOURCE_ONLINE_SIMULATED, ImpressionDraft
 
     drafts = [
         ImpressionDraft(
@@ -3390,8 +3390,8 @@ def test_expand_events_tags_exposure_metadata_and_prefix():
 
 
 def test_expand_events_without_metadata_is_unchanged():
-    from autoresearch.action_logs.pipeline import _expand_events, select_clicks_per_slate
-    from autoresearch.action_logs.schema import ImpressionDraft
+    from autoresearch.action_log_generation.pipeline import _expand_events, select_clicks_per_slate
+    from autoresearch.action_log_generation.schema import ImpressionDraft
 
     drafts = [
         ImpressionDraft(
@@ -3441,8 +3441,8 @@ def test_expand_events_event_ids_are_date_namespaced_and_unique():
     import re
     from datetime import datetime, timedelta, timezone
 
-    from autoresearch.action_logs.pipeline import _expand_events, select_clicks_per_slate
-    from autoresearch.action_logs.schema import EventGenerationRequest, ImpressionDraft
+    from autoresearch.action_log_generation.pipeline import _expand_events, select_clicks_per_slate
+    from autoresearch.action_log_generation.schema import EventGenerationRequest, ImpressionDraft
 
     kst = timezone(timedelta(hours=9))
     drafts = [

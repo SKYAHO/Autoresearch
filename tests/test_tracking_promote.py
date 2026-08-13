@@ -11,8 +11,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.tracking import promote, registry  # noqa: E402
-from src.tracking.promotion_result import (  # noqa: E402
+from autoresearch.model_registry import promote, registry  # noqa: E402
+from autoresearch.model_registry.promotion_result import (  # noqa: E402
     PromotionExecutionError,
     PromotionOutcome,
     PromotionReasonCode,

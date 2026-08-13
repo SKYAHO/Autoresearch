@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.features.model_contract import (
+from autoresearch.feature_engineering.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
     FeatureContractError,
@@ -173,7 +173,7 @@ def test_passthrough_columns_are_disjoint_from_model_input() -> None:
 
     겹치면 평가용으로 실은 컬럼이 모델 입력으로 새어 들어가 유저 암기가 발생한다.
     """
-    from src.features.model_contract import PASSTHROUGH_COLUMNS
+    from autoresearch.feature_engineering.model_contract import PASSTHROUGH_COLUMNS
 
     assert "user_id" in PASSTHROUGH_COLUMNS
     assert set(PASSTHROUGH_COLUMNS).isdisjoint(MODEL_FEATURE_COLUMNS)
@@ -182,7 +182,7 @@ def test_passthrough_columns_are_disjoint_from_model_input() -> None:
 
 def test_resolve_experiment_feature_columns_rejects_passthrough_name() -> None:
     """패스스루 이름을 실험 피처로 승격시킬 수 없다(#505)."""
-    from src.features.model_contract import PASSTHROUGH_COLUMNS
+    from autoresearch.feature_engineering.model_contract import PASSTHROUGH_COLUMNS
 
     with pytest.raises(FeatureContractError):
         resolve_experiment_feature_columns((PASSTHROUGH_COLUMNS[0],))

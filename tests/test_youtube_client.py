@@ -7,7 +7,7 @@ import traceback
 import pytest
 import requests
 
-from autoresearch.youtube_collection.client import (
+from autoresearch.data_collection.client import (
     CollectionExhausted,
     ResilientYouTubeClient,
     Verdict,
@@ -604,7 +604,7 @@ def test_call_via_proxy_does_not_chain_raw_requests_exception(monkeypatch, caplo
     monkeypatch.setattr("requests.get", fake_get)
 
     with caplog.at_level(
-        logging.WARNING, logger="autoresearch.youtube_collection.client"
+        logging.WARNING, logger="autoresearch.data_collection.client"
     ):
         with pytest.raises(CollectionExhausted) as exc_info:
             client._call_via_proxy("videos", {})
@@ -649,7 +649,7 @@ def test_call_via_proxy_waits_before_network_error_retry(monkeypatch):
         proxy_network_backoff=1.5,
     )
     monkeypatch.setattr("requests.get", fake_get)
-    monkeypatch.setattr("autoresearch.youtube_collection.client.time.sleep", fake_sleep)
+    monkeypatch.setattr("autoresearch.data_collection.client.time.sleep", fake_sleep)
 
     result = client._call_via_proxy("videos", {"part": "snippet"})
 
@@ -767,7 +767,7 @@ def test_success_path_logs_ok(caplog):
     factory = _make_service_that_raises(then_return=_fake_videos_response())
     client = ResilientYouTubeClient(keys=["k1"], _service_factory=factory)
 
-    with caplog.at_level(logging.INFO, logger="autoresearch.youtube_collection.client"):
+    with caplog.at_level(logging.INFO, logger="autoresearch.data_collection.client"):
         client.make_callables().list_videos(part="snippet")
 
     assert any(

@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-import autoresearch.virtual_users.persona_source as persona_source
-from autoresearch.virtual_users.persona_source import (
+import autoresearch.virtual_user_generation.persona_source as persona_source
+from autoresearch.virtual_user_generation.persona_source import (
     build_fixture_raw_persona_records,
     load_raw_persona_records,
     normalize_sex,
@@ -106,7 +106,7 @@ def test_load_raw_persona_records_returns_raw_dicts_and_snapshot(monkeypatch, tm
         return iter(fake)
 
     monkeypatch.setattr(
-        "autoresearch.virtual_users.persona_source.load_dataset", fake_load_dataset
+        "autoresearch.virtual_user_generation.persona_source.load_dataset", fake_load_dataset
     )
     snapshot = tmp_path / "raw.jsonl"
 

@@ -50,11 +50,11 @@ def main() -> int:
     os.environ.setdefault("BQ_DATASET", dataset)
 
     from feature_repo import feature_definitions as fd
-    from src.features.feast_retrieval import (
+    from autoresearch.feature_engineering.feast_retrieval import (
         build_offline_feature_store,
         retrieve_training_features,
     )
-    from src.pipeline.build_training_dataset import load_training_entity_spine
+    from autoresearch.model_training.build_training_dataset import load_training_entity_spine
 
     out_abs = os.path.abspath(args.out) if args.out else None
     tmp = tempfile.mkdtemp(prefix="feast_validate_")
@@ -87,11 +87,11 @@ def main() -> int:
     features = retrieve_training_features(store, spine)
     elapsed = time.time() - t0
 
-    from src.features.feast_retrieval import (
+    from autoresearch.feature_engineering.feast_retrieval import (
         apply_cold_start_defaults,
         drop_user_dynamic_gap_rows,
     )
-    from src.features.model_contract import MODEL_FEATURE_COLUMNS
+    from autoresearch.feature_engineering.model_contract import MODEL_FEATURE_COLUMNS
 
     missing = [c for c in MODEL_FEATURE_COLUMNS if c not in features.columns]
     print("\n" + "=" * 60)

@@ -1,7 +1,7 @@
 import json
 
-from autoresearch.action_logs.pipeline import write_action_log_draft_parquet
-from autoresearch.action_logs.schema import ImpressionDraft
+from autoresearch.action_log_generation.pipeline import write_action_log_draft_parquet
+from autoresearch.action_log_generation.schema import ImpressionDraft
 from autoresearch.jobs.click_threshold_calibrate import main
 
 

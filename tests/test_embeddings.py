@@ -1,4 +1,4 @@
-"""src/features/embeddings.py의 Vertex AI 배치 임베딩 함수 단위 테스트.
+"""autoresearch/feature_engineering/embeddings.py의 Vertex AI 배치 임베딩 함수 단위 테스트.
 
 tests/conftest.py의 autouse fixture가 기본 fake를 깔아두지만, 여기서는
 Vertex AI SDK 호출의 정확한 형태(task_type/output_dimensionality/청킹/정규화)를
@@ -13,7 +13,7 @@ import pytest
 from google.api_core.exceptions import BadGateway, Unknown
 from google.auth.exceptions import TransportError
 
-from src.features import embeddings as embeddings_module
+from autoresearch.feature_engineering import embeddings as embeddings_module
 
 
 class _RecordingTextEmbeddingInput:

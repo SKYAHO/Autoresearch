@@ -1,7 +1,7 @@
 """조건별 학습 산출물을 채점해 실험 지표로 모으는 계약을 고정한다.
 
 실제 평가를 돌리지 않고 subprocess 경계만 대역으로 바꾼다 — 지표의 정의와 계산은
-`src/pipeline/evaluate.py`가 소유하고 `tests/test_pipeline_evaluate.py`가 검증한다.
+`autoresearch/model_evaluation/evaluate.py`가 소유하고 `tests/test_pipeline_evaluate.py`가 검증한다.
 여기서 지키는 것은 "무엇을 호출하고 무엇을 남기는가"다.
 """
 
@@ -35,7 +35,11 @@ SEEDS = (42, 43)
 
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
-    """clone된 저장소를 흉내 내는 디렉터리."""
+    """clone된 저장소를 흉내 내는 디렉터리.
+
+    #754 전환 기간 동안 이 fixture는 재배치 **이전** 트리를 나타낸다 — 채점 명령의 모듈
+    이름을 workspace 모양에서 고르기 때문이다(`workspace_layout`).
+    """
     repository = tmp_path / "repository"
     repository.mkdir()
     return repository
@@ -101,10 +105,30 @@ _DEFAULT_VALUES = {
 }
 
 
+@pytest.mark.parametrize(
+    ("tree_marker", "expected_module"),
+    (
+        (None, "src.cli"),
+        ("autoresearch/cli.py", "autoresearch.cli"),
+    ),
+)
 def test_evaluate_condition_calls_evaluate_model_once_per_seed(
-    monkeypatch: pytest.MonkeyPatch, workspace: Path, output_root: Path
+    monkeypatch: pytest.MonkeyPatch,
+    workspace: Path,
+    output_root: Path,
+    tree_marker: str | None,
+    expected_module: str,
 ) -> None:
-    """seed마다 한 번씩, 학습이 남긴 산출물 경로를 그대로 넘겨 채점한다."""
+    """seed마다 한 번씩, 학습이 남긴 산출물 경로를 그대로 넘겨 채점한다.
+
+    채점 명령의 모듈 이름은 **봉인된 workspace 트리의 모양**에서 나온다(#754). 이미지는
+    릴리스된 digest이고 워크스페이스는 그보다 앞선 `base_dev_sha`일 수 있어, 한쪽만
+    검증하면 다른 쪽 실험이 `ModuleNotFoundError`로 전부 죽어도 이 테스트는 통과한다.
+    """
+    if tree_marker is not None:
+        marker = workspace / tree_marker
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("", encoding="utf-8")
     _write_training_artifacts(output_root, TrainingStage.BASELINE)
     calls = _stub_evaluation(monkeypatch, _DEFAULT_VALUES)
 
@@ -121,7 +145,7 @@ def test_evaluate_condition_calls_evaluate_model_once_per_seed(
     assert sorted(collected) == list(SEEDS)
     assert len(calls) == len(SEEDS)
     argv = calls[0]
-    assert argv[:4] == ["python", "-m", "src.cli", "evaluate-model"]
+    assert argv[:4] == ["python", "-m", expected_module, "evaluate-model"]
     # 학습이 만든 테스트셋으로 채점해야 한다 — 전체 데이터셋으로 재면 학습에 쓴 행이
     # 섞여 지표가 부풀려진다.
     assert argv[argv.index("--data-path") + 1].endswith("baseline/test_42.csv")

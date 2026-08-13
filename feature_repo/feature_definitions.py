@@ -31,8 +31,8 @@ from feast.value_type import ValueType
 # `feature_definitions`), UDF가 이 모듈의 전역을 참조하면 dill이 그 이름을
 # by-reference로 레지스트리에 박는다. `/app`에서 도는 학습·서빙은 그 이름을 import할
 # 수 없어 레지스트리를 읽는 순간 ModuleNotFoundError로 죽는다. 그래서 변환 본체는
-# import 경로가 고정된 src.features.feature_builder에 둔다.
-from src.features.feature_builder import compute_category_matches
+# import 경로가 고정된 autoresearch.feature_engineering.feature_builder에 둔다.
+from autoresearch.feature_engineering.feature_builder import compute_category_matches
 
 # FeatureView ttl 정책 (#357 spec (C) 확정, 2026-07-27):
 # - 일 스냅샷 뷰(UserDynamic)만 60h — 당일(≤24h)+1일 결손(≤48h)까지 stale 허용, 2일+는 null.
@@ -213,7 +213,10 @@ user_category_similarity_view = FeatureView(
     ],
 )
 def category_match_view(inputs: pd.DataFrame) -> pd.DataFrame:
-    # 변환 본체는 src.features.feature_builder에 있다(#409, 위 import 주석 참조).
+    # 변환 본체는 autoresearch.feature_engineering.feature_builder에 있다(#409, 위 import
+    # 주석 참조). #754 재배치로 src.features.feature_builder에서 이 경로로 옮겼다 — 배포된
+    # 레지스트리의 dill body는 아직 옛 이름을 by-reference로 물고 있으므로, 이 주석
+    # 변경으로 udf_string 을 바꿔 apply가 재직렬화하도록 만든다(아래 설명 참조).
     #
     # 이 주석은 문서이면서 동시에 **레지스트리 갱신 트리거**다. feast의 변경 감지는
     # PandasTransformation.__eq__ = (udf_string, 바이트코드) 두 가지뿐이라, 헬퍼의 소속
@@ -228,7 +231,8 @@ def category_match_view(inputs: pd.DataFrame) -> pd.DataFrame:
 
 # ============================================================================
 # FeatureService — 학습 21피처 묶음 (#358)
-# MODEL_FEATURE_COLUMNS(src/features/model_contract.py)와 이름·개수 1:1이어야 한다.
+# MODEL_FEATURE_COLUMNS(autoresearch/feature_engineering/model_contract.py)와 이름·개수
+# 1:1이어야 한다.
 # UserStatic에서 3개(preferred_category/preferred_topics는 ODFV 입력이라 제외),
 # UserDynamic 6 + Video 9 + Similarity 1(topic_similarity만) + ODFV 2 = 21.
 # ============================================================================

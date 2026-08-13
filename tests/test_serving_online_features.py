@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from src.features.model_contract import FeatureContractError, MODEL_FEATURE_COLUMNS
+from autoresearch.feature_engineering.model_contract import FeatureContractError, MODEL_FEATURE_COLUMNS
 from src.serving import online_features
 from src.serving.online_features import (
     FeatureBuildTimings,

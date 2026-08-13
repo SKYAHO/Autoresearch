@@ -4,7 +4,7 @@ import types
 
 import pytest
 
-from autoresearch.virtual_users.glm_generator import (
+from autoresearch.virtual_user_generation.glm_generator import (
     DEFAULT_OPENROUTER_BASE_URL,
     DEFAULT_OPENROUTER_MODEL,
     GLM_SYSTEM_HARNESS,
@@ -15,8 +15,8 @@ from autoresearch.virtual_users.glm_generator import (
     build_source_hash,
     build_virtual_user_prompt,
 )
-from autoresearch.virtual_users.persona_source import build_fixture_raw_persona_records
-from autoresearch.virtual_users.schema import VirtualUser
+from autoresearch.virtual_user_generation.persona_source import build_fixture_raw_persona_records
+from autoresearch.virtual_user_generation.schema import VirtualUser
 
 
 def _raw_row():

@@ -12,7 +12,7 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pipeline.degradation_eval import (  # noqa: E402
+from autoresearch.model_evaluation.degradation_eval import (  # noqa: E402
     EvaluationStatus,
     classify_evaluation_day,
     evaluation_dates,

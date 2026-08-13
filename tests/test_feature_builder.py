@@ -2,13 +2,13 @@
 
 import numpy as np
 import json
-from src.features.feature_builder import (
+from autoresearch.feature_engineering.feature_builder import (
     compute_historical_category_match,
     compute_preferred_category_match,
     compute_topic_similarity,
     embed_keywords,
 )
-from src.features.category_reference import get_category_description_embedding, CATEGORY_DESCRIPTIONS
+from autoresearch.feature_engineering.category_reference import get_category_description_embedding, CATEGORY_DESCRIPTIONS
 
 
 class TestComputeHistoricalCategoryMatch:

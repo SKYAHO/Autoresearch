@@ -60,3 +60,18 @@ scratchpad/
 
 # 로컬 생성 산출물(PDF 등)
 output/
+
+# Airflow DAG는 인접 저장소 SKYAHO/Autoresearch-airflow 소유다.
+# 최상위 dags/ 는 #142 레거시 제거 후 되살아난 로컬 잔재이므로 추적하지 않는다 (#754)
+/dags/
+
+# 에이전트 도구 세션 스크래치 (#754)
+.gjc/
+.playwright-mcp/
+.superpowers/
+
+# 워크벤치 확인용 스크린샷 등 최상위 이미지 (#754)
+/*.png
+
+# 워크스페이스 전용 로컬 메모 — 파일 스스로 "Git에 커밋하지 않는다"고 선언한다 (#754)
+/agent.md
