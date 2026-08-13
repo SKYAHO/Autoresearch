@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-13T15:26:52Z",
+  "generated_at": "2026-08-13T15:30:17Z",
   "reports": [
+    {
+      "number": 758,
+      "title": "refactor: 테스트를 소스 구조와 같은 모양으로 옮긴다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-13T15:29:55Z",
+      "summary_ko": [
+        "저장소 구조 재배치(#754) Task 3으로 tests/ 폴더 내 138개 테스트 파일을 소스 코드 모듈 구조에 맞게 하위 디렉터리로 이동했습니다.",
+        "테스트 폴더 깊이 변경으로 영향을 받은 상대 경로 참조 37곳과 CI 워크플로우(ci.yml) 내 명시적 테스트 파일 경로들을 모두 갱신했습니다.",
+        "테스트 실행 순서 변경 시 드러난 로컬 .env 환경 변수 오염 버그를 autouse fixture로 차단하고 전체 2838개 테스트 수집을 확인했습니다."
+      ],
+      "report_url": "pr/758/"
+    },
     {
       "number": 757,
       "title": "refactor: 배포되는 서비스를 applications 층으로 분리한다",
