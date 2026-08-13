@@ -24,7 +24,7 @@ cutoff 학습의 랜덤 val 지표가 아니다 — 산출 경로가 달라 약 
 [비책임] 학습(``train.main``)·데이터 조립(``build_training_dataset.main``)·held-out
 ROC-AUC 계산(``evaluate.evaluate_held_out_roc_auc``) 자체는 재구현하지 않고 그대로
 호출한다. 승격 판정(``eligible``/``reject``/``hold``)은
-``src/pipeline/experiment_evaluation.py`` 소유이며 이 모듈은 호출·수정하지 않는다
+``autoresearch/model_evaluation/experiment_evaluation.py`` 소유이며 이 모듈은 호출·수정하지 않는다
 (#485 §7.1 게이트 — `#425` 신호 필드를 그 스키마에 얹을지는 `#493` 확인 후 결정).
 두 조건(baseline/challenger) 비교와 시간축 paired 계약은 `#514` 소관이다.
 Plotly 시각화와 공개 CLI 명령은 각각 ``scripts/bench/``, ``src/cli.py``가 담당한다.
@@ -42,15 +42,15 @@ from typing import TYPE_CHECKING, TypedDict
 import pandas as pd
 from pydantic import BaseModel, ConfigDict
 
-from src.pipeline import build_training_dataset, train
-from src.pipeline.evaluate import evaluate_held_out_roc_auc
-from src.pipeline.training_provenance import (
+from autoresearch.model_training import build_training_dataset, train
+from autoresearch.model_evaluation.evaluate import evaluate_held_out_roc_auc
+from autoresearch.model_training.training_provenance import (
     TrainingSnapshotManifest,
     load_training_snapshot_manifest,
     sha256_file,
     write_manifest_atomic,
 )
-from src.utils.model_utils import load_categorical_columns, load_feature_columns, load_model
+from autoresearch.model_training.model_utils import load_categorical_columns, load_feature_columns, load_model
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence

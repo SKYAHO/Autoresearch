@@ -16,13 +16,13 @@ from typing import Literal
 
 from openai import APITimeoutError
 
-from autoresearch.action_logs.candidate import (
+from autoresearch.action_log_generation.candidate import (
     _relevance_score,
     _user_keywords,
     _video_text,
 )
-from autoresearch.action_logs.observability import emit_action_log_event
-from autoresearch.action_logs.schema import PROMPT_VERSION
+from autoresearch.action_log_generation.observability import emit_action_log_event
+from autoresearch.action_log_generation.schema import PROMPT_VERSION
 
 
 logger = logging.getLogger(__name__)

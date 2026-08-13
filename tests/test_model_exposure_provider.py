@@ -6,7 +6,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from src.pipeline.model_exposure_provider import (
+from autoresearch.recommendation.model_exposure_provider import (
     RankedVideo,
     RankingsPartition,
     build_model_exposures,
@@ -17,7 +17,7 @@ from src.pipeline.model_exposure_provider import (
 
 
 def test_resolve_recommendations_table_id_defaults_and_override(monkeypatch):
-    from src.pipeline import build_training_dataset
+    from autoresearch.model_training import build_training_dataset
 
     monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", "test-project")
     monkeypatch.delenv("CTR_TRAINING_BQ_RECOMMENDATIONS_TABLE", raising=False)
@@ -38,7 +38,7 @@ def test_resolve_recommendations_table_id_defaults_and_override(monkeypatch):
 
 def test_resolve_recommendations_table_id_requires_project(monkeypatch):
     """프로젝트가 없으면 ``None.<dataset>.<table>``을 만들지 않는다."""
-    from src.pipeline import build_training_dataset
+    from autoresearch.model_training import build_training_dataset
 
     monkeypatch.setattr(build_training_dataset, "BIGQUERY_PROJECT", None)
 

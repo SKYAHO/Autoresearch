@@ -11,10 +11,10 @@
 요약해 판정 산출물에 병기한다(`summarize_temporal_signal`) — 이 신호는 `verdict`를
 바꾸지 않고, 사람과 `#472`가 판정의 신뢰도를 읽는 데 쓴다.
 
-[비책임] 모델 학습은 `src/pipeline/train.py`, 지표 산출은
-`src/pipeline/evaluate.py`, MLflow artifact 비교 검증은
-`src/pipeline/training_comparison.py`, 시간축 **측정**은
-`src/pipeline/degradation_eval.py`가 소유한다. 이 모듈은 `degradation_eval`을
+[비책임] 모델 학습은 `autoresearch/model_training/train.py`, 지표 산출은
+`autoresearch/model_evaluation/evaluate.py`, MLflow artifact 비교 검증은
+`autoresearch/model_evaluation/training_comparison.py`, 시간축 **측정**은
+`autoresearch/model_evaluation/degradation_eval.py`가 소유한다. 이 모듈은 `degradation_eval`을
 **import하지 않는다** — 그 모듈이 끌고 오는 `train`(→ lightgbm)이 판정 경로에
 딸려오면 안 되기 때문이다. 호출부가
 `temporal_signal_inputs(result)`로 원시값을 뽑아 넘긴다(#485 §5.3). 이 모듈은 그 verifier를 호출해
@@ -33,7 +33,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from src.pipeline.promotion_evidence import (
+from autoresearch.model_evaluation.promotion_evidence import (
     PROMOTION_POLICY_VERSION,
     ExperimentPlan,
     ExperimentPlanReceipt,
@@ -41,12 +41,12 @@ from src.pipeline.promotion_evidence import (
     PromotionEvidenceValidationError,
     create_experiment_plan,  # noqa: F401 - 기존 import 경로 호환 re-export
 )
-from src.pipeline.seed_sweep import compare_to_baseline, summarize_metric, t_critical_95
-from src.pipeline.training_comparison import (
+from autoresearch.model_evaluation.seed_sweep import compare_to_baseline, summarize_metric, t_critical_95
+from autoresearch.model_evaluation.training_comparison import (
     ComparisonValidationError,
     revalidate_training_comparison,
 )
-from src.pipeline.training_provenance import TrainingComparisonManifest
+from autoresearch.model_training.training_provenance import TrainingComparisonManifest
 
 
 POLICY_VERSION = PROMOTION_POLICY_VERSION

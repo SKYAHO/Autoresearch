@@ -217,7 +217,7 @@ class LauncherSettings:
             ),
             # launcher가 **받는** 이름에는 `ORCH_` 접두사가 붙지만, executor에
             # **내보내는** 이름은 `MLFLOW_TRACKING_URI`다(`jobs.py`). 두 이름이 다르다 —
-            # `src/pipeline/train.py`가 접두사 없는 표준 이름으로 읽기 때문이다.
+            # `autoresearch/model_training/train.py`가 접두사 없는 표준 이름으로 읽기 때문이다.
             mlflow_tracking_uri=os.environ.get(
                 "ORCH_MLFLOW_TRACKING_URI", ""
             ).strip(),

@@ -7,7 +7,7 @@ pool에서 병행 노출하고, LLM 판정(합집합 1회)·합동 커트라인 
 
 이 모듈이 담당하는 구간은 "노출 결정 → 판정 확보 → 커트라인 적용 → event log
 산출"이다. 판정을 만드는 LLM 호출 규약과 클릭 선정 규칙 자체는
-`autoresearch.action_logs`가 소유하며, 학습·평가와 GCS 적재는 담당하지 않는다.
+`autoresearch.action_log_generation`가 소유하며, 학습·평가와 GCS 적재는 담당하지 않는다.
 
 제공 기능:
 
@@ -48,12 +48,12 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from autoresearch.action_logs.candidate import build_candidates
-from autoresearch.action_logs.llm_generator import (
+from autoresearch.action_log_generation.candidate import build_candidates
+from autoresearch.action_log_generation.llm_generator import (
     OpenRouterActionLogGenerator,
     RuleBasedActionLogGenerator,
 )
-from autoresearch.action_logs.pipeline import (
+from autoresearch.action_log_generation.pipeline import (
     ActionLogGenerator,
     ExposureMetadata,
     _expand_events,
@@ -65,7 +65,7 @@ from autoresearch.action_logs.pipeline import (
     write_event_log_warehouse_jsonl,
     write_quarantine_jsonl,
 )
-from autoresearch.action_logs.schema import (
+from autoresearch.action_log_generation.schema import (
     ACTION_LOG_SCHEMA_VERSION,
     PROMPT_VERSION,
     SOURCE_ONLINE_SIMULATED,
@@ -74,17 +74,17 @@ from autoresearch.action_logs.schema import (
     EventLogBatch,
     ImpressionDraft,
 )
-from src.features.assembly import (
+from autoresearch.feature_engineering.assembly import (
     compute_interaction_columns,
     compute_point_in_time_user_features,
     compute_user_offline_features,
     compute_video_features,
 )
-from src.features.embeddings import verify_vertex_ai_credentials
-from src.features.feast_retrieval import build_pool_feature_frame_feast
-from src.features.model_contract import require_model_feature_columns
-from src.pipeline.policy_selector import Exposure, select_exposures
-from src.pipeline.report_html import render_report_html
+from autoresearch.feature_engineering.embeddings import verify_vertex_ai_credentials
+from autoresearch.feature_engineering.feast_retrieval import build_pool_feature_frame_feast
+from autoresearch.feature_engineering.model_contract import require_model_feature_columns
+from autoresearch.recommendation.policy_selector import Exposure, select_exposures
+from autoresearch.reporting.report_html import render_report_html
 from src.serving.model_loader import (
     load_model_settings_from_environment,
     load_reranker,
@@ -697,7 +697,7 @@ def _cli() -> None:
     # 주입한다(prod feature_store.yaml/Redis 불필요, registry는 배포 job이 apply한 GCS).
     feature_store = None
     if args.assembly_source == "feast":
-        from src.pipeline.build_training_dataset import (
+        from autoresearch.model_training.build_training_dataset import (
             BIGQUERY_DATASET,
             require_bigquery_project,
         )
@@ -708,7 +708,7 @@ def _cli() -> None:
         import shutil
         import tempfile
 
-        from src.features.feast_retrieval import build_offline_feature_store
+        from autoresearch.feature_engineering.feast_retrieval import build_offline_feature_store
 
         try:
             registry_path = os.environ["GCS_REGISTRY_PATH"]
@@ -735,7 +735,7 @@ def _cli() -> None:
 
     import pyarrow.parquet as pq
 
-    from src.pipeline.build_training_dataset import load_personas
+    from autoresearch.model_training.build_training_dataset import load_personas
 
     personas = load_personas(args.personas)
     virtual_users = pq.read_table(args.virtual_users).to_pylist()
@@ -819,8 +819,8 @@ def _cli() -> None:
     if args.log_mlflow:
         import mlflow
 
-        from src.tracking.client import get_or_create_experiment, set_tracking_uri
-        from src.tracking.logger import log_metrics, log_parameters
+        from autoresearch.model_registry.client import get_or_create_experiment, set_tracking_uri
+        from autoresearch.model_registry.logger import log_metrics, log_parameters
 
         # os.getenv(name, default)는 빈 문자열에 default를 적용하지 않는다.
         # .env.example대로 `MLFLOW_TRACKING_URI=`가 주입되면 set_tracking_uri("")가

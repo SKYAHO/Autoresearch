@@ -13,7 +13,7 @@ ODFV의 그 판정은 ``PandasTransformation.__eq__`` = (``udf_string``, ``co_co
 
 [무엇을 보장하는가]
   ① 모든 ODFV UDF가 소비자 import 경로에서 **역직렬화된다**.
-  ② UDF가 by-reference로 참조하는 이름 중 이 저장소 소유 모듈은 **``src/`` 밑에만** 있다.
+  ② UDF가 by-reference로 참조하는 이름 중 이 저장소 소유 모듈은 **``autoresearch/`` 밑에만** 있다.
      ②는 ①로 안 잡히는 경우를 위한 것이다 — 소비자 파드의 ``/app``은 ``git archive``로 푼
      저장소 전체라 ``feature_repo.*``/``tests.*`` 참조도 "import는 되기" 때문에, import
      성공만 보면 통과해 버린다. 참조 위치를 직접 보고 좁힌다.
@@ -56,20 +56,20 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FEATURE_REPO = REPO_ROOT / "feature_repo"
 # UDF가 참조해도 되는 이 저장소 소유 코드의 위치. 학습·서빙·시뮬이 공유하는 변환 본체는
 # 전부 여기 있고, 정의 파일(feature_repo)은 apply 실행 위치에 묶이므로 참조 대상이 될 수 없다.
-ALLOWED_FIRST_PARTY = REPO_ROOT / "src"
+ALLOWED_FIRST_PARTY = REPO_ROOT / "autoresearch"
 
 
 def isolate_consumer_import_path() -> None:
     """소비자(학습·materialize 파드)와 같은 import 경로를 만든다.
 
-    소비자는 ``/app``(=repo 루트)에서 ``python -m src.cli``로 돌아 **repo 루트만** import
+    소비자는 ``/app``(=repo 루트)에서 ``python -m autoresearch.cli``로 돌아 **repo 루트만** import
     경로에 있다. 반면 apply job은 ``cd /app/feature_repo``에서 돌아 정의 모듈이 bare 이름으로
     잡힌다. 그래서 두 가지를 맞춘다.
 
     - ``feature_repo`` 디렉터리 제거: 있으면 apply 시점 bare 이름이 그대로 import돼 검증이
       무의미해진다.
     - 이 스크립트가 있는 ``scripts`` 디렉터리를 repo 루트로 교체: ``python scripts/x.py``로
-      실행하면 파이썬이 ``scripts``를 ``sys.path[0]``에 넣어 ``src.*``가 안 보인다. 이건
+      실행하면 파이썬이 ``scripts``를 ``sys.path[0]``에 넣어 ``autoresearch.*``가 안 보인다. 이건
       실행 방식의 부산물이지 소비자 환경이 아니다.
     """
     here = Path(__file__).resolve().parent
@@ -100,7 +100,7 @@ def _load_recording_references(body: bytes) -> set[tuple[str, str]]:
 
 
 def _first_party_violation(module: str) -> str | None:
-    """참조된 모듈이 이 저장소 소유이면서 ``src/`` 밖이면 그 파일 경로를 돌려준다."""
+    """참조된 모듈이 이 저장소 소유이면서 ``autoresearch/`` 밖이면 그 파일 경로를 돌려준다."""
     resolved = sys.modules.get(module)
     origin = getattr(resolved, "__file__", None)
     if origin is None:
@@ -153,7 +153,7 @@ def check_udf_portability(
             if location is not None:
                 failures.append(
                     f"{name}: 저장소 안 {location}의 {module}.{attribute}를 참조 "
-                    "(UDF는 src/ 밖 모듈을 참조하면 안 된다)"
+                    "(UDF는 autoresearch/ 밖 모듈을 참조하면 안 된다)"
                 )
     return checked, skipped, failures
 
@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {failure}")
         print(
             "\n확인할 것:\n"
-            "  1) UDF가 부르는 헬퍼가 src/ 밑에 있는가 (feature_repo 안에 두면 apply 실행\n"
+            "  1) UDF가 부르는 헬퍼가 autoresearch/ 밑에 있는가 (feature_repo 안에 두면 apply 실행\n"
             "     위치에 묶인 이름으로 기록된다)\n"
             "  2) 헬퍼만 옮긴 변경이라면 feast가 '변경 없음'으로 판정해 옛 dill body를\n"
             "     보존했을 수 있다 — udf_string 또는 UDF 바이트코드가 바뀌어야 갱신된다 (#409)"

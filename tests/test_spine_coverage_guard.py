@@ -13,7 +13,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.pipeline.build_training_dataset import (  # noqa: E402
+from autoresearch.model_training.build_training_dataset import (  # noqa: E402
     require_spine_coverage,
     summarize_spine_coverage,
 )

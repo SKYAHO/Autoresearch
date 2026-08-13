@@ -14,7 +14,7 @@ retrieval·학습 Job이 실행되기 직전의 실행 context 구간을 담당�
 [비책임] 실제 GCS object 생성·권한·namespace/Job 오케스트레이션은
 ``Autoresearch-infra``와 ``Autoresearch-airflow``가 담당한다. Feast 정의와 offline
 store 조회 구현은 ``feature_repo`` 및 ``autoresearch.jobs``가 소유한다. 비교 판정과
-결과 payload는 ``src.pipeline.paired_experiment``가 소유한다.
+결과 payload는 ``autoresearch.model_evaluation.paired_experiment``가 소유한다.
 """
 
 from __future__ import annotations

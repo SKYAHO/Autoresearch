@@ -12,21 +12,21 @@ import pytest
 import yaml
 from mlflow.tracking import MlflowClient
 
-from src.features.model_contract import (
+from autoresearch.feature_engineering.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
     FeatureContractError,
 )
-from src.pipeline import train
-from src.pipeline.evaluate import HELD_OUT_METRIC_NAMES
-from src.pipeline.train import collect_categorical_categories
-from src.pipeline.promotion_evidence import (
+from autoresearch.model_training import train
+from autoresearch.model_evaluation.evaluate import HELD_OUT_METRIC_NAMES
+from autoresearch.model_training.train import collect_categorical_categories
+from autoresearch.model_evaluation.promotion_evidence import (
     ExperimentPlanReceipt,
     PromotionEvidenceStore,
     PromotionEvidenceValidationError,
     create_experiment_plan,
 )
-from src.pipeline.training_provenance import (
+from autoresearch.model_training.training_provenance import (
     ProvenanceValidationError,
     RegistryProvenance,
     TrainingSplitManifest,

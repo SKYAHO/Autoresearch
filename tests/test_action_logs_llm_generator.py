@@ -8,13 +8,13 @@ import httpx
 import pytest
 from openai import APITimeoutError
 
-import autoresearch.action_logs.llm_generator as llm_module
-from autoresearch.action_logs.llm_generator import (
+import autoresearch.action_log_generation.llm_generator as llm_module
+from autoresearch.action_log_generation.llm_generator import (
     OpenRouterActionLogGenerator,
     OpenRouterRequestError,
     build_action_log_prompt,
 )
-from autoresearch.action_logs.observability import action_log_work_log_context
+from autoresearch.action_log_generation.observability import action_log_work_log_context
 
 
 def _user():
@@ -372,7 +372,7 @@ def test_openrouter_structured_logs_include_attempt_usage_without_sensitive_data
 
     with caplog.at_level(
         logging.INFO,
-        logger="autoresearch.action_logs.llm_generator",
+        logger="autoresearch.action_log_generation.llm_generator",
     ):
         with action_log_work_log_context(
             shard_index=2,
@@ -438,7 +438,7 @@ def test_openrouter_retry_log_separates_attempt_and_backoff(monkeypatch, caplog)
 
     with caplog.at_level(
         logging.INFO,
-        logger="autoresearch.action_logs.llm_generator",
+        logger="autoresearch.action_log_generation.llm_generator",
     ):
         with action_log_work_log_context(
             shard_index=0,
@@ -489,7 +489,7 @@ def test_openrouter_success_detail_logs_are_suppressed_for_large_runs(
 
     with caplog.at_level(
         logging.INFO,
-        logger="autoresearch.action_logs.llm_generator",
+        logger="autoresearch.action_log_generation.llm_generator",
     ):
         with action_log_work_log_context(
             shard_index=0,

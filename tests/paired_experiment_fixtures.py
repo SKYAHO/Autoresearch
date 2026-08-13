@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from src.pipeline.paired_experiment import PairedExperimentResult
-from src.pipeline.promotion_evidence import (
+from autoresearch.model_evaluation.paired_experiment import PairedExperimentResult
+from autoresearch.model_evaluation.promotion_evidence import (
     ExperimentPlanReceipt,
     GcsObjectReceipt,
     create_experiment_plan,

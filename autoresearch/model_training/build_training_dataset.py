@@ -29,8 +29,8 @@ BigQuery 없이 단위 테스트 가능한 순수 함수이며, 검증은 비싼
 잘라내지 않고 보존한다(#454) — 학습의 ``--extra-features``는 데이터셋에 **이미 있는** 컬럼만
 승격하므로, 조립이 보존하지 않으면 가설이 성립하지 않는다. 계약 정본은
 ``docs/specs/2026-08-03-paired-offline-experiment-comparison.md`` §2다.
-model input의 이름·순서·categorical 분류는 ``src/features/model_contract.py``가, staged PIT 조회는
-``src/features/feast_retrieval.py``가 소유한다(이 모듈은 재정의하지 않는다).
+model input의 이름·순서·categorical 분류는 ``autoresearch/feature_engineering/model_contract.py``가, staged PIT 조회는
+``autoresearch/feature_engineering/feast_retrieval.py``가 소유한다(이 모듈은 재정의하지 않는다).
 
 ``main()``은 조립이 끝나 CSV·sidecar가 로컬에 durable하게 쓰인 뒤, ``snapshot_root``가
 주어진 경우에만 ``training_snapshot_store.publish_snapshot``으로 GCS에 게시한다(#530) —
@@ -60,15 +60,15 @@ import pandas as pd
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.features.assembly import connect_duckdb  # noqa: E402
-from src.features.model_contract import (  # noqa: E402
+from autoresearch.feature_engineering.assembly import connect_duckdb  # noqa: E402
+from autoresearch.feature_engineering.model_contract import (  # noqa: E402
     MODEL_FEATURE_COLUMNS,
     PASSTHROUGH_COLUMNS,
     FeatureContractError,
     resolve_experiment_feature_columns,
 )
-from src.pipeline.virtual_user_adapter import to_personas_frame  # noqa: E402
-from src.pipeline.training_provenance import (  # noqa: E402
+from autoresearch.virtual_user_generation.adapter import to_personas_frame  # noqa: E402
+from autoresearch.model_training.training_provenance import (  # noqa: E402
     ProvenanceValidationError,
     RegistryProvenance,
     build_snapshot_manifest,
@@ -76,7 +76,7 @@ from src.pipeline.training_provenance import (  # noqa: E402
     snapshot_manifest_path,
     write_manifest_atomic,
 )
-from src.pipeline import training_snapshot_store  # noqa: E402
+from autoresearch.model_training import training_snapshot_store  # noqa: E402
 
 # spine 커버리지 가드(#464). 요청 기간에 데이터 없는 날이 섞여도 조용히 성공하던 것을 막는다 —
 # champion v12가 사실상 2일치로 학습돼 재현 불가능한 val_roc_auc=0.80으로 굳고, 이후 정상
@@ -471,7 +471,7 @@ def is_experiment_assembly(
     predicate로 분리한다 — 조건식이 두 벌이면 ``DEFAULT_SERVICE`` 판별 기준이 바뀔 때
     한쪽만 고치는 실수가 난다.
     """
-    from src.features.feast_retrieval import DEFAULT_SERVICE
+    from autoresearch.feature_engineering.feast_retrieval import DEFAULT_SERVICE
 
     experiment_service = (
         feature_service is not None and feature_service != DEFAULT_SERVICE
@@ -636,7 +636,7 @@ def _assemble_via_feast(
     """
     project = require_bigquery_project()
 
-    from src.features.feast_retrieval import (
+    from autoresearch.feature_engineering.feast_retrieval import (
         DEFAULT_SERVICE,
         apply_cold_start_defaults,
         build_offline_feature_store,

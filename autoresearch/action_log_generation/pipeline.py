@@ -32,13 +32,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pydantic import ValidationError
 
-from autoresearch.action_logs.candidate import build_candidates
-from autoresearch.action_logs.observability import (
+from autoresearch.action_log_generation.candidate import build_candidates
+from autoresearch.action_log_generation.observability import (
     ActionLogStreamingTelemetryReporter,
     ActionLogTelemetryReporter,
     action_log_work_log_context,
 )
-from autoresearch.action_logs.schema import (
+from autoresearch.action_log_generation.schema import (
     ACTION_LOG_SCHEMA_VERSION,
     PROMPT_VERSION,
     SOURCE_HISTORICAL,
@@ -49,7 +49,7 @@ from autoresearch.action_logs.schema import (
     ImpressionDraft,
     QuarantineRecord,
 )
-from autoresearch.action_logs.video_source import _MAX_DURATION, nominal_duration_sec
+from autoresearch.action_log_generation.video_source import _MAX_DURATION, nominal_duration_sec
 
 
 logger = logging.getLogger(__name__)

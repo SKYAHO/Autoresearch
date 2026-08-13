@@ -13,9 +13,9 @@ from datetime import datetime
 import duckdb
 import pandas as pd
 
-from src.features.category_reference import CATEGORY_DESCRIPTIONS
-from src.features.embeddings import embed_texts
-from src.features.feature_builder import (
+from autoresearch.feature_engineering.category_reference import CATEGORY_DESCRIPTIONS
+from autoresearch.feature_engineering.embeddings import embed_texts
+from autoresearch.feature_engineering.feature_builder import (
     compute_historical_category_match,
     compute_preferred_category_match,
     compute_topic_similarity,

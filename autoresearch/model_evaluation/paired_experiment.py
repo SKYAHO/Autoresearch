@@ -13,7 +13,7 @@
 [비책임] 학습·평가 실행 자체와 조건별 이미지 빌드, Job 오케스트레이션(Airflow),
 GCS/BigQuery IAM(infra), champion alias 이동(#470)은 이 모듈이 다루지 않는다. 통계
 판정 규칙과 승격 정책은 `experiment_evaluation`이, 두 run의 provenance equality는
-`training_comparison`이, Registry 좌표 규칙은 `autoresearch.experiments.context`가
+`training_comparison`이, Registry 좌표 규칙은 `autoresearch.model_evaluation.experiments.context`가
 소유한다 — 여기서 재정의하지 않는다.
 """
 
@@ -26,8 +26,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from autoresearch.experiments.context import BASELINE, CANDIDATE, registry_uri_matches
-from src.pipeline.experiment_evaluation import (
+from autoresearch.model_evaluation.experiments.context import BASELINE, CANDIDATE, registry_uri_matches
+from autoresearch.model_evaluation.experiment_evaluation import (
     POLICY_SEEDS,
     POLICY_VERSION,
     EvaluationVerdict,
@@ -38,12 +38,12 @@ from src.pipeline.experiment_evaluation import (
     decide_promotion,
     evaluate_experiment,
 )
-from src.pipeline.promotion_evidence import ExperimentPlanReceipt, PromotionEvidenceStore
-from src.pipeline.training_comparison import (
+from autoresearch.model_evaluation.promotion_evidence import ExperimentPlanReceipt, PromotionEvidenceStore
+from autoresearch.model_evaluation.training_comparison import (
     ComparisonValidationError,
     verify_training_comparison,
 )
-from src.pipeline.training_provenance import write_manifest_atomic
+from autoresearch.model_training.training_provenance import write_manifest_atomic
 
 
 CONTRACT_VERSION = "paired-offline-experiment-v1"

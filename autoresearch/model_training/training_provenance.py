@@ -26,7 +26,7 @@ from typing import Literal
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, NonNegativeInt, ValidationError
 
-from src.pipeline.promotion_evidence import ExperimentPlanReceipt, HeldOutMetricReceipt
+from autoresearch.model_evaluation.promotion_evidence import ExperimentPlanReceipt, HeldOutMetricReceipt
 
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 

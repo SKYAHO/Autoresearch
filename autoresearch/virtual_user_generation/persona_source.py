@@ -9,7 +9,7 @@ from typing import Any
 
 from datasets import load_dataset
 
-from autoresearch.virtual_users.schema import SOURCE_DATASET
+from autoresearch.virtual_user_generation.schema import SOURCE_DATASET
 
 
 logger = logging.getLogger(__name__)

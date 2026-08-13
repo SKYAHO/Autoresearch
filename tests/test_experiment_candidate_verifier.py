@@ -148,18 +148,32 @@ def test_forbidden_path_rejects_the_whole_candidate(tmp_path: Path, path: str) -
         _verify(repository, base_sha)
 
 
-def test_model_contract_requires_its_explicit_scope(tmp_path: Path) -> None:
-    """특별 모델 계약 파일을 기본 src allowlist가 열면 의도치 않은 계약 변경을 허용한다."""
+@pytest.mark.parametrize(
+    "contract_path",
+    (
+        "src/features/model_contract.py",
+        "autoresearch/feature_engineering/model_contract.py",
+    ),
+)
+def test_model_contract_requires_its_explicit_scope(
+    tmp_path: Path, contract_path: str
+) -> None:
+    """기본 allowlist가 모델 계약 파일을 열면 의도치 않은 계약 변경을 허용한다.
+
+    두 경로를 모두 검증한다. #754 재배치로 계약 파일이 옮겨졌지만, 이 게이트는 봉인된
+    base_dev_sha 워크스페이스에 적용되므로 재배치 이전 실험은 여전히 옛 경로를 가진다.
+    한쪽만 검증하면 다른 쪽 게이트가 죽어도 이 테스트는 계속 통과한다.
+    """
     repository, base_sha = _repository(tmp_path)
-    target = repository / "src" / "features" / "model_contract.py"
-    target.parent.mkdir(parents=True)
+    target = repository / contract_path
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("CONTRACT = 2\n", encoding="utf-8")
 
     with pytest.raises(CandidateVerificationError, match="forbidden_path"):
         _verify(repository, base_sha)
 
     assert _verify(repository, base_sha, allowed_scope=("prod_model_contract",)) == (
-        "src/features/model_contract.py",
+        contract_path,
     )
 
 

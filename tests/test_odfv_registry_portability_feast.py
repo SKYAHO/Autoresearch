@@ -14,7 +14,7 @@ by-reference 기록된다. 반면 소비자(학습·서빙)는 ``/app``에서 �
 import 경로(repo 루트만)에서 역직렬화한다 — GCS 레지스트리도 GKE도 없이 CI에서 재현된다.
 
 [불변식] ODFV UDF가 참조하는 이름은 전부 ``feature_repo`` **바깥의 import 가능한
-모듈**(``src.features.*`` 등)에 있어야 한다. 정의 파일 안에 헬퍼를 두고 UDF에서 부르면
+모듈**(``autoresearch.feature_engineering.*`` 등)에 있어야 한다. 정의 파일 안에 헬퍼를 두고 UDF에서 부르면
 이 게이트가 실패한다. 데코레이터가 없는 한 아무리 얇은 래퍼라도 dill이 by-reference로
 기록하므로, "테스트 용이성을 위한 분리"는 파일 **안**이 아니라 **밖**으로 해야 한다.
 
@@ -51,7 +51,7 @@ DEFINITIONS = FEATURE_REPO / "feature_definitions.py"
 APPLY_MODULE_NAME = "feature_definitions"
 # 이 저장소가 소유한 최상위 패키지. 역직렬화 직전에 sys.modules에서 비워, 이미 로드돼
 # 있다는 이유로 통과하는 대신 소비자 경로에서 **실제로 import되는지**를 확인한다.
-_PROJECT_TOP_LEVEL = frozenset({"src", "feature_repo"})
+_PROJECT_TOP_LEVEL = frozenset({"autoresearch", "feature_repo"})
 
 
 @pytest.fixture()
@@ -135,7 +135,7 @@ def test_every_odfv_udf_deserializes_in_consumer_import_path(
             pytest.fail(
                 f"ODFV '{name}'의 UDF가 소비자 경로에서 해소되지 않는 이름을 참조한다: "
                 f"{type(error).__name__}: {error}. UDF가 부르는 헬퍼를 feature_repo 밖"
-                "(src.features.*)으로 옮겨라 (#409)."
+                "(autoresearch.feature_engineering.*)으로 옮겨라 (#409)."
             )
 
 

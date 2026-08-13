@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from autoresearch.action_logs.schema import SOURCE_ONLINE_SIMULATED, EventLog
+from autoresearch.action_log_generation.schema import SOURCE_ONLINE_SIMULATED, EventLog
 
 
 def _base_kwargs() -> dict:
@@ -70,7 +70,7 @@ def test_exposure_source_roundtrip_and_validation():
 def test_cli_videos_help_describes_videos_csv(capsys, monkeypatch):
     import sys
 
-    from src.pipeline import simulate_policy_round as module
+    from autoresearch.recommendation import simulate_policy_round as module
 
     monkeypatch.setattr(sys, "argv", ["simulate_policy_round", "--help"])
     with pytest.raises(SystemExit):

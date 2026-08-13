@@ -16,7 +16,7 @@ experiment 이름, registry 모델 이름)을 함께 정한다. 세 값을 따�
 경로**다 — CWD 상대면 실행 위치에 따라 실험 이력이 갈린다(#444).
 
 [비책임] MLflow 호출 자체(`set_tracking_uri`, `get_or_create_experiment`)는
-`src/tracking/client.py`가, 승격 판정은 `src/tracking/promote.py`가 소유한다.
+`autoresearch/model_registry/client.py`가, 승격 판정은 `autoresearch/model_registry/promote.py`가 소유한다.
 """
 
 from __future__ import annotations

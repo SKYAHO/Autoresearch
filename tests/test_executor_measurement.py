@@ -1,7 +1,7 @@
 """조건별 학습 산출물을 채점해 실험 지표로 모으는 계약을 고정한다.
 
 실제 평가를 돌리지 않고 subprocess 경계만 대역으로 바꾼다 — 지표의 정의와 계산은
-`src/pipeline/evaluate.py`가 소유하고 `tests/test_pipeline_evaluate.py`가 검증한다.
+`autoresearch/model_evaluation/evaluate.py`가 소유하고 `tests/test_pipeline_evaluate.py`가 검증한다.
 여기서 지키는 것은 "무엇을 호출하고 무엇을 남기는가"다.
 """
 
@@ -121,7 +121,7 @@ def test_evaluate_condition_calls_evaluate_model_once_per_seed(
     assert sorted(collected) == list(SEEDS)
     assert len(calls) == len(SEEDS)
     argv = calls[0]
-    assert argv[:4] == ["python", "-m", "src.cli", "evaluate-model"]
+    assert argv[:4] == ["python", "-m", "autoresearch.cli", "evaluate-model"]
     # 학습이 만든 테스트셋으로 채점해야 한다 — 전체 데이터셋으로 재면 학습에 쓴 행이
     # 섞여 지표가 부풀려진다.
     assert argv[argv.index("--data-path") + 1].endswith("baseline/test_42.csv")
@@ -398,7 +398,7 @@ def test_failed_evaluation_logs_its_stderr_and_call_site(
         with pytest.raises(MeasurementError, match="evaluation_command_failed"):
             evaluate_condition(config, TrainingStage.BASELINE)
 
-    assert "No module named 'src'" in caplog.text
+    assert "No module named 'autoresearch'" in caplog.text
     assert f"stage=evaluate_model:baseline:{SEEDS[0]}" in caplog.text
 
 

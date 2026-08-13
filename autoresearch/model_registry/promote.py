@@ -1,6 +1,6 @@
 """champion 승격 게이트 판정.
 
-[파이프라인] 학습(src/pipeline/train.py) 이후, 서빙이 alias로 모델을 로드하기
+[파이프라인] 학습(autoresearch/model_training/train.py) 이후, 서빙이 alias로 모델을 로드하기
 전 — Model Registry의 champion alias를 신규 후보 버전으로 옮길지 판정하는
 구간을 담당한다. Airflow ctr_model_promote DAG(Autoresearch-airflow#137)가
 호출하는 promote-model CLI(src/cli.py)의 판정 본체다.
@@ -23,17 +23,17 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from mlflow.tracking import MlflowClient
-from src.models.calibration import CALIBRATION_PARAM_FILENAME
-from src.tracking.client import set_tracking_uri
-from src.tracking.namespace import is_experiment_model_name
-from src.tracking.model_package import load_manifest
-from src.tracking.promotion_result import (
+from autoresearch.model_training.calibration import CALIBRATION_PARAM_FILENAME
+from autoresearch.model_registry.client import set_tracking_uri
+from autoresearch.model_registry.namespace import is_experiment_model_name
+from autoresearch.model_registry.model_package import load_manifest
+from autoresearch.model_registry.promotion_result import (
     ModelPromotionResult,
     PromotionExecutionError,
     PromotionOutcome,
     PromotionReasonCode,
 )
-from src.tracking.registry import (
+from autoresearch.model_registry.registry import (
     ServingCalibrationNotReadyError,
     get_model_metrics_by_alias,
     get_model_versions,

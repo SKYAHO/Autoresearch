@@ -31,9 +31,9 @@ if TYPE_CHECKING:
     from feast import FeatureStore
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
-from src.features.feast_retrieval import build_pool_feature_frames_feast
-from src.features.model_contract import require_model_feature_columns
-from src.pipeline.build_training_dataset import (
+from autoresearch.feature_engineering.feast_retrieval import build_pool_feature_frames_feast
+from autoresearch.feature_engineering.model_contract import require_model_feature_columns
+from autoresearch.model_training.build_training_dataset import (
     BIGQUERY_DATASET,
     derive_wide_events,
     feature_table_id,
@@ -41,14 +41,14 @@ from src.pipeline.build_training_dataset import (
     raw_table_id,
     require_bigquery_project,
 )
-from src.pipeline.virtual_user_adapter import to_personas_frame
+from autoresearch.virtual_user_generation.adapter import to_personas_frame
 from src.serving.model_loader import (
     RegistryModelSettings,
     ResolvedModel,
     load_reranker_with_lineage,
 )
 from src.serving.schemas import RerankedVideo
-from src.pipeline.simulate_policy_round import _to_candidate_videos, build_pool_feature_frame
+from autoresearch.recommendation.simulate_policy_round import _to_candidate_videos, build_pool_feature_frame
 
 logger = logging.getLogger(__name__)
 JOB_NAME: Final = "daily_recommendations"
@@ -313,7 +313,7 @@ def run_batch(
             import shutil
             import tempfile
 
-            from src.features.feast_retrieval import build_offline_feature_store
+            from autoresearch.feature_engineering.feast_retrieval import build_offline_feature_store
 
             try:
                 registry_path = os.environ["GCS_REGISTRY_PATH"]

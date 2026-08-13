@@ -24,7 +24,7 @@ import re
 from datetime import UTC, date, datetime, time
 from typing import get_args, get_origin
 
-from autoresearch.youtube_collection.schema import TARGET_COUNTRY, TrendingVideo
+from autoresearch.data_collection.schema import TARGET_COUNTRY, TrendingVideo
 
 
 logger = logging.getLogger(__name__)

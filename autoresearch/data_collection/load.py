@@ -24,7 +24,7 @@ from datetime import date
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from autoresearch.youtube_collection.schema import TrendingVideo
+from autoresearch.data_collection.schema import TrendingVideo
 
 
 logger = logging.getLogger(__name__)

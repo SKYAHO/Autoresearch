@@ -32,11 +32,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pyarrow.fs import FileSelector, FileType
 
-from autoresearch.action_logs.llm_generator import (
+from autoresearch.action_log_generation.llm_generator import (
     OpenRouterActionLogGenerator,
     RuleBasedActionLogGenerator,
 )
-from autoresearch.action_logs.pipeline import (
+from autoresearch.action_log_generation.pipeline import (
     EVENT_LOG_PARQUET_SCHEMA,
     OPTIONAL_ADDITIVE_COLUMNS,
     ActionLogGenerationError,
@@ -54,7 +54,7 @@ from autoresearch.action_logs.pipeline import (
     write_event_log_parquet,
     write_quarantine_jsonl,
 )
-from autoresearch.action_logs.schema import (
+from autoresearch.action_log_generation.schema import (
     ACTION_LOG_SCHEMA_VERSION,
     PROMPT_VERSION,
     ActionLogShardManifest,
@@ -63,7 +63,7 @@ from autoresearch.action_logs.schema import (
     QuarantineErrorType,
     QuarantineRecord,
 )
-from autoresearch.action_logs.video_source import load_video_records
+from autoresearch.action_log_generation.video_source import load_video_records
 
 
 _KST = ZoneInfo("Asia/Seoul")

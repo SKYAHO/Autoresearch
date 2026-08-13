@@ -16,8 +16,8 @@
 유한하지 않은 지표(NaN/inf)는 두 계층 모두에서 거부한다 — 흘려보내면 평균·편차가
 조용히 NaN이 되고 판정이 "노이즈 안/밖"이 아니라 아무 말도 못 하게 된다(#445).
 
-[비책임] 학습 자체는 `src/pipeline/train.py`, 채점은 `src/pipeline/evaluate.py`,
-MLflow 좌표는 `src/tracking/namespace.py`가 소유한다. 이 모듈은 판정을 대신하지
+[비책임] 학습 자체는 `autoresearch/model_training/train.py`, 채점은 `autoresearch/model_evaluation/evaluate.py`,
+MLflow 좌표는 `autoresearch/model_registry/namespace.py`가 소유한다. 이 모듈은 판정을 대신하지
 않고 **판정 근거만** 만든다 — 채택/기각은 가설의 성공 기준이 정한다.
 """
 

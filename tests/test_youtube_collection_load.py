@@ -3,8 +3,8 @@ from datetime import date, datetime
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from autoresearch.youtube_collection.load import write_partition
-from autoresearch.youtube_collection.schema import TrendingVideo
+from autoresearch.data_collection.load import write_partition
+from autoresearch.data_collection.schema import TrendingVideo
 
 
 def _video(video_id: str = "v1", **overrides) -> TrendingVideo:
@@ -88,7 +88,7 @@ def test_write_partition_preserves_list_and_null_fields(tmp_path):
 def test_to_table_keeps_int64_type_when_all_subscribers_none():
     # 한 파티션의 channel_subscriber_count 가 전부 None 이어도 int64 로 고정.
     # (from_pylist 자동 추론이면 null 타입이 돼 인접 파티션과 스키마 충돌.)
-    from autoresearch.youtube_collection.load import _to_table
+    from autoresearch.data_collection.load import _to_table
 
     video = _video("v1", channel_subscriber_count=None)
     table = _to_table([video])

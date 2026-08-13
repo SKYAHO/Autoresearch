@@ -11,7 +11,7 @@ NOTE: category_description_embedding는 첫 조회 시점에 Vertex AI로 1회�
 
 import numpy as np
 
-from src.features.embeddings import embed_texts
+from autoresearch.feature_engineering.embeddings import embed_texts
 
 
 CATEGORY_DESCRIPTIONS = {

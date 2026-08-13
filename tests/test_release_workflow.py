@@ -119,7 +119,7 @@ def test_release_workflow_verifies_all_public_batch_commands():
         "autoresearch.jobs.action_log",
         "autoresearch.jobs.action_log_quality",
         "autoresearch.jobs.feature_store_build",
-        "src.pipeline.daily_recommendations",
+        "autoresearch.recommendation.daily_recommendations",
     ):
         assert module in workflow_text
     assert "org.opencontainers.image.revision" in workflow_text
@@ -185,7 +185,7 @@ def test_code_archive_carries_both_batch_command_packages():
         names = set(archived.getnames())
 
     assert "autoresearch/jobs/youtube_trending.py" in names
-    assert "src/pipeline/daily_recommendations.py" in names
+    assert "autoresearch/recommendation/daily_recommendations.py" in names
 
 
 def test_application_image_installs_lightgbm_openmp_runtime():

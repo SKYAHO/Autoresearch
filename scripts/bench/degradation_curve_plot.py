@@ -3,7 +3,7 @@
 
 [파이프라인] 열화 측정 구간의 **시각화 보조** 도구다. `measure-degradation`(src/cli.py)이
 낸 `RollingOriginResult` JSON만 읽어 그린다 — 측정·열화 판정 로직은 여기서 다시
-구현하지 않고 정본(``src/pipeline/degradation_eval.py``) 산출물을 그대로 옮긴다.
+구현하지 않고 정본(``autoresearch/model_evaluation/degradation_eval.py``) 산출물을 그대로 옮긴다.
 
 [기능] x축 ``elapsed_days``(cutoff 기준 달력 일수, 관측 순번이 아니다 — spec §2.1),
 y축 ROC-AUC. ``valid``가 아닌 날은 ``roc_auc=null``이라 Plotly가 그 지점에서 선을

@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.features.category_reference import CATEGORY_DESCRIPTIONS
+from autoresearch.feature_engineering.category_reference import CATEGORY_DESCRIPTIONS
 
 random.seed(42)
 

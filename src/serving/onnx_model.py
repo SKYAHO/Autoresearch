@@ -5,7 +5,7 @@
   `ProbabilityModel` 계약(`predict_proba(DataFrame) -> (n, 2)`)을 그대로 만족시킨다. pandas
   category dtype 컬럼을 학습 시점 카테고리 순서의 **정수 코드**(`.cat.codes`)로 바꿔 단일
   float32 텐서로 넣는다 — 이렇게 하면 ONNX 예측이 원본 LightGBM과 허용오차 내로 일치한다(#302).
-- **담당 아님(인접 책임)**: LightGBM→ONNX 변환은 학습측 `src.utils.model_utils.convert_lgbm_to_onnx`,
+- **담당 아님(인접 책임)**: LightGBM→ONNX 변환은 학습측 `autoresearch.model_training.model_utils.convert_lgbm_to_onnx`,
   아티팩트 manifest 검증·로딩은 `src.serving.model_loader`, 재랭킹·calibration 체이닝은
   `src.serving.service.Reranker`가 담당한다. 이 어댑터는 predict_proba만 제공한다.
 

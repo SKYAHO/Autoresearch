@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
-from autoresearch.virtual_users.categories import (
+from autoresearch.virtual_user_generation.categories import (
     DEFAULT_KAGGLE_YOUTUBE_CATEGORIES,
     validate_categories,
 )

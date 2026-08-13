@@ -5,18 +5,18 @@ commit·push를 마친 뒤까지 — 같은 Pod의 workspace를 공유하며 두
 구간을 담당한다. baseline은 Codex 실행 **전**(dev 코드·dev 의존성), candidate는 push
 **후**(candidate 코드·candidate 의존성)에 돈다.
 
-[기능] workspace의 `src.cli` 를 subprocess로 호출해 seed별 학습을 반복하고, 의존성이
+[기능] workspace의 `autoresearch.cli` 를 subprocess로 호출해 seed별 학습을 반복하고, 의존성이
 바뀐 경우에만 `uv sync`를 수행하며, 두 조건의 실행 순서를 state marker로 강제한다.
 subprocess가 실패하거나 timeout되면 어느 호출이었는지와 출력 tail을 컨테이너 로그로
 남긴다(#636) — 그 로그는 수집기가 `experiment_logs`로 옮겨 워크벤치가 읽는다(#559).
 
-[비책임] 학습 알고리즘과 데이터셋 조립(`src/pipeline/`), Codex 실행(`codex_worker.py`),
-commit·push와 candidate 보고(`finalizer.py`·`api_client.py`), 스냅샷 GCS 게시
-(`src/pipeline/training_snapshot_store.py`)는 담당하지 않는다.
+[비책임] 학습 알고리즘과 데이터셋 조립(`autoresearch/model_training/`), Codex 실행
+(`codex_worker.py`), commit·push와 candidate 보고(`finalizer.py`·`api_client.py`), 스냅샷
+GCS 게시(`autoresearch/model_training/training_snapshot_store.py`)는 담당하지 않는다.
 
-[중요] 학습 코드는 이미지가 아니라 **workspace의 clone**에서 온다. 이미지에 `src/`를
-구우면 Codex가 수정한 candidate 코드가 아니라 빌드 시점의 낡은 코드로 학습하게 되어
-candidate 실험 자체가 무의미해진다 (#574).
+[중요] 학습 코드는 이미지가 아니라 **workspace의 clone**에서 온다. 이미지에 파이프라인
+코드를 구우면 Codex가 수정한 candidate 코드가 아니라 빌드 시점의 낡은 코드로 학습하게
+되어 candidate 실험 자체가 무의미해진다 (#574).
 
 [중요] 산출물은 clone **밖**에 쓴다(`output_root`, #603). clone 안에 쓰면 verifier가
 그것을 Codex의 변경으로 수집해, 아무 변경도 없는 실행이 통과한다.
@@ -65,23 +65,28 @@ _DEPENDENCY_PATHS: Final = ("pyproject.toml", "uv.lock")
 # 그래서 정의 파일만이 아니라 **피처를 계산하는 로직**까지 포함한다. 정의는 그대로 두고
 # 계산만 바꾸는 변경도 스냅샷 컬럼을 낡게 만들기 때문이다. `feature_repo`는 파일 단위가
 # 아니라 디렉터리 전체를 본다.
+# #754 재배치로 build_training_dataset 의 경로가 바뀌었다. 이 pathspec 은 저장소 트리가
+# 아니라 봉인된 base_dev_sha 워크스페이스에 적용되므로 재배치 이전 실험은 여전히 옛
+# 경로를 가진다. 매칭되지 않는 pathspec 은 git diff 가 조용히 무시하므로 둘 다 둔다 —
+# 위 "넓은 쪽으로 둔다" 원칙과 같은 판단이다.
 _FEATURE_DEFINITION_PATHS: Final = (
     "feature_repo",
     "src/pipeline/build_training_dataset.py",
+    "autoresearch/model_training/build_training_dataset.py",
 )
 _SEED_PROBE: Final = (
-    "from src.pipeline.experiment_evaluation import POLICY_SEEDS;"
+    "from autoresearch.model_evaluation.experiment_evaluation import POLICY_SEEDS;"
     "print(','.join(str(seed) for seed in POLICY_SEEDS))"
 )
 _BASELINE_MARKER: Final = "baseline_training_complete"
 
-# 스냅샷 다운로드도 workspace 코드에게 맡긴다 — `src/`가 이미지에 없어 import할 수
+# 스냅샷 다운로드도 workspace 코드에게 맡긴다 — 파이프라인 코드가 이미지에 없어 import할 수
 # 없고, `by-hash` 레이아웃과 sidecar 복원 규칙을 복제하면 사본이 늘어난다.
 # 인자는 `python -c <code> <uri> <dir>` 형태로 argv에 실어 넘긴다(shell 해석 없음).
 _DOWNLOAD_PROBE: Final = (
     "import sys;"
     "from pathlib import Path;"
-    "from src.pipeline.training_snapshot_store import download_snapshot;"
+    "from autoresearch.model_training.training_snapshot_store import download_snapshot;"
     "print(download_snapshot(dataset_uri=sys.argv[1], destination_dir=Path(sys.argv[2])))"
 )
 _DATASET_CSV_NAME: Final = "training_dataset.csv"
@@ -378,7 +383,7 @@ def run_training(config: TrainingInput) -> tuple[int, ...]:
             [
                 "python",
                 "-m",
-                "src.cli",
+                "autoresearch.cli",
                 "train-model",
                 "--data-path",
                 str(config.dataset_path),

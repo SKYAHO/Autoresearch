@@ -9,15 +9,15 @@ outcome→실험 상태 매핑, `metric_snapshot`·`reason`·포인터 로그 �
 지키는 idempotency key 생성, 현재 상태에서 목표 터미널까지의 전이 경로 계획을 제공한다.
 
 [비책임]
-HTTP 전송(`agent_orchestration.ui.client`), 명령 배선과 종료 코드(`src.cli`), 판정
-자체(`src.pipeline.experiment_evaluation`).
+HTTP 전송(`agent_orchestration.ui.client`), 명령 배선과 종료 코드(`autoresearch.cli`), 판정
+자체(`autoresearch.model_evaluation.experiment_evaluation`).
 """
 
 from __future__ import annotations
 
 import hashlib
 
-from src.pipeline.paired_experiment import PairedExperimentResult
+from autoresearch.model_evaluation.paired_experiment import PairedExperimentResult
 
 STATUS_CREATED = "CREATED"
 STATUS_RUNNING = "RUNNING"

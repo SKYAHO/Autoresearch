@@ -10,9 +10,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pydantic import ValidationError
 
-from autoresearch.virtual_users.glm_generator import assemble_virtual_user
-from autoresearch.virtual_users.persona_source import sample_raw_personas_by_contract
-from autoresearch.virtual_users.schema import (
+from autoresearch.virtual_user_generation.glm_generator import assemble_virtual_user
+from autoresearch.virtual_user_generation.persona_source import sample_raw_personas_by_contract
+from autoresearch.virtual_user_generation.schema import (
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
     SOURCE_DATASET,

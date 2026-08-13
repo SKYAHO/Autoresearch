@@ -6,7 +6,7 @@
 [기능] 승격 outcome과 reason code를 타입으로 제한하고
 `model-promotion-result-v1` JSON schema를 제공한다.
 
-[비책임] MLflow 게이트 판정과 alias 이동(src/tracking/promote.py), 결과 파일
+[비책임] MLflow 게이트 판정과 alias 이동(autoresearch/model_registry/promote.py), 결과 파일
 운반과 Slack 전송(Autoresearch-airflow)은 담당하지 않는다.
 """
 

@@ -28,7 +28,7 @@ def convert_lgbm_to_onnx(model, n_features: int) -> Any:
     다른 지점).
 
     Args:
-        model: 학습된 LGBMModel(src.models.lgbm_model.LGBMModel) 인스턴스.
+        model: 학습된 LGBMModel(autoresearch.model_training.lgbm_model.LGBMModel) 인스턴스.
         n_features: 학습에 사용한 피처 개수(입력 텐서 shape 결정용).
 
     Returns:

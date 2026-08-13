@@ -34,7 +34,7 @@ from urllib.parse import urlparse
 
 from pydantic import ValidationError
 
-from src.pipeline.training_provenance import (
+from autoresearch.model_training.training_provenance import (
     MAX_POINTER_HISTORY,
     SnapshotPointerEntry,
     TrainingSnapshotManifest,

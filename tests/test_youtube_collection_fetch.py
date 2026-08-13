@@ -1,12 +1,12 @@
 from datetime import UTC, datetime
 
-from autoresearch.youtube_collection.fetch import (
+from autoresearch.data_collection.fetch import (
     collect_trending,
     fetch_category_map,
     fetch_channel_map,
     fetch_trending_video_items,
 )
-from autoresearch.youtube_collection.schema import TrendingVideo
+from autoresearch.data_collection.schema import TrendingVideo
 
 
 def test_fetch_trending_video_items_paginates_until_exhausted():

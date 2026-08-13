@@ -28,7 +28,7 @@ import mlflow.artifacts
 from mlflow.tracking import MlflowClient
 from pydantic import ValidationError
 
-from src.pipeline.training_provenance import (
+from autoresearch.model_training.training_provenance import (
     TrainingComparisonManifest,
     TrainingSeeds,
     TrainingSnapshotManifest,
@@ -39,7 +39,7 @@ from src.pipeline.training_provenance import (
     sha256_file,
     write_manifest_atomic,
 )
-from src.pipeline.promotion_evidence import (
+from autoresearch.model_evaluation.promotion_evidence import (
     HeldOutMetricEvidence,
     HeldOutMetricReceipt,
     PromotionEvidenceStore,

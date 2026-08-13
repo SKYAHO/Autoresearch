@@ -6,7 +6,7 @@
 [기능] 엄격한 pydantic manifest 스키마, 플랫폼 독립적인 canonical SHA-256, 패키지
 내용 및 calibration 정합성 검증을 제공한다.
 
-[비책임] ONNX 변환·학습은 src.pipeline.train, ONNX 세션 생성·추론은
+[비책임] ONNX 변환·학습은 autoresearch.model_training.train, ONNX 세션 생성·추론은
 src.serving.model_loader와 src.serving.onnx_model이 담당한다.
 """
 

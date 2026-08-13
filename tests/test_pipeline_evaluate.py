@@ -5,14 +5,14 @@ import pandas as pd
 import pytest
 import yaml
 
-from src.features.model_contract import (
+from autoresearch.feature_engineering.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
     FeatureContractError,
 )
 from sklearn.metrics import roc_auc_score
 
-from src.pipeline import evaluate
+from autoresearch.model_evaluation import evaluate
 
 
 class _FakeModel:
@@ -184,7 +184,7 @@ def _held_out_dataset() -> pd.DataFrame:
 
 def test_held_out_metric_names_match_the_evidence_contract_allowlist() -> None:
     """산출 지표 집합이 증거 계약 allowlist와 갈라지면 게시가 거부된다."""
-    from src.pipeline.promotion_evidence import SUPPORTED_HELD_OUT_METRIC_NAMES
+    from autoresearch.model_evaluation.promotion_evidence import SUPPORTED_HELD_OUT_METRIC_NAMES
 
     assert set(evaluate.HELD_OUT_METRIC_NAMES) == set(SUPPORTED_HELD_OUT_METRIC_NAMES)
 
@@ -341,7 +341,7 @@ def test_group_key_column_is_a_passthrough_column() -> None:
     모델 입력 컬럼을 그룹 키로 쓰면 "모델이 본 것"으로 그룹을 나누게 되고, 패스스루가
     아닌 컬럼은 조립이 CSV에 싣지 않아 평가가 조용히 건너뛴다.
     """
-    from src.features.model_contract import PASSTHROUGH_COLUMNS
+    from autoresearch.feature_engineering.model_contract import PASSTHROUGH_COLUMNS
 
     assert evaluate.GROUP_KEY_COLUMN in PASSTHROUGH_COLUMNS
 

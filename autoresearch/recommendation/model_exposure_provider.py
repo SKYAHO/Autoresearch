@@ -6,7 +6,7 @@
 [기능] 명시 BigQuery 프로젝트를 검증해 테이블 ID를 만들고, 유저별 순위(70%) +
 트렌딩(20%) + 랜덤(10%) 노출과 정책 태그(ExposureMetadata)를 구성한다.
 
-[비책임] LLM 프롬프트·클릭 판정·저장은 ``autoresearch.action_logs``가 소유하며,
+[비책임] LLM 프롬프트·클릭 판정·저장은 ``autoresearch.action_log_generation``가 소유하며,
 이 모듈은 태그·점수를 프롬프트에 노출하지 않는다.
 
 spec: docs/specs/2026-07-22-model-exposure-assembly.md
@@ -23,7 +23,7 @@ from typing import Sequence
 import pandas as pd
 from google.cloud import bigquery
 
-from autoresearch.action_logs.pipeline import CandidateProvider, ExposureMetadata
+from autoresearch.action_log_generation.pipeline import CandidateProvider, ExposureMetadata
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ def resolve_recommendations_table_id(table: str | None) -> str:
     """user_recommendations 대상 테이블의 정규화된 id를 만든다(기본값 단일 출처)."""
     import os
 
-    from src.pipeline.build_training_dataset import (
+    from autoresearch.model_training.build_training_dataset import (
         BIGQUERY_DATASET,
         require_bigquery_project,
     )

@@ -2,7 +2,7 @@
 """LightGBM 학습 파이프라인 Typer CLI.
 
 [파이프라인] 피처 조립 → 학습 → 평가 → comparison → champion 승격 구간의
-진입점(배선)을 담당한다: `python -m src.cli create-experiment-plan /
+진입점(배선)을 담당한다: `python -m autoresearch.cli create-experiment-plan /
 build-features / train-model / evaluate-model / run-pipeline / verify-comparison /
 compare-paired-experiment / promote-model / sweep-seeds / measure-degradation`.
 
@@ -22,8 +22,8 @@ negative downsampling 난수를 분리하며, `run-pipeline`은 검증된 snapsh
 `measure-degradation`은 단일 cutoff로 학습한 모델을 이후 날짜에 하루씩 순차 적용해
 ROC-AUC 열화 곡선과 열화 지점을 낸다(#471) — 승격 판정이 아니라 측정 도구다.
 
-[비책임] 실제 조립·학습·평가·승격 로직은 각 모듈(src/pipeline/*.py,
-src/tracking/promote.py)이 소유한다. DAG·스케줄·재시도는 인접 저장소
+[비책임] 실제 조립·학습·평가·승격 로직은 각 모듈(`autoresearch/model_training/`,
+`autoresearch/model_evaluation/`, `autoresearch/model_registry/promote.py`)이 소유한다. DAG·스케줄·재시도는 인접 저장소
 Autoresearch-airflow 소유다.
 """
 
@@ -44,15 +44,17 @@ from pydantic import ValidationError
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.pipeline import (  # noqa: E402
+from autoresearch.model_training import (  # noqa: E402
     build_training_dataset,
+    train,
+)
+from autoresearch.model_evaluation import (  # noqa: E402
     degradation_eval,
     evaluate,
     paired_experiment,
-    train,
     training_comparison,
 )
-from src.pipeline.experiment_result_report import (  # noqa: E402
+from autoresearch.reporting.experiment_result_report import (  # noqa: E402
     LauncherOwnedExperimentError,
     ResultReportError,
     TerminalStatusConflictError,
@@ -63,15 +65,15 @@ from src.pipeline.experiment_result_report import (  # noqa: E402
     plan_transitions,
     target_status,
 )
-from src.pipeline.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
-from src.pipeline.promotion_evidence import (  # noqa: E402
+from autoresearch.model_evaluation.seed_sweep import run_seed_sweep, validate_seeds  # noqa: E402
+from autoresearch.model_evaluation.promotion_evidence import (  # noqa: E402
     PromotionEvidenceStore,
     PromotionEvidenceValidationError,
     create_experiment_plan,
 )
-from src.pipeline.training_provenance import write_manifest_atomic  # noqa: E402
-from src.tracking import promote  # noqa: E402
-from src.tracking.promotion_result import (  # noqa: E402
+from autoresearch.model_training.training_provenance import write_manifest_atomic  # noqa: E402
+from autoresearch.model_registry import promote  # noqa: E402
+from autoresearch.model_registry.promotion_result import (  # noqa: E402
     MODEL_PROMOTION_RESULT_CONTRACT,
     ModelPromotionResult,
     PromotionExecutionError,
@@ -289,7 +291,7 @@ def create_experiment_plan_command(
 
 @app.command()
 def train_model(
-    config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
+    config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: autoresearch/model_training/config.yaml)"),
     data_path: Optional[str] = typer.Option(None, help="training dataset 경로 (config override)"),
     model_output: Optional[str] = typer.Option(None, help="모델 저장 경로 (config override)"),
     test_set_output: Optional[str] = typer.Option(
@@ -401,7 +403,7 @@ def train_model(
 
 @app.command()
 def evaluate_model(
-    config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
+    config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: autoresearch/model_training/config.yaml)"),
     data_path: Optional[str] = typer.Option(None, help="평가용 데이터 경로 (config override, 기본: held-out test set)"),
     model_path: Optional[str] = typer.Option(None, help="모델 로드 경로 (config override)"),
     feature_columns_path: Optional[str] = typer.Option(None, help="Feature 목록 경로 (config override)"),
@@ -452,7 +454,7 @@ def run_pipeline(
             "백필 등 의도적으로 좁은 구간을 쓸 때는 0으로 우회합니다."
         ),
     ),
-    config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
+    config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: autoresearch/model_training/config.yaml)"),
     model_output: Optional[str] = typer.Option(None, help="모델 저장 경로 (config override)"),
     test_set_output: Optional[str] = typer.Option(
         None, help="Held-out test set 저장 경로 (config override, 병렬 실험 시 실험별로 분리 필요)"
@@ -610,7 +612,7 @@ def run_pipeline(
 
     # 어떤 기간·소스로 학습했는지 MLflow run에 lineage로 남긴다(#359). C2로 조립 경로는
     # feast(offline store PIT)가 유일하므로 FeatureService·registry·기간을 기록한다.
-    from src.features.feast_retrieval import DEFAULT_SERVICE
+    from autoresearch.feature_engineering.feast_retrieval import DEFAULT_SERVICE
 
     if resolved_dataset_uri is None:
         # run-pipeline은 C2로 feast-only다. 위 build-features(_assemble_via_feast)가
@@ -847,7 +849,7 @@ def _experiment_client_module():
     `agent_orchestration.ui.client`는 `ui.models`를 거쳐
     `agent_orchestration.app.experiments.models`를 끌어오고, 그 모듈이 SQLAlchemy를
     요구한다. 학습 이미지는 `uv sync --locked --no-dev`로 빌드되어 SQLAlchemy가 없으므로
-    top-level import면 `src.cli` 전체가 뜨지 않는다 — `train-model --help`조차 죽는다.
+    top-level import면 `autoresearch.cli` 전체가 뜨지 않는다 — `train-model --help`조차 죽는다.
 
     이 명령을 실제로 실행할 때만 필요한 의존이므로 여기서만 가져온다.
     """
@@ -1216,7 +1218,7 @@ def sweep_seeds(
         "--seeds",
         help="반복할 시드 목록(쉼표 구분). 기본값은 이슈 템플릿의 재현 조건과 같은 3개입니다.",
     ),
-    config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: src/pipeline/config.yaml)"),
+    config_path: Optional[str] = typer.Option(None, help="config.yaml 경로 (기본: autoresearch/model_training/config.yaml)"),
     data_path: Optional[str] = typer.Option(None, help="training dataset 경로 (config override)"),
     output_dir: Optional[str] = typer.Option(
         None, help="시드별 아티팩트 저장 디렉토리 (기본: data/processed/seed_sweep)"

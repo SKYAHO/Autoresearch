@@ -20,9 +20,9 @@ from datetime import UTC, date, datetime
 
 import pyarrow.parquet as pq
 
-from autoresearch.youtube_collection.load import write_partition
-from autoresearch.youtube_collection.schema import TrendingVideo
-from autoresearch.youtube_collection.transform import (
+from autoresearch.data_collection.load import write_partition
+from autoresearch.data_collection.schema import TrendingVideo
+from autoresearch.data_collection.transform import (
     COUNTRY_ALIASES,
     normalize_kaggle_row,
 )

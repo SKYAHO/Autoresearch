@@ -16,11 +16,11 @@ import pyarrow.parquet as pq
 from pyarrow.fs import GcsFileSystem
 from pydantic import ValidationError
 
-from autoresearch.action_logs.pipeline import (
+from autoresearch.action_log_generation.pipeline import (
     EVENT_LOG_PARQUET_SCHEMA,
     OPTIONAL_ADDITIVE_COLUMNS,
 )
-from autoresearch.action_logs.schema import EventLog
+from autoresearch.action_log_generation.schema import EventLog
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
 
 

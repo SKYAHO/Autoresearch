@@ -11,7 +11,7 @@ import mlflow
 def set_tracking_uri(uri: Optional[str] = None) -> None:
     """MLflow Tracking URI 설정.
 
-    좌표를 정하는 책임은 `src/tracking/namespace.py`에 있다(#406). 이 함수는 이미
+    좌표를 정하는 책임은 `autoresearch/model_registry/namespace.py`에 있다(#406). 이 함수는 이미
     결정된 URI를 MLflow에 넘기는 얇은 배관이며, 폴백 기본값을 스스로 정하지 않는다.
 
     예전에는 `uri=None`일 때 `file:./mlruns`(CWD 상대)로 떨어졌는데, 실행 위치에

@@ -13,7 +13,7 @@ registered model 버전 생성이 이 모듈의 책임이다.
 (Feast ODFV, #399) 안내와 함께 중단하며, 실험 모델은 registry tag로 표시돼
 승격 게이트가 거부한다. `experiment`를 주면 MLflow experiment·registry 이름이
 prod와 분리되고 트래킹 URI 기본값이 로컬 파일 스토어가 된다(#406) — 좌표 결정은
-`src/tracking/namespace.py`가 소유한다. 운영 경로에서 `MLFLOW_TRACKING_URI`가
+`autoresearch/model_registry/namespace.py`가 소유한다. 운영 경로에서 `MLFLOW_TRACKING_URI`가
 비어 있으면 조용히 localhost로 넘어가지 않고 즉시 중단한다.
 `scale_pos_weight="auto"` 계산의 0 나눗셈도 같은 이유로 fail-closed다. 결과는
 `TrainingOutcome`으로 반환하며, `defer_registration=True`면 registered model
@@ -30,8 +30,8 @@ prod와 분리되고 트래킹 URI 기본값이 로컬 파일 스토어가 된�
 `HeldOutMetricEvidence`를 게시한다(#493). 주 지표 ROC-AUC receipt만 기존
 `reproducibility/metrics/` artifact 경로로도 남겨 비교 계약을 유지한다.
 
-[비책임] 데이터셋 조립(src/pipeline/build_training_dataset.py), held-out test set
-채점(src/pipeline/evaluate.py), champion 승격 게이트(src/tracking/promote.py),
+[비책임] 데이터셋 조립(autoresearch/model_training/build_training_dataset.py), held-out test set
+채점(autoresearch/model_evaluation/evaluate.py), champion 승격 게이트(autoresearch/model_registry/promote.py),
 서빙 로드(src/serving/model_loader.py)는 이 모듈이 다루지 않는다.
 """
 
@@ -57,46 +57,46 @@ sys.path.insert(0, PROJECT_ROOT)
 import mlflow  # noqa: E402
 import mlflow.onnx  # noqa: E402
 
-from src.models.lgbm_model import LGBMModel  # noqa: E402
-from src.models.downsampling import downsample_negatives  # noqa: E402
-from src.models.calibration import (  # noqa: E402
+from autoresearch.model_training.lgbm_model import LGBMModel  # noqa: E402
+from autoresearch.model_training.downsampling import downsample_negatives  # noqa: E402
+from autoresearch.model_training.calibration import (  # noqa: E402
     CALIBRATION_PARAM_FILENAME,
     DownsamplingCalibrator,
 )
-from src.features.model_contract import (  # noqa: E402
+from autoresearch.feature_engineering.model_contract import (  # noqa: E402
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
     resolve_experiment_feature_columns,
 )
-from src.utils.model_utils import (  # noqa: E402
+from autoresearch.model_training.model_utils import (  # noqa: E402
     convert_lgbm_to_onnx,
     save_categorical_columns,
     save_feature_columns,
 )
-from src.tracking.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
-from src.tracking.namespace import (  # noqa: E402
+from autoresearch.model_registry.client import get_or_create_experiment, set_tracking_uri  # noqa: E402
+from autoresearch.model_registry.namespace import (  # noqa: E402
     derive_experiment_name,
     resolve_tracking_namespace,
 )
-from src.tracking.logger import (  # noqa: E402
+from autoresearch.model_registry.logger import (  # noqa: E402
     log_artifact,
     log_artifacts,
     log_dataset,
     log_metrics,
     log_parameters,
 )
-from src.tracking.model_package import (  # noqa: E402
+from autoresearch.model_registry.model_package import (  # noqa: E402
     ModelPackageManifest,
     load_manifest,
     save_manifest,
     verify_model_package,
 )
-from src.tracking.registry import register_model  # noqa: E402
-from src.pipeline.evaluate import (  # noqa: E402
+from autoresearch.model_registry.registry import register_model  # noqa: E402
+from autoresearch.model_evaluation.evaluate import (  # noqa: E402
     HELD_OUT_METRIC_NAMES,
     evaluate_held_out_metrics,
 )
-from src.pipeline.promotion_evidence import (  # noqa: E402
+from autoresearch.model_evaluation.promotion_evidence import (  # noqa: E402
     DEFAULT_HELD_OUT_METRIC_NAME,
     ExperimentPlanReceipt,
     HeldOutMetricEvidence,
@@ -104,7 +104,7 @@ from src.pipeline.promotion_evidence import (  # noqa: E402
     PromotionEvidenceStore,
     PromotionEvidenceValidationError,
 )
-from src.pipeline.training_provenance import (  # noqa: E402
+from autoresearch.model_training.training_provenance import (  # noqa: E402
     ProvenanceValidationError,
     TrainingSnapshotManifest,
     build_split_manifest,
@@ -115,7 +115,7 @@ from src.pipeline.training_provenance import (  # noqa: E402
     split_manifest_path,
     write_manifest_atomic,
 )
-from src.pipeline import training_snapshot_store  # noqa: E402
+from autoresearch.model_training import training_snapshot_store  # noqa: E402
 
 LABEL_COLUMN = "clicked"
 
@@ -233,7 +233,7 @@ def require_experiment_features_in_dataset(
     이 경로는 데이터셋에 **이미 있는** 컬럼을 모델 입력으로 승격시킬 뿐 컬럼을
     만들어내지 않는다. 없는 컬럼을 즉석에서 계산해 채우면 서빙 시점에는 Feast
     online store에 그 피처가 없어 학습/서빙 스큐가 그대로 재현된다
-    (`src/features/feature_builder.py`가 막으려는 바로 그것).
+    (`autoresearch/feature_engineering/feature_builder.py`가 막으려는 바로 그것).
 
     그래서 fail-closed로 막되, 팀원이 정규 경로를 바로 찾아가도록 안내를 함께 낸다.
 
@@ -316,7 +316,8 @@ def get_project_root():
     """프로젝트 루트 경로 반환."""
     current = os.path.dirname(os.path.abspath(__file__))
     while current != "/":
-        if os.path.exists(os.path.join(current, "src")):
+        # #754 재배치로 최상위 src/ 가 사라지므로 센티널을 autoresearch/ 로 바꾼다.
+        if os.path.exists(os.path.join(current, "autoresearch")):
             return current
         current = os.path.dirname(current)
     raise RuntimeError("프로젝트 루트를 찾을 수 없습니다")
@@ -587,7 +588,7 @@ def _train_from_resolved_dataset(
 
     project_root = get_project_root()
     if config_path is None:
-        config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
+        config_path = os.path.join(project_root, "autoresearch", "model_training", "config.yaml")
     elif not os.path.isabs(config_path):
         config_path = os.path.join(project_root, config_path)
     config = load_config(config_path)

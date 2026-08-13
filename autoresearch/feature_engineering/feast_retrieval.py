@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from src.features.model_contract import (
+from autoresearch.feature_engineering.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     COLD_START_CATEGORICAL_DEFAULT,
     MODEL_FEATURE_COLUMNS,

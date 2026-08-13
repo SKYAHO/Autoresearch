@@ -2,7 +2,7 @@
 
 [파이프라인] `training.py`가 baseline·candidate 산출물을 남긴 뒤부터, finalizer가
 결과를 게시·보고하기 전까지의 구간을 담당한다. 같은 Pod의 workspace에서
-`src.cli evaluate-model`을 조건·seed마다 호출하고, 그 JSON을 실험 하나의
+`autoresearch.cli evaluate-model`을 조건·seed마다 호출하고, 그 JSON을 실험 하나의
 `metrics.json`으로 조립한다.
 
 [기능] 조건별 seed 목록을 받아 held-out 지표를 수집하고, 같은 seed끼리 짝지은
@@ -12,7 +12,7 @@ delta와 그 평균·표준오차를 함께 싣는다. 두 조건이 같은 데�
 정의를 쓰지 않으려면 같은 곳에서 나와야 한다. 채점 subprocess가 실패하거나 timeout되면
 어느 조건의 어느 seed였는지와 출력 tail을 컨테이너 로그로 남긴다(#636).
 
-[비책임] 지표의 정의와 계산은 `src/pipeline/evaluate.py`가 소유한다 — 이 모듈은
+[비책임] 지표의 정의와 계산은 `autoresearch/model_evaluation/evaluate.py`가 소유한다 — 이 모듈은
 호출과 조립만 한다. 학습은 `training.py`, GCS 게시와 API 보고는 finalizer,
 가설의 성패 판정은 `report.md`를 읽는 사람과 리뷰 에이전트가 한다.
 
@@ -188,7 +188,7 @@ def evaluate_condition(
             [
                 "python",
                 "-m",
-                "src.cli",
+                "autoresearch.cli",
                 "evaluate-model",
                 "--data-path",
                 str(test_set_path),
@@ -225,7 +225,7 @@ def _paired_deltas(
     효과만 남는다. 이것이 두 조건을 매번 같은 Pod에서 함께 학습하는 이유다.
 
     **판정하지 않는다** — 평균과 표준오차를 계산해 싣기만 한다. 신뢰구간을 여기서
-    만들지 않는 이유는 t 임계값 표가 `src/pipeline/seed_sweep.py`에 있고, 그것을
+    만들지 않는 이유는 t 임계값 표가 `autoresearch/model_evaluation/seed_sweep.py`에 있고, 그것을
     executor에 복제하면 두 벌이 갈라지기 때문이다. 필요한 쪽에서 원본을 쓴다.
     """
     summary: dict[str, dict[str, object]] = {}

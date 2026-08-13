@@ -13,7 +13,7 @@ See: docs/guides/ctr-model-specification.md (Interaction Feature section)
 소비자가 역직렬화에 실패한다. 게이트: ``tests/test_odfv_registry_portability_feast.py``.
 
 [비책임] FeatureView/ODFV **정의**(스키마·소스·ttl)는 ``feature_repo/
-feature_definitions.py``가, PIT 조회 배관은 ``src/features/feast_retrieval.py``가 소유한다.
+feature_definitions.py``가, PIT 조회 배관은 ``autoresearch/feature_engineering/feast_retrieval.py``가 소유한다.
 """
 
 import json
@@ -21,8 +21,8 @@ from typing import Union, List
 import numpy as np
 import pandas as pd
 
-from src.features.embeddings import embed_texts, cosine_similarity
-from src.features.category_reference import get_category_description_embedding
+from autoresearch.feature_engineering.embeddings import embed_texts, cosine_similarity
+from autoresearch.feature_engineering.category_reference import get_category_description_embedding
 
 
 def compute_historical_category_match(hist_cat_aff: str, category_id: str) -> int:
@@ -98,7 +98,7 @@ def embed_keywords(keywords: List[str]) -> List[np.ndarray]:
     않음). 다만 이 함수 자체는 호출 단위(보통 유저 1명)를 넘어선 dedup은
     하지 않는다 — 여러 행(row)에 걸쳐 반복 호출을 피해야 하는 경우(예:
     학습 데이터셋 조립)는 호출부가 고유 키워드를 먼저 모아 직접
-    embed_texts()를 호출해야 한다 (src/features/assembly.py 참고).
+    embed_texts()를 호출해야 한다 (autoresearch/feature_engineering/assembly.py 참고).
 
     Args:
         keywords: 키워드 문자열 리스트.

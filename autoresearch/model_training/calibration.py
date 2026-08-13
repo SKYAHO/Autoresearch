@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from src.models.downsampling import ArrayLike, apply_downsampling_calibration
+from autoresearch.model_training.downsampling import ArrayLike, apply_downsampling_calibration
 
 # calibration 모델 아티팩트 파일명. 서빙 로더의 MLFLOW_CALIBRATION_ARTIFACT_PATH와 계약.
 CALIBRATION_PARAM_FILENAME = "calibration.json"

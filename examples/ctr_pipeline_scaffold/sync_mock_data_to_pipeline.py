@@ -105,7 +105,7 @@ def sync():
     print(
         "\nNote: #359 C2 이후 mock CSV -> 학습셋 로컬 흐름은 제거되었습니다. "
         "학습셋 조립은 Feast offline(BigQuery)에서 다음으로 실행합니다:\n"
-        "  python -m src.cli build-features "
+        "  python -m autoresearch.cli build-features "
         "--events-start-date <YYYY-MM-DD> --events-end-date <YYYY-MM-DD>"
     )
 

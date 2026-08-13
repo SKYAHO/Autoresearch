@@ -6,9 +6,9 @@ import logging
 import os
 from datetime import UTC, datetime
 
-from autoresearch.virtual_users.categories import DEFAULT_KAGGLE_YOUTUBE_CATEGORIES
-from autoresearch.virtual_users.persona_source import record_age, record_sex
-from autoresearch.virtual_users.schema import (
+from autoresearch.virtual_user_generation.categories import DEFAULT_KAGGLE_YOUTUBE_CATEGORIES
+from autoresearch.virtual_user_generation.persona_source import record_age, record_sex
+from autoresearch.virtual_user_generation.schema import (
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
     SOURCE_COUNTRY,

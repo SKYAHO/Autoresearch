@@ -13,9 +13,9 @@ from typing import Mapping, Sequence
 from pyarrow.fs import GcsFileSystem
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
-from autoresearch.youtube_collection.client import ResilientYouTubeClient
-from autoresearch.youtube_collection.fetch import collect_trending
-from autoresearch.youtube_collection.load import PARTITION_FILE, write_partition
+from autoresearch.data_collection.client import ResilientYouTubeClient
+from autoresearch.data_collection.fetch import collect_trending
+from autoresearch.data_collection.load import PARTITION_FILE, write_partition
 
 
 logger = logging.getLogger(__name__)

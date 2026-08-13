@@ -1,12 +1,12 @@
-"""src/features/assembly.py 공용 피처 조립 함수 단위 테스트."""
+"""autoresearch/feature_engineering/assembly.py 공용 피처 조립 함수 단위 테스트."""
 
 import tempfile
 
 import numpy as np
 import pandas as pd
 
-import src.features.assembly as assembly_module
-from src.features.assembly import (
+import autoresearch.feature_engineering.assembly as assembly_module
+from autoresearch.feature_engineering.assembly import (
     compute_interaction_columns,
     compute_point_in_time_user_features,
     compute_user_offline_features,

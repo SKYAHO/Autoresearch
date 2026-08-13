@@ -13,11 +13,11 @@ downsampling 보정은 순위를 바꾸지 않으므로 ROC-AUC/PR-AUC 계열에
 않는다(#300). `metrics_output`을 주면 같은 지표를 `held-out-metrics-v1` JSON으로도
 남긴다 — stdout 파싱 없이 기계가 읽을 경로다.
 
-[비책임] 학습·분할은 `src/pipeline/train.py`, 데이터셋 조립과 패스스루 컬럼 보존은
-`src/pipeline/build_training_dataset.py`, 공정 baseline·challenger 비교는
+[비책임] 학습·분할은 `autoresearch/model_training/train.py`, 데이터셋 조립과 패스스루 컬럼 보존은
+`autoresearch/model_training/build_training_dataset.py`, 공정 baseline·challenger 비교는
 `training_comparison.py`, write-once 증거 계약과 GCS 게시는
-`promotion_evidence.py`, 통계적 유의성 판정은 `src/pipeline/seed_sweep.py`와
-`src/pipeline/experiment_evaluation.py`가 소유한다. 주 지표를 무엇으로 삼을지와
+`promotion_evidence.py`, 통계적 유의성 판정은 `autoresearch/model_evaluation/seed_sweep.py`와
+`autoresearch/model_evaluation/experiment_evaluation.py`가 소유한다. 주 지표를 무엇으로 삼을지와
 승격 판정은 이 모듈이 정하지 않는다(#493).
 """
 
@@ -43,9 +43,9 @@ from sklearn.metrics import (  # noqa: E402
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, PROJECT_ROOT)
 
-from src.utils.model_utils import load_model, load_feature_columns  # noqa: E402
-from src.models.downsampling import apply_downsampling_calibration  # noqa: E402
-from src.features.model_contract import (  # noqa: E402
+from autoresearch.model_training.model_utils import load_model, load_feature_columns  # noqa: E402
+from autoresearch.model_training.downsampling import apply_downsampling_calibration  # noqa: E402
+from autoresearch.feature_engineering.model_contract import (  # noqa: E402
     CATEGORICAL_FEATURE_COLUMNS,
     require_experiment_feature_columns,
     require_model_feature_columns,
@@ -278,7 +278,8 @@ def get_project_root():
     """프로젝트 루트 경로 반환."""
     current = os.path.dirname(os.path.abspath(__file__))
     while current != "/":
-        if os.path.exists(os.path.join(current, "src")):
+        # #754 재배치로 최상위 src/ 가 사라지므로 센티널을 autoresearch/ 로 바꾼다.
+        if os.path.exists(os.path.join(current, "autoresearch")):
             return current
         current = os.path.dirname(current)
     raise RuntimeError("프로젝트 루트를 찾을 수 없습니다")
@@ -308,7 +309,7 @@ def main(
     # 모델이나 standalone 평가의 하위호환 기본값(#300 결정 7).
     project_root = get_project_root()
     if config_path is None:
-        config_path = os.path.join(project_root, "src", "pipeline", "config.yaml")
+        config_path = os.path.join(project_root, "autoresearch", "model_training", "config.yaml")
     elif not os.path.isabs(config_path):
         config_path = os.path.join(project_root, config_path)
     config = load_config(config_path)

@@ -5,7 +5,7 @@
 노출 순위의 출처는 `--exposure-source`로 고른다: `model`(BigQuery
 `user_recommendations` 파티션), `rerank-api`(Inference Server `/rerank` 실시간
 호출, single 전용), `heuristic`(규칙 기반). 노출 조립·클릭 판정·저장 로직은
-각각 `src.pipeline`·`autoresearch.action_logs`가 소유하며 여기서 담당하지
+각각 `src.pipeline`·`autoresearch.action_log_generation`가 소유하며 여기서 담당하지
 않는다. model 경로는 명시 BigQuery 프로젝트를 외부 import·클라이언트 생성보다
 먼저 인자 검증 단계에서 확인한다.
 
@@ -27,14 +27,14 @@ from typing import Sequence
 
 from pyarrow.fs import GcsFileSystem
 
-from autoresearch.action_logs.pipeline import CandidateProvider, ExposureMetadata
-from autoresearch.action_logs.daily import (
+from autoresearch.action_log_generation.pipeline import CandidateProvider, ExposureMetadata
+from autoresearch.action_log_generation.daily import (
     CandidateProviderFactory,
     merge_daily_action_log_shards,
     run_daily_action_log,
     run_daily_action_log_shard,
 )
-from autoresearch.action_logs.schema import validate_candidate_ratios
+from autoresearch.action_log_generation.schema import validate_candidate_ratios
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
 from autoresearch.jobs._telemetry import configure_action_log_telemetry_logging
 
@@ -206,7 +206,9 @@ def _build_candidate_provider_factory(
         def rerank_factory(
             videos: list[dict],
         ) -> tuple[CandidateProvider, Mapping[tuple[str, str], ExposureMetadata]]:
-            from src.pipeline.rerank_api import (
+            # 순환 import 회피 — action_log_generation ↔ recommendation 은 폐루프 구조상
+            # 서로를 참조한다. 모듈 최상단으로 올리면 import 가 실패한다 (#754).
+            from autoresearch.recommendation.rerank_api import (
                 RerankApiSettings,
                 make_rerank_api_exposure_provider,
             )
@@ -230,13 +232,17 @@ def _build_candidate_provider_factory(
         return None
 
     def factory(videos: list[dict]) -> tuple[CandidateProvider, Mapping[tuple[str, str], ExposureMetadata]]:
-        from src.pipeline.build_training_dataset import require_bigquery_project
+        # 순환 import 회피 — action_log_generation ↔ model_training 은 폐루프 구조상
+        # 서로를 참조한다. 모듈 최상단으로 올리면 import 가 실패한다 (#754).
+        from autoresearch.model_training.build_training_dataset import require_bigquery_project
 
         project = require_bigquery_project()
 
         from google.cloud import bigquery
 
-        from src.pipeline.model_exposure_provider import (
+        # 순환 import 회피 — action_log_generation ↔ recommendation 은 폐루프 구조상
+        # 서로를 참조한다. 모듈 최상단으로 올리면 import 가 실패한다 (#754).
+        from autoresearch.recommendation.model_exposure_provider import (
             load_user_rankings,
             make_model_exposure_provider,
             resolve_recommendations_table_id,
@@ -262,7 +268,9 @@ def _validate_args(args: argparse.Namespace) -> None:
     if args.mode in {"single", "shard"}:
         args.exposure_source = args.exposure_source or "model"
         if args.exposure_source == "model":
-            from src.pipeline.build_training_dataset import require_bigquery_project
+            # 순환 import 회피 — action_log_generation ↔ model_training 은 폐루프 구조상
+            # 서로를 참조한다. 모듈 최상단으로 올리면 import 가 실패한다 (#754).
+            from autoresearch.model_training.build_training_dataset import require_bigquery_project
 
             try:
                 require_bigquery_project()

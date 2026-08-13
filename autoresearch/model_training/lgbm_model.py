@@ -1,16 +1,16 @@
 """LightGBM 모델 wrapper.
 
-[파이프라인] 학습(src/pipeline/train.py)이 사용하는 champion 계열 모델 구현체.
+[파이프라인] 학습(autoresearch/model_training/train.py)이 사용하는 champion 계열 모델 구현체.
 model_contract 스칼라 피처를 축정렬 분할(tree split)로 학습한다.
 
-[기능] src.models.base.CTRModel 인터페이스(fit/predict_proba/save/load)를 구현해,
+[기능] autoresearch.model_training.base.CTRModel 인터페이스(fit/predict_proba/save/load)를 구현해,
 향후 train.py가 다른 모델 구현체와 다형적으로 다룰 수 있게 한다. save/load는 기존
-프로덕션 경로(src.utils.model_utils.save_model/load_model이 raw LightGBM booster를
+프로덕션 경로(autoresearch.model_training.model_utils.save_model/load_model이 raw LightGBM booster를
 직접 joblib 저장)와 동일한 결과를 내도록 override한다 — 인터페이스 추가가 기존 저장
 아티팩트 포맷을 바꾸지 않는다(additive,
 docs/archive/specs/2026-07-30-ctr-model-interface-port.md 참고).
 
-[비책임] ONNX 변환은 여전히 src.utils.model_utils.convert_lgbm_to_onnx가 전담한다
+[비책임] ONNX 변환은 여전히 autoresearch.model_training.model_utils.convert_lgbm_to_onnx가 전담한다
 (이 클래스는 변환하지 않는다).
 """
 
@@ -18,8 +18,8 @@ import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
-from src.models.base import CTRModel
-from src.utils.model_utils import load_model, save_model
+from autoresearch.model_training.base import CTRModel
+from autoresearch.model_training.model_utils import load_model, save_model
 
 
 class LGBMModel(CTRModel):

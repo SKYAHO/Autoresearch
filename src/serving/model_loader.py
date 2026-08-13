@@ -13,17 +13,17 @@ import mlflow
 from mlflow.tracking import MlflowClient
 from pydantic import TypeAdapter, ValidationError
 
-from src.features.model_contract import (
+from autoresearch.feature_engineering.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
     FeatureContractError,
     require_categorical_feature_columns,
     require_model_feature_columns,
 )
-from src.models.calibration import CALIBRATION_PARAM_FILENAME, DownsamplingCalibrator
+from autoresearch.model_training.calibration import CALIBRATION_PARAM_FILENAME, DownsamplingCalibrator
 from src.serving.onnx_model import OnnxProbabilityModel
 from src.serving.service import ProbabilityModel, Reranker
-from src.tracking.model_package import load_manifest, verify_model_package
+from autoresearch.model_registry.model_package import load_manifest, verify_model_package
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +36,8 @@ _JSON_METADATA_ERRORS: Final = (
     json.JSONDecodeError,
 )
 
-# 학습 파이프라인(src/pipeline/train.py Step 8)의 log_artifact 경로와 계약이다.
-# 학습 config(src/pipeline/config.yaml artifacts.*) 파일명이 바뀌면 함께 갱신한다.
+# 학습 파이프라인(autoresearch/model_training/train.py Step 8)의 log_artifact 경로와 계약이다.
+# 학습 config(autoresearch/model_training/config.yaml artifacts.*) 파일명이 바뀌면 함께 갱신한다.
 MLFLOW_FEATURE_COLUMNS_ARTIFACT_PATH: Final = "features/feature_columns.json"
 MLFLOW_CATEGORICAL_COLUMNS_ARTIFACT_PATH: Final = "features/categorical_columns.json"
 # calibration 상수 아티팩트(JSON w). 학습 train.py의 artifact_path="calibration"와 계약.

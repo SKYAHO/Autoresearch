@@ -3,7 +3,7 @@ import logging
 import pytest
 from pydantic import ValidationError
 
-from autoresearch.virtual_users.schema import (
+from autoresearch.virtual_user_generation.schema import (
     GENERATION_SCHEMA_VERSION,
     PROMPT_VERSION,
     GenerationRequest,
@@ -212,7 +212,7 @@ def test_virtual_user_batch_counts_users_by_sex(caplog):
         request=GenerationRequest(male_count=1, female_count=1),
         users=users,
     )
-    with caplog.at_level(logging.DEBUG, logger="autoresearch.virtual_users.schema"):
+    with caplog.at_level(logging.DEBUG, logger="autoresearch.virtual_user_generation.schema"):
         payload = batch.to_output_dict()
 
     assert batch.summary["total"] == 2

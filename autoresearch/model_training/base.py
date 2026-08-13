@@ -1,14 +1,14 @@
 """CTR 이진 분류 모델 계열의 최소 추상 인터페이스.
 
-[파이프라인] 학습(src/pipeline/train.py)이 모델 구현체(LGBMModel 등)를 다형적으로
+[파이프라인] 학습(autoresearch/model_training/train.py)이 모델 구현체(LGBMModel 등)를 다형적으로
 다루기 위한 계약만 이 모듈이 정의한다. 각 구현체의 알고리즘·하이퍼파라미터·전처리는
 개별 모듈(lgbm_model.py 등)이 소유한다.
 
 [기능] fit/predict_proba를 각 구현체가 반드시 구현하도록 강제하고, save/load는
 joblib 직렬화 기본 구현을 제공해 구현체가 필요할 때만 override하게 한다.
 
-[비책임] 모델 서빙(src/serving/*), ONNX 변환(src.utils.model_utils
-.convert_lgbm_to_onnx), MLflow 아티팩트 로깅(src/pipeline/train.py)은 이 인터페이스를
+[비책임] 모델 서빙(src/serving/*), ONNX 변환(autoresearch.model_training.model_utils
+.convert_lgbm_to_onnx), MLflow 아티팩트 로깅(autoresearch/model_training/train.py)은 이 인터페이스를
 소비하지 않는다 — 기존 LightGBM 프로덕션 저장 경로는 이 인터페이스 도입으로 바뀌지
 않는다(additive, capability probe round_001/round_002 검증을 거쳐 포팅,
 docs/archive/specs/2026-07-30-ctr-model-interface-port.md 참고).

@@ -81,14 +81,21 @@ REPORT_SECTIONS: Final = (
     "## 결론",
 )
 
+# #754 전환 기간 — 이 프롬프트는 배포된 executor 이미지가 만들지만, Codex가 보는 것은
+# 봉인된 base_dev_sha 워크스페이스다. 재배치 이전 봉인 트리는 src/ 를, 이후 트리는
+# autoresearch/ 를 가지므로 한 프롬프트가 두 트리를 모두 설명해야 한다. 옛 봉인 SHA
+# 실험이 모두 끝나면 src/ 줄과 옛 모델 계약 경로를 제거한다.
 _BASE_ALLOWED_PATHS = (
-    "src/** (src/features/model_contract.py 제외)",
-    "autoresearch/**",
+    "src/** (재배치 이전 트리에만 존재, src/features/model_contract.py 제외)",
+    "autoresearch/** (autoresearch/feature_engineering/model_contract.py 제외)",
     "tests/**",
     "tools/**",
 )
 _CONDITIONAL_ALLOWED_PATHS = {
-    "prod_model_contract": "src/features/model_contract.py",
+    "prod_model_contract": (
+        "src/features/model_contract.py 또는 "
+        "autoresearch/feature_engineering/model_contract.py (트리에 있는 쪽)"
+    ),
     "feast_definition": "feature_repo/**",
 }
 _PROHIBITED_PATHS = (
@@ -359,7 +366,8 @@ def build_harness_instructions(
 {budget_section}
 ## 무결성
 
-- 채점 경로(`src/pipeline/evaluate.py`)와 테스트 분할 코드를 실험 결과가 좋아 보이도록
+- 채점 경로(`autoresearch/model_evaluation/evaluate.py`, 재배치 이전 트리에서는
+  `src/pipeline/evaluate.py`)와 테스트 분할 코드를 실험 결과가 좋아 보이도록
   고치지 마십시오. 두 조건은 **같은 채점자**로 채점되며, 분할이 달라지면 두 숫자는
   애초에 비교 대상이 아닙니다. 채점 경로 변경은 diff에 그대로 드러나 리뷰가 잡습니다.
 - 자격 증명 파일을 읽거나 복사하거나 출력하지 마십시오.

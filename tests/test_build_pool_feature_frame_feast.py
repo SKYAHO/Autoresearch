@@ -9,8 +9,8 @@ store)로 검증한다.
 import pandas as pd
 import pytest
 
-from src.features import feast_retrieval
-from src.features.model_contract import (
+from autoresearch.feature_engineering import feast_retrieval
+from autoresearch.feature_engineering.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     MODEL_FEATURE_COLUMNS,
 )

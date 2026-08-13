@@ -51,4 +51,4 @@ RUN chown appuser /app
 USER appuser
 
 ENTRYPOINT ["/usr/local/bin/gcs_code_bootstrap.sh"]
-CMD ["python", "-m", "src.cli", "--help"]
+CMD ["python", "-m", "autoresearch.cli", "--help"]

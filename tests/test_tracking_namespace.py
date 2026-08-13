@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from src.tracking.namespace import (
+from autoresearch.model_registry.namespace import (
     EXPERIMENT_TRACKING_URI_DEFAULT,
     derive_experiment_name,
     PROD_EXPERIMENT_NAME,

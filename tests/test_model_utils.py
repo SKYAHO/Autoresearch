@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.models.lgbm_model import LGBMModel
-from src.utils.model_utils import (
+from autoresearch.model_training.lgbm_model import LGBMModel
+from autoresearch.model_training.model_utils import (
     convert_lgbm_to_onnx,
     load_categorical_columns,
     save_categorical_columns,

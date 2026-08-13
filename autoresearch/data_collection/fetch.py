@@ -19,8 +19,8 @@
 """
 import logging
 
-from autoresearch.youtube_collection.schema import TARGET_COUNTRY, TrendingVideo
-from autoresearch.youtube_collection.transform import normalize_api_item
+from autoresearch.data_collection.schema import TARGET_COUNTRY, TrendingVideo
+from autoresearch.data_collection.transform import normalize_api_item
 
 
 logger = logging.getLogger(__name__)
