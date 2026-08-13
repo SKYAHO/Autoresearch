@@ -46,7 +46,7 @@ from feast.repo_operations import py_path_to_module  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FEATURE_REPO = REPO_ROOT / "feature_repo"
 DEFINITIONS = FEATURE_REPO / "feature_definitions.py"
-# deploy/feast/apply-job.yaml이 `cd /app/feature_repo` 후 feast apply를 실행하므로
+# deployment/feast/apply-job.yaml이 `cd /app/feature_repo` 후 feast apply를 실행하므로
 # 정의 파일의 모듈명은 패키지 경로가 아니라 bare 이름이 된다.
 APPLY_MODULE_NAME = "feature_definitions"
 # 이 저장소가 소유한 최상위 패키지. 역직렬화 직전에 sys.modules에서 비워, 이미 로드돼
@@ -109,7 +109,7 @@ def test_apply_job_module_name_matches_this_gate(monkeypatch: pytest.MonkeyPatch
     모듈명을 짓는다 — 둘 다 이 저장소 밖(배포 매니페스트·feast 버전)에서 바뀔 수 있으므로
     여기서 함께 고정한다. 전제가 바뀌면 게이트가 조용히 무력해지는 대신 이 테스트가 먼저 깨진다.
     """
-    job = (REPO_ROOT / "deploy" / "feast" / "apply-job.yaml").read_text(encoding="utf-8")
+    job = (REPO_ROOT / "deployment" / "feast" / "apply-job.yaml").read_text(encoding="utf-8")
     match = re.search(r"cd (\S+) && exec feast [^\n]*\bapply\b", job)
     assert match is not None, "apply-job.yaml에서 feast apply 실행 디렉터리를 찾지 못했다"
     # (a) apply의 cwd = feature_repo 디렉터리 자체(부모가 아니다).

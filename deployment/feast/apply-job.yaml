@@ -38,7 +38,7 @@ spec:
           imagePullPolicy: IfNotPresent
           # command를 쓰면 ENTRYPOINT(gcs_code_bootstrap.sh)가 대체되어 GCS
           # 코드 아카이브가 /app에 풀리지 않는다. 반드시 args만 지정한다
-          # (Dockerfile.feast:31-40, Airflow KPO도 cmds 대신 arguments 사용).
+          # (deployment/Dockerfile.feast:31-40, Airflow KPO도 cmds 대신 arguments 사용).
           #
           # feast 공식 CLI에는 TLS CA 조달 훅이 없어 apply 직전에 내려받는다.
           # --log-level debug가 없으면 기본값 warning이라 삭제 건수 로그

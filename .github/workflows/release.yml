@@ -154,7 +154,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.app
+          file: deployment/Dockerfile.app
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -362,7 +362,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/serving/Dockerfile
+          file: deployment/serving/Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -534,7 +534,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/agent_orchestration/api.Dockerfile
+          file: deployment/experiment_platform/api.Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -704,7 +704,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/agent_orchestration/ui.Dockerfile
+          file: deployment/experiment_platform/workbench.Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -843,16 +843,16 @@ jobs:
           # 여기도 같이 늘려야 하며, 어긋나면 이 가드가 정상 승격을 거부해 Agent
           # Orchestration 배포가 통째로 막힌다(#653).
           allowed_paths=(
-            deploy/agent-orchestration/api-deployment.yaml
-            deploy/agent-orchestration/api-migration-job.yaml
-            deploy/agent-orchestration/launcher-cronjob.yaml
+            deployment/agent-orchestration/api-deployment.yaml
+            deployment/agent-orchestration/api-migration-job.yaml
+            deployment/agent-orchestration/launcher-cronjob.yaml
             # API image와 launcher image가 둘 다 이 파일을 고친다(#616).
-            deploy/agent-orchestration/log-collector-deployment.yaml
-            deploy/agent-orchestration/runner-deployment.yaml
-            deploy/agent-orchestration/deployment-verification-job.yaml
-            deploy/agent-orchestration/ui-deployment.yaml
+            deployment/agent-orchestration/log-collector-deployment.yaml
+            deployment/agent-orchestration/runner-deployment.yaml
+            deployment/agent-orchestration/deployment-verification-job.yaml
+            deployment/agent-orchestration/ui-deployment.yaml
             # log-collector와 같은 launcher image를 쓰는 PR 생성기다(#689/#700).
-            deploy/agent-orchestration/pull-request-opener-deployment.yaml
+            deployment/agent-orchestration/pull-request-opener-deployment.yaml
           )
           git add -- "${allowed_paths[@]}"
           mapfile -t changed_paths < <(git diff --cached --name-only)
@@ -1044,7 +1044,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/agent_orchestration/runner.Dockerfile
+          file: deployment/experiment_platform/runner.Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -1217,7 +1217,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/agent_orchestration/launcher.Dockerfile
+          file: deployment/experiment_platform/launcher.Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -1389,7 +1389,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: deploy/agent_orchestration/executor.Dockerfile
+          file: deployment/experiment_platform/executor.Dockerfile
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -1504,7 +1504,7 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: airflow-repo
-          add-paths: deploy/airflow/values.yaml
+          add-paths: deployment/airflow/values.yaml
           base: main
           branch: automation/batch-${{ steps.promotion-branch.outputs.short_sha }}
           delete-branch: true
@@ -1672,7 +1672,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.train
+          file: deployment/Dockerfile.train
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -1870,7 +1870,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.feast
+          file: deployment/Dockerfile.feast
           push: true
           build-args: |
             VCS_REF=${{ steps.source.outputs.sha }}
@@ -1991,7 +1991,7 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: airflow-repo
-          add-paths: deploy/airflow/values.yaml
+          add-paths: deployment/airflow/values.yaml
           base: main
           branch: automation/training-${{ steps.promotion-branch.outputs.short_sha }}
           delete-branch: true
@@ -2076,7 +2076,7 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: airflow-repo
-          add-paths: deploy/airflow/values.yaml
+          add-paths: deployment/airflow/values.yaml
           base: main
           branch: automation/feast-${{ steps.promotion-branch.outputs.short_sha }}
           delete-branch: true

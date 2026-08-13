@@ -8,15 +8,15 @@ import yaml
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-API_DOCKERFILE = REPOSITORY_ROOT / "deploy" / "agent_orchestration" / "api.Dockerfile"
+API_DOCKERFILE = REPOSITORY_ROOT / "deployment" / "experiment_platform" / "api.Dockerfile"
 RUNNER_DOCKERFILE = (
-    REPOSITORY_ROOT / "deploy" / "agent_orchestration" / "runner.Dockerfile"
+    REPOSITORY_ROOT / "deployment" / "experiment_platform" / "runner.Dockerfile"
 )
 LAUNCHER_DOCKERFILE = (
-    REPOSITORY_ROOT / "deploy" / "agent_orchestration" / "launcher.Dockerfile"
+    REPOSITORY_ROOT / "deployment" / "experiment_platform" / "launcher.Dockerfile"
 )
 EXECUTOR_DOCKERFILE = (
-    REPOSITORY_ROOT / "deploy" / "agent_orchestration" / "executor.Dockerfile"
+    REPOSITORY_ROOT / "deployment" / "experiment_platform" / "executor.Dockerfile"
 )
 DOCKERIGNORE = REPOSITORY_ROOT / ".dockerignore"
 RELEASE_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "release.yml"
@@ -122,8 +122,8 @@ def test_release_workflow_publishes_api_and_runner_digests() -> None:
 
     assert "publish-agent-orchestration-api-image:" in workflow
     assert "publish-agent-orchestration-runner-image:" in workflow
-    assert "file: deploy/agent_orchestration/api.Dockerfile" in workflow
-    assert "file: deploy/agent_orchestration/runner.Dockerfile" in workflow
+    assert "file: deployment/experiment_platform/api.Dockerfile" in workflow
+    assert "file: deployment/experiment_platform/runner.Dockerfile" in workflow
     assert "autoresearch-agent-orchestration-api" in workflow
     assert "autoresearch-agent-orchestration-runner" in workflow
     assert workflow.count("needs: publish-application-image") >= 3
@@ -243,7 +243,7 @@ def test_pr_ci_builds_and_smokes_the_executor_image_contract() -> None:
     assert isinstance(build_script, str)
     assert isinstance(smoke_script, str)
 
-    assert "deploy/agent_orchestration/executor.Dockerfile" in build_script
+    assert "deployment/experiment_platform/executor.Dockerfile" in build_script
     assert "autoresearch-agent-orchestration-executor:ci" in build_script
     assert "--read-only" in smoke_script
     assert 'test "$(id -u)" = "10001"' in smoke_script
@@ -280,13 +280,13 @@ def _load_release_workflow() -> dict[str, object]:
     (
         (
             "publish-agent-orchestration-launcher-image",
-            "deploy/agent_orchestration/launcher.Dockerfile",
+            "deployment/experiment_platform/launcher.Dockerfile",
             "autoresearch-agent-orchestration-launcher",
             ("applications.experiment_platform.launcher.main",),
         ),
         (
             "publish-agent-orchestration-executor-image",
-            "deploy/agent_orchestration/executor.Dockerfile",
+            "deployment/experiment_platform/executor.Dockerfile",
             "autoresearch-agent-orchestration-executor",
             (
                 "applications.experiment_platform.executor.main",

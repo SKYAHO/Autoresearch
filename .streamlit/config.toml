@@ -5,7 +5,7 @@
 # Streamlit 1.60은 emotion CSS-in-JS로 계산된 값을 주입할 뿐 그런 전역 CSS 커스텀
 # 속성을 노출하지 않는다. 참조가 전부 빈 값이라 해당 선언이 통째로 무시됐다(#657).
 #
-# 이 파일이 이미지에 실리려면 `deploy/agent_orchestration/ui.Dockerfile`이 복사해야
+# 이 파일이 이미지에 실리려면 `deployment/experiment_platform/workbench.Dockerfile`이 복사해야
 # 한다 — 그 Dockerfile은 경로를 열거해 복사하므로 저장소 루트에 두는 것만으로는
 # 컨테이너에 들어가지 않는다.
 #

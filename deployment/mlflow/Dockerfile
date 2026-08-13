@@ -13,8 +13,8 @@ ENV UV_SYSTEM_PYTHON=1
 
 WORKDIR /opt/mlflow-runtime
 
-COPY deploy/mlflow/runtime/pyproject.toml ./pyproject.toml
-COPY deploy/mlflow/runtime/uv.lock ./uv.lock
+COPY deployment/mlflow/runtime/pyproject.toml ./pyproject.toml
+COPY deployment/mlflow/runtime/uv.lock ./uv.lock
 
 RUN uv export \
       --frozen \

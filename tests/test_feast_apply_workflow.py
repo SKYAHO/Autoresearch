@@ -158,7 +158,7 @@ def test_runs_on_targets_the_scale_set_of_the_same_environment() -> None:
 
 def test_code_archive_uploads_dev_commit_for_dev_feast_apply() -> None:
     # feast-apply는 더 이상 이 아카이브를 기다리지 않지만(#561), GKE Job 롤백
-    # 경로(deploy/feast/apply-job.yaml, Dockerfile.feast)는 여전히 이 아카이브를
+    # 경로(deployment/feast/apply-job.yaml, deployment/Dockerfile.feast)는 여전히 이 아카이브를
     # 소비하므로 dev push도 계속 archive를 만들어야 한다.
     archive_workflow = CODE_ARCHIVE_WORKFLOW.read_text(encoding="utf-8")
 

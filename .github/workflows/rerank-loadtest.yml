@@ -185,7 +185,7 @@ jobs:
 
             job_manifest="runner/job-vu-${vus}.yaml"
             sed "s/rerank-loadtest-settings-placeholder/${settings_config_map}/g" \
-              deploy/loadtest/rerank-k6-job.yaml > "$job_manifest"
+              deployment/loadtest/rerank-k6-job.yaml > "$job_manifest"
             if grep -q "rerank-loadtest-settings-placeholder" "$job_manifest"; then
               echo "::error::settings ConfigMap placeholder was not rendered."
               exit 1

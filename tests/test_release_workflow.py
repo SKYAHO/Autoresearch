@@ -11,7 +11,7 @@ WORKFLOW_PATH = (
     Path(__file__).resolve().parents[1] / ".github" / "workflows" / "release.yml"
 )
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
-APPLICATION_DOCKERFILE = REPOSITORY_ROOT / "Dockerfile.app"
+APPLICATION_DOCKERFILE = REPOSITORY_ROOT / "deployment/Dockerfile.app"
 
 
 def _load_workflow() -> dict:
@@ -32,7 +32,7 @@ def test_release_workflow_publishes_application_image_directly():
         step for step in steps if step.get("uses") == "docker/build-push-action@v6"
     )
     assert build_step["with"]["context"] == "."
-    assert build_step["with"]["file"] == "Dockerfile.app"
+    assert build_step["with"]["file"] == "deployment/Dockerfile.app"
     assert build_step["with"]["push"] == "true"
     assert "VCS_REF=${{ steps.source.outputs.sha }}" in build_step["with"][
         "build-args"
@@ -70,7 +70,7 @@ def test_release_workflow_publishes_serving_image_with_immutable_verification():
         step for step in steps if step.get("uses") == "docker/build-push-action@v6"
     )
     assert build_step["with"]["context"] == "."
-    assert build_step["with"]["file"] == "deploy/serving/Dockerfile"
+    assert build_step["with"]["file"] == "deployment/serving/Dockerfile"
     assert build_step["with"]["push"] == "true"
     assert "VCS_REF=${{ steps.source.outputs.sha }}" in build_step["with"][
         "build-args"
@@ -103,7 +103,7 @@ def test_release_workflow_opens_an_airflow_digest_promotion_pr():
         step for step in steps if step.get("uses") == "peter-evans/create-pull-request@v8"
     )
     assert create_pr["with"]["base"] == "main"
-    assert create_pr["with"]["add-paths"] == "deploy/airflow/values.yaml"
+    assert create_pr["with"]["add-paths"] == "deployment/airflow/values.yaml"
     assert create_pr["with"]["branch"].startswith("automation/batch-")
 
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -145,7 +145,7 @@ def test_release_workflow_still_opens_the_batch_digest_promotion_pr():
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
 
     assert "promote_batch_image.py" in workflow_text
-    assert "deploy/airflow/values.yaml" in workflow_text
+    assert "deployment/airflow/values.yaml" in workflow_text
 
 
 def test_application_image_does_not_bake_source_code():
@@ -158,7 +158,7 @@ def test_application_image_does_not_bake_source_code():
 
 
 def test_application_image_bootstraps_code_from_the_gcs_archive():
-    # Dockerfile.feast·Dockerfile.train과 같은 부트스트랩 계약을 따른다.
+    # deployment/Dockerfile.feast·deployment/Dockerfile.train과 같은 부트스트랩 계약을 따른다.
     dockerfile = APPLICATION_DOCKERFILE.read_text(encoding="utf-8")
 
     assert (
@@ -266,7 +266,7 @@ def test_release_workflow_limits_orchestration_promotion_to_approved_manifests()
     scope_step = next(
         step for step in job["steps"] if step.get("id") == "changed"
     )
-    assert "deploy/agent-orchestration/launcher-cronjob.yaml" in scope_step["run"]
+    assert "deployment/agent-orchestration/launcher-cronjob.yaml" in scope_step["run"]
 
     summary_step = next(
         step for step in job["steps"] if "Executor digest" in step.get("run", "")
@@ -295,3 +295,20 @@ def test_ci_enumerated_test_paths_exist() -> None:
     assert referenced, "ci.yml이 테스트 경로를 하나도 열거하지 않는다 — 패턴이 바뀌었는지 확인하라"
     missing = [path for path in referenced if not (REPOSITORY_ROOT / path).is_file()]
     assert not missing, f"ci.yml이 없는 테스트 경로를 가리킨다: {missing}"
+
+
+def test_workflow_referenced_build_files_exist() -> None:
+    """워크플로가 `-f`/`file:`로 가리키는 빌드 파일이 실제로 있어야 한다(#754).
+
+    `deploy/` → `deployment/` 이동처럼 경로가 바뀌면 이 참조들이 조용히 낡는다. Dockerfile
+    경로가 틀리면 `docker build`가 실패하지만, 그 job이 paths 필터에 걸려 **돌지 않으면**
+    아예 드러나지 않는다. 저장소 트리만 보고 미리 잡는다.
+    """
+    missing: list[str] = []
+    for workflow in sorted((REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml")):
+        text = workflow.read_text(encoding="utf-8")
+        for reference in re.findall(r"(?:-f |file: )(deployment/[\w./-]+)", text):
+            if not (REPOSITORY_ROOT / reference).is_file():
+                missing.append(f"{workflow.name}: {reference}")
+
+    assert missing == [], f"워크플로가 없는 빌드 파일을 가리킨다: {missing}"

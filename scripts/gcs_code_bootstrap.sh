@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 파드 시작 시 코드 아카이브를 /app에 풀고 전달받은 커맨드를 실행한다.
-# Dockerfile.feast, Dockerfile.train 공용 ENTRYPOINT.
+# deployment/Dockerfile.feast, deployment/Dockerfile.train 공용 ENTRYPOINT.
 # 계약: docs/specs/2026-07-18-feast-bootstrap-gcs-code.md,
 #       docs/specs/2026-07-20-training-image-gcs-bootstrap.md
 set -euo pipefail

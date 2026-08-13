@@ -23,7 +23,7 @@ mlflow-artifacts/ (bucket)
 ### 1. 환경 설정
 
 ```bash
-cd deploy/mlflow/local
+cd deployment/mlflow/local
 
 # 템플릿에서 실제 환경파일 생성
 cp .env.minio.example .env.minio

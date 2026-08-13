@@ -3,7 +3,7 @@ import tomllib
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-SERVING_DOCKERFILE = REPOSITORY_ROOT / "deploy" / "serving" / "Dockerfile"
+SERVING_DOCKERFILE = REPOSITORY_ROOT / "deployment" / "serving" / "Dockerfile"
 CI_WORKFLOW = REPOSITORY_ROOT / ".github" / "workflows" / "ci.yml"
 PYPROJECT = REPOSITORY_ROOT / "pyproject.toml"
 
@@ -63,7 +63,7 @@ def test_serving_image_embeds_source_revision_and_runs_non_root() -> None:
 def test_ci_builds_serving_image_and_runs_import_smoke() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
 
-    assert "-f deploy/serving/Dockerfile" in workflow
+    assert "-f deployment/serving/Dockerfile" in workflow
     assert "--tag autoresearch-serving:ci" in workflow
     assert (
         "import lightgbm, feast, fastapi, feature_repo.redis_iam, applications.reranking_api.app"
