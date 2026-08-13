@@ -192,11 +192,19 @@ Codex prompt는 이슈 본문 원문, executor가 고정한 허용·금지 경�
 
 기본 수정 가능 경로는 다음으로 제한한다.
 
-- `autoresearch/**` (`autoresearch/feature_engineering/model_contract.py` 제외)
-- `src/**` — #754 재배치 **이전**에 봉인된 트리에만 존재한다. 옛 봉인 SHA 실험이
-  모두 끝나면 제거한다. 정본은 `executor/prompt.py`와 `executor/verifier.py`이며,
-  두 곳 모두 워크스페이스 트리를 보고 판단한다
-- `autoresearch/**`, `tests/**`, `tools/**`
+- `autoresearch/**`, `tests/**`, `tools/**` — 단
+  `autoresearch/feature_engineering/model_contract.py`는 `prod_model_contract` scope가
+  있을 때만 열린다
+- `src/**` — #754 재배치 **이전**에 봉인된 트리에만 존재한다. 그 트리의 계약 파일은
+  `src/features/model_contract.py`이며 같은 scope 규칙을 받는다
+
+재배치 이후 트리에서 candidate가 `src/` 아래 파일을 새로 만들면 **거부된다.** 허용은
+봉인된 base 트리가 `src/`를 가졌을 때만 열리며, 판정은 워크스페이스가 아니라 base
+tree를 본다(`verifier._path_is_allowed`의 `legacy_tree`). 워크스페이스를 보면 candidate가
+`src/foo.py`를 만드는 것만으로 자기 허용을 열게 된다.
+
+정본은 `executor/verifier.py`이고 `executor/prompt.py`가 그 내용을 Codex에게 보여준다.
+옛 봉인 SHA 실험이 모두 끝나면 `src/**` 항목을 제거한다.
 
 MVP에서는 Issue Form 내용으로 수정 범위를 확장하지 않는다. 추가 범위가 필요하면
 Issue heading이 아니라 executor 코드와 verifier 계약을 별도 변경한다.

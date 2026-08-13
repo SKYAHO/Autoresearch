@@ -261,7 +261,7 @@ docs/
   조건별(baseline|candidate) 학습 Job을 실행하고
   `python -m autoresearch.cli compare-paired-experiment`의 결과 파일을 운반할 뿐,
   `comparison_passed`/`comparison_rejected`/`comparison_failed` 판정을 다시
-  계산하지 않습니다. 실행 좌표는 `autoresearch/experiments/context.py`가,
+  계산하지 않습니다. 실행 좌표는 `autoresearch/model_evaluation/experiments/context.py`가,
   결과 계약은 `autoresearch/model_evaluation/paired_experiment.py`가 소유하며 정본은
   `docs/specs/2026-08-03-paired-offline-experiment-comparison.md`입니다.
 - 학습 데이터셋 스냅샷 재사용(#530)의 CLI 인자 이름(`--snapshot-root`,

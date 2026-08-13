@@ -30,10 +30,13 @@
    `applications/reranking_api/model_loader.py`에 registry 소스를 확장한다(서빙 spec
    `2026-07-16-reranking-serving-api.md`에 명시된 후속 과제의 해소).
    실행 계보는 alias가 가리키는 run_id를 해석해 산출 행에 기록한다.
-3. **코드 위치 = `autoresearch/recommendation/`** — 이 배치는 `applications.reranking_api`(Reranker)과
-   `src.features`(조립)를 소비하므로, `autoresearch → src` import 금지 규칙상
-   `autoresearch/jobs/` 편입이 불가능하다. `simulate_policy_round`와 같은
-   패턴으로 `autoresearch/recommendation/`에 두고 `python -m autoresearch.recommendation.daily_recommendations`
+3. **코드 위치 = `autoresearch/recommendation/`** — 이 배치는
+   `applications.reranking_api`(Reranker)와 `autoresearch.feature_engineering`(조립)을
+   소비한다. 작성 시점에는 그것이 `src.features`였고 `autoresearch → src` import 금지
+   규칙 때문에 `autoresearch/jobs/` 편입이 불가능하다는 것이 근거였다. **#754로 그 규칙
+   자체가 사라졌지만 결론은 유지된다** — `jobs/`는 Airflow 공개 batch 계약만 담고, 추천
+   로직은 파이프라인 단계 패키지가 소유한다. `simulate_policy_round`와 같은 패턴으로
+   `autoresearch/recommendation/`에 두고 `python -m autoresearch.recommendation.daily_recommendations`
    실행 형태를 공개 배치 계약 문서에 등재한다.
 4. **action log 단일 파티션 소비** — 일일 배치 하나가 독립된 30일 synthetic
    히스토리를 재생성하므로 파티션 간 UNION은 event_id 충돌·타임스탬프 겹침으로

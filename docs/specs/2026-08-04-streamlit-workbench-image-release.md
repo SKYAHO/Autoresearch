@@ -9,7 +9,7 @@
 
 ## 범위
 
-- `deployment/experiment_platform/ui.Dockerfile`로 Streamlit UI 전용 이미지를 정의한다.
+- `deployment/experiment_platform/workbench.Dockerfile`로 Streamlit UI 전용 이미지를 정의한다.
 - 기존 release workflow가 동일한 `main` source SHA에서 UI 이미지를 build·push·검증한다.
 - release summary가 인프라 저장소가 소비할 UI 이미지의 immutable digest를 남긴다.
 
