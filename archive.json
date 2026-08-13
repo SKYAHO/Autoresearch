@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-13T13:29:19Z",
+  "generated_at": "2026-08-13T13:33:59Z",
   "reports": [
+    {
+      "number": 755,
+      "title": "docs: 저장소 구조 재배치 설계와 계획을 확정한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-13T13:33:43Z",
+      "summary_ko": [
+        "저장소 구조 재배치를 위한 상세 설계 문서 및 단계별 실행 계획 문서를 확정하고 최상위 레거시 잔재를 정리하였습니다.",
+        "기존 `src/` 및 최상위 모듈을 파이프라인 단계 축(`autoresearch/`)과 서비스 층(`applications/`)으로 재배치하는 목표 구조를 정의하였습니다.",
+        "실제 코드 이동은 도메인 소유자 승인 후 별도 PR로 진행하며, 진행 중인 실험과의 호환성 검증 및 CI 가드 방안을 수립하였습니다."
+      ],
+      "report_url": "pr/755/"
+    },
     {
       "number": 756,
       "title": "refactor: src 트리를 autoresearch 단계별 패키지로 옮긴다",
