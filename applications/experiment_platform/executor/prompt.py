@@ -24,7 +24,10 @@ GitHub 이슈·ref 검증과 clone(`workspace.py`), Codex 프로세스 실행과
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Final
+
+from applications.experiment_platform.executor.verifier import _ruff_targets
 
 if TYPE_CHECKING:
     from applications.experiment_platform.executor.codex_worker import CodexRunInput
@@ -110,11 +113,31 @@ _PROHIBITED_PATHS = (
     "agent_orchestration/**",
     ".env 및 .env.* ( .env.example 포함 )",
 )
-_VERIFICATION_COMMANDS = (
-    # ruff 대상은 트리 세대에 따라 다르다 — verifier 의 `_ruff_targets` 가 정본이다 (#754).
-    "uv run --no-sync ruff check <applications 또는 agent_orchestration> autoresearch tests tools",
-    "uv run --no-sync python -m pytest",
-)
+def _verification_commands(repository: Path | None) -> tuple[str, ...]:
+    """worker 가 **그대로 셸에 넣을 수 있는** 검증 명령을 만든다.
+
+    ruff 대상은 워크스페이스 트리에 따라 다르므로(#754) 고정 문자열로 둘 수 없다. 그렇다고
+    `<applications 또는 agent_orchestration>` 같은 플레이스홀더를 넣으면 안 된다 — 이 값은
+    프롬프트와 워크스페이스 `AGENTS.md`에 **그대로 렌더**되고, 셸에서 `<`·`>`는 리다이렉션이라
+    worker 가 그 줄을 실행하면 명령이 깨진다. 그러면 worker 가 스스로 lint 를 못 고쳐 오고
+    verifier 의 `ruff_failed` 차단만 늘어난다.
+
+    판정 정본은 verifier 의 `_ruff_targets` 이며 여기서 그대로 쓴다.
+
+    Args:
+        repository: 봉인된 워크스페이스 경로. `None`이면 재배치 이후 트리를 가정한다 —
+            워크스페이스 없이 문안만 렌더하는 호출용 기본값이다.
+    """
+    targets = _ruff_targets(repository) if repository is not None else (
+        "applications",
+        "autoresearch",
+        "tests",
+        "tools",
+    )
+    return (
+        f"uv run --no-sync ruff check {' '.join(targets)}",
+        "uv run --no-sync python -m pytest",
+    )
 
 
 def _allowed_paths(allowed_scope: tuple[str, ...]) -> list[str]:
@@ -139,7 +162,9 @@ def build_codex_prompt(run: CodexRunInput) -> str:
     """
     allowed = "\n".join(f"- {path}" for path in _allowed_paths(run.allowed_scope))
     prohibited = "\n".join(f"- {path}" for path in _PROHIBITED_PATHS)
-    commands = "\n".join(f"- `{command}`" for command in _VERIFICATION_COMMANDS)
+    commands = "\n".join(
+        f"- `{command}`" for command in _verification_commands(run.repository)
+    )
     return f"""You are the code modification worker for an experiment.
 
 The repository checkout is ready. Modify files only within the permitted paths. Do not create,
@@ -284,6 +309,8 @@ def _budget_section(budget: ResourceBudget) -> str:
 def build_harness_instructions(
     allowed_scope: tuple[str, ...],
     budget: ResourceBudget | None = None,
+    *,
+    repository: Path | None = None,
 ) -> str:
     """clone의 `AGENTS.md`를 대체할 executor 전용 하네스 지침 본문을 만든다.
 
@@ -302,7 +329,9 @@ def build_harness_instructions(
     allowed = "\n".join(f"- `{path}`" for path in _allowed_paths(allowed_scope))
     budget_section = _budget_section(budget or ResourceBudget())
     prohibited = "\n".join(f"- `{path}`" for path in _PROHIBITED_PATHS)
-    commands = "\n".join(f"- `{command}`" for command in _VERIFICATION_COMMANDS)
+    commands = "\n".join(
+        f"- `{command}`" for command in _verification_commands(repository)
+    )
     return f"""# 실험 하네스 지침 (executor 전용)
 
 이 파일은 실험 executor가 clone 직후 심은 **하네스 지침**입니다. 저장소 원본

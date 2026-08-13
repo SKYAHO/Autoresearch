@@ -362,14 +362,15 @@ def _name_status_changes(
     return changes
 
 
-def _is_legacy_tree(repository: Path) -> bool:
-    """워크스페이스가 #754 재배치 **이전**에 봉인된 트리인지 본다.
+def _tree_has(repository: Path, relative: str) -> bool:
+    """봉인된 워크스페이스에 그 경로가 실제로 있는지 본다.
 
-    `autoresearch/cli.py`의 존재로 가른다 — 재배치가 만든 진입점이라 이전 트리에는 없고
-    이후 트리에는 반드시 있다. `autoresearch/` 디렉터리 자체는 이전에도 있었으므로 판별
-    기준이 될 수 없다. 옛 봉인 SHA 실험이 모두 끝나면 이 함수와 호출부를 제거한다.
+    #754 재배치는 여러 PR로 나뉘어 들어가므로 "재배치 이전/이후" 같은 **한 개의 세대
+    플래그로 가르면 중간 SHA에서 틀린다.** 예를 들어 Task 1만 머지된 시점에 봉인된 트리는
+    `autoresearch/cli.py`를 가지면서 `applications/`는 아직 없다. 그래서 각 판단은 프록시가
+    아니라 **그 판단이 실제로 의존하는 경로**를 직접 본다.
     """
-    return not (repository / "autoresearch" / "cli.py").is_file()
+    return (repository / relative).exists()
 
 
 def _path_is_allowed(path: str, policy: CandidatePolicy, *, legacy_tree: bool) -> bool:
@@ -486,7 +487,10 @@ def _validate_path_files(
     environment: dict[str, str],
 ) -> tuple[str, ...]:
     """경로·mode·LFS·파일 크기를 candidate 전체에 대해 fail-closed로 검사한다."""
-    legacy_tree = _is_legacy_tree(repository)
+    # `src/` 허용은 **봉인된 base 트리**에 그 경로가 있었을 때만 연다 (#754).
+    # 워크스페이스를 보면 순환이 된다 — candidate 가 `src/foo.py` 를 만들면 그 사실만으로
+    # 자기 허용을 열어버린다. base_entries 는 base_sha 시점의 트리라 candidate 가 바꿀 수 없다.
+    legacy_tree = any(path.startswith("src/") for path in base_entries)
     policy_paths: list[str] = []
     untracked_paths: list[str] = []
     for change in changes:
@@ -591,12 +595,16 @@ def _ruff_targets(repository: Path) -> tuple[str, ...]:
 
     ruff는 **없는 경로를 인자로 받으면 exit 1** 이므로, 목록이 트리와 어긋나면 모든
     candidate가 `ruff_failed`로 거부된다. 이 명령은 봉인된 `base_dev_sha` 워크스페이스에서
-    돌고(#754 재배치 이전 트리는 `agent_orchestration/`을, 이후 트리는 `applications/`를
-    가진다) 이미지 버전과 트리 세대가 어긋날 수 있으므로, 고정 목록을 쓸 수 없다.
+    돌고 이미지 버전과 트리가 어긋날 수 있으므로, 고정 목록을 쓸 수 없다.
 
-    옛 봉인 SHA 실험이 모두 끝나면 분기를 지우고 `applications`로 고정한다.
+    `applications/`의 존재를 직접 본다 — "재배치 이전/이후" 같은 세대 플래그로 가르면
+    #754가 여러 PR로 나뉘어 들어가는 중간 SHA에서 틀린다.
+
+    `applications/`를 가진 봉인 트리만 남으면 분기를 지우고 `applications`로 고정한다.
     """
-    platform_target = "agent_orchestration" if _is_legacy_tree(repository) else "applications"
+    platform_target = (
+        "applications" if _tree_has(repository, "applications") else "agent_orchestration"
+    )
     return (platform_target, "autoresearch", "tests", "tools")
 
 

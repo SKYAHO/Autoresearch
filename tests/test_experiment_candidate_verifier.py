@@ -718,23 +718,34 @@ def test_pytest_output_is_capped_to_the_tail(
     assert output.endswith("LAST_LINE\n")
 
 
-def test_src_allowance_applies_only_to_pre_rearrangement_trees(tmp_path: Path) -> None:
-    """`src/` 허용은 재배치 이전에 봉인된 트리에서만 열린다(#754).
+def test_src_allowance_follows_the_sealed_base_tree(tmp_path: Path) -> None:
+    """`src/` 허용은 **봉인된 base 트리**가 그 경로를 가졌을 때만 열린다(#754).
 
-    이 검증은 저장소 트리가 아니라 봉인된 `base_dev_sha` 워크스페이스에 적용되므로,
     진행 중 실험을 살리려면 옛 트리에서는 `src/`를 열어야 한다. 그러나 재배치 **이후**
-    트리에서 `src/` 아래 파일이 새로 생기는 것은 정상이 아니다 — 조건 없이 열어 두면
-    전환이 끝난 뒤에도 allowlist가 넓어진 채로 남는다.
+    트리에서 `src/` 아래 파일이 새로 생기는 것은 정상이 아니다.
+
+    워크스페이스가 아니라 base 트리를 보는 것이 핵심이다 — 워크스페이스를 보면 순환이
+    된다. candidate 가 `src/foo.py` 를 만드는 것만으로 자기 허용을 열어버린다.
     """
+    # 재배치 이후 트리: base 에 src/ 가 없으므로 새로 만든 src/ 파일은 거부된다.
     repository, base_sha = _repository(tmp_path)
     target = repository / "src" / "pipeline" / "train.py"
     target.parent.mkdir(parents=True)
     target.write_text("VALUE = 1\n", encoding="utf-8")
 
-    # 옛 트리(`autoresearch/cli.py` 없음)에서는 통과한다.
-    assert _verify(repository, base_sha) == ("src/pipeline/train.py",)
-
-    # 재배치가 만든 진입점이 생기면 같은 경로가 거부된다.
-    (repository / "autoresearch" / "cli.py").write_text("", encoding="utf-8")
     with pytest.raises(CandidateVerificationError, match="forbidden_path"):
         _verify(repository, base_sha)
+
+    # 재배치 이전 트리: base 가 이미 src/ 를 가지므로 그 아래 수정이 통과한다.
+    legacy_root = tmp_path / "legacy"
+    legacy_root.mkdir()
+    legacy_repository, legacy_base = _repository(legacy_root)
+    sealed = legacy_repository / "src" / "pipeline" / "train.py"
+    sealed.parent.mkdir(parents=True)
+    sealed.write_text("VALUE = 1\n", encoding="utf-8")
+    _git(legacy_repository, "add", "src/pipeline/train.py")
+    _git(legacy_repository, "commit", "-m", "sealed src tree")
+    legacy_base = _git(legacy_repository, "rev-parse", "HEAD")
+    sealed.write_text("VALUE = 2\n", encoding="utf-8")
+
+    assert _verify(legacy_repository, legacy_base) == ("src/pipeline/train.py",)

@@ -107,11 +107,14 @@ _LEGACY_LAYOUT: Final = _WorkspaceLayout(
 
 
 def workspace_layout(workspace: Path) -> _WorkspaceLayout:
-    """봉인된 트리가 #754 재배치 이전인지 이후인지 보고 모듈 이름을 고른다.
+    """봉인된 트리가 가진 모듈 이름 셋을 고른다.
 
-    `autoresearch/cli.py`의 존재로 가른다 — 재배치가 만든 진입점이라 이전 트리에는 없고,
-    이후 트리에는 반드시 있다. `autoresearch/` 디렉터리 자체는 재배치 이전에도 있었으므로
-    판별 기준이 될 수 없다.
+    `autoresearch/cli.py`의 존재로 가른다. 이 셋(`cli`·`model_evaluation`·`model_training`)은
+    **같은 커밋에서 함께 생겼으므로** 하나를 봐도 셋을 대표한다. `autoresearch/` 디렉터리
+    자체는 재배치 이전에도 있었으므로 판별 기준이 될 수 없다.
+
+    verifier의 `_tree_has`와 달리 여기서는 단일 술어로 충분한 이유가 이것이다 — 반면
+    `applications/`는 다른 커밋에서 생기므로 그쪽은 경로마다 따로 봐야 한다.
     """
     if (workspace / "autoresearch" / "cli.py").is_file():
         return _CURRENT_LAYOUT

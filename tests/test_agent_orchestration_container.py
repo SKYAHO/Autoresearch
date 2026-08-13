@@ -89,15 +89,15 @@ def test_api_and_runner_images_copy_only_their_runtime_modules() -> None:
     runner_dockerfile = RUNNER_DOCKERFILE.read_text(encoding="utf-8")
 
     assert "COPY applications/experiment_platform/api ./applications/experiment_platform/api" in api_dockerfile
-    assert "COPY applications/experiment_platform/shared/contracts.py ./applications/experiment_platform/" in api_dockerfile
-    assert "COPY applications/experiment_platform/shared/bootstrap_secrets.py ./applications/experiment_platform/" in api_dockerfile
+    assert "COPY applications/experiment_platform/shared/contracts.py ./applications/experiment_platform/shared/" in api_dockerfile
+    assert "COPY applications/experiment_platform/shared/bootstrap_secrets.py ./applications/experiment_platform/shared/" in api_dockerfile
     assert "COPY applications/experiment_platform/entrypoint.sh ./applications/experiment_platform/" in api_dockerfile
     assert "COPY applications/experiment_platform/runner" not in api_dockerfile
     assert "COPY applications/experiment_platform/shared/codex.py" not in api_dockerfile
 
     assert "COPY applications/experiment_platform/runner ./applications/experiment_platform/runner" in runner_dockerfile
-    assert "COPY applications/experiment_platform/shared/codex.py ./applications/experiment_platform/" in runner_dockerfile
-    assert "COPY applications/experiment_platform/shared/contracts.py ./applications/experiment_platform/" in runner_dockerfile
+    assert "COPY applications/experiment_platform/shared/codex.py ./applications/experiment_platform/shared/" in runner_dockerfile
+    assert "COPY applications/experiment_platform/shared/contracts.py ./applications/experiment_platform/shared/" in runner_dockerfile
     assert "COPY applications/experiment_platform/runner_entrypoint.sh ./applications/experiment_platform/" in runner_dockerfile
     assert "COPY applications/experiment_platform/api" not in runner_dockerfile
 

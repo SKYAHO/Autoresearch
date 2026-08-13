@@ -704,7 +704,8 @@ def run_codex(
     _validate_run(run)
     git_directory, sealed_git_metadata = _capture_protected_git_metadata(run.repository)
     with _harness_instructions(
-        run.repository, build_harness_instructions(run.allowed_scope, budget)
+        run.repository,
+        build_harness_instructions(run.allowed_scope, budget, repository=run.repository),
     ):
         result = _execute_codex(
             CodexExecution(
