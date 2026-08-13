@@ -703,7 +703,31 @@ EOF
 
 ---
 
-### Task 2: `applications/` 층 신설
+### Task 2: `applications/` 층 신설 — 완료 (커밋 `9bae803`·`e68bc2b`)
+
+**계획과 달랐던 것.** 셋 다 Task 2 시점에 즉시 깨진다.
+
+| 발견 | 왜 미룰 수 없나 |
+| --- | --- |
+| `verifier.py`의 블로킹 ruff 인자 | ruff는 **없는 경로를 인자로 받으면 exit 1**이다. 이 명령은 봉인된 워크스페이스에서 도는데 옛 트리에는 `applications/`가, 새 트리에는 `agent_orchestration/`이 없다. 고정 목록이면 한쪽 세대가 통째로 `ruff_failed`로 거부된다 — `_ruff_targets()`가 트리 모양을 보고 고른다 |
+| `alembic.ini`의 `prepend_sys_path = %(here)s/..` | 이 파일이 한 단계 깊어져 `..`가 저장소 루트가 아니라 `applications/`를 가리킨다. `../..`로 고치지 않으면 migration이 `api.database`를 import하지 못한다 |
+| `proxy/requirements.txt` 경로 | CI의 `uv lock & proxy export drift` job이 없는 경로에 export해 실패한다. 산출물도 새 경로로 재생성했다 |
+
+**Step 15-1(Task 1에서 옮겨온 `src/` 부활 방지 가드)을 여기서 넣었다.** 대상을 셋으로
+넓혔다 — `src`·`proxy`·`agent_orchestration` 전부 이번에 사라진다.
+
+**임포트 치환 스크립트의 함정.** 점 표기 매핑에 bare `agent_orchestration`을 넣으면
+`agent_orchestration/app` 같은 **슬래시 경로**와 `ruff check agent_orchestration` 같은
+**CLI 인자**까지 점 표기로 바꿔버린다(`applications.experiment_platform/app`). 실제로
+11개 파일이 이 형태로 망가져 손으로 되돌렸다. 다음 Task에서는 슬래시 규칙을 먼저
+적용하거나 bare 매핑을 빼야 한다.
+
+**Dockerfile COPY는 스크립트로 처리할 수 없다.** 원본 경로와 목적지 경로가 서로 다르게
+바뀌기 때문이다(`COPY .../api ./.../app`처럼 어긋난다). 5개 모두 손으로 고쳤고,
+`applications/__init__.py`와 `shared/__init__.py` COPY를 새로 넣었다.
+
+**검증.** `2837 tests collected` — Task 2 착수 시점과 동일. `2818 passed / 2 failed(WSL2
+환경) / 25 skipped`. Docker는 이 개발 환경에서 사용 불가라 이미지 빌드는 CI에 맡겼다.
 
 **Files:**
 - Create: `applications/__init__.py`, `applications/experiment_platform/shared/__init__.py`
@@ -713,7 +737,7 @@ EOF
 - Modify: **`applications/experiment_platform/executor/{verifier,prompt}.py`** — Task 1 Step 6-1에서 남겨둔 ruff 인자에 `applications`를 반영
 - Modify: **경로를 문자열로 단언하는 테스트 8개** — `test_agent_orchestration_container.py`, `test_serving_deployment.py`, `test_experiment_models.py`, `test_ui_submission_app.py`, `test_ui_visual_contract.py`, `test_experiment_branch_migration.py`, `test_experiment_issue_migration.py`, `test_experiment_candidate_verifier.py`. 갱신하지 않으면 Step 7의 "기준선과 동일한 통과 수" 기대가 성립하지 않는다
 
-- [ ] **Step 1: 디렉토리 생성과 이동**
+- [x] **Step 1: 디렉토리 생성과 이동**
 
 ```bash
 cd /home/yjlee/Autoresearch
@@ -745,7 +769,7 @@ git mv autoresearch/loadtest/__init__.py       applications/reranking_api/loadte
 rmdir autoresearch/loadtest 2>/dev/null
 ```
 
-- [ ] **Step 2: 이동만 커밋**
+- [x] **Step 2: 이동만 커밋**
 
 ```bash
 git add -A
@@ -761,7 +785,7 @@ EOF
 )"
 ```
 
-- [ ] **Step 3: 임포트 치환**
+- [x] **Step 3: 임포트 치환**
 
 Task 1의 스크립트를 재사용하되 `DOTTED`를 아래로 바꾼다.
 
@@ -791,7 +815,7 @@ grep -rn "src\.serving\|agent_orchestration\.\|autoresearch\.loadtest" --include
 
 기대: 0건.
 
-- [ ] **Step 4: `src/serving/model_loader.py:40` 주석 수정**
+- [x] **Step 4: `src/serving/model_loader.py:40` 주석 수정**
 
 ```python
 # 기존
@@ -800,7 +824,7 @@ grep -rn "src\.serving\|agent_orchestration\.\|autoresearch\.loadtest" --include
 # 학습 config(autoresearch/model_training/config.yaml artifacts.*) 파일명이 바뀌면 함께 갱신한다.
 ```
 
-- [ ] **Step 5: 배포 파일 경로 갱신**
+- [x] **Step 5: 배포 파일 경로 갱신**
 
 ```bash
 grep -rn "agent_orchestration\|src/serving\|src\.serving\|^COPY proxy" deploy/ applications/experiment_platform/docker-compose.yml applications/experiment_platform/alembic.ini applications/experiment_platform/*.sh
@@ -812,7 +836,7 @@ grep -rn "agent_orchestration\|src/serving\|src\.serving\|^COPY proxy" deploy/ a
 - `applications/experiment_platform/{entrypoint.sh,runner_entrypoint.sh}` — `python -m agent_orchestration.*` 갱신
 - `applications/experiment_platform/docker-compose.yml` — build context·volume 경로 갱신
 
-- [ ] **Step 5-1: 에이전트 이미지 5개의 COPY 허용 목록 갱신**
+- [x] **Step 5-1: 에이전트 이미지 5개의 COPY 허용 목록 갱신**
 
 이 다섯 Dockerfile은 디렉토리 통째가 아니라 **모듈을 하나씩 골라 COPY하는 허용 목록** 방식이다(#701이 launcher에 `github_pull_requests`를 넣어 맞춘 그 목록). 공유 모듈이 `shared/`로 내려가므로 전부 바뀐다.
 
@@ -896,7 +920,7 @@ docker build -f deploy/agent_orchestration/executor.Dockerfile -t ao-executor:ci
 docker run --rm ao-executor:ci python -c "import applications.experiment_platform.executor.main"
 ```
 
-- [ ] **Step 6: alembic migration 경로 확인**
+- [x] **Step 6: alembic migration 경로 확인**
 
 ```bash
 grep -n "script_location\|prepend_sys_path\|version_locations" applications/experiment_platform/alembic.ini
@@ -905,7 +929,7 @@ grep -rn "agent_orchestration" applications/experiment_platform/migrations/env.p
 
 `env.py`가 모델을 import 하면 경로를 갱신한다. **revision 파일 자체는 수정하지 않는다** — 이미 적용된 마이그레이션 이력이다.
 
-- [ ] **Step 7: 테스트·lint**
+- [x] **Step 7: 테스트·lint**
 
 ```bash
 uv run python -m pytest -q 2>&1 | tail -5
@@ -914,7 +938,7 @@ uv run --no-sync ruff check autoresearch applications tests tools scripts
 
 기대: Step 1 기준선과 동일한 통과 수.
 
-- [ ] **Step 8: 이미지 빌드 검증**
+- [x] **Step 8: 이미지 빌드 검증**
 
 ```bash
 docker build -f Dockerfile.app   -t autoresearch:ci .
@@ -935,7 +959,7 @@ docker run --rm ao-runner:ci   python -c "import applications.experiment_platfor
 docker run --rm ao-ui:ci       python -c "import applications.experiment_platform.workbench.app"
 ```
 
-- [ ] **Step 9: 커밋**
+- [x] **Step 9: 커밋**
 
 ```bash
 git add -A
@@ -1572,8 +1596,8 @@ Task마다 별도 PR을 올린다. `main` 기준, `Closes #754`는 마지막 PR�
 | PR | Task | 성격 | 상태 |
 | --- | --- | --- | --- |
 | [#755](https://github.com/SKYAHO/Autoresearch/pull/755) | spec·plan + Task 0 | 설계 확정 + 잔재 정리 | 리뷰 반영 완료 |
-| 2 | Task 1 | 최대 diff — 이동/치환 2커밋 + executor 슬래시 경로 + feast 레지스트리 | 구현 완료 |
-| 3 | Task 2 | applications 층 + `lint.yml` + 테스트 8개 | 대기 |
+| [#756](https://github.com/SKYAHO/Autoresearch/pull/756) | Task 1 | 최대 diff — 이동/치환 2커밋 + executor 슬래시 경로 + feast 레지스트리 | 리뷰 반영 완료 |
+| 4 | Task 2 | applications 층 + `lint.yml` + ruff 대상·alembic·proxy export | 구현 완료 |
 | 4 | Task 3 | 테스트 재배치 | 대기 |
 | 5 | Task 4 | 배포·CI paths 필터 | 대기 |
 | 6 | Task 5 | 문서 | 대기 |
