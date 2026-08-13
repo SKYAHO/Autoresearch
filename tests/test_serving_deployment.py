@@ -59,7 +59,7 @@ def test_ci_builds_serving_image_and_runs_import_smoke() -> None:
     assert "-f deploy/serving/Dockerfile" in workflow
     assert "--tag autoresearch-serving:ci" in workflow
     assert (
-        "import lightgbm, feast, fastapi, feature_repo.redis_iam, src.serving.app"
+        "import lightgbm, feast, fastapi, feature_repo.redis_iam, applications.reranking_api.app"
         in workflow
     )
     assert "tests/test_serving_feast_reader.py" in workflow

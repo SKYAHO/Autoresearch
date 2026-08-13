@@ -8,5 +8,5 @@ offline feature source의 loadtest fixture를 준비하는 구간을 담당한�
 BigQuery DML renderer를 제공한다.
 
 [비책임] Feast materialize와 Redis online store 갱신은 feature_repo/ 및 Airflow가,
-HTTP 리랭킹 요청은 src/serving/이 담당한다.
+HTTP 리랭킹 요청은 applications/reranking_api/이 담당한다.
 """

@@ -13,8 +13,8 @@ import subprocess
 
 import pytest
 
-from agent_orchestration.executor import verifier
-from agent_orchestration.executor.verifier import (
+from applications.experiment_platform.executor import verifier
+from applications.experiment_platform.executor.verifier import (
     CandidatePolicy,
     CandidateVerificationError,
     current_working_tree_verification,

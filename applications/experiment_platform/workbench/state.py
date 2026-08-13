@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
-from agent_orchestration.ui.models import (
+from applications.experiment_platform.workbench.models import (
     Event,
     Experiment,
     ExperimentCost,

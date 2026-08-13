@@ -90,7 +90,7 @@ def _classify(stderr: str) -> str:
 def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
     """`gh`와 같은 세션의 하위 프로세스를 함께 종료한다.
 
-    `agent_orchestration/codex.py`의 같은 이름 함수와 동일한 계약이다. 비-POSIX에는
+    `applications/experiment_platform/shared/codex.py`의 같은 이름 함수와 동일한 계약이다. 비-POSIX에는
     프로세스 그룹이 없으므로 `process.kill()`로 떨어진다 — 이 fallback이 없으면
     아래 회수 단계가 무기한 대기해 `gh_timeout_sec`이 무의미해진다.
     """

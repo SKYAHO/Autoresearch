@@ -3,7 +3,7 @@
 전체 파이프라인 기준으로 이 모듈은 **실험 실행이나 판정에 관여하지 않는다.**
 가설 이슈를 Auto Research로 분류하고 승격 단계에서 확인하는 label 계약만 검증한다.
 본문 파싱과 executor Pod의 브랜치 생성은 각각
-`tools/auto_research_issue_branch.py`와 `agent_orchestration.executor`가,
+`tools/auto_research_issue_branch.py`와 `applications.experiment_platform.executor`가,
 승격 판정은 `autoresearch/experiments/promotion_gate.py`가 담당하며 여기서 다루지 않는다.
 
 label 문자열은 Issue Form·API 발행 경로·승격 워크플로·문서 2개에 흩어져 있다.
@@ -103,7 +103,7 @@ def test_service_publishes_issues_with_the_form_label() -> None:
     `service.TRIGGER_LABEL`은 이 문자열의 복제본이다 — 여기가 어긋나면 서버가 발행한
     이슈를 승격 workflow가 Auto Research 입력으로 인정하지 않는다.
     """
-    from agent_orchestration.app.experiments.service import TRIGGER_LABEL
+    from applications.experiment_platform.api.experiments.service import TRIGGER_LABEL
 
     (trigger_label,) = _form_labels()
     assert TRIGGER_LABEL == trigger_label

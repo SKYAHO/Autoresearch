@@ -28,9 +28,9 @@ from tempfile import TemporaryDirectory
 from typing import Iterator
 import uuid
 
-from agent_orchestration.executor import api_client, verifier
-from agent_orchestration.executor.config import issue_branch_matches
-from agent_orchestration.executor.verifier import VerificationResult
+from applications.experiment_platform.executor import api_client, verifier
+from applications.experiment_platform.executor.config import issue_branch_matches
+from applications.experiment_platform.executor.verifier import VerificationResult
 
 
 _SHA_PATTERN = re.compile(r"^[0-9a-f]{40}$")

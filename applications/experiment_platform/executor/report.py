@@ -28,12 +28,12 @@ import stat
 import subprocess
 from typing import Final
 
-from agent_orchestration.executor.codex_worker import (
+from applications.experiment_platform.executor.codex_worker import (
     CodexExecution,
     CodexRunResult,
     run_codex_execution,
 )
-from agent_orchestration.executor.prompt import REPORT_SECTIONS, build_report_prompt
+from applications.experiment_platform.executor.prompt import REPORT_SECTIONS, build_report_prompt
 
 
 REPORT_FILENAME: Final = "report.md"

@@ -21,4 +21,4 @@ case "${database_env_line}" in
     ;;
 esac
 
-exec uvicorn agent_orchestration.app.main:app --host 0.0.0.0 --port 8000
+exec uvicorn applications.experiment_platform.api.main:app --host 0.0.0.0 --port 8000

@@ -16,26 +16,26 @@ from sqlalchemy import Engine, create_engine, event, inspect, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.exceptions import (
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.exceptions import (
     ExperimentNotFoundError,
     ExperimentStepNotFoundError,
     IdempotencyConflictError,
     StepAlreadyFinalizedError,
 )
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.experiments.models import (
     Experiment,
     ExperimentStep,
     StepKind,
     StepStatus,
     TERMINAL_STEP_STATUSES,
 )
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api.experiments.schemas import (
     MAX_STEP_TARGET_BYTES,
     ExperimentStepCreate,
     ExperimentStepUpdate,
 )
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.service import (
     create_experiment_step,
     update_experiment_step,
 )

@@ -29,15 +29,15 @@ pytest.importorskip("streamlit", reason="orchestration-ui 그룹이 설치돼야
 import streamlit as st  # noqa: E402
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
-from agent_orchestration.ui.app import refresh_report  # noqa: E402
-from agent_orchestration.ui.client import ApiUnavailableError  # noqa: E402
-from agent_orchestration.ui.report import (  # noqa: E402
+from applications.experiment_platform.workbench.app import refresh_report  # noqa: E402
+from applications.experiment_platform.workbench.client import ApiUnavailableError  # noqa: E402
+from applications.experiment_platform.workbench.report import (  # noqa: E402
     build_report_document,
     render_report_html,
     report_document,
 )
-from agent_orchestration.ui.models import Experiment, REPORT_STATUSES  # noqa: E402
-from agent_orchestration.ui.state import (  # noqa: E402
+from applications.experiment_platform.workbench.models import Experiment, REPORT_STATUSES  # noqa: E402
+from applications.experiment_platform.workbench.state import (  # noqa: E402
     WorkbenchState,
     record_report,
     record_report_error,
@@ -45,7 +45,7 @@ from agent_orchestration.ui.state import (  # noqa: E402
 )
 
 
-APP_PATH = "agent_orchestration/ui/app.py"
+APP_PATH = "applications/experiment_platform/workbench/app.py"
 
 
 def test_inline_raw_html_is_escaped() -> None:
@@ -341,7 +341,7 @@ def test_refresh_report_failure_does_not_touch_the_detail_error() -> None:
 
 
 # 결과 탭 다섯 조합이 실제로 참고하는 `measurement.build_metric_snapshot`의 산출 형태다
-# (`agent_orchestration/executor/measurement.py`). 값 자체는 임의지만 키 구조는 맞춘다.
+# (`applications/experiment_platform/executor/measurement.py`). 값 자체는 임의지만 키 구조는 맞춘다.
 SNAPSHOT_FIXTURE: dict[str, object] = {
     "contract_version": "experiment-metric-snapshot-v1",
     "primary_metric": "roc_auc",

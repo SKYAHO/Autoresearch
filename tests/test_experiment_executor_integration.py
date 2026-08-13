@@ -21,31 +21,31 @@ import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.models import (
     Experiment,
     ExperimentEvent,
     ExperimentStatus,
 )
-from agent_orchestration.executor.results_store import PublishedObject
-from agent_orchestration.launcher.config import LauncherSettings
-from agent_orchestration.launcher.jobs import (
+from applications.experiment_platform.executor.results_store import PublishedObject
+from applications.experiment_platform.launcher.config import LauncherSettings
+from applications.experiment_platform.launcher.jobs import (
     EXPERIMENT_EXECUTOR_LABEL_SELECTOR,
     KubernetesJobs,
     build_executor_job,
 )
-from agent_orchestration.launcher.main import run_tick
-from agent_orchestration.launcher.repository import (
+from applications.experiment_platform.launcher.main import run_tick
+from applications.experiment_platform.launcher.repository import (
     ClaimedExperiment,
     claim_experiments,
     reconcile_failed_jobs,
 )
-from agent_orchestration.executor import phase2
-from agent_orchestration.executor.codex_worker import CodexRunResult, CodexWorkerError
-from agent_orchestration.executor.report import ReportResult
-from agent_orchestration.executor.state import ExecutorWorkspaceState, write_state
-from agent_orchestration.executor.verifier import VerificationResult
-from agent_orchestration.executor.workspace import PreparedWorkspace
+from applications.experiment_platform.executor import phase2
+from applications.experiment_platform.executor.codex_worker import CodexRunResult, CodexWorkerError
+from applications.experiment_platform.executor.report import ReportResult
+from applications.experiment_platform.executor.state import ExecutorWorkspaceState, write_state
+from applications.experiment_platform.executor.verifier import VerificationResult
+from applications.experiment_platform.executor.workspace import PreparedWorkspace
 
 
 _EXPERIMENT_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")
@@ -56,7 +56,7 @@ class UnsafeExecutorError(RuntimeError):
     """향후 executor 도메인 예외가 비정제 문자열을 담는 경우를 재현한다."""
 
 
-UnsafeExecutorError.__module__ = "agent_orchestration.executor.future"
+UnsafeExecutorError.__module__ = "applications.experiment_platform.executor.future"
 
 
 def test_phase2_main_logs_stage_lifecycle(
@@ -154,7 +154,7 @@ def test_phase2_module_execution_preserves_phase2_failure_reason(
         [
             sys.executable,
             "-m",
-            "agent_orchestration.executor.phase2",
+            "applications.experiment_platform.executor.phase2",
             "workspace-preparer",
         ],
         check=False,
@@ -278,7 +278,7 @@ def test_claim_does_not_require_a_stored_issue_body(
     session, engine = _session()
     try:
         monkeypatch.setattr(
-            "agent_orchestration.launcher.repository._try_advisory_lock",
+            "applications.experiment_platform.launcher.repository._try_advisory_lock",
             lambda _session: True,
         )
         missing_body = Experiment(
@@ -537,7 +537,7 @@ def test_launcher_reconciles_only_failed_phase2_jobs_before_claiming(
 
     try:
         monkeypatch.setattr(
-            "agent_orchestration.launcher.repository._try_advisory_lock",
+            "applications.experiment_platform.launcher.repository._try_advisory_lock",
             lambda _session: False,
         )
         experiment = Experiment(

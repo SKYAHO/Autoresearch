@@ -42,12 +42,12 @@ from autoresearch.model_training.build_training_dataset import (
     require_bigquery_project,
 )
 from autoresearch.virtual_user_generation.adapter import to_personas_frame
-from src.serving.model_loader import (
+from applications.reranking_api.model_loader import (
     RegistryModelSettings,
     ResolvedModel,
     load_reranker_with_lineage,
 )
-from src.serving.schemas import RerankedVideo
+from applications.reranking_api.schemas import RerankedVideo
 from autoresearch.recommendation.simulate_policy_round import _to_candidate_videos, build_pool_feature_frame
 
 logger = logging.getLogger(__name__)

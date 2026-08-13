@@ -27,15 +27,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_orchestration.executor.prompt import (  # noqa: E402
+from applications.experiment_platform.executor.prompt import (  # noqa: E402
     ResourceBudget,
     build_harness_instructions,
 )
 from kubernetes.client import V1ResourceRequirements  # noqa: E402
 
-from agent_orchestration.launcher import jobs  # noqa: E402
-from agent_orchestration.launcher.config import LauncherSettings  # noqa: E402
-from agent_orchestration.launcher.jobs import (  # noqa: E402
+from applications.experiment_platform.launcher import jobs  # noqa: E402
+from applications.experiment_platform.launcher.config import LauncherSettings  # noqa: E402
+from applications.experiment_platform.launcher.jobs import (  # noqa: E402
     _container_resources,
     _cpu_limit_millicores,
     _cpu_request_millicores,
@@ -45,7 +45,7 @@ from agent_orchestration.launcher.jobs import (  # noqa: E402
     _parse_memory_quantity,
     build_executor_job,
 )
-from agent_orchestration.launcher.repository import ClaimedExperiment  # noqa: E402
+from applications.experiment_platform.launcher.repository import ClaimedExperiment  # noqa: E402
 
 
 _DIGEST = "d3d273e66324042cd8e547068c194231cf1812d53cb68236edba56b067055293"

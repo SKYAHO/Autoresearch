@@ -23,13 +23,13 @@ from datetime import datetime, timezone
 
 import streamlit as st
 
-from agent_orchestration.ui.client import (
+from applications.experiment_platform.workbench.client import (
     ApiConfigurationError,
     ApiNotFoundError,
     ExperimentApiError,
     ExperimentClient,
 )
-from agent_orchestration.ui.state import (
+from applications.experiment_platform.workbench.state import (
     PendingPublication,
     WorkbenchView,
     WorkbenchState,
@@ -54,15 +54,15 @@ from agent_orchestration.ui.state import (
     show_experiment,
     should_poll,
 )
-from agent_orchestration.ui.styles import workbench_css
-from agent_orchestration.ui.models import (
+from applications.experiment_platform.workbench.styles import workbench_css
+from applications.experiment_platform.workbench.models import (
     BOARD_RUNNING_STATUSES,
     IssuePublication,
     REPORT_STATUSES,
     Submission,
     stage_index,
 )
-from agent_orchestration.ui.views import (
+from applications.experiment_platform.workbench.views import (
     render_board,
     render_board_button,
     render_empty_workbench,
@@ -107,7 +107,7 @@ def render_configuration_notice() -> None:
     """API 토큰 없이 연 화면에 서버 측 설정 방법을 표시한다."""
     st.error("Experiment API 연결 설정이 필요합니다.")
     st.code(
-        "ORCH_UI_API_BASE_URL=http://127.0.0.1:8000 \\\nORCH_UI_API_TOKEN=\"$ORCH_API_TOKEN\" \\\nPYTHONPATH=. uv run streamlit run agent_orchestration/ui/app.py",
+        "ORCH_UI_API_BASE_URL=http://127.0.0.1:8000 \\\nORCH_UI_API_TOKEN=\"$ORCH_API_TOKEN\" \\\nPYTHONPATH=. uv run streamlit run applications/experiment_platform/workbench/app.py",
         language="bash",
     )
     st.caption("토큰은 Streamlit 서버 환경에만 설정되며 브라우저로 전달되지 않습니다.")

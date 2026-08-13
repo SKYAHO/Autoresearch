@@ -9,7 +9,7 @@ fail-closed 검증 함수를 제공한다.
 
 from __future__ import annotations
 
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.experiments.models import (
     ALLOWED_TRANSITIONS,
     TERMINAL_STATUSES,
     ExperimentStatus,

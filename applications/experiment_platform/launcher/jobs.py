@@ -43,8 +43,8 @@ from kubernetes.client import (
 )
 from kubernetes.client.exceptions import ApiException
 
-from agent_orchestration.launcher.config import LauncherSettings
-from agent_orchestration.launcher.repository import ClaimedExperiment
+from applications.experiment_platform.launcher.config import LauncherSettings
+from applications.experiment_platform.launcher.repository import ClaimedExperiment
 
 
 BRANCH_BOOTSTRAP_LABEL_SELECTOR = "app.kubernetes.io/component=branch-bootstrap"
@@ -105,7 +105,7 @@ def _token_minter(
     return V1Container(
         name=f"{purpose}-token-minter",
         image=settings.executor_image,
-        command=["python", "-m", "agent_orchestration.executor.token_minter"],
+        command=["python", "-m", "applications.experiment_platform.executor.token_minter"],
         env=[
             _env("ORCH_GITHUB_APP_ID", str(settings.github_app_id)),
             _env(
@@ -390,14 +390,14 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
     push_token = "/var/run/push-token"
     branch_creator = _container(
         "branch-creator",
-        ["python", "-m", "agent_orchestration.executor.main"],
+        ["python", "-m", "applications.experiment_platform.executor.main"],
         [*coordinates, _env("ORCH_GITHUB_TOKEN_FILE", f"{branch_token}/token")],
         [V1VolumeMount(name="branch-token", mount_path=branch_token, read_only=True)],
         settings,
     )
     workspace_preparer = _container(
         "workspace-preparer",
-        ["python", "-m", "agent_orchestration.executor.phase2", "workspace-preparer"],
+        ["python", "-m", "applications.experiment_platform.executor.phase2", "workspace-preparer"],
         [
             *coordinates,
             _env("ORCH_GITHUB_TOKEN_FILE", f"{clone_token}/token"),
@@ -427,7 +427,7 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
     )
     codex_worker = _container(
         "codex-worker",
-        ["python", "-m", "agent_orchestration.executor.phase2", "codex-worker"],
+        ["python", "-m", "applications.experiment_platform.executor.phase2", "codex-worker"],
         [
             _env("ORCH_EXECUTOR_WORKSPACE", _WORKSPACE_DIRECTORY),
             *codex_environment,
@@ -444,7 +444,7 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
     )
     candidate_verifier = _container(
         "candidate-verifier",
-        ["python", "-m", "agent_orchestration.executor.phase2", "candidate-verifier"],
+        ["python", "-m", "applications.experiment_platform.executor.phase2", "candidate-verifier"],
         [_env("ORCH_EXECUTOR_WORKSPACE", _WORKSPACE_DIRECTORY)],
         [
             workspace_mount,
@@ -461,7 +461,7 @@ def build_executor_job(claim: ClaimedExperiment, settings: LauncherSettings) -> 
     )
     candidate_finalizer = _container(
         "candidate-finalizer",
-        ["python", "-m", "agent_orchestration.executor.phase2", "candidate-finalizer"],
+        ["python", "-m", "applications.experiment_platform.executor.phase2", "candidate-finalizer"],
         [
             *coordinates,
             _env("ORCH_GITHUB_TOKEN_FILE", f"{push_token}/token"),
@@ -629,7 +629,7 @@ def build_branch_job(
     token_minter = V1Container(
         name="github-token-minter",
         image=settings.executor_image,
-        command=["python", "-m", "agent_orchestration.executor.token_minter"],
+        command=["python", "-m", "applications.experiment_platform.executor.token_minter"],
         env=[
             _env("ORCH_GITHUB_APP_ID", str(settings.github_app_id)),
             _env(
@@ -654,7 +654,7 @@ def build_branch_job(
     branch_bootstrap = V1Container(
         name="branch-bootstrap",
         image=settings.executor_image,
-        command=["python", "-m", "agent_orchestration.executor.main"],
+        command=["python", "-m", "applications.experiment_platform.executor.main"],
         env=[
             _env("ORCH_EXPERIMENT_ID", str(claim.experiment_id)),
             _env("ORCH_ISSUE_NUMBER", str(claim.issue_number)),

@@ -32,7 +32,7 @@ prod와 분리되고 트래킹 URI 기본값이 로컬 파일 스토어가 된�
 
 [비책임] 데이터셋 조립(autoresearch/model_training/build_training_dataset.py), held-out test set
 채점(autoresearch/model_evaluation/evaluate.py), champion 승격 게이트(autoresearch/model_registry/promote.py),
-서빙 로드(src/serving/model_loader.py)는 이 모듈이 다루지 않는다.
+서빙 로드(applications/reranking_api/model_loader.py)는 이 모듈이 다루지 않는다.
 """
 
 import math
@@ -336,7 +336,7 @@ def collect_categorical_categories(
     Categorical 컬럼을 train/val union 카테고리로 캐스팅하고 카테고리 목록을 반환.
 
     반환된 dict는 categorical_columns.json 아티팩트로 저장되어 서빙이 학습과
-    동일한 category 코드 매핑을 재현하는 데 사용된다 (src/serving/model_loader.py).
+    동일한 category 코드 매핑을 재현하는 데 사용된다 (applications/reranking_api/model_loader.py).
     """
     categories_by_column: dict = {}
     for col in categorical_columns:
@@ -971,7 +971,7 @@ def _train_from_resolved_dataset(
         save_feature_columns(feature_columns, feature_columns_path)
         save_categorical_columns(categories_by_column, categorical_columns_path)
 
-        # artifact 경로(model/, features/)는 서빙 로더(src/serving/model_loader.py)의
+        # artifact 경로(model/, features/)는 서빙 로더(applications/reranking_api/model_loader.py)의
         # MLflow 다운로드 경로 상수와 계약이다 — 변경 시 양쪽을 함께 갱신한다.
         log_artifact(local_path=model_path, artifact_path="model")
 

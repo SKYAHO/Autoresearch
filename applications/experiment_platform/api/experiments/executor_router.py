@@ -14,17 +14,17 @@ import uuid
 from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
-from agent_orchestration.app.database import get_db_session
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api.database import get_db_session
+from applications.experiment_platform.api.experiments.schemas import (
     CandidateReportRequest,
     ExecutorResultReportRequest,
     ExperimentResponse,
 )
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.service import (
     record_candidate,
     record_experiment_result,
 )
-from agent_orchestration.app.schemas import ErrorResponse
+from applications.experiment_platform.api.schemas import ErrorResponse
 
 
 router = APIRouter(prefix="/internal/executor/experiments", tags=["executor"])

@@ -7,7 +7,7 @@
 내용 및 calibration 정합성 검증을 제공한다.
 
 [비책임] ONNX 변환·학습은 autoresearch.model_training.train, ONNX 세션 생성·추론은
-src.serving.model_loader와 src.serving.onnx_model이 담당한다.
+applications.reranking_api.model_loader와 applications.reranking_api.onnx_model이 담당한다.
 """
 
 from __future__ import annotations

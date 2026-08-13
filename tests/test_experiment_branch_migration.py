@@ -16,7 +16,7 @@ from sqlalchemy import Column
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-REVISION_ROOT = PROJECT_ROOT / "agent_orchestration" / "migrations" / "versions"
+REVISION_ROOT = PROJECT_ROOT / "applications" / "experiment_platform" / "migrations" / "versions"
 
 
 def load_revision(name: str) -> ModuleType:

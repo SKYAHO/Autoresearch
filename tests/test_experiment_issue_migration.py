@@ -12,13 +12,13 @@ import re
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 REVISION = (
     PROJECT_ROOT
-    / "agent_orchestration"
+    / "applications" / "experiment_platform"
     / "migrations"
     / "versions"
     / "0003_experiment_issue_lineage.py"
 )
 MODELS = (
-    PROJECT_ROOT / "agent_orchestration" / "app" / "experiments" / "models.py"
+    PROJECT_ROOT / "applications" / "experiment_platform" / "api" / "experiments" / "models.py"
 )
 
 LINEAGE_COLUMNS = (

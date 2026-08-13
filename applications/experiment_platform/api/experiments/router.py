@@ -14,10 +14,10 @@ import uuid
 from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.orm import Session
 
-from agent_orchestration.app.config import ServiceSettings, get_settings
-from agent_orchestration.app.database import get_db_session
-from agent_orchestration.app.experiments.models import ExperimentStatus, StepKind
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api.config import ServiceSettings, get_settings
+from applications.experiment_platform.api.database import get_db_session
+from applications.experiment_platform.api.experiments.models import ExperimentStatus, StepKind
+from applications.experiment_platform.api.experiments.schemas import (
     ExperimentCreate,
     ExperimentEventCreate,
     ExperimentEventPageResponse,
@@ -40,7 +40,7 @@ from agent_orchestration.app.experiments.schemas import (
     PromotionRequest,
     StatusUpdateRequest,
 )
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.service import (
     create_experiment,
     create_experiment_event,
     create_experiment_log,
@@ -58,7 +58,7 @@ from agent_orchestration.app.experiments.service import (
     update_experiment_status,
     update_experiment_step,
 )
-from agent_orchestration.app.schemas import ErrorResponse
+from applications.experiment_platform.api.schemas import ErrorResponse
 
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])

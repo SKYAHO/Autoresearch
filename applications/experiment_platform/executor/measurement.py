@@ -33,9 +33,9 @@ import statistics
 import subprocess
 from typing import Final, cast
 
-from agent_orchestration.executor.command_output import log_command_streams
-from agent_orchestration.executor.training import workspace_layout
-from agent_orchestration.executor.training import TrainingStage
+from applications.experiment_platform.executor.command_output import log_command_streams
+from applications.experiment_platform.executor.training import workspace_layout
+from applications.experiment_platform.executor.training import TrainingStage
 
 
 _LOGGER = logging.getLogger(__name__)

@@ -22,7 +22,7 @@ import re
 import stat
 import uuid
 
-from agent_orchestration.github_app import GitHubAppCredentials
+from applications.experiment_platform.shared.github_app import GitHubAppCredentials
 
 
 _POSITIVE_INTEGER_PATTERN = re.compile(r"^[1-9][0-9]*$")

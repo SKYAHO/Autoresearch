@@ -398,7 +398,7 @@ jobs:
           fi
 
           docker run --rm "$digest_ref" python -c \
-            "import lightgbm, feast, fastapi, feature_repo.redis_iam, src.serving.app"
+            "import lightgbm, feast, fastapi, feature_repo.redis_iam, applications.reranking_api.app"
 
           echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
 
@@ -569,8 +569,8 @@ jobs:
             exit 1
           fi
 
-          docker run --rm "$digest_ref" python -c "import agent_orchestration.app.main"
-          docker run --rm "$digest_ref" python -c "import agent_orchestration.bootstrap_secrets; from google.cloud import secretmanager"
+          docker run --rm "$digest_ref" python -c "import applications.experiment_platform.api.main"
+          docker run --rm "$digest_ref" python -c "import applications.experiment_platform.shared.bootstrap_secrets; from google.cloud import secretmanager"
 
           echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
 
@@ -1083,7 +1083,7 @@ jobs:
             echo "::error::Agent orchestration Runner Codex version is unexpected"
             exit 1
           fi
-          docker run --rm "$digest_ref" python -c "import agent_orchestration.runner.app"
+          docker run --rm "$digest_ref" python -c "import applications.experiment_platform.runner.app"
 
           echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
 
@@ -1253,7 +1253,7 @@ jobs:
           fi
 
           docker run --rm --read-only "$digest_ref" python -c \
-            "import agent_orchestration.launcher.main"
+            "import applications.experiment_platform.launcher.main"
 
           echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"
 
@@ -1429,7 +1429,7 @@ jobs:
             uv --version
             node --version
             codex --version
-            python -c "import agent_orchestration.executor.main, agent_orchestration.executor.token_minter, agent_orchestration.executor.workspace, agent_orchestration.executor.codex_worker, agent_orchestration.executor.verifier, agent_orchestration.executor.finalizer, agent_orchestration.executor.phase2"
+            python -c "import applications.experiment_platform.executor.main, applications.experiment_platform.executor.token_minter, applications.experiment_platform.executor.workspace, applications.experiment_platform.executor.codex_worker, applications.experiment_platform.executor.verifier, applications.experiment_platform.executor.finalizer, applications.experiment_platform.executor.phase2"
           '
 
           echo "digest_ref=$digest_ref" >> "$GITHUB_OUTPUT"

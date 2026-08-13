@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_orchestration.launcher.resident import run_forever  # noqa: E402
+from applications.experiment_platform.launcher.resident import run_forever  # noqa: E402
 
 
 def test_a_tick_exception_does_not_kill_the_loop() -> None:

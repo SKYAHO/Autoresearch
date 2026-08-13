@@ -27,8 +27,8 @@ from pathlib import Path
 import tempfile
 from typing import Protocol
 
-from agent_orchestration.executor.config import ExecutorConfigError, TokenMinterInput
-from agent_orchestration.github_app import (
+from applications.experiment_platform.executor.config import ExecutorConfigError, TokenMinterInput
+from applications.experiment_platform.shared.github_app import (
     GitHubAppCredentials,
     GitHubAppError,
     InstallationToken,

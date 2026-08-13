@@ -6,8 +6,8 @@
 [기능] FastAPI 수명주기 의존성 초기화와 readiness 판정, healthcheck·rerank·metrics
 HTTP 계약, 요청 순서 응답과 고정 카디널리티의 단계별 서빙 메트릭을 담당한다.
 
-[비책임] 모델 아티팩트 해석(src/serving/model_loader.py), 온라인 피처 조회·조립
-(src/serving/online_features.py), CTR 예측 구현(src/serving/service.py), Airflow 배포
+[비책임] 모델 아티팩트 해석(applications/reranking_api/model_loader.py), 온라인 피처 조회·조립
+(applications/reranking_api/online_features.py), CTR 예측 구현(applications/reranking_api/service.py), Airflow 배포
 및 스케줄링(Autoresearch-airflow 저장소).
 """
 
@@ -28,23 +28,23 @@ from autoresearch.feature_engineering.model_contract import (
     FeatureContractError,
     MODEL_FEATURE_COLUMNS,
 )
-from src.serving.feast_reader import load_feast_online_feature_reader
-from src.serving.model_loader import (
+from applications.reranking_api.feast_reader import load_feast_online_feature_reader
+from applications.reranking_api.model_loader import (
     ResolvedModel,
     load_model_settings_from_environment,
     load_reranker_with_lineage,
 )
-from src.serving.online_features import (
+from applications.reranking_api.online_features import (
     FeatureRetrievalError,
     ServingFeatureBuilder,
 )
-from src.serving.schemas import (
+from applications.reranking_api.schemas import (
     HealthcheckResponse,
     RerankRequest,
     RerankResponse,
     RerankResponseItem,
 )
-from src.serving.service import PredictionError
+from applications.reranking_api.service import PredictionError
 
 # uvicorn이 자체 로깅을 구성한 뒤 이 모듈을 import하므로, 여기서 JSON
 # stdout으로 재구성해야 access 로그까지 구조화된다 (#352, 계약은

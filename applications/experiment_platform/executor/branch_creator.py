@@ -19,8 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
-from agent_orchestration.executor.config import BranchCreatorInput
-from agent_orchestration.github_refs import GitHubRefError
+from applications.experiment_platform.executor.config import BranchCreatorInput
+from applications.experiment_platform.shared.github_refs import GitHubRefError
 
 
 class RefClient(Protocol):

@@ -16,8 +16,8 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import CheckConstraint, UniqueConstraint
 
-from agent_orchestration.app.database import create_database_engine
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.database import create_database_engine
+from applications.experiment_platform.api.experiments.models import (
     Experiment,
     ExperimentEvent,
     ExperimentLog,
@@ -55,7 +55,7 @@ def test_database_engine_pool_matches_sync_endpoint_threadpool_ceiling() -> None
 def test_initial_migration_offline_sql_contains_workbench_contract() -> None:
     """초기 migration에서 테이블·멱등 제약·서버 UUID 기본값이 빠지는 회귀를 잡는다."""
     output = StringIO()
-    config = Config(str(_REPO_ROOT / "agent_orchestration" / "alembic.ini"))
+    config = Config(str(_REPO_ROOT / "applications" / "experiment_platform" / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", "postgresql+psycopg://offline")
     config.output_buffer = output
 
@@ -77,7 +77,7 @@ def test_initial_migration_offline_sql_contains_workbench_contract() -> None:
 def test_step_migration_offline_sql_contains_step_contract() -> None:
     """Step 테이블의 CHECK·멱등 제약·3컬럼 polling index가 빠지는 회귀를 잡는다."""
     output = StringIO()
-    config = Config(str(_REPO_ROOT / "agent_orchestration" / "alembic.ini"))
+    config = Config(str(_REPO_ROOT / "applications" / "experiment_platform" / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", "postgresql+psycopg://offline")
     config.output_buffer = output
 
@@ -102,7 +102,7 @@ def test_offline_migration_does_not_disable_existing_application_loggers() -> No
     original_disabled = logger.disabled
     logger.disabled = False
     output = StringIO()
-    config = Config(str(_REPO_ROOT / "agent_orchestration" / "alembic.ini"))
+    config = Config(str(_REPO_ROOT / "applications" / "experiment_platform" / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", "postgresql+psycopg://offline")
     config.output_buffer = output
 
@@ -119,7 +119,7 @@ def test_online_migration_fails_fast_without_database_url_env_var(
     """online migration이 환경 변수 없이 alembic.ini의 localhost placeholder로 새지 않는다."""
     monkeypatch.delenv("ORCH_DATABASE_URL", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
-    config = Config(str(_REPO_ROOT / "agent_orchestration" / "alembic.ini"))
+    config = Config(str(_REPO_ROOT / "applications" / "experiment_platform" / "alembic.ini"))
 
     with pytest.raises(RuntimeError, match="ORCH_DATABASE_URL"):
         command.upgrade(config, "head")

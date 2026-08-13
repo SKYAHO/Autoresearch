@@ -14,12 +14,12 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.pool import StaticPool
 
-from agent_orchestration.app import main as main_module
-from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.exceptions import IssuePublicationLimitError
-from agent_orchestration.app.experiments.github_issues import IssueRef
-from agent_orchestration.app.experiments.models import Experiment
+from applications.experiment_platform.api import main as main_module
+from applications.experiment_platform.api.config import ServiceSettings
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.exceptions import IssuePublicationLimitError
+from applications.experiment_platform.api.experiments.github_issues import IssueRef
+from applications.experiment_platform.api.experiments.models import Experiment
 
 API_TOKEN = "test-orchestration-token"
 
@@ -85,7 +85,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         return "a" * 40
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        "applications.experiment_platform.api.experiments.service.resolve_dev_sha",
         fake_resolve_dev_sha,
         raising=False,
     )
@@ -105,11 +105,11 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
         )
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.find_issue_by_marker",
+        "applications.experiment_platform.api.experiments.service.find_issue_by_marker",
         fake_find_issue_by_marker,
     )
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", fake_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", fake_create_issue
     )
 
     app = main_module.create_app()
@@ -179,15 +179,15 @@ def test_republishing_legacy_issue_returns_null_baseline_without_github(
         raise AssertionError("기존 발행 행은 GitHub를 호출하면 안 된다")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.resolve_dev_sha",
+        "applications.experiment_platform.api.experiments.service.resolve_dev_sha",
         unexpected_github_call,
     )
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.find_issue_by_marker",
+        "applications.experiment_platform.api.experiments.service.find_issue_by_marker",
         unexpected_github_call,
     )
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue",
+        "applications.experiment_platform.api.experiments.service.create_issue",
         unexpected_github_call,
     )
 
@@ -223,7 +223,7 @@ def test_publication_labels_the_issue_for_classification_and_promotion(
         return IssueRef(number=610, url="https://github.com/SKYAHO/Autoresearch/issues/610")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", recording_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", recording_create_issue
     )
     created = client.post(
         "/experiments", json={"hypothesis": "ratio"}, headers=authorized_headers
@@ -246,7 +246,7 @@ def test_daily_limit_maps_to_429(
         raise IssuePublicationLimitError(20)
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.router.publish_experiment_issue", raise_limit
+        "applications.experiment_platform.api.experiments.router.publish_experiment_issue", raise_limit
     )
     created = client.post(
         "/experiments", json={"hypothesis": "ratio"}, headers=authorized_headers
@@ -288,7 +288,7 @@ def test_field_violations_map_to_422_before_any_issue_is_opened(
         raise AssertionError("요청 검증에서 끊겼어야 한다")
 
     monkeypatch.setattr(
-        "agent_orchestration.app.experiments.service.create_issue", unexpected_create_issue
+        "applications.experiment_platform.api.experiments.service.create_issue", unexpected_create_issue
     )
     created = client.post(
         "/experiments", json={"hypothesis": "ratio"}, headers=authorized_headers

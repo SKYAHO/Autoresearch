@@ -12,7 +12,7 @@ import json
 import httpx
 import pytest
 
-from agent_orchestration.github_refs import GitHubRefError, GitHubRefs
+from applications.experiment_platform.shared.github_refs import GitHubRefError, GitHubRefs
 
 
 class RecordingTransport(httpx.AsyncBaseTransport):

@@ -28,17 +28,17 @@ import uuid  # noqa: E402
 
 import pytest  # noqa: E402
 
-from agent_orchestration.app.experiments.exceptions import (  # noqa: E402
+from applications.experiment_platform.api.experiments.exceptions import (  # noqa: E402
     IdempotencyConflictError,
 )
-from agent_orchestration.app.experiments.schemas import (  # noqa: E402
+from applications.experiment_platform.api.experiments.schemas import (  # noqa: E402
     ExperimentLogCreate,
 )
-from agent_orchestration.launcher.config import LauncherSettings  # noqa: E402
-from agent_orchestration.launcher.jobs import build_executor_job  # noqa: E402
-from agent_orchestration.launcher.repository import ClaimedExperiment  # noqa: E402
-from agent_orchestration.launcher.resident import run_forever  # noqa: E402
-from agent_orchestration.launcher.log_collector import (  # noqa: E402
+from applications.experiment_platform.launcher.config import LauncherSettings  # noqa: E402
+from applications.experiment_platform.launcher.jobs import build_executor_job  # noqa: E402
+from applications.experiment_platform.launcher.repository import ClaimedExperiment  # noqa: E402
+from applications.experiment_platform.launcher.resident import run_forever  # noqa: E402
+from applications.experiment_platform.launcher.log_collector import (  # noqa: E402
     CHUNK_SIZE,
     complete_chunks,
     KubernetesPodLogs,
@@ -59,10 +59,10 @@ from agent_orchestration.launcher.log_collector import (  # noqa: E402
     SeqCursor,
     step_idempotency_key,
 )
-from agent_orchestration.app.experiments.exceptions import (  # noqa: E402
+from applications.experiment_platform.api.experiments.exceptions import (  # noqa: E402
     StepAlreadyFinalizedError,
 )
-from agent_orchestration.app.experiments.models import (  # noqa: E402
+from applications.experiment_platform.api.experiments.models import (  # noqa: E402
     StepKind,
     StepStatus,
 )
@@ -795,7 +795,7 @@ class _RecordingBatchV1:
 
 def test_active_jobs_adapter_uses_the_executor_label() -> None:
     """launcher와 같은 상수를 써야 두 곳이 갈리지 않는다."""
-    from agent_orchestration.launcher.jobs import EXPERIMENT_EXECUTOR_LABEL_SELECTOR
+    from applications.experiment_platform.launcher.jobs import EXPERIMENT_EXECUTOR_LABEL_SELECTOR
 
     api = _RecordingBatchV1(["ar-exec-abc"])
 
@@ -909,7 +909,7 @@ def test_collector_settings_read_the_interval_override(monkeypatch) -> None:
 
 def test_collector_settings_reject_a_missing_database_url(monkeypatch) -> None:
     """DB 없이 뜨면 매 tick 조용히 실패한다 — 기동 시점에 막는다."""
-    from agent_orchestration.launcher.config import LauncherConfigError
+    from applications.experiment_platform.launcher.config import LauncherConfigError
 
     monkeypatch.delenv("ORCH_DATABASE_URL", raising=False)
     monkeypatch.setenv("ORCH_JOB_NAMESPACE", "ns")
@@ -1185,7 +1185,7 @@ def sqlite_session():
     from sqlalchemy import create_engine, event
     from sqlalchemy.orm import sessionmaker
 
-    from agent_orchestration.app.experiments.models import Base
+    from applications.experiment_platform.api.experiments.models import Base
 
     engine = create_engine("sqlite+pysqlite:///:memory:")
 
@@ -1206,7 +1206,7 @@ def sqlite_session():
 
 
 def _persisted_experiment(session):
-    from agent_orchestration.app.experiments.models import Experiment
+    from applications.experiment_platform.api.experiments.models import Experiment
 
     experiment = Experiment(hypothesis="컨테이너 진행 상태를 화면에 낸다")
     session.add(experiment)
@@ -1217,7 +1217,7 @@ def _persisted_experiment(session):
 def _stored_steps(session, experiment_id):
     from sqlalchemy import select
 
-    from agent_orchestration.app.experiments.models import ExperimentStep
+    from applications.experiment_platform.api.experiments.models import ExperimentStep
 
     rows = list(
         session.scalars(
@@ -1284,7 +1284,7 @@ def test_step_sink_leaves_the_session_usable_for_log_writes(sqlite_session) -> N
 
     from sqlalchemy import select
 
-    from agent_orchestration.app.experiments.models import ExperimentLog
+    from applications.experiment_platform.api.experiments.models import ExperimentLog
 
     logs = list(
         sqlite_session.scalars(
@@ -1298,7 +1298,7 @@ def test_step_sink_leaves_the_session_usable_for_log_writes(sqlite_session) -> N
 
 def test_step_sink_rejects_an_unknown_experiment(sqlite_session) -> None:
     """존재하지 않는 실험은 서비스 함수가 막는다 — 어댑터가 조용히 만들지 않는다."""
-    from agent_orchestration.app.experiments.exceptions import ExperimentNotFoundError
+    from applications.experiment_platform.api.experiments.exceptions import ExperimentNotFoundError
 
     sink = DatabaseStepSink(sqlite_session, uuid.uuid4())
 

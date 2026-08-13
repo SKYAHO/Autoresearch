@@ -21,8 +21,8 @@ from autoresearch.feature_engineering.model_contract import (
     require_model_feature_columns,
 )
 from autoresearch.model_training.calibration import CALIBRATION_PARAM_FILENAME, DownsamplingCalibrator
-from src.serving.onnx_model import OnnxProbabilityModel
-from src.serving.service import ProbabilityModel, Reranker
+from applications.reranking_api.onnx_model import OnnxProbabilityModel
+from applications.reranking_api.service import ProbabilityModel, Reranker
 from autoresearch.model_registry.model_package import load_manifest, verify_model_package
 
 logger = logging.getLogger(__name__)

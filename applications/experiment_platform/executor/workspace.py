@@ -24,8 +24,8 @@ from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Protocol
 import uuid
 
-from agent_orchestration.executor.github_issues import GitHubIssueSnapshot
-from agent_orchestration.executor.state import ExecutorWorkspaceState, write_state
+from applications.experiment_platform.executor.github_issues import GitHubIssueSnapshot
+from applications.experiment_platform.executor.state import ExecutorWorkspaceState, write_state
 
 
 _SHA_LENGTH = 40

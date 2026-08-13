@@ -8,5 +8,5 @@
 모듈별로 제공한다.
 
 [비책임] CronJob/RBAC/Secret/NetworkPolicy 배포(Autoresearch-infra), Job 완료 상태 회수와
-실제 Git ref 생성(`agent_orchestration.executor`)은 담당하지 않는다.
+실제 Git ref 생성(`applications.experiment_platform.executor`)은 담당하지 않는다.
 """

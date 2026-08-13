@@ -9,8 +9,8 @@
 초과·취소 시 프로세스 그룹을 회수한 뒤 공통 LLM 결과 계약으로 정규화한다.
 
 [비책임]
-API 백엔드 선택(agent_orchestration.app.llm), Runner 동시성 제어와 HTTP
-라우팅(agent_orchestration.runner.app), OAuth 자격 증명 주입·저장.
+API 백엔드 선택(applications.experiment_platform.api.llm), Runner 동시성 제어와 HTTP
+라우팅(applications.experiment_platform.runner.app), OAuth 자격 증명 주입·저장.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from pathlib import Path
 import signal
 from tempfile import TemporaryDirectory
 
-from agent_orchestration.contracts import LLMBackendError, LLMResult
+from applications.experiment_platform.shared.contracts import LLMBackendError, LLMResult
 
 
 logger = logging.getLogger(__name__)

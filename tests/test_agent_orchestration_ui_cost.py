@@ -18,14 +18,14 @@ pytest.importorskip("streamlit", reason="orchestration-ui 그룹이 설치돼야
 
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
-from agent_orchestration.ui.app import refresh_cost  # noqa: E402
-from agent_orchestration.ui.client import ApiUnavailableError  # noqa: E402
-from agent_orchestration.ui.models import (  # noqa: E402
+from applications.experiment_platform.workbench.app import refresh_cost  # noqa: E402
+from applications.experiment_platform.workbench.client import ApiUnavailableError  # noqa: E402
+from applications.experiment_platform.workbench.models import (  # noqa: E402
     Experiment,
     ExperimentCost,
     StageTokens,
 )
-from agent_orchestration.ui.state import WorkbenchState  # noqa: E402
+from applications.experiment_platform.workbench.state import WorkbenchState  # noqa: E402
 
 
 _COST = ExperimentCost(
@@ -118,9 +118,9 @@ def test_cost_failure_retries_and_never_touches_the_detail_error() -> None:
 _RENDER_SCRIPT = '''
 from datetime import datetime, timezone
 import streamlit as st
-from agent_orchestration.ui.models import Experiment, ExperimentCost, StageTokens
-from agent_orchestration.ui.state import WorkbenchState
-from agent_orchestration.ui import views
+from applications.experiment_platform.workbench.models import Experiment, ExperimentCost, StageTokens
+from applications.experiment_platform.workbench.state import WorkbenchState
+from applications.experiment_platform.workbench import views
 
 mode = st.session_state.get("mode", "full")
 state = WorkbenchState(selected_id="exp-1")

@@ -20,13 +20,13 @@ import asyncio
 import logging
 from pathlib import Path
 
-from agent_orchestration.executor.branch_creator import (
+from applications.experiment_platform.executor.branch_creator import (
     BranchCreatorInput,
     RefClient,
     ensure_issue_branch,
 )
-from agent_orchestration.executor.config import ExecutorConfigError
-from agent_orchestration.github_refs import GitHubRefError, GitHubRefs
+from applications.experiment_platform.executor.config import ExecutorConfigError
+from applications.experiment_platform.shared.github_refs import GitHubRefError, GitHubRefs
 
 
 _LOGGER = logging.getLogger(__name__)

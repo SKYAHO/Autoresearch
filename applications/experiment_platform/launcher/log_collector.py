@@ -29,28 +29,28 @@ from typing import Final, Protocol
 
 from kubernetes.client.exceptions import ApiException
 
-from agent_orchestration.app.experiments.exceptions import (
+from applications.experiment_platform.api.experiments.exceptions import (
     IdempotencyConflictError,
     StepAlreadyFinalizedError,
 )
-from agent_orchestration.app.experiments.models import StepKind, StepStatus
-from agent_orchestration.app.experiments.repository import find_step_by_idempotency_key
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api.experiments.models import StepKind, StepStatus
+from applications.experiment_platform.api.experiments.repository import find_step_by_idempotency_key
+from applications.experiment_platform.api.experiments.schemas import (
     ExperimentLogCreate,
     ExperimentStepCreate,
     ExperimentStepUpdate,
 )
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.service import (
     create_experiment_log,
     create_experiment_step,
     update_experiment_step,
 )
-from agent_orchestration.launcher.config import (
+from applications.experiment_platform.launcher.config import (
     _optional_positive_integer_environment,
     _required_environment,
 )
-from agent_orchestration.launcher.jobs import EXPERIMENT_EXECUTOR_LABEL_SELECTOR
-from agent_orchestration.launcher.resident import run_forever
+from applications.experiment_platform.launcher.jobs import EXPERIMENT_EXECUTOR_LABEL_SELECTOR
+from applications.experiment_platform.launcher.resident import run_forever
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -716,7 +716,7 @@ def main() -> int:
     """
     from kubernetes import client, config as kube_config
 
-    from agent_orchestration.app.database import (
+    from applications.experiment_platform.api.database import (
         create_database_engine,
         create_session_factory,
     )

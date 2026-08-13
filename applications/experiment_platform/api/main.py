@@ -27,13 +27,13 @@ from typing import Annotated, TypeVar
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from starlette.responses import JSONResponse, Response
 
-from agent_orchestration.app.config import ServiceSettings, load_settings
-from agent_orchestration.app.database import (
+from applications.experiment_platform.api.config import ServiceSettings, load_settings
+from applications.experiment_platform.api.database import (
     create_database_engine,
     create_session_factory,
 )
-from agent_orchestration.app.db import ensure_schema, save_interaction
-from agent_orchestration.app.experiments.exceptions import (
+from applications.experiment_platform.api.db import ensure_schema, save_interaction
+from applications.experiment_platform.api.experiments.exceptions import (
     CandidateConflictError,
     ExperimentNotFoundError,
     ExperimentStepNotFoundError,
@@ -43,13 +43,13 @@ from agent_orchestration.app.experiments.exceptions import (
     PromotionRequiresDedicatedEndpointError,
     StepAlreadyFinalizedError,
 )
-from agent_orchestration.app.experiments.github_issues import GitHubIssueError
-from agent_orchestration.app.experiments.executor_router import router as executor_router
-from agent_orchestration.app.experiments.router import router as experiment_router
-from agent_orchestration.app.experiments.transition_service import InvalidTransitionError
-from agent_orchestration.app.llm import LLMBackendError, generate_response
-from agent_orchestration.contracts import LLMBackendOverloadedError
-from agent_orchestration.app.schemas import ChatRequest, ChatResponse, ErrorResponse
+from applications.experiment_platform.api.experiments.github_issues import GitHubIssueError
+from applications.experiment_platform.api.experiments.executor_router import router as executor_router
+from applications.experiment_platform.api.experiments.router import router as experiment_router
+from applications.experiment_platform.api.experiments.transition_service import InvalidTransitionError
+from applications.experiment_platform.api.llm import LLMBackendError, generate_response
+from applications.experiment_platform.shared.contracts import LLMBackendOverloadedError
+from applications.experiment_platform.api.schemas import ChatRequest, ChatResponse, ErrorResponse
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +97,7 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         nonlocal settings
-        logger.info("agent_orchestration startup")
+        logger.info("applications.experiment_platform startup")
         settings = load_settings()
         # 라우터는 `create_app()`의 클로저에 접근할 수 없으므로, 요청 단위로 설정을
         # 꺼내는 `config.get_settings` 의존성이 여기서 읽는다.
@@ -114,7 +114,7 @@ def create_app() -> FastAPI:
         )
         app.state.experiment_session_factory = create_session_factory(experiment_engine)
         logger.info(
-            "agent_orchestration initialized with backend=%s table=%s",
+            "applications.experiment_platform initialized with backend=%s table=%s",
             settings.llm_backend,
             settings.interactions_table,
         )

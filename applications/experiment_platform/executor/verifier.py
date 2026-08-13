@@ -33,7 +33,7 @@ import subprocess
 from tempfile import TemporaryDirectory
 from typing import Final
 
-from agent_orchestration.executor.safety import contains_credential_value
+from applications.experiment_platform.executor.safety import contains_credential_value
 
 
 _SHA_PATTERN: Final = re.compile(r"^[0-9a-f]{40}$")
@@ -52,14 +52,19 @@ _MODEL_CONTRACT_PATHS: Final = frozenset(
 # 비차단 pytest의 출력 tail 상한. 실패한 pytest의 traceback은 수 MB까지 커질 수 있고,
 # 이 값은 finalizer handoff JSON과 stage 로그에 그대로 실린다(#615).
 _PYTEST_OUTPUT_TAIL_BYTES: Final = 64 * 1024
+# 두 트리 세대를 모두 덮는다. 이 검사는 봉인된 워크스페이스에 적용되므로 #754 재배치
+# 이전 트리는 `agent_orchestration/`·`proxy/`를, 이후 트리는 `applications/`를 가진다.
+# 어느 쪽이든 **금지**이므로 양쪽을 나열하는 것이 안전하다 — 빠뜨린 쪽은 default-deny로
+# 떨어지지만, 그러면 "왜 막혔는가"가 이 목록에서 읽히지 않는다.
 _ALWAYS_FORBIDDEN_PREFIXES: Final = (
     ".git/",
     ".github/",
     ".claude/",
     "docs/",
     "deploy/",
-    "proxy/",
-    "agent_orchestration/",
+    "applications/",  # 재배치 후 — 서빙·에이전트·proxy 전부
+    "proxy/",  # 봉인된 옛 트리
+    "agent_orchestration/",  # 봉인된 옛 트리
 )
 _ALLOWED_SCOPE_VALUES: Final = frozenset(
     {"prod_model_contract", "feast_definition", "promotion"}
@@ -581,6 +586,20 @@ def _validate_path_files(
     return unique_paths
 
 
+def _ruff_targets(repository: Path) -> tuple[str, ...]:
+    """이 워크스페이스에서 lint할 디렉터리를 고른다.
+
+    ruff는 **없는 경로를 인자로 받으면 exit 1** 이므로, 목록이 트리와 어긋나면 모든
+    candidate가 `ruff_failed`로 거부된다. 이 명령은 봉인된 `base_dev_sha` 워크스페이스에서
+    돌고(#754 재배치 이전 트리는 `agent_orchestration/`을, 이후 트리는 `applications/`를
+    가진다) 이미지 버전과 트리 세대가 어긋날 수 있으므로, 고정 목록을 쓸 수 없다.
+
+    옛 봉인 SHA 실험이 모두 끝나면 분기를 지우고 `applications`로 고정한다.
+    """
+    platform_target = "agent_orchestration" if _is_legacy_tree(repository) else "applications"
+    return (platform_target, "autoresearch", "tests", "tools")
+
+
 def _run_sealed_commands(
     repository: Path,
     base_sha: str,
@@ -596,20 +615,7 @@ def _run_sealed_commands(
     revisions = (base_sha,) if candidate_sha is None else (base_sha, candidate_sha)
     blocking_commands = (
         (("git", "diff", "--check", *revisions), "diff_check_failed"),
-        (
-            (
-                "uv",
-                "run",
-                "--no-sync",
-                "ruff",
-                "check",
-                "agent_orchestration",
-                "autoresearch",
-                "tests",
-                "tools",
-            ),
-            "ruff_failed",
-        ),
+        (("uv", "run", "--no-sync", "ruff", "check", *_ruff_targets(repository)), "ruff_failed"),
     )
     for command, error_code in blocking_commands:
         exit_code, _ = _run_fixed_command(command, cwd=repository, environment=environment)

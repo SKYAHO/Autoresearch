@@ -15,10 +15,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event
 from sqlalchemy.pool import StaticPool
 
-from agent_orchestration.app import main as main_module
-from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.schemas import MAX_STEP_TARGET_BYTES
+from applications.experiment_platform.api import main as main_module
+from applications.experiment_platform.api.config import ServiceSettings
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.schemas import MAX_STEP_TARGET_BYTES
 
 
 API_TOKEN = "test-orchestration-token"

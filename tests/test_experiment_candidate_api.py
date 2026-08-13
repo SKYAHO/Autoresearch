@@ -17,25 +17,25 @@ from sqlalchemy import Engine, create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from agent_orchestration.app import main as main_module
-from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.exceptions import (
+from applications.experiment_platform.api import main as main_module
+from applications.experiment_platform.api.config import ServiceSettings
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.exceptions import (
     CandidateConflictError,
     IdempotencyConflictError,
 )
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.experiments.models import (
     Experiment,
     ExperimentEvent,
     ExperimentStatus,
 )
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api.experiments.schemas import (
     MAX_METRIC_SNAPSHOT_BYTES,
     CandidateReportRequest,
     ExecutorResultReportRequest,
     ExperimentCreate,
 )
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.service import (
     create_experiment,
     record_candidate,
     record_experiment_result,

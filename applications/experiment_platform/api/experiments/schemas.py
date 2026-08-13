@@ -17,8 +17,8 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from agent_orchestration.app.experiments.issue_authoring import IssueSubmission
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.experiments.issue_authoring import IssueSubmission
+from applications.experiment_platform.api.experiments.models import (
     ExperimentStatus,
     StepKind,
     StepStatus,

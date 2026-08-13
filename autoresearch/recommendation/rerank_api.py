@@ -5,7 +5,7 @@ Inference Server(FastAPI `/rerank`)를 유저 단위로 호출해 응답 점수�
 `RankedVideo` 순위로 변환하고, 그 순위를 기존 노출 조립기에 넘길 lazy
 provider를 만든다. 노출 24개 조립·태그 규칙은 `model_exposure_provider`가,
 LLM 클릭 판정·저장은 `autoresearch.action_log_generation`가 소유하며 여기서 담당하지
-않는다. 서버 자체(피처 조회·모델 추론)는 `src/serving`이 소유한다.
+않는다. 서버 자체(피처 조회·모델 추론)는 `applications/reranking_api`이 소유한다.
 
 제공 기능:
 
@@ -35,7 +35,7 @@ from autoresearch.recommendation.model_exposure_provider import (
 
 logger = logging.getLogger(__name__)
 
-# RerankRequest.video_ids 상한 (src/serving/schemas.py 계약과 동일)
+# RerankRequest.video_ids 상한 (applications/reranking_api/schemas.py 계약과 동일)
 MAX_CANDIDATES_PER_REQUEST = 200
 
 # 재시도 백오프 기저(초). 시도 n 실패 후 _BACKOFF_BASE_SEC * n 만큼 대기한다.

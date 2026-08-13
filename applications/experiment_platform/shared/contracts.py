@@ -9,8 +9,8 @@
 503으로 변환할 백엔드 오류를 하나의 불변 계약으로 정의한다.
 
 [비책임]
-Codex CLI 실행(agent_orchestration.codex), Runner HTTP 라우팅
-(agent_orchestration.runner.app), OpenAI API 호출(agent_orchestration.app.llm).
+Codex CLI 실행(applications.experiment_platform.shared.codex), Runner HTTP 라우팅
+(applications.experiment_platform.runner.app), OpenAI API 호출(applications.experiment_platform.api.llm).
 """
 
 from __future__ import annotations

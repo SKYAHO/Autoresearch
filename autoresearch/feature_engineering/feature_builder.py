@@ -3,7 +3,7 @@
 [파이프라인] 피처 구간 — (유저, 영상) 쌍에서만 정해지는 파생 피처의 **계산 본체**를
 담당한다. 세 소비자가 이 한 벌을 공유해 Training-Serving Skew를 막는다: ① 학습·시뮬의
 Feast ODFV(``category_match_view``) 변환, ② 서빙 online 조회 후처리
-(``src/serving/online_features.py``), ③ DuckDB 재계산 경로(``assembly.py``).
+(``applications/reranking_api/online_features.py``), ③ DuckDB 재계산 경로(``assembly.py``).
 See: docs/guides/ctr-model-specification.md (Interaction Feature section)
 
 [Feast ODFV 계약 — #409] ODFV UDF가 부르는 헬퍼는 **반드시 이 모듈처럼 feature_repo

@@ -8,8 +8,8 @@ import stat
 
 import pytest
 
-from agent_orchestration import bootstrap_secrets as bootstrap_module
-from agent_orchestration.bootstrap_secrets import (
+from applications.experiment_platform.shared import bootstrap_secrets as bootstrap_module
+from applications.experiment_platform.shared.bootstrap_secrets import (
     DatabaseBootstrapSettings,
     RunnerAuthBootstrapSettings,
     bootstrap_api_database,

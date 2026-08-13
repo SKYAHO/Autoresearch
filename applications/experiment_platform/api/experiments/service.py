@@ -29,7 +29,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from agent_orchestration.app.experiments.exceptions import (
+from applications.experiment_platform.api.experiments.exceptions import (
     CandidateConflictError,
     ExperimentNotFoundError,
     ExperimentStepNotFoundError,
@@ -38,17 +38,17 @@ from agent_orchestration.app.experiments.exceptions import (
     PromotionRequiresDedicatedEndpointError,
     StepAlreadyFinalizedError,
 )
-from agent_orchestration.app.experiments.github_issues import (
+from applications.experiment_platform.api.experiments.github_issues import (
     GitHubIssueError,
     create_issue,
     find_issue_by_marker,
 )
-from agent_orchestration.app.experiments.issue_authoring import (
+from applications.experiment_platform.api.experiments.issue_authoring import (
     build_issue_body,
     build_issue_title,
     marker_for,
 )
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.experiments.models import (
     Experiment,
     ExperimentEvent,
     ExperimentLog,
@@ -58,11 +58,11 @@ from agent_orchestration.app.experiments.models import (
     StepKind,
     TERMINAL_STEP_STATUSES,
 )
-from agent_orchestration.app.experiments.cost import (
+from applications.experiment_platform.api.experiments.cost import (
     ExperimentCost,
     build_experiment_cost,
 )
-from agent_orchestration.app.experiments.repository import (
+from applications.experiment_platform.api.experiments.repository import (
     find_experiment,
     find_experiment_events,
     find_experiment_report,
@@ -77,7 +77,7 @@ from agent_orchestration.app.experiments.repository import (
     find_log_by_idempotency_key,
     find_step_by_idempotency_key,
 )
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api.experiments.schemas import (
     CandidateReportRequest,
     ExecutorResultReportRequest,
     ExperimentCreate,
@@ -90,13 +90,13 @@ from agent_orchestration.app.experiments.schemas import (
     PromotionRequest,
     StatusUpdateRequest,
 )
-from agent_orchestration.app.experiments.transition_service import validate_transition
-from agent_orchestration.github_app import (
+from applications.experiment_platform.api.experiments.transition_service import validate_transition
+from applications.experiment_platform.shared.github_app import (
     GitHubAppCredentials,
     GitHubAppError,
     create_installation_token,
 )
-from agent_orchestration.github_refs import GitHubRefError, GitHubRefs
+from applications.experiment_platform.shared.github_refs import GitHubRefError, GitHubRefs
 
 logger = logging.getLogger(__name__)
 

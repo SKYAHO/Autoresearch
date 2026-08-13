@@ -61,7 +61,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from agent_orchestration.app.database import Base
+from applications.experiment_platform.api.database import Base
 
 
 class ExperimentStatus(str, enum.Enum):

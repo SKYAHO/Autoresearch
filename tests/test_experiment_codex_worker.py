@@ -16,16 +16,16 @@ import time
 
 import pytest
 
-from agent_orchestration.executor import codex_worker
-from agent_orchestration.executor.codex_worker import (
+from applications.experiment_platform.executor import codex_worker
+from applications.experiment_platform.executor.codex_worker import (
     CodexRunInput,
     CodexRunResult,
     CodexWorkerError,
     run_codex,
     run_codex_for_workspace,
 )
-from agent_orchestration.executor.prompt import build_codex_prompt
-from agent_orchestration.executor.state import ExecutorWorkspaceState
+from applications.experiment_platform.executor.prompt import build_codex_prompt
+from applications.experiment_platform.executor.state import ExecutorWorkspaceState
 
 
 _BASE_SHA = "a" * 40
@@ -132,9 +132,11 @@ def test_prompt_contains_raw_issue_and_fixed_worker_boundaries() -> None:
     assert "tools/**" in prompt
     assert "- src/features/model_contract.py\n" not in prompt
     assert "- feature_repo/**\n" not in prompt
-    assert "uv run --no-sync ruff check agent_orchestration autoresearch tests tools" in prompt
+    # ruff 대상은 트리 세대에 따라 갈리므로(#754) 프롬프트는 두 이름을 함께 보여준다.
+    assert "ruff check <applications 또는 agent_orchestration> autoresearch tests tools" in prompt
     assert "uv run --no-sync python -m pytest" in prompt
     assert "agent_orchestration/**" in prompt
+    assert "applications/**" in prompt
     assert ".github/**" in prompt
     assert "Validated Issue Form data" not in prompt
     template = prompt.replace(run.issue_body, "")
@@ -382,7 +384,7 @@ def test_timeout_terminates_the_codex_process_group_and_child(
     )
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setattr(
-        "agent_orchestration.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
+        "applications.experiment_platform.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
     )
     run = _run_input(tmp_path)
     run = CodexRunInput(**{**run.__dict__, "timeout_seconds": 1})
@@ -421,7 +423,7 @@ def test_run_codex_timeout_still_carries_the_codex_output(
     )
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setattr(
-        "agent_orchestration.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
+        "applications.experiment_platform.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
     )
     run = _run_input(tmp_path)
     run = CodexRunInput(**{**run.__dict__, "timeout_seconds": 1})
@@ -524,7 +526,7 @@ def test_parent_success_with_live_child_is_not_reported_as_codex_success(
     )
     monkeypatch.setenv("PATH", str(bin_dir))
     monkeypatch.setattr(
-        "agent_orchestration.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
+        "applications.experiment_platform.executor.codex_worker._TERMINATION_GRACE_SECONDS", 0.1
     )
     run = _run_input(tmp_path)
 

@@ -14,7 +14,7 @@ Secret Manager 조회 전에 거부한다. 시크릿 원문은 로그, 환경 �
 노출하지 않는다.
 
 [비책임]
-FastAPI 요청 처리와 PostgreSQL 저장은 ``agent_orchestration.app``이 담당하며,
+FastAPI 요청 처리와 PostgreSQL 저장은 ``applications.experiment_platform.api``이 담당하며,
 Secret Manager·Kubernetes 리소스 생성은 Autoresearch-infra 저장소가 담당한다.
 """
 

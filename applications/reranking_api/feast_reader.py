@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Protocol
 
 from feature_repo.bootstrap import ensure_redis_ca_bundle, load_feature_store
-from src.serving.online_features import (
+from applications.reranking_api.online_features import (
     FeatureRetrievalError,
     FeatureRows,
 )

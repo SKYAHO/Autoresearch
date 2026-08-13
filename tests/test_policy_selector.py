@@ -5,7 +5,7 @@ import random
 import pytest
 
 from autoresearch.recommendation.policy_selector import select_exposures
-from src.serving.schemas import RerankedVideo
+from applications.reranking_api.schemas import RerankedVideo
 
 
 def _ranked(n: int) -> list[RerankedVideo]:

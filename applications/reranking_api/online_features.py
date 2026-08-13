@@ -6,8 +6,8 @@
 [기능] keyed batch 조회, cold-start 기본값과 파생 피처를 조립하고 각 조회와
 조립 구간의 소요 시간을 typed 결과로 제공한다.
 
-[비책임] Feast SDK·Redis bootstrap(src/serving/feast_reader.py), CTR 모델
-추론과 점수 정렬, HTTP 요청·응답 계약(src/serving/app.py).
+[비책임] Feast SDK·Redis bootstrap(applications/reranking_api/feast_reader.py), CTR 모델
+추론과 점수 정렬, HTTP 요청·응답 계약(applications/reranking_api/app.py).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from autoresearch.feature_engineering.model_contract import (
     FeatureContractError,
     require_model_feature_columns,
 )
-from src.serving.schemas import CandidateVideo, FeatureValue
+from applications.reranking_api.schemas import CandidateVideo, FeatureValue
 
 FeatureRows: TypeAlias = Mapping[str, Sequence[object]]
 

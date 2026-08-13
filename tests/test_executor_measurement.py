@@ -18,8 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_orchestration.executor import measurement as measurement_module  # noqa: E402
-from agent_orchestration.executor.measurement import (  # noqa: E402
+from applications.experiment_platform.executor import measurement as measurement_module  # noqa: E402
+from applications.experiment_platform.executor.measurement import (  # noqa: E402
     MeasurementError,
     MeasurementInput,
     build_experiment_metrics,
@@ -27,7 +27,7 @@ from agent_orchestration.executor.measurement import (  # noqa: E402
     evaluate_condition,
     write_experiment_metrics,
 )
-from agent_orchestration.executor.training import TrainingStage  # noqa: E402
+from applications.experiment_platform.executor.training import TrainingStage  # noqa: E402
 
 
 SEEDS = (42, 43)
@@ -417,7 +417,7 @@ def test_failed_evaluation_logs_its_stderr_and_call_site(
     )
 
     with caplog.at_level(
-        logging.ERROR, logger="agent_orchestration.executor.measurement"
+        logging.ERROR, logger="applications.experiment_platform.executor.measurement"
     ):
         with pytest.raises(MeasurementError, match="evaluation_command_failed"):
             evaluate_condition(config, TrainingStage.BASELINE)
@@ -434,7 +434,7 @@ def test_timed_out_evaluation_logs_its_partial_output(
     `text=True`를 줘도 `TimeoutExpired`가 싣는 출력은 bytes라 그대로 찍으면 읽을 수 없다.
     """
     with caplog.at_level(
-        logging.ERROR, logger="agent_orchestration.executor.measurement"
+        logging.ERROR, logger="applications.experiment_platform.executor.measurement"
     ):
         with pytest.raises(MeasurementError, match="evaluation_timeout"):
             measurement_module._run(
@@ -457,7 +457,7 @@ def test_timed_out_evaluation_logs_its_partial_output(
 def test_raised_failure_survives_the_phase2_redaction_filter(workspace: Path) -> None:
     """**실제로 던져진** 채점 예외가 `phase2._safe_failure_reason`을 통과해야 한다(#636)."""
     # phase2는 GitHub App·GCS 의존성을 끌어오므로 이 테스트 안에서만 import한다.
-    from agent_orchestration.executor import phase2
+    from applications.experiment_platform.executor import phase2
 
     with pytest.raises(MeasurementError) as raised:
         measurement_module._run(
@@ -475,7 +475,7 @@ def test_spawn_failure_logs_why_the_process_could_not_start(
 ) -> None:
     """채점 프로세스가 아예 못 떠도 그 사유가 로그에 남는다(#636)."""
     with caplog.at_level(
-        logging.ERROR, logger="agent_orchestration.executor.measurement"
+        logging.ERROR, logger="applications.experiment_platform.executor.measurement"
     ):
         with pytest.raises(MeasurementError, match="evaluation_spawn_failed"):
             measurement_module._run(

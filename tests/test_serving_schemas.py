@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from src.serving.schemas import RerankRequest, RerankResponse, RerankResponseItem
+from applications.reranking_api.schemas import RerankRequest, RerankResponse, RerankResponseItem
 
 
 def test_rerank_request_accepts_user_and_video_ids_only() -> None:

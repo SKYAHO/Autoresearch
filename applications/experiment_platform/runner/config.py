@@ -10,7 +10,7 @@ Codex 실행 경계 설정, Runner 동시성 상한, API가 전달한 내부 요
 HTTP timeout 관계를 기동 전에 검증한다.
 
 [비책임]
-API 공유 토큰·데이터베이스·OpenAI 설정(agent_orchestration.app.config),
+API 공유 토큰·데이터베이스·OpenAI 설정(applications.experiment_platform.api.config),
 OAuth 자격 증명 값의 수집·기록·저장.
 """
 
@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 
-from agent_orchestration.codex import CodexSettings
+from applications.experiment_platform.shared.codex import CodexSettings
 
 
 def _require_env(name: str, value: str | None) -> str:

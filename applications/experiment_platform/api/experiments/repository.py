@@ -12,8 +12,8 @@ import uuid
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, undefer
 
-from agent_orchestration.app.experiments.exceptions import InvalidCursorError
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.experiments.exceptions import InvalidCursorError
+from applications.experiment_platform.api.experiments.models import (
     Experiment,
     ExperimentEvent,
     ExperimentLog,

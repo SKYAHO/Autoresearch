@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
 if TYPE_CHECKING:
-    from agent_orchestration.executor.codex_worker import CodexRunInput
+    from applications.experiment_platform.executor.codex_worker import CodexRunInput
 
 
 @dataclass(frozen=True)
@@ -104,12 +104,15 @@ _PROHIBITED_PATHS = (
     ".claude/**",
     "docs/**",
     "deploy/**",
+    # 재배치 전/후 트리를 모두 덮는다 (#754).
+    "applications/**",
     "proxy/**",
     "agent_orchestration/**",
     ".env 및 .env.* ( .env.example 포함 )",
 )
 _VERIFICATION_COMMANDS = (
-    "uv run --no-sync ruff check agent_orchestration autoresearch tests tools",
+    # ruff 대상은 트리 세대에 따라 다르다 — verifier 의 `_ruff_targets` 가 정본이다 (#754).
+    "uv run --no-sync ruff check <applications 또는 agent_orchestration> autoresearch tests tools",
     "uv run --no-sync python -m pytest",
 )
 

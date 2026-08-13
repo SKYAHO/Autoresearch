@@ -24,7 +24,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from agent_orchestration.ui.models import (
+from applications.experiment_platform.workbench.models import (
     Event,
     Experiment,
     ExperimentCost,

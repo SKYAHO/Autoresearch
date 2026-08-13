@@ -32,35 +32,35 @@ import re
 import sys
 import uuid
 
-from agent_orchestration.executor.codex_worker import (
+from applications.experiment_platform.executor.codex_worker import (
     CodexRunResult,
     CodexTokenUsage,
     CodexWorkerError,
     run_codex_for_workspace,
 )
-from agent_orchestration.executor.config import ISSUE_BRANCH_PATTERN
-from agent_orchestration.executor.finalizer import FinalizeInput, finalize_candidate
-from agent_orchestration.executor.github_issues import GitHubIssues
-from agent_orchestration.executor.prompt import ResourceBudget
-from agent_orchestration.executor.api_client import report_result
-from agent_orchestration.executor.measurement import (
+from applications.experiment_platform.executor.config import ISSUE_BRANCH_PATTERN
+from applications.experiment_platform.executor.finalizer import FinalizeInput, finalize_candidate
+from applications.experiment_platform.executor.github_issues import GitHubIssues
+from applications.experiment_platform.executor.prompt import ResourceBudget
+from applications.experiment_platform.executor.api_client import report_result
+from applications.experiment_platform.executor.measurement import (
     MeasurementInput,
     build_experiment_metrics,
     build_metric_snapshot,
     write_experiment_metrics,
 )
-from agent_orchestration.executor.report import (
+from applications.experiment_platform.executor.report import (
     REPORT_FILENAME,
     ReportInput,
     read_report_markdown,
     write_experiment_report,
 )
-from agent_orchestration.executor.results_store import (
+from applications.experiment_platform.executor.results_store import (
     collect_publishable_files,
     publish_results,
 )
-from agent_orchestration.executor.state import ExecutorWorkspaceState, read_state
-from agent_orchestration.executor.training import (
+from applications.experiment_platform.executor.state import ExecutorWorkspaceState, read_state
+from applications.experiment_platform.executor.training import (
     TrainingError,
     TrainingInput,
     TrainingStage,
@@ -71,12 +71,12 @@ from agent_orchestration.executor.training import (
     run_training,
     sync_dependencies,
 )
-from agent_orchestration.executor.verifier import (
+from applications.experiment_platform.executor.verifier import (
     CandidatePolicy,
     VerificationResult,
     verify_candidate,
 )
-from agent_orchestration.executor.workspace import (
+from applications.experiment_platform.executor.workspace import (
     WorkspacePrepareInput,
     prepare_workspace,
 )
@@ -128,7 +128,7 @@ def _safe_failure_reason(error: Exception) -> str:
     """executor 도메인 예외의 제한된 고정 사유 코드만 기록한다."""
     error_type = type(error)
     is_executor_domain_error = isinstance(error, Phase2ExecutorError) or (
-        error_type.__module__.startswith("agent_orchestration.executor")
+        error_type.__module__.startswith("applications.experiment_platform.executor")
         and error_type.__name__.endswith("Error")
     )
     if is_executor_domain_error:

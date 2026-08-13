@@ -110,11 +110,11 @@ Autoresearch의 최종 목표는 **ML 리서처·엔지니어를 위한 자율 �
 ```bash
 uv sync                                    # .venv 생성 + 런타임/dev 의존성 (uv.lock 기준)
 uv run python -m pytest                    # CI pytest job과 동일
-uv run --no-sync ruff check agent_orchestration autoresearch tests tools   # CI lint job과 동일
+uv run --no-sync ruff check applications autoresearch tests tools   # CI lint job과 동일
 ```
 
 - 의존성 변경은 `pyproject.toml` 수정 → `uv lock` → 산출물 갱신 순서로
-  진행합니다. `proxy/requirements.txt`는 파일 헤더의 `uv export` 명령으로
+  진행합니다. `applications/youtube_api_proxy/requirements.txt`는 파일 헤더의 `uv export` 명령으로
   재생성하고, `deploy/mlflow/runtime`은 자체 lock을 가집니다 — CI
   `uv lock & proxy export drift` job이 둘 다 검사합니다.
 - Feast는 dev 그룹과 의존성 충돌(feast 0.64의 starlette>=1.0 ↔ dev/proxy의
@@ -144,7 +144,7 @@ uv run --no-sync ruff check agent_orchestration autoresearch tests tools   # CI 
 
 ```bash
 uv run python -m pytest -v                          # CI와 동일
-uv run --no-sync ruff check agent_orchestration autoresearch tests tools # CI lint와 동일
+uv run --no-sync ruff check applications autoresearch tests tools # CI lint와 동일
 docker build -f Dockerfile.app -t autoresearch:ci . # CI 이미지 빌드 검증
 ```
 

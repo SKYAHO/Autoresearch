@@ -25,7 +25,7 @@ pytest.importorskip("streamlit", reason="orchestration-ui 그룹이 설치돼야
 import streamlit as st  # noqa: E402
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
-APP_PATH = "agent_orchestration/ui/app.py"
+APP_PATH = "applications/experiment_platform/workbench/app.py"
 
 # 기존 테스트가 이슈 발행 경로 좌표로 쓰는 값. 첫 생성은 항상 이 id를 돌려준다.
 CANONICAL_EXPERIMENT_ID = "3f2a1c9d-8b7e-4a1f-9c2d-5e6f7a8b9c0d"

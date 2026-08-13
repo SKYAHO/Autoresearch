@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import html
 
-from agent_orchestration.ui.models import status_color, status_label
+from applications.experiment_platform.workbench.models import status_color, status_label
 
 
 # 본문 서체. 테마의 `font = "sans-serif"`는 generic family라 한글 자형을 고르지

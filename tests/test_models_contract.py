@@ -80,7 +80,7 @@ def test_lgbm_model_save_load_round_trip_matches_serving_contract(tmp_path) -> N
     model_path = tmp_path / "model.joblib"
     model.save(str(model_path))
 
-    # 서빙(src/serving/model_loader.py)과 동일한 로드 경로 — joblib.load를 직접 호출한다.
+    # 서빙(applications/reranking_api/model_loader.py)과 동일한 로드 경로 — joblib.load를 직접 호출한다.
     loaded = joblib.load(model_path)
 
     assert isinstance(loaded, lgb.LGBMClassifier)

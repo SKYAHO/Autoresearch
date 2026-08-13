@@ -2,12 +2,12 @@ from collections.abc import Mapping, Sequence
 
 import pytest
 
-import src.serving.feast_reader as feast_reader
-from src.serving.feast_reader import (
+import applications.reranking_api.feast_reader as feast_reader
+from applications.reranking_api.feast_reader import (
     FeastOnlineFeatureReader,
     load_feast_online_feature_reader,
 )
-from src.serving.online_features import FeatureRetrievalError
+from applications.reranking_api.online_features import FeatureRetrievalError
 
 
 class _FakeOnlineFeatures:
@@ -81,7 +81,7 @@ def test_read_logs_error_type_and_redacts_external_store_failure(
     reader = FeastOnlineFeatureReader(store=_FailingStore())
 
     # When: the SDK-facing adapter invokes the external store.
-    with caplog.at_level("ERROR", logger="src.serving.feast_reader"):
+    with caplog.at_level("ERROR", logger="applications.reranking_api.feast_reader"):
         with pytest.raises(FeatureRetrievalError) as excinfo:
             reader.read(
                 feature_refs=("UserStaticView:age_group",),

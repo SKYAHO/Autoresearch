@@ -44,13 +44,13 @@ import threading
 import time
 from typing import BinaryIO, Iterator
 
-from agent_orchestration.executor.prompt import (
+from applications.experiment_platform.executor.prompt import (
     HARNESS_FILENAME,
     ResourceBudget,
     build_codex_prompt,
     build_harness_instructions,
 )
-from agent_orchestration.executor.state import ExecutorWorkspaceState
+from applications.experiment_platform.executor.state import ExecutorWorkspaceState
 
 
 _TERMINATION_GRACE_SECONDS = 5.0

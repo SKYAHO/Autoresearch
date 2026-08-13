@@ -24,7 +24,7 @@ from datetime import datetime
 import re
 from typing import Any
 
-from agent_orchestration.app.experiments.models import (
+from applications.experiment_platform.api.experiments.models import (
     TERMINAL_STATUSES as API_TERMINAL_STATUSES,
     ExperimentStatus,
 )

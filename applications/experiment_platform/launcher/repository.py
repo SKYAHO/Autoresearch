@@ -21,8 +21,8 @@ import uuid
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from agent_orchestration.app.experiments.models import Experiment, ExperimentStatus
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.models import Experiment, ExperimentStatus
+from applications.experiment_platform.api.experiments.service import (
     transition_experiment_in_transaction,
 )
 

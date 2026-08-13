@@ -30,7 +30,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from agent_orchestration.ui.models import (
+from applications.experiment_platform.workbench.models import (
     BOARD_RUNNING_STATUSES,
     BOARD_WAITING_STATUSES,
     Event,
@@ -49,10 +49,10 @@ from agent_orchestration.ui.models import (
     step_status_color,
     step_status_label,
 )
-from agent_orchestration.ui.report import report_document
-from agent_orchestration.ui.state import PendingPublication, WorkbenchState
-from agent_orchestration.ui.styles import fact_row, status_badge
-from agent_orchestration.ui.time import format_short_time, format_time
+from applications.experiment_platform.workbench.report import report_document
+from applications.experiment_platform.workbench.state import PendingPublication, WorkbenchState
+from applications.experiment_platform.workbench.styles import fact_row, status_badge
+from applications.experiment_platform.workbench.time import format_short_time, format_time
 
 
 HYPOTHESIS_KEY = "submission-hypothesis"

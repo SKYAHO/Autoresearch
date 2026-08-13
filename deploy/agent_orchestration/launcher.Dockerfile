@@ -20,22 +20,24 @@ COPY --from=lock-export /requirements.lock ./
 RUN python -m pip install --no-cache-dir --no-deps -r requirements.lock \
     && rm requirements.lock
 
-COPY agent_orchestration/__init__.py ./agent_orchestration/
-COPY agent_orchestration/launcher ./agent_orchestration/launcher
+COPY applications/__init__.py ./applications/
+COPY applications/experiment_platform/__init__.py ./applications/experiment_platform/
+COPY applications/experiment_platform/launcher ./applications/experiment_platform/launcher
 # launcher repository가 기존 Experiment 상태 전이 계약을 재사용하므로 API 도메인
 # 모듈과 그 GitHub 경계만 포함한다. Codex CLI·Node 런타임은 설치하지 않는다.
-COPY agent_orchestration/app ./agent_orchestration/app
-COPY agent_orchestration/github_app.py ./agent_orchestration/
-COPY agent_orchestration/github_refs.py ./agent_orchestration/
+COPY applications/experiment_platform/api ./applications/experiment_platform/api
+COPY applications/experiment_platform/shared/__init__.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/shared/github_app.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/shared/github_refs.py ./applications/experiment_platform/shared/
 # PR 생성기(`launcher.pull_request`, #689)가 최상위에서 import한다. 이 줄이 없으면
 # 이미지는 정상 빌드되고 launcher·log_collector도 멀쩡히 돌지만, PR 생성기 컨테이너만
 # 기동 즉시 ModuleNotFoundError로 죽는다(#700). 최상위 모듈은 이 목록에 열거해야만
-# 들어오므로, `agent_orchestration/`에 파일을 추가하는 것만으로는 부족하다.
-COPY agent_orchestration/github_pull_requests.py ./agent_orchestration/
+# 들어오므로, `applications/experiment_platform/`에 파일을 추가하는 것만으로는 부족하다.
+COPY applications/experiment_platform/shared/github_pull_requests.py ./applications/experiment_platform/shared/
 
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.revision="${VCS_REF}"
 
 USER appuser
 
-CMD ["python", "-m", "agent_orchestration.launcher.main"]
+CMD ["python", "-m", "applications.experiment_platform.launcher.main"]

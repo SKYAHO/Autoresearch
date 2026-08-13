@@ -13,9 +13,9 @@ import importlib
 def test_executor_candidate_route_is_owned_by_dedicated_router_module() -> None:
     """executor 내부 endpoint는 일반 Experiment router에 섞이지 않는다."""
     executor_module = importlib.import_module(
-        "agent_orchestration.app.experiments.executor_router"
+        "applications.experiment_platform.api.experiments.executor_router"
     )
-    experiment_module = importlib.import_module("agent_orchestration.app.experiments.router")
+    experiment_module = importlib.import_module("applications.experiment_platform.api.experiments.router")
 
     assert executor_module.router.prefix == "/internal/executor/experiments"
     paths = {route.path for route in executor_module.router.routes}

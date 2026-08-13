@@ -20,18 +20,18 @@ import logging
 from kubernetes import client, config
 from sqlalchemy.orm import Session
 
-from agent_orchestration.app.database import (
+from applications.experiment_platform.api.database import (
     create_database_engine,
     create_session_factory,
 )
-from agent_orchestration.launcher.config import LauncherSettings
-from agent_orchestration.launcher.jobs import (
+from applications.experiment_platform.launcher.config import LauncherSettings
+from applications.experiment_platform.launcher.jobs import (
     EXPERIMENT_EXECUTOR_LABEL_SELECTOR,
     JobClient,
     KubernetesJobs,
     ensure_executor_job,
 )
-from agent_orchestration.launcher.repository import (
+from applications.experiment_platform.launcher.repository import (
     ClaimedExperiment,
     claim_experiments,
     record_job_created,

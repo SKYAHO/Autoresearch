@@ -33,7 +33,7 @@ import re
 import subprocess
 from typing import Final
 
-from agent_orchestration.executor.command_output import log_command_streams
+from applications.experiment_platform.executor.command_output import log_command_streams
 
 
 _LOGGER = logging.getLogger(__name__)

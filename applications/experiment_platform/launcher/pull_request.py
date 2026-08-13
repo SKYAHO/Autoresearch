@@ -25,8 +25,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Final, Protocol
 
-from agent_orchestration.github_app import GitHubAppError
-from agent_orchestration.github_pull_requests import (
+from applications.experiment_platform.shared.github_app import GitHubAppError
+from applications.experiment_platform.shared.github_pull_requests import (
     GitHubPullRequestError,
     GitHubPullRequests,
 )
@@ -341,7 +341,7 @@ class DatabaseExperimentStore:
 
         완주하지 않은 실험까지 걷으면 리포트도 없는 브랜치로 PR을 열게 된다.
         """
-        from agent_orchestration.app.experiments.models import (
+        from applications.experiment_platform.api.experiments.models import (
             Experiment,
             ExperimentStatus,
         )
@@ -354,7 +354,7 @@ class DatabaseExperimentStore:
         )
 
     def _entries(self, experiment_id: uuid.UUID) -> dict[str, str]:
-        from agent_orchestration.app.experiments.models import ExperimentMetadata
+        from applications.experiment_platform.api.experiments.models import ExperimentMetadata
 
         rows = (
             self._session.query(ExperimentMetadata)
@@ -389,7 +389,7 @@ class DatabaseExperimentStore:
 
         재시도가 여기서 죽으면 그 실험이 매 주기 실패로 남는다.
         """
-        from agent_orchestration.app.experiments.models import ExperimentMetadata
+        from applications.experiment_platform.api.experiments.models import ExperimentMetadata
 
         existing = (
             self._session.query(ExperimentMetadata)
@@ -436,7 +436,7 @@ class PullRequestSettings:
 
     def __post_init__(self) -> None:
         """형식 오류를 Pod까지 끌고 가지 않는다."""
-        from agent_orchestration.launcher.config import (
+        from applications.experiment_platform.launcher.config import (
             LauncherConfigError,
             _REPOSITORY_PATTERN,
         )
@@ -449,7 +449,7 @@ class PullRequestSettings:
         """환경 변수에서 설정을 읽는다. 없으면 기동 시점에 막는다."""
         import os
 
-        from agent_orchestration.launcher.config import (
+        from applications.experiment_platform.launcher.config import (
             _optional_positive_integer_environment,
             _positive_integer_environment,
             _required_environment,
@@ -495,7 +495,7 @@ class GitHubPullRequestOpener:
         client: GitHubPullRequests | None = None,
         token_factory=None,
     ) -> None:
-        from agent_orchestration.github_app import create_installation_token
+        from applications.experiment_platform.shared.github_app import create_installation_token
 
         self._repository = repository
         self._credentials = credentials
@@ -549,12 +549,12 @@ def main() -> int:
     import time
     from pathlib import Path
 
-    from agent_orchestration.app.database import (
+    from applications.experiment_platform.api.database import (
         create_database_engine,
         create_session_factory,
     )
-    from agent_orchestration.github_app import GitHubAppCredentials
-    from agent_orchestration.launcher.resident import run_forever
+    from applications.experiment_platform.shared.github_app import GitHubAppCredentials
+    from applications.experiment_platform.launcher.resident import run_forever
 
     logging.basicConfig(level=logging.INFO)
     settings = PullRequestSettings.from_environment()

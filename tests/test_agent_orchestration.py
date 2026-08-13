@@ -15,12 +15,12 @@ from fastapi import status
 from fastapi.testclient import TestClient
 import pytest
 
-from agent_orchestration.app.config import ServiceSettings, load_settings
-from agent_orchestration.app import db as db_module
-from agent_orchestration.app import llm as llm_module
-from agent_orchestration.app import main as main_module
-from agent_orchestration.app.llm import LLMBackendError, LLMResult, generate_response
-from agent_orchestration import codex as codex_module
+from applications.experiment_platform.api.config import ServiceSettings, load_settings
+from applications.experiment_platform.api import db as db_module
+from applications.experiment_platform.api import llm as llm_module
+from applications.experiment_platform.api import main as main_module
+from applications.experiment_platform.api.llm import LLMBackendError, LLMResult, generate_response
+from applications.experiment_platform.shared import codex as codex_module
 
 
 _SETTINGS_ENV_VARS = (
@@ -317,7 +317,7 @@ def test_load_settings_uses_default_for_blank_numeric_value(
 def test_api_entrypoint_reports_missing_runtime_dir() -> None:
     """API 컨테이너는 bootstrap runtime 경로 누락 원인을 직접 출력한다."""
     result = subprocess.run(
-        ["/bin/sh", "agent_orchestration/entrypoint.sh"],
+        ["/bin/sh", "applications/experiment_platform/entrypoint.sh"],
         capture_output=True,
         check=False,
         env={"PATH": os.environ["PATH"]},
@@ -345,7 +345,7 @@ def test_api_entrypoint_reads_database_url_without_shell_evaluation(tmp_path: Pa
     uvicorn.chmod(0o755)
 
     result = subprocess.run(
-        ["/bin/sh", "agent_orchestration/entrypoint.sh"],
+        ["/bin/sh", "applications/experiment_platform/entrypoint.sh"],
         capture_output=True,
         check=False,
         env={
@@ -1121,8 +1121,8 @@ def test_app_package_does_not_eagerly_import_fastapi_application() -> None:
         [
             sys.executable,
             "-c",
-            "import agent_orchestration.app; import sys; "
-            "assert 'agent_orchestration.app.main' not in sys.modules",
+            "import applications.experiment_platform.api; import sys; "
+            "assert 'applications.experiment_platform.api.main' not in sys.modules",
         ],
         capture_output=True,
         check=False,
@@ -1172,7 +1172,7 @@ def test_main_chat_returns_service_unavailable_when_runner_is_overloaded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Runner 과부하는 API가 502가 아닌 503으로 호출자에게 전달한다."""
-    from agent_orchestration.contracts import LLMBackendOverloadedError
+    from applications.experiment_platform.shared.contracts import LLMBackendOverloadedError
 
     settings = ServiceSettings(
         openai_api_key=None,

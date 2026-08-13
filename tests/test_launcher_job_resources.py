@@ -28,9 +28,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent_orchestration.launcher.config import LauncherSettings  # noqa: E402
-from agent_orchestration.launcher.jobs import build_executor_job  # noqa: E402
-from agent_orchestration.launcher.repository import ClaimedExperiment  # noqa: E402
+from applications.experiment_platform.launcher.config import LauncherSettings  # noqa: E402
+from applications.experiment_platform.launcher.jobs import build_executor_job  # noqa: E402
+from applications.experiment_platform.launcher.repository import ClaimedExperiment  # noqa: E402
 
 
 _EXPERIMENT_ID = uuid.UUID("12345678-1234-5678-1234-567812345678")

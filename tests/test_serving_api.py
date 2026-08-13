@@ -13,15 +13,15 @@ from fastapi.testclient import TestClient
 from prometheus_client import REGISTRY
 from prometheus_client.parser import text_string_to_metric_families
 
-import src.serving.app as serving_app
-import src.serving.model_loader as model_loader_module
+import applications.reranking_api.app as serving_app
+import applications.reranking_api.model_loader as model_loader_module
 from autoresearch.feature_engineering.model_contract import (
     CATEGORICAL_FEATURE_COLUMNS,
     FeatureContractError,
     MODEL_FEATURE_COLUMNS,
 )
-from src.serving.app import create_app
-from src.serving.model_loader import (
+from applications.reranking_api.app import create_app
+from applications.reranking_api.model_loader import (
     LocalModelSettings,
     MlflowModelSettings,
     ModelArtifactError,
@@ -29,14 +29,14 @@ from src.serving.model_loader import (
     load_local_model,
     load_mlflow_model,
 )
-from src.serving.online_features import (
+from applications.reranking_api.online_features import (
     FeatureBuildTimings,
     FeatureRows,
     FeatureRetrievalError,
     TimedFeatureBuild,
 )
-from src.serving.schemas import CandidateVideo, FeatureValue, RerankedVideo
-from src.serving.service import PredictionError, RerankOutcome, Reranker
+from applications.reranking_api.schemas import CandidateVideo, FeatureValue, RerankedVideo
+from applications.reranking_api.service import PredictionError, RerankOutcome, Reranker
 from autoresearch.model_registry.model_package import ModelPackageManifest, save_manifest
 
 
@@ -271,7 +271,7 @@ def test_healthcheck_is_503_when_feast_initialization_fails(
         raising=False,
     )
 
-    with caplog.at_level("ERROR", logger="src.serving.app"):
+    with caplog.at_level("ERROR", logger="applications.reranking_api.app"):
         with TestClient(create_app()) as client:
             response = client.get("/healthcheck")
 
@@ -305,7 +305,7 @@ def test_healthcheck_is_503_when_model_initialization_fails(
         lambda repo_path: feast_load_calls.append(repo_path) or FakeOnlineFeatureReader(),
     )
 
-    with caplog.at_level("ERROR", logger="src.serving.app"):
+    with caplog.at_level("ERROR", logger="applications.reranking_api.app"):
         with TestClient(create_app()) as client:
             response = client.get("/healthcheck")
 
@@ -1133,7 +1133,7 @@ def test_mlflow_model_loader_fails_closed_without_manifest(
         raise FileNotFoundError(f"manifest does not exist in {dst_path}")
 
     monkeypatch.setattr(
-        "src.serving.model_loader.mlflow.artifacts.download_artifacts",
+        "applications.reranking_api.model_loader.mlflow.artifacts.download_artifacts",
         download_artifacts,
     )
 

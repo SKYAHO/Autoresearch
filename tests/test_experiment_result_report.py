@@ -1,7 +1,7 @@
 """paired 판정 결과를 Experiment API payload로 바꾸는 계약을 검증한다.
 
 전체 파이프라인 중 `compare-paired-experiment`의 결과와 Experiment API 사이의 변환
-구간만 본다. HTTP 전송(`agent_orchestration.ui.client`)과 명령 배선(`autoresearch.cli`)은
+구간만 본다. HTTP 전송(`applications.experiment_platform.workbench.client`)과 명령 배선(`autoresearch.cli`)은
 담당하지 않는다.
 """
 
@@ -255,7 +255,7 @@ def test_report_immutable_statuses_derive_from_server_set() -> None:
     런타임에 서버 모듈을 import하면 SQLAlchemy가 딸려와 학습 이미지가 깨진다. 그래서
     상수는 이 모듈에서 재선언하되, 서버와의 차이를 여기서 명시적으로 못 박는다.
     """
-    from agent_orchestration.app.experiments.models import (
+    from applications.experiment_platform.api.experiments.models import (
         TERMINAL_STATUSES as SERVER_TERMINAL_STATUSES,
     )
 
@@ -268,7 +268,7 @@ def test_report_immutable_statuses_derive_from_server_set() -> None:
 
 def test_length_limits_match_server_schema() -> None:
     """상한 상수가 서버 스키마와 어긋나면 런타임 422 대신 여기서 깨지게 한다."""
-    from agent_orchestration.app.experiments.schemas import (
+    from applications.experiment_platform.api.experiments.schemas import (
         ExperimentLogCreate,
         StatusUpdateRequest,
     )

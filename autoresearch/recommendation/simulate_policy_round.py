@@ -85,12 +85,12 @@ from autoresearch.feature_engineering.feast_retrieval import build_pool_feature_
 from autoresearch.feature_engineering.model_contract import require_model_feature_columns
 from autoresearch.recommendation.policy_selector import Exposure, select_exposures
 from autoresearch.reporting.report_html import render_report_html
-from src.serving.model_loader import (
+from applications.reranking_api.model_loader import (
     load_model_settings_from_environment,
     load_reranker,
 )
-from src.serving.schemas import CandidateVideo
-from src.serving.service import Reranker
+from applications.reranking_api.schemas import CandidateVideo
+from applications.reranking_api.service import Reranker
 
 if TYPE_CHECKING:
     from feast import FeatureStore

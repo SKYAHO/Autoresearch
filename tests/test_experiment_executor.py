@@ -17,22 +17,22 @@ import uuid
 
 import pytest
 
-from agent_orchestration.executor.branch_creator import (
+from applications.experiment_platform.executor.branch_creator import (
     BranchCreatorInput,
     ensure_issue_branch,
 )
-from agent_orchestration.executor.config import ExecutorConfigError
-from agent_orchestration.executor.main import main as executor_main
-from agent_orchestration.executor.token_minter import (
+from applications.experiment_platform.executor.config import ExecutorConfigError
+from applications.experiment_platform.executor.main import main as executor_main
+from applications.experiment_platform.executor.token_minter import (
     main as token_minter_main,
     write_installation_token,
 )
-from agent_orchestration.github_app import (
+from applications.experiment_platform.shared.github_app import (
     GitHubAppCredentials,
     GitHubAppError,
     InstallationToken,
 )
-from agent_orchestration.github_refs import GitHubRefError
+from applications.experiment_platform.shared.github_refs import GitHubRefError
 
 
 _EXPERIMENT_ID = "12345678-1234-5678-1234-567812345678"

@@ -34,12 +34,14 @@ COPY --from=codex-cli /usr/local/bin/node /usr/local/bin/node
 COPY --from=codex-cli /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
 
-COPY agent_orchestration/__init__.py ./agent_orchestration/
-COPY agent_orchestration/contracts.py ./agent_orchestration/
-COPY agent_orchestration/codex.py ./agent_orchestration/
-COPY agent_orchestration/runner ./agent_orchestration/runner
-COPY agent_orchestration/runner_entrypoint.sh ./agent_orchestration/
-RUN chmod 0555 ./agent_orchestration/runner_entrypoint.sh
+COPY applications/__init__.py ./applications/
+COPY applications/experiment_platform/__init__.py ./applications/experiment_platform/
+COPY applications/experiment_platform/shared/__init__.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/shared/contracts.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/shared/codex.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/runner ./applications/experiment_platform/runner
+COPY applications/experiment_platform/runner_entrypoint.sh ./applications/experiment_platform/
+RUN chmod 0555 ./applications/experiment_platform/runner_entrypoint.sh
 
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.revision="${VCS_REF}"
@@ -48,4 +50,4 @@ USER appuser
 
 EXPOSE 8080
 
-CMD ["./agent_orchestration/runner_entrypoint.sh"]
+CMD ["./applications/experiment_platform/runner_entrypoint.sh"]

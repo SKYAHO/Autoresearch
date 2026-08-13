@@ -39,19 +39,21 @@ RUN set -eux; \
     rm -rf /var/lib/apt/lists/*; \
     gh --version
 
-COPY agent_orchestration/__init__.py ./agent_orchestration/
-COPY agent_orchestration/app ./agent_orchestration/app
-COPY agent_orchestration/contracts.py ./agent_orchestration/
-COPY agent_orchestration/bootstrap_secrets.py ./agent_orchestration/
-COPY agent_orchestration/github_app.py ./agent_orchestration/
-COPY agent_orchestration/github_refs.py ./agent_orchestration/
-COPY agent_orchestration/entrypoint.sh ./agent_orchestration/
+COPY applications/__init__.py ./applications/
+COPY applications/experiment_platform/__init__.py ./applications/experiment_platform/
+COPY applications/experiment_platform/api ./applications/experiment_platform/api
+COPY applications/experiment_platform/shared/__init__.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/shared/contracts.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/shared/bootstrap_secrets.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/shared/github_app.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/shared/github_refs.py ./applications/experiment_platform/shared/
+COPY applications/experiment_platform/entrypoint.sh ./applications/experiment_platform/
 # 실험 워크벤치 스키마 migration 실행용. entrypoint.sh는 이 파일을 실행하지 않는다 —
-# 이 이미지를 대상으로 `alembic -c agent_orchestration/alembic.ini upgrade head`를
+# 이 이미지를 대상으로 `alembic -c applications/experiment_platform/alembic.ini upgrade head`를
 # API 기동 전에 실행하는 것은 배포 오케스트레이션(K8s Job/initContainer) 쪽 책임이다.
-COPY agent_orchestration/alembic.ini ./agent_orchestration/
-COPY agent_orchestration/migrations ./agent_orchestration/migrations
-RUN chmod 0555 ./agent_orchestration/entrypoint.sh
+COPY applications/experiment_platform/alembic.ini ./applications/experiment_platform/
+COPY applications/experiment_platform/migrations ./applications/experiment_platform/migrations
+RUN chmod 0555 ./applications/experiment_platform/entrypoint.sh
 
 ARG VCS_REF=unknown
 LABEL org.opencontainers.image.revision="${VCS_REF}"
@@ -60,4 +62,4 @@ USER appuser
 
 EXPOSE 8000
 
-CMD ["./agent_orchestration/entrypoint.sh"]
+CMD ["./applications/experiment_platform/entrypoint.sh"]

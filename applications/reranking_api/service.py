@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from autoresearch.model_training.calibration import DownsamplingCalibrator
-from src.serving.schemas import CandidateVideo, FeatureValue, RerankedVideo
+from applications.reranking_api.schemas import CandidateVideo, FeatureValue, RerankedVideo
 
 
 @runtime_checkable

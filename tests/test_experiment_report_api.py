@@ -17,18 +17,18 @@ from sqlalchemy import Engine, create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from agent_orchestration.app import main as main_module
-from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.app.database import Base
-from agent_orchestration.app.experiments.models import Experiment, ExperimentStatus
-from agent_orchestration.app.experiments.repository import find_experiment_report
-from agent_orchestration.app.experiments.schemas import (
+from applications.experiment_platform.api import main as main_module
+from applications.experiment_platform.api.config import ServiceSettings
+from applications.experiment_platform.api.database import Base
+from applications.experiment_platform.api.experiments.models import Experiment, ExperimentStatus
+from applications.experiment_platform.api.experiments.repository import find_experiment_report
+from applications.experiment_platform.api.experiments.schemas import (
     MAX_REPORT_MARKDOWN_BYTES,
     CandidateReportRequest,
     ExecutorResultReportRequest,
     ExperimentCreate,
 )
-from agent_orchestration.app.experiments.service import (
+from applications.experiment_platform.api.experiments.service import (
     create_experiment,
     normalize_report_markdown,
     record_candidate,
@@ -190,7 +190,7 @@ def test_report_write_failure_leaves_the_metric_commit_in_place(
     반환값이 expired가 아님을 직접 단언한다 — 이전 버전의 이 테스트는 반환값을
     검사하지 않아 이 귀결을 놓쳤다.
     """
-    import agent_orchestration.app.experiments.service as service_module
+    import applications.experiment_platform.api.experiments.service as service_module
 
     experiment_id = _evaluating_experiment(db_session)
 
@@ -352,7 +352,7 @@ def test_executor_and_api_share_the_same_report_size_limit() -> None:
     `executor`는 `app` 패키지를 import하지 않으므로 상수를 공유할 수 없다. 드리프트를
     막는 것은 이 테스트뿐이다.
     """
-    from agent_orchestration.executor.report import (
+    from applications.experiment_platform.executor.report import (
         MAX_REPORT_MARKDOWN_BYTES as EXECUTOR_LIMIT,
     )
 
@@ -361,14 +361,14 @@ def test_executor_and_api_share_the_same_report_size_limit() -> None:
 
 def test_truncate_keeps_a_body_within_the_limit_untouched() -> None:
     """상한 안이면 그대로다."""
-    from agent_orchestration.executor.report import truncate_report_markdown
+    from applications.experiment_platform.executor.report import truncate_report_markdown
 
     assert truncate_report_markdown("# 결론") == "# 결론"
 
 
 def test_truncate_cuts_on_a_character_boundary() -> None:
     """멀티바이트 문자가 상한에 걸쳐도 깨진 문자를 남기지 않는다."""
-    from agent_orchestration.executor.report import (
+    from applications.experiment_platform.executor.report import (
         MAX_REPORT_MARKDOWN_BYTES as LIMIT,
         truncate_report_markdown,
     )
@@ -383,14 +383,14 @@ def test_truncate_cuts_on_a_character_boundary() -> None:
 
 def test_read_report_markdown_absorbs_a_missing_file(tmp_path) -> None:
     """본문 읽기 실패는 None이다 — 지표 보고를 막지 않는다."""
-    from agent_orchestration.executor.report import read_report_markdown
+    from applications.experiment_platform.executor.report import read_report_markdown
 
     assert read_report_markdown(tmp_path / "없음.md") is None
 
 
 def test_read_report_markdown_treats_a_blank_report_as_absent(tmp_path) -> None:
     """공백뿐인 리포트는 없는 것으로 본다."""
-    from agent_orchestration.executor.report import read_report_markdown
+    from applications.experiment_platform.executor.report import read_report_markdown
 
     path = tmp_path / "report.md"
     path.write_text("   \n\n", encoding="utf-8")

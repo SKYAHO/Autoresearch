@@ -78,7 +78,7 @@ def test_release_workflow_publishes_serving_image_with_immutable_verification():
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "autoresearch-serving" in workflow_text
     assert "^sha256:[0-9a-f]{64}$" in workflow_text
-    assert "feature_repo.redis_iam, src.serving.app" in workflow_text
+    assert "feature_repo.redis_iam, applications.reranking_api.app" in workflow_text
     assert "Serving digest_ref" in workflow_text
     assert "$GITHUB_STEP_SUMMARY" in workflow_text
 

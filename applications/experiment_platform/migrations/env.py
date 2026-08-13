@@ -15,7 +15,7 @@ import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-from agent_orchestration.app.database import Base, _sqlalchemy_database_url
+from applications.experiment_platform.api.database import Base, _sqlalchemy_database_url
 
 
 config = context.config

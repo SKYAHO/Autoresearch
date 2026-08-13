@@ -2,7 +2,7 @@
 
 전체 파이프라인에서 실험 워크벤치 API와 PostgreSQL 사이의 연결·요청 단위 Session
 경계를 담당한다. 기존 `/chat`의 psycopg 저장과 Alembic migration 실행은 각각
-`agent_orchestration.app.db`와 migration 환경의 책임이다.
+`applications.experiment_platform.api.db`와 migration 환경의 책임이다.
 
 이 모듈은 공통 declarative Base, psycopg 3 dialect를 사용하는 engine 생성,
 Session factory와 FastAPI 요청 단위 Session dependency를 제공한다.
@@ -43,7 +43,7 @@ def create_database_engine(database_url: str, connect_timeout_sec: int = 10) -> 
     `TimeoutError`로 실패한다. `pool_size`/`max_overflow`를 40으로 맞춰 이 engine
     자체의 커넥션 상한이 이 endpoint 그룹의 동시 요청 상한 아래로 내려가지 않게 한다.
 
-    이 상한은 이 engine에 한정된다 — 기존 `/chat`의 psycopg 경로(`agent_orchestration.
+    이 상한은 이 engine에 한정된다 — 기존 `/chat`의 psycopg 경로(`applications.experiment_platform.
     app.db`)는 별도의 pool 없이 `psycopg.connect()`를 요청마다 열고 닫으며, 그 경로는
     `asyncio.to_thread`(asyncio 기본 executor, anyio worker pool과는 별개)에서
     실행되므로 이 40과 상한을 공유하지 않고 커넥션 사용량이 더해진다. pod당 총

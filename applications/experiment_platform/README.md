@@ -1,4 +1,4 @@
-# agent_orchestration
+# applications.experiment_platform
 
 `FastAPI + Codex CLI + PostgreSQL` 기반 Agent Orchestration API입니다. 기존 `/chat`은
 Codex 응답을 PostgreSQL에 저장하며, 실험 워크벤치 v0은 Agent와 Streamlit이 실험 상태,
@@ -52,18 +52,18 @@ OpenAI API 키나 API 크레딧을 사용하지 않습니다.
    들어 `openssl rand -hex 32`로 생성합니다.
 5. PostgreSQL 컨테이너 기동 및 healthcheck 완료 대기
    ```bash
-   docker compose -f agent_orchestration/docker-compose.yml up -d --wait
+   docker compose -f applications/experiment_platform/docker-compose.yml up -d --wait
    ```
 6. 실험 워크벤치 테이블 migration 적용
    ```bash
-   uv run alembic -c agent_orchestration/alembic.ini upgrade head
+   uv run alembic -c applications/experiment_platform/alembic.ini upgrade head
    ```
    `/chat`의 `chat_interactions` 초기 테이블은 기존 psycopg 경로가 기동 시 보장하며,
    `experiments`, `experiment_events`, `experiment_logs`, `experiment_metadata`는 Alembic이
    관리합니다.
 7. 앱 실행
    ```bash
-   uv run uvicorn agent_orchestration.app.main:app --env-file .env --host 127.0.0.1 --port 8000
+   uv run uvicorn applications.experiment_platform.api.main:app --env-file .env --host 127.0.0.1 --port 8000
    ```
 8. 요청 예시
    ```bash
@@ -74,7 +74,7 @@ OpenAI API 키나 API 크레딧을 사용하지 않습니다.
    ```
 9. 저장 확인
    ```bash
-   docker compose -f agent_orchestration/docker-compose.yml exec postgres \
+   docker compose -f applications/experiment_platform/docker-compose.yml exec postgres \
      psql -U orch_user -d orch_orchestration \
      -c "SELECT id, model, created_at FROM chat_interactions ORDER BY id DESC LIMIT 3;"
    ```
@@ -113,11 +113,11 @@ OpenAI API 키나 API 크레딧을 사용하지 않습니다.
     받은 Step의 상태 변화를 관측하지 못합니다.
 - `POST /experiments/{id}/promote`는 `PASSED` 실험에 대해 운영자가 필수 `reason`과
   idempotency key를 남기는 전용 수동 승격 경로입니다.
-- **DB migration은 이미지 기동 시 자동 실행되지 않습니다.** `agent_orchestration/entrypoint.sh`는
+- **DB migration은 이미지 기동 시 자동 실행되지 않습니다.** `applications/experiment_platform/entrypoint.sh`는
   `uvicorn`만 실행하며, 실험 테이블 4개(`experiments`/`experiment_events`/
   `experiment_logs`/`experiment_metadata`)는 Alembic으로만 생성됩니다. API 이미지에는
-  `alembic upgrade head`를 실행할 수 있도록 `agent_orchestration/alembic.ini`와
-  `agent_orchestration/migrations/`가 포함되어 있고 CI가 오프라인 SQL 생성으로 이를
+  `alembic upgrade head`를 실행할 수 있도록 `applications/experiment_platform/alembic.ini`와
+  `applications/experiment_platform/migrations/`가 포함되어 있고 CI가 오프라인 SQL 생성으로 이를
   검증하지만, **이 이미지를 대상으로 migration을 실제로 실행하는 시점·주체(K8s
   Job/initContainer 등)는 배포 오케스트레이션(`Autoresearch-infra`) 쪽에서 앱
   롤아웃보다 먼저 끝나도록 별도로 구성해야 합니다.** 이 단계 없이 배포하면
@@ -144,7 +144,7 @@ In a separate terminal, run the workbench:
 uv sync --group orchestration-ui
 ORCH_UI_API_BASE_URL=http://127.0.0.1:8000 \
 ORCH_UI_API_TOKEN="$ORCH_API_TOKEN" \
-PYTHONPATH=. uv run --group orchestration-ui streamlit run agent_orchestration/ui/app.py
+PYTHONPATH=. uv run --group orchestration-ui streamlit run applications/experiment_platform/workbench/app.py
 ```
 
 The v0 submit form calls `POST /experiments`, so it creates only a database
@@ -233,7 +233,7 @@ API 결제 방식으로 전환할 때만 `LLM_BACKEND=openai`와 `OPENAI_API_KEY
 Runner OAuth bootstrap init container는 **API 이미지**를 실행하지만 Runner 전용
 KSA/GSA와 PVC를 사용해 OAuth 시크릿 하나만 읽는다. 이는 API 런타임 Pod에 OAuth
 파일·PVC·Secret Manager 권한을 주지 않는 분리 경계를 유지하기 위한 선택이다.
-이 init container는 `python -m agent_orchestration.bootstrap_secrets runner-codex-auth`
+이 init container는 `python -m applications.experiment_platform.shared.bootstrap_secrets runner-codex-auth`
 CLI 역할을 호출한다. `api-database` 역할은 API DB runtime 파일만 만들며, 기존의
 인자 없는 모듈 실행도 이 API DB 역할과 호환된다.
 기본 Runner bootstrap은 PVC의 기존 `auth.json`을 보존하고 Secret Manager를 다시

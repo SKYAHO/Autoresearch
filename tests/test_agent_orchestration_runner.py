@@ -11,14 +11,14 @@ from fastapi.testclient import TestClient
 import httpx
 import pytest
 
-from agent_orchestration.app.config import ServiceSettings
-from agent_orchestration.app.llm import LLMBackendError, generate_response
-from agent_orchestration.app.schemas import ChatRequest
-from agent_orchestration import codex as codex_module
-from agent_orchestration.contracts import LLMBackendOverloadedError, LLMResult
-from agent_orchestration.runner import app as runner_app_module
-from agent_orchestration.runner import config as runner_config_module
-from agent_orchestration.runner.config import RunnerSettings
+from applications.experiment_platform.api.config import ServiceSettings
+from applications.experiment_platform.api.llm import LLMBackendError, generate_response
+from applications.experiment_platform.api.schemas import ChatRequest
+from applications.experiment_platform.shared import codex as codex_module
+from applications.experiment_platform.shared.contracts import LLMBackendOverloadedError, LLMResult
+from applications.experiment_platform.runner import app as runner_app_module
+from applications.experiment_platform.runner import config as runner_config_module
+from applications.experiment_platform.runner.config import RunnerSettings
 
 
 def make_settings(**overrides: Any) -> ServiceSettings:
@@ -649,7 +649,7 @@ def test_api_returns_499_after_http_disconnect(
         finally:
             cancelled.set()
 
-    from agent_orchestration.app import main as main_module
+    from applications.experiment_platform.api import main as main_module
 
     monkeypatch.setattr(main_module, "load_settings", lambda: settings)
     monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)
@@ -697,7 +697,7 @@ def test_api_asgi_disconnect_cancels_runner_http_request(
         finally:
             cancelled.set()
 
-    from agent_orchestration.app import main as main_module
+    from applications.experiment_platform.api import main as main_module
 
     monkeypatch.setattr(main_module, "load_settings", lambda: settings)
     monkeypatch.setattr(main_module, "ensure_schema", lambda *_args: None)

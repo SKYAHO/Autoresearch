@@ -10,7 +10,7 @@
 종료 시 공용 Codex 실행 task를 취소·회수하며 결과에 Runner 처리 시간을 추가한다.
 
 [비책임]
-외부 호출자 인증·DB 저장·OpenAI API 선택(agent_orchestration.app), OAuth
+외부 호출자 인증·DB 저장·OpenAI API 선택(applications.experiment_platform.api), OAuth
 자격 증명 값 관리 및 Kubernetes Service 네트워크 정책.
 """
 
@@ -27,8 +27,8 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 from starlette.responses import Response
 
-from agent_orchestration.codex import generate_codex_response
-from agent_orchestration.runner.config import RunnerSettings, load_runner_settings
+from applications.experiment_platform.shared.codex import generate_codex_response
+from applications.experiment_platform.runner.config import RunnerSettings, load_runner_settings
 
 
 TaskResult = TypeVar("TaskResult")

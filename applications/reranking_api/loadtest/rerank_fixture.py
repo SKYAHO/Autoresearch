@@ -8,7 +8,7 @@ offline feature source를 결정론적으로 준비하는 구간을 담당한다
 키만 대상으로 하는 DELETE 및 명시적 컬럼 INSERT SQL을 만든다.
 
 [비책임] Feast materialize와 Redis online store 갱신(feature_repo/ 및 Airflow),
-HTTP 리랭킹 요청(src/serving/)은 이 모듈이 수행하지 않는다.
+HTTP 리랭킹 요청(applications/reranking_api/)은 이 모듈이 수행하지 않는다.
 """
 
 from __future__ import annotations
