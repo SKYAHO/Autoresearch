@@ -988,13 +988,44 @@ EOF
 
 ---
 
-### Task 3: `tests/` 소스 구조 미러링
+### Task 3: `tests/` 소스 구조 미러링 — 완료 (커밋 `f1a489b`·`e3ab015`)
+
+**계획서 매핑은 정확했다.** 163개 중 162개를 그대로 덮었고(나머지는 기존
+`tests/__init__.py`), 중복·누락이 없었다. 다만 `<확인>` 표시 2건 중 하나가 틀렸다 —
+`test_action_logs_schema_policy.py`는 `action_log_generation.schema`만 import하므로
+`recommendation`이 아니라 `action_log_generation`이다. `tests/action_logs/` 디렉터리는
+이미 없어서 리네임 단계는 건너뛰었다.
+
+**계획서가 놓친 것 — 깊이에 의존하는 경로 계산.**
+
+`Path(__file__).resolve().parents[1]`이 저장소 루트를 가리키는 테스트가 **37개**였다.
+한 단계(또는 `applications/<svc>/`는 두 단계) 깊어지면 이 값이 `tests/`를 가리킨다.
+`tests/fixtures`를 형제로 참조하던 2곳도 같다. 이동 커밋과 분리해 고쳤다.
+
+**계획서가 놓친 것 — ci.yml이 파일 이름을 열거한다.**
+
+`pytest (feast group)` job이 테스트 12개를, `pytest (postgres group)`이 1개를 경로로
+나열한다. 어긋나면 job이 실패한다. `test_serving_deployment.py`가 그 목록을 계약으로
+고정하므로 함께 갱신했다.
+
+**드러난 기존 결함 — `.env`가 프로세스 환경으로 샌다.**
+
+이동으로 실행 순서가 바뀌자 `tests/jobs/test_feast_materialize.py` 3건이 깨졌다. 원인은
+`test_rerank_loadtest_fixture.py`가 부르는 `provisioner.main()` 안의 `load_dotenv()`다.
+이것은 monkeypatch가 아니라 **프로세스 환경을 직접** 바꾸므로, 로컬 `.env`의
+`AUTORESEARCH_ENV=dev`가 세션 끝까지 남아 이후 테스트가 dev 환경으로 오인된다.
+
+이동이 만든 버그가 아니라 순서가 가려주던 기존 결함이다. CI에는 `.env`가 없어 드러나지
+않는다 — 로컬에서만 나는 종류다. 해당 모듈에 autouse fixture로 `load_dotenv`를 막았다.
+
+**검증.** `2838 tests collected` — 이동 전과 정확히 동일. `2819 passed / 2 failed(WSL2
+환경) / 25 skipped`.
 
 **Files:**
 - Move: `tests/test_*.py` 다수 → `tests/<패키지명>/`
 - Modify: `tests/conftest.py` (필요 시)
 
-- [ ] **Step 1: 기준선 재확인**
+- [x] **Step 1: 기준선 재확인**
 
 ```bash
 uv run python -m pytest --collect-only -q 2>/dev/null | tail -1
@@ -1002,7 +1033,7 @@ uv run python -m pytest --collect-only -q 2>/dev/null | tail -1
 
 이 숫자를 Task 3 종료 시 비교한다.
 
-- [ ] **Step 2: 디렉토리 생성**
+- [x] **Step 2: 디렉토리 생성**
 
 ```bash
 cd /home/yjlee/Autoresearch/tests
@@ -1021,7 +1052,7 @@ touch applications/reranking_api/__init__.py applications/experiment_platform/__
 git mv action_logs action_log_generation
 ```
 
-- [ ] **Step 3: 테스트 파일을 대상 모듈 기준으로 이동**
+- [x] **Step 3: 테스트 파일을 대상 모듈 기준으로 이동**
 
 각 테스트가 무엇을 import 하는지로 목적지를 정한다.
 
@@ -1247,7 +1278,7 @@ test_pr_report_archive_card_isolation.py
 git mv tests/test_pipeline_train.py tests/model_training/test_train.py
 ```
 
-- [ ] **Step 4: 수집 개수 비교**
+- [x] **Step 4: 수집 개수 비교**
 
 ```bash
 uv run python -m pytest --collect-only -q 2>/dev/null | tail -1
@@ -1255,7 +1286,7 @@ uv run python -m pytest --collect-only -q 2>/dev/null | tail -1
 
 기대: Step 1과 **정확히 같은 숫자**. 다르면 파일이 유실됐거나 `__init__.py`가 빠져 수집이 안 되는 것이다.
 
-- [ ] **Step 5: 이름 충돌 확인**
+- [x] **Step 5: 이름 충돌 확인**
 
 같은 basename의 테스트 파일이 서로 다른 디렉토리에 있으면 `__init__.py`가 없을 때 pytest가 충돌을 낸다. Step 2에서 전부 만들었는지 확인한다.
 
@@ -1263,13 +1294,13 @@ uv run python -m pytest --collect-only -q 2>/dev/null | tail -1
 find tests -type d -not -path '*__pycache__*' -exec sh -c '[ -f "$1/__init__.py" ] || echo "missing __init__: $1"' _ {} \;
 ```
 
-- [ ] **Step 6: 전체 실행**
+- [x] **Step 6: 전체 실행**
 
 ```bash
 uv run python -m pytest -q 2>&1 | tail -5
 ```
 
-- [ ] **Step 7: CI 테스트 목록 갱신**
+- [x] **Step 7: CI 테스트 목록 갱신**
 
 `.github/workflows/ci.yml`의 feast·postgres 그룹 job이 테스트 경로를 명시적으로 나열한다. 이동한 경로로 갱신한다.
 
@@ -1277,7 +1308,7 @@ uv run python -m pytest -q 2>&1 | tail -5
 grep -n "tests/" .github/workflows/ci.yml
 ```
 
-- [ ] **Step 8: 커밋**
+- [x] **Step 8: 커밋**
 
 ```bash
 git add -A
@@ -1598,7 +1629,7 @@ Task마다 별도 PR을 올린다. `main` 기준, `Closes #754`는 마지막 PR�
 | [#755](https://github.com/SKYAHO/Autoresearch/pull/755) | spec·plan + Task 0 | 설계 확정 + 잔재 정리 | **머지** (main `247644e`) |
 | [#756](https://github.com/SKYAHO/Autoresearch/pull/756) | Task 1 | 최대 diff — 이동/치환 2커밋 + executor 슬래시 경로 + feast 레지스트리 | **머지** — 아래 사유로 #755 squash에 포함 |
 | [#757](https://github.com/SKYAHO/Autoresearch/pull/757) | Task 2 | applications 층 + `lint.yml` + ruff 대상·alembic·proxy export | main 위로 rebase, 리뷰 대기 |
-| 4 | Task 3 | 테스트 재배치 | 대기 |
+| 5 | Task 3 | 테스트 재배치 | 구현 완료 |
 | 5 | Task 4 | 배포·CI paths 필터 | 대기 |
 | 6 | Task 5 | 문서 | 대기 |
 
