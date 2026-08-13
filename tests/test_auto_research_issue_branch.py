@@ -15,6 +15,7 @@ PROMOTION_WORKFLOW = PROJECT_ROOT / ".github/workflows/auto-research-dev-promoti
 RENDERED_FORM_FIXTURE = PROJECT_ROOT / "tests/fixtures/auto_research_issue_form_rendered.md"
 sys.path.insert(0, str(PROJECT_ROOT))
 
+from tools import auto_research_issue_branch as issue_branch  # noqa: E402
 from tools.auto_research_issue_branch import (  # noqa: E402
     MAX_COMPLETION_CANDIDATES,
     MAX_DECIMAL_DIGITS,
@@ -43,7 +44,7 @@ def structured_body(
     test_size: str = "0.2",
     validation_size: str = "0.2",
     training_config_ref: str = "configs/train/lgbm-v1.yaml@abc1234",
-    allowed_scope: str = "- [ ] prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다",
+    allowed_scope: str = "- [ ] prod 모델 계약(`autoresearch/feature_engineering/model_contract.py`) 수정을 허용한다",
 ) -> str:
     """GitHub가 구조화 Form 응답에서 생성하는 실제 heading 본문을 만듭니다."""
     return f"""### 연구 가설
@@ -647,7 +648,7 @@ def test_identifiers_ignore_fields_outside_fixed_structured_contracts() -> None:
         449,
         "[AR] metric",
         structured_body(
-            allowed_scope="- [x] prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다"
+            allowed_scope="- [x] prod 모델 계약(`autoresearch/feature_engineering/model_contract.py`) 수정을 허용한다"
         ),
     )
 
@@ -1426,3 +1427,43 @@ def test_promotion_workflow_fails_after_recording_new_merge_failure_state() -> N
         body,
     )
     assert update_failure is not None
+
+
+@pytest.mark.parametrize(
+    "label",
+    (
+        "prod 모델 계약(`autoresearch/feature_engineering/model_contract.py`) 수정을 허용한다",
+        "prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다",
+    ),
+)
+def test_prod_model_contract_scope_accepts_both_path_spellings(label: str) -> None:
+    """#754 재배치 전후 라벨 문자열을 모두 같은 scope 로 해석해야 한다.
+
+    알 수 없는 라벨은 fail-closed 로 거부된다 — 한쪽만 받으면 그 이슈가 통째로 반려된다.
+    DB에 봉인된 진행 중 실험의 이슈 본문은 여전히 옛 문자열을 담고 있으므로, 템플릿만
+    바꾸고 여기를 안 바꾸면(또는 그 반대면) 실험이 죽는다.
+    """
+    parsed = parse_issue_input(
+        451, "[AR] metric", structured_body(allowed_scope=f"- [x] {label}")
+    )
+
+    assert parsed.allowed_scope == ("prod_model_contract",)
+
+
+def test_issue_form_labels_are_all_known_scopes() -> None:
+    """Issue Form 의 checkbox 문구가 `_SCOPE_LABELS` 에 전부 있어야 한다(#754).
+
+    이 둘은 **정확 일치 계약**이다. 알 수 없는 라벨은 fail-closed 로 거부되므로, 템플릿
+    문구를 고치면서 매핑을 빠뜨리면 그 순간부터 새 실험이 통째로 반려된다. 증상이
+    "이슈 발행은 되는데 실험이 시작되지 않는다"라 원인을 찾기 어렵다.
+
+    반대 방향(매핑에만 있고 템플릿에 없는 항목)은 검사하지 않는다 — 전환 기간 동안
+    봉인된 옛 이슈 본문을 받기 위해 일부러 남기기 때문이다.
+    """
+    repository_root = Path(__file__).resolve().parents[1]
+    template = repository_root / ".github" / "ISSUE_TEMPLATE" / "auto_research.yml"
+    labels = re.findall(r"^\s*- label: (.+)$", template.read_text(encoding="utf-8"), re.MULTILINE)
+
+    assert labels, "Issue Form 에서 checkbox 라벨을 하나도 찾지 못했다 — 형식이 바뀌었는지 확인하라"
+    unknown = [label for label in labels if label.strip() not in issue_branch._SCOPE_LABELS]
+    assert unknown == [], f"Issue Form 라벨이 _SCOPE_LABELS 에 없다: {unknown}"

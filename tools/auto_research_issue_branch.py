@@ -75,8 +75,16 @@ _SNAPSHOT_REUSE = frozenset(
 _METRIC_DIRECTIONS = frozenset({"higher_is_better", "lower_is_better"})
 _NOT_APPLICABLE = "not_applicable"
 _NONE_VALUE = "없음"
+# 라벨 문자열은 `.github/ISSUE_TEMPLATE/auto_research.yml`의 checkbox 문구와 **정확히**
+# 일치해야 한다. 알 수 없는 라벨은 fail-closed 로 거부되므로(아래 `_parse_allowed_scope`)
+# 어긋나면 그 이슈는 통째로 반려된다.
+#
+# #754 재배치로 모델 계약 파일의 경로가 바뀌었다. DB에 봉인된 진행 중 실험의 이슈 본문은
+# 여전히 옛 문자열을 담고 있으므로 **둘 다 받는다.** 옛 봉인 이슈가 모두 끝나면 옛 항목을
+# 제거한다 — 그 판단은 `experiments.base_dev_sha` 기준 미종료 실험 0건으로 한다.
 _SCOPE_LABELS = {
-    "prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다": "prod_model_contract",
+    "prod 모델 계약(`autoresearch/feature_engineering/model_contract.py`) 수정을 허용한다": "prod_model_contract",
+    "prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다": "prod_model_contract",  # 봉인된 옛 이슈 본문
     "Feast 정의(`feature_repo/`) 수정을 허용한다": "feast_definition",
     "실험 결과를 champion으로 승격하는 것까지 검토한다": "promotion",
 }
