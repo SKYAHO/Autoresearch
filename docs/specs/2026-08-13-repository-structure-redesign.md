@@ -367,45 +367,75 @@ feast 계열은 `uv sync --only-group feast` 환경에서 `.github/workflows/ci.
 | 문자열 하드코딩 경로 누락 | 6-3에 전수 목록. 단계 1 완료 후 `grep -rn "src/" --include=*.py --include=*.yml --include=Dockerfile*`로 잔여 확인 |
 | 인접 저장소 Airflow 호출 중단 | 단계 5를 이 저장소 배포 **이후**에 수행하거나, 배포 순서를 사전 합의 |
 | `tests/` 재배치 중 테스트 유실 | 단계 3에서 재배치 전후 `pytest --collect-only -q \| wc -l` 비교 |
-| 이슈 템플릿 경로 변경으로 진행 중 실험 실패 | 실행 중인 실험이 없는 시점에 단계 4 수행 |
+| 이슈 템플릿 경로 변경으로 진행 중 실험 실패 | 해당 없음 — 실험은 `base_dev_sha`로 봉인된 트리를 체크아웃하므로 이슈 본문의 명령과 트리가 항상 짝이 맞는다. 9-1 참조 |
 | 단계 1의 diff가 커서 리뷰 불가 | 파일 이동(`git mv`)과 임포트 치환을 **별도 커밋**으로 분리해 rename 감지를 살림 |
-| **실험 에이전트가 `src/`를 계속 수정함** | 아래 별도 절 참조 — 이 재배치의 최대 제약 |
-| 팀원의 열린 브랜치가 `src/`를 건드려 rebase 충돌 | 선행 plan과 동일 — 실행 시점을 열린 PR 머지 직후로 고정. 착수 전 `gh pr list`로 확인 |
+| 열린 PR이 `src/`를 건드려 merge 충돌 | 9-1에서 실측 — rename 감지가 처리한다. 예외는 `#535`(사람 PR) 한 건의 일반 rebase뿐 |
+| exp 브랜치가 `src/` 아래 새 파일을 추가해 `src/`가 되살아남 | 단계 1 이후 CI 가드 추가 (9-1 참조) |
 | 도메인 소유자 합의 없이 착수 | 선행 plan의 실행 조건(waieiches, hyochangsung 승인)이 유효. 착수 전 확인 필요 |
 | 배치 이미지가 코드 경로를 굽고 있을 가능성 | 해당 없음 — #752 이후 `Dockerfile.app`은 소스를 COPY하지 않는다. `scripts/upload_code_archive.sh`가 **추적 파일 전체**를 `git archive`로 말아 `gcs_code_bootstrap.sh`가 `/app`에 풀고 `PYTHONPATH=/app`으로 실행하므로 경로에 무관하다. 두 스크립트 수정 불필요 |
 
-### 9-1. 실험 에이전트와의 충돌 (최대 제약)
+### 9-1. 실험 에이전트와의 충돌 — 실측 결과 막지 않는다
 
-2026-08-13 기준 열린 PR 11건 중 **7건이 `src/`를 건드리며, 그중 6건이 실험
-에이전트가 자동 생성한 `[AR]` 실험 PR**입니다.
+2026-08-13 기준 열린 PR 11건 중 7건이 `src/`를 건드리며, 그중 6건이 실험
+에이전트가 자동 생성한 `[AR]` PR입니다.
 
-| PR | 브랜치 | 건드리는 `src/` 파일 |
+| PR | 브랜치 | base | 건드리는 `src/` 파일 |
+| --- | --- | --- | --- |
+| #739, #738, #737 | `exp/733`, `exp/734`, `exp/732` | `dev` | `models/lgbm_model.py`, `pipeline/config.yaml`, `pipeline/train.py` |
+| #736, #735, #751 | `exp/731`, `exp/730`, `exp/749` | `dev` | `pipeline/config.yaml` |
+| #535 | `docs/514-temporal-paired-evaluation-spec` | `main` | `pipeline/degradation_eval.py` |
+
+이 파일들은 단계 1에서 이동하는 파일과 겹칩니다. 그래서 처음에는 착수를 막는
+제약으로 판단했으나, **실측 결과 막지 않습니다.**
+
+**실측 1 — git rename 감지가 처리한다.** 1,147행 규모 파일을 모사해 재배치 후
+exp 변경을 rebase·merge 양방향으로 시도했습니다.
+
+```
+rebase: Successfully rebased and updated refs/heads/exp/999.
+merge:  Auto-merging autoresearch/model_training/train.py
+```
+
+두 방향 모두 충돌 없이 새 경로 파일에 값이 반영됩니다. 파일이 작을 때는 임포트
+1~2줄 변경만으로 유사도가 임계값 아래로 떨어져 `modify/delete` 충돌이 나지만,
+실제 파일 크기에서는 유사도가 99%대라 감지가 성공합니다.
+
+**실측 2 — exp diff가 단계 1이 고치는 영역과 겹치지 않는다.**
+
+| 파일 | 단계 1이 고치는 곳 | exp PR이 고치는 곳 |
 | --- | --- | --- |
-| #739, #738, #737 | `exp/733`, `exp/734`, `exp/732` | `models/lgbm_model.py`, `pipeline/config.yaml`, `pipeline/train.py` |
-| #736, #735, #751 | `exp/731`, `exp/730`, `exp/749` | `pipeline/config.yaml` |
-| #535 | `docs/514-temporal-paired-evaluation-spec` | `pipeline/degradation_eval.py` |
+| `pipeline/train.py` | 임포트 55–118행 | 884–933행 |
+| `models/lgbm_model.py` | 임포트 21–22행 | 31–53행 |
+| `pipeline/config.yaml` | 이동만, 내용 변경 없음 | 하이퍼파라미터 값 |
 
-실험 PR이 건드리는 파일이 단계 1에서 이동하는 파일과 **정확히 겹칩니다**
-(`config.yaml`, `train.py`, `lgbm_model.py` → `model_training/`).
+**실측 3 — 진행 중 실험은 애초에 영향받지 않는다.** executor는 DB에 봉인된
+`base_dev_sha` 트리에서 `exp/*` 브랜치를 만듭니다. 그 트리에는 `src/`가 그대로
+있고, 같은 시점에 발행된 이슈 본문의 `python -m src.cli build-features`와 짝이
+맞습니다. `main`/`dev`가 재배치돼도 봉인된 SHA는 바뀌지 않습니다.
 
-문제는 일회성 충돌이 아닙니다. 구조적입니다:
+**실측 4 — 승격 계보 검증은 경로와 무관하다.**
+`.github/workflows/auto-research-promotion.yml:192`의 유일한 계보 조건은
+`candidate_sha must be an ancestor of dev`입니다.
 
-1. 실험 에이전트는 `.github/ISSUE_TEMPLATE/auto_research.yml:212`가 지시하는
-   `python -m src.cli build-features` 경로에 의존합니다.
-2. executor가 `dev` 기준으로 `exp/*` 브랜치를 만들어 `src/` 파일을 수정합니다.
-3. 따라서 실험 루프가 도는 동안에는 "`src/`를 건드리는 열린 PR이 없는 시점"이
-   구조적으로 생기지 않습니다.
+**따라서 실험 발행을 중단할 필요가 없습니다.** 남는 조치는 두 가지뿐입니다.
 
-**완화책 — 착수 전 창(window) 확보가 필요합니다:**
+1. `#535`는 사람이 올린 PR이므로 일반적인 rebase 한 번이 필요합니다.
+2. exp 브랜치가 `src/` 아래 **새 파일을 추가**하면 merge가 `src/`를 되살립니다.
+   실험은 기존 하이퍼파라미터만 수정하므로 실제로 일어나진 않지만, 단계 1
+   이후 CI에 가드를 둡니다.
 
-- 진행 중 실험이 모두 종료·머지·폐기된 상태를 만든다.
-- 새 실험 발행을 일시 중단한다 (에이전트 CronJob 정지 또는 가설 제출 보류).
-- 그 창 안에서 단계 1~4를 연속 수행하고, 단계 4에서 이슈 템플릿 경로를 갱신한
-  뒤 실험 발행을 재개한다.
+```yaml
+- name: src 디렉토리가 되살아나지 않았는지 확인
+  run: |
+    if [ -d src ]; then
+      echo "src/ 가 다시 생겼습니다 — #754 재배치 이후 이 경로는 사용하지 않습니다" >&2
+      exit 1
+    fi
+```
 
-이 창을 확보하지 못하면 단계 1 착수 자체를 미루는 것이 맞습니다. 실험 브랜치는
-rebase가 아니라 재생성이 필요해지고, 진행 중이던 실험 결과의 baseline 비교
-가능성이 깨질 수 있습니다.
+`exp/*` 브랜치를 삭제하거나 force-push하지 않는다는 기존 규칙은 그대로
+지킵니다(CONTRIBUTING 브랜치 보호). merge 방향이 동작하므로 rebase가 필요
+없습니다.
 
 ## 10. 후속 문서
 

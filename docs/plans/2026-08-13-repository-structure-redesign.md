@@ -24,11 +24,18 @@
 
 ## 착수 전제 (Task 0 이전에 확인)
 
-- [ ] Model Training / Feast Features 도메인 소유자(waieiches, hyochangsung) 합의
-- [ ] `gh pr list --state open --json number,files` 로 `src/`를 건드리는 열린 PR이 0건인지 확인
-- [ ] 실험 발행 일시 중단 (에이전트 CronJob 정지 또는 가설 제출 보류) — spec 9-1절
+- [ ] Model Training / Feast Features 도메인 소유자(waieiches, hyochangsung) 합의 — 선행 plan(#149)이 규정한 조건이며 유일한 실질 전제다
+- [ ] `#535`(사람 PR, `degradation_eval.py`) 처리 방침 합의 — 먼저 머지하거나, 재배치 후 rebase하도록 담당자에게 알린다
 
-전제가 안 되면 Task 1 이후를 착수하지 않는다. Task 0은 전제와 무관하게 가능하다.
+**실험 발행은 중단하지 않는다.** spec 9-1절에서 실측한 대로, 열린 `[AR]` PR
+6건은 재배치를 막지 않는다:
+
+- git rename 감지가 rebase·merge 양방향에서 충돌 없이 처리한다 (1,147행 규모로 실측)
+- exp diff(`train.py` 884–933행)와 단계 1이 고치는 임포트 블록(55–118행)이 겹치지 않는다
+- 진행 중 실험은 봉인된 `base_dev_sha` 트리를 쓰므로 `main`/`dev` 변경에 영향받지 않는다
+- 승격 계보 검증은 `candidate_sha must be an ancestor of dev` 하나뿐이라 경로와 무관하다
+
+대신 Task 1 끝에 `src/` 재생성을 막는 CI 가드를 넣는다(Task 1 Step 15-1).
 
 ## File Structure
 
@@ -511,6 +518,28 @@ uv run python -m autoresearch.recommendation.daily_recommendations --help
 ```
 
 기대: 정상 출력.
+
+- [ ] **Step 15-1: `src/` 재생성 방지 CI 가드 추가**
+
+exp 브랜치가 봉인된 옛 SHA에서 갈라져 나오므로, 그 브랜치가 `src/` 아래 **새 파일**을 추가하면 merge가 `src/`를 되살린다. 실험은 기존 하이퍼파라미터만 고치므로 실제로 일어나진 않지만, 되살아나면 조용히 넘어가는 것이 더 나쁘다.
+
+`.github/workflows/lint.yml`의 Ruff job에 아래 step을 추가한다.
+
+```yaml
+      - name: src 디렉토리가 되살아나지 않았는지 확인
+        run: |
+          if [ -d src ]; then
+            echo "::error::src/ 가 다시 생겼습니다 — #754 재배치 이후 이 경로는 사용하지 않습니다" >&2
+            git ls-files src | head -20
+            exit 1
+          fi
+```
+
+로컬 확인:
+
+```bash
+[ -d src ] && echo "실패: src/ 가 아직 있다" || echo "통과"
+```
 
 - [ ] **Step 15: 커밋**
 
