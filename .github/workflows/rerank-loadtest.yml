@@ -159,7 +159,7 @@ jobs:
 
           kubectl create configmap rerank-loadtest-script \
             -n "$LOADTEST_NAMESPACE" \
-            --from-file=rerank.js=loadtest/rerank.js \
+            --from-file=rerank.js=applications/reranking_api/loadtest/rerank.js \
             --dry-run=client -o yaml \
             | kubectl label --local -f - \
                 app.kubernetes.io/part-of=rerank-loadtest -o yaml \

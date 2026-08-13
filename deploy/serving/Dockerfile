@@ -27,7 +27,10 @@ RUN python -m pip install --no-cache-dir --no-deps -r requirements.lock && rm re
 
 COPY autoresearch ./autoresearch
 COPY feature_repo ./feature_repo
-COPY src ./src
+# 서빙 앱 본체. #754 로 src/serving 에서 옮겨 왔고, applications 는 패키지이므로
+# __init__.py 를 함께 넣어야 `applications.reranking_api.app` import 가 성립한다.
+COPY applications/__init__.py ./applications/
+COPY applications/reranking_api ./applications/reranking_api
 
 USER appuser
 

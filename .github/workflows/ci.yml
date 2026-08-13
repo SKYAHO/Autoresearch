@@ -281,8 +281,9 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Build training image
-        # CTR 학습 파이프라인(src/)을 담는 이미지. Dockerfile.app과 별도로
-        # 관리한다 — 배치 CLI(autoresearch/)와 학습 코드(src/)는 책임이 다르다.
+        # CTR 학습 파이프라인을 담는 이미지. Dockerfile.app과 별도로 관리한다 —
+        # 배치 CLI(autoresearch/jobs/)와 학습 코드(autoresearch/model_training/)는
+        # 책임이 다르다.
         run: |
           docker build \
             --build-arg VCS_REF="${{ github.sha }}" \

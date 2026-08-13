@@ -25,7 +25,7 @@ HAVE_DOCKER = shutil_which("docker") is not None and _docker_daemon_running()
 def test_proxy_container_forwards_youtube(monkeypatch):
     """proxy 컨테이너 빌드/실행 후 /health 200 + /youtube/v3/ 전달."""
     subprocess.run(
-        ["docker", "build", "-t", "youtube-proxy", "./proxy"],
+        ["docker", "build", "-t", "youtube-proxy", "./applications/youtube_api_proxy"],
         check=True,
         capture_output=True,
     )
@@ -49,7 +49,7 @@ def test_proxy_container_honors_port_env():
     fix 후: shell form ${PORT:-8080} 이 PORT=18081 을 읽어 18081 리슨 → /health 200.
     """
     subprocess.run(
-        ["docker", "build", "-t", "youtube-proxy", "./proxy"],
+        ["docker", "build", "-t", "youtube-proxy", "./applications/youtube_api_proxy"],
         check=True,
         capture_output=True,
     )
