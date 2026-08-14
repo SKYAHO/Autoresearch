@@ -37,6 +37,7 @@ from autoresearch.action_log_generation.daily import (
 from autoresearch.action_log_generation.schema import validate_candidate_ratios
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
 from autoresearch.jobs._telemetry import configure_action_log_telemetry_logging
+from autoresearch.jobs._version_action import add_version_argument
 
 
 logger = logging.getLogger(__name__)
@@ -124,16 +125,10 @@ def _canonical_gcs_path(value: str) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=json.dumps(
-            {
-                "application_revision": _REVISION,
-                "contract_version": BATCH_CONTRACT_VERSION,
-            },
-            sort_keys=True,
-        ),
+    add_version_argument(
+        parser,
+        application_revision=_REVISION,
+        contract_version=BATCH_CONTRACT_VERSION,
     )
     parser.add_argument("--mode", choices=("single", "shard", "merge"), required=True)
     parser.add_argument("--partition-date", type=_partition_date, required=True)

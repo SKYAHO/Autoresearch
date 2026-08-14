@@ -49,6 +49,7 @@ from applications.reranking_api.model_loader import (
 )
 from applications.reranking_api.schemas import RerankedVideo
 from autoresearch.recommendation.simulate_policy_round import _to_candidate_videos, build_pool_feature_frame
+from autoresearch.jobs._version_action import add_version_argument
 
 logger = logging.getLogger(__name__)
 JOB_NAME: Final = "daily_recommendations"
@@ -480,16 +481,10 @@ def _skip_ratio(value: str) -> float:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(description="일일 추천 결과 BQ 적재 배치")
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=json.dumps(
-            {
-                "application_revision": _REVISION,
-                "contract_version": BATCH_CONTRACT_VERSION,
-            },
-            sort_keys=True,
-        ),
+    add_version_argument(
+        parser,
+        application_revision=_REVISION,
+        contract_version=BATCH_CONTRACT_VERSION,
     )
     parser.add_argument("--candidate-dt", type=_iso_date)
     parser.add_argument("--events-dt", type=_iso_date)

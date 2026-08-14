@@ -12,6 +12,7 @@ from pyarrow.fs import GcsFileSystem
 
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
 from autoresearch.data_collection.backfill import backfill_from_parquet
+from autoresearch.jobs._version_action import add_version_argument
 
 
 logger = logging.getLogger(__name__)
@@ -63,16 +64,10 @@ def _strip_gs(path: str) -> str:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=json.dumps(
-            {
-                "application_revision": _REVISION,
-                "contract_version": BATCH_CONTRACT_VERSION,
-            },
-            sort_keys=True,
-        ),
+    add_version_argument(
+        parser,
+        application_revision=_REVISION,
+        contract_version=BATCH_CONTRACT_VERSION,
     )
     parser.add_argument("--source-path", required=True)
     parser.add_argument("--youtube-base-path", required=True)
