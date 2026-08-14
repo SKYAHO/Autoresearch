@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-14T07:54:46Z",
+  "generated_at": "2026-08-14T08:07:04Z",
   "reports": [
+    {
+      "number": 766,
+      "title": "fix: batch --version이 폭에 따라 줄바꿈되던 것을 고친다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-14T08:06:51Z",
+      "summary_ko": [
+        "공개 배치 CLI에서 --version 실행 시 터미널 폭에 따라 JSON이 줄바꿈되어 자동화 도구의 파싱이 실패하던 문제를 해결했습니다.",
+        "argparse 기본 포맷터 대신 터미널 폭 설정과 무관하게 한 줄 JSON을 직접 출력하는 전용 액션을 구현했습니다.",
+        "공개 배치 CLI 7개 모듈 전체에 이를 적용하고 제한된 폭 환경에서도 한 줄 출력이 유지되는 회귀 테스트를 추가했습니다."
+      ],
+      "report_url": "pr/766/"
+    },
     {
       "number": 765,
       "title": "fix: feast apply가 옛 레지스트리를 읽지 못하는 교착을 푼다",
