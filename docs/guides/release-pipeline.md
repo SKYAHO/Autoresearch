@@ -29,13 +29,13 @@ flowchart TD
 
     subgraph 코드 리포 release.yml
         RY --> WIF1[WIF 인증<br/>GAR_PUSHER_SA]
-        WIF1 --> BUILD[Dockerfile.app 빌드<br/>의존성만 · 소스 미포함]
+        WIF1 --> BUILD[deployment/Dockerfile.app 빌드<br/>의존성만 · 소스 미포함]
         BUILD --> PUSH1[GAR push<br/>autoresearch-batch:sha-XXX + v0.0.2]
         PUSH1 --> VERIFY[OCI revision / non-root /<br/>CLI contract batch-contract-v1 검증]
         VERIFY --> APP[GitHub App 토큰<br/>create-github-app-token]
         APP --> PROMO[배포 리포 values.yaml<br/>batch digest 갱신]
         PROMO --> PRAUTO[PR 자동 생성<br/>automation/batch-XXX]
-        RY --> SERVING[deploy/serving/Dockerfile 빌드<br/>autoresearch-serving]
+        RY --> SERVING[deployment/serving/Dockerfile 빌드<br/>autoresearch-serving]
         SERVING --> SVERIFY[OCI revision / non-root /<br/>Feast·serving import smoke]
         SVERIFY --> SSUMMARY[serving digest_ref<br/>job summary → infra 리포]
         RY --> ORCHAPI[agent orchestration API 빌드<br/>autoresearch-agent-orchestration-api]
@@ -104,7 +104,7 @@ job은 batch job이 검증한 동일한 `source_sha`를 checkout하므로 다섯
    값이 다르면 WIF 인증과 GCP 쓰기 전에 실패합니다. 프로젝트 이전 시에는
    카탈로그와 bootstrap/WIF 설정을 먼저 갱신한 뒤 GitHub 변수를 같은 값으로
    바꿉니다.
-2. **이미지 빌드**: `Dockerfile.app` (multi-stage, uv lock-export → python:3.12-slim,
+2. **이미지 빌드**: `deployment/Dockerfile.app` (multi-stage, uv lock-export → python:3.12-slim,
    non-root user). 빌드 인자로 `VCS_REF`(commit SHA) 전달.
    **이미지는 애플리케이션 소스를 담지 않습니다**(#750) — `feast`·`train`
    이미지와 같이 ENTRYPOINT 부트스트랩이 파드 시작 시 GCS 코드 아카이브를
@@ -126,7 +126,7 @@ workflow_dispatch(`source_sha` 입력)로 수동 실행도 가능합니다.
 `publish-serving-image` job은 다음 계약으로
 `autoresearch-serving`을 발행합니다.
 
-1. `deploy/serving/Dockerfile`을 사용하고 `VCS_REF`에 full commit SHA를 전달
+1. `deployment/serving/Dockerfile`을 사용하고 `VCS_REF`에 full commit SHA를 전달
 2. `sha-<full-sha>` immutable tag와 published release tag를 GAR에 push
 3. push 결과 digest를 pull하여 `org.opencontainers.image.revision`이 source SHA와 같은지 확인
 4. 이미지가 non-root `appuser`로 실행되는지 확인
@@ -189,7 +189,7 @@ release.yml의 두 번째 job은 빌드된 batch 이미지의 digest를 배포 �
 
 1. GitHub App(`Autoresearch CI Dispatcher`) 토큰 생성
 2. 배포 리포 checkout
-3. `scripts/promote_batch_image.py`로 `values.yaml`의 batch digest 갱신
+3. `airflow-repo/scripts/promote_batch_image.py`로 `values.yaml`의 batch digest 갱신
 4. `peter-evans/create-pull-request@v8`로 PR 생성 (브랜치명: `automation/batch-<short_sha>`)
 
 이 PR은 사람이 리뷰한 뒤 머지하면 deploy-gke-dev.yml이 트리거됩니다.
@@ -291,19 +291,22 @@ gcloud artifacts docker images list \
 | `.github/release-drafter.yml` | 라벨 → semver 매핑 규칙 |
 | `.github/workflows/release-drafter.yml` | push to main 트리거 |
 | `.github/workflows/release.yml` | release:published → batch·serving·Agent Orchestration API·Runner·UI·launcher·executor 빌드/GAR push, batch PR 승격 및 Agent Orchestration infra main 자동 승격 |
-| `Dockerfile.app` | multi-stage batch 이미지 (uv lock-export → python:3.12-slim, non-root, 소스 미포함·GCS 부트스트랩) |
-| `deploy/serving/Dockerfile` | Feast 호환 serving 이미지 (FastAPI/Uvicorn, non-root) |
+| `deployment/Dockerfile.app` | multi-stage batch 이미지 (uv lock-export → python:3.12-slim, non-root, 소스 미포함·GCS 부트스트랩) |
+| `deployment/serving/Dockerfile` | Feast 호환 serving 이미지 (FastAPI/Uvicorn, non-root) |
 | `deployment/experiment_platform/api.Dockerfile` | API 전용 FastAPI 이미지 (non-root, OAuth·Codex CLI 미포함) |
 | `deployment/experiment_platform/runner.Dockerfile` | Runner 전용 Codex CLI 이미지 (non-root, Codex 0.146.0 고정) |
 
 ### 배포 리포 (`SKYAHO/Autoresearch-airflow`)
 
+아래 표의 경로는 전부 **인접 저장소 `Autoresearch-airflow` 트리 기준**입니다 — 이
+저장소의 `deployment/`·`scripts/`와 다른 대상입니다.
+
 | 파일 | 역할 |
 |------|------|
 | `.github/workflows/build-and-push.yml` | airflow 이미지 수동 빌드 (workflow_dispatch) |
 | `.github/workflows/deploy-gke-dev.yml` | digest 승격 PR 머지 시 GKE 배포 자동화 |
-| `deploy/airflow/` | ArgoCD umbrella chart (Chart.yaml, values.yaml, values.example.yaml) |
-| `scripts/promote_batch_image.py` | values.yaml의 batch digest 갱신 스크립트 |
+| `airflow-repo/deploy/airflow/` | ArgoCD umbrella chart (Chart.yaml, values.yaml, values.example.yaml) |
+| `airflow-repo/scripts/promote_batch_image.py` | values.yaml의 batch digest 갱신 스크립트 |
 | `dags/youtube_gcs_action_log_pipeline_factory.py` | KPO batch DAG (Spot pool 적용) |
 | `dags/youtube_backfill_kr.py` | YouTube backfill DAG (Spot pool 적용) |
 

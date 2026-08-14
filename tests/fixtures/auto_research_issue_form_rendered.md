@@ -54,7 +54,7 @@ configs/train/lgbm-v1.yaml@abc1234
 허용 (진행하되 실제로 쓴 데이터를 결과에 명시)
 
 ### 허용 범위
-- [ ] prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다
+- [ ] prod 모델 계약(`autoresearch/feature_engineering/model_contract.py`) 수정을 허용한다
 
 ### 결과 (에이전트가 채웁니다)
 - 판정 (지지/기각):

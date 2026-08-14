@@ -1462,8 +1462,37 @@ def test_issue_form_labels_are_all_known_scopes() -> None:
     """
     repository_root = Path(__file__).resolve().parents[1]
     template = repository_root / ".github" / "ISSUE_TEMPLATE" / "auto_research.yml"
-    labels = re.findall(r"^\s*- label: (.+)$", template.read_text(encoding="utf-8"), re.MULTILINE)
+    form = yaml.safe_load(template.read_text(encoding="utf-8"))
 
-    assert labels, "Issue Form 에서 checkbox 라벨을 하나도 찾지 못했다 — 형식이 바뀌었는지 확인하라"
+    # 파일 전체에서 `- label:` 을 긁으면 나중에 "제출 전 확인" 같은 checkboxes 필드가
+    # 하나만 추가돼도 그 라벨까지 scope 매핑을 요구하게 된다. allowed_scope 필드만 본다.
+    fields = [
+        field
+        for field in form["body"]
+        if field.get("type") == "checkboxes" and field.get("id") == "allowed_scope"
+    ]
+    assert len(fields) == 1, "allowed_scope checkboxes 필드를 정확히 하나 찾지 못했다"
+    labels = [option["label"] for option in fields[0]["attributes"]["options"]]
+
+    assert labels, "allowed_scope 에서 checkbox 라벨을 하나도 찾지 못했다 — 형식이 바뀌었는지 확인하라"
     unknown = [label for label in labels if label.strip() not in issue_branch._SCOPE_LABELS]
     assert unknown == [], f"Issue Form 라벨이 _SCOPE_LABELS 에 없다: {unknown}"
+
+
+def test_duplicate_scope_labels_collapse_to_one_scope() -> None:
+    """전환 기간의 두 라벨이 모두 체크돼도 scope 는 하나여야 한다(#754).
+
+    verifier 는 중복 scope 를 `allowed_scope_invalid` 로 **거부**한다
+    (`executor/verifier.py:_validate_input`). 접지 않으면 두 라벨이 모두 체크된 이슈의
+    candidate 가 검증 단계에서 통째로 반려된다.
+    """
+    body = structured_body(
+        allowed_scope=(
+            "- [x] prod 모델 계약(`autoresearch/feature_engineering/model_contract.py`) 수정을 허용한다\n"
+            "- [x] prod 모델 계약(`src/features/model_contract.py`) 수정을 허용한다"
+        )
+    )
+
+    parsed = parse_issue_input(452, "[AR] metric", body)
+
+    assert parsed.allowed_scope == ("prod_model_contract",)

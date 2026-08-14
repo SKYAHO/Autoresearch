@@ -250,4 +250,4 @@ backfill은 `youtube_backfill_kr` DAG가 실행합니다 (수동 트리거 전�
 | `autoresearch/data_collection/backfill.py` | Kaggle 과거 데이터 일괄 적재 |
 | `autoresearch/jobs/youtube_trending.py` | 일일 수집 batch CLI |
 | `autoresearch/jobs/youtube_backfill.py` | backfill batch CLI |
-| `proxy/app.py` | Cloud Run dumb forwarder (IP밴 대응 egress seam) |
+| `applications/youtube_api_proxy/app.py` | Cloud Run dumb forwarder (IP밴 대응 egress seam) |

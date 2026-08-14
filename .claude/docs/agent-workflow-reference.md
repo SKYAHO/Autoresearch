@@ -390,7 +390,7 @@ Issue Form과 자동화를 단순하게 유지하기 위해 `feature`, `bug`,
 **Auto Research 분류 label — 임의로 제거하지 않습니다.** `auto-experiment`는
 Issue Form과 API 발행 경로가 붙이는 분류값이며 executor Pod의 branch 생성 트리거가
 아닙니다. `auto-research-promotion.yml`은 같은 label을 요구하므로 제거하면 승격
-단계가 실패합니다. 이 조건은 `tests/test_auto_experiment_trigger_label.py`가 계약으로
+단계가 실패합니다. 이 조건은 `tests/applications/experiment_platform/test_auto_experiment_trigger_label.py`가 계약으로
 고정합니다.
 
 `auto-research`는 트리거가 **아닙니다.** Auto Research 주제를 가리키는 분류

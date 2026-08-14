@@ -340,3 +340,54 @@ def test_workflow_referenced_build_files_exist() -> None:
         if not (REPOSITORY_ROOT / reference).is_file()
     ]
     assert missing == [], f"워크플로가 없는 빌드 파일을 가리킨다: {missing}"
+
+
+def test_documented_repository_paths_exist() -> None:
+    """정본 문서가 백틱으로 인용한 이 저장소 경로가 실제로 있어야 한다(#754).
+
+    #754 재배치에서 경로 드리프트를 **세 번** 반복했다 — 파일을 옮기면서 문서의 인용을
+    빠뜨리거나, 일괄 치환이 절반만 닿거나, 옮긴 테스트 경로를 안 고쳤다. 매번 사람이
+    읽어서 발견했다.
+
+    최상위 패키지로 시작하는 인용만 본다. 인접 저장소(`Autoresearch-airflow`·`-infra`)
+    트리 기준 경로는 이 저장소에 없는 것이 정상이므로 `deploy/`로 시작하는 것은 제외한다.
+    """
+    documented_roots = (
+        "README.md",
+        "CLAUDE.md",
+        "AGENTS.md",
+        "CONTRIBUTING.md",
+        "docs/README.md",
+        ".claude/docs",
+        "docs/guides",
+        "docs/runbooks",
+    )
+    repository_packages = {
+        "autoresearch",
+        "applications",
+        "deployment",
+        "feature_repo",
+        "tests",
+        "tools",
+        "scripts",
+        "examples",
+    }
+
+    documents: list[Path] = []
+    for entry in documented_roots:
+        path = REPOSITORY_ROOT / entry
+        documents.extend([path] if path.is_file() else sorted(path.rglob("*.md")))
+
+    missing: list[str] = []
+    for document in documents:
+        quoted = re.findall(
+            r"`([\w][\w./-]*\.(?:py|yaml|yml|toml|js|sh|ini|Dockerfile))`",
+            document.read_text(encoding="utf-8"),
+        )
+        for reference in quoted:
+            if reference.split("/")[0] not in repository_packages:
+                continue
+            if not (REPOSITORY_ROOT / reference).exists():
+                missing.append(f"{document.relative_to(REPOSITORY_ROOT)}: {reference}")
+
+    assert missing == [], f"문서가 없는 경로를 인용한다: {missing}"

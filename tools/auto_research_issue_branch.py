@@ -840,7 +840,10 @@ def _parse_allowed_scope(allowed_scope_text: str) -> tuple[str, ...]:
         scope = _SCOPE_LABELS.get(label)
         if scope is None:
             raise ValueError("allowed_scope contains an unknown guardrail")
-        if match.group(1).lower() == "x":
+        if match.group(1).lower() == "x" and scope not in selected_scopes:
+            # #754 전환 기간 동안 두 라벨 문자열이 같은 scope 로 매핑된다. 둘 다 체크된
+            # 본문이 들어오면 중복이 생기는데, verifier 는 중복 scope 를
+            # `allowed_scope_invalid` 로 **거부**한다(`_validate_input`). 여기서 접는다.
             selected_scopes.append(scope)
     if checkbox_count == 0:
         raise ValueError("allowed_scope must contain Issue Form checkboxes")

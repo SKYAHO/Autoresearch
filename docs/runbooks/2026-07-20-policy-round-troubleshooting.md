@@ -15,7 +15,7 @@
 
 - **위치**: PR #201 (Task 2, EventLog 확장)
 - **증상**: EventLog에 optional 필드 4개(`policy`/`ctr_score`/`is_exploration`/
-  `policy_version`)를 추가하자 기존 `tests/test_action_logs_pipeline.py`의
+  `policy_version`)를 추가하자 기존 `tests/action_log_generation/test_action_logs_pipeline.py`의
   warehouse JSONL row 검증이 실패. 해당 테스트는 row 키 집합을 **정확
   동등(`==`)** 으로 단언하고 있었고, 구현 계획은 이를 간과한 채 "기존 테스트
   무수정 통과"를 전제로 했다.
