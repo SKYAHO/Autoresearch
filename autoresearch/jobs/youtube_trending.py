@@ -16,6 +16,7 @@ from autoresearch.jobs import BATCH_CONTRACT_VERSION
 from autoresearch.data_collection.client import ResilientYouTubeClient
 from autoresearch.data_collection.fetch import collect_trending
 from autoresearch.data_collection.load import PARTITION_FILE, write_partition
+from autoresearch.jobs._version_action import add_version_argument
 
 
 logger = logging.getLogger(__name__)
@@ -120,16 +121,10 @@ def _load_api_keys(environment: Mapping[str, str] | None = None) -> list[str]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=json.dumps(
-            {
-                "application_revision": _REVISION,
-                "contract_version": BATCH_CONTRACT_VERSION,
-            },
-            sort_keys=True,
-        ),
+    add_version_argument(
+        parser,
+        application_revision=_REVISION,
+        contract_version=BATCH_CONTRACT_VERSION,
     )
     parser.add_argument("--partition-date", type=_partition_date, required=True)
     parser.add_argument("--youtube-base-path", required=True)

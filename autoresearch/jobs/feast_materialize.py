@@ -25,6 +25,7 @@ from typing import Any, Sequence
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
 from feature_repo.bootstrap import ensure_redis_ca_bundle, load_feature_store
 from feature_repo.env import ENV_DEV, resolve_environment
+from autoresearch.jobs._version_action import add_version_argument
 
 logger = logging.getLogger(__name__)
 _REVISION = os.getenv("AUTORESEARCH_REVISION", "unknown")
@@ -72,16 +73,10 @@ def _boolean(value: str | bool) -> bool:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=json.dumps(
-            {
-                "application_revision": _REVISION,
-                "contract_version": BATCH_CONTRACT_VERSION,
-            },
-            sort_keys=True,
-        ),
+    add_version_argument(
+        parser,
+        application_revision=_REVISION,
+        contract_version=BATCH_CONTRACT_VERSION,
     )
     parser.add_argument("--repo-path", default="feature_repo")
     parser.add_argument("--views", type=_view_list)

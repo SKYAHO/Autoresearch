@@ -22,6 +22,7 @@ from autoresearch.action_log_generation.pipeline import (
 )
 from autoresearch.action_log_generation.schema import EventLog
 from autoresearch.jobs import BATCH_CONTRACT_VERSION
+from autoresearch.jobs._version_action import add_version_argument
 
 
 logger = logging.getLogger(__name__)
@@ -220,16 +221,10 @@ def read_parquet(path: str) -> tuple[list[dict[str, object]], pa.Schema]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = _ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--version",
-        action="version",
-        version=json.dumps(
-            {
-                "application_revision": _REVISION,
-                "contract_version": BATCH_CONTRACT_VERSION,
-            },
-            sort_keys=True,
-        ),
+    add_version_argument(
+        parser,
+        application_revision=_REVISION,
+        contract_version=BATCH_CONTRACT_VERSION,
     )
     parser.add_argument("--partition-date", type=_partition_date, required=True)
     parser.add_argument("--youtube-base-path", required=True)
