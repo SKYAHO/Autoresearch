@@ -205,6 +205,32 @@ jobs:
           if [[ "$AUTORESEARCH_ENV" != "dev" ]]; then
             uv run --no-sync python scripts/fetch_redis_ca.py "$REDIS_TLS_CA_PATH"
           fi
+          # ── #754 전환용 일회성 shim ─────────────────────────────────────────
+          # `feast apply`는 새 정의를 쓰기 전에 **기존 레지스트리를 읽어** diff를 낸다.
+          # 그 레지스트리의 ODFV는 UDF 본체가 아니라 이름을 dill by-reference로 물고
+          # 있고(#409), 그 이름이 #754 이전 경로인 `src.features.feature_builder`다.
+          # 재배치로 그 모듈이 사라져 역직렬화가 ModuleNotFoundError로 죽는다 —
+          # **레지스트리를 고치려면 먼저 읽어야 하는데 읽는 것 자체가 실패하는 교착**이다.
+          #
+          # 옛 이름으로 import되는 전달 모듈을 러너의 임시 경로에만 만들어 그 한 번을
+          # 통과시킨다. apply가 성공하면 레지스트리가 새 이름으로 재직렬화되므로 이
+          # 블록과 아래 PYTHONPATH 확장은 **그 다음 PR에서 제거한다.**
+          #
+          # 저장소 트리에 `src/`를 되살리지 않는다 — lint.yml의 부활 방지 가드가 살아
+          # 있어야 하고, 임시 조각이 영구 구조물이 되는 것이 이 방식의 전형적 실패다.
+          shim_root="$(mktemp -d)"
+          mkdir -p "$shim_root/src/features"
+          : > "$shim_root/src/__init__.py"
+          : > "$shim_root/src/features/__init__.py"
+          cat > "$shim_root/src/features/feature_builder.py" <<'SHIM'
+          from autoresearch.feature_engineering.feature_builder import (  # noqa: F401
+              compute_category_matches,
+          )
+          SHIM
+          export PYTHONPATH="${PYTHONPATH}:${shim_root}"
+          echo "transition shim: ${shim_root}"
+          # ────────────────────────────────────────────────────────────────────
+
           cd feature_repo
           # --log-level debug가 없으면 기본값 warning이라 삭제 건수 로그
           # (feast redis.py의 logger.debug)가 남지 않아 삭제 경로를 검증할 수 없다.
