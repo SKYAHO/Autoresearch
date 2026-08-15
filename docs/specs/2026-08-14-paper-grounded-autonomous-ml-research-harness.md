@@ -162,6 +162,10 @@ MVP의 위협 모델은 **실수와 자기 채점 오염 방지**다. candidate�
 validation 정답과 final holdout slate·정답의 경로는 candidate의
 argv·환경·prompt·feedback에 전달하지 않지만, 이 조치도 경로 추측이나
 호스트 탐색 또는 같은 UID의 파일 변조에 대한 완전 격리를 보장하지 않는다.
+로컬 fixture 평가 구간을 만드는 `RuleBasedActionLogGenerator`의 입력과 seed도 Judge 소유
+경로에만 보관하고 candidate workspace·argv·환경에 전달하지 않는다. 같은 UID에서 호스트를
+탐색하면 이 값과 final 소비 registry까지 찾거나 지울 수 있으므로, 이 분리는 재생성에 의한
+정답 복원과 상태 삭제를 완전히 차단하는 보안 경계가 아니라 실수 방지 수준이다.
 
 Judge가 candidate 경계에서 받는 것은 `predictions.csv` 하나뿐이다. Judge는 candidate
 경로를 `O_RDONLY|O_NOFOLLOW`로 한 번만 열고, 검증한 **같은 FD**에서만 복사한다. 경로를
@@ -173,9 +177,25 @@ candidate workspace나 commit의 파일 크기를 제한하는 D4를 되살리�
 프로세스가 Judge에 넘기는 단일 artifact의 메모리·디스크 소비를 제한하는 입출력 계약이다.
 
 CSV parser는 header를 포함해 필드가 정확히 `evaluation_id,slate_id,video_id,score` 4개인지
-확인하고, 행 수는 대상 slate와 정확히 같으면서 최대 1,000,000행이어야 한다. 격리된 parser
+확인한다. 세 ID는 comma·quote·개행 없는 ASCII로 각 최대 64 byte, `score` token은 최대
+24 byte로 제한한다. CRLF까지 허용한 한 행의 최악 크기는
+`64 + 64 + 64 + 24 + comma 3 + CRLF 2 = 221 byte`이고 header는 최대 39 byte다.
+따라서 유효 행 상한은 **300,000행**으로 둔다. 최악 크기 `39 + 300,000 * 221 =
+66,300,039 byte`는 64 MiB(`67,108,864 byte`) 안에 들어가므로 artifact 상한과 모순되지
+않는다. 행 수는 이 상한 이하이면서 대상 slate와 정확히 같아야 한다. 격리된 parser
 subprocess에 wall-clock 10초와 256 MiB 메모리 상한을 적용하며, 어느 상한이든 넘으면
-`invalid_predictions`로 실행을 실패시킨다.
+`invalid_predictions`로 실행을 실패시킨다. 행·시간·메모리 초기값은 Task 7 실측으로 함께
+재조정한다.
+
+candidate 실행의 고정 진입점은 다음과 같다.
+
+```text
+python -m autoresearch.cli harness-predict --slate <in> --out <out> --seed <n>
+```
+
+candidate는 주어진 seed를 split·sampling·모델 초기화를 포함한 학습 파이프라인에 적용해
+모델을 새로 학습한 뒤 slate 예측을 산출한다. 이미 학습된 고정 모델을 seed마다 다시
+점수화만 하거나 `--seed`를 무시하는 구현은 이 계약을 만족하지 않는다.
 
 별도 OS 사용자, container, read-only mount를 이용한 적대적 탈출 방지는 MVP 이후의 완전
 격리 단계로 남긴다.
@@ -276,7 +296,11 @@ class LocalRunner(ExperimentRunner): ...
 class KubernetesJobRunner(ExperimentRunner): ...
 ```
 
-MVP에는 `YouTubeCTRDomain`과 `LocalRunner`만 실제 구현한다. 이커머스·뉴스피드는
+MVP에는 `YouTubeCTRDomain`과 `LocalRunner`만 실제 구현한다. `YouTubeCTRDomain`은 MVP가
+실제로 호출하는 `build_evaluation_snapshot()`, `validate_candidate()`, `evaluate()`,
+`compare()`를 slate/Judge 구현에 연결한다. 논문 발견이 없는 MVP에서는
+`describe_capabilities()`를 호출하지 않으며 명시적인 미지원 오류로 남긴다. 이 메서드는
+Paper Discovery 단계에서 구현한다. 이커머스·뉴스피드는
 `ResearchDomain` 계약의 확장 가능성을 설명하는 후속 사례이며 MVP 구현 범위가 아니다.
 테스트에서는 작은 fixture용 fake domain을 사용할 수 있으나 두 번째 제품 domain으로
 간주하지 않는다.
@@ -409,7 +433,9 @@ while budget.remaining:
 단일 scalar leaderboard만 최적화하지 않는다. `ResearchDomain.compare()`는 primary
 metric 개선과 guardrail 충족을 분리하며, 어떤 지표를 선택했는지는 REPORT에 설명한다.
 승격 임계값은 고정 비율이 아니라 baseline을 seed만 바꿔 반복했을 때의 노이즈 표준편차
-`σ`의 배수로 정의한다. validation slate에서 수행하는 같은 5-seed baseline sweep으로
+`σ`의 배수로 정의한다. validation slate의 5-seed baseline sweep은 고정 모델을 다섯 번
+점수화하는 작업이 아니라, 현행 champion 설정을 seed마다 **독립적으로 5회 재학습**한 뒤
+같은 slate를 점수화하는 작업이다. 이 sweep으로
 primary와 모든 guardrail의 `σ_metric`을 **지표별로 각각** 계산한다. NDCG의 σ를
 Recall·AUC·LogLoss·Brier에 공용하지 않는다.
 
@@ -525,11 +551,13 @@ CandidateRanking
   score
 ```
 
-`CandidateRanking.score`는 단순 ranking 점수가 아니라 **`[0, 1]` 범위로 보정된 click
-확률**이다. NaN·Inf 또는 범위 밖 값은 지표 0점으로 흡수하지 않고
+`CandidateRanking.score`는 단순 ranking 점수가 아니라 **`[0, 1]` 범위의 click 확률
+추정치**다. 범위 검사만으로 보정 여부나 품질을 증명할 수는 없다. NaN·Inf 또는 범위 밖
+값은 지표 0점으로 흡수하지 않고
 `invalid_predictions` 실행 실패로 거부한다. LogLoss와 Brier는 이 확률로 계산하고,
-랭킹은 같은 확률의 내림차순으로 정한다. 동률은 `video_id` 오름차순으로 끊어 실행마다
-순서가 흔들리지 않게 한다.
+실제 보정 품질의 악화는 LogLoss·Brier guardrail이 감시한다. 랭킹은 같은 추정치의
+내림차순으로 정한다. 동률은 `video_id` 오름차순으로 끊어 실행마다 순서가 흔들리지 않게
+한다.
 
 `EvaluationSlateItem.slate_id`는 유저별 후보 노출 묶음이 확정되는 action log 생성 시점에
 부여한다. 사후에 timestamp나 rank로 추론하지 않으며, `slate_id`가 없는 과거 파티션은
@@ -551,18 +579,40 @@ click을 30분 윈도우로 join해 `clicked`를 복원한다
 (`autoresearch/jobs/feature_store_build.py:295-370`). candidate가 평가 기간 raw action log를
 읽으면 같은 join으로 숨긴 정답을 다시 만들 수 있다.
 
-snapshot을 만들 때 KST 파티션 날짜 경계 `T = evaluation_start_date`를 manifest에 봉인한다.
-데이터 접근 계약은 다음과 같다.
+snapshot을 만들 때 평가 **출력일** 구간을 KST 파티션 날짜 경계
+`[T, T_end] = [evaluation_start_date, evaluation_end_date]`로 manifest에 봉인한다. 라벨
+계산의 스캔 범위와 snapshot 출력 범위는 다음처럼 분리한다.
+
+- click과 귀속 후보 impression은 **`dt BETWEEN T AND T_end + 1`**로 읽는다.
+- slate와 labels에는 impression `dt`가 **`[T, T_end]`**인 행만 출력한다.
+- `T_end + 1` 파티션이 존재하고 읽을 수 있어야 snapshot을 만든다. 없으면 자정 직전
+  impression의 다음 날 click을 완전하게 관측할 수 없으므로 fail-closed한다. 이는 출력일
+  `D`를 `D+2` 이후 빌드하는 기존 정본과 같은 이유다
+  (`docs/specs/2026-07-26-training-entity-incremental-slice.md:68-100`).
+- click을 직전 30분 내 같은 `(user_id, video_id)`의 가장 최근 impression 한 건에 붙이는
+  귀속 규칙과 후보 범위는 기존 정본 및 구현
+  (`autoresearch/jobs/feature_store_build.py:295-370`)과 동일해야 한다. 출력일 행만 후보로
+  좁히거나 별도 규칙을 만들면 학습 라벨과 평가 라벨의 의미가 갈리므로 허용하지 않는다.
+
+candidate 데이터 접근 계약은 다음과 같다.
 
 - candidate workspace에는 Harness가 복사한 로컬 action log 파티션 중 **`dt < T`만** 둔다.
   `dt >= T` 파티션은 경로만 숨기는 것이 아니라 workspace에 두지 않는다.
-- validation slate와 final holdout slate는 봉인된 **`dt >= T` 평가 구간에서만** 만든다.
+- 이 범위는 평가 출력일 `T` 이후 impression이 파티션 `T` 이후에만 존재하므로 누출이 아니다.
+  다만 candidate가 자기 history만으로 완전한 라벨을 만들 수 있는 마지막 출력일은
+  **`T-2`**다. candidate가 가진 마지막 파티션 `T-1`만으로는 출력일 `T-1`의 다음 날 click을
+  담을 수 없으므로, 이를 완전한 라벨로 조용히 사용해서는 안 된다.
+- validation slate와 final holdout slate는 봉인된 출력일 **`[T, T_end]`**에서만 만든다.
 - 평가 구간 내부에서는 아래 유저 단위 해시 80/20을 그대로 적용한다. 시간 cutoff는 평가
   정답 접근을 막고, 유저 분할은 validation 피드백으로 같은 유저 선호에 적응하는 것을
   막으므로 목적이 다르며 둘 다 필요하다.
 - candidate subprocess의 argv·환경·filesystem에 GCS·BigQuery 등 원격 데이터 소스
   자격 증명을 주입하지 않는다. candidate가 볼 수 있는 원천은 Harness가 준 `dt < T` 로컬
   파일뿐이다.
+
+로컬 fixture를 쓸 때 평가 출력일 `[T, T_end]`와 스캔용 `T_end + 1`을 생성한 입력 및 seed는
+Judge 전용 상태에 보관한다. candidate에는 생성된 `dt < T` history만 줄 수 있으며, 평가
+구간을 같은 생성기와 seed로 재생성할 수 있는 입력은 workspace·argv·환경에 두지 않는다.
 
 이 계약은 D3과 충돌하지 않는다. D3은 candidate가 **어떤 코드 파일을 수정할 수 있는지**를
 열어 두는 연구 공간 결정이고, 시간 cutoff는 **어떤 평가 구간 데이터에 접근할 수 있는지**를
@@ -594,10 +644,16 @@ final holdout 실행 자체가 실패하면 재평가로 정보를 더 소비하
 
 ### 8.3 final holdout 전역 소비 registry
 
-마지막 1회 보장은 run별 ledger나 checkpoint가 아니라 `evaluation_id` 기준의 **전역 소비
-registry**가 소유한다. registry는 run/workspace/ledger 디렉터리 밖 Judge 상태 루트의
-`final-holdout-consumed/<evaluation_id>` 파일이며, 새 run·새 ledger·동시 Controller·중단 후
-재개가 같은 holdout을 다시 쓰는 우회 경로를 만들지 않는다.
+final holdout 소비 상태는 run별 ledger나 checkpoint가 아니라 `evaluation_id` 기준의 **전역
+소비 registry**가 소유한다. Judge 상태 루트는 필수 harness 설정
+`harness-run --judge-state-root <absolute-path>`로 결정하며, 상대 경로를 받거나 run·workspace·
+ledger 아래로 유도하지 않는다. registry marker의 고정 절대 경로는
+`<judge-state-root>/final-holdout-consumed/<evaluation_id>`다.
+
+Controller는 final 평가 전에 설정값을 정규화한 절대 경로로 해석하고, 상태 루트와 registry
+디렉터리가 이미 존재하며 접근 가능한지 확인한다. Harness가 이를 임의로 새로 만들거나
+다른 임시 경로로 fallback하지 않는다. 상태 루트가 없거나 읽기·marker 생성·`fsync`가
+불가능하면 registry 선점과 final holdout 평가를 시작하지 않고 fail-closed한다.
 
 Controller는 final 평가를 시작하기 **전에** marker를 `O_CREAT|O_EXCL`로 원자 생성한다.
 marker에 `evaluation_id`, 시작 시각, 비교 대상 SHA를 쓴 뒤 파일과 부모 디렉터리를
@@ -608,7 +664,13 @@ marker에 `evaluation_id`, 시작 시각, 비교 대상 SHA를 쓴 뒤 파일과
 Trial Ledger는 registry marker의 경로와 digest를 증거로 기록할 뿐 소비 권한의 정본이
 아니다. JSONL ledger의 손상된 마지막 줄 복구 규칙은 파일 하나가 소비 사실 하나인 이
 registry에 적용하지 않는다. registry marker가 손상되거나 불완전해도 `evaluation_id`의
-존재 자체로 이미 소비된 것으로 fail-closed한다.
+존재 자체로 이미 소비된 것으로 fail-closed한다. 이전 checkpoint·ledger·Judge evidence가
+marker 생성을 기록했는데 marker가 사라졌다면 상태 루트 무결성 위반으로 보고 재생성하거나
+재평가하지 않는다. marker 삭제는 정상 복구 절차가 아니다.
+
+MVP가 보장하는 수준은 **온전한 같은 상태 루트에서 marker가 남아 있는 evaluation의 재소비를
+거부하는 것**이다. 같은 UID의 candidate가 상태 루트나 marker 자체를 탐색해 삭제하는 공격은
+이 보장 밖이며 위협 모델의 명시적 한계다.
 
 ## 9. Trial Ledger와 재현성
 
@@ -684,10 +746,10 @@ research lineage다.
 | 역량 항목 | 단계 | 판정 | 현재 재사용 가능 자산 | 더 필요한 것 |
 | --- | --- | --- | --- | --- |
 | 추상 `ResearchDomain`과 `YouTubeCTRDomain` | MVP | 확장 | 확률 지표와 유저 단위 grouped ROC-AUC(`autoresearch/model_evaluation/evaluate.py:55-124,366-427`), snapshot·split·seed manifest(`autoresearch/model_training/training_provenance.py:96-180`) | domain capability, slate 생성·검증, 지표 방향과 비교 정책을 묶는 adapter 계약 |
-| OpenAlex/arXiv 발견과 Crossref 식별자 해소 | 로드맵 | 신규 | paper provider는 없고, 재시도·rate-limit 분류·key 회전·호출 예산을 갖춘 외부 HTTP 패턴만 있다(`autoresearch/data_collection/client.py:132-186,222-318,368-393`) | provider client, 중복 제거, 원문 범위, query·선택·탈락 manifest |
+| OpenAlex/arXiv 발견과 Crossref 식별자 해소 | 로드맵 | 신규 | paper provider는 없고, 재시도·rate-limit 분류·key 회전·호출 예산을 갖춘 외부 HTTP 패턴만 있다(`autoresearch/data_collection/client.py:132-186,222-318,319-365,368-393`) | provider client, 중복 제거, 원문 범위, query·선택·탈락 manifest |
 | PaperCard·capability matching·출처 provenance | 로드맵 | 신규 | 엄격한 immutable Pydantic provenance 모델 패턴(`autoresearch/model_training/training_provenance.py:38-45,96-180`)과 선택적 선행 연구 입력(`applications/experiment_platform/api/experiments/issue_authoring.py:80-112`)만 간접 재사용 가능 | PaperCard 모델, claim 근거 위치, repository capability와 실행 가능성 판정 |
 | 논문에서 검증 가능한 ExperimentCard 생성 | 로드맵 | 확장 | 사전등록 입력 검증과 `[AR]` 이슈 본문 조립(`applications/experiment_platform/api/experiments/issue_authoring.py:80-112,183-220`) | paper claim에서 change·falsification·metric 계약을 구조화하는 compiler |
-| 전체 저장소 수정 coding agent와 verifier 대체 | MVP | 확장 | credential-free checkout(`applications/experiment_platform/executor/workspace.py:153-251`), process-group 회수를 포함한 Codex 호출(`applications/experiment_platform/executor/codex_worker.py:537-574,624-670`), 검증 tree commit·non-force push(`applications/experiment_platform/executor/finalizer.py:382-547`) | 현행 경로·의존성 allowlist(`applications/experiment_platform/executor/verifier.py:377-393`)를 쓰지 않는 disposable local workspace와 사후 artifact 계약 |
+| 전체 저장소 수정 coding agent와 독립 로컬 실행 경로 | MVP | 확장 | credential-free checkout(`applications/experiment_platform/executor/workspace.py:153-251`), process-group 회수를 포함한 Codex 호출(`applications/experiment_platform/executor/codex_worker.py:537-574,624-670`), 검증 tree commit·non-force push(`applications/experiment_platform/executor/finalizer.py:382-547`) | 현행 경로·의존성 allowlist(`applications/experiment_platform/executor/verifier.py:377-393`)를 쓰지 않는 disposable local workspace와 사후 artifact 계약. executor 배선·verifier 삭제는 후속 |
 | `LocalRunner` 기반 반복 실험 | MVP | 확장 | bounded output tail(`applications/experiment_platform/executor/codex_worker.py:253-281`), process-group 회수(`applications/experiment_platform/executor/codex_worker.py:537-574`), `Popen`·timeout 처리(`applications/experiment_platform/executor/codex_worker.py:624-670`) | 교체 가능한 runner 인터페이스, candidate 예측 실행, budget loop와 iteration orchestration |
 | screening과 확인 실험 | MVP | 재사용 | 조건별 seed 평가와 paired delta 조립(`applications/experiment_platform/executor/measurement.py:169-252,255-297`), 다중 seed 평균·표준편차(`autoresearch/model_evaluation/seed_sweep.py:139-248`) | 저비용/확인 fidelity 선택과 Sealed Judge 결과 연결 |
 | 판정·checkpoint·실패 복구·자가 피드백 | MVP | 확장 | 상태 전이(`applications/experiment_platform/api/experiments/models.py:67-103`), 멱등 event·log·Step 영속화(`applications/experiment_platform/api/experiments/models.py:235-357`) | trial 단위 결정론 판정, 완료 단계 resume payload, 다음 iteration 전략과 구조화 feedback |
@@ -703,8 +765,9 @@ research lineage다.
 ### 11.2 MVP 포함
 
 - 추상 `ResearchDomain`과 YouTube 구현 1개
-- 전체 연구 저장소를 수정할 수 있는 coding agent와 현행 verifier의 정적 allowlist를
-  대체하는 봉인 artifact 판정
+- 전체 연구 저장소를 수정할 수 있는 coding agent와 현행 executor를 수정하지 않고 정적
+  allowlist를 사용하지 않는 독립 로컬 봉인 artifact 판정 경로. executor 배선과 verifier
+  삭제는 후속이다
 - 외부 Sealed Judge와 YouTube 리랭킹 평가 snapshot
 - LocalRunner 기반 반복 실험
 - screening과 확인 실험
@@ -744,12 +807,18 @@ research lineage다.
 - [ ] 의도적으로 깨진 candidate에서 자동 복구하고 다음 trial을 계속한다.
 - [ ] 동일한 Sealed Judge로 baseline과 candidate를 비교한다.
 - [ ] candidate에는 `dt < T` 로컬 action log만 보이고 원격 데이터 자격 증명과 `dt >= T`
-      평가 파티션은 보이지 않는다.
+      평가 파티션, fixture 평가 구간 생성 입력·seed는 보이지 않는다. candidate history의
+      완전 라벨 출력일 상한은 `T-2`로 강제한다.
+- [ ] 평가 출력일 `[T, T_end]`의 click·귀속 후보 impression은
+      `dt BETWEEN T AND T_end + 1`로 스캔하고 출력은 `[T, T_end]` impression으로 제한하며,
+      `T_end + 1` 파티션이 없으면 snapshot 생성을 거부한다.
 - [ ] 유저 단위로 분리된 validation에서만 반복 피드백하고, final holdout은 마지막 1회만
       평가해 에이전트에게 피드백하지 않는다.
-- [ ] final holdout 재평가는 `evaluation_id` 전역 소비 registry가 run·ledger·동시 실행과
-      무관하게 거부한다.
-- [ ] 보정 확률·σ·metric 값·지표별 coverage 계약이 불완전하면 판정을 내리지 않는다.
+- [ ] 필수 절대 `judge_state_root`가 없거나 접근 불가하면 final 평가를 시작하지 않고,
+      온전한 같은 상태 루트에서는 `evaluation_id` marker가 남은 final holdout의 재소비를
+      거부한다. 상태 루트 자체의 무결성은 위협 모델의 한계다.
+- [ ] click 확률 추정치·σ·metric 값·지표별 coverage 계약이 불완전하면 판정을 내리지 않고,
+      보정 품질은 LogLoss·Brier guardrail로 감시한다.
 - [ ] 프로세스를 중단한 뒤 마지막 checkpoint부터 재개한다.
 - [ ] 개선 여부와 무관하게 지표·commit·snapshot·복구 이력이 ledger와 일치하는 MVP
       REPORT를 생성한다.
@@ -801,12 +870,12 @@ MVP 구현은 [로컬 Research Harness MVP 계획](../plans/2026-08-15-local-res
 의존 순서를 따른다. 로컬 Harness를 신규로 만들고 현행 Kubernetes executor는 MVP에서
 수정하지 않으며, 이후 `ExperimentRunner` 구현체로 흡수한다.
 
-1. Sealed Judge와 `EvaluationSlateSnapshot`
-2. Trial Ledger와 checkpoint 가능한 Research Controller
-3. `ResearchDomain`과 YouTube adapter
-4. LocalRunner와 disposable candidate workspace
-5. 반복 `promote/revise/discard` loop
-6. Trial Ledger 근거와 MVP REPORT
+1. `EvaluationSlateSnapshot`, 리랭킹 지표와 Sealed Judge
+2. 그 세 구현 위의 `ResearchDomain`과 YouTube adapter
+3. Trial Ledger, LocalRunner와 disposable candidate workspace
+4. `ResearchDomain`을 호출하는 checkpoint 가능한 Research Controller와 반복
+   `promote/revise/discard` loop
+5. Trial Ledger 근거와 MVP REPORT
 
 MVP 이후에는 Paper Discovery와 PaperCard → Capability Matcher와 ExperimentCard compiler →
 출처가 연결된 9절 REPORT → 기존 웹 workbench 연결 순으로 진행한다. 원격 자원 필요가

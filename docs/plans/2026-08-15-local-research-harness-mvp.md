@@ -1,12 +1,13 @@
-# 로컬 Research Harness MVP — verifier 대체 Implementation Plan
+# 로컬 Research Harness MVP — 독립 실행 경로 Implementation Plan
 
 > **상태: #769 이슈·브랜치 생성, 기반 MVP 범위와 확정 결정 승인 완료.** 구현은 아래
 > Task 순서와 검증·동료 리뷰 규칙을 따른다.
 
-**Goal:** 현행 executor의 `verifier`(정적 allowlist 사전 검문)를 로컬 Research
-Harness(봉인된 사후 판정 + 자가 피드백)로 대체한다. 사람이 준 가설·`ExperimentCard`로
+**Goal:** 현행 executor를 수정하지 않고 정적 allowlist를 사용하지 않는 독립 로컬 Research
+Harness(봉인된 사후 판정 + 자가 피드백) 경로를 만든다. 사람이 준 가설·`ExperimentCard`로
 에이전트가 저장소를 자유롭게 바꾸며 실험하고, 봉인된 Judge가 CTR 예측 품질을 판정해
-그 결과를 다시 에이전트에게 돌려주는 반복 환경을 MVP로 완주한다.
+그 결과를 다시 에이전트에게 돌려주는 반복 환경을 MVP로 완주한다. 현행 executor 배선과
+`verifier` 삭제는 이 경로가 검증된 뒤의 후속 범위다.
 
 **Architecture:** 에이전트가 **무엇을 고쳤는지 검사하지 않고, 무엇을 냈는지만
 계약한다.** candidate는 disposable worktree에서 저장소 전체를 자유롭게 수정한 뒤
@@ -64,21 +65,30 @@ candidate가 지켜야 하는 계약은 **단 하나**다.
 입력  <workspace>/harness_in/slate.parquet                   라벨 없는 평가 slate
       <workspace>/harness_in/history/action_log/dt=...        dt < T 로컬 파티션만
 출력  <workspace>/harness_out/predictions.csv                evaluation_id, slate_id, video_id, score
-진입점 python -m autoresearch.cli harness-predict --slate <in> --out <out>
+진입점 python -m autoresearch.cli harness-predict --slate <in> --out <out> --seed <n>
 ```
 
 이 명령이 동작하는 한 나머지는 전부 자유다 — 피처 재조립, 모델 교체, 의존성 추가,
 디렉터리 구조 변경, 학습 코드 재작성 모두 허용된다. 진입점 계약이 곧 allowlist의
 대체물이다.
 
-`score`는 `[0,1]` 보정 click 확률이다. 범위 밖·NaN·Inf는 `invalid_predictions` 실행
-실패이며, ranking은 score 내림차순(`video_id` 오름차순 tie-break)으로 계산한다.
+candidate는 주어진 seed로 split·sampling·모델 초기화를 포함한 학습 파이프라인을 실행한
+뒤 예측을 산출해야 한다. 고정 모델을 seed마다 다시 점수화만 하거나 seed를 무시하는 구현은
+계약 위반이다.
+
+`score`는 `[0,1]` click 확률 추정치다. 범위 검사만으로 보정 여부를 증명하지 않으며 실제
+보정 품질은 LogLoss·Brier guardrail이 감시한다. 범위 밖·NaN·Inf는
+`invalid_predictions` 실행 실패이고, ranking은 score 내림차순(`video_id` 오름차순
+tie-break)으로 계산한다.
 
 ### 평가 slate 2단계 계약
 
-snapshot manifest에 `T = evaluation_start_date` KST 파티션 경계를 봉인한다. candidate가
-볼 수 있는 action log는 `dt < T`이고, validation/final 원천은 `dt >= T`다. 그 평가 구간을
-반복 피드백으로 같은 holdout에 적응하지 못하게 다시 유저 단위로 나눈다.
+snapshot manifest에 평가 출력일 `[T, T_end]` KST 파티션 경계를 봉인한다. click과 귀속 후보
+impression의 스캔은 `dt BETWEEN T AND T_end + 1`, slate·labels 출력은 impression `dt`가
+`[T, T_end]`인 행으로 분리한다. `T_end + 1` 파티션이 없으면 snapshot을 fail-closed한다.
+candidate가 볼 수 있는 action log는 `dt < T`이고, 이 범위에서 완전한 라벨을 만들 수 있는
+마지막 출력일은 `T-2`다. 그 평가 출력 구간을 반복 피드백으로 같은 holdout에 적응하지
+못하게 다시 유저 단위로 나눈다.
 
 - `bucket = int(sha256("research-harness-slate-v1:" + user_id).hexdigest()[:8], 16) % 10`
 - bucket `0..7`은 `validation slate`, `8..9`는 `final holdout`이다. 같은 유저의 모든
@@ -86,7 +96,8 @@ snapshot manifest에 `T = evaluation_start_date` KST 파티션 경계를 봉인�
 - 반복 trial·decision·feedback은 validation만 사용한다.
 - final holdout의 label-free slate도 반복 중 candidate에 주지 않는다. 예산 종료 후 고정된
   champion과 baseline을 마지막 1회만 평가하고, 결과를 에이전트에 돌려주지 않은 채
-  Controller를 종료한다. 두 번째 평가는 `evaluation_id` 전역 소비 registry가 거부한다.
+  Controller를 종료한다. 두 번째 평가는 온전한 같은 Judge 상태 루트의 `evaluation_id`
+  소비 registry가 거부한다.
 - 최종 REPORT의 대표 수치는 validation 최고값이 아니라 final holdout 값이다. 마지막 평가가
   실패하면 재평가하지 않고 `판정 불가`를 기록한다.
 
@@ -110,7 +121,8 @@ snapshot manifest에 `T = evaluation_start_date` KST 파티션 경계를 봉인�
 - **MVP 위협 모델.** 방어 대상은 실수와 자기 채점 오염이다. 같은 OS 사용자의 일반
   subprocess가 절대 경로를 추측하면 Judge 파일을 읽을 뿐 아니라 수정·삭제할 수도 있다.
   디렉터리 분리는 기밀성·무결성 sandbox가 아니며, 별도 OS 사용자, container,
-  read-only mount는 후속 완전 격리 범위다.
+  read-only mount는 후속 완전 격리 범위다. 평가 fixture를 만드는
+  `RuleBasedActionLogGenerator`의 입력·seed와 final 소비 registry도 같은 한계를 가진다.
 - **라벨은 candidate에게 어떤 형태로도 노출하지 않는다.** slate 주입 파일에 `clicked`
   컬럼이 없어야 하고 라벨 파일 경로를 candidate의 argv·환경·prompt에 넣지 않는다.
   validation feedback에는 집계 지표만 넣고, final holdout 결과는 집계값도 돌려주지 않는다.
@@ -118,11 +130,19 @@ snapshot manifest에 `T = evaluation_start_date` KST 파티션 경계를 봉인�
   검증한 같은 FD에서 `64 MiB + 1` byte까지만 복사한다. 경로를 다시 열지 않고, 복사
   전후 `fstat`으로 교체·성장을 검출하며, Judge 목적지는 `O_CREAT|O_EXCL`로 만든다.
   Judge는 candidate 경로가 아니라 이 사본만 읽는다. parser는 정확히 4개 필드, 대상
-  slate와 같은 행 수(최대 1,000,000), 10초, 256 MiB 상한을 강제한다. 이 상한은
-  workspace/commit 파일 제한을 폐기한 D4와 충돌하지 않는 inter-process artifact 계약이다.
+  slate와 같은 행 수를 강제한다. 세 ID 각 64 byte, score token 24 byte, comma 3개와
+  CRLF 2 byte를 합친 최악 행 길이 221 byte와 header 39 byte를 기준으로 최대
+  **300,000행**만 허용한다. `39 + 300,000 * 221 = 66,300,039 byte`이므로 64 MiB와
+  모순되지 않는다. parser는 10초·256 MiB 상한도 강제하고, Task 7에서 행·시간·메모리
+  초기값을 실측해 함께 재조정한다. 이 상한은 workspace/commit 파일 제한을 폐기한 D4와
+  충돌하지 않는 inter-process artifact 계약이다.
 - **데이터 자격 증명 제거.** candidate 환경 allowlist에 GCS·BigQuery 자격 증명을 넣지
   않는다. Harness가 주입한 `dt < T` 로컬 파일만 읽을 수 있다. D3은 코드 수정 범위를 여는
   결정이고 이 규칙은 평가 데이터 접근을 닫는 결정이라 충돌하지 않는다.
+- **Judge 상태 루트.** `harness-run --judge-state-root <absolute-path>`를 필수 설정으로 받고,
+  final 소비 marker는 그 고정 절대 경로 아래에 둔다. 경로가 상대 경로이거나 상태 루트가
+  없거나 접근 불가하면 final 평가를 시작하지 않는다. Harness가 임시 경로를 만들거나
+  fallback하지 않는다.
 - **기존 실행 경로를 건드리지 않는다.** `applications/experiment_platform/**`는 이 계획의
   변경 대상이 아니다. verifier 삭제는 로컬 harness가 검증된 뒤 별도 이슈로 한다.
 - **지표 정의를 새로 만들지 않는다.** LogLoss·Brier·PR-AUC·grouped ROC-AUC는
@@ -192,8 +212,9 @@ spec 7장과 이 plan은 얼마나 좋아져야 promote인지 아래 지표별 �
 harness는 잡음을 champion으로 승격시키고 그 위에서 다음 실험을 이어가므로, 오류가 조용히
 누적된다.
 
-**σ 측정.** validation slate에서 baseline(현행 champion)을 **seed만 바꿔 5회** 실행하고,
-`NDCG@10`뿐 아니라 `Recall@10`, `NDCG@24`, grouped ROC-AUC, PR-AUC, LogLoss, Brier의
+**σ 측정.** validation slate에서 baseline(현행 champion 설정)을 seed마다 **독립적으로
+5회 재학습**한 뒤 같은 slate를 점수화하고, `NDCG@10`뿐 아니라 `Recall@10`, `NDCG@24`,
+grouped ROC-AUC, PR-AUC, LogLoss, Brier의
 표준편차를 **각각** 구한다. 각 `σ_metric`은 해당 지표에서 "아무것도 바꾸지 않아도
 흔들리는 폭"이다. 지표별 σ map을 ledger에 기록하고, 데이터 규모나 모델 구조가 크게
 바뀌면 같은 5-seed sweep으로 전부 재측정한다.
@@ -283,18 +304,19 @@ REPORT evidence 위에 이어질 후속 구현이다.
 | Task 1 | `autoresearch/jobs/feature_store_build.py:295-370`, `autoresearch/model_training/training_provenance.py:38-45,96-180`, `autoresearch/model_training/training_snapshot_store.py:147-205` | 30분 click 귀속, immutable manifest, content-addressed write-once 게시 패턴 | label-free slate/봉인 labels 분리와 evaluation manifest |
 | Task 2a | `autoresearch/model_evaluation/evaluate.py:55-124` | 그룹 단위 metric과 coverage를 함께 반환하는 순수 계산 패턴 | 결정적 NDCG@k·Recall@k와 0-click coverage 규칙 |
 | Task 2b | `autoresearch/model_evaluation/evaluate.py:366-427`, `autoresearch/model_evaluation/seed_sweep.py:139-248` | ROC-AUC/PR-AUC/LogLoss/Brier/grouped ROC-AUC, seed 평균·표준편차 | 예측 schema 검증, ranking metric 결합, deterministic Judge decision |
+| Task 2c | `autoresearch/model_evaluation/evaluate.py:55-124,366-427`, `autoresearch/model_training/training_provenance.py:96-180` | YouTube 지표·coverage와 immutable snapshot/split/seed manifest 계약 | `ResearchDomain` ABC와 slate/Judge에 위임하는 `YouTubeCTRDomain` |
 | Task 3 | `applications/experiment_platform/executor/workspace.py:153-251`, `applications/experiment_platform/executor/finalizer.py:411-501`, `applications/experiment_platform/executor/safety.py:21-38` | credential-free Git 준비, content fingerprint·검증 tree commit 패턴, credential 값 탐지 | 기준 SHA의 disposable local worktree, 입출력 디렉터리, 시크릿만 남긴 commit guard |
 | Task 4 | `applications/experiment_platform/api/experiments/models.py:235-357`, `applications/experiment_platform/executor/results_store.py:91-145` | 멱등 event/log/Step 모델과 write-once 산출물 의미론 | append-only local Trial Ledger와 단계별 resume checkpoint |
 | Task 5a | `applications/experiment_platform/executor/codex_worker.py:253-281,537-574,624-670` | bounded output tail, timeout 시 process-group 회수, `Popen`·timeout 처리 패턴 | candidate `harness-predict` 실행 결과를 `TrialResult`로 정규화하는 `LocalRunner` |
-| Task 5b | `applications/experiment_platform/api/experiments/models.py:67-125`, `applications/experiment_platform/api/experiments/issue_authoring.py:80-112` | 상태 enum·전이와 구조화된 사전등록 입력 검증 패턴 | budget loop, validation 피드백, 이전 trial memory, 자동 실패 복구 Controller |
-| Task 6 | `autoresearch/cli.py`, `applications/experiment_platform/workbench/views.py:173-180,240-260` | Typer command 배선과 현행 연구 입력 UI 계약 | candidate/run CLI 두 개와 새 패키지 문서 등록 |
+| Task 5b | `applications/experiment_platform/api/experiments/models.py:67-125`, `applications/experiment_platform/api/experiments/issue_authoring.py:80-112` | 상태 enum·전이와 구조화된 사전등록 입력 검증 패턴 | `ResearchDomain`을 통한 budget loop, validation 피드백, 이전 trial memory, 자동 실패 복구 Controller |
+| Task 6 | `autoresearch/cli.py`, `applications/experiment_platform/workbench/views.py:173-180,240-260` | Typer command 배선과 현행 연구 입력 UI 계약 | `--seed`별 재학습 candidate CLI, run CLI와 새 패키지 문서 등록 |
 | Task 7 | `applications/experiment_platform/executor/measurement.py:169-297`, `autoresearch/model_evaluation/seed_sweep.py:217-248`, `autoresearch/model_training/training_provenance.py:163-180` | 동일 seed 조건 평가, 평균·표준편차, split/seed manifest | Judge 지표별 baseline noise 등록과 로컬 end-to-end 증거 |
 
 ### MVP 이후 로드맵의 재사용 출발점
 
 | 후속 범위 | 기존 경로 | 재사용/확장 방향 |
 | --- | --- | --- |
-| Paper Discovery | `autoresearch/data_collection/client.py:132-186,222-318,368-393` | paper 전용 구현은 신규지만 HTTP 오류 분류·backoff·rate-limit·호출 예산 패턴을 재사용 |
+| Paper Discovery | `autoresearch/data_collection/client.py:132-186,222-318,319-365,368-393` | paper 전용 구현은 신규지만 HTTP 오류 분류·backoff·rate-limit·key 회전·호출 예산 패턴을 재사용 |
 | PaperCard·ExperimentCard | `autoresearch/model_training/training_provenance.py:38-45,96-180`, `applications/experiment_platform/api/experiments/issue_authoring.py:80-112,183-220` | immutable provenance 모델과 사전등록 검증 위에 paper claim·falsification 구조를 확장 |
 | 최종 REPORT | `applications/experiment_platform/executor/report.py:126-159,197-230`, `applications/experiment_platform/executor/prompt.py:77-85,410-471`, `applications/experiment_platform/workbench/report.py:29-42,70-129`, `autoresearch/reporting/report_html.py:86-149` | 실제 diff·metrics 기반 작성, 절 검사, safe HTML shell과 자기완결 renderer를 multi-trial·paper lineage로 확장 |
 | 웹 연결 | `applications/experiment_platform/api/experiments/router.py:81-106,320-333`, `applications/experiment_platform/workbench/views.py:337-410,613-633` | 생성·목록·상세·report 조회 흐름에 request budget과 research report 모델만 추가 |
@@ -307,6 +329,7 @@ REPORT evidence 위에 이어질 후속 구현이다.
 | --- | --- |
 | `autoresearch/research_harness/__init__.py` | 공개 타입 재수출 |
 | `autoresearch/research_harness/slate.py` | 평가 slate 조립·라벨 봉인·fingerprint |
+| `autoresearch/research_harness/domain.py` | `ResearchDomain` ABC와 `YouTubeCTRDomain` adapter |
 | `autoresearch/research_harness/judge.py` | 예측 점수 채점, 리랭킹 지표, Decision 산출 |
 | `autoresearch/research_harness/ranking_metrics.py` | NDCG@k, Recall@k 순수 계산 |
 | `autoresearch/research_harness/workspace.py` | disposable worktree 생성·주입·회수 |
@@ -328,7 +351,7 @@ REPORT evidence 위에 이어질 후속 구현이다.
       파일이며, Judge는 candidate 코드를 실행하지 않는다"
 - [x] spec 4.2에 **연구 공간 제한과 안전 제한의 분리** 명시 — allowlist는 폐기하되
       시크릿 커밋 차단은 유지
-- [x] spec 11장 기반 MVP 범위에 verifier 대체를 명시적으로 포함
+- [x] spec 11장 기반 MVP 범위에 현행 executor와 분리된 allowlist 없는 로컬 경로를 포함
 - [x] spec 15장에 실행 위치 결정(D2) 반영
 - [x] D5(지표별 σ 기반 판정 규칙)를 spec 7장 `compare()` 설명에 반영
 - [x] D6(`slate_id` 생성 시점 부여)를 spec 8장 `EvaluationSlateItem`에 반영
@@ -369,25 +392,36 @@ Task 1의 선행 작업이다. **이 저장소의 데이터 계약을 바꾸는 
 
 action log parquet에서 평가 slate를 조립하고 정답을 분리 봉인한다.
 
-- [ ] `slate.py` 작성. 입력은 action log parquet 경로(로컬/GCS), 대상 날짜 범위,
-      필수 `slate_id_cutover_date`, KST `evaluation_cutoff_date`(`T`). `T`는 평가 범위의
-      첫 날짜이고 `slate_id_cutover_date <= T`여야 한다
+- [ ] `slate.py` 작성. 입력은 action log parquet 경로(로컬/GCS), 평가 **출력일** 범위
+      `[T, T_end]`, 필수 `slate_id_cutover_date`. `T`는 첫 출력일이고
+      `slate_id_cutover_date <= T`여야 한다
 - [ ] impression 행에서 slate 조립: `slate_id`(**Task 1-0의 원천 컬럼을 그대로 사용.
       추론하지 않는다**), `user_id`, `video_id`, `event_timestamp`,
       optional `original_rank`(원천 `rank`), optional `candidate_source`(원천 `exposure_source`)
 - [ ] 파티션 선택을 통과한 `dt >= slate_id_cutover_date` 행에서 `slate_id`가 null이면
       **오류로 거부**한다. 조용히 건너뛰거나 추론으로 채우지 않는다 (D6)
-- [ ] 개발·검증용 입력은 `RuleBasedActionLogGenerator`로 로컬 생성한다 (D7 — LLM·API 키 불필요)
-- [ ] click 귀속으로 `clicked` 산출. **귀속 규칙(30분 윈도우)은
-      `autoresearch/jobs/feature_store_build.py`의 기존 SQL과 동일해야 한다** — 상수를
-      공유하거나, 불가능하면 동일 규칙임을 테스트로 고정한다
+- [ ] 개발·검증용 입력은 `RuleBasedActionLogGenerator`로 로컬 생성한다 (D7 — LLM·API 키
+      불필요). 평가 구간을 생성한 입력과 seed는 Judge 소유 경로에만 두고 candidate
+      workspace·argv·환경에 넣지 않는다
+- [ ] click과 귀속 후보 impression은 **`dt BETWEEN T AND T_end + 1`**로 스캔하고,
+      slate·labels 출력은 impression `dt`가 **`[T, T_end]`**인 행으로 제한한다.
+      `T_end + 1` 파티션이 없거나 읽을 수 없으면 snapshot 생성을 fail-closed한다
+- [ ] click 귀속으로 `clicked`를 산출한다. **귀속 규칙(직전 30분, 같은
+      `(user_id, video_id)`의 전역 최근 impression 1건)은
+      `docs/specs/2026-07-26-training-entity-incremental-slice.md:68-100`과
+      `autoresearch/jobs/feature_store_build.py:295-370`의 기존 계약과 동일해야 한다.** 상수를
+      공유하거나, 불가능하면 후보·출력 범위를 포함해 동일 규칙임을 테스트로 고정한다
 - [ ] raw action log 선택을 시간으로 분리한다. candidate history는 설정한 history 시작일부터
-      **`dt < T`까지만** 허용하고, validation/final 원천은 **`dt >= T`만** 허용한다. 현행
+      **`dt < T`까지만** 허용한다. 평가 출력은 `[T, T_end]`, 라벨 스캔은
+      `[T, T_end + 1]`만 허용한다. 현행
       action log가 click을 저장하고(`autoresearch/action_log_generation/schema.py:37-61`)
       현행 30분 join으로 정답을 복원할 수 있으므로
       (`autoresearch/jobs/feature_store_build.py:295-370`) 평가 파티션은 candidate history에
-      섞이면 안 된다
-- [ ] `dt >= T` 평가 구간 안에서 고정 salt의 SHA-256 bucket으로 유저 단위 80/20 분할한다.
+      섞이면 안 된다. `dt < T`는 누출이 아니지만, candidate history로 완전한 라벨을 만들 수
+      있는 마지막 출력일은 **`T-2`**다. 마지막 파티션 `T-1`을 출력일 `T-1`의 완전한 라벨로
+      사용하지 못하게 manifest와 검증 계약에 기록한다
+- [ ] `[T, T_end]` 평가 출력 구간 안에서 고정 salt의 SHA-256 bucket으로 유저 단위 80/20
+      분할한다.
       validation/final 중 한쪽이
       비거나 필수 지표 coverage가 없으면 snapshot 생성을 거부한다
 - [ ] 산출물을 content-addressed 디렉터리에 write-once 게시:
@@ -396,14 +430,17 @@ action log parquet에서 평가 slate를 조립하고 정답을 분리 봉인한
       - `validation/labels.parquet` — `evaluation_id`, `slate_id`, `video_id`, `clicked`. **봉인**
       - `final_holdout/slate.parquet`과 `final_holdout/labels.parquet` — 같은 schema이되 반복
         loop가 끝날 때까지 slate도 candidate에게 주입하지 않음
-      - `manifest.json` — split별 `evaluation_id`(content hash), 유저 분할 규칙, 행 수, 기간,
-        `T`, candidate history의 `dt < T` 파티션 목록, 평가의 `dt >= T` 원천 파티션,
-        slate 수, slate당 평균 크기, click 보유 slate 비율
+      - `manifest.json` — split별 `evaluation_id`(content hash), 유저 분할 규칙, 행 수,
+        출력일 `[T, T_end]`, candidate history의 `dt < T` 파티션 목록과 완전 라벨 출력일
+        상한 `T-2`, 평가 스캔의 `[T, T_end + 1]` 원천 파티션, slate 수, slate당 평균 크기,
+        click 보유 slate 비율
 - [ ] optional 컬럼의 실제 non-null 비율을 manifest에 기록 (갭 조사에서 미확인 항목)
 - [ ] 테스트: `clicked`는 labels에만 있고 slate에는 없음, 두 파일이 join key
       (`evaluation_id`, `slate_id`, `video_id`)를 공유함, 같은 유저의 slate가 split을
-      넘지 않음, candidate history에 `dt >= T`가 한 건도 없음, 평가에 `dt < T`가 한 건도
-      없음, 동일 입력 → 동일 `evaluation_id`, write-once 위반 시 실패
+      넘지 않음, candidate history에 `dt >= T`가 한 건도 없음, 출력에 `[T, T_end]` 밖
+      impression이 없음, `T_end + 1` click과 impression이 귀속 후보에는 포함되지만 출력에는
+      없음, `T_end + 1` 파티션 누락 시 실패, 출력일 `T-1`을 candidate의 완전 라벨로
+      취급하지 않음, 동일 입력 → 동일 `evaluation_id`, write-once 위반 시 실패
 
 **검증:** `uv run python -m pytest tests/research_harness/test_slate.py -v`
 
@@ -419,7 +456,8 @@ action log parquet에서 평가 slate를 조립하고 정답을 분리 봉인한
       처리하면 지표가 데이터 구성에 따라 왜곡된다
 - [ ] NDCG@10·NDCG@24·Recall@10은 유효 slate가 전체의 20% 이상이면서 최소 30개여야 한다.
       미달이면 `insufficient_metric_coverage`로 판정 불가다
-- [ ] ranking은 보정 확률 `score` 내림차순, 동률은 `video_id` 오름차순으로 고정한다
+- [ ] ranking은 click 확률 추정치 `score` 내림차순, 동률은 `video_id` 오름차순으로 고정한다.
+      `[0,1]` 범위 검사는 보정 품질의 증거가 아니며 LogLoss·Brier guardrail이 이를 감시한다
 - [ ] 테스트: 완전 정답 순서 → 1.0, 역순 → 최소값, 0-click slate 제외 동작, 동점 처리,
       k보다 짧은 slate, 클릭 수 > k인 slate
 
@@ -434,8 +472,11 @@ action log parquet에서 평가 slate를 조립하고 정답을 분리 봉인한
       `64 MiB + 1` byte까지만 읽는다. 복사 전후 `fstat`의 identity·mode·size·mtime을
       비교해 교체·성장을 검출하고, Judge 목적지는 `O_CREAT|O_EXCL`로 만든다. 경로를 다시
       열지 않으며 schema와 지표 계산은 Judge 사본만 읽는다
-- [ ] parser를 격리 subprocess에서 실행해 정확히 4개 필드, 대상 slate와 같은 행 수이면서
-      최대 1,000,000행, wall-clock 10초, 메모리 256 MiB를 강제한다. 상한 위반은
+- [ ] parser를 격리 subprocess에서 실행해 정확히 4개 필드와 field byte 계약을 강제한다.
+      `evaluation_id`·`slate_id`·`video_id`는 comma·quote·개행 없는 ASCII 각 최대 64 byte,
+      `score` token은 최대 24 byte다. CRLF 기준 최악 행 221 byte와 header 39 byte에서
+      300,000행은 66,300,039 byte이므로 64 MiB 안에 든다. 행 수는 대상 slate와 같으면서
+      최대 300,000행, wall-clock 10초, 메모리 256 MiB여야 하며 상한 위반은
       `invalid_predictions`다
 - [ ] **predictions 스키마 강제 검증**: 컬럼은
       `evaluation_id, slate_id, video_id, score`. `evaluation_id`는 대상 split manifest와
@@ -458,7 +499,8 @@ action log parquet에서 평가 slate를 조립하고 정답을 분리 봉인한
       paired normalized delta 평균만 확정한다
 - [ ] 테스트: 각 schema·artifact 계약 위반 거부, champion 동률 시 판정,
       evaluation ID 불일치, symlink·64 MiB 초과·복사 중 성장·기존 목적지 거부,
-      `[0,1]` 범위 위반, parser 행/시간/메모리 상한, higher/lower 방향 정규화,
+      ID/score field byte 상한과 300,000행 경계, `[0,1]` 범위 위반,
+      parser 행/시간/메모리 상한, higher/lower 방향 정규화,
       σ=0·`1e-6` 경계, metric `None`, 지표별 coverage 미달, 2σ 직전/직후와 guardrail
       -1σ 직전/직후 판정 전환
 
@@ -469,16 +511,39 @@ action log parquet에서 평가 slate를 조립하고 정답을 분리 봉인한
 
 ---
 
+## Task 2c: `ResearchDomain` ABC + `YouTubeCTRDomain`
+
+Task 1(slate), Task 2a(지표), Task 2b(Judge)가 완료된 뒤 시작하고, Task 5b Controller보다
+먼저 끝낸다. Controller는 구체 slate/Judge 구현이 아니라 이 interface를 통해 호출한다.
+
+- [ ] `domain.py`에 spec 5.1의 다섯 메서드
+      (`describe_capabilities`, `build_evaluation_snapshot`, `validate_candidate`, `evaluate`,
+      `compare`)를 가진 `ResearchDomain` ABC를 정의한다
+- [ ] `YouTubeCTRDomain`은 MVP에서 실제 필요한 `build_evaluation_snapshot()`,
+      `validate_candidate()`, `evaluate()`, `compare()`를 Task 1·2a·2b 구현에 위임한다.
+      논문 발견이 없는 MVP에서 호출하지 않는 `describe_capabilities()`는 명시적 미지원
+      오류를 내고, Paper Discovery 단계 전에는 빈 값이나 임시 capability를 꾸며 내지 않는다
+- [ ] `__init__.py`에서 공개 domain 타입을 재수출한다
+- [ ] 테스트: ABC가 다섯 메서드 계약을 강제함, YouTube adapter가 snapshot·검증·평가·비교를
+      올바른 구현으로 전달함, `describe_capabilities()`가 명시적 미지원 오류를 냄
+
+**의존 순서:** `Task 1 + Task 2a + Task 2b → Task 2c → Task 5b`
+
+**검증:** `uv run python -m pytest tests/research_harness/test_domain.py -v`
+
+---
+
 ## Task 3: CandidateWorkspace + 산출물 계약
 
-verifier 대체가 실제로 일어나는 지점이다.
+현행 executor를 건드리지 않고 정적 allowlist 없는 독립 로컬 workspace를 만드는 지점이다.
 
 - [ ] `workspace.py` — 기준 SHA에서 disposable git worktree 생성, 종료 시 회수
 - [ ] 반복 중에는 validation `harness_in/slate.parquet`만 주입한다. final holdout slate는
       Controller가 loop를 닫은 뒤 한 번만 주입한다. **labels, ledger, judge 체크아웃은
       worktree 바깥 경로에 두고 경로도 candidate에 전달하지 않는다**
 - [ ] `harness_in/history/action_log/`에는 manifest가 허용한 `dt < T` 로컬 파티션만
-      주입한다. `dt >= T`가 하나라도 있으면 workspace 생성을 거부한다
+      주입한다. `dt >= T`가 하나라도 있으면 workspace 생성을 거부한다. 평가 fixture를 만든
+      `RuleBasedActionLogGenerator` 입력과 seed도 주입하지 않고 argv·환경에 넣지 않는다
 - [ ] candidate 환경은 명시적 allowlist로 새로 만들고 GCS·BigQuery credential env와
       credential 파일을 주입하지 않는다. 원격 데이터 접근 없이 Harness의 로컬 history만
       읽는 계약을 테스트한다
@@ -489,8 +554,8 @@ verifier 대체가 실제로 일어나는 지점이다.
       검사는 가져오지 않고 credential 값 탐지만 호출한다
 - [ ] diff content fingerprint를 계산해 ledger에 넘긴다(차단용이 아니라 기록용)
 - [ ] 테스트: worktree 격리, labels가 주입·argv·환경에 없음, final slate가 반복 중 없음,
-      history에 `dt >= T` 없음, 원격 credential 없음, 시크릿 포함 diff 거부,
-      `.parquet`/`pyproject.toml` 수정이 **허용**되는지(D3·D4 회귀 방지)
+      history에 `dt >= T` 없음, fixture 평가 입력·seed 없음, 원격 credential 없음, 시크릿 포함
+      diff 거부, `.parquet`/`pyproject.toml` 수정이 **허용**되는지(D3·D4 회귀 방지)
 
 **검증:** `uv run python -m pytest tests/research_harness/test_workspace.py -v`
 
@@ -499,10 +564,14 @@ verifier 대체가 실제로 일어나는 지점이다.
 ## Task 4: Trial Ledger + checkpoint
 
 - [ ] `ledger.py` — `experiment-ledger.jsonl` append-only
-- [ ] `consumption_registry.py` — run·workspace·ledger 밖의 Judge 상태 루트에
-      `final-holdout-consumed/<evaluation_id>` marker를 둔다. final 평가 시작 전에
-      `O_CREAT|O_EXCL`로 생성하고 metadata를 쓴 뒤 file과 parent directory를 `fsync`한다.
-      이미 있으면 두 번째 평가를 거부한다
+- [ ] `consumption_registry.py` — 필수 harness 설정
+      `harness-run --judge-state-root <absolute-path>`를 정규화한 **고정 절대 경로** 아래
+      `final-holdout-consumed/<evaluation_id>` marker를 둔다. state root는
+      run·workspace·ledger에 종속시키지 않는다. 상대 경로, root/registry 디렉터리 부재,
+      읽기·marker 생성·`fsync` 불가는 모두 final 평가 시작 전 fail-closed하고, 임시 경로를
+      만들거나 fallback하지 않는다
+- [ ] final 평가 시작 전에 marker를 `O_CREAT|O_EXCL`로 생성하고 metadata를 쓴 뒤 file과
+      parent directory를 `fsync`한다. 이미 있으면 두 번째 평가를 거부한다
 - [ ] trial당 기록: `trial_id`, 기준/candidate SHA, diff fingerprint, `evaluation_id`,
       seed, 전체 지표, decision과 reason_code, 소요 시간, 실패 reason code, champion lineage
 - [ ] validation trial과 final holdout을 구분하고 ledger에는 registry marker의 경로·digest를
@@ -512,8 +581,9 @@ verifier 대체가 실제로 일어나는 지점이다.
 - [ ] 테스트: 중단 후 재개가 완료 단계를 건너뜀, 같은 trial 중복 append 방지,
       ledger의 손상된 마지막 줄 복구. 별도 테스트에서 새 run·새 ledger·동시 Controller가
       같은 `evaluation_id`를 소비하지 못함, marker 생성 뒤 crash해도 재평가 거부,
-      손상 marker도 존재만으로 소비 처리함을 고정한다. ledger 마지막 줄 복구를 registry에
-      적용하지 않는다
+      손상 marker도 존재만으로 소비 처리함, root 부재·접근 불가 시 final 미시작을 고정한다.
+      이전 evidence가 기록한 marker가 사라진 경우 상태 무결성 위반으로 fail-closed하고
+      marker를 재생성하지 않는다. ledger 마지막 줄 복구를 registry에 적용하지 않는다
 
 **검증:** `uv run python -m pytest tests/research_harness/test_ledger.py -v`
 
@@ -521,15 +591,16 @@ verifier 대체가 실제로 일어나는 지점이다.
 
 ## Task 5a: LocalRunner
 
-- [ ] `runner.py` — workspace에서 고정 진입점(`harness-predict`)을 subprocess로 실행.
+- [ ] `runner.py` — workspace에서 고정 진입점
+      (`harness-predict --slate <in> --out <out> --seed <n>`)을 subprocess로 실행.
       timeout·자원 상한·stdout/stderr tail 수집. 실패는 reason code로 분류
       (`predict_timeout`, `predict_crash`, `invalid_predictions`, …)
 - [ ] candidate를 새 process group/session으로 시작한다. 정상 종료·timeout·취소·예외 모두
       TERM grace 뒤 KILL과 최종 wait를 거쳐 child/grandchild까지 완전히 회수하고, 남은
       process가 있으면 실행 실패로 처리한다. 기존 패턴은
       `applications/experiment_platform/executor/codex_worker.py:537-574,624-670`이다
-- [ ] 테스트: 정상 실행, timeout, 비정상 종료, 산출물 미생성 각각의 reason code와
-      timeout 뒤 grandchild process가 남지 않음을 검증한다
+- [ ] 테스트: seed가 argv에 전달됨, 정상 실행, timeout, 비정상 종료, 산출물 미생성 각각의
+      reason code와 timeout 뒤 grandchild process가 남지 않음을 검증한다
 
 **검증:** `uv run python -m pytest tests/research_harness/test_runner.py -v`
 
@@ -543,17 +614,21 @@ verifier 대체가 실제로 일어나는 지점이다.
       - 이전 trial 이력 요약 (무엇을 시도했고 왜 기각됐는지)
       - 실패 시 stage + reason code + 로그 tail
       - **행 단위 정답과 지표 구현 코드는 포함하지 않는다**
-- [ ] `controller.py` — 예산(최대 시간/trial 수) 안에서 반복. spec 7장 루프 구조를 따르되
+- [ ] `controller.py` — Task 2c의 `ResearchDomain` interface를 주입받아 snapshot·candidate
+      검증·평가·비교를 호출하고 예산(최대 시간/trial 수) 안에서 반복한다. 구체
+      `YouTubeCTRDomain`의 slate/Judge 모듈을 Controller에서 직접 호출하지 않는다. spec 7장
+      루프 구조를 따르되
       MVP에서는 사람이 준 가설과 `ExperimentCard`를 입력 seam에 주입한다. 다음
       단계에서는 Paper Discovery/Capability Matcher가 만든 `ExperimentCard`가 같은 seam을
       사용한다
 - [ ] 실패 시 사용자에게 묻지 않고 다음 행동을 스스로 정한다(spec 7.2)
 - [ ] validation loop 종료 후 champion을 고정하고 final holdout을 마지막 1회 평가한다.
-      전역 registry marker를 fsync한 뒤에만 실행하고, final 결과는 feedback을 만들지 않고
-      ledger/REPORT evidence에만 기록한 뒤 종료한다
+      필수 절대 `judge_state_root`의 존재·접근을 확인하고 전역 registry marker를 fsync한
+      뒤에만 실행한다. final 결과는 feedback을 만들지 않고 ledger/REPORT evidence에만 기록한
+      뒤 종료한다
 - [ ] final holdout의 유효한 판정이 `promote`면 `개선`, `revise|discard`면 baseline을
       유지하고 `개선 없음`, 유효한 비교를 만들지 못했을 때만 `판정 불가`로 결론낸다
-- [ ] 테스트: fake candidate(고정 점수 산출)로 2 trial 이상 루프가 도는지,
+- [ ] 테스트: seed-sensitive fake domain/runner로 2 trial 이상 루프가 도는지,
       피드백 payload에 라벨이 없는지, final 결과가 payload에 없는지, final 평가가 두 번째
       호출을 거부하는지, 예산 소진 시 정상 종료하는지
 
@@ -563,9 +638,12 @@ verifier 대체가 실제로 일어나는 지점이다.
 
 ## Task 6: CLI 진입점 + MVP REPORT + 문서 갱신
 
-- [ ] `autoresearch/cli.py`에 `harness-predict`(candidate용)와 `harness-run`(연구 실행) 추가
-- [ ] `harness-predict` 기본 구현 — 현행 champion 모델로 slate를 점수화한다.
-      **이것이 baseline이자 candidate가 고쳐 나갈 출발점이다**
+- [ ] `autoresearch/cli.py`에
+      `harness-predict --slate <in> --out <out> --seed <n>`(candidate용)와
+      `harness-run --judge-state-root <absolute-path>`(연구 실행) 추가
+- [ ] `harness-predict` 기본 구현 — 현행 champion 설정으로 주어진 seed에서 split·sampling·
+      모델 초기화를 포함해 **재학습한 뒤** slate를 점수화한다. 고정 모델을 다시 점수화만
+      하는 구현은 허용하지 않는다. **이것이 baseline이자 candidate가 고쳐 나갈 출발점이다**
 - [ ] `report.py` — Trial Ledger와 final holdout evidence에서 `research-report.md`를 만든다.
       사람이 준 가설·`ExperimentCard`, trial·실패·복구 이력, validation/final 지표,
       최종 결론과 재현 좌표를 포함한다. 논문 출처와 9절 고정 형식은 로드맵 범위다
@@ -589,22 +667,27 @@ uv run --no-sync ruff check applications autoresearch tests tools
 앞선 Task가 전부 머지된 뒤에만 가능하다. σ 측정에 `harness-predict`(Task 6)와
 slate(Task 1)가 모두 필요하기 때문이다.
 
-- [ ] **지표별 baseline σ 측정** (D5) — validation slate에서 현행 champion을 같은 seed
-      5개로 실행해 primary와 모든 guardrail의 표준편차를 각각 구하고 ledger에 기록한다.
-      측정 전에는 `compare()`가 판정할 수 없다
+- [ ] **지표별 baseline σ 측정** (D5) — validation slate에서 현행 champion 설정을 seed
+      5개로 **5회 독립 재학습**한 뒤 같은 slate를 점수화해 primary와 모든 guardrail의
+      표준편차를 각각 구하고 ledger에 기록한다. 측정 전에는 `compare()`가 판정할 수 없다
 - [ ] 측정된 지표별 σ map과 baseline 지표 절대값을 이 plan과 spec에 기록한다 — 이후
       실험의 기준선이다
 - [ ] 5-seed 실측 분포와 의도된 개선·무변경 candidate 경로를 보고 `2σ/-1σ`,
       `σ > 1e-6`, 지표별 20%·30개 coverage 하한이 실용적인지 재조정한다. 변경이 필요하면
       승격 판정을 열기 전에 spec과 plan을 먼저 갱신한다
+- [ ] 최악 길이 300,000행 predictions fixture로 parser wall-clock 10초·메모리 256 MiB와
+      64 MiB artifact 상한을 실측한다. 시간·메모리 안에서 안정적으로 처리하지 못하거나
+      실사용 slate 규모와 맞지 않으면 행 상한을 포함한 세 초기값을 함께 낮춰 spec과 plan을
+      먼저 갱신한다
 - [ ] 로컬 end-to-end 1회 완주 — slate 조립 → baseline 점수화 → Judge 판정 → ledger 기록
       → 피드백 반환 → 2차 trial
 - [ ] **promote 경로 검증** — 일부러 개선된 candidate(유효한 피처 1개 추가)로 `promote`가
       실제 발생하는지 확인한다. 이걸 하지 않으면 승격이 없는 상태의 원인을 알 수 없다
 - [ ] 중단 후 checkpoint 재개 1회 확인
 - [ ] validation loop가 끝난 뒤 final holdout을 정확히 1회 평가하고 feedback 없이 종료되는지,
-      새 run·새 ledger·동시 Controller에서도 전역 registry가 재평가를 막는지, 최종 REPORT
-      evidence의 대표 수치가 final 결과인지 확인
+      새 run·새 ledger·동시 Controller에서도 온전한 같은 Judge 상태 루트의 registry가
+      재평가를 막는지, root 부재·접근 불가·관측된 marker 삭제에서 fail-closed하는지, 최종
+      REPORT evidence의 대표 수치가 final 결과인지 확인
 
 **검증:** 전체 테스트 + 실제 1회 완주 로그와 ledger 산출물
 
@@ -615,15 +698,25 @@ slate(Task 1)가 모두 필요하기 때문이다.
 - [ ] 에이전트가 저장소 어느 파일이든 수정해도 harness가 차단하지 않는다
 - [ ] candidate가 evaluator·테스트·split 코드를 고쳐도 판정 수치가 바뀌지 않는다
 - [ ] candidate에는 `dt < T` 로컬 action log만 주입되고 `dt >= T` 평가 파티션과 원격
-      데이터 자격 증명은 주입되지 않는다
+      데이터 자격 증명, fixture 평가 구간 생성 입력·seed는 주입되지 않는다. candidate가
+      완전 라벨로 사용할 수 있는 마지막 출력일은 `T-2`다
+- [ ] 평가 출력일 `[T, T_end]`의 click·귀속 후보 impression은
+      `dt BETWEEN T AND T_end + 1`로 스캔하고 출력은 `[T, T_end]` impression으로 제한하며,
+      `T_end + 1` 파티션 누락은 fail-closed한다
 - [ ] `predictions.csv` 계약 위반이 지표 조작이 아니라 실행 실패로 처리된다
-- [ ] `score`는 `[0,1]` 보정 확률이며 범위 위반, metric `None`, σ·coverage 미달은
-      `promote/revise/discard` 없이 fail-closed한다
+- [ ] `harness-predict`가 필수 `--seed`로 학습부터 실행하며 baseline 5-seed sweep은 5회
+      재학습이다. 고정 모델 재점수화 구현은 계약 위반이다
+- [ ] `score`는 `[0,1]` click 확률 추정치이며 범위 위반, metric `None`, σ·coverage 미달은
+      `promote/revise/discard` 없이 fail-closed하고, 보정 품질은 LogLoss·Brier가 감시한다
 - [ ] 판정 결과가 구조화된 피드백으로 에이전트에게 돌아가고, 다음 trial이 그것을 참조한다
 - [ ] 프로세스를 중단한 뒤 마지막 checkpoint부터 재개된다
 - [ ] 로컬에서 Kubernetes 없이 완주한다
 - [ ] 지표별 baseline σ가 측정되어 ledger에 기록되고, 판정이 각 지표의 값을 입력으로 쓴다
 - [ ] 일부러 개선된 candidate로 `promote`가 실제 발생함을 1회 확인했다 (D5 검증 의무)
 - [ ] validation은 반복 피드백에 쓰고 final holdout은 마지막 1회·무피드백으로만 사용한다
-- [ ] `evaluation_id` 전역 registry가 run·ledger·동시 실행과 무관하게 final 재평가를 막는다
+- [ ] 필수 절대 `judge_state_root`가 없거나 접근 불가하면 final 평가를 시작하지 않고,
+      온전한 같은 상태 루트에서는 `evaluation_id` marker가 남은 final holdout의 재소비를
+      거부한다. 상태 루트 자체의 무결성은 위협 모델의 한계다
+- [ ] `ResearchDomain` ABC와 `YouTubeCTRDomain`이 구현되고 Controller가 이 interface를 통해
+      snapshot·검증·평가·비교를 호출한다
 - [ ] 최종 REPORT의 대표 수치는 final holdout 결과다
