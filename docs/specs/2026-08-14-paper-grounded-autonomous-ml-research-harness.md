@@ -143,6 +143,21 @@ import하거나 실행하지 않고 모델 파일도 역직렬화하지 않는�
 Controller와 Judge는 고정 이미지·digest 또는 별도 프로세스로 봉인되므로, candidate
 branch가 그 소스를 수정해도 현재 run의 판정에는 반영되지 않는다.
 
+MVP의 위협 모델은 **실수와 자기 채점 오염 방지**다. candidate와 Judge가 같은 OS 사용자로
+실행되는 로컬 환경에서는 worktree 밖의 절대 경로를 아는 일반 subprocess가 파일을 읽을 수
+있으므로, 디렉터리 분리는 적대적 candidate의 탈출을 막는 보안 sandbox가 아니다.
+validation 정답과 final holdout slate·정답의 경로는 candidate의
+argv·환경·prompt·feedback에 전달하지 않지만, 이 조치도 경로 추측이나
+호스트 탐색에 대한 완전 격리를 보장하지 않는다.
+
+Judge가 candidate 경계에서 받는 것은 `predictions.csv` 하나뿐이다. Judge는 candidate
+경로를 `O_NOFOLLOW`로 열고 `fstat`으로 regular file과 **64 MiB 이하**를 확인한 뒤,
+Judge 소유 디렉터리의 새 regular file로 복사하고 그 사본만 파싱한다. 이 64 MiB 상한은
+candidate workspace나 commit의 파일 크기를 제한하는 D4를 되살리는 것이 아니라, 불신
+프로세스가 Judge에 넘기는 단일 artifact의 메모리·디스크 소비를 제한하는 입출력 계약이다.
+별도 OS 사용자, container, read-only mount를 이용한 적대적 탈출 방지는 MVP 이후의 완전
+격리 단계로 남긴다.
+
 ### 4.4 로컬 실행이 기본이다
 
 장시간 실행과 중단 후 재개는 Kubernetes만의 기능이 아니다. MVP는 다음 조합으로
@@ -193,7 +208,7 @@ Research Request
                                | evaluate and compare  |
                                +-----------+-----------+
                                            |
-                         keep / discard / revise
+                       promote / revise / discard
                                            |
                     +----------------------+------------------+
                     |                                         |
@@ -322,7 +337,7 @@ REPORT는 논문을 다음 상태로 구분한다.
 - `reviewed`: 초록 또는 원문 분석
 - `hypothesis_source`: 가설 생성의 근거로 사용
 - `implemented`: 실제 candidate로 구현
-- `promoted` 또는 `rejected`: 실험 판정 완료
+- `promote` 또는 `discard`: 실험 판정 완료
 
 존재 여부와 canonical identifier를 검증하지 못한 논문은 구현 근거로 사용할 수 없다.
 
@@ -357,12 +372,24 @@ while budget.remaining:
 단일 scalar leaderboard만 최적화하지 않는다. `ResearchDomain.compare()`는 primary
 metric 개선과 guardrail 충족을 분리하며, 어떤 지표를 선택했는지는 REPORT에 설명한다.
 승격 임계값은 고정 비율이 아니라 baseline을 seed만 바꿔 반복했을 때의 노이즈 표준편차
-`σ`의 배수로 정의한다.
+`σ`의 배수로 정의한다. validation slate에서 수행하는 같은 5-seed baseline sweep으로
+primary와 모든 guardrail의 `σ_metric`을 **지표별로 각각** 계산한다. NDCG의 σ를
+Recall·AUC·LogLoss·Brier에 공용하지 않는다.
+
+모든 delta는 **개선이 양수**가 되도록 방향을 정규화한다.
+
+- 높을수록 좋은 `NDCG@10`, `Recall@10`, `NDCG@24`, grouped ROC-AUC, PR-AUC:
+  `normalized_delta = candidate - baseline`
+- 낮을수록 좋은 LogLoss, Brier Score:
+  `normalized_delta = baseline - candidate`
+
+아래 표의 `Δ_metric`은 이 정규화된 delta이고, `σ_metric`은 같은 지표의 baseline
+5-seed 표준편차다.
 
 | 판정 | 조건 |
 | --- | --- |
-| `promote` | primary 평균이 baseline보다 `2σ` 이상 개선되고 모든 guardrail 델타가 `-1σ` 이상 |
-| `revise` | primary 평균이 `2σ` 이상 개선됐지만 하나 이상의 guardrail 델타가 `-1σ` 미만 |
+| `promote` | `Δ_ndcg_at_10 ≥ 2σ_ndcg_at_10`이고 모든 guardrail `Δ_metric ≥ -1σ_metric` |
+| `revise` | `Δ_ndcg_at_10 ≥ 2σ_ndcg_at_10`이지만 하나 이상의 guardrail `Δ_metric < -1σ_metric` |
 | `discard` | 그 외 |
 
 고정 비율은 그 값이 실제 seed 잡음보다 큰지 알려 주지 않는다. 자율 루프가 수십 trial을
@@ -431,6 +458,27 @@ split이나 evaluator를 바꾸어도 최종 평가에는 영향을 주지 못�
 counterfactual label이나 graded relevance는 MVP 완주 이후 Domain Adapter의 버전된
 평가 계약으로 검토한다.
 
+### 8.1 validation slate와 final holdout
+
+하나의 평가 원천을 반복 피드백용 `validation slate`와 마지막 1회용 `final holdout`으로
+나눈다. 같은 유저의 행동·선호가 양쪽에 섞이면 slate가 달라도 에이전트가 validation
+피드백으로 그 유저에 적응할 수 있으므로 **유저 단위**로 분할한다.
+
+- `bucket = int(sha256("research-harness-slate-v1:" + user_id).hexdigest()[:8], 16) % 10`
+- bucket `0..7`: validation, bucket `8..9`: final holdout
+- 한 유저의 모든 slate는 하나의 split에만 속한다. 두 split이 비거나 필수 지표 coverage를
+  만들 수 없으면 snapshot 생성을 fail-closed한다.
+- 두 split은 서로 다른 `evaluation_id`를 가지며, `CandidateRanking.evaluation_id`는 해당
+  split의 manifest와 정확히 일치해야 한다.
+
+반복 trial과 에이전트 feedback은 validation slate만 사용한다. final holdout의 label-free
+slate도 반복 중에는 candidate에 주입하지 않는다. 예산이 끝나 champion이 고정되면 baseline과
+그 champion을 final holdout에서 **마지막 1회만** 점수화한다. Ledger에는 평가 시작 전에
+`final_holdout_consumed` checkpoint를 기록해 두 번째 평가를 거부하며, 이 단계의
+지표·delta·decision은 에이전트에게 어떤 형태로도 돌려주지 않고 Controller를 종료한다.
+final holdout 실행 자체가 실패하면 재평가로 정보를 더 소비하지 않고 REPORT를 `판정 불가`로
+끝낸다.
+
 ## 9. Trial Ledger와 재현성
 
 Trial Ledger는 REPORT의 근거이자 다음 iteration의 memory다. 최소한 다음을 기록한다.
@@ -442,7 +490,8 @@ Trial Ledger는 REPORT의 근거이자 다음 iteration의 memory다. 최소한 
 - 데이터 snapshot, 파생 데이터 lineage, split과 evaluation fingerprint
 - 실행 환경, dependency lock, seed, 소요 시간과 자원 사용량
 - stdout/stderr 요약과 실패 reason code
-- 모든 지표와 Judge의 `keep/discard/revise` 근거
+- validation의 모든 지표·피드백과 Judge의 `promote/revise/discard` 근거
+- final holdout의 단일 평가 결과와 `final_holdout_consumed` 여부
 - champion lineage와 checkpoint
 
 외부 데이터를 허용하는 후속 버전에서는 URL, 조회 시점, 라이선스, checksum을 함께
@@ -455,7 +504,7 @@ REPORT는 최고 점수만 보여주는 결과 페이지가 아니라 논문에�
 research lineage다.
 
 1. Executive Summary
-   - champion 대비 최종 결과
+   - champion 대비 최종 결과. 대표 수치는 반복 validation 최고값이 아니라 final holdout 값
    - 실행 시간, trial 수, 사용 자원
    - 개선·개선 없음·판정 불가 중 최종 결론
 2. Research Brief
@@ -523,7 +572,7 @@ paper-grounded 제품 차별점도 사라진다. 반대로 웹 제출·조회와
   대체하는 봉인 artifact 판정
 - LocalRunner 기반 반복 실험
 - screening과 확인 실험
-- keep/discard/revise, checkpoint, 실패 복구
+- promote/revise/discard, checkpoint, 실패 복구
 - 외부 Sealed Judge와 YouTube 리랭킹 평가 snapshot
 - Trial Ledger와 출처가 연결된 최종 REPORT
 - 기존 웹 서비스에서 research request 제출과 최종 REPORT 열람
@@ -540,6 +589,7 @@ paper-grounded 제품 차별점도 사라진다. 반대로 웹 제출·조회와
 | 유료 논문 원문 우회 수집 | 라이선스와 접근 통제를 침해하며 MVP 기능이 아니다 | 재검토하지 않는다. 정식 라이선스 연동은 별도 제품 기능으로만 검토한다 |
 | 범용 웹 검색 결과를 검증 없이 연구 근거로 사용 | 출처 검증과 재현 계약을 깨뜨린다 | 구조화 paper source의 recall 부족이 실측되면, 검증·canonicalization 계약을 먼저 설계한 뒤 |
 | Research Harness나 실행 중인 Sealed Judge의 자기 수정 | root of trust를 없애 현재 run의 판정을 무효화한다 | 새 고정 digest로 **다음 run**을 시작하는 배포 절차로만 검토한다 |
+| 별도 OS 사용자·container·read-only mount를 이용한 적대적 candidate 완전 격리 | 로컬 제품 MVP의 방어 대상은 실수와 자기 채점 오염이며, 같은 사용자 프로세스의 호스트 탐색까지 막는 sandbox는 신규 실행 기반이 필요하다 | 불신 코드나 다중 사용자 run을 받기 전에 위협 모델과 실행 기반을 별도 spec으로 확정한다 |
 
 ## 12. MVP 완료 조건
 
@@ -550,6 +600,8 @@ paper-grounded 제품 차별점도 사라진다. 반대로 웹 제출·조회와
 - [ ] 이전 결과를 관찰해 서로 다른 trial을 순차 실행한다.
 - [ ] 의도적으로 깨진 candidate에서 자동 복구하고 다음 trial을 계속한다.
 - [ ] 동일한 Sealed Judge로 baseline과 candidate를 비교한다.
+- [ ] 유저 단위로 분리된 validation에서만 반복 피드백하고, final holdout은 마지막 1회만
+      평가해 에이전트에게 피드백하지 않는다.
 - [ ] 프로세스를 중단한 뒤 마지막 checkpoint부터 재개한다.
 - [ ] 개선 여부와 무관하게 최종 REPORT를 생성한다.
 - [ ] REPORT의 논문, 수치, commit, snapshot이 원본 manifest·ledger와 일치한다.
@@ -593,7 +645,7 @@ trial을 수행한 뒤, 채택 또는 기각 근거와 출처가 연결된 REPOR
 2. Trial Ledger와 checkpoint 가능한 Research Controller
 3. `ResearchDomain`과 YouTube adapter
 4. LocalRunner와 disposable candidate workspace
-5. 반복 `keep/discard/revise` loop
+5. 반복 `promote/revise/discard` loop
 6. Paper Discovery와 PaperCard
 7. Capability Matcher와 ExperimentCard
 8. 출처가 연결된 최종 REPORT
