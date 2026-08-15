@@ -1,12 +1,12 @@
-# 로컬 Research Harness 기반 단계 — verifier 대체 Implementation Plan
+# 로컬 Research Harness MVP — verifier 대체 Implementation Plan
 
-> **상태: #769 이슈·브랜치 생성, 확정 결정 승인 완료.** 구현은 아래 Task 순서와
-> 검증·동료 리뷰 규칙을 따른다.
+> **상태: #769 이슈·브랜치 생성, 기반 MVP 범위와 확정 결정 승인 완료.** 구현은 아래
+> Task 순서와 검증·동료 리뷰 규칙을 따른다.
 
-**Goal:** 제품 MVP의 선행 기반으로, 현행 executor의 `verifier`(정적 allowlist 사전
-검문)를 로컬 Research Harness(봉인된 사후 판정 + 자가 피드백)로 대체한다. 에이전트가
-저장소를 자유롭게 바꾸며 실험하고, 봉인된 Judge가 CTR 예측 품질을 판정해 그 결과를
-다시 에이전트에게 돌려주는 반복 환경을 만든다.
+**Goal:** 현행 executor의 `verifier`(정적 allowlist 사전 검문)를 로컬 Research
+Harness(봉인된 사후 판정 + 자가 피드백)로 대체한다. 사람이 준 가설·`ExperimentCard`로
+에이전트가 저장소를 자유롭게 바꾸며 실험하고, 봉인된 Judge가 CTR 예측 품질을 판정해
+그 결과를 다시 에이전트에게 돌려주는 반복 환경을 MVP로 완주한다.
 
 **Architecture:** 에이전트가 **무엇을 고쳤는지 검사하지 않고, 무엇을 냈는지만
 계약한다.** candidate는 disposable worktree에서 저장소 전체를 자유롭게 수정한 뒤
@@ -25,20 +25,19 @@ worktree 바깥의 Judge 소유 디렉터리와 별도 프로세스에 둔다. �
 
 ---
 
-## 제품 MVP와 이 계획의 관계
+## MVP와 이후 로드맵의 관계
 
-제품 MVP의 정본은 spec 11·12장이다. 그 범위는 자연어 request → 논문 자동 발견 →
-ExperimentCard → 반복 실험 → 봉인 평가 → 출처가 연결된 REPORT → 기존 웹 열람까지다.
-이 계획은 그중 **로컬 실행·평가 기반 단계**만 구현하는 부분집합이며, 완료되어도 제품
-MVP가 완료됐다고 부르지 않는다.
+MVP의 정본은 spec 11·12장이고, 이 plan이 그 MVP 전체의 구현 순서를 소유한다. 범위는
+사람이 준 가설·`ExperimentCard` → 전체 저장소 수정 → 반복 실험 → 봉인 평가 → 복구·재개 →
+Trial Ledger와 MVP REPORT까지다.
 
-Task 5b가 받는 수동 문자열 또는 fixture `ExperimentCard`는 Controller·피드백 seam을
-검증하기 위한 기반 단계 입력이다. 제품 경로에서는 후속 Paper Discovery/Capability
-Matcher가 만든 `ExperimentCard`가 같은 seam으로 들어오며, 사람에게 가설 문자열을
-요구하는 임시 입력은 최종 research request 계약이 아니다.
+Task 5b가 받는 사람이 작성한 가설과 `ExperimentCard`는 Controller·피드백 seam을
+검증하는 MVP 입력이다. 다음 단계에서는 Paper Discovery/Capability Matcher가 만든
+`ExperimentCard`가 같은 seam으로 들어온다.
 
-이 구분으로 spec과 plan이 같은 대상을 각각 MVP라고 부르지 않는다. 이 문서의 완료 조건은
-**기반 단계 완료 조건**이고, 제품 MVP 완료 조건은 spec 12장만이 소유한다.
+OpenAlex/arXiv/Crossref 자동 발견, PaperCard·compiler·출처 provenance, 논문이 연결된 9절
+REPORT, 기존 웹 request·budget·REPORT 배선은 MVP에서 버리는 항목이 아니라 이 plan 완료
+후 이어질 제품 로드맵이다.
 
 ---
 
@@ -209,18 +208,18 @@ guardrail을 -1σ로 더 민감하게 두는 것은 의도적 비대칭이다 �
 
 ---
 
-## 이 계획 이후 제품 MVP 잔여 범위
+## MVP 이후 로드맵
 
-다음 항목은 제품 MVP에서 빠지는 것이 아니라, 이 기반 단계와 다른 책임이라 후속 구현
-계획으로 나눈다. 기반 단계가 제공하는 `ExperimentCard` 입력 seam, Trial Ledger,
-REPORT evidence가 이 후속 범위의 선행 조건이다.
+다음 항목은 제외가 아니라 MVP가 제공하는 `ExperimentCard` 입력 seam, Trial Ledger,
+REPORT evidence 위에 이어질 후속 구현이다.
 
-- OpenAlex/arXiv/Crossref 논문 자동 발견과 PaperCard·Capability Matcher
+- OpenAlex/arXiv 논문 자동 발견과 Crossref 식별자 해소
+- PaperCard·Capability Matcher·출처 provenance
 - paper claim에서 검증 가능한 `ExperimentCard`를 만드는 compiler
 - 최종 `research-report.html` 전체 9개 섹션과 paper manifest 교차검증
 - 기존 workbench의 자연어 research request·budget 제출과 최종 REPORT 조회 배선
 
-다음은 제품 MVP 자체에서도 제외한다.
+다음은 MVP 밖의 별도 이슈 또는 필요 실측 뒤 재검토 범위다.
 
 - `applications/experiment_platform/executor/verifier.py` 삭제 (별도 이슈)
 - KubernetesJobRunner 연결 (spec 15장 10번)
@@ -248,7 +247,7 @@ REPORT evidence가 이 후속 범위의 선행 조건이다.
 | Task 6 | `autoresearch/cli.py`, `applications/experiment_platform/workbench/views.py:173-180,240-260` | Typer command 배선과 현행 연구 입력 UI 계약 | candidate/run CLI 두 개와 새 패키지 문서 등록 |
 | Task 7 | `applications/experiment_platform/executor/measurement.py:169-297`, `autoresearch/model_evaluation/seed_sweep.py:217-248`, `autoresearch/model_training/training_provenance.py:163-180` | 동일 seed 조건 평가, 평균·표준편차, split/seed manifest | Judge 지표별 baseline noise 등록과 로컬 end-to-end 증거 |
 
-### 제품 MVP 잔여 구현의 재사용 출발점
+### MVP 이후 로드맵의 재사용 출발점
 
 | 후속 범위 | 기존 경로 | 재사용/확장 방향 |
 | --- | --- | --- |
@@ -272,6 +271,7 @@ REPORT evidence가 이 후속 범위의 선행 조건이다.
 | `autoresearch/research_harness/feedback.py` | 자가 피드백 payload 조립 |
 | `autoresearch/research_harness/runner.py` | LocalRunner — candidate 실행 |
 | `autoresearch/research_harness/controller.py` | 예산·반복 루프·checkpoint |
+| `autoresearch/research_harness/report.py` | ledger·final evidence 기반 MVP REPORT 생성 |
 | `tests/research_harness/` | 위 각 모듈의 테스트 |
 
 ---
@@ -284,7 +284,7 @@ REPORT evidence가 이 후속 범위의 선행 조건이다.
       파일이며, Judge는 candidate 코드를 실행하지 않는다"
 - [x] spec 4.2에 **연구 공간 제한과 안전 제한의 분리** 명시 — allowlist는 폐기하되
       시크릿 커밋 차단은 유지
-- [x] spec 11장 제품 MVP 범위에 verifier 대체를 명시적으로 포함
+- [x] spec 11장 기반 MVP 범위에 verifier 대체를 명시적으로 포함
 - [x] spec 15장에 실행 위치 결정(D2) 반영
 - [x] D5(지표별 σ 기반 판정 규칙)를 spec 7장 `compare()` 설명에 반영
 - [x] D6(`slate_id` 생성 시점 부여)를 spec 8장 `EvaluationSlateItem`에 반영
@@ -458,9 +458,9 @@ verifier 대체가 실제로 일어나는 지점이다.
       - 실패 시 stage + reason code + 로그 tail
       - **행 단위 정답과 지표 구현 코드는 포함하지 않는다**
 - [ ] `controller.py` — 예산(최대 시간/trial 수) 안에서 반복. spec 7장 루프 구조를 따르되
-      이 기반 단계 검증에서는 사람이 준 문자열 또는 fixture `ExperimentCard`를 입력 seam에
-      주입한다. 제품 경로 입력은 후속 Paper Discovery/Capability Matcher가 만든
-      `ExperimentCard`이며, 수동 문자열을 제품 계약으로 노출하지 않는다
+      MVP에서는 사람이 준 가설과 `ExperimentCard`를 입력 seam에 주입한다. 다음
+      단계에서는 Paper Discovery/Capability Matcher가 만든 `ExperimentCard`가 같은 seam을
+      사용한다
 - [ ] 실패 시 사용자에게 묻지 않고 다음 행동을 스스로 정한다(spec 7.1)
 - [ ] validation loop 종료 후 champion을 고정하고 final holdout을 마지막 1회 평가한다.
       final 결과는 feedback을 만들지 않고 ledger/REPORT evidence에만 기록한 뒤 종료한다
@@ -472,11 +472,14 @@ verifier 대체가 실제로 일어나는 지점이다.
 
 ---
 
-## Task 6: CLI 진입점 + 문서 갱신
+## Task 6: CLI 진입점 + MVP REPORT + 문서 갱신
 
 - [ ] `autoresearch/cli.py`에 `harness-predict`(candidate용)와 `harness-run`(연구 실행) 추가
 - [ ] `harness-predict` 기본 구현 — 현행 champion 모델로 slate를 점수화한다.
       **이것이 baseline이자 candidate가 고쳐 나갈 출발점이다**
+- [ ] `report.py` — Trial Ledger와 final holdout evidence에서 `research-report.md`를 만든다.
+      사람이 준 가설·`ExperimentCard`, trial·실패·복구 이력, validation/final 지표,
+      최종 결론과 재현 좌표를 포함한다. 논문 출처와 9절 고정 형식은 로드맵 범위다
 - [ ] `README.md`와 `.claude/docs/agent-project-reference.md`에
       `autoresearch/research_harness/` 추가 (CLAUDE.md 필수 규칙)
 - [ ] `docs/README.md` 역할별 인덱스에 이 spec/plan 등재
@@ -511,7 +514,7 @@ slate(Task 1)가 모두 필요하기 때문이다.
 
 ---
 
-## 기반 단계 완료 조건
+## MVP 완료 조건
 
 - [ ] 에이전트가 저장소 어느 파일이든 수정해도 harness가 차단하지 않는다
 - [ ] candidate가 evaluator·테스트·split 코드를 고쳐도 판정 수치가 바뀌지 않는다

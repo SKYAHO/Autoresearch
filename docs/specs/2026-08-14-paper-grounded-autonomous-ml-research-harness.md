@@ -1,14 +1,14 @@
-# 논문 기반 자율 ML 연구 Harness — YouTube 리랭킹 MVP
+# 자율 ML 연구 Harness — YouTube 리랭킹 기반 MVP와 논문 로드맵
 
 > 2026-08-14 | 상태: 제품 방향·상위 설계·구현 계획 확정, 구현 미착수
 >
 > 이 문서는 기존 executor의 다음 단계를 정의한다. 현재의 단일 가설 실행 계약을
-> 폐기하지 않으며, 논문 발견부터 반복 실험과 최종 리포트까지 이어지는 자율 연구
-> 제품의 목표 구조를 고정한다.
+> 폐기하지 않으며, 사람이 준 가설로 반복 실험을 완주하는 기반 MVP와 그 위에 놓일
+> 논문 발견·출처 연결 제품 로드맵을 구분해 고정한다.
 
 ## 1. 목적
 
-Autoresearch MVP의 목표는 CTR 도메인의 최고 성능 자체가 아니다. YouTube 트렌딩 기반
+Autoresearch의 최종 목표는 CTR 도메인의 최고 성능 자체가 아니다. YouTube 트렌딩 기반
 리랭킹을 구체적인 테스트베드로 삼아 다음 능력을 end-to-end로 증명하는 것이다.
 
 > 사용자가 자연어 연구 목표와 실행 예산을 제출하면, 에이전트가 관련 논문을 스스로
@@ -18,6 +18,11 @@ Autoresearch MVP의 목표는 CTR 도메인의 최고 성능 자체가 아니다
 사용자가 CTR, 추천 지표, 모델 구조를 미리 알아야 하는 제품으로 만들지 않는다.
 도메인별 기본 평가 방법과 안전 계약은 `ResearchDomain` 구현이 소유하며, 사용자가
 확인해야 하는 것은 실행 도중의 승인 요청이 아니라 완주 후 REPORT뿐이다.
+
+이번 MVP는 이 최종 목표의 실행 기반을 먼저 닫는다. 사람이 작성한 가설과
+`ExperimentCard`를 입력받아 전체 저장소 수정, 반복 실험, 봉인 평가, 복구·재개,
+Trial Ledger와 REPORT 생성까지 완주한다. 논문 자동 발견과 claim compiler, 논문 출처가
+연결된 9절 REPORT, 웹 배선은 이 기반을 검증한 뒤의 로드맵이다.
 
 ## 2. 배경과 현재 한계
 
@@ -50,13 +55,18 @@ agent나 기존 goal 실행과 구별되는 ML 연구 방법론이 부족하다.
 
 ### 3.1 입력
 
-사용자는 다음 두 종류의 정보만 제공한다.
+MVP의 입력은 사람이 작성한 가설과 `ExperimentCard`, 실행 예산이다. `ExperimentCard`는
+실험 의도, 검증 가능한 변경, falsification 조건을 구조화해 Controller에 전달하며,
+MVP는 이 입력을 스스로 보완·수정하면서 반복한다.
+
+MVP 이후 최종 제품에서는 사용자가 다음 두 종류의 정보만 제공한다.
 
 - 자연어 연구 목표: 예) `YouTube 추천 목록의 리랭킹 품질을 개선한다.`
 - 실행 예산: 최대 시간, 최대 trial 수, CPU/GPU 등 허용 자원
 
 논문 shortlist, 모델 종류, 피처, primary metric, 통계 기법을 사용자에게 선택시키지
-않는다. YouTube MVP의 기본값은 `YouTubeCTRDomain`이 결정한다.
+않는다. YouTube 도메인의 기본값은 `YouTubeCTRDomain`이 결정한다. 자연어 목표와 예산만으로
+`ExperimentCard`를 만드는 경로는 논문 자동 발견·compiler와 함께 MVP 이후 로드맵이다.
 
 ### 3.2 실행 중 상호작용
 
@@ -74,15 +84,17 @@ agent나 기존 goal 실행과 구별되는 ML 연구 방법론이 부족하다.
 
 ### 3.3 출력
 
-사람이 확인하는 주 산출물은 최종 `research-report.html` 또는 동일 내용을 가진
-Markdown REPORT다. 다음 기계 판독 산출물도 함께 보존한다.
+MVP에서 사람이 확인하는 주 산출물은 `research-report.md` 또는 동일 내용을 가진 HTML
+REPORT다. 다음 기계 판독 산출물도 함께 보존한다.
 
 ```text
-research-report.html
-paper-manifest.json
+research-report.md
 experiment-ledger.jsonl
 artifacts/
 ```
+
+MVP 이후 논문 기반 로드맵은 `research-report.html`의 9절 계약과
+`paper-manifest.json`을 추가한다.
 
 모든 가설이 기각되어도 연구 run은 유효하게 완주할 수 있다. `개선 없음`은 실행 실패가
 아니라 근거가 있는 연구 결과다.
@@ -174,6 +186,10 @@ Kubernetes Job은 다중 사용자 격리, 원격 자원, GPU scheduling이 필�
 
 ## 5. 목표 아키텍처
 
+아래는 MVP 이후 논문 계층까지 포함한 최종 구조다. MVP에서는 사람이 준 가설과
+`ExperimentCard`가 Paper Discovery·Capability Matcher 자리를 대신해 Research Agent 입력으로
+직접 들어간다.
+
 ```text
 Research Request
        |
@@ -249,12 +265,12 @@ MVP에는 `YouTubeCTRDomain`과 `LocalRunner`만 실제 구현한다. 이커머�
 테스트에서는 작은 fixture용 fake domain을 사용할 수 있으나 두 번째 제품 domain으로
 간주하지 않는다.
 
-## 6. 논문 자동 발견
+## 6. 논문 자동 발견 (MVP 이후 로드맵)
 
 논문 발견은 서비스 내부의 첫 번째 연구 단계다. 사용자가 PDF나 논문 목록을 제공하는
 흐름을 기본값으로 두지 않는다.
 
-### 6.1 MVP source 구성
+### 6.1 로드맵 source 구성
 
 - OpenAlex: 여러 출판처를 포괄하는 검색, 필터, 인용 관계 탐색
 - arXiv: 추천·CTR·representation learning 분야의 공개 preprint와 원문
@@ -342,6 +358,9 @@ REPORT는 논문을 다음 상태로 구분한다.
 존재 여부와 canonical identifier를 검증하지 못한 논문은 구현 근거로 사용할 수 없다.
 
 ## 7. 자율 연구 루프
+
+MVP는 사람이 준 가설·`ExperimentCard`에서 아래 루프를 시작한다. 코드의 discovery와
+paper compile 단계는 MVP 이후에 같은 입력 seam 앞에 붙는다.
 
 ```python
 while budget.remaining:
@@ -483,10 +502,9 @@ final holdout 실행 자체가 실패하면 재평가로 정보를 더 소비하
 
 Trial Ledger는 REPORT의 근거이자 다음 iteration의 memory다. 최소한 다음을 기록한다.
 
-- research request와 budget
+- 사람이 준 가설·`ExperimentCard`와 budget
 - 기준 commit, candidate commit, 전체 diff fingerprint
-- 선택한 PaperCard와 탈락한 후보
-- 논문 claim에서 변환된 가설과 falsification 조건
+- 가설과 falsification 조건
 - 데이터 snapshot, 파생 데이터 lineage, split과 evaluation fingerprint
 - 실행 환경, dependency lock, seed, 소요 시간과 자원 사용량
 - stdout/stderr 요약과 실패 reason code
@@ -494,11 +512,20 @@ Trial Ledger는 REPORT의 근거이자 다음 iteration의 memory다. 최소한 
 - final holdout의 단일 평가 결과와 `final_holdout_consumed` 여부
 - champion lineage와 checkpoint
 
-외부 데이터를 허용하는 후속 버전에서는 URL, 조회 시점, 라이선스, checksum을 함께
-기록한다. 출처와 생성 과정을 재현할 수 없는 데이터는 최종 candidate 근거로 사용할 수
-없다.
+MVP 이후에는 선택한 PaperCard와 탈락한 후보, 논문 claim에서 변환된 가설, URL, 조회 시점,
+라이선스, checksum을 같은 ledger에 추가한다. 출처와 생성 과정을 재현할 수 없는 외부
+데이터는 최종 candidate 근거로 사용할 수 없다.
 
-## 10. 최종 REPORT 계약
+## 10. REPORT 계약
+
+### 10.1 MVP REPORT
+
+MVP REPORT는 사람이 준 가설·`ExperimentCard`에서 최종 결론까지의 실행 근거를 남긴다.
+최소한 실행 예산과 trial 수, 시도한 변경과 실패, validation·final holdout 지표,
+promote/revise/discard 근거, checkpoint 복구 이력, 최종 candidate와 재현 좌표를 포함한다.
+논문 출처와 9개 고정 절, paper manifest 교차검증은 요구하지 않는다.
+
+### 10.2 MVP 이후 논문 기반 REPORT
 
 REPORT는 최고 점수만 보여주는 결과 페이지가 아니라 논문에서 candidate까지의 감사 가능한
 research lineage다.
@@ -542,42 +569,48 @@ research lineage다.
 `확장`은 기존 경계 위에 설 수 있지만 상당한 추가 구현이 필요하다는 뜻이며, `신규`는
 직접 대응하는 제품 자산이 없다는 뜻이다.
 
-| MVP 항목 | 판정 | 현재 재사용 가능 자산 | MVP에 더 필요한 것 |
-| --- | --- | --- | --- |
-| 추상 `ResearchDomain`과 `YouTubeCTRDomain` | 확장 | 확률 지표와 유저 단위 grouped ROC-AUC(`autoresearch/model_evaluation/evaluate.py:55-124,366-427`), snapshot·split·seed manifest(`autoresearch/model_training/training_provenance.py:96-180`) | domain capability, slate 생성·검증, 지표 방향과 비교 정책을 묶는 adapter 계약 |
-| OpenAlex/arXiv 발견과 Crossref 식별자 해소 | 신규 | paper provider는 없고, 재시도·rate-limit 분류·key 회전·호출 예산을 갖춘 외부 HTTP 패턴만 있다(`autoresearch/data_collection/client.py:132-186,222-318,368-393`) | provider client, 중복 제거, 원문 범위, query·선택·탈락 manifest |
-| PaperCard·capability matching·출처 provenance | 신규 | 엄격한 immutable Pydantic provenance 모델 패턴(`autoresearch/model_training/training_provenance.py:38-45,96-180`)과 선택적 선행 연구 입력(`applications/experiment_platform/api/experiments/issue_authoring.py:80-112`)만 간접 재사용 가능 | PaperCard 모델, claim 근거 위치, repository capability와 실행 가능성 판정 |
-| 논문에서 검증 가능한 ExperimentCard 생성 | 확장 | 사전등록 입력 검증과 `[AR]` 이슈 본문 조립(`applications/experiment_platform/api/experiments/issue_authoring.py:80-112,183-220`) | paper claim에서 change·falsification·metric 계약을 구조화하는 compiler |
-| 전체 저장소 수정 coding agent와 verifier 대체 | 확장 | credential-free checkout(`applications/experiment_platform/executor/workspace.py:153-251`), 격리된 Codex 호출(`applications/experiment_platform/executor/codex_worker.py:119-173`), 검증 tree commit·non-force push(`applications/experiment_platform/executor/finalizer.py:382-547`) | 현행 경로·의존성 allowlist(`applications/experiment_platform/executor/verifier.py:377-393`)를 쓰지 않는 disposable local workspace와 사후 artifact 계약 |
-| `LocalRunner` 기반 반복 실험 | 확장 | timeout·process-group 회수·stdout/stderr tail을 갖춘 subprocess 실행(`applications/experiment_platform/executor/codex_worker.py:1-26,150-173`) | 교체 가능한 runner 인터페이스, candidate 예측 실행, budget loop와 iteration orchestration |
-| screening과 확인 실험 | 재사용 | 조건별 seed 평가와 paired delta 조립(`applications/experiment_platform/executor/measurement.py:169-252,255-297`), 다중 seed 평균·표준편차(`autoresearch/model_evaluation/seed_sweep.py:139-248`) | 저비용/확인 fidelity 선택과 Sealed Judge 결과 연결 |
-| 판정·checkpoint·실패 복구 | 확장 | 상태 전이(`applications/experiment_platform/api/experiments/models.py:67-103`), 멱등 event·log·Step 영속화(`applications/experiment_platform/api/experiments/models.py:235-357`) | trial 단위 결정론 판정, 완료 단계 resume payload, 다음 iteration 전략 |
-| 외부 Sealed Judge와 YouTube 평가 snapshot | 확장 | action log의 user/video/rank/source 원천(`autoresearch/action_log_generation/schema.py:37-61`), API key 없는 결정적 fixture 생성기(`autoresearch/action_log_generation/llm_generator.py:149-171`), 30분 click 귀속(`autoresearch/jobs/feature_store_build.py:295-370`), 기존 확률 지표(`autoresearch/model_evaluation/evaluate.py:366-427`) | `slate_id`, 라벨 분리 snapshot, NDCG/Recall, candidate와 분리된 Judge 프로세스 |
-| Trial Ledger와 출처가 연결된 최종 REPORT | 확장 | DB의 commit·metric·event·log·Step(`applications/experiment_platform/api/experiments/models.py:139-357`), write-once 결과 게시(`applications/experiment_platform/executor/results_store.py:91-145`), agent report 입력·절 검사(`applications/experiment_platform/executor/report.py:126-159,197-230`, `applications/experiment_platform/executor/prompt.py:77-85,410-471`), 자기완결 HTML renderer(`autoresearch/reporting/report_html.py:86-149`) | 여러 trial·paper lineage ledger, 9개 REPORT 절, 원본 manifest 교차검증 |
-| 웹 research request 제출과 REPORT 열람 | 재사용 | 제목·가설 제출 화면(`applications/experiment_platform/workbench/views.py:173-180,240-260`), 실험 목록·상세 조회(`applications/experiment_platform/workbench/views.py:337-410`), safe Markdown→HTML과 iframe 표시(`applications/experiment_platform/workbench/report.py:29-42,70-129`, `applications/experiment_platform/workbench/views.py:613-633`) | budget 입력, research run API 배선, 최종 multi-trial REPORT 조회 모델 |
+| 역량 항목 | 단계 | 판정 | 현재 재사용 가능 자산 | 더 필요한 것 |
+| --- | --- | --- | --- | --- |
+| 추상 `ResearchDomain`과 `YouTubeCTRDomain` | MVP | 확장 | 확률 지표와 유저 단위 grouped ROC-AUC(`autoresearch/model_evaluation/evaluate.py:55-124,366-427`), snapshot·split·seed manifest(`autoresearch/model_training/training_provenance.py:96-180`) | domain capability, slate 생성·검증, 지표 방향과 비교 정책을 묶는 adapter 계약 |
+| OpenAlex/arXiv 발견과 Crossref 식별자 해소 | 로드맵 | 신규 | paper provider는 없고, 재시도·rate-limit 분류·key 회전·호출 예산을 갖춘 외부 HTTP 패턴만 있다(`autoresearch/data_collection/client.py:132-186,222-318,368-393`) | provider client, 중복 제거, 원문 범위, query·선택·탈락 manifest |
+| PaperCard·capability matching·출처 provenance | 로드맵 | 신규 | 엄격한 immutable Pydantic provenance 모델 패턴(`autoresearch/model_training/training_provenance.py:38-45,96-180`)과 선택적 선행 연구 입력(`applications/experiment_platform/api/experiments/issue_authoring.py:80-112`)만 간접 재사용 가능 | PaperCard 모델, claim 근거 위치, repository capability와 실행 가능성 판정 |
+| 논문에서 검증 가능한 ExperimentCard 생성 | 로드맵 | 확장 | 사전등록 입력 검증과 `[AR]` 이슈 본문 조립(`applications/experiment_platform/api/experiments/issue_authoring.py:80-112,183-220`) | paper claim에서 change·falsification·metric 계약을 구조화하는 compiler |
+| 전체 저장소 수정 coding agent와 verifier 대체 | MVP | 확장 | credential-free checkout(`applications/experiment_platform/executor/workspace.py:153-251`), 격리된 Codex 호출(`applications/experiment_platform/executor/codex_worker.py:119-173`), 검증 tree commit·non-force push(`applications/experiment_platform/executor/finalizer.py:382-547`) | 현행 경로·의존성 allowlist(`applications/experiment_platform/executor/verifier.py:377-393`)를 쓰지 않는 disposable local workspace와 사후 artifact 계약 |
+| `LocalRunner` 기반 반복 실험 | MVP | 확장 | timeout·process-group 회수·stdout/stderr tail을 갖춘 subprocess 실행(`applications/experiment_platform/executor/codex_worker.py:1-26,150-173`) | 교체 가능한 runner 인터페이스, candidate 예측 실행, budget loop와 iteration orchestration |
+| screening과 확인 실험 | MVP | 재사용 | 조건별 seed 평가와 paired delta 조립(`applications/experiment_platform/executor/measurement.py:169-252,255-297`), 다중 seed 평균·표준편차(`autoresearch/model_evaluation/seed_sweep.py:139-248`) | 저비용/확인 fidelity 선택과 Sealed Judge 결과 연결 |
+| 판정·checkpoint·실패 복구·자가 피드백 | MVP | 확장 | 상태 전이(`applications/experiment_platform/api/experiments/models.py:67-103`), 멱등 event·log·Step 영속화(`applications/experiment_platform/api/experiments/models.py:235-357`) | trial 단위 결정론 판정, 완료 단계 resume payload, 다음 iteration 전략과 구조화 feedback |
+| 외부 Sealed Judge와 YouTube 평가 snapshot | MVP | 확장 | action log의 user/video/rank/source 원천(`autoresearch/action_log_generation/schema.py:37-61`), API key 없는 결정적 fixture 생성기(`autoresearch/action_log_generation/llm_generator.py:149-171`), 30분 click 귀속(`autoresearch/jobs/feature_store_build.py:295-370`), 기존 확률 지표(`autoresearch/model_evaluation/evaluate.py:366-427`) | `slate_id`, 라벨 분리 snapshot, NDCG/Recall, candidate와 분리된 Judge 프로세스 |
+| Trial Ledger와 MVP REPORT | MVP | 확장 | DB의 commit·metric·event·log·Step(`applications/experiment_platform/api/experiments/models.py:139-357`), write-once 결과 게시(`applications/experiment_platform/executor/results_store.py:91-145`), agent report 입력·절 검사(`applications/experiment_platform/executor/report.py:126-159,197-230`, `applications/experiment_platform/executor/prompt.py:77-85,410-471`) | 여러 trial의 ledger, 복구·판정 근거가 연결된 로컬 REPORT |
+| 출처가 연결된 최종 REPORT 9절 | 로드맵 | 확장 | 자기완결 HTML renderer(`autoresearch/reporting/report_html.py:86-149`)와 MVP ledger/report | paper lineage, 9개 REPORT 절, 원본 manifest 교차검증 |
+| 웹 research request 제출과 REPORT 열람 | 로드맵 | 재사용 | 제목·가설 제출 화면(`applications/experiment_platform/workbench/views.py:173-180,240-260`), 실험 목록·상세 조회(`applications/experiment_platform/workbench/views.py:337-410`), safe Markdown→HTML과 iframe 표시(`applications/experiment_platform/workbench/report.py:29-42,70-129`, `applications/experiment_platform/workbench/views.py:613-633`) | budget 입력, research run API 배선, 최종 multi-trial REPORT 조회 모델 |
 
-조사 결과 제품 입력과 완료 조건을 줄일 이유는 없다. 논문 provider와 PaperCard는 신규지만
-이를 제외하면 12장의 자동 발견·가설 변환·출처 일치 완료 조건을 만족하지 못하고,
-paper-grounded 제품 차별점도 사라진다. 반대로 웹 제출·조회와 HTML 렌더는 이미 대부분
-구현되어 있어 제외하는 편이 오히려 별도 임시 인터페이스를 만든다. 따라서 아래 11개
-항목을 모두 **제품 MVP**에 포함하되, 구현은 기존 자산 위에 서는 순서로 나눈다.
+이 인벤토리는 MVP에서 제외된 항목을 폐기하지 않는다. MVP는 현재 코드 위에 바로 세울 수
+있는 반복 실행·봉인 평가 기반을 먼저 완주하고, 논문·출처·웹 제품 계층은 그 결과를
+입력 seam과 evidence로 재사용하는 다음 단계다.
 
-### 11.2 제품 MVP 포함
+### 11.2 MVP 포함
 
 - 추상 `ResearchDomain`과 YouTube 구현 1개
-- OpenAlex/arXiv 기반 논문 자동 발견과 Crossref 식별자 해소
-- PaperCard, capability matching, 출처 provenance
-- 논문에서 검증 가능한 ExperimentCard 생성
 - 전체 연구 저장소를 수정할 수 있는 coding agent와 현행 verifier의 정적 allowlist를
   대체하는 봉인 artifact 판정
+- 외부 Sealed Judge와 YouTube 리랭킹 평가 snapshot
 - LocalRunner 기반 반복 실험
 - screening과 확인 실험
 - promote/revise/discard, checkpoint, 실패 복구
-- 외부 Sealed Judge와 YouTube 리랭킹 평가 snapshot
-- Trial Ledger와 출처가 연결된 최종 REPORT
-- 기존 웹 서비스에서 research request 제출과 최종 REPORT 열람
+- Trial Ledger
+- 사람이 준 가설·`ExperimentCard`로 동작하는 자가 피드백 반복 루프와 MVP REPORT
 
-### 11.3 제품 MVP 제외와 재검토 시점
+### 11.3 MVP 이후 로드맵
+
+다음은 제외가 아니라 MVP 위에 이어서 구현할 다음 단계다.
+
+- OpenAlex/arXiv 논문 자동 발견과 Crossref 식별자 해소
+- PaperCard, capability matching, 출처 provenance
+- 논문 claim에서 `ExperimentCard`를 만드는 compiler
+- 출처가 연결된 최종 REPORT 9개 절과 paper manifest 교차검증
+- 기존 웹 workbench의 research request·budget 제출과 최종 REPORT 조회 배선
+
+### 11.4 영구 제외와 재검토 시점
 
 | 제외 항목 | 제외 이유 | 재검토 시점 |
 | --- | --- | --- |
@@ -593,9 +626,7 @@ paper-grounded 제품 차별점도 사라진다. 반대로 웹 제출·조회와
 
 ## 12. MVP 완료 조건
 
-- [ ] 자연어 목표와 예산만으로 research run을 시작한다.
-- [ ] 서비스가 논문을 자동 발견하고 선택·탈락 이유를 기록한다.
-- [ ] 선택한 논문 하나 이상을 코드 변경이 있는 검증 가능한 가설로 변환한다.
+- [ ] 사람이 준 가설과 `ExperimentCard`, 예산으로 research run을 시작한다.
 - [ ] 에이전트가 저장소 전체 범위에서 candidate를 만들 수 있다.
 - [ ] 이전 결과를 관찰해 서로 다른 trial을 순차 실행한다.
 - [ ] 의도적으로 깨진 candidate에서 자동 복구하고 다음 trial을 계속한다.
@@ -603,11 +634,22 @@ paper-grounded 제품 차별점도 사라진다. 반대로 웹 제출·조회와
 - [ ] 유저 단위로 분리된 validation에서만 반복 피드백하고, final holdout은 마지막 1회만
       평가해 에이전트에게 피드백하지 않는다.
 - [ ] 프로세스를 중단한 뒤 마지막 checkpoint부터 재개한다.
-- [ ] 개선 여부와 무관하게 최종 REPORT를 생성한다.
-- [ ] REPORT의 논문, 수치, commit, snapshot이 원본 manifest·ledger와 일치한다.
+- [ ] 개선 여부와 무관하게 지표·commit·snapshot·복구 이력이 ledger와 일치하는 MVP
+      REPORT를 생성한다.
 - [ ] 사람의 중간 승인 없이 시작부터 REPORT까지 완주한다.
 
+### MVP 이후 로드맵 완료 조건
+
+- [ ] 자연어 목표와 예산만으로 research run을 시작한다.
+- [ ] 서비스가 논문을 자동 발견하고 선택·탈락 이유를 기록한다.
+- [ ] 선택한 논문 하나 이상을 코드 변경이 있는 검증 가능한 가설로 변환한다.
+- [ ] REPORT의 논문, 수치, commit, snapshot이 원본 paper manifest·ledger와 일치한다.
+- [ ] 기존 웹 workbench에서 request·budget을 제출하고 최종 REPORT를 조회한다.
+
 ## 13. 오픈소스 차별점
+
+paper-grounded hypothesis generation은 최종 제품의 핵심 차별점으로 유지하지만 이번 MVP의
+구현 범위는 아니다.
 
 오픈소스 가치의 중심은 웹에서 작업을 제출하거나 자리를 비워도 실행이 계속되는 기능이
 아니다. 다음 연구 방법론과 재현 가능한 reference implementation이 차별점이다.
@@ -623,6 +665,8 @@ paper-grounded 제품 차별점도 사라진다. 반대로 웹 제출·조회와
 
 ## 14. 이력서·데모 포지셔닝
 
+논문 기반 가설 생성과 출처가 연결된 REPORT는 최종 데모 목표이며 이번 MVP 범위는 아니다.
+
 프로젝트는 CTR 연구 전문성을 과장하기보다 자율 에이전트 시스템과 재현 가능한 ML 실험
 설계를 강조한다.
 
@@ -636,9 +680,8 @@ trial을 수행한 뒤, 채택 또는 기각 근거와 출처가 연결된 REPOR
 
 ## 15. 구현 순서 원칙
 
-구현의 첫 부분집합은 [로컬 Research Harness 기반 단계 계획](../plans/2026-08-15-local-research-harness-mvp.md)의
-의존 순서를 따른다. 이 계획은 제품 MVP 전체가 아니라 Sealed Judge·반복 실행 기반만
-담당한다. 로컬 Harness를 신규로 만들고 현행 Kubernetes executor는 이 기반 단계에서
+MVP 구현은 [로컬 Research Harness MVP 계획](../plans/2026-08-15-local-research-harness-mvp.md)의
+의존 순서를 따른다. 로컬 Harness를 신규로 만들고 현행 Kubernetes executor는 MVP에서
 수정하지 않으며, 이후 `ExperimentRunner` 구현체로 흡수한다.
 
 1. Sealed Judge와 `EvaluationSlateSnapshot`
@@ -646,11 +689,11 @@ trial을 수행한 뒤, 채택 또는 기각 근거와 출처가 연결된 REPOR
 3. `ResearchDomain`과 YouTube adapter
 4. LocalRunner와 disposable candidate workspace
 5. 반복 `promote/revise/discard` loop
-6. Paper Discovery와 PaperCard
-7. Capability Matcher와 ExperimentCard
-8. 출처가 연결된 최종 REPORT
-9. 기존 웹 workbench 연결
-10. 필요가 실측된 뒤 KubernetesJobRunner 연결
+6. Trial Ledger 근거와 MVP REPORT
+
+MVP 이후에는 Paper Discovery와 PaperCard → Capability Matcher와 ExperimentCard compiler →
+출처가 연결된 9절 REPORT → 기존 웹 workbench 연결 순으로 진행한다. 원격 자원 필요가
+실측된 뒤에만 KubernetesJobRunner를 연결한다.
 
 구현 착수 전 기존 관련 spec과의 대체·확장 관계를 이슈에서 확정하고, 저장소 workflow에
 따라 이슈에서 생성한 브랜치와 구현 plan을 사용한다.
