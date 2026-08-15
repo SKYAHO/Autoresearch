@@ -1,12 +1,12 @@
-# 로컬 Research Harness MVP — verifier 대체 Implementation Plan
+# 로컬 Research Harness 기반 단계 — verifier 대체 Implementation Plan
 
 > **상태: #769 이슈·브랜치 생성, 확정 결정 승인 완료.** 구현은 아래 Task 순서와
 > 검증·동료 리뷰 규칙을 따른다.
 
-**Goal:** 현행 executor의 `verifier`(정적 allowlist 사전 검문)를 로컬 Research
-Harness(봉인된 사후 판정 + 자가 피드백)로 대체한다. 에이전트가 저장소를 자유롭게
-바꾸며 실험하고, 봉인된 Judge가 CTR 예측 품질을 판정해 그 결과를 다시 에이전트에게
-돌려주는 반복 환경을 만든다.
+**Goal:** 제품 MVP의 선행 기반으로, 현행 executor의 `verifier`(정적 allowlist 사전
+검문)를 로컬 Research Harness(봉인된 사후 판정 + 자가 피드백)로 대체한다. 에이전트가
+저장소를 자유롭게 바꾸며 실험하고, 봉인된 Judge가 CTR 예측 품질을 판정해 그 결과를
+다시 에이전트에게 돌려주는 반복 환경을 만든다.
 
 **Architecture:** 에이전트가 **무엇을 고쳤는지 검사하지 않고, 무엇을 냈는지만
 계약한다.** candidate는 disposable worktree에서 저장소 전체를 자유롭게 수정한 뒤
@@ -20,6 +20,23 @@ worktree 바깥의 별도 디렉터리와 별도 프로세스에 있어, 접근 
 (현재 미커밋 — Task 0에서 결정 반영 후 커밋)
 
 **Issue:** #769
+
+---
+
+## 제품 MVP와 이 계획의 관계
+
+제품 MVP의 정본은 spec 11·12장이다. 그 범위는 자연어 request → 논문 자동 발견 →
+ExperimentCard → 반복 실험 → 봉인 평가 → 출처가 연결된 REPORT → 기존 웹 열람까지다.
+이 계획은 그중 **로컬 실행·평가 기반 단계**만 구현하는 부분집합이며, 완료되어도 제품
+MVP가 완료됐다고 부르지 않는다.
+
+Task 5b가 받는 수동 문자열 또는 fixture `ExperimentCard`는 Controller·피드백 seam을
+검증하기 위한 기반 단계 입력이다. 제품 경로에서는 후속 Paper Discovery/Capability
+Matcher가 만든 `ExperimentCard`가 같은 seam으로 들어오며, 사람에게 가설 문자열을
+요구하는 임시 입력은 최종 research request 계약이 아니다.
+
+이 구분으로 spec과 plan이 같은 대상을 각각 MVP라고 부르지 않는다. 이 문서의 완료 조건은
+**기반 단계 완료 조건**이고, 제품 MVP 완료 조건은 spec 12장만이 소유한다.
 
 ---
 
@@ -162,14 +179,52 @@ guardrail을 -1σ로 더 민감하게 두는 것은 의도적 비대칭이다 �
 
 ---
 
-## 범위 밖
+## 이 계획 이후 제품 MVP 잔여 범위
 
-- 논문 자동 발견, PaperCard, Capability Matcher (spec 15장 6·7번 — 후속)
-- 최종 `research-report.html` 전체 9개 섹션 (spec 10장 — 후속)
+다음 항목은 제품 MVP에서 빠지는 것이 아니라, 이 기반 단계와 다른 책임이라 후속 구현
+계획으로 나눈다. 기반 단계가 제공하는 `ExperimentCard` 입력 seam, Trial Ledger,
+REPORT evidence가 이 후속 범위의 선행 조건이다.
+
+- OpenAlex/arXiv/Crossref 논문 자동 발견과 PaperCard·Capability Matcher
+- paper claim에서 검증 가능한 `ExperimentCard`를 만드는 compiler
+- 최종 `research-report.html` 전체 9개 섹션과 paper manifest 교차검증
+- 기존 workbench의 자연어 research request·budget 제출과 최종 REPORT 조회 배선
+
+다음은 제품 MVP 자체에서도 제외한다.
+
 - `applications/experiment_platform/executor/verifier.py` 삭제 (별도 이슈)
 - KubernetesJobRunner 연결 (spec 15장 10번)
 - `training_entity` SQL 변경 — **불필요하다.** Judge는 slate 식별자와 라벨만 필요하고
   피처는 candidate가 스스로 조립하므로, 학습 데이터 계약을 건드리지 않는다.
+
+---
+
+## 기존 코드 재사용 지도
+
+기존 자산을 복제하지 않고 아래 경계 위에 얹는다. `새로 쓰는 것`은 해당 Task의 실제
+증분이며, 경로가 비슷하다는 이유만으로 기존 Kubernetes executor를 수정하지 않는다.
+
+| Task | 기존 경로 | 재사용하는 것 | 새로 쓰는 것 |
+| --- | --- | --- | --- |
+| Task 1-0 | `autoresearch/action_log_generation/schema.py:37-61`, `autoresearch/action_log_generation/pipeline.py:859-939`, `autoresearch/action_log_generation/daily.py:847-880`, `autoresearch/action_log_generation/llm_generator.py:149-171` | EventLog 계약, 유저별 후보 묶음 확장, 일일 1-day 생성 설정, API key 없는 결정적 fixture 생성 | 원천 `slate_id` 필드와 묶음별 결정적 ID 부여 |
+| Task 1 | `autoresearch/jobs/feature_store_build.py:295-370`, `autoresearch/model_training/training_provenance.py:38-45,96-180`, `autoresearch/model_training/training_snapshot_store.py:147-205` | 30분 click 귀속, immutable manifest, content-addressed write-once 게시 패턴 | label-free slate/봉인 labels 분리와 evaluation manifest |
+| Task 2a | `autoresearch/model_evaluation/evaluate.py:55-124` | 그룹 단위 metric과 coverage를 함께 반환하는 순수 계산 패턴 | 결정적 NDCG@k·Recall@k와 0-click coverage 규칙 |
+| Task 2b | `autoresearch/model_evaluation/evaluate.py:366-427`, `autoresearch/model_evaluation/seed_sweep.py:139-248` | ROC-AUC/PR-AUC/LogLoss/Brier/grouped ROC-AUC, seed 평균·표준편차 | 예측 schema 검증, ranking metric 결합, deterministic Judge decision |
+| Task 3 | `applications/experiment_platform/executor/workspace.py:153-251`, `applications/experiment_platform/executor/finalizer.py:411-501`, `applications/experiment_platform/executor/safety.py` | credential-free Git 준비, content fingerprint·검증 tree commit 패턴, credential 값 탐지 | 기준 SHA의 disposable local worktree, 입출력 디렉터리, 시크릿만 남긴 commit guard |
+| Task 4 | `applications/experiment_platform/api/experiments/models.py:235-357`, `applications/experiment_platform/executor/results_store.py:91-145` | 멱등 event/log/Step 모델과 write-once 산출물 의미론 | append-only local Trial Ledger와 단계별 resume checkpoint |
+| Task 5a | `applications/experiment_platform/executor/codex_worker.py:1-26,150-173` | argv subprocess, timeout 시 process-group 회수, bounded output tail·reason code 패턴 | candidate `harness-predict` 실행 결과를 `TrialResult`로 정규화하는 `LocalRunner` |
+| Task 5b | `applications/experiment_platform/api/experiments/models.py:67-125`, `applications/experiment_platform/api/experiments/issue_authoring.py:80-112` | 상태 enum·전이와 구조화된 사전등록 입력 검증 패턴 | budget loop, validation 피드백, 이전 trial memory, 자동 실패 복구 Controller |
+| Task 6 | `autoresearch/cli.py`, `applications/experiment_platform/workbench/views.py:173-180,240-260` | Typer command 배선과 현행 연구 입력 UI 계약 | candidate/run CLI 두 개와 새 패키지 문서 등록 |
+| Task 7 | `applications/experiment_platform/executor/measurement.py:169-297`, `autoresearch/model_evaluation/seed_sweep.py:217-248`, `autoresearch/model_training/training_provenance.py:163-180` | 동일 seed 조건 평가, 평균·표준편차, split/seed manifest | Judge 지표별 baseline noise 등록과 로컬 end-to-end 증거 |
+
+### 제품 MVP 잔여 구현의 재사용 출발점
+
+| 후속 범위 | 기존 경로 | 재사용/확장 방향 |
+| --- | --- | --- |
+| Paper Discovery | `autoresearch/data_collection/client.py:132-186,222-318,368-393` | paper 전용 구현은 신규지만 HTTP 오류 분류·backoff·rate-limit·호출 예산 패턴을 재사용 |
+| PaperCard·ExperimentCard | `autoresearch/model_training/training_provenance.py:38-45,96-180`, `applications/experiment_platform/api/experiments/issue_authoring.py:80-112,183-220` | immutable provenance 모델과 사전등록 검증 위에 paper claim·falsification 구조를 확장 |
+| 최종 REPORT | `applications/experiment_platform/executor/report.py:126-159,197-230`, `applications/experiment_platform/executor/prompt.py:77-85,410-471`, `applications/experiment_platform/workbench/report.py:29-42,70-129`, `autoresearch/reporting/report_html.py:86-149` | 실제 diff·metrics 기반 작성, 절 검사, safe HTML shell과 자기완결 renderer를 multi-trial·paper lineage로 확장 |
+| 웹 연결 | `applications/experiment_platform/api/experiments/router.py:81-106,320-333`, `applications/experiment_platform/workbench/views.py:337-410,613-633` | 생성·목록·상세·report 조회 흐름에 request budget과 research report 모델만 추가 |
 
 ---
 
@@ -351,7 +406,9 @@ verifier 대체가 실제로 일어나는 지점이다.
       - 실패 시 stage + reason code + 로그 tail
       - **행 단위 정답과 지표 구현 코드는 포함하지 않는다**
 - [ ] `controller.py` — 예산(최대 시간/trial 수) 안에서 반복. spec 7장 루프 구조를 따르되
-      MVP는 `hypothesis` 입력을 사람이 준 문자열로 받는다(논문 발견은 범위 밖)
+      이 기반 단계 검증에서는 사람이 준 문자열 또는 fixture `ExperimentCard`를 입력 seam에
+      주입한다. 제품 경로 입력은 후속 Paper Discovery/Capability Matcher가 만든
+      `ExperimentCard`이며, 수동 문자열을 제품 계약으로 노출하지 않는다
 - [ ] 실패 시 사용자에게 묻지 않고 다음 행동을 스스로 정한다(spec 7.1)
 - [ ] 테스트: fake candidate(고정 점수 산출)로 2 trial 이상 루프가 도는지,
       피드백 payload에 라벨이 없는지, 예산 소진 시 정상 종료하는지
@@ -395,7 +452,7 @@ slate(Task 1)가 모두 필요하기 때문이다.
 
 ---
 
-## 완료 조건
+## 기반 단계 완료 조건
 
 - [ ] 에이전트가 저장소 어느 파일이든 수정해도 harness가 차단하지 않는다
 - [ ] candidate가 evaluator·테스트·split 코드를 고쳐도 판정 수치가 바뀌지 않는다

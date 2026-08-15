@@ -94,7 +94,7 @@
 - [Spec — 가설 수신부터 `[AR]` 이슈 발행까지](specs/2026-08-04-hypothesis-to-auto-research-issue.md) — 필드 소유권 3분할, 시드 고정, `gh` 발행 경계, 멱등성 (#516)
 - [Plan — 가설 수신부터 `[AR]` 이슈 발행까지 구현](plans/2026-08-04-hypothesis-to-auto-research-issue.md) (#516)
 - [Spec — 논문 기반 자율 ML 연구 Harness](specs/2026-08-14-paper-grounded-autonomous-ml-research-harness.md) — 저장소 전체 수정·외부 Sealed Judge·σ 기반 판정·local-first 반복 연구 계약 (#769)
-- [Plan — 로컬 Research Harness MVP](plans/2026-08-15-local-research-harness-mvp.md) — `slate_id` 원천 부여부터 Sealed Judge·workspace·ledger·LocalRunner까지 verifier 대체 구현 순서 (#769)
+- [Plan — 로컬 Research Harness 기반 단계](plans/2026-08-15-local-research-harness-mvp.md) — 제품 MVP의 부분집합으로 `slate_id` 원천 부여부터 Sealed Judge·workspace·ledger·LocalRunner까지 verifier 대체 구현 순서 (#769)
 - `applications/experiment_platform/` (FastAPI + Codex CLI/OpenAI + PostgreSQL 실험 API)
 - [Spec — Agent Orchestration GKE 내부 배포](specs/2026-07-30-agent-orchestration-gke-internal-deployment.md)
 - [Plan — Agent Orchestration GKE 내부 배포](plans/2026-07-30-agent-orchestration-gke-internal-deployment.md)
@@ -163,8 +163,8 @@
 - [논문 기반 자율 ML 연구 Harness](specs/2026-08-14-paper-grounded-autonomous-ml-research-harness.md) —
   저장소 전체 수정, 예측 점수 artifact 기반 Sealed Judge, baseline seed 노이즈 상대 판정,
   local-first 반복 연구 계약 (#769)
-- [로컬 Research Harness MVP 구현 계획](plans/2026-08-15-local-research-harness-mvp.md) —
-  `slate_id` 원천 부여부터 봉인 평가·candidate workspace·ledger·LocalRunner까지의 구현 순서 (#769)
+- [로컬 Research Harness 기반 단계 구현 계획](plans/2026-08-15-local-research-harness-mvp.md) —
+  제품 MVP의 부분집합으로 `slate_id` 원천 부여부터 봉인 평가·candidate workspace·ledger·LocalRunner까지의 구현 순서 (#769)
 
 ## 가이드
 
