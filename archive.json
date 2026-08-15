@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-15T16:50:26Z",
+  "generated_at": "2026-08-15T16:55:21Z",
   "reports": [
+    {
+      "number": 768,
+      "title": "feat: GCP 프로젝트 좌표를 autoresearch-505505로 교체",
+      "author": "hyochangsung",
+      "merged_at": "2026-08-15T16:55:06Z",
+      "summary_ko": [
+        "개발용 GCP 프로젝트 이관에 따라 테스트 코드 내 하드코딩된 저장소 버킷 주소를 신규 프로젝트 좌표로 교체하였습니다.",
+        "런타임 코드는 GCP 환경 변수를 바라보도록 이미 파라미터화되어 있어 테스트 상수를 제외한 코드 변경을 최소화하였습니다.",
+        "여러 실험이 동시 진행될 때 피처 저장소 덮어쓰기를 방지하는 실험 전용 Feast registry 격리 설계 명세를 추가하였습니다."
+      ],
+      "report_url": "pr/768/"
+    },
     {
       "number": 766,
       "title": "fix: batch --version이 폭에 따라 줄바꿈되던 것을 고친다",
