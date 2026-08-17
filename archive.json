@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-17T05:26:15Z",
+  "generated_at": "2026-08-17T08:29:13Z",
   "reports": [
+    {
+      "number": 774,
+      "title": "fix: OpenRouter 오류 본문을 보존해 api_error 원인을 식별한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-17T08:28:58Z",
+      "summary_ko": [
+        "OpenRouter가 200 상태코드로 choices 없이 error 본문만 반환할 때 발생하던 NoneType 오류를 방지합니다.",
+        "응답 검증 로직을 추가하여 오류 코드 및 provider 정보를 포함한 정형화된 OpenRouterRequestError로 승격합니다.",
+        "격리 레코드의 진단성을 높이면서도 upstream 상세 메시지는 유출되지 않도록 보안 원칙을 유지합니다."
+      ],
+      "report_url": "pr/774/"
+    },
     {
       "number": 772,
       "title": "chore: PR 리포트 생성 모델을 Gemini 3.7로 변경",
