@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-17T11:47:35Z",
+  "generated_at": "2026-08-17T11:53:14Z",
   "reports": [
+    {
+      "number": 499,
+      "title": "fix: GKE Prometheus CFS query와 빈 series 검증 보완",
+      "author": "bbungjun",
+      "merged_at": "2026-08-17T11:53:00Z",
+      "summary_ko": [
+        "GKE 환경에서 존재하지 않던 CPU CFS 스로틀링 메트릭 쿼리를 실제 존재하는 periods 메트릭 비율 쿼리로 수정하였습니다.",
+        "Prometheus 쿼리 응답 검증 시 성공 상태 확인뿐만 아니라 데이터 시리즈가 비어 있지 않은지 검증하는 로직을 추가하였습니다.",
+        "변경된 모니터링 쿼리 검증 기준에 맞춰 부하 테스트 런북 문서와 CI 계약 테스트 코드를 함께 갱신하였습니다."
+      ],
+      "report_url": "pr/499/"
+    },
     {
       "number": 777,
       "title": "fix: Feast online read 필드 누적으로 서빙이 느려지던 것을 고친다",
