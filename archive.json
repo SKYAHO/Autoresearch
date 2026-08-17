@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-16T14:57:16Z",
+  "generated_at": "2026-08-17T04:36:19Z",
   "reports": [
+    {
+      "number": 772,
+      "title": "chore: PR 리포트 생성 모델을 Gemini 3.7로 변경",
+      "author": "bbungjun",
+      "merged_at": "2026-08-17T04:36:04Z",
+      "summary_ko": [
+        "PR 이해 리포트 자동 생성 워크플로의 기본 LLM 모델을 Gemini 3.7 Flash로 교체했습니다.",
+        "스크립트 환경 변수 예시와 관련 설계 스펙 문서의 기본 모델 표기를 함께 갱신했습니다.",
+        "OpenRouter 단가 할인 혜택을 활용하여 리포트 생성 비용 절감 및 최신 모델 품질을 확보했습니다."
+      ],
+      "report_url": "pr/772/"
+    },
     {
       "number": 768,
       "title": "feat: GCP 프로젝트 좌표를 autoresearch-505505로 교체",
