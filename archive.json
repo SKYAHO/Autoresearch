@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-17T11:59:16Z",
+  "generated_at": "2026-08-17T12:04:57Z",
   "reports": [
+    {
+      "number": 778,
+      "title": "fix: CI의 changed-paths 필터에 PR 읽기 권한을 준다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-17T12:04:43Z",
+      "summary_ko": [
+        "CI 워크플로우의 최상위 권한 설정에 PR 읽기 권한(pull-requests: read)을 추가했습니다.",
+        "dorny/paths-filter 액션이 PR 변경 파일 목록을 조회할 때 발생하던 권한 부족 오류(#776)를 해결했습니다.",
+        "최소 권한 원칙을 준수하여 읽기 권한만 추가하고 CI의 경로 기반 작업 필터링을 정상화했습니다."
+      ],
+      "report_url": "pr/778/"
+    },
     {
       "number": 499,
       "title": "fix: GKE Prometheus CFS query와 빈 series 검증 보완",
