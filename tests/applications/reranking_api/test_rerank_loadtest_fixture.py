@@ -192,6 +192,43 @@ def test_k6_summary_includes_p99_for_exact_latency_reporting() -> None:
     assert "p(99)" in trend_stats
 
 
+def test_k6_script_offers_open_loop_mode_for_saturation_measurement() -> None:
+    """개루프 모드가 있어야 도착률이 처리 용량을 넘는 상태를 만들 수 있다.
+
+    폐루프(`constant-vus`)는 VU가 응답을 받아야 다음 요청을 보내므로 동시 요청 수가
+    VU 수를 넘지 못한다. 그래서 대기열 무한 증가·부하 차단 부재처럼 과부하에서만
+    드러나는 결함을 관측할 수 없고, 측정이 "정상"이라는 잘못된 합격을 낸다.
+    """
+    script = Path("applications/reranking_api/loadtest/rerank.js").read_text()
+
+    assert 'executor: "constant-arrival-rate"' in script
+    assert "ARRIVAL_RATE" in script
+    assert "preAllocatedVUs" in script and "maxVUs" in script
+    # 폐루프 경로는 개선 전후 A/B 비교용으로 계속 유효하므로 제거하지 않는다.
+    assert 'executor: "constant-vus"' in script
+
+
+def test_k6_script_exposes_measure_scoped_dropped_iterations() -> None:
+    """생성기 한계는 측정 구간에서만, 서버 실패와 구분되어 드러나야 한다.
+
+    warmup까지 합산하면 측정 구간의 drop 여부를 읽을 수 없다. 또 drop을 k6 threshold
+    실패로 만들면 서버가 무너진 것과 구분되지 않으므로, 노출만 하고 판정은 workflow가
+    한다.
+    """
+    script = Path("applications/reranking_api/loadtest/rerank.js").read_text()
+
+    assert '"dropped_iterations{scenario:measure}"' in script
+    assert 'thresholds["dropped_iterations{scenario:measure}"] = ["count>=0"]' in script
+
+
+def test_k6_summary_metadata_identifies_the_load_mode() -> None:
+    """개루프와 폐루프 결과를 사후에 혼동하지 않도록 모드와 도착률을 남긴다."""
+    script = Path("applications/reranking_api/loadtest/rerank.js").read_text()
+
+    for key in ("load_mode", "arrival_rate", "pre_allocated_vus", "max_vus"):
+        assert f"{key}:" in script
+
+
 def test_k6_job_has_no_identity_or_token_mount() -> None:
     """k6 Job은 전용 KSA만 쓰고 토큰·Secret·권한 상승을 허용하지 않는다."""
     text = Path("deployment/loadtest/rerank-k6-job.yaml").read_text()
