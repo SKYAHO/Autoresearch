@@ -1,7 +1,19 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-08-17T14:44:18Z",
+  "generated_at": "2026-08-18T12:32:23Z",
   "reports": [
+    {
+      "number": 780,
+      "title": "feat: 부하 하네스에 개루프 측정 모드를 추가한다",
+      "author": "bbungjun",
+      "merged_at": "2026-08-18T12:32:09Z",
+      "summary_ko": [
+        "리랭킹 서빙 API 부하 테스트 하네스에 고정 도착률 기반의 개루프(open-loop) 측정 모드를 추가했습니다.",
+        "부하 생성기 용량 부족(dropped_iterations)을 서버 실패와 명확히 분리하여 무효화 판정하도록 개선했습니다.",
+        "GitHub Actions 워크플로우와 운영 런북을 갱신하여 초과 유입 상황에서의 과부하 거동 및 안정성 검증을 지원합니다."
+      ],
+      "report_url": "pr/780/"
+    },
     {
       "number": 778,
       "title": "fix: CI의 changed-paths 필터에 PR 읽기 권한을 준다",
