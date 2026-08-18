@@ -29,13 +29,25 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, replace
 import json
-import re
 import shutil
+from pathlib import Path
 import statistics
 import subprocess
 import sys
 from typing import Any, Final
 import urllib.request
+
+# 저장소 패키지를 import하기 전에 루트를 경로에 올린다. 다른 `scripts/`와 같은 관례다
+# (`backfill_feature_store.py`) — 파일로 실행하면 `sys.path[0]`이 `scripts/`가 된다.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agent_orchestration.app.experiments.cost import (  # noqa: E402
+    TOKEN_PRICE_CACHED_USD,
+    TOKEN_PRICE_INPUT_USD,
+    TOKEN_PRICE_OUTPUT_USD,
+    parse_legacy_total_tokens,
+    parse_stage_tokens,
+)
 
 
 COMPUTE_ENGINE_SERVICE: Final = "services/6F81-5844-456A"
@@ -44,21 +56,10 @@ BILLING_SKU_URL: Final = (
     f"{COMPUTE_ENGINE_SERVICE}/skus?currencyCode=USD&pageSize=5000"
 )
 
-# executor가 남기는 구조화 사용량 줄(#742). 이 줄이 있으면 가정 없이 과금 구분이 나온다.
-USAGE_LINE_PATTERN: Final = re.compile(
-    r"codex token usage stage=(?P<stage>\S+) available=1 turns=(?P<turns>\d+) "
-    r"input=(?P<input>\d+) cached_input=(?P<cached>\d+) fresh_input=(?P<fresh>\d+) "
-    r"output=(?P<output>\d+) reasoning=(?P<reasoning>\d+) total=(?P<total>\d+)"
-)
-# #742 이전 실험의 유일한 흔적. 총량 하나뿐이라 분해는 가정에 기댄다.
-LEGACY_TOTAL_PATTERN: Final = re.compile(r"tokens used\s*\n\s*([\d,]+)")
-
-# `gpt-5.6-luna` 표준 단가(USD / 1M tokens, 2026-08 기준).
-# 출처: https://developers.openai.com/api/docs/pricing — 모델이나 단가가 바뀌면 인자로 덮는다.
+# 사용량 줄 형식과 단가의 정본은 `app.experiments.cost`다(#746). 로그 형식은 executor가
+# 소유하는 하나의 계약인데 그것을 읽는 정규식을 여기 한 벌 더 두면, 형식이 바뀔 때 한쪽만
+# 고쳐도 아무 오류 없이 "기록이 없다"로 보인다 — 값이 틀리는 것보다 발견이 늦다.
 DEFAULT_MODEL: Final = "gpt-5.6-luna"
-DEFAULT_PRICE_INPUT: Final = 0.20
-DEFAULT_PRICE_CACHED: Final = 0.02
-DEFAULT_PRICE_OUTPUT: Final = 1.20
 
 # machine type 접미사별 (vCPU, GiB). 노드풀이 바뀌면 `--node-vcpu`/`--node-memory-gib`로
 # 덮어쓴다 — 표를 늘리는 것보다 인자로 받는 편이 드리프트가 없다.
@@ -202,9 +203,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="원가 집계 대상 상태. ERROR는 회수 시각이 실행 시간과 무관해 기본에서 뺀다",
     )
     parser.add_argument("--model", default=DEFAULT_MODEL, help="단가 표기에 쓰는 모델 이름")
-    parser.add_argument("--token-price-input", type=float, default=DEFAULT_PRICE_INPUT)
-    parser.add_argument("--token-price-cached", type=float, default=DEFAULT_PRICE_CACHED)
-    parser.add_argument("--token-price-output", type=float, default=DEFAULT_PRICE_OUTPUT)
+    parser.add_argument("--token-price-input", type=float, default=TOKEN_PRICE_INPUT_USD)
+    parser.add_argument("--token-price-cached", type=float, default=TOKEN_PRICE_CACHED_USD)
+    parser.add_argument("--token-price-output", type=float, default=TOKEN_PRICE_OUTPUT_USD)
     parser.add_argument(
         "--legacy-output-ratio",
         type=float,
@@ -318,25 +319,28 @@ def collect_usage(
 
     구조화 줄이 하나라도 있으면 그 실험은 총량 줄을 무시한다 — 같은 실행을 두 출처에서
     세면 두 배가 된다. 로그 수집기가 8000자 청크로 쪼개 적재하므로 질의에서 이어 붙인
-    뒤 찾는다.
+    뒤 넘긴다.
+
+    파싱 자체는 `app.experiments.cost`가 한다. 여기 남은 것은 **추정**뿐이다 — 총량밖에
+    없는 과거 실험을 가정 비율로 쪼개는 일은 화면이 아니라 분석 도구의 몫이라는 #744의
+    결정을 그대로 지킨다.
     """
     exact: dict[str, dict[str, TokenUsage]] = {}
     legacy: dict[str, dict[str, TokenUsage]] = {}
     for row in logs:
         experiment_id, container = row["id"], row["stage"]
-        for match in USAGE_LINE_PATTERN.finditer(row["content"]):
+        for stage in parse_stage_tokens([row["content"]]):
             usage = TokenUsage(
-                input_tokens=int(match.group("input")),
-                cached_input_tokens=int(match.group("cached")),
-                output_tokens=int(match.group("output")),
-                reasoning_output_tokens=int(match.group("reasoning")),
+                input_tokens=stage.input_tokens,
+                cached_input_tokens=stage.cached_input_tokens,
+                output_tokens=stage.output_tokens,
+                reasoning_output_tokens=stage.reasoning_output_tokens,
                 exact=True,
             )
             stages = exact.setdefault(experiment_id, {})
-            stage = match.group("stage")
-            stages[stage] = stages.get(stage, TokenUsage()).merged(usage)
-        for match in LEGACY_TOTAL_PATTERN.finditer(row["content"]):
-            total = int(match.group(1).replace(",", ""))
+            stages[stage.stage] = stages.get(stage.stage, TokenUsage()).merged(usage)
+        total = parse_legacy_total_tokens([row["content"]])
+        if total:
             output_tokens = round(total * output_ratio)
             input_tokens = total - output_tokens
             usage = TokenUsage(
