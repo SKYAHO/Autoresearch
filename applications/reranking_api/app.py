@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from time import perf_counter
 
 from autoresearch.logging_json import setup_json_logging
 from fastapi import FastAPI, HTTPException, status
@@ -50,6 +52,10 @@ from applications.reranking_api.service import PredictionError
 # stdout으로 재구성해야 access 로그까지 구조화된다 (#352, 계약은
 # autoresearch.logging_json docstring 참조).
 setup_json_logging()
+
+# 과부하 거절 시 호출부에 제시하는 재시도 대기 초. 호출부가 고정 백오프 대신
+# 서버가 제시한 값을 쓸 수 있다.
+RETRY_AFTER_SECONDS: int = 1
 
 # 아래 메트릭들은 모듈 전역 레지스트리에 등록된다 — uvicorn을 --workers>1로 늘리면
 # 워커별로 값이 분리되어 /metrics가 워커마다 다르게 보인다. 스케일업 시
@@ -95,6 +101,53 @@ RERANK_UNSEEN_CATEGORY = Counter(
 logger = logging.getLogger(__name__)
 
 
+def _positive_environment_value(name: str) -> float | None:
+    """양수 설정값을 읽는다. 미설정·빈 값이면 None(기능 비활성)이다.
+
+    기본값으로 조용히 거동을 바꾸지 않는다 — 운영자가 명시적으로 켜야 한다.
+    """
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise ValueError(f"{name} must be a positive number; received {raw!r}") from error
+    if not value > 0:
+        raise ValueError(f"{name} must be a positive number; received {raw!r}")
+    return value
+
+
+class _ConcurrencyGate:
+    """동시 실행 수를 세어 상한 초과 요청을 즉시 거절한다.
+
+    동기 핸들러가 anyio 스레드풀의 여러 스레드에서 돌므로 판정과 증감이 원자적이어야
+    한다. 세마포어가 아니라 Lock + 카운터를 쓰는 이유는, 세마포어는 자리가 없을 때
+    **대기**하는 것이 기본이라 대기열을 없애려는 목적과 반대이기 때문이다. 여기서는
+    자리가 없으면 기다리지 않고 즉시 거절한다.
+    """
+
+    def __init__(self, limit: int | None) -> None:
+        self._limit = limit
+        self._lock = threading.Lock()
+        self._active = 0
+
+    def try_acquire(self) -> bool:
+        if self._limit is None:
+            return True
+        with self._lock:
+            if self._active >= self._limit:
+                return False
+            self._active += 1
+            return True
+
+    def release(self) -> None:
+        if self._limit is None:
+            return
+        with self._lock:
+            self._active -= 1
+
+
 def create_app(
     resolved_model: ResolvedModel | None = None,
     feature_builder: ServingFeatureBuilder | None = None,
@@ -103,6 +156,12 @@ def create_app(
     active_model = resolved_model
     active_feature_builder = feature_builder
     load_from_environment = resolved_model is None and feature_builder is None
+
+    max_concurrency = _positive_environment_value("RERANK_MAX_CONCURRENCY")
+    request_timeout_seconds = _positive_environment_value("RERANK_REQUEST_TIMEOUT_SECONDS")
+    concurrency_gate = _ConcurrencyGate(
+        int(max_concurrency) if max_concurrency is not None else None
+    )
 
     def unavailable_detail() -> str | None:
         if active_model is None:
@@ -160,6 +219,16 @@ def create_app(
 
     @app.post("/rerank", response_model=RerankResponse)
     def rerank(request: RerankRequest) -> RerankResponse:
+        # 상한 판정은 readiness보다 앞이고 피처 조회·예측보다 앞이다. 거절 경로가
+        # 비싸면 과부하에서 차단이 오히려 부하를 키운다.
+        if not concurrency_gate.try_acquire():
+            RERANK_OUTCOMES.labels(outcome="overloaded").inc()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Reranking is over its concurrency limit.",
+                headers={"Retry-After": str(RETRY_AFTER_SECONDS)},
+            )
+        started = perf_counter()
         RERANK_IN_FLIGHT.inc()
         try:
             with RERANK_DURATION.time():
@@ -244,10 +313,24 @@ def create_app(
                             for video_id in request.video_ids
                         ]
                     )
+                # 상한 안에 들어온 요청이 의존성 지연으로 오래 붙잡혀 있으면 그만큼
+                # 새 요청이 거절된다. 예산을 넘긴 응답은 호출부 입장에서 이미 쓸모가
+                # 없으므로, 성공으로 세지 않고 끊어 자리를 돌려준다.
+                if (
+                    request_timeout_seconds is not None
+                    and perf_counter() - started > request_timeout_seconds
+                ):
+                    RERANK_OUTCOMES.labels(outcome="timeout").inc()
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="Reranking exceeded its request time budget.",
+                        headers={"Retry-After": str(RETRY_AFTER_SECONDS)},
+                    )
                 RERANK_OUTCOMES.labels(outcome="success").inc()
                 return response
         finally:
             RERANK_IN_FLIGHT.dec()
+            concurrency_gate.release()
 
     @app.get("/metrics", include_in_schema=False)
     def metrics() -> Response:
