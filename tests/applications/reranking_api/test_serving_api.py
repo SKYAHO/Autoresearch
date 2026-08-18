@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import threading
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
@@ -1142,3 +1143,129 @@ def test_mlflow_model_loader_fails_closed_without_manifest(
             MlflowModelSettings(tracking_uri="http://mlflow.example", run_id="run-123")
         )
     assert downloaded_uris == ["runs:/run-123/manifest/manifest.json"]
+
+
+class BlockingFeatureBuilder(FakeFeatureBuilder):
+    """요청을 붙잡아 동시 실행 상태를 재현한다."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Semaphore(0)
+        self.release = threading.Event()
+
+    def build_with_timings(self, **kwargs: object) -> object:
+        self.entered.release()
+        self.release.wait(timeout=5)
+        return super().build_with_timings(**kwargs)
+
+
+def test_rerank_rejects_over_the_concurrency_limit_without_doing_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """상한을 넘긴 요청은 503으로 즉시 거절되고 피처 조회를 하지 않는다.
+
+    거절 경로가 비싸면 과부하에서 차단이 오히려 부하를 키운다.
+    """
+    monkeypatch.setenv("RERANK_MAX_CONCURRENCY", "1")
+    builder = BlockingFeatureBuilder()
+    app = create_app(resolved_model=_resolved_model(), feature_builder=builder)
+
+    with TestClient(app) as client:
+        before = _sample_value(client, "rerank_outcomes_total", {"outcome": "overloaded"})
+        held: list[int] = []
+        holder = threading.Thread(
+            target=lambda: held.append(
+                client.post(
+                    "/rerank", json={"user_id": "user-1", "video_ids": ["video-1"]}
+                ).status_code
+            )
+        )
+        holder.start()
+        assert builder.entered.acquire(timeout=5)  # 첫 요청이 핸들러 안에 들어갔다
+
+        rejected = client.post(
+            "/rerank", json={"user_id": "user-2", "video_ids": ["video-2"]}
+        )
+
+        builder.release.set()
+        holder.join(timeout=5)
+        # 붙잡힌 요청 하나만 피처를 조회했어야 한다. 거절된 요청까지 조회했다면 2가 된다.
+        total_builder_calls = len(builder.calls)
+        after = _sample_value(client, "rerank_outcomes_total", {"outcome": "overloaded"})
+
+    assert rejected.status_code == 503
+    assert rejected.headers.get("Retry-After") is not None
+    assert total_builder_calls == 1, "거절된 요청이 피처를 조회했다"
+    assert held == [200], "상한 안의 요청까지 거절됐다"
+    assert after == before + 1
+
+
+def test_rerank_keeps_current_behaviour_when_the_limit_is_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """상한 미설정 시 기존 거동이 그대로여야 한다 — 기본값으로 조용히 바꾸지 않는다."""
+    monkeypatch.delenv("RERANK_MAX_CONCURRENCY", raising=False)
+    app = create_app(resolved_model=_resolved_model(), feature_builder=FakeFeatureBuilder())
+
+    with TestClient(app) as client:
+        before = _sample_value(client, "rerank_outcomes_total", {"outcome": "overloaded"})
+        codes = [
+            client.post(
+                "/rerank", json={"user_id": "user-1", "video_ids": [f"video-{i}"]}
+            ).status_code
+            for i in range(5)
+        ]
+        after = _sample_value(client, "rerank_outcomes_total", {"outcome": "overloaded"})
+
+    assert codes == [200] * 5
+    assert after == before
+
+
+def test_rerank_overload_rejection_is_separable_from_readiness_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """과부하와 readiness 실패는 같은 503이지만 outcome 라벨로 구분된다."""
+    monkeypatch.delenv("RERANK_MAX_CONCURRENCY", raising=False)
+    app = create_app(resolved_model=None, feature_builder=None)
+
+    with TestClient(app) as client:
+        before_unavailable = _sample_value(
+            client, "rerank_outcomes_total", {"outcome": "unavailable"}
+        )
+        before_overloaded = _sample_value(
+            client, "rerank_outcomes_total", {"outcome": "overloaded"}
+        )
+        response = client.post(
+            "/rerank", json={"user_id": "user-1", "video_ids": ["video-1"]}
+        )
+        after_unavailable = _sample_value(
+            client, "rerank_outcomes_total", {"outcome": "unavailable"}
+        )
+        after_overloaded = _sample_value(
+            client, "rerank_outcomes_total", {"outcome": "overloaded"}
+        )
+
+    assert response.status_code == 503
+    assert after_unavailable == before_unavailable + 1
+    assert after_overloaded == before_overloaded
+
+
+def test_rerank_times_out_a_slow_request_as_its_own_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """타임아웃을 넘긴 요청은 503으로 끊기고 overloaded와 구분해 기록된다."""
+    monkeypatch.delenv("RERANK_MAX_CONCURRENCY", raising=False)
+    monkeypatch.setenv("RERANK_REQUEST_TIMEOUT_SECONDS", "0.05")
+    builder = BlockingFeatureBuilder()
+    app = create_app(resolved_model=_resolved_model(), feature_builder=builder)
+
+    with TestClient(app) as client:
+        before = _sample_value(client, "rerank_outcomes_total", {"outcome": "timeout"})
+        response = client.post(
+            "/rerank", json={"user_id": "user-1", "video_ids": ["video-1"]}
+        )
+        after = _sample_value(client, "rerank_outcomes_total", {"outcome": "timeout"})
+    builder.release.set()
+
+    assert response.status_code == 503
+    assert after == before + 1

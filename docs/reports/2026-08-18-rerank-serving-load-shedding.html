@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description"
+        content="리랭킹 서빙이 과부하에서 조용히 무너지던 것을 개루프 부하테스트로 확인하고, 부하 차단 도입 전후를 같은 조건에서 비교한 보고서입니다.">
+  <title>리랭킹 서빙 부하 차단 | 도입 전후 실측</title>
+  <style>
+    :root {
+      --bg: #0d1117; --panel: #161b22; --sunken: #1c2129;
+      --line: #2a313a; --hairline: #232931;
+      --text: #e6edf3; --muted: #9aa6b2;
+      --accent: #4fd1e8; --warn: #e8a33f; --good: #52d6a4;
+      --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+      --sans: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", "Segoe UI", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 0 20px 100px; background: var(--bg); color: var(--text);
+      font-family: var(--sans); font-size: 16px; line-height: 1.75;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { max-width: 900px; margin: 0 auto; }
+    header { padding: 64px 0 36px; border-bottom: 1px solid var(--line); }
+    .kicker { font-family: var(--mono); font-size: 11px; letter-spacing: .16em;
+      text-transform: uppercase; color: var(--accent); margin: 0 0 16px; }
+    h1 { font-size: clamp(26px, 4.5vw, 38px); font-weight: 600; letter-spacing: -.02em;
+      line-height: 1.25; margin: 0 0 16px; text-wrap: balance; }
+    .lede { color: var(--muted); font-size: 16.5px; margin: 0; max-width: 62ch; }
+    .meta { font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+      margin-top: 26px; display: flex; flex-wrap: wrap; gap: 6px 26px; }
+    h2 { font-size: 22px; font-weight: 600; letter-spacing: -.015em; margin: 56px 0 14px;
+      padding-top: 22px; border-top: 1px solid var(--line); text-wrap: balance; }
+    h3 { font-size: 16.5px; font-weight: 600; margin: 32px 0 10px; }
+    p { margin: 0 0 16px; }
+    code { font-family: var(--mono); font-size: .86em; background: var(--sunken);
+      border: 1px solid var(--hairline); border-radius: 3px; padding: .1em .36em; }
+    .tw { overflow-x: auto; margin: 22px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 14.5px; min-width: 520px; }
+    caption { caption-side: top; text-align: left; font-family: var(--mono); font-size: 10.5px;
+      letter-spacing: .12em; text-transform: uppercase; color: var(--muted); padding-bottom: 10px; }
+    th, td { padding: 10px 14px 10px 0; border-bottom: 1px solid var(--hairline); text-align: left;
+      vertical-align: top; }
+    thead th { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--muted); font-weight: 400;
+      border-bottom: 1px solid var(--line); white-space: nowrap; }
+    tbody tr:last-child td { border-bottom: 1px solid var(--line); }
+    td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap;
+      font-family: var(--mono); font-size: 13.5px; }
+    th.n { text-align: right; }
+    tr.knee td { background: rgba(232, 163, 63, .08); }
+    tr.collapse td { background: rgba(232, 163, 63, .16); }
+    .bad { color: var(--warn); }
+    .good { color: var(--good); }
+    .box { background: var(--panel); border: 1px solid var(--line);
+      border-left: 3px solid var(--accent); padding: 20px 22px; margin: 24px 0; }
+    .box.warn { border-left-color: var(--warn); }
+    .box p:last-child { margin-bottom: 0; }
+    .box .h { font-weight: 600; font-size: 16.5px; margin-bottom: 8px; }
+    ul { margin: 0 0 16px; padding-left: 1.2em; }
+    li { margin-bottom: 8px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 1px; background: var(--line); border: 1px solid var(--line); margin: 26px 0; }
+    .cell { background: var(--panel); padding: 18px; }
+    .cell .v { font-size: 25px; font-weight: 600; letter-spacing: -.02em;
+      font-variant-numeric: tabular-nums; }
+    .cell .k { font-family: var(--mono); font-size: 10.5px; letter-spacing: .11em;
+      text-transform: uppercase; color: var(--muted); margin-top: 4px; }
+    pre { background: var(--sunken); border: 1px solid var(--hairline); padding: 16px;
+      overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.6; margin: 18px 0; }
+    footer { margin-top: 64px; padding-top: 20px; border-top: 1px solid var(--line);
+      font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="kicker">Autoresearch · 리랭킹 서빙</p>
+  <h1>과부하에서 조용히 무너지던 서빙에 부하 차단을 넣고, 전후를 같은 조건에서 쟀다</h1>
+  <p class="lede">
+    한계를 넘긴 리랭킹 서빙은 요청을 거절하지 않고 전부 느려졌다. 오류율은 0%였고
+    대시보드는 정상이라고 표시했다. 동시 실행 상한을 도입해 초과분만 즉시 거절하도록
+    바꾼 뒤, 실제 트래픽 조건에서 p95가 15.3초에서 233ms로 떨어졌다.
+  </p>
+  <div class="meta">
+    <span>2026-08-18</span><span>이슈 #781</span>
+    <span>로컬 · 워커 1개 · 합성 모델</span>
+    <span>k6 개루프 (constant-arrival-rate)</span>
+  </div>
+</header>
+
+<h2>요약</h2>
+<div class="grid">
+  <div class="cell"><div class="v bad">15,330ms</div><div class="k">도입 전 p95 (60/s)</div></div>
+  <div class="cell"><div class="v good">233ms</div><div class="k">도입 후 p95 (60/s)</div></div>
+  <div class="cell"><div class="v">20~30</div><div class="k">안전 용량 rps (실제 조건)</div></div>
+  <div class="cell"><div class="v">0</div><div class="k">도입 전 거절 건수</div></div>
+</div>
+
+<p>
+  측정은 두 조건에서 했다. <strong>200후보</strong>가 실제 호출부가 보내는 모양이고,
+  <strong>24후보</strong>는 가벼운 요청일 때의 대조군이다. 일일 추천 배치는
+  <code>MAX_CANDIDATES_PER_REQUEST = 200</code>으로 후보 200개를 한 요청에 담아 보내고,
+  그 순위 결과에서 24개를 골라 노출한다(모델 17 + 인기 5 + 탐색 2).
+</p>
+
+<h2>1. 도입 전 — 거절하지 않고 전부 느려진다</h2>
+
+<div class="tw">
+  <table>
+    <caption>200후보 · 부하 차단 없음 · 클라이언트가 겪은 지연</caption>
+    <thead>
+      <tr><th class="n">도착률</th><th class="n">실제 RPS</th><th class="n">p50</th><th class="n">p95</th>
+          <th class="n">p95/p50</th><th class="n">503</th><th class="n">오류율</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="n">5</td><td class="n">5.0</td><td class="n">20.1ms</td><td class="n">23.5ms</td><td class="n">1.2</td><td class="n">0</td><td class="n">0%</td></tr>
+      <tr><td class="n">10</td><td class="n">10.0</td><td class="n">20.0ms</td><td class="n">24.0ms</td><td class="n">1.2</td><td class="n">0</td><td class="n">0%</td></tr>
+      <tr><td class="n">20</td><td class="n">20.0</td><td class="n">19.6ms</td><td class="n">25.4ms</td><td class="n">1.3</td><td class="n">0</td><td class="n">0%</td></tr>
+      <tr class="knee"><td class="n">30</td><td class="n">30.0</td><td class="n">19.4ms</td><td class="n bad">84.1ms</td><td class="n bad">4.3</td><td class="n">0</td><td class="n">0%</td></tr>
+      <tr class="knee"><td class="n">40</td><td class="n">39.9</td><td class="n">20.7ms</td><td class="n bad">132.0ms</td><td class="n bad">6.4</td><td class="n">0</td><td class="n">0%</td></tr>
+      <tr class="collapse"><td class="n">60</td><td class="n bad">30.5</td><td class="n bad">3,214ms</td><td class="n bad">15,330ms</td><td class="n">—</td><td class="n">0</td><td class="n">0%</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>세 가지가 드러났다.</p>
+<ul>
+  <li><strong>거절이 없다.</strong> p95가 15초인 상태에서도 <code>503</code>이 0건이다.
+      요청은 거절되지 않고 무한 대기열에 쌓인다.</li>
+  <li><strong>겉보기로는 정상이다.</strong> 30/s에서 p50은 19.4ms로 멀쩡한데 p95만 84.1ms다.
+      오류율은 0%다. p50·평균을 보는 대시보드는 이 상태를 정상으로 읽는다.</li>
+  <li><strong>한계를 넘으면 처리량이 오히려 떨어진다.</strong> 40 rps를 내던 서버가 60을
+      받으면 30.5로 내려간다. 평탄한 천장이 아니라 congestion collapse다.</li>
+</ul>
+
+<h3>한계의 원인은 1코어의 계산 능력이다</h3>
+<p>
+  24후보 조건에서 포화 시점의 서빙 프로세스 CPU를 <code>/proc</code> 델타로 재니 109%,
+  즉 1코어를 꽉 채운 상태였다. 요청당 CPU는 5.79ms이고 저부하 응답 시간은 6.24ms로,
+  <strong>응답 시간의 93%가 계산</strong>이다. I/O 대기가 지배적이지 않으므로 비동기화는
+  해법이 아니다. <code>1초 / 5.79ms ≈ 173 rps</code>가 1코어의 이론상 최대이며 관측된
+  무릎(140~180)과 일치한다.
+</p>
+<p>
+  같은 머신에 코어가 20개 있지만 <strong>1개만 쓴다.</strong>
+  <code>--workers</code>가 지정되지 않아 프로세스가 하나이고, GIL은 프로세스마다 하나이기
+  때문이다.
+</p>
+
+<h2>2. 서버는 자기 대기열을 보지 못한다</h2>
+<div class="box warn">
+  <div class="h">같은 시점, 같은 요청에 대한 두 수치</div>
+  <pre>클라이언트가 겪은 p95 (k6)              7,014 ms
+서버가 기록한 p95 (rerank_duration)       250 ms
+                                     ──────────
+차이 = 대기열에서 보낸 시간             6,764 ms</pre>
+  <p>
+    <code>rerank_duration_seconds</code> 타이머는 스레드가 요청을 <strong>집어든 뒤에</strong>
+    시작한다. 그 앞의 대기열에서 보낸 6.7초는 서버 메트릭에 아예 기록되지 않는다.
+    대시보드에 이 지표를 띄워놨다면 250ms로 보였을 것이고, 실제 사용자는 7초를 기다리고
+    있었다. <strong>"거짓 정상"은 p50만의 문제가 아니라 서버 지연 메트릭의 구조적
+    사각지대였다.</strong>
+  </p>
+</div>
+
+<h2>3. 도입 후 — 초과분만 거절하고 나머지를 지킨다</h2>
+
+<div class="tw">
+  <table>
+    <caption>200후보 · 실제 트래픽 조건 · 도입 전후 (동일 환경·동일 fixture)</caption>
+    <thead>
+      <tr><th class="n">도착률</th><th class="n">전 p95</th><th class="n">후 p95</th>
+          <th class="n">전 처리량</th><th class="n">후 처리량</th><th class="n">후 거절</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="n">20</td><td class="n">25.4ms</td><td class="n">27.6ms</td><td class="n">20.0</td><td class="n">20.0</td><td class="n">0</td></tr>
+      <tr><td class="n">30</td><td class="n">84.1ms</td><td class="n">88.0ms</td><td class="n">30.0</td><td class="n">30.0</td><td class="n">0</td></tr>
+      <tr><td class="n">40</td><td class="n">132.0ms</td><td class="n">120.2ms</td><td class="n">39.9</td><td class="n">40.0</td><td class="n">16</td></tr>
+      <tr class="collapse"><td class="n">60</td><td class="n bad">15,330ms</td><td class="n good">232.7ms</td><td class="n bad">30.5</td><td class="n good">59.5</td><td class="n">501</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  <strong>60/s에서 p95가 15.3초에서 233ms로 떨어졌다(66배).</strong> 그리고 처리량이
+  무너지지 않는다 — 도입 전에는 60을 밀어넣으면 오히려 30.5로 떨어졌지만, 도입 후에는
+  59.5를 그대로 소화하며 그중 501건을 즉시 거절한다.
+</p>
+
+<div class="tw">
+  <table>
+    <caption>받아들인 요청만 · 서버측 히스토그램 증분 (거절은 타이머 앞에서 끝나므로 제외됨)</caption>
+    <thead>
+      <tr><th class="n">도착률</th><th class="n">수용</th><th class="n">거절</th><th class="n">수용 RPS</th>
+          <th class="n">p50</th><th class="n">p95</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="n">20</td><td class="n">662</td><td class="n">0</td><td class="n">20.1</td><td class="n">25ms</td><td class="n">25ms</td></tr>
+      <tr><td class="n">30</td><td class="n">992</td><td class="n">0</td><td class="n">30.1</td><td class="n">25ms</td><td class="n">75ms</td></tr>
+      <tr><td class="n">40</td><td class="n">1,302</td><td class="n">20</td><td class="n">39.5</td><td class="n">25ms</td><td class="n">100ms</td></tr>
+      <tr><td class="n">60</td><td class="n">1,318</td><td class="n">664</td><td class="n">39.9</td><td class="n">100ms</td><td class="n">250ms</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  k6가 재는 지연에는 거절된 503이 섞인다. 503은 피처 조회도 예측도 하지 않아 매우 빠르므로
+  섞인 채로는 p95가 실제보다 좋아 보인다. 위 표는 서버측 <code>rerank_duration_seconds</code>
+  증분이며, <strong>차단 게이트가 타이머보다 앞에 있어 거절된 요청은 이 히스토그램에 들어가지
+  않는다</strong> — 즉 정확히 "받아들인 요청"의 분포다.
+</p>
+
+<h2>4. 후보 수가 8배 달라도 같은 상한이 통한다</h2>
+<p>
+  <code>RERANK_MAX_CONCURRENCY = 4</code>는 24후보 조건에서 정한 값이다. 한 요청의 무게가
+  8.3배인 200후보에서도 그대로 쓸 수 있는지가 설계 질문이었다. 도입 전에는 "동시 요청 수"가
+  아니라 "동시 영상 수 총합" 같은 가중치 제한이 필요할 수 있다고 보았다.
+</p>
+
+<div class="tw">
+  <table>
+    <caption>상한 4 고정 · 조건별 거절 시점</caption>
+    <thead><tr><th>구간</th><th class="n">24후보 거절</th><th class="n">200후보 거절</th></tr></thead>
+    <tbody>
+      <tr><td>안정</td><td class="n">0 (140/s)</td><td class="n">0 (20/s)</td></tr>
+      <tr><td>무릎</td><td class="n">13 (180/s)</td><td class="n">0 (30/s)</td></tr>
+      <tr><td>열화</td><td class="n">898 (220/s)</td><td class="n">20 (40/s)</td></tr>
+      <tr><td>붕괴</td><td class="n">2,082 (260/s)</td><td class="n">664 (60/s)</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<p>
+  양쪽 모두 안정 구간에서는 한 건도 거절하지 않고 한계를 넘는 구간에서만 거절했다.
+  Little의 법칙으로 설명된다 — 동시 실행 수는 <code>도착률 × 응답시간</code>인데,
+  24후보는 <code>172 × 6ms ≈ 1</code>, 200후보는 <code>40 × 25ms ≈ 1</code>로
+  <strong>양쪽 다 1 근처</strong>다. 후보 수가 달라도 한계 지점의 동시 실행 수는 비슷하므로
+  개수 기반 상한 하나로 충분하다. <strong>가중치 제한이 필요할 것이라는 사전 우려는 측정으로
+  기각됐다.</strong>
+</p>
+
+<h2>5. 구현</h2>
+<div class="tw">
+  <table>
+    <thead><tr><th>결정</th><th>근거</th></tr></thead>
+    <tbody>
+      <tr><td>거절을 readiness·피처 조회·예측보다 <strong>앞</strong>에 둔다</td>
+          <td>거절 경로가 비싸면 과부하에서 차단이 오히려 부하를 키운다. 테스트로 "거절된 요청은 피처를 조회하지 않는다"를 고정했다.</td></tr>
+      <tr><td>세마포어가 아니라 Lock + 카운터</td>
+          <td>세마포어는 자리가 없을 때 <strong>대기</strong>하는 것이 기본이라 대기열을 없애려는 목적과 반대다. 여기서는 기다리지 않고 즉시 거절한다.</td></tr>
+      <tr><td><code>503</code> + <code>Retry-After</code></td>
+          <td><code>429</code>는 클라이언트별 할당량 초과를 뜻한다. 서버 전체의 일시적 과부하는 <code>503</code>이 표준 의미다. 호출부는 이미 5xx를 백오프하며 재시도하므로 계약 변경이 없다.</td></tr>
+      <tr><td><code>outcome="overloaded"</code>·<code>"timeout"</code> 분리</td>
+          <td>기존 <code>unavailable</code>(readiness 실패)과 섞으면 같은 503이라 원인을 구분할 수 없다.</td></tr>
+      <tr><td>미설정 시 기존 거동 유지</td>
+          <td>기본값으로 조용히 거동을 바꾸지 않는다. 운영자가 명시적으로 켠다.</td></tr>
+      <tr><td>uvicorn 내장 <code>--limit-concurrency</code>를 쓰지 않음</td>
+          <td>애플리케이션 계층 밖이라 거절이 메트릭에 잡히지 않는다. <strong>차단이 관측되지 않으면 도입하지 않은 것과 같다.</strong></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<h3>폴백을 채택하지 않은 이유</h3>
+<p>
+  "리랭킹 없이 원래 트렌딩 순서로 <code>200</code>을 반환한다"는 대안을 검토하고 기각했다.
+  서비스 가용성은 올라가지만 <strong>일일 폐루프를 오염시킨다.</strong> 노출 조립은 리랭킹
+  결과를 모델 노출로 기록하고 그 노출이 action log를 거쳐 다음 학습 데이터가 된다. 모델이
+  고르지 않은 슬레이트를 모델 노출로 기록하면 <strong>모델이 하지 않은 선택을 모델의 선택으로
+  학습</strong>하게 되며, 과부하가 심할수록 오염 비율이 커진다.
+</p>
+
+<h2>6. 이 측정이 답하지 못하는 것</h2>
+<div class="box warn">
+  <div class="h">차단은 붕괴를 막지만 열화는 막지 못한다</div>
+  <p>
+    200후보 30/s에서 도입 전후 p95가 84.1ms와 88.0ms로 같다. 거절이 0건이기 때문이다.
+    <strong>무릎 바로 위 구간은 대기열이 상한 4를 넘지 않으면서도 지연은 이미 4배로 뛴
+    상태</strong>라 차단이 개입하지 않는다. 상한을 더 조이면 이 구간도 보호되지만 정상
+    트래픽을 거절할 위험이 커진다.
+  </p>
+</div>
+<ul>
+  <li><strong>로컬 수치다.</strong> loopback이라 네트워크 왕복이 없고, GKE는 VPC 건너
+      Memorystore + TLS + IAM이다. 절대 수치는 이전할 수 없다. 다만 실패 <em>방식</em>은
+      애플리케이션 코드의 성질이라 환경과 무관하다.</li>
+  <li><strong>모델이 합성이다.</strong> 트리 200개·21개 피처 중 16개가 분기에 쓰이는
+      구조적으로 유효한 ONNX지만, <code>model_predict</code> 절대값은 champion과 다를 수 있다.</li>
+  <li><strong>fixture 유저가 1명이다.</strong> Redis 엔티티 키가 하나뿐이라 캐시 지역성이
+      실제보다 유리하다.</li>
+  <li><strong>180/s(24후보)는 무릎 경계라 실행마다 흔들린다.</strong> 1차 178.6ms, 2차 8.4ms로
+      관측됐다. 확실한 비교는 붕괴 구간이다.</li>
+</ul>
+
+<h2>7. 측정으로 드러난 후속 항목</h2>
+<ul>
+  <li><strong>워커 증설.</strong> 20코어 중 1개만 쓴다. 다만 <code>prometheus_client</code>가
+      프로세스별로 메트릭을 들고 있어 <code>/metrics</code>가 워커마다 달라지는 문제를 먼저
+      풀어야 한다. <strong>용량을 늘려도 차단이 없으면 더 큰 규모에서 같은 방식으로 무너지므로
+      순서상 뒤다.</strong></li>
+  <li><strong>후보 pool 크기.</strong> 200개를 전부 예측하지만 노출에 실제로 쓰이는 모델 순위는
+      상위 17개뿐이다. 후보를 줄이면 요청당 CPU가 줄어 한계가 올라간다. 다만 모델이 고를 폭이
+      좁아져 품질이 떨어질 수 있으므로 <strong>오프라인 평가로 재야 하는 ML 문제</strong>다.</li>
+  <li><strong>하네스의 오류율 게이트.</strong> k6의 <code>rerank_measure_failure &lt; 1%</code>
+      임계가 설계대로 나온 503 거절까지 실패로 센다(60/s에서 33.7%). 부하 차단이 있는 시스템을
+      재려면 "올바른 거절"과 "실패"를 구분해야 한다.</li>
+  <li><strong>온라인 피처 캐시.</strong> 한 요청 안에서 유저 피처는 후보 전체에 공통인데 매번
+      다시 읽는다. 로컬에서는 조회 비중이 작지만 GKE에서는 다르다.</li>
+</ul>
+
+<h2>재현 방법</h2>
+<pre>uvicorn applications.reranking_api.app:app --host 127.0.0.1 --port 8000
+  RERANK_MAX_CONCURRENCY=4  RERANK_REQUEST_TIMEOUT_SECONDS=1.0
+
+k6 run -e LOAD_MODE=open -e ARRIVAL_RATE=&lt;rate&gt; -e CANDIDATE_COUNT=200 \
+       -e WARMUP_SECONDS=8 -e MEASURE_SECONDS=25 \
+       applications/reranking_api/loadtest/rerank.js</pre>
+<p>
+  판정 기준은 <code>docs/runbooks/rerank-loadtest.md</code> 5절을 따른다. 설계 근거는
+  <code>docs/specs/2026-08-18-rerank-serving-load-shedding.md</code>에 있다.
+</p>
+
+<footer>
+  Autoresearch · 리랭킹 서빙 부하 차단 도입 전후 실측 · 2026-08-18 · 이슈 #781
+</footer>
+
+</div>
+</body>
+</html>
